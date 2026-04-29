@@ -135,7 +135,7 @@ NKIAAI-540 의 `agent-wpm` 역할이 `testbed_services` 변수에 나열된 각 
 | 레포 | 역할 |
 |-----|------|
 | [nkia-ai-team/claude-code-skills](https://github.com/nkia-ai-team/claude-code-skills) — `nkia-ai-tools/infra/testbed/` | NKIAAI-540 Ansible 플레이북 본체 (에이전트 6종 설치 + `service-k8s` 호출) |
-| [nkia-ai-team/rca-scenario-runner](https://github.com/nkia-ai-team/rca-scenario-runner) | 장애 시나리오 실행 도구 (NKIAAI-498). testbed K3s 안에 함께 배포될 예정 (NKIAAI-570 후속) |
+| [nkia-ai-team/rca-scenario-runner](https://github.com/nkia-ai-team/rca-scenario-runner) | 장애 시나리오 실행 도구 (NKIAAI-498). **호스트 docker compose 단일 인스턴스로 운영** — testbed 외부에서 K3s API 를 호출해 시나리오 실행. testbed K3s 안 컴포넌트가 아니며 KCM/APM/WPM 모니터링 대상도 아니라 self-contained 통합 불필요 (NKIAAI-570 결정). |
 | [nkia-ai-team/polestar-agents-binaries](https://github.com/nkia-ai-team/polestar-agents-binaries) | WPM/APM/SMS 에이전트 바이너리 GitHub Releases |
 
 ---
