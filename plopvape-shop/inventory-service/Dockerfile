@@ -1,4 +1,6 @@
 FROM eclipse-temurin:17-jdk AS builder
+ENV JAVA_TOOL_OPTIONS=-Djava.net.preferIPv4Stack=true
+RUN echo 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf
 WORKDIR /build
 
 COPY pom.xml ./pom.xml

@@ -13,6 +13,7 @@
 
 # 에러 발생 시 즉시 중단 (-e), 미정의 변수 사용 시 에러 (-u), 파이프 에러 전파 (-o pipefail)
 set -euo pipefail
+export DOCKER_BUILDKIT=0
 
 SERVICES=("order" "product" "inventory" "payment" "notification")
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,7 +27,7 @@ echo "========================================="
 for svc in "${SERVICES[@]}"; do
   echo ""
   echo ">>> [빌드] plopvape-${svc}..."
-  docker build -f "${PROJECT_ROOT}/${svc}-service/Dockerfile" \
+  docker build --network=host -f "${PROJECT_ROOT}/${svc}-service/Dockerfile" \
     -t "plopvape-${svc}:latest" "${PROJECT_ROOT}"
   echo "<<< [완료] plopvape-${svc}"
 done
