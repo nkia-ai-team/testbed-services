@@ -1,0 +1,167 @@
+# ============================================================
+# 리소스 1: DB 초기화 SQL을 담는 ConfigMap
+# ============================================================
+# PostgreSQL이 처음 시작될 때 /docker-entrypoint-initdb.d/ 폴더 안의
+# SQL 파일을 알파벳순으로 자동 실행한다.
+# 여기서 그 SQL 파일들을 ConfigMap에 담아두고, 아래 StatefulSet에서 마운트한다.
+# 파일 이름 앞에 01-, 02-를 붙여서 실행 순서를 보장한다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: rca-testbed
+data:
+  # 첫 번째로 실행: 4개 스키마(=DB 안의 폴더 같은 것) 생성
+  01-init-schemas.sql: |
+    CREATE SCHEMA IF NOT EXISTS order_schema;
+    CREATE SCHEMA IF NOT EXISTS product_schema;
+    CREATE SCHEMA IF NOT EXISTS inventory_schema;
+    CREATE SCHEMA IF NOT EXISTS payment_schema;
+
+  # 두 번째로 실행: 카테고리, 상품, 재고 초기 데이터 삽입
+  02-seed-all.sql: |
+    -- 카테고리 4개
+    INSERT INTO product_schema.categories (id, name, description) VALUES
+    (1, '기기', '전자담배 본체, 팟 디바이스, 모드 기기'),
+    (2, '액상', '니코틴 액상, 무니코틴 액상, 프리미엄 리퀴드'),
+    (3, '코일/팟', '교체용 코일, 팟 카트리지, 메쉬 코일'),
+    (4, '악세서리', '배터리, 충전기, 드립팁, 케이스')
+    ON CONFLICT (id) DO NOTHING;
+
+    -- 상품 16개
+    INSERT INTO product_schema.products (id, category_id, name, description, price) VALUES
+    (1, 1, 'PlopVape Air Pro', '초경량 팟 디바이스, 850mAh 배터리, Type-C 충전', 45000),
+    (2, 1, 'PlopVape Box Mod 200W', '듀얼 배터리 모드, 온도 제어, OLED 디스플레이', 89000),
+    (3, 1, 'PlopVape Stick V2', '올인원 스틱형, 초보자용, 1100mAh', 32000),
+    (4, 1, 'PlopVape Pod Mini', '미니 팟 디바이스, 자동 흡입 감지, 휴대용', 28000),
+    (5, 2, '클래식 버지니아 30ml', '진한 버지니아 블렌드, 니코틴 9mg', 15000),
+    (6, 2, '아이스 멘솔 50ml', '쿨링 멘솔, 니코틴 6mg, 대용량', 22000),
+    (7, 2, '망고 패션프루트 30ml', '열대과일 블렌드, 니코틴 3mg', 18000),
+    (8, 2, '카페라떼 30ml', '커피+크림 디저트 라인, 무니코틴', 16000),
+    (9, 3, 'Air Pro 교체 팟 (4입)', 'Air Pro 전용, 1.0ohm 메쉬 코일 내장', 12000),
+    (10, 3, 'Box Mod 메쉬 코일 (5입)', '0.15ohm 메쉬 코일, 고출력용', 18000),
+    (11, 3, 'Stick V2 교체 코일 (3입)', '0.8ohm MTL 코일, 입호흡용', 9000),
+    (12, 3, 'Pod Mini 카트리지 (3입)', '1.2ohm 세라믹 코일, 액상 누수 방지', 10000),
+    (13, 4, '18650 배터리 2개입', '3000mAh 고방전 배터리, Box Mod 호환', 16000),
+    (14, 4, 'USB-C 고속 충전 케이블', '1.5m 길이, 전 기기 호환', 8000),
+    (15, 4, '가죽 파우치 케이스', '기기+액상 수납, PlopVape 로고 각인', 25000),
+    (16, 4, '레진 드립팁 세트 (3종)', '510 규격, 핸드메이드 레진', 15000)
+    ON CONFLICT (id) DO NOTHING;
+
+    -- 재고 16개 (각 상품당 초기 재고)
+    INSERT INTO inventory_schema.inventory (id, product_id, stock, reserved) VALUES
+    (1, 1, 50, 0), (2, 2, 30, 0), (3, 3, 80, 0), (4, 4, 100, 0),
+    (5, 5, 200, 0), (6, 6, 150, 0), (7, 7, 180, 0), (8, 8, 120, 0),
+    (9, 9, 300, 0), (10, 10, 250, 0), (11, 11, 400, 0), (12, 12, 350, 0),
+    (13, 13, 100, 0), (14, 14, 500, 0), (15, 15, 60, 0), (16, 16, 200, 0)
+    ON CONFLICT (id) DO NOTHING;
+---
+# ============================================================
+# 리소스 2: PostgreSQL StatefulSet
+# ============================================================
+# Deployment와 구조가 거의 같다. 차이점:
+#   1. kind가 StatefulSet
+#   2. serviceName 필드가 추가됨 (고정 네트워크 이름용)
+#   3. volumeClaimTemplates로 PVC(디스크)를 자동 생성
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: testbed-postgres
+  namespace: rca-testbed
+  labels:
+    app: testbed-postgres
+spec:
+  # StatefulSet 전용: 이 이름으로 고정된 네트워크 주소가 만들어진다.
+  # Pod 이름이 항상 testbed-postgres-0 으로 고정되는 이유.
+  serviceName: testbed-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-postgres
+  template:
+    metadata:
+      labels:
+        app: testbed-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          # Secret에서 POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD를 환경변수로 주입.
+          # PostgreSQL 공식 이미지는 이 환경변수를 읽어서 DB와 사용자를 자동 생성한다.
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          volumeMounts:
+            # (1) DB 데이터 파일 저장 경로 → PVC(영구 디스크)에 연결
+            #     Pod가 죽어도 이 디스크의 데이터는 살아있다.
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            # (2) 초기화 SQL 파일 → ConfigMap에서 가져와서 이 폴더에 넣음
+            #     PostgreSQL이 처음 시작할 때 여기 있는 SQL을 자동 실행.
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        # init-scripts 볼륨의 실체: 위에서 만든 ConfigMap
+        # ConfigMap의 키(파일이름)가 폴더 안에 파일로 생성된다.
+        #   01-init-schemas.sql → /docker-entrypoint-initdb.d/01-init-schemas.sql
+        #   02-seed-all.sql     → /docker-entrypoint-initdb.d/02-seed-all.sql
+        - name: init-scripts
+          configMap:
+            name: postgres-init-scripts
+
+  # StatefulSet 전용: PVC(디스크) 자동 생성 템플릿
+  # Deployment에는 이 필드가 없다 (stateless라 디스크 불필요).
+  # Pod가 죽고 새로 떠도 이 PVC는 삭제되지 않아서 데이터가 보존된다.
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]  # 한 번에 하나의 Pod만 이 디스크에 쓸 수 있음
+        resources:
+          requests:
+            storage: 5Gi                # 5GB 디스크 공간 요청
+---
+# ============================================================
+# 리소스 3: PostgreSQL Service (ClusterIP) — 클러스터 내부 통신용
+# ============================================================
+# 마이크로서비스들이 DB에 접속할 때 사용하는 이름.
+# ConfigMap의 DB_HOST=testbed-postgres 가 바로 이 Service를 가리킨다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-postgres
+  namespace: rca-testbed
+spec:
+  selector:
+    app: testbed-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# ============================================================
+# 리소스 4: PostgreSQL Service (NodePort) — 외부 접근용
+# ============================================================
+# Polestar10 DPM(DB 모니터링)이 K3s 밖에서 DB에 접속할 때 사용.
+# 192.168.200.109:30432 로 접근하면 PostgreSQL Pod로 연결된다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-postgres-external
+  namespace: rca-testbed
+spec:
+  type: NodePort                     # 외부 접근 허용
+  selector:
+    app: testbed-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      nodePort: 30432                # 외부에서 접근하는 포트 (30000~32767 범위)

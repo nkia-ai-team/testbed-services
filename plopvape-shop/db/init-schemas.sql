@@ -1,0 +1,4 @@
+CREATE SCHEMA IF NOT EXISTS order_schema;
+CREATE SCHEMA IF NOT EXISTS product_schema;
+CREATE SCHEMA IF NOT EXISTS inventory_schema;
+CREATE SCHEMA IF NOT EXISTS payment_schema;

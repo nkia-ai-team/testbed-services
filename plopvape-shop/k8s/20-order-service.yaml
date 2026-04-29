@@ -1,0 +1,140 @@
+# --- YAML 구조 해부 ---
+# K8s YAML은 크게 4파트로 나뉜다:
+#   apiVersion: 어떤 API를 쓸지 (apps/v1은 Deployment용)
+#   kind:       어떤 종류의 리소스를 만들지
+#   metadata:   이름, 네임스페이스, 라벨 등 메타 정보
+#   spec:       실제 설정 내용 ("이렇게 만들어줘")
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-order              # 이 Deployment의 이름
+  namespace: rca-testbed           # 어떤 네임스페이스에 만들지
+  labels:
+    app: testbed-order             # Deployment 자체에 붙이는 라벨
+spec:
+  replicas: 1                      # Pod 1개 유지
+  selector:
+    matchLabels:
+      app: testbed-order           # "이 라벨이 붙은 Pod를 내가 관리할게"
+  template:                        # Pod 템플릿 = "이 틀대로 Pod를 찍어내줘"
+    metadata:
+      labels:
+        app: testbed-order         # 찍어낸 Pod에 붙일 라벨 (selector와 일치해야!)
+    spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: Directory
+        - name: wpm-agent
+          hostPath:
+            path: /opt/polestar10/wpm
+            type: Directory
+      containers:                  # 이 Pod 안에 들어갈 컨테이너 목록
+        - name: order-service      # 컨테이너 이름 (자유롭게 지정)
+          image: plopvape-order:latest   # 어떤 Docker 이미지를 쓸지
+          imagePullPolicy: Never         # 로컬 이미지 사용 (인터넷에서 안 받음)
+          ports:
+            - containerPort: 8080        # 이 컨테이너가 듣는 포트
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
+            - name: wpm-agent
+              mountPath: /opt/wpm
+              readOnly: true
+
+          # --- 환경변수 주입 ---
+          # envFrom: ConfigMap/Secret의 모든 키-값을 한꺼번에 환경변수로 넣음
+          # 예: ConfigMap에 DB_HOST=testbed-postgres가 있으면
+          #     컨테이너 안에서 환경변수 DB_HOST로 접근 가능
+          envFrom:
+            - configMapRef:
+                name: service-config     # ConfigMap
+            - secretRef:
+                name: postgres-secret    # Secret
+
+          # env: 개별 환경변수를 하나씩 지정 (이름을 바꿔서 넣을 때 유용)
+          # Secret에는 POSTGRES_USER로 저장했지만, 우리 앱은 DB_USER를 기대함
+          env:
+            - name: DB_USER              # 컨테이너 안에서 쓸 이름
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret   # 어떤 Secret에서
+                  key: POSTGRES_USER      # 어떤 키의 값을 가져올지
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            # --- APM Java Agent ---
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/wpmagent.jar -Dwpm.config=/opt/wpm/wpmagent-order.conf"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://192.168.230.104:6565"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "plopvape-order"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "lucida.organizationId=69731678b56620b247fb279a,lucida.groupId=plopvape-shop"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
+
+          # --- 헬스체크 (Probe) ---
+          # startupProbe가 부팅 완료까지 liveness/readiness를 억제 → 최대 150초 부팅 허용
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            failureThreshold: 30         # 5초 x 30 = 최대 150초 부팅 대기
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3            # 기본 1초는 타이트 → GC pause / DB 일시 지연 허용
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 3            # 기본 1초 → 3초
+            failureThreshold: 5          # 기본 3 → 5 (15s x 5 = 75s 유예, 일시적 슬로우다운에 관대)
+
+          # --- 리소스 제한 ---
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+# ============================================================
+# Service (ClusterIP) — 클러스터 내부에서 이 이름으로 접근 가능
+# ============================================================
+# 이 Service를 만들면 K8s DNS에 "testbed-order"라는 이름이 등록된다.
+# 다른 Pod에서 http://testbed-order:8080 으로 요청할 수 있다.
+# selector로 "app: testbed-order" 라벨이 붙은 Pod를 찾아서 트래픽을 전달한다.
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-order
+  namespace: rca-testbed
+spec:
+  # type 생략 = ClusterIP (기본값). 클러스터 내부 전용.
+  selector:
+    app: testbed-order       # 위 Deployment가 만든 Pod의 라벨과 일치
+  ports:
+    - port: 8080             # Service 포트 (다른 Pod가 접근할 때 쓰는 포트)
+      targetPort: 8080       # 실제 컨테이너의 포트

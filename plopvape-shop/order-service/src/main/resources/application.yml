@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: order-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/plopvape
+    username: ${DB_USER:plopvape}
+    password: ${DB_PASS:plopvape1234}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: order_schema
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+services:
+  product:
+    url: ${PRODUCT_SERVICE_URL:http://localhost:8081}
+    connect-timeout: 3s
+    read-timeout: 10s
+  payment:
+    url: ${PAYMENT_SERVICE_URL:http://localhost:8083}
+    connect-timeout: 3s
+    read-timeout: 15s
+  inventory:
+    url: ${INVENTORY_SERVICE_URL:http://localhost:8082}
+    connect-timeout: 3s
+    read-timeout: 10s
