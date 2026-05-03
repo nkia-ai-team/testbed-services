@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-feed
+  namespace: rca-testbed-social
+  labels:
+    app: testbed-feed
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-feed
+  template:
+    metadata:
+      labels:
+        app: testbed-feed
+    spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: DirectoryOrCreate
+        - name: wpm-agent
+          hostPath:
+            path: /opt/polestar10/wpm
+            type: DirectoryOrCreate
+      containers:
+        - name: feed-service
+          image: social-feed-feed:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
+            - name: wpm-agent
+              mountPath: /opt/wpm
+              readOnly: true
+          envFrom:
+            - configMapRef:
+                name: service-config
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+            - name: OTEL_SERVICE_NAME
+              value: "social-feed-feed"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-feed
+  namespace: rca-testbed-social
+spec:
+  selector:
+    app: testbed-feed
+  ports:
+    - port: 8081
+      targetPort: 8081

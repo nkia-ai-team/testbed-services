@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-notification
+  namespace: rca-testbed-social
+  labels:
+    app: testbed-notification
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-notification
+  template:
+    metadata:
+      labels:
+        app: testbed-notification
+    spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: DirectoryOrCreate
+        - name: wpm-agent
+          hostPath:
+            path: /opt/polestar10/wpm
+            type: DirectoryOrCreate
+      containers:
+        - name: notification-service
+          image: social-feed-notification:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8083
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
+            - name: wpm-agent
+              mountPath: /opt/wpm
+              readOnly: true
+          envFrom:
+            - configMapRef:
+                name: service-config
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+            - name: OTEL_SERVICE_NAME
+              value: "social-feed-notification"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8083
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-notification
+  namespace: rca-testbed-social
+spec:
+  selector:
+    app: testbed-notification
+  ports:
+    - port: 8083
+      targetPort: 8083

@@ -1,0 +1,26 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root1234
+      MYSQL_DATABASE: socialfeed
+      MYSQL_USER: socialfeed
+      MYSQL_PASSWORD: socialfeed1234
+    ports:
+      - "13306:3306"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - mysqldata:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+
+  mock-push-gateway:
+    image: mockserver/mockserver:latest
+    ports:
+      - "18090:1080"
+    environment:
+      MOCKSERVER_LIVENESS_HTTP_GET_PATH: /liveness/probe
+
+volumes:
+  mysqldata:
