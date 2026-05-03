@@ -1,0 +1,46 @@
+# mock-push-gateway: notification-service 의 외부 의존 시뮬레이터.
+# failure_surface: external-timeout — 시나리오 시 이 컨테이너 응답 지연/down.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-mock-push-gateway
+  namespace: rca-testbed-social
+  labels:
+    app: testbed-mock-push-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-mock-push-gateway
+  template:
+    metadata:
+      labels:
+        app: testbed-mock-push-gateway
+    spec:
+      containers:
+        - name: mockserver
+          image: mockserver/mockserver:latest
+          ports:
+            - containerPort: 1080
+          env:
+            - name: MOCKSERVER_LIVENESS_HTTP_GET_PATH
+              value: /liveness/probe
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-mock-push-gateway
+  namespace: rca-testbed-social
+spec:
+  selector:
+    app: testbed-mock-push-gateway
+  ports:
+    - port: 1080
+      targetPort: 1080

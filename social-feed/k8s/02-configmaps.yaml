@@ -1,0 +1,180 @@
+# 서비스 공통 환경변수
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service-config
+  namespace: rca-testbed-social
+data:
+  DB_HOST: testbed-mysql
+  DB_PORT: "3306"
+  DB_NAME: socialfeed
+
+  POST_SERVICE_URL: http://testbed-post:8080
+  FEED_SERVICE_URL: http://testbed-feed:8081
+  COMMENT_SERVICE_URL: http://testbed-comment:8082
+  NOTIFICATION_SERVICE_URL: http://testbed-notification:8083
+
+  PUSH_GATEWAY_URL: http://testbed-mock-push-gateway:1080
+---
+# Nginx reverse proxy 설정
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-conf
+  namespace: rca-testbed-social
+data:
+  default.conf: |
+    upstream post-service {
+        server testbed-post:8080;
+    }
+    upstream feed-service {
+        server testbed-feed:8081;
+    }
+    upstream comment-service {
+        server testbed-comment:8082;
+    }
+    upstream notification-service {
+        server testbed-notification:8083;
+    }
+
+    server {
+        listen 80;
+
+        location /api/posts {
+            proxy_pass http://post-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/users {
+            proxy_pass http://post-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/feed {
+            proxy_pass http://feed-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/notifications {
+            proxy_pass http://notification-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /health {
+            return 200 'ok';
+        }
+    }
+---
+# MySQL init script (init.sql 내용을 ConfigMap 으로 마운트)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-scripts
+  namespace: rca-testbed-social
+data:
+  01-init.sql: |
+    CREATE DATABASE IF NOT EXISTS socialfeed
+        DEFAULT CHARACTER SET utf8mb4
+        DEFAULT COLLATE utf8mb4_unicode_ci;
+    USE socialfeed;
+
+    CREATE TABLE IF NOT EXISTS posts (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        author_id   BIGINT NOT NULL,
+        content     TEXT,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_post_author (author_id)
+    ) ENGINE=InnoDB;
+
+    CREATE TABLE IF NOT EXISTS feed_entries (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id     BIGINT NOT NULL,
+        post_id     BIGINT NOT NULL,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_feed_user (user_id),
+        INDEX idx_feed_post (post_id),
+        CONSTRAINT fk_feed_post FOREIGN KEY (post_id) REFERENCES posts(id)
+    ) ENGINE=InnoDB;
+
+    CREATE TABLE IF NOT EXISTS comments (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        post_id     BIGINT NOT NULL,
+        author_id   BIGINT NOT NULL,
+        content     TEXT,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_comment_post (post_id),
+        CONSTRAINT fk_comment_post FOREIGN KEY (post_id) REFERENCES posts(id)
+    ) ENGINE=InnoDB;
+
+    CREATE TABLE IF NOT EXISTS notifications (
+        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+        user_id     BIGINT NOT NULL,
+        type        VARCHAR(32),
+        ref_id      BIGINT,
+        read_flag   TINYINT DEFAULT 0,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_notif_user (user_id)
+    ) ENGINE=InnoDB;
+
+    -- 시드 데이터
+    INSERT INTO posts (id, author_id, content) VALUES
+    (1, 1, '오늘 출근길 단풍이 너무 예뻤다'),
+    (2, 1, '점심 김치찌개 맛집 추천 받습니다'),
+    (3, 2, '주말 등산 다녀왔어요'),
+    (4, 2, '카페에서 작업 중'),
+    (5, 3, '운동 100일째'),
+    (6, 3, '아이폰 17 프로 고민'),
+    (7, 4, '집들이 메뉴 추천'),
+    (8, 4, '신혼집 인테리어'),
+    (9, 5, '서울 출장 마무리'),
+    (10, 5, '평양냉면집 추천'),
+    (11, 6, '강아지 산책 사진'),
+    (12, 6, '비 오는 날 카페'),
+    (13, 7, '독서 모임 후기'),
+    (14, 7, '책 추천: 사피엔스'),
+    (15, 8, '제주도 여행 후기'),
+    (16, 8, '비행기 티켓 꿀팁'),
+    (17, 9, '재택 책상 셋업'),
+    (18, 9, '키보드 타건감 비교'),
+    (19, 10, '주말 캠핑'),
+    (20, 10, 'viral 게시물');
+
+    INSERT INTO feed_entries (user_id, post_id) VALUES
+    (1, 1), (2, 1), (3, 1), (4, 1), (5, 1),
+    (1, 2), (2, 2),
+    (2, 3), (3, 3), (4, 3),
+    (3, 5), (4, 5),
+    (4, 7), (5, 7),
+    (5, 9), (6, 9),
+    (6, 11), (7, 11),
+    (7, 13), (8, 13),
+    (8, 15), (9, 15),
+    (9, 17), (10, 17),
+    (10, 19), (1, 19),
+    (10, 20), (1, 20), (2, 20), (3, 20), (4, 20), (5, 20), (6, 20), (7, 20), (8, 20), (9, 20);
+
+    INSERT INTO comments (post_id, author_id, content) VALUES
+    (1, 2, '저도 봤어요'),
+    (1, 3, '단풍 시즌 끝났네요'),
+    (3, 5, '부럽네요'),
+    (20, 1, '와 대박'),
+    (20, 2, 'viral 인정');
+
+    INSERT INTO notifications (user_id, type, ref_id, read_flag) VALUES
+    (1, 'COMMENT', 1, 0),
+    (2, 'COMMENT', 3, 0),
+    (3, 'COMMENT', 5, 1),
+    (5, 'FOLLOW', 1, 1),
+    (10, 'LIKE', 20, 0);
