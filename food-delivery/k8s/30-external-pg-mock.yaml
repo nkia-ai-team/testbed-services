@@ -1,0 +1,85 @@
+# external-pg-mock — payment-service 의 외부 PG 의존 시뮬레이터.
+# failure_surface: external-timeout — 시나리오 시 이 컨테이너 응답 지연/down 으로 만들어 RCA 검증.
+# mockserver/mockserver: POST /pay 등 임의 매칭 룰을 동적으로 셋업 가능.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-external-pg-mock
+  namespace: rca-testbed-food
+  labels:
+    app: testbed-external-pg-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-external-pg-mock
+  template:
+    metadata:
+      labels:
+        app: testbed-external-pg-mock
+    spec:
+      containers:
+        - name: mockserver
+          image: mockserver/mockserver:latest
+          ports:
+            - containerPort: 1080
+          env:
+            - name: MOCKSERVER_LIVENESS_HTTP_GET_PATH
+              value: /liveness/probe
+            - name: MOCKSERVER_INITIALIZATION_JSON_PATH
+              value: /config/init.json
+          volumeMounts:
+            - name: mock-init
+              mountPath: /config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+      volumes:
+        - name: mock-init
+          configMap:
+            name: external-pg-mock-init
+            optional: true
+---
+# Service exposes mock on port 9090 (matches PG_API_URL configmap)
+# but mockserver listens on 1080, so we map 9090 -> 1080.
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-external-pg-mock
+  namespace: rca-testbed-food
+spec:
+  selector:
+    app: testbed-external-pg-mock
+  ports:
+    - port: 9090
+      targetPort: 1080
+---
+# Default expectation: POST /pay -> 200 {status: APPROVED, transaction_id: ...}
+# Scenarios overwrite this expectation at runtime via mockserver REST API
+# (PUT /mockserver/expectation) to inject delays / 504 / hangs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-pg-mock-init
+  namespace: rca-testbed-food
+data:
+  init.json: |
+    [
+      {
+        "httpRequest": {
+          "method": "POST",
+          "path": "/pay"
+        },
+        "httpResponse": {
+          "statusCode": 200,
+          "headers": {
+            "content-type": ["application/json"]
+          },
+          "body": "{\"status\":\"APPROVED\",\"transaction_id\":\"mock-tx-0001\"}"
+        }
+      }
+    ]
