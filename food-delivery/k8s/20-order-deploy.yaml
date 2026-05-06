@@ -47,11 +47,11 @@ spec:
             - name: JAVA_TOOL_OPTIONS
               value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://{{ polestar10_collector_host }}:{{ polestar10_apm_otlp_port | default('6565') }}"
+              value: "http://221.141.145.157:6565"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId={{ polestar_organization_id }},lucida.groupId=food-delivery"
+              value: "lucida.organizationId=69d8a71a5fa0cb8784e5fb38,lucida.groupId=food-delivery"
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "10000"
             - name: OTEL_SERVICE_NAME
