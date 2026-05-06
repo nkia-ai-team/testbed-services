@@ -20,6 +20,10 @@ spec:
           hostPath:
             path: /opt/polestar10/apm
             type: DirectoryOrCreate
+        - name: wpm-agent
+          hostPath:
+            path: /opt/polestar10/wpm
+            type: DirectoryOrCreate
       containers:
         - name: order-service
           image: food-delivery-order:latest
@@ -29,6 +33,9 @@ spec:
           volumeMounts:
             - name: apm-agent
               mountPath: /opt/apm
+              readOnly: true
+            - name: wpm-agent
+              mountPath: /opt/wpm
               readOnly: true
           envFrom:
             - configMapRef:
@@ -45,7 +52,7 @@ spec:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              value: "-javaagent:/opt/wpm/wpmagent.jar -javaagent:/opt/apm/opentelemetry-javaagent.jar -Dnet_collector_ip=221.141.145.157 -Dnet_collector_udp_port=31002 -Dnet_collector_tcp_port=31005 -Dobj_name=food-delivery-order"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://221.141.145.157:6565"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
