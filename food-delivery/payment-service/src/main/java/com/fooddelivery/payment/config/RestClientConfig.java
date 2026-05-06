@@ -1,0 +1,35 @@
+package com.fooddelivery.payment.config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
+
+import java.time.Duration;
+
+@Configuration
+public class RestClientConfig {
+
+    @Bean
+    public RestClient orderRestClient(
+            @Value("${services.order.url}") String baseUrl,
+            @Value("${services.order.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${services.order.read-timeout:10s}") Duration readTimeout) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+    }
+
+    @Bean
+    public RestClient pgRestClient(
+            @Value("${pg.api.base-url}") String baseUrl,
+            @Value("${pg.api.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${pg.api.read-timeout:10s}") Duration readTimeout) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+    }
+}

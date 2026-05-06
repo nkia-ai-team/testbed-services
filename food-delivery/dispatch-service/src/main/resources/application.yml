@@ -1,0 +1,29 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: dispatch-service
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:fooddelivery}
+    username: ${POSTGRES_USER:fooddelivery}
+    password: ${POSTGRES_PASSWORD:fooddelivery1234}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+
+services:
+  order:
+    url: ${ORDER_SERVICE_URL:http://localhost:8080}
+    connect-timeout: 3s
+    read-timeout: 10s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

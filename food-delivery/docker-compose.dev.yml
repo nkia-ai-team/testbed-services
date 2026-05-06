@@ -1,0 +1,95 @@
+# Local dev compose — runs the full stack on localhost for engineer iteration.
+# Production deployment uses k8s/ manifests instead.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fooddelivery
+      POSTGRES_USER: fooddelivery
+      POSTGRES_PASSWORD: fooddelivery1234
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - pgdata:/var/lib/postgresql/data
+
+  external-pg-mock:
+    image: mockserver/mockserver:latest
+    environment:
+      MOCKSERVER_LIVENESS_HTTP_GET_PATH: /liveness/probe
+    ports:
+      - "9090:1080"
+
+  order:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    image: food-delivery-order:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fooddelivery
+      POSTGRES_USER: fooddelivery
+      POSTGRES_PASSWORD: fooddelivery1234
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+
+  restaurant:
+    build:
+      context: .
+      dockerfile: restaurant-service/Dockerfile
+    image: food-delivery-restaurant:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fooddelivery
+      POSTGRES_USER: fooddelivery
+      POSTGRES_PASSWORD: fooddelivery1234
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+
+  dispatch:
+    build:
+      context: .
+      dockerfile: dispatch-service/Dockerfile
+    image: food-delivery-dispatch:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fooddelivery
+      POSTGRES_USER: fooddelivery
+      POSTGRES_PASSWORD: fooddelivery1234
+      ORDER_SERVICE_URL: http://order:8080
+    ports:
+      - "8082:8082"
+    depends_on:
+      - postgres
+      - order
+
+  payment:
+    build:
+      context: .
+      dockerfile: payment-service/Dockerfile
+    image: food-delivery-payment:latest
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fooddelivery
+      POSTGRES_USER: fooddelivery
+      POSTGRES_PASSWORD: fooddelivery1234
+      ORDER_SERVICE_URL: http://order:8080
+      PG_API_URL: http://external-pg-mock:1080
+    ports:
+      - "8083:8083"
+    depends_on:
+      - postgres
+      - order
+      - external-pg-mock
+
+volumes:
+  pgdata:
