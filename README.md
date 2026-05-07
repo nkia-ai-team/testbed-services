@@ -95,7 +95,7 @@ spec:
                 -javaagent:/opt/wpm/wpmagent.jar
                 -Dwpm.config=/opt/wpm/wpmagent-<service>.conf
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://192.168.230.104:6565"
+              value: "${OTLP_ENDPOINT}"   # envsubst placeholder — build-and-deploy.sh 가 deploy-time 치환. ansible 이 OTLP_ENDPOINT env 주입 (수동 실행 시 직접 export). hardcoded IP / Jinja 표현 사용 X.
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_SERVICE_NAME
