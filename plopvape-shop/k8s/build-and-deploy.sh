@@ -46,12 +46,19 @@ done
 
 echo ""
 echo "========================================="
-echo "  Phase 3: K8s 매니페스트 적용"
+echo "  Phase 3: K8s 매니페스트 적용 (envsubst 치환 포함)"
 echo "========================================="
-# kubectl apply -f 디렉토리/ → 디렉토리 안의 모든 YAML을 알파벳순으로 적용.
-# 파일 이름 앞에 00-, 01-, 10-, 20-, 30- 번호를 붙인 이유가 이것이다.
+# 매니페스트의 ${OTLP_ENDPOINT} placeholder 를 deploy-time 에 치환.
+# 사내 NAT/방화벽 환경에서는 collector 가 환경마다 달라서 매니페스트에 hardcode 불가.
+# 누락 시 fail-fast — broken endpoint 로 Pod 가 뜨고 silent fail 하는 사고 차단.
+: "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.200.57:6565}"
+
+# envsubst 화이트리스트로 '${OTLP_ENDPOINT}' 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
+# 파일 이름 앞 00-, 01-, 10-, 20-, 30- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → PostgreSQL(10) → ... → Nginx(30)
-kubectl apply -f "${PROJECT_ROOT}/k8s/"
+for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
+  envsubst '${OTLP_ENDPOINT}' < "$f" | kubectl apply -f -
+done
 
 echo ""
 echo "========================================="
