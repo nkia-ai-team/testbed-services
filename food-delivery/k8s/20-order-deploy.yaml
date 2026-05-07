@@ -54,7 +54,7 @@ spec:
             - name: JAVA_TOOL_OPTIONS
               value: "-javaagent:/opt/wpm/wpmagent.jar -Dwpm.config=/opt/wpm/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://221.141.145.157:6565"
+              value: "http://192.168.200.57:6565"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
