@@ -48,9 +48,17 @@ fi
 
 echo ""
 echo "========================================="
-echo "  Phase 3: kubectl apply"
+echo "  Phase 3: kubectl apply (envsubst 치환 포함)"
 echo "========================================="
-kubectl apply -f "${PROJECT_ROOT}/k8s/"
+# 매니페스트의 ${OTLP_ENDPOINT} placeholder 를 deploy-time 에 치환.
+# Polestar10 collector 주소가 환경마다 다르므로 매니페스트 hardcode 불가 — testbed-build orchestrator
+# 가 ansible service-k8s role 의 OTLP_ENDPOINT env var 로 주입 (NKIAAI-542 패턴, plopvape-shop 동일).
+: "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.230.104:6565}"
+
+# envsubst 화이트리스트로 '${OTLP_ENDPOINT}' 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
+for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
+  envsubst '${OTLP_ENDPOINT}' < "$f" | kubectl apply -f -
+done
 
 echo ""
 echo "========================================="
