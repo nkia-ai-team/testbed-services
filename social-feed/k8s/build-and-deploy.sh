@@ -25,12 +25,26 @@ done
 
 echo ""
 echo "========================================="
-echo "  Phase 2: K3s 이미지 임포트"
+echo "  Phase 2: cluster 이미지 임포트 (k3d / native K3s 자동 감지)"
 echo "========================================="
-for svc in "${SERVICES[@]}"; do
-  echo ">>> [임포트] social-feed-${svc}..."
-  docker save "social-feed-${svc}:latest" | sudo k3s ctr images import -
-done
+# kubectl 의 현재 context cluster 이름이 'k3d-<name>' 으로 시작하면 k3d.
+# k3d 노드의 containerd 는 호스트 docker 와 분리되어 있어 `k3d image import` 로 명시 주입 필요.
+# 그 외 (native K3s / 기타) 는 k3s containerd 로 import.
+CTX_CLUSTER=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null || echo "")
+if [[ "$CTX_CLUSTER" == k3d-* ]]; then
+  K3D_NAME="${CTX_CLUSTER#k3d-}"
+  echo "[detect] k3d cluster: $K3D_NAME"
+  for svc in "${SERVICES[@]}"; do
+    echo ">>> [k3d import] social-feed-${svc}..."
+    k3d image import "social-feed-${svc}:latest" -c "$K3D_NAME"
+  done
+else
+  echo "[detect] native K3s (cluster=$CTX_CLUSTER)"
+  for svc in "${SERVICES[@]}"; do
+    echo ">>> [k3s ctr import] social-feed-${svc}..."
+    docker save "social-feed-${svc}:latest" | sudo k3s ctr images import -
+  done
+fi
 
 echo ""
 echo "========================================="
