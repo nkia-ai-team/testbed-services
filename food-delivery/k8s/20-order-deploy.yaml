@@ -22,7 +22,7 @@ spec:
             type: DirectoryOrCreate
         - name: wpm-agent
           hostPath:
-            path: /opt/polestar10/wpm/order
+            path: /opt/polestar10/wpm
             type: DirectoryOrCreate
       containers:
         - name: order-service
@@ -52,13 +52,13 @@ spec:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/wpm/wpmagent.jar -Dwpm.config=/opt/wpm/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              value: "-javaagent:/opt/wpm/template/wpmagent.jar -Dwpm.config=/opt/wpm/order/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId=69d8a71a5fa0cb8784e5fb38,lucida.groupId=food-delivery"
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=food-delivery"
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "10000"
             - name: OTEL_SERVICE_NAME
