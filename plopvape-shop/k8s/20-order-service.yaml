@@ -9,7 +9,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: testbed-order              # 이 Deployment의 이름
-  namespace: rca-testbed           # 어떤 네임스페이스에 만들지
+  namespace: rca-testbed-plopvape           # 어떤 네임스페이스에 만들지
   labels:
     app: testbed-order             # Deployment 자체에 붙이는 라벨
 spec:
@@ -130,7 +130,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: testbed-order
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
 spec:
   # type 생략 = ClusterIP (기본값). 클러스터 내부 전용.
   selector:
