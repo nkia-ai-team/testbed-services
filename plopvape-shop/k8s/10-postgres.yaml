@@ -9,7 +9,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-init-scripts
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
 data:
   # 첫 번째로 실행: 4개 스키마(=DB 안의 폴더 같은 것) 생성
   01-init-schemas.sql: |
@@ -67,7 +67,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: testbed-postgres
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
   labels:
     app: testbed-postgres
 spec:
@@ -139,7 +139,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: testbed-postgres
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
 spec:
   selector:
     app: testbed-postgres
@@ -156,7 +156,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: testbed-postgres-external
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
 spec:
   type: NodePort                     # 외부 접근 허용
   selector:

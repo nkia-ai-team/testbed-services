@@ -77,16 +77,16 @@ echo "  Phase 4: 배포 상태 확인"
 echo "========================================="
 # Deployment가 완전히 뜰 때까지 최대 3분 대기.
 echo "Deployment 롤아웃 대기 중..."
-kubectl -n rca-testbed rollout status deployment --timeout=180s || true
+kubectl -n rca-testbed-plopvape rollout status deployment --timeout=180s || true
 
 # StatefulSet은 별도로 확인
 echo "StatefulSet 롤아웃 대기 중..."
-kubectl -n rca-testbed rollout status statefulset --timeout=120s || true
+kubectl -n rca-testbed-plopvape rollout status statefulset --timeout=120s || true
 
 echo ""
 echo "========================================="
 echo "  최종 상태"
 echo "========================================="
-kubectl -n rca-testbed get pods
+kubectl -n rca-testbed-plopvape get pods
 echo ""
-kubectl -n rca-testbed get svc
+kubectl -n rca-testbed-plopvape get svc

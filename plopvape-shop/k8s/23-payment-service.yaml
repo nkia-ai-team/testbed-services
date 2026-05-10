@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: testbed-payment
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
   labels:
     app: testbed-payment
 spec:
@@ -104,7 +104,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: testbed-payment
-  namespace: rca-testbed
+  namespace: rca-testbed-plopvape
 spec:
   selector:
     app: testbed-payment
