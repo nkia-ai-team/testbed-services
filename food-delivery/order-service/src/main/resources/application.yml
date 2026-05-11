@@ -16,6 +16,16 @@ spring:
         default_schema: public
     open-in-view: false
 
+services:
+  restaurant:
+    url: ${SERVICES_RESTAURANT_URL:http://testbed-restaurant:8081}
+    connect-timeout: 3s
+    read-timeout: 5s
+  dispatch:
+    url: ${SERVICES_DISPATCH_URL:http://testbed-dispatch:8082}
+    connect-timeout: 3s
+    read-timeout: 5s
+
 management:
   endpoints:
     web:

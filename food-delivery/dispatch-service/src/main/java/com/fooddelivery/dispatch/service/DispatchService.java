@@ -9,10 +9,13 @@ import com.fooddelivery.dispatch.entity.Dispatch;
 import com.fooddelivery.dispatch.repository.DispatchRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -23,10 +26,14 @@ public class DispatchService {
 
     private final DispatchRepository dispatchRepository;
     private final OrderClient orderClient;
+    private final int maxCapacity;
 
-    public DispatchService(DispatchRepository dispatchRepository, OrderClient orderClient) {
+    public DispatchService(DispatchRepository dispatchRepository,
+                           OrderClient orderClient,
+                           @Value("${dispatch.max-capacity:50}") int maxCapacity) {
         this.dispatchRepository = dispatchRepository;
         this.orderClient = orderClient;
+        this.maxCapacity = maxCapacity;
     }
 
     @Transactional
@@ -34,6 +41,12 @@ public class DispatchService {
         OrderResponse order = orderClient.getOrder(request.orderId());
         if (order == null) {
             throw new ServiceException(HttpStatus.BAD_REQUEST, "Order not found: " + request.orderId());
+        }
+
+        long currentAssigned = dispatchRepository.countByStatus("ASSIGNED");
+        if (currentAssigned >= maxCapacity) {
+            throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Courier pool exhausted (assigned=" + currentAssigned + ", max=" + maxCapacity + ")");
         }
 
         Dispatch d = new Dispatch();
@@ -53,6 +66,17 @@ public class DispatchService {
         Dispatch d = dispatchRepository.findById(id)
                 .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND, "Dispatch not found: " + id));
         return toResponse(d);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Integer> getCapacity() {
+        long currentAssigned = dispatchRepository.countByStatus("ASSIGNED");
+        int available = Math.max(0, (int) (maxCapacity - currentAssigned));
+        Map<String, Integer> result = new LinkedHashMap<>();
+        result.put("currentAssigned", (int) currentAssigned);
+        result.put("maxCapacity", maxCapacity);
+        result.put("available", available);
+        return result;
     }
 
     private DispatchResponse toResponse(Dispatch d) {
