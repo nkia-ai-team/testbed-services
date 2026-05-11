@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -79,6 +80,18 @@ public class DispatchService {
         result.put("maxCapacity", maxCapacity);
         result.put("available", available);
         return result;
+    }
+
+    // 배달 완료 시뮬레이션: ETA 가 지난 ASSIGNED dispatch 는 DELIVERED 로 전이.
+    // 없으면 capacity 가 영구히 차서 정상 traffic 도 503. scenario-02 seed (eta=30min) 는
+    // 시나리오 duration (240s) 안에 expire X 라 알람 영향 없음.
+    @Scheduled(fixedDelay = 30000, initialDelay = 30000)
+    @Transactional
+    public void deliverExpiredDispatches() {
+        int n = dispatchRepository.markExpiredAsDelivered();
+        if (n > 0) {
+            log.info("Delivered {} expired dispatches", n);
+        }
     }
 
     private DispatchResponse toResponse(Dispatch d) {
