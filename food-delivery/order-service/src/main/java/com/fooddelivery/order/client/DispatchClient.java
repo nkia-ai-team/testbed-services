@@ -1,5 +1,7 @@
 package com.fooddelivery.order.client;
 
+import com.fooddelivery.common.dto.DispatchRequest;
+import com.fooddelivery.common.dto.DispatchResponse;
 import com.fooddelivery.common.exception.ServiceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +37,23 @@ public class DispatchClient {
             log.error("Failed to check dispatch capacity: {}", ex.getMessage());
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Dispatch capacity check failed: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * 실제 courier 배차 — order 생성 후 fan-out 호출.
+     */
+    public DispatchResponse dispatchCourier(Long orderId, String region) {
+        try {
+            return dispatchRestClient.post()
+                    .uri("/api/deliveries/dispatch")
+                    .body(new DispatchRequest(orderId, region))
+                    .retrieve()
+                    .body(DispatchResponse.class);
+        } catch (RestClientException ex) {
+            log.error("Failed to dispatch courier for order {}: {}", orderId, ex.getMessage());
+            throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Dispatch service failed: " + ex.getMessage());
         }
     }
 }
