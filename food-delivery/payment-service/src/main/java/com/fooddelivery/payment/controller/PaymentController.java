@@ -16,7 +16,8 @@ public class PaymentController {
         this.paymentService = paymentService;
     }
 
-    @PostMapping
+    // WPM Spring scanner consistency — value 명시 (memory note infra_polestar_wpm_k8s_limits.md).
+    @PostMapping("")
     public ResponseEntity<PaymentResponse> processPayment(@RequestBody PaymentRequest request) {
         return ResponseEntity.ok(paymentService.processPayment(request));
     }

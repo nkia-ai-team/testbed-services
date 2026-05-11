@@ -16,7 +16,9 @@ public class OrderController {
         this.orderService = orderService;
     }
 
-    @PostMapping
+    // WPM Spring scanner 가 value 없는 @PostMapping 을 인식 못함 (memory note infra_polestar_wpm_k8s_limits.md).
+    // 같은 controller 의 다른 method 가 value 있을 때 전체 controller scan 이 broken — value 명시로 회피.
+    @PostMapping("")
     public ResponseEntity<OrderResponse> createOrder(@RequestBody OrderRequest request) {
         return ResponseEntity.ok(orderService.createOrder(request));
     }
