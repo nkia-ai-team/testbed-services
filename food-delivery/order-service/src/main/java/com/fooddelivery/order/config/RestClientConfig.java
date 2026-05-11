@@ -27,6 +27,14 @@ public class RestClientConfig {
         return buildClient(baseUrl, connectTimeout, readTimeout);
     }
 
+    @Bean
+    public RestClient paymentRestClient(
+            @Value("${services.payment.url}") String baseUrl,
+            @Value("${services.payment.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${services.payment.read-timeout:10s}") Duration readTimeout) {
+        return buildClient(baseUrl, connectTimeout, readTimeout);
+    }
+
     private RestClient buildClient(String baseUrl, Duration connectTimeout, Duration readTimeout) {
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(connectTimeout);

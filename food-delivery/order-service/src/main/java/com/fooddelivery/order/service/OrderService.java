@@ -6,6 +6,7 @@ import com.fooddelivery.common.dto.OrderResponse;
 import com.fooddelivery.common.dto.RestaurantResponse;
 import com.fooddelivery.common.exception.ServiceException;
 import com.fooddelivery.order.client.DispatchClient;
+import com.fooddelivery.order.client.PaymentClient;
 import com.fooddelivery.order.client.RestaurantClient;
 import com.fooddelivery.order.entity.Order;
 import com.fooddelivery.order.entity.OrderItem;
@@ -31,15 +32,18 @@ public class OrderService {
     private final OrderItemRepository orderItemRepository;
     private final RestaurantClient restaurantClient;
     private final DispatchClient dispatchClient;
+    private final PaymentClient paymentClient;
 
     public OrderService(OrderRepository orderRepository,
                         OrderItemRepository orderItemRepository,
                         RestaurantClient restaurantClient,
-                        DispatchClient dispatchClient) {
+                        DispatchClient dispatchClient,
+                        PaymentClient paymentClient) {
         this.orderRepository = orderRepository;
         this.orderItemRepository = orderItemRepository;
         this.restaurantClient = restaurantClient;
         this.dispatchClient = dispatchClient;
+        this.paymentClient = paymentClient;
     }
 
     @Transactional
@@ -127,6 +131,25 @@ public class OrderService {
         }
 
         log.info("Created order id={}, customer={}, total={}", order.getId(), order.getCustomerId(), total);
+
+        // Fan-out 1: dispatch courier (실 배차 — capacity guard 가 503 반환 가능)
+        try {
+            dispatchClient.dispatchCourier(order.getId(), restaurant.region());
+        } catch (ServiceException se) {
+            log.info("Order fan-out dispatch failed: orderId={} status={} msg={}",
+                    order.getId(), se.getStatus(), se.getMessage());
+            throw se;
+        }
+
+        // Fan-out 2: payment 처리 (외부 PG mock 호출)
+        try {
+            paymentClient.processPayment(order.getId(), total, "default");
+        } catch (ServiceException se) {
+            log.info("Order fan-out payment failed: orderId={} status={} msg={}",
+                    order.getId(), se.getStatus(), se.getMessage());
+            throw se;
+        }
+
         return toResponse(order);
     }
 

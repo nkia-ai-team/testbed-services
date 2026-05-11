@@ -25,6 +25,10 @@ services:
     url: ${SERVICES_DISPATCH_URL:http://testbed-dispatch:8082}
     connect-timeout: 3s
     read-timeout: 5s
+  payment:
+    url: ${SERVICES_PAYMENT_URL:http://testbed-payment:8083}
+    connect-timeout: 3s
+    read-timeout: 10s
 
 management:
   endpoints:
