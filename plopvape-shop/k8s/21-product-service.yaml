@@ -63,7 +63,7 @@ spec:
                   key: POSTGRES_PASSWORD
             # --- APM Java Agent ---
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/wpmagent.jar -Dwpm.config=/opt/wpm/wpmagent-product.conf"
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/product/wpmagent.jar -Dwpm.config=/opt/wpm/product/wpmagent.conf"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
