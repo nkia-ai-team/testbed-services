@@ -37,16 +37,17 @@ public class PaymentService {
 
     @Transactional
     public PaymentResponse processPayment(PaymentRequest request) {
-        OrderResponse order = orderClient.getOrder(request.orderId());
-        if (order == null) {
-            throw new ServiceException(HttpStatus.BAD_REQUEST, "Order not found: " + request.orderId());
+        // orderId 는 request 그대로 신뢰 (microservice 경계).
+        // order-service @Transactional 안에서 fan-out 호출 시 commit 전이라 reverse GET 시 404 race.
+        if (request.orderId() == null) {
+            throw new ServiceException(HttpStatus.BAD_REQUEST, "orderId required");
         }
 
-        BigDecimal amount = request.amount() != null ? request.amount() : order.totalAmount();
+        BigDecimal amount = request.amount() != null ? request.amount() : BigDecimal.ZERO;
         String pgProvider = request.pgProvider() != null ? request.pgProvider() : "default";
 
         Payment payment = new Payment();
-        payment.setOrderId(order.id());
+        payment.setOrderId(request.orderId());
         payment.setPgProvider(pgProvider);
         payment.setAmount(amount);
         payment.setStatus("PENDING");
@@ -54,7 +55,7 @@ public class PaymentService {
 
         Map<String, Object> pgResponse;
         try {
-            pgResponse = pgApiClient.pay(order.id(), amount, pgProvider);
+            pgResponse = pgApiClient.pay(request.orderId(), amount, pgProvider);
         } catch (ServiceException ex) {
             payment.setStatus("FAILED");
             payment.setProcessedAt(LocalDateTime.now());

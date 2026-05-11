@@ -38,9 +38,11 @@ public class DispatchService {
 
     @Transactional
     public DispatchResponse dispatchCourier(DispatchRequest request) {
-        OrderResponse order = orderClient.getOrder(request.orderId());
-        if (order == null) {
-            throw new ServiceException(HttpStatus.BAD_REQUEST, "Order not found: " + request.orderId());
+        // order ID 는 request 그대로 신뢰 (microservice 경계).
+        // order-service 의 @Transactional 안에서 fan-out 호출 시 commit 전이라 reverse GET 시 404 race.
+        // 정합성은 eventual — orphan dispatch 는 외부 reconciliation 작업 책임.
+        if (request.orderId() == null) {
+            throw new ServiceException(HttpStatus.BAD_REQUEST, "orderId required");
         }
 
         long currentAssigned = dispatchRepository.countByStatus("ASSIGNED");
@@ -50,7 +52,7 @@ public class DispatchService {
         }
 
         Dispatch d = new Dispatch();
-        d.setOrderId(order.id());
+        d.setOrderId(request.orderId());
         d.setCourierId("courier-" + UUID.randomUUID().toString().substring(0, 8));
         d.setEtaMinutes(15 + ThreadLocalRandom.current().nextInt(20));
         d.setStatus("ASSIGNED");
