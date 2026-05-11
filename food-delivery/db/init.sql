@@ -33,9 +33,13 @@ CREATE TABLE IF NOT EXISTS order_items (
     unit_price  DECIMAL(10,2) NOT NULL
 );
 
+-- dispatches / payments: order_id 에 FK constraint 두지 않음 (cross-service eventual consistency).
+-- 이유: order-service @Transactional 안에서 fan-out (dispatch + payment) 시 order commit 전이라
+--       FK 검증이 race 로 실패. microservice 경계에서 cross-table FK 는 정합성 부담만 큼.
+-- 정합성: orphan dispatches/payments 는 외부 reconciliation 작업 (별도 job) 책임.
 CREATE TABLE IF NOT EXISTS dispatches (
     id           BIGSERIAL PRIMARY KEY,
-    order_id     BIGINT NOT NULL REFERENCES orders(id),
+    order_id     BIGINT NOT NULL,
     courier_id   VARCHAR(64),
     eta_minutes  INT,
     status       VARCHAR(16) NOT NULL DEFAULT 'ASSIGNED',
@@ -44,7 +48,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
 
 CREATE TABLE IF NOT EXISTS payments (
     id            BIGSERIAL PRIMARY KEY,
-    order_id      BIGINT NOT NULL REFERENCES orders(id),
+    order_id      BIGINT NOT NULL,
     pg_provider   VARCHAR(32),
     amount        DECIMAL(10,2) NOT NULL,
     status        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
