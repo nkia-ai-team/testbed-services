@@ -73,4 +73,6 @@ spec:
   ports:
     - port: 5432
       targetPort: 5432
-      nodePort: 30432
+      # k3d serverlb 는 30200-30299 만 호스트로 포워딩. 이 범위를 벗어나면
+      # 호스트/외부(DPM 관제 서버)에서 PG 에 닿지 못함.
+      nodePort: 30232
