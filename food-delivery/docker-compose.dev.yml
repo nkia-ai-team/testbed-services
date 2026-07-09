@@ -2,17 +2,24 @@
 # Production deployment uses k8s/ manifests instead.
 
 services:
-  postgres:
-    image: postgres:16-alpine
+  mysql:
+    image: mysql:8.0
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     environment:
-      POSTGRES_DB: fooddelivery
-      POSTGRES_USER: fooddelivery
-      POSTGRES_PASSWORD: fooddelivery1234
+      MYSQL_DATABASE: fooddelivery
+      MYSQL_USER: fooddelivery
+      MYSQL_PASSWORD: fooddelivery1234
+      MYSQL_ROOT_PASSWORD: rootpassword1234
     ports:
-      - "15432:5432"
+      - "13306:3306"
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
-      - pgdata:/var/lib/postgresql/data
+      - mysqldata:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
 
   external-pg-mock:
     image: mockserver/mockserver:latest
@@ -27,15 +34,18 @@ services:
       dockerfile: order-service/Dockerfile
     image: food-delivery-order:latest
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: fooddelivery
-      POSTGRES_USER: fooddelivery
-      POSTGRES_PASSWORD: fooddelivery1234
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: fooddelivery
+      DB_USER: fooddelivery
+      DB_PASSWORD: fooddelivery1234
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
+      - mysql
+      - redis
 
   restaurant:
     build:
@@ -43,15 +53,15 @@ services:
       dockerfile: restaurant-service/Dockerfile
     image: food-delivery-restaurant:latest
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: fooddelivery
-      POSTGRES_USER: fooddelivery
-      POSTGRES_PASSWORD: fooddelivery1234
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: fooddelivery
+      DB_USER: fooddelivery
+      DB_PASSWORD: fooddelivery1234
     ports:
       - "8081:8081"
     depends_on:
-      - postgres
+      - mysql
 
   dispatch:
     build:
@@ -59,16 +69,16 @@ services:
       dockerfile: dispatch-service/Dockerfile
     image: food-delivery-dispatch:latest
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: fooddelivery
-      POSTGRES_USER: fooddelivery
-      POSTGRES_PASSWORD: fooddelivery1234
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: fooddelivery
+      DB_USER: fooddelivery
+      DB_PASSWORD: fooddelivery1234
       ORDER_SERVICE_URL: http://order:8080
     ports:
       - "8082:8082"
     depends_on:
-      - postgres
+      - mysql
       - order
 
   payment:
@@ -77,19 +87,32 @@ services:
       dockerfile: payment-service/Dockerfile
     image: food-delivery-payment:latest
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: fooddelivery
-      POSTGRES_USER: fooddelivery
-      POSTGRES_PASSWORD: fooddelivery1234
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: fooddelivery
+      DB_USER: fooddelivery
+      DB_PASSWORD: fooddelivery1234
       ORDER_SERVICE_URL: http://order:8080
       PG_API_URL: http://external-pg-mock:1080
     ports:
       - "8083:8083"
     depends_on:
-      - postgres
+      - mysql
       - order
       - external-pg-mock
 
+  notify:
+    build:
+      context: .
+      dockerfile: notify-service/Dockerfile
+    image: food-delivery-notify:latest
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8084:8084"
+    depends_on:
+      - redis
+
 volumes:
-  pgdata:
+  mysqldata:

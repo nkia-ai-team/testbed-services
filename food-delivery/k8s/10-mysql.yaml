@@ -1,48 +1,51 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: testbed-postgres
+  name: testbed-mysql
   namespace: rca-testbed-food
   labels:
-    app: testbed-postgres
+    app: testbed-mysql
 spec:
-  serviceName: testbed-postgres
+  serviceName: testbed-mysql
   replicas: 1
   selector:
     matchLabels:
-      app: testbed-postgres
+      app: testbed-mysql
   template:
     metadata:
       labels:
-        app: testbed-postgres
+        app: testbed-mysql
     spec:
       containers:
-        - name: postgres
-          image: postgres:16-alpine
+        - name: mysql
+          image: mysql:8.0
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
           ports:
-            - containerPort: 5432
+            - containerPort: 3306
           envFrom:
             - secretRef:
-                name: postgres-secret
+                name: mysql-secret
           volumeMounts:
-            - name: pgdata
-              mountPath: /var/lib/postgresql/data
+            - name: mysqldata
+              mountPath: /var/lib/mysql
             - name: init-scripts
               mountPath: /docker-entrypoint-initdb.d
           resources:
             requests:
               cpu: 200m
-              memory: 256Mi
+              memory: 512Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 1Gi
       volumes:
         - name: init-scripts
           configMap:
-            name: postgres-init-scripts
+            name: mysql-init-scripts
   volumeClaimTemplates:
     - metadata:
-        name: pgdata
+        name: mysqldata
       spec:
         accessModes: ["ReadWriteOnce"]
         resources:
@@ -52,27 +55,28 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: testbed-postgres
+  name: testbed-mysql
   namespace: rca-testbed-food
 spec:
   selector:
-    app: testbed-postgres
+    app: testbed-mysql
   ports:
-    - port: 5432
-      targetPort: 5432
+    - port: 3306
+      targetPort: 3306
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: testbed-postgres-external
+  name: testbed-mysql-external
   namespace: rca-testbed-food
 spec:
   type: NodePort
   selector:
-    app: testbed-postgres
+    app: testbed-mysql
   ports:
-    - port: 5432
-      targetPort: 5432
+    - port: 3306
+      targetPort: 3306
       # k3d serverlb 는 30200-30299 만 호스트로 포워딩. 이 범위를 벗어나면
-      # 호스트/외부(DPM 관제 서버)에서 PG 에 닿지 못함.
-      nodePort: 30232
+      # 호스트/외부(DPM 관제 서버)에서 MySQL 에 닿지 못하므로 이 범위 안에서 지정한다.
+      # 30232(구 postgres)와 충돌 없이, social-feed MySQL(30306)과도 겹치지 않는 값.
+      nodePort: 30236

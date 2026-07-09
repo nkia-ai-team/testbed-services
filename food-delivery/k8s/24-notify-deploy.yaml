@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: testbed-dispatch
+  name: testbed-notify
   namespace: rca-testbed-food
   labels:
-    app: testbed-dispatch
+    app: testbed-notify
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: testbed-dispatch
+      app: testbed-notify
   template:
     metadata:
       labels:
-        app: testbed-dispatch
+        app: testbed-notify
     spec:
       volumes:
         - name: apm-agent
@@ -25,11 +25,11 @@ spec:
             path: /opt/polestar10/wpm
             type: DirectoryOrCreate
       containers:
-        - name: dispatch-service
-          image: food-delivery-dispatch:latest
+        - name: notify-service
+          image: food-delivery-notify:latest
           imagePullPolicy: Never
           ports:
-            - containerPort: 8082
+            - containerPort: 8084
           volumeMounts:
             - name: apm-agent
               mountPath: /opt/apm
@@ -41,28 +41,19 @@ spec:
             - configMapRef:
                 name: service-config
           env:
-            - name: DB_USER
-              valueFrom:
-                secretKeyRef:
-                  name: mysql-secret
-                  key: MYSQL_USER
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: mysql-secret
-                  key: MYSQL_PASSWORD
+            # worker: DB 미사용 (Redis consumer 전용) → DB_* env 없음
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/wpm/template/wpmagent.jar -Dwpm.config=/opt/wpm/dispatch/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              value: "-javaagent:/opt/wpm/template/wpmagent.jar -Dwpm.config=/opt/wpm/notify/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=food-delivery,lucida.target_id=${DISPATCH_TARGET_ID}"
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=food-delivery,lucida.target_id=${NOTIFY_TARGET_ID}"
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "10000"
             - name: OTEL_SERVICE_NAME
-              value: "food-delivery-dispatch"
+              value: "food-delivery-notify"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER
@@ -72,20 +63,20 @@ spec:
           startupProbe:
             httpGet:
               path: /actuator/health
-              port: 8082
+              port: 8084
             failureThreshold: 30
             periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /actuator/health
-              port: 8082
+              port: 8084
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /actuator/health
-              port: 8082
+              port: 8084
             periodSeconds: 15
             timeoutSeconds: 3
             failureThreshold: 5
@@ -100,11 +91,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: testbed-dispatch
+  name: testbed-notify
   namespace: rca-testbed-food
 spec:
   selector:
-    app: testbed-dispatch
+    app: testbed-notify
   ports:
-    - port: 8082
-      targetPort: 8082
+    - port: 8084
+      targetPort: 8084

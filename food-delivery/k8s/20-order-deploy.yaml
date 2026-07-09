@@ -41,16 +41,16 @@ spec:
             - configMapRef:
                 name: service-config
           env:
-            - name: POSTGRES_USER
+            - name: DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
-                  key: POSTGRES_USER
-            - name: POSTGRES_PASSWORD
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
-                  key: POSTGRES_PASSWORD
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
             - name: JAVA_TOOL_OPTIONS
               value: "-javaagent:/opt/wpm/template/wpmagent.jar -Dwpm.config=/opt/wpm/order/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -58,7 +58,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=food-delivery"
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=food-delivery,lucida.target_id=${ORDER_TARGET_ID}"
             - name: OTEL_METRIC_EXPORT_INTERVAL
               value: "10000"
             - name: OTEL_SERVICE_NAME

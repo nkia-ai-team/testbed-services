@@ -13,14 +13,14 @@ COPY notify-service/pom.xml ./notify-service/pom.xml
 
 RUN apt-get update && apt-get install -y maven && \
     mvn -pl shop-common -am install -DskipTests -q && \
-    mvn -pl restaurant-service dependency:go-offline -q
+    mvn -pl notify-service dependency:go-offline -q
 
-COPY restaurant-service/src ./restaurant-service/src
-RUN mvn -pl restaurant-service package -DskipTests -q
+COPY notify-service/src ./notify-service/src
+RUN mvn -pl notify-service package -DskipTests -q
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=builder /build/restaurant-service/target/*.jar app.jar
+COPY --from=builder /build/notify-service/target/*.jar app.jar
 RUN mkdir -p /opt/apm
-EXPOSE 8081
+EXPOSE 8084
 ENTRYPOINT ["java", "-jar", "app.jar"]

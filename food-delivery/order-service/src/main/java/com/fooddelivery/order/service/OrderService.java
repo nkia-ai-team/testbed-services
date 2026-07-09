@@ -1,6 +1,7 @@
 package com.fooddelivery.order.service;
 
 import com.fooddelivery.common.dto.MenuResponse;
+import com.fooddelivery.common.dto.OrderEvent;
 import com.fooddelivery.common.dto.OrderRequest;
 import com.fooddelivery.common.dto.OrderResponse;
 import com.fooddelivery.common.dto.RestaurantResponse;
@@ -10,6 +11,7 @@ import com.fooddelivery.order.client.PaymentClient;
 import com.fooddelivery.order.client.RestaurantClient;
 import com.fooddelivery.order.entity.Order;
 import com.fooddelivery.order.entity.OrderItem;
+import com.fooddelivery.order.event.OrderEventPublisher;
 import com.fooddelivery.order.repository.OrderItemRepository;
 import com.fooddelivery.order.repository.OrderRepository;
 import org.slf4j.Logger;
@@ -33,17 +35,20 @@ public class OrderService {
     private final RestaurantClient restaurantClient;
     private final DispatchClient dispatchClient;
     private final PaymentClient paymentClient;
+    private final OrderEventPublisher orderEventPublisher;
 
     public OrderService(OrderRepository orderRepository,
                         OrderItemRepository orderItemRepository,
                         RestaurantClient restaurantClient,
                         DispatchClient dispatchClient,
-                        PaymentClient paymentClient) {
+                        PaymentClient paymentClient,
+                        OrderEventPublisher orderEventPublisher) {
         this.orderRepository = orderRepository;
         this.orderItemRepository = orderItemRepository;
         this.restaurantClient = restaurantClient;
         this.dispatchClient = dispatchClient;
         this.paymentClient = paymentClient;
+        this.orderEventPublisher = orderEventPublisher;
     }
 
     @Transactional
@@ -149,6 +154,15 @@ public class OrderService {
                     order.getId(), se.getStatus(), se.getMessage());
             throw se;
         }
+
+        // Fan-out 3 (async): Redis Streams 로 주문 이벤트 발행 → notify-service 소비
+        orderEventPublisher.publish(new OrderEvent(
+                order.getId(),
+                order.getCustomerId(),
+                order.getRestaurantId(),
+                order.getTotalAmount(),
+                order.getStatus()
+        ));
 
         return toResponse(order);
     }

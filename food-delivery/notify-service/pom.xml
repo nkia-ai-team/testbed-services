@@ -10,8 +10,8 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>payment-service</artifactId>
-    <name>Payment Service</name>
+    <artifactId>notify-service</artifactId>
+    <name>Notify Service</name>
 
     <dependencies>
         <dependency>
@@ -24,12 +24,7 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
-            <scope>runtime</scope>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
     </dependencies>
 

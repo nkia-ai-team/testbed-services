@@ -8,7 +8,7 @@
 set -euo pipefail
 export DOCKER_BUILDKIT=0
 
-SERVICES=("order" "restaurant" "dispatch" "payment")
+SERVICES=("order" "restaurant" "dispatch" "payment" "notify")
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo ""
@@ -56,16 +56,25 @@ echo "========================================="
 : "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.230.104:6565}"
 : "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — ansible 또는 수동 export 필요. Polestar10 web 의 24자리 hex 조직 ID}"
 
+# application target UUID placeholder. 미등록 단계(§7 4단계 전)에서는 빈 값 허용 → 기본 빈 문자열로 치환.
+# 등록 후에는 ansible / 수동 export 로 실제 UUID 주입 (lucida.target_id 바인딩, spec §3.3).
+export ORDER_TARGET_ID="${ORDER_TARGET_ID:-}"
+export RESTAURANT_TARGET_ID="${RESTAURANT_TARGET_ID:-}"
+export DISPATCH_TARGET_ID="${DISPATCH_TARGET_ID:-}"
+export PAYMENT_TARGET_ID="${PAYMENT_TARGET_ID:-}"
+export NOTIFY_TARGET_ID="${NOTIFY_TARGET_ID:-}"
+
 # envsubst 화이트리스트로 명시 변수만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
-  envsubst '${OTLP_ENDPOINT} ${POLESTAR_ORG_ID}' < "$f" | kubectl apply -f -
+  envsubst '${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${RESTAURANT_TARGET_ID} ${DISPATCH_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFY_TARGET_ID}' < "$f" | kubectl apply -f -
 done
 
 echo ""
 echo "========================================="
 echo "  Phase 4: rollout status"
 echo "========================================="
-kubectl -n rca-testbed-food rollout status statefulset/testbed-postgres --timeout=180s || true
+kubectl -n rca-testbed-food rollout status statefulset/testbed-mysql --timeout=180s || true
+kubectl -n rca-testbed-food rollout status deployment/testbed-redis --timeout=120s || true
 for svc in "${SERVICES[@]}"; do
   kubectl -n rca-testbed-food rollout status deployment/testbed-${svc} --timeout=180s || true
 done

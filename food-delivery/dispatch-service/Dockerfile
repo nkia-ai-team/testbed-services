@@ -9,6 +9,7 @@ COPY order-service/pom.xml ./order-service/pom.xml
 COPY restaurant-service/pom.xml ./restaurant-service/pom.xml
 COPY dispatch-service/pom.xml ./dispatch-service/pom.xml
 COPY payment-service/pom.xml ./payment-service/pom.xml
+COPY notify-service/pom.xml ./notify-service/pom.xml
 
 RUN apt-get update && apt-get install -y maven && \
     mvn -pl shop-common -am install -DskipTests -q && \
