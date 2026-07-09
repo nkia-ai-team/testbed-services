@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-# plopvape-shop K3s 빌드 + 배포 스크립트
+# commerce K3s 빌드 + 배포 스크립트
 # ============================================================
 # 109서버(ARM/aarch64)에서 실행한다.
-# 사용법: cd plopvape-shop && bash k8s/build-and-deploy.sh
+# 사용법: cd commerce && bash k8s/build-and-deploy.sh
 #
 # 하는 일:
 #   1) 5개 서비스 Docker 이미지를 ARM 네이티브로 빌드
@@ -26,10 +26,10 @@ echo "========================================="
 # 이유: 멀티모듈 Maven 프로젝트라서 루트의 pom.xml과 shop-common이 필요.
 for svc in "${SERVICES[@]}"; do
   echo ""
-  echo ">>> [빌드] plopvape-${svc}..."
+  echo ">>> [빌드] commerce-${svc}..."
   docker build --network=host -f "${PROJECT_ROOT}/${svc}-service/Dockerfile" \
-    -t "plopvape-${svc}:latest" "${PROJECT_ROOT}"
-  echo "<<< [완료] plopvape-${svc}"
+    -t "commerce-${svc}:latest" "${PROJECT_ROOT}"
+  echo "<<< [완료] commerce-${svc}"
 done
 
 echo ""
@@ -44,14 +44,14 @@ if [[ "$CTX_CLUSTER" == k3d-* ]]; then
   K3D_NAME="${CTX_CLUSTER#k3d-}"
   echo "[detect] k3d cluster: $K3D_NAME"
   for svc in "${SERVICES[@]}"; do
-    echo ">>> [k3d import] plopvape-${svc}..."
-    k3d image import "plopvape-${svc}:latest" -c "$K3D_NAME"
+    echo ">>> [k3d import] commerce-${svc}..."
+    k3d image import "commerce-${svc}:latest" -c "$K3D_NAME"
   done
 else
   echo "[detect] native K3s (cluster=$CTX_CLUSTER)"
   for svc in "${SERVICES[@]}"; do
-    echo ">>> [k3s ctr import] plopvape-${svc}..."
-    docker save "plopvape-${svc}:latest" | sudo k3s ctr images import -
+    echo ">>> [k3s ctr import] commerce-${svc}..."
+    docker save "commerce-${svc}:latest" | sudo k3s ctr images import -
   done
 fi
 
@@ -63,12 +63,22 @@ echo "========================================="
 # 사내 NAT/방화벽 환경에서는 collector 가 환경마다 달라서 매니페스트에 hardcode 불가.
 # 누락 시 fail-fast — broken endpoint 로 Pod 가 뜨고 silent fail 하는 사고 차단.
 : "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.200.57:6565}"
+: "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — lucida org id. ansible 또는 수동 export 필요.}"
 
-# envsubst 화이트리스트로 '${OTLP_ENDPOINT}' 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
+# lucida.target_id placeholder 는 application target 등록(§7) 후 UUID 를 export 해 주입한다.
+# 미등록 상태 배포도 허용하므로 fail-fast 대상은 아니며, 미설정 시 envsubst 가 빈 문자열로 치환한다.
+export ORDER_TARGET_ID="${ORDER_TARGET_ID:-}"
+export PRODUCT_TARGET_ID="${PRODUCT_TARGET_ID:-}"
+export INVENTORY_TARGET_ID="${INVENTORY_TARGET_ID:-}"
+export PAYMENT_TARGET_ID="${PAYMENT_TARGET_ID:-}"
+export NOTIFICATION_TARGET_ID="${NOTIFICATION_TARGET_ID:-}"
+
+# envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 10-, 20-, 30- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → PostgreSQL(10) → ... → Nginx(30)
+WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${PRODUCT_TARGET_ID} ${INVENTORY_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFICATION_TARGET_ID}'
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
-  envsubst '${OTLP_ENDPOINT}' < "$f" | kubectl apply -f -
+  envsubst "$WHITELIST" < "$f" | kubectl apply -f -
 done
 
 echo ""
@@ -77,16 +87,16 @@ echo "  Phase 4: 배포 상태 확인"
 echo "========================================="
 # Deployment가 완전히 뜰 때까지 최대 3분 대기.
 echo "Deployment 롤아웃 대기 중..."
-kubectl -n rca-testbed-plopvape rollout status deployment --timeout=180s || true
+kubectl -n rca-testbed-commerce rollout status deployment --timeout=180s || true
 
 # StatefulSet은 별도로 확인
 echo "StatefulSet 롤아웃 대기 중..."
-kubectl -n rca-testbed-plopvape rollout status statefulset --timeout=120s || true
+kubectl -n rca-testbed-commerce rollout status statefulset --timeout=120s || true
 
 echo ""
 echo "========================================="
 echo "  최종 상태"
 echo "========================================="
-kubectl -n rca-testbed-plopvape get pods
+kubectl -n rca-testbed-commerce get pods
 echo ""
-kubectl -n rca-testbed-plopvape get svc
+kubectl -n rca-testbed-commerce get svc

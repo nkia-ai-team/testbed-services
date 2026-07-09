@@ -31,4 +31,15 @@ public class RestClientConfig {
                 .requestFactory(factory)
                 .build();
     }
+
+    @Bean
+    public RestClient bankingTransferRestClient(
+            @Value("${services.banking-transfer.base-url}") String baseUrl,
+            @Value("${services.banking-transfer.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${services.banking-transfer.read-timeout:10s}") Duration readTimeout) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+    }
 }

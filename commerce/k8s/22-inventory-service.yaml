@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: testbed-payment
-  namespace: rca-testbed-plopvape
+  name: testbed-inventory
+  namespace: rca-testbed-commerce
   labels:
-    app: testbed-payment
+    app: testbed-inventory
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: testbed-payment
+      app: testbed-inventory
   template:
     metadata:
       labels:
-        app: testbed-payment
+        app: testbed-inventory
     spec:
       volumes:
         - name: apm-agent
@@ -25,11 +25,11 @@ spec:
             path: /opt/polestar10/wpm
             type: Directory
       containers:
-        - name: payment-service
-          image: plopvape-payment:latest
+        - name: inventory-service
+          image: commerce-inventory:latest
           imagePullPolicy: Never
           ports:
-            - containerPort: 8083
+            - containerPort: 8082
           volumeMounts:
             - name: apm-agent
               mountPath: /opt/apm
@@ -55,15 +55,15 @@ spec:
                   key: POSTGRES_PASSWORD
             # --- APM Java Agent ---
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/payment/wpmagent.jar -Dwpm.config=/opt/wpm/payment/wpmagent.conf"
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/inventory/wpmagent.jar -Dwpm.config=/opt/wpm/inventory/wpmagent.conf"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_SERVICE_NAME
-              value: "plopvape-payment"
+              value: "commerce-inventory"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId=69731678b56620b247fb279a,lucida.groupId=plopvape-shop"
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=commerce,lucida.target_id=${INVENTORY_TARGET_ID}"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER
@@ -75,20 +75,20 @@ spec:
           startupProbe:
             httpGet:
               path: /actuator/health
-              port: 8083
+              port: 8082
             failureThreshold: 30
             periodSeconds: 5
           readinessProbe:
             httpGet:
               path: /actuator/health
-              port: 8083
+              port: 8082
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /actuator/health
-              port: 8083
+              port: 8082
             periodSeconds: 15
             timeoutSeconds: 3
             failureThreshold: 5
@@ -103,11 +103,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: testbed-payment
-  namespace: rca-testbed-plopvape
+  name: testbed-inventory
+  namespace: rca-testbed-commerce
 spec:
   selector:
-    app: testbed-payment
+    app: testbed-inventory
   ports:
-    - port: 8083
-      targetPort: 8083
+    - port: 8082
+      targetPort: 8082

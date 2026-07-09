@@ -25,3 +25,9 @@ pg:
     base-url: ${PG_API_URL:http://192.168.200.109:8090}
     connect-timeout: 3s
     read-timeout: 10s
+
+services:
+  banking-transfer:
+    base-url: ${BANKING_TRANSFER_URL:http://testbed-transfer.rca-testbed-banking.svc.cluster.local:8082}
+    connect-timeout: 3s
+    read-timeout: 10s

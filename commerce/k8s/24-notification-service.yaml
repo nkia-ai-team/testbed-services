@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: testbed-notification
-  namespace: rca-testbed-plopvape
+  namespace: rca-testbed-commerce
   labels:
     app: testbed-notification
 spec:
@@ -26,7 +26,7 @@ spec:
             type: Directory
       containers:
         - name: notification-service
-          image: plopvape-notification:latest
+          image: commerce-notification:latest
           imagePullPolicy: Never
           ports:
             - containerPort: 8084
@@ -61,9 +61,9 @@ spec:
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_SERVICE_NAME
-              value: "plopvape-notification"
+              value: "commerce-notification"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId=69731678b56620b247fb279a,lucida.groupId=plopvape-shop"
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=commerce,lucida.target_id=${NOTIFICATION_TARGET_ID}"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER
@@ -104,7 +104,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: testbed-notification
-  namespace: rca-testbed-plopvape
+  namespace: rca-testbed-commerce
 spec:
   selector:
     app: testbed-notification
