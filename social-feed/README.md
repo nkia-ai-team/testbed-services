@@ -1,5 +1,7 @@
 # social-feed testbed
 
+> **legacy** — 신설계(core-banking)로 대체 예정. 신규 배포/시나리오 개발 대상 아님.
+
 NKIA RCA testbed - SNS 도메인 (게시물, 피드, 댓글, 알림) 마이크로서비스.
 
 ## 구조
