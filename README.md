@@ -142,7 +142,26 @@ spec:
        └─ kubectl rollout status (deploy + sts)
 ```
 
-본 monorepo 변경 + push → 인프라 재배포로 새 버전이 K3s 에 반영된다.
+본 monorepo 변경 + push → 인프라 재배포로 새 버전이 클러스터에 반영된다.
+
+### 4-1. 배포 대상 인프라 (2026-07-09)
+
+현재 배포 대상은 호스트 `192.168.200.109`(ARM64 GB10 / Ubuntu 24.04) 위
+KVM/libvirt 게스트 VM들로 구성된 **kubeadm 단일 클러스터**다. 게스트는 libvirt
+NAT(`192.168.122.0/24`). 도메인 워크로드는 worker 노드에 `domain` 라벨로
+배치된다.
+
+| VM | IP | 사양 | 역할 |
+|----|----|------|------|
+| tb-cp | 192.168.122.77 | 2vCPU/4GB | kubeadm control-plane |
+| tb-w1 | 192.168.122.184 | 4vCPU/12GB | worker · `domain=commerce` |
+| tb-w2 | 192.168.122.11 | 4vCPU/12GB | worker · `domain=food-delivery` |
+| tb-w3 | 192.168.122.14 | 4vCPU/12GB | worker · `domain=core-banking` |
+| tb-runner | 192.168.122.206 | 2vCPU/4GB | 조종석(부하/장애 주입/mock, 클러스터 외부) |
+
+앱 이미지는 arm64로 빌드한다(`eclipse-temurin` 멀티아치). 각 worker는 SMS
+호스트 풀 + KCM 노드 역할도 겸한다. 관측 평면(lucida-next)은 109 밖 별도 AP
+서버다.
 
 ---
 
