@@ -1,0 +1,118 @@
+# 서비스 공통 환경변수
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: service-config
+  namespace: rca-testbed-banking
+data:
+  DB_HOST: testbed-mariadb
+  DB_PORT: "3306"
+  DB_NAME: banking
+
+  REDIS_HOST: testbed-redis
+  REDIS_PORT: "6379"
+
+  ACCOUNT_SERVICE_URL: http://testbed-account:8081
+  TRANSFER_SERVICE_URL: http://testbed-transfer:8082
+---
+# Nginx reverse proxy (게이트웨이). 외부 진입은 api-service 로.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-conf
+  namespace: rca-testbed-banking
+data:
+  default.conf: |
+    upstream api-service {
+        server testbed-api:8080;
+    }
+    upstream transfer-service {
+        server testbed-transfer:8082;
+    }
+    upstream account-service {
+        server testbed-account:8081;
+    }
+
+    server {
+        listen 80;
+
+        location /api/transfers {
+            proxy_pass http://api-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/accounts {
+            proxy_pass http://account-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /health {
+            return 200 'ok';
+        }
+    }
+---
+# MariaDB init script (db/init.sql 내용을 ConfigMap 으로 마운트)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mariadb-init-scripts
+  namespace: rca-testbed-banking
+data:
+  01-init.sql: |
+    CREATE DATABASE IF NOT EXISTS banking
+        DEFAULT CHARACTER SET utf8mb4
+        DEFAULT COLLATE utf8mb4_unicode_ci;
+    USE banking;
+
+    CREATE TABLE IF NOT EXISTS accounts (
+        id          VARCHAR(64) PRIMARY KEY,
+        holder      VARCHAR(128) NOT NULL,
+        balance     DECIMAL(18,2) NOT NULL DEFAULT 0,
+        status      VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;
+
+    CREATE TABLE IF NOT EXISTS transfers (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        transfer_ref  VARCHAR(64) NOT NULL UNIQUE,
+        from_account  VARCHAR(64) NOT NULL,
+        to_account    VARCHAR(64) NOT NULL,
+        amount        DECIMAL(18,2) NOT NULL,
+        status        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+        order_id      VARCHAR(64),
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_transfers_from (from_account),
+        INDEX idx_transfers_to (to_account),
+        INDEX idx_transfers_order (order_id)
+    ) ENGINE=InnoDB;
+
+    CREATE TABLE IF NOT EXISTS ledger_entries (
+        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+        transfer_ref  VARCHAR(64) NOT NULL,
+        account_id    VARCHAR(64) NOT NULL,
+        direction     VARCHAR(8) NOT NULL,
+        amount        DECIMAL(18,2) NOT NULL,
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_ledger_ref (transfer_ref),
+        INDEX idx_ledger_account (account_id)
+    ) ENGINE=InnoDB;
+
+    INSERT INTO accounts (id, holder, balance, status) VALUES
+        ('ACC-1001', '김민수',        5000000.00, 'ACTIVE'),
+        ('ACC-1002', '이서연',        3200000.00, 'ACTIVE'),
+        ('ACC-1003', '박지훈',        1500000.00, 'ACTIVE'),
+        ('ACC-1004', '최유진',         800000.00, 'ACTIVE'),
+        ('ACC-1005', '정우성',       12000000.00, 'ACTIVE'),
+        ('ACC-1006', '한소희',         450000.00, 'ACTIVE'),
+        ('ACC-1007', '오세훈',        2750000.00, 'ACTIVE'),
+        ('ACC-2001', '플롭베이프(주)', 88000000.00, 'ACTIVE'),
+        ('ACC-2002', '누리 커머스',   45000000.00, 'ACTIVE'),
+        ('ACC-2003', '배달의고수',    23000000.00, 'ACTIVE'),
+        ('ACC-9001', '동결계좌 A',      100000.00, 'FROZEN'),
+        ('ACC-9002', '해지계좌 B',           0.00, 'CLOSED')
+    ON DUPLICATE KEY UPDATE holder = VALUES(holder);

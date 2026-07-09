@@ -1,0 +1,21 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-service
+
+services:
+  account:
+    url: ${ACCOUNT_SERVICE_URL:http://testbed-account:8081}
+    connect-timeout: 3s
+    read-timeout: 10s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always

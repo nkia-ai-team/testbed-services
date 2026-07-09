@@ -1,0 +1,93 @@
+# Local dev compose — runs the full core-banking stack on localhost for engineer iteration.
+# Production deployment uses k8s/ manifests instead.
+
+services:
+  mariadb:
+    image: mariadb:11
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MARIADB_DATABASE: banking
+      MARIADB_USER: banking
+      MARIADB_PASSWORD: banking1234
+      MARIADB_ROOT_PASSWORD: root1234
+    ports:
+      - "13306:3306"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - mariadbdata:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: api-service/Dockerfile
+    image: core-banking-api:latest
+    environment:
+      ACCOUNT_SERVICE_URL: http://account:8081
+    ports:
+      - "8080:8080"
+    depends_on:
+      - account
+
+  account:
+    build:
+      context: .
+      dockerfile: account-service/Dockerfile
+    image: core-banking-account:latest
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: banking
+      DB_USER: banking
+      DB_PASS: banking1234
+      TRANSFER_SERVICE_URL: http://transfer:8082
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mariadb
+      - transfer
+
+  transfer:
+    build:
+      context: .
+      dockerfile: transfer-service/Dockerfile
+    image: core-banking-transfer:latest
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: banking
+      DB_USER: banking
+      DB_PASS: banking1234
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8082:8082"
+    depends_on:
+      - mariadb
+      - redis
+
+  ledger:
+    build:
+      context: .
+      dockerfile: ledger-service/Dockerfile
+    image: core-banking-ledger:latest
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: banking
+      DB_USER: banking
+      DB_PASS: banking1234
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8083:8083"
+    depends_on:
+      - mariadb
+      - redis
+
+volumes:
+  mariadbdata:

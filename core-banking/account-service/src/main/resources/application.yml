@@ -1,0 +1,33 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: account-service
+  datasource:
+    url: jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:banking}
+    username: ${DB_USER:banking}
+    password: ${DB_PASS:banking1234}
+    driver-class-name: org.mariadb.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MariaDBDialect
+    open-in-view: false
+
+services:
+  transfer:
+    url: ${TRANSFER_SERVICE_URL:http://testbed-transfer:8082}
+    connect-timeout: 3s
+    read-timeout: 15s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
