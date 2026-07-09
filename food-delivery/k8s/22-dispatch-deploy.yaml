@@ -20,10 +20,6 @@ spec:
           hostPath:
             path: /opt/polestar10/apm
             type: DirectoryOrCreate
-        - name: wpm-agent
-          hostPath:
-            path: /opt/polestar10/wpm
-            type: DirectoryOrCreate
       containers:
         - name: dispatch-service
           image: food-delivery-dispatch:latest
@@ -33,9 +29,6 @@ spec:
           volumeMounts:
             - name: apm-agent
               mountPath: /opt/apm
-              readOnly: true
-            - name: wpm-agent
-              mountPath: /opt/wpm
               readOnly: true
           envFrom:
             - configMapRef:
@@ -52,7 +45,7 @@ spec:
                   name: mysql-secret
                   key: MYSQL_PASSWORD
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/wpm/template/wpmagent.jar -Dwpm.config=/opt/wpm/dispatch/wpmagent.conf -javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL

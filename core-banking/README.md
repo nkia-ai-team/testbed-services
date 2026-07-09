@@ -80,7 +80,7 @@ MariaDB 단일 `banking` DB. 테이블 3개. 전체 DDL + 시드: [`db/init.sql`
 
 - APM `service.name`: deployment env `OTEL_SERVICE_NAME=core-banking-<svc>` (등록 application target `meta.service_name` 과 정확일치).
 - `OTEL_RESOURCE_ATTRIBUTES=lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=core-banking,lucida.target_id=${<SVC>_TARGET_ID}`.
-- OTel/WPM javaagent 는 이미지에 굽지 않고 hostPath(`/opt/polestar10/{apm,wpm}`)를 `JAVA_TOOL_OPTIONS` 로 주입.
+- OTel javaagent 는 이미지에 굽지 않고 hostPath(`/opt/polestar10/apm`, 인프라 공급)를 `JAVA_TOOL_OPTIONS` 로 주입.
 - DB/pod/host 의 `lucida.target_id` 는 collector(db_poll/kcm/sms)가 emit — 앱이 넣지 않는다.
 - MariaDB 는 DPM `db_poll` 로 engine=mariadb 등록. NodePort 30307(외부 접속).
 
@@ -117,5 +117,4 @@ cd core-banking && bash k8s/build-and-deploy.sh
 ## 한계 + 알려진 제약
 
 - 비즈니스 로직은 LLM 자동 생성. `mvnw clean package` 컴파일까지 검증되며 도메인 정확성은 PR review 권장.
-- WPM 은 Java 21 미지원 — 본 testbed 는 Java 17 고정.
 - api-service 는 DB 를 쓰지 않아 `DataSourceAutoConfiguration`/`HibernateJpaAutoConfiguration` 을 제외한다(shop-common 이 data-jpa 를 classpath 로 끌어오기 때문).

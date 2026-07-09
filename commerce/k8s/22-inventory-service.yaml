@@ -20,10 +20,6 @@ spec:
           hostPath:
             path: /opt/polestar10/apm
             type: Directory
-        - name: wpm-agent
-          hostPath:
-            path: /opt/polestar10/wpm
-            type: Directory
       containers:
         - name: inventory-service
           image: commerce-inventory:latest
@@ -33,9 +29,6 @@ spec:
           volumeMounts:
             - name: apm-agent
               mountPath: /opt/apm
-              readOnly: true
-            - name: wpm-agent
-              mountPath: /opt/wpm
               readOnly: true
           envFrom:
             - configMapRef:
@@ -55,7 +48,7 @@ spec:
                   key: POSTGRES_PASSWORD
             # --- APM Java Agent ---
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/inventory/wpmagent.jar -Dwpm.config=/opt/wpm/inventory/wpmagent.conf"
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL

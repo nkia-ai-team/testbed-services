@@ -16,7 +16,6 @@ public class TransferController {
         this.apiService = apiService;
     }
 
-    // WPM Spring scanner 가 value 없는 @PostMapping 을 인식 못함 → value 명시로 회피.
     @PostMapping("")
     public ResponseEntity<TransferResponse> submit(@RequestBody TransferRequest request) {
         return ResponseEntity.ok(apiService.submitTransfer(request));

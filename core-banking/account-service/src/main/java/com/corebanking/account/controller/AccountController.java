@@ -22,7 +22,6 @@ public class AccountController {
         return ResponseEntity.ok(accountService.getAccount(id));
     }
 
-    // WPM Spring scanner 가 value 없는 @PostMapping 을 인식 못함 → value 명시로 회피.
     @PostMapping("/transfer")
     public ResponseEntity<TransferResponse> transfer(@RequestBody TransferRequest request) {
         return ResponseEntity.ok(accountService.validateAndForward(request));

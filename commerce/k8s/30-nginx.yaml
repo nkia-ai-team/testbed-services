@@ -52,7 +52,6 @@ spec:
 # 이게 전체 시스템의 정문이다.
 # 외부에서 192.168.200.109:30080 으로 요청하면 이 Service가 받아서
 # Nginx Pod의 80번 포트로 전달한다.
-# Polestar10 WPM(웹 성능 모니터링)도 이 포트를 감시한다.
 apiVersion: v1
 kind: Service
 metadata:

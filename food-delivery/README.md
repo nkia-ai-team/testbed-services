@@ -75,7 +75,7 @@ MySQL 8.0 단일 `fooddelivery` DB. 테이블 6개. 전체 DDL + 시드: [`db/in
 
 - APM `service.name`: deployment env `OTEL_SERVICE_NAME=food-delivery-<svc>` (등록 application target `meta.service_name` 과 정확일치).
 - `OTEL_RESOURCE_ATTRIBUTES=lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=food-delivery,lucida.target_id=${<SVC>_TARGET_ID}`.
-- OTel/WPM javaagent 는 이미지에 굽지 않고 hostPath(`/opt/polestar10/{apm,wpm}`)를 `JAVA_TOOL_OPTIONS` 로 주입.
+- OTel javaagent 는 이미지에 굽지 않고 hostPath(`/opt/polestar10/apm`, 인프라 공급)를 `JAVA_TOOL_OPTIONS` 로 주입.
 - DB/pod/host 의 `lucida.target_id` 는 collector(db_poll/kcm/sms)가 emit — 앱이 넣지 않는다.
 
 ## K8s 배포
@@ -149,4 +149,3 @@ curl -X POST http://localhost:8080/api/orders \
 ## 한계 + 알려진 제약
 
 - 비즈니스 로직은 LLM 자동 생성. `mvnw clean package` 컴파일까지 검증되며 도메인 정확성은 PR review 권장.
-- WPM 은 Java 21 미지원 — 본 testbed 는 Java 17 고정.

@@ -20,10 +20,6 @@ spec:
           hostPath:
             path: /opt/polestar10/apm
             type: Directory
-        - name: wpm-agent
-          hostPath:
-            path: /opt/polestar10/wpm
-            type: Directory
       containers:                  # 이 Pod 안에 들어갈 컨테이너 목록
         - name: product-service    # 컨테이너 이름 (자유롭게 지정)
           image: commerce-product:latest # 어떤 Docker 이미지를 쓸지
@@ -33,9 +29,6 @@ spec:
           volumeMounts:
             - name: apm-agent
               mountPath: /opt/apm
-              readOnly: true
-            - name: wpm-agent
-              mountPath: /opt/wpm
               readOnly: true
 
           # --- 환경변수 주입 ---
@@ -63,7 +56,7 @@ spec:
                   key: POSTGRES_PASSWORD
             # --- APM Java Agent ---
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -javaagent:/opt/wpm/product/wpmagent.jar -Dwpm.config=/opt/wpm/product/wpmagent.conf"
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "${OTLP_ENDPOINT}"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
