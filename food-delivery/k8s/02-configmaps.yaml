@@ -8,8 +8,7 @@ data:
   DB_PORT: "3306"
   DB_NAME: fooddelivery
 
-  REDIS_HOST: testbed-redis
-  REDIS_PORT: "6379"
+  KAFKA_BOOTSTRAP_SERVERS: testbed-kafka:9092
 
   ORDER_SERVICE_URL: http://testbed-order:8080
   RESTAURANT_SERVICE_URL: http://testbed-restaurant:8081
@@ -17,93 +16,3 @@ data:
   PAYMENT_SERVICE_URL: http://testbed-payment:8083
 
   PG_API_URL: http://testbed-external-pg-mock:9090
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mysql-init-scripts
-  namespace: rca-testbed-food
-data:
-  01-init.sql: |
-    CREATE TABLE IF NOT EXISTS restaurants (
-        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-        name        VARCHAR(128) NOT NULL,
-        region      VARCHAR(64),
-        status      VARCHAR(16) DEFAULT 'OPEN'
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-    CREATE TABLE IF NOT EXISTS menus (
-        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-        restaurant_id BIGINT NOT NULL,
-        name          VARCHAR(128) NOT NULL,
-        price         DECIMAL(10,2),
-        available     BOOLEAN DEFAULT TRUE,
-        KEY idx_menus_restaurant (restaurant_id),
-        CONSTRAINT fk_menus_restaurant FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-    CREATE TABLE IF NOT EXISTS orders (
-        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-        customer_id   VARCHAR(64) NOT NULL,
-        restaurant_id BIGINT NOT NULL,
-        total_amount  DECIMAL(10,2) DEFAULT 0,
-        status        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        KEY idx_orders_restaurant (restaurant_id),
-        KEY idx_orders_customer (customer_id),
-        CONSTRAINT fk_orders_restaurant FOREIGN KEY (restaurant_id) REFERENCES restaurants(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-    CREATE TABLE IF NOT EXISTS order_items (
-        id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-        order_id    BIGINT NOT NULL,
-        menu_id     BIGINT NOT NULL,
-        qty         INT NOT NULL,
-        unit_price  DECIMAL(10,2) NOT NULL,
-        KEY idx_order_items_order (order_id),
-        CONSTRAINT fk_order_items_order FOREIGN KEY (order_id) REFERENCES orders(id),
-        CONSTRAINT fk_order_items_menu FOREIGN KEY (menu_id) REFERENCES menus(id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-    -- dispatches / payments: order_id 에 FK 두지 않음 (cross-service eventual consistency).
-    CREATE TABLE IF NOT EXISTS dispatches (
-        id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-        order_id     BIGINT NOT NULL,
-        courier_id   VARCHAR(64),
-        eta_minutes  INT,
-        status       VARCHAR(16) NOT NULL DEFAULT 'ASSIGNED',
-        assigned_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        KEY idx_dispatches_order (order_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-    CREATE TABLE IF NOT EXISTS payments (
-        id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-        order_id      BIGINT NOT NULL,
-        pg_provider   VARCHAR(32),
-        amount        DECIMAL(10,2) NOT NULL,
-        status        VARCHAR(16) NOT NULL DEFAULT 'PENDING',
-        processed_at  TIMESTAMP NULL,
-        KEY idx_payments_order (order_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-    INSERT IGNORE INTO restaurants (id, name, region, status) VALUES
-        (1, '강남 떡볶이 본점', 'GANGNAM', 'OPEN'),
-        (2, '홍대 마라탕', 'HONGDAE', 'OPEN'),
-        (3, '잠실 치킨하우스', 'JAMSIL', 'OPEN');
-
-    INSERT IGNORE INTO menus (id, restaurant_id, name, price, available) VALUES
-        (1, 1, '국물 떡볶이', 7000.00, TRUE),
-        (2, 1, '로제 떡볶이', 9000.00, TRUE),
-        (3, 1, '치즈 떡볶이', 8500.00, TRUE),
-        (4, 1, '순대 한 접시', 5000.00, TRUE),
-        (5, 1, '튀김 모듬', 6000.00, TRUE),
-        (6, 2, '기본 마라탕', 12000.00, TRUE),
-        (7, 2, '곱창 마라탕', 15000.00, TRUE),
-        (8, 2, '해물 마라탕', 14000.00, TRUE),
-        (9, 2, '마라샹궈', 18000.00, TRUE),
-        (10, 2, '꿔바로우', 13000.00, TRUE),
-        (11, 3, '후라이드 치킨', 18000.00, TRUE),
-        (12, 3, '양념 치킨', 19000.00, TRUE),
-        (13, 3, '간장 치킨', 19500.00, TRUE),
-        (14, 3, '치킨 무 (대)', 1500.00, TRUE),
-        (15, 3, '콜라 1.25L', 3000.00, TRUE);

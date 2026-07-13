@@ -4,10 +4,13 @@ server:
 spring:
   application:
     name: notify-service
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    consumer:
+      group-id: notify-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
@@ -21,3 +24,11 @@ management:
   endpoint:
     health:
       show-details: always
+  health:
+    kafka:
+      enabled: false
+
+topics:
+  orders: food.orders
+  payments: food.payments
+  dispatch: food.dispatch

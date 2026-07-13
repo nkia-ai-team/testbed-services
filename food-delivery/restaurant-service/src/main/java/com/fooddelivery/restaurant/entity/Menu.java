@@ -14,6 +14,9 @@ public class Menu {
     @Column(name = "restaurant_id", nullable = false)
     private Long restaurantId;
 
+    @Column(name = "category_id")
+    private Long categoryId;
+
     @Column(name = "name", nullable = false, length = 128)
     private String name;
 
@@ -27,6 +30,8 @@ public class Menu {
     public void setId(Long id) { this.id = id; }
     public Long getRestaurantId() { return restaurantId; }
     public void setRestaurantId(Long restaurantId) { this.restaurantId = restaurantId; }
+    public Long getCategoryId() { return categoryId; }
+    public void setCategoryId(Long categoryId) { this.categoryId = categoryId; }
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
     public BigDecimal getPrice() { return price; }

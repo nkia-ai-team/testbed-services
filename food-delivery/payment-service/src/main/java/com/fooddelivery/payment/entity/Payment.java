@@ -27,6 +27,12 @@ public class Payment {
     @Column(name = "processed_at")
     private LocalDateTime processedAt;
 
+    @Column(name = "settled_at")
+    private LocalDateTime settledAt;
+
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt = LocalDateTime.now();
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public Long getOrderId() { return orderId; }
@@ -39,4 +45,7 @@ public class Payment {
     public void setStatus(String status) { this.status = status; }
     public LocalDateTime getProcessedAt() { return processedAt; }
     public void setProcessedAt(LocalDateTime processedAt) { this.processedAt = processedAt; }
+    public LocalDateTime getSettledAt() { return settledAt; }
+    public void setSettledAt(LocalDateTime settledAt) { this.settledAt = settledAt; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
 }

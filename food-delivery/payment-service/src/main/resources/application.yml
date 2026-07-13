@@ -9,6 +9,12 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${DB_USER:fooddelivery}
     password: ${DB_PASSWORD:fooddelivery1234}
+    hikari:
+      maximum-pool-size: 15
+      minimum-idle: 5
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
   jpa:
     hibernate:
       ddl-auto: none
@@ -16,6 +22,11 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
     open-in-view: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 services:
   order:
@@ -37,3 +48,48 @@ management:
   endpoint:
     health:
       show-details: always
+  health:
+    kafka:
+      enabled: false
+
+outbox:
+  relay:
+    enabled: true
+
+topics:
+  payments: food.payments
+
+# order(reverse lookup)·pg(외부 PG mock) 호출 전부 timeout+retry+circuit breaker.
+# pg는 결제성 호출이라 max-attempts=2.
+resilience4j:
+  circuitbreaker:
+    instances:
+      order:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+      pg:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+  retry:
+    instances:
+      order:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      pg:
+        max-attempts: 2
+        wait-duration: 300ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+
+settlement:
+  poll-interval-ms: 3600000

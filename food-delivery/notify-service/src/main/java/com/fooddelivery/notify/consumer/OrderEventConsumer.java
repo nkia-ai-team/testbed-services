@@ -3,47 +3,32 @@ package com.fooddelivery.notify.consumer;
 import com.fooddelivery.notify.service.NotifyService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.connection.stream.MapRecord;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.stream.StreamListener;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
-import java.util.Map;
-
+/**
+ * food.orders 구독(구 Redis Streams → Kafka 전환). order-service의 outbox 릴레이가
+ * 발행한 OrderEvent(JSON) payload 를 그대로 로그로 넘긴다 — notify-service는 실제 발송
+ * 없이 시뮬레이션만 하므로 파싱 없이 원문 그대로 사용해도 충분하다.
+ */
 @Component
-public class OrderEventConsumer implements StreamListener<String, MapRecord<String, String, String>> {
+public class OrderEventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(OrderEventConsumer.class);
-    private static final String STREAM_KEY = "order-events";
-    private static final String GROUP_NAME = "notify-group";
 
     private final NotifyService notifyService;
-    private final StringRedisTemplate redisTemplate;
 
-    public OrderEventConsumer(NotifyService notifyService,
-                              StringRedisTemplate redisTemplate) {
+    public OrderEventConsumer(NotifyService notifyService) {
         this.notifyService = notifyService;
-        this.redisTemplate = redisTemplate;
     }
 
-    @Override
-    public void onMessage(MapRecord<String, String, String> message) {
-        Map<String, String> fields = message.getValue();
-        log.info("Received order event: {}", fields);
-
+    @KafkaListener(topics = "${topics.orders}", groupId = "notify-service")
+    public void onOrderEvent(String message) {
+        log.info("Received order event: {}", message);
         try {
-            notifyService.sendNotification(
-                    fields.get("orderId"),
-                    fields.get("customerId"),
-                    fields.get("restaurantId"),
-                    fields.get("totalAmount"),
-                    fields.get("status")
-            );
-
-            redisTemplate.opsForStream().acknowledge(STREAM_KEY, GROUP_NAME, message.getId());
-            log.info("ACK message: {}", message.getId());
-        } catch (Exception e) {
-            log.error("Failed to process order event: {}", e.getMessage(), e);
+            notifyService.sendNotification("order", message);
+        } catch (Exception ex) {
+            log.error("Failed to process order event: {}", ex.getMessage(), ex);
         }
     }
 }

@@ -1,0 +1,106 @@
+# ============================================================
+# Kafka Deployment (KRaft 모드, 단일 브로커) — 7번 이식(commerce §1 패턴 복제)
+# ============================================================
+# 구 Redis Streams(order→notify)를 대체하는 도메인 이벤트 백본. order/payment/dispatch가
+# outbox 릴레이로 발행하고 notify-service가 구독한다. Redis는 이 용도 외 캐시 등 다른 쓰임이
+# 없어 완전히 제거했다(11-redis.yaml 삭제, docker-compose/02-configmaps.yaml에서도 제거).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: testbed-kafka
+  namespace: rca-testbed-food
+  labels:
+    app: testbed-kafka
+spec:
+  serviceName: testbed-kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-kafka
+  template:
+    metadata:
+      labels:
+        app: testbed-kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.9.0
+          ports:
+            - containerPort: 9092
+            - containerPort: 9093
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@localhost:9093"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://testbed-kafka:9092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_NUM_PARTITIONS
+              value: "3"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: CLUSTER_ID
+              value: "rca-testbed-food-kafka-1"
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+          resources:
+            requests:
+              cpu: 300m
+              memory: 768Mi
+            limits:
+              cpu: 800m
+              memory: 1536Mi
+          startupProbe:
+            tcpSocket:
+              port: 9092
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-kafka
+  namespace: rca-testbed-food
+spec:
+  selector:
+    app: testbed-kafka
+  ports:
+    - port: 9092
+      targetPort: 9092

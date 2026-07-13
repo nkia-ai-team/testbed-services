@@ -9,6 +9,12 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${DB_USER:fooddelivery}
     password: ${DB_PASSWORD:fooddelivery1234}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 3
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
   jpa:
     hibernate:
       ddl-auto: none
@@ -16,12 +22,17 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
     open-in-view: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 services:
   order:
     url: ${ORDER_SERVICE_URL:http://localhost:8080}
     connect-timeout: 3s
-    read-timeout: 10s
+    read-timeout: 5s
 
 management:
   endpoints:
@@ -31,3 +42,34 @@ management:
   endpoint:
     health:
       show-details: always
+  health:
+    kafka:
+      enabled: false
+
+outbox:
+  relay:
+    enabled: true
+
+topics:
+  dispatch: food.dispatch
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      order:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+  retry:
+    instances:
+      order:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+
+dispatch:
+  max-capacity: 50

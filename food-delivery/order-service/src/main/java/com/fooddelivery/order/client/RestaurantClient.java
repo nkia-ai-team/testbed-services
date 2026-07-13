@@ -3,6 +3,8 @@ package com.fooddelivery.order.client;
 import com.fooddelivery.common.dto.MenuResponse;
 import com.fooddelivery.common.dto.RestaurantResponse;
 import com.fooddelivery.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -22,6 +24,8 @@ public class RestaurantClient {
         this.restaurantRestClient = restaurantRestClient;
     }
 
+    @CircuitBreaker(name = "restaurant", fallbackMethod = "getRestaurantFallback")
+    @Retry(name = "restaurant")
     public RestaurantResponse getRestaurant(Long restaurantId) {
         try {
             return restaurantRestClient.get()
@@ -35,6 +39,13 @@ public class RestaurantClient {
         }
     }
 
+    @SuppressWarnings("unused")
+    private RestaurantResponse getRestaurantFallback(Long restaurantId, Throwable ex) {
+        throw new ServiceException(HttpStatus.BAD_GATEWAY, "Restaurant service unavailable: " + ex.getMessage());
+    }
+
+    @CircuitBreaker(name = "restaurant", fallbackMethod = "getMenuFallback")
+    @Retry(name = "restaurant")
     public List<MenuResponse> getMenu(Long restaurantId) {
         try {
             return restaurantRestClient.get()
@@ -46,5 +57,10 @@ public class RestaurantClient {
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Menu lookup failed: " + ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private List<MenuResponse> getMenuFallback(Long restaurantId, Throwable ex) {
+        throw new ServiceException(HttpStatus.BAD_GATEWAY, "Restaurant service unavailable: " + ex.getMessage());
     }
 }

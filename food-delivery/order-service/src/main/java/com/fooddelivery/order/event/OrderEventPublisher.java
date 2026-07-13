@@ -3,34 +3,30 @@ package com.fooddelivery.order.event;
 import com.fooddelivery.common.dto.OrderEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
-import java.util.Map;
-
+/**
+ * Redis Streams(구) → Kafka + outbox(신규)로 전환. 비즈니스 트랜잭션과 같은 커밋에 outbox
+ * 행을 남기고, 실제 Kafka 발행은 OrderOutboxRelay가 별도 폴링으로 처리한다(at-least-once).
+ */
 @Component
 public class OrderEventPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(OrderEventPublisher.class);
-    private static final String STREAM_KEY = "order-events";
 
-    private final StringRedisTemplate redisTemplate;
+    private final OrderOutboxPublisher outboxPublisher;
+    private final String ordersTopic;
 
-    public OrderEventPublisher(StringRedisTemplate redisTemplate) {
-        this.redisTemplate = redisTemplate;
+    public OrderEventPublisher(OrderOutboxPublisher outboxPublisher,
+                                @Value("${topics.orders}") String ordersTopic) {
+        this.outboxPublisher = outboxPublisher;
+        this.ordersTopic = ordersTopic;
     }
 
     public void publish(OrderEvent event) {
-        Map<String, String> fields = Map.of(
-                "orderId", String.valueOf(event.orderId()),
-                "customerId", event.customerId() != null ? event.customerId() : "",
-                "restaurantId", String.valueOf(event.restaurantId()),
-                "totalAmount", event.totalAmount() != null ? event.totalAmount().toString() : "0",
-                "status", event.status(),
-                "timestamp", Instant.now().toString()
-        );
-        redisTemplate.opsForStream().add(STREAM_KEY, fields);
-        log.info("Published order event to Redis Streams: orderId={}", event.orderId());
+        outboxPublisher.publish(ordersTopic, "ORDER", String.valueOf(event.orderId()),
+                "ORDER_" + event.status(), event);
+        log.info("Recorded outbox event for order: orderId={}, status={}", event.orderId(), event.status());
     }
 }

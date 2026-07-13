@@ -3,6 +3,8 @@ package com.fooddelivery.order.client;
 import com.fooddelivery.common.dto.DispatchRequest;
 import com.fooddelivery.common.dto.DispatchResponse;
 import com.fooddelivery.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -27,6 +29,8 @@ public class DispatchClient {
      * 응답: { "currentAssigned": int, "maxCapacity": int, "available": int }
      */
     @SuppressWarnings("unchecked")
+    @CircuitBreaker(name = "dispatch", fallbackMethod = "checkCapacityFallback")
+    @Retry(name = "dispatch")
     public Map<String, Integer> checkCapacity() {
         try {
             return dispatchRestClient.get()
@@ -40,9 +44,16 @@ public class DispatchClient {
         }
     }
 
+    @SuppressWarnings("unused")
+    private Map<String, Integer> checkCapacityFallback(Throwable ex) {
+        throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE, "Dispatch service unavailable: " + ex.getMessage());
+    }
+
     /**
      * 실제 courier 배차 — order 생성 후 fan-out 호출.
      */
+    @CircuitBreaker(name = "dispatch", fallbackMethod = "dispatchCourierFallback")
+    @Retry(name = "dispatch")
     public DispatchResponse dispatchCourier(Long orderId, String region) {
         try {
             return dispatchRestClient.post()
@@ -55,5 +66,10 @@ public class DispatchClient {
             throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE,
                     "Dispatch service failed: " + ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private DispatchResponse dispatchCourierFallback(Long orderId, String region, Throwable ex) {
+        throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE, "Dispatch service unavailable: " + ex.getMessage());
     }
 }

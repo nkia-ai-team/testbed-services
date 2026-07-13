@@ -9,6 +9,12 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${DB_USER:fooddelivery}
     password: ${DB_PASSWORD:fooddelivery1234}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
   jpa:
     hibernate:
       ddl-auto: none
@@ -25,3 +31,8 @@ management:
   endpoint:
     health:
       show-details: always
+
+menu:
+  popularity:
+    interval-ms: 3600000
+    lookback-days: 7

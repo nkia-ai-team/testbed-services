@@ -3,6 +3,8 @@ package com.fooddelivery.order.client;
 import com.fooddelivery.common.dto.PaymentRequest;
 import com.fooddelivery.common.dto.PaymentResponse;
 import com.fooddelivery.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -22,6 +24,9 @@ public class PaymentClient {
         this.paymentRestClient = paymentRestClient;
     }
 
+    // 결제성 호출 — 재시도 증폭(중복결제) 위험 때문에 application.yml에서 max-attempts=2로 낮춰둠.
+    @CircuitBreaker(name = "payment", fallbackMethod = "processPaymentFallback")
+    @Retry(name = "payment")
     public PaymentResponse processPayment(Long orderId, BigDecimal amount, String pgProvider) {
         try {
             return paymentRestClient.post()
@@ -34,5 +39,10 @@ public class PaymentClient {
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Payment service failed: " + ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private PaymentResponse processPaymentFallback(Long orderId, BigDecimal amount, String pgProvider, Throwable ex) {
+        throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment service unavailable: " + ex.getMessage());
     }
 }

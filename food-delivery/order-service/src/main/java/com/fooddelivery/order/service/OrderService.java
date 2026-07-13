@@ -1,5 +1,6 @@
 package com.fooddelivery.order.service;
 
+import com.fooddelivery.common.dto.DailyOrderStatResponse;
 import com.fooddelivery.common.dto.MenuResponse;
 import com.fooddelivery.common.dto.OrderEvent;
 import com.fooddelivery.common.dto.OrderRequest;
@@ -16,11 +17,13 @@ import com.fooddelivery.order.repository.OrderItemRepository;
 import com.fooddelivery.order.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -155,7 +158,7 @@ public class OrderService {
             throw se;
         }
 
-        // Fan-out 3 (async): Redis Streams 로 주문 이벤트 발행 → notify-service 소비
+        // Fan-out 3 (async): outbox 경유 Kafka 로 주문 이벤트 발행 → notify-service 소비
         orderEventPublisher.publish(new OrderEvent(
                 order.getId(),
                 order.getCustomerId(),
@@ -172,6 +175,24 @@ public class OrderService {
         Order order = orderRepository.findById(id)
                 .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND, "Order not found: " + id));
         return toResponse(order);
+    }
+
+    // §7 신규 — customerId/status/restaurantId/from/to/page/size 필터 조합. 배열 응답(하위호환).
+    @Transactional(readOnly = true)
+    public List<OrderResponse> searchOrders(String customerId, String status, Long restaurantId,
+                                             LocalDateTime from, LocalDateTime to, Pageable pageable) {
+        return orderRepository.search(customerId, status, restaurantId, from, to, pageable).getContent().stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
+    // §7 신규 — 최근 days일 일별 주문수/합계.
+    @Transactional(readOnly = true)
+    public List<DailyOrderStatResponse> getDailyStats(int days) {
+        LocalDateTime since = LocalDateTime.now().minusDays(days).toLocalDate().atStartOfDay();
+        return orderRepository.aggregateDailyStats(since).stream()
+                .map(row -> new DailyOrderStatResponse(row.getOrderDate().toLocalDate(), row.getOrderCount(), row.getTotalAmount()))
+                .toList();
     }
 
     private OrderResponse toResponse(Order order) {

@@ -1,6 +1,8 @@
 package com.fooddelivery.payment.client;
 
 import com.fooddelivery.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -23,7 +25,10 @@ public class PgApiClient {
         this.pgRestClient = pgRestClient;
     }
 
+    // 결제성 호출 — 재시도 증폭 위험 때문에 application.yml에서 max-attempts=2로 낮춰둠.
     @SuppressWarnings("unchecked")
+    @CircuitBreaker(name = "pg", fallbackMethod = "payFallback")
+    @Retry(name = "pg")
     public Map<String, Object> pay(Long orderId, BigDecimal amount, String pgProvider) {
         try {
             var body = Map.of(
@@ -42,5 +47,10 @@ public class PgApiClient {
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "External PG call failed: " + ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private Map<String, Object> payFallback(Long orderId, BigDecimal amount, String pgProvider, Throwable ex) {
+        throw new ServiceException(HttpStatus.BAD_GATEWAY, "PG mock unavailable: " + ex.getMessage());
     }
 }

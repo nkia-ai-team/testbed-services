@@ -2,6 +2,8 @@ package com.fooddelivery.payment.client;
 
 import com.fooddelivery.common.dto.OrderResponse;
 import com.fooddelivery.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -20,6 +22,8 @@ public class OrderClient {
         this.orderRestClient = orderRestClient;
     }
 
+    @CircuitBreaker(name = "order", fallbackMethod = "getOrderFallback")
+    @Retry(name = "order")
     public OrderResponse getOrder(Long orderId) {
         try {
             return orderRestClient.get()
@@ -31,5 +35,10 @@ public class OrderClient {
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Order lookup failed: " + ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private OrderResponse getOrderFallback(Long orderId, Throwable ex) {
+        throw new ServiceException(HttpStatus.BAD_GATEWAY, "Order service unavailable: " + ex.getMessage());
     }
 }
