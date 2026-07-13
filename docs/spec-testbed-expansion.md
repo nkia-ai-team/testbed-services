@@ -1,6 +1,6 @@
 # spec-testbed-expansion — 테스트베드 대폭 확장 + 지속 부하 (commerce 플래그십)
 
-> 상태: **설계 초안 (확정 대기)**. 2026-07-13.
+> 상태: **확정** (2026-07-13). 부하 세부(RPS 절대치·diurnal 진폭/주기·golden 배경 표시)는 §8 미결로 남겨 구현하며 결정.
 > 목적: 테스트베드를 "의도된 장애 표면을 가진 소형 MSA" → **"평상시 부하가 계속 도는 production-like 서비스"**로 끌어올린다.
 > 전략: **flagship-first** — commerce를 먼저 깊게 만들어 패턴 템플릿을 확정한 뒤 food-delivery·core-banking에 복제.
 
@@ -137,7 +137,7 @@ users, addresses, categories, products, product_variants, inventory, inventory_m
 
 ## 10. 부수 정리 (확장과 함께)
 
-- **리네이밍**: `plopvape-shop` artifact;/패키지 `com.plopvape.*` → `commerce` 정본화 (Codex 지적 #3 관련).
+- **리네이밍**: 기존 전자담배 쇼핑몰 예제 artifact/패키지 → `commerce`/`com.commerce.*` 정본화 (Codex 지적 #3 관련).
 - **배포 정합**: build-and-deploy.sh의 `k3s ctr images import` → **kubeadm(containerd/`ctr -n k8s.io`)** 정정, rollout 실패 `|| true` 제거(Codex 지적).
 - **cross-domain 시드 정합**: commerce가 부르는 banking 계좌 ID를 banking 시드에 존재하게(Codex 지적).
 - **DB**: core-banking는 별도 확정대로 **Oracle**. commerce는 PostgreSQL 유지.

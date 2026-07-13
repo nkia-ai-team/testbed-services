@@ -1,13 +1,13 @@
 #!/bin/bash
 # ============================================================
-# commerce K3s 빌드 + 배포 스크립트
+# commerce kubeadm 빌드 + 배포 스크립트
 # ============================================================
 # 109서버(ARM/aarch64)에서 실행한다.
 # 사용법: cd commerce && bash k8s/build-and-deploy.sh
 #
 # 하는 일:
 #   1) 5개 서비스 Docker 이미지를 ARM 네이티브로 빌드
-#   2) 빌드된 이미지를 K3s containerd에 임포트
+#   2) 빌드된 이미지를 kubeadm containerd에 임포트
 #   3) K8s 매니페스트를 적용 (kubectl apply)
 #   4) 모든 Pod가 Running 상태인지 확인
 
@@ -23,7 +23,7 @@ echo "========================================="
 echo "  Phase 1: Docker 이미지 빌드 (ARM)"
 echo "========================================="
 # 각 서비스의 Dockerfile은 프로젝트 루트를 빌드 컨텍스트로 사용한다.
-# 이유: 멀티모듈 Maven 프로젝트라서 루트의 pom.xml과 shop-common이 필요.
+# 이유: 멀티모듈 Maven 프로젝트라서 루트의 pom.xml과 commerce-common이 필요.
 for svc in "${SERVICES[@]}"; do
   echo ""
   echo ">>> [빌드] commerce-${svc}..."
@@ -34,11 +34,11 @@ done
 
 echo ""
 echo "========================================="
-echo "  Phase 2: cluster 이미지 임포트 (k3d / native K3s 자동 감지)"
+echo "  Phase 2: cluster 이미지 임포트 (k3d / kubeadm 자동 감지)"
 echo "========================================="
 # kubectl 의 현재 context cluster 이름이 'k3d-<name>' 으로 시작하면 k3d.
 # k3d 노드의 containerd 는 호스트 docker 와 분리되어 있어 `k3d image import` 로 명시 주입 필요.
-# 그 외 (native K3s / 기타) 는 k3s containerd 로 import.
+# 그 외 (kubeadm / 기타) 는 kubeadm 의 containerd 로 import.
 CTX_CLUSTER=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null || echo "")
 if [[ "$CTX_CLUSTER" == k3d-* ]]; then
   K3D_NAME="${CTX_CLUSTER#k3d-}"
@@ -48,10 +48,10 @@ if [[ "$CTX_CLUSTER" == k3d-* ]]; then
     k3d image import "commerce-${svc}:latest" -c "$K3D_NAME"
   done
 else
-  echo "[detect] native K3s (cluster=$CTX_CLUSTER)"
+  echo "[detect] kubeadm (cluster=$CTX_CLUSTER)"
   for svc in "${SERVICES[@]}"; do
-    echo ">>> [k3s ctr import] commerce-${svc}..."
-    docker save "commerce-${svc}:latest" | sudo k3s ctr images import -
+    echo ">>> [ctr import] commerce-${svc}..."
+    docker save "commerce-${svc}:latest" | sudo ctr -n k8s.io images import -
   done
 fi
 
@@ -87,11 +87,11 @@ echo "  Phase 4: 배포 상태 확인"
 echo "========================================="
 # Deployment가 완전히 뜰 때까지 최대 3분 대기.
 echo "Deployment 롤아웃 대기 중..."
-kubectl -n rca-testbed-commerce rollout status deployment --timeout=180s || true
+kubectl -n rca-testbed-commerce rollout status deployment --timeout=180s
 
 # StatefulSet은 별도로 확인
 echo "StatefulSet 롤아웃 대기 중..."
-kubectl -n rca-testbed-commerce rollout status statefulset --timeout=120s || true
+kubectl -n rca-testbed-commerce rollout status statefulset --timeout=120s
 
 echo ""
 echo "========================================="

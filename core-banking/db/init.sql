@@ -44,7 +44,10 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 ) ENGINE=InnoDB;
 
 -- ============================================================
--- 시드 데이터: 계좌 12개(개인/법인 혼합, 잔액 보유)
+-- 시드 데이터: 계좌 13개(개인/법인 혼합, 잔액 보유)
+-- 'commerce-settlement' 는 commerce/payment-service의
+-- BankingTransferClient.SETTLEMENT_ACCOUNT 가 이체 fromAccount 로 호출하는
+-- 고정 계좌 ID — cross-domain 시드 정합을 위해 실제 계좌로 시딩한다.
 -- ============================================================
 INSERT INTO accounts (id, holder, balance, status) VALUES
     ('ACC-1001', '김민수',        5000000.00, 'ACTIVE'),
@@ -58,5 +61,6 @@ INSERT INTO accounts (id, holder, balance, status) VALUES
     ('ACC-2002', '누리 커머스',   45000000.00, 'ACTIVE'),
     ('ACC-2003', '배달의고수',    23000000.00, 'ACTIVE'),
     ('ACC-9001', '동결계좌 A',      100000.00, 'FROZEN'),
-    ('ACC-9002', '해지계좌 B',           0.00, 'CLOSED')
+    ('ACC-9002', '해지계좌 B',           0.00, 'CLOSED'),
+    ('commerce-settlement', '커머스 정산 계좌', 50000000.00, 'ACTIVE')
 ON DUPLICATE KEY UPDATE holder = VALUES(holder);

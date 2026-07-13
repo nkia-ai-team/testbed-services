@@ -52,7 +52,7 @@ echo "  Phase 3: kubectl apply (envsubst 치환 포함)"
 echo "========================================="
 # 매니페스트의 ${OTLP_ENDPOINT} placeholder 를 deploy-time 에 치환.
 # Polestar10 collector 주소가 환경마다 다르므로 매니페스트 hardcode 불가 — testbed-build orchestrator
-# 가 ansible service-k8s role 의 OTLP_ENDPOINT env var 로 주입 (NKIAAI-542 패턴, plopvape-shop 동일).
+# 가 ansible service-k8s role 의 OTLP_ENDPOINT env var 로 주입 (NKIAAI-542 패턴, commerce 동일).
 : "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.230.104:6565}"
 : "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — ansible 또는 수동 export 필요. Polestar10 web 의 24자리 hex 조직 ID}"
 

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "entries": {
+    "690d3cd9491a25b809673240e1f362545f64199e6839c366333753bb5a7514a2": {
+      "last_emitted_at_ms": 1783902865083,
+      "message": "Spawning agent: unknown (inherit) | Task: core-banking transfer API and seed accounts"
+    },
+    "445ed27a3872b681d98190bae61ccb84954e1bc4e140df5370be958dee776b3a": {
+      "last_emitted_at_ms": 1783902827576,
+      "message": "Verify changes work after editing. Test functionality before marking complete."
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1783902784375,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1783902776803,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "af0eab6c8ed9d2f319b4a265edab0fc270bc504be9f7c39aac0b1f276b811ed7": {
+      "last_emitted_at_ms": 1783902618627,
+      "message": "Spawning agent: oh-my-claudecode:executor (inherit) | Task: commerce 리네이밍+배포정정"
+    }
+  },
+  "updated_at": "2026-07-13T00:34:25.083Z"
+}

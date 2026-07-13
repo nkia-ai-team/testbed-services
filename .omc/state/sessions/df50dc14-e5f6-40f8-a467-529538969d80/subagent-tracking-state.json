@@ -1,0 +1,26 @@
+{
+  "agents": [
+    {
+      "agent_id": "arename-executor-5855fc4efbc9ca11",
+      "agent_type": "rename-executor",
+      "started_at": "2026-07-13T00:30:18.805Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-13T00:36:59.188Z",
+      "duration_ms": 400383
+    },
+    {
+      "agent_id": "a0d21acddb9fb6def",
+      "agent_type": "general-purpose",
+      "started_at": "2026-07-13T00:34:25.222Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-07-13T00:34:56.168Z",
+      "duration_ms": 30946
+    }
+  ],
+  "total_spawned": 2,
+  "total_completed": 3,
+  "total_failed": 0,
+  "last_updated": "2026-07-13T00:36:59.329Z"
+}

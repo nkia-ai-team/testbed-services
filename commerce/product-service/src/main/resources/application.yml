@@ -5,9 +5,9 @@ spring:
   application:
     name: product-service
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/plopvape
-    username: ${DB_USER:plopvape}
-    password: ${DB_PASS:plopvape1234}
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/commerce
+    username: ${DB_USER:commerce}
+    password: ${DB_PASS:commerce1234}
   jpa:
     hibernate:
       ddl-auto: none

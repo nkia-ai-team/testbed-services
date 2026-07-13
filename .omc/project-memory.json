@@ -1,0 +1,148 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1783902431184,
+  "projectRoot": "/home/ydkim/project-2025/testbed-services",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "commerce": {
+      "path": "commerce",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1783902431181,
+      "keyFiles": [
+        "README.md",
+        "docker-compose.dev.yml",
+        "mvnw",
+        "mvnw.cmd",
+        "pom.xml"
+      ]
+    },
+    "core-banking": {
+      "path": "core-banking",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1783902431181,
+      "keyFiles": [
+        "README.md",
+        "docker-compose.dev.yml",
+        "mvnw",
+        "mvnw.cmd",
+        "pom.xml"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 11,
+      "lastAccessed": 1783902431183,
+      "keyFiles": [
+        "README.md",
+        "documentation-rules.md",
+        "ref-lucida-next-ai-features.md",
+        "ref-lucida-next-data-collection.md",
+        "spec-eval-data-capture.md"
+      ]
+    },
+    "food-delivery": {
+      "path": "food-delivery",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1783902431183,
+      "keyFiles": [
+        "README.md",
+        "docker-compose.dev.yml",
+        "mvnw",
+        "mvnw.cmd",
+        "pom.xml"
+      ]
+    },
+    "social-feed": {
+      "path": "social-feed",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1783902431183,
+      "keyFiles": [
+        "README.md",
+        "docker-compose.dev.yml",
+        "mvnw",
+        "mvnw.cmd",
+        "pom.xml"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "commerce/README.md",
+      "accessCount": 7,
+      "lastAccessed": 1783902983920,
+      "type": "file"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 4,
+      "lastAccessed": 1783902746835,
+      "type": "file"
+    },
+    {
+      "path": "docs/spec-testbed-expansion.md",
+      "accessCount": 4,
+      "lastAccessed": 1783902788220,
+      "type": "file"
+    },
+    {
+      "path": "commerce/pom.xml",
+      "accessCount": 2,
+      "lastAccessed": 1783902676557,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/pom.xml",
+      "accessCount": 2,
+      "lastAccessed": 1783902687582,
+      "type": "file"
+    },
+    {
+      "path": "core-banking/db/init.sql",
+      "accessCount": 2,
+      "lastAccessed": 1783902971082,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/02-configmaps.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783902565819,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

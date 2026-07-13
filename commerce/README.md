@@ -2,7 +2,7 @@
 
 전자상거래 도메인 RCA 테스트베드. 5개의 Spring Boot 서비스로 구성된 주문 처리 시스템으로, 3-hop 호출 체인(`order → product → inventory`)을 통해 다단계 서비스 간 통신을 구현합니다.
 
-(기존 `plopvape-shop`(전자담배 쇼핑몰)을 커머스 일반 도메인으로 리네이밍한 것 — 코드 골격·DB 스키마·시드 데이터는 그대로 승계.)
+(기존 전자담배 쇼핑몰 예제 프로젝트를 커머스 일반 도메인으로 리네이밍한 것 — 코드 골격·DB 스키마·시드 데이터는 그대로 승계.)
 
 ## 아키텍처
 
@@ -42,7 +42,7 @@ order-service (:8080)
 ```
 commerce/
 ├── pom.xml                        # Parent POM
-├── shop-common/                   # 공통 모듈 (DTO, 예외, BaseEntity)
+├── commerce-common/                # 공통 모듈 (DTO, 예외, BaseEntity)
 ├── order-service/                 # :8080 — 주문 생성/조회 허브
 ├── product-service/               # :8081 — 상품 목록/검색
 ├── inventory-service/             # :8082 — 재고 관리 (SELECT FOR UPDATE)
@@ -190,7 +190,7 @@ curl -X POST http://localhost:8080/api/orders \
 
 | 프로젝트 | 설명 |
 |----------|------|
-| [plopvape-pg-mock](https://github.com/BangSungjoon/plopvape-pg-mock) | 외부 PG API 시뮬레이션 서버 (FastAPI) — 원본 plopvape 프로젝트에서 승계 |
+| [plopvape-pg-mock](https://github.com/BangSungjoon/plopvape-pg-mock) | 외부 PG API 시뮬레이션 서버 (FastAPI) — 원본 전자담배 쇼핑몰 예제 프로젝트에서 승계 |
 
 ## License
 

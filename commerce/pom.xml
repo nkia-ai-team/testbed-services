@@ -11,15 +11,15 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.plopvape</groupId>
-    <artifactId>plopvape-shop</artifactId>
+    <groupId>com.commerce</groupId>
+    <artifactId>commerce</artifactId>
     <version>1.0.0</version>
     <packaging>pom</packaging>
-    <name>PlopVape Shop</name>
-    <description>PlopVape 전자담배 온라인 쇼핑몰 마이크로서비스</description>
+    <name>Commerce</name>
+    <description>Commerce 온라인 쇼핑몰 마이크로서비스</description>
 
     <modules>
-        <module>shop-common</module>
+        <module>commerce-common</module>
         <module>order-service</module>
         <module>product-service</module>
         <module>inventory-service</module>
@@ -37,8 +37,8 @@
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>com.plopvape</groupId>
-                <artifactId>shop-common</artifactId>
+                <groupId>com.commerce</groupId>
+                <artifactId>commerce-common</artifactId>
                 <version>${project.version}</version>
             </dependency>
         </dependencies>

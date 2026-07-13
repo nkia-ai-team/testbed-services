@@ -5,8 +5,8 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>com.plopvape</groupId>
-        <artifactId>plopvape-shop</artifactId>
+        <groupId>com.commerce</groupId>
+        <artifactId>commerce</artifactId>
         <version>1.0.0</version>
     </parent>
 
@@ -15,8 +15,8 @@
 
     <dependencies>
         <dependency>
-            <groupId>com.plopvape</groupId>
-            <artifactId>shop-common</artifactId>
+            <groupId>com.commerce</groupId>
+            <artifactId>commerce-common</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

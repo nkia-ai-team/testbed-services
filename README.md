@@ -35,7 +35,7 @@ testbed-services/
 
 각 도메인 폴더는 **자기 완결적**이다 — 자체 manifest + 자체 build script. 인프라는 `git clone` 후 **`<domain>/k8s/build-and-deploy.sh`** 만 호출한다.
 
-commerce 는 기존 `plopvape-shop`(전자담배 쇼핑몰)을 커머스 일반 도메인으로 리네이밍한 것이다. social-feed 는 신설계상 폐기 예정이며, 그 자리를 core-banking(신규)이 대체한다.
+commerce 는 기존 전자담배 쇼핑몰 예제 프로젝트를 커머스 일반 도메인으로 리네이밍한 것이다. social-feed 는 신설계상 폐기 예정이며, 그 자리를 core-banking(신규)이 대체한다.
 
 ---
 
@@ -175,7 +175,7 @@ NAT(`192.168.122.0/24`). 도메인 워크로드는 worker 노드에 `domain` 라
 
 ## 6. 변경 이력
 
-- **2026-07-09**: 3도메인 재설계 — plopvape-shop → **commerce**(PostgreSQL 리네이밍), food-delivery **PostgreSQL→MySQL 전환 + Redis 비동기(notify-service 신규)**, **core-banking**(MariaDB, 신규) 추가. namespace 규약을 `rca-testbed-<domain>` 으로 통일하고 lucida 태깅(`OTEL_SERVICE_NAME`/`OTEL_RESOURCE_ATTRIBUTES`)을 전 도메인에 적용. social-feed 는 legacy 로 남기고 신규 배포 대상에서 제외.
+- **2026-07-09**: 3도메인 재설계 — 전자담배 쇼핑몰 예제 프로젝트 → **commerce**(PostgreSQL 리네이밍), food-delivery **PostgreSQL→MySQL 전환 + Redis 비동기(notify-service 신규)**, **core-banking**(MariaDB, 신규) 추가. namespace 규약을 `rca-testbed-<domain>` 으로 통일하고 lucida 태깅(`OTEL_SERVICE_NAME`/`OTEL_RESOURCE_ATTRIBUTES`)을 전 도메인에 적용. social-feed 는 legacy 로 남기고 신규 배포 대상에서 제외.
 - **2026-07-09**: WPM/Polestar10 계측 제거, 관측을 OTel(lucida-next) 단일 경로로 일원화.
 
 원본: [BangSungjoon/plopvape-shop](https://github.com/BangSungjoon/plopvape-shop) — 본 레포 신설 이후 archive 상태(실제 push 안 함). 본 레포가 canonical truth.

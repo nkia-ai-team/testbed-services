@@ -1,0 +1,14 @@
+package com.commerce.common.dto;
+
+import java.util.List;
+
+public record OrderRequest(
+        String customerName,
+        String customerEmail,
+        List<OrderItemRequest> items
+) {
+    public record OrderItemRequest(
+            Long productId,
+            int quantity
+    ) {}
+}
