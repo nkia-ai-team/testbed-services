@@ -75,22 +75,24 @@ validation을 통과해야 확정한다.
 | --- | --- | --- |
 | Runtime | Kubernetes 계열 | pod/container lifecycle, restart, OOM, resource limit을 자연스럽게 재현 |
 | 애플리케이션 | instrumentation이 쉬운 단일 stack | trace, metric, log 형식의 일관성 확보 |
-| DB | PostgreSQL + MySQL + MariaDB (도메인별 1종) | 모두 오픈소스라 K8s 설치가 쉽고, DPM 식별자 두 계열(`sql_hash`/`sql_id`)을 함께 밟음 |
+| DB | PostgreSQL + MySQL + Oracle (도메인별 1종) | DPM 식별자 두 계열(`sql_hash`/`sql_id`)을 함께 밟고, Oracle은 DPM 전용 collector·최다 핸들러 경로를 검증 |
 | Cache/Queue | Redis | 비동기 전파, queue backlog, cache 장애를 간단히 구성 |
 | 외부 의존 | HTTP mock service | timeout, 5xx, latency injection을 독립 제어 |
 | 부하 생성 | k6 또는 Locust | run id, phase, target endpoint를 남기기 쉬움 |
 | 관측 | metric + trace + log + event + topology | RCA가 원인, 증상, 반증, 시간 관계를 함께 조회 |
 
-DB 엔진은 세 도메인에 PostgreSQL, MySQL, MariaDB를 하나씩 배치한다. 셋 다
-오픈소스라 K8s 설치 부담이 낮고, lucida-next DPM collector가 모두 지원하는
-엔진이다(`collector-dpm/dbpoll/poll.go`의 engine switch로 확인). 핵심은 DPM의
-SQL 식별자 정규화가 두 계열로 갈린다는 점이다. PostgreSQL만 `sql_hash`
-계열(세션은 Java hashCode, TopSQL은 queryid)이고, MySQL·MariaDB를 포함한
-나머지 관계형 엔진은 `sql_id` 계열이다. MariaDB는 세션 단계에서는
-hashCode를 쓰지만 ClickHouse 적재 시 digest 기반 typed `sql_id` 컬럼으로
-저장되는 하이브리드라, collector의 엔진 구분 처리를 한 번 더 시험한다. 상용
-DB(Oracle/Tibero/MSSQL)는 설치·라이선스 비용이 커서 Phase 1에서 제외하고,
-필요 시 확장 후보로만 둔다.
+DB 엔진은 세 도메인에 PostgreSQL, MySQL, Oracle을 하나씩 배치한다. 모두
+lucida-next DPM collector가 지원하는 엔진이다(`collector-dpm/dbpoll/poll.go`의
+engine switch로 확인). 핵심은 DPM의 SQL 식별자 정규화가 두 계열로 갈린다는
+점이다. PostgreSQL만 `sql_hash` 계열(세션은 Java hashCode, TopSQL은 queryid)이고,
+MySQL·Oracle을 포함한 나머지 관계형 엔진은 `sql_id` 계열이다.
+
+> **core-banking DB = Oracle 확정 (2026-07-12, MariaDB 폐기).** 초기 설계는
+> "상용 DB는 라이선스 비용 때문에 Phase 1 제외"였으나, ① DPM이 Oracle 전용
+> collector와 최다 핸들러를 갖고 있어 검증 가치가 가장 크고, ② Oracle 23ai
+> Free(`gvenzl/oracle-free`)는 무비용 + ARM64 정식 포팅이라 제외 근거가
+> 소멸했다. MariaDB의 "세션 hashCode→typed `sql_id` 하이브리드" 시험 항목은
+> 이 전환으로 범위에서 빠진다(필요 시 확장 후보).
 
 Phase 1에서는 APM, DPM, SMS를 우선 검증 대상으로 둔다. KCM은 코드·DDL상
 Kubernetes resource target 모델이 준비되어 있으므로, 테스트베드에 KCM collector
@@ -131,7 +133,7 @@ flowchart TB
             C2["account service"]
             C3["transfer service"]
             C4["ledger worker"]
-            CDB["MariaDB"]
+            CDB["Oracle"]
             CR["Redis"]
         end
 
@@ -206,7 +208,7 @@ flowchart TB
 | --- | --- | --- | --- | --- | --- |
 | A · commerce | api-gateway, order, inventory, payment worker | PostgreSQL (`sql_hash`) | PostgreSQL, Redis | payment mock | 재고 lock 경합, slow query, payment 외부의존 timeout |
 | B · food-delivery | api, matching, delivery tracker, notification worker | MySQL (`sql_id`) | MySQL, Redis | notification mock | 비동기 매칭 backlog, 추적 이벤트 지연, 알림 큐 적체 |
-| C · core-banking | api, account, transfer, ledger worker | MariaDB (`sql_id`) | MariaDB, Redis | — | 이체 트랜잭션 lock, 원장 정합성 대기, connection pool 고갈 |
+| C · core-banking | api, account, transfer, ledger worker | Oracle (`sql_id`) | Oracle, Kafka | — | 이체 트랜잭션 lock, 원장 정합성 대기, connection pool 고갈 |
 
 세 도메인은 같은 runner, 같은 label 규칙, 같은 observation snapshot 형식을 쓴다.
 비즈니스 모델과 DB 엔진만 달라야 한다.
@@ -252,7 +254,7 @@ sequenceDiagram
 2. 정상 요청 하나에서 trace, metric, log, topology가 연결되는지 확인한다.
 3. run metadata와 observation snapshot 형식을 확정한다.
 4. 두 번째 도메인(food-delivery, MySQL)을 추가해 도메인 과적합과 DB 엔진 과적합을 줄인다.
-5. 세 번째 도메인(core-banking, MariaDB)을 추가하고, commerce payment → banking transfer cross-domain 호출을 trace 전파와 함께 계측한다.
+5. 세 번째 도메인(core-banking, Oracle)을 추가하고, commerce payment → banking transfer cross-domain 호출을 trace 전파와 함께 계측한다.
 6. cross-domain `apm_call` edge가 실측 trace로 생성되고 두 도메인 증상이 하나의 의존성 그래프로 이어지는지 확인한다.
 7. KCM과 SMS 관측을 붙여 container/host 원인 후보를 만들 수 있게 한다.
 8. DPM 관측을 붙여 세 엔진의 session, lock, query 근거와 `sql_hash`/`sql_id` 식별자를 만든다.
@@ -265,7 +267,7 @@ sequenceDiagram
 - 4개 내외의 서비스로 구성한다(api 진입, 도메인 서비스 2개, worker 1개 형태).
 - 하나 이상의 synchronous request chain을 가진다.
 - 하나 이상의 asynchronous 또는 delayed path를 가진다.
-- 도메인별로 지정된 관계형 DB(PostgreSQL / MySQL / MariaDB) 1종과 Redis를 상태 저장소로 가진다.
+- 도메인별로 지정된 관계형 DB(PostgreSQL / MySQL / Oracle) 1종과 Kafka(+필요 시 Redis 캐시)를 상태·이벤트 저장소로 가진다.
 - 외부 의존을 흉내 낼 수 있는 mock endpoint를 둔다(도메인 특성에 맞게).
 - 요청 부하를 정상, ramp-up, burst, sustained 구간으로 조절할 수 있다.
 
@@ -402,7 +404,7 @@ inbound(DPM 폴링·UI)은 이후 포트포워딩으로 연다.
 | 계열 | 환경이 제공해야 하는 관측 |
 | --- | --- |
 | APM | 서비스 latency, error, throughput, trace/span/link, dependency edge |
-| DPM | connection, session, lock/wait, slow query 또는 TopSQL 식별자 (PostgreSQL=`sql_hash`, MySQL·MariaDB=`sql_id` 두 계열) |
+| DPM | connection, session, lock/wait, slow query 또는 TopSQL 식별자 (PostgreSQL=`sql_hash`, MySQL·Oracle=`sql_id` 두 계열) |
 | SMS | host CPU/memory/disk/network, process-level CPU/memory |
 | NMS | interface utilization, error/drop, packet loss 또는 RTT |
 | KCM | pod/container/node 상태, restart, OOM, scheduling/lifecycle event |
@@ -428,7 +430,7 @@ timestamp 단위를 검증한다.
 | 계열 | 참조상 기대 가능한 데이터 | live validation에서 확인할 것 | Phase 1 지위 |
 | --- | --- | --- | --- |
 | APM | `otel_traces_local`의 `trace_id`, `span_id`, `parent_span_id`, `service_name`, `duration_ns`, `span_attributes`, `resource_attributes`; `agg_service_golden_signals`의 service 단위 latency/error | 정상 요청 1건이 trace/span/link로 연결되는지, `resource_attributes['lucida.target_id']`가 incident seed 대상과 연결되는지, `k8s_pod_name`/`k8s_node_name`과 error/latency 집계가 같은 시간창에 생기는지, cross-domain(commerce payment → banking transfer) 호출이 같은 trace로 이어져 도메인 경계를 넘는 `apm_call` edge가 실측 trace로 생성되는지 | 우선 검증 |
-| DPM | `dpm_session_local`, `dpm_topsql_local`의 `target_id`, `engine`, session/wait 정보, `sql_id`, `sql_hash`; VM의 `dpm.*` metrics | 세 엔진(PostgreSQL/MySQL/MariaDB)의 lock/slow query/connection pressure가 session 또는 TopSQL로 남는지, PostgreSQL은 `sql_hash`·MySQL/MariaDB는 `sql_id`가 안정적인지, MariaDB의 session hashCode→적재 시 typed `sql_id` 하이브리드가 예상대로 저장되는지, DB `target_id`가 환경 snapshot과 매칭되는지 | 우선 검증 |
+| DPM | `dpm_session_local`, `dpm_topsql_local`의 `target_id`, `engine`, session/wait 정보, `sql_id`, `sql_hash`; VM의 `dpm.*` metrics | 세 엔진(PostgreSQL/MySQL/Oracle)의 lock/slow query/connection pressure가 session 또는 TopSQL로 남는지, PostgreSQL은 `sql_hash`·MySQL/Oracle은 `sql_id`가 안정적인지, Oracle 전용 collector 경로(세션·TopSQL 핸들러)가 예상대로 적재되는지, DB `target_id`가 환경 snapshot과 매칭되는지 | 우선 검증 |
 | KCM | PostgreSQL `kcm_resource_targets`의 `target_id`, `resource_kind`, `resource_key`, `cluster_target_id`, `parent_target_id`; VM `kcm.*` metrics | pod/container/node metric과 lifecycle event가 같은 resource identity로 묶이는지, pod 재생성 시 `resource_key` 변화가 golden 작성에 어떤 영향을 주는지 | 설치 포함 시 우선 후보 |
 | SMS | VM `sms.*` metrics, process/docker/net session snapshots의 `target_id`, `pid`, `name`, `cmdline`, container id/name, host connection | host/process CPU·memory가 서비스 영향 시간창과 맞물리는지, process 식별자가 재시작 후 어떻게 바뀌는지, host `target_id`와 pod/node 관계를 연결할 수 있는지 | 우선 검증 |
 | NMS | SNMP trap의 `if_index`, NetFlow의 `in_iface`/`out_iface`, NMS resource inventory의 `resource_kind=network_interface`, `resource_key`는 interface name 또는 `eth{ifIndex}` fallback | 인터페이스 dimension이 metric/trap/flow/resource inventory 사이에서 같은 의미로 연결되는지, `ifIndex`와 inventory `resource_key`를 어떻게 bridge할지, packet loss/error/drop 증거가 시간창에 남는지 | 확장 후보 |
@@ -507,7 +509,7 @@ Live validation 산출물은 환경 산출물에 포함한다.
 
 | 확인 대상 | 근거 | 결과 |
 | --- | --- | --- |
-| DPM 지원 엔진 | `backend/services/collector-dpm/dbpoll/poll.go`의 engine switch | PostgreSQL/Oracle/Tibero/MySQL/MariaDB/MSSQL/CUBRID/ClickHouse만 구현(switch case). DB2 미구현. 테스트베드가 고른 PostgreSQL·MySQL·MariaDB는 모두 지원됨 |
+| DPM 지원 엔진 | `backend/services/collector-dpm/dbpoll/poll.go`의 engine switch | PostgreSQL/Oracle/Tibero/MySQL/MariaDB/MSSQL/CUBRID/ClickHouse만 구현(switch case). DB2 미구현. 테스트베드가 고른 PostgreSQL·MySQL·Oracle(2026-07-12 MariaDB→Oracle 전환)은 모두 지원됨 |
 | SQL 식별자 계열 | `backend/services/ingest/writer/clickhouse_dpm.go`의 `extractDpmKey` | PostgreSQL만 `sql_hash` 계열, 나머지 관계형 엔진은 `sql_id`. MariaDB는 세션 hashCode(`database_livesql_mariadb.go`)이지만 적재 시 digest 기반 typed `sql_id`로 저장되는 하이브리드 |
 | 의존성 그래프 구성 | `backend/services/query/store/topology_store.go`의 `topoServiceCallEdges` | edge는 별도 topology 수집이 아니라 APM trace의 parent-child span 조인으로 쿼리 타임 계산. 조건은 `parent.service_name != child.service_name`뿐, namespace/domain 필터 없음(`graph-wide`) |
 | 도메인 경계 | eventcluster `service/topology_adapter.go`, `runner/topology.go`, incidents DDL `090_ai_incidents_redesign.sql` | topology·클러스터링에 도메인 스코프 필터 없음. incidents는 `domain` 컬럼을 제거하고 다도메인 `blast_radius`/`incident_members`로 재설계됨 |
@@ -515,9 +517,10 @@ Live validation 산출물은 환경 산출물에 포함한다.
 
 교차검증으로 확정한 설계 결정:
 
-- 도메인별 DB를 PostgreSQL·MySQL·MariaDB로 배치하면 `sql_hash`/`sql_id` 두 계열과
-  MariaDB 하이브리드 경로를 모두 밟는다. 상용 DB(Oracle/Tibero/MSSQL)는 지원되나
-  설치 비용 때문에 확장 후보로만 둔다.
+- 도메인별 DB를 PostgreSQL·MySQL·Oracle로 배치하면 `sql_hash`/`sql_id` 두 계열을
+  모두 밟고, Oracle 전용 collector(최다 핸들러) 경로까지 검증한다. (초기 결정은
+  MariaDB였으나 2026-07-12 Oracle로 전환 — §3 박스 참조. MariaDB 하이브리드
+  경로는 확장 후보로 이동.)
 - cross-domain 호출은 하나의 의존성 그래프·인시던트로 묶일 수 있다(코드 근거 확정).
   단 lucida-next는 호출을 추론/합성하지 않고 실측 trace의 parent-child만 edge로
   삼으므로, cross-domain 경계에서 trace context 전파가 반드시 유지돼야 한다. 이
@@ -560,7 +563,7 @@ test를 모두 포함해야 한다.
 - [ ] 세 도메인(commerce/food-delivery/core-banking)별 정상 요청이 성공하고 기본 latency/error/throughput이 수집된다.
 - [ ] 서비스 간 dependency edge가 관측된다.
 - [ ] cross-domain(payment → transfer) 호출이 같은 trace로 이어져 도메인 경계를 넘는 `apm_call` edge가 실측된다.
-- [ ] 세 DB 엔진의 DPM 근거가 `sql_hash`(PostgreSQL)·`sql_id`(MySQL/MariaDB) 계열로 각각 수집된다.
+- [ ] 세 DB 엔진의 DPM 근거가 `sql_hash`(PostgreSQL)·`sql_id`(MySQL/Oracle) 계열로 각각 수집된다.
 - [ ] DB, host, container, network, web 관측 중 Phase 1에 필요한 계열이 조회된다.
 - [ ] APM, DPM, SMS의 우선 검증 필드가 live validation을 통과했다.
 - [ ] KCM을 Phase 1 필수로 쓸 경우, Kubernetes resource target과 `kcm.*` VM metric이 먼저 live validation을 통과했다.
