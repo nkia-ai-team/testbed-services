@@ -23,6 +23,10 @@ public class BankingTransferClient {
 
     private static final Logger log = LoggerFactory.getLogger(BankingTransferClient.class);
     private static final String SETTLEMENT_ACCOUNT = "commerce-settlement";
+    // 이체 대상은 banking 시드에 실존하는 고정 가맹점 계좌여야 한다 — 이전의 "merchant-<orderId>" 는
+    // 주문마다 미존재 계좌라 banking 계좌 검증에서 전부 400 (109 실배포에서 발견, 2026-07-13).
+    // 주문 추적은 orderId 필드가 담당하므로 계좌를 동적으로 만들 이유가 없다.
+    private static final String MERCHANT_ACCOUNT = "commerce-merchant";
 
     private final RestClient bankingTransferRestClient;
 
@@ -34,7 +38,7 @@ public class BankingTransferClient {
         try {
             var request = new BankingTransferRequest(
                     SETTLEMENT_ACCOUNT,
-                    "merchant-" + orderId,
+                    MERCHANT_ACCOUNT,
                     amount,
                     String.valueOf(orderId));
 

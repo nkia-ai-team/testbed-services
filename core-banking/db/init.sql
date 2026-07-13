@@ -70,9 +70,9 @@ CREATE TABLE outbox_events (
 CREATE INDEX idx_outbox_unpublished ON outbox_events (published_at, created_at);
 
 -- ============================================================
--- 시드 데이터: 계좌 13개(개인/법인 혼합, 잔액 보유)
--- 'commerce-settlement' 는 commerce/payment-service의
--- BankingTransferClient.SETTLEMENT_ACCOUNT 가 이체 fromAccount 로 호출하는
+-- 시드 데이터: 계좌 14개(개인/법인 혼합, 잔액 보유)
+-- 'commerce-settlement'/'commerce-merchant' 는 commerce/payment-service의
+-- BankingTransferClient 가 이체 fromAccount/toAccount 로 호출하는
 -- 고정 계좌 ID — cross-domain 시드 정합을 위해 실제 계좌로 시딩한다.
 -- MERGE 로 idempotent 재실행 보장(MySQL ON DUPLICATE KEY UPDATE 대응).
 -- ============================================================
@@ -90,7 +90,8 @@ USING (
     SELECT 'ACC-2003', '배달의고수', 23000000.00, 'ACTIVE' FROM dual UNION ALL
     SELECT 'ACC-9001', '동결계좌 A', 100000.00, 'FROZEN' FROM dual UNION ALL
     SELECT 'ACC-9002', '해지계좌 B', 0.00, 'CLOSED' FROM dual UNION ALL
-    SELECT 'commerce-settlement', '커머스 정산 계좌', 50000000.00, 'ACTIVE' FROM dual
+    SELECT 'commerce-settlement', '커머스 정산 계좌', 50000000.00, 'ACTIVE' FROM dual UNION ALL
+    SELECT 'commerce-merchant', '커머스 가맹점 계좌', 10000000.00, 'ACTIVE' FROM dual
 ) src
 ON (a.id = src.id)
 WHEN MATCHED THEN UPDATE SET a.holder = src.holder
