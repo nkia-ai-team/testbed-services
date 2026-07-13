@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,17 +32,39 @@ public class CartService {
     private final RedisTemplate<String, String> cartRedisTemplate;
     private final ObjectMapper objectMapper;
     private final long cacheTtlSeconds;
+    private final long idleExpiryHours;
 
     public CartService(CartRepository cartRepository,
                         CartItemRepository cartItemRepository,
                         RedisTemplate<String, String> cartRedisTemplate,
                         ObjectMapper objectMapper,
-                        @Value("${cart.cache.ttl-seconds:1800}") long cacheTtlSeconds) {
+                        @Value("${cart.cache.ttl-seconds:1800}") long cacheTtlSeconds,
+                        @Value("${cart.cleanup.idle-expiry-hours:24}") long idleExpiryHours) {
         this.cartRepository = cartRepository;
         this.cartItemRepository = cartItemRepository;
         this.cartRedisTemplate = cartRedisTemplate;
         this.objectMapper = objectMapper;
         this.cacheTtlSeconds = cacheTtlSeconds;
+        this.idleExpiryHours = idleExpiryHours;
+    }
+
+    // 유휴 cart 정리 배치 — 5분마다(§5) 오래(idleExpiryHours) 갱신되지 않은 cart를 DB에서 삭제하고
+    // Redis 캐시도 함께 무효화한다. 상주 배경 부하가 계속 carts를 만드는 전제라 정리 없이는 상태가
+    // 무한히 누적된다.
+    @Scheduled(fixedDelayString = "${cart.cleanup.interval-ms:300000}")
+    @Transactional
+    public void cleanupExpiredCarts() {
+        LocalDateTime cutoff = LocalDateTime.now().minusHours(idleExpiryHours);
+        List<Cart> stale = cartRepository.findByUpdatedAtBefore(cutoff);
+        log.info("Cart cleanup batch started: staleCandidates={}", stale.size());
+
+        for (Cart cart : stale) {
+            cartItemRepository.deleteByCartId(cart.getId());
+            cartRepository.delete(cart);
+            cartRedisTemplate.delete(cacheKey(cart.getUserId()));
+        }
+
+        log.info("Cart cleanup batch finished: removed={}", stale.size());
     }
 
     // 캐시 우선 조회. Redis timeout/장애 시 CircuitBreaker가 열리며 DB fallback으로 즉시 우회한다

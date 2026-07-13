@@ -9,6 +9,7 @@ services:
       - "15432:5432"
     volumes:
       - ./db/init-schemas.sql:/docker-entrypoint-initdb.d/01-init-schemas.sql
+      - ./db/seed-all.sql:/docker-entrypoint-initdb.d/02-seed-all.sql
       - pgdata:/var/lib/postgresql/data
 
   redis:

@@ -7,7 +7,22 @@ CREATE TABLE IF NOT EXISTS payment_schema.payments (
     method            VARCHAR(30) NOT NULL DEFAULT 'CARD',
     status            VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     pg_transaction_id VARCHAR(100),
+    settled_at        TIMESTAMP,
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_unsettled ON payment_schema.payments(created_at) WHERE settled_at IS NULL;
+
+-- 정산(settlement) 배치가 시간별로 기록하는 집계 원장. cross-domain 경로 ②(§2)의 감사 로그.
+CREATE TABLE IF NOT EXISTS payment_schema.settlement_summary (
+    id                       BIGSERIAL PRIMARY KEY,
+    period_start             TIMESTAMP NOT NULL,
+    period_end               TIMESTAMP NOT NULL,
+    payment_count            INT NOT NULL,
+    total_amount             DECIMAL(14,2) NOT NULL,
+    banking_transfer_status  VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    banking_transfer_ref     VARCHAR(100),
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS payment_schema.payment_logs (

@@ -36,6 +36,9 @@ spring:
 cart:
   cache:
     ttl-seconds: 1800
+  cleanup:
+    interval-ms: 300000
+    idle-expiry-hours: 24
 
 # Redis 읽기 경로: timeout(위 spring.data.redis.timeout) + retry + circuit breaker.
 # 브레이커가 열리면 즉시 DB fallback으로 우회해 캐시 장애가 전체 지연으로 번지지 않게 한다.

@@ -8,6 +8,18 @@ CREATE TABLE IF NOT EXISTS inventory_schema.inventory (
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 재고 변동 원장. reconciliation 배치가 inventory.stock과 대사하는 기준 로그.
+CREATE TABLE IF NOT EXISTS inventory_schema.inventory_movements (
+    id               BIGSERIAL PRIMARY KEY,
+    product_id       BIGINT NOT NULL,
+    movement_type    VARCHAR(20) NOT NULL,
+    quantity         INT NOT NULL,
+    resulting_stock  INT NOT NULL,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_schema.inventory_movements(product_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS inventory_schema.outbox_events (
     id              BIGSERIAL PRIMARY KEY,
     aggregate_type  VARCHAR(50) NOT NULL,

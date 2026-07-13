@@ -27,6 +27,10 @@ public class Payment {
     @Column(name = "pg_transaction_id", length = 100)
     private String pgTransactionId;
 
+    // settlement 배치가 은행 이체까지 성공적으로 반영한 시각. null이면 미정산 — 다음 배치 주기의 대상.
+    @Column(name = "settled_at")
+    private LocalDateTime settledAt;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -42,5 +46,7 @@ public class Payment {
     public void setStatus(String status) { this.status = status; }
     public String getPgTransactionId() { return pgTransactionId; }
     public void setPgTransactionId(String pgTransactionId) { this.pgTransactionId = pgTransactionId; }
+    public LocalDateTime getSettledAt() { return settledAt; }
+    public void setSettledAt(LocalDateTime settledAt) { this.settledAt = settledAt; }
     public LocalDateTime getCreatedAt() { return createdAt; }
 }

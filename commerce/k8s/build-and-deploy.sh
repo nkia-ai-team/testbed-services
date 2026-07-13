@@ -66,6 +66,20 @@ fi
 
 echo ""
 echo "========================================="
+echo "  Phase 2.5: DB 초기화 ConfigMap 생성 (db/*.sql이 정본)"
+echo "========================================="
+# postgres-init-scripts ConfigMap을 YAML에 데이터를 베껴 넣는 대신 commerce/db/init-schemas.sql·
+# commerce/db/seed-all.sql에서 직접 생성한다 — docker-compose.dev.yml이 마운트하는 파일과
+# 동일한 정본을 쓰게 해, k8s와 로컬 dev 시드가 다시 어긋나는 일(3a~4번 증분 사이 실제로 있었던
+# 문제)을 구조적으로 막는다. 네임스페이스가 먼저 있어야 하므로 00-namespace.yaml을 선적용한다.
+kubectl apply -f "${PROJECT_ROOT}/k8s/00-namespace.yaml"
+kubectl create configmap postgres-init-scripts \
+  --from-file=01-init-schemas.sql="${PROJECT_ROOT}/db/init-schemas.sql" \
+  --from-file=02-seed-all.sql="${PROJECT_ROOT}/db/seed-all.sql" \
+  -n rca-testbed-commerce --dry-run=client -o yaml | kubectl apply -f -
+
+echo ""
+echo "========================================="
 echo "  Phase 3: K8s 매니페스트 적용 (envsubst 치환 포함)"
 echo "========================================="
 # 매니페스트의 ${OTLP_ENDPOINT} placeholder 를 deploy-time 에 치환.

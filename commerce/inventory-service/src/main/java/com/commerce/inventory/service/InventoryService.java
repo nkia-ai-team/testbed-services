@@ -7,6 +7,8 @@ import com.commerce.common.dto.InventoryReserveResponse;
 import com.commerce.common.exception.ServiceException;
 import com.commerce.common.outbox.OutboxPublisher;
 import com.commerce.inventory.entity.Inventory;
+import com.commerce.inventory.entity.InventoryMovement;
+import com.commerce.inventory.repository.InventoryMovementRepository;
 import com.commerce.inventory.repository.InventoryRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -17,13 +19,16 @@ import org.springframework.transaction.annotation.Transactional;
 public class InventoryService {
 
     private final InventoryRepository inventoryRepository;
+    private final InventoryMovementRepository inventoryMovementRepository;
     private final OutboxPublisher outboxPublisher;
     private final String inventoryTopic;
 
     public InventoryService(InventoryRepository inventoryRepository,
+                             InventoryMovementRepository inventoryMovementRepository,
                              OutboxPublisher outboxPublisher,
                              @Value("${topics.inventory}") String inventoryTopic) {
         this.inventoryRepository = inventoryRepository;
+        this.inventoryMovementRepository = inventoryMovementRepository;
         this.outboxPublisher = outboxPublisher;
         this.inventoryTopic = inventoryTopic;
     }
@@ -49,6 +54,7 @@ public class InventoryService {
 
         inventory.setStock(inventory.getStock() - request.quantity());
         inventoryRepository.save(inventory);
+        recordMovement(inventory, "RESERVE", -request.quantity());
 
         publishEvent(inventory, "STOCK_RESERVED", request.quantity());
 
@@ -67,6 +73,7 @@ public class InventoryService {
 
         inventory.setStock(inventory.getStock() + request.quantity());
         inventoryRepository.save(inventory);
+        recordMovement(inventory, "RELEASE", request.quantity());
 
         publishEvent(inventory, "STOCK_RELEASED", request.quantity());
 
@@ -82,10 +89,20 @@ public class InventoryService {
         int delta = stock - inventory.getStock();
         inventory.setStock(stock);
         inventoryRepository.save(inventory);
+        recordMovement(inventory, "ADJUST", delta);
 
         publishEvent(inventory, "STOCK_ADJUSTED", delta);
 
         return inventory;
+    }
+
+    private void recordMovement(Inventory inventory, String movementType, int signedQuantity) {
+        InventoryMovement movement = new InventoryMovement();
+        movement.setProductId(inventory.getProductId());
+        movement.setMovementType(movementType);
+        movement.setQuantity(signedQuantity);
+        movement.setResultingStock(inventory.getStock());
+        inventoryMovementRepository.save(movement);
     }
 
     private void publishEvent(Inventory inventory, String eventType, int quantity) {

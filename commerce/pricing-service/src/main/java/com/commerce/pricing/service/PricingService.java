@@ -9,7 +9,11 @@ import com.commerce.pricing.repository.CouponRepository;
 import com.commerce.pricing.repository.PriceRepository;
 import com.commerce.pricing.repository.PromotionRepository;
 import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -18,13 +22,20 @@ import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 public class PricingService {
 
+    private static final Logger log = LoggerFactory.getLogger(PricingService.class);
+
     private final PriceRepository priceRepository;
     private final PromotionRepository promotionRepository;
     private final CouponRepository couponRepository;
+
+    // 프로모션 갱신 배치(§5, 매시)가 채우는 인메모리 캐시. quote 계산은 DB를 매번 조회하지 않고
+    // 이 캐시를 읽는다 — 최대 1시간 지연을 감수하는 대신 견적 계산 경로의 DB 부하를 줄인다.
+    private final AtomicReference<List<Promotion>> activePromotionsCache = new AtomicReference<>(List.of());
 
     public PricingService(PriceRepository priceRepository,
                            PromotionRepository promotionRepository,
@@ -32,6 +43,20 @@ public class PricingService {
         this.priceRepository = priceRepository;
         this.promotionRepository = promotionRepository;
         this.couponRepository = couponRepository;
+    }
+
+    @PostConstruct
+    public void initPromotionCache() {
+        refreshPromotionCache();
+    }
+
+    @Scheduled(cron = "0 0 * * * *")
+    public void refreshPromotionCache() {
+        log.info("Promotion cache refresh started");
+        LocalDateTime now = LocalDateTime.now();
+        List<Promotion> active = promotionRepository.findByActiveTrueAndStartsAtBeforeAndEndsAtAfter(now, now);
+        activePromotionsCache.set(active);
+        log.info("Promotion cache refresh finished: activeCount={}", active.size());
     }
 
     public PriceResponse getPrice(Long productId) {
@@ -98,8 +123,7 @@ public class PricingService {
     }
 
     private Optional<Promotion> findBestActivePromotion() {
-        LocalDateTime now = LocalDateTime.now();
-        return promotionRepository.findByActiveTrueAndStartsAtBeforeAndEndsAtAfter(now, now).stream()
+        return activePromotionsCache.get().stream()
                 .max(Comparator.comparing(Promotion::getDiscountPercent));
     }
 
