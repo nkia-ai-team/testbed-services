@@ -15,6 +15,14 @@ spec:
       labels:
         app: testbed-gateway
     spec:
+      volumes:
+        # Polestar APM(Java)는 OTLP 표준을 otel-collector로 재사용한다 — 별도 jar 없이
+        # OTel javaagent가 뿜는 OTLP를 AP collector가 polestar_apm 자산으로 붙인다.
+        # javaagent jar는 각 워커 hostPath(/opt/polestar10/apm)에 배포돼 있다.
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: Directory
       containers:
         - name: api-gateway
           image: commerce-gateway:latest
@@ -25,6 +33,31 @@ spec:
           envFrom:
             - configMapRef:
                 name: service-config
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            # 매칭 키는 service.name — 웹 APM 등록의 '서비스명'과 정확일치해야 한다.
+            - name: OTEL_SERVICE_NAME
+              value: "commerce-gateway"
+            # AP collector(Polestar APM = OTLP 재사용)로 직접 전송.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://192.168.230.118:14317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "lucida.groupId=commerce"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
           startupProbe:
             httpGet:
               path: /actuator/health
