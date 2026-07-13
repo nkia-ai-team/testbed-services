@@ -330,7 +330,7 @@ curl -X POST http://localhost:8089/api/orders/checkout -H "Content-Type: applica
 | `KAFKA_BOOTSTRAP_SERVERS` | localhost:19092(dev compose) | Kafka |
 | `PRODUCT_SERVICE_URL` ~ `SHIPPING_SERVICE_URL` | http://localhost:808x | 서비스간 호출(order/gateway가 사용) |
 | `GATEWAY_SERVICE_URL` | http://localhost:8089 | loadgen 등이 참조하는 게이트웨이 주소 |
-| `PG_API_URL` | http://192.168.200.109:8190 | PG Mock Server URL |
+| `PG_API_URL` | http://testbed-external-pg-mock:9090 | PG Mock (클러스터 내부 mockserver, 31-external-pg-mock.yaml) |
 | `BANKING_TRANSFER_URL` | http://testbed-transfer.rca-testbed-banking.svc.cluster.local:8082 | core-banking cross-domain 이체 API |
 
 ## Failure Scenarios (RCA 검증용)

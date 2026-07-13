@@ -36,8 +36,9 @@ data:
   GATEWAY_SERVICE_URL: http://testbed-gateway:8089
 
   # --- 외부 PG Mock 서버 ---
-  # pg-mock은 K3s 밖에서 Docker로 돌아가므로, 서버 IP를 직접 적는다.
-  PG_API_URL: http://192.168.200.109:8190
+  # 클러스터 내부 mockserver(31-external-pg-mock.yaml). 이전의 109 호스트 FastAPI mock(:8190)은
+  # 프로세스 부재 시 checkout 전멸(CB open)을 유발해 클러스터 내부로 이관(2026-07-13).
+  PG_API_URL: http://testbed-external-pg-mock:9090
 
   # --- cross-domain: core-banking 이체 API ---
   # payment-service가 결제 처리 시 core-banking(별도 namespace)의 transfer-service를 호출한다.
