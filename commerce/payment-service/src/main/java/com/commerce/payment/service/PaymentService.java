@@ -1,7 +1,9 @@
 package com.commerce.payment.service;
 
+import com.commerce.common.dto.PaymentEvent;
 import com.commerce.common.dto.PaymentRequest;
 import com.commerce.common.dto.PaymentResponse;
+import com.commerce.common.outbox.OutboxPublisher;
 import com.commerce.payment.client.BankingTransferClient;
 import com.commerce.payment.client.BankingTransferResponse;
 import com.commerce.payment.client.PgApiClient;
@@ -9,6 +11,7 @@ import com.commerce.payment.entity.Payment;
 import com.commerce.payment.entity.PaymentLog;
 import com.commerce.payment.repository.PaymentLogRepository;
 import com.commerce.payment.repository.PaymentRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,15 +24,21 @@ public class PaymentService {
     private final PaymentLogRepository paymentLogRepository;
     private final PgApiClient pgApiClient;
     private final BankingTransferClient bankingTransferClient;
+    private final OutboxPublisher outboxPublisher;
+    private final String paymentsTopic;
 
     public PaymentService(PaymentRepository paymentRepository,
                           PaymentLogRepository paymentLogRepository,
                           PgApiClient pgApiClient,
-                          BankingTransferClient bankingTransferClient) {
+                          BankingTransferClient bankingTransferClient,
+                          OutboxPublisher outboxPublisher,
+                          @Value("${topics.payments}") String paymentsTopic) {
         this.paymentRepository = paymentRepository;
         this.paymentLogRepository = paymentLogRepository;
         this.pgApiClient = pgApiClient;
         this.bankingTransferClient = bankingTransferClient;
+        this.outboxPublisher = outboxPublisher;
+        this.paymentsTopic = paymentsTopic;
     }
 
     @Transactional
@@ -60,6 +69,12 @@ public class PaymentService {
                 request.orderId(), request.amount());
         logAction(payment, "BANKING_TRANSFER_RESPONSE",
                 "Banking transfer: " + (transfer != null ? transfer.status() : "no-response"));
+
+        // outbox 발행: 결제 승인/실패 이벤트 → commerce.payments (order-service가 상태 보정에 구독)
+        outboxPublisher.publish(paymentsTopic, "PAYMENT", String.valueOf(payment.getId()),
+                "PAYMENT_" + payment.getStatus(),
+                new PaymentEvent(payment.getId(), payment.getOrderId(), payment.getAmount(),
+                        payment.getStatus(), payment.getPgTransactionId()));
 
         return new PaymentResponse(payment.getId(), payment.getStatus(), transactionId);
     }

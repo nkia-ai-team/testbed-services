@@ -108,27 +108,45 @@
       "type": "file"
     },
     {
+      "path": "commerce/commerce-common/pom.xml",
+      "accessCount": 6,
+      "lastAccessed": 1783903728462,
+      "type": "file"
+    },
+    {
+      "path": "docs/spec-testbed-expansion.md",
+      "accessCount": 5,
+      "lastAccessed": 1783903320515,
+      "type": "file"
+    },
+    {
       "path": "README.md",
       "accessCount": 4,
       "lastAccessed": 1783902746835,
       "type": "file"
     },
     {
-      "path": "docs/spec-testbed-expansion.md",
-      "accessCount": 4,
-      "lastAccessed": 1783902788220,
-      "type": "file"
-    },
-    {
       "path": "commerce/pom.xml",
-      "accessCount": 2,
-      "lastAccessed": 1783902676557,
+      "accessCount": 3,
+      "lastAccessed": 1783903332542,
       "type": "file"
     },
     {
-      "path": "commerce/commerce-common/pom.xml",
-      "accessCount": 2,
-      "lastAccessed": 1783902687582,
+      "path": "commerce/k8s/02-configmaps.yaml",
+      "accessCount": 3,
+      "lastAccessed": 1783903469558,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java",
+      "accessCount": 3,
+      "lastAccessed": 1783903666190,
+      "type": "file"
+    },
+    {
+      "path": "commerce/inventory-service/src/main/java/com/commerce/inventory/service/InventoryService.java",
+      "accessCount": 3,
+      "lastAccessed": 1783903682662,
       "type": "file"
     },
     {
@@ -138,9 +156,249 @@
       "type": "file"
     },
     {
-      "path": "commerce/k8s/02-configmaps.yaml",
+      "path": "commerce/docker-compose.dev.yml",
+      "accessCount": 2,
+      "lastAccessed": 1783903496487,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/resources/schema.sql",
+      "accessCount": 2,
+      "lastAccessed": 1783903534705,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/src/main/resources/schema.sql",
+      "accessCount": 2,
+      "lastAccessed": 1783903537997,
+      "type": "file"
+    },
+    {
+      "path": "commerce/inventory-service/src/main/resources/schema.sql",
+      "accessCount": 2,
+      "lastAccessed": 1783903542045,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/pom.xml",
+      "accessCount": 2,
+      "lastAccessed": 1783903563710,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/pom.xml",
+      "accessCount": 2,
+      "lastAccessed": 1783903565663,
+      "type": "file"
+    },
+    {
+      "path": "commerce/inventory-service/pom.xml",
+      "accessCount": 2,
+      "lastAccessed": 1783903567386,
+      "type": "file"
+    },
+    {
+      "path": "commerce/notification-service/pom.xml",
+      "accessCount": 2,
+      "lastAccessed": 1783903568592,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/resources/application.yml",
+      "accessCount": 2,
+      "lastAccessed": 1783903579005,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/src/main/resources/application.yml",
+      "accessCount": 2,
+      "lastAccessed": 1783903583068,
+      "type": "file"
+    },
+    {
+      "path": "commerce/inventory-service/src/main/resources/application.yml",
+      "accessCount": 2,
+      "lastAccessed": 1783903587001,
+      "type": "file"
+    },
+    {
+      "path": "commerce/notification-service/src/main/resources/application.yml",
+      "accessCount": 2,
+      "lastAccessed": 1783903591923,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/OrderServiceApplication.java",
+      "accessCount": 2,
+      "lastAccessed": 1783903606014,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/src/main/java/com/commerce/payment/PaymentServiceApplication.java",
+      "accessCount": 2,
+      "lastAccessed": 1783903608557,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/event/OrderEventPublisher.java",
+      "accessCount": 2,
+      "lastAccessed": 1783903619354,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java",
+      "accessCount": 2,
+      "lastAccessed": 1783903643793,
+      "type": "file"
+    },
+    {
+      "path": "commerce/notification-service/src/main/java/com/commerce/notification/consumer/OrderEventConsumer.java",
+      "accessCount": 2,
+      "lastAccessed": 1783903699884,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/11-redis.yaml",
       "accessCount": 1,
-      "lastAccessed": 1783902565819,
+      "lastAccessed": 1783903324025,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/10-postgres.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783903324823,
+      "type": "file"
+    },
+    {
+      "path": "commerce/db/init-schemas.sql",
+      "accessCount": 1,
+      "lastAccessed": 1783903325483,
+      "type": "file"
+    },
+    {
+      "path": "commerce/notification-service/src/main/java/com/commerce/notification/config/RedisStreamConfig.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903331010,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/dto/OrderEvent.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903345826,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/config/BaseEntity.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903346543,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/entity/Order.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903346950,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/20-order-service.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783903353521,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/src/main/java/com/commerce/payment/entity/Payment.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903353851,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/controller/OrderController.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903364000,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903364373,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/client/ProductClient.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903448659,
+      "type": "file"
+    },
+    {
+      "path": "commerce/order-service/src/main/java/com/commerce/order/client/InventoryClient.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903449413,
+      "type": "file"
+    },
+    {
+      "path": "commerce/inventory-service/src/main/java/com/commerce/inventory/controller/InventoryController.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903449816,
+      "type": "file"
+    },
+    {
+      "path": "commerce/payment-service/src/main/java/com/commerce/payment/controller/PaymentController.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903456765,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/24-notification-service.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783903465196,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/01-secrets.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783903465436,
+      "type": "file"
+    },
+    {
+      "path": "commerce/k8s/12-kafka.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1783903485804,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxEvent.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903511662,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxEventRepository.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903515820,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxPublisher.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903518294,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxRelay.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903524205,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/dto/PaymentEvent.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903528963,
+      "type": "file"
+    },
+    {
+      "path": "commerce/commerce-common/src/main/java/com/commerce/common/dto/InventoryEvent.java",
+      "accessCount": 1,
+      "lastAccessed": 1783903529721,
       "type": "file"
     }
   ],

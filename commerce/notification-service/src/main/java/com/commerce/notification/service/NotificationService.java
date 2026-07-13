@@ -17,4 +17,9 @@ public class NotificationService {
         // 알림 발송 시뮬레이션 (실제 이메일/SMS 발송 없음)
         log.info("Notification sent successfully to {} for order {}", customerName, orderId);
     }
+
+    public void sendPaymentNotification(String paymentId, String orderId, String status) {
+        log.info("Sending payment notification: paymentId={}, orderId={}, status={}",
+                paymentId, orderId, status);
+    }
 }

@@ -126,6 +126,30 @@ public class OrderService {
         return toResponse(order);
     }
 
+    // Kafka commerce.payments 구독을 통한 비동기 상태 보정.
+    // 동기 흐름(createOrder)에서 이미 status를 확정하므로, 여기서는 사후 정정만 additive하게 반영한다.
+    // 같은 상태로의 재적용은 멱등하게 무시한다.
+    @Transactional
+    public void reconcileStatusFromPayment(Long orderId, String paymentStatus) {
+        String resolvedStatus = switch (paymentStatus) {
+            case "SUCCESS", "APPROVED", "COMPLETED" -> "PAID";
+            case "FAILED", "DECLINED" -> "PAYMENT_FAILED";
+            default -> null;
+        };
+        if (resolvedStatus == null) {
+            log.warn("Unrecognized payment status for reconciliation: orderId={}, status={}", orderId, paymentStatus);
+            return;
+        }
+
+        orderRepository.findById(orderId).ifPresentOrElse(order -> {
+            if (!resolvedStatus.equals(order.getStatus())) {
+                order.setStatus(resolvedStatus);
+                orderRepository.save(order);
+                log.info("Reconciled order status from payment event: orderId={}, status={}", orderId, resolvedStatus);
+            }
+        }, () -> log.warn("Order not found for payment reconciliation: orderId={}", orderId));
+    }
+
     private void releaseAll(List<OrderRequest.OrderItemRequest> items) {
         for (var item : items) {
             inventoryClient.releaseStock(item.productId(), item.quantity());

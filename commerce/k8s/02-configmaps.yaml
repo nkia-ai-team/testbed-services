@@ -17,6 +17,9 @@ data:
   REDIS_HOST: testbed-redis
   REDIS_PORT: "6379"
 
+  # --- Kafka 접속 정보 ---
+  KAFKA_BOOTSTRAP_SERVERS: testbed-kafka:9092
+
   # --- 서비스 간 통신 URL ---
   # order-service가 다른 서비스를 호출할 때 쓰는 주소.
   # "testbed-product"는 product-service의 K8s Service 이름이다.

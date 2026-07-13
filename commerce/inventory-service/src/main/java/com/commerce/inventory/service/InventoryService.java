@@ -1,11 +1,14 @@
 package com.commerce.inventory.service;
 
+import com.commerce.common.dto.InventoryEvent;
 import com.commerce.common.dto.InventoryReleaseRequest;
 import com.commerce.common.dto.InventoryReserveRequest;
 import com.commerce.common.dto.InventoryReserveResponse;
 import com.commerce.common.exception.ServiceException;
+import com.commerce.common.outbox.OutboxPublisher;
 import com.commerce.inventory.entity.Inventory;
 import com.commerce.inventory.repository.InventoryRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,9 +17,15 @@ import org.springframework.transaction.annotation.Transactional;
 public class InventoryService {
 
     private final InventoryRepository inventoryRepository;
+    private final OutboxPublisher outboxPublisher;
+    private final String inventoryTopic;
 
-    public InventoryService(InventoryRepository inventoryRepository) {
+    public InventoryService(InventoryRepository inventoryRepository,
+                             OutboxPublisher outboxPublisher,
+                             @Value("${topics.inventory}") String inventoryTopic) {
         this.inventoryRepository = inventoryRepository;
+        this.outboxPublisher = outboxPublisher;
+        this.inventoryTopic = inventoryTopic;
     }
 
     @Transactional(readOnly = true)
@@ -41,6 +50,8 @@ public class InventoryService {
         inventory.setStock(inventory.getStock() - request.quantity());
         inventoryRepository.save(inventory);
 
+        publishEvent(inventory, "STOCK_RESERVED", request.quantity());
+
         return new InventoryReserveResponse(
                 inventory.getProductId(),
                 true,
@@ -55,7 +66,11 @@ public class InventoryService {
                         "Inventory not found for product: " + request.productId()));
 
         inventory.setStock(inventory.getStock() + request.quantity());
-        return inventoryRepository.save(inventory);
+        inventoryRepository.save(inventory);
+
+        publishEvent(inventory, "STOCK_RELEASED", request.quantity());
+
+        return inventory;
     }
 
     @Transactional
@@ -64,7 +79,18 @@ public class InventoryService {
                 .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND,
                         "Inventory not found for product: " + productId));
 
+        int delta = stock - inventory.getStock();
         inventory.setStock(stock);
-        return inventoryRepository.save(inventory);
+        inventoryRepository.save(inventory);
+
+        publishEvent(inventory, "STOCK_ADJUSTED", delta);
+
+        return inventory;
+    }
+
+    private void publishEvent(Inventory inventory, String eventType, int quantity) {
+        outboxPublisher.publish(inventoryTopic, "INVENTORY", String.valueOf(inventory.getProductId()),
+                eventType,
+                new InventoryEvent(inventory.getProductId(), eventType, quantity, inventory.getStock()));
     }
 }
