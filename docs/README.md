@@ -27,7 +27,10 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
   도메인 서비스(commerce/food-delivery/core-banking)의 구성·계측·등록 대상. (Draft)
 - [테스트베드 대폭 확장 + 지속 부하 (commerce 플래그십)](spec-testbed-expansion.md):
   production-like 확장 템플릿(복원성·Kafka·배치·스키마)과 상주 부하 생성기 설계.
-  flagship-first(commerce)로 확정 후 나머지 도메인 복제. (설계 초안)
+  flagship-first(commerce)로 확정, 3도메인 구현 완료. (확정)
+- [테스트베드 배포 runbook](runbook-testbed-deploy.md):
+  109 kubeadm 클러스터 배포·검증 실측 절차 — 환경 실값(OTLP/org id), 신규 VM
+  전제조건(StorageClass·OTel jar), 트러블슈팅. (Active)
 - [시나리오 설계](spec-scenario-design.md):
   양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
