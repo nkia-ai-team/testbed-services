@@ -120,62 +120,68 @@ lucida-next가 관측을 target에 귀속시키는 규칙이다. 어기면 golde
 
 ## 4. 도메인별 서비스 설계
 
-각 도메인은 **동기 체인 + Redis 비동기 + 관계형 DB + 외부 mock**을 갖는다.
-서비스 구성은 실제 레포 구조를 베이스로 하고, DB 엔진·Redis·cross-domain을 덧댄다.
+> 2026-07-13 확장(spec-testbed-expansion.md) 반영 현행판. 각 도메인은 **동기 체인 +
+> Kafka 이벤트 백본(outbox) + 관계형 DB + 상주 배치 + 대량 히스토리 시드 + k6 loadgen +
+> 외부 mock**을 갖는다. Redis Streams 비동기는 전 도메인에서 Kafka로 대체됐다
+> (Redis 자체는 commerce cart 캐시 용도로만 잔존).
 
-### 4.1 commerce (PostgreSQL) — 기존 전자담배 쇼핑몰 예제 기반
-
-| service.name | 모듈 | 역할 | 주요 호출 |
-| --- | --- | --- | --- |
-| commerce-order | order-service | 주문 생성, 재고 확인, 결제 이벤트 발행 | → product, → inventory(RestClient), → PG, → Redis `order-events` publish |
-| commerce-product | product-service | 상품 조회 | → PG |
-| commerce-inventory | inventory-service | 재고 차감(lock 대상) | → PG |
-| commerce-payment | payment-service | 결제, 외부 PG mock 호출 | → payment mock, → **core-banking-transfer(cross-domain)** |
-| commerce-notification | notification-service | Redis `order-events` 소비(worker, DB 미사용) | ← Redis consumer group |
-
-- DB: PostgreSQL 16, 스키마 분리(order/product/inventory/payment). Redis Streams 기존
-  보유(그대로 승계).
-- 장애 표면: 재고 row-lock, 재고 slow query, payment 외부 mock timeout/5xx, 비동기
-  backlog(Redis), connection pool 고갈, pod CPU throttle.
-- 개조: 기존 전자담배 쇼핑몰 예제를 commerce로 리네이밍(또는 신규 폴더) — §10 결정.
-
-### 4.2 food-delivery (MySQL) — food-delivery 기반, PG→MySQL 전환
+### 4.1 commerce (PostgreSQL) — 플래그십, 10 서비스 + gateway
 
 | service.name | 모듈 | 역할 | 주요 호출 |
 | --- | --- | --- | --- |
-| food-delivery-order | order-service | 주문 허브 | → restaurant, → dispatch, → payment(RestClient), → MySQL, → Redis publish |
-| food-delivery-restaurant | restaurant-service | 매장·메뉴 조회 | → MySQL |
-| food-delivery-dispatch | dispatch-service | 배차 | → MySQL |
-| food-delivery-payment | payment-service | 결제, 외부 PG mock 호출 | → payment mock |
-| food-delivery-notify | notify-service(신규) | Redis 소비(worker) | ← Redis consumer group |
+| commerce-gateway | api-gateway | 엣지 라우팅·토큰검증·BFF 집계 (DB 없음) | → 전 서비스(RestClient+CB) |
+| commerce-user | user-service | 회원·주소·opaque 토큰 | → PG, → Kafka `commerce.user`(outbox) |
+| commerce-product | product-service | 상품·variants·카테고리·검색 | → PG |
+| commerce-inventory | inventory-service | 재고·이동내역·예약/해제, 재조정 배치 | → PG, → Kafka `commerce.inventory`(outbox) |
+| commerce-cart | cart-service | 장바구니(Redis 캐시 + PG fallback), 만료정리 배치 | → Redis/PG |
+| commerce-pricing | pricing-service | 가격·프로모션·쿠폰 견적(bulkhead) | → PG |
+| commerce-order | order-service | checkout 오케스트레이션(보상 포함) | → cart→pricing→inventory→payment, → Kafka `commerce.orders`(outbox) |
+| commerce-payment | payment-service | 결제·정산 배치 | → PG mock, → **banking transfer(cross-domain ①·②)**, → Kafka `commerce.payments`(outbox) |
+| commerce-shipping | shipping-service | 배송 생성(orders 구독)·상태 자동전이 | ← Kafka `commerce.orders`, → Kafka `commerce.shipping`(outbox) |
+| commerce-notification | notification-service | 알림 (DB 없는 순수 consumer) | ← Kafka `commerce.orders`/`commerce.payments` |
 
-- DB: 기존 **PostgreSQL → MySQL 8.0 전환**(JPA dialect·driver·init.sql 변경).
-- 개조: (a) PG→MySQL, (b) **Redis 비동기 경로 신규 추가**(기존 food엔 없음 — commerce
-  패턴 이식), (c) lucida 태깅 라인 정합.
-- 장애 표면: matching/조회 slow query(MySQL), 비동기 backlog, 외부 mock timeout,
-  MySQL lock/wait, connection pool 고갈.
+- DB: PostgreSQL 16, 스키마 8개·물리 테이블 25. 시드: 유저 3k·상품 2k(+variants 6k)·
+  주문 50k·배송이벤트 137k, 90일 diurnal+주말 가중, `setseed` 재현.
+- 복원성: 전 동기 호출 Resilience4j(timeout+retry+CB, 결제만 max-attempts=2), HikariCP 명시.
+- 장애 표면: 기존(row-lock·slow query·mock timeout·pool 고갈) + 재시도 폭풍·CB open·
+  bulkhead 포화·캐시 스탬피드·consumer lag·outbox 적체·배치-온라인 경합.
 
-### 4.3 core-banking (MariaDB) — 신규 작성
+### 4.2 food-delivery (MySQL) — 템플릿 복제 완료
 
 | service.name | 모듈 | 역할 | 주요 호출 |
 | --- | --- | --- | --- |
-| core-banking-api | api-service | 이체 요청 진입 | → account |
-| core-banking-account | account-service | 계좌 조회·검증 | → transfer(RestClient), → MariaDB |
-| core-banking-transfer | transfer-service | 이체 트랜잭션(lock 집중) | → MariaDB, → Redis publish. **← commerce-payment(cross-domain)** |
-| core-banking-ledger | ledger-service | Redis 소비 → 원장 반영(worker) | ← Redis, → MariaDB |
+| food-delivery-order | order-service | 주문 허브, stale 정리 배치 | → restaurant/dispatch/payment(CB), → Kafka `food.orders`(outbox) |
+| food-delivery-restaurant | restaurant-service | 매장·메뉴, 인기메뉴 집계 배치 | → MySQL |
+| food-delivery-dispatch | dispatch-service | 배차·만료전이 배치 | → MySQL, → Kafka `food.dispatch`(outbox) |
+| food-delivery-payment | payment-service | 결제·정산 배치 | → PG mock, → Kafka `food.payments`(outbox) |
+| food-delivery-notify | notify-service | 3토픽 소비(worker) | ← Kafka `food.*` |
 
-- DB: MariaDB 단일 `banking` DB. 이체·원장이 강한 트랜잭션·lock 경합을 만든다.
-  MariaDB는 DPM 세션 hashCode → 적재 시 typed `sql_id` 하이브리드라 식별자 검증에
-  유용(환경 문서 §7.1). 계측 베이스는 MySQL인 social-feed 패턴 참고.
-- 장애 표면: 이체 트랜잭션 lock(`FOR UPDATE`), 원장 정합성 대기, connection pool
-  고갈, slow query.
+- DB: MySQL 8.0 단일 flat DB, 15테이블. outbox는 `@MappedSuperclass`+제네릭 베이스로
+  서비스별 테이블 분리(스키마 분리 불가 대안). 시드: 고객 2k·주문 20k·배차이벤트 40k,
+  점심/저녁 피크+주말 가중.
+- 장애 표면: 4.1과 동일 계열 + MySQL lock/wait.
 
-## 5. cross-domain 경로
+### 4.3 core-banking (Oracle) — 신규 + Oracle 전환(2026-07-12 확정)
 
-- **commerce-payment → core-banking-transfer** 호출 1개. namespace가 분리(`rca-testbed-*`)
-  되므로 FQDN(`transfer-service.rca-testbed-banking.svc.cluster.local`)으로 호출한다.
-  기존 `service-config` configmap엔 도메인 내부 URL만 있어 cross-domain URL을 신규
-  추가해야 한다.
+| service.name | 모듈 | 역할 | 주요 호출 |
+| --- | --- | --- | --- |
+| core-banking-api | api-service | 이체 요청 진입 | → account(CB) |
+| core-banking-account | account-service | 계좌 조회·검증 | → transfer(CB), → Oracle |
+| core-banking-transfer | transfer-service | 이체 트랜잭션(`FOR UPDATE` lock 집중), 이자·정리 배치 | → Oracle, → Kafka `banking.transfers`(outbox). **← commerce-payment(cross-domain)** |
+| core-banking-ledger | ledger-service | transfers 소비 → 원장 기표, 일말 대사 배치 | ← Kafka, → Oracle, → Kafka `banking.ledger`(outbox) |
+
+- DB: **Oracle 23ai Free**(`gvenzl/oracle-free:23-slim`, arm64) — MariaDB 폐기.
+  DPM Oracle 전용 collector·최다 핸들러 커버가 전환 근거. 시드: 계좌 1k·이체 20k·
+  원장 39k, 90일 diurnal (`CONNECT BY LEVEL`).
+- 장애 표면: 이체 lock, 원장 정합 대기, pool 고갈, slow query + Kafka 계열.
+
+## 5. cross-domain 경로 (2개)
+
+- **① commerce-payment → core-banking transfer** (`POST /api/transfers`, 결제 시점 동기 호출):
+  namespace 분리(`rca-testbed-*`)라 FQDN(`testbed-transfer.rca-testbed-banking.svc.cluster.local`)
+  으로 호출. 시드 계약: banking 시드에 `commerce-settlement` 계좌 실존.
+- **② commerce-payment 정산 배치 → banking 이체** (매시, 미정산 집계분 이체): 배치발
+  주기 cross-domain 트래픽 — 야간·정시 스파이크가 경계를 넘는 패턴을 만든다.
 - **W3C traceparent 전파 필수**: 같은 trace로 이어져야 lucida-next가 경계를 넘는
   `apm_call` edge를 실측 trace로 생성한다(환경 문서 §4, §7.2). RestClient 사용 시
   OTel javaagent가 자동 전파하므로, 계측만 켜져 있으면 성립한다.
