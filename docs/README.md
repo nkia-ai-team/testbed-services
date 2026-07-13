@@ -31,6 +31,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [테스트베드 배포 runbook](runbook-testbed-deploy.md):
   109 kubeadm 클러스터 배포·검증 실측 절차 — 환경 실값(OTLP/org id), 신규 VM
   전제조건(StorageClass·OTel jar), 트러블슈팅. (Active)
+- [관측 에이전트 설치 runbook](runbook-observability-agents.md):
+  lucida-next(AP 118) 관측 4계층(SMS·APM·DPM·KCM) 설치·등록·검증 실측 절차 —
+  비대칭 라우팅, DB 모니터링 계정, KCM arm64 크로스빌드 포함. (Active)
 - [시나리오 설계](spec-scenario-design.md):
   양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
