@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -115,12 +116,27 @@ public class ProxyService {
             if (request.getContentType() != null) {
                 spec.contentType(MediaType.parseMediaType(request.getContentType()));
             }
+            ResponseEntity<byte[]> entity;
             if (body != null && body.length > 0 && BODY_METHODS.contains(request.getMethod())) {
-                return spec.body(body).retrieve().toEntity(byte[].class);
+                entity = spec.body(body).retrieve().toEntity(byte[].class);
+            } else {
+                entity = spec.retrieve().toEntity(byte[].class);
             }
-            return spec.retrieve().toEntity(byte[].class);
+            return sanitize(entity);
         } catch (RestClientResponseException ex) {
             return ResponseEntity.status(ex.getStatusCode()).body(ex.getResponseBodyAsByteArray());
         }
+    }
+
+    // 하류 응답 헤더를 그대로 흘리면 hop-by-hop 헤더(Transfer-Encoding 등)가 서블릿
+    // 컨테이너의 인코딩과 중복되어("too many transfer encodings: chunked chunked")
+    // 클라이언트가 응답을 거부한다 — 표현 헤더(Content-Type)만 유지하고 나머지는 버린다.
+    private ResponseEntity<byte[]> sanitize(ResponseEntity<byte[]> entity) {
+        HttpHeaders out = new HttpHeaders();
+        MediaType contentType = entity.getHeaders().getContentType();
+        if (contentType != null) {
+            out.setContentType(contentType);
+        }
+        return new ResponseEntity<>(entity.getBody(), out, entity.getStatusCode());
     }
 }
