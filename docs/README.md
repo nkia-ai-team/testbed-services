@@ -34,6 +34,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [관측 에이전트 설치 runbook](runbook-observability-agents.md):
   lucida-next(AP 118) 관측 4계층(SMS·APM·DPM·KCM) 설치·등록·검증 실측 절차 —
   비대칭 라우팅, DB 모니터링 계정, KCM arm64 크로스빌드 포함. (Active)
+- [테스트용 AP 서버 참고 정보](ref-testbed-ap-server.md):
+  lucida-next AP(192.168.230.118) 접속 정보·포트맵·등록 자산 현황·검증
+  엔드포인트 치트시트·알려진 제약. (Active)
 - [시나리오 설계](spec-scenario-design.md):
   양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
