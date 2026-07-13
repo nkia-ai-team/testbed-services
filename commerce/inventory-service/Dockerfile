@@ -10,6 +10,10 @@ COPY product-service/pom.xml ./product-service/pom.xml
 COPY inventory-service/pom.xml ./inventory-service/pom.xml
 COPY payment-service/pom.xml ./payment-service/pom.xml
 COPY notification-service/pom.xml ./notification-service/pom.xml
+COPY user-service/pom.xml ./user-service/pom.xml
+COPY cart-service/pom.xml ./cart-service/pom.xml
+COPY pricing-service/pom.xml ./pricing-service/pom.xml
+COPY shipping-service/pom.xml ./shipping-service/pom.xml
 
 RUN apt-get update && apt-get install -y maven && \
     mvn -pl commerce-common -am install -DskipTests -q && \

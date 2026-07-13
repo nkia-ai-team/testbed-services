@@ -1,0 +1,37 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: pricing-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/commerce
+    username: ${DB_USER:commerce}
+    password: ${DB_PASS:commerce1234}
+    hikari:
+      maximum-pool-size: 15
+      minimum-idle: 5
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: pricing_schema
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+      data-locations: classpath:data.sql
+
+# 견적 계산은 order 오케스트레이션의 상시 호출 지점이 될 API라 동시성 상한을 둔다.
+# 세마포어 방식(스레드풀 없이 허용치만 제한) — 초과 요청은 즉시 거부(BUSY)한다.
+resilience4j:
+  bulkhead:
+    instances:
+      pricingQuote:
+        max-concurrent-calls: 20
+        max-wait-duration: 0

@@ -1,0 +1,56 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: cart-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/commerce
+    username: ${DB_USER:commerce}
+    password: ${DB_PASS:commerce1234}
+    hikari:
+      # 캐시 미스/장애 시 DB fallback 트래픽까지 흡수해야 해서 다른 서비스보다 크게(상한 20).
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: cart_schema
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:16381}
+      timeout: 500ms
+      connect-timeout: 500ms
+
+cart:
+  cache:
+    ttl-seconds: 1800
+
+# Redis 읽기 경로: timeout(위 spring.data.redis.timeout) + retry + circuit breaker.
+# 브레이커가 열리면 즉시 DB fallback으로 우회해 캐시 장애가 전체 지연으로 번지지 않게 한다.
+resilience4j:
+  circuitbreaker:
+    instances:
+      cartRedis:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+  retry:
+    instances:
+      cartRedis:
+        max-attempts: 2
+        wait-duration: 100ms

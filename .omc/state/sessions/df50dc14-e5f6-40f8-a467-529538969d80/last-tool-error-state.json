@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /home/ydkim/project-2025/testbed-services\\ngrep -rn \\\"BankingTransferClient\\\\|ACC-\\\\|SETTLEMENT_ACCOUNT\\\\|merchant-\\\" commerce/payment-service/src/main/java --include=*.java\\necho \\\"===...",
-  "error": "Exit code 1\n(eval):2: no matches found: --include=*.java",
-  "timestamp": "2026-07-13T00:35:11.670Z",
-  "retry_count": 1
-}

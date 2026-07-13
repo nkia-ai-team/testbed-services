@@ -1,0 +1,49 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: user-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/commerce
+    username: ${DB_USER:commerce}
+    password: ${DB_PASS:commerce1234}
+    hikari:
+      # 회원가입/로그인은 order 대비 호출 빈도가 낮아 order(15)보다 작게, 최소치(10)로 설정.
+      maximum-pool-size: 10
+      minimum-idle: 3
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: user_schema
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+      data-locations: classpath:data.sql
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+management:
+  health:
+    kafka:
+      enabled: false
+
+outbox:
+  relay:
+    enabled: true
+
+topics:
+  users: commerce.user
+
+auth:
+  token-ttl-hours: 24

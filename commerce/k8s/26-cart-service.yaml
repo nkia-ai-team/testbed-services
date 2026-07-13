@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-cart
+  namespace: rca-testbed-commerce
+  labels:
+    app: testbed-cart
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-cart
+  template:
+    metadata:
+      labels:
+        app: testbed-cart
+    spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: Directory
+      containers:
+        - name: cart-service
+          image: commerce-cart:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8086
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
+          envFrom:
+            - configMapRef:
+                name: service-config
+            - secretRef:
+                name: postgres-secret
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            # --- APM Java Agent ---
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "${OTLP_ENDPOINT}"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "commerce-cart"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=commerce,lucida.target_id=${CART_TARGET_ID}"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8086
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8086
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8086
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-cart
+  namespace: rca-testbed-commerce
+spec:
+  selector:
+    app: testbed-cart
+  ports:
+    - port: 8086
+      targetPort: 8086

@@ -26,6 +26,10 @@ data:
   PRODUCT_SERVICE_URL: http://testbed-product:8081
   PAYMENT_SERVICE_URL: http://testbed-payment:8083
   INVENTORY_SERVICE_URL: http://testbed-inventory:8082
+  USER_SERVICE_URL: http://testbed-user:8085
+  CART_SERVICE_URL: http://testbed-cart:8086
+  PRICING_SERVICE_URL: http://testbed-pricing:8087
+  SHIPPING_SERVICE_URL: http://testbed-shipping:8088
 
   # --- 외부 PG Mock 서버 ---
   # pg-mock은 K3s 밖에서 Docker로 돌아가므로, 서버 IP를 직접 적는다.
@@ -62,6 +66,18 @@ data:
     upstream payment-service {
         server testbed-payment:8083;
     }
+    upstream user-service {
+        server testbed-user:8085;
+    }
+    upstream cart-service {
+        server testbed-cart:8086;
+    }
+    upstream pricing-service {
+        server testbed-pricing:8087;
+    }
+    upstream shipping-service {
+        server testbed-shipping:8088;
+    }
 
     server {
         listen 80;
@@ -89,6 +105,34 @@ data:
 
         location /api/orders {
             proxy_pass http://order-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/users {
+            proxy_pass http://user-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/carts {
+            proxy_pass http://cart-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/pricing {
+            proxy_pass http://pricing-service;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /api/shipments {
+            proxy_pass http://shipping-service;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

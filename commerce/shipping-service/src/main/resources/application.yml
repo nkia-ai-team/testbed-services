@@ -1,0 +1,57 @@
+server:
+  port: 8088
+
+spring:
+  application:
+    name: shipping-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/commerce
+    username: ${DB_USER:commerce}
+    password: ${DB_PASS:commerce1234}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 3
+      connection-timeout: 3000
+      idle-timeout: 60000
+      max-lifetime: 600000
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: shipping_schema
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
+    consumer:
+      group-id: shipping-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+management:
+  health:
+    kafka:
+      enabled: false
+
+outbox:
+  relay:
+    enabled: true
+
+topics:
+  orders: commerce.orders
+  shipping: commerce.shipping
+
+shipment:
+  # 시나리오 밖 평상시 배경 부하로 상태가 자연히 흘러가도록 하는 자동 전이 스케줄러 주기/지연.
+  transition:
+    poll-interval-ms: 30000
+    ship-after-minutes: 2
+    deliver-after-minutes: 5

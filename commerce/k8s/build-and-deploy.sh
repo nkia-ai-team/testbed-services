@@ -15,7 +15,7 @@
 set -euo pipefail
 export DOCKER_BUILDKIT=0
 
-SERVICES=("order" "product" "inventory" "payment" "notification")
+SERVICES=("order" "product" "inventory" "payment" "notification" "user" "cart" "pricing" "shipping")
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo ""
@@ -72,11 +72,15 @@ export PRODUCT_TARGET_ID="${PRODUCT_TARGET_ID:-}"
 export INVENTORY_TARGET_ID="${INVENTORY_TARGET_ID:-}"
 export PAYMENT_TARGET_ID="${PAYMENT_TARGET_ID:-}"
 export NOTIFICATION_TARGET_ID="${NOTIFICATION_TARGET_ID:-}"
+export USER_TARGET_ID="${USER_TARGET_ID:-}"
+export CART_TARGET_ID="${CART_TARGET_ID:-}"
+export PRICING_TARGET_ID="${PRICING_TARGET_ID:-}"
+export SHIPPING_TARGET_ID="${SHIPPING_TARGET_ID:-}"
 
 # envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 10-, 20-, 30- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → PostgreSQL(10) → ... → Nginx(30)
-WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${PRODUCT_TARGET_ID} ${INVENTORY_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFICATION_TARGET_ID}'
+WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${PRODUCT_TARGET_ID} ${INVENTORY_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFICATION_TARGET_ID} ${USER_TARGET_ID} ${CART_TARGET_ID} ${PRICING_TARGET_ID} ${SHIPPING_TARGET_ID}'
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
   envsubst "$WHITELIST" < "$f" | kubectl apply -f -
 done
