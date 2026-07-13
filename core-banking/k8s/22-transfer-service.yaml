@@ -37,13 +37,13 @@ spec:
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: mariadb-secret
-                  key: MARIADB_USER
+                  name: oracle-secret
+                  key: APP_USER
             - name: DB_PASS
               valueFrom:
                 secretKeyRef:
-                  name: mariadb-secret
-                  key: MARIADB_PASSWORD
+                  name: oracle-secret
+                  key: APP_USER_PASSWORD
             - name: JAVA_TOOL_OPTIONS
               value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

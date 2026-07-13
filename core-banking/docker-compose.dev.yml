@@ -2,24 +2,45 @@
 # Production deployment uses k8s/ manifests instead.
 
 services:
-  mariadb:
-    image: mariadb:11
-    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  oracle:
+    image: gvenzl/oracle-free:23-slim
     environment:
-      MARIADB_DATABASE: banking
-      MARIADB_USER: banking
-      MARIADB_PASSWORD: banking1234
-      MARIADB_ROOT_PASSWORD: root1234
+      ORACLE_PASSWORD: root1234
+      APP_USER: banking
+      APP_USER_PASSWORD: banking1234
     ports:
-      - "13306:3306"
+      - "11521:1521"
     volumes:
-      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
-      - mariadbdata:/var/lib/mysql
+      - ./db/init.sql:/container-entrypoint-initdb.d/01-init.sql
+      - ./db/seed-all.sql:/container-entrypoint-initdb.d/02-seed-all.sql
+      - oracledata:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
 
-  redis:
-    image: redis:7-alpine
+  kafka:
+    image: apache/kafka:3.9.0
     ports:
-      - "16379:6379"
+      - "19092:9092"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      # CONTROLLER 도 advertised.listeners 에 포함 필요(실기동 검증 중 발견 — k8s/11-kafka.yaml 주석 참조)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_NUM_PARTITIONS: "3"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      CLUSTER_ID: rca-testbed-banking-kafka-1
 
   api:
     build:
@@ -39,17 +60,19 @@ services:
       dockerfile: account-service/Dockerfile
     image: core-banking-account:latest
     environment:
-      DB_HOST: mariadb
-      DB_PORT: "3306"
-      DB_NAME: banking
+      DB_HOST: oracle
+      DB_PORT: "1521"
+      DB_SERVICE: FREEPDB1
       DB_USER: banking
       DB_PASS: banking1234
       TRANSFER_SERVICE_URL: http://transfer:8082
     ports:
       - "8081:8081"
     depends_on:
-      - mariadb
-      - transfer
+      oracle:
+        condition: service_healthy
+      transfer:
+        condition: service_started
 
   transfer:
     build:
@@ -57,18 +80,19 @@ services:
       dockerfile: transfer-service/Dockerfile
     image: core-banking-transfer:latest
     environment:
-      DB_HOST: mariadb
-      DB_PORT: "3306"
-      DB_NAME: banking
+      DB_HOST: oracle
+      DB_PORT: "1521"
+      DB_SERVICE: FREEPDB1
       DB_USER: banking
       DB_PASS: banking1234
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     ports:
       - "8082:8082"
     depends_on:
-      - mariadb
-      - redis
+      oracle:
+        condition: service_healthy
+      kafka:
+        condition: service_started
 
   ledger:
     build:
@@ -76,18 +100,19 @@ services:
       dockerfile: ledger-service/Dockerfile
     image: core-banking-ledger:latest
     environment:
-      DB_HOST: mariadb
-      DB_PORT: "3306"
-      DB_NAME: banking
+      DB_HOST: oracle
+      DB_PORT: "1521"
+      DB_SERVICE: FREEPDB1
       DB_USER: banking
       DB_PASS: banking1234
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     ports:
       - "8083:8083"
     depends_on:
-      - mariadb
-      - redis
+      oracle:
+        condition: service_healthy
+      kafka:
+        condition: service_started
 
 volumes:
-  mariadbdata:
+  oracledata:

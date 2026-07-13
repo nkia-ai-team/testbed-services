@@ -1,0 +1,107 @@
+# Kafka KRaft 단일 브로커 (commerce/k8s/12-kafka.yaml 패턴을 banking 전용 namespace 로 복제).
+# 기존 Redis Streams(transfer-events) 를 대체하는 이벤트 백본. 토픽: banking.transfers, banking.ledger.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: testbed-kafka
+  namespace: rca-testbed-banking
+  labels:
+    app: testbed-kafka
+spec:
+  serviceName: testbed-kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-kafka
+  template:
+    metadata:
+      labels:
+        app: testbed-kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:3.9.0
+          ports:
+            - containerPort: 9092
+            - containerPort: 9093
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@localhost:9093"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            # CONTROLLER 리스너도 advertised.listeners 에 명시해야 한다 — 실기동 검증 중 발견:
+            # apache/kafka:3.9.0 이미지는 KRaft combined mode(process.roles=broker,controller)에서
+            # advertised.listeners 가 CONTROLLER 항목을 누락하면 listeners 의 0.0.0.0 이 그대로
+            # 흘러들어가 "advertised.listeners cannot use the nonroutable meta-address 0.0.0.0" 로
+            # 기동 자체가 실패한다(이미지 기본 server.properties 템플릿도 CONTROLLER 를 포함해서 예시함).
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://testbed-kafka:9092,CONTROLLER://testbed-kafka:9093"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_NUM_PARTITIONS
+              value: "3"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: CLUSTER_ID
+              value: "rca-testbed-banking-kafka-1"
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+          resources:
+            requests:
+              cpu: 300m
+              memory: 768Mi
+            limits:
+              cpu: 800m
+              memory: 1536Mi
+          startupProbe:
+            tcpSocket:
+              port: 9092
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-kafka
+  namespace: rca-testbed-banking
+spec:
+  selector:
+    app: testbed-kafka
+  ports:
+    - port: 9092
+      targetPort: 9092

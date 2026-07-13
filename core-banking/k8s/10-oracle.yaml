@@ -1,0 +1,98 @@
+# Oracle 23ai Free(gvenzl/oracle-free:23-slim). 기동이 무거워(수분 소요) startupProbe 여유 확보.
+# init/seed 스크립트는 build-and-deploy.sh Phase 2.5 가 db/init.sql, db/seed-all.sql 로부터
+# oracle-init-scripts ConfigMap 을 생성해 마운트한다(파일↔ConfigMap drift 방지, commerce 패턴과 동일).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: testbed-oracle
+  namespace: rca-testbed-banking
+  labels:
+    app: testbed-oracle
+spec:
+  serviceName: testbed-oracle
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-oracle
+  template:
+    metadata:
+      labels:
+        app: testbed-oracle
+    spec:
+      containers:
+        - name: oracle
+          image: gvenzl/oracle-free:23-slim
+          ports:
+            - containerPort: 1521
+          envFrom:
+            - secretRef:
+                name: oracle-secret
+          volumeMounts:
+            - name: oracledata
+              mountPath: /opt/oracle/oradata
+            - name: init-scripts
+              mountPath: /container-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          startupProbe:
+            exec:
+              command: ["healthcheck.sh"]
+            failureThreshold: 60
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: oracle-init-scripts
+  volumeClaimTemplates:
+    - metadata:
+        name: oracledata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-oracle
+  namespace: rca-testbed-banking
+spec:
+  selector:
+    app: testbed-oracle
+  ports:
+    - port: 1521
+      targetPort: 1521
+---
+# DPM(db_poll) 접속용 외부 NodePort. 30308 = 미사용 값(MariaDB 시절 30307 과 구분, PG 30432/30232, MySQL 30306 회피).
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-oracle-external
+  namespace: rca-testbed-banking
+spec:
+  type: NodePort
+  selector:
+    app: testbed-oracle
+  ports:
+    - port: 1521
+      targetPort: 1521
+      nodePort: 30308

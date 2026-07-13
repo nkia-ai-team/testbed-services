@@ -16,7 +16,7 @@
     <version>1.0.0</version>
     <packaging>pom</packaging>
     <name>Core Banking</name>
-    <description>코어뱅킹 이체·원장 마이크로서비스 (RCA 테스트베드, MariaDB)</description>
+    <description>코어뱅킹 이체·원장 마이크로서비스 (RCA 테스트베드, Oracle)</description>
 
     <modules>
         <module>shop-common</module>
@@ -31,6 +31,7 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <resilience4j.version>2.2.0</resilience4j.version>
     </properties>
 
     <dependencyManagement>

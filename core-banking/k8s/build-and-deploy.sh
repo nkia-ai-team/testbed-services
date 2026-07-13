@@ -1,9 +1,11 @@
 #!/bin/bash
 # ============================================================
-# core-banking K3s build + deploy script
+# core-banking kubeadm build + deploy script
 # ============================================================
 # Used on the target server by testbed-build orchestrator.
 # Usage: cd core-banking && bash k8s/build-and-deploy.sh
+# commerce/k8s/build-and-deploy.sh 최신 패턴(kubeadm ctr -n k8s.io import,
+# Phase 2.5 ConfigMap --from-file, rollout fail-fast) 을 그대로 정합.
 
 set -euo pipefail
 export DOCKER_BUILDKIT=0
@@ -25,7 +27,7 @@ done
 
 echo ""
 echo "========================================="
-echo "  Phase 2: cluster image import (k3d / native K3s 자동 감지)"
+echo "  Phase 2: cluster image import (kubeadm/containerd, k3d fallback)"
 echo "========================================="
 CTX_CLUSTER=$(kubectl config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null || echo "")
 if [[ "$CTX_CLUSTER" == k3d-* ]]; then
@@ -36,12 +38,26 @@ if [[ "$CTX_CLUSTER" == k3d-* ]]; then
     k3d image import "core-banking-${svc}:latest" -c "$K3D_NAME"
   done
 else
-  echo "[detect] native K3s (cluster=$CTX_CLUSTER)"
+  echo "[detect] kubeadm/containerd cluster (cluster=$CTX_CLUSTER)"
   for svc in "${SERVICES[@]}"; do
-    echo ">>> [k3s ctr import] core-banking-${svc}..."
-    docker save "core-banking-${svc}:latest" | sudo k3s ctr images import -
+    echo ">>> [ctr import] core-banking-${svc}..."
+    docker save "core-banking-${svc}:latest" | sudo ctr -n k8s.io images import -
   done
 fi
+
+echo ""
+echo "========================================="
+echo "  Phase 2.5: namespace + DB init/seed ConfigMap + loadgen scripts (원본 파일에서 직접 생성)"
+echo "========================================="
+kubectl apply -f "${PROJECT_ROOT}/k8s/00-namespace.yaml"
+kubectl create configmap oracle-init-scripts \
+  --from-file=01-init.sql="${PROJECT_ROOT}/db/init.sql" \
+  --from-file=02-seed-all.sql="${PROJECT_ROOT}/db/seed-all.sql" \
+  -n rca-testbed-banking --dry-run=client -o yaml | kubectl apply -f -
+kubectl create configmap loadgen-scripts \
+  --from-file=script.js="${PROJECT_ROOT}/loadgen/script.js" \
+  --from-file=entrypoint.sh="${PROJECT_ROOT}/loadgen/entrypoint.sh" \
+  -n rca-testbed-banking --dry-run=client -o yaml | kubectl apply -f -
 
 echo ""
 echo "========================================="
@@ -63,14 +79,15 @@ done
 
 echo ""
 echo "========================================="
-echo "  Phase 4: rollout status"
+echo "  Phase 4: rollout status (fail-fast — 실패 시 스크립트 즉시 종료)"
 echo "========================================="
-kubectl -n rca-testbed-banking rollout status statefulset/testbed-mariadb --timeout=180s || true
-kubectl -n rca-testbed-banking rollout status deployment/testbed-redis --timeout=120s || true
+kubectl -n rca-testbed-banking rollout status statefulset/testbed-oracle --timeout=600s
+kubectl -n rca-testbed-banking rollout status statefulset/testbed-kafka --timeout=180s
 for svc in "${SERVICES[@]}"; do
-  kubectl -n rca-testbed-banking rollout status deployment/testbed-${svc} --timeout=180s || true
+  kubectl -n rca-testbed-banking rollout status deployment/testbed-${svc} --timeout=180s
 done
-kubectl -n rca-testbed-banking rollout status deployment/testbed-nginx --timeout=120s || true
+kubectl -n rca-testbed-banking rollout status deployment/testbed-nginx --timeout=120s
+kubectl -n rca-testbed-banking rollout status deployment/testbed-loadgen --timeout=120s
 
 echo ""
 echo "========================================="

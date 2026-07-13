@@ -3,6 +3,8 @@ package com.corebanking.account.client;
 import com.corebanking.common.dto.TransferRequest;
 import com.corebanking.common.dto.TransferResponse;
 import com.corebanking.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -21,6 +23,8 @@ public class TransferClient {
         this.transferRestClient = transferRestClient;
     }
 
+    @CircuitBreaker(name = "transferClient", fallbackMethod = "executeTransferFallback")
+    @Retry(name = "transferClient")
     public TransferResponse executeTransfer(TransferRequest request) {
         try {
             return transferRestClient.post()
@@ -34,5 +38,11 @@ public class TransferClient {
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Transfer service failed: " + ex.getMessage());
         }
+    }
+
+    private TransferResponse executeTransferFallback(TransferRequest request, Throwable ex) {
+        log.error("Transfer service circuit open/exhausted for order {}: {}", request.orderId(), ex.getMessage());
+        throw new ServiceException(HttpStatus.BAD_GATEWAY,
+                "Transfer service unavailable: " + ex.getMessage());
     }
 }
