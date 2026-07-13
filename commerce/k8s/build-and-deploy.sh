@@ -100,39 +100,12 @@ kubectl create configmap loadgen-scripts \
 
 echo ""
 echo "========================================="
-echo "  Phase 3: K8s 매니페스트 적용 (envsubst 치환 포함)"
+echo "  Phase 3: K8s 매니페스트 적용"
 echo "========================================="
-# OTLP endpoint 는 manifest 가 downward API(status.hostIP:4317, 노드 로컬 OTel 에이전트)로 직접 구성한다
-# — OTLP_ENDPOINT env 는 더 이상 치환 대상이 아니다 (에이전트 설치 전 임시 직접전송 시절의 잔재).
-export OTLP_ENDPOINT="${OTLP_ENDPOINT:-}"
-: "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — lucida org id. ansible 또는 수동 export 필요.}"
-
-# lucida.target_id placeholder 는 application target 등록(§7) 후 UUID 를 export 해 주입한다.
-# 미등록 상태 배포도 허용하므로 fail-fast 대상은 아니며, 미설정 시 envsubst 가 빈 문자열로 치환한다.
-export ORDER_TARGET_ID="${ORDER_TARGET_ID:-}"
-export PRODUCT_TARGET_ID="${PRODUCT_TARGET_ID:-}"
-export INVENTORY_TARGET_ID="${INVENTORY_TARGET_ID:-}"
-export PAYMENT_TARGET_ID="${PAYMENT_TARGET_ID:-}"
-export NOTIFICATION_TARGET_ID="${NOTIFICATION_TARGET_ID:-}"
-export USER_TARGET_ID="${USER_TARGET_ID:-}"
-export CART_TARGET_ID="${CART_TARGET_ID:-}"
-export PRICING_TARGET_ID="${PRICING_TARGET_ID:-}"
-export SHIPPING_TARGET_ID="${SHIPPING_TARGET_ID:-}"
-export GATEWAY_TARGET_ID="${GATEWAY_TARGET_ID:-}"
-
-# fail-open 이되 조용히 빠지지는 않게 — 비어 있는 TARGET_ID 는 배포 로그에 경고를 남긴다
-# (미설정 시 해당 앱 JVM 메트릭의 lucida.target_id 바인딩이 빈 채로 배포됨. 등록 후 재배포 필요).
-for v in ORDER PRODUCT INVENTORY PAYMENT NOTIFICATION USER CART PRICING SHIPPING GATEWAY; do
-  eval tid="\${${v}_TARGET_ID}"
-  [[ -z "$tid" ]] && echo "[WARN] ${v}_TARGET_ID 미설정 — lucida.target_id 빈 값으로 배포됨"
-done
-
-# envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 10-, 20-, 30- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → PostgreSQL(10) → ... → Nginx(30)
-WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${PRODUCT_TARGET_ID} ${INVENTORY_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFICATION_TARGET_ID} ${USER_TARGET_ID} ${CART_TARGET_ID} ${PRICING_TARGET_ID} ${SHIPPING_TARGET_ID} ${GATEWAY_TARGET_ID}'
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
-  envsubst "$WHITELIST" < "$f" | kubectl apply -f -
+  kubectl apply -f "$f"
 done
 
 echo ""

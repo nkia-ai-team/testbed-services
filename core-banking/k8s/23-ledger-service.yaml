@@ -15,21 +15,12 @@ spec:
       labels:
         app: testbed-ledger
     spec:
-      volumes:
-        - name: apm-agent
-          hostPath:
-            path: /opt/polestar10/apm
-            type: DirectoryOrCreate
       containers:
         - name: ledger-service
           image: core-banking-ledger:latest
           imagePullPolicy: Never
           ports:
             - containerPort: 8083
-          volumeMounts:
-            - name: apm-agent
-              mountPath: /opt/apm
-              readOnly: true
           envFrom:
             - configMapRef:
                 name: service-config
@@ -44,30 +35,6 @@ spec:
                 secretKeyRef:
                   name: oracle-secret
                   key: APP_USER_PASSWORD
-            - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-            # OTLP 는 노드 로컬 OTel 에이전트(lucida-otel-supervisor, OpAMP 관리)로 보낸다.
-            # AP collector 직접 전송은 에이전트 설치 전 임시 우회였음 (2026-07-13 전환).
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://$(NODE_IP):4317"
-            - name: OTEL_EXPORTER_OTLP_PROTOCOL
-              value: "grpc"
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=core-banking,lucida.target_id=${LEDGER_TARGET_ID}"
-            - name: OTEL_METRIC_EXPORT_INTERVAL
-              value: "10000"
-            - name: OTEL_SERVICE_NAME
-              value: "core-banking-ledger"
-            - name: OTEL_TRACES_EXPORTER
-              value: "otlp"
-            - name: OTEL_METRICS_EXPORTER
-              value: "otlp"
-            - name: OTEL_LOGS_EXPORTER
-              value: "otlp"
           startupProbe:
             httpGet:
               path: /actuator/health

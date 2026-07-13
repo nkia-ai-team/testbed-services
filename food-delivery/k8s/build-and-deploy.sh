@@ -89,33 +89,12 @@ kubectl create configmap loadgen-scripts \
 
 echo ""
 echo "========================================="
-echo "  Phase 3: K8s 매니페스트 적용 (envsubst 치환 포함)"
+echo "  Phase 3: K8s 매니페스트 적용"
 echo "========================================="
-# OTLP endpoint 는 manifest 가 downward API(status.hostIP:4317, 노드 로컬 OTel 에이전트)로 직접 구성한다
-# — OTLP_ENDPOINT env 는 더 이상 치환 대상이 아니다 (에이전트 설치 전 임시 직접전송 시절의 잔재).
-export OTLP_ENDPOINT="${OTLP_ENDPOINT:-}"
-: "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — Polestar10 web 의 24자리 hex 조직 ID. ansible 또는 수동 export 필요.}"
-
-# lucida.target_id placeholder 는 application target 등록(§7) 후 UUID 를 export 해 주입한다.
-# 미등록 상태 배포도 허용하므로 fail-fast 대상은 아니며, 미설정 시 envsubst 가 빈 문자열로 치환한다.
-export ORDER_TARGET_ID="${ORDER_TARGET_ID:-}"
-export RESTAURANT_TARGET_ID="${RESTAURANT_TARGET_ID:-}"
-export DISPATCH_TARGET_ID="${DISPATCH_TARGET_ID:-}"
-export PAYMENT_TARGET_ID="${PAYMENT_TARGET_ID:-}"
-export NOTIFY_TARGET_ID="${NOTIFY_TARGET_ID:-}"
-
-# fail-open 이되 조용히 빠지지는 않게 — 비어 있는 TARGET_ID 는 배포 로그에 경고를 남긴다.
-for v in ORDER RESTAURANT DISPATCH PAYMENT NOTIFY; do
-  eval tid="\${${v}_TARGET_ID}"
-  [[ -z "$tid" ]] && echo "[WARN] ${v}_TARGET_ID 미설정 — lucida.target_id 빈 값으로 배포됨"
-done
-
-# envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 02-, 10-, 11-, 20-, 40- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → MySQL(10) → Kafka(11) → 서비스(20-24) → loadgen(40)
-WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${RESTAURANT_TARGET_ID} ${DISPATCH_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFY_TARGET_ID}'
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
-  envsubst "$WHITELIST" < "$f" | kubectl apply -f -
+  kubectl apply -f "$f"
 done
 
 echo ""

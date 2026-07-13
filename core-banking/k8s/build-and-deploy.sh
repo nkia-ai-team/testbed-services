@@ -71,28 +71,10 @@ kubectl create configmap loadgen-scripts \
 
 echo ""
 echo "========================================="
-echo "  Phase 3: kubectl apply (envsubst 치환 포함)"
+echo "  Phase 3: kubectl apply"
 echo "========================================="
-# 매니페스트의 placeholder 를 deploy-time 에 치환.
-# OTLP_ENDPOINT / POLESTAR_ORG_ID 는 필수. *_TARGET_ID 는 등록 루프(§7)가 주입하며 미설정 시 빈 값으로 치환된다.
-# OTLP endpoint 는 manifest 가 downward API(status.hostIP:4317, 노드 로컬 OTel 에이전트)로 직접 구성한다
-# — OTLP_ENDPOINT env 는 더 이상 치환 대상이 아니다 (에이전트 설치 전 임시 직접전송 시절의 잔재).
-export OTLP_ENDPOINT="${OTLP_ENDPOINT:-}"
-: "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — ansible 또는 수동 export 필요. Polestar10 web 의 24자리 hex 조직 ID}"
-export API_TARGET_ID="${API_TARGET_ID:-}"
-export ACCOUNT_TARGET_ID="${ACCOUNT_TARGET_ID:-}"
-export TRANSFER_TARGET_ID="${TRANSFER_TARGET_ID:-}"
-export LEDGER_TARGET_ID="${LEDGER_TARGET_ID:-}"
-
-# fail-open 이되 조용히 빠지지는 않게 — 비어 있는 TARGET_ID 는 배포 로그에 경고를 남긴다.
-for v in API ACCOUNT TRANSFER LEDGER; do
-  eval tid="\${${v}_TARGET_ID}"
-  [[ -z "$tid" ]] && echo "[WARN] ${v}_TARGET_ID 미설정 — lucida.target_id 빈 값으로 배포됨"
-done
-
-# envsubst 화이트리스트로 명시 변수만 치환. K8s downward API 의 $(POD_NAME) 등과 충돌 회피.
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
-  envsubst '${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${API_TARGET_ID} ${ACCOUNT_TARGET_ID} ${TRANSFER_TARGET_ID} ${LEDGER_TARGET_ID}' < "$f" | kubectl apply -f -
+  kubectl apply -f "$f"
 done
 
 echo ""
