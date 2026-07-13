@@ -1,6 +1,8 @@
 package com.commerce.inventory.service;
 
 import com.commerce.common.dto.InventoryEvent;
+import com.commerce.common.dto.InventoryListItemResponse;
+import com.commerce.common.dto.InventoryMovementResponse;
 import com.commerce.common.dto.InventoryReleaseRequest;
 import com.commerce.common.dto.InventoryReserveRequest;
 import com.commerce.common.dto.InventoryReserveResponse;
@@ -11,12 +13,18 @@ import com.commerce.inventory.entity.InventoryMovement;
 import com.commerce.inventory.repository.InventoryMovementRepository;
 import com.commerce.inventory.repository.InventoryRepository;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Service
 public class InventoryService {
+
+    // §7: 재고부족 판단 임계치(고정값) — stock이 이 미만이면 lowStockOnly=true 목록에 잡힌다.
+    private static final int LOW_STOCK_THRESHOLD = 20;
 
     private final InventoryRepository inventoryRepository;
     private final InventoryMovementRepository inventoryMovementRepository;
@@ -38,6 +46,28 @@ public class InventoryService {
         return inventoryRepository.findByProductId(productId)
                 .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND,
                         "Inventory not found for product: " + productId));
+    }
+
+    // §7 신규 — 응답은 배열(List)로 통일한다(레포 안의 다른 목록 API들과 동일 관례).
+    @Transactional(readOnly = true)
+    public List<InventoryListItemResponse> list(boolean lowStockOnly, Pageable pageable) {
+        var page = lowStockOnly
+                ? inventoryRepository.findByStockLessThan(LOW_STOCK_THRESHOLD, pageable)
+                : inventoryRepository.findAll(pageable);
+        return page.map(this::toListItem).getContent();
+    }
+
+    @Transactional(readOnly = true)
+    public List<InventoryMovementResponse> getMovements(Long productId, Pageable pageable) {
+        return inventoryMovementRepository.findByProductIdOrderByCreatedAtDesc(productId, pageable).stream()
+                .map(m -> new InventoryMovementResponse(m.getId(), m.getProductId(), m.getMovementType(),
+                        m.getQuantity(), m.getResultingStock(), m.getCreatedAt()))
+                .toList();
+    }
+
+    private InventoryListItemResponse toListItem(Inventory inventory) {
+        return new InventoryListItemResponse(inventory.getProductId(), inventory.getStock(),
+                inventory.getReserved(), inventory.getStock() > 0);
     }
 
     @Transactional

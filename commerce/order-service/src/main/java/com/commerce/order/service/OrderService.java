@@ -13,11 +13,17 @@ import com.commerce.order.event.OrderEventPublisher;
 import com.commerce.order.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.sql.Date;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -208,6 +214,37 @@ public class OrderService {
                 ? orderRepository.findByUserIdOrderByCreatedAtDesc(userId)
                 : orderRepository.findAll();
         return orders.stream().map(this::toResponse).toList();
+    }
+
+    // §7 확장: userId/status/from/to/page/size. 응답은 기존과 동일하게 배열이다 — BFF의
+    // AggregationService가 이 엔드포인트를 OrderResponse[]로 역직렬화하므로 Page 객체로
+    // 감싸면 안 된다(하위호환 최우선). page/size는 조회 슬라이싱에만 사용한다.
+    @Transactional(readOnly = true)
+    public List<OrderResponse> searchOrders(Long userId, String status, LocalDateTime from, LocalDateTime to,
+                                             Pageable pageable) {
+        Sort defaultSort = Sort.by(Sort.Direction.DESC, "createdAt");
+        Pageable effective;
+        if (pageable.getSort().isSorted()) {
+            effective = pageable;
+        } else if (pageable.isPaged()) {
+            effective = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), defaultSort);
+        } else {
+            effective = Pageable.unpaged(defaultSort);
+        }
+        Page<Order> page = orderRepository.search(userId, status, from, to, effective);
+        return page.map(this::toResponse).getContent();
+    }
+
+    @Transactional(readOnly = true)
+    public List<DailyOrderStatResponse> getDailyStats(int days) {
+        LocalDateTime since = LocalDateTime.now().minusDays(Math.max(days, 1)).toLocalDate().atStartOfDay();
+        return orderRepository.dailyStats(since).stream()
+                .map(row -> new DailyOrderStatResponse(
+                        ((Date) row[0]).toLocalDate(),
+                        ((Number) row[1]).longValue(),
+                        (BigDecimal) row[2]
+                ))
+                .toList();
     }
 
     @Transactional(readOnly = true)

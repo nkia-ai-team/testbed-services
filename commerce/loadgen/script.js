@@ -120,19 +120,34 @@ function authHeaders(token) {
 // 여정 1: 브라우징(read) — 65%
 // ------------------------------------------------------------
 function browsingJourney() {
-    // 상품 목록(카테고리 필터 랜덤 or 전체) — 현재 API에 offset/limit 페이지네이션이 없어
-    // 목록은 전체 반환이다(§7 read API 보강 전까지의 현재 표면 그대로).
+    // 카테고리 목록(§7 GET /api/categories) — 가끔 곁들인다.
+    if (rand() < 0.1) {
+        const catRes = http.get(`${GATEWAY_URL}/api/categories`, { tags: { journey: 'browsing', step: 'categories' } });
+        check(catRes, { 'browse categories 200': (r) => r.status === 200 });
+    }
+
+    // 상품 목록 — §7의 category=/page=/size= 파라미터로 2,000개 대량 상품 전체를 페이지 단위로
+    // 브라우징한다(카탈로그 범위 대비 넉넉한 page 상한을 잡아 빈 페이지도 정상 케이스로 둔다).
+    const page = randInt(0, 50);
     const listRes = rand() < 0.5
-        ? http.get(`${GATEWAY_URL}/api/products?categoryId=${randInt(1, 4)}`, { tags: { journey: 'browsing', step: 'list' } })
-        : http.get(`${GATEWAY_URL}/api/products`, { tags: { journey: 'browsing', step: 'list' } });
+        ? http.get(`${GATEWAY_URL}/api/products?category=${randInt(1, 4)}&page=${page}&size=20`,
+            { tags: { journey: 'browsing', step: 'list' } })
+        : http.get(`${GATEWAY_URL}/api/products?page=${page}&size=20`,
+            { tags: { journey: 'browsing', step: 'list' } });
     check(listRes, { 'browse list 200': (r) => r.status === 200 });
 
-    // 상세 조회 1~2건 — 대량 시드 상품까지 포함한 전체 카탈로그 범위에서.
+    // 상세 조회 1~2건(대량 시드 상품 포함 전체 카탈로그 범위) + variants 일부(§7).
     const detailCount = randInt(1, 2);
     for (let i = 0; i < detailCount; i++) {
         const productId = randInt(1, BROWSE_PRODUCT_ID_MAX);
         const res = http.get(`${GATEWAY_URL}/api/products/${productId}`, { tags: { journey: 'browsing', step: 'detail' } });
         check(res, { 'browse detail 200/404': (r) => r.status === 200 || r.status === 404 });
+
+        if (rand() < 0.3) {
+            const variantsRes = http.get(`${GATEWAY_URL}/api/products/${productId}/variants`,
+                { tags: { journey: 'browsing', step: 'variants' } });
+            check(variantsRes, { 'browse variants 200/404': (r) => r.status === 200 || r.status === 404 });
+        }
     }
 }
 
@@ -141,7 +156,8 @@ function browsingJourney() {
 // ------------------------------------------------------------
 function searchJourney() {
     const keyword = pick(SEARCH_KEYWORDS);
-    const res = http.get(`${GATEWAY_URL}/api/products?name=${encodeURIComponent(keyword)}`, {
+    const page = randInt(0, 5);
+    const res = http.get(`${GATEWAY_URL}/api/products?q=${encodeURIComponent(keyword)}&page=${page}&size=20`, {
         tags: { journey: 'search', step: 'query' },
     });
     check(res, { 'search 200': (r) => r.status === 200 });

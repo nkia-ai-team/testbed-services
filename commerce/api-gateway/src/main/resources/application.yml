@@ -39,6 +39,10 @@ services:
     url: ${PRODUCT_SERVICE_URL:http://localhost:8081}
     connect-timeout: 3s
     read-timeout: 10s
+  payment:
+    url: ${PAYMENT_SERVICE_URL:http://localhost:8083}
+    connect-timeout: 3s
+    read-timeout: 10s
 
 # 하류 서비스별 CB/Retry 인스턴스 분리 — 한 서비스 장애가 다른 라우트로 번지지 않게 격리.
 resilience4j:
@@ -86,6 +90,13 @@ resilience4j:
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
+      payment:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
   retry:
     instances:
       user:
@@ -114,6 +125,11 @@ resilience4j:
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
       product:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      payment:
         max-attempts: 3
         wait-duration: 200ms
         enable-exponential-backoff: true

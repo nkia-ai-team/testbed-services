@@ -35,19 +35,22 @@ public class ProxyService {
     private final RestClient shippingRestClient;
     private final RestClient orderRestClient;
     private final RestClient productRestClient;
+    private final RestClient paymentRestClient;
 
     public ProxyService(@Qualifier("userRestClient") RestClient userRestClient,
                          @Qualifier("cartRestClient") RestClient cartRestClient,
                          @Qualifier("pricingRestClient") RestClient pricingRestClient,
                          @Qualifier("shippingRestClient") RestClient shippingRestClient,
                          @Qualifier("orderRestClient") RestClient orderRestClient,
-                         @Qualifier("productRestClient") RestClient productRestClient) {
+                         @Qualifier("productRestClient") RestClient productRestClient,
+                         @Qualifier("paymentRestClient") RestClient paymentRestClient) {
         this.userRestClient = userRestClient;
         this.cartRestClient = cartRestClient;
         this.pricingRestClient = pricingRestClient;
         this.shippingRestClient = shippingRestClient;
         this.orderRestClient = orderRestClient;
         this.productRestClient = productRestClient;
+        this.paymentRestClient = paymentRestClient;
     }
 
     @CircuitBreaker(name = "user", fallbackMethod = "unavailable")
@@ -80,10 +83,19 @@ public class ProxyService {
         return doForward(orderRestClient, request, body);
     }
 
+    // /api/categories도 이 메서드를 재사용한다(GatewayProxyController) — categories는
+    // product-service가 소유한 리소스라 별도 CB를 두지 않고 product 하류 장애와 같은
+    // 격리 단위로 묶는다(팀 지시 그대로).
     @CircuitBreaker(name = "product", fallbackMethod = "unavailable")
     @Retry(name = "product")
     public ResponseEntity<byte[]> forwardToProduct(HttpServletRequest request, byte[] body) {
         return doForward(productRestClient, request, body);
+    }
+
+    @CircuitBreaker(name = "payment", fallbackMethod = "unavailable")
+    @Retry(name = "payment")
+    public ResponseEntity<byte[]> forwardToPayment(HttpServletRequest request, byte[] body) {
+        return doForward(paymentRestClient, request, body);
     }
 
     @SuppressWarnings("unused") // resilience4j fallback 시그니처(원 메서드 인자 + Throwable)

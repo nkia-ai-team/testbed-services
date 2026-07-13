@@ -58,4 +58,17 @@ public class GatewayProxyController {
         authGuard.verifyIfWrite(request);
         return proxyService.forwardToProduct(request, body);
     }
+
+    // categories는 product-service가 소유한 리소스라 product CB 인스턴스를 그대로 재사용한다(§7).
+    @RequestMapping("/api/categories/**")
+    public ResponseEntity<byte[]> categories(HttpServletRequest request, @RequestBody(required = false) byte[] body) {
+        authGuard.verifyIfWrite(request);
+        return proxyService.forwardToProduct(request, body);
+    }
+
+    @RequestMapping("/api/payments/**")
+    public ResponseEntity<byte[]> payments(HttpServletRequest request, @RequestBody(required = false) byte[] body) {
+        authGuard.verifyIfWrite(request);
+        return proxyService.forwardToPayment(request, body);
+    }
 }
