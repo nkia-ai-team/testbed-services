@@ -39,9 +39,19 @@ if [[ "$CTX_CLUSTER" == k3d-* ]]; then
   done
 else
   echo "[detect] kubeadm/containerd cluster (cluster=$CTX_CLUSTER)"
+  # IMPORT_SSH_NODES: 빌드 호스트≠클러스터 노드 토폴로지용(commerce 스크립트와 동일 규약).
+  SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10)
+  [[ -n "${IMPORT_SSH_KEY:-}" ]] && SSH_OPTS+=(-i "$IMPORT_SSH_KEY")
   for svc in "${SERVICES[@]}"; do
-    echo ">>> [ctr import] core-banking-${svc}..."
-    docker save "core-banking-${svc}:latest" | sudo ctr -n k8s.io images import -
+    if [[ -n "${IMPORT_SSH_NODES:-}" ]]; then
+      for node in ${IMPORT_SSH_NODES}; do
+        echo ">>> [ssh ctr import → ${node}] core-banking-${svc}..."
+        docker save "core-banking-${svc}:latest" | ssh "${SSH_OPTS[@]}" "$node" "sudo ctr -n k8s.io images import -"
+      done
+    else
+      echo ">>> [ctr import] core-banking-${svc}..."
+      docker save "core-banking-${svc}:latest" | sudo ctr -n k8s.io images import -
+    fi
   done
 fi
 

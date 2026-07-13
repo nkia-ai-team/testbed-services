@@ -58,9 +58,22 @@ if [[ "$CTX_CLUSTER" == k3d-* ]]; then
   done
 else
   echo "[detect] kubeadm (cluster=$CTX_CLUSTER)"
+  # IMPORT_SSH_NODES: 빌드 호스트가 클러스터 노드가 아닌 토폴로지(예: 109 호스트에서 빌드,
+  # 클러스터는 게스트 VM)용. 공백 구분 ssh 대상 목록(user@ip). 지정 시 각 노드의 containerd 로
+  # docker save 스트림을 ssh 로 흘려 임포트한다. 미지정 시 기존처럼 로컬 containerd 임포트.
+  # IMPORT_SSH_KEY: (옵션) ssh 개인키 경로.
+  SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10)
+  [[ -n "${IMPORT_SSH_KEY:-}" ]] && SSH_OPTS+=(-i "$IMPORT_SSH_KEY")
   for svc in "${SERVICES[@]}"; do
-    echo ">>> [ctr import] commerce-${svc}..."
-    docker save "commerce-${svc}:latest" | sudo ctr -n k8s.io images import -
+    if [[ -n "${IMPORT_SSH_NODES:-}" ]]; then
+      for node in ${IMPORT_SSH_NODES}; do
+        echo ">>> [ssh ctr import → ${node}] commerce-${svc}..."
+        docker save "commerce-${svc}:latest" | ssh "${SSH_OPTS[@]}" "$node" "sudo ctr -n k8s.io images import -"
+      done
+    else
+      echo ">>> [ctr import] commerce-${svc}..."
+      docker save "commerce-${svc}:latest" | sudo ctr -n k8s.io images import -
+    fi
   done
 fi
 
