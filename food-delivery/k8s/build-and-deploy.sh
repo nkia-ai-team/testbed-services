@@ -105,6 +105,12 @@ export DISPATCH_TARGET_ID="${DISPATCH_TARGET_ID:-}"
 export PAYMENT_TARGET_ID="${PAYMENT_TARGET_ID:-}"
 export NOTIFY_TARGET_ID="${NOTIFY_TARGET_ID:-}"
 
+# fail-open 이되 조용히 빠지지는 않게 — 비어 있는 TARGET_ID 는 배포 로그에 경고를 남긴다.
+for v in ORDER RESTAURANT DISPATCH PAYMENT NOTIFY; do
+  eval tid="\${${v}_TARGET_ID}"
+  [[ -z "$tid" ]] && echo "[WARN] ${v}_TARGET_ID 미설정 — lucida.target_id 빈 값으로 배포됨"
+done
+
 # envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 02-, 10-, 11-, 20-, 40- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → MySQL(10) → Kafka(11) → 서비스(20-24) → loadgen(40)
@@ -117,8 +123,10 @@ echo ""
 echo "========================================="
 echo "  Phase 4: 배포 상태 확인"
 echo "========================================="
-# Deployment가 완전히 뜰 때까지 최대 3분 대기.
-echo "Deployment 롤아웃 대기 중..."
+# :latest + imagePullPolicy:Never 조합은 재배포 시 Pod template 이 안 바뀌어 구이미지 Pod 가
+# 그대로 남는다 — 명시적 restart 로 교체 강제 (commerce 스크립트와 동일 이유).
+echo "Deployment 재시작(새 이미지 반영) + 롤아웃 대기 중..."
+kubectl -n rca-testbed-food rollout restart deployment
 kubectl -n rca-testbed-food rollout status deployment --timeout=180s
 
 # StatefulSet은 별도로 확인

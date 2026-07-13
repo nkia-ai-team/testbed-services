@@ -82,6 +82,12 @@ export ACCOUNT_TARGET_ID="${ACCOUNT_TARGET_ID:-}"
 export TRANSFER_TARGET_ID="${TRANSFER_TARGET_ID:-}"
 export LEDGER_TARGET_ID="${LEDGER_TARGET_ID:-}"
 
+# fail-open 이되 조용히 빠지지는 않게 — 비어 있는 TARGET_ID 는 배포 로그에 경고를 남긴다.
+for v in API ACCOUNT TRANSFER LEDGER; do
+  eval tid="\${${v}_TARGET_ID}"
+  [[ -z "$tid" ]] && echo "[WARN] ${v}_TARGET_ID 미설정 — lucida.target_id 빈 값으로 배포됨"
+done
+
 # envsubst 화이트리스트로 명시 변수만 치환. K8s downward API 의 $(POD_NAME) 등과 충돌 회피.
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
   envsubst '${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${API_TARGET_ID} ${ACCOUNT_TARGET_ID} ${TRANSFER_TARGET_ID} ${LEDGER_TARGET_ID}' < "$f" | kubectl apply -f -
@@ -91,6 +97,9 @@ echo ""
 echo "========================================="
 echo "  Phase 4: rollout status (fail-fast — 실패 시 스크립트 즉시 종료)"
 echo "========================================="
+# :latest + imagePullPolicy:Never 조합은 재배포 시 Pod template 이 안 바뀌어 구이미지 Pod 가
+# 그대로 남는다 — 명시적 restart 로 앱 Deployment 교체 강제 (StatefulSet 은 외부 고정 이미지라 제외).
+kubectl -n rca-testbed-banking rollout restart deployment
 kubectl -n rca-testbed-banking rollout status statefulset/testbed-oracle --timeout=600s
 kubectl -n rca-testbed-banking rollout status statefulset/testbed-kafka --timeout=180s
 for svc in "${SERVICES[@]}"; do

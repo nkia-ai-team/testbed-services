@@ -121,6 +121,13 @@ export PRICING_TARGET_ID="${PRICING_TARGET_ID:-}"
 export SHIPPING_TARGET_ID="${SHIPPING_TARGET_ID:-}"
 export GATEWAY_TARGET_ID="${GATEWAY_TARGET_ID:-}"
 
+# fail-open 이되 조용히 빠지지는 않게 — 비어 있는 TARGET_ID 는 배포 로그에 경고를 남긴다
+# (미설정 시 해당 앱 JVM 메트릭의 lucida.target_id 바인딩이 빈 채로 배포됨. 등록 후 재배포 필요).
+for v in ORDER PRODUCT INVENTORY PAYMENT NOTIFICATION USER CART PRICING SHIPPING GATEWAY; do
+  eval tid="\${${v}_TARGET_ID}"
+  [[ -z "$tid" ]] && echo "[WARN] ${v}_TARGET_ID 미설정 — lucida.target_id 빈 값으로 배포됨"
+done
+
 # envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 10-, 20-, 30- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → PostgreSQL(10) → ... → Nginx(30)
@@ -133,8 +140,11 @@ echo ""
 echo "========================================="
 echo "  Phase 4: 배포 상태 확인"
 echo "========================================="
-# Deployment가 완전히 뜰 때까지 최대 3분 대기.
-echo "Deployment 롤아웃 대기 중..."
+# :latest 태그 + imagePullPolicy:Never 조합은 재배포 시 Pod template 이 안 바뀌어
+# 기존 Pod 가 구이미지로 계속 돈다 — 이미지 임포트 후 명시적 restart 로 교체를 강제한다.
+# StatefulSet(DB·Kafka)은 이미지가 고정 태그(외부 이미지)라 재시작 대상이 아니다.
+echo "Deployment 재시작(새 이미지 반영) + 롤아웃 대기 중..."
+kubectl -n rca-testbed-commerce rollout restart deployment
 kubectl -n rca-testbed-commerce rollout status deployment --timeout=180s
 
 # StatefulSet은 별도로 확인

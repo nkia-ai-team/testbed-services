@@ -226,15 +226,15 @@ manifest에 넣어야 하는 경우(선택적 app target)는 스크립트로 주
 | 전자담배 쇼핑몰 예제(PG + Redis Streams, 5 svc + nginx) | **commerce** 베이스(거의 그대로, 리네이밍) |
 | food-delivery (PG, 4 svc, RestClient timeout, external-pg-mock) | **food-delivery** 베이스 — PG→MySQL 전환 + Redis 추가 |
 | social-feed (MySQL 8.0) | 폐기하되 **MySQL 계측·init.sql 패턴을 food/banking에 참고** |
-| 시나리오 셸 스크립트 4종 | 이식 + MySQL/MariaDB·cross-domain 변형 추가 |
+| 시나리오 셸 스크립트 4종 | 이식 + MySQL/Oracle·cross-domain 변형 추가 |
 | OTel 계측 패턴(JAVA_TOOL_OPTIONS, hostPath, OTEL_SERVICE_NAME, groupId) | 표준 승계 |
 | k8s 번호 규약·build-and-deploy.sh·StatefulSet 규약 | 승계 |
 
 ## 9. 서비스 검증 체크리스트
 
 - [ ] 서비스별 `OTEL_SERVICE_NAME`(`<domain>-<svc>`)이 등록 target `meta.service_name`과 정확일치하고 trace golden signal이 바인딩된다.
-- [ ] 동기 체인(RestClient)과 Redis 비동기 경로가 각 도메인에서 관측된다.
-- [ ] 3개 DB(PG/MySQL/MariaDB)가 각 engine으로 DPM 등록되고 session/lock/slow query 근거가 나온다(`sql_hash`/`sql_id`).
+- [ ] 동기 체인(RestClient)과 Kafka 비동기 경로(outbox 릴레이→consumer)가 각 도메인에서 관측된다.
+- [ ] 3개 DB(PG/MySQL/Oracle)가 각 engine으로 DPM 등록되고 session/lock/slow query 근거가 나온다(`sql_hash`/`sql_id`).
 - [ ] KCM에서 pod/container가 `namespace/name` 키로 승격되고 pod→node가 관측된다.
 - [ ] worker VM host가 안정 hostname으로 SMS enroll되어 host/process 근거가 나온다.
 - [ ] cross-domain(commerce-payment → core-banking-transfer)이 같은 trace로 이어져 경계를 넘는 `apm_call` edge가 실측된다.

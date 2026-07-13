@@ -101,6 +101,7 @@ docker exec lucida-clickhouse clickhouse-client -q "
 | `FailedMount ... /opt/polestar10/apm` | otel jar hostPath 미준비 | §2-2 |
 | Kafka pod 기동 실패 `nonroutable meta-address 0.0.0.0` | advertised.listeners에 CONTROLLER 누락 | 수정 커밋 f745fb3 반영 확인 |
 | gateway 프록시 응답 전부 거부 `too many transfer encodings` | 하류 Transfer-Encoding 헤더 재전파 | 수정 커밋 dd485ca 반영 확인 |
+| banking 앱 `ORA-00942 ... "BANKING"."<table>" does not exist` | gvenzl initdb.d 가 **SYSDBA 로 실행**돼 테이블이 SYS 소유로 생성됨 (Oracle 로그에 ORA-04089 동반) | init.sql/seed-all.sql 헤더의 `ALTER SESSION SET CONTAINER/CURRENT_SCHEMA` 유지(f6834a0). 재초기화는 ConfigMap 재생성 후 oracle pod+PVC 삭제(§2-1의 SC가 재프로비저닝) |
 | loadgen `dial i/o timeout` (배포 직후 수 분) | 서비스 워밍업 중 | 정상 — Ready 후 자동 회복 |
 | org id를 모름/바뀜 | — | §4 ClickHouse 쿼리로 실사용 organizationId 역추출 |
 | 원격 프로세스 정리 시 ssh 세션이 끊김 | `pkill -f build-and-deploy`가 자기 명령줄과 매치 | `pkill -f "[b]uild-and-deploy"` 패턴 사용 |
