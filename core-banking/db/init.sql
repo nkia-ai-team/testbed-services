@@ -1,7 +1,11 @@
 -- core-banking schema (Oracle 23ai Free — gvenzl/oracle-free)
--- 실행 컨텍스트: 이미지가 자동 생성하는 APP_USER(banking) 세션, PDB=FREEPDB1.
--- CREATE DATABASE/USE 문 불필요 — docker-compose/k8s 모두 ORACLE_PASSWORD+APP_USER+APP_USER_PASSWORD 로
--- banking 스키마 사용자를 이미지가 부트스트랩하고, 이 스크립트는 그 세션에서 실행된다.
+-- 실행 컨텍스트 주의: /container-entrypoint-initdb.d 의 스크립트는 APP_USER 가 아니라
+-- **SYSDBA 로 실행**된다 (2026-07-13 109 실배포에서 확인 — 테이블이 전부 SYS 소유로
+-- 생성되고 트리거는 ORA-04089 로 실패, 앱(banking 접속)은 ORA-00942).
+-- 그래서 아래 두 줄로 대상 PDB·스키마를 명시한다. banking 유저 자체는 이미지가
+-- ORACLE_PASSWORD+APP_USER+APP_USER_PASSWORD 로 부트스트랩한다.
+ALTER SESSION SET CONTAINER = FREEPDB1;
+ALTER SESSION SET CURRENT_SCHEMA = BANKING;
 --
 -- 4개 테이블: accounts, transfers, ledger_entries, outbox_events.
 -- 이체(transfer)는 accounts 를 FOR UPDATE 로 lock → row-lock 경합 표면.

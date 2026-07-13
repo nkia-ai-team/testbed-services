@@ -1,4 +1,7 @@
 -- core-banking 대량 시드 (Oracle). init.sql 로드 후 단독 실행 가능.
+-- initdb.d 스크립트는 SYSDBA 세션으로 실행되므로 대상 PDB·스키마를 명시한다(init.sql 헤더 참조).
+ALTER SESSION SET CONTAINER = FREEPDB1;
+ALTER SESSION SET CURRENT_SCHEMA = BANKING;
 -- 계좌 수백~수천 + 과거 이체/원장 레코드 수만 행을 90일 diurnal(시간대별 활동) 분포로 생성한다.
 --
 -- 재현성: DBMS_RANDOM.SEED(42) 로 고정. 단, Oracle 도 병렬 실행 시 순서가 완전히 결정론적이지
