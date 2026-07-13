@@ -102,10 +102,9 @@ echo ""
 echo "========================================="
 echo "  Phase 3: K8s 매니페스트 적용 (envsubst 치환 포함)"
 echo "========================================="
-# 매니페스트의 ${OTLP_ENDPOINT} placeholder 를 deploy-time 에 치환.
-# 사내 NAT/방화벽 환경에서는 collector 가 환경마다 달라서 매니페스트에 hardcode 불가.
-# 누락 시 fail-fast — broken endpoint 로 Pod 가 뜨고 silent fail 하는 사고 차단.
-: "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.200.57:6565}"
+# OTLP endpoint 는 manifest 가 downward API(status.hostIP:4317, 노드 로컬 OTel 에이전트)로 직접 구성한다
+# — OTLP_ENDPOINT env 는 더 이상 치환 대상이 아니다 (에이전트 설치 전 임시 직접전송 시절의 잔재).
+export OTLP_ENDPOINT="${OTLP_ENDPOINT:-}"
 : "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — lucida org id. ansible 또는 수동 export 필요.}"
 
 # lucida.target_id placeholder 는 application target 등록(§7) 후 UUID 를 export 해 주입한다.

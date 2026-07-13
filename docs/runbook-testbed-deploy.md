@@ -23,7 +23,7 @@ summary: 109 KVM 클러스터에 3도메인 테스트베드를 배포·검증하
 | kubeconfig | `109:/root/tb-kubeconfig` | kubeadm v1.31 클러스터(tb-cp + tb-w1/w2/w3) |
 | VM ssh | `ssh -i /root/.ssh/tb_key nkia@192.168.122.<NAT-ip>` (NOPASSWD sudo) | 인벤토리 `109:/root/tb-inventory.txt` |
 | 워커 NAT IP | w1=`.184`(commerce) w2=`.11`(food) w3=`.14`(banking) | 노드 라벨 `domain=` 적용됨 |
-| `OTLP_ENDPOINT` | `http://192.168.230.104:4317` | 워크스테이션(AP)의 `lucida-otel-collector` 컨테이너, gRPC. ※ 6565는 구 Polestar10(범위 밖) |
+| OTLP 수집 경로 | manifest 가 downward API 로 **노드 로컬** `http://$(status.hostIP):4317` 구성 — 각 VM의 OTel 에이전트(lucida-otel-supervisor, OpAMP 관리)가 수신 | **VM에 OTel 에이전트 설치 필수**(미설치 시 앱은 정상, 텔레메트리만 유실). AP collector 직접 전송(`230.104:4317`)은 에이전트 설치 전 임시 우회였음. ※ 6565는 구 Polestar10(범위 밖) |
 | `POLESTAR_ORG_ID` | `69731678b56620b247fb279a` | lucida ClickHouse `otel_traces_local`의 실사용 organizationId (변경 시 재확인: §5 쿼리) |
 | deploy env 파일 | `109:/root/deploy-env.sh` | 위 값 + IMPORT_SSH_NODES/KEY export 모음 |
 | `IMPORT_SSH_NODES` | `"nkia@192.168.122.184 nkia@192.168.122.11 nkia@192.168.122.14"` | manifest에 nodeSelector가 없어 **3개 워커 전부**에 이미지 필요 (§6 미결) |

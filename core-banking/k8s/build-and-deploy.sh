@@ -75,7 +75,9 @@ echo "  Phase 3: kubectl apply (envsubst 치환 포함)"
 echo "========================================="
 # 매니페스트의 placeholder 를 deploy-time 에 치환.
 # OTLP_ENDPOINT / POLESTAR_ORG_ID 는 필수. *_TARGET_ID 는 등록 루프(§7)가 주입하며 미설정 시 빈 값으로 치환된다.
-: "${OTLP_ENDPOINT:?OTLP_ENDPOINT 미설정 — ansible 또는 수동 export 필요. 예: export OTLP_ENDPOINT=http://192.168.230.104:6565}"
+# OTLP endpoint 는 manifest 가 downward API(status.hostIP:4317, 노드 로컬 OTel 에이전트)로 직접 구성한다
+# — OTLP_ENDPOINT env 는 더 이상 치환 대상이 아니다 (에이전트 설치 전 임시 직접전송 시절의 잔재).
+export OTLP_ENDPOINT="${OTLP_ENDPOINT:-}"
 : "${POLESTAR_ORG_ID:?POLESTAR_ORG_ID 미설정 — ansible 또는 수동 export 필요. Polestar10 web 의 24자리 hex 조직 ID}"
 export API_TARGET_ID="${API_TARGET_ID:-}"
 export ACCOUNT_TARGET_ID="${ACCOUNT_TARGET_ID:-}"
