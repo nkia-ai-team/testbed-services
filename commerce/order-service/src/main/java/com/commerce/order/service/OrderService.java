@@ -2,8 +2,10 @@ package com.commerce.order.service;
 
 import com.commerce.common.dto.*;
 import com.commerce.common.exception.ServiceException;
+import com.commerce.order.client.CartClient;
 import com.commerce.order.client.InventoryClient;
 import com.commerce.order.client.PaymentClient;
+import com.commerce.order.client.PricingClient;
 import com.commerce.order.client.ProductClient;
 import com.commerce.order.entity.Order;
 import com.commerce.order.entity.OrderItem;
@@ -28,17 +30,23 @@ public class OrderService {
     private final ProductClient productClient;
     private final PaymentClient paymentClient;
     private final InventoryClient inventoryClient;
+    private final CartClient cartClient;
+    private final PricingClient pricingClient;
     private final OrderEventPublisher eventPublisher;
 
     public OrderService(OrderRepository orderRepository,
                         ProductClient productClient,
                         PaymentClient paymentClient,
                         InventoryClient inventoryClient,
+                        CartClient cartClient,
+                        PricingClient pricingClient,
                         OrderEventPublisher eventPublisher) {
         this.orderRepository = orderRepository;
         this.productClient = productClient;
         this.paymentClient = paymentClient;
         this.inventoryClient = inventoryClient;
+        this.cartClient = cartClient;
+        this.pricingClient = pricingClient;
         this.eventPublisher = eventPublisher;
     }
 
@@ -114,9 +122,92 @@ public class OrderService {
         }
     }
 
+    // checkout 5-hop: cart 조회 → pricing 최종가 확정 → inventory 예약(기존 product경유 흐름 재사용)
+    // → payment 결제(금액은 quote 결과) → 주문 확정 + cart 비우기(best-effort) + outbox 이벤트.
+    // 실패 시 기존 createOrder와 동일한 보상 로직(재고 해제)을 적용한다.
+    @Transactional
+    public OrderResponse checkout(CheckoutRequest request) {
+        Long userId = request.userId();
+        CartResponse cart = cartClient.getCart(userId);
+        if (cart == null || cart.items() == null || cart.items().isEmpty()) {
+            throw new ServiceException(HttpStatus.BAD_REQUEST, "Cart is empty for user: " + userId);
+        }
+
+        List<QuoteRequest.QuoteItemRequest> quoteItems = cart.items().stream()
+                .map(i -> new QuoteRequest.QuoteItemRequest(i.productId(), i.quantity()))
+                .toList();
+        QuoteResponse quote = pricingClient.calculateQuote(new QuoteRequest(quoteItems, request.couponCode()));
+
+        List<ReserveStockResponse> reserved = new ArrayList<>();
+        try {
+            for (var item : cart.items()) {
+                reserved.add(productClient.reserveStock(item.productId(), item.quantity()));
+            }
+
+            PaymentResponse paymentResponse;
+            try {
+                paymentResponse = paymentClient.requestPayment(0L, quote.total(), "CARD");
+            } catch (Exception ex) {
+                log.error("Checkout payment failed, releasing reserved stock: userId={}, {}", userId, ex.getMessage());
+                releaseAllCartItems(cart.items());
+                throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
+            }
+
+            Order order = new Order();
+            order.setUserId(userId);
+            // user-service 조회는 checkout 흐름 범위 밖(스펙상 cart→pricing→inventory→payment) —
+            // 고객 표시명은 최소 placeholder로 채운다. 필요 시 gateway BFF가 user 정보를 별도로 합성한다.
+            order.setCustomerName("user-" + userId);
+            order.setTotalAmount(quote.total());
+            order.setStatus("PAID");
+
+            for (int i = 0; i < cart.items().size(); i++) {
+                var cartItem = cart.items().get(i);
+                var stockRes = reserved.get(i);
+                var quoteItem = quote.items().get(i);
+
+                OrderItem orderItem = new OrderItem();
+                orderItem.setProductId(cartItem.productId());
+                orderItem.setProductName(stockRes.name());
+                orderItem.setQuantity(cartItem.quantity());
+                orderItem.setUnitPrice(quoteItem.unitPrice());
+                orderItem.setSubtotal(quoteItem.subtotal());
+                order.addItem(orderItem);
+            }
+
+            orderRepository.save(order);
+
+            try {
+                eventPublisher.publish(new OrderEvent(
+                        order.getId(),
+                        order.getCustomerName(),
+                        order.getCustomerEmail(),
+                        order.getTotalAmount(),
+                        order.getStatus()
+                ));
+            } catch (Exception ex) {
+                log.warn("Failed to publish order event (non-critical): {}", ex.getMessage());
+            }
+
+            cartClient.clearCart(userId); // best-effort — 실패해도 주문은 이미 성공(클라이언트 내부에서 예외를 흡수)
+
+            return toResponse(order);
+
+        } catch (ServiceException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            log.error("Checkout failed, releasing reserved stock: userId={}, {}", userId, ex.getMessage());
+            releaseAllCartItems(cart.items());
+            throw new ServiceException(HttpStatus.INTERNAL_SERVER_ERROR, "Checkout failed: " + ex.getMessage());
+        }
+    }
+
     @Transactional(readOnly = true)
-    public List<OrderResponse> getAllOrders() {
-        return orderRepository.findAll().stream().map(this::toResponse).toList();
+    public List<OrderResponse> getAllOrders(Long userId) {
+        List<Order> orders = userId != null
+                ? orderRepository.findByUserIdOrderByCreatedAtDesc(userId)
+                : orderRepository.findAll();
+        return orders.stream().map(this::toResponse).toList();
     }
 
     @Transactional(readOnly = true)
@@ -151,6 +242,12 @@ public class OrderService {
     }
 
     private void releaseAll(List<OrderRequest.OrderItemRequest> items) {
+        for (var item : items) {
+            inventoryClient.releaseStock(item.productId(), item.quantity());
+        }
+    }
+
+    private void releaseAllCartItems(List<CartItemResponse> items) {
         for (var item : items) {
             inventoryClient.releaseStock(item.productId(), item.quantity());
         }

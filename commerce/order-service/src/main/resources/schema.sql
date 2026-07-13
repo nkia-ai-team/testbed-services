@@ -2,6 +2,7 @@ CREATE SCHEMA IF NOT EXISTS order_schema;
 
 CREATE TABLE IF NOT EXISTS order_schema.orders (
     id              BIGSERIAL PRIMARY KEY,
+    user_id         BIGINT,
     customer_name   VARCHAR(100) NOT NULL,
     customer_email  VARCHAR(200),
     total_amount    DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -9,6 +10,8 @@ CREATE TABLE IF NOT EXISTS order_schema.orders (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_orders_user ON order_schema.orders(user_id);
 
 CREATE TABLE IF NOT EXISTS order_schema.order_items (
     id          BIGSERIAL PRIMARY KEY,

@@ -10,8 +10,9 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>order-service</artifactId>
-    <name>Order Service</name>
+    <artifactId>api-gateway</artifactId>
+    <name>API Gateway</name>
+    <description>엣지 라우팅 + 인증 검증 + 집계 조회 (BFF). DB 없음.</description>
 
     <properties>
         <resilience4j.version>2.2.0</resilience4j.version>
@@ -26,20 +27,7 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.kafka</groupId>
-            <artifactId>spring-kafka</artifactId>
-        </dependency>
-        <!-- cart/pricing/inventory/product/payment 하류 호출에 timeout+retry+circuit breaker 적용 -->
+        <!-- 모든 하류 호출에 timeout+retry+circuit breaker (서비스별 인스턴스 분리) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>

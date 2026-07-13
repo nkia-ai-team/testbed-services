@@ -14,6 +14,11 @@ public class Order extends BaseEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    // checkout(userId 기반) 주문에만 채워진다. 기존 POST /api/orders(직접 items 지정) 경로는
+    // userId 없이 계속 동작해야 하므로 nullable로 유지한다.
+    @Column(name = "user_id")
+    private Long userId;
+
     @Column(name = "customer_name", nullable = false, length = 100)
     private String customerName;
 
@@ -31,6 +36,8 @@ public class Order extends BaseEntity {
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
+    public Long getUserId() { return userId; }
+    public void setUserId(Long userId) { this.userId = userId; }
     public String getCustomerName() { return customerName; }
     public void setCustomerName(String customerName) { this.customerName = customerName; }
     public String getCustomerEmail() { return customerEmail; }

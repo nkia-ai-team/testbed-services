@@ -1,5 +1,6 @@
 package com.commerce.order.controller;
 
+import com.commerce.common.dto.CheckoutRequest;
 import com.commerce.common.dto.OrderRequest;
 import com.commerce.common.dto.OrderResponse;
 import com.commerce.order.service.OrderService;
@@ -18,14 +19,21 @@ public class OrderController {
         this.orderService = orderService;
     }
 
+    // 기존 API — 시나리오 러너가 items를 직접 지정해 호출하므로 그대로 유지한다.
     @PostMapping
     public ResponseEntity<OrderResponse> createOrder(@RequestBody OrderRequest request) {
         return ResponseEntity.ok(orderService.createOrder(request));
     }
 
+    // 신규 checkout 오케스트레이션 — cart→pricing→inventory→payment 5-hop.
+    @PostMapping("/checkout")
+    public ResponseEntity<OrderResponse> checkout(@RequestBody CheckoutRequest request) {
+        return ResponseEntity.ok(orderService.checkout(request));
+    }
+
     @GetMapping
-    public ResponseEntity<List<OrderResponse>> getAllOrders() {
-        return ResponseEntity.ok(orderService.getAllOrders());
+    public ResponseEntity<List<OrderResponse>> getAllOrders(@RequestParam(required = false) Long userId) {
+        return ResponseEntity.ok(orderService.getAllOrders(userId));
     }
 
     @GetMapping("/{id}")

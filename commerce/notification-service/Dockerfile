@@ -14,6 +14,7 @@ COPY user-service/pom.xml ./user-service/pom.xml
 COPY cart-service/pom.xml ./cart-service/pom.xml
 COPY pricing-service/pom.xml ./pricing-service/pom.xml
 COPY shipping-service/pom.xml ./shipping-service/pom.xml
+COPY api-gateway/pom.xml ./api-gateway/pom.xml
 
 RUN apt-get update && apt-get install -y maven && \
     mvn -pl commerce-common -am install -DskipTests -q && \

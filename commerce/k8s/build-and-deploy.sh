@@ -15,8 +15,17 @@
 set -euo pipefail
 export DOCKER_BUILDKIT=0
 
-SERVICES=("order" "product" "inventory" "payment" "notification" "user" "cart" "pricing" "shipping")
+SERVICES=("order" "product" "inventory" "payment" "notification" "user" "cart" "pricing" "shipping" "gateway")
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# 모듈 디렉토리 이름 규칙: 대부분 "<svc>-service"이지만 api-gateway만 예외("api-gateway").
+module_dir() {
+  if [[ "$1" == "gateway" ]]; then
+    echo "api-gateway"
+  else
+    echo "$1-service"
+  fi
+}
 
 echo ""
 echo "========================================="
@@ -27,7 +36,7 @@ echo "========================================="
 for svc in "${SERVICES[@]}"; do
   echo ""
   echo ">>> [빌드] commerce-${svc}..."
-  docker build --network=host -f "${PROJECT_ROOT}/${svc}-service/Dockerfile" \
+  docker build --network=host -f "${PROJECT_ROOT}/$(module_dir "$svc")/Dockerfile" \
     -t "commerce-${svc}:latest" "${PROJECT_ROOT}"
   echo "<<< [완료] commerce-${svc}"
 done
@@ -76,11 +85,12 @@ export USER_TARGET_ID="${USER_TARGET_ID:-}"
 export CART_TARGET_ID="${CART_TARGET_ID:-}"
 export PRICING_TARGET_ID="${PRICING_TARGET_ID:-}"
 export SHIPPING_TARGET_ID="${SHIPPING_TARGET_ID:-}"
+export GATEWAY_TARGET_ID="${GATEWAY_TARGET_ID:-}"
 
 # envsubst 화이트리스트로 아래 placeholder 만 치환. 그 외 ${...} (예: K8s downward API 의 $(POD_NAME)) 와 충돌 회피.
 # 파일 이름 앞 00-, 01-, 10-, 20-, 30- 번호 → kubectl apply 가 알파벳순 적용:
 # Namespace(00) → Secret(01) → ConfigMap(02) → PostgreSQL(10) → ... → Nginx(30)
-WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${PRODUCT_TARGET_ID} ${INVENTORY_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFICATION_TARGET_ID} ${USER_TARGET_ID} ${CART_TARGET_ID} ${PRICING_TARGET_ID} ${SHIPPING_TARGET_ID}'
+WHITELIST='${OTLP_ENDPOINT} ${POLESTAR_ORG_ID} ${ORDER_TARGET_ID} ${PRODUCT_TARGET_ID} ${INVENTORY_TARGET_ID} ${PAYMENT_TARGET_ID} ${NOTIFICATION_TARGET_ID} ${USER_TARGET_ID} ${CART_TARGET_ID} ${PRICING_TARGET_ID} ${SHIPPING_TARGET_ID} ${GATEWAY_TARGET_ID}'
 for f in "${PROJECT_ROOT}/k8s/"*.yaml; do
   envsubst "$WHITELIST" < "$f" | kubectl apply -f -
 done

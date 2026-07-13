@@ -30,6 +30,8 @@ data:
   CART_SERVICE_URL: http://testbed-cart:8086
   PRICING_SERVICE_URL: http://testbed-pricing:8087
   SHIPPING_SERVICE_URL: http://testbed-shipping:8088
+  # api-gateway가 /api/orders/** 프록시 + BFF 집계(최근 주문 조회)에 order-service를 호출한다.
+  ORDER_SERVICE_URL: http://testbed-order:8080
 
   # --- 외부 PG Mock 서버 ---
   # pg-mock은 K3s 밖에서 Docker로 돌아가므로, 서버 IP를 직접 적는다.
@@ -53,86 +55,18 @@ data:
   # Nginx 컨테이너의 /etc/nginx/conf.d/default.conf 에 들어감.
   # 경로별로 해당 서비스로 라우팅하는 Nginx 설정.
   # /api/products → product-service, /api/orders → order-service 등.
+  # §2 목표 그래프(client → api-gateway → 각 도메인 서비스)에 맞춰 nginx는 모든 /api/*를
+  # api-gateway 단일 upstream으로만 전달한다. 개별 서비스 라우팅/인증/집계는 게이트웨이가 맡는다.
   default.conf: |
-    upstream order-service {
-        server testbed-order:8080;
-    }
-    upstream product-service {
-        server testbed-product:8081;
-    }
-    upstream inventory-service {
-        server testbed-inventory:8082;
-    }
-    upstream payment-service {
-        server testbed-payment:8083;
-    }
-    upstream user-service {
-        server testbed-user:8085;
-    }
-    upstream cart-service {
-        server testbed-cart:8086;
-    }
-    upstream pricing-service {
-        server testbed-pricing:8087;
-    }
-    upstream shipping-service {
-        server testbed-shipping:8088;
+    upstream api-gateway {
+        server testbed-gateway:8089;
     }
 
     server {
         listen 80;
 
-        location /api/products {
-            proxy_pass http://product-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/inventory {
-            proxy_pass http://inventory-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/payments {
-            proxy_pass http://payment-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/orders {
-            proxy_pass http://order-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/users {
-            proxy_pass http://user-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/carts {
-            proxy_pass http://cart-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/pricing {
-            proxy_pass http://pricing-service;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        }
-
-        location /api/shipments {
-            proxy_pass http://shipping-service;
+        location /api/ {
+            proxy_pass http://api-gateway;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

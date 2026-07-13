@@ -18,14 +18,14 @@ COPY api-gateway/pom.xml ./api-gateway/pom.xml
 
 RUN apt-get update && apt-get install -y maven && \
     mvn -pl commerce-common -am install -DskipTests -q && \
-    mvn -pl inventory-service dependency:go-offline -q
+    mvn -pl api-gateway dependency:go-offline -q
 
-COPY inventory-service/src ./inventory-service/src
-RUN mvn -pl inventory-service package -DskipTests -q
+COPY api-gateway/src ./api-gateway/src
+RUN mvn -pl api-gateway package -DskipTests -q
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=builder /build/inventory-service/target/*.jar app.jar
+COPY --from=builder /build/api-gateway/target/*.jar app.jar
 RUN mkdir -p /opt/apm
-EXPOSE 8082
+EXPOSE 8089
 ENTRYPOINT ["java", "-jar", "app.jar"]

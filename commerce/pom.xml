@@ -29,6 +29,7 @@
         <module>cart-service</module>
         <module>pricing-service</module>
         <module>shipping-service</module>
+        <module>api-gateway</module>
     </modules>
 
     <properties>

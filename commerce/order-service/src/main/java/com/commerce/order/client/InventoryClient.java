@@ -1,7 +1,8 @@
 package com.commerce.order.client;
 
 import com.commerce.common.dto.InventoryReleaseRequest;
-import com.commerce.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -19,6 +20,9 @@ public class InventoryClient {
         this.inventoryRestClient = inventoryRestClient;
     }
 
+    // 보상 트랜잭션(재고 해제) — 실패해도 예외를 던지지 않고 로그만 남긴다(기존 동작 유지).
+    @CircuitBreaker(name = "inventoryClient", fallbackMethod = "releaseStockFallback")
+    @Retry(name = "inventoryClient")
     public void releaseStock(Long productId, int quantity) {
         try {
             inventoryRestClient.post()
@@ -31,5 +35,10 @@ public class InventoryClient {
         } catch (Exception ex) {
             log.error("Failed to release stock for product {}: {}", productId, ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private void releaseStockFallback(Long productId, int quantity, Throwable ex) {
+        log.error("Inventory service unavailable, could not release stock for product {}: {}", productId, ex.getMessage());
     }
 }

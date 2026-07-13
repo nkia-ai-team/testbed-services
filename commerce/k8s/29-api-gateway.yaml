@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testbed-gateway
+  namespace: rca-testbed-commerce
+  labels:
+    app: testbed-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testbed-gateway
+  template:
+    metadata:
+      labels:
+        app: testbed-gateway
+    spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: Directory
+      containers:
+        - name: api-gateway
+          image: commerce-gateway:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8089
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
+          # DB가 없는 순수 라우팅/집계 계층이라 postgres-secret은 주입하지 않는다.
+          envFrom:
+            - configMapRef:
+                name: service-config
+          env:
+            # --- APM Java Agent ---
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "${OTLP_ENDPOINT}"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_SERVICE_NAME
+              value: "commerce-gateway"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "lucida.organizationId=${POLESTAR_ORG_ID},lucida.groupId=commerce,lucida.target_id=${GATEWAY_TARGET_ID}"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8089
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8089
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8089
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testbed-gateway
+  namespace: rca-testbed-commerce
+spec:
+  selector:
+    app: testbed-gateway
+  ports:
+    - port: 8089
+      targetPort: 8089

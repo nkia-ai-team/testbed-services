@@ -3,6 +3,8 @@ package com.commerce.order.client;
 import com.commerce.common.dto.ReserveStockRequest;
 import com.commerce.common.dto.ReserveStockResponse;
 import com.commerce.common.exception.ServiceException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -19,6 +21,8 @@ public class ProductClient {
         this.productRestClient = productRestClient;
     }
 
+    @CircuitBreaker(name = "productClient", fallbackMethod = "reserveStockFallback")
+    @Retry(name = "productClient")
     public ReserveStockResponse reserveStock(Long productId, int quantity) {
         try {
             return productRestClient.post()
@@ -31,5 +35,11 @@ public class ProductClient {
             throw new ServiceException(HttpStatus.valueOf(ex.getStatusCode().value()),
                     "Product service error for product " + productId + ": " + ex.getMessage());
         }
+    }
+
+    @SuppressWarnings("unused")
+    private ReserveStockResponse reserveStockFallback(Long productId, int quantity, Throwable ex) {
+        throw new ServiceException(HttpStatus.BAD_GATEWAY,
+                "Product service unavailable for product " + productId + ": " + ex.getMessage());
     }
 }

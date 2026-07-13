@@ -1,59 +1,22 @@
 server:
-  port: 8080
+  port: 8089
 
 spring:
   application:
-    name: order-service
-  datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/commerce
-    username: ${DB_USER:commerce}
-    password: ${DB_PASS:commerce1234}
-  jpa:
-    hibernate:
-      ddl-auto: none
-    properties:
-      hibernate:
-        default_schema: order_schema
-    open-in-view: false
-  sql:
-    init:
-      mode: always
-      schema-locations: classpath:schema.sql
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092}
-    consumer:
-      group-id: order-service
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
-
-management:
-  health:
-    kafka:
-      enabled: false
-
-outbox:
-  relay:
-    enabled: true
-
-topics:
-  orders: commerce.orders
-  payments: commerce.payments
+    name: api-gateway
+  # commerce-common이 spring-boot-starter-data-jpa를 컴파일 의존성으로 갖고 있어(outbox 패턴용)
+  # 전이 의존성으로 딸려온다. 게이트웨이는 DB가 없으므로 JPA/DataSource 자동설정을 꺼서
+  # DataSource 빈 부재로 인한 기동 실패를 막는다.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration
 
 services:
-  product:
-    url: ${PRODUCT_SERVICE_URL:http://localhost:8081}
-    connect-timeout: 3s
-    read-timeout: 10s
-  payment:
-    url: ${PAYMENT_SERVICE_URL:http://localhost:8083}
-    connect-timeout: 3s
-    read-timeout: 15s
-  inventory:
-    url: ${INVENTORY_SERVICE_URL:http://localhost:8082}
+  user:
+    url: ${USER_SERVICE_URL:http://localhost:8085}
     connect-timeout: 3s
     read-timeout: 10s
   cart:
@@ -64,41 +27,59 @@ services:
     url: ${PRICING_SERVICE_URL:http://localhost:8087}
     connect-timeout: 3s
     read-timeout: 10s
+  shipping:
+    url: ${SHIPPING_SERVICE_URL:http://localhost:8088}
+    connect-timeout: 3s
+    read-timeout: 10s
+  order:
+    url: ${ORDER_SERVICE_URL:http://localhost:8080}
+    connect-timeout: 3s
+    read-timeout: 15s
+  product:
+    url: ${PRODUCT_SERVICE_URL:http://localhost:8081}
+    connect-timeout: 3s
+    read-timeout: 10s
 
-# checkout 5-hop(cart→pricing→inventory(product경유)→payment)의 모든 하류 호출에
-# timeout(위 services.*.read-timeout) + retry(지수백오프) + circuit breaker를 서비스별로 분리 적용.
+# 하류 서비스별 CB/Retry 인스턴스 분리 — 한 서비스 장애가 다른 라우트로 번지지 않게 격리.
 resilience4j:
   circuitbreaker:
     instances:
-      productClient:
+      user:
         sliding-window-size: 10
         minimum-number-of-calls: 5
         failure-rate-threshold: 50
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
-      inventoryClient:
+      cart:
         sliding-window-size: 10
         minimum-number-of-calls: 5
         failure-rate-threshold: 50
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
-      paymentClient:
+      pricing:
         sliding-window-size: 10
         minimum-number-of-calls: 5
         failure-rate-threshold: 50
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
-      cartClient:
+      shipping:
         sliding-window-size: 10
         minimum-number-of-calls: 5
         failure-rate-threshold: 50
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
-      pricingClient:
+      order:
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+      product:
         sliding-window-size: 10
         minimum-number-of-calls: 5
         failure-rate-threshold: 50
@@ -107,28 +88,32 @@ resilience4j:
         automatic-transition-from-open-to-half-open-enabled: true
   retry:
     instances:
-      productClient:
+      user:
         max-attempts: 3
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
-      inventoryClient:
+      cart:
         max-attempts: 3
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
-      paymentClient:
-        # 결제는 재시도 증폭(중복 결제) 위험이 커서 시도 횟수를 낮게 유지.
+      pricing:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      shipping:
+        max-attempts: 3
+        wait-duration: 200ms
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+      order:
         max-attempts: 2
         wait-duration: 300ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
-      cartClient:
-        max-attempts: 3
-        wait-duration: 200ms
-        enable-exponential-backoff: true
-        exponential-backoff-multiplier: 2
-      pricingClient:
+      product:
         max-attempts: 3
         wait-duration: 200ms
         enable-exponential-backoff: true

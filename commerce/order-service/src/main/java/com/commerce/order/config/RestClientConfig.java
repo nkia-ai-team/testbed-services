@@ -43,4 +43,26 @@ public class RestClientConfig {
         factory.setReadTimeout(readTimeout);
         return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
     }
+
+    @Bean
+    public RestClient cartRestClient(
+            @Value("${services.cart.url}") String baseUrl,
+            @Value("${services.cart.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${services.cart.read-timeout:10s}") Duration readTimeout) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+    }
+
+    @Bean
+    public RestClient pricingRestClient(
+            @Value("${services.pricing.url}") String baseUrl,
+            @Value("${services.pricing.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${services.pricing.read-timeout:10s}") Duration readTimeout) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+    }
 }
