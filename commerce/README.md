@@ -113,6 +113,45 @@ export POLESTAR_ORG_ID=<24-hex-org-id>
 cd commerce && bash k8s/build-and-deploy.sh
 ```
 
+## 지속 부하 생성기 (loadgen)
+
+> 이 절 이전의 README 본문(아키텍처·Services·DB 구조 등)은 최초 5서비스 시절 그대로이며
+> 3a/3b/4번 증분(user/cart/pricing/shipping/api-gateway 신설, checkout 오케스트레이션,
+> 배치 4종, Kafka 전환)이 반영되지 않은 상태다 — 이번 5번 증분은 loadgen 절만 추가했고
+> 나머지 README 갱신은 범위 밖이라 손대지 않았다(발견만 남겨둔다).
+
+`commerce/loadgen/`은 시나리오(장애 주입)와 별개로 상시 동작하는 baseline 부하 생성기다
+(`docs/spec-testbed-expansion.md` §8). rca-scenario-runner가 장애를 주입하는 동안에도,
+그리고 평상시에도 끊김 없이 현실적인 사용자 여정을 만들어 "평소 데이터"가 계속 쌓이게 한다.
+
+- **진입점**: api-gateway(`GATEWAY_URL`, 기본 `http://testbed-gateway:8089`) 하나뿐이다.
+  단, cross-domain 이체 여정만 게이트웨이를 거치지 않고 core-banking transfer API를
+  직접 호출한다(게이트웨이가 `/api/transfers`를 프록시하지 않음).
+- **여정 가중**: 브라우징 65% / 검색 15% / 장바구니 10% / 체크아웃 8% / cross-domain 이체 2%.
+  체크아웃·장바구니는 flagship 상품(id 1~16, product/pricing/inventory 3개 서비스에 걸쳐
+  정합된 시드)만 사용하고, 브라우징 상세 조회는 대량 시드 상품(최대 id 3000)까지 포함한다.
+- **RPS 프로파일**: `commerce/loadgen/entrypoint.sh`가 매시 KST 시각 기준 코사인 근사
+  diurnal 곡선으로 목표 RPS를 계산해 k6 constant-arrival-rate로 1시간씩 반복 실행한다.
+- **끄는 법**: `kubectl -n rca-testbed-commerce scale deployment testbed-loadgen --replicas=0`
+  (또는 `kubectl delete -f k8s/40-loadgen.yaml`).
+
+### 환경변수 (loadgen)
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `GATEWAY_URL` | http://testbed-gateway:8089 | api-gateway 진입점 |
+| `BANKING_TRANSFER_URL` | http://testbed-transfer.rca-testbed-banking.svc.cluster.local:8082 | cross-domain 이체 직접 호출 대상 |
+| `PEAK_RPS` | 10 | 낮 피크(16시경) 목표 RPS |
+| `TROUGH_RPS` | 2 | 새벽 저점(4시경) 목표 RPS |
+| `LOADGEN_SEED` | 42 | mulberry32 PRNG 시드 — 여정/유저/상품 선택 재현성 |
+| `PRE_ALLOCATED_VUS` / `MAX_VUS` | 20 / 50 | k6 constant-arrival-rate VU 풀 크기 |
+
+로컬에서 스크립트만 검증할 때:
+
+```bash
+docker run --rm -v "$(pwd)/loadgen:/scripts" grafana/k6 inspect /scripts/script.js
+```
+
 ## 시작하기 (로컬 개발)
 
 ### 사전 요구사항

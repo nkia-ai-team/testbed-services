@@ -32,6 +32,8 @@ data:
   SHIPPING_SERVICE_URL: http://testbed-shipping:8088
   # api-gateway가 /api/orders/** 프록시 + BFF 집계(최근 주문 조회)에 order-service를 호출한다.
   ORDER_SERVICE_URL: http://testbed-order:8080
+  # loadgen(§8 지속 부하 생성기)이 client 진입점(§2 그래프)으로 호출하는 게이트웨이 주소.
+  GATEWAY_SERVICE_URL: http://testbed-gateway:8089
 
   # --- 외부 PG Mock 서버 ---
   # pg-mock은 K3s 밖에서 Docker로 돌아가므로, 서버 IP를 직접 적는다.

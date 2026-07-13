@@ -78,6 +78,13 @@ kubectl create configmap postgres-init-scripts \
   --from-file=02-seed-all.sql="${PROJECT_ROOT}/db/seed-all.sql" \
   -n rca-testbed-commerce --dry-run=client -o yaml | kubectl apply -f -
 
+# loadgen(§8)의 k6 스크립트도 같은 이유(정본-사본 드리프트 방지)로 commerce/loadgen/에서
+# 직접 ConfigMap을 생성한다. 40-loadgen.yaml은 이 ConfigMap을 이름으로만 참조한다.
+kubectl create configmap loadgen-scripts \
+  --from-file=script.js="${PROJECT_ROOT}/loadgen/script.js" \
+  --from-file=entrypoint.sh="${PROJECT_ROOT}/loadgen/entrypoint.sh" \
+  -n rca-testbed-commerce --dry-run=client -o yaml | kubectl apply -f -
+
 echo ""
 echo "========================================="
 echo "  Phase 3: K8s 매니페스트 적용 (envsubst 치환 포함)"

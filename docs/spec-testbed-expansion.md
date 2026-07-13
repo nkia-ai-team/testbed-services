@@ -119,7 +119,18 @@ users, addresses, categories, products, product_variants, inventory, inventory_m
 **자립성**: 시드 유저/상품 재사용, 주문은 폐기 가능 데이터, 장기 실행에도 상태 팽창 없게(정리 배치와 연동).
 **eval 연계**: eval-data-capture의 "긴 운영 캡처"가 바로 이 상주 부하 위에서 시간창을 뜬다. 평가 재현성을 위해 **부하 프로파일·시드·RNG 고정** 필요.
 
-**미결(부하)**: RPS 절대치(테스트베드 용량 대비), diurnal 진폭/주기, 부하 트래픽을 golden에서 어떻게 배경(정상)으로 표시할지.
+**구현 확정값(5번 증분, `commerce/loadgen/`)**: RPS는 시(hour)별 코사인 근사 프로파일 —
+피크(오후 16시) `PEAK_RPS`(기본 10 req/s), 저점(새벽 4시) `TROUGH_RPS`(기본 2 req/s), 둘 다
+env로 조정 가능. 4노드 ARM VM 규모 대비 보수적으로 잡은 값이라 실측 후 조정 여지가 있다.
+주기는 24시간 1사이클(요일 가중은 걸지 않음 — 요일별 diurnal은 4번 증분의 과거 주문 시드에서만
+구현했고, loadgen 자체는 매일 같은 하루 프로파일을 반복한다). RNG는 `LOADGEN_SEED`(기본 42) +
+mulberry32로 고정, VU별로 시드를 분기해(`SEED + VU*7919`) 재현성과 VU 간 비상관성을 함께
+확보했다.
+
+**미결로 남긴 것**: 부하 트래픽을 golden에서 어떻게 배경(정상)으로 표시할지, k6 자체의
+Prometheus/OTLP 메트릭 내보내기(스펙 §8 "도구" 항목에 언급됐으나 이번 구현은 k8s 배치만
+다뤘고 k6 실행 메트릭의 관측 파이프라인 연결은 다음 단계), 요일별 diurnal(주말 가중)을
+loadgen RPS 자체에도 반영할지.
 
 ---
 
