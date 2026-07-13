@@ -42,6 +42,9 @@ spec:
       containers:
         - name: postgres
           image: postgres:16-alpine
+          # Polestar DPM(slowSQL 수집)용 pg_stat_statements는 서버 시작 시점에
+          # shared_preload_libraries로 로드되어야 한다 (postgresql.conf 기본값엔 없음).
+          args: ["-c", "shared_preload_libraries=pg_stat_statements"]
           ports:
             - containerPort: 5432
           # Secret에서 POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD를 환경변수로 주입.
