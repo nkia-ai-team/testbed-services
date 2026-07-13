@@ -71,22 +71,15 @@ public class OrderService {
                         stockResponse.price().multiply(BigDecimal.valueOf(item.quantity())));
             }
 
-            // 2. 결제 요청
-            PaymentResponse paymentResponse;
-            try {
-                paymentResponse = paymentClient.requestPayment(0L, totalAmount, "CARD");
-            } catch (Exception ex) {
-                log.error("Payment failed, releasing reserved stock: {}", ex.getMessage());
-                releaseAll(request.items());
-                throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
-            }
-
-            // 3. 주문 저장
+            // 2. 주문을 PENDING 으로 먼저 저장 — 결제·banking 이체가 실제 주문번호를 갖게 한다.
+            // (이전엔 orderId=0 placeholder 로 결제를 불러 banking transfers.order_id 추적성이 죽고,
+            //  commerce.payments 이벤트 기반 주문 상태 보정도 무력화됐다. 결제 실패 시엔 이
+            //  트랜잭션이 롤백되어 PENDING 행도 남지 않는다 — 기존 관측 행동과 동일.)
             Order order = new Order();
             order.setCustomerName(request.customerName());
             order.setCustomerEmail(request.customerEmail());
             order.setTotalAmount(totalAmount);
-            order.setStatus("PAID");
+            order.setStatus("PENDING");
 
             for (int i = 0; i < request.items().size(); i++) {
                 var itemReq = request.items().get(i);
@@ -101,6 +94,19 @@ public class OrderService {
                 order.addItem(orderItem);
             }
 
+            orderRepository.save(order);
+
+            // 3. 결제 요청 (실제 orderId 전달)
+            PaymentResponse paymentResponse;
+            try {
+                paymentResponse = paymentClient.requestPayment(order.getId(), totalAmount, "CARD");
+            } catch (Exception ex) {
+                log.error("Payment failed, releasing reserved stock: {}", ex.getMessage());
+                releaseAll(request.items());
+                throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
+            }
+
+            order.setStatus("PAID");
             orderRepository.save(order);
 
             // 4. 비동기 알림 이벤트 발행
@@ -150,22 +156,15 @@ public class OrderService {
                 reserved.add(productClient.reserveStock(item.productId(), item.quantity()));
             }
 
-            PaymentResponse paymentResponse;
-            try {
-                paymentResponse = paymentClient.requestPayment(0L, quote.total(), "CARD");
-            } catch (Exception ex) {
-                log.error("Checkout payment failed, releasing reserved stock: userId={}, {}", userId, ex.getMessage());
-                releaseAllCartItems(cart.items());
-                throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
-            }
-
+            // 주문을 PENDING 으로 먼저 저장해 결제·banking 이체에 실제 주문번호를 전달한다
+            // (createOrder 와 동일 구조 — 실패 시 트랜잭션 롤백으로 PENDING 행도 남지 않음).
             Order order = new Order();
             order.setUserId(userId);
             // user-service 조회는 checkout 흐름 범위 밖(스펙상 cart→pricing→inventory→payment) —
             // 고객 표시명은 최소 placeholder로 채운다. 필요 시 gateway BFF가 user 정보를 별도로 합성한다.
             order.setCustomerName("user-" + userId);
             order.setTotalAmount(quote.total());
-            order.setStatus("PAID");
+            order.setStatus("PENDING");
 
             for (int i = 0; i < cart.items().size(); i++) {
                 var cartItem = cart.items().get(i);
@@ -181,6 +180,18 @@ public class OrderService {
                 order.addItem(orderItem);
             }
 
+            orderRepository.save(order);
+
+            PaymentResponse paymentResponse;
+            try {
+                paymentResponse = paymentClient.requestPayment(order.getId(), quote.total(), "CARD");
+            } catch (Exception ex) {
+                log.error("Checkout payment failed, releasing reserved stock: userId={}, {}", userId, ex.getMessage());
+                releaseAllCartItems(cart.items());
+                throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
+            }
+
+            order.setStatus("PAID");
             orderRepository.save(order);
 
             try {
