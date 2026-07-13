@@ -39,8 +39,11 @@ spec:
               value: "CONTROLLER"
             - name: KAFKA_LISTENERS
               value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+            # CONTROLLER 리스너도 advertised.listeners 에 명시해야 한다 — core-banking 실기동 검증에서 발견:
+            # apache/kafka:3.9.0 KRaft combined mode 는 CONTROLLER 항목 누락 시 listeners 의 0.0.0.0 이
+            # 흘러들어가 "advertised.listeners cannot use the nonroutable meta-address 0.0.0.0" 로 기동 실패한다.
             - name: KAFKA_ADVERTISED_LISTENERS
-              value: "PLAINTEXT://testbed-kafka:9092"
+              value: "PLAINTEXT://testbed-kafka:9092,CONTROLLER://testbed-kafka:9093"
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
               value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
             - name: KAFKA_INTER_BROKER_LISTENER_NAME
