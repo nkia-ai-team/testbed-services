@@ -22,6 +22,11 @@ spec:
       labels:
         app: testbed-order         # 찍어낸 Pod에 붙일 라벨 (selector와 일치해야!)
     spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: Directory
       containers:                  # 이 Pod 안에 들어갈 컨테이너 목록
         - name: order-service      # 컨테이너 이름 (자유롭게 지정)
           image: commerce-order:latest   # 어떤 Docker 이미지를 쓸지
@@ -38,6 +43,10 @@ spec:
                 name: service-config     # ConfigMap
             - secretRef:
                 name: postgres-secret    # Secret
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
 
           # env: 개별 환경변수를 하나씩 지정 (이름을 바꿔서 넣을 때 유용)
           # Secret에는 POSTGRES_USER로 저장했지만, 우리 앱은 DB_USER를 기대함
@@ -52,6 +61,24 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            - name: OTEL_SERVICE_NAME
+              value: "commerce-order"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://192.168.230.118:14317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "lucida.groupId=commerce"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
 
           # --- 헬스체크 (Probe) ---
           # startupProbe가 부팅 완료까지 liveness/readiness를 억제 → 최대 150초 부팅 허용

@@ -15,6 +15,11 @@ spec:
       labels:
         app: testbed-order
     spec:
+      volumes:
+        - name: apm-agent
+          hostPath:
+            path: /opt/polestar10/apm
+            type: Directory
       containers:
         - name: order-service
           image: food-delivery-order:latest
@@ -24,6 +29,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: service-config
+          volumeMounts:
+            - name: apm-agent
+              mountPath: /opt/apm
+              readOnly: true
           env:
             - name: DB_USER
               valueFrom:
@@ -35,6 +44,24 @@ spec:
                 secretKeyRef:
                   name: mysql-secret
                   key: MYSQL_PASSWORD
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            - name: OTEL_SERVICE_NAME
+              value: "food-delivery-order"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://192.168.230.118:14317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "lucida.groupId=food-delivery"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "10000"
           startupProbe:
             httpGet:
               path: /actuator/health
