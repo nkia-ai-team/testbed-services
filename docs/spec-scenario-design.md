@@ -226,6 +226,28 @@ exporter(softflowd 등)를 올려 소스를 만든다. SSH 자격 확보 대기.
 우선 후보: G8의 짝(플랜 변화 없이 데이터량 증가만으로 느려진 경우), G17의
 짝(배포는 있었지만 무관한 경우 — 기존 Deployment Change 음성과 통합 검토).
 
+### 9.2 관측 가능성 실측 (2026-07-14, 119 VictoriaMetrics 직접 질의)
+
+G군의 원인 신호가 **실제 수집 중**인지 119에 라이브 확인한 결과. 총 1,474개
+메트릭 유입 중.
+
+| 후보 | 원인 신호 메트릭 (실측 확인) | 상태 |
+| --- | --- | --- |
+| G1 디스크 풀 | `sms.file_system.used`, `sms.file_system.inode_used` | ✅ 수집 중 |
+| G2 IO 포화 | `sms.disk.busy_time`·`io_wait_counts`·read/write 8종 | ✅ 수집 중 |
+| G3~G6 K8s | `kcm.pod.container_oom_killed`, `kcm.pod.container_restart_count` (650 series 라이브) | ✅ 수집 중 |
+| G7 데드락 | `dpm.oracle.session.blocked_session`·`blocking_session` (PG/MySQL 대응 계열 존재) | ⚠️ 세션 blocking으로 관측 — `dpm_ch_query_event`는 ClickHouse 엔진 전용이라 PG/Oracle 데드락 "이벤트"는 ERROR 로그로 보강 |
+| G9/L2 커넥션 | `db.client.connections.pending_requests`·`timeouts`·`usage`(HikariCP OTel) + `dpm.*.session.*` — 앱측·DB측 양쪽 수집 | ✅ 수집 중 |
+| G10 Kafka lag | `kafka.consumer.records_lag`(_avg/_max 포함, 247 series 라이브) — **관측 gap 아니었음, 해소** | ✅ 수집 중 |
+| G12 스레드 | `jvm.thread.count` (tomcat executor pool 메트릭은 없음 — 간접 관측) | ⚠️ 간접 |
+| G13 GC | `jvm.memory.used_after_last_gc`, `jvm.memory.used/limit`, `jvm.cpu.*` | ✅ 수집 중 |
+| G17/G18 배포 | RCA 변경 이력 소스는 PG `policy_deployments`/`change_history` — **k8s 앱 배포가 여기 남는지 미확인**, KCM pod 재생성으로 간접 관측 가능 | ❓ 확인 필요 |
+| G19/G20 NMS | 수신기 존재·테이블 0건 — .57 셋업 선행 (§9 전제 작업) | 🔧 셋업 대기 |
+
+공통 유의: **수집 ≠ 감지.** stream anomaly는 `ai_coverages`에 (target×metric)
+등록된 것만 처리하므로([부하 규칙 §4.1-1](spec-scenario-load.md)), 각 시나리오
+승격 전에 해당 메트릭의 coverage 등록 확인이 precondition이다.
+
 ## 10. 열린 결정
 
 - 계열별 Phase 1 후보 목록.
