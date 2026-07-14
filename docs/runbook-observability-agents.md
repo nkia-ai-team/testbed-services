@@ -57,6 +57,11 @@ summary: 109 테스트베드에 lucida-next(AP 119) 관측 4계층을 붙이는 
   meta.collector=polestar-java, service_name) +
   `POST /targets/{id}/collectors`(kind=polestar_apm, config.service_name).
   매칭키는 **service.name**(SMS는 target_id UUID).
+- **⚠ 이벤트 탭 연결 (커밋 7d72bda)**: 트레이스/메트릭은 service.name으로 붙지만
+  **로그→이벤트 파이프라인은 `resource_attributes['lucida.target_id']`로만**
+  target을 채운다. 미전송 시 서비스 상세 이벤트 탭(target_id 필터)이 항상 0건.
+  → `OTEL_RESOURCE_ATTRIBUTES`에 `lucida.target_id=<등록 target UUID>` 추가 필수.
+  UUID는 등록 시점 값 하드코딩이라 **자산 재등록(UUID 변경) 시 manifest도 갱신**해야 한다.
 - **검증**: 19/19 트레이스 유입(RPS·p50/p95/p99).
 
 ## 3. DPM — DB 세션/lock/slowSQL (PG·MySQL·Oracle)
