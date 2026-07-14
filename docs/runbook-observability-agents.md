@@ -2,7 +2,7 @@
 title: 관측 에이전트 설치 runbook (SMS·APM·DPM·KCM)
 status: Active
 owner: project
-last_reviewed: 2026-07-13
+last_reviewed: 2026-07-14
 tags:
   - runbook
   - testbed
@@ -168,15 +168,23 @@ org_id/token은 사전 등록으로 발급받는다:
 `POST /targets`(type=kubernetes, name=클러스터명, meta.collector=polestar-agent)
 → 응답에 `kcm:{org_id, token}` 1회 노출.
 
-### 4-3. 함정 3개
+### 4-3. 함정 (서버 빌드에 따라 다름 — 2026-07-14 갱신)
 
-1. **토큰 바인딩이 실제로는 동작 안 함** — 서버가 `KCM_TRUST_UNTOKENED=true`
-   (compose 기본)라 에이전트는 **cluster_id 자동등록 경로**로 신규 target을
-   만든다(name=`cluster-<uid>`, display=클러스터명, 자동 managed/approved).
-   사전 등록한 target은 데이터가 안 붙으므로 삭제하고 자동등록분을 정본으로
-   삼는다. (2026-07-13 정본: `cluster-18c410c8-…`, display `rca-testbed`)
-2. **`OperatorService Unimplemented` 에러 도배** — AP측 명령 스트림이 TODO stub.
-   수집과 무관하나 에이전트가 3ms 간격 재시도해 master 로그가 시끄럽다.
+1. **토큰은 필수이며 target 삭제 시 즉시 수집이 끊긴다.**
+   2026-07-13 이전 빌드는 무토큰 자동등록(`KCM_TRUST_UNTOKENED=true`)을
+   허용했으나, 07-11 커밋으로 **폐지**(fail-closed)됐고 118은 07-13 저녁
+   업데이트로 이를 반영했다. 에이전트는 토큰을 `Authorization` 헤더로 보내며
+   새 빌드는 이를 `kcm-token`의 폴백으로 수용한다.
+   - 토큰 분실/무효 시: `POST /targets/{id}/kcm-token`
+     (body `{"current_password":"<로그인 비번>"}`)로 재발급 → helm upgrade
+     `--set kcm.orgId=<target-id> --set kcm.token=<새 토큰>` + rollout restart.
+   - 증상: master 로그에 `Unauthenticated: invalid kcm agent credentials`,
+     VM에서 kcm.* 샘플 중단.
+   - (2026-07-13 실제 사고: 토큰이 묶인 사전등록 target을 중복 정리로 삭제
+     → 서버 업데이트 시점부터 수집 중단. 자동등록 target
+     `cluster-18c410c8-…`(display `rca-testbed`)에 토큰 재발급으로 복구.)
+2. **`OperatorService Unimplemented` 에러 도배**(구 빌드) — AP측 명령 스트림
+   stub. 수집과 무관. 새 빌드에서는 구현됨.
 3. **`GET /targets` 기본 목록에 kubernetes type이 안 보인다** —
    `?type=kubernetes` 필터로 조회할 것.
 

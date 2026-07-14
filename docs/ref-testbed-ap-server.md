@@ -2,7 +2,7 @@
 title: 테스트용 AP 서버 (lucida-next 192.168.230.118) 참고 정보
 status: Active
 owner: project
-last_reviewed: 2026-07-13
+last_reviewed: 2026-07-14
 tags:
   - ref
   - testbed
@@ -80,12 +80,13 @@ curl -G http://192.168.230.118:18428/api/v1/label/__name__/values \
 메트릭 네임스페이스: SMS=호스트, APM=OTLP 트레이스(ClickHouse),
 DPM=`dpm.<engine>.*`, KCM=`kcm.<resource>.<measurement>`.
 
-## 5. 알려진 제약 (2026-07-13 빌드 기준)
+## 5. 알려진 제약 (서버는 수시 업데이트 — last_reviewed 기준)
 
 - **Polestar Java agent jar 미포함** — APM은 OTel javaagent → 14317 직접 전송으로 대체.
-- **KCM OperatorService = TODO stub** — 에이전트 로그에 Unimplemented 에러가
-  3ms 간격으로 도배되지만 수집 무관.
-- **`KCM_TRUST_UNTOKENED=true`** — KCM 토큰 바인딩이 사실상 미작동, 에이전트는
-  cluster_id 자동등록 경로로 target 생성(자동 managed/approved).
+- **KCM 토큰 필수 (fail-closed)** — 2026-07-13 저녁 서버 업데이트로 무토큰
+  자동등록 폐지. 토큰 재발급 = `POST /targets/{id}/kcm-token`
+  (body `current_password`). 상세는 runbook §4-3.
+- 서버가 수시로 업데이트되는 개발 스택이므로 **수집 중단 시 서버측 변경을
+  먼저 의심**할 것 (2026-07-13 KCM 중단 사례가 정확히 이 패턴).
 - 테스트베드 방향 통신(118→VM)은 워커의 `192.168.230.0/24` 라우트에 의존
   (netplan `99-testbed-230-route.yaml`, runbook §3-1).
