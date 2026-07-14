@@ -21,4 +21,15 @@ public class RestClientConfig {
         factory.setReadTimeout(readTimeout);
         return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
     }
+
+    @Bean
+    public RestClient transferRestClient(
+            @Value("${services.transfer.url}") String baseUrl,
+            @Value("${services.transfer.connect-timeout:3s}") Duration connectTimeout,
+            @Value("${services.transfer.read-timeout:10s}") Duration readTimeout) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(connectTimeout);
+        factory.setReadTimeout(readTimeout);
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+    }
 }
