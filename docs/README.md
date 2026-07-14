@@ -41,6 +41,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
   양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
   service-spec.yaml을 채점 가능한 golden 레코드로 끌어올리는 작성 규칙과 계열별 패턴. (Draft)
+- [부하 시나리오 규칙](spec-scenario-load.md):
+  surge 주입 규칙(R0~R9), 시나리오 간 간격, RCA·이상감지 양축 커버리지,
+  golden 이상감지 기대값과 사후 검증 패스. (Draft)
 
 ## 공용 문서 (rca-agent-next와 양쪽 복사 — 정본 동기화 주의)
 

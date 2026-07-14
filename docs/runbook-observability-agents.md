@@ -248,3 +248,50 @@ curl -sG "$VM/api/v1/query" --data-urlencode \
     교체 후 `sudo /home/nkia/.lucida-agent/lucidactl restart`(파일이 root 소유라 sudo 필수).
   DPM·SNMP는 서버측 폴링이라 무영향. ⚠ SMS는 메트릭이 흘러도 UI가 down일 수 있다 —
   하트비트 기준 판정이므로 agent.env 재포인팅 전까지 down.)
+
+## 6. 로그 수집 (서버 syslog + DB 로그)
+
+로그 수집 커버리지(2026-07-14 기준): 앱=OTLP 자동 ✅ · k8s=KCM 이벤트 ✅ ·
+서버/DB=아래 로그 모니터 등록 필요 · 네트워크=trap 수신기만 존재(장비측 설정 필요) ·
+Oracle alert log=미구현(diag 경로가 마운트 볼륨 밖 — manifest 볼륨 추가 필요).
+
+### 6-1. 구조
+
+SMS 에이전트의 로그 모니터(kind=log)가 유일한 파일 tail 수단이다.
+등록 = `POST http://<AP>:8090/api/custom-monitors` (collector-sms 직접, 인증 없음):
+
+```json
+{"parent_target_id":"<tail 실행 호스트의 server target>","kind":"log",
+ "name":"...","enabled":true,"interval_seconds":5,"unified_log_enabled":true,
+ "owner_kind":"dpm","event_target_id":"<귀속시킬 DB target>",
+ "params":{"fileName":"<절대경로>","scanType":"End","matchingType":"Exact",
+   "fatalPattern":"...","errorPattern":"...","warnPattern":"...","infoPattern":""}}
+```
+
+- `owner_kind=dpm` + `event_target_id` = DB 로그를 호스트가 아닌 **DB target으로 귀속**
+  (생략 시 host 귀속 = 일반 서버 로그).
+- 등록 확인: `GET :8090/api/agent/log-monitors/<호스트IP>` 에 file_path가 나오면 전달됨.
+
+### 6-2. 등록 현황 (2026-07-14)
+
+| 모니터 | 호스트 | 파일 | 귀속 |
+|---|---|---|---|
+| syslog / auth-log ×3 | w1·w2·w3 | /var/log/syslog, /var/log/auth.log | 호스트 |
+| pg-serverlog | w1 | `<local-path PV>/…_pgdata-testbed-postgres-0/log/postgresql.log` | PostgreSQL-commerce |
+| mysql-errorlog | **w3**(PV 노드 고정 — w2 아님 주의) | `<local-path PV>/…_mysqldata-testbed-mysql-0/error.log` | MySQL-fooddelivery |
+
+DB 로그 파일을 PVC 안 고정 경로에 만들기 위한 선행 설정:
+- **PG**: `ALTER SYSTEM SET logging_collector=on, log_directory='log',
+  log_filename='postgresql.log', log_rotation_age=0, log_rotation_size=0` + pod 재시작.
+  한 문장씩 실행(트랜잭션 불가). 설정은 PGDATA(PVC)의 postgresql.auto.conf에 영속 —
+  **레포 manifest에는 없음**, PVC 리셋 시 재적용 필요.
+- **MySQL**: manifest args `--log-error=/var/lib/mysql/error.log` (커밋 9cfab0a).
+
+### 6-3. 함정
+
+- **scanType=End**: 모니터 활성화 이전 라인은 안 잡힌다. 검증은 등록 후 새 라인으로.
+- **ERROR 패턴은 CRITICAL 슬롯으로 발화**(현행 와이어 규약) — 이벤트 등급 CRITICAL이 정상.
+- **에이전트는 glob 미지원**(os.Open 직접) — 파일명이 변하는 경로(파드 로그
+  /var/log/containers 등)는 못 쓴다. PVC 고정 경로를 쓰는 이유.
+- **local-path PV 경로에 PVC UID 포함** — PVC 재생성 시 경로가 바뀌므로 모니터 갱신 필요.
+- 로그 파일 권한(syslog:adm 640, postgres 600)은 에이전트가 root라 문제없음.
