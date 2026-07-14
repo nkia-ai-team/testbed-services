@@ -167,7 +167,31 @@ reject_if: >
 
 이 순서는 구현 난이도가 아니라 평가 리스크 기준이다.
 
-## 9. 열린 결정
+## 9. 원인 유형 백로그 (2026-07-14)
+
+RCA가 읽는 데이터 소스 14종(`../lucida-next` operator/rca 코드 조사)과 현재
+카탈로그(기존 12 + 부하 후보 9, [부하 시나리오 규칙](spec-scenario-load.md)
+§4)를 대조해 도출한 갭. RCA가 볼 수 있는데 어떤 시나리오도 발현시키지 않는
+영역이 백로그다. 목표 규모는 양성 30~50 + 음성 10~15.
+
+| 갭 영역 (계열) | 놀고 있는 RCA 데이터 | 후보 시나리오 예 |
+| --- | --- | --- |
+| 디스크/스토리지 (SMS) | host kin filesystem 리소스 | 디스크 풀 → DB 쓰기 실패, WAL/로그 파티션 고갈 |
+| K8s 세부 (KCM) | pod/node 메트릭, lifecycle 이벤트 | OOMKill, pod eviction, liveness probe 재시작 루프, 이미지 pull 실패 |
+| DB 세부 (DPM) | `dpm_ch_query_event`(데드락/예외), TopSQL | 데드락, 인덱스 없는 쿼리(플랜 변화), 앱 버그성 커넥션 누수 |
+| 이벤트 백본 (Kafka) | (관측 gap 확인 선행 — load spec §7) | consumer 정지 → lag 폭증, 브로커 다운 |
+| 앱 내부 (APM) | 프로세스 메트릭, 트레이스 | 스레드 풀 고갈, JVM GC 압박, 앱 데드락 |
+| 외부 의존 세부 (APM) | 소켓 연결(HostTopPeers) | rate limit, 인증서 만료, DNS 실패 |
+| 나쁜 배포 (change) | 변경 이력 | 버그 릴리스가 진짜 원인인 양성(기존 Deployment Change는 상관 검증 중심) |
+| **NMS (신규 개방)** | `snmp_traps_local`, `netflow_records_local` — **현재 0건(미수집)** | 스위치/서버 인터페이스 다운 → 통신 단절(증상 APM·원인 NMS 계열 교차), 트래픽 이상 flow |
+
+NMS 계열 전제 작업(2026-07-14 확인): 수신 경로는 이미 존재한다 —
+`collector-nms-trap`(UDP 162, host net), `collector-tms`(flow), dev/test용
+트랩 시뮬레이터 포함. 수집 소스가 없어 0건이며, 외부 서버
+**192.168.200.57**에 snmpd(폴링 대상 등록) + trap 송신 + NetFlow
+exporter(softflowd 등)를 올려 소스를 만든다. SSH 자격 확보 대기.
+
+## 10. 열린 결정
 
 - 계열별 Phase 1 후보 목록.
 - 양성/음성 paired guardrail을 어느 fault family부터 만들지.
