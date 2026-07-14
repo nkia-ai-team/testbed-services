@@ -49,7 +49,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.groupId=commerce"
+              value: "lucida.groupId=commerce,lucida.target_id=e9f5f307-9ebd-4403-8461-164b989e5d62"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER

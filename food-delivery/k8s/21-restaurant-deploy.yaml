@@ -53,7 +53,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.groupId=food-delivery"
+              value: "lucida.groupId=food-delivery,lucida.target_id=18a0e363-d253-4712-be40-a9e9e117d1dc"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER

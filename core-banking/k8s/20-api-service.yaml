@@ -43,7 +43,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "lucida.groupId=core-banking"
+              value: "lucida.groupId=core-banking,lucida.target_id=b3d586c3-4443-4581-8f2e-be12f3504448"
             - name: OTEL_TRACES_EXPORTER
               value: "otlp"
             - name: OTEL_METRICS_EXPORTER
