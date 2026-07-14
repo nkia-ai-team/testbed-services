@@ -236,5 +236,10 @@ curl -sG "$VM/api/v1/query" --data-urlencode \
   master 로그에서 `Unauthenticated` 확인 → §4-3-1 토큰 재발급.
 - **전 계층 동시 중단**: AP 서버 자체(재시작/업데이트/**IP 이관**) 또는 AP→VM 라우트를 의심.
   (2026-07-14 실사례: 118→119 이관. DB 스냅샷째 이전이라 target ID·토큰은 보존되지만,
-  **에이전트 쪽 주소는 안 따라온다** — APM manifest OTLP endpoint 19곳(커밋 9861caa),
-  KCM helm kcm.addr 재포인팅 필요. DPM·SNMP는 서버측 폴링이라 무영향.)
+  **에이전트 쪽 주소는 안 따라온다** — 재포인팅 3종 세트:
+  ① APM manifest OTLP endpoint 19곳(커밋 9861caa) + apply,
+  ② KCM `helm upgrade --reuse-values --set kcm.addr=<신규>:7575` + restart,
+  ③ SMS 워커 3대 `/home/nkia/.lucida-agent/agent.env`의 LUCIDA_SERVER/LUCIDA_DIST_URL
+    교체 후 `sudo /home/nkia/.lucida-agent/lucidactl restart`(파일이 root 소유라 sudo 필수).
+  DPM·SNMP는 서버측 폴링이라 무영향. ⚠ SMS는 메트릭이 흘러도 UI가 down일 수 있다 —
+  하트비트 기준 판정이므로 agent.env 재포인팅 전까지 down.)
