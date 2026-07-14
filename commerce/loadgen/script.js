@@ -198,6 +198,14 @@ function checkoutJourney() {
         return; // 로그인 실패는 정상 케이스로 카운트(check()에 이미 기록됨), 여정 중단만.
     }
 
+    // 체크아웃 물량을 bounded로 유지: 다른 여정(cartJourney)이 쌓아둔 장바구니를 비우고
+    // 이번 여정 물량(1~2개)만 담는다. 데모 유저 20명을 전 여정이 공유하므로, 비우지 않으면
+    // cart가 무한 팽창해 재고를 한 번에 소진 → checkout이 영구 실패하는 자립성 버그(§8)가
+    // 재발한다(2026-07-14 실측: user 4 카트 982개, flagship 재고 14/16종 소진).
+    http.del(`${GATEWAY_URL}/api/carts/${userId}`, null, {
+        headers: authHeaders(token), tags: { journey: 'checkout', step: 'clear-cart' },
+    });
+
     // 체크아웃 전 장바구니에 최소 1개는 있어야 하므로(비어있으면 400) 아이템을 추가해둔다.
     const itemCount = randInt(1, 2);
     for (let i = 0; i < itemCount; i++) {
