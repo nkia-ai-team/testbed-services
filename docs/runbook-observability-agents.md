@@ -199,3 +199,39 @@ curl -G 'http://192.168.230.118:18428/api/v1/query' \
 ```
 
 2026-07-13 실측: 노드 4 · 파드 53, `kcm.*` 7,200+ 시리즈 유입.
+
+## 5. 수집 상태 점검 (헬스체크 — 작업 시작 전 권장)
+
+118은 수시로 업데이트되는 개발 스택이라 관측이 조용히 끊길 수 있다
+(2026-07-14 KCM 사례: 서버측 인증 정책 변경으로 하룻밤 새 중단).
+알람 튜닝·시나리오 실행 등 관측에 의존하는 작업 전에 4계층을 훑는다.
+
+```bash
+BASE=http://192.168.230.118:18080/api/v1
+VM=http://192.168.230.118:18428
+curl -sc ck -X POST $BASE/login -H 'Content-Type: application/json' \
+  -d '{"username":"manager","password":"!nkia1234"}' -o /dev/null
+
+# ① DPM — collector가 폴마다 기록하는 상태값이 가장 정확
+for tid in $(curl -sb ck "$BASE/targets?type=database" | jq -r '.targets[].id'); do
+  curl -sb ck "$BASE/targets/$tid/collectors" | \
+    jq -r '.collectors[] | "\(.last_collect_status)\t\(.last_collected_at)\t\(.last_collect_error // "")"'
+done
+
+# ② SMS — server target들의 최신 샘플 시각 (5분 이상 벌어지면 이상)
+curl -sG "$VM/api/v1/query" --data-urlencode \
+  'query=max(timestamp({target_id=~".+"})) by (target_id)'
+
+# ③ KCM — kcm.* 최신 샘플 (빈 결과 = 끊김. 24h lookback으로 끊긴 시각 추정)
+curl -sG "$VM/api/v1/query" --data-urlencode \
+  'query=max(tlast_over_time({__name__="kcm.node.cpu_usage"}[24h]))'
+
+# ④ APM — 웹 UI 애플리케이션 목록에서 RPS 유입 확인 (트레이스는 ClickHouse라 VM 질의 불가)
+```
+
+판독 요령:
+- **DPM `error`**: `last_collect_error`에 원인이 그대로 나온다
+  (dial timeout=라우팅/§3-1, Access denied=grant/§3-1-3).
+- **KCM 빈 결과 + pod는 Running**: 에이전트 인증 문제 가능성 높음 —
+  master 로그에서 `Unauthenticated` 확인 → §4-3-1 토큰 재발급.
+- **전 계층 동시 중단**: 118 서버 자체(재시작/업데이트) 또는 118→VM 라우트를 의심.
