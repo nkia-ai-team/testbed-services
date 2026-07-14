@@ -45,7 +45,7 @@ spec:
               value: "commerce-gateway"
             # AP collector(Polestar APM = OTLP 재사용)로 직접 전송.
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://192.168.230.118:14317"
+              value: "http://192.168.230.119:14317"
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
             - name: OTEL_RESOURCE_ATTRIBUTES
