@@ -22,6 +22,9 @@ spec:
           args:
             - --character-set-server=utf8mb4
             - --collation-server=utf8mb4_unicode_ci
+            # Polestar DPM 로그 수집용 — datadir(PVC)에 에러 로그를 고정 경로로 남겨
+            # 호스트 SMS 로그 모니터(owner_kind=dpm)가 tail한다.
+            - --log-error=/var/lib/mysql/error.log
           ports:
             - containerPort: 3306
           envFrom:
