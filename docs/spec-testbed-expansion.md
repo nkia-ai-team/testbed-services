@@ -113,7 +113,7 @@ users, addresses, categories, products, product_variants, inventory, inventory_m
 **정체**: 시나리오(장애 주입)와 **별개인 상주 컴포넌트**. 평상시 저율·현실적 사용자 여정을 **끊김 없이** 발생시켜 "평소 데이터"가 계속 쌓이게 한다. (rca-scenario-runner는 장애 주입 전용으로 유지 — 역할 분리)
 
 **도구**: **k6**(constant-arrival-rate, 시나리오 스크립트, Prometheus/OTLP 출력). 대안 Locust.
-**배치**: 테스트베드 내부 **상시 k8s Deployment**(`loadgen`) 또는 runner 호스트 상주. 항상 on.
+**배치**: **tb-runner(조종석 VM) systemd 상주로 확정**(2026-07-14 이전 — 최초 구현은 클러스터 내부 k8s Deployment였으나 옮겼다). 이유: ①클러스터 장애 중에도 부하가 살아있어야 장애가 production처럼 "에러율 상승"으로 관측된다(내부 배치면 loadgen이 장애에 휘말려 "트래픽 감소"로 왜곡). ②부하 생성 CPU가 측정 대상 worker 노드 메트릭·KCM 대상에 섞이지 않는다. ③시나리오성 surge 부하도 runner에서 쏘므로 baseline과 같은 자리·같은 외부 경로(NodePort, tb-cp IP 고정)로 겹친다. 운영 절차는 runbook-testbed-deploy.md §4. 항상 on.
 **여정 가중(예)**: 브라우징(read) 65% / 검색 15% / 장바구니 10% / 체크아웃(order→payment) 8% / cross-domain 이체 2%.
 **시간 패턴(diurnal)**: 낮 높고 새벽 낮은 사인파 RPS 프로파일 → 이상감지 계절성·챗봇 추세 성립.
 **자립성**: 시드 유저/상품 재사용, 주문은 폐기 가능 데이터, 장기 실행에도 상태 팽창 없게(정리 배치와 연동).
@@ -127,10 +127,24 @@ env로 조정 가능. 4노드 ARM VM 규모 대비 보수적으로 잡은 값이
 mulberry32로 고정, VU별로 시드를 분기해(`SEED + VU*7919`) 재현성과 VU 간 비상관성을 함께
 확보했다.
 
+**tb-runner 이전 구현(2026-07-14)**: 3개 도메인 loadgen 전부 runner `/opt/loadgen/<domain>/` +
+`loadgen-{commerce,food,banking}.service`(systemd, enable+Restart=always)로 상주. 스크립트
+정본은 리포 `<domain>/loadgen/` 그대로(코드 무수정 — URL만 env로 교체). 진입은 전부 tb-cp
+(192.168.122.77) NodePort: commerce nginx 30080, banking nginx 30082, banking transfer 직행
+30282(commerce cross-domain 여정이 클러스터 내부 시절과 같은 호출 형태를 유지하도록 신설),
+food-delivery order/restaurant/dispatch 30180-30182(nginx 정문이 없는 도메인이라 개별 노출).
+구 k8s Deployment·loadgen-scripts ConfigMap은 클러스터·리포 모두에서 제거.
+
 **미결로 남긴 것**: 부하 트래픽을 golden에서 어떻게 배경(정상)으로 표시할지, k6 자체의
-Prometheus/OTLP 메트릭 내보내기(스펙 §8 "도구" 항목에 언급됐으나 이번 구현은 k8s 배치만
-다뤘고 k6 실행 메트릭의 관측 파이프라인 연결은 다음 단계), 요일별 diurnal(주말 가중)을
-loadgen RPS 자체에도 반영할지.
+Prometheus/OTLP 메트릭 내보내기(k6 실행 메트릭의 관측 파이프라인 연결은 다음 단계),
+요일별 diurnal(주말 가중)을 loadgen RPS 자체에도 반영할지, banking loadgen 조회 여정이
+page/size 미지정이라 응답이 계좌당 수백 KB로 큰 것(이체 히스토리 시드가 커서 — 필요 시
+loadgen에 size 파라미터 추가).
+
+**해결된 이슈(2026-07-14)**: banking `GET /api/transfers` 405 — api-service에 POST만 있어
+loadgen 조회 여정이 전부 실패하던 것(pre-existing, runner 이전과 무관). api-service에
+transfer-service GET 목록을 JSON passthrough로 중계하는 조회 프록시(`TransferClient`,
+서킷브레이커/재시도 포함)를 추가해 해소. 쓰기 체인(api→account)은 무변경.
 
 ---
 

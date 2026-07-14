@@ -80,9 +80,22 @@ cd /root/testbed-services/<domain> && nohup bash k8s/build-and-deploy.sh > /root
 ```bash
 export KUBECONFIG=/root/tb-kubeconfig
 kubectl -n rca-testbed-<domain> get pods            # 전부 1/1 Running
-kubectl -n rca-testbed-<domain> logs deploy/testbed-loadgen --tail=5   # Request Failed 없어야 함
 curl -s -o /dev/null -w "%{http_code}" http://192.168.122.184:30080/api/products?size=3  # 200 (commerce nginx NodePort)
 ```
+
+baseline loadgen 확인 (tb-runner에 systemd로 상주 — 클러스터 밖, 2026-07-14 이전):
+```bash
+ssh -i /root/.ssh/tb_key nkia@192.168.122.206
+systemctl is-active loadgen-commerce loadgen-food loadgen-banking   # 전부 active
+journalctl -u loadgen-commerce -n 5 --no-pager                      # iters/s 진행 로그, Request Failed 없어야 함
+```
+스크립트 정본은 리포 `<domain>/loadgen/`, 배치 위치는 runner `/opt/loadgen/<domain>/`,
+unit 파일은 `/etc/systemd/system/loadgen-*.service`(진입 URL·RPS env는 unit에 정의).
+진입 경로: commerce nginx `:30080` / banking nginx `:30082` / banking transfer 직행
+`:30282` / food-delivery order·restaurant·dispatch `:30180-30182` (전부 tb-cp
+192.168.122.77 경유 — worker 장애 시나리오에 진입점이 휘말리지 않게 cp IP 사용).
+스크립트 수정 시 재배포: 리포 파일을 runner `/opt/loadgen/<domain>/`에 복사 후
+`sudo systemctl restart loadgen-<domain>`.
 
 OTLP 유입 확인 (워크스테이션에서):
 ```bash

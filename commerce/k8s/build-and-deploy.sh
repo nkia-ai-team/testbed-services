@@ -91,12 +91,8 @@ kubectl create configmap postgres-init-scripts \
   --from-file=02-seed-all.sql="${PROJECT_ROOT}/db/seed-all.sql" \
   -n rca-testbed-commerce --dry-run=client -o yaml | kubectl apply -f -
 
-# loadgen(§8)의 k6 스크립트도 같은 이유(정본-사본 드리프트 방지)로 commerce/loadgen/에서
-# 직접 ConfigMap을 생성한다. 40-loadgen.yaml은 이 ConfigMap을 이름으로만 참조한다.
-kubectl create configmap loadgen-scripts \
-  --from-file=script.js="${PROJECT_ROOT}/loadgen/script.js" \
-  --from-file=entrypoint.sh="${PROJECT_ROOT}/loadgen/entrypoint.sh" \
-  -n rca-testbed-commerce --dry-run=client -o yaml | kubectl apply -f -
+# loadgen(§8)은 클러스터 밖 tb-runner(192.168.122.206)의 systemd 서비스로 이전했다 —
+# 측정 오염 방지 + 장애 중에도 baseline 유지. 배치 절차는 docs/runbook-testbed-deploy.md 참조.
 
 echo ""
 echo "========================================="

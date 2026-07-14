@@ -57,17 +57,15 @@ fi
 
 echo ""
 echo "========================================="
-echo "  Phase 2.5: namespace + DB init/seed ConfigMap + loadgen scripts (원본 파일에서 직접 생성)"
+echo "  Phase 2.5: namespace + DB init/seed ConfigMap (원본 파일에서 직접 생성)"
 echo "========================================="
 kubectl apply -f "${PROJECT_ROOT}/k8s/00-namespace.yaml"
 kubectl create configmap oracle-init-scripts \
   --from-file=01-init.sql="${PROJECT_ROOT}/db/init.sql" \
   --from-file=02-seed-all.sql="${PROJECT_ROOT}/db/seed-all.sql" \
   -n rca-testbed-banking --dry-run=client -o yaml | kubectl apply -f -
-kubectl create configmap loadgen-scripts \
-  --from-file=script.js="${PROJECT_ROOT}/loadgen/script.js" \
-  --from-file=entrypoint.sh="${PROJECT_ROOT}/loadgen/entrypoint.sh" \
-  -n rca-testbed-banking --dry-run=client -o yaml | kubectl apply -f -
+# loadgen(§8)은 클러스터 밖 tb-runner(192.168.122.206)의 systemd 서비스로 이전했다 —
+# 측정 오염 방지 + 장애 중에도 baseline 유지. 배치 절차는 docs/runbook-testbed-deploy.md 참조.
 
 echo ""
 echo "========================================="
@@ -90,7 +88,6 @@ for svc in "${SERVICES[@]}"; do
   kubectl -n rca-testbed-banking rollout status deployment/testbed-${svc} --timeout=180s
 done
 kubectl -n rca-testbed-banking rollout status deployment/testbed-nginx --timeout=120s
-kubectl -n rca-testbed-banking rollout status deployment/testbed-loadgen --timeout=120s
 
 echo ""
 echo "========================================="
