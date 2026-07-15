@@ -52,7 +52,7 @@ testbed의 `service-spec.yaml`은 장애를 *설계·주입*하기 위한 형식
 | `id`, `title` | `incident_ref` | `<domain>/<id>`로 그대로 |
 | `root_cause` (자연어) | `cause.mechanism` + `cause.entity` | **자연어 원인을 정본 식별자로 분해** (§3) |
 | `expected_rca_root_cause` | `accept_if` / `reject_if` | 채점 경계 문장으로 다듬기 (§4) |
-| `propagation` | `propagation` | root→현상 인과사슬 그대로, 단계 명확화 |
+| `propagation` | `propagation` | root→현상 인과사슬 그대로, 단계 명확화. **golden에서는 단계별 구조체** `{step, description, targets:[{target_id, name}]}` — 각 단계의 대상도 정본 target_id로 기입(2026-07-15 확정, 첫 케이스 적용). 사용자 체감 등 대상 없는 단계는 `targets: []` |
 | `expected_alarms` | (매핑 안 함) | **알람 검증용, RCA 정답 아님** — 분리 유지 |
 | `difficulty` | `difficulty` | 없으면 1~5로 부여 |
 | (신규) | `cause.domain` | 원인이 속한 계열 명시 (§5, **필수**) |
