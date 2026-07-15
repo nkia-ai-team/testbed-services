@@ -72,4 +72,8 @@ resilience4j:
         exponential-backoff-multiplier: 2
 
 dispatch:
-  max-capacity: 50
+  # 정상 수요를 감당하는 크기여야 한다: baseline 주문 ~1/s × 평균 ETA 25분 ≈ 동시 배차
+  # 1,500 (Little's law). 50이던 시절엔 처리량이 분당 2건뿐이라 주문이 상시 100% 503으로
+  # 거절됐다(2026-07-15 용량 프로브에서 발견 — spec-scenario-load §8.2 결함 4).
+  # 배차 부족 시나리오는 이 env를 낮춰 재현한다.
+  max-capacity: ${DISPATCH_MAX_CAPACITY:2000}
