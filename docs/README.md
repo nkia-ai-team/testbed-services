@@ -34,11 +34,15 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [관측 에이전트 설치 runbook](runbook-observability-agents.md):
   lucida-next(AP 118) 관측 4계층(SMS·APM·DPM·KCM) 설치·등록·검증 실측 절차 —
   비대칭 라우팅, DB 모니터링 계정, KCM arm64 크로스빌드 포함. (Active)
+- [NMS 수집 소스 셋업 runbook](runbook-nms-source-setup.md):
+  외부 서버 .57에 snmpd·trap·softflowd 셋업해 119 NMS 수신 경로 활성화 —
+  G19·G20 전제 작업. (Planned — 서버 담당자 승인 대기)
 - [테스트용 AP 서버 참고 정보](ref-testbed-ap-server.md):
   lucida-next AP(192.168.230.118) 접속 정보·포트맵·등록 자산 현황·검증
   엔드포인트 치트시트·알려진 제약. (Active)
 - [시나리오 설계](spec-scenario-design.md):
-  양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준. (Draft)
+  양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준,
+  시나리오당 파일 레이아웃. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
   service-spec.yaml을 채점 가능한 golden 레코드로 끌어올리는 작성 규칙과 계열별 패턴. (Draft)
 - [부하 시나리오 규칙](spec-scenario-load.md):
@@ -50,7 +54,11 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [평가·실험 설계](spec-evaluation.md):
   평가 축·채점식, golden 스키마, cause-domain 층화, baseline/ablation, 실험 절차. (Draft)
 - [평가용 데이터 캡처·재생 설계](spec-eval-data-capture.md):
-  사건 시간창을 파일로 떠서 격리 DB에 복원하고 재생하는 캡처/재생 파이프라인. (Draft)
+  사건 시간창을 파일로 떠서 케이스(`/data/eval-cases/`)로 저장하는 캡처
+  파이프라인과 케이스 계약. 재생은 소비자 소유(§8 함정 참고). (Draft)
+- [평가 케이스 복원 runbook](runbook-eval-case-restore.md):
+  케이스 파일을 격리 일회용 DB 세트(VM/CH/PG)에 복원·검증·폐기하는
+  소비자용 절차. (Draft)
 - [Lucida Next 데이터 수집 참조](ref-lucida-next-data-collection.md):
   `../lucida-next`의 데이터 수집 대상, 경로, 스키마, 예시 데이터.
 - [Lucida Next AI 기능 참조](ref-lucida-next-ai-features.md):

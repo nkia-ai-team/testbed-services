@@ -2,7 +2,7 @@
 title: 부하 시나리오 규칙
 status: Draft
 owner: project
-last_reviewed: 2026-07-14
+last_reviewed: 2026-07-15
 tags:
   - scenario
   - testbed
@@ -60,9 +60,17 @@ summary: baseline 위에 얹는 시나리오성 부하(surge)의 주입 규칙, 
   | 사용자 트래픽 surge (north-south) | tb-runner | baseline과 동일 — tb-cp NodePort |
   | 내부 호출 폭주 (east-west, 재시도 폭풍 등) | 클러스터 내부 (일회성 Job 등) | 서비스 내부 DNS |
   | DB 직접 부하 (무거운 쿼리·커넥션 점유) | tb-runner | DB NodePort |
+  | 네트워크 경로 부하 (NMS 계열 — 대역 포화·flow·trap) | **외부 서버 192.168.200.57** (2026-07-15 추가) | 물리 NIC·브리지 경유 — 109 호스트 밖에서 진입 |
 
   유형과 위치가 어긋나면 관측되는 topology가 비현실적이 된다. 사용자 폭주가
   클러스터 안에서 발생하거나, 내부 폭주가 정문으로 들어오면 안 된다.
+  **네트워크 계층 시나리오(G19·G20)는 반드시 외부 서버발이어야 한다** —
+  tb-runner도 109 호스트 안의 VM이라 그 트래픽은 물리 인터페이스를 타지
+  않으므로, 호스트 내부발 부하로는 NMS가 보는 인터페이스·flow에 실상관이
+  생기지 않는다. .57은 SNMP 폴링 대상·trap 송신·NetFlow exporter 역할
+  겸용([시나리오 설계 §9](spec-scenario-design.md) NMS 전제 작업). 접속:
+  `root@192.168.200.57` / `Cloud!!25` (2026-07-15 확보·실증 — Rocky 9.7,
+  x86_64, hostname `dev-svr-200-57`).
 - **R3. 생명주기는 시나리오에 종속.** surge는 `injection.script`가 시작하고
   cleanup 단계가 종료를 보증한다: k6는 duration 만료로 스스로 죽게 하되,
   cleanup에서 잔존 프로세스 강제 종료 + 사망 확인까지 한다. 잔존 surge는
