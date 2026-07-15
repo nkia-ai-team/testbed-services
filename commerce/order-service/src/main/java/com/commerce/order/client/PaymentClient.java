@@ -41,6 +41,10 @@ public class PaymentClient {
 
     @SuppressWarnings("unused")
     private PaymentResponse requestPaymentFallback(Long orderId, BigDecimal amount, String method, Throwable ex) {
+        // 4xx는 하류의 정상 업무 거절(결제 거절 등) — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment service unavailable: " + ex.getMessage());
     }
 }

@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 @Component
 public class OrderClient {
@@ -32,6 +33,11 @@ public class OrderClient {
                     .body(OrderResponse.class);
         } catch (RestClientException ex) {
             log.error("Failed to fetch order {}: {}", orderId, ex.getMessage());
+            // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+            if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
+                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                        "Order lookup failed: " + ex.getMessage());
+            }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Order lookup failed: " + ex.getMessage());
         }
@@ -39,6 +45,10 @@ public class OrderClient {
 
     @SuppressWarnings("unused")
     private OrderResponse getOrderFallback(Long orderId, Throwable ex) {
+        // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY, "Order service unavailable: " + ex.getMessage());
     }
 }

@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.List;
 
@@ -34,6 +35,11 @@ public class RestaurantClient {
                     .body(RestaurantResponse.class);
         } catch (RestClientException ex) {
             log.error("Failed to fetch restaurant {}: {}", restaurantId, ex.getMessage());
+            // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+            if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
+                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                        "Restaurant lookup failed: " + ex.getMessage());
+            }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Restaurant lookup failed: " + ex.getMessage());
         }
@@ -41,6 +47,10 @@ public class RestaurantClient {
 
     @SuppressWarnings("unused")
     private RestaurantResponse getRestaurantFallback(Long restaurantId, Throwable ex) {
+        // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY, "Restaurant service unavailable: " + ex.getMessage());
     }
 
@@ -54,6 +64,11 @@ public class RestaurantClient {
                     .body(new org.springframework.core.ParameterizedTypeReference<List<MenuResponse>>() {});
         } catch (RestClientException ex) {
             log.error("Failed to fetch menu for restaurant {}: {}", restaurantId, ex.getMessage());
+            // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+            if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
+                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                        "Menu lookup failed: " + ex.getMessage());
+            }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Menu lookup failed: " + ex.getMessage());
         }
@@ -61,6 +76,10 @@ public class RestaurantClient {
 
     @SuppressWarnings("unused")
     private List<MenuResponse> getMenuFallback(Long restaurantId, Throwable ex) {
+        // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY, "Restaurant service unavailable: " + ex.getMessage());
     }
 }

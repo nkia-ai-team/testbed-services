@@ -103,6 +103,10 @@ public class OrderService {
             } catch (Exception ex) {
                 log.error("Payment failed, releasing reserved stock: {}", ex.getMessage());
                 releaseAll(request.items());
+                // 4xx는 결제 거절 같은 정상 업무 실패 — 502로 바꾸지 않고 그대로 전파한다.
+                if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+                    throw se;
+                }
                 throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
             }
 
@@ -188,6 +192,10 @@ public class OrderService {
             } catch (Exception ex) {
                 log.error("Checkout payment failed, releasing reserved stock: userId={}, {}", userId, ex.getMessage());
                 releaseAllCartItems(cart.items());
+                // 4xx는 결제 거절 같은 정상 업무 실패 — 502로 바꾸지 않고 그대로 전파한다.
+                if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+                    throw se;
+                }
                 throw new ServiceException(HttpStatus.BAD_GATEWAY, "Payment failed: " + ex.getMessage());
             }
 

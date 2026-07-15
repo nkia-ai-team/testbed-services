@@ -11,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -44,6 +45,11 @@ public class PgApiClient {
                     .body(Map.class);
         } catch (RestClientException ex) {
             log.error("PG /pay failed for order={}: {}", orderId, ex.getMessage());
+            // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+            if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
+                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                        "External PG call failed: " + ex.getMessage());
+            }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "External PG call failed: " + ex.getMessage());
         }
@@ -51,6 +57,10 @@ public class PgApiClient {
 
     @SuppressWarnings("unused")
     private Map<String, Object> payFallback(Long orderId, BigDecimal amount, String pgProvider, Throwable ex) {
+        // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY, "PG mock unavailable: " + ex.getMessage());
     }
 }

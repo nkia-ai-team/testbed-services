@@ -35,6 +35,10 @@ public class CartClient {
 
     @SuppressWarnings("unused")
     private CartResponse getCartFallback(Long userId, Throwable ex) {
+        // 4xx는 하류의 정상 업무 거절(빈 장바구니 등) — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY, "Cart service unavailable: " + ex.getMessage());
     }
 

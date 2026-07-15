@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 /**
  * 이체 조회 프록시. 쓰기(POST)는 account-service 체인(AccountClient)을 타지만,
@@ -37,6 +38,11 @@ public class TransferClient {
                     .body(String.class);
         } catch (RestClientException ex) {
             log.error("Transfer service list call failed: {}", ex.getMessage());
+            // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+            if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
+                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                        "Transfer service failed: " + ex.getMessage());
+            }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Transfer service failed: " + ex.getMessage());
         }
@@ -44,6 +50,10 @@ public class TransferClient {
 
     private String listTransfersFallback(MultiValueMap<String, String> params, Throwable ex) {
         log.error("Transfer service circuit open/exhausted: {}", ex.getMessage());
+        // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY,
                 "Transfer service unavailable: " + ex.getMessage());
     }

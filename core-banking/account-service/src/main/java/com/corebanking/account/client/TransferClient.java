@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 @Component
 public class TransferClient {
@@ -35,6 +36,11 @@ public class TransferClient {
                     .body(TransferResponse.class);
         } catch (RestClientException ex) {
             log.error("Transfer service call failed for order {}: {}", request.orderId(), ex.getMessage());
+            // 4xx는 하류의 정상 업무 거절(잔액 부족 등) — 502로 바꾸지 않고 그대로 전파한다.
+            if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
+                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                        "Transfer service failed: " + ex.getMessage());
+            }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,
                     "Transfer service failed: " + ex.getMessage());
         }
@@ -42,6 +48,10 @@ public class TransferClient {
 
     private TransferResponse executeTransferFallback(TransferRequest request, Throwable ex) {
         log.error("Transfer service circuit open/exhausted for order {}: {}", request.orderId(), ex.getMessage());
+        // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
+        if (ex instanceof ServiceException se && se.getStatus().is4xxClientError()) {
+            throw se;
+        }
         throw new ServiceException(HttpStatus.BAD_GATEWAY,
                 "Transfer service unavailable: " + ex.getMessage());
     }
