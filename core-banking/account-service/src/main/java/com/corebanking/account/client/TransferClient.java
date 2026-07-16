@@ -2,6 +2,7 @@ package com.corebanking.account.client;
 
 import com.corebanking.common.dto.TransferRequest;
 import com.corebanking.common.dto.TransferResponse;
+import com.corebanking.common.exception.ClientErrorException;
 import com.corebanking.common.exception.ServiceException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
@@ -38,7 +39,7 @@ public class TransferClient {
             log.error("Transfer service call failed for order {}: {}", request.orderId(), ex.getMessage());
             // 4xx는 하류의 정상 업무 거절(잔액 부족 등) — 502로 바꾸지 않고 그대로 전파한다.
             if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
-                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                throw new ClientErrorException(HttpStatus.valueOf(rex.getStatusCode().value()),
                         "Transfer service failed: " + ex.getMessage());
             }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,

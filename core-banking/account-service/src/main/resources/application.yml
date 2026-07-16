@@ -39,6 +39,8 @@ resilience4j:
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - com.corebanking.common.exception.ClientErrorException
   retry:
     instances:
       transferClient:
@@ -46,6 +48,8 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.corebanking.common.exception.ClientErrorException
 
 management:
   health:

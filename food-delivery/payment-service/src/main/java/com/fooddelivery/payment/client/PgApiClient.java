@@ -1,5 +1,6 @@
 package com.fooddelivery.payment.client;
 
+import com.fooddelivery.common.exception.ClientErrorException;
 import com.fooddelivery.common.exception.ServiceException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
@@ -47,7 +48,7 @@ public class PgApiClient {
             log.error("PG /pay failed for order={}: {}", orderId, ex.getMessage());
             // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
             if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
-                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                throw new ClientErrorException(HttpStatus.valueOf(rex.getStatusCode().value()),
                         "External PG call failed: " + ex.getMessage());
             }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,

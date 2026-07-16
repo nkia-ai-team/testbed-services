@@ -63,6 +63,8 @@ resilience4j:
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
   retry:
     instances:
       order:
@@ -70,6 +72,8 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
 
 dispatch:
   # 정상 수요를 감당하는 크기여야 한다: baseline 주문 ~1/s × 평균 ETA 25분 ≈ 동시 배차

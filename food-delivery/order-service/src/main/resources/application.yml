@@ -73,6 +73,8 @@ resilience4j:
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
       dispatch:
         sliding-window-size: 10
         minimum-number-of-calls: 5
@@ -80,6 +82,8 @@ resilience4j:
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
       payment:
         sliding-window-size: 10
         minimum-number-of-calls: 5
@@ -87,6 +91,8 @@ resilience4j:
         wait-duration-in-open-state: 5s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
   retry:
     instances:
       restaurant:
@@ -94,16 +100,22 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
       dispatch:
         max-attempts: 3
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
       payment:
         max-attempts: 2
         wait-duration: 300ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        ignore-exceptions:
+          - com.fooddelivery.common.exception.ClientErrorException
 
 order:
   cleanup:

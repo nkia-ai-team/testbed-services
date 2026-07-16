@@ -2,6 +2,7 @@ package com.fooddelivery.order.client;
 
 import com.fooddelivery.common.dto.PaymentRequest;
 import com.fooddelivery.common.dto.PaymentResponse;
+import com.fooddelivery.common.exception.ClientErrorException;
 import com.fooddelivery.common.exception.ServiceException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
@@ -39,7 +40,7 @@ public class PaymentClient {
             log.error("Failed to process payment for order {}: {}", orderId, ex.getMessage());
             // 4xx는 하류의 정상 업무 거절 — 502로 바꾸지 않고 그대로 전파한다.
             if (ex instanceof RestClientResponseException rex && rex.getStatusCode().is4xxClientError()) {
-                throw new ServiceException(HttpStatus.valueOf(rex.getStatusCode().value()),
+                throw new ClientErrorException(HttpStatus.valueOf(rex.getStatusCode().value()),
                         "Payment service failed: " + ex.getMessage());
             }
             throw new ServiceException(HttpStatus.BAD_GATEWAY,

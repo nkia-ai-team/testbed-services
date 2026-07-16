@@ -2,6 +2,7 @@ package com.commerce.order.client;
 
 import com.commerce.common.dto.ReserveStockRequest;
 import com.commerce.common.dto.ReserveStockResponse;
+import com.commerce.common.exception.ClientErrorException;
 import com.commerce.common.exception.ServiceException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
@@ -32,8 +33,12 @@ public class ProductClient {
                     .retrieve()
                     .body(ReserveStockResponse.class);
         } catch (RestClientResponseException ex) {
-            throw new ServiceException(HttpStatus.valueOf(ex.getStatusCode().value()),
-                    "Product service error for product " + productId + ": " + ex.getMessage());
+            HttpStatus status = HttpStatus.valueOf(ex.getStatusCode().value());
+            // 4xx는 하류의 정상 업무 거절(재고 부족 409 등) — CB/Retry 실패 집계 대상에서 제외한다.
+            if (status.is4xxClientError()) {
+                throw new ClientErrorException(status, "Product service error for product " + productId + ": " + ex.getMessage());
+            }
+            throw new ServiceException(status, "Product service error for product " + productId + ": " + ex.getMessage());
         }
     }
 
