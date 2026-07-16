@@ -28,6 +28,13 @@ spec:
               value: /liveness/probe
             - name: MOCKSERVER_INITIALIZATION_JSON_PATH
               value: /config/init.json
+            # MockServer는 요청 로그를 메모리에 누적한다 — 배차 수리(2026-07-15) 후 주문
+            # ~1/s 상시 트래픽을 받자 ~9시간 만에 OOMKilled(결함 5). 로그 링버퍼를 캡해
+            # 상주 메모리를 유계로 만든다.
+            - name: MOCKSERVER_MAX_LOG_ENTRIES
+              value: "1000"
+            - name: MOCKSERVER_MAX_EXPECTATIONS
+              value: "100"
           volumeMounts:
             - name: mock-init
               mountPath: /config
@@ -37,7 +44,7 @@ spec:
               memory: 256Mi
             limits:
               cpu: 300m
-              memory: 512Mi
+              memory: 768Mi
       volumes:
         - name: mock-init
           configMap:
