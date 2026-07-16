@@ -11,7 +11,7 @@ COPY dispatch-service/pom.xml ./dispatch-service/pom.xml
 COPY payment-service/pom.xml ./payment-service/pom.xml
 COPY notify-service/pom.xml ./notify-service/pom.xml
 
-RUN apt-get update && apt-get install -y maven && \
+RUN apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=true install -y maven && \
     mvn -pl shop-common -am install -DskipTests -q && \
     mvn -pl notify-service dependency:go-offline -q
 

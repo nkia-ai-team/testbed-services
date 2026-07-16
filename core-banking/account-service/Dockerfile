@@ -10,7 +10,7 @@ COPY account-service/pom.xml ./account-service/pom.xml
 COPY transfer-service/pom.xml ./transfer-service/pom.xml
 COPY ledger-service/pom.xml ./ledger-service/pom.xml
 
-RUN apt-get update && apt-get install -y maven && \
+RUN apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=true install -y maven && \
     mvn -pl shop-common -am install -DskipTests -q && \
     mvn -pl account-service dependency:go-offline -q
 

@@ -10,7 +10,7 @@ COPY feed-service/pom.xml ./feed-service/pom.xml
 COPY comment-service/pom.xml ./comment-service/pom.xml
 COPY notification-service/pom.xml ./notification-service/pom.xml
 
-RUN apt-get update && apt-get install -y maven && \
+RUN apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=true install -y maven && \
     mvn -pl shop-common -am install -DskipTests -q && \
     mvn -pl post-service dependency:go-offline -q
 

@@ -16,7 +16,7 @@ COPY pricing-service/pom.xml ./pricing-service/pom.xml
 COPY shipping-service/pom.xml ./shipping-service/pom.xml
 COPY api-gateway/pom.xml ./api-gateway/pom.xml
 
-RUN apt-get update && apt-get install -y maven && \
+RUN apt-get -o Acquire::ForceIPv4=true update && apt-get -o Acquire::ForceIPv4=true install -y maven && \
     mvn -pl commerce-common -am install -DskipTests -q && \
     mvn -pl pricing-service dependency:go-offline -q
 
