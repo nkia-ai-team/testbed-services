@@ -427,10 +427,26 @@ brownout이 반복 관측된 s80을 명확한 양성 강도로 사용한다. 이
    loadgen의 503 = 정상 취급이 이 결함을 가렸다 — **자립성 회귀 체크에 "주문
    성공률 > 0" 같은 양(+)의 신호를 넣어야 침묵 실패를 잡는다**(교훈).
 
+5. ~~**external-pg-mock 메모리 무한 성장 → OOMKilled 루프**~~ → **수리 완료
+   (2026-07-16)**: MockServer가 요청 로그를 메모리에 누적 — 배차 수리로
+   payment 경로가 상시 트래픽(~1/s)을 받자 ~9시간 만에 OOMKilled(food
+   16:04Z 재시작이 "Connection refused" 버스트 → 인시던트 승격). commerce
+   mock도 재시작 3회로 동일 결함. 양쪽 manifest에
+   `MOCKSERVER_MAX_LOG_ENTRIES=1000`·`MAX_EXPECTATIONS=100` 캡 + 메모리
+   한도 512→768Mi, 재배포 완료.
+6. **CB가 업무 4xx를 실패로 집계 → 재고 부족이 서비스 차단으로 증폭**
+   (2026-07-16 발견): 재고 409 몇 건이 CircuitBreaker(실패율 50%/창 10)를
+   열면 이후 checkout이 HTTP 시도 없이 즉발 502(span·로그 무흔적, 열린
+   CB에 재시도 3회=600ms 시그니처). 409×6+502×16 동행 버스트로 실측.
+   수리: 4xx 전용 `ClientErrorException` 신설 + CB/Retry
+   `ignore-exceptions` — 3도메인 적용(결함 1 수리의 완결편).
+
 1~4의 공통 교훈: **4xx→502 둔갑은 commerce·banking·food 3도메인 공통
 템플릿 결함이었고 2026-07-15 일괄 수리 완료**(commerce 6곳 + banking 3파일 +
 food 5파일, food의 배차 503 설계는 보존). 검증: banking 잔액 초과 이체 →
-400 전파, commerce 재고 0 → 409 전파, 정상 경로 200.
+400 전파, commerce 재고 0 → 409 전파, 정상 경로 200. 5·6은 그 수리가
+드러낸 2차 결함이다 — 가려진 경로가 트래픽을 받기 시작하면 다음 층의
+결함이 나타난다.
 
 발견 경위 상세(스텝별 데이터·trace 증거)는 세션 기록과 probe 로그
 (tb-runner `/tmp/capacity-probe*.log`, `/tmp/cb-probe.log`, `/tmp/fd-probe.log`) 참조.
