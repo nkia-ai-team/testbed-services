@@ -2,7 +2,7 @@
 title: 평가 케이스 복원 runbook (소비자용)
 status: Draft
 owner: project
-last_reviewed: 2026-07-14
+last_reviewed: 2026-07-15
 tags:
   - evaluation
   - testbed
@@ -38,9 +38,12 @@ case-NN-slug/
       host_connections.parquet
       ...
     postgres.dump            # pg_dump custom format (-Fc, 스키마 포함)
+  models/
+    stream-anomaly/global/v1/
+      model.json             # t2+45m 시점 모델 artifact
+      model.json.sha256      # 원본 SHA-256
   golden.rca.json
-  golden.anomaly.json
-  meta.json                  # 시간창 [t0,t1]·장애 시각·리드인
+  meta.json                  # t1·t2·[t1-2h,t2+45m]·덤프/모델 스냅샷 시각
 ```
 
 ## 1. 격리 DB 세트 기동
@@ -137,13 +140,14 @@ docker compose -p eval-case01 exec -T postgres \
 
 ## 4. 복원 검증
 
-`meta.json`의 시간창 `[t0,t1]`과 대조한다. 세 가지 모두 통과해야 복원 성공.
+`meta.json`의 시간창 `[capture_start,capture_end]` = `[t1-2h,t2+45m]`과
+대조한다. 저장소 세 가지와 모델 무결성 검사가 모두 통과해야 복원 성공.
 
 ```bash
 # VM — 시간창 안에 시계열이 있는가
 curl -sS "http://localhost:18428/api/v1/query_range" \
   --data-urlencode 'query=count({__name__!=""})' \
-  --data-urlencode "start=<t0>" --data-urlencode "end=<t1>" \
+  --data-urlencode "start=<capture_start>" --data-urlencode "end=<capture_end>" \
   --data-urlencode 'step=5m' | head -c 400
 
 # CH — 테이블별 행수와 시간범위
@@ -155,15 +159,22 @@ docker compose -p eval-case01 exec clickhouse \
 docker compose -p eval-case01 exec postgres \
   psql -U lucida -d lucida -c \
   "SELECT (SELECT count(*) FROM incidents), (SELECT count(*) FROM targets);"
+
+# stream-anomaly 모델 — 캡처 시 기록한 checksum과 일치하는가
+(cd "$CASE/models/stream-anomaly/global/v1" && \
+  sha256sum -c model.json.sha256 && jq -e . model.json >/dev/null)
 ```
 
 - 시간 데이터의 min/max가 시간창을 벗어나면 캡처 슬라이스 오류,
   행수 0이면 복원 실패(특히 VM은 retention 함정 §1 의심).
 - `targets`는 시간창과 무관한 전체 스냅샷이므로 0이면 안 된다.
+- `model.json`은 비어 있지 않은 JSON이어야 하고 `meta.json`의 `model_sha256`도
+  `model.json.sha256` 검증값과 같아야 한다. 웜스타트 평가에서 이 artifact를
+  실제로 적용할지는 평가 소비자가 결정한다.
 
 ## 5. 평가 실행 시 주의 (모듈을 돌리는 소비자만)
 
-복원된 DB를 조회만 하는 평가(RCA·챗봇 등 배치형)는 모듈이 바라보는 DB
+복원된 DB를 조회만 하는 평가(RCA 등 배치형)는 모듈이 바라보는 DB
 접속 env만 격리 세트(위 포트)로 바꾸면 된다. **실워커를 돌리는 평가**는
 [캡처 설계 §8 "재생 시 알려진 함정"](spec-eval-data-capture.md)을 반드시
 읽어라. 요약:

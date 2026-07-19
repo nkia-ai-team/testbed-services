@@ -2,7 +2,7 @@
 title: 시나리오 작성 규칙과 ground truth 형식
 status: Draft
 owner: project
-last_reviewed: 2026-07-08
+last_reviewed: 2026-07-17
 tags:
   - testbed
   - scenario
@@ -30,6 +30,17 @@ testbed의 `service-spec.yaml`은 장애를 *설계·주입*하기 위한 형식
 
 시나리오 하나는 두 곳에서 소비된다. 둘을 같은 설계 의도에 고정하되 형식은
 분리한다.
+
+### 1.1 실행·캡처용 설명 정본
+
+시나리오 설명은 실행 코드가 ID나 slug로 자동 생성하지 않는다. 설계자가
+`scripts/scenarios/registry/scenario-metadata.json`에 `title`, `description`,
+`cause`, `injection_summary`, `user_impact`, `distinguishing_evidence`를 직접
+작성한다. 이 설명은 golden과 별개로 캡처 `meta.json`에 그대로 복사되는 사건
+문맥이다. runner는 live 주입 전에 누락을 차단하고, 캡처는 객체 SHA-256 불일치 시
+케이스 저장을 거부한다. 세부 운영 절차는
+[시나리오 부하 주입·모니터링·캡처 runbook](runbook-scenario-load-execution.md)을
+따른다.
 
 | 소비자 | 형식 | 위치 | 용도 |
 | --- | --- | --- | --- |

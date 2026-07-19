@@ -17,7 +17,7 @@
 | **지속 부하** | **없음 — 시나리오 밖 평상시 idle** | **상주 부하 생성기 신설(§8)** |
 | 과도한 단순성 | 소형(도메인당 1~1.8k LOC, 3~7 테이블) | 스키마 15~25 테이블 + 대량 시드 |
 
-가장 큰 값은 **지속 부하(§8)** — 이게 없으면 이상감지 정상분포·챗봇 추세/인벤토리·RCA 기준선이 성립하지 않는다.
+가장 큰 값은 **지속 부하(§8)** — 이게 없으면 이상감지 정상분포와 RCA 비교 기준선이 성립하지 않는다.
 
 ---
 
@@ -98,7 +98,7 @@ client → api-gateway → order → cart(조회) → pricing(가격확정) → 
 
 ## 6. 스키마 확장 (7 → ~20 테이블)
 
-users, addresses, categories, products, product_variants, inventory, inventory_movements, carts, cart_items, prices, promotions, coupons, orders, order_items, payments, shipments, shipment_events, notifications, outbox_events, (+ settlement_summary). 시드: 상품 수천, 유저 수천, 과거 주문 수만 행(히스토리 → 챗봇 추세/집계 질의 재료).
+users, addresses, categories, products, product_variants, inventory, inventory_movements, carts, cart_items, prices, promotions, coupons, orders, order_items, payments, shipments, shipment_events, notifications, outbox_events, (+ settlement_summary). 시드: 상품 수천, 유저 수천, 과거 주문 수만 행(현실적인 조회·배치·장애 표면 재료).
 
 ---
 
@@ -115,7 +115,7 @@ users, addresses, categories, products, product_variants, inventory, inventory_m
 **도구**: **k6**(constant-arrival-rate, 시나리오 스크립트, Prometheus/OTLP 출력). 대안 Locust.
 **배치**: **tb-runner(조종석 VM) systemd 상주로 확정**(2026-07-14 이전 — 최초 구현은 클러스터 내부 k8s Deployment였으나 옮겼다). 이유: ①클러스터 장애 중에도 부하가 살아있어야 장애가 production처럼 "에러율 상승"으로 관측된다(내부 배치면 loadgen이 장애에 휘말려 "트래픽 감소"로 왜곡). ②부하 생성 CPU가 측정 대상 worker 노드 메트릭·KCM 대상에 섞이지 않는다. ③시나리오성 surge 부하도 runner에서 쏘므로 baseline과 같은 자리·같은 외부 경로(NodePort, tb-cp IP 고정)로 겹친다. 운영 절차는 runbook-testbed-deploy.md §4. 항상 on.
 **여정 가중(예)**: 브라우징(read) 65% / 검색 15% / 장바구니 10% / 체크아웃(order→payment) 8% / cross-domain 이체 2%.
-**시간 패턴(diurnal)**: 낮 높고 새벽 낮은 사인파 RPS 프로파일 → 이상감지 계절성·챗봇 추세 성립.
+**시간 패턴(diurnal)**: 낮 높고 새벽 낮은 사인파 RPS 프로파일 → 이상감지 계절성 기준선 성립.
 **자립성**: 시드 유저/상품 재사용, 주문은 폐기 가능 데이터, 장기 실행에도 상태 팽창 없게(정리 배치와 연동).
 **eval 연계**: eval-data-capture의 "긴 운영 캡처"가 바로 이 상주 부하 위에서 시간창을 뜬다. 평가 재현성을 위해 **부하 프로파일·시드·RNG 고정** 필요.
 
@@ -156,7 +156,7 @@ transfer-service GET 목록을 JSON passthrough로 중계하는 조회 프록시
 | Kafka 백본 | consumer lag, 파티션 스큐, 리밸런싱 폭풍, outbox 적체 |
 | 배치 | 배치-온라인 자원 경합, 야간 스파이크 오탐 |
 | 깊은 호출그래프 | 다중 홉 지연 전파, 원인-증상 도메인 분리(cross-domain) |
-| 지속 부하 | 위 모든 것이 **평상시 기준선 위에서** 발현 → 이상감지·챗봇 평가 성립 |
+| 지속 부하 | 위 모든 것이 **평상시 기준선 위에서** 발현 → 이상감지·RCA 평가 성립 |
 
 ---
 
