@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "id": "F15-G",
+  "slug": "f15-g-dual-db-lock-multiroot",
+  "readiness": "partial",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "scenario-runner",
+    "matrix_location_transport": "R/ssh 두 DB NodePort",
+    "transport": "local-orchestrator",
+    "profile_refs": [
+      "injector-profiles/timeline.compose",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-local-runner-state",
+      "subinjection-timeline",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "dry-run",
+      "decision_mode": "evaluation",
+      "profile": {
+        "kind": "fixed",
+        "ref": "controller-profiles/f15-g-dual-db-lock-multiroot/fixed",
+        "requires_approved_fixed_profile": true
+      },
+      "live_enabled": false
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "timeline.compose",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "timeline.compose",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "timeline.compose"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "unresolved",
+    "required": true,
+    "description": "independent lock rows/order",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-2h,t2+45m]",
+    "export_not_before": "t2+45m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+45m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

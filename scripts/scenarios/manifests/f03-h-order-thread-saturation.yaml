@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.0",
+  "id": "F03-H",
+  "slug": "f03-h-order-thread-saturation",
+  "readiness": "partial",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "commerce namespace",
+    "matrix_location_transport": "K/kubectl one-shot Job",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/load.east_west"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "east-west-job-contract"
+    ],
+    "controller": {
+      "dispatcher_mode": "dry-run",
+      "decision_mode": "calibration",
+      "profile": {
+        "kind": "adaptive",
+        "ref": "controller-profiles/f03-h-order-thread-saturation/adaptive",
+        "requires_approved_fixed_profile": false
+      },
+      "live_enabled": false
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "load.east_west"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "load.east_west"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.east_west"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "unresolved",
+    "required": true,
+    "description": "executor metric and safe saturation",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-2h,t2+45m]",
+    "export_not_before": "t2+45m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+45m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

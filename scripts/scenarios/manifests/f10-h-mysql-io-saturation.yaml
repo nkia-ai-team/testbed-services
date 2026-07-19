@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "id": "F10-H",
+  "slug": "f10-h-mysql-io-saturation",
+  "readiness": "blocked",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "worker-w2",
+    "matrix_location_transport": "food worker/ssh",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "host-placement-and-oob-recovery",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "dry-run",
+      "decision_mode": "evaluation",
+      "profile": {
+        "kind": "fixed",
+        "ref": "controller-profiles/f10-h-mysql-io-saturation/fixed",
+        "requires_approved_fixed_profile": true
+      },
+      "live_enabled": false
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "host.stress",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "host.stress",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "host.stress"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "unresolved",
+    "required": true,
+    "description": "MySQL PVC device",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-2h,t2+45m]",
+    "export_not_before": "t2+45m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+45m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -1,0 +1,320 @@
+{
+  "schema_version": "1.0",
+  "id": "F11-R",
+  "slug": "f11-r-redis-down-fallback-overload",
+  "readiness": "ready",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "commerce namespace",
+    "matrix_location_transport": "K/kubectl Redis + R/ssh",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/load.north_south",
+      "injector-profiles/cache.control"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "baseline-loadgen-active",
+      "cache-warmup-contract"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [
+          "cache.control"
+        ]
+      },
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "40m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "2h",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "fallback-load-35",
+              "parameters": {
+                "target_rps": 35,
+                "ramp_up": "2m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30080",
+                "script_path": "/opt/loadgen/commerce/surge.js",
+                "scenario_tag": "scenario_id=F11-R",
+                "seed": 4242,
+                "baseline_unit": "loadgen-commerce"
+              },
+              "min_hold": "2m",
+              "settle": "30s",
+              "timeout": "12m"
+            },
+            {
+              "id": "fallback-load-50",
+              "parameters": {
+                "target_rps": 50,
+                "ramp_up": "2m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30080",
+                "script_path": "/opt/loadgen/commerce/surge.js",
+                "scenario_tag": "scenario_id=F11-R",
+                "seed": 4242,
+                "baseline_unit": "loadgen-commerce"
+              },
+              "min_hold": "2m",
+              "settle": "30s",
+              "timeout": "12m"
+            },
+            {
+              "id": "fallback-load-65",
+              "parameters": {
+                "target_rps": 65,
+                "ramp_up": "2m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30080",
+                "script_path": "/opt/loadgen/commerce/surge.js",
+                "scenario_tag": "scenario_id=F11-R",
+                "seed": 4242,
+                "baseline_unit": "loadgen-commerce"
+              },
+              "min_hold": "2m",
+              "settle": "30s",
+              "timeout": "12m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-cart"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "business_ok",
+            "adapter": "business_probe",
+            "query_id": "business.checkout_invariant",
+            "freshness": "60s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "fallback-overloaded",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.05
+            },
+            {
+              "id": "load-achieved",
+              "observation": "achieved_rps",
+              "op": "gte",
+              "value": 30
+            },
+            {
+              "id": "cart-remains-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "business-impact",
+              "observation": "business_ok",
+              "op": "eq",
+              "value": false
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "all": [
+            {
+              "id": "fallback-headroom-remains",
+              "observation": "checkout_5xx_rate",
+              "op": "lt",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "general-overload",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 70
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "pod-unready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "2h",
+          "post_window": "45m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "load.north_south",
+        "cache.control"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "load.north_south",
+        "cache.control"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "cache.control",
+        "load.north_south"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-2h,t2+45m]",
+    "export_not_before": "t2+45m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+45m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

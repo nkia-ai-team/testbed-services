@@ -1,0 +1,155 @@
+{
+  "schema_version": "1.0",
+  "profiles": {
+    "db.lock": {
+      "executor": "profiles/db_lock_executor.py", "location_strategy": "fixed", "default_location": "tb-runner", "allowed_locations": ["tb-runner"], "live_supported": true,
+      "default_queries": ["database.tagged_session_count", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F01-R"]},
+      "scenario_parameters": {"F01-R": {"db_host": "192.168.122.77", "db_port": 30432, "db_name": "commerce", "db_user": "commerce", "application_name": "rca-F01-R-inventory-lock", "product_id": 1, "hold_seconds": 600}}
+    },
+    "db.ddl": {
+      "executor": "profiles/db_ddl_executor.py", "location_strategy": "fixed", "default_location": "tb-runner", "allowed_locations": ["tb-runner"], "live_supported": true,
+      "default_queries": ["database.index_present", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F02-R"]},
+      "scenario_parameters": {"F02-R": {"engine": "postgresql", "db_host": "192.168.122.77", "db_port": 30432, "db_name": "commerce", "db_user": "commerce", "application_name": "rca-F02-R-index-ddl", "schema": "product_schema", "table": "products", "index": "idx_products_name", "expected_indexdef": "CREATE INDEX idx_products_name ON product_schema.products USING btree (name)", "minimum_rows": 2000}}
+    },
+    "db.workload": {"executor": "profiles/db-workload.sh", "location_strategy": "fixed", "default_location": "tb-runner", "allowed_locations": ["tb-runner"], "live_supported": false, "default_queries": ["database.tagged_session_count"]},
+    "mock.expectation": {
+      "executor": "profiles/mock_expectation_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-mock", "food-mock", "generic-mock"], "live_supported": true,
+      "default_queries": ["http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F01-H", "F01-G", "F06-R", "F06-G"]},
+      "scenario_parameters": {
+        "F01-H": {"path": "/v1/payments", "mode": "status", "status_code": 429, "delay_seconds": 0},
+        "F01-G": {"path": "/v1/payments", "mode": "delay", "status_code": 200, "delay_seconds": 5},
+        "F06-R": {"path": "/v1/payments", "mode": "delay", "status_code": 200, "delay_seconds": 30},
+        "F06-G": {"path": "/v1/payments", "mode": "transient_status", "status_code": 500, "remaining_times": 1, "ttl_seconds": 10, "pulse_interval_seconds": 15, "max_pulses": 32}
+      },
+      "scenario_levels": {
+        "F01-G": [
+          {"level_id": "absorbed-delay-1s", "parameters": {"path": "/v1/payments", "mode": "delay", "status_code": 200, "delay_seconds": 1}},
+          {"level_id": "absorbed-delay-3s", "parameters": {"path": "/v1/payments", "mode": "delay", "status_code": 200, "delay_seconds": 3}},
+          {"level_id": "absorbed-delay-5s", "parameters": {"path": "/v1/payments", "mode": "delay", "status_code": 200, "delay_seconds": 5}}
+        ]
+      }
+    },
+    "load.north_south": {
+      "executor": "profiles/load_north_south_executor.py",
+      "location_strategy": "fixed",
+      "default_location": "tb-runner",
+      "allowed_locations": ["tb-runner"],
+      "live_supported": true,
+      "default_queries": ["loadgen.achieved_rps", "http.entry_health", "prometheus.user_p95"],
+      "parameter_contract": {
+        "allowed_scenarios": ["F07-H", "F03-G", "F01-R", "F01-H", "F01-G", "F05-G", "F06-R", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H"],
+        "allowed_entry_urls": ["http://192.168.122.77:30080"],
+        "allowed_script_paths": ["/opt/loadgen/commerce/surge.js"],
+        "target_rps": {"minimum": 1, "maximum": 80},
+        "duration_pattern": "^[1-9][0-9]*[sm]$",
+        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H)$"
+      },
+      "scenario_parameters": {
+        "F07-H": {"target_rps": 80, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F03-G": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F03-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F01-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F01-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F01-H": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F01-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F01-G": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F01-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F05-G": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F05-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F06-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F06-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F08-H": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F08-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F09-P": {"target_rps": 60, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F09-P", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F11-R": {"target_rps": 65, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F11-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F11-G": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F11-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F02-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F02-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F04-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F04-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F12-H": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F12-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F06-G": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F06-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F05-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F05-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F05-H": {"target_rps": 20, "ramp_up": "2m", "hold": "3m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F05-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}
+      },
+      "scenario_levels": {
+        "F07-H": [
+          {"level_id": "healthy-ceiling-60", "parameters": {"target_rps": 60, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
+          {"level_id": "knee-70", "parameters": {"target_rps": 70, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
+          {"level_id": "measured-upper-80", "parameters": {"target_rps": 80, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}}
+        ],
+        "F11-R": [
+          {"level_id": "fallback-load-35", "parameters": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F11-R", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
+          {"level_id": "fallback-load-50", "parameters": {"target_rps": 50, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F11-R", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
+          {"level_id": "fallback-load-65", "parameters": {"target_rps": 65, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F11-R", "seed": 4242, "baseline_unit": "loadgen-commerce"}}
+        ]
+      }
+    },
+    "load.east_west": {"executor": "profiles/load-east-west.sh", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace", "food-namespace", "banking-namespace", "target-namespace"], "live_supported": false, "default_queries": ["kubernetes.pod_ready", "http.entry_health"]},
+    "k8s.patch": {
+      "executor": "profiles/k8s_patch_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace", "food-namespace", "banking-namespace", "target-namespace", "edge-route"], "live_supported": true,
+      "default_queries": ["kubernetes.pod_ready", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F09-P", "F12-H"]},
+      "scenario_parameters": {
+        "F09-P": {"deployment": "testbed-inventory", "container": "inventory-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "50m"},
+        "F12-H": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "50m"}
+      },
+      "scenario_levels": {
+        "F09-P": [
+          {"level_id": "conservative-250m", "parameters": {"deployment": "testbed-inventory", "container": "inventory-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "250m"}},
+          {"level_id": "constrained-100m", "parameters": {"deployment": "testbed-inventory", "container": "inventory-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "100m"}},
+          {"level_id": "endpoint-50m", "parameters": {"deployment": "testbed-inventory", "container": "inventory-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "50m"}}
+        ],
+        "F12-H": [
+          {"level_id": "conservative-250m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "250m"}},
+          {"level_id": "constrained-100m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "100m"}},
+          {"level_id": "endpoint-50m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "50m"}}
+        ]
+      }
+    },
+    "k8s.lifecycle": {
+      "executor": "profiles/k8s_lifecycle_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace", "food-namespace", "banking-namespace", "target-namespace", "kafka-namespace"], "live_supported": true,
+      "default_queries": ["kubernetes.pod_ready", "kubernetes.image_pull_failure", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F05-G"]},
+      "scenario_parameters": {"F05-G": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service", "baseline_image": "commerce-payment:latest", "invalid_image": "commerce-payment:scenario-invalid-f05-g"}}
+    },
+    "k8s.resource": {
+      "executor": "profiles/k8s_resource_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace"], "live_supported": true,
+      "default_queries": ["kubernetes.container_restart_count", "kubernetes.container_last_termination_reason", "kubernetes.deployment_container_memory_limit", "kubernetes.deployment_resources_match_baseline", "kubernetes.pod_ready", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F05-R"]},
+      "scenario_parameters": {"F05-R": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service", "resource": "memory", "baseline": {"limits": {"cpu": "500m", "memory": "1Gi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}, "fault": {"limits": {"cpu": "500m", "memory": "576Mi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}}},
+      "scenario_levels": {"F05-R": [
+        {"level_id": "headroom-768mi", "parameters": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service", "resource": "memory", "baseline": {"limits": {"cpu": "500m", "memory": "1Gi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}, "fault": {"limits": {"cpu": "500m", "memory": "768Mi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}}},
+        {"level_id": "measured-640mi", "parameters": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service", "resource": "memory", "baseline": {"limits": {"cpu": "500m", "memory": "1Gi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}, "fault": {"limits": {"cpu": "500m", "memory": "640Mi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}}},
+        {"level_id": "deterministic-576mi", "parameters": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service", "resource": "memory", "baseline": {"limits": {"cpu": "500m", "memory": "1Gi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}, "fault": {"limits": {"cpu": "500m", "memory": "576Mi"}, "requests": {"cpu": "200m", "memory": "512Mi"}}}}
+      ]}
+    },
+    "k8s.probe": {
+      "executor": "profiles/k8s_probe_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace"], "live_supported": true,
+      "default_queries": ["kubernetes.container_restart_count", "kubernetes.container_last_termination_reason", "kubernetes.deployment_liveness_probe_matches_baseline", "kubernetes.deployment_resources_match_baseline", "kubernetes.pod_ready", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F05-H"]},
+      "scenario_parameters": {"F05-H": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service", "probe": "livenessProbe", "baseline": {"failureThreshold": 5, "httpGet": {"path": "/actuator/health", "port": 8083, "scheme": "HTTP"}, "periodSeconds": 15, "successThreshold": 1, "timeoutSeconds": 3}, "fault": {"failureThreshold": 5, "httpGet": {"path": "/actuator/health/f05-h-fail", "port": 8083, "scheme": "HTTP"}, "periodSeconds": 15, "successThreshold": 1, "timeoutSeconds": 3}}}
+    },
+    "kafka.control": {
+      "executor": "profiles/kafka_control_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace", "food-namespace", "banking-namespace", "kafka-namespace"], "live_supported": true,
+      "default_queries": ["kubernetes.kafka_consumer_lag", "kubernetes.deployment_available_replicas", "kubernetes.pod_ready"],
+      "parameter_contract": {"allowed_scenarios": ["F04-R"]},
+      "scenario_parameters": {"F04-R": {"namespace": "rca-testbed-commerce", "deployment": "testbed-shipping", "baseline_replicas": 1, "kafka_pod": "testbed-kafka-0", "bootstrap_server": "localhost:9092", "consumer_group": "shipping-service", "drain_timeout_seconds": 600}}
+    },
+    "host.stress": {"executor": "profiles/host-stress.sh", "location_strategy": "scenario", "allowed_locations": ["worker-w1", "worker-w2", "worker-w3", "target-worker", "shared-worker", "batch-host"], "live_supported": false, "default_queries": ["http.entry_health"]},
+    "cache.control": {
+      "executor": "profiles/cache_control_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace"], "live_supported": true,
+      "default_queries": ["kubernetes.pod_ready", "business.checkout_invariant"],
+      "parameter_contract": {"allowed_scenarios": ["F11-R", "F11-G"]},
+      "scenario_parameters": {
+        "F11-R": {"namespace": "rca-testbed-commerce", "deployment": "testbed-redis", "baseline_replicas": 1, "fault_replicas": 0, "dependent_deployment": "testbed-cart"},
+        "F11-G": {"namespace": "rca-testbed-commerce", "deployment": "testbed-redis", "baseline_replicas": 1, "fault_replicas": 0, "dependent_deployment": "testbed-cart"}
+      }
+    },
+    "network.fault": {"executor": "profiles/network-fault.sh", "location_strategy": "scenario", "allowed_locations": ["external-57", "cross-domain-edge", "probe-edge"], "live_supported": false, "default_queries": ["http.entry_health"]},
+    "app.release": {"executor": "profiles/app-release.sh", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace", "food-namespace", "banking-namespace"], "live_supported": false, "default_queries": ["kubernetes.pod_ready", "business.checkout_invariant"]},
+    "wpm.probe": {"executor": "profiles/wpm-probe.sh", "location_strategy": "scenario", "allowed_locations": ["edge-route", "probe-edge", "probe-location", "banking-namespace"], "live_supported": false, "default_queries": ["http.entry_health"]},
+    "business.fault": {"executor": "profiles/business-fault.sh", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace", "food-namespace", "banking-namespace"], "live_supported": false, "default_queries": ["business.checkout_invariant"]},
+    "timeline.compose": {
+      "executor": "profiles/timeline_compose_executor.py", "location_strategy": "fixed", "default_location": "scenario-runner", "allowed_locations": ["scenario-runner"], "live_supported": true,
+      "default_queries": ["capture.export_complete", "http.entry_health"],
+      "parameter_contract": {"allowed_scenarios": ["F08-H"]},
+      "scenario_parameters": {"F08-H": {"namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "annotation_key": "rca.lucida.ai/f08-h-rollout", "mock_resource": "deployment/testbed-external-pg-mock", "mock_path": "/v1/payments", "mock_status": 429, "second_fault_offset_seconds": 15}}
+    }
+  },
+  "required_actions": ["preflight", "run", "cleanup", "recovery", "dry-run"]
+}

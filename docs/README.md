@@ -43,6 +43,23 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [시나리오 설계](spec-scenario-design.md):
   양성·음성 시나리오 카탈로그 구조, 설계 템플릿, 실행 시간 구조, golden 승격 기준,
   시나리오당 파일 레이아웃. (Draft)
+- [AIOps 시나리오 카탈로그](spec-scenario-catalog.md):
+  15개 사례군과 64개 후보를 원인 계열·사건 구조·유사 장애 관계·도메인별로 정리한
+  전체 시나리오 포트폴리오. (Draft)
+- [시나리오 실행·주입 위치 결정표](spec-scenario-execution-matrix.md):
+  64개 후보의 오케스트레이터와 실제 주입 위치, 전송 방식, cleanup 위치,
+  실행 준비도와 차단 조건. (Draft)
+- [Adaptive Scenario Controller 설계](spec-scenario-controller.md):
+  사전검사, 단계별 자동 강화, 성공·중단·대안 배제, watchdog cleanup,
+  캡처·평가 승격을 공통 상태 머신으로 정의. (Draft)
+- [시나리오 부하 주입·모니터링·캡처 runbook](runbook-scenario-load-execution.md):
+  AI 작성 설명 정본, 순차 주입, adaptive 강화, cleanup, 데이터·모델 저장과
+  실패 재개 절차. (Active)
+- [AI Scenario Supervisor 설계](spec-scenario-supervisor.md):
+  큐 pause를 AI가 진단·수리·재개하는 감시 루프와 조치 권한 경계,
+  캡처 메타데이터 무결성 상시 검증. (Draft)
+- [64개 시나리오 실행 진입점](../scripts/scenarios/README.md):
+  공통 실행기와 catalog를 공유하는 64개 안전 wrapper, dry-run 및 live gate. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
   service-spec.yaml을 채점 가능한 golden 레코드로 끌어올리는 작성 규칙과 계열별 패턴. (Draft)
 - [부하 시나리오 규칙](spec-scenario-load.md):

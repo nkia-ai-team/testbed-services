@@ -1,0 +1,141 @@
+{
+  "schema_version": "1.0",
+  "scenarios": {
+    "F01-R": {
+      "title": "재고 hot row 잠금으로 인한 체크아웃 실패",
+      "description": "commerce inventory의 체크아웃 대상 재고 행을 PostgreSQL에서 장기 점유해 재고 예약과 주문 처리를 지연시키는 시나리오다.",
+      "cause": "PostgreSQL inventory hot row lock contention",
+      "injection_summary": "inventory_schema의 지정 재고 행에 태그된 트랜잭션 잠금을 설정하고 체크아웃 트래픽을 주입한다.",
+      "user_impact": "재고 예약 대기와 order timeout이 발생해 체크아웃 요청이 실패한다.",
+      "distinguishing_evidence": "대상 PostgreSQL blocking session과 점유 SQL이 존재하며 외부 결제대행사와 호스트 CPU는 정상이다."
+    },
+    "F01-H": {
+      "title": "외부 결제대행사 429로 인한 체크아웃 실패",
+      "description": "commerce external PG가 결제 요청에 HTTP 429를 반환해 결제 거절이 주문과 체크아웃 실패로 전파되는 시나리오다.",
+      "cause": "External payment gateway rate limiting",
+      "injection_summary": "commerce external-pg-mock의 /v1/payments 응답을 429로 고정하고 승인된 north-south 체크아웃 부하를 주입한다.",
+      "user_impact": "결제가 빠르게 거절되고 gateway checkout이 502로 실패한다.",
+      "distinguishing_evidence": "외부 결제 span의 429와 checkout 502가 관측되며 내부 DB blocking session은 0이다."
+    },
+    "F03-G": {
+      "title": "영향 없이 흡수되는 높은 DB 풀 사용률",
+      "description": "커넥션 풀 사용률을 높이되 pending·timeout과 사용자 영향 없이 처리되는 음성 시나리오다.",
+      "cause": "No incident; bounded connection-pool utilization",
+      "injection_summary": "승인된 낮은 강도의 요청으로 풀 사용률만 상승시키고 고갈 임계점 아래에서 유지한다.",
+      "user_impact": "사용자 오류와 SLA 위반이 없어야 한다.",
+      "distinguishing_evidence": "풀 사용률은 증가하지만 pending, timeout, 에러율, 사용자 p95는 정상 범위다."
+    },
+    "F06-R": {
+      "title": "외부 결제대행사 hang으로 인한 결제 timeout",
+      "description": "commerce external PG 응답을 read-timeout보다 오래 지연시켜 retry와 timeout이 체크아웃 실패로 전파되는 시나리오다.",
+      "cause": "External payment gateway response hang",
+      "injection_summary": "external-pg-mock 결제 응답에 승인된 장기 지연을 적용하고 체크아웃 부하를 주입한다.",
+      "user_impact": "결제 응답 지연과 재시도로 체크아웃이 실패한다.",
+      "distinguishing_evidence": "외부 호출 span이 장기 대기하며 commerce DB 잠금과 banking 서비스는 정상이다."
+    },
+    "F07-H": {
+      "title": "north-south 사용자 트래픽 폭주",
+      "description": "외부 사용자 진입 경로의 요청량 자체를 포화점 이상으로 높여 전 계층 호출량과 지연을 함께 증가시키는 시나리오다.",
+      "cause": "North-south traffic surge",
+      "injection_summary": "tb-runner에서 commerce NodePort로 실측 기반 adaptive k6 부하를 주입한다.",
+      "user_impact": "체크아웃 지연과 오류가 운영 인시던트 수준으로 증가한다.",
+      "distinguishing_evidence": "진입 요청량과 내부 호출량이 유사한 비율로 증가하며 특정 하류 retry 반복이 원인이 아니다."
+    },
+    "F08-H": {
+      "title": "배포 직후 우연히 겹친 외부 결제 장애",
+      "description": "무관한 배포 변경 직후 외부 결제대행사 장애가 발생해 시간상 변경처럼 보이지만 실제 원인은 외부 의존인 시나리오다.",
+      "cause": "External payment failure coincident with deployment",
+      "injection_summary": "무영향 rollout 변경과 external PG fault를 정해진 offset으로 합성한다.",
+      "user_impact": "배포 직후 체크아웃 실패가 발생한다.",
+      "distinguishing_evidence": "old/new pod 모두 동일하게 실패하고 오류는 외부 결제 span에서 시작된다."
+    },
+    "F09-P": {
+      "title": "inventory 컨테이너 CPU limit 과소 설정",
+      "description": "commerce inventory pod의 CPU limit을 낮춰 throttling과 재고 예약 지연을 만드는 시나리오다.",
+      "cause": "Inventory container CPU throttling caused by an undersized limit",
+      "injection_summary": "inventory deployment의 CPU limit을 승인된 adaptive 단계로 낮추고 체크아웃 부하를 주입한다.",
+      "user_impact": "재고 예약 지연으로 체크아웃 일부가 실패한다.",
+      "distinguishing_evidence": "inventory container throttling과 limit 변경이 관측되며 같은 host의 다른 pod와 DB는 정상이다."
+    },
+    "F11-G": {
+      "title": "DB fallback이 흡수하는 Redis 장애",
+      "description": "Redis 장애가 발생하지만 PostgreSQL fallback 여유 용량으로 사용자 영향을 완전히 흡수하는 음성 시나리오다.",
+      "cause": "No incident; Redis failure absorbed by database fallback",
+      "injection_summary": "Redis를 제한된 시간 중단하고 낮은 강도의 cart·checkout 트래픽을 유지한다.",
+      "user_impact": "cart와 checkout 결과 및 SLA가 정상이어야 한다.",
+      "distinguishing_evidence": "cache 오류는 존재하지만 DB headroom, 최종 성공률, 사용자 지연이 정상이다."
+    },
+    "F01-G": {
+      "title": "retry와 보상으로 흡수되는 짧은 결제 지연",
+      "description": "외부 결제 응답을 짧게 지연시키지만 retry·보상 로직이 SLA 안에서 흡수하는 음성 시나리오다.",
+      "cause": "No incident; transient payment delay absorbed by resilience logic",
+      "injection_summary": "external-pg-mock에 짧고 제한된 지연 pulse를 적용한다.",
+      "user_impact": "최종 주문과 결제 상태 및 사용자 응답은 정상이어야 한다.",
+      "distinguishing_evidence": "하류 지연 흔적은 있으나 중복 결제 없이 SLA 안에 정상화된다."
+    },
+    "F05-G": {
+      "title": "기존 replica가 서비스를 유지하는 잘못된 이미지 rollout",
+      "description": "존재하지 않는 이미지로 rollout을 시도하지만 기존 ready replica가 계속 서비스를 제공하는 음성 시나리오다.",
+      "cause": "No incident; failed image rollout contained by existing replicas",
+      "injection_summary": "payment deployment에 검증된 invalid image를 적용하고 원본 image를 정확히 복구한다.",
+      "user_impact": "사용자 요청 성공률과 지연은 정상이어야 한다.",
+      "distinguishing_evidence": "ImagePullBackOff 이벤트는 있지만 기존 ready replica 수와 사용자 경로는 유지된다."
+    },
+    "F11-R": {
+      "title": "Redis 중단과 fallback 과부하로 인한 cart 장애",
+      "description": "Redis 중단 뒤 cart·checkout 요청이 PostgreSQL fallback으로 몰려 DB 용량을 초과하는 시나리오다.",
+      "cause": "Redis outage amplified by overloaded PostgreSQL fallback",
+      "injection_summary": "Redis를 중단하고 실측 기반 cart·checkout surge를 동시에 주입한다.",
+      "user_impact": "cart 조회와 checkout 지연·실패가 발생한다.",
+      "distinguishing_evidence": "Redis 오류 이후 DB session과 pool 사용량이 급증하고 fallback trace가 나타난다."
+    },
+    "F02-R": {
+      "title": "상품 검색 인덱스 제거로 인한 조회 지연",
+      "description": "commerce 상품 검색 핵심 인덱스를 제거해 full scan과 검색 timeout을 유발하는 시나리오다.",
+      "cause": "PostgreSQL product search index removal",
+      "injection_summary": "정확한 index 정의를 snapshot한 뒤 대상 index를 제거하고 검색 부하를 주입한다.",
+      "user_impact": "상품 검색 응답이 느려지고 gateway 검색 요청이 timeout된다.",
+      "distinguishing_evidence": "TopSQL 실행계획과 rows scanned가 변하며 DB lock과 host IO는 정상이다."
+    },
+    "F04-R": {
+      "title": "shipping consumer 중단으로 인한 배송 생성 지연",
+      "description": "commerce shipping Kafka consumer를 지속 중단해 주문·결제 성공 후 배송 생성 SLA를 위반하는 시나리오다.",
+      "cause": "Shipping Kafka consumer outage",
+      "injection_summary": "shipping deployment를 0 replica로 내리고 lag를 만든 뒤 원래 replica로 복구하고 backlog drain을 확인한다.",
+      "user_impact": "주문은 성공하지만 배송 생성과 후속 상태 반영이 지연된다.",
+      "distinguishing_evidence": "outbox publish는 정상이고 shipping consumer lag가 증가하며 shipment row가 생성되지 않는다."
+    },
+    "F12-H": {
+      "title": "네트워크 장애처럼 보이는 product pod CPU 포화",
+      "description": "product pod CPU limit을 낮춰 특정 서비스 timeout을 만들고 실제 네트워크 장애와 구분하는 시나리오다.",
+      "cause": "Product pod CPU throttling",
+      "injection_summary": "product deployment CPU limit을 승인된 단계로 낮추고 상품 조회 부하를 주입한다.",
+      "user_impact": "상품 조회와 연계 요청이 지연되거나 실패한다.",
+      "distinguishing_evidence": "container throttling과 service trace 지연이 존재하지만 interface와 pod network error는 정상이다."
+    },
+    "F06-G": {
+      "title": "retry가 흡수하는 일시적 외부 5xx",
+      "description": "외부 결제대행사의 짧은 5xx pulse를 retry와 circuit breaker가 흡수하는 음성 시나리오다.",
+      "cause": "No incident; transient external 5xx absorbed by retry",
+      "injection_summary": "run-scoped MockServer expectation으로 제한된 5xx pulse를 발생시킨다.",
+      "user_impact": "최종 주문 성공과 결제 정합성이 유지되어야 한다.",
+      "distinguishing_evidence": "retry 흔적은 있으나 expectation이 소비되고 중복 결제 없이 정상 복구된다."
+    },
+    "F05-R": {
+      "title": "payment memory limit 축소로 인한 OOMKill loop",
+      "description": "commerce payment container의 memory limit을 낮추고 결제 부하를 주입해 OOMKill 재시작을 만드는 시나리오다.",
+      "cause": "Payment container memory limit exhaustion",
+      "injection_summary": "payment memory limit을 실측 adaptive 단계로 낮추고 checkout 부하를 주입한 뒤 최초 resources를 복구한다.",
+      "user_impact": "payment pod 재시작 동안 체크아웃이 간헐적으로 실패한다.",
+      "distinguishing_evidence": "container OOMKilled와 restart count 증가가 직접 관측되며 host memory pressure는 정상이다."
+    },
+    "F05-H": {
+      "title": "잘못된 liveness probe로 인한 payment 재시작 loop",
+      "description": "commerce payment liveness probe를 항상 실패하는 경로로 변경해 OOM과 유사한 재시작 loop를 만드는 시나리오다.",
+      "cause": "Misconfigured payment liveness probe",
+      "injection_summary": "payment livenessProbe 경로를 고정 404 endpoint로 변경하고 원본 probe 전체를 정확히 복구한다.",
+      "user_impact": "payment 재시작으로 체크아웃이 간헐적으로 실패한다.",
+      "distinguishing_evidence": "termination reason은 Error이고 probe 변경과 restart가 관측되며 OOMKilled와 memory pressure는 없다."
+    }
+  }
+}

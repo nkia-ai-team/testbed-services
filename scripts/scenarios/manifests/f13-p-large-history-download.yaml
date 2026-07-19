@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "id": "F13-P",
+  "slug": "f13-p-large-history-download",
+  "readiness": "blocked",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "R/ssh DB seed 또는 K fault build",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/business.fault",
+      "injector-profiles/wpm.probe"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "business-invariant-probe",
+      "wpm-probe-contract"
+    ],
+    "controller": {
+      "dispatcher_mode": "dry-run",
+      "decision_mode": "evaluation",
+      "profile": {
+        "kind": "fixed",
+        "ref": "controller-profiles/f13-p-large-history-download/fixed",
+        "requires_approved_fixed_profile": true
+      },
+      "live_enabled": false
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "business.fault",
+        "wpm.probe"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "business.fault",
+        "wpm.probe"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "wpm.probe",
+        "business.fault"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "unresolved",
+    "required": true,
+    "description": "large response surface",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-2h,t2+45m]",
+    "export_not_before": "t2+45m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+45m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}
