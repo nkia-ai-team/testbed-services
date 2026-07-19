@@ -184,11 +184,11 @@
           "consecutive_ticks": 3
         },
         "escalate": {
-          "any": [
+          "all": [
             {
-              "id": "surge-too-low",
+              "id": "surge-delivered",
               "observation": "achieved_rps",
-              "op": "lt",
+              "op": "gte",
               "value": 100
             },
             {
