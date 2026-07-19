@@ -79,7 +79,7 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "2m",
+              "min_hold": "6m",
               "settle": "30s",
               "timeout": "12m"
             },
@@ -96,7 +96,7 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "2m",
+              "min_hold": "6m",
               "settle": "30s",
               "timeout": "12m"
             },
@@ -113,7 +113,7 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "2m",
+              "min_hold": "6m",
               "settle": "30s",
               "timeout": "12m"
             }
