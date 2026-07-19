@@ -113,6 +113,15 @@ supervisor가 매 사이클 다음을 검증한다.
   내용(result.json의 profile·parameters)과 어긋나지 않는지 AI가 교차 읽기로
   점검한다. 예: injection_summary가 "PG row lock"인데 실주입이 north-south
   surge면 즉시 보고.
+- **동반 문서 `scenario.md` 작성(케이스별)**: 캡처 성공 후 supervisor의 AI가
+  사람 판독용 동반 문서를 케이스 디렉터리에 작성한다. 구성은 L1 케이스의
+  형식을 따른다 — 개요(meta.json 6필드 기반), 주입 방법(result.json의
+  profile·parameters 실측), 실행 기록(t1/t2·판정·streak·cleanup), 관측
+  실측(`ticks.jsonl` 요약 + 관측 저장소 사후 질의), 유사 시나리오와의
+  시그니처 대비, 재현 시 주의. **작성 주체는 AI다** — 수치는 run
+  아티팩트에서 기계 추출하되 서술·해석은 AI가 쓰고, 자동 생성기가 ID로
+  문장을 만들어내는 것은 금지한다(설명 정본 원칙과 동일). 07-19에
+  case-f01-r·case-f01-h 두 케이스에 소급 작성해 형식을 고정했다.
 
 기존 위반: `case-f01-r-791f695b`는 `scenario_metadata`가 빈 객체이고 SHA가
 없다(메타데이터 계약 도입 전 캡처). §2-5의 backfill 대상이다.
@@ -133,6 +142,8 @@ supervisor가 매 사이클 다음을 검증한다.
 1. **P0**: §2 선행 결함 5건 수리 (runner + manifest + 케이스 backfill).
 2. **M1 수동 모드**: supervisor 프롬프트·플레이북을 스킬로 작성하고, 사람이
    세션에서 호출해 1사이클씩 검증한다. F03-G 재실행으로 A·B 분류 실증.
+   §6의 케이스별 `scenario.md` 동반 문서 작성(AI 저술)을 이 단계의 캡처
+   후처리로 포함한다.
 3. **M2 자동 모드**: systemd timer + `claude -p` 배선, state·로그 영속화,
    에스컬레이션 알림 연결. 감시만 1~2일 돌려 오탐 확인 후 자율 조치 개방.
 4. **M3 확장**: 큐 완주 후 다음 배치 자동 제안(카탈로그 `ready` 후보), 캡처
