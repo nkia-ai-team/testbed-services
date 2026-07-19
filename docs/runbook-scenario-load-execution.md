@@ -254,3 +254,18 @@ gateway가 APM allowlist에도 빠져 있었다. 실제 수집 지표와 millise
 `user_p95` freshness를 실측 케이던스에 맞게 완화(120s), controller의 tick별
 관측·판정 로그를 `runs/<run-id>/ticks.jsonl`로 영속화, run 로그 캡처 수리.
 성공·중단 조건의 의미(임계값·조건식)는 이 수리에서 변경하지 않는다.
+
+같은 날 7차 실행(`ca64d788`)은 위 수리 후에도
+`safety_observation_unavailable`로 중단됐는데, 신설된 `ticks.jsonl`이 원인을
+바로 드러냈다. hold 31 tick 중 17 tick이 성공 조건을 전부 충족했지만 최장
+연속은 2 tick(3 필요)이었고, streak을 끊은 것은 p95의 stale 판정 14회 —
+그런데 해당 관측의 나이가 **0초 또는 -1초**였다. VictoriaMetrics instant
+query가 반환하는 timestamp는 샘플 시각이 아니라 **VM 서버의 평가 시각**이고,
+http/k8s probe도 폴링 완료 시각을 쓰므로, tick 시작 시각(now)보다 미래가
+되면 나이가 음수가 되어 `0 <= age` 검사가 stale로 오판했다. 호스트 간 1초
+미만의 시계 차만으로 건강한 신호의 45%가 죽은 것이다. freshness 완화(60→120s)
+가 무효였던 이유는 실패가 상한이 아니라 **하한**에서 났기 때문이다. 수리:
+staleness 검사에 시계 차 허용 `CLOCK_SKEW_TOLERANCE_SEC=10`을 도입
+(`observations.py`·`adaptive_runtime.py` 양쪽 게이트, 회귀 테스트 포함).
+freshness 계약을 조정할 때는 상한(적재 케이던스)과 하한(시계 차·타임스탬프
+출처)을 모두 실측할 것.
