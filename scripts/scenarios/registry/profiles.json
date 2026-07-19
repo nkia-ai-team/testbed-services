@@ -43,12 +43,12 @@
         "allowed_scenarios": ["F07-H", "F03-G", "F01-R", "F01-H", "F01-G", "F05-G", "F06-R", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H"],
         "allowed_entry_urls": ["http://192.168.122.77:30080"],
         "allowed_script_paths": ["/opt/loadgen/commerce/surge.js"],
-        "target_rps": {"minimum": 1, "maximum": 80},
+        "target_rps": {"minimum": 1, "maximum": 180},
         "duration_pattern": "^[1-9][0-9]*[sm]$",
         "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H)$"
       },
       "scenario_parameters": {
-        "F07-H": {"target_rps": 80, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+        "F07-H": {"target_rps": 160, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
         "F03-G": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F03-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
         "F01-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F01-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
         "F01-H": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F01-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
@@ -68,9 +68,9 @@
       },
       "scenario_levels": {
         "F07-H": [
-          {"level_id": "healthy-ceiling-60", "parameters": {"target_rps": 60, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
-          {"level_id": "knee-70", "parameters": {"target_rps": 70, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
-          {"level_id": "measured-upper-80", "parameters": {"target_rps": 80, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}}
+          {"level_id": "healthy-high-120", "parameters": {"target_rps": 120, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
+          {"level_id": "knee-140", "parameters": {"target_rps": 140, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}},
+          {"level_id": "overload-160", "parameters": {"target_rps": 160, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-H", "seed": 4242, "baseline_unit": "loadgen-commerce"}}
         ],
         "F11-R": [
           {"level_id": "fallback-load-35", "parameters": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F11-R", "seed": 4242, "baseline_unit": "loadgen-commerce"}},

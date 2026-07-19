@@ -44,7 +44,7 @@ class ProfileControlTests(unittest.TestCase):
         self.levels = [
             {"level_id": level_id, "parameters": parameters}
             for level_id, parameters in zip(
-                ("healthy-ceiling-60", "knee-70", "measured-upper-80"),
+                ("healthy-high-120", "knee-140", "overload-160"),
                 self.level_parameters,
             )
         ]
@@ -92,7 +92,7 @@ class ProfileControlTests(unittest.TestCase):
     def test_apply_remains_active_until_explicit_cleanup(self) -> None:
         parameters = module.ProfileController._canonical(self.level_parameters[0])
         applied = self.call(
-            "apply", "apply:0", level_index=0, level_id="healthy-ceiling-60",
+            "apply", "apply:0", level_index=0, level_id="healthy-high-120",
             parameters_json=parameters,
         )
         self.assertEqual(applied, {"applied_at": "2026-07-16T12:00:00Z"})
@@ -119,7 +119,7 @@ class ProfileControlTests(unittest.TestCase):
         self.controller.runner = delayed
         applied = self.call(
             "apply", "apply:started", level_index=0,
-            level_id="healthy-ceiling-60",
+            level_id="healthy-high-120",
             parameters_json=module.ProfileController._canonical(self.level_parameters[0]),
         )
         self.assertEqual(applied["applied_at"], module.ProfileController._timestamp(started))
@@ -133,7 +133,7 @@ class ProfileControlTests(unittest.TestCase):
         with self.assertRaisesRegex(module.ControlError, "terminal fence"):
             self.call(
                 "apply", "apply-after-claim", level_index=0,
-                level_id="healthy-ceiling-60",
+                level_id="healthy-high-120",
                 parameters_json=module.ProfileController._canonical(self.level_parameters[0]),
             )
         self.assertEqual(self.runner.calls, [])
@@ -141,16 +141,16 @@ class ProfileControlTests(unittest.TestCase):
     def test_apply_is_idempotent_without_a_second_profile_invocation(self) -> None:
         raw = module.ProfileController._canonical(self.level_parameters[1])
         first = self.call(
-            "apply", "apply:1", level_index=1, level_id="knee-70", parameters_json=raw
+            "apply", "apply:1", level_index=1, level_id="knee-140", parameters_json=raw
         )
         second = self.call(
-            "apply", "apply:1", level_index=1, level_id="knee-70", parameters_json=raw
+            "apply", "apply:1", level_index=1, level_id="knee-140", parameters_json=raw
         )
         self.assertEqual(first, second)
         self.assertEqual(len(self.runner.calls), 2)
         with self.assertRaisesRegex(module.ControlError, "another request"):
             self.call(
-                "apply", "apply:1", level_index=2, level_id="measured-upper-80",
+                "apply", "apply:1", level_index=2, level_id="overload-160",
                 parameters_json=module.ProfileController._canonical(self.level_parameters[2]),
             )
 
@@ -173,7 +173,7 @@ class ProfileControlTests(unittest.TestCase):
         raw = module.ProfileController._canonical(self.level_parameters[0])
         self.call(
             "apply", "apply:heartbeat", level_index=0,
-            level_id="healthy-ceiling-60", parameters_json=raw,
+            level_id="healthy-high-120", parameters_json=raw,
         )
         self.assertEqual([call[1] for call in calls], ["preflight", "run"])
 
@@ -181,13 +181,13 @@ class ProfileControlTests(unittest.TestCase):
         with self.assertRaisesRegex(module.ControlError, "predeclared level"):
             self.call(
                 "apply", "bad:level", level_index=1,
-                level_id="knee-70",
+                level_id="knee-140",
                 parameters_json=module.ProfileController._canonical({"target_rps": 71, "hold": "8m"}),
             )
         with self.assertRaisesRegex(module.ControlError, "canonical JSON"):
             self.call(
                 "apply", "bad:json", level_index=1,
-                level_id="knee-70",
+                level_id="knee-140",
                 parameters_json='{"target_rps": 70, "hold": "8m"}',
             )
         self.assertEqual(self.runner.calls, [])
@@ -206,7 +206,7 @@ class ProfileControlTests(unittest.TestCase):
         self.coordinator.write_text(json.dumps(state), encoding="utf-8")
         with self.assertRaisesRegex(module.ControlError, "expired"):
             self.call(
-                "apply", "expired", level_index=0, level_id="healthy-ceiling-60",
+                "apply", "expired", level_index=0, level_id="healthy-high-120",
                 parameters_json=raw,
             )
 

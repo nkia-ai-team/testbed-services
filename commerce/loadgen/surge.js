@@ -2,9 +2,8 @@
 // commerce surge 부하 (시나리오 전용) — testbed-services docs/spec-scenario-load.md
 // ============================================================
 // baseline loadgen(tb-runner 상주, 불가침 — R1)과 별개로, 시나리오가 켰다 끄는
-// 폭주 부하다. 강도는 절대 RPS가 아니라 "baseline 대비 배수"로 정의하고(R4·§3),
-// 셸(시나리오 스크립트)이 diurnal 테이블로 현재 baseline RPS를 계산해
-// TARGET_RPS(=baseline×배수)로 넘겨준다.
+// 폭주 부하다. 강도 정본은 capacity probe로 실측한 절대 TARGET_RPS다(R4-1).
+// 배수는 실행 시 baseline과 함께 기록하는 운영자 서술값일 뿐 강도 계산에 쓰지 않는다.
 //
 // 여정은 loadgen 여정 카탈로그(commerce/loadgen/script.js)와 같은 계약(같은
 // 엔드포인트·데모 유저 20·flagship 상품 16)을 쓰되, Black Friday 성격에 맞게
@@ -13,13 +12,15 @@ import http from 'k6/http';
 import { check } from 'k6';
 
 const GATEWAY_URL = __ENV.GATEWAY_URL || 'http://192.168.122.77:30080';
-const TARGET_RPS = Number(__ENV.TARGET_RPS || 40);
+const TARGET_RPS = Number(__ENV.TARGET_RPS || 80);
 const RAMP_UP = __ENV.RAMP_UP || '2m';
 const HOLD = __ENV.HOLD || '8m';
 const RAMP_DOWN = __ENV.RAMP_DOWN || '1m';
 const SURGE_SEED = Number(__ENV.SURGE_SEED || 4242);
-const PRE_ALLOCATED_VUS = Number(__ENV.PRE_ALLOCATED_VUS || 50);
-const MAX_VUS = Number(__ENV.MAX_VUS || 150);
+// 무릎(140rps) 혼잡 구간에서 여정 latency가 초 단위로 늘어도 offered load가
+// 유지되어야 한다 — 07-19 확장 probe에서 140rps가 VU 840까지 사용했다.
+const PRE_ALLOCATED_VUS = Number(__ENV.PRE_ALLOCATED_VUS || 100);
+const MAX_VUS = Number(__ENV.MAX_VUS || 900);
 
 export const options = {
     scenarios: {

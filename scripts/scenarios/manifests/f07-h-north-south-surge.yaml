@@ -67,9 +67,9 @@
           "kind": "adaptive_ladder",
           "levels": [
             {
-              "id": "healthy-ceiling-60",
+              "id": "healthy-high-120",
               "parameters": {
-                "target_rps": 60,
+                "target_rps": 120,
                 "ramp_up": "2m",
                 "hold": "8m",
                 "ramp_down": "1m",
@@ -84,9 +84,9 @@
               "timeout": "12m"
             },
             {
-              "id": "knee-70",
+              "id": "knee-140",
               "parameters": {
-                "target_rps": 70,
+                "target_rps": 140,
                 "ramp_up": "2m",
                 "hold": "8m",
                 "ramp_down": "1m",
@@ -101,9 +101,9 @@
               "timeout": "12m"
             },
             {
-              "id": "measured-upper-80",
+              "id": "overload-160",
               "parameters": {
-                "target_rps": 80,
+                "target_rps": 160,
                 "ramp_up": "2m",
                 "hold": "8m",
                 "ramp_down": "1m",
@@ -166,7 +166,7 @@
               "id": "surge-achieved",
               "observation": "achieved_rps",
               "op": "gte",
-              "value": 70
+              "value": 100
             },
             {
               "id": "latency-elevated",
@@ -189,7 +189,7 @@
               "id": "surge-too-low",
               "observation": "achieved_rps",
               "op": "lt",
-              "value": 70
+              "value": 100
             },
             {
               "id": "latency-not-elevated",

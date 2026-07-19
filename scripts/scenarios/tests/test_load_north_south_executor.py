@@ -44,7 +44,7 @@ class NorthSouthExecutorTests(unittest.TestCase):
     def test_allowlisted_parameters_bind_capacity_profiles(self) -> None:
         profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
         profile = profiles["load.north_south"]
-        expected = {"F07-H": 80, "F03-G": 35, "F06-G": 20, "F05-R": 35, "F05-H": 20}
+        expected = {"F07-H": 160, "F03-G": 35, "F06-G": 20, "F05-R": 35, "F05-H": 20}
         for scenario_id, target_rps in expected.items():
             params = profile["scenario_parameters"][scenario_id]
             executor.validate_parameters(scenario_id, params, profile)
@@ -63,13 +63,13 @@ class NorthSouthExecutorTests(unittest.TestCase):
     def test_f07h_capacity_ladder_is_exact_and_tamper_proof(self) -> None:
         profile = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]["load.north_south"]
         levels = profile["scenario_levels"]["F07-H"]
-        self.assertEqual([level["level_id"] for level in levels], ["healthy-ceiling-60", "knee-70", "measured-upper-80"])
-        self.assertEqual([level["parameters"]["target_rps"] for level in levels], [60, 70, 80])
+        self.assertEqual([level["level_id"] for level in levels], ["healthy-high-120", "knee-140", "overload-160"])
+        self.assertEqual([level["parameters"]["target_rps"] for level in levels], [120, 140, 160])
         for level in levels:
             executor.validate_parameters("F07-H", level["parameters"], profile)
         plan = compiler.compile_plan("f07-h-north-south-surge")
         instance = executor.load_instance(plan)
-        self.assertEqual(instance["selected_level_id"], "measured-upper-80")
+        self.assertEqual(instance["selected_level_id"], "overload-160")
         self.assertEqual(instance["scenario_levels"], levels)
         tampered = dict(levels[1]["parameters"])
         tampered["target_rps"] = 69
@@ -83,9 +83,9 @@ class NorthSouthExecutorTests(unittest.TestCase):
         knee, knee_id = executor.bind_level_parameters(plan, "load.north_south", 1, self.canonical(levels[1]["parameters"]))
         low_argv, _ = executor.build_invocation(low, "run")
         knee_argv, _ = executor.build_invocation(knee, "run")
-        self.assertEqual((low_id, knee_id), ("healthy-ceiling-60", "knee-70"))
-        self.assertIn("60", low_argv)
-        self.assertIn("70", knee_argv)
+        self.assertEqual((low_id, knee_id), ("healthy-high-120", "knee-140"))
+        self.assertIn("120", low_argv)
+        self.assertIn("140", knee_argv)
         self.assertNotEqual(low_argv, knee_argv)
         tampered = dict(levels[0]["parameters"])
         tampered["target_rps"] = 61

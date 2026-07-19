@@ -147,7 +147,7 @@ class RegistryContractTests(unittest.TestCase):
         controllers = self.controllers["controllers"]
         self.assertEqual(
             [level["parameters"]["target_rps"] for level in controllers["F07-H"]["profile"]["levels"]],
-            [60, 70, 80],
+            [120, 140, 160],
         )
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"] for level in controllers["F09-P"]["profile"]["levels"]],
