@@ -150,7 +150,7 @@
               "value": false
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 3
         },
         "abort": {
           "any": [
