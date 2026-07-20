@@ -26,12 +26,41 @@ F09R_LEVELS = [
     {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 4, "runtime_seconds": 480},
 ]
 
+# F05-P (worker node memory pressure) is a calibration ladder that drives tb-w2
+# (192.168.122.11) toward the kubelet hard-eviction threshold (memory.available<100Mi)
+# so several co-located commerce/food pods are evicted and their APIs fail during the
+# reschedule gap. tb-w2 has 4 cores, ~11.9G total / ~8G reclaimable-available memory and
+# no stress-ng, so the burner is a stress-ng-free anonymous-memory hog (python touches
+# every page) held for the window — CPU stays free to keep this distinct from F09-R's
+# CPU surface. Ladder MiB are static estimates from the 07-20 read-only headroom probe
+# (free -m available ~7985 MiB above 3944 MiB used); the eviction knee (between the
+# 7000 and 8500 steps) is confirmed by live calibration, never by static measurement.
+#
+# `required_cohort` is the fail-closed runtime placement gate: commerce has no
+# nodeSelector/affinity so the cohort on tb-w2 drifts across reschedules (pod name
+# suffixes already changed between probes). The gate re-verifies the *current* pods on
+# the node by deployment-name prefix (crictl pods, node-local, no kubeconfig) before any
+# allocation and refuses if the expected multi-service cohort is not actually co-located.
+_F05P_COHORT = [
+    "testbed-gateway", "testbed-cart", "testbed-inventory",
+    "testbed-redis", "testbed-kafka", "testbed-payment",
+]
+F05P_LEVELS = [
+    {"mode": "memhog", "host": "192.168.122.11", "mib": 5500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.11", "mib": 7000, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.11", "mib": 8500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+]
+
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
     del profile
     if scenario_id == "F09-R":
         if params not in F09R_LEVELS:
             raise ExecutorError("parameters do not match a measured F09-R CPU noisy-neighbor level")
+        return
+    if scenario_id == "F05-P":
+        if params not in F05P_LEVELS:
+            raise ExecutorError("parameters do not match a measured F05-P memory-pressure level")
         return
     expected = CONTRACTS.get(scenario_id)
     if expected is None:
@@ -53,6 +82,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         args += [p["target_dir"], str(p["watermark_percent"]), str(p["reserve_mib"]), str(p["maximum_fill_mib"])]
     elif p["mode"] == "cpu":
         args += [str(p["cpu_workers"]), str(p["runtime_seconds"])]
+    elif p["mode"] == "memhog":
+        args += [str(p["mib"]), str(p["runtime_seconds"]), ",".join(p["required_cohort"])]
     else:
         args += [str(p["cpu_workers"]), str(p["vm_workers"]), p["vm_bytes"], str(p["runtime_seconds"])]
     return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s", "--", *args], REMOTE
@@ -88,6 +119,48 @@ case "$mode" in
    preflight) command -v yes >/dev/null; command -v setsid >/dev/null; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
    run) [[ ! -e "$pgidfile" ]]; ! grouplive
      setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; for _ in $(seq 1 '"$cpu"'); do yes >/dev/null 2>&1 & done; sleep '"$runtime"'' >"$state_root/${scenario}.log" 2>&1 &
+     for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
+   cleanup)
+     if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi
+     rm -f "$pgidfile" "$pgidfile.tmp" "$state_root/${scenario}.log" ;;
+   recovery) ! grouplive; [[ ! -e "$pgidfile" ]] ;;
+   *) exit 2 ;;
+  esac ;;
+ memhog)
+  # stress-ng-free node memory-pressure burner: a single python process anonymously
+  # allocates $mib MiB and touches every page (bytearray, 1 MiB stride) so the pages are
+  # resident RSS, then holds for $runtime. Confined to a setsid session with a self-bound
+  # sleep + trap kill 0 so cleanup reaps the whole group by negative PGID (identical
+  # lifecycle contract to the cpu mode). CPU stays idle to keep this distinct from F09-R.
+  #
+  # Placement gate (fail-closed): before allocating we re-list the pods actually resident
+  # on THIS node via node-local crictl and require every deployment prefix in $cohort to
+  # be present. commerce has no nodeSelector/affinity so the cohort drifts; a stale target
+  # map must not silently pressure the wrong node. Missing crictl, a crictl error, or any
+  # absent cohort member aborts before a single byte is allocated.
+  mib="$1"; runtime="$2"; cohort="$3"; pgidfile="$state_root/${scenario}.pgid"
+  grouplive() { [[ -s "$pgidfile" ]] && kill -0 -"$(cat "$pgidfile")" 2>/dev/null; }
+  placement_ok() {
+    command -v crictl >/dev/null || return 1
+    local pods; pods="$(crictl pods --state Ready -o json 2>/dev/null)" || return 1
+    [[ -n "$pods" ]] || return 1
+    local names; names="$(printf '%s' "$pods" | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print("\n".join(p["metadata"]["name"] for p in d.get("items",[])))' 2>/dev/null)" || return 1
+    local prefix
+    for prefix in ${cohort//,/ }; do
+      printf '%s\n' "$names" | grep -q "^${prefix}-\?" || return 1
+    done
+  }
+  case "$action" in
+   preflight) command -v python3 >/dev/null; command -v setsid >/dev/null; placement_ok; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
+   run) [[ ! -e "$pgidfile" ]]; ! grouplive; placement_ok
+     setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; python3 -c "import sys,time
+mib=int(sys.argv[1]); hold=int(sys.argv[2])
+buf=bytearray(mib*1024*1024)
+for off in range(0, len(buf), 1024*1024):
+    buf[off]=1
+time.sleep(hold)" '"$mib"' '"$runtime"'' >"$state_root/${scenario}.log" 2>&1 &
      for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
    cleanup)
      if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi

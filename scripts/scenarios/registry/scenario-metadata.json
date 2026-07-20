@@ -200,6 +200,22 @@
       "injection_summary": "payment deployment에 SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE env(k8s.env, F08-P 패턴)를 주입+rollout해 풀을 축소한다. calibration ladder로 pool=5→3→2를 내려가며(F09-P 계단식 선례) 증상 발현 지점을 정의한다. north-south 60rps companion(무릎 아래 건강 상한)이 checkout 결제 경로에 지속 부하를 준다. cleanup=env 제거+rollout 원복.",
       "user_impact": "축소된 풀에서 payment 커넥션 획득 대기가 길어져 payment_p95가 급등하고, order의 payment 호출이 timeout돼 checkout 5xx가 상승한다.",
       "distinguishing_evidence": "payment_p95 급등 + checkout_5xx 상승이 있으나 payment pod·DB·호스트 자원은 정상이고 payment deployment의 풀 설정 변경(rollout) 이력이 존재한다. F07-H(진입 폭주)와 달리 진입량은 60rps로 통제 수준이며, F06-R/F06-H와 달리 원인은 커넥션풀 설정이다."
+    },
+    "F09-H": {
+      "title": "order JVM GC 압박(heap 축소)",
+      "description": "order-service의 JVM heap을 JAVA_TOOL_OPTIONS -Xmx 오버라이드로 좁혀 잦은 stop-the-world GC를 유발하는 시나리오다. 주기적 GC pause로 order 전 endpoint의 p95가 함께 튀지만, OOMKill 직전 대역만 유지해 pod는 재시작 없이 살아있다. 원인은 트래픽·외부 장애가 아니라 order 자신의 JVM 메모리 여유 축소다.",
+      "cause": "Undersized JVM heap causing frequent stop-the-world GC pauses",
+      "injection_summary": "order deployment의 JAVA_TOOL_OPTIONS에 -Xmx/-Xms(256→208→176 MiB adaptive ladder)와 -XX:+UseParallelGC를 얹어 재빌드 없이 heap을 좁힌다(k8s.env, rollout 동반). 사용자 경로 확인용 north-south 20rps companion을 병행하며, cleanup은 env 원복 후 rollout이다. restart_count==0을 유지하는 pre-OOM 대역만 사용한다.",
+      "user_impact": "order의 모든 endpoint가 주기적 GC pause 동안 느려져 checkout·조회 응답의 p95가 톱니처럼 상승한다.",
+      "distinguishing_evidence": "jvm.gc.pause/jvm.memory.used(after-GC) 주기성과 order p95 스파이크가 동기화되고, host/node CPU 포화(F09-R/F09-P)는 없다. F05-R(payment OOM loop)과 달리 restart_count는 0으로 유지되며 OOMKill 종료가 없다. F08-P(read-timeout 오설정)와 달리 order→payment span은 정상이고 heap after-GC used/limit이 원인 신호다."
+    },
+    "F05-P": {
+      "title": "worker 노드 메모리 압박 → 다서비스 eviction",
+      "description": "commerce·food·banking 파드가 동거하는 tb-w2 worker 노드의 메모리를 kubelet hard-eviction 임계(memory.available<100Mi)까지 밀어 여러 pod를 eviction시키고, 재스케줄 공백 동안 여러 도메인의 API가 동시에 실패하는 시나리오다. 특정 서비스 결함이 아니라 노드 단위 메모리 자원 고갈이 원인인 P(플랫폼/인프라)형이다.",
+      "cause": "Worker node memory exhaustion driving kubelet pod eviction",
+      "injection_summary": "tb-w2(192.168.122.11)에서 stress-ng 없이 python anonymous 메모리 hog(5500→7000→8500 MiB adaptive ladder, 전 페이지 터치)를 실행해 노드 메모리를 eviction 임계까지 포화시킨다. 주입 전 노드의 실제 pod 목록을 crictl로 재확인해 기대 cohort(gateway·cart·inventory·redis·kafka·food-payment) 동거를 검증하고 불일치 시 fail-closed. 사용자 경로 확인용 north-south 20rps companion 병행. cleanup은 memhog process group 전멸(negative PGID kill) 확인이며, 메모리만 점유해 CPU·설정·파일은 건드리지 않아 F09-R(CPU)·config형과 표면 분리한다.",
+      "user_impact": "tb-w2에 동거하던 gateway·cart·inventory 등이 evict·재스케줄되는 공백 동안 commerce checkout과 여러 도메인 API가 동시에 5xx로 실패한다.",
+      "distinguishing_evidence": "kcm.node.memory_utilization(tb-w2) 포화 + KCM eviction/pod relocation 이벤트가 원인 신호이고, 앱 heap after-GC는 정상이다. F09-H(order heap 축소)와 달리 특정 서비스 JVM이 아니라 노드 전역 메모리이며 여러 도메인 pod가 동시에 흔들린다. F09-R(노드 CPU)과 달리 CPU는 정상이고 메모리·eviction이 신호다. 다른 노드(tb-w3 등)에 배치된 서비스는 영향이 없다."
     }
   }
 }

@@ -2,13 +2,13 @@
   "schema_version": "1.0",
   "id": "F05-P",
   "slug": "f05-p-worker-memory-eviction",
-  "readiness": "partial",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "target worker",
+    "location": "worker-w2",
     "matrix_location_transport": "대상 worker/ssh",
     "transport": "ssh",
     "profile_refs": [
@@ -29,14 +29,311 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f05-p-worker-memory-eviction/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health",
+          "worker-cohort-placement"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            },
+            {
+              "check": "worker-cohort-placement"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "mem-5500",
+              "parameters": {
+                "mode": "memhog",
+                "host": "192.168.122.11",
+                "mib": 5500,
+                "runtime_seconds": 480,
+                "required_cohort": [
+                  "testbed-gateway",
+                  "testbed-cart",
+                  "testbed-inventory",
+                  "testbed-redis",
+                  "testbed-kafka",
+                  "testbed-payment"
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "mem-7000",
+              "parameters": {
+                "mode": "memhog",
+                "host": "192.168.122.11",
+                "mib": 7000,
+                "runtime_seconds": 480,
+                "required_cohort": [
+                  "testbed-gateway",
+                  "testbed-cart",
+                  "testbed-inventory",
+                  "testbed-redis",
+                  "testbed-kafka",
+                  "testbed-payment"
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "mem-8500",
+              "parameters": {
+                "mode": "memhog",
+                "host": "192.168.122.11",
+                "mib": 8500,
+                "runtime_seconds": 480,
+                "required_cohort": [
+                  "testbed-gateway",
+                  "testbed-cart",
+                  "testbed-inventory",
+                  "testbed-redis",
+                  "testbed-kafka",
+                  "testbed-payment"
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "node_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.node_ready",
+            "parameters": {
+              "node": "tb-w2"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "node_mem_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_memory_utilization",
+            "parameters": {
+              "node": "tb-w2"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "gateway_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-gateway"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "kafka_restart_count",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_restart_count",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-kafka",
+              "container": "kafka"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-gateway"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "node-memory-saturated",
+              "observation": "node_mem_util",
+              "op": "gte",
+              "value": 92
+            },
+            {
+              "id": "cohort-user-impact",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.1
+            },
+            {
+              "id": "node-survives",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "controlled-user-load",
+              "observation": "achieved_rps",
+              "op": "lte",
+              "value": 60
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "pressure-not-yet-enough",
+              "observation": "node_mem_util",
+              "op": "lt",
+              "value": 92
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "impact-without-node-pressure",
+              "observation": "node_mem_util",
+              "op": "lt",
+              "value": 50
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "node-notready-total-collapse",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "stateful-restart-storm",
+              "observation": "kafka_restart_count",
+              "op": "gte",
+              "value": 3
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "gateway-pod-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "node-recovered",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "node-memory-normal",
+              "observation": "node_mem_util",
+              "op": "lt",
+              "value": 40
+            },
+            {
+              "id": "gateway-rescheduled",
+              "observation": "gateway_replicas",
+              "op": "gte",
+              "value": 1
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +367,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
+    "state": "satisfied",
+    "required": false,
     "description": "placement and safe eviction",
-    "live_allowed": false
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

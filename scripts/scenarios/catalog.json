@@ -222,9 +222,9 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "partial",
-      "load_mode": "fixed",
-      "injection_location": "target worker",
+      "readiness": "ready",
+      "load_mode": "adaptive",
+      "injection_location": "worker-w2",
       "prerequisite": "placement and safe eviction"
     },
     {
@@ -398,10 +398,10 @@
       "id": "F09-H",
       "slug": "f09-h-order-gc-pressure",
       "profiles": [
-        "k8s.patch",
+        "k8s.env",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "stable pre-OOM GC range"
