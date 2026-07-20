@@ -2,7 +2,6 @@ package com.commerce.payment.service;
 
 import com.commerce.payment.client.BankingTransferClient;
 import com.commerce.payment.client.BankingTransferResponse;
-import com.commerce.payment.entity.Payment;
 import com.commerce.payment.entity.SettlementSummary;
 import com.commerce.payment.repository.PaymentRepository;
 import com.commerce.payment.repository.SettlementSummaryRepository;
@@ -44,23 +43,23 @@ public class SettlementBatch {
     @Transactional
     public void run() {
         LocalDateTime cutoff = LocalDateTime.now();
-        List<Payment> pending = paymentRepository.findByStatusInAndSettledAtIsNullAndCreatedAtLessThan(
-                SETTLEABLE_STATUSES, cutoff);
+        PaymentRepository.SettleableAggregate pending =
+                paymentRepository.aggregateSettleable(SETTLEABLE_STATUSES, cutoff);
+        long pendingCount = pending.getPaymentCount();
 
-        log.info("Settlement batch started: pendingCount={}", pending.size());
-        if (pending.isEmpty()) {
+        log.info("Settlement batch started: pendingCount={}", pendingCount);
+        if (pendingCount == 0) {
             log.info("Settlement batch finished: nothing to settle");
             return;
         }
 
-        BigDecimal total = pending.stream().map(Payment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
-        LocalDateTime periodStart = pending.stream().map(Payment::getCreatedAt)
-                .min(LocalDateTime::compareTo).orElse(cutoff);
+        BigDecimal total = pending.getTotalAmount();
+        LocalDateTime periodStart = pending.getPeriodStart() != null ? pending.getPeriodStart() : cutoff;
 
         SettlementSummary summary = new SettlementSummary();
         summary.setPeriodStart(periodStart);
         summary.setPeriodEnd(cutoff);
-        summary.setPaymentCount(pending.size());
+        summary.setPaymentCount((int) pendingCount);
         summary.setTotalAmount(total);
         settlementSummaryRepository.save(summary);
 
@@ -71,9 +70,8 @@ public class SettlementBatch {
             summary.setBankingTransferRef(transfer != null ? transfer.transferId() : null);
 
             if (success) {
-                LocalDateTime settledAt = LocalDateTime.now();
-                pending.forEach(p -> p.setSettledAt(settledAt));
-                paymentRepository.saveAll(pending);
+                int settled = paymentRepository.markSettled(SETTLEABLE_STATUSES, cutoff, LocalDateTime.now());
+                log.info("Settlement marked settled: {} payments", settled);
             }
         } catch (Exception ex) {
             summary.setBankingTransferStatus("FAILED");
@@ -83,6 +81,6 @@ public class SettlementBatch {
         settlementSummaryRepository.save(summary);
 
         log.info("Settlement batch finished: count={}, total={}, transferStatus={}",
-                pending.size(), total, summary.getBankingTransferStatus());
+                pendingCount, total, summary.getBankingTransferStatus());
     }
 }
