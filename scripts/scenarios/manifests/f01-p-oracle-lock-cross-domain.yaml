@@ -29,14 +29,197 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f01-p-oracle-lock-cross-domain/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.lock",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.lock"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "12m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "external-rate-limit",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 429
+            }
+          ],
+          "consecutive_ticks": 1
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f01-p",
+              "parameters": {
+                "engine": "oracle",
+                "namespace": "rca-testbed-banking",
+                "pod": "testbed-oracle-0",
+                "schema": "BANKING",
+                "table": "accounts",
+                "key_column": "id",
+                "key_value": "commerce-settlement",
+                "client_identifier": "rca-F01-P-oracle-lock",
+                "hold_seconds": 600
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "10m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "tagged_db_sessions",
+            "adapter": "database",
+            "query_id": "database.tagged_session_count",
+            "parameters": {
+              "scenario_tag": "rca-F01-P-oracle-lock"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "payment_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "parameters": {
+              "service_name": "commerce-payment"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "lock-present",
+              "observation": "tagged_db_sessions",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "cross-domain-payment-impact",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 0.1
+            },
+            {
+              "id": "checkout-impact",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "lock-cleared",
+              "observation": "tagged_db_sessions",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
     }
   },
   "actions": {
@@ -73,7 +256,7 @@
     "state": "satisfied",
     "required": false,
     "description": "Oracle lock SQL/session tagging",
-    "live_allowed": false
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

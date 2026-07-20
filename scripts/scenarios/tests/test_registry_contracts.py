@@ -59,9 +59,9 @@ class RegistryContractTests(unittest.TestCase):
             )
             self.assertEqual(controller["abort"]["consecutive_ticks"], 2, scenario_id)
 
-    def test_registry_closure_covers_64_scenarios_and_19_profiles(self) -> None:
+    def test_registry_closure_covers_64_scenarios_and_20_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 64)
-        self.assertEqual(len(self.profiles["profiles"]), 19)
+        self.assertEqual(len(self.profiles["profiles"]), 20)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -73,10 +73,11 @@ class RegistryContractTests(unittest.TestCase):
         plan = compile_plan_module.compile_plan("f07-h-north-south-surge")
         self.assertRegex(plan["profile_instances"][0]["executor_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_all_64_scenarios_compile_with_twenty_trusted_live_plans(self) -> None:
+    def test_all_64_scenarios_compile_with_trusted_live_plans(self) -> None:
         live_ids = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
             "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+            "F01-P", "F08-G", "F15-G",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -140,13 +141,14 @@ class RegistryContractTests(unittest.TestCase):
             self.assertTrue(first["live_allowed"])
             self.assertRegex(first["plan_digest"], r"^[0-9a-f]{64}$")
 
-    def test_exactly_twenty_manifests_have_complete_live_controllers(self) -> None:
+    def test_live_manifests_have_complete_live_controllers(self) -> None:
         live_ids = set(self.controllers["live_scenario_ids"])
         self.assertEqual(
             live_ids,
             {
                 "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
                 "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+                "F01-P", "F08-G", "F15-G",
             },
         )
         self.assertEqual(
@@ -154,6 +156,7 @@ class RegistryContractTests(unittest.TestCase):
             [
                 "F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H",
                 "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+                "F01-P", "F08-G", "F15-G",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -280,7 +283,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
-        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F08-P", "F09-R"])
+        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F08-G", "F15-G"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

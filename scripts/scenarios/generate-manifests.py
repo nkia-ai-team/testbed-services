@@ -45,6 +45,7 @@ PROFILE_PREFLIGHTS = {
     "wpm.probe": "wpm-probe-contract",
     "business.fault": "business-invariant-probe",
     "timeline.compose": "subinjection-timeline",
+    "timeline.multi": "subinjection-timeline",
 }
 
 TRANSPORT_PREFLIGHTS = {

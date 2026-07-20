@@ -160,6 +160,30 @@
       "injection_summary": "payment livenessProbe 경로를 고정 404 endpoint로 변경하고 원본 probe 전체를 정확히 복구한다.",
       "user_impact": "payment 재시작으로 체크아웃이 간헐적으로 실패한다.",
       "distinguishing_evidence": "termination reason은 Error이고 probe 변경과 restart가 관측되며 OOMKilled와 memory pressure는 없다."
+    },
+    "F01-P": {
+      "title": "banking Oracle 계좌 lock의 commerce 결제 cross-domain 전파",
+      "description": "core-banking Oracle의 commerce-settlement 정산 계좌 행을 장기 점유해 commerce checkout→banking transfer 경로의 결제를 지연·실패시키는 cross-domain 시나리오다.",
+      "cause": "Oracle BANKING.accounts commerce-settlement row lock contention (cross-domain)",
+      "injection_summary": "kubectl exec로 testbed-oracle-0(FREEPDB1)에 client_identifier 태그된 SELECT ... FOR UPDATE를 걸고 commerce checkout 부하를 흘린다.",
+      "user_impact": "banking transfer 대기로 commerce payment timeout·checkout 5xx가 발생한다.",
+      "distinguishing_evidence": "Oracle blocking session(client_identifier=rca-F01-P-oracle-lock)과 commerce→banking cross-domain trace가 존재하고, commerce PG·호스트 CPU·외부 결제대행사는 정상이다."
+    },
+    "F08-G": {
+      "title": "무관한 notification 배포와 banking Oracle lock 동시 발생",
+      "description": "commerce notification 배포(topology상 장애 경로 밖)와 banking commerce-settlement 계좌 lock을 동시에 발생시켜, 변경 이력이 있으나 그 변경이 원인이 아님을 판별하게 하는 distractor 시나리오다.",
+      "cause": "banking Oracle commerce-settlement row lock (동시 notification 배포는 무관 distractor)",
+      "injection_summary": "distractor로 testbed-notification을 annotation rollout하고 15초 뒤 testbed-oracle-0(FREEPDB1)에 태그된 settlement 계좌 lock을 건다.",
+      "user_impact": "banking transfer 대기로 commerce payment timeout·checkout 5xx가 발생한다(notification은 정상 재기동).",
+      "distinguishing_evidence": "Oracle blocking session(rca-F08-G-oracle-lock)이 직접 원인이고, notification 배포 change는 checkout→payment→banking 경로와 무관하며 payment pod는 재생성 없이 열화한다."
+    },
+    "F15-G": {
+      "title": "commerce inventory lock과 banking settlement lock의 동시 multi-root",
+      "description": "하나의 checkout trace에서 commerce inventory 행과 banking settlement 계좌 행을 동시에 점유해, 독립 root가 둘이라 단일 원인 확정이 부당한 상황을 만든다.",
+      "cause": "commerce PG inventory row lock ∧ banking Oracle settlement row lock (독립 multi-root, has_single_cause:false)",
+      "injection_summary": "tb-runner NodePort로 commerce inventory product_id=1을 PG 락(태그)하고 동시에 testbed-oracle-0 settlement 계좌를 Oracle 락(태그)한다.",
+      "user_impact": "같은 checkout 요청이 두 blocking root 중 어느 쪽으로도 실패해 5xx가 발생한다.",
+      "distinguishing_evidence": "PG blocking session(rca-F15-G-inventory-lock)과 Oracle blocking session(rca-F15-G-oracle-lock)이 동시에 각각 존재하고 선후 인과가 없어 단일 root로 환원되지 않는다."
     }
   }
 }

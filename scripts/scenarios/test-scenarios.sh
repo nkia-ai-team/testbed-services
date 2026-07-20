@@ -10,8 +10,8 @@ manifest_dir="$script_dir/manifests"
 [[ "$(find "$manifest_dir" -maxdepth 1 -type f -name '*.yaml' | wc -l)" -eq 64 ]]
 [[ "$(jq '[.scenarios[].id] | unique | length' "$catalog")" -eq 64 ]]
 [[ "$(jq '[.scenarios[].slug] | unique | length' "$catalog")" -eq 64 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 21 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 15 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 23 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 13 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 28 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 13 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 47 ]]
@@ -21,7 +21,7 @@ jq -e '
    "load.east_west","k8s.patch","k8s.lifecycle","k8s.resource","k8s.probe",
    "k8s.env","kafka.control","host.stress",
    "cache.control","network.fault","app.release","wpm.probe","business.fault",
-   "timeline.compose"] as $known_profiles |
+   "timeline.compose","timeline.multi"] as $known_profiles |
   all(.scenarios[];
     (.id | test("^F[0-9]{2}-(R|H|P|G|T[1-4])$")) and
     (.slug | test("^[a-z0-9][a-z0-9-]+$")) and
@@ -141,9 +141,9 @@ while IFS= read -r slug; do
     ready_live_true=$((ready_live_true + 1))
   fi
 done < <(jq -r '.scenarios[].slug' "$catalog")
-[[ $((ready_live_false + ready_live_true)) -eq 21 ]]
-[[ "$ready_live_true" -eq 20 ]]
-[[ "$ready_live_false" -eq 1 ]]
+[[ $((ready_live_false + ready_live_true)) -eq 23 ]]
+[[ "$ready_live_true" -eq 23 ]]
+[[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then
   echo "blocked scenario unexpectedly passed live fail-closed gate" >&2

@@ -374,13 +374,13 @@
       "id": "F08-G",
       "slug": "f08-g-distractor-rollout-oracle-lock",
       "profiles": [
-        "timeline.compose",
+        "timeline.multi",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "Oracle lock profile"
+      "prerequisite": ""
     },
     {
       "id": "F09-R",
@@ -704,13 +704,13 @@
       "id": "F15-G",
       "slug": "f15-g-dual-db-lock-multiroot",
       "profiles": [
-        "timeline.compose",
+        "timeline.multi",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "independent lock rows/order"
+      "prerequisite": ""
     },
     {
       "id": "F15-T1",
