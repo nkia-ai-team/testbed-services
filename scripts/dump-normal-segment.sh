@@ -30,7 +30,7 @@ Required environment for a live dump (same conventions as capture-eval-case.sh):
   CH_USER        default: lucida
   CH_PASSWORD    required unless the ClickHouse endpoint allows anonymous access
 Freshness gate:
-  OBSERVER_HEALTH_URL   default: http://192.168.230.119:18080/healthz
+  OBSERVER_HEALTH_URL   default: http://192.168.230.119:18087/api/v1/health
   FRESHNESS_MAX_LAG_SEC default: 600 (each store's newest datapoint must be
                         within this many seconds of now)
 EOF
@@ -105,7 +105,7 @@ VM_URL="${VM_URL:-http://192.168.230.119:18428}"
 CH_URL="${CH_URL:-http://192.168.230.119:18123}"
 CH_USER="${CH_USER:-lucida}"
 CH_PASSWORD="${CH_PASSWORD:-}"
-OBSERVER_HEALTH_URL="${OBSERVER_HEALTH_URL:-http://192.168.230.119:18080/healthz}"
+OBSERVER_HEALTH_URL="${OBSERVER_HEALTH_URL:-http://192.168.230.119:18087/api/v1/health}"
 FRESHNESS_MAX_LAG_SEC="${FRESHNESS_MAX_LAG_SEC:-600}"
 
 [[ ! -e "$final_dir" ]] || die "normal segment already exists and is immutable: $final_dir"
