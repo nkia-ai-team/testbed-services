@@ -2,13 +2,13 @@
   "schema_version": "1.0",
   "id": "F09-R",
   "slug": "f09-r-worker-cpu-noisy-neighbor",
-  "readiness": "partial",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "target worker",
+    "location": "worker-w3",
     "matrix_location_transport": "선택 worker/ssh",
     "transport": "ssh",
     "profile_refs": [
@@ -29,14 +29,256 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f09-r-worker-cpu-noisy-neighbor/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "2h",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "noisy-50",
+              "parameters": {
+                "mode": "cpu",
+                "host": "192.168.122.14",
+                "cpu_workers": 2,
+                "runtime_seconds": 480
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "noisy-75",
+              "parameters": {
+                "mode": "cpu",
+                "host": "192.168.122.14",
+                "cpu_workers": 3,
+                "runtime_seconds": 480
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "noisy-100",
+              "parameters": {
+                "mode": "cpu",
+                "host": "192.168.122.14",
+                "cpu_workers": 4,
+                "runtime_seconds": 480
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "node_cpu_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_cpu_utilization",
+            "parameters": {
+              "node": "tb-w3"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "order_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "parameters": {
+              "service_name": "commerce-order"
+            },
+            "freshness": "120s"
+          },
+          {
+            "id": "pricing_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "parameters": {
+              "service_name": "commerce-pricing"
+            },
+            "freshness": "120s"
+          },
+          {
+            "id": "product_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "parameters": {
+              "service_name": "commerce-product"
+            },
+            "freshness": "120s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "node-cpu-saturated",
+              "observation": "node_cpu_util",
+              "op": "gte",
+              "value": 85
+            },
+            {
+              "id": "cohort-order-degraded",
+              "observation": "order_p95",
+              "op": "gte",
+              "value": 300
+            },
+            {
+              "id": "cohort-pricing-degraded",
+              "observation": "pricing_p95",
+              "op": "gte",
+              "value": 300
+            },
+            {
+              "id": "controlled-user-load",
+              "observation": "achieved_rps",
+              "op": "lte",
+              "value": 60
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "node-not-yet-saturated",
+              "observation": "node_cpu_util",
+              "op": "lt",
+              "value": 85
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "symptom-without-node-load",
+              "observation": "node_cpu_util",
+              "op": "lt",
+              "value": 50
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "cohort-pod-unready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "node-cpu-normal",
+              "observation": "node_cpu_util",
+              "op": "lt",
+              "value": 30
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "2h",
+          "post_window": "45m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +312,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
+    "state": "satisfied",
+    "required": false,
     "description": "runtime placement lock",
-    "live_allowed": false
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

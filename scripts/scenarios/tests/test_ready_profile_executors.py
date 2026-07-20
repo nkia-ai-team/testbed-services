@@ -33,6 +33,7 @@ cache = load("cache_control_executor")
 timeline = load("timeline_compose_executor")
 db_ddl = load("db_ddl_executor")
 kafka_control = load("kafka_control_executor")
+host_stress = load("host_stress_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -162,10 +163,10 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertLess(cleanup.index("reset_mock"), cleanup.index("restore_rollout"))
         self.assertIn("Reverse sub-injection order is mandatory", cleanup)
 
-    def test_live_matrix_has_nineteen_ready_plans_with_payment_faults(self) -> None:
+    def test_live_matrix_has_twenty_ready_plans_with_payment_faults(self) -> None:
         expected = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P",
+            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -191,6 +192,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         cases = [
             ("f01-g-absorbed-pg-delay", "mock.expectation", mock),
             ("f11-r-redis-down-fallback-overload", "load.north_south", None),
+            ("f09-r-worker-cpu-noisy-neighbor", "host.stress", host_stress),
         ]
         for slug, profile_id, module in cases:
             plan = compiler.compile_plan(slug)

@@ -16,9 +16,23 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F15-P": {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 2, "vm_workers": 1, "vm_bytes": "512M", "runtime_seconds": 600},
 }
 
+# F09-R (worker CPU noisy neighbor) is a calibration ladder, not a single contract.
+# tb-w3 (192.168.122.14) has 4 cores and no stress-ng, so intensity is CPU-only busy
+# loops (yes) at 50/75/100% of the node — memory is untouched to stay clear of the
+# eviction/OOM surface owned by F05-P.
+F09R_LEVELS = [
+    {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 2, "runtime_seconds": 480},
+    {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 3, "runtime_seconds": 480},
+    {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 4, "runtime_seconds": 480},
+]
+
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
     del profile
+    if scenario_id == "F09-R":
+        if params not in F09R_LEVELS:
+            raise ExecutorError("parameters do not match a measured F09-R CPU noisy-neighbor level")
+        return
     expected = CONTRACTS.get(scenario_id)
     if expected is None:
         raise ExecutorError("scenario has no verified bounded host-stress contract")
@@ -37,6 +51,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         args += [p["target_dir"], str(p["size_mib"]), str(p["runtime_seconds"]), str(p["rate_iops"])]
     elif p["mode"] == "watermark":
         args += [p["target_dir"], str(p["watermark_percent"]), str(p["reserve_mib"]), str(p["maximum_fill_mib"])]
+    elif p["mode"] == "cpu":
+        args += [str(p["cpu_workers"]), str(p["runtime_seconds"])]
     else:
         args += [str(p["cpu_workers"]), str(p["vm_workers"]), p["vm_bytes"], str(p["runtime_seconds"])]
     return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s", "--", *args], REMOTE
@@ -61,6 +77,24 @@ case "$mode" in
  pressure)
   cpu="$1"; vm="$2"; bytes="$3"; runtime="$4"
   case "$action" in preflight) command -v stress-ng >/dev/null; ! alive;; run) ! alive; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --timeout "${runtime}s" --metrics-brief >"$state_root/${scenario}.log" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f "$state_root/${scenario}.log";; recovery) ! alive;; *) exit 2;; esac ;;
+ cpu)
+  # stress-ng-free CPU noisy neighbor: N `yes` busy loops at normal priority (no nice),
+  # confined to one session so cleanup can reap the whole group by negative PGID. The
+  # burner writes its own leader pid ($$ == pgid under setsid) so we never guess it, and a
+  # self-bounded sleep + trap kill 0 guarantees teardown even if the controller never calls cleanup.
+  cpu="$1"; runtime="$2"; pgidfile="$state_root/${scenario}.pgid"
+  grouplive() { [[ -s "$pgidfile" ]] && kill -0 -"$(cat "$pgidfile")" 2>/dev/null; }
+  case "$action" in
+   preflight) command -v yes >/dev/null; command -v setsid >/dev/null; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
+   run) [[ ! -e "$pgidfile" ]]; ! grouplive
+     setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; for _ in $(seq 1 '"$cpu"'); do yes >/dev/null 2>&1 & done; sleep '"$runtime"'' >"$state_root/${scenario}.log" 2>&1 &
+     for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
+   cleanup)
+     if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi
+     rm -f "$pgidfile" "$pgidfile.tmp" "$state_root/${scenario}.log" ;;
+   recovery) ! grouplive; [[ ! -e "$pgidfile" ]] ;;
+   *) exit 2 ;;
+  esac ;;
  *) exit 2 ;;
 esac
 '''

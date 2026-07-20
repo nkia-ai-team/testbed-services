@@ -40,7 +40,7 @@
       "live_supported": true,
       "default_queries": ["loadgen.achieved_rps", "http.entry_health", "prometheus.user_p95"],
       "parameter_contract": {
-        "allowed_scenarios": ["F07-H", "F03-G", "F01-R", "F01-H", "F01-G", "F05-G", "F06-R", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P"],
+        "allowed_scenarios": ["F07-H", "F03-G", "F01-R", "F01-H", "F01-G", "F05-G", "F06-R", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R"],
         "allowed_entry_urls": ["http://192.168.122.77:30080"],
         "allowed_script_paths": ["/opt/loadgen/commerce/surge.js"],
         "target_rps": {"minimum": 1, "maximum": 180},
@@ -55,6 +55,7 @@
         "F01-G": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F01-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
         "F05-G": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F05-G", "seed": 4242, "baseline_unit": "loadgen-commerce"},
       "F08-P": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F08-P", "seed": 4242, "baseline_unit": "loadgen-commerce"},
+      "F09-R": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F09-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
       "F07-P": {"target_rps": 20, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F07-P", "seed": 4242, "baseline_unit": "loadgen-commerce"},
         "F06-R": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F06-R", "seed": 4242, "baseline_unit": "loadgen-commerce"},
         "F08-H": {"target_rps": 35, "ramp_up": "2m", "hold": "8m", "ramp_down": "1m", "entry_url": "http://192.168.122.77:30080", "script_path": "/opt/loadgen/commerce/surge.js", "scenario_tag": "scenario_id=F08-H", "seed": 4242, "baseline_unit": "loadgen-commerce"},
@@ -133,7 +134,7 @@
       "parameter_contract": {"allowed_scenarios": ["F04-R"]},
       "scenario_parameters": {"F04-R": {"namespace": "rca-testbed-commerce", "deployment": "testbed-shipping", "baseline_replicas": 1, "kafka_pod": "testbed-kafka-0", "bootstrap_server": "localhost:9092", "consumer_group": "shipping-service", "drain_timeout_seconds": 600}}
     },
-    "host.stress": {"executor": "profiles/host-stress.sh", "location_strategy": "scenario", "allowed_locations": ["worker-w1", "worker-w2", "worker-w3", "target-worker", "shared-worker", "batch-host"], "live_supported": false, "default_queries": ["http.entry_health"]},
+    "host.stress": {"executor": "profiles/host-stress.sh", "location_strategy": "scenario", "allowed_locations": ["worker-w1", "worker-w2", "worker-w3", "target-worker", "shared-worker", "batch-host"], "live_supported": true, "default_queries": ["http.entry_health"], "parameter_contract": {"allowed_scenarios": ["F09-R"]}, "scenario_parameters": {"F09-R": {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 2, "runtime_seconds": 480}}, "scenario_levels": {"F09-R": [{"level_id": "noisy-50", "parameters": {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 2, "runtime_seconds": 480}}, {"level_id": "noisy-75", "parameters": {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 3, "runtime_seconds": 480}}, {"level_id": "noisy-100", "parameters": {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 4, "runtime_seconds": 480}}]}},
     "cache.control": {
       "executor": "profiles/cache_control_executor.py", "location_strategy": "scenario", "allowed_locations": ["commerce-namespace"], "live_supported": true,
       "default_queries": ["kubernetes.pod_ready", "business.checkout_invariant"],

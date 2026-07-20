@@ -389,9 +389,9 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "partial",
-      "load_mode": "fixed",
-      "injection_location": "target worker",
+      "readiness": "ready",
+      "load_mode": "adaptive",
+      "injection_location": "worker-w3",
       "prerequisite": "runtime placement lock"
     },
     {

@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec "$(dirname "$0")/profile-executor.sh" --profile host.stress "$@"
+exec python3 "$(dirname "$0")/host_stress_executor.py" "$@"
