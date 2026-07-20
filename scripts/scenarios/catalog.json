@@ -673,10 +673,10 @@
         "timeline.compose",
         "load.north_south"
       ],
-      "readiness": "partial",
-      "load_mode": "fixed",
+      "readiness": "ready",
+      "load_mode": "adaptive",
       "injection_location": "scenario-runner",
-      "prerequisite": "episode separation interval"
+      "prerequisite": ""
     },
     {
       "id": "F15-H",
@@ -718,10 +718,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "partial",
-      "load_mode": "fixed",
+      "readiness": "ready",
+      "load_mode": "adaptive",
       "injection_location": "scenario-runner",
-      "prerequisite": "safe food OOM strength"
+      "prerequisite": ""
     },
     {
       "id": "F15-T2",

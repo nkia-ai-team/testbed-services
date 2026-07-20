@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F15-R",
   "slug": "f15-r-pg-429-flapping",
-  "readiness": "partial",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,14 +29,253 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f15-r-pg-429-flapping/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "timeline.compose",
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "episode-fault-240",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "mock_resource": "deployment/testbed-external-pg-mock",
+                "mock_path": "/v1/payments",
+                "fault_status": 429,
+                "episode_count": 2,
+                "fault_hold_seconds": 240,
+                "recovery_gap_seconds": 720
+              },
+              "min_hold": "21m",
+              "settle": "30s",
+              "timeout": "23m"
+            },
+            {
+              "id": "episode-fault-300",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "mock_resource": "deployment/testbed-external-pg-mock",
+                "mock_path": "/v1/payments",
+                "fault_status": 429,
+                "episode_count": 2,
+                "fault_hold_seconds": 300,
+                "recovery_gap_seconds": 720
+              },
+              "min_hold": "23m",
+              "settle": "30s",
+              "timeout": "25m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "mock_flap_episode",
+            "adapter": "business_probe",
+            "query_id": "scenario.mock_flap_episode",
+            "parameters": {
+              "scenario_id": "F15-R"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "mock_flap_fault_active",
+            "adapter": "business_probe",
+            "query_id": "scenario.mock_flap_fault_active",
+            "parameters": {
+              "scenario_id": "F15-R"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_duplicate_count",
+            "adapter": "database",
+            "query_id": "business.order_duplicate_count_since_t1",
+            "parameters": {
+              "scenario_id": "F15-R"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "fault-episode-active",
+              "observation": "mock_flap_fault_active",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "checkout-impact",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.05
+            },
+            {
+              "id": "controlled-user-load",
+              "observation": "achieved_rps",
+              "op": "gte",
+              "value": 15
+            },
+            {
+              "id": "no-duplicate-order",
+              "observation": "order_duplicate_count",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "episode-impact-not-visible",
+              "observation": "checkout_5xx_rate",
+              "op": "lt",
+              "value": 0.02
+            }
+          ],
+          "consecutive_ticks": 4
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "non-idempotent-duplicate",
+              "observation": "order_duplicate_count",
+              "op": "gt",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "fault-cleared",
+              "observation": "mock_flap_fault_active",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "all-episodes-run",
+              "observation": "mock_flap_episode",
+              "op": "gte",
+              "value": 2
+            },
+            {
+              "id": "no-residual-duplicate",
+              "observation": "order_duplicate_count",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +309,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "episode separation interval",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

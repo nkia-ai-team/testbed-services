@@ -27,7 +27,9 @@
     "F06-H",
     "F03-P",
     "F09-H",
-    "F05-P"
+    "F05-P",
+    "F15-T1",
+    "F15-R"
   ],
   "controllers": {
     "F01-R": {
@@ -6817,6 +6819,598 @@
             "observation": "gateway_replicas",
             "op": "gte",
             "value": 1
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F15-T1": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "calibration",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "adaptive_ladder",
+        "primary_ref": "timeline.compose",
+        "companion_refs": [],
+        "approved_profile_id": null,
+        "levels": [
+          {
+            "id": "food-headroom-768mi",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_runner_host": "192.168.122.206",
+              "pg_db_host": "192.168.122.77",
+              "pg_db_port": 30432,
+              "pg_db_name": "commerce",
+              "pg_db_user": "commerce",
+              "pg_application_name": "rca-F15-T1-inventory-lock",
+              "pg_product_id": 1,
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_deployment": "testbed-payment",
+              "food_container": "payment-service",
+              "food_baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "food_fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "768Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "start_offset_seconds": 0
+            },
+            "min_hold": "4m",
+            "settle": "30s",
+            "timeout": "8m"
+          },
+          {
+            "id": "food-measured-640mi",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_runner_host": "192.168.122.206",
+              "pg_db_host": "192.168.122.77",
+              "pg_db_port": 30432,
+              "pg_db_name": "commerce",
+              "pg_db_user": "commerce",
+              "pg_application_name": "rca-F15-T1-inventory-lock",
+              "pg_product_id": 1,
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_deployment": "testbed-payment",
+              "food_container": "payment-service",
+              "food_baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "food_fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "640Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "start_offset_seconds": 0
+            },
+            "min_hold": "4m",
+            "settle": "30s",
+            "timeout": "8m"
+          },
+          {
+            "id": "food-deterministic-576mi",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_runner_host": "192.168.122.206",
+              "pg_db_host": "192.168.122.77",
+              "pg_db_port": 30432,
+              "pg_db_name": "commerce",
+              "pg_db_user": "commerce",
+              "pg_application_name": "rca-F15-T1-inventory-lock",
+              "pg_product_id": 1,
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_deployment": "testbed-payment",
+              "food_container": "payment-service",
+              "food_baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "food_fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "576Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "start_offset_seconds": 0
+            },
+            "min_hold": "4m",
+            "settle": "30s",
+            "timeout": "8m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-payment"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "food_termination_reason",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_last_termination_reason",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-payment",
+            "container": "payment-service"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "food_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-payment",
+            "container": "payment-service"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "food_memory_limit",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.deployment_container_memory_limit",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-payment",
+            "container": "payment-service"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "commerce_tagged_db_sessions",
+          "adapter": "database",
+          "query_id": "database.tagged_session_count",
+          "parameters": {
+            "scenario_tag": "rca-F15-T1-inventory-lock"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "pg-lock-present",
+            "observation": "commerce_tagged_db_sessions",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "id": "food-oom-direct",
+            "observation": "food_termination_reason",
+            "op": "eq",
+            "value": "OOMKilled"
+          },
+          {
+            "id": "food-restart-visible",
+            "observation": "food_restart_count",
+            "op": "gte",
+            "value": 1
+          },
+          {
+            "id": "commerce-checkout-impact",
+            "observation": "entry_status",
+            "op": "gte",
+            "value": 500
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "escalate": {
+        "all": [
+          {
+            "id": "food-oom-not-reached",
+            "observation": "food_restart_count",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 4
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "single-root-food-only",
+            "observation": "commerce_tagged_db_sessions",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "food-restart-budget",
+            "observation": "food_restart_count",
+            "op": "gte",
+            "value": 3
+          },
+          {
+            "id": "commerce-entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "food-memory-restored",
+            "observation": "food_memory_limit",
+            "op": "eq",
+            "value": "1Gi"
+          },
+          {
+            "id": "pg-lock-cleared",
+            "observation": "commerce_tagged_db_sessions",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F15-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "calibration",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "adaptive_ladder",
+        "primary_ref": "timeline.compose",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": null,
+        "levels": [
+          {
+            "id": "episode-fault-240",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "mock_resource": "deployment/testbed-external-pg-mock",
+              "mock_path": "/v1/payments",
+              "fault_status": 429,
+              "episode_count": 2,
+              "fault_hold_seconds": 240,
+              "recovery_gap_seconds": 720
+            },
+            "min_hold": "21m",
+            "settle": "30s",
+            "timeout": "23m"
+          },
+          {
+            "id": "episode-fault-300",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "mock_resource": "deployment/testbed-external-pg-mock",
+              "mock_path": "/v1/payments",
+              "fault_status": 429,
+              "episode_count": 2,
+              "fault_hold_seconds": 300,
+              "recovery_gap_seconds": 720
+            },
+            "min_hold": "23m",
+            "settle": "30s",
+            "timeout": "25m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-payment"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "mock_flap_episode",
+          "adapter": "business_probe",
+          "query_id": "scenario.mock_flap_episode",
+          "parameters": {
+            "scenario_id": "F15-R"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "mock_flap_fault_active",
+          "adapter": "business_probe",
+          "query_id": "scenario.mock_flap_fault_active",
+          "parameters": {
+            "scenario_id": "F15-R"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_duplicate_count",
+          "adapter": "database",
+          "query_id": "business.order_duplicate_count_since_t1",
+          "parameters": {
+            "scenario_id": "F15-R"
+          },
+          "freshness": "60s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "fault-episode-active",
+            "observation": "mock_flap_fault_active",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "checkout-impact",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.05
+          },
+          {
+            "id": "controlled-user-load",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 15
+          },
+          {
+            "id": "no-duplicate-order",
+            "observation": "order_duplicate_count",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "escalate": {
+        "any": [
+          {
+            "id": "episode-impact-not-visible",
+            "observation": "checkout_5xx_rate",
+            "op": "lt",
+            "value": 0.02
+          }
+        ],
+        "consecutive_ticks": 4
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "non-idempotent-duplicate",
+            "observation": "order_duplicate_count",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "fault-cleared",
+            "observation": "mock_flap_fault_active",
+            "op": "eq",
+            "value": false
+          },
+          {
+            "id": "all-episodes-run",
+            "observation": "mock_flap_episode",
+            "op": "gte",
+            "value": 2
+          },
+          {
+            "id": "no-residual-duplicate",
+            "observation": "order_duplicate_count",
+            "op": "eq",
+            "value": 0
           }
         ],
         "consecutive_ticks": 2,

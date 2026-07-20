@@ -89,8 +89,8 @@ class RemainingFaultExecutorFoundationTests(unittest.TestCase):
             "mock_path": "/v1/payments",
             "fault_status": 429,
             "episode_count": 2,
-            "fault_hold_seconds": 60,
-            "recovery_gap_seconds": 120,
+            "fault_hold_seconds": 300,
+            "recovery_gap_seconds": 720,
         }
         profile = {"scenario_parameters": {"F15-R": params}}
         flap.validate("F15-R", params, profile)
@@ -100,7 +100,8 @@ class RemainingFaultExecutorFoundationTests(unittest.TestCase):
         ), "run")
         self.assertEqual(argv[0], "/usr/bin/bash")
         script = stdin.decode()
-        self.assertIn('(( episode == episodes )) || sleep "$recovery_gap"', script)
+        self.assertIn('(( episode == episodes )) || hold "$recovery_gap"', script)
+        self.assertIn('write_flap_state 0 false "$started_at" true', script)
         self.assertIn('nohup bash "$worker"', script)
         self.assertIn('stop_worker; start_pf; restore', script)
         self.assertIn('[[ "$actual" == "$expected" ]]', script)
@@ -111,7 +112,7 @@ class RemainingFaultExecutorFoundationTests(unittest.TestCase):
     def test_unresolved_timeline_and_mock_business_paths_are_explicitly_not_promotable(self) -> None:
         self.assertEqual(
             set(flap.BLOCKED_TIMELINES),
-            {"F08-G", "F14-R", "F15-H", "F15-G", "F15-T1", "F15-T2", "F15-T3", "F15-T4"},
+            {"F08-G", "F14-R", "F15-H", "F15-G", "F15-T2", "F15-T3", "F15-T4"},
         )
         profile = {
             "parameter_contract": {"allowed_scenarios": ["F01-H"]},

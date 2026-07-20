@@ -221,7 +221,8 @@
           "F06-H",
           "F03-P",
           "F09-H",
-          "F05-P"
+          "F05-P",
+          "F15-R"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080"
@@ -234,7 +235,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P)$"
+        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P|15-R)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -531,6 +532,17 @@
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
           "scenario_tag": "scenario_id=F05-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F15-R": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F15-R",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
         }
@@ -2397,7 +2409,7 @@
       ]
     },
     "timeline.compose": {
-      "executor": "profiles/timeline_compose_executor.py",
+      "executor": "profiles/timeline_compose_dispatch.py",
       "location_strategy": "fixed",
       "default_location": "scenario-runner",
       "allowed_locations": [
@@ -2410,7 +2422,9 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F08-H"
+          "F08-H",
+          "F15-R",
+          "F15-T1"
         ]
       },
       "scenario_parameters": {
@@ -2422,7 +2436,195 @@
           "mock_path": "/v1/payments",
           "mock_status": 429,
           "second_fault_offset_seconds": 15
+        },
+        "F15-R": {
+          "namespace": "rca-testbed-commerce",
+          "mock_resource": "deployment/testbed-external-pg-mock",
+          "mock_path": "/v1/payments",
+          "fault_status": 429,
+          "episode_count": 2,
+          "fault_hold_seconds": 300,
+          "recovery_gap_seconds": 720
+        },
+        "F15-T1": {
+          "commerce_namespace": "rca-testbed-commerce",
+          "pg_runner_host": "192.168.122.206",
+          "pg_db_host": "192.168.122.77",
+          "pg_db_port": 30432,
+          "pg_db_name": "commerce",
+          "pg_db_user": "commerce",
+          "pg_application_name": "rca-F15-T1-inventory-lock",
+          "pg_product_id": 1,
+          "pg_hold_seconds": 600,
+          "food_namespace": "rca-testbed-food",
+          "food_deployment": "testbed-payment",
+          "food_container": "payment-service",
+          "food_baseline": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "1Gi"
+            },
+            "requests": {
+              "cpu": "200m",
+              "memory": "512Mi"
+            }
+          },
+          "food_fault": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "576Mi"
+            },
+            "requests": {
+              "cpu": "200m",
+              "memory": "512Mi"
+            }
+          },
+          "start_offset_seconds": 0
         }
+      },
+      "scenario_levels": {
+        "F15-R": [
+          {
+            "level_id": "episode-fault-240",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "mock_resource": "deployment/testbed-external-pg-mock",
+              "mock_path": "/v1/payments",
+              "fault_status": 429,
+              "episode_count": 2,
+              "fault_hold_seconds": 240,
+              "recovery_gap_seconds": 720
+            }
+          },
+          {
+            "level_id": "episode-fault-300",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "mock_resource": "deployment/testbed-external-pg-mock",
+              "mock_path": "/v1/payments",
+              "fault_status": 429,
+              "episode_count": 2,
+              "fault_hold_seconds": 300,
+              "recovery_gap_seconds": 720
+            }
+          }
+        ],
+        "F15-T1": [
+          {
+            "level_id": "food-headroom-768mi",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_runner_host": "192.168.122.206",
+              "pg_db_host": "192.168.122.77",
+              "pg_db_port": 30432,
+              "pg_db_name": "commerce",
+              "pg_db_user": "commerce",
+              "pg_application_name": "rca-F15-T1-inventory-lock",
+              "pg_product_id": 1,
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_deployment": "testbed-payment",
+              "food_container": "payment-service",
+              "food_baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "food_fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "768Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "start_offset_seconds": 0
+            }
+          },
+          {
+            "level_id": "food-measured-640mi",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_runner_host": "192.168.122.206",
+              "pg_db_host": "192.168.122.77",
+              "pg_db_port": 30432,
+              "pg_db_name": "commerce",
+              "pg_db_user": "commerce",
+              "pg_application_name": "rca-F15-T1-inventory-lock",
+              "pg_product_id": 1,
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_deployment": "testbed-payment",
+              "food_container": "payment-service",
+              "food_baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "food_fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "640Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "start_offset_seconds": 0
+            }
+          },
+          {
+            "level_id": "food-deterministic-576mi",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_runner_host": "192.168.122.206",
+              "pg_db_host": "192.168.122.77",
+              "pg_db_port": 30432,
+              "pg_db_name": "commerce",
+              "pg_db_user": "commerce",
+              "pg_application_name": "rca-F15-T1-inventory-lock",
+              "pg_product_id": 1,
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_deployment": "testbed-payment",
+              "food_container": "payment-service",
+              "food_baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "1Gi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "food_fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "576Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "512Mi"
+                }
+              },
+              "start_offset_seconds": 0
+            }
+          }
+        ]
       }
     },
     "timeline.multi": {

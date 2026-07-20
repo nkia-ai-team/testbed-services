@@ -40,8 +40,8 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
     def test_f02r_and_f04r_controller_evaluation_contracts(self) -> None:
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
-            controllers["live_scenario_ids"][-6:],
-            ["F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P"],
+            controllers["live_scenario_ids"][-5:],
+            ["F03-P", "F09-H", "F05-P", "F15-T1", "F15-R"],
         )
 
         f02 = controllers["controllers"]["F02-R"]

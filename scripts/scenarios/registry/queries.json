@@ -377,6 +377,35 @@
         "node"
       ],
       "freshness_sec": 30
+    },
+    "scenario.mock_flap_episode": {
+      "adapter": "business_probe",
+      "selector": "scenario_state.mock_flap.episode",
+      "allowed_parameters": [
+        "scenario_id"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
+    },
+    "scenario.mock_flap_fault_active": {
+      "adapter": "business_probe",
+      "selector": "scenario_state.mock_flap.fault_active",
+      "allowed_parameters": [
+        "scenario_id"
+      ],
+      "value_type": "boolean",
+      "freshness_sec": 30
+    },
+    "business.order_duplicate_count_since_t1": {
+      "adapter": "database",
+      "selector": "order.duplicate_business_key_count_since_t1",
+      "allowed_parameters": [
+        "scenario_id",
+        "run_id",
+        "t1"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 60
     }
   }
 }

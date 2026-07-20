@@ -216,6 +216,22 @@
       "injection_summary": "tb-w2(192.168.122.11)에서 stress-ng 없이 python anonymous 메모리 hog(5500→7000→8500 MiB adaptive ladder, 전 페이지 터치)를 실행해 노드 메모리를 eviction 임계까지 포화시킨다. 주입 전 노드의 실제 pod 목록을 crictl로 재확인해 기대 cohort(gateway·cart·inventory·redis·kafka·food-payment) 동거를 검증하고 불일치 시 fail-closed. 사용자 경로 확인용 north-south 20rps companion 병행. cleanup은 memhog process group 전멸(negative PGID kill) 확인이며, 메모리만 점유해 CPU·설정·파일은 건드리지 않아 F09-R(CPU)·config형과 표면 분리한다.",
       "user_impact": "tb-w2에 동거하던 gateway·cart·inventory 등이 evict·재스케줄되는 공백 동안 commerce checkout과 여러 도메인 API가 동시에 5xx로 실패한다.",
       "distinguishing_evidence": "kcm.node.memory_utilization(tb-w2) 포화 + KCM eviction/pod relocation 이벤트가 원인 신호이고, 앱 heap after-GC는 정상이다. F09-H(order heap 축소)와 달리 특정 서비스 JVM이 아니라 노드 전역 메모리이며 여러 도메인 pod가 동시에 흔들린다. F09-R(노드 CPU)과 달리 CPU는 정상이고 메모리·eviction이 신호다. 다른 노드(tb-w3 등)에 배치된 서비스는 영향이 없다."
+    },
+    "F15-T1": {
+      "title": "재고 잠금과 food 결제 OOMKill이 정확히 동시에 시작된 이종 복합 장애",
+      "description": "commerce inventory hot row PostgreSQL 잠금과 food-delivery payment 컨테이너 memory limit 축소 OOMKill loop를 offset 0으로 정확히 동시에 시작하는 합성 시나리오다. 하나의 orchestration script가 두 하위 주입의 시작·종료·역순 cleanup을 소유한다.",
+      "cause": "Two independent roots — commerce PostgreSQL inventory row-lock contention AND food payment container memory-limit OOMKill — with no shared infrastructure cause",
+      "injection_summary": "tb-runner에서 NodePort 30432 commerce로 product_id=1 재고 행을 FOR UPDATE 장기 점유하고, 동시에 kubectl로 food payment memory limit을 F05-R adaptive ladder(768/640/576Mi)로 낮춰 OOMKill을 유발한다. 두 주입은 같은 시각(offset 0)에 시작하며 baseline 부하가 사용자 영향을 표면화한다.",
+      "user_impact": "commerce checkout이 재고 예약 대기로 실패하고, food payment pod가 OOM 재시작하는 동안 food 결제가 간헐 실패한다. 두 도메인에서 비슷한 주문 실패가 동시에 발생한다.",
+      "distinguishing_evidence": "commerce 측 blocking PostgreSQL session(태그 rca-F15-T1-inventory-lock)과 food 측 container OOMKilled·restart가 각각 관측된다. 두 root는 원인·topology가 다르고 공유 인프라(노드·호스트·네트워크) 원인이 없어 anti-merge — 인시던트 2개다. F15-P(공통 node pressure로 merge)와 정반대 구조다."
+    },
+    "F15-R": {
+      "title": "외부 결제 429 반복 전환으로 인한 장애→회복→재발 flapping",
+      "description": "commerce external PG mock의 /v1/payments 응답을 429↔200으로 반복 전환해, checkout 실패가 정상 구간을 사이에 두고 같은 외부 원인으로 다시 발생하는 시나리오다. 두 장애 episode 사이 충분한 정상 구간을 두어 앞 episode가 완전히 닫히게 한다.",
+      "cause": "Recurrent external payment gateway rate limiting (same root cause reappears after full recovery)",
+      "injection_summary": "commerce external-pg-mock에 429 expectation을 episode당 fault_hold(기본 300s) 동안 적용하고 recovery_gap(기본 720s)만큼 정상(200)으로 되돌리기를 2회 반복한다. north-south 35rps companion으로 각 episode의 checkout 영향을 표면화한다. cleanup은 원본 expectation snapshot을 정확 복원한다.",
+      "user_impact": "각 장애 episode 동안 checkout 결제가 502로 실패하고, 정상 구간에는 복구된다. 회복 후 동일 원인으로 다시 실패가 재발한다.",
+      "distinguishing_evidence": "두 episode 사이 정상 구간과 두 episode 모두 동일한 외부 429 root가 결정적 구분 근거다. 기대 정답은 episode 2가 episode 1의 reopen이 아니라 신규 인시던트(재발)로 생성되는 것. order 중복 생성 0으로 F14-R(비멱등 응답유실 중복) 오판과 분리되고, 내부 DB blocking session은 0이다."
     }
   }
 }
