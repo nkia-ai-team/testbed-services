@@ -44,8 +44,20 @@ current() { "${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.spec.con
 check() { command -v kubectl >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
-  run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"; "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$fault" >/dev/null ;;
-  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$original" >/dev/null; "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null; rm -f "$state" ;;
+  run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"
+    # kubectl set resources is client-side get-modify-update; right after a rollout it can
+    # race the controller's status writes and die on a conflict (seen: F09-P run 2333e298,
+    # 3s after level transition). Retry absorbs the transient conflict.
+    ok=""; for _ in 1 2 3; do
+      if "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$fault" >/dev/null; then ok=1; break; fi
+      sleep 2
+    done; [[ -n "$ok" ]] ;;
+  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]
+    ok=""; for _ in 1 2 3; do
+      if "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$original" >/dev/null; then ok=1; break; fi
+      sleep 2
+    done; [[ -n "$ok" ]]
+    "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(current)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
   *) exit 2 ;;
 esac
