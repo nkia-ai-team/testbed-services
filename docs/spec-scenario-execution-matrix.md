@@ -35,7 +35,7 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F01-H | external 429 | K/kubectl port-forward → commerce MockServer API | payment outbound `/v1/payments` | 같은 MockServer에서 기본 200 복원 | ready — mock path 확인됨 |
 | F01-P | Oracle row lock + checkout | R/ssh → Oracle NodePort 30308 | banking accounts row; commerce→banking trace | R의 tagged Oracle session | partial — Oracle 전용 lock script 필요 |
 | F01-G | 짧은 external delay | K/kubectl → commerce MockServer API | retry가 흡수할 지연 범위 | 같은 MockServer | ready — 1/3/5초 adaptive ladder와 5xx·업무 guardrail 고정 |
-| F02-R | PG index fault | R/ssh → PG NodePort | product search SQL/index | R에서 exact inverse DDL | partial — index·데이터량 확정 필요 |
+| F02-R | PG index fault | R/ssh → PG NodePort | product search SQL/index | R에서 exact inverse DDL | ready — idx_products_name·rows≥2000 registry 고정(07-18), 라이브 실존 검증 07-20 |
 | F02-H | storage IO stress | commerce worker/ssh | PG PVC backing device; commerce search NodePort | 같은 worker의 scenario process | blocked — backing device 미확정 |
 | F02-P | MySQL index fault | R/ssh → MySQL NodePort | food menu filter SQL/index | R에서 index 복원 | partial — SQL/index 실측 필요 |
 | F02-G | batch-only heavy SQL | R/ssh → 해당 DB NodePort | batch-tagged session, 온라인 경로는 관측만 | R의 tagged session | blocked — 실제 batch 기동 표면 미확정 |
@@ -43,18 +43,18 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F03-H | servlet thread saturation | K/kubectl one-shot Job | service DNS를 통한 east-west slow calls | K에서 Job 삭제 | partial — executor 관측·강도 필요 |
 | F03-P | Hikari 축소 + surge | K/kubectl config patch + R/ssh load | commerce payment + checkout NodePort | K config rollback, R k6 종료 | partial — pool/강도 실측 필요 |
 | F03-G | 낮은 surge | R/ssh | 용량 무릎 아래 commerce NodePort | R k6 tagged process | ready — 사용자 경로 동일 |
-| F04-R | consumer stop | K/kubectl scale shipping=0 | commerce orders→Kafka→shipping | K replica 복원·lag drain | blocked — 배송 SLA probe 필요 |
+| F04-R | consumer stop | K/kubectl scale shipping=0 | commerce orders→Kafka→shipping | K replica 복원·lag drain | ready — SLA probe 대신 kafka-consumer-groups lag 직접 판정(replicas=0 ∧ lag>0)으로 재설계(07-18) |
 | F04-H | outbox relay stop | K/kubectl fault config/build | order DB outbox→Kafka | K relay 복원·backlog drain | blocked — relay 독립 제어 없음 |
 | F04-P | ledger rate limit | K/kubectl fault config/build | banking transfers→ledger | K 처리율 복원·lag drain | blocked — rate-control 표면 없음 |
 | F04-G | short broker outage | K/kubectl Kafka lifecycle | outbox→Kafka→consumer | K broker 복구·완전 drain | partial — SLA 내 중단시간 실측 필요 |
-| F05-R | memory limit + load | K/kubectl payment limit patch + R/ssh | checkout→payment pod | K 원 spec rollback, R load 종료 | partial — 안전 OOM 강도 필요 |
-| F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | partial — probe 경계 실측 필요 |
+| F05-R | memory limit + load | K/kubectl payment limit patch + R/ssh | checkout→payment pod | K 원 spec rollback, R load 종료 | ready — adaptive ladder가 안전 강도 탐색, restart 예산 3회 stop-loss(07-18) |
+| F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | ready — fault probe(/actuator/health/f05-h-fail) 고정, restart 예산 4회(07-18) |
 | F05-P | node memory pressure | 대상 worker/ssh | 해당 worker의 commerce·food pods | 같은 worker process 종료 | partial — placement 고정 필요 |
 | F05-G | invalid image rollout | K/kubectl → `rca-testbed-commerce/testbed-payment` | 새 replica만 실패, 기존 replica 유지 | K에서 snapshot한 원 image 복원 | ready — target/image 정본과 ImagePullBackOff 관측 고정 |
 | F06-R | external hang | K/kubectl → commerce MockServer API | payment outbound timeout | 같은 MockServer 기본 200 | ready — path·restore 계약 확인됨 |
 | F06-H | payment DB lock | R/ssh → PG NodePort | 외부 호출 전 payment DB row | R tagged DB session | partial — 정확한 row/path 확정 필요 |
 | F06-P | partial 429 | K/kubectl → food MockServer API | food `/pay`, 성공/429 혼재 | 같은 MockServer 기본 200 | blocked — 배차 풀 복구 전 정상 주문·결제 영향 평가 불가 |
-| F06-G | transient 5xx | K/kubectl → 대상 MockServer API | retry/CB 실제 호출 경로 | 같은 MockServer | partial — 중복 없는 흡수 범위 필요 |
+| F06-G | transient 5xx | K/kubectl → 대상 MockServer API | retry/CB 실제 호출 경로 | 같은 MockServer | ready — fixed evaluation 계약 완비, live 등재(07-18) |
 | F07-R | downstream delay + surge | 미확정 edge fault + R/ssh | commerce payment→banking transfer | fault 제거 + R load 종료 | blocked — 안전한 edge delay 위치 없음 |
 | F07-H | north-south surge | R/ssh | commerce NodePort | R tagged k6 | ready — Commerce는 80 RPS 실측 |
 | F07-P | pricing bulkhead saturation | K/kubectl one-shot Job | pricing service DNS | K Job 삭제 | partial — bulkhead 설정 확인 필요 |
