@@ -162,10 +162,10 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertLess(cleanup.index("reset_mock"), cleanup.index("restore_rollout"))
         self.assertIn("Reverse sub-injection order is mandatory", cleanup)
 
-    def test_live_matrix_has_seventeen_ready_plans_with_payment_faults(self) -> None:
+    def test_live_matrix_has_eighteen_ready_plans_with_payment_faults(self) -> None:
         expected = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H",
+            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

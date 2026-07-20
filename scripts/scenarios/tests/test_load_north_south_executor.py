@@ -36,7 +36,7 @@ class NorthSouthExecutorTests(unittest.TestCase):
             live,
             {
                 "db.lock", "mock.expectation", "load.north_south", "k8s.patch",
-                "k8s.lifecycle", "cache.control", "timeline.compose", "db.ddl",
+                "k8s.lifecycle", "cache.control", "timeline.compose", "db.ddl", "load.east_west",
                 "kafka.control", "k8s.resource", "k8s.probe",
             },
         )

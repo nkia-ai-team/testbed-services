@@ -33,6 +33,14 @@
       "user_impact": "결제 응답 지연과 재시도로 체크아웃이 실패한다.",
       "distinguishing_evidence": "외부 호출 span이 장기 대기하며 commerce DB 잠금과 banking 서비스는 정상이다."
     },
+    "F07-P": {
+      "title": "pricing 동시성 상한(bulkhead) 포화",
+      "description": "pricing 견적 API의 resilience4j bulkhead(동시 20, 대기 0)를 namespace 내부 east-west 부하로 포화시켜, 초과 요청이 즉시 503으로 거절되고 checkout 견적 단계가 함께 실패하는 시나리오다.",
+      "cause": "Pricing bulkhead concurrency saturation",
+      "injection_summary": "commerce namespace 내부 k6 Job이 testbed-pricing /api/pricing/quote를 20/35/50rps 사다리로 직접 호출해 semaphore를 점유한다. 사용자 경로 확인용 north-south 20rps companion을 병행한다.",
+      "user_impact": "checkout의 가격 확정 단계가 503으로 실패하거나 지연되어 주문 실패율이 상승한다.",
+      "distinguishing_evidence": "pricing의 503(BulkheadFullException 즉시 거절)이 원인 신호이고 pricing pod·DB·호스트 자원은 정상이다. 진입 트래픽 폭주(F07-H)와 달리 north-south 진입량은 평상 수준이며 east-west 호출만 급증한다."
+    },
     "F07-H": {
       "title": "north-south 사용자 트래픽 폭주",
       "description": "외부 사용자 진입 경로의 요청량 자체를 포화점 이상으로 높여 전 계층 호출량과 지연을 함께 증가시키는 시나리오다.",

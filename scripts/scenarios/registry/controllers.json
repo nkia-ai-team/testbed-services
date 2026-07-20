@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "live_scenario_ids": ["F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H", "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H"],
+  "live_scenario_ids": ["F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H", "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P"],
   "controllers": {
     "F01-R": {
       "dispatcher_mode": "trusted",
@@ -116,6 +116,20 @@
       "must_rule_out": {"any": [{"id": "db-lock-alternative", "observation": "tagged_db_sessions", "op": "gt", "value": 0}], "consecutive_ticks": 1},
       "abort": {"any": [{"id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0}, {"id": "pod-unready", "observation": "pod_ready", "op": "eq", "value": false}], "consecutive_ticks": 2},
       "recovery": {"all": [{"id": "target-recovered", "observation": "target_health", "op": "eq", "value": 200}, {"id": "pod-recovered", "observation": "pod_ready", "op": "eq", "value": true}], "consecutive_ticks": 2, "timeout": "10m"},
+      "cleanup": {"required": true, "order": "reverse", "timeout": "10m"},
+      "capture": {"enabled": true, "pre_window": "2h", "post_window": "45m", "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json", "create_golden_anomaly": false}
+    },
+    "F07-P": {
+      "dispatcher_mode": "trusted", "live_enabled": true, "mode": "calibration", "tick_interval": "15s", "settle_after_change": "30s", "max_injection_duration": "30m",
+      "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+      "baseline": {"clean_window": "2h", "required": [{"check": "coordinator-clean"}, {"check": "clean-window"}, {"check": "baseline-traffic"}, {"check": "target-health"}]},
+      "profile": {"kind": "adaptive_ladder", "primary_ref": "load.east_west", "companion_refs": ["load.north_south"], "approved_profile_id": null, "levels": [{"id": "probe-20rps", "parameters": {"namespace": "rca-testbed-commerce", "job": "scenario-f07-p-pricing-bulkhead", "configmap": "scenario-f07-p-pricing-bulkhead", "node_name": "tb-w1", "image": "grafana/k6:latest", "target_url": "http://testbed-pricing:8087/api/pricing/quote", "target_rps": 20, "duration_seconds": 480, "preallocated_vus": 32, "max_vus": 64}, "min_hold": "4m", "settle": "30s", "timeout": "8m"}, {"id": "contention-35rps", "parameters": {"namespace": "rca-testbed-commerce", "job": "scenario-f07-p-pricing-bulkhead", "configmap": "scenario-f07-p-pricing-bulkhead", "node_name": "tb-w1", "image": "grafana/k6:latest", "target_url": "http://testbed-pricing:8087/api/pricing/quote", "target_rps": 35, "duration_seconds": 480, "preallocated_vus": 32, "max_vus": 64}, "min_hold": "4m", "settle": "30s", "timeout": "8m"}, {"id": "saturation-50rps", "parameters": {"namespace": "rca-testbed-commerce", "job": "scenario-f07-p-pricing-bulkhead", "configmap": "scenario-f07-p-pricing-bulkhead", "node_name": "tb-w1", "image": "grafana/k6:latest", "target_url": "http://testbed-pricing:8087/api/pricing/quote", "target_rps": 50, "duration_seconds": 480, "preallocated_vus": 32, "max_vus": 64}, "min_hold": "4m", "settle": "30s", "timeout": "8m"}]},
+      "observations": [{"id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s"}, {"id": "target_health", "adapter": "http_probe", "query_id": "http.target_health", "freshness": "15s"}, {"id": "pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready", "parameters": {"namespace": "rca-testbed-commerce", "resource": "testbed-pricing"}, "freshness": "30s"}, {"id": "pricing_error_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate", "parameters": {"service_name": "commerce-pricing"}, "freshness": "60s"}, {"id": "pricing_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95", "parameters": {"service_name": "commerce-pricing"}, "freshness": "120s"}, {"id": "achieved_rps", "adapter": "loadgen_summary", "query_id": "loadgen.achieved_rps", "freshness": "30s"}, {"id": "checkout_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate", "freshness": "30s"}],
+      "success": {"all": [{"id": "bulkhead-rejections-visible", "observation": "pricing_error_rate", "op": "gte", "value": 0.1}, {"id": "checkout-impact", "observation": "checkout_5xx_rate", "op": "gte", "value": 0.05}, {"id": "controlled-user-load", "observation": "achieved_rps", "op": "gte", "value": 15}], "consecutive_ticks": 3},
+      "escalate": {"any": [{"id": "bulkhead-not-saturated", "observation": "pricing_error_rate", "op": "lt", "value": 0.05}], "consecutive_ticks": 3},
+      "must_rule_out": {"any": [{"id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429}], "consecutive_ticks": 2},
+      "abort": {"any": [{"id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0}, {"id": "pod-unready", "observation": "pod_ready", "op": "eq", "value": false}], "consecutive_ticks": 2},
+      "recovery": {"all": [{"id": "target-recovered", "observation": "target_health", "op": "eq", "value": 200}, {"id": "pod-recovered", "observation": "pod_ready", "op": "eq", "value": true}, {"id": "rejections-cleared", "observation": "pricing_error_rate", "op": "lt", "value": 0.05}], "consecutive_ticks": 2, "timeout": "10m"},
       "cleanup": {"required": true, "order": "reverse", "timeout": "10m"},
       "capture": {"enabled": true, "pre_window": "2h", "post_window": "45m", "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json", "create_golden_anomaly": false}
     },

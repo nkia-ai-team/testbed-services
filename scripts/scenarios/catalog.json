@@ -314,9 +314,10 @@
       "id": "F07-P",
       "slug": "f07-p-pricing-bulkhead-saturation",
       "profiles": [
-        "load.east_west"
+        "load.east_west",
+        "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "bulkhead configuration/reject surface"

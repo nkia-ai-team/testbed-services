@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec "$(dirname "$0")/profile-executor.sh" --profile load.east_west "$@"
+exec python3 "$(dirname "$0")/load_east_west_executor.py" "$@"
