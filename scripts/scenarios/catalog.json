@@ -124,10 +124,10 @@
       "id": "F03-P",
       "slug": "f03-p-small-hikari-checkout",
       "profiles": [
-        "k8s.patch",
+        "k8s.env",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "pool size and minimum effective RPS"
@@ -258,10 +258,10 @@
         "db.lock",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "payment row before outbound call"
+      "prerequisite": "payments table exclusive lock blocks payment writes"
     },
     {
       "id": "F06-P",

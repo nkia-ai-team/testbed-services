@@ -46,11 +46,16 @@ class DbHostFoundations(unittest.TestCase):
             lock.validate(sid, p, {})
             _, body = lock.build_invocation(plan("db.lock", sid, p), "run")
             text = body.decode()
-            self.assertIn("FOR UPDATE", text.upper())
             if sid == "F01-P":
+                # Oracle account row-lock (settlement row exists, single-key contention).
+                self.assertIn("FOR UPDATE", text.upper())
                 self.assertIn("dbms_session.set_identifier", text)
                 self.assertIn("FREEPDB1", text)
             else:
+                # F06-H payment writes are fresh INSERTs, so a row-lock cannot block them;
+                # the tagged session holds the payments table in EXCLUSIVE MODE instead.
+                self.assertNotIn("FOR UPDATE", text.upper())
+                self.assertIn("LOCK TABLE $SCHEMA.$TABLE IN $MODE MODE", text)
                 self.assertIn("pg_terminate_backend", text)
                 self.assertIn("PGAPPNAME", text)
 
