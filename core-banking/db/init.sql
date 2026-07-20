@@ -90,7 +90,9 @@ USING (
     SELECT 'ACC-2003', '배달의고수', 23000000.00, 'ACTIVE' FROM dual UNION ALL
     SELECT 'ACC-9001', '동결계좌 A', 100000.00, 'FROZEN' FROM dual UNION ALL
     SELECT 'ACC-9002', '해지계좌 B', 0.00, 'CLOSED' FROM dual UNION ALL
-    SELECT 'commerce-settlement', '커머스 정산 계좌', 50000000.00, 'ACTIVE' FROM dual UNION ALL
+    -- 정산 계좌는 두 상시 소비자(checkout당 이체 + 매시 정산 배치)가 출금만 하는 저수지다.
+    -- 5천만이면 반나절에 고갈돼 이체가 전부 FAILED로 침묵 실패한다(2026-07-20 실증, 5일간 27.5만 건).
+    SELECT 'commerce-settlement', '커머스 정산 계좌', 1000000000000.00, 'ACTIVE' FROM dual UNION ALL
     SELECT 'commerce-merchant', '커머스 가맹점 계좌', 10000000.00, 'ACTIVE' FROM dual
 ) src
 ON (a.id = src.id)
