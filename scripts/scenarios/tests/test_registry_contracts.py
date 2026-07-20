@@ -26,6 +26,21 @@ class RegistryContractTests(unittest.TestCase):
             cls.controllers,
         ) = compile_plan_module.load_contracts()
 
+    def test_f05g_rollout_uses_replica_catastrophic_gate_not_pod_ready(self) -> None:
+        # F05-G의 의도된 invalid-image rollout은 새 replica를 지속 unready로 만들므로
+        # pod_ready(전체 AND) abort는 셀프 트리거다. catastrophic 게이트는 서빙 전멸
+        # (available_replicas==0)이어야 하고 success도 available_replicas를 봐야 한다.
+        f05g = self.controllers["controllers"]["F05-G"]
+        abort_pairs = {
+            (item["observation"], item["op"], item["value"]) for item in f05g["abort"]["any"]
+        }
+        self.assertIn(("available_replicas", "eq", 0), abort_pairs)
+        self.assertNotIn(("pod_ready", "eq", False), abort_pairs)
+        success = {item["id"]: item for item in f05g["success"]["all"]}
+        self.assertEqual(success["old-replica-ready"]["observation"], "available_replicas")
+        self.assertEqual(success["old-replica-ready"]["op"], "gte")
+        self.assertEqual(success["old-replica-ready"]["value"], 1)
+
     def test_registry_closure_covers_64_scenarios_and_18_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 64)
         self.assertEqual(len(self.profiles["profiles"]), 18)

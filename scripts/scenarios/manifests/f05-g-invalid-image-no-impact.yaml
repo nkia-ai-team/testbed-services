@@ -110,6 +110,16 @@
             "freshness": "30s"
           },
           {
+            "id": "available_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-payment"
+            },
+            "freshness": "30s"
+          },
+          {
             "id": "image_pull_failed",
             "adapter": "kubernetes",
             "query_id": "kubernetes.image_pull_failure",
@@ -143,9 +153,9 @@
             },
             {
               "id": "old-replica-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
+              "observation": "available_replicas",
+              "op": "gte",
+              "value": 1
             },
             {
               "id": "business-invariant-preserved",
@@ -182,10 +192,10 @@
               "value": 0
             },
             {
-              "id": "pod-unready",
-              "observation": "pod_ready",
+              "id": "no-serving-replica",
+              "observation": "available_replicas",
               "op": "eq",
-              "value": false
+              "value": 0
             }
           ],
           "consecutive_ticks": 2

@@ -213,7 +213,12 @@ def validate_controllers(
         abort = controller["abort"]
         abort_items = abort.get("any", [])
         abort_pairs = {(item.get("observation"), item.get("op"), item.get("value")) for item in abort_items}
-        if ("entry_status", "eq", 0) not in abort_pairs or ("pod_ready", "eq", False) not in abort_pairs:
+        # 의도된 rollout 장애(F05-G류)는 새 replica가 지속 unready라 pod_ready(전체 AND)가
+        # 상시 false — 그런 시나리오는 available_replicas==0(서빙 전멸)이 catastrophic 게이트다.
+        pod_gate_ok = ("pod_ready", "eq", False) in abort_pairs or (
+            "available_replicas", "eq", 0
+        ) in abort_pairs
+        if ("entry_status", "eq", 0) not in abort_pairs or not pod_gate_ok:
             raise ContractError(f"controller {scenario_id} lacks catastrophic abort gates")
         recovery_items = controller["recovery"].get("all", [])
         recovery_pairs = {(item.get("observation"), item.get("op"), item.get("value")) for item in recovery_items}
