@@ -60,6 +60,11 @@ iso_utc_from_epoch() {
   date -u -d "@$1" +'%Y-%m-%dT%H:%M:%SZ'
 }
 
+# Human-readable KST companion for a UTC epoch (meta keeps UTC as canonical).
+kst_from_epoch() {
+  TZ='Asia/Seoul' date -d "@$1" +'%Y-%m-%dT%H:%M:%S+09:00'
+}
+
 parse_utc_epoch() {
   local raw=$1 name=$2 epoch normalized
   [[ "$raw" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
@@ -84,6 +89,12 @@ t2_raw=''
 output_root="${EVAL_CASE_ROOT:-/data/eval-cases}"
 case_label='calibration'
 run_result=''
+# Capture contract v2 (spec §2.1) optional inputs, supplied by the runner:
+#   --preflight-json     runner's 1st-layer preflight verdict for [t1-10m, t1]
+#   --normal-segment     path to the day's normal segment dir (normal-segments/
+#                        <domain>/<date>/) used for provenance + assembled/ merge
+preflight_json=''
+normal_segment=''
 dry_run=false
 
 while (( $# > 0 )); do
@@ -101,6 +112,8 @@ while (( $# > 0 )); do
     --t2) t2_raw="${2:-}"; shift 2 ;;
     --case-label) case_label="${2:-}"; shift 2 ;;
     --run-result) run_result="${2:-}"; shift 2 ;;
+    --preflight-json) preflight_json="${2:-}"; shift 2 ;;
+    --normal-segment) normal_segment="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -215,7 +228,74 @@ t1=$(iso_utc_from_epoch "$t1_epoch")
 t2=$(iso_utc_from_epoch "$t2_epoch")
 capture_start=$(iso_utc_from_epoch "$capture_start_epoch")
 capture_end=$(iso_utc_from_epoch "$capture_end_epoch")
+t1_kst=$(kst_from_epoch "$t1_epoch")
+t2_kst=$(kst_from_epoch "$t2_epoch")
+capture_start_kst=$(kst_from_epoch "$capture_start_epoch")
+capture_end_kst=$(kst_from_epoch "$capture_end_epoch")
 final_dir="${output_root%/}/$case_id"
+
+# ------------------------------------------------------------
+# schema 1.3 companion metadata (spec-eval-data-capture §2.1):
+# preflight verdict, normal-segment provenance, segments[], rebase{}.
+# All are optional inputs supplied by the runner; evaluation additionally
+# requires a clean preflight verdict.
+# ------------------------------------------------------------
+CLEAN_VERDICTS='clean clean_after_wait ai_judged_clean'
+preflight='null'
+preflight_verdict=''
+preflight_clean=false
+if [[ -n "$preflight_json" ]]; then
+  [[ -r "$preflight_json" ]] || die "--preflight-json is not readable: $preflight_json"
+  jq -e '
+    (.verdict | type == "string") and (.checked_at | type == "string") and
+    (.window | type == "array" and length == 2) and (.checks | type == "array")
+  ' "$preflight_json" >/dev/null || die 'preflight json is missing required fields'
+  preflight=$(jq -c '.' "$preflight_json")
+  preflight_verdict=$(jq -r '.verdict' "$preflight_json")
+  case " $CLEAN_VERDICTS " in
+    *" $preflight_verdict "*) preflight_clean=true ;;
+    *) preflight_clean=false ;;
+  esac
+fi
+
+if [[ "$case_label" == evaluation ]]; then
+  [[ -n "$preflight_json" ]] ||
+    die 'evaluation capture requires --preflight-json (a clean preflight verdict)'
+  [[ "$preflight_clean" == true ]] ||
+    die "evaluation capture requires a clean preflight verdict, got: ${preflight_verdict:-none}"
+fi
+
+normal_provenance='null'
+segments=$(jq -cn \
+  --arg start "$capture_start" --arg finish "$capture_end" \
+  '[{role:"scenario", ref:null, original_start:$start, original_end:$finish, tod_phase:null}]')
+rebase='null'
+if [[ -n "$normal_segment" ]]; then
+  normal_meta="${normal_segment%/}/meta.json"
+  [[ -r "$normal_meta" ]] || die "--normal-segment has no readable meta.json: $normal_meta"
+  jq -e '
+    (.segment_start | type == "string") and (.segment_end | type == "string")
+  ' "$normal_meta" >/dev/null || die 'normal-segment meta.json is missing segment bounds'
+  normal_start=$(jq -r '.segment_start' "$normal_meta")
+  normal_end=$(jq -r '.segment_end' "$normal_meta")
+  normal_tod_phase=$(jq -r '.tod_phase // empty' "$normal_meta")
+  normal_end_epoch=$(parse_utc_epoch "$normal_end" 'normal-segment segment_end')
+  rebase_delta_sec=$(( capture_start_epoch - normal_end_epoch ))
+  normal_ref=$(realpath -m "$normal_segment")
+  segments=$(jq -c \
+    --arg ref "$normal_ref" --arg start "$normal_start" --arg finish "$normal_end" \
+    --arg phase "$normal_tod_phase" \
+    '. + [{role:"normal", ref:$ref, original_start:$start, original_end:$finish,
+           tod_phase:(if $phase == "" then null else $phase end)}]' \
+    <<<"$segments")
+  rebase=$(jq -cn \
+    --argjson delta "$rebase_delta_sec" --arg seam "$capture_start" \
+    '{policy:"shift_normal_forward", delta_sec:$delta, seam_at:$seam}')
+  normal_provenance=$(jq -c '{
+    captured_at: (.captured_at // null), loadgen_seed: (.loadgen_seed // null),
+    baseline_rps: (.baseline_rps // null), testbed_commit: (.testbed_commit // null)
+  }' "$normal_meta")
+fi
 
 if [[ "$dry_run" == true ]]; then
   jq -n \
@@ -232,13 +312,25 @@ if [[ "$dry_run" == true ]]; then
     --arg run_script_sha256 "$run_script_sha256" \
     --arg run_catalog_sha256 "$run_catalog_sha256" \
     --arg run_plan_sha256 "$run_plan_sha256" \
+    --arg t1_kst "$t1_kst" \
+    --arg t2_kst "$t2_kst" \
+    --arg capture_start_kst "$capture_start_kst" \
+    --arg capture_end_kst "$capture_end_kst" \
+    --argjson segments "$segments" \
+    --argjson rebase "$rebase" \
+    --argjson normal_provenance "$normal_provenance" \
+    --argjson preflight "$preflight" \
     --argjson evaluation_eligible "$evaluation_eligible" \
-    '{mode:"dry-run", case_id:$case_id, scenario_id:$scenario_id,
+    '{mode:"dry-run", schema_version:"1.3", case_id:$case_id, scenario_id:$scenario_id,
       scenario_metadata:$scenario_metadata,
       scenario_metadata_sha256:$scenario_metadata_sha256,
       case_label:$case_label, evaluation_eligible:$evaluation_eligible,
       time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
       capture_end:$capture_end, model_snapshot_not_before:$capture_end,
+      t1_kst:$t1_kst, t2_kst:$t2_kst, capture_start_kst:$capture_start_kst,
+      capture_end_kst:$capture_end_kst,
+      segments:$segments, rebase:$rebase, normal_provenance:$normal_provenance,
+      preflight:$preflight, topology_snapshot:null,
       run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
       run_plan_sha256:$run_plan_sha256,
       golden_anomaly_file:false, final_dir:$final_dir}'
@@ -262,8 +354,13 @@ PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16-alpine}"
 CAPTURE_HOST_OUTPUT_ROOT="${CAPTURE_HOST_OUTPUT_ROOT:-}"
 MODEL_SOURCE="${MODEL_SOURCE:-/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json}"
 MODEL_CONTAINER="${MODEL_CONTAINER:-lucida-ai-observer}"
+# Topology snapshot (spec §4, 2026-07-20) — query API on 119:18080, cookie login.
+QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:18080}"
+QUERY_API_USER="${QUERY_API_USER:-manager}"
+QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
 
 [[ -n "$PG_PASSWORD" ]] || die 'PG_PASSWORD is required for live capture'
+[[ -n "$QUERY_API_PASSWORD" ]] || die 'QUERY_API_PASSWORD is required for the topology snapshot'
 [[ ! -e "$final_dir" ]] || die "case already exists and is immutable: $final_dir"
 mkdir -p "$output_root"
 [[ -w "$output_root" ]] || die "output root is not writable: $output_root"
@@ -294,6 +391,7 @@ fi
 staging_dir=$(mktemp -d "${output_root%/}/.${case_id}.staging.XXXXXX")
 mkdir -p \
   "$staging_dir/data/clickhouse" \
+  "$staging_dir/data/topology" \
   "$staging_dir/models/stream-anomaly/global/v1"
 
 dump_started_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -375,6 +473,51 @@ PGPASSWORD="$PG_PASSWORD" docker run --rm \
   pg_dump -Fc --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" \
   --dbname "$PG_DATABASE" --file /out/postgres.dump
 
+# ------------------------------------------------------------
+# Topology snapshot (spec §4, 2026-07-20): the query API's cross-domain graph
+# and operator service tree, saved as raw API JSON under data/topology/ so a
+# consumer can score RCA propagation / topology context without restoring PG.
+# Login mirrors the ai-coverages registration flow (POST /api/v1/login ->
+# lucida_session cookie). graph range is the scenario window [t1-10m, t2+20m].
+# NOTE: the exact query-param contract for /api/v1/topology/graph is not pinned
+# in the specs; `from`/`to` (UTC) are used and echoed into graph_params so a
+# live run can confirm/adjust. See report "결정 필요: topology graph params".
+# ------------------------------------------------------------
+topology_dir="$staging_dir/data/topology"
+topology_snapshot_at=''
+graph_params='{}'
+topology_endpoints='[]'
+snapshot_topology() {
+  local cookie_jar
+  cookie_jar=$(mktemp "${TMPDIR:-/tmp}/.topo-cookie.XXXXXX")
+  log 'logging into query API for topology snapshot'
+  printf '{"username":"%s","password":"%s"}' "$QUERY_API_USER" "$QUERY_API_PASSWORD" |
+    curl --fail --silent --show-error --cookie-jar "$cookie_jar" \
+      -H 'Content-Type: application/json' --data-binary @- \
+      "${QUERY_API_URL%/}/api/v1/login" >/dev/null
+  local graph_url="${QUERY_API_URL%/}/api/v1/topology/graph"
+  log 'fetching topology graph'
+  curl --fail --silent --show-error --cookie "$cookie_jar" --get "$graph_url" \
+    --data-urlencode "from=$capture_start" --data-urlencode "to=$capture_end" \
+    --output "$topology_dir/topology-graph.json"
+  local tree_url="${QUERY_API_URL%/}/api/v1/asset-tree/service/unified"
+  log 'fetching unified service asset tree'
+  curl --fail --silent --show-error --cookie "$cookie_jar" \
+    --output "$topology_dir/asset-tree-service-unified.json" "$tree_url"
+  rm -f "$cookie_jar"
+  jq -e . "$topology_dir/topology-graph.json" >/dev/null ||
+    die 'topology graph response is not valid JSON'
+  jq -e . "$topology_dir/asset-tree-service-unified.json" >/dev/null ||
+    die 'asset-tree response is not valid JSON'
+  topology_snapshot_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  graph_params=$(jq -cn --arg from "$capture_start" --arg to "$capture_end" \
+    '{from:$from, to:$to, range:("["+$from+","+$to+"]")}')
+  topology_endpoints=$(jq -cn --arg graph "$graph_url" --arg tree "$tree_url" \
+    '[{name:"topology.graph", url:$graph, file:"data/topology/topology-graph.json"},
+      {name:"asset-tree.service.unified", url:$tree, file:"data/topology/asset-tree-service-unified.json"}]')
+}
+snapshot_topology
+
 required_files=(
   data/victoriametrics.export
   data/clickhouse/otel_traces_local.parquet
@@ -382,6 +525,8 @@ required_files=(
   data/clickhouse/lucida_events_local.parquet
   data/clickhouse/host_connections.parquet
   data/postgres.dump
+  data/topology/topology-graph.json
+  data/topology/asset-tree-service-unified.json
   models/stream-anomaly/global/v1/model.json
   models/stream-anomaly/global/v1/model.json.sha256
 )
@@ -397,8 +542,18 @@ done
   die 'golden.anomaly.json is forbidden; expected anomalies belong in the scenario YAML'
 
 dump_completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+dump_started_at_kst=$(kst_from_epoch "$(date -d "$dump_started_at" +%s)")
+dump_completed_at_kst=$(kst_from_epoch "$(date -d "$dump_completed_at" +%s)")
+model_snapshot_at_kst=$(kst_from_epoch "$model_snapshot_epoch")
+
+topology_snapshot=$(jq -cn \
+  --arg snapshot_at "$topology_snapshot_at" \
+  --argjson endpoints "$topology_endpoints" \
+  --argjson graph_params "$graph_params" \
+  '{snapshot_at:$snapshot_at, endpoints:$endpoints, graph_params:$graph_params}')
+
 jq -n \
-  --arg schema_version '1.2' \
+  --arg schema_version '1.3' \
   --arg case_id "$case_id" \
   --arg scenario_id "$scenario_id" \
   --argjson scenario_metadata "$scenario_metadata" \
@@ -408,34 +563,53 @@ jq -n \
   --arg t2 "$t2" \
   --arg capture_start "$capture_start" \
   --arg capture_end "$capture_end" \
+  --arg t1_kst "$t1_kst" \
+  --arg t2_kst "$t2_kst" \
+  --arg capture_start_kst "$capture_start_kst" \
+  --arg capture_end_kst "$capture_end_kst" \
   --arg dump_started_at "$dump_started_at" \
   --arg dump_completed_at "$dump_completed_at" \
+  --arg dump_started_at_kst "$dump_started_at_kst" \
+  --arg dump_completed_at_kst "$dump_completed_at_kst" \
   --arg model_snapshot_at "$model_snapshot_at" \
+  --arg model_snapshot_at_kst "$model_snapshot_at_kst" \
   --argjson model_snapshot_lag_sec "$model_snapshot_lag_sec" \
   --arg model_source_path "$MODEL_SOURCE" \
   --arg model_sha256 "$model_sha256" \
   --arg run_script_sha256 "$run_script_sha256" \
   --arg run_catalog_sha256 "$run_catalog_sha256" \
   --arg run_plan_sha256 "$run_plan_sha256" \
+  --argjson segments "$segments" \
+  --argjson rebase "$rebase" \
+  --argjson normal_provenance "$normal_provenance" \
+  --argjson preflight "$preflight" \
+  --argjson topology_snapshot "$topology_snapshot" \
   --argjson evaluation_eligible "$evaluation_eligible" \
   '{schema_version:$schema_version, case_id:$case_id, scenario_id:$scenario_id,
     scenario_metadata:$scenario_metadata,
     scenario_metadata_sha256:$scenario_metadata_sha256,
     case_label:$case_label, evaluation_eligible:$evaluation_eligible,
     time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
-    capture_end:$capture_end, dump_started_at:$dump_started_at,
-    dump_completed_at:$dump_completed_at, model_snapshot_at:$model_snapshot_at,
+    capture_end:$capture_end, t1_kst:$t1_kst, t2_kst:$t2_kst,
+    capture_start_kst:$capture_start_kst, capture_end_kst:$capture_end_kst,
+    dump_started_at:$dump_started_at, dump_completed_at:$dump_completed_at,
+    dump_started_at_kst:$dump_started_at_kst, dump_completed_at_kst:$dump_completed_at_kst,
+    model_snapshot_at:$model_snapshot_at, model_snapshot_at_kst:$model_snapshot_at_kst,
     model_snapshot_lag_sec:$model_snapshot_lag_sec,
     model_source_path:$model_source_path, model_sha256:$model_sha256,
     run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
     run_plan_sha256:$run_plan_sha256,
+    segments:$segments, rebase:$rebase, normal_provenance:$normal_provenance,
+    preflight:$preflight, topology_snapshot:$topology_snapshot,
     golden_anomaly_file:false}' > "$staging_dir/meta.json"
 
 jq -e \
+  --arg schema_version '1.3' \
   --arg capture_end "$capture_end" \
   --arg case_label "$case_label" \
   --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
-  '.time_basis == "UTC" and .capture_end == $capture_end and
+  '.schema_version == $schema_version and
+   .time_basis == "UTC" and .capture_end == $capture_end and
    .scenario_metadata_sha256 == $scenario_metadata_sha256 and
    (.scenario_metadata.title | length > 0) and
    (.scenario_metadata.description | length > 0) and
@@ -445,8 +619,11 @@ jq -e \
    (.scenario_metadata.distinguishing_evidence | length > 0) and
    .model_snapshot_at >= $capture_end and .case_label == $case_label and
    .golden_anomaly_file == false and
+   (.segments | type == "array" and length >= 1) and
+   (.topology_snapshot.snapshot_at | type == "string" and length > 0) and
    (if $case_label == "evaluation" then
       .evaluation_eligible == true and
+      (.preflight.verdict | IN("clean", "clean_after_wait", "ai_judged_clean")) and
       (.run_plan_sha256 | test("^[0-9a-f]{64}$")) and
       (.run_script_sha256 | test("^[0-9a-f]{64}$")) and
       (.run_catalog_sha256 | test("^[0-9a-f]{64}$"))

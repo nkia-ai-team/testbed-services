@@ -73,21 +73,39 @@ jq -n \
 chmod 600 "$TMP_ROOT/runs/run-test/result.json"
 export CAPTURE_DRY_RUN_TRUSTED_RUNS_ROOT="$TMP_ROOT/runs"
 
+# Clean preflight verdict for [t1-10m, t1] (spec §2.1) — required for evaluation.
+clean_preflight="$TMP_ROOT/preflight-clean.json"
+jq -n '{window:["2026-07-15T00:50:00Z","2026-07-15T01:00:00Z"], verdict:"clean",
+  checked_at:"2026-07-15T01:00:05Z", waited_sec:0, ai_judgement:null,
+  checks:[{name:"baseline_loadgen_alive", value:1, threshold:1, pass:true}]}' >"$clean_preflight"
+
 for label in calibration evaluation failed; do
   label_args=()
-  [[ "$label" != evaluation ]] || label_args=(--run-result "$TMP_ROOT/runs/run-test/result.json")
+  [[ "$label" != evaluation ]] ||
+    label_args=(--run-result "$TMP_ROOT/runs/run-test/result.json" --preflight-json "$clean_preflight")
   output=$("$CAPTURE" "${base_args[@]}" --case-label "$label" "${label_args[@]}" \
     --output-root "$TMP_ROOT/cases" --dry-run)
   jq -e \
     --arg case_label "$label" \
-    '.mode == "dry-run" and .case_label == $case_label and
+    '.mode == "dry-run" and .schema_version == "1.3" and .case_label == $case_label and
      .capture_start == "2026-07-15T00:50:00Z" and
      .capture_end == "2026-07-15T01:30:00Z" and
+     .capture_start_kst == "2026-07-15T09:50:00+09:00" and
      .model_snapshot_not_before == .capture_end and
+     (.segments | type == "array" and .[0].role == "scenario") and
      .golden_anomaly_file == false and
      .evaluation_eligible == ($case_label == "evaluation")' \
     <<<"$output" >/dev/null || fail "unexpected dry-run policy for label=$label"
 done
+
+# Evaluation requires a preflight verdict, and it must be clean.
+expect_rejected evaluation-without-preflight \
+  "${base_args[@]}" --case-label evaluation --run-result "$TMP_ROOT/runs/run-test/result.json"
+dirty_preflight="$TMP_ROOT/preflight-dirty.json"
+jq '.verdict = "dirty"' "$clean_preflight" >"$dirty_preflight"
+expect_rejected evaluation-with-dirty-preflight \
+  "${base_args[@]}" --case-label evaluation --run-result "$TMP_ROOT/runs/run-test/result.json" \
+  --preflight-json "$dirty_preflight"
 
 [[ ! -e "$TMP_ROOT/cases" ]] || fail 'dry-run created the output root'
 
