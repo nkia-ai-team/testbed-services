@@ -222,7 +222,8 @@
           "F03-P",
           "F09-H",
           "F05-P",
-          "F15-R"
+          "F15-R",
+          "F03-H"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080"
@@ -235,7 +236,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P|15-R)$"
+        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P|15-R|03-H)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -545,6 +546,17 @@
           "scenario_tag": "scenario_id=F15-R",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
+        },
+        "F03-H": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F03-H",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
         }
       },
       "scenario_levels": {
@@ -654,7 +666,8 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F07-P"
+          "F07-P",
+          "F03-H"
         ]
       },
       "scenario_parameters": {
@@ -669,6 +682,18 @@
           "duration_seconds": 480,
           "preallocated_vus": 32,
           "max_vus": 64
+        },
+        "F03-H": {
+          "namespace": "rca-testbed-commerce",
+          "job": "scenario-f03-h-order-thread-pool",
+          "configmap": "scenario-f03-h-order-thread-pool",
+          "node_name": "tb-w1",
+          "image": "grafana/k6:latest",
+          "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+          "target_rps": 30,
+          "duration_seconds": 480,
+          "preallocated_vus": 64,
+          "max_vus": 360
         }
       },
       "scenario_levels": {
@@ -716,6 +741,53 @@
               "duration_seconds": 480,
               "preallocated_vus": 32,
               "max_vus": 64
+            }
+          }
+        ],
+        "F03-H": [
+          {
+            "level_id": "below-saturation-30rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 30,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            }
+          },
+          {
+            "level_id": "at-saturation-45rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 45,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            }
+          },
+          {
+            "level_id": "past-saturation-60rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 60,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
             }
           }
         ]

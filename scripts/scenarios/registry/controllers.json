@@ -29,7 +29,8 @@
     "F09-H",
     "F05-P",
     "F15-T1",
-    "F15-R"
+    "F15-R",
+    "F03-H"
   ],
   "controllers": {
     "F01-R": {
@@ -7411,6 +7412,246 @@
             "observation": "order_duplicate_count",
             "op": "eq",
             "value": 0
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F03-H": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "calibration",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "adaptive_ladder",
+        "primary_ref": "load.east_west",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": null,
+        "levels": [
+          {
+            "id": "below-saturation-30rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 30,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            },
+            "min_hold": "6m",
+            "settle": "30s",
+            "timeout": "10m"
+          },
+          {
+            "id": "at-saturation-45rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 45,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            },
+            "min_hold": "6m",
+            "settle": "30s",
+            "timeout": "10m"
+          },
+          {
+            "id": "past-saturation-60rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 60,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            },
+            "min_hold": "6m",
+            "settle": "30s",
+            "timeout": "10m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "render-load-delivered",
+            "observation": "order_p95",
+            "op": "gte",
+            "value": 2000
+          },
+          {
+            "id": "checkout-impact",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.05
+          },
+          {
+            "id": "controlled-user-load",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 15
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "escalate": {
+        "all": [
+          {
+            "id": "render-load-delivered",
+            "observation": "order_p95",
+            "op": "gte",
+            "value": 2000
+          },
+          {
+            "id": "checkout-not-impacted",
+            "observation": "checkout_5xx_rate",
+            "op": "lt",
+            "value": 0.02
+          }
+        ],
+        "consecutive_ticks": 4
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "external-rate-limit",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 429
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "checkout-cleared",
+            "observation": "checkout_5xx_rate",
+            "op": "lt",
+            "value": 0.02
           }
         ],
         "consecutive_ticks": 2,

@@ -77,7 +77,7 @@ class RegistryContractTests(unittest.TestCase):
         live_ids = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
             "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-            "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R",
+            "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R", "F03-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -148,7 +148,7 @@ class RegistryContractTests(unittest.TestCase):
             {
                 "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
                 "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R",
+                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R", "F03-H",
             },
         )
         self.assertEqual(
@@ -156,7 +156,7 @@ class RegistryContractTests(unittest.TestCase):
             [
                 "F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H",
                 "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R",
+                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R", "F03-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -283,7 +283,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
-        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F15-T1", "F15-R"])
+        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F15-R", "F03-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

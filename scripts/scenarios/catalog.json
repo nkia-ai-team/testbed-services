@@ -113,12 +113,13 @@
       "id": "F03-H",
       "slug": "f03-h-order-thread-saturation",
       "profiles": [
-        "load.east_west"
+        "load.east_west",
+        "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "executor metric and safe saturation"
+      "prerequisite": ""
     },
     {
       "id": "F03-P",

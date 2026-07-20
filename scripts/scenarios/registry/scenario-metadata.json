@@ -232,6 +232,14 @@
       "injection_summary": "commerce external-pg-mock에 429 expectation을 episode당 fault_hold(기본 300s) 동안 적용하고 recovery_gap(기본 720s)만큼 정상(200)으로 되돌리기를 2회 반복한다. north-south 35rps companion으로 각 episode의 checkout 영향을 표면화한다. cleanup은 원본 expectation snapshot을 정확 복원한다.",
       "user_impact": "각 장애 episode 동안 checkout 결제가 502로 실패하고, 정상 구간에는 복구된다. 회복 후 동일 원인으로 다시 실패가 재발한다.",
       "distinguishing_evidence": "두 episode 사이 정상 구간과 두 episode 모두 동일한 외부 429 root가 결정적 구분 근거다. 기대 정답은 episode 2가 episode 1의 reopen이 아니라 신규 인시던트(재발)로 생성되는 것. order 중복 생성 0으로 F14-R(비멱등 응답유실 중복) 오판과 분리되고, 내부 DB blocking session은 0이다."
+    },
+    "F03-H": {
+      "title": "order 서블릿 스레드풀 고갈 — DB 비접촉 slow 렌더 호출 동시성 포화",
+      "description": "order-service에 신설된 DB 비접촉 read-only 렌더 엔드포인트(/api/orders/reports/render, 5초 점유)를 클러스터 내부 k6 Job으로 동시 호출해 tomcat 워커 스레드풀(기본 200)을 포화시키는 시나리오다. DB·커넥션풀은 건드리지 않으므로 순수 스레드풀 고갈로 격리된다.",
+      "cause": "order-service servlet worker thread-pool exhaustion by slow in-process calls (no DB, no connection-pool contention)",
+      "injection_summary": "tb-w1에 뜬 k6 Job이 testbed-order:8080의 렌더 엔드포인트를 delayMs=5000으로 30/45/60rps ladder 호출한다(동시 점유 150/225/300 스레드 vs 상한 200). north-south 35rps companion이 checkout 사용자 영향을 표면화한다.",
+      "user_impact": "order 워커 스레드가 렌더 호출에 점유되어 checkout·주문 조회 요청이 큐에서 대기하다 지연·타임아웃(5xx)된다. DB 계층은 정상이다.",
+      "distinguishing_evidence": "order p95 급등과 checkout 5xx가 있는데 DB blocking session 0·커넥션풀 정상·하류(pricing/inventory/payment) p95 정상이 결정적 구분 근거다. F03-P(HikariCP 축소)와 달리 DB 대기 신호가 전혀 없고, 스레드 점유는 render 엔드포인트 trace로 직접 확인된다."
     }
   }
 }

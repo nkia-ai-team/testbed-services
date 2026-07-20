@@ -53,13 +53,13 @@ class PriorityExecutorCandidateTests(unittest.TestCase):
                 self.assertNotEqual(params["fault_selector"], params["baseline_selector"])
 
     def test_f07p_bulkhead_job_is_bounded_namespace_local_and_cleanup_scoped(self) -> None:
-        self.assertEqual(set(east_west.LEVELS), {20, 35, 50})
-        for rps, params in east_west.LEVELS.items():
+        self.assertEqual(set(east_west.F07P_LEVELS), {20, 35, 50})
+        for rps, params in east_west.F07P_LEVELS.items():
             east_west.validate("F07-P", params, {})
             self.assertEqual(params["target_rps"], rps)
             self.assertEqual(params["node_name"], "tb-w1")
             self.assertEqual(params["max_vus"], 64)
-        params = east_west.LEVELS[50]
+        params = east_west.F07P_LEVELS[50]
         _, stdin = east_west.build_invocation(plan(
             "load.east_west", "F07-P", params,
             {"transport": "kubectl", "namespace": "rca-testbed-commerce"},
@@ -70,9 +70,26 @@ class PriorityExecutorCandidateTests(unittest.TestCase):
         self.assertIn('delete job "$job" --ignore-not-found --wait=true', script)
         self.assertIn('delete configmap "$configmap" --ignore-not-found --wait=true', script)
 
-    def test_f03h_remains_blocked_without_read_only_slow_order_surface(self) -> None:
-        with self.assertRaisesRegex(east_west.ExecutorError, "no slow read-only"):
-            east_west.validate("F03-H", {}, {})
+    def test_f03h_thread_pool_saturation_targets_the_db_free_render_surface(self) -> None:
+        # 07-20 승격: order-service에 DB 비접촉 slow 렌더 엔드포인트가 신설되어
+        # 기존 "no slow read-only order endpoint" 차단 사유가 해소되었다.
+        self.assertEqual(set(east_west.F03H_LEVELS), {30, 45, 60})
+        for rps, params in east_west.F03H_LEVELS.items():
+            east_west.validate("F03-H", params, {})
+            self.assertEqual(params["target_rps"], rps)
+            self.assertIn("/api/orders/reports/render?delayMs=5000", params["target_url"])
+            self.assertGreaterEqual(params["max_vus"], rps * 5)
+        _, stdin = east_west.build_invocation(plan(
+            "load.east_west", "F03-H", east_west.F03H_LEVELS[60],
+            {"transport": "kubectl", "namespace": "rca-testbed-commerce"},
+        ), "run")
+        script = stdin.decode()
+        self.assertIn("'$method' === 'GET' ? http.get('$target', params)", script)
+        self.assertIn('rollout status deploy/"$target_deploy"', script)
+        with self.assertRaisesRegex(east_west.ExecutorError, "not allowlisted"):
+            east_west.validate("F14-H", {}, {})
+        with self.assertRaisesRegex(east_west.ExecutorError, "exactly match"):
+            east_west.validate("F03-H", east_west.F07P_LEVELS[20], {})
 
     def test_external_f12g_flow_is_bounded_and_password_is_not_embedded(self) -> None:
         external.validate("F12-G", external.CONTRACT, {})

@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/orders")
@@ -57,6 +58,17 @@ public class OrderController {
                 ? PageRequest.of(page != null ? page : 0, size != null ? size : 20)
                 : Pageable.unpaged();
         return ResponseEntity.ok(orderService.searchOrders(userId, status, from, to, pageable));
+    }
+
+    // F03-H 주입 표면: DB에 닿지 않고 서블릿 워커 스레드만 지정 시간 점유하는
+    // read-only 렌더 호출. DB 경유 GET들과 달리 스레드풀 고갈을 커넥션풀/DB 경합과
+    // 분리해 재현할 수 있는 유일한 경로다. delayMs는 10초 클램프로 잔류 점유를 차단.
+    @GetMapping("/reports/render")
+    public ResponseEntity<Map<String, Object>> renderReport(
+            @RequestParam(defaultValue = "2000") long delayMs) throws InterruptedException {
+        long bounded = Math.min(Math.max(delayMs, 0), 10_000);
+        Thread.sleep(bounded);
+        return ResponseEntity.ok(Map.of("status", "RENDERED", "delayMs", bounded));
     }
 
     // 챗봇 추세/집계 질의 재료 — 최근 days일 일별 주문수·금액.
