@@ -84,8 +84,8 @@ while IFS= read -r row; do
      end) and
     .capture_policy.policy_ref == "focused-window-v1" and
     .capture_policy.time_basis == "UTC" and
-    .capture_policy.query_window == "[t1-2h,t2+45m]" and
-    .capture_policy.export_not_before == "t2+45m" and
+    .capture_policy.query_window == "[t1-10m,t2+20m]" and
+    .capture_policy.export_not_before == "t2+20m" and
     .capture_policy.create_golden_anomaly == false
   ' "$manifest" >/dev/null
 done < <(jq -c '.scenarios[]' "$catalog")

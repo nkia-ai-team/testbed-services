@@ -51,7 +51,7 @@
           "target-health"
         ],
         "baseline": {
-          "clean_window": "2h",
+          "clean_window": "30m",
           "required": [
             {
               "check": "coordinator-clean"
@@ -273,8 +273,8 @@
         },
         "capture": {
           "enabled": true,
-          "pre_window": "2h",
-          "post_window": "45m",
+          "pre_window": "10m",
+          "post_window": "20m",
           "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
           "create_golden_anomaly": false
         }
@@ -322,9 +322,9 @@
     "time_basis": "UTC",
     "t1": "earliest-actual-effect-start",
     "t2": "latest-load-end-or-fault-release",
-    "query_window": "[t1-2h,t2+45m]",
-    "export_not_before": "t2+45m",
-    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+45m",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
     "create_golden_anomaly": false,
     "allowed_case_labels": [
       "calibration",

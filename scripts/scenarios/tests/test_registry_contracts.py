@@ -158,8 +158,8 @@ class RegistryContractTests(unittest.TestCase):
             if expected_live:
                 self.assertEqual(controller["binding"]["primary_ref"], scenario["profiles"][0])
                 self.assertEqual(controller["binding"]["companion_refs"], scenario["profiles"][1:])
-                self.assertEqual(controller["runtime"]["baseline"]["clean_window"], "2h")
-                self.assertEqual(controller["runtime"]["capture"]["post_window"], "45m")
+                self.assertEqual(controller["runtime"]["baseline"]["clean_window"], "30m")
+                self.assertEqual(controller["runtime"]["capture"]["post_window"], "20m")
             else:
                 self.assertNotIn("runtime", controller)
         f12h = compile_plan_module.compile_plan("f12-h-pod-cpu-network-lookalike")
@@ -257,7 +257,7 @@ class RegistryContractTests(unittest.TestCase):
         r_success = {item["observation"]: item for item in f05r["success"]["all"]}
         self.assertEqual(r_success["termination_reason"]["value"], "OOMKilled")
         self.assertEqual(r_success["achieved_rps"]["value"], 30)
-        self.assertEqual(f05r["capture"]["post_window"], "45m")
+        self.assertEqual(f05r["capture"]["post_window"], "20m")
         self.assertFalse(f05r["capture"]["create_golden_anomaly"])
 
         f05h = self.controllers["controllers"]["F05-H"]

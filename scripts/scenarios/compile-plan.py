@@ -146,7 +146,7 @@ def validate_controllers(
             raise ContractError(f"controller {scenario_id} requires bounded 30s settling")
         baseline = controller.get("baseline", {})
         required_checks = {item.get("check") for item in baseline.get("required", []) if isinstance(item, dict)}
-        if baseline.get("clean_window") != "2h" or not {
+        if baseline.get("clean_window") != "30m" or not {
             "coordinator-clean", "clean-window", "baseline-traffic", "target-health"
         } <= required_checks:
             raise ContractError(f"controller {scenario_id} baseline is not fail-closed")
@@ -227,8 +227,8 @@ def validate_controllers(
         capture = controller.get("capture", {})
         if capture != {
             "enabled": True,
-            "pre_window": "2h",
-            "post_window": "45m",
+            "pre_window": "10m",
+            "post_window": "20m",
             "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
             "create_golden_anomaly": False,
         }:
@@ -407,8 +407,8 @@ def compile_plan(slug: str) -> dict[str, Any]:
         "manifest_digest": _digest(manifest),
         "controller": controller,
         "capture": {
-            "query_window": "[t1-2h,t2+45m]",
-            "model_snapshot_at": "t2+45m",
+            "query_window": "[t1-10m,t2+20m]",
+            "model_snapshot_at": "t2+20m",
             "create_golden_anomaly": False,
         },
     }

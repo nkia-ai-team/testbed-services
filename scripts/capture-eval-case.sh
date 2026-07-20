@@ -38,7 +38,7 @@ Model snapshot source (one must be accessible):
   MODEL_SOURCE       default: /var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json
   MODEL_CONTAINER    default: lucida-ai-observer; used when MODEL_SOURCE is not readable locally
 
-The live command waits until t2+45m, captures [t1-2h,t2+45m], validates every
+The live command waits until t2+20m, captures [t1-10m,t2+20m], validates every
 artifact, then atomically renames the staging directory into the final case path.
 EOF
 }
@@ -206,8 +206,11 @@ t1_epoch=$(parse_utc_epoch "$t1_raw" t1)
 t2_epoch=$(parse_utc_epoch "$t2_raw" t2)
 (( t2_epoch >= t1_epoch )) || die 't2 must be greater than or equal to t1'
 
-capture_start_epoch=$(( t1_epoch - 2 * 60 * 60 ))
-capture_end_epoch=$(( t2_epoch + 45 * 60 ))
+# Capture window contract v2 (spec-eval-data-capture §2.1, 2026-07-20):
+# scenario segment is [t1-10m, t2+20m]; the 2h normal lead-in moved to the
+# shared daily normal segment (dump-normal-segment.sh).
+capture_start_epoch=$(( t1_epoch - 10 * 60 ))
+capture_end_epoch=$(( t2_epoch + 20 * 60 ))
 t1=$(iso_utc_from_epoch "$t1_epoch")
 t2=$(iso_utc_from_epoch "$t2_epoch")
 capture_start=$(iso_utc_from_epoch "$capture_start_epoch")

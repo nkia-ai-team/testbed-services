@@ -81,8 +81,8 @@ for label in calibration evaluation failed; do
   jq -e \
     --arg case_label "$label" \
     '.mode == "dry-run" and .case_label == $case_label and
-     .capture_start == "2026-07-14T23:00:00Z" and
-     .capture_end == "2026-07-15T01:55:00Z" and
+     .capture_start == "2026-07-15T00:50:00Z" and
+     .capture_end == "2026-07-15T01:30:00Z" and
      .model_snapshot_not_before == .capture_end and
      .golden_anomaly_file == false and
      .evaluation_eligible == ($case_label == "evaluation")' \
