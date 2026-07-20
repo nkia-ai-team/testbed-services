@@ -145,7 +145,7 @@
       "success": {"all": [{"id": "throttle-symptom", "observation": "user_p95", "op": "gte", "value": 500}, {"id": "inventory-still-ready", "observation": "pod_ready", "op": "eq", "value": true}, {"id": "controlled-load", "observation": "achieved_rps", "op": "lte", "value": 60}], "consecutive_ticks": 3},
       "escalate": {"all": [{"id": "symptom-not-yet-visible", "observation": "user_p95", "op": "lt", "value": 500}], "consecutive_ticks": 3},
       "must_rule_out": {"any": [{"id": "overload-alternative", "observation": "achieved_rps", "op": "gt", "value": 65}], "consecutive_ticks": 2},
-      "abort": {"any": [{"id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0}, {"id": "pod-unready", "observation": "pod_ready", "op": "eq", "value": false}], "consecutive_ticks": 2},
+      "abort": {"any": [{"id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0}, {"id": "pod-unready", "observation": "pod_ready", "op": "eq", "value": false}], "consecutive_ticks": 8},
       "recovery": {"all": [{"id": "target-recovered", "observation": "target_health", "op": "eq", "value": 200}, {"id": "pod-recovered", "observation": "pod_ready", "op": "eq", "value": true}], "consecutive_ticks": 2, "timeout": "10m"},
       "cleanup": {"required": true, "order": "reverse", "timeout": "10m"},
       "capture": {"enabled": true, "pre_window": "2h", "post_window": "45m", "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json", "create_golden_anomaly": false}
@@ -249,7 +249,7 @@
         {"id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0},
         {"id": "pod-unready", "observation": "pod_ready", "op": "eq", "value": false},
         {"id": "network-errors-detected", "observation": "network_error_rate", "op": "gt", "value": 0}
-      ], "consecutive_ticks": 2},
+      ], "consecutive_ticks": 8},
       "recovery": {"all": [
         {"id": "cpu-limit-restored", "observation": "cpu_limit", "op": "eq", "value": "500m"},
         {"id": "target-recovered", "observation": "target_health", "op": "eq", "value": 200},

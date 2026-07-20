@@ -41,6 +41,14 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(success["old-replica-ready"]["op"], "gte")
         self.assertEqual(success["old-replica-ready"]["value"], 1)
 
+    def test_pod_patch_scenarios_tolerate_rollout_blip_in_abort_gate(self) -> None:
+        # 리소스/패치 주입(k8s.patch·k8s.resource)은 pod 재생성을 동반해 pod_ready(전체 AND)가
+        # 30~60초 false가 된다. abort 연속 틱이 짧으면 자기 rollout을 abort로 오인한다
+        # (F09-P run 0a6ea0ce 실증). F05-R 선례와 같이 8틱(2분) 이상이어야 한다.
+        for scenario_id in ("F09-P", "F12-H", "F05-R"):
+            controller = self.controllers["controllers"][scenario_id]
+            self.assertGreaterEqual(controller["abort"]["consecutive_ticks"], 8, scenario_id)
+
     def test_registry_closure_covers_64_scenarios_and_18_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 64)
         self.assertEqual(len(self.profiles["profiles"]), 18)
