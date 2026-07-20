@@ -296,12 +296,6 @@
               "value": 0
             },
             {
-              "id": "pod-unready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": false
-            },
-            {
               "id": "checkout-5xx-visible",
               "observation": "checkout_5xx_rate",
               "op": "gt",

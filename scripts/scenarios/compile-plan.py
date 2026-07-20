@@ -213,12 +213,14 @@ def validate_controllers(
         abort = controller["abort"]
         abort_items = abort.get("any", [])
         abort_pairs = {(item.get("observation"), item.get("op"), item.get("value")) for item in abort_items}
-        # 의도된 rollout 장애(F05-G류)는 새 replica가 지속 unready라 pod_ready(전체 AND)가
-        # 상시 false — 그런 시나리오는 available_replicas==0(서빙 전멸)이 catastrophic 게이트다.
-        pod_gate_ok = ("pod_ready", "eq", False) in abort_pairs or (
-            "available_replicas", "eq", 0
-        ) in abort_pairs
-        if ("entry_status", "eq", 0) not in abort_pairs or not pod_gate_ok:
+        # catastrophic abort는 사용자 영향 단일 기준이다(2026-07-20 게이트 재정의):
+        # entry_status==0(진입 전멸)이 필수, available_replicas==0(서빙 전멸)은 선택.
+        # pod_ready는 abort에 넣을 수 없다 — "재난인가"와 "이 pod이 트래픽을 받나"의
+        # 의미 이중성 때문에 시나리오의 의도된 rollout·eviction·의존성 전파가 자기
+        # abort를 트리거한 계보가 5건(F08-H·F05-G·F09-P·F11-G·F11-R)이다.
+        if any(obs == "pod_ready" for obs, _op, _val in abort_pairs):
+            raise ContractError(f"controller {scenario_id} uses pod_ready as abort gate (forbidden)")
+        if ("entry_status", "eq", 0) not in abort_pairs:
             raise ContractError(f"controller {scenario_id} lacks catastrophic abort gates")
         recovery_items = controller["recovery"].get("all", [])
         recovery_pairs = {(item.get("observation"), item.get("op"), item.get("value")) for item in recovery_items}

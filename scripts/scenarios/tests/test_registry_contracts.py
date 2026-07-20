@@ -41,13 +41,23 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(success["old-replica-ready"]["op"], "gte")
         self.assertEqual(success["old-replica-ready"]["value"], 1)
 
-    def test_pod_patch_scenarios_tolerate_rollout_blip_in_abort_gate(self) -> None:
-        # 리소스/패치/env 주입(k8s.patch·k8s.resource·k8s.env)은 pod 재생성을 동반해 pod_ready(전체 AND)가
-        # 30~60초 false가 된다. abort 연속 틱이 짧으면 자기 rollout을 abort로 오인한다
-        # (F09-P run 0a6ea0ce 실증). F05-R 선례와 같이 8틱(2분) 이상이어야 한다.
-        for scenario_id in ("F09-P", "F12-H", "F05-R", "F08-P"):
-            controller = self.controllers["controllers"][scenario_id]
-            self.assertGreaterEqual(controller["abort"]["consecutive_ticks"], 8, scenario_id)
+    def test_abort_gates_are_user_impact_only(self) -> None:
+        # catastrophic abort 게이트 재정의(2026-07-20): pod_ready는 "재난인가"와
+        # "이 pod이 트래픽을 받나"의 의미 이중성 때문에 시나리오의 의도된
+        # rollout·eviction·의존성 전파가 자기 abort를 트리거한 계보가 5건
+        # (F08-H·F05-G·F09-P·F11-G·F11-R). abort는 사용자 영향 신호만 허용:
+        # entry_status==0 필수, available_replicas==0 선택, pod_ready 금지.
+        # pod_ready 제거로 8틱 우회(F09-P 등)도 불필요해져 2틱으로 정규화됐다.
+        for scenario_id, controller in self.controllers["controllers"].items():
+            abort_items = controller["abort"]["any"]
+            observations = {item["observation"] for item in abort_items}
+            self.assertNotIn("pod_ready", observations, scenario_id)
+            self.assertIn(
+                ("entry_status", "eq", 0),
+                {(i["observation"], i["op"], i["value"]) for i in abort_items},
+                scenario_id,
+            )
+            self.assertEqual(controller["abort"]["consecutive_ticks"], 2, scenario_id)
 
     def test_registry_closure_covers_64_scenarios_and_19_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 64)

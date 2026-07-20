@@ -232,12 +232,6 @@
               "observation": "entry_status",
               "op": "eq",
               "value": 0
-            },
-            {
-              "id": "cohort-pod-unready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": false
             }
           ],
           "consecutive_ticks": 2
