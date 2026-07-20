@@ -37,7 +37,7 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F01-G | 짧은 external delay | K/kubectl → commerce MockServer API | retry가 흡수할 지연 범위 | 같은 MockServer | ready — 1/3/5초 adaptive ladder와 5xx·업무 guardrail 고정 |
 | F02-R | PG index fault | R/ssh → PG NodePort | product search SQL/index | R에서 exact inverse DDL | ready — idx_products_name·rows≥2000 registry 고정(07-18), 라이브 실존 검증 07-20 |
 | F02-H | storage IO stress | commerce worker/ssh | PG PVC backing device; commerce search NodePort | 같은 worker의 scenario process | blocked — backing device 미확정 |
-| F02-P | MySQL index fault | R/ssh → MySQL NodePort | food menu filter SQL/index | R에서 index 복원 | partial — SQL/index 실측 필요 |
+| F02-P | MySQL index fault | R/ssh → MySQL NodePort | food menu filter SQL/index | R에서 index 복원 | blocked — 실측(07-20): menus 95행뿐이라 인덱스 제거로 증상 불성립. 시드 보강(수만 행) 선행 필요 |
 | F02-G | batch-only heavy SQL | R/ssh → 해당 DB NodePort | batch-tagged session, 온라인 경로는 관측만 | R의 tagged session | blocked — 실제 batch 기동 표면 미확정 |
 | F03-R | connection leak | K/kubectl → food-payment fault build | 실제 payment 실패 경로 | K에서 image/config rollback | blocked — leak fault surface 없음 |
 | F03-H | servlet thread saturation | K/kubectl one-shot Job | service DNS를 통한 east-west slow calls | K에서 Job 삭제 | partial — executor 관측·강도 필요 |
@@ -49,21 +49,21 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F04-G | short broker outage | K/kubectl Kafka lifecycle | outbox→Kafka→consumer | K broker 복구·완전 drain | partial — SLA 내 중단시간 실측 필요 |
 | F05-R | memory limit + load | K/kubectl payment limit patch + R/ssh | checkout→payment pod | K 원 spec rollback, R load 종료 | ready — adaptive ladder가 안전 강도 탐색, restart 예산 3회 stop-loss(07-18) |
 | F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | ready — fault probe(/actuator/health/f05-h-fail) 고정, restart 예산 4회(07-18) |
-| F05-P | node memory pressure | 대상 worker/ssh | 해당 worker의 commerce·food pods | 같은 worker process 종료 | partial — placement 고정 필요 |
+| F05-P | node memory pressure | 대상 worker/ssh | 해당 worker의 commerce·food pods | 같은 worker process 종료 | partial — 배치 지도 확보(07-20, F09-R 참조). eviction 안전 강도 실측만 잔여 |
 | F05-G | invalid image rollout | K/kubectl → `rca-testbed-commerce/testbed-payment` | 새 replica만 실패, 기존 replica 유지 | K에서 snapshot한 원 image 복원 | ready — target/image 정본과 ImagePullBackOff 관측 고정 |
 | F06-R | external hang | K/kubectl → commerce MockServer API | payment outbound timeout | 같은 MockServer 기본 200 | ready — path·restore 계약 확인됨 |
-| F06-H | payment DB lock | R/ssh → PG NodePort | 외부 호출 전 payment DB row | R tagged DB session | partial — 정확한 row/path 확정 필요 |
+| F06-H | payment DB lock | R/ssh → PG NodePort | 외부 호출 전 payment DB row | R tagged DB session | partial — 실측(07-20): payment 경로는 결제마다 신규 INSERT라 row lock 대상 없음. 표면 = payments 테이블 잠금(tagged session LOCK TABLE) 변형으로 상세화 |
 | F06-P | partial 429 | K/kubectl → food MockServer API | food `/pay`, 성공/429 혼재 | 같은 MockServer 기본 200 | blocked — 배차 풀 복구 전 정상 주문·결제 영향 평가 불가 |
 | F06-G | transient 5xx | K/kubectl → 대상 MockServer API | retry/CB 실제 호출 경로 | 같은 MockServer | ready — fixed evaluation 계약 완비, live 등재(07-18) |
 | F07-R | downstream delay + surge | 미확정 edge fault + R/ssh | commerce payment→banking transfer | fault 제거 + R load 종료 | blocked — 안전한 edge delay 위치 없음 |
 | F07-H | north-south surge | R/ssh | commerce NodePort | R tagged k6 | ready — Commerce는 80 RPS 실측 |
-| F07-P | pricing bulkhead saturation | K/kubectl one-shot Job | pricing service DNS | K Job 삭제 | partial — bulkhead 설정 확인 필요 |
+| F07-P | pricing bulkhead saturation | K/kubectl one-shot Job | pricing service DNS | K Job 삭제 | ready-후보 — 실측(07-20): resilience4j pricingQuote max-concurrent 20·wait 0(즉시 503) 확인. 동시 slow call >20 Job으로 상세화 가능 |
 | F07-G | CB containment | K/kubectl → 선택 mock/downstream | 실제 fallback 경로 | fault reset·CB closed 확인 | partial — 하류와 fallback을 YAML에서 고정 필요 |
 | F08-R | faulty pricing release | K/kubectl image rollout | pricing→checkout correctness | K previous image + 업무 데이터 정리 | blocked — 결함 image 없음 |
 | F08-H | rollout + external fault | K/kubectl rollout + MockServer API | checkout NodePort, 독립 sub-injection | K에서 두 fault 역순 복구 | ready — composite script 필요 |
-| F08-P | timeout ConfigMap | K/kubectl config+rollout | payment/order tail latency | K config rollback+rollout | partial — 실제 env binding 확인 필요 |
+| F08-P | timeout ConfigMap | K/kubectl config+rollout | payment/order tail latency | K config rollback+rollout | ready-후보 — 실측(07-20): timeout은 yml 리터럴(env 없음) → SPRING_APPLICATION_JSON env 오버라이드로 재빌드 없이 주입 가능 |
 | F08-G | distractor rollout + Oracle lock | K/kubectl + R/ssh | notification change와 banking accounts | Oracle rollback 후 rollout 정리 | partial — Oracle script 필요 |
-| F09-R | host CPU noisy neighbor | 선택 worker/ssh | 해당 node pod cohort | 같은 worker tagged process | partial — pod placement 기록 필요 |
+| F09-R | host CPU noisy neighbor | 선택 worker/ssh | 해당 node pod cohort | 같은 worker tagged process | ready-후보 — 실측(07-20): 배치 지도 확보(w2=cart·gateway·inventory·redis·kafka·food-payment / w3=order·payment·pricing·product·user·mysql) |
 | F09-H | JVM GC pressure | K/kubectl JVM config + R/ssh | order endpoints | K config rollback, R load 종료 | partial — OOM 전 pause 범위 필요 |
 | F09-P | pod CPU throttle | K/kubectl inventory limit + R/ssh | checkout→inventory | K 원 limit rollback, R load 종료 | ready — 기존 resource patch 패턴 사용 |
 | F09-G | batch CPU only | K/kubectl exec 또는 batch owner | batch process, 온라인 trace 정상 | 같은 process/Job | blocked — 독립 batch trigger 없음 |
