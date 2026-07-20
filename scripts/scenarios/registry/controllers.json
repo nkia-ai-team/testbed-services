@@ -212,9 +212,9 @@
       "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
       "baseline": {"clean_window": "2h", "required": [{"check": "coordinator-clean"}, {"check": "clean-window"}, {"check": "baseline-traffic"}, {"check": "target-health"}]},
       "profile": {"kind": "adaptive_ladder", "primary_ref": "k8s.patch", "companion_refs": ["load.north_south"], "approved_profile_id": null, "levels": [
-        {"id": "conservative-250m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "250m"}, "min_hold": "2m", "settle": "30s", "timeout": "8m"},
-        {"id": "constrained-100m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "100m"}, "min_hold": "2m", "settle": "30s", "timeout": "8m"},
-        {"id": "endpoint-50m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "50m"}, "min_hold": "2m", "settle": "30s", "timeout": "8m"}
+        {"id": "conservative-250m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "250m"}, "min_hold": "4m", "settle": "30s", "timeout": "8m"},
+        {"id": "constrained-100m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "100m"}, "min_hold": "4m", "settle": "30s", "timeout": "8m"},
+        {"id": "endpoint-50m", "parameters": {"deployment": "testbed-product", "container": "product-service", "baseline_cpu_limit": "500m", "fault_cpu_limit": "50m"}, "min_hold": "4m", "settle": "30s", "timeout": "8m"}
       ]},
       "observations": [
         {"id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s"},

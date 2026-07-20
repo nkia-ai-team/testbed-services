@@ -78,7 +78,7 @@
                 "baseline_cpu_limit": "500m",
                 "fault_cpu_limit": "250m"
               },
-              "min_hold": "2m",
+              "min_hold": "4m",
               "settle": "30s",
               "timeout": "8m"
             },
@@ -90,7 +90,7 @@
                 "baseline_cpu_limit": "500m",
                 "fault_cpu_limit": "100m"
               },
-              "min_hold": "2m",
+              "min_hold": "4m",
               "settle": "30s",
               "timeout": "8m"
             },
@@ -102,7 +102,7 @@
                 "baseline_cpu_limit": "500m",
                 "fault_cpu_limit": "50m"
               },
-              "min_hold": "2m",
+              "min_hold": "4m",
               "settle": "30s",
               "timeout": "8m"
             }
