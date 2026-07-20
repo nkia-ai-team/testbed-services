@@ -42,16 +42,16 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(success["old-replica-ready"]["value"], 1)
 
     def test_pod_patch_scenarios_tolerate_rollout_blip_in_abort_gate(self) -> None:
-        # 리소스/패치 주입(k8s.patch·k8s.resource)은 pod 재생성을 동반해 pod_ready(전체 AND)가
+        # 리소스/패치/env 주입(k8s.patch·k8s.resource·k8s.env)은 pod 재생성을 동반해 pod_ready(전체 AND)가
         # 30~60초 false가 된다. abort 연속 틱이 짧으면 자기 rollout을 abort로 오인한다
         # (F09-P run 0a6ea0ce 실증). F05-R 선례와 같이 8틱(2분) 이상이어야 한다.
-        for scenario_id in ("F09-P", "F12-H", "F05-R"):
+        for scenario_id in ("F09-P", "F12-H", "F05-R", "F08-P"):
             controller = self.controllers["controllers"][scenario_id]
             self.assertGreaterEqual(controller["abort"]["consecutive_ticks"], 8, scenario_id)
 
-    def test_registry_closure_covers_64_scenarios_and_18_profiles(self) -> None:
+    def test_registry_closure_covers_64_scenarios_and_19_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 64)
-        self.assertEqual(len(self.profiles["profiles"]), 18)
+        self.assertEqual(len(self.profiles["profiles"]), 19)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -63,10 +63,10 @@ class RegistryContractTests(unittest.TestCase):
         plan = compile_plan_module.compile_plan("f07-h-north-south-surge")
         self.assertRegex(plan["profile_instances"][0]["executor_sha256"], r"^[0-9a-f]{64}$")
 
-    def test_all_64_scenarios_compile_with_eighteen_trusted_live_plans(self) -> None:
+    def test_all_64_scenarios_compile_with_nineteen_trusted_live_plans(self) -> None:
         live_ids = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P",
+            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -130,20 +130,20 @@ class RegistryContractTests(unittest.TestCase):
             self.assertTrue(first["live_allowed"])
             self.assertRegex(first["plan_digest"], r"^[0-9a-f]{64}$")
 
-    def test_exactly_eighteen_manifests_have_complete_live_controllers(self) -> None:
+    def test_exactly_nineteen_manifests_have_complete_live_controllers(self) -> None:
         live_ids = set(self.controllers["live_scenario_ids"])
         self.assertEqual(
             live_ids,
             {
                 "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-                "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P",
+                "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P",
             },
         )
         self.assertEqual(
             self.controllers["live_scenario_ids"],
             [
                 "F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H",
-                "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P",
+                "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -270,7 +270,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
-        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F05-H", "F07-P"])
+        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F07-P", "F08-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

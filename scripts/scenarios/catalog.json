@@ -362,10 +362,10 @@
       "id": "F08-P",
       "slug": "f08-p-low-read-timeout-config",
       "profiles": [
-        "k8s.patch",
+        "k8s.env",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "client binding verification"

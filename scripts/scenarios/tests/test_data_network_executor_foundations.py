@@ -41,7 +41,7 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
             controllers["live_scenario_ids"][-6:],
-            ["F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P"],
+            ["F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P"],
         )
 
         f02 = controllers["controllers"]["F02-R"]

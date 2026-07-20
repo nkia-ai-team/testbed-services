@@ -33,6 +33,7 @@ PROFILE_PREFLIGHTS = {
     "load.north_south": "baseline-loadgen-active",
     "load.east_west": "east-west-job-contract",
     "k8s.patch": "kubernetes-original-spec-snapshot",
+    "k8s.env": "kubernetes-original-env-snapshot",
     "k8s.lifecycle": "kubernetes-recovery-capacity",
     "k8s.resource": "kubernetes-original-resource-snapshot",
     "k8s.probe": "kubernetes-original-probe-snapshot",
