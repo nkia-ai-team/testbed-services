@@ -456,3 +456,39 @@ staging_dir=''
 cleanup_capture
 trap - EXIT
 log "capture complete: $final_dir"
+
+# ------------------------------------------------------------
+# 아카이브 동기화(best-effort): 완성 케이스를 아카이브 정본(.104 /data/eval-cases)으로 복사.
+# 실패해도 캡처는 성공으로 남긴다(케이스는 로컬 보존, 수동 재동기화 가능).
+# 대역폭 제한 필수 — 무제한 전송이 사무실 라우터 인터페이스를 75%까지 점유해
+# NMS warning 인시던트를 만든 실증 있음(2026-07-20, N2024-R3-01).
+# ------------------------------------------------------------
+ARCHIVE_SSH_TARGET="${ARCHIVE_SSH_TARGET:-}"
+ARCHIVE_ROOT="${ARCHIVE_ROOT:-/data/eval-cases}"
+ARCHIVE_BWLIMIT_KBPS="${ARCHIVE_BWLIMIT_KBPS:-4096}"
+ARCHIVE_SSH_KEY="${ARCHIVE_SSH_KEY:-/root/.ssh/tb_key}"
+if [[ -n "$ARCHIVE_SSH_TARGET" ]]; then
+  log "archiving case to ${ARCHIVE_SSH_TARGET}:${ARCHIVE_ROOT} (limit ${ARCHIVE_BWLIMIT_KBPS}KB/s)"
+  if tar -C "$output_root" -cf - "${final_dir##*/}" \
+    | python3 -c '
+import sys, time
+limit = int(sys.argv[1]) * 1024
+start = time.monotonic(); sent = 0
+while True:
+    chunk = sys.stdin.buffer.read(65536)
+    if not chunk:
+        break
+    sys.stdout.buffer.write(chunk)
+    sent += len(chunk)
+    ahead = sent / limit - (time.monotonic() - start)
+    if ahead > 0:
+        time.sleep(ahead)
+sys.stdout.buffer.flush()
+' "$ARCHIVE_BWLIMIT_KBPS" \
+    | ssh -i "$ARCHIVE_SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 \
+        "$ARCHIVE_SSH_TARGET" "tar -C '${ARCHIVE_ROOT}' -xf -"; then
+    log "archive sync complete: ${final_dir##*/}"
+  else
+    printf '[WARN] archive sync failed (case remains local only): %s\n' "${final_dir##*/}" >&2
+  fi
+fi
