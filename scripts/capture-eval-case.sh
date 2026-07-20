@@ -541,6 +541,27 @@ done
 [[ ! -e "$staging_dir/golden.anomaly.json" ]] ||
   die 'golden.anomaly.json is forbidden; expected anomalies belong in the scenario YAML'
 
+# ------------------------------------------------------------
+# assembled/ (spec §2.1/§4): when a normal segment is supplied, build the
+# continuous-timeline merge (shift normal prefix forward by rebase.delta_sec,
+# concat scenario window). Scenario data/ stays real wall clock; originals are
+# not mutated. Skipped when no normal segment is available (e.g. calibration).
+# ------------------------------------------------------------
+if [[ -n "$normal_segment" ]]; then
+  assemble_script="${ASSEMBLE_SCRIPT:-$(dirname "$(realpath "$0")")/assemble-eval-case.sh}"
+  [[ -x "$assemble_script" ]] || die "assemble script is not executable: $assemble_script"
+  log "assembling continuous timeline (delta=${rebase_delta_sec}s)"
+  "$assemble_script" --case-dir "$staging_dir" --normal-segment "$normal_segment" \
+    --delta-sec "$rebase_delta_sec"
+  for relative in \
+    assembled/victoriametrics.export \
+    assembled/clickhouse/otel_traces_local.parquet \
+    assembled/clickhouse/lucida_logs_local.parquet \
+    assembled/clickhouse/lucida_events_local.parquet; do
+    [[ -s "$staging_dir/$relative" ]] || die "assembled artifact is missing or empty: $relative"
+  done
+fi
+
 dump_completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 dump_started_at_kst=$(kst_from_epoch "$(date -d "$dump_started_at" +%s)")
 dump_completed_at_kst=$(kst_from_epoch "$(date -d "$dump_completed_at" +%s)")
