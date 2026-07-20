@@ -33,6 +33,14 @@ spring:
       timeout: 500ms
       connect-timeout: 500ms
 
+# Redis 상태를 readiness/liveness 집계에서 제외한다. 캐시 계층은 아래 CB+DB
+# fallback으로 이미 격리돼 있어, Redis 다운이 pod 재시작·트래픽 차단으로
+# 번지면 fallback 설계 자체가 무의미해진다.
+management:
+  health:
+    redis:
+      enabled: false
+
 cart:
   cache:
     ttl-seconds: 1800

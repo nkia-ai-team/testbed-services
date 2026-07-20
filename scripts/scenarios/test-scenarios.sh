@@ -10,11 +10,11 @@ manifest_dir="$script_dir/manifests"
 [[ "$(find "$manifest_dir" -maxdepth 1 -type f -name '*.yaml' | wc -l)" -eq 64 ]]
 [[ "$(jq '[.scenarios[].id] | unique | length' "$catalog")" -eq 64 ]]
 [[ "$(jq '[.scenarios[].slug] | unique | length' "$catalog")" -eq 64 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 18 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 18 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 21 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 15 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 28 ]]
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 12 ]]
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 48 ]]
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 13 ]]
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 47 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 4 ]]
 jq -e '
   ["db.lock","db.ddl","db.workload","mock.expectation","load.north_south",
@@ -141,8 +141,8 @@ while IFS= read -r slug; do
     ready_live_true=$((ready_live_true + 1))
   fi
 done < <(jq -r '.scenarios[].slug' "$catalog")
-[[ $((ready_live_false + ready_live_true)) -eq 18 ]]
-[[ "$ready_live_true" -eq 17 ]]
+[[ $((ready_live_false + ready_live_true)) -eq 21 ]]
+[[ "$ready_live_true" -eq 20 ]]
 [[ "$ready_live_false" -eq 1 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then
