@@ -170,15 +170,27 @@ restore_dir="$golden_dir/data"
 if [[ -n "${RESTORE_HOST_INPUT_ROOT:-}" ]]; then
   restore_dir="${RESTORE_HOST_INPUT_ROOT%/}/$(basename "$golden_dir")/data"
 fi
+# Reset target tables to golden WITHOUT pg_restore --clean: --clean drops the
+# tables' constraints, which fails when an out-of-golden table holds a FK into
+# one (e.g. ai_training_runs -> ai_model_registry). Instead empty the tables and
+# COPY golden data back, both with FK triggers disabled via
+# session_replication_role=replica (requires superuser — the lucida role is).
+# Under replica role the DELETE/COPY order is FK-independent.
+delete_sql='SET session_replication_role = replica;'
+for t in "${golden_tables[@]}"; do delete_sql+=" DELETE FROM public.\"$t\";"; done
+PGPASSWORD="$PG_PASSWORD" docker run --rm --env PGPASSWORD "$PG_DUMP_IMAGE" \
+  psql -v ON_ERROR_STOP=1 --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" \
+  --dbname "$PG_DATABASE" -c "$delete_sql" >/dev/null ||
+  die 'emptying AI-state tables failed — trainer is frozen; investigate before injecting'
 PGPASSWORD="$PG_PASSWORD" docker run --rm \
   --env PGPASSWORD \
   --volume "$restore_dir:/in:ro" \
   "$PG_DUMP_IMAGE" \
-  pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error \
+  pg_restore --data-only --disable-triggers --no-owner --no-privileges --exit-on-error \
   --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" --dbname "$PG_DATABASE" \
   /in/golden-pg-state.dump ||
   die 'pg_restore failed — trainer is frozen; investigate before injecting'
-log 'PostgreSQL AI-state restored'
+log 'PostgreSQL AI-state restored (data-only, FK-safe)'
 
 # ------------------------------------------------------------
 # 3. Restart the observer so it reloads the golden models.
