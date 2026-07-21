@@ -194,7 +194,7 @@
                   }
                 ]
               },
-              "min_hold": "4m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }

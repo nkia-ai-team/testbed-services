@@ -84,7 +84,7 @@
                 "application_name": "rca-F06-H-payment-lock",
                 "hold_seconds": 600
               },
-              "min_hold": "4m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }

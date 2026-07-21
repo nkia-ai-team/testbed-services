@@ -82,7 +82,7 @@
                 "product_id": 1,
                 "hold_seconds": 600
               },
-              "min_hold": "2m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }

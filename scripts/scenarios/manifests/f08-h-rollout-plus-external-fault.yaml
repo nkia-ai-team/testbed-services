@@ -82,7 +82,7 @@
                 "mock_status": 429,
                 "second_fault_offset_seconds": 15
               },
-              "min_hold": "2m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }

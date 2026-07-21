@@ -79,7 +79,7 @@
                 "status_code": 200,
                 "delay_seconds": 30
               },
-              "min_hold": "2m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }

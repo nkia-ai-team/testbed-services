@@ -118,7 +118,7 @@
                 "client_identifier": "rca-F01-P-oracle-lock",
                 "hold_seconds": 600
               },
-              "min_hold": "4m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }

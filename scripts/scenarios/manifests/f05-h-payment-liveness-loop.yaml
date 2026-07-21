@@ -42,7 +42,7 @@
         "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "8m",
+        "max_injection_duration": "10m",
         "preflight": [
           "kube-context",
           "kube-node-set",
@@ -101,9 +101,9 @@
                   "timeoutSeconds": 3
                 }
               },
-              "min_hold": "3m",
+              "min_hold": "5m",
               "settle": "30s",
-              "timeout": "6m"
+              "timeout": "8m"
             }
           ]
         },

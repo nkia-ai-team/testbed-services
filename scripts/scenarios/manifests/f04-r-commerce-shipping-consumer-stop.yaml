@@ -82,7 +82,7 @@
                 "consumer_group": "shipping-service",
                 "drain_timeout_seconds": 600
               },
-              "min_hold": "2m",
+              "min_hold": "5m",
               "settle": "30s",
               "timeout": "10m"
             }
