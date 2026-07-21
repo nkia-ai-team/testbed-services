@@ -162,8 +162,23 @@ else
 fi
 
 # ------------------------------------------------------------
-# 2. Restore golden PG AI-state (the 23 tables in the dump). --clean --if-exists
-#    drops+recreates only the dumped tables, resetting them to the golden.
+# 1b. Stop the observer BEFORE resetting the tables. The observer live-writes the
+#     AI-state tables (coverage_signal_state, detector_seen_signatures, ...); if it
+#     keeps running, its inserts race the DELETE+COPY reset and the COPY fails with
+#     a duplicate-key error. It is restarted in step 3. Unconditional (not gated on
+#     --no-freeze): the observer is restarted regardless, so this only extends its
+#     existing restart window by the ~15s of the restore.
+# ------------------------------------------------------------
+if [[ "$(docker inspect -f '{{.State.Running}}' "$observer_container" 2>/dev/null)" == true ]]; then
+  log "stopping observer for reset: docker stop $observer_container"
+  docker stop "$observer_container" >/dev/null
+else
+  log "observer already stopped: $observer_container"
+fi
+
+# ------------------------------------------------------------
+# 2. Restore golden PG AI-state (the 23 tables in the dump). Empty the tables then
+#    COPY golden data back (data-only, FK-safe); no live writer during the reset.
 # ------------------------------------------------------------
 log "restoring PostgreSQL AI-state from golden (${#golden_tables[@]} tables)"
 restore_dir="$golden_dir/data"
@@ -186,17 +201,19 @@ PGPASSWORD="$PG_PASSWORD" docker run --rm \
   --env PGPASSWORD \
   --volume "$restore_dir:/in:ro" \
   "$PG_DUMP_IMAGE" \
-  pg_restore --data-only --disable-triggers --no-owner --no-privileges --exit-on-error \
+  pg_restore --data-only --disable-triggers --no-owner --no-privileges \
+  --single-transaction \
   --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" --dbname "$PG_DATABASE" \
   /in/golden-pg-state.dump ||
   die 'pg_restore failed — trainer is frozen; investigate before injecting'
 log 'PostgreSQL AI-state restored (data-only, FK-safe)'
 
 # ------------------------------------------------------------
-# 3. Restart the observer so it reloads the golden models.
+# 3. Start the observer back up (stopped in step 1b) so it reloads the golden
+#    models from the freshly-restored tables.
 # ------------------------------------------------------------
-log "restarting observer: docker restart $observer_container"
-docker restart "$observer_container" >/dev/null
+log "starting observer: docker start $observer_container"
+docker start "$observer_container" >/dev/null
 
 # ------------------------------------------------------------
 # 4. Await observer readiness (health endpoint).
