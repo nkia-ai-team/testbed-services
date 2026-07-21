@@ -38,7 +38,7 @@ check() { command -v kubectl >/dev/null; "${k[@]}" auth can-i patch deployments 
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
   run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"; "${k[@]}" set image deploy/"$deploy" "$container=$invalid" >/dev/null ;;
-  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; "${k[@]}" set image deploy/"$deploy" "$container=$original" >/dev/null; "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null; rm -f "$state" ;;
+  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; "${k[@]}" set image deploy/"$deploy" "$container=$original" >/dev/null; ok=""; for _ in 1 2 3 4 5 6; do if "${k[@]}" rollout status deploy/"$deploy" --timeout=30s >/dev/null; then ok=1; break; fi; sleep 5; done; [[ -n "$ok" ]]; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(current)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
   *) exit 2 ;;
 esac
