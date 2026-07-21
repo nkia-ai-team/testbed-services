@@ -39,7 +39,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -84,9 +84,9 @@
               "product_id": 1,
               "hold_seconds": 600
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -201,7 +201,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -243,9 +243,9 @@
               "status_code": 429,
               "delay_seconds": 0
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -959,7 +959,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -1001,9 +1001,9 @@
               "status_code": 200,
               "delay_seconds": 30
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -1577,7 +1577,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -1734,9 +1734,9 @@
                 }
               ]
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -1888,7 +1888,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -1933,9 +1933,9 @@
               "mock_status": 429,
               "second_fault_offset_seconds": 15
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -2893,7 +2893,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -2942,9 +2942,9 @@
               "expected_indexdef": "CREATE INDEX idx_products_name ON product_schema.products USING btree (name)",
               "minimum_rows": 2000
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -3074,7 +3074,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -3119,9 +3119,9 @@
               "consumer_group": "shipping-service",
               "drain_timeout_seconds": 600
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -4299,7 +4299,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "10m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -4363,9 +4363,9 @@
                 "timeoutSeconds": 3
               }
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "8m"
+            "timeout": "13m"
           }
         ]
       },
@@ -4589,7 +4589,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -4670,9 +4670,9 @@
               "client_identifier": "rca-F01-P-oracle-lock",
               "hold_seconds": 600
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
@@ -5188,7 +5188,7 @@
       "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
-      "max_injection_duration": "12m",
+      "max_injection_duration": "15m",
       "preflight": [
         "kube-context",
         "kube-node-set",
@@ -5235,9 +5235,9 @@
               "application_name": "rca-F06-H-payment-lock",
               "hold_seconds": 600
             },
-            "min_hold": "5m",
+            "min_hold": "8m",
             "settle": "30s",
-            "timeout": "10m"
+            "timeout": "13m"
           }
         ]
       },
