@@ -2,6 +2,7 @@
 """Exact inverse-DDL executor for the verified PostgreSQL product-search index."""
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from executor_common import ExecutorError, cli, profile_instance
@@ -50,13 +51,18 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     location = instance["location"]
     if location.get("host") != "192.168.122.206" or location.get("transport") != "ssh":
         raise ExecutorError("db.ddl requires the canonical tb-runner")
+    # ssh joins argv with spaces into one remote command line, so every remote
+    # argument must be shell-quoted or the DDL's parentheses break remote bash.
+    remote_args = [
+        action, plan["scenario"]["id"], p["db_host"], str(p["db_port"]),
+        p["db_name"], p["db_user"], p["application_name"], p["schema"],
+        p["table"], p["index"], p["expected_indexdef"], str(p["minimum_rows"]),
+    ]
     argv = [
         "/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10",
         f"{location.get('user', 'nkia')}@{location['host']}", "bash", "-s", "--",
-        action, plan["scenario"]["id"], p["db_host"], str(p["db_port"]),
-        p["db_name"], p["db_user"], p["application_name"], p["schema"],
-        p["table"], p["index"], p["expected_indexdef"], str(p["minimum_rows"]),
+        *(shlex.quote(arg) for arg in remote_args),
     ]
     return argv, REMOTE
 
