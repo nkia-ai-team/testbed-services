@@ -122,6 +122,14 @@ supervisor가 매 사이클 다음을 검증한다.
   아티팩트에서 기계 추출하되 서술·해석은 AI가 쓰고, 자동 생성기가 ID로
   문장을 만들어내는 것은 금지한다(설명 정본 원칙과 동일). 07-19에
   case-f01-r·case-f01-h 두 케이스에 소급 작성해 형식을 고정했다.
+- **AI 계층 온전 케이스의 관측 실측(신계약, 2026-07-21~)**: golden reset
+  활성화 후 observer가 살아 있는 케이스는 "관측 실측" 절에 **실제 탐지 이벤트
+  타임라인**을 수록한다 — `lucida_events_local`을 주입 창으로 질의해 탐지기별
+  (stream/trace/log-anomaly·alarm-bridge)·대상·심각도·onset/clear 시각을 뽑고,
+  **트리거/병목 대상(최초·최강 발화)과 전파 대상을 구분**해 서술한다. 인시던트
+  격상 여부(observer incidents)도 함께 기록한다. 반대로 AI 계층 결손 케이스는
+  그 사실을 문서 상단에 경고로 명기해 RCA 단독 평가용임을 밝힌다. 첫 적용 =
+  `case-f01-r-a598db24`(golden reset 첫 신계약 케이스).
 
 기존 위반: `case-f01-r-791f695b`는 `scenario_metadata`가 빈 객체이고 SHA가
 없다(메타데이터 계약 도입 전 캡처). §2-5의 backfill 대상이다.
