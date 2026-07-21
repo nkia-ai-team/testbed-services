@@ -40,10 +40,39 @@ while (( $# > 0 )); do
     --delta-sec) delta_sec="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --vm-only) vm_only=true; shift ;;
+    --self-check) self_check=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# --self-check: prove the clickhouse-local parquet path end-to-end — image
+# runnable AND the host-vs-container work-dir mount translation actually
+# delivers files (the 2026-07-21 live failure mode). A tiny parquet is written
+# and read back through the exact ch_local/work-mount code path used live.
+if [[ "${self_check:-false}" == true ]]; then
+  require_command docker
+  root="${EVAL_CASE_ROOT:-/data/eval-cases}"
+  [[ -d "$root" && -w "$root" ]] || die "self-check: eval case root is not writable: $root"
+  work=$(mktemp -d "${root%/}/.assemble-selfcheck.XXXXXX")
+  trap '[[ -n "${work:-}" ]] && rm -rf "$work"' EXIT
+  work_mount="$work"
+  if [[ -n "${CAPTURE_HOST_OUTPUT_ROOT:-}" ]]; then
+    work_mount="${CAPTURE_HOST_OUTPUT_ROOT%/}/$(basename "$work")"
+  fi
+  CH_LOCAL_IMAGE="${CH_LOCAL_IMAGE:-clickhouse/clickhouse-server:latest}"
+  docker run --rm --user "$(id -u):$(id -g)" --volume "$work_mount:/work" \
+    --entrypoint clickhouse "$CH_LOCAL_IMAGE" local --query \
+    "INSERT INTO FUNCTION file('/work/probe.parquet', Parquet) SELECT 1 AS x" ||
+    die 'self-check: clickhouse-local parquet write failed'
+  count=$(docker run --rm --user "$(id -u):$(id -g)" --volume "$work_mount:/work" \
+    --entrypoint clickhouse "$CH_LOCAL_IMAGE" local --query \
+    "SELECT count() FROM file('/work/probe.parquet', Parquet)") ||
+    die 'self-check: clickhouse-local parquet read failed'
+  [[ "$count" == "1" ]] || die "self-check: parquet roundtrip mismatch: $count"
+  log 'self-check passed: clickhouse-local parquet shift path is provisioned'
+  exit 0
+fi
 
 require_command python3
 [[ -n "$case_dir" ]] || die '--case-dir is required'
@@ -148,8 +177,17 @@ for table in "${CH_TABLES[@]}"; do
   [[ -r "$scenario_pq" ]] || die "scenario parquet missing: $scenario_pq"
   [[ -r "$normal_pq" ]] || die "normal parquet missing: $normal_pq"
   log "assembling ClickHouse table=$table (shift $col by ${delta_sec}s)"
-  # Mount a shared work dir so both inputs and the output are visible in-container.
-  work=$(mktemp -d)
+  # Work dir MUST live under the case dir, not /tmp: this script runs inside
+  # the runner container but `docker run -v` resolves paths on the HOST daemon
+  # (host-mounted docker.sock). /tmp differs between the two; the eval-cases
+  # tree is the shared root. CAPTURE_HOST_OUTPUT_ROOT translates when the two
+  # roots differ (pg_dump precedent in capture-eval-case.sh). 2026-07-21 라이브
+  # 실패(CANNOT_STAT /work/normal.parquet) 실측 수리.
+  work=$(mktemp -d "${case_dir%/}/.ch-shift.XXXXXX")
+  work_mount="$work"
+  if [[ -n "${CAPTURE_HOST_OUTPUT_ROOT:-}" ]]; then
+    work_mount="${CAPTURE_HOST_OUTPUT_ROOT%/}/$(basename "$case_dir")/$(basename "$work")"
+  fi
   cp "$normal_pq" "$work/normal.parquet"
   cp "$scenario_pq" "$work/scenario.parquet"
   ch_local "
@@ -158,7 +196,7 @@ for table in "${CH_TABLES[@]}"; do
       FROM file('/work/normal.parquet', Parquet)
     UNION ALL
     SELECT * FROM file('/work/scenario.parquet', Parquet)
-  " "$work"
+  " "$work_mount"
   [[ -s "$work/out.parquet" ]] || { rm -rf "$work"; die "assembled parquet is empty: $table"; }
   mv "$work/out.parquet" "$out_pq"
   rm -rf "$work"

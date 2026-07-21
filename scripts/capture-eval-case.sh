@@ -175,6 +175,9 @@ if [[ "$self_check" == true ]]; then
   fi
   sc_assemble="${ASSEMBLE_SCRIPT:-$(dirname "$(realpath "$0")")/assemble-eval-case.sh}"
   sc_run "assemble script executable ($sc_assemble)" test -x "$sc_assemble"
+  if [[ -x "$sc_assemble" ]]; then
+    sc_run "assemble clickhouse-local roundtrip" env EVAL_CASE_ROOT="$output_root" "$sc_assemble" --self-check
+  fi
   sc_run "output root writable ($output_root)" bash -c "mkdir -p '$output_root' && touch '$output_root/.self-check' && rm -f '$output_root/.self-check'"
   if [[ -n "${ARCHIVE_SSH_TARGET:-}" ]]; then
     sc_run "archive ssh (${ARCHIVE_SSH_TARGET})" \
