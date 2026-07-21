@@ -96,6 +96,7 @@ run_result=''
 preflight_json=''
 normal_segment=''
 dry_run=false
+self_check=false
 
 while (( $# > 0 )); do
   case "$1" in
@@ -116,10 +117,72 @@ while (( $# > 0 )); do
     --normal-segment) normal_segment="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
+    --self-check) self_check=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# ------------------------------------------------------------
+# --self-check: prove every external dependency the capture will need,
+# BEFORE any scenario is run. The runner's queue readiness invokes this so a
+# missing credential or unreachable store refuses queue start instead of
+# burning a 30-minute scenario and failing at capture time (2026-07-21,
+# preflight-json / QUERY_API_PASSWORD 실전 실패 계보의 근본 수리).
+# Uses the exact same env defaults as live capture — no separate config.
+# ------------------------------------------------------------
+if [[ "$self_check" == true ]]; then
+  require_command date; require_command jq; require_command realpath
+  require_command stat; require_command sha256sum; require_command curl
+  require_command docker
+
+  VM_URL="${VM_URL:-http://192.168.230.119:18428}"
+  CH_URL="${CH_URL:-http://192.168.230.119:18123}"
+  CH_USER="${CH_USER:-lucida}"
+  CH_PASSWORD="${CH_PASSWORD:-}"
+  PG_HOST="${PG_HOST:-192.168.230.119}"
+  PG_PORT="${PG_PORT:-15432}"
+  PG_USER="${PG_USER:-lucida}"
+  PG_PASSWORD="${PG_PASSWORD:-}"
+  PG_DATABASE="${PG_DATABASE:-lucida}"
+  PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16-alpine}"
+  QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:18080}"
+  QUERY_API_USER="${QUERY_API_USER:-manager}"
+  QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
+
+  sc_status=0
+  sc_fail() { printf '[ERROR] self-check FAILED: %s\n' "$*" >&2; sc_status=1; }
+  sc_run() { local name=$1; shift; if "$@" >/dev/null 2>&1; then log "self-check ok: $name"; else sc_fail "$name"; fi; }
+
+  [[ -n "$PG_PASSWORD" ]] || sc_fail 'env PG_PASSWORD is empty'
+  [[ -n "$CH_PASSWORD" ]] || sc_fail 'env CH_PASSWORD is empty'
+  [[ -n "$QUERY_API_PASSWORD" ]] || sc_fail 'env QUERY_API_PASSWORD is empty'
+
+  sc_run "victoriametrics reachable ($VM_URL)" \
+    curl --fail --silent --max-time 10 --get "${VM_URL%/}/api/v1/query" --data-urlencode 'query=vm_rows'
+  if [[ -n "$CH_PASSWORD" ]]; then
+    sc_ch() { printf 'user = "%s:%s"\n' "$CH_USER" "$CH_PASSWORD" | curl --config - --fail --silent --max-time 10 --data-binary 'SELECT 1' "${CH_URL%/}/"; }
+    sc_run "clickhouse auth ($CH_URL)" sc_ch
+  fi
+  if [[ -n "$QUERY_API_PASSWORD" ]]; then
+    sc_login() { printf '{"username":"%s","password":"%s"}' "$QUERY_API_USER" "$QUERY_API_PASSWORD" | curl --fail --silent --max-time 10 -X POST -H 'Content-Type: application/json' --data-binary @- "${QUERY_API_URL%/}/api/v1/login"; }
+    sc_run "query api login for topology ($QUERY_API_URL)" sc_login
+  fi
+  if [[ -n "$PG_PASSWORD" ]]; then
+    sc_run "postgres auth ($PG_HOST:$PG_PORT/$PG_DATABASE)" \
+      docker run --rm --env PGPASSWORD="$PG_PASSWORD" "$PG_DUMP_IMAGE" \
+      psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SELECT 1'
+  fi
+  sc_assemble="${ASSEMBLE_SCRIPT:-$(dirname "$(realpath "$0")")/assemble-eval-case.sh}"
+  sc_run "assemble script executable ($sc_assemble)" test -x "$sc_assemble"
+  sc_run "output root writable ($output_root)" bash -c "mkdir -p '$output_root' && touch '$output_root/.self-check' && rm -f '$output_root/.self-check'"
+  if [[ -n "${ARCHIVE_SSH_TARGET:-}" ]]; then
+    sc_run "archive ssh (${ARCHIVE_SSH_TARGET})" \
+      ssh -i "${ARCHIVE_SSH_KEY:-/root/.ssh/tb_key}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "$ARCHIVE_SSH_TARGET" true
+  fi
+  (( sc_status == 0 )) && log 'self-check passed: capture chain is fully provisioned'
+  exit "$sc_status"
+fi
 
 [[ -n "$case_id" ]] || die '--case-id is required'
 [[ "$case_id" =~ ^case-[a-z0-9][a-z0-9-]*$ ]] || die '--case-id must match case-[a-z0-9-]+'
