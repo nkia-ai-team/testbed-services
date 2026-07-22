@@ -132,70 +132,27 @@ case "$action" in
     check_read_only
     [[ -z "$(tagged_pids)" ]] || { echo "tagged k6 already running" >&2; exit 4; }
     cat >"$monitor" <<'PY'
-# The live document is rewritten on a fixed once-per-second wall-clock
-# cadence, bounded per cycle, instead of after an unbounded backlog drain:
-# draining every buffered k6 sample before writing let a high arrival rate
-# stretch a single "drain cycle" to minutes, so observed_at (taken from the
-# last *parsed* sample) went stale and tripped the 30s staleness contract
-# (F05-H runs dd823342/00d1f218, 07-21; originally seen as F07-H 158b449c,
-# 80rps, 07-19). observed_at now reflects the wall-clock write time, and
-# each cycle's read is capped so the loop always returns to sleep(1) and
-# write, even while catching up on a large backlog.
+# The live document must be rewritten at most once per drain cycle, not per
+# parsed line: a per-line fsync cannot keep up with k6's json output at high
+# arrival rates, the parser falls minutes behind, and observed_at then trips
+# the 30s staleness contract (F07-H run 158b449c, 80rps, 07-19).
 import collections, datetime, json, os, sys, time
 source, output, scenario_id, business_step = sys.argv[1:]
 iterations = collections.deque()
 checkout_results = collections.deque()
 entry_status = None
+last_stamp = None
 position = 0
-MAX_LINES_PER_CYCLE = 20000
-
-
-def write_document(now):
-    cutoff = now - datetime.timedelta(seconds=30)
-    while iterations and iterations[0] < cutoff:
-        iterations.popleft()
-    while checkout_results and checkout_results[0][0] < cutoff:
-        checkout_results.popleft()
-    span = max(1.0, min(30.0, (iterations[-1] - iterations[0]).total_seconds())) if len(iterations) > 1 else 1.0
-    checkout_5xx_rate = (
-        sum(status >= 500 for _, status in checkout_results) / len(checkout_results)
-        if checkout_results else 0.0
-    )
-    document = {
-        "scenario_id": scenario_id,
-        "scenario_tag": f"scenario_id={scenario_id}",
-        "achieved_rps": len(iterations) / span,
-        "entry_status": entry_status,
-        "checkout_5xx_rate": checkout_5xx_rate,
-        "business_ok": entry_status in {200, 400, 409},
-        "observed_at": now.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
-    temporary = output + ".tmp"
-    with open(temporary, "w", encoding="utf-8") as target:
-        json.dump(document, target, sort_keys=True)
-        target.write("\n")
-        target.flush()
-        os.fsync(target.fileno())
-    os.replace(temporary, output)
-
-
-# Create a valid live document immediately, before k6 has produced any
-# output, so the runner never observes "No such file" (F09-R run 0196a3fe,
-# 07-20: the old code only wrote once a k6 sample had actually been parsed,
-# so a scenario that ended before its first match left the file missing).
-write_document(datetime.datetime.now(datetime.timezone.utc))
-
 while True:
-    lines_read = 0
+    parsed_any = False
     try:
         with open(source, encoding="utf-8") as stream:
             stream.seek(position)
-            while lines_read < MAX_LINES_PER_CYCLE:
+            while True:
                 line = stream.readline()
                 if not line:
                     break
                 position = stream.tell()
-                lines_read += 1
                 if '"iterations"' not in line and '"http_reqs"' not in line:
                     continue
                 try:
@@ -215,11 +172,41 @@ while True:
                         raw = tags.get("status")
                         entry_status = int(raw) if raw and str(raw).isdigit() else 0
                         checkout_results.append((stamp, entry_status))
+                    else:
+                        continue
+                    last_stamp = stamp
+                    parsed_any = True
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                     continue
     except FileNotFoundError:
         pass
-    write_document(datetime.datetime.now(datetime.timezone.utc))
+    if parsed_any and last_stamp is not None:
+        cutoff = last_stamp - datetime.timedelta(seconds=30)
+        while iterations and iterations[0] < cutoff:
+            iterations.popleft()
+        while checkout_results and checkout_results[0][0] < cutoff:
+            checkout_results.popleft()
+        span = max(1.0, min(30.0, (iterations[-1] - iterations[0]).total_seconds())) if len(iterations) > 1 else 1.0
+        checkout_5xx_rate = (
+            sum(status >= 500 for _, status in checkout_results) / len(checkout_results)
+            if checkout_results else 0.0
+        )
+        document = {
+            "scenario_id": scenario_id,
+            "scenario_tag": f"scenario_id={scenario_id}",
+            "achieved_rps": len(iterations) / span,
+            "entry_status": entry_status,
+            "checkout_5xx_rate": checkout_5xx_rate,
+            "business_ok": entry_status in {200, 400, 409},
+            "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        temporary = output + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as target:
+            json.dump(document, target, sort_keys=True)
+            target.write("\n")
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, output)
     time.sleep(1)
 PY
     rm -f -- "$samples" "$live"
