@@ -91,8 +91,8 @@ ORACLE_REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; keycol="$7"; key="$8"; tag="$9"; hold="${10}"
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns"); state="/tmp/${tag}.pid"
-alive() { "${k[@]}" exec "$pod" -- sh -lc 'test -s '"'"'$state'"'"' && kill -0 "$(cat '"'"'$state'"'"')" 2>/dev/null'; }
-stop() { "${k[@]}" exec "$pod" -- sh -lc 'if test -s '"'"'$state'"'"'; then kill "$(cat '"'"'$state'"'"')" 2>/dev/null || true; rm -f '"'"'$state'"'"' /tmp/'"'"'$tag'"'"'.sql /tmp/'"'"'$tag'"'"'.log; fi'; }
+alive() { "${k[@]}" exec "$pod" -- env STATE="$state" sh -lc 'test -s "$STATE" && kill -0 "$(cat "$STATE")" 2>/dev/null'; }
+stop() { "${k[@]}" exec "$pod" -- env STATE="$state" TAG="$tag" sh -lc 'if test -s "$STATE"; then kill "$(cat "$STATE")" 2>/dev/null || true; rm -f "$STATE" "/tmp/$TAG.sql" "/tmp/$TAG.log"; fi'; }
 check_row() { printf 'alter session set container=FREEPDB1;\nalter session set current_schema=%s;\nset pages 0 feedback off heading off\nselect count(*) from %s where %s='"'"'%s'"'"';\nexit;\n' "$schema" "$table" "$keycol" "$key" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
 case "$action" in preflight) check_row; ! alive;; run) check_row; ! alive; "${k[@]}" exec "$pod" -- sh -lc 'cat > /tmp/'"'"'$tag'"'"'.sql <<EOF
 alter session set container=FREEPDB1;
@@ -117,7 +117,7 @@ case "$mode" in EXCLUSIVE|"ACCESS EXCLUSIVE"|"SHARE ROW EXCLUSIVE") : ;; *) echo
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
 envs=(env TAG="$tag" SCHEMA="$schema" TABLE="$table" MODE="$mode" HOLD="$hold")
 count() { "${k[@]}" exec "$pod" -- "${envs[@]}" sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) FROM pg_stat_activity WHERE application_name='"'"'$TAG'"'"';"' | tr -d '[:space:]'; }
-table_ok() { "${k[@]}" exec "$pod" -- "${envs[@]}" sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT to_regclass('"'"''"'"'$SCHEMA.$TABLE'"'"''"'"') IS NOT NULL;"' | grep -qx t; }
+table_ok() { "${k[@]}" exec "$pod" -- "${envs[@]}" sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT to_regclass('"'"'$SCHEMA.$TABLE'"'"') IS NOT NULL;"' | grep -qx t; }
 stop() { "${k[@]}" exec "$pod" -- "${envs[@]}" sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='"'"'$TAG'"'"' AND pid<>pg_backend_pid();"' >/dev/null; }
 case "$action" in
  preflight) table_ok; [[ "$(count)" == 0 ]] ;;

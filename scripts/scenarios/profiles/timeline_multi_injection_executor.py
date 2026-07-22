@@ -147,7 +147,7 @@ field() { printf '%s' "$spec_b64" | base64 -d | python3 -c 'import json,sys;prin
 
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
 state_dir="$state_root/${scenario_id}-multi"
-kube="kubectl --kubeconfig=/root/tb-kubeconfig"
+kube=(kubectl --kubeconfig=/root/tb-kubeconfig)
 
 # ---- oracle_lock primitive (kubectl exec into Oracle pod; FREEPDB1) ----------
 oracle() {  # $1=verb $2=step_index
@@ -156,7 +156,7 @@ oracle() {  # $1=verb $2=step_index
   ns=$(field "$i" namespace); pod=$(field "$i" pod); schema=$(field "$i" schema)
   table=$(field "$i" table); keycol=$(field "$i" key_column); key=$(field "$i" key_value)
   tag=$(field "$i" client_identifier); hold=$(field "$i" hold_seconds)
-  local k=("$kube" -n "$ns")
+  local k=("${kube[@]}" -n "$ns")
   local pidf="/tmp/${tag}.pid"
   o_rowok() { printf 'alter session set container=FREEPDB1;\nset pages 0 feedback off heading off\nselect count(*) from %s.%s where %s=%s;\nexit;\n' \
       "$schema" "$table" "$keycol" "'$key'" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
@@ -212,7 +212,7 @@ pg() {  # $1=verb $2=step_index
 rollout() {  # $1=verb $2=step_index
   local verb="$1" i="$2"
   local ns deploy ann; ns=$(field "$i" namespace); deploy=$(field "$i" deployment); ann=$(field "$i" annotation_key)
-  local k=("$kube" -n "$ns"); local saved="$state_dir/rollout-$i.annotation"
+  local k=("${kube[@]}" -n "$ns"); local saved="$state_dir/rollout-$i.annotation"
   case "$verb" in
     check)  "${k[@]}" auth can-i patch deployments | grep -qx yes; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
     apply)  local cur; cur=$("${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.metadata.annotations['$ann']}")
