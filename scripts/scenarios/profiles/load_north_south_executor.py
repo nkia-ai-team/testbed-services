@@ -51,8 +51,11 @@ def validate_parameters(scenario_id: str, parameters: dict[str, Any], profile: d
         raise ExecutorError("scenario_tag is not allowlisted")
     if parameters["scenario_tag"] != f"scenario_id={scenario_id}":
         raise ExecutorError("scenario_tag must exactly bind the scenario id")
-    if parameters["baseline_unit"] != "loadgen-commerce":
+    if parameters["baseline_unit"] not in contract["allowed_baseline_units"]:
         raise ExecutorError("baseline unit is not allowlisted")
+    domain_profile = contract["domain_profiles"].get(parameters["entry_url"])
+    if domain_profile is None or parameters["baseline_unit"] != domain_profile["baseline_unit"]:
+        raise ExecutorError("baseline_unit does not match the entry_url domain profile")
     if isinstance(parameters["seed"], bool) or not isinstance(parameters["seed"], int):
         raise ExecutorError("seed must be an integer")
 
@@ -88,6 +91,7 @@ def remote_script() -> bytes:
 set -euo pipefail
 action="$1"; scenario_id="$2"; target_rps="$3"; ramp_up="$4"; hold="$5"; ramp_down="$6"
 entry_url="$7"; script_path="$8"; scenario_tag="$9"; seed="${10}"; baseline_unit="${11}"
+health_path="${12}"; gateway_env="${13}"; business_step="${14}"
 safe_id="${scenario_id//[^A-Za-z0-9_-]/_}"
 summary="/tmp/rca-scenario-${safe_id}-summary.json"
 samples="/tmp/rca-scenario-${safe_id}-samples.json"
@@ -116,7 +120,7 @@ check_read_only() {
   command -v curl >/dev/null
   systemctl is-active --quiet "$baseline_unit"
   [[ -r "$script_path" ]]
-  [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$entry_url/api/products?size=1")" == "200" ]]
+  [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$entry_url$health_path")" == "200" ]]
 }
 
 case "$action" in
@@ -133,7 +137,7 @@ case "$action" in
 # arrival rates, the parser falls minutes behind, and observed_at then trips
 # the 30s staleness contract (F07-H run 158b449c, 80rps, 07-19).
 import collections, datetime, json, os, sys, time
-source, output, scenario_id = sys.argv[1:]
+source, output, scenario_id, business_step = sys.argv[1:]
 iterations = collections.deque()
 checkout_results = collections.deque()
 entry_status = None
@@ -164,7 +168,7 @@ while True:
                     tags = data.get("tags", {})
                     if metric == "iterations":
                         iterations.append(stamp)
-                    elif metric == "http_reqs" and tags.get("step") == "checkout":
+                    elif metric == "http_reqs" and tags.get("step") == business_step:
                         raw = tags.get("status")
                         entry_status = int(raw) if raw and str(raw).isdigit() else 0
                         checkout_results.append((stamp, entry_status))
@@ -207,11 +211,11 @@ while True:
 PY
     rm -f -- "$samples" "$live"
     nohup k6 run --tag "$scenario_tag" \
-      --env "GATEWAY_URL=$entry_url" --env "TARGET_RPS=$target_rps" \
+      --env "$gateway_env=$entry_url" --env "TARGET_RPS=$target_rps" \
       --env "RAMP_UP=$ramp_up" --env "HOLD=$hold" --env "RAMP_DOWN=$ramp_down" \
       --env "SURGE_SEED=$seed" --out "json=$samples" --summary-export "$summary" "$script_path" \
       >"$log_file" 2>&1 &
-    nohup python3 "$monitor" "$samples" "$live" "$scenario_id" \
+    nohup python3 "$monitor" "$samples" "$live" "$scenario_id" "$business_step" \
       >>"$log_file" 2>&1 & echo $! >"$monitor_pid"
     ;;
   cleanup)
@@ -235,6 +239,11 @@ esac
 def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], bytes]:
     instance = load_instance(plan)
     parameters = instance["parameters"]
+    profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())
+    contract = profiles["profiles"]["load.north_south"]["parameter_contract"]
+    domain_profile = contract["domain_profiles"].get(parameters["entry_url"])
+    if domain_profile is None:
+        raise ExecutorError("entry_url has no domain profile")
     argv = build_ssh_argv(instance["location"])
     argv.extend([
         action,
@@ -248,6 +257,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         parameters["scenario_tag"],
         str(parameters["seed"]),
         parameters["baseline_unit"],
+        domain_profile["health_path"],
+        domain_profile["gateway_env"],
+        domain_profile["business_step"],
     ])
     return argv, remote_script()
 

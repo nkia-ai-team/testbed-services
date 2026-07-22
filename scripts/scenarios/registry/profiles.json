@@ -226,11 +226,40 @@
           "F03-H"
         ],
         "allowed_entry_urls": [
-          "http://192.168.122.77:30080"
+          "http://192.168.122.77:30080",
+          "http://192.168.122.77:30181",
+          "http://192.168.122.77:30082"
         ],
         "allowed_script_paths": [
-          "/opt/loadgen/commerce/surge.js"
+          "/opt/loadgen/commerce/surge.js",
+          "/opt/loadgen/food-delivery/surge.js",
+          "/opt/loadgen/core-banking/surge.js"
         ],
+        "allowed_baseline_units": [
+          "loadgen-commerce",
+          "loadgen-food",
+          "loadgen-banking"
+        ],
+        "domain_profiles": {
+          "http://192.168.122.77:30080": {
+            "baseline_unit": "loadgen-commerce",
+            "health_path": "/api/products?size=1",
+            "gateway_env": "GATEWAY_URL",
+            "business_step": "checkout"
+          },
+          "http://192.168.122.77:30181": {
+            "baseline_unit": "loadgen-food",
+            "health_path": "/api/restaurants?size=1",
+            "gateway_env": "RESTAURANT_URL",
+            "business_step": "create"
+          },
+          "http://192.168.122.77:30082": {
+            "baseline_unit": "loadgen-banking",
+            "health_path": "/api/accounts?status=ACTIVE&size=1",
+            "gateway_env": "GATEWAY_URL",
+            "business_step": "transfer"
+          }
+        },
         "target_rps": {
           "minimum": 1,
           "maximum": 180
