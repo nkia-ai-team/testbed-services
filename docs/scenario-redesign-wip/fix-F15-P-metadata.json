@@ -1,0 +1,43 @@
+{
+  "F15-P": {
+    "title": "공유 worker 노드 자원압박이 다서비스 증상을 하나로 묶는 merge 시나리오",
+    "description": "한 도메인의 서비스들이 co-locate된 공유 worker 노드에 자원압박을 주입해, 여러 서비스가 동시에 지연·간헐 5xx를 내지만 실제 root는 노드 1개인 merge(단일 공통 원인) 시나리오다. F15-T1 anti-merge의 정반대 구조다.",
+    "cause": "shared worker node resource pressure (single common root -> multi-service symptoms merge)",
+    "injection_summary": "host.stress(ssh)로 대상 worker 노드(예: tb-w2 food)의 CPU/mem을 포화시킨다. 그 노드에 co-locate된 모든 pod가 CPU steal/스케줄 지연을 겪어 여러 서비스가 동시에 열화한다. baseline 부하가 사용자 영향을 표면화한다.",
+    "user_impact": "같은 노드 위 여러 서비스가 동시에 지연·간헐 5xx를 내 여러 도메인/서비스에서 비슷한 실패가 함께 발생한다. 타 노드 서비스는 정상.",
+    "distinguishing_evidence": "대상 노드의 host CPU/mem이 포화되고 그 노드에 co-locate된 다수 서비스가 동시 지연·pod throttling을 보인다. 타 노드 서비스는 정상이고 특정 서비스 코드결함/DB 락 signal은 없다. 증상 서비스가 서로 다른 노드/원인이면 merge가 아니라 split(F15-T1/F15-G)이다.",
+    "root_cause": {
+      "target_kind": "host",
+      "id": "shared-worker-node",
+      "namespace": "cluster-node",
+      "mechanism": "공유 worker 노드 CPU/mem 포화 -> 그 위 co-locate된 여러 pod가 동시에 CPU steal/스케줄 지연 -> 여러 서비스 동시 열화. 증상은 다서비스로 분산되나 root는 노드 1개(merge, has_single_cause=true). naive RCA가 각 서비스를 개별 root로 오판하도록 유도. Class B 인프라.",
+      "pattern": "infra",
+      "has_single_cause": true,
+      "expected_structure": "merge",
+      "code_anchor": [
+        "injector: host.stress (ssh) - worker 노드 CPU/mem 포화 (Class B 인프라, 코드앵커 아님)",
+        "배치 전제: project CLAUDE.md 서버맵 - tb-w1=commerce / tb-w2=food-delivery / tb-w3=core-banking (도메인 서비스 co-residency)",
+        "preflight: host-placement-and-oob-recovery (co-residency 검증 게이트)"
+      ]
+    },
+    "must_support": [
+      "대상 worker 노드 host CPU/mem 포화",
+      "동일 노드 co-locate 서비스 다수 동시 지연",
+      "pod CPU throttling / 스케줄 지연"
+    ],
+    "must_rule_out": [
+      "단일 서비스만 지연(있으면 그 서비스 코드결함 = split)",
+      "타 노드 서비스 지연(공유 노드 원인 아님)",
+      "DB 락 blocking session(있으면 lock 계열)",
+      "entry_status=429(외부 rate-limit 오인 배제)"
+    ],
+    "discrimination_pair": {
+      "against": "F15-T1 (anti-merge)",
+      "axis": "F15-T1은 공유 인프라 원인 없는 2개 독립 root(anti-merge). F15-P는 공유 노드 1개가 공통 root라 다서비스 증상이 한 사건으로 merge(has_single_cause=true)."
+    },
+    "class": "B",
+    "readiness": "blocked",
+    "prerequisite_gate": "blocked",
+    "injector_gap": "host.stress executor는 실재(F09 SMS 계열 검증). 승격 전 gate = 대상 서비스들의 동일 노드 co-residency 보장(nodeSelector/affinity 또는 배치 확인) — 미보장 시 merge 전제 붕괴. 관측 gap: node-level 다서비스 동시상관을 결정지표로 노출."
+  }
+}

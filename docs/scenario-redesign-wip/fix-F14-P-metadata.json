@@ -1,0 +1,44 @@
+{
+  "F14-P": {
+    "title": "ledger consumer catch-swallow로 인한 선별적 원장 이벤트 유실",
+    "description": "core-banking ledger consumer가 recordTransfer 처리 예외를 catch 후 삼켜 Kafka offset을 커밋하는 결함(at-most-once)을 이용해, 동기 이체는 200으로 성공하지만 일부 이체가 원장에 5xx 없이 영구 누락되는 시나리오다.",
+    "cause": "ledger-service TransferEventConsumer catch-and-swallow (offset committed on failure -> at-most-once event loss)",
+    "injection_summary": "ledger recordTransfer 경로에 이체 유입과 겹치는 transient 실패(ledger_entries 행 락 또는 Oracle 순간 blip)를 주입한다. 실패한 이벤트는 consumer가 catch 후 삼켜 재처리되지 않아 원장에서 선별적으로 유실된다. 동기 이체 트랜잭션(TransferService 단일 @Transactional)은 그대로 200 COMPLETED로 커밋된다.",
+    "user_impact": "이체 API는 200 COMPLETED로 정상 응답하지만 실패 순간의 일부 이체가 ledger_entries에 반영되지 않아 원장이 선별적으로 누락된다. 성공률·지연은 정상이며 ReconciliationBatch imbalance WARN으로만 사후 관측된다.",
+    "distinguishing_evidence": "이체 5xx가 없고 Kafka consumer lag은 증가하지 않으며(소비는 계속됨) outbox published_at=null 적체도 없다. ledger_entries가 발행 이체 대비 선별적으로 부족해 ReconciliationBatch가 imbalance를 낸다. lag이 증가하면 F04-R(consumer 정지), outbox null 적체면 F18-P(relay 정지), 이체 5xx면 lock/502 계열이다.",
+    "root_cause": {
+      "target_kind": "service",
+      "id": "banking-ledger-consumer",
+      "namespace": "rca-testbed-banking",
+      "mechanism": "TransferEventConsumer.onTransferEvent가 recordTransfer 예외를 catch(Exception){log.error}로 삼키고 되던지지 않아 Kafka offset이 커밋됨 -> 실패 이벤트 재처리 불가 -> ledger_entries 영구 누락(at-most-once). 단일스레드 consumer(concurrency 미설정)라 순차 소비. 동기 이체는 별도 단일 @Transactional이라 200 유지(P5 silent async 유실). ledger의 findByTransferRef 멱등은 중복만 막을 뿐 삼켜져 도달 못한 이벤트 유실은 막지 못함.",
+      "pattern": "P5",
+      "code_anchor": [
+        "core-banking/ledger-service/src/main/java/com/corebanking/ledger/consumer/TransferEventConsumer.java:38-42 (catch(Exception){log.error} 되던지지 않음 -> offset 커밋 -> 유실, 최강 앵커 FS-10)",
+        "core-banking/ledger-service/src/main/java/com/corebanking/ledger/consumer/TransferEventConsumer.java:28 (@KafkaListener groupId=ledger-service, 단일 리스너)",
+        "core-banking/ledger-service/src/main/resources/application.yml:27-31 (concurrency 미설정 = 단일스레드)",
+        "core-banking/ledger-service/.../LedgerService.java:35 (findByTransferRef 멱등 조회 - 유실은 못 막음)",
+        "core-banking/ledger-service/.../ReconciliationBatch.java:30-31 (사후 imbalance WARN 유일 관측면)",
+        "core-banking/transfer-service/.../TransferService.java:51-107 (단일 @Transactional - 동기 200 독립)"
+      ]
+    },
+    "must_support": [
+      "동기 이체 성공률 정상(transfer_2xx_rate >= 0.95)",
+      "ledger_entries 최신 이체 선별적 누락(전량 아님)",
+      "ReconciliationBatch imbalance WARN 증가(발행 이체 대비 원장 반영 부족)"
+    ],
+    "must_rule_out": [
+      "이체 5xx 급증(있으면 lock/502 계열 — 유실은 5xx 없음)",
+      "Kafka consumer lag 증가(있으면 F04-R consumer 정지 — F14-P는 소비는 지속)",
+      "outbox_events published_at=null 적체(있으면 F18-P relay 정지)",
+      "entry_status=429(외부 rate-limit 오인 배제)"
+    ],
+    "discrimination_pair": {
+      "against": "F04-R / F18-P",
+      "axis": "F04-R은 consumer 정지 -> lag 증가. F18-P는 relay 정지 -> outbox null 적체 + lag 평탄. F14-P는 consumer가 살아 소비하되 실패 이벤트만 삼켜 유실 -> lag/outbox 정상, ledger 선별 누락 + imbalance로만 관측."
+    },
+    "class": "A",
+    "readiness": "blocked",
+    "prerequisite_gate": "blocked",
+    "injector_gap": "ledger recordTransfer 경로에 이벤트 유입과 동기화된 선별적 transient 실패를 주입하는 executor 미구현. 현행 executor 표면에 없음(신설 필요). 관측 gap: database.ledger_imbalance_count selector + query_id 미존재."
+  }
+}

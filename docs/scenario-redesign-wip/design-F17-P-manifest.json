@@ -1,0 +1,289 @@
+{
+  "schema_version": "1.0",
+  "id": "F17-P",
+  "slug": "f17-p-transfer-direct-integrity-bypass",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P7",
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "tb-runner/http → core-banking transfer NodePort 30282 (direct) + 30082 (normal, control)",
+    "transport": "http",
+    "profile_refs": [
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-http-access",
+      "frozen-seed-present",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "normal-path-not-rejecting",
+              "observation": "normal_path_frozen_reject_rate",
+              "op": "lt",
+              "value": 0.9
+            },
+            {
+              "id": "actually-5xx-availability-fault",
+              "observation": "target_5xx_rate",
+              "op": "gte",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f17-p",
+              "parameters": {
+                "target_rps": 20,
+                "ramp_up": "1m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30282",
+                "control_entry_url": "http://192.168.122.77:30082",
+                "script_path": "/opt/loadgen/core-banking/frozen-bypass.js",
+                "scenario_tag": "scenario_id=F17-P",
+                "seed": 4242,
+                "baseline_unit": "loadgen-banking",
+                "frozen_from_account": "ACC-9001",
+                "closed_to_account": "ACC-9002",
+                "active_counterparty": "ACC-1001",
+                "amount_min": 1000,
+                "amount_max": 5000
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "parameters": {
+              "service": "testbed-transfer",
+              "namespace": "rca-testbed-banking",
+              "port": 8082,
+              "path": "/actuator/health"
+            },
+            "freshness": "15s"
+          },
+          {
+            "id": "target_5xx_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "parameters": {
+              "service_name": "core-banking-transfer"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "frozen_bypass_completed_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.frozen_bypass_completed_rate",
+            "parameters": {
+              "path_class": "direct",
+              "expected_status": 200,
+              "expected_body": "COMPLETED"
+            },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — no existing loadgen summary emits a 'direct-path 200 COMPLETED on a FROZEN account' rate. frozen-bypass.js must tag each POST with path_class(direct|normal) and assert body status; summary must bucket by path_class × http_status × body_status. See design sheet §4."
+          },
+          {
+            "id": "normal_path_frozen_reject_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.normal_path_reject_rate",
+            "parameters": {
+              "path_class": "normal",
+              "expected_status": 400
+            },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — control arm (30082→api→account) must report the 400 reject rate for the identical FROZEN payload. This is the decisive path-asymmetry evidence and has no wiring today."
+          },
+          {
+            "id": "integrity_violation_count",
+            "adapter": "database",
+            "query_id": "database.integrity_violation_count",
+            "parameters": {
+              "engine": "oracle",
+              "namespace": "rca-testbed-banking",
+              "pod": "testbed-oracle-0",
+              "schema": "BANKING",
+              "query": "SELECT count(*) FROM transfers t JOIN accounts a ON a.id IN (t.from_account, t.to_account) WHERE a.status IN ('FROZEN','CLOSED') AND t.status='COMPLETED' AND t.created_at >= :since"
+            },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — no database query counts COMPLETED transfers involving a FROZEN/CLOSED account. This is the ground-truth data-integrity witness (no 5xx exists, so trace/error metrics cannot see the fault). See design sheet §4."
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "direct-frozen-completed",
+              "observation": "frozen_bypass_completed_rate",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "ledger-integrity-violated",
+              "observation": "integrity_violation_count",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "normal-path-rejects",
+              "observation": "normal_path_frozen_reject_rate",
+              "op": "gte",
+              "value": 0.9
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "direct-load-stopped",
+              "observation": "frozen_bypass_completed_rate",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "load.north_south parameter_contract must allowlist F17-P AND allowlist entry_url http://192.168.122.77:30282 (direct transfer NodePort, currently not in allowed_entry_urls) AND allowlist a new dual-arm script /opt/loadgen/core-banking/frozen-bypass.js (direct+control-normal arms, FROZEN-targeting, path_class tags). Three NEW query_ids must be registered: loadgen.frozen_bypass_completed_rate, loadgen.normal_path_reject_rate, database.integrity_violation_count. FROZEN/CLOSED seed (ACC-9001/ACC-9002) already present — no seeding injector needed. See design sheet §4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

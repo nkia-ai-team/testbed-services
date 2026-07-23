@@ -1,0 +1,59 @@
+{
+  "F15-T4": {
+    "title": "PG 락에서 Kafka lag로 순차 handoff되는 독립 2근본 temporal split 장애",
+    "description": "commerce inventory 행 락(P3)과 commerce shipping consumer 정지(P5)를 시간상 순차로 주입하는 합성 시나리오. 두 root는 코드상 인과경로가 없어 단일 전파사슬이 아니며, 동시(F15-T1/G)도 아닌 시간 순차이므로 temporal split(독립 2 인시던트)이다.",
+    "cause": "PG inventory row-lock incident (P3) then, sequentially, shipping Kafka consumer outage (P5) - two independent roots, no causal link",
+    "injection_summary": "timeline.compose로 구간1(t0~t1)에 commerce inventory product 행을 FOR UPDATE 장기 락해 checkout 502를 만들고, 락 해제 후 구간2(t1~t2)에 commerce shipping consumer를 정지(scale=0)해 배송 lag을 만든다. 두 구간은 시간창이 비중첩(순차 handoff)이다.",
+    "user_impact": "구간1에는 checkout이 재고 예약 대기로 502 실패하고, 구간2에는 주문은 성공하나 배송 생성이 lag으로 지연된다. 두 장애는 서로 다른 시각에 발생한다.",
+    "distinguishing_evidence": "구간1에 PG blocking session(태그)+checkout 502가, 구간2에 shipping consumer lag+배송 지연이 각각 비중첩 시간창에서 관측된다. 두 장애가 동시 시작이면 multi-root(F15-T1/G), 한 root가 다른 root를 유발하는 인과경로가 있으면 단일사슬(merge)이지만, inventory 행 락은 shipping consumer를 stall시키지 않아(공유 자원/코드경로 없음) 인과경로가 없으므로 순차 독립 split이다.",
+    "root_cause": [
+      {
+        "segment": "1",
+        "time_window": "t0~t1",
+        "target_kind": "database",
+        "id": "commerce-inventory-row-lock",
+        "namespace": "rca-testbed-commerce",
+        "mechanism": "inventory product 행 PESSIMISTIC_WRITE 장기 락(NOWAIT 없음) -> reserve 직렬화 대기 -> order checkout 지연/502. P3 무제한 비관적 row-lock.",
+        "pattern": "P3",
+        "code_anchor": [
+          "commerce/inventory-service/.../InventoryRepository.java:17-19 (@Lock PESSIMISTIC_WRITE, NOWAIT 없음)",
+          "commerce/inventory-service/.../InventoryService.java:73-96 (reserve 트랜잭션 배타락)"
+        ]
+      },
+      {
+        "segment": "2",
+        "time_window": "t1~t2",
+        "target_kind": "service",
+        "id": "commerce-shipping-consumer",
+        "namespace": "rca-testbed-commerce",
+        "mechanism": "shipping Kafka consumer 정지(scale=0) -> PAID 이벤트 미소비 -> shipping consumer lag 증가 -> 배송(shipment) 생성 지연. P5 silent async. 구간1과 자원·topology·시간창 분리.",
+        "pattern": "P5",
+        "code_anchor": [
+          "commerce/shipping-service/.../OrderEventConsumer.java:28-38 (groupId=shipping-service, PAID 이벤트 소비 - F04-R 동일 표면)"
+        ]
+      }
+    ],
+    "has_single_cause": false,
+    "expected_structure": "split",
+    "expected_status": "two independent sequential incidents (temporal split)",
+    "must_support": [
+      "구간1: PG blocking session(태그) + checkout 502 (t0~t1)",
+      "구간2: shipping consumer lag 증가 + 배송 지연 (t1~t2)",
+      "두 구간 시간창 비중첩(순차)"
+    ],
+    "must_rule_out": [
+      "두 장애 동시 시작(있으면 multi-root F15-T1/F15-G)",
+      "한 root가 다른 root를 유발하는 인과경로(있으면 단일사슬 merge)",
+      "공유 노드/DB 공통 원인(있으면 F15-P merge)",
+      "entry_status=429"
+    ],
+    "discrimination_pair": {
+      "against": "F15-T1 / F15-T3",
+      "axis": "F15-T1은 동시(offset 0) 독립 2 root(multi-root). F15-T3는 인과종속 단일사슬(merge). F15-T4는 인과경로 없는 독립 2 root를 시간 순차로 배치한 temporal split -> RCA가 순차 2건으로 분리 보고해야 정답, 단일 근본 축약은 오답."
+    },
+    "class": "A",
+    "readiness": "partial",
+    "prerequisite_gate": "blocked",
+    "injector_gap": "db.lock(inventory, F02/C2 실재)과 kafka.control(shipping, F04-R 실재) 둘 다 존재. timeline.compose에 순차 결속(offset!=0, 구간 비중첩) 스케줄 계약 등록 필요(partial). 관측 gap: 구간별 시간창을 캡처 메타에 분리 기록(sub-injection timeline)이 split 판정 근거."
+  }
+}

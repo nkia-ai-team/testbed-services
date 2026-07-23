@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0",
+  "id": "F19-S",
+  "slug": "f19-s-food-pg-cascade-cb-open",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P4",
+  "injection": {
+    "location": "food-mock",
+    "matrix_location_transport": "tb-runner/kubectl → rca-testbed-food testbed-external-pg-mock (mockserver /pay)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/mock.expectation",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "mock-baseline-clean",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "mock.expectation",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "mock.expectation"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f19-s",
+              "parameters": {
+                "path": "/pay",
+                "mode": "delay",
+                "status_code": 200,
+                "delay_seconds": 30
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "payment_target_health", "adapter": "http_probe", "query_id": "http.target_health",
+            "parameters": { "service": "testbed-payment", "namespace": "rca-testbed-food", "port": 8083, "path": "/actuator/health" },
+            "freshness": "15s"
+          },
+          {
+            "id": "payment_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "food-payment", "status_class": "502" }, "freshness": "60s"
+          },
+          {
+            "id": "pg_cb_open", "adapter": "prometheus", "query_id": "prometheus.circuitbreaker_open",
+            "parameters": { "service_name": "food-payment", "cb_name": "pg" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — resilience4j CB state gauge for cb=pg on food-payment. Same class as pilot gateway_circuitbreaker_open gap. See sheet §5."
+          },
+          {
+            "id": "order_create_502_rate", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",
+            "parameters": { "step": "create", "status_class": "502" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — food surge.js create step not status-bucketed. See sheet §5."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "payment-502", "observation": "payment_502_rate", "op": "gte", "value": 0.3 },
+            { "id": "pg-cb-open", "observation": "pg_cb_open", "op": "eq", "value": true },
+            { "id": "order-502-propagated", "observation": "order_create_502_rate", "op": "gte", "value": 0.1 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "payment-target-recovered", "observation": "payment_target_health", "op": "eq", "value": 200 },
+            { "id": "pg-cb-closed", "observation": "pg_cb_open", "op": "eq", "value": false },
+            { "id": "order-502-cleared", "observation": "order_create_502_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["mock.expectation", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["mock.expectation", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "mock.expectation"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "mock.expectation executor guard 일반화(mock_expectation_executor.py:54 commerce 하드코딩 → rca-testbed-food 허용, 1줄) + parameter_contract에 F19-S allowlist + scenario_parameters(path=/pay, delay 30s>read-timeout 10s). load.north_south allowlist에 F19-S + food params(entry 30181). NEW query_id 2종: loadgen.food_create_status_rate, prometheus.circuitbreaker_open(cb=pg, food-payment). 자세히 sheet §5.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

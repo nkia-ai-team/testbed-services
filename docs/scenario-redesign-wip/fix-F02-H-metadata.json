@@ -1,0 +1,41 @@
+{
+  "F02-H": {
+    "title": "PostgreSQL PVC 스토리지 IO 포화로 인한 commerce 전반 지연",
+    "description": "commerce 단일 PostgreSQL의 PVC backing 디바이스(tb-w1 로컬디스크)에 fio로 IO 포화를 걸어 공유 DB가 느려지고 commerce 전 서비스 응답이 지연되는 Class B(SMS·디스크) 시나리오다. root는 코드가 아니라 스토리지 IO 포화다.",
+    "cause": "PostgreSQL PVC backing device IO saturation (host disk, tb-w1)",
+    "injection_summary": "host.stress fio 모드로 tb-w1(192.168.122.184)의 local-path-provisioner PVC 디렉토리(pgdata-testbed-postgres-0)에 rate_iops=3000, size_mib=2048, 600s IO 부하를 주고 commerce checkout 부하를 흘린다. 파일·프로세스 bounded recovery로 원상복구한다.",
+    "user_impact": "특정 서비스 코드 결함 없이 commerce 전 서비스(order/product/inventory/payment 등)가 공유 PostgreSQL 경유로 동반 지연되고 checkout 지연·간헐 5xx가 발생한다.",
+    "distinguishing_evidence": "호스트 디스크 await/util·PG IO 대기가 급등하는 반면 워커 CPU·메모리는 정상(F09 CPU/F05 mem 배제)이고, 특정 서비스 코드락·커넥션풀 자연고갈 시그니처(F01 DB락 등)가 없다. 원인은 단일 스토리지 디바이스 IO 포화 하나다.",
+    "root_cause": {
+      "target_kind": "infra",
+      "class": "B",
+      "id": "commerce-postgres-pvc-device",
+      "namespace": "rca-testbed-commerce",
+      "host": "192.168.122.184",
+      "mechanism": "PG 데이터 PVC(local-path hostPath, tb-w1)에 fio IO 포화 → 공유 단일 PostgreSQL(8스키마) 디스크 IO 대기 급증 → 모든 스키마 쿼리 지연 → commerce 전 서비스 동반 지연. 코드 결함 아님(인프라 스토리지).",
+      "pattern": "ClassB-SMS-disk",
+      "code_anchor": [
+        "scripts/scenarios/profiles/host_stress_executor.py:12 (F02-H fio 계약: target_dir=pgdata PVC, rate_iops=3000)",
+        "commerce/README:119 (단일 PostgreSQL 인스턴스 8스키마 공유)"
+      ]
+    },
+    "must_support": [
+      "호스트 디스크 IO util/await 급등(tb-w1, PG PVC 디바이스)",
+      "commerce 여러 서비스 p95 동반 상승(단일 서비스 국한 아님)",
+      "PG IO 대기/쿼리 지연 증가"
+    ],
+    "must_rule_out": [
+      "워커 CPU 포화(F09 배제) / 워커 메모리 압박·OOM(F05 배제)",
+      "특정 서비스 코드 row-lock·풀 자연고갈 시그니처(F01/F06 배제 — 인프라 IO가 원인)",
+      "entry_status=429(외부 rate-limit 오인 배제)"
+    ],
+    "discrimination_pair": {
+      "against": "F09-R / F05-P",
+      "axis": "F09=CPU noisy-neighbor, F05=메모리 eviction. F02-H는 디스크 IO 포화 — SMS 디스크 지표(await/util)로만 갈린다. CPU/mem 정상."
+    },
+    "class_label": "B",
+    "readiness": "draft",
+    "prerequisite_gate": "blocked",
+    "prerequisite_reason": "profiles.json host.stress+load.north_south 계약에 F02-H 미등록(executor 코드는 지원), 호스트 disk IO 관측 query_id 미배선"
+  }
+}

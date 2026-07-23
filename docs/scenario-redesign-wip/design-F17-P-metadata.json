@@ -1,0 +1,43 @@
+{
+  "F17-P": {
+    "title": "commerce→transfer 직행 무결성 우회 — FROZEN 계좌 이체가 200 COMPLETED",
+    "description": "commerce-payment이 core-banking transfer-service NodePort 30282(testbed-transfer-external)로 직행하면 api·account 경유 검증을 건너뛴다. transfer execute()는 계좌 status(FROZEN/CLOSED)를 검사하지 않으므로, 정상경로(nginx→api→account)에서는 400으로 거절되는 FROZEN 계좌 이체가 직행경로에서는 200 COMPLETED로 성공하고 잔액·원장에 부정합이 기입된다. 5xx가 전혀 발생하지 않는 도메인 무결성 위반(P7)이라, 에러율·지연 기반 이상감지가 아예 뜨지 않을 수 있는 관측 사각 시나리오다.",
+    "class": "A",
+    "fault_pattern": "P7",
+    "domain": "cross (commerce + core-banking)",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "transfer-service execute()의 계좌 status 검증 부재 + commerce가 account 검증을 우회하는 30282 직행 경로 사용 → 검증 비대칭",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "banking-transfer (testbed-transfer, rca-testbed-banking)",
+      "mechanism": "TransferService.execute()는 amount>0·from≠to·계좌존재·from잔액만 검사하고 계좌 status(FROZEN/CLOSED)를 전혀 검사하지 않는다. ACTIVE 검증은 오직 account-service validateAndForward에만 존재한다(정상경로 전용). commerce-payment이 testbed-transfer-external NodePort 30282로 transfer를 직행 호출하면 account 검증 단계가 통째로 우회되어, FROZEN 계좌(ACC-9001, 잔액 100000)를 출금계좌로 하는 이체가 balance 검사(line 77)만 통과하고 line 86에서 status=COMPLETED로 확정된 뒤 line 100-104에서 원장 이벤트까지 발행된다. 동일 이체를 정상경로로 보내면 account가 400 'From account is FROZEN'으로 거절한다.",
+      "code_anchor": [
+        "core-banking/transfer-service/.../service/TransferService.java:51-107 (execute; :52-89 검증부에 status 미검사, :77 balance만, :86 COMPLETED, :100-104 원장이벤트 발행)",
+        "core-banking/account-service/.../service/AccountService.java:57-81 (validateAndForward; :66-71 from/to ACTIVE 검사 → 400, 정상경로 전용)",
+        "core-banking/k8s/22-transfer-service.yaml:105-120 (testbed-transfer-external NodePort 30282 직행 진입점 — account 우회)",
+        "core-banking/db/init.sql:91-92 (ACC-9001 FROZEN 잔액100000 / ACC-9002 CLOSED 잔액0 시드)"
+      ],
+      "infra_anchor": "직행 경로 = tb-runner → http://192.168.122.77:30282/api/transfers (POST). 정상 경로 = 30082(nginx)→api→account. 두 경로가 동일 transfer pod로 수렴하나 검증 단계 수가 다르다."
+    },
+    "injection_summary": "tb-runner에서 core-banking NodePort 30282(/api/transfers)로 fromAccount=ACC-9001(FROZEN)·toAccount=ACC-1001(ACTIVE)·amount 소액 이체를 직행 POST한다(FROZEN 계좌가 seed에 이미 존재, 별도 시딩 불필요). 대조군으로 동일 payload를 정상경로 30082로도 흘려 400 거절을 확인한다. cleanup은 직행 부하 종료 + (선택) 부정합 기입된 transfers/원장 행 표시·정정.",
+    "user_impact": "동결/해지된 계좌에서 이체가 성공(200 COMPLETED)해 잔액이 부당하게 변동되고 원장에 부정합이 기입된다. 5xx·지연이 없어 서비스 대시보드상으로는 완전히 정상으로 보이며, 실제 손실은 사후 정합 검사에서만 드러난다.",
+    "must_support": [
+      "직행경로(30282) FROZEN/CLOSED 계좌 이체가 200 COMPLETED로 성공 (frozen_bypass_completed_rate > 0)",
+      "FROZEN 계좌(ACC-9001)를 당사자로 하는 COMPLETED transfers 행이 DB에 존재 (integrity_violation_count > 0)",
+      "해당 이체 구간에 transfer/account/api의 5xx·에러율은 정상(무결성 위반이 에러 없이 성공)"
+    ],
+    "must_rule_out": [
+      "동일 이체를 정상경로(30082→api→account)로 보내면 400으로 거절됨 (normal_path_frozen_reject_rate ≥ 0.9) — 경로별 비대칭이 결정적 증거",
+      "증상이 5xx가 아님 — entry/target 5xx율 정상, 이상은 상태(무결성)이지 가용성이 아님",
+      "잔액부족(4xx)·계좌미존재(4xx)로 인한 거절이 아님 — ACC-9001은 존재하고 잔액 100000으로 소액 이체에 충분"
+    ],
+    "distinguishing_evidence": "정답은 경로별 검증 비대칭이다: 완전히 동일한 이체 요청이 30282 직행에서는 200 COMPLETED, 30082 정상경로에서는 400 'From account is FROZEN'. transfer-service execute() 트레이스에는 status 검증 span이 없고 account validateAndForward span이 직행 트레이스에는 존재하지 않는다. 5xx·지연이 전혀 없으므로 naive RCA는 '정상'으로 오판하기 쉽다 — 진짜 증거는 데이터 정합(FROZEN 계좌의 COMPLETED transfer 존재)과 경로 비대칭이며, transfer가 root(검증 부재), account 우회가 트리거다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F01-P (Oracle 계좌 lock → commerce 결제 5xx: 여기선 5xx·지연이 아니라 200 무결성 위반)",
+        "FS-1/FS-2 계열 (transfer lock/CB → account 502: 가용성 장애 vs 여기선 가용성 정상·상태 위반)"
+      ]
+    }
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "schema_version": "1.0",
+  "id": "F19-Q",
+  "slug": "f19-q-food-dispatch-expiry-batch-stop",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P3",
+  "injection": {
+    "location": "food-namespace",
+    "matrix_location_transport": "MISSING — deliverExpiredDispatches는 앱 내부 @Scheduled로 외부 제어점 없음. 스케줄러 정지 injector 미존재(능력갭).",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/business.fault",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "scheduler-control-hook-present",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "business.fault",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "business.fault",
+        "note": "primary_ref는 미실현 능력의 자리표시자 — 배차 만료 스케줄러(deliverExpiredDispatches)를 선택적으로 정지시키는 injector가 아직 없다. business.fault는 현재 live_supported=false stub."
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "60s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "dispatch-service-down", "observation": "dispatch_pod_ready", "op": "eq", "value": false }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f19-q",
+              "parameters": {
+                "namespace": "rca-testbed-food",
+                "deployment": "testbed-dispatch",
+                "container": "dispatch-service",
+                "fault_kind": "scheduler-stop",
+                "target_scheduler": "deliverExpiredDispatches",
+                "note": "이 파라미터를 소비할 실 executor가 없음 — 능력갭. 스케줄러 정지 제어 훅 신설 시 구체화."
+              },
+              "min_hold": "8m",
+              "settle": "60s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "dispatch_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-food", "resource": "testbed-dispatch" }, "freshness": "30s"
+          },
+          {
+            "id": "dispatch_assigned_count", "adapter": "database", "query_id": "database.dispatch_status_count",
+            "parameters": { "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0", "database": "fooddelivery", "table": "dispatches", "status": "ASSIGNED" },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — dispatches 테이블 status별 카운트(ASSIGNED 시계열). database adapter에 등록 필요. 감별의 핵심(단조증가 vs 톱니파). See sheet §5."
+          },
+          {
+            "id": "dispatch_delivered_transition_rate", "adapter": "database", "query_id": "database.dispatch_delivered_rate",
+            "parameters": { "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0", "database": "fooddelivery", "window": "1m" },
+            "freshness": "60s",
+            "capability_gap": "NEW query_id — 최근 창의 DELIVERED 전이율(배치 동작 여부 신호). 배치정지=0. See sheet §5."
+          },
+          {
+            "id": "order_create_503_rate", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",
+            "parameters": { "step": "create", "status_class": "503" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — food surge.js create 스텝이 503을 pass로 접어버림(surge.js:138-139) → 지표에 503이 드러나지 않음. per-status emit 필요. 게다가 biz-503과 fault-503을 상태코드로 구분 불가(응답 메시지 레벨 관측 필요) — 더 깊은 갭. See sheet §5.",
+            "biz_reject_ambiguity": true
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "order-create-503", "observation": "order_create_503_rate", "op": "gte", "value": 0.3 },
+            { "id": "assigned-saturated", "observation": "dispatch_assigned_count", "op": "gte", "value": 2000 },
+            { "id": "batch-halted", "observation": "dispatch_delivered_transition_rate", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "batch-resumed", "observation": "dispatch_delivered_transition_rate", "op": "gt", "value": 0 },
+            { "id": "assigned-drained", "observation": "dispatch_assigned_count", "op": "lt", "value": 2000 },
+            { "id": "create-recovered", "observation": "order_create_503_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["business.fault", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["business.fault", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "business.fault"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "[능력갭 — 주입수단 미존재] deliverExpiredDispatches(@Scheduled 30s)를 선택 정지시킬 injector가 없다(앱 내부 @Scheduled, 외부 제어점 부재 — P5 outbox-relay 갭과 동종, 헌장 §5). DISPATCH_MAX_CAPACITY 하향(k8s.env)은 헌장 §2-A Class-A 위장·biz-reject 자기모순이라 금지. pod 교란은 'unavailable' 503(다른 성격)이라 메커니즘 불일치. 필요: (1) 스케줄러 정지 제어 훅(business.fault 실장화 또는 전용 injector), (2) database adapter에 dispatch_status_count / dispatch_delivered_rate query, (3) loadgen.food_create_status_rate + 503의 biz vs fault 감별을 위한 응답-메시지 레벨 관측. 자세히 sheet §5.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

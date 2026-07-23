@@ -1,0 +1,43 @@
+{
+  "F19-S": {
+    "title": "food PG mock 지연/다운 → payment 502 → pg CircuitBreaker open → order 연쇄 502",
+    "description": "food payment-service의 PgApiClient.pay가 외부 PG mock(POST /pay)을 호출한다. PG mock에 payment read-timeout(10s) 초과 지연 또는 500을 주입하면 pay가 timeout/에러 → @Retry(pg, max 2)가 백오프 재시도로 증폭 → ServiceException(502 BAD_GATEWAY). 실패율이 임계(50%)를 넘으면 @CircuitBreaker(pg)가 open되고 payFallback이 즉시 502를 낸다. order createOrder는 fan-out에서 paymentClient.processPayment로 이 502를 받아 주문 실패로 전파한다. P4 패턴(정작 터지는 외부 hop=PG에 CB가 있으나 open되어 502 확산). food는 429 없음.",
+    "class": "A",
+    "fault_pattern": "P4",
+    "domain": "food-delivery",
+    "observation_domains": ["APM"],
+    "cause": "외부 PG mock 지연(read-timeout 초과)/500 → PgApiClient.pay timeout → @Retry(pg) max2 재시도 증폭 → 502 BAD_GATEWAY → 실패율 50%↑ → @CircuitBreaker(pg) open → payFallback 즉시 502 → order paymentClient.processPayment가 502 수신 → 주문 실패 전파",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "food-payment (testbed-payment, rca-testbed-food) — PgApiClient의 외부 PG hop; 근본 트리거는 외부 PG mock",
+      "mechanism": "PgApiClient.pay(@CircuitBreaker name=pg, @Retry name=pg, max 2)가 POST /pay 호출. PG 지연(>read-timeout 10s)/5xx면 ServiceException(HttpStatus.BAD_GATEWAY, 502) throw. Retry 2회가 부하를 증폭. sliding-window 10/min-calls 5/50% 임계 초과 시 CB pg open → payFallback이 즉시 502(BAD_GATEWAY 'PG mock unavailable'). order.createOrder fan-out(:154)이 502를 받아 주문 실패로 전파.",
+      "code_anchor": [
+        "food-delivery/payment-service/.../client/PgApiClient.java:32-34 (@CircuitBreaker(pg)+@Retry(pg) pay), :42 (uri /pay), :54 (ServiceException BAD_GATEWAY 502), :65 (payFallback → 502)",
+        "food-delivery/payment-service/src/main/resources/application.yml (resilience4j pg: sliding-window 10, min-calls 5, 50%, open 5s; retry pg max-attempts 2, 300ms; PG read-timeout 10s)",
+        "food-delivery/order-service/.../service/OrderService.java:154 (paymentClient.processPayment — 502 전파), order-service PaymentClient.java:30 (@CircuitBreaker(payment) fallback)"
+      ],
+      "infra_anchor": "food-delivery/k8s/30-external-pg-mock.yaml — testbed-external-pg-mock (mockserver, rca-testbed-food, POST /pay, failure_surface: external-timeout). 주입면."
+    },
+    "injection_summary": "mock.expectation executor로 food testbed-external-pg-mock(rca-testbed-food)에 path=/pay, mode=delay(delay_seconds≈30, payment read-timeout 10s 초과 → 강제 timeout) 또는 mode=status status_code=500을 셋업 → PgApiClient.pay 실패 → Retry 증폭 → 502 → pg CB open. 동시에 load.north_south food surge.js(entry 30181, orderJourney create)로 결제 경로 부하를 흘린다. cleanup은 mock expectation reset(CB는 open 5s 후 자연 half-open→close).",
+    "user_impact": "주문 생성 시 결제 단계가 502 Bad Gateway로 실패해 주문이 거절된다. 초기에는 개별 결제 timeout, 실패율 누적 후에는 pg 회로 개방으로 결제 요청이 즉시 502로 반려된다(빠른 실패). 상품·식당 조회는 정상.",
+    "must_support": [
+      "payment 502 BAD_GATEWAY 비율 급증 (payment_502_rate ≥ 0.3)",
+      "pg CircuitBreaker open (resilience4j pg state=open) — 실패율 임계 초과 확인",
+      "order createOrder 502 전파 (order_create_502_rate ≥ 0.1) + payment 재시도 증폭(retry pg 호출량 상승)"
+    ],
+    "must_rule_out": [
+      "order 커넥션풀 고갈발 5xx/timeout이 아님 — payment가 502로 명시적으로 터지고 order Hikari pending이 정상. F19-P(풀고갈, payment 200)와 결정적 구분",
+      "배차 503(capacity)이 아님 — 상태코드가 502(BAD_GATEWAY)이지 503(Courier pool)이 아님. dispatch 정상",
+      "429/rate-limit 아님 — food는 429 없음. entry_status ≠ 429"
+    ],
+    "distinguishing_evidence": "F19-S는 payment가 502로 명시적으로 실패하고 pg CircuitBreaker가 open된다 — 이 두 신호(payment 502 rate + pg CB open)가 F19-P(payment는 지연된 200, order 풀고갈발 5xx)와의 결정적 감별점이다. 주입면은 F19-P와 같은 PG mock이지만 delay가 read-timeout을 '초과'하느냐(S: timeout→502→CB) '미만'이냐(P: 흡수→풀고갈)로 갈린다. F19-Q(503 capacity)와는 상태코드(502 vs 503)로 구분. naive RCA는 증상이 퍼진 order를 root로 오판하지만 정답=외부 PG(payment PgApiClient hop).",
+    "difficulty": "medium",
+    "related_scenarios": {
+      "contrast_with": [
+        "F19-P (동일 PG mock 주입면·delay<read-timeout → order 풀고갈, payment 200; F19-S는 delay>read-timeout → payment 502·pg CB open)",
+        "F06-R (commerce 외부 hang mock.expectation delay 30s — 동일 injector 계열, 도메인·경로 상이)",
+        "F03-R (food payment connection leak — payment 계열이나 커넥션 누수 원인)"
+      ]
+    }
+  }
+}

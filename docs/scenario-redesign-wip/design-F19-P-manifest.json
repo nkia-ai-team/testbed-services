@@ -1,0 +1,163 @@
+{
+  "schema_version": "1.0",
+  "id": "F19-P",
+  "slug": "f19-p-food-order-longtx-pool-exhaustion",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P1",
+  "injection": {
+    "location": "food-mock",
+    "matrix_location_transport": "tb-runner/kubectl → rca-testbed-food testbed-external-pg-mock (mockserver /pay)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/mock.expectation",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "mock-baseline-clean",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "mock.expectation",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "mock.expectation"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "payment-5xx-cascade", "observation": "payment_502_rate", "op": "gte", "value": 0.2 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f19-p",
+              "parameters": {
+                "path": "/pay",
+                "mode": "delay",
+                "status_code": 200,
+                "delay_seconds": 8
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "order_target_health", "adapter": "http_probe", "query_id": "http.target_health",
+            "parameters": { "service": "testbed-order", "namespace": "rca-testbed-food", "port": 8080, "path": "/actuator/health" },
+            "freshness": "15s"
+          },
+          {
+            "id": "order_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-food", "resource": "testbed-order" }, "freshness": "30s"
+          },
+          {
+            "id": "order_hikari_pending", "adapter": "prometheus", "query_id": "prometheus.hikari_pending_connections",
+            "parameters": { "service_name": "food-order" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — Hikari active/pending gauge for food-order. Verify OTel javaagent exposes hikaricp_connections_pending; register query. See sheet §5."
+          },
+          {
+            "id": "payment_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "food-payment", "status_class": "502" }, "freshness": "60s"
+          },
+          {
+            "id": "order_create_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",
+            "parameters": { "step": "create", "status_class": "5xx" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — food surge.js create step is not status-bucketed (folds 200/400/503 into pass, surge.js:138-139). Only commerce loadgen.checkout_5xx_rate exists. Need food create per-status emit + query. See sheet §5."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "order-create-5xx", "observation": "order_create_5xx_rate", "op": "gte", "value": 0.1 },
+            { "id": "order-pool-exhausted", "observation": "order_hikari_pending", "op": "gt", "value": 0 },
+            { "id": "payment-not-5xx", "observation": "payment_502_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "order-target-recovered", "observation": "order_target_health", "op": "eq", "value": 200 },
+            { "id": "order-pool-recovered", "observation": "order_hikari_pending", "op": "eq", "value": 0 },
+            { "id": "create-recovered", "observation": "order_create_5xx_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["mock.expectation", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["mock.expectation", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "mock.expectation"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "mock.expectation executor는 rca-testbed-commerce mock만 허용(mock_expectation_executor.py:54 하드코딩) → rca-testbed-food/testbed-external-pg-mock 허용하도록 guard 일반화 필요(SCRIPT 본문은 이미 $ns 파라미터화됨, 1줄 변경). mock.expectation parameter_contract에 F19-P allowlist + scenario_parameters(path=/pay, delay 8s) 추가. load.north_south allowlist/tag_pattern에 F19-P + food scenario_parameters(entry 30181, food surge.js) 추가. NEW query_id 2종: loadgen.food_create_status_rate(surge.js create 스텝 per-status emit), prometheus.hikari_pending_connections(food-order). 자세히 sheet §5.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

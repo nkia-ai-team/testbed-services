@@ -1,0 +1,42 @@
+{
+  "F16-H": {
+    "title": "user-service fail-close 인증 확산 → commerce 전 도메인 쓰기 401",
+    "description": "commerce user-service를 readiness 실패로 Service 엔드포인트에서 탈락시키면, api-gateway AuthGuard가 모든 쓰기요청(POST/PUT/DELETE/PATCH)마다 호출하는 verify-token이 실패하고 user 서킷브레이커가 open되어 verifyTokenFallback이 401을 던진다(fail-close). 국소 장애(user-service 하나)가 order·cart·checkout 전반의 광역 쓰기 401로 위장하는 P6 패턴이다.",
+    "class": "A",
+    "fault_pattern": "P6",
+    "domain": "commerce",
+    "observation_domains": ["APM", "KCM"],
+    "cause": "commerce user-service 불가용 → 게이트웨이 AuthGuard verify-token 실패 → user CircuitBreaker open → fail-close 401 확산",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "commerce-user (testbed-user, rca-testbed-commerce)",
+      "mechanism": "AuthGuard.verifyIfWrite가 쓰기요청마다 user-service /api/users/verify-token 호출; @CircuitBreaker(name=user)+@Retry(name=user)가 user 불가용 시 open되고 verifyTokenFallback이 HttpStatus.UNAUTHORIZED(401)을 throw. register/login만 EXEMPT.",
+      "code_anchor": [
+        "commerce/api-gateway/.../service/AuthGuard.java:31-63 (verifyIfWrite, verifyToken, verifyTokenFallback)",
+        "commerce/api-gateway/.../controller/GatewayProxyController.java:28-71 (8개 쓰기 라우트가 verifyIfWrite 호출)",
+        "commerce/api-gateway/src/main/resources/application.yml:51-57 (user CB: window 10, min-calls 5, fail-rate 50%, open 5s), :102-106 (user retry 3회)"
+      ],
+      "infra_anchor": "commerce/k8s/25-user-service.yaml — Deployment testbed-user / container user-service / port 8085 / readinessProbe httpGet /actuator/health:8085 (period 10s, timeout 3s, failureThreshold 3)"
+    },
+    "injection_summary": "k8s.probe executor로 testbed-user Deployment의 readinessProbe httpGet path를 /actuator/health/f16-h-fail(존재하지 않는 경로)로 patch → 3×10s 후 pod가 NotReady로 Service 엔드포인트에서 제거 → verify-token 연결 실패. 동시에 load.north_south commerce surge.js(login→browse→add-to-cart→clear-cart→checkout)로 읽기/쓰기 혼합 부하를 흘린다. cleanup은 readinessProbe를 baseline 경로로 복원.",
+    "user_impact": "장바구니 담기·주문 생성·checkout 등 모든 쓰기요청이 401 Unauthorized로 급증한다. 상품 조회(GET) 등 읽기와 로그인/회원가입은 정상 200을 유지한다 — 부분장애처럼 보이나 원인은 단일 서비스.",
+    "must_support": [
+      "쓰기 스텝(add-to-cart/clear-cart/checkout) 401 비율 급증 (write_401_rate ≥ 0.3)",
+      "user-service 불가용 (kubernetes.deployment_available_replicas testbed-user = 0, pod NotReady)",
+      "게이트웨이 user CircuitBreaker open (gateway_circuitbreaker_open{cb=user} = true) + commerce-gateway APM error rate 상승"
+    ],
+    "must_rule_out": [
+      "읽기(GET /api/products 등)는 정상 200 유지 (read_2xx_rate ≥ 0.9) — 읽기까지 깨지면 광역 아웃티지이지 fail-close가 아님",
+      "외부 rate-limit(429) 아님 — entry_status ≠ 429",
+      "checkout 실패가 5xx가 아니라 401(4xx)임 — DB풀 고갈/하류지연 계열(C1/C12) 및 결제 5xx 계열과 결정적으로 구분"
+    ],
+    "distinguishing_evidence": "쓰기 401은 게이트웨이가 하류로 프록시하기 전에 AuthGuard에서 던진 것이라 order/cart/payment 하류 서비스에는 해당 요청 trace가 도달하지 않는다(하류 error rate·지연 정상). user-service만 NotReady이고 게이트웨이 user CB만 open이며, 읽기·로그인은 정상이다. naive RCA는 증상이 퍼진 order/cart/checkout을 root로 오판하지만 정답은 user-service.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F01-P/F06-R (결제 지연→5xx: 여기선 5xx가 아니라 401, 읽기 정상)",
+        "F05-H (payment liveness 실패: 동일 injector 계열이나 target=payment, 증상=결제 5xx이지 광역 401 아님)"
+      ]
+    }
+  }
+}

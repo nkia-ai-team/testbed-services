@@ -1,0 +1,20 @@
+{
+  "F17-R": {
+    "title": "core-banking transfer 다운의 commerce 결제 @Transactional 전체 롤백 (성공 카드결제 소멸)",
+    "description": "core-banking transfer-service를 readinessProbe 실패로 엔드포인트에서 제거하면, commerce payment.processPayment가 PG mock 결제를 성공(200, transaction_id 발급)시킨 직후 BankingTransferClient의 core-banking 이체 호출에서 연결 실패가 발생한다. BankingTransferClient가 CB 없이 RestClientException을 ServiceException(BAD_GATEWAY 502)로 던지고, processPayment는 @Transactional이라 방금 저장한 payments 행·payment_logs까지 전부 롤백된다 → 성공했던 PG 결제분이 commerce DB에서 소멸하고 checkout이 502로 실패한다. 원인이 타 namespace(core-banking)라 commerce 지표만으로는 보이지 않는 cross-domain 시나리오다.",
+    "cause": "core-banking testbed-transfer readinessProbe 실패 → Service 엔드포인트 0 → commerce-payment BankingTransferClient 연결 실패 → payment @Transactional 전체 롤백 (PaymentService.java:53-89, BankingTransferClient.java:37-59, CB 없음 payment yml:46-50)",
+    "injection_summary": "k8s.probe로 rca-testbed-banking/testbed-transfer의 readinessProbe httpGet path를 /actuator/health/f17-r-fail(404)로 패치해 3×10s 후 pod NotReady·엔드포인트 제거, load.north_south commerce surge(35rps)로 checkout 여정을 흘린다. cleanup은 probe 경로 복원만으로 재시작 폭풍 없이 회복.",
+    "user_impact": "checkout이 502로 실패한다. PG(카드결제 대행)는 성공 응답을 냈는데도 commerce payments 행이 롤백으로 사라져 '결제는 됐는데 주문/결제 기록이 없는' 정합성 파괴 흔적을 남긴다. 읽기(GET)는 정상.",
+    "distinguishing_evidence": "banking transfer pod(testbed-transfer)가 NotReady(readinessProbe 실패, restart_count 증가 없음)이고 commerce→banking cross-domain trace의 마지막 span이 PG 200 성공 직후 /api/transfers 연결 실패(502)로 끊긴다. commerce testbed-payment는 pod_ready=true·자원/설정 정상, entry_status≠429. F01-P(Oracle row-lock)와의 감별점: F01-P는 transfer가 살아있으나(pod ready) Oracle blocking session이 존재하고 payment가 timeout으로 '느리게' 실패하는 반면, F17-R은 Oracle lock이 없고 transfer가 '다운'되어 payment가 연결 실패로 '빠르게' 502 실패한다.",
+    "root_cause": {
+      "target_kind": "service",
+      "id": "core-banking-transfer",
+      "namespace": "rca-testbed-banking",
+      "mechanism": "downstream unavailability → cross-domain @Transactional rollback (P7+P1)",
+      "code_anchor": "commerce/payment-service/.../service/PaymentService.java:53-89 (@Transactional PG-then-banking); commerce/payment-service/.../client/BankingTransferClient.java:37-59 (RestClientException→ServiceException 502, no CB)"
+    },
+    "class": "A",
+    "pattern": ["P7", "P1"],
+    "rca_difficulty": "high"
+  }
+}

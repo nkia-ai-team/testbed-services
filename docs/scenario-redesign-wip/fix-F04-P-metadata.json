@@ -1,0 +1,43 @@
+{
+  "F04-P": {
+    "title": "banking 원장 단일스레드 consumer 처리량 병목으로 인한 원장 반영 lag",
+    "description": "core-banking ledger-service의 Kafka consumer가 concurrency 미설정(단일 스레드)이라 이체 부하가 처리량을 초과하면 banking.transfers lag가 쌓여 원장(ledger_entries) 반영이 지연되는 FS-3(P5 계열) 시나리오다. 동기 이체는 200으로 성공한다.",
+    "cause": "ledger-service single-thread Kafka consumer throughput bottleneck (concurrency unset)",
+    "injection_summary": "load.north_south로 banking 이체 surge(30082/transfer)를 단일스레드 consumer 처리량 이상으로 흘려 banking.transfers consumer lag를 유발한다. rate-control 전용 injector는 없으며 단일스레드 병목(concurrency 미설정)을 부하로 착취한다.",
+    "user_impact": "이체 API(transfer/account/api)는 200 COMPLETED로 정상 응답하지만 원장 반영(ledger_entries)이 지연되어 GET /api/ledger-entries에 최신 이체가 늦게 반영된다. 동기 성공률·지연은 정상.",
+    "distinguishing_evidence": "banking.transfers consumer lag가 surge 동안 증가했다가 부하 감소 후 drain된다. 이체 5xx는 없고 transfer/account 파드는 정상이다. lag가 총량까지 치솟고 재시작 전 drain이 없으면 F04-R(consumer 정지), lag가 평탄하고 outbox published_at=null이 쌓이면 F18-P(relay 정지)이지 처리량 병목이 아니다.",
+    "root_cause": {
+      "target_kind": "service",
+      "class": "A",
+      "id": "banking-ledger-consumer",
+      "namespace": "rca-testbed-banking",
+      "mechanism": "ledger TransferEventConsumer가 concurrency 미설정=기본 1스레드로 banking.transfers를 순차 소비하고 recordTransfer가 매 건 2 insert+멱등조회를 수행 → 유입속도>처리속도면 consumer lag 누적 → ledger_entries 반영 지연. 동기 이체는 transfer 단일 @Transactional이라 200 유지(5xx 없는 silent 데이터 지연).",
+      "pattern": "P5",
+      "code_anchor": [
+        "core-banking/ledger-service/src/main/java/com/corebanking/ledger/consumer/TransferEventConsumer.java:28-39 (@KafkaListener groupId=ledger-service, 예외 catch·log 삼킴)",
+        "core-banking/ledger-service/src/main/resources/application.yml:25-31 (kafka consumer concurrency 미설정 → 단일 스레드)",
+        "core-banking/ledger-service/.../LedgerService.java:33-44 (recordTransfer 2 insert + findByTransferRef 멱등조회/건)",
+        "core-banking/transfer-service/.../TransferService.java:51-107 (단일 @Transactional — 동기 이체 200 독립)"
+      ]
+    },
+    "must_support": [
+      "동기 이체 성공률 정상(transfer_2xx_rate >= 0.95)",
+      "banking.transfers consumer lag가 surge 동안 증가",
+      "원장(ledger_entries) 최신 이체 반영 지연"
+    ],
+    "must_rule_out": [
+      "동기 이체 5xx 급증(비동기·데이터 지연에만 국한 — lock/502 배제)",
+      "consumer lag이 재시작 전까지 drain 없이 총량 상승(F04-R consumer 정지)",
+      "outbox_events published_at=null 적체 + lag 평탄(F18-P relay 정지)",
+      "entry_status=429(외부 rate-limit 오인 배제)"
+    ],
+    "discrimination_pair": {
+      "against": "F04-R / F18-P",
+      "axis": "F04-R=consumer 정지(lag 총량↑, drain 없음), F18-P=relay 정지(lag 평탄, outbox null↑). F04-P=consumer 생존·단일스레드 처리량 병목(lag surge 중 증가·후 drain)."
+    },
+    "class_label": "A",
+    "readiness": "draft",
+    "prerequisite_gate": "blocked",
+    "prerequisite_reason": "rate-control 전용 injector 부재(현 manifest kafka.control은 consumer 정지=F04-R 의미로 오배선). load.north_south banking surge로 재정의 필요(F04-P + banking surge 등록) + 지속 lag 재현 신뢰성 검증 + ledger 반영지연 DB selector 신설"
+  }
+}

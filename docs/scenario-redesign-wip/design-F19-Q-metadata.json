@@ -1,0 +1,43 @@
+{
+  "F19-Q": {
+    "title": "food 배차 만료 배치 정지 → capacity 소진 → 신규배차 503 → 주문 거절",
+    "description": "dispatch-service의 deliverExpiredDispatches(@Scheduled 30s)가 ETA 지난 ASSIGNED dispatch를 DELIVERED로 전이시켜 배차 capacity를 회수한다. 이 배치가 멈추면 ASSIGNED가 회수되지 않고 누적되어 countByStatus('ASSIGNED') >= maxCapacity가 되고, dispatchCourier가 신규 배차마다 503 'Courier pool exhausted'를 낸다. order createOrder는 fan-out 중 이 503을 받아 주문을 거절한다. 정체성: 이 503은 '정상 용량초과(biz-reject)'와 코드가 같아, 배치정지(장애)인지 정상 포화인지 감별하는 것이 이 시나리오의 핵심. P3 capacity 계열. food는 429가 없고 용량초과=503이다.",
+    "class": "A",
+    "fault_pattern": "P3",
+    "domain": "food-delivery",
+    "observation_domains": ["APM"],
+    "cause": "deliverExpiredDispatches(@Scheduled 30s) 정지 → ASSIGNED dispatch가 DELIVERED로 전이되지 않고 영구 누적 → countByStatus('ASSIGNED') >= maxCapacity → dispatchCourier 신규 배차 503 → order createOrder fan-out에서 503 수신 → 주문 거절",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "food-dispatch (testbed-dispatch, rca-testbed-food) — deliverExpiredDispatches 스케줄러",
+      "mechanism": "DispatchService.deliverExpiredDispatches(@Scheduled fixedDelay=30000)가 findExpiredAssigned()로 ETA 경과 ASSIGNED를 DELIVERED 전이(:119-127). 이 배치가 멈추면 ASSIGNED가 회수 안 됨 → dispatchCourier의 currentAssigned=countByStatus('ASSIGNED')가 maxCapacity(DISPATCH_MAX_CAPACITY 기본 2000)에 도달 → 503 'Courier pool exhausted' throw(:60-63). OrderService가 fan-out에서 이 503을 받아 주문 생성 차단.",
+      "code_anchor": [
+        "food-delivery/dispatch-service/.../service/DispatchService.java:119-127 (deliverExpiredDispatches @Scheduled 30s, findExpiredAssigned → DELIVERED 전이 = capacity 회수 경로)",
+        "food-delivery/dispatch-service/.../service/DispatchService.java:60-63 (countByStatus('ASSIGNED') >= maxCapacity → 503 'Courier pool exhausted')",
+        "food-delivery/dispatch-service/src/main/resources/application.yml:83 (dispatch.max-capacity: ${DISPATCH_MAX_CAPACITY:2000})",
+        "food-delivery/order-service/.../service/OrderService.java:96,145 (checkCapacity/dispatchCourier — 503 수신 시 주문 거절)"
+      ],
+      "infra_anchor": "없음(순수 코드 스케줄러). deliverExpiredDispatches는 앱 내부 @Scheduled라 외부 제어점(env 플래그·토글)이 없다 — 이것이 주입 능력갭의 근원."
+    },
+    "injection_summary": "[능력갭 — 실주입 수단 미존재] 이 시나리오의 진짜 결함은 '배치가 멈추는 것'인데, deliverExpiredDispatches는 앱 내부 @Scheduled로 외부 제어점이 없어 이 배치만 선택적으로 정지시킬 injector가 없다(P5 outbox-relay 갭과 동종, 헌장 §5). DISPATCH_MAX_CAPACITY를 낮추는 k8s.env는 '정상 용량 축소'라 오히려 이 시나리오가 감별해야 할 biz-reject 자체를 만드는 자기모순이며 헌장 §2-A(Class A 위장 금지)에 위배된다. pod 교란/GC stall은 dispatch 전체를 죽여 'unavailable' 503(다른 성격)을 내므로 ASSIGNED 누적 메커니즘을 재현하지 못한다. 승격하려면 스케줄러 정지 제어 훅(business.fault 또는 전용 injector) 신설이 선행돼야 한다.",
+    "user_impact": "신규 주문 생성이 'No courier available' / 배차 503으로 거절된다. dispatch 서비스 자체는 200(capacity=0)을 정상 반환하고 조회도 정상이라, 겉으로는 '정상적인 용량 포화'처럼 보인다. 실제로는 만료 배치 정지로 인한 장애다.",
+    "must_support": [
+      "order createOrder 503 'No courier available' 비율 급증 (order_create_503_rate ≥ 0.3)",
+      "dispatch currentAssigned가 maxCapacity에 도달·정체 (ASSIGNED 카운트가 회수 없이 단조증가; available=0 지속)",
+      "만료 전이 정지 신호 — DELIVERED 전이 이벤트 유입이 0으로 끊김(deliverExpiredDispatches 미동작)"
+    ],
+    "must_rule_out": [
+      "정상 용량 포화(biz-reject)가 아님 — ASSIGNED가 배치에 의해 주기적으로 회수되면 정상, 회수가 끊기고 단조증가하면 장애. 이 감별이 핵심(503 이중성)",
+      "dispatch 서비스 다운/unavailable이 아님 — dispatch pod ready, capacity 조회는 200. '장애 503(unavailable)'이 아니라 'capacity 503'임",
+      "429/rate-limit 아님 — food는 429 없음. 상태코드는 503(용량)"
+    ],
+    "distinguishing_evidence": "핵심 감별은 '503의 두 원인 분리'다: (1) 정상 용량 포화 — 배치가 ASSIGNED를 주기적으로 회수하므로 ASSIGNED가 톱니파로 오르내림; (2) 배치정지 장애 — ASSIGNED가 회수 없이 단조증가해 maxCapacity에서 정체, DELIVERED 전이 이벤트가 0으로 끊김. 상태코드(503)와 dispatch 응답(200 capacity=0)만으로는 구분 불가 — DELIVERED 전이율/ASSIGNED 시계열 추세와 응답 메시지('Courier pool exhausted' vs dispatch 'unavailable')로만 감별된다. naive RCA는 order 주문실패를 order 결함으로 오판하고, 한 단계 나아가도 '정상 용량 포화'로 오판하기 쉽다. 정답=dispatch 만료배치 정지.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F19-P/F19-S (증상이 order로 수렴하는 건 같으나 상태코드 5xx/502이고 원인이 커넥션풀/PG회로; F19-Q는 503 capacity·dispatch 원인)",
+        "정상 용량 포화(no-incident) — 같은 503 코드지만 배치 회수가 살아있어 ASSIGNED가 오르내림 = 장애 아님. F19-Q의 감별 대상"
+      ]
+    }
+  }
+}

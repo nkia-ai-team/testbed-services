@@ -1,0 +1,332 @@
+{
+  "schema_version": "1.0",
+  "id": "F16-H",
+  "slug": "f16-h-user-service-fail-close",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P6",
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "tb-runner/kubectl → rca-testbed-commerce testbed-user",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.probe",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "probe-baseline-clean",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.probe",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.probe"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "external-rate-limit",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 429
+            },
+            {
+              "id": "reads-also-broken",
+              "observation": "read_2xx_rate",
+              "op": "lt",
+              "value": 0.9
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f16-h",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-user",
+                "container": "user-service",
+                "probe": "readinessProbe",
+                "baseline": {
+                  "httpGet": {
+                    "path": "/actuator/health",
+                    "port": 8085,
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 3
+                },
+                "fault": {
+                  "httpGet": {
+                    "path": "/actuator/health/f16-h-fail",
+                    "port": 8085,
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 3
+                }
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "user_target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "parameters": {
+              "service": "testbed-user",
+              "namespace": "rca-testbed-commerce",
+              "port": 8085,
+              "path": "/actuator/health"
+            },
+            "freshness": "15s"
+          },
+          {
+            "id": "user_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-user"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "user_available_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-user"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "gateway_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "parameters": {
+              "service_name": "commerce-gateway"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "write_401_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "parameters": {
+              "step_class": "write",
+              "status": 401
+            },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — see design sheet §4. loadgen.checkout_5xx_rate is blind to 401 (401<500)."
+          },
+          {
+            "id": "read_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "step_class": "read",
+              "status": 200
+            },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — see design sheet §4."
+          },
+          {
+            "id": "user_cb_open",
+            "adapter": "prometheus",
+            "query_id": "prometheus.gateway_circuitbreaker_open",
+            "parameters": {
+              "service_name": "commerce-gateway",
+              "cb_name": "user"
+            },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — resilience4j CB state metric. See design sheet §4."
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "user-unavailable",
+              "observation": "user_available_replicas",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "write-fail-close-401",
+              "observation": "write_401_rate",
+              "op": "gte",
+              "value": 0.3
+            },
+            {
+              "id": "auth-cb-open",
+              "observation": "user_cb_open",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "reads-stay-healthy",
+              "observation": "read_2xx_rate",
+              "op": "gte",
+              "value": 0.9
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "user-target-recovered",
+              "observation": "user_target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "user-pod-recovered",
+              "observation": "user_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "writes-recovered",
+              "observation": "write_401_rate",
+              "op": "lt",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.probe",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.probe",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.probe"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "k8s.probe parameter_contract must allowlist F16-H (probe=readinessProbe on testbed-user); load.north_south must allowlist F16-H; three NEW query_ids (loadgen.write_step_status_rate, loadgen.read_step_status_rate, prometheus.gateway_circuitbreaker_open) must be registered and surge.js must emit per-step status-bucketed rates. See design sheet §4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

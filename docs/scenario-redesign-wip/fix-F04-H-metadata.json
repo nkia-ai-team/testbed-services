@@ -1,0 +1,44 @@
+{
+  "F04-H": {
+    "title": "commerce order outbox relay 정지로 인한 배송·알림 silent lag",
+    "description": "commerce order-service의 outbox relay를 정지시켜 checkout은 200으로 성공하지만 commerce.orders 이벤트가 5xx 없이 미발행되어 배송 생성·알림이 조용히 정지되는 P5(silent async) 시나리오다. F18-P(banking)의 commerce 정합판.",
+    "cause": "commerce order-service outbox relay halted (OutboxRelay bean disabled)",
+    "injection_summary": "k8s.env로 testbed-order/order-service 컨테이너에 OUTBOX_RELAY_ENABLED=false를 주입·rollout해 @ConditionalOnProperty relay 빈을 미생성시킨 뒤 commerce checkout 트래픽을 흘린다. 동기 checkout 트랜잭션(outbox INSERT 포함)은 커밋되나 outbox_events가 Kafka로 발행되지 않는다.",
+    "user_impact": "checkout API는 200으로 정상 응답하지만 PAID 주문의 배송(shipping) 생성과 알림(notification)이 지연·정지되고 order_schema.outbox_events published_at=null 행이 누적된다. 동기 성공률·지연은 정상.",
+    "distinguishing_evidence": "outbox_events.published_at=null 행이 단조 증가하고 shipment row가 생성되지 않는 반면 Kafka consumer lag은 평탄/0으로 수렴한다(생산 중단). testbed-order 파드·Kafka 브로커는 정상이고 checkout 5xx는 없다. consumer lag이 증가하면 F04-R(shipping consumer 정지)이지 relay 정지가 아니다.",
+    "root_cause": {
+      "target_kind": "service",
+      "class": "A",
+      "id": "commerce-order-relay",
+      "namespace": "rca-testbed-commerce",
+      "mechanism": "OutboxRelay(@Scheduled 2s poll)가 @ConditionalOnProperty(outbox.relay.enabled) 비활성으로 빈 미생성 → order_schema.outbox_events.published_at=null 무한 적체, commerce.orders 신규 메시지 0건 → shipping OrderEventConsumer(PAID만 배송생성) 유입 정지 + notification 정지. checkout은 별 @Transactional이라 200 성공 유지(P5 silent async).",
+      "pattern": "P5",
+      "code_anchor": [
+        "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxRelay.java:20 (@ConditionalOnProperty 제어점)",
+        "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxRelay.java:33-40 (@Scheduled 2s poll, send().get(), setPublishedAt)",
+        "commerce/order-service/src/main/resources/application.yml:38-40 (outbox.relay.enabled: true — env override 가능)",
+        "commerce/order-service/src/main/resources/schema.sql:28,39 (outbox_events + idx_outbox_events_unpublished 부분인덱스)",
+        "commerce/shipping-service/.../OrderEventConsumer.java:28-38 (PAID 이벤트만 배송생성 — 유입 정지 대상)"
+      ]
+    },
+    "must_support": [
+      "동기 checkout 성공률 정상(checkout_2xx 유지)",
+      "order_schema.outbox_events published_at=null 적체 단조 증가",
+      "PAID 주문 대비 shipment row 미생성/지연 + notification 정지"
+    ],
+    "must_rule_out": [
+      "checkout 5xx 급증(비동기에만 국한 — 502/풀고갈 계열 배제)",
+      "Kafka consumer lag 증가(증가하면 F04-R shipping consumer 정지)",
+      "testbed-order 파드/Kafka 브로커 다운(광역 아웃티지 배제)",
+      "entry_status=429(외부 rate-limit 오인 배제)"
+    ],
+    "discrimination_pair": {
+      "against": "F04-R",
+      "axis": "F04-R은 consumer(shipping) 정지 → Kafka lag 증가·shipment 미생성. F04-H는 relay(producer) 정지 → 생산 중단으로 lag 평탄, outbox published_at=null 적체로 관측. lag는 must_rule_out."
+    },
+    "class_label": "A",
+    "readiness": "draft",
+    "prerequisite_gate": "blocked",
+    "prerequisite_reason": "manifest injector kafka.control→k8s.env 교체 + k8s_env_executor/profiles.json에 F04-H(testbed-order/OUTBOX_RELAY_ENABLED) 등록 + database.outbox_unpublished_count(order_schema) selector 신설"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "F19-P": {
+    "title": "food order 롱-트랜잭션 커넥션풀 고갈 (downstream 지연 증폭)",
+    "description": "food order-service의 createOrder 전체가 하나의 @Transactional 안에서 restaurant·dispatch·payment 5개 원격호출을 순차 수행한다(DB 커넥션을 잡은 채로). 외부 PG mock에 payment read-timeout(10s) 미만의 지연(~8s)을 주입하면 각 createOrder가 커넥션을 Σlatency만큼 붙잡아 order Hikari pool(15)이 고갈되고, 신규 createOrder가 connection-timeout 3s를 초과해 order 자체 5xx가 난다. 증상은 orchestrator인 order로 수렴하나 원인은 downstream 지연이다. P1 패턴.",
+    "class": "A",
+    "fault_pattern": "P1",
+    "domain": "food-delivery",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "외부 PG mock 지연(payment read-timeout 미만) → payment 응답 지연 → order createOrder가 @Transactional로 DB 커넥션 보유 시간 = Σ(downstream latency) → order Hikari pool(15) 고갈 → 신규 요청 connection-timeout 3s 초과 → order 5xx",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "food-order (testbed-order, rca-testbed-food) — 근본 트리거는 외부 PG mock 지연이나 5xx를 내는 결함 구조는 order의 롱-트랜잭션",
+      "mechanism": "OrderService.createOrder가 @Transactional(timeout 미설정) 안에서 restaurantClient.getRestaurant/getMenu, dispatchClient.checkCapacity/dispatchCourier, paymentClient.processPayment를 순차 동기 호출. DB 커넥션을 잡은 채 원격 지연을 흡수 → 커넥션 보유시간 = Σlatency(payment read-timeout 최대 10s). Hikari max-pool 15가 고갈되면 신규 createOrder가 connection-timeout 3000ms를 초과해 5xx.",
+      "code_anchor": [
+        "food-delivery/order-service/.../service/OrderService.java:57 (@Transactional createOrder — timeout 미설정)",
+        "food-delivery/order-service/.../service/OrderService.java:60,73 (restaurantClient.getRestaurant/getMenu), :96 (dispatchClient.checkCapacity), :145 (dispatchCourier), :154 (paymentClient.processPayment) — 트랜잭션 내부 순차 원격호출",
+        "food-delivery/order-service/src/main/resources/application.yml (Hikari maximum-pool-size 15, connection-timeout 3000ms, payment read-timeout 10s)"
+      ],
+      "infra_anchor": "food-delivery/k8s/30-external-pg-mock.yaml — testbed-external-pg-mock (mockserver, rca-testbed-food, POST /pay, failure_surface: external-timeout). 주입면."
+    },
+    "injection_summary": "mock.expectation executor로 food의 testbed-external-pg-mock(rca-testbed-food)에 path=/pay, mode=delay, delay_seconds≈8(payment read-timeout 10s 미만 — payment 자체는 502를 내지 않도록)을 셋업 → payment가 정상 200을 내되 지연되고, order createOrder가 커넥션을 오래 붙잡아 Hikari 15 고갈. 동시에 load.north_south food surge.js(entry 30181, orderJourney create)로 order-create 부하를 흘린다. cleanup은 mock expectation reset(order 롤백은 없음).",
+    "user_impact": "주문 생성(POST /api/orders)이 order-service 커넥션풀 고갈로 5xx·타임아웃 급증한다. restaurant 조회(GET) 등 order DB 커넥션을 짧게 쓰는 읽기는 상대적으로 견디나 order 전반 지연이 오른다. PG(payment)는 502가 아니라 지연된 200으로만 보여 원인이 order로 오인되기 쉽다.",
+    "must_support": [
+      "order-service createOrder 5xx/timeout 비율 급증 (order_create_5xx_rate ≥ 0.1) — connection-timeout 3s 초과",
+      "order Hikari pool 고갈 신호 (hikari active≈15, pending>0 지속; order DB 커넥션 획득 대기)",
+      "payment→order 구간 지연 상승하나 payment 5xx는 낮음 (payment 502 rate < 0.05) — 지연이 read-timeout 미만"
+    ],
+    "must_rule_out": [
+      "payment/PG가 502로 터진 게 아님 — payment 502 rate < 0.05. 502 연쇄(F19-S)면 원인이 PG 회로개방이지 order 풀고갈이 아님",
+      "order 5xx가 4xx(biz reject)나 배차 503이 아님 — 커넥션풀 고갈발 5xx/timeout임 (order 자체 정상 로직, DB 커넥션 병목)",
+      "외부 rate-limit/429 아님 — food 도메인은 429 없음(용량초과는 503). entry_status ≠ 429"
+    ],
+    "distinguishing_evidence": "order createOrder의 5xx는 하류가 5xx라서가 아니라 order 자신의 DB 커넥션이 없어서(획득 3s 타임아웃) 발생한다. payment/PG는 지연된 200을 반환하며 502가 아니다(지연<read-timeout). Hikari active=max/pending>0이 order에서만 관측되고, dispatch·payment pod는 정상 ready. F19-S(PG 502→CB open→502 연쇄)와는 payment 502 rate·pg CB open으로 구분되고, F19-Q(배차 503)와는 상태코드(5xx/timeout vs 503)와 dispatch 정상 여부로 구분된다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F19-S (동일 PG mock 주입면이나 delay가 read-timeout 초과 → payment 502·pg CB open·order 502 연쇄; F19-P는 delay 미만 → order 풀고갈·payment 200)",
+        "F19-Q (증상이 order 주문실패로 동일하나 상태코드 503 biz형이고 원인은 dispatch 배치정지; F19-P는 커넥션풀발 5xx/timeout)",
+        "F03-R (food payment connection leak — 커넥션 누수 계열, F19-P는 롱-tx 흡수형 고갈)"
+      ]
+    }
+  }
+}

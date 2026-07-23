@@ -1,0 +1,46 @@
+{
+  "F15-T3": {
+    "title": "호스트 CPU 포화가 단일스레드 consumer를 stall시키는 중첩 단일사슬 장애",
+    "description": "worker 노드 CPU를 포화시켜 그 위 단일스레드 Kafka consumer를 CPU 기아로 stall시키는 시나리오. root는 호스트 CPU 1개이고 consumer stall은 그 하류 전파(nested)이며, consumer 단일스레드는 독립 root가 아니라 취약성이다. multi-root가 아닌 단일 인과사슬(merge)이다.",
+    "cause": "worker node CPU saturation -> single-thread Kafka consumer starved -> consumer stall (single causal chain, not two roots)",
+    "injection_summary": "host.stress(ssh)로 banking ledger consumer가 뜬 worker 노드(tb-w3)의 CPU를 포화시킨다. concurrency 미설정으로 단일스레드인 ledger TransferEventConsumer가 CPU 기아로 건당 처리속도가 급락해 banking.transfers consumer lag이 증가한다. 동기 이체 API는 200 정상.",
+    "user_impact": "이체 API는 200으로 성공하지만 원장(ledger_entries) 반영이 consumer stall로 지연된다(silent lag). host CPU를 제거하면 consumer도 회복된다.",
+    "distinguishing_evidence": "대상 노드 host CPU 포화와 ledger consumer lag 증가가 동반 상승하고 host CPU 제거 시 lag이 회복돼 인과종속(단일사슬)이 입증된다. consumer replica는 살아있고(scale>0) outbox published_at=null 적체는 없다. consumer가 host와 무관히 독립 정지면 F04-R(split), outbox 적체면 F18-P다.",
+    "root_cause": {
+      "target_kind": "host",
+      "id": "worker-node-cpu",
+      "namespace": "cluster-node(tb-w3)",
+      "mechanism": "호스트 CPU 포화(ROOT, Class B) -> 노드 위 단일스레드 ledger consumer CPU 기아 -> 건당 처리속도 급락 -> banking.transfers consumer lag 단조 증가 -> ledger_entries 반영 지연(NESTED 전파). consumer 단일스레드(concurrency 미설정)는 stall을 증폭하는 취약성이지 독립 root가 아님 -> 단일 인과사슬(merge, has_single_cause=true). 동기 이체는 별 @Transactional이라 200 독립.",
+      "pattern": "infra+P5",
+      "has_single_cause": true,
+      "expected_structure": "merge",
+      "code_anchor": [
+        "injector: host.stress (ssh) - worker 노드 CPU 포화 (ROOT, Class B 인프라)",
+        "core-banking/ledger-service/.../consumer/TransferEventConsumer.java:28 (@KafkaListener 단일 리스너 - stall 대상)",
+        "core-banking/ledger-service/src/main/resources/application.yml:27-31 (concurrency 미설정 = 단일스레드 취약성)",
+        "core-banking/ledger-service/.../LedgerService.java (recordTransfer 매건 DB write - CPU 기아 시 병목)",
+        "core-banking/transfer-service/.../TransferService.java:51-107 (단일 @Transactional - 동기 200 독립)"
+      ]
+    },
+    "must_support": [
+      "대상 worker 노드 host CPU 포화",
+      "ledger consumer lag 증가",
+      "원장(ledger_entries) 반영 지연, 이체 2xx 정상"
+    ],
+    "must_rule_out": [
+      "consumer replica down/scale=0(있으면 F04-R consumer 정지 = split)",
+      "outbox published_at=null 적체(있으면 F18-P relay 정지)",
+      "타 노드 서비스 지연(host CPU root면 대상 노드만)",
+      "이체 5xx 급증(있으면 lock/502 계열)",
+      "entry_status=429"
+    ],
+    "discrimination_pair": {
+      "against": "F04-R / F15-T4",
+      "axis": "F04-R은 consumer 자체 정지(독립 root). F15-T3는 host CPU가 consumer를 stall시키는 단일 인과사슬 -> host CPU 제거 시 consumer 회복(인과종속 입증)이 merge 판정 근거. F15-T4는 인과경로 없는 2 root 순차 split."
+    },
+    "class": "B",
+    "readiness": "partial",
+    "prerequisite_gate": "blocked",
+    "injector_gap": "host.stress executor는 실재. timeline.compose에 host.stress(노드)+대상 consumer 결속 계약 등록 필요(partial). 관측 gap: kafka.consumer_lag{group=ledger-service} + node host CPU query_id 동시 노출(동반상승이 사슬 증거)."
+  }
+}
