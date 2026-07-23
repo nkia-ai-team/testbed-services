@@ -31,3 +31,16 @@ git apply --3way scripts/runner-patches/<날짜>-newcontract-v2.patch
 - 대응 테스트 갱신·신규(preflight 8, 큐 preflight 4, invoker forwarding 1, kafka 1)
 
 캡처 셸 스크립트(capture-eval-case.sh·dump-normal-segment.sh·assemble-eval-case.sh)는 이 레포(`scripts/`)에 이미 git으로 있으므로 이 patch에는 없다.
+
+## 2026-07-23-live-probes-status-class.patch — 담긴 변경 (status-class loadgen 관측)
+
+대상 1파일(`backend/app/live_probes.py`, root 스냅샷 — 위와 동일한 이유로 diff 기준선 없음). 109 컨테이너에서 `docker exec scenario-runner cat backend/app/live_probes.py`로 실측한 현재본에 `_loadgen_observation`(430행 부근) 3지점만 편집:
+
+- allowlist set에 4 query_id 추가: `loadgen.write_step_status_rate`·`loadgen.read_step_status_rate`·`loadgen.food_create_status_rate`·`loadgen.transfer_2xx_rate`
+- field map 추가: `write_step_status_rate→business_nonok_rate`, `read_step_status_rate→read_nonok_rate`, `food_create_status_rate→business_5xx_rate`, `transfer_2xx_rate→business_2xx_rate`
+- range check를 `field == "checkout_5xx_rate"` 하드코딩에서 `field.endswith("_rate")` 일반화(모든 rate 필드 [0,1] 검증)
+
+**아직 적용되지 않음(2026-07-23 기준) — repo 쪽 monitor 확장(`load_north_south_executor.py`) 및 `queries.json` 4항 선언과 짝을 이루지만, 이 patch를 컨테이너에 반영하기 전까지 새 query_id는 `LiveProbeError`로 거부된다.**
+
+적용: `git apply --3way scripts/runner-patches/2026-07-23-live-probes-status-class.patch` (대상 파일이 이미 있으므로 `git am`이 아니라 `git apply --3way`를 쓴다) → 컨테이너 반영은 `docker cp`/재기동.
+롤백: `git apply -R scripts/runner-patches/2026-07-23-live-probes-status-class.patch` 또는 직전 스냅샷(2026-07-20-newcontract-v2)의 `backend/app/live_probes.py`로 복원.

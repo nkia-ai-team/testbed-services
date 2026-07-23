@@ -187,16 +187,33 @@ while True:
         while checkout_results and checkout_results[0][0] < cutoff:
             checkout_results.popleft()
         span = max(1.0, min(30.0, (iterations[-1] - iterations[0]).total_seconds())) if len(iterations) > 1 else 1.0
-        checkout_5xx_rate = (
-            sum(status >= 500 for _, status in checkout_results) / len(checkout_results)
-            if checkout_results else 0.0
+        checkout_count = len(checkout_results)
+        business_2xx_rate = (
+            sum(200 <= status <= 299 for _, status in checkout_results) / checkout_count
+            if checkout_count else 0.0
         )
+        business_4xx_rate = (
+            sum(400 <= status <= 499 for _, status in checkout_results) / checkout_count
+            if checkout_count else 0.0
+        )
+        business_5xx_rate = (
+            sum(status >= 500 for _, status in checkout_results) / checkout_count
+            if checkout_count else 0.0
+        )
+        business_nonok_rate = business_4xx_rate + business_5xx_rate
+        # checkout_5xx_rate is kept for backward compatibility (pre-existing
+        # query_id/consumer contract); business_5xx_rate is its replacement value.
+        checkout_5xx_rate = business_5xx_rate
         document = {
             "scenario_id": scenario_id,
             "scenario_tag": f"scenario_id={scenario_id}",
             "achieved_rps": len(iterations) / span,
             "entry_status": entry_status,
             "checkout_5xx_rate": checkout_5xx_rate,
+            "business_2xx_rate": business_2xx_rate,
+            "business_4xx_rate": business_4xx_rate,
+            "business_5xx_rate": business_5xx_rate,
+            "business_nonok_rate": business_nonok_rate,
             "business_ok": entry_status in {200, 400, 409},
             "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         }

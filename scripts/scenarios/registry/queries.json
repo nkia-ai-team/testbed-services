@@ -79,6 +79,30 @@
       "value_type": "number",
       "freshness_sec": 30
     },
+    "loadgen.write_step_status_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "business.nonok.rate",
+      "value_type": "number",
+      "freshness_sec": 30
+    },
+    "loadgen.read_step_status_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "read.nonok.rate",
+      "value_type": "number",
+      "freshness_sec": 30
+    },
+    "loadgen.food_create_status_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "business.5xx.rate",
+      "value_type": "number",
+      "freshness_sec": 30
+    },
+    "loadgen.transfer_2xx_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "business.2xx.rate",
+      "value_type": "number",
+      "freshness_sec": 30
+    },
     "http.entry_health": {
       "adapter": "http_probe",
       "request_ref": "scenario.entry_health",
