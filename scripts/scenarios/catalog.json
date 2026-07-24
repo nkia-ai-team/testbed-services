@@ -558,6 +558,39 @@
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "verified user readinessProbe snapshot; write/read status-class + user 관측 allowlist (monitor read_step 증분)"
+    },
+    {
+      "id": "F20-R",
+      "slug": "f20-r-commerce-order-slowquery-shared-pg-crossschema",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py)"
+    },
+    {
+      "id": "F20-P",
+      "slug": "f20-p-banking-transfer-slowquery-trunc-pool-contention",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": "verified TransferRepository.dailyStatsSince native trunc(created_at) 풀스캔 앵커(idx_transfers_created 존재/무력화); 신규 slowquery.js(stats/daily 80%+대표 이체 20%) + load.north_south 계약 등록; 러너 APPROVED_HIKARI_SERVICES/APPROVED_APM_SERVICES에 core-banking-transfer/account/api/ledger 추가"
+    },
+    {
+      "id": "F20-Q",
+      "slug": "f20-q-food-order-unpaged-slowquery-heap-pressure",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": "verified OrderController unpaged GET /api/orders(무조건 Pageable.unpaged()) + aggregateDailyStats native GROUP BY DATE() 필소트 앵커; 신규 slowquery.js(무제한목록+통계 80%, 대표 create 20%) + load.north_south 계약 등록; 러너 F20_FOOD_ORDER_TARGET 신설(container_memory_current_bytes/limit/restart_count를 food testbed-order로 확장)"
     }
   ]
 }

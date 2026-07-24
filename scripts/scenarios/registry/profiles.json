@@ -187,7 +187,10 @@
           "F18-P",
           "F19-P",
           "F19-S",
-          "F16-H"
+          "F16-H",
+          "F20-R",
+          "F20-P",
+          "F20-Q"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -198,7 +201,10 @@
           "/opt/loadgen/commerce/surge.js",
           "/opt/loadgen/food-delivery/surge.js",
           "/opt/loadgen/food-delivery/order-surge.js",
-          "/opt/loadgen/core-banking/surge.js"
+          "/opt/loadgen/core-banking/surge.js",
+          "/opt/loadgen/commerce/slowquery.js",
+          "/opt/loadgen/core-banking/slowquery.js",
+          "/opt/loadgen/food-delivery/slowquery.js"
         ],
         "allowed_baseline_units": [
           "loadgen-commerce",
@@ -233,7 +239,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -554,6 +560,39 @@
           "scenario_tag": "scenario_id=F16-H",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
+        },
+        "F20-R": {
+          "target_rps": 30,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/slowquery.js",
+          "scenario_tag": "scenario_id=F20-R",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F20-P": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/slowquery.js",
+          "scenario_tag": "scenario_id=F20-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-banking"
+        },
+        "F20-Q": {
+          "target_rps": 30,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/slowquery.js",
+          "scenario_tag": "scenario_id=F20-Q",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
         }
       },
       "scenario_levels": {

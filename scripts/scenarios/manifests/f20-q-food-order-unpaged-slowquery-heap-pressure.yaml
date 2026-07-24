@@ -1,0 +1,326 @@
+{
+  "schema_version": "1.0",
+  "id": "F20-Q",
+  "slug": "f20-q-food-order-unpaged-slowquery-heap-pressure",
+  "readiness": "ready",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh load.north_south → food-delivery slowquery.js(무제한목록+stats 80%, 대표 create 20%)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f20-q",
+              "parameters": {
+                "target_rps": 30,
+                "ramp_up": "2m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30181",
+                "script_path": "/opt/loadgen/food-delivery/slowquery.js",
+                "scenario_tag": "scenario_id=F20-Q",
+                "seed": 4242,
+                "baseline_unit": "loadgen-food"
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "parameters": {
+              "service_name": "food-delivery-order"
+            },
+            "freshness": "120s"
+          },
+          {
+            "id": "order_memory_current",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_memory_current_bytes",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-order",
+              "container": "order-service"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_memory_limit",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_container_memory_limit",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-order",
+              "container": "order-service"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_restart_count",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_restart_count",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-order",
+              "container": "order-service"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "payment_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "parameters": {
+              "service_name": "food-delivery-payment"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "order_create_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_slowquery_read_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-latency-up",
+              "observation": "order_p95",
+              "op": "gte",
+              "value": 2.0
+            },
+            {
+              "id": "order-memory-climbing",
+              "observation": "order_memory_current",
+              "op": "gte",
+              "value": 805306368
+            },
+            {
+              "id": "payment-not-5xx",
+              "observation": "payment_error_rate",
+              "op": "lt",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "external-rate-limit",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 429
+            },
+            {
+              "id": "payment-5xx-cascade",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 0.2
+            },
+            {
+              "id": "dispatch-capacity-503",
+              "observation": "order_create_5xx_rate",
+              "op": "gte",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "order-pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "order-latency-recovered",
+              "observation": "order_p95",
+              "op": "lt",
+              "value": 0.8
+            },
+            {
+              "id": "order-memory-recovered",
+              "observation": "order_memory_current",
+              "op": "lt",
+              "value": 671088640
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "verified OrderController unpaged GET /api/orders(무조건 Pageable.unpaged()) + aggregateDailyStats native GROUP BY DATE() 필소트 앵커; 신규 slowquery.js(무제한목록+통계 80%, 대표 create 20%) + load.north_south 계약 등록; 러너 F20_FOOD_ORDER_TARGET 신설(container_memory_current_bytes/limit/restart_count를 food testbed-order로 확장)",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -308,6 +308,18 @@
       "value_type": "boolean",
       "freshness_sec": 30
     },
+    "database.pg_slow_active_query_count": {
+      "adapter": "database",
+      "selector": "postgres.pg_stat_activity.slow_active_count",
+      "allowed_parameters": [
+        "db_host",
+        "db_port",
+        "db_name",
+        "db_user"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
+    },
     "business.checkout_invariant": {
       "adapter": "business_probe",
       "selector": "checkout.final_state_consistent",
