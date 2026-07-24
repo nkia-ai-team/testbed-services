@@ -768,6 +768,18 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": "verified transfer readiness snapshot and banking observation allowlist (runner 94bb225)"
+    },
+    {
+      "id": "F18-P",
+      "slug": "f18-p-banking-outbox-relay-halt",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": "verified transfer env snapshot; outbox count + banking kafka lag observation (runner 674c092)"
     }
   ]
 }

@@ -256,6 +256,14 @@
       "injection_summary": "k8s.probe로 rca-testbed-banking/testbed-transfer의 readinessProbe httpGet path를 /actuator/health/f17-r-fail(404)로 패치해 3×10s 후 pod NotReady·엔드포인트 제거, load.north_south commerce surge(35rps)로 checkout 여정을 흘린다. cleanup은 probe 경로 복원만으로 재시작 폭풍 없이 회복.",
       "user_impact": "checkout이 502로 실패한다. PG(카드결제 대행)는 성공 응답을 냈는데도 commerce payments 행이 롤백으로 사라져 '결제는 됐는데 주문/결제 기록이 없는' 정합성 파괴 흔적을 남긴다. 읽기(GET)는 정상.",
       "distinguishing_evidence": "banking transfer pod(testbed-transfer)가 NotReady(readinessProbe 실패, restart_count 증가 없음)이고 commerce→banking cross-domain trace의 마지막 span이 PG 200 성공 직후 /api/transfers 연결 실패(502)로 끊긴다. commerce testbed-payment는 pod_ready=true·자원/설정 정상, entry_status≠429. F01-P(Oracle row-lock)와의 감별점: F01-P는 transfer가 살아있으나(pod ready) Oracle blocking session이 존재하고 payment가 timeout으로 '느리게' 실패하는 반면, F17-R은 Oracle lock이 없고 transfer가 '다운'되어 payment가 연결 실패로 '빠르게' 502 실패한다."
+    },
+    "F18-P": {
+      "title": "outbox relay 정지로 인한 원장·알림 silent lag",
+      "description": "core-banking transfer-service의 outbox relay를 정지시켜 동기 이체는 200으로 성공하지만 원장 반영과 알림 이벤트가 5xx 없이 조용히 지연·누락되는 시나리오다.",
+      "cause": "transfer-service outbox relay halted (OutboxRelay bean disabled)",
+      "injection_summary": "k8s.env로 testbed-transfer 컨테이너에 OUTBOX_RELAY_ENABLED=false를 주입하고 rollout해 @ConditionalOnProperty relay 빈을 미생성시킨 뒤 banking 이체 트래픽을 주입한다. 동기 이체 트랜잭션(outbox INSERT 포함)은 그대로 커밋되나 outbox_events가 Kafka로 발행되지 않는다.",
+      "user_impact": "이체 API는 200 COMPLETED로 정상 응답하지만 원장(ledger_entries) 최신 이체 미반영과 알림 이벤트 중단이 발생한다. 동기 요청 성공률·지연은 정상.",
+      "distinguishing_evidence": "outbox_events.published_at=null 행이 단조 증가하는 반면 ledger consumer lag은 평탄/0으로 수렴한다(생산 중단). testbed-transfer 파드와 Kafka 브로커는 정상이며 이체 5xx는 없다. consumer lag이 증가하면 F04-R(consumer 정지)이지 relay 정지가 아니다."
     }
   }
 }
