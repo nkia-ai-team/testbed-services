@@ -186,7 +186,8 @@
           "F17-R",
           "F18-P",
           "F19-P",
-          "F19-S"
+          "F19-S",
+          "F16-H"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -209,19 +210,22 @@
             "baseline_unit": "loadgen-commerce",
             "health_path": "/api/products?size=1",
             "gateway_env": "GATEWAY_URL",
-            "business_step": "checkout"
+            "business_step": "checkout",
+            "read_step": "list"
           },
           "http://192.168.122.77:30181": {
             "baseline_unit": "loadgen-food",
             "health_path": "/api/restaurants?size=1",
             "gateway_env": "RESTAURANT_URL",
-            "business_step": "create"
+            "business_step": "create",
+            "read_step": "menu"
           },
           "http://192.168.122.77:30082": {
             "baseline_unit": "loadgen-banking",
             "health_path": "/api/accounts?status=ACTIVE&size=1",
             "gateway_env": "GATEWAY_URL",
-            "business_step": "transfer"
+            "business_step": "transfer",
+            "read_step": "get"
           }
         },
         "target_rps": {
@@ -229,7 +233,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -539,6 +543,17 @@
           "scenario_tag": "scenario_id=F19-S",
           "seed": 4242,
           "baseline_unit": "loadgen-food"
+        },
+        "F16-H": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F16-H",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
         }
       },
       "scenario_levels": {
@@ -2294,7 +2309,8 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F05-H",
-          "F17-R"
+          "F17-R",
+          "F16-H"
         ]
       },
       "scenario_parameters": {
@@ -2347,6 +2363,34 @@
             "httpGet": {
               "path": "/actuator/health/f17-r-fail",
               "port": 8082,
+              "scheme": "HTTP"
+            },
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": 3
+          }
+        },
+        "F16-H": {
+          "namespace": "rca-testbed-commerce",
+          "deployment": "testbed-user",
+          "container": "user-service",
+          "probe": "readinessProbe",
+          "baseline": {
+            "failureThreshold": 3,
+            "httpGet": {
+              "path": "/actuator/health",
+              "port": 8085,
+              "scheme": "HTTP"
+            },
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": 3
+          },
+          "fault": {
+            "failureThreshold": 3,
+            "httpGet": {
+              "path": "/actuator/health/f16-h-fail",
+              "port": 8085,
               "scheme": "HTTP"
             },
             "periodSeconds": 10,

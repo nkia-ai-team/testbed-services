@@ -546,6 +546,18 @@
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
       "prerequisite": "verified food mock /pay delay 30s>read-timeout; CB게이트는 상태코드 rate로 대체 관측 (runner e1a34b4)"
+    },
+    {
+      "id": "F16-H",
+      "slug": "f16-h-user-service-fail-close",
+      "profiles": [
+        "k8s.probe",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": "verified user readinessProbe snapshot; write/read status-class + user 관측 allowlist (monitor read_step 증분)"
     }
   ]
 }

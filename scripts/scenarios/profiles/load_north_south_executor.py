@@ -91,7 +91,7 @@ def remote_script() -> bytes:
 set -euo pipefail
 action="$1"; scenario_id="$2"; target_rps="$3"; ramp_up="$4"; hold="$5"; ramp_down="$6"
 entry_url="$7"; script_path="$8"; scenario_tag="$9"; seed="${10}"; baseline_unit="${11}"
-health_path="${12}"; gateway_env="${13}"; business_step="${14}"
+health_path="${12}"; gateway_env="${13}"; business_step="${14}"; read_step="${15:-}"
 safe_id="${scenario_id//[^A-Za-z0-9_-]/_}"
 summary="/tmp/rca-scenario-${safe_id}-summary.json"
 samples="/tmp/rca-scenario-${safe_id}-samples.json"
@@ -137,9 +137,10 @@ case "$action" in
 # arrival rates, the parser falls minutes behind, and observed_at then trips
 # the 30s staleness contract (F07-H run 158b449c, 80rps, 07-19).
 import collections, datetime, json, os, sys, time
-source, output, scenario_id, business_step = sys.argv[1:]
+source, output, scenario_id, business_step, read_step = (sys.argv[1:] + [""])[:5]
 iterations = collections.deque()
 checkout_results = collections.deque()
+read_results = collections.deque()
 entry_status = None
 last_stamp = None
 position = 0
@@ -172,6 +173,9 @@ while True:
                         raw = tags.get("status")
                         entry_status = int(raw) if raw and str(raw).isdigit() else 0
                         checkout_results.append((stamp, entry_status))
+                    elif metric == "http_reqs" and read_step and tags.get("step") == read_step:
+                        raw = tags.get("status")
+                        read_results.append((stamp, int(raw) if raw and str(raw).isdigit() else 0))
                     else:
                         continue
                     last_stamp = stamp
@@ -186,6 +190,8 @@ while True:
             iterations.popleft()
         while checkout_results and checkout_results[0][0] < cutoff:
             checkout_results.popleft()
+        while read_results and read_results[0][0] < cutoff:
+            read_results.popleft()
         span = max(1.0, min(30.0, (iterations[-1] - iterations[0]).total_seconds())) if len(iterations) > 1 else 1.0
         checkout_count = len(checkout_results)
         business_2xx_rate = (
@@ -217,6 +223,17 @@ while True:
             "business_ok": entry_status in {200, 400, 409},
             "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         }
+        if read_step:
+            read_count = len(read_results)
+            read_2xx_rate = (
+                sum(200 <= status <= 299 for _, status in read_results) / read_count
+                if read_count else 0.0
+            )
+            document["read_2xx_rate"] = read_2xx_rate
+            document["read_nonok_rate"] = (
+                sum(status >= 400 or status == 0 for _, status in read_results) / read_count
+                if read_count else 0.0
+            )
         temporary = output + ".tmp"
         with open(temporary, "w", encoding="utf-8") as target:
             json.dump(document, target, sort_keys=True)
@@ -232,7 +249,7 @@ PY
       --env "RAMP_UP=$ramp_up" --env "HOLD=$hold" --env "RAMP_DOWN=$ramp_down" \
       --env "SURGE_SEED=$seed" --out "json=$samples" --summary-export "$summary" "$script_path" \
       >"$log_file" 2>&1 &
-    nohup python3 "$monitor" "$samples" "$live" "$scenario_id" "$business_step" \
+    nohup python3 "$monitor" "$samples" "$live" "$scenario_id" "$business_step" "$read_step" \
       >>"$log_file" 2>&1 & echo $! >"$monitor_pid"
     ;;
   cleanup)
@@ -277,6 +294,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         domain_profile["health_path"],
         domain_profile["gateway_env"],
         domain_profile["business_step"],
+        domain_profile.get("read_step", ""),
     ])
     return argv, remote_script()
 

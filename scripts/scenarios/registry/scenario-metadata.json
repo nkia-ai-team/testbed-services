@@ -240,6 +240,14 @@
       "injection_summary": "mock.expectation executor로 food testbed-external-pg-mock(rca-testbed-food)에 path=/pay, mode=delay(delay_seconds≈30, payment read-timeout 10s 초과 → 강제 timeout) 또는 mode=status status_code=500을 셋업 → PgApiClient.pay 실패 → Retry 증폭 → 502 → pg CB open. 동시에 load.north_south food surge.js(entry 30181, orderJourney create)로 결제 경로 부하를 흘린다. cleanup은 mock expectation reset(CB는 open 5s 후 자연 half-open→close).",
       "user_impact": "주문 생성 시 결제 단계가 502 Bad Gateway로 실패해 주문이 거절된다. 초기에는 개별 결제 timeout, 실패율 누적 후에는 pg 회로 개방으로 결제 요청이 즉시 502로 반려된다(빠른 실패). 상품·식당 조회는 정상.",
       "distinguishing_evidence": "F19-S는 payment가 502로 명시적으로 실패하고 pg CircuitBreaker가 open된다 — 이 두 신호(payment 502 rate + pg CB open)가 F19-P(payment는 지연된 200, order 풀고갈발 5xx)와의 결정적 감별점이다. 주입면은 F19-P와 같은 PG mock이지만 delay가 read-timeout을 '초과'하느냐(S: timeout→502→CB) '미만'이냐(P: 흡수→풀고갈)로 갈린다. F19-Q(503 capacity)와는 상태코드(502 vs 503)로 구분. naive RCA는 증상이 퍼진 order를 root로 오판하지만 정답=외부 PG(payment PgApiClient hop)."
+    },
+    "F16-H": {
+      "title": "user-service fail-close 인증 확산 → commerce 전 도메인 쓰기 401",
+      "description": "commerce user-service를 readiness 실패로 Service 엔드포인트에서 탈락시키면, api-gateway AuthGuard가 모든 쓰기요청(POST/PUT/DELETE/PATCH)마다 호출하는 verify-token이 실패하고 user 서킷브레이커가 open되어 verifyTokenFallback이 401을 던진다(fail-close). 국소 장애(user-service 하나)가 order·cart·checkout 전반의 광역 쓰기 401로 위장하는 P6 패턴이다.",
+      "cause": "commerce user-service 불가용 → 게이트웨이 AuthGuard verify-token 실패 → user CircuitBreaker open → fail-close 401 확산",
+      "injection_summary": "k8s.probe executor로 testbed-user Deployment의 readinessProbe httpGet path를 /actuator/health/f16-h-fail(존재하지 않는 경로)로 patch → 3×10s 후 pod가 NotReady로 Service 엔드포인트에서 제거 → verify-token 연결 실패. 동시에 load.north_south commerce surge.js(login→browse→add-to-cart→clear-cart→checkout)로 읽기/쓰기 혼합 부하를 흘린다. cleanup은 readinessProbe를 baseline 경로로 복원.",
+      "user_impact": "장바구니 담기·주문 생성·checkout 등 모든 쓰기요청이 401 Unauthorized로 급증한다. 상품 조회(GET) 등 읽기와 로그인/회원가입은 정상 200을 유지한다 — 부분장애처럼 보이나 원인은 단일 서비스.",
+      "distinguishing_evidence": "쓰기 401은 게이트웨이가 하류로 프록시하기 전에 AuthGuard에서 던진 것이라 order/cart/payment 하류 서비스에는 해당 요청 trace가 도달하지 않는다(하류 error rate·지연 정상). user-service만 NotReady이고 게이트웨이 user CB만 open이며, 읽기·로그인은 정상이다. naive RCA는 증상이 퍼진 order/cart/checkout을 root로 오판하지만 정답은 user-service."
     }
   }
 }

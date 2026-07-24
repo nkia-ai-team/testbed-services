@@ -11,6 +11,7 @@ PROFILE_ID = "k8s.probe"
 APPROVED_TARGETS = {
     "F05-H": ("rca-testbed-commerce", "testbed-payment", "payment-service", "livenessProbe"),
     "F17-R": ("rca-testbed-banking", "testbed-transfer", "transfer-service", "readinessProbe"),
+    "F16-H": ("rca-testbed-commerce", "testbed-user", "user-service", "readinessProbe"),
 }
 F05_H_PARAMETERS = {
     "namespace": "rca-testbed-commerce",
@@ -60,9 +61,34 @@ F17_R_PARAMETERS = {
         "timeoutSeconds": 3,
     },
 }
+F16_H_PARAMETERS = {
+    "namespace": "rca-testbed-commerce",
+    "deployment": "testbed-user",
+    "container": "user-service",
+    "probe": "readinessProbe",
+    "baseline": {
+        "failureThreshold": 3,
+        "httpGet": {"path": "/actuator/health", "port": 8085, "scheme": "HTTP"},
+        "periodSeconds": 10,
+        "successThreshold": 1,
+        "timeoutSeconds": 3,
+    },
+    "fault": {
+        "failureThreshold": 3,
+        "httpGet": {
+            "path": "/actuator/health/f16-h-fail",
+            "port": 8085,
+            "scheme": "HTTP",
+        },
+        "periodSeconds": 10,
+        "successThreshold": 1,
+        "timeoutSeconds": 3,
+    },
+}
 APPROVED_PARAMETERS = {
     "F05-H": F05_H_PARAMETERS,
     "F17-R": F17_R_PARAMETERS,
+    "F16-H": F16_H_PARAMETERS,
 }
 
 
