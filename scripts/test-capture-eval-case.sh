@@ -142,4 +142,54 @@ chmod 600 "$TMP_ROOT/runs/run-badhash/result.json"
 expect_rejected evaluation-plan-hash-mismatch \
   "${base_args[@]}" --case-label evaluation --run-result "$TMP_ROOT/runs/run-badhash/result.json"
 
+# ------------------------------------------------------------
+# v3 (continuous-cycle, schema 2.0, spec §2.2) — --phases-json.
+# Timeline: normal.start=T-2h10m, buffer=[T-10m,T), injection=[T,T+10m)=t1/t2,
+# cooldown=[T+10m,T+40m). capture_start=normal.start, capture_end=t2+30m.
+# ------------------------------------------------------------
+phases_json="$TMP_ROOT/phases.json"
+jq -n '[
+  {phase:"trainer_reset", at:"2026-07-14T22:50:00Z", golden_id:"golden-01", golden_sha256:("a"*64)},
+  {phase:"normal", start:"2026-07-14T22:50:00Z", end:"2026-07-15T00:50:00Z"},
+  {phase:"buffer", start:"2026-07-15T00:50:00Z", end:"2026-07-15T01:00:00Z"},
+  {phase:"injection", start:"2026-07-15T01:00:00Z", end:"2026-07-15T01:10:00Z"},
+  {phase:"cooldown", start:"2026-07-15T01:10:00Z", end:"2026-07-15T01:40:00Z"}
+]' >"$phases_json"
+
+# (a) phases-json input reflected: capture_start/capture_end/schema 2.0/phases[].
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --output-root "$TMP_ROOT/cases" --dry-run)
+jq -e '
+  .mode == "dry-run" and .schema_version == "2.0" and .timeline == "continuous" and
+  .capture_start == "2026-07-14T22:50:00Z" and
+  .capture_end == "2026-07-15T01:40:00Z" and
+  .capture_start_kst == "2026-07-15T07:50:00+09:00" and
+  (.phases | type == "array" and length == 5) and
+  (.phases[] | select(.phase == "trainer_reset") | .at_kst | length > 0) and
+  (.phases[] | select(.phase == "injection") | .start == "2026-07-15T01:00:00Z" and .end == "2026-07-15T01:10:00Z") and
+  .evaluation_eligible == false' \
+  <<<"$output" >/dev/null || fail 'unexpected dry-run output for --phases-json (v3)'
+
+# (b) --phases-json and --normal-segment are mutually exclusive.
+normal_segment_dir="$TMP_ROOT/normal-segments/commerce/2026-07-14"
+mkdir -p "$normal_segment_dir"
+jq -n '{segment_start:"2026-07-14T00:00:00Z", segment_end:"2026-07-14T02:00:00Z"}' \
+  >"$normal_segment_dir/meta.json"
+expect_rejected phases-json-with-normal-segment \
+  "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --normal-segment "$normal_segment_dir"
+
+# (c) injection.start/.end must equal --t1/--t2.
+bad_injection_start="$TMP_ROOT/phases-bad-injection-start.json"
+jq '(.[] | select(.phase == "injection") | .start) = "2026-07-15T00:59:00Z"' "$phases_json" \
+  >"$bad_injection_start"
+expect_rejected phases-json-injection-start-mismatch \
+  "${base_args[@]}" --case-label calibration --phases-json "$bad_injection_start"
+
+bad_injection_end="$TMP_ROOT/phases-bad-injection-end.json"
+jq '(.[] | select(.phase == "injection") | .end) = "2026-07-15T01:11:00Z"' "$phases_json" \
+  >"$bad_injection_end"
+expect_rejected phases-json-injection-end-mismatch \
+  "${base_args[@]}" --case-label calibration --phases-json "$bad_injection_end"
+
 printf '[PASS] capture policy dry-run tests\n'
