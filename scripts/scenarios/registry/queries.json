@@ -439,6 +439,15 @@
       ],
       "value_type": "integer",
       "freshness_sec": 30
+    },
+    "prometheus.hikari_pending_connections": {
+      "adapter": "prometheus",
+      "template_id": "otel-hikari-pending-v1",
+      "allowed_parameters": [
+        "service_name"
+      ],
+      "value_type": "number",
+      "freshness_sec": 30
     }
   }
 }

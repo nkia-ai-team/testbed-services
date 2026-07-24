@@ -32,6 +32,8 @@
     "F15-T1",
     "F17-R",
     "F18-P",
+    "F19-P",
+    "F19-S",
     "F15-R",
     "F03-H"
   ],
@@ -8392,6 +8394,383 @@
         "post_window": "20m",
         "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
         "create_golden_anomaly": false
+      }
+    },
+    "F19-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "15m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "mock.expectation",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "mock.expectation",
+        "levels": [
+          {
+            "id": "approved-fixed-f19-p",
+            "parameters": {
+              "path": "/pay",
+              "mode": "delay",
+              "status_code": 200,
+              "delay_seconds": 8
+            },
+            "min_hold": "8m",
+            "settle": "45s",
+            "timeout": "13m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_hikari_pending",
+          "adapter": "prometheus",
+          "query_id": "prometheus.hikari_pending_connections",
+          "parameters": {
+            "service_name": "food-delivery-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "payment_error_rate",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_error_rate",
+          "parameters": {
+            "service_name": "food-delivery-payment"
+          },
+          "freshness": "60s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.1
+          },
+          {
+            "id": "order-pool-exhausted",
+            "observation": "order_hikari_pending",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "id": "payment-not-5xx",
+            "observation": "payment_error_rate",
+            "op": "lt",
+            "value": 0.05
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "external-rate-limit",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 429
+          },
+          {
+            "id": "payment-5xx-cascade",
+            "observation": "payment_error_rate",
+            "op": "gte",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "order-pool-recovered",
+            "observation": "order_hikari_pending",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_5xx_rate",
+            "op": "lt",
+            "value": 0.05
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      }
+    },
+    "F19-S": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "15m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "mock.expectation",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "mock.expectation",
+        "levels": [
+          {
+            "id": "approved-fixed-f19-s",
+            "parameters": {
+              "path": "/pay",
+              "mode": "delay",
+              "status_code": 200,
+              "delay_seconds": 30
+            },
+            "min_hold": "8m",
+            "settle": "45s",
+            "timeout": "13m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-payment"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "payment_error_rate",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_error_rate",
+          "parameters": {
+            "service_name": "food-delivery-payment"
+          },
+          "freshness": "60s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "payment-errors",
+            "observation": "payment_error_rate",
+            "op": "gte",
+            "value": 0.3
+          },
+          {
+            "id": "order-502-propagated",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "external-rate-limit",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 429
+          },
+          {
+            "id": "payment-pod-failure",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "payment-errors-cleared",
+            "observation": "payment_error_rate",
+            "op": "lt",
+            "value": 0.05
+          },
+          {
+            "id": "create-cleared",
+            "observation": "order_create_5xx_rate",
+            "op": "lt",
+            "value": 0.05
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
       }
     }
   }

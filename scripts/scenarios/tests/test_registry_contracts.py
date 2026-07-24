@@ -60,7 +60,7 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(controller["abort"]["consecutive_ticks"], 2, scenario_id)
 
     def test_registry_closure_covers_64_scenarios_and_20_profiles(self) -> None:
-        self.assertEqual(len(self.catalog["scenarios"]), 66)
+        self.assertEqual(len(self.catalog["scenarios"]), 68)
         self.assertEqual(len(self.profiles["profiles"]), 20)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -77,7 +77,7 @@ class RegistryContractTests(unittest.TestCase):
         live_ids = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
             "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-            "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F15-R", "F03-H",
+            "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -148,7 +148,7 @@ class RegistryContractTests(unittest.TestCase):
             {
                 "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
                 "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F15-R", "F03-H",
+                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
             },
         )
         self.assertEqual(
@@ -156,7 +156,7 @@ class RegistryContractTests(unittest.TestCase):
             [
                 "F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H",
                 "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F15-R", "F03-H",
+                "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:

@@ -780,6 +780,30 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": "verified transfer env snapshot; outbox count + banking kafka lag observation (runner 674c092)"
+    },
+    {
+      "id": "F19-P",
+      "slug": "f19-p-food-order-longtx-pool-exhaustion",
+      "profiles": [
+        "mock.expectation",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "food external-pg-mock",
+      "prerequisite": "verified food mock /pay delay 8s; hikari_pending·food_create_status 관측 (runner e1a34b4)"
+    },
+    {
+      "id": "F19-S",
+      "slug": "f19-s-food-pg-cascade-cb-open",
+      "profiles": [
+        "mock.expectation",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "food external-pg-mock",
+      "prerequisite": "verified food mock /pay delay 30s>read-timeout; CB게이트는 상태코드 rate로 대체 관측 (runner e1a34b4)"
     }
   ]
 }

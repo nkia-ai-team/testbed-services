@@ -96,6 +96,8 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F15-T3 | host CPU + nested consumer stall | worker/ssh + K/kubectl | node cohort + Kafka consumer | consumer drain 후 worker stress 종료 | partial — SLA·placement 필요 |
 | F17-R | banking transfer down → payment @Tx 전체 롤백 | K/kubectl probe patch (rca-testbed-banking) | commerce checkout 502 (cross-domain, PG 성공분 소멸) | K 원 readinessProbe rollback | ready — injector·관측 allowlist 완비(07-24, 재설계 신규 1호 승격, runner 94bb225) |
 | F18-P | outbox relay 정지 → 원장/알림 silent lag | K/kubectl env-patch OUTBOX_RELAY_ENABLED=false + rollout (rca-testbed-banking) | 동기 이체는 정상(2xx 유지), outbox 미발행 적체만 증가 — F04-R(lag 증가)과 감별 | K 원 env rollback + rollout | ready — env allowlist·outbox count·banking kafka lag 배선 완비(07-24, runner 674c092) |
+| F19-P | food 롱tx 풀고갈 (createOrder @Tx내 동기 fanout) | K/kubectl → food MockServer /pay delay 8s | order Hikari(10) 고갈 → create 5xx, payment는 정상 유지 | mock 스냅샷 복원 | ready — mock food 일반화·hikari_pending·food_create_status 배선(07-24, runner e1a34b4) |
+| F19-S | food PG mock 지연 → payment 502 연쇄 | K/kubectl → food MockServer /pay delay 30s(>read-timeout 10s) | payment error≥30% → order create 502 전파 | mock 스냅샷 복원 | ready — CB-open 게이트는 상태코드 rate 대체 관측(부품2 폐기 판정, 07-24) |
 | F15-T4 | PG lock then Kafka lag | R/ssh + K/kubectl | lock 회복 +2m 후 consumer | consumer drain, DB session 확인 | partial — judge close 간격 필요 |
 
 ## 3. 공통 preflight와 중단 조건
