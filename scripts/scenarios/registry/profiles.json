@@ -113,7 +113,8 @@
           "F01-H",
           "F06-R",
           "F19-P",
-          "F19-S"
+          "F19-S",
+          "F01-G"
         ]
       },
       "scenario_parameters": {
@@ -140,9 +141,45 @@
           "mode": "delay",
           "status_code": 200,
           "delay_seconds": 30
+        },
+        "F01-G": {
+          "path": "/v1/payments",
+          "mode": "delay",
+          "status_code": 200,
+          "delay_seconds": 5
         }
       },
-      "scenario_levels": {}
+      "scenario_levels": {
+        "F01-G": [
+          {
+            "level_id": "absorbed-delay-1s",
+            "parameters": {
+              "path": "/v1/payments",
+              "mode": "delay",
+              "status_code": 200,
+              "delay_seconds": 1
+            }
+          },
+          {
+            "level_id": "absorbed-delay-3s",
+            "parameters": {
+              "path": "/v1/payments",
+              "mode": "delay",
+              "status_code": 200,
+              "delay_seconds": 3
+            }
+          },
+          {
+            "level_id": "absorbed-delay-5s",
+            "parameters": {
+              "path": "/v1/payments",
+              "mode": "delay",
+              "status_code": 200,
+              "delay_seconds": 5
+            }
+          }
+        ]
+      }
     },
     "load.north_south": {
       "executor": "profiles/load_north_south_executor.py",
@@ -196,7 +233,11 @@
           "F17-P",
           "F21-Q",
           "F21-P",
-          "F24-Q"
+          "F24-Q",
+          "F03-G",
+          "F01-G",
+          "F05-G",
+          "F11-G"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -255,7 +296,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -675,6 +716,50 @@
           "scenario_tag": "scenario_id=F24-Q",
           "seed": 4242,
           "baseline_unit": "loadgen-food"
+        },
+        "F03-G": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F03-G",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F01-G": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F01-G",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F05-G": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F05-G",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F11-G": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F11-G",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
         }
       },
       "scenario_levels": {
@@ -2382,16 +2467,26 @@
         "target-namespace",
         "kafka-namespace"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "kubernetes.pod_ready",
         "kubernetes.image_pull_failure",
         "http.entry_health"
       ],
       "parameter_contract": {
-        "allowed_scenarios": []
+        "allowed_scenarios": [
+          "F05-G"
+        ]
       },
-      "scenario_parameters": {}
+      "scenario_parameters": {
+        "F05-G": {
+          "namespace": "rca-testbed-commerce",
+          "deployment": "testbed-payment",
+          "container": "payment-service",
+          "baseline_image": "commerce-payment:latest",
+          "invalid_image": "commerce-payment:scenario-invalid-f05-g"
+        }
+      }
     },
     "k8s.resource": {
       "executor": "profiles/k8s_resource_executor.py",
@@ -2857,11 +2952,19 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F11-R"
+          "F11-R",
+          "F11-G"
         ]
       },
       "scenario_parameters": {
         "F11-R": {
+          "namespace": "rca-testbed-commerce",
+          "deployment": "testbed-redis",
+          "baseline_replicas": 1,
+          "fault_replicas": 0,
+          "dependent_deployment": "testbed-cart"
+        },
+        "F11-G": {
           "namespace": "rca-testbed-commerce",
           "deployment": "testbed-redis",
           "baseline_replicas": 1,

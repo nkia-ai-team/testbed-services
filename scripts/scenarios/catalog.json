@@ -661,6 +661,53 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "calibration 미확정 — target_rps=70이 restaurant Hikari 10·Tomcat을 order 5xx 임계까지 실제로 밀어내는지 첫 run 확정 필요. 러너 APPROVED_APM_SERVICES(food-delivery-restaurant)+APPROVED_K8S_TARGETS(rca-testbed-food, testbed-restaurant) 배선이 F02-P 선행 결함 수리와 함께 선행조건"
+    },
+    {
+      "id": "F01-G",
+      "slug": "f01-g-absorbed-pg-delay",
+      "profiles": [
+        "mock.expectation",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "adaptive",
+      "injection_location": "commerce external-pg-mock",
+      "prerequisite": ""
+    },
+    {
+      "id": "F03-G",
+      "slug": "f03-g-high-pool-usage-no-impact",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
+    },
+    {
+      "id": "F05-G",
+      "slug": "f05-g-invalid-image-no-impact",
+      "profiles": [
+        "k8s.lifecycle",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": ""
+    },
+    {
+      "id": "F11-G",
+      "slug": "f11-g-redis-down-absorbed",
+      "profiles": [
+        "cache.control",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": ""
     }
   ]
 }
