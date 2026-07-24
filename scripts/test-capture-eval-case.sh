@@ -209,6 +209,22 @@ jq -e '
   (.phases[] | select(.phase == "trainer_reset") | .golden_sha256 == null)' \
   <<<"$output" >/dev/null || fail 'phases-json with golden_sha256=null should be accepted'
 
+# Evaluation-label integrity guard (spec §2.2, 2026-07-25): a shortened normal
+# lead-in (< contract 2h) must downgrade evaluation -> calibration, not mint a
+# scoring-grade case. The 2026-07-24 overnight incident regression guard.
+short_normal="$TMP_ROOT/phases-short-normal.json"
+jq '(.phases[] | select(.phase == "normal") | .start) = "2026-07-15T00:49:00Z"' "$phases_json" \
+  >"$short_normal"  # normal now 60s instead of 2h; injection/t1/t2 unchanged
+output=$("$CAPTURE" "${base_args[@]}" --case-label evaluation --phases-json "$short_normal" \
+  --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+jq -e '.case_label == "calibration" and .evaluation_eligible == false' \
+  <<<"$output" >/dev/null || fail 'short normal lead-in must downgrade evaluation -> calibration'
+
+# The full 2h normal lead-in must NOT be downgraded — it stays evaluation
+# (and then fails for the missing run-result, proving the label survived).
+expect_rejected full-normal-evaluation-needs-result \
+  "${base_args[@]}" --case-label evaluation --phases-json "$phases_json"
+
 # ------------------------------------------------------------
 # Topology periodic bundle — --topology-bundle (spec §2.2, EventCluster
 # contract). Fixture manifest matches the spec's field names exactly:

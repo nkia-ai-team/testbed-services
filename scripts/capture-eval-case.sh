@@ -262,6 +262,29 @@ require_command realpath
 require_command stat
 require_command sha256sum
 
+# ------------------------------------------------------------
+# Evaluation-label integrity guard (2026-07-25). A v3 case keeps the
+# scoring-grade `evaluation` label only if its normal lead-in met the contract
+# 2h (spec §2.2). Shortened smoke cycles (CYCLE_NORMAL_SEC override) would
+# otherwise be minted as evaluation — the 2026-07-24 overnight incident, where
+# 72s-normal cases were labelled evaluation/eligible. Downgrade to calibration
+# (not fail) so the capture still completes with an honest label. The floor is
+# hard-coded on purpose — it must not follow the same env override that shortens
+# the cycle. v2 (no phases) is unaffected.
+# ------------------------------------------------------------
+CONTRACT_NORMAL_MIN_SEC=7140  # 2h minus 1m clock tolerance
+if [[ "$v3_mode" == true && "$case_label" == evaluation ]]; then
+  guard_ns=$(jq -r '.phases[] | select(.phase == "normal") | .start' "$phases_json")
+  guard_ne=$(jq -r '.phases[] | select(.phase == "normal") | .end' "$phases_json")
+  guard_normal_sec=$(( $(parse_utc_epoch "$guard_ne" 'phases-json normal.end') - \
+                       $(parse_utc_epoch "$guard_ns" 'phases-json normal.start') ))
+  if (( guard_normal_sec < CONTRACT_NORMAL_MIN_SEC )); then
+    printf '[WARN] normal lead-in %ss < contract %ss; downgrading case_label evaluation -> calibration\n' \
+      "$guard_normal_sec" "$CONTRACT_NORMAL_MIN_SEC" >&2
+    case_label='calibration'
+  fi
+fi
+
 scenario_metadata=$(jq -cn \
   --arg title "$scenario_title" \
   --arg description "$scenario_description" \
