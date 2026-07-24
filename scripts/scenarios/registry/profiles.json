@@ -68,24 +68,10 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F02-R",
           "F02-P"
         ]
       },
       "scenario_parameters": {
-        "F02-R": {
-          "engine": "postgresql",
-          "db_host": "192.168.122.77",
-          "db_port": 30432,
-          "db_name": "commerce",
-          "db_user": "commerce",
-          "application_name": "rca-F02-R-index-ddl",
-          "schema": "product_schema",
-          "table": "products",
-          "index": "idx_products_name",
-          "expected_indexdef": "CREATE INDEX idx_products_name ON product_schema.products USING btree (name)",
-          "minimum_rows": 2000
-        },
         "F02-P": {
           "engine": "mysql",
           "namespace": "rca-testbed-food",
@@ -125,9 +111,7 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F01-H",
-          "F01-G",
           "F06-R",
-          "F06-G",
           "F19-P",
           "F19-S"
         ]
@@ -139,26 +123,11 @@
           "status_code": 429,
           "delay_seconds": 0
         },
-        "F01-G": {
-          "path": "/v1/payments",
-          "mode": "delay",
-          "status_code": 200,
-          "delay_seconds": 5
-        },
         "F06-R": {
           "path": "/v1/payments",
           "mode": "delay",
           "status_code": 200,
           "delay_seconds": 30
-        },
-        "F06-G": {
-          "path": "/v1/payments",
-          "mode": "transient_status",
-          "status_code": 500,
-          "remaining_times": 1,
-          "ttl_seconds": 10,
-          "pulse_interval_seconds": 15,
-          "max_pulses": 32
         },
         "F19-P": {
           "path": "/pay",
@@ -173,37 +142,7 @@
           "delay_seconds": 30
         }
       },
-      "scenario_levels": {
-        "F01-G": [
-          {
-            "level_id": "absorbed-delay-1s",
-            "parameters": {
-              "path": "/v1/payments",
-              "mode": "delay",
-              "status_code": 200,
-              "delay_seconds": 1
-            }
-          },
-          {
-            "level_id": "absorbed-delay-3s",
-            "parameters": {
-              "path": "/v1/payments",
-              "mode": "delay",
-              "status_code": 200,
-              "delay_seconds": 3
-            }
-          },
-          {
-            "level_id": "absorbed-delay-5s",
-            "parameters": {
-              "path": "/v1/payments",
-              "mode": "delay",
-              "status_code": 200,
-              "delay_seconds": 5
-            }
-          }
-        ]
-      }
+      "scenario_levels": {}
     },
     "load.north_south": {
       "executor": "profiles/load_north_south_executor.py",
@@ -221,20 +160,14 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F07-H",
-          "F03-G",
           "F01-R",
           "F01-H",
-          "F01-G",
-          "F05-G",
           "F06-R",
           "F08-H",
           "F09-P",
           "F11-R",
-          "F11-G",
-          "F02-R",
           "F04-R",
           "F12-H",
-          "F06-G",
           "F05-R",
           "F05-H",
           "F07-P",
@@ -296,7 +229,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -307,17 +240,6 @@
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
           "scenario_tag": "scenario_id=F07-H",
-          "seed": 4242,
-          "baseline_unit": "loadgen-commerce"
-        },
-        "F03-G": {
-          "target_rps": 35,
-          "ramp_up": "2m",
-          "hold": "8m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30080",
-          "script_path": "/opt/loadgen/commerce/surge.js",
-          "scenario_tag": "scenario_id=F03-G",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
         },
@@ -340,28 +262,6 @@
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
           "scenario_tag": "scenario_id=F01-H",
-          "seed": 4242,
-          "baseline_unit": "loadgen-commerce"
-        },
-        "F01-G": {
-          "target_rps": 20,
-          "ramp_up": "2m",
-          "hold": "8m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30080",
-          "script_path": "/opt/loadgen/commerce/surge.js",
-          "scenario_tag": "scenario_id=F01-G",
-          "seed": 4242,
-          "baseline_unit": "loadgen-commerce"
-        },
-        "F05-G": {
-          "target_rps": 20,
-          "ramp_up": "2m",
-          "hold": "8m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30080",
-          "script_path": "/opt/loadgen/commerce/surge.js",
-          "scenario_tag": "scenario_id=F05-G",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
         },
@@ -442,28 +342,6 @@
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
         },
-        "F11-G": {
-          "target_rps": 20,
-          "ramp_up": "2m",
-          "hold": "8m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30080",
-          "script_path": "/opt/loadgen/commerce/surge.js",
-          "scenario_tag": "scenario_id=F11-G",
-          "seed": 4242,
-          "baseline_unit": "loadgen-commerce"
-        },
-        "F02-R": {
-          "target_rps": 35,
-          "ramp_up": "2m",
-          "hold": "12m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30080",
-          "script_path": "/opt/loadgen/commerce/surge.js",
-          "scenario_tag": "scenario_id=F02-R",
-          "seed": 4242,
-          "baseline_unit": "loadgen-commerce"
-        },
         "F04-R": {
           "target_rps": 35,
           "ramp_up": "2m",
@@ -483,17 +361,6 @@
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
           "scenario_tag": "scenario_id=F12-H",
-          "seed": 4242,
-          "baseline_unit": "loadgen-commerce"
-        },
-        "F06-G": {
-          "target_rps": 20,
-          "ramp_up": "2m",
-          "hold": "8m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30080",
-          "script_path": "/opt/loadgen/commerce/surge.js",
-          "scenario_tag": "scenario_id=F06-G",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
         },
@@ -2257,26 +2124,16 @@
         "target-namespace",
         "kafka-namespace"
       ],
-      "live_supported": true,
+      "live_supported": false,
       "default_queries": [
         "kubernetes.pod_ready",
         "kubernetes.image_pull_failure",
         "http.entry_health"
       ],
       "parameter_contract": {
-        "allowed_scenarios": [
-          "F05-G"
-        ]
+        "allowed_scenarios": []
       },
-      "scenario_parameters": {
-        "F05-G": {
-          "namespace": "rca-testbed-commerce",
-          "deployment": "testbed-payment",
-          "container": "payment-service",
-          "baseline_image": "commerce-payment:latest",
-          "invalid_image": "commerce-payment:scenario-invalid-f05-g"
-        }
-      }
+      "scenario_parameters": {}
     },
     "k8s.resource": {
       "executor": "profiles/k8s_resource_executor.py",
@@ -2672,19 +2529,11 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F11-R",
-          "F11-G"
+          "F11-R"
         ]
       },
       "scenario_parameters": {
         "F11-R": {
-          "namespace": "rca-testbed-commerce",
-          "deployment": "testbed-redis",
-          "baseline_replicas": 1,
-          "fault_replicas": 0,
-          "dependent_deployment": "testbed-cart"
-        },
-        "F11-G": {
           "namespace": "rca-testbed-commerce",
           "deployment": "testbed-redis",
           "baseline_replicas": 1,

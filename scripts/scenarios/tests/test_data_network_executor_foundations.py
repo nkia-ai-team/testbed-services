@@ -37,18 +37,18 @@ def plan(profile_id: str, scenario_id: str, params: dict, location: dict) -> dic
 
 
 class DataNetworkExecutorFoundationTests(unittest.TestCase):
-    def test_f02r_and_f04r_controller_evaluation_contracts(self) -> None:
+    def test_f02p_and_f04r_controller_evaluation_contracts(self) -> None:
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
             controllers["live_scenario_ids"][-5:],
             ["F18-P", "F19-P", "F19-S", "F15-R", "F03-H"],
         )
 
-        f02 = controllers["controllers"]["F02-R"]
-        self.assertEqual(f02["profile"]["levels"][0]["parameters"], db_ddl.CONTRACTS["F02-R"])
+        f02 = controllers["controllers"]["F02-P"]
+        self.assertEqual(f02["profile"]["levels"][0]["parameters"], db_ddl.CONTRACTS["F02-P"])
         self.assertEqual(
             {(rule["observation"], rule["op"], rule["value"]) for rule in f02["success"]["all"]},
-            {("index_present", "eq", False), ("entry_status", "ne", 0)},
+            {("entry_status", "ne", 0)},
         )
 
         f04 = controllers["controllers"]["F04-R"]

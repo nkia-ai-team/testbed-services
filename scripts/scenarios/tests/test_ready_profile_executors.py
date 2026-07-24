@@ -28,7 +28,6 @@ compiler_spec.loader.exec_module(compiler)
 db_lock = load("db_lock_executor")
 mock = load("mock_expectation_executor")
 k8s_patch = load("k8s_patch_executor")
-k8s_lifecycle = load("k8s_lifecycle_executor")
 cache = load("cache_control_executor")
 timeline = load("timeline_compose_executor")
 db_ddl = load("db_ddl_executor")
@@ -69,26 +68,6 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertIn("/root/tb-kubeconfig", script)
         plan = compiler.compile_plan("f06-r-commerce-external-hang")
         self.assertEqual(next(x for x in plan["profile_instances"] if x["profile_id"] == "mock.expectation")["parameters"]["delay_seconds"], 30)
-
-    def test_transient_mock_pulses_are_bounded_consumption_proven_and_exactly_restored(self) -> None:
-        plan = compiler.compile_plan("f06-g-transient-5xx-absorbed")
-        instance = next(x for x in plan["profile_instances"] if x["profile_id"] == "mock.expectation")
-        self.assertEqual(instance["location_id"], "commerce-mock")
-        self.assertEqual(instance["parameters"], {
-            "path": "/v1/payments", "mode": "transient_status", "status_code": 500,
-            "remaining_times": 1, "ttl_seconds": 10,
-            "pulse_interval_seconds": 15, "max_pulses": 32,
-        })
-        mock.validate("F06-G", instance["parameters"], self.profiles["mock.expectation"])
-        _, script = mock.build_invocation(plan, "run")
-        rendered = script.decode()
-        self.assertIn('"times": {"remainingTimes": remaining, "unlimited": False}', rendered)
-        self.assertIn('"timeToLive": {"timeUnit": "SECONDS", "timeToLive": ttl, "unlimited": False}', rendered)
-        self.assertIn('recorded_before = request("/mockserver/retrieve?type=REQUESTS"', rendered)
-        self.assertIn('if not matches:', rendered)
-        self.assertIn('stop_worker', rendered)
-        self.assertLess(rendered.index('stop_worker\n    start_pf; reset'), rendered.index('--data-binary "@$state"'))
-        self.assertIn('[[ "$actual" == "$expected" ]]', rendered)
 
     def test_kubernetes_patch_has_fixed_target_and_original_value_snapshot(self) -> None:
         script = self.assert_contract(k8s_patch, "f09-p-inventory-cpu-throttle", "k8s.patch")
@@ -144,16 +123,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertIn("product-service", argv)
         self.assertIn('--limits="cpu=$original"', script.decode())
 
-    def test_lifecycle_has_fixed_target_snapshot_and_live_recovery(self) -> None:
-        plan = compiler.compile_plan("f05-g-invalid-image-no-impact")
-        self.assertTrue(plan["live_allowed"])
-        self.assertEqual(plan["profile_instances"][0]["location_id"], "commerce-namespace")
-        script = self.assert_contract(k8s_lifecycle, "f05-g-invalid-image-no-impact", "k8s.lifecycle")
-        self.assertIn('current >"$state.tmp"', script)
-        self.assertIn('"$container=$original"', script)
-
     def test_cache_cleanup_restores_snapshot_and_waits_for_dependents(self) -> None:
-        script = self.assert_contract(cache, "f11-g-redis-down-absorbed", "cache.control")
+        script = self.assert_contract(cache, "f11-r-redis-down-fallback-overload", "cache.control")
         self.assertIn('--replicas="$original"', script)
         self.assertIn('rollout status deploy/"$dependent"', script)
 
@@ -165,8 +136,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
 
     def test_live_matrix_has_twenty_ready_plans_with_payment_faults(self) -> None:
         expected = {
-            "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+            "F01-R", "F01-H", "F06-R",
+            "F07-H", "F08-H", "F09-P", "F11-R", "F02-P", "F04-R", "F12-H", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
             "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
@@ -176,9 +147,9 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertTrue(plan["live_allowed"])
         self.assertEqual(plan["profile_instances"][0]["location_id"], "commerce-namespace")
 
-    def test_f02r_and_f04r_use_exact_live_contracts(self) -> None:
+    def test_f02p_and_f04r_use_exact_live_contracts(self) -> None:
         cases = [
-            ("f02-r-pg-product-index-drop", "db.ddl", db_ddl, "tb-runner"),
+            ("f02-p-mysql-menu-index-drop", "db.ddl", db_ddl, "tb-runner"),
             ("f04-r-commerce-shipping-consumer-stop", "kafka.control", kafka_control, "commerce-namespace"),
         ]
         for slug, profile_id, module, location_id in cases:
@@ -191,7 +162,6 @@ class ReadyProfileExecutorTests(unittest.TestCase):
 
     def test_new_adaptive_profiles_accept_only_predeclared_levels(self) -> None:
         cases = [
-            ("f01-g-absorbed-pg-delay", "mock.expectation", mock),
             ("f11-r-redis-down-fallback-overload", "load.north_south", None),
             ("f09-r-worker-cpu-noisy-neighbor", "host.stress", host_stress),
         ]

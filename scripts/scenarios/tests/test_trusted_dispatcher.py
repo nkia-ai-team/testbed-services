@@ -94,7 +94,7 @@ class Harness:
 
 class TrustedDispatcherTests(unittest.TestCase):
     def test_fixed_load_one_shot_is_accepted_without_external_commands(self) -> None:
-        slug = "f03-g-high-pool-usage-no-impact"
+        slug = "f01-r-pg-lock-checkout"
         with tempfile.TemporaryDirectory() as temporary:
             invoker = FakeInvoker()
             dispatcher = dispatcher_module.Dispatcher(
@@ -107,8 +107,17 @@ class TrustedDispatcherTests(unittest.TestCase):
             )
             self.assertEqual(result["cleanup"], "verified")
             self.assertEqual(
-                [action for _, action in invoker.actions()],
-                ["preflight", "run", "cleanup", "recovery"],
+                invoker.actions(),
+                [
+                    ("db_lock_executor.py", "preflight"),
+                    ("load_north_south_executor.py", "preflight"),
+                    ("db_lock_executor.py", "run"),
+                    ("load_north_south_executor.py", "run"),
+                    ("load_north_south_executor.py", "cleanup"),
+                    ("db_lock_executor.py", "cleanup"),
+                    ("load_north_south_executor.py", "recovery"),
+                    ("db_lock_executor.py", "recovery"),
+                ],
             )
 
     def test_adaptive_load_refuses_one_shot_dispatch(self) -> None:

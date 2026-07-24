@@ -26,21 +26,6 @@ class RegistryContractTests(unittest.TestCase):
             cls.controllers,
         ) = compile_plan_module.load_contracts()
 
-    def test_f05g_rollout_uses_replica_catastrophic_gate_not_pod_ready(self) -> None:
-        # F05-G의 의도된 invalid-image rollout은 새 replica를 지속 unready로 만들므로
-        # pod_ready(전체 AND) abort는 셀프 트리거다. catastrophic 게이트는 서빙 전멸
-        # (available_replicas==0)이어야 하고 success도 available_replicas를 봐야 한다.
-        f05g = self.controllers["controllers"]["F05-G"]
-        abort_pairs = {
-            (item["observation"], item["op"], item["value"]) for item in f05g["abort"]["any"]
-        }
-        self.assertIn(("available_replicas", "eq", 0), abort_pairs)
-        self.assertNotIn(("pod_ready", "eq", False), abort_pairs)
-        success = {item["id"]: item for item in f05g["success"]["all"]}
-        self.assertEqual(success["old-replica-ready"]["observation"], "available_replicas")
-        self.assertEqual(success["old-replica-ready"]["op"], "gte")
-        self.assertEqual(success["old-replica-ready"]["value"], 1)
-
     def test_abort_gates_are_user_impact_only(self) -> None:
         # catastrophic abort 게이트 재정의(2026-07-20): pod_ready는 "재난인가"와
         # "이 pod이 트래픽을 받나"의 의미 이중성 때문에 시나리오의 의도된
@@ -60,7 +45,7 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(controller["abort"]["consecutive_ticks"], 2, scenario_id)
 
     def test_registry_closure_covers_64_scenarios_and_20_profiles(self) -> None:
-        self.assertEqual(len(self.catalog["scenarios"]), 68)
+        self.assertEqual(len(self.catalog["scenarios"]), 46)
         self.assertEqual(len(self.profiles["profiles"]), 20)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -75,8 +60,8 @@ class RegistryContractTests(unittest.TestCase):
 
     def test_all_64_scenarios_compile_with_trusted_live_plans(self) -> None:
         live_ids = {
-            "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+            "F01-R", "F01-H", "F06-R",
+            "F07-H", "F08-H", "F09-P", "F11-R", "F02-P", "F04-R", "F12-H", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
             "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
         }
         for scenario in self.catalog["scenarios"]:
@@ -132,8 +117,8 @@ class RegistryContractTests(unittest.TestCase):
                 [{"query_id": "prometheus.user_p95", "promql": "up"}], self.queries
             )
 
-    def test_f07h_and_f03g_plans_are_deterministic_and_canonical(self) -> None:
-        for slug in ("f07-h-north-south-surge", "f03-g-high-pool-usage-no-impact"):
+    def test_f07h_and_f01r_plans_are_deterministic_and_canonical(self) -> None:
+        for slug in ("f07-h-north-south-surge", "f01-r-pg-lock-checkout"):
             first = compile_plan_module.compile_plan(slug)
             second = compile_plan_module.compile_plan(slug)
             self.assertEqual(first, second)
@@ -146,16 +131,16 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(
             live_ids,
             {
-                "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-                "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+                "F01-R", "F01-H", "F06-R",
+                "F07-H", "F08-H", "F09-P", "F11-R", "F02-P", "F04-R", "F12-H", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
                 "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
             },
         )
         self.assertEqual(
             self.controllers["live_scenario_ids"],
             [
-                "F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H",
-                "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+                "F01-R", "F01-H", "F06-R", "F07-H", "F08-H",
+                "F09-P", "F11-R", "F02-P", "F04-R", "F12-H", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
                 "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F15-R", "F03-H",
             ],
         )
@@ -230,35 +215,6 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(success["product-impact-visible"]["value"], 500)
         self.assertEqual(success["unrelated-service-stable"]["value"], 200)
         self.assertEqual(success["cpu-throttle-direct"]["op"], "gt")
-
-    def test_f06g_transient_retry_contract_is_fixed_and_fail_closed(self) -> None:
-        plan = compile_plan_module.compile_plan("f06-g-transient-5xx-absorbed")
-        self.assertTrue(plan["live_allowed"])
-        self.assertEqual(plan["profile_instances"][0]["location_id"], "commerce-mock")
-        controller = self.controllers["controllers"]["F06-G"]
-        self.assertEqual(controller["profile"]["levels"][0]["parameters"], {
-            "path": "/v1/payments", "mode": "transient_status", "status_code": 500,
-            "remaining_times": 1, "ttl_seconds": 10,
-            "pulse_interval_seconds": 15, "max_pulses": 32,
-        })
-        observations = {item["id"]: item for item in controller["observations"]}
-        self.assertEqual(
-            observations["payment_duplicate_order_count_since_t1"]["query_id"],
-            "database.payment_duplicate_order_count_since_t1",
-        )
-        self.assertEqual(
-            observations["duplicate_expectation_count"]["query_id"],
-            "mock.duplicate_expectation_count",
-        )
-        success = {item["observation"]: item for item in controller["success"]["all"]}
-        self.assertEqual(success["achieved_rps"]["value"], 15)
-        self.assertEqual(success["checkout_5xx_rate"]["value"], 0)
-        self.assertEqual(success["business_ok"]["value"], True)
-        self.assertEqual(success["transient_consumed_count"]["value"], 1)
-        self.assertEqual(success["payment_duplicate_order_count_since_t1"]["value"], 0)
-        recovery = {item["observation"]: item for item in controller["recovery"]["all"]}
-        self.assertEqual(recovery["expectation_absent"]["value"], True)
-        self.assertEqual(recovery["snapshot_restored"]["value"], True)
 
     def test_f05_payment_faults_are_exact_and_causally_distinct(self) -> None:
         f05r = self.controllers["controllers"]["F05-R"]

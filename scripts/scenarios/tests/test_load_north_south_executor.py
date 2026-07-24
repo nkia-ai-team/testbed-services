@@ -36,7 +36,7 @@ class NorthSouthExecutorTests(unittest.TestCase):
             live,
             {
                 "db.lock", "mock.expectation", "load.north_south", "k8s.patch",
-                "k8s.lifecycle", "cache.control", "timeline.compose", "db.ddl", "load.east_west",
+                "cache.control", "timeline.compose", "db.ddl", "load.east_west",
                 "kafka.control", "k8s.resource", "k8s.probe", "k8s.env", "host.stress", "timeline.multi",
             },
         )
@@ -44,7 +44,7 @@ class NorthSouthExecutorTests(unittest.TestCase):
     def test_allowlisted_parameters_bind_capacity_profiles(self) -> None:
         profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
         profile = profiles["load.north_south"]
-        expected = {"F07-H": 160, "F03-G": 35, "F06-G": 20, "F05-R": 35, "F05-H": 20}
+        expected = {"F07-H": 160, "F01-R": 35, "F01-H": 35, "F05-R": 35, "F05-H": 20}
         for scenario_id, target_rps in expected.items():
             params = profile["scenario_parameters"][scenario_id]
             executor.validate_parameters(scenario_id, params, profile)
@@ -92,21 +92,16 @@ class NorthSouthExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
             executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(tampered))
 
-    def test_fixed_load_profile_accepts_only_its_controller_bound_level(self) -> None:
-        plan = compiler.compile_plan("f03-g-high-pool-usage-no-impact")
+    def test_fixed_companion_load_profile_rejects_level_overrides(self) -> None:
+        # F01-R uses load.north_south as a fixed companion (db.lock is primary), so
+        # the profile has no predeclared scenario_levels of its own for F01-R and
+        # any attempt to bind an adaptive level index must be rejected outright.
+        plan = compiler.compile_plan("f01-r-pg-lock-checkout")
         instance = executor.load_instance(plan)
         params = instance["parameters"]
-        bound, level_id = executor.bind_level_parameters(
-            plan, "load.north_south", 0, self.canonical(params)
-        )
-        self.assertEqual(level_id, "approved-fixed-f03-g")
-        self.assertEqual(executor.load_instance(bound)["parameters"], params)
-        tampered = dict(params)
-        tampered["target_rps"] += 1
-        with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
-            executor.bind_level_parameters(
-                plan, "load.north_south", 0, self.canonical(tampered)
-            )
+        self.assertEqual(instance["approved_levels"], [])
+        with self.assertRaisesRegex(executor.ExecutorError, "rejects adaptive level overrides"):
+            executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(params))
 
     def test_command_builder_uses_strict_ssh_argv_and_scoped_cleanup(self) -> None:
         plan = compiler.compile_plan("f07-h-north-south-surge")

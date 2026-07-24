@@ -39,30 +39,6 @@
       "prerequisite": "Oracle lock SQL/session tagging"
     },
     {
-      "id": "F01-G",
-      "slug": "f01-g-absorbed-pg-delay",
-      "profiles": [
-        "mock.expectation",
-        "load.north_south"
-      ],
-      "readiness": "ready",
-      "load_mode": "adaptive",
-      "injection_location": "commerce external-pg-mock",
-      "prerequisite": ""
-    },
-    {
-      "id": "F02-R",
-      "slug": "f02-r-pg-product-index-drop",
-      "profiles": [
-        "db.ddl",
-        "load.north_south"
-      ],
-      "readiness": "ready",
-      "load_mode": "fixed",
-      "injection_location": "tb-runner",
-      "prerequisite": ""
-    },
-    {
       "id": "F02-H",
       "slug": "f02-h-commerce-storage-io",
       "profiles": [
@@ -87,29 +63,6 @@
       "prerequisite": ""
     },
     {
-      "id": "F02-G",
-      "slug": "f02-g-batch-heavy-sql-only",
-      "profiles": [
-        "db.workload"
-      ],
-      "readiness": "blocked",
-      "load_mode": "no-load",
-      "injection_location": "tb-runner",
-      "prerequisite": "batch trigger/session identity"
-    },
-    {
-      "id": "F03-R",
-      "slug": "f03-r-food-payment-connection-leak",
-      "profiles": [
-        "app.release",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "food namespace",
-      "prerequisite": "fault build/toggle"
-    },
-    {
       "id": "F03-H",
       "slug": "f03-h-order-thread-saturation",
       "profiles": [
@@ -132,17 +85,6 @@
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "pool size and minimum effective RPS"
-    },
-    {
-      "id": "F03-G",
-      "slug": "f03-g-high-pool-usage-no-impact",
-      "profiles": [
-        "load.north_south"
-      ],
-      "readiness": "ready",
-      "load_mode": "fixed",
-      "injection_location": "tb-runner",
-      "prerequisite": ""
     },
     {
       "id": "F04-R",
@@ -181,18 +123,6 @@
       "prerequisite": "ledger consumer rate control"
     },
     {
-      "id": "F04-G",
-      "slug": "f04-g-short-broker-outage",
-      "profiles": [
-        "k8s.lifecycle",
-        "load.north_south"
-      ],
-      "readiness": "partial",
-      "load_mode": "fixed",
-      "injection_location": "kafka namespace",
-      "prerequisite": "safe outage/catch-up duration"
-    },
-    {
       "id": "F05-R",
       "slug": "f05-r-payment-oom-loop",
       "profiles": [
@@ -227,18 +157,6 @@
       "load_mode": "adaptive",
       "injection_location": "worker-w2",
       "prerequisite": "placement and safe eviction"
-    },
-    {
-      "id": "F05-G",
-      "slug": "f05-g-invalid-image-no-impact",
-      "profiles": [
-        "k8s.lifecycle",
-        "load.north_south"
-      ],
-      "readiness": "ready",
-      "load_mode": "fixed",
-      "injection_location": "commerce namespace",
-      "prerequisite": ""
     },
     {
       "id": "F06-R",
@@ -277,30 +195,6 @@
       "prerequisite": "food courier pool recovery"
     },
     {
-      "id": "F06-G",
-      "slug": "f06-g-transient-5xx-absorbed",
-      "profiles": [
-        "mock.expectation",
-        "load.north_south"
-      ],
-      "readiness": "ready",
-      "load_mode": "fixed",
-      "injection_location": "commerce external-pg-mock",
-      "prerequisite": ""
-    },
-    {
-      "id": "F07-R",
-      "slug": "f07-r-cross-domain-retry-storm",
-      "profiles": [
-        "network.fault",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "adaptive",
-      "injection_location": "cross-domain edge",
-      "prerequisite": "safe delay injection point"
-    },
-    {
       "id": "F07-H",
       "slug": "f07-h-north-south-surge",
       "profiles": [
@@ -322,30 +216,6 @@
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "bulkhead configuration/reject surface"
-    },
-    {
-      "id": "F07-G",
-      "slug": "f07-g-cb-contained-downstream",
-      "profiles": [
-        "mock.expectation",
-        "load.north_south"
-      ],
-      "readiness": "partial",
-      "load_mode": "fixed",
-      "injection_location": "external-pg-mock",
-      "prerequisite": "downstream endpoint and fallback"
-    },
-    {
-      "id": "F08-R",
-      "slug": "f08-r-faulty-pricing-release",
-      "profiles": [
-        "app.release",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "commerce namespace",
-      "prerequisite": "pricing fault image"
     },
     {
       "id": "F08-H",
@@ -420,17 +290,6 @@
       "prerequisite": ""
     },
     {
-      "id": "F09-G",
-      "slug": "f09-g-batch-cpu-no-user-impact",
-      "profiles": [
-        "host.stress"
-      ],
-      "readiness": "blocked",
-      "load_mode": "no-load",
-      "injection_location": "batch host",
-      "prerequisite": "independent batch trigger"
-    },
-    {
       "id": "F10-R",
       "slug": "f10-r-postgres-volume-full",
       "profiles": [
@@ -467,17 +326,6 @@
       "prerequisite": "Oracle device and safe IO"
     },
     {
-      "id": "F10-G",
-      "slug": "f10-g-log-partition-watermark",
-      "profiles": [
-        "host.stress"
-      ],
-      "readiness": "blocked",
-      "load_mode": "no-load",
-      "injection_location": "target worker",
-      "prerequisite": "separate log mount proof"
-    },
-    {
       "id": "F11-R",
       "slug": "f11-r-redis-down-fallback-overload",
       "profiles": [
@@ -490,54 +338,6 @@
       "prerequisite": ""
     },
     {
-      "id": "F11-H",
-      "slug": "f11-h-cart-pg-pool-fault",
-      "profiles": [
-        "k8s.patch",
-        "load.north_south"
-      ],
-      "readiness": "partial",
-      "load_mode": "adaptive",
-      "injection_location": "commerce namespace",
-      "prerequisite": "cart pool boundary"
-    },
-    {
-      "id": "F11-P",
-      "slug": "f11-p-stale-promotion-cache",
-      "profiles": [
-        "business.fault",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "commerce namespace",
-      "prerequisite": "stale-cache API/fault build"
-    },
-    {
-      "id": "F11-G",
-      "slug": "f11-g-redis-down-absorbed",
-      "profiles": [
-        "cache.control",
-        "load.north_south"
-      ],
-      "readiness": "ready",
-      "load_mode": "fixed",
-      "injection_location": "commerce namespace",
-      "prerequisite": ""
-    },
-    {
-      "id": "F12-R",
-      "slug": "f12-r-physical-interface-down",
-      "profiles": [
-        "network.fault",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "external-server .57",
-      "prerequisite": "interface and OOB recovery"
-    },
-    {
       "id": "F12-H",
       "slug": "f12-h-pod-cpu-network-lookalike",
       "profiles": [
@@ -548,29 +348,6 @@
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": ""
-    },
-    {
-      "id": "F12-P",
-      "slug": "f12-p-cross-domain-packet-loss",
-      "profiles": [
-        "network.fault",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "cross-domain edge",
-      "prerequisite": "CNI/NET_ADMIN edge"
-    },
-    {
-      "id": "F12-G",
-      "slug": "f12-g-unrelated-flow-trap",
-      "profiles": [
-        "network.fault"
-      ],
-      "readiness": "blocked",
-      "load_mode": "no-load",
-      "injection_location": "external-server .57",
-      "prerequisite": "SNMP/NetFlow source"
     },
     {
       "id": "F13-R",
@@ -609,17 +386,6 @@
       "prerequisite": "large response surface"
     },
     {
-      "id": "F13-G",
-      "slug": "f13-g-single-probe-failure",
-      "profiles": [
-        "wpm.probe"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "probe location",
-      "prerequisite": "multi-location topology"
-    },
-    {
       "id": "F14-R",
       "slug": "f14-r-non-idempotent-response-loss",
       "profiles": [
@@ -632,18 +398,6 @@
       "prerequisite": "response-loss proxy/fault image"
     },
     {
-      "id": "F14-H",
-      "slug": "f14-h-pricing-correctness-bug",
-      "profiles": [
-        "app.release",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "commerce namespace",
-      "prerequisite": "pricing fault image"
-    },
-    {
       "id": "F14-P",
       "slug": "f14-p-selective-ledger-loss",
       "profiles": [
@@ -654,18 +408,6 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": "selective event-drop surface"
-    },
-    {
-      "id": "F14-G",
-      "slug": "f14-g-compensation-final-consistency",
-      "profiles": [
-        "mock.expectation",
-        "load.north_south"
-      ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "commerce external-pg-mock",
-      "prerequisite": "business invariant probe"
     },
     {
       "id": "F15-R",

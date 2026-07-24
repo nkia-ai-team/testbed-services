@@ -34,59 +34,37 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F01-R | PG row lock + checkout | R/ssh → PG NodePort 30432 | inventory hot row; 사용자는 commerce NodePort | R의 tagged DB session | ready — 실제 checkout row와 동일 DB |
 | F01-H | external 429 | K/kubectl port-forward → commerce MockServer API | payment outbound `/v1/payments` | 같은 MockServer에서 기본 200 복원 | ready — mock path 확인됨 |
 | F01-P | Oracle row lock + checkout | R/ssh → Oracle NodePort 30308 | banking accounts row; commerce→banking trace | R의 tagged Oracle session | partial — Oracle 전용 lock script 필요 |
-| F01-G | 짧은 external delay | K/kubectl → commerce MockServer API | retry가 흡수할 지연 범위 | 같은 MockServer | ready — 1/3/5초 adaptive ladder와 5xx·업무 guardrail 고정 |
-| F02-R | PG index fault | R/ssh → PG NodePort | product search SQL/index | R에서 exact inverse DDL | ready — idx_products_name·rows≥2000 registry 고정(07-18), 라이브 실존 검증 07-20 |
 | F02-H | storage IO stress | commerce worker/ssh | PG PVC backing device; commerce search NodePort | 같은 worker의 scenario process | blocked — backing device 미확정 |
-| F02-P | MySQL index fault | R/ssh → MySQL NodePort | food menu filter SQL/index | R에서 index 복원 | blocked — 실측(07-20): menus 95행뿐이라 인덱스 제거로 증상 불성립. 시드 보강(수만 행) 선행 필요 |
-| F02-G | batch-only heavy SQL | R/ssh → 해당 DB NodePort | batch-tagged session, 온라인 경로는 관측만 | R의 tagged session | blocked — 실제 batch 기동 표면 미확정 |
-| F03-R | connection leak | K/kubectl → food-payment fault build | 실제 payment 실패 경로 | K에서 image/config rollback | blocked — leak fault surface 없음 |
+| F02-P | MySQL index fault | R/ssh → MySQL NodePort | food menu filter SQL/index | R에서 index 복원 | ready — 시드 보강 후 07-24 live 승격(46d3371). 07-23 CUT 판정은 번복(wave1-worklist §A) |
 | F03-H | servlet thread saturation | K/kubectl one-shot Job | service DNS를 통한 east-west slow calls | K에서 Job 삭제 | partial — executor 관측·강도 필요 |
 | F03-P | Hikari 축소 + surge | K/kubectl config patch + R/ssh load | commerce payment + checkout NodePort | K config rollback, R k6 종료 | partial — pool/강도 실측 필요 |
-| F03-G | 낮은 surge | R/ssh | 용량 무릎 아래 commerce NodePort | R k6 tagged process | ready — 사용자 경로 동일 |
 | F04-R | consumer stop | K/kubectl scale shipping=0 | commerce orders→Kafka→shipping | K replica 복원·lag drain | ready — SLA probe 대신 kafka-consumer-groups lag 직접 판정(replicas=0 ∧ lag>0)으로 재설계(07-18) |
 | F04-H | outbox relay stop | K/kubectl fault config/build | order DB outbox→Kafka | K relay 복원·backlog drain | blocked — relay 독립 제어 없음 |
 | F04-P | ledger rate limit | K/kubectl fault config/build | banking transfers→ledger | K 처리율 복원·lag drain | blocked — rate-control 표면 없음 |
-| F04-G | short broker outage | K/kubectl Kafka lifecycle | outbox→Kafka→consumer | K broker 복구·완전 drain | partial — SLA 내 중단시간 실측 필요 |
 | F05-R | memory limit + load | K/kubectl payment limit patch + R/ssh | checkout→payment pod | K 원 spec rollback, R load 종료 | ready — adaptive ladder가 안전 강도 탐색, restart 예산 3회 stop-loss(07-18) |
 | F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | ready — fault probe(/actuator/health/f05-h-fail) 고정, restart 예산 4회(07-18) |
 | F05-P | node memory pressure | 대상 worker/ssh | 해당 worker의 commerce·food pods | 같은 worker process 종료 | partial — 배치 지도 확보(07-20, F09-R 참조). eviction 안전 강도 실측만 잔여 |
-| F05-G | invalid image rollout | K/kubectl → `rca-testbed-commerce/testbed-payment` | 새 replica만 실패, 기존 replica 유지 | K에서 snapshot한 원 image 복원 | ready — target/image 정본과 ImagePullBackOff 관측 고정 |
 | F06-R | external hang | K/kubectl → commerce MockServer API | payment outbound timeout | 같은 MockServer 기본 200 | ready — path·restore 계약 확인됨 |
 | F06-H | payment DB lock | R/ssh → PG NodePort | 외부 호출 전 payment DB row | R tagged DB session | partial — 실측(07-20): payment 경로는 결제마다 신규 INSERT라 row lock 대상 없음. 표면 = payments 테이블 잠금(tagged session LOCK TABLE) 변형으로 상세화 |
 | F06-P | partial 429 | K/kubectl → food MockServer API | food `/pay`, 성공/429 혼재 | 같은 MockServer 기본 200 | blocked — 배차 풀 복구 전 정상 주문·결제 영향 평가 불가 |
-| F06-G | transient 5xx | K/kubectl → 대상 MockServer API | retry/CB 실제 호출 경로 | 같은 MockServer | ready — fixed evaluation 계약 완비, live 등재(07-18) |
-| F07-R | downstream delay + surge | 미확정 edge fault + R/ssh | commerce payment→banking transfer | fault 제거 + R load 종료 | blocked — 안전한 edge delay 위치 없음 |
 | F07-H | north-south surge | R/ssh | commerce NodePort | R tagged k6 | ready — Commerce는 80 RPS 실측 |
 | F07-P | pricing bulkhead saturation | K/kubectl one-shot Job | pricing service DNS | K Job 삭제 | ready-후보 — 실측(07-20): resilience4j pricingQuote max-concurrent 20·wait 0(즉시 503) 확인. 동시 slow call >20 Job으로 상세화 가능 |
-| F07-G | CB containment | K/kubectl → 선택 mock/downstream | 실제 fallback 경로 | fault reset·CB closed 확인 | partial — 하류와 fallback을 YAML에서 고정 필요 |
-| F08-R | faulty pricing release | K/kubectl image rollout | pricing→checkout correctness | K previous image + 업무 데이터 정리 | blocked — 결함 image 없음 |
 | F08-H | rollout + external fault | K/kubectl rollout + MockServer API | checkout NodePort, 독립 sub-injection | K에서 두 fault 역순 복구 | ready — composite script 필요 |
 | F08-P | timeout ConfigMap | K/kubectl config+rollout | payment/order tail latency | K config rollback+rollout | ready-후보 — 실측(07-20): timeout은 yml 리터럴(env 없음) → SPRING_APPLICATION_JSON env 오버라이드로 재빌드 없이 주입 가능 |
 | F08-G | distractor rollout + Oracle lock | K/kubectl + R/ssh | notification change와 banking accounts | Oracle rollback 후 rollout 정리 | partial — Oracle script 필요 |
 | F09-R | host CPU noisy neighbor | 선택 worker/ssh | 해당 node pod cohort | 같은 worker tagged process | ready-후보 — 실측(07-20): 배치 지도 확보(w2=cart·gateway·inventory·redis·kafka·food-payment / w3=order·payment·pricing·product·user·mysql) |
 | F09-H | JVM GC pressure | K/kubectl JVM config + R/ssh | order endpoints | K config rollback, R load 종료 | partial — OOM 전 pause 범위 필요 |
 | F09-P | pod CPU throttle | K/kubectl inventory limit + R/ssh | checkout→inventory | K 원 limit rollback, R load 종료 | ready — 기존 resource patch 패턴 사용 |
-| F09-G | batch CPU only | K/kubectl exec 또는 batch owner | batch process, 온라인 trace 정상 | 같은 process/Job | blocked — 독립 batch trigger 없음 |
 | F10-R | PG volume fill | commerce worker/ssh 또는 privileged K Job | 실제 PG data volume | filler만 제거 | blocked — PVC path 오판 위험 |
 | F10-H | MySQL IO saturation | food worker/ssh | 실제 MySQL device | 같은 worker stress 종료 | blocked — backing device 미확정 |
 | F10-P | Oracle IO saturation | banking worker/ssh | 실제 Oracle device | 같은 worker stress 종료 | blocked — 데이터 손상 위험·device 미확정 |
-| F10-G | log partition watermark | 대상 worker/ssh | DB data와 분리된 log mount | filler 제거 | blocked — 별도 partition 확인 안 됨 |
 | F11-R | Redis down + surge | K/kubectl Redis + R/ssh | cart fallback→PG | R load 종료 후 Redis replica 복원 | ready — 35/50/65 RPS adaptive ladder와 checkout 5xx 비율 관측 고정 |
-| F11-H | PG pool fault | K/kubectl cart config + R/ssh | cart/checkout, Redis 정상 | K rollback, R load 종료 | partial — pool 경계 필요 |
-| F11-P | stale price cache | 미확정 API/K fault surface | pricing correctness | cache/version 복원 | blocked — 조작 API·fault build 없음 |
-| F11-G | Redis down under low load | K/kubectl Redis + R/ssh | fallback이 흡수할 cart/checkout | Redis 복구, R load 종료 | ready — 낮은 강도 사용 |
-| F12-R | actual interface down | E57/ssh 또는 network device API | .57→실제 NIC/bridge→tb-cp | 같은 interface up·route 확인 | blocked — 실제 interface·OOB 복구 미확정 |
 | F12-H | product pod CPU throttle | K/kubectl `rca-testbed-commerce/testbed-product` + R/ssh 35 RPS | `commerce-product` APM p95/error, pod throttle; checkout/network 정상 | CPU limit 원값 `500m` rollback, pod Ready 확인, R load 종료 | ready — `product-service` CPU `500m→250m→100m→50m` adaptive ladder, product-only 영향·network error 0 고정 관측 |
-| F12-P | cross-domain packet loss | 미확정 network namespace | commerce payment↔banking edge | netem/policy 완전 제거 | blocked — CNI/NET_ADMIN 지점 없음 |
-| F12-G | unrelated flow/trap | E57/ssh의 비서비스 interface | 서비스 topology와 무관한 NMS source | E57 generator 종료·상태 복원 | blocked — NMS source setup 필요 |
 | F13-R | edge route delay | K/kubectl commerce ingress config | WPM→checkout NodePort | K ingress config 복원 | blocked — WPM phase 계약 없음 |
 | F13-H | connect phase delay | WPM source 또는 E57/ssh | probe→tb-cp NodePort | tc/route 복원 | blocked — probe 위치 미확정 |
 | F13-P | oversized history response | R/ssh DB seed 또는 K fault build | WPM→banking history | seed 제거/image rollback | blocked — response-size 표면·WPM 없음 |
-| F13-G | single probe failure | 특정 WPM probe host | 해당 probe만 URL 접근 | probe config/network 복원 | blocked — 복수 probe topology 없음 |
 | F14-R | response loss + non-idempotent retry | K ingress/fault image | checkout business key | proxy 제거·image rollback·중복 row 정리 | blocked — fault surfaces 없음 |
-| F14-H | pricing correctness bug | K/kubectl fault image/cache | pricing→checkout | K rollback·오염 데이터 정리 | blocked — fault image 없음 |
 | F14-P | selective ledger loss | K/kubectl fault consumer | transfer→Kafka→ledger | consumer 복원·event replay | blocked — selective drop 없음 |
-| F14-G | compensation path | MockServer API + R/ssh | checkout failure→inventory release | mock 복원·업무 invariant 확인 | blocked — invariant probe 필요 |
 | F15-R | 429 flapping | K/kubectl → commerce MockServer API | checkout episodes | 기본 200 복원 | partial — judge episode 간격 실측 필요 |
 | F15-H | simultaneous PG lock + food 429 | K/kubectl 두 injection point | commerce DB와 food mock, offset 0 | orchestrator가 역순 cleanup | blocked — food 주문 경로 상시 배차 503 |
 | F15-P | common node pressure | 공통 worker/ssh | 같은 node의 commerce·food pods | worker stress 종료 | blocked — 현재 공통 placement 불확실 |
