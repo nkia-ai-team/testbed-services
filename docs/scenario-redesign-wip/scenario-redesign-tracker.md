@@ -22,7 +22,7 @@
 |---|---|---|---|:--:|:--:|:--:|---|
 | F16-H | user-service fail-close → 전도메인 쓰기401 | commerce | P6 | ✅ | 🟡 | 🟡 | write/read status query + gateway CB open + surge step×status |
 | F17-P | commerce→transfer 직행 무결성우회(FROZEN) | cross | P7 | ✅ | 🟡 | 🟡 | frozen_bypass/normal_reject rate + integrity_violation_count + dual-arm 스크립트 + ledger cleanup |
-| F17-R | banking down → payment @Tx 전체 롤백 | cross | P7+P1 | ✅ | ✅ | 🟡 | **없음(기존 checkout_5xx로 관측)** — k8s.probe allowlist 확장뿐 |
+| F17-R | banking down → payment @Tx 전체 롤백 | cross | P7+P1 | ✅ | ✅ | ✅ | **승격 완료(07-24, bc2ac2b)** — 재설계 신규 1호, catalog 65·live 32. 러너 관측 allowlist 짝=runner 94bb225(109 배포됨). 109 testbed-services 동기화는 ③스모크 때 전체 일관 배포 |
 | F18-P | outbox relay 정지 → 원장/알림 silent lag | banking·food | P5 | ✅ | 🟡 | 🟡 | outbox_unpublished_count DB selector + k8s.env 계약 + transfer_2xx query. (lag는 must_rule_out) |
 | F19-P | food 롱tx 풀고갈 (createOrder @Tx내 동기fanout) | food | P1 | ✅ | 🟡 | 🟡 | mock.expectation food 일반화(1줄) + food_create_status + hikari_pending query |
 | F19-Q | food 배차 배치정지 → capacity 소진 503 | food | P3 | ✅ | ❌ | ❌ | **진짜 injector 갭**: @Scheduled 정지 훅 없음. env하향은 §2-A 위배 |
