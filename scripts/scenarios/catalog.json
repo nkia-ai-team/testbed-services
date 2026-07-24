@@ -81,10 +81,10 @@
         "db.ddl",
         "load.north_south"
       ],
-      "readiness": "partial",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "menu SQL/index/data volume"
+      "prerequisite": ""
     },
     {
       "id": "F02-G",

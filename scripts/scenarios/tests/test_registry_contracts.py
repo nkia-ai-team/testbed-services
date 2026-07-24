@@ -76,7 +76,7 @@ class RegistryContractTests(unittest.TestCase):
     def test_all_64_scenarios_compile_with_trusted_live_plans(self) -> None:
         live_ids = {
             "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+            "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
             "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R", "F03-H",
         }
         for scenario in self.catalog["scenarios"]:
@@ -147,7 +147,7 @@ class RegistryContractTests(unittest.TestCase):
             live_ids,
             {
                 "F01-R", "F01-H", "F01-G", "F03-G", "F05-G", "F06-R",
-                "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+                "F07-H", "F08-H", "F09-P", "F11-R", "F11-G", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
                 "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R", "F03-H",
             },
         )
@@ -155,7 +155,7 @@ class RegistryContractTests(unittest.TestCase):
             self.controllers["live_scenario_ids"],
             [
                 "F01-R", "F01-H", "F03-G", "F06-R", "F07-H", "F08-H",
-                "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
+                "F09-P", "F11-G", "F01-G", "F05-G", "F11-R", "F02-R", "F02-P", "F04-R", "F12-H", "F06-G", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
                 "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F15-R", "F03-H",
             ],
         )

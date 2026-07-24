@@ -13,6 +13,7 @@
     "F05-G",
     "F11-R",
     "F02-R",
+    "F02-P",
     "F04-R",
     "F12-H",
     "F06-G",
@@ -3039,6 +3040,166 @@
             "op": "eq",
             "value": true
           },
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F02-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "15m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f02-p",
+            "parameters": {
+              "engine": "mysql",
+              "namespace": "rca-testbed-food",
+              "pod": "testbed-mysql-0",
+              "database": "fooddelivery",
+              "table": "menus",
+              "index": "idx_menus_category",
+              "column": "category_id",
+              "minimum_rows": 1000
+            },
+            "min_hold": "8m",
+            "settle": "30s",
+            "timeout": "13m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "restaurant_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "food-delivery-restaurant"
+          },
+          "freshness": "120s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "entry-reachable",
+            "observation": "entry_status",
+            "op": "ne",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "global-entry-failure",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "global-pod-failure",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
           {
             "id": "target-recovered",
             "observation": "target_health",

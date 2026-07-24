@@ -68,7 +68,8 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F02-R"
+          "F02-R",
+          "F02-P"
         ]
       },
       "scenario_parameters": {
@@ -84,6 +85,16 @@
           "index": "idx_products_name",
           "expected_indexdef": "CREATE INDEX idx_products_name ON product_schema.products USING btree (name)",
           "minimum_rows": 2000
+        },
+        "F02-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "menus",
+          "index": "idx_menus_category",
+          "column": "category_id",
+          "minimum_rows": 1000
         }
       }
     },
@@ -223,7 +234,8 @@
           "F09-H",
           "F05-P",
           "F15-R",
-          "F03-H"
+          "F03-H",
+          "F02-P"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -233,6 +245,7 @@
         "allowed_script_paths": [
           "/opt/loadgen/commerce/surge.js",
           "/opt/loadgen/food-delivery/surge.js",
+          "/opt/loadgen/food-delivery/order-surge.js",
           "/opt/loadgen/core-banking/surge.js"
         ],
         "allowed_baseline_units": [
@@ -265,7 +278,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P|15-R|03-H)$"
+        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P|15-R|03-H|02-P)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -293,7 +306,7 @@
         "F01-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -304,7 +317,7 @@
         "F01-H": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -337,7 +350,7 @@
         "F08-P": {
           "target_rps": 20,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -370,7 +383,7 @@
         "F06-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -381,7 +394,7 @@
         "F08-H": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -425,7 +438,7 @@
         "F02-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -436,7 +449,7 @@
         "F04-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -480,7 +493,7 @@
         "F05-H": {
           "target_rps": 20,
           "ramp_up": "2m",
-          "hold": "3m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -491,7 +504,7 @@
         "F01-P": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -524,7 +537,7 @@
         "F06-H": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "12m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -586,6 +599,17 @@
           "scenario_tag": "scenario_id=F03-H",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
+        },
+        "F02-P": {
+          "target_rps": 50,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F02-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
         }
       },
       "scenario_levels": {

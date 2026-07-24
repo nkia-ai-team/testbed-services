@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F02-P",
   "slug": "f02-p-mysql-menu-index-drop",
-  "readiness": "partial",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,14 +29,168 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f02-p-mysql-menu-index-drop/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f02-p",
+              "parameters": {
+                "engine": "mysql",
+                "namespace": "rca-testbed-food",
+                "pod": "testbed-mysql-0",
+                "database": "fooddelivery",
+                "table": "menus",
+                "index": "idx_menus_category",
+                "column": "category_id",
+                "minimum_rows": 1000
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "restaurant_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "parameters": {
+              "service_name": "food-delivery-restaurant"
+            },
+            "freshness": "120s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "entry-reachable",
+              "observation": "entry_status",
+              "op": "ne",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "global-entry-failure",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "global-pod-failure",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +224,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "menu SQL/index/data volume",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

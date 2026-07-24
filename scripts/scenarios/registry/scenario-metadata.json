@@ -121,6 +121,14 @@
       "user_impact": "상품 검색 응답이 느려지고 gateway 검색 요청이 timeout된다.",
       "distinguishing_evidence": "TopSQL 실행계획과 rows scanned가 변하며 DB lock과 host IO는 정상이다."
     },
+    "F02-P": {
+      "title": "메뉴 카테고리 조회 인덱스 제거로 인한 응답 지연",
+      "description": "food-delivery menus 테이블의 카테고리 조회 인덱스(idx_menus_category)를 제거해 메뉴 목록 조회 시 full scan과 응답 지연을 유발하는 시나리오다.",
+      "cause": "MySQL menu category lookup index removal",
+      "injection_summary": "인덱스 정의를 확인한 뒤 대상 인덱스를 제거하고 실측 기반(F02-R과 동일한 target_rps/hold) 진입 부하를 동시에 주입한다.",
+      "user_impact": "메뉴 목록·카테고리별 조회 응답이 느려지고 주문 화면 진입이 지연된다.",
+      "distinguishing_evidence": "카테고리별 메뉴 조회 지연(APM p95)이 증가하는 동안 MySQL 호스트 CPU/IO와 에러율은 정상 범위를 유지한다."
+    },
     "F04-R": {
       "title": "shipping consumer 중단으로 인한 배송 생성 지연",
       "description": "commerce shipping Kafka consumer를 지속 중단해 주문·결제 성공 후 배송 생성 SLA를 위반하는 시나리오다.",
