@@ -51,6 +51,43 @@ summary: baseline 위에 얹는 시나리오성 부하(surge)의 주입 규칙, 
   baseline 위에 얹는다. baseline이 흔들리면 정상 분포가 오염되고 시나리오 간
   독립성이 깨진다.
 
+### 인시던트 격상 정답표 (evaluation answer-key)
+
+R0의 귀결로 각 시나리오는 "인시던트가 나야 하는가"에 대한 정답값
+`expected_incident`를 가진다. 이 값은 채점의 **인시던트 계층 answer-key**이며,
+러너 캡처 메타데이터(strict `ScenarioMetadata`)가 아니라 이 문서가 정본이다.
+탐지·클러스터·RCA 계층 정답과는 독립이다 — 같은 시나리오가 탐지엔 true
+positive이면서 인시던트엔 false일 수 있다(§5 흡수 규율, spec-scenario-design §5).
+
+**클래스 기본값**
+
+| 클래스 | `expected_incident` |
+| --- | --- |
+| `G` guardrail | **false** (이상은 있으나 인시던트가 아님 — 흡수 또는 단일원인 부당) |
+| `R`/`H`/`P`/`T` | **true** (사용자 체감 장애로 이어지는 인과가 R0을 통과) |
+
+**단, 클래스만으로 값을 확정하지 않는다.** 2026-07-22 live-30 큐 실측(APM
+`error_rate`·checkout entry status·k6 `achieved_rps`)으로 클래스 기본값과
+어긋나는 사례가 드러났다:
+
+| 시나리오 | 기본 | 실측 | 정답 판정 |
+| --- | --- | --- | --- |
+| F01-G · F03-G · F05-G | false | error 0%, 흡수 확인 | **false (확정)** |
+| F11-G | false(absorbed 라벨) | error 27% + 인시던트 승격 | **재검토** — 라벨↔실측 불일치 |
+| F08-G · F15-G | false(guardrail) | checkout 5xx 실재(distractor/multi-root) | **true** — 인시던트는 나되 RCA만 guardrail(변경귀속·단일원인) |
+| F02-R · F04-R | true | 백엔드 error ~0%(soft, 지연만) | **재검토** — 부하가 의도한 장애 미발현(캘리브레이션 갭) |
+| F01-R · F06-R · F07-H | true | k6 148rps→gateway 502·백엔드 100% error | **true (확정)** |
+
+정리하면 `expected_incident`는 (1) `G`라도 distractor/multi-root면 true,
+(2) `R`이라도 부하가 약해 증상이 미발현이면 부하 재설계 대상, 세 가지 예외를
+가진다. 그리고 (3) F01-R·F06-R·F07-H처럼 **진짜 장애(사용자 502·백엔드 100%
+error)가 발생했는데도 미승격**인 경우는 answer-key 문제가 아니라 **인시던트
+탐지 계층의 결함**이다 — 원인은 lucida judge가 엣지(게이트웨이) 5xx를 인시던트
+신호로 보지 않고 백엔드 골든시그널만 읽으며, 백엔드 `error_rate`가 있어도 judge
+입력 enrichment에 실리지 않는 것(2026-07-22 judge decision 로그로 확인, 재현
+케이스 F06-R·F07-H). 이 결함은 인시던트 담당 컴포넌트에서 처리하며 테스트베드
+answer-key와 분리해 트래킹한다.
+
 ### 주입
 
 - **R2. 주입 위치는 부하 유형이 결정한다.**
