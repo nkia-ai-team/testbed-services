@@ -100,11 +100,11 @@
           },
           {
             "id": "payment_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
-            "parameters": { "service_name": "food-payment", "status_class": "502" }, "freshness": "60s"
+            "parameters": { "service_name": "food-delivery-payment", "status_class": "502" }, "freshness": "60s"
           },
           {
             "id": "pg_cb_open", "adapter": "prometheus", "query_id": "prometheus.circuitbreaker_open",
-            "parameters": { "service_name": "food-payment", "cb_name": "pg" }, "freshness": "30s",
+            "parameters": { "service_name": "food-delivery-payment", "cb_name": "pg" }, "freshness": "30s",
             "capability_gap": "NEW query_id — resilience4j CB state gauge for cb=pg on food-payment. Same class as pilot gateway_circuitbreaker_open gap. See sheet §5."
           },
           {

@@ -1,0 +1,176 @@
+{
+  "schema_version": "1.0",
+  "id": "F21-P",
+  "slug": "f21-p-banking-api-tomcat-thread-saturation",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P2",
+  "injection": {
+    "location": "banking-transfer-slowdown",
+    "matrix_location_transport": "tb-runner → host.stress(worker-w3 CPU) 또는 db.workload(transfer Oracle) 로 transfer-service execute() 지연 유발(단, 응답이 완료되는 느린-200 유지)",
+    "transport": "ssh/kubectl",
+    "profile_refs": [
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
+    ],
+    "injector_note": "정밀 delay injector 부재(transfer hop엔 mock 없음). db.lock은 무한대기→502→CB=FS-1/FS-2로 오염되어 부적격. host.stress/db.workload로 지연하되 account rt 15s·api rt 10s '미만' 유지 캘리브레이션. sheet §4-C."
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "host.stress"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "api-cb-open-fs2", "observation": "api_cb_open", "op": "eq", "value": 1 },
+            { "id": "api-502-cascade-fs1", "observation": "api_502_rate", "op": "gte", "value": 0.2 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f21-p",
+              "parameters": {
+                "target": "transfer-service",
+                "worker": "worker-w3",
+                "mechanism": "cpu-stress-or-db-workload",
+                "target_added_latency_seconds": 8,
+                "latency_ceiling_seconds": 10,
+                "companion_load": {
+                  "entry_url": "http://192.168.122.77:30082",
+                  "script_path": "/opt/loadgen/core-banking/transfer-surge.js",
+                  "business_step": "transfer",
+                  "target_rps": 180,
+                  "transfer_mix_note": "기본 surge는 transfer 10%뿐 → transfer-가중 변형 필요(λ≈25 transfer-rps 지속). sheet §4-B.",
+                  "baseline_unit": "loadgen-banking"
+                }
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "api_target_health", "adapter": "http_probe", "query_id": "http.target_health",
+            "parameters": { "service": "testbed-api", "namespace": "rca-testbed-banking", "port": 8080, "path": "/actuator/health" },
+            "freshness": "15s"
+          },
+          {
+            "id": "api_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-banking", "resource": "testbed-api" }, "freshness": "30s"
+          },
+          {
+            "id": "api_busy_threads", "adapter": "prometheus", "query_id": "prometheus.http_server_active_requests",
+            "parameters": { "service_name": "core-banking-api" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — OTel javaagent http.server.active_requests (동시 in-flight = Tomcat busy-thread 근사). api는 DataSource 없어 이게 유일 자원지표. sheet §4-A #1."
+          },
+          {
+            "id": "api_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "core-banking-api", "status_class": "502" }, "freshness": "60s"
+          },
+          {
+            "id": "api_cb_open", "adapter": "prometheus", "query_id": "prometheus.circuitbreaker_open",
+            "parameters": { "service_name": "core-banking-api", "cb": "accountClient" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — api accountClient CB state. open=FS-2로 전이 신호(must_rule_out). sheet §4-A #5."
+          },
+          {
+            "id": "transfer_slow_2xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": { "step": "transfer", "status_class": "2xx", "slow": true }, "freshness": "30s",
+            "capability_gap": "NEW query_id(헌장 §5/F18-P 공유) — transfer 느린-200 비율(F21-P는 502 아니라 느린 200이 정답). 현 banking surge는 not-5xx만 check. sheet §4-A #4."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "api-threads-saturated", "observation": "api_busy_threads", "op": "gte", "value": 180 },
+            { "id": "api-not-502-cascade", "observation": "api_502_rate", "op": "lt", "value": 0.05 },
+            { "id": "api-cb-still-closed", "observation": "api_cb_open", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "api-target-recovered", "observation": "api_target_health", "op": "eq", "value": 200 },
+            { "id": "api-threads-recovered", "observation": "api_busy_threads", "op": "lt", "value": 50 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["host.stress", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["host.stress", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "host.stress"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "① 지연 주입: transfer hop엔 정밀 delay injector 없음. db.lock은 무한대기→502→CB open=FS-1/FS-2를 만들어 감별대상 오염(부적격). host.stress(worker-w3) 또는 db.workload(transfer Oracle, live 미지원)로 지연하되 account rt 15s·api rt 10s '미만'의 느린-200 유지 캘리브레이션 필수(초과 시 FS-2로 전이). host.stress allowed_scenarios에 F21-P + 워커 매핑. ② 부하: api Tomcat 200 포화엔 transfer ~25 req/s 지속 필요(Little L=λ·8s). banking surge transfer 믹스 10%뿐 → transfer-가중 변형(transfer-surge.js) 필요. load.north_south는 banking entry(30082)·loadgen-banking·max_rps 180 기존 계약 → allowed_scenarios/tag_pattern에 F21-P만 추가. ③ 관측: NEW query — prometheus.http_server_active_requests(api busy-thread=유일 자원지표), prometheus.circuitbreaker_open(api CB, FS-2 배제), loadgen.transfer_2xx_rate(느린-200). api는 풀이 없어 hikari query 부재 자체가 FS-6 배제 증거. 자세히 sheet §4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

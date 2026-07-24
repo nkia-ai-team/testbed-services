@@ -1,0 +1,47 @@
+{
+  "F23-R": {
+    "title": "commerce 재입고 배치 정지 → 재고 소진 → checkout 409 조용한 기능마비",
+    "description": "inventory-service의 ReconciliationBatch.run(@Scheduled 10분)이 각 상품의 재고를 대사하고 기준치(20) 미달 재고를 target(200)으로 보충(RESTOCK)한다. 이 배치가 멈추면 상주 부하(loadgen checkout 5-hop)가 재고를 계속 소비하는데 보충이 없어 inventory.stock이 회수 없이 단조 감소해 0에 도달하고, InventoryService.reserve가 stock<quantity에서 409 CONFLICT 'Insufficient stock'을 낸다. product가 409를 그대로 전파하고 order productClient는 4xx를 CB 실패로 집계하지 않아(ProductClient.java:37) checkout이 409로 실패 급증한다 — 5xx도 CB open도 없는 '조용한 기능마비'. 정체성: 이 409는 '정상 재고소진(biz-reject)'과 코드가 같아, 배치정지(장애)인지 정상 소진인지 감별하는 것이 핵심. F19-Q(food 배차 만료 배치 정지, biz-503↔fault-503)의 commerce 동형(biz-409↔fault-409)이며 같은 스케줄러 정지 훅 능력갭을 공유한다. P3 자원고갈 계열.",
+    "class": "A",
+    "fault_pattern": "P3",
+    "domain": "commerce",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "ReconciliationBatch.run(@Scheduled 10분) 재입고 스텝 정지 → loadgen이 재고를 계속 소비하나 RESTOCK 미실행 → inventory.stock 단조 감소→0 → InventoryService.reserve가 409 CONFLICT → product가 409 전파 → order productClient가 4xx를 CB 미집계로 그대로 전파 → checkout 409 급증(5xx·CB open 없음)",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "commerce-inventory (testbed-inventory, rca-testbed-commerce) — ReconciliationBatch 재입고 스케줄러",
+      "mechanism": "ReconciliationBatch.run(@Scheduled fixedDelayString=inventory.reconciliation.interval-ms:600000)의 RESTOCK 루프(:74-91)가 stock<threshold(20)인 상품을 target(200)으로 보충한다. 이 배치가 멈추면 재입고가 끊겨 stock이 loadgen 소비로 단조 감소→0. InventoryService.reserve가 stock<quantity에서 409 CONFLICT throw(:79-83). product InventoryClient가 409를 status 그대로 전파(:33,48), order productClient는 4xx를 CB/Retry 실패집계에서 제외(ProductClient.java:37)해 checkout이 409로 실패하나 5xx·CB open은 발생하지 않음.",
+      "code_anchor": [
+        "commerce/inventory-service/.../service/ReconciliationBatch.java:46 (@Scheduled fixedDelayString=inventory.reconciliation.interval-ms:600000, 10분 주기; 주기가 env 바인딩 — F19-Q 하드코딩과 다른 점)",
+        "commerce/inventory-service/.../service/ReconciliationBatch.java:74-91 (RESTOCK 루프: stock<threshold(20) → target(200) 보충 + RESTOCK movement 기록 = 재고 회수 경로)",
+        "commerce/inventory-service/.../service/ReconciliationBatch.java:16-25 (파일 주석: 보충 없으면 전 상품 소진→checkout 영구 실패, 2026-07-14 실측 버그)",
+        "commerce/inventory-service/.../service/InventoryService.java:79-83 (stock<quantity → 409 CONFLICT 'Insufficient stock')",
+        "commerce/order-service/.../client/ProductClient.java:25,35-42 (@CircuitBreaker(productClient); 4xx는 ClientErrorException으로 CB 실패 미집계 → 5xx·CB open 없음)",
+        "commerce/product-service/.../client/InventoryClient.java:33,48 (409를 HttpStatus.valueOf로 그대로 전파)"
+      ],
+      "infra_anchor": "부분 존재(F19-Q와의 비대칭). 재입고 배치 주기가 @Scheduled fixedDelayString=${inventory.reconciliation.interval-ms}로 env 바인딩돼 k8s.env(SPRING_APPLICATION_JSON)로 interval-ms를 크게 주면 rollout 후 배치가 사실상 정지한다(고갈은 loadgen 자연 소비 → §2-A 위장 아님). 그러나 fixedDelayString은 bean-init 바인딩이라 pod 재시작을 강요하는 stopgap이고, 깨끗한 런타임 스케줄러 정지 훅은 미존재 — 이것이 주입 능력갭의 근원(F19-Q와 공유)."
+    },
+    "injection_summary": "[깨끗한 주입훅 미존재 — 관측 배선도 부재] 이 시나리오의 진짜 결함은 '재입고 배치가 멈추는 것'이다. F19-Q(dispatch 만료배치 하드코딩 @Scheduled)와 달리 재입고 배치는 주기가 env(inventory.reconciliation.interval-ms) 바인딩이라 k8s.env로 interval-ms를 크게 + rollout하면 사실상 정지가 가능하다(고갈은 loadgen의 자연 소비라 헌장 §2-A 위장이 아님) — F19-Q에 없는 우회로가 실재하는 셈. 그러나 fixedDelayString이 bean-init 바인딩이라 pod 재시작을 강요해 '돌던 배치의 일시정지'가 아니라 '재시작 후 미동작'이며 재시작 이벤트가 창을 오염시키고, 임의 극단 타이밍값은 헌장 §3.2가 물러서는 F08-P류 env-왜곡 optics에 걸려 golden 승격로가 아닌 검증용 stopgap에 머문다. restock threshold/target 하향은 고갈을 인위 제조하는 진짜 §2-A 위장이라 금지. 깨끗한 승격에는 pod 재시작 없이 지정 @Scheduled만 정지하는 런타임 훅이 선행돼야 하며, 이는 F19-Q와 단일 훅으로 통합 가능(business.fault stub 승격, sheet §4-B Option B). 더 깊은 블로커는 ③ 관측: inventory stock 시계열·RESTOCK 원장 유입율·checkout 409 rate 세 지표가 전부 부재해 biz-409와 fault-409를 분리할 수 없다.",
+    "user_impact": "checkout(주문 결제)이 재고부족 409로 실패 급증한다. inventory 서비스 자체는 pod ready·조회 200으로 정상이고 409는 4xx라 5xx·CB open·표준 알람이 조용해, 겉으로는 '정상적인 재고 소진(수요 급증)'처럼 보인다. 실제로는 재입고 배치 정지로 인한 조용한 기능마비다.",
+    "must_support": [
+      "checkout 409 'Insufficient stock' 비율 급증 (checkout_409_rate ≥ 0.3)",
+      "inventory.stock이 재입고 없이 단조 감소해 0에 정체 (재고=0 상품 수 증가, available=0 지속)",
+      "재입고 정지 신호 — RESTOCK movement 원장 유입이 0으로 끊김(ReconciliationBatch 미동작)"
+    ],
+    "must_rule_out": [
+      "정상 재고소진(biz-reject)이 아님 — 배치가 살아있으면 10분마다 RESTOCK으로 stock이 톱니파(20 밑돌면 200 복원); 회수가 끊기고 단조감소·RESTOCK row 0이면 장애. 이 감별이 핵심(409 이중성, F19-Q biz-503↔fault-503 동형)",
+      "inventory 서비스 다운/unavailable이 아님 — pod ready, GET /api/inventory 200. reserve는 409(insufficient stock)이지 503/timeout이 아님",
+      "재고 row-lock 경합(C2)이 아님 — 그건 지연/timeout 증상이고 409가 아님(락 경합은 stock>0에서 발생)",
+      "5xx·CB open이 아님 — 409는 4xx라 order productClient CB가 실패 미집계(ProductClient.java:37). checkout_5xx_rate 정상·CB closed"
+    ],
+    "distinguishing_evidence": "핵심 감별은 '409의 두 원인 분리'다: (1) 정상 재고소진 — 재입고 배치가 stock을 주기적으로 target(200)으로 복원하므로 stock이 톱니파로 오르내리고 RESTOCK movement가 계속 유입; (2) 배치정지 장애 — stock이 회수 없이 단조감소해 0에서 정체, RESTOCK movement 유입이 0으로 끊김. 상태코드(409)와 inventory 응답(pod ready·조회 200)만으로는 구분 불가 — stock 시계열 추세와 RESTOCK 원장 유입율로만 감별된다. 게다가 409는 4xx라 5xx·CB open 신호가 전무해 표준 알람이 조용하다. naive RCA는 checkout 실패를 order/checkout 결함으로 오판하고, 한 단계 나아가도 '정상 수요 급증에 의한 재고 소진'으로 오판하기 쉽다. 정답=inventory 재입고 배치 정지.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F19-Q (food 배차 만료 배치 정지 — 동종 구조·같은 스케줄러 정지 훅 공유. 그쪽은 biz-503↔fault-503, 이쪽은 biz-409↔fault-409)",
+        "정상 재고소진(no-incident) — 같은 409 코드지만 배치 회수가 살아있어 stock이 톱니파·RESTOCK 유입 지속 = 장애 아님. F23-R의 감별 대상",
+        "F10 계열 / fault-surface C2(재고 row-lock 경합) — 같은 inventory 표면이나 증상이 지연/timeout·5xx이지 409 조용마비가 아님. C10(재입고 배치 정지)이 F23-R의 근거"
+      ]
+    }
+  }
+}

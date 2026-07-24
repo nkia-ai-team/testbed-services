@@ -105,12 +105,12 @@
           },
           {
             "id": "order_hikari_pending", "adapter": "prometheus", "query_id": "prometheus.hikari_pending_connections",
-            "parameters": { "service_name": "food-order" }, "freshness": "30s",
+            "parameters": { "service_name": "food-delivery-order" }, "freshness": "30s",
             "capability_gap": "NEW query_id — Hikari active/pending gauge for food-order. Verify OTel javaagent exposes hikaricp_connections_pending; register query. See sheet §5."
           },
           {
             "id": "payment_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
-            "parameters": { "service_name": "food-payment", "status_class": "502" }, "freshness": "60s"
+            "parameters": { "service_name": "food-delivery-payment", "status_class": "502" }, "freshness": "60s"
           },
           {
             "id": "order_create_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",

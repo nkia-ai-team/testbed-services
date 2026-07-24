@@ -1,0 +1,47 @@
+{
+  "F24-Q": {
+    "title": "food restaurant 최상류 차단 → order 전량 502 (retry 증폭 fan-in)",
+    "description": "food order-service의 createOrder는 모든 주문에서 restaurant를 2회(getRestaurant :60 + getMenu :73) hard-dependency로 호출하며, 이 두 콜은 order DB 쓰기(:128)보다 앞선다. restaurant NodePort(30181)에 조회 부하를 폭주시켜 Hikari 10(최소풀)·Tomcat 스레드를 자연 포화시키면 getRestaurant/getMenu가 read-timeout 5s를 초과하고, order측 @Retry(restaurant) max-attempts=3 지수백오프가 재시도를 증폭(실패 주문당 restaurant 호출 최대 6회 = 양성 피드백)하며, 실패율 50%↑에 @CircuitBreaker(restaurant)가 open되어 fallback이 즉시 502 BAD_GATEWAY를 던진다. 증상은 orchestrator인 order의 502 전량이나 원인은 최상류 리프 restaurant다. downstream 없는 restaurant가 모든 주문의 단일 상류 SPOF라는 fan-in 취약(P4 변형)이 정체성.",
+    "class": "A",
+    "fault_pattern": "P4-variant",
+    "domain": "food-delivery",
+    "observation_domains": ["APM"],
+    "cause": "restaurant NodePort(30181) 조회 부하 폭주 → restaurant Hikari 10·Tomcat 스레드 포화, restaurant p95 급등 → order getRestaurant/getMenu가 read-timeout 5s 초과 → @Retry(restaurant) 3회 증폭 → 실패율 50%↑ → @CircuitBreaker(restaurant) open → fallback 502 BAD_GATEWAY → createOrder가 DB 쓰기 이전 단계(:60/:73)에서 502 전파 → order 전량 502",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "food-restaurant (testbed-restaurant, rca-testbed-food) — 부하로 포화된 최상류 리프. 502를 order 전량으로 증폭시키는 결함 구조는 order측 코드(retry·hard-dependency·bulkhead 부재)",
+      "mechanism": "OrderService.createOrder(@Transactional)가 모든 주문에서 restaurantClient.getRestaurant/getMenu를 order DB 쓰기 이전에 순차 호출(단일 상류 2회 hard-dependency). restaurant 지연 시 order측 @Retry(restaurant) max-attempts=3 지수백오프가 재시도를 증폭해 restaurant에 양성 피드백 부하를 가하고, 실패율 50%↑에 @CircuitBreaker(restaurant) open→getRestaurantFallback/getMenuFallback이 502 BAD_GATEWAY를 던져 order가 전량 502로 실패. F19-P와 달리 502가 order DB 쓰기·커넥션풀 고갈 이전(:60/:73)에서 발생.",
+      "code_anchor": [
+        "food-delivery/order-service/.../service/OrderService.java:57 (@Transactional createOrder), :60 (restaurantClient.getRestaurant), :73 (restaurantClient.getMenu) — 모든 주문의 restaurant 2회 hard-dependency, DB 쓰기(:128)보다 앞",
+        "food-delivery/order-service/.../client/RestaurantClient.java:29-30,58-59 (@CircuitBreaker(restaurant)+@Retry(restaurant)), :44,:55 (502 BAD_GATEWAY fallback), :40-42,:69-71 (4xx는 ClientErrorException로 회로 안 엶)",
+        "food-delivery/order-service/src/main/resources/application.yml:54 (restaurant read-timeout 5s), :69-77 (CB restaurant window10/min5/50%/open5s), :98-104 (retry restaurant max-attempts=3·200ms·exp×2)",
+        "food-delivery/restaurant-service/src/main/resources/application.yml:13 (restaurant Hikari maximum-pool-size 10, 최소 풀)"
+      ],
+      "infra_anchor": "food-delivery/k8s/21-restaurant-deploy.yaml:118 — testbed-restaurant-external NodePort 30181 (조회 부하 주입면). 부하원 보조: restaurant-service/.../MenuRepository.java:17(order_items⋈orders⋈menus 크로스테이블 조인) + PopularMenuBatch.java:37,45(@Scheduled 1h) — 자연 CPU/DB 압박원이나 1h 주기라 주입 타이밍 제어 불가(수단 선택에서 배제, sheet §4). 별도 인프라 조작 없이 부하로만 restaurant 자연 포화."
+    },
+    "injection_summary": "load.north_south executor로 restaurant NodePort(entry http://192.168.122.77:30181)에 food surge.js 조회 부하(target_rps≈70)를 흘려 restaurant Hikari 10·Tomcat 스레드를 자연 포화시킨다. order-create 트래픽은 baseline(loadgen-food)이 공급하며, 포화된 restaurant 탓에 baseline 주문이 502를 받는다. mock.expectation은 restaurant가 실 서비스라 부적용, PopularMenuBatch는 1h 스케줄이라 타이밍 제어 불가, CPU stress는 §2-A Class B 위장이라 배제 — load.north_south가 유일한 실재·계약준비완료(F02-P 선례) 수단. cleanup은 load ramp_down 후 정지(restaurant는 부하 제거만으로 회복, 상태 롤백 불필요).",
+    "user_impact": "주문 생성(POST /api/orders)이 restaurant 조회 실패로 502 BAD_GATEWAY 전량 실패한다. 실패가 DB 쓰기 이전(restaurant 검증 단계)에서 나므로 주문이 아예 생성되지 않는다. restaurant 자체는 조회 부하로 p95 급등·에러율 상승을 보이나 order가 증상의 수렴점이라 원인이 order로 오인되기 쉽다. downstream 없는 restaurant가 모든 주문의 단일 상류라는 점이 사각.",
+    "must_support": [
+      "order create 502 비율 급증 (order_create_502_rate ≥ 0.1) — restaurant fallback 502 전파",
+      "restaurant p95 급등 (food-delivery-restaurant) + restaurant apm_service_error_rate 상승 — root가 restaurant임을 지목",
+      "(관측 배선 시) order측 resilience4j cb=restaurant open — 재시도 증폭 후 회로 개방"
+    ],
+    "must_rule_out": [
+      "payment/PG가 502로 터진 게 아님 — payment_502_rate < 0.05, pg CB 정상. payment가 root면 F19-S(PG 502→CB open)",
+      "order create가 503(dispatch biz-reject)이 아님 — order_create_503_rate 낮음. 503 우세면 F19-Q(dispatch 배치정지 capacity 소진)",
+      "order 자신의 커넥션풀 고갈발 5xx/timeout이 아님 — 502가 DB 쓰기 이전(:60/:73)에서 발생, Hikari pending 정상~경미. 풀 pending이 주신호면 F19-P(롱tx 풀고갈, 하류 502 없음)",
+      "외부 rate-limit/429 아님 — food 도메인은 429 없음(용량초과는 503). entry_status ≠ 429"
+    ],
+    "distinguishing_evidence": "order의 502는 order 자신의 결함이 아니라 최상류 restaurant의 지연이 order측 retry 증폭·hard-dependency·CB open을 거쳐 fallback 502로 전파된 결과다. 결정 감별 두 축: (1) 어느 downstream이 아픈가 — F24-Q는 restaurant p95·error_rate 급등(payment 정상), F19-S는 payment 502·pg CB open(restaurant 정상)으로 같은 order 502를 가른다. (2) 하류가 명시적 5xx를 내는가 — F24-Q는 restaurant가 502를 내지만, F19-P는 하류가 502 없이(payment 200 지연) order Hikari pending만 오른다. F19-Q와는 상태코드(502 vs 503)로 갈린다. restaurant는 downstream 없는 '무해한 리프'로 보여 후보에서 배제되기 쉬우나 모든 주문의 단일 상류 SPOF다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F19-P (order 롱tx 커넥션풀 고갈: 증상 order 5xx/timeout 동일하나 하류 502 없이 order Hikari pending; F24-Q는 restaurant가 명시적 502·restaurant p95 급등)",
+        "F19-S (PG 502→pg CB open→order 502 연쇄: 같은 order 502이나 root=payment/PG. F24-Q는 root=restaurant — downstream별 p95/error_rate로 결정 감별)",
+        "F19-Q (dispatch 배치정지 capacity 소진→order 503: 상태코드 503 biz형으로 F24-Q의 502와 갈림)",
+        "F02-P (MySQL menus 인덱스 드롭→restaurant getMenu 풀스캔 지연→order 지연: root가 DB 인덱스. F24-Q는 restaurant app-level 포화(Hikari/스레드)로 root layer가 다름 — DB vs 앱)",
+        "C7 인덱스 계열 (fault-surface C7 / F02: restaurant 지연의 DB측 root. F24-Q는 동일 restaurant→order 경로의 앱측 포화 root)"
+      ]
+    }
+  }
+}

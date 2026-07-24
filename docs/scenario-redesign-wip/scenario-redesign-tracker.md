@@ -3,6 +3,20 @@
 순서: ①설계완성 → ②배관완성 → ③실주입 스모크검증 → ④일괄 배치실행
 상태 범례: ⬜미착수 / 🔧설계중 / 📝설계완료(gap있음) / ✅설계완료(gap없음)
 
+## 신규 2차 (8, 07-24) — 커버리지 확장. 설계 완료 (coverage-matrix 잔여 빈칸 + fault-surface 미소진 표면)
+| id | 시나리오 | 도메인 | 패턴 | ①② | ③ | ④ | 배관 gap |
+|---|---|---|---|:--:|:--:|:--:|---|
+| F20-R | order 통계/검색 슬로우쿼리 → 공유 PG 교차오염 | commerce | P8(신설:슬로우쿼리) | ✅ | 🟡 | 🟡 | slowquery.js 신설 + DB-side CPU/쿼리시간 query(교차오염 ground-truth) |
+| F20-P | transfer stats trunc 풀스캔(인덱스 실재·무력화) → 이체 경합 | banking | P8 | ✅ | 🟡 | 🟡 | slowquery.js + hikari_pending(F19-P 공유) |
+| F20-Q | 무제한 조회 unpaged + DATE() filesort → 힙(1Gi)·MySQL 압박 | food | P8 | ✅ | 🟡 | 🟡 | slowquery.js. 힙은 기존 container_memory로 관측 가능(3종 중 최선) |
+| F21-Q | food order Tomcat 200 포화 (Hibernate 지연획득으로 Hikari 미보유 구간) | food | P2 | ✅ | 🟡 | 🟡 | active_requests query + create-heavy surge(λ≈50/s). 정밀 delay injector 부재=캘리브레이션 게이트 |
+| F21-P | banking api Tomcat 200 포화 (DataSource 부재=유일 무풀 서비스) | banking | P2 | ✅ | 🟡 | 🟡 | active_requests + transfer-heavy surge(λ≈25/s, 총 250rps > max_rps 180) |
+| F22-P | transfer Hikari(15) 자연 고갈 — 무관 계좌까지 전멸 (F01-P와 answer-key 분리) | banking | P1+P3 | ✅ | 🟡 | ❌ | **진짜 능력갭**: hot-account transfer-heavy surge 부재(현 banking 부하로 재현 불가). query는 F19-P/F18-P 공유 |
+| F23-R | 재입고 배치(ReconciliationBatch) 정지 → 재고소진 → 409 조용마비 | commerce | P5류(배치) | ✅ | ❌ | 🟡 | **하드블로커=③**: inventory stock/RESTOCK rate/409 버킷 query 전무. ④는 env(interval-ms) stopgap 실재(검증용 한정), 정식=F19-Q 공유 훅 |
+| F24-Q | restaurant 최상류 차단 → order 전량 502 (retry 3x 증폭 fan-in) | food | P4류(fan-in) | ✅ | 🟡 | 🟡 | F02-P 경로 재사용(30181 flood, 신규 executor 0) + cb=restaurant query. calibration만 |
+
+요지: 8개 전부 ①②(코드앵커+정답) ✅ · 실소스 재검증 완료(드리프트: F20 dailyStats 라인, F19 service_name 4곳→정정됨). **7개는 배선/calibration, F22-P만 진짜 능력갭**(banking hot-account surge). 공유 훅 통합안: business.fault stub 승격 1건으로 F19-Q+F23-R 동시 해제(F23 sheet §4-B). 시트: design-F20-slowquery/F21-threads/F22-P/F23-R/F24-Q-sheet.md.
+
 ## 신규 (7) — 설계 완료. 4조건: ①코드앵커 ②정답 ③감별 ④주입수단
 | id | 시나리오 | 도메인 | 패턴 | ①② | ③ | ④ | 배관 gap |
 |---|---|---|---|:--:|:--:|:--:|---|
@@ -30,7 +44,7 @@
 
 ## Phase 1 최종 (진짜장애 카탈로그)
 - 64 → **CUT 23** (음성13 + 근거없음7 + FIX강등3: F02-R/F03-R/F14-H)
-- 잔존 **48 = KEEP 14 + FIX 27 + 신규 7**. 전부 ①코드/인프라앵커 + ②정답 완료(또는 명확한 gap).
+- 잔존 48 = KEEP 14 + FIX 27 + 신규 7. **+ 신규 2차 8(F20~F24, 07-24) = 총 56**. 전부 ①코드/인프라앵커 + ②정답 완료(또는 명확한 gap).
 - 남은 일 = ③④(관측배선+injector) = **Phase 2**.
 
 ## Phase 2 백로그 (③④ 배관) — 3버킷
@@ -43,6 +57,9 @@
 - 대상: F16-H·F17-P·F18-P·F04-H·F04-P·F19-P/S·F06-P·F15-H/T2·F10×3(+좌표정정)
 ### 버킷3 진짜 능력갭 (신규 훅/executor/소스변경):
 - F19-Q(dispatch @Scheduled 정지 훅) · F14-P(선별유실 injector) · F14-R(중복/유실 fault-proxy) · F15-P(co-residency 보장) · F15-T3/T4(timeline 결속 계약) · F13×3+F12(NMS/WPM 실 executor) · F03-H(합성 엔드포인트 제거)
+- (07-24 추가) **스케줄러 정지 훅 통합**: business.fault stub(profiles.json, live_supported=false) 승격 → F19-Q+F23-R 동시 해제(계약 키잉={namespace,deployment,scheduler_method}, F23-R sheet §4-B) · **F22-P**(banking hot-account transfer-heavy surge 신설 — DB_POOL_MAX 하향은 §2-A 위배로 금지)
+### 버킷2 추가분 (07-24, 신규 2차 배선):
+- slowquery.js 3도메인(F20 공유) + DB-side CPU/쿼리시간 query(F20-R ground-truth) · prometheus.http_server_active_requests(F21 공유) · cb=restaurant(F24-Q, F19-S cb=pg와 공유 신설) · inventory stock/RESTOCK rate/409 버킷 query 3종(F23-R 하드블로커) · surge 변형(create-heavy λ50/transfer-heavy λ25 — F21 캘리브레이션 게이트)
 
 ## KEEP (14) — 그대로 골든
 F01-R, F01-H, F01-P, F04-R, F06-R, F06-H, F07-P, F08-H, F08-G, F11-R, F12-H, F15-G, F15-R, F15-T1

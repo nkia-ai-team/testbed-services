@@ -1,0 +1,174 @@
+{
+  "schema_version": "1.0",
+  "id": "F22-P",
+  "slug": "f22-p-banking-transfer-pool-exhaustion",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P3",
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh → Oracle NodePort 30308 (row FOR UPDATE) + tb-runner k6 → banking nginx 30082",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.lock",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-session-tag-clean",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "db.lock",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "db.lock"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "oracle-down", "observation": "oracle_pod_ready", "op": "eq", "value": false }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f22-p",
+              "parameters": {
+                "engine": "oracle",
+                "namespace": "rca-testbed-banking",
+                "pod": "testbed-oracle-0",
+                "schema": "BANKING",
+                "table": "accounts",
+                "key_column": "id",
+                "key_value": "ACC-1001",
+                "client_identifier": "rca-F22-P-oracle-pool-lock",
+                "hold_seconds": 600
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "account_target_health", "adapter": "http_probe", "query_id": "http.target_health",
+            "parameters": { "service": "testbed-account", "namespace": "rca-testbed-banking", "port": 8081, "path": "/actuator/health" },
+            "freshness": "15s"
+          },
+          {
+            "id": "oracle_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-banking", "resource": "testbed-oracle" }, "freshness": "30s"
+          },
+          {
+            "id": "tagged_db_sessions", "adapter": "database", "query_id": "database.tagged_session_count",
+            "parameters": { "scenario_tag": "rca-F22-P-oracle-pool-lock" }, "freshness": "30s"
+          },
+          {
+            "id": "transfer_hikari_pending", "adapter": "prometheus", "query_id": "prometheus.hikari_pending_connections",
+            "parameters": { "service_name": "core-banking-transfer" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — core-banking-transfer Hikari active/pending gauge. 이 시나리오의 결정적 신호(active≈15 & pending>0 = 커넥션 큐잉으로 풀 고갈). F19-P가 food-order용으로 제안한 동일 query(service_name만 상이). OTel javaagent가 hikaricp_connections_pending 노출 확인 후 등록. sheet §4-B."
+          },
+          {
+            "id": "account_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "core-banking-account", "status_class": "502" }, "freshness": "60s"
+          },
+          {
+            "id": "control_transfer_2xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": { "account_class": "control" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — 락과 무관한 control 계좌쌍(예 ACC-1006→ACC-1007) 이체 성공률. F22-P의 정체성 증거(pool 고갈이면 무관 이체도 실패 → control_2xx↓; F01-P lock 대기면 control은 200 유지). banking surge가 이체를 hot/control 클래스로 태깅·status-class emit해야 함(현 surge는 not-5xx check만). F18-P transfer_2xx_rate 계열. sheet §4-B."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "lock-present", "observation": "tagged_db_sessions", "op": "gt", "value": 0 },
+            { "id": "pool-exhausted", "observation": "transfer_hikari_pending", "op": "gt", "value": 0 },
+            { "id": "unrelated-transfer-fails", "observation": "control_transfer_2xx_rate", "op": "lt", "value": 0.9 },
+            { "id": "account-502-impact", "observation": "account_502_rate", "op": "gte", "value": 0.1 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "account-target-recovered", "observation": "account_target_health", "op": "eq", "value": 200 },
+            { "id": "pool-recovered", "observation": "transfer_hikari_pending", "op": "eq", "value": 0 },
+            { "id": "lock-cleared", "observation": "tagged_db_sessions", "op": "eq", "value": 0 },
+            { "id": "control-recovered", "observation": "control_transfer_2xx_rate", "op": "gte", "value": 0.95 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["db.lock", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["db.lock", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "db.lock"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "진짜 능력갭(배선 아님): (1) banking 부하가 pool 고갈을 못 만든다 — 현 core-banking/loadgen/surge.js는 이체 10%·랜덤 계좌·건강상한 20rps라 hot 계좌에 ≥15 동시 FOR UPDATE 대기를 못 쌓음. hot계좌 집중·transfer-heavy·고동시성 surge 변형 필요. DB_POOL_MAX 하향 우회는 헌장 §2-A 위장 금지라 불가(자연 고갈 요건). (2) banking surge가 load.north_south에 미배선 — 30082 진입 시나리오 0개(F01-P는 cross-domain commerce surge). F22-P용 계약(entry 30082, script core-banking surge 변형, baseline_unit loadgen-banking) 신설. 배선(재사용): db.lock allowed_scenarios+scenario_parameters(oracle, key_value=hot 계좌, client_identifier rca-F22-P-oracle-pool-lock, hold 600) — executor 코드 변경 없이 계약 등록만. NEW query_id 2종: prometheus.hikari_pending_connections(core-banking-transfer, F19-P와 공유), loadgen.transfer_2xx_rate(control 계좌 클래스). 자세히 sheet §4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

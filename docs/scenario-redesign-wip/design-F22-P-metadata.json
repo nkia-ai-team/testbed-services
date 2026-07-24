@@ -1,0 +1,46 @@
+{
+  "F22-P": {
+    "title": "banking transfer 커넥션풀(15) 고갈 — 무관 계좌 이체까지 전면 실패",
+    "description": "core-banking transfer-service의 execute()는 timeout 없는 @Transactional 안에서 두 계좌를 NOWAIT/timeout 없이 순차 FOR UPDATE(무한 대기)한다. Oracle의 hot 계좌 row에 장기 lock을 걸고 그 계좌로 이체를 고동시성으로 집중시키면, 락 대기 이체들이 Hikari 커넥션을 반납하지 못한 채 점유해 maximum-pool-size 15가 고갈된다. 그 시점부터는 신규 이체가 lock 경합에 도달하기도 전에 커넥션 획득 단계에서 connection-timeout 3000ms를 초과(CannotGetJdbcConnection→500)하므로, 락과 무관한 계좌쌍 이체까지 전부 3s 만에 실패한다. 증상은 502를 뱉는 account/api로 수렴하나 원인은 transfer의 커넥션풀 고갈이다. P3(무제한 비관적 row-lock)+P2(기본 풀·timeout 부재) 결합.",
+    "class": "A",
+    "fault_pattern": "P3",
+    "domain": "core-banking",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "Oracle BANKING.accounts hot 계좌 row 장기 FOR UPDATE + hot 계좌 집중 이체 고동시성 → transfer execute()가 커넥션 보유한 채 무한 lock 대기 → 대기 이체 수 ≥ Hikari 15 → 풀 고갈 → 신규 이체가 connection-timeout 3s 초과 500 → account 502",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "core-banking-transfer (testbed-transfer, rca-testbed-banking) — 트리거는 Oracle row lock이나 5xx를 내는 결함 구조는 transfer의 Hikari 15 커넥션풀 고갈(자연 소진)",
+      "mechanism": "TransferService.execute()가 @Transactional(timeout 미설정) 안에서 AccountRepository.findByIdForUpdate를 NOWAIT/timeout 없이 순차 호출(무한 대기). hot 계좌 row가 외부 lock으로 점유된 상태에서 그 계좌로 이체가 몰리면, 대기 트랜잭션이 각각 Hikari 커넥션 1개를 반납 없이 붙잡아 maximum-pool-size 15가 고갈된다. 이후 신규 execute()는 findByIdForUpdate에 도달하기 전 커넥션 획득에서 connection-timeout 3000ms 초과 → CannotGetJdbcConnection → GlobalExceptionHandler 미매핑 → Spring 기본 500. account.validateAndForward의 transferClient가 이 5xx를 502 BAD_GATEWAY로 매핑. 락은 트리거일 뿐 실제 5xx 원인은 커넥션 자원 고갈이라, 락과 무관한 계좌쌍 이체까지 동일하게 실패한다.",
+      "code_anchor": [
+        "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/AccountRepository.java:18-20 (@Lock(PESSIMISTIC_WRITE) findByIdForUpdate — NOWAIT/timeout 없음, 무한 대기)",
+        "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:51 (execute() @Transactional, timeout 미설정), :68-71 (firstId/secondId 순차 findByIdForUpdate — 커넥션 보유한 채 lock 대기)",
+        "core-banking/transfer-service/src/main/resources/application.yml:13 (Hikari maximum-pool-size ${DB_POOL_MAX:15}), :15 (connection-timeout 3000ms)",
+        "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:45 (RestClientException → ServiceException 502 BAD_GATEWAY), :53 (CB open/retry 소진 fallback도 502)"
+      ],
+      "infra_anchor": "없음(순수 앱 커넥션풀 고갈 — Class A). 주입면은 db.lock(oracle) executor로 testbed-oracle-0(FREEPDB1) BANKING.accounts row FOR UPDATE(F01-P와 동일 실물). 풀 크기 15는 env DB_POOL_MAX 기본값을 인위 축소 없이 자연 소진한다(헌장 §2-A 준수)."
+    },
+    "injection_summary": "db.lock(oracle) executor로 testbed-oracle-0에 client_identifier=rca-F22-P-oracle-pool-lock 태그의 SELECT ... FOR UPDATE를 hot 계좌(예 ACC-1001) row에 hold_seconds=600 걸고, load.north_south(banking surge 변형)로 hot 계좌 집중·transfer-heavy·고동시성 이체를 흘려 ≥15 트랜잭션이 동시에 FOR UPDATE 대기에 걸리게 한다 → Hikari 15 자연 고갈. 동시에 control 계좌쌍(ACC-1006→ACC-1007, hot 아님) 이체를 흘려 그 실패로 pool 고갈을 입증한다. cleanup은 lock 세션 종료 + surge 중단(이체 데이터 롤백 불필요 — COMPLETED만 커밋). live_allowed=false(능력갭 미해소).",
+    "user_impact": "이체(POST /api/transfers)가 락 대상 계좌뿐 아니라 락과 무관한 계좌쌍까지 커넥션 획득 실패로 3초 만에 502가 되어 사실상 전면 실패한다. 계좌 조회(GET, 짧은 커넥션 사용)는 상대적으로 견디나 이체 경로 전체가 마비된다. transfer 자체는 5xx를 직접 안 뱉고 지연·풀고갈만 보이며 502는 account/api에서 관측돼 원인이 오인되기 쉽다.",
+    "must_support": [
+      "account/api 502 비율 급증 (account_502_rate ≥ 0.1) — transfer 커넥션 획득 실패발 500이 502로 매핑",
+      "transfer Hikari 풀 고갈 신호 (active≈15 & pending>0 지속) — 커넥션 큐잉, 이 시나리오의 결정적 증거",
+      "락과 무관한 control 계좌쌍 이체까지 실패 (control_transfer_2xx_rate < 0.9) — 실패가 특정 row가 아니라 커넥션 자원에서 남",
+      "Oracle tagged lock 세션 존재 (tagged_session_count > 0, tag=rca-F22-P-oracle-pool-lock)"
+    ],
+    "must_rule_out": [
+      "control(무관 계좌) 이체가 여전히 200이면 F22-P 아님 — 그건 F01-P류 특정 row lock 대기(hot 계좌만 영향). F22-P의 정체성은 커넥션 자원 고갈로 무관 이체도 실패하는 것",
+      "Oracle 자체 다운/광역 지연 아님 — oracle pod ready, 전 서비스 균등 500이 아니라 transfer 커넥션 큐잉이 국소 원인 (FS-12 Oracle-down과 구분)",
+      "DB_POOL_MAX를 낮춘 인위 축소 아님 — 기본 15를 실제 동시 lock-대기로 자연 소진 (헌장 §2-A Class A 위장 금지 준수)",
+      "외부 rate-limit/429 아님 — banking 도메인은 429 없음"
+    ],
+    "distinguishing_evidence": "transfer의 5xx는 특정 계좌 lock 경합 때문이 아니라 transfer 자신의 Hikari 커넥션이 모두 소진돼(active=15, pending>0) 신규 요청이 커넥션 획득 3s 타임아웃에 걸려 발생한다. 결정적 증거는 (1) transfer Hikari active=max & pending>0, (2) 락과 무관한 control 계좌쌍 이체까지 3s 만에 502로 동반 실패 — 이 둘의 결합이 F01-P(lock 대기: 무관 이체는 200, pending 낮음)와 F22-P를 가른다. Oracle blocking session(rca-F22-P-oracle-pool-lock)은 트리거로 존재하나 그것만으론 F01-P와 구분 불가하며, 무관 계좌 이체의 동반 실패가 유일한 결정 증거다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F01-P (동일 Oracle row FOR UPDATE 주입면이나 정답이 특정 commerce-settlement 계좌쌍의 lock 대기 — 그 계좌를 건드리는 이체만 지연/502이고 무관 계좌 이체는 200 완료; F22-P는 락 대기가 Hikari 15를 고갈시켜 무관 계좌 이체까지 커넥션 획득 실패로 전면 502)",
+        "F21-P (banking transfer 스레드/동시성 계열 — 자원 고갈 축이 다름; F22-P는 DB 커넥션풀 15 축)",
+        "FS-2 계열 (transfer 지연 → account CircuitBreaker OPEN → 즉시 502; F22-P는 CB open 이전 단계인 커넥션 자원 고갈이 근본, hot만이 아니라 전 이체 대상)"
+      ]
+    }
+  }
+}

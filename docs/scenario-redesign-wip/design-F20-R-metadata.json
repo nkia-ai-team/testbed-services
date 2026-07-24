@@ -1,0 +1,44 @@
+{
+  "F20-R": {
+    "title": "commerce order 통계/검색 슬로우쿼리 → 공유 PostgreSQL CPU 오염 → 타 스키마 교차 지연",
+    "description": "commerce order-service의 GET /api/orders/stats/daily(일별 집계)와 무제한 search(page/size 미지정)는 orders(50k)를 인덱스 없이 풀스캔한다. orders에는 idx_orders_user(user_id) 하나뿐이라 created_at 기준 집계·검색이 전부 풀스캔이 되고, dailyStats는 FUNCTION('DATE', created_at) GROUP BY로 인덱스를 아예 못 탄다. 이 무거운 조회를 반복하면 order 응답이 느려질 뿐 아니라 단일 PostgreSQL 인스턴스의 CPU가 상승해 같은 인스턴스에 스키마만 분리해 얹힌 payment_schema·inventory_schema 조회까지 동반 지연된다(공유자원 오염). payment/inventory는 5xx 없이 '느려짐'만 보여 원인이 order로 오인된다. 신규 슬로우쿼리 패턴(P8 후보).",
+    "class": "A",
+    "fault_pattern": "P8",
+    "domain": "commerce",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "GET /api/orders/stats/daily?days=90 + 무제한 /api/orders search 반복 호출 → OrderRepository.dailyStats(FUNCTION('DATE') GROUP BY)·search(OR-null 술어)가 orders(50k) 풀스캔(created_at/status 인덱스 부재, idx_orders_user 유일) → order 지연 + 단일 PostgreSQL 인스턴스 CPU 상승 → 동일 인스턴스의 payment_schema/inventory_schema 조회 동반 지연(교차 스키마 오염) → payment/inventory는 5xx 없이 지연만",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "commerce-order (testbed-order, rca-testbed-commerce) — 근본은 order 통계/검색 쿼리의 인덱스 설계 결함이며, 교차 지연의 매개는 단일 공유 PostgreSQL 인스턴스",
+      "mechanism": "OrderRepository.dailyStats가 JPQL FUNCTION('DATE', o.createdAt) GROUP BY로 orders를 집계 — orders의 유일한 인덱스는 idx_orders_user(user_id)라 created_at 기준 스캔이 인덱스를 타지 못하고 50k 풀스캔이 된다. search도 (:x IS NULL OR ...) OR-null 술어라 인덱스 미선택 풀스캔. 이 풀스캔이 단일 PostgreSQL 인스턴스의 CPU를 잠식하고, 동일 인스턴스에 스키마 분리로 공존하는 payment_schema/inventory_schema 쿼리까지 CPU 경합으로 동반 지연시킨다. 인덱스가 드롭된 게 아니라 설계상 상시 부재라는 점이 F02-R(드롭)과 다르다.",
+      "code_anchor": [
+        "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java:32-35 (dailyStats — FUNCTION('DATE', createdAt) GROUP BY, created_at 인덱스 없음 → 풀스캔)",
+        "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java:19-28 (search — (:x IS NULL OR ...) OR-null 술어 → 인덱스 미선택 풀스캔)",
+        "commerce/order-service/src/main/java/com/commerce/order/controller/OrderController.java:45-61 (getAllOrders — page/size 미지정 시 :59 Pageable.unpaged() 무제한 반환), :75-79 (GET /stats/daily)",
+        "commerce/db/init-schemas.sql:215 (CREATE INDEX idx_orders_user ON order_schema.orders(user_id) — orders의 유일 인덱스, created_at/status 인덱스 부재)"
+      ],
+      "infra_anchor": "commerce/db/init-schemas.sql — 단일 PostgreSQL 인스턴스(testbed-postgres-0, rca-testbed-commerce)에 order_schema/payment_schema(:256 idx_payments_order)/inventory_schema 등 8개 스키마 공존. 교차 스키마 오염의 물리적 매개(공유 인스턴스 CPU). README:119(단일 인스턴스 8스키마)."
+    },
+    "injection_summary": "[배선 갭 — loadgen 스크립트 신설 필요] 주입은 load.north_south로 commerce loadgen을 켜 GET /api/orders/stats/daily?days=90과 무제한 GET /api/orders search를 반복 호출하는 것이다. 메커니즘(k6 GET)은 실재하나 현재 commerce surge.js는 products/cart/checkout만 쳐서 stats/daily·무제한 search를 치는 스크립트가 없다 — NEW k6 스크립트(slowquery.js 또는 surge.js에 slowquery 여정 추가) + load.north_south 계약 등록(allowed_scenarios F20-R, allowed_script_paths, scenario_parameters entry 30080/loadgen-commerce, tag_pattern 확장)이 선행돼야 한다. §2-A 위배 없음(env 왜곡 아님, 실제 결함 쿼리를 실부하로 자연 발화). cleanup은 부하 종료뿐(DB 변형 없음).",
+    "user_impact": "주문 통계/검색(GET /api/orders/stats/daily, 넓은 조건 /api/orders) 응답이 느려지고, 같은 PostgreSQL 인스턴스를 공유하는 결제·재고 조회까지 동반 지연된다. 사용자는 '결제/재고 서비스가 느린데 그쪽엔 오류가 없다'는 혼란스러운 부분 열화를 겪는다 — 실제 원인은 order 쪽 인덱스 없는 무거운 쿼리다.",
+    "must_support": [
+      "order-service 조회 p95 지연 급증 (apm_service_p95 commerce-order↑)",
+      "payment/inventory 조회 p95도 동반 상승 (apm_service_p95 commerce-payment·commerce-inventory↑) — 공유 PostgreSQL 인스턴스 CPU 경합",
+      "payment/inventory 에러율은 낮음 (apm_service_error_rate < 0.05) — 느려질 뿐 5xx가 아님(교차 오염의 서명)"
+    ],
+    "must_rule_out": [
+      "F02-R 인덱스 드롭이 아님 — created_at/status 인덱스는 상시 부재(설계)이지 런타임 드롭이 아님. index_present는 애초에 false",
+      "payment/inventory 서비스 자체 장애가 아님 — 두 서비스 pod ready, 5xx 없이 지연만. 원인은 order 쿼리가 공유 PG를 오염시킨 것",
+      "order 커넥션풀 고갈발 5xx가 아님 — 지연 상승이지 connection-timeout 5xx가 아님(F19-P/C12 롱-tx 계열과 구분)"
+    ],
+    "distinguishing_evidence": "결정적 서명은 '건강한(5xx 없는) 타 스키마 서비스가 order와 함께 느려진다'는 것이다 — payment/inventory의 apm_service_p95는 오르지만 error_rate는 <0.05로 낮아, 그 서비스들 자체 결함이 아니라 공유 PostgreSQL 인스턴스 CPU 경합임을 가리킨다. 인덱스는 드롭된 게 아니라 애초에 없어(idx_orders_user 유일) F02-R과 구분되고, 증상이 지연이지 커넥션풀 timeout 5xx가 아니어서 롱-tx 풀고갈 계열(F19-P·C12)과 구분된다. F20-P(banking, 자체 커넥션풀 점유·502)와는 '타 스키마 교차 지연 유무'와 상태코드(지연 vs 502)로, F20-Q(food, 자체 힙·단일 MySQL)와는 '교차 스키마 오염 유무'로 갈린다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F20-P (같은 슬로우쿼리 패밀리지만 잠식 자원이 공유 DB CPU가 아니라 transfer 자체 커넥션풀 — 증상이 banking 체인 502로 국한, 인덱스는 존재하나 trunc() 무력화)",
+        "F20-Q (같은 패밀리지만 잠식 자원이 order JVM 힙 — 단일 MySQL이라 교차 스키마 오염 없음)",
+        "F02-R (동일 order 인덱스 축이나 F02-R은 인덱스 런타임 드롭 주입, F20-R은 설계상 상시 부재 + 공유 PG 교차 오염이 정체성)"
+      ]
+    }
+  }
+}

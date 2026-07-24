@@ -1,0 +1,167 @@
+{
+  "schema_version": "1.0",
+  "id": "F23-R",
+  "slug": "f23-r-commerce-restock-batch-stop",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P3",
+  "injection": {
+    "location": "commerce-namespace",
+    "matrix_location_transport": "MISSING(clean) — ReconciliationBatch.run은 앱 내부 @Scheduled. 주기가 env(inventory.reconciliation.interval-ms)로 바인딩돼 k8s.env로 사실상 정지는 가능하나 pod rollout 재시작을 강요하는 stopgap. 깨끗한 런타임 스케줄러 정지 injector는 미존재(F19-Q와 공유 능력갭).",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/business.fault",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "scheduler-control-hook-present",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "business.fault",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "business.fault",
+        "note": "primary_ref는 미실현 능력의 자리표시자 — 재입고 배치(ReconciliationBatch.run)를 pod 재시작 없이 선택 정지시키는 injector가 아직 없다. business.fault는 현재 live_supported=false stub. F19-Q와 동일 훅을 공유(sheet §4-B Option B)."
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "30s",
+        "settle_after_change": "60s",
+        "max_injection_duration": "25m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "inventory-service-down", "observation": "inventory_pod_ready", "op": "eq", "value": false },
+            { "id": "checkout-5xx-elevated", "observation": "checkout_5xx_rate", "op": "gte", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "12m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f23-r",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-inventory",
+                "container": "inventory-service",
+                "fault_kind": "scheduler-stop",
+                "target_scheduler": "ReconciliationBatch.run",
+                "note": "이 파라미터를 소비할 런타임 스케줄러-정지 executor가 없음 — 능력갭. restock threshold/target 하향은 §2-A 위장이라 금지. interval-ms 큰 값(k8s.env, SPRING_APPLICATION_JSON)은 restart 기반 stopgap일 뿐 golden 승격로 아님. sheet §4-B 훅 신설 시 구체화."
+              },
+              "min_hold": "15m",
+              "settle": "60s",
+              "timeout": "22m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "inventory_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-inventory" }, "freshness": "30s"
+          },
+          {
+            "id": "inventory_stock_level", "adapter": "database", "query_id": "database.inventory_stock_level",
+            "parameters": { "engine": "postgresql", "db_host": "192.168.122.77", "db_port": 30432, "db_name": "commerce", "db_user": "commerce", "schema": "inventory_schema", "table": "inventory", "agg": "count_zero_stock" },
+            "freshness": "30s",
+            "capability_gap": "NEW query_id — inventory.stock 분포(재고=0 상품 수 또는 min/avg). 감별 1차 신호(단조감소 vs 톱니파). database.index_present와 동일 어댑터 패턴으로 신설 필요. See sheet §4-A(1)."
+          },
+          {
+            "id": "restock_movement_rate", "adapter": "database", "query_id": "database.restock_movement_rate",
+            "parameters": { "engine": "postgresql", "db_host": "192.168.122.77", "db_port": 30432, "db_name": "commerce", "db_user": "commerce", "schema": "inventory_schema", "table": "inventory_movements", "movement_type": "RESTOCK", "window": "12m" },
+            "freshness": "60s",
+            "capability_gap": "NEW query_id — 최근 창의 RESTOCK 원장 유입 건수(재입고 배치 동작 여부의 직접 신호). 배치정지=0. F19-Q database.dispatch_delivered_rate와 동형. See sheet §4-A(2)."
+          },
+          {
+            "id": "checkout_409_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_status_rate",
+            "parameters": { "step": "checkout", "status_class": "409" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — checkout_5xx_rate(selector checkout.5xx.rate)는 5xx 전용이라 409를 구조적으로 못 봄. script.js:228·surge.js:132가 409를 pass로 접어 emit 자체가 없음. checkout 스텝 status-class(2xx/4xx/409/5xx) emit + query 등록 필요. F16-H write_step_status_rate·F19-Q food-503 fold와 동형. See sheet §4-A(3).",
+            "biz_reject_ambiguity": true
+          },
+          { "id": "checkout_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate", "parameters": { "step": "checkout" }, "freshness": "30s" }
+        ],
+        "success": {
+          "all": [
+            { "id": "checkout-409-up", "observation": "checkout_409_rate", "op": "gte", "value": 0.3 },
+            { "id": "stock-depleted", "observation": "inventory_stock_level", "op": "gte", "value": 1 },
+            { "id": "restock-halted", "observation": "restock_movement_rate", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "restock-resumed", "observation": "restock_movement_rate", "op": "gt", "value": 0 },
+            { "id": "stock-replenished", "observation": "inventory_stock_level", "op": "eq", "value": 0 },
+            { "id": "checkout-409-recovered", "observation": "checkout_409_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "12m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["business.fault", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["business.fault", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "business.fault"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "[관측 배선 부재 = 하드 블로커 + 깨끗한 주입훅 부재] ③ 감별 지표 3종이 전무: (1) database.inventory_stock_level(stock 단조감소 vs 톱니파), (2) database.restock_movement_rate(RESTOCK 유입율 = 배치 동작 신호), (3) loadgen.checkout_status_rate(409 버킷 — checkout_5xx_rate는 5xx 전용이고 script.js:228·surge.js:132가 409를 pass로 접음). 이것 없이는 biz-409(정상 재고소진 톱니파)와 fault-409(배치정지 단조감소)를 분리 불가. ④ 주입: 재입고 배치 주기가 env(inventory.reconciliation.interval-ms) 바인딩이라 k8s.env interval-ms 큰 값 + rollout으로 사실상 정지는 가능하나(고갈은 loadgen 자연 소비 → §2-A 위장 아님), pod 재시작 강요·극단값 optics 때문에 stopgap일 뿐 — 깨끗한 길은 pod 재시작 없이 지정 @Scheduled만 정지하는 런타임 훅(F19-Q dispatch 만료배치와 동일 훅 공유, sheet §4-B Option B: business.fault stub 승격). restock threshold/target 하향은 진짜 §2-A 위장이라 금지. 자세히 sheet §4.",
+    "live_allowed": false,
+    "shared_capability_gap_with": ["F19-Q"]
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

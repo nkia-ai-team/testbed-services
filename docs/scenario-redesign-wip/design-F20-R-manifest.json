@@ -1,0 +1,171 @@
+{
+  "schema_version": "1.0",
+  "id": "F20-R",
+  "slug": "f20-r-commerce-order-slowquery-shared-pg-crossschema",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P8",
+  "injection": {
+    "location": "commerce-loadgen",
+    "matrix_location_transport": "tb-runner k6 → GATEWAY 30080 GET /api/orders/stats/daily + 무제한 /api/orders search",
+    "transport": "k6",
+    "profile_refs": [
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-loadgen-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "payment-service-down", "observation": "payment_error_rate", "op": "gte", "value": 0.2 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f20-r",
+              "parameters": {
+                "target_rps": 30,
+                "ramp_up": "2m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30080",
+                "script_path": "/opt/loadgen/commerce/slowquery.js",
+                "scenario_tag": "scenario_id=F20-R",
+                "seed": 4242,
+                "baseline_unit": "loadgen-commerce"
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "order_target_health", "adapter": "http_probe", "query_id": "http.target_health",
+            "parameters": { "service": "testbed-order", "namespace": "rca-testbed-commerce", "port": 8080, "path": "/actuator/health" },
+            "freshness": "15s"
+          },
+          {
+            "id": "order_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "commerce-order" }, "freshness": "60s"
+          },
+          {
+            "id": "payment_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "commerce-payment" }, "freshness": "60s",
+            "capability_gap": "교차 스키마 오염(F20-R 정체성)의 간접 지표 — 공유 PostgreSQL CPU를 직접 볼 DB-process query가 없어 payment p95 동반 상승으로 대체. DB CPU/쿼리시간 query 신설 필요. sheet §4-B."
+          },
+          {
+            "id": "payment_error_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "commerce-payment" }, "freshness": "60s"
+          },
+          {
+            "id": "shared_pg_cpu", "adapter": "prometheus", "query_id": "prometheus.node_cpu_utilization",
+            "parameters": { "node": "tb-w1" }, "freshness": "60s",
+            "capability_gap": "NEW query 필요 — 단일 PostgreSQL 인스턴스의 process/DB-side CPU. 현재는 node_cpu_utilization(노드 레벨 프록시)뿐이라 PG 전용 CPU를 분리 못 봄. 교차 오염의 결정 ground-truth 미배선. sheet §4-B #4."
+          },
+          {
+            "id": "order_slowquery_read_rate", "adapter": "loadgen_summary", "query_id": "loadgen.read_step_status_rate",
+            "parameters": { "step": "stats-daily", "status_class": "5xx" }, "freshness": "30s",
+            "capability_gap": "NEW loadgen 배선 — commerce surge.js는 stats/daily·무제한 search를 치지 않음. slowquery.js 신설 + read-step status/latency emit + load.north_south 계약 등록 필요. sheet §4-A."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "order-latency-up", "observation": "order_p95", "op": "gte", "value": 1.5 },
+            { "id": "payment-crossschema-latency-up", "observation": "payment_p95", "op": "gte", "value": 0.5 },
+            { "id": "payment-not-erroring", "observation": "payment_error_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "order-target-recovered", "observation": "order_target_health", "op": "eq", "value": 200 },
+            { "id": "order-latency-recovered", "observation": "order_p95", "op": "lt", "value": 0.5 },
+            { "id": "payment-latency-recovered", "observation": "payment_p95", "op": "lt", "value": 0.3 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "④ 주입: NEW loadgen 스크립트 필요 — commerce surge.js는 products/cart/checkout만 침. GET /api/orders/stats/daily?days=90 + 무제한 GET /api/orders search를 치는 slowquery.js 신설 + load.north_south 계약 등록(allowed_scenarios F20-R, allowed_script_paths /opt/loadgen/commerce/slowquery.js, scenario_parameters entry 30080/loadgen-commerce, tag_pattern 확장) + read-step status/latency emit. ③ 관측: DB-side PG CPU/쿼리시간 query 신설(교차 오염 결정 ground-truth — 현재 node_cpu 프록시뿐), 보조로 prometheus.hikari_pending_connections(F19-P와 동일 갭). 진짜 injector 능력갭 아님(전부 배선). 자세히 sheet §4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

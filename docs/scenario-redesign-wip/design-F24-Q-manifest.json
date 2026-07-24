@@ -1,0 +1,183 @@
+{
+  "schema_version": "1.0",
+  "id": "F24-Q",
+  "slug": "f24-q-food-restaurant-upstream-block-order-502",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "A",
+  "fault_pattern": "P4-variant",
+  "injection": {
+    "location": "food-restaurant-entry",
+    "matrix_location_transport": "tb-runner/loadgen → rca-testbed-food testbed-restaurant NodePort 30181 (조회 부하 폭주 → Hikari 10 자연 포화)",
+    "transport": "loadgen",
+    "profile_refs": [
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-loadgen-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "payment-5xx-cascade", "observation": "payment_502_rate", "op": "gte", "value": 0.2 },
+            { "id": "dispatch-503-saturation", "observation": "order_create_503_rate", "op": "gte", "value": 0.2 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f24-q",
+              "parameters": {
+                "target_rps": 70,
+                "ramp_up": "2m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30181",
+                "script_path": "/opt/loadgen/food-delivery/surge.js",
+                "scenario_tag": "scenario_id=F24-Q",
+                "seed": 4242,
+                "baseline_unit": "loadgen-food"
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m",
+              "calibration_note": "target_rps 70은 초기 추정치. restaurant Hikari 10(최소풀) 포화가 order create 502를 임계까지 밀어내는지 첫 calibration에서 확정·튜닝 필요(§sheet 4·조건 ④)."
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "restaurant_target_health", "adapter": "http_probe", "query_id": "http.target_health",
+            "parameters": { "service": "testbed-restaurant", "namespace": "rca-testbed-food", "port": 8081, "path": "/actuator/health" },
+            "freshness": "15s"
+          },
+          {
+            "id": "restaurant_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-food", "resource": "testbed-restaurant" }, "freshness": "30s"
+          },
+          {
+            "id": "restaurant_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "food-delivery-restaurant" }, "freshness": "120s",
+            "note": "이미 등록·라이브(F02-P가 동일 observation 사용). root=restaurant 결정 신호."
+          },
+          {
+            "id": "restaurant_error_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "food-delivery-restaurant" }, "freshness": "60s"
+          },
+          {
+            "id": "payment_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "food-delivery-payment" }, "freshness": "60s",
+            "note": "F19-S 감별용 — restaurant가 root면 payment는 낮아야 함."
+          },
+          {
+            "id": "order_create_502_rate", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",
+            "parameters": { "step": "create", "status_class": "502" }, "freshness": "30s",
+            "capability_gap": "query_id는 등록됨(selector business.5xx.rate). 단 F19가 지적한 대로 food surge.js create 스텝이 502를 실제 status-bucketed emit하는지 미검 → surge.js 요약 emit 확인 필요. 502/503 분리 emit이 안 되면 order_create_503_rate 감별 불가."
+          },
+          {
+            "id": "order_create_503_rate", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",
+            "parameters": { "step": "create", "status_class": "503" }, "freshness": "30s",
+            "capability_gap": "F19-Q(dispatch 503) 감별용. surge.js가 create 스텝 상태코드를 502/503로 분리 emit해야 성립 — 현재 business.5xx.rate 단일 selector라 502/503 분리 미보장. 배선 필요."
+          },
+          {
+            "id": "restaurant_cb_open", "adapter": "prometheus", "query_id": "prometheus.circuitbreaker_open",
+            "parameters": { "service_name": "food-delivery-order", "cb": "restaurant" }, "freshness": "30s",
+            "capability_gap": "NEW query_id 미존재 — registry(queries.json)에 circuitbreaker_open 계열 query가 아예 없음. order측 resilience4j cb=restaurant open 게이지 노출 확인 후 등록 필요. F19-S의 cb=pg 갭과 동일 계열(공유 신설)."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "order-create-502", "observation": "order_create_502_rate", "op": "gte", "value": 0.1 },
+            { "id": "restaurant-slow", "observation": "restaurant_error_rate", "op": "gte", "value": 0.1 },
+            { "id": "payment-not-5xx", "observation": "payment_502_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "restaurant-target-recovered", "observation": "restaurant_target_health", "op": "eq", "value": 200 },
+            { "id": "restaurant-error-recovered", "observation": "restaurant_error_rate", "op": "lt", "value": 0.05 },
+            { "id": "create-recovered", "observation": "order_create_502_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "배선(wiring) + calibration. 신규 executor·앱코드 불필요. (1) load.north_south parameter_contract에 F24-Q allowlist + tag_pattern(F24-Q 추가) + scenario_parameters(entry 30181, food surge.js, baseline loadgen-food) 추가 — F02-P가 동일 entry/script/baseline을 이미 사용하는 계약준비완료 경로. (2) NEW query_id: prometheus.circuitbreaker_open{service=food-delivery-order,cb=restaurant} — registry에 circuitbreaker_open 계열이 전무(F19-S cb=pg와 공유 신설). (3) surge.js food create 스텝의 502/503 status-bucketed emit 확인/보강 — order_create_502_rate와 503 감별에 필수(F19 지적 공유). (4) calibration: target_rps 70이 restaurant Hikari10 포화→order 502 임계를 넘기는지 첫 run에서 확정. restaurant_p95·apm_service_error_rate는 이미 라이브(F02-P). 자세히 sheet §3·§4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

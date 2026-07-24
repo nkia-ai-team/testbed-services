@@ -1,0 +1,49 @@
+{
+  "F21-P": {
+    "title": "banking api-service Tomcat 스레드풀(200) 포화 (transfer 하류지연, DataSource 없음)",
+    "description": "core-banking api-service는 @SpringBootApplication(exclude=DataSourceAutoConfiguration)로 DB를 아예 갖지 않아(ApiServiceApplication.java:12) Hikari 풀이 0개이며, server.tomcat 튜닝도 없어 Tomcat 기본 200 스레드로 동작한다. 이체 진입은 api→account→transfer 동기 blocking 체인이다. transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) 미만으로 지연시키면(느린 200 성공, CB 미개방), api→account 요청이 응답을 기다리며 api Tomcat 스레드를 점유한다. api엔 커넥션풀이라는 개념 자체가 없으므로 Tomcat 200이 유일한 유한 자원 → 동시 이체≥200이면 순수 스레드 포화가 관측된다. 무관한 조회프록시 GET /api/transfers까지 스레드 굶주림으로 지연. 커넥션풀 고갈(FS-6)이 원천적으로 불가능한 유일 서비스라 순수 스레드 포화 관측에 이상적. P2 패턴.",
+    "class": "A",
+    "fault_pattern": "P2",
+    "domain": "core-banking",
+    "observation_domains": ["APM"],
+    "cause": "transfer-service execute() 지연(account rt 15s·api rt 10s 미만의 느린 200) → api→account 동기 호출이 응답 대기하며 api Tomcat 스레드 점유 → api는 DataSource 없어 풀 0 → Tomcat 200이 유일 자원 → 동시 이체≥200이면 스레드 포화 → acceptor 큐 적체 → 무관 조회프록시까지 지연. FS-9 retry x3이 하류호출을 곱해 점유 가속.",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "core-banking-transfer (testbed-transfer, rca-testbed-banking) 하류지연이 트리거이나, 200 스레드 포화라는 결함 구조는 api-service의 무튜닝 Tomcat + DataSource 부재 + timeout 없는 동기체인",
+      "mechanism": "api-service는 DataSourceAutoConfiguration을 제외해 Hikari 풀이 0(ApiServiceApplication.java:12)이고 server.tomcat 설정이 없어 Tomcat 기본 200. 이체는 api→account(read-timeout 10s)→transfer(account측 read-timeout 15s) 동기 blocking 체인이며 @Transactional timeout이 없다. transfer를 timeout 미만으로 지연시키면 api→account 요청이 느린 200을 기다리며 api Tomcat 스레드만 점유(풀은 존재하지 않음) → 200 포화 → 무관 조회프록시까지 스레드 굶주림. 병목은 오직 Tomcat 200.",
+      "code_anchor": [
+        "core-banking/api-service/.../ApiServiceApplication.java:12 (@SpringBootApplication(exclude={DataSourceAutoConfiguration, HibernateJpaAutoConfiguration}) → Hikari 풀 0, 스레드가 유일 자원)",
+        "core-banking/api-service/src/main/resources/application.yml:1-2 (server: port만, tomcat 스레드 설정 부재 → 기본 200)",
+        "core-banking/api-service/src/main/resources/application.yml:11-12 (account read-timeout 10s), :15-16 (transfer 조회 read-timeout 10s), :18-49 (resilience4j CB window10/min5/50%/open5s + retry max-attempts=3)",
+        "core-banking/account-service/src/main/resources/application.yml:29-30 (account→transfer read-timeout 15s)",
+        "core-banking/account-service/.../service/AccountService.java:57,80 (@Transactional(readOnly) validateAndForward → 말미 transferClient.executeTransfer)",
+        "core-banking/transfer-service/.../repository/AccountRepository.java:18-20 (FOR UPDATE NOWAIT/timeout 없음), transfer TransferService.java:51 (@Transactional timeout 없음)"
+      ],
+      "infra_anchor": "없음(순수 코드 구조 — DataSource 제외 + Tomcat 무튜닝). 지연 트리거는 transfer-service 슬로우다운(host.stress worker-w3 또는 db.workload transfer Oracle)이나 이는 주입 수단이지 root가 아님."
+    },
+    "injection_summary": "transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) '미만'(목표 ~8s)으로 지연시켜(host.stress worker-w3 CPU 또는 db.workload transfer Oracle) transfer가 502가 아닌 느린 200을 내되 api→account 요청이 api Tomcat 스레드를 오래 점유하게 한다. db.lock은 무한대기→502→CB open으로 FS-1/FS-2를 만들어 부적격. 동시에 load.north_south로 banking transfer-surge.js(entry 30082, transfer-heavy, target_rps≈180 — Little L=λ·8s로 200 스레드 목표; 기본 surge transfer 10%로는 부족)를 흘린다. 지연이 10s를 넘으면 api read-timeout→502→CB open(FS-2)으로 전이하므로 캘리브레이션이 감별 정체성과 직결. cleanup은 stress/workload 해제.",
+    "user_impact": "이체(POST /api/transfers)가 api Tomcat 스레드 포화로 지연·타임아웃 급증하고, 무관한 이체내역 조회(GET /api/transfers 프록시)까지 느려진다. transfer는 지연만 있고 5xx를 안 뱉으며(느린 200), api는 커넥션풀이 없어 풀 지표가 부재 → 풀 고갈(FS-6)이나 CB open(FS-2)으로 오인하면 오진.",
+    "must_support": [
+      "api busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",
+      "api 502 rate 낮음 (< 0.05) — 느린 200 성공, CB 미개방(실패가 아니라 지연)",
+      "api CB(accountClient) open 아님 — 스레드가 점유된 채 유지(open되면 즉시 502·스레드 해제)",
+      "transfer는 지연만(5xx 아님, 느린 200), 무관 조회프록시 GET /api/transfers 지연 상승"
+    ],
+    "must_rule_out": [
+      "api 커넥션풀 고갈 아님 — api는 DataSource 제외로 풀이 존재하지 않음(hikari query 부재 자체가 증거) → FS-6 아님",
+      "api CB open 아님 — open이면 즉시 502·이체 0%로 스레드 해제되는 FS-2(정체성 붕괴). 주입 지연이 timeout 초과하면 전이하므로 감별선",
+      "api 502 폭증 아님 — 폭증이면 transfer lock 무한대기(FS-1). F21-P는 느린 200이지 502 아님",
+      "병목이 account가 아님 — account는 Hikari 10을 먼저 소진(validateAndForward가 readOnly tx로 커넥션 보유). 순수 스레드 지표는 풀 없는 api에서만 자명"
+    ],
+    "distinguishing_evidence": "api의 지연은 커넥션풀 고갈(FS-6)이나 CB open(FS-2)이 아니라 Tomcat 스레드 고갈이다. 결정 증거: (1) http.server.active_requests가 200에 닿음, (2) api엔 Hikari query가 부재(풀이 없음) — 이 부재가 곧 FS-6 배제, (3) api 502 rate 낮음 + CB closed — FS-1(502 폭증)·FS-2(즉시 502) 배제, transfer는 느린 200. api-service가 테스트베드에서 유일하게 DataSource가 없는 서비스라, 스레드가 유일 유한 자원임이 구조적으로 자명하다. 주입 지연이 read-timeout(10s)을 넘으면 502→CB open으로 FS-2에 전이하는데, 이 전이 경계가 F21-P의 감별선이다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "FS-1 (transfer lock 무한대기 → account/api 502 폭증; F21-P는 timeout 미만 지연이라 느린 200·502 낮음)",
+        "FS-2 (account/api CB open → 즉시 502·이체 0%; F21-P는 CB closed·스레드 점유 지속. 주입 과하면 F21-P가 FS-2로 전이)",
+        "FS-6 (transfer Hikari 15 풀고갈; F21-P는 api에 풀이 아예 없어 스레드가 병목 — 풀 부재가 감별)",
+        "F03-H (commerce 동종 Tomcat 포화이나 합성 sleep 의존이 재앵커 대상; F21-P는 실 이체 동기체인 + 풀 없는 api라는 더 강한 앵커)"
+      ]
+    }
+  }
+}

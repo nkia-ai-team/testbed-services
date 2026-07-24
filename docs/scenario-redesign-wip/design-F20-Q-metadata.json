@@ -1,0 +1,44 @@
+{
+  "F20-Q": {
+    "title": "food order 무제한 조회 + stats filesort → order 힙·MySQL 압박",
+    "description": "food order-service의 GET /api/orders는 page/size를 지정하지 않으면 Pageable.unpaged()로 전 행을 무제한 반환하고(OrderController.java:41-43), search는 OR-null 술어로 풀스캔한다. GET /api/orders/stats/daily는 native 'GROUP BY DATE(created_at)'로 컬럼 함수를 씌워 인덱스를 무력화하고 filesort를 유발한다. 이 무거운 조회를 반복하면 무제한 결과셋이 order JVM 힙(limit 1Gi)에 적재돼 GC 압박·OOM 위험이 커지고 MySQL slow query가 쌓인다. order 지연이 오르며 createOrder 롱-트랜잭션(C1)과 상승작용할 수 있다. 잠식 자원이 힙이라는 점이 R(공유 DB)·P(커넥션풀)와 다르고, 단일 MySQL이라 교차 스키마 오염이 없다. 신규 슬로우쿼리 패턴(P8 후보).",
+    "class": "A",
+    "fault_pattern": "P8",
+    "domain": "food-delivery",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "GET /api/orders(page/size 없이) + GET /api/orders/stats/daily?days=90 반복 호출 → OrderController가 Pageable.unpaged()로 무제한 반환, OrderRepository.search 풀스캔 + aggregateDailyStats가 GROUP BY DATE(created_at) 함수로 인덱스 무력화·filesort → 무제한 결과셋이 order JVM 힙(1Gi limit)에 적재 → GC 압박/OOM 위험 + MySQL slow query → order 지연 상승",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "food-order (testbed-order, rca-testbed-food) — getAllOrders/search/aggregateDailyStats 조회 쿼리 설계",
+      "mechanism": "OrderController.getAllOrders가 page/size 미지정 시 Pageable.unpaged()를 써서 orders 전 행을 무제한 반환한다. OrderRepository.search는 (:x IS NULL OR ...) OR-null 술어라 인덱스 미선택 풀스캔이고, aggregateDailyStats는 native 'GROUP BY DATE(created_at)'로 created_at 컬럼에 함수를 씌워 idx_orders_created를 무력화하며 filesort를 만든다. 무제한 결과셋을 힙에 적재하면서 order JVM 힙(k8s limit 1Gi)이 상승해 GC 압박과 OOMKilled 위험이 커지고, MySQL 쪽엔 filesort/풀스캔 slow query가 쌓인다. C1(createOrder 롱-트랜잭션 커넥션 점유)과 겹치면 커넥션 압박까지 상승작용한다.",
+      "code_anchor": [
+        "food-delivery/order-service/src/main/java/com/fooddelivery/order/controller/OrderController.java:41-43 (getAllOrders — page/size 미지정 시 Pageable.unpaged() 무제한 반환)",
+        "food-delivery/order-service/src/main/java/com/fooddelivery/order/repository/OrderRepository.java:22-33 (search — OR-null 술어 풀스캔), :36-40 (aggregateDailyStats — native GROUP BY DATE(created_at) 함수로 인덱스 무력화 + filesort)",
+        "food-delivery/k8s/20-order-deploy.yaml:88,91 (order request memory 512Mi / limit 1Gi — 무제한 결과셋 적재 시 힙/OOM 한계)"
+      ],
+      "infra_anchor": "food-delivery/k8s/20-order-deploy.yaml:91 (order 컨테이너 memory limit 1Gi — 무제한 결과셋 적재의 OOM 경계). 단일 flat MySQL(fooddelivery, testbed-mysql-0) — 스키마 분리 없음이라 교차 스키마 오염은 발생하지 않음(F20-R과의 구조적 차이)."
+    },
+    "injection_summary": "[배선 갭 — loadgen 스크립트 신설 필요] 주입은 load.north_south로 food loadgen을 켜 GET /api/orders(page/size 없이) + GET /api/orders/stats/daily?days=90을 반복 호출하는 것이다. 메커니즘(k6 GET)은 실재하나 현재 food surge.js/order-surge.js는 restaurants·order create(POST)·deliveries만 쳐서 GET /api/orders unpaged·stats/daily를 치는 스크립트가 없다 — NEW k6 스크립트 + load.north_south 계약 등록(allowed_scenarios F20-Q, allowed_script_paths, scenario_parameters entry 30181/order 30180/loadgen-food, tag_pattern 확장)이 선행돼야 한다. food는 domain_profiles/allowed_entry_urls(30181)/baseline_unit(loadgen-food)이 이미 등록됨(F02-P 선례). §2-A 위배 없음(env 왜곡 아님, 실제 결함 쿼리를 실부하로 자연 발화). cleanup은 부하 종료뿐.",
+    "user_impact": "주문 목록/통계 조회(GET /api/orders, /api/orders/stats/daily)가 무거운 무제한 반환·filesort로 느려지고, order 서비스 메모리가 1Gi 한계로 차올라 GC 지연·OOMKilled 재시작 위험이 커진다. 주문 조회·생성 전반이 열화한다 — 원인은 페이지네이션 부재와 함수 래핑 집계 쿼리다.",
+    "must_support": [
+      "order-service 조회 p95 지연 급증 (apm_service_p95 food-order↑)",
+      "order 컨테이너 메모리가 1Gi limit로 상승 (kubernetes.container_memory_current_bytes → deployment_container_memory_limit 접근) — 무제한 결과셋 적재",
+      "order OOMKilled/재시작 위험 신호 (kubernetes.container_restart_count↑ / last_termination_reason=OOMKilled) + MySQL slow query"
+    ],
+    "must_rule_out": [
+      "F19-P 롱-트랜잭션 커넥션풀 고갈이 아님 — PG mock 지연 주입 없음, payment 502 rate < 0.05. 증상은 힙/메모리 압박이지 connection-timeout 5xx가 아님",
+      "F19-Q 배차 capacity 503이 아님 — 상태코드가 지연/200이지 503 'Courier pool exhausted'가 아님. dispatch 정상",
+      "단일 MySQL이라 교차 스키마 오염이 없음 — F20-R(공유 PostgreSQL)과 달리 타 서비스 동반 지연 없이 order에 국한. 429도 아님(food는 429 없음)"
+    ],
+    "distinguishing_evidence": "결정적 서명은 'order 컨테이너 메모리가 1Gi limit로 차오르며(무제한 결과셋 적재) 지연이 오르지만 payment 502나 배차 503은 없다'는 것이다 — 잠식 자원이 커넥션풀(F19-P)이나 배차 capacity(F19-Q)가 아니라 JVM 힙임을 가리킨다. 단일 MySQL이라 F20-R 같은 교차 스키마 오염이 없어 증상이 order에 국한되고, 이것이 R(공유 PG 교차 지연)과의 결정적 구분이다. 힙 압박은 container_memory_current_bytes로 직접 관측돼 3종 중 감별 근거가 가장 튼튼하다. naive RCA는 느린 order를 root로 보나 정답은 페이지네이션 부재(unpaged)와 DATE() 함수 집계 쿼리다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F20-R (같은 슬로우쿼리 패밀리지만 잠식 자원이 공유 PostgreSQL CPU라 타 스키마 교차 지연 — F20-Q는 단일 MySQL이라 교차 오염 없이 order 힙에 국한)",
+        "F20-P (같은 패밀리, 잠식 자원=transfer 커넥션풀·502)",
+        "F19-P (같은 food-order 증상 수렴이나 F19-P는 PG mock 지연→롱-tx 커넥션풀 고갈(write 경로), F20-Q는 무거운 read 쿼리→힙 압박)",
+        "C1 (createOrder 롱-트랜잭션 — F20-Q의 read 힙 압박과 겹치면 커넥션 압박까지 상승작용)"
+      ]
+    }
+  }
+}

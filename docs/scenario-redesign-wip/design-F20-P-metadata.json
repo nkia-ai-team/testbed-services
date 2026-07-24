@@ -1,0 +1,44 @@
+{
+  "F20-P": {
+    "title": "banking transfer stats/daily trunc 풀스캔 → transfer 커넥션 점유 → 이체 경합 악화",
+    "description": "core-banking transfer-service의 GET /api/transfers/stats/daily는 native 쿼리 'select trunc(created_at) ... group by trunc(created_at)'로 transfers를 일별 집계한다. transfers에는 idx_transfers_created(created_at) 인덱스가 존재하지만 trunc(created_at) 함수 래핑 때문에 인덱스를 타지 못하고 풀스캔이 된다. 이 무거운 조회를 반복하면 풀스캔이 transfer Hikari(max=15) 커넥션을 스캔 시간만큼 점유하고, 동시에 진행되는 이체 execute()의 FOR UPDATE(무한 대기)와 커넥션·CPU를 경합해 이체 지연이 악화된다. transfer 지연이 account read-timeout(15s)를 초과하면 account가 502, retry x3로 부하가 증폭돼 api도 502를 낸다. '인덱스가 있는데 왜 느린가'라는 한 단계 깊은 오진을 유도한다. 신규 슬로우쿼리 패턴(P8 후보).",
+    "class": "A",
+    "fault_pattern": "P8",
+    "domain": "core-banking",
+    "observation_domains": ["APM", "DPM"],
+    "cause": "GET /api/transfers/stats/daily?days=90 반복 호출 → TransferRepository.dailyStatsSince의 native trunc(created_at) group by가 idx_transfers_created를 함수 래핑으로 무력화 → transfers 풀스캔 → transfer Hikari(15) 커넥션 점유 + CPU 경합 → 동시 이체 execute() FOR UPDATE와 경합 → transfer 지연 → account read-timeout(15s) 초과 → account 502 + retry x3 증폭 → api 502",
+    "root_cause": {
+      "target_kind": "service",
+      "target_id": "core-banking-transfer (testbed-transfer, rca-testbed-banking) — dailyStatsSince 통계 쿼리",
+      "mechanism": "TransferRepository.dailyStatsSince가 native 'select trunc(created_at) as day, count(*), sum(amount) from transfers where status='COMPLETED' and created_at >= :since group by trunc(created_at)'를 실행한다. transfers.created_at에 idx_transfers_created 인덱스가 있으나 trunc(created_at)로 컬럼을 함수 래핑하면 옵티마이저가 인덱스를 못 써 풀스캔이 된다. 풀스캔이 transfer 서비스의 Hikari 커넥션(max=15, connection-timeout 3000ms)을 스캔 동안 점유하고, 같은 시점 이체 execute()의 순차 FOR UPDATE(NOWAIT/timeout 없음, 무한 대기)와 커넥션·CPU를 경합해 이체 트랜잭션을 지연시킨다. 지연이 account→transfer read-timeout(15s)를 넘으면 account가 502(ServiceException), retry max-attempts=3으로 부하가 배가돼 api까지 502로 전파된다.",
+      "code_anchor": [
+        "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java:33-36 (dailyStatsSince — native trunc(created_at) group by 풀스캔)",
+        "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:129-131 (dailyStats → dailyStatsSince 호출)",
+        "core-banking/transfer-service/src/main/java/com/corebanking/transfer/controller/TransferController.java:66-69 (GET /api/transfers/stats/daily)",
+        "core-banking/transfer-service/src/main/resources/application.yml (Hikari maximum-pool-size 15, connection-timeout 3000ms), account application.yml:30 (account→transfer read-timeout 15s), api yml:41-54 (retry max-attempts=3)"
+      ],
+      "infra_anchor": "core-banking/db/init.sql:46 (CREATE INDEX idx_transfers_created ON transfers(created_at) — 인덱스가 존재하지만 trunc() 함수 래핑으로 무력화되는 것이 결함의 핵심). 단일 Oracle PDB(FREEPDB1)를 account/transfer/ledger 공유."
+    },
+    "injection_summary": "[배선 갭 — loadgen 스크립트 신설 필요] 주입은 load.north_south로 banking loadgen을 켜 GET /api/transfers/stats/daily?days=90을 반복 호출하는 것이다. 메커니즘(k6 GET)은 실재하나 현재 banking surge.js는 balance/history/list/transfer만 쳐서 /transfers/stats/daily를 치는 스크립트가 없다 — NEW k6 스크립트 + load.north_south 계약 등록(allowed_scenarios F20-P, allowed_script_paths, scenario_parameters entry 30082/loadgen-banking, tag_pattern 확장)이 선행돼야 한다. banking은 domain_profiles/allowed_entry_urls(30082)/baseline_unit(loadgen-banking)이 이미 등록돼 entry 재사용 가능. §2-A 위배 없음(env 왜곡 아님). cleanup은 부하 종료뿐.",
+    "user_impact": "이체(POST /api/transfers)가 통계 쿼리와 커넥션·자원을 경합해 지연되고 성공률이 떨어진다. account/api가 502를 반환해 이체가 실패하며, 통계 조회(/stats/daily) 자체도 느리다. 겉으로는 이체 경로 장애로 보이나 실제 방아쇠는 인덱스를 무력화한 통계 쿼리다.",
+    "must_support": [
+      "transfer 조회/이체 p95 지연 급증 (apm_service_p95 core-banking-transfer↑)",
+      "transfer Hikari pending>0 — 통계 풀스캔이 커넥션 점유(capability_gap: hikari_pending query 미등록)",
+      "account/api 502 비율 급증 (apm_service_error_rate core-banking-account·core-banking-api↑) + retry 증폭, 이체 성공률↓"
+    ],
+    "must_rule_out": [
+      "인덱스 드롭이 아님 — idx_transfers_created는 존재하며, trunc() 함수 래핑이 인덱스를 무력화한 것(있는데 안 쓰는 구조). index_present는 true",
+      "FS-1 hot-account row-lock 경합이 아님 — 특정 계좌 편중 없이 통계 풀스캔이 전체 이체를 지연. 특정 계좌쌍 직렬화 패턴이 아님",
+      "Oracle 전체 다운/광역 열화가 아님 — account 조회·ledger는 상대적으로 견디고 transfer만 집중 열화(통계 쿼리가 transfer 커넥션을 잠식)"
+    ],
+    "distinguishing_evidence": "결정적 서명은 '인덱스가 있는데도 통계 쿼리가 풀스캔으로 느리다'(idx_transfers_created 존재 + trunc() 무력화)와 '증상이 banking 체인(transfer 지연→account/api 502)에 국한되고 transfer 커넥션이 점유된다'는 것이다. F20-R처럼 타 스키마로 교차 오염되지 않고(transfer 자체 커넥션풀이 잠식 자원), F20-Q처럼 힙이 아니라 커넥션·502가 증상이다. FS-1(hot-account row-lock)과는 계좌 편중 없이 전체가 지연되는 점, Oracle 전체 다운과는 account/ledger가 상대적으로 견디는 점으로 구분된다. naive RCA는 502를 뱉는 account/api를 범인으로 오판하나 정답은 transfer의 trunc() 통계 쿼리다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F20-R (같은 슬로우쿼리 패밀리지만 잠식 자원이 공유 DB CPU라 타 스키마 교차 지연이 정체성 — F20-P는 자체 커넥션풀 점유로 banking 체인에 국한, 인덱스가 아예 없는 R과 달리 P는 인덱스 존재/무력화)",
+        "F20-Q (같은 패밀리, 잠식 자원=order JVM 힙)",
+        "FS-1/F06 계열 (transfer row-lock 경합 — F20-P는 lock이 아니라 통계 풀스캔의 커넥션·CPU 경합)"
+      ]
+    }
+  }
+}
