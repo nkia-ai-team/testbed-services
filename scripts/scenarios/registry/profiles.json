@@ -127,7 +127,9 @@
           "F01-H",
           "F01-G",
           "F06-R",
-          "F06-G"
+          "F06-G",
+          "F19-P",
+          "F19-S"
         ]
       },
       "scenario_parameters": {
@@ -157,6 +159,18 @@
           "ttl_seconds": 10,
           "pulse_interval_seconds": 15,
           "max_pulses": 32
+        },
+        "F19-P": {
+          "path": "/pay",
+          "mode": "delay",
+          "status_code": 200,
+          "delay_seconds": 8
+        },
+        "F19-S": {
+          "path": "/pay",
+          "mode": "delay",
+          "status_code": 200,
+          "delay_seconds": 30
         }
       },
       "scenario_levels": {
@@ -235,7 +249,11 @@
           "F05-P",
           "F15-R",
           "F03-H",
-          "F02-P"
+          "F02-P",
+          "F17-R",
+          "F18-P",
+          "F19-P",
+          "F19-S"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -278,7 +296,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|03-P|06-H|09-H|05-P|15-R|03-H|02-P)$"
+        "tag_pattern": "^scenario_id=F(07-H|03-G|01-R|01-H|01-G|05-G|06-R|08-H|09-P|11-R|11-G|02-R|04-R|12-H|06-G|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -610,6 +628,50 @@
           "scenario_tag": "scenario_id=F02-P",
           "seed": 4242,
           "baseline_unit": "loadgen-food"
+        },
+        "F17-R": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F17-R",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F18-P": {
+          "target_rps": 30,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/surge.js",
+          "scenario_tag": "scenario_id=F18-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-banking"
+        },
+        "F19-P": {
+          "target_rps": 50,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F19-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
+        },
+        "F19-S": {
+          "target_rps": 50,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F19-S",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
         }
       },
       "scenario_levels": {
@@ -864,7 +926,8 @@
         "allowed_scenarios": [
           "F08-P",
           "F03-P",
-          "F09-H"
+          "F09-H",
+          "F18-P"
         ]
       },
       "scenario_parameters": {
@@ -1224,6 +1287,127 @@
             {
               "name": "OTEL_METRIC_EXPORT_INTERVAL",
               "value": "10000"
+            }
+          ]
+        },
+        "F18-P": {
+          "namespace": "rca-testbed-banking",
+          "deployment": "testbed-transfer",
+          "container": "transfer-service",
+          "baseline": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER_PASSWORD",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "core-banking-transfer"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.230.119:14317"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            }
+          ],
+          "fault": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER_PASSWORD",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "core-banking-transfer"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.230.119:14317"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            },
+            {
+              "name": "OUTBOX_RELAY_ENABLED",
+              "value": "false"
             }
           ]
         }
@@ -2238,7 +2422,8 @@
       "executor": "profiles/k8s_probe_executor.py",
       "location_strategy": "scenario",
       "allowed_locations": [
-        "commerce-namespace"
+        "commerce-namespace",
+        "banking-namespace"
       ],
       "live_supported": true,
       "default_queries": [
@@ -2251,7 +2436,8 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F05-H"
+          "F05-H",
+          "F17-R"
         ]
       },
       "scenario_parameters": {
@@ -2279,6 +2465,34 @@
               "scheme": "HTTP"
             },
             "periodSeconds": 15,
+            "successThreshold": 1,
+            "timeoutSeconds": 3
+          }
+        },
+        "F17-R": {
+          "namespace": "rca-testbed-banking",
+          "deployment": "testbed-transfer",
+          "container": "transfer-service",
+          "probe": "readinessProbe",
+          "baseline": {
+            "failureThreshold": 3,
+            "httpGet": {
+              "path": "/actuator/health",
+              "port": 8082,
+              "scheme": "HTTP"
+            },
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": 3
+          },
+          "fault": {
+            "failureThreshold": 3,
+            "httpGet": {
+              "path": "/actuator/health/f17-r-fail",
+              "port": 8082,
+              "scheme": "HTTP"
+            },
+            "periodSeconds": 10,
             "successThreshold": 1,
             "timeoutSeconds": 3
           }

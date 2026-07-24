@@ -73,7 +73,7 @@
 - status-class: loadgen write/read/food_create/transfer_2xx status rate + surge step×status 버킷 → F16-H·F19·F18-P·F04-H·food429 공유
 - CB open: gateway_cb_open{user}, cb_open{pg} → F16-H·F19-S
 - 무결성/적체: integrity_violation_count, outbox_unpublished_count(selector), hikari_pending, ledger_imbalance
-- injector 계약확장(신규코드 아님): mock.expectation food 일반화(1줄), k8s.probe/k8s.env allowlist, load.north_south entry_url/surge 계약, F17-P dual-arm 스크립트
+- injector 계약확장(신규코드 아님): ~~mock.expectation food 일반화, k8s.probe/k8s.env allowlist, load.north_south surge 계약~~ **✅완료(07-24)**: F19-P/S(mock food /pay)·F17-R(probe banking transfer)·F18-P(env OUTBOX_RELAY_ENABLED)·load.north_south 4종 등록(executor+profiles.json 양쪽, validate 스모크 통과). 잔여: F17-P dual-arm 스크립트
 - 대상: F16-H·F17-P·F18-P·F04-H·F04-P·F19-P/S·F06-P·F15-H/T2·F10×3(+좌표정정)
 ### 버킷3 진짜 능력갭 (신규 훅/executor/소스변경):
 - F19-Q(dispatch @Scheduled 정지 훅) · F14-P(선별유실 injector) · F14-R(중복/유실 fault-proxy) · F15-P(co-residency 보장) · F15-T3/T4(timeline 결속 계약) · F13×3+F12(NMS/WPM 실 executor) · F03-H(합성 엔드포인트 제거)

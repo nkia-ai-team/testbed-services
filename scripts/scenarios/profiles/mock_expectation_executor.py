@@ -19,7 +19,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     )
     if params not in approved:
         raise ExecutorError("parameters do not match an approved scenario profile or level")
-    if params.get("path") != "/v1/payments":
+    if params.get("path") not in {"/v1/payments", "/pay"}:
         raise ExecutorError("mock target is not allowlisted")
     mode = params.get("mode")
     if mode in {"status", "delay"}:
@@ -51,8 +51,12 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     instance = profile_instance(plan, PROFILE_ID)
     p = instance["parameters"]
     location = instance["location"]
-    if location.get("namespace") != "rca-testbed-commerce" or location.get("resource") != "deployment/testbed-external-pg-mock":
-        raise ExecutorError("mock executor requires the canonical commerce MockServer")
+    approved_mocks = {
+        ("rca-testbed-commerce", "deployment/testbed-external-pg-mock"),
+        ("rca-testbed-food", "deployment/testbed-external-pg-mock"),
+    }
+    if (location.get("namespace"), location.get("resource")) not in approved_mocks:
+        raise ExecutorError("mock executor requires a canonical testbed MockServer")
     argv = kubectl_bash_argv([
         action, plan["scenario"]["id"], location["namespace"], location["resource"],
         p["path"], p["mode"], str(p["status_code"]), str(p.get("delay_seconds", 0)),

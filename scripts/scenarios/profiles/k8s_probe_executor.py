@@ -10,6 +10,7 @@ from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_insta
 PROFILE_ID = "k8s.probe"
 APPROVED_TARGETS = {
     "F05-H": ("rca-testbed-commerce", "testbed-payment", "payment-service", "livenessProbe"),
+    "F17-R": ("rca-testbed-banking", "testbed-transfer", "transfer-service", "readinessProbe"),
 }
 F05_H_PARAMETERS = {
     "namespace": "rca-testbed-commerce",
@@ -35,6 +36,34 @@ F05_H_PARAMETERS = {
         "timeoutSeconds": 3,
     },
 }
+F17_R_PARAMETERS = {
+    "namespace": "rca-testbed-banking",
+    "deployment": "testbed-transfer",
+    "container": "transfer-service",
+    "probe": "readinessProbe",
+    "baseline": {
+        "failureThreshold": 3,
+        "httpGet": {"path": "/actuator/health", "port": 8082, "scheme": "HTTP"},
+        "periodSeconds": 10,
+        "successThreshold": 1,
+        "timeoutSeconds": 3,
+    },
+    "fault": {
+        "failureThreshold": 3,
+        "httpGet": {
+            "path": "/actuator/health/f17-r-fail",
+            "port": 8082,
+            "scheme": "HTTP",
+        },
+        "periodSeconds": 10,
+        "successThreshold": 1,
+        "timeoutSeconds": 3,
+    },
+}
+APPROVED_PARAMETERS = {
+    "F05-H": F05_H_PARAMETERS,
+    "F17-R": F17_R_PARAMETERS,
+}
 
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
@@ -53,8 +82,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("probe snapshots must be JSON objects")
     if params["baseline"] == params["fault"]:
         raise ExecutorError("fault probe must differ from baseline")
-    if scenario_id == "F05-H" and params != F05_H_PARAMETERS:
-        raise ExecutorError("parameters do not match the measured F05-H liveness contract")
+    if params != APPROVED_PARAMETERS[scenario_id]:
+        raise ExecutorError(f"parameters do not match the measured {scenario_id} probe contract")
 
 
 def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], bytes]:
