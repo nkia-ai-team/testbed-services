@@ -50,12 +50,12 @@
       "distinguishing_evidence": "kcm.node.cpu_utilization(tb-w3)이 포화되고 같은 노드 cohort의 다수 서비스 p95가 동반 상승한다. DB·외부 의존은 정상이고, 다른 노드(tb-w2 등)에 배치된 서비스는 영향이 없다. 단일 서비스 자원 제한(F09-P: pod CPU limit)과 달리 노드 전역 신호이며, 진입 트래픽(F07-H)은 평상 수준이다."
     },
     "F07-H": {
-      "title": "north-south 사용자 트래픽 폭주",
-      "description": "외부 사용자 진입 경로의 요청량 자체를 포화점 이상으로 높여 전 계층 호출량과 지연을 함께 증가시키는 시나리오다.",
-      "cause": "North-south traffic surge",
+      "title": "north-south 사용자 트래픽 폭주 — order Hikari(10)·Tomcat(200) 용량 무릎 초과",
+      "description": "외부 사용자 진입 경로의 요청량 자체를 order createOrder/checkout의 tx 내 동기 5-hop 호출 구조와 order Hikari 커넥션풀(10)·Tomcat(200) 용량 무릎 이상으로 높여, 진입·내부 호출량이 함께 증가하며 order 풀이 포화돼 checkout 5xx가 발생하는 시나리오다. 원인은 설정 변경이 아니라 부하 자체가 서비스 구조적 용량 한계를 초과하는 것이다.",
+      "cause": "North-south traffic surge exceeding order-service Hikari pool(10)/Tomcat(200) capacity knee",
       "injection_summary": "tb-runner에서 commerce NodePort로 실측 기반 adaptive k6 부하를 주입한다.",
       "user_impact": "체크아웃 지연과 오류가 운영 인시던트 수준으로 증가한다.",
-      "distinguishing_evidence": "진입 요청량과 내부 호출량이 유사한 비율로 증가하며 특정 하류 retry 반복이 원인이 아니다."
+      "distinguishing_evidence": "진입 요청량과 내부 호출량이 유사한 비율로 증가하며 order Hikari pool(10) 커넥션 대기가 함께 상승한다. 특정 하류 retry 반복이 원인이 아니며, F03-P(풀 설정 축소)·F08-P(timeout 설정 오배포)와 달리 풀·timeout 설정 변경 이력이 없고 순수 진입량이 무릎을 초과한 것이 원인이다."
     },
     "F08-H": {
       "title": "배포 직후 우연히 겹친 외부 결제 장애",
@@ -80,6 +80,14 @@
       "injection_summary": "Redis를 중단하고 실측 기반 cart·checkout surge를 동시에 주입한다.",
       "user_impact": "cart 조회와 checkout 지연·실패가 발생한다.",
       "distinguishing_evidence": "Redis 오류 이후 DB session과 pool 사용량이 급증하고 fallback trace가 나타난다."
+    },
+    "F02-H": {
+      "title": "PostgreSQL PVC 스토리지 IO 포화로 인한 commerce 전반 지연",
+      "description": "commerce 단일 PostgreSQL의 PVC backing 디바이스(tb-w1 로컬디스크)에 fio로 IO 포화를 걸어 공유 DB가 느려지고 commerce 전 서비스 응답이 지연되는 Class B(SMS·디스크) 시나리오다. root는 코드가 아니라 스토리지 IO 포화다.",
+      "cause": "PostgreSQL PVC backing device IO saturation (host disk, tb-w1)",
+      "injection_summary": "host.stress fio 모드로 tb-w1(192.168.122.184)의 local-path-provisioner PVC 디렉토리(pgdata-testbed-postgres-0)에 rate_iops=3000, size_mib=2048, 600s IO 부하를 주고 commerce checkout 부하를 흘린다. 파일·프로세스 bounded recovery로 원상복구한다.",
+      "user_impact": "특정 서비스 코드 결함 없이 commerce 전 서비스(order/product/inventory/payment 등)가 공유 PostgreSQL 경유로 동반 지연되고 checkout 지연·간헐 5xx가 발생한다.",
+      "distinguishing_evidence": "호스트 디스크 await/util·PG IO 대기가 급등하는 반면 워커 CPU·메모리는 정상(F09 CPU/F05 mem 배제)이고, 특정 서비스 코드락·커넥션풀 자연고갈 시그니처(F01 DB락 등)가 없다. 원인은 단일 스토리지 디바이스 IO 포화 하나다."
     },
     "F02-P": {
       "title": "메뉴 카테고리 조회 인덱스 제거로 인한 응답 지연",
@@ -156,7 +164,7 @@
     "F03-P": {
       "title": "payment Hikari 커넥션풀 축소 + checkout surge 중첩",
       "description": "commerce payment-service의 Hikari maximum-pool-size를 재빌드 없이 env로 축소하고 checkout surge를 얹어, 커넥션풀 포화로 payment 처리가 지연·timeout되는 시나리오다. 원인은 트래픽 자체가 아니라 축소된 풀 설정이며 surge는 증폭기다(R5).",
-      "cause": "Undersized HikariCP pool on payment-service amplified by checkout surge",
+      "cause": "Undersized HikariCP pool configuration on payment-service (config misdeployment) amplified by checkout surge",
       "injection_summary": "payment deployment에 SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE env(k8s.env, F08-P 패턴)를 주입+rollout해 풀을 축소한다. calibration ladder로 pool=5→3→2를 내려가며(F09-P 계단식 선례) 증상 발현 지점을 정의한다. north-south 60rps companion(무릎 아래 건강 상한)이 checkout 결제 경로에 지속 부하를 준다. cleanup=env 제거+rollout 원복.",
       "user_impact": "축소된 풀에서 payment 커넥션 획득 대기가 길어져 payment_p95가 급등하고, order의 payment 호출이 timeout돼 checkout 5xx가 상승한다.",
       "distinguishing_evidence": "payment_p95 급등 + checkout_5xx 상승이 있으나 payment pod·DB·호스트 자원은 정상이고 payment deployment의 풀 설정 변경(rollout) 이력이 존재한다. F07-H(진입 폭주)와 달리 진입량은 60rps로 통제 수준이며, F06-R/F06-H와 달리 원인은 커넥션풀 설정이다."

@@ -34,10 +34,10 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F01-R | PG row lock + checkout | R/ssh → PG NodePort 30432 | inventory hot row; 사용자는 commerce NodePort | R의 tagged DB session | ready — 실제 checkout row와 동일 DB |
 | F01-H | external 429 | K/kubectl port-forward → commerce MockServer API | payment outbound `/v1/payments` | 같은 MockServer에서 기본 200 복원 | ready — mock path 확인됨 |
 | F01-P | Oracle row lock + checkout | R/ssh → Oracle NodePort 30308 | banking accounts row; commerce→banking trace | R의 tagged Oracle session | partial — Oracle 전용 lock script 필요 |
-| F02-H | storage IO stress | commerce worker/ssh | PG PVC backing device; commerce search NodePort | 같은 worker의 scenario process | blocked — backing device 미확정 |
+| F02-H | storage IO stress | commerce worker/ssh | PG PVC backing device; commerce search NodePort | 같은 worker의 scenario process | blocked → 주입가능(fix-answerkey-A-sheet 07-23): host_stress_executor.py CONTRACTS['F02-H'] fio 계약(tb-w1 pgdata PVC) 이미 실재, Class B/SMS-disk. 잔여 gap=profiles.json host.stress+load.north_south allowlist 미등록, 호스트 disk IO query_id 미배선 |
 | F02-P | MySQL index fault | R/ssh → MySQL NodePort | food menu filter SQL/index | R에서 index 복원 | ready — 시드 보강 후 07-24 live 승격(46d3371). 07-23 CUT 판정은 번복(wave1-worklist §A) |
 | F03-H | servlet thread saturation | K/kubectl one-shot Job | service DNS를 통한 east-west slow calls | K에서 Job 삭제 | partial — executor 관측·강도 필요 |
-| F03-P | Hikari 축소 + surge | K/kubectl config patch + R/ssh load | commerce payment + checkout NodePort | K config rollback, R k6 종료 | partial — pool/강도 실측 필요 |
+| F03-P | Hikari 축소 + surge | K/kubectl config patch + R/ssh load | commerce payment + checkout NodePort | K config rollback, R k6 종료 | partial — pool/강도 실측 필요. Class B/config 재라벨 확정(fix-food429-reanchor-sheet 07-23): root=undersized pool 설정 오배포, surge=증폭기(R5). executor·metadata 이미 정합, 라벨만 정정 |
 | F04-R | consumer stop | K/kubectl scale shipping=0 | commerce orders→Kafka→shipping | K replica 복원·lag drain | ready — SLA probe 대신 kafka-consumer-groups lag 직접 판정(replicas=0 ∧ lag>0)으로 재설계(07-18) |
 | F04-H | outbox relay stop | K/kubectl fault config/build | order DB outbox→Kafka | K relay 복원·backlog drain | blocked — relay 독립 제어 없음 |
 | F04-P | ledger rate limit | K/kubectl fault config/build | banking transfers→ledger | K 처리율 복원·lag drain | blocked — rate-control 표면 없음 |
@@ -47,7 +47,7 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F06-R | external hang | K/kubectl → commerce MockServer API | payment outbound timeout | 같은 MockServer 기본 200 | ready — path·restore 계약 확인됨 |
 | F06-H | payment DB lock | R/ssh → PG NodePort | 외부 호출 전 payment DB row | R tagged DB session | partial — 실측(07-20): payment 경로는 결제마다 신규 INSERT라 row lock 대상 없음. 표면 = payments 테이블 잠금(tagged session LOCK TABLE) 변형으로 상세화 |
 | F06-P | partial 429 | K/kubectl → food MockServer API | food `/pay`, 성공/429 혼재 | 같은 MockServer 기본 200 | blocked — 배차 풀 복구 전 정상 주문·결제 영향 평가 불가 |
-| F07-H | north-south surge | R/ssh | commerce NodePort | R tagged k6 | ready — Commerce는 80 RPS 실측 |
+| F07-H | north-south surge | R/ssh | commerce NodePort | R tagged k6 | ready — Commerce는 80 RPS 실측. 재앵커(fix-food429-reanchor-sheet 07-23): root_cause를 order Hikari pool(10)·Tomcat(200) 용량 무릎 초과로 구체화(코드 한계 앵커), F03-P/F08-P와 설정변경 이력 부재로 감별 |
 | F07-P | pricing bulkhead saturation | K/kubectl one-shot Job | pricing service DNS | K Job 삭제 | ready-후보 — 실측(07-20): resilience4j pricingQuote max-concurrent 20·wait 0(즉시 503) 확인. 동시 slow call >20 Job으로 상세화 가능 |
 | F08-H | rollout + external fault | K/kubectl rollout + MockServer API | checkout NodePort, 독립 sub-injection | K에서 두 fault 역순 복구 | ready — composite script 필요 |
 | F08-P | timeout ConfigMap | K/kubectl config+rollout | payment/order tail latency | K config rollback+rollout | ready-후보 — 실측(07-20): timeout은 yml 리터럴(env 없음) → SPRING_APPLICATION_JSON env 오버라이드로 재빌드 없이 주입 가능 |
