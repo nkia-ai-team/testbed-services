@@ -2,7 +2,7 @@
 title: 평가용 데이터 캡처·재생 설계
 status: Draft
 owner: project
-last_reviewed: 2026-07-20
+last_reviewed: 2026-07-24
 tags:
   - evaluation
   - testbed
@@ -48,7 +48,8 @@ summary: 평가 입력 데이터를 재현 가능하게 고정하는 방법을 �
 
 평가는 두 단계로 분리한다. 이 둘을 섞으면 혼란해진다.
 
-**Phase A · 캡처 (녹화)** — 라이브 테스트베드, 일일 사이클(2026-07-20 개정, §2.1).
+**Phase A · 캡처 (녹화)** — 라이브 테스트베드. 현행 계약은 **연속 사이클
+v3(§2.2)** 이며, 아래 1~5 절차 서술은 v2(일일 사이클, §2.1) 당시 기록이다.
 
 1. 테스트베드에 에이전트·collector 설치(최초 1회).
 2. **일일 정상 세그먼트** 확보 — 매일 00:00~02:00(보호 구간, 주입 금지)을
@@ -64,8 +65,11 @@ summary: 평가 입력 데이터를 재현 가능하게 고정하는 방법을 �
    **연속 시간축 완성본(`assembled/`)까지 생성해 동봉**하고, 레시피를
    `meta.json`에 기록한다(§2.1).
 
-### 2.1 캡처 시간창 계약 (2026-07-20 개정 — 일일 사이클·세그먼트 분리)
+### 2.1 캡처 시간창 계약 (2026-07-20 개정 — 일일 사이클·세그먼트 분리) — §2.2로 대체됨
 
+> **[2026-07-24] 이 계약(v2)은 §2.2 연속 사이클 계약(v3)으로 대체되었다.**
+> 07-21 큐(13케이스)가 이 계약으로 캡처되었으므로 기록으로 보존한다.
+>
 > 2026-07-15 계약(시나리오당 단일 창 `[t1-2h, t2+45m]`)을 대체한다. 시나리오마다
 > 정상 2시간을 실시간으로 기다리던 구조를 "일일 공유 정상 세그먼트 + 짧은
 > 시나리오 창"으로 바꿔 대기 시간을 없애고 하루 처리량을 높인다. settle window
@@ -164,6 +168,121 @@ SHA-256에 결속된다. 자동 캡처의 기본 라벨은 기존 호출과의
 확인(2026-07-20)에 근거한다. 실제 지연은 환경 부하에 따라 달라지므로 각 저장소의
 최대 event-time과 dump 시각의 차이를 `meta.json` 또는 캡처 로그에 기록하고,
 인시던트가 창 밖에서 생성된 정황이 보이면 settle window를 재협의한다.
+
+### 2.2 연속 사이클 캡처 계약 v3 (2026-07-24 — schema 2.0)
+
+> §2.1(v2, 일일 공유 정상 세그먼트 + rebase/`assembled/` 조립)을 대체한다. 동인
+> 셋(2026-07-24 사용자 확정): ① 조립식 시간축은 이음새(diurnal 위상차) 처리를
+> 소비자에게 떠넘기고 rebase 역산 부담을 남긴다 — 실제 연속 시간축이면 둘 다
+> 소멸. ② CH 캡처가 4테이블뿐이라 소비자(이상감지)가 필요한 dpm·kcm·process
+> 계열이 빠졌고, 07-24에 사후 백필로 메꾸는 사건이 있었다(TTL 경과 시 소실
+> 위험). ③ trainer 초기화(golden 복원)와 정상 리드인을 한 사이클로 묶어 "리셋
+> 직후 2시간 정상 학습 → 주입"의 인과를 케이스 안에 담는다. 첫 적용 대상 =
+> 검증된 13개 시나리오(F01-G/H/R·F02-R·F03-G·F04-R·F05-G·F06-R·F07-H·F08-H·
+> F09-P·F11-G·F11-R) 재캡처 큐.
+
+**사이클 구조** — 케이스 1개 = 사이클 1개, 시간축은 실벽시계 그대로 연속:
+
+```
+[trainer_reset] → normal(2h) → buffer(10m) → injection[t1,t2] → cooldown(30m)
+                                                                      └→ 캡처 시작
+```
+
+- `trainer_reset`: golden 스냅샷 복원([Trainer 초기화 설계](spec-trainer-reset.md))
+  을 **사이클 시작 시** 수행한다(v2는 주입 직전이었음). 리셋 후 정상 2시간 동안
+  trainer는 **가동 상태로 학습**한다 — 정상만 보는 구간이므로 오염이 없고, 매
+  사이클 "golden + 갓 학습한 2h 정상"으로 두뇌 상태가 동일하게 재현된다.
+  stream-anomaly(60분 적응형)도 이 리드인에서 자가 회복한다(동 스펙 §3.2).
+- `buffer(10m)`: 주입 전 완충. **buffer 시작(=t1−10m)에 trainer 동결**(docker
+  stop), 캡처 완료 후 해동. preflight 검사창도 이 10분이다(v2와 동일 게이트).
+- `injection[t1,t2]`: 기존 controller 소유 실행(변경 없음).
+- `cooldown(30m)`: 회복·settle 통합 창. v2의 settle 20m을 30m으로 흡수 통일.
+- **캡처 창 = `[cycle_start, t2+30m]` 통짜 1개.** `cycle_start`=trainer 리셋
+  직후 normal 시작 시각. 조립이 없으므로 `assembled/`·`normal-segments/` 참조·
+  `rebase`·이음새 계약이 **모두 소멸**한다. 일일 정상 세그먼트 cron과 00:00~02:00
+  보호 구간은 이 큐에서 사용하지 않는다.
+- 처리량: 사이클당 약 2h40m + 주입 시간 → 13개 연속 약 1.5~2일. 사이클은
+  시간대 제약 없이 연속 실행한다(시간대별 golden 최근접 선택은 trainer 스펙 §8).
+
+**ClickHouse 캡처 테이블 — 12종 고정 목록** (v2의 4종에서 확장, 07-24 백필
+사건의 재발 방지. 2026-07-24 라이브 CH 스키마 34테이블 전수 실측으로 확정 —
+행수 보유 베이스 테이블 11종 전부 + `syslog_local` 예비 1종이며, MV·`.inner`·
+AggregatingMergeTree는 소비자 복원 시 base 재삽입으로 재구축되므로 제외,
+`schema_migrations` 제외). 시간창
+슬라이스 대상과 전체 스냅샷 대상을 구분한다:
+
+| 테이블 | 시간 컬럼 | 방식 |
+|---|---|---|
+| `otel_traces_local` | `timestamp` | 창 슬라이스 |
+| `lucida_logs_local` | `timestamp` | 창 슬라이스 |
+| `lucida_events_local` | `occurred_at` | 창 슬라이스 (UUID→String 캐스팅, §8.3) |
+| `dpm_session_local` | `timestamp` | 창 슬라이스 |
+| `dpm_topsql_local` | `timestamp` | 창 슬라이스 |
+| `kcm_events_local` | `timestamp` | 창 슬라이스 |
+| `process_snapshot` | `ts` | 창 슬라이스 |
+| `trace_error_chains_local` | `window_start` | 창 슬라이스 |
+| `trace_path_signatures_local` | `window_start` | 창 슬라이스 |
+| `syslog_local` | `timestamp` | 창 슬라이스 (현재 0행 — 유입 시 대비) |
+| `host_connections` | — | 전체 스냅샷 (인벤토리성, §5) |
+| `process_meta` | — | 전체 스냅샷 (프로세스 메타, `seen_at`은 관리용) |
+
+- §3 ⚠의 "로그 정본 싱크" 우려는 실측으로 해소: 정본 후보 `otel_logs_local`은
+  현 배포에서 **0행**(미사용)이고 로그는 `lucida_logs_local`로 들어온다. 캡처
+  스크립트는 **런타임에 베이스 테이블을 전수 열거**해 위 목록에 없는 비어있지
+  않은 테이블을 발견하면 경고를 남긴다(스키마 드리프트 조기 감지 — 예:
+  `otel_logs_local`·wpm·netflow 계열이 유입을 시작하는 경우 목록 개정).
+
+캡처 스크립트는 **테이블별 행수와 실제 시간범위(min/max)를 `meta.json.
+clickhouse_tables[]`에 기록**한다 — "데이터가 들었는가"를 파일을 열지 않고
+meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 구조적 방지).
+
+**meta.json schema 2.0** — v3 계약을 담는 케이스는 `schema_version: "2.0"`:
+
+- 신규: `timeline: "continuous"` (v2 케이스와 기계 구분).
+- 신규 `phases[]`: 사이클 실측 기록 —
+  `{phase: trainer_reset, at, golden_id, golden_sha256}` /
+  `{phase: normal|buffer|injection|cooldown, start, end}` (UTC 정본 + `*_kst`
+  병기). `injection.start`=`t1`, `injection.end`=`t2`와 일치해야 한다.
+- 신규 `clickhouse_tables[]`: `{table, file, rows, time_column,
+  time_min, time_max | null(전체 스냅샷)}`.
+- 유지: `t1`/`t2`/`capture_start`/`capture_end`(+`_kst`), `dump_*`,
+  `scenario_metadata` 6필드 + `scenario_metadata_sha256`(정본 운반, 불일치 시
+  승격 거부), `case_label`, `evaluation_eligible`(v2와 동일 결속 규칙),
+  `preflight`(창=buffer 10분), `topology_snapshot`, 모델 스냅샷 계보
+  (`model_snapshot_at >= capture_end` 검증 포함).
+- 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.
+
+**산출물 권한 (2026-07-24 신설)**: 케이스 디렉터리·파일은 승격 시점부터 **그룹
+읽기 가능**(`g+rX`, 그룹은 저장 호스트 관례를 따름 — .104는 `sudo`)이어야 한다.
+07-24에 109 사본이 root 700으로 떨어져 소비자가 "데이터 없음"으로 오인한 사건의
+재발 방지. 정본 아카이브는 .104 `/data/eval-cases/`이며 소비자 안내는 항상 정본
+경로로 한다.
+
+**scenario.md (동반 문서)**: 형식 정본은 [AI Scenario Supervisor §6]
+(spec-scenario-supervisor.md)의 AI 저술 규칙을 승계하되, v3 케이스는 다음을
+추가·변경한다 — ① "사이클 타임라인" 표 신설(리셋~쿨다운 종료의 실측 UTC/KST),
+② 시간축이 실제 연속임을 명기하고 rebase/이음새 서술 금지, ③ 관측 실측 절은
+AI 계층 온전 전제(리셋+2h 학습)로 탐지 이벤트 타임라인을 수록.
+
+**무인 실행·자가 복구 (2026-07-24 사용자 핵심 요구)**: 사이클이 길어(13개
+~2일) 실패 시 사람 개입 대기는 허용되지 않는다. 두 겹으로 보장한다.
+
+1. **큐 상태기계의 재개 가능성(코드)**: 상태를 매 구간 전환마다 영속화하고,
+   실패 구간별 재개 정책을 고정한다:
+
+   | 실패 구간 | 재개 정책 | 근거 |
+   |---|---|---|
+   | trainer_reset | 1회 자동 재시도 → 실패 시 pause | 기존 restore 재시도 계보 |
+   | normal(2h) 중 | **사이클 처음(리셋)부터 재시작** | 리드인 학습·시간축 오염 방지 |
+   | buffer·injection 중 | cleanup 보장 → 사이클 재시작 | dirty 상태에서 진행 금지 |
+   | cooldown 중 | 쿨다운만 이어서 완료 → 캡처 진행 | 데이터는 이미 저장소에 있음 |
+   | 캡처 실패 | 캡처만 재시도(창 불변) | 저장소 TTL 내 데이터 잔존 |
+
+2. **supervisor 감시 루프(AI)**: [AI Scenario Supervisor](spec-scenario-supervisor.md)
+   계약대로 주기 감시 — pause 감지 → 진단 분류(동 스펙 §5 권한 경계 준수) →
+   자율 수리 → 위 정책표의 안전 지점부터 재개. 사이클 진행(현재 구간·경과·
+   다음 전환 예정 시각)은 큐 상태 API로 노출해 감시 루프가 stall도 판정할 수
+   있게 한다(전환 예정 시각 + 유예를 넘기면 stalled).
 
 **Phase B · 평가 (재생)** — 라이브 없이 무한 반복. **소비자 소유.**
 
