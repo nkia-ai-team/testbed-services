@@ -26,6 +26,7 @@ Usage:
     [--observer-container <name>] [--trainer-container <name>] \
     [--no-freeze] [--dry-run] [--ready-timeout-sec <n>]
   restore-golden-state.sh --thaw [--trainer-container <name>]
+  restore-golden-state.sh --freeze [--trainer-container <name>]
 
 Selection:
   --golden-dir   use this exact golden directory.
@@ -52,6 +53,7 @@ trainer_container="${TRAINER_CONTAINER:-lucida-ai-trainer}"
 no_freeze=false
 dry_run=false
 thaw_only=false
+freeze_only=false
 ready_timeout_sec=180
 
 while (( $# > 0 )); do
@@ -64,6 +66,7 @@ while (( $# > 0 )); do
     --no-freeze) no_freeze=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     --thaw) thaw_only=true; shift ;;
+    --freeze) freeze_only=true; shift ;;
     --ready-timeout-sec) ready_timeout_sec="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -77,6 +80,21 @@ if [[ "$thaw_only" == true ]]; then
   log "thawing trainer: docker start $trainer_container"
   docker start "$trainer_container" >/dev/null
   log 'trainer thawed'
+  exit 0
+fi
+
+# --- freeze mode: just stop the trainer (v3 cycle buffer start = t1-10m). The
+#     cycle restores golden + thaws at cycle start so the trainer learns on the
+#     2h normal lead-in, then freezes here for the evaluation window. --thaw
+#     reverses it after capture. restart-policy=no keeps it down once stopped.
+if [[ "$freeze_only" == true ]]; then
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$trainer_container" 2>/dev/null)" == true ]]; then
+    log "freezing trainer: docker stop $trainer_container"
+    docker stop "$trainer_container" >/dev/null
+  else
+    log "trainer already stopped: $trainer_container"
+  fi
+  log 'trainer frozen'
   exit 0
 fi
 
