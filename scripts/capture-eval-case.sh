@@ -15,7 +15,7 @@ Usage:
     --scenario-metadata-sha256 <sha256> \
     --t1 <YYYY-MM-DDTHH:MM:SSZ> --t2 <YYYY-MM-DDTHH:MM:SSZ> \
     [--case-label <calibration|evaluation|failed>] [--run-result <result.json>] \
-    [--phases-json <file>] \
+    [--phases-json <file>] [--topology-bundle <dir>] \
     [--output-root <dir>] [--dry-run]
 
 Case labels:
@@ -35,6 +35,14 @@ Capture contract version:
                                produced: trainer_reset{at,golden_id,golden_sha256}
                                and normal|buffer|injection|cooldown{start,end}.
                                injection.start/.end must equal --t1/--t2.
+  --topology-bundle <dir>      v3-only. Runner-collected periodic topology/
+                               service-tree bundle (dir with graph/,
+                               service-tree/, manifest.json — spec §2.2). Verified
+                               (sha256 + chronological + ≥1 snapshot inside
+                               [t1,t2]) and re-homed byte-for-byte into the
+                               case's topology/ (only manifest.json's case_id
+                               is patched). Omitted: capture proceeds fail-open
+                               with a warning; meta.topology_bundle is null.
 
 Required environment for a live capture:
   VM_URL             default: http://192.168.230.119:18428
@@ -114,6 +122,9 @@ normal_segment=''
 # array covering trainer_reset/normal/buffer/injection/cooldown. Presence of
 # this flag switches the whole script into v3 (continuous-cycle) mode.
 phases_json=''
+# Periodic topology/service-tree bundle (spec §2.2, EventCluster contract,
+# v3-only). Runner-collected dir with graph/, service-tree/, manifest.json.
+topology_bundle=''
 dry_run=false
 self_check=false
 
@@ -135,6 +146,7 @@ while (( $# > 0 )); do
     --preflight-json) preflight_json="${2:-}"; shift 2 ;;
     --normal-segment) normal_segment="${2:-}"; shift 2 ;;
     --phases-json) phases_json="${2:-}"; shift 2 ;;
+    --topology-bundle) topology_bundle="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --self-check) self_check=true; shift ;;
@@ -241,6 +253,8 @@ fi
   die '--phases-json and --normal-segment are mutually exclusive (v3 phases[] replaces v2 assembled/ provenance)'
 v3_mode=false
 [[ -n "$phases_json" ]] && v3_mode=true
+[[ -z "$topology_bundle" || "$v3_mode" == true ]] ||
+  die '--topology-bundle requires --phases-json (v3-only)'
 
 require_command date
 require_command jq
@@ -333,25 +347,28 @@ if [[ "$v3_mode" == true ]]; then
   # truth so shortened smoke cycles capture without a hardcoded 30m wait).
   # injection.start/.end must equal --t1/--t2 (runner/capture consistency).
   [[ -r "$phases_json" ]] || die "--phases-json is not readable: $phases_json"
+  # The runner emits an envelope object {schema_version, run_id, scenario_id,
+  # phases: [...]}; golden_sha256 may be null until restore emits a digest
+  # (known TODO). Validate the envelope, then work off .phases below.
   jq -e '
-    (type == "array") and
-    ([.[].phase] as $p |
+    (type == "object") and (.phases | type == "array") and
+    ([.phases[].phase] as $p |
       ($p | index("trainer_reset")) != null and
       ($p | index("normal")) != null and
       ($p | index("buffer")) != null and
       ($p | index("injection")) != null and
       ($p | index("cooldown")) != null) and
-    (.[] | select(.phase == "trainer_reset") |
+    (.phases[] | select(.phase == "trainer_reset") |
       (.at | type == "string") and (.golden_id | type == "string") and
-      (.golden_sha256 | type == "string")) and
-    (.[] | select(.phase != "trainer_reset") |
+      ((.golden_sha256 | type == "string") or .golden_sha256 == null)) and
+    (.phases[] | select(.phase != "trainer_reset") |
       (.start | type == "string") and (.end | type == "string"))
   ' "$phases_json" >/dev/null ||
     die 'phases-json is missing required phases (trainer_reset/normal/buffer/injection/cooldown) or fields'
 
-  normal_start_raw=$(jq -r '.[] | select(.phase == "normal") | .start' "$phases_json")
-  injection_start_raw=$(jq -r '.[] | select(.phase == "injection") | .start' "$phases_json")
-  injection_end_raw=$(jq -r '.[] | select(.phase == "injection") | .end' "$phases_json")
+  normal_start_raw=$(jq -r '.phases[] | select(.phase == "normal") | .start' "$phases_json")
+  injection_start_raw=$(jq -r '.phases[] | select(.phase == "injection") | .start' "$phases_json")
+  injection_end_raw=$(jq -r '.phases[] | select(.phase == "injection") | .end' "$phases_json")
   injection_start_epoch=$(parse_utc_epoch "$injection_start_raw" 'phases-json injection.start')
   injection_end_epoch=$(parse_utc_epoch "$injection_end_raw" 'phases-json injection.end')
   (( injection_start_epoch == t1_epoch )) ||
@@ -360,7 +377,7 @@ if [[ "$v3_mode" == true ]]; then
     die "phases-json injection.end ($injection_end_raw) must equal --t2 ($t2_raw)"
 
   capture_start_epoch=$(parse_utc_epoch "$normal_start_raw" 'phases-json normal.start')
-  cooldown_end_raw=$(jq -r '.[] | select(.phase == "cooldown") | .end' "$phases_json")
+  cooldown_end_raw=$(jq -r '.phases[] | select(.phase == "cooldown") | .end' "$phases_json")
   capture_end_epoch=$(parse_utc_epoch "$cooldown_end_raw" 'phases-json cooldown.end')
   (( capture_end_epoch >= t2_epoch )) ||
     die "phases-json cooldown.end ($cooldown_end_raw) must not precede --t2 ($t2_raw)"
@@ -380,7 +397,7 @@ if [[ "$v3_mode" == true ]]; then
         '. + {start_kst:$start_kst, end_kst:$end_kst}' <<<"$phase_obj")
     fi
     phases_enriched=$(jq -c --argjson obj "$enriched" '. + [$obj]' <<<"$phases_enriched")
-  done < <(jq -c '.[]' "$phases_json")
+  done < <(jq -c '.phases[]' "$phases_json")
 else
   # Capture window contract v2 (spec-eval-data-capture §2.1, 2026-07-20):
   # scenario segment is [t1-10m, t2+20m]; the 2h normal lead-in moved to the
@@ -397,6 +414,80 @@ t2_kst=$(kst_from_epoch "$t2_epoch")
 capture_start_kst=$(kst_from_epoch "$capture_start_epoch")
 capture_end_kst=$(kst_from_epoch "$capture_end_epoch")
 final_dir="${output_root%/}/$case_id"
+
+# ------------------------------------------------------------
+# Topology periodic bundle (spec §2.2, EventCluster contract, 2026-07-24,
+# v3-only): the runner polls topology/service-tree throughout the cycle and
+# hands the raw bundle off via --topology-bundle. Verified here (sha256 +
+# chronological + >=1 snapshot inside [t1,t2]) so a bad/incomplete bundle
+# dies before any live capture work starts; a missing bundle is fail-open —
+# a collector outage must not kill the whole capture (spec: "수집기 장애는
+# 큐를 멈추지 않고... 캡처는 번들 부재 시 경고 후 진행").
+# ------------------------------------------------------------
+topology_bundle_meta='null'
+if [[ -n "$topology_bundle" ]]; then
+  [[ -d "$topology_bundle" ]] || die "--topology-bundle is not a directory: $topology_bundle"
+  tb_manifest="${topology_bundle%/}/manifest.json"
+  [[ -r "$tb_manifest" ]] || die "topology bundle has no readable manifest.json: $tb_manifest"
+  # A snapshot is either a full pair or a blank failure tick (graph=[] and
+  # service_tree=null) — the collector appends blanks for failed ticks and
+  # records the failure in capture_failures[] (수집 공백도 기록 원칙).
+  jq -e '
+    ((.schema_version | tostring) == "1") and
+    (.capture_interval_seconds | type == "number") and
+    (.capture_failures | type == "array") and
+    (.snapshots | type == "array" and length > 0) and
+    (.snapshots[] |
+      (.captured_at | type == "string") and
+      (((.graph | type == "array" and length == 0) and .service_tree == null) or
+       ((.graph | type == "array" and length > 0) and
+        (.graph[] |
+          (.path | type == "string") and (.request_url | type == "string") and
+          (.http_status | type == "number") and (.sha256 | type == "string")) and
+        (.service_tree |
+          (.path | type == "string") and (.request_url | type == "string") and
+          (.http_status | type == "number") and (.sha256 | type == "string")))))
+  ' "$tb_manifest" >/dev/null ||
+    die 'topology bundle manifest.json is missing required fields (spec §2.2: schema_version/capture_interval_seconds/capture_failures[]/snapshots[].graph[]/service_tree)'
+
+  # Raw-bytes re-verification: every referenced file must exist and hash to
+  # the value manifest.json recorded (원본 무가공 원칙 — no re-derivation).
+  while IFS=$'\t' read -r tb_rel_path tb_sha256; do
+    tb_file="${topology_bundle%/}/$tb_rel_path"
+    [[ -r "$tb_file" ]] || die "topology bundle references a missing file: $tb_rel_path"
+    [[ "$(sha256sum "$tb_file" | awk '{print $1}')" == "$tb_sha256" ]] ||
+      die "topology bundle sha256 mismatch: $tb_rel_path"
+  done < <(jq -r '.snapshots[] | select((.graph | length) > 0) | (.graph[] | [.path, .sha256]), ([.service_tree.path, .service_tree.sha256]) | @tsv' "$tb_manifest")
+
+  # Chronological order + minimum coverage: >=1 snapshot inside [t1, t2].
+  tb_prev_epoch=''
+  tb_covered=0
+  while IFS= read -r tb_captured_at; do
+    tb_cur_epoch=$(parse_utc_epoch "$tb_captured_at" 'topology bundle snapshots[].captured_at')
+    if [[ -n "$tb_prev_epoch" ]]; then
+      (( tb_cur_epoch >= tb_prev_epoch )) ||
+        die "topology bundle snapshots[].captured_at is not chronological at $tb_captured_at"
+    fi
+    tb_prev_epoch=$tb_cur_epoch
+    if (( tb_cur_epoch >= t1_epoch && tb_cur_epoch <= t2_epoch )); then
+      tb_covered=$(( tb_covered + 1 ))
+    fi
+  done < <(jq -r '.snapshots[] | select((.graph | length) > 0) | .captured_at' "$tb_manifest")
+  (( tb_covered >= 1 )) ||
+    die 'topology bundle has no successful snapshots[] inside the injection window [t1, t2]'
+
+  tb_snapshot_count=$(jq -r '.snapshots | length' "$tb_manifest")
+  tb_failure_count=$(jq -r '.capture_failures | length' "$tb_manifest")
+  tb_interval_seconds=$(jq -r '.capture_interval_seconds' "$tb_manifest")
+  topology_bundle_meta=$(jq -cn \
+    --argjson snapshot_count "$tb_snapshot_count" \
+    --argjson capture_failure_count "$tb_failure_count" \
+    --argjson interval_seconds "$tb_interval_seconds" \
+    '{path:"topology/", snapshot_count:$snapshot_count,
+      capture_failure_count:$capture_failure_count, interval_seconds:$interval_seconds}')
+elif [[ "$v3_mode" == true ]]; then
+  printf '[WARN] --topology-bundle not supplied; case will have no periodic topology snapshots (fail-open)\n' >&2
+fi
 
 # ------------------------------------------------------------
 # schema 1.3 companion metadata (spec-eval-data-capture §2.1):
@@ -486,6 +577,7 @@ if [[ "$dry_run" == true ]]; then
       --arg capture_end_kst "$capture_end_kst" \
       --argjson phases "$phases_enriched" \
       --argjson preflight "$preflight" \
+      --argjson topology_bundle "$topology_bundle_meta" \
       --argjson evaluation_eligible "$evaluation_eligible" \
       '{mode:"dry-run", schema_version:"2.0", timeline:"continuous",
         case_id:$case_id, scenario_id:$scenario_id,
@@ -496,7 +588,7 @@ if [[ "$dry_run" == true ]]; then
         capture_end:$capture_end, model_snapshot_not_before:$capture_end,
         t1_kst:$t1_kst, t2_kst:$t2_kst, capture_start_kst:$capture_start_kst,
         capture_end_kst:$capture_end_kst,
-        phases:$phases, clickhouse_tables:[],
+        phases:$phases, clickhouse_tables:[], topology_bundle:$topology_bundle,
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
@@ -806,6 +898,22 @@ snapshot_topology() {
 }
 snapshot_topology
 
+# ------------------------------------------------------------
+# Topology periodic bundle re-home (spec §2.2, v3-only): byte-identical copy
+# of the runner's verified bundle into the case's topology/ — only
+# manifest.json is re-emitted, and only to inject case_id (원본 무가공
+# 원칙: graph/*.json, service-tree/*.json are never re-serialized).
+# ------------------------------------------------------------
+if [[ -n "$topology_bundle" ]]; then
+  log "re-homing topology bundle from $topology_bundle"
+  mkdir -p "$staging_dir/topology"
+  cp -a "$topology_bundle/." "$staging_dir/topology/"
+  tb_manifest_out=$(mktemp)
+  jq --arg case_id "$case_id" '.case_id = $case_id' "$staging_dir/topology/manifest.json" \
+    > "$tb_manifest_out"
+  mv "$tb_manifest_out" "$staging_dir/topology/manifest.json"
+fi
+
 required_files=(
   data/victoriametrics.export
   data/postgres.dump
@@ -814,6 +922,7 @@ required_files=(
   models/stream-anomaly/global/v1/model.json
   models/stream-anomaly/global/v1/model.json.sha256
 )
+[[ -z "$topology_bundle" ]] || required_files+=(topology/manifest.json)
 if [[ "$v3_mode" == true ]]; then
   for entry in "${ch_v3_tables[@]}"; do
     tbl="${entry%%:*}"
@@ -903,6 +1012,7 @@ if [[ "$v3_mode" == true ]]; then
     --argjson clickhouse_tables "$clickhouse_tables_json" \
     --argjson preflight "$preflight" \
     --argjson topology_snapshot "$topology_snapshot" \
+    --argjson topology_bundle "$topology_bundle_meta" \
     --argjson evaluation_eligible "$evaluation_eligible" \
     '{schema_version:$schema_version, timeline:"continuous",
       case_id:$case_id, scenario_id:$scenario_id,
@@ -921,6 +1031,7 @@ if [[ "$v3_mode" == true ]]; then
       run_plan_sha256:$run_plan_sha256,
       phases:$phases, clickhouse_tables:$clickhouse_tables,
       preflight:$preflight, topology_snapshot:$topology_snapshot,
+      topology_bundle:$topology_bundle,
       golden_anomaly_file:false}' > "$staging_dir/meta.json"
 
   jq -e \
@@ -941,6 +1052,11 @@ if [[ "$v3_mode" == true ]]; then
      .golden_anomaly_file == false and
      (.phases | type == "array" and length == 5) and
      (.clickhouse_tables | type == "array" and length == 12) and
+     (.topology_bundle == null or
+       (.topology_bundle.path == "topology/" and
+        (.topology_bundle.snapshot_count | type == "number") and
+        (.topology_bundle.capture_failure_count | type == "number") and
+        (.topology_bundle.interval_seconds | type == "number"))) and
      (.topology_snapshot.snapshot_at | type == "string" and length > 0) and
      (if $case_label == "evaluation" then
         .evaluation_eligible == true and

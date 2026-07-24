@@ -148,13 +148,18 @@ expect_rejected evaluation-plan-hash-mismatch \
 # cooldown=[T+10m,T+40m). capture_start=normal.start, capture_end=t2+30m.
 # ------------------------------------------------------------
 phases_json="$TMP_ROOT/phases.json"
-jq -n '[
-  {phase:"trainer_reset", at:"2026-07-14T22:50:00Z", golden_id:"golden-01", golden_sha256:("a"*64)},
-  {phase:"normal", start:"2026-07-14T22:50:00Z", end:"2026-07-15T00:50:00Z"},
-  {phase:"buffer", start:"2026-07-15T00:50:00Z", end:"2026-07-15T01:00:00Z"},
-  {phase:"injection", start:"2026-07-15T01:00:00Z", end:"2026-07-15T01:10:00Z"},
-  {phase:"cooldown", start:"2026-07-15T01:10:00Z", end:"2026-07-15T01:40:00Z"}
-]' >"$phases_json"
+jq -n '{
+  schema_version:"2.0", run_id:"run-cycle-test", scenario_id:"commerce/scenario-policy-test",
+  timeline:"continuous",
+  capture_start:"2026-07-14T22:50:00Z", capture_end:"2026-07-15T01:40:00Z",
+  phases: [
+    {phase:"trainer_reset", at:"2026-07-14T22:50:00Z", golden_id:"golden-01", golden_sha256:("a"*64)},
+    {phase:"normal", start:"2026-07-14T22:50:00Z", end:"2026-07-15T00:50:00Z"},
+    {phase:"buffer", start:"2026-07-15T00:50:00Z", end:"2026-07-15T01:00:00Z"},
+    {phase:"injection", start:"2026-07-15T01:00:00Z", end:"2026-07-15T01:10:00Z"},
+    {phase:"cooldown", start:"2026-07-15T01:10:00Z", end:"2026-07-15T01:40:00Z"}
+  ]
+}' >"$phases_json"
 
 # (a) phases-json input reflected: capture_start/capture_end/schema 2.0/phases[].
 output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
@@ -181,15 +186,123 @@ expect_rejected phases-json-with-normal-segment \
 
 # (c) injection.start/.end must equal --t1/--t2.
 bad_injection_start="$TMP_ROOT/phases-bad-injection-start.json"
-jq '(.[] | select(.phase == "injection") | .start) = "2026-07-15T00:59:00Z"' "$phases_json" \
+jq '(.phases[] | select(.phase == "injection") | .start) = "2026-07-15T00:59:00Z"' "$phases_json" \
   >"$bad_injection_start"
 expect_rejected phases-json-injection-start-mismatch \
   "${base_args[@]}" --case-label calibration --phases-json "$bad_injection_start"
 
 bad_injection_end="$TMP_ROOT/phases-bad-injection-end.json"
-jq '(.[] | select(.phase == "injection") | .end) = "2026-07-15T01:11:00Z"' "$phases_json" \
+jq '(.phases[] | select(.phase == "injection") | .end) = "2026-07-15T01:11:00Z"' "$phases_json" \
   >"$bad_injection_end"
 expect_rejected phases-json-injection-end-mismatch \
   "${base_args[@]}" --case-label calibration --phases-json "$bad_injection_end"
+
+# golden_sha256 may be null (restore has not emitted a digest yet — known
+# TODO on the runner side); this must still be accepted, not rejected.
+null_golden_sha="$TMP_ROOT/phases-null-golden-sha.json"
+jq '(.phases[] | select(.phase == "trainer_reset") | .golden_sha256) = null' "$phases_json" \
+  >"$null_golden_sha"
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$null_golden_sha" \
+  --output-root "$TMP_ROOT/cases" --dry-run)
+jq -e '
+  .mode == "dry-run" and .schema_version == "2.0" and
+  (.phases[] | select(.phase == "trainer_reset") | .golden_sha256 == null)' \
+  <<<"$output" >/dev/null || fail 'phases-json with golden_sha256=null should be accepted'
+
+# ------------------------------------------------------------
+# Topology periodic bundle — --topology-bundle (spec §2.2, EventCluster
+# contract). Fixture manifest matches the spec's field names exactly:
+# schema_version, capture_interval_seconds, capture_failures[],
+# snapshots[].{captured_at, graph[]{path,request_url,http_status,sha256},
+# service_tree{path,request_url,http_status,sha256}}.
+# ------------------------------------------------------------
+make_topology_bundle() {
+  local dir=$1
+  shift
+  local -a captured_ats=("$@")
+  mkdir -p "$dir/graph" "$dir/service-tree"
+  local idx=0 snapshots_json='[]' ts graph_file tree_file graph_sha tree_sha
+  for ts in "${captured_ats[@]}"; do
+    idx=$((idx + 1))
+    graph_file="graph/${ts}-part-001.json"
+    tree_file="service-tree/${ts}.json"
+    printf '{"nodes":[],"edges":[],"sources":[],"snapshot":%d}\n' "$idx" >"$dir/$graph_file"
+    printf '{"tree":[],"snapshot":%d}\n' "$idx" >"$dir/$tree_file"
+    graph_sha=$(sha256sum "$dir/$graph_file" | awk '{print $1}')
+    tree_sha=$(sha256sum "$dir/$tree_file" | awk '{print $1}')
+    snapshots_json=$(jq -c \
+      --arg ts "$ts" \
+      --arg gpath "$graph_file" --arg gsha "$graph_sha" \
+      --arg tpath "$tree_file" --arg tsha "$tree_sha" \
+      '. + [{captured_at:$ts,
+             graph:[{path:$gpath, request_url:"http://query-api/api/v1/topology/graph", http_status:200, sha256:$gsha}],
+             service_tree:{path:$tpath, request_url:"http://query-api/api/v1/asset-tree/service/unified", http_status:200, sha256:$tsha}}]' \
+      <<<"$snapshots_json")
+  done
+  jq -n --argjson snapshots "$snapshots_json" \
+    '{schema_version:"1", case_id:null, capture_interval_seconds:30, capture_failures:[], snapshots:$snapshots}' \
+    >"$dir/manifest.json"
+}
+
+good_topology_bundle="$TMP_ROOT/topology-bundle-good"
+make_topology_bundle "$good_topology_bundle" \
+  "2026-07-15T00-55-00Z" "2026-07-15T01-05-00Z" "2026-07-15T01-15-00Z"
+# manifest captured_at must be the strict YYYY-MM-DDTHH:MM:SSZ form the
+# capture script requires; filenames above avoid ':' for portability, so
+# rewrite captured_at (not the paths/hashes) to the colonized timestamps.
+jq '.snapshots |= [
+  (.[0] | .captured_at = "2026-07-15T00:55:00Z"),
+  (.[1] | .captured_at = "2026-07-15T01:05:00Z"),
+  (.[2] | .captured_at = "2026-07-15T01:15:00Z")
+]' "$good_topology_bundle/manifest.json" >"$good_topology_bundle/manifest.json.tmp"
+mv "$good_topology_bundle/manifest.json.tmp" "$good_topology_bundle/manifest.json"
+
+# (a) normal ingestion: dry-run reflects topology_bundle summary in meta.
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --topology-bundle "$good_topology_bundle" --output-root "$TMP_ROOT/cases" --dry-run)
+jq -e '
+  .mode == "dry-run" and .schema_version == "2.0" and
+  .topology_bundle.path == "topology/" and
+  .topology_bundle.snapshot_count == 3 and
+  .topology_bundle.capture_failure_count == 0 and
+  .topology_bundle.interval_seconds == 30' \
+  <<<"$output" >/dev/null || fail 'unexpected dry-run output for --topology-bundle (good bundle)'
+
+# (b) sha256 mismatch is rejected.
+bad_sha_bundle="$TMP_ROOT/topology-bundle-bad-sha"
+cp -r "$good_topology_bundle" "$bad_sha_bundle"
+jq '(.snapshots[0].graph[0].sha256) = ("0" * 64)' "$bad_sha_bundle/manifest.json" \
+  >"$bad_sha_bundle/manifest.json.tmp"
+mv "$bad_sha_bundle/manifest.json.tmp" "$bad_sha_bundle/manifest.json"
+expect_rejected topology-bundle-sha-mismatch \
+  "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --topology-bundle "$bad_sha_bundle"
+
+# (c) no snapshot covering the injection window [t1, t2] is rejected.
+no_coverage_bundle="$TMP_ROOT/topology-bundle-no-coverage"
+make_topology_bundle "$no_coverage_bundle" "2026-07-15T00-30-00Z" "2026-07-15T00-40-00Z"
+jq '.snapshots |= [
+  (.[0] | .captured_at = "2026-07-15T00:30:00Z"),
+  (.[1] | .captured_at = "2026-07-15T00:40:00Z")
+]' "$no_coverage_bundle/manifest.json" >"$no_coverage_bundle/manifest.json.tmp"
+mv "$no_coverage_bundle/manifest.json.tmp" "$no_coverage_bundle/manifest.json"
+expect_rejected topology-bundle-no-coverage \
+  "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --topology-bundle "$no_coverage_bundle"
+
+# (d) --topology-bundle omitted: fail-open (warns on stderr, still succeeds,
+# meta.topology_bundle is null).
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --output-root "$TMP_ROOT/cases" --dry-run 2>"$TMP_ROOT/topology-bundle-missing.err")
+jq -e '.topology_bundle == null' <<<"$output" >/dev/null ||
+  fail 'expected topology_bundle == null when --topology-bundle is omitted'
+grep -q 'topology-bundle not supplied' "$TMP_ROOT/topology-bundle-missing.err" ||
+  fail 'expected a fail-open warning when --topology-bundle is omitted'
+
+# --topology-bundle requires v3 (--phases-json); v2 calls must reject it.
+expect_rejected topology-bundle-without-phases-json \
+  --case-id case-policy-test --scenario-id commerce/test \
+  --t1 2026-07-15T01:00:00Z --t2 2026-07-15T01:10:00Z \
+  --topology-bundle "$good_topology_bundle"
 
 printf '[PASS] capture policy dry-run tests\n'
