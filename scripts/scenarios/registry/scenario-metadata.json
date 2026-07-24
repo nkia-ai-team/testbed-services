@@ -296,6 +296,151 @@
       "injection_summary": "k8s.env executor로 testbed-inventory(inventory-service)의 SPRING_APPLICATION_JSON에 inventory.reconciliation.interval-ms를 999999999로 주입하고 rollout해 재입고 배치를 사실상 정지시킨다(고갈은 상주 loadgen의 자연 소비이지 재고 값을 직접 조작하지 않는다). commerce north-south companion 부하(surge.js checkout)로 재고를 계속 소비시켜 stock=0 상품 수 증가와 checkout 409 급증을 관측한다. cleanup은 env 원복 후 rollout 회복 확인.",
       "user_impact": "checkout(주문 결제)이 재고부족 409로 실패 급증한다. inventory 서비스 자체는 pod ready·조회 200으로 정상이고 409는 4xx라 5xx·CB open·표준 알람이 조용해, 겉으로는 '정상적인 재고 소진(수요 급증)'처럼 보인다. 실제로는 재입고 배치 정지로 인한 조용한 기능마비다.",
       "distinguishing_evidence": "핵심 감별은 '409의 두 원인 분리'다: 정상 재고소진은 재입고 배치가 stock을 주기적으로 target(200)으로 복원해 톱니파를 그리고 RESTOCK movement가 계속 유입되지만, 배치정지 장애는 stock이 회수 없이 단조감소해 0에서 정체하고 RESTOCK movement 유입이 0으로 끊긴다. 상태코드(409)와 inventory 응답(pod ready·조회 200)만으로는 구분 불가 — stock 시계열 추세(database.inventory_stock_level)와 RESTOCK 원장 유입율(database.restock_movement_rate)로만 감별된다."
+    },
+    "F21-Q": {
+      "title": "food order-service Tomcat 스레드풀(200) 포화 (restaurant 상류지연, Hikari 미보유)",
+      "description": "food order-service는 server.tomcat 튜닝이 전혀 없어 Tomcat 기본 200 스레드로 동작한다. createOrder(@Transactional, timeout 미설정)는 orderRepository.save(:128)보다 앞에서 restaurant getRestaurant(:60)·getMenu(:73)·dispatch checkCapacity(:96)를 순차 호출하는데, Hibernate 지연 커넥션 획득(기본값) 때문에 save 전까지는 order Hikari 커넥션을 잡지 않는다. 따라서 restaurant를 read-timeout(5s) 미만으로 지연시키면 각 createOrder가 order Tomcat 스레드만 ~4s 점유하고 Hikari는 비운다. 동시 요청이 200을 넘으면 Tomcat 200이 포화되어 acceptor 큐가 적체되고, 하류를 안 타는 무관한 읽기 GET /api/orders(:173)까지 스레드 굶주림으로 지연된다. 병목 자원이 커넥션풀(F19-P)이 아니라 한 층 위 Tomcat 스레드라는 것이 정체성. P2 패턴.",
+      "class": "A",
+      "fault_pattern": "P2",
+      "domain": "food-delivery",
+      "observation_domains": [
+        "APM"
+      ],
+      "cause": "restaurant-service 응답 지연(read-timeout 5s 미만) → createOrder가 save 前 hop(getRestaurant)에서 대기하며 order Tomcat 스레드 점유(지연 커넥션 획득으로 Hikari 미보유) → 동시 createOrder≥200이면 Tomcat 기본 200 포화 → acceptor 큐 적체 → 무관 엔드포인트까지 스레드 굶주림 지연",
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "food-restaurant (testbed-restaurant, rca-testbed-food) 상류지연이 트리거이나, 200 스레드 포화라는 결함 구조는 order-service의 무튜닝 Tomcat + timeout 없는 @Transactional",
+        "mechanism": "order-service에 server.tomcat 설정이 전무해 Tomcat 기본 200 스레드. createOrder가 @Transactional(timeout 미설정)로 restaurant/dispatch 원격호출을 순차 수행하는데, 이 호출들이 orderRepository.save보다 앞이라 Hibernate 지연 커넥션 획득 하에서 Hikari를 잡지 않는다. restaurant 지연 시 각 요청이 read-timeout(5s)까지 Tomcat 스레드만 점유 → 200 포화 → 신규 요청이 스레드를 못 받아 무관 엔드포인트까지 지연. 병목은 Hikari(15)가 아니라 Tomcat(200).",
+        "code_anchor": [
+          "food-delivery/order-service/src/main/resources/application.yml:1-2 (server: port만, tomcat 스레드 설정 부재 → 기본 200)",
+          "food-delivery/order-service/.../service/OrderService.java:57 (@Transactional createOrder — timeout 미설정)",
+          "food-delivery/order-service/.../service/OrderService.java:60,73,96 (restaurant getRestaurant/getMenu, dispatch checkCapacity — 전부 :128 save 前 = 지연 커넥션 획득으로 Hikari 미보유)",
+          "food-delivery/order-service/.../service/OrderService.java:128 (orderRepository.save = 첫 SQL = Hikari 획득 시점)",
+          "food-delivery/order-service/.../service/OrderService.java:173 (GET /api/orders 읽기 — 하류 무관하나 스레드 굶주림으로 동반 지연)",
+          "food-delivery/order-service/src/main/resources/application.yml:53-54 (restaurant read-timeout 5s)",
+          "food-delivery/order-service/.../service/OrderService.java:181 (searchOrders, @Transactional(readOnly) — 실제 GET /api/orders 목록 대응, :173 단건조회와 병기)"
+        ],
+        "infra_anchor": "없음(순수 코드 구조 — Tomcat 무튜닝 + 지연 커넥션 획득). 지연 트리거는 restaurant-service 슬로우다운(host.stress worker-w2 또는 db.workload restaurant MySQL)이나 이는 주입 수단이지 root가 아님."
+      },
+      "injection_summary": "restaurant-service getRestaurant/getMenu 응답을 read-timeout 5s '미만'(목표 ~4s)으로 지연시켜(host.stress worker-w2 CPU 또는 db.workload restaurant MySQL) restaurant가 502가 아닌 느린 200을 내되 order createOrder가 Tomcat 스레드를 오래 점유하게 한다. 동시에 load.north_south로 food order-surge.js(entry 30181, create-heavy, target_rps≈55 — Little L=λ·4s로 200 스레드 목표)를 흘린다. 지연이 5s를 넘으면 retry/502(C4 regime)로 전이하므로 캘리브레이션 필수. cleanup은 stress/workload 해제(order 롤백 없음).",
+      "user_impact": "주문 생성(POST /api/orders)이 order Tomcat 스레드 포화로 지연·타임아웃 급증하고, 하류를 안 타는 주문 조회(GET /api/orders)까지 느려진다. restaurant는 느린 200으로만 보여(502 아님) 원인이 order로 오인되기 쉽다. Hikari는 비어 있어(pending≈0) DB 커넥션풀을 범인으로 지목하면 오진.",
+      "must_support": [
+        "order busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",
+        "order Hikari pending≈0, active 낮음 — 풀이 아니라 스레드가 병목 (지연이 save 前 hop)",
+        "무관한 GET /api/orders 지연 상승 (p95 급증) — 스레드 굶주림의 전 엔드포인트 전염 지문",
+        "order create 지연/타임아웃↑, restaurant는 느린 200(502 낮음)"
+      ],
+      "must_rule_out": [
+        "order Hikari 풀고갈 아님 — hikari pending≈0. pending>0이면 payment(save 後) 지연발 F19-P이지 스레드 포화 아님",
+        "payment/PG 502 연쇄 아님 — 지연 지점은 restaurant(save 前 hop)이지 payment 아님 → F19-S 아님",
+        "배차 503 아님 — dispatch pod ready, capacity>0. create 503 낮음 → F19-Q 아님",
+        "외부 rate-limit/429 아님 — food 도메인은 429 없음(용량초과는 503). entry_status ≠ 429"
+      ],
+      "distinguishing_evidence": "order의 지연은 DB 커넥션이 없어서(F19-P)가 아니라 Tomcat 스레드가 없어서 발생한다. 결정 증거 3종: (1) http.server.active_requests가 200에 닿음(F19-P는 ~15+에서 멈춤, Hikari가 먼저 참), (2) hikari pending≈0·active 낮음(F19-P는 pending>0·active≈15), (3) 무관 GET /api/orders 지연 전염(Hikari 고갈은 DB 만지는 엔드포인트에 국한, 스레드 고갈은 전 엔드포인트 전염). 지연 지점이 orderRepository.save(:128) 앞(restaurant)이냐 뒤(payment)냐가 P2(스레드)와 P1(Hikari)을 가르는 근본 분기.",
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F19-P (동일 order로 증상 수렴하나 payment(save 後) 지연 → Hikari 15 pending>0가 병목; F21-Q는 restaurant(save 前) 지연 → Tomcat 200 busy-threads가 병목, Hikari pending≈0)",
+          "F19-S (PG 502→CB open→502 연쇄; F21-Q는 restaurant 느린 200, 502 없음)",
+          "F19-Q (배차 503 biz형; F21-Q는 스레드 굶주림 지연/timeout, dispatch 정상)",
+          "F03-H (commerce 동종 Tomcat 포화이나 합성 sleep 엔드포인트 의존이 재앵커 대상; F21-Q는 합성 없이 실 createOrder 경로)"
+        ]
+      }
+    },
+    "F21-P": {
+      "title": "banking api-service Tomcat 스레드풀(200) 포화 (transfer 하류지연, DataSource 없음)",
+      "description": "core-banking api-service는 @SpringBootApplication(exclude=DataSourceAutoConfiguration)로 DB를 아예 갖지 않아(ApiServiceApplication.java:12) Hikari 풀이 0개이며, server.tomcat 튜닝도 없어 Tomcat 기본 200 스레드로 동작한다. 이체 진입은 api→account→transfer 동기 blocking 체인이다. transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) 미만으로 지연시키면(느린 200 성공, CB 미개방), api→account 요청이 응답을 기다리며 api Tomcat 스레드를 점유한다. api엔 커넥션풀이라는 개념 자체가 없으므로 Tomcat 200이 유일한 유한 자원 → 동시 이체≥200이면 순수 스레드 포화가 관측된다. 무관한 조회프록시 GET /api/transfers까지 스레드 굶주림으로 지연. 커넥션풀 고갈(FS-6)이 원천적으로 불가능한 유일 서비스라 순수 스레드 포화 관측에 이상적. P2 패턴.",
+      "class": "A",
+      "fault_pattern": "P2",
+      "domain": "core-banking",
+      "observation_domains": [
+        "APM"
+      ],
+      "cause": "transfer-service execute() 지연(account rt 15s·api rt 10s 미만의 느린 200) → api→account 동기 호출이 응답 대기하며 api Tomcat 스레드 점유 → api는 DataSource 없어 풀 0 → Tomcat 200이 유일 자원 → 동시 이체≥200이면 스레드 포화 → acceptor 큐 적체 → 무관 조회프록시까지 지연. FS-9 retry x3이 하류호출을 곱해 점유 가속.",
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "core-banking-transfer (testbed-transfer, rca-testbed-banking) 하류지연이 트리거이나, 200 스레드 포화라는 결함 구조는 api-service의 무튜닝 Tomcat + DataSource 부재 + timeout 없는 동기체인",
+        "mechanism": "api-service는 DataSourceAutoConfiguration을 제외해 Hikari 풀이 0(ApiServiceApplication.java:12)이고 server.tomcat 설정이 없어 Tomcat 기본 200. 이체는 api→account(read-timeout 10s)→transfer(account측 read-timeout 15s) 동기 blocking 체인이며 @Transactional timeout이 없다. transfer를 timeout 미만으로 지연시키면 api→account 요청이 느린 200을 기다리며 api Tomcat 스레드만 점유(풀은 존재하지 않음) → 200 포화 → 무관 조회프록시까지 스레드 굶주림. 병목은 오직 Tomcat 200.",
+        "code_anchor": [
+          "core-banking/api-service/.../ApiServiceApplication.java:12 (@SpringBootApplication(exclude={DataSourceAutoConfiguration, HibernateJpaAutoConfiguration}) → Hikari 풀 0, 스레드가 유일 자원)",
+          "core-banking/api-service/src/main/resources/application.yml:1-2 (server: port만, tomcat 스레드 설정 부재 → 기본 200)",
+          "core-banking/api-service/src/main/resources/application.yml:11-12 (account read-timeout 10s), :15-16 (transfer 조회 read-timeout 10s), :18-49 (resilience4j CB window10/min5/50%/open5s + retry max-attempts=3)",
+          "core-banking/account-service/src/main/resources/application.yml:29-30 (account→transfer read-timeout 15s)",
+          "core-banking/account-service/.../service/AccountService.java:57,80 (@Transactional(readOnly) validateAndForward → 말미 transferClient.executeTransfer)",
+          "core-banking/transfer-service/.../repository/AccountRepository.java:18-20 (FOR UPDATE NOWAIT/timeout 없음), transfer TransferService.java:51 (@Transactional timeout 없음)"
+        ],
+        "infra_anchor": "없음(순수 코드 구조 — DataSource 제외 + Tomcat 무튜닝). 지연 트리거는 transfer-service 슬로우다운(host.stress worker-w3 또는 db.workload transfer Oracle)이나 이는 주입 수단이지 root가 아님."
+      },
+      "injection_summary": "transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) '미만'(목표 ~8s)으로 지연시켜(host.stress worker-w3 CPU 또는 db.workload transfer Oracle) transfer가 502가 아닌 느린 200을 내되 api→account 요청이 api Tomcat 스레드를 오래 점유하게 한다. db.lock은 무한대기→502→CB open으로 FS-1/FS-2를 만들어 부적격. 동시에 load.north_south로 banking transfer-surge.js(entry 30082, transfer-heavy, target_rps≈180 — Little L=λ·8s로 200 스레드 목표; 기본 surge transfer 10%로는 부족)를 흘린다. 지연이 10s를 넘으면 api read-timeout→502→CB open(FS-2)으로 전이하므로 캘리브레이션이 감별 정체성과 직결. cleanup은 stress/workload 해제.",
+      "user_impact": "이체(POST /api/transfers)가 api Tomcat 스레드 포화로 지연·타임아웃 급증하고, 무관한 이체내역 조회(GET /api/transfers 프록시)까지 느려진다. transfer는 지연만 있고 5xx를 안 뱉으며(느린 200), api는 커넥션풀이 없어 풀 지표가 부재 → 풀 고갈(FS-6)이나 CB open(FS-2)으로 오인하면 오진.",
+      "must_support": [
+        "api busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",
+        "api 502 rate 낮음 (< 0.05) — 느린 200 성공, CB 미개방(실패가 아니라 지연)",
+        "api CB(accountClient) open 아님 — 스레드가 점유된 채 유지(open되면 즉시 502·스레드 해제)",
+        "transfer는 지연만(5xx 아님, 느린 200), 무관 조회프록시 GET /api/transfers 지연 상승"
+      ],
+      "must_rule_out": [
+        "api 커넥션풀 고갈 아님 — api는 DataSource 제외로 풀이 존재하지 않음(hikari query 부재 자체가 증거) → FS-6 아님",
+        "api CB open 아님 — open이면 즉시 502·이체 0%로 스레드 해제되는 FS-2(정체성 붕괴). 주입 지연이 timeout 초과하면 전이하므로 감별선",
+        "api 502 폭증 아님 — 폭증이면 transfer lock 무한대기(FS-1). F21-P는 느린 200이지 502 아님",
+        "병목이 account가 아님 — account는 Hikari 10을 먼저 소진(validateAndForward가 readOnly tx로 커넥션 보유). 순수 스레드 지표는 풀 없는 api에서만 자명"
+      ],
+      "distinguishing_evidence": "api의 지연은 커넥션풀 고갈(FS-6)이나 CB open(FS-2)이 아니라 Tomcat 스레드 고갈이다. 결정 증거: (1) http.server.active_requests가 200에 닿음, (2) api엔 Hikari query가 부재(풀이 없음) — 이 부재가 곧 FS-6 배제, (3) api 502 rate 낮음 + CB closed — FS-1(502 폭증)·FS-2(즉시 502) 배제, transfer는 느린 200. api-service가 테스트베드에서 유일하게 DataSource가 없는 서비스라, 스레드가 유일 유한 자원임이 구조적으로 자명하다. 주입 지연이 read-timeout(10s)을 넘으면 502→CB open으로 FS-2에 전이하는데, 이 전이 경계가 F21-P의 감별선이다.",
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "FS-1 (transfer lock 무한대기 → account/api 502 폭증; F21-P는 timeout 미만 지연이라 느린 200·502 낮음)",
+          "FS-2 (account/api CB open → 즉시 502·이체 0%; F21-P는 CB closed·스레드 점유 지속. 주입 과하면 F21-P가 FS-2로 전이)",
+          "FS-6 (transfer Hikari 15 풀고갈; F21-P는 api에 풀이 아예 없어 스레드가 병목 — 풀 부재가 감별)",
+          "F03-H (commerce 동종 Tomcat 포화이나 합성 sleep 의존이 재앵커 대상; F21-P는 실 이체 동기체인 + 풀 없는 api라는 더 강한 앵커)"
+        ]
+      }
+    },
+    "F24-Q": {
+      "title": "food restaurant 최상류 차단 → order 전량 502 (retry 증폭 fan-in)",
+      "description": "food order-service의 createOrder는 모든 주문에서 restaurant를 2회(getRestaurant :60 + getMenu :73) hard-dependency로 호출하며, 이 두 콜은 order DB 쓰기(:128)보다 앞선다. restaurant NodePort(30181)에 조회 부하를 폭주시켜 Hikari 10(최소풀)·Tomcat 스레드를 자연 포화시키면 getRestaurant/getMenu가 read-timeout 5s를 초과하고, order측 @Retry(restaurant) max-attempts=3 지수백오프가 재시도를 증폭(실패 주문당 restaurant 호출 최대 6회 = 양성 피드백)하며, 실패율 50%↑에 @CircuitBreaker(restaurant)가 open되어 fallback이 즉시 502 BAD_GATEWAY를 던진다. 증상은 orchestrator인 order의 502 전량이나 원인은 최상류 리프 restaurant다. downstream 없는 restaurant가 모든 주문의 단일 상류 SPOF라는 fan-in 취약(P4 변형)이 정체성.",
+      "class": "A",
+      "fault_pattern": "P4-variant",
+      "domain": "food-delivery",
+      "observation_domains": [
+        "APM"
+      ],
+      "cause": "restaurant NodePort(30181) 조회 부하 폭주 → restaurant Hikari 10·Tomcat 스레드 포화, restaurant p95 급등 → order getRestaurant/getMenu가 read-timeout 5s 초과 → @Retry(restaurant) 3회 증폭 → 실패율 50%↑ → @CircuitBreaker(restaurant) open → fallback 502 BAD_GATEWAY → createOrder가 DB 쓰기 이전 단계(:60/:73)에서 502 전파 → order 전량 502",
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "food-restaurant (testbed-restaurant, rca-testbed-food) — 부하로 포화된 최상류 리프. 502를 order 전량으로 증폭시키는 결함 구조는 order측 코드(retry·hard-dependency·bulkhead 부재)",
+        "mechanism": "OrderService.createOrder(@Transactional)가 모든 주문에서 restaurantClient.getRestaurant/getMenu를 order DB 쓰기 이전에 순차 호출(단일 상류 2회 hard-dependency). restaurant 지연 시 order측 @Retry(restaurant) max-attempts=3 지수백오프가 재시도를 증폭해 restaurant에 양성 피드백 부하를 가하고, 실패율 50%↑에 @CircuitBreaker(restaurant) open→getRestaurantFallback/getMenuFallback이 502 BAD_GATEWAY를 던져 order가 전량 502로 실패. F19-P와 달리 502가 order DB 쓰기·커넥션풀 고갈 이전(:60/:73)에서 발생.",
+        "code_anchor": [
+          "food-delivery/order-service/.../service/OrderService.java:57 (@Transactional createOrder), :60 (restaurantClient.getRestaurant), :73 (restaurantClient.getMenu) — 모든 주문의 restaurant 2회 hard-dependency, DB 쓰기(:128)보다 앞",
+          "food-delivery/order-service/.../client/RestaurantClient.java:29-30,58-59 (@CircuitBreaker(restaurant)+@Retry(restaurant)), :44(getRestaurantFallback),:79-84(getMenuFallback) (502 BAD_GATEWAY fallback), :40-42,:69-71 (4xx는 ClientErrorException로 회로 안 엶)",
+          "food-delivery/order-service/src/main/resources/application.yml:54 (restaurant read-timeout 5s), :69-77 (CB restaurant window10/min5/50%/open5s), :98-104 (retry restaurant max-attempts=3·200ms·exp×2)",
+          "food-delivery/restaurant-service/src/main/resources/application.yml:13 (restaurant Hikari maximum-pool-size 10, 최소 풀)"
+        ],
+        "infra_anchor": "food-delivery/k8s/21-restaurant-deploy.yaml:118 — testbed-restaurant-external NodePort 30181 (조회 부하 주입면). 부하원 보조: restaurant-service/.../MenuRepository.java:17(order_items⋈orders⋈menus 크로스테이블 조인) + PopularMenuBatch.java:37,45(@Scheduled 1h) — 자연 CPU/DB 압박원이나 1h 주기라 주입 타이밍 제어 불가(수단 선택에서 배제, sheet §4). 별도 인프라 조작 없이 부하로만 restaurant 자연 포화."
+      },
+      "injection_summary": "load.north_south executor로 restaurant NodePort(entry http://192.168.122.77:30181)에 food surge.js 조회 부하(target_rps≈70)를 흘려 restaurant Hikari 10·Tomcat 스레드를 자연 포화시킨다. order-create 트래픽은 baseline(loadgen-food)이 공급하며, 포화된 restaurant 탓에 baseline 주문이 502를 받는다. mock.expectation은 restaurant가 실 서비스라 부적용, PopularMenuBatch는 1h 스케줄이라 타이밍 제어 불가, CPU stress는 §2-A Class B 위장이라 배제 — load.north_south가 유일한 실재·계약준비완료(F02-P 선례) 수단. cleanup은 load ramp_down 후 정지(restaurant는 부하 제거만으로 회복, 상태 롤백 불필요).",
+      "user_impact": "주문 생성(POST /api/orders)이 restaurant 조회 실패로 502 BAD_GATEWAY 전량 실패한다. 실패가 DB 쓰기 이전(restaurant 검증 단계)에서 나므로 주문이 아예 생성되지 않는다. restaurant 자체는 조회 부하로 p95 급등·에러율 상승을 보이나 order가 증상의 수렴점이라 원인이 order로 오인되기 쉽다. downstream 없는 restaurant가 모든 주문의 단일 상류라는 점이 사각.",
+      "must_support": [
+        "order create 5xx 비율 급증 (order_create_5xx_rate ≥ 0.1) — 502/503 분리는 이 신호로 불가, restaurant/dispatch 각각의 APM 신호로 감별 — restaurant fallback 502 전파",
+        "restaurant p95 급등 (food-delivery-restaurant) + restaurant apm_service_error_rate 상승 — root가 restaurant임을 지목"
+      ],
+      "must_rule_out": [
+        "payment/PG가 502로 터진 게 아님 — payment_502_rate < 0.05, pg CB 정상. payment가 root면 F19-S(PG 502→CB open)",
+        "order create가 503(dispatch biz-reject)이 아님 — order_create_503_rate 낮음. 503 우세면 F19-Q(dispatch 배치정지 capacity 소진)",
+        "order 자신의 커넥션풀 고갈발 5xx/timeout이 아님 — 502가 DB 쓰기 이전(:60/:73)에서 발생, Hikari pending 정상~경미. 풀 pending이 주신호면 F19-P(롱tx 풀고갈, 하류 502 없음)",
+        "외부 rate-limit/429 아님 — food 도메인은 429 없음(용량초과는 503). entry_status ≠ 429"
+      ],
+      "distinguishing_evidence": "order의 502는 order 자신의 결함이 아니라 최상류 restaurant의 지연이 order측 retry 증폭·hard-dependency·CB open을 거쳐 fallback 502로 전파된 결과다. 결정 감별 두 축: (1) 어느 downstream이 아픈가 — F24-Q는 restaurant p95·error_rate 급등(payment 정상), F19-S는 payment 502·pg CB open(restaurant 정상)으로 같은 order 502를 가른다. (2) 하류가 명시적 5xx를 내는가 — F24-Q는 restaurant가 502를 내지만, F19-P는 하류가 502 없이(payment 200 지연) order Hikari pending만 오른다. F19-Q와는 상태코드(502 vs 503)로 갈린다. restaurant는 downstream 없는 '무해한 리프'로 보여 후보에서 배제되기 쉬우나 모든 주문의 단일 상류 SPOF다.",
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F19-P (order 롱tx 커넥션풀 고갈: 증상 order 5xx/timeout 동일하나 하류 502 없이 order Hikari pending; F24-Q는 restaurant가 명시적 502·restaurant p95 급등)",
+          "F19-S (PG 502→pg CB open→order 502 연쇄: 같은 order 502이나 root=payment/PG. F24-Q는 root=restaurant — downstream별 p95/error_rate로 결정 감별)",
+          "F19-Q (dispatch 배치정지 capacity 소진→order 503: 상태코드 503 biz형으로 F24-Q의 502와 갈림)",
+          "F02-P (MySQL menus 인덱스 드롭→restaurant getMenu 풀스캔 지연→order 지연: root가 DB 인덱스. F24-Q는 restaurant app-level 포화(Hikari/스레드)로 root layer가 다름 — DB vs 앱)",
+          "C7 인덱스 계열 (fault-surface C7 / F02: restaurant 지연의 DB측 root. F24-Q는 동일 restaurant→order 경로의 앱측 포화 root)"
+        ]
+      }
     }
   }
 }

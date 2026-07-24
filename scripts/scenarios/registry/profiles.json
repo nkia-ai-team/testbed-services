@@ -193,7 +193,10 @@
           "F20-Q",
           "F25-H",
           "F23-R",
-          "F17-P"
+          "F17-P",
+          "F21-Q",
+          "F21-P",
+          "F24-Q"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -209,7 +212,8 @@
           "/opt/loadgen/commerce/slowquery.js",
           "/opt/loadgen/core-banking/slowquery.js",
           "/opt/loadgen/food-delivery/slowquery.js",
-          "/opt/loadgen/core-banking/frozen-bypass.js"
+          "/opt/loadgen/core-banking/frozen-bypass.js",
+          "/opt/loadgen/core-banking/transfer-heavy-surge.js"
         ],
         "allowed_baseline_units": [
           "loadgen-commerce",
@@ -251,7 +255,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -638,6 +642,39 @@
           "scenario_tag": "scenario_id=F17-P",
           "seed": 4242,
           "baseline_unit": "loadgen-banking"
+        },
+        "F21-Q": {
+          "target_rps": 70,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/order-surge.js",
+          "scenario_tag": "scenario_id=F21-Q",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
+        },
+        "F21-P": {
+          "target_rps": 90,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
+          "scenario_tag": "scenario_id=F21-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-banking"
+        },
+        "F24-Q": {
+          "target_rps": 70,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F24-Q",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
         }
       },
       "scenario_levels": {
@@ -2683,7 +2720,9 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F09-R",
-          "F05-P"
+          "F05-P",
+          "F21-Q",
+          "F21-P"
         ]
       },
       "scenario_parameters": {
@@ -2691,6 +2730,18 @@
           "mode": "cpu",
           "host": "192.168.122.14",
           "cpu_workers": 2,
+          "runtime_seconds": 480
+        },
+        "F21-Q": {
+          "mode": "cpu",
+          "host": "192.168.122.11",
+          "cpu_workers": 3,
+          "runtime_seconds": 480
+        },
+        "F21-P": {
+          "mode": "cpu",
+          "host": "192.168.122.14",
+          "cpu_workers": 3,
           "runtime_seconds": 480
         },
         "F05-P": {

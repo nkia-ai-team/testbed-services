@@ -626,6 +626,41 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "cleanup(원장 정정 SQL) 구현·검증 전까지 live 보류 — direct arm이 생성하는 FROZEN/CLOSED 계좌 관여 COMPLETED transfer의 역이체 정정이 미구현"
+    },
+    {
+      "id": "F21-Q",
+      "slug": "f21-q-food-order-tomcat-thread-saturation",
+      "profiles": [
+        "host.stress",
+        "load.north_south"
+      ],
+      "readiness": "draft",
+      "load_mode": "fixed",
+      "injection_location": "worker-w2",
+      "prerequisite": "calibration 미확정 — order_busy_threads/order_p95_latency 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(52)만으로 추정됨. cpu_workers 강도와 restaurant 실제 응답지연(d≈4s) 간 관계도 미검증"
+    },
+    {
+      "id": "F21-P",
+      "slug": "f21-p-banking-api-tomcat-thread-saturation",
+      "profiles": [
+        "host.stress",
+        "load.north_south"
+      ],
+      "readiness": "draft",
+      "load_mode": "fixed",
+      "injection_location": "worker-w3",
+      "prerequisite": "calibration 미확정 — api_busy_threads 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(65)만으로 추정됨. cpu_workers 강도와 transfer 실제 응답지연(d≈8s) 간 관계 미검증, 지연이 read-timeout(10s) 초과 시 502→CB open(FS-2)으로 전이하는 경계 확인 필요"
+    },
+    {
+      "id": "F24-Q",
+      "slug": "f24-q-food-restaurant-upstream-block-order-502",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "draft",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": "calibration 미확정 — target_rps=70이 restaurant Hikari 10·Tomcat을 order 5xx 임계까지 실제로 밀어내는지 첫 run 확정 필요. 러너 APPROVED_APM_SERVICES(food-delivery-restaurant)+APPROVED_K8S_TARGETS(rca-testbed-food, testbed-restaurant) 배선이 F02-P 선행 결함 수리와 함께 선행조건"
     }
   ]
 }

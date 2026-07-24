@@ -45,7 +45,7 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(controller["abort"]["consecutive_ticks"], 2, scenario_id)
 
     def test_registry_closure_covers_64_scenarios_and_20_profiles(self) -> None:
-        self.assertEqual(len(self.catalog["scenarios"]), 53)
+        self.assertEqual(len(self.catalog["scenarios"]), 56)
         self.assertEqual(len(self.profiles["profiles"]), 20)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:

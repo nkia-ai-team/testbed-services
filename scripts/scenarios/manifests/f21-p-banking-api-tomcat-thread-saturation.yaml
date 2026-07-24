@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0",
+  "id": "F21-P",
+  "slug": "f21-p-banking-api-tomcat-thread-saturation",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "worker-w3",
+    "matrix_location_transport": "W/ssh host.stress(worker-w3, cpu) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=90)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "host-placement-and-oob-recovery",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "dry-run",
+      "decision_mode": "evaluation",
+      "profile": {
+        "kind": "fixed",
+        "ref": "controller-profiles/f21-p-banking-api-tomcat-thread-saturation/fixed",
+        "requires_approved_fixed_profile": true
+      },
+      "live_enabled": false
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "host.stress",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "host.stress",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "host.stress"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "unresolved",
+    "required": true,
+    "description": "calibration 미확정 — api_busy_threads 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(65)만으로 추정됨. cpu_workers 강도와 transfer 실제 응답지연(d≈8s) 간 관계 미검증, 지연이 read-timeout(10s) 초과 시 502→CB open(FS-2)으로 전이하는 경계 확인 필요",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}
