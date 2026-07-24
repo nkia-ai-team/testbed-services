@@ -328,7 +328,9 @@ t2_epoch=$(parse_utc_epoch "$t2_raw" t2)
 phases_enriched='[]'
 if [[ "$v3_mode" == true ]]; then
   # Capture window contract v3 (spec-eval-data-capture §2.2, 2026-07-24):
-  # capture_start = normal.start (=cycle_start), capture_end = t2+30m.
+  # capture_start = normal.start (=cycle_start), capture_end = cooldown.end
+  # (= t2+30m in production; the runner's phases.json is the single source of
+  # truth so shortened smoke cycles capture without a hardcoded 30m wait).
   # injection.start/.end must equal --t1/--t2 (runner/capture consistency).
   [[ -r "$phases_json" ]] || die "--phases-json is not readable: $phases_json"
   jq -e '
@@ -358,7 +360,10 @@ if [[ "$v3_mode" == true ]]; then
     die "phases-json injection.end ($injection_end_raw) must equal --t2 ($t2_raw)"
 
   capture_start_epoch=$(parse_utc_epoch "$normal_start_raw" 'phases-json normal.start')
-  capture_end_epoch=$(( t2_epoch + 30 * 60 ))
+  cooldown_end_raw=$(jq -r '.[] | select(.phase == "cooldown") | .end' "$phases_json")
+  capture_end_epoch=$(parse_utc_epoch "$cooldown_end_raw" 'phases-json cooldown.end')
+  (( capture_end_epoch >= t2_epoch )) ||
+    die "phases-json cooldown.end ($cooldown_end_raw) must not precede --t2 ($t2_raw)"
 
   # Carry phases[] into meta.json verbatim, plus *_kst companions per field.
   while IFS= read -r phase_obj; do
