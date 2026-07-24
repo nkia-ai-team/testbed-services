@@ -430,6 +430,15 @@
       ],
       "value_type": "integer",
       "freshness_sec": 60
+    },
+    "database.outbox_unpublished_count": {
+      "adapter": "database",
+      "selector": "banking.outbox_unpublished_count",
+      "allowed_parameters": [
+        "namespace"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
     }
   }
 }

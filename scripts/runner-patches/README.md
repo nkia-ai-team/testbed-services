@@ -44,3 +44,14 @@ git apply --3way scripts/runner-patches/<날짜>-newcontract-v2.patch
 
 적용: `git apply --3way scripts/runner-patches/2026-07-23-live-probes-status-class.patch` (대상 파일이 이미 있으므로 `git am`이 아니라 `git apply --3way`를 쓴다) → 컨테이너 반영은 `docker cp`/재기동.
 롤백: `git apply -R scripts/runner-patches/2026-07-23-live-probes-status-class.patch` 또는 직전 스냅샷(2026-07-20-newcontract-v2)의 `backend/app/live_probes.py`로 복원.
+
+## 2026-07-24-live-probes-db-selectors.patch — 담긴 변경 (DB selector: outbox 적체)
+
+대상 1파일(`backend/app/live_probes.py`, root 스냅샷). **2026-07-23 status-class 스냅샷을 포함·대체한다**(그 위에 1분기 추가) — 적용 시 07-23 patch는 따로 적용할 필요 없음:
+
+- `_database_observation`에 `database.outbox_unpublished_count` 분기 추가: `kubectl exec testbed-oracle-0`(rca-testbed-banking) → sqlplus `SELECT COUNT(*) FROM banking.outbox_events WHERE published_at IS NULL`(FREEPDB1, init.sql:60-70 앵커). F18-P(outbox relay 정지) 결정 증거.
+- 계약: `OUTBOX_UNPUBLISHED_CONTRACT = {"namespace": "rca-testbed-banking"}` 정확일치, 숫자 아닌 출력은 `LiveProbeError`.
+
+**아직 적용되지 않음(2026-07-24 기준)** — repo `queries.json`의 `database.outbox_unpublished_count` 선언과 짝. 적용 전까지 해당 query는 러너에서 거부된다.
+
+적용/롤백은 위와 동일(`git apply --3way` / `-R`).
