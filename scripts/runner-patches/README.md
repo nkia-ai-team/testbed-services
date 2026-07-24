@@ -1,4 +1,15 @@
-# runner-patches
+# runner-patches — ⚠️ 은퇴(2026-07-24)
+
+**이 디렉터리의 역할은 끝났다.** 2026-07-24에 정본화 PR #20이 main에 머지되고
+109 `/root/rca-scenario-runner`가 **git checkout(main) 기반 배포로 전환**되면서,
+여기 보존된 변경은 전부 GitHub `nkia-ai-team/rca-scenario-runner` main에 정식
+커밋으로 존재한다(status-class=d70effc, db-selectors=7cc6b4e). 이후 러너 변경은
+러너 레포에 커밋→109에서 `git pull`+`docker compose build`로 배포하면 되고, 새
+patch를 여기 추가하지 않는다. 파일들은 이력 참고용으로만 남긴다.
+
+---
+
+(이하는 은퇴 전 기록)
 
 `rca-scenario-runner`(109 배포본)의 백엔드는 GitHub 정본(`nkia-ai-team/rca-scenario-runner` main)보다 크게 앞서 있고 대부분의 컨트롤러/캡처/큐 코드가 정본에 없다(예: `runner.py`가 main 대비 984줄 차이, `live_queue.py`·`controller.py`·`preflight.py` 등은 main에 아예 부재). 109는 사실상 비-git 배포본이라 이 코드는 버전관리 밖에 있다.
 
