@@ -222,7 +222,7 @@ AggregatingMergeTree는 소비자 복원 시 base 재삽입으로 재구축되�
 | `process_snapshot` | `ts` | 창 슬라이스 |
 | `trace_error_chains_local` | `window_start` | 창 슬라이스 |
 | `trace_path_signatures_local` | `window_start` | 창 슬라이스 |
-| `syslog_local` | `timestamp` | 창 슬라이스 (현재 0행 — 유입 시 대비) |
+| `syslog_local` | `received_at` | 창 슬라이스 (현재 0행 — 유입 시 대비, 컬럼명 07-24 실측) |
 | `host_connections` | — | 전체 스냅샷 (인벤토리성, §5) |
 | `process_meta` | — | 전체 스냅샷 (프로세스 메타, `seen_at`은 관리용) |
 

@@ -775,7 +775,7 @@ if [[ "$v3_mode" == true ]]; then
     'process_snapshot:ts:slice'
     'trace_error_chains_local:window_start:slice'
     'trace_path_signatures_local:window_start:slice'
-    'syslog_local:timestamp:slice'
+    'syslog_local:received_at:slice'
     'host_connections::full'
     'process_meta::full'
   )
