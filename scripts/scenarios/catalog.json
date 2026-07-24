@@ -756,6 +756,18 @@
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": "incident hand-off interval"
+    },
+    {
+      "id": "F17-R",
+      "slug": "f17-r-banking-down-payment-rollback",
+      "profiles": [
+        "k8s.probe",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": "verified transfer readiness snapshot and banking observation allowlist (runner 94bb225)"
     }
   ]
 }

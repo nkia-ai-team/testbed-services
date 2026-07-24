@@ -1,0 +1,339 @@
+{
+  "schema_version": "1.0",
+  "id": "F17-R",
+  "slug": "f17-r-banking-down-payment-rollback",
+  "readiness": "ready",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl probe patch (rca-testbed-banking)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.probe",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-probe-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.probe",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.probe"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f17-r",
+              "parameters": {
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-transfer",
+                "container": "transfer-service",
+                "probe": "readinessProbe",
+                "baseline": {
+                  "failureThreshold": 3,
+                  "httpGet": {
+                    "path": "/actuator/health",
+                    "port": 8082,
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10,
+                  "successThreshold": 1,
+                  "timeoutSeconds": 3
+                },
+                "fault": {
+                  "failureThreshold": 3,
+                  "httpGet": {
+                    "path": "/actuator/health/f17-r-fail",
+                    "port": 8082,
+                    "scheme": "HTTP"
+                  },
+                  "periodSeconds": 10,
+                  "successThreshold": 1,
+                  "timeoutSeconds": 3
+                }
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "banking_transfer_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "banking_transfer_restart_count",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_restart_count",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer",
+              "container": "transfer-service"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "payment_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "payment_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "parameters": {
+              "service_name": "commerce-payment"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "controlled-load",
+              "observation": "achieved_rps",
+              "op": "gte",
+              "value": 15
+            },
+            {
+              "id": "banking-transfer-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "cross-domain-payment-impact",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 0.1
+            },
+            {
+              "id": "checkout-impact",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "external-rate-limit",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 429
+            },
+            {
+              "id": "commerce-payment-self-fault",
+              "observation": "payment_pod_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "transfer-crashloop-alternative",
+              "observation": "banking_transfer_restart_count",
+              "op": "gte",
+              "value": 2
+            }
+          ],
+          "consecutive_ticks": 1
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "transfer-replica-recovered",
+              "observation": "banking_transfer_replicas",
+              "op": "eq",
+              "value": 1
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.probe",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.probe",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.probe"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "verified transfer readiness snapshot and banking observation allowlist (runner 94bb225)",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}
