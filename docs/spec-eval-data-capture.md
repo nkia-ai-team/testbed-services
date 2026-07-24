@@ -252,6 +252,27 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   (`model_snapshot_at >= capture_end` 검증 포함).
 - 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.
 
+**토폴로지 주기 스냅샷 번들 (2026-07-24 신설 — EventCluster 소비자 계약)**:
+EventCluster의 event-time replay 평가는 "사건 당시" 토폴로지가 필요하므로,
+단발 사후 스냅샷(§4 `data/topology/`)과 별도로 **사이클 실행 동안 주기
+수집한 원본 번들**을 케이스 `topology/`에 동봉한다. 계약 정본은 07-24
+EventCluster 담당(장재훈) 전달사항이며 요지:
+
+- 러너가 cycle_reset~캡처 완료 동안 주기(기본 30s, ≤ topology refresh
+  주기)로 `GET /api/v1/topology/graph`(`range=24h`·`depth=1`·edgeKinds
+  13종·`includeSelfMonitor=true`, **global graph 모드** — 07-24 실측
+  171노드/172엣지 `truncated=false`라 anchor 64분할 불요) +
+  `GET /api/v1/asset-tree/service/unified` 쌍을 수집.
+- 저장: `topology/graph/<UTC>-part-NNN.json` + `topology/service-tree/
+  <UTC>.json` + `manifest.json`(schema_version=1, case_id,
+  capture_interval_seconds, snapshots[]의 request_url·http_status·
+  raw-bytes SHA-256, **capture_failures[] — 실패도 기록**).
+- **원본 무가공**: 응답 바이트 그대로 보존(재직렬화·필드 삭제·보정 금지),
+  캡처는 sha 재검증·시간순·injection 구간 [t1,t2] 커버(≥1 스냅샷) 검증 후
+  바이트 그대로 반입. manifest의 case_id 주입만 허용.
+- 수집기 장애는 큐를 멈추지 않고(capture_failures 기록) 캡처는 번들 부재
+  시 경고 후 진행(fail-open). meta.json에 `topology_bundle` 요약 기록.
+
 **산출물 권한 (2026-07-24 신설)**: 케이스 디렉터리·파일은 승격 시점부터 **그룹
 읽기 가능**(`g+rX`, 그룹은 저장 호스트 관례를 따름 — .104는 `sudo`)이어야 한다.
 07-24에 109 사본이 root 700으로 떨어져 소비자가 "데이터 없음"으로 오인한 사건의
