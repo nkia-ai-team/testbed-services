@@ -1,0 +1,170 @@
+{
+  "schema_version": "1.0",
+  "id": "F25-P",
+  "slug": "f25-p-banking-oracle-shared-pdb-saturation",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "banking-namespace",
+    "matrix_location_transport": "tb-runner/kubectl → rca-testbed-banking testbed-oracle (StatefulSet) cpu limit 2000m→하향 → 단일 PDB FREEPDB1 자원 포화",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.patch",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "k8s.patch",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "k8s.patch"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "not-row-lock", "observation": "oracle_pod_ready", "op": "eq", "value": false }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 },
+            { "id": "oracle-crash", "observation": "oracle_restart_count", "op": "gte", "value": 1 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f25-p",
+              "parameters": {
+                "namespace": "rca-testbed-banking",
+                "kind": "statefulset",
+                "workload": "testbed-oracle",
+                "container": "oracle",
+                "baseline_cpu_limit": "2000m",
+                "fault_cpu_limit": "300m"
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "oracle_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-banking", "resource": "testbed-oracle" }, "freshness": "30s"
+          },
+          {
+            "id": "oracle_restart_count", "adapter": "kubernetes", "query_id": "kubernetes.container_restart_count",
+            "parameters": { "namespace": "rca-testbed-banking", "deployment": "testbed-oracle", "container": "oracle" }, "freshness": "30s"
+          },
+          {
+            "id": "oracle_cpu_throttled", "adapter": "prometheus", "query_id": "prometheus.container_cpu_throttled_time",
+            "parameters": { "namespace": "rca-testbed-banking", "deployment": "testbed-oracle", "container": "oracle" }, "freshness": "60s",
+            "capability_gap": "query_id 실재(queries.json:155)하나 allowed_parameters가 deployment 기준 — StatefulSet(testbed-oracle) 대응 확인 필요. cpu 하향 주입의 root 신호(스로틀 상승)."
+          },
+          {
+            "id": "account_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "banking-account" }, "freshness": "60s"
+          },
+          {
+            "id": "transfer_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "banking-transfer" }, "freshness": "60s"
+          },
+          {
+            "id": "ledger_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "banking-ledger" }, "freshness": "60s"
+          },
+          {
+            "id": "transfer_2xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": { "step": "transfer", "status_class": "2xx" }, "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "account-degraded", "observation": "account_p95", "op": "gte", "value": 1.0 },
+            { "id": "transfer-degraded", "observation": "transfer_p95", "op": "gte", "value": 1.0 },
+            { "id": "ledger-degraded", "observation": "ledger_p95", "op": "gte", "value": 1.0 },
+            { "id": "oracle-throttled", "observation": "oracle_cpu_throttled", "op": "gt", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "transfer-2xx-recovered", "observation": "transfer_2xx_rate", "op": "gte", "value": 0.95 },
+            { "id": "oracle-ready", "observation": "oracle_pod_ready", "op": "eq", "value": true },
+            { "id": "entry-healthy", "observation": "entry_status", "op": "eq", "value": 200 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["k8s.patch", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["k8s.patch", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "k8s.patch"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "k8s.patch executor가 Deployment 하드코딩(k8s_patch_executor.py:43,52 get/set resources deploy) + baseline!=500m 거부 가드(:21). Oracle은 StatefulSet(testbed-oracle) cpu limit 2000m. 승격 선행: (1) executor kind 일반화(deploy→statefulset), (2) baseline 500m 가드를 파라미터화(2000m 허용), (3) k8s.patch parameter_contract에 F25-P allowlist + banking-namespace(이미 allowed_locations 포함) + Oracle cpu baseline 2000m/fault. §2-A 정직성: cpu 하향은 코드가 아니라 인프라 자원을 조이고 정답이 그 자원 상한이라 'Class A 위장' 아님 — 단 자연 4서비스 포화가 아닌 proxy 주입이라 🟡(sheet §1 논증). 관측: apm_service_p95(서비스별 실재)로 4서비스 동반저하 관측 가능하나 cpu_throttled_time은 StatefulSet 파라미터 대응 필요, banking 서비스별 5xx query 부재. load.north_south banking companion allowlist(entry 30082) 추가. 자세히 sheet §4.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

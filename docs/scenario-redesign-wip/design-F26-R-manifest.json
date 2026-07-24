@@ -1,0 +1,169 @@
+{
+  "schema_version": "1.0",
+  "id": "F26-R",
+  "slug": "f26-r-worker-node-loss-multidomain-blast-radius",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "AUTO:max-blast-worker",
+    "matrix_location_transport": "tb-runner/kubectl → 대상 워커 cordon+drain (preflight 라이브 선정)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.node",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "node-blast-radius-resolve",
+      "exclusive-node-window",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "k8s.node",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "k8s.node"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "60s",
+        "max_injection_duration": "20m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health", "node-blast-radius-resolve"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f26-r",
+              "parameters": {
+                "action": "drain",
+                "node": "AUTO:max-blast-worker",
+                "resolve_strategy": "max-multidomain-pod-count",
+                "ignore_daemonsets": true,
+                "delete_emptydir_data": true,
+                "grace_period_seconds": 30,
+                "drain_timeout_seconds": 120
+              },
+              "min_hold": "8m",
+              "settle": "60s",
+              "timeout": "15m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "target_node_ready", "adapter": "kubernetes", "query_id": "kubernetes.node_ready",
+            "parameters": { "node": "AUTO:max-blast-worker" }, "freshness": "30s"
+          },
+          {
+            "id": "commerce_order_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-order" }, "freshness": "30s"
+          },
+          {
+            "id": "commerce_payment_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-payment" }, "freshness": "30s"
+          },
+          {
+            "id": "food_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-food", "resource": "testbed-order" }, "freshness": "30s"
+          },
+          {
+            "id": "banking_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-banking", "resource": "testbed-account" }, "freshness": "30s"
+          },
+          {
+            "id": "reschedule_image_failure", "adapter": "kubernetes", "query_id": "kubernetes.image_pull_failure",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-order" }, "freshness": "30s",
+            "note": "N5(ErrImageNeverPull) 2차 증상 — imagePullPolicy:Never + 미적재 노드 재스케줄. R의 후속으로만 관측."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "target-node-down", "observation": "target_node_ready", "op": "eq", "value": false },
+            { "id": "commerce-order-down", "observation": "commerce_order_ready", "op": "eq", "value": false },
+            { "id": "cross-domain-down", "observation": "food_pod_ready", "op": "eq", "value": false }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "node-recovered", "observation": "target_node_ready", "op": "eq", "value": true },
+            { "id": "commerce-order-recovered", "observation": "commerce_order_ready", "op": "eq", "value": true },
+            { "id": "cross-domain-recovered", "observation": "food_pod_ready", "op": "eq", "value": true },
+            { "id": "banking-recovered", "observation": "banking_pod_ready", "op": "eq", "value": true }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "15m"
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "15m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false,
+          "multi_namespace": true
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["k8s.node", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["k8s.node", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "k8s.node"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "능력갭(신규 executor): 노드 cordon/drain executor 부재 — k8s.lifecycle은 이미지 스왑만, host.stress는 프로세스/파일만(fault-surface §2 실측). 신설안 k8s.node(action=drain: cordon+kubectl drain --ignore-daemonsets --delete-emptydir-data / cleanup=uncordon, 비파괴·복구가능). 실제 정지/virsh destroy는 local-path 데이터 소실 위험이라 배제. 대상 노드는 하드코딩 금지 → preflight node-blast-radius-resolve로 blast radius 최대 워커 라이브 선정(CLAUDE.md 배치 메모는 스테일). 운영안전: 노드 drain은 대상 노드 전 파드 evict → 3도메인 baseline 동시 타격 → 전용 클린윈도우(exclusive-node-window) + 다-namespace 캡처 필수. sheet §4-A·§5.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "F26-H": {
+    "title": "DB StatefulSet local-path PV 노드고정 → 노드 상실 시 DB pod 영구 Pending",
+    "description": "DB 3종은 default StorageClass local-path(WaitForFirstConsumer)로 PV를 받아 노드로컬 hostPath에 묶인다. DB pod가 얹힌 노드가 소실되면 StatefulSet가 pod를 재생성하려 하나, PV가 그 노드에 고정돼 있어 스케줄러가 타 노드로 보내지 못한다 → pod가 'volume node affinity conflict' 사유로 영구 Pending. 디스크는 멀쩡한데 DB에 닿지 못하는 함정이며, 해당 도메인 전 서비스가 DB 커넥션 실패로 5xx가 된다. Class B 인프라 앵커.",
+    "class": "B",
+    "domain": "cross",
+    "observation_domains": ["KCM"],
+    "cause": "DB pod가 얹힌 노드 소실 + local-path PV의 노드고정(WaitForFirstConsumer, 노드로컬 hostPath) → 스케줄러가 PV 없는 노드로 재스케줄 불가 → DB pod Pending 영구(volume node affinity conflict) → 도메인 전 서비스 DB 커넥션 실패 5xx.",
+    "root_cause": {
+      "target_kind": "node",
+      "target_id": "대상 DB pod(testbed-mysql-0 / testbed-postgres-0 / testbed-oracle-0)가 실제 얹힌 워커 — 실행 시 라이브 확정. 근본 결함은 노드 소실 + PV 노드고정 조합",
+      "mechanism": "StatefulSet DB(replicas=1)의 PV가 local-path StorageClass(WaitForFirstConsumer)라 노드로컬 hostPath(/opt/local-path-provisioner/<pvc>)에 바인딩된다. 노드 소실 시 PV가 그 노드를 떠날 수 없어 스케줄러가 DB pod를 재스케줄 못함 → Pending 영구, event 'N node(s) had volume node affinity conflict'. DB 디스크 자체는 정상이므로 디스크 지표로는 원인이 안 보임.",
+      "code_anchor": [
+        "food-delivery/k8s/10-mysql.yaml:49-56 (volumeClaimTemplates, storageClassName 미지정 → default local-path)",
+        "food-delivery/k8s/10-mysql.yaml:10, commerce/k8s/10-postgres.yaml:33, core-banking/k8s/10-oracle.yaml:13 (replicas: 1)",
+        "scripts/scenarios/profiles/host_stress_executor.py:13-15 (PV 실경로 /opt/local-path-provisioner/pvc-...가 노드로컬 hostPath임을 증명 — F10 계열이 이미 사용)"
+      ],
+      "infra_anchor": "StorageClass local-path(rancher, default, WaitForFirstConsumer, expansion 불가). PV는 DB 3종+kafka만 보유. local-path provisioner는 tb-w2 단독(그 자체도 SPOF). 재현 수단 = 비파괴 cordon+drain(신규 k8s.node executor)."
+    },
+    "injection_summary": "신규 k8s.node executor로 대상 DB pod가 얹힌 워커를 cordon+drain → StatefulSet가 DB pod 재생성 시도하나 PV 노드고정으로 Pending. 대상 노드는 preflight db-pod-node-locate로 라이브 확정(배치 동적). cleanup=uncordon → DB pod가 자기 PV 노드로 재스케줄 Ready(recovery ≥15m). 노드 파일·PV 데이터 보존(비파괴).",
+    "user_impact": "해당 도메인(예: food)의 모든 서비스가 DB 커넥션 실패로 5xx. DB pod는 Pending으로 영원히 안 뜨고, 오퍼레이터가 디스크 지표를 봐도 정상이라 원인을 못 찾는다(스케줄 불가가 진짜 원인).",
+    "must_support": [
+      "대상 DB pod_ready=false + pod Pending 지속",
+      "pod 스케줄 실패 사유 = 'volume node affinity conflict' (pod_unschedulable_reason)",
+      "해당 도메인 전 서비스 5xx 급증"
+    ],
+    "must_rule_out": [
+      "디스크 full/IO 포화가 아님 — 노드/PV 디스크 지표 정상(F10 계열과 감별). root는 스케줄 불가지 디스크 이상 아님",
+      "CrashLoop/OOM 아님 — 컨테이너가 아예 스케줄 안 됨(Pending, 컨테이너 미기동)",
+      "외부 rate-limit/429 아님(entry_status ≠ 429)"
+    ],
+    "distinguishing_evidence": "DB pod가 Pending이고 스케줄 실패 사유가 'volume node affinity conflict'인데 노드·PV 디스크 지표는 정상이다 — '디스크는 멀쩡한데 DB에 닿지 못함'이 정체성. F10(PV 디스크 full/IO)은 DB가 살아있는 성능저하라 pod_ready=true·디스크 지표 이상이고, F26-H는 DB 완전 소실 + 재스케줄 원천 불가라 mechanism이 정반대다. F26-R과는 같은 node executor이나 H는 DB pod의 노드를 특정해 Pending 사유를 지목한다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F10-R/H/P (DB PV 디스크 full/IO — DB 살아서 느림, 디스크 지표 이상; F26-H는 DB 죽어서 스케줄 불가, 디스크 정상)",
+        "F26-R (같은 node drain executor, 다도메인 blast radius 전반; H는 DB Pending 특정)",
+        "F05-R (컨테이너 OOMKill loop — 컨테이너 기동됨; F26-H는 스케줄 자체 불가)"
+      ]
+    }
+  }
+}

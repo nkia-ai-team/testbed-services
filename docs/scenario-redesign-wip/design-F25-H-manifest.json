@@ -1,0 +1,166 @@
+{
+  "schema_version": "1.0",
+  "id": "F25-H",
+  "slug": "f25-h-commerce-postgres-oomkill",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "commerce-namespace",
+    "matrix_location_transport": "tb-runner/kubectl → rca-testbed-commerce testbed-postgres (StatefulSet) container memory limit patch → cgroup OOMKill",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.resource",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "k8s.resource",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "k8s.resource"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "not-connection-refusal", "observation": "pg_pod_ready", "op": "eq", "value": false }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 },
+            { "id": "restart-storm", "observation": "pg_restart_count", "op": "gte", "value": 6 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f25-h",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "kind": "statefulset",
+                "workload": "testbed-postgres",
+                "container": "postgres",
+                "resource": "memory",
+                "baseline": { "limits": { "memory": "512Mi" }, "requests": { "memory": "256Mi" } },
+                "fault": { "limits": { "memory": "320Mi" }, "requests": { "memory": "256Mi" } }
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "pg_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-postgres" }, "freshness": "30s"
+          },
+          {
+            "id": "pg_termination_reason", "adapter": "kubernetes", "query_id": "kubernetes.container_last_termination_reason",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres", "container": "postgres" }, "freshness": "30s",
+            "capability_gap": "query_id는 실재(queries.json:232)하나 allowed_parameters가 deployment 기준. StatefulSet(testbed-postgres) pod 조회로 동작하는지 확인 필요(셀렉터 pod.container.last_termination_reason은 pod 기반이라 유효 예상). See sheet §4-A."
+          },
+          {
+            "id": "pg_restart_count", "adapter": "kubernetes", "query_id": "kubernetes.container_restart_count",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres", "container": "postgres" }, "freshness": "30s"
+          },
+          {
+            "id": "pg_mem_current", "adapter": "kubernetes", "query_id": "kubernetes.container_memory_current_bytes",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres", "container": "postgres" }, "freshness": "30s"
+          },
+          {
+            "id": "pg_mem_limit", "adapter": "kubernetes", "query_id": "kubernetes.deployment_container_memory_limit",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres", "container": "postgres" }, "freshness": "30s"
+          },
+          {
+            "id": "commerce_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": { "step": "checkout", "status_class": "5xx" }, "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "pg-oomkilled", "observation": "pg_termination_reason", "op": "eq", "value": "OOMKilled" },
+            { "id": "pg-restarted", "observation": "pg_restart_count", "op": "gte", "value": 1 },
+            { "id": "commerce-transient-5xx", "observation": "commerce_5xx_rate", "op": "gte", "value": 0.1 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            { "id": "pg-ready", "observation": "pg_pod_ready", "op": "eq", "value": true },
+            { "id": "entry-recovered", "observation": "entry_status", "op": "eq", "value": 200 },
+            { "id": "commerce-5xx-recovered", "observation": "commerce_5xx_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["k8s.resource", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["k8s.resource", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "k8s.resource"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "k8s.resource executor가 Deployment 하드코딩(k8s_resource_executor.py: auth can-i patch deployments, get deploy). PG는 StatefulSet(testbed-postgres). 승격 선행: (1) executor kind 일반화(deploy→statefulset 파라미터), (2) k8s.resource parameter_contract에 F25-H allowlist + PG mem baseline 512Mi/fault 320Mi + kind=statefulset·workload=testbed-postgres·container=postgres, (3) container_last_termination_reason 등 KCM query가 StatefulSet pod 조회로 동작하는지 확인. 관측(③)은 termination_reason·restart_count·mem_current·mem_limit 전부 실재라 완비 — B군 중 승격 최선두. load.north_south commerce companion allowlist 추가. 자세히 sheet §4-A.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

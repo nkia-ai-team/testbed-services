@@ -1,0 +1,169 @@
+{
+  "schema_version": "1.0",
+  "id": "F27-P",
+  "slug": "f27-p-cross-domain-netpol-partition",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "banking-namespace",
+    "matrix_location_transport": "K/kubectl apply NetworkPolicy (rca-testbed-banking, testbed-transfer ingress deny-from-commerce)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.netpol",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "netpol-baseline-absent",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "k8s.netpol",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "k8s.netpol"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f27-p",
+              "parameters": {
+                "namespace": "rca-testbed-banking",
+                "policy_name": "rca-f27-p-deny-commerce-to-transfer",
+                "pod_selector": { "app": "testbed-transfer" },
+                "policy_types": ["Ingress"],
+                "ingress_allow_from": [{ "namespaceSelector": { "kubernetes.io/metadata.name": "rca-testbed-banking" } }],
+                "intent": "banking 내부 caller·kubelet probe는 허용, cross-namespace commerce ingress는 DROP"
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          { "id": "target_health", "adapter": "http_probe", "query_id": "http.target_health", "freshness": "15s" },
+          { "id": "achieved_rps", "adapter": "loadgen_summary", "query_id": "loadgen.achieved_rps", "freshness": "30s" },
+          { "id": "checkout_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate", "freshness": "30s" },
+          {
+            "id": "payment_502_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "commerce-payment", "status_class": "502" }, "freshness": "60s"
+          },
+          {
+            "id": "banking_transfer_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-banking", "resource": "testbed-transfer" }, "freshness": "30s"
+          },
+          {
+            "id": "banking_transfer_restart_count", "adapter": "kubernetes", "query_id": "kubernetes.container_restart_count",
+            "parameters": { "namespace": "rca-testbed-banking", "deployment": "testbed-transfer", "container": "transfer-service" }, "freshness": "30s"
+          },
+          {
+            "id": "banking_transfer_error_rate", "adapter": "prometheus", "query_id": "prometheus.apm_service_error_rate",
+            "parameters": { "service_name": "core-banking-transfer" }, "freshness": "60s"
+          },
+          {
+            "id": "commerce_to_banking_edge_fail", "adapter": "prometheus", "query_id": "prometheus.apm_cross_domain_edge_error_rate",
+            "parameters": { "from_service": "commerce-payment", "to_service": "core-banking-transfer" }, "freshness": "60s",
+            "capability_gap": "NEW query_id — cross-domain edge(commerce-payment→core-banking-transfer) 실패/소실율. connect-phase 실패(read timeout 아님) 구분 포함. sheet §5-B."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "controlled-load", "observation": "achieved_rps", "op": "gte", "value": 15 },
+            { "id": "payment-502-up", "observation": "payment_502_rate", "op": "gte", "value": 0.1 },
+            { "id": "checkout-impact", "observation": "checkout_5xx_rate", "op": "gte", "value": 0.05 },
+            { "id": "cross-domain-edge-broken", "observation": "commerce_to_banking_edge_fail", "op": "gte", "value": 0.2 },
+            { "id": "banking-transfer-still-ready", "observation": "banking_transfer_ready", "op": "eq", "value": true }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "transfer-down-F17-R", "observation": "banking_transfer_ready", "op": "eq", "value": false },
+            { "id": "transfer-crashloop", "observation": "banking_transfer_restart_count", "op": "gte", "value": 2 },
+            { "id": "banking-self-fault", "observation": "banking_transfer_error_rate", "op": "gte", "value": 0.1 }
+          ],
+          "consecutive_ticks": 1
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "recovery": {
+          "all": [
+            { "id": "target-recovered", "observation": "target_health", "op": "eq", "value": 200 },
+            { "id": "edge-recovered", "observation": "commerce_to_banking_edge_fail", "op": "lt", "value": 0.05 },
+            { "id": "checkout-recovered", "observation": "checkout_5xx_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["k8s.netpol", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["k8s.netpol", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "k8s.netpol"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "k8s.netpol 프로파일 신설 필요(신규 executor 로직 아님, 봉인된 deny 정책 manifest를 kubectl apply(run)/delete(cleanup)만 수행 — k8s.probe/k8s.env 계약 스타일). deny manifest: rca-testbed-banking에 podSelector app=testbed-transfer, policyTypes=[Ingress], ingress.from=namespaceSelector rca-testbed-banking만 허용(banking 내부 caller·probe 유지, cross-namespace commerce 자동 DROP). parameter_contract.allowed_scenarios=[F27-P], allowed_locations=[banking-namespace], live_supported는 kubelet probe 도달성 live 검증(banking_transfer_ready=true 유지 필수, probe까지 막히면 F17-R로 붕괴) 통과 후. load.north_south allowlist/tag_pattern에 F27-P + commerce scenario_parameters(entry 30080, commerce surge.js) 추가. NEW query_id: prometheus.apm_cross_domain_edge_error_rate(commerce-payment→core-banking-transfer edge 소실). 자세히 sheet §5-B.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

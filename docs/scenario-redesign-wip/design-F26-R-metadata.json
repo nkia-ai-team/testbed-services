@@ -1,0 +1,43 @@
+{
+  "F26-R": {
+    "title": "워커 노드 상실 → 흩어진 배치가 만드는 다도메인 동시 장애 (SPOF blast radius)",
+    "description": "모든 워크로드가 replicas=1이고 nodeSelector/affinity가 전무해 스케줄러가 도메인 무관하게 파드를 흩뿌린다. 워커 1대가 소실되면(재현은 비파괴 cordon+drain) 그 노드에 얹힌 서로 무관한 3개 도메인의 다중 서비스가 같은 시각에 함께 죽는다. 대체 파드가 없고(replicas=1), 재스케줄은 local-path PV 노드고정(F26-H)·imagePullPolicy:Never 미적재(N5)에 막혀 장기 미가용이 된다. 증상은 앱 다수의 동시 Down이나 원인은 노드 1점이다. Class B 인프라 앵커.",
+    "class": "B",
+    "domain": "cross",
+    "observation_domains": ["KCM", "SMS"],
+    "cause": "워커 노드 소실 + 모든 워크로드 replicas=1 + affinity 전무 + 스케줄러 임의 배치 → 노드 1대 blast radius가 도메인 경계를 넘어 commerce·food·banking 다중 서비스를 동시에 소실시킴. 재스케줄은 PV 노드고정·이미지 미적재에 막힘.",
+    "root_cause": {
+      "target_kind": "node",
+      "target_id": "워커 1대(tb-w1/w2/w3 중 blast radius 최대 노드, 실행 시 라이브 선정) — 배치가 동적이라 노드명 하드코딩 불가",
+      "mechanism": "노드 소실 시 그 노드의 파드가 모두 불가용. 모든 Deployment/StatefulSet가 replicas=1(예외 없음)이고 nodeSelector/affinity가 전 매니페스트에 없어 스케줄러가 도메인 무관하게 흩뿌린 상태 → 노드 1대에 여러 도메인 서비스가 공존 → 노드 소실이 다도메인 동시 장애가 됨. 대체 replica 없음 + PV 노드고정·imagePullPolicy:Never로 재스케줄 실패 → 장기 outage.",
+      "code_anchor": [
+        "commerce/k8s/20-order-service.yaml:16 (replicas: 1) — 22개 앱·3개 DB StatefulSet 전부 동일",
+        "food-delivery/k8s/10-mysql.yaml:10, commerce/k8s/10-postgres.yaml:33, core-banking/k8s/10-oracle.yaml:13 (replicas: 1)",
+        "전 매니페스트 nodeSelector/affinity grep 무결과 — 배치 무제약"
+      ],
+      "infra_anchor": "라이브 kubeadm 클러스터 tb-w1/w2/w3 (각 4vCPU/11.9Gi). 배치는 스케줄러 임의(도메인별 안 묶임, 2026-07-24 실측). 노드 1대 = 전체 워커 용량의 1/3. 재현 수단 = 비파괴 cordon+drain(신규 k8s.node executor 필요)."
+    },
+    "injection_summary": "신규 k8s.node executor로 대상 워커를 cordon+drain(--ignore-daemonsets --delete-emptydir-data, 비파괴)해 그 노드의 파드를 모두 evict → replicas=1이라 대체 없이 다도메인 동시 Down. 대상 노드는 preflight에서 blast radius 최대 워커로 라이브 선정. cleanup=uncordon → 파드 재스케줄. 실제 정지/virsh destroy는 local-path 데이터 소실 위험이라 배제.",
+    "user_impact": "한 노드에 얹힌 서로 무관한 도메인들(예: commerce 주문·결제 + food 주문 + banking 계좌)이 동시에 5xx/불가용. 사용자는 여러 서비스가 이유 없이 함께 죽는 광범위 장애를 겪는다. 재스케줄도 막혀 회복이 오래 걸린다.",
+    "must_support": [
+      "대상 노드 node_ready=false",
+      "서로 무관한 최소 2~3개 도메인의 pod_ready가 같은 시각 동시=false (commerce order/payment + food + banking)",
+      "다도메인 서비스 5xx 동시 급증(baseline 트래픽 기준)"
+    ],
+    "must_rule_out": [
+      "단일 서비스 성능저하가 아님 — 노드가 살아있는(node_ready=true) F05/F09 계열과 달리 노드 자체 소실",
+      "특정 DB 하나만의 문제가 아님 — 여러 무관 도메인이 동시에 죽음(노드 공유가 root라는 증거)",
+      "앱 이미지/설정 결함 아님 — 파드 스펙 정상, 노드 소실이 원인",
+      "외부 rate-limit/429 아님(entry_status ≠ 429)"
+    ],
+    "distinguishing_evidence": "서로 아무 의존관계 없는 도메인들(commerce·food·banking)이 정확히 같은 시각에 함께 Down하고 대상 노드 node_ready=false가 동반된다 — 이 '무관 도메인 동시 사망'이 노드 공유가 root라는 결정적 신호다. F05/F09/F10은 노드가 살아있는 단일 서비스 성능저하라 node_ready=true이고 한 도메인에 국한된다. F26-H와는 near-twin(같은 node executor)이나 R은 광범위 다도메인 소실, H는 특정 DB pod의 노드를 특정해 Pending을 지목한다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F26-H (같은 node drain executor이나 대상=DB pod의 노드 → DB 영구 Pending에 초점; R은 다도메인 blast radius 전반)",
+        "F05-P (worker node 메모리 압박 eviction — 노드는 살아있고 특정 cohort만; R은 노드 자체 소실로 다도메인 완전 소실)",
+        "F09-R (worker CPU noisy neighbor — 노드 살아있는 성능저하; R은 노드 down)"
+      ]
+    }
+  }
+}

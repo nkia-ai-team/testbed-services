@@ -1,0 +1,39 @@
+{
+  "F25-P": {
+    "title": "banking Oracle 단일 PDB 공유 포화 → banking 전 서비스 저하",
+    "description": "banking 4서비스(api/account/transfer/ledger)가 단일 Oracle 23ai Free StatefulSet(testbed-oracle, cpu limit 2000m·SGA 1.5G·단일 PDB FREEPDB1)를 공유한다. Oracle 컨테이너 cpu limit을 조이면 공유 PDB가 자원 상한에 걸려 4서비스 쿼리가 동시에 큐잉·지연된다. 특정 서비스가 아니라 banking 도메인 전반이 동반 저하하며, 원인이 개별 앱에 안 보인다. row-lock(F01-P, Oracle 건강)과 달리 인스턴스 자원 상한이 원인이다. Class B(미들웨어 자원 상한 + 단일 PDB 공유). FS-12 통합 후계.",
+    "class": "B",
+    "fault_pattern": null,
+    "domain": "core-banking",
+    "observation_domains": ["DPM", "KCM"],
+    "cause": "k8s.patch(확장)로 testbed-oracle 컨테이너 cpu limit 2000m→하향(예 300m) → 단일 PDB FREEPDB1가 cpu 상한에 걸려 쿼리 처리 큐잉 → api/account/transfer/ledger 4서비스 전부 지연(공유 자원 오염)",
+    "root_cause": {
+      "target_kind": "middleware",
+      "target_id": "banking-oracle (testbed-oracle StatefulSet, rca-testbed-banking, 단일 PDB FREEPDB1)",
+      "mechanism": "Oracle Free 에디션 하드캡(SGA 1.5G·cpu 2코어)과 단일 PDB를 4서비스가 공유. cpu 자원 상한에 걸리면 PDB가 병목이 되어 모든 서비스 쿼리가 동반 지연. 재시작이 무거워(startup healthcheck 수분) 회복 지연. 특정 행 락이 아니라 인스턴스 자원 상한이 root.",
+      "code_anchor": [],
+      "infra_anchor": "core-banking/k8s/10-oracle.yaml:5 kind StatefulSet testbed-oracle, :37-41 resources cpu req 500m/limit 2000m·mem 2Gi/4Gi, container 'oracle'. SGA 1.5G·단일 PDB FREEPDB1 4서비스 공유(fault-surface §1.3). 주입면=k8s.patch cpu limit 하향."
+    },
+    "injection_summary": "k8s.patch executor로 testbed-oracle(StatefulSet)의 container 'oracle' cpu limit을 2000m→300m로 패치하고 banking north-south companion 부하(surge.js transfer, entry 30082)로 4서비스 쿼리를 지속 자극한다. cleanup은 cpu limit 원복. §2-A: cpu 하향은 코드가 아니라 인프라 자원을 조이고 정답이 그 자원 상한이라 Class A 위장이 아니나, 자연 4서비스 포화가 아닌 proxy 주입이라 정직하게 🟡. 현 executor는 Deployment 하드코딩 + baseline 500m 가드라 StatefulSet kind 일반화·2000m 허용이 선행(prerequisite_gate).",
+    "user_impact": "송금/계좌조회/원장/API 등 banking 전 기능이 동시에 느려진다(응답 지연·타임아웃). 특정 서비스만 아픈 게 아니라 도메인 전체가 동반 저하하므로 개별 서비스 트레이스만 보면 '내 downstream이 느리다'로 서로를 가리켜 오진하기 쉽다.",
+    "must_support": [
+      "banking 4서비스(account/transfer/ledger) apm p95 동시 상승 (공유 자원 오염)",
+      "Oracle 컨테이너 cpu throttled_time 상승 (자원 상한 root 신호)",
+      "loadgen transfer 2xx rate 저하"
+    ],
+    "must_rule_out": [
+      "Oracle row-lock(F01-P) 아님 — F01-P은 특정 행 FOR UPDATE로 Oracle 건강·tagged_session 상주·한 경로만 블록; F25-P는 락 없이 인스턴스 cpu 상한이라 4서비스 전부 저하",
+      "단일 서비스 CPU/노드 포화(F09) 아님 — 특정 앱이 아니라 공유 Oracle이 병목, 4서비스 동반",
+      "Oracle 크래시/재기동 아님 — restart_count=0 유지(자원 스로틀이지 OOM/crash 아님)"
+    ],
+    "distinguishing_evidence": "banking 4서비스가 동시에 p95 상승하고 Oracle 컨테이너 cpu throttled_time이 오르는 반면 특정 행 락 세션(tagged_session)이나 앱 pool pending은 관측되지 않는다. F01-P(Oracle row-lock)은 Oracle이 건강하고 특정 경로만 블록되지만, F25-P는 락 없이 Oracle 인스턴스 자원 상한이 원인이라 4서비스가 무차별 저하한다. restart_count=0으로 크래시가 아님을 확인한다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F01-P (Oracle row-lock — 특정 행 FOR UPDATE·Oracle 건강·tagged_session; F25-P는 락 없는 인스턴스 자원 상한·4서비스 동반)",
+        "F25-H (동일 Class B 공유 미들웨어 자원 상한이나 PG 메모리 OOMKill; F25-P는 Oracle cpu 스로틀·크래시 없음)",
+        "F09-R/F09-P (CPU 계열 Class B이나 앱/노드 대상; F25-P는 공유 DB 인스턴스 대상)"
+      ]
+    }
+  }
+}

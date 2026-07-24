@@ -1,0 +1,39 @@
+{
+  "F25-R": {
+    "title": "commerce PostgreSQL 연결 슬롯 고갈 → 8스키마 전면 신규요청 거부",
+    "description": "commerce 8스키마를 단일 PostgreSQL(testbed-postgres, max_connections=100·reserved 3·usable 97)이 담당하는데 앱 Hikari 풀 합이 95라 헤드룸이 사실상 0이다. 유휴 커넥션 소비(또는 cart/pricing/user/shipping 풀 동시 max 램프)로 usable 97을 넘기면 신규 getConnection이 전부 'FATAL: sorry, too many clients already'로 거부되어 8스키마 전 서비스가 동시에 DB 연결 오류(5xx)를 낸다. 앱 한 서비스 풀 고갈(F03/F22)과 달리 PG 서버 상한이 원인이며 증상 범위가 전 스키마다. Class B(미들웨어 연결 상한).",
+    "class": "B",
+    "fault_pattern": null,
+    "domain": "commerce",
+    "observation_domains": ["DPM"],
+    "cause": "PG usable 97(=max_connections 100 − reserved 3) 소진 — 앱 풀 합 95 + 유휴 슬롯 소비/부하 램프로 상한 초과 → 신규 커넥션 전부 'too many clients' 거부 → 8스키마(order/payment/inventory/…) 전 서비스 커넥션 획득 실패 → commerce 전면 5xx",
+    "root_cause": {
+      "target_kind": "middleware",
+      "target_id": "commerce-postgres (testbed-postgres StatefulSet, rca-testbed-commerce)",
+      "mechanism": "단일 PostgreSQL의 max_connections=100(무튜닝 기본, reserved 3 → usable 97)이 인프라 상한. 8스키마를 한 인스턴스가 담당하고 앱 Hikari 풀 합이 95라 여유가 없어, 유휴 커넥션 소비나 풀 램프로 97을 넘기면 전 스키마 신규 커넥션이 거부됨. 앱 풀을 아무리 키워도 PG가 못 받는다는 점이 핵심(원인=PG 서버 상한, 앱 풀 아님).",
+      "code_anchor": [],
+      "infra_anchor": "commerce/k8s/10-postgres.yaml StatefulSet testbed-postgres 무튜닝 → max_connections=100 기본·reserved 3=usable 97. 앱 Hikari 풀 합 95(order10+product10+inventory10+payment10+cart20+pricing15+user10+shipping10, fault-surface §0), 라이브 baseline 62접속. 주입면=bare 커넥션 슬롯 소비(INJECTOR 미존재)."
+    },
+    "injection_summary": "의도: db.connection-saturate(신설) executor로 tb-runner에서 PG(NodePort 30432)에 유휴 커넥션 N개(예 34)를 홀드해 baseline 62 + N ≈ 97에 도달시키고, commerce north-south companion 부하로 cart/pricing/user/shipping 풀 램프를 겹쳐 상한을 넘긴다. 그러나 bare 커넥션 홀드 injector가 부재(db.lock은 row-lock만) + PG 총 접속수·too-many-clients 관측 query도 부재라 blocked. cleanup은 홀드 커넥션 해제. 자세히 sheet §4-B.",
+    "user_impact": "commerce 전 서비스(주문/결제/재고/장바구니/가격/사용자/배송)가 동시에 DB 연결 실패로 5xx를 낸다. 특정 서비스가 아니라 전 스키마가 한꺼번에 '커넥션을 못 얻음'을 보이므로, 앱마다 'DB 안 붙음'만 찍혀 개별 앱 오진을 유발한다.",
+    "must_support": [
+      "PG 총 접속수가 usable 상한(≈97)에서 flat (pg_connection_count ≥ 97)",
+      "'FATAL: sorry, too many clients already' 발생 (pg_connection_error_rate > 0)",
+      "commerce 전 서비스 동시 5xx (단일 서비스 아님); postgres pod ready·restart_count=0(인스턴스 건강)"
+    ],
+    "must_rule_out": [
+      "앱 풀 고갈(F03/F22) 아님 — 그건 한 서비스 Hikari pending만 오르고 PG 총 접속수는 상한 미달; F25-R은 PG 접속수가 상한 flat이고 전 스키마 동시 실패",
+      "PG OOM(F25-H) 아님 — postgres restart_count=0·termination≠OOMKilled(PG 건강, 접속만 거부); F25-H는 OOMKill+재기동",
+      "429/rate-limit 아님 — DB 연결 거부(too many clients)이지 엣지 제한 아님"
+    ],
+    "distinguishing_evidence": "PG 총 접속수가 usable 상한(≈97)에 flat하게 붙고 'too many clients' 오류가 관측되며, commerce 전 스키마가 동시에 커넥션 획득에 실패한다. 앱 풀 고갈(F03/F22)이라면 특정 서비스의 Hikari pending만 오르고 PG 총 접속수는 상한에 못 미치지만, F25-R은 PG 서버 자체가 상한이라 앱 풀 크기와 무관하게 전 스키마가 막힌다. postgres pod는 ready·restart=0으로 건강해 F25-H(OOMKill)와 구분된다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F03-R/F22-P (앱 한 서비스 Hikari 풀 고갈 Class A — 원인=앱 풀·증상=단일 서비스; F25-R은 PG 서버 상한·전 스키마 동시)",
+        "F25-H (동일 commerce PG이나 메모리 OOMKill — restart↑·재기동; F25-R은 restart=0·인스턴스 건강, 접속만 거부)",
+        "F01-R (commerce PG row-lock Class A — 특정 행 락; F25-R은 연결 슬롯 상한)"
+      ]
+    }
+  }
+}

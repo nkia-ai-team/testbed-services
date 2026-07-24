@@ -1,0 +1,48 @@
+{
+  "F27-P": {
+    "title": "크로스도메인 NetworkPolicy 파티션 (commerce→banking 차단, banking은 건강)",
+    "description": "kube-router가 NetworkPolicy를 강제함이 실측 확인되어(fault-surface-infra-network-wpm.md §0.2, KUBE-ROUTER-FORWARD 4.2M pkts), rca-testbed-banking의 testbed-transfer에 'banking 내부만 ingress 허용' deny 정책을 kubectl apply하면 cross-namespace인 commerce-payment의 SYN이 testbed-transfer(:8082)로 못 간다(silent DROP). payment.processPayment가 PG mock 결제를 성공(200)시킨 직후 BankingTransferClient의 이체 호출에서 connect timeout이 나고, BankingTransferClient는 CB가 없어 RestClientException을 ServiceException(502)로 던지며 @Transactional이 방금 저장한 결제까지 전부 롤백한다 → checkout 502. 증상은 C4(banking 앱 다운)·F17-R(transfer readiness 실패)과 동일 계열이나, root가 앱이 아니라 네트워크 정책이라는 게 정체성이다: banking testbed-transfer pod는 전부 ready이고 banking 자체·타 caller는 무신호이며 commerce에서만 connect timeout이 난다. F12-P(cross-domain packet-loss, CNI/NET_ADMIN 미해결로 blocked)의 realizable 대체. Class B(인프라).",
+    "class": "B",
+    "domain": "cross-domain",
+    "observation_domains": ["APM", "KCM"],
+    "observation_note": "자연 도메인은 NMS(네트워크)이나 SNMP/NetFlow 소스가 0(fault-surface-infra-network-wpm.md §1.4)이라 NMS를 ground-truth로 쓸 수 없다. 신호는 APM(commerce→banking cross-domain edge 소실)+KCM(banking testbed-transfer pod ready=true)로만 관측된다. observation_domains에서 NMS를 의도적으로 제외.",
+    "cause": "rca-testbed-banking testbed-transfer에 ingress deny-from-commerce NetworkPolicy 적용(kube-router 강제) → commerce-payment→testbed-transfer(:8082) SYN DROP → payment BankingTransferClient connect timeout → CB 부재로 502 → @Transactional 전체 롤백 → checkout 502. 원인은 앱 결함·banking 다운이 아니라 네트워크 정책.",
+    "root_cause": {
+      "target_kind": "network-policy",
+      "target_id": "rca-f27-p-deny-commerce-to-transfer (rca-testbed-banking, podSelector app=testbed-transfer, Ingress)",
+      "namespace": "rca-testbed-banking",
+      "mechanism": "kube-router가 강제하는 ingress NetworkPolicy가 testbed-transfer를 banking 네임스페이스 내부 caller에게만 열고 cross-namespace commerce의 패킷을 DROP한다. commerce-payment의 이체 호출 SYN이 응답 없이 버려져 connect timeout이 나고, BankingTransferClient(CB 없음)가 이를 502로 변환하며 payment @Transactional이 롤백된다. transfer pod·엔드포인트는 살아있어(ready) 원인이 앱/자원이 아니라 네트워크 정책이라는 게 감별 정체성.",
+      "code_anchor": [
+        "commerce/payment-service/.../client/BankingTransferClient.java (RestClientException→ServiceException 502, CB 없음 — 증상 증폭점, root 아님)",
+        "commerce/payment-service/src/main/resources/application.yml:47-48 (banking-transfer.base-url=http://testbed-transfer.rca-testbed-banking.svc.cluster.local:8082 — ClusterDNS 경로, netpol 강제 대상; 재검증됨)"
+      ],
+      "infra_anchor": "kube-router NetworkPolicy 강제(fault-surface-infra-network-wpm.md §0.2 KUBE-ROUTER-FORWARD 체인 실측). 주입=kubectl apply deny 정책, 복구=kubectl delete. 레포에 기존 NetworkPolicy 0개(재검증) — 이 정책이 최초."
+    },
+    "injection_summary": "k8s.netpol executor(신설, 봉인된 manifest를 kubectl apply/delete만 수행)로 rca-testbed-banking에 podSelector app=testbed-transfer, policyTypes=[Ingress], ingress.from=namespaceSelector rca-testbed-banking(내부·probe 허용)만 두는 정책을 적용한다 → cross-namespace commerce는 자동 DROP. 동시에 load.north_south commerce surge(entry 30080, commerce surge.js, ~35rps)로 checkout 여정을 흘린다. cleanup은 kubectl delete networkpolicy(멱등)로 원복.",
+    "user_impact": "checkout이 502로 실패한다. PG(카드결제)는 성공 응답을 냈는데도 payment @Transactional 롤백으로 commerce 결제 기록이 사라져 '결제는 됐는데 기록이 없는' 정합성 파괴 흔적을 남긴다. banking 자체 서비스와 읽기(GET)는 정상.",
+    "must_support": [
+      "commerce payment 502↑ 및 checkout 502↑",
+      "commerce→banking cross-domain edge(payment→transfer) 실패/소실 (connect-단계 실패, read timeout 아님)",
+      "banking testbed-transfer pod_ready = true 유지 (다운 아님)"
+    ],
+    "must_rule_out": [
+      "banking testbed-transfer pod_ready = false 아님 — false면 F17-R(transfer readiness 실패)·C4(banking 다운)이지 netpol 파티션 아님",
+      "transfer restart_count 증가 아님 — crashloop/재시작 계열 아님",
+      "banking transfer 자체 error_rate 무증가 — banking 앱은 건강(타 caller·probe 정상)",
+      "Oracle blocking session 없음 — F01-P(cross-domain row-lock) 아님",
+      "외부 rate-limit/429 아님 — entry_status ≠ 429"
+    ],
+    "distinguishing_evidence": "banking testbed-transfer pod가 전부 ready이고(다운 아님) restart도 없으며 banking 자체·타 caller는 무신호인데, commerce payment→banking transfer edge만 connect timeout으로 끊긴다 — 원인이 앱/자원이 아니라 commerce에서 banking으로 가는 경로의 네트워크 정책임을 지목한다. F17-R과의 near-twin 감별: F17-R은 transfer readinessProbe 실패로 엔드포인트가 0이라 pod_ready=false이고 connect가 빠르게 실패하는 반면, F27-P는 pod·엔드포인트가 살아있어(pod_ready=true) SYN silent-drop으로 connect가 timeout(느리게) 실패한다. NMS로는 양성 확인 불가, APM edge 소실 + KCM pod ready 소거법으로 추정.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F17-R (banking transfer 다운→payment 롤백; near-twin이나 pod_ready false(다운) vs F27-P true(netpol) + connect refuse/fast vs timeout/silent-drop로 결정 감별)",
+        "F01-P (banking Oracle row-lock cross-domain; transfer 살아있고 Oracle blocking session 존재·payment가 느리게 실패 vs F27-P는 lock 없고 connect 차단)",
+        "C4 (banking 앱 다운; banking 자체 5xx vs F27-P는 banking 무신호·건강)"
+      ],
+      "supersedes": [
+        "F12-P (cross-domain packet-loss, CNI/NET_ADMIN 미해결로 blocked — F27-P가 kube-router netpol deny로 realizable 대체)"
+      ]
+    }
+  }
+}

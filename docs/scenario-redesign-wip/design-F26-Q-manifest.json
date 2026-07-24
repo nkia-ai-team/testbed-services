@@ -1,0 +1,162 @@
+{
+  "schema_version": "1.0",
+  "id": "F26-Q",
+  "slug": "f26-q-node-rootfs-diskpressure-neighbor-eviction",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "AUTO:target-worker",
+    "matrix_location_transport": "tb-runner/ssh → 대상 워커 루트fs watermark fill (host.stress watermark 재타깃)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "host-placement-and-oob-recovery",
+      "rootfs-reserve-guard",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "host.stress"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "20m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health", "rootfs-reserve-guard"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f26-q",
+              "parameters": {
+                "mode": "watermark",
+                "host": "AUTO:target-worker",
+                "target_dir": "/var/lib/lucida-f26-q-fill",
+                "target_scope": "node-rootfs",
+                "watermark_percent": 92,
+                "reserve_mib": 4096,
+                "maximum_fill_mib": 40960
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "15m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "node_disk_pressure", "adapter": "kubernetes", "query_id": "kubernetes.node_disk_pressure",
+            "parameters": { "node": "AUTO:target-worker" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — node.condition.DiskPressure boolean. 현재 kubernetes.node_ready만 있고 세부 condition 없음. F05-P(MemoryPressure)와의 결정적 감별자. sheet §4-D #9."
+          },
+          {
+            "id": "neighbor_evicted", "adapter": "kubernetes", "query_id": "kubernetes.pod_evicted_count",
+            "parameters": { "node": "AUTO:target-worker" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — 대상 노드에서 Evicted 상태로 넘어간 파드 수(이웃 축출 = 2차 피해, 이 시나리오의 정체성). 없으면 '이웃이 쫓겨났다'를 못 관측. sheet §4-D #9."
+          },
+          {
+            "id": "node_rootfs_util", "adapter": "prometheus", "query_id": "prometheus.node_disk_utilization",
+            "parameters": { "node": "AUTO:target-worker", "mountpoint": "/" }, "freshness": "60s"
+          },
+          {
+            "id": "node_mem_util", "adapter": "prometheus", "query_id": "prometheus.node_memory_utilization",
+            "parameters": { "node": "AUTO:target-worker" }, "freshness": "60s",
+            "note": "must_rule_out — 메모리는 정상이어야 함(root=디스크, F05-P memhog와 감별)."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "node-disk-pressure", "observation": "node_disk_pressure", "op": "eq", "value": true },
+            { "id": "neighbor-evicted", "observation": "neighbor_evicted", "op": "gte", "value": 1 },
+            { "id": "rootfs-saturated", "observation": "node_rootfs_util", "op": "gte", "value": 90 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "memory-pressure-cause", "observation": "node_mem_util", "op": "gte", "value": 90 },
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 },
+            { "id": "rootfs-over-guard", "observation": "node_rootfs_util", "op": "gte", "value": 97 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            { "id": "disk-pressure-cleared", "observation": "node_disk_pressure", "op": "eq", "value": false },
+            { "id": "rootfs-recovered", "observation": "node_rootfs_util", "op": "lt", "value": 70 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["host.stress", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["host.stress", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "host.stress"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "배선(기존 mode 재타깃) + 관측 query 2종. (1) host.stress watermark mode(host_stress_executor.py:104-106, F10-R live검증)를 target_dir=노드 루트fs 임시경로로 재타깃 + 안전 상한(reserve_mib 루트fs 여유하한·maximum_fill_mib)로 노드 마비 방지, artifact cleanup으로 즉시 회수. 신규 executor 코드 아님(계약·scenario_parameters). preflight rootfs-reserve-guard로 대상 노드 루트fs 여유 사전확인. (2) NEW query 2종 kubernetes.node_disk_pressure(DiskPressure condition, F05-P MemoryPressure와 감별) + kubernetes.pod_evicted_count(이웃 축출=정체성). 둘 없으면 '루트fs 찼다'까지만 보이고 '이웃이 쫓겨났다'는 정체성 관측 불가. sheet §4-D.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

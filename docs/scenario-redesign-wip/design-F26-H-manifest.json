@@ -1,0 +1,162 @@
+{
+  "schema_version": "1.0",
+  "id": "F26-H",
+  "slug": "f26-h-db-pv-node-pinning-permanent-pending",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "AUTO:db-host-worker",
+    "matrix_location_transport": "tb-runner/kubectl → 대상 DB pod가 얹힌 워커 cordon+drain (preflight 라이브 확정)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.node",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "db-pod-node-locate",
+      "exclusive-node-window",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "k8s.node",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "k8s.node"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "60s",
+        "max_injection_duration": "20m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health", "db-pod-node-locate"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f26-h",
+              "parameters": {
+                "action": "drain",
+                "node": "AUTO:db-host-worker",
+                "resolve_strategy": "host-of-pod",
+                "resolve_target": { "namespace": "rca-testbed-food", "pod": "testbed-mysql-0" },
+                "ignore_daemonsets": true,
+                "delete_emptydir_data": true,
+                "grace_period_seconds": 30,
+                "drain_timeout_seconds": 120
+              },
+              "min_hold": "8m",
+              "settle": "60s",
+              "timeout": "15m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "db_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-food", "resource": "testbed-mysql" }, "freshness": "30s"
+          },
+          {
+            "id": "db_unschedulable_reason", "adapter": "kubernetes", "query_id": "kubernetes.pod_unschedulable_reason",
+            "parameters": { "namespace": "rca-testbed-food", "pod": "testbed-mysql-0" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — DB pod Pending 시 PodScheduled condition의 reason/message('N node(s) had volume node affinity conflict')를 노출. 이것이 F10(디스크 이상)과의 결정적 감별자('디스크 정상인데 스케줄 불가'). 현재 pod_ready=false는 불가용만 알 뿐 사유를 못 짚음. kubernetes adapter에 pod.status.conditions[PodScheduled].reason selector 등록. sheet §4-B."
+          },
+          {
+            "id": "food_service_5xx", "adapter": "loadgen_summary", "query_id": "loadgen.food_create_status_rate",
+            "parameters": { "step": "create", "status_class": "5xx" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — food surge.js create step per-status 미배선(surge.js:138-139 200/400/503 fold). F19 계열과 공유 갭. DB 소실로 food 전 서비스 5xx 관측용."
+          },
+          {
+            "id": "db_disk_health", "adapter": "prometheus", "query_id": "prometheus.node_disk_utilization",
+            "parameters": { "node": "AUTO:db-host-worker" }, "freshness": "60s",
+            "note": "감별용 — 디스크 지표는 정상이어야 함(root=노드 소실+PV 노드고정, 디스크 full 아님). F10과의 대비."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "db-down", "observation": "db_pod_ready", "op": "eq", "value": false },
+            { "id": "db-pending-affinity", "observation": "db_unschedulable_reason", "op": "contains", "value": "volume node affinity conflict" }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "disk-actually-full", "observation": "db_disk_health", "op": "gte", "value": 90 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "db-recovered", "observation": "db_pod_ready", "op": "eq", "value": true },
+            { "id": "food-recovered", "observation": "food_service_5xx", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "15m"
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "15m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false,
+          "multi_namespace": true
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["k8s.node", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["k8s.node", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "k8s.node"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "능력갭 2종. (1) F26-R과 동일 node executor 갭(k8s.node action=drain, 비파괴 cordon+drain / cleanup uncordon). 대상=DB pod(testbed-mysql-0/postgres-0/oracle-0)가 실제 얹힌 워커 → preflight db-pod-node-locate로 라이브 확정(하드코딩 금지). (2) NEW query kubernetes.pod_unschedulable_reason — DB pod Pending 사유(volume node affinity conflict)를 노출해야 F10(디스크 이상)과 감별. 운영안전: drain은 대상 노드 전 파드 evict, DB uncordon 후 자기 PV 노드로 재스케줄 Ready까지 recovery(≥15m). exclusive-node-window + 다-namespace 캡처. sheet §4-A·§4-B·§5.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

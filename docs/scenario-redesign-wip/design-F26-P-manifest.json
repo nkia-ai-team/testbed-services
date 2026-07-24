@@ -1,0 +1,163 @@
+{
+  "schema_version": "1.0",
+  "id": "F26-P",
+  "slug": "f26-p-hostpath-agent-dir-loss-node-apps-fail",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "AUTO:target-worker",
+    "matrix_location_transport": "tb-runner/ssh → 대상 워커 /opt/polestar10/apm rename (host.stress hostpath-disrupt mode)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "host-placement-and-oob-recovery",
+      "hostpath-restore-guarantee",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "host.stress"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "20m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health", "hostpath-restore-guarantee"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f26-p",
+              "parameters": {
+                "mode": "hostpath-disrupt",
+                "host": "AUTO:target-worker",
+                "target_path": "/opt/polestar10/apm",
+                "disrupt_kind": "dir-rename",
+                "aside_suffix": ".lucida-f26-p-aside",
+                "restore_required": true,
+                "trigger_recreate": "rollout-restart-node-pods"
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "15m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "node_app_restart", "adapter": "kubernetes", "query_id": "kubernetes.container_restart_count",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-order", "container": "order-service" }, "freshness": "30s"
+          },
+          {
+            "id": "node_app_termination_reason", "adapter": "kubernetes", "query_id": "kubernetes.container_last_termination_reason",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-order", "container": "order-service" }, "freshness": "30s"
+          },
+          {
+            "id": "node_app_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-order" }, "freshness": "30s"
+          },
+          {
+            "id": "mount_failure", "adapter": "kubernetes", "query_id": "kubernetes.volume_mount_failure",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-order" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — hostPath type:Directory 소실 시 FailedMount event(dir-소실 분기)를 boolean으로. jar-소실 분기는 container_restart_count+last_termination_reason로 관측 가능. sheet §4-C #7."
+          },
+          {
+            "id": "image_pull_failure", "adapter": "kubernetes", "query_id": "kubernetes.image_pull_failure",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-order" }, "freshness": "30s",
+            "note": "must_rule_out — F05-G(이미지 부재)와 감별. hostPath 소실은 이미지 정상이므로 false여야 함."
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "node-app-not-ready", "observation": "node_app_ready", "op": "eq", "value": false },
+            { "id": "mount-or-agent-failure", "observation": "node_app_restart", "op": "gte", "value": 2 },
+            { "id": "image-intact", "observation": "image_pull_failure", "op": "eq", "value": false }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "image-pull-cause", "observation": "image_pull_failure", "op": "eq", "value": true }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "node-app-recovered", "observation": "node_app_ready", "op": "eq", "value": true },
+            { "id": "restart-stabilized", "observation": "node_app_restart", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "15m"
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "15m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["host.stress", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["host.stress", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "host.stress"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "능력갭(신규 host.stress mode + 복구안전). host_stress_executor.py는 fio/watermark/pressure/cpu/memhog뿐 — 파일 rename 기능 없음. 신설 mode hostpath-disrupt: run이 /opt/polestar10/apm을 aside로 rename(삭제 아님, 복구가능성 보존), cleanup trap이 aside→원경로 되돌림. §2-A 부합(env 왜곡 아니라 노드 로컬 인프라 자산 실제 제거 = 정당 Class B). 복구안전 필수: 소실 방치 시 그 노드 22개 앱 영구 불능 → recovery_gate가 '/opt/polestar10/apm 디렉토리 + opentelemetry-javaagent.jar 존재 + 대상 노드 앱 pod_ready 회복'까지 검증해야 통과, preflight hostpath-restore-guarantee로 aside 경로 충돌·잔재 사전 확인. NEW query kubernetes.volume_mount_failure(dir-소실 FailedMount 분기). sheet §4-C.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

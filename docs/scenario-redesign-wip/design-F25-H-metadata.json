@@ -1,0 +1,39 @@
+{
+  "F25-H": {
+    "title": "commerce PostgreSQL OOMKill → commerce DB 전면 순단 (공유 인스턴스)",
+    "description": "commerce 8스키마를 단일 PostgreSQL StatefulSet(testbed-postgres, mem limit 512Mi·shared_buffers 128MB)이 담당한다. 컨테이너 메모리 한계를 조이고(예 320Mi) 정렬/해시 부하가 겹치면 postgres-0가 cgroup OOMKill되고, 재기동 수십초 동안 8스키마 전부 접속 불가해 commerce 전 서비스가 순간 5xx 후 회복한다. 앱 pod OOM(F05-R)과 달리 대상이 공유 DB라 blast radius가 도메인 전체다. Class B(미들웨어 메모리 인프라 상한).",
+    "class": "B",
+    "fault_pattern": null,
+    "domain": "commerce",
+    "observation_domains": ["DPM", "KCM"],
+    "cause": "testbed-postgres 컨테이너 memory limit(512Mi)을 조여(fault 320Mi) shared_buffers 128MB + work_mem×동시성 + 페이지캐시가 cgroup 상한을 초과 → postgres-0 OOMKill → 재기동(PVC로 데이터 보존) 동안 8스키마 접속 불가 → commerce 전 서비스 순간 5xx",
+    "root_cause": {
+      "target_kind": "middleware",
+      "target_id": "commerce-postgres (testbed-postgres StatefulSet, rca-testbed-commerce)",
+      "mechanism": "단일 PostgreSQL 인스턴스가 cgroup memory limit에 걸려 OOMKill. 8개 스키마(order/product/inventory/payment/cart/pricing/user/shipping)를 한 인스턴스가 담당하므로 격리 없이 전면 정지. PVC(pgdata 5Gi)로 데이터는 보존되나 재기동 구간 outage.",
+      "code_anchor": [],
+      "infra_anchor": "commerce/k8s/10-postgres.yaml:23 kind StatefulSet testbed-postgres, :67-70 resources memory req 256Mi/limit 512Mi, container 'postgres'. shared_buffers=128MB 기본(무튜닝). 주입면=k8s.resource로 mem limit 하향."
+    },
+    "injection_summary": "k8s.resource executor로 testbed-postgres(StatefulSet)의 container 'postgres' memory limit을 512Mi→320Mi로 패치하고 commerce north-south companion 부하(surge.js checkout)를 흘려 cgroup OOM을 유도한다. cleanup은 mem limit 원복 후 pod ready 회복 확인. 현 executor는 Deployment 하드코딩이라 StatefulSet kind 일반화가 선행(prerequisite_gate).",
+    "user_impact": "commerce 전 서비스(주문/결제/재고/장바구니/가격/사용자/배송)가 postgres 재기동 구간 동안 동시에 5xx/타임아웃을 낸 뒤 자동 회복한다. 특정 서비스가 아니라 도메인 전체가 순단하므로 개별 앱 로그만 보면 원인이 안 보인다.",
+    "must_support": [
+      "postgres 컨테이너 last_termination_reason=OOMKilled (KCM)",
+      "postgres restart_count 증가(재기동 발생)",
+      "재기동 구간 commerce checkout 5xx 스파이크 후 회복; postgres mem_current가 limit(320Mi) 근접 후 kill"
+    ],
+    "must_rule_out": [
+      "앱 pod OOM(F05-R) 아님 — 대상이 공유 DB(testbed-postgres)라 blast radius=commerce 도메인 전체(payment 한 서비스 아님). target_kind=middleware",
+      "연결 슬롯 고갈(F25-R) 아님 — F25-R은 postgres restart_count=0(인스턴스 건강, 접속만 거부); F25-H는 OOMKill+재기동",
+      "앱 풀 고갈(F03/F22) 아님 — 그건 앱 Hikari pending, postgres pod는 ready 유지"
+    ],
+    "distinguishing_evidence": "postgres 컨테이너가 OOMKilled로 종료되고 restart_count가 증가하며, 재기동 동안 commerce 전 서비스가 동시에 5xx를 낸 뒤 PVC로 회복한다. 대상이 payment 앱 pod가 아니라 공유 DB라는 점(target_kind=middleware, blast=8스키마)이 F05-R과의 결정적 구분이다. F25-R(연결 고갈)과 달리 postgres는 크래시하고(restart↑), F03/F22(앱 풀)와 달리 병목이 DB 인스턴스 자체다.",
+    "difficulty": "medium",
+    "related_scenarios": {
+      "contrast_with": [
+        "F05-R (payment 앱 pod OOM — 동일 OOMKill 계열이나 대상=앱 컨테이너·blast=단일 서비스; F25-H는 공유 DB·blast=도메인 전체)",
+        "F25-R (동일 commerce PG이나 연결 슬롯 고갈 — restart 없음·인스턴스 건강; F25-H는 OOMKill+재기동)",
+        "F25-S (동일 Class B 공유 미들웨어이나 Kafka 브로커 SPOF — 비동기 백본 정지, 5xx 없음)"
+      ]
+    }
+  }
+}

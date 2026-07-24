@@ -1,0 +1,163 @@
+{
+  "schema_version": "1.0",
+  "id": "F25-R",
+  "slug": "f25-r-commerce-postgres-connection-slot-exhaustion",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "tb-runner → commerce PG(testbed-postgres, NodePort 30432) bare 유휴 커넥션 N개 홀드 → usable 97 소진 (INJECTOR 미존재)",
+    "transport": "psql",
+    "profile_refs": [
+      "injector-profiles/db.connection-saturate",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "db.connection-saturate",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "db.connection-saturate"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "not-app-pool-exhaustion", "observation": "pg_connection_count", "op": "lt", "value": 90 },
+            { "id": "not-pg-oom", "observation": "pg_restart_count", "op": "gte", "value": 1 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f25-r",
+              "parameters": {
+                "db_host": "192.168.122.77",
+                "db_port": 30432,
+                "db_name": "commerce",
+                "db_user": "commerce",
+                "application_name": "rca-F25-R-slot-saturate",
+                "hold_connections": 34,
+                "hold_seconds": 600
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "pg_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-postgres" }, "freshness": "30s"
+          },
+          {
+            "id": "pg_restart_count", "adapter": "kubernetes", "query_id": "kubernetes.container_restart_count",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres", "container": "postgres" }, "freshness": "30s"
+          },
+          {
+            "id": "pg_connection_count", "adapter": "database", "query_id": "database.pg_connection_count",
+            "parameters": { "db_host": "192.168.122.77", "db_port": 30432, "db_name": "commerce", "db_user": "commerce" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — pg_stat_activity 총 접속수(vs max_connections). 현 database.tagged_session_count(queries.json:287)은 특정 application_name 태그 세션만 세어 전체 포화(≈97 flat)를 못 봄. 상한 도달=이 시나리오 정체성의 결정 지표. See sheet §4-B #8."
+          },
+          {
+            "id": "pg_connection_error_rate", "adapter": "database", "query_id": "database.pg_connection_error_rate",
+            "parameters": { "db_host": "192.168.122.77", "db_port": 30432, "db_name": "commerce" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — 'FATAL: sorry, too many clients already' 발생 카운터. 없으면 loadgen checkout_5xx로만 근사(단일 경로) → 전 스키마 동시 거부 증명 불가. See sheet §4-B #9."
+          },
+          {
+            "id": "commerce_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": { "step": "checkout", "status_class": "5xx" }, "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "pg-conn-at-ceiling", "observation": "pg_connection_count", "op": "gte", "value": 97 },
+            { "id": "too-many-clients", "observation": "pg_connection_error_rate", "op": "gt", "value": 0 },
+            { "id": "commerce-broad-5xx", "observation": "commerce_5xx_rate", "op": "gte", "value": 0.1 },
+            { "id": "pg-not-crashed", "observation": "pg_restart_count", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "pg-conn-recovered", "observation": "pg_connection_count", "op": "lt", "value": 80 },
+            { "id": "entry-healthy", "observation": "entry_status", "op": "eq", "value": 200 },
+            { "id": "commerce-5xx-recovered", "observation": "commerce_5xx_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["db.connection-saturate", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["db.connection-saturate", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "db.connection-saturate"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "B군 중 가장 깊은 blocked — 순수 배선으로 불가한 진짜 능력갭. (1) INJECTOR 부재: bare 유휴 커넥션 N개를 홀드해 usable 97을 소진하는 executor(db.connection-saturate 신설)가 없음. db.lock은 row-lock만이라 부적격. hold_connections=34는 baseline 62 + 34 ≈ 96~97 도달용 예시치(라이브 baseline 따라 조정). (2) QUERY 부재: database.pg_connection_count(pg_stat_activity 총 접속수, tagged_session_count로는 전체 포화 불가) + database.pg_connection_error_rate('too many clients' 카운터) 신설 필요. 관측(③)·주입(④) 둘 다 부재라 draft/blocked. 대안(max_connections 하향+재시작)은 pod 교란 성격이 달라 '자연 도달' 정체성과 불일치. load.north_south commerce companion(cart/pricing/user/shipping 풀 램프 유도) allowlist 추가. 자세히 sheet §4-B.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

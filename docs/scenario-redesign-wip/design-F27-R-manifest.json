@@ -1,0 +1,173 @@
+{
+  "schema_version": "1.0",
+  "id": "F27-R",
+  "slug": "f27-r-worker-network-delay-uniform",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "gb10-host",
+    "matrix_location_transport": "GB10(192.168.200.109) host root → tc netem on vnet1 (virbr0, tb-w1 commerce 앱-평면 NIC)",
+    "transport": "ssh-host-tc",
+    "profile_refs": [
+      "injector-profiles/network.host_tc",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-host-tc-access",
+      "host-tc-plane-allowlist",
+      "host-tc-no-residual-qdisc",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "network.host_tc",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "network.host_tc"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f27-r",
+              "parameters": {
+                "target_nic": "vnet1",
+                "plane": "app",
+                "worker": "tb-w1",
+                "domain": "commerce",
+                "mode": "delay",
+                "delay_ms": 200,
+                "jitter_ms": 20,
+                "forbidden_nics": ["br0", "vnet0", "vnet6", "vnet7", "vnet8", "vnet9", "vnet10"]
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          { "id": "achieved_rps", "adapter": "loadgen_summary", "query_id": "loadgen.achieved_rps", "freshness": "30s" },
+          { "id": "checkout_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate", "freshness": "30s" },
+          {
+            "id": "order_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "commerce-order" }, "freshness": "60s",
+            "capability_gap": "NEW query_id — per-service APM p95. 균일성 판정의 핵심(전 commerce 서비스가 함께 오르는지). 현재 서비스별 p95 비교 query 없음. sheet §5-A 참조."
+          },
+          {
+            "id": "product_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "commerce-product" }, "freshness": "60s",
+            "capability_gap": "NEW query_id — per-service APM p95. F12-H(product 단독 상승)와의 균일성 대비축."
+          },
+          {
+            "id": "inventory_p95", "adapter": "prometheus", "query_id": "prometheus.apm_service_p95",
+            "parameters": { "service_name": "commerce-inventory" }, "freshness": "60s",
+            "capability_gap": "NEW query_id — per-service APM p95."
+          },
+          {
+            "id": "product_cpu_throttle", "adapter": "kubernetes", "query_id": "kubernetes.container_cpu_throttle_rate",
+            "parameters": { "namespace": "rca-testbed-commerce", "deployment": "testbed-product", "container": "product-service" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — container CPU throttle rate(KCM). F12-H(throttle>0) 대비 F27-R(=0)의 결정 신호. sheet §5-A/§2 참조."
+          },
+          {
+            "id": "worker_host_cpu", "adapter": "prometheus", "query_id": "prometheus.node_cpu_utilization",
+            "parameters": { "node": "tb-w1" }, "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "controlled-load", "observation": "achieved_rps", "op": "gte", "value": 15 },
+            { "id": "order-latency-up", "observation": "order_p95", "op": "gte", "value": 400 },
+            { "id": "product-latency-up", "observation": "product_p95", "op": "gte", "value": 400 },
+            { "id": "inventory-latency-up", "observation": "inventory_p95", "op": "gte", "value": 400 },
+            { "id": "throttle-zero", "observation": "product_cpu_throttle", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "external-rate-limit", "observation": "entry_status", "op": "eq", "value": 429 },
+            { "id": "cpu-throttle-lookalike-F12-H", "observation": "product_cpu_throttle", "op": "gt", "value": 0 },
+            { "id": "host-cpu-saturation", "observation": "worker_host_cpu", "op": "gte", "value": 0.85 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "recovery": {
+          "all": [
+            { "id": "order-latency-recovered", "observation": "order_p95", "op": "lt", "value": 250 },
+            { "id": "product-latency-recovered", "observation": "product_p95", "op": "lt", "value": 250 },
+            { "id": "checkout-recovered", "observation": "checkout_5xx_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["network.host_tc", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["network.host_tc", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "network.host_tc"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "host-side tc executor 미존재(network.fault=BLOCKED 껍데기, network-fault.sh). GB10 host root tc netem executor(network.host_tc) 신설 필요: (1) tc qdisc add/del on target_nic, (2) cleanup 멱등, (3) 관측평면 접근 금지 allowlist — target_nic ∈ {vnet1,vnet2,vnet3}(앱평면)만 허용, {br0,vnet0,vnet6~10}(관측평면/엣지) 물리적 거부(self-blinding 방어), (4) worker↔vnet 매핑 검증(vnet1=commerce/tb-w1). NEW query_id 2종: prometheus.apm_service_p95(서비스별, 균일성 판정), kubernetes.container_cpu_throttle_rate(KCM, F12-H 대비). load.north_south allowlist/tag_pattern에 F27-R + commerce scenario_parameters(entry 30080, commerce surge.js) 추가. 자세히 sheet §5-A.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}

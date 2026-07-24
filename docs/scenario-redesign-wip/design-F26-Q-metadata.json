@@ -1,0 +1,43 @@
+{
+  "F26-Q": {
+    "title": "ephemeral-storage 무제한 → 노드 루트fs 포화 → DiskPressure 이웃 파드 eviction",
+    "description": "전 파드가 ephemeral-storage req/limit 미설정(0/0)이라 앱 로그/tmp가 상한 없이 노드 루트fs(overlay/emptyDir, / )로 쌓인다. 한 노드의 루트fs가 kubelet 임계를 넘으면 DiskPressure=True가 되고, 노드 전역 eviction이 초과사용·BestEffort 파드부터 축출한다 → 가해 파드가 아닌 무고한 이웃 파드가 쫓겨나는 2차 피해가 발생한다. root는 노드 루트fs 포화(ephemeral 상한 부재)인데 증상은 무관한 이웃 eviction이다. Class B 인프라 앵커.",
+    "class": "B",
+    "domain": "cross",
+    "observation_domains": ["SMS", "KCM"],
+    "cause": "ephemeral-storage 상한 부재 → 앱 로그/tmp가 노드 루트fs 포화 → kubelet DiskPressure=True → 노드 전역 eviction → 무관한 이웃 파드 축출(2차 피해).",
+    "root_cause": {
+      "target_kind": "node-root-fs",
+      "target_id": "대상 워커의 노드 루트fs(/) — 특정 PV가 아니라 노드 루트 파일시스템. 실행 시 라이브 선정",
+      "mechanism": "모든 파드가 ephemeral-storage req/limit 미설정이라 앱 로그/tmp가 노드 루트fs(overlay)에 무제한 축적. 루트fs가 kubelet eviction 임계를 넘으면 노드 condition DiskPressure=True → kubelet이 노드 전역에서 파드를 evict(BestEffort·초과사용 우선). 가해 파드가 아닌 이웃까지 축출돼 오진을 유발. PV가 아니라 노드 루트fs가 대상.",
+      "code_anchor": [
+        "describe node Allocated 'ephemeral-storage 0(0%)' — 전 파드 상한 미설정(라이브 실측)",
+        "앱 서비스 PV 없음(§0) — 로그는 노드 루트 overlay로 감",
+        "scripts/scenarios/profiles/host_stress_executor.py:104-106 (watermark mode 실재 — target_dir을 %까지 채움, 노드 루트fs로 재타깃)"
+      ],
+      "infra_anchor": "노드 루트fs(/) — ephemeral-storage 상한 부재가 인프라 결함. 재현 수단 = host.stress watermark mode를 PV가 아닌 노드 루트fs 임시경로로 재타깃(reserve/max 안전상한 필수)."
+    },
+    "injection_summary": "host.stress watermark mode(F10-R live검증)를 target_dir=노드 루트fs 임시경로(/var/lib/lucida-f26-q-fill)로 재타깃해 루트fs를 DiskPressure 임계 초과까지 채운다. reserve_mib·maximum_fill_mib로 노드 완전 마비를 막고, artifact 파일 cleanup으로 즉시 회수. DiskPressure=True → 이웃 파드 eviction. recovery_gate가 DiskPressure 해제 + 루트fs util 회복까지 검증.",
+    "user_impact": "루트fs를 채운 노드에서 무관한 서비스의 파드가 Evicted되어 재스케줄을 반복한다. 정작 로그를 폭증시킨 가해 파드가 아니라 이웃이 쫓겨나므로, 운영자는 엉뚱한 서비스를 원인으로 오진하기 쉽다.",
+    "must_support": [
+      "대상 노드 DiskPressure=true (node condition)",
+      "가해 파드가 아닌 이웃 파드 Evicted (pod_evicted_count ≥ 1)",
+      "노드 루트fs utilization 高(≥90%)"
+    ],
+    "must_rule_out": [
+      "MemoryPressure 아님 — node memory util 정상(F05-P memhog→메모리 eviction과 감별). root는 디스크",
+      "PV 디스크 아님 — 노드 루트fs가 대상이지 DB PV가 아님(F10과 감별)",
+      "이웃 eviction이지 가해 파드 자멸 아님 — 2차 피해 구조",
+      "외부 rate-limit/429 아님(entry_status ≠ 429)"
+    ],
+    "distinguishing_evidence": "노드 condition이 DiskPressure=True(MemoryPressure 아님)이고, 루트fs를 채운 가해 파드가 아니라 무관한 이웃 파드가 Evicted된다 — '노드 루트fs 포화 → 이웃 축출'이라는 2차 피해가 정체성. F05-P(memhog)는 MemoryPressure로 갈리고, F10-R(postgres PV watermark)은 PV 디렉토리를 채워 DB 자신이 디스크 full이 되는 것이라 대상(노드 루트 vs PV)과 피해자(이웃 vs DB)가 다르다. node condition 세부(Disk vs Memory)가 F05-P와의 결정적 스칼라 감별자다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F05-P (worker node 메모리 압박 memhog → MemoryPressure eviction; F26-Q는 루트fs → DiskPressure eviction)",
+        "F10-R (postgres PV watermark → DB 디스크 full, DB 자신 영향; F26-Q는 노드 루트fs → 이웃 파드 eviction)",
+        "F26-P (같은 노드 로컬 자산 계열이나 hostPath 자산 부재로 기동 실패; Q는 루트fs 포화로 이웃 축출)"
+      ]
+    }
+  }
+}

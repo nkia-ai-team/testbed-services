@@ -30,6 +30,26 @@
 
 요지: **7개 전부 ①②(코드앵커+정답) ✅** — 코드 근거는 탄탄. 남은 건 ③④(관측배선+injector계약)이고, 대부분 **공유 배관**이라 Phase 2에서 묶어 해결. F17-R은 사실상 즉시 승격 가능, F19-Q만 진짜 능력갭.
 
+## Class B 신규 (10, 07-24) — APM 편중 해소 라운드. 인프라 fault-surface 3축 실측(fault-surface-infra-*.md) 기반
+| id | 시나리오 | 도메인 | ①② | ③ | ④ | 판정 |
+|---|---|---|:--:|:--:|:--:|---|
+| F25-R | PG 연결슬롯 고갈(97 vs 풀합95, 전 8스키마 동시) | DPM | ✅ | ❌ | ❌ | **최심 능력갭**: bare 커넥션 injector+pg 접속수 query 둘 다 부재 |
+| F25-H | PG OOMKill(512Mi) — 공유 DB blast | DPM·KCM | ✅ | ✅ | 🟡 | **승격 최선두**(관측 완비, executor kind 배선만) |
+| F25-S | Kafka 브로커 SPOF(RF=1) — F04-R(consumer)과 available_replicas=0 vs lag 감별 | DPM·KCM | ✅ | 🟡 | 🟡 | 공유 배선 |
+| F25-P | Oracle 단일 PDB 포화(FS-12 통합) — cpu-patch는 §2-A 위장 아님·proxy 🟡 | DPM·KCM | ✅ | 🟡 | 🟡 | 공유 배선 |
+| F26-R | 노드 상실 blast radius(affinity無, 3도메인 동시) | KCM·SMS | ✅ | 🟡 | ❌ | k8s.node drain executor 갭(R·H 공유) |
+| F26-H | DB PV 노드고정→영구 Pending(affinity conflict) | KCM | ✅ | ❌ | ❌ | 동일 갭+Pending사유 query |
+| F26-P | hostPath 에이전트 디렉토리 소실(22앱 의존) | KCM·SMS | ✅ | 🟡 | ❌ | host.stress hostpath-disrupt mode 신설 |
+| F26-Q | ephemeral 무제한→루트fs 포화→이웃 eviction | SMS·KCM | ✅ | ❌ | 🟡 | watermark 재타깃(배선)+DiskPressure query |
+| F27-R | 워커 네트워크 지연(tc netem) — F12-H 상호 감별쌍, F12-R 승계 | APM·KCM·SMS | ✅ | 🟡 | ❌ | host tc executor 갭. **관측평면(br0) 접근 물리적 거부 allowlist 필수** |
+| F27-P | NetworkPolicy 크로스도메인 파티션 — F12-P 승계, kube-router 강제 실측 | APM·KCM | ✅ | 🟡 | 🟡 | k8s.netpol 배선(즉시 실현 가능). probe 미차단 live검증 전 golden 금지 |
+
+- **F28(WPM) = 전용 시나리오 없음 판정**(데드락/스레드릭 코드앵커 0 — grep 실증). WPM은 관측 능력: F21·F22·F01·F06-H·F20 6개 감별을 소거법→직접증거로 격상("동일증상 삼각" 해결). F09-H(GC)는 강화 안 됨(정직 음성). 복원 5게이트(G5=OTel 이중계측 충돌 검증, 실패 시 WPM축 보류) design-F28-wpm-sheet.md.
+- **F12 재편**: F12-H KEEP 유지(F27-R 감별쌍) · F12-R(CUT)→F27-R 승계 · F12-P(blocked)→F27-P 승계 · F12-G 폐기 유지.
+- **F13×3 = WebURL 계열 오배정 → 재설계 대기 강등**(wpmagent는 TTFB/connect 신호 안 줌). **NMS 관측 불가 확정**(SNMP 소스 0) — 네트워크 시나리오는 must_support에 NMS 금지, 소거법 감별.
+- **F25 정정(중요)**: k8s.resource·k8s.patch·kafka.control 전부 Deployment 하드코딩 — StatefulSet 미들웨어에 allowlist만으론 불가. kafka.control은 consumer scale0 코드라 브로커 down 재현 불가 → executor kind 일반화 + statefulset_available_replicas가 공유 배선.
+- **F26 운영 안전**: drain류는 3도메인 동시 타격 — 전용 클린윈도우·대상노드 라이브 확정(문서 매핑 스테일)·비파괴 drain만·recovery gate 전 namespace 검증·multi_namespace 캡처.
+
 ## FIX (30) — 처리 완료. 27 유지 / 3 CUT추가
 ### 정답 미작성 10 → 처리
 - F02-H ✅정답(ClassB/disk, injector 실재) · F04-H ✅정답+unblock(k8s.env) · F04-P ✅정답(④🟡 rate injector) · F15-P ✅정답(merge,④✅) · F15-T3 ✅정답(MERGE 단일사슬) · F15-T4 ✅정답(SPLIT 순차2근본)
@@ -44,7 +64,7 @@
 
 ## Phase 1 최종 (진짜장애 카탈로그)
 - 64 → **CUT 23** (음성13 + 근거없음7 + FIX강등3: F02-R/F03-R/F14-H)
-- 잔존 48 = KEEP 14 + FIX 27 + 신규 7. **+ 신규 2차 8(F20~F24, 07-24) = 총 56**. 전부 ①코드/인프라앵커 + ②정답 완료(또는 명확한 gap).
+- 잔존 48 = KEEP 14 + FIX 27 + 신규 7. + 신규 2차 8(F20~F24) + **Class B 10(F25~F27, 07-24) = 총 66**. 전부 ①코드/인프라앵커 + ②정답 완료(또는 명확한 gap). F28=관측능력(카운트 제외), F13×3은 66에 포함하되 WebURL 재설계 대기.
 - 남은 일 = ③④(관측배선+injector) = **Phase 2**.
 
 ## Phase 2 백로그 (③④ 배관) — 3버킷
@@ -58,6 +78,11 @@
 ### 버킷3 진짜 능력갭 (신규 훅/executor/소스변경):
 - F19-Q(dispatch @Scheduled 정지 훅) · F14-P(선별유실 injector) · F14-R(중복/유실 fault-proxy) · F15-P(co-residency 보장) · F15-T3/T4(timeline 결속 계약) · F13×3+F12(NMS/WPM 실 executor) · F03-H(합성 엔드포인트 제거)
 - (07-24 추가) **스케줄러 정지 훅 통합**: business.fault stub(profiles.json, live_supported=false) 승격 → F19-Q+F23-R 동시 해제(계약 키잉={namespace,deployment,scheduler_method}, F23-R sheet §4-B) · **F22-P**(banking hot-account transfer-heavy surge 신설 — DB_POOL_MAX 하향은 §2-A 위배로 금지)
+### 버킷2 추가분 (07-24 Class B 배선):
+- executor kind 일반화 deploy→statefulset(F25-H/S/P 공유) + kubernetes.statefulset_available_replicas · kafka broker-down 모드 분기 · host.stress watermark 노드루트fs 재타깃(F26-Q) · k8s.netpol 프로파일+deny manifest(F27-P) · query 신설: pod_unschedulable_reason·volume_mount_failure·node_disk_pressure·pod_evicted_count·apm_cross_domain_edge_error_rate
+- **WPM 복원 트랙**(관측 능력, F21·F22·F01 감별 격상): R1 manager_ip→119 · R2 이중 javaagent 부착 · R3 banking conf 신설 · 스모크 5게이트(G5=OTel 충돌 검증이 관문)
+### 버킷3 추가분 (07-24 Class B 능력갭):
+- k8s.node drain executor(F26-R/H 동시 해제, 비파괴 cordon+drain+uncordon만) · host.stress hostpath-disrupt mode(F26-P, rename+trap) · host tc executor network.host_tc(F27-R, **관측평면 vnet 거부 allowlist 필수**) · bare 커넥션 슬롯 injector+pg_connection_count query(F25-R, 최심)
 ### 버킷2 추가분 (07-24, 신규 2차 배선):
 - slowquery.js 3도메인(F20 공유) + DB-side CPU/쿼리시간 query(F20-R ground-truth) · prometheus.http_server_active_requests(F21 공유) · cb=restaurant(F24-Q, F19-S cb=pg와 공유 신설) · inventory stock/RESTOCK rate/409 버킷 query 3종(F23-R 하드블로커) · surge 변형(create-heavy λ50/transfer-heavy λ25 — F21 캘리브레이션 게이트)
 

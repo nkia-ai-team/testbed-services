@@ -1,0 +1,39 @@
+{
+  "F25-S": {
+    "title": "commerce Kafka 브로커 SPOF 다운 → 이벤트 백본 전면 중단 (RF=1)",
+    "description": "commerce Kafka는 단일 브로커 StatefulSet(testbed-kafka, replicas 1, broker+controller 겸임 KRaft, 전 토픽 RF=1/ISR=1)이다. 브로커 pod를 0으로 내리면 failover 없이 전 토픽이 unavailable해져 OutboxRelay 발행이 블로킹/실패하고 소비가 멈춘다. 동기 결제 경로는 200으로 정상이라 5xx가 없는 '조용한 고장'이며, 배송 미생성·알림 정지·상태 사후보정 정지가 비동기 백본에서만 나타난다. consumer 정지(F04-R, 브로커 생존+lag)와 달리 브로커 자체가 죽는다(available_replicas=0). Class B(미들웨어 SPOF).",
+    "class": "B",
+    "fault_pattern": null,
+    "domain": "commerce",
+    "observation_domains": ["DPM", "KCM"],
+    "cause": "kafka.control(확장)로 testbed-kafka StatefulSet replicas 1→0 → RF=1/ISR=1이라 failover 불가, KRaft combined라 controller 쿼럼도 상실 → 발행(send().get()) 블로킹/실패 + 소비 중단 → 비동기 경로(배송/알림/상태 사후보정) 전면 정지",
+    "root_cause": {
+      "target_kind": "middleware",
+      "target_id": "commerce-kafka (testbed-kafka StatefulSet, rca-testbed-commerce)",
+      "mechanism": "단일 Kafka 브로커가 SPOF. replicas=1 + broker/controller 겸임 + 전 토픽 RF=1/ISR=1이라 브로커 down 시 복제본이 없어 전 토픽 unavailable. 동기 HTTP 경로는 Kafka에 의존하지 않아 200을 유지하고, outbox→Kafka 비동기 경로만 전멸. PVC(kafka-data 5Gi)로 재기동 시 복구·리밸런싱.",
+      "code_anchor": [],
+      "infra_anchor": "commerce/k8s/12-kafka.yaml:10 kind StatefulSet testbed-kafka, :18 replicas 1, container 'kafka'(apache/kafka:3.9.0 KRaft combined). 전 토픽 RF=1/ISR=1(fault-surface 라이브 확인). 주입면=kafka.control broker scale 0."
+    },
+    "injection_summary": "kafka.control executor(mode=broker-down 확장)로 testbed-kafka StatefulSet를 replicas 0으로 내려 브로커를 정지시키고 commerce north-south companion 부하로 outbox 발행 경로를 지속 자극한다. cleanup은 replicas 1 원복 후 available_replicas 회복·리밸런싱 확인. 현 executor는 consumer Deployment(testbed-shipping) scale이라 브로커 down 모드 신설이 선행(prerequisite_gate).",
+    "user_impact": "결제/주문 동기 응답은 정상(200)이라 즉시 체감 오류는 낮지만, 배송이 생성되지 않고 알림이 나가지 않으며 주문 상태 사후보정이 멈춘다. outbox 백로그가 쌓이고 브로커 회복 후 일괄 catch-up된다. 사용자에겐 '주문은 됐는데 배송/알림이 안 옴'으로 드러나는 지연성 장애.",
+    "must_support": [
+      "statefulset_available_replicas(testbed-kafka)=0 (브로커 down, KCM)",
+      "testbed-kafka pod not ready; 전 토픽 발행/소비 중단, outbox 미발행 누적",
+      "동기 경로 정상 — commerce checkout 5xx 낮음(5xx 없는 조용한 고장)"
+    ],
+    "must_rule_out": [
+      "consumer 정지(F04-R) 아님 — F04-R은 브로커 UP(kafka replicas=1)이고 consumer만 멈춰 lag↑; F25-S는 브로커 down이라 available_replicas(kafka)=0이고 발행까지 중단. 감별축=available_replicas=0 vs 브로커생존+lag",
+      "동기 HTTP 장애 아님 — checkout 5xx가 오르지 않음(백본은 비동기만 영향)",
+      "앱 pod/노드 장애 아님 — commerce 앱 pod는 ready 유지"
+    ],
+    "distinguishing_evidence": "testbed-kafka StatefulSet의 available_replicas가 0이고 브로커 pod가 not-ready인 반면 동기 결제/주문 경로는 200을 유지한다. F04-R(consumer 정지)은 브로커가 살아있어 consumer_lag가 관측 가능하지만 F25-S는 브로커 자체가 부재라 lag 조회조차 실패/stale이 되고 available_replicas=0이 결정 신호다. 헌장 F04 정정(relay/consumer 정지 시 lag는 must_rule_out)과 대비되어, F25-S는 available_replicas=0을 must_support로 삼는다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F04-R (consumer 정지 — 브로커 UP·lag↑가 신호; F25-S는 브로커 down·available_replicas=0, 발행까지 중단)",
+        "F25-H (동일 Class B 공유 미들웨어이나 PG OOMKill — 동기 5xx 순단; F25-S는 5xx 없는 비동기 백본 정지)",
+        "F04-R relay 계열 P5 (outbox silent lag — 앱 코드 결함 Class A; F25-S는 브로커 인스턴스 인프라)"
+      ]
+    }
+  }
+}

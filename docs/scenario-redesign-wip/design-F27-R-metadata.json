@@ -1,0 +1,41 @@
+{
+  "F27-R": {
+    "title": "commerce 워커 앱-평면 네트워크 지연 (전 서비스 균일 열화, F12-H 정직한 쌍)",
+    "description": "GB10 호스트에서 commerce 워커(tb-w1)의 앱-평면 NIC(vnet1, virbr0 멤버)에 tc netem delay(~200ms)를 주입하면, tb-w1로 들어가는 모든 트래픽이 균일하게 지연된다. commerce 전 서비스(order·product·inventory·payment)의 남북 진입과 동서 pod-to-pod 호출이 함께 늦어지고, order→product→inventory→payment 동기 hop 체인이 netem 지연을 누적해 latency가 증폭되며 일부 timeout이 난다. 진짜 네트워크 지연은 그 워커 위 모든 pod를 똑같이 늦춘다는 '균일성'이 정체성으로, 특정 서비스 하나만 느려지는 F12-H(product CPU throttle)의 정직한 역방향 쌍이다. 이 테스트베드는 SNMP 소스가 없어 NMS로는 양성 확인이 불가하며, APM(균일 지연)+KCM(throttle=0)+SMS(host CPU 정상)의 소거법으로만 '네트워크'를 추정한다. Class B(인프라).",
+    "class": "B",
+    "domain": "commerce",
+    "observation_domains": ["APM", "KCM", "SMS"],
+    "observation_note": "자연 도메인은 NMS(네트워크)이나 이 테스트베드는 SNMP/NetFlow 소스가 0(모든 VM 161 닫힘, fault-surface-infra-network-wpm.md §1.4)이라 NMS를 ground-truth로 쓸 수 없다. 신호는 APM(균일 p95 상승)·KCM(container throttle=0)·SMS(host CPU 정상)의 소거법으로만 관측된다. observation_domains에서 NMS를 의도적으로 제외.",
+    "cause": "GB10 host tc netem delay on vnet1(tb-w1 commerce 앱-평면 NIC, virbr0) → tb-w1 유입 트래픽 전역 균일 지연 → commerce 전 서비스 동기 hop 체인 지연 누적 → 전 서비스 p95 균일 상승·일부 timeout. 원인은 앱 코드·CPU가 아니라 워커 링크 지연.",
+    "root_cause": {
+      "target_kind": "network-link",
+      "target_id": "tb-w1 / vnet1 (commerce 워커 앱-평면 NIC, virbr0 멤버)",
+      "mechanism": "GB10 호스트 root에서 tc qdisc netem delay 200ms±20ms를 vnet1 egress에 부착 → 호스트→tb-w1 방향 모든 패킷 지연 → 해당 워커 위 commerce 전 pod의 남북(NodePort 진입)+동서(pod-to-pod VXLAN) 트래픽이 균일 열화. 특정 서비스/코드 결함이 아니라 워커 단위 링크 지연이라 균일성이 결정 신호.",
+      "code_anchor": [],
+      "infra_anchor": "host vnet1 egress qdisc (virbr0 멤버; fault-surface-infra-network-wpm.md §0.1 virsh domiflist/brctl show 실측 매핑 vnet1↔tb-w1↔commerce). 주입=tc qdisc add dev vnet1 root netem delay, 복구=tc qdisc del dev vnet1 root."
+    },
+    "injection_summary": "network.host_tc executor(신설)로 GB10 호스트 root에서 tc qdisc add dev vnet1 root netem delay 200ms 20ms를 부착한다. executor는 target_nic이 앱-평면(vnet1/2/3)인지 검증하고 관측-평면(br0/vnet6~10)·엣지(vnet0)는 물리적으로 거부한다(self-blinding 방어). 동시에 load.north_south commerce surge(entry 30080, commerce surge.js, ~35rps)로 checkout 여정을 흘려 균일 지연을 발현시킨다. cleanup은 tc qdisc del(멱등)로 원복.",
+    "user_impact": "commerce 전 서비스 응답이 함께 느려진다(상품 조회·장바구니·checkout 모두). 동기 hop 체인이 긴 checkout이 가장 크게 지연·일부 timeout(5xx)되나, 원인이 특정 서비스가 아니라 워커 전역이라 '가장 느린 서비스'를 root로 오판하기 쉽다.",
+    "must_support": [
+      "commerce 다중 서비스 p95 균일 상승 (order·product·inventory가 동시에 오름, 단일 서비스 아님)",
+      "checkout latency↑ 및 긴 hop 체인 요청의 timeout/5xx 증가",
+      "지연이 서비스 경계와 무관하게 워커 전역에 나타남 (동서·남북 모두)"
+    ],
+    "must_rule_out": [
+      "container CPU throttle = 0 — throttle>0이면 F12-H(product pod CPU 포화)이지 네트워크 지연 아님",
+      "단일 서비스만 상승이 아님 — 특정 서비스만 느리면 그 서비스 앱/DB 병목이지 워커 링크 아님",
+      "host CPU 정상 (worker_host_cpu < 0.85) — 연산 부하 포화 아님",
+      "외부 rate-limit/429 아님 — entry_status ≠ 429"
+    ],
+    "distinguishing_evidence": "commerce 전 서비스의 p95가 함께 오르는 '균일성'과 모든 container의 CPU throttle=0이 결정 신호다. F12-H는 product 단일 서비스만 지연되고 product container throttle>0이며 나머지 서비스는 정상 — 정확히 반대다. SMS host CPU와 pod restart는 정상이라 자원/재시작 계열이 아니다. NMS(if_index/packet-loss/RTT)로는 양성 확인이 불가하고 APM·KCM·SMS 소거법으로만 '워커 링크 지연'을 추정한다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "mutual_rule_out": [
+        "F12-H (product pod CPU throttle — 네트워크처럼 보이는 CPU 포화; F27-R과 상호 must_rule_out 감별 쌍: throttle>0/=0 · 단일/균일)"
+      ],
+      "supersedes": [
+        "F12-R (physical interface-down, executor 껍데기로 CUT — F27-R이 tc netem delay로 realizable 대체)"
+      ]
+    }
+  }
+}

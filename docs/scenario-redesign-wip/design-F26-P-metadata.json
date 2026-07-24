@@ -1,0 +1,43 @@
+{
+  "F26-P": {
+    "title": "hostPath 에이전트 디렉토리/jar 소실 → 노드 위 전 앱 파드 기동 실패",
+    "description": "22개 앱 파드가 모두 hostPath /opt/polestar10/apm(type:Directory)을 /opt/apm으로 RO 마운트하고 -javaagent:/opt/apm/opentelemetry-javaagent.jar에 의존한다. 특정 워커에서 이 디렉토리(또는 jar)가 소실되면, (a) 디렉토리 소실은 type:Directory 검증 실패로 FailedMount → 재기동/재배포 시 Pending, (b) jar만 소실은 javaagent 로드 실패로 JVM 즉시 종료 → CrashLoopBackOff가 된다. 이미지·설정은 정상인데 노드 로컬 자산 부재가 원인이다. Class B 인프라 앵커.",
+    "class": "B",
+    "domain": "cross",
+    "observation_domains": ["KCM", "SMS"],
+    "cause": "노드 로컬 hostPath /opt/polestar10/apm 또는 그 안 javaagent jar 소실 → (dir) FailedMount로 파드 Pending / (jar) javaagent 로드 실패로 JVM 종료 CrashLoop → 그 노드의 앱 파드가 재시작·재배포 시점에 일제히 못 뜸. 앱 코드·이미지 무결함.",
+    "root_cause": {
+      "target_kind": "hostpath-asset",
+      "target_id": "대상 워커의 /opt/polestar10/apm 디렉토리 및 opentelemetry-javaagent.jar (노드 로컬 자산) — 앱 서비스가 아니라 노드 위 인프라 자산이 정답",
+      "mechanism": "전 앱 파드가 hostPath type:Directory로 /opt/polestar10/apm을 마운트한다. type:Directory는 kubelet이 디렉토리 실재를 강제하므로 소실 시 FailedMount → 파드가 그 노드에서 못 뜸(Pending). jar만 소실되면 JAVA_TOOL_OPTIONS의 -javaagent 로드가 실패해 JVM이 즉시 종료 → CrashLoopBackOff. 둘 다 앱 코드/이미지와 무관한 노드 로컬 전제의 붕괴.",
+      "code_anchor": [
+        "commerce/k8s/20-order-service.yaml:26-29 (volumes hostPath path /opt/polestar10/apm, type: Directory)",
+        "commerce/k8s/20-order-service.yaml:47-49 (volumeMounts /opt/apm readOnly)",
+        "commerce/k8s/20-order-service.yaml:64-65 (JAVA_TOOL_OPTIONS -javaagent:/opt/apm/opentelemetry-javaagent.jar)",
+        "commerce/k8s/20-order-service.yaml:33 (imagePullPolicy: Never — 이미지는 정상 적재, 감별용)"
+      ],
+      "infra_anchor": "hostPath /opt/polestar10/apm(WPM은 /wpm)은 22개 앱 파드 공통(전 도메인 동일 패턴). OTel javaagent hostPath는 관측 파이프라인의 숨은 전제. 재현 수단 = host.stress 신규 hostpath-disrupt mode(dir/jar rename + trap 복구)."
+    },
+    "injection_summary": "host.stress 신규 hostpath-disrupt mode로 대상 워커의 /opt/polestar10/apm을 aside 경로로 rename(삭제 아님 — 복구가능성 보존). rollout-restart로 그 노드 파드를 재생성시키면 dir-소실 분기는 FailedMount Pending, jar-소실 분기는 CrashLoop. cleanup trap이 aside→원경로 되돌리고, recovery_gate가 디렉토리+jar 존재 및 앱 pod_ready 회복까지 검증. 복구 실패 시 그 노드 22개 앱 영구 불능이라 안전이 설계의 중심.",
+    "user_impact": "대상 노드에 얹힌 앱들이 재시작·재배포 시점에 일제히 못 뜬다. 이미 떠 있던 파드는 재시작 전까지 버티나, 롤아웃/노드 이벤트가 겹치면 그 노드분 서비스가 광범위 불가용이 된다. 원인이 앱이 아니라 노드 로컬 경로라 오진되기 쉽다.",
+    "must_support": [
+      "대상 노드 앱 파드 pod_ready=false",
+      "container_restart_count 급증 + last_termination_reason(agent/JVM 실패, jar-소실 분기) 또는 FailedMount event(dir-소실 분기)",
+      "이미지 pull 실패 없음(image_pull_failure=false) — 노드 로컬 경로 자산 부재가 원인"
+    ],
+    "must_rule_out": [
+      "이미지 부재/잘못된 이미지 아님 — image_pull_failure=false (F05-G rollout 실패와 감별)",
+      "liveness probe 오설정·메모리 limit 축소 아님 — hostPath 자산 부재가 원인(F05-H/R와 감별, probe·mem 정상)",
+      "앱 코드 결함 아님 — 코드·이미지 정상, 노드 로컬 마운트/agent 실패"
+    ],
+    "distinguishing_evidence": "파드가 못 뜨는데 이미지 pull은 정상(image_pull_failure=false)이고, 실패 신호가 FailedMount event(dir 소실) 또는 javaagent 로드 실패로 인한 last_termination_reason(jar 소실)이다 — 노드 로컬 hostPath 자산 부재라는 신호. F05-G(잘못된 이미지 레이어)는 image pull failure event로, F05-H(liveness)·F05-R(OOM)은 probe/mem 원인으로 갈린다. 같은 노드의 여러 무관 도메인 앱이 동시에 같은 mount/agent 실패를 보이는 것도 노드 로컬 자산이 root라는 단서다.",
+    "difficulty": "high",
+    "related_scenarios": {
+      "contrast_with": [
+        "F05-G (잘못된 이미지 rollout → ErrImageNeverPull; F26-P는 이미지 정상, hostPath 마운트/agent 실패)",
+        "F05-H (liveness probe 오설정 재시작 loop; F26-P는 probe 정상, 노드 로컬 자산 부재)",
+        "F05-R (컨테이너 메모리 limit 축소 OOMKill; F26-P는 mem 정상, javaagent/mount 실패)"
+      ]
+    }
+  }
+}

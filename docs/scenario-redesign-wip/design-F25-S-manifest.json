@@ -1,0 +1,161 @@
+{
+  "schema_version": "1.0",
+  "id": "F25-S",
+  "slug": "f25-s-commerce-kafka-broker-spof",
+  "readiness": "draft",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md",
+    "charter": "docs/spec-scenario-design-charter.md"
+  },
+  "class": "B",
+  "injection": {
+    "location": "commerce-namespace",
+    "matrix_location_transport": "tb-runner/kubectl → rca-testbed-commerce testbed-kafka (StatefulSet) scale 1→0 → RF=1 broker unavailable",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/kafka.control",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubectl-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": false,
+      "binding": {
+        "primary_ref": "kafka.control",
+        "companion_refs": ["load.north_south"],
+        "approved_profile_id": "kafka.control"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "45s",
+        "max_injection_duration": "15m",
+        "preflight": ["kube-context", "kube-node-set", "coordinator-clean", "clean-window", "baseline-traffic", "target-health"],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            { "check": "coordinator-clean" },
+            { "check": "clean-window" },
+            { "check": "baseline-traffic" },
+            { "check": "target-health" }
+          ]
+        },
+        "must_rule_out": {
+          "any": [
+            { "id": "not-consumer-stop-broker-up", "observation": "kafka_available_replicas", "op": "gte", "value": 1 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            { "id": "entry-unreachable", "observation": "entry_status", "op": "eq", "value": 0 }
+          ],
+          "consecutive_ticks": 2
+        },
+        "cleanup": { "required": true, "order": "reverse", "timeout": "10m" },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f25-s",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "mode": "broker-down",
+                "kind": "statefulset",
+                "workload": "testbed-kafka",
+                "baseline_replicas": 1,
+                "fault_replicas": 0,
+                "kafka_pod": "testbed-kafka-0",
+                "bootstrap_server": "localhost:9092",
+                "affected_consumer_groups": ["shipping-service", "notification-service"],
+                "drain_timeout_seconds": 600
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          { "id": "entry_status", "adapter": "http_probe", "query_id": "http.entry_health", "freshness": "15s" },
+          {
+            "id": "kafka_pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+            "parameters": { "namespace": "rca-testbed-commerce", "resource": "testbed-kafka" }, "freshness": "30s"
+          },
+          {
+            "id": "kafka_available_replicas", "adapter": "kubernetes", "query_id": "kubernetes.statefulset_available_replicas",
+            "parameters": { "namespace": "rca-testbed-commerce", "statefulset": "testbed-kafka" }, "freshness": "30s",
+            "capability_gap": "NEW query_id — 현 kubernetes.deployment_available_replicas(queries.json:199)는 셀렉터가 deployment.status.available_replicas라 StatefulSet(broker)을 못 읽음. statefulset.status.available_replicas 셀렉터로 신설 필요. F04-R(consumer 정지, broker UP → 이 값 1 유지)과의 결정 감별축. See sheet §4-A #2."
+          },
+          {
+            "id": "shipping_consumer_lag", "adapter": "kubernetes", "query_id": "kubernetes.kafka_consumer_lag",
+            "parameters": { "namespace": "rca-testbed-commerce", "pod": "testbed-kafka-0", "bootstrap_server": "localhost:9092", "consumer_group": "shipping-service" }, "freshness": "30s",
+            "capability_gap": "브로커 down 구간엔 lag 조회 자체가 broker 부재로 실패/stale일 수 있음(F04-R은 broker UP이라 lag 정상 조회) — 이 대비가 오히려 감별 신호. 조회 실패 처리 확인 필요."
+          },
+          {
+            "id": "commerce_5xx_rate", "adapter": "loadgen_summary", "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": { "step": "checkout", "status_class": "5xx" }, "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            { "id": "broker-down", "observation": "kafka_available_replicas", "op": "eq", "value": 0 },
+            { "id": "broker-pod-not-ready", "observation": "kafka_pod_ready", "op": "eq", "value": false },
+            { "id": "sync-path-healthy", "observation": "commerce_5xx_rate", "op": "lt", "value": 0.05 }
+          ],
+          "consecutive_ticks": 3
+        },
+        "recovery": {
+          "all": [
+            { "id": "broker-recovered", "observation": "kafka_available_replicas", "op": "gte", "value": 1 },
+            { "id": "broker-ready", "observation": "kafka_pod_ready", "op": "eq", "value": true },
+            { "id": "entry-healthy", "observation": "entry_status", "op": "eq", "value": 200 }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": { "mode": "dry-run", "mutation": false, "adapter_refs": ["kafka.control", "load.north_south"] },
+    "run": { "mode": "dry-run", "mutation": false, "requires_preflight": true, "adapter_refs": ["kafka.control", "load.north_south"] },
+    "cleanup": { "mode": "dry-run", "mutation": false, "required": true, "order": "reverse", "recovery_gate": true, "adapter_refs": ["load.north_south", "kafka.control"] }
+  },
+  "prerequisite_gate": {
+    "state": "blocked",
+    "required": true,
+    "description": "kafka.control executor(F04-R)는 실제로 consumer Deployment(testbed-shipping)를 scale 0으로 만드는 코드(kafka_control_executor.py:99 scale deploy)라 브로커는 살아있음 — fault-surface의 '브로커 스케일0 지원' 낙관과 상이. F25-S(브로커 down)는 별개: (1) executor에 mode=broker-down 분기 + testbed-kafka StatefulSet scale 0(kind 일반화, 갭 A), (2) NEW query kubernetes.statefulset_available_replicas(갭 B — 현 available_replicas는 Deployment 전용, F04-R lag vs 이 값=0 이 감별의 핵심), (3) kafka.control parameter_contract에 F25-S allowlist. load.north_south commerce companion allowlist 추가. 자세히 sheet §4-A.",
+    "live_allowed": false
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": ["calibration", "evaluation", "failed"]
+  }
+}
