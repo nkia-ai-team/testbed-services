@@ -272,6 +272,30 @@
       "injection_summary": "load.north_south로 food loadgen(slowquery.js)을 켜 GET /api/orders(무제한, 40%)와 GET /api/orders/stats/daily?days=90(40%)을 반복 호출한다. 대표 order-create 여정(20%, order-surge.js와 동일 계약)을 낮은 비중으로 섞어 monitor의 business_step(create) 태그 샘플을 유지한다 — 슬로우쿼리 조회는 domain의 read_step(menu) 태그로 집계한다. cleanup은 부하 종료뿐.",
       "user_impact": "주문 목록/통계 조회(GET /api/orders, /api/orders/stats/daily)가 무거운 무제한 반환·filesort로 느려지고, order 서비스 메모리가 1Gi 한계로 차올라 GC 지연·OOMKilled 재시작 위험이 커진다. 원인은 페이지네이션 부재와 함수 래핑 집계 쿼리다.",
       "distinguishing_evidence": "결정적 서명은 'order 컨테이너 메모리가 1Gi limit로 차오르며(무제한 결과셋 적재) 지연이 오르지만 payment 502나 배차 503은 없다'는 것이다 — 잠식 자원이 커넥션풀(F19-P)이나 배차 capacity(F19-Q)가 아니라 JVM 힙임을 가리킨다. 단일 MySQL이라 F20-R 같은 교차 스키마 오염이 없어 증상이 order에 국한되고, 이것이 R(공유 PG 교차 지연)과의 결정적 구분이다. naive RCA는 느린 order를 root로 보나 정답은 페이지네이션 부재(unpaged)와 DATE() 함수 집계 쿼리다."
+    },
+    "F25-H": {
+      "title": "commerce PostgreSQL OOMKill → commerce DB 전면 순단 (공유 인스턴스)",
+      "description": "commerce 8스키마를 단일 PostgreSQL StatefulSet(testbed-postgres, mem limit 512Mi·shared_buffers 128MB)이 담당한다. 컨테이너 메모리 한계를 320Mi로 조이고 checkout 부하가 겹치면 postgres-0가 cgroup OOMKill되고, 재기동 수십초 동안 8스키마 전부 접속 불가해 commerce 전 서비스가 순간 5xx 후 회복한다. 앱 pod OOM(F05-R)과 달리 대상이 공유 DB라 blast radius가 도메인 전체다.",
+      "cause": "testbed-postgres 컨테이너 memory limit(512Mi)을 조여(fault 320Mi) shared_buffers 128MB + work_mem×동시성 + 페이지캐시가 cgroup 상한을 초과 → postgres-0 OOMKill → 재기동(PVC로 데이터 보존) 동안 8스키마 접속 불가 → commerce 전 서비스 순간 5xx",
+      "injection_summary": "k8s.resource executor로 testbed-postgres(StatefulSet)의 container 'postgres' memory limit을 512Mi→320Mi로 패치하고 commerce north-south companion 부하(surge.js checkout)를 흘려 cgroup OOM을 유도한다. cleanup은 mem limit 원복 후 pod ready 회복 확인.",
+      "user_impact": "commerce 전 서비스(주문/결제/재고/장바구니/가격/사용자/배송)가 postgres 재기동 구간 동안 동시에 5xx/타임아웃을 낸 뒤 자동 회복한다. 특정 서비스가 아니라 도메인 전체가 순단하므로 개별 앱 로그만 보면 원인이 안 보인다.",
+      "distinguishing_evidence": "postgres 컨테이너가 OOMKilled로 종료되고 restart_count가 증가하며, 재기동 동안 commerce 전 서비스가 동시에 5xx를 낸 뒤 PVC로 회복한다. 대상이 payment 앱 pod가 아니라 공유 DB라는 점(blast=8스키마)이 F05-R과의 결정적 구분이다."
+    },
+    "F17-P": {
+      "title": "commerce→transfer 직행 무결성 우회 — FROZEN 계좌 이체가 200 COMPLETED",
+      "description": "commerce-payment이 core-banking transfer-service NodePort 30282(testbed-transfer-external)로 직행하면 api·account 경유 검증을 건너뛴다. transfer execute()는 계좌 status(FROZEN/CLOSED)를 검사하지 않으므로, 정상경로(nginx→api→account)에서는 400으로 거절되는 FROZEN 계좌 이체가 직행경로에서는 200 COMPLETED로 성공하고 잔액·원장에 부정합이 기입된다. 5xx가 전혀 발생하지 않는 도메인 무결성 위반이라, 에러율·지연 기반 이상감지가 아예 뜨지 않을 수 있는 관측 사각 시나리오다.",
+      "cause": "transfer-service execute()의 계좌 status 검증 부재 + commerce가 account 검증을 우회하는 30282 직행 경로 사용 → 검증 비대칭",
+      "injection_summary": "load.north_south executor로 core-banking/loadgen/frozen-bypass.js(dual-arm k6)를 30282(direct) entry_url에 흘린다. direct arm은 FROZEN 계좌(ACC-9001)를 출금계좌로 하는 이체를 30282(transfer-service 직행)로 반복 POST하고, control arm은 동일 payload를 정상경로 상수(30082)로 병행 호출해 400 거절을 대조 확인한다. 두 arm은 각각 business_step=frozen-direct/read_step=frozen-control 태그로 집계된다. cleanup은 direct arm이 만든 COMPLETED transfers를 역이체·REVERSED 마킹으로 원장 정정한다(미구현 상태로는 live 승격 보류).",
+      "user_impact": "동결/해지된 계좌에서 이체가 성공(200 COMPLETED)해 잔액이 부당하게 변동되고 원장에 부정합이 기입된다. 5xx·지연이 없어 서비스 대시보드상으로는 완전히 정상으로 보이며, 실제 손실은 사후 정합 검사에서만 드러난다.",
+      "distinguishing_evidence": "정답은 경로별 검증 비대칭이다: 완전히 동일한 이체 요청이 30282 직행에서는 200 COMPLETED, 30082 정상경로에서는 400 'From account is FROZEN'. 5xx·지연이 전혀 없으므로 naive RCA는 '정상'으로 오판하기 쉽다 — 진짜 증거는 데이터 정합(FROZEN 계좌의 COMPLETED transfer 존재, database.integrity_violation_count > 0)과 경로 비대칭이다."
+    },
+    "F23-R": {
+      "title": "commerce 재입고 배치 정지 → 재고 소진 → checkout 409 조용한 기능마비",
+      "description": "inventory-service의 ReconciliationBatch.run(@Scheduled 10분)이 각 상품의 재고를 대사하고 기준치(20) 미달 재고를 target(200)으로 보충(RESTOCK)한다. 이 배치가 멈추면 상주 부하(loadgen checkout)가 재고를 계속 소비하는데 보충이 없어 inventory.stock이 회수 없이 단조 감소해 0에 도달하고, InventoryService.reserve가 stock<quantity에서 409 CONFLICT 'Insufficient stock'을 낸다. order productClient가 4xx를 CB 실패로 집계하지 않아 checkout이 409로 실패 급증한다 — 5xx도 CB open도 없는 '조용한 기능마비'다. 핵심은 이 409가 '정상 재고소진'과 코드가 같아, 배치정지(장애)인지 정상 소진인지 감별하는 것이다.",
+      "cause": "ReconciliationBatch.run(@Scheduled 10분) 재입고 스텝 정지(env stopgap: inventory.reconciliation.interval-ms를 극단값으로 늘려 rollout) → loadgen이 재고를 계속 소비하나 RESTOCK 미실행 → inventory.stock 단조 감소→0 → InventoryService.reserve가 409 CONFLICT → order productClient가 4xx를 CB 미집계로 그대로 전파 → checkout 409 급증(5xx·CB open 없음)",
+      "injection_summary": "k8s.env executor로 testbed-inventory(inventory-service)의 SPRING_APPLICATION_JSON에 inventory.reconciliation.interval-ms를 999999999로 주입하고 rollout해 재입고 배치를 사실상 정지시킨다(고갈은 상주 loadgen의 자연 소비이지 재고 값을 직접 조작하지 않는다). commerce north-south companion 부하(surge.js checkout)로 재고를 계속 소비시켜 stock=0 상품 수 증가와 checkout 409 급증을 관측한다. cleanup은 env 원복 후 rollout 회복 확인.",
+      "user_impact": "checkout(주문 결제)이 재고부족 409로 실패 급증한다. inventory 서비스 자체는 pod ready·조회 200으로 정상이고 409는 4xx라 5xx·CB open·표준 알람이 조용해, 겉으로는 '정상적인 재고 소진(수요 급증)'처럼 보인다. 실제로는 재입고 배치 정지로 인한 조용한 기능마비다.",
+      "distinguishing_evidence": "핵심 감별은 '409의 두 원인 분리'다: 정상 재고소진은 재입고 배치가 stock을 주기적으로 target(200)으로 복원해 톱니파를 그리고 RESTOCK movement가 계속 유입되지만, 배치정지 장애는 stock이 회수 없이 단조감소해 0에서 정체하고 RESTOCK movement 유입이 0으로 끊긴다. 상태코드(409)와 inventory 응답(pod ready·조회 200)만으로는 구분 불가 — stock 시계열 추세(database.inventory_stock_level)와 RESTOCK 원장 유입율(database.restock_movement_rate)로만 감별된다."
     }
   }
 }

@@ -13,12 +13,14 @@ APPROVED_TARGETS = {
     "F09-H": ("rca-testbed-commerce", "testbed-order", "order-service"),
     "F08-P": ("rca-testbed-commerce", "testbed-order", "order-service"),
     "F18-P": ("rca-testbed-banking", "testbed-transfer", "transfer-service"),
+    "F23-R": ("rca-testbed-commerce", "testbed-inventory", "inventory-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
     "F09-H": {"JAVA_TOOL_OPTIONS"},
     "F08-P": {"SPRING_APPLICATION_JSON"},
     "F18-P": {"OUTBOX_RELAY_ENABLED"},
+    "F23-R": {"SPRING_APPLICATION_JSON"},
 }
 
 

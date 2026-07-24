@@ -591,6 +591,41 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "verified OrderController unpaged GET /api/orders(무조건 Pageable.unpaged()) + aggregateDailyStats native GROUP BY DATE() 필소트 앵커; 신규 slowquery.js(무제한목록+통계 80%, 대표 create 20%) + load.north_south 계약 등록; 러너 F20_FOOD_ORDER_TARGET 신설(container_memory_current_bytes/limit/restart_count를 food testbed-order로 확장)"
+    },
+    {
+      "id": "F25-H",
+      "slug": "f25-h-commerce-postgres-oomkill",
+      "profiles": [
+        "k8s.resource",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": "postgres StatefulSet kind 일반화(k8s_resource_executor) + postgres 관측 allowlist(live_probes.py F25_H_POSTGRES_TARGET) 배선 완료(07-24)"
+    },
+    {
+      "id": "F23-R",
+      "slug": "f23-r-commerce-restock-batch-halt",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": "k8s.env interval-ms stopgap 배선 + database.inventory_stock_level/restock_movement_rate/loadgen.checkout_409_rate 관측 배선 완료(07-24)"
+    },
+    {
+      "id": "F17-P",
+      "slug": "f17-p-commerce-transfer-frozen-bypass",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "draft",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": "cleanup(원장 정정 SQL) 구현·검증 전까지 live 보류 — direct arm이 생성하는 FROZEN/CLOSED 계좌 관여 COMPLETED transfer의 역이체 정정이 미구현"
     }
   ]
 }

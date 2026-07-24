@@ -210,6 +210,13 @@ while True:
         # checkout_5xx_rate is kept for backward compatibility (pre-existing
         # query_id/consumer contract); business_5xx_rate is its replacement value.
         checkout_5xx_rate = business_5xx_rate
+        # F23-R decisive evidence: 409 (stock-exhausted) is a subset of the
+        # 4xx bucket that business_nonok_rate can't isolate from other 4xx
+        # causes (e.g. coupon validation) - tracked separately here.
+        business_409_rate = (
+            sum(status == 409 for _, status in checkout_results) / checkout_count
+            if checkout_count else 0.0
+        )
         document = {
             "scenario_id": scenario_id,
             "scenario_tag": f"scenario_id={scenario_id}",
@@ -219,6 +226,7 @@ while True:
             "business_2xx_rate": business_2xx_rate,
             "business_4xx_rate": business_4xx_rate,
             "business_5xx_rate": business_5xx_rate,
+            "business_409_rate": business_409_rate,
             "business_nonok_rate": business_nonok_rate,
             "business_ok": entry_status in {200, 400, 409},
             "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),

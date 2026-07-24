@@ -460,6 +460,64 @@
       ],
       "value_type": "number",
       "freshness_sec": 30
+    },
+    "database.inventory_stock_level": {
+      "adapter": "database",
+      "selector": "commerce.inventory.zero_stock_count",
+      "allowed_parameters": [
+        "db_host",
+        "db_port",
+        "db_name",
+        "db_user",
+        "schema",
+        "table"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
+    },
+    "database.restock_movement_rate": {
+      "adapter": "database",
+      "selector": "commerce.inventory.restock_movement_count",
+      "allowed_parameters": [
+        "db_host",
+        "db_port",
+        "db_name",
+        "db_user",
+        "schema",
+        "table",
+        "movement_type",
+        "window_minutes"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 60
+    },
+    "loadgen.checkout_409_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "checkout.409.rate",
+      "allowed_parameters": [],
+      "value_type": "number",
+      "freshness_sec": 30
+    },
+    "loadgen.frozen_bypass_completed_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "business.2xx.rate",
+      "value_type": "number",
+      "freshness_sec": 30
+    },
+    "loadgen.normal_path_reject_rate": {
+      "adapter": "loadgen_summary",
+      "selector": "read.nonok.rate",
+      "value_type": "number",
+      "freshness_sec": 30
+    },
+    "database.integrity_violation_count": {
+      "adapter": "database",
+      "selector": "banking.integrity_violation_count",
+      "allowed_parameters": [
+        "since"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
     }
   }
 }

@@ -190,12 +190,16 @@
           "F16-H",
           "F20-R",
           "F20-P",
-          "F20-Q"
+          "F20-Q",
+          "F25-H",
+          "F23-R",
+          "F17-P"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
           "http://192.168.122.77:30181",
-          "http://192.168.122.77:30082"
+          "http://192.168.122.77:30082",
+          "http://192.168.122.77:30282"
         ],
         "allowed_script_paths": [
           "/opt/loadgen/commerce/surge.js",
@@ -204,7 +208,8 @@
           "/opt/loadgen/core-banking/surge.js",
           "/opt/loadgen/commerce/slowquery.js",
           "/opt/loadgen/core-banking/slowquery.js",
-          "/opt/loadgen/food-delivery/slowquery.js"
+          "/opt/loadgen/food-delivery/slowquery.js",
+          "/opt/loadgen/core-banking/frozen-bypass.js"
         ],
         "allowed_baseline_units": [
           "loadgen-commerce",
@@ -232,6 +237,13 @@
             "gateway_env": "GATEWAY_URL",
             "business_step": "transfer",
             "read_step": "get"
+          },
+          "http://192.168.122.77:30282": {
+            "baseline_unit": "loadgen-banking",
+            "health_path": "/actuator/health",
+            "gateway_env": "TRANSFER_DIRECT_URL",
+            "business_step": "frozen-direct",
+            "read_step": "frozen-control"
           }
         },
         "target_rps": {
@@ -239,7 +251,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -593,6 +605,39 @@
           "scenario_tag": "scenario_id=F20-Q",
           "seed": 4242,
           "baseline_unit": "loadgen-food"
+        },
+        "F25-H": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F25-H",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F23-R": {
+          "target_rps": 35,
+          "ramp_up": "2m",
+          "hold": "12m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F23-R",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F17-P": {
+          "target_rps": 20,
+          "ramp_up": "1m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30282",
+          "script_path": "/opt/loadgen/core-banking/frozen-bypass.js",
+          "scenario_tag": "scenario_id=F17-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-banking"
         }
       },
       "scenario_levels": {
@@ -848,7 +893,8 @@
           "F08-P",
           "F03-P",
           "F09-H",
-          "F18-P"
+          "F18-P",
+          "F23-R"
         ]
       },
       "scenario_parameters": {
@@ -1329,6 +1375,127 @@
             {
               "name": "OUTBOX_RELAY_ENABLED",
               "value": "false"
+            }
+          ]
+        },
+        "F23-R": {
+          "namespace": "rca-testbed-commerce",
+          "deployment": "testbed-inventory",
+          "container": "inventory-service",
+          "baseline": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_USER",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_PASSWORD",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "commerce-inventory"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.230.119:14317"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=commerce,lucida.target_id=414db206-d121-43b1-886c-78b240d23a7a"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            }
+          ],
+          "fault": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_USER",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_PASSWORD",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "commerce-inventory"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.230.119:14317"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=commerce,lucida.target_id=414db206-d121-43b1-886c-78b240d23a7a"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            },
+            {
+              "name": "SPRING_APPLICATION_JSON",
+              "value": "{\"inventory\":{\"reconciliation\":{\"interval-ms\":999999999}}}"
             }
           ]
         }
@@ -2206,7 +2373,8 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F05-R"
+          "F05-R",
+          "F25-H"
         ]
       },
       "scenario_parameters": {
@@ -2233,6 +2401,32 @@
             "requests": {
               "cpu": "200m",
               "memory": "512Mi"
+            }
+          }
+        },
+        "F25-H": {
+          "namespace": "rca-testbed-commerce",
+          "deployment": "testbed-postgres",
+          "container": "postgres",
+          "resource": "memory",
+          "baseline": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "512Mi"
+            },
+            "requests": {
+              "cpu": "200m",
+              "memory": "256Mi"
+            }
+          },
+          "fault": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "320Mi"
+            },
+            "requests": {
+              "cpu": "200m",
+              "memory": "256Mi"
             }
           }
         }

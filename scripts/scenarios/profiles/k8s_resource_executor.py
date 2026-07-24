@@ -13,6 +13,12 @@ PROFILE_ID = "k8s.resource"
 APPROVED_TARGETS = {
     "F05-R": ("rca-testbed-commerce", "testbed-payment", "payment-service", "memory"),
     "F09-P": ("rca-testbed-commerce", "testbed-inventory", "inventory-service", "cpu"),
+    "F25-H": ("rca-testbed-commerce", "testbed-postgres", "postgres", "memory"),
+}
+APPROVED_KINDS = {
+    "F05-R": "deploy",
+    "F09-P": "deploy",
+    "F25-H": "statefulset",
 }
 F05_R_BASELINE = {
     "limits": {"cpu": "500m", "memory": "1Gi"},
@@ -63,8 +69,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     instance = profile_instance(plan, PROFILE_ID)
     p = instance["parameters"]
     validate(plan["scenario"]["id"], p, {})
+    kind = APPROVED_KINDS[plan["scenario"]["id"]]
     return kubectl_bash_argv([
-        action, plan["scenario"]["id"], p["namespace"], p["deployment"], p["container"],
+        action, plan["scenario"]["id"], kind, p["namespace"], p["deployment"], p["container"],
         json.dumps(p["baseline"], sort_keys=True, separators=(",", ":")),
         json.dumps(p["fault"], sort_keys=True, separators=(",", ":")),
     ]), SCRIPT
@@ -72,14 +79,14 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
 
 SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
-action="$1"; scenario_id="$2"; ns="$3"; deploy="$4"; container="$5"; baseline="$6"; fault="$7"
+action="$1"; scenario_id="$2"; kind="$3"; ns="$4"; deploy="$5"; container="$6"; baseline="$7"; fault="$8"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
 state="$state_root/${scenario_id}-container-resources.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
-current() { "${k[@]}" get deploy "$deploy" -o json | jq -Sc --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | (.resources // {})'; }
-patch() { jq -cn --arg c "$container" --argjson r "$1" '{spec:{template:{spec:{containers:[{name:$c,resources:$r}]}}}}' | "${k[@]}" patch deploy "$deploy" --type=strategic --patch-file=/dev/stdin >/dev/null; }
-healthy() { "${k[@]}" rollout status deploy/"$deploy" --timeout="$1" >/dev/null; }
-check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
+current() { "${k[@]}" get "$kind" "$deploy" -o json | jq -Sc --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | (.resources // {})'; }
+patch() { jq -cn --arg c "$container" --argjson r "$1" '{spec:{template:{spec:{containers:[{name:$c,resources:$r}]}}}}' | "${k[@]}" patch "$kind" "$deploy" --type=strategic --patch-file=/dev/stdin >/dev/null; }
+healthy() { "${k[@]}" rollout status "$kind"/"$deploy" --timeout="$1" >/dev/null; }
+check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch "${kind}s" | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
   run)

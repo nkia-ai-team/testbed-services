@@ -39,26 +39,53 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             "baseline": {"requests": {"cpu": "200m"}, "limits": {"cpu": "500m"}},
             "fault": {"requests": {"cpu": "50m"}, "limits": {"cpu": "100m"}},
         }
+        postgres = {
+            "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres",
+            "container": "postgres", "resource": "memory",
+            "baseline": {"limits": {"cpu": "500m", "memory": "512Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
+            "fault": {"limits": {"cpu": "500m", "memory": "320Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
+        }
         resource.validate("F05-R", payment, {})
         resource.validate("F09-P", inventory, {})
+        resource.validate("F25-H", postgres, {})
         tampered = dict(payment, deployment="testbed-order")
         with self.assertRaisesRegex(resource.ExecutorError, "not allowlisted"):
             resource.validate("F05-R", tampered, {})
         with self.assertRaisesRegex(resource.ExecutorError, "not allowlisted"):
             resource.validate("F12-H", inventory, {})
+        with self.assertRaisesRegex(resource.ExecutorError, "not allowlisted"):
+            resource.validate("F25-H", dict(postgres, container="postgres-2"), {})
 
     def test_resource_script_snapshots_then_restores_exact_original(self) -> None:
         params = resource.F05_R_LEVELS[2]
         argv, stdin = resource.build_invocation(plan(resource.PROFILE_ID, "F05-R", params), "run")
         self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
         self.assertIn("rca-testbed-commerce", argv)
+        self.assertIn("deploy", argv)
         script = stdin.decode()
         self.assertIn("'{original:$original,applied:$applied}'", script)
         self.assertIn("[[ \"$(current)\" == \"$applied\" ]]", script)
         self.assertIn("original=$(jq -Sc '.original'", script)
         self.assertIn('patch "$original"', script)
         self.assertIn("--type=strategic", script)
+        self.assertIn('get "$kind"', script)
         self.assertNotIn("kubectl exec", script)
+
+    def test_resource_executor_uses_statefulset_kind_for_f25_h(self) -> None:
+        postgres = {
+            "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres",
+            "container": "postgres", "resource": "memory",
+            "baseline": {"limits": {"cpu": "500m", "memory": "512Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
+            "fault": {"limits": {"cpu": "500m", "memory": "320Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
+        }
+        argv, stdin = resource.build_invocation(plan(resource.PROFILE_ID, "F25-H", postgres), "run")
+        self.assertIn("statefulset", argv)
+        self.assertNotIn("deploy", argv)
+        script = stdin.decode()
+        self.assertIn('get "$kind" "$deploy"', script)
+        self.assertIn('patch "$kind" "$deploy"', script)
+        self.assertIn('rollout status "$kind"/"$deploy"', script)
+        self.assertIn('can-i patch "${kind}s"', script)
 
     def test_probe_executor_allows_only_payment_liveness(self) -> None:
         params = probe.F05_H_PARAMETERS
@@ -80,11 +107,22 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             "baseline": [{"name": "JAVA_TOOL_OPTIONS", "value": "-XX:MaxRAMPercentage=75"}],
             "fault": [{"name": "JAVA_TOOL_OPTIONS", "value": "-XX:MaxRAMPercentage=35"}],
         }
+        restock_stopgap = {
+            "namespace": "rca-testbed-commerce", "deployment": "testbed-inventory", "container": "inventory-service",
+            "baseline": [{"name": "DB_USER", "value": "commerce"}],
+            "fault": [
+                {"name": "DB_USER", "value": "commerce"},
+                {"name": "SPRING_APPLICATION_JSON", "value": '{"inventory":{"reconciliation":{"interval-ms":999999999}}}'},
+            ],
+        }
         env.validate("F03-P", hikari, {})
         env.validate("F09-H", gc, {})
+        env.validate("F23-R", restock_stopgap, {})
         unsafe = dict(hikari, fault=hikari["fault"] + [{"name": "SAFE", "value": "changed"}])
         with self.assertRaisesRegex(env.ExecutorError, "non-allowlisted key"):
             env.validate("F03-P", unsafe, {})
+        with self.assertRaisesRegex(env.ExecutorError, "not allowlisted"):
+            env.validate("F23-R", dict(restock_stopgap, deployment="testbed-order"), {})
         script = env.build_invocation(plan(env.PROFILE_ID, "F09-H", gc), "recovery")[1].decode()
         self.assertIn("(.env // [])", script)
         self.assertIn('[[ ! -e "$state" ]]', script)
