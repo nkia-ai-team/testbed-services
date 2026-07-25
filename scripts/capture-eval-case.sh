@@ -744,9 +744,19 @@ curl --fail --silent --show-error --get "${VM_URL%/}/api/v1/export" \
   --data-urlencode "end=$capture_end" \
   --output "$staging_dir/data/victoriametrics.export"
 
+# ClickHouse Parquet exports buffer a full row group in memory. The default
+# 1M-row row group made the production window's otel_traces (~567k wide trace
+# rows) allocate 2.78 GiB and blow CH's 2.5 GiB per-query limit → HTTP 500
+# (2026-07-25 F01-H). Bounding the row group (+ read block) keeps peak memory
+# well under the limit regardless of window size, and a multi-row-group Parquet
+# is standard/readable. Passed as URL settings so every FORMAT Parquet export
+# (incl. full-snapshot host_connections ~1.7M rows) is memory-bounded.
+CH_EXPORT_SETTINGS="output_format_parquet_row_group_size=50000&max_block_size=50000&max_threads=2"
+
 ch_export() {
   local table=$1 query=$2 output=$3 credential
   log "exporting ClickHouse table=$table"
+  local url="${CH_URL%/}/?${CH_EXPORT_SETTINGS}"
   if [[ -n "$CH_USER" ]]; then
     # Feed credentials through curl's stdin config so they never appear in argv.
     credential="${CH_USER}:${CH_PASSWORD}"
@@ -756,12 +766,12 @@ ch_export() {
     credential=${credential//$'\r'/\\r}
     printf 'user = "%s"\n' "$credential" |
       curl --config - --fail --silent --show-error \
-        --data-binary "$query" "${CH_URL%/}/" \
+        --data-binary "$query" "$url" \
         --output "$output"
     return
   fi
   curl --fail --silent --show-error \
-    --data-binary "$query" "${CH_URL%/}/" \
+    --data-binary "$query" "$url" \
     --output "$output"
 }
 
