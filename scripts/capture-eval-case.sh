@@ -868,13 +868,21 @@ pg_dump_data_dir="$staging_dir/data"
 if [[ -n "$CAPTURE_HOST_OUTPUT_ROOT" ]]; then
   pg_dump_data_dir="${CAPTURE_HOST_OUTPUT_ROOT%/}/${staging_dir##*/}/data"
 fi
-PGPASSWORD="$PG_PASSWORD" docker run --rm \
+# TCP keepalives + a hard timeout on the cross-network (109->119 AP bridge)
+# pg_dump. Without keepalives an idle COPY period lets the bridge/NAT reap the
+# connection and pg_dump blocks forever in poll() (2026-07-25 production run:
+# F01-H pg_dump hung 55m at 2.48GB, PG backend already gone). keepalives keep
+# the socket alive; `timeout` bounds any residual hang so the capture fails and
+# the scheduler retries instead of stalling the queue indefinitely.
+PG_DUMP_TIMEOUT_SEC="${PG_DUMP_TIMEOUT_SEC:-900}"
+PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker run --rm \
   --user "$(id -u):$(id -g)" \
   --env PGPASSWORD \
   --volume "$pg_dump_data_dir:/out" \
   "$PG_DUMP_IMAGE" \
   pg_dump -Fc --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" \
-  --dbname "$PG_DATABASE" --file /out/postgres.dump
+  --dbname "dbname=$PG_DATABASE keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5" \
+  --file /out/postgres.dump
 
 # ------------------------------------------------------------
 # Topology snapshot (spec §4, 2026-07-20): the query API's cross-domain graph
