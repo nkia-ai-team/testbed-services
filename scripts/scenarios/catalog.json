@@ -670,7 +670,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce external-pg-mock",
       "prerequisite": ""
     },

@@ -35,10 +35,11 @@
         "primary_ref": "mock.expectation",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "mock.expectation"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -68,43 +69,19 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "absorbed-delay-1s",
+              "id": "approved-fixed-f01-g",
               "parameters": {
                 "path": "/v1/payments",
                 "mode": "delay",
                 "status_code": 200,
                 "delay_seconds": 1
               },
-              "min_hold": "2m",
+              "min_hold": "8m",
               "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "absorbed-delay-3s",
-              "parameters": {
-                "path": "/v1/payments",
-                "mode": "delay",
-                "status_code": 200,
-                "delay_seconds": 3
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "absorbed-delay-5s",
-              "parameters": {
-                "path": "/v1/payments",
-                "mode": "delay",
-                "status_code": 200,
-                "delay_seconds": 5
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "8m"
+              "timeout": "13m"
             }
           ]
         },
@@ -190,17 +167,6 @@
               "observation": "business_ok",
               "op": "eq",
               "value": true
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "delay-not-visible",
-              "observation": "user_p95",
-              "op": "lt",
-              "value": 500
             }
           ],
           "consecutive_ticks": 3

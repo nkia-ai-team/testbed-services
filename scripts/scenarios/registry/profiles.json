@@ -146,40 +146,10 @@
           "path": "/v1/payments",
           "mode": "delay",
           "status_code": 200,
-          "delay_seconds": 5
+          "delay_seconds": 1
         }
       },
-      "scenario_levels": {
-        "F01-G": [
-          {
-            "level_id": "absorbed-delay-1s",
-            "parameters": {
-              "path": "/v1/payments",
-              "mode": "delay",
-              "status_code": 200,
-              "delay_seconds": 1
-            }
-          },
-          {
-            "level_id": "absorbed-delay-3s",
-            "parameters": {
-              "path": "/v1/payments",
-              "mode": "delay",
-              "status_code": 200,
-              "delay_seconds": 3
-            }
-          },
-          {
-            "level_id": "absorbed-delay-5s",
-            "parameters": {
-              "path": "/v1/payments",
-              "mode": "delay",
-              "status_code": 200,
-              "delay_seconds": 5
-            }
-          }
-        ]
-      }
+      "scenario_levels": {}
     },
     "load.north_south": {
       "executor": "profiles/load_north_south_executor.py",
