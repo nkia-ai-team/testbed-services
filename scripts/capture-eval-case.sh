@@ -750,7 +750,7 @@ curl --fail --silent --show-error --get "${VM_URL%/}/api/v1/export" \
 # (2026-07-25 F01-H). Bounding the row group (+ read block) keeps peak memory
 # well under the limit regardless of window size, and a multi-row-group Parquet
 # is standard/readable. Passed as URL settings so every FORMAT Parquet export
-# (incl. full-snapshot host_connections ~1.7M rows) is memory-bounded.
+# is memory-bounded.
 CH_EXPORT_SETTINGS="output_format_parquet_row_group_size=50000&max_block_size=50000&max_threads=2"
 
 ch_export() {
@@ -794,10 +794,19 @@ ch_start="parseDateTime64BestEffort('$capture_start')"
 ch_end="parseDateTime64BestEffort('$capture_end')"
 clickhouse_tables_json='[]'
 if [[ "$v3_mode" == true ]]; then
-  # ClickHouse capture — v3 12-table catalog (spec §2.2). 10 window-sliced +
-  # 2 full-snapshot tables. Each entry records rows/time_min/time_max in
-  # meta.clickhouse_tables[] so "did data land" is answerable without
-  # opening a file (2026-07-24 "CH 데이터 없음" 논쟁 재발 방지).
+  # ClickHouse capture — v3 12-table catalog (spec §2.2). Every table is scoped
+  # to the capture window; none is exported whole. Each entry records
+  # rows/time_min/time_max in meta.clickhouse_tables[] so "did data land" is
+  # answerable without opening a file (2026-07-24 "CH 데이터 없음" 논쟁 재발 방지).
+  #
+  # Scoping modes:
+  #   slice — WHERE <time_col> BETWEEN window bounds.
+  #   snap  — no usable own time column for scoping; scope by the (target_id,
+  #           proc_key) pairs that process_snapshot actually observed inside the
+  #           window. process_meta registers a process at first sight, so a
+  #           seen_at slice would drop the metadata of every process that was
+  #           already running when the window opened (2026-07-27 실측: 창 내
+  #           1157 proc_key 중 499개만 커버 = 57% 유실).
   ch_v3_tables=(
     'otel_traces_local:timestamp:slice'
     'lucida_logs_local:timestamp:slice'
@@ -809,8 +818,8 @@ if [[ "$v3_mode" == true ]]; then
     'trace_error_chains_local:window_start:slice'
     'trace_path_signatures_local:window_start:slice'
     'syslog_local:received_at:slice'
-    'host_connections::full'
-    'process_meta::full'
+    'host_connections:timestamp:slice'
+    'process_meta:seen_at:snap'
   )
   for entry in "${ch_v3_tables[@]}"; do
     IFS=':' read -r tbl time_col mode <<<"$entry"
@@ -818,29 +827,25 @@ if [[ "$v3_mode" == true ]]; then
     select_expr='*'
     [[ "$tbl" == lucida_events_local ]] &&
       select_expr='* REPLACE(toString(event_id) AS event_id, toString(episode_id) AS episode_id)'
-    if [[ "$mode" == full ]]; then
-      ch_export "$tbl" "SELECT $select_expr FROM lucida.$tbl FORMAT Parquet" "$file"
-      rows=$(ch_query "SELECT count() FROM lucida.$tbl FORMAT TSV")
-      entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
-        --argjson rows "$rows" \
-        '{table:$table, file:$file, rows:$rows, time_column:null, time_min:null, time_max:null}')
+    if [[ "$mode" == snap ]]; then
+      where_clause=" WHERE (target_id, proc_key) IN (SELECT target_id, proc_key FROM lucida.process_snapshot WHERE ts >= $ch_start AND ts <= $ch_end)"
     else
       where_clause=" WHERE $time_col >= $ch_start AND $time_col <= $ch_end"
-      ch_export "$tbl" "SELECT $select_expr FROM lucida.$tbl${where_clause} FORMAT Parquet" "$file"
-      stats_line=$(ch_query "SELECT count(), toString(min($time_col)), toString(max($time_col)) FROM lucida.$tbl${where_clause} FORMAT TSV")
-      rows=$(cut -f1 <<<"$stats_line")
-      if [[ "$rows" == 0 ]]; then
-        entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
-          --arg time_column "$time_col" --argjson rows "$rows" \
-          '{table:$table, file:$file, rows:$rows, time_column:$time_column, time_min:null, time_max:null}')
-      else
-        time_min_raw=$(cut -f2 <<<"$stats_line")
-        time_max_raw=$(cut -f3 <<<"$stats_line")
-        entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
-          --arg time_column "$time_col" --argjson rows "$rows" \
-          --arg time_min "$time_min_raw" --arg time_max "$time_max_raw" \
-          '{table:$table, file:$file, rows:$rows, time_column:$time_column, time_min:$time_min, time_max:$time_max}')
-      fi
+    fi
+    ch_export "$tbl" "SELECT $select_expr FROM lucida.$tbl${where_clause} FORMAT Parquet" "$file"
+    stats_line=$(ch_query "SELECT count(), toString(min($time_col)), toString(max($time_col)) FROM lucida.$tbl${where_clause} FORMAT TSV")
+    rows=$(cut -f1 <<<"$stats_line")
+    if [[ "$rows" == 0 ]]; then
+      entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
+        --arg time_column "$time_col" --argjson rows "$rows" --arg scope "$mode" \
+        '{table:$table, file:$file, rows:$rows, time_column:$time_column, scope:$scope, time_min:null, time_max:null}')
+    else
+      time_min_raw=$(cut -f2 <<<"$stats_line")
+      time_max_raw=$(cut -f3 <<<"$stats_line")
+      entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
+        --arg time_column "$time_col" --argjson rows "$rows" --arg scope "$mode" \
+        --arg time_min "$time_min_raw" --arg time_max "$time_max_raw" \
+        '{table:$table, file:$file, rows:$rows, time_column:$time_column, scope:$scope, time_min:$time_min, time_max:$time_max}')
     fi
     clickhouse_tables_json=$(jq -c --argjson e "$entry_json" '. + [$e]' <<<"$clickhouse_tables_json")
   done
@@ -869,7 +874,7 @@ else
     "SELECT * REPLACE(toString(event_id) AS event_id, toString(episode_id) AS episode_id) FROM lucida.lucida_events_local WHERE occurred_at >= $ch_start AND occurred_at <= $ch_end FORMAT Parquet" \
     "$staging_dir/data/clickhouse/lucida_events_local.parquet"
   ch_export host_connections \
-    'SELECT * FROM lucida.host_connections FORMAT Parquet' \
+    "SELECT * FROM lucida.host_connections WHERE timestamp >= $ch_start AND timestamp <= $ch_end FORMAT Parquet" \
     "$staging_dir/data/clickhouse/host_connections.parquet"
 fi
 

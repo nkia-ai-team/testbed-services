@@ -208,8 +208,8 @@ SHA-256에 결속된다. 자동 캡처의 기본 라벨은 기존 호출과의
 사건의 재발 방지. 2026-07-24 라이브 CH 스키마 34테이블 전수 실측으로 확정 —
 행수 보유 베이스 테이블 11종 전부 + `syslog_local` 예비 1종이며, MV·`.inner`·
 AggregatingMergeTree는 소비자 복원 시 base 재삽입으로 재구축되므로 제외,
-`schema_migrations` 제외). 시간창
-슬라이스 대상과 전체 스냅샷 대상을 구분한다:
+`schema_migrations` 제외). **12종 전부 캡처 창으로 스코프한다** — 전체 스냅샷은
+없다(2026-07-27, 품질 기준서 G6/L3):
 
 | 테이블 | 시간 컬럼 | 방식 |
 |---|---|---|
@@ -223,8 +223,22 @@ AggregatingMergeTree는 소비자 복원 시 base 재삽입으로 재구축되�
 | `trace_error_chains_local` | `window_start` | 창 슬라이스 |
 | `trace_path_signatures_local` | `window_start` | 창 슬라이스 |
 | `syslog_local` | `received_at` | 창 슬라이스 (현재 0행 — 유입 시 대비, 컬럼명 07-24 실측) |
-| `host_connections` | — | 전체 스냅샷 (인벤토리성, §5) |
-| `process_meta` | — | 전체 스냅샷 (프로세스 메타, `seen_at`은 관리용) |
+| `host_connections` | `timestamp` | 창 슬라이스 |
+| `process_meta` | `seen_at` | **스냅샷 조인** — 창 안 `process_snapshot`의 `(target_id, proc_key)`로 스코프 |
+
+> **전체 스냅샷 폐지 (2026-07-27).** `host_connections`·`process_meta` 두 종만
+> 창 없이 통째로 떴고, 그 결과 v3 케이스 **11건 전부**의 `process_meta.cmdline`에
+> 07-22에 돌았던 F09-R CPU 부하 프로세스가 실려 무관한 케이스에 **틀린 단서**를
+> 제공했다(품질 기준서 정답 누설 L3).
+>
+> `process_meta`만 방식이 다른 이유: 이 테이블은 프로세스를 **처음 봤을 때 등록**한다
+> (`ReplacingMergeTree(target_id, proc_key, seen_at)`, 실측 min `seen_at` = 07-13).
+> `seen_at`으로 단순 슬라이스하면 창이 열리기 전부터 돌던 프로세스—즉 앱 프로세스
+> 대부분—의 메타가 사라진다(2026-07-27 실측: 창 내 1157 proc_key 중 **499개만 커버,
+> 57% 유실**). 그래서 창 안에서 **실제로 관측된** 프로세스의 메타만 조인으로 가져온다.
+>
+> 실측 검증: F09-R 자기 창(07-22 03:00–04:00)에는 해당 메타 2행이 그대로 남고,
+> 무관한 창(07-27 20:00–21:00)에는 **0행**. 행수 217,189 → 2,768.
 
 - §3 ⚠의 "로그 정본 싱크" 우려는 실측으로 해소: 정본 후보 `otel_logs_local`은
   현 배포에서 **0행**(미사용)이고 로그는 `lucida_logs_local`로 들어온다. 캡처
@@ -244,7 +258,7 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   `{phase: normal|buffer|injection|cooldown, start, end}` (UTC 정본 + `*_kst`
   병기). `injection.start`=`t1`, `injection.end`=`t2`와 일치해야 한다.
 - 신규 `clickhouse_tables[]`: `{table, file, rows, time_column,
-  time_min, time_max | null(전체 스냅샷)}`.
+  scope: slice|snap, time_min, time_max | null(0행)}`.
 - 유지: `t1`/`t2`/`capture_start`/`capture_end`(+`_kst`), `dump_*`,
   `scenario_metadata` 6필드 + `scenario_metadata_sha256`(정본 운반, 불일치 시
   승격 거부), `case_label`, `evaluation_eligible`(v2와 동일 결속 규칙),
@@ -582,7 +596,7 @@ RCA 유사 장애 기능을 고려한 사례군의 의미 관계와 시간 순�
 
 - ~~실제 export 메커니즘~~ → **수동 절차로 실증 완료(2026-07-15, 첫 케이스
   `case-l1-blackfriday-surge`)**: VM `/api/v1/export`(전 시리즈 시간창), CH
-  HTTP `FORMAT Parquet`(테이블별 시간창 슬라이스 + host_connections 전체),
+  HTTP `FORMAT Parquet`(테이블별 시간창 슬라이스),
   원격 `pg_dump -Fc`(lucida 전체). **자동화 초안도 구현 완료** —
   `scripts/capture-eval-case.sh`가 시간 가드·3개 저장소 덤프·모델 스냅샷·checksum·
   meta·원자적 승격을 수행한다. `--dry-run`과 저장소별 읽기 전용 연결/쿼리 검증은
