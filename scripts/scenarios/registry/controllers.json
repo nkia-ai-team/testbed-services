@@ -127,11 +127,12 @@
           "freshness": "30s"
         },
         {
-          "id": "tagged_db_sessions",
+          "id": "blocked_db_sessions",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.blocked_session_count",
           "parameters": {
-            "scenario_tag": "rca-F01-R-inventory-lock"
+            "schema": "inventory_schema",
+            "table": "inventory"
           },
           "freshness": "30s"
         }
@@ -139,10 +140,10 @@
       "success": {
         "all": [
           {
-            "id": "lock-present",
-            "observation": "tagged_db_sessions",
-            "op": "gt",
-            "value": 0
+            "id": "lock-blocks-sessions",
+            "observation": "blocked_db_sessions",
+            "op": "gte",
+            "value": 1
           },
           {
             "id": "checkout-impact",
@@ -191,7 +192,7 @@
           },
           {
             "id": "lock-cleared",
-            "observation": "tagged_db_sessions",
+            "observation": "blocked_db_sessions",
             "op": "eq",
             "value": 0
           }
@@ -4140,9 +4141,13 @@
           "freshness": "30s"
         },
         {
-          "id": "tagged_session_count",
+          "id": "blocked_session_count",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.blocked_session_count",
+          "parameters": {
+            "schema": "payment_schema",
+            "table": "payments"
+          },
           "freshness": "30s"
         },
         {
@@ -4179,8 +4184,8 @@
       "success": {
         "all": [
           {
-            "id": "db-lock-held",
-            "observation": "tagged_session_count",
+            "id": "lock-blocks-sessions",
+            "observation": "blocked_session_count",
             "op": "gte",
             "value": 1
           },
@@ -4209,7 +4214,7 @@
         "any": [
           {
             "id": "symptom-without-our-lock",
-            "observation": "tagged_session_count",
+            "observation": "blocked_session_count",
             "op": "eq",
             "value": 0
           }
@@ -4243,7 +4248,7 @@
           },
           {
             "id": "lock-released",
-            "observation": "tagged_session_count",
+            "observation": "blocked_session_count",
             "op": "eq",
             "value": 0
           }

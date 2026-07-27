@@ -293,6 +293,16 @@
       "value_type": "integer",
       "freshness_sec": 30
     },
+    "database.blocked_session_count": {
+      "adapter": "database",
+      "selector": "postgres.pg_locks.blocked_session_count",
+      "allowed_parameters": [
+        "schema",
+        "table"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
+    },
     "database.index_present": {
       "adapter": "database",
       "selector": "postgres.index.present",
