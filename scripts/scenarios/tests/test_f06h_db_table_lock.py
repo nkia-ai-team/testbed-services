@@ -1,8 +1,16 @@
-"""F06-H payment DB table-lock executor contract (표면 상세화, 정적).
+"""PostgreSQL 락 주입 계약 (F01-R row / F06-H table, 정적).
 
-라이브 주입 없이 db_lock_executor의 F06-H 표면(payments 테이블 EXCLUSIVE 잠금)과
-application_name 접미사 일반화만 검증한다. 공유 registry(catalog/controllers/
-profiles) 패치 없이 실행되도록 compile_plan은 기존 live 시나리오(F01-R)에만 쓴다.
+라이브 주입 없이 db_lock_executor의 PostgreSQL 경로를 검증한다. 2026-07-27
+품질 기준서(G6 정답 무누설, `docs/spec-scenario-quality-charter.md` 부록 A)에 따라
+주입 세션은 **실제 앱 세션과 구별되지 않아야** 하므로, 아래 세 축이 회귀하지
+않는지를 계약으로 고정한다.
+
+    신원  : application_name에 시나리오를 인코딩하지 않고 실 앱과 동일해야 한다(L1)
+    유지  : pg_sleep이 아니라 idle in transaction으로 잡아야 한다(L2)
+    출처  : 클러스터 내부 파드에서 접속해야 한다(L2 — 외부 접속은 NAT 주소로 튄다)
+
+정리는 세션 이름이 아니라 **전용 클라이언트 파드 삭제**로 한다. 이름 기반
+pg_terminate_backend는 실 서비스 세션을 죽일 수 있어 금지한다.
 """
 from __future__ import annotations
 
@@ -32,26 +40,35 @@ compiler = importlib.util.module_from_spec(compiler_spec)
 compiler_spec.loader.exec_module(compiler)
 
 
-class F06HDbTableLockTests(unittest.TestCase):
-    def _f06h_plan(self) -> dict:
+class PostgresLockContractTests(unittest.TestCase):
+    def _plan(self, scenario_id: str) -> dict:
         return {
-            "scenario": {"id": "F06-H"},
+            "scenario": {"id": scenario_id},
             "profile_instances": [
-                {"profile_id": "db.lock", "parameters": db_lock.CONTRACTS["F06-H"]}
+                {"profile_id": "db.lock", "parameters": db_lock.CONTRACTS[scenario_id]}
             ],
         }
 
-    def test_contract_is_table_exclusive_lock_on_payments(self) -> None:
+    # --- 표면 계약 ---------------------------------------------------------
+
+    def test_f06h_contract_is_table_exclusive_lock_on_payments(self) -> None:
         contract = db_lock.CONTRACTS["F06-H"]
         self.assertEqual(contract["engine"], "postgresql")
         self.assertEqual(contract["schema"], "payment_schema")
         self.assertEqual(contract["table"], "payments")
         self.assertEqual(contract["lock_scope"], "table")
         self.assertEqual(contract["lock_mode"], "EXCLUSIVE")
-        self.assertEqual(contract["application_name"], "rca-F06-H-payment-lock")
-        # row-lock 잔재가 남으면 안 된다 — payment는 신규 INSERT라 특정 row로는 못 막는다.
-        self.assertNotIn("key_column", contract)
-        self.assertNotIn("key_value", contract)
+        # payment는 결제마다 신규 INSERT라 특정 row로는 막을 수 없다.
+        self.assertEqual(contract["key_column"], "")
+        self.assertEqual(contract["key_value"], "")
+
+    def test_f01r_contract_is_row_lock_on_inventory(self) -> None:
+        contract = db_lock.CONTRACTS["F01-R"]
+        self.assertEqual(contract["engine"], "postgresql")
+        self.assertEqual(contract["schema"], "inventory_schema")
+        self.assertEqual(contract["table"], "inventory")
+        self.assertEqual(contract["lock_scope"], "row")
+        self.assertEqual(contract["key_column"], "product_id")
 
     def test_validate_exact_contract_match(self) -> None:
         db_lock.validate("F06-H", db_lock.CONTRACTS["F06-H"], {})
@@ -60,50 +77,108 @@ class F06HDbTableLockTests(unittest.TestCase):
         with self.assertRaisesRegex(db_lock.ExecutorError, "verified lock contract"):
             db_lock.validate("F06-H", tampered, {})
 
-    def test_build_invocation_locks_table_and_binds_tag(self) -> None:
-        argv, stdin = db_lock.build_invocation(self._f06h_plan(), "run")
-        self.assertEqual(argv[0], "/usr/bin/bash")
-        self.assertIn("rca-F06-H-payment-lock", argv)
-        self.assertIn("EXCLUSIVE", argv)
-        script = stdin.decode()
-        self.assertIn("LOCK TABLE $SCHEMA.$TABLE IN $MODE MODE", script)
-        self.assertIn("PGAPPNAME=\"$TAG\"", script)
-        self.assertIn("pg_terminate_backend", script)
-        self.assertIn("to_regclass", script)
-        # ACCESS SHARE(평문 SELECT)를 막는 잔재/행잠금 잔재 금지 — pod readiness 보호.
-        self.assertNotIn("FOR UPDATE", script)
-        self.assertNotIn("pkill", script)
+    # --- G6/L1: 신원에 정답을 인코딩하지 않는다 ---------------------------
 
-    def test_lock_mode_allowlist_rejects_arbitrary_sql(self) -> None:
-        # 잠금 모드는 승인 목록만 원격 스크립트에서 통과한다(SQL 주입 표면 차단).
-        script = db_lock.POSTGRES_POD_REMOTE.decode()
-        self.assertIn('case "$mode" in EXCLUSIVE|"ACCESS EXCLUSIVE"|"SHARE ROW EXCLUSIVE")', script)
+    def test_client_identity_impersonates_the_real_application(self) -> None:
+        for scenario_id in ("F01-R", "F06-H"):
+            contract = db_lock.CONTRACTS[scenario_id]
+            self.assertEqual(contract["client_identity"], db_lock.APP_IDENTITY)
+            # 세션 이름 어디에도 시나리오 ID가 남아서는 안 된다.
+            self.assertNotIn(scenario_id, contract["client_identity"])
+            self.assertNotIn("rca-", contract["client_identity"])
 
-    def test_application_name_suffix_is_generalized_not_hardcoded_inventory(self) -> None:
+    def test_scenario_encoded_identity_is_rejected(self) -> None:
         profile = {
             "parameter_contract": {"allowed_scenarios": ["F0X-T"]},
-            "scenario_parameters": {"F0X-T": {"application_name": "rca-F0X-T-payment-lock"}},
+            "scenario_parameters": {"F0X-T": {}},
         }
-        # payment-lock 접미사가 통과해야 한다(과거엔 -inventory-lock 하드코딩으로 거절됐다).
-        db_lock.validate("F0X-T", {"application_name": "rca-F0X-T-payment-lock"}, profile)
-        # 여전히 scenario id 결속 + -lock 접미사는 강제한다.
-        bad_profile = {
-            "parameter_contract": {"allowed_scenarios": ["F0X-T"]},
-            "scenario_parameters": {"F0X-T": {"application_name": "rca-F0X-T-payment"}},
-        }
-        with self.assertRaisesRegex(db_lock.ExecutorError, "does not bind the scenario"):
-            db_lock.validate("F0X-T", {"application_name": "rca-F0X-T-payment"}, bad_profile)
+        params = dict(db_lock.CONTRACTS["F01-R"])
+        params["client_identity"] = "rca-F0X-T-payment-lock"
+        profile["scenario_parameters"]["F0X-T"] = params
+        with self.assertRaisesRegex(db_lock.ExecutorError, "impersonate the real application"):
+            db_lock.validate("F0X-T", params, profile)
 
-    def test_f01r_inventory_lock_contract_still_passes(self) -> None:
-        # 기존 F01-R(-inventory-lock, ssh tb-runner row-lock) 계약 회귀 방지.
+    def test_no_scenario_tag_reaches_the_injection_argv(self) -> None:
+        for scenario_id in ("F01-R", "F06-H"):
+            argv, _ = db_lock.build_invocation(self._plan(scenario_id), "run")
+            joined = " ".join(argv)
+            self.assertNotIn("rca-F", joined)
+            self.assertIn(db_lock.APP_IDENTITY, argv)
+
+    # --- G6/L2: 주입 서명을 남기지 않는다 ---------------------------------
+
+    def test_lock_is_held_idle_in_transaction_not_by_pg_sleep(self) -> None:
+        script = db_lock.POSTGRES_CLIENT_POD.decode()
+        # 서버측 수면은 waitEvent=PgSleep이라는 유일값을 남긴다 — 금지.
+        self.assertNotIn("pg_sleep", script)
+        # 클라이언트가 트랜잭션을 열어둔 채 대기해야 idle in transaction이 된다.
+        self.assertIn("BEGIN;", script)
+        self.assertIn('sleep "\\$HOLD"', script)
+        self.assertIn("idle in transaction", script)
+
+    def test_injection_originates_inside_the_cluster(self) -> None:
+        script = db_lock.POSTGRES_CLIENT_POD.decode()
+        self.assertIn("kind: Pod", script)
+        # 클러스터 밖 tb-runner ssh 경로가 되살아나면 출처 IP가 NAT로 튄다.
+        self.assertNotIn("/usr/bin/ssh", script)
+        for scenario_id in ("F01-R", "F06-H"):
+            argv, _ = db_lock.build_invocation(self._plan(scenario_id), "run")
+            self.assertEqual(argv[0], "/usr/bin/bash")
+
+    def test_external_access_mode_is_refused(self) -> None:
+        params = dict(db_lock.CONTRACTS["F01-R"])
+        params["access"] = "tb-runner"
+        profile = {
+            "parameter_contract": {"allowed_scenarios": ["F0X-T"]},
+            "scenario_parameters": {"F0X-T": params},
+        }
+        with self.assertRaisesRegex(db_lock.ExecutorError, "inside the cluster"):
+            db_lock.validate("F0X-T", params, profile)
+
+    # --- 정리 안전성 -------------------------------------------------------
+
+    def test_cleanup_deletes_the_client_pod_not_sessions_by_name(self) -> None:
+        script = db_lock.POSTGRES_CLIENT_POD.decode()
+        # 신원이 앱과 같아졌으므로 이름 기반 종료는 실 서비스를 죽일 수 있다.
+        self.assertNotIn("pg_terminate_backend", script)
+        self.assertNotIn("pkill", script)
+        self.assertIn("delete pod", script)
+        self.assertIn("lucida.io/db-client=session", script)
+
+    # --- SQL 주입 표면 -----------------------------------------------------
+
+    def test_lock_mode_allowlist_rejects_arbitrary_sql(self) -> None:
+        script = db_lock.POSTGRES_CLIENT_POD.decode()
+        self.assertIn('case "$mode" in EXCLUSIVE|"ACCESS EXCLUSIVE"|"SHARE ROW EXCLUSIVE")', script)
+        params = dict(db_lock.CONTRACTS["F06-H"])
+        params["lock_mode"] = "; DROP TABLE payments; --"
+        profile = {
+            "parameter_contract": {"allowed_scenarios": ["F0X-T"]},
+            "scenario_parameters": {"F0X-T": params},
+        }
+        with self.assertRaisesRegex(db_lock.ExecutorError, "unsupported table lock mode"):
+            db_lock.validate("F0X-T", params, profile)
+
+    def test_row_scope_requires_a_key(self) -> None:
+        params = dict(db_lock.CONTRACTS["F01-R"])
+        params["key_value"] = ""
+        profile = {
+            "parameter_contract": {"allowed_scenarios": ["F0X-T"]},
+            "scenario_parameters": {"F0X-T": params},
+        }
+        with self.assertRaisesRegex(db_lock.ExecutorError, "key_column and key_value"):
+            db_lock.validate("F0X-T", params, profile)
+
+    # --- 레지스트리 정합 ---------------------------------------------------
+
+    def test_f01r_registry_plan_matches_the_executor_contract(self) -> None:
         plan = compiler.compile_plan("f01-r-pg-lock-checkout")
         instance = next(r for r in plan["profile_instances"] if r["profile_id"] == "db.lock")
         profiles = compiler.load_contracts()[2]["profiles"]
         db_lock.validate("F01-R", instance["parameters"], profiles["db.lock"])
-        argv, stdin = db_lock.build_invocation(plan, "run")
-        self.assertEqual(argv[0], "/usr/bin/ssh")
-        self.assertIn("rca-F01-R-inventory-lock", argv)
-        self.assertIn("FOR UPDATE", stdin.decode())
+        argv, script = db_lock.build_invocation(plan, "run")
+        self.assertIn("FOR UPDATE", script.decode())
+        self.assertIn(db_lock.APP_IDENTITY, argv)
 
 
 if __name__ == "__main__":

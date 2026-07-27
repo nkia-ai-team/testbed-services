@@ -50,15 +50,20 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertNotIn("shell=True", script)
         return script
 
-    def test_db_lock_uses_strict_ssh_and_tag_scoped_termination(self) -> None:
+    def test_db_lock_injects_inside_the_cluster_and_reclaims_its_client(self) -> None:
+        # 품질 기준서 G6 / 부록 A: 주입 세션은 실 앱 세션과 구별되지 않아야 하므로
+        # (1) 클러스터 안에서 접속하고 (2) 신원을 사칭하며 (3) 정리는 파드 삭제로 한다.
         plan = compiler.compile_plan("f01-r-pg-lock-checkout")
         argv, stdin = db_lock.build_invocation(plan, "cleanup")
-        self.assertIn("BatchMode=yes", argv)
-        self.assertIn("StrictHostKeyChecking=yes", argv)
-        self.assertIn("nkia@192.168.122.206", argv)
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertIn(db_lock.APP_IDENTITY, argv)
+        self.assertNotIn("nkia@192.168.122.206", argv)
         script = stdin.decode()
-        self.assertIn("application_name='$tag'", script)
-        self.assertIn("pg_terminate_backend", script)
+        self.assertIn("kind: Pod", script)
+        self.assertIn("delete pod", script)
+        self.assertIn("lucida.io/db-client=session", script)
+        self.assertNotIn("pg_terminate_backend", script)
+        self.assertNotIn("pg_sleep", script)
         self.assertNotIn("pkill", script)
 
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:

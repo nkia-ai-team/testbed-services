@@ -22,12 +22,20 @@
       },
       "scenario_parameters": {
         "F01-R": {
-          "db_host": "192.168.122.77",
-          "db_port": 30432,
-          "db_name": "commerce",
-          "db_user": "commerce",
-          "application_name": "rca-F01-R-inventory-lock",
-          "product_id": 1,
+          "engine": "postgresql",
+          "access": "in-cluster-pod",
+          "namespace": "rca-testbed-commerce",
+          "db_pod": "testbed-postgres-0",
+          "service": "testbed-postgres",
+          "secret": "postgres-secret",
+          "image": "postgres:16-alpine",
+          "schema": "inventory_schema",
+          "table": "inventory",
+          "lock_scope": "row",
+          "lock_mode": "",
+          "key_column": "product_id",
+          "key_value": "1",
+          "client_identity": "PostgreSQL JDBC Driver",
           "hold_seconds": 600
         },
         "F01-P": {
@@ -43,13 +51,19 @@
         },
         "F06-H": {
           "engine": "postgresql",
+          "access": "in-cluster-pod",
           "namespace": "rca-testbed-commerce",
-          "pod": "testbed-postgres-0",
+          "db_pod": "testbed-postgres-0",
+          "service": "testbed-postgres",
+          "secret": "postgres-secret",
+          "image": "postgres:16-alpine",
           "schema": "payment_schema",
           "table": "payments",
           "lock_scope": "table",
           "lock_mode": "EXCLUSIVE",
-          "application_name": "rca-F06-H-payment-lock",
+          "key_column": "",
+          "key_value": "",
+          "client_identity": "PostgreSQL JDBC Driver",
           "hold_seconds": 600
         }
       }

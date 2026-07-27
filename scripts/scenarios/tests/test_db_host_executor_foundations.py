@@ -40,7 +40,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("ALTER TABLE $table DROP INDEX $index", script)
         self.assertIn("CREATE INDEX $index ON $table($column)", script)
 
-    def test_oracle_and_payment_locks_are_tagged_and_terminated(self) -> None:
+    def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]
             lock.validate(sid, p, {})
@@ -53,11 +53,17 @@ class DbHostFoundations(unittest.TestCase):
                 self.assertIn("FREEPDB1", text)
             else:
                 # F06-H payment writes are fresh INSERTs, so a row-lock cannot block them;
-                # the tagged session holds the payments table in EXCLUSIVE MODE instead.
-                self.assertNotIn("FOR UPDATE", text.upper())
-                self.assertIn("LOCK TABLE $SCHEMA.$TABLE IN $MODE MODE", text)
-                self.assertIn("pg_terminate_backend", text)
+                # the session holds the payments table in EXCLUSIVE MODE instead.
+                # 스크립트는 row/table scope를 공유하므로 잠금 형태는 계약으로 고정한다.
+                self.assertEqual(p["lock_scope"], "table")
+                self.assertEqual(p["lock_mode"], "EXCLUSIVE")
+                self.assertIn("LOCK TABLE ${schema}.${table} IN ${mode} MODE", text)
                 self.assertIn("PGAPPNAME", text)
+                # 정리는 파드 삭제로 한다 — 신원이 실 앱과 같아 이름 기반 종료는 금지
+                # (품질 기준서 G6 / 부록 A).
+                self.assertIn("delete pod", text)
+                self.assertNotIn("pg_terminate_backend", text)
+                self.assertNotIn("pg_sleep", text)
 
     def test_batch_workload_is_read_only_tagged_and_bounded(self) -> None:
         p = workload.CONTRACTS["F02-G"]
