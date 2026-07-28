@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F03-G",
   "slug": "f03-g-high-pool-usage-no-impact",
-  "readiness": "parked",
+  "readiness": "cut",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "회생 불가(음성): 결함 주입 자체가 없음. 헌장 §1 개정이 선행",
+    "description": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 결함 주입 자체가 없다 — 재편입은 헌장 개정이 선행한다",
     "live_allowed": false
   },
   "capture_policy": {

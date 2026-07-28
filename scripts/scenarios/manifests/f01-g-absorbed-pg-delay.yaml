@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F01-G",
   "slug": "f01-g-absorbed-pg-delay",
-  "readiness": "parked",
+  "readiness": "cut",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "회생 불가(음성): 헌장 §1의 no-incident 폐지 결정을 뒤집어야 재편입 가능",
+    "description": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 기술적 결손 0 — 재편입은 헌장 개정이 선행한다",
     "live_allowed": false
   },
   "capture_policy": {

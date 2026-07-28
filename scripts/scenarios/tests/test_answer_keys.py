@@ -33,10 +33,12 @@ class AnswerKeyContractTests(unittest.TestCase):
         cls.catalog = {row["id"]: row for row in _load("catalog.json")["scenarios"]}
         cls.controllers = _load("registry/controllers.json")["controllers"]
         cls.metadata = _load("registry/scenario-metadata.json")["scenarios"]
+        # parked과 cut은 실행 집합 밖이라 정답지를 요구하지 않는다. 둘을 나눈 이유는
+        # 회생 가능성이지 정답지 의무가 아니므로, 여기서는 같은 취급이다.
         cls.active = {
             scenario_id
             for scenario_id, row in cls.catalog.items()
-            if row["readiness"] != "parked"
+            if row["readiness"] not in ("parked", "cut")
         }
 
     def test_every_active_scenario_states_what_it_injected(self) -> None:

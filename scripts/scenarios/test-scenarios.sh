@@ -23,8 +23,12 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-07-28: ready 31→32, parked 26→25. F03-H가 복귀했다 — 주입 표면을 자백하던
 # OrderController의 Thread.sleep(delayMs)을 실제 결함(직렬화된 O(n^2) 리포트 렌더러)으로
 # 교체해 G6 누설을 없앴다.
+# 2026-07-28: readiness에 cut을 신설하고 음성 시나리오 4종(F01-G·F03-G·F05-G·F11-G)을
+# 옮겼다(parked 24→20). parked는 "회생 후보"라는 뜻이므로 회생 조건이 코드가 아니라
+# 헌장 개정인 것을 같은 칸에 두면 영원히 열릴 것처럼 읽힌다. cut은 종착역이다.
 [[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 33 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 24 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 2 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
@@ -43,7 +47,7 @@ jq -e '
   all(.scenarios[];
     (.id | test("^F[0-9]{2}-(R|H|P|G|Q|S|T[1-4])$")) and
     (.slug | test("^[a-z0-9][a-z0-9-]+$")) and
-    (.readiness | IN("ready", "partial", "blocked", "draft", "parked")) and
+    (.readiness | IN("ready", "partial", "blocked", "draft", "parked", "cut")) and
     (.load_mode | IN("adaptive", "fixed", "no-load")) and
     (.injection_location | type == "string" and length > 0) and
     (.profiles | type == "array" and length > 0 and all(.[]; IN($known_profiles[]))) and
@@ -108,14 +112,15 @@ while IFS= read -r row; do
   ' "$manifest" >/dev/null
 done < <(jq -c '.scenarios[]' "$catalog")
 
-# Parked scenarios keep their design assets (manifest, controller, executors)
-# but must never compile to an executable plan. compile-plan gates live_allowed
-# on readiness == "ready", so this is the guard that keeps a CUT scenario from
-# re-entering the capture queue by accident. Checked for all 26 without going
-# through bin/, which does not cover the whole catalog (see below).
+# Parked and cut scenarios keep their design assets (manifest, executors) but
+# must never compile to an executable plan. compile-plan gates live_allowed on
+# readiness == "ready", so this is the guard that keeps a withdrawn scenario
+# from re-entering the capture queue by accident. cut is covered by the same
+# loop deliberately: a terminal decision needs the same mechanical proof as a
+# temporary one, or the enum value becomes documentation instead of a gate.
 while IFS= read -r slug; do
   [[ "$(python3 "$script_dir/compile-plan.py" --scenario "$slug" | jq -r '.live_allowed')" == "false" ]]
-done < <(jq -r '.scenarios[] | select(.readiness=="parked") | .slug' "$catalog")
+done < <(jq -r '.scenarios[] | select(.readiness=="parked" or .readiness=="cut") | .slug' "$catalog")
 
 ready_live_false=0
 ready_live_true=0

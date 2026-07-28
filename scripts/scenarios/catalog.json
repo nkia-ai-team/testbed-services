@@ -669,10 +669,10 @@
         "mock.expectation",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "cut",
       "load_mode": "fixed",
       "injection_location": "commerce external-pg-mock",
-      "prerequisite": "회생 불가(음성): 헌장 §1의 no-incident 폐지 결정을 뒤집어야 재편입 가능"
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 기술적 결손 0 — 재편입은 헌장 개정이 선행한다"
     },
     {
       "id": "F03-G",
@@ -680,10 +680,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "cut",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "회생 불가(음성): 결함 주입 자체가 없음. 헌장 §1 개정이 선행"
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 결함 주입 자체가 없다 — 재편입은 헌장 개정이 선행한다"
     },
     {
       "id": "F05-G",
@@ -692,10 +692,10 @@
         "k8s.lifecycle",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "cut",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": "회생 불가(음성): 헌장 §1의 no-incident 폐지 결정을 뒤집어야 재편입 가능"
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 기술적 결손 0 — 재편입은 헌장 개정이 선행한다"
     },
     {
       "id": "F11-G",
@@ -704,10 +704,10 @@
         "cache.control",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "cut",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": "회생 불가(음성): 성공조건 3건이 구조적 참. 헌장 §1 개정이 선행"
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 성공조건 3건이 구조적 참 — 재편입은 헌장 개정이 선행한다"
     }
   ]
 }
