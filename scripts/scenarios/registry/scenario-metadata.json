@@ -255,12 +255,62 @@
       }
     },
     "F07-P": {
-      "title": "pricing 동시성 상한(bulkhead) 포화",
-      "description": "pricing 견적 API의 resilience4j bulkhead(동시 20, 대기 0)를 namespace 내부 east-west 부하로 포화시켜, 초과 요청이 즉시 503으로 거절되고 checkout 견적 단계가 함께 실패하는 시나리오다.",
-      "cause": "Pricing bulkhead concurrency saturation",
-      "injection_summary": "commerce namespace 내부 k6 Job이 testbed-pricing /api/pricing/quote를 20/35/50rps 사다리로 직접 호출해 semaphore를 점유한다. 사용자 경로 확인용 north-south 20rps companion을 병행한다.",
-      "user_impact": "checkout의 가격 확정 단계가 503으로 실패하거나 지연되어 주문 실패율이 상승한다.",
-      "distinguishing_evidence": "pricing의 503(BulkheadFullException 즉시 거절)이 원인 신호이고 pricing pod·DB·호스트 자원은 정상이다. 진입 트래픽 폭주(F07-H)와 달리 north-south 진입량은 평상 수준이며 east-west 호출만 급증한다.",
+      "title": "pricing bulkhead 포화 — 대기 없는 동시성 상한이 초과분을 즉시 503으로 자른다",
+      "description": "pricing의 견적 API는 resilience4j bulkhead로 동시 20건까지만 받고 대기 시간을 0으로 두어 초과분을 즉시 거절한다. 네임스페이스 안에서 east-west 부하로 이 세마포어를 점유하면 체크아웃의 견적 단계가 503을 받는다. pricing은 죽지도 느려지지도 않는다 — 오히려 **설계대로 자기를 보호하는 중**이며, 그 보호가 상류에게는 장애로 보인다. '정상 동작하는 방어 장치가 만든 장애'라는 점이 이 케이스의 정체성이다.",
+      "cause": "east-west k6 부하가 pricing /api/pricing/quote의 bulkhead(동시 20, 대기 0) 세마포어를 점유 → 초과 요청에 BulkheadFullException → GlobalExceptionHandler가 503 반환 → order PricingClient가 5xx로 집계 → @Retry·@CircuitBreaker(pricingClient) → calculateQuoteFallback 502 → 체크아웃 실패",
+      "injection_summary": "load.east_west executor가 commerce 네임스페이스 안에 k6 Job을 띄워 http://testbed-pricing:8087/api/pricing/quote를 20/35/50rps 사다리로 직접 호출한다. 게이트웨이를 거치지 않으므로 진입 지표는 평상 수준을 유지한다. 사용자 경로 확인용 north-south 20rps companion을 병행하며, cleanup은 Job·ConfigMap 삭제다.",
+      "user_impact": "체크아웃의 가격 확정 단계가 실패해 주문 실패율이 오른다. 상품 조회·장바구니는 정상이라 '담기까지는 되는데 결제로 못 넘어가는' 형태다. pricing 자체는 건강하므로 재기동해도 낫지 않는다.",
+      "distinguishing_evidence": "결정 증거는 pricing이 내는 상태코드가 503이고 그 응답이 **빠르다**는 것이다 — 대기 시간 0의 즉시 거절이라 지연 없이 거부된다. 포화·과부하 계열은 보통 느려진 뒤 실패하는데 여기선 지연 없이 실패한다. 두 번째 축은 트래픽의 방향이다: 진입(north-south) 요청량은 평상 수준인데 pricing으로 가는 east-west 호출량만 급증한다 — 게이트웨이 지표만 보면 아무 일도 없다. pricing 파드·DB·호스트 자원은 모두 정상이다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P2",
+      "observation_domains": [
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "commerce-pricing",
+        "trigger_target_id": "commerce-order",
+        "mechanism": "결함 보유 대상은 pricing-service의 동시성 상한 설정이다. PricingService의 견적 계산에 @Bulkhead(name=\"pricingQuote\")가 걸려 있고 인스턴스 설정은 max-concurrent-calls 20, max-wait-duration 0이다. 즉 21번째 동시 요청은 **기다리지 않고** BulkheadFullException으로 떨어지며, GlobalExceptionHandler가 이를 503 SERVICE_UNAVAILABLE로 변환한다. 이 상한은 pricing 자신을 지키는 장치라서 pricing의 CPU·DB·응답시간은 끝까지 정상이다 — 관측상 '아픈 서비스'가 없다는 것이 판별을 어렵게 만든다. 상류에서는 order의 PricingClient가 4xx만 ClientErrorException으로 분리하고 5xx는 실패로 집계하므로 503이 그대로 CB 집계에 들어가고, 서킷이 열리면 calculateQuoteFallback이 502를 던져 체크아웃이 실패한다. 부하의 출처가 클러스터 내부라 진입 지표에는 흔적이 없고, 세마포어를 누가 점유하고 있는지는 pricing으로 들어오는 호출자 분포에서만 드러난다.",
+        "code_anchor": [
+          "commerce/pricing-service/src/main/resources/application.yml:32-37 (resilience4j bulkhead pricingQuote — max-concurrent-calls 20, max-wait-duration 0)",
+          "commerce/pricing-service/src/main/java/com/commerce/pricing/service/PricingService.java:77 (@Bulkhead(name = \"pricingQuote\") — 상한이 걸리는 지점)",
+          "commerce/pricing-service/src/main/java/com/commerce/pricing/config/GlobalExceptionHandler.java:25-32 (handleBulkheadFull — BulkheadFullException을 503으로 즉시 거절)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PricingClient.java:25-27 (@CircuitBreaker(pricingClient)+@Retry(pricingClient) — 503을 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PricingClient.java:46-51 (calculateQuoteFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:155 (pricingClient.calculateQuote — 체크아웃의 견적 단계)"
+        ],
+        "infra_anchor": "east-west 부하는 네임스페이스 안 k6 Job으로 준다. 클러스터 밖에서 쏘지 않는 이유는 게이트웨이를 거치면 진입 지표가 함께 오르면서 F07-H(진입 폭주)와 구분이 사라지기 때문이다 — '진입은 평온한데 내부만 뜨겁다'가 이 시나리오의 감별 축이므로 부하 경로 선택이 곧 설계다. Job은 tb-w1에 고정 배치해 노드 자원 영향을 예측 가능하게 둔다."
+      },
+      "must_support": [
+        "commerce-pricing 오류율 상승(≥ 0.1)이 503으로 구성되고 응답이 지연 없이 즉시 반환됨",
+        "체크아웃 5xx 비율 상승(≥ 0.05) — 견적 단계 실패가 사용자에게 도달",
+        "진입(north-south) 요청량은 평상 수준인데 pricing으로 향하는 east-west 호출량만 급증",
+        "pricing 파드 Ready 유지, CPU·DB·응답시간 정상"
+      ],
+      "must_rule_out": [
+        "진입 폭주가 아님 — achieved_rps가 승인 수준을 유지한다. 폭주면 F07-H",
+        "외부 rate-limit이 아님 — entry_status ≠ 429. 429면 F01-H",
+        "pricing 자원 문제가 아님 — CPU throttling·OOM·재시작이 없다. 자원이면 F12-H·F05 계열",
+        "DB 지연이 아님 — pricing의 쿼리 시간은 정상이고 차단 세션이 없다"
+      ],
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F07-H (같은 '용량 초과'지만 진입 트래픽이 원인이라 게이트웨이 지표가 함께 오른다)",
+          "F12-H (같은 '한 서비스가 상류를 막는다'지만 그쪽은 실제로 느려진다 — 즉시 503 vs 지연)",
+          "F01-H (같은 '즉시 거절'이지만 거절하는 주체가 외부 PG이고 코드가 429다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-pricing"
+        ],
+        "partial": [
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [
@@ -313,8 +363,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F08-P": {
       "title": "order→payment read-timeout을 15s에서 250ms로 줄인 설정 오배포 — 실패한 주문의 결제만 성사",
@@ -599,12 +648,63 @@
       }
     },
     "F07-H": {
-      "title": "north-south 사용자 트래픽 폭주 — order Hikari(10)·Tomcat(200) 용량 무릎 초과",
-      "description": "외부 사용자 진입 경로의 요청량 자체를 order createOrder/checkout의 tx 내 동기 5-hop 호출 구조와 order Hikari 커넥션풀(10)·Tomcat(200) 용량 무릎 이상으로 높여, 진입·내부 호출량이 함께 증가하며 order 풀이 포화돼 checkout 5xx가 발생하는 시나리오다. 원인은 설정 변경이 아니라 부하 자체가 서비스 구조적 용량 한계를 초과하는 것이다.",
-      "cause": "North-south traffic surge exceeding order-service Hikari pool(10)/Tomcat(200) capacity knee",
-      "injection_summary": "tb-runner에서 commerce NodePort로 실측 기반 adaptive k6 부하를 주입한다.",
-      "user_impact": "체크아웃 지연과 오류가 운영 인시던트 수준으로 증가한다.",
-      "distinguishing_evidence": "진입 요청량과 내부 호출량이 유사한 비율로 증가하며 order Hikari pool(10) 커넥션 대기가 함께 상승한다. 특정 하류 retry 반복이 원인이 아니며, F03-P(풀 설정 축소)·F08-P(timeout 설정 오배포)와 달리 풀·timeout 설정 변경 이력이 없고 순수 진입량이 무릎을 초과한 것이 원인이다.",
+      "title": "진입 트래픽 폭주 — order의 구조적 용량 무릎(Hikari 10 / Tomcat 200) 초과",
+      "description": "설정을 바꾸지 않고 진입 요청량만 order의 용량 무릎 위로 올린다. order의 checkout은 @Transactional 하나 안에서 cart·pricing·product/inventory·payment로 이어지는 5-hop을 동기 순차 호출하므로, 요청 하나가 DB 커넥션을 **하류 지연의 합만큼** 붙잡는다. order에는 Hikari 설정이 없어 기본 풀 10이고 Tomcat 스레드는 200이므로, 동시 처리량이 풀에 막히는 지점에서 응답시간이 무릎처럼 꺾인다. 어떤 것도 고장 나지 않았고 어떤 설정도 바뀌지 않았는데 느려지는 것이 이 케이스의 정체성이다 — 정답은 '용량'이다.",
+      "cause": "north-south 진입량을 120~160rps로 상승 → order checkout이 트랜잭션 안에서 5-hop을 도는 동안 커넥션 점유 시간 = Σ(하류 지연) → 동시 요청이 order Hikari 기본 풀(10)을 초과 → 커넥션 대기 급증 → 게이트웨이 p95 상승과 체크아웃 지연·실패",
+      "injection_summary": "load.north_south executor가 tb-runner에서 commerce NodePort(30080)로 surge.js를 120→140→160rps 사다리로 흘린다. 설정·자원·의존은 일절 건드리지 않는다 — 이 시나리오의 주입은 트래픽 그 자체다. cleanup은 부하 종료이며 상태 변화가 없어 원복 대상이 없다.",
+      "user_impact": "체크아웃과 주문 생성의 응답시간이 전반적으로 악화되고 오류가 인시던트 수준으로 증가한다. 특정 기능이 아니라 order를 지나는 모든 경로가 함께 느려지며, 부하를 낮추면 즉시 회복된다.",
+      "distinguishing_evidence": "결정 증거는 진입량과 내부 호출량이 **같은 비율로** 증가한다는 것이다. 특정 하류의 재시도 폭주나 특정 릴레이션의 잠금이 아니라 전 구간이 비례해 늘어난다. 두 번째 축은 변경 부재로, 풀·timeout·자원 설정과 배포 이력이 모두 baseline 그대로다 — F03-P·F08-P와 갈리는 지점이 여기다. 세 번째로 차단 세션이 0이라 잠금 계열이 배제되고, 부하를 내리면 회복된다는 가역성이 구조적 결함이 아니라 용량 초과임을 확정한다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P1+P2",
+      "observation_domains": [
+        "APM",
+        "DPM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "commerce-order",
+        "trigger_target_id": "commerce-gateway",
+        "mechanism": "결함 보유 대상은 order-service의 용량 구조다. OrderService.checkout은 @Transactional 안에서 cart 조회 → pricing 견적 → 품목별 product/inventory 예약 → payment 결제를 순차로 부른다. 트랜잭션이 열려 있는 동안 DB 커넥션은 계속 점유되므로 커넥션 보유 시간 = 하류 왕복의 총합이며 (P1), @Transactional에 timeout이 없고 order의 application.yml에 Hikari 설정이 없어 기본 풀 10이 그대로 상한이 된다(P2). Tomcat은 200 스레드를 받아들이므로 요청은 계속 들어오지만 실제로 진행할 수 있는 것은 커넥션을 쥔 10건뿐이고, 나머지는 획득 대기에 쌓인다 — 받아들이는 능력과 처리하는 능력의 불일치가 무릎을 만든다. 이 지점을 넘으면 대기가 대기를 낳아 응답시간이 비선형으로 튀고, 하류 타임아웃에 닿는 요청부터 5xx가 된다. 부하를 내리면 즉시 회복되므로 상태를 남기는 결함이 아니라 **용량 한계**다.",
+        "code_anchor": [
+          "commerce/order-service/src/main/resources/application.yml:7-10 (datasource — Hikari 설정이 없어 기본 풀 10이 상한이 된다)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:141-147 (checkout — @Transactional 진입, cartClient.getCart로 5-hop 시작)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:155 (pricingClient.calculateQuote — 같은 트랜잭션 안 두 번째 hop)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:157-161 (productClient.reserveStock — 품목마다 순차 호출로 점유 시간이 누적된다)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment — 마지막 hop. 여기까지 커넥션을 쥔다)",
+          "commerce/order-service/src/main/resources/application.yml:46-66 (services.* read-timeout 10~15s — 대기가 이 벽에 닿는 요청부터 5xx가 된다)"
+        ],
+        "infra_anchor": "부하는 tb-runner의 k6가 commerce NodePort 30080으로 surge.js를 흘린다. 승인 사다리는 120/140/160rps이며 seed 고정으로 요청 구성이 재현된다. 주입이 상태를 바꾸지 않으므로 cleanup은 부하 종료뿐이고, 그래서 이 시나리오는 케이스 간 오염 위험이 가장 낮다."
+      },
+      "must_support": [
+        "게이트웨이 p95 상승(≥ 500ms)과 체크아웃 지연·오류 증가",
+        "달성 부하가 승인 대역(≥ 100rps)에 도달 — 원인이 실제로 트래픽임을 보이는 전제",
+        "진입 요청량과 내부 호출량이 유사한 비율로 증가",
+        "order의 커넥션 획득 대기 증가 — 무릎의 위치가 풀임을 보이는 증거"
+      ],
+      "must_rule_out": [
+        "DB 잠금이 아님 — inventory·payments 차단 세션 0. 잠금이면 F01-R·F06-H",
+        "설정 오배포가 아님 — 풀·timeout·자원이 baseline 그대로이고 롤아웃 이력이 없다. 변경이 있으면 F03-P·F08-P",
+        "부하가 실제로 흐르지 않은 것이 아님 — achieved_rps가 목표에 도달했다(도달하지 못하면 판정 불가)",
+        "하류 장애가 아님 — 외부 PG·banking·Redis 모두 정상이며 특정 하류의 재시도 폭주가 아니다"
+      ],
+      "difficulty": "easy",
+      "related_scenarios": {
+        "contrast_with": [
+          "F03-P (같은 '풀 포화'지만 원인이 축소 설정 — 변경 이력 유무로 갈린다)",
+          "F09-R (같은 '전반적 지연'이지만 원인이 노드 CPU — 진입량이 평상 수준이다)",
+          "F11-R (같은 부하 증폭 구조지만 근본이 Redis 중단이다 — 캐시 장애 신호 유무로 갈린다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-order"
+        ],
+        "partial": [
+          "commerce-gateway"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [],
@@ -749,12 +849,68 @@
       "distinguishing_evidence": "inventory container throttling과 limit 변경이 관측되며 같은 host의 다른 pod와 DB는 정상이다."
     },
     "F11-R": {
-      "title": "Redis 중단과 fallback 과부하로 인한 cart 장애",
-      "description": "Redis 중단 뒤 cart·checkout 요청이 PostgreSQL fallback으로 몰려 DB 용량을 초과하는 시나리오다.",
-      "cause": "Redis outage amplified by overloaded PostgreSQL fallback",
-      "injection_summary": "Redis를 중단하고 실측 기반 cart·checkout surge를 동시에 주입한다.",
-      "user_impact": "cart 조회와 checkout 지연·실패가 발생한다.",
-      "distinguishing_evidence": "Redis 오류 이후 DB session과 pool 사용량이 급증하고 fallback trace가 나타난다.",
+      "title": "Redis 중단 — 캐시 격리는 성공했지만 DB로 몰린 fallback이 cart를 무너뜨린다",
+      "description": "cart-service는 Redis 장애에 대비해 설계돼 있다. 읽기 경로에 500ms 타임아웃·재시도·서킷브레이커를 두고, 브레이커가 열리면 즉시 DB fallback으로 우회하며, Redis는 readiness 집계에서도 빠져 있다. 그래서 Redis를 내려도 파드는 죽지 않고 기능도 유지된다 — **다만 모든 읽기가 DB로 간다**. 여기에 부하를 얹으면 캐시가 흡수하던 트래픽 전량이 cart의 커넥션 풀로 몰려 그 풀이 마르고, 장바구니 조회와 체크아웃이 실패한다. 격리는 성공했는데 용량이 못 따라간 형태다.",
+      "cause": "Redis 중단 → cart getCart의 @Retry(cartRedis) 후 @CircuitBreaker(cartRedis) open → getCartFromDb fallback으로 전량 DB 조회 → surge와 겹쳐 cart Hikari 풀(20) 포화 → 커넥션 획득 3s 초과로 cart 5xx → order의 cartClient 서킷 open → 체크아웃 502",
+      "injection_summary": "cache.control executor가 testbed-redis를 중단하고, 동시에 load.north_south가 surge.js를 35/50/65rps 사다리로 흘려 fallback 트래픽을 만든다. cleanup은 Redis 복구이며 캐시는 비어 있는 상태에서 다시 채워진다.",
+      "user_impact": "장바구니 조회가 느려지고 체크아웃이 5xx로 실패한다. Redis가 살아 있을 때와 달리 **모든 조회가 DB를 때리므로** 부하가 조금만 올라도 급격히 나빠진다. 체크아웃 종단 불변식이 깨져 주문·재고 상태의 일관성 점검에도 걸린다.",
+      "distinguishing_evidence": "결정 증거는 시간 순서다 — Redis 연결 오류와 서킷 개방이 먼저 관측되고, 그 뒤에 cart의 DB 세션 수와 풀 사용량이 계단식으로 뛴다. 즉 DB 압박은 원인이 아니라 결과다. cart 파드는 Ready를 유지하는데(Redis가 health 집계에서 빠져 있으므로) 서비스는 실패한다는 불일치도 특징이다. F07-H와 달리 진입량은 통제 대역이고, F03-P와 달리 풀 설정 변경 이력이 없다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P1",
+      "observation_domains": [
+        "APM",
+        "DPM",
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "middleware",
+        "target_id": "testbed-redis",
+        "trigger_target_id": "commerce-cart",
+        "mechanism": "근본은 캐시 계층(testbed-redis)의 중단이고, 그것이 장애로 번지는 이유는 fallback의 용량이 캐시의 용량과 같지 않기 때문이다. CartService.getCart는 @CircuitBreaker(cartRedis)와 @Retry(cartRedis)를 달고 있어 Redis가 죽으면 최대 2회 시도(각 500ms 타임아웃) 뒤 getCartFromDb로 우회한다. 서킷이 열려 있는 동안은 Redis를 건너뛰므로 지연이 사라지지만, half-open 전이 때마다 다시 500ms 왕복을 시도해 주기적인 지연 파동이 남는다. 본질적 문제는 그 다음이다 — 평소 캐시가 처리하던 조회가 전부 loadFromDb로 내려가고, cart의 Hikari 풀은 20(fallback을 감안해 다른 서비스보다 크게 잡았지만 무한은 아니다)이며 connection-timeout이 3초라, surge와 겹치면 획득 실패가 5xx로 표면화된다. Redis는 readiness 집계에서 제외돼 있어 파드는 Ready를 유지하고, 그래서 '파드는 건강한데 요청은 실패하는' 형상이 된다. 상류 order는 cartClient의 서킷이 열리며 체크아웃 첫 단계에서 502를 낸다.",
+        "code_anchor": [
+          "commerce/cart-service/src/main/java/com/commerce/cart/service/CartService.java:72-82 (getCart — @CircuitBreaker(cartRedis)+@Retry(cartRedis), 캐시 우선 조회)",
+          "commerce/cart-service/src/main/java/com/commerce/cart/service/CartService.java:84-88 (getCartFromDb — Redis 불가 시 DB fallback. 트래픽 전량이 이 경로로 내려간다)",
+          "commerce/cart-service/src/main/resources/application.yml:30-34 (spring.data.redis timeout 500ms/connect-timeout 500ms — 장애 시 요청당 대기의 크기)",
+          "commerce/cart-service/src/main/resources/application.yml:11-17 (hikari maximum-pool-size 20·connection-timeout 3000 — fallback이 부딪히는 벽)",
+          "commerce/cart-service/src/main/resources/application.yml:41-42 (management.health.redis enabled false — 파드가 Ready를 유지하는 근거)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/CartClient.java:26-28 (@CircuitBreaker(cartClient) — cart 실패를 체크아웃 첫 단계에서 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/CartClient.java:42-47 (getCartFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:147 (cartClient.getCart — 체크아웃 5-hop의 첫 단계)",
+          "commerce/k8s/11-redis.yaml:10 (testbed-redis — 중단 대상 캐시 인스턴스)"
+        ],
+        "infra_anchor": "cache.control executor가 Redis를 중단하고 복구한다. 부하 사다리(35/50/65rps)를 둔 이유는 Redis만 내려서는 피해가 나지 않기 때문이다 — 격리 설계가 실제로 동작하므로 **fallback 용량을 넘기는 부하가 있어야 G3(서비스 피해)가 성립한다**. 이 시나리오에서 부하는 배경 조건이 아니라 필수 구성 요소다."
+      },
+      "must_support": [
+        "Redis 연결 실패와 cartRedis 서킷 개방이 관측되고, 그 **뒤에** cart의 DB 세션·풀 사용량이 급증",
+        "체크아웃 5xx 비율 상승(≥ 0.05)과 체크아웃 종단 불변식 위반(business_ok = false)",
+        "cart 파드는 Ready를 유지 — Redis가 health 집계에서 빠져 있어 생기는 특유의 불일치",
+        "DB fallback 경로의 트레이스(loadFromDb)가 캐시 히트 경로를 대체"
+      ],
+      "must_rule_out": [
+        "순수 부하 초과가 아님 — achieved_rps가 통제 대역(30~70)이고 Redis 장애가 선행한다. 부하만이면 F07-H",
+        "cart 파드 장애가 아님 — pod_ready = true 유지. 죽으면 F05 계열",
+        "풀 설정 변경이 아님 — cart의 풀·timeout 설정에 변경 이력이 없다. 변경이 있으면 F03-P",
+        "DB 자체 장애가 아님 — 차단 세션이 없고 DB는 요청량 증가에만 반응한다"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F07-H (같은 풀 포화지만 캐시 장애 없이 진입량만으로 도달한다)",
+          "F03-P (같은 풀 포화지만 원인이 축소 설정 — 변경 이력 유무로 갈린다)",
+          "F01-R (같은 '체크아웃 실패'지만 근본이 DB 잠금 — 차단 세션 유무로 갈린다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "testbed-redis"
+        ],
+        "partial": [
+          "commerce-cart",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [
@@ -824,12 +980,62 @@
       "distinguishing_evidence": "카테고리별 메뉴 조회 지연(APM p95)이 증가하는 동안 MySQL 호스트 CPU/IO와 에러율은 정상 범위를 유지한다."
     },
     "F04-R": {
-      "title": "shipping consumer 중단으로 인한 배송 생성 지연",
-      "description": "commerce shipping Kafka consumer를 지속 중단해 주문·결제 성공 후 배송 생성 SLA를 위반하는 시나리오다.",
-      "cause": "Shipping Kafka consumer outage",
-      "injection_summary": "shipping deployment를 0 replica로 내리고 lag를 만든 뒤 원래 replica로 복구하고 backlog drain을 확인한다.",
-      "user_impact": "주문은 성공하지만 배송 생성과 후속 상태 반영이 지연된다.",
-      "distinguishing_evidence": "outbox publish는 정상이고 shipping consumer lag가 증가하며 shipment row가 생성되지 않는다.",
+      "title": "shipping 컨슈머 중단 — 주문은 전부 성공하는데 배송만 생기지 않는다",
+      "description": "shipping-service를 0 replica로 내려 commerce.orders 토픽의 컨슈머를 멈춘다. 주문·결제는 동기 경로라 끝까지 성공하고 사용자에게는 아무 오류도 보이지 않는다. 그러나 PAID 이벤트를 받아 배송을 만드는 소비자가 없으므로 shipment 행이 생기지 않고 컨슈머 lag만 쌓인다. **5xx가 하나도 없는 장애**라는 점이 이 케이스의 정체성이며, 오류율·응답시간 기반 탐지가 전부 침묵하는 사각지대를 만든다.",
+      "cause": "testbed-shipping을 0 replica로 축소 → commerce.orders의 shipping-service 컨슈머 그룹이 정지 → OrderEventConsumer가 PAID 이벤트를 소비하지 못함 → ShippingService.createShipmentForOrder 미호출 → shipment 행 미생성 + 컨슈머 lag 증가. 동기 주문 경로는 전 구간 정상",
+      "injection_summary": "kafka.control executor가 testbed-shipping deployment를 0 replica로 내려 lag를 만든 뒤, cleanup에서 원래 replica(1)로 복구하고 backlog가 실제로 소진되는지(drain, 최대 600초)까지 확인한다. 복구 확인을 lag 0까지로 두는 이유는 컨슈머가 다시 떠도 밀린 이벤트를 다 처리하기 전에는 다음 케이스가 오염되기 때문이다.",
+      "user_impact": "사용자는 주문에 성공하고 결제도 완료되지만 배송이 생성되지 않는다. 화면상 오류가 없어 주문 직후에는 아무도 이상을 느끼지 못하고, 배송 SLA 시점이 지나서야 드러난다. 복구 후에는 밀린 이벤트가 처리되며 배송이 뒤늦게 한꺼번에 생성된다.",
+      "distinguishing_evidence": "결정 증거는 **생산은 정상인데 소비만 멈췄다**는 비대칭이다. order의 outbox 발행과 브로커의 토픽 유입은 정상이고 Kafka 파드도 건강한데, shipping-service 컨슈머 그룹의 lag만 단조 증가한다. 동기 경로 지표(5xx·p95)는 전 구간 정상이라 오류 기반 탐지로는 잡히지 않고, '주문 수 대비 shipment 생성 수'라는 업무 불변식에서만 드러난다. Kafka 자체 장애라면 생산도 함께 실패했을 것이다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P5",
+      "observation_domains": [
+        "KCM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "commerce-shipping",
+        "trigger_target_id": "commerce-order",
+        "mechanism": "결함 보유 대상은 shipping-service의 이벤트 소비 경로다. order는 주문이 확정되면 OrderEvent를 outbox에 기록하고 relay가 commerce.orders로 발행한다 — 여기까지는 shipping의 생사와 무관하게 동작한다. shipping의 OrderEventConsumer는 @KafkaListener(topics=${topics.orders}, groupId=shipping-service)로 그 토픽을 구독하다가 status가 PAID인 이벤트에 대해 ShippingService.createShipmentForOrder를 호출한다. 컨슈머가 사라지면 그룹의 오프셋이 전진하지 않아 lag가 쌓이고, 배송은 생성되지 않는다. 이 구조에서 동기 주문 경로는 **어떤 것도 기다리지 않으므로** 사용자 응답은 200을 유지한다 — 비동기 경계 뒤의 고장은 응답 코드로 새어 나오지 않는다(P5). 메시지는 브로커에 보존되므로 컨슈머가 돌아오면 밀린 이벤트가 처리되고 배송이 뒤늦게 생성된다 — 데이터 손실이 아니라 **지연**이며, 그래서 피해 판정을 SLA 위반으로 정의해야 한다.",
+        "code_anchor": [
+          "commerce/shipping-service/src/main/java/com/commerce/shipping/event/OrderEventConsumer.java:28-36 (@KafkaListener(topics = \"${topics.orders}\", groupId = \"shipping-service\") — PAID 이벤트로 배송을 만드는 유일한 경로)",
+          "commerce/shipping-service/src/main/java/com/commerce/shipping/service/ShippingService.java:48-49 (createShipmentForOrder — 컨슈머가 멈추면 호출되지 않는다)",
+          "commerce/shipping-service/src/main/resources/application.yml:48-50 (topics.orders commerce.orders — 구독 토픽)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:206 (eventPublisher.publish(new OrderEvent — 생산 측은 소비자와 무관하게 정상 동작한다)",
+          "commerce/k8s/28-shipping-service.yaml:9 (replicas 1 — 주입이 이 값을 0으로 내린다)"
+        ],
+        "infra_anchor": "kafka.control executor가 Deployment replica를 0으로 내리고 복구한다. 브로커나 토픽을 건드리지 않는 이유는 그렇게 하면 생산까지 실패해 '생산 정상·소비 정지'라는 감별 축이 무너지기 때문이다. cleanup이 lag 0까지 기다리는 것은 G9(케이스 간 무오염) 요구사항이다."
+      },
+      "must_support": [
+        "shipping-service 컨슈머 그룹의 lag가 0보다 크고 단조 증가",
+        "shipping deployment의 available replicas가 0 — 소비자가 실제로 사라졌다는 직접 증거",
+        "같은 구간에 주문·결제 동기 경로는 정상(5xx 없음)이며 outbox 발행도 정상",
+        "주문 수 대비 shipment 생성 수의 괴리 — 업무 불변식 위반이 유일한 피해 신호"
+      ],
+      "must_rule_out": [
+        "Kafka 브로커 장애가 아님 — Kafka 파드 Ready 유지, 생산은 정상이다. 브로커면 생산도 실패한다",
+        "진입 경로 장애가 아님 — entry_status가 살아 있고 주문은 성공한다",
+        "컨슈머가 살아 있는 상태의 지연이 아님 — replicas가 0이다(0이 아니면 원인이 다르다)",
+        "데이터 손실이 아님 — 복구 후 backlog가 소진되며 배송이 생성된다(손실이면 다른 결함이다)"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F23-R (같은 '조용한 장애'지만 재고 리스톡 배치가 멈춰 409로 표면화된다)",
+          "F18-P (같은 비동기 경계 뒤의 고장이지만 대상이 outbox relay — 생산 쪽이 멈춘다)",
+          "F01-R (같은 commerce 도메인이지만 잠금으로 동기 경로가 실패한다. 차단 세션 0인 대조군으로 쓰인다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-shipping"
+        ],
+        "partial": [
+          "testbed-kafka"
+        ]
+      },
       "injected_fault": {
         "profile": "kafka.control",
         "companions": [
@@ -849,8 +1055,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F12-H": {
       "title": "product 컨테이너 CPU 한도 축소 — 네트워크 장애처럼 보이는 단일 서비스 포화",
@@ -1476,12 +1681,64 @@
       }
     },
     "F03-P": {
-      "title": "payment Hikari 커넥션풀 축소 + checkout surge 중첩",
-      "description": "commerce payment-service의 Hikari maximum-pool-size를 재빌드 없이 env로 축소하고 checkout surge를 얹어, 커넥션풀 포화로 payment 처리가 지연·timeout되는 시나리오다. 원인은 트래픽 자체가 아니라 축소된 풀 설정이며 surge는 증폭기다(R5).",
-      "cause": "Undersized HikariCP pool configuration on payment-service (config misdeployment) amplified by checkout surge",
-      "injection_summary": "payment deployment에 SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE env(k8s.env, F08-P 패턴)를 주입+rollout해 풀을 축소한다. calibration ladder로 pool=5→3→2를 내려가며(F09-P 계단식 선례) 증상 발현 지점을 정의한다. north-south 60rps companion(무릎 아래 건강 상한)이 checkout 결제 경로에 지속 부하를 준다. cleanup=env 제거+rollout 원복.",
-      "user_impact": "축소된 풀에서 payment 커넥션 획득 대기가 길어져 payment_p95가 급등하고, order의 payment 호출이 timeout돼 checkout 5xx가 상승한다.",
-      "distinguishing_evidence": "payment_p95 급등 + checkout_5xx 상승이 있으나 payment pod·DB·호스트 자원은 정상이고 payment deployment의 풀 설정 변경(rollout) 이력이 존재한다. F07-H(진입 폭주)와 달리 진입량은 60rps로 통제 수준이며, F06-R/F06-H와 달리 원인은 커넥션풀 설정이다.",
+      "title": "payment Hikari 풀 축소 오배포 — 커넥션 대기가 결제 지연으로, 다시 체크아웃 실패로",
+      "description": "payment-service의 Hikari 최대 커넥션 수를 배포 파라미터로 축소한다(기본 10 → 5→3→2 사다리). payment의 processPayment는 한 트랜잭션 안에서 외부 PG와 core-banking을 차례로 부르므로 요청 하나가 커넥션을 **두 번의 원격 왕복 시간 내내** 쥔다. 풀이 작아지면 그 점유가 곧바로 대기 행렬이 되고, 대기 시간이 상류 order의 결제 read-timeout(15초)을 넘기면서 체크아웃이 실패한다. 원인은 트래픽이 아니라 축소된 풀 설정이며 부하는 증폭기다 — Class B(설정 오배포)로 라벨한다.",
+      "cause": "payment deployment에 SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE 축소 env 주입 → processPayment가 트랜잭션 안에서 커넥션을 쥔 채 PG·banking 왕복 → 동시 결제가 풀 크기를 넘는 순간 커넥션 획득 대기 → payment p95 급등 → order의 payment read-timeout 15s 초과 → @CircuitBreaker(paymentClient) open → 체크아웃 502",
+      "injection_summary": "k8s.env executor가 testbed-payment/payment-service의 env를 승인된 baseline에서 fault 집합으로 교체하고 rollout한다(F08-P와 같은 패턴, 차이는 풀 크기 env 한 항목). calibration ladder로 5→3→2를 내려가며 증상 발현 지점을 정한다. north-south 60rps companion이 결제 경로에 지속 부하를 주며, cleanup은 env 제거 후 rollout 원복이다.",
+      "user_impact": "결제 단계가 느려지다 타임아웃으로 실패해 체크아웃 5xx가 오른다. 피해가 전량이 아니라 **동시성에 좌우된다** — 한산하면 통과하고 몰리면 실패하므로 실패율이 부하와 함께 오르내린다. 결제 조회 등 payment의 다른 API도 같은 풀을 쓰므로 함께 느려진다.",
+      "distinguishing_evidence": "결정 증거는 지연의 위치다. payment 서버측 처리 시간은 늘었는데 그 안의 외부 PG·banking 호출은 정상 속도이고, 늘어난 시간의 정체가 **커넥션 획득 대기**다. DB 자체도 무죄다 — 차단 세션이 없고 느린 쿼리도 없다. 두 번째 축은 변경 이력으로, payment deployment에 env 변경과 롤아웃이 있고 실패 개시가 새 파드 Ready와 정렬된다. 진입량은 60rps 통제 수준이라 폭주(F07-H)가 아니다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "APM",
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "config",
+        "target_id": "commerce-payment",
+        "trigger_target_id": "commerce-order",
+        "mechanism": "결함은 payment-service의 커넥션 풀 크기 설정이다. payment의 application.yml에는 Hikari 설정이 없어 평소에는 Spring 기본값 10을 쓰는데, 주입은 이 값을 env로 덮어 더 작게 만든다. 풀 크기가 문제가 되는 이유는 PaymentService.processPayment의 구조다 — @Transactional 안에서 결제 행을 저장(=커넥션 획득)한 뒤 외부 PG와 core-banking을 차례로 호출하고 마지막에 커밋하므로, 커넥션 점유 시간이 곧 두 원격 왕복의 합이다. 풀이 2~5면 그만큼의 동시 결제만 진행할 수 있고 나머지는 획득 대기에 쌓인다. 대기는 payment 내부 시간으로 나타나므로 상류에서는 'payment가 느려졌다'로만 보이고, 대기가 order의 결제 read-timeout 15초를 넘기면 @Retry 2회와 @CircuitBreaker(paymentClient)를 태워 체크아웃 502가 된다. 요컨대 하류도 DB도 아프지 않은데 **자기 자신의 배급량**이 부족해 아픈 구조다.",
+        "code_anchor": [
+          "commerce/payment-service/src/main/resources/application.yml:7-10 (datasource — Hikari 설정이 없어 기본 풀 10. 주입이 이 기본값을 env로 덮는다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (PaymentService.processPayment — @Transactional 진입 후 결제 행 저장으로 커넥션을 잡는다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:63-64 (pgApiClient.requestPayment — 커넥션을 쥔 채 첫 번째 원격 왕복)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:77-80 (bankingTransferClient.transfer — 같은 트랜잭션 안 두 번째 원격 왕복. 점유 시간이 합산된다)",
+          "commerce/order-service/src/main/resources/application.yml:51-54 (services.payment read-timeout 15s — 대기가 이 벽을 넘으면 체크아웃이 실패한다)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient))",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')"
+        ],
+        "infra_anchor": "k8s.env executor가 baseline/fault env 집합을 통째로 교체한다(차이는 풀 크기 항목 하나). **정직성 각주**: 풀 크기를 인위로 줄인 것이므로 Class A(코드 결함)로 제시할 수 없다 — 품질 기준서 G1 금지2의 실증 목록에 이 시나리오가 이름으로 올라 있다. 다만 '트랜잭션 안에서 두 번의 원격 호출을 하며 커넥션을 쥔다'는 구조 자체는 실제 코드이며, 그 구조가 없으면 풀을 줄여도 이런 형태로 아프지 않는다."
+      },
+      "must_support": [
+        "commerce-payment p95 급등(≥ 500ms)과 체크아웃 5xx 비율 상승(≥ 0.05)",
+        "늘어난 payment 처리 시간의 정체가 커넥션 획득 대기 — 내부 외부호출 구간은 정상 속도",
+        "payment deployment의 env 변경·롤아웃 이력이 있고 실패 개시가 새 파드 Ready와 정렬",
+        "DB 무죄 — 차단 세션 0, 느린 쿼리 없음, payment 파드 Ready 유지"
+      ],
+      "must_rule_out": [
+        "진입 폭주가 아님 — achieved_rps가 통제 수준(60rps 대역)이다. 100rps 이상이면 F07-H",
+        "파드 장애가 아님 — payment 파드 Ready 유지, 재시작 없음. 죽으면 F05 계열",
+        "하류 지연이 아님 — 외부 PG·banking 응답은 정상 속도다. 하류면 F06-R·F08-G",
+        "DB 잠금이 아님 — payments·inventory 차단 세션 0. 잠금이면 F06-H·F01-R"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F08-P (같은 k8s.env 설정 오배포지만 대상이 timeout — 절단이 order 쪽에서 일어난다)",
+          "F07-H (같은 '풀 포화'지만 원인이 부하량이고 설정 변경 이력이 없다)",
+          "F06-R (같은 payment 커넥션 점유지만 원인이 외부 지연 — 외부 span이 10초에 붙는다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-payment"
+        ],
+        "partial": [
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [
@@ -1861,8 +2118,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F09-H": {
       "title": "order JVM GC 압박(heap 축소)",
