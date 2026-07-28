@@ -30,11 +30,11 @@
     ],
     "controller": {
       "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
+      "decision_mode": "calibration",
       "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f10-h-mysql-io-saturation/fixed",
-        "requires_approved_fixed_profile": true
+        "kind": "adaptive",
+        "ref": "controller-profiles/f10-h-mysql-io-saturation/adaptive",
+        "requires_approved_fixed_profile": false
       },
       "live_enabled": false
     }

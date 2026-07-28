@@ -2801,7 +2801,11 @@
           "F09-R",
           "F05-P",
           "F21-Q",
-          "F21-P"
+          "F21-P",
+          "F02-H",
+          "F10-H",
+          "F10-P",
+          "F15-P"
         ]
       },
       "scenario_parameters": {
@@ -2836,6 +2840,38 @@
             "testbed-kafka",
             "testbed-payment"
           ]
+        },
+        "F02-H": {
+          "mode": "fio",
+          "host": "192.168.122.184",
+          "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0",
+          "size_mib": 2048,
+          "runtime_seconds": 600,
+          "rate_iops": 6000
+        },
+        "F10-H": {
+          "mode": "fio",
+          "host": "192.168.122.14",
+          "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
+          "size_mib": 2048,
+          "runtime_seconds": 600,
+          "rate_iops": 6000
+        },
+        "F10-P": {
+          "mode": "fio",
+          "host": "192.168.122.11",
+          "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+          "size_mib": 2048,
+          "runtime_seconds": 600,
+          "rate_iops": 6000
+        },
+        "F15-P": {
+          "mode": "pressure",
+          "host": "192.168.122.11",
+          "cpu_workers": 2,
+          "vm_workers": 1,
+          "vm_bytes": "1500M",
+          "runtime_seconds": 600
         }
       },
       "scenario_levels": {
@@ -2918,6 +2954,146 @@
                 "testbed-kafka",
                 "testbed-payment"
               ]
+            }
+          }
+        ],
+        "F02-H": [
+          {
+            "level_id": "io-6000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.184",
+              "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 6000
+            }
+          },
+          {
+            "level_id": "io-12000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.184",
+              "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 12000
+            }
+          },
+          {
+            "level_id": "io-20000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.184",
+              "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 20000
+            }
+          }
+        ],
+        "F10-H": [
+          {
+            "level_id": "io-6000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.14",
+              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 6000
+            }
+          },
+          {
+            "level_id": "io-12000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.14",
+              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 12000
+            }
+          },
+          {
+            "level_id": "io-20000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.14",
+              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 20000
+            }
+          }
+        ],
+        "F10-P": [
+          {
+            "level_id": "io-6000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.11",
+              "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 6000
+            }
+          },
+          {
+            "level_id": "io-12000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.11",
+              "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 12000
+            }
+          },
+          {
+            "level_id": "io-20000",
+            "parameters": {
+              "mode": "fio",
+              "host": "192.168.122.11",
+              "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+              "size_mib": 2048,
+              "runtime_seconds": 600,
+              "rate_iops": 20000
+            }
+          }
+        ],
+        "F15-P": [
+          {
+            "level_id": "pressure-cpu2-vm1x1500m",
+            "parameters": {
+              "mode": "pressure",
+              "host": "192.168.122.11",
+              "cpu_workers": 2,
+              "vm_workers": 1,
+              "vm_bytes": "1500M",
+              "runtime_seconds": 600
+            }
+          },
+          {
+            "level_id": "pressure-cpu3-vm1x3000m",
+            "parameters": {
+              "mode": "pressure",
+              "host": "192.168.122.11",
+              "cpu_workers": 3,
+              "vm_workers": 1,
+              "vm_bytes": "3000M",
+              "runtime_seconds": 600
+            }
+          },
+          {
+            "level_id": "pressure-cpu4-vm2x2500m",
+            "parameters": {
+              "mode": "pressure",
+              "host": "192.168.122.11",
+              "cpu_workers": 4,
+              "vm_workers": 2,
+              "vm_bytes": "2500M",
+              "runtime_seconds": 600
             }
           }
         ]

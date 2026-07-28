@@ -81,22 +81,46 @@ class DbHostFoundations(unittest.TestCase):
         # 단독으로 쓴다 — commerce PG=tb-w1(.184), banking Oracle=tb-w2(.11),
         # food MySQL=tb-w3(.14). 이전에는 PG와 Oracle이 tb-w1 한 장치를 공유해
         # F02-H와 F10-P가 서로를 오염시켰다.
-        expected = {"F02-H": "192.168.122.184", "F10-R": "192.168.122.184", "F10-H": "192.168.122.14", "F10-P": "192.168.122.11", "F15-P": "192.168.122.11"}
-        for sid, address in expected.items():
-            p = host.CONTRACTS[sid]
-            host.validate(sid, p, {})
-            argv, body = host.build_invocation(plan("host.stress", sid, p, {"transport": "ssh", "host": address}), "cleanup")
-            self.assertIn(f"nkia@{address}", argv)
-            text = body.decode()
-            self.assertIn("StrictHostKeyChecking=yes", " ".join(argv))
-            self.assertIn("rm -f", text)
-            self.assertIn("kill -9", text)
+        #
+        # F02-H·F10-H·F10-P·F15-P는 고정 계약이 아니라 사다리다(rate_iops 고정값이
+        # 장치 능력의 16~21%뿐이라 피해를 못 냈다). 모든 레벨이 같은 워커를 향해야 한다.
+        expected = {"F02-H": "192.168.122.184", "F10-H": "192.168.122.14", "F10-P": "192.168.122.11"}
+        cases = [(sid, addr, p) for sid, addr in expected.items() for p in host.STORAGE_LEVELS[sid]]
+        cases += [("F15-P", "192.168.122.11", p) for p in host.F15P_LEVELS]
+        cases += [("F10-R", "192.168.122.184", host.CONTRACTS["F10-R"])]
+        for sid, address, p in cases:
+            with self.subTest(scenario=sid, level=p.get("rate_iops") or p.get("vm_bytes") or "fixed"):
+                self.assertEqual(p["host"], address)
+                host.validate(sid, p, {})
+                argv, body = host.build_invocation(plan("host.stress", sid, p, {"transport": "ssh", "host": address}), "cleanup")
+                self.assertIn(f"nkia@{address}", argv)
+                text = body.decode()
+                self.assertIn("StrictHostKeyChecking=yes", " ".join(argv))
+                self.assertIn("rm -f", text)
+                self.assertIn("kill -9", text)
+
+    def test_storage_ladders_span_below_and_above_measured_device_capacity(self) -> None:
+        # 2026-07-28 실측: tb-w3 /dev/vda1 ≈ 18,600 randwrite IOPS. 사다리는 경합이
+        # 미미한 구간부터 사실상 무제한까지 걸쳐야 무릎을 찾을 수 있다. 옛 고정값
+        # 3000~4000은 능력의 16~21%라 상한으로서 DB를 굶길 수 없었다.
+        measured_capacity = 18_600
+        for sid, levels in host.STORAGE_LEVELS.items():
+            with self.subTest(scenario=sid):
+                iops = [level["rate_iops"] for level in levels]
+                self.assertEqual(iops, sorted(iops), "사다리는 오름차순이어야 한다")
+                self.assertLess(iops[0], measured_capacity * 0.5, "첫 단은 경합이 약해야 한다")
+                self.assertGreater(iops[-1], measured_capacity, "마지막 단은 사실상 무제한이어야 한다")
 
     def test_contract_drift_and_unverified_log_partition_are_rejected(self) -> None:
-        drift = copy.deepcopy(host.CONTRACTS["F10-H"])
+        drift = copy.deepcopy(host.STORAGE_LEVELS["F10-H"][0])
         drift["target_dir"] = "/dev/sda"
         with self.assertRaises(host.ExecutorError):
             host.validate("F10-H", drift, {})
+        # 사다리 밖의 강도도 거부해야 한다 — 옛 고정 계약값(4000)이 대표적이다.
+        stale = copy.deepcopy(host.STORAGE_LEVELS["F10-H"][0])
+        stale["rate_iops"] = 4000
+        with self.assertRaises(host.ExecutorError):
+            host.validate("F10-H", stale, {})
         with self.assertRaisesRegex(host.ExecutorError, "no verified"):
             host.validate("F10-G", {}, {})
 

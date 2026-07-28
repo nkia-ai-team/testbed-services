@@ -9,11 +9,38 @@ from executor_common import ExecutorError, cli, profile_instance
 PROFILE_ID = "host.stress"
 
 CONTRACTS: dict[str, dict[str, Any]] = {
-    "F02-H": {"mode": "fio", "host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 3000},
     "F10-R": {"mode": "watermark", "host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0", "watermark_percent": 85, "reserve_mib": 10240, "maximum_fill_mib": 51200},
-    "F10-H": {"mode": "fio", "host": "192.168.122.14", "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 4000},
-    "F10-P": {"mode": "fio", "host": "192.168.122.11", "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 3000},
-    "F15-P": {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 2, "vm_workers": 1, "vm_bytes": "512M", "runtime_seconds": 600},
+}
+
+# 스토리지 IO 시나리오(F02-H·F10-H·F10-P)는 단일 계약이 아니라 캘리브레이션 사다리다.
+#
+# 2026-07-28 실측: tb-w3 /dev/vda1이 randwrite 4k direct에서 약 18,600 IOPS
+# (min 13,516 / max 26,090, 72.9 MiB/s, util 85%). 세 워커는 같은 GB10 호스트의
+# 동종 VM이라 능력이 유사하다고 보되, 무릎은 노드별로 라이브에서 확정한다.
+#
+# 이전 계약의 rate_iops 3000~4000은 그 능력의 16~21%에 불과했다. rate_iops는
+# **상한**이므로 이 값으로는 DB를 굶길 수 없다 — F10-R에서 배운 것과 같은 함정
+# ("안전한 구간에는 피해가 없다"). 사다리는 경합 없음(~32%)부터 사실상 무제한까지
+# 걸쳐, 어느 지점에서 DB 지연이 사용자 피해로 번지는지를 런타임이 찾게 한다.
+# 20000은 측정 능력(18.6k)을 넘으므로 실질적으로 무제한이다.
+_STORAGE_LADDER_IOPS = (6000, 12000, 20000)
+
+_STORAGE_TARGETS: dict[str, dict[str, Any]] = {
+    # commerce PG — tb-w1 단독 장치(2026-07-28 배치 고정 후 Oracle과 분리됨)
+    "F02-H": {"host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0"},
+    # food MySQL — tb-w3 단독 장치
+    "F10-H": {"host": "192.168.122.14", "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0"},
+    # banking Oracle — tb-w2 단독 장치(07-28 이사 + PVC 재생성)
+    "F10-P": {"host": "192.168.122.11", "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0"},
+}
+
+STORAGE_LEVELS: dict[str, list[dict[str, Any]]] = {
+    sid: [
+        {"mode": "fio", "host": t["host"], "target_dir": t["target_dir"],
+         "size_mib": 2048, "runtime_seconds": 600, "rate_iops": iops}
+        for iops in _STORAGE_LADDER_IOPS
+    ]
+    for sid, t in _STORAGE_TARGETS.items()
 }
 
 # F09-R (worker CPU noisy neighbor) is a calibration ladder, not a single contract.
@@ -62,6 +89,32 @@ F05P_LEVELS = [
     {"mode": "memhog", "host": "192.168.122.184", "mib": 8500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
 ]
 
+# F15-P — 2026-07-28 재설계.
+#
+# 원 설계는 "공용 노드 압박"이었다. 세 도메인이 한 워커에 뒤섞여 있으니 노드를 누르면
+# 여러 도메인이 동시에 아프다는 것이 정체성이었는데, nodeSelector로 도메인을 갈라놓은
+# 순간 그 전제가 **소멸**했다. 이제 어떤 워커도 한 도메인만 담는다.
+#
+# 새 정체성은 **복합 자원 고갈**이다. F09-R은 CPU만, F05-P는 메모리만 건드리도록
+# 일부러 격리돼 있다(각 주석 참조). F15-P는 둘을 동시에 밀어 "자원 하나로는 설명되지
+# 않는" 서명을 만든다 — 이것이 감별선이다:
+#   - F09-R 배제: 메모리 압박 신호가 함께 있다(F09-R은 메모리를 안 건드린다)
+#   - F05-P 배제: CPU 포화가 함께 있다(F05-P는 CPU를 비워 둔다)
+#   - 서비스 단위 결함 배제: 같은 노드 서비스가 **전부** 함께 나빠진다
+#
+# 대상은 tb-w2(banking)다. commerce 노드(tb-w1)에는 이미 F09-R·F05-P가 있어 쌓이는
+# 것을 피했고, 무엇보다 banking은 **Oracle이 같은 노드에 있어** 앱과 DB가 함께
+# 무너지는 인과 그림이 나온다 — 노드가 근본임을 가리키는 더 강한 증거다.
+#
+# 메모리는 eviction 무릎 아래로 묶는다. tb-w2 available ~7103 MiB(2026-07-28 실측)에서
+# 최대 5000 MiB만 잡아 파드 축출은 일으키지 않는다 — 축출은 F05-P의 표면이고,
+# F15-P는 "축출 없이 전반적으로 느려지는" 상태를 노린다.
+F15P_LEVELS = [
+    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 2, "vm_workers": 1, "vm_bytes": "1500M", "runtime_seconds": 600},
+    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 3, "vm_workers": 1, "vm_bytes": "3000M", "runtime_seconds": 600},
+    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 4, "vm_workers": 2, "vm_bytes": "2500M", "runtime_seconds": 600},
+]
+
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
     del profile
@@ -72,6 +125,14 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     if scenario_id == "F05-P":
         if params not in F05P_LEVELS:
             raise ExecutorError("parameters do not match a measured F05-P memory-pressure level")
+        return
+    if scenario_id == "F15-P":
+        if params not in F15P_LEVELS:
+            raise ExecutorError("parameters do not match a measured F15-P compound-pressure level")
+        return
+    if scenario_id in STORAGE_LEVELS:
+        if params not in STORAGE_LEVELS[scenario_id]:
+            raise ExecutorError("parameters do not match a measured storage-IO ladder level")
         return
     expected = CONTRACTS.get(scenario_id)
     if expected is None:

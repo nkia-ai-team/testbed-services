@@ -46,7 +46,7 @@
         "load.north_south"
       ],
       "readiness": "blocked",
-      "load_mode": "fixed",
+      "load_mode": "adaptive",
       "injection_location": "worker-w1",
       "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 observations/success 신설 + live_enabled 승격. backing device는 실측 확정(tb-w1 /dev/vda1 — PVC는 루트FS 위)"
     },
@@ -309,7 +309,7 @@
         "load.north_south"
       ],
       "readiness": "parked",
-      "load_mode": "fixed",
+      "load_mode": "adaptive",
       "injection_location": "worker-w3",
       "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(food MySQL PVC는 tb-w3에 있다 — 도메인-워커 맵과 무관)"
     },
@@ -321,7 +321,7 @@
         "load.north_south"
       ],
       "readiness": "parked",
-      "load_mode": "fixed",
+      "load_mode": "adaptive",
       "injection_location": "worker-w2",
       "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(banking Oracle PVC는 tb-w1에 있다 — 도메인-워커 맵과 무관)"
     },
@@ -439,8 +439,8 @@
         "host.stress"
       ],
       "readiness": "parked",
-      "load_mode": "fixed",
-      "injection_location": "shared worker",
+      "load_mode": "adaptive",
+      "injection_location": "worker-w2",
       "prerequisite": "stress-ng 미설치(워커 3대 전부, apt 설치 가능 확인) + co-residency 보장 코드 + metadata·allowlist 신설"
     },
     {
