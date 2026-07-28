@@ -303,6 +303,15 @@
       "value_type": "integer",
       "freshness_sec": 30
     },
+    "database.oracle_tagged_session_count": {
+      "adapter": "database",
+      "selector": "oracle.client_identifier.session_count",
+      "allowed_parameters": [
+        "client_identifier"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
+    },
     "database.index_present": {
       "adapter": "database",
       "selector": "postgres.index.present",

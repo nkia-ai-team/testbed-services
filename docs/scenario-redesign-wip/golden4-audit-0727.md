@@ -135,6 +135,18 @@ CUT 26의 사유 분류:
 
 근본 대책: `live_probes.py:1121-1127` 태그 allowlist를 하드코딩 집합이 아니라 매니페스트/queries 기반 검증으로 일반화. `ORACLE_TAG_CONTRACT` 단일 태그 하드코딩 파라미터화.
 
+> **해소됨 (F06-H는 2026-07-27, 나머지 5건은 07-28).** 실제 원인은 표에 적힌 것과 일부 달랐다 — 재확인해 고친 내용:
+>
+> | 시나리오 | 실제 원인 | 조치 |
+> | --- | --- | --- |
+> | F06-H | 태그 관측 자체가 L1 누설 | `database.blocked_session_count`로 교체(07-27) |
+> | F01-P·F08-G | Oracle 세션을 **PG** `tagged_session_count`로 조회 | `database.oracle_tagged_session_count`로 전환 + repo `queries.json`에 등록 |
+> | F15-G | 위 + PG 태그 `rca-F15-G-inventory-lock`이 러너 allowlist 밖 | Oracle 축 전환 + PG 태그 등록 |
+> | F15-T1 | 러너 loadgen 정규식 `F[0-9]{2}-[A-Z]`가 `F15-T1` 배제 | `T[1-4]` 분기 추가 |
+> | F07-H | **표의 hikari 진단은 현행과 불일치** — 현 매니페스트에 hikari 관측이 없다. 실제 결함은 `tagged_db_sessions`에 파라미터가 없어 `lucida:<run_id>`로 폴백, 아무도 그 이름을 쓰지 않으므로 항상 0 → must_rule_out이 **발화 불가**(§3-3 동어반복 계열) | inventory·payments 두 릴레이션의 `blocked_session_count`로 교체 |
+>
+> `ORACLE_TAG_CONTRACT`(단일 태그 dict)는 `APPROVED_ORACLE_TAGS` 3종 집합으로 바뀌었다. 태그가 SQL에 `chr(114)||chr(99)||...`로 **손으로 인코딩**돼 있어 F01-P 외에는 관측 자체가 불가능했다 — 인코딩을 `_oracle_string_literal()`로 런타임 생성한다(중첩 printf/sqlplus 파이프라인에 따옴표를 넣지 않으려는 원래 의도는 유지).
+
 ### 3-5. 파드 교란이 장애를 만들지 못한다 (신규 발견)
 1-replica Deployment + strategy 미지정(maxUnavailable 0) 상태에서 probe/template patch를 가하면 **신규 파드만 NotReady가 되고 구 Ready 파드가 살아남아** Service 엔드포인트가 유지된다.
 영향: **F16-H, F17-R**(및 F15-T1의 food OOM 축, F05-H 재확인 필요).

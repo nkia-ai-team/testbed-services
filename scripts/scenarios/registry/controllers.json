@@ -631,9 +631,23 @@
           "freshness": "120s"
         },
         {
-          "id": "tagged_db_sessions",
+          "id": "blocked_inventory_sessions",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.blocked_session_count",
+          "parameters": {
+            "schema": "inventory_schema",
+            "table": "inventory"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "blocked_payment_sessions",
+          "adapter": "database",
+          "query_id": "database.blocked_session_count",
+          "parameters": {
+            "schema": "payment_schema",
+            "table": "payments"
+          },
           "freshness": "30s"
         }
       ],
@@ -680,8 +694,14 @@
       "must_rule_out": {
         "any": [
           {
-            "id": "db-lock-alternative",
-            "observation": "tagged_db_sessions",
+            "id": "db-lock-alternative-inventory",
+            "observation": "blocked_inventory_sessions",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "id": "db-lock-alternative-payment",
+            "observation": "blocked_payment_sessions",
             "op": "gt",
             "value": 0
           }
@@ -3200,9 +3220,9 @@
         {
           "id": "tagged_db_sessions",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.oracle_tagged_session_count",
           "parameters": {
-            "scenario_tag": "rca-F01-P-oracle-lock"
+            "client_identifier": "rca-F01-P-oracle-lock"
           },
           "freshness": "30s"
         },
@@ -3403,9 +3423,9 @@
         {
           "id": "tagged_db_sessions",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.oracle_tagged_session_count",
           "parameters": {
-            "scenario_tag": "rca-F08-G-oracle-lock"
+            "client_identifier": "rca-F08-G-oracle-lock"
           },
           "freshness": "30s"
         },
@@ -3613,9 +3633,9 @@
         {
           "id": "tagged_oracle_sessions",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.oracle_tagged_session_count",
           "parameters": {
-            "scenario_tag": "rca-F15-G-oracle-lock"
+            "client_identifier": "rca-F15-G-oracle-lock"
           },
           "freshness": "30s"
         },

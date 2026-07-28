@@ -150,9 +150,9 @@
           {
             "id": "tagged_db_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.oracle_tagged_session_count",
             "parameters": {
-              "scenario_tag": "rca-F01-P-oracle-lock"
+              "client_identifier": "rca-F01-P-oracle-lock"
             },
             "freshness": "30s"
           },
