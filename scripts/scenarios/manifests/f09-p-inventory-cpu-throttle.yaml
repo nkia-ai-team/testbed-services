@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "throttling 관측 지표 신설 + 성공조건을 자기충족 아닌 피해 지표로 교체",
+    "description": "감별 증거 배선만 남음 — prometheus.container_cpu_throttled_time은 이미 존재하나 컨트롤러 observations에 없다. 이를 등록해 감별자로 쓰면 된다. 성공조건 교체는 완료됨(user_p95≥500 = 피해 지표, ff5b9ab)",
     "live_allowed": false
   },
   "capture_policy": {

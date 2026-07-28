@@ -58,9 +58,9 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F09-R | host CPU noisy neighbor | 선택 worker/ssh | 해당 node pod cohort | 같은 worker tagged process | ready-후보 — 실측(07-20): 배치 지도 확보(w2=cart·gateway·inventory·redis·kafka·food-payment / w3=order·payment·pricing·product·user·mysql) |
 | F09-H | JVM GC pressure | K/kubectl JVM config + R/ssh | order endpoints | K config rollback, R load 종료 | partial — OOM 전 pause 범위 필요 |
 | F09-P | pod CPU throttle | K/kubectl inventory limit + R/ssh | checkout→inventory | K 원 limit rollback, R load 종료 | ready — 기존 resource patch 패턴 사용 |
-| F10-R | PG volume fill | commerce worker/ssh 또는 privileged K Job | 실제 PG data volume | filler만 제거 | blocked — PVC path 오판 위험 |
-| F10-H | MySQL IO saturation | food worker/ssh | 실제 MySQL device | 같은 worker stress 종료 | blocked — backing device 미확정 |
-| F10-P | Oracle IO saturation | banking worker/ssh | 실제 Oracle device | 같은 worker stress 종료 | blocked — 데이터 손상 위험·device 미확정 |
+| F10-R | PG volume fill | tb-w1/ssh | tb-w1 `/dev/vda1`(루트FS 공유 — 전용 볼륨 없음) | filler만 제거 | blocked — 구조적 불가. 안전 구간(85% 수위) 무피해, 전량 충전은 노드 DiskPressure 사건이라 정답 붕괴 |
+| F10-H | MySQL IO saturation | tb-w3/ssh | tb-w3 `/dev/vda1`(food MySQL PVC 실측 위치) | 같은 worker stress 종료 | blocked — fio 미설치. 좌표는 2026-07-28 실측 확정 |
+| F10-P | Oracle IO saturation | tb-w1/ssh | tb-w1 `/dev/vda1`(banking Oracle PVC 실측 위치) | 같은 worker stress 종료 | blocked — fio 미설치. 좌표는 2026-07-28 실측 확정 |
 | F11-R | Redis down + surge | K/kubectl Redis + R/ssh | cart fallback→PG | R load 종료 후 Redis replica 복원 | ready — 35/50/65 RPS adaptive ladder와 checkout 5xx 비율 관측 고정 |
 | F11-G | Redis down under low load | K/kubectl Redis + R/ssh | fallback이 흡수할 cart/checkout | Redis 복구, R load 종료 | ready — 낮은 강도 사용 (음성, v3 재캡처 복원 07-24) |
 | F12-H | product pod CPU throttle | K/kubectl `rca-testbed-commerce/testbed-product` + R/ssh 35 RPS | `commerce-product` APM p95/error, pod throttle; checkout/network 정상 | CPU limit 원값 `500m` rollback, pod Ready 확인, R load 종료 | ready — `product-service` CPU `500m→250m→100m→50m` adaptive ladder, product-only 영향·network error 0 고정 관측 |

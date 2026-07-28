@@ -8,8 +8,8 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w2",
-    "matrix_location_transport": "food worker/ssh",
+    "location": "worker-w3",
+    "matrix_location_transport": "tb-w3/ssh",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "metadata·controller 신설 + 호스트 좌표를 도메인-워커 맵과 정합화",
+    "description": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(food MySQL PVC는 tb-w3에 있다 — 도메인-워커 맵과 무관)",
     "live_allowed": false
   },
   "capture_policy": {

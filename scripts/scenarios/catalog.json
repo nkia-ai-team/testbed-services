@@ -48,7 +48,7 @@
       "readiness": "blocked",
       "load_mode": "fixed",
       "injection_location": "worker-w1",
-      "prerequisite": "PG PVC backing device"
+      "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 observations/success 신설 + live_enabled 승격. backing device는 실측 확정(tb-w1 /dev/vda1 — PVC는 루트FS 위)"
     },
     {
       "id": "F02-P",
@@ -275,7 +275,7 @@
       "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "jvm.gc.* 메트릭 유입 배선 + 러너의 testbed-order 거부 해제"
+      "prerequisite": "GC 압박 증거 쿼리 1종 신설 — jvm.gc.duration류는 수집되지 않으나 apm.agent.otel.java.jvm.memory.used_after_last_gc가 존재하므로 jvm.memory.limit 대비 비율로 배선한다(jvm_nondaemon_thread_count와 동일 패턴). '러너의 testbed-order 거부'는 해소됨(live_probes.py에 commerce·food 양쪽 등록 확인, 2026-07-28)"
     },
     {
       "id": "F09-P",
@@ -287,7 +287,7 @@
       "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "throttling 관측 지표 신설 + 성공조건을 자기충족 아닌 피해 지표로 교체"
+      "prerequisite": "감별 증거 배선만 남음 — prometheus.container_cpu_throttled_time은 이미 존재하나 컨트롤러 observations에 없다. 이를 등록해 감별자로 쓰면 된다. 성공조건 교체는 완료됨(user_p95≥500 = 피해 지표, ff5b9ab)"
     },
     {
       "id": "F10-R",
@@ -299,7 +299,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w1",
-      "prerequisite": "F10 계열 재설계 1순위: 좌표는 정합하므로 정답·컨트롤러·allowlist만 신설"
+      "prerequisite": "구조적 불가 — PGDATA 전용 볼륨이 선행되어야 한다. PVC가 tb-w1 루트FS(/dev/vda1, 38G) 위에 있어 계약대로면 3.1GiB만 차서 사용률 66→74%, PostgreSQL 무피해(G3 실패). 예비를 없애 14G를 채우면 kubelet·containerd가 함께 죽어 노드 DiskPressure 사건이 되어 정답과 다른 사건이 된다(2026-07-28 실측)"
     },
     {
       "id": "F10-H",
@@ -310,8 +310,8 @@
       ],
       "readiness": "parked",
       "load_mode": "fixed",
-      "injection_location": "worker-w2",
-      "prerequisite": "metadata·controller 신설 + 호스트 좌표를 도메인-워커 맵과 정합화"
+      "injection_location": "worker-w3",
+      "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(food MySQL PVC는 tb-w3에 있다 — 도메인-워커 맵과 무관)"
     },
     {
       "id": "F10-P",
@@ -322,8 +322,8 @@
       ],
       "readiness": "parked",
       "load_mode": "fixed",
-      "injection_location": "worker-w3",
-      "prerequisite": "metadata·controller 신설 + 호스트 좌표를 도메인-워커 맵과 정합화"
+      "injection_location": "worker-w1",
+      "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(banking Oracle PVC는 tb-w1에 있다 — 도메인-워커 맵과 무관)"
     },
     {
       "id": "F11-R",
@@ -441,7 +441,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "shared worker",
-      "prerequisite": "stress-ng 설치 + co-residency 보장 코드 + metadata·allowlist 신설"
+      "prerequisite": "stress-ng 미설치(워커 3대 전부, apt 설치 가능 확인) + co-residency 보장 코드 + metadata·allowlist 신설"
     },
     {
       "id": "F15-G",
@@ -625,7 +625,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "cleanup 원장 역분개 구현(공유 계정 ACC-1001 차감이 다음 케이스를 오염)"
+      "prerequisite": "배선 4항 — (1) load.north_south allowed_entry_urls에 30282 직행 등록, (2) frozen-bypass.js dual-arm 스크립트 신설, (3) controller 신설, (4) cleanup 원장 역분개(공유 계정 ACC-1001 차감이 다음 케이스를 오염). 관측 3종(frozen_bypass_completed_rate·normal_path_reject_rate·integrity_violation_count)은 이미 존재 — 설계 시트의 '관측 부재'는 낡음"
     },
     {
       "id": "F21-Q",
@@ -637,7 +637,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w2",
-      "prerequisite": "host.stress 계약 구성 + busy-thread 신호 신설 + Class 재분류"
+      "prerequisite": "host_stress_executor.py CONTRACTS에 F21-Q 미등록 → 실행 즉시 ExecutorError. 등록 + controller 신설. 'busy-thread 신호 부재'는 해소됨(prometheus.jvm_nondaemon_thread_count 존재)"
     },
     {
       "id": "F21-P",

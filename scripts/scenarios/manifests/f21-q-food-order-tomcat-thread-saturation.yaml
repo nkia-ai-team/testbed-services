@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "host.stress 계약 구성 + busy-thread 신호 신설 + Class 재분류",
+    "description": "host_stress_executor.py CONTRACTS에 F21-Q 미등록 → 실행 즉시 ExecutorError. 등록 + controller 신설. 'busy-thread 신호 부재'는 해소됨(prometheus.jvm_nondaemon_thread_count 존재)",
     "live_allowed": false
   },
   "capture_policy": {

@@ -9,7 +9,7 @@
   },
   "injection": {
     "location": "worker-w1",
-    "matrix_location_transport": "commerce worker/ssh 또는 privileged K Job",
+    "matrix_location_transport": "tb-w1/ssh",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "F10 계열 재설계 1순위: 좌표는 정합하므로 정답·컨트롤러·allowlist만 신설",
+    "description": "구조적 불가 — PGDATA 전용 볼륨이 선행되어야 한다. PVC가 tb-w1 루트FS(/dev/vda1, 38G) 위에 있어 계약대로면 3.1GiB만 차서 사용률 66→74%, PostgreSQL 무피해(G3 실패). 예비를 없애 14G를 채우면 kubelet·containerd가 함께 죽어 노드 DiskPressure 사건이 되어 정답과 다른 사건이 된다(2026-07-28 실측)",
     "live_allowed": false
   },
   "capture_policy": {

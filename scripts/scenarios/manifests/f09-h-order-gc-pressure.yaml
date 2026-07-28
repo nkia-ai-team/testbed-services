@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "jvm.gc.* 메트릭 유입 배선 + 러너의 testbed-order 거부 해제",
+    "description": "GC 압박 증거 쿼리 1종 신설 — jvm.gc.duration류는 수집되지 않으나 apm.agent.otel.java.jvm.memory.used_after_last_gc가 존재하므로 jvm.memory.limit 대비 비율로 배선한다(jvm_nondaemon_thread_count와 동일 패턴). '러너의 testbed-order 거부'는 해소됨(live_probes.py에 commerce·food 양쪽 등록 확인, 2026-07-28)",
     "live_allowed": false
   },
   "capture_policy": {
