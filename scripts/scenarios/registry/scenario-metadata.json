@@ -4636,7 +4636,7 @@
           "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:206 (eventPublisher.publish(new OrderEvent — outbox에 기록하는 경로는 계속 정상 동작한다)",
           "commerce/shipping-service/src/main/java/com/commerce/shipping/event/OrderEventConsumer.java:28-36 (@KafkaListener — 굶는 소비자. 여기가 lag 방향의 관측점이다)"
         ],
-        "infra_anchor": "**G2 미충족 — 현재 실행 불가(readiness: blocked).** 카탈로그의 injector가 `kafka.control`로 잘못 배선돼 있다(그것은 컨슈머를 멈추는 수단이라 의미가 정반대다). 07-27 감사 지적대로 `k8s.env`로 교체하고, testbed-order를 k8s.env allowlist에 등록하며, 미발행 outbox 카운트 관측을 commerce 쪽에도 신설해야 한다(현재는 banking F18-P만 있다). 정답지는 설계 의도를 기록해 두는 것이며 컨트롤러가 생기기 전까지 채점 대상이 아니다."
+        "infra_anchor": "주입은 k8s.env가 testbed-order/order-service의 env를 baseline↔fault로 교체하고 rollout한다(차이는 OUTBOX_RELAY_ENABLED=false 한 항목뿐 — 앱 수정은 0줄이며 스위치는 이미 코드에 있었다). 결정 증거는 러너의 database.commerce_outbox_unpublished_count다. 같은 이름의 banking 관측(F18-P)은 testbed-oracle-0에 sqlplus로 들어가는 Oracle 전용이라 commerce에는 쓸 수 없어, order_schema.outbox_events를 PG로 세는 관측을 따로 신설했다(published_at IS NULL, idx_outbox_events_unpublished 부분인덱스 경로). 반증 축인 shipping 컨슈머 lag은 F04-R이 쓰던 commerce Kafka lag 계약을 그대로 재사용한다 — 같은 지표를 두 시나리오가 반대 방향으로 읽는다."
       },
       "must_support": [
         "미발행 outbox 행(published_at IS NULL)이 단조 증가",
@@ -4667,7 +4667,138 @@
           "commerce-shipping"
         ]
       },
-      "injected_fault": null
+      "injected_fault": {
+        "profile": "k8s.env",
+        "companions": [
+          "load.north_south"
+        ],
+        "levels": [
+          {
+            "id": "approved-fixed-f04-h",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-order",
+              "container": "order-service",
+              "baseline": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ],
+              "fault": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                },
+                {
+                  "name": "OUTBOX_RELAY_ENABLED",
+                  "value": "false"
+                }
+              ]
+            }
+          }
+        ]
+      }
     },
     "F06-P": {
       "title": "food 외부 PG가 429로 거절 — 주문 생성만 막히고 조회는 멀쩡하다",

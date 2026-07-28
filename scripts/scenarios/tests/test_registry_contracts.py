@@ -74,6 +74,9 @@ class RegistryContractTests(unittest.TestCase):
             "F02-H", "F10-H", "F10-P", "F15-P",
             "F21-P", "F21-Q",
             "F09-H", "F09-P", "F17-P",
+            # 2026-07-28: relay 정지의 commerce 정합판. 스위치는 이미 앱에 있었고
+            # 막고 있던 것은 commerce PG용 미발행 outbox 관측의 부재였다.
+            "F04-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -191,6 +194,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F02-H", "F10-H", "F10-P", "F15-P",
                 "F21-P", "F21-Q",
                 "F09-H", "F09-P", "F17-P",
+                "F04-H",
             },
         )
         self.assertEqual(
@@ -221,6 +225,10 @@ class RegistryContractTests(unittest.TestCase):
                 # 2026-07-28: 배선 4항 중 둘은 이미 돼 있었고, 원장 역분개는
                 # 주입 금액을 잔액의 0.3%로 낮춰 오염 자체를 없앴다.
                 "F17-P",
+                # 2026-07-28: relay 정지의 commerce 정합판(F18-P의 쌍). 앱은 손대지
+                # 않았다 — OutboxRelay는 이미 @ConditionalOnProperty로 꺼지고,
+                # 없던 것은 order_schema의 미발행 outbox를 세는 관측뿐이었다.
+                "F04-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -342,7 +350,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         self.assertEqual(self.controllers["live_scenario_ids"][-4:],
-                         ["F21-P", "F09-H", "F09-P", "F17-P"])
+                         ["F09-H", "F09-P", "F17-P", "F04-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

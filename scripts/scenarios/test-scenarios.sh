@@ -38,10 +38,13 @@ total="$(jq '.scenarios | length' "$catalog")"
 # F12-H 말고는 아무도 쓸 수 없었다.
 # 2026-07-28: ready 41→42. F17-P. 카탈로그가 적어둔 배선 4항 중 둘은 이미 완료돼
 # 있었고, 원장 역분개는 주입 금액을 1~5로 낮춰 오염 자체를 없애는 것으로 대체했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 42 ]]
+# 2026-07-28: ready 42→43, blocked 1→0. F04-H. 유일한 blocked였고, 필요하던
+# 제어 표면(@ConditionalOnProperty)은 앱에 이미 있었다 — 없던 것은 commerce PG의
+# 미발행 outbox를 세는 관측이며 러너에 신설했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 43 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 12 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 1 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-28: 13 → 17. 스토리지 IO 3종(F02-H·F10-H·F10-P)과 F15-P를 고정 계약에서
@@ -196,8 +199,9 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # 2026-07-28: 21→22. F03-H 복귀분이 bin/ 스크립트를 가진 ready 집합에 더해졌다.
 # 2026-07-28: 23→27. 스토리지 포화 3종과 F15-P가 더해졌고 넷 다 bin/ 스크립트를 갖고 있다.
 # 2026-07-28: 27→29. F09-H·F09-P 복귀분.
-[[ $((ready_live_false + ready_live_true)) -eq 29 ]]
-[[ "$ready_live_true" -eq 29 ]]
+# 2026-07-28: 29→30. F04-H 승격분(bin/ 스크립트를 이미 갖고 있었다).
+[[ $((ready_live_false + ready_live_true)) -eq 30 ]]
+[[ "$ready_live_true" -eq 30 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

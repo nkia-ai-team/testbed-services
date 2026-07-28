@@ -41,7 +41,7 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F03-P | Hikari 축소 + surge | K/kubectl config patch + R/ssh load | commerce payment + checkout NodePort | K config rollback, R k6 종료 | partial — pool/강도 실측 필요. Class B/config 재라벨 확정(fix-food429-reanchor-sheet 07-23): root=undersized pool 설정 오배포, surge=증폭기(R5). executor·metadata 이미 정합, 라벨만 정정 |
 | F03-G | 낮은 surge | R/ssh | 용량 무릎 아래 commerce NodePort | R k6 tagged process | ready — 사용자 경로 동일 (음성, v3 재캡처 복원 07-24) |
 | F04-R | consumer stop | K/kubectl scale shipping=0 | commerce orders→Kafka→shipping | K replica 복원·lag drain | ready — SLA probe 대신 kafka-consumer-groups lag 직접 판정(replicas=0 ∧ lag>0)으로 재설계(07-18) |
-| F04-H | outbox relay stop | K/kubectl fault config/build | order DB outbox→Kafka | K relay 복원·backlog drain | blocked — relay 독립 제어 없음 |
+| F04-H | outbox relay stop | K/kubectl k8s.env(OUTBOX_RELAY_ENABLED=false) + R/ssh load.north_south | order DB outbox 미발행 적체(database.commerce_outbox_unpublished_count) + shipping lag 평탄 | K env 원복·rollout, relay 복원 시 backlog drain | ready — 제어는 앱의 @ConditionalOnProperty, 관측은 commerce PG용 신설 |
 | F04-P | ledger rate limit | K/kubectl fault config/build | banking transfers→ledger | K 처리율 복원·lag drain | blocked — rate-control 표면 없음 |
 | F05-R | memory limit + load | K/kubectl payment limit patch + R/ssh | checkout→payment pod | K 원 spec rollback, R load 종료 | ready — adaptive ladder가 안전 강도 탐색, restart 예산 3회 stop-loss(07-18) |
 | F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | ready — fault probe(/actuator/health/f05-h-fail) 고정, restart 예산 4회(07-18) |

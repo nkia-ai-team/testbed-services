@@ -102,13 +102,13 @@
       "id": "F04-H",
       "slug": "f04-h-order-outbox-relay-stop",
       "profiles": [
-        "kafka.control",
+        "k8s.env",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": "outbox relay control"
+      "prerequisite": ""
     },
     {
       "id": "F04-P",
