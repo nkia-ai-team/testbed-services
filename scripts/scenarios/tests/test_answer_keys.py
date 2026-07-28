@@ -75,10 +75,37 @@ class AnswerKeyContractTests(unittest.TestCase):
         collisions = {k: v for k, v in by_fingerprint.items() if len(v) > 1}
         self.assertEqual(collisions, {}, f"identical injections: {collisions}")
 
-    def test_code_anchors_point_at_a_line_that_exists(self) -> None:
-        # Charter §3-1 fix 3. The audit measured three anchors whose line
-        # numbers had drifted off the symbol they name.
-        anchor_pattern = re.compile(r"^([\w./-]+\.(?:java|yml|yaml|sql|py|js)):(\d+)")
+    def test_written_keys_are_machine_matchable(self) -> None:
+        # Charter §3-1 fix 1 + fix 4. The three pre-existing keys put the
+        # trigger and the fault-bearing target into one prose paragraph, which
+        # no scorer can match, and none of them defined how to score at all.
+        for scenario_id in sorted(self.active):
+            entry = self.metadata[scenario_id]
+            root_cause = entry.get("root_cause")
+            if not isinstance(root_cause, dict):
+                continue
+            target_id = root_cause["target_id"]
+            self.assertNotIn(" ", target_id, f"{scenario_id}: target_id must be an identifier")
+            self.assertLessEqual(len(target_id), 64, scenario_id)
+
+            scoring = entry.get("scoring")
+            self.assertIsInstance(scoring, dict, f"{scenario_id}: written key needs scoring")
+            self.assertIn(scoring["granularity"], {"service", "database-relation", "node", "container"})
+            self.assertTrue(scoring["accept"], scenario_id)
+            self.assertNotIn(
+                target_id,
+                scoring.get("partial", []),
+                f"{scenario_id}: the root cause cannot also be partial credit",
+            )
+
+    def test_code_anchors_still_name_a_symbol_that_lives_there(self) -> None:
+        # Charter §3-1 fix 3 / G7 CI requirement. Line numbers rot as code moves;
+        # the audit found three anchors that had drifted off the symbol they
+        # name. Anchors are written "path:start-end (Symbol — note)", so the
+        # check is that at least one identifier from the parenthetical actually
+        # appears within the cited span (±1 line of slack for signatures that
+        # wrap).
+        anchor_pattern = re.compile(r"^([\w./-]+):(\d+)(?:-(\d+))?\s*\((.+)$")
         checked = 0
         for scenario_id in sorted(self.active):
             root_cause = self.metadata[scenario_id].get("root_cause")
@@ -86,17 +113,27 @@ class AnswerKeyContractTests(unittest.TestCase):
                 continue
             for anchor in root_cause.get("code_anchor", []):
                 match = anchor_pattern.match(anchor)
-                if not match:
-                    continue
-                relative, line_no = match.group(1), int(match.group(2))
+                self.assertIsNotNone(
+                    match, f"{scenario_id}: anchor is not 'path:line (Symbol …)': {anchor}"
+                )
+                relative = match.group(1)
+                start = int(match.group(2))
+                end = int(match.group(3) or match.group(2))
+                symbol_text = match.group(4)
+
                 path = REPO / relative
-                if not path.is_file():
-                    matches = list(REPO.glob(f"**/{Path(relative).name}"))
-                    self.assertTrue(matches, f"{scenario_id}: no such file {relative}")
-                    path = matches[0]
+                self.assertTrue(path.is_file(), f"{scenario_id}: no such file {relative}")
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
                 self.assertLessEqual(
-                    line_no, len(lines), f"{scenario_id}: {relative}:{line_no} past EOF"
+                    end, len(lines), f"{scenario_id}: {relative}:{end} is past EOF"
+                )
+
+                span = "\n".join(lines[max(0, start - 2):min(len(lines), end + 1)])
+                identifiers = re.findall(r"[A-Za-z_][A-Za-z0-9_-]{2,}", symbol_text)
+                self.assertTrue(
+                    any(identifier in span for identifier in identifiers),
+                    f"{scenario_id}: {relative}:{start}-{end} names "
+                    f"{identifiers[:4]} but none of them is there",
                 )
                 checked += 1
         self.assertGreater(checked, 0, "no code anchors were verifiable")

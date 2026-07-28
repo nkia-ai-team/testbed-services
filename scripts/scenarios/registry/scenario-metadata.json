@@ -2,12 +2,66 @@
   "schema_version": "1.0",
   "scenarios": {
     "F01-R": {
-      "title": "재고 hot row 잠금으로 인한 체크아웃 실패",
-      "description": "commerce inventory의 체크아웃 대상 재고 행을 PostgreSQL에서 장기 점유해 재고 예약과 주문 처리를 지연시키는 시나리오다.",
-      "cause": "PostgreSQL inventory hot row lock contention",
-      "injection_summary": "inventory_schema의 지정 재고 행에 태그된 트랜잭션 잠금을 설정하고 체크아웃 트래픽을 주입한다.",
-      "user_impact": "재고 예약 대기와 order timeout이 발생해 체크아웃 요청이 실패한다.",
-      "distinguishing_evidence": "대상 PostgreSQL blocking session과 점유 SQL이 존재하며 외부 결제대행사와 호스트 CPU는 정상이다.",
+      "title": "commerce inventory hot row 잠금 → 체크아웃 부분 실패 후 재고 서비스 전면 정체",
+      "description": "commerce 체크아웃은 cart→pricing→(product 경유)inventory→payment의 5-hop이고, 재고 차감은 3-hop(order→product→inventory)으로 내려간다. inventory의 예약 경로는 PESSIMISTIC_WRITE(SELECT … FOR UPDATE)로 대상 재고 행을 잠근다. product_id=1 행을 클러스터 안에서 장기 점유하면 그 상품이 담긴 체크아웃만 블록되므로 피해는 처음부터 부분적이다(loadgen은 flagship 1~16에서 고른다). 그러나 블록된 예약 스레드는 JDBC 대기 중이라 상류 HTTP 타임아웃으로 취소되지 않고 커넥션을 계속 쥔다 — inventory-service는 Hikari 설정이 없어 기본 풀 10이므로, 부하가 이어지면 풀이 마르며 다른 상품의 예약까지 정체된다. 부분 장애가 시간이 지나며 넓어지는 것이 이 케이스의 정체성이다.",
+      "cause": "inventory_schema.inventory의 product_id=1 행을 트랜잭션이 장기 점유 → InventoryService.reserve의 SELECT … FOR UPDATE가 대기 → product read-timeout 10s 초과 → @Retry(productClient) 3회 증폭 → 실패율 50%↑에 @CircuitBreaker(productClient) open → reserveStockFallback이 502 BAD_GATEWAY → 해당 상품 체크아웃 실패. 병행하여 블록된 예약이 inventory 기본 풀(10) 커넥션을 소진하며 피해가 다른 상품으로 확대",
+      "injection_summary": "클러스터 내부 클라이언트가 inventory_schema.inventory의 product_id=1 행을 SELECT … FOR UPDATE로 잡고 커밋하지 않은 채 600초 대기한다(idle in transaction). 부하는 baseline loadgen이 공급한다. cleanup은 PID 기록 후 해당 파드 삭제로 연결을 끊어 롤백시킨다 — 신원이 실 앱과 같아져 이름 기반 pg_terminate_backend는 실 서비스를 죽일 수 있다.",
+      "user_impact": "잠긴 상품이 담긴 체크아웃이 502 BAD_GATEWAY로 실패한다. 초기 실패율은 장바구니 구성에 따라 부분적이나, 블록된 예약이 재고 서비스의 커넥션 풀을 소진하면서 다른 상품의 체크아웃까지 지연·실패로 번진다. 상품 조회 등 읽기 경로는 잠금과 무관해 정상이므로, 겉보기에는 '가끔 실패하는 결제'로 보인다.",
+      "distinguishing_evidence": "같은 '체크아웃 실패'라도 어느 릴레이션이 막혔는지가 결정 증거다. F01-R은 inventory에서 차단 세션이 관측되고 결제는 깨끗하며, F06-H는 그 반대다. 두 번째 축은 피해의 시간 형상이다 — F01-R은 잠근 행이 전체 상품의 일부라 실패율이 낮게 시작해 커넥션 풀 고갈과 함께 넓어지는 반면, 테이블 전체를 잠그는 F06-H는 처음부터 결제 전량이 막힌다. 세 번째로 읽기 경로가 정상이라는 점이 캐시·조회 계열 원인을 배제한다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P1",
+      "observation_domains": [
+        "DPM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "database",
+        "target_id": "commerce-postgres:inventory_schema.inventory",
+        "trigger_target_id": "commerce-inventory",
+        "mechanism": "InventoryService.reserve(@Transactional)가 InventoryRepository.findByProductIdForUpdate(@Lock(PESSIMISTIC_WRITE))로 대상 재고 행에 FOR UPDATE를 건다. 주입 세션이 같은 행을 트랜잭션 안에서 점유하고 있으면 이 SELECT가 대기한다. inventory-service에는 lock_timeout·statement_timeout이 설정돼 있지 않아 대기는 무한하고, 상류(order)가 10s에 타임아웃해도 서버측 JDBC 대기는 취소되지 않아 커넥션이 반환되지 않는다. inventory-service는 Hikari 설정이 없어 Spring 기본 풀 10을 쓰므로, product_id=1 체크아웃이 동시에 10건 쌓이면 풀이 고갈되고 그 시점부터 잠기지 않은 상품의 예약까지 커넥션 대기로 밀린다. 즉 초기에는 1/16 수준의 부분 실패, 이후 재고 서비스 전면 정체로 확대된다.",
+        "code_anchor": [
+          "commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java:17-19 (findByProductIdForUpdate — @Lock(LockModeType.PESSIMISTIC_WRITE), SELECT … FOR UPDATE)",
+          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/InventoryService.java:73-75 (InventoryService.reserve — @Transactional, findByProductIdForUpdate 호출로 블록되는 지점)",
+          "commerce/product-service/src/main/java/com/commerce/product/service/ProductService.java:89-91 (ProductService.reserveStock — inventoryClient.reserve로 3-hop 중계)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:157-161 (OrderService.checkout — 장바구니 품목마다 productClient.reserveStock 순차 호출)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/ProductClient.java:25-27 (@CircuitBreaker(productClient)+@Retry(productClient)), :46-53 (reserveStockFallback — 502 BAD_GATEWAY, 4xx는 그대로 전파)",
+          "commerce/order-service/src/main/resources/application.yml:49-50 (services.product connect 3s / read 10s), :118-124 (retry productClient max-attempts 3·200ms·exp×2)",
+          "commerce/inventory-service/src/main/resources/application.yml:6-10 (datasource — Hikari 미설정이라 기본 풀 10, lock_timeout 없음)",
+          "commerce/loadgen/script.js:80 (FLAGSHIP_PRODUCT_IDS = 1..16 — 잠근 행이 전체 체크아웃의 일부만 덮는 근거)"
+        ],
+        "infra_anchor": "주입은 네임스페이스 안 단명 postgres:16-alpine 파드에서 수행한다(클러스터 밖 tb-runner의 NAT 주소가 dpm_session에 남지 않게 하기 위함). 세션 신원은 실 앱과 같은 'PostgreSQL JDBC Driver'이며 대기는 idle in transaction/ClientRead다 — 품질 기준서 부록 A."
+      },
+      "must_support": [
+        "대상 릴레이션(inventory_schema.inventory)에서 차단된 세션이 존재 — database.blocked_session_count ≥ 1. 잠금이 실제로 물었다는 직접 증거",
+        "checkout 5xx 비율 상승 (loadgen.checkout_5xx_rate ≥ 0.05) — 502가 사용자에게 도달했다는 피해 증거",
+        "DPM 세션에서 inventory 관계를 기다리는 blocking 세션군 — 락 없는 대조군(F04-R)은 blocking 0행"
+      ],
+      "must_rule_out": [
+        "외부 rate-limit(429)이 아님 — entry_status ≠ 429. 429가 주신호면 F01-H(게이트웨이 429 캐스케이드)",
+        "결제 경로 자체의 장애가 아님 — payments 릴레이션의 blocked_session_count는 0. payments가 막히면 F06-H",
+        "파드/노드 장애가 아님 — inventory·order 파드 Ready 유지, 노드 CPU 정상. 파드가 죽으면 F05 계열",
+        "재고 부족(409)이 아님 — 409는 정상 업무 거절이고 ClientErrorException으로 CB를 열지 않는다. 409 우세면 F23-R(리스톡 배치 정지)"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F06-H (payments 테이블 EXCLUSIVE 잠금: 같은 DB 잠금 계열이나 릴레이션·피해 형상이 다르다 — 부분→확대 vs 전량 즉시)",
+          "F04-R (shipping 컨슈머 정지: 잠금 없이 같은 commerce 도메인이 아픈 대조군, blocking 세션 0행)",
+          "F23-R (리스톡 배치 정지로 재고 소진: 같은 inventory 대상이나 증상이 409이고 잠금이 없다)",
+          "F15-T1 (commerce PG 잠금 + food OOM 동시: 잠금 축은 동일하고 두 번째 근본이 추가된다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "database-relation",
+        "accept": [
+          "commerce-postgres:inventory_schema.inventory"
+        ],
+        "partial": [
+          "commerce-inventory",
+          "commerce-postgres"
+        ]
+      },
       "injected_fault": {
         "profile": "db.lock",
         "companions": [
@@ -35,8 +89,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F01-H": {
       "title": "외부 결제대행사 429로 인한 체크아웃 실패",
@@ -855,12 +908,63 @@
       "domain": "core-banking"
     },
     "F06-H": {
-      "title": "payment 내부 DB 테이블 잠금(외부 timeout 감별짝)",
-      "description": "commerce payment의 결제 쓰기 경로를 payment_schema.payments 테이블 EXCLUSIVE 잠금으로 막아, 외부 결제 hang(F06-R)과 동일한 증상(checkout 결제 확정 실패)을 내부 DB 원인으로 재현하는 시나리오다. 원인은 외부 PG·네트워크가 아니라 DB 내부 테이블 잠금이다.",
-      "cause": "Internal PostgreSQL table lock on payments (tagged session, EXCLUSIVE mode)",
-      "injection_summary": "testbed-postgres-0 pod 안에서 PGAPPNAME=rca-F06-H-payment-lock 세션이 BEGIN; LOCK TABLE payment_schema.payments IN EXCLUSIVE MODE; pg_sleep(600); ROLLBACK로 payments 테이블을 잠근다. payment INSERT(ROW EXCLUSIVE)는 블록되지만 평문 SELECT/actuator health(ACCESS SHARE)는 통과해 pod readiness는 유지된다. north-south 35rps companion이 checkout 결제 경로를 흘려 증상을 발현시킨다. cleanup은 tagged 세션 pg_terminate_backend+원복(멱등).",
-      "user_impact": "checkout의 결제 확정 단계에서 payment INSERT가 잠금 대기하다 order의 payment read-timeout을 넘겨 timeout으로 실패, 주문 실패율(5xx)이 상승한다.",
-      "distinguishing_evidence": "pg_stat_activity에 application_name=rca-F06-H-payment-lock 세션이 상주하고(원인 신호), payment_p95는 급등하지만 payment error_rate는 반드시 오르지는 않는다. F06-R(외부 payment hang)과 달리 외부 PG·mock·네트워크는 정상이고 DB 내부 테이블 잠금이 원인이다. payments는 결제마다 신규 INSERT라 특정 row FOR UPDATE로는 재현 불가 — 테이블 잠금이 유일 표면(07-20 실측).",
+      "title": "commerce payments 테이블 EXCLUSIVE 잠금 → 결제 전량 차단, 파드는 Ready 유지",
+      "description": "결제 경로는 결제마다 payments에 새 행을 INSERT한다. 특정 행을 잠그는 것으로는 신규 INSERT를 막을 수 없으므로 테이블을 EXCLUSIVE MODE로 잡는다. EXCLUSIVE는 INSERT가 요구하는 ROW EXCLUSIVE와 충돌하지만 평문 SELECT(ACCESS SHARE)는 통과시키므로, actuator health의 SELECT 1은 성공하고 파드는 Ready를 유지한다. 즉 쿠버네티스 관점에서는 아무 문제가 없는데 결제만 전량 실패하는 형태다.",
+      "cause": "payment_schema.payments에 EXCLUSIVE MODE 테이블 잠금 → PaymentService.processPayment의 INSERT(ROW EXCLUSIVE)가 대기 → order의 payment read-timeout 15s 초과 → @Retry(paymentClient) 2회 → @CircuitBreaker(paymentClient) open → requestPaymentFallback이 502 BAD_GATEWAY → 체크아웃 전량 실패. SELECT는 통과하므로 health check는 계속 성공",
+      "injection_summary": "클러스터 내부 클라이언트가 payment_schema.payments를 LOCK TABLE … IN EXCLUSIVE MODE로 잡고 커밋하지 않은 채 600초 대기한다. ACCESS EXCLUSIVE가 아니라 EXCLUSIVE를 쓰는 것이 설계 핵심이다 — SELECT를 통과시켜 health check 자기-abort를 피하고, '파드는 멀쩡한데 결제만 안 되는' 형태를 만든다. cleanup은 PID 기록 후 파드 삭제.",
+      "user_impact": "체크아웃이 결제 단계에서 502로 전량 실패한다. 재고는 예약됐다가 보상 해제되므로 재고 수치는 결국 맞지만 그 사이 예약/해제 왕복이 발생한다. 사용자에게는 '결제만 안 되는' 장애로 보이고, 파드·노드 지표는 전부 정상이라 인프라 관점에서는 원인이 보이지 않는다.",
+      "distinguishing_evidence": "결정 증거는 두 가지다. (1) 어느 릴레이션에 차단 세션이 쌓이는가 — payments면 F06-H, inventory면 F01-R. (2) 파드 상태와 증상의 괴리 — 결제가 전량 실패하는데 testbed-payment는 Ready이고 재시작도 없다. 이 조합은 프로세스 장애 계열(F05-H·F05-R·F25-H)을 전부 배제하며, 원인이 애플리케이션 밖 데이터베이스 잠금임을 가리킨다. 또한 실패가 PG API 호출 이전 단계에서 발생하므로 외부 결제대행 계열(F08-H·F15-R)과도 갈린다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P1",
+      "observation_domains": [
+        "DPM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "database",
+        "target_id": "commerce-postgres:payment_schema.payments",
+        "trigger_target_id": "commerce-payment",
+        "mechanism": "PaymentService.processPayment(@Transactional)는 요청마다 Payment 엔티티를 새로 만들어 paymentRepository.save로 INSERT한다. INSERT는 대상 테이블에 ROW EXCLUSIVE 잠금을 요구하고 이는 EXCLUSIVE와 충돌하므로, 주입 세션이 payments를 EXCLUSIVE로 쥐고 있는 동안 모든 결제가 잠금 대기에 걸린다. 반면 EXCLUSIVE는 ACCESS SHARE와 충돌하지 않아 평문 SELECT는 통과한다 — actuator health의 SELECT 1이 성공하므로 파드는 Ready를 유지하고, k8s 신호만 보는 관측자에게는 정상으로 보인다. 상류에서는 order의 payment read-timeout 15s 초과 후 @Retry(paymentClient)가 2회만 재시도하고(중복 결제 위험 때문에 다른 클라이언트보다 낮다) CB가 열리면 fallback이 502를 던진다. 체크아웃 흐름상 결제는 재고 예약 뒤 마지막 단계이므로, 재고는 예약됐다가 보상 해제되는 왕복이 남는다.",
+        "code_anchor": [
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (processPayment — @Transactional, paymentRepository.save로 payments INSERT)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/entity/Payment.java:7-8 (@Table(name=\"payments\", schema=\"payment_schema\") — 잠금 대상 릴레이션)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-200 (checkout의 paymentClient.requestPayment 및 실패 시 releaseAllCartItems 보상)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-28 (@CircuitBreaker(paymentClient)+@Retry(paymentClient)), :53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/resources/application.yml:53-54 (services.payment connect 3s / read 15s), :134-137 (retry paymentClient max-attempts 2 — 중복 결제 위험으로 낮게 유지)"
+        ],
+        "infra_anchor": "F01-R과 동일하게 네임스페이스 안 단명 파드에서 주입하며 신원은 'PostgreSQL JDBC Driver', 대기는 idle in transaction이다. 잠금 범위만 row가 아니라 table EXCLUSIVE로 다르다."
+      },
+      "must_support": [
+        "payment_schema.payments에서 차단된 세션이 존재 — database.blocked_session_count ≥ 1",
+        "checkout 5xx 비율 상승 (loadgen.checkout_5xx_rate ≥ 0.05)",
+        "order 서비스 에러율 상승 (apm_service_error_rate ≥ 0.1) — 502가 order에서 발생·전파"
+      ],
+      "must_rule_out": [
+        "결제 파드 장애가 아님 — testbed-payment Ready 유지. EXCLUSIVE가 SELECT를 통과시키므로 health check는 성공한다. 파드가 죽으면 F05-H(liveness 루프)·F05-R(OOM)",
+        "외부 PG(결제대행) 장애가 아님 — external-pg-mock 정상, 지연이 PG 호출 이전(INSERT)에서 발생. PG가 원인이면 F08-H·F15-R",
+        "재고 잠금이 아님 — inventory 릴레이션의 blocked_session_count는 0. inventory가 막히면 F01-R",
+        "부하 폭주가 아님 — achieved_rps는 baseline 수준 유지. 폭주면 F07-H"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F01-R (inventory row 잠금: 같은 DB 잠금 계열이나 릴레이션이 다르고 피해가 부분에서 시작한다)",
+          "F05-H (payment liveness 루프: 같은 결제 실패나 파드가 재시작을 반복한다 — F06-H는 Ready 유지)",
+          "F08-H (외부 PG 429 + 롤아웃: 결제 실패의 원인이 외부이고 INSERT는 성공한다)",
+          "F01-P (banking Oracle 잠금: 잠금 계열의 교차도메인 판본, 대상 DB 엔진과 도메인이 다르다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "database-relation",
+        "accept": [
+          "commerce-postgres:payment_schema.payments"
+        ],
+        "partial": [
+          "commerce-payment",
+          "commerce-postgres"
+        ]
+      },
       "injected_fault": {
         "profile": "db.lock",
         "companions": [
@@ -888,8 +992,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F03-P": {
       "title": "payment Hikari 커넥션풀 축소 + checkout surge 중첩",
@@ -1773,12 +1876,62 @@
       }
     },
     "F16-H": {
-      "title": "user-service fail-close 인증 확산 → commerce 전 도메인 쓰기 401",
-      "description": "commerce user-service를 readiness 실패로 Service 엔드포인트에서 탈락시키면, api-gateway AuthGuard가 모든 쓰기요청(POST/PUT/DELETE/PATCH)마다 호출하는 verify-token이 실패하고 user 서킷브레이커가 open되어 verifyTokenFallback이 401을 던진다(fail-close). 국소 장애(user-service 하나)가 order·cart·checkout 전반의 광역 쓰기 401로 위장하는 P6 패턴이다.",
-      "cause": "commerce user-service 불가용 → 게이트웨이 AuthGuard verify-token 실패 → user CircuitBreaker open → fail-close 401 확산",
-      "injection_summary": "k8s.probe executor로 testbed-user Deployment의 readinessProbe httpGet path를 /actuator/health/f16-h-fail(존재하지 않는 경로)로 patch → 3×10s 후 pod가 NotReady로 Service 엔드포인트에서 제거 → verify-token 연결 실패. 동시에 load.north_south commerce surge.js(login→browse→add-to-cart→clear-cart→checkout)로 읽기/쓰기 혼합 부하를 흘린다. cleanup은 readinessProbe를 baseline 경로로 복원.",
-      "user_impact": "장바구니 담기·주문 생성·checkout 등 모든 쓰기요청이 401 Unauthorized로 급증한다. 상품 조회(GET) 등 읽기와 로그인/회원가입은 정상 200을 유지한다 — 부분장애처럼 보이나 원인은 단일 서비스.",
-      "distinguishing_evidence": "쓰기 401은 게이트웨이가 하류로 프록시하기 전에 AuthGuard에서 던진 것이라 order/cart/payment 하류 서비스에는 해당 요청 trace가 도달하지 않는다(하류 error rate·지연 정상). user-service만 NotReady이고 게이트웨이 user CB만 open이며, 읽기·로그인은 정상이다. naive RCA는 증상이 퍼진 order/cart/checkout을 root로 오판하지만 정답은 user-service.",
+      "title": "user-service readiness 실패 → 게이트웨이 인증 fail-close, 쓰기만 401 (읽기 정상)",
+      "description": "api-gateway는 쓰기 요청(POST/PUT/DELETE/PATCH)에 대해서만 user-service로 토큰을 검증하고, 검증이 불가능하면 통과시키지 않고 401로 닫는다(fail-close). 따라서 user-service가 사라지면 조회는 멀쩡한데 쓰기만 401로 실패한다. 증상 상태코드가 4xx라 '토큰·권한 문제'로 읽히지만 실제 근본은 user-service의 가용성이다. 증상 계층과 원인 계층이 어긋나는 것이 이 케이스의 정체성이다.",
+      "cause": "testbed-user의 readinessProbe를 실패하는 경로로 교체 → 파드가 엔드포인트에서 빠져 user-service 도달 불가 → AuthGuard.verifyToken 실패 → @Retry(user) 3회 후 @CircuitBreaker(user) open → verifyTokenFallback이 401 UNAUTHORIZED로 fail-close → 쓰기 요청 전량 401. GET은 AuthGuard를 아예 거치지 않아 정상",
+      "injection_summary": "testbed-user Deployment의 readinessProbe를 실패하는 httpGet 경로로 패치한다. maxUnavailable:1/maxSurge:0이므로 헌 파드가 먼저 종료되고 새 파드는 Ready가 되지 못해 서비스 엔드포인트가 비게 된다. 부하는 baseline loadgen이 공급하며 읽기/쓰기 단계가 분리 집계된다. cleanup은 원본 probe 복원 후 롤아웃 완료 대기.",
+      "user_impact": "로그인·회원가입을 제외한 모든 쓰기 요청(장바구니 담기, 주문, 체크아웃)이 401로 거부된다. 상품 조회·검색 등 읽기는 정상이라 사이트가 살아 있는 것처럼 보이고, 사용자에게는 '로그인이 풀린 것 같은' 인증 오류로 인식된다. 실제로는 토큰이 유효하며 검증기가 없을 뿐이다.",
+      "distinguishing_evidence": "결정 증거는 읽기와 쓰기의 비대칭이다. 쓰기만 401이고 읽기는 정상인 조합은 게이트웨이가 쓰기 경로에만 인증 가드를 두고 그 가드가 fail-close라는 구조에서만 나온다. 상태코드가 401이라 인증·토큰 문제로 오인하기 쉬우나, 토큰은 유효하며 검증 대상 서비스가 부재한 것이다 — 즉 4xx 증상 뒤에 가용성 근본이 있다. 두 번째 축은 user Deployment의 available replicas 0이며, 이는 지연이 아니라 부재임을 확정한다. 하류 도메인 서비스(재고·결제)에는 요청이 도달조차 하지 않으므로 그쪽 지표가 깨끗하다는 점도 함께 근본을 좁힌다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P2",
+      "observation_domains": [
+        "KCM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "commerce-user",
+        "trigger_target_id": "commerce-gateway",
+        "mechanism": "AuthGuard.verifyIfWrite는 WRITE_METHODS(POST/PUT/DELETE/PATCH)에만 적용되고 register·login은 면제한다. 검증 호출 verifyToken은 @CircuitBreaker(user)+@Retry(user)로 감싸여 있고, 폴백 verifyTokenFallback은 값을 통과시키지 않고 401 UNAUTHORIZED를 던진다 — 검증 불가 토큰을 통과시키지 않겠다는 의도적 fail-close다. readinessProbe가 실패하면 파드가 서비스 엔드포인트에서 제거되어 게이트웨이의 user 호출이 전부 실패하고, 결과적으로 쓰기 경로만 401이 된다. 읽기 경로는 가드 자체를 타지 않으므로 무영향이다. 이 시나리오가 성립하려면 롤아웃 의미론이 전제된다 — replicas 1에서 k8s는 maxUnavailable을 25%→0으로 내림하고 maxSurge를 →1로 올림하므로, 기본 설정에서는 새 파드가 Ready가 되지 못한 채 헌 파드가 계속 서비스해 장애가 아예 발생하지 않는다(2026-07-28 실측). testbed-user에 maxUnavailable:1/maxSurge:0을 명시해 헌 파드가 먼저 내려가도록 했다.",
+        "code_anchor": [
+          "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:31-48 (verifyIfWrite — 쓰기 메서드에만 토큰 검증, register/login 면제)",
+          "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:51-58 (verifyToken — @CircuitBreaker(user)+@Retry(user))",
+          "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:60-63 (verifyTokenFallback — 401 UNAUTHORIZED fail-close)",
+          "commerce/api-gateway/src/main/resources/application.yml:18-21 (services.user connect 3s / read 10s), :51-57 (CB user window10/min5/50%/open5s), :102-106 (retry user max-attempts 3·200ms·exp×2)",
+          "commerce/k8s/25-user-service.yaml:9-22 (replicas 1 + strategy maxUnavailable 1 / maxSurge 0 — readiness 결함이 실제 장애가 되기 위한 전제)"
+        ],
+        "infra_anchor": "k8s.probe executor가 testbed-user Deployment의 readinessProbe httpGet.path를 실패 경로로 교체한다. cleanup은 스냅샷한 원본 probe로 복원한다."
+      },
+      "must_support": [
+        "쓰기 단계 비정상 응답률 급증 (loadgen.write_step_status_rate ≥ 0.3) — 401 fail-close의 직접 결과",
+        "user Deployment의 available replicas 0 — 검증기가 실제로 사라졌다는 증거",
+        "게이트웨이 에러율 상승 (apm_service_error_rate, commerce-gateway) — 401이 게이트웨이에서 발생"
+      ],
+      "must_rule_out": [
+        "읽기도 함께 깨진 것이 아님 — loadgen.read_step_status_rate < 0.1. 읽기까지 무너지면 게이트웨이·네트워크 계열(F07-H·F12-H)",
+        "user-service가 살아 있는 채 느린 것이 아님 — available replicas가 0이어야 한다. 살아 있는데 느리면 지연 계열",
+        "외부 rate-limit(429)이 아님 — entry_status ≠ 429. 429면 F01-H",
+        "결제·재고 경로의 장애가 아님 — 실패가 401이고 하류 서비스에 도달조차 하지 않는다. 하류 5xx면 F01-R·F06-H"
+      ],
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F17-R (banking transfer readiness 실패: 동일한 주입 수단이나 교차도메인 결제 경로가 502로 깨진다 — F16-H는 인증 fail-close라 401)",
+          "F01-H (게이트웨이 429 캐스케이드: 같은 게이트웨이 계층 4xx이나 상태코드와 근본이 다르다)",
+          "F07-H (남북 트래픽 폭주: 게이트웨이가 아픈 점은 같으나 읽기·쓰기가 함께 느려진다)",
+          "F05-H (payment liveness 루프: 파드 부재라는 점은 같으나 증상이 5xx이고 재시작이 관측된다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-user"
+        ],
+        "partial": [
+          "commerce-gateway"
+        ]
+      },
       "injected_fault": {
         "profile": "k8s.probe",
         "companions": [
@@ -1817,8 +1970,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F20-R": {
       "title": "commerce order 통계/검색 슬로우쿼리 → 공유 PostgreSQL CPU 오염 → 타 스키마 교차 지연",
@@ -2210,13 +2362,24 @@
       "cause": "restaurant NodePort(30181) 조회 부하 폭주 → restaurant Hikari 10·Tomcat 스레드 포화, restaurant p95 급등 → order getRestaurant/getMenu가 read-timeout 5s 초과 → @Retry(restaurant) 3회 증폭 → 실패율 50%↑ → @CircuitBreaker(restaurant) open → fallback 502 BAD_GATEWAY → createOrder가 DB 쓰기 이전 단계(:60/:73)에서 502 전파 → order 전량 502",
       "root_cause": {
         "target_kind": "service",
-        "target_id": "food-restaurant (testbed-restaurant, rca-testbed-food) — 부하로 포화된 최상류 리프. 502를 order 전량으로 증폭시키는 결함 구조는 order측 코드(retry·hard-dependency·bulkhead 부재)",
-        "mechanism": "OrderService.createOrder(@Transactional)가 모든 주문에서 restaurantClient.getRestaurant/getMenu를 order DB 쓰기 이전에 순차 호출(단일 상류 2회 hard-dependency). restaurant 지연 시 order측 @Retry(restaurant) max-attempts=3 지수백오프가 재시도를 증폭해 restaurant에 양성 피드백 부하를 가하고, 실패율 50%↑에 @CircuitBreaker(restaurant) open→getRestaurantFallback/getMenuFallback이 502 BAD_GATEWAY를 던져 order가 전량 502로 실패. F19-P와 달리 502가 order DB 쓰기·커넥션풀 고갈 이전(:60/:73)에서 발생.",
+        "target_id": "food-restaurant",
+        "trigger_target_id": "food-order",
+        "mechanism": "증상은 orchestrator인 order에 모이지만 근본은 최상류 리프 restaurant다. 502를 order 전량으로 증폭시키는 결함 구조 자체는 order측 코드(retry·hard-dependency·bulkhead 부재)에 있다. OrderService.createOrder(@Transactional)가 모든 주문에서 restaurantClient.getRestaurant/getMenu를 order DB 쓰기 이전에 순차 호출(단일 상류 2회 hard-dependency). restaurant 지연 시 order측 @Retry(restaurant) max-attempts=3 지수백오프가 재시도를 증폭해 restaurant에 양성 피드백 부하를 가하고, 실패율 50%↑에 @CircuitBreaker(restaurant) open→getRestaurantFallback/getMenuFallback이 502 BAD_GATEWAY를 던져 order가 전량 502로 실패. F19-P와 달리 502가 order DB 쓰기·커넥션풀 고갈 이전(:60/:73)에서 발생.",
         "code_anchor": [
-          "food-delivery/order-service/.../service/OrderService.java:57 (@Transactional createOrder), :60 (restaurantClient.getRestaurant), :73 (restaurantClient.getMenu) — 모든 주문의 restaurant 2회 hard-dependency, DB 쓰기(:128)보다 앞",
-          "food-delivery/order-service/.../client/RestaurantClient.java:29-30,58-59 (@CircuitBreaker(restaurant)+@Retry(restaurant)), :44(getRestaurantFallback),:79-84(getMenuFallback) (502 BAD_GATEWAY fallback), :40-42,:69-71 (4xx는 ClientErrorException로 회로 안 엶)",
-          "food-delivery/order-service/src/main/resources/application.yml:54 (restaurant read-timeout 5s), :69-77 (CB restaurant window10/min5/50%/open5s), :98-104 (retry restaurant max-attempts=3·200ms·exp×2)",
-          "food-delivery/restaurant-service/src/main/resources/application.yml:13 (restaurant Hikari maximum-pool-size 10, 최소 풀)"
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57 (@Transactional createOrder — 주문 생성 트랜잭션 진입)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:60 (restaurantClient.getRestaurant — 모든 주문의 첫 hard-dependency)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:73 (restaurantClient.getMenu — 두 번째 hard-dependency)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:128 (orderRepository.save — DB 쓰기. 위 두 호출보다 뒤라 실패가 쓰기 이전에 난다)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:29-30 (@CircuitBreaker(restaurant)+@Retry(restaurant) — getRestaurant 경로)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:44 (getRestaurantFallback의 BAD_GATEWAY — 502 전파 지점)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:58-59 (@CircuitBreaker(restaurant)+@Retry(restaurant) — getMenu 경로)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:79-84 (getMenuFallback — 502 BAD_GATEWAY)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:40-42 (RestClientResponseException 4xx 분기 — 회로를 열지 않는다)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:69-71 (RestClientResponseException — getMenu 쪽 동일 4xx 분기)",
+          "food-delivery/order-service/src/main/resources/application.yml:54 (restaurant read-timeout 5s)",
+          "food-delivery/order-service/src/main/resources/application.yml:69-77 (circuitbreaker restaurant — window 10 / min 5 / 50% / open 5s)",
+          "food-delivery/order-service/src/main/resources/application.yml:98-104 (retry restaurant — max-attempts 3 · 200ms · exp ×2)",
+          "food-delivery/restaurant-service/src/main/resources/application.yml:13 (maximum-pool-size 10 — restaurant Hikari 최소 풀)"
         ],
         "infra_anchor": "food-delivery/k8s/21-restaurant-deploy.yaml:118 — testbed-restaurant-external NodePort 30181 (조회 부하 주입면). 부하원 보조: restaurant-service/.../MenuRepository.java:17(order_items⋈orders⋈menus 크로스테이블 조인) + PopularMenuBatch.java:37,45(@Scheduled 1h) — 자연 CPU/DB 압박원이나 1h 주기라 주입 타이밍 제어 불가(수단 선택에서 배제, sheet §4). 별도 인프라 조작 없이 부하로만 restaurant 자연 포화."
       },
@@ -2243,7 +2406,16 @@
           "C7 인덱스 계열 (fault-surface C7 / F02: restaurant 지연의 DB측 root. F24-Q는 동일 restaurant→order 경로의 앱측 포화 root)"
         ]
       },
-      "injected_fault": null
+      "injected_fault": null,
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "food-restaurant"
+        ],
+        "partial": [
+          "food-order"
+        ]
+      }
     },
     "F01-G": {
       "title": "retry와 보상으로 흡수되는 짧은 결제 지연",
