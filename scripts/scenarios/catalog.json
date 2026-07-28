@@ -189,10 +189,10 @@
         "mock.expectation",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
-      "prerequisite": "food 429 응답 경로 구현 + metadata·controller 신설 + mock allowlist 등록"
+      "prerequisite": ""
     },
     {
       "id": "F07-H",

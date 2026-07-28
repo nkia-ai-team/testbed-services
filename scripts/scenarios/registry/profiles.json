@@ -128,7 +128,8 @@
           "F06-R",
           "F19-P",
           "F19-S",
-          "F01-G"
+          "F01-G",
+          "F06-P"
         ]
       },
       "scenario_parameters": {
@@ -161,6 +162,12 @@
           "mode": "delay",
           "status_code": 200,
           "delay_seconds": 1
+        },
+        "F06-P": {
+          "path": "/pay",
+          "mode": "status",
+          "status_code": 429,
+          "delay_seconds": 0
         }
       },
       "scenario_levels": {}
@@ -221,7 +228,8 @@
           "F03-G",
           "F01-G",
           "F05-G",
-          "F11-G"
+          "F11-G",
+          "F06-P"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -744,6 +752,17 @@
           "scenario_tag": "scenario_id=F11-G",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
+        },
+        "F06-P": {
+          "target_rps": 40,
+          "ramp_up": "2m",
+          "hold": "10m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F06-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
         }
       },
       "scenario_levels": {

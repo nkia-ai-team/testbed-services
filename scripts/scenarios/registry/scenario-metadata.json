@@ -4105,6 +4105,65 @@
         ]
       },
       "injected_fault": null
+    },
+    "F06-P": {
+      "title": "food 외부 PG가 429로 거절 — 주문 생성만 막히고 조회는 멀쩡하다",
+      "description": "food 결제는 payment-service가 외부 PG(mock)의 /pay를 호출해 성사시킨다. 외부 PG가 rate limit(429)을 돌려주면 PgApiClient는 그 상태코드를 5xx로 승격하지 않고 **원래대로 전파**한다(ClientErrorException). resilience4j의 retry·circuit breaker 모두 ClientErrorException을 ignore-exceptions로 두었기 때문에 재시도 증폭도 CB open도 일어나지 않는다 — 즉 429는 왜곡 없이 order까지 올라와 사용자에게 429로 도달한다. food 부하는 식당 조회(GET)와 주문 생성(POST)을 섞으므로 피해는 주문 생성 경로에만 국한된다. 가용성 장애처럼 5xx가 튀지 않고, 파드도 DB도 정상이라 '아무것도 안 죽었는데 주문만 안 된다'로 보인다.",
+      "cause": "외부 PG mock이 /pay에 429를 반환 → payment PgApiClient가 4xx를 원 상태코드로 전파 → retry·CB는 ClientErrorException을 무시해 증폭·차단 없음 → payment가 429 응답 → order PaymentClient도 4xx를 전파 → 주문 생성 API가 429. 조회 경로는 PG를 타지 않아 무영향",
+      "injection_summary": "food 네임스페이스의 testbed-external-pg-mock에 /pay → status 429 기대값을 설치한다. 부하는 north-south 40rps로 food 진입점(30181)에 흘려 조회와 주문 생성을 함께 태운다. cleanup은 mock 스냅샷 복원이며 앱·DB 상태는 건드리지 않는다.",
+      "user_impact": "주문 생성이 429로 거절된다. 식당 목록·메뉴·배달 조회는 정상이라 사용자는 '앱은 되는데 주문만 안 되는' 상태를 겪는다. 5xx가 아니므로 에러율 기반 알람에는 잘 걸리지 않는다.",
+      "distinguishing_evidence": "결정 증거는 **상태코드 자체**다. 주문 생성이 429로 거절되는데 5xx 비율은 낮고(가용성 장애 아님), 조회 경로는 정상이며(전면 장애 아님), 파드 Ready·DB 정상이다. F19-P/F19-S(같은 mock의 지연 주입)와 달리 지연이 아니라 즉시 거절이고, F01-H(commerce판 429)와는 도메인·경로가 다르다. 429가 애플리케이션이 만든 것이 아니라 **하류에서 온 것**임은 payment 트레이스에서 외부 PG 응답이 429인 것으로 확인된다 — 앱은 상태코드를 만들지 않고 옮겼을 뿐이다.",
+      "domain": "food-delivery",
+      "class": "A",
+      "fault_pattern": "P3-외부의존거절",
+      "observation_domains": [
+        "loadgen",
+        "apm",
+        "kubernetes"
+      ],
+      "difficulty": "중",
+      "related_scenarios": [
+        "F01-H",
+        "F19-P",
+        "F19-S"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "food-external-pg-mock",
+        "mechanism": "외부 PG가 429로 거절하고 food 결제 경로가 이를 5xx로 승격하지 않은 채 그대로 전파해 주문 생성만 실패한다",
+        "code_anchor": [
+          "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/client/PgApiClient.java:50 (RestClientResponseException — 4xx를 원 상태코드로 전파한다)",
+          "food-delivery/payment-service/src/main/resources/application.yml:93 (ignore-exceptions — retry가 ClientErrorException을 무시해 증폭이 없다)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/PaymentClient.java:42 (is4xxClientError — order도 4xx를 그대로 올린다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "food-external-pg-mock"
+        ],
+        "partial": [
+          "food-delivery-payment",
+          "food-delivery-order"
+        ]
+      },
+      "injected_fault": {
+        "profile": "mock.expectation",
+        "companions": [
+          "load.north_south"
+        ],
+        "levels": [
+          {
+            "id": "approved-fixed-f06-p",
+            "parameters": {
+              "path": "/pay",
+              "mode": "status",
+              "status_code": 429,
+              "delay_seconds": 0
+            }
+          }
+        ]
+      }
     }
   }
 }

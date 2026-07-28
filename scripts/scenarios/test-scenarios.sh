@@ -23,8 +23,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-07-28: ready 31→32, parked 26→25. F03-H가 복귀했다 — 주입 표면을 자백하던
 # OrderController의 Thread.sleep(delayMs)을 실제 결함(직렬화된 O(n^2) 리포트 렌더러)으로
 # 교체해 G6 누설을 없앴다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 32 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 25 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 33 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 24 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 2 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
@@ -177,8 +177,8 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # compile to live_allowed == true. The remaining 10 are covered by the
 # catalog-level checks above and by tests/test_registry_contracts.py.
 # 2026-07-28: 21→22. F03-H 복귀분이 bin/ 스크립트를 가진 ready 집합에 더해졌다.
-[[ $((ready_live_false + ready_live_true)) -eq 22 ]]
-[[ "$ready_live_true" -eq 22 ]]
+[[ $((ready_live_false + ready_live_true)) -eq 23 ]]
+[[ "$ready_live_true" -eq 23 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

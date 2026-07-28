@@ -217,6 +217,15 @@ while True:
             sum(status == 409 for _, status in checkout_results) / checkout_count
             if checkout_count else 0.0
         )
+        # F06-P decisive evidence: 429 (downstream rate limit) is another 4xx
+        # subset that business_nonok_rate cannot isolate. Without it a partial
+        # 429 outage is indistinguishable from validation rejects, and
+        # business_5xx_rate is blind to it entirely - the app propagates the
+        # downstream status verbatim rather than promoting it to 5xx.
+        business_429_rate = (
+            sum(status == 429 for _, status in checkout_results) / checkout_count
+            if checkout_count else 0.0
+        )
         document = {
             "scenario_id": scenario_id,
             "scenario_tag": f"scenario_id={scenario_id}",
@@ -227,6 +236,7 @@ while True:
             "business_4xx_rate": business_4xx_rate,
             "business_5xx_rate": business_5xx_rate,
             "business_409_rate": business_409_rate,
+            "business_429_rate": business_429_rate,
             "business_nonok_rate": business_nonok_rate,
             "business_ok": entry_status in {200, 400, 409},
             "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
