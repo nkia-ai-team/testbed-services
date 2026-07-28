@@ -77,7 +77,10 @@ class PriorityExecutorCandidateTests(unittest.TestCase):
         for rps, params in east_west.F03H_LEVELS.items():
             east_west.validate("F03-H", params, {})
             self.assertEqual(params["target_rps"], rps)
-            self.assertIn("/api/orders/reports/render?delayMs=5000", params["target_url"])
+            self.assertIn("/api/orders/reports/render?days=120", params["target_url"])
+            # 지연 시간을 호출자가 지정하던 옛 계약(delayMs)은 결함이 아니라
+            # 파라미터였고 접근 로그가 정답을 자백했다. 이제 평범한 업무 파라미터다.
+            self.assertNotIn("delayMs", params["target_url"])
             self.assertGreaterEqual(params["max_vus"], rps * 5)
         _, stdin = east_west.build_invocation(plan(
             "load.east_west", "F03-H", east_west.F03H_LEVELS[60],

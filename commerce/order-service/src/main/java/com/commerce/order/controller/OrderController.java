@@ -4,6 +4,7 @@ import com.commerce.common.dto.CheckoutRequest;
 import com.commerce.common.dto.DailyOrderStatResponse;
 import com.commerce.common.dto.OrderRequest;
 import com.commerce.common.dto.OrderResponse;
+import com.commerce.order.service.OrderReportRenderer;
 import com.commerce.order.service.OrderService;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.PageRequest;
@@ -20,9 +21,11 @@ import java.util.Map;
 public class OrderController {
 
     private final OrderService orderService;
+    private final OrderReportRenderer reportRenderer;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(OrderService orderService, OrderReportRenderer reportRenderer) {
         this.orderService = orderService;
+        this.reportRenderer = reportRenderer;
     }
 
     // 기존 API — 시나리오 러너가 items를 직접 지정해 호출하므로 그대로 유지한다.
@@ -60,15 +63,23 @@ public class OrderController {
         return ResponseEntity.ok(orderService.searchOrders(userId, status, from, to, pageable));
     }
 
-    // F03-H 주입 표면: DB에 닿지 않고 서블릿 워커 스레드만 지정 시간 점유하는
-    // read-only 렌더 호출. DB 경유 GET들과 달리 스레드풀 고갈을 커넥션풀/DB 경합과
-    // 분리해 재현할 수 있는 유일한 경로다. delayMs는 10초 클램프로 잔류 점유를 차단.
+    /**
+     * 주문 리포트 렌더링. 요청 스레드에서 동기로 렌더한다.
+     *
+     * <p>{@link OrderReportRenderer}는 내부 버퍼를 재사용하는 단일 인스턴스라
+     * 렌더가 직렬화되고, 렌더 비용이 구간 길이의 제곱으로 늘어난다. 구간이 짧을 때는
+     * 문제가 드러나지 않지만, 긴 구간 요청이 동시에 들어오면 처리율 상한을 넘겨
+     * 대기 요청이 서블릿 워커를 쥔 채 쌓인다.
+     */
     @GetMapping("/reports/render")
     public ResponseEntity<Map<String, Object>> renderReport(
-            @RequestParam(defaultValue = "2000") long delayMs) throws InterruptedException {
-        long bounded = Math.min(Math.max(delayMs, 0), 10_000);
-        Thread.sleep(bounded);
-        return ResponseEntity.ok(Map.of("status", "RENDERED", "delayMs", bounded));
+            @RequestParam(defaultValue = "30") int days) {
+        int bounded = Math.min(Math.max(days, 1), 365);
+        String report = reportRenderer.render(bounded);
+        return ResponseEntity.ok(Map.of(
+                "status", "RENDERED",
+                "days", bounded,
+                "lines", report.lines().count()));
     }
 
     // 챗봇 추세/집계 질의 재료 — 최근 days일 일별 주문수·금액.

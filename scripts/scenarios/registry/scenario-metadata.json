@@ -2692,12 +2692,85 @@
       }
     },
     "F03-H": {
-      "title": "order 서블릿 스레드풀 고갈 — DB 비접촉 slow 렌더 호출 동시성 포화",
-      "description": "order-service에 신설된 DB 비접촉 read-only 렌더 엔드포인트(/api/orders/reports/render, 5초 점유)를 클러스터 내부 k6 Job으로 동시 호출해 tomcat 워커 스레드풀(기본 200)을 포화시키는 시나리오다. DB·커넥션풀은 건드리지 않으므로 순수 스레드풀 고갈로 격리된다.",
-      "cause": "order-service servlet worker thread-pool exhaustion by slow in-process calls (no DB, no connection-pool contention)",
-      "injection_summary": "tb-w1에 뜬 k6 Job이 testbed-order:8080의 렌더 엔드포인트를 delayMs=5000으로 30/45/60rps ladder 호출한다(동시 점유 150/225/300 스레드 vs 상한 200). north-south 35rps companion이 checkout 사용자 영향을 표면화한다.",
-      "user_impact": "order 워커 스레드가 렌더 호출에 점유되어 checkout·주문 조회 요청이 큐에서 대기하다 지연·타임아웃(5xx)된다. DB 계층은 정상이다.",
-      "distinguishing_evidence": "order p95 급등과 checkout 5xx가 있는데 DB blocking session 0·커넥션풀 정상·하류(pricing/inventory/payment) p95 정상이 결정적 구분 근거다. F03-P(HikariCP 축소)와 달리 DB 대기 신호가 전혀 없고, 스레드 점유는 render 엔드포인트 trace로 직접 확인된다."
+      "title": "order 서블릿 스레드풀 고갈 — 직렬화된 리포트 렌더러가 처리율 상한을 만든다",
+      "description": "order-service의 리포트 렌더링은 요청 스레드에서 동기로 수행된다. 렌더러(OrderReportRenderer)는 조립 버퍼를 인스턴스 필드로 재사용하므로 스레드 안전하지 않고, 그 때문에 render()가 통째로 synchronized다 — 모든 리포트 요청이 모니터 하나에서 직렬화된다. 게다가 렌더 비용이 요청 구간에 비례하지 않고 제곱으로 늘어난다(일별 이동평균을 지점마다 창 전체로 다시 합산). 따라서 서비스의 리포트 처리율 상한은 1/렌더시간으로 고정되고, 도착률이 그 상한을 넘으면 초과 요청은 모니터 앞에 줄을 선다. 줄 선 요청은 서블릿 워커 스레드를 쥔 채 기다리므로 Tomcat 워커 풀(기본 200)이 마르고, 그 순간부터 리포트와 무관한 체크아웃·주문 조회까지 큐에서 굶는다. DB와 커넥션 풀은 끝까지 정상이다.",
+      "cause": "OrderReportRenderer가 재사용 버퍼를 인스턴스 상태로 들고 있어 render()가 synchronized → 리포트 렌더가 전역 직렬화 → movingAverages의 O(n^2) 재합산으로 긴 구간의 렌더가 비싸짐 → 처리율 상한(1/렌더시간)을 넘는 도착률에서 대기 요청이 서블릿 워커를 점유 → Tomcat 워커 풀 고갈 → 같은 풀을 쓰는 체크아웃·주문 조회가 큐 대기 후 지연·5xx",
+      "injection_summary": "tb-w1의 클러스터 내부 k6 Job이 testbed-order:8080의 리포트 엔드포인트를 days=120으로 30/45/60rps 사다리 호출한다. 주입은 '평범한 업무 파라미터로 리포트를 요청하는 것'뿐이며 지연 시간을 지정하지 않는다 — 느려지는 원인은 전적으로 앱 안의 직렬화된 O(n^2) 렌더러다. north-south 35rps companion이 체크아웃 사용자 영향을 표면화한다. cleanup은 k6 Job·ConfigMap 삭제이며 앱 상태는 남기지 않는다.",
+      "user_impact": "체크아웃과 주문 조회가 큐에서 대기하다 지연·타임아웃(5xx)된다. 리포트를 쓰지 않는 사용자까지 함께 느려지는 것이 특징이다 — 워커 풀이 공유 자원이기 때문이다. DB 계층은 정상이라 'DB는 멀쩡한데 앱이 안 받는' 상태로 보인다.",
+      "distinguishing_evidence": "order p95 급등과 checkout 5xx가 있는데 (1) DB 차단 세션 0·커넥션풀 정상 → F03-P(Hikari 축소)·F01-R/F06-H(락) 배제, (2) 하류(pricing·inventory·payment) p95 정상 → 의존 결함 배제, (3) 노드 CPU가 포화되지 않음 → F09-R(노드 CPU noisy neighbor) 배제. 렌더가 직렬화돼 있어 아무리 부하를 올려도 CPU는 코어 하나치 이상 쓰지 않는다는 점이 결정적이다 — 스레드는 RUNNABLE이 아니라 같은 모니터에서 BLOCKED로 쌓인다. 즉 '바쁜 것'이 아니라 '줄 서 있는 것'이다.",
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "commerce-order",
+        "mechanism": "공유 렌더러의 전역 직렬화(synchronized)와 O(n^2) 렌더 비용이 리포트 처리율 상한을 만들고, 초과 도착이 서블릿 워커 스레드를 점유해 Tomcat 워커 풀을 고갈시킨다",
+        "code_anchor": [
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderReportRenderer.java:33 (buffer — 인스턴스 상태로 재사용되는 조립 버퍼. 이것이 클래스를 스레드 안전하지 않게 만든다)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderReportRenderer.java:35 (render — synchronized 진입점. 모든 리포트 요청이 이 모니터에서 직렬화된다)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderReportRenderer.java:68 (movingAverages — 지점마다 창 전체를 다시 합산해 비용이 O(n^2))",
+          "commerce/order-service/src/main/java/com/commerce/order/controller/OrderController.java:75 (renderReport — 요청 스레드에서 동기로 렌더한다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-order"
+        ],
+        "partial": [
+          "commerce-gateway"
+        ]
+      },
+      "injected_fault": {
+        "profile": null,
+        "companions": [
+          "load.north_south"
+        ],
+        "levels": [
+          {
+            "id": "below-saturation-30rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 30,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            }
+          },
+          {
+            "id": "at-saturation-45rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 45,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            }
+          },
+          {
+            "id": "past-saturation-60rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 60,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            }
+          }
+        ]
+      }
     },
     "F17-R": {
       "title": "banking transfer readiness 실패 — 성공한 카드결제가 롤백으로 사라진다",

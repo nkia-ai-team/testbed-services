@@ -69,10 +69,10 @@
         "load.east_west",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "OrderController.java:70 Thread.sleep을 실제 결함으로 교체(주입 표면 자백 제거)"
+      "prerequisite": ""
     },
     {
       "id": "F03-P",

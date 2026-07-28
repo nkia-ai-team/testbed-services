@@ -2,8 +2,8 @@
 """Bounded namespace-local k6 Job executor for east-west saturation loads.
 
 Serves two scenarios with disjoint measured ladders: F07-P (pricing bulkhead
-POST quotes) and F03-H (order servlet thread-pool exhaustion via the DB-free
-GET /api/orders/reports/render surface added for exactly this purpose)."""
+POST quotes) and F03-H (order servlet thread-pool exhaustion driven through the
+report-rendering endpoint, whose serialized O(n^2) renderer is the real defect)."""
 from __future__ import annotations
 
 from typing import Any
@@ -28,9 +28,17 @@ F07P_LEVELS = {
     for rps in (20, 35, 50)
 }
 
-# Concurrency = rps x 5s render delay; tomcat default max threads is 200, so
-# 30/45/60 rps land below / at / decisively past saturation. max_vus must
-# cover the full concurrency plateau or k6 silently drops the arrival rate.
+# 2026-07-28: 주입이 `?delayMs=5000`이었다. 앱이 호출자가 준 시간만큼 Thread.sleep
+# 하는 구조라 (a) 결함이 아니라 파라미터였고 (b) 접근 로그의 delayMs가 정답을 그대로
+# 자백했다(헌장 §2-A, G6 위반). 이제 앱에는 진짜 결함이 있다 — OrderReportRenderer가
+# 내부 버퍼를 재사용하는 단일 인스턴스라 render()가 synchronized이고, 일별 이동평균을
+# 매 지점마다 창 전체로 다시 계산해 비용이 O(n^2)다.
+#
+# 렌더 비용 실측(x86 dev, 2026-07-28): days=30 → 1.18ms, 90 → 5.69ms,
+# 180 → 17.09ms, 365 → 62.34ms. 렌더가 직렬화되므로 처리율 상한 = 1/렌더시간이다.
+# days=120은 x86에서 ~7.6ms(상한 ~131 rps)이고 워커가 aarch64라 실제 상한은 더
+# 낮으므로, 30/45/60 rps가 포화 아래/근처/너머에 걸린다. 정확한 무릎은 사다리가
+# 라이브에서 찾는다. max_vus는 포화 고원 전체를 덮어야 k6가 도착률을 조용히 떨구지 않는다.
 F03H_LEVELS = {
     rps: {
         "namespace": "rca-testbed-commerce",
@@ -38,7 +46,7 @@ F03H_LEVELS = {
         "configmap": "scenario-f03-h-order-thread-pool",
         "node_name": "tb-w1",
         "image": "grafana/k6:latest",
-        "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+        "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
         "target_rps": rps,
         "duration_seconds": 480,
         "preallocated_vus": 64,

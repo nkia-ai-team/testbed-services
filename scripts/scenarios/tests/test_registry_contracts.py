@@ -59,14 +59,16 @@ class RegistryContractTests(unittest.TestCase):
         self.assertRegex(plan["profile_instances"][0]["executor_sha256"], r"^[0-9a-f]{64}$")
 
     def test_all_scenarios_compile_with_trusted_live_plans(self) -> None:
-        # 31 live of 60. The 8 that left this set on 2026-07-27 (F01-G, F02-P,
-        # F03-G, F03-H, F05-G, F09-H, F09-P, F11-G) were parked by the golden
-        # audit; their controllers moved to registry/controllers-parked.json.
+        # 32 live of 60. 2026-07-27 골든 감사로 8종이 빠졌고(F01-G, F02-P, F03-G,
+        # F03-H, F05-G, F09-H, F09-P, F11-G) 컨트롤러는 controllers-parked.json으로
+        # 옮겼다. 2026-07-28 F03-H가 복귀했다 — 주입 표면을 자백하던 Thread.sleep을
+        # 실제 결함(직렬화된 O(n^2) 리포트 렌더러)으로 교체해 G6 누설을 없앴다.
         live_ids = {
             "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
             "F06-H", "F06-R", "F07-H", "F07-P", "F08-G", "F08-H", "F08-P", "F09-R",
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
             "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
+            "F03-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -180,6 +182,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F06-H", "F06-R", "F07-H", "F07-P", "F08-G", "F08-H", "F08-P", "F09-R",
                 "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
                 "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
+            "F03-H",
             },
         )
         self.assertEqual(
@@ -189,6 +192,8 @@ class RegistryContractTests(unittest.TestCase):
                 "F05-R", "F05-H", "F07-P", "F08-P", "F09-R", "F01-P", "F08-G", "F15-G",
                 "F06-H", "F03-P", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S",
                 "F16-H", "F20-R", "F20-P", "F20-Q", "F25-H", "F23-R", "F15-R",
+                # 2026-07-28 복귀: 앱의 Thread.sleep 자백을 실제 결함으로 교체했다.
+                "F03-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -308,7 +313,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
-        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F23-R", "F15-R"])
+        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F15-R", "F03-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
