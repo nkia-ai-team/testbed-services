@@ -26,10 +26,13 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-07-28: readiness에 cut을 신설하고 음성 시나리오 4종(F01-G·F03-G·F05-G·F11-G)을
 # 옮겼다(parked 24→20). parked는 "회생 후보"라는 뜻이므로 회생 조건이 코드가 아니라
 # 헌장 개정인 것을 같은 칸에 두면 영원히 열릴 것처럼 읽힌다. cut은 종착역이다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 33 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
+# 2026-07-28: ready 33→37. 스토리지 포화 3종(F02-H·F10-H·F10-P)과 복합 자원 고갈
+# F15-P가 들어왔다. 마지막까지 이들을 막고 있던 것은 도구도 계약도 아니라
+# "장치가 바쁘다"를 셀 수 없다는 것이었다 — host.disk_io_utilization 신설로 풀렸다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 37 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 17 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 2 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-28: 13 → 17. 스토리지 IO 3종(F02-H·F10-H·F10-P)과 F15-P를 고정 계약에서
@@ -182,8 +185,9 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # compile to live_allowed == true. The remaining 10 are covered by the
 # catalog-level checks above and by tests/test_registry_contracts.py.
 # 2026-07-28: 21→22. F03-H 복귀분이 bin/ 스크립트를 가진 ready 집합에 더해졌다.
-[[ $((ready_live_false + ready_live_true)) -eq 23 ]]
-[[ "$ready_live_true" -eq 23 ]]
+# 2026-07-28: 23→27. 스토리지 포화 3종과 F15-P가 더해졌고 넷 다 bin/ 스크립트를 갖고 있다.
+[[ $((ready_live_false + ready_live_true)) -eq 27 ]]
+[[ "$ready_live_true" -eq 27 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

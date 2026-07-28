@@ -41,7 +41,7 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
             controllers["live_scenario_ids"][-5:],
-            ["F25-H", "F23-R", "F15-R", "F03-H", "F06-P"],
+            ["F06-P", "F02-H", "F10-H", "F10-P", "F15-P"],
         )
 
         # F02-P was parked on 2026-07-27 (nothing in food queries

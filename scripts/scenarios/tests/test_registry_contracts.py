@@ -69,6 +69,9 @@ class RegistryContractTests(unittest.TestCase):
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
             "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
+            # 2026-07-28: 스토리지 포화 3종 + 복합 자원 고갈. 셋을 막고 있던 것은
+            # fio 부재·약한 고정 계약·디스크 IO 관측 부재였고 모두 해소됐다.
+            "F02-H", "F10-H", "F10-P", "F15-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -183,7 +186,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
                 "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
                 "F03-H", "F06-P",
-            "F03-H",
+                "F02-H", "F10-H", "F10-P", "F15-P",
             },
         )
         self.assertEqual(
@@ -198,6 +201,12 @@ class RegistryContractTests(unittest.TestCase):
                 # 2026-07-28 신규: food 429 경로는 앱에 이미 완결돼 있었고,
                 # 막고 있던 것은 429를 세는 관측(business_429_rate) 부재였다.
                 "F06-P",
+                # 2026-07-28 신규: 스토리지 포화 3종. 마지막 차단은 도구도 계약도
+                # 아니라 "장치가 바쁘다"를 셀 수 없다는 것이었다(host.disk_io_utilization).
+                "F02-H", "F10-H", "F10-P",
+                # 2026-07-28 신규: 복합 자원 고갈. 배치 고정으로 원 전제(공용 노드)가
+                # 사라져 CPU+메모리 동시 압박으로 재정의했다.
+                "F15-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -317,7 +326,8 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
-        self.assertEqual(self.controllers["live_scenario_ids"][-2:], ["F03-H", "F06-P"])
+        self.assertEqual(self.controllers["live_scenario_ids"][-4:],
+                         ["F02-H", "F10-H", "F10-P", "F15-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

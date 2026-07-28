@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F10-P",
   "slug": "f10-p-oracle-io-saturation",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,14 +29,274 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "calibration",
-      "profile": {
-        "kind": "adaptive",
-        "ref": "controller-profiles/f10-p-oracle-io-saturation/adaptive",
-        "requires_approved_fixed_profile": false
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "io-6000",
+              "parameters": {
+                "mode": "fio",
+                "host": "192.168.122.11",
+                "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+                "size_mib": 2048,
+                "runtime_seconds": 600,
+                "rate_iops": 6000
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "io-12000",
+              "parameters": {
+                "mode": "fio",
+                "host": "192.168.122.11",
+                "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+                "size_mib": 2048,
+                "runtime_seconds": 600,
+                "rate_iops": 12000
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "io-20000",
+              "parameters": {
+                "mode": "fio",
+                "host": "192.168.122.11",
+                "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0",
+                "size_mib": 2048,
+                "runtime_seconds": 600,
+                "rate_iops": 20000
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            }
+          },
+          {
+            "id": "disk_io_util",
+            "adapter": "host_probe",
+            "query_id": "host.disk_io_utilization",
+            "freshness": "30s",
+            "parameters": {
+              "scenario_id": "F10-P"
+            }
+          },
+          {
+            "id": "transfer_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "core-banking-transfer"
+            }
+          },
+          {
+            "id": "transfer_hikari_pending",
+            "adapter": "prometheus",
+            "query_id": "prometheus.hikari_pending_connections",
+            "freshness": "30s",
+            "parameters": {
+              "service_name": "core-banking-transfer"
+            }
+          },
+          {
+            "id": "node_cpu_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_cpu_utilization",
+            "freshness": "60s",
+            "parameters": {
+              "node": "tb-w2"
+            }
+          },
+          {
+            "id": "transfer_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "device-saturated",
+              "observation": "disk_io_util",
+              "op": "gte",
+              "value": 70
+            },
+            {
+              "id": "transfer-latency-damage",
+              "observation": "transfer_p95",
+              "op": "gte",
+              "value": 4000
+            },
+            {
+              "id": "transfer-pool-occupied",
+              "observation": "transfer_hikari_pending",
+              "op": "gt",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "device-not-yet-saturated",
+              "observation": "disk_io_util",
+              "op": "lt",
+              "value": 70
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "symptom-without-device-load",
+              "observation": "disk_io_util",
+              "op": "lt",
+              "value": 30
+            },
+            {
+              "id": "node-cpu-saturated",
+              "observation": "node_cpu_util",
+              "op": "gte",
+              "value": 85
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "device-idle-again",
+              "observation": "disk_io_util",
+              "op": "lt",
+              "value": 20
+            },
+            {
+              "id": "transfer-latency-recovered",
+              "observation": "transfer_p95",
+              "op": "lt",
+              "value": 1500
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +330,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(banking Oracle PVC는 tb-w1에 있다 — 도메인-워커 맵과 무관)",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

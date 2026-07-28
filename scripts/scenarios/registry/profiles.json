@@ -229,7 +229,10 @@
           "F01-G",
           "F05-G",
           "F11-G",
-          "F06-P"
+          "F06-P",
+          "F02-H",
+          "F10-H",
+          "F10-P"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -763,6 +766,39 @@
           "scenario_tag": "scenario_id=F06-P",
           "seed": 4242,
           "baseline_unit": "loadgen-food"
+        },
+        "F02-H": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30080",
+          "script_path": "/opt/loadgen/commerce/surge.js",
+          "scenario_tag": "scenario_id=F02-H",
+          "seed": 4242,
+          "baseline_unit": "loadgen-commerce"
+        },
+        "F10-H": {
+          "target_rps": 30,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F10-H",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
+        },
+        "F10-P": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/surge.js",
+          "scenario_tag": "scenario_id=F10-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-banking"
         }
       },
       "scenario_levels": {
