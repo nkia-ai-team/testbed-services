@@ -204,12 +204,64 @@
       "domain": "commerce"
     },
     "F08-P": {
-      "title": "order→payment read-timeout 오설정(설정 오배포)",
-      "description": "order-service의 payment 호출 read-timeout을 15s에서 250ms로 비정상적으로 짧게 오설정하는 설정 오배포다. checkout의 payment 확정 단계가 조기 timeout으로 실패해 주문 실패율이 상승하지만, 원인은 트래픽·자원·외부 장애가 아니라 order 자신의 timeout 설정 변경이다.",
-      "cause": "Misconfigured downstream read-timeout (config misdeployment)",
-      "injection_summary": "order deployment에 SPRING_APPLICATION_JSON env({\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}})를 주입하고 rollout해, 재빌드 없이 application.yml의 services.payment.read-timeout(15s) 리터럴을 250ms로 오버라이드한다. 사용자 경로 확인용 north-south 20rps companion을 병행하며, cleanup은 env 제거 후 rollout 원복이다.",
-      "user_impact": "checkout의 결제 확정 단계가 250ms 초과 시 timeout으로 실패해 주문 실패율(5xx)이 상승한다.",
-      "distinguishing_evidence": "order→payment span이 250ms 부근에서 client-side timeout으로 잘리며 order error_rate가 상승한다. F06-R(외부 payment hang)과 달리 외부 payment 서비스·pod·DB·호스트 자원은 모두 정상이고, order deployment의 timeout 설정 변경(rollout) 이력이 존재한다. F07-H(진입 폭주)와 달리 north-south 진입량은 평상 수준이다.",
+      "title": "order→payment read-timeout을 15s에서 250ms로 줄인 설정 오배포 — 실패한 주문의 결제만 성사",
+      "description": "order-service의 결제 호출 read-timeout(application.yml 리터럴 15s)을 배포 파라미터로 250ms로 덮어쓰는 설정 오배포다. payment-service의 processPayment는 한 트랜잭션 안에서 외부 PG 호출과 core-banking 이체 두 번의 원격 왕복을 수행하므로 정상 응답도 250ms 안에 끝나지 않는다 — order 쪽 소켓이 먼저 끊긴다. 이 시나리오의 정체성은 5xx 자체가 아니라 **비대칭 실패**다. order는 실패로 보고 트랜잭션을 롤백하지만 payment 서버는 호출을 끝까지 완주해 결제를 커밋하고 정산 이체까지 보낸다. 게다가 @Retry(paymentClient)가 2회이므로 같은 결제가 서버에 두 번 도달할 수 있다. 사용자는 실패 화면을 보는데 돈은 나간다. Class B(설정 오배포)로 라벨한다 — 250ms는 코드에 잠복한 결함이 아니라 인위적으로 주입한 설정값이다.",
+      "cause": "testbed-order Deployment에 SPRING_APPLICATION_JSON으로 services.payment.read-timeout=250ms를 주입 → paymentRestClient의 소켓 read-timeout이 250ms → 정상 처리 중인 결제 호출이 250ms에 절단(ResourceAccessException) → @Retry(paymentClient) 2회 → @CircuitBreaker(paymentClient) open → requestPaymentFallback 502 → OrderService.checkout이 재고 보상 후 502 'Payment failed'. 서버측 payment 트랜잭션은 무관하게 커밋된다.",
+      "injection_summary": "k8s.env executor가 testbed-order/order-service 컨테이너의 env를 승인된 baseline에서 fault 집합으로 교체하고 rollout한다. 차이는 SPRING_APPLICATION_JSON=`{\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}}` 한 줄뿐이며, Spring이 이 값을 application.yml의 15s 리터럴보다 우선 적용한다(재빌드 불필요). north-south 20rps companion으로 사용자 경로를 흘리고, cleanup은 env를 baseline으로 되돌리고 rollout 원복한다.",
+      "user_impact": "체크아웃이 502로 실패한다. 실패율은 payment 왕복 시간 분포에 따라 결정되며 250ms는 정상 p50보다도 짧아 사실상 대부분의 결제가 잘린다. 진짜 피해는 상태 불일치다 — 주문은 롤백되고 재고는 반환되는데 payment_schema.payments에는 결제가 커밋되고 core-banking 정산 이체가 실행된다(재시도 때문에 중복 가능). 결제·주문 대사에서 '주문 없는 결제'가 남고, 이는 주입을 끊어도 자동으로 되돌아가지 않는다.",
+      "distinguishing_evidence": "결정 증거는 같은 호출의 클라이언트 span과 서버 span이 어긋난다는 것이다 — order→payment 클라이언트 span은 약 250ms에서 timeout으로 끊기는데 payment 서버측 span은 그보다 길게 정상 200으로 완주한다. 즉 하류는 아프지 않고 상류의 인내심만 짧아졌다. 두 번째 축은 변경 이력이다 — testbed-order Deployment에 env 변경과 롤아웃이 실제로 존재하며 실패 개시가 새 파드 Ready 시각과 붙는다(F08-H는 정반대로 어긋난다). 세 번째로 외부 PG mock은 200을 반환하고 banking 이체·commerce PG 잠금·노드 자원은 모두 정상이며, 진입 트래픽도 평상 수준이라 폭주(F07-H)가 아니다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "APM",
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "config",
+        "target_id": "commerce-order",
+        "mechanism": "결함을 가진 대상은 commerce-order의 배포 설정이다. RestClientConfig.paymentRestClient가 services.payment.read-timeout을 SimpleClientHttpRequestFactory의 소켓 read-timeout으로 그대로 주입하므로, 이 값이 250ms가 되면 payment의 정상 처리 시간보다 짧아진다. payment-service의 processPayment는 @Transactional 하나 안에서 (1) 결제 행 저장, (2) 외부 PG POST /v1/payments, (3) core-banking POST /api/transfers, (4) outbox 발행을 순차 수행한다 — 원격 왕복이 두 번 들어 있어 250ms는 구조적으로 부족하다. 절단은 클라이언트 소켓에서만 일어나고 서버 스레드는 취소되지 않으므로 payment 트랜잭션은 커밋된다. order 쪽에서는 ResourceAccessException이 PaymentClient의 4xx 분기(ClientErrorException)에 걸리지 않아 실패로 집계되고, @Retry 2회를 태운 뒤 fallback이 502를 던진다 — 재시도 때문에 같은 주문의 결제가 서버에 두 번 도달할 수 있다. checkout은 @Transactional이므로 PENDING 주문은 사라지고 재고도 반환되지만, 이미 커밋된 결제와 이체는 되돌아가지 않는다.",
+        "code_anchor": [
+          "commerce/order-service/src/main/resources/application.yml:51-54 (services.payment read-timeout 15s — 오배포가 덮어쓰는 리터럴)",
+          "commerce/order-service/src/main/java/com/commerce/order/config/RestClientConfig.java:25-32 (paymentRestClient — read-timeout을 소켓 타임아웃으로 주입하는 지점)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — 절단된 호출을 하류 장애로 집계)",
+          "commerce/order-service/src/main/resources/application.yml:134-137 (paymentClient — retry max-attempts 2·300ms, 같은 결제가 서버에 두 번 도달하는 근거)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502, PENDING 주문은 롤백)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (PaymentService.processPayment — @Transactional 진입, 클라이언트가 끊겨도 서버는 계속 진행해 커밋한다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:77-80 (bankingTransferClient.transfer — 같은 트랜잭션 안 두 번째 원격 왕복, 250ms 예산을 구조적으로 초과시킨다)"
+        ],
+        "infra_anchor": "k8s.env executor가 승인된 baseline/fault env 집합을 통째로 교체한다 — 두 집합의 차이는 SPRING_APPLICATION_JSON 한 항목뿐이며 OTel·DB 시크릿 등 나머지는 동일하다. cleanup은 baseline 복원 + rollout. **정직성 각주**: 실제 코드에 잠복한 결함은 오히려 반대 방향이다(payment 15s + @Transactional timeout 부재 = 과대 인내). 250ms는 그 정반대를 인위 주입한 것이라 Class A(코드 결함)로 제시할 수 없고 Class B(설정 오배포)로만 유효하다 — 품질 기준서 G1 금지2의 실증 목록에 이 시나리오가 이름으로 올라 있다. **미검증 잔여**: 250ms가 실제로 무는지(=정상 payment 왕복 p50이 250ms를 넘는지)는 기존 baseline 캡처의 commerce-order p50/p95로 확인하기로 한 항목이며 아직 실측되지 않았다."
+      },
+      "must_support": [
+        "order→payment 클라이언트 span이 약 250ms에서 timeout으로 절단(commerce-order error_rate ≥ 0.1) — 상류 인내심이 원인이라는 직접 증거",
+        "같은 호출의 payment 서버측 span은 200으로 완주하며 지연·오류가 없다 — 하류 무죄",
+        "testbed-order Deployment의 env 변경과 롤아웃이 존재하고, 실패 개시가 새 파드 Ready 시각과 정렬된다",
+        "체크아웃 5xx 비율 상승(loadgen.checkout_5xx_rate ≥ 0.05)과 함께 주문 없는 결제 행이 남는다(상태 불일치)"
+      ],
+      "must_rule_out": [
+        "payment 자체 열화가 아님 — payment 서버측 latency·error_rate 정상, 파드 Ready 유지. payment가 아프면 F06-R·F08-H",
+        "외부 PG 장애가 아님 — mock이 200을 반환하고 payment→PG span에 4xx/5xx가 없다",
+        "진입 폭주가 아님 — achieved_rps가 승인 수준(20rps)을 유지한다. 폭주면 F07-H",
+        "파드 크래시·재기동 반복이 아님 — pod_ready = true 유지. 롤아웃은 성공했고 그 뒤로 안정적이다"
+      ],
+      "difficulty": "easy",
+      "related_scenarios": {
+        "contrast_with": [
+          "F08-H (변경이 무죄인 짝 — 같은 '배포 직후 결제 실패'지만 그쪽은 외부 PG가 범인이다. 실패 개시가 롤아웃과 정렬되는가/어긋나는가가 갈림길)",
+          "F06-R (외부 PG hang — 클라이언트가 끊기는 점은 같으나 그쪽은 서버측 span도 오래 걸린다)",
+          "F03-P (같은 k8s.env 설정 오배포 계열, 대상이 timeout이 아니라 Hikari 풀 크기다)",
+          "F19-P (같은 '상류가 아파 보이는데 원인은 시간 예산' 구조지만 그쪽은 실제 하류 지연이 원인이고 풀 고갈로 표면화한다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-order"
+        ],
+        "partial": [
+          "commerce-payment"
+        ]
+      },
       "injected_fault": {
         "profile": "k8s.env",
         "companions": [
@@ -341,8 +393,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F09-R": {
       "title": "worker 노드 CPU noisy neighbor",
@@ -444,12 +495,70 @@
       }
     },
     "F08-H": {
-      "title": "배포 직후 우연히 겹친 외부 결제 장애",
-      "description": "무관한 배포 변경 직후 외부 결제대행사 장애가 발생해 시간상 변경처럼 보이지만 실제 원인은 외부 의존인 시나리오다.",
-      "cause": "External payment failure coincident with deployment",
-      "injection_summary": "무영향 rollout 변경과 external PG fault를 정해진 offset으로 합성한다.",
-      "user_impact": "배포 직후 체크아웃 실패가 발생한다.",
-      "distinguishing_evidence": "old/new pod 모두 동일하게 실패하고 오류는 외부 결제 span에서 시작된다.",
+      "title": "무죄인 배포 직후 15초 뒤 시작된 외부 결제대행사 429 — 체크아웃 전량 502",
+      "description": "commerce 결제는 payment-service가 외부 PG(`testbed-external-pg-mock`)에 POST /v1/payments를 동기로 부르는 구조다. 이 시나리오는 먼저 testbed-payment Deployment에 annotation만 바꾸는 롤아웃(이미지·env·설정 동일)을 걸고, 15초 뒤 외부 PG가 모든 결제 요청에 429를 반환하도록 만든다. 배포와 장애가 시간상 붙어 있어 변경이 범인처럼 보이지만 실제 원인은 프로세스 밖 외부 의존이다. 429는 4xx지만 사용자에게는 5xx로 도달한다 — PgApiClient가 RestClient 기본 에러 핸들러의 예외를 잡아 502 BAD_GATEWAY로 승격하기 때문이며(payment-service에는 resilience4j 설정이 아예 없다), 상류 order는 그 502를 하류 장애로 집계해 재시도·서킷브레이커를 태우고 체크아웃을 502로 끝낸다. 즉 외부의 '속도 제한'이라는 부분적 신호가 코드 경로를 지나며 전량 실패로 증폭된다.",
+      "cause": "외부 PG가 POST /v1/payments에 429 반환 → PgApiClient.requestPayment의 retrieve()가 예외 → catch(RestClientException) → ServiceException(502) → order PaymentClient가 5xx로 집계 → @Retry(paymentClient) 2회 → 실패율 50%↑에 @CircuitBreaker(paymentClient) open → requestPaymentFallback이 502 → OrderService.checkout이 재고 보상 후 502 'Payment failed' 반환. 동시에 진행된 testbed-payment 롤아웃은 annotation 변경뿐이라 무해하다.",
+      "injection_summary": "timeline.compose executor가 두 단계를 합성한다. t=0: testbed-payment Deployment에 `rca.lucida.ai/f08-h-rollout` annotation을 찍어 롤아웃을 유발한다(replicas 1, 기본 전략이라 새 파드가 먼저 뜨고 헌 파드가 서비스를 유지하므로 사용자 영향 없음). t=+15s: mockserver expectation을 덮어써 POST /v1/payments를 429로 고정한다. cleanup은 역순 — mock expectation 스냅샷 복원이 먼저, 롤아웃 annotation 원복이 나중이다.",
+      "user_impact": "체크아웃이 502 BAD_GATEWAY로 실패한다. 외부 PG가 모든 결제 요청을 거절하므로 피해는 부분이 아니라 전량이고, 장바구니·가격조회·상품조회 등 결제 이전 단계는 정상이라 '마지막 결제 버튼만 안 되는' 형태로 보인다. payment-service의 processPayment는 @Transactional 안에서 실패해 롤백되므로 결제 행·정산 이체는 남지 않는다 — 돈이 나가고 주문이 없는 F08-P와 갈리는 지점이다.",
+      "distinguishing_evidence": "결정 증거는 오류의 시작점이 프로세스 밖이라는 것이다. payment→외부 PG 아웃바운드 span이 429로 끝나고, 그 안쪽(payment DB·commerce PG 잠금·호스트 자원)은 전부 깨끗하다. 배포 무죄는 두 가지로 확정된다 — (1) 파드 템플릿 변경분이 annotation 하나뿐이고 이미지·env가 그대로이며 pod_ready가 유지된다, (2) 실패 시작이 롤아웃 시각과 15초 어긋나고 롤아웃 완료 후에도 계속된다. F06-R(외부 hang)과는 지연이 아니라 즉시 응답이라는 점에서 갈린다 — 실패한 결제 호출의 소요시간이 read-timeout 10s에 붙지 않고 수십 ms에 끝난다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P4",
+      "observation_domains": [
+        "APM",
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "testbed-external-pg-mock",
+        "trigger_target_id": "commerce-payment",
+        "mechanism": "근본은 외부 결제대행사(테스트베드에서는 payment-service가 PG_API_URL로 바라보는 클러스터 내 testbed-external-pg-mock)의 속도 제한이고, 그것이 전량 장애가 되는 이유는 commerce-payment의 P4 결함이다. PgApiClient.requestPayment는 RestClient.retrieve()를 기본 에러 핸들러로 쓰므로 429에 예외가 나고, 이를 catch(RestClientException)로 받아 502 BAD_GATEWAY로 바꾼다 — 외부의 '나중에 다시 오라'가 '게이트웨이 고장'으로 번역된다. payment-service에는 resilience4j 설정이 없어 이 hop에 서킷브레이커도 백오프 재시도도 없다(pgRestClient는 timeout만 갖는다). 상류 order의 PaymentClient는 4xx만 ClientErrorException으로 분리하고 5xx는 실패로 집계하므로, 승격된 502가 @Retry 2회와 @CircuitBreaker(paymentClient, 실패율 50%)를 그대로 태워 fallback 502로 수렴한다. 한편 같은 시각의 testbed-payment 롤아웃은 annotation만 바꾸는 no-op이며, replicas 1에서 기본 롤링 전략은 maxSurge를 올리고 maxUnavailable을 내려(새 파드 먼저) 무중단이다 — 이 시나리오가 distractor로 성립하는 근거다.",
+        "code_anchor": [
+          "commerce/k8s/31-external-pg-mock.yaml:9-12 (testbed-external-pg-mock — 외부 PG 대역 mockserver Deployment)",
+          "commerce/k8s/02-configmaps.yaml:41 (PG_API_URL — payment의 외부 PG 엔드포인트가 이 mock으로 향한다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/client/PgApiClient.java:23-36 (PgApiClient.requestPayment — retrieve() 기본 핸들러라 429에도 예외가 난다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/client/PgApiClient.java:37-40 (catch RestClientException → ServiceException BAD_GATEWAY — 외부 429가 502로 승격되는 지점)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/config/RestClientConfig.java:23-33 (pgRestClient — timeout만 있고 CircuitBreaker·Retry 없음 = P4)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:63-64 (pgApiClient.requestPayment — @Transactional 안 동기 외부 호출, 실패 시 결제 행까지 롤백)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — 승격된 502를 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY, 4xx만 그대로 전파)",
+          "commerce/order-service/src/main/resources/application.yml:134-137 (paymentClient — retry max-attempts 2·300ms, 결제 재시도 증폭 폭)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')",
+          "commerce/k8s/23-payment-service.yaml:4 (testbed-payment — distractor 롤아웃 대상 Deployment, replicas 1)"
+        ],
+        "infra_anchor": "distractor는 testbed-payment Deployment의 pod template annotation 패치이며 이미지·env·리소스는 손대지 않는다. 전 함대에 maxUnavailable:1/maxSurge:0을 적용하지 않은 이유가 바로 이 시나리오다 — 적용하면 무해한 롤아웃이 진짜 순단을 만들어 distractor가 아니라 두 번째 원인이 된다(품질 기준서 롤아웃 의미론 절). 외부 PG 장애는 mockserver expectation PUT으로 만들며 expectation id에 시나리오 ID가 들어가지만, 이 값은 mockserver 내부 상태라 캡처 대상이 아니다."
+      },
+      "must_support": [
+        "payment→외부 PG 아웃바운드 호출이 429로 실패 — 오류의 시작점이 commerce 프로세스 밖이라는 직접 증거",
+        "체크아웃 5xx 비율 상승(loadgen.checkout_5xx_rate ≥ 0.05) 및 체크아웃 종단 불변식 위반(business.checkout_invariant = false)",
+        "실패 개시 시각이 롤아웃 개시보다 약 15초 늦고, 롤아웃 완료 이후에도 실패가 지속됨 — 배포와 장애의 시간 분리",
+        "commerce PG의 차단 세션 0, payment·order 파드 Ready 유지, 노드 자원 정상 — 내부 원인 부재"
+      ],
+      "must_rule_out": [
+        "배포가 원인이 아님 — 파드 템플릿 변경분이 annotation 하나뿐(이미지·env 동일)이고 pod_ready 유지. 배포가 원인이면 F08-R 계열(결함 이미지)",
+        "내부 DB 잠금이 아님 — commerce PG의 blocked_session_count = 0. 잠금이면 F01-R(inventory)·F06-H(payments)",
+        "banking 이체 지연이 아님 — commerce→banking transfer가 정상 응답. banking이 막히면 F01-P·F08-G",
+        "외부 hang(지연)이 아님 — 실패한 PG 호출이 read-timeout 10s에 붙지 않고 즉시 끝난다. 지연이면 F06-R"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F01-H (동일한 외부 PG 429 주입에 distractor가 없는 형태 — 근본과 정답이 같고, F08-H가 추가로 요구하는 것은 '무죄인 배포를 배제하는 일' 하나뿐이다)",
+          "F06-R (같은 외부 PG hop이지만 429가 아니라 30s 지연 — 실패 호출의 소요시간으로 갈린다)",
+          "F08-G (역시 distractor 롤아웃을 동반하나 근본은 banking Oracle 잠금이다 — 오류 시작점이 외부 PG hop인지 banking hop인지가 결정 증거)",
+          "F08-P (같은 '변경 직후 결제 실패'지만 그쪽은 변경이 진짜 범인이다 — 배포 무죄/유죄가 뒤집힌 짝)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "testbed-external-pg-mock"
+        ],
+        "partial": [
+          "commerce-payment",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": "timeline.compose",
         "companions": [
@@ -469,8 +578,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F09-P": {
       "title": "inventory 컨테이너 CPU limit 과소 설정",
@@ -811,12 +919,73 @@
       "domain": "core-banking"
     },
     "F08-G": {
-      "title": "무관한 notification 배포와 banking Oracle lock 동시 발생",
-      "description": "commerce notification 배포(topology상 장애 경로 밖)와 banking commerce-settlement 계좌 lock을 동시에 발생시켜, 변경 이력이 있으나 그 변경이 원인이 아님을 판별하게 하는 distractor 시나리오다.",
-      "cause": "banking Oracle commerce-settlement row lock (동시 notification 배포는 무관 distractor)",
-      "injection_summary": "distractor로 testbed-notification을 annotation rollout하고 15초 뒤 testbed-oracle-0(FREEPDB1)에 태그된 settlement 계좌 lock을 건다.",
-      "user_impact": "banking transfer 대기로 commerce payment timeout·checkout 5xx가 발생한다(notification은 정상 재기동).",
-      "distinguishing_evidence": "Oracle blocking session(rca-F08-G-oracle-lock)이 직접 원인이고, notification 배포 change는 checkout→payment→banking 경로와 무관하며 payment pod는 재생성 없이 열화한다.",
+      "title": "무관한 notification 배포 뒤에 숨은 banking Oracle 정산계좌 잠금 — 크로스도메인 체크아웃 실패",
+      "description": "commerce 결제는 마지막 단계에서 core-banking에 정산 이체를 요청하며, 출금계좌는 모든 주문이 공유하는 고정 계좌 `commerce-settlement`다. 이 시나리오는 먼저 commerce의 notification Deployment를 롤아웃해 '방금 배포가 있었다'는 흔적을 남기고(그러나 notification은 Kafka 컨슈머 전용이라 체크아웃 동기 경로 밖이다), 15초 뒤 banking Oracle의 그 계좌 행을 장기 점유한다. TransferService는 이체 시 두 계좌를 SELECT … FOR UPDATE로 잠그는데 NOWAIT도 lock timeout도 없어 무한 대기한다. commerce payment는 10초 read-timeout에 걸려 502를 내고 체크아웃이 실패한다. 증상은 commerce에서 나지만 근본은 다른 네임스페이스·다른 DB 엔진에 있으며, 눈에 띄는 변경 이력은 무죄다.",
+      "cause": "BANKING.accounts의 commerce-settlement 행을 트랜잭션이 장기 점유 → TransferService.execute의 두 번째 findByIdForUpdate가 무한 대기 → commerce payment의 banking read-timeout 10s 초과 → BankingTransferClient가 ServiceException(502) → order PaymentClient가 5xx로 집계 → @Retry 2회 → @CircuitBreaker(paymentClient) open → 체크아웃 502. 동시에 대기 중인 이체가 transfer-service의 Hikari 풀(15)을 소진하면 정산과 무관한 이체까지 커넥션 획득 3s 초과로 실패한다. 같은 시각의 notification 롤아웃은 동기 경로 밖이라 무관하다.",
+      "injection_summary": "timeline.multi executor가 두 단계를 합성한다. t=0: rca-testbed-commerce의 testbed-notification에 annotation 롤아웃(distractor). t=+15s: rca-testbed-banking의 testbed-oracle-0(FREEPDB1)에서 BANKING.accounts id='commerce-settlement' 행을 SELECT … FOR UPDATE로 잡고 600초 유지한다. 부하는 north-south companion이 공급하며, cleanup은 역순으로 잠금 세션을 끊고 롤아웃 annotation을 원복한다.",
+      "user_impact": "체크아웃이 502로 실패한다. 정산 이체는 모든 commerce 결제가 같은 계좌를 쓰므로 피해는 상품·사용자를 가리지 않고 전량이다. 더 나쁜 것은 순서다 — 외부 PG 결제 승인은 이미 끝난 뒤 banking 이체에서 막히므로, 실계라면 카드 승인만 남고 정산이 누락된다. 대기가 길어지면 transfer-service의 커넥션 풀이 말라 commerce와 무관한 banking 자체 이체까지 실패로 번진다. notification 재기동은 알림 지연(컨슈머 lag)만 만들 뿐 주문 처리에는 영향이 없다.",
+      "distinguishing_evidence": "결정 증거는 오류가 시작되는 hop이다. payment→외부 PG는 200으로 정상 종료되고, 그 다음 payment→banking transfer span이 10초 벽에서 끊긴다 — 즉 실패는 결제가 아니라 정산에서 난다. banking 쪽에서는 BANKING.accounts의 commerce-settlement 행을 기다리는 차단 세션이 관측된다. 배포 무죄는 두 겹이다 — notification은 Kafka 컨슈머만 갖고 있어 체크아웃 동기 경로에 등장하지 않으며(트레이스에 없다), 실패 개시가 롤아웃보다 15초 늦고 롤아웃 완료 후에도 지속된다. commerce PG의 차단 세션은 0이고 payment 파드는 재생성 없이 열화한다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P3+P7",
+      "observation_domains": [
+        "DPM",
+        "APM",
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "database",
+        "target_id": "banking-oracle:BANKING.accounts",
+        "trigger_target_id": "banking-transfer",
+        "mechanism": "결함을 보유한 대상은 banking Oracle의 BANKING.accounts, 그중 commerce 정산 전용 행 commerce-settlement다. commerce payment는 결제마다 BankingTransferClient로 fromAccount='commerce-settlement', toAccount='commerce-merchant' 이체를 보내며 두 계좌는 상수로 고정돼 있다 — 모든 주문이 한 행을 공유하므로 그 행 하나가 잠기면 commerce 결제 전량이 막힌다(P7: 네임스페이스 밖이 근본). TransferService.execute는 데드락 회피를 위해 id 오름차순으로 잠그므로 commerce-merchant를 먼저 잡고 commerce-settlement에서 대기한다 — 즉 대기 중에도 merchant 행 잠금을 쥐고 있어 뒤따르는 이체가 그 계좌에서 2차로 밀린다. AccountRepository.findByIdForUpdate에는 NOWAIT도 lock timeout도 없어 대기는 무한하고(P3), 상류가 타임아웃해도 서버측 JDBC 대기는 취소되지 않아 커넥션이 반환되지 않는다. transfer-service의 Hikari 최대 15가 이렇게 소진되면 무관한 이체까지 connection-timeout 3s로 실패한다. commerce 쪽에서는 payment의 bankingTransferRestClient read-timeout 10s가 먼저 걸려 ServiceException(502)이 되고, order의 @Retry·@CircuitBreaker를 태워 체크아웃 502로 수렴한다. payment의 이 hop에도 서킷브레이커가 없어(P4) 매 요청이 10초를 온전히 소모한다.",
+        "code_anchor": [
+          "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:25-29 (SETTLEMENT_ACCOUNT·MERCHANT_ACCOUNT — 모든 commerce 결제가 공유하는 고정 계좌)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:45-50 (bankingTransferRestClient.post — POST /api/transfers 크로스 네임스페이스 동기 호출)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:55-58 (catch RestClientException → ServiceException BAD_GATEWAY)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/config/RestClientConfig.java:36-43 (bankingTransferRestClient — read-timeout 10s, 서킷브레이커 없음)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:77-80 (bankingTransferClient.transfer — PG 승인 이후에 호출되므로 결제는 되고 정산만 막힌다)",
+          "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/AccountRepository.java:16-20 (findByIdForUpdate — @Lock(PESSIMISTIC_WRITE), NOWAIT·lock timeout 없음)",
+          "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:63-71 (findByIdForUpdate 2회 — id 오름차순으로 merchant를 쥔 채 settlement에서 대기)",
+          "core-banking/transfer-service/src/main/resources/application.yml:12-15 (maximum-pool-size 15·connection-timeout 3000 — 대기 이체가 풀을 소진하면 무관 이체까지 실패)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — payment 502를 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')",
+          "commerce/k8s/24-notification-service.yaml:4 (testbed-notification — distractor 롤아웃 대상 Deployment)",
+          "commerce/notification-service/src/main/java/com/commerce/notification/consumer/PaymentEventConsumer.java:12-24 (PaymentEventConsumer @KafkaListener — notification은 컨슈머 전용이라 체크아웃 동기 경로 밖이다)"
+        ],
+        "infra_anchor": "잠금은 kubectl exec로 testbed-oracle-0(FREEPDB1)에 붙어 client_identifier로 태그된 세션이 건다. **누설 잔여(L1)**: 이 태그 값 `rca-F08-G-oracle-lock`은 시나리오 ID를 그대로 노출하며 v$session 계열 관측에 남는다. PostgreSQL 경로(F01-R)에서는 실앱 신원 사칭으로 이미 제거했으나 Oracle 경로는 아직 대응 전이다(품질 기준서 §9 잔여 항목). 러너의 성공/rule-out 게이트가 이 태그 카운트에 의존하므로, 제거 시 F01-R과 같은 방식으로 판정을 '가해자 신원'에서 '피해자(차단된 세션)'로 옮겨야 한다. RCA 소비자 측 증거는 이미 피해자 기준으로 기술한다."
+      },
+      "must_support": [
+        "BANKING.accounts의 commerce-settlement 행을 기다리는 차단 세션이 존재 — 잠금이 실제로 물었다는 직접 증거",
+        "payment→banking transfer span이 read-timeout 10s 벽에서 끊기고, 그 직전 payment→외부 PG span은 200으로 정상 — 실패 hop이 결제가 아니라 정산임",
+        "체크아웃 5xx 비율 상승(loadgen.checkout_5xx_rate ≥ 0.05)",
+        "실패 개시가 notification 롤아웃보다 약 15초 늦고 롤아웃 완료 이후에도 지속됨"
+      ],
+      "must_rule_out": [
+        "notification 배포가 원인이 아님 — notification은 Kafka 컨슈머 전용이라 체크아웃 트레이스에 등장하지 않고, 재기동 후 Ready·lag 회복. 이 배포는 distractor다",
+        "외부 결제대행사 장애가 아님 — 외부 PG는 200을 반환한다(entry_status ≠ 429). 외부가 원인이면 F01-H·F08-H",
+        "commerce 내부 DB 잠금이 아님 — commerce PG의 차단 세션 0. commerce 잠금이면 F01-R·F06-H",
+        "payment 파드 장애가 아님 — pod_ready 유지, 재생성 없이 열화한다. 파드가 죽으면 F05 계열"
+      ],
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F01-P (동일한 banking Oracle 정산계좌 잠금에 distractor가 없는 형태 — 근본과 정답이 같고, F08-G가 추가로 요구하는 것은 '무죄인 배포를 배제하는 일'이다)",
+          "F08-H (같은 distractor 구조지만 근본이 외부 PG hop이다 — 결제 span이 429로 끝나는가, 200 뒤 정산 span이 끊기는가로 갈린다)",
+          "F06-H (commerce payments 테이블 잠금 — 같은 '결제 전량 실패'지만 차단 세션이 commerce PG에서 관측된다)",
+          "F15-G (crossdomain multi-root — banking 축이 겹치나 근본이 하나가 아니다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "database-relation",
+        "accept": [
+          "banking-oracle:BANKING.accounts"
+        ],
+        "partial": [
+          "banking-transfer",
+          "commerce-payment",
+          "banking-oracle"
+        ]
+      },
       "injected_fault": {
         "profile": "timeline.multi",
         "companions": [
@@ -852,8 +1021,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F15-G": {
       "title": "commerce inventory lock과 banking settlement lock의 동시 multi-root",
