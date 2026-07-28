@@ -143,13 +143,13 @@
               "id": "order-latency-up",
               "observation": "order_p95",
               "op": "gte",
-              "value": 1.5
+              "value": 1500
             },
             {
               "id": "payment-crossschema-latency-up",
               "observation": "payment_p95",
               "op": "gte",
-              "value": 0.5
+              "value": 500
             }
           ],
           "consecutive_ticks": 3
@@ -206,13 +206,13 @@
               "id": "order-latency-recovered",
               "observation": "order_p95",
               "op": "lt",
-              "value": 0.5
+              "value": 500
             },
             {
               "id": "payment-latency-recovered",
               "observation": "payment_p95",
               "op": "lt",
-              "value": 0.3
+              "value": 300
             }
           ],
           "consecutive_ticks": 2,

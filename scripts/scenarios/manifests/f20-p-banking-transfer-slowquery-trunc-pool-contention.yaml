@@ -152,7 +152,7 @@
               "id": "transfer-latency-up",
               "observation": "transfer_p95",
               "op": "gte",
-              "value": 3.0
+              "value": 3000
             },
             {
               "id": "account-502-up",
@@ -215,7 +215,7 @@
               "id": "transfer-latency-recovered",
               "observation": "transfer_p95",
               "op": "lt",
-              "value": 1.0
+              "value": 1000
             },
             {
               "id": "account-recovered",

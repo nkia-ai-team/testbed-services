@@ -151,7 +151,7 @@
               "id": "order-latency-up",
               "observation": "order_p95",
               "op": "gte",
-              "value": 2.0
+              "value": 2000
             },
             {
               "id": "order-memory-climbing",
@@ -220,7 +220,7 @@
               "id": "order-latency-recovered",
               "observation": "order_p95",
               "op": "lt",
-              "value": 0.8
+              "value": 800
             },
             {
               "id": "order-memory-recovered",

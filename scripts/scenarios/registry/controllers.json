@@ -6628,13 +6628,13 @@
             "id": "order-latency-up",
             "observation": "order_p95",
             "op": "gte",
-            "value": 1.5
+            "value": 1500
           },
           {
             "id": "payment-crossschema-latency-up",
             "observation": "payment_p95",
             "op": "gte",
-            "value": 0.5
+            "value": 500
           }
         ],
         "consecutive_ticks": 3
@@ -6691,13 +6691,13 @@
             "id": "order-latency-recovered",
             "observation": "order_p95",
             "op": "lt",
-            "value": 0.5
+            "value": 500
           },
           {
             "id": "payment-latency-recovered",
             "observation": "payment_p95",
             "op": "lt",
-            "value": 0.3
+            "value": 300
           }
         ],
         "consecutive_ticks": 2,
@@ -6839,7 +6839,7 @@
             "id": "transfer-latency-up",
             "observation": "transfer_p95",
             "op": "gte",
-            "value": 3.0
+            "value": 3000
           },
           {
             "id": "account-502-up",
@@ -6902,7 +6902,7 @@
             "id": "transfer-latency-recovered",
             "observation": "transfer_p95",
             "op": "lt",
-            "value": 1.0
+            "value": 1000
           },
           {
             "id": "account-recovered",
@@ -7049,7 +7049,7 @@
             "id": "order-latency-up",
             "observation": "order_p95",
             "op": "gte",
-            "value": 2.0
+            "value": 2000
           },
           {
             "id": "order-memory-climbing",
@@ -7118,7 +7118,7 @@
             "id": "order-latency-recovered",
             "observation": "order_p95",
             "op": "lt",
-            "value": 0.8
+            "value": 800
           },
           {
             "id": "order-memory-recovered",

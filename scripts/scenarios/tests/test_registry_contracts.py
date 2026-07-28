@@ -348,6 +348,38 @@ class RegistryContractTests(unittest.TestCase):
             }),
         )
 
+    def test_latency_thresholds_are_stated_in_the_metric_unit(self) -> None:
+        # prometheus.apm_service_p95 reads apm.agent.otel.java.percentile95, which
+        # the Polestar APM agent publishes in MILLISECONDS — live-verified against
+        # VictoriaMetrics 119:18428 on 2026-07-28 (24h: commerce-order p50 92,
+        # core-banking-transfer p50 707, max 49,600; seconds would be 13 hours).
+        #
+        # F20-P/Q/R were authored in seconds (1.5 / 3.0 / 0.8). Against a
+        # millisecond metric those gates are 1000x too low, and they fail in both
+        # directions at once: success clears at idle baseline, so the scenario
+        # certifies damage that never happened (charter G3), while recovery
+        # demands a latency the service never reaches even when healthy, so the
+        # cleanup gate can only time out.
+        #
+        # No live service idles under 50ms at p95, so a threshold below that is a
+        # unit error rather than a strict gate.
+        floor = 50
+        for scenario_id, controller in self.controllers["controllers"].items():
+            query_by_observation = {
+                item["id"]: item["query_id"] for item in controller["observations"]
+            }
+            for section in ("success", "escalate", "must_rule_out", "recovery", "abort"):
+                block = controller.get(section) or {}
+                for condition in block.get("all", []) + block.get("any", []):
+                    query_id = query_by_observation[condition["observation"]]
+                    if query_id != "prometheus.apm_service_p95":
+                        continue
+                    self.assertGreaterEqual(
+                        condition["value"],
+                        floor,
+                        f"{scenario_id}:{section}:{condition['id']} looks like seconds",
+                    )
+
     def test_host_stress_observes_the_node_it_actually_injects(self) -> None:
         # 2026-07-28: 배치 고정에 맞춰 좌표를 갱신할 때 profiles.json의 주입 host는
         # 고쳤으나 컨트롤러 observation의 node= 파라미터는 그대로였다. 그 결과 F09-R은
