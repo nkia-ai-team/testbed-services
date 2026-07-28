@@ -1,0 +1,1919 @@
+{
+  "schema_version": "1.0",
+  "note": "2026-07-27 골든 감사 CUT 판정으로 보류(readiness=parked)된 시나리오의 컨트롤러 정의. compile-plan은 controllers.json의 모든 항목이 ready 시나리오에 묶이고 곧 실행 가능함을 불변식으로 강제하므로 보류분은 여기에 보관한다. 회생 조건은 catalog.json의 prerequisite에 있으며, 충족되면 이 파일에서 controllers.json으로 되돌린다. 삭제가 아니라 보관인 이유 = 26종 중 22종이 회생 후보다.",
+  "controllers": {
+    "F01-G": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "mock.expectation",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "mock.expectation",
+        "levels": [
+          {
+            "id": "approved-fixed-f01-g",
+            "parameters": {
+              "path": "/v1/payments",
+              "mode": "delay",
+              "status_code": 200,
+              "delay_seconds": 1
+            },
+            "min_hold": "8m",
+            "settle": "30s",
+            "timeout": "13m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-payment"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "user_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-gateway"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "business_ok",
+          "adapter": "business_probe",
+          "query_id": "business.checkout_invariant",
+          "freshness": "60s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "controlled-load",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 15
+          },
+          {
+            "id": "delay-visible",
+            "observation": "user_p95",
+            "op": "gte",
+            "value": 500
+          },
+          {
+            "id": "no-checkout-5xx",
+            "observation": "checkout_5xx_rate",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "entry-reachable",
+            "observation": "entry_status",
+            "op": "ne",
+            "value": 0
+          },
+          {
+            "id": "business-absorbed",
+            "observation": "business_ok",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "user-impact",
+            "observation": "checkout_5xx_rate",
+            "op": "gt",
+            "value": 0
+          },
+          {
+            "id": "business-inconsistent",
+            "observation": "business_ok",
+            "op": "eq",
+            "value": false
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F02-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "15m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f02-p",
+            "parameters": {
+              "engine": "mysql",
+              "namespace": "rca-testbed-food",
+              "pod": "testbed-mysql-0",
+              "database": "fooddelivery",
+              "table": "menus",
+              "index": "idx_menus_category",
+              "column": "category_id",
+              "minimum_rows": 1000
+            },
+            "min_hold": "8m",
+            "settle": "30s",
+            "timeout": "13m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "restaurant_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "food-delivery-restaurant"
+          },
+          "freshness": "120s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "entry-reachable",
+            "observation": "entry_status",
+            "op": "ne",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "global-entry-failure",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "global-pod-failure",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F03-G": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "13m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south",
+        "levels": [
+          {
+            "id": "approved-fixed-f03-g",
+            "parameters": {
+              "target_rps": 35,
+              "ramp_up": "2m",
+              "hold": "8m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30080",
+              "script_path": "/opt/loadgen/commerce/surge.js",
+              "scenario_tag": "scenario_id=F03-G",
+              "seed": 4242,
+              "baseline_unit": "loadgen-commerce"
+            },
+            "min_hold": "2m",
+            "settle": "30s",
+            "timeout": "12m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "user_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-gateway"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "business_ok",
+          "adapter": "business_probe",
+          "query_id": "business.checkout_invariant",
+          "freshness": "60s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "load-achieved",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 30
+          },
+          {
+            "id": "business-invariant-preserved",
+            "observation": "business_ok",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "latency-normal",
+            "observation": "user_p95",
+            "op": "lt",
+            "value": 500
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "latency-impact",
+            "observation": "user_p95",
+            "op": "gte",
+            "value": 500
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F03-H": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "calibration",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "adaptive_ladder",
+        "primary_ref": "load.east_west",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": null,
+        "levels": [
+          {
+            "id": "below-saturation-30rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 30,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            },
+            "min_hold": "6m",
+            "settle": "30s",
+            "timeout": "10m"
+          },
+          {
+            "id": "at-saturation-45rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 45,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            },
+            "min_hold": "6m",
+            "settle": "30s",
+            "timeout": "10m"
+          },
+          {
+            "id": "past-saturation-60rps",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "job": "scenario-f03-h-order-thread-pool",
+              "configmap": "scenario-f03-h-order-thread-pool",
+              "node_name": "tb-w1",
+              "image": "grafana/k6:latest",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?delayMs=5000",
+              "target_rps": 60,
+              "duration_seconds": 480,
+              "preallocated_vus": 64,
+              "max_vus": 360
+            },
+            "min_hold": "6m",
+            "settle": "30s",
+            "timeout": "10m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "render-load-delivered",
+            "observation": "order_p95",
+            "op": "gte",
+            "value": 2000
+          },
+          {
+            "id": "checkout-impact",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.05
+          },
+          {
+            "id": "controlled-user-load",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 15
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "escalate": {
+        "all": [
+          {
+            "id": "render-load-delivered",
+            "observation": "order_p95",
+            "op": "gte",
+            "value": 2000
+          },
+          {
+            "id": "checkout-not-impacted",
+            "observation": "checkout_5xx_rate",
+            "op": "lt",
+            "value": 0.02
+          }
+        ],
+        "consecutive_ticks": 4
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "external-rate-limit",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 429
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "checkout-cleared",
+            "observation": "checkout_5xx_rate",
+            "op": "lt",
+            "value": 0.02
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F05-G": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "12m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.lifecycle",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.lifecycle",
+        "levels": [
+          {
+            "id": "approved-fixed-f05-g",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-payment",
+              "container": "payment-service",
+              "baseline_image": "commerce-payment:latest",
+              "invalid_image": "commerce-payment:scenario-invalid-f05-g"
+            },
+            "min_hold": "2m",
+            "settle": "30s",
+            "timeout": "10m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-payment"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "available_replicas",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.deployment_available_replicas",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "deployment": "testbed-payment"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "image_pull_failed",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.image_pull_failure",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-payment",
+            "container": "payment-service"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "business_ok",
+          "adapter": "business_probe",
+          "query_id": "business.checkout_invariant",
+          "freshness": "60s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "invalid-image-observed",
+            "observation": "image_pull_failed",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "old-replica-ready",
+            "observation": "available_replicas",
+            "op": "gte",
+            "value": 1
+          },
+          {
+            "id": "business-invariant-preserved",
+            "observation": "business_ok",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "controlled-load",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 15
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "user-impact",
+            "observation": "entry_status",
+            "op": "gte",
+            "value": 500
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "no-serving-replica",
+            "observation": "available_replicas",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F09-H": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "calibration",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "adaptive_ladder",
+        "primary_ref": "k8s.env",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": null,
+        "levels": [
+          {
+            "id": "heap-256",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-order",
+              "container": "order-service",
+              "baseline": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ],
+              "fault": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx256m -Xms256m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ]
+            },
+            "min_hold": "4m",
+            "settle": "30s",
+            "timeout": "8m"
+          },
+          {
+            "id": "heap-208",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-order",
+              "container": "order-service",
+              "baseline": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ],
+              "fault": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ]
+            },
+            "min_hold": "4m",
+            "settle": "30s",
+            "timeout": "8m"
+          },
+          {
+            "id": "heap-176",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-order",
+              "container": "order-service",
+              "baseline": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ],
+              "fault": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx176m -Xms176m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ]
+            },
+            "min_hold": "4m",
+            "settle": "30s",
+            "timeout": "8m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "deployment": "testbed-order",
+            "container": "order-service"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_error_rate",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_error_rate",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "60s"
+        },
+        {
+          "id": "order_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "gc-pause-visible",
+            "observation": "order_p95",
+            "op": "gte",
+            "value": 400
+          },
+          {
+            "id": "order-still-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "no-oom",
+            "observation": "order_restart_count",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "controlled-user-load",
+            "observation": "achieved_rps",
+            "op": "gte",
+            "value": 15
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "escalate": {
+        "any": [
+          {
+            "id": "pause-not-yet-visible",
+            "observation": "order_p95",
+            "op": "lt",
+            "value": 400
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "crossed-into-oom",
+            "observation": "order_restart_count",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 1
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "gc-pressure-cleared",
+            "observation": "order_p95",
+            "op": "lt",
+            "value": 200
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F09-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "calibration",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "adaptive_ladder",
+        "primary_ref": "k8s.patch",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": null,
+        "levels": [
+          {
+            "id": "conservative-250m",
+            "parameters": {
+              "deployment": "testbed-inventory",
+              "container": "inventory-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "250m"
+            },
+            "min_hold": "2m",
+            "settle": "30s",
+            "timeout": "8m"
+          },
+          {
+            "id": "constrained-100m",
+            "parameters": {
+              "deployment": "testbed-inventory",
+              "container": "inventory-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "100m"
+            },
+            "min_hold": "2m",
+            "settle": "30s",
+            "timeout": "8m"
+          },
+          {
+            "id": "endpoint-50m",
+            "parameters": {
+              "deployment": "testbed-inventory",
+              "container": "inventory-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "50m"
+            },
+            "min_hold": "2m",
+            "settle": "30s",
+            "timeout": "8m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-inventory"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "user_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-gateway"
+          },
+          "freshness": "120s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "throttle-symptom",
+            "observation": "user_p95",
+            "op": "gte",
+            "value": 500
+          },
+          {
+            "id": "inventory-still-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "controlled-load",
+            "observation": "achieved_rps",
+            "op": "lte",
+            "value": 60
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "escalate": {
+        "all": [
+          {
+            "id": "symptom-not-yet-visible",
+            "observation": "user_p95",
+            "op": "lt",
+            "value": 500
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "overload-alternative",
+            "observation": "achieved_rps",
+            "op": "gt",
+            "value": 65
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F11-G": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "12m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "cache.control",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "cache.control",
+        "levels": [
+          {
+            "id": "approved-fixed-f11-g",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-redis",
+              "baseline_replicas": 1,
+              "fault_replicas": 0,
+              "dependent_deployment": "testbed-cart"
+            },
+            "min_hold": "2m",
+            "settle": "30s",
+            "timeout": "10m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-cart"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "business_ok",
+          "adapter": "business_probe",
+          "query_id": "business.checkout_invariant",
+          "freshness": "60s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "entry-reachable",
+            "observation": "entry_status",
+            "op": "ne",
+            "value": 0
+          },
+          {
+            "id": "business-absorbed",
+            "observation": "business_ok",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "dependent-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "overload-alternative",
+            "observation": "achieved_rps",
+            "op": "gt",
+            "value": 65
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    }
+  }
+}

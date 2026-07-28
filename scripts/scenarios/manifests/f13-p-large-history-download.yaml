@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F13-P",
   "slug": "f13-p-large-history-download",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "large response surface",
+    "description": "business_fault_executor.py:13 BLOCKED stub 해제 + WPM download-phase 계약 구성",
     "live_allowed": false
   },
   "capture_policy": {

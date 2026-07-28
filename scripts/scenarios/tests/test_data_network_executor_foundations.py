@@ -41,10 +41,18 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
             controllers["live_scenario_ids"][-5:],
-            ["F20-Q", "F25-H", "F23-R", "F15-R", "F03-H"],
+            ["F20-P", "F20-Q", "F25-H", "F23-R", "F15-R"],
         )
 
-        f02 = controllers["controllers"]["F02-P"]
+        # F02-P was parked on 2026-07-27 (nothing in food queries
+        # idx_menus_category, and its only success rule — entry_status ne 0 —
+        # is true whenever the service answers at all). The definition is kept
+        # for recovery, so the executor contract stays guarded here; what
+        # changed is that it must live in the parked archive, not the live
+        # registry, or compile-plan would treat it as executable.
+        parked = json.loads((ROOT / "registry" / "controllers-parked.json").read_text())
+        self.assertNotIn("F02-P", controllers["controllers"])
+        f02 = parked["controllers"]["F02-P"]
         self.assertEqual(f02["profile"]["levels"][0]["parameters"], db_ddl.CONTRACTS["F02-P"])
         self.assertEqual(
             {(rule["observation"], rule["op"], rule["value"]) for rule in f02["success"]["all"]},

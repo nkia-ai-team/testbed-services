@@ -57,10 +57,10 @@
         "db.ddl",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": ""
+      "prerequisite": "food에 idx_menus_category를 타는 조회 경로 신설 + 성공조건을 5xx 비율로 교체"
     },
     {
       "id": "F03-H",
@@ -69,10 +69,10 @@
         "load.east_west",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": ""
+      "prerequisite": "OrderController.java:70 Thread.sleep을 실제 결함으로 교체(주입 표면 자백 제거)"
     },
     {
       "id": "F03-P",
@@ -117,10 +117,10 @@
         "kafka.control",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "ledger consumer rate control"
+      "prerequisite": "정답을 consumer concurrency 미설정으로 재작성 + injector·metadata·controller 신설"
     },
     {
       "id": "F05-R",
@@ -189,10 +189,10 @@
         "mock.expectation",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
-      "prerequisite": "food courier pool recovery"
+      "prerequisite": "food 429 응답 경로 구현 + metadata·controller 신설 + mock allowlist 등록"
     },
     {
       "id": "F07-H",
@@ -272,10 +272,10 @@
         "k8s.env",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "stable pre-OOM GC range"
+      "prerequisite": "jvm.gc.* 메트릭 유입 배선 + 러너의 testbed-order 거부 해제"
     },
     {
       "id": "F09-P",
@@ -284,10 +284,10 @@
         "k8s.patch",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": ""
+      "prerequisite": "throttling 관측 지표 신설 + 성공조건을 자기충족 아닌 피해 지표로 교체"
     },
     {
       "id": "F10-R",
@@ -296,10 +296,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w1",
-      "prerequisite": "PG PVC path and reserve"
+      "prerequisite": "F10 계열 재설계 1순위: 좌표는 정합하므로 정답·컨트롤러·allowlist만 신설"
     },
     {
       "id": "F10-H",
@@ -308,10 +308,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w2",
-      "prerequisite": "MySQL PVC device"
+      "prerequisite": "metadata·controller 신설 + 호스트 좌표를 도메인-워커 맵과 정합화"
     },
     {
       "id": "F10-P",
@@ -320,10 +320,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w3",
-      "prerequisite": "Oracle device and safe IO"
+      "prerequisite": "metadata·controller 신설 + 호스트 좌표를 도메인-워커 맵과 정합화"
     },
     {
       "id": "F11-R",
@@ -356,10 +356,10 @@
         "k8s.patch",
         "wpm.probe"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "edge route",
-      "prerequisite": "WPM TTFB contract/probe"
+      "prerequisite": "commerce에 Ingress 리소스 도입 + k8s.patch allowlist 등록"
     },
     {
       "id": "F13-H",
@@ -368,10 +368,10 @@
         "network.fault",
         "wpm.probe"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "probe edge",
-      "prerequisite": "probe source/interface"
+      "prerequisite": "network_fault_executor.py:21 BLOCKED stub 해제 + connect-phase 관측 소스 확보"
     },
     {
       "id": "F13-P",
@@ -380,10 +380,10 @@
         "business.fault",
         "wpm.probe"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "large response surface"
+      "prerequisite": "business_fault_executor.py:13 BLOCKED stub 해제 + WPM download-phase 계약 구성"
     },
     {
       "id": "F14-R",
@@ -392,10 +392,10 @@
         "timeline.compose",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "response-loss proxy/fault image"
+      "prerequisite": "회생 1순위: OrderService.java:59-60 멱등키 앵커용 fault-proxy 구현 + allowlist 등록"
     },
     {
       "id": "F14-P",
@@ -404,10 +404,10 @@
         "business.fault",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "selective event-drop surface"
+      "prerequisite": "회생 1순위: TransferEventConsumer.java:40-42 catch-swallow용 injector 신설 + imbalance 쿼리 등록"
     },
     {
       "id": "F15-R",
@@ -427,10 +427,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "food courier pool recovery"
+      "prerequisite": "food 429 전제 확보 + metadata·controller·allowlist 신설"
     },
     {
       "id": "F15-P",
@@ -438,10 +438,10 @@
       "profiles": [
         "host.stress"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "shared worker",
-      "prerequisite": "shared placement topology"
+      "prerequisite": "stress-ng 설치 + co-residency 보장 코드 + metadata·allowlist 신설"
     },
     {
       "id": "F15-G",
@@ -472,10 +472,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "food courier pool recovery"
+      "prerequisite": "food 429 전제 확보 + metadata 신설 + dispatcher 등록"
     },
     {
       "id": "F15-T3",
@@ -483,10 +483,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "partial",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "consumer SLA and placement"
+      "prerequisite": "merge 결속 구현 + metadata 신설 + dispatcher 등록"
     },
     {
       "id": "F15-T4",
@@ -494,10 +494,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "partial",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "incident hand-off interval"
+      "prerequisite": "split 인계 구간 구현 + metadata 신설 + dispatcher 등록"
     },
     {
       "id": "F17-R",
@@ -622,10 +622,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "draft",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "cleanup(원장 정정 SQL) 구현·검증 전까지 live 보류 — direct arm이 생성하는 FROZEN/CLOSED 계좌 관여 COMPLETED transfer의 역이체 정정이 미구현"
+      "prerequisite": "cleanup 원장 역분개 구현(공유 계정 ACC-1001 차감이 다음 케이스를 오염)"
     },
     {
       "id": "F21-Q",
@@ -634,10 +634,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "draft",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w2",
-      "prerequisite": "calibration 미확정 — order_busy_threads/order_p95_latency 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(52)만으로 추정됨. cpu_workers 강도와 restaurant 실제 응답지연(d≈4s) 간 관계도 미검증"
+      "prerequisite": "host.stress 계약 구성 + busy-thread 신호 신설 + Class 재분류"
     },
     {
       "id": "F21-P",
@@ -646,10 +646,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "draft",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w3",
-      "prerequisite": "calibration 미확정 — api_busy_threads 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(65)만으로 추정됨. cpu_workers 강도와 transfer 실제 응답지연(d≈8s) 간 관계 미검증, 지연이 read-timeout(10s) 초과 시 502→CB open(FS-2)으로 전이하는 경계 확인 필요"
+      "prerequisite": "executor CONTRACTS 등록 + F09-R과의 주입 파라미터 분리(정답 충돌 해소)"
     },
     {
       "id": "F24-Q",
@@ -669,10 +669,10 @@
         "mock.expectation",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "commerce external-pg-mock",
-      "prerequisite": ""
+      "prerequisite": "회생 불가(음성): 헌장 §1의 no-incident 폐지 결정을 뒤집어야 재편입 가능"
     },
     {
       "id": "F03-G",
@@ -680,10 +680,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": ""
+      "prerequisite": "회생 불가(음성): 결함 주입 자체가 없음. 헌장 §1 개정이 선행"
     },
     {
       "id": "F05-G",
@@ -692,10 +692,10 @@
         "k8s.lifecycle",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": ""
+      "prerequisite": "회생 불가(음성): 헌장 §1의 no-incident 폐지 결정을 뒤집어야 재편입 가능"
     },
     {
       "id": "F11-G",
@@ -704,10 +704,10 @@
         "cache.control",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": ""
+      "prerequisite": "회생 불가(음성): 성공조건 3건이 구조적 참. 헌장 §1 개정이 선행"
     }
   ]
 }

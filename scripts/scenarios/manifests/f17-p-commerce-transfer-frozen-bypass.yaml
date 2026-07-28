@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F17-P",
   "slug": "f17-p-commerce-transfer-frozen-bypass",
-  "readiness": "draft",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "cleanup(원장 정정 SQL) 구현·검증 전까지 live 보류 — direct arm이 생성하는 FROZEN/CLOSED 계좌 관여 COMPLETED transfer의 역이체 정정이 미구현",
+    "description": "cleanup 원장 역분개 구현(공유 계정 ACC-1001 차감이 다음 케이스를 오염)",
     "live_allowed": false
   },
   "capture_policy": {

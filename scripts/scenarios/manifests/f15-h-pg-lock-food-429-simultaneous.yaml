@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F15-H",
   "slug": "f15-h-pg-lock-food-429-simultaneous",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "food courier pool recovery",
+    "description": "food 429 전제 확보 + metadata·controller·allowlist 신설",
     "live_allowed": false
   },
   "capture_policy": {

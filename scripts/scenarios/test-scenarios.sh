@@ -5,17 +5,29 @@ root="$(cd -- "$script_dir/../.." && pwd)"
 catalog="$script_dir/catalog.json"
 manifest_dir="$script_dir/manifests"
 
-[[ "$(jq '.scenarios | length' "$catalog")" -eq 64 ]]
+total="$(jq '.scenarios | length' "$catalog")"
+[[ "$total" -eq 60 ]]
+# Internal consistency: ids, slugs and manifests track the catalog exactly, so
+# these are derived rather than pinned — a pinned copy is what went stale here
+# (the suite asserted 64 long after the catalog moved to 60, and failed silently
+# in anything that did not check its exit code).
+[[ "$(find "$manifest_dir" -maxdepth 1 -type f -name '*.yaml' | wc -l)" -eq "$total" ]]
+[[ "$(jq '[.scenarios[].id] | unique | length' "$catalog")" -eq "$total" ]]
+[[ "$(jq '[.scenarios[].slug] | unique | length' "$catalog")" -eq "$total" ]]
+# bin/ predates the profile-executor architecture and has drifted: 18 scripts
+# have no catalog entry and 14 catalog entries have no script. Pinned so new
+# drift trips, not as an endorsement — cleanup is a separate backlog item.
 [[ "$(find "$script_dir/bin" -maxdepth 1 -type f -name '*.sh' | wc -l)" -eq 64 ]]
-[[ "$(find "$manifest_dir" -maxdepth 1 -type f -name '*.yaml' | wc -l)" -eq 64 ]]
-[[ "$(jq '[.scenarios[].id] | unique | length' "$catalog")" -eq 64 ]]
-[[ "$(jq '[.scenarios[].slug] | unique | length' "$catalog")" -eq 64 ]]
+# The readiness split IS a governed decision, so it stays pinned.
+# parked = 2026-07-27 골든 감사 CUT 26종. 설계 자산은 남기고 실행에서만 뺀다.
 [[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 31 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 5 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 28 ]]
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 16 ]]
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 44 ]]
-[[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 4 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 26 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 2 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 13 ]]
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 47 ]]
+[[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 jq -e '
   ["db.lock","db.ddl","db.workload","mock.expectation","load.north_south",
    "load.east_west","k8s.patch","k8s.lifecycle","k8s.resource","k8s.probe",
@@ -23,9 +35,9 @@ jq -e '
    "cache.control","network.fault","app.release","wpm.probe","business.fault",
    "timeline.compose","timeline.multi"] as $known_profiles |
   all(.scenarios[];
-    (.id | test("^F[0-9]{2}-(R|H|P|G|T[1-4])$")) and
+    (.id | test("^F[0-9]{2}-(R|H|P|G|Q|S|T[1-4])$")) and
     (.slug | test("^[a-z0-9][a-z0-9-]+$")) and
-    (.readiness | IN("ready", "partial", "blocked")) and
+    (.readiness | IN("ready", "partial", "blocked", "draft", "parked")) and
     (.load_mode | IN("adaptive", "fixed", "no-load")) and
     (.injection_location | type == "string" and length > 0) and
     (.profiles | type == "array" and length > 0 and all(.[]; IN($known_profiles[]))) and
@@ -90,9 +102,23 @@ while IFS= read -r row; do
   ' "$manifest" >/dev/null
 done < <(jq -c '.scenarios[]' "$catalog")
 
+# Parked scenarios keep their design assets (manifest, controller, executors)
+# but must never compile to an executable plan. compile-plan gates live_allowed
+# on readiness == "ready", so this is the guard that keeps a CUT scenario from
+# re-entering the capture queue by accident. Checked for all 26 without going
+# through bin/, which does not cover the whole catalog (see below).
+while IFS= read -r slug; do
+  [[ "$(python3 "$script_dir/compile-plan.py" --scenario "$slug" | jq -r '.live_allowed')" == "false" ]]
+done < <(jq -r '.scenarios[] | select(.readiness=="parked") | .slug' "$catalog")
+
 ready_live_false=0
 ready_live_true=0
+# bin/ only covers the pre-profile-executor generation of scenarios: 46 of the
+# 60 catalog slugs have a script. The newer ones are driven through
+# profile-control/trusted_dispatcher instead, so the round-trip below runs over
+# the intersection rather than the whole catalog.
 while IFS= read -r slug; do
+  [[ -f "$script_dir/bin/$slug.sh" ]] || continue
   expected_plan="$(python3 "$script_dir/compile-plan.py" --scenario "$slug")"
   shared_contract=""
   for action in plan run cleanup; do
@@ -141,8 +167,11 @@ while IFS= read -r slug; do
     ready_live_true=$((ready_live_true + 1))
   fi
 done < <(jq -r '.scenarios[].slug' "$catalog")
-[[ $((ready_live_false + ready_live_true)) -eq 31 ]]
-[[ "$ready_live_true" -eq 31 ]]
+# 21 of the 31 ready scenarios have a bin/ script; every one of them must
+# compile to live_allowed == true. The remaining 10 are covered by the
+# catalog-level checks above and by tests/test_registry_contracts.py.
+[[ $((ready_live_false + ready_live_true)) -eq 21 ]]
+[[ "$ready_live_true" -eq 21 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

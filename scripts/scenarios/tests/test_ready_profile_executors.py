@@ -139,11 +139,12 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertLess(cleanup.index("reset_mock"), cleanup.index("restore_rollout"))
         self.assertIn("Reverse sub-injection order is mandatory", cleanup)
 
-    def test_live_matrix_has_twenty_ready_plans_with_payment_faults(self) -> None:
+    def test_live_matrix_has_thirty_one_ready_plans_with_payment_faults(self) -> None:
         expected = {
-            "F01-R", "F01-H", "F03-G", "F11-G", "F01-G", "F05-G", "F06-R",
-            "F07-H", "F08-H", "F09-P", "F11-R", "F02-P", "F04-R", "F12-H", "F05-R", "F05-H", "F07-P", "F08-P", "F09-R",
-            "F01-P", "F08-G", "F15-G", "F06-H", "F03-P", "F09-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S", "F16-H", "F20-R", "F20-P", "F20-Q", "F25-H", "F23-R", "F15-R", "F03-H",
+            "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
+            "F06-H", "F06-R", "F07-H", "F07-P", "F08-G", "F08-H", "F08-P", "F09-R",
+            "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
+            "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -152,9 +153,13 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertTrue(plan["live_allowed"])
         self.assertEqual(plan["profile_instances"][0]["location_id"], "commerce-namespace")
 
-    def test_f02p_and_f04r_use_exact_live_contracts(self) -> None:
+    def test_f04r_uses_exact_live_contracts(self) -> None:
+        # F02-P dropped out of this test on 2026-07-27: it is parked (no food
+        # query rides idx_menus_category, so the DDL drop injures nothing), and
+        # a parked scenario must not compile to a live plan. Its executor
+        # contract is still guarded — see the parked-archive assertion in
+        # test_data_network_executor_foundations.py.
         cases = [
-            ("f02-p-mysql-menu-index-drop", "db.ddl", db_ddl, "tb-runner"),
             ("f04-r-commerce-shipping-consumer-stop", "kafka.control", kafka_control, "commerce-namespace"),
         ]
         for slug, profile_id, module, location_id in cases:

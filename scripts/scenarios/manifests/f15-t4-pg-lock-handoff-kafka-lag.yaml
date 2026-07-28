@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F15-T4",
   "slug": "f15-t4-pg-lock-handoff-kafka-lag",
-  "readiness": "partial",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "incident hand-off interval",
+    "description": "split 인계 구간 구현 + metadata 신설 + dispatcher 등록",
     "live_allowed": false
   },
   "capture_policy": {

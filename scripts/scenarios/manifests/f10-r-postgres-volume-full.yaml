@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F10-R",
   "slug": "f10-r-postgres-volume-full",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "PG PVC path and reserve",
+    "description": "F10 계열 재설계 1순위: 좌표는 정합하므로 정답·컨트롤러·allowlist만 신설",
     "live_allowed": false
   },
   "capture_policy": {

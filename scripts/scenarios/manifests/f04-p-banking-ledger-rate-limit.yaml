@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F04-P",
   "slug": "f04-p-banking-ledger-rate-limit",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "ledger consumer rate control",
+    "description": "정답을 consumer concurrency 미설정으로 재작성 + injector·metadata·controller 신설",
     "live_allowed": false
   },
   "capture_policy": {

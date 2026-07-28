@@ -182,4 +182,12 @@ F21-P와 F09-R이 **동일 주입**(`{"mode":"cpu","host":"192.168.122.14","cpu_
 4. **answer-key 백필** — F24-Q 기반 템플릿 확정(§3-1 수정 3건 반영) 후 KEEP 15 + 조건부 19에 적용
 5. **조건부 19 수리** — 회수 순: F24-Q > F06-H(1줄) > F01-P·F08-G·F15-G(배선) > 나머지
 6. **CUT 26 제거** — catalog.json·manifests에서 정리. 단 F14-P/F14-R의 코드 앵커(`TransferEventConsumer.java:40-42`, `OrderService.java:59-60`)는 카탈로그 최강급 P5/무결성 재료이므로 **신규 시나리오 백로그로 승계**(injector 신설 트랙)
+
+   > **실행됨 (2026-07-28) — 단, 삭제가 아니라 보류(park).** 26종을 지우려다 보니 CUT 사유의 대부분이 "발상이 틀렸다"가 아니라 **"미완성"**이었다. 정답·컨트롤러 부재 8 + injector 부재 6 = 14종은 쓰기만 하면 회생하고, 전제 오류 4 + 합성장애 1 + cleanup 1도 앱·정리절차를 고치면 살아난다. 회생 불가는 음성 4와 관측 소스가 없는 2종뿐이다. 지우면 목표(60종)에 도달할 때 같은 설계를 다시 해야 한다.
+   >
+   > 구현: `catalog.json`에 `readiness: "parked"` + `prerequisite`에 **회생 조건**을 명시. 컨트롤러 8종은 `registry/controllers-parked.json`으로 이관했다 — `compile-plan`이 *"controllers.json에 있으면 곧 실행 가능"*을 불변식으로 강제하므로(`must bind a ready catalog scenario`) 보류분이 거기 남아 있을 수 없다. 실행 차단은 `live_allowed = readiness == "ready" and ...`가 담당하며, 26종 전건이 `live_allowed == false`임을 `test-scenarios.sh`가 검사한다.
+   >
+   > 러너 큐에서도 제거: `LIVE_SCENARIO_ORDER`에서 F03-G·F09-P·F11-G, `CYCLE_SCENARIO_ORDER`에서 F01-G·F03-G·F05-G·F11-G·F09-P.
+   >
+   > 부수 발견 — `test-scenarios.sh`는 **이미 실패 상태였다**(카탈로그가 60으로 줄어든 뒤에도 64를 단언, `Q`·`S` 접미사가 ID 정규식에 미등록). 종료코드를 확인하지 않은 호출 경로에서 조용히 통과한 것으로 보인다. 고정 숫자 중 파생 가능한 것은 파생시키고, 통치 대상인 readiness 분포만 고정으로 남겼다.
 7. **전수 스모크** — 위가 끝난 뒤

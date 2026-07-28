@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F14-P",
   "slug": "f14-p-selective-ledger-loss",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "selective event-drop surface",
+    "description": "회생 1순위: TransferEventConsumer.java:40-42 catch-swallow용 injector 신설 + imbalance 쿼리 등록",
     "live_allowed": false
   },
   "capture_policy": {

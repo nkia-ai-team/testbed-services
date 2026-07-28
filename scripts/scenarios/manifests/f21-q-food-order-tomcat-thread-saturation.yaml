@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F21-Q",
   "slug": "f21-q-food-order-tomcat-thread-saturation",
-  "readiness": "draft",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "calibration 미확정 — order_busy_threads/order_p95_latency 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(52)만으로 추정됨. cpu_workers 강도와 restaurant 실제 응답지연(d≈4s) 간 관계도 미검증",
+    "description": "host.stress 계약 구성 + busy-thread 신호 신설 + Class 재분류",
     "live_allowed": false
   },
   "capture_policy": {
