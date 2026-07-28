@@ -15,6 +15,8 @@ spec:
       labels:
         app: testbed-payment
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       volumes:
         - name: apm-agent
           hostPath:

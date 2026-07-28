@@ -15,6 +15,8 @@ spec:
       labels:
         app: testbed-gateway
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       volumes:
         # Polestar APM(Java)는 OTLP 표준을 otel-collector로 재사용한다 — 별도 jar 없이
         # OTel javaagent가 뿜는 OTLP를 AP collector가 polestar_apm 자산으로 붙인다.

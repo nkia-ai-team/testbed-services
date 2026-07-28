@@ -18,6 +18,8 @@ spec:
       labels:
         app: testbed-kafka
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w2
       containers:
         - name: kafka
           image: apache/kafka:3.9.0

@@ -24,6 +24,8 @@ spec:
       labels:
         app: testbed-transfer
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w2
       volumes:
         - name: apm-agent
           hostPath:

@@ -19,6 +19,8 @@ spec:
       labels:
         app: testbed-oracle
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w2
       containers:
         - name: oracle
           image: gvenzl/oracle-free:23-slim

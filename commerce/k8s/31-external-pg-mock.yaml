@@ -20,6 +20,8 @@ spec:
       labels:
         app: testbed-external-pg-mock
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       containers:
         - name: mockserver
           image: mockserver/mockserver:latest

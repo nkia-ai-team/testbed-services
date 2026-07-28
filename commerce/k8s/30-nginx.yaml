@@ -23,6 +23,8 @@ spec:
       labels:
         app: testbed-nginx
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       containers:
         - name: nginx
           image: nginx:alpine

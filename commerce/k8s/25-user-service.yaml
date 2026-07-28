@@ -30,6 +30,8 @@ spec:
       labels:
         app: testbed-user
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       volumes:
         - name: apm-agent
           hostPath:

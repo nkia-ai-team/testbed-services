@@ -22,6 +22,8 @@ spec:
       labels:
         app: testbed-order         # 찍어낸 Pod에 붙일 라벨 (selector와 일치해야!)
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       volumes:
         - name: apm-agent
           hostPath:
