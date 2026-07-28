@@ -963,12 +963,61 @@
       }
     },
     "F02-H": {
-      "title": "PostgreSQL PVC 스토리지 IO 포화로 인한 commerce 전반 지연",
-      "description": "commerce 단일 PostgreSQL의 PVC backing 디바이스(tb-w1 로컬디스크)에 fio로 IO 포화를 걸어 공유 DB가 느려지고 commerce 전 서비스 응답이 지연되는 Class B(SMS·디스크) 시나리오다. root는 코드가 아니라 스토리지 IO 포화다.",
-      "cause": "PostgreSQL PVC backing device IO saturation (host disk, tb-w1)",
-      "injection_summary": "host.stress fio 모드로 tb-w1(192.168.122.184)의 local-path-provisioner PVC 디렉토리(pgdata-testbed-postgres-0)에 rate_iops=3000, size_mib=2048, 600s IO 부하를 주고 commerce checkout 부하를 흘린다. 파일·프로세스 bounded recovery로 원상복구한다.",
-      "user_impact": "특정 서비스 코드 결함 없이 commerce 전 서비스(order/product/inventory/payment 등)가 공유 PostgreSQL 경유로 동반 지연되고 checkout 지연·간헐 5xx가 발생한다.",
-      "distinguishing_evidence": "호스트 디스크 await/util·PG IO 대기가 급등하는 반면 워커 CPU·메모리는 정상(F09 CPU/F05 mem 배제)이고, 특정 서비스 코드락·커넥션풀 자연고갈 시그니처(F01 DB락 등)가 없다. 원인은 단일 스토리지 디바이스 IO 포화 하나다.",
+      "title": "PostgreSQL PVC 백킹 디스크 IO 포화 — 코드 결함 없이 commerce 전체가 느려진다",
+      "description": "commerce의 단일 PostgreSQL이 쓰는 PVC의 백킹 디바이스(워커 노드 로컬 디스크)에 IO 부하를 걸어 디스크를 포화시킨다. DB 프로세스도 앱도 정상이고 CPU·메모리도 여유가 있는데, 모든 쿼리가 IO 대기에 걸려 commerce 전 서비스가 함께 느려진다. 잠식 자원이 CPU도 메모리도 커넥션도 아닌 **스토리지 대역**이라는 점, 그리고 그 자원이 k8s 추상화 아래에 숨어 있어 파드·노드 지표로는 잘 드러나지 않는다는 점이 이 케이스의 정체성이다.",
+      "cause": "tb-w1의 local-path PVC 디렉토리(pgdata-testbed-postgres-0)에 fio IO 부하 → 백킹 디바이스 await·util 급등 → PostgreSQL의 읽기·쓰기가 IO 대기에 묶임 → commerce 8개 스키마를 쓰는 전 서비스가 동반 지연 → 체크아웃 지연·간헐 5xx",
+      "injection_summary": "host.stress executor의 fio 모드로 tb-w1(192.168.122.184)의 PVC 경로에 rate_iops=3000, size_mib=2048, 600초 IO 부하를 주고 commerce 체크아웃 부하를 병행한다. cleanup은 fio 프로세스 종료와 생성 파일 삭제이며, DB 데이터는 건드리지 않는다.",
+      "user_impact": "특정 서비스의 결함 없이 commerce 전 서비스가 동반 지연되고 체크아웃이 느려지다 간헐적으로 5xx가 난다. 어떤 파드도 죽지 않고 어떤 컨테이너도 한도를 넘지 않아 가용성 지표는 끝까지 정상으로 보인다.",
+      "distinguishing_evidence": "결정 증거는 호스트 디스크의 await·util 급등과 PostgreSQL의 IO 대기 증가가 같은 시각에 관측되면서, 워커 CPU·메모리는 정상이라는 조합이다. 자원 축이 다르므로 F09-R(노드 CPU)·F05-P(노드 메모리)와 즉시 갈린다. 차단 세션이 없어 잠금 계열(F01-R·F06-H)도 배제되고, 커넥션 풀 고갈의 서명(획득 타임아웃)도 없다. 느려지는 집합의 경계가 '이 PVC를 쓰는 DB에 붙은 것 전부'라는 점은 F20-R(공유 DB CPU 오염)과 같지만, 그쪽은 특정 쿼리가 방아쇠이고 이쪽은 디바이스 자체가 원인이다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "SMS",
+        "DPM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "node",
+        "target_id": "tb-w1",
+        "trigger_target_id": "commerce-postgres",
+        "mechanism": "결함 보유 대상은 commerce PostgreSQL의 PVC를 담은 워커 노드의 로컬 디스크다. local-path provisioner는 PVC를 노드의 디렉토리에 직접 매핑하므로 PVC의 성능은 그 노드 디스크의 성능과 같고, 같은 디바이스를 쓰는 다른 무엇이든 대역을 나눠 갖는다. 디스크가 포화되면 PostgreSQL의 WAL 기록과 데이터 페이지 읽기가 모두 IO 대기에 걸리고, 쿼리 시간이 늘어난 만큼 앱의 커넥션 보유 시간도 늘어난다 — commerce의 8개 스키마가 한 인스턴스에 있으므로 지연은 도메인 전체로 균일하게 번진다. 이 층위가 관측을 어렵게 만드는 이유는 신호가 **k8s 추상화 아래**에 있기 때문이다: 파드는 Ready이고 컨테이너 지표는 한도 안이며 노드 CPU·메모리도 정상이다. 디스크 await/util 같은 호스트 레벨 지표(SMS 계열)를 보지 않으면 원인 층위 자체가 보이지 않는다.",
+        "code_anchor": [
+          "commerce/k8s/10-postgres.yaml:23-25 (StatefulSet testbed-postgres — PVC를 쓰는 단일 인스턴스)",
+          "commerce/db/init-schemas.sql:16-23 (order_schema~shipping_schema 8개 — 지연이 도메인 전체로 번지는 근거)",
+          "commerce/order-service/src/main/resources/application.yml:7-10 (datasource — 앱이 이 인스턴스 하나에 붙는다)"
+        ],
+        "infra_anchor": "**G2 미충족 — 현재 실행 불가(readiness: blocked).** host.stress executor에 fio 모드가 있어야 하고, PVC 백킹 경로를 실측해 계약에 고정해야 하며, 디스크 IO 관측 쿼리와 success/must_rule_out을 신설해야 한다(07-27 감사 지적). 정답지는 설계 의도를 기록해 두는 것이며, 컨트롤러가 생기기 전까지는 채점 대상이 아니다. 회생 시 주의점: fio가 만든 파일이 PVC 공간을 잡으므로 cleanup에서 반드시 삭제해야 하고, PG 데이터 디렉토리 자체를 건드리면 G9(재현·격리)를 깬다."
+      },
+      "must_support": [
+        "PVC 백킹 디바이스의 await·util 급등(호스트 레벨 지표)",
+        "PostgreSQL의 IO 대기 증가와 쿼리 시간 상승",
+        "commerce 전 서비스의 p95 동반 상승 — 경계가 '이 DB를 쓰는 것 전부'",
+        "워커 CPU·메모리 정상, 파드 Ready 유지, 컨테이너 한도 초과 없음"
+      ],
+      "must_rule_out": [
+        "노드 CPU 경합이 아님 — CPU 사용률 정상. CPU면 F09-R",
+        "노드 메모리 압박이 아님 — eviction·OOM 없음. 메모리면 F05-P",
+        "DB 잠금이 아님 — 차단 세션 0. 잠금이면 F01-R·F06-H",
+        "특정 쿼리가 방아쇠가 아님 — 슬로우쿼리 부하가 없는데도 전 구간이 느리다. 쿼리면 F20-R"
+      ],
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F20-R (같은 공유 DB 경유 오염이지만 방아쇠가 특정 쿼리이고 자원이 CPU다)",
+          "F25-H (같은 공유 DB 대상이지만 죽어서 전면 순단이 난다 — 지연과 순단)",
+          "F09-R (같은 노드 층위지만 자원이 CPU다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "node",
+        "accept": [
+          "tb-w1"
+        ],
+        "partial": [
+          "commerce-postgres",
+          "commerce-order"
+        ]
+      },
       "injected_fault": null
     },
     "F02-P": {
@@ -3927,6 +3976,61 @@
       "distinguishing_evidence": "cache 오류는 존재하지만 DB headroom, 최종 성공률, 사용자 지연이 정상이다."
     },
     "F04-H": {
+      "title": "commerce order의 outbox relay 정지 — 주문은 200인데 배송·알림만 조용히 멈춘다",
+      "description": "commerce order-service의 outbox relay를 비활성화한다. 주문 트랜잭션은 outbox INSERT까지 정상 커밋되므로 사용자에게는 아무 오류도 보이지 않지만, 커밋된 이벤트를 Kafka로 내보내는 스케줄러가 없어 commerce.orders 토픽으로 아무것도 나가지 않는다. shipping은 배송을 만들지 못하고 notification은 알림을 보내지 못한다. F04-R과 피해가 같아 보이지만 원인은 정반대편 — 그쪽은 소비자가 멈췄고 이쪽은 생산자가 멈췄다. **컨슈머 lag의 방향**이 둘을 가른다.",
+      "cause": "testbed-order에 OUTBOX_RELAY_ENABLED=false 주입 → @ConditionalOnProperty가 걸린 OutboxRelay 빈이 생성되지 않음 → @Scheduled relay 미실행 → outbox_events.published_at이 null인 행 단조 증가 → commerce.orders 발행 중단 → shipping의 배송 생성·notification 알림 중단. 동기 주문 경로는 정상",
+      "injection_summary": "k8s.env executor가 testbed-order/order-service의 env를 baseline에서 fault로 교체하고 rollout한다(차이는 OUTBOX_RELAY_ENABLED=false 한 항목). north-south 부하가 주문을 계속 생성하며 outbox 행이 쌓인다. cleanup은 env 원복 후 rollout이며 relay가 살아나면 밀린 이벤트가 순차 발행된다.",
+      "user_impact": "주문·결제는 정상 완료되지만 배송이 생성되지 않고 알림도 나가지 않는다. F04-R과 마찬가지로 주문 직후에는 아무도 이상을 느끼지 못하며 배송 SLA 시점에야 드러난다. 복구하면 밀린 이벤트가 처리돼 배송이 뒤늦게 생성된다 — 손실이 아니라 지연이다.",
+      "distinguishing_evidence": "결정 증거는 미발행 outbox 행이 단조 증가하는 동시에 shipping 컨슈머 lag이 **오르지 않고 0으로 수렴**한다는 것이다. 소비자는 살아서 굶고 있다. 소비자가 멈춘 F04-R은 정확히 반대로 lag이 증가하며 outbox는 정상 비워진다. order 파드와 Kafka 브로커는 모두 정상이고 동기 주문 성공률도 정상이라 오류·지연 기반 신호는 전부 침묵한다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "DPM",
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "config",
+        "target_id": "commerce-order",
+        "trigger_target_id": "commerce-shipping",
+        "mechanism": "결함은 order-service의 outbox relay 활성화 설정이다. OutboxRelay는 @ConditionalOnProperty(prefix=\"outbox.relay\", name=\"enabled\", havingValue=\"true\")로 조건부 생성되며, 생성되면 @Scheduled로 2초마다 미발행 이벤트를 Kafka로 보내고 published_at을 채운다. env로 조건을 끄면 빈 자체가 없으므로 스케줄러도 없고 예외도 로그도 남지 않는다 — '고장'이 아니라 '부재'다. 주문 트랜잭션은 outbox INSERT를 포함해 정상 커밋되므로 동기 경로는 완전히 건강하고, 고장은 커밋 이후의 전달 단계에만 있다(P5). 관측 가능한 신호는 두 가지뿐이며 둘 다 '없음'의 형태다: 미발행 행이 줄지 않는다는 것과 컨슈머가 받을 것이 없다는 것. 후자가 특히 위험한데, lag 0은 보통 건강함으로 읽히기 때문이다 — 같은 지표가 여기서는 굶주림을 뜻한다.",
+        "code_anchor": [
+          "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxRelay.java:20-21 (@ConditionalOnProperty outbox.relay.enabled — 주입이 끄는 스위치)",
+          "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxRelay.java:33-35 (@Scheduled relay — 빈이 없으면 이 루프가 존재하지 않는다)",
+          "commerce/order-service/src/main/resources/application.yml:38-40 (outbox.relay.enabled true — baseline 값)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:206 (eventPublisher.publish(new OrderEvent — outbox에 기록하는 경로는 계속 정상 동작한다)",
+          "commerce/shipping-service/src/main/java/com/commerce/shipping/event/OrderEventConsumer.java:28-36 (@KafkaListener — 굶는 소비자. 여기가 lag 방향의 관측점이다)"
+        ],
+        "infra_anchor": "**G2 미충족 — 현재 실행 불가(readiness: blocked).** 카탈로그의 injector가 `kafka.control`로 잘못 배선돼 있다(그것은 컨슈머를 멈추는 수단이라 의미가 정반대다). 07-27 감사 지적대로 `k8s.env`로 교체하고, testbed-order를 k8s.env allowlist에 등록하며, 미발행 outbox 카운트 관측을 commerce 쪽에도 신설해야 한다(현재는 banking F18-P만 있다). 정답지는 설계 의도를 기록해 두는 것이며 컨트롤러가 생기기 전까지 채점 대상이 아니다."
+      },
+      "must_support": [
+        "미발행 outbox 행(published_at IS NULL)이 단조 증가",
+        "shipping 컨슈머 lag이 증가하지 않고 0으로 수렴 — 생산이 멈췄다는 방향 증거",
+        "동기 주문 성공률·지연 정상, order 파드와 Kafka 브로커 정상",
+        "주문 수 대비 shipment 생성 수의 괴리"
+      ],
+      "must_rule_out": [
+        "컨슈머 정지가 아님 — shipping lag이 증가하지 않는다. 증가하면 F04-R",
+        "Kafka 브로커 장애가 아님 — 브로커 Ready이고 다른 토픽 발행은 정상이다",
+        "order 파드 장애가 아님 — pod_ready = true, 동기 경로 200",
+        "데이터 손실이 아님 — 복구 후 밀린 이벤트가 발행돼 배송이 생성된다"
+      ],
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F04-R (같은 피해·정반대 원인 — 소비자 정지. lag 증가/수렴이 갈림길)",
+          "F18-P (banking판 동일 구조 — 같은 OutboxRelay 스위치, 대상만 transfer다)",
+          "F23-R (같은 '조용한 정지'지만 피해가 재고 소진과 409로 드러난다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "commerce-order"
+        ],
+        "partial": [
+          "commerce-shipping"
+        ]
+      },
       "injected_fault": null
     }
   }
