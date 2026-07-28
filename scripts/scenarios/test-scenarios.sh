@@ -29,8 +29,11 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-07-28: ready 33→37. 스토리지 포화 3종(F02-H·F10-H·F10-P)과 복합 자원 고갈
 # F15-P가 들어왔다. 마지막까지 이들을 막고 있던 것은 도구도 계약도 아니라
 # "장치가 바쁘다"를 셀 수 없다는 것이었다 — host.disk_io_utilization 신설로 풀렸다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 37 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 17 ]]
+# 2026-07-28: ready 37→39. Tomcat 스레드풀 포화 짝(F21-P·F21-Q). 좌표는 배치 고정으로
+# 이미 갈렸고(F09-R과 다른 노드), 마지막 차단은 busy-thread 신호가 non-daemon 스레드를
+# 세고 있었다는 것이다 — Tomcat 워커는 daemon이라 그 합은 4~5에 붙박이였다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 39 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 15 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]

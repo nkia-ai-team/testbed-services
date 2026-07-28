@@ -3902,23 +3902,22 @@
       "cause": "restaurant-service 응답 지연(read-timeout 5s 미만) → createOrder가 save 前 hop(getRestaurant)에서 대기하며 order Tomcat 스레드 점유(지연 커넥션 획득으로 Hikari 미보유) → 동시 createOrder≥200이면 Tomcat 기본 200 포화 → acceptor 큐 적체 → 무관 엔드포인트까지 스레드 굶주림 지연",
       "root_cause": {
         "target_kind": "service",
-        "target_id": "food-restaurant (testbed-restaurant, rca-testbed-food) 상류지연이 트리거이나, 200 스레드 포화라는 결함 구조는 order-service의 무튜닝 Tomcat + timeout 없는 @Transactional",
+        "target_id": "food-delivery-order",
         "mechanism": "order-service에 server.tomcat 설정이 전무해 Tomcat 기본 200 스레드. createOrder가 @Transactional(timeout 미설정)로 restaurant/dispatch 원격호출을 순차 수행하는데, 이 호출들이 orderRepository.save보다 앞이라 Hibernate 지연 커넥션 획득 하에서 Hikari를 잡지 않는다. restaurant 지연 시 각 요청이 read-timeout(5s)까지 Tomcat 스레드만 점유 → 200 포화 → 신규 요청이 스레드를 못 받아 무관 엔드포인트까지 지연. 병목은 Hikari(15)가 아니라 Tomcat(200).",
         "code_anchor": [
-          "food-delivery/order-service/src/main/resources/application.yml:1-2 (server: port만, tomcat 스레드 설정 부재 → 기본 200)",
-          "food-delivery/order-service/.../service/OrderService.java:57 (@Transactional createOrder — timeout 미설정)",
-          "food-delivery/order-service/.../service/OrderService.java:60,73,96 (restaurant getRestaurant/getMenu, dispatch checkCapacity — 전부 :128 save 前 = 지연 커넥션 획득으로 Hikari 미보유)",
-          "food-delivery/order-service/.../service/OrderService.java:128 (orderRepository.save = 첫 SQL = Hikari 획득 시점)",
-          "food-delivery/order-service/.../service/OrderService.java:173 (GET /api/orders 읽기 — 하류 무관하나 스레드 굶주림으로 동반 지연)",
-          "food-delivery/order-service/src/main/resources/application.yml:53-54 (restaurant read-timeout 5s)",
-          "food-delivery/order-service/.../service/OrderService.java:181 (searchOrders, @Transactional(readOnly) — 실제 GET /api/orders 목록 대응, :173 단건조회와 병기)"
+          "food-delivery/order-service/src/main/resources/application.yml:1-2 (server — port만 있고 tomcat 스레드 설정이 없어 기본 200)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57 (@Transactional — createOrder에 timeout이 없다)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:60-96 (getRestaurant·getMenu·checkCapacity — 전부 save 前이라 지연 커넥션 획득 하에서 Hikari를 잡지 않는다)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:128 (orderRepository.save — 첫 SQL이자 Hikari 획득 시점)",
+          "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:173-181 (@Transactional(readOnly) — 하류와 무관한 조회인데 스레드 굶주림으로 함께 느려진다)",
+          "food-delivery/order-service/src/main/resources/application.yml:53-54 (read-timeout — restaurant 5s)"
         ],
         "infra_anchor": "없음(순수 코드 구조 — Tomcat 무튜닝 + 지연 커넥션 획득). 지연 트리거는 restaurant-service 슬로우다운(host.stress worker-w2 또는 db.workload restaurant MySQL)이나 이는 주입 수단이지 root가 아님."
       },
       "injection_summary": "restaurant-service getRestaurant/getMenu 응답을 read-timeout 5s '미만'(목표 ~4s)으로 지연시켜(host.stress worker-w3 CPU 또는 db.workload restaurant MySQL) restaurant가 502가 아닌 느린 200을 내되 order createOrder가 Tomcat 스레드를 오래 점유하게 한다. 동시에 load.north_south로 food order-surge.js(entry 30181, create-heavy, target_rps≈55 — Little L=λ·4s로 200 스레드 목표)를 흘린다. 지연이 5s를 넘으면 retry/502(C4 regime)로 전이하므로 캘리브레이션 필수. cleanup은 stress/workload 해제(order 롤백 없음).",
       "user_impact": "주문 생성(POST /api/orders)이 order Tomcat 스레드 포화로 지연·타임아웃 급증하고, 하류를 안 타는 주문 조회(GET /api/orders)까지 느려진다. restaurant는 느린 200으로만 보여(502 아님) 원인이 order로 오인되기 쉽다. Hikari는 비어 있어(pending≈0) DB 커넥션풀을 범인으로 지목하면 오진.",
       "must_support": [
-        "order busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",
+        "order busy-threads가 200 스레드풀에 근접 (jvm_daemon_thread_count ≥ 180) — Tomcat의 http-nio-*-exec 워커는 daemon 스레드라 daemon 합으로 센다. non-daemon 합은 4~5에 붙박이라 이 신호를 볼 수 없다",
         "order Hikari pending≈0, active 낮음 — 풀이 아니라 스레드가 병목 (지연이 save 前 hop)",
         "무관한 GET /api/orders 지연 상승 (p95 급증) — 스레드 굶주림의 전 엔드포인트 전염 지문",
         "order create 지연/타임아웃↑, restaurant는 느린 200(502 낮음)"
@@ -3938,6 +3937,32 @@
           "F19-Q (배차 503 biz형; F21-Q는 스레드 굶주림 지연/timeout, dispatch 정상)",
           "F03-H (commerce 동종 Tomcat 포화이나 합성 sleep 엔드포인트 의존이 재앵커 대상; F21-Q는 합성 없이 실 createOrder 경로)"
         ]
+      },
+      "injected_fault": {
+        "profile": "host.stress",
+        "companions": [
+          "load.north_south"
+        ],
+        "levels": [
+          {
+            "id": "approved-fixed-f21-q",
+            "parameters": {
+              "mode": "cpu",
+              "host": "192.168.122.14",
+              "cpu_workers": 3,
+              "runtime_seconds": 480
+            }
+          }
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "food-delivery-order"
+        ],
+        "partial": [
+          "food-delivery-restaurant"
+        ]
       }
     },
     "F21-P": {
@@ -3952,22 +3977,23 @@
       "cause": "transfer-service execute() 지연(account rt 15s·api rt 10s 미만의 느린 200) → api→account 동기 호출이 응답 대기하며 api Tomcat 스레드 점유 → api는 DataSource 없어 풀 0 → Tomcat 200이 유일 자원 → 동시 이체≥200이면 스레드 포화 → acceptor 큐 적체 → 무관 조회프록시까지 지연. FS-9 retry x3이 하류호출을 곱해 점유 가속.",
       "root_cause": {
         "target_kind": "service",
-        "target_id": "core-banking-transfer (testbed-transfer, rca-testbed-banking) 하류지연이 트리거이나, 200 스레드 포화라는 결함 구조는 api-service의 무튜닝 Tomcat + DataSource 부재 + timeout 없는 동기체인",
+        "target_id": "core-banking-api",
         "mechanism": "api-service는 DataSourceAutoConfiguration을 제외해 Hikari 풀이 0(ApiServiceApplication.java:12)이고 server.tomcat 설정이 없어 Tomcat 기본 200. 이체는 api→account(read-timeout 10s)→transfer(account측 read-timeout 15s) 동기 blocking 체인이며 @Transactional timeout이 없다. transfer를 timeout 미만으로 지연시키면 api→account 요청이 느린 200을 기다리며 api Tomcat 스레드만 점유(풀은 존재하지 않음) → 200 포화 → 무관 조회프록시까지 스레드 굶주림. 병목은 오직 Tomcat 200.",
         "code_anchor": [
-          "core-banking/api-service/.../ApiServiceApplication.java:12 (@SpringBootApplication(exclude={DataSourceAutoConfiguration, HibernateJpaAutoConfiguration}) → Hikari 풀 0, 스레드가 유일 자원)",
-          "core-banking/api-service/src/main/resources/application.yml:1-2 (server: port만, tomcat 스레드 설정 부재 → 기본 200)",
-          "core-banking/api-service/src/main/resources/application.yml:11-12 (account read-timeout 10s), :15-16 (transfer 조회 read-timeout 10s), :18-49 (resilience4j CB window10/min5/50%/open5s + retry max-attempts=3)",
-          "core-banking/account-service/src/main/resources/application.yml:29-30 (account→transfer read-timeout 15s)",
-          "core-banking/account-service/.../service/AccountService.java:57,80 (@Transactional(readOnly) validateAndForward → 말미 transferClient.executeTransfer)",
-          "core-banking/transfer-service/.../repository/AccountRepository.java:18-20 (FOR UPDATE NOWAIT/timeout 없음), transfer TransferService.java:51 (@Transactional timeout 없음)"
+          "core-banking/api-service/src/main/java/com/corebanking/api/ApiServiceApplication.java:12 (@SpringBootApplication exclude DataSourceAutoConfiguration — Hikari 풀이 0이라 스레드가 유일 자원)",
+          "core-banking/api-service/src/main/resources/application.yml:1-2 (server — port만 있고 tomcat 스레드 설정이 없어 기본 200)",
+          "core-banking/api-service/src/main/resources/application.yml:11-16 (read-timeout — account·transfer 조회 모두 10s 동기 대기)",
+          "core-banking/account-service/src/main/resources/application.yml:29-30 (read-timeout — account→transfer 15s)",
+          "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:57-80 (validateAndForward — @Transactional(readOnly) 말미에 transferClient.executeTransfer)",
+          "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/AccountRepository.java:18-20 (findByIdForUpdate — PESSIMISTIC_WRITE, NOWAIT도 timeout도 없다)",
+          "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:51 (@Transactional — timeout이 없어 하류 지연이 그대로 상류 점유가 된다)"
         ],
         "infra_anchor": "없음(순수 코드 구조 — DataSource 제외 + Tomcat 무튜닝). 지연 트리거는 transfer-service 슬로우다운(host.stress worker-w3 또는 db.workload transfer Oracle)이나 이는 주입 수단이지 root가 아님."
       },
       "injection_summary": "transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) '미만'(목표 ~8s)으로 지연시켜(host.stress worker-w2 CPU 또는 db.workload transfer Oracle) transfer가 502가 아닌 느린 200을 내되 api→account 요청이 api Tomcat 스레드를 오래 점유하게 한다. db.lock은 무한대기→502→CB open으로 FS-1/FS-2를 만들어 부적격. 동시에 load.north_south로 banking transfer-surge.js(entry 30082, transfer-heavy, target_rps≈180 — Little L=λ·8s로 200 스레드 목표; 기본 surge transfer 10%로는 부족)를 흘린다. 지연이 10s를 넘으면 api read-timeout→502→CB open(FS-2)으로 전이하므로 캘리브레이션이 감별 정체성과 직결. cleanup은 stress/workload 해제.",
       "user_impact": "이체(POST /api/transfers)가 api Tomcat 스레드 포화로 지연·타임아웃 급증하고, 무관한 이체내역 조회(GET /api/transfers 프록시)까지 느려진다. transfer는 지연만 있고 5xx를 안 뱉으며(느린 200), api는 커넥션풀이 없어 풀 지표가 부재 → 풀 고갈(FS-6)이나 CB open(FS-2)으로 오인하면 오진.",
       "must_support": [
-        "api busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",
+        "api busy-threads가 200 스레드풀에 근접 (jvm_daemon_thread_count ≥ 180) — Tomcat의 http-nio-*-exec 워커는 daemon 스레드다. api-service는 DataSource가 없어 커넥션풀이 아예 없으므로 병목이 스레드임이 구조적으로 확정된다",
         "api 502 rate 낮음 (< 0.05) — 느린 200 성공, CB 미개방(실패가 아니라 지연)",
         "api CB(accountClient) open 아님 — 스레드가 점유된 채 유지(open되면 즉시 502·스레드 해제)",
         "transfer는 지연만(5xx 아님, 느린 200), 무관 조회프록시 GET /api/transfers 지연 상승"
@@ -3986,6 +4012,33 @@
           "FS-2 (account/api CB open → 즉시 502·이체 0%; F21-P는 CB closed·스레드 점유 지속. 주입 과하면 F21-P가 FS-2로 전이)",
           "FS-6 (transfer Hikari 15 풀고갈; F21-P는 api에 풀이 아예 없어 스레드가 병목 — 풀 부재가 감별)",
           "F03-H (commerce 동종 Tomcat 포화이나 합성 sleep 의존이 재앵커 대상; F21-P는 실 이체 동기체인 + 풀 없는 api라는 더 강한 앵커)"
+        ]
+      },
+      "injected_fault": {
+        "profile": "host.stress",
+        "companions": [
+          "load.north_south"
+        ],
+        "levels": [
+          {
+            "id": "approved-fixed-f21-p",
+            "parameters": {
+              "mode": "cpu",
+              "host": "192.168.122.11",
+              "cpu_workers": 3,
+              "runtime_seconds": 480
+            }
+          }
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "core-banking-api"
+        ],
+        "partial": [
+          "core-banking-transfer",
+          "core-banking-account"
         ]
       }
     },

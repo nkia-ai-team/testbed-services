@@ -634,10 +634,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "worker-w3",
-      "prerequisite": "host_stress_executor.py CONTRACTS에 F21-Q 미등록 → 실행 즉시 ExecutorError. 등록 + controller 신설. 'busy-thread 신호 부재'는 해소됨(prometheus.jvm_nondaemon_thread_count 존재)"
+      "prerequisite": ""
     },
     {
       "id": "F21-P",
@@ -646,10 +646,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "worker-w2",
-      "prerequisite": "executor CONTRACTS 등록 + F09-R과의 주입 파라미터 분리(정답 충돌 해소)"
+      "prerequisite": ""
     },
     {
       "id": "F24-Q",

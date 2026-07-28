@@ -2,14 +2,14 @@
   "schema_version": "1.0",
   "id": "F21-P",
   "slug": "f21-p-banking-api-tomcat-thread-saturation",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
     "location": "worker-w2",
-    "matrix_location_transport": "W/ssh host.stress(worker-w3, cpu) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=90)",
+    "matrix_location_transport": "W/ssh host.stress(worker-w2, cpu) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=90)",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",
@@ -29,14 +29,244 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f21-p-banking-api-tomcat-thread-saturation/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.stress"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f21-p",
+              "parameters": {
+                "mode": "cpu",
+                "host": "192.168.122.11",
+                "cpu_workers": 3,
+                "runtime_seconds": 480
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-api"
+            }
+          },
+          {
+            "id": "api_busy_threads",
+            "adapter": "prometheus",
+            "query_id": "prometheus.jvm_daemon_thread_count",
+            "freshness": "60s",
+            "parameters": {
+              "service_name": "core-banking-api"
+            }
+          },
+          {
+            "id": "api_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "core-banking-api"
+            }
+          },
+          {
+            "id": "api_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "core-banking-api"
+            }
+          },
+          {
+            "id": "transfer_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "core-banking-transfer"
+            }
+          },
+          {
+            "id": "node_cpu_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_cpu_utilization",
+            "freshness": "60s",
+            "parameters": {
+              "node": "tb-w2"
+            }
+          },
+          {
+            "id": "transfer_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "thread-pool-saturated",
+              "observation": "api_busy_threads",
+              "op": "gte",
+              "value": 180
+            },
+            {
+              "id": "api-latency-damage",
+              "observation": "api_p95",
+              "op": "gte",
+              "value": 6000
+            },
+            {
+              "id": "downstream-slow-not-failed",
+              "observation": "transfer_p95",
+              "op": "gte",
+              "value": 2000
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": null,
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "api-failing-not-queueing",
+              "observation": "api_error_rate",
+              "op": "gte",
+              "value": 0.05
+            },
+            {
+              "id": "threads-never-piled-up",
+              "observation": "api_busy_threads",
+              "op": "lt",
+              "value": 60
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 120
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "threads-drained",
+              "observation": "api_busy_threads",
+              "op": "lt",
+              "value": 60
+            },
+            {
+              "id": "api-latency-recovered",
+              "observation": "api_p95",
+              "op": "lt",
+              "value": 2000
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +300,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "executor CONTRACTS 등록 + F09-R과의 주입 파라미터 분리(정답 충돌 해소)",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

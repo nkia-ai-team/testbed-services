@@ -2,14 +2,14 @@
   "schema_version": "1.0",
   "id": "F21-Q",
   "slug": "f21-q-food-order-tomcat-thread-saturation",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
     "location": "worker-w3",
-    "matrix_location_transport": "W/ssh host.stress(worker-w2, cpu) + R/ssh load.north_south companion(order-surge.js, target_rps=70)",
+    "matrix_location_transport": "W/ssh host.stress(worker-w3, cpu) + R/ssh load.north_south companion(order-surge.js, target_rps=70)",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",
@@ -29,14 +29,253 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f21-q-food-order-tomcat-thread-saturation/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.stress"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f21-q",
+              "parameters": {
+                "mode": "cpu",
+                "host": "192.168.122.14",
+                "cpu_workers": 3,
+                "runtime_seconds": 480
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            }
+          },
+          {
+            "id": "order_busy_threads",
+            "adapter": "prometheus",
+            "query_id": "prometheus.jvm_daemon_thread_count",
+            "freshness": "60s",
+            "parameters": {
+              "service_name": "food-delivery-order"
+            }
+          },
+          {
+            "id": "order_hikari_pending",
+            "adapter": "prometheus",
+            "query_id": "prometheus.hikari_pending_connections",
+            "freshness": "30s",
+            "parameters": {
+              "service_name": "food-delivery-order"
+            }
+          },
+          {
+            "id": "order_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "food-delivery-order"
+            }
+          },
+          {
+            "id": "restaurant_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "food-delivery-restaurant"
+            }
+          },
+          {
+            "id": "restaurant_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "food-delivery-restaurant"
+            }
+          },
+          {
+            "id": "node_cpu_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_cpu_utilization",
+            "freshness": "60s",
+            "parameters": {
+              "node": "tb-w3"
+            }
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "thread-pool-saturated",
+              "observation": "order_busy_threads",
+              "op": "gte",
+              "value": 180
+            },
+            {
+              "id": "order-latency-damage",
+              "observation": "order_p95",
+              "op": "gte",
+              "value": 2500
+            },
+            {
+              "id": "upstream-slow-not-failed",
+              "observation": "restaurant_p95",
+              "op": "gte",
+              "value": 300
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": null,
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "pool-is-the-bottleneck",
+              "observation": "order_hikari_pending",
+              "op": "gt",
+              "value": 2
+            },
+            {
+              "id": "threads-never-piled-up",
+              "observation": "order_busy_threads",
+              "op": "lt",
+              "value": 60
+            },
+            {
+              "id": "upstream-failing-not-slowing",
+              "observation": "restaurant_error_rate",
+              "op": "gte",
+              "value": 0.05
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 100
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "threads-drained",
+              "observation": "order_busy_threads",
+              "op": "lt",
+              "value": 60
+            },
+            {
+              "id": "order-latency-recovered",
+              "observation": "order_p95",
+              "op": "lt",
+              "value": 1200
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +309,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "host_stress_executor.py CONTRACTS에 F21-Q 미등록 → 실행 즉시 ExecutorError. 등록 + controller 신설. 'busy-thread 신호 부재'는 해소됨(prometheus.jvm_nondaemon_thread_count 존재)",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

@@ -9,7 +9,7 @@
   },
   "injection": {
     "location": "worker-w1",
-    "matrix_location_transport": "commerce worker/ssh",
+    "matrix_location_transport": "tb-w1/ssh",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",

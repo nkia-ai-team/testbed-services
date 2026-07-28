@@ -147,6 +147,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
             "F02-H", "F10-H", "F10-P", "F15-P",
+            "F21-P", "F21-Q",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

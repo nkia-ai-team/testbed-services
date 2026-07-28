@@ -498,9 +498,9 @@
       "value_type": "number",
       "freshness_sec": 30
     },
-    "prometheus.jvm_nondaemon_thread_count": {
+    "prometheus.jvm_daemon_thread_count": {
       "adapter": "prometheus",
-      "template_id": "otel-jvm-nondaemon-thread-count-v1",
+      "template_id": "otel-jvm-daemon-thread-count-v1",
       "allowed_parameters": [
         "service_name"
       ],
