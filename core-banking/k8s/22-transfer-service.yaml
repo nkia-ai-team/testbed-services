@@ -7,6 +7,15 @@ metadata:
     app: testbed-transfer
 spec:
   replicas: 1
+  # See commerce/k8s/25-user-service.yaml for the full reasoning. F17-R injects a
+  # readiness-probe fault here; with maxUnavailable rounded down to 0 on a single
+  # replica the old pod survives the stalled rollout and the cross-domain outage
+  # never happens.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: testbed-transfer

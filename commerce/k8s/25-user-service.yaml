@@ -7,6 +7,21 @@ metadata:
     app: testbed-user
 spec:
   replicas: 1
+  # A readiness-probe fault (F16-H) must actually take this service down. With
+  # the cluster default (maxUnavailable 25%, maxSurge 25%) and one replica,
+  # Kubernetes rounds maxUnavailable *down* to 0 and maxSurge *up* to 1: the new
+  # pod is created first and the old one keeps serving until it is Ready. A pod
+  # that never passes readiness therefore stalls the rollout and injures nobody
+  # — the fault is real but the incident never happens (2026-07-28 실측).
+  # maxUnavailable 1 makes the old pod go first, which is what a team that ships
+  # a bad probe to a single-replica service actually experiences.
+  # Deliberately NOT applied fleet-wide: F08-H uses an innocuous rollout as a
+  # distractor, and it must stay innocuous.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: testbed-user

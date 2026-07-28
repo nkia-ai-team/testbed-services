@@ -170,6 +170,24 @@ CUT 26의 사유 분류:
 영향: **F16-H, F17-R**(및 F15-T1의 food OOM 축, F05-H 재확인 필요).
 → `strategy.rollingUpdate.maxUnavailable: 1` 명시 / 파드 레벨 조작 / replicas 2+ 전 파드 교란 중 택1. **결정 전 golden 불가.**
 
+> **결정·실증 완료 (2026-07-28).** 라이브 클러스터에서 before/after를 직접 측정했다(`testbed-user`, readiness 고장 주입):
+>
+> | | 파드 | endpoints | availableReplicas |
+> | --- | --- | --- | ---: |
+> | 현재 전략(25%/25%) | 헌 파드 `1/1 Running` + 새 파드 `0/1 Running` | `10.244.2.59` | 1 |
+> | `maxUnavailable:1`/`maxSurge:0` | `0/1 Running` 하나 | **없음** | 없음 |
+>
+> replicas 1에서 쿠버네티스는 maxUnavailable을 **내림**(25% → 0), maxSurge를 **올림**(25% → 1)한다. 그래서 새 파드가 먼저 뜨고 헌 파드는 새 파드가 Ready가 될 때까지 서비스한다 — readiness가 영원히 실패하면 롤아웃만 멈추고 **아무도 다치지 않는다.** 결함은 진짜인데 사건이 없다(G3 불충족).
+>
+> **채택: `maxUnavailable: 1` / `maxSurge: 0`을 `testbed-user`·`testbed-transfer` **두 디플로이먼트에만** 명시.** 매니페스트(`commerce/k8s/25-user-service.yaml`, `core-banking/k8s/22-transfer-service.yaml`)에 넣고 라이브에도 적용했다.
+> - 전 함대 적용하지 않은 이유: **F08-H는 무해한 롤아웃을 distractor로 쓴다.** 전역 적용은 그 distractor를 진짜 장애로 만들어 시나리오를 파괴한다.
+> - replicas 2+ 안을 택하지 않은 이유: 용량·로드밸런싱 전제가 바뀌어 다른 시나리오의 임계치를 흔든다.
+> - 파드 레벨 조작 안을 택하지 않은 이유: readinessProbe는 러닝 파드에서 불변 필드다.
+>
+> **영향 범위는 readiness 2건뿐이다.** `k8s.probe` 3건 중 F05-H는 **liveness**라 새 파드가 Ready가 된 뒤 헌 파드가 제거되고 그 다음 크래시 루프에 빠지므로 원래부터 장애가 난다. `k8s.resource`(F05-R·F25-H)도 같은 이유로 정상 동작한다. 즉 §3-5의 영향 목록에서 F15-T1·F05-H는 제외된다.
+>
+> 부수 확인: `availableReplicas`는 0일 때 필드가 사라지지만 러너가 `.get("availableReplicas", 0)`으로 받으므로 관측은 정상이다.
+
 ### 3-6. 정답 충돌 1건
 F21-P와 F09-R이 **동일 주입**(`{"mode":"cpu","host":"192.168.122.14","cpu_workers":3,"runtime_seconds":480}`)에 서로 다른 answer-key를 갖는다. 데이터셋 최대 취약점.
 
