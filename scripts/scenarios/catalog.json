@@ -120,7 +120,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "정답을 consumer concurrency 미설정으로 재작성 + injector·metadata·controller 신설"
+      "prerequisite": "단일스레드 소비 병목이 실측으로 반증됨(2026-07-28: 건당 서비스시간 1~3ms=능력 300~500/s vs 도달 가능 유입 ≤72/s, transfer relay 상한 ~50/s). 재현하려면 소비 경로에 앱 결함 필요 → T2 앱 결함 묶음에서 재설계"
     },
     {
       "id": "F05-R",

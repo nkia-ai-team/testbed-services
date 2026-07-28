@@ -9,7 +9,7 @@
   },
   "injection": {
     "location": "commerce namespace",
-    "matrix_location_transport": "K/kubectl fault config/build",
+    "matrix_location_transport": "K/kubectl k8s.env(OUTBOX_RELAY_ENABLED=false) + R/ssh load.north_south",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.env",
