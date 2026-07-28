@@ -92,12 +92,66 @@
       }
     },
     "F01-H": {
-      "title": "외부 결제대행사 429로 인한 체크아웃 실패",
-      "description": "commerce external PG가 결제 요청에 HTTP 429를 반환해 결제 거절이 주문과 체크아웃 실패로 전파되는 시나리오다.",
-      "cause": "External payment gateway rate limiting",
-      "injection_summary": "commerce external-pg-mock의 /v1/payments 응답을 429로 고정하고 승인된 north-south 체크아웃 부하를 주입한다.",
-      "user_impact": "결제가 빠르게 거절되고 gateway checkout이 502로 실패한다.",
-      "distinguishing_evidence": "외부 결제 span의 429와 checkout 502가 관측되며 내부 DB blocking session은 0이다.",
+      "title": "외부 결제대행사 429 — 4xx가 502로 승격되며 체크아웃 전량 실패",
+      "description": "외부 PG가 POST /v1/payments에 429(Too Many Requests)를 반환한다. 속도 제한은 원래 '잠시 뒤 다시 오라'는 부분적·회복 가능한 신호지만, commerce 결제 경로에는 이 hop을 감싸는 백오프도 서킷브레이커도 없다. PgApiClient가 RestClient 기본 에러 핸들러의 예외를 잡아 502 BAD_GATEWAY로 바꾸고, 상류 order는 그것을 하류 장애로 집계해 재시도와 서킷브레이커를 태운 뒤 체크아웃을 502로 끝낸다. 즉 외부의 감속 요청이 내부에서 전면 장애로 번역된다. 응답이 즉시 오므로 지연 계열(F06-R)과 달리 시스템은 빠르게, 조용히, 전량 실패한다.",
+      "cause": "외부 PG가 429 반환 → PgApiClient.requestPayment의 retrieve()가 예외 → catch(RestClientException) → ServiceException(502) → order PaymentClient가 5xx로 집계 → @Retry(paymentClient) 2회 → @CircuitBreaker(paymentClient) open → requestPaymentFallback 502 → OrderService.checkout이 재고 보상 후 502 'Payment failed'",
+      "injection_summary": "mock.expectation executor가 commerce external-pg-mock의 POST /v1/payments 응답을 429(지연 0초)로 고정하고, north-south companion이 체크아웃 부하를 공급한다. cleanup은 원본 expectation 스냅샷 복원이다.",
+      "user_impact": "체크아웃이 502로 실패한다. 외부 PG가 모든 결제 요청을 거절하므로 피해는 전량이며, 장바구니·가격·상품조회 등 결제 이전 단계는 정상이라 '마지막 결제만 안 되는' 형태다. payment의 processPayment는 트랜잭션 안에서 실패해 롤백되므로 결제 행·정산 이체는 남지 않는다.",
+      "distinguishing_evidence": "결정 증거는 오류의 시작점과 그 속도다. payment→외부 PG 아웃바운드 span이 429로 **즉시** 끝나고, 그 안쪽(commerce PG 잠금·payment DB·호스트 자원·banking 이체)은 전부 정상이다. 같은 외부 hop을 쓰는 F06-R은 실패 호출이 read-timeout 10초를 꽉 채우므로 응답시간 분포로 갈린다. 내부 잠금 계열(F01-R·F06-H)과는 두 릴레이션의 차단 세션이 모두 0이라는 점으로 갈리고, F08-H와는 같은 시각에 배포 이력이 있는지 없는지로 갈린다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P4",
+      "observation_domains": [
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "testbed-external-pg-mock",
+        "trigger_target_id": "commerce-payment",
+        "mechanism": "근본은 외부 결제대행사(테스트베드에서는 payment-service가 PG_API_URL로 바라보는 testbed-external-pg-mock)의 속도 제한이고, 전량 장애가 되는 이유는 commerce-payment의 P4 결함이다. PgApiClient.requestPayment는 RestClient.retrieve()를 기본 에러 핸들러로 쓰므로 429에 예외가 나고, catch(RestClientException)가 이를 502 BAD_GATEWAY로 바꾼다 — 4xx의 의미(재시도 가능한 감속)가 5xx(게이트웨이 고장)로 승격되면서 상류의 판단 근거가 사라진다. payment-service에는 resilience4j 설정이 없어 이 hop에 서킷브레이커도 백오프 재시도도 없다. order의 PaymentClient는 4xx만 ClientErrorException으로 분리해 CB 집계에서 제외하는데, 이미 502로 바뀐 뒤라 그 분기에 걸리지 않는다. 결과적으로 @Retry 2회와 @CircuitBreaker(실패율 50%)가 그대로 열리고 체크아웃은 502로 수렴한다. 429는 즉시 반환되므로 커넥션 점유가 없고, 따라서 풀 고갈 같은 2차 확산도 없다 — 피해가 빠르고 균일하며 자원 지표가 조용한 것이 이 케이스의 형상이다.",
+        "code_anchor": [
+          "commerce/k8s/31-external-pg-mock.yaml:9-12 (testbed-external-pg-mock — 외부 PG 대역 mockserver Deployment)",
+          "commerce/k8s/02-configmaps.yaml:41 (PG_API_URL — payment의 외부 PG 엔드포인트가 이 mock으로 향한다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/config/RestClientConfig.java:23-33 (pgRestClient — timeout만 있고 CircuitBreaker·Retry 없음 = P4)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (PaymentService.processPayment — @Transactional 진입, 여기서 잡은 DB 커넥션을 외부 호출 내내 쥔다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:63-64 (pgApiClient.requestPayment — 트랜잭션 안 동기 외부 호출)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — payment 502를 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')"
+        ],
+        "infra_anchor": "외부 PG 장애는 mockserver expectation PUT으로 만든다(우선순위 100의 임시 expectation을 얹고 cleanup에서 스냅샷을 되돌린다). mock은 클러스터 안에 있지만 앱 입장에서는 외부 엔드포인트이며, OTel 에이전트가 붙어 있지 않아 소비자에게는 payment의 아웃바운드 span으로만 보인다."
+      },
+      "must_support": [
+        "payment→외부 PG 아웃바운드 호출이 429로 실패 — 오류의 시작점이 commerce 프로세스 밖이라는 직접 증거",
+        "체크아웃 5xx 비율 상승(loadgen.checkout_5xx_rate ≥ 0.05)",
+        "실패한 결제 호출의 소요시간이 수십 ms — 지연이 아니라 즉시 거절",
+        "payment·order 파드 Ready 유지, 노드·DB 자원 정상"
+      ],
+      "must_rule_out": [
+        "내부 DB 잠금이 아님 — inventory_schema.inventory·payment_schema.payments 모두 차단 세션 0. 잠금이면 F01-R·F06-H",
+        "외부 hang이 아님 — 실패 호출이 read-timeout 10s에 붙지 않는다. 지연이면 F06-R",
+        "배포 때문이 아님 — 같은 시각에 롤아웃·env 변경 이력이 없다. 변경 이력이 함께 있으면 F08-H·F08-P",
+        "banking 정산 지연이 아님 — payment→banking transfer는 애초에 도달하지 않는다(PG 단계에서 끊긴다). banking이 원인이면 F01-P·F08-G"
+      ],
+      "difficulty": "easy",
+      "related_scenarios": {
+        "contrast_with": [
+          "F08-H (같은 429 주입에 무죄인 배포를 더한 짝 — 근본과 정답이 같고 배포 배제 능력만 추가로 묻는다)",
+          "F06-R (같은 외부 hop의 지연 버전 — 즉시 실패 vs 10초 타임아웃)",
+          "F01-R (같은 '체크아웃 502'지만 근본이 내부 잠금 — 차단 세션 유무로 갈린다)",
+          "F19-S (food 도메인의 같은 구조 — 외부 PG 장애가 결제 CB를 여는 계열)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "testbed-external-pg-mock"
+        ],
+        "partial": [
+          "commerce-payment",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": "mock.expectation",
         "companions": [
@@ -117,12 +171,71 @@
       }
     },
     "F06-R": {
-      "title": "외부 결제대행사 hang으로 인한 결제 timeout",
-      "description": "commerce external PG 응답을 read-timeout보다 오래 지연시켜 retry와 timeout이 체크아웃 실패로 전파되는 시나리오다.",
-      "cause": "External payment gateway response hang",
-      "injection_summary": "external-pg-mock 결제 응답에 승인된 장기 지연을 적용하고 체크아웃 부하를 주입한다.",
-      "user_impact": "결제 응답 지연과 재시도로 체크아웃이 실패한다.",
-      "distinguishing_evidence": "외부 호출 span이 장기 대기하며 commerce DB 잠금과 banking 서비스는 정상이다.",
+      "title": "외부 결제대행사 30초 hang — 결제 스레드가 커넥션을 쥔 채 타임아웃",
+      "description": "외부 PG가 결제 응답을 30초 지연시킨다. payment의 read-timeout은 10초이므로 모든 결제 호출이 소켓 타임아웃으로 끊기고 502가 된다. 429(F01-H)와 결정적으로 다른 점은 **대기가 자원을 먹는다**는 것이다. processPayment는 @Transactional 안에서 결제 행을 저장한 뒤 외부를 부르므로, 각 요청이 DB 커넥션을 10초씩 쥔 채 대기한다. payment-service에는 Hikari 설정이 없어 기본 풀 10이므로 부하가 이어지면 풀이 마르고, 그때부터는 외부와 무관한 결제 요청까지 커넥션 대기로 밀린다. 증상이 외부 hop에서 시작해 payment 자신의 자원 고갈로 번지는 것이 이 케이스의 정체성이다.",
+      "cause": "외부 PG가 30s 지연 → payment의 pg read-timeout 10s 초과 → SocketTimeout(ResourceAccessException) → ServiceException(502) → order PaymentClient가 5xx로 집계 → @Retry 2회 → @CircuitBreaker(paymentClient) open → 체크아웃 502. 병행하여 대기 중인 결제가 payment 기본 풀(10)의 커넥션을 10초씩 점유하며 payment 전반이 정체된다",
+      "injection_summary": "mock.expectation executor가 commerce external-pg-mock의 POST /v1/payments에 30초 지연 expectation(응답코드는 200)을 적용하고, north-south companion이 체크아웃 부하를 공급한다. cleanup은 원본 expectation 스냅샷 복원이다.",
+      "user_impact": "체크아웃이 느려지다 502로 실패한다. 사용자 체감은 F01-H와 달리 '한참 기다린 끝의 실패'이며, 결제 경로가 payment의 커넥션 풀을 말리면 결제 조회 등 payment의 다른 API까지 느려진다. 지연이 길어지면 payment의 /actuator/health가 커넥션을 얻지 못해 readiness 실패로 이어질 수 있다 — 그 경우 파드 재기동은 원인이 아니라 결과다.",
+      "distinguishing_evidence": "결정 증거는 실패한 결제 호출의 소요시간이 read-timeout 10초에 정확히 붙는다는 것이다. 외부 span이 응답 없이 잘리고 mock 쪽은 200을 만들고 있었으므로 상태코드가 아니라 시간이 근거다. F01-H와는 즉시/10초로 갈리고, F08-P와는 절단 지점이 order→payment(250ms)가 아니라 payment→외부 PG(10s)라는 점으로 갈린다. 내부 잠금 계열과는 두 릴레이션의 차단 세션이 0이라는 점으로 갈린다. payment의 Hikari 대기가 함께 관측되지만 그것은 외부 대기의 결과다.",
+      "domain": "commerce",
+      "class": "A",
+      "fault_pattern": "P4+P1",
+      "observation_domains": [
+        "APM",
+        "DPM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "testbed-external-pg-mock",
+        "trigger_target_id": "commerce-payment",
+        "mechanism": "근본은 외부 PG의 응답 hang이고, 그것이 payment 자신의 자원 고갈로 번지는 이유는 두 가지 코드 구조다. 첫째 P4 — pgRestClient에는 timeout만 있고 서킷브레이커·백오프가 없어 매 요청이 10초를 온전히 소모한다. 둘째 P1 — PaymentService.processPayment가 @Transactional 안에서 paymentRepository.save()로 커넥션을 잡은 뒤 외부를 호출하므로, 외부 대기 시간이 그대로 DB 커넥션 점유 시간이 된다. payment-service에는 Hikari 설정이 없어 Spring 기본 풀 10이므로 동시 결제가 10건을 넘는 순간 풀이 마르고, 이후 요청은 커넥션 획득 단계에서 대기한다. 이 시점부터 payment는 외부와 무관한 요청(결제 조회 등)에도 느려지며, /actuator/health의 DB 검사도 커넥션을 얻지 못해 readinessProbe(timeout 3s·failureThreshold 3)를 넘길 수 있다. 상류에서는 order의 @Retry(2회)가 10초짜리 실패를 두 번 반복해 order의 payment read-timeout 15초를 넘기므로, 체크아웃 응답시간이 15초 근처에서 잘리고 502가 된다.",
+        "code_anchor": [
+          "commerce/k8s/31-external-pg-mock.yaml:9-12 (testbed-external-pg-mock — 외부 PG 대역 mockserver Deployment)",
+          "commerce/k8s/02-configmaps.yaml:41 (PG_API_URL — payment의 외부 PG 엔드포인트가 이 mock으로 향한다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/config/RestClientConfig.java:23-33 (pgRestClient — timeout만 있고 CircuitBreaker·Retry 없음 = P4)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (PaymentService.processPayment — @Transactional 진입, 여기서 잡은 DB 커넥션을 외부 호출 내내 쥔다)",
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:63-64 (pgApiClient.requestPayment — 트랜잭션 안 동기 외부 호출)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — payment 502를 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')",
+          "commerce/payment-service/src/main/resources/application.yml:43-44 (pg.api connect 3s / read-timeout 10s — 지연 30s가 반드시 이 벽에 걸린다)",
+          "commerce/payment-service/src/main/resources/application.yml:7-10 (datasource — Hikari 미설정이라 기본 풀 10)",
+          "commerce/k8s/23-payment-service.yaml:73-79 (readinessProbe — /actuator/health, timeoutSeconds 3·failureThreshold 3. 풀 고갈이 길어지면 여기에 걸린다)",
+          "commerce/order-service/src/main/resources/application.yml:51-54 (services.payment read-timeout 15s — 재시도 2회×10초가 이 벽을 넘긴다)"
+        ],
+        "infra_anchor": "지연은 mockserver expectation PUT으로 만든다(응답코드 200 + delay 30s). 상태코드가 정상이므로 '외부가 에러를 냈다'는 단서는 없고, 시간만이 증거로 남는다 — G5 감별의 축을 상태코드가 아니라 응답시간에 두기 위한 설계다."
+      },
+      "must_support": [
+        "payment→외부 PG 아웃바운드 호출이 read-timeout 10초 지점에서 응답 없이 절단",
+        "체크아웃 5xx 비율 상승(loadgen.checkout_5xx_rate ≥ 0.05)과 체크아웃 응답시간의 급증",
+        "payment의 DB 커넥션 점유 시간·대기 증가(풀 고갈) — 외부 대기가 자원으로 번진 증거",
+        "inventory·payments 릴레이션의 차단 세션 0 — 잠금이 아니라 대기다"
+      ],
+      "must_rule_out": [
+        "내부 DB 잠금이 아님 — 두 릴레이션 모두 차단 세션 0. 잠금이면 F01-R·F06-H",
+        "외부 거절(429/5xx)이 아님 — mock은 200을 만들고 있었고 실패 원인은 시간 초과다. 상태코드가 원인이면 F01-H",
+        "order의 timeout 오설정이 아님 — 절단이 order→payment(250ms)가 아니라 payment→외부 PG(10s)에서 일어난다. 설정 변경이면 F08-P",
+        "payment 파드 장애가 아님 — 파드 재기동이 관측되더라도 그것은 커넥션 풀 고갈의 결과이지 원인이 아니다(재기동 없이도 실패가 선행한다)"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F01-H (같은 외부 hop의 즉시 거절 버전 — 자원 지표가 조용하다)",
+          "F08-P (같은 '타임아웃으로 잘린 결제'지만 절단 지점과 범인이 다르다 — order의 설정 vs 외부 지연)",
+          "F19-P (food 도메인의 같은 P1 구조 — 하류 지연이 상류 커넥션 풀을 말린다. 그쪽은 지연이 read-timeout보다 짧아 502가 아니라 순수 풀 고갈로 나타난다)",
+          "F01-R (내부 잠금이 결제 경로를 막는 대조군 — 차단 세션 유무로 갈린다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "testbed-external-pg-mock"
+        ],
+        "partial": [
+          "commerce-payment",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": "mock.expectation",
         "companions": [
@@ -396,12 +509,59 @@
       }
     },
     "F09-R": {
-      "title": "worker 노드 CPU noisy neighbor",
-      "description": "commerce 파드가 다수 배치된 tb-w3 worker 노드에서 CPU를 잡아먹는 이웃 프로세스(tagged busy-loop)가 노드 CPU를 포화시켜, 같은 노드의 pod cohort(order·payment·pricing·product·user) latency가 함께 상승하는 시나리오다. 특정 서비스 결함이 아니라 노드 단위 자원 경합이 원인인 R형이다.",
-      "cause": "Worker node CPU contention from a co-located noisy process",
-      "injection_summary": "tb-w3(192.168.122.14)에서 stress-ng 없이 N개의 yes busy-loop를 normal priority로 실행(2/3/4 워커 = 노드 4코어의 50/75/100%)해 노드 CPU를 포화시킨다. 사용자 경로 확인용 north-south 20rps companion을 병행한다. cleanup은 process group 전멸(negative PGID kill) 확인이다. CPU만 점유하고 메모리는 건드리지 않아 eviction/OOM(F05-P 경계)을 피한다.",
-      "user_impact": "tb-w3에 배치된 checkout 경로 서비스(order·pricing·product 등)의 p95가 동반 상승해 사용자 응답이 전반적으로 느려진다.",
-      "distinguishing_evidence": "kcm.node.cpu_utilization(tb-w3)이 포화되고 같은 노드 cohort의 다수 서비스 p95가 동반 상승한다. DB·외부 의존은 정상이고, 다른 노드(tb-w2 등)에 배치된 서비스는 영향이 없다. 단일 서비스 자원 제한(F09-P: pod CPU limit)과 달리 노드 전역 신호이며, 진입 트래픽(F07-H)은 평상 수준이다.",
+      "title": "tb-w3 노드 CPU noisy neighbor — 같은 노드 서비스들의 p95가 함께 오른다",
+      "description": "commerce 파드가 다수 배치된 워커 노드 tb-w3에서 CPU를 태우는 이웃 프로세스가 노드를 포화시킨다. 파드는 죽지 않고 아무 것도 5xx를 내지 않지만, 같은 노드의 order·payment·pricing·product·user가 **함께** 느려진다. 신호가 '실패'가 아니라 '동반 지연'이라는 점, 그리고 느려진 서비스들의 공통점이 호출 관계가 아니라 배치라는 점이 이 케이스의 핵심이다. 의존 그래프를 따라가면 범인을 찾을 수 없다.",
+      "cause": "tb-w3에서 busy-loop 프로세스가 노드 CPU를 점유 → 같은 노드 파드들의 CPU 스케줄링 지연 → order·pricing 등 cohort 서비스의 p95 동반 상승 → 체크아웃 응답시간 전반 악화",
+      "injection_summary": "host.stress executor가 tb-w3(192.168.122.14)에서 stress-ng 없이 yes busy-loop를 normal priority로 2/3/4개 실행해(4코어의 50/75/100%) 노드 CPU를 포화시킨다. north-south 20rps companion을 병행하고, cleanup은 프로세스 그룹 전멸 확인이다. CPU만 점유하고 메모리는 건드리지 않아 eviction/OOM (F05-P 경계)을 피한다.",
+      "user_impact": "체크아웃과 상품 조회가 전반적으로 느려진다. 실패는 거의 없고 응답시간만 오르므로 5xx 기반 알람에는 잘 걸리지 않는다 — '아무도 에러를 내지 않는데 모두가 느린' 상태다. tb-w3에 없는 서비스는 정상이므로 사용자 체감은 기능별로 고르지 않다.",
+      "distinguishing_evidence": "결정 증거는 노드 CPU 포화와 **여러 서비스의 동시 p95 상승**이 같은 노드 범위에서만 일어난다는 것이다. 느려진 서비스들은 서로 호출 관계가 없어도 되고(pricing은 아무도 호출하지 않는다), 다른 노드의 서비스는 정상이다. 단일 파드의 CPU 한도 문제(F09-P·F12-H)와 달리 특정 컨테이너의 throttling에 갇히지 않고, 진입 트래픽은 평상 수준이라 폭주(F07-H)도 아니다. DB·외부 의존은 정상이다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "KCM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "node",
+        "target_id": "tb-w3",
+        "mechanism": "결함 보유 대상은 워커 노드 tb-w3의 CPU다. 이웃 프로세스가 normal priority로 코어를 채우면 같은 노드의 컨테이너들은 CFS 상에서 실행 기회를 나눠 갖게 되고, 요청당 실제 계산 시간이 늘어난다. 컨테이너 CPU limit을 넘긴 것이 아니므로 throttling 지표는 특정 파드에 집중되지 않고, cgroup 관점에서는 아무도 '잘못'하지 않았다. 그래서 신호가 서비스가 아니라 노드에만 남는다. commerce 체크아웃은 5-hop이라 경로 위 여러 서비스가 같은 노드에 있으면 지연이 누적되고, order의 하류 타임아웃(10~15s)에는 미치지 못해 5xx로는 거의 표면화되지 않는다 — '조용한 열화'가 이 케이스의 관측 형상이며, 그래서 성공 조건도 실패율이 아니라 p95다.",
+        "code_anchor": [
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:143-160 (checkout — cart→pricing→product/inventory 순차 호출. 경로 위 서비스가 같은 노드에 몰리면 지연이 누적된다)",
+          "commerce/order-service/src/main/resources/application.yml:46-66 (services.* read-timeout 10~15s — 노드 지연이 이 벽에 닿지 못해 5xx가 아니라 지연으로만 나타나는 근거)"
+        ],
+        "infra_anchor": "tb-w3(192.168.122.14)에서 yes busy-loop를 실행한다. nice를 올리지 않는 이유는 우선순위를 낮추면 커널이 앱에 CPU를 양보해 경합이 재현되지 않기 때문이다. 워커 수를 노드 코어 수에 맞춰 50/75/100% 사다리로 두고, 메모리는 건드리지 않아 eviction 경계(F05-P)와 분리한다. cleanup은 음수 PGID kill로 프로세스 그룹 전체를 확인 사살한다."
+      },
+      "must_support": [
+        "tb-w3의 노드 CPU 사용률 포화(≥ 85%)",
+        "같은 노드 cohort의 복수 서비스 p95 동반 상승(commerce-order·commerce-pricing 각 ≥ 300ms)",
+        "호출 관계가 없는 서비스끼리도 함께 느려짐 — 원인이 의존 그래프가 아니라 배치에 있다는 증거",
+        "다른 노드에 배치된 서비스와 DB·외부 의존은 정상"
+      ],
+      "must_rule_out": [
+        "단일 파드의 CPU 한도 문제가 아님 — 특정 컨테이너의 throttling에 갇히지 않는다. 갇히면 F09-P·F12-H",
+        "노드 메모리 압박이 아님 — eviction·OOMKilled가 없다. 메모리면 F05-P",
+        "진입 폭주가 아님 — achieved_rps가 승인 대역 안이다. 폭주면 F07-H",
+        "DB·외부 의존 장애가 아님 — 차단 세션 0, 외부 PG 정상"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F05-P (같은 노드 층위지만 자원이 메모리 — 파드가 축출돼 5xx가 난다)",
+          "F12-H (같은 'CPU 때문에 느리다'지만 층위가 컨테이너 한도 — throttling이 한 파드에 집중된다)",
+          "F07-H (같은 '전반적 지연'이지만 원인이 진입량 — 트래픽 지표로 갈린다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "node",
+        "accept": [
+          "tb-w3"
+        ],
+        "partial": [
+          "commerce-order",
+          "commerce-pricing",
+          "commerce-product"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [
@@ -693,12 +853,63 @@
       "domain": "commerce"
     },
     "F12-H": {
-      "title": "네트워크 장애처럼 보이는 product pod CPU 포화",
-      "description": "product pod CPU limit을 낮춰 특정 서비스 timeout을 만들고 실제 네트워크 장애와 구분하는 시나리오다.",
-      "cause": "Product pod CPU throttling",
-      "injection_summary": "product deployment CPU limit을 승인된 단계로 낮추고 상품 조회 부하를 주입한다.",
-      "user_impact": "상품 조회와 연계 요청이 지연되거나 실패한다.",
-      "distinguishing_evidence": "container throttling과 service trace 지연이 존재하지만 interface와 pod network error는 정상이다.",
+      "title": "product 컨테이너 CPU 한도 축소 — 네트워크 장애처럼 보이는 단일 서비스 포화",
+      "description": "product 컨테이너의 CPU limit을 낮춰 그 파드만 CPU throttling에 걸리게 한다. 상류에서 보면 product 호출이 느려지고 타임아웃·재시도가 늘어 '네트워크가 이상하다'로 읽히지만, 인터페이스 오류·패킷 드랍·파드 네트워크 오류는 0이다. 지연의 출처가 링크가 아니라 **컨테이너의 CPU 시간**이라는 것을 throttling 지표로 확정하는 것이 이 케이스가 요구하는 판별이다.",
+      "cause": "product 컨테이너 CPU limit 축소(500m → 250/100/50m) → cgroup CPU throttling → product 응답 지연·오류 상승 → order의 productClient 타임아웃·재시도 증가 → 체크아웃 재고 예약 단계 지연·실패",
+      "injection_summary": "k8s.resource executor가 testbed-product/product-service의 CPU limit을 baseline 500m에서 승인된 단계(250m→100m→50m)로 낮추고 rollout한다. memory는 건드리지 않는다. north-south companion이 상품 조회·체크아웃 부하를 공급하며, cleanup은 baseline 한도 복원이다.",
+      "user_impact": "상품 조회가 느려지고, 체크아웃의 재고 예약 단계가 지연·실패한다. product는 죽지 않으므로 가용성 지표는 정상으로 보이고 응답시간만 나빠진다 — 사용자에게는 '가끔 멈추는 화면'으로 보인다.",
+      "distinguishing_evidence": "결정 증거는 product 컨테이너의 CPU throttled time이 0보다 크다는 것과, 같은 시각 파드 네트워크 오류율이 0이라는 것의 결합이다. 지연이 링크가 아니라 스케줄링에서 왔음을 직접 보여준다. 두 번째 축은 범위다 — 느려지는 것은 product와 그 상류뿐이고, product를 거치지 않는 경로(pricing 등)는 정상이다. 노드 전역이 느려지면 F09-R이다. 세 번째로 CPU limit이 baseline과 다르다는 변경 이력이 남는다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "KCM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "container",
+        "target_id": "testbed-product:product-service",
+        "trigger_target_id": "commerce-order",
+        "mechanism": "결함은 product 컨테이너의 CPU 한도 설정이다. cgroup CPU 한도는 코어를 뺏는 것이 아니라 주기(period)마다 사용 가능한 시간을 배급하는 방식이라, 한도를 넘긴 컨테이너는 남은 주기 동안 **실행이 멈춘다**. 그래서 증상이 '느림'이 아니라 '간헐적으로 완전히 멈춤'에 가깝고, 상류에서는 응답시간 분포의 꼬리가 길어지는 형태로 보인다 — 네트워크 지터와 구분이 어려운 이유다. order의 checkout은 장바구니 품목마다 productClient.reserveStock을 순차 호출하므로 throttling으로 늘어난 지연이 품목 수만큼 누적되고, read-timeout 10초를 넘기면 @Retry(productClient) 3회가 붙어 부하를 오히려 늘린다. 실패가 계속되면 @CircuitBreaker(productClient)가 열려 reserveStockFallback이 502를 반환한다. product 파드는 죽지 않으므로 가용성 지표는 끝까지 정상이다.",
+        "code_anchor": [
+          "commerce/k8s/21-product-service.yaml:99-105 (resources — limits cpu 500m. 주입이 이 값만 내린다)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/ProductClient.java:25-27 (@CircuitBreaker(productClient)+@Retry(productClient))",
+          "commerce/order-service/src/main/java/com/commerce/order/client/ProductClient.java:46-52 (reserveStockFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/resources/application.yml:47-50 (services.product connect 3s / read-timeout 10s — throttling 지연이 이 벽에 닿으면 재시도가 붙는다)",
+          "commerce/order-service/src/main/resources/application.yml:121-124 (productClient retry max-attempts 3 — 느려진 하류에 부하를 더하는 증폭 경로)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:157-161 (productClient.reserveStock — 장바구니 품목마다 순차 호출이라 지연이 누적된다)"
+        ],
+        "infra_anchor": "k8s.resource executor가 CPU limit만 교체하고 memory·requests는 고정한다. 한도 변경은 파드 재생성을 수반하므로 주입 직후 짧은 롤아웃 blip이 있으며, throttling에 의한 지연은 그 뒤 부하가 쌓이면서 나타난다. 컨트롤러는 `cpu_limit`·`resources_match_baseline`으로 주입 사실을, `cpu_throttled_time`으로 실제 throttling을, `network_error_rate`로 네트워크 무죄를 각각 확인한다."
+      },
+      "must_support": [
+        "product 컨테이너의 CPU throttled time > 0 — 지연의 출처가 스케줄링임을 보이는 직접 증거",
+        "commerce-product p95 상승(≥ 500ms)과 오류율 상승",
+        "product 컨테이너 CPU limit이 baseline(500m)과 다름",
+        "파드 네트워크 오류율 0, product 파드 Ready 유지"
+      ],
+      "must_rule_out": [
+        "네트워크 장애가 아님 — 파드 네트워크 오류율 0. 링크가 원인이면 F27 계열(네트워크)",
+        "노드 전역 경합이 아님 — product를 거치지 않는 경로(commerce-pricing)의 p95는 정상이다. 노드면 F09-R",
+        "파드 장애가 아님 — product 파드 Ready 유지, 재시작 없음. 죽으면 F05 계열",
+        "부하 폭주가 아님 — achieved_rps가 승인 대역 안이다. 폭주면 F07-H"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F09-R (같은 CPU 축이지만 층위가 노드 — 무관한 서비스까지 함께 느려진다)",
+          "F05-R (같은 컨테이너 한도 축이지만 자원이 메모리 — 죽고 재시작한다)",
+          "F01-R (같은 '재고 예약이 막힌다'지만 원인이 DB 잠금 — throttling 없이 차단 세션이 관측된다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "container",
+        "accept": [
+          "testbed-product:product-service"
+        ],
+        "partial": [
+          "commerce-product",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [
@@ -736,12 +947,63 @@
       }
     },
     "F05-R": {
-      "title": "payment memory limit 축소로 인한 OOMKill loop",
-      "description": "commerce payment container의 memory limit을 낮추고 결제 부하를 주입해 OOMKill 재시작을 만드는 시나리오다.",
-      "cause": "Payment container memory limit exhaustion",
-      "injection_summary": "payment memory limit을 실측 adaptive 단계로 낮추고 checkout 부하를 주입한 뒤 최초 resources를 복구한다.",
-      "user_impact": "payment pod 재시작 동안 체크아웃이 간헐적으로 실패한다.",
-      "distinguishing_evidence": "container OOMKilled와 restart count 증가가 직접 관측되며 host memory pressure는 정상이다.",
+      "title": "payment 메모리 한도 축소 — 결제 부하 중 OOMKill 재시작",
+      "description": "payment 컨테이너의 메모리 limit을 실측 사다리(768Mi→640Mi→576Mi)로 낮춘 상태에서 결제 부하를 흘린다. JVM에 -Xmx가 없어 힙은 컨테이너 한도의 비율로 정해지지만, 실제 RSS는 힙 외에 메타스페이스·코드캐시·스레드 스택·OTel javaagent를 포함하므로 한도가 내려가면 총합이 cgroup 한도를 넘어 커널이 컨테이너를 OOMKill한다. 종료 사유 `OOMKilled`와 메모리 한도 변경 이력이 직접 증거이며, 재기동 구간에 체크아웃 결제가 실패한다.",
+      "cause": "payment 컨테이너 memory limit 축소(1Gi → 768/640/576Mi) → 결제 부하 중 RSS가 한도 초과 → 커널 OOMKill(reason=OOMKilled) → 재기동 → 부팅 구간 결제 실패 → order PaymentClient가 5xx로 집계 → @CircuitBreaker(paymentClient) open → 체크아웃 502",
+      "injection_summary": "k8s.resource executor가 testbed-payment/payment-service의 resources를 baseline(limits 500m/1Gi)에서 fault 단계로 교체하고 rollout한다. 세 단계는 실측 사다리이며 cpu·requests는 고정하고 memory limit만 내린다. north-south companion이 결제 부하를 공급하고, cleanup은 최초 resources 복원이다.",
+      "user_impact": "OOMKill과 재기동 구간 동안 체크아웃의 결제 단계가 실패한다. F05-H와 마찬가지로 간헐적이지만 주기가 고정돼 있지 않고 **부하량에 좌우된다** — 결제가 몰릴 때 죽고 한산하면 버틴다. 결제 외 경로는 정상이다.",
+      "distinguishing_evidence": "결정 증거는 종료 사유 OOMKilled와 컨테이너 메모리 한도가 baseline과 다르다는 두 사실의 결합이다. 노드 전체 메모리는 정상이므로 노드 압박(F05-P)이 아니라 컨테이너 한도가 원인임이 확정된다. F05-H와는 종료 사유(OOMKilled vs Error)와 probe 변경 유무로 갈리고, 재기동 시점이 고정 주기가 아니라 부하와 상관된다는 점도 축이 된다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "KCM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "container",
+        "target_id": "testbed-payment:payment-service",
+        "trigger_target_id": "commerce-order",
+        "mechanism": "결함은 payment 컨테이너의 메모리 한도 설정이다. 컨테이너에는 -Xmx가 지정돼 있지 않고 JAVA_TOOL_OPTIONS는 OTel javaagent만 붙이므로, JVM은 컨테이너 인지 기본값(MaxRAMPercentage)으로 힙 상한을 한도에 비례해 잡는다. 문제는 cgroup이 세는 것이 힙이 아니라 **RSS 총합**이라는 점이다 — 메타스페이스, 코드 캐시, 스레드 스택, javaagent, 다이렉트 버퍼가 힙 밖에서 함께 자란다. 한도를 낮추면 힙 상한만 같이 내려가고 힙 밖 사용량은 거의 그대로이므로, 결제 부하로 스레드와 객체가 늘어나는 구간에서 총합이 한도를 넘고 커널이 컨테이너를 죽인다. replicas 1이라 재기동 구간에는 결제를 받을 인스턴스가 없고, order의 서킷브레이커가 열려 체크아웃 502로 이어진다. 사다리 세 단계를 둔 이유는 어느 한도에서 실제로 OOM이 재현되는지가 런타임 상태에 좌우되기 때문이며, 승인된 단계는 실측으로 확정한다.",
+        "code_anchor": [
+          "commerce/k8s/23-payment-service.yaml:87-93 (resources — requests 200m/512Mi, limits 500m/1Gi. 주입이 memory limit만 내린다)",
+          "commerce/k8s/23-payment-service.yaml:49-50 (JAVA_TOOL_OPTIONS — javaagent만 지정하고 -Xmx가 없다. 힙 상한이 컨테이너 한도에 종속되는 근거)",
+          "commerce/k8s/23-payment-service.yaml:9 (replicas 1 — 재기동 구간에 결제를 받을 다른 인스턴스가 없다)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — payment 불가를 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')"
+        ],
+        "infra_anchor": "k8s.resource executor가 resources 블록을 baseline/fault 스냅샷으로 교체한다. 한도 변경은 파드 재생성을 수반하므로 주입 직후 한 번의 롤아웃 blip이 존재하며, 이는 OOMKill과 시점이 다르다(롤아웃은 즉시, OOM은 부하가 쌓인 뒤). 컨트롤러는 `resources_match_baseline`으로 주입 사실을, `termination_reason`으로 죽은 이유를 각각 확인한다."
+      },
+      "must_support": [
+        "컨테이너 마지막 종료 사유 = OOMKilled, restart_count 증가 — 죽은 이유의 직접 증거",
+        "컨테이너 memory limit이 baseline(1Gi)과 다름(resources_match_baseline = false)",
+        "노드 메모리는 정상 — 압박이 컨테이너 한도 안에서만 발생",
+        "체크아웃 5xx 비율 상승(≥ 0.05)이 재기동 구간과 정렬"
+      ],
+      "must_rule_out": [
+        "probe 오설정이 아님 — liveness_matches_baseline = true, 종료 사유도 Error가 아니다. probe면 F05-H",
+        "노드 메모리 압박이 아님 — 같은 노드의 다른 파드가 evict되지 않았다. 노드가 원인이면 F05-P",
+        "부하 폭주가 아님 — achieved_rps가 승인 대역(30~45) 안이다. 폭주면 F07-H",
+        "애플리케이션 메모리 누수가 아님 — 한도를 되돌리면 같은 부하에서 죽지 않는다(사다리 단계별 재현성이 근거)"
+      ],
+      "difficulty": "easy",
+      "related_scenarios": {
+        "contrast_with": [
+          "F05-H (같은 컨테이너의 재시작 루프지만 종료 사유가 Error — 자원이 아니라 probe 판정)",
+          "F05-P (같은 '메모리 때문에 죽는다'지만 층위가 노드다 — 여러 도메인 파드가 동시에 흔들린다)",
+          "F09-H (JVM 힙을 직접 줄이는 계열 — 같은 메모리 축이지만 컨테이너가 아니라 힙이 대상)"
+        ]
+      },
+      "scoring": {
+        "granularity": "container",
+        "accept": [
+          "testbed-payment:payment-service"
+        ],
+        "partial": [
+          "commerce-payment",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [
@@ -836,16 +1098,66 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F05-H": {
-      "title": "잘못된 liveness probe로 인한 payment 재시작 loop",
-      "description": "commerce payment liveness probe를 항상 실패하는 경로로 변경해 OOM과 유사한 재시작 loop를 만드는 시나리오다.",
-      "cause": "Misconfigured payment liveness probe",
-      "injection_summary": "payment livenessProbe 경로를 고정 404 endpoint로 변경하고 원본 probe 전체를 정확히 복구한다.",
-      "user_impact": "payment 재시작으로 체크아웃이 간헐적으로 실패한다.",
-      "distinguishing_evidence": "termination reason은 Error이고 probe 변경과 restart가 관측되며 OOMKilled와 memory pressure는 없다.",
+      "title": "payment liveness probe 오설정 — 15초마다 살아 있는 컨테이너를 죽이는 재시작 루프",
+      "description": "payment 컨테이너의 livenessProbe 경로를 존재하지 않는 엔드포인트로 바꾼다. 애플리케이션은 정상인데 kubelet이 응답 404를 실패로 세고, failureThreshold 5 × periodSeconds 15 = 약 75초마다 컨테이너를 죽인다. 재기동에는 JVM 부팅과 워밍업이 필요하므로 payment는 '살아 있음 → 죽음 → 부팅 중'을 반복하며, 그 사이 체크아웃의 결제 단계가 간헐적으로 실패한다. 종료 사유가 `Error`(신호에 의한 종료)이고 메모리 압박이 없다는 점이 OOM 계열(F05-R)과 갈리는 축이다.",
+      "cause": "livenessProbe httpGet.path를 /actuator/health/f05-h-fail(404)로 변경 → kubelet이 5회 연속 실패로 판정 → 컨테이너 강제 종료(reason=Error) → 재기동 → 부팅 중 결제 요청 실패 → order PaymentClient가 5xx로 집계 → @CircuitBreaker(paymentClient) open → 체크아웃 502. probe가 원복될 때까지 이 주기가 반복된다",
+      "injection_summary": "k8s.probe executor가 testbed-payment/payment-service의 livenessProbe 블록을 통째로 교체한다 (baseline/fault 두 스냅샷이 계약에 명시돼 있고 차이는 httpGet.path 하나뿐이다). north-south companion이 체크아웃 부하를 공급하며, cleanup은 baseline probe 블록의 정확한 복원이다.",
+      "user_impact": "체크아웃의 결제 단계가 주기적으로 실패한다. 피해는 전량이 아니라 **간헐적**이며 재기동 주기(약 75초)와 부팅 시간에 맞춰 파도친다 — 실패가 몰렸다 사라졌다 하는 형상이 지속적 실패(F01-H·F06-H)와 구분된다. 결제 이외의 경로(상품·장바구니·가격)는 정상이다.",
+      "distinguishing_evidence": "결정 증거는 죽는 이유다. 마지막 종료 사유가 `Error`이고 restart_count가 계단식으로 오르는데, 컨테이너 메모리 사용량은 한도에 근접하지 않고 노드 메모리도 정상이다 — 즉 자원이 아니라 판정이 죽였다. 두 번째 축은 변경 이력이다: Deployment의 livenessProbe가 baseline과 다르고 resources는 baseline 그대로다. 세 번째로 실패가 재기동 주기와 위상이 맞는다(연속이 아니다).",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "KCM",
+        "APM"
+      ],
+      "root_cause": {
+        "target_kind": "config",
+        "target_id": "testbed-payment:payment-service",
+        "trigger_target_id": "commerce-order",
+        "mechanism": "결함은 payment 컨테이너의 livenessProbe 설정에 있다. 원래 probe는 /actuator/health를 periodSeconds 15·timeoutSeconds 3·failureThreshold 5로 검사한다. 경로를 없는 하위 경로로 바꾸면 Spring Boot actuator는 404를 반환하고 kubelet은 이를 실패로 센다 — 애플리케이션이 실제로 건강한지와 무관하게 5회(약 75초) 뒤 컨테이너가 SIGTERM으로 종료되고 재기동된다. readinessProbe는 건드리지 않으므로 파드는 부팅 후 정상적으로 트래픽을 받다가 다시 죽는다. replicas가 1이라 재기동 구간에는 결제를 처리할 인스턴스가 없고, 그 구간의 요청은 order의 PaymentClient에서 연결 실패로 집계돼 @Retry 2회 뒤 서킷브레이커를 열고 체크아웃 502가 된다. 서킷이 열려 있는 5초 동안은 payment가 이미 복구돼도 실패가 이어지므로 피해 구간이 재기동 구간보다 조금 길다.",
+        "code_anchor": [
+          "commerce/k8s/23-payment-service.yaml:80-86 (livenessProbe — /actuator/health, periodSeconds 15·timeoutSeconds 3·failureThreshold 5. 주입이 이 블록의 path만 바꾼다)",
+          "commerce/k8s/23-payment-service.yaml:73-79 (readinessProbe — 동일 경로지만 주입 대상이 아니다. 그래서 파드는 부팅 후 정상적으로 트래픽을 받는다)",
+          "commerce/k8s/23-payment-service.yaml:9 (replicas 1 — 재기동 구간에 결제를 받을 다른 인스턴스가 없다)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — payment 불가를 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')"
+        ],
+        "infra_anchor": "k8s.probe executor가 probe 블록 전체를 baseline/fault 스냅샷으로 교체하고 cleanup에서 정확히 되돌린다. 부분 패치가 아니라 블록 교체인 이유는 원복 시 필드 누락으로 다른 값이 남는 것을 막기 위함이다. 컨트롤러는 `liveness_matches_baseline`으로 주입이 실제로 걸렸는지 확인한다."
+      },
+      "must_support": [
+        "컨테이너 마지막 종료 사유 = Error, restart_count가 2회 이상 증가 — 자원이 아니라 판정이 죽였다는 직접 증거",
+        "Deployment의 livenessProbe가 baseline과 다름(liveness_matches_baseline = false)",
+        "체크아웃 5xx 비율 상승(≥ 0.05)이 재기동 주기와 위상이 맞는 간헐적 형상",
+        "컨테이너·노드 메모리가 한도에 근접하지 않음"
+      ],
+      "must_rule_out": [
+        "OOM이 아님 — termination_reason ≠ OOMKilled. OOM이면 F05-R",
+        "자원 한도 변경이 아님 — resources_match_baseline = true. 한도가 바뀌었으면 F05-R·F12-H",
+        "부하 폭주가 아님 — achieved_rps가 승인 수준을 유지한다. 폭주면 F07-H",
+        "노드 장애가 아님 — 같은 노드의 다른 파드는 정상이다. 노드가 원인이면 F05-P·F09-R"
+      ],
+      "difficulty": "easy",
+      "related_scenarios": {
+        "contrast_with": [
+          "F05-R (같은 컨테이너의 재시작 루프지만 종료 사유가 OOMKilled — 죽는 이유가 자원인가 판정인가)",
+          "F16-H (같은 probe 계열이지만 readiness를 건드려 파드를 죽이지 않고 트래픽에서만 떼어낸다)",
+          "F01-H (같은 '결제 실패'지만 지속적이고 외부가 원인 — 간헐/지속의 시간 형상으로 갈린다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "container",
+        "accept": [
+          "testbed-payment:payment-service"
+        ],
+        "partial": [
+          "commerce-payment",
+          "commerce-order"
+        ]
+      },
       "injected_fault": {
         "profile": "k8s.probe",
         "companions": [
@@ -884,8 +1196,7 @@
             }
           }
         ]
-      },
-      "domain": "commerce"
+      }
     },
     "F01-P": {
       "title": "banking Oracle 계좌 lock의 commerce 결제 cross-domain 전파",
@@ -1562,12 +1873,60 @@
       "distinguishing_evidence": "jvm.gc.pause/jvm.memory.used(after-GC) 주기성과 order p95 스파이크가 동기화되고, host/node CPU 포화(F09-R/F09-P)는 없다. F05-R(payment OOM loop)과 달리 restart_count는 0으로 유지되며 OOMKill 종료가 없다. F08-P(read-timeout 오설정)와 달리 order→payment span은 정상이고 heap after-GC used/limit이 원인 신호다."
     },
     "F05-P": {
-      "title": "worker 노드 메모리 압박 → 다서비스 eviction",
-      "description": "commerce·food·banking 파드가 동거하는 tb-w2 worker 노드의 메모리를 kubelet hard-eviction 임계(memory.available<100Mi)까지 밀어 여러 pod를 eviction시키고, 재스케줄 공백 동안 여러 도메인의 API가 동시에 실패하는 시나리오다. 특정 서비스 결함이 아니라 노드 단위 메모리 자원 고갈이 원인인 P(플랫폼/인프라)형이다.",
-      "cause": "Worker node memory exhaustion driving kubelet pod eviction",
-      "injection_summary": "tb-w2(192.168.122.11)에서 stress-ng 없이 python anonymous 메모리 hog(5500→7000→8500 MiB adaptive ladder, 전 페이지 터치)를 실행해 노드 메모리를 eviction 임계까지 포화시킨다. 주입 전 노드의 실제 pod 목록을 crictl로 재확인해 기대 cohort(gateway·cart·inventory·redis·kafka·food-payment) 동거를 검증하고 불일치 시 fail-closed. 사용자 경로 확인용 north-south 20rps companion 병행. cleanup은 memhog process group 전멸(negative PGID kill) 확인이며, 메모리만 점유해 CPU·설정·파일은 건드리지 않아 F09-R(CPU)·config형과 표면 분리한다.",
-      "user_impact": "tb-w2에 동거하던 gateway·cart·inventory 등이 evict·재스케줄되는 공백 동안 commerce checkout과 여러 도메인 API가 동시에 5xx로 실패한다.",
-      "distinguishing_evidence": "kcm.node.memory_utilization(tb-w2) 포화 + KCM eviction/pod relocation 이벤트가 원인 신호이고, 앱 heap after-GC는 정상이다. F09-H(order heap 축소)와 달리 특정 서비스 JVM이 아니라 노드 전역 메모리이며 여러 도메인 pod가 동시에 흔들린다. F09-R(노드 CPU)과 달리 CPU는 정상이고 메모리·eviction이 신호다. 다른 노드(tb-w3 등)에 배치된 서비스는 영향이 없다.",
+      "title": "tb-w2 노드 메모리 고갈 — kubelet eviction으로 여러 도메인이 동시에 무너진다",
+      "description": "commerce·food·banking 파드가 함께 배치된 워커 노드 tb-w2의 메모리를 kubelet hard-eviction 임계까지 밀어 올린다. 노드가 메모리를 회수하려고 파드를 축출하면 gateway·cart·inventory 등 그 노드에 있던 파드들이 동시에 사라지고, 재스케줄과 부팅이 끝날 때까지 여러 도메인의 API가 한꺼번에 실패한다. 어떤 서비스의 결함도 아니고 어떤 컨테이너의 한도 문제도 아니다 — **노드라는 공유 자원**이 원인이며, 증상의 공통분모가 '같은 노드에 있었다'는 것뿐이라는 점이 이 케이스의 정체성이다.",
+      "cause": "tb-w2의 익명 메모리를 hog가 점유 → 노드 memory.available이 kubelet hard-eviction 임계 미만 → kubelet이 QoS·우선순위 순으로 파드 축출 → gateway·cart·inventory 등 동거 파드 소멸 → 재스케줄·부팅 공백 동안 commerce checkout과 다른 도메인 API가 동시에 5xx",
+      "injection_summary": "host.stress executor가 tb-w2(192.168.122.11)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→7000→8500 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
+      "user_impact": "tb-w2에 있던 서비스가 축출·재스케줄되는 공백 동안 commerce 체크아웃이 실패하고, 같은 노드에 있던 다른 도메인의 API도 동시에 실패한다. 피해의 경계가 **도메인이 아니라 노드**를 따르는 것이 특징이다 — 다른 노드에 배치된 서비스는 멀쩡하다. 축출된 파드가 다른 노드로 옮겨 붙으면 주입이 계속돼도 서비스는 부분적으로 회복된다.",
+      "distinguishing_evidence": "결정 증거는 노드 메모리 포화와 eviction 이벤트가 같은 시각에 함께 관측되고, 무너진 서비스 목록이 정확히 그 노드의 파드 목록과 일치한다는 것이다. 앱 쪽 지표는 무죄를 가리킨다 — JVM heap after-GC는 정상이고 어떤 컨테이너도 자기 한도를 넘지 않았다. F05-R(컨테이너 한도)과는 층위로, F09-R(같은 노드 계열)과는 자원 종류로 갈린다 — CPU는 정상이고 메모리·eviction만 신호다.",
+      "domain": "commerce",
+      "class": "B",
+      "observation_domains": [
+        "KCM"
+      ],
+      "root_cause": {
+        "target_kind": "node",
+        "target_id": "tb-w2",
+        "mechanism": "결함 보유 대상은 워커 노드 tb-w2의 가용 메모리다. kubelet은 memory.available이 hard-eviction 임계 미만으로 떨어지면 파드를 축출해 노드를 지키는데, 이 판단은 파드가 자기 한도를 지켰는지와 무관하다 — 노드가 부족하면 무고한 파드도 죽는다. tb-w2에는 commerce의 진입점(gateway)과 장바구니·재고, 그리고 redis·kafka 같은 인프라 파드가 함께 있어 축출 한 번이 checkout 5-hop의 여러 지점을 동시에 끊는다. 축출된 파드는 다른 노드에 재스케줄되지만 이미지 풀·JVM 부팅·readiness 통과까지 수십 초가 걸리고, 그 공백이 사용자 피해 구간이다. 노드 단위 원인이므로 증상의 공통 원인을 서비스 의존 그래프에서는 찾을 수 없고 **배치(placement)** 에서만 찾을 수 있다 — 이것이 이 케이스가 요구하는 추론이다.",
+        "code_anchor": [
+          "commerce/k8s/23-payment-service.yaml:87-93 (resources requests/limits — 파드가 자기 한도를 지켜도 노드 부족이면 축출된다는 대조 근거)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:27-29 (@CircuitBreaker(paymentClient)+@Retry(paymentClient) — payment 불가를 하류 장애로 집계)",
+          "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
+          "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')"
+        ],
+        "infra_anchor": "tb-w2(192.168.122.11)에서 python 익명 메모리 hog를 실행한다. stress-ng를 쓰지 않는 이유는 노드에 별도 패키지를 설치하지 않기 위함이며, 전 페이지를 터치해야 실제 RSS가 잡히므로 단순 할당이 아니라 쓰기까지 수행한다. 주입 전 crictl로 동거 cohort를 재확인하는 것은 스케줄러가 파드를 옮겼을 경우 '아무도 아프지 않은' 무의미한 실행을 막기 위한 fail-closed 게이트다. cleanup은 음수 PGID kill로 프로세스 그룹 전체를 확인 사살한다."
+      },
+      "must_support": [
+        "tb-w2의 노드 메모리 사용률 포화(≥ 92%)와 같은 시각의 kubelet eviction·파드 재배치 이벤트",
+        "무너진 서비스 목록이 tb-w2의 동거 파드 목록과 일치 — 도메인이 아니라 노드를 따르는 피해 경계",
+        "체크아웃 5xx 비율 상승(≥ 0.1)",
+        "어떤 컨테이너도 자기 메모리 한도를 초과하지 않았고 JVM heap after-GC가 정상"
+      ],
+      "must_rule_out": [
+        "컨테이너 한도 문제가 아님 — 개별 컨테이너의 OOMKilled가 아니라 노드 eviction이다. 컨테이너면 F05-R",
+        "노드 소실이 아님 — node_ready는 true를 유지한다(노드가 빠지면 원인이 다르다)",
+        "CPU 경합이 아님 — 노드 CPU는 정상이다. CPU면 F09-R",
+        "부하 폭주가 아님 — achieved_rps가 승인 대역 안이다. 폭주면 F07-H"
+      ],
+      "difficulty": "medium",
+      "related_scenarios": {
+        "contrast_with": [
+          "F09-R (같은 노드 층위지만 자원이 CPU — 파드가 죽지 않고 느려지기만 한다)",
+          "F05-R (같은 메모리 축이지만 층위가 컨테이너 — 피해가 한 서비스에 갇힌다)",
+          "F15-T1 (여러 도메인이 동시에 아픈 또 다른 형태지만 그쪽은 근본이 둘이다 — 노드 하나로 환원되지 않는다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "node",
+        "accept": [
+          "tb-w2"
+        ],
+        "partial": [
+          "commerce-gateway",
+          "commerce-cart",
+          "commerce-inventory"
+        ]
+      },
       "injected_fault": {
         "profile": null,
         "companions": [

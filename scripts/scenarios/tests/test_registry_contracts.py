@@ -271,8 +271,15 @@ class RegistryContractTests(unittest.TestCase):
         # "the unrelated service stays fast" and "no network errors" are what
         # separate a CPU fault from a network lookalike, but neither is damage,
         # so both are veto conditions rather than success conditions (2026-07-28).
+        #
+        # The unrelated service must actually be unrelated. This veto was wired
+        # to commerce-order, which sits directly upstream of product and *must*
+        # slow down when product is throttled — the scenario would have vetoed
+        # itself. commerce-pricing calls nobody, so its p95 rising really does
+        # mean the cause is broader than one container (2026-07-28).
         rule_out = {item["id"]: item for item in controller["must_rule_out"]["any"]}
-        self.assertEqual(rule_out["cross-service-overload"]["value"], 200)
+        self.assertEqual(rule_out["cross-service-overload"]["observation"], "pricing_p95")
+        self.assertEqual(rule_out["cross-service-overload"]["value"], 300)
         self.assertEqual(rule_out["network-fault-alternative"]["op"], "gt")
 
     def test_f05_payment_faults_are_exact_and_causally_distinct(self) -> None:
