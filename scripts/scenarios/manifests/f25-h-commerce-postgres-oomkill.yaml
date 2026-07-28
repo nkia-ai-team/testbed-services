@@ -151,23 +151,6 @@
             "freshness": "30s"
           },
           {
-            "id": "pg_mem_current",
-            "adapter": "kubernetes",
-            "query_id": "kubernetes.container_memory_current_bytes",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres"
-            },
-            "freshness": "30s"
-          },
-          {
-            "id": "achieved_rps",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.achieved_rps",
-            "freshness": "30s"
-          },
-          {
             "id": "checkout_5xx_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.checkout_5xx_rate",

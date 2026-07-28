@@ -121,18 +121,6 @@
         "success": {
           "all": [
             {
-              "id": "checkout-impact",
-              "observation": "entry_status",
-              "op": "gte",
-              "value": 400
-            },
-            {
-              "id": "rollout-remains-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
               "id": "business-impact",
               "observation": "business_ok",
               "op": "eq",

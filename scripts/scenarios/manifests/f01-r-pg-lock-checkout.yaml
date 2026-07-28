@@ -124,6 +124,12 @@
               "table": "inventory"
             },
             "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -135,10 +141,10 @@
               "value": 1
             },
             {
-              "id": "checkout-impact",
-              "observation": "entry_status",
+              "id": "checkout-5xx-rate",
+              "observation": "checkout_5xx_rate",
               "op": "gte",
-              "value": 500
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2
@@ -152,7 +158,7 @@
               "value": 429
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [

@@ -158,12 +158,6 @@
               "observation": "order_hikari_pending",
               "op": "gt",
               "value": 0
-            },
-            {
-              "id": "payment-not-5xx",
-              "observation": "payment_error_rate",
-              "op": "lt",
-              "value": 0.05
             }
           ],
           "consecutive_ticks": 3
@@ -181,6 +175,12 @@
               "observation": "payment_error_rate",
               "op": "gte",
               "value": 0.2
+            },
+            {
+              "id": "payment-also-erroring",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2

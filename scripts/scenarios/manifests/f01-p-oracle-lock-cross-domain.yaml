@@ -75,9 +75,15 @@
               "observation": "entry_status",
               "op": "eq",
               "value": 429
+            },
+            {
+              "id": "injected-lock-absent",
+              "observation": "tagged_db_sessions",
+              "op": "eq",
+              "value": 0
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [
@@ -174,12 +180,6 @@
         ],
         "success": {
           "all": [
-            {
-              "id": "lock-present",
-              "observation": "tagged_db_sessions",
-              "op": "gt",
-              "value": 0
-            },
             {
               "id": "cross-domain-payment-impact",
               "observation": "payment_error_rate",

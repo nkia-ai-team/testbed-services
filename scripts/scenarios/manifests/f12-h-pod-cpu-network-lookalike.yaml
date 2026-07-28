@@ -212,34 +212,10 @@
               "value": 0
             },
             {
-              "id": "unrelated-service-stable",
-              "observation": "order_p95",
-              "op": "lt",
-              "value": 200
-            },
-            {
               "id": "cpu-throttle-direct",
               "observation": "cpu_throttled_time",
               "op": "gt",
               "value": 0
-            },
-            {
-              "id": "product-still-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "not-a-network-fault",
-              "observation": "network_error_rate",
-              "op": "eq",
-              "value": 0
-            },
-            {
-              "id": "controlled-load",
-              "observation": "achieved_rps",
-              "op": "lte",
-              "value": 40
             }
           ],
           "consecutive_ticks": 3
@@ -274,6 +250,18 @@
               "observation": "order_p95",
               "op": "gte",
               "value": 200
+            },
+            {
+              "id": "product-pod-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 40
             }
           ],
           "consecutive_ticks": 2

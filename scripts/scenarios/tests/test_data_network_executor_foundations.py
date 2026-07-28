@@ -61,13 +61,17 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
 
         f04 = controllers["controllers"]["F04-R"]
         self.assertEqual(f04["profile"]["levels"][0]["parameters"], kafka.CONTRACTS["F04-R"])
+        # success carries only damage. "shipping_replicas == 0" is a read-back of
+        # the injection itself (we scaled the consumer down), so on 2026-07-28 it
+        # moved to must_rule_out inverted: if the consumer is still running, the
+        # injection never took and the run is invalid.
         self.assertEqual(
             {(rule["observation"], rule["op"], rule["value"]) for rule in f04["success"]["all"]},
-            {("shipping_replicas", "eq", 0), ("shipping_lag", "gt", 0)},
+            {("shipping_lag", "gt", 0)},
         )
         self.assertEqual(
-            {rule["observation"] for rule in f04["must_rule_out"]["any"]},
-            {"entry_status", "pod_ready"},
+            {(rule["observation"], rule["op"], rule["value"]) for rule in f04["must_rule_out"]["any"]},
+            {("entry_status", "eq", 0), ("pod_ready", "eq", False), ("shipping_replicas", "gt", 0)},
         )
 
     def test_f04r_kafka_contract_snapshots_replicas_and_requires_lag_drain(self) -> None:

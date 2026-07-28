@@ -159,15 +159,6 @@
             "freshness": "120s"
           },
           {
-            "id": "product_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "parameters": {
-              "service_name": "commerce-product"
-            },
-            "freshness": "120s"
-          },
-          {
             "id": "achieved_rps",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.achieved_rps",
@@ -193,12 +184,6 @@
               "observation": "pricing_p95",
               "op": "gte",
               "value": 300
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "lte",
-              "value": 60
             }
           ],
           "consecutive_ticks": 3
@@ -221,6 +206,12 @@
               "observation": "node_cpu_util",
               "op": "lt",
               "value": 50
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
             }
           ],
           "consecutive_ticks": 3

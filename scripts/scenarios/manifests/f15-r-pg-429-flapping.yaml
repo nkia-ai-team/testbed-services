@@ -168,28 +168,10 @@
         "success": {
           "all": [
             {
-              "id": "fault-episode-active",
-              "observation": "mock_flap_fault_active",
-              "op": "eq",
-              "value": true
-            },
-            {
               "id": "checkout-impact",
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
-            },
-            {
-              "id": "no-duplicate-order",
-              "observation": "order_duplicate_count",
-              "op": "eq",
-              "value": 0
             }
           ],
           "consecutive_ticks": 2
@@ -212,6 +194,18 @@
               "observation": "order_duplicate_count",
               "op": "gt",
               "value": 0
+            },
+            {
+              "id": "injected-episode-absent",
+              "observation": "mock_flap_fault_active",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
             }
           ],
           "consecutive_ticks": 2

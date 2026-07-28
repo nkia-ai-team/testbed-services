@@ -486,15 +486,6 @@
             "freshness": "120s"
           },
           {
-            "id": "order_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
-            "parameters": {
-              "service_name": "commerce-order"
-            },
-            "freshness": "60s"
-          },
-          {
             "id": "achieved_rps",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.achieved_rps",
@@ -520,18 +511,6 @@
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
-            },
-            {
-              "id": "payment-still-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
             }
           ],
           "consecutive_ticks": 3
@@ -554,6 +533,18 @@
               "observation": "achieved_rps",
               "op": "gte",
               "value": 100
+            },
+            {
+              "id": "payment-pod-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
             }
           ],
           "consecutive_ticks": 3

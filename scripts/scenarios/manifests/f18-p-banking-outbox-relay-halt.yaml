@@ -258,12 +258,6 @@
               "observation": "outbox_unpublished",
               "op": "gt",
               "value": 20
-            },
-            {
-              "id": "sync-transfers-unaffected",
-              "observation": "transfer_2xx_rate",
-              "op": "gte",
-              "value": 0.95
             }
           ],
           "consecutive_ticks": 3
@@ -288,6 +282,12 @@
               "observation": "entry_status",
               "op": "eq",
               "value": 429
+            },
+            {
+              "id": "sync-path-also-broken",
+              "observation": "transfer_2xx_rate",
+              "op": "lt",
+              "value": 0.95
             }
           ],
           "consecutive_ticks": 2

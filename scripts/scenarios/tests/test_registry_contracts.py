@@ -81,6 +81,47 @@ class RegistryContractTests(unittest.TestCase):
                 [item["profile_id"] for item in reversed(plan["profile_instances"])],
             )
 
+    def test_success_conditions_ask_only_whether_damage_occurred(self) -> None:
+        # Quality charter G3 / audit §3-2·§3-3, enforced structurally on
+        # 2026-07-28. success must certify damage; three signal shapes cannot:
+        #
+        #   http.entry_health    — the last single checkout sample, not a rate.
+        #                          An "entry_status >= 500" gate only fires when
+        #                          the blast radius is 100%. Kept for abort's
+        #                          "== 0" (unreachable) and for veto conditions.
+        #   loadgen.achieved_rps — the load we ourselves drove. Asserting it is
+        #                          reading back the injection, so it belongs in
+        #                          must_rule_out as a guard ("load never flowed").
+        #   kubernetes.pod_ready — either structurally true (the injection does
+        #                          not touch the pod) or a read-back (it does).
+        #                          As a discriminator it inverts into a veto.
+        banned = {
+            "http.entry_health",
+            "loadgen.achieved_rps",
+            "kubernetes.pod_ready",
+        }
+        for scenario_id, controller in self.controllers["controllers"].items():
+            query_by_observation = {
+                item["id"]: item["query_id"] for item in controller["observations"]
+            }
+            for condition in controller["success"]["all"]:
+                query_id = query_by_observation[condition["observation"]]
+                self.assertNotIn(
+                    query_id, banned, f"{scenario_id}:{condition['id']}"
+                )
+            self.assertTrue(controller["success"]["all"], scenario_id)
+
+    def test_no_veto_condition_is_stated_twice(self) -> None:
+        # Demoting a success condition into must_rule_out can collide with a veto
+        # that already says the same thing; a duplicate would double-count toward
+        # the streak that aborts the run.
+        for scenario_id, controller in self.controllers["controllers"].items():
+            signatures = [
+                (item["observation"], item["op"], json.dumps(item["value"]))
+                for item in controller["must_rule_out"]["any"]
+            ]
+            self.assertEqual(len(signatures), len(set(signatures)), scenario_id)
+
     def test_all_kubectl_locations_use_canonical_kubeconfig(self) -> None:
         for location in self.locations["locations"].values():
             if location["transport"] == "kubectl":
@@ -226,8 +267,13 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(recovery["cpu-limit-restored"]["value"], "500m")
         success = {item["id"]: item for item in controller["success"]["all"]}
         self.assertEqual(success["product-impact-visible"]["value"], 500)
-        self.assertEqual(success["unrelated-service-stable"]["value"], 200)
         self.assertEqual(success["cpu-throttle-direct"]["op"], "gt")
+        # "the unrelated service stays fast" and "no network errors" are what
+        # separate a CPU fault from a network lookalike, but neither is damage,
+        # so both are veto conditions rather than success conditions (2026-07-28).
+        rule_out = {item["id"]: item for item in controller["must_rule_out"]["any"]}
+        self.assertEqual(rule_out["cross-service-overload"]["value"], 200)
+        self.assertEqual(rule_out["network-fault-alternative"]["op"], "gt")
 
     def test_f05_payment_faults_are_exact_and_causally_distinct(self) -> None:
         f05r = self.controllers["controllers"]["F05-R"]
@@ -238,7 +284,10 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(f05r["profile"]["levels"][0]["parameters"]["baseline"]["limits"]["memory"], "1Gi")
         r_success = {item["observation"]: item for item in f05r["success"]["all"]}
         self.assertEqual(r_success["termination_reason"]["value"], "OOMKilled")
-        self.assertEqual(r_success["achieved_rps"]["value"], 30)
+        # achieved_rps is a guard ("load actually flowed"), not damage — it vetoes
+        # the run from must_rule_out instead of certifying it from success.
+        r_rule_out = {item["observation"]: item for item in f05r["must_rule_out"]["any"]}
+        self.assertEqual((r_rule_out["achieved_rps"]["op"], r_rule_out["achieved_rps"]["value"]), ("lt", 30))
         self.assertEqual(f05r["capture"]["post_window"], "20m")
         self.assertFalse(f05r["capture"]["create_golden_anomaly"])
 

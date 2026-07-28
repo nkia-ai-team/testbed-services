@@ -174,18 +174,6 @@
               "value": 0.05
             },
             {
-              "id": "load-achieved",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 30
-            },
-            {
-              "id": "cart-remains-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
               "id": "business-impact",
               "observation": "business_ok",
               "op": "eq",
@@ -212,6 +200,18 @@
               "observation": "achieved_rps",
               "op": "gt",
               "value": 70
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 30
+            },
+            {
+              "id": "cart-pod-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
             }
           ],
           "consecutive_ticks": 2

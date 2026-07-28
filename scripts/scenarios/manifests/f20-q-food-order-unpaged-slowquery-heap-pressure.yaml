@@ -130,28 +130,6 @@
             "freshness": "30s"
           },
           {
-            "id": "order_memory_limit",
-            "adapter": "kubernetes",
-            "query_id": "kubernetes.deployment_container_memory_limit",
-            "parameters": {
-              "namespace": "rca-testbed-food",
-              "deployment": "testbed-order",
-              "container": "order-service"
-            },
-            "freshness": "30s"
-          },
-          {
-            "id": "order_restart_count",
-            "adapter": "kubernetes",
-            "query_id": "kubernetes.container_restart_count",
-            "parameters": {
-              "namespace": "rca-testbed-food",
-              "deployment": "testbed-order",
-              "container": "order-service"
-            },
-            "freshness": "30s"
-          },
-          {
             "id": "payment_error_rate",
             "adapter": "prometheus",
             "query_id": "prometheus.apm_service_error_rate",
@@ -164,12 +142,6 @@
             "id": "order_create_5xx_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.food_create_status_rate",
-            "freshness": "30s"
-          },
-          {
-            "id": "order_slowquery_read_rate",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.read_step_status_rate",
             "freshness": "30s"
           }
         ],
@@ -186,12 +158,6 @@
               "observation": "order_memory_current",
               "op": "gte",
               "value": 805306368
-            },
-            {
-              "id": "payment-not-5xx",
-              "observation": "payment_error_rate",
-              "op": "lt",
-              "value": 0.05
             }
           ],
           "consecutive_ticks": 3
@@ -215,6 +181,12 @@
               "observation": "order_create_5xx_rate",
               "op": "gte",
               "value": 0.3
+            },
+            {
+              "id": "payment-also-erroring",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2

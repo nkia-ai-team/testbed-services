@@ -141,15 +141,6 @@
             "freshness": "30s"
           },
           {
-            "id": "gateway_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
-            "parameters": {
-              "service_name": "commerce-gateway"
-            },
-            "freshness": "60s"
-          },
-          {
             "id": "write_401_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.write_step_status_rate",
@@ -165,22 +156,10 @@
         "success": {
           "all": [
             {
-              "id": "user-unavailable",
-              "observation": "user_available_replicas",
-              "op": "eq",
-              "value": 0
-            },
-            {
               "id": "write-fail-close",
               "observation": "write_401_rate",
               "op": "gte",
               "value": 0.3
-            },
-            {
-              "id": "reads-stay-healthy",
-              "observation": "read_nonok_rate",
-              "op": "lt",
-              "value": 0.1
             }
           ],
           "consecutive_ticks": 3
@@ -198,6 +177,18 @@
               "observation": "read_nonok_rate",
               "op": "gte",
               "value": 0.3
+            },
+            {
+              "id": "user-service-still-up",
+              "observation": "user_available_replicas",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "reads-also-broken",
+              "observation": "read_nonok_rate",
+              "op": "gte",
+              "value": 0.1
             }
           ],
           "consecutive_ticks": 2

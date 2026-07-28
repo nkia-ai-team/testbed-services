@@ -177,22 +177,10 @@
         "success": {
           "all": [
             {
-              "id": "surge-achieved",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 100
-            },
-            {
               "id": "latency-elevated",
               "observation": "user_p95",
               "op": "gte",
               "value": 500
-            },
-            {
-              "id": "entry-still-reachable",
-              "observation": "entry_status",
-              "op": "ne",
-              "value": 0
             }
           ],
           "consecutive_ticks": 3
@@ -227,9 +215,15 @@
               "observation": "blocked_payment_sessions",
               "op": "gt",
               "value": 0
+            },
+            {
+              "id": "surge-not-achieved",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 100
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [

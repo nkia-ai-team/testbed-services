@@ -105,25 +105,39 @@
             "freshness": "30s"
           },
           {
-            "id": "tagged_db_sessions",
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "blocked_inventory_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.blocked_session_count",
+            "parameters": {
+              "schema": "inventory_schema",
+              "table": "inventory"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "blocked_payment_sessions",
+            "adapter": "database",
+            "query_id": "database.blocked_session_count",
+            "parameters": {
+              "schema": "payment_schema",
+              "table": "payments"
+            },
             "freshness": "30s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "rate-limit-cascade-observed",
-              "observation": "entry_status",
-              "op": "eq",
-              "value": 502
-            },
-            {
-              "id": "db-not-blocked",
-              "observation": "tagged_db_sessions",
-              "op": "eq",
-              "value": 0
+              "id": "gateway-5xx-rate",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2
@@ -131,13 +145,19 @@
         "must_rule_out": {
           "any": [
             {
-              "id": "db-lock-alternative",
-              "observation": "tagged_db_sessions",
+              "id": "db-lock-alternative-inventory",
+              "observation": "blocked_inventory_sessions",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "db-lock-alternative-payments",
+              "observation": "blocked_payment_sessions",
               "op": "gt",
               "value": 0
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [

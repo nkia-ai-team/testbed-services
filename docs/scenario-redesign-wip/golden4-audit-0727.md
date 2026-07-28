@@ -119,9 +119,27 @@ CUT 26의 사유 분류:
 `entry_status >= 500` 류 게이트는 영향반경 100%가 아니면 발화하지 않는다. 전 그룹에서 발견.
 → rate 지표(`loadgen.checkout_5xx_rate`, `business_nonok_rate`)로 치환. `entry_status`는 abort의 `==0`(도달 불가) 용도로만 존치.
 
+> **해소됨 (2026-07-28).** success에서 `entry_status`를 쓰던 6건 중 4건(F01-H·F01-R·F06-R·F15-T1)을 `loadgen.checkout_5xx_rate >= 0.05`로 교체했다. F07-H의 `entry-still-reachable != 0`은 abort의 `== 0`과 같은 말이라 삭제했다.
+> **F08-H만 남았다** — 주입이 mock 429(4xx)라 5xx 비율로는 안 잡히는데 **4xx 비율 지표가 없다**(§3-7과 같은 뿌리). 피해 증거는 `business.checkout_invariant == false`가 이미 지고 있어 조건을 삭제했고, 4xx rate 신설은 §3-7 step×status 버킷 작업에 묶는다.
+
 ### 3-3. 동어반복·자기충족 성공조건
 주입 파라미터 되읽기(`achieved_rps >= 주입rps`, `replicas == 0`, `image_pull_failed == true`, `env == 주입값`)와 구조적 항상-참(`pod_ready == true`, 태그를 안 심는 시나리오의 `tagged_db_sessions == 0`).
 → success에서 제거하고 preflight/effect-gate 또는 must_rule_out으로 강등. **success는 "장애가 실제로 났는가"만 물어야 한다.**
+
+> **해소됨 (2026-07-28).** 31개 컨트롤러 전수 재분류. `effect-gate`는 신설하지 않았다 — 컨트롤러 스키마에 그런 구획이 없고, `must_rule_out`의 정의가 *"참이면 런을 무효화(abort)"*이며 **min_hold 이후에만 평가**되므로 가드·감별자를 **반전해서** 넣기에 이미 정확한 자리다. 스키마 변경 없이 끝났다.
+>
+> | 유형 | 처리 | 예 |
+> | --- | --- | --- |
+> | 주입 되읽기 | must_rule_out 반전 | `shipping_replicas == 0`(우리가 0으로 줄였다) → `> 0`이면 주입 실패 |
+> | 부하 가드 | must_rule_out 반전 | `achieved_rps >= 15` → `< 15`면 부하가 안 흘렀으므로 무효 |
+> | 감별자 | must_rule_out 반전 | `payment 5xx < 0.05`(무관 서비스 정상) → `>= 0.05`면 다른 원인 |
+> | abort와 동어 | 삭제 | F07-H `entry_status != 0` |
+>
+> success 조건 총 106 → 60. 시나리오당 최소 1건은 남으며 전건이 피해 증거다.
+>
+> **경계**: *결과*는 강등하지 않았다. F19-P/F20-P의 커넥션 풀 대기, F12-H의 CPU throttling은 주입의 되읽기가 아니라 주입이 일으킨 성능 저하이므로 G3의 피해에 해당한다. 되읽기와 결과를 가르는 기준은 *"부하 없이도 참인가"* — 참이면 되읽기다.
+>
+> 재발 방지: `test_success_conditions_ask_only_whether_damage_occurred`가 success에서 `http.entry_health`·`loadgen.achieved_rps`·`kubernetes.pod_ready` 사용을 구조적으로 금지한다.
 
 ### 3-4. 실행 불가 배선 6건
 | 시나리오 | 증상 |

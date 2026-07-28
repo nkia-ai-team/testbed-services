@@ -128,15 +128,6 @@
             "freshness": "60s"
           },
           {
-            "id": "api_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
-            "parameters": {
-              "service_name": "core-banking-api"
-            },
-            "freshness": "60s"
-          },
-          {
             "id": "ledger_error_rate",
             "adapter": "prometheus",
             "query_id": "prometheus.apm_service_error_rate",
@@ -152,18 +143,6 @@
             "parameters": {
               "service_name": "core-banking-transfer"
             },
-            "freshness": "30s"
-          },
-          {
-            "id": "achieved_rps",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.achieved_rps",
-            "freshness": "30s"
-          },
-          {
-            "id": "transfer_slowquery_read_rate",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.read_step_status_rate",
             "freshness": "30s"
           }
         ],

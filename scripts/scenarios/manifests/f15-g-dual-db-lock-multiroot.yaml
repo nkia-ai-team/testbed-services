@@ -75,6 +75,12 @@
               "observation": "tagged_oracle_sessions",
               "op": "eq",
               "value": 0
+            },
+            {
+              "id": "injected-pg-lock-absent",
+              "observation": "tagged_pg_sessions",
+              "op": "eq",
+              "value": 0
             }
           ],
           "consecutive_ticks": 3
@@ -195,18 +201,6 @@
         ],
         "success": {
           "all": [
-            {
-              "id": "pg-root-present",
-              "observation": "tagged_pg_sessions",
-              "op": "gt",
-              "value": 0
-            },
-            {
-              "id": "oracle-root-present",
-              "observation": "tagged_oracle_sessions",
-              "op": "gt",
-              "value": 0
-            },
             {
               "id": "checkout-impact",
               "observation": "checkout_5xx_rate",

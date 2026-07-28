@@ -279,12 +279,6 @@
               "observation": "stock_zero_count",
               "op": "gte",
               "value": 1
-            },
-            {
-              "id": "restock-halted",
-              "observation": "restock_movement_count",
-              "op": "eq",
-              "value": 0
             }
           ],
           "consecutive_ticks": 3
@@ -302,6 +296,12 @@
               "observation": "pod_ready",
               "op": "eq",
               "value": false
+            },
+            {
+              "id": "restock-still-running",
+              "observation": "restock_movement_count",
+              "op": "gt",
+              "value": 0
             }
           ],
           "consecutive_ticks": 3

@@ -137,12 +137,6 @@
         "success": {
           "all": [
             {
-              "id": "shipping-stopped",
-              "observation": "shipping_replicas",
-              "op": "eq",
-              "value": 0
-            },
-            {
               "id": "shipping-lag-observed",
               "observation": "shipping_lag",
               "op": "gt",
@@ -164,6 +158,12 @@
               "observation": "pod_ready",
               "op": "eq",
               "value": false
+            },
+            {
+              "id": "consumer-still-running",
+              "observation": "shipping_replicas",
+              "op": "gt",
+              "value": 0
             }
           ],
           "consecutive_ticks": 2

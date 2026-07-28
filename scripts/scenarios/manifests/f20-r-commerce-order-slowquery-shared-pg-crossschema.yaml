@@ -135,30 +135,6 @@
               "service_name": "commerce-payment"
             },
             "freshness": "60s"
-          },
-          {
-            "id": "pg_slow_active_query_count",
-            "adapter": "database",
-            "query_id": "database.pg_slow_active_query_count",
-            "parameters": {
-              "db_host": "192.168.122.77",
-              "db_port": 30432,
-              "db_name": "commerce",
-              "db_user": "commerce"
-            },
-            "freshness": "30s"
-          },
-          {
-            "id": "achieved_rps",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.achieved_rps",
-            "freshness": "30s"
-          },
-          {
-            "id": "order_slowquery_read_rate",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.read_step_status_rate",
-            "freshness": "30s"
           }
         ],
         "success": {
@@ -174,12 +150,6 @@
               "observation": "payment_p95",
               "op": "gte",
               "value": 0.5
-            },
-            {
-              "id": "payment-not-erroring",
-              "observation": "payment_error_rate",
-              "op": "lt",
-              "value": 0.05
             }
           ],
           "consecutive_ticks": 3
@@ -197,6 +167,12 @@
               "observation": "payment_error_rate",
               "op": "gte",
               "value": 0.2
+            },
+            {
+              "id": "payment-also-erroring",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2

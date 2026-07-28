@@ -139,15 +139,6 @@
             "freshness": "60s"
           },
           {
-            "id": "payment_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "parameters": {
-              "service_name": "commerce-payment"
-            },
-            "freshness": "120s"
-          },
-          {
             "id": "achieved_rps",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.achieved_rps",
@@ -179,12 +170,6 @@
               "observation": "order_error_rate",
               "op": "gte",
               "value": 0.1
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
             }
           ],
           "consecutive_ticks": 3
@@ -196,6 +181,12 @@
               "observation": "blocked_session_count",
               "op": "eq",
               "value": 0
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
             }
           ],
           "consecutive_ticks": 3

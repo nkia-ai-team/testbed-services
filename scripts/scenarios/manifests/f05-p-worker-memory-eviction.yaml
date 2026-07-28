@@ -224,18 +224,6 @@
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.1
-            },
-            {
-              "id": "node-survives",
-              "observation": "node_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "lte",
-              "value": 60
             }
           ],
           "consecutive_ticks": 3
@@ -258,6 +246,18 @@
               "observation": "node_mem_util",
               "op": "lt",
               "value": 50
+            },
+            {
+              "id": "node-lost",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
             }
           ],
           "consecutive_ticks": 3

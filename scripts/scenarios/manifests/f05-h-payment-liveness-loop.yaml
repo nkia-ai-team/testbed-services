@@ -200,12 +200,6 @@
         "success": {
           "all": [
             {
-              "id": "controlled-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
-            },
-            {
               "id": "liveness-loop-direct",
               "observation": "termination_reason",
               "op": "eq",
@@ -222,18 +216,6 @@
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
-            },
-            {
-              "id": "fault-probe-applied",
-              "observation": "liveness_matches_baseline",
-              "op": "eq",
-              "value": false
-            },
-            {
-              "id": "resources-unchanged",
-              "observation": "resources_match_baseline",
-              "op": "eq",
-              "value": true
             }
           ],
           "consecutive_ticks": 2
@@ -251,9 +233,21 @@
               "observation": "resources_match_baseline",
               "op": "eq",
               "value": false
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
+            },
+            {
+              "id": "injected-probe-absent",
+              "observation": "liveness_matches_baseline",
+              "op": "eq",
+              "value": true
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [

@@ -186,18 +186,6 @@
         "success": {
           "all": [
             {
-              "id": "controlled-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
-            },
-            {
-              "id": "banking-transfer-down",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": false
-            },
-            {
               "id": "cross-domain-payment-impact",
               "observation": "payment_error_rate",
               "op": "gte",
@@ -231,9 +219,21 @@
               "observation": "banking_transfer_restart_count",
               "op": "gte",
               "value": 2
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
+            },
+            {
+              "id": "banking-still-up",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [
