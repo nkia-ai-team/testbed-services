@@ -37,13 +37,16 @@ def plan(profile_id: str, scenario_id: str, params: dict, location: dict) -> dic
 def canonical_params(memory: str = "576Mi") -> dict:
     return {
         "commerce_namespace": "rca-testbed-commerce",
-        "pg_runner_host": "192.168.122.206",
-        "pg_db_host": "192.168.122.77",
-        "pg_db_port": 30432,
-        "pg_db_name": "commerce",
-        "pg_db_user": "commerce",
-        "pg_application_name": "rca-F15-T1-inventory-lock",
-        "pg_product_id": 1,
+        "pg_access": "in-cluster-pod",
+        "pg_db_pod": "testbed-postgres-0",
+        "pg_service": "testbed-postgres",
+        "pg_secret": "postgres-secret",
+        "pg_image": "postgres:16-alpine",
+        "pg_schema": "inventory_schema",
+        "pg_table": "inventory",
+        "pg_key_column": "product_id",
+        "pg_key_value": "1",
+        "pg_client_identity": "PostgreSQL JDBC Driver",
         "pg_hold_seconds": 600,
         "food_namespace": "rca-testbed-food",
         "food_deployment": "testbed-payment",
@@ -69,6 +72,11 @@ class TimelineDualFaultFoundationTests(unittest.TestCase):
         self.assertIn('[[ "$offset" -eq 0 ]] || sleep "$offset"', script)
         # both roots injected together, PG first then food
         self.assertIn("pg run", script)
+        # G6/L2: app identity, idle-in-transaction hold, in-cluster origin
+        self.assertIn("PostgreSQL JDBC Driver", argv)
+        self.assertNotIn("pg_sleep", script)
+        self.assertNotIn("pg_terminate_backend", script)
+        self.assertIn("idle in transaction", script)
         self.assertIn('food_patch "$food_fault"', script)
         # reverse-order cleanup: food restored first, PG terminated second, fail-closed
         self.assertLess(script.index('food_patch "$original"'), script.index("pg cleanup"))
@@ -92,16 +100,20 @@ class TimelineDualFaultFoundationTests(unittest.TestCase):
         with self.assertRaisesRegex(dual.ExecutorError, "measured F05-R ladder"):
             dual.validate("F15-T1", params, {"scenario_parameters": {"F15-T1": params}})
 
-    def test_pg_must_run_through_tb_runner_nodeport(self) -> None:
+    def test_pg_lock_must_originate_inside_the_cluster(self) -> None:
+        # Injecting from tb-runner leaves that host's NAT address in the capture,
+        # which points at the answer (charter G6/L2, appendix A-1).
         params = canonical_params()
-        params["pg_db_host"] = "10.0.0.9"
-        with self.assertRaisesRegex(dual.ExecutorError, "tb-runner against the NodePort"):
+        params["pg_access"] = "tb-runner-nodeport"
+        with self.assertRaisesRegex(dual.ExecutorError, "inside the cluster"):
             dual.validate("F15-T1", params, {"scenario_parameters": {"F15-T1": params}})
 
-    def test_session_tag_binds_scenario(self) -> None:
+    def test_session_identity_must_impersonate_the_application(self) -> None:
+        # The opposite of the old rule: encoding the scenario in the session
+        # identity is exactly the L1 leak the charter now forbids.
         params = canonical_params()
-        params["pg_application_name"] = "rca-generic-lock"
-        with self.assertRaisesRegex(dual.ExecutorError, "session tag"):
+        params["pg_client_identity"] = "rca-F15-T1-inventory-lock"
+        with self.assertRaisesRegex(dual.ExecutorError, "impersonate the real application"):
             dual.validate("F15-T1", params, {"scenario_parameters": {"F15-T1": params}})
 
     def test_other_composite_timelines_remain_blocked(self) -> None:

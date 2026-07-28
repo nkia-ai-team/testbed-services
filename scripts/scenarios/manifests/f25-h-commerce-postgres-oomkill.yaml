@@ -155,6 +155,17 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.checkout_5xx_rate",
             "freshness": "30s"
+          },
+          {
+            "id": "app_termination_reason",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_last_termination_reason",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-payment",
+              "container": "payment-service"
+            },
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -183,10 +194,10 @@
         "must_rule_out": {
           "any": [
             {
-              "id": "postgres-unready",
-              "observation": "pod_ready",
+              "id": "app-container-oom",
+              "observation": "app_termination_reason",
               "op": "eq",
-              "value": false
+              "value": "OOMKilled"
             }
           ],
           "consecutive_ticks": 2
