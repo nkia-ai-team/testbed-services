@@ -622,10 +622,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "배선 4항 — (1) load.north_south allowed_entry_urls에 30282 직행 등록, (2) frozen-bypass.js dual-arm 스크립트 신설, (3) controller 신설, (4) cleanup 원장 역분개(공유 계정 ACC-1001 차감이 다음 케이스를 오염). 관측 3종(frozen_bypass_completed_rate·normal_path_reject_rate·integrity_violation_count)은 이미 존재 — 설계 시트의 '관측 부재'는 낡음"
+      "prerequisite": ""
     },
     {
       "id": "F21-Q",

@@ -73,7 +73,7 @@ class RegistryContractTests(unittest.TestCase):
             # fio 부재·약한 고정 계약·디스크 IO 관측 부재였고 모두 해소됐다.
             "F02-H", "F10-H", "F10-P", "F15-P",
             "F21-P", "F21-Q",
-            "F09-H", "F09-P",
+            "F09-H", "F09-P", "F17-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -190,7 +190,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F03-H", "F06-P",
                 "F02-H", "F10-H", "F10-P", "F15-P",
                 "F21-P", "F21-Q",
-                "F09-H", "F09-P",
+                "F09-H", "F09-P", "F17-P",
             },
         )
         self.assertEqual(
@@ -218,6 +218,9 @@ class RegistryContractTests(unittest.TestCase):
                 # 조건들로 채워져 있었고, 감별 신호는 없다고 판단됐지만 실은
                 # 있었다 — GC는 재는 방법이, 스로틀은 대상이 없었을 뿐이다.
                 "F09-H", "F09-P",
+                # 2026-07-28: 배선 4항 중 둘은 이미 돼 있었고, 원장 역분개는
+                # 주입 금액을 잔액의 0.3%로 낮춰 오염 자체를 없앴다.
+                "F17-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -339,7 +342,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         self.assertEqual(self.controllers["live_scenario_ids"][-4:],
-                         ["F15-P", "F21-Q", "F21-P", "F09-H", "F09-P"][-4:])
+                         ["F21-P", "F09-H", "F09-P", "F17-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -36,8 +36,10 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 없다던 판정이 둘 다 틀렸다 — GC는 재는 방법(used_after_last_gc/limit 비율)이 없었을
 # 뿐이고, 스로틀은 신호가 있었으나 러너 템플릿이 testbed-product로 하드코딩돼 있어
 # F12-H 말고는 아무도 쓸 수 없었다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 41 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 13 ]]
+# 2026-07-28: ready 41→42. F17-P. 카탈로그가 적어둔 배선 4항 중 둘은 이미 완료돼
+# 있었고, 원장 역분개는 주입 금액을 1~5로 낮춰 오염 자체를 없애는 것으로 대체했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 42 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 12 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]

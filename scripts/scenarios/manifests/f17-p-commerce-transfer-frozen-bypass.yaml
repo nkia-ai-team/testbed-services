@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F17-P",
   "slug": "f17-p-commerce-transfer-frozen-bypass",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -27,14 +27,190 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f17-p-commerce-transfer-frozen-bypass/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f17-p",
+              "parameters": {
+                "target_rps": 20,
+                "ramp_up": "1m",
+                "hold": "8m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30282",
+                "script_path": "/opt/loadgen/core-banking/frozen-bypass.js",
+                "scenario_tag": "scenario_id=F17-P",
+                "seed": 4242,
+                "baseline_unit": "loadgen-banking"
+              },
+              "min_hold": "8m",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            }
+          },
+          {
+            "id": "frozen_bypass_completed_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.frozen_bypass_completed_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "normal_path_reject_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.normal_path_reject_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "frozen-transfer-completed",
+              "observation": "frozen_bypass_completed_rate",
+              "op": "gte",
+              "value": 0.9
+            },
+            {
+              "id": "normal-path-still-rejects",
+              "observation": "normal_path_reject_rate",
+              "op": "gte",
+              "value": 0.9
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": null,
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "both-paths-agree",
+              "observation": "normal_path_reject_rate",
+              "op": "lt",
+              "value": 0.9
+            },
+            {
+              "id": "bypass-never-completed",
+              "observation": "frozen_bypass_completed_rate",
+              "op": "lt",
+              "value": 0.5
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 40
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -65,10 +241,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "배선 4항 — (1) load.north_south allowed_entry_urls에 30282 직행 등록, (2) frozen-bypass.js dual-arm 스크립트 신설, (3) controller 신설, (4) cleanup 원장 역분개(공유 계정 ACC-1001 차감이 다음 케이스를 오염). 관측 3종(frozen_bypass_completed_rate·normal_path_reject_rate·integrity_violation_count)은 이미 존재 — 설계 시트의 '관측 부재'는 낡음",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

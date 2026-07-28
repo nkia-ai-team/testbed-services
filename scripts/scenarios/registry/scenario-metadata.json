@@ -4099,7 +4099,74 @@
       "cause": "transfer-service execute()의 계좌 status 검증 부재 + commerce가 account 검증을 우회하는 30282 직행 경로 사용 → 검증 비대칭",
       "injection_summary": "load.north_south executor로 core-banking/loadgen/frozen-bypass.js(dual-arm k6)를 30282(direct) entry_url에 흘린다. direct arm은 FROZEN 계좌(ACC-9001)를 출금계좌로 하는 이체를 30282(transfer-service 직행)로 반복 POST하고, control arm은 동일 payload를 정상경로 상수(30082)로 병행 호출해 400 거절을 대조 확인한다. 두 arm은 각각 business_step=frozen-direct/read_step=frozen-control 태그로 집계된다. cleanup은 direct arm이 만든 COMPLETED transfers를 역이체·REVERSED 마킹으로 원장 정정한다(미구현 상태로는 live 승격 보류).",
       "user_impact": "동결/해지된 계좌에서 이체가 성공(200 COMPLETED)해 잔액이 부당하게 변동되고 원장에 부정합이 기입된다. 5xx·지연이 없어 서비스 대시보드상으로는 완전히 정상으로 보이며, 실제 손실은 사후 정합 검사에서만 드러난다.",
-      "distinguishing_evidence": "정답은 경로별 검증 비대칭이다: 완전히 동일한 이체 요청이 30282 직행에서는 200 COMPLETED, 30082 정상경로에서는 400 'From account is FROZEN'. 5xx·지연이 전혀 없으므로 naive RCA는 '정상'으로 오판하기 쉽다 — 진짜 증거는 데이터 정합(FROZEN 계좌의 COMPLETED transfer 존재, database.integrity_violation_count > 0)과 경로 비대칭이다."
+      "distinguishing_evidence": "정답은 경로별 검증 비대칭이다: 완전히 동일한 이체 요청이 30282 직행에서는 200 COMPLETED, 30082 정상경로에서는 400 'From account is FROZEN'. 5xx·지연이 전혀 없으므로 naive RCA는 '정상'으로 오판하기 쉽다 — 진짜 증거는 데이터 정합(FROZEN 계좌의 COMPLETED transfer 존재, database.integrity_violation_count > 0)과 경로 비대칭이다.",
+      "domain": "core-banking",
+      "class": "A",
+      "observation_domains": [
+        "loadgen",
+        "APM",
+        "DPM"
+      ],
+      "difficulty": "high",
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "core-banking-transfer",
+        "mechanism": "계좌 상태(FROZEN/CLOSED) 검사는 account-service에만 있고 transfer-service에는 없다. 정상 경로(nginx→api→account.validateAndForward)는 ACTIVE가 아니면 400으로 거절하지만, transfer-service가 NodePort 30282로 **직접 노출**돼 있어 그 경로를 우회하면 상태 검사 없이 잔액 검사만 통과하고 COMPLETED로 성사된다. 즉 무결성 규칙이 호출 경로에 얹혀 있고 도메인 불변식으로 강제되지 않는다. 같은 payload를 두 경로로 흘리면 한쪽은 400, 한쪽은 200이 되는 **경로 비대칭**이 나타나며, 이것이 결함의 지문이다.",
+        "code_anchor": [
+          "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:66-71 (ACTIVE — 정상 경로만 FROZEN/CLOSED를 400으로 거절한다)",
+          "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:74-86 (getBalance/COMPLETED — 잔액만 보고 계좌 상태는 보지 않는다)",
+          "core-banking/db/init.sql:91-92 (ACC-9001 FROZEN / ACC-9002 CLOSED 시드 — 이 시나리오의 전제)",
+          "core-banking/k8s/22-transfer-service.yaml:125-131 (NodePort nodePort 30282 — transfer가 account 검증을 거치지 않는 경로로 직접 노출된다)"
+        ],
+        "infra_anchor": "2026-07-28 승격(readiness: ready). 배선 4항 중 (1)30282 진입점 등록과 (2)frozen-bypass.js는 이미 완료돼 있었다 — 카탈로그 사유가 낡았다. (3)controller를 신설했고, (4)원장 역분개는 **금액 하향으로 대체**했다: load.north_south의 cleanup은 부하 종료만 하고 DB 쓰기 권한이 없으며, 위반의 증거는 금액이 아니라 성사되었다는 사실이므로 1~5로 낮추면 회차당 계좌 차감이 잔액의 0.3% 수준이 되어 오염이 사라진다. 원래 1000~5000은 ACC-9001 잔액(100,000)을 3배 초과해 8분 hold 중반부터 잔액부족 FAILED가 섞이는, 성공조건이 스스로 무너지는 구조이기도 했다. **남은 갭**: database.integrity_violation_count는 'since'를 실행 시작 시각으로 받아야 하는데 러너에 run-scoped 파라미터 바인딩이 없어 아직 쓸 수 없다. 결정적 증거는 경로 비대칭이고 그 두 신호는 배선돼 있으므로 승격은 성립한다."
+      },
+      "must_support": [
+        "direct arm(30282)이 FROZEN/CLOSED 당사자 이체를 200 COMPLETED로 성사시킨다",
+        "control arm(30082)은 **같은 payload**를 400으로 거절한다 — 경로 비대칭",
+        "파드·DB 모두 정상이고 5xx도 없다 — 가용성 사건이 아니다"
+      ],
+      "must_rule_out": [
+        "가용성 장애가 아님 — 두 경로 모두 응답하며 5xx가 없다",
+        "정상 경로도 함께 뚫린 것이 아님 — control arm의 거절률이 유지된다. 함께 뚫렸다면 검사 자체가 사라진 다른 사건이다",
+        "잔액부족 FAILED가 아님 — 금액이 잔액에 비해 충분히 작다",
+        "부하 과다가 아님 — 주입 부하가 계약 범위 안이다"
+      ],
+      "related_scenarios": {
+        "contrast_with": [
+          "F18-P (같은 도메인의 원장 정합성 문제지만 이쪽은 relay 정지로 미발행이 쌓이는 것이다)",
+          "F17-R (같은 transfer 대상이지만 롤아웃 가용성 사건이다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "core-banking-transfer"
+        ],
+        "partial": [
+          "core-banking-account",
+          "core-banking-api"
+        ]
+      },
+      "injected_fault": {
+        "profile": "load.north_south",
+        "companions": [],
+        "levels": [
+          {
+            "id": "approved-fixed-f17-p",
+            "parameters": {
+              "target_rps": 20,
+              "ramp_up": "1m",
+              "hold": "8m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30282",
+              "script_path": "/opt/loadgen/core-banking/frozen-bypass.js",
+              "scenario_tag": "scenario_id=F17-P",
+              "seed": 4242,
+              "baseline_unit": "loadgen-banking"
+            }
+          }
+        ]
+      }
     },
     "F23-R": {
       "title": "재입고 배치 정지 — 재고가 말라 체크아웃이 409로 실패하는 조용한 기능마비",
