@@ -8,7 +8,7 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w2",
+    "location": "worker-w1",
     "matrix_location_transport": "대상 worker/ssh",
     "transport": "ssh",
     "profile_refs": [
@@ -78,7 +78,7 @@
               "id": "mem-5500",
               "parameters": {
                 "mode": "memhog",
-                "host": "192.168.122.11",
+                "host": "192.168.122.184",
                 "mib": 5500,
                 "runtime_seconds": 480,
                 "required_cohort": [
@@ -98,7 +98,7 @@
               "id": "mem-7000",
               "parameters": {
                 "mode": "memhog",
-                "host": "192.168.122.11",
+                "host": "192.168.122.184",
                 "mib": 7000,
                 "runtime_seconds": 480,
                 "required_cohort": [
@@ -118,7 +118,7 @@
               "id": "mem-8500",
               "parameters": {
                 "mode": "memhog",
-                "host": "192.168.122.11",
+                "host": "192.168.122.184",
                 "mib": 8500,
                 "runtime_seconds": 480,
                 "required_cohort": [

@@ -155,7 +155,7 @@
       ],
       "readiness": "ready",
       "load_mode": "adaptive",
-      "injection_location": "worker-w2",
+      "injection_location": "worker-w1",
       "prerequisite": "placement and safe eviction"
     },
     {
@@ -262,7 +262,7 @@
       ],
       "readiness": "ready",
       "load_mode": "adaptive",
-      "injection_location": "worker-w3",
+      "injection_location": "worker-w1",
       "prerequisite": "runtime placement lock"
     },
     {
@@ -322,7 +322,7 @@
       ],
       "readiness": "parked",
       "load_mode": "fixed",
-      "injection_location": "worker-w1",
+      "injection_location": "worker-w2",
       "prerequisite": "fio 미설치(워커 3대 전부) → preflight 즉사. apt 설치 후 metadata·controller·allowlist 신설. 좌표는 실측 정정 완료(banking Oracle PVC는 tb-w1에 있다 — 도메인-워커 맵과 무관)"
     },
     {
@@ -636,7 +636,7 @@
       ],
       "readiness": "parked",
       "load_mode": "fixed",
-      "injection_location": "worker-w2",
+      "injection_location": "worker-w3",
       "prerequisite": "host_stress_executor.py CONTRACTS에 F21-Q 미등록 → 실행 즉시 ExecutorError. 등록 + controller 신설. 'busy-thread 신호 부재'는 해소됨(prometheus.jvm_nondaemon_thread_count 존재)"
     },
     {
@@ -648,7 +648,7 @@
       ],
       "readiness": "parked",
       "load_mode": "fixed",
-      "injection_location": "worker-w3",
+      "injection_location": "worker-w2",
       "prerequisite": "executor CONTRACTS 등록 + F09-R과의 주입 파라미터 분리(정답 충돌 해소)"
     },
     {

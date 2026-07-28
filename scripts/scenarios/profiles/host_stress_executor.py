@@ -12,43 +12,54 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F02-H": {"mode": "fio", "host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 3000},
     "F10-R": {"mode": "watermark", "host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0", "watermark_percent": 85, "reserve_mib": 10240, "maximum_fill_mib": 51200},
     "F10-H": {"mode": "fio", "host": "192.168.122.14", "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 4000},
-    "F10-P": {"mode": "fio", "host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-01f9e717-727a-4227-a09b-584ec371c99f_rca-testbed-banking_oracledata-testbed-oracle-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 3000},
+    "F10-P": {"mode": "fio", "host": "192.168.122.11", "target_dir": "/opt/local-path-provisioner/pvc-2c369013-b180-417a-9eda-da922c78b6ee_rca-testbed-banking_oracledata-testbed-oracle-0", "size_mib": 2048, "runtime_seconds": 600, "rate_iops": 3000},
     "F15-P": {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 2, "vm_workers": 1, "vm_bytes": "512M", "runtime_seconds": 600},
 }
 
 # F09-R (worker CPU noisy neighbor) is a calibration ladder, not a single contract.
-# tb-w3 (192.168.122.14) has 4 cores and no stress-ng, so intensity is CPU-only busy
-# loops (yes) at 50/75/100% of the node — memory is untouched to stay clear of the
-# eviction/OOM surface owned by F05-P.
+# tb-w1 (192.168.122.184) has 4 cores, so intensity is CPU-only busy loops (yes) at
+# 50/75/100% of the node — memory is untouched to stay clear of the eviction/OOM
+# surface owned by F05-P.
+#
+# 2026-07-28: 대상이 tb-w3에서 tb-w1으로 바뀌었다. nodeSelector 도입 전에는 commerce
+# 서비스가 세 워커에 흩어져 있었고 이 사다리는 우연히 commerce 다수가 앉아 있던 tb-w3를
+# 때리고 있었다. 이제 commerce 전체가 tb-w1에 고정되므로 "노드 CPU 포화가 같은 노드
+# 서비스들의 p95를 함께 올린다"는 이 시나리오의 정체성이 배치로 보장된다.
 F09R_LEVELS = [
-    {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 2, "runtime_seconds": 480},
-    {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 3, "runtime_seconds": 480},
-    {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 4, "runtime_seconds": 480},
+    {"mode": "cpu", "host": "192.168.122.184", "cpu_workers": 2, "runtime_seconds": 480},
+    {"mode": "cpu", "host": "192.168.122.184", "cpu_workers": 3, "runtime_seconds": 480},
+    {"mode": "cpu", "host": "192.168.122.184", "cpu_workers": 4, "runtime_seconds": 480},
 ]
 
-# F05-P (worker node memory pressure) is a calibration ladder that drives tb-w2
-# (192.168.122.11) toward the kubelet hard-eviction threshold (memory.available<100Mi)
-# so several co-located commerce/food pods are evicted and their APIs fail during the
-# reschedule gap. tb-w2 has 4 cores, ~11.9G total / ~8G reclaimable-available memory and
-# no stress-ng, so the burner is a stress-ng-free anonymous-memory hog (python touches
-# every page) held for the window — CPU stays free to keep this distinct from F09-R's
-# CPU surface. Ladder MiB are static estimates from the 07-20 read-only headroom probe
-# (free -m available ~7985 MiB above 3944 MiB used); the eviction knee (between the
-# 7000 and 8500 steps) is confirmed by live calibration, never by static measurement.
+# F05-P (worker node memory pressure) is a calibration ladder that drives tb-w1
+# (192.168.122.184) toward the kubelet hard-eviction threshold (memory.available<100Mi)
+# so several co-located commerce pods are evicted and their APIs fail during the
+# reschedule gap. tb-w1 has 4 cores and ~11.9G total, so the burner is a stress-ng-free
+# anonymous-memory hog (python touches every page) held for the window — CPU stays free
+# to keep this distinct from F09-R's CPU surface.
 #
-# `required_cohort` is the fail-closed runtime placement gate: commerce has no
-# nodeSelector/affinity so the cohort on tb-w2 drifts across reschedules (pod name
-# suffixes already changed between probes). The gate re-verifies the *current* pods on
-# the node by deployment-name prefix (crictl pods, node-local, no kubeconfig) before any
-# allocation and refuses if the expected multi-service cohort is not actually co-located.
+# 2026-07-28: nodeSelector 도입으로 대상이 tb-w2에서 tb-w1으로 바뀌었다. 이전에는
+# commerce cohort가 세 워커에 흩어져 있어 tb-w2를 때리는 것이 우연히 일부만 맞았고,
+# 특히 `testbed-payment` 접두사는 tb-w2에 있던 **food**-payment에 매칭됐다(commerce
+# payment는 다른 노드). 이제 commerce 전체가 tb-w1에 고정되어 cohort가 설계대로다.
+#
+# 사다리 MiB는 유지한다. 이전 대상(tb-w2)의 available ~7985 MiB 기준이었고 새 대상
+# tb-w1은 commerce 집결 후 available ~6865 MiB(2026-07-28 실측)라, 5500은 압박만,
+# 7000이 eviction 무릎을 넘고 8500은 확실히 넘는다 — 무릎을 더 좁게 감싼다.
+# 무릎의 정확한 위치는 라이브 캘리브레이션으로만 확정하며 정적 측정으로 단정하지 않는다.
+#
+# `required_cohort`는 fail-closed 런타임 배치 게이트다. nodeSelector로 배치가 고정된
+# 뒤에도 이 게이트는 남긴다 — 매니페스트가 되돌려지거나 노드가 빠지면 엉뚱한 노드를
+# 때리는 대신 멈춰야 하기 때문이다. 게이트는 주입 전에 node-local crictl로 현재 파드를
+# 다시 세어 예상 cohort가 실제로 공존하는지 확인하고, 아니면 한 바이트도 할당하지 않는다.
 _F05P_COHORT = [
     "testbed-gateway", "testbed-cart", "testbed-inventory",
     "testbed-redis", "testbed-kafka", "testbed-payment",
 ]
 F05P_LEVELS = [
-    {"mode": "memhog", "host": "192.168.122.11", "mib": 5500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
-    {"mode": "memhog", "host": "192.168.122.11", "mib": 7000, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
-    {"mode": "memhog", "host": "192.168.122.11", "mib": 8500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.184", "mib": 5500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.184", "mib": 7000, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.184", "mib": 8500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
 ]
 
 

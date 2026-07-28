@@ -8,7 +8,7 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w3",
+    "location": "worker-w2",
     "matrix_location_transport": "W/ssh host.stress(worker-w3, cpu) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=90)",
     "transport": "ssh",
     "profile_refs": [

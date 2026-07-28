@@ -77,7 +77,11 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("pg_terminate_backend", text)
 
     def test_storage_contracts_use_measured_pvc_workers_and_exact_cleanup(self) -> None:
-        expected = {"F02-H": "192.168.122.184", "F10-R": "192.168.122.184", "F10-H": "192.168.122.14", "F10-P": "192.168.122.184", "F15-P": "192.168.122.11"}
+        # 2026-07-28 nodeSelector 도입 후 실측 배치. 각 도메인 DB가 자기 워커의 장치를
+        # 단독으로 쓴다 — commerce PG=tb-w1(.184), banking Oracle=tb-w2(.11),
+        # food MySQL=tb-w3(.14). 이전에는 PG와 Oracle이 tb-w1 한 장치를 공유해
+        # F02-H와 F10-P가 서로를 오염시켰다.
+        expected = {"F02-H": "192.168.122.184", "F10-R": "192.168.122.184", "F10-H": "192.168.122.14", "F10-P": "192.168.122.11", "F15-P": "192.168.122.11"}
         for sid, address in expected.items():
             p = host.CONTRACTS[sid]
             host.validate(sid, p, {})

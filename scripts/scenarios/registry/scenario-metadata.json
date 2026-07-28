@@ -558,11 +558,11 @@
       }
     },
     "F09-R": {
-      "title": "tb-w3 노드 CPU noisy neighbor — 같은 노드 서비스들의 p95가 함께 오른다",
-      "description": "commerce 파드가 다수 배치된 워커 노드 tb-w3에서 CPU를 태우는 이웃 프로세스가 노드를 포화시킨다. 파드는 죽지 않고 아무 것도 5xx를 내지 않지만, 같은 노드의 order·payment·pricing·product·user가 **함께** 느려진다. 신호가 '실패'가 아니라 '동반 지연'이라는 점, 그리고 느려진 서비스들의 공통점이 호출 관계가 아니라 배치라는 점이 이 케이스의 핵심이다. 의존 그래프를 따라가면 범인을 찾을 수 없다.",
-      "cause": "tb-w3에서 busy-loop 프로세스가 노드 CPU를 점유 → 같은 노드 파드들의 CPU 스케줄링 지연 → order·pricing 등 cohort 서비스의 p95 동반 상승 → 체크아웃 응답시간 전반 악화",
-      "injection_summary": "host.stress executor가 tb-w3(192.168.122.14)에서 stress-ng 없이 yes busy-loop를 normal priority로 2/3/4개 실행해(4코어의 50/75/100%) 노드 CPU를 포화시킨다. north-south 20rps companion을 병행하고, cleanup은 프로세스 그룹 전멸 확인이다. CPU만 점유하고 메모리는 건드리지 않아 eviction/OOM (F05-P 경계)을 피한다.",
-      "user_impact": "체크아웃과 상품 조회가 전반적으로 느려진다. 실패는 거의 없고 응답시간만 오르므로 5xx 기반 알람에는 잘 걸리지 않는다 — '아무도 에러를 내지 않는데 모두가 느린' 상태다. tb-w3에 없는 서비스는 정상이므로 사용자 체감은 기능별로 고르지 않다.",
+      "title": "tb-w1 노드 CPU noisy neighbor — 같은 노드 서비스들의 p95가 함께 오른다",
+      "description": "commerce 파드가 다수 배치된 워커 노드 tb-w1에서 CPU를 태우는 이웃 프로세스가 노드를 포화시킨다. 파드는 죽지 않고 아무 것도 5xx를 내지 않지만, 같은 노드의 order·payment·pricing·product·user가 **함께** 느려진다. 신호가 '실패'가 아니라 '동반 지연'이라는 점, 그리고 느려진 서비스들의 공통점이 호출 관계가 아니라 배치라는 점이 이 케이스의 핵심이다. 의존 그래프를 따라가면 범인을 찾을 수 없다.",
+      "cause": "tb-w1에서 busy-loop 프로세스가 노드 CPU를 점유 → 같은 노드 파드들의 CPU 스케줄링 지연 → order·pricing 등 cohort 서비스의 p95 동반 상승 → 체크아웃 응답시간 전반 악화",
+      "injection_summary": "host.stress executor가 tb-w1(192.168.122.184)에서 stress-ng 없이 yes busy-loop를 normal priority로 2/3/4개 실행해(4코어의 50/75/100%) 노드 CPU를 포화시킨다. north-south 20rps companion을 병행하고, cleanup은 프로세스 그룹 전멸 확인이다. CPU만 점유하고 메모리는 건드리지 않아 eviction/OOM (F05-P 경계)을 피한다.",
+      "user_impact": "체크아웃과 상품 조회가 전반적으로 느려진다. 실패는 거의 없고 응답시간만 오르므로 5xx 기반 알람에는 잘 걸리지 않는다 — '아무도 에러를 내지 않는데 모두가 느린' 상태다. tb-w1에 없는 서비스는 정상이므로 사용자 체감은 기능별로 고르지 않다.",
       "distinguishing_evidence": "결정 증거는 노드 CPU 포화와 **여러 서비스의 동시 p95 상승**이 같은 노드 범위에서만 일어난다는 것이다. 느려진 서비스들은 서로 호출 관계가 없어도 되고(pricing은 아무도 호출하지 않는다), 다른 노드의 서비스는 정상이다. 단일 파드의 CPU 한도 문제(F09-P·F12-H)와 달리 특정 컨테이너의 throttling에 갇히지 않고, 진입 트래픽은 평상 수준이라 폭주(F07-H)도 아니다. DB·외부 의존은 정상이다.",
       "domain": "commerce",
       "class": "B",
@@ -621,7 +621,7 @@
             "id": "noisy-50",
             "parameters": {
               "mode": "cpu",
-              "host": "192.168.122.14",
+              "host": "192.168.122.184",
               "cpu_workers": 2,
               "runtime_seconds": 480
             }
@@ -630,7 +630,7 @@
             "id": "noisy-75",
             "parameters": {
               "mode": "cpu",
-              "host": "192.168.122.14",
+              "host": "192.168.122.184",
               "cpu_workers": 3,
               "runtime_seconds": 480
             }
@@ -639,7 +639,7 @@
             "id": "noisy-100",
             "parameters": {
               "mode": "cpu",
-              "host": "192.168.122.14",
+              "host": "192.168.122.184",
               "cpu_workers": 4,
               "runtime_seconds": 480
             }
@@ -2295,11 +2295,11 @@
       "distinguishing_evidence": "jvm.gc.pause/jvm.memory.used(after-GC) 주기성과 order p95 스파이크가 동기화되고, host/node CPU 포화(F09-R/F09-P)는 없다. F05-R(payment OOM loop)과 달리 restart_count는 0으로 유지되며 OOMKill 종료가 없다. F08-P(read-timeout 오설정)와 달리 order→payment span은 정상이고 heap after-GC used/limit이 원인 신호다."
     },
     "F05-P": {
-      "title": "tb-w2 노드 메모리 고갈 — kubelet eviction으로 여러 도메인이 동시에 무너진다",
-      "description": "commerce·food·banking 파드가 함께 배치된 워커 노드 tb-w2의 메모리를 kubelet hard-eviction 임계까지 밀어 올린다. 노드가 메모리를 회수하려고 파드를 축출하면 gateway·cart·inventory 등 그 노드에 있던 파드들이 동시에 사라지고, 재스케줄과 부팅이 끝날 때까지 여러 도메인의 API가 한꺼번에 실패한다. 어떤 서비스의 결함도 아니고 어떤 컨테이너의 한도 문제도 아니다 — **노드라는 공유 자원**이 원인이며, 증상의 공통분모가 '같은 노드에 있었다'는 것뿐이라는 점이 이 케이스의 정체성이다.",
-      "cause": "tb-w2의 익명 메모리를 hog가 점유 → 노드 memory.available이 kubelet hard-eviction 임계 미만 → kubelet이 QoS·우선순위 순으로 파드 축출 → gateway·cart·inventory 등 동거 파드 소멸 → 재스케줄·부팅 공백 동안 commerce checkout과 다른 도메인 API가 동시에 5xx",
-      "injection_summary": "host.stress executor가 tb-w2(192.168.122.11)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→7000→8500 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
-      "user_impact": "tb-w2에 있던 서비스가 축출·재스케줄되는 공백 동안 commerce 체크아웃이 실패하고, 같은 노드에 있던 다른 도메인의 API도 동시에 실패한다. 피해의 경계가 **도메인이 아니라 노드**를 따르는 것이 특징이다 — 다른 노드에 배치된 서비스는 멀쩡하다. 축출된 파드가 다른 노드로 옮겨 붙으면 주입이 계속돼도 서비스는 부분적으로 회복된다.",
+      "title": "tb-w1 노드 메모리 고갈 — kubelet eviction으로 여러 도메인이 동시에 무너진다",
+      "description": "commerce·food·banking 파드가 함께 배치된 워커 노드 tb-w1의 메모리를 kubelet hard-eviction 임계까지 밀어 올린다. 노드가 메모리를 회수하려고 파드를 축출하면 gateway·cart·inventory 등 그 노드에 있던 파드들이 동시에 사라지고, 재스케줄과 부팅이 끝날 때까지 여러 도메인의 API가 한꺼번에 실패한다. 어떤 서비스의 결함도 아니고 어떤 컨테이너의 한도 문제도 아니다 — **노드라는 공유 자원**이 원인이며, 증상의 공통분모가 '같은 노드에 있었다'는 것뿐이라는 점이 이 케이스의 정체성이다.",
+      "cause": "tb-w1의 익명 메모리를 hog가 점유 → 노드 memory.available이 kubelet hard-eviction 임계 미만 → kubelet이 QoS·우선순위 순으로 파드 축출 → gateway·cart·inventory 등 동거 파드 소멸 → 재스케줄·부팅 공백 동안 commerce checkout과 다른 도메인 API가 동시에 5xx",
+      "injection_summary": "host.stress executor가 tb-w1(192.168.122.184)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→7000→8500 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
+      "user_impact": "tb-w1에 있던 서비스가 축출·재스케줄되는 공백 동안 commerce 체크아웃이 실패하고, 같은 노드에 있던 다른 도메인의 API도 동시에 실패한다. 피해의 경계가 **도메인이 아니라 노드**를 따르는 것이 특징이다 — 다른 노드에 배치된 서비스는 멀쩡하다. 축출된 파드가 다른 노드로 옮겨 붙으면 주입이 계속돼도 서비스는 부분적으로 회복된다.",
       "distinguishing_evidence": "결정 증거는 노드 메모리 포화와 eviction 이벤트가 같은 시각에 함께 관측되고, 무너진 서비스 목록이 정확히 그 노드의 파드 목록과 일치한다는 것이다. 앱 쪽 지표는 무죄를 가리킨다 — JVM heap after-GC는 정상이고 어떤 컨테이너도 자기 한도를 넘지 않았다. F05-R(컨테이너 한도)과는 층위로, F09-R(같은 노드 계열)과는 자원 종류로 갈린다 — CPU는 정상이고 메모리·eviction만 신호다.",
       "domain": "commerce",
       "class": "B",
@@ -2359,7 +2359,7 @@
             "id": "mem-5500",
             "parameters": {
               "mode": "memhog",
-              "host": "192.168.122.11",
+              "host": "192.168.122.184",
               "mib": 5500,
               "runtime_seconds": 480,
               "required_cohort": [
@@ -2376,7 +2376,7 @@
             "id": "mem-7000",
             "parameters": {
               "mode": "memhog",
-              "host": "192.168.122.11",
+              "host": "192.168.122.184",
               "mib": 7000,
               "runtime_seconds": 480,
               "required_cohort": [
@@ -2393,7 +2393,7 @@
             "id": "mem-8500",
             "parameters": {
               "mode": "memhog",
-              "host": "192.168.122.11",
+              "host": "192.168.122.184",
               "mib": 8500,
               "runtime_seconds": 480,
               "required_cohort": [
@@ -3802,7 +3802,7 @@
         ],
         "infra_anchor": "없음(순수 코드 구조 — Tomcat 무튜닝 + 지연 커넥션 획득). 지연 트리거는 restaurant-service 슬로우다운(host.stress worker-w2 또는 db.workload restaurant MySQL)이나 이는 주입 수단이지 root가 아님."
       },
-      "injection_summary": "restaurant-service getRestaurant/getMenu 응답을 read-timeout 5s '미만'(목표 ~4s)으로 지연시켜(host.stress worker-w2 CPU 또는 db.workload restaurant MySQL) restaurant가 502가 아닌 느린 200을 내되 order createOrder가 Tomcat 스레드를 오래 점유하게 한다. 동시에 load.north_south로 food order-surge.js(entry 30181, create-heavy, target_rps≈55 — Little L=λ·4s로 200 스레드 목표)를 흘린다. 지연이 5s를 넘으면 retry/502(C4 regime)로 전이하므로 캘리브레이션 필수. cleanup은 stress/workload 해제(order 롤백 없음).",
+      "injection_summary": "restaurant-service getRestaurant/getMenu 응답을 read-timeout 5s '미만'(목표 ~4s)으로 지연시켜(host.stress worker-w3 CPU 또는 db.workload restaurant MySQL) restaurant가 502가 아닌 느린 200을 내되 order createOrder가 Tomcat 스레드를 오래 점유하게 한다. 동시에 load.north_south로 food order-surge.js(entry 30181, create-heavy, target_rps≈55 — Little L=λ·4s로 200 스레드 목표)를 흘린다. 지연이 5s를 넘으면 retry/502(C4 regime)로 전이하므로 캘리브레이션 필수. cleanup은 stress/workload 해제(order 롤백 없음).",
       "user_impact": "주문 생성(POST /api/orders)이 order Tomcat 스레드 포화로 지연·타임아웃 급증하고, 하류를 안 타는 주문 조회(GET /api/orders)까지 느려진다. restaurant는 느린 200으로만 보여(502 아님) 원인이 order로 오인되기 쉽다. Hikari는 비어 있어(pending≈0) DB 커넥션풀을 범인으로 지목하면 오진.",
       "must_support": [
         "order busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",
@@ -3851,7 +3851,7 @@
         ],
         "infra_anchor": "없음(순수 코드 구조 — DataSource 제외 + Tomcat 무튜닝). 지연 트리거는 transfer-service 슬로우다운(host.stress worker-w3 또는 db.workload transfer Oracle)이나 이는 주입 수단이지 root가 아님."
       },
-      "injection_summary": "transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) '미만'(목표 ~8s)으로 지연시켜(host.stress worker-w3 CPU 또는 db.workload transfer Oracle) transfer가 502가 아닌 느린 200을 내되 api→account 요청이 api Tomcat 스레드를 오래 점유하게 한다. db.lock은 무한대기→502→CB open으로 FS-1/FS-2를 만들어 부적격. 동시에 load.north_south로 banking transfer-surge.js(entry 30082, transfer-heavy, target_rps≈180 — Little L=λ·8s로 200 스레드 목표; 기본 surge transfer 10%로는 부족)를 흘린다. 지연이 10s를 넘으면 api read-timeout→502→CB open(FS-2)으로 전이하므로 캘리브레이션이 감별 정체성과 직결. cleanup은 stress/workload 해제.",
+      "injection_summary": "transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) '미만'(목표 ~8s)으로 지연시켜(host.stress worker-w2 CPU 또는 db.workload transfer Oracle) transfer가 502가 아닌 느린 200을 내되 api→account 요청이 api Tomcat 스레드를 오래 점유하게 한다. db.lock은 무한대기→502→CB open으로 FS-1/FS-2를 만들어 부적격. 동시에 load.north_south로 banking transfer-surge.js(entry 30082, transfer-heavy, target_rps≈180 — Little L=λ·8s로 200 스레드 목표; 기본 surge transfer 10%로는 부족)를 흘린다. 지연이 10s를 넘으면 api read-timeout→502→CB open(FS-2)으로 전이하므로 캘리브레이션이 감별 정체성과 직결. cleanup은 stress/workload 해제.",
       "user_impact": "이체(POST /api/transfers)가 api Tomcat 스레드 포화로 지연·타임아웃 급증하고, 무관한 이체내역 조회(GET /api/transfers 프록시)까지 느려진다. transfer는 지연만 있고 5xx를 안 뱉으며(느린 200), api는 커넥션풀이 없어 풀 지표가 부재 → 풀 고갈(FS-6)이나 CB open(FS-2)으로 오인하면 오진.",
       "must_support": [
         "api busy-threads가 200에 근접 (http.server.active_requests ≥ 180) — Tomcat 기본 200 포화",

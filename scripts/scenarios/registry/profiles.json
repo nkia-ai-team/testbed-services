@@ -2807,25 +2807,25 @@
       "scenario_parameters": {
         "F09-R": {
           "mode": "cpu",
-          "host": "192.168.122.14",
+          "host": "192.168.122.184",
           "cpu_workers": 2,
           "runtime_seconds": 480
         },
         "F21-Q": {
           "mode": "cpu",
-          "host": "192.168.122.11",
+          "host": "192.168.122.14",
           "cpu_workers": 3,
           "runtime_seconds": 480
         },
         "F21-P": {
           "mode": "cpu",
-          "host": "192.168.122.14",
+          "host": "192.168.122.11",
           "cpu_workers": 3,
           "runtime_seconds": 480
         },
         "F05-P": {
           "mode": "memhog",
-          "host": "192.168.122.11",
+          "host": "192.168.122.184",
           "mib": 5500,
           "runtime_seconds": 480,
           "required_cohort": [
@@ -2844,7 +2844,7 @@
             "level_id": "noisy-50",
             "parameters": {
               "mode": "cpu",
-              "host": "192.168.122.14",
+              "host": "192.168.122.184",
               "cpu_workers": 2,
               "runtime_seconds": 480
             }
@@ -2853,7 +2853,7 @@
             "level_id": "noisy-75",
             "parameters": {
               "mode": "cpu",
-              "host": "192.168.122.14",
+              "host": "192.168.122.184",
               "cpu_workers": 3,
               "runtime_seconds": 480
             }
@@ -2862,7 +2862,7 @@
             "level_id": "noisy-100",
             "parameters": {
               "mode": "cpu",
-              "host": "192.168.122.14",
+              "host": "192.168.122.184",
               "cpu_workers": 4,
               "runtime_seconds": 480
             }
@@ -2873,7 +2873,7 @@
             "level_id": "mem-5500",
             "parameters": {
               "mode": "memhog",
-              "host": "192.168.122.11",
+              "host": "192.168.122.184",
               "mib": 5500,
               "runtime_seconds": 480,
               "required_cohort": [
@@ -2890,7 +2890,7 @@
             "level_id": "mem-7000",
             "parameters": {
               "mode": "memhog",
-              "host": "192.168.122.11",
+              "host": "192.168.122.184",
               "mib": 7000,
               "runtime_seconds": 480,
               "required_cohort": [
@@ -2907,7 +2907,7 @@
             "level_id": "mem-8500",
             "parameters": {
               "mode": "memhog",
-              "host": "192.168.122.11",
+              "host": "192.168.122.184",
               "mib": 8500,
               "runtime_seconds": 480,
               "required_cohort": [

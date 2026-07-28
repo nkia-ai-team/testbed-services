@@ -8,7 +8,7 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w1",
+    "location": "worker-w2",
     "matrix_location_transport": "tb-w1/ssh",
     "transport": "ssh",
     "profile_refs": [

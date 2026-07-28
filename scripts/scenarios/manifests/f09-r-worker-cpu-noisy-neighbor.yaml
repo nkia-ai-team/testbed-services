@@ -8,7 +8,7 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w3",
+    "location": "worker-w1",
     "matrix_location_transport": "선택 worker/ssh",
     "transport": "ssh",
     "profile_refs": [
@@ -74,7 +74,7 @@
               "id": "noisy-50",
               "parameters": {
                 "mode": "cpu",
-                "host": "192.168.122.14",
+                "host": "192.168.122.184",
                 "cpu_workers": 2,
                 "runtime_seconds": 480
               },
@@ -86,7 +86,7 @@
               "id": "noisy-75",
               "parameters": {
                 "mode": "cpu",
-                "host": "192.168.122.14",
+                "host": "192.168.122.184",
                 "cpu_workers": 3,
                 "runtime_seconds": 480
               },
@@ -98,7 +98,7 @@
               "id": "noisy-100",
               "parameters": {
                 "mode": "cpu",
-                "host": "192.168.122.14",
+                "host": "192.168.122.184",
                 "cpu_workers": 4,
                 "runtime_seconds": 480
               },
