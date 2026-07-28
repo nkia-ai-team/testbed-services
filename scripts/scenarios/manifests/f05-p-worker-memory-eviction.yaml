@@ -154,7 +154,7 @@
             "adapter": "kubernetes",
             "query_id": "kubernetes.node_ready",
             "parameters": {
-              "node": "tb-w2"
+              "node": "tb-w1"
             },
             "freshness": "30s"
           },
@@ -163,7 +163,7 @@
             "adapter": "prometheus",
             "query_id": "prometheus.node_memory_utilization",
             "parameters": {
-              "node": "tb-w2"
+              "node": "tb-w1"
             },
             "freshness": "60s"
           },

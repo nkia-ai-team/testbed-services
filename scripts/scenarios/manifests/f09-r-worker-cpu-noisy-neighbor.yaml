@@ -136,7 +136,7 @@
             "adapter": "prometheus",
             "query_id": "prometheus.node_cpu_utilization",
             "parameters": {
-              "node": "tb-w3"
+              "node": "tb-w1"
             },
             "freshness": "60s"
           },

@@ -348,6 +348,47 @@ class RegistryContractTests(unittest.TestCase):
             }),
         )
 
+    def test_host_stress_observes_the_node_it_actually_injects(self) -> None:
+        # 2026-07-28: 배치 고정에 맞춰 좌표를 갱신할 때 profiles.json의 주입 host는
+        # 고쳤으나 컨트롤러 observation의 node= 파라미터는 그대로였다. 그 결과 F09-R은
+        # tb-w1을 때리면서 tb-w3의 CPU를 재고 있었다 — success(node_cpu_util>=85)는
+        # 유휴 노드라 영원히 서지 않고, 동시에 must_rule_out(node_cpu_util<50)이 즉시
+        # 발화하는 자기-거부 구조다. F05-P도 동형이었다.
+        #
+        # 주입 좌표와 관측 좌표가 따로 노는 한 이 사고는 배치가 바뀔 때마다 재발한다.
+        # locations.json이 alias→(host, node)를 함께 들고 있으므로 여기서 묶어 강제한다.
+        host_to_node = {
+            location["host"]: location["node"]
+            for location in self.locations["locations"].values()
+            if "node" in location and "host" in location
+        }
+        self.assertTrue(host_to_node, "worker locations must bind a k8s node name")
+
+        scenario_parameters = self.profiles["profiles"]["host.stress"]["scenario_parameters"]
+        parked = json.loads(
+            (ROOT / "registry" / "controllers-parked.json").read_text(encoding="utf-8")
+        )["controllers"]
+        every_controller = {**parked, **self.controllers["controllers"]}
+
+        for scenario_id, parameters in sorted(scenario_parameters.items()):
+            controller = every_controller.get(scenario_id)
+            if controller is None:
+                continue
+            expected_node = host_to_node.get(parameters["host"])
+            self.assertIsNotNone(
+                expected_node, f"{scenario_id} injects an unmapped host {parameters['host']}"
+            )
+            for observation in controller["observations"]:
+                node = (observation.get("parameters") or {}).get("node")
+                if node is None:
+                    continue
+                self.assertEqual(
+                    node,
+                    expected_node,
+                    f"{scenario_id}.{observation['id']} observes {node} "
+                    f"but the injection lands on {expected_node}",
+                )
+
     def test_each_profile_supports_all_plan_actions_and_refuses_live(self) -> None:
         required = self.profiles["required_actions"]
         for profile_id, profile in self.profiles["profiles"].items():

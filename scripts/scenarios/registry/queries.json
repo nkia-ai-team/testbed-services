@@ -1,6 +1,15 @@
 {
   "schema_version": "1.0",
   "adapters": {
+    "host_probe": {
+      "required_fields": [
+        "value",
+        "observed_at",
+        "source",
+        "freshness",
+        "quality"
+      ]
+    },
     "loadgen_summary": {
       "required_fields": [
         "value",
@@ -101,6 +110,15 @@
       "adapter": "loadgen_summary",
       "selector": "business.2xx.rate",
       "value_type": "number",
+      "freshness_sec": 30
+    },
+    "host.disk_io_utilization": {
+      "adapter": "host_probe",
+      "selector": "scenario.target.disk_io_utilization",
+      "allowed_parameters": [
+        "scenario_id"
+      ],
+      "value_type": "integer",
       "freshness_sec": 30
     },
     "http.entry_health": {
