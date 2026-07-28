@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F09-H",
   "slug": "f09-h-order-gc-pressure",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,14 +29,591 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "calibration",
-      "profile": {
-        "kind": "adaptive",
-        "ref": "controller-profiles/f09-h-order-gc-pressure/adaptive",
-        "requires_approved_fixed_profile": false
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.env",
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "heap-208",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-order",
+                "container": "order-service",
+                "baseline": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-order"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.230.119:14317"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+AlwaysPreTouch"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-order"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.230.119:14317"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "heap-160",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-order",
+                "container": "order-service",
+                "baseline": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-order"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.230.119:14317"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx160m -Xms160m -XX:+AlwaysPreTouch"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-order"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.230.119:14317"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "heap-128",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-order",
+                "container": "order-service",
+                "baseline": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-order"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.230.119:14317"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx128m -Xms128m -XX:+AlwaysPreTouch"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-order"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.230.119:14317"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-order"
+            }
+          },
+          {
+            "id": "order_restart_count",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_restart_count",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-order",
+              "container": "order-service"
+            }
+          },
+          {
+            "id": "order_old_gen_ratio",
+            "adapter": "prometheus",
+            "query_id": "prometheus.jvm_old_gen_after_gc_ratio",
+            "freshness": "60s",
+            "parameters": {
+              "service_name": "commerce-order"
+            }
+          },
+          {
+            "id": "order_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-order"
+            }
+          },
+          {
+            "id": "order_error_rate",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_error_rate",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-order"
+            }
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "heap-cannot-be-reclaimed",
+              "observation": "order_old_gen_ratio",
+              "op": "gte",
+              "value": 0.85
+            },
+            {
+              "id": "order-latency-damage",
+              "observation": "order_p95",
+              "op": "gte",
+              "value": 1000
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "heap-not-yet-pressured",
+              "observation": "order_old_gen_ratio",
+              "op": "lt",
+              "value": 0.85
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "crossed-into-oom",
+              "observation": "order_restart_count",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "symptom-without-gc-pressure",
+              "observation": "order_old_gen_ratio",
+              "op": "lt",
+              "value": 0.5
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "heap-reclaimable-again",
+              "observation": "order_old_gen_ratio",
+              "op": "lt",
+              "value": 0.5
+            },
+            {
+              "id": "order-latency-recovered",
+              "observation": "order_p95",
+              "op": "lt",
+              "value": 300
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +647,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "GC 압박 증거 쿼리 1종 신설 — jvm.gc.duration류는 수집되지 않으나 apm.agent.otel.java.jvm.memory.used_after_last_gc가 존재하므로 jvm.memory.limit 대비 비율로 배선한다(jvm_nondaemon_thread_count와 동일 패턴). '러너의 testbed-order 거부'는 해소됨(live_probes.py에 commerce·food 양쪽 등록 확인, 2026-07-28)",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

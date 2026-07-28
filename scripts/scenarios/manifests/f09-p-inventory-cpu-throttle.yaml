@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F09-P",
   "slug": "f09-p-inventory-cpu-throttle",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,14 +29,240 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "calibration",
-      "profile": {
-        "kind": "adaptive",
-        "ref": "controller-profiles/f09-p-inventory-cpu-throttle/adaptive",
-        "requires_approved_fixed_profile": false
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.patch",
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "calibration",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "adaptive_ladder",
+          "levels": [
+            {
+              "id": "conservative-250m",
+              "parameters": {
+                "deployment": "testbed-inventory",
+                "container": "inventory-service",
+                "baseline_cpu_limit": "500m",
+                "fault_cpu_limit": "250m"
+              },
+              "min_hold": "2m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "constrained-100m",
+              "parameters": {
+                "deployment": "testbed-inventory",
+                "container": "inventory-service",
+                "baseline_cpu_limit": "500m",
+                "fault_cpu_limit": "100m"
+              },
+              "min_hold": "2m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "endpoint-50m",
+              "parameters": {
+                "deployment": "testbed-inventory",
+                "container": "inventory-service",
+                "baseline_cpu_limit": "500m",
+                "fault_cpu_limit": "50m"
+              },
+              "min_hold": "2m",
+              "settle": "30s",
+              "timeout": "8m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-inventory"
+            }
+          },
+          {
+            "id": "inventory_throttled",
+            "adapter": "prometheus",
+            "query_id": "prometheus.container_cpu_throttled_time",
+            "freshness": "60s",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-inventory",
+              "container": "inventory-service"
+            }
+          },
+          {
+            "id": "gateway_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-gateway"
+            }
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "cfs-throttling-active",
+              "observation": "inventory_throttled",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "user-latency-damage",
+              "observation": "gateway_p95",
+              "op": "gte",
+              "value": 500
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "throttling-not-yet-biting",
+              "observation": "inventory_throttled",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "symptom-without-throttling",
+              "observation": "inventory_throttled",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 65
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "throttling-cleared",
+              "observation": "inventory_throttled",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "user-latency-recovered",
+              "observation": "gateway_p95",
+              "op": "lt",
+              "value": 200
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +296,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "감별 증거 배선만 남음 — prometheus.container_cpu_throttled_time은 이미 존재하나 컨트롤러 observations에 없다. 이를 등록해 감별자로 쓰면 된다. 성공조건 교체는 완료됨(user_p95≥500 = 피해 지표, ff5b9ab)",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

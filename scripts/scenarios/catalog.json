@@ -272,10 +272,10 @@
         "k8s.env",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "GC 압박 증거 쿼리 1종 신설 — jvm.gc.duration류는 수집되지 않으나 apm.agent.otel.java.jvm.memory.used_after_last_gc가 존재하므로 jvm.memory.limit 대비 비율로 배선한다(jvm_nondaemon_thread_count와 동일 패턴). '러너의 testbed-order 거부'는 해소됨(live_probes.py에 commerce·food 양쪽 등록 확인, 2026-07-28)"
+      "prerequisite": ""
     },
     {
       "id": "F09-P",
@@ -284,10 +284,10 @@
         "k8s.patch",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "감별 증거 배선만 남음 — prometheus.container_cpu_throttled_time은 이미 존재하나 컨트롤러 observations에 없다. 이를 등록해 감별자로 쓰면 된다. 성공조건 교체는 완료됨(user_p95≥500 = 피해 지표, ff5b9ab)"
+      "prerequisite": ""
     },
     {
       "id": "F10-R",

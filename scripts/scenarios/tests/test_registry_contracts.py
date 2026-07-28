@@ -73,6 +73,7 @@ class RegistryContractTests(unittest.TestCase):
             # fio 부재·약한 고정 계약·디스크 IO 관측 부재였고 모두 해소됐다.
             "F02-H", "F10-H", "F10-P", "F15-P",
             "F21-P", "F21-Q",
+            "F09-H", "F09-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -189,6 +190,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F03-H", "F06-P",
                 "F02-H", "F10-H", "F10-P", "F15-P",
                 "F21-P", "F21-Q",
+                "F09-H", "F09-P",
             },
         )
         self.assertEqual(
@@ -212,6 +214,10 @@ class RegistryContractTests(unittest.TestCase):
                 # 2026-07-28 신규: Tomcat 스레드풀 포화 짝. busy-thread 신호를
                 # non-daemon에서 daemon으로 바로잡고서야 볼 수 있게 됐다.
                 "F21-Q", "F21-P",
+                # 2026-07-28 복귀: 07-27에 parked된 두 건. success가 스스로 참인
+                # 조건들로 채워져 있었고, 감별 신호는 없다고 판단됐지만 실은
+                # 있었다 — GC는 재는 방법이, 스로틀은 대상이 없었을 뿐이다.
+                "F09-H", "F09-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -240,15 +246,16 @@ class RegistryContractTests(unittest.TestCase):
             [level["parameters"]["target_rps"] for level in controllers["F07-H"]["profile"]["levels"]],
             [120, 140, 160],
         )
-        # F09-P's ladder assertion moved to the parked archive on 2026-07-27
-        # (parked: its three success rules are all self-fulfilling and the
-        # throttling signal it needs does not exist). F12-H below keeps the same
-        # ladder under live coverage.
-        parked = json.loads((ROOT / "registry" / "controllers-parked.json").read_text())
-        self.assertNotIn("F09-P", controllers)
+        # F09-P returned to the live registry on 2026-07-28. The 07-27 audit
+        # parked it for two reasons and both are now addressed: its success rules
+        # were self-fulfilling (pod_ready and achieved_rps, since banned from
+        # success outright) and the throttling signal was said not to exist. The
+        # signal did exist — but the runner's PromQL template hardcoded
+        # testbed-product, so it existed for F12-H and for nothing else. The
+        # template is parameterized now and F09-P observes its own deployment.
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"]
-             for level in parked["controllers"]["F09-P"]["profile"]["levels"]],
+             for level in controllers["F09-P"]["profile"]["levels"]],
             ["250m", "100m", "50m"],
         )
         self.assertEqual(
@@ -332,7 +339,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         self.assertEqual(self.controllers["live_scenario_ids"][-4:],
-                         ["F10-P", "F15-P", "F21-Q", "F21-P"])
+                         ["F15-P", "F21-Q", "F21-P", "F09-H", "F09-P"][-4:])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

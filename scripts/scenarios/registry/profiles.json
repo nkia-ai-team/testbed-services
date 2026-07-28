@@ -1382,7 +1382,7 @@
             },
             {
               "name": "JAVA_TOOL_OPTIONS",
-              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx256m -Xms256m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+AlwaysPreTouch"
             },
             {
               "name": "OTEL_SERVICE_NAME",
@@ -2038,126 +2038,6 @@
         ],
         "F09-H": [
           {
-            "level_id": "heap-256",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.230.119:14317"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx256m -Xms256m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.230.119:14317"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            }
-          },
-          {
             "level_id": "heap-208",
             "parameters": {
               "namespace": "rca-testbed-commerce",
@@ -2240,7 +2120,7 @@
                 },
                 {
                   "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+AlwaysPreTouch"
                 },
                 {
                   "name": "OTEL_SERVICE_NAME",
@@ -2278,7 +2158,7 @@
             }
           },
           {
-            "level_id": "heap-176",
+            "level_id": "heap-160",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-order",
@@ -2360,7 +2240,127 @@
                 },
                 {
                   "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx176m -Xms176m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx160m -Xms160m -XX:+AlwaysPreTouch"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ]
+            }
+          },
+          {
+            "level_id": "heap-128",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-order",
+              "container": "order-service",
+              "baseline": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                },
+                {
+                  "name": "OTEL_SERVICE_NAME",
+                  "value": "commerce-order"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                  "value": "http://192.168.230.119:14317"
+                },
+                {
+                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                  "value": "grpc"
+                },
+                {
+                  "name": "OTEL_RESOURCE_ATTRIBUTES",
+                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
+                },
+                {
+                  "name": "OTEL_TRACES_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRICS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_LOGS_EXPORTER",
+                  "value": "otlp"
+                },
+                {
+                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                  "value": "10000"
+                }
+              ],
+              "fault": [
+                {
+                  "name": "DB_USER",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_USER",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "DB_PASS",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "key": "POSTGRES_PASSWORD",
+                      "name": "postgres-secret"
+                    }
+                  }
+                },
+                {
+                  "name": "JAVA_TOOL_OPTIONS",
+                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx128m -Xms128m -XX:+AlwaysPreTouch"
                 },
                 {
                   "name": "OTEL_SERVICE_NAME",
