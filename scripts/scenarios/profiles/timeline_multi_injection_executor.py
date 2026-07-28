@@ -9,9 +9,9 @@ each carry their own tagged, idempotent, death-confirmed lifecycle:
 * ``oracle_lock``  — tagged Oracle ``SELECT ... FOR UPDATE`` on FREEPDB1 via
                      ``kubectl exec`` into the Oracle pod (v$session client
                      identifier tag; death confirmed by v$session absence)
-* ``pg_lock``      — tagged PostgreSQL ``SELECT ... FOR UPDATE`` via the
-                     canonical tb-runner NodePort path (application_name tag;
-                     death confirmed by pg_stat_activity absence)
+* ``pg_lock``      — PostgreSQL ``SELECT ... FOR UPDATE`` held by a short-lived
+                     in-cluster client pod that impersonates the real app's
+                     session identity (death confirmed by pod absence)
 
 Sub-injections apply in declared order (with per-step ``offset_seconds``) and
 clean up in strict reverse order. Each lock's cleanup terminates the *server*
@@ -55,7 +55,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                 "table": "accounts",
                 "key_column": "id",
                 "key_value": "commerce-settlement",
-                "client_identifier": "rca-F08-G-oracle-lock",
+                "client_identifier": "dba-maintenance",
                 "hold_seconds": 600,
             },
         ],
@@ -66,15 +66,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                 "name": "commerce-inventory-lock",
                 "kind": "pg_lock",
                 "offset_seconds": 0,
-                "db_host": "192.168.122.77",
-                "db_port": 30432,
-                "db_name": "commerce",
-                "db_user": "commerce",
+                "access": "in-cluster-pod",
+                "namespace": "rca-testbed-commerce",
+                "db_pod": "testbed-postgres-0",
+                "service": "testbed-postgres",
+                "secret": "postgres-secret",
+                "image": "postgres:16-alpine",
                 "schema": "inventory_schema",
                 "table": "inventory",
                 "key_column": "product_id",
-                "key_value": 1,
-                "application_name": "rca-F15-G-inventory-lock",
+                "key_value": "1",
+                "client_identity": "PostgreSQL JDBC Driver",
                 "hold_seconds": 600,
             },
             {
@@ -87,7 +89,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                 "table": "accounts",
                 "key_column": "id",
                 "key_value": "commerce-settlement",
-                "client_identifier": "rca-F15-G-oracle-lock",
+                "client_identifier": "dba-maintenance",
                 "hold_seconds": 600,
             },
         ],
@@ -120,6 +122,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
             raise ExecutorError("sub-injection offset is outside the approved bounds")
         if step["kind"] in ("oracle_lock", "pg_lock") and int(step["hold_seconds"]) <= 0:
             raise ExecutorError("lock hold must be positive")
+        if step["kind"] == "pg_lock" and step.get("access") != "in-cluster-pod":
+            raise ExecutorError("postgresql lock injection must originate inside the cluster")
     if not any(s["kind"] in ("oracle_lock", "pg_lock") for s in steps):
         raise ExecutorError("a multi-injection must contain at least one tagged DB lock root")
 
@@ -135,6 +139,11 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return ["/usr/bin/bash", "-s", "--", action, spec_b64], ORCHESTRATOR
 
 
+# pg_lock 경로는 2026-07-28에 db.lock 실행기와 같은 방식으로 교체했다(기준서 G6/L2).
+# 이전의 ssh+NodePort 방식은 한 세션에 세 개의 유일값을 남겼다 — application_name에
+# 인코딩된 시나리오 ID(L1), 실운영에 없는 대기 이벤트 PgSleep(L2), 클러스터 밖
+# tb-runner의 NAT 주소(L2). 셋 다 캡처에서 정답을 지목한다.
+#
 # The orchestrator decodes the spec with a stdlib python3 (present on the runner)
 # and drives each sub-injection. Reverse-order cleanup is mandatory: the last
 # root applied is released first so no dependent effect outlives its cause.
@@ -186,25 +195,83 @@ nohup sqlplus -s / as sysdba @/tmp/'"$tag"'.sql >/tmp/'"$tag"'.log 2>&1 </dev/nu
   esac
 }
 
-# ---- pg_lock primitive (ssh tb-runner NodePort; application_name tag) ---------
+# ---- pg_lock primitive (in-cluster client pod; app identity impersonation) ----
+# Same recipe as the db.lock executor; see the Korean note above ORCHESTRATOR.
 pg() {  # $1=verb $2=step_index
   local verb="$1" i="$2"
-  local host port db user schema table keycol key tag hold
-  host=$(field "$i" db_host); port=$(field "$i" db_port); db=$(field "$i" db_name)
-  user=$(field "$i" db_user); schema=$(field "$i" schema); table=$(field "$i" table)
-  keycol=$(field "$i" key_column); key=$(field "$i" key_value)
-  tag=$(field "$i" application_name); hold=$(field "$i" hold_seconds)
-  local ssh=(/usr/bin/ssh -i /root/.ssh/tb_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "nkia@192.168.122.206")
-  local base="psql -X -v ON_ERROR_STOP=1 -h $host -p $port -U $user -d $db"
-  pg_sessions() { "${ssh[@]}" "$base -tAc \"SELECT count(*) FROM pg_stat_activity WHERE application_name='$tag';\"" | tr -d '[:space:]'; }
-  pg_rowok() { "${ssh[@]}" "$base -tAc \"SELECT count(*) FROM $schema.$table WHERE $keycol=$key;\"" | grep -qx 1; }
+  local ns db_pod svc secret image schema table keycol keyval identity hold
+  ns=$(field "$i" namespace); db_pod=$(field "$i" db_pod); svc=$(field "$i" service)
+  secret=$(field "$i" secret); image=$(field "$i" image); schema=$(field "$i" schema)
+  table=$(field "$i" table); keycol=$(field "$i" key_column); keyval=$(field "$i" key_value)
+  identity=$(field "$i" client_identity); hold=$(field "$i" hold_seconds)
+  local k=("${kube[@]}" -n "$ns")
+  local sel="lucida.io/db-client=session"
+  local saved="$state_dir/pg-$i.pod"
+  p_admin() { "${k[@]}" exec "$db_pod" -- sh -lc "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"$1\""; }
+  p_rowok() { p_admin "SELECT count(*) FROM ${schema}.${table} WHERE ${keycol}='${keyval}';" | tr -d '[:space:]' | grep -qx 1; }
+  p_clients() { "${k[@]}" get pods -l "$sel" -o name 2>/dev/null | tr -d '\r'; }
   case "$verb" in
-    check)  pg_rowok; [[ "$(pg_sessions)" == 0 ]] ;;
-    apply)  "${ssh[@]}" "nohup env PGAPPNAME='$tag' $base -c \"BEGIN; SELECT $keycol FROM $schema.$table WHERE $keycol=$key FOR UPDATE; SELECT pg_sleep($hold); ROLLBACK;\" >/tmp/$tag.log 2>&1 </dev/null &" ;;
-    release)  "${ssh[@]}" "$base -tAc \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='$tag' AND pid<>pg_backend_pid();\" >/dev/null; rm -f /tmp/$tag.log"
-      for _ in $(seq 1 20); do [[ "$(pg_sessions)" == 0 ]] && return 0; sleep 1; done
+    check)  p_rowok; [[ -z "$(p_clients)" ]] ;;
+    apply)
+      local token pod pid
+      token="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; pod="commerce-db-client-${token}"
+      "${k[@]}" apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod}
+  namespace: ${ns}
+  labels:
+    lucida.io/db-client: session
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: client
+      image: ${image}
+      envFrom:
+        - secretRef:
+            name: ${secret}
+      env:
+        - name: PGHOST
+          value: "${svc}"
+        - name: PGAPPNAME
+          value: "${identity}"
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ${secret}
+              key: POSTGRES_PASSWORD
+        - name: HOLD
+          value: "${hold}"
+        - name: SQL_PRE
+          value: "BEGIN; SELECT pg_backend_pid(); SELECT ${keycol} FROM ${schema}.${table} WHERE ${keycol}='${keyval}' FOR UPDATE;"
+        - name: SQL_POST
+          value: "ROLLBACK;"
+      command: ["sh", "-c"]
+      args:
+        - '{ printf "%s\n" "\$SQL_PRE"; sleep "\$HOLD"; printf "%s\n" "\$SQL_POST"; } | psql -X -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"'
+YAML
+      "${k[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
+      pid=""
+      for _ in $(seq 1 30); do
+        pid="$("${k[@]}" logs "$pod" 2>/dev/null | sed -n '1p' | tr -d '[:space:]')"
+        [[ "$pid" =~ ^[0-9]+$ ]] && break
+        pid=""; sleep 1
+      done
+      [[ -n "$pid" ]] || { "${k[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; echo "lock session did not report a backend pid" >&2; exit 1; }
+      p_admin "SELECT count(*) FROM pg_stat_activity WHERE pid=${pid} AND state='idle in transaction';" | tr -d '[:space:]' | grep -qx 1
+      printf '%s %s\n' "$pod" "$pid" >"$saved" ;;
+    release)
+      # Never kill by session name: the identity now equals the real app's.
+      # Deleting the client pod drops the connection and rolls the txn back.
+      if [[ -s "$saved" ]]; then local pod pid; read -r pod pid <"$saved" || true
+        [[ -n "${pod:-}" ]] && "${k[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; fi
+      local p; for p in $(p_clients); do "${k[@]}" delete "$p" --now --ignore-not-found >/dev/null; done
+      rm -f -- "$saved"
+      for _ in $(seq 1 20); do [[ -z "$(p_clients)" ]] && return 0; sleep 1; done
       return 1 ;;
-    recover)  [[ "$(pg_sessions)" == 0 ]]; pg_rowok ;;
+    recover)  [[ -z "$(p_clients)" ]]; p_rowok ;;
   esac
 }
 

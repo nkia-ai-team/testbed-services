@@ -893,7 +893,7 @@
       "cause": "Oracle BANKING.accounts commerce-settlement row lock contention (cross-domain)",
       "injection_summary": "kubectl exec로 testbed-oracle-0(FREEPDB1)에 client_identifier 태그된 SELECT ... FOR UPDATE를 걸고 commerce checkout 부하를 흘린다.",
       "user_impact": "banking transfer 대기로 commerce payment timeout·checkout 5xx가 발생한다.",
-      "distinguishing_evidence": "Oracle blocking session(client_identifier=rca-F01-P-oracle-lock)과 commerce→banking cross-domain trace가 존재하고, commerce PG·호스트 CPU·외부 결제대행사는 정상이다.",
+      "distinguishing_evidence": "Oracle blocking session(client_identifier=dba-maintenance)과 commerce→banking cross-domain trace가 존재하고, commerce PG·호스트 CPU·외부 결제대행사는 정상이다.",
       "injected_fault": {
         "profile": "db.lock",
         "companions": [
@@ -910,7 +910,7 @@
               "table": "accounts",
               "key_column": "id",
               "key_value": "commerce-settlement",
-              "client_identifier": "rca-F01-P-oracle-lock",
+              "client_identifier": "dba-maintenance",
               "hold_seconds": 600
             }
           }
@@ -925,7 +925,7 @@
       "injection_summary": "timeline.multi executor가 두 단계를 합성한다. t=0: rca-testbed-commerce의 testbed-notification에 annotation 롤아웃(distractor). t=+15s: rca-testbed-banking의 testbed-oracle-0(FREEPDB1)에서 BANKING.accounts id='commerce-settlement' 행을 SELECT … FOR UPDATE로 잡고 600초 유지한다. 부하는 north-south companion이 공급하며, cleanup은 역순으로 잠금 세션을 끊고 롤아웃 annotation을 원복한다.",
       "user_impact": "체크아웃이 502로 실패한다. 정산 이체는 모든 commerce 결제가 같은 계좌를 쓰므로 피해는 상품·사용자를 가리지 않고 전량이다. 더 나쁜 것은 순서다 — 외부 PG 결제 승인은 이미 끝난 뒤 banking 이체에서 막히므로, 실계라면 카드 승인만 남고 정산이 누락된다. 대기가 길어지면 transfer-service의 커넥션 풀이 말라 commerce와 무관한 banking 자체 이체까지 실패로 번진다. notification 재기동은 알림 지연(컨슈머 lag)만 만들 뿐 주문 처리에는 영향이 없다.",
       "distinguishing_evidence": "결정 증거는 오류가 시작되는 hop이다. payment→외부 PG는 200으로 정상 종료되고, 그 다음 payment→banking transfer span이 10초 벽에서 끊긴다 — 즉 실패는 결제가 아니라 정산에서 난다. banking 쪽에서는 BANKING.accounts의 commerce-settlement 행을 기다리는 차단 세션이 관측된다. 배포 무죄는 두 겹이다 — notification은 Kafka 컨슈머만 갖고 있어 체크아웃 동기 경로에 등장하지 않으며(트레이스에 없다), 실패 개시가 롤아웃보다 15초 늦고 롤아웃 완료 후에도 지속된다. commerce PG의 차단 세션은 0이고 payment 파드는 재생성 없이 열화한다.",
-      "domain": "commerce",
+      "domain": "core-banking",
       "class": "A",
       "fault_pattern": "P3+P7",
       "observation_domains": [
@@ -952,7 +952,7 @@
           "commerce/k8s/24-notification-service.yaml:4 (testbed-notification — distractor 롤아웃 대상 Deployment)",
           "commerce/notification-service/src/main/java/com/commerce/notification/consumer/PaymentEventConsumer.java:12-24 (PaymentEventConsumer @KafkaListener — notification은 컨슈머 전용이라 체크아웃 동기 경로 밖이다)"
         ],
-        "infra_anchor": "잠금은 kubectl exec로 testbed-oracle-0(FREEPDB1)에 붙어 client_identifier로 태그된 세션이 건다. **누설 잔여(L1)**: 이 태그 값 `rca-F08-G-oracle-lock`은 시나리오 ID를 그대로 노출하며 v$session 계열 관측에 남는다. PostgreSQL 경로(F01-R)에서는 실앱 신원 사칭으로 이미 제거했으나 Oracle 경로는 아직 대응 전이다(품질 기준서 §9 잔여 항목). 러너의 성공/rule-out 게이트가 이 태그 카운트에 의존하므로, 제거 시 F01-R과 같은 방식으로 판정을 '가해자 신원'에서 '피해자(차단된 세션)'로 옮겨야 한다. RCA 소비자 측 증거는 이미 피해자 기준으로 기술한다."
+        "infra_anchor": "잠금은 kubectl exec로 testbed-oracle-0(FREEPDB1)에 붙어 client_identifier로 태그된 세션이 건다. **누설 잔여(L1)**: 이 태그 값 `dba-maintenance`은 시나리오 ID를 그대로 노출하며 v$session 계열 관측에 남는다. PostgreSQL 경로(F01-R)에서는 실앱 신원 사칭으로 이미 제거했으나 Oracle 경로는 아직 대응 전이다(품질 기준서 §9 잔여 항목). 러너의 성공/rule-out 게이트가 이 태그 카운트에 의존하므로, 제거 시 F01-R과 같은 방식으로 판정을 '가해자 신원'에서 '피해자(차단된 세션)'로 옮겨야 한다. RCA 소비자 측 증거는 이미 피해자 기준으로 기술한다."
       },
       "must_support": [
         "BANKING.accounts의 commerce-settlement 행을 기다리는 차단 세션이 존재 — 잠금이 실제로 물었다는 직접 증거",
@@ -1014,7 +1014,7 @@
                   "table": "accounts",
                   "key_column": "id",
                   "key_value": "commerce-settlement",
-                  "client_identifier": "rca-F08-G-oracle-lock",
+                  "client_identifier": "dba-maintenance",
                   "hold_seconds": 600
                 }
               ]
@@ -1029,7 +1029,7 @@
       "cause": "commerce PG inventory row lock ∧ banking Oracle settlement row lock (독립 multi-root, has_single_cause:false)",
       "injection_summary": "tb-runner NodePort로 commerce inventory product_id=1을 PG 락(태그)하고 동시에 testbed-oracle-0 settlement 계좌를 Oracle 락(태그)한다.",
       "user_impact": "같은 checkout 요청이 두 blocking root 중 어느 쪽으로도 실패해 5xx가 발생한다.",
-      "distinguishing_evidence": "PG blocking session(rca-F15-G-inventory-lock)과 Oracle blocking session(rca-F15-G-oracle-lock)이 동시에 각각 존재하고 선후 인과가 없어 단일 root로 환원되지 않는다.",
+      "distinguishing_evidence": "commerce PG의 inventory 행을 기다리는 차단 세션과 banking Oracle의 commerce-settlement 계좌를 기다리는 차단 세션이 동시에 각각 존재하고, 선후 인과가 없어 단일 root로 환원되지 않는다.",
       "injected_fault": {
         "profile": "timeline.multi",
         "companions": [
@@ -1044,15 +1044,17 @@
                   "name": "commerce-inventory-lock",
                   "kind": "pg_lock",
                   "offset_seconds": 0,
-                  "db_host": "192.168.122.77",
-                  "db_port": 30432,
-                  "db_name": "commerce",
-                  "db_user": "commerce",
+                  "access": "in-cluster-pod",
+                  "namespace": "rca-testbed-commerce",
+                  "db_pod": "testbed-postgres-0",
+                  "service": "testbed-postgres",
+                  "secret": "postgres-secret",
+                  "image": "postgres:16-alpine",
                   "schema": "inventory_schema",
                   "table": "inventory",
                   "key_column": "product_id",
-                  "key_value": 1,
-                  "application_name": "rca-F15-G-inventory-lock",
+                  "key_value": "1",
+                  "client_identity": "PostgreSQL JDBC Driver",
                   "hold_seconds": 600
                 },
                 {
@@ -1065,7 +1067,7 @@
                   "table": "accounts",
                   "key_column": "id",
                   "key_value": "commerce-settlement",
-                  "client_identifier": "rca-F15-G-oracle-lock",
+                  "client_identifier": "dba-maintenance",
                   "hold_seconds": 600
                 }
               ]

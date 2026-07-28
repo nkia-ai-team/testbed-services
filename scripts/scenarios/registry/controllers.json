@@ -1405,6 +1405,12 @@
           "adapter": "business_probe",
           "query_id": "business.checkout_invariant",
           "freshness": "60s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -1414,6 +1420,12 @@
             "observation": "business_ok",
             "op": "eq",
             "value": false
+          },
+          {
+            "id": "checkout-impact",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.05
           }
         ],
         "consecutive_ticks": 2
@@ -3162,7 +3174,7 @@
               "table": "accounts",
               "key_column": "id",
               "key_value": "commerce-settlement",
-              "client_identifier": "rca-F01-P-oracle-lock",
+              "client_identifier": "dba-maintenance",
               "hold_seconds": 600
             },
             "min_hold": "8m",
@@ -3199,7 +3211,7 @@
           "adapter": "database",
           "query_id": "database.oracle_tagged_session_count",
           "parameters": {
-            "client_identifier": "rca-F01-P-oracle-lock"
+            "client_identifier": "dba-maintenance"
           },
           "freshness": "30s"
         },
@@ -3369,7 +3381,7 @@
                   "table": "accounts",
                   "key_column": "id",
                   "key_value": "commerce-settlement",
-                  "client_identifier": "rca-F08-G-oracle-lock",
+                  "client_identifier": "dba-maintenance",
                   "hold_seconds": 600
                 }
               ]
@@ -3408,7 +3420,7 @@
           "adapter": "database",
           "query_id": "database.oracle_tagged_session_count",
           "parameters": {
-            "client_identifier": "rca-F08-G-oracle-lock"
+            "client_identifier": "dba-maintenance"
           },
           "freshness": "30s"
         },
@@ -3496,8 +3508,8 @@
             "value": 0
           },
           {
-            "id": "injected-pg-lock-absent",
-            "observation": "tagged_pg_sessions",
+            "id": "pg-lock-victimless",
+            "observation": "blocked_pg_sessions",
             "op": "eq",
             "value": 0
           }
@@ -3543,15 +3555,17 @@
                   "name": "commerce-inventory-lock",
                   "kind": "pg_lock",
                   "offset_seconds": 0,
-                  "db_host": "192.168.122.77",
-                  "db_port": 30432,
-                  "db_name": "commerce",
-                  "db_user": "commerce",
+                  "access": "in-cluster-pod",
+                  "namespace": "rca-testbed-commerce",
+                  "db_pod": "testbed-postgres-0",
+                  "service": "testbed-postgres",
+                  "secret": "postgres-secret",
+                  "image": "postgres:16-alpine",
                   "schema": "inventory_schema",
                   "table": "inventory",
                   "key_column": "product_id",
-                  "key_value": 1,
-                  "application_name": "rca-F15-G-inventory-lock",
+                  "key_value": "1",
+                  "client_identity": "PostgreSQL JDBC Driver",
                   "hold_seconds": 600
                 },
                 {
@@ -3564,7 +3578,7 @@
                   "table": "accounts",
                   "key_column": "id",
                   "key_value": "commerce-settlement",
-                  "client_identifier": "rca-F15-G-oracle-lock",
+                  "client_identifier": "dba-maintenance",
                   "hold_seconds": 600
                 }
               ]
@@ -3599,11 +3613,12 @@
           "freshness": "30s"
         },
         {
-          "id": "tagged_pg_sessions",
+          "id": "blocked_pg_sessions",
           "adapter": "database",
-          "query_id": "database.tagged_session_count",
+          "query_id": "database.blocked_session_count",
           "parameters": {
-            "scenario_tag": "rca-F15-G-inventory-lock"
+            "schema": "inventory_schema",
+            "table": "inventory"
           },
           "freshness": "30s"
         },
@@ -3612,7 +3627,7 @@
           "adapter": "database",
           "query_id": "database.oracle_tagged_session_count",
           "parameters": {
-            "client_identifier": "rca-F15-G-oracle-lock"
+            "client_identifier": "dba-maintenance"
           },
           "freshness": "30s"
         },
@@ -3649,8 +3664,8 @@
             "value": true
           },
           {
-            "id": "pg-cleared",
-            "observation": "tagged_pg_sessions",
+            "id": "pg-blocking-cleared",
+            "observation": "blocked_pg_sessions",
             "op": "eq",
             "value": 0
           },

@@ -139,7 +139,7 @@
                     "table": "accounts",
                     "key_column": "id",
                     "key_value": "commerce-settlement",
-                    "client_identifier": "rca-F08-G-oracle-lock",
+                    "client_identifier": "dba-maintenance",
                     "hold_seconds": 600
                   }
                 ]
@@ -178,7 +178,7 @@
             "adapter": "database",
             "query_id": "database.oracle_tagged_session_count",
             "parameters": {
-              "client_identifier": "rca-F08-G-oracle-lock"
+              "client_identifier": "dba-maintenance"
             },
             "freshness": "30s"
           },

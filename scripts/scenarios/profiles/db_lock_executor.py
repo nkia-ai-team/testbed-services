@@ -40,7 +40,7 @@ CLIENT_LABEL_KEY = "lucida.io/db-client"
 CLIENT_LABEL_VALUE = "session"
 
 CONTRACTS: dict[str, dict[str, Any]] = {
-    "F01-P": {"engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0", "schema": "BANKING", "table": "accounts", "key_column": "id", "key_value": "commerce-settlement", "client_identifier": "rca-F01-P-oracle-lock", "hold_seconds": 600},
+    "F01-P": {"engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0", "schema": "BANKING", "table": "accounts", "key_column": "id", "key_value": "commerce-settlement", "client_identifier": "dba-maintenance", "hold_seconds": 600},
     "F01-R": {
         "engine": "postgresql", "access": "in-cluster-pod",
         "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
@@ -129,7 +129,7 @@ schema="$8"; table="$9"; scope="${10}"; mode="${11}"; keycol="${12}"; keyval="${
 hold="${14}"; identity="${15}"
 
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
-sel="lucida.io/db-client=session,lucida.io/scenario-run=$scenario"
+sel="lucida.io/db-client=session"
 state="/tmp/db-lock-${scenario}.state"
 
 case "$scope" in
@@ -158,7 +158,6 @@ metadata:
   namespace: ${ns}
   labels:
     lucida.io/db-client: session
-    lucida.io/scenario-run: ${scenario}
 spec:
   restartPolicy: Never
   terminationGracePeriodSeconds: 1
@@ -250,8 +249,16 @@ exit;
 EOF
 nohup sqlplus -s / as sysdba @/tmp/'"'"'$tag'"'"'.sql >/tmp/'"'"'$tag'"'"'.log 2>&1 </dev/null & echo $! >/tmp/'"'"'$tag'"'"'.pid' ;; cleanup) stop;; recovery) ! alive; check_row;; *) exit 2;; esac
 '''
-# TODO(G6/L2 — Oracle): F01-P·F08-G의 Oracle 경로는 아직 구 방식이다.
-#   · client_identifier에 시나리오 ID를 인코딩(L1)
+# L1 해소(2026-07-28): client_identifier가 시나리오 ID를 인코딩하던 것을
+#   `dba-maintenance` 상수로 통일했다(F01-P·F08-G·F15-G 공통). 케이스마다 다르면
+#   태그 하나가 정답을 지목하지만(L1), 전 케이스 균일하면 변별정보가 0이라
+#   공개 가능한 환경 서명(L4)이 된다 — 기준서 G6의 판정 규칙 그대로다.
+#   값 선택 근거: 실 앱은 set_identifier를 호출하지 않으므로 무엇을 넣어도
+#   앱과 같아지지는 않는다. 그렇다면 특정 서비스를 지목하지 않는 운영 주체
+#   이름이 안전하다 — `banking-interest-batch` 같은 값은 무고한 서비스를
+#   가리키는 **틀린 단서**가 된다.
+#
+# TODO(G6/L2 — Oracle): 남은 두 축은 그대로다.
 #   · `host sleep`으로 유지 → 대기 이벤트가 인위적(L2)
 #   · DB 파드 내부 실행이라 출처가 앱과 다름(L2)
 #   PostgreSQL과 동일하게 (1) 실 앱 신원 사칭 (2) idle-in-transaction 유지

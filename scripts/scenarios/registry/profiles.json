@@ -46,7 +46,7 @@
           "table": "accounts",
           "key_column": "id",
           "key_value": "commerce-settlement",
-          "client_identifier": "rca-F01-P-oracle-lock",
+          "client_identifier": "dba-maintenance",
           "hold_seconds": 600
         },
         "F06-H": {
@@ -3269,7 +3269,7 @@
               "table": "accounts",
               "key_column": "id",
               "key_value": "commerce-settlement",
-              "client_identifier": "rca-F08-G-oracle-lock",
+              "client_identifier": "dba-maintenance",
               "hold_seconds": 600
             }
           ]
@@ -3280,15 +3280,17 @@
               "name": "commerce-inventory-lock",
               "kind": "pg_lock",
               "offset_seconds": 0,
-              "db_host": "192.168.122.77",
-              "db_port": 30432,
-              "db_name": "commerce",
-              "db_user": "commerce",
+              "access": "in-cluster-pod",
+              "namespace": "rca-testbed-commerce",
+              "db_pod": "testbed-postgres-0",
+              "service": "testbed-postgres",
+              "secret": "postgres-secret",
+              "image": "postgres:16-alpine",
               "schema": "inventory_schema",
               "table": "inventory",
               "key_column": "product_id",
-              "key_value": 1,
-              "application_name": "rca-F15-G-inventory-lock",
+              "key_value": "1",
+              "client_identity": "PostgreSQL JDBC Driver",
               "hold_seconds": 600
             },
             {
@@ -3301,7 +3303,7 @@
               "table": "accounts",
               "key_column": "id",
               "key_value": "commerce-settlement",
-              "client_identifier": "rca-F15-G-oracle-lock",
+              "client_identifier": "dba-maintenance",
               "hold_seconds": 600
             }
           ]
