@@ -48,20 +48,27 @@ function pick(arr) {
   return arr[randInt(0, arr.length - 1)];
 }
 
+// step 태그는 관측 계약이다 — loadgen_monitor가 business_step/read_step 태그로
+// 사업 지표를 분해한다(profiles.json domain_profiles: business_step=transfer,
+// read_step=get). commerce·food-delivery baseline은 처음부터 태그를 달았는데
+// core-banking만 빠져 있어 이 도메인의 baseline 사업 지표를 셀 수 없었다.
 function balanceCheckJourney() {
   const id = pick(ACTIVE_ACCOUNTS);
-  const res = http.get(`${GATEWAY_URL}/api/accounts/${id}`);
+  const res = http.get(`${GATEWAY_URL}/api/accounts/${id}`,
+    { tags: { journey: 'balance', step: 'get' } });
   check(res, { 'balance check status is 200': (r) => r.status === 200 });
 }
 
 function transactionHistoryJourney() {
   const id = pick(ACTIVE_ACCOUNTS);
-  const res = http.get(`${GATEWAY_URL}/api/transfers?fromAccount=${id}`);
+  const res = http.get(`${GATEWAY_URL}/api/transfers?fromAccount=${id}`,
+    { tags: { journey: 'history', step: 'history' } });
   check(res, { 'transaction history status ok': (r) => r.status === 200 || r.status === 404 });
 }
 
 function accountListJourney() {
-  const res = http.get(`${GATEWAY_URL}/api/accounts?status=ACTIVE&size=20`);
+  const res = http.get(`${GATEWAY_URL}/api/accounts?status=ACTIVE&size=20`,
+    { tags: { journey: 'browsing', step: 'list' } });
   check(res, { 'account list status ok': (r) => r.status === 200 || r.status === 404 });
 }
 
@@ -79,6 +86,7 @@ function smallTransferJourney() {
   });
   const res = http.post(`${GATEWAY_URL}/api/transfers`, payload, {
     headers: { 'Content-Type': 'application/json' },
+    tags: { journey: 'transfer', step: 'transfer' },
   });
   check(res, { 'transfer status ok': (r) => r.status === 200 });
 }

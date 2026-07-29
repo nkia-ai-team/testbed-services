@@ -118,11 +118,20 @@ class NorthSouthExecutorTests(unittest.TestCase):
         self.assertNotIn("pkill", script)
         self.assertIn('systemctl is-active --quiet "$baseline_unit"', script)
         self.assertIn('--out "json=$samples"', script)
-        self.assertIn('"entry_status": entry_status', script)
+        self.assertIn('"entry_status": self.entry_status', script)
         self.assertIn('"checkout_5xx_rate": checkout_5xx_rate', script)
         self.assertIn("checkout_results", script)
-        self.assertIn('"business_ok": entry_status in {200, 400, 409}', script)
+        self.assertIn('"business_ok": self.entry_status in {200, 400, 409}', script)
         self.assertIn('rca-scenario-${safe_id}-live.json', script)
+        # The monitor body is injected from the canonical loadgen_monitor.py
+        # rather than restated here — a second hand-maintained copy is what
+        # killed F06-P's sole success condition on 2026-07-29.
+        self.assertIn("--mode tail --scenario-id", script)
+        self.assertEqual(
+            (Path(executor.__file__).resolve().parent / "loadgen_monitor.py").read_text()
+            in script,
+            True,
+        )
 
     def test_live_requires_exact_digest_and_confirmation_before_dispatch(self) -> None:
         plan = compiler.compile_plan("f07-h-north-south-surge")

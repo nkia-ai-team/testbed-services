@@ -87,7 +87,21 @@ def build_ssh_argv(location: dict[str, Any]) -> list[str]:
 
 
 def remote_script() -> bytes:
-    return br'''#!/usr/bin/env bash
+    """원격 bash 스크립트를 조립한다.
+
+    monitor 본문은 `loadgen_monitor.py`(정본)에서 읽어 주입한다. 예전에는 이 함수 안에
+    heredoc으로 박혀 있었는데, baseline 경로가 같은 파서를 필요로 하면서 사본이 둘이 될
+    참이었다 — 손으로 관리하는 두 번째 사본이 정본과 갈라져 시나리오의 유일한 성공 조건을
+    죽인 게 2026-07-29 F06-P다. 읽어서 주입하면 ssh stdin 한 번으로 보내는 기존 구조를
+    유지하면서도 정본이 하나로 남는다.
+    """
+    monitor_source = (HERE / "loadgen_monitor.py").read_bytes()
+    if b"\nPY\n" in monitor_source or monitor_source.startswith(b"PY\n"):
+        raise ExecutorError("monitor source collides with the heredoc terminator")
+    return _REMOTE_PREFIX + monitor_source + _REMOTE_SUFFIX
+
+
+_REMOTE_PREFIX = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; target_rps="$3"; ramp_up="$4"; hold="$5"; ramp_down="$6"
 entry_url="$7"; script_path="$8"; scenario_tag="$9"; seed="${10}"; baseline_unit="${11}"
@@ -132,142 +146,18 @@ case "$action" in
     check_read_only
     [[ -z "$(tagged_pids)" ]] || { echo "tagged k6 already running" >&2; exit 4; }
     cat >"$monitor" <<'PY'
-# The live document must be rewritten at most once per drain cycle, not per
-# parsed line: a per-line fsync cannot keep up with k6's json output at high
-# arrival rates, the parser falls minutes behind, and observed_at then trips
-# the 30s staleness contract (F07-H run 158b449c, 80rps, 07-19).
-import collections, datetime, json, os, sys, time
-source, output, scenario_id, business_step, read_step = (sys.argv[1:] + [""])[:5]
-iterations = collections.deque()
-checkout_results = collections.deque()
-read_results = collections.deque()
-entry_status = None
-last_stamp = None
-position = 0
-while True:
-    parsed_any = False
-    try:
-        with open(source, encoding="utf-8") as stream:
-            stream.seek(position)
-            while True:
-                line = stream.readline()
-                if not line:
-                    break
-                position = stream.tell()
-                if '"iterations"' not in line and '"http_reqs"' not in line:
-                    continue
-                try:
-                    point = json.loads(line)
-                    if point.get("type") != "Point":
-                        continue
-                    data = point.get("data", {})
-                    observed = data.get("time")
-                    if not observed:
-                        continue
-                    stamp = datetime.datetime.fromisoformat(observed.replace("Z", "+00:00"))
-                    metric = point.get("metric")
-                    tags = data.get("tags", {})
-                    if metric == "iterations":
-                        iterations.append(stamp)
-                    elif metric == "http_reqs" and tags.get("step") == business_step:
-                        raw = tags.get("status")
-                        entry_status = int(raw) if raw and str(raw).isdigit() else 0
-                        checkout_results.append((stamp, entry_status))
-                    elif metric == "http_reqs" and read_step and tags.get("step") == read_step:
-                        raw = tags.get("status")
-                        read_results.append((stamp, int(raw) if raw and str(raw).isdigit() else 0))
-                    else:
-                        continue
-                    last_stamp = stamp
-                    parsed_any = True
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except FileNotFoundError:
-        pass
-    if parsed_any and last_stamp is not None:
-        cutoff = last_stamp - datetime.timedelta(seconds=30)
-        while iterations and iterations[0] < cutoff:
-            iterations.popleft()
-        while checkout_results and checkout_results[0][0] < cutoff:
-            checkout_results.popleft()
-        while read_results and read_results[0][0] < cutoff:
-            read_results.popleft()
-        span = max(1.0, min(30.0, (iterations[-1] - iterations[0]).total_seconds())) if len(iterations) > 1 else 1.0
-        checkout_count = len(checkout_results)
-        business_2xx_rate = (
-            sum(200 <= status <= 299 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_4xx_rate = (
-            sum(400 <= status <= 499 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_5xx_rate = (
-            sum(status >= 500 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_nonok_rate = business_4xx_rate + business_5xx_rate
-        # checkout_5xx_rate is kept for backward compatibility (pre-existing
-        # query_id/consumer contract); business_5xx_rate is its replacement value.
-        checkout_5xx_rate = business_5xx_rate
-        # F23-R decisive evidence: 409 (stock-exhausted) is a subset of the
-        # 4xx bucket that business_nonok_rate can't isolate from other 4xx
-        # causes (e.g. coupon validation) - tracked separately here.
-        business_409_rate = (
-            sum(status == 409 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        # F06-P decisive evidence: 429 (downstream rate limit) is another 4xx
-        # subset that business_nonok_rate cannot isolate. Without it a partial
-        # 429 outage is indistinguishable from validation rejects, and
-        # business_5xx_rate is blind to it entirely - the app propagates the
-        # downstream status verbatim rather than promoting it to 5xx.
-        business_429_rate = (
-            sum(status == 429 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        document = {
-            "scenario_id": scenario_id,
-            "scenario_tag": f"scenario_id={scenario_id}",
-            "achieved_rps": len(iterations) / span,
-            "entry_status": entry_status,
-            "checkout_5xx_rate": checkout_5xx_rate,
-            "business_2xx_rate": business_2xx_rate,
-            "business_4xx_rate": business_4xx_rate,
-            "business_5xx_rate": business_5xx_rate,
-            "business_409_rate": business_409_rate,
-            "business_429_rate": business_429_rate,
-            "business_nonok_rate": business_nonok_rate,
-            "business_ok": entry_status in {200, 400, 409},
-            "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-        if read_step:
-            read_count = len(read_results)
-            read_2xx_rate = (
-                sum(200 <= status <= 299 for _, status in read_results) / read_count
-                if read_count else 0.0
-            )
-            document["read_2xx_rate"] = read_2xx_rate
-            document["read_nonok_rate"] = (
-                sum(status >= 400 or status == 0 for _, status in read_results) / read_count
-                if read_count else 0.0
-            )
-        temporary = output + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as target:
-            json.dump(document, target, sort_keys=True)
-            target.write("\n")
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, output)
-    time.sleep(1)
-PY
+'''
+
+_REMOTE_SUFFIX = br'''PY
     rm -f -- "$samples" "$live"
     nohup k6 run --tag "$scenario_tag" \
       --env "$gateway_env=$entry_url" --env "TARGET_RPS=$target_rps" \
       --env "RAMP_UP=$ramp_up" --env "HOLD=$hold" --env "RAMP_DOWN=$ramp_down" \
       --env "SURGE_SEED=$seed" --out "json=$samples" --summary-export "$summary" "$script_path" \
       >"$log_file" 2>&1 &
-    nohup python3 "$monitor" "$samples" "$live" "$scenario_id" "$business_step" "$read_step" \
+    nohup python3 "$monitor" --source "$samples" --output "$live" \
+      --business-step "$business_step" --read-step "$read_step" \
+      --mode tail --scenario-id "$scenario_id" \
       >>"$log_file" 2>&1 & echo $! >"$monitor_pid"
     ;;
   cleanup)

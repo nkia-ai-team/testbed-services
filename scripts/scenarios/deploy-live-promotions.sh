@@ -18,8 +18,11 @@ python3 scripts/scenarios/generate-manifests.py --check
 (
   cd "$runner_repo/backend"
   RCA_TRACE_DIR=/tmp/rca-traces uv run pytest tests -q
+  # Derived from the catalog, not pinned: the pinned 64 outlived the catalog's
+  # move to 60 and this assertion had been failing ever since, blocking the
+  # deploy path it was meant to guard.
   uv run python -c \
-    'from pathlib import Path; from app.manifests import load_manifests; manifests=load_manifests(Path("../../testbed-services/scripts/scenarios/manifests")); assert len({item.id for item in manifests.values()}) == 64'
+    'import json;from pathlib import Path;from app.manifests import load_manifests;root=Path("../../testbed-services/scripts/scenarios");expected=len(json.loads((root/"catalog.json").read_text())["scenarios"]);manifests=load_manifests(root/"manifests");assert len({item.id for item in manifests.values()}) == expected, f"manifests {len(manifests)} != catalog {expected}"'
 )
 
 # Publish the load scripts the live profiles reference. 2026-07-28: this step did
@@ -51,6 +54,24 @@ while read -r remote_path; do
   loadgen_repo_files+="$domain/loadgen/$file"$'\n'
 done <<<"$loadgen_paths"
 
+# Observation plane separation (docs/spec-scenario-observation-plane.md): the
+# resident baseline units publish a per-domain live document, so tb-runner needs
+# the shared monitor, the sh helper the three entrypoints source, and the
+# entrypoints themselves. Without these the units keep running the old script and
+# no baseline document ever appears — observations then fail closed, silently.
+baseline_shared_files=(
+  "scripts/scenarios/profiles/loadgen_monitor.py"
+  "scripts/loadgen/baseline-publish.sh"
+)
+baseline_domains=(commerce core-banking food-delivery)
+for domain in "${baseline_domains[@]}"; do
+  loadgen_repo_files+="$domain/loadgen/entrypoint.sh"$'\n'
+done
+for shared in "${baseline_shared_files[@]}"; do
+  [[ -f "$repo_root/$shared" ]] || { echo "baseline file missing from repo: $shared" >&2; exit 1; }
+  loadgen_repo_files+="$shared"$'\n'
+done
+
 # The baseline script.js files are deliberately not shipped here — they belong to
 # the resident loadgen-* units and replacing one would need a unit restart.
 tar czf - -C "$repo_root" $(echo "$loadgen_repo_files" | tr '\n' ' ') \
@@ -60,23 +81,58 @@ tar czf - -C "$repo_root" $(echo "$loadgen_repo_files" | tr '\n' ' ') \
         set -e
         rm -rf /tmp/loadgen-stage && mkdir -p /tmp/loadgen-stage
         tar xzf /tmp/loadgen-publish.tgz -C /tmp/loadgen-stage
-        for src in /tmp/loadgen-stage/*/loadgen/*.js; do
+        for src in /tmp/loadgen-stage/*/loadgen/*.js /tmp/loadgen-stage/*/loadgen/entrypoint.sh; do
+          [ -f \$src ] || continue
           domain=\$(basename \$(dirname \$(dirname \$src)))
           sudo install -m 644 -o root -g root \$src /opt/loadgen/\$domain/\$(basename \$src)
         done
+        sudo install -m 644 -o root -g root \
+          /tmp/loadgen-stage/scripts/scenarios/profiles/loadgen_monitor.py /opt/loadgen/loadgen_monitor.py
+        sudo install -m 644 -o root -g root \
+          /tmp/loadgen-stage/scripts/loadgen/baseline-publish.sh /opt/loadgen/baseline-publish.sh
         rm -rf /tmp/loadgen-stage /tmp/loadgen-publish.tgz'
       rm -f /tmp/loadgen-publish.tgz"
 
 # Verify by content, not by exit status: a silently truncated copy still exits 0.
+# Every published file is checked, not just the k6 scripts — the baseline monitor
+# and the entrypoints are just as load-bearing now.
+verify_pairs=""
 while read -r remote_path; do
   [[ -n "$remote_path" ]] || continue
   domain=$(basename "$(dirname "$remote_path")")
   file=$(basename "$remote_path")
-  local_sum=$(md5sum "$repo_root/$domain/loadgen/$file" | cut -d' ' -f1)
+  verify_pairs+="$remote_path|$repo_root/$domain/loadgen/$file"$'\n'
+done <<<"$loadgen_paths"
+for domain in "${baseline_domains[@]}"; do
+  verify_pairs+="/opt/loadgen/$domain/entrypoint.sh|$repo_root/$domain/loadgen/entrypoint.sh"$'\n'
+done
+verify_pairs+="/opt/loadgen/loadgen_monitor.py|$repo_root/scripts/scenarios/profiles/loadgen_monitor.py"$'\n'
+verify_pairs+="/opt/loadgen/baseline-publish.sh|$repo_root/scripts/loadgen/baseline-publish.sh"$'\n'
+
+while IFS='|' read -r remote_path local_path; do
+  [[ -n "$remote_path" ]] || continue
+  local_sum=$(md5sum "$local_path" | cut -d' ' -f1)
   remote_sum=$(ssh "$remote" "ssh -i ~/.ssh/tb_key nkia@192.168.122.206 'md5sum $remote_path'" | cut -d' ' -f1)
   [[ "$local_sum" == "$remote_sum" ]] \
     || { echo "load script mismatch on tb-runner: $remote_path" >&2; exit 1; }
-done <<<"$loadgen_paths"
+done <<<"$verify_pairs"
+
+# An entrypoint on disk is not an entrypoint in effect: the resident unit keeps
+# running whatever it started with. Publishing without restarting would leave a
+# green md5 next to a baseline that publishes nothing. Report it rather than
+# restarting here — dropping baseline traffic mid-deploy is the caller's call.
+# The unit each domain's entrypoint belongs to. test_loadgen_monitor.py locks
+# this same pairing against profiles.json, so it cannot drift silently.
+declare -A baseline_units=(
+  [commerce]=loadgen-commerce
+  [core-banking]=loadgen-banking
+  [food-delivery]=loadgen-food
+)
+for domain in "${baseline_domains[@]}"; do
+  unit=${baseline_units[$domain]}
+  echo "[deploy] $unit: entrypoint published — restart for it to take effect:"
+  echo "[deploy]   ssh nkia@192.168.122.206 'sudo systemctl restart $unit'"
+done
 
 # Publish implementations and manifests before the registry exposes new live IDs.
 rsync -az --exclude registry/controllers.json \
