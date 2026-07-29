@@ -18,6 +18,9 @@ total="$(jq '.scenarios | length' "$catalog")"
 # have no catalog entry and 14 catalog entries have no script. Pinned so new
 # drift trips, not as an endorsement — cleanup is a separate backlog item.
 [[ "$(find "$script_dir/bin" -maxdepth 1 -type f -name '*.sh' | wc -l)" -eq 64 ]]
+# 2026-07-29: ready 41→43, parked 14→12. F15-H·F15-T2 승격(c83fcaf)이 이 핀을 두고 갔다.
+# 이 스위트가 deploy-live-promotions.sh의 첫 관문이라, 핀이 어긋난 동안 배포 자체가
+# 막혀 있었다 — 승격 커밋과 핀 갱신은 같은 커밋에 있어야 한다.
 # The readiness split IS a governed decision, so it stays pinned.
 # parked = 2026-07-27 골든 감사 CUT 26종. 설계 자산은 남기고 실행에서만 뺀다.
 # 2026-07-28: ready 31→32, parked 26→25. F03-H가 복귀했다 — 주입 표면을 자백하던
@@ -43,8 +46,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 미발행 outbox를 세는 관측이며 러너에 신설했다.
 # 2026-07-28: ready 43→41. 부하 도달 가능성 전수 점검에서 F07-P·F20-P가 반증됐다.
 # 둘 다 "부하를 부으면 뻗는다"를 서비스 시간 측정 없이 가정하고 있었다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 41 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 14 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 43 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 12 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
@@ -204,8 +207,9 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # 2026-07-28: 29→30. F04-H 승격분(bin/ 스크립트를 이미 갖고 있었다).
 # 2026-07-28: 30→29. F07-P 강등분(F20-P는 bin/ 스크립트가 없어 이 카운트에
 # 애초에 들어 있지 않았다).
-[[ $((ready_live_false + ready_live_true)) -eq 29 ]]
-[[ "$ready_live_true" -eq 29 ]]
+# 2026-07-29: 29→31. F15-H·F15-T2 승격분(둘 다 bin/ 스크립트를 갖고 있다).
+[[ $((ready_live_false + ready_live_true)) -eq 31 ]]
+[[ "$ready_live_true" -eq 31 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

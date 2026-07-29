@@ -136,6 +136,26 @@ class RegistryContractTests(unittest.TestCase):
             ]
             self.assertEqual(len(signatures), len(set(signatures)), scenario_id)
 
+    def test_condition_ids_are_unique_within_every_condition_set(self) -> None:
+        # The runner enforces id uniqueness per condition set; this registry only
+        # checked (observation, op, value) signatures, so F16-H carried two
+        # "reads-also-broken" vetoes at gte 0.3 and gte 0.1 — different signature,
+        # same id. The manifest then failed to load at all, which took the whole
+        # deploy path down with it (2026-07-29). Check what the runner checks.
+        for scenario_id, controller in self.controllers["controllers"].items():
+            for gate in ("success", "escalate", "abort", "must_rule_out", "recovery"):
+                condition_set = controller.get(gate)
+                if not isinstance(condition_set, dict):
+                    continue
+                for match in ("all", "any"):
+                    items = condition_set.get(match)
+                    if not isinstance(items, list):
+                        continue
+                    ids = [item["id"] for item in items if isinstance(item, dict) and "id" in item]
+                    self.assertEqual(
+                        len(ids), len(set(ids)), f"{scenario_id}.{gate}.{match}"
+                    )
+
     def test_all_kubectl_locations_use_canonical_kubeconfig(self) -> None:
         for location in self.locations["locations"].values():
             if location["transport"] == "kubectl":
