@@ -170,13 +170,13 @@
               "id": "payment-service-down",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.2
+              "value": 20
             },
             {
               "id": "payment-also-erroring",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.05
+              "value": 5
             }
           ],
           "consecutive_ticks": 2

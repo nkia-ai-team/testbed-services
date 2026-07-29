@@ -413,6 +413,45 @@ class RegistryContractTests(unittest.TestCase):
                         f"{scenario_id}:{section}:{condition['id']} looks like seconds",
                     )
 
+    def test_rate_thresholds_are_stated_in_the_metric_unit(self) -> None:
+        # prometheus.apm_service_error_rate reads apm.agent.otel.java.error_rate,
+        # which the Polestar APM agent publishes as a PERCENTAGE (0..100) —
+        # live-verified against VictoriaMetrics 119:18428 on 2026-07-29. The 48h
+        # distinct non-zero values were 33.333 / 50 / 66.667 / 75 / 100, i.e.
+        # 1/3, 1/2, 2/3, 3/4, 1 rendered as percent. A fraction would cap at 1.0.
+        #
+        # Every gate was authored as a 0..1 fraction (0.05 .. 0.3) beside genuine
+        # 0..1 loadgen rates, so all 13 live scenarios were off by 100x — and in
+        # both directions at once: success gates cleared at 0.1% error (a fake
+        # success on one request in a thousand, charter G3) while must_rule_out
+        # gates fired at 0.05% and vetoed sound runs.
+        #
+        # No gate here means "a tenth of a percent", so a non-zero threshold
+        # below 1 is a unit error rather than a strict gate. F12-H's `gt 0`
+        # asks only whether any error exists and is unit-free.
+        floor = 1
+        parked = json.loads(
+            (ROOT / "registry" / "controllers-parked.json").read_text(encoding="utf-8")
+        )["controllers"]
+        every_controller = {**parked, **self.controllers["controllers"]}
+        for scenario_id, controller in sorted(every_controller.items()):
+            query_by_observation = {
+                item["id"]: item["query_id"] for item in controller["observations"]
+            }
+            for section in ("success", "escalate", "must_rule_out", "recovery", "abort"):
+                block = controller.get(section) or {}
+                for condition in block.get("all", []) + block.get("any", []):
+                    query_id = query_by_observation[condition["observation"]]
+                    if query_id != "prometheus.apm_service_error_rate":
+                        continue
+                    if condition["value"] == 0:
+                        continue
+                    self.assertGreaterEqual(
+                        condition["value"],
+                        floor,
+                        f"{scenario_id}:{section}:{condition['id']} looks like a fraction",
+                    )
+
     def test_host_stress_observes_the_node_it_actually_injects(self) -> None:
         # 2026-07-28: 배치 고정에 맞춰 좌표를 갱신할 때 profiles.json의 주입 host는
         # 고쳤으나 컨트롤러 observation의 node= 파라미터는 그대로였다. 그 결과 F09-R은

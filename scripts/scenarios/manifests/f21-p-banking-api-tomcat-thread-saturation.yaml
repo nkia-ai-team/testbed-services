@@ -200,7 +200,7 @@
               "id": "api-failing-not-queueing",
               "observation": "api_error_rate",
               "op": "gte",
-              "value": 0.05
+              "value": 5
             },
             {
               "id": "threads-never-piled-up",

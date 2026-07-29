@@ -173,7 +173,7 @@
               "id": "order-timeout-symptom",
               "observation": "order_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 10
             }
           ],
           "consecutive_ticks": 3

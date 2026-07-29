@@ -193,7 +193,7 @@
               "id": "cross-domain-payment-impact",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 10
             },
             {
               "id": "checkout-impact",

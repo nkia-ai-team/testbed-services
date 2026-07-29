@@ -317,7 +317,7 @@
             "id": "bulkhead-rejections-visible",
             "observation": "pricing_error_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 10
           },
           {
             "id": "checkout-impact",
@@ -334,7 +334,7 @@
             "id": "bulkhead-not-saturated",
             "observation": "pricing_error_rate",
             "op": "lt",
-            "value": 0.05
+            "value": 5
           }
         ],
         "consecutive_ticks": 3
@@ -385,7 +385,7 @@
             "id": "rejections-cleared",
             "observation": "pricing_error_rate",
             "op": "lt",
-            "value": 0.05
+            "value": 5
           }
         ],
         "consecutive_ticks": 2,
@@ -537,7 +537,7 @@
             "id": "account-502-up",
             "observation": "account_error_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 10
           },
           {
             "id": "transfer-pool-occupied",
@@ -560,7 +560,7 @@
             "id": "oracle-global-outage",
             "observation": "ledger_error_rate",
             "op": "gte",
-            "value": 0.3
+            "value": 30
           }
         ],
         "consecutive_ticks": 2
@@ -600,7 +600,7 @@
             "id": "account-recovered",
             "observation": "account_error_rate",
             "op": "lt",
-            "value": 0.02
+            "value": 2
           }
         ],
         "consecutive_ticks": 2,

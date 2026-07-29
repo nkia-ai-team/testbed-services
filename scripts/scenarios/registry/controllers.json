@@ -1040,7 +1040,7 @@
             "id": "timeout-symptom-visible",
             "observation": "order_error_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 10
           },
           {
             "id": "checkout-impact",
@@ -1097,7 +1097,7 @@
             "id": "timeout-config-cleared",
             "observation": "order_error_rate",
             "op": "lt",
-            "value": 0.05
+            "value": 5
           }
         ],
         "consecutive_ticks": 2,
@@ -3074,7 +3074,7 @@
             "id": "cross-domain-payment-impact",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 10
           },
           {
             "id": "checkout-impact",
@@ -3667,7 +3667,7 @@
             "id": "order-timeout-symptom",
             "observation": "order_error_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 10
           }
         ],
         "consecutive_ticks": 3
@@ -5376,7 +5376,7 @@
             "id": "cross-domain-payment-impact",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 10
           },
           {
             "id": "checkout-impact",
@@ -5930,13 +5930,13 @@
             "id": "payment-5xx-cascade",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.2
+            "value": 20
           },
           {
             "id": "payment-also-erroring",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.05
+            "value": 5
           }
         ],
         "consecutive_ticks": 2
@@ -6098,7 +6098,7 @@
             "id": "payment-errors",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.3
+            "value": 30
           },
           {
             "id": "order-502-propagated",
@@ -6155,7 +6155,7 @@
             "id": "payment-errors-cleared",
             "observation": "payment_error_rate",
             "op": "lt",
-            "value": 0.05
+            "value": 5
           },
           {
             "id": "create-cleared",
@@ -6529,13 +6529,13 @@
             "id": "payment-service-down",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.2
+            "value": 20
           },
           {
             "id": "payment-also-erroring",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.05
+            "value": 5
           }
         ],
         "consecutive_ticks": 2
@@ -6743,7 +6743,7 @@
             "id": "payment-5xx-cascade",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.2
+            "value": 20
           },
           {
             "id": "dispatch-capacity-503",
@@ -6755,7 +6755,7 @@
             "id": "payment-also-erroring",
             "observation": "payment_error_rate",
             "op": "gte",
-            "value": 0.05
+            "value": 5
           }
         ],
         "consecutive_ticks": 2
@@ -9101,7 +9101,7 @@
             "id": "upstream-failing-not-slowing",
             "observation": "restaurant_error_rate",
             "op": "gte",
-            "value": 0.05
+            "value": 5
           },
           {
             "id": "user-load-overshot",
@@ -9335,7 +9335,7 @@
             "id": "api-failing-not-queueing",
             "observation": "api_error_rate",
             "op": "gte",
-            "value": 0.05
+            "value": 5
           },
           {
             "id": "threads-never-piled-up",

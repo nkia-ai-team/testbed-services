@@ -255,7 +255,7 @@
               "id": "timeout-symptom-visible",
               "observation": "order_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 10
             },
             {
               "id": "checkout-impact",
@@ -312,7 +312,7 @@
               "id": "timeout-config-cleared",
               "observation": "order_error_rate",
               "op": "lt",
-              "value": 0.05
+              "value": 5
             }
           ],
           "consecutive_ticks": 2,

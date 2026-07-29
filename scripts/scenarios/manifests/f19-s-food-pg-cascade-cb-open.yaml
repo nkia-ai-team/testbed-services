@@ -146,7 +146,7 @@
               "id": "payment-errors",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.3
+              "value": 30
             },
             {
               "id": "order-502-propagated",
@@ -203,7 +203,7 @@
               "id": "payment-errors-cleared",
               "observation": "payment_error_rate",
               "op": "lt",
-              "value": 0.05
+              "value": 5
             },
             {
               "id": "create-cleared",

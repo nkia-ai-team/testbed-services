@@ -215,7 +215,7 @@
               "id": "upstream-failing-not-slowing",
               "observation": "restaurant_error_rate",
               "op": "gte",
-              "value": 0.05
+              "value": 5
             },
             {
               "id": "user-load-overshot",
