@@ -41,7 +41,9 @@
     "F09-H",
     "F09-P",
     "F17-P",
-    "F04-H"
+    "F04-H",
+    "F15-H",
+    "F15-T2"
   ],
   "controllers": {
     "F01-R": {
@@ -10733,6 +10735,482 @@
         "post_window": "20m",
         "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
         "create_golden_anomaly": false
+      }
+    },
+    "F15-H": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "15m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "timeline.compose",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "timeline.compose",
+        "levels": [
+          {
+            "id": "approved-fixed-f15-h",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_access": "in-cluster-pod",
+              "pg_db_pod": "testbed-postgres-0",
+              "pg_service": "testbed-postgres",
+              "pg_secret": "postgres-secret",
+              "pg_image": "postgres:16-alpine",
+              "pg_schema": "inventory_schema",
+              "pg_table": "inventory",
+              "pg_lock_scope": "table",
+              "pg_lock_mode": "EXCLUSIVE",
+              "pg_client_identity": "PostgreSQL JDBC Driver",
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_mock_resource": "deployment/testbed-external-pg-mock",
+              "food_mock_path": "/pay",
+              "food_mock_status": 429,
+              "start_offset_seconds": 0
+            },
+            "min_hold": "8m",
+            "settle": "45s",
+            "timeout": "15m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "commerce_blocked_db_sessions",
+          "adapter": "database",
+          "query_id": "database.blocked_session_count",
+          "parameters": {
+            "schema": "inventory_schema",
+            "table": "inventory"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "commerce_order_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "food_create_429_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_429_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "food_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "commerce-lock-blocks-checkout",
+            "observation": "commerce_blocked_db_sessions",
+            "op": "gte",
+            "value": 1
+          },
+          {
+            "id": "commerce-order-stalled",
+            "observation": "commerce_order_p95",
+            "op": "gte",
+            "value": 2000
+          },
+          {
+            "id": "food-429-propagated",
+            "observation": "food_create_429_rate",
+            "op": "gte",
+            "value": 0.3
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 15
+          },
+          {
+            "id": "food-order-pod-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false
+          },
+          {
+            "id": "food-promoted-to-5xx",
+            "observation": "food_create_5xx_rate",
+            "op": "gte",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "pg-lock-cleared",
+            "observation": "commerce_blocked_db_sessions",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "commerce-order-recovered",
+            "observation": "commerce_order_p95",
+            "op": "lt",
+            "value": 800
+          },
+          {
+            "id": "food-429-cleared",
+            "observation": "food_create_429_rate",
+            "op": "lt",
+            "value": 0.02
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      }
+    },
+    "F15-T2": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "timeline.compose",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "timeline.compose",
+        "levels": [
+          {
+            "id": "approved-fixed-f15-t2",
+            "parameters": {
+              "commerce_namespace": "rca-testbed-commerce",
+              "pg_access": "in-cluster-pod",
+              "pg_db_pod": "testbed-postgres-0",
+              "pg_service": "testbed-postgres",
+              "pg_secret": "postgres-secret",
+              "pg_image": "postgres:16-alpine",
+              "pg_schema": "inventory_schema",
+              "pg_table": "inventory",
+              "pg_lock_scope": "table",
+              "pg_lock_mode": "EXCLUSIVE",
+              "pg_client_identity": "PostgreSQL JDBC Driver",
+              "pg_hold_seconds": 600,
+              "food_namespace": "rca-testbed-food",
+              "food_mock_resource": "deployment/testbed-external-pg-mock",
+              "food_mock_path": "/pay",
+              "food_mock_status": 429,
+              "start_offset_seconds": 240
+            },
+            "min_hold": "10m",
+            "settle": "45s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "commerce_blocked_db_sessions",
+          "adapter": "database",
+          "query_id": "database.blocked_session_count",
+          "parameters": {
+            "schema": "inventory_schema",
+            "table": "inventory"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "commerce_order_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "120s"
+        },
+        {
+          "id": "food_create_429_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_429_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "food_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "commerce-lock-blocks-checkout",
+            "observation": "commerce_blocked_db_sessions",
+            "op": "gte",
+            "value": 1
+          },
+          {
+            "id": "commerce-order-stalled",
+            "observation": "commerce_order_p95",
+            "op": "gte",
+            "value": 2000
+          },
+          {
+            "id": "food-429-propagated",
+            "observation": "food_create_429_rate",
+            "op": "gte",
+            "value": 0.3
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 15
+          },
+          {
+            "id": "food-order-pod-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false
+          },
+          {
+            "id": "food-promoted-to-5xx",
+            "observation": "food_create_5xx_rate",
+            "op": "gte",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "pod-recovered",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "pg-lock-cleared",
+            "observation": "commerce_blocked_db_sessions",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "id": "commerce-order-recovered",
+            "observation": "commerce_order_p95",
+            "op": "lt",
+            "value": 800
+          },
+          {
+            "id": "food-429-cleared",
+            "observation": "food_create_429_rate",
+            "op": "lt",
+            "value": 0.02
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
       }
     }
   }

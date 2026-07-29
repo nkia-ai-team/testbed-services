@@ -425,12 +425,13 @@
       "id": "F15-H",
       "slug": "f15-h-pg-lock-food-429-simultaneous",
       "profiles": [
-        "timeline.compose"
+        "timeline.compose",
+        "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "food 429 전제 확보 + metadata·controller·allowlist 신설"
+      "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
     },
     {
       "id": "F15-P",
@@ -470,12 +471,13 @@
       "id": "F15-T2",
       "slug": "f15-t2-pg-lock-then-food-429",
       "profiles": [
-        "timeline.compose"
+        "timeline.compose",
+        "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "food 429 전제 확보 + metadata 신설 + dispatcher 등록"
+      "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
     },
     {
       "id": "F15-T3",

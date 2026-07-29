@@ -117,9 +117,14 @@ class TimelineDualFaultFoundationTests(unittest.TestCase):
             dual.validate("F15-T1", params, {"scenario_parameters": {"F15-T1": params}})
 
     def test_other_composite_timelines_remain_blocked(self) -> None:
+        # F15-H/F15-T2 left this set on 2026-07-29: they route to
+        # timeline_lock_mock_executor now. Their old block reasons ("food dispatch
+        # baseline/recovery") were leftovers of the discarded dispatch-503 reading
+        # of their food arm — food's 429 comes from the external PG mock, not from
+        # food's own capacity path, and that surface was already proven by F06-P.
         self.assertEqual(
             set(dual.BLOCKED_TIMELINES),
-            {"F08-G", "F14-R", "F15-H", "F15-G", "F15-T2", "F15-T3", "F15-T4"},
+            {"F08-G", "F14-R", "F15-G", "F15-T3", "F15-T4"},
         )
         for scenario_id, reason in dual.BLOCKED_TIMELINES.items():
             with self.subTest(scenario_id=scenario_id):

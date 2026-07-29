@@ -24,9 +24,7 @@ HERE = Path(__file__).resolve().parent
 BLOCKED_TIMELINES = {
     "F08-G": "Oracle lock row, credential, and inverse transaction are unresolved",
     "F14-R": "response-loss proxy and duplicate-row cleanup do not exist",
-    "F15-H": "food dispatch baseline is not healthy enough for a simultaneous fault",
     "F15-G": "Oracle and PostgreSQL lock rows and acquisition order are unresolved",
-    "F15-T2": "food dispatch recovery is a prerequisite",
     "F15-T3": "worker placement and consumer stall SLA are unresolved",
     "F15-T4": "handoff close interval and consumer drain SLA are unresolved",
 }
@@ -35,6 +33,14 @@ ROUTES = {
     "F08-H": "timeline_compose_executor",
     "F15-R": "timeline_flap_executor",
     "F15-T1": "timeline_dual_fault_executor",
+    # 2026-07-29: F15-H/F15-T2 were blocked on "food dispatch baseline/recovery",
+    # a leftover of the discarded dispatch-503 reading of their food arm. food has
+    # no 429 of its own, but the external PG mock's 429 propagates through
+    # PgApiClient.java:50 to the food entry point unchanged — the F06-P surface.
+    # Both arms are therefore already-proven injections; only the composition and
+    # its observation plane were missing.
+    "F15-H": "timeline_lock_mock_executor",
+    "F15-T2": "timeline_lock_mock_executor",
 }
 
 

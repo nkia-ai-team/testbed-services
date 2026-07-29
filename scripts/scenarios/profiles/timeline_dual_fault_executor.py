@@ -27,9 +27,7 @@ PROFILE_ID = "timeline.compose"
 BLOCKED_TIMELINES = {
     "F08-G": "Oracle lock row, credential, and inverse transaction are unresolved",
     "F14-R": "response-loss proxy and duplicate-row cleanup do not exist",
-    "F15-H": "food dispatch baseline is not healthy enough for a simultaneous fault",
     "F15-G": "Oracle and PostgreSQL lock rows and acquisition order are unresolved",
-    "F15-T2": "food dispatch recovery is a prerequisite",
     "F15-T3": "worker placement and consumer stall SLA are unresolved",
     "F15-T4": "handoff close interval and consumer drain SLA are unresolved",
 }

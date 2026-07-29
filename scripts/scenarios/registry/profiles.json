@@ -233,7 +233,9 @@
           "F02-H",
           "F10-H",
           "F10-P",
-          "F04-H"
+          "F04-H",
+          "F15-H",
+          "F15-T2"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -811,6 +813,28 @@
           "scenario_tag": "scenario_id=F04-H",
           "seed": 4242,
           "baseline_unit": "loadgen-commerce"
+        },
+        "F15-H": {
+          "target_rps": 40,
+          "ramp_up": "2m",
+          "hold": "10m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F15-H",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
+        },
+        "F15-T2": {
+          "target_rps": 40,
+          "ramp_up": "2m",
+          "hold": "12m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F15-T2",
+          "seed": 4242,
+          "baseline_unit": "loadgen-food"
         }
       },
       "scenario_levels": {
@@ -3392,7 +3416,9 @@
         "allowed_scenarios": [
           "F08-H",
           "F15-R",
-          "F15-T1"
+          "F15-T1",
+          "F15-H",
+          "F15-T2"
         ]
       },
       "scenario_parameters": {
@@ -3451,6 +3477,44 @@
             }
           },
           "start_offset_seconds": 0
+        },
+        "F15-H": {
+          "commerce_namespace": "rca-testbed-commerce",
+          "pg_access": "in-cluster-pod",
+          "pg_db_pod": "testbed-postgres-0",
+          "pg_service": "testbed-postgres",
+          "pg_secret": "postgres-secret",
+          "pg_image": "postgres:16-alpine",
+          "pg_schema": "inventory_schema",
+          "pg_table": "inventory",
+          "pg_lock_scope": "table",
+          "pg_lock_mode": "EXCLUSIVE",
+          "pg_client_identity": "PostgreSQL JDBC Driver",
+          "pg_hold_seconds": 600,
+          "food_namespace": "rca-testbed-food",
+          "food_mock_resource": "deployment/testbed-external-pg-mock",
+          "food_mock_path": "/pay",
+          "food_mock_status": 429,
+          "start_offset_seconds": 0
+        },
+        "F15-T2": {
+          "commerce_namespace": "rca-testbed-commerce",
+          "pg_access": "in-cluster-pod",
+          "pg_db_pod": "testbed-postgres-0",
+          "pg_service": "testbed-postgres",
+          "pg_secret": "postgres-secret",
+          "pg_image": "postgres:16-alpine",
+          "pg_schema": "inventory_schema",
+          "pg_table": "inventory",
+          "pg_lock_scope": "table",
+          "pg_lock_mode": "EXCLUSIVE",
+          "pg_client_identity": "PostgreSQL JDBC Driver",
+          "pg_hold_seconds": 600,
+          "food_namespace": "rca-testbed-food",
+          "food_mock_resource": "deployment/testbed-external-pg-mock",
+          "food_mock_path": "/pay",
+          "food_mock_status": 429,
+          "start_offset_seconds": 240
         }
       },
       "scenario_levels": {

@@ -77,6 +77,10 @@ class RegistryContractTests(unittest.TestCase):
             # 2026-07-28: relay 정지의 commerce 정합판. 스위치는 이미 앱에 있었고
             # 막고 있던 것은 commerce PG용 미발행 outbox 관측의 부재였다.
             "F04-H",
+            # 2026-07-29: 두 도메인 동시/순차 복합. food arm의 429는 외부 PG mock에서
+            # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
+            # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
+            "F15-H", "F15-T2",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -195,6 +199,10 @@ class RegistryContractTests(unittest.TestCase):
                 "F21-P", "F21-Q",
                 "F09-H", "F09-P", "F17-P",
                 "F04-H",
+            # 2026-07-29: 두 도메인 동시/순차 복합. food arm의 429는 외부 PG mock에서
+            # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
+            # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
+            "F15-H", "F15-T2",
             },
         )
         self.assertEqual(
@@ -229,6 +237,10 @@ class RegistryContractTests(unittest.TestCase):
                 # 않았다 — OutboxRelay는 이미 @ConditionalOnProperty로 꺼지고,
                 # 없던 것은 order_schema의 미발행 outbox를 세는 관측뿐이었다.
                 "F04-H",
+            # 2026-07-29: 두 도메인 동시/순차 복합. food arm의 429는 외부 PG mock에서
+            # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
+            # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
+            "F15-H", "F15-T2",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -350,7 +362,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         self.assertEqual(self.controllers["live_scenario_ids"][-4:],
-                         ["F09-H", "F09-P", "F17-P", "F04-H"])
+                         ["F17-P", "F04-H", "F15-H", "F15-T2"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
