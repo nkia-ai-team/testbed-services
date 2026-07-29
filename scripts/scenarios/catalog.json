@@ -212,10 +212,10 @@
         "load.east_west",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "bulkhead configuration/reject surface"
+      "prerequisite": "2026-07-28 실측 반증. pricing bulkhead는 max-concurrent-calls=20인데 견적 응답이 2.5~12ms라 target_rps=20에서 동시성이 0.1에 불과하다. 거부(pricing_error_rate≥0.1)가 나려면 4,000rps 또는 견적 1초가 필요하다 — 부하 상한 180으로 도달 불가. 재현하려면 pricing 경로에 앱 결함 필요 → T2 재설계"
     },
     {
       "id": "F08-H",
@@ -576,10 +576,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "verified TransferRepository.dailyStatsSince native trunc(created_at) 풀스캔 앵커(idx_transfers_created 존재/무력화); 신규 slowquery.js(stats/daily 80%+대표 이체 20%) + load.north_south 계약 등록; 러너 APPROVED_HIKARI_SERVICES/APPROVED_APM_SERVICES에 core-banking-transfer/account/api/ledger 추가"
+      "prerequisite": "2026-07-28 실측 반증. ① 부하가 때리는 진입점(30082 nginx→api-service)에 /api/transfers/stats/daily 패스스루가 없어 404로 20ms만에 튕긴다 — 주입이 아무것도 하지 않는다. ② 직행 포트(30282)로 우회해도 그 쿼리가 12~300ms(transfers 43,369행)라 transfer_p95≥3000ms 임계와 무관하다. 살리려면 api-service 패스스루 신설 + 쿼리 자체를 무겁게 만드는 앱/데이터 작업이 선행"
     },
     {
       "id": "F20-Q",

@@ -41,8 +41,10 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-07-28: ready 42→43, blocked 1→0. F04-H. 유일한 blocked였고, 필요하던
 # 제어 표면(@ConditionalOnProperty)은 앱에 이미 있었다 — 없던 것은 commerce PG의
 # 미발행 outbox를 세는 관측이며 러너에 신설했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 43 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 12 ]]
+# 2026-07-28: ready 43→41. 부하 도달 가능성 전수 점검에서 F07-P·F20-P가 반증됐다.
+# 둘 다 "부하를 부으면 뻗는다"를 서비스 시간 측정 없이 가정하고 있었다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 41 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 14 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
@@ -200,8 +202,10 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # 2026-07-28: 23→27. 스토리지 포화 3종과 F15-P가 더해졌고 넷 다 bin/ 스크립트를 갖고 있다.
 # 2026-07-28: 27→29. F09-H·F09-P 복귀분.
 # 2026-07-28: 29→30. F04-H 승격분(bin/ 스크립트를 이미 갖고 있었다).
-[[ $((ready_live_false + ready_live_true)) -eq 30 ]]
-[[ "$ready_live_true" -eq 30 ]]
+# 2026-07-28: 30→29. F07-P 강등분(F20-P는 bin/ 스크립트가 없어 이 카운트에
+# 애초에 들어 있지 않았다).
+[[ $((ready_live_false + ready_live_true)) -eq 29 ]]
+[[ "$ready_live_true" -eq 29 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

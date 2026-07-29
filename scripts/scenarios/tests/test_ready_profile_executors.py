@@ -142,9 +142,9 @@ class ReadyProfileExecutorTests(unittest.TestCase):
     def test_live_matrix_matches_the_governed_ready_set(self) -> None:
         expected = {
             "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
-            "F06-H", "F06-R", "F07-H", "F07-P", "F08-G", "F08-H", "F08-P", "F09-R",
+            "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P", "F09-R",
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
-            "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
+            "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
             "F02-H", "F10-H", "F10-P", "F15-P",
             "F21-P", "F21-Q",

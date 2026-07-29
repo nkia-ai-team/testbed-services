@@ -65,9 +65,9 @@ class RegistryContractTests(unittest.TestCase):
         # 실제 결함(직렬화된 O(n^2) 리포트 렌더러)으로 교체해 G6 누설을 없앴다.
         live_ids = {
             "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
-            "F06-H", "F06-R", "F07-H", "F07-P", "F08-G", "F08-H", "F08-P", "F09-R",
+            "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P", "F09-R",
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
-            "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
+            "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
             # 2026-07-28: 스토리지 포화 3종 + 복합 자원 고갈. 셋을 막고 있던 것은
             # fio 부재·약한 고정 계약·디스크 IO 관측 부재였고 모두 해소됐다.
@@ -187,9 +187,9 @@ class RegistryContractTests(unittest.TestCase):
             live_ids,
             {
                 "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
-                "F06-H", "F06-R", "F07-H", "F07-P", "F08-G", "F08-H", "F08-P", "F09-R",
+                "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P", "F09-R",
                 "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
-                "F19-P", "F19-S", "F20-P", "F20-Q", "F20-R", "F23-R", "F25-H",
+                "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
                 "F03-H", "F06-P",
                 "F02-H", "F10-H", "F10-P", "F15-P",
                 "F21-P", "F21-Q",
@@ -201,9 +201,9 @@ class RegistryContractTests(unittest.TestCase):
             self.controllers["live_scenario_ids"],
             [
                 "F01-R", "F01-H", "F06-R", "F07-H", "F08-H", "F11-R", "F04-R", "F12-H",
-                "F05-R", "F05-H", "F07-P", "F08-P", "F09-R", "F01-P", "F08-G", "F15-G",
+                "F05-R", "F05-H", "F08-P", "F09-R", "F01-P", "F08-G", "F15-G",
                 "F06-H", "F03-P", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S",
-                "F16-H", "F20-R", "F20-P", "F20-Q", "F25-H", "F23-R", "F15-R",
+                "F16-H", "F20-R", "F20-Q", "F25-H", "F23-R", "F15-R",
                 # 2026-07-28 복귀: 앱의 Thread.sleep 자백을 실제 결함으로 교체했다.
                 "F03-H",
                 # 2026-07-28 신규: food 429 경로는 앱에 이미 완결돼 있었고,
