@@ -76,7 +76,24 @@ echo "========================================="
 # 로컬 dev 시드가 어긋나는 일(commerce 4번 증분에서 실제로 겪은 문제)을 구조적으로 막는다.
 # 네임스페이스가 먼저 있어야 하므로 00-namespace.yaml을 선적용한다.
 kubectl apply -f "${PROJECT_ROOT}/k8s/00-namespace.yaml"
+
+# DPM 모니터링 계정은 시드에 있어야 한다. banking Oracle 은 07-28 이사로 PV 가
+# 새로 생기며 손으로 만든 lucida_mon 이 사라져 DPM 이 36시간 멈췄다. 자격증명
+# 정본은 01-secrets.yaml 이므로 여기서 읽어 치환한다 — 템플릿에 값을 복제해 두면
+# 다음 변경 때 둘이 어긋난다. 환경변수로 덮어쓸 수 있다.
+mon_user=${MON_USER:-$(awk '$1=="MON_USER:"{print $2}' "${PROJECT_ROOT}/k8s/01-secrets.yaml")}
+mon_password=${MON_PASSWORD:-$(awk '$1=="MON_PASSWORD:"{print $2}' "${PROJECT_ROOT}/k8s/01-secrets.yaml")}
+if [[ -z "$mon_user" || -z "$mon_password" ]]; then
+  echo "ERROR: 01-secrets.yaml 에서 MON_USER/MON_PASSWORD 를 읽지 못했다" >&2
+  exit 1
+fi
+monitoring_sql=$(mktemp)
+trap 'rm -f "$monitoring_sql"' EXIT
+sed -e "s/__MON_USER__/${mon_user}/g" -e "s/__MON_PASSWORD__/${mon_password}/g" \
+  "${PROJECT_ROOT}/db/monitoring.sql.tmpl" > "$monitoring_sql"
+
 kubectl create configmap mysql-init-scripts \
+  --from-file=00-monitoring.sql="$monitoring_sql" \
   --from-file=01-init.sql="${PROJECT_ROOT}/db/init.sql" \
   -n rca-testbed-food --dry-run=client -o yaml | kubectl apply -f -
 
