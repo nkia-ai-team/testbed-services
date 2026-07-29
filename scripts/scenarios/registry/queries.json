@@ -588,6 +588,16 @@
       "value_type": "integer",
       "freshness_sec": 30
     },
+    "database.ledger_unmatched_transfer_count": {
+      "adapter": "database",
+      "selector": "banking.ledger_unmatched_transfer_count",
+      "allowed_parameters": [
+        "window_minutes",
+        "grace_seconds"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30
+    },
     "loadgen.food_create_429_rate": {
       "adapter": "loadgen_summary",
       "selector": "business.429.rate",

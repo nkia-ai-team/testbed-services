@@ -46,8 +46,13 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 미발행 outbox를 세는 관측이며 러너에 신설했다.
 # 2026-07-28: ready 43→41. 부하 도달 가능성 전수 점검에서 F07-P·F20-P가 반증됐다.
 # 둘 다 "부하를 부으면 뻗는다"를 서비스 시간 측정 없이 가정하고 있었다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 43 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 12 ]]
+# 2026-07-29: ready 43→44. F14-P. 필요하던 "catch-swallow injector"는 앱에 심을 필요가
+# 없었다 — 결함(삼킴 + 자동 ack = 영구 유실)은 이미 코드에 있고, 없던 것은 그것을
+# 발화시킬 쓰기 실패다. ledger_entries만 READ ONLY로 뒤집는다(db.table_readonly 신설).
+# 짝인 F14-R은 같은 심사에서 반증돼 parked로 남았다: 중첩 타임아웃이 안쪽(10s) <
+# 바깥쪽(15s)이라 "커밋됐는데 응답만 유실"이 구조적으로 생기지 않는다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 44 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 11 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
@@ -58,12 +63,10 @@ total="$(jq '.scenarios | length' "$catalog")"
 [[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 17 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 43 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
-jq -e '
-  ["db.lock","db.ddl","db.workload","mock.expectation","load.north_south",
-   "load.east_west","k8s.patch","k8s.lifecycle","k8s.resource","k8s.probe",
-   "k8s.env","kafka.control","host.stress",
-   "cache.control","network.fault","app.release","wpm.probe","business.fault",
-   "timeline.compose","timeline.multi"] as $known_profiles |
+# 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
+# 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의
+# 배포 정지였다 — 검사하는 쪽과 실제 계약이 다른 것을 보고 있으면 안 된다.
+jq -e --argjson known_profiles "$(jq '[.profiles | keys[]]' "$script_dir/registry/profiles.json")" '
   all(.scenarios[];
     (.id | test("^F[0-9]{2}-(R|H|P|G|Q|S|T[1-4])$")) and
     (.slug | test("^[a-z0-9][a-z0-9-]+$")) and
@@ -208,8 +211,9 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # 2026-07-28: 30→29. F07-P 강등분(F20-P는 bin/ 스크립트가 없어 이 카운트에
 # 애초에 들어 있지 않았다).
 # 2026-07-29: 29→31. F15-H·F15-T2 승격분(둘 다 bin/ 스크립트를 갖고 있다).
-[[ $((ready_live_false + ready_live_true)) -eq 31 ]]
-[[ "$ready_live_true" -eq 31 ]]
+# 2026-07-29: 31→32. F14-P 승격분(bin/ 스크립트를 이미 갖고 있었다).
+[[ $((ready_live_false + ready_live_true)) -eq 32 ]]
+[[ "$ready_live_true" -eq 32 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

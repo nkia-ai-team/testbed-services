@@ -5327,6 +5327,85 @@
           }
         ]
       }
+    },
+    "F14-P": {
+      "title": "원장 테이블 쓰기 실패 — 이체는 200인데 원장이 영구 소멸한다",
+      "description": "banking.ledger_entries만 READ ONLY로 전환한다. transfers는 그대로 커밋되므로 이체 API는 끝까지 200 COMPLETED다. Kafka 메시지도 정상 발행·소비된다. 그러나 ledger 컨슈머가 INSERT에서 ORA-12081을 받고, 이를 catch로 삼킨 뒤 정상 리턴하기 때문에 **오프셋이 커밋된다.** 일시적 쓰기 실패 한 번이 복구 불가능한 데이터 손실로 증폭되는 것이 이 사건의 정체성이다. F18-P가 '생산자가 멈춘' 형태, F04-P가 '소비자가 느린' 형태라면 이쪽은 **소비자가 정상 속도로 먹어치우며 버리는** 형태다 — lag은 0에 붙어 있고 적체도 없다.",
+      "cause": "banking.ledger_entries가 READ ONLY → LedgerService.recordTransfer의 INSERT가 ORA-12081로 즉시 실패 → @Transactional 롤백 → TransferEventConsumer의 catch (Exception ex)가 예외를 삼키고 정상 리턴 → Spring Kafka 기본 ack가 오프셋 커밋 → 해당 이체 이벤트는 재처리 대상에서 영구 제외. 동기 이체 경로와 outbox relay는 전 구간 정상",
+      "injection_summary": "db.table_readonly executor가 testbed-oracle-0에서 ALTER TABLE BANKING.LEDGER_ENTRIES READ ONLY를 실행하고 ALL_TABLES.READ_ONLY로 확인한다. 대상은 원장 테이블 하나뿐이라 transfers·accounts는 영향이 없다. 부하는 baseline loadgen이 공급한다. cleanup은 READ WRITE 한 문장이며, 쓰기는 재개되지만 주입 중 유실된 이벤트는 돌아오지 않는다 — 오프셋이 이미 커밋됐기 때문이다.",
+      "user_impact": "이체는 200 COMPLETED로 정상 응답하고 잔액도 움직인다. 그러나 그 이체가 원장에 남지 않아 대사가 영구히 어긋난다. F18-P와 달리 복구해도 따라잡히지 않는다 — 지연이 아니라 손실이다. 사용자는 장애 시점에도, 복구 이후에도 아무 오류 화면을 보지 못한다.",
+      "distinguishing_evidence": "결정 증거는 **소비는 됐는데 결과가 없다**는 조합이다. ledger 컨슈머 lag이 0 부근에 머무르고 outbox 미발행 행도 쌓이지 않는데(= 생산·전달은 정상), 창구 내 COMPLETED 이체 중 매칭 원장행이 없는 건수만 증가한다. 여기에 ledger-service의 ORA-12081 ERROR 로그가 원인을 지목한다. 메시지가 아예 없는 F18-P와, lag이 자라는 F04-P/F04-R이 이 조합으로 배제된다. 주의: 복식부기 imbalance(DEBIT-CREDIT)는 두 행이 같은 트랜잭션에서 함께 사라지므로 **끝까지 0이다** — 대사 배치가 침묵하는 것 자체가 이 사건의 특징이지 건강함의 증거가 아니다.",
+      "domain": "core-banking",
+      "class": "A",
+      "fault_pattern": "P5",
+      "observation_domains": [
+        "APM",
+        "DPM"
+      ],
+      "root_cause": {
+        "target_kind": "service",
+        "target_id": "core-banking-ledger",
+        "mechanism": "결함은 ledger 컨슈머의 오류 처리다. TransferEventConsumer는 평범한 @KafkaListener 하나이며 ErrorHandler도 DLQ도 재시도 설정도 없다. 리스너 본문이 모든 예외를 catch해 log.error만 남기고 정상 리턴하므로, Spring Kafka의 기본 ack 정책이 그 레코드의 오프셋을 커밋한다. 즉 '처리 실패'와 '처리 성공'이 브로커 입장에서 구분되지 않는다. 정상 운영에서는 이 결함이 드러나지 않는다 — recordTransfer가 실패할 일이 없기 때문이다. 원장 테이블에 쓰기 실패를 만들면 그때 비로소 '한 번의 일시 오류 → 영구 유실'이라는 증폭이 발현한다. 또한 recordTransfer는 DEBIT과 CREDIT 두 행을 같은 @Transactional 안에서 넣으므로 실패 시 둘이 함께 사라지고, 그 결과 복식부기 대사(sumImbalance)는 정상값 0을 유지한다. 무결성 검사가 있으나 이 유실 유형에는 구조적으로 눈이 멀어 있다는 점이 난도를 만든다.",
+        "code_anchor": [
+          "core-banking/ledger-service/src/main/java/com/corebanking/ledger/consumer/TransferEventConsumer.java:28-29 (KafkaListener — ErrorHandler·DLQ·재시도 없이 선언된 기본 리스너. 정상 리턴하면 오프셋이 커밋된다)",
+          "core-banking/ledger-service/src/main/java/com/corebanking/ledger/consumer/TransferEventConsumer.java:40-42 (log.error — 모든 예외를 삼키고 정상 리턴한다. 이 한 줄이 일시 오류를 영구 유실로 바꾼다)",
+          "core-banking/ledger-service/src/main/java/com/corebanking/ledger/service/LedgerService.java:33-40 (recordTransfer — DEBIT/CREDIT 두 행을 한 트랜잭션에 넣는다. 그래서 실패하면 둘이 함께 사라진다)",
+          "core-banking/ledger-service/src/main/java/com/corebanking/ledger/batch/ReconciliationBatch.java:26-33 (Scheduled — 대사 배치. sumImbalance만 보므로 두 행이 함께 사라진 이 유실을 감지하지 못한다)"
+        ],
+        "infra_anchor": "db.table_readonly executor가 BANKING.LEDGER_ENTRIES 한 테이블만 READ ONLY로 뒤집는다. 락이 아니라 READ ONLY인 이유는 블로킹된 INSERT는 예외를 던지지 않고 대기하기 때문이다 — 그러면 컨슈머가 멈추는 F04-P 형태가 되어 유실이 아니라 적체가 된다. 즉시 예외를 만들어야만 catch-swallow 결함이 발현한다. 대상을 transfers나 accounts로 넓히면 이체 경로 자체가 깨져 '조용한 무결성 훼손'이라는 정체성을 잃는다."
+      },
+      "must_support": [
+        "창구 내 COMPLETED 이체 중 매칭 원장행이 없는 건수가 증가(> 20)",
+        "ledger 컨슈머 lag이 자라지 않는다 — 소비는 정상 속도로 진행된다",
+        "outbox 미발행 행이 쌓이지 않는다 — 생산·전달도 정상이다",
+        "동기 이체 성공률 정상(2xx >= 0.95)이고 ledger 파드도 Ready",
+        "ledger-service에 ORA-12081 쓰기 실패 ERROR 로그"
+      ],
+      "must_rule_out": [
+        "컨슈머 정지·지연이 아님 — ledger lag이 증가하지 않는다. 증가하면 F04-P/F04-R",
+        "relay 정지가 아님 — outbox 미발행 행이 쌓이지 않는다. 쌓이면 F18-P",
+        "동기 경로 장애가 아님 — 이체 2xx 비율이 0.95 이상이다",
+        "ledger 파드 장애가 아님 — pod_ready = true",
+        "외부 rate-limit이 아님 — entry_status != 429"
+      ],
+      "difficulty": "high",
+      "related_scenarios": {
+        "contrast_with": [
+          "F18-P (같은 '이체 200인데 원장 없음'이지만 메시지가 아예 발행되지 않는다 — 복구하면 따라잡히는 지연)",
+          "F04-P (같은 ledger 소비 경로지만 소비가 느려 적체된다 — lag의 방향이 가른다)",
+          "F17-P (같은 banking 무결성 훼손이지만 동기 경로에서 발생하고 대사로 검출된다)"
+        ]
+      },
+      "scoring": {
+        "granularity": "service",
+        "accept": [
+          "core-banking-ledger"
+        ],
+        "partial": [
+          "banking-oracle:BANKING.ledger_entries"
+        ]
+      },
+      "injected_fault": {
+        "profile": "db.table_readonly",
+        "companions": [
+          "load.north_south"
+        ],
+        "levels": [
+          {
+            "id": "approved-fixed-f14-p",
+            "parameters": {
+              "engine": "oracle",
+              "namespace": "rca-testbed-banking",
+              "pod": "testbed-oracle-0",
+              "schema": "BANKING",
+              "table": "LEDGER_ENTRIES"
+            },
+            "min_hold": "8m",
+            "settle": "45s",
+            "timeout": "13m"
+          }
+        ]
+      }
     }
   }
 }

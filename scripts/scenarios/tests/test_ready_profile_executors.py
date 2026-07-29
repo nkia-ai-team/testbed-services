@@ -151,6 +151,10 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F09-H", "F09-P", "F17-P",
             "F04-H",
             "F15-H", "F15-T2",
+            # 2026-07-29: 원장 테이블 READ ONLY. 필요하던 "catch-swallow injector"는
+            # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
+            # 없던 것은 그것을 발화시킬 쓰기 실패였다.
+            "F14-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

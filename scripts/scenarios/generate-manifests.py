@@ -28,6 +28,9 @@ COMMON_PREFLIGHTS = (
 PROFILE_PREFLIGHTS = {
     "db.lock": "db-session-tag-clean",
     "db.ddl": "db-inverse-ddl-ready",
+    # Same guarantee as db.ddl: the inverse is a single statement (READ WRITE)
+    # and must be proven available before the table is frozen.
+    "db.table_readonly": "db-inverse-ddl-ready",
     "db.workload": "db-session-tag-clean",
     "mock.expectation": "mock-restore-contract",
     "load.north_south": "baseline-loadgen-active",

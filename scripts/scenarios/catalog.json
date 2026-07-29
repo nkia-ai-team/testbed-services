@@ -395,19 +395,19 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "회생 1순위: OrderService.java:59-60 멱등키 앵커용 fault-proxy 구현 + allowlist 등록"
+      "prerequisite": "2026-07-29 실측 반증. 중복이 생기려면 1차 시도가 커밋되면서(각 하류 타임아웃 PG 10s·뱅킹 10s 이내) 동시에 order 측 15s를 넘겨야 하는데, pg-mock 한 곳만 늦추면 총 소요가 10s를 못 넘어 재시도 자체가 발생하지 않는다. 15s 이상으로 올리면 PG 구간이 먼저 터져 @Transactional이 롤백되어 결제 행이 남지 않는다. 성립하려면 PG 9s + 뱅킹 이체 8s 동시 주입이 필요하나 뱅킹 이체 구간에 유한·제어 가능한 지연 수단이 없다 (db.lock은 해제까지 대기라 10s 초과). 앵커 자체는 실재 — PaymentService.processPayment 멱등성 부재 × PaymentClient.java:28 @Retry(max-attempts=2)"
     },
     {
       "id": "F14-P",
       "slug": "f14-p-selective-ledger-loss",
       "profiles": [
-        "business.fault",
+        "db.table_readonly",
         "load.north_south"
       ],
-      "readiness": "parked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "회생 1순위: TransferEventConsumer.java:40-42 catch-swallow용 injector 신설 + imbalance 쿼리 등록"
+      "prerequisite": "verified ledger read-only injection (db.table_readonly) + transfer/ledger reconciliation observation. imbalance 쿼리는 폐기 — DEBIT/CREDIT가 함께 사라져 구조적으로 항상 0 (docs/scenario-redesign-wip/design-F14-sheet.md)"
     },
     {
       "id": "F15-R",

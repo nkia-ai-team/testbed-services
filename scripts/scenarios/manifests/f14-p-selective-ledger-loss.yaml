@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F14-P",
   "slug": "f14-p-selective-ledger-loss",
-  "readiness": "parked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -12,7 +12,7 @@
     "matrix_location_transport": "K/kubectl fault consumer",
     "transport": "kubectl",
     "profile_refs": [
-      "injector-profiles/business.fault",
+      "injector-profiles/db.table_readonly",
       "injector-profiles/load.north_south"
     ]
   },
@@ -25,18 +25,231 @@
       "target-health",
       "profile-prerequisites",
       "transport-kubernetes-rbac",
-      "business-invariant-probe",
+      "db-inverse-ddl-ready",
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f14-p-selective-ledger-loss/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.table_readonly",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.table_readonly"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f14-p",
+              "parameters": {
+                "engine": "oracle",
+                "namespace": "rca-testbed-banking",
+                "pod": "testbed-oracle-0",
+                "schema": "BANKING",
+                "table": "LEDGER_ENTRIES"
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-ledger"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "ledger_unmatched",
+            "adapter": "database",
+            "query_id": "database.ledger_unmatched_transfer_count",
+            "parameters": {
+              "window_minutes": 5,
+              "grace_seconds": 60
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "ledger_consumer_lag",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.kafka_consumer_lag",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "pod": "testbed-kafka-0",
+              "bootstrap_server": "localhost:9092",
+              "consumer_group": "ledger-service"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "outbox_unpublished",
+            "adapter": "database",
+            "query_id": "database.outbox_unpublished_count",
+            "parameters": {
+              "namespace": "rca-testbed-banking"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "transfers-completed-without-ledger",
+              "observation": "ledger_unmatched",
+              "op": "gt",
+              "value": 20,
+              "_note": "G3 피해 직접 증명: 창구 내 COMPLETED 이체 중 원장행이 없는 건수. imbalance(DEBIT-CREDIT)는 두 행이 함께 사라져 구조적으로 항상 0이라 쓸 수 없다"
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "consumer-lag-growing",
+              "observation": "ledger_consumer_lag",
+              "op": "gt",
+              "value": 50,
+              "_note": "lag이 자라면 컨슈머가 멈춘 것(F04-P). 여기서는 오프셋이 정상 전진하면서 유실된다"
+            },
+            {
+              "id": "outbox-backlog-growing",
+              "observation": "outbox_unpublished",
+              "op": "gt",
+              "value": 20,
+              "_note": "적체가 자라면 relay 정지(F18-P). 여기서는 메시지가 정상 발행·소비된다"
+            },
+            {
+              "id": "transfer-write-also-broken",
+              "observation": "transfer_2xx_rate",
+              "op": "lt",
+              "value": 0.95,
+              "_note": "이체 쓰기까지 깨지면 원장만 얼린 것이 아니다"
+            },
+            {
+              "id": "ledger-pod-failure",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "external-rate-limit",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 429
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "ledger-writes-resumed",
+              "observation": "ledger_unmatched",
+              "op": "eq",
+              "value": 0,
+              "_note": "창구 기준 지표라 쓰기가 재개되면 0으로 돌아온다. 주입 중 유실된 이벤트는 오프셋이 이미 커밋돼 영구 소멸이며, 그 영구성이 이 시나리오의 본질이다"
+            },
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -44,7 +257,7 @@
       "mode": "dry-run",
       "mutation": false,
       "adapter_refs": [
-        "business.fault",
+        "db.table_readonly",
         "load.north_south"
       ]
     },
@@ -53,7 +266,7 @@
       "mutation": false,
       "requires_preflight": true,
       "adapter_refs": [
-        "business.fault",
+        "db.table_readonly",
         "load.north_south"
       ]
     },
@@ -65,15 +278,15 @@
       "recovery_gate": true,
       "adapter_refs": [
         "load.north_south",
-        "business.fault"
+        "db.table_readonly"
       ]
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "회생 1순위: TransferEventConsumer.java:40-42 catch-swallow용 injector 신설 + imbalance 쿼리 등록",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "verified ledger read-only injection (db.table_readonly) + transfer/ledger reconciliation observation. imbalance 쿼리는 폐기 — DEBIT/CREDIT가 함께 사라져 구조적으로 항상 0 (docs/scenario-redesign-wip/design-F14-sheet.md)",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

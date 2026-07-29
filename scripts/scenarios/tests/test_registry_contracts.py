@@ -44,9 +44,11 @@ class RegistryContractTests(unittest.TestCase):
             )
             self.assertEqual(controller["abort"]["consecutive_ticks"], 2, scenario_id)
 
-    def test_registry_closure_covers_64_scenarios_and_20_profiles(self) -> None:
+    # Counts stay out of the name: it already read "64 scenarios" while asserting
+    # 60, which is how the stale pins of 2026-07-29 got past review.
+    def test_registry_closure_covers_catalog_scenarios_and_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 60)
-        self.assertEqual(len(self.profiles["profiles"]), 20)
+        self.assertEqual(len(self.profiles["profiles"]), 21)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -81,6 +83,10 @@ class RegistryContractTests(unittest.TestCase):
             # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
             # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
             "F15-H", "F15-T2",
+            # 2026-07-29: 원장 테이블 READ ONLY. 필요하던 "catch-swallow injector"는
+            # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
+            # 없던 것은 그것을 발화시킬 쓰기 실패였다.
+            "F14-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -223,6 +229,10 @@ class RegistryContractTests(unittest.TestCase):
             # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
             # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
             "F15-H", "F15-T2",
+            # 2026-07-29: 원장 테이블 READ ONLY. 필요하던 "catch-swallow injector"는
+            # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
+            # 없던 것은 그것을 발화시킬 쓰기 실패였다.
+            "F14-P",
             },
         )
         self.assertEqual(
@@ -261,6 +271,9 @@ class RegistryContractTests(unittest.TestCase):
             # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
             # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
             "F15-H", "F15-T2",
+            # 2026-07-29: 원장 테이블 READ ONLY. 삼킴 + 자동 ack = 영구 유실은 이미
+            # 코드에 있었고, 없던 것은 그것을 발화시킬 쓰기 실패였다.
+            "F14-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -382,7 +395,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         self.assertEqual(self.controllers["live_scenario_ids"][-4:],
-                         ["F17-P", "F04-H", "F15-H", "F15-T2"])
+                         ["F04-H", "F15-H", "F15-T2", "F14-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
