@@ -86,8 +86,15 @@ summary: 109 테스트베드에 lucida-next(AP 119) 관측 4계층을 붙이는 
    - MySQL: `PROCESS, REPLICATION CLIENT ON *.*` + `SELECT ON performance_schema.*`
      + `SELECT, EXECUTE ON sys.*` + **`SELECT ON fooddelivery.*`**
      (마지막이 없으면 접속은 되고 수집만 Error 1044로 실패)
-   - Oracle(FREEPDB1): `CREATE SESSION, SELECT_CATALOG_ROLE, SELECT ANY DICTIONARY`
-   - ⚠ 계정은 init.sql에 미반영 — DB 볼륨 리셋 시 재생성 필요.
+   - Oracle(FREEPDB1): **시드에 반영됨(2026-07-29)** — `core-banking/db/monitoring.sql.tmpl`을
+     `build-and-deploy.sh` Phase 2.5가 `01-secrets.yaml`의 `MON_USER`/`MON_PASSWORD`로
+     치환해 `00-monitoring.sql`로 넣는다. 자격증명 정본은 시크릿 한 곳이므로
+     값을 바꾸면 collector 등록(`collectors.config_encrypted`)도 함께 갱신할 것.
+     재시딩이 곧 복원이라 볼륨이 새로 생겨도 손댈 필요가 없다.
+   - ⚠ **PG·MySQL은 아직 수작업** — 볼륨 리셋 시 재생성 필요. 두 PVC는 07-13 생성분이
+     그대로라 아직 겪지 않았을 뿐이고, Oracle과 같은 사고가 예약돼 있다.
+     (Oracle 사례: 07-28 tb-w2 이사로 PV가 새로 생기며 계정 소실 → DPM이 ORA-01017로
+     36시간 정지, Oracle 지표 1종 vs PG 158·MySQL 198. 판정은 `last_collect_status`.)
 
 ### 3-2. 등록 (API)
 
