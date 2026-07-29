@@ -45,6 +45,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -58,6 +59,9 @@
             },
             {
               "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
             },
             {
               "check": "target-health"
