@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "merge 결속 구현 + metadata 신설 + dispatcher 등록",
+    "description": "2026-07-29 재심사로 잔여 축소(parked-reaudit-0729.md §2). 주입기 host.stress·관측 kubernetes.kafka_consumer_lag+prometheus.node_cpu_utilization 모두 실재하고 배치 고정으로 대상 노드는 tb-w2로 확정(정답지 tb-w3는 오기, 정정함). 단일 주입이라 timeline.compose는 오배정 — profiles를 host.stress 단독으로 재배정 + metadata 반입(F14-P 배제 포함) + controller + 캘리브레이션이 잔여",
     "live_allowed": false
   },
   "capture_policy": {

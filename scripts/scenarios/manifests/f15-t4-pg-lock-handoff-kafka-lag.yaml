@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "split 인계 구간 구현 + metadata 신설 + dispatcher 등록",
+    "description": "2026-07-29 재심사로 잔여 명확화(parked-reaudit-0729.md §3). 주입기 db.lock(inventory)·kafka.control(shipping) 둘 다 실재하고 순차 오프셋 스케줄은 F15-T2로 라이브 실증됨. 잔여는 비중첩 인계 — timeline_lock_mock_executor 변형(1구간 해제 후 2구간 시작, 신규 executor 아님) + dispatcher ROUTES 등록 + metadata + controller + 구간별 시간창 분리 기록",
     "live_allowed": false
   },
   "capture_policy": {

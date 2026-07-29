@@ -488,7 +488,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "merge 결속 구현 + metadata 신설 + dispatcher 등록"
+      "prerequisite": "2026-07-29 재심사로 잔여 축소(parked-reaudit-0729.md §2). 주입기 host.stress·관측 kubernetes.kafka_consumer_lag+prometheus.node_cpu_utilization 모두 실재하고 배치 고정으로 대상 노드는 tb-w2로 확정(정답지 tb-w3는 오기, 정정함). 단일 주입이라 timeline.compose는 오배정 — profiles를 host.stress 단독으로 재배정 + metadata 반입(F14-P 배제 포함) + controller + 캘리브레이션이 잔여"
     },
     {
       "id": "F15-T4",
@@ -499,7 +499,7 @@
       "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "split 인계 구간 구현 + metadata 신설 + dispatcher 등록"
+      "prerequisite": "2026-07-29 재심사로 잔여 명확화(parked-reaudit-0729.md §3). 주입기 db.lock(inventory)·kafka.control(shipping) 둘 다 실재하고 순차 오프셋 스케줄은 F15-T2로 라이브 실증됨. 잔여는 비중첩 인계 — timeline_lock_mock_executor 변형(1구간 해제 후 2구간 시작, 신규 executor 아님) + dispatcher ROUTES 등록 + metadata + controller + 구간별 시간창 분리 기록"
     },
     {
       "id": "F17-R",
