@@ -2,6 +2,7 @@
 """Bounded host/PVC stress foundations with exact process and file recovery."""
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from executor_common import ExecutorError, cli, profile_instance
@@ -10,6 +11,20 @@ PROFILE_ID = "host.stress"
 
 CONTRACTS: dict[str, dict[str, Any]] = {
     "F10-R": {"mode": "watermark", "host": "192.168.122.184", "target_dir": "/opt/local-path-provisioner/pvc-5d71e22a-1225-4505-a7cc-5cf29dad4cf5_rca-testbed-commerce_pgdata-testbed-postgres-0", "watermark_percent": 85, "reserve_mib": 10240, "maximum_fill_mib": 51200},
+    # F21-P·F21-Q (Tomcat worker saturation) — registered 2026-07-30. Both were in
+    # registry/profiles.json but not here, so dispatch raised "scenario has no
+    # verified bounded host-stress contract"; the quality charter's G2 flagged this
+    # on 07-27 and it was still open. These are `fixed` profiles, one level each, so
+    # they belong in CONTRACTS rather than in a calibration ladder.
+    #
+    # The envelope is not new: both ask for exactly F09R_LEVELS' middle rung
+    # (cpu, 3 workers, 480s), pointed at a different worker. tb-w1/w2/w3 are
+    # identical 4-core VMs on the same GB10 host, so 3-of-4 cores for 8 minutes is
+    # already measured behaviour — F09-R has run this shape on tb-w1. CPU only:
+    # memory stays free, which is what keeps these distinct from F05-P and F15-P
+    # (F15-P shares tb-w2 but drives CPU *and* memory together).
+    "F21-P": {"mode": "cpu", "host": "192.168.122.11", "cpu_workers": 3, "runtime_seconds": 480},
+    "F21-Q": {"mode": "cpu", "host": "192.168.122.14", "cpu_workers": 3, "runtime_seconds": 480},
 }
 
 # 스토리지 IO 시나리오(F02-H·F10-H·F10-P)는 단일 계약이 아니라 캘리브레이션 사다리다.
@@ -158,7 +173,13 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         args += [str(p["mib"]), str(p["runtime_seconds"]), ",".join(p["required_cohort"])]
     else:
         args += [str(p["cpu_workers"]), str(p["vm_workers"]), p["vm_bytes"], str(p["runtime_seconds"])]
-    return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s", "--", *args], REMOTE
+    # ssh joins argv with spaces into one remote command line, so remote arguments
+    # must be shell-quoted (db_ddl_executor and load_north_south_executor do the
+    # same). Nothing here carries a metacharacter today — these are paths, numbers
+    # and cohort names — but that is a property of the current parameters, not of
+    # the transport, and load.north_south lost five scenarios to exactly that
+    # assumption when one health_path grew an `&`.
+    return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s", "--", *(shlex.quote(arg) for arg in args)], REMOTE
 
 
 REMOTE = br'''#!/usr/bin/env bash

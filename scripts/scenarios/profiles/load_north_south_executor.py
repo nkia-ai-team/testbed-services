@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -186,8 +187,15 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     domain_profile = contract["domain_profiles"].get(parameters["entry_url"])
     if domain_profile is None:
         raise ExecutorError("entry_url has no domain profile")
-    argv = build_ssh_argv(instance["location"])
-    argv.extend([
+    # ssh joins argv with spaces into one remote command line, so every remote
+    # argument must be shell-quoted (db_ddl_executor does the same). The banking
+    # health_path is `/api/accounts?status=ACTIVE&size=1`: unquoted, that `&` cut
+    # the command in two and the rest ran as a new one, which is where
+    # "GATEWAY_URL: command not found" came from. Every banking north-south
+    # scenario — F10-P, F14-P, F18-P, F20-P, F21-P — died on contact. The `?` in
+    # all three health paths was surviving only because pathname expansion found
+    # no match; quoting removes that coin flip too.
+    remote_args = [
         action,
         plan["scenario"]["id"],
         str(parameters["target_rps"]),
@@ -203,7 +211,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         domain_profile["gateway_env"],
         domain_profile["business_step"],
         domain_profile.get("read_step", ""),
-    ])
+    ]
+    argv = build_ssh_argv(instance["location"])
+    argv.extend(shlex.quote(arg) for arg in remote_args)
     return argv, remote_script()
 
 

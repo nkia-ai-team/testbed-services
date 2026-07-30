@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -23,6 +24,14 @@ compiler = load_module("scenario_compile_plan_for_load", ROOT / "compile-plan.py
 executor = load_module(
     "load_north_south_executor", ROOT / "profiles" / "load_north_south_executor.py"
 )
+host_stress = load_module(
+    "host_stress_executor", ROOT / "profiles" / "host_stress_executor.py"
+)
+
+SLUG_BY_SCENARIO = {
+    json.loads(path.read_text())["id"]: json.loads(path.read_text())["slug"]
+    for path in sorted((ROOT / "manifests").glob("*.yaml"))
+}
 
 
 class NorthSouthExecutorTests(unittest.TestCase):
@@ -151,3 +160,70 @@ class NorthSouthExecutorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemoteArgumentQuotingTests(unittest.TestCase):
+    """ssh hands the trailing argv to a *shell*, not to exec.
+
+    Everything after the destination is joined with spaces into one command line
+    that the remote login shell parses. Any metacharacter in a value therefore
+    changes the command's structure instead of travelling as data. The banking
+    health_path `/api/accounts?status=ACTIVE&size=1` did exactly that: the `&`
+    backgrounded the first half and the remainder ran as a second command, which
+    surfaced as `bash: line 1: GATEWAY_URL: command not found`. F10-P, F14-P,
+    F18-P, F20-P and F21-P all failed within ten seconds of dispatch.
+
+    These tests do not assert on the argv string — that is what let the defect
+    ship. They replay the join through a real shell and compare what the remote
+    script would actually receive in "$@".
+    """
+
+    PROBE = b'printf "%s\\n" "$#" "$@"\n'
+
+    def _round_trip(self, argv: list[str]) -> list[str]:
+        """Feed argv through a shell the way sshd does and read back "$@"."""
+        marker = argv.index("--", argv.index("-s"))
+        remote_command = " ".join(argv[marker - 2:])  # bash -s -- <joined args>
+        completed = subprocess.run(
+            ["bash", "-c", remote_command],
+            input=self.PROBE, capture_output=True, timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        lines = completed.stdout.decode().splitlines()
+        self.assertEqual(int(lines[0]), len(lines) - 1, "argument count disagrees with $#")
+        return lines[1:]
+
+    def test_banking_health_path_ampersand_survives_the_remote_shell(self) -> None:
+        plan = compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation")
+        argv, _ = executor.build_invocation(plan, "cleanup")
+        received = self._round_trip(argv)
+        self.assertEqual(len(received), 15, f"remote script needs 15 positional args, got {received}")
+        self.assertEqual(received[11], "/api/accounts?status=ACTIVE&size=1")
+        self.assertEqual(received[12], "GATEWAY_URL")
+        self.assertEqual(received[13], "transfer")
+
+    def test_every_domain_profile_survives_the_remote_shell(self) -> None:
+        profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
+        contract = profiles["load.north_south"]["parameter_contract"]
+        seen_entry_urls = set()
+        for scenario_id, parameters in profiles["load.north_south"]["scenario_parameters"].items():
+            entry_url = parameters.get("entry_url")
+            if entry_url in seen_entry_urls or entry_url not in contract["domain_profiles"]:
+                continue
+            seen_entry_urls.add(entry_url)
+            slug = SLUG_BY_SCENARIO[scenario_id]
+            argv, _ = executor.build_invocation(compiler.compile_plan(slug), "cleanup")
+            received = self._round_trip(argv)
+            domain_profile = contract["domain_profiles"][entry_url]
+            self.assertEqual(
+                received[11], domain_profile["health_path"],
+                f"{scenario_id}: health_path did not survive the remote shell",
+            )
+            self.assertEqual(received[12], domain_profile["gateway_env"])
+        self.assertEqual(len(seen_entry_urls), len(contract["domain_profiles"]))
+
+    def test_host_stress_arguments_survive_the_remote_shell(self) -> None:
+        plan = compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation")
+        argv, _ = host_stress.build_invocation(plan, "cleanup")
+        received = self._round_trip(argv)
+        self.assertEqual(received[:4], ["cleanup", "F21-P", "cpu", "192.168.122.11"])

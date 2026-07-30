@@ -125,5 +125,53 @@ class DbHostFoundations(unittest.TestCase):
             host.validate("F10-G", {}, {})
 
 
+class HostStressRegistrationIsTwoSidedTests(unittest.TestCase):
+    """registry/profiles.json and the executor must agree, in both directions.
+
+    The registry decides what a scenario is *allowed* to ask for; the executor
+    decides what it will actually *run*. A scenario listed only in the registry
+    dispatches fine and then dies inside the executor — F21-P did exactly that on
+    2026-07-30, failing nine seconds into a live run with "scenario has no
+    verified bounded host-stress contract". The quality charter raised this as G2
+    on 07-27 and asked for this cross-check; until now nothing enforced it, and a
+    hand audit of profiles.json alone reported the scenario as registered.
+    """
+
+    def test_every_allowlisted_scenario_has_executor_parameters_it_accepts(self) -> None:
+        import json
+
+        profile = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]["host.stress"]
+        allowed = profile["parameter_contract"]["allowed_scenarios"]
+        declared = profile["scenario_parameters"]
+        self.assertTrue(allowed, "host.stress allowlist is empty")
+        rejected = []
+        for scenario_id in allowed:
+            parameters = declared.get(scenario_id)
+            if parameters is None:
+                rejected.append((scenario_id, "no scenario_parameters in the registry"))
+                continue
+            try:
+                host.validate(scenario_id, copy.deepcopy(parameters), profile)
+            except host.ExecutorError as exc:
+                rejected.append((scenario_id, str(exc)))
+        self.assertEqual(rejected, [], f"registry allows what the executor refuses: {rejected}")
+
+    def test_executor_contracts_only_cover_scenarios_that_still_exist(self) -> None:
+        # The reverse direction is deliberately weaker than the forward one. A
+        # parked scenario keeps its executor contract while dropping out of the
+        # live allowlist — F10-R is parked and that is correct, not a defect. What
+        # must not survive is a contract for a scenario that no longer exists at
+        # all, which is dead code authorising an injection nobody reviews.
+        import json
+
+        catalog = json.loads((ROOT / "catalog.json").read_text())
+        scenarios = catalog.get("scenarios", catalog)
+        known = set(scenarios) if isinstance(scenarios, dict) else {s["id"] for s in scenarios}
+        self.assertEqual(
+            sorted(set(host.CONTRACTS) - known), [],
+            "executor carries contracts for scenarios that are not in the catalog",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
