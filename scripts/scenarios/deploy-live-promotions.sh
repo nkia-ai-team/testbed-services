@@ -149,7 +149,10 @@ docker exec "$container" printenv CLICKHOUSE_PASSWORD > /dev/null 2>&1 || {
   exit 1
 }
 # Reachability and grant are separate failures; check the query the probe runs.
-docker exec "$container" python3 - << 'PROBE'
+# -i is load-bearing: without it docker exec never attaches stdin, `python3 -`
+# reads EOF, runs nothing and exits 0 — a check that always passes. Verified on
+# 109 (2026-07-30): `docker exec c python3 - <<< 'print(1)'` prints nothing.
+docker exec -i "$container" python3 - << 'PROBE'
 import json, os, urllib.request
 url = os.environ.get("CLICKHOUSE_URL", "http://192.168.230.119:18123/")
 sql = (
