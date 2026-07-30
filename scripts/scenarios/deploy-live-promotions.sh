@@ -134,6 +134,43 @@ for domain in "${baseline_domains[@]}"; do
   echo "[deploy]   ssh nkia@192.168.122.206 'sudo systemctl restart $unit'"
 done
 
+# 2026-07-30: service error rate moved off the APM rollup onto the trace table,
+# which needs a credential the runner did not previously hold. Without it every
+# clickhouse observation returns quality=error, and an unusable signal in
+# must_rule_out blocks success for the 13 scenarios that read it — a whole batch
+# would fail for a reason no tick record explains. Fail here instead, loudly.
+ssh "$remote" bash -s << 'PREFLIGHT'
+set -Eeuo pipefail
+container=$(docker ps --format '{{.Names}}' | grep -E 'rca-scenario-runner|scenario-runner' | head -1)
+[[ -n "$container" ]] || { echo "runner container not found" >&2; exit 1; }
+docker exec "$container" printenv CLICKHOUSE_PASSWORD > /dev/null 2>&1 || {
+  echo "runner is missing CLICKHOUSE_PASSWORD — clickhouse.service_error_rate cannot authenticate" >&2
+  echo "set CLICKHOUSE_USER/CLICKHOUSE_PASSWORD on the runner and recreate it" >&2
+  exit 1
+}
+# Reachability and grant are separate failures; check the query the probe runs.
+docker exec "$container" python3 - << 'PROBE'
+import json, os, urllib.request
+url = os.environ.get("CLICKHOUSE_URL", "http://192.168.230.119:18123/")
+sql = (
+    "SELECT count() AS n FROM lucida.otel_traces_local "
+    "WHERE timestamp > now() - INTERVAL 60 SECOND FORMAT JSON"
+)
+request = urllib.request.Request(
+    url,
+    data=sql.encode(),
+    headers={
+        "X-ClickHouse-User": os.environ.get("CLICKHOUSE_USER", "lucida"),
+        "X-ClickHouse-Key": os.environ["CLICKHOUSE_PASSWORD"],
+    },
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    json.loads(response.read())["data"][0]["n"]
+print("[deploy] clickhouse trace query reachable")
+PROBE
+PREFLIGHT
+
 # Publish implementations and manifests before the registry exposes new live IDs.
 rsync -az --exclude registry/controllers.json \
   "$scenario_root/" "$remote:$remote_root/"

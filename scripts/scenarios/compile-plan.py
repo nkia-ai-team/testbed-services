@@ -62,12 +62,20 @@ def validate_contracts(
     # publishes node CPU and memory but nothing per-device, so disk busy time is
     # read off the host itself. Without it those scenarios can only show that a
     # database got slow, which is the one thing every other DB fault also shows.
+    # clickhouse joined on 2026-07-30: service error rate is read from the trace
+    # table because the APM rollup dropped 20-288x of the denominator, leaving
+    # every percentage threshold to be decided by a single sampled request.
     required_adapters = {
         "loadgen_summary", "http_probe", "prometheus", "kubernetes",
         "database", "business_probe", "capture_status", "host_probe",
+        "clickhouse",
     }
     if set(adapters) != required_adapters:
-        raise ContractError("adapter registry must contain exactly the eight approved adapters")
+        raise ContractError(
+            "adapter registry must contain exactly the approved adapters: "
+            f"missing {sorted(required_adapters - set(adapters))}, "
+            f"unexpected {sorted(set(adapters) - required_adapters)}"
+        )
     for location_id, location in locations.items():
         if location.get("transport") == "kubectl" and location.get("kubeconfig") != "/root/tb-kubeconfig":
             raise ContractError(f"non-canonical kubeconfig at location {location_id}")

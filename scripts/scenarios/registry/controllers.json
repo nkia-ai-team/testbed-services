@@ -1017,8 +1017,8 @@
         },
         {
           "id": "order_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "commerce-order"
           },
@@ -2057,8 +2057,8 @@
         },
         {
           "id": "product_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "commerce-product"
           },
@@ -3057,8 +3057,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "commerce-payment"
           },
@@ -3632,8 +3632,8 @@
         },
         {
           "id": "order_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "commerce-order"
           },
@@ -5353,8 +5353,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "commerce-payment"
           },
@@ -5890,8 +5890,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "food-delivery-payment"
           },
@@ -6075,8 +6075,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "food-delivery-payment"
           },
@@ -6483,8 +6483,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "commerce-payment"
           },
@@ -6685,8 +6685,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "food-delivery-payment"
           },
@@ -7706,8 +7706,8 @@
         },
         {
           "id": "payment_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "parameters": {
             "service_name": "food-delivery-payment"
           },
@@ -9015,8 +9015,8 @@
         },
         {
           "id": "restaurant_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "freshness": "120s",
           "parameters": {
             "service_name": "food-delivery-restaurant"
@@ -9246,8 +9246,8 @@
         },
         {
           "id": "api_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "freshness": "120s",
           "parameters": {
             "service_name": "core-banking-api"
@@ -9854,8 +9854,8 @@
         },
         {
           "id": "order_error_rate",
-          "adapter": "prometheus",
-          "query_id": "prometheus.apm_service_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
           "freshness": "120s",
           "parameters": {
             "service_name": "commerce-order"

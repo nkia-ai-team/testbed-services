@@ -487,7 +487,11 @@ class RegistryContractTests(unittest.TestCase):
                 block = controller.get(section) or {}
                 for condition in block.get("all", []) + block.get("any", []):
                     query_id = query_by_observation[condition["observation"]]
-                    if query_id != "prometheus.apm_service_error_rate":
+                    # 2026-07-30: the source moved to clickhouse.service_error_rate
+                    # (trace table) because the APM rollup discarded 20-288x of the
+                    # denominator. Both report percent, so the thresholds and this
+                    # guard carry over unchanged.
+                    if query_id != "clickhouse.service_error_rate":
                         continue
                     if condition["value"] == 0:
                         continue

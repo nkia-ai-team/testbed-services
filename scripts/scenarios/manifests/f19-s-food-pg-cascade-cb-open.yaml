@@ -126,8 +126,8 @@
           },
           {
             "id": "payment_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
             "parameters": {
               "service_name": "food-delivery-payment"
             },
