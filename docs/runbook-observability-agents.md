@@ -133,6 +133,41 @@ Oracle은 `database` 필드가 곧 서비스명이다(`service_name` 키 없음)
   DPM 수집이 정상이어도 0을 반환한다. collector-dpm의 발행 이름은
   `dpm.<engine>.session.*`.
 
+## 3-5. syslog — 노드 OS 로그 (2026-07-30 신설)
+
+에이전트가 아니라 노드의 rsyslog 가 `119:514/udp` 로 직접 보낸다. 수집기는
+`lucida-collector-syslog`(host 네트워크, UDP 514 리슨).
+
+**배선은 `scripts/setup-syslog-forwarding.sh` 가 정본이다.** 멱등하며
+`--check` 로 현재 상태만 볼 수 있다. 대상 6곳 = 109(KVM 호스트) + tb-cp +
+tb-w1/w2/w3 + tb-runner. 119 는 제외한다(수집기 자신 — 되먹임, selfsystem 수집기 별도).
+
+```bash
+bash scripts/setup-syslog-forwarding.sh --check   # 상태만
+bash scripts/setup-syslog-forwarding.sh           # 적용
+```
+
+- ⚠ **왜 스크립트인가**: 2026-07-30 확인 시점까지 `syslog_local` 이 **0 행**이었다.
+  수집기는 멀쩡했고 없던 것은 보내는 쪽이다 — 그때까지 만든 모든 평가 케이스에서
+  12 테이블 중 이 하나가 비어 있었다. 노드를 다시 만들면 `/etc/rsyslog.d` 도
+  사라지므로 배선을 문장이 아니라 실행 가능한 형태로 둔다(Oracle `lucida_mon` 과 같은 교훈).
+- **등록은 선행 조건이 아니다.** 미등록 송신 IP 도 버리지 않고 `registered=0`
+  으로 적재한다(`collector-syslog/syslog/receiver.go:342`). 등록하면 자원 귀속만 좋아진다.
+- ⚠ **source_ip 로 노드를 구분하지 말 것.** 워커만 전용 NAT 주소를 갖는다:
+
+  | 노드 | source_ip | 구분 |
+  |---|---|---|
+  | tb-w1 / tb-w2 / tb-w3 | 200.136 / .137 / .138 | source_ip 로 구분 가능 |
+  | 109 · tb-cp · tb-runner | **셋 다 200.109** | `hostname` 으로만 구분 |
+
+  따라서 IP 기반 대상 등록은 이 셋을 한 자원으로 뭉갠다. 소비자는 `hostname` 을 쓸 것.
+
+검증:
+```bash
+ssh 192.168.230.119 'docker exec lucida-clickhouse clickhouse-client -q \
+  "select hostname, source_ip, count() from lucida.syslog_local group by hostname, source_ip"'
+```
+
 ## 4. KCM — k8s pod/node (kubeadm 클러스터)
 
 에이전트 방식: 클러스터 안에 master Deployment 1 + node DaemonSet(전 노드,
