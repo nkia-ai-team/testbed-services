@@ -497,6 +497,49 @@ class RegistryContractTests(unittest.TestCase):
                         f"{scenario_id}:{section}:{condition['id']} looks like a fraction",
                     )
 
+    def test_any_gates_carry_no_threshold_subsumed_by_a_looser_sibling(self) -> None:
+        # An `any` gate fires on its first satisfied condition, so two conditions
+        # on the same observation and operator collapse into one: the looser
+        # threshold always wins and the stricter can never decide anything.
+        #
+        # 2026-07-28 ff5b9ab moved discriminators out of `success` and inverted
+        # them into `must_rule_out`, which is the right home for them. But three
+        # landed beside a pre-existing veto on the same signal —
+        # `payment-also-erroring >= 5` next to `payment-5xx-cascade >= 20` — and
+        # silently killed it. The registry read as if F19-P/F20-Q/F20-R vetoed a
+        # payment cascade; they had not been able to since that commit.
+        #
+        # A dead veto is worse than no veto: it reads as evidence of rigour.
+        looser = {"gt": min, "gte": min, "lt": max, "lte": max}
+        parked = json.loads(
+            (ROOT / "registry" / "controllers-parked.json").read_text(encoding="utf-8")
+        )["controllers"]
+        every_controller = {**parked, **self.controllers["controllers"]}
+        for scenario_id, controller in sorted(every_controller.items()):
+            for section in ("success", "escalate", "must_rule_out", "recovery", "abort"):
+                conditions = (controller.get(section) or {}).get("any") or []
+                grouped: dict[tuple, list] = {}
+                for condition in conditions:
+                    key = (condition["observation"], condition["op"])
+                    grouped.setdefault(key, []).append(condition)
+                for (observation, operator), group in grouped.items():
+                    if len(group) < 2 or operator not in looser:
+                        continue
+                    values = {item["id"]: item["value"] for item in group}
+                    if any(
+                        isinstance(value, bool) or not isinstance(value, (int, float))
+                        for value in values.values()
+                    ):
+                        continue
+                    dominant = looser[operator](values.values())
+                    dead = sorted(cid for cid, value in values.items() if value != dominant)
+                    self.assertEqual(
+                        dead,
+                        [],
+                        f"{scenario_id}:{section}.any on {observation} {operator}: "
+                        f"{dead} can never fire — {values} collapses to {dominant}",
+                    )
+
     def test_host_stress_observes_the_node_it_actually_injects(self) -> None:
         # 2026-07-28: 배치 고정에 맞춰 좌표를 갱신할 때 profiles.json의 주입 host는
         # 고쳤으나 컨트롤러 observation의 node= 파라미터는 그대로였다. 그 결과 F09-R은

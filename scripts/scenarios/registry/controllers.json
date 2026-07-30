@@ -5930,12 +5930,6 @@
             "value": 429
           },
           {
-            "id": "payment-5xx-cascade",
-            "observation": "payment_error_rate",
-            "op": "gte",
-            "value": 20
-          },
-          {
             "id": "payment-also-erroring",
             "observation": "payment_error_rate",
             "op": "gte",
@@ -6523,12 +6517,6 @@
             "value": 429
           },
           {
-            "id": "payment-service-down",
-            "observation": "payment_error_rate",
-            "op": "gte",
-            "value": 20
-          },
-          {
             "id": "payment-also-erroring",
             "observation": "payment_error_rate",
             "op": "gte",
@@ -6735,12 +6723,6 @@
             "observation": "entry_status",
             "op": "eq",
             "value": 429
-          },
-          {
-            "id": "payment-5xx-cascade",
-            "observation": "payment_error_rate",
-            "op": "gte",
-            "value": 20
           },
           {
             "id": "dispatch-capacity-503",
