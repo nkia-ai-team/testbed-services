@@ -228,6 +228,35 @@ class ProfileControlTests(unittest.TestCase):
         cleaned = self.call("cleanup", "cleanup:claimed-expired")
         self.assertTrue(cleaned["succeeded"])
 
+    def test_repaired_capsule_retry_is_not_mistaken_for_key_reuse(self) -> None:
+        # A capsule repair swaps a defective executor, which moves plan_digest.
+        # If the digest counts as part of the request's identity, the retry the
+        # repair exists to enable is rejected as "already used for another
+        # request" — which is exactly what happened on 2026-07-30, and it reads
+        # as key abuse rather than as the same cleanup asked again. Identity is
+        # the run, fence, scenario, profile and level; the digest is verified
+        # separately by _plan().
+        calls: list[list[str]] = []
+        outcome = module.Result(9, stderr="cleanup failed")
+
+        def runner(argv: Sequence[str]):
+            calls.append(list(argv))
+            return outcome
+
+        self.controller.runner = runner
+        first = self.call("cleanup", "cleanup:repaired")
+        self.assertFalse(first["succeeded"])
+
+        control_state = self.base / "profile-state.json"
+        state = json.loads(control_state.read_text())
+        record = state["results"]["cleanup:repaired"]
+        record["request"]["plan_digest"] = "f" * 64
+        control_state.write_text(json.dumps(state), encoding="utf-8")
+
+        outcome = module.Result(0)
+        retried = self.call("cleanup", "cleanup:repaired")
+        self.assertTrue(retried["succeeded"], "the post-repair retry was refused")
+
     def test_failed_cleanup_is_retried_and_never_laundered_into_success(self) -> None:
         # This used to assert the opposite — that a failed cleanup is answered
         # from cache forever and never re-invoked. That is what deadlocked the
