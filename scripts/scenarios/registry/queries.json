@@ -80,37 +80,43 @@
       "adapter": "loadgen_summary",
       "selector": "iterations.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.checkout_5xx_rate": {
       "adapter": "loadgen_summary",
       "selector": "checkout.5xx.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.write_step_status_rate": {
       "adapter": "loadgen_summary",
       "selector": "business.nonok.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.read_step_status_rate": {
       "adapter": "loadgen_summary",
       "selector": "read.nonok.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.food_create_status_rate": {
       "adapter": "loadgen_summary",
       "selector": "business.5xx.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.transfer_2xx_rate": {
       "adapter": "loadgen_summary",
       "selector": "business.2xx.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "host.disk_io_utilization": {
       "adapter": "host_probe",
@@ -119,19 +125,22 @@
         "scenario_id"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "http.entry_health": {
       "adapter": "http_probe",
       "request_ref": "scenario.entry_health",
       "value_type": "integer",
-      "freshness_sec": 15
+      "freshness_sec": 15,
+      "update_interval_sec": 0
     },
     "http.target_health": {
       "adapter": "http_probe",
       "request_ref": "scenario.target_health",
       "value_type": "integer",
-      "freshness_sec": 15
+      "freshness_sec": 15,
+      "update_interval_sec": 0
     },
     "prometheus.user_p95": {
       "adapter": "prometheus",
@@ -141,7 +150,8 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "prometheus.apm_service_p95": {
       "adapter": "prometheus",
@@ -150,7 +160,8 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "prometheus.jvm_old_gen_after_gc_ratio": {
       "adapter": "prometheus",
@@ -159,7 +170,8 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "prometheus.node_cpu_utilization": {
       "adapter": "prometheus",
@@ -168,7 +180,8 @@
         "node"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "prometheus.apm_service_error_rate": {
       "adapter": "prometheus",
@@ -177,7 +190,8 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "prometheus.container_cpu_throttled_time": {
       "adapter": "prometheus",
@@ -188,7 +202,8 @@
         "container"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "prometheus.pod_network_error_rate": {
       "adapter": "prometheus",
@@ -198,13 +213,15 @@
         "deployment"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "kubernetes.pod_ready": {
       "adapter": "kubernetes",
       "selector": "pod.condition.Ready",
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.deployment_container_cpu_limit": {
       "adapter": "kubernetes",
@@ -215,13 +232,15 @@
         "container"
       ],
       "value_type": "string",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.image_pull_failure": {
       "adapter": "kubernetes",
       "selector": "pod.container.waiting.image_pull_failure",
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.deployment_available_replicas": {
       "adapter": "kubernetes",
@@ -231,7 +250,8 @@
         "deployment"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.kafka_consumer_lag": {
       "adapter": "kubernetes",
@@ -243,7 +263,8 @@
         "consumer_group"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.container_restart_count": {
       "adapter": "kubernetes",
@@ -254,7 +275,8 @@
         "container"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.container_last_termination_reason": {
       "adapter": "kubernetes",
@@ -265,7 +287,8 @@
         "container"
       ],
       "value_type": "string",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.container_memory_current_bytes": {
       "adapter": "kubernetes",
@@ -276,7 +299,8 @@
         "container"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.deployment_container_memory_limit": {
       "adapter": "kubernetes",
@@ -287,7 +311,8 @@
         "container"
       ],
       "value_type": "string",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.deployment_resources_match_baseline": {
       "adapter": "kubernetes",
@@ -298,7 +323,8 @@
         "container"
       ],
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "kubernetes.deployment_liveness_probe_matches_baseline": {
       "adapter": "kubernetes",
@@ -309,7 +335,8 @@
         "container"
       ],
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.tagged_session_count": {
       "adapter": "database",
@@ -318,7 +345,8 @@
         "scenario_tag"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.blocked_session_count": {
       "adapter": "database",
@@ -328,7 +356,8 @@
         "table"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.oracle_tagged_session_count": {
       "adapter": "database",
@@ -337,7 +366,8 @@
         "client_identifier"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.index_present": {
       "adapter": "database",
@@ -352,7 +382,8 @@
         "index"
       ],
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.pg_slow_active_query_count": {
       "adapter": "database",
@@ -364,13 +395,15 @@
         "db_user"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "business.checkout_invariant": {
       "adapter": "business_probe",
       "selector": "checkout.final_state_consistent",
       "value_type": "boolean",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 0
     },
     "mock.transient_consumed_count": {
       "adapter": "business_probe",
@@ -379,7 +412,8 @@
         "scenario_id"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "mock.pulse_age_seconds": {
       "adapter": "business_probe",
@@ -388,7 +422,8 @@
         "scenario_id"
       ],
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "mock.duplicate_expectation_count": {
       "adapter": "business_probe",
@@ -397,7 +432,8 @@
         "scenario_id"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "mock.expired_unconsumed_count": {
       "adapter": "business_probe",
@@ -406,7 +442,8 @@
         "scenario_id"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "mock.transient_expectation_absent": {
       "adapter": "business_probe",
@@ -415,7 +452,8 @@
         "scenario_id"
       ],
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "mock.snapshot_restored": {
       "adapter": "business_probe",
@@ -424,7 +462,8 @@
         "scenario_id"
       ],
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.payment_duplicate_order_count_since_t1": {
       "adapter": "database",
@@ -435,13 +474,15 @@
         "t1"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "capture.export_complete": {
       "adapter": "capture_status",
       "selector": "export.checksum_verified",
       "value_type": "boolean",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 0
     },
     "prometheus.node_memory_utilization": {
       "adapter": "prometheus",
@@ -450,7 +491,8 @@
         "node"
       ],
       "value_type": "number",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 60
     },
     "kubernetes.node_ready": {
       "adapter": "kubernetes",
@@ -458,7 +500,8 @@
       "allowed_parameters": [
         "node"
       ],
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "scenario.mock_flap_episode": {
       "adapter": "business_probe",
@@ -467,7 +510,8 @@
         "scenario_id"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "scenario.mock_flap_fault_active": {
       "adapter": "business_probe",
@@ -476,7 +520,8 @@
         "scenario_id"
       ],
       "value_type": "boolean",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "business.order_duplicate_count_since_t1": {
       "adapter": "database",
@@ -487,7 +532,8 @@
         "t1"
       ],
       "value_type": "integer",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 0
     },
     "database.outbox_unpublished_count": {
       "adapter": "database",
@@ -496,7 +542,8 @@
         "namespace"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.commerce_outbox_unpublished_count": {
       "adapter": "database",
@@ -510,7 +557,8 @@
         "table"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "prometheus.hikari_pending_connections": {
       "adapter": "prometheus",
@@ -519,7 +567,8 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 60
     },
     "prometheus.jvm_daemon_thread_count": {
       "adapter": "prometheus",
@@ -528,7 +577,8 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 60
     },
     "database.inventory_stock_level": {
       "adapter": "database",
@@ -542,7 +592,8 @@
         "table"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.restock_movement_rate": {
       "adapter": "database",
@@ -558,26 +609,30 @@
         "window_minutes"
       ],
       "value_type": "integer",
-      "freshness_sec": 60
+      "freshness_sec": 60,
+      "update_interval_sec": 0
     },
     "loadgen.checkout_409_rate": {
       "adapter": "loadgen_summary",
       "selector": "checkout.409.rate",
       "allowed_parameters": [],
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.frozen_bypass_completed_rate": {
       "adapter": "loadgen_summary",
       "selector": "business.2xx.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "loadgen.normal_path_reject_rate": {
       "adapter": "loadgen_summary",
       "selector": "read.nonok.rate",
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     },
     "database.integrity_violation_count": {
       "adapter": "database",
@@ -586,7 +641,8 @@
         "since"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "database.ledger_unmatched_transfer_count": {
       "adapter": "database",
@@ -596,14 +652,16 @@
         "grace_seconds"
       ],
       "value_type": "integer",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 0
     },
     "loadgen.food_create_429_rate": {
       "adapter": "loadgen_summary",
       "selector": "business.429.rate",
       "allowed_parameters": [],
       "value_type": "number",
-      "freshness_sec": 30
+      "freshness_sec": 30,
+      "update_interval_sec": 30
     }
   }
 }
