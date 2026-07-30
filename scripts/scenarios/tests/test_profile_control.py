@@ -228,21 +228,48 @@ class ProfileControlTests(unittest.TestCase):
         cleaned = self.call("cleanup", "cleanup:claimed-expired")
         self.assertTrue(cleaned["succeeded"])
 
-    def test_cleanup_failure_is_persistently_idempotent_and_not_claimed_success(self) -> None:
+    def test_failed_cleanup_is_retried_and_never_laundered_into_success(self) -> None:
+        # This used to assert the opposite — that a failed cleanup is answered
+        # from cache forever and never re-invoked. That is what deadlocked the
+        # fleet on 2026-07-30: F21-P's cleanup failed on an executor defect, the
+        # defect was fixed, and the retry was served from cache without ever
+        # running the new code. Both callers key on (run_id, fencing_token), so
+        # the first failure was permanently the last attempt, and DIRTY is global.
+        #
+        # The half of the old intent that was right is kept: a failure is never
+        # recorded as success. Cleanup is idempotent by construction, so retrying
+        # it is free; what must not happen is a non-answer hardening into one.
         calls: list[list[str]] = []
+        outcome = module.Result(9, stderr="cleanup failed")
 
-        def failing_runner(argv: Sequence[str]):
+        def runner(argv: Sequence[str]):
             calls.append(list(argv))
-            return module.Result(9, stderr="cleanup failed")
+            return outcome
 
-        self.controller.runner = failing_runner
+        self.controller.runner = runner
         result = self.call("cleanup", "cleanup:failed")
         self.assertEqual(result, {
             "succeeded": False, "effect_ended_at": None, "reason": "cleanup failed"
         })
+
         again = self.call("cleanup", "cleanup:failed")
-        self.assertEqual(again, result)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(again, result, "a still-failing retry must not claim success")
+        self.assertEqual(len(calls), 4, "the retry did not re-invoke the executor")
+
+        outcome = module.Result(0)
+        recovered = self.call("cleanup", "cleanup:failed")
+        self.assertTrue(recovered["succeeded"])
+        self.assertIsNotNone(recovered["effect_ended_at"])
+
+        # Once it actually succeeds the answer is final and stops re-running.
+        settled = self.call("cleanup", "cleanup:failed")
+        invocations = len(calls)
+        self.assertEqual(settled, recovered)
+        self.assertEqual(len(calls), invocations, "a settled cleanup was re-invoked")
+
+        # Apply keeps replaying its cached result instead — a second injection is
+        # a different fault, not a retry. test_apply_is_idempotent_without_a_
+        # second_profile_invocation covers that side.
 
 
 if __name__ == "__main__":
