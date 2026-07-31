@@ -175,7 +175,7 @@
             "id": "transfer_throttled",
             "adapter": "prometheus",
             "query_id": "prometheus.container_cpu_throttled_time",
-            "freshness": "180s",
+            "freshness": "60s",
             "parameters": {
               "namespace": "rca-testbed-banking",
               "deployment": "testbed-transfer",
