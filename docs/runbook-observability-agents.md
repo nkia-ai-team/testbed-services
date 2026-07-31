@@ -295,7 +295,9 @@ curl -sG "$VM/api/v1/query" --data-urlencode \
 
 로그 수집 커버리지(2026-07-14 기준): 앱=OTLP 자동 ✅ · k8s=KCM 이벤트 ✅ ·
 서버/DB=아래 로그 모니터 등록 필요 · 네트워크=trap 수신기만 존재(장비측 설정 필요) ·
-Oracle alert log=미구현(diag 경로가 마운트 볼륨 밖 — manifest 볼륨 추가 필요).
+Oracle alert log=✅ (2026-07-31 구현 — diag를 oracledata PVC subPath로 마운트해
+호스트 노출, 10-oracle.yaml 커밋 e51456f. 주의: subPath 디렉토리 `<PVC>/diag`는
+kubelet이 root로 만들므로 배치 전 uid 54321(oracle)로 선생성 필요).
 
 ### 6-1. 구조
 
@@ -321,6 +323,7 @@ SMS 에이전트의 로그 모니터(kind=log)가 유일한 파일 tail 수단�
 | syslog / auth-log ×3 | w1·w2·w3 | /var/log/syslog, /var/log/auth.log | 호스트 |
 | pg-serverlog | w1 | `<local-path PV>/…_pgdata-testbed-postgres-0/log/postgresql.log` | PostgreSQL-commerce |
 | mysql-errorlog | **w3**(PV 노드 고정 — w2 아님 주의) | `<local-path PV>/…_mysqldata-testbed-mysql-0/error.log` | MySQL-fooddelivery |
+| oracle-alertlog (2026-07-31, id 8a0c8037) | w2 | `<local-path PV>/…_oracledata-testbed-oracle-0/diag/rdbms/free/FREE/trace/alert_FREE.log` | Oracle-corebanking |
 
 DB 로그 파일을 PVC 안 고정 경로에 만들기 위한 선행 설정:
 - **PG**: `ALTER SYSTEM SET logging_collector=on, log_directory='log',
@@ -328,6 +331,8 @@ DB 로그 파일을 PVC 안 고정 경로에 만들기 위한 선행 설정:
   한 문장씩 실행(트랜잭션 불가). 설정은 PGDATA(PVC)의 postgresql.auto.conf에 영속 —
   **레포 manifest에는 없음**, PVC 리셋 시 재적용 필요.
 - **MySQL**: manifest args `--log-error=/var/lib/mysql/error.log` (커밋 9cfab0a).
+- **Oracle**: manifest에서 oracledata PVC의 `subPath: diag`를 `/opt/oracle/diag`에
+  마운트(커밋 e51456f). 배치 전 호스트에서 `<PVC>/diag`를 uid 54321로 mkdir 필수.
 
 ### 6-3. 함정
 
