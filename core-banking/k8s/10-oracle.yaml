@@ -32,6 +32,12 @@ spec:
           volumeMounts:
             - name: oracledata
               mountPath: /opt/oracle/oradata
+            # alert log(diag)를 PVC로 꺼내 호스트의 SMS 로그 모니터가 tail 할 수 있게 한다.
+            # subPath 디렉토리는 kubelet이 root 소유로 만들므로 호스트에서 uid 54321(oracle)로
+            # 선생성 필요: <PVC>/diag (runbook-observability-agents.md §6 참조)
+            - name: oracledata
+              mountPath: /opt/oracle/diag
+              subPath: diag
             - name: init-scripts
               mountPath: /container-entrypoint-initdb.d
           resources:
