@@ -201,9 +201,15 @@ case "$action" in
     pod="$(create_pod)"
     "${k[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
     # Backend pid is kept in runner-local state only; it never reaches capture output.
+    # It is NOT on the first log line: psql prints the BEGIN command tag before any
+    # result, so the session logs "BEGIN", then the pid, then the locked key. Reading
+    # line 1 therefore never matched and every PostgreSQL db.lock injection died with
+    # "did not report a backend pid" (F01-R, 2026-07-31). Take the first all-digits
+    # line instead: SQL_PRE always issues pg_backend_pid() before the lock query, so
+    # that line is the pid whether or not psql prints tags.
     backend_pid=""
     for _ in $(seq 1 30); do
-      backend_pid="$("${k[@]}" logs "$pod" 2>/dev/null | sed -n '1p' | tr -d '[:space:]')"
+      backend_pid="$("${k[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
       [[ "$backend_pid" =~ ^[0-9]+$ ]] && break
       backend_pid=""; sleep 1
     done

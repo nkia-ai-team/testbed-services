@@ -15,6 +15,7 @@ pg_terminate_backend는 실 서비스 세션을 죽일 수 있어 금지한다.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -179,6 +180,32 @@ class PostgresLockContractTests(unittest.TestCase):
         argv, script = db_lock.build_invocation(plan, "run")
         self.assertIn("FOR UPDATE", script.decode())
         self.assertIn(db_lock.APP_IDENTITY, argv)
+
+    # --- 백엔드 pid 추출 ---------------------------------------------------
+
+    def test_backend_pid_is_read_from_real_psql_output(self) -> None:
+        """주입 세션의 pid를 실제 psql 로그 모양에서 뽑아낼 수 있어야 한다.
+
+        psql은 결과보다 `BEGIN` 명령 태그를 먼저 찍는다. 첫 줄만 보던 구현은
+        그래서 한 번도 pid를 찾지 못했고, PostgreSQL db.lock 주입이 전부
+        "did not report a backend pid"로 죽었다(F01-R, 2026-07-31).
+        아래 입력은 그날 파드에서 실측한 로그 그대로다.
+        """
+        script = db_lock.POSTGRES_CLIENT_POD.decode()
+        pipeline = next(
+            line.split('logs "$pod" 2>/dev/null |', 1)[1].rstrip(')"').strip()
+            for line in script.splitlines()
+            if 'backend_pid="$(' in line and "logs" in line
+        )
+        observed_pod_log = "BEGIN\n35250\n1\n"
+        extracted = subprocess.run(
+            ["sh", "-c", f"cat | {pipeline}"],
+            input=observed_pod_log,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(extracted, "35250")
 
 
 if __name__ == "__main__":
