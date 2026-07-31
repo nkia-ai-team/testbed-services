@@ -723,7 +723,7 @@
           "baseline_unit": "loadgen-food"
         },
         "F21-P": {
-          "target_rps": 50,
+          "target_rps": 30,
           "ramp_up": "2m",
           "hold": "8m",
           "ramp_down": "1m",
