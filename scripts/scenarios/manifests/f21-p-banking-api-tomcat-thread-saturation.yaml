@@ -206,7 +206,7 @@
               "id": "threads-never-piled-up",
               "observation": "api_busy_threads",
               "op": "lt",
-              "value": 60
+              "value": 100
             },
             {
               "id": "user-load-overshot",
@@ -246,7 +246,7 @@
               "id": "threads-drained",
               "observation": "api_busy_threads",
               "op": "lt",
-              "value": 60
+              "value": 100
             },
             {
               "id": "api-latency-recovered",

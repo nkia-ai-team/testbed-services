@@ -4403,6 +4403,9 @@
       ],
       "distinguishing_evidence": "order의 지연은 DB 커넥션이 없어서(F19-P)가 아니라 Tomcat 스레드가 없어서 발생한다. 결정 증거 3종: (1) http.server.active_requests가 200에 닿음(F19-P는 ~15+에서 멈춤, Hikari가 먼저 참), (2) hikari pending≈0·active 낮음(F19-P는 pending>0·active≈15), (3) 무관 GET /api/orders 지연 전염(Hikari 고갈은 DB 만지는 엔드포인트에 국한, 스레드 고갈은 전 엔드포인트 전염). 지연 지점이 orderRepository.save(:128) 앞(restaurant)이냐 뒤(payment)냐가 P2(스레드)와 P1(Hikari)을 가르는 근본 분기.",
       "difficulty": "high",
+      "threshold_evidence": [
+        "order_busy_threads: 평시 37~46 (24h 범위질의, p50 42·p95 44) / 주입 후 잔재는 **아직 실측 없음** — must_rule_out·recovery를 60→100으로 올린 근거는 F21-P의 동일 구조(Tomcat 200 + OTel javaagent) 실측 잔재 69~77이다(2026-07-31, otel-jvm-daemon-thread-count-v1). F21-Q의 첫 라이브 런에서 주입 해제 후 스레드 곡선을 확인하고 이 항목을 자기 실측으로 교체한다. 그때까지 이 임계는 양쪽 실측을 갖추지 못한 상태다."
+      ],
       "related_scenarios": {
         "contrast_with": [
           "F19-P (동일 order로 증상 수렴하나 payment(save 後) 지연 → Hikari 15 pending>0가 병목; F21-Q는 restaurant(save 前) 지연 → Tomcat 200 busy-threads가 병목, Hikari pending≈0)",
@@ -4479,6 +4482,10 @@
       ],
       "distinguishing_evidence": "api의 지연은 커넥션풀 고갈(FS-6)이나 CB open(FS-2)이 아니라 Tomcat 스레드 고갈이다. 결정 증거: (1) http.server.active_requests가 200에 닿음, (2) api엔 Hikari query가 부재(풀이 없음) — 이 부재가 곧 FS-6 배제, (3) api 502 rate 낮음 + CB closed — FS-1(502 폭증)·FS-2(즉시 502) 배제, transfer는 느린 200. api-service가 테스트베드에서 유일하게 DataSource가 없는 서비스라, 스레드가 유일 유한 자원임이 구조적으로 자명하다. 주입 지연이 read-timeout(10s)을 넘으면 502→CB open으로 FS-2에 전이하는데, 이 전이 경계가 F21-P의 감별선이다.",
       "difficulty": "high",
+      "threshold_evidence": [
+        "api_busy_threads: 평시 35~44 (24h 범위질의, p50 44·p95 44) / 주입 중 224~225 / 주입 해제 후 10분 내 69~77에서 평탄, 20분 뒤 61 — JVM이 Tomcat 워커 스레드를 즉시 반납하지 않는다. 임계 success≥180 유지, must_rule_out·recovery는 60→100 (2026-07-31, otel-jvm-daemon-thread-count-v1, VM 119:18428). 60은 평시(35~44)와 잔재(61~77) 사이에 끼어 있어 recovery가 도달 불가였고(07-31 01:03 런이 recovery_timeout으로 dirty 처리), 직전 런의 잔재가 남으면 must_rule_out이 발화하지 못했다. 100은 잔재 상한(77)과 포화(224) 사이에 있어 양쪽이 갈린다.",
+        "node_cpu_utilization(tb-w2): 평시 2.4~3.8 (24h 범위질의, p50 3.0·p95 3.8) / 주입 중 19~23 (p99 22.0·max 24.5) — 관측용, 판정 조건 아님 (2026-07-31, kcm-node-cpu-utilization-v1)"
+      ],
       "related_scenarios": {
         "contrast_with": [
           "FS-1 (transfer lock 무한대기 → account/api 502 폭증; F21-P는 timeout 미만 지연이라 느린 200·502 낮음)",

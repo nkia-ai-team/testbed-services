@@ -209,7 +209,7 @@
               "id": "threads-never-piled-up",
               "observation": "order_busy_threads",
               "op": "lt",
-              "value": 60
+              "value": 100
             },
             {
               "id": "upstream-failing-not-slowing",
@@ -255,7 +255,7 @@
               "id": "threads-drained",
               "observation": "order_busy_threads",
               "op": "lt",
-              "value": 60
+              "value": 100
             },
             {
               "id": "order-latency-recovered",
