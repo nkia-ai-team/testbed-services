@@ -8,11 +8,11 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w2",
-    "matrix_location_transport": "W/ssh host.stress(worker-w2, cpu) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=90)",
-    "transport": "ssh",
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl transfer cpu limit 사다리(400m→300m→200m) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=50)",
+    "transport": "kubectl",
     "profile_refs": [
-      "injector-profiles/host.stress",
+      "injector-profiles/k8s.patch",
       "injector-profiles/load.north_south"
     ]
   },
@@ -24,22 +24,21 @@
       "baseline-clean-window",
       "target-health",
       "profile-prerequisites",
-      "transport-ssh-access",
-      "host-placement-and-oob-recovery",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
       "baseline-loadgen-active"
     ],
     "controller": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
       "binding": {
-        "primary_ref": "host.stress",
+        "primary_ref": "k8s.patch",
         "companion_refs": [
           "load.north_south"
-        ],
-        "approved_profile_id": "host.stress"
+        ]
       },
       "runtime": {
-        "mode": "evaluation",
+        "mode": "calibration",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -73,19 +72,43 @@
           ]
         },
         "profile": {
-          "kind": "fixed",
+          "kind": "adaptive_ladder",
           "levels": [
             {
-              "id": "approved-fixed-f21-p",
+              "id": "conservative-400m",
               "parameters": {
-                "mode": "cpu",
-                "host": "192.168.122.11",
-                "cpu_workers": 3,
-                "runtime_seconds": 480
+                "deployment": "testbed-transfer",
+                "container": "transfer-service",
+                "baseline_cpu_limit": "500m",
+                "fault_cpu_limit": "400m"
               },
-              "min_hold": "8m",
+              "min_hold": "3m",
               "settle": "45s",
-              "timeout": "13m"
+              "timeout": "9m"
+            },
+            {
+              "id": "constrained-300m",
+              "parameters": {
+                "deployment": "testbed-transfer",
+                "container": "transfer-service",
+                "baseline_cpu_limit": "500m",
+                "fault_cpu_limit": "300m"
+              },
+              "min_hold": "3m",
+              "settle": "45s",
+              "timeout": "9m"
+            },
+            {
+              "id": "floor-200m",
+              "parameters": {
+                "deployment": "testbed-transfer",
+                "container": "transfer-service",
+                "baseline_cpu_limit": "500m",
+                "fault_cpu_limit": "200m"
+              },
+              "min_hold": "3m",
+              "settle": "45s",
+              "timeout": "9m"
             }
           ]
         },
@@ -149,12 +172,14 @@
             }
           },
           {
-            "id": "node_cpu_util",
+            "id": "transfer_throttled",
             "adapter": "prometheus",
-            "query_id": "prometheus.node_cpu_utilization",
+            "query_id": "prometheus.container_cpu_throttled_time",
             "freshness": "60s",
             "parameters": {
-              "node": "tb-w2"
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer",
+              "container": "transfer-service"
             }
           },
           {
@@ -193,7 +218,23 @@
           ],
           "consecutive_ticks": 3
         },
-        "escalate": null,
+        "escalate": {
+          "any": [
+            {
+              "id": "threads-not-yet-piling",
+              "observation": "api_busy_threads",
+              "op": "lt",
+              "value": 180
+            },
+            {
+              "id": "throttling-not-yet-biting",
+              "observation": "transfer_throttled",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 3
+        },
         "must_rule_out": {
           "any": [
             {
@@ -203,16 +244,10 @@
               "value": 5
             },
             {
-              "id": "threads-never-piled-up",
-              "observation": "api_busy_threads",
-              "op": "lt",
-              "value": 100
-            },
-            {
               "id": "user-load-overshot",
               "observation": "achieved_rps",
               "op": "gt",
-              "value": 120
+              "value": 70
             }
           ],
           "consecutive_ticks": 3
@@ -278,7 +313,7 @@
       "mode": "dry-run",
       "mutation": false,
       "adapter_refs": [
-        "host.stress",
+        "k8s.patch",
         "load.north_south"
       ]
     },
@@ -287,7 +322,7 @@
       "mutation": false,
       "requires_preflight": true,
       "adapter_refs": [
-        "host.stress",
+        "k8s.patch",
         "load.north_south"
       ]
     },
@@ -299,7 +334,7 @@
       "recovery_gate": true,
       "adapter_refs": [
         "load.north_south",
-        "host.stress"
+        "k8s.patch"
       ]
     }
   },

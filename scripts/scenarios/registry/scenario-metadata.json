@@ -4464,9 +4464,9 @@
           "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/AccountRepository.java:18-20 (findByIdForUpdate — PESSIMISTIC_WRITE, NOWAIT도 timeout도 없다)",
           "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:51 (@Transactional — timeout이 없어 하류 지연이 그대로 상류 점유가 된다)"
         ],
-        "infra_anchor": "없음(순수 코드 구조 — DataSource 제외 + Tomcat 무튜닝). 지연 트리거는 transfer-service 슬로우다운(host.stress worker-w3 또는 db.workload transfer Oracle)이나 이는 주입 수단이지 root가 아님."
+        "infra_anchor": "없음(순수 코드 구조 — DataSource 제외 + Tomcat 무튜닝). 지연 트리거는 transfer-service 슬로우다운(k8s.patch로 testbed-transfer CPU limit 500m→400m→300m→200m)이나 이는 주입 수단이지 root가 아님. 트리거는 반드시 transfer 하나만 겨냥해야 한다 — 노드 단위 압박은 api까지 굶겨 CB open(FS-2)으로 정체성을 무너뜨린다(2026-07-31 실증)."
       },
-      "injection_summary": "transfer-service execute()를 account read-timeout(15s)·api read-timeout(10s) '미만'(목표 ~8s)으로 지연시켜(host.stress worker-w2 CPU 또는 db.workload transfer Oracle) transfer가 502가 아닌 느린 200을 내되 api→account 요청이 api Tomcat 스레드를 오래 점유하게 한다. db.lock은 무한대기→502→CB open으로 FS-1/FS-2를 만들어 부적격. 동시에 load.north_south로 banking transfer-surge.js(entry 30082, transfer-heavy, target_rps≈180 — Little L=λ·8s로 200 스레드 목표; 기본 surge transfer 10%로는 부족)를 흘린다. 지연이 10s를 넘으면 api read-timeout→502→CB open(FS-2)으로 전이하므로 캘리브레이션이 감별 정체성과 직결. cleanup은 stress/workload 해제.",
+      "injection_summary": "transfer-service만 골라 느리게 만든다: k8s.patch로 testbed-transfer의 CPU limit을 500m에서 사다리(400m→300m→200m)로 조인다. 200m가 바닥인 이유는 requests.cpu가 200m이고 API 서버가 limit<requests를 거부하기 때문이다(2026-07-31 실측: 100m·50m 패치는 'must be less than or equal to cpu limit'으로 반려). 동시에 load.north_south로 core-banking/transfer-heavy-surge.js(entry 30082, target_rps=50)를 흘린다. Little L=λ·T로 λ=50·T≈3.8s면 스레드 190 — T가 api read-timeout 10s에서 멀리 떨어져 있어야 CB가 닫힌 채로 남는다. 2026-07-31까지 쓰던 host.stress(worker-w2 cpu_workers=3)는 부적격으로 판명됐다: 노드 전체를 굶겨(실측 real CPU 1.8%→79%) api까지 함께 느려지고, api가 먼저 빠르게 실패해 CB가 열린다. 같은 런의 부하 램프(7→97rps)가 그 자체로 전 구간 스윕이었고, 스레드≥180(65rps 이상)과 오류율<5%(40rps 미만)가 겹치는 구간이 없었다. db.lock은 무한대기→502→CB open으로 부적격이고, db.workload는 live_supported=false다. cleanup은 원 limit(500m) 롤백 + load 종료.",
       "user_impact": "이체(POST /api/transfers)가 api Tomcat 스레드 포화로 지연·타임아웃 급증하고, 무관한 이체내역 조회(GET /api/transfers 프록시)까지 느려진다. transfer는 지연만 있고 5xx를 안 뱉으며(느린 200), api는 커넥션풀이 없어 풀 지표가 부재 → 풀 고갈(FS-6)이나 CB open(FS-2)으로 오인하면 오진.",
       "must_support": [
         "api busy-threads가 200 스레드풀에 근접 (jvm_daemon_thread_count ≥ 180) — Tomcat의 http-nio-*-exec 워커는 daemon 스레드다. api-service는 DataSource가 없어 커넥션풀이 아예 없으므로 병목이 스레드임이 구조적으로 확정된다",
@@ -4484,7 +4484,9 @@
       "difficulty": "high",
       "threshold_evidence": [
         "api_busy_threads: 평시 35~44 (24h 범위질의, p50 44·p95 44) / 주입 중 224~225 / 주입 해제 후 10분 내 69~77에서 평탄, 20분 뒤 61 — JVM이 Tomcat 워커 스레드를 즉시 반납하지 않는다. 임계 success≥180 유지, must_rule_out·recovery는 60→100 (2026-07-31, otel-jvm-daemon-thread-count-v1, VM 119:18428). 60은 평시(35~44)와 잔재(61~77) 사이에 끼어 있어 recovery가 도달 불가였고(07-31 01:03 런이 recovery_timeout으로 dirty 처리), 직전 런의 잔재가 남으면 must_rule_out이 발화하지 못했다. 100은 잔재 상한(77)과 포화(224) 사이에 있어 양쪽이 갈린다.",
-        "node_cpu_utilization(tb-w2): 평시 2.4~3.8 (24h 범위질의, p50 3.0·p95 3.8) / 주입 중 19~23 (p99 22.0·max 24.5) — 관측용, 판정 조건 아님 (2026-07-31, kcm-node-cpu-utilization-v1)"
+        "achieved_rps: target_rps=90에서 실측 88~97 — 부하기는 목표를 그대로 낸다. target을 50으로 낮추면서 user-load-overshot을 120→70으로 조인다. 70은 50의 1.4배로 오버슛만 잡고 정상 변동은 통과시킨다 (2026-07-31, loadgen.achieved_rps)",
+        "success 임계(스레드≥180·api p95≥6000·transfer p95≥2000)는 host.stress 시절 값 그대로 두었다. 새 레버에서의 장애 시 값역을 아직 재지 못했기 때문이다 — 첫 calibration 런의 사다리 응답으로 재도출한다. 특히 api p95≥6000은 λ=50·스레드 190의 안정 구간(T≈3.8s)과 어긋날 가능성이 크다. 양쪽 실측이 나오기 전까지 이 세 값은 잠정이다",
+        "폐기된 관측 — node_cpu_utilization(tb-w2)은 F21-P에서 제거했다. KCM이 매우 긴 이동평균을 보고해 5~10분짜리 장애를 표현하지 못한다: 실측(2026-07-31) 1코어 90초 소각으로 실제 CPU가 +21%p 오를 때 지표는 +0.4%p 움직였고, 3코어 8분 소각(실제 ~79%) 동안 3.8→23.6으로 천천히 오르며 끝까지 수렴하지 못했다. 대체 관측은 transfer_throttled(container_cpu_throttled_time)로, 주입한 원인을 직접 가리킨다"
       ],
       "related_scenarios": {
         "contrast_with": [
@@ -4495,18 +4497,36 @@
         ]
       },
       "injected_fault": {
-        "profile": "host.stress",
+        "profile": null,
         "companions": [
           "load.north_south"
         ],
         "levels": [
           {
-            "id": "approved-fixed-f21-p",
+            "id": "conservative-400m",
             "parameters": {
-              "mode": "cpu",
-              "host": "192.168.122.11",
-              "cpu_workers": 3,
-              "runtime_seconds": 480
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "400m"
+            }
+          },
+          {
+            "id": "constrained-300m",
+            "parameters": {
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "300m"
+            }
+          },
+          {
+            "id": "floor-200m",
+            "parameters": {
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "200m"
             }
           }
         ]

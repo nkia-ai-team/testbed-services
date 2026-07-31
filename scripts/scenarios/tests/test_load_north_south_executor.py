@@ -223,7 +223,11 @@ class RemoteArgumentQuotingTests(unittest.TestCase):
         self.assertEqual(len(seen_entry_urls), len(contract["domain_profiles"]))
 
     def test_host_stress_arguments_survive_the_remote_shell(self) -> None:
-        plan = compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation")
+        # F21-P held this guard until 2026-07-31, when its injection moved from
+        # node-wide CPU pressure to a transfer-only CPU limit. F21-Q is the same
+        # cpu-mode host.stress contract on the food worker, so the quoting
+        # property stays covered by a scenario that still dispatches it.
+        plan = compiler.compile_plan("f21-q-food-order-tomcat-thread-saturation")
         argv, _ = host_stress.build_invocation(plan, "cleanup")
         received = self._round_trip(argv)
-        self.assertEqual(received[:4], ["cleanup", "F21-P", "cpu", "192.168.122.11"])
+        self.assertEqual(received[:4], ["cleanup", "F21-Q", "cpu", "192.168.122.14"])

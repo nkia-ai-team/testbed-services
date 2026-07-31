@@ -95,6 +95,42 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(k8s_patch.ExecutorError, "predeclared"):
             k8s_patch.validate("F09-P", tampered, profile)
 
+    def test_kubernetes_patch_reaches_banking_and_still_pins_each_scenario(self) -> None:
+        # Until 2026-07-31 build_invocation hardcoded the commerce namespace, so
+        # F21-P's "throttle transfer alone" lever could not be dispatched at all
+        # even though allowed_locations already listed banking-namespace. Revert
+        # the ALLOWLIST lookup to the old constant and this first assertion fails.
+        profile = self.profiles["k8s.patch"]
+        argv, _ = k8s_patch.build_invocation(
+            compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation"), "run"
+        )
+        self.assertIn("rca-testbed-banking", argv)
+        self.assertIn("testbed-transfer", argv)
+        # Generalising the namespace must not turn it into a free parameter: a
+        # scenario may only patch the deployment its own answer key names.
+        with self.assertRaisesRegex(k8s_patch.ExecutorError, "not allowlisted"):
+            k8s_patch.validate(
+                "F21-P", profile["scenario_levels"]["F09-P"][0]["parameters"], profile
+            )
+        with self.assertRaisesRegex(k8s_patch.ExecutorError, "not allowlisted"):
+            k8s_patch.validate(
+                "F09-P", profile["scenario_levels"]["F21-P"][0]["parameters"], profile
+            )
+
+    def test_kubernetes_patch_ladder_stays_above_the_declared_cpu_request(self) -> None:
+        # The API server rejects any limit below requests.cpu, and every testbed
+        # deployment declares 200m. A rung below that is a rung that can never be
+        # applied — measured 2026-07-31 on testbed-transfer with 100m and 50m.
+        profile = self.profiles["k8s.patch"]
+        levels = profile["scenario_levels"]["F21-P"]
+        self.assertEqual(
+            [level["parameters"]["fault_cpu_limit"] for level in levels],
+            ["400m", "300m", "200m"],
+        )
+        for level in levels:
+            millicores = int(level["parameters"]["fault_cpu_limit"].removesuffix("m"))
+            self.assertGreaterEqual(millicores, 200, level["level_id"])
+
     def test_kubernetes_patch_level_override_changes_exact_builder_argv(self) -> None:
         plan = compiler.compile_plan("f09-p-inventory-cpu-throttle")
         instance = next(row for row in plan["profile_instances"] if row["profile_id"] == "k8s.patch")

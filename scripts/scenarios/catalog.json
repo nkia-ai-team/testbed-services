@@ -645,12 +645,12 @@
       "id": "F21-P",
       "slug": "f21-p-banking-api-tomcat-thread-saturation",
       "profiles": [
-        "host.stress",
+        "k8s.patch",
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "fixed",
-      "injection_location": "worker-w2",
+      "load_mode": "adaptive",
+      "injection_location": "banking namespace",
       "prerequisite": ""
     },
     {

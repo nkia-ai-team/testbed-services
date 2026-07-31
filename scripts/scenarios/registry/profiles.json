@@ -723,7 +723,7 @@
           "baseline_unit": "loadgen-food"
         },
         "F21-P": {
-          "target_rps": 90,
+          "target_rps": 50,
           "ramp_up": "2m",
           "hold": "8m",
           "ramp_down": "1m",
@@ -2616,7 +2616,8 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F09-P",
-          "F12-H"
+          "F12-H",
+          "F21-P"
         ]
       },
       "scenario_parameters": {
@@ -2631,6 +2632,12 @@
           "container": "product-service",
           "baseline_cpu_limit": "500m",
           "fault_cpu_limit": "50m"
+        },
+        "F21-P": {
+          "deployment": "testbed-transfer",
+          "container": "transfer-service",
+          "baseline_cpu_limit": "500m",
+          "fault_cpu_limit": "200m"
         }
       },
       "scenario_levels": {
@@ -2689,6 +2696,35 @@
               "container": "product-service",
               "baseline_cpu_limit": "500m",
               "fault_cpu_limit": "50m"
+            }
+          }
+        ],
+        "F21-P": [
+          {
+            "level_id": "conservative-400m",
+            "parameters": {
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "400m"
+            }
+          },
+          {
+            "level_id": "constrained-300m",
+            "parameters": {
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "300m"
+            }
+          },
+          {
+            "level_id": "floor-200m",
+            "parameters": {
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_cpu_limit": "500m",
+              "fault_cpu_limit": "200m"
             }
           }
         ]
