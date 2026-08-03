@@ -173,6 +173,15 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.achieved_rps",
             "freshness": "30s"
+          },
+          {
+            "id": "food_create_429_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_429_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -260,7 +269,7 @@
             },
             {
               "id": "food-429-cleared",
-              "observation": "food_create_429_rate",
+              "observation": "food_create_429_rate_baseline",
               "op": "lt",
               "value": 0.02
             }

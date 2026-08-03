@@ -138,6 +138,15 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.food_create_status_rate",
             "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -207,7 +216,7 @@
             },
             {
               "id": "create-cleared",
-              "observation": "order_create_5xx_rate",
+              "observation": "order_create_5xx_rate_baseline",
               "op": "lt",
               "value": 0.05
             }

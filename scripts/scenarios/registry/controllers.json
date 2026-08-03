@@ -4210,6 +4210,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.checkout_5xx_rate",
           "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -4290,7 +4299,7 @@
           },
           {
             "id": "pool-restored",
-            "observation": "checkout_5xx_rate",
+            "observation": "checkout_5xx_rate_baseline",
             "op": "lt",
             "value": 0.02
           }
@@ -5902,6 +5911,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
           "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -5971,7 +5989,7 @@
           },
           {
             "id": "create-recovered",
-            "observation": "order_create_5xx_rate",
+            "observation": "order_create_5xx_rate_baseline",
             "op": "lt",
             "value": 0.05
           }
@@ -6087,6 +6105,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
           "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -6156,7 +6183,7 @@
           },
           {
             "id": "create-cleared",
-            "observation": "order_create_5xx_rate",
+            "observation": "order_create_5xx_rate_baseline",
             "op": "lt",
             "value": 0.05
           }
@@ -6289,6 +6316,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.read_step_status_rate",
           "freshness": "30s"
+        },
+        {
+          "id": "write_401_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.write_step_status_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -6358,7 +6394,7 @@
           },
           {
             "id": "writes-recovered",
-            "observation": "write_401_rate",
+            "observation": "write_401_rate_baseline",
             "op": "lt",
             "value": 0.05
           }
@@ -6932,6 +6968,15 @@
             "container": "payment-service"
           },
           "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -7001,7 +7046,7 @@
           },
           {
             "id": "checkout-recovered",
-            "observation": "checkout_5xx_rate",
+            "observation": "checkout_5xx_rate_baseline",
             "op": "lt",
             "value": 0.05
           }
@@ -7492,6 +7537,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.checkout_5xx_rate",
           "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -7572,7 +7626,7 @@
           },
           {
             "id": "checkout-cleared",
-            "observation": "checkout_5xx_rate",
+            "observation": "checkout_5xx_rate_baseline",
             "op": "lt",
             "value": 0.02
           }
@@ -7718,6 +7772,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.achieved_rps",
           "freshness": "30s"
+        },
+        {
+          "id": "order_create_429_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_429_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -7787,7 +7850,7 @@
           },
           {
             "id": "create-recovered",
-            "observation": "order_create_429_rate",
+            "observation": "order_create_429_rate_baseline",
             "op": "lt",
             "value": 0.02
           }
@@ -10892,6 +10955,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.achieved_rps",
           "freshness": "30s"
+        },
+        {
+          "id": "food_create_429_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_429_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -10979,7 +11051,7 @@
           },
           {
             "id": "food-429-cleared",
-            "observation": "food_create_429_rate",
+            "observation": "food_create_429_rate_baseline",
             "op": "lt",
             "value": 0.02
           }
@@ -11130,6 +11202,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.achieved_rps",
           "freshness": "30s"
+        },
+        {
+          "id": "food_create_429_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_429_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
         }
       ],
       "success": {
@@ -11217,7 +11298,7 @@
           },
           {
             "id": "food-429-cleared",
-            "observation": "food_create_429_rate",
+            "observation": "food_create_429_rate_baseline",
             "op": "lt",
             "value": 0.02
           }

@@ -155,6 +155,15 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.read_step_status_rate",
             "freshness": "30s"
+          },
+          {
+            "id": "write_401_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -224,7 +233,7 @@
             },
             {
               "id": "writes-recovered",
-              "observation": "write_401_rate",
+              "observation": "write_401_rate_baseline",
               "op": "lt",
               "value": 0.05
             }

@@ -173,6 +173,15 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.checkout_5xx_rate",
             "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -253,7 +262,7 @@
             },
             {
               "id": "checkout-cleared",
-              "observation": "checkout_5xx_rate",
+              "observation": "checkout_5xx_rate_baseline",
               "op": "lt",
               "value": 0.02
             }
