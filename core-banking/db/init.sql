@@ -96,7 +96,16 @@ USING (
     SELECT 'commerce-merchant', '커머스 가맹점 계좌', 10000000.00, 'ACTIVE' FROM dual
 ) src
 ON (a.id = src.id)
-WHEN MATCHED THEN UPDATE SET a.holder = src.holder
+-- 저수지 계좌(정산)는 재시딩 때 설계 시드까지 되채운다. holder만 갱신하던
+-- 시절엔 5천만→1조 상향이 기존 DB에 영영 반영되지 않아 같은 고갈이 재발했다
+-- (2026-08-03 배치 #13: 2h40m 동안 정산 발 이체 전건 침묵 실패). 일반 계좌
+-- 잔액은 건드리지 않는다 — 앱이 움직인 상태는 보존해야 한다.
+WHEN MATCHED THEN UPDATE SET
+    a.holder = src.holder,
+    a.balance = CASE
+        WHEN a.id = 'commerce-settlement' AND a.balance < src.balance THEN src.balance
+        ELSE a.balance
+    END
 WHEN NOT MATCHED THEN INSERT (id, holder, balance, status) VALUES (src.id, src.holder, src.balance, src.status);
 
 COMMIT;
