@@ -186,7 +186,10 @@ YAML
       "${kc[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
       pid=""
       for _ in $(seq 1 30); do
-        pid="$("${kc[@]}" logs "$pod" 2>/dev/null | sed -n '1p' | tr -d '[:space:]')"
+        # psql prints the BEGIN command tag before any result, so line 1 is never
+        # the pid. Take the first all-digits line. Same fix as db_lock_executor
+        # (2026-07-31) and timeline_multi_injection_executor (2026-08-03).
+        pid="$("${kc[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
         [[ "$pid" =~ ^[0-9]+$ ]] && break
         pid=""; sleep 1
       done

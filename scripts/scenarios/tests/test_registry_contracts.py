@@ -200,6 +200,42 @@ class RegistryContractTests(unittest.TestCase):
                 f"{profile_id}: allowed_scenarios 에 있으나 tag_pattern 이 거부한다",
             )
 
+    def test_every_pg_lock_executor_reads_the_pid_from_real_psql_output(self) -> None:
+        """pid 추출은 실행기마다 따로 구현돼 있고, 같은 결함이 네 번 반복됐다.
+
+        psql 은 결과보다 `BEGIN` 명령 태그를 먼저 찍으므로 첫 줄은 절대 pid 가 아니다.
+        db_lock_executor(2026-07-31) → timeline_multi_injection(08-03) →
+        timeline_lock_mock·timeline_dual_fault(08-03) 순으로 같은 자리를 네 번 고쳤다.
+        파일마다 가드를 두는 대신 **pid 를 뽑는 모든 실행기**를 한 번에 검사한다.
+
+        입력은 2026-07-31 에 파드에서 실측한 로그 그대로다.
+        """
+        observed_pod_log = "BEGIN\n35250\n1\n"
+        checked = []
+        for path in sorted((ROOT / "profiles").glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            if "did not report a backend pid" not in source:
+                continue
+            pipelines = [
+                line.split('logs "$pod" 2>/dev/null |', 1)[1].rstrip(')"').strip()
+                for line in source.splitlines()
+                if 'logs "$pod" 2>/dev/null |' in line and 'pid="$(' in line
+            ]
+            self.assertTrue(pipelines, f"{path.name}: pid 추출 파이프라인을 찾지 못했다")
+            for pipeline in pipelines:
+                extracted = subprocess.run(
+                    ["sh", "-c", f"cat | {pipeline}"],
+                    input=observed_pod_log,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                self.assertEqual(
+                    extracted, "35250", f"{path.name}: 실제 psql 출력에서 pid 를 못 뽑는다"
+                )
+            checked.append(path.name)
+        self.assertGreaterEqual(len(checked), 4, f"검사된 실행기가 너무 적다: {checked}")
+
     def test_executor_side_tables_cover_every_allowlisted_scenario(self) -> None:
         """실행기가 들고 있는 표도 레지스트리 목록과 같아야 한다.
 
