@@ -242,7 +242,13 @@ action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; keycol="
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns"); state="/tmp/${tag}.pid"
 alive() { "${k[@]}" exec "$pod" -- env STATE="$state" sh -lc 'test -s "$STATE" && kill -0 "$(cat "$STATE")" 2>/dev/null'; }
 stop() { "${k[@]}" exec "$pod" -- env STATE="$state" TAG="$tag" sh -lc 'if test -s "$STATE"; then kill "$(cat "$STATE")" 2>/dev/null || true; rm -f "$STATE" "/tmp/$TAG.sql" "/tmp/$TAG.log"; fi'; }
-check_row() { printf 'alter session set container=FREEPDB1;\nalter session set current_schema=%s;\nset pages 0 feedback off heading off\nselect count(*) from %s where %s='"'"'%s'"'"';\nexit;\n' "$schema" "$table" "$keycol" "$key" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
+# `set feedback off` must precede the alters: sqlplus echoes "Session altered." for
+# each one while feedback is still on, and `tr -d [:space:]` then folds that into the
+# value, so the exact match below sees "Sessionaltered.Sessionaltered.1" and never
+# matches. This blocked BOTH preflight and recovery for the Oracle lock, so the run
+# could not clean itself and the global DIRTY it left stalled the whole queue (F01-P,
+# 2026-08-03).
+check_row() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\nselect count(*) from %s where %s='"'"'%s'"'"';\nexit;\n' "$schema" "$table" "$keycol" "$key" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
 case "$action" in preflight) check_row; ! alive;; run) check_row; ! alive; "${k[@]}" exec "$pod" -- sh -lc 'cat > /tmp/'"'"'$tag'"'"'.sql <<EOF
 alter session set container=FREEPDB1;
 alter session set current_schema='"'"'$schema'"'"';

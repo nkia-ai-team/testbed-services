@@ -65,7 +65,10 @@ k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
 # ALL_TABLES.READ_ONLY is the authority. Never trust the DDL's exit status alone,
 # because a no-op ALTER also succeeds.
 state() {
-  printf 'alter session set container=FREEPDB1;\nset pages 0 feedback off heading off\nselect read_only from all_tables where owner='"'"'%s'"'"' and table_name='"'"'%s'"'"';\nexit;\n' \
+  # feedback off first: while it is on, sqlplus echoes "Session altered." for the
+  # alter and `tr -d [:space:]` folds it into the value, so expect() compares
+  # "Sessionaltered.NO" against "NO" and never matches (verified 2026-08-03).
+  printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nselect read_only from all_tables where owner='"'"'%s'"'"' and table_name='"'"'%s'"'"';\nexit;\n' \
     "$schema" "$table" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'
 }
 flip() {
