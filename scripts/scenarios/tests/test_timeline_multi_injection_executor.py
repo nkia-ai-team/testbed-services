@@ -4,6 +4,7 @@ import base64
 import copy
 import importlib.util
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -106,6 +107,30 @@ class MultiInjectionContractTests(unittest.TestCase):
         params = allowlisted["scenario_parameters"]["F99-X"]
         with self.assertRaises(multi.ExecutorError):
             multi.validate("F99-X", params, allowlisted)
+
+    def test_backend_pid_is_read_from_real_psql_output(self) -> None:
+        """pg_lock 스텝이 실제 psql 로그 모양에서 pid를 뽑아낼 수 있어야 한다.
+
+        psql은 결과보다 `BEGIN` 명령 태그를 먼저 찍는다. 첫 줄만 보던 구현은
+        pid를 영영 못 찾고 "did not report a backend pid"로 죽는다. db.lock
+        실행기는 2026-07-31에 고쳤지만 이 실행기에는 옮겨지지 않아, F15-G가
+        같은 자리에서 죽고 전역 DIRTY로 큐를 세웠다(2026-08-03).
+        아래 입력은 그날 파드에서 실측한 로그 그대로다.
+        """
+        script = multi.ORCHESTRATOR.decode()
+        pipeline = next(
+            line.split('logs "$pod" 2>/dev/null |', 1)[1].rstrip(')"').strip()
+            for line in script.splitlines()
+            if 'pid="$(' in line and "logs" in line
+        )
+        extracted = subprocess.run(
+            ["sh", "-c", f"cat | {pipeline}"],
+            input="BEGIN\n35250\n1\n",
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(extracted, "35250")
 
 
 if __name__ == "__main__":

@@ -167,9 +167,11 @@ oracle() {  # $1=verb $2=step_index
   tag=$(field "$i" client_identifier); hold=$(field "$i" hold_seconds)
   local k=("${kube[@]}" -n "$ns")
   local pidf="/tmp/${tag}.pid"
-  o_rowok() { printf 'alter session set container=FREEPDB1;\nset pages 0 feedback off heading off\nselect count(*) from %s.%s where %s=%s;\nexit;\n' \
+  # feedback off must precede the alter, or sqlplus prefixes "Session altered." to
+  # the value and the exact comparisons below never match (verified 2026-08-03).
+  o_rowok() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nselect count(*) from %s.%s where %s=%s;\nexit;\n' \
       "$schema" "$table" "$keycol" "'$key'" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
-  o_sessions() { printf 'alter session set container=FREEPDB1;\nset pages 0 feedback off heading off\nselect count(*) from v$session where client_identifier=%s;\nexit;\n' \
+  o_sessions() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nselect count(*) from v$session where client_identifier=%s;\nexit;\n' \
       "'$tag'" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'; }
   o_kill() { printf "alter session set container=FREEPDB1;\nset pages 0 feedback off heading off\nbegin for s in (select sid,serial# from v\$session where client_identifier='%s') loop execute immediate 'alter system kill session '''||s.sid||','||s.serial#||''' immediate'; end loop; end;\n/\nexit;\n" \
       "$tag" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba >/dev/null 2>&1 || true; }
@@ -253,9 +255,16 @@ spec:
         - '{ printf "%s\n" "\$SQL_PRE"; sleep "\$HOLD"; printf "%s\n" "\$SQL_POST"; } | psql -X -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"'
 YAML
       "${k[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
+      # The pid is NOT on the first log line: psql prints the BEGIN command tag
+      # before any result, so the session logs "BEGIN", then the pid, then the
+      # locked key. Take the first all-digits line instead - SQL_PRE always issues
+      # pg_backend_pid() before the lock query, so that line is the pid whether or
+      # not psql prints tags. Same defect and same fix as db_lock_executor
+      # (2026-07-31); it was never carried across to this executor, so F15-G still
+      # died with "did not report a backend pid" and wedged the queue (2026-08-03).
       pid=""
       for _ in $(seq 1 30); do
-        pid="$("${k[@]}" logs "$pod" 2>/dev/null | sed -n '1p' | tr -d '[:space:]')"
+        pid="$("${k[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
         [[ "$pid" =~ ^[0-9]+$ ]] && break
         pid=""; sleep 1
       done
