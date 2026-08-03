@@ -200,6 +200,38 @@ class RegistryContractTests(unittest.TestCase):
                 f"{profile_id}: allowed_scenarios 에 있으나 tag_pattern 이 거부한다",
             )
 
+    def test_executor_side_tables_cover_every_allowlisted_scenario(self) -> None:
+        """실행기가 들고 있는 표도 레지스트리 목록과 같아야 한다.
+
+        `k8s.env` 는 `profiles.json` 의 allowed_scenarios 로 한 번, 실행기 안의
+        APPROVED_TARGETS / APPROVED_KEYS 로 또 한 번 검사한다. F04-H 는 2026-07-29
+        승격 때 앞의 목록에만 들어가 `scenario environment target is not allowlisted`
+        로 죽었고, 정리도 같은 검증을 지나므로 전역 DIRTY 가 됐다(2026-08-03).
+
+        tag_pattern 짝(test_every_allowlisted_scenario_also_matches_its_tag_pattern)과
+        같은 결함을 실행기 쪽에서 잡는다.
+        """
+        import ast
+
+        spec = (ROOT / "profiles" / "k8s_env_executor.py").read_text(encoding="utf-8")
+        tables: dict[str, object] = {}
+        for node in ast.walk(ast.parse(spec)):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if getattr(target, "id", "") in {"APPROVED_TARGETS", "APPROVED_KEYS"}:
+                        tables[target.id] = ast.literal_eval(node.value)
+        allowed = (
+            self.profiles["profiles"]["k8s.env"]
+            .get("parameter_contract", {})
+            .get("allowed_scenarios", [])
+        )
+        for name, table in sorted(tables.items()):
+            self.assertEqual(
+                [scenario_id for scenario_id in allowed if scenario_id not in table],
+                [],
+                f"k8s.env: allowed_scenarios 에 있으나 {name} 에 없다",
+            )
+
     def test_manifest_catalog_mismatch_is_rejected(self) -> None:
         scenario = self.catalog["scenarios"][0]
         manifest = json.loads(

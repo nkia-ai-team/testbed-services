@@ -14,6 +14,9 @@ APPROVED_TARGETS = {
     "F08-P": ("rca-testbed-commerce", "testbed-order", "order-service"),
     "F18-P": ("rca-testbed-banking", "testbed-transfer", "transfer-service"),
     "F23-R": ("rca-testbed-commerce", "testbed-inventory", "inventory-service"),
+    # 2026-07-29 승격 때 profiles.json 의 allowed_scenarios 에만 들어가고 이 표에는
+    # 빠져 있었다. 정리도 같은 검증을 지나므로 런이 스스로 못 씻고 전역 DIRTY 가 된다.
+    "F04-H": ("rca-testbed-commerce", "testbed-order", "order-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -21,6 +24,7 @@ APPROVED_KEYS = {
     "F08-P": {"SPRING_APPLICATION_JSON"},
     "F18-P": {"OUTBOX_RELAY_ENABLED"},
     "F23-R": {"SPRING_APPLICATION_JSON"},
+    "F04-H": {"OUTBOX_RELAY_ENABLED"},
 }
 
 
