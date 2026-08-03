@@ -14,7 +14,7 @@ summary: 큐 live-44-8890d512 실행 중 발견된 결함을 층별로 기록한
 
 큐 `live-44-8890d512`, 스모크 패스. **배치 자체가 결함 발견 수단**이라는 전제
 (`docs/scenario-redesign-wip/` 이전 감사 문서들)가 다시 한번 그대로 입증됐다 —
-아래 12건 중 **정적 감사로 잡을 수 있었던 것은 없다**. 매니페스트·계약·파라미터는
+아래 21건 중 **정적 감사로 잡을 수 있었던 것은 없다**. 매니페스트·계약·파라미터는
 모두 정상으로 읽혔고, 실패는 파드 안 파일 이름, sqlplus 한 줄의 순서,
 지표의 실제 분포처럼 **돌려봐야만 보이는 자리**에 있었다.
 
@@ -34,6 +34,15 @@ summary: 큐 live-44-8890d512 실행 중 발견된 결함을 층별로 기록한
 | 10 | **ready 9종** | 판정 구조 | 회복 게이트가 cleanup이 지우는 자기 부하기 파일을 읽는다 | **수리** |
 | 11 | F05-P | 레포 불일치 | 매니페스트가 러너에 없는 검사 id를 부른다 | 스킵 |
 | 12 | F15-T1 | 레포 불일치 | 같은 파라미터가 두 레지스트리에서 다르다 | 스킵 |
+| 13 | F18-P (banking 전반) | 환경/시드 | 정산 계좌가 말라 이체가 2/3 실패 — 07-20 수정이 실행 DB에 닿은 적 없다 | **복구** |
+| 14 | core-banking 전체 | 관측 | baseline 스크립트에 `step` 태그가 없어 관측 평면이 처음부터 죽어 있었다 | 미수리 |
+| 15 | F18-P | 주입 부작용 | 릴레이를 끄면 health가 응답을 멈춰 liveness가 유일한 파드를 죽인다 | 스킵 |
+| 16 | **17종 잠재** | 판정 진단 | companion 부하가 레벨 timeout보다 짧아, 오래 도는 런은 신호가 사라진 뒤 엉뚱한 사유로 죽는다 | 스킵·기록 |
+| 17 | F05-H·F16-H·F17-R | 정리 검증 | 주입이 배포의 progress deadline을 넘기면 굳은 실패 조건이 cleanup 검증을 오염시켜 전역 DIRTY가 된다 | 스킵·기록 |
+| 18 | F20-Q | 주입 크기 | 성공 임계(768Mi)가 서비스가 견디는 지점 위에 있다 — 624MB에서 먼저 죽는다 | 스킵 |
+| 19 | F23-R (파괴적 시나리오 뒤 전부) | 간격 | 앞 시나리오가 DB를 재기동시키면 5분 창이 비어 다음 시나리오가 게이트에 막힌다 | 대기 후 재개 |
+| 20 | F15-R·F03-H (+F15-T1) | 레포 불일치 | 승인 파라미터가 한 벌뿐인데 사다리는 여러 단 — 주입도 정리도 거부돼 전역 DIRTY | 스킵 |
+| 21 | **live 7종** | 레포 불일치 | 같은 계약 안 두 목록이 갈라져 부하 태그가 거부된다 — 남은 배치의 절반 | **수리** |
 
 ---
 
@@ -260,6 +269,23 @@ kube-context·kube-node-set·target-health는 통과했으니 kubectl 전반의 
 게다가 `check_failed:*`는 `TRANSIENT_AUTO_RETRY_REASONS`에도 `..._PREFIXES`에도 없어
 **큐가 자동 재시도하지 않고 그대로 선다.**
 
+### 같은 병이 준비 점검 층에서도 나온다
+
+2026-08-03 F25-H 차례에서 큐가 시나리오를 시작하지도 못하고 섰다:
+
+```
+operational readiness failed: preflight_signals
+```
+
+곧바로 `/api/live-queue/readiness`를 부르니 **17개 검사 전부 통과**였다. 일시적 실패였고,
+resume 한 번으로 F25-H가 정상 시작했다.
+
+`readiness()`도 같은 모양이다 — `preflight_probe.collect()`가 던지면 예외를 삼키고
+`preflight_signals: False`로 바꾼다. 사유가 남지 않고, 자동 재시도도 없다.
+**한 번의 프로브 실패가 배치를 세운다.**
+
+대응은 아래와 같다 — 막히면 먼저 같은 것을 직접 재보고, 값이 멀쩡하면 resume한다.
+
 **대응:** `check_failed:baseline-*`로 막히면 **먼저 게이트와 같은 질의를 직접 재라.**
 값이 멀쩡하면 프로브 결함이니 resume해서 재시도시킨다 — 스킵할 일이 아니다.
 
@@ -445,6 +471,349 @@ profile control refused: parameters must exactly match an approved F15-T1 timeli
 실행기 자신의 기본값도 576Mi다. 어느 쪽이 옳은지는 설계 판단이 필요하고(#2에 따르면
 JVM 상대로는 576Mi도 OOM을 못 낸다), 자기 시나리오만 막으므로 스킵했다.
 
+## 13. 정산 계좌가 말랐다 — 07-20 수정이 실행 DB에 닿은 적 없다 (F18-P)
+
+F18-P가 `must_rule_out`의 `sync-path-also-broken`(`transfer_2xx_rate < 0.95`)으로 abort했다.
+실측값이 20틱 내내 0.0~0.36이었다. cleanup·recovery는 성공했고 DIRTY도 아니었다.
+
+transfer 앱은 **정상**이었다(Ready, 재시작 0, 주입 env 복원됨). 로그가 이유를 그대로 말한다:
+
+```
+Transfer FAILED (insufficient balance): from=commerce-settlement balance=1094.04 amount=108400.00
+```
+
+`BANKING.accounts`의 `commerce-settlement` 잔액이 **1094.04**, `updated_at`이 **00:00 UTC**
+— 2시간 40분째 그 계좌에서 나가는 이체가 전부 실패하고 있었다.
+
+### 왜 말랐나 — 고쳤다고 생각한 수정이 적용된 적이 없다
+
+`core-banking/db/init.sql`의 주석은 이 문제를 이미 알고 있다:
+
+> 정산 계좌는 두 상시 소비자(checkout당 이체 + 매시 정산 배치)가 출금만 하는 저수지다.
+> 5천만이면 반나절에 고갈돼 이체가 전부 FAILED로 침묵 실패한다(2026-07-20 실증).
+
+그래서 시드를 **1조**로 올렸다. 그런데 시딩이 MERGE이고 매칭 절이 이렇다:
+
+```sql
+WHEN MATCHED THEN UPDATE SET a.holder = src.holder
+```
+
+**`balance`는 갱신하지 않는다.** 계좌가 이미 존재하므로 올린 시드 값은 실행 중인 DB에
+영영 반영되지 않았고, 5천만 시절 잔액이 그대로 다시 말랐다.
+
+**복구:** 설계 시드 값으로 되돌렸다(`update ... set balance = 1000000000000.00
+where id = 'commerce-settlement' and balance < 1000000000000.00`).
+근본 수리는 재시딩 경로가 이 저수지 계좌의 잔액도 복원하게 만드는 것이다.
+
+**F18-P의 감별자는 정당했다** — 동기 경로가 실제로 깨져 있었으니 그 시나리오는 자기 주장을
+증명할 수 없는 상태였다. 계좌 복구 후 재시도했다.
+
+## 14. core-banking 관측 평면은 처음부터 죽어 있었다
+
+`/tmp/rca-baseline-core-banking-live.json`이 `business_2xx_rate 0.0`,
+`entry_status null`, 모든 rate 0을 계속 발행한다. commerce·food-delivery는 정상(1.0/200)이다.
+
+원인은 baseline 부하 스크립트다. 모니터는 `step` 태그로 표본을 분류한다:
+
+```
+loadgen_monitor.py --business-step transfer --read-step get
+...
+elif metric == "http_reqs" and tags.get("step") == self.business_step:
+```
+
+그런데 `/opt/loadgen/core-banking/script.js`에는 **`tags`가 한 줄도 없다**(`grep -c tags` = 0).
+commerce 스크립트에는 있다. 요청은 나가지만 태그가 없어 영영 분류되지 않는다.
+`achieved_rps`만 `iterations` 메트릭에서 나와 정상으로 보인다 — **살아 있는 것처럼 보이는
+죽은 관측**이다.
+
+`#10`의 회복 게이트 재지정은 commerce·food-delivery만 쓰므로 영향받지 않는다.
+다만 **`domain: core-banking`을 쓰는 관측을 새로 만들면 0을 읽는다** — 스크립트에 태그를
+넣기 전까지는 쓸 수 없다.
+
+### 곁다리: tb-runner에 남은 좀비 모니터
+
+`pgrep -af monitor`에 몇 시간 전 시나리오의 모니터가 살아 있다
+(`rca-scenario-F08-P-monitor.py`, `F01-P`, `F08-G`). cleanup이 이들을 거두지 않는다.
+당장 해롭진 않지만 누적된다.
+
+## 15. 주입이 의도와 다른 장애를 만든다 (F18-P)
+
+계좌를 복구(#13)한 뒤 재시도했는데도 같은 감별자로 abort했다. 이번엔 원인이 다르다.
+
+이벤트가 그대로 말한다:
+
+```
+Container transfer-service failed liveness probe, will be restarted
+Liveness probe failed: .../actuator/health: context deadline exceeded
+Readiness probe failed: .../actuator/health: context deadline exceeded
+```
+
+주입은 `OUTBOX_RELAY_ENABLED=false`(k8s.env)다. 그런데 **릴레이를 끈 파드가
+`/actuator/health`에 응답하지 못한다.** liveness가 죽이고, 배포가
+**`replicas=1` · `maxSurge=0` · `maxUnavailable=1`**이라 그때마다 동기 경로가 통째로 끊긴다.
+
+틱에 그대로 보인다 — `pod_ready`가 1분 주기로 false↔true, 그때마다
+`entry_status` 502, `transfer_2xx_rate` 0.0. 계좌 복구 덕에 파드가 살아 있는 구간에서는
+0.52까지 올라왔지만(복구 전엔 최대 0.36) 곧 다시 0으로 떨어진다.
+
+성공 조건 `outbox_unpublished > 20`도 서지 못한다 — 0 → 13 → 0 → 4 → 0으로,
+파드가 갈릴 때마다 릴레이가 다시 돌아 백로그를 비운다.
+
+**시나리오가 의도한 장애는 "릴레이만 멈추고 동기 경로는 멀쩡"인데, 실제로 만들어지는 것은
+"서비스가 통째로 불안정"이다.** 감별자 `sync-path-also-broken`은 정확히 그 차이를
+잡으라고 있는 것이므로 **정당하게 거부한 것**이다.
+
+두 갈래로 읽을 수 있고 어느 쪽이든 배치 중에 정할 일이 아니다:
+
+- **앱 결함** — 릴레이를 끈다고 health가 타임아웃되는 것은 그 자체로 이상하다
+- **시나리오 전제 오류** — 이 주입이 동기 경로에 무해하다는 가정이 틀렸다
+
+`maxSurge=0`이라 어떤 env 주입이든 이 서비스에서는 완전 정지를 동반한다는 점도 함께 남긴다.
+
+## 16. companion 부하가 판정 창보다 먼저 끝난다 (F19-P, 17종 잠재)
+
+**#10의 수리는 여기서 확인됐다.** F19-P의 회복 게이트가 값을 읽었고
+(`order_create_5xx_rate_baseline = 0.0`, 출처 `k6:baseline:food-delivery:business_5xx_rate`),
+**recovery 성공 · DIRTY 없음**으로 끝났다. 고치기 전이라면 `recovery_timeout` → 전역 DIRTY였다.
+
+그런데 F19-P는 다른 사유로 abort했다 — `safety_observation_unavailable`.
+
+```
+03:43:30  부하·주입 apply
+03:55:21  entry_status / order_create_5xx_rate 가 unusable  <- live.json 사라짐
+03:55:37~ safety_observation_pending  (4틱 대기)
+03:56:45  cleanup 시작                                       <- 삭제보다 84초 늦다
+03:56:46  abort: safety_observation_unavailable
+```
+
+원인은 **지속시간 불일치**다:
+
+| | 값 |
+|---|---|
+| companion 부하 `load.north_south` | ramp_up 2m + hold 8m + ramp_down 1m = **11분** |
+| 레벨 | settle 45s + min_hold 8m, **timeout 13분** |
+
+부하가 11분에 끝나면서 `/tmp/rca-scenario-F19-P-live.json`이 사라지는데, 컨트롤러는
+13분까지 판정을 계속할 수 있다. F19-P의 `must_rule_out`은 `entry_status`(시나리오 부하 출처)를
+쓰므로 그 2분 공백에서 **안전 관측 상실**로 abort한다. 큐는 이 사유를 전이 사유로 보고
+**두 번 자동 재시도한 뒤** 세 번째에 섰다 — 한 시나리오에 런 3개(약 40분)를 태웠다.
+
+### 범위: timeout > 부하 길이 이면서 감별자가 시나리오 신호를 쓰는 17종
+
+`F07-H F11-R F14-P F15-H F15-R F15-T2 F16-H F17-P F17-R F18-P F19-P F19-S
+F20-Q F20-R F21-Q F23-R F25-H` (공백 +1분 ~ **+14분**, F15-R이 최악)
+
+**다만 이것만으로 죽지는 않는다.** 성공하는 런은 min_hold(8분) 안에 끝나 부하가 살아 있는
+동안 정리에 들어간다 — 실제로 F07-H(+1)·F11-R(+1)·F17-R(+2)는 이 배치에서 통과했다.
+공백이 무는 것은 **성공하지 못해 timeout까지 가는 런**이고, 그때 하는 일이 나쁘다:
+
+- 진짜 사유("성공 조건 미달")를 **엉뚱한 사유**("안전 관측 상실")로 덮는다
+- 전이 사유로 분류돼 **자동 재시도 2회**를 태운다 → 실패 하나당 런 3개
+
+즉 **실패를 만들지는 않지만 실패의 진단을 망가뜨리고 시간을 세 배로 쓴다.**
+
+**F19-S에서 그대로 재현됐다**(2026-08-03): 첫 틱 04:38:28 → 신호 소실 04:49:45(11분 17초),
+`safety_observation_unavailable`, 자동 재시도 2회 소진 후 정지. 회복 게이트는 이번에도
+정상이었다(`order_create_5xx_rate_baseline` usable, cleanup·recovery 성공, DIRTY 없음) —
+**#10의 수리가 두 번째로 확인됐다.**
+
+부하 길이는 주입 파라미터라 스모크 패스 규칙상 배치 중에 건드리지 않는다.
+수리 방향은 **부하가 판정 창보다 오래 살게 하는 것**(ramp_down 연장 또는 timeout 축소)이다.
+
+## 17. 주입이 배포의 progress deadline을 넘기면 cleanup 검증이 오염된다 (F16-H)
+
+F16-H가 `cleanup_failed after safety_observation_unavailable`로 **전역 DIRTY**가 됐다.
+1차 사유는 #16(부하 공백)이고, DIRTY를 만든 것은 그 다음이다:
+
+```
+cleanup reason: k8s.probe:error: deployment "testbed-user" exceeded its progress deadline
+```
+
+**그런데 복원은 성공해 있었다.** 확인한 실물:
+
+- 프로브가 이미 원값(`/actuator/health`)으로 되돌아와 있었다
+- 파드는 부팅 중이었고 **68초 뒤 1/1 Running**이 됐다
+- 그 뒤 정규 cleanup을 다시 부르니 **그대로 성공**했다
+
+### 기제
+
+실행기의 정리는 `rollout status --timeout=180s`로 기다린다(넉넉하다). 문제는 그 앞이다 —
+주입한 프로브가 파드를 **10분 넘게 unready로 붙잡아** 배포의
+`progressDeadlineSeconds: 600`이 만료됐고, Deployment에 `ProgressDeadlineExceeded`
+조건이 **굳어버린다**. 복원 패치 뒤 `rollout status`는 기다리지 않고 그 굳은 조건을
+즉시 되읽어 실패로 보고한다.
+
+즉 **정리는 됐는데 정리를 확인하는 쪽이 과거 상태를 본다.** #10·#6과 같은 계열
+("되돌아갔음을 확인하는 쪽이 망가진다")이며, 이번엔 대가가 전역 DIRTY다.
+
+### 범위
+
+`k8s.probe`를 쓰는 live 3종의 레벨 timeout이 전부 **13분 > 10분**이다:
+**F05-H · F16-H · F17-R**.
+
+**#16과 마찬가지로 성공하는 런은 걸리지 않는다** — min_hold(8분) 안에 끝나면 파드가
+deadline 전에 복구된다. 실제로 F05-H와 F17-R은 이 배치에서 통과했다. 걸리는 것은
+**timeout까지 가는 런**이고, 그때 clean한 abort가 **전역 DIRTY로 승격**돼 사람이 붙어야 한다.
+
+수리 방향은 셋 중 하나다 — 레벨 timeout을 `progressDeadlineSeconds` 아래로,
+배포의 deadline을 늘리기, 또는 정리 검증이 굳은 조건 대신 **파드 준비 상태를 직접** 보게 하기.
+마지막이 가장 정확하다.
+
+## 18. 성공 임계가 서비스가 견디는 지점 위에 있다 (F20-Q)
+
+F20-Q는 별도 fault 프로파일이 없다 — **부하 자체가 주입**이다
+(`slowquery.js`, 30 rps, unpaged slow query로 힙 압박).
+
+성공 조건은 둘 다 만족해야 한다:
+
+```
+order_p95            >= 2000 ms
+order_memory_current >= 805,306,368 (768Mi)
+```
+
+실측 진행:
+
+```
++0s   entry_status 400  p95 641ms  memory 624MB  pod_ready true
++15s  entry_status   0  p95   0ms  memory 625MB  pod_ready false   <- 서비스가 죽었다
++34s  abort: abort_condition (entry-unreachable, 2틱 연속)
+      이후 memory 295MB (새 JVM)
+```
+
+**메모리가 624MB일 때 서비스가 먼저 죽는다.** 성공에 필요한 768Mi에 닿기 전이다.
+`abort`의 `entry-unreachable`(`entry_status == 0`)은 "특정 열화가 아니라 경로가 통째로
+끊겼다"를 잡는 안전 정지이고, 여기서는 **정확히 제 역할을 했다**.
+
+#2(F05-R 메모리)·#3(F08-P 타임아웃)과 같은 뿌리다 — **대상이 어디까지 버티는지 재지 않고
+임계를 정했다.** 이번엔 방향이 반대일 뿐이다: 주입이 약해서 못 넘긴 게 아니라,
+넘기기 전에 대상이 죽는다.
+
+수리하려면 임계를 서비스가 살아 있는 구간으로 내리거나(예: p95만으로 판정),
+힙이 아니라 지연만 밀어올리는 부하로 바꿔야 한다.
+
+## 19. 파괴적 시나리오 뒤에는 게이트 창이 비어 있다 (F23-R)
+
+F23-R이 주입 전에 `check_failed:baseline-business-success`로 막혔다. **#8과 달리 이번엔
+게이트가 옳았다** — 절차대로 같은 질의를 직접 재보니 5분간 PAID가 **0 · 0 · 1건**이었다(임계 5).
+
+원인은 바로 앞 시나리오다. F25-H는 commerce PostgreSQL을 OOMKill시키는 시나리오이고,
+그 직후 상태가 이랬다:
+
+```
+testbed-postgres-0   1/1 Running   4m42s   <- 방금 재기동됐다
+15분 기준 PAID       2093건                <- 경로 자체는 살아 있다
+commerce baseline    business_2xx_rate 0.76, entry_status 200
+```
+
+DB가 재기동된 구간에는 주문이 기록되지 않으므로, 게이트가 보는 **직전 5분 창이 통째로 비었다.**
+경로는 멀쩡한데 창이 비어 있는 것이다.
+
+스모크 패스의 시나리오 간격은 5분이라 **창을 다시 채우기에 빠듯하다** — 파괴적 시나리오
+뒤에는 거의 확정적으로 막힌다. 데이터셋 등급(30분)에서는 안 생긴다.
+
+**대응은 스킵도 재시도도 아니고 기다림이다.** PAID/5분이 임계를 넘을 때까지 폴링한 뒤
+resume했다(30건까지 회복 후 재개, F23-R 정상 시작).
+
+`#8`과 이 건을 가르는 절차는 그대로다 — **막히면 먼저 같은 질의를 직접 재라.**
+값이 멀쩡하면 프로브 결함(#8, resume), 값이 실제로 낮으면 환경 회복 대기(#19).
+
+## 20. 승인 파라미터가 한 벌인데 사다리는 여러 단이다 (F03-H·F15-R)
+
+#12(F15-T1)와 같은 계열이 두 건 더 나왔고, 이번엔 **전역 DIRTY**까지 갔다.
+
+### F03-H — 사다리 3단, 승인은 1벌
+
+```
+profile control refused: parameters must exactly match a measured F03-H level
+cleanup reason: load.east_west:refused: parameters must exactly match a measured F03-H level
+```
+
+`profiles.json`의 `load.east_west/F03-H`에는 파라미터가 **한 벌**(`target_rps: 30`)뿐인데
+컨트롤러 사다리는 세 단이다:
+
+| level | target_rps | 승인과 일치 |
+|---|---|---|
+| below-saturation-30rps | 30 | ✅ (완전 일치) |
+| at-saturation-45rps | 45 | ❌ |
+| past-saturation-60rps | 60 | ❌ |
+
+**1·2단은 영영 적용될 수 없다.** 더 나쁜 것은 정리도 같은 검증을 통과해야 한다는 점이다 —
+그래서 주입 입구와 청소 출구가 동시에 막히고(#5와 같은 교착 모양) 전역 DIRTY가 된다.
+
+### F15-R — 주입 실패 뒤 회복이 주입 산출물을 기다린다
+
+같은 거부(`must exactly match an approved F15-R timeline`)로 주입이 무산됐는데,
+회복 조건 셋이 **주입이 만들어내는 상태**를 본다:
+
+```
+mock_flap_fault_active  eq False    <- business_probe (scenario_id=F15-R)
+mock_flap_episode       gte 2       <- 주입이 두 번 flap해야 만족한다
+order_duplicate_count   eq 0        <- database (scenario_id=F15-R)
+```
+
+주입이 없었으니 그 상태 파일도 없고, 세 신호 모두 `error/fresh`로 읽히지 않는다.
+**주입이 실패하면 회복은 반드시 10분을 태우고 DIRTY로 끝난다.**
+`mock_flap_episode >= 2`는 애초에 "정상으로 돌아왔는가"가 아니라 성공 조건에 가깝다.
+
+회복 게이트가 `scenario_id` 파라미터(주입 산출물)에 의존하는 live 시나리오는 넷이다 —
+**F02-H · F10-H · F10-P**(`disk_io_util < 20`)와 **F15-R**. 앞의 셋은 주입만 성공하면
+정상 동작하지만, 주입이 거부되면 같은 길을 간다.
+
+### 환경은 깨끗했다 — 그리고 정규 경로로는 못 씻는다
+
+F03-H는 실물 확인 결과 잔재가 전혀 없었다(k6 job/configmap 없음, 시나리오 k6 프로세스 없음,
+`/tmp/rca-scenario-*-live.json` 없음, commerce 파드 전부 정상). 그런데 정리가 **구조적으로**
+거부되므로 `cleanup`도 `repair_capsule`도 통하지 않는다(캡슐을 다시 잘라도 같은 레지스트리를 본다).
+
+그래서 **직접 확인한 근거로 `coordinator.json`의 dirty_run을 수동 해제**했다
+(백업 `coordinator.json.bak-f03h-dirty-*`). 기계 검증이 원리적으로 도달할 수 없는 경우의
+유일한 탈출구다 — 다만 이건 마지막 수단이고, 먼저 잔재를 전수 확인해야 한다.
+
+## 21. 같은 계약 안의 두 목록이 갈라졌다 (live 7종) — 수리함
+
+F06-P가 주입 전에 죽고 전역 DIRTY가 됐다:
+
+```
+profile control refused: scenario_tag is not allowlisted
+cleanup reason: load.north_south:refused: scenario_tag is not allowlisted
+```
+
+`load.north_south`의 `parameter_contract`는 시나리오를 **두 번** 검사한다:
+
+| 검사 | 내용 |
+|---|---|
+| `allowed_scenarios` | 목록에 있는가 |
+| `tag_pattern` | `^scenario_id=F(07-H\|01-R\|…)$` 정규식에 맞는가 |
+
+승격할 때 **앞의 목록만 갱신되고 정규식이 따라오지 않았다.** 갈라진 결과:
+
+**F06-P · F02-H · F10-H · F10-P · F15-H · F15-T2 · F14-P** — 일곱 모두
+`allowed_scenarios`에는 있으나 `tag_pattern`이 거부한다. 그리고 **일곱 전부가 큐에 남아 있었다**
+(남은 14종의 절반). 정리도 같은 검증을 거치므로 매번 전역 DIRTY가 된다.
+
+**수리:** 누락된 일곱을 `tag_pattern`에 추가했다(`registry/profiles.json`).
+재시도한 F06-P는 **주입이 정상 적용**됐다(`load.north_south`·`mock.expectation` 둘 다 완료).
+
+### 가드
+
+`test_every_allowlisted_scenario_also_matches_its_tag_pattern` 신설 —
+`tag_pattern`을 가진 모든 프로파일에 대해 `allowed_scenarios` 전원이 그 패턴을 통과하는지 본다.
+F06-P를 패턴에서 빼 실패하는 것을 확인했다.
+
+### `repair_capsule`이 조용히 아무 일도 안 했다
+
+레지스트리를 고친 뒤 `cleanup?repair_capsule=true`를 불렀는데 **여전히 거부**됐고,
+`capsule-repair.json`이 **생성되지 않았으며** 오류 로그도 남지 않았다(HTTP 200).
+캡슐 안 `registry/profiles.json`은 옛 패턴 그대로였다.
+
+#5에서는 같은 스위치가 동작했으므로 조건부로 실패하는 것이다 — 아마 재컴파일된 plan의
+`registry_digest`가 "움직여도 되는 필드"(`executor_sha256`·`plan_digest`) 밖이라
+수리가 거부되고, 그 예외가 삼켜지는 것으로 보인다. **탈출구가 조용히 없어지는 것은
+그 자체로 결함이다.** 결국 잔재를 전수 확인한 뒤 `coordinator.json`을 수동 해제했다.
+
+**교훈: 레지스트리를 고쳐도 이미 실패한 런은 못 살린다 — 새 런만 새 캡슐을 받는다.**
+그래서 F06-P는 스킵이 아니라 **재시도**가 정답이었다.
+
 ## 배치 후 수리 목록
 
 | 대상 | 내용 | 레포 |
@@ -461,6 +830,18 @@ JVM 상대로는 576Mi도 OOM을 못 낸다), 자기 시나리오만 막으므�
 | 러너 | `_safe_bool` 예외 사유 보존, `check_failed:`를 1회 자동 재시도 대상으로 | runner |
 | 러너 | **리스 만료 근본** — 주입 서브프로세스가 이벤트 루프를 막아 하트비트가 못 돈다. 만료되면 cleanup까지 거부돼 DIRTY가 된다(07-31 미해결, #9에서 재현) | runner |
 | 러너 | 실행기 계약 테스트가 실제 출력 형태를 흉내내도록 (아래) | runner |
+| **core-banking** | baseline `script.js`에 `step: transfer` / `step: get` 태그 추가 — 없으면 이 도메인 관측은 전부 0 | testbed |
+| **시딩** | `init.sql` MERGE가 정산 계좌 잔액도 복원하도록 (지금은 holder만 갱신해 상향된 시드가 영영 반영 안 됨) | testbed |
+| tb-runner | 시나리오 cleanup이 모니터 프로세스를 거두도록 | runner |
+| F18-P | 릴레이 비활성 시 health가 멈추는 원인 규명(앱 결함인지) + `maxSurge=0`이라 env 주입이 항상 완전 정지를 동반하는 점 재설계 | testbed |
+| **17종** | companion 부하 길이 ≥ 레벨 timeout 이 되도록 정렬 — 안 하면 실패 진단이 `safety_observation_unavailable`로 덮이고 재시도 2회를 태운다 | testbed |
+| F05-H·F16-H·F17-R | `k8s.probe` 정리 검증이 `rollout status`(굳은 조건) 대신 파드 준비 상태를 직접 보도록 — 또는 timeout을 progressDeadline 아래로 | testbed |
+| F20-Q | 성공 임계를 서비스 생존 구간 안으로 (624MB에서 죽는데 768Mi를 요구한다) | testbed |
+| 러너/큐 | 파괴적 시나리오 뒤 간격을 게이트 창(5분)보다 길게, 또는 게이트가 회복을 기다리게 | runner |
+| F03-H | `profiles.json`에 사다리 각 단(30/45/60)의 승인 파라미터를 모두 등록 | testbed |
+| F15-R | 회복 조건에서 주입 산출물 의존을 걷어내기 (`mock_flap_episode >= 2`는 회복 조건이 아니라 성공 조건이다) | testbed |
+| 러너 | 주입이 적용되지 않은 런은 회복 게이트를 건너뛰도록 — 지금은 실패한 주입이 반드시 10분 뒤 DIRTY가 된다 | runner |
+| 러너 | `repair_capsule`이 실패할 때 사유를 남기도록 — 지금은 HTTP 200에 아무 흔적 없이 무동작(#21) | runner |
 
 ## 반복되는 메타 패턴
 

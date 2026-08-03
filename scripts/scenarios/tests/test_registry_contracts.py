@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -171,6 +172,32 @@ class RegistryContractTests(unittest.TestCase):
         with self.assertRaisesRegex(compile_plan_module.ContractError, "cannot use location"):
             compile_plan_module.validate_profile_location(
                 "load.north_south", "commerce-namespace", self.profiles
+            )
+
+    def test_every_allowlisted_scenario_also_matches_its_tag_pattern(self) -> None:
+        """한 계약 안의 두 목록이 갈라지면 주입도 정리도 거부된다.
+
+        load.north_south 는 시나리오를 `allowed_scenarios` 로 한 번, 부하 태그를
+        `tag_pattern` 으로 또 한 번 검사한다. 승격할 때 앞의 목록만 갱신되고
+        정규식이 따라오지 않아, F06-P·F02-H·F10-H·F10-P·F15-H·F15-T2·F14-P 일곱이
+        `scenario_tag is not allowlisted` 로 죽었다. 정리도 같은 검증을 거치므로
+        런이 스스로 씻지 못하고 전역 DIRTY 가 된다(2026-08-03).
+        """
+        for profile_id, profile in self.profiles["profiles"].items():
+            contract = profile.get("parameter_contract") or {}
+            pattern = contract.get("tag_pattern")
+            if not pattern:
+                continue
+            compiled = re.compile(pattern)
+            unmatched = [
+                scenario_id
+                for scenario_id in contract.get("allowed_scenarios", [])
+                if not compiled.fullmatch(f"scenario_id={scenario_id}")
+            ]
+            self.assertEqual(
+                unmatched,
+                [],
+                f"{profile_id}: allowed_scenarios 에 있으나 tag_pattern 이 거부한다",
             )
 
     def test_manifest_catalog_mismatch_is_rejected(self) -> None:
