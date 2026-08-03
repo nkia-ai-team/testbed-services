@@ -85,7 +85,23 @@ state="$state_root/${scenario_id}-container-resources.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 current() { "${k[@]}" get "$kind" "$deploy" -o json | jq -Sc --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | (.resources // {})'; }
 patch() { jq -cn --arg c "$container" --argjson r "$1" '{spec:{template:{spec:{containers:[{name:$c,resources:$r}]}}}}' | "${k[@]}" patch "$kind" "$deploy" --type=strategic --patch-file=/dev/stdin >/dev/null; }
-healthy() { "${k[@]}" rollout status "$kind"/"$deploy" --timeout="$1" >/dev/null; }
+# Not `kubectl rollout-status` -- ProgressDeadlineExceeded freezes onto a Deployment
+# whose pods an injection held unready past progressDeadlineSeconds, and
+# the rollout verifier then re-reads that stale verdict after a successful restore
+# (batch #17 class). Compute completion from live status; readyReplicas is
+# the statefulset spelling of availableReplicas.
+healthy() {
+  local deadline=$((SECONDS + ${1%s}))
+  while :; do
+    if "${k[@]}" get "$kind" "$deploy" -o json | jq -e '
+        .status.observedGeneration >= .metadata.generation
+        and ((.status.updatedReplicas // 0) == .spec.replicas)
+        and ((.status.availableReplicas // .status.readyReplicas // 0) == .spec.replicas)
+        and ((.status.replicas // 0) == .spec.replicas)' >/dev/null; then return 0; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
 check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch "${kind}s" | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;

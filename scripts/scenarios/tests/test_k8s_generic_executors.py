@@ -84,7 +84,11 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         script = stdin.decode()
         self.assertIn('get "$kind" "$deploy"', script)
         self.assertIn('patch "$kind" "$deploy"', script)
-        self.assertIn('rollout status "$kind"/"$deploy"', script)
+        # 배치 #17: rollout status는 ProgressDeadlineExceeded가 굳으면 복원
+        # 성공 뒤에도 실패를 되읽는다 — healthy()는 상태 필드를 직접 계산한다.
+        self.assertNotIn("rollout status", script)
+        self.assertIn(".status.observedGeneration >= .metadata.generation", script)
+        self.assertIn(".status.readyReplicas", script)
         self.assertIn('can-i patch "${kind}s"', script)
 
     def test_probe_executor_allows_only_payment_liveness(self) -> None:

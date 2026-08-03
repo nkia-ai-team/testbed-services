@@ -68,7 +68,22 @@ state="$state_root/${scenario_id}-container-env.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 current() { "${k[@]}" get deploy "$deploy" -o json | jq -Sc --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | (.env // [])'; }
 patch() { idx=$("${k[@]}" get deploy "$deploy" -o json | jq -r --arg c "$container" '.spec.template.spec.containers | to_entries[] | select(.value.name==$c) | .key'); jq -cn --arg idx "$idx" --argjson e "$1" '[{op:"replace",path:("/spec/template/spec/containers/"+$idx+"/env"),value:$e}]' | "${k[@]}" patch deploy "$deploy" --type=json --patch-file=/dev/stdin >/dev/null; }
-healthy() { "${k[@]}" rollout status deploy/"$deploy" --timeout="$1" >/dev/null; }
+# Not `kubectl rollout-status` -- ProgressDeadlineExceeded freezes onto the
+# Deployment when an injection (e.g. F18-P's full stop under maxSurge=0)
+# holds pods unready past progressDeadlineSeconds, and rollout status then
+# re-reads that stale verdict after a successful restore (batch #17 class).
+healthy() {
+  local deadline=$((SECONDS + ${1%s}))
+  while :; do
+    if "${k[@]}" get deploy "$deploy" -o json | jq -e '
+        .status.observedGeneration >= .metadata.generation
+        and ((.status.updatedReplicas // 0) == .spec.replicas)
+        and ((.status.availableReplicas // 0) == .spec.replicas)
+        and ((.status.replicas // 0) == .spec.replicas)' >/dev/null; then return 0; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
 check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
