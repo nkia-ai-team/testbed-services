@@ -14,7 +14,7 @@ summary: 큐 live-44-8890d512 실행 중 발견된 결함을 층별로 기록한
 
 큐 `live-44-8890d512`, 스모크 패스. **배치 자체가 결함 발견 수단**이라는 전제
 (`docs/scenario-redesign-wip/` 이전 감사 문서들)가 다시 한번 그대로 입증됐다 —
-아래 9건 중 **정적 감사로 잡을 수 있었던 것은 없다**. 매니페스트·계약·파라미터는
+아래 12건 중 **정적 감사로 잡을 수 있었던 것은 없다**. 매니페스트·계약·파라미터는
 모두 정상으로 읽혔고, 실패는 파드 안 파일 이름, sqlplus 한 줄의 순서,
 지표의 실제 분포처럼 **돌려봐야만 보이는 자리**에 있었다.
 
@@ -31,6 +31,9 @@ summary: 큐 live-44-8890d512 실행 중 발견된 결함을 층별로 기록한
 | 7 | F01-P | 주입 | Oracle 락이 한 번도 걸린 적 없음 (원격 인용 오류) | 스킵, 수리 대기 |
 | 8 | F08-G | 게이트 | `_safe_bool`이 프로브 예외를 조용히 False로 → 헛막힘 | 재시도로 통과 |
 | 9 | F15-G | 주입 | 07-31에 고친 pid 파싱 결함이 형제 실행기에 안 옮겨져 있었다 | **수리** |
+| 10 | **ready 9종** | 판정 구조 | 회복 게이트가 cleanup이 지우는 자기 부하기 파일을 읽는다 | **수리** |
+| 11 | F05-P | 레포 불일치 | 매니페스트가 러너에 없는 검사 id를 부른다 | 스킵 |
+| 12 | F15-T1 | 레포 불일치 | 같은 파라미터가 두 레지스트리에서 다르다 | 스킵 |
 
 ---
 
@@ -305,7 +308,142 @@ apply 실패 경로가 클라이언트 파드를 지우고 나갔다.
 
 영향 범위는 F15-G 하나다 — `timeline.multi`를 쓰는 나머지 F08-G는 `pg_lock` 스텝이 없다.
 
+## 10. 회복 게이트가 cleanup이 지우는 신호를 읽는다 (ready 9종)
+
+F03-P가 사다리 3단을 모두 적용·정리하고 **cleanup까지 성공한 뒤** `recovery_timeout`으로
+DIRTY가 됐다. 주입은 제대로 되돌아가 있었다 — `SPRING_APPLICATION_JSON` 제거됨, 파드 Running.
+망가진 건 "되돌아갔음을 확인하는" 쪽이다.
+
+회복 조건은 셋인데 그중 하나가 이렇다:
+
+```json
+{"id": "pool-restored", "observation": "checkout_5xx_rate", "op": "lt", "value": 0.02}
+```
+
+`checkout_5xx_rate`의 출처는 **시나리오 자신의 부하기**가 쓰는
+`/tmp/rca-scenario-F03-P-live.json`이다. 그런데 cleanup이 companion 부하(`load.north_south`)를
+걷으면서 그 파일을 지운다. 회복은 **cleanup 다음에** 평가되므로
+(`actions.cleanup.recovery_gate: true`), 그 신호는 회복을 판정할 시점에
+**구조적으로 존재할 수 없다.**
+
+```
+cleanup load.north_south  complete_at 01:48:37   <- live.json 삭제
+recovery_timeout          01:58:43               <- 정확히 10분 뒤
+```
+
+마지막 8틱 내내 `achieved_rps`·`checkout_5xx_rate`·`entry_status`가
+`No such file or directory`로 unusable이었다. 읽을 수 없는 조건은 영원히 통과 못 한다.
+
+### 영향 범위 — 회복 게이트가 loadgen_summary를 읽는 ready 9종
+
+| 시나리오 | 큐 index | 게이트 관측 |
+|---|---|---|
+| F03-P | 16 (스킵됨) | `checkout_5xx_rate` |
+| F19-P | 21 | `order_create_5xx_rate` |
+| F19-S | 22 | `order_create_5xx_rate` |
+| F16-H | 23 | `write_401_rate` |
+| F25-H | 26 | `checkout_5xx_rate` |
+| F03-H | 29 | `checkout_5xx_rate` |
+| F06-P | 30 | `order_create_429_rate` |
+| F15-H | 41 | `food_create_429_rate` |
+| F15-T2 | 42 | `food_create_429_rate` |
+
+**아홉 번 모두 전역 DIRTY로 큐를 세운다.** 지금까지 나온 것 중 가장 넓은 결함이다.
+
+### 고칠 수단은 이미 있다 (07-29에 만들어졌고 아무도 안 썼다)
+
+`_loadgen_observation`은 `domain` 파라미터를 받으면 시나리오 부하기 대신
+**상주 baseline 부하기의 문서**를 읽는다. 그 docstring이 정확히 이 문제를 말한다:
+
+> Separates the observation plane from the injection plane: this document exists
+> whether or not the running scenario pours load into that domain.
+
+바로 아래 주석은 이렇다 — **"The 43 live controllers pass no parameters and are untouched."**
+배관만 깔리고 매니페스트가 채택하지 않았다.
+
+실물 확인(2026-08-03 11:03 KST) — 셋 다 살아 있고 신선하며 필요한 필드를 갖고 있다:
+
+```
+commerce      achieved_rps 6.04  checkout_5xx_rate 0.0  observed_at 02:03:37Z
+core-banking  achieved_rps 3.07  checkout_5xx_rate 0.0  observed_at 02:03:37Z
+food-delivery achieved_rps 4.00  checkout_5xx_rate 0.0  observed_at 02:03:38Z
+```
+
+도메인 이름은 `commerce` / **`core-banking`** / **`food-delivery`**다(네임스페이스 이름과 다르다).
+
+### 수리 (2026-08-03 적용, 임계는 그대로)
+
+성공 조건은 시나리오 부하 위에서 판정해야 하므로 기존 관측을 그대로 두고,
+**baseline 출처의 관측을 하나 더 추가해 회복 조건만 그쪽으로** 돌린다.
+
+```json
+{"id": "checkout_5xx_rate_baseline", "adapter": "loadgen_summary",
+ "query_id": "loadgen.checkout_5xx_rate",
+ "parameters": {"domain": "commerce"}, "freshness": "30s"}
+```
+
+`0.02`라는 임계는 건드리지 않았다. 바뀌는 것은 **어느 트래픽 위에서 재는가**뿐이고,
+시나리오 부하가 이미 멈춘 시점에는 baseline이 유일하게 남아 있는 트래픽이므로
+의미상으로도 이쪽이 맞다.
+
+**정본은 `registry/controllers.json`이고 매니페스트는 `generate-manifests.py`의 생성물**이다.
+레지스트리만 고치고 재생성하면 9개 매니페스트가 정확히 따라온다.
+
+러너 쪽 배관은 손댈 필요가 없었다 — 라이브 경로가 쓰는
+`backend/app/observation_queries.json`에는 **모든 loadgen 질의에 이미 `allowed_parameters: ["domain"]`**이
+들어 있다(testbed `registry/queries.json` 사본에는 없지만 그쪽은 라이브 바인딩에 쓰이지 않는다).
+
+컨테이너 안에서 실제로 값이 읽히는 것까지 확인했다:
+
+```
+loadgen.checkout_5xx_rate       commerce      -> k6:baseline:commerce:checkout_5xx_rate
+loadgen.write_step_status_rate  commerce      -> k6:baseline:commerce:business_nonok_rate
+loadgen.food_create_status_rate food-delivery -> k6:baseline:food-delivery:business_5xx_rate
+loadgen.food_create_429_rate    food-delivery -> k6:baseline:food-delivery:business_429_rate
+```
+
+측정 당시 commerce가 `checkout_5xx_rate = 1.0`이었는데, 이는 F17-R이 그 순간 commerce에
+장애를 주입 중이었기 때문이다(읽기 경로는 `read_2xx_rate = 1.0`으로 정상). **baseline 평면이
+주입된 손상을 그대로 반영한다**는 뜻이므로 회복 게이트로 쓰기에 적합하다 — 값이 늘 0이라
+공허하게 통과하는 종류가 아니다.
+
+### 가드도 함께 넓혔다
+
+`test_every_live_controller_observation_passes_the_probe_allowlists`에 `loadgen_summary`를
+추가했다(#6에서 `database`를 추가한 것과 같은 이유로 빠져 있었다). 단 파라미터가 없는
+loadgen 관측은 **실행 중인 시나리오의 k6 출력**을 읽으므로 테스트가 줄 수 없는 런타임
+맥락이 필요하다 — 그래서 파라미터가 있는 형태만 검사한다. 도메인 값을 오타로 바꿔
+실패하는 것을 확인했다.
+
 ---
+
+## 11. 매니페스트가 러너에 없는 검사 id를 부른다 (F05-P)
+
+주입 전에 죽었다(mutations 0건, DIRTY 아님):
+
+```
+[ERROR] Adaptive controller failed closed: unknown approved check ids: ['worker-cohort-placement']
+```
+
+러너의 승인 검사 목록에 그런 이름이 없다. 러너는 모르는 이름을 만나면 통과시키지 않고
+그 자리에서 닫는다(fail closed) — 옳은 동작이다. #6과 같은 레포 간 불일치 계열이다.
+
+## 12. 같은 파라미터가 두 레지스트리에서 다르다 (F15-T1)
+
+```
+profile control refused: parameters must exactly match an approved F15-T1 timeline
+```
+
+실행기는 매니페스트 파라미터를 **`registry/profiles.json`의 `scenario_parameters`**와
+정확 비교한다. `food_fault`의 메모리가 어긋나 있었다:
+
+| 출처 | 값 |
+|---|---|
+| `profiles.json` (승인) | `576Mi` |
+| `controllers.json` → 매니페스트 | **`768Mi`** |
+
+실행기 자신의 기본값도 576Mi다. 어느 쪽이 옳은지는 설계 판단이 필요하고(#2에 따르면
+JVM 상대로는 576Mi도 OOM을 못 낸다), 자기 시나리오만 막으므로 스킵했다.
 
 ## 배치 후 수리 목록
 
@@ -317,6 +455,9 @@ apply 실패 경로가 클라이언트 파드를 지우고 나갔다.
 | F09-R·F15-P | 노드 CPU 관측 교체 + 사다리 0단과 감별자 바닥의 겹침 해소 | testbed / runner |
 | F05-P·F15-P | `kcm.node.mem_utilization` 신뢰도 실측 (큐 정지 중에만) | — |
 | F01-P | `ORACLE_REMOTE` apply를 인자 전달 방식으로 재작성 + pid 경로 통일 | testbed |
+| F05-P | `worker-cohort-placement` 검사를 러너에 구현하거나 매니페스트에서 제거 | runner / testbed |
+| F15-T1 | `food_fault` 메모리를 두 레지스트리 중 어느 쪽으로 통일할지 결정 | testbed |
+| testbed | `registry/queries.json`의 loadgen 항목에도 `allowed_parameters: ["domain"]` 반영(라이브엔 무해하나 두 사본이 갈라져 있다) | testbed |
 | 러너 | `_safe_bool` 예외 사유 보존, `check_failed:`를 1회 자동 재시도 대상으로 | runner |
 | 러너 | **리스 만료 근본** — 주입 서브프로세스가 이벤트 루프를 막아 하트비트가 못 돈다. 만료되면 cleanup까지 거부돼 DIRTY가 된다(07-31 미해결, #9에서 재현) | runner |
 | 러너 | 실행기 계약 테스트가 실제 출력 형태를 흉내내도록 (아래) | runner |
