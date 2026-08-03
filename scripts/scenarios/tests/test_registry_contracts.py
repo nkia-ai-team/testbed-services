@@ -697,6 +697,58 @@ class RegistryContractTests(unittest.TestCase):
             )
             self.assertEqual(refused.returncode, 3)
 
+    def test_north_south_load_outlives_every_judgment_window(self) -> None:
+        # 배치 #16 (2026-08-03, F19-P·F19-S 실증): 부하(ramp_up+hold+ramp_down)가
+        # 판정 창보다 먼저 끝나면 시나리오-출처 관측(live.json)이 사라져,
+        # 진짜 실패 사유("성공 조건 미달")가 safety_observation_unavailable로
+        # 덮이고 전이 사유로 분류돼 자동 재시도 2회를 태운다(실패 하나당 런 3개).
+        # 동반 부하는 primary의 판정 창(최장 레벨 timeout)보다 60초 이상 오래
+        # 살아야 한다. primary 부하는 반대 계약(timeout이 자기 부하를 덮는다,
+        # test_level_timeout_covers_its_own_load_profile)과 함께 성립해야 하므로
+        # 공백 0 — timeout == 부하 길이 — 만 허용된다.
+        def seconds(value: str) -> int:
+            match = re.fullmatch(r"(\d+)([sm])", value)
+            assert match, value
+            return int(match.group(1)) * (60 if match.group(2) == "m" else 1)
+
+        margin = 60
+        companion_params = self.profiles["profiles"]["load.north_south"][
+            "scenario_parameters"
+        ]
+        problems = []
+        for scenario_id, controller in self.controllers["controllers"].items():
+            profile = controller["profile"]
+            levels = profile["levels"]
+            if profile.get("primary_ref") == "load.north_south":
+                for level in levels:
+                    parameters = level["parameters"]
+                    if not {"ramp_up", "hold", "ramp_down"} <= set(parameters):
+                        continue
+                    duration = sum(
+                        seconds(parameters[key])
+                        for key in ("ramp_up", "hold", "ramp_down")
+                    )
+                    timeout = seconds(level["timeout"])
+                    if duration != timeout:
+                        problems.append(
+                            f"{scenario_id}/{level['id']}: load {duration}s != timeout {timeout}s"
+                        )
+            elif "load.north_south" in (profile.get("companion_refs") or []):
+                parameters = companion_params.get(scenario_id)
+                if parameters is None:
+                    problems.append(f"{scenario_id}: companion load has no parameters")
+                    continue
+                duration = sum(
+                    seconds(parameters[key])
+                    for key in ("ramp_up", "hold", "ramp_down")
+                )
+                timeout = max(seconds(level["timeout"]) for level in levels)
+                if duration < timeout + margin:
+                    problems.append(
+                        f"{scenario_id}: companion load {duration}s < timeout {timeout}s + {margin}s"
+                    )
+        self.assertFalse(problems, "\n".join(problems))
+
 
 if __name__ == "__main__":
     unittest.main()

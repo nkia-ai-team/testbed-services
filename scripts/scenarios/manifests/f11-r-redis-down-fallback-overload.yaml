@@ -89,7 +89,7 @@
               },
               "min_hold": "2m",
               "settle": "30s",
-              "timeout": "12m"
+              "timeout": "11m"
             },
             {
               "id": "fallback-load-50",
@@ -106,7 +106,7 @@
               },
               "min_hold": "2m",
               "settle": "30s",
-              "timeout": "12m"
+              "timeout": "11m"
             },
             {
               "id": "fallback-load-65",
@@ -123,7 +123,7 @@
               },
               "min_hold": "2m",
               "settle": "30s",
-              "timeout": "12m"
+              "timeout": "11m"
             }
           ]
         },

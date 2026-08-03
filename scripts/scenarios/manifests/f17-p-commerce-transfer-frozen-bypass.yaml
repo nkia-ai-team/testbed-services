@@ -86,7 +86,7 @@
               },
               "min_hold": "8m",
               "settle": "30s",
-              "timeout": "13m"
+              "timeout": "10m"
             }
           ]
         },

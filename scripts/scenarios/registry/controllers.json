@@ -633,7 +633,7 @@
             },
             "min_hold": "6m",
             "settle": "30s",
-            "timeout": "12m"
+            "timeout": "11m"
           },
           {
             "id": "knee-140",
@@ -650,7 +650,7 @@
             },
             "min_hold": "6m",
             "settle": "30s",
-            "timeout": "12m"
+            "timeout": "11m"
           },
           {
             "id": "overload-160",
@@ -667,7 +667,7 @@
             },
             "min_hold": "6m",
             "settle": "30s",
-            "timeout": "12m"
+            "timeout": "11m"
           }
         ]
       },
@@ -1583,7 +1583,7 @@
             },
             "min_hold": "2m",
             "settle": "30s",
-            "timeout": "12m"
+            "timeout": "11m"
           },
           {
             "id": "fallback-load-50",
@@ -1600,7 +1600,7 @@
             },
             "min_hold": "2m",
             "settle": "30s",
-            "timeout": "12m"
+            "timeout": "11m"
           },
           {
             "id": "fallback-load-65",
@@ -1617,7 +1617,7 @@
             },
             "min_hold": "2m",
             "settle": "30s",
-            "timeout": "12m"
+            "timeout": "11m"
           }
         ]
       },
@@ -6472,7 +6472,7 @@
             },
             "min_hold": "8m",
             "settle": "30s",
-            "timeout": "13m"
+            "timeout": "11m"
           }
         ]
       },
@@ -6672,7 +6672,7 @@
             },
             "min_hold": "8m",
             "settle": "30s",
-            "timeout": "13m"
+            "timeout": "11m"
           }
         ]
       },
@@ -10361,7 +10361,7 @@
             },
             "min_hold": "8m",
             "settle": "30s",
-            "timeout": "13m"
+            "timeout": "10m"
           }
         ]
       },

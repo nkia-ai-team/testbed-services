@@ -559,7 +559,7 @@
         "F15-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "23m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -592,7 +592,7 @@
         "F17-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -603,7 +603,7 @@
         "F18-P": {
           "target_rps": 30,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30082",
           "script_path": "/opt/loadgen/core-banking/surge.js",
@@ -614,7 +614,7 @@
         "F19-P": {
           "target_rps": 50,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30181",
           "script_path": "/opt/loadgen/food-delivery/surge.js",
@@ -625,7 +625,7 @@
         "F19-S": {
           "target_rps": 50,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30181",
           "script_path": "/opt/loadgen/food-delivery/surge.js",
@@ -636,7 +636,7 @@
         "F16-H": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -680,7 +680,7 @@
         "F25-H": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -691,7 +691,7 @@
         "F23-R": {
           "target_rps": 35,
           "ramp_up": "2m",
-          "hold": "12m",
+          "hold": "16m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/surge.js",
@@ -713,7 +713,7 @@
         "F21-Q": {
           "target_rps": 70,
           "ramp_up": "2m",
-          "hold": "8m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30181",
           "script_path": "/opt/loadgen/food-delivery/order-surge.js",
@@ -790,7 +790,7 @@
         "F06-P": {
           "target_rps": 40,
           "ramp_up": "2m",
-          "hold": "10m",
+          "hold": "11m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30181",
           "script_path": "/opt/loadgen/food-delivery/surge.js",
@@ -845,7 +845,7 @@
         "F15-H": {
           "target_rps": 40,
           "ramp_up": "2m",
-          "hold": "10m",
+          "hold": "13m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30181",
           "script_path": "/opt/loadgen/food-delivery/surge.js",
@@ -856,7 +856,7 @@
         "F15-T2": {
           "target_rps": 40,
           "ramp_up": "2m",
-          "hold": "12m",
+          "hold": "18m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30181",
           "script_path": "/opt/loadgen/food-delivery/surge.js",
