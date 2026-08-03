@@ -12,8 +12,7 @@
     "matrix_location_transport": "K/kubectl fault consumer",
     "transport": "kubectl",
     "profile_refs": [
-      "injector-profiles/db.table_readonly",
-      "injector-profiles/load.north_south"
+      "injector-profiles/db.table_readonly"
     ]
   },
   "execution": {
@@ -25,17 +24,14 @@
       "target-health",
       "profile-prerequisites",
       "transport-kubernetes-rbac",
-      "db-inverse-ddl-ready",
-      "baseline-loadgen-active"
+      "db-inverse-ddl-ready"
     ],
     "controller": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
       "binding": {
         "primary_ref": "db.table_readonly",
-        "companion_refs": [
-          "load.north_south"
-        ],
+        "companion_refs": [],
         "approved_profile_id": "db.table_readonly"
       },
       "runtime": {
@@ -117,6 +113,10 @@
             "id": "transfer_2xx_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "baseline 문서 직독(관측 평면 분리). 동반 30rps surge를 재던 시절엔 무주입에서도 transfer 2xx가 0.067이라(2026-08-03 실측) 감별자가 항상 발화했다 — 부하는 injection_summary대로 baseline이 공급하고, 이 지표는 그 baseline의 이체 건강만 잰다",
             "freshness": "30s"
           },
           {
@@ -257,8 +257,7 @@
       "mode": "dry-run",
       "mutation": false,
       "adapter_refs": [
-        "db.table_readonly",
-        "load.north_south"
+        "db.table_readonly"
       ]
     },
     "run": {
@@ -266,8 +265,7 @@
       "mutation": false,
       "requires_preflight": true,
       "adapter_refs": [
-        "db.table_readonly",
-        "load.north_south"
+        "db.table_readonly"
       ]
     },
     "cleanup": {
@@ -277,7 +275,6 @@
       "order": "reverse",
       "recovery_gate": true,
       "adapter_refs": [
-        "load.north_south",
         "db.table_readonly"
       ]
     }

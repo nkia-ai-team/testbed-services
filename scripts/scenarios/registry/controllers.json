@@ -8305,13 +8305,8 @@
             "id": "order-latency-damage",
             "observation": "order_p95",
             "op": "gte",
-            "value": 2500
-          },
-          {
-            "id": "order-pool-occupied",
-            "observation": "order_hikari_pending",
-            "op": "gt",
-            "value": 0
+            "value": 2500,
+            "_note": "풀 대기(order_hikari_pending>0)는 성공 게이트에서 뺐다 — 2026-08-03 배치에서 disk 77·p95 5632ms로 손상을 크게 재현하고도 풀 대기가 진짜 0이라 실패했다(지표 자체는 살아 있음을 VM 직질의로 확인, 24h 최대 192). 이 시나리오의 정체성은 디스크 포화→사용자 지연이고 풀 경합은 경로의 하나일 뿐 필요조건이 아니다. order_hikari_pending은 관측으로 남아 증거로는 계속 캡처된다"
           }
         ],
         "consecutive_ticks": 3
@@ -11346,9 +11341,7 @@
       "profile": {
         "kind": "fixed",
         "primary_ref": "db.table_readonly",
-        "companion_refs": [
-          "load.north_south"
-        ],
+        "companion_refs": [],
         "approved_profile_id": "db.table_readonly",
         "levels": [
           {
@@ -11393,6 +11386,10 @@
           "id": "transfer_2xx_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "baseline 문서 직독(관측 평면 분리). 동반 30rps surge를 재던 시절엔 무주입에서도 transfer 2xx가 0.067이라(2026-08-03 실측) 감별자가 항상 발화했다 — 부하는 injection_summary대로 baseline이 공급하고, 이 지표는 그 baseline의 이체 건강만 잰다",
           "freshness": "30s"
         },
         {

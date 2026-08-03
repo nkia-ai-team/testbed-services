@@ -401,8 +401,7 @@
       "id": "F14-P",
       "slug": "f14-p-selective-ledger-loss",
       "profiles": [
-        "db.table_readonly",
-        "load.north_south"
+        "db.table_readonly"
       ],
       "readiness": "ready",
       "load_mode": "fixed",

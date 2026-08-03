@@ -263,8 +263,7 @@
           "F10-P",
           "F04-H",
           "F15-H",
-          "F15-T2",
-          "F14-P"
+          "F15-T2"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -864,17 +863,6 @@
           "scenario_tag": "scenario_id=F15-T2",
           "seed": 4242,
           "baseline_unit": "loadgen-food"
-        },
-        "F14-P": {
-          "target_rps": 30,
-          "ramp_up": "2m",
-          "hold": "8m",
-          "ramp_down": "1m",
-          "entry_url": "http://192.168.122.77:30082",
-          "script_path": "/opt/loadgen/core-banking/surge.js",
-          "scenario_tag": "scenario_id=F14-P",
-          "seed": 4242,
-          "baseline_unit": "loadgen-banking"
         }
       },
       "scenario_levels": {

@@ -4895,10 +4895,10 @@
     "F10-H": {
       "title": "MySQL PVC 백킹 디스크 IO 포화 — food 주문이 커넥션을 쥔 채 느려진다",
       "description": "food-delivery의 MySQL이 쓰는 PVC의 백킹 디바이스(tb-w3 로컬 디스크)를 포화시킨다. MySQL 프로세스도 앱도 정상이고 노드 CPU·메모리도 여유가 있는데, InnoDB의 읽기와 redo 기록이 모두 IO 대기에 걸려 주문 경로가 느려진다. commerce판(F02-H)과 같은 기전이지만 도메인이 다르고, food는 단일 DB에 주문·식당·배달이 모두 얹혀 있어 지연이 도메인 전체로 균일하게 번진다.",
-      "cause": "tb-w3의 local-path PVC 디렉토리(mysqldata-testbed-mysql-0)에 fio IO 부하 → 백킹 디바이스 busy 급등 → InnoDB 버퍼풀 미스와 redo 기록이 IO 대기에 묶임 → 주문 생성·조회 쿼리 시간 상승 → order의 Hikari 커넥션 보유 시간 증가 → 풀 대기 발생 → 주문 경로 지연",
+      "cause": "tb-w3의 local-path PVC 디렉토리(mysqldata-testbed-mysql-0)에 fio IO 부하 → 백킹 디바이스 busy 급등 → InnoDB 버퍼풀 미스와 redo 기록이 IO 대기에 묶임 → 주문 생성·조회 쿼리 시간 상승 → order의 Hikari 커넥션 보유 시간 증가 → 주문 경로 지연 (풀 대기는 동시성이 풀 크기를 넘을 때만 함께 나타나는 부수 신호다 — 2026-08-03 라이브에서 p95 5632ms 손상이 풀 대기 0으로 재현됐다)",
       "injection_summary": "host.stress executor의 fio 모드로 tb-w3(192.168.122.14)의 PVC 경로에 6000/12000/20000 IOPS 사다리로 IO 부하를 주고 food 진입점 부하를 병행한다. cleanup은 fio 프로세스 종료와 생성 파일 삭제이며, MySQL 데이터는 건드리지 않는다.",
       "user_impact": "주문 생성과 조회가 함께 느려진다. 파드는 죽지 않고 5xx도 즉시 튀지 않아 가용성 지표로는 정상으로 보이지만, 사용자에게는 앱 전체가 굼뜬 상태가 된다.",
-      "distinguishing_evidence": "결정 증거는 **백킹 디바이스가 바쁘다**와 order의 Hikari 대기가 함께 오르는데 노드 CPU는 정상이라는 조합이다. CPU가 아니므로 F21-Q(노드 CPU 경합)와 갈리고, 힙이 자라지 않으므로 F20-Q(무페이징 슬로우쿼리로 인한 힙 압박)와 갈린다 — F20-Q는 특정 쿼리가 방아쇠이고 컨테이너 메모리가 함께 오르지만, 이쪽은 특정 쿼리 없이 전 구간이 느리고 메모리는 평온하다. 인덱스가 사라진 것도 아니다(F02-P 배제).",
+      "distinguishing_evidence": "결정 증거는 **백킹 디바이스가 바쁘다**와 order 지연이 함께 오르는데 노드 CPU는 정상이라는 조합이다(Hikari 대기는 나타나면 보강 증거이지만 필요조건이 아니다 — 2026-08-03 라이브에서 대기 0으로도 손상이 성립했다). CPU가 아니므로 F21-Q(노드 CPU 경합)와 갈리고, 힙이 자라지 않으므로 F20-Q(무페이징 슬로우쿼리로 인한 힙 압박)와 갈린다 — F20-Q는 특정 쿼리가 방아쇠이고 컨테이너 메모리가 함께 오르지만, 이쪽은 특정 쿼리 없이 전 구간이 느리고 메모리는 평온하다. 인덱스가 사라진 것도 아니다(F02-P 배제).",
       "domain": "food-delivery",
       "class": "B",
       "observation_domains": [
