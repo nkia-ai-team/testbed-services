@@ -180,7 +180,7 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 60,
+      "freshness_sec": 120,
       "update_interval_sec": 60
     },
     "prometheus.apm_service_p95": {
@@ -190,7 +190,7 @@
         "service_name"
       ],
       "value_type": "number",
-      "freshness_sec": 60,
+      "freshness_sec": 120,
       "update_interval_sec": 60
     },
     "prometheus.jvm_old_gen_after_gc_ratio": {
@@ -321,7 +321,7 @@
     },
     "kubernetes.container_memory_current_bytes": {
       "adapter": "kubernetes",
-      "selector": "pod.container.cgroup.memory_current_bytes",
+      "selector": "pod.container.cgroup.memory.current_bytes",
       "allowed_parameters": [
         "namespace",
         "deployment",
@@ -530,6 +530,7 @@
     },
     "kubernetes.node_ready": {
       "adapter": "kubernetes",
+      "selector": "node.status.ready",
       "value_type": "boolean",
       "allowed_parameters": [
         "node"
