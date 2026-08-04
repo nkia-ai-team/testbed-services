@@ -875,6 +875,77 @@ class RegistryContractTests(unittest.TestCase):
                     )
         self.assertFalse(problems, "\n".join(problems))
 
+    def test_loadgen_signals_require_a_profile_that_produces_them(self) -> None:
+        """판정이 부하 산출물을 읽으면 부하를 만드는 프로파일이 있어야 한다.
+
+        `loadgen_summary`/`http_probe` 어댑터는 `/tmp/rca-scenario-<ID>-live.json`을
+        읽는다. 그 파일은 `load.*` 프로파일이 만든다. 둘이 어긋나면 신호가 **런 내내
+        사용 불가**가 되고, 그 신호를 보는 게이트는 영원히 판정을 못 내린다.
+
+        F15-T1이 그랬다(2026-08-04): companion이 하나도 없는데 success 조건이
+        `checkout_5xx_rate`를 봤다. 두 주입(food OOMKilled, commerce 잠금 세션 20)이
+        모두 성공했는데도 성공은 구조적으로 불가능했고, 재시작이 중단 예산에 닿아
+        aborted로 끝났다. 같은 구멍이 F15-P·F14-P에도 있었다 — 그쪽은 success가 아니라
+        **recovery**가 읽으므로, 실패가 그 시나리오에서 끝나지 않고 전역 DIRTY가 된다.
+
+        primary도 부하를 만들 수 있다(F07-H·F11-R의 surge가 곧 주입이다).
+        """
+        loadgen_adapters = {"loadgen_summary", "http_probe"}
+        loadgen_queries = {
+            query_id
+            for query_id, spec in self.queries["queries"].items()
+            if spec.get("adapter") in loadgen_adapters
+        }
+        self.assertTrue(loadgen_queries, "부하 산출물 질의를 하나도 못 찾았다")
+
+        offenders = {}
+        for scenario_id, controller in self.controllers["controllers"].items():
+            profile = controller.get("profile") or {}
+            refs = [profile.get("primary_ref") or profile.get("approved_profile_id") or ""]
+            refs += profile.get("companion_refs") or []
+            if any(str(ref).startswith("load.") for ref in refs):
+                continue
+            reading = {
+                obs["id"]
+                for obs in controller.get("observations") or []
+                if obs.get("query_id") in loadgen_queries
+            }
+            if not reading:
+                continue
+            judged = set()
+            for gate in ("success", "escalate", "must_rule_out", "abort", "recovery"):
+                block = controller.get(gate) or {}
+                for cond in (block.get("all") or []) + (block.get("any") or []):
+                    if cond.get("observation") in reading:
+                        judged.add(f"{gate}:{cond['observation']}")
+            if judged:
+                offenders[scenario_id] = sorted(judged)
+
+        # 2026-08-04 배치가 찾은 미수리 3종. **줄어들기만 해야 한다** — 부하
+        # companion을 붙이거나 게이트에서 죽은 신호를 빼면 여기서 지운다. 새 항목이
+        # 생기면 이 테스트가 그 자리에서 막는다. 라이브에서만 보이던 결함을
+        # 레지스트리 단계로 끌어내리는 것이 이 목록의 목적이다.
+        known_unfixed = {
+            "F14-P": [
+                "abort:entry_status",
+                "must_rule_out:entry_status",
+                "must_rule_out:transfer_2xx_rate",
+                "recovery:target_health",
+            ],
+            "F15-P": ["abort:entry_status", "recovery:target_health"],
+            "F15-T1": [
+                "abort:entry_status",
+                "recovery:target_health",
+                "success:checkout_5xx_rate",
+            ],
+        }
+        self.assertEqual(
+            offenders,
+            known_unfixed,
+            "판정이 읽는 부하 신호를 아무도 만들지 않는다: "
+            + json.dumps(offenders, ensure_ascii=False, sort_keys=True),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
