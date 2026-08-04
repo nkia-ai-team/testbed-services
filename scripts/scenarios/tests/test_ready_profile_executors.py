@@ -120,25 +120,30 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertIn("current() { echo \"$(field limits) $(field requests)\"; }", script)
         self.assertIn('--requests="cpu=$original_request"', script)
         # 사다리에 request 아래 단이 실제로 남아 있어야 이 수리가 의미가 있다.
-        for scenario_id in ("F12-H", "F09-P"):
-            rungs = [
-                int(level["parameters"]["fault_cpu_limit"].removesuffix("m"))
-                for level in self.profiles["k8s.patch"]["scenario_levels"][scenario_id]
-            ]
-            self.assertTrue(
-                [rung for rung in rungs if rung < 200],
-                f"{scenario_id} ladder no longer reaches under the 200m request",
-            )
+        # F09-P는 여기서 빠진다 — 2026-08-04 라이브 실측이 그 사다리를 request 위로
+        # 되돌려 놓았기 때문이다. 평시 CPU가 낮아 request를 내려도 스케줄은 되지만
+        # (inventory 7m), 스케줄과 **서빙**은 다른 질문이었다: baseline 부하 아래에서
+        # inventory는 200m에서 Ready 12/12·재시작 0인데 175m에서는 12틱 내내 Ready가
+        # 되지 못하고 재시작한다. 같은 날 product는 175m을 버텼다 — 바닥은 서비스마다
+        # 다르므로 사다리마다 재야 한다.
+        rungs = [
+            int(level["parameters"]["fault_cpu_limit"].removesuffix("m"))
+            for level in self.profiles["k8s.patch"]["scenario_levels"]["F12-H"]
+        ]
+        self.assertTrue(
+            [rung for rung in rungs if rung < 200],
+            "F12-H ladder no longer reaches under the 200m request",
+        )
 
     def test_kubernetes_patch_adaptive_ladder_accepts_only_exact_levels(self) -> None:
         profile = self.profiles["k8s.patch"]
         levels = profile["scenario_levels"]["F09-P"]
-        self.assertEqual([level["level_id"] for level in levels], ["conservative-250m", "constrained-100m", "endpoint-50m"])
-        self.assertEqual([level["parameters"]["fault_cpu_limit"] for level in levels], ["250m", "100m", "50m"])
+        self.assertEqual([level["level_id"] for level in levels], ["conservative-250m", "constrained-225m", "endpoint-200m"])
+        self.assertEqual([level["parameters"]["fault_cpu_limit"] for level in levels], ["250m", "225m", "200m"])
         for level in levels:
             k8s_patch.validate("F09-P", level["parameters"], profile)
         instance = next(row for row in compiler.compile_plan("f09-p-inventory-cpu-throttle")["profile_instances"] if row["profile_id"] == "k8s.patch")
-        self.assertEqual(instance["selected_level_id"], "endpoint-50m")
+        self.assertEqual(instance["selected_level_id"], "endpoint-200m")
         self.assertEqual(instance["scenario_levels"], levels)
         tampered = dict(levels[1]["parameters"])
         tampered["fault_cpu_limit"] = "99m"
@@ -190,9 +195,9 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         endpoint, endpoint_id = sys.modules["executor_common"].bind_level_parameters(plan, "k8s.patch", 2, canonical(levels[2]["parameters"]))
         low_argv, _ = k8s_patch.build_invocation(low, "run")
         endpoint_argv, _ = k8s_patch.build_invocation(endpoint, "run")
-        self.assertEqual((low_id, endpoint_id), ("conservative-250m", "endpoint-50m"))
+        self.assertEqual((low_id, endpoint_id), ("conservative-250m", "endpoint-200m"))
         self.assertIn("250m", low_argv)
-        self.assertIn("50m", endpoint_argv)
+        self.assertIn("200m", endpoint_argv)
         self.assertNotEqual(low_argv, endpoint_argv)
         tampered = dict(levels[0]["parameters"])
         tampered["fault_cpu_limit"] = "249m"

@@ -407,7 +407,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"]
              for level in controllers["F09-P"]["profile"]["levels"]],
-            ["250m", "100m", "50m"],
+            ["250m", "225m", "200m"],
         )
         # F12-H's floor was measured on the live pod (2026-08-04, 3 minutes per
         # rung under baseline load): 200m and 175m held Ready 12/12 with zero

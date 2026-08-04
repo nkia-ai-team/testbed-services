@@ -10367,24 +10367,24 @@
             "timeout": "8m"
           },
           {
-            "id": "constrained-100m",
+            "id": "constrained-225m",
             "parameters": {
               "deployment": "testbed-inventory",
               "container": "inventory-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "100m"
+              "fault_cpu_limit": "225m"
             },
             "min_hold": "2m",
             "settle": "30s",
             "timeout": "8m"
           },
           {
-            "id": "endpoint-50m",
+            "id": "endpoint-200m",
             "parameters": {
               "deployment": "testbed-inventory",
               "container": "inventory-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "50m"
+              "fault_cpu_limit": "200m"
             },
             "min_hold": "2m",
             "settle": "30s",

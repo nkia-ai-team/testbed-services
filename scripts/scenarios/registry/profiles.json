@@ -2971,7 +2971,7 @@
           "deployment": "testbed-inventory",
           "container": "inventory-service",
           "baseline_cpu_limit": "500m",
-          "fault_cpu_limit": "50m"
+          "fault_cpu_limit": "200m"
         },
         "F12-H": {
           "deployment": "testbed-product",
@@ -2998,21 +2998,21 @@
             }
           },
           {
-            "level_id": "constrained-100m",
+            "level_id": "constrained-225m",
             "parameters": {
               "deployment": "testbed-inventory",
               "container": "inventory-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "100m"
+              "fault_cpu_limit": "225m"
             }
           },
           {
-            "level_id": "endpoint-50m",
+            "level_id": "endpoint-200m",
             "parameters": {
               "deployment": "testbed-inventory",
               "container": "inventory-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "50m"
+              "fault_cpu_limit": "200m"
             }
           }
         ],
