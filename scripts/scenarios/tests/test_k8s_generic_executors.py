@@ -89,7 +89,13 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         self.assertNotIn("rollout status", script)
         self.assertIn(".status.observedGeneration >= .metadata.generation", script)
         self.assertIn(".status.readyReplicas", script)
-        self.assertIn('can-i patch "${kind}s"', script)
+        # `${kind}s` made "deploys" out of the "deploy" kind. kubectl still
+        # answered yes, so the check passed — but it warned on stderr, and
+        # profile-control reports a failed preflight's stderr as the reason, so
+        # unrelated failures arrived labelled with this warning (2026-08-04).
+        # The permission check must ask about the same spelling get/patch use.
+        self.assertIn('can-i patch "$kind"', script)
+        self.assertNotIn('can-i patch "${kind}s"', script)
 
     def test_probe_executor_allows_only_payment_liveness(self) -> None:
         params = probe.F05_H_PARAMETERS
@@ -130,6 +136,31 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         script = env.build_invocation(plan(env.PROFILE_ID, "F09-H", gc), "recovery")[1].decode()
         self.assertIn("(.env // [])", script)
         self.assertIn('[[ ! -e "$state" ]]', script)
+
+    def test_env_apply_settles_the_rollout_it_starts(self) -> None:
+        """Measured 2026-08-04 on 109: patch env, and for the next 3s the same
+        Deployment fails a steady-baseline preflight; once the rollout completes
+        it passes again. F05-R's primary (k8s.resource) hits the very Deployment
+        this companion patches 0.9s earlier, so an apply that does not settle
+        cost the run and paused the 44-scenario batch. Cleanup already waited.
+        """
+        pretouch = {
+            "namespace": "rca-testbed-commerce", "deployment": "testbed-payment",
+            "container": "payment-service",
+            "baseline": [{"name": "JAVA_TOOL_OPTIONS", "value": "-javaagent:/opt/apm/x.jar"}],
+            "fault": [{
+                "name": "JAVA_TOOL_OPTIONS",
+                "value": "-javaagent:/opt/apm/x.jar -Xms768m -XX:+AlwaysPreTouch",
+            }],
+        }
+        env.validate("F05-R", pretouch, {})
+        script = env.build_invocation(plan(env.PROFILE_ID, "F05-R", pretouch), "run")[1].decode()
+        run_case = script.split("run)")[1].split(";;")[0]
+        self.assertIn('patch "$fault"', run_case)
+        self.assertIn("healthy", run_case.split('patch "$fault"')[1])
+        # An injection may legitimately leave pods unready, so the wait must not
+        # decide the run — only remove the race.
+        self.assertIn("|| true", run_case.split('patch "$fault"')[1])
 
     def test_registry_gate_is_fail_closed_when_present(self) -> None:
         params = resource.F05_R_LEVELS[0]

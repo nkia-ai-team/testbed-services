@@ -93,7 +93,15 @@ healthy() {
 check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
-  run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"; patch "$fault" ;;
+  # The patch starts a rollout; returning before it settles leaves the Deployment
+  # mid-generation for whatever runs next. F05-R is the first scenario whose
+  # primary profile (k8s.resource) touches the same Deployment this companion
+  # does, and its preflight asserts a steady baseline: 0.9s after this returned,
+  # it saw a rolling Deployment and refused, which cost the run and paused the
+  # batch (2026-08-04). Cleanup already waited; apply did not. Best effort, since
+  # an injection may legitimately leave pods unready -- a wait that times out
+  # must not fail the apply. The controller, not this executor, judges results.
+  run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"; patch "$fault"; healthy 120s || true ;;
   cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; patch "$original"; healthy 180s; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(current)" == "$baseline" ]]; healthy 1s ;;
   *) exit 2 ;;

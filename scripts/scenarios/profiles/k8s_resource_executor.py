@@ -102,7 +102,12 @@ healthy() {
     sleep 2
   done
 }
-check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch "${kind}s" | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
+# `${kind}s` built "deploys" from the "deploy" kind. That is not a resource
+# type, so kubectl warned on stderr while still answering yes. Harmless to the
+# check itself, but profile-control reports a failed preflight's stderr as the
+# reason, so every real failure here arrived labelled with a warning about the
+# wrong thing (2026-08-04, F05-R). auth can-i takes the spelling get/patch use.
+check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch "$kind" | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
   run)
