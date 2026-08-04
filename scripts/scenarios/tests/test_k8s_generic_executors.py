@@ -137,12 +137,16 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         self.assertIn("(.env // [])", script)
         self.assertIn('[[ ! -e "$state" ]]', script)
 
-    def test_env_apply_settles_the_rollout_it_starts(self) -> None:
-        """Measured 2026-08-04 on 109: patch env, and for the next 3s the same
-        Deployment fails a steady-baseline preflight; once the rollout completes
-        it passes again. F05-R's primary (k8s.resource) hits the very Deployment
-        this companion patches 0.9s earlier, so an apply that does not settle
-        cost the run and paused the 44-scenario batch. Cleanup already waited.
+    def test_a_peers_rollout_is_waited_out_in_preflight_not_in_apply(self) -> None:
+        """Measured 2026-08-04 on 109, both halves of it.
+
+        F05-R's k8s.env companion patches testbed-payment ~1s before the
+        k8s.resource primary runs against the same Deployment, and payment takes
+        ~58s to roll; for those seconds a steady-baseline check refuses. Waiting
+        inside the companion's apply fixed that and broke something worse:
+        profile-control holds the coordinator lock through apply, so the 30s
+        lease could not be heartbeat-renewed and expired mid-run. preflight runs
+        with the lock released, so the budget belongs there.
         """
         pretouch = {
             "namespace": "rca-testbed-commerce", "deployment": "testbed-payment",
@@ -154,13 +158,19 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             }],
         }
         env.validate("F05-R", pretouch, {})
-        script = env.build_invocation(plan(env.PROFILE_ID, "F05-R", pretouch), "run")[1].decode()
-        run_case = script.split("run)")[1].split(";;")[0]
-        self.assertIn('patch "$fault"', run_case)
-        self.assertIn("healthy", run_case.split('patch "$fault"')[1])
-        # An injection may legitimately leave pods unready, so the wait must not
-        # decide the run — only remove the race.
-        self.assertIn("|| true", run_case.split('patch "$fault"')[1])
+        env_run = (
+            env.build_invocation(plan(env.PROFILE_ID, "F05-R", pretouch), "run")[1]
+            .decode().split("run)")[1].split(";;")[0]
+        )
+        self.assertNotIn("healthy", env_run.split('patch "$fault"')[1])
+
+        script = resource.build_invocation(
+            plan(resource.PROFILE_ID, "F05-R", resource.F05_R_LEVELS[0]), "preflight"
+        )[1].decode()
+        preflight_case = script.split("preflight)")[1].split(";;")[0]
+        self.assertIn("settle=90s check", preflight_case)
+        # apply keeps the tight budget; by then preflight has settled it.
+        self.assertIn('healthy "${settle:-1s}"', script)
 
     def test_registry_gate_is_fail_closed_when_present(self) -> None:
         params = resource.F05_R_LEVELS[0]

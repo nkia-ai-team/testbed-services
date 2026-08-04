@@ -107,9 +107,16 @@ healthy() {
 # check itself, but profile-control reports a failed preflight's stderr as the
 # reason, so every real failure here arrived labelled with a warning about the
 # wrong thing (2026-08-04, F05-R). auth can-i takes the spelling get/patch use.
-check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch "$kind" | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
+check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch "$kind" | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy "${settle:-1s}"; }
 case "$action" in
-  preflight) check; [[ ! -e "$state" ]] ;;
+  # A companion may have just patched this same Deployment: F05-R's k8s.env adds
+  # the heap pretouch to testbed-payment ~1s before this runs, and payment then
+  # takes ~58s to roll (measured 2026-08-04). A 1s budget refused every time.
+  # The wait lives here, not in the companion's apply, because profile-control
+  # releases the coordinator lock around preflight and holds it through apply --
+  # a long apply cannot be heartbeat-renewed and expires the 30s lease. `run`
+  # keeps the 1s budget: preflight has already settled the Deployment by then.
+  preflight) settle=90s check; [[ ! -e "$state" ]] ;;
   run)
     mkdir -p "$state_root"; umask 077
     if [[ -e "$state" ]]; then
