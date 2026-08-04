@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -83,6 +84,29 @@ class TimelineDualFaultFoundationTests(unittest.TestCase):
         self.assertIn("[[ $rc -eq 0 ]]", script)
         # no ambient shell injection
         self.assertNotIn("shell=True", script)
+
+    def test_food_fault_pins_a_pretouched_heap_floor_and_baseline_does_not(self) -> None:
+        # Dropping the container limit alone cannot OOM-kill a JVM: HotSpot sizes
+        # MaxHeapSize at 25% of the limit, so every rung of the ladder just buys a
+        # smaller heap (measured 2026-08-04: limit 1Gi -> MaxHeapSize 256Mi exactly).
+        # The fault must therefore also pin and pre-touch the heap, and cleanup must
+        # put the baseline flags back — otherwise the pod stays oversized forever.
+        params = canonical_params()
+        argv, _ = dual.build_invocation(
+            plan("timeline.compose", "F15-T1", params, {"transport": "local", "resolved": True}),
+            "run",
+        )
+        baseline_state, fault_state = json.loads(argv[-3]), json.loads(argv[-2])
+
+        for flag in ("-Xms512m", "-Xmx512m", "-XX:+AlwaysPreTouch"):
+            self.assertIn(flag, fault_state["java_opts"])
+            self.assertNotIn(flag, baseline_state["java_opts"])
+        # The OTel agent must survive both states or the run goes unobserved.
+        self.assertIn("opentelemetry-javaagent.jar", baseline_state["java_opts"])
+        self.assertIn("opentelemetry-javaagent.jar", fault_state["java_opts"])
+        # Both levers travel together through snapshot/restore.
+        self.assertEqual(baseline_state["resources"], dual.FOOD_BASELINE)
+        self.assertEqual(fault_state["resources"]["limits"]["memory"], "576Mi")
 
     def test_each_food_ladder_level_validates(self) -> None:
         for memory in ("768Mi", "640Mi", "576Mi"):

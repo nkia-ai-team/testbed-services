@@ -47,6 +47,35 @@ FOOD_BASELINE = {
 }
 FOOD_FAULT_MEMORY_LADDER = ("768Mi", "640Mi", "576Mi")
 
+# Lowering the container limit does not squeeze a JVM: HotSpot sizes MaxHeapSize
+# at 25% of the limit, so a smaller limit buys a proportionally smaller heap and
+# the process simply never grows into it. Measured on the live food payment
+# 2026-08-04: limit 1Gi -> MaxHeapSize exactly 268435456 (256Mi), RSS 473MB. At
+# 576Mi the heap would be 144Mi and RSS would *fall*, so no rung of this ladder
+# could ever OOM-kill. What decides an OOMKill is anon memory, so the fault also
+# pins the heap floor and pre-touches it (same repair as F05-R, which reached it
+# through a companion — this timeline has no companion slot, so the lever lives
+# in the executor). 512m of pre-touched heap plus this image's non-heap anon puts
+# the knee inside the ladder rather than below its floor.
+#
+# These are executor constants, not scenario parameters: the approved-parameter
+# contract stays exactly as the registry has it, and the scenario cannot nominate
+# its own JVM flags.
+FOOD_BASELINE_JAVA_OPTS = "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+FOOD_FAULT_JAVA_OPTS = (
+    f"{FOOD_BASELINE_JAVA_OPTS} -Xms512m -Xmx512m -XX:+AlwaysPreTouch"
+)
+
+
+def _food_state(resources: dict[str, Any], java_opts: str) -> dict[str, Any]:
+    """The snapshot shape the script compares and restores: both levers at once.
+
+    Restoring resources while leaving the heap floor pinned would leave the pod
+    permanently oversized, so the two travel together through preflight,
+    snapshot, patch, cleanup and recovery.
+    """
+    return {"resources": resources, "java_opts": java_opts}
+
 
 def _food_fault(memory: str) -> dict[str, Any]:
     return {
@@ -104,8 +133,14 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         p["pg_schema"], p["pg_table"], p["pg_key_column"], str(p["pg_key_value"]),
         p["pg_client_identity"], str(p["pg_hold_seconds"]),
         p["food_namespace"], p["food_deployment"], p["food_container"],
-        json.dumps(p["food_baseline"], sort_keys=True, separators=(",", ":")),
-        json.dumps(p["food_fault"], sort_keys=True, separators=(",", ":")),
+        json.dumps(
+            _food_state(p["food_baseline"], FOOD_BASELINE_JAVA_OPTS),
+            sort_keys=True, separators=(",", ":"),
+        ),
+        json.dumps(
+            _food_state(p["food_fault"], FOOD_FAULT_JAVA_OPTS),
+            sort_keys=True, separators=(",", ":"),
+        ),
         str(p["start_offset_seconds"]),
     ]), SCRIPT
 
@@ -202,8 +237,10 @@ YAML
 }
 
 # --- Food payment OOM via exact-snapshot memory-limit reduction ---
-food_current() { "${k[@]}" get deploy "$food_deploy" -o json | jq -Sc --arg c "$food_container" '.spec.template.spec.containers[] | select(.name==$c) | (.resources // {})'; }
-food_patch() { jq -cn --arg c "$food_container" --argjson r "$1" '{spec:{template:{spec:{containers:[{name:$c,resources:$r}]}}}}' | "${k[@]}" patch deploy "$food_deploy" --type=strategic --patch-file=/dev/stdin >/dev/null; }
+food_current() { "${k[@]}" get deploy "$food_deploy" -o json | jq -Sc --arg c "$food_container" '.spec.template.spec.containers[] | select(.name==$c) | {resources:(.resources // {}), java_opts:(((.env // []) | map(select(.name=="JAVA_TOOL_OPTIONS")) | first | .value) // "")}'; }
+# env is a strategic-merge list keyed on name, so patching JAVA_TOOL_OPTIONS
+# leaves every other variable (OTel endpoint, DB secrets) untouched.
+food_patch() { jq -cn --arg c "$food_container" --argjson s "$1" '{spec:{template:{spec:{containers:[{name:$c,resources:$s.resources,env:[{name:"JAVA_TOOL_OPTIONS",value:$s.java_opts}]}]}}}}' | "${k[@]}" patch deploy "$food_deploy" --type=strategic --patch-file=/dev/stdin >/dev/null; }
 food_check() { command -v jq >/dev/null; "${k[@]}" auth can-i patch deployments >/dev/null; [[ "$(food_current)" == "$food_baseline" ]]; "${k[@]}" rollout status deploy/"$food_deploy" --timeout=1s >/dev/null; }
 
 case "$action" in
