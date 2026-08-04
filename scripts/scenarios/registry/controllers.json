@@ -2300,6 +2300,7 @@
         "kind": "adaptive_ladder",
         "primary_ref": "k8s.resource",
         "companion_refs": [
+          "k8s.env",
           "load.north_south"
         ],
         "approved_profile_id": null,

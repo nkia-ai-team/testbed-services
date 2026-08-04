@@ -507,6 +507,35 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(instance["approved_levels"], expected)
             self.assertIsNotNone(instance["selected_level_id"])
 
+    def test_f05r_pins_the_heap_so_the_limit_ladder_can_actually_oomkill(self) -> None:
+        # limit을 내리면 힙 상한도 같이 내려간다(MaxRAMPercentage=25). 그래서 사다리
+        # 세 단을 다 써도 OOMKill이 안 났다 — 25틱 내내 restart_count=0 (배치 #2).
+        #
+        # 109 실측 2026-08-04, payment-service cgroup:
+        #   anon 413MiB / memory.current 417MiB (file 캐시는 0.8MiB뿐)
+        #   heap committed 79MiB, non_heap 120MiB → 힙 외 anon ≈ 334MiB
+        # 사다리 바닥 576Mi보다 163MiB 낮으니 커널이 죽일 이유가 없었다.
+        #
+        # -Xms + AlwaysPreTouch가 있어야 anon이 시작 즉시 384+334≈718MiB로 올라가
+        # 640Mi·576Mi 단에서 확실히 한도를 넘는다. -Xmx만으로는 부족하다 — live set이
+        # 73MiB뿐이라 SerialGC가 계속 회수해 힙이 그만큼 자라지 않는다.
+        parameters = self.profiles["profiles"]["k8s.env"]["scenario_parameters"]["F05-R"]
+        options = next(
+            row["value"]
+            for row in parameters["fault"]
+            if row["name"] == "JAVA_TOOL_OPTIONS"
+        )
+        self.assertIn("-XX:+AlwaysPreTouch", options)
+        self.assertRegex(options, r"-Xms(\d+)m")
+        floor_mib = int(re.search(r"-Xms(\d+)m", options).group(1))
+        non_heap_anon_mib = 334
+        bottom_rung_mib = 576
+        self.assertGreater(
+            floor_mib + non_heap_anon_mib,
+            bottom_rung_mib,
+            "pretouched heap does not push anon past the bottom rung of the limit ladder",
+        )
+
     def test_discriminator_floors_sit_at_rest_not_inside_the_ladder(self) -> None:
         # 감별자("증상은 있는데 기전이 없다")는 지표가 **평시 자리에 머물 때** 발동해야
         # 한다. 사다리가 밀어올리는 구간 안에 바닥을 두면 첫 단에서 곧바로 실격되고,

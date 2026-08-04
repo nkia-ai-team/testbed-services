@@ -17,6 +17,11 @@ APPROVED_TARGETS = {
     # 2026-07-29 승격 때 profiles.json 의 allowed_scenarios 에만 들어가고 이 표에는
     # 빠져 있었다. 정리도 같은 검증을 지나므로 런이 스스로 못 씻고 전역 DIRTY 가 된다.
     "F04-H": ("rca-testbed-commerce", "testbed-order", "order-service"),
+    # 2026-08-04. F05-R의 limit 사다리만으로는 JVM이 OOMKill되지 않는다 — limit을
+    # 내리면 힙 상한도 같이 내려가기 때문이다(배치 #2). 109 실측: payment의 anon은
+    # 413MiB로 사다리 바닥 576Mi보다 163MiB 낮다. 힙을 pretouch로 못 박아야 anon이
+    # 한도를 넘는다. k8s.resource와 함께 걸리는 companion 주입이다.
+    "F05-R": ("rca-testbed-commerce", "testbed-payment", "payment-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -25,6 +30,7 @@ APPROVED_KEYS = {
     "F18-P": {"OUTBOX_RELAY_ENABLED"},
     "F23-R": {"SPRING_APPLICATION_JSON"},
     "F04-H": {"OUTBOX_RELAY_ENABLED"},
+    "F05-R": {"JAVA_TOOL_OPTIONS"},
 }
 
 

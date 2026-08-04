@@ -1120,7 +1120,8 @@
           "F09-H",
           "F18-P",
           "F23-R",
-          "F04-H"
+          "F04-H",
+          "F05-R"
         ]
       },
       "scenario_parameters": {
@@ -1843,6 +1844,123 @@
             {
               "name": "OUTBOX_RELAY_ENABLED",
               "value": "false"
+            }
+          ]
+        },
+        "F05-R": {
+          "namespace": "rca-testbed-commerce",
+          "deployment": "testbed-payment",
+          "container": "payment-service",
+          "baseline": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_USER",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_PASSWORD",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "commerce-payment"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.230.119:14317"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=commerce,lucida.target_id=c3a3587e-215e-4da8-a76c-729732394e40"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            }
+          ],
+          "fault": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_USER",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "POSTGRES_PASSWORD",
+                  "name": "postgres-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xms384m -Xmx384m -XX:+AlwaysPreTouch"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "commerce-payment"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.230.119:14317"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=commerce,lucida.target_id=c3a3587e-215e-4da8-a76c-729732394e40"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
             }
           ]
         }

@@ -13,6 +13,7 @@
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.resource",
+      "injector-profiles/k8s.env",
       "injector-profiles/load.north_south"
     ]
   },
@@ -26,6 +27,7 @@
       "profile-prerequisites",
       "transport-kubernetes-rbac",
       "kubernetes-original-resource-snapshot",
+      "kubernetes-original-env-snapshot",
       "baseline-loadgen-active"
     ],
     "controller": {
@@ -34,6 +36,7 @@
       "binding": {
         "primary_ref": "k8s.resource",
         "companion_refs": [
+          "k8s.env",
           "load.north_south"
         ]
       },
@@ -410,6 +413,7 @@
       "mutation": false,
       "adapter_refs": [
         "k8s.resource",
+        "k8s.env",
         "load.north_south"
       ]
     },
@@ -419,6 +423,7 @@
       "requires_preflight": true,
       "adapter_refs": [
         "k8s.resource",
+        "k8s.env",
         "load.north_south"
       ]
     },
@@ -430,6 +435,7 @@
       "recovery_gate": true,
       "adapter_refs": [
         "load.north_south",
+        "k8s.env",
         "k8s.resource"
       ]
     }

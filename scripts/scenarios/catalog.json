@@ -127,6 +127,7 @@
       "slug": "f05-r-payment-oom-loop",
       "profiles": [
         "k8s.resource",
+        "k8s.env",
         "load.north_south"
       ],
       "readiness": "ready",
