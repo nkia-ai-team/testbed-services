@@ -249,17 +249,28 @@ stop() { "${k[@]}" exec "$pod" -- env STATE="$state" TAG="$tag" sh -lc 'if test 
 # could not clean itself and the global DIRTY it left stalled the whole queue (F01-P,
 # 2026-08-03).
 check_row() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\nselect count(*) from %s where %s='"'"'%s'"'"';\nexit;\n' "$schema" "$table" "$keycol" "$key" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
-case "$action" in preflight) check_row; ! alive;; run) check_row; ! alive; "${k[@]}" exec "$pod" -- sh -lc 'cat > /tmp/'"'"'$tag'"'"'.sql <<EOF
+# Values reach the pod through `env`, never by hoping a local name survives the
+# hop. It did not: the remote heredoc expanded $tag/$schema/... to empty (they are
+# this script's variables, not the pod's) and the file name kept a literal $tag.
+# The pod held /tmp/$tag.sql containing set_identifier('') and a log saying
+# SP2-0310 unable to open file. NO LOCK WAS EVER TAKEN, and preflight, cleanup
+# and recovery all reported success anyway, because they look at /tmp/${tag}.pid
+# built here while the run wrote /tmp/$tag.pid there. The only thing that ever
+# caught it was the injected-lock-absent discriminator
+# (F01-P, 2026-08-04; same disease as the PostgreSQL lock, 2026-07-31).
+# Quote values, never identifiers: selecting from a quoted table name reads the
+# string, not the table.
+case "$action" in preflight) check_row; ! alive;; run) check_row; ! alive; "${k[@]}" exec "$pod" -- env TAG="$tag" SCHEMA="$schema" TBL="$table" KEYCOL="$keycol" KEY="$key" HOLD="$hold" sh -lc 'cat > "/tmp/$TAG.sql" <<EOF
 alter session set container=FREEPDB1;
-alter session set current_schema='"'"'$schema'"'"';
-begin dbms_session.set_identifier('"'"'$tag'"'"'); end;
+alter session set current_schema=$SCHEMA;
+begin dbms_session.set_identifier('"'"'$TAG'"'"'); end;
 /
-select '"'"'$keycol'"'"' from '"'"'$table'"'"' where '"'"'$keycol'"'"'='"'"''"'"'$key'"'"''"'"' for update;
-host sleep '"'"'$hold'"'"'
+select $KEYCOL from $TBL where $KEYCOL='"'"'$KEY'"'"' for update;
+host sleep $HOLD
 rollback;
 exit;
 EOF
-nohup sqlplus -s / as sysdba @/tmp/'"'"'$tag'"'"'.sql >/tmp/'"'"'$tag'"'"'.log 2>&1 </dev/null & echo $! >/tmp/'"'"'$tag'"'"'.pid' ;; cleanup) stop;; recovery) ! alive; check_row;; *) exit 2;; esac
+nohup sqlplus -s / as sysdba @"/tmp/$TAG.sql" >"/tmp/$TAG.log" 2>&1 </dev/null & echo $! >"/tmp/$TAG.pid"' ;; cleanup) stop;; recovery) ! alive; check_row;; *) exit 2;; esac
 '''
 # L1 해소(2026-07-28): client_identifier가 시나리오 ID를 인코딩하던 것을
 #   `dba-maintenance` 상수로 통일했다(F01-P·F08-G·F15-G 공통). 케이스마다 다르면

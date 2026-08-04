@@ -91,6 +91,36 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertNotIn("pg_sleep", script)
         self.assertNotIn("pkill", script)
 
+    def test_oracle_lock_carries_its_values_into_the_pod(self) -> None:
+        """F01-P 2026-08-04: 잠금이 한 번도 걸린 적이 없었다.
+
+        원격 heredoc이 `$tag`·`$schema`를 이 스크립트의 변수로 알고 빈 문자열로
+        폈다. 파드에는 `set_identifier('')`가 든 `/tmp/$tag.sql`과
+        `SP2-0310 unable to open file` 로그만 남았는데, preflight·cleanup·recovery는
+        전부 성공을 보고했다 — 그것들은 로컬에서 만든 `/tmp/${tag}.pid`를 보고
+        주입은 `/tmp/$tag.pid`에 썼기 때문이다. 감별자 하나만이 이걸 잡았다.
+        """
+        plan = compiler.compile_plan("f01-p-oracle-lock-cross-domain")
+        script = db_lock.build_invocation(plan, "run")[1].decode()
+        run_case = script.split("run)")[1].split(";;")[0]
+        # 값은 env로 건너간다. 로컬 이름을 원격에서 쓸 수는 없다.
+        for pair in ('TAG="$tag"', 'SCHEMA="$schema"', 'TBL="$table"',
+                     'KEYCOL="$keycol"', 'KEY="$key"', 'HOLD="$hold"'):
+            self.assertIn(pair, run_case)
+        # sh -lc 뒤가 파드에서 도는 텍스트다. 거기엔 로컬 소문자 이름이 없어야 한다.
+        remote = run_case.split("sh -lc", 1)[1]
+        for local_only in ("$tag", "$schema", "$table", "$keycol", "$key", "$hold"):
+            self.assertNotIn(local_only, remote)
+        self.assertIn("/tmp/$TAG.sql", remote)
+        self.assertIn("/tmp/$TAG.pid", remote)
+        # 식별자는 따옴표를 두르지 않는다 — 두르면 문자열을 select 하게 된다.
+        self.assertIn("current_schema=$SCHEMA", remote)
+        self.assertIn("select $KEYCOL from $TBL where $KEYCOL=", remote)
+        # 값은 반대로 반드시 따옴표 안에 있어야 한다(셸 이스케이프를 거친 형태).
+        quote = "'\"'\"'"
+        self.assertIn(f"set_identifier({quote}$TAG{quote})", remote)
+        self.assertIn(f"{quote}$KEY{quote}", remote)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
