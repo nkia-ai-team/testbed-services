@@ -17,7 +17,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
+from executor_common import (
+    ExecutorError,
+    approved_parameter_sets,
+    cli,
+    kubectl_bash_argv,
+    profile_instance,
+)
 
 PROFILE_ID = "timeline.compose"
 
@@ -53,8 +59,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     if scenario_id != "F15-T1":
         reason = BLOCKED_TIMELINES.get(scenario_id, "timeline is not allowlisted")
         raise ExecutorError(reason)
-    approved = profile.get("scenario_parameters", {}).get(scenario_id)
-    if approved is None or params != approved:
+    if params not in approved_parameter_sets(profile, scenario_id):
         raise ExecutorError("parameters must exactly match an approved F15-T1 timeline")
     required = {
         "commerce_namespace", "pg_access", "pg_db_pod", "pg_service", "pg_secret",

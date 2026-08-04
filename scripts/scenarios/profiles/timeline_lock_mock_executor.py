@@ -36,7 +36,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
+from executor_common import (
+    ExecutorError,
+    approved_parameter_sets,
+    cli,
+    kubectl_bash_argv,
+    profile_instance,
+)
 
 PROFILE_ID = "timeline.compose"
 
@@ -53,8 +59,7 @@ REQUIRED = {
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
     if scenario_id not in ROUTED:
         raise ExecutorError("timeline is not allowlisted")
-    approved = profile.get("scenario_parameters", {}).get(scenario_id)
-    if approved is None or params != approved:
+    if params not in approved_parameter_sets(profile, scenario_id):
         raise ExecutorError(f"parameters must exactly match an approved {scenario_id} timeline")
     if set(params) != REQUIRED:
         raise ExecutorError("lock/mock timeline parameters have an invalid shape")

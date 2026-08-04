@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
+from executor_common import (
+    ExecutorError,
+    approved_parameter_sets,
+    cli,
+    kubectl_bash_argv,
+    profile_instance,
+)
 
 PROFILE_ID = "timeline.compose"
 
@@ -22,8 +28,7 @@ BLOCKED_TIMELINES = {
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
     if scenario_id != "F15-R":
         raise ExecutorError("flapping timeline is allowlisted only for F15-R")
-    approved = profile.get("scenario_parameters", {}).get(scenario_id)
-    if approved is None or params != approved:
+    if params not in approved_parameter_sets(profile, scenario_id):
         raise ExecutorError("parameters must exactly match an approved F15-R timeline")
     required = {
         "namespace", "mock_resource", "mock_path", "fault_status",

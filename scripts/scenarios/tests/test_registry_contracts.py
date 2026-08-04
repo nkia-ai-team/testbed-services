@@ -507,6 +507,26 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(instance["approved_levels"], expected)
             self.assertIsNotNone(instance["selected_level_id"])
 
+    def test_observation_parameters_stay_inside_what_the_query_allows(self) -> None:
+        # 이 목록은 러너가 판정 시점에 집행한다. testbed 사본이 더 넓으면 여기서는
+        # 통과하고 라이브에서 거부되고, 더 좁으면 관측이 조용히 파라미터를 잃는다.
+        # 2026-08-04에 10개 loadgen 항목이 `domain`을 아예 선언하지 않은 채(관측 평면
+        # 분리 때 러너에만 들어갔다) 갈라져 있었고, `_since_t1` 두 항목은 반대로
+        # testbed 쪽이 러너에 없는 run_id·t1을 허용하고 있었다.
+        queries = self.queries["queries"]
+        for scenario_id, controller in self.controllers["controllers"].items():
+            for observation in controller["observations"]:
+                allowed = queries[observation["query_id"]].get("allowed_parameters")
+                if allowed is None:
+                    continue
+                supplied = set(observation.get("parameters") or {})
+                self.assertLessEqual(
+                    supplied,
+                    set(allowed),
+                    f"{scenario_id}:{observation['id']} passes parameters "
+                    f"{sorted(supplied - set(allowed))} that {observation['query_id']} does not allow",
+                )
+
     def test_429_scenarios_stay_in_the_band_where_429_survives(self) -> None:
         # 이 앱들은 부하를 올리면 429를 5xx로 승격시킨다. 그래서 성공 조건(429 비율)과
         # 감별자(5xx 승격)가 부하 축에서 서로를 밀어낸다 — 부하를 올리는 행위 자체가

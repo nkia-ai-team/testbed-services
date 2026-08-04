@@ -50,6 +50,31 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertNotIn("shell=True", script)
         return script
 
+    def test_every_approved_ladder_rung_passes_its_own_executor(self) -> None:
+        # 승인 레지스트리에 등재된 사다리 단이 정작 실행기 검증에서 거부되면, 그 단은
+        # 라이브에서만 드러나는 사문이 된다. `bind_level_parameters`가 단을 정확히
+        # 묶어 주는데도 검증이 `scenario_parameters` 한 벌만 보면 기본값과 다른 단은
+        # 전부 막힌다 — F15-T1이 768Mi 단에서 그렇게 막혔고(배치 #12), F15-R의
+        # `episode-fault-240`도 같은 상태였다. 실행기 세 개가 같은 형태였다.
+        #
+        # 한 실행기만 고치고 형제로 안 옮기는 것이 이 저장소의 반복 결함이므로
+        # (#9·#29·#30) 파일 단위가 아니라 사다리를 가진 프로파일 전체를 훑는다.
+        checked = 0
+        for profile_id, profile in self.profiles.items():
+            levels = profile.get("scenario_levels") or {}
+            if not levels or not profile["executor"].endswith(".py"):
+                continue
+            module = load(Path(profile["executor"]).stem)
+            # load.north_south는 별도 validate 없이 build_invocation 안에서 검사한다.
+            if not hasattr(module, "validate"):
+                continue
+            for scenario_id, rungs in levels.items():
+                for rung in rungs:
+                    with self.subTest(profile=profile_id, scenario=scenario_id, rung=rung["level_id"]):
+                        module.validate(scenario_id, rung["parameters"], profile)
+                        checked += 1
+        self.assertGreater(checked, 20, "ladder sweep found almost nothing to check")
+
     def test_db_lock_injects_inside_the_cluster_and_reclaims_its_client(self) -> None:
         # 품질 기준서 G6 / 부록 A: 주입 세션은 실 앱 세션과 구별되지 않아야 하므로
         # (1) 클러스터 안에서 접속하고 (2) 신원을 사칭하며 (3) 정리는 파드 삭제로 한다.
