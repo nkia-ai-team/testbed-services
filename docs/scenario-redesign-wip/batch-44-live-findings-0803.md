@@ -1215,6 +1215,48 @@ pod_ready  usable=False  error="kubernetes selector parameters are not approved"
 환경은 완전히 복원돼 있었다(BANKING 스키마 read-only 테이블 0, ledger 파드 3일째 정상) —
 수동으로 DIRTY를 해제하고 배치를 완주시켰다.
 
+## 33. 주입이 열리자 판정이 막는다 (F12-H, 2026-08-04 라이브)
+
+수리 4단계로 `k8s_patch_executor`가 limit과 함께 requests를 내리게 고친 뒤(#1), F12-H를
+**처음으로** 주입까지 보냈다. 배관은 전부 정상이었다 — 사다리가 requests 아래 단까지
+내려갔고, 정리가 limit·requests를 둘 다 되돌렸고, 회복도 성공했고, 환경은 clean으로 끝났다.
+
+```
+conservative-250m  01:38:59 → 01:47:04   limit/req 250m/200m  (clamp 불필요, 정상)
+constrained-100m   01:47:07 → 01:51:21   limit/req 100m/100m  (여태 API 서버가 거부하던 자리)
+cleanup succeeded  recovery succeeded    정리 후 500m/200m — baseline 그대로
+```
+
+판정은 `must_rule_out_detected`로 실격이었다. **주입이 열리자 그 뒤에 있던 것들이 보였다.**
+
+| 단 | product_p95 | error_rate | cpu_throttled_time | pod_ready | achieved_rps |
+|---|---|---|---|---|---|
+| 250m | 6.7 → **5704 → 5802** → 594 → 103 | 0.0 | 대부분 읽기 불가 | True | ~35 |
+| 100m | 5591 → 11 → 13 → 10 | 0.0 | 읽기 불가 | **내내 False** | ~35 |
+
+### 250m에서 시나리오는 사실상 성공했다
+
+p95가 6ms에서 **5.7초**로 갔다. 성공 조건 `product_p95 >= 500`을 열 배 넘게 넘겼다.
+막은 것은 `product-errors-visible`(`product_error_rate > 0`)이다 — **CPU를 조이면 느려지지
+응답이 실패하지는 않는다.** 51틱 내내 0.0이었다. #24(F10-H)의 과다 명세와 같은 계열이다.
+
+### 그래서 100m으로 내려갔고, 거기서 파드가 못 버틴다
+
+`pod_ready`가 내내 False가 되고 자기 감별자 `product-pod-down`이 발동한다. 100m은 0.1코어인데
+이 서비스는 평시만 16m을 쓴다(109 실측 2026-08-04). **자기 주입이 자기 감별자를 켜는 구조**로
+#32(F14-P)·#22(F06-P)와 같은 형태다. 사다리 바닥이 파드 생존 구간 밖에 있다.
+
+### 성공 조건과 감별자 하나씩이 읽히지 않는다
+
+- `cpu_throttled_time` — 성공 조건인데 대부분의 틱에서 unusable
+- `network_error_rate` — 감별자인데 `prometheus query requires exactly one series`로 평가 불가.
+  질의가 단일 시리즈를 보장하지 못한다(#4·[[capsule-repair-chain-0731]]의 grade 중복 계열로 의심)
+
+### 읽는 법
+
+이 건은 **정적 감사로는 절대 안 나온다.** 주입이 성립한 적이 없어 이 신호들을 아무도 본 적이
+없었기 때문이다. 배관 수리의 값은 시나리오를 살린 것이 아니라 **다음 결함을 보이게 만든 것**이다.
+
 ## 배치 후 수리 목록
 
 | 대상 | 내용 | 레포 |
@@ -1255,6 +1297,10 @@ pod_ready  usable=False  error="kubernetes selector parameters are not approved"
 | **러너** | 리스(30초)보다 오래 걸리는 apply를 견디도록 — 오프셋 대기를 apply 밖으로 빼거나 리스를 늘린다(#31) | runner |
 | F14-P | 성공 조건과 감별자가 같은 원인에서 나온다 — `transfer_2xx_rate` 감별자를 재설계하거나 성공 정체성을 다시 정의(#32) | testbed |
 | F06-P·F15-H | 429 계열 신호는 부하를 올리면 5xx로 바뀐다 — 두 시나리오가 같은 형태로 실패했다. 저부하 구간으로 내리는 설계 재검토 | testbed |
+| **F12-H** | 성공에서 `product_error_rate > 0` 제거 — CPU 조임은 지연을 만들지 오류를 만들지 않는다(51틱 0.0). 250m에서 p95 5.7초는 이미 났다(#33) | testbed |
+| **F12-H** | 사다리 바닥을 파드 생존 구간 안으로 — 100m에서 `pod_ready`가 False가 되어 자기 감별자 `product-pod-down`이 발동한다(평시 CPU 16m, 바닥 100m)(#33) | testbed |
+| **F12-H** | `cpu_throttled_time`이 성공 조건인데 대부분의 틱에서 unusable — 읽히게 하거나 성공 조건에서 빼야 한다(#33) | testbed / runner |
+| **F12-H** | `network_error_rate` 감별자가 `prometheus query requires exactly one series`로 평가 불가 — 질의가 단일 시리즈를 보장하지 못한다(#33) | runner |
 
 ## 반복되는 메타 패턴
 
