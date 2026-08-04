@@ -80,6 +80,31 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertIn('--limits="cpu=$original"', script)
         self.assertIn("testbed-inventory", " ".join(k8s_patch.build_invocation(compiler.compile_plan("f09-p-inventory-cpu-throttle"), "run")[0]))
 
+    def test_kubernetes_patch_lowers_the_request_with_the_limit(self) -> None:
+        # 쿠버네티스는 자기 request보다 낮은 CPU limit을 표현할 수 없다 — 패치 전체가
+        # 거부된다. 2026-08-04까지 이 실행기는 --limits만 설정했고, 두 시나리오의
+        # 사다리는 request(200m) 아래인 100m·50m로 내려간다. 그래서 F12-H·F09-P는
+        # 주입 자체가 한 번도 성립하지 않았다(배치 #1).
+        #
+        # 109 실측 2026-08-04 평시 CPU: product 16m / inventory 7m. request를 사다리
+        # 값까지 내려도 파드는 그대로 스케줄된다.
+        script = self.assert_contract(k8s_patch, "f12-h-pod-cpu-network-lookalike", "k8s.patch")
+        self.assertIn('--requests="cpu=$request"', script)
+        # 스냅샷은 limit·request 두 값을 함께 잡고, 정리는 둘 다 되돌린다. request를
+        # 스냅샷하지 않으면 내려간 request가 영구히 남는다.
+        self.assertIn("current() { echo \"$(field limits) $(field requests)\"; }", script)
+        self.assertIn('--requests="cpu=$original_request"', script)
+        # 사다리에 request 아래 단이 실제로 남아 있어야 이 수리가 의미가 있다.
+        for scenario_id in ("F12-H", "F09-P"):
+            rungs = [
+                int(level["parameters"]["fault_cpu_limit"].removesuffix("m"))
+                for level in self.profiles["k8s.patch"]["scenario_levels"][scenario_id]
+            ]
+            self.assertTrue(
+                [rung for rung in rungs if rung < 200],
+                f"{scenario_id} ladder no longer reaches under the 200m request",
+            )
+
     def test_kubernetes_patch_adaptive_ladder_accepts_only_exact_levels(self) -> None:
         profile = self.profiles["k8s.patch"]
         levels = profile["scenario_levels"]["F09-P"]

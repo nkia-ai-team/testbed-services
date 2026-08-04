@@ -788,7 +788,7 @@
           "baseline_unit": "loadgen-commerce"
         },
         "F06-P": {
-          "target_rps": 40,
+          "target_rps": 5,
           "ramp_up": "2m",
           "hold": "11m",
           "ramp_down": "1m",
@@ -843,7 +843,7 @@
           "baseline_unit": "loadgen-commerce"
         },
         "F15-H": {
-          "target_rps": 40,
+          "target_rps": 5,
           "ramp_up": "2m",
           "hold": "13m",
           "ramp_down": "1m",

@@ -55,31 +55,45 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     ]), SCRIPT
 
 
+# 사다리 바닥이 requests(200m)에 잘려 F12-H·F09-P의 100m·50m 단이 사문이었다(배치 #1).
+# 109 실측 2026-08-04: 평시 CPU는 product 16m / inventory 7m 이므로 request를 사다리
+# 값까지 내려도 파드는 그대로 스케줄된다. 아래 스크립트의 clamp/restore가 그 몫이다.
 SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; deploy="$4"; container="$5"; baseline="$6"; fault="$7"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
 state="$state_root/${scenario_id}-cpu-limit"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
-current() { "${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.spec.containers[?(@.name=='$container')].resources.limits.cpu}"; }
-check() { command -v kubectl >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null; }
+field() { "${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.spec.containers[?(@.name=='$container')].resources.$1.cpu}"; }
+current() { echo "$(field limits) $(field requests)"; }
+# A CPU limit below the container's own request is not expressible in Kubernetes:
+# the API server rejects the whole patch. Until 2026-08-04 this executor set only
+# --limits, so every rung under the 200m request (F12-H and F09-P both ladder down
+# to 100m and 50m) was refused and the scenarios never injected at all. Lower the
+# request alongside the limit when it would otherwise sit above it; cleanup puts
+# both back from the snapshot, so the request is restored even when never touched.
+clamp() { if [[ -z "$1" || "${1%m}" -gt "${2%m}" ]]; then echo "$2"; else echo "$1"; fi; }
+check() { command -v kubectl >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(field limits)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
   run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"
+    read -r _ original_request <"$state"
+    request=$(clamp "$original_request" "$fault")
     # kubectl set resources is client-side get-modify-update; right after a rollout it can
     # race the controller's status writes and die on a conflict (seen: F09-P run 2333e298,
     # 3s after level transition). Retry absorbs the transient conflict.
     ok=""; for _ in 1 2 3; do
-      if "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$fault" >/dev/null; then ok=1; break; fi
+      if "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$fault" --requests="cpu=$request" >/dev/null; then ok=1; break; fi
       sleep 2
     done; [[ -n "$ok" ]] ;;
-  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]
+  cleanup) [[ -e "$state" ]] || exit 0; read -r original original_request <"$state"; [[ "$original" == "$baseline" ]]
+    restore=(--limits="cpu=$original"); [[ -n "$original_request" ]] && restore+=(--requests="cpu=$original_request")
     ok=""; for _ in 1 2 3; do
-      if "${k[@]}" set resources deploy "$deploy" -c "$container" --limits="cpu=$original" >/dev/null; then ok=1; break; fi
+      if "${k[@]}" set resources deploy "$deploy" -c "$container" "${restore[@]}" >/dev/null; then ok=1; break; fi
       sleep 2
     done; [[ -n "$ok" ]]
     "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null; rm -f "$state" ;;
-  recovery) [[ ! -e "$state" ]]; [[ "$(current)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
+  recovery) [[ ! -e "$state" ]]; [[ "$(field limits)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
   *) exit 2 ;;
 esac
 '''

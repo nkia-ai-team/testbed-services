@@ -507,6 +507,27 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(instance["approved_levels"], expected)
             self.assertIsNotNone(instance["selected_level_id"])
 
+    def test_429_scenarios_stay_in_the_band_where_429_survives(self) -> None:
+        # 이 앱들은 부하를 올리면 429를 5xx로 승격시킨다. 그래서 성공 조건(429 비율)과
+        # 감별자(5xx 승격)가 부하 축에서 서로를 밀어낸다 — 부하를 올리는 행위 자체가
+        # 관측하려던 신호를 지운다. 서로 다른 두 시나리오가 같은 형태로 실패했다(배치 #22).
+        #
+        # 실측 진행(2026-08-03):
+        #   F06-P   3.6rps → 429 0.75 / 5xx 0.00      12.1rps → 0.18 / 0.71
+        #   F15-H   3.8rps → 429 0.80 / 5xx 0.00      17.8rps → 0.10 / 0.84
+        #
+        # 정답은 저부하 구간에 있었고 설계된 40rps가 그 위를 지나쳐 버렸다. 성공은 3틱
+        # 연속을 요구하는데 그 3틱이 쌓이기 전에 램프가 신호를 파괴한다.
+        ceiling = 10
+        for scenario_id in ("F06-P", "F15-H"):
+            parameters = self.profiles["profiles"]["load.north_south"]["scenario_parameters"][scenario_id]
+            self.assertLessEqual(
+                parameters["target_rps"],
+                ceiling,
+                f"{scenario_id} load ramps past the band where 429 survives — "
+                "the app promotes it to 5xx and its own discriminator rejects the run",
+            )
+
     def test_f05r_pins_the_heap_so_the_limit_ladder_can_actually_oomkill(self) -> None:
         # limit을 내리면 힙 상한도 같이 내려간다(MaxRAMPercentage=25). 그래서 사다리
         # 세 단을 다 써도 OOMKill이 안 났다 — 25틱 내내 restart_count=0 (배치 #2).
