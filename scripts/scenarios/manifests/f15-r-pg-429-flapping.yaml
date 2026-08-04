@@ -176,6 +176,13 @@
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
+            },
+            {
+              "id": "all-episodes-run",
+              "observation": "mock_flap_episode",
+              "op": "gte",
+              "value": 2,
+              "_note": "플랩(에피소드 반복)이 이 시나리오의 정체성이므로 성공 조건이다. 회복 조건에 있던 시절엔 2에피소드 전에 끝난 런이 영원히 회복을 못 해 반드시 DIRTY가 됐다"
             }
           ],
           "consecutive_ticks": 2
@@ -243,13 +250,8 @@
               "id": "fault-cleared",
               "observation": "mock_flap_fault_active",
               "op": "eq",
-              "value": false
-            },
-            {
-              "id": "all-episodes-run",
-              "observation": "mock_flap_episode",
-              "op": "gte",
-              "value": 2
+              "value": false,
+              "_note": "회복은 '원상복구됐는가'만 묻는다. all-episodes-run(mock_flap_episode>=2)이 여기 있던 시절엔 2에피소드 전에 끝난 런이 회복을 영원히 통과 못 해 반드시 DIRTY가 됐다 — 주입 진행 산출물은 성공 조건으로 옮겼다(배치 후 수리, 2026-08-04)"
             },
             {
               "id": "no-residual-duplicate",
