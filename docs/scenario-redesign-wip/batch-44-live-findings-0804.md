@@ -28,6 +28,9 @@ summary: 큐 live-44-e7152d6f. 08-03 배치의 수리를 라이브에서 검증�
 | 4 | k8s.env ↔ k8s.resource | 경합 | companion의 롤아웃을 primary preflight이 못 기다림 | **수리** `96b8d46` |
 | 5 | F05-R | **G3 피해 부재** | OOM은 실증됐으나 사용자 피해가 관측되지 않음 | **스킵** |
 | 6 | F09-R | **G3 피해 부재** | 노드를 100% 태워도 동거 서비스가 멀쩡함 | **스킵** |
+| 7 | db.lock (Oracle) | 주입 부재 | 값이 파드까지 안 가 잠금이 한 번도 안 걸림 | **수리** `4398722` |
+| 8 | 러너 preflight | 진단 | #1의 형제 — 시나리오 경로도 예외 1회에 정지 | **수리** `2e611fe` |
+| 9 | F01-P | **판정 계약** | 주입·피해 모두 실증됐으나 성공 신호가 표본 부족으로 요동 | **스킵** |
 
 ## 1. readiness 프로브 예외 1회가 배치를 세운다 (수리)
 
@@ -155,3 +158,57 @@ achieved_rps  = 20
    noisy neighbor가 성립하지 않는다고 판정한다.
 
 #5와 함께 **"주입은 진짜인데 피해가 없다"** 계열로 묶어 한 번에 판단하는 것이 좋겠다.
+
+## 7. Oracle 잠금은 한 번도 걸린 적이 없었다 (수리)
+
+F01-P의 감별자 `injected-lock-absent`(tagged_db_sessions == 0)가 첫 틱부터 485초
+내내 걸렸다. 파드 안이 증거였다:
+
+```
+/tmp/$tag.sql     <- 파일 이름에 변수가 안 풀렸다
+/tmp/$tag.log     SP2-0310: unable to open file "/tmp/$tag.sql"
+sqlplus 프로세스   없음
+
+$tag.sql:  set current_schema='';  set_identifier('');  select '' from '' where ''=''
+```
+
+원격 heredoc이 로컬 변수 이름을 폈고, 파드 셸에 그 이름이 없어 전부 빈 문자열이 됐다.
+
+**더 나쁜 것은 배관 전체가 초록불이었다는 점이다.** `alive`/`stop`은 로컬이 만든
+`/tmp/${tag}.pid`를 보는데 주입은 `/tmp/$tag.pid`에 썼다 — preflight·cleanup·recovery가
+모두 통과했다. 이걸 잡은 유일한 장치가 감별자다. **감별자가 없었다면 통과로
+기록됐을 것이다.**
+
+수리: 값을 `env`로 파드에 넘기고, 식별자에서 따옴표를 제거했다(원래 SQL은
+`select 'id' from 'accounts'` 꼴이라 값이 채워졌어도 틀렸다).
+
+## 9. F01-P — 주입도 피해도 진짜인데 성공 신호가 요동한다 (스킵)
+
+#7 수리 후 재시도. **주입이 걸렸다**(`tagged_db_sessions=1`, 10분 유지) 그리고
+**피해도 압도적이다**:
+
+```
+entry_status      = 502          (10분 내내)
+checkout_5xx_rate = 0.89 ~ 1.00  (성공 임계 0.05)
+payment_error_rate= 33 ~ 100     (성공 임계 10)
+```
+
+그런데 `must_rule_out_detected`로 abort했다. 원인은 두 겹이다.
+
+**(a) 성공 신호 하나가 표본 부족으로 0까지 떨어진다.** 08:23:03 틱에서
+`payment_error_rate = 0.0`(usable·fresh, 진짜 값). 값들이 33.3 / 50 / 42.8 / 66.7 /
+80 / 100 / 75 / 0 처럼 움직이는데, 게이트웨이가 502로 막아 payment까지 닿는 트레이스가
+몇 건뿐이라 분모가 무너진 비율이다. 같은 시각 `checkout_5xx_rate`는 0.99로 흔들리지
+않는다. success는 두 조건을 **3연속** 요구하므로 이 한 번의 0이 streak을 리셋한다.
+
+**(b) min_hold 이후 남는 창이 2분뿐이다.** `min_hold 8m` / 주입 `hold_seconds 600`.
+streak은 375초에 이미 3에 도달했지만 그때는 min_hold 중이라 선언되지 않았고,
+min_hold가 끝난 485초부터 잠금이 스스로 풀리는 610초까지 125초 안에 요동치는 신호로
+3연속을 다시 만들어야 했다. 실패하자 잠금이 만료돼 `tagged_db_sessions=0`이 되고
+감별자가 정당하게 발화했다.
+
+**권고**: (b)를 먼저 고친다 — `hold_seconds` 600 -> 900 (max_injection_duration 15m
+안). 그러면 min_hold 이후 창이 7분이 되어 3연속을 잡을 기회가 충분해진다. (a)는
+F12-H에서 이미 같은 이유로 `product_error_rate`를 success에서 뺀 전례가 있으나,
+F01-P에서 payment_error_rate는 **도메인 교차 인과의 유일한 증거**이므로 단순 제거는
+주장을 약화시킨다. 최소 분모 가드를 얹거나 창 평균으로 바꾸는 편이 낫다.
