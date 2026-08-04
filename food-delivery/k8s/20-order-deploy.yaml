@@ -46,8 +46,13 @@ spec:
                 secretKeyRef:
                   name: mysql-secret
                   key: MYSQL_PASSWORD
+            # -Xmx는 명시가 필요하다. 기본값(MaxRAMPercentage=25)이면 1Gi limit에서
+            # 힙 상한이 256Mi로 굳어, F20-Q의 unpaged slow query가 힙을 채우기 전에
+            # GC 스래싱으로 probe가 먼저 끊긴다(2026-08-03 실측: memory.current
+            # 624MB에서 서비스 사망, 성공 임계 768Mi에 닿지 못함). 512m이면 주입
+            # 창에서 memory.current가 768Mi를 넘고도 1Gi limit 아래에 머문다.
             - name: JAVA_TOOL_OPTIONS
-              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx512m"
             - name: OTEL_SERVICE_NAME
               value: "food-delivery-order"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

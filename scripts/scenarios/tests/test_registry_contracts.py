@@ -507,6 +507,35 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(instance["approved_levels"], expected)
             self.assertIsNotNone(instance["selected_level_id"])
 
+    def test_discriminator_floors_sit_at_rest_not_inside_the_ladder(self) -> None:
+        # 감별자("증상은 있는데 기전이 없다")는 지표가 **평시 자리에 머물 때** 발동해야
+        # 한다. 사다리가 밀어올리는 구간 안에 바닥을 두면 첫 단에서 곧바로 실격되고,
+        # must_rule_out이 escalate보다 먼저 평가되므로(07-31) 사다리는 영영 못 오른다.
+        #
+        # F09-H가 그랬다. 감별자 바닥 0.5는 첫 단 heap-208의 예상값 0.385보다 위였고,
+        # 매 틱 실격돼 heap-160·heap-128을 밟아보지도 못했다(배치 #28).
+        #
+        # 평시값은 VictoriaMetrics 119:18428 실측이다(2026-08-04, commerce-order):
+        # used_after_last_gc{Tenured Gen} 53.4MiB / limit 170.7MiB = 0.313.
+        # 사다리 각 단의 Tenured 상한은 -Xmx의 약 2/3(SerialGC)이므로
+        # 208m→0.385, 160m→0.500, 128m→0.626, 112m→0.715, 96m→0.834이다.
+        resting = {("F09-H", "order_old_gen_ratio"): 0.313}
+        for (scenario_id, observation), value in resting.items():
+            controller = self.controllers["controllers"][scenario_id]
+            floors = [
+                condition["value"]
+                for condition in controller["must_rule_out"].get("any", [])
+                if condition["observation"] == observation and condition["op"] == "lt"
+            ]
+            self.assertTrue(floors, f"{scenario_id}:{observation} has no discriminator floor")
+            for floor in floors:
+                self.assertLessEqual(
+                    floor,
+                    value * 1.15,
+                    f"{scenario_id}:{observation} discriminator floor {floor} sits above "
+                    f"the resting value {value} — the ladder cannot escalate past it",
+                )
+
     def test_recovery_gates_read_metrics_that_actually_return(self) -> None:
         # 회복 게이트는 "부하가 끝나면 되돌아오는" 지표만 읽어야 한다.
         # prometheus.jvm_daemon_thread_count는 그렇지 않다 — JVM 스레드 풀은 한 번
