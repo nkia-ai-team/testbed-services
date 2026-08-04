@@ -507,6 +507,28 @@ class RegistryContractTests(unittest.TestCase):
             self.assertEqual(instance["approved_levels"], expected)
             self.assertIsNotNone(instance["selected_level_id"])
 
+    def test_recovery_gates_read_metrics_that_actually_return(self) -> None:
+        # 회복 게이트는 "부하가 끝나면 되돌아오는" 지표만 읽어야 한다.
+        # prometheus.jvm_daemon_thread_count는 그렇지 않다 — JVM 스레드 풀은 한 번
+        # 늘면 유지되므로 주입이 끝나도 내려오지 않는다. F21-P가 이걸 회복 조건으로
+        # 읽어 정확히 10분 타임아웃을 태우고 전역 DIRTY로 끝났다(배치 #27). 임계
+        # 추격도 이미 실패했다 — 07-31에 60→100으로 올렸는데 08-03엔 상주값이 109였다.
+        # 상승만 하는 지표는 성공 조건(정체성)으로는 맞지만 회복 조건으로는 틀리다.
+        one_way = {"prometheus.jvm_daemon_thread_count"}
+        for scenario_id, controller in self.controllers["controllers"].items():
+            query_by_observation = {
+                item["id"]: item["query_id"] for item in controller["observations"]
+            }
+            block = controller.get("recovery") or {}
+            for condition in block.get("all", []) + block.get("any", []):
+                query_id = query_by_observation[condition["observation"]]
+                self.assertNotIn(
+                    query_id,
+                    one_way,
+                    f"{scenario_id}:recovery:{condition['id']} reads a metric "
+                    "that does not come back after the load stops",
+                )
+
     def test_controller_registry_is_bound_into_registry_and_plan_digest(self) -> None:
         baseline = compile_plan_module.compile_plan("f07-h-north-south-surge")
         changed = copy.deepcopy(self.controllers)

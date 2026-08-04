@@ -252,10 +252,10 @@
               "value": true
             },
             {
-              "id": "threads-drained",
-              "observation": "order_busy_threads",
+              "id": "upstream-latency-recovered",
+              "observation": "restaurant_p95",
               "op": "lt",
-              "value": 100
+              "value": 150
             },
             {
               "id": "order-latency-recovered",

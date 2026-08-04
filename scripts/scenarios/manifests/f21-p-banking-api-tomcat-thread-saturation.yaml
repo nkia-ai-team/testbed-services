@@ -278,10 +278,10 @@
               "value": true
             },
             {
-              "id": "threads-drained",
-              "observation": "api_busy_threads",
+              "id": "downstream-latency-recovered",
+              "observation": "transfer_p95",
               "op": "lt",
-              "value": 100
+              "value": 1500
             },
             {
               "id": "api-latency-recovered",
