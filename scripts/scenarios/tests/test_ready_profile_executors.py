@@ -204,7 +204,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         instance = next(row for row in plan["profile_instances"] if row["profile_id"] == "k8s.patch")
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"] for level in instance["approved_levels"]],
-            ["250m", "100m", "50m"],
+            ["250m", "200m", "175m"],
         )
         self.assertEqual(instance["parameters"]["deployment"], "testbed-product")
         self.assertEqual(instance["parameters"]["container"], "product-service")

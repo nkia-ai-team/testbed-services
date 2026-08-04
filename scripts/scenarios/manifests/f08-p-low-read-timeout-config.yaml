@@ -194,7 +194,7 @@
                   },
                   {
                     "name": "SPRING_APPLICATION_JSON",
-                    "value": "{\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}}"
+                    "value": "{\"services\":{\"payment\":{\"read-timeout\":\"20ms\"}}}"
                   }
                 ]
               },

@@ -87,24 +87,24 @@
               "timeout": "8m"
             },
             {
-              "id": "constrained-100m",
+              "id": "constrained-200m",
               "parameters": {
                 "deployment": "testbed-product",
                 "container": "product-service",
                 "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "100m"
+                "fault_cpu_limit": "200m"
               },
               "min_hold": "4m",
               "settle": "30s",
               "timeout": "8m"
             },
             {
-              "id": "endpoint-50m",
+              "id": "endpoint-175m",
               "parameters": {
                 "deployment": "testbed-product",
                 "container": "product-service",
                 "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "50m"
+                "fault_cpu_limit": "175m"
               },
               "min_hold": "4m",
               "settle": "30s",
@@ -217,12 +217,6 @@
               "observation": "product_p95",
               "op": "gte",
               "value": 500
-            },
-            {
-              "id": "product-errors-visible",
-              "observation": "product_error_rate",
-              "op": "gt",
-              "value": 0
             },
             {
               "id": "cpu-throttle-direct",

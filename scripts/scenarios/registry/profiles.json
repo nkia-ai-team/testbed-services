@@ -1242,7 +1242,7 @@
             },
             {
               "name": "SPRING_APPLICATION_JSON",
-              "value": "{\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}}"
+              "value": "{\"services\":{\"payment\":{\"read-timeout\":\"20ms\"}}}"
             }
           ]
         },
@@ -2977,7 +2977,7 @@
           "deployment": "testbed-product",
           "container": "product-service",
           "baseline_cpu_limit": "500m",
-          "fault_cpu_limit": "50m"
+          "fault_cpu_limit": "175m"
         },
         "F21-P": {
           "deployment": "testbed-transfer",
@@ -3027,21 +3027,21 @@
             }
           },
           {
-            "level_id": "constrained-100m",
+            "level_id": "constrained-200m",
             "parameters": {
               "deployment": "testbed-product",
               "container": "product-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "100m"
+              "fault_cpu_limit": "200m"
             }
           },
           {
-            "level_id": "endpoint-50m",
+            "level_id": "endpoint-175m",
             "parameters": {
               "deployment": "testbed-product",
               "container": "product-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "50m"
+              "fault_cpu_limit": "175m"
             }
           }
         ],

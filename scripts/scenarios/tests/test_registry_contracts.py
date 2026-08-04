@@ -409,9 +409,14 @@ class RegistryContractTests(unittest.TestCase):
              for level in controllers["F09-P"]["profile"]["levels"]],
             ["250m", "100m", "50m"],
         )
+        # F12-H's floor was measured on the live pod (2026-08-04, 3 minutes per
+        # rung under baseline load): 200m and 175m held Ready 12/12 with zero
+        # restarts, 150m never became Ready and restarted twice. The old 100m/50m
+        # rungs sat below pod survival, so the scenario's own discriminator
+        # `product-pod-down` fired on its own injection.
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"] for level in controllers["F12-H"]["profile"]["levels"]],
-            ["250m", "100m", "50m"],
+            ["250m", "200m", "175m"],
         )
         for scenario_id, controller in controllers.items():
             if controller["mode"] == "evaluation":

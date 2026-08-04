@@ -176,7 +176,7 @@
       "cause": "외부 PG가 30s 지연 → payment의 pg read-timeout 10s 초과 → SocketTimeout(ResourceAccessException) → ServiceException(502) → order PaymentClient가 5xx로 집계 → @Retry 2회 → @CircuitBreaker(paymentClient) open → 체크아웃 502. 병행하여 대기 중인 결제가 payment 기본 풀(10)의 커넥션을 10초씩 점유하며 payment 전반이 정체된다",
       "injection_summary": "mock.expectation executor가 commerce external-pg-mock의 POST /v1/payments에 30초 지연 expectation(응답코드는 200)을 적용하고, north-south companion이 체크아웃 부하를 공급한다. cleanup은 원본 expectation 스냅샷 복원이다.",
       "user_impact": "체크아웃이 느려지다 502로 실패한다. 사용자 체감은 F01-H와 달리 '한참 기다린 끝의 실패'이며, 결제 경로가 payment의 커넥션 풀을 말리면 결제 조회 등 payment의 다른 API까지 느려진다. 지연이 길어지면 payment의 /actuator/health가 커넥션을 얻지 못해 readiness 실패로 이어질 수 있다 — 그 경우 파드 재기동은 원인이 아니라 결과다.",
-      "distinguishing_evidence": "결정 증거는 실패한 결제 호출의 소요시간이 read-timeout 10초에 정확히 붙는다는 것이다. 외부 span이 응답 없이 잘리고 mock 쪽은 200을 만들고 있었으므로 상태코드가 아니라 시간이 근거다. F01-H와는 즉시/10초로 갈리고, F08-P와는 절단 지점이 order→payment(250ms)가 아니라 payment→외부 PG(10s)라는 점으로 갈린다. 내부 잠금 계열과는 두 릴레이션의 차단 세션이 0이라는 점으로 갈린다. payment의 Hikari 대기가 함께 관측되지만 그것은 외부 대기의 결과다.",
+      "distinguishing_evidence": "결정 증거는 실패한 결제 호출의 소요시간이 read-timeout 10초에 정확히 붙는다는 것이다. 외부 span이 응답 없이 잘리고 mock 쪽은 200을 만들고 있었으므로 상태코드가 아니라 시간이 근거다. F01-H와는 즉시/10초로 갈리고, F08-P와는 절단 지점이 order→payment(20ms)가 아니라 payment→외부 PG(10s)라는 점으로 갈린다. 내부 잠금 계열과는 두 릴레이션의 차단 세션이 0이라는 점으로 갈린다. payment의 Hikari 대기가 함께 관측되지만 그것은 외부 대기의 결과다.",
       "domain": "commerce",
       "class": "A",
       "fault_pattern": "P4+P1",
@@ -214,7 +214,7 @@
       "must_rule_out": [
         "내부 DB 잠금이 아님 — 두 릴레이션 모두 차단 세션 0. 잠금이면 F01-R·F06-H",
         "외부 거절(429/5xx)이 아님 — mock은 200을 만들고 있었고 실패 원인은 시간 초과다. 상태코드가 원인이면 F01-H",
-        "order의 timeout 오설정이 아님 — 절단이 order→payment(250ms)가 아니라 payment→외부 PG(10s)에서 일어난다. 설정 변경이면 F08-P",
+        "order의 timeout 오설정이 아님 — 절단이 order→payment(20ms)가 아니라 payment→외부 PG(10s)에서 일어난다. 설정 변경이면 F08-P",
         "payment 파드 장애가 아님 — 파드 재기동이 관측되더라도 그것은 커넥션 풀 고갈의 결과이지 원인이 아니다(재기동 없이도 실패가 선행한다)"
       ],
       "difficulty": "medium",
@@ -366,12 +366,12 @@
       }
     },
     "F08-P": {
-      "title": "order→payment read-timeout을 15s에서 250ms로 줄인 설정 오배포 — 실패한 주문의 결제만 성사",
-      "description": "order-service의 결제 호출 read-timeout(application.yml 리터럴 15s)을 배포 파라미터로 250ms로 덮어쓰는 설정 오배포다. payment-service의 processPayment는 한 트랜잭션 안에서 외부 PG 호출과 core-banking 이체 두 번의 원격 왕복을 수행하므로 정상 응답도 250ms 안에 끝나지 않는다 — order 쪽 소켓이 먼저 끊긴다. 이 시나리오의 정체성은 5xx 자체가 아니라 **비대칭 실패**다. order는 실패로 보고 트랜잭션을 롤백하지만 payment 서버는 호출을 끝까지 완주해 결제를 커밋하고 정산 이체까지 보낸다. 게다가 @Retry(paymentClient)가 2회이므로 같은 결제가 서버에 두 번 도달할 수 있다. 사용자는 실패 화면을 보는데 돈은 나간다. Class B(설정 오배포)로 라벨한다 — 250ms는 코드에 잠복한 결함이 아니라 인위적으로 주입한 설정값이다.",
-      "cause": "testbed-order Deployment에 SPRING_APPLICATION_JSON으로 services.payment.read-timeout=250ms를 주입 → paymentRestClient의 소켓 read-timeout이 250ms → 정상 처리 중인 결제 호출이 250ms에 절단(ResourceAccessException) → @Retry(paymentClient) 2회 → @CircuitBreaker(paymentClient) open → requestPaymentFallback 502 → OrderService.checkout이 재고 보상 후 502 'Payment failed'. 서버측 payment 트랜잭션은 무관하게 커밋된다.",
-      "injection_summary": "k8s.env executor가 testbed-order/order-service 컨테이너의 env를 승인된 baseline에서 fault 집합으로 교체하고 rollout한다. 차이는 SPRING_APPLICATION_JSON=`{\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}}` 한 줄뿐이며, Spring이 이 값을 application.yml의 15s 리터럴보다 우선 적용한다(재빌드 불필요). north-south 20rps companion으로 사용자 경로를 흘리고, cleanup은 env를 baseline으로 되돌리고 rollout 원복한다.",
-      "user_impact": "체크아웃이 502로 실패한다. 실패율은 payment 왕복 시간 분포에 따라 결정되며 250ms는 정상 p50보다도 짧아 사실상 대부분의 결제가 잘린다. 진짜 피해는 상태 불일치다 — 주문은 롤백되고 재고는 반환되는데 payment_schema.payments에는 결제가 커밋되고 core-banking 정산 이체가 실행된다(재시도 때문에 중복 가능). 결제·주문 대사에서 '주문 없는 결제'가 남고, 이는 주입을 끊어도 자동으로 되돌아가지 않는다.",
-      "distinguishing_evidence": "결정 증거는 같은 호출의 클라이언트 span과 서버 span이 어긋난다는 것이다 — order→payment 클라이언트 span은 약 250ms에서 timeout으로 끊기는데 payment 서버측 span은 그보다 길게 정상 200으로 완주한다. 즉 하류는 아프지 않고 상류의 인내심만 짧아졌다. 두 번째 축은 변경 이력이다 — testbed-order Deployment에 env 변경과 롤아웃이 실제로 존재하며 실패 개시가 새 파드 Ready 시각과 붙는다(F08-H는 정반대로 어긋난다). 세 번째로 외부 PG mock은 200을 반환하고 banking 이체·commerce PG 잠금·노드 자원은 모두 정상이며, 진입 트래픽도 평상 수준이라 폭주(F07-H)가 아니다.",
+      "title": "order→payment read-timeout을 15s에서 20ms로 줄인 설정 오배포 — 실패한 주문의 결제만 성사",
+      "description": "order-service의 결제 호출 read-timeout(application.yml 리터럴 15s)을 배포 파라미터로 20ms로 덮어쓰는 설정 오배포다. 실측(2026-08-04, order→payment 클라이언트 span)으로 이 호출의 왕복은 p50 17.6ms · p90 26.8ms · p95 44.4ms이므로, 20ms 예산은 정상 처리 중인 결제의 상당수를 끊는다 — order 쪽 소켓이 먼저 끊긴다. 이 시나리오의 정체성은 5xx 자체가 아니라 **비대칭 실패**다. order는 실패로 보고 트랜잭션을 롤백하지만 payment 서버는 호출을 끝까지 완주해 결제를 커밋하고 정산 이체까지 보낸다. 게다가 @Retry(paymentClient)가 2회이므로 같은 결제가 서버에 두 번 도달할 수 있다. 사용자는 실패 화면을 보는데 돈은 나간다. Class B(설정 오배포)로 라벨한다 — 20ms는 코드에 잠복한 결함이 아니라 인위적으로 주입한 설정값이다.",
+      "cause": "testbed-order Deployment에 SPRING_APPLICATION_JSON으로 services.payment.read-timeout=20ms를 주입 → paymentRestClient의 소켓 read-timeout이 20ms → 정상 처리 중인 결제 호출이 20ms에 절단(ResourceAccessException) → @Retry(paymentClient) 2회 → @CircuitBreaker(paymentClient) open → requestPaymentFallback 502 → OrderService.checkout이 재고 보상 후 502 'Payment failed'. 서버측 payment 트랜잭션은 무관하게 커밋된다.",
+      "injection_summary": "k8s.env executor가 testbed-order/order-service 컨테이너의 env를 승인된 baseline에서 fault 집합으로 교체하고 rollout한다. 차이는 SPRING_APPLICATION_JSON=`{\"services\":{\"payment\":{\"read-timeout\":\"20ms\"}}}` 한 줄뿐이며, Spring이 이 값을 application.yml의 15s 리터럴보다 우선 적용한다(재빌드 불필요). north-south 20rps companion으로 사용자 경로를 흘리고, cleanup은 env를 baseline으로 되돌리고 rollout 원복한다.",
+      "user_impact": "체크아웃이 502로 실패한다. 실패율은 payment 왕복 시간 분포에 따라 결정되며 20ms는 정상 p50(17.6ms)에 바로 붙어 있어 결제의 약 절반이 잘리고, @Retry 2회와 서킷 브레이커를 거치며 체크아웃 실패로 증폭된다. 진짜 피해는 상태 불일치다 — 주문은 롤백되고 재고는 반환되는데 payment_schema.payments에는 결제가 커밋되고 core-banking 정산 이체가 실행된다(재시도 때문에 중복 가능). 결제·주문 대사에서 '주문 없는 결제'가 남고, 이는 주입을 끊어도 자동으로 되돌아가지 않는다.",
+      "distinguishing_evidence": "결정 증거는 같은 호출의 클라이언트 span과 서버 span이 어긋난다는 것이다 — order→payment 클라이언트 span은 약 20ms에서 timeout으로 끊기는데 payment 서버측 span은 그보다 길게 정상 200으로 완주한다. 즉 하류는 아프지 않고 상류의 인내심만 짧아졌다. 두 번째 축은 변경 이력이다 — testbed-order Deployment에 env 변경과 롤아웃이 실제로 존재하며 실패 개시가 새 파드 Ready 시각과 붙는다(F08-H는 정반대로 어긋난다). 세 번째로 외부 PG mock은 200을 반환하고 banking 이체·commerce PG 잠금·노드 자원은 모두 정상이며, 진입 트래픽도 평상 수준이라 폭주(F07-H)가 아니다.",
       "domain": "commerce",
       "class": "B",
       "observation_domains": [
@@ -381,7 +381,7 @@
       "root_cause": {
         "target_kind": "config",
         "target_id": "commerce-order",
-        "mechanism": "결함을 가진 대상은 commerce-order의 배포 설정이다. RestClientConfig.paymentRestClient가 services.payment.read-timeout을 SimpleClientHttpRequestFactory의 소켓 read-timeout으로 그대로 주입하므로, 이 값이 250ms가 되면 payment의 정상 처리 시간보다 짧아진다. payment-service의 processPayment는 @Transactional 하나 안에서 (1) 결제 행 저장, (2) 외부 PG POST /v1/payments, (3) core-banking POST /api/transfers, (4) outbox 발행을 순차 수행한다 — 원격 왕복이 두 번 들어 있어 250ms는 구조적으로 부족하다. 절단은 클라이언트 소켓에서만 일어나고 서버 스레드는 취소되지 않으므로 payment 트랜잭션은 커밋된다. order 쪽에서는 ResourceAccessException이 PaymentClient의 4xx 분기(ClientErrorException)에 걸리지 않아 실패로 집계되고, @Retry 2회를 태운 뒤 fallback이 502를 던진다 — 재시도 때문에 같은 주문의 결제가 서버에 두 번 도달할 수 있다. checkout은 @Transactional이므로 PENDING 주문은 사라지고 재고도 반환되지만, 이미 커밋된 결제와 이체는 되돌아가지 않는다.",
+        "mechanism": "결함을 가진 대상은 commerce-order의 배포 설정이다. RestClientConfig.paymentRestClient가 services.payment.read-timeout을 SimpleClientHttpRequestFactory의 소켓 read-timeout으로 그대로 주입하므로, 이 값이 20ms가 되면 payment의 정상 처리 시간(p50 17.6ms)보다 짧아진다. payment-service의 processPayment는 @Transactional 하나 안에서 (1) 결제 행 저장, (2) 외부 PG POST /v1/payments, (3) core-banking POST /api/transfers, (4) outbox 발행을 순차 수행한다 — 원격 왕복이 두 번 들어 있어 20ms는 구조적으로 부족하다. 절단은 클라이언트 소켓에서만 일어나고 서버 스레드는 취소되지 않으므로 payment 트랜잭션은 커밋된다. order 쪽에서는 ResourceAccessException이 PaymentClient의 4xx 분기(ClientErrorException)에 걸리지 않아 실패로 집계되고, @Retry 2회를 태운 뒤 fallback이 502를 던진다 — 재시도 때문에 같은 주문의 결제가 서버에 두 번 도달할 수 있다. checkout은 @Transactional이므로 PENDING 주문은 사라지고 재고도 반환되지만, 이미 커밋된 결제와 이체는 되돌아가지 않는다.",
         "code_anchor": [
           "commerce/order-service/src/main/resources/application.yml:51-54 (services.payment read-timeout 15s — 오배포가 덮어쓰는 리터럴)",
           "commerce/order-service/src/main/java/com/commerce/order/config/RestClientConfig.java:25-32 (paymentRestClient — read-timeout을 소켓 타임아웃으로 주입하는 지점)",
@@ -390,12 +390,12 @@
           "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
           "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502, PENDING 주문은 롤백)",
           "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (PaymentService.processPayment — @Transactional 진입, 클라이언트가 끊겨도 서버는 계속 진행해 커밋한다)",
-          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:77-80 (bankingTransferClient.transfer — 같은 트랜잭션 안 두 번째 원격 왕복, 250ms 예산을 구조적으로 초과시킨다)"
+          "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:77-80 (bankingTransferClient.transfer — 같은 트랜잭션 안 두 번째 원격 왕복, 20ms 예산을 구조적으로 초과시킨다)"
         ],
-        "infra_anchor": "k8s.env executor가 승인된 baseline/fault env 집합을 통째로 교체한다 — 두 집합의 차이는 SPRING_APPLICATION_JSON 한 항목뿐이며 OTel·DB 시크릿 등 나머지는 동일하다. cleanup은 baseline 복원 + rollout. **정직성 각주**: 실제 코드에 잠복한 결함은 오히려 반대 방향이다(payment 15s + @Transactional timeout 부재 = 과대 인내). 250ms는 그 정반대를 인위 주입한 것이라 Class A(코드 결함)로 제시할 수 없고 Class B(설정 오배포)로만 유효하다 — 품질 기준서 G1 금지2의 실증 목록에 이 시나리오가 이름으로 올라 있다. **미검증 잔여**: 250ms가 실제로 무는지(=정상 payment 왕복 p50이 250ms를 넘는지)는 기존 baseline 캡처의 commerce-order p50/p95로 확인하기로 한 항목이며 아직 실측되지 않았다."
+        "infra_anchor": "k8s.env executor가 승인된 baseline/fault env 집합을 통째로 교체한다 — 두 집합의 차이는 SPRING_APPLICATION_JSON 한 항목뿐이며 OTel·DB 시크릿 등 나머지는 동일하다. cleanup은 baseline 복원 + rollout. **정직성 각주**: 실제 코드에 잠복한 결함은 오히려 반대 방향이다(payment 15s + @Transactional timeout 부재 = 과대 인내). 20ms는 그 정반대를 인위 주입한 것이라 Class A(코드 결함)로 제시할 수 없고 Class B(설정 오배포)로만 유효하다 — 품질 기준서 G1 금지2의 실증 목록에 이 시나리오가 이름으로 올라 있다. **실측 완료(2026-08-04)**: 이 항목은 오래 미검증으로 남아 있었고, 2026-08-03 라이브 배치에서 실제로 물지 않는 것이 확인됐다. order→payment 클라이언트 span은 p50 17.6ms · p90 26.8ms · p95 44.4ms · p99 215ms라서 250ms는 호출의 1% 미만만 끊었고 성공 조건(order_error_rate ≥ 10)에 구조적으로 도달할 수 없었다. 예산을 20ms로 내려 p50 바로 아래에 맞췄다."
       },
       "must_support": [
-        "order→payment 클라이언트 span이 약 250ms에서 timeout으로 절단(commerce-order error_rate ≥ 0.1) — 상류 인내심이 원인이라는 직접 증거",
+        "order→payment 클라이언트 span이 약 20ms에서 timeout으로 절단(commerce-order error_rate ≥ 0.1) — 상류 인내심이 원인이라는 직접 증거",
         "같은 호출의 payment 서버측 span은 200으로 완주하며 지연·오류가 없다 — 하류 무죄",
         "testbed-order Deployment의 env 변경과 롤아웃이 존재하고, 실패 개시가 새 파드 Ready 시각과 정렬된다",
         "체크아웃 5xx 비율 상승(loadgen.checkout_5xx_rate ≥ 0.05)과 함께 주문 없는 결제 행이 남는다(상태 불일치)"
@@ -549,7 +549,7 @@
                 },
                 {
                   "name": "SPRING_APPLICATION_JSON",
-                  "value": "{\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}}"
+                  "value": "{\"services\":{\"payment\":{\"read-timeout\":\"20ms\"}}}"
                 }
               ]
             }
@@ -1256,21 +1256,21 @@
             }
           },
           {
-            "id": "constrained-100m",
+            "id": "constrained-200m",
             "parameters": {
               "deployment": "testbed-product",
               "container": "product-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "100m"
+              "fault_cpu_limit": "200m"
             }
           },
           {
-            "id": "endpoint-50m",
+            "id": "endpoint-175m",
             "parameters": {
               "deployment": "testbed-product",
               "container": "product-service",
               "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "50m"
+              "fault_cpu_limit": "175m"
             }
           }
         ]

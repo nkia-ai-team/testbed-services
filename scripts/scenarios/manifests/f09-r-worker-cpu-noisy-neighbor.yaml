@@ -209,7 +209,7 @@
               "id": "symptom-without-node-load",
               "observation": "node_cpu_util",
               "op": "lt",
-              "value": 50
+              "value": 35
             },
             {
               "id": "user-load-overshot",
