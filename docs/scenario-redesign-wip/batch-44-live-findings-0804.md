@@ -48,6 +48,7 @@ summary: 큐 live-44-e7152d6f. 08-03 배치의 수리를 라이브에서 검증�
 | 17 | F20-R | **엣지에서 빨리 실패해 하류가 안 느려짐** | entry 502인데 order·payment p95는 0.0(무트래픽) | **스킵** |
 | 18 | F20-Q | **느려지는 게 아니라 죽는다** | 메모리 임계는 넘겼으나(어제 수리 검증) 파드가 죽어 지연이 0 | **스킵** |
 | 19 | F25-H | **레버가 실사용의 2.6배** | PG는 124MiB 쓰는데 fault limit이 320Mi → OOM 불가 | **스킵** |
+| 20 | F15-R | **부하 live.json 조기 소멸(재발)** | 23분 런의 막판에 파일이 사라져 안전 관측 상실 → 중단 | **스킵** |
 
 ## 1. readiness 프로브 예외 1회가 배치를 세운다 (수리)
 
@@ -571,3 +572,46 @@ requests를 함께 내려야 한다.
 덧붙여 PostgreSQL 메모리는 탄력적이라(shared_buffers·page cache) limit을 낮추면
 OOM 대신 디스크 I/O가 늘어날 수도 있다. **한 단이 아니라 사다리로 내려가며 실측해
 바닥을 찾는 것**이 안전하다(F12-H·F09-P에서 배운 방식 그대로).
+
+## 20. F15-R — 부하 산출물이 런 도중에 사라진다 (스킵, 알려진 미해결 버그의 재발)
+
+`safety_observation_unavailable`로 중단. 80틱 · 1394초(23.2분).
+cleanup·recovery 성공, dirty 아님.
+
+신호별 사용 가능 집계:
+
+```
+achieved_rps        78/80    2x  cat: /tmp/rca-scenario-F15-R-live.json: No such file
+checkout_5xx_rate   78/80    2x  (동일)
+entry_status        78/80    2x  (동일)   <- 안전 관측
+mock_flap_episode   71/80    9x  freshness
+
+마지막 4틱
+  03:19:17 wait        safety_observation_pending      불가: mock_flap_*
+  03:19:34 wait        safety_observation_pending      불가: mock_flap_*
+  03:20:07 mark_clean  safety_observation_unavailable  불가: achieved_rps·checkout_5xx_rate·entry_status
+  03:20:25 mark_clean  safety_observation_unavailable  불가: (동일)
+```
+
+**78틱 동안 멀쩡하던 파일이 막판 2틱에 사라졌다.** 그 파일이 안전 관측
+`entry_status`를 먹여 살리므로 런이 중단됐다.
+
+이것은 [08-03 배치 기록](batch-44-live-findings-0803.md) 시절부터 미해결로 남아 있던
+**"north_south companion의 live.json 조기 삭제"**의 재발이다(그때는 F05-H·F08-P).
+
+### 시간 부족은 아니다 (실측)
+
+```
+부하 companion  ramp_up 2m + hold 23m + ramp_down 1m = 26분
+레벨 episode-fault-240  min_hold 21m · timeout 23m
+실제 런 23.2분
+```
+
+26분짜리 부하가 23.2분 런을 덮어야 한다. **단순한 지속시간 미달로는 설명되지 않으므로
+원인은 아직 미상이다.** 후보는 (a) ramp_down 진입 시 산출물을 먼저 지운다,
+(b) k6 프로세스가 조기 종료한다, (c) 정리 순서가 판정보다 먼저 돈다.
+
+**다음 행동**: tb-runner에서 이 시나리오의 부하를 단독으로 26분 돌리며
+`/tmp/rca-scenario-<ID>-live.json`의 존재를 1초 간격으로 찍어 **언제 사라지는지**
+먼저 실측한다. 원인을 고르기 전에 사라지는 시각을 아는 것이 순서다.
+가장 긴 런에서 재현됐다는 점이 단서다 — 이번 배치에서 23분은 최장이었다.
