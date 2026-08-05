@@ -47,6 +47,7 @@ summary: 큐 live-44-e7152d6f. 08-03 배치의 수리를 라이브에서 검증�
 | 16 | F16-H | **여정에 없는 필드를 안전 관측이 읽음** | 부하는 도는데 checkout 필드가 없어 52틱 전부 사용 불가 → 안전 중단 | **스킵** |
 | 17 | F20-R | **엣지에서 빨리 실패해 하류가 안 느려짐** | entry 502인데 order·payment p95는 0.0(무트래픽) | **스킵** |
 | 18 | F20-Q | **느려지는 게 아니라 죽는다** | 메모리 임계는 넘겼으나(어제 수리 검증) 파드가 죽어 지연이 0 | **스킵** |
+| 19 | F25-H | **레버가 실사용의 2.6배** | PG는 124MiB 쓰는데 fault limit이 320Mi → OOM 불가 | **스킵** |
 
 ## 1. readiness 프로브 예외 1회가 배치를 세운다 (수리)
 
@@ -539,3 +540,34 @@ limit의 25%인 256Mi에 묶여 `memory.current`가 768Mi에 닿기 전에 GC �
 **권고**: 성공의 두 번째 조건을 실제로 일어나는 피해로 바꾼다 — 파드 unready·재기동
 또는 그 구간의 요청 실패율. 지연을 유지하려면 메모리 상승 속도를 낮춰 죽기 전 구간을
 길게 만들어야 하는데, 그건 레버 재설계다.
+
+## 19. F25-H — PostgreSQL fault limit이 실사용의 2.6배다 (스킵, 숫자는 나왔다)
+
+`evaluation_level_timeout`, streak 전부 0. cleanup·recovery 성공.
+
+```
+pg_termination_reason = None   (성공: == OOMKilled)
+pg_restart_count      = 0      (성공: >= 1)
+checkout_5xx_rate     = 0.0    (성공: >= 0.1)
+```
+
+주입은 postgres StatefulSet의 memory limit을 512Mi -> **320Mi**로 내리는 것이다.
+그런데 109 실측(무주입):
+
+```
+testbed-postgres-0  workingSet 124MiB · rss 86MiB · usage 139MiB
+현재 limits.memory 512Mi / requests.memory 256Mi
+```
+
+**fault limit 320Mi는 실사용 124MiB의 2.6배다.** 여유가 그만큼 남으니 OOMKill은
+일어날 수 없다. F03-P(커넥션 풀 2가 400rps를 감당)·F09-R(노드를 태워도 requests가
+서비스를 지킴)과 같은 계열 — **레버 크기를 실측 없이 정한 것**이다.
+
+**권고(숫자 포함)**: fault limit을 실사용 근처인 **128Mi** 수준으로 내린다. 단
+`requests.memory`가 256Mi이므로 limit을 그 아래로 두면 쿠버네티스가 패치를 거부한다 —
+`k8s.patch`에서 이미 겪은 문제이고(커밋 `765e99f`) `k8s.resource`도 같은 처리가 필요하다.
+requests를 함께 내려야 한다.
+
+덧붙여 PostgreSQL 메모리는 탄력적이라(shared_buffers·page cache) limit을 낮추면
+OOM 대신 디스크 I/O가 늘어날 수도 있다. **한 단이 아니라 사다리로 내려가며 실측해
+바닥을 찾는 것**이 안전하다(F12-H·F09-P에서 배운 방식 그대로).
