@@ -59,12 +59,21 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         #
         # 한 실행기만 고치고 형제로 안 옮기는 것이 이 저장소의 반복 결함이므로
         # (#9·#29·#30) 파일 단위가 아니라 사다리를 가진 프로파일 전체를 훑는다.
+        # `.py`만 훑던 탓에 정작 검증을 가진 실행기 둘을 통째로 빠뜨렸다 — 레지스트리가
+        # 셸 래퍼(`profiles/load-east-west.sh`)를 가리키는데 validate는 그 옆
+        # `load_east_west_executor.py`에 있기 때문이다. 그 사각에서 F03-H의 target_url이
+        # 레지스트리(`?delayMs=5000`)와 실행기(`?days=120`) 사이로 갈라진 채 살아남았고,
+        # 라이브에서 주입과 **정리가 함께** 거부돼 전역 DIRTY가 됐다(2026-08-05 배치).
+        # host.stress도 같은 사각에 있었다(사다리 6종).
         checked = 0
         for profile_id, profile in self.profiles.items():
             levels = profile.get("scenario_levels") or {}
-            if not levels or not profile["executor"].endswith(".py"):
+            if not levels:
                 continue
-            module = load(Path(profile["executor"]).stem)
+            stem = Path(profile["executor"]).stem
+            if profile["executor"].endswith(".sh"):
+                stem = f"{stem.replace('-', '_')}_executor"
+            module = load(stem)
             # load.north_south는 별도 validate 없이 build_invocation 안에서 검사한다.
             if not hasattr(module, "validate"):
                 continue
