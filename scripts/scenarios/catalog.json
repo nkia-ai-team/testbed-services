@@ -45,10 +45,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "worker-w1",
-      "prerequisite": ""
+      "prerequisite": "commerce/PG 인과 부재 실측 확정(0804 #24: disk 81%에 p95 41.9ms) — 캐시 밖 디스크 경로(shared_buffers 축소 또는 캐시 밖 질의) 신설 + 사다리 실측 후 회생. 디스크 포화 대표성은 F10-H가 보유"
     },
     {
       "id": "F02-P",
@@ -636,10 +636,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w3",
-      "prerequisite": ""
+      "prerequisite": "노드 CPU 스트레스는 상류 지연을 만들지 못하고 입구를 죽임(0804 #27: entry=0 catastrophic abort) — F21-P와 병합, 정밀 delay injector 확보 후 회생"
     },
     {
       "id": "F21-P",
@@ -648,10 +648,10 @@
         "k8s.patch",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "banking namespace",
-      "prerequisite": ""
+      "prerequisite": "k8s.patch CPU limit 레버로는 slow-not-failed 불성립(0804 #28: maxSurge=0 롤아웃 + 400m 스로틀로 api 즉시 실패) — 재기동 없는 정밀 지연 주입 표면(서버측 고정 지연, 호출자 파라미터 자백 금지) 확보 후 F21-Q와 병합 재설계"
     },
     {
       "id": "F24-Q",

@@ -126,7 +126,7 @@
                 "key_column": "id",
                 "key_value": "commerce-settlement",
                 "client_identifier": "dba-maintenance",
-                "hold_seconds": 600
+                "hold_seconds": 900
               },
               "min_hold": "8m",
               "settle": "30s",

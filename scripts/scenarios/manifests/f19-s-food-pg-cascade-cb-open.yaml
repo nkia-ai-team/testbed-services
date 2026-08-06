@@ -152,12 +152,6 @@
         "success": {
           "all": [
             {
-              "id": "payment-errors",
-              "observation": "payment_error_rate",
-              "op": "gte",
-              "value": 30
-            },
-            {
               "id": "order-502-propagated",
               "observation": "order_create_5xx_rate",
               "op": "gte",

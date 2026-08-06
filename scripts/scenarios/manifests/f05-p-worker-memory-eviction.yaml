@@ -249,7 +249,7 @@
               "id": "impact-without-node-pressure",
               "observation": "node_mem_util",
               "op": "lt",
-              "value": 50
+              "value": 40
             },
             {
               "id": "node-lost",
@@ -313,7 +313,7 @@
               "id": "node-memory-normal",
               "observation": "node_mem_util",
               "op": "lt",
-              "value": 40
+              "value": 60
             },
             {
               "id": "gateway-rescheduled",

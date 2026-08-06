@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F21-P",
   "slug": "f21-p-banking-api-tomcat-thread-saturation",
-  "readiness": "ready",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,283 +29,14 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "trusted",
-      "live_enabled": true,
-      "binding": {
-        "primary_ref": "k8s.patch",
-        "companion_refs": [
-          "load.north_south"
-        ]
+      "dispatcher_mode": "dry-run",
+      "decision_mode": "calibration",
+      "profile": {
+        "kind": "adaptive",
+        "ref": "controller-profiles/f21-p-banking-api-tomcat-thread-saturation/adaptive",
+        "requires_approved_fixed_profile": false
       },
-      "runtime": {
-        "mode": "calibration",
-        "tick_interval": "15s",
-        "settle_after_change": "30s",
-        "max_injection_duration": "30m",
-        "preflight": [
-          "kube-context",
-          "kube-node-set",
-          "coordinator-clean",
-          "clean-window",
-          "baseline-traffic",
-          "baseline-business-success",
-          "target-health"
-        ],
-        "baseline": {
-          "clean_window": "30m",
-          "required": [
-            {
-              "check": "coordinator-clean"
-            },
-            {
-              "check": "clean-window"
-            },
-            {
-              "check": "baseline-traffic"
-            },
-            {
-              "check": "baseline-business-success"
-            },
-            {
-              "check": "target-health"
-            }
-          ]
-        },
-        "profile": {
-          "kind": "adaptive_ladder",
-          "levels": [
-            {
-              "id": "conservative-400m",
-              "parameters": {
-                "deployment": "testbed-transfer",
-                "container": "transfer-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "400m"
-              },
-              "min_hold": "3m",
-              "settle": "3m",
-              "timeout": "9m"
-            },
-            {
-              "id": "constrained-300m",
-              "parameters": {
-                "deployment": "testbed-transfer",
-                "container": "transfer-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "300m"
-              },
-              "min_hold": "3m",
-              "settle": "3m",
-              "timeout": "9m"
-            },
-            {
-              "id": "floor-200m",
-              "parameters": {
-                "deployment": "testbed-transfer",
-                "container": "transfer-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "200m"
-              },
-              "min_hold": "3m",
-              "settle": "3m",
-              "timeout": "9m"
-            }
-          ]
-        },
-        "observations": [
-          {
-            "id": "entry_status",
-            "adapter": "http_probe",
-            "query_id": "http.entry_health",
-            "freshness": "15s"
-          },
-          {
-            "id": "target_health",
-            "adapter": "http_probe",
-            "query_id": "http.target_health",
-            "freshness": "15s"
-          },
-          {
-            "id": "pod_ready",
-            "adapter": "kubernetes",
-            "query_id": "kubernetes.pod_ready",
-            "freshness": "30s",
-            "parameters": {
-              "namespace": "rca-testbed-banking",
-              "resource": "testbed-api"
-            }
-          },
-          {
-            "id": "api_busy_threads",
-            "adapter": "prometheus",
-            "query_id": "prometheus.jvm_daemon_thread_count",
-            "freshness": "60s",
-            "parameters": {
-              "service_name": "core-banking-api"
-            }
-          },
-          {
-            "id": "api_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "freshness": "120s",
-            "parameters": {
-              "service_name": "core-banking-api"
-            }
-          },
-          {
-            "id": "api_error_rate",
-            "adapter": "clickhouse",
-            "query_id": "clickhouse.service_error_rate",
-            "freshness": "120s",
-            "parameters": {
-              "service_name": "core-banking-api"
-            }
-          },
-          {
-            "id": "transfer_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "freshness": "120s",
-            "parameters": {
-              "service_name": "core-banking-transfer"
-            }
-          },
-          {
-            "id": "transfer_throttled",
-            "adapter": "prometheus",
-            "query_id": "prometheus.container_cpu_throttled_time",
-            "freshness": "60s",
-            "parameters": {
-              "namespace": "rca-testbed-banking",
-              "deployment": "testbed-transfer",
-              "container": "transfer-service"
-            }
-          },
-          {
-            "id": "transfer_2xx_rate",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.transfer_2xx_rate",
-            "freshness": "30s"
-          },
-          {
-            "id": "achieved_rps",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.achieved_rps",
-            "freshness": "30s"
-          }
-        ],
-        "success": {
-          "all": [
-            {
-              "id": "thread-pool-saturated",
-              "observation": "api_busy_threads",
-              "op": "gte",
-              "value": 180
-            },
-            {
-              "id": "api-latency-damage",
-              "observation": "api_p95",
-              "op": "gte",
-              "value": 6000
-            },
-            {
-              "id": "downstream-slow-not-failed",
-              "observation": "transfer_p95",
-              "op": "gte",
-              "value": 2000
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "threads-not-yet-piling",
-              "observation": "api_busy_threads",
-              "op": "lt",
-              "value": 180
-            },
-            {
-              "id": "throttling-not-yet-biting",
-              "observation": "transfer_throttled",
-              "op": "eq",
-              "value": 0
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "must_rule_out": {
-          "any": [
-            {
-              "id": "api-failing-not-queueing",
-              "observation": "api_error_rate",
-              "op": "gte",
-              "value": 5
-            },
-            {
-              "id": "user-load-overshot",
-              "observation": "achieved_rps",
-              "op": "gt",
-              "value": 45
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "abort": {
-          "any": [
-            {
-              "id": "entry-unreachable",
-              "observation": "entry_status",
-              "op": "eq",
-              "value": 0
-            }
-          ],
-          "consecutive_ticks": 2
-        },
-        "recovery": {
-          "all": [
-            {
-              "id": "target-recovered",
-              "observation": "target_health",
-              "op": "eq",
-              "value": 200
-            },
-            {
-              "id": "pod-recovered",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "downstream-latency-recovered",
-              "observation": "transfer_p95",
-              "op": "lt",
-              "value": 1500
-            },
-            {
-              "id": "api-latency-recovered",
-              "observation": "api_p95",
-              "op": "lt",
-              "value": 2000
-            }
-          ],
-          "consecutive_ticks": 2,
-          "timeout": "10m"
-        },
-        "cleanup": {
-          "required": true,
-          "order": "reverse",
-          "timeout": "10m"
-        },
-        "capture": {
-          "enabled": true,
-          "pre_window": "10m",
-          "post_window": "20m",
-          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
-          "create_golden_anomaly": false
-        }
-      }
+      "live_enabled": false
     }
   },
   "actions": {
@@ -339,10 +70,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "satisfied",
-    "required": false,
-    "description": "none",
-    "live_allowed": true
+    "state": "unresolved",
+    "required": true,
+    "description": "k8s.patch CPU limit 레버로는 slow-not-failed 불성립(0804 #28: maxSurge=0 롤아웃 + 400m 스로틀로 api 즉시 실패) — 재기동 없는 정밀 지연 주입 표면(서버측 고정 지연, 호출자 파라미터 자백 금지) 확보 후 F21-Q와 병합 재설계",
+    "live_allowed": false
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

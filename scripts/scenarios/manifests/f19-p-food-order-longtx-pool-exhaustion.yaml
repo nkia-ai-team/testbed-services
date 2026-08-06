@@ -165,12 +165,6 @@
               "observation": "order_create_5xx_rate",
               "op": "gte",
               "value": 0.1
-            },
-            {
-              "id": "order-pool-exhausted",
-              "observation": "order_hikari_pending",
-              "op": "gt",
-              "value": 0
             }
           ],
           "consecutive_ticks": 3

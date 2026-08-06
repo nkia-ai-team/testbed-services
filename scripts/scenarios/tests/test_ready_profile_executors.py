@@ -276,8 +276,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
             "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
-            "F02-H", "F10-H", "F10-P", "F15-P",
-            "F21-P", "F21-Q",
+            # 2026-08-06: F02-H·F21-P·F21-Q parked (0804 #24·27·28)
+            "F10-H", "F10-P", "F15-P",
             "F09-H", "F09-P", "F17-P",
             "F04-H",
             "F15-H", "F15-T2",
