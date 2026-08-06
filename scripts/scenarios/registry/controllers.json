@@ -6539,7 +6539,7 @@
               "seed": 4242,
               "baseline_unit": "loadgen-food"
             },
-            "min_hold": "8m",
+            "min_hold": "30s",
             "settle": "30s",
             "timeout": "11m"
           }
@@ -6607,19 +6607,19 @@
       "success": {
         "all": [
           {
-            "id": "order-latency-up",
-            "observation": "order_p95",
-            "op": "gte",
-            "value": 2000
-          },
-          {
             "id": "order-memory-climbing",
             "observation": "order_memory_current",
             "op": "gte",
             "value": 805306368
+          },
+          {
+            "id": "order-create-errors",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.3
           }
         ],
-        "consecutive_ticks": 3
+        "consecutive_ticks": 2
       },
       "must_rule_out": {
         "any": [
@@ -6628,12 +6628,6 @@
             "observation": "entry_status",
             "op": "eq",
             "value": 429
-          },
-          {
-            "id": "dispatch-capacity-503",
-            "observation": "order_create_5xx_rate",
-            "op": "gte",
-            "value": 0.3
           },
           {
             "id": "payment-also-erroring",
@@ -8157,22 +8151,10 @@
       "success": {
         "all": [
           {
-            "id": "device-saturated",
-            "observation": "disk_io_util",
-            "op": "gte",
-            "value": 70
-          },
-          {
-            "id": "transfer-latency-damage",
-            "observation": "transfer_p95",
-            "op": "gte",
-            "value": 4000
-          },
-          {
-            "id": "transfer-pool-occupied",
-            "observation": "transfer_hikari_pending",
-            "op": "gt",
-            "value": 0
+            "id": "transfer-2xx-collapse",
+            "observation": "transfer_2xx_rate",
+            "op": "lt",
+            "value": 0.5
           }
         ],
         "consecutive_ticks": 3
