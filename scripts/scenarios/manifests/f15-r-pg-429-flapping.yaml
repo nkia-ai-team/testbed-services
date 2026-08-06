@@ -85,7 +85,7 @@
                 "fault_hold_seconds": 240,
                 "recovery_gap_seconds": 720
               },
-              "min_hold": "21m",
+              "min_hold": "18m",
               "settle": "30s",
               "timeout": "23m"
             },
@@ -100,7 +100,7 @@
                 "fault_hold_seconds": 300,
                 "recovery_gap_seconds": 720
               },
-              "min_hold": "23m",
+              "min_hold": "18m",
               "settle": "30s",
               "timeout": "25m"
             }

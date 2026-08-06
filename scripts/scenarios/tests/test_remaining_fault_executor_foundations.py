@@ -100,7 +100,12 @@ class RemainingFaultExecutorFoundationTests(unittest.TestCase):
         ), "run")
         self.assertEqual(argv[0], "/usr/bin/bash")
         script = stdin.decode()
-        self.assertIn('(( episode == episodes )) || hold "$recovery_gap"', script)
+        # 2026-08-06: 마지막 에피소드도 recovery_gap을 hold해야 한다 — 워커가
+        # 마지막 restore 직후 죽으면 mock_flap_*이 30초 뒤 stale이 되어 판정 창
+        # 3분을 남기고 안전 관측이 굶는다(F15-R 3 run 전부 timeout abort).
+        # 관측면은 판정 창보다 오래 살아야 한다.
+        self.assertNotIn('(( episode == episodes )) || hold "$recovery_gap"', script)
+        self.assertIn('  hold "$recovery_gap"\ndone', script)
         self.assertIn('write_flap_state 0 false "$started_at" true', script)
         self.assertIn('nohup bash "$worker"', script)
         self.assertIn('stop_worker; start_pf; restore', script)

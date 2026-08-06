@@ -107,7 +107,13 @@ for ((episode=1; episode<=episodes; episode++)); do
   episode_now=$episode; fault_active=true; write_state
   hold "$fault_hold"; restore
   fault_active=false; write_state
-  (( episode == episodes )) || hold "$recovery_gap"
+  # The last episode also holds the recovery gap: the worker used to exit right
+  # after the final restore, so mock_flap_* went stale 30s later while the
+  # controller still had 3 minutes of judgment window left -- every F15-R run
+  # starved its safety observation and aborted at level timeout (runs 96103ef8,
+  # 00009c51, a1219613; 2026-08-06). The observation plane must outlive the
+  # judgment window, and cleanup's stop_worker still ends the worker on time.
+  hold "$recovery_gap"
 done
 WORKER
   chmod 700 "$worker"
