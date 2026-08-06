@@ -40,7 +40,9 @@ CLIENT_LABEL_KEY = "lucida.io/db-client"
 CLIENT_LABEL_VALUE = "session"
 
 CONTRACTS: dict[str, dict[str, Any]] = {
-    "F01-P": {"engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0", "schema": "BANKING", "table": "accounts", "key_column": "id", "key_value": "commerce-settlement", "client_identifier": "dba-maintenance", "hold_seconds": 600},
+    # hold 600->900 (2026-08-06, 0804 #9): min_hold 8m 뒤 성공 창이 2분뿐이라
+    # 요동치는 payment_error_rate로 3연속을 다시 만들 시간이 없었다.
+    "F01-P": {"engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0", "schema": "BANKING", "table": "accounts", "key_column": "id", "key_value": "commerce-settlement", "client_identifier": "dba-maintenance", "hold_seconds": 900},
     "F01-R": {
         "engine": "postgresql", "access": "in-cluster-pod",
         "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",

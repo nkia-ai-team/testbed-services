@@ -269,6 +269,19 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertLess(cleanup.index("reset_mock"), cleanup.index("restore_rollout"))
         self.assertIn("Reverse sub-injection order is mandatory", cleanup)
 
+    def test_db_lock_contracts_do_not_drift_from_the_approved_profile(self) -> None:
+        # F03-H(0804 #21)는 수리가 실행기에만 들어가 레지스트리와 어긋난 채 일주일을
+        # 죽어 있었다. db.lock은 반대 방향도 가능하다 — CONTRACTS가 실행기 안에
+        # 하드코딩돼 있어 registry만 고치면 validate()가 주입을 거부한다(F01-P
+        # hold 600->900에서 실제로 걸릴 뻔했다). 두 벌이 같은 값을 주장하는지 고정.
+        approved = self.profiles["db.lock"]["scenario_parameters"]
+        for scenario_id, contract in db_lock.CONTRACTS.items():
+            if scenario_id in approved:
+                self.assertEqual(
+                    contract, approved[scenario_id],
+                    f"{scenario_id}: executor CONTRACTS drifted from profiles.json",
+                )
+
     def test_live_matrix_matches_the_governed_ready_set(self) -> None:
         expected = {
             "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
