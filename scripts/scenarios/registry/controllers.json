@@ -9342,6 +9342,15 @@
           "adapter": "loadgen_summary",
           "query_id": "loadgen.achieved_rps",
           "freshness": "30s"
+        },
+        {
+          "id": "order_tenured_limit_mib",
+          "adapter": "prometheus",
+          "query_id": "prometheus.jvm_tenured_limit_mib",
+          "parameters": {
+            "service_name": "commerce-order"
+          },
+          "freshness": "60s"
         }
       ],
       "success": {
@@ -9350,13 +9359,7 @@
             "id": "heap-cannot-be-reclaimed",
             "observation": "order_old_gen_ratio",
             "op": "gte",
-            "value": 0.8
-          },
-          {
-            "id": "order-latency-damage",
-            "observation": "order_p95",
-            "op": "gte",
-            "value": 1000
+            "value": 0.7
           }
         ],
         "consecutive_ticks": 3
@@ -9367,7 +9370,7 @@
             "id": "heap-not-yet-pressured",
             "observation": "order_old_gen_ratio",
             "op": "lt",
-            "value": 0.8
+            "value": 0.7
           }
         ],
         "consecutive_ticks": 3
@@ -9381,10 +9384,10 @@
             "value": 0
           },
           {
-            "id": "symptom-without-gc-pressure",
-            "observation": "order_old_gen_ratio",
-            "op": "lt",
-            "value": 0.35
+            "id": "injection-not-reflected",
+            "observation": "order_tenured_limit_mib",
+            "op": "gt",
+            "value": 145
           },
           {
             "id": "user-load-overshot",

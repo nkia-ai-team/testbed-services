@@ -589,26 +589,29 @@ class RegistryContractTests(unittest.TestCase):
         # F09-H가 그랬다. 감별자 바닥 0.5는 첫 단 heap-208의 예상값 0.385보다 위였고,
         # 매 틱 실격돼 heap-160·heap-128을 밟아보지도 못했다(배치 #28).
         #
-        # 평시값은 VictoriaMetrics 119:18428 실측이다(2026-08-04, commerce-order):
-        # used_after_last_gc{Tenured Gen} 53.4MiB / limit 170.7MiB = 0.313.
-        # 사다리 각 단의 Tenured 상한은 -Xmx의 약 2/3(SerialGC)이므로
-        # 208m→0.385, 160m→0.500, 128m→0.626, 112m→0.715, 96m→0.834이다.
-        resting = {("F09-H", "order_old_gen_ratio"): 0.313}
-        for (scenario_id, observation), value in resting.items():
-            controller = self.controllers["controllers"][scenario_id]
-            floors = [
-                condition["value"]
-                for condition in controller["must_rule_out"].get("any", [])
-                if condition["observation"] == observation and condition["op"] == "lt"
-            ]
-            self.assertTrue(floors, f"{scenario_id}:{observation} has no discriminator floor")
-            for floor in floors:
-                self.assertLessEqual(
-                    floor,
-                    value * 1.15,
-                    f"{scenario_id}:{observation} discriminator floor {floor} sits above "
-                    f"the resting value {value} — the ladder cannot escalate past it",
-                )
+        # 2026-08-06 후속: 비율 바닥은 은퇴했다. 파드별 실측으로 평시 범위가
+        # 파드 나이에 따라 0.29(갓 뜬 파드)~0.4769(24h 숙성)로 넓어, 오발화 없는
+        # 절대 바닥이 존재하지 않는다. "기전 부재"는 이제 잡음 없는 계단 함수
+        # (살아 있는 파드 중 최소 Tenured limit)로 직접 묻는다 — run 4793c9f4의
+        # '비율 얼어붙음'(주입 미반영)을 비율 임계로는 표현할 수 없다.
+        controller = self.controllers["controllers"]["F09-H"]
+        ratio_floors = [
+            condition
+            for condition in controller["must_rule_out"].get("any", [])
+            if condition["observation"] == "order_old_gen_ratio" and condition["op"] == "lt"
+        ]
+        self.assertEqual(ratio_floors, [], "비율 바닥 감별자는 은퇴했다 — 위 주석 참조")
+        steps = [
+            condition
+            for condition in controller["must_rule_out"].get("any", [])
+            if condition["observation"] == "order_tenured_limit_mib"
+        ]
+        self.assertEqual(len(steps), 1, "F09-H must ask whether the injection landed")
+        # 임계는 첫 단(heap-208 → Tenured 138.69MiB)과 평시(256Mi → 170.69MiB)
+        # 사이에 있어야 한다: 평시를 읽으면 발화, 어떤 주입 단을 읽어도 침묵.
+        self.assertEqual(steps[0]["op"], "gt")
+        self.assertGreater(steps[0]["value"], 138.69)
+        self.assertLess(steps[0]["value"], 170.69)
 
     def test_recovery_gates_read_metrics_that_actually_return(self) -> None:
         # 회복 게이트는 "부하가 끝나면 되돌아오는" 지표만 읽어야 한다.

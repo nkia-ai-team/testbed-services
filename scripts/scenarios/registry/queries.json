@@ -205,6 +205,16 @@
       "freshness_sec": 60,
       "update_interval_sec": 60
     },
+    "prometheus.jvm_tenured_limit_mib": {
+      "adapter": "prometheus",
+      "template_id": "otel-jvm-tenured-limit-mib-v1",
+      "allowed_parameters": [
+        "service_name"
+      ],
+      "value_type": "number",
+      "freshness_sec": 60,
+      "update_interval_sec": 60
+    },
     "prometheus.node_cpu_utilization": {
       "adapter": "prometheus",
       "template_id": "kcm-node-cpu-utilization-v1",
