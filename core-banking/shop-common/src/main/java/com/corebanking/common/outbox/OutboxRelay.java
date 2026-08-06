@@ -2,6 +2,7 @@ package com.corebanking.common.outbox;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,15 +25,35 @@ public class OutboxRelay {
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
+    private final OutboxRelayControlRepository controlRepository;
+    private final String controlId;
 
-    public OutboxRelay(OutboxEventRepository outboxEventRepository, KafkaTemplate<String, String> kafkaTemplate) {
+    public OutboxRelay(OutboxEventRepository outboxEventRepository, KafkaTemplate<String, String> kafkaTemplate,
+                       OutboxRelayControlRepository controlRepository,
+                       @Value("${outbox.relay.control-id:}") String controlId) {
         this.outboxEventRepository = outboxEventRepository;
         this.kafkaTemplate = kafkaTemplate;
+        this.controlRepository = controlRepository;
+        this.controlId = controlId;
     }
 
     @Scheduled(fixedDelayString = "${outbox.relay.poll-interval-ms:2000}")
     @Transactional
     public void relay() {
+        // outbox_relay_control 행이 재기동 없는 정지 스위치다(OutboxRelayControl 참조).
+        // 행 부재·조회 실패는 정지 근거가 아니므로 fail-open — 릴레이가 스위치보다 중요하다.
+        if (!controlId.isEmpty()) {
+            try {
+                boolean enabled = controlRepository.findById(controlId)
+                        .map(OutboxRelayControl::isEnabled)
+                        .orElse(true);
+                if (!enabled) {
+                    return;
+                }
+            } catch (Exception ex) {
+                log.warn("Outbox relay control lookup failed (relay continues): {}", ex.getMessage());
+            }
+        }
         List<OutboxEvent> pending = outboxEventRepository.findTop100ByPublishedAtIsNullOrderByCreatedAtAsc();
         for (OutboxEvent event : pending) {
             try {

@@ -49,7 +49,7 @@ class RegistryContractTests(unittest.TestCase):
     # 60, which is how the stale pins of 2026-07-29 got past review.
     def test_registry_closure_covers_catalog_scenarios_and_profiles(self) -> None:
         self.assertEqual(len(self.catalog["scenarios"]), 60)
-        self.assertEqual(len(self.profiles["profiles"]), 21)
+        self.assertEqual(len(self.profiles["profiles"]), 22)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)

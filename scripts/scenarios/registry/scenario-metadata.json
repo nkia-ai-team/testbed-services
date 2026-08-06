@@ -3617,7 +3617,7 @@
         ]
       },
       "injected_fault": {
-        "profile": "k8s.env",
+        "profile": "app.control",
         "companions": [
           "load.north_south"
         ],
@@ -3625,125 +3625,12 @@
           {
             "id": "approved-fixed-f18-p",
             "parameters": {
+              "engine": "oracle",
               "namespace": "rca-testbed-banking",
-              "deployment": "testbed-transfer",
-              "container": "transfer-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "APP_USER",
-                      "name": "oracle-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "APP_USER_PASSWORD",
-                      "name": "oracle-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "core-banking-transfer"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.230.119:14317"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "APP_USER",
-                      "name": "oracle-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "APP_USER_PASSWORD",
-                      "name": "oracle-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "core-banking-transfer"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.230.119:14317"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                },
-                {
-                  "name": "OUTBOX_RELAY_ENABLED",
-                  "value": "false"
-                }
-              ]
+              "db_pod": "testbed-oracle-0",
+              "schema": "BANKING",
+              "control_table": "outbox_relay_control",
+              "service_id": "transfer"
             }
           }
         ]
@@ -4358,7 +4245,7 @@
         "code_anchor": [
           "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:66-71 (ACTIVE — 정상 경로만 FROZEN/CLOSED를 400으로 거절한다)",
           "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:74-86 (getBalance/COMPLETED — 잔액만 보고 계좌 상태는 보지 않는다)",
-          "core-banking/db/init.sql:91-92 (ACC-9001 FROZEN / ACC-9002 CLOSED 시드 — 이 시나리오의 전제)",
+          "core-banking/db/init.sql:104-105 (ACC-9001 FROZEN / ACC-9002 CLOSED 시드 — 이 시나리오의 전제)",
           "core-banking/k8s/22-transfer-service.yaml:125-131 (NodePort nodePort 30282 — transfer가 account 검증을 거치지 않는 경로로 직접 노출된다)"
         ],
         "infra_anchor": "2026-07-28 승격(readiness: ready). 배선 4항 중 (1)30282 진입점 등록과 (2)frozen-bypass.js는 이미 완료돼 있었다 — 카탈로그 사유가 낡았다. (3)controller를 신설했고, (4)원장 역분개는 **금액 하향으로 대체**했다: load.north_south의 cleanup은 부하 종료만 하고 DB 쓰기 권한이 없으며, 위반의 증거는 금액이 아니라 성사되었다는 사실이므로 1~5로 낮추면 회차당 계좌 차감이 잔액의 0.3% 수준이 되어 오염이 사라진다. 원래 1000~5000은 ACC-9001 잔액(100,000)을 3배 초과해 8분 hold 중반부터 잔액부족 FAILED가 섞이는, 성공조건이 스스로 무너지는 구조이기도 했다. **남은 갭**: database.integrity_violation_count는 'since'를 실행 시작 시각으로 받아야 하는데 러너에 run-scoped 파라미터 바인딩이 없어 아직 쓸 수 없다. 결정적 증거는 경로 비대칭이고 그 두 신호는 배선돼 있으므로 승격은 성립한다."

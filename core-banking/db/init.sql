@@ -69,6 +69,19 @@ CREATE TABLE outbox_events (
 );
 CREATE INDEX idx_outbox_unpublished ON outbox_events (published_at, created_at);
 
+-- 릴레이 일시정지 스위치(재기동 없는 정지 표면 — OutboxRelay 가 매 주기 조회).
+-- env 토글은 롤아웃을 유발하고(maxSurge=0 이라 유일한 파드가 먼저 내려간다),
+-- HTTP 관리 엔드포인트는 otel 서버 스팬으로 정지 시각을 자백한다. DB 행이면 둘 다 없다.
+CREATE TABLE outbox_relay_control (
+    service_id  VARCHAR2(32) PRIMARY KEY,
+    enabled     NUMBER(1) DEFAULT 1 NOT NULL CHECK (enabled IN (0, 1)),
+    updated_at  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+MERGE INTO outbox_relay_control c
+USING (SELECT 'transfer' AS service_id FROM dual) s
+ON (c.service_id = s.service_id)
+WHEN NOT MATCHED THEN INSERT (service_id, enabled) VALUES (s.service_id, 1);
+
 -- ============================================================
 -- 시드 데이터: 계좌 14개(개인/법인 혼합, 잔액 보유)
 -- 'commerce-settlement'/'commerce-merchant' 는 commerce/payment-service의

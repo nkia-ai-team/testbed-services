@@ -517,7 +517,7 @@
       "id": "F18-P",
       "slug": "f18-p-banking-outbox-relay-halt",
       "profiles": [
-        "k8s.env",
+        "app.control",
         "load.north_south"
       ],
       "readiness": "ready",

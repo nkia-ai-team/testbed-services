@@ -47,6 +47,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.lock", "db.table_readonly", "mock.expectation", "load.north_south", "k8s.patch",
                 "k8s.lifecycle", "cache.control", "timeline.compose", "db.ddl", "load.east_west",
                 "kafka.control", "k8s.resource", "k8s.probe", "k8s.env", "host.stress", "timeline.multi",
+                # 2026-08-06: F18-P 재설계 — 재기동 없는 DB 플래그 토글(0804 #13 집행).
+                "app.control",
             },
         )
 

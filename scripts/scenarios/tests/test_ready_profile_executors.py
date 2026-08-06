@@ -33,6 +33,7 @@ timeline = load("timeline_compose_executor")
 db_ddl = load("db_ddl_executor")
 kafka_control = load("kafka_control_executor")
 host_stress = load("host_stress_executor")
+app_control = load("app_control_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -268,6 +269,26 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         cleanup = script[script.index("cleanup)"):script.index("recovery)")]
         self.assertLess(cleanup.index("reset_mock"), cleanup.index("restore_rollout"))
         self.assertIn("Reverse sub-injection order is mandatory", cleanup)
+
+    def test_app_control_flips_the_flag_without_touching_the_deployment(self) -> None:
+        # F18-P 재설계(0804 #13 집행): 재기동 없는 DB 플래그 토글. 롤아웃을 유발하는
+        # 어떤 kubectl 동사도 스크립트에 있어선 안 된다 — patch/rollout이 다시 들어오면
+        # maxSurge=0 아래서 자기 감별자(transfer-pod-failure)를 켜는 원래 병이 재발한다.
+        script = self.assert_contract(app_control, "f18-p-banking-outbox-relay-halt", "app.control")
+        self.assertIn("sqlplus", script)
+        self.assertIn("update $table set enabled=$1", script)
+        for rollout_verb in ("kubectl patch", "rollout", "set env"):
+            self.assertNotIn(rollout_verb, script)
+        # 정리는 상태 파일 없이 멱등 UPDATE 하나여야 한다.
+        self.assertNotIn("state_root", script)
+
+    def test_app_control_contract_matches_the_approved_profile(self) -> None:
+        approved = self.profiles["app.control"]["scenario_parameters"]
+        for scenario_id, contract in app_control.CONTRACTS.items():
+            self.assertEqual(
+                contract, approved.get(scenario_id),
+                f"{scenario_id}: executor CONTRACTS drifted from profiles.json",
+            )
 
     def test_db_lock_contracts_do_not_drift_from_the_approved_profile(self) -> None:
         # F03-H(0804 #21)는 수리가 실행기에만 들어가 레지스트리와 어긋난 채 일주일을

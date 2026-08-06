@@ -96,7 +96,8 @@ while IFS= read -r row; do
      "kubernetes-original-env-snapshot",
      "kafka-drain-capacity", "host-placement-and-oob-recovery",
      "cache-warmup-contract", "network-oob-recovery", "rollback-artifact",
-     "wpm-probe-contract", "business-invariant-probe", "subinjection-timeline"] as $known_preflights |
+     "wpm-probe-contract", "business-invariant-probe", "subinjection-timeline",
+     "app-control-flag-armed"] as $known_preflights |
     ($row.profiles | map("injector-profiles/" + .)) as $profile_refs |
     .id == $row.id and
     .slug == $row.slug and

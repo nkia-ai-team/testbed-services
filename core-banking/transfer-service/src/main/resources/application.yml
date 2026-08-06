@@ -36,6 +36,8 @@ spring:
 outbox:
   relay:
     enabled: true
+    # outbox_relay_control 행으로 재기동 없이 정지 가능(F18-P 표면).
+    control-id: transfer
 
 topics:
   transfers: banking.transfers

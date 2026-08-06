@@ -1118,7 +1118,6 @@
           "F08-P",
           "F03-P",
           "F09-H",
-          "F18-P",
           "F23-R",
           "F04-H",
           "F05-R"
@@ -1481,127 +1480,6 @@
             {
               "name": "OTEL_METRIC_EXPORT_INTERVAL",
               "value": "10000"
-            }
-          ]
-        },
-        "F18-P": {
-          "namespace": "rca-testbed-banking",
-          "deployment": "testbed-transfer",
-          "container": "transfer-service",
-          "baseline": [
-            {
-              "name": "DB_USER",
-              "valueFrom": {
-                "secretKeyRef": {
-                  "key": "APP_USER",
-                  "name": "oracle-secret"
-                }
-              }
-            },
-            {
-              "name": "DB_PASS",
-              "valueFrom": {
-                "secretKeyRef": {
-                  "key": "APP_USER_PASSWORD",
-                  "name": "oracle-secret"
-                }
-              }
-            },
-            {
-              "name": "JAVA_TOOL_OPTIONS",
-              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-            },
-            {
-              "name": "OTEL_SERVICE_NAME",
-              "value": "core-banking-transfer"
-            },
-            {
-              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-              "value": "http://192.168.230.119:14317"
-            },
-            {
-              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-              "value": "grpc"
-            },
-            {
-              "name": "OTEL_RESOURCE_ATTRIBUTES",
-              "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
-            },
-            {
-              "name": "OTEL_TRACES_EXPORTER",
-              "value": "otlp"
-            },
-            {
-              "name": "OTEL_METRICS_EXPORTER",
-              "value": "otlp"
-            },
-            {
-              "name": "OTEL_LOGS_EXPORTER",
-              "value": "otlp"
-            },
-            {
-              "name": "OTEL_METRIC_EXPORT_INTERVAL",
-              "value": "10000"
-            }
-          ],
-          "fault": [
-            {
-              "name": "DB_USER",
-              "valueFrom": {
-                "secretKeyRef": {
-                  "key": "APP_USER",
-                  "name": "oracle-secret"
-                }
-              }
-            },
-            {
-              "name": "DB_PASS",
-              "valueFrom": {
-                "secretKeyRef": {
-                  "key": "APP_USER_PASSWORD",
-                  "name": "oracle-secret"
-                }
-              }
-            },
-            {
-              "name": "JAVA_TOOL_OPTIONS",
-              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-            },
-            {
-              "name": "OTEL_SERVICE_NAME",
-              "value": "core-banking-transfer"
-            },
-            {
-              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-              "value": "http://192.168.230.119:14317"
-            },
-            {
-              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-              "value": "grpc"
-            },
-            {
-              "name": "OTEL_RESOURCE_ATTRIBUTES",
-              "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
-            },
-            {
-              "name": "OTEL_TRACES_EXPORTER",
-              "value": "otlp"
-            },
-            {
-              "name": "OTEL_METRICS_EXPORTER",
-              "value": "otlp"
-            },
-            {
-              "name": "OTEL_LOGS_EXPORTER",
-              "value": "otlp"
-            },
-            {
-              "name": "OTEL_METRIC_EXPORT_INTERVAL",
-              "value": "10000"
-            },
-            {
-              "name": "OUTBOX_RELAY_ENABLED",
-              "value": "false"
             }
           ]
         },
@@ -4170,6 +4048,33 @@
               "hold_seconds": 600
             }
           ]
+        }
+      }
+    },
+    "app.control": {
+      "executor": "profiles/app_control_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "banking-namespace"
+      ],
+      "live_supported": true,
+      "default_queries": [
+        "database.outbox_unpublished_count",
+        "kubernetes.pod_ready"
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F18-P"
+        ]
+      },
+      "scenario_parameters": {
+        "F18-P": {
+          "engine": "oracle",
+          "namespace": "rca-testbed-banking",
+          "db_pod": "testbed-oracle-0",
+          "schema": "BANKING",
+          "control_table": "outbox_relay_control",
+          "service_id": "transfer"
         }
       }
     }
