@@ -602,7 +602,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "fixed",
+      "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "postgres StatefulSet kind 일반화(k8s_resource_executor) + postgres 관측 allowlist(live_probes.py F25_H_POSTGRES_TARGET) 배선 완료(07-24)"
     },

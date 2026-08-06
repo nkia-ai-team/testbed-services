@@ -3051,7 +3051,7 @@
           "fault": {
             "limits": {
               "cpu": "500m",
-              "memory": "320Mi"
+              "memory": "256Mi"
             },
             "requests": {
               "cpu": "200m",
@@ -3145,6 +3145,95 @@
                 "requests": {
                   "cpu": "200m",
                   "memory": "512Mi"
+                }
+              }
+            }
+          }
+        ],
+        "F25-H": [
+          {
+            "level_id": "squeeze-256mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "256Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              }
+            }
+          },
+          {
+            "level_id": "squeeze-192mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "192Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "192Mi"
+                }
+              }
+            }
+          },
+          {
+            "level_id": "floor-128mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "128Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "128Mi"
                 }
               }
             }

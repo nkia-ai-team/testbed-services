@@ -4186,13 +4186,13 @@
         ]
       },
       "injected_fault": {
-        "profile": "k8s.resource",
+        "profile": null,
         "companions": [
           "load.north_south"
         ],
         "levels": [
           {
-            "id": "approved-fixed-f25-h",
+            "id": "squeeze-256mi",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-postgres",
@@ -4211,11 +4211,69 @@
               "fault": {
                 "limits": {
                   "cpu": "500m",
-                  "memory": "320Mi"
+                  "memory": "256Mi"
                 },
                 "requests": {
                   "cpu": "200m",
                   "memory": "256Mi"
+                }
+              }
+            }
+          },
+          {
+            "id": "squeeze-192mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "192Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "192Mi"
+                }
+              }
+            }
+          },
+          {
+            "id": "floor-128mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "128Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "128Mi"
                 }
               }
             }

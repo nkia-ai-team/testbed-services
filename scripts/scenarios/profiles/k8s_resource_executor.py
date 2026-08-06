@@ -38,6 +38,36 @@ F05_R_LEVELS = tuple(
     }
     for limit in ("768Mi", "640Mi", "576Mi")
 )
+F25_H_BASELINE = {
+    "limits": {"cpu": "500m", "memory": "512Mi"},
+    "requests": {"cpu": "200m", "memory": "256Mi"},
+}
+# 2026-08-06 사다리 전환(0804 #19): 고정 320Mi는 실사용 124MiB의 2.6배라 OOM이
+# 불가능했다. requests(256Mi)가 limit보다 크면 쿠버네티스가 패치를 거부하므로
+# (765e99f에서 k8s.patch가 먼저 겪은 문제) 단마다 requests를 limit에 맞춰 내린다.
+F25_H_LEVELS = tuple(
+    {
+        "namespace": "rca-testbed-commerce",
+        "deployment": "testbed-postgres",
+        "container": "postgres",
+        "resource": "memory",
+        "baseline": F25_H_BASELINE,
+        "fault": {
+            "limits": {"cpu": "500m", "memory": limit},
+            "requests": {"cpu": "200m", "memory": limit},
+        },
+    }
+    for limit in ("256Mi", "192Mi", "128Mi")
+)
+
+_MEM_UNITS = {"Ki": 1, "Mi": 2, "Gi": 3}
+
+
+def _mem_bytes(value: str) -> int:
+    for suffix, power in _MEM_UNITS.items():
+        if value.endswith(suffix):
+            return int(value[: -len(suffix)]) * 1024 ** power
+    return int(value)
 
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
@@ -61,8 +91,18 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
             raise ExecutorError(f"{name} must declare the selected resource limit")
     if params["baseline"] == params["fault"]:
         raise ExecutorError("fault resources must differ from baseline")
+    # Kubernetes rejects any pod spec whose request exceeds its limit, so a fault
+    # that lowers only the limit dies at apply time and the run goes global-DIRTY
+    # instead of failing here (k8s.patch hit this first, 765e99f).
+    if key == "memory":
+        fault_limit = _mem_bytes(params["fault"]["limits"][key])
+        fault_request = params["fault"].get("requests", {}).get(key)
+        if fault_request is not None and _mem_bytes(fault_request) > fault_limit:
+            raise ExecutorError("fault memory request exceeds the fault limit")
     if scenario_id == "F05-R" and params not in F05_R_LEVELS:
         raise ExecutorError("parameters do not match the measured F05-R memory ladder")
+    if scenario_id == "F25-H" and params not in F25_H_LEVELS:
+        raise ExecutorError("parameters do not match the measured F25-H memory ladder")
 
 
 def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], bytes]:

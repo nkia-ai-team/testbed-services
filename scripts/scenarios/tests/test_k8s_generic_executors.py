@@ -39,12 +39,8 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             "baseline": {"requests": {"cpu": "200m"}, "limits": {"cpu": "500m"}},
             "fault": {"requests": {"cpu": "50m"}, "limits": {"cpu": "100m"}},
         }
-        postgres = {
-            "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres",
-            "container": "postgres", "resource": "memory",
-            "baseline": {"limits": {"cpu": "500m", "memory": "512Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-            "fault": {"limits": {"cpu": "500m", "memory": "320Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-        }
+        # 2026-08-06: 고정 320Mi(실사용의 2.6배, OOM 불가)를 실측 사다리로 교체(0804 #19).
+        postgres = resource.F25_H_LEVELS[0]
         resource.validate("F05-R", payment, {})
         resource.validate("F09-P", inventory, {})
         resource.validate("F25-H", postgres, {})
@@ -72,12 +68,7 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         self.assertNotIn("kubectl exec", script)
 
     def test_resource_executor_uses_statefulset_kind_for_f25_h(self) -> None:
-        postgres = {
-            "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres",
-            "container": "postgres", "resource": "memory",
-            "baseline": {"limits": {"cpu": "500m", "memory": "512Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-            "fault": {"limits": {"cpu": "500m", "memory": "320Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-        }
+        postgres = resource.F25_H_LEVELS[0]
         argv, stdin = resource.build_invocation(plan(resource.PROFILE_ID, "F25-H", postgres), "run")
         self.assertIn("statefulset", argv)
         self.assertNotIn("deploy", argv)
