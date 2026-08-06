@@ -209,7 +209,10 @@
             "id": "entry_status",
             "adapter": "http_probe",
             "query_id": "http.entry_health",
-            "freshness": "15s"
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            }
           },
           {
             "id": "target_health",
@@ -274,7 +277,10 @@
             "id": "checkout_5xx_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.checkout_5xx_rate",
-            "freshness": "30s"
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            }
           }
         ],
         "success": {

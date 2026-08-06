@@ -91,7 +91,10 @@
             "id": "entry_status",
             "adapter": "http_probe",
             "query_id": "http.entry_health",
-            "freshness": "15s"
+            "freshness": "15s",
+            "parameters": {
+              "domain": "core-banking"
+            }
           },
           {
             "id": "target_health",

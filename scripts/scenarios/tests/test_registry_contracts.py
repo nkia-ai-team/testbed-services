@@ -894,6 +894,9 @@ class RegistryContractTests(unittest.TestCase):
             query_id
             for query_id, spec in self.queries["queries"].items()
             if spec.get("adapter") in loadgen_adapters
+            # target_health는 http_probe지만 게이트웨이 URL을 직접 찌른다 —
+            # live.json과 무관하므로 이 계약의 대상이 아니다(07-24 과매치).
+            and query_id != "http.target_health"
         }
         self.assertTrue(loadgen_queries, "부하 산출물 질의를 하나도 못 찾았다")
 
@@ -908,6 +911,10 @@ class RegistryContractTests(unittest.TestCase):
                 obs["id"]
                 for obs in controller.get("observations") or []
                 if obs.get("query_id") in loadgen_queries
+                # domain 한정은 시나리오 자신의 live.json이 아니라 상주 baseline
+                # 유닛의 문서를 읽는다(2026-08-06, 러너 2b01f43). 그 문서는 부하
+                # companion과 무관하게 항상 존재하므로 이 계약의 위반이 아니다.
+                and "domain" not in (obs.get("parameters") or {})
             }
             if not reading:
                 continue
@@ -920,30 +927,43 @@ class RegistryContractTests(unittest.TestCase):
             if judged:
                 offenders[scenario_id] = sorted(judged)
 
-        # 2026-08-04 배치가 찾은 미수리 3종. **줄어들기만 해야 한다** — 부하
-        # companion을 붙이거나 게이트에서 죽은 신호를 빼면 여기서 지운다. 새 항목이
-        # 생기면 이 테스트가 그 자리에서 막는다. 라이브에서만 보이던 결함을
-        # 레지스트리 단계로 끌어내리는 것이 이 목록의 목적이다.
-        known_unfixed = {
-            "F14-P": [
-                "abort:entry_status",
-                "must_rule_out:entry_status",
-                "must_rule_out:transfer_2xx_rate",
-                "recovery:target_health",
-            ],
-            "F15-P": ["abort:entry_status", "recovery:target_health"],
-            "F15-T1": [
-                "abort:entry_status",
-                "recovery:target_health",
-                "success:checkout_5xx_rate",
-            ],
-        }
+        # 2026-08-04 배치가 찾은 미수리 3종(F14-P·F15-P·F15-T1)은 2026-08-06에
+        # 전부 해소됐다 — 판정이 읽는 관측을 domain 한정으로 옮겨 상주 baseline
+        # 유닛이 생산자가 됐다. 목록은 이제 비어 있어야 하며, 새 항목이 생기면
+        # 이 테스트가 그 자리에서 막는다. 라이브에서만 보이던 결함을 레지스트리
+        # 단계로 끌어내리는 것이 이 검사의 목적이다.
         self.assertEqual(
             offenders,
-            known_unfixed,
+            {},
             "판정이 읽는 부하 신호를 아무도 만들지 않는다: "
             + json.dumps(offenders, ensure_ascii=False, sort_keys=True),
         )
+
+    def test_companionless_controllers_must_domain_qualify_their_loadgen_reads(self) -> None:
+        # 게이트가 안 보는 관측이라도, companion 없는 시나리오가 자기 live.json을
+        # 읽으면 그 신호는 런 내내 죽어 있다 — 표시만 안 될 뿐 같은 병이다.
+        # F14-P는 transfer_2xx_rate에 @core-banking을 붙이면서 entry_health만
+        # 빠뜨렸다(2026-08-06 발견). 관측 전체에 계약을 건다.
+        loadgen_adapters = {"loadgen_summary", "http_probe"}
+        loadgen_queries = {
+            query_id
+            for query_id, spec in self.queries["queries"].items()
+            if spec.get("adapter") in loadgen_adapters
+            and query_id != "http.target_health"
+        }
+        for scenario_id, controller in self.controllers["controllers"].items():
+            profile = controller.get("profile") or {}
+            refs = [profile.get("primary_ref") or profile.get("approved_profile_id") or ""]
+            refs += profile.get("companion_refs") or []
+            if any(str(ref).startswith("load.") for ref in refs):
+                continue
+            for obs in controller.get("observations") or []:
+                if obs.get("query_id") in loadgen_queries:
+                    self.assertIn(
+                        "domain", obs.get("parameters") or {},
+                        f"{scenario_id}:{obs['id']} — companion 없는 시나리오의 "
+                        "부하 관측은 domain을 한정해야 한다",
+                    )
 
 
 if __name__ == "__main__":

@@ -116,7 +116,10 @@
             "id": "entry_status",
             "adapter": "http_probe",
             "query_id": "http.entry_health",
-            "freshness": "15s"
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            }
           },
           {
             "id": "target_health",
@@ -148,22 +151,19 @@
             "id": "write_401_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.write_step_status_rate",
-            "freshness": "30s"
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            }
           },
           {
             "id": "read_nonok_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.read_step_status_rate",
-            "freshness": "30s"
-          },
-          {
-            "id": "write_401_rate_baseline",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.write_step_status_rate",
+            "freshness": "30s",
             "parameters": {
               "domain": "commerce"
-            },
-            "freshness": "30s"
+            }
           }
         ],
         "success": {
@@ -233,7 +233,7 @@
             },
             {
               "id": "writes-recovered",
-              "observation": "write_401_rate_baseline",
+              "observation": "write_401_rate",
               "op": "lt",
               "value": 0.05
             }
