@@ -3903,7 +3903,7 @@
         "code_anchor": [
           "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java:32-35 (dailyStats — FUNCTION('DATE', o.createdAt) GROUP BY로 인덱스를 탈 수 없다)",
           "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java:24 (search — OR-null 술어라 조건이 비면 풀스캔)",
-          "commerce/db/init-schemas.sql:215 (idx_orders_user — orders의 유일한 인덱스. created_at·status 인덱스가 애초에 없다는 근거)",
+          "commerce/db/init-schemas.sql:223 (idx_orders_user — orders의 유일한 인덱스. created_at·status 인덱스가 애초에 없다는 근거)",
           "commerce/db/init-schemas.sql:16-23 (order_schema~shipping_schema 8개 — 같은 인스턴스를 공유해 오염이 번지는 근거)",
           "commerce/payment-service/src/main/resources/application.yml:7-10 (payment datasource — order와 같은 인스턴스를 바라본다)"
         ],

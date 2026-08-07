@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS inventory_schema.inventory_movements (
 );
 
 CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_schema.inventory_movements(product_id, created_at DESC);
+-- F23-R 감별자(러너 database.restock_movement_rate)가 15초마다 도는 질의 전용.
+-- 술어가 movement_type='RESTOCK' + created_at 창인데 위의 복합 인덱스는 선두가
+-- product_id 라 탈 수 없었다. 2026-08-07 실측: 2.47M 행 Parallel Seq Scan 701ms,
+-- 버퍼 읽기 20672블록=161MB. shared_buffers 가 128MB 뿐이라 프로브 한 번이 공유
+-- 캐시를 통째로 밀어냈고, F23-R 의 성공 게이트(checkout_5xx_rate·checkout_409_rate)가
+-- 같은 인스턴스의 checkout 거동을 재므로 프로브가 측정 대상을 교란하고 있었다.
+-- 부분 인덱스인 이유: RESTOCK 은 전체의 0.48%(11,949/2,501,668)라 색인 자체가 1MB 미만이다.
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_restock ON inventory_schema.inventory_movements(created_at) WHERE movement_type = 'RESTOCK';
 
 CREATE TABLE IF NOT EXISTS inventory_schema.outbox_events (
     id              BIGSERIAL PRIMARY KEY,

@@ -138,6 +138,75 @@ kubectl -n rca-testbed-commerce rollout status statefulset --timeout=120s
 
 echo ""
 echo "========================================="
+echo "  Phase 4.1: 관측 인덱스 멱등 적용(기존 PVC 대응)"
+echo "========================================="
+# db/init-schemas.sql 은 데이터 디렉터리가 비어 있을 때만 postgres 엔트리포인트가
+# 실행한다. PVC 를 물려받는 테스트베드에서는 나중에 추가된 인덱스가 영영 생기지
+# 않는다 — banking Phase 4.1 이 같은 함정으로 신설된 단계이고, 이번에도 F23-R
+# 인덱스가 init 파일에만 있으면 실환경에는 도달하지 못한다.
+#
+# CONCURRENTLY 인 이유: 이 표는 2.5M 행이고 상주 baseline 부하가 계속 쓰고 있다.
+# 일반 CREATE INDEX 는 ACCESS EXCLUSIVE 로 잠가 그동안의 재고 이동을 전부 막는다.
+#
+# ⚠ CONCURRENTLY + IF NOT EXISTS 의 함정 — 이 순서가 이유다.
+#   1) CONCURRENTLY 는 트랜잭션 블록 안에서 못 돈다. psql 에 여러 문장을 한 번의
+#      -c 로 주면 하나의 트랜잭션으로 묶여 실패하므로, 문장마다 -c 를 따로 준다.
+#   2) CONCURRENTLY 가 중간에 실패하면 indisvalid=false 인 **무효 인덱스가 남는다**.
+#      그 상태에서 IF NOT EXISTS 로 재시도하면 "이미 있다"고 판단해 건너뛰므로,
+#      쓰기 비용만 물리고 읽기에는 안 쓰이는 인덱스가 조용히 영구화된다.
+#      그래서 만들기 전에 무효 잔재를 먼저 떨어뜨린다.
+#   3) CONCURRENTLY 는 병렬 빌드를 쓰지 못한다(max_parallel_maintenance_workers 무시).
+#      힙 164MB 를 두 번 훑고 RESTOCK 11,949건만 정렬하므로 maintenance_work_mem
+#      64MB 안에서 끝난다 — 실측 기준 수 초 규모이나, 동시 트랜잭션이 빠지길
+#      기다리는 시간이 지배적이라 여유를 크게 준다.
+PGX=(kubectl -n rca-testbed-commerce exec -i testbed-postgres-0 -- psql -U commerce -d commerce -v ON_ERROR_STOP=1)
+
+# postgres 가 연결을 받을 때까지만 재시도한다. 인덱스 생성 자체는 재시도하지 않는다 —
+# 빌드가 겹치면 서로를 기다리며 잠금 대기를 만든다.
+pg_ready=no
+for attempt in $(seq 1 30); do
+  if "${PGX[@]}" -qtAc 'SELECT 1' >/dev/null 2>&1; then pg_ready=yes; break; fi
+  echo "[retry ${attempt}/30] postgres 가 아직 연결을 받지 않는다. 5초 후 재시도..."
+  sleep 5
+done
+if [[ "$pg_ready" != "yes" ]]; then
+  echo "ERROR: postgres 연결 실패 — 관측 인덱스 없이 배포를 끝내지 않는다" >&2
+  exit 1
+fi
+
+# (2)의 잔재 청소. 유효한 인덱스는 건드리지 않는다.
+# DO 블록 안에서 하지 않는 이유: DROP INDEX CONCURRENTLY 도 트랜잭션 블록 안에서
+# 돌 수 없고 DO 블록은 트랜잭션이다. 판정과 실행을 나눠 최상위 문장으로 보낸다.
+invalid_left=$("${PGX[@]}" -qtAc "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+  WHERE c.relname = 'idx_inventory_movements_restock' AND NOT i.indisvalid" | tr -d '[:space:]')
+if [[ "$invalid_left" != "0" ]]; then
+  echo "무효 인덱스 잔재를 제거한다(직전 CONCURRENTLY 실패)"
+  "${PGX[@]}" -qtAc "DROP INDEX CONCURRENTLY inventory_schema.idx_inventory_movements_restock"
+fi
+
+echo "인덱스 빌드 중(CONCURRENTLY, 잠금 없음)..."
+"${PGX[@]}" -qtAc "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_inventory_movements_restock
+  ON inventory_schema.inventory_movements (created_at) WHERE movement_type = 'RESTOCK'"
+
+# 유효성 확인. CONCURRENTLY 는 실패해도 종료코드가 0 일 수 있으므로 상태를 직접 읽는다.
+index_valid=$("${PGX[@]}" -qtAc "SELECT coalesce(bool_and(i.indisvalid), false)
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+  WHERE c.relname = 'idx_inventory_movements_restock'" | tr -d '[:space:]')
+if [[ "$index_valid" != "t" ]]; then
+  echo "ERROR: idx_inventory_movements_restock 이 유효하지 않다(valid=${index_valid})." >&2
+  echo "       DROP INDEX CONCURRENTLY inventory_schema.idx_inventory_movements_restock 후 재실행하라." >&2
+  exit 1
+fi
+
+# 기대 계획: Parallel Seq Scan(2.5M 행, 701ms, 161MB) -> Index Scan(RESTOCK 11,949건 중
+# 창에 걸리는 수십 건, 1ms 미만, 버퍼 수십 블록). 배포 후 검증 항목이다.
+echo "인덱스 유효 확인 완료. 적용 후 계획:"
+"${PGX[@]}" -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) AS restock_count
+  FROM inventory_schema.inventory_movements
+  WHERE movement_type = 'RESTOCK' AND created_at >= now() - interval '5 minutes'"
+
+echo ""
+echo "========================================="
 echo "  최종 상태"
 echo "========================================="
 kubectl -n rca-testbed-commerce get pods
