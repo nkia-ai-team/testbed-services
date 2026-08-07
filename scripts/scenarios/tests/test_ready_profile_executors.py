@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -300,7 +301,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 self.assertEqual(injected, str(contract["delay_ms"]))
                 # 평시 값이 0 이어야 preflight·cleanup 이 "지연 없음"을 기대치로 삼는다.
                 self.assertEqual(clean, "0")
-                for bad in (-1, app_control.MAX_DELAY_MS + 1, "1000", 1000.0, True, None):
+                # 0 은 평시값과 같다 — 아무 행도 바꾸지 않는 주입이 성공을 보고한다.
+                for bad in (0, -1, app_control.MAX_DELAY_MS + 1, "1000", 1000.0, True, None):
                     with self.assertRaises(ExecutorError):
                         app_control.validate(scenario_id, dict(contract, delay_ms=bad), profile)
                 with self.assertRaises(ExecutorError):
@@ -317,8 +319,12 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             self.assertIn(engine, script)
         remote = script[script.index("mysql)"):script.index("esac")]
         self.assertIn("MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\"", remote)
-        # 값은 env 로 건너간다. 원격 sh -c 는 홑따옴표라 로컬이 먼저 펴지 않는다.
-        self.assertIn("env SQL=\"$1\" DB=\"$schema\" sh -c '", remote)
+        # 원격 sh -c 는 홑따옴표라 로컬이 먼저 펴지 않는다.
+        self.assertIn("sh -c 'MYSQL_PWD=", remote)
+        # 문장은 stdin 으로 간다. `-e "$SQL"` 이면 KCM 이 수집하는 원격 프로세스
+        # 명령줄에 SQL 전문이 찍혀 주입이 자기 테이블 이름을 자백한다.
+        self.assertIn("printf '%s\\n' \"$1\" |", remote)
+        self.assertNotIn("-e \"$SQL\"", remote)
         self.assertNotIn("rootpassword", script)
         # 식별자를 따옴표로 감싸면 테이블이 아니라 문자열을 읽는다.
         self.assertIn("select $col from $table", script)
@@ -329,6 +335,31 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             with self.subTest(scenario=scenario_id):
                 self.assertIn(f'{contract["engine"]})', script,
                               f"{scenario_id}: contract names an engine the script cannot speak")
+
+    def test_the_delay_ceiling_is_one_number_in_every_place_that_enforces_it(self) -> None:
+        # 상한은 세 곳이 각자 조인다: 앱(Thread.sleep 직전 클램프), DDL 의 CHECK,
+        # 실행기의 값 검증. 하나만 올리면 주입은 성공을 보고하는데 앱은 다른 값을 쓰고,
+        # 판정은 있지도 않은 지연을 전제로 결론을 적는다. 한 값임을 고정한다.
+        repo = ROOT.parents[1]
+        ceilings: dict[str, int] = {}
+        for relative in ("core-banking/shop-common/src/main/java/com/corebanking/common/delay"
+                         "/ResponseDelayFilter.java",
+                         "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/delay"
+                         "/ResponseDelayFilter.java"):
+            text = (repo / relative).read_text(encoding="utf-8")
+            found = re.findall(r"MAX_DELAY_MS\s*=\s*([\d_]+)L", text)
+            self.assertEqual(len(found), 1, f"{relative}: expected exactly one ceiling")
+            ceilings[relative] = int(found[0].replace("_", ""))
+        # DDL 은 init.sql 과 배포 스크립트(기존 PVC 대응) 두 벌로 존재한다.
+        sql_sources = ("core-banking/db/init.sql", "food-delivery/db/init.sql",
+                       "core-banking/k8s/build-and-deploy.sh", "food-delivery/k8s/build-and-deploy.sh")
+        for relative in sql_sources:
+            text = (repo / relative).read_text(encoding="utf-8")
+            found = re.findall(r"delay_ms BETWEEN 0 AND (\d+)", text)
+            self.assertEqual(len(found), 1, f"{relative}: expected exactly one delay_ms CHECK")
+            ceilings[relative] = int(found[0])
+        ceilings["app_control_executor.MAX_DELAY_MS"] = app_control.MAX_DELAY_MS
+        self.assertEqual(len(set(ceilings.values())), 1, f"delay ceilings disagree: {ceilings}")
 
     def test_app_control_flag_scenarios_keep_their_one_or_zero_contract(self) -> None:
         # 값형을 들이면서 플래그형(F18-P)의 의미가 뒤집히면 릴레이가 정리 후에도

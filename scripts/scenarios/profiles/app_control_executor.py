@@ -70,6 +70,9 @@ CONTRACTS: dict[str, dict[str, Any]] = {
 # 앱(ResponseDelayFilter)과 DDL 의 CHECK 가 같은 상한을 조인다. 셋이 어긋나면
 # 주입은 성공했다고 보고하는데 앱은 다른 값을 쓴다.
 MAX_DELAY_MS = 10000
+# 주입값 0 은 평시값과 같다 — 아무 행도 바꾸지 않고 성공을 보고하는 주입이 되고,
+# 그 위에서 판정은 "지연을 넣었는데 아무 일도 없었다"를 시나리오의 결론으로 적는다.
+MIN_DELAY_MS = 1
 
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
@@ -78,8 +81,9 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("scenario is not allowlisted for app control")
     if "delay_ms" in contract:
         delay = params.get("delay_ms")
-        if isinstance(delay, bool) or not isinstance(delay, int) or not 0 <= delay <= MAX_DELAY_MS:
-            raise ExecutorError(f"delay_ms must be an integer within 0..{MAX_DELAY_MS}")
+        if (isinstance(delay, bool) or not isinstance(delay, int)
+                or not MIN_DELAY_MS <= delay <= MAX_DELAY_MS):
+            raise ExecutorError(f"delay_ms must be an integer within {MIN_DELAY_MS}..{MAX_DELAY_MS}")
         if _without_value(params) != _without_value(contract):
             raise ExecutorError("parameters do not exactly match the verified control contract")
     elif params != contract:
@@ -123,12 +127,15 @@ case "$engine" in
     sql() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\n%s\nexit;\n' "$schema" "$1" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba; }
     now="systimestamp" ;;
   # The root password lives in the pod's own env (mysql-secret) and must stay
-  # unexpanded here, so the remote command is single-quoted and the statement
-  # rides in through `env` -- a local name inside the remote text would arrive
-  # empty and the UPDATE would silently address nothing (F01-P, 4398722).
-  # MYSQL_PWD instead of -p keeps the password off the remote argv.
+  # unexpanded here, so the remote command is single-quoted -- a local name inside
+  # the remote text would arrive empty and the UPDATE would silently address
+  # nothing (F01-P, 4398722). MYSQL_PWD instead of -p keeps the password off the
+  # remote argv, and the statement rides on stdin (like sqlplus above) so the SQL
+  # never appears in the pod's argv either: KCM collects process command lines,
+  # and an injection that names its own table there has confessed. Piping stdin
+  # is also what keeps `exec -i` from eating this script's own remaining lines.
   mysql)
-    sql() { "${k[@]}" exec -i "$pod" -- env SQL="$1" DB="$schema" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B "$DB" -e "$SQL"'; }
+    sql() { printf '%s\n' "$1" | "${k[@]}" exec -i "$pod" -- env DB="$schema" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B "$DB"'; }
     now="now()" ;;
   *) exit 2 ;;
 esac

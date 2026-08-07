@@ -126,6 +126,40 @@ kubectl -n rca-testbed-food rollout status statefulset --timeout=180s
 
 echo ""
 echo "========================================="
+echo "  Phase 4.1: app.control 제어 테이블 멱등 적용(기존 PVC 대응)"
+echo "========================================="
+# db/init.sql 은 데이터 디렉터리가 비어 있을 때만 MySQL 엔트리포인트가 실행한다. PVC 를
+# 그대로 물려받는 테스트베드에서는 나중에 추가된 제어 테이블이 영영 생기지 않고, 앱은
+# 없는 테이블을 폴링하며 실패만 반복한다(주입 표면이 조용히 죽어 있다). 여기서 같은
+# 정의를 멱등으로 다시 넣는다 — 상한 10000 은 init.sql·앱·실행기와 함께 가드 테스트가
+# 한 값으로 묶는다. 비밀번호는 파드 자기 env(mysql-secret)에서만 온다.
+control_ddl=$(cat <<'SQL'
+CREATE TABLE IF NOT EXISTS response_delay_control (
+    service_id  VARCHAR(32) PRIMARY KEY,
+    delay_ms    INT NOT NULL DEFAULT 0,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_response_delay_ms CHECK (delay_ms BETWEEN 0 AND 10000)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO response_delay_control (service_id, delay_ms) VALUES ('restaurant', 0);
+SQL
+)
+control_applied=no
+for attempt in $(seq 1 30); do
+  if printf '%s\n' "$control_ddl" | kubectl -n rca-testbed-food exec -i testbed-mysql-0 -- \
+      sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot fooddelivery'; then
+    control_applied=yes
+    break
+  fi
+  echo "[retry ${attempt}/30] MySQL 이 아직 DDL 을 받지 않는다. 10초 후 재시도..."
+  sleep 10
+done
+if [[ "$control_applied" != "yes" ]]; then
+  echo "ERROR: 제어 테이블 DDL 적용 실패 — app.control 주입 표면 없이 배포를 끝내지 않는다" >&2
+  exit 1
+fi
+
+echo ""
+echo "========================================="
 echo "  최종 상태"
 echo "========================================="
 kubectl -n rca-testbed-food get pods
