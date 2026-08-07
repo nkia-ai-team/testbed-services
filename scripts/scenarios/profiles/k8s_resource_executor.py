@@ -24,6 +24,13 @@ F05_R_BASELINE = {
     "limits": {"cpu": "500m", "memory": "1Gi"},
     "requests": {"cpu": "200m", "memory": "512Mi"},
 }
+# 2026-08-07(run 95b07798): 768Mi 단을 뺀다. fault companion이 힙을 -Xms384m -Xmx384m
+# -XX:+AlwaysPreTouch로 고정·선점하므로 컨테이너 바닥은 384MiB(선점된 힙) + 비힙이고,
+# 평시 cgroup 실측 415MiB(최대 힙 256MiB)에서 역산한 비힙이 ~160MiB라 바닥은 ~544MiB다.
+# 768Mi는 그 위로 220MiB, 640Mi는 100MiB가 남아 OOM이 구조적으로 불가능하다 — 실제로
+# 두 단 모두 restart_count 0으로 승급만 하고 6.5분을 태웠다. 640Mi는 "OOM이 안 나는 단"
+# 대조군으로 남기고, 아래로는 더 못 내린다: 576Mi 밑은 바닥 아래라 부하 중 OOM이 아니라
+# 기동 중 OOM이 되어 트래픽을 한 건도 못 받고 crashloop한다(피해가 커지는 게 아니라 사라진다).
 F05_R_LEVELS = tuple(
     {
         "namespace": "rca-testbed-commerce",
@@ -36,7 +43,7 @@ F05_R_LEVELS = tuple(
             "requests": {"cpu": "200m", "memory": "512Mi"},
         },
     }
-    for limit in ("768Mi", "640Mi", "576Mi")
+    for limit in ("640Mi", "576Mi")
 )
 F25_H_BASELINE = {
     "limits": {"cpu": "500m", "memory": "512Mi"},

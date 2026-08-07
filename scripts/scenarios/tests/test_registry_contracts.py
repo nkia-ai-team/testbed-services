@@ -471,7 +471,9 @@ class RegistryContractTests(unittest.TestCase):
         f05r = self.controllers["controllers"]["F05-R"]
         self.assertEqual(
             [level["parameters"]["fault"]["limits"]["memory"] for level in f05r["profile"]["levels"]],
-            ["768Mi", "640Mi", "576Mi"],
+            # 768Mi는 2026-08-07에 뺐다(run 95b07798) — 고정 힙 384m + 비힙 ~160MiB로
+            # 바닥이 ~544MiB라 768Mi는 OOM이 구조적으로 불가능했고 승급만 하며 시간을 먹었다.
+            ["640Mi", "576Mi"],
         )
         self.assertEqual(f05r["profile"]["levels"][0]["parameters"]["baseline"]["limits"]["memory"], "1Gi")
         r_success = {item["observation"]: item for item in f05r["success"]["all"]}

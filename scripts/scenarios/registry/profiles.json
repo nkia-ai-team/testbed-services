@@ -3063,35 +3063,6 @@
       "scenario_levels": {
         "F05-R": [
           {
-            "level_id": "headroom-768mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-payment",
-              "container": "payment-service",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "768Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              }
-            }
-          },
-          {
             "level_id": "measured-640mi",
             "parameters": {
               "namespace": "rca-testbed-commerce",

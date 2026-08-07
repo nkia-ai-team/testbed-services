@@ -1280,7 +1280,7 @@
       "title": "payment 메모리 한도 축소 — 결제 부하 중 OOMKill 재시작",
       "description": "payment 컨테이너의 메모리 limit을 사다리(768Mi→640Mi→576Mi)로 낮추면서, 같은 주입에서 JVM 힙을 `-Xms384m -Xmx384m -XX:+AlwaysPreTouch`로 못 박는다. limit만 내리는 것으로는 OOMKill이 나지 않는다 — 힙 상한이 컨테이너 한도의 비율로 따라 내려가기 때문이다(109 실측 2026-08-04: payment의 anon 413MiB, 사다리 바닥 576Mi보다 163MiB 낮다). 힙을 pretouch로 고정하면 anon이 384MiB+비힙 334MiB≈718MiB가 되어 한도를 넘고, 커널이 컨테이너를 OOMKill한다. 종료 사유 `OOMKilled`와 한도·힙 설정 변경 이력이 직접 증거이며, 재기동 구간에 체크아웃 결제가 실패한다.",
       "cause": "payment 컨테이너 memory limit 축소(1Gi → 768/640/576Mi) + JVM 힙 pretouch 고정(384m) → anon(≈718MiB)이 컨테이너 한도 초과 → 커널 OOMKill(reason=OOMKilled) → 재기동 → 부팅 구간 결제 실패 → order PaymentClient가 5xx로 집계 → @CircuitBreaker(paymentClient) open → 체크아웃 502",
-      "injection_summary": "k8s.resource executor가 testbed-payment/payment-service의 resources를 baseline(limits 500m/1Gi)에서 fault 단계로 교체하고, k8s.env companion이 같은 컨테이너의 JAVA_TOOL_OPTIONS에 `-Xms384m -Xmx384m -XX:+AlwaysPreTouch`를 얹는다. 두 레버가 함께 걸려야 anon이 한도를 넘는다. cpu·requests는 고정하고 memory limit만 내린다. north-south companion이 결제 부하를 공급하고, cleanup은 resources와 환경변수 양쪽의 최초 상태 복원이다.",
+      "injection_summary": "k8s.resource executor가 testbed-payment/payment-service의 resources를 baseline(limits 500m/1Gi)에서 fault 단계(640Mi→576Mi)로 교체하고, k8s.env companion이 같은 컨테이너의 JAVA_TOOL_OPTIONS에 `-Xms384m -Xmx384m -XX:+AlwaysPreTouch`를 얹는다. 두 레버가 함께 걸려야 anon이 한도를 넘는다. cpu·requests는 고정하고 memory limit만 내린다. north-south companion이 결제 부하를 공급하고, cleanup은 resources와 환경변수 양쪽의 최초 상태 복원이다.",
       "user_impact": "OOMKill과 재기동 구간 동안 체크아웃의 결제 단계가 실패한다. F05-H와 마찬가지로 간헐적이지만 주기가 고정돼 있지 않고 **부하량에 좌우된다** — 결제가 몰릴 때 죽고 한산하면 버틴다. 결제 외 경로는 정상이다.",
       "distinguishing_evidence": "결정 증거는 종료 사유 OOMKilled와 컨테이너 메모리 한도가 baseline과 다르다는 두 사실의 결합이다. 노드 전체 메모리는 정상이므로 노드 압박(F05-P)이 아니라 컨테이너 한도가 원인임이 확정된다. F05-H와는 종료 사유(OOMKilled vs Error)와 probe 변경 유무로 갈리고, 재기동 시점이 고정 주기가 아니라 부하와 상관된다는 점도 축이 된다.",
       "domain": "commerce",
@@ -1340,35 +1340,6 @@
           "load.north_south"
         ],
         "levels": [
-          {
-            "id": "headroom-768mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-payment",
-              "container": "payment-service",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "768Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              }
-            }
-          },
           {
             "id": "measured-640mi",
             "parameters": {

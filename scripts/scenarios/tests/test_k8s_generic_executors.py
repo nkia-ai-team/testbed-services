@@ -53,7 +53,7 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             resource.validate("F25-H", dict(postgres, container="postgres-2"), {})
 
     def test_resource_script_snapshots_then_restores_exact_original(self) -> None:
-        params = resource.F05_R_LEVELS[2]
+        params = resource.F05_R_LEVELS[-1]
         argv, stdin = resource.build_invocation(plan(resource.PROFILE_ID, "F05-R", params), "run")
         self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
         self.assertIn("rca-testbed-commerce", argv)
