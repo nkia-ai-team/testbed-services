@@ -685,6 +685,63 @@ class RegistryContractTests(unittest.TestCase):
                     f"설계 부하 {lowest_rung} rps 위에 있다 — 주입과 무관하게 발화한다",
                 )
 
+    def test_success_and_abort_do_not_share_a_signal_in_the_same_direction(self) -> None:
+        # 같은 관측이 success와 abort(또는 must_rule_out)를 **같은 방향으로** 굴리면,
+        # 성공 가능 구간은 두 임계 사이의 좁은 창뿐이다. 그리고 abort는 min_hold
+        # **앞**에서 평가되는데(adaptive.py:229) success는 **뒤**다(:264). 그래서 그 창이
+        # min_hold 안에서 닫히면 성공은 평가조차 못 되고 abort만 발화한다.
+        #
+        # F15-T1 run 64be9853이 그렇게 죽었다. success `food_restart_count>=1`,
+        # abort `>=3`, min_hold 240s. 실측 도달 시각은 restart 1=31s, 2=47s, 3=94s —
+        # 성공 창 전체가 min_hold 안에서 닫혔다. success streak은 요구치 2를 넘어
+        # 3까지 갔지만 264줄까지 간 적이 없다.
+        #
+        # 같은 구조인데 살아남은 것들이 왜 살았는지가 임계 설정의 근거가 된다:
+        #   F05-R  min_hold 120s, restart 1 도달 140s → min_hold **뒤**라 즉시 평가됨
+        #   F05-H  min_hold 480s, restart 3 도달 413s 이지만 abort 임계가 4라 미발화
+        #   F25-H  창이 [1,6)으로 넓어 여유가 크다
+        # 즉 위험은 "창의 폭"이 아니라 **abort 임계에 min_hold 안에서 닿는가**로 갈린다.
+        #
+        # 그 도달 시각은 주입 속도에 달렸고 레지스트리만으로는 알 수 없다. 그래서 이
+        # 가드는 **형태만** 고정한다 — 새로운 조합이 생기면 red로 세우고, 사람이
+        # min_hold 대비 도달 시각을 재서 판단하게 한다. 기계가 답할 수 있는 데까지만
+        # 답하는 것이 조용히 틀린 답을 내는 것보다 낫다.
+        up, down = {"gte", "gt"}, {"lt", "lte"}
+
+        def conditions(controller, gate):
+            block = controller.get(gate) or {}
+            return (block.get("all") or []) + (block.get("any") or [])
+
+        found = set()
+        for scenario_id, controller in self.controllers["controllers"].items():
+            successes = {}
+            for condition in conditions(controller, "success"):
+                successes.setdefault(condition["observation"], []).append(condition)
+            for gate in ("abort", "must_rule_out"):
+                for veto in conditions(controller, gate):
+                    for win in successes.get(veto["observation"], []):
+                        same_direction = (
+                            (win["op"] in up and veto["op"] in up)
+                            or (win["op"] in down and veto["op"] in down)
+                        )
+                        if same_direction:
+                            found.add((scenario_id, veto["observation"], gate))
+
+        # 검토를 마친 조합. 새 항목이 여기 없으면 red — 침묵시키지 말고 위 방법으로
+        # min_hold 대비 도달 시각을 재고 나서 등록할 것.
+        reviewed = {
+            ("F05-H", "restart_count", "abort"),        # 창 [2,4), min_hold 480s — 임계 4 미도달로 생존
+            ("F05-R", "restart_count", "abort"),        # 창 [1,3), min_hold 120s — 첫 restart가 min_hold 뒤
+            ("F15-T1", "food_restart_count", "abort"),  # 창 [1,3), min_hold 240s — 창이 min_hold 안에서 닫혀 죽음
+            ("F25-H", "pg_restart_count", "abort"),     # 창 [1,6) — 여유 큼
+        }
+        self.assertEqual(
+            found,
+            reviewed,
+            "success와 abort가 같은 신호를 같은 방향으로 굴리는 조합이 바뀌었다 — "
+            "min_hold 대비 abort 임계 도달 시각을 재고 위 주석에 근거를 남길 것",
+        )
+
     def test_recovery_gates_read_metrics_that_actually_return(self) -> None:
         # 회복 게이트는 "부하가 끝나면 되돌아오는" 지표만 읽어야 한다.
         # prometheus.jvm_daemon_thread_count는 그렇지 않다 — JVM 스레드 풀은 한 번
