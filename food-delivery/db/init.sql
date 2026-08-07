@@ -185,6 +185,18 @@ CREATE TABLE IF NOT EXISTS menu_popularity_summary (
     computed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 응답 고정 지연 스위치(재기동 없는 지연 표면 — ResponseDelayFilter 가 2초 주기로 조회).
+-- core-banking 의 response_delay_control 과 같은 계보다: k8s.env 는 롤아웃을 유발하고,
+-- HTTP 관리 엔드포인트는 otel 서버 스팬으로, 호출자 파라미터는 접근 로그로 정답을 자백한다.
+-- 상한 10000ms 는 DDL 과 앱 양쪽에서 조인다 — 잘못된 UPDATE 하나로 홉을 죽이지 않도록.
+CREATE TABLE IF NOT EXISTS response_delay_control (
+    service_id  VARCHAR(32) PRIMARY KEY,
+    delay_ms    INT NOT NULL DEFAULT 0,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_response_delay_ms CHECK (delay_ms BETWEEN 0 AND 10000)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO response_delay_control (service_id, delay_ms) VALUES ('restaurant', 0);
+
 -- ------------------------------------------------------------
 -- 기존 소량 데모 시드 (그대로 유지 — id 1~3 restaurants / 1~15 menus 는 하위호환 앵커)
 -- ------------------------------------------------------------

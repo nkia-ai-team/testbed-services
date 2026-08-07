@@ -4144,7 +4144,8 @@
       "executor": "profiles/app_control_executor.py",
       "location_strategy": "scenario",
       "allowed_locations": [
-        "banking-namespace"
+        "banking-namespace",
+        "food-namespace"
       ],
       "live_supported": true,
       "default_queries": [
@@ -4154,7 +4155,8 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F18-P",
-          "F21-P"
+          "F21-P",
+          "F21-Q"
         ]
       },
       "scenario_parameters": {
@@ -4173,6 +4175,15 @@
           "schema": "BANKING",
           "control_table": "response_delay_control",
           "service_id": "transfer",
+          "delay_ms": 1000
+        },
+        "F21-Q": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "db_pod": "testbed-mysql-0",
+          "schema": "fooddelivery",
+          "control_table": "response_delay_control",
+          "service_id": "restaurant",
           "delay_ms": 1000
         }
       }

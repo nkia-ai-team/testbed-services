@@ -54,6 +54,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "service_id": "transfer",
         "delay_ms": 1000,
     },
+    # F19-P(결제 풀 고갈)와 레버가 겹치는 mock /pay 지연은 기각된 안이다 — 지연은
+    # 반드시 order->restaurant 홉에 있어야 두 시나리오의 원인이 갈린다.
+    "F21-Q": {
+        "engine": "mysql",
+        "namespace": "rca-testbed-food",
+        "db_pod": "testbed-mysql-0",
+        "schema": "fooddelivery",
+        "control_table": "response_delay_control",
+        "service_id": "restaurant",
+        "delay_ms": 1000,
+    },
 }
 
 # 앱(ResponseDelayFilter)과 DDL 의 CHECK 가 같은 상한을 조인다. 셋이 어긋나면
@@ -96,20 +107,33 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     column, injected, clean = control_values(p)
     return kubectl_bash_argv([
         action, plan["scenario"]["id"], p["namespace"], p["db_pod"],
-        p["schema"], p["control_table"], p["service_id"], column, injected, clean,
+        p["schema"], p["control_table"], p["service_id"], column, injected, clean, p["engine"],
     ]), SCRIPT
 
 
 SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; sid="$7"
-col="$8"; injected="$9"; clean="${10}"
+col="$8"; injected="$9"; clean="${10}"; engine="${11}"
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
-# `set feedback off` must precede everything else: sqlplus echoes command tags
-# while feedback is on and tr folds them into the value (F01-P, 2026-08-03).
-sql() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\n%s\nexit;\n' "$schema" "$1" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba; }
+case "$engine" in
+  # `set feedback off` must precede everything else: sqlplus echoes command tags
+  # while feedback is on and tr folds them into the value (F01-P, 2026-08-03).
+  oracle)
+    sql() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\n%s\nexit;\n' "$schema" "$1" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba; }
+    now="systimestamp" ;;
+  # The root password lives in the pod's own env (mysql-secret) and must stay
+  # unexpanded here, so the remote command is single-quoted and the statement
+  # rides in through `env` -- a local name inside the remote text would arrive
+  # empty and the UPDATE would silently address nothing (F01-P, 4398722).
+  # MYSQL_PWD instead of -p keeps the password off the remote argv.
+  mysql)
+    sql() { "${k[@]}" exec -i "$pod" -- env SQL="$1" DB="$schema" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B "$DB" -e "$SQL"'; }
+    now="now()" ;;
+  *) exit 2 ;;
+esac
 value_is() { sql "select $col from $table where service_id='$sid';" | tr -d '[:space:]' | grep -qx "$1"; }
-set_value() { sql "update $table set $col=$1, updated_at=systimestamp where service_id='$sid';
+set_value() { sql "update $table set $col=$1, updated_at=$now where service_id='$sid';
 commit;" >/dev/null; }
 case "$action" in
   # The control row is deployment-provisioned (db/init.sql). Its absence means

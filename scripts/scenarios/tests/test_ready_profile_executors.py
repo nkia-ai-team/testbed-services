@@ -306,6 +306,30 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 with self.assertRaises(ExecutorError):
                     app_control.validate(scenario_id, dict(contract, service_id="somebody-else"), profile)
 
+    def test_app_control_speaks_both_engines_without_leaking_a_local_name(self) -> None:
+        # F21-Q 는 food/MySQL 이다. 오라클 한 벌만 있는 스크립트에 mysql 계약을 물리면
+        # 주입은 조용히 아무 행도 건드리지 않는다. 그리고 원격 텍스트 안의 이름은 원격
+        # 것이어야 한다 — 로컬 이름이 원격 heredoc 에서 빈 문자열로 퍼진 것이 F01-P 를
+        # 일주일 죽였다(4398722). 비밀번호는 파드 자기 env 에서만 온다.
+        script = app_control.SCRIPT.decode()
+        self.assertIn("engine=", script)
+        for engine in ("oracle)", "mysql)"):
+            self.assertIn(engine, script)
+        remote = script[script.index("mysql)"):script.index("esac")]
+        self.assertIn("MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\"", remote)
+        # 값은 env 로 건너간다. 원격 sh -c 는 홑따옴표라 로컬이 먼저 펴지 않는다.
+        self.assertIn("env SQL=\"$1\" DB=\"$schema\" sh -c '", remote)
+        self.assertNotIn("rootpassword", script)
+        # 식별자를 따옴표로 감싸면 테이블이 아니라 문자열을 읽는다.
+        self.assertIn("select $col from $table", script)
+        for engine, expected in (("oracle", "systimestamp"), ("mysql", "now()")):
+            with self.subTest(engine=engine):
+                self.assertIn(f'now="{expected}"', script)
+        for scenario_id, contract in app_control.CONTRACTS.items():
+            with self.subTest(scenario=scenario_id):
+                self.assertIn(f'{contract["engine"]})', script,
+                              f"{scenario_id}: contract names an engine the script cannot speak")
+
     def test_app_control_flag_scenarios_keep_their_one_or_zero_contract(self) -> None:
         # 값형을 들이면서 플래그형(F18-P)의 의미가 뒤집히면 릴레이가 정리 후에도
         # 멈춘 채로 남는다. enabled 는 주입 0 / 평시 1 이다.
