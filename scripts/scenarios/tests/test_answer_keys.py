@@ -178,6 +178,121 @@ class AnswerKeyContractTests(unittest.TestCase):
                 f"binds {sorted(bound)}",
             )
 
+    def test_prose_ladders_match_the_contract_ladder(self) -> None:
+        """산문이 사다리를 나열하면 그 값은 계약에 실재해야 한다.
+
+        구조화된 injected_fault.levels 는 컨트롤러와 대조되지만 산문은 아무도
+        대조하지 않아, 사다리를 고칠 때마다 조용히 낡는다. 2026-08-07 감사에서
+        5건이 나왔다 — F05-R(뺀 768Mi 단이 남음)·F09-H(사다리도 GC 플래그도
+        다름)·F12-H(cause 만 옛 값)·F25-H(사다리 전환 전 고정값). 채점자가 읽는
+        것은 산문 쪽이므로 이 드리프트는 데이터셋 오염이다.
+
+        범위는 의도적으로 좁다. "A→B→C" 처럼 **나열로 쓴 것**만 본다 —
+        서술 속의 단일 값("한도 1Gi")이나 측정 서술("anon 413MiB")은 계약 밖의
+        사실을 정당하게 인용할 수 있어 대조 대상이 아니다. 나열은 사다리를
+        옮겨 적은 것이므로 계약과 1:1이어야 한다.
+        """
+        sequence = re.compile(
+            r"(\d+)\s*(Mi|Gi|m|rps)?\s*(?:(?:→|->|/)\s*(\d+)\s*(Mi|Gi|m|rps)?\s*){1,5}"
+        )
+        problems: list[str] = []
+        for scenario_id in sorted(self.active):
+            controller = self.controllers.get(scenario_id)
+            if controller is None:
+                continue
+            memory, cpu, plain = self._contract_magnitudes(scenario_id, controller)
+            for field, text in self._prose_fields(scenario_id):
+                for match in sequence.finditer(text):
+                    span = match.group(0)
+                    values = [
+                        (int(number), unit)
+                        for number, unit in re.findall(r"(\d+)\s*(Mi|Gi|m|rps)?", span)
+                        if number
+                    ]
+                    if len(values) < 2:
+                        continue
+                    trailing = re.match(r"\s*(MiB|Mi|Gi|rps|m)\b", text[match.end():])
+                    unit = next((u for _, u in reversed(values) if u), None) or (
+                        trailing.group(1) if trailing else None
+                    )
+                    unit = "Mi" if unit == "MiB" else unit
+                    if unit not in ("Mi", "Gi", "m"):
+                        continue  # rps·무단위 나열은 사다리가 아닌 서술일 수 있다
+                    for number, own in values:
+                        own = own or unit
+                        if own in ("Mi", "Gi"):
+                            mib = number * 1024 if own == "Gi" else number
+                            ok = mib in memory or number in plain
+                        else:
+                            ok = number in cpu or number in plain
+                        if not ok:
+                            problems.append(
+                                f"{scenario_id}.{field}: '{span.strip()}' cites "
+                                f"{number}{own}, which the contract does not contain"
+                            )
+        self.assertFalse(problems, "\n".join(problems))
+
+    def _contract_magnitudes(self, scenario_id: str, controller: dict):
+        """이 시나리오의 계약에 실재하는 크기들 — 메모리(MiB)·CPU(밀리코어)·생값."""
+        raw: set = set()
+
+        def walk(node) -> None:
+            if isinstance(node, dict):
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+            else:
+                raw.add(node)
+
+        walk(controller)
+        for profile in self.profiles["profiles"].values():
+            walk(profile.get("scenario_parameters", {}).get(scenario_id))
+            walk(profile.get("scenario_levels", {}).get(scenario_id))
+
+        memory: set[int] = set()
+        cpu: set[int] = set()
+        plain: set[int] = set()
+        for value in raw:
+            if isinstance(value, str):
+                match = re.fullmatch(r"(\d+)(Mi|Gi|m)", value)
+                if match:
+                    number, unit = int(match.group(1)), match.group(2)
+                    if unit == "Gi":
+                        memory.add(number * 1024)
+                    elif unit == "Mi":
+                        memory.add(number)
+                    else:
+                        cpu.add(number)
+                # JVM 힙 플래그도 계약이다(F05-R·F09-H가 이 경로로 힙을 고정한다)
+                for heap in re.findall(r"-Xm[sx](\d+)m", value):
+                    memory.add(int(heap))
+            elif isinstance(value, int) and not isinstance(value, bool):
+                plain.add(value)
+                if value >= 1048576 and value % 1048576 == 0:
+                    memory.add(value // 1048576)  # 바이트로 적힌 임계
+        return memory, cpu, plain
+
+    def _prose_fields(self, scenario_id: str):
+        """정답지의 사람이 읽는 필드 전부(구조화된 injected_fault 는 제외)."""
+        out: list[tuple[str, str]] = []
+
+        def walk(prefix: str, node) -> None:
+            if isinstance(node, str):
+                out.append((prefix, node))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(f"{prefix}[{index}]", value)
+            elif isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "injected_fault":
+                        continue
+                    walk(f"{prefix}.{key}" if prefix else key, value)
+
+        walk("", self.metadata.get(scenario_id) or {})
+        return out
+
 
 if __name__ == "__main__":
     unittest.main()
