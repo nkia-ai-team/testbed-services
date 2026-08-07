@@ -442,7 +442,17 @@ def control_arm(run: dict[str, Any], window_end_index: int | None) -> dict[str, 
     baseline = {k: (v or {}).get("value") for k, v in signals.items() if k.endswith("_baseline")}
     if not baseline:
         return {"status": "absent", "reason": "이 run에는 대조 팔 신호가 없다"}
-    denominators = {k: (v or {}).get("value") for k, v in signals.items() if k.endswith("_count")}
+    # 분모는 아무 `*_count`나 되는 게 아니라 **그 대조 신호의 분모**여야 한다.
+    # 접미사만 보던 초기 판정은 F05-R에서 `restart_count`(파드 재시작 횟수)를 분모로
+    # 오인해 해석 불가를 해석 가능으로 뒤집었다. 이름 줄기가 대조 신호의 접두여야 한다:
+    #   checkout_5xx_rate_baseline ← checkout_count   (checkout_5xx_rate 가 checkout 로 시작)
+    #   checkout_5xx_rate_baseline ← restart_count    (restart 로 시작하지 않음 → 거부)
+    stems = {k[: -len("_baseline")] for k in baseline}
+    denominators = {
+        k: (v or {}).get("value")
+        for k, v in signals.items()
+        if k.endswith("_count") and any(stem.startswith(k[: -len("_count")]) for stem in stems)
+    }
     if denominators:
         return {"status": "interpretable", "values": baseline, "denominators": denominators}
     return {

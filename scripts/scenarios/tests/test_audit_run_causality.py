@@ -230,6 +230,14 @@ class ControlArmTests(unittest.TestCase):
         self.assertEqual(arm["status"], "interpretable")
         self.assertEqual(arm["denominators"], {"checkout_count": 120})
 
+    def test_unrelated_count_signal_is_not_mistaken_for_a_denominator(self) -> None:
+        # F05-R 회귀: `restart_count`(파드 재시작 횟수)를 분모로 오인해 "해석 불가"를
+        # "해석 가능"으로 뒤집었다. 접미사가 아니라 이름 줄기가 맞아야 한다.
+        run = {"ticks": [tick(0, "t", {}, {"checkout_5xx_rate_baseline": {"value": 0.0},
+                                           "restart_count": {"value": 3}})]}
+        arm = audit.control_arm(run, 0)
+        self.assertEqual(arm["status"], "uninterpretable")
+
     def test_absent_control_arm_is_reported_as_absent(self) -> None:
         run = {"ticks": [tick(0, "t", {}, {"order_p95": {"value": 1.0}})]}
         self.assertEqual(audit.control_arm(run, 0)["status"], "absent")
