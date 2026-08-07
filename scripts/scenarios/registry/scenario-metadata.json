@@ -1337,6 +1337,7 @@
       "injected_fault": {
         "profile": null,
         "companions": [
+          "k8s.env",
           "load.north_south"
         ],
         "levels": [
@@ -5623,9 +5624,7 @@
       },
       "injected_fault": {
         "profile": "db.table_readonly",
-        "companions": [
-          "load.north_south"
-        ],
+        "companions": [],
         "levels": [
           {
             "id": "approved-fixed-f14-p",

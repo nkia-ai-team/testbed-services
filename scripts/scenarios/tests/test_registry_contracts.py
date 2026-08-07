@@ -183,6 +183,13 @@ class RegistryContractTests(unittest.TestCase):
         정규식이 따라오지 않아, F06-P·F02-H·F10-H·F10-P·F15-H·F15-T2·F14-P 일곱이
         `scenario_tag is not allowlisted` 로 죽었다. 정리도 같은 검증을 거치므로
         런이 스스로 씻지 못하고 전역 DIRTY 가 된다(2026-08-03).
+
+        2026-08-07: 검사를 **양방향**으로 넓혔다. 한쪽만 보던 탓에 반대 방향 드리프트가
+        살아남았다 — F14-P 는 위 2026-08-03 수리 때 정규식에 들어갔는데, 그 뒤
+        companion 이 빠지면서 `allowed_scenarios` 에서는 사라지고 정규식에만 남았다.
+        fail-closed 라 실행은 막히지만(allowlist 가 먼저 거부한다) 계약 안에 "이
+        시나리오는 이 프로파일을 쓴다"는 거짓 흔적이 남는다. 두 목록은 같은 집합을
+        가리켜야 한다.
         """
         for profile_id, profile in self.profiles["profiles"].items():
             contract = profile.get("parameter_contract") or {}
@@ -190,9 +197,10 @@ class RegistryContractTests(unittest.TestCase):
             if not pattern:
                 continue
             compiled = re.compile(pattern)
+            allowed = list(contract.get("allowed_scenarios", []))
             unmatched = [
                 scenario_id
-                for scenario_id in contract.get("allowed_scenarios", [])
+                for scenario_id in allowed
                 if not compiled.fullmatch(f"scenario_id={scenario_id}")
             ]
             self.assertEqual(
@@ -200,6 +208,15 @@ class RegistryContractTests(unittest.TestCase):
                 [],
                 f"{profile_id}: allowed_scenarios 에 있으나 tag_pattern 이 거부한다",
             )
+            # 반대 방향: 정규식이 받아주는데 allowlist 에 없는 시나리오
+            alternation = re.search(r"F\(([^)]*)\)", pattern)
+            if alternation:
+                accepted = {f"F{part}" for part in alternation.group(1).split("|")}
+                self.assertEqual(
+                    sorted(accepted - set(allowed)),
+                    [],
+                    f"{profile_id}: tag_pattern 이 받아주는데 allowed_scenarios 에 없다",
+                )
 
     def test_every_pg_lock_executor_reads_the_pid_from_real_psql_output(self) -> None:
         """pid 추출은 실행기마다 따로 구현돼 있고, 같은 결함이 네 번 반복됐다.

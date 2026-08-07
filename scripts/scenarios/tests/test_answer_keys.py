@@ -64,6 +64,53 @@ class AnswerKeyContractTests(unittest.TestCase):
                 scenario_id,
             )
 
+    def test_stated_companions_agree_with_controller_and_catalog(self) -> None:
+        """정답지가 말하는 companion 은 실제로 주입되는 것이어야 한다.
+
+        `levels` 는 test_stated_injection_matches_the_live_controller 가 컨트롤러와
+        대조하는데 **companions 는 아무도 대조하지 않았다.** 2026-08-07 감사에서
+        둘이 나왔다:
+
+          F05-R: 정답지가 `[load.north_south]` 만 적었으나 실제는
+                 `[k8s.env, load.north_south]` 다. 같은 레코드 안의 injection_summary
+                 는 "k8s.env companion 이 JAVA_TOOL_OPTIONS 에…"라고 정확히 쓴다 —
+                 산문이 맞고 구조화 필드가 틀렸다. 그 k8s.env 가 힙을 고정하는
+                 두 번째 레버라 이걸 빠뜨리면 정답지가 주입의 절반을 감춘다.
+          F14-P: 주입하지도 않는 companion 을 주장했다(실제 companion_refs 는 비었고
+                 산문도 "부하는 baseline loadgen 이 공급한다"고 쓴다).
+
+        디스패치는 이 필드를 읽지 않지만(러너는 plan 의 companion_profile_ids 를
+        쓴다) 캡처 케이스에 실려 sha256 으로 봉인되므로 채점자가 읽는 면이다.
+
+        카탈로그까지 세 면을 함께 본다 — `catalog.profiles` 는 primary 를 맨 앞에
+        둔 전체 목록이므로 `[primary] + companions` 와 정확히 같아야 한다.
+        """
+        problems: list[str] = []
+        for scenario_id in sorted(self.active):
+            controller = self.controllers.get(scenario_id)
+            if controller is None:
+                continue
+            profile = controller["profile"]
+            companions = list(profile.get("companion_refs") or [])
+            stated = (self.metadata[scenario_id].get("injected_fault") or {}).get(
+                "companions"
+            )
+            if stated is None:
+                problems.append(f"{scenario_id}: injected_fault.companions 가 없다")
+            elif list(stated) != companions:
+                problems.append(
+                    f"{scenario_id}: 정답지 companions={list(stated)} 인데 "
+                    f"컨트롤러 companion_refs={companions}"
+                )
+            declared = list(self.catalog[scenario_id]["profiles"])
+            expected = [profile["primary_ref"], *companions]
+            if declared != expected:
+                problems.append(
+                    f"{scenario_id}: catalog.profiles={declared} 인데 "
+                    f"[primary]+companions={expected}"
+                )
+        self.assertFalse(problems, "\n".join(problems))
+
     def test_no_two_scenarios_claim_the_same_injection(self) -> None:
         # The F21-P / F09-R defect: one injection, two contradictory answers.
         by_fingerprint: dict[str, list[str]] = {}
