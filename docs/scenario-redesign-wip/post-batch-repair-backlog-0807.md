@@ -538,11 +538,12 @@ F01-P/F17-R 쌍은 성공 조건 **두 개가 완전히 일치**한다. 정답�
 
 ---
 
-## K. 스킵 9건 전수 규명 완료
+## K. 스킵 10건 전수 규명 완료
 
 | 시나리오 | 이력 | 계열 | 이번 주기 |
 |---|---|---|---|
 | F18-P | 0승 5패 | 자기 부하가 자기 감별자를 켬 + 아웃박스 교차 배수 | **가능** (§A·§B) |
+| **F25-H** | 0승 5패 | **전환 비원자성** + 주입 무효(192Mi로 안 죽음) | **R1 가능**, R2 실측 선행 (§N) |
 | F19-P·F19-S | — | 대조군이 주입 구성요소를 공유 | **가능** (감별자 제거) |
 | F20-R | 0승 6패 | 도달 불가 임계 + 부하 수명 소진 | **가능하되 실측 선행** (§I·§J) |
 | **F11-R** | 5승 1패 (간헐) | **기존 범주 재발** — `60fc295` | **가능** |
@@ -831,6 +832,99 @@ commerce-order percentile95 게이지, 평시 5분:  min 3.17  max 348.63   ← 
 | **1** | 노드 메모리 게이지 blind | **2** (F05-P, **F15-P 미실행**) | 템플릿 한 줄 | **이번 주기 필수** |
 | **2** | APM p95 표본 부족 | **19** (위험군 8) | 설계 필요 | 이번 주기 **완화만**, 임계 재보정은 다음 |
 | 3 | `kcm.pod.*_by_*` 세 변형 | 0 (미사용) | — | 기록만 |
+
+---
+
+## N. F25-H — 일곱째 계열: **레벨 전환이 원자적이지 않다**
+
+`F25-H-run-4771bc5b` (2026-08-07 20:40:53Z~20:46:03Z UTC), `dirty`, `result.json` 부재.
+```
+reason:  cleanup_failed after level_transition_cleanup_failed
+cleanup: {"succeeded": false, "reason": "load.north_south:recovery failed"}
+```
+
+> ⚠ 이 런 디렉터리의 파일 mtime은 **KST**로 표시된다(`08-08T05:46` = UTC `20:46`). 런 내부 타임스탬프는 UTC.
+
+### `776d993` 형태가 **아니다** (확정)
+
+evaluating **16틱 전수**: `pg_restart_count` 0, `pg_termination_reason` `"None"`, `checkout_5xx_rate` 0.0,
+`pod_ready` True, `target_health` 200. **`streaks: {}` — success도 abort도 한 틱도 못 찼다.**
+
+`pg_restart_count`가 success(`>=1`)·abort(`>=6`)·escalate(`<1`) 세 곳에 쓰이는 **위험 구조는 실재**하지만
+(등재는 유효), restart가 0에서 안 움직여 **이번 스킵의 원인은 아니다.**
+abort 예산이 6으로 success(1)보다 훨씬 높아 여유가 큰 점도 F15-T1(1 대 3)과 다르다.
+
+### 층 1 — 주입이 아무 효과도 못 냈다 (확정)
+`squeeze-192mi`는 `testbed-postgres` memory limit을 512Mi → 192Mi로 조인다.
+**16틱(약 4.5분) 내내 restart 0, OOMKill 0, checkout 5xx 0.0.**
+**192Mi로는 postgres가 죽지 않는다.** → escalate(`restart_count < 1`, 3틱) 성립 → 승격 시도 → 거기서 dirty.
+**사다리 첫 단이 너무 약하다** — F20-R의 층 2(rps 1)와 같은 형태.
+
+### 층 2 — dirty의 진짜 원인: 종료 검증이 너무 이르다
+
+`mutations.json`:
+```
+20:45:39  transition-cleanup  k8s.resource       → 20:45:44 완료
+20:45:44  transition-cleanup  load.north_south   → 20:45:52 완료
+          ↑ 이 직후 recovery 검증 실패 → dirty
+```
+
+`load_north_south_executor.py`의 recovery:
+```bash
+recovery)  check_read_only;  [[ -z "$(tagged_pids)" ]]  ;;   # 태그된 k6가 하나도 없어야 한다
+```
+**k6에 종료를 요청한 직후 곧바로 "프로세스가 전부 사라졌는가"를 검증한다.** k6는 종료에 수 초가 걸린다.
+
+### 일곱째 계열 — 전환 계약 결함형
+
+> 레벨 승격 시 `_cleanup_for_level_transition()` → `_apply_current_level()` 시퀀스가 **원자적이지 않아,
+> 끄는 도중·끈 직후에 판정이나 검증이 끼어들면 런이 죽는다.**
+
+**오늘의 미규명 조각 셋을 함께 덮는다:**
+
+| 사례 | 무엇이 끼어들었나 | 결과 |
+|---|---|---|
+| **F25-H** | companion 종료 검증이 k6 종료 지연을 안 기다림 | `dirty` |
+| **F20-R-0c92dfd2** | cleanup→apply 공백에 판정 틱이 겹침 | `decision_observation_unavailable` |
+| **F03-P-27f6eee2** | 동일 (91초 공백) | 〃 |
+
+셋 다 **`level_index`는 올랐는데 `level_changes`에 새 항목이 없다**는 같은 서명.
+**§J(부하 수명 소진)와 다르다** — J는 부하가 수명이 다해 자연 종료한 것이고, 이건 **의도적으로 껐다 켜는 사이**다.
+증상(관측 부재)이 겹쳐 사인만으로는 구분되지 않는다.
+
+### 이력 — 5런 0승, F20-R과 같은 위장 패턴
+`safety_observation_unavailable` ×3 → `evaluation_level_timeout` ×1 → `dirty` ×2.
+**"주입이 효과가 없다"는 하나의 사실이 사인을 세 번 바꿔가며 나타났다.**
+
+### 재고 수리는 효과가 있었다 — 그러나 `_note` 가설은 거짓 (확정된 반증)
+
+수리 전(`af660719`) 대 오늘(`4771bc5b`):
+
+| 신호 | 수리 전 | **오늘** |
+|---|---|---|
+| `entry_status` 409 비율 | 12/14 = **86%** | 5/16 = **31%** |
+| `checkout_5xx_rate_baseline` | 0.1176 ×1, 0.0 ×13 | **전 16틱 0.0** |
+| 종료 사유 | `cleanup_failed after ...` | **동일** |
+
+**`ReconciliationBatch` 60초·target 60 수리는 실측으로 효과가 확인됐다.**
+recovery 조건 `checkout_5xx_rate_baseline < 0.05`를 이제 여유 있게 만족한다.
+
+**그런데 레지스트리 `_note`에 내가 남긴 가설 — "평시 재고가 0에 닿지 않으면 이 dirty도 함께 풀릴 것"— 은 거짓이다.**
+전제(재고 0 해소)는 참으로 확인됐지만 결론이 틀렸다. **dirty의 원인이 409가 아니라 companion 종료 검증이었다.**
+`_note`의 recovery 조건 셋은 마지막 틱에서 **전부 만족**한다 — 실패한 것은 컨트롤러 recovery가 아니라 **실행기 recovery**다.
+→ **`_note` 갱신 대상.** 조건 자체는 그대로 두는 게 맞고(전역 계약 판단은 유효), **인과 서술만 정정**한다.
+※ entry 409가 31% 남은 원인은 미조사.
+
+### 수리
+1. **R1 (이번 주기 가능)** — `load.north_south` recovery의 `tagged_pids` 검사를 **즉시 판정 → 폴링·타임아웃**으로.
+   실행기 스크립트 한 곳. **사다리 2단 이상이면서 north_south를 companion으로 쓰는 시나리오는 매 승격마다 이 지뢰를 밟는다**(정확한 수 미집계).
+   **dirty는 시터 액션을 소비한다** — 오늘 2회 소비됐다. R1이 그 소모를 막는다.
+2. **R2 (실측 선행)** — 사다리 첫 단 재설계. 192Mi로 안 죽으니 실제로 죽는 값을 찾아야 한다.
+   ⚠ **F05-P의 교훈이 적용된다**: 너무 낮추면 기동 중 OOM으로 트래픽을 한 건도 못 받고 crashloop한다
+   (F05-R success `_note`가 같은 함정을 기록). **"부하 중 OOM은 나되 기동은 되는" 구간을 실측으로 찾을 것.**
+   **R1 → R2 순서** — R1을 안 고치면 사다리를 올릴 때마다 또 dirty가 난다.
+3. **별도 항목**: 전환을 원자적으로 만든다(새 레벨 먼저 적용 후 이전 정리, 또는 전환 구간을 판정에서 제외).
+   러너 판정 로직 변경이라 무겁다.
 
 ---
 
