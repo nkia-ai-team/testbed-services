@@ -449,6 +449,31 @@ F05-R·F11-R `lt 30` / **F07-H `surge-not-achieved lt 100`(target 160)**
 
 **→ 건당 비용이 오르면 A는 침묵하고 B는 비명을 지른다.**
 
+### F06-P 실증 — 기전이 완전히 드러났다 (확정, `F06-P-run-2775cd4f`)
+
+`aborted / must_rule_out_detected`, level 0, **streaks: success 16 · must_rule_out 2**.
+
+```
+must_rule_out.any:  {"id": "load-not-delivered", "observation": "achieved_rps", "op": "lt", "value": 15}
+success.all:        {"id": "order-create-rejected", "observation": "order_create_429_rate", "op": "gte", "value": 0.3}
+                    consecutive_ticks: 3
+```
+
+**실측 `achieved_rps`: min 2.19 / max 5.07 — 29/29 evaluating 틱 전부 15 미만.**
+설계 부하가 5rps인데 감별자 하한이 15다. **주입과 무관하게 매 틱 참이다.**
+
+**왜 success 16이 쌓이고도 죽었는가 — 오늘 문서화한 비대칭이 그대로 작동했다:**
+1. settle+min_hold 동안 **success 스트릭은 쌓이고**(16), must_rule_out 스트릭은 매 틱 리셋된다(`_drop_pending_streaks`)
+2. min_hold 만료 → must_rule_out이 충전되기 시작
+3. 첫 틱: mro 미확정이지만 `raw_ruleout=True`라 **`safety_pending`이 success 확정을 막는다**
+4. 둘째 틱: mro 확정 → abort. **success는 조건을 16틱이나 만족하고도 한 번도 평가되지 못했다**
+
+> 마지막 틱: `order_create_429_rate` **1.0**(임계 0.3) · `order_create_5xx_rate` 0.0 · `pod_ready` 1 · `target_health` 200.
+> **주입은 완벽하게 작동했다.** 죽인 것은 설계 부하보다 높은 감별자 하한 하나다.
+
+**독립 수렴 세 번째다** — 배포 전 판단, `achieved_rps` 전수 감사(§F 계열 B), 그리고 이 실증.
+수리는 §F의 계열 B 항목과 동일하다(하한을 설계 부하 아래로 내리거나 지표를 로드젠 생존으로 교체).
+
 ### 이미 알고 있던 것과의 수렴
 **F06-P·F15-H는 target 5인데 임계가 `lt 15`** — 정상 동작 중에도 조건이 성립한다.
 이건 배포 전부터 대기 중이던 항목("설계 부하 5rps vs `lt 15` — 항상 발화")과 **독립적으로 같은 결론**에 도달했다.
@@ -560,13 +585,14 @@ F03-H가 실증했다 — 강도를 올리니 대조 팔 결함이 드러났다.
 
 ---
 
-## K. 스킵 11건 전수 규명 완료
+## K. 스킵 12건 전수 규명 완료
 
 | 시나리오 | 이력 | 계열 | 이번 주기 |
 |---|---|---|---|
 | F18-P | 0승 5패 | 자기 부하가 자기 감별자를 켬 + 아웃박스 교차 배수 | **가능** (§A·§B) |
 | **F25-H** | 0승 5패 | **전환 비원자성** + 주입 무효(192Mi로 안 죽음) | **R1 가능**, R2 실측 선행 (§N) |
 | **F03-H** | 0승 3패 | **F19형 — 강도 의존적** (L2에서만 대조 팔 오염) | **가능** — #11에 합류 (§O) |
+| **F06-P** | — | **감별자 하한(15) > 설계 부하(5rps)** — 29/29 틱 상시 발화 | **가능** — §F 계열 B |
 | F19-P·F19-S | — | 대조군이 주입 구성요소를 공유 | **가능** (감별자 제거) |
 | F20-R | 0승 6패 | 도달 불가 임계 + 부하 수명 소진 | **가능하되 실측 선행** (§I·§J) |
 | **F11-R** | 5승 1패 (간헐) | **기존 범주 재발** — `60fc295` | **가능** |
