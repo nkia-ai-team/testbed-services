@@ -4346,7 +4346,7 @@
     },
     "F23-R": {
       "title": "재입고 배치 정지 — 재고가 말라 체크아웃이 409로 실패하는 조용한 기능마비",
-      "description": "inventory-service의 재조정 배치는 10분마다 재고를 대사하고 기준치(20) 미만인 상품을 target(200)으로 보충한다. 이 배치를 사실상 멈추면 상주 부하가 재고를 계속 소비하는데 보충이 없어 재고가 단조 감소해 0에 닿고, 예약이 409 CONFLICT로 실패한다. 409는 4xx라 서킷브레이커도 열리지 않고 5xx 알람도 울리지 않는다 — **정상적인 재고 소진과 코드가 완전히 같다**. 이 케이스가 요구하는 것은 같은 상태코드를 만드는 두 원인을 재고 시계열의 모양으로 가르는 일이다.",
+      "description": "inventory-service의 재조정 배치는 1분마다 재고를 대사하고 기준치(20) 미만인 상품을 target(60)으로 보충한다. 이 배치를 사실상 멈추면 상주 부하가 재고를 계속 소비하는데 보충이 없어 재고가 단조 감소해 0에 닿고, 예약이 409 CONFLICT로 실패한다. 409는 4xx라 서킷브레이커도 열리지 않고 5xx 알람도 울리지 않는다 — **정상적인 재고 소진과 코드가 완전히 같다**. 이 케이스가 요구하는 것은 같은 상태코드를 만드는 두 원인을 재고 시계열의 모양으로 가르는 일이다.",
       "cause": "inventory.reconciliation.interval-ms를 극단값으로 늘려 ReconciliationBatch.run 정지 → loadgen이 재고를 계속 소비하나 RESTOCK 미실행 → inventory.stock 단조 감소 → 0 도달 → InventoryService.reserve가 409 CONFLICT 'Insufficient stock' → order ProductClient가 4xx를 ClientErrorException으로 분리해 CB에 집계하지 않고 그대로 전파 → 체크아웃 409 급증",
       "injection_summary": "k8s.env executor가 testbed-inventory의 SPRING_APPLICATION_JSON에 inventory.reconciliation.interval-ms=999999999를 주입하고 rollout해 배치를 사실상 정지시킨다. 재고 값을 직접 조작하지 않는 것이 핵심이다 — 고갈은 상주 loadgen의 **자연 소비**로 진행된다. cleanup은 env 원복 후 rollout이며, 재고는 배치가 되살아나면서 자연 복원된다.",
       "user_impact": "체크아웃이 재고 부족 409로 실패한다. inventory 서비스 자체는 파드 Ready에 조회도 200이라 가용성 지표는 완전히 정상이고, 409는 4xx라 5xx·서킷브레이커·표준 알람이 모두 조용하다. 겉으로는 '수요가 몰려 품절된 것'처럼 보이지만 실제로는 보충이 멈춘 기능 마비다.",
@@ -4364,9 +4364,9 @@
         "trigger_target_id": "commerce-order",
         "mechanism": "결함 보유 대상은 inventory-service의 재조정 배치다. ReconciliationBatch.run은 @Scheduled(fixedDelayString=\"${inventory.reconciliation.interval-ms:600000}\")로 10분마다 돌며, 대사 단계에 이어 재고가 restockThreshold(20) 미만인 상품을 restockTarget(200)으로 올리고 RESTOCK movement를 원장에 남긴다. 이 배치가 멈추면 소비만 남는다 — 상주 체크아웃 부하가 예약할 때마다 재고가 줄고 되돌아오지 않는다. 재고가 0에 닿으면 InventoryService.reserve가 stock < quantity 조건에서 409 CONFLICT를 던지고, order의 ProductClient는 4xx를 ClientErrorException으로 분리해 **서킷브레이커 실패 집계에서 제외**하므로 CB는 끝까지 닫혀 있다. checkout도 4xx는 그대로 전파하도록 돼 있어 사용자에게 409가 그대로 도달한다. 즉 모든 방어 장치가 '이건 정상 업무 거절'이라고 판단하며, 실제로 코드상 그 판단은 옳다 — 틀린 것은 재고가 왜 0인지에 대한 전제이며, 그 전제는 재고 시계열에서만 반증된다.",
         "code_anchor": [
-          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java:46-48 (@Scheduled(fixedDelayString = \"${inventory.reconciliation.interval-ms:600000}\") run — 주입이 이 주기를 극단값으로 늘린다)",
-          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java:73-90 (restockThreshold 미만을 restockTarget으로 보충하고 RESTOCK movement를 남기는 단계)",
-          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java:33-39 (restockThreshold 20 / restockTarget 200 — 톱니파의 아래·위 경계)",
+          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java:69-71 (@Scheduled(fixedDelayString = \"${inventory.reconciliation.interval-ms:60000}\") run — 주입이 이 주기를 극단값으로 늘린다)",
+          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java:96-113 (restockThreshold 미만을 restockTarget으로 보충하고 RESTOCK movement를 남기는 단계)",
+          "commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java:53-59 (restockThreshold 20 / restockTarget 60 — 톱니파의 아래·위 경계)",
           "commerce/inventory-service/src/main/java/com/commerce/inventory/service/InventoryService.java:74-81 (reserve — stock 부족 시 409 CONFLICT 'Insufficient stock')",
           "commerce/order-service/src/main/java/com/commerce/order/client/ProductClient.java:35-41 (4xx를 ClientErrorException으로 분리 — 서킷브레이커가 열리지 않는 이유)",
           "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient 실패 처리 분기 — 4xx는 502로 바꾸지 않고 그대로 전파한다)"

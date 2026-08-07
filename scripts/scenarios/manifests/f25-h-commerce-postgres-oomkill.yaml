@@ -314,7 +314,7 @@
               "observation": "checkout_5xx_rate_baseline",
               "op": "lt",
               "value": 0.05,
-              "_note": "이 조건은 완화하지 않는다. run af660719에서 레벨 전환 recovery가 commerce 입구의 baseline 409 flakiness에 걸려 dirty로 끝났지만, 회복 검증은 전역 계약이라 여기서 느슨하게 하면 이 시나리오 하나가 아니라 뒤따르는 모든 런의 clean-window가 거짓이 된다. 409는 주입과 무관한 baseline 입구의 문제이므로 그쪽에서 고쳐야 한다 — 여기서는 관찰만 기록한다(2026-08-07)."
+              "_note": "이 조건은 완화하지 않는다. run af660719에서 레벨 전환 recovery가 commerce 입구의 baseline 409 flakiness에 걸려 dirty로 끝났지만, 회복 검증은 전역 계약이라 여기서 느슨하게 하면 이 시나리오 하나가 아니라 뒤따르는 모든 런의 clean-window가 거짓이 된다. 409는 주입과 무관한 baseline 입구의 문제이므로 그쪽에서 고쳐야 한다. 2026-08-07 후속: 그 입구 문제의 정체가 재고 공급 버스트로 확인됐고(소비 ~110 units/min 대 10분 주기 배치, flagship 16종 전부 stock=0 실측) ReconciliationBatch를 60초 주기·target 60으로 재척도했다. 평시 재고가 0에 닿지 않으면 이 dirty도 함께 풀릴 것으로 본다 — 다만 이는 아직 가설이며 재배치 후 런으로 확인해야 한다. 확인 전까지 이 조건은 그대로 둔다."
             }
           ],
           "consecutive_ticks": 2,

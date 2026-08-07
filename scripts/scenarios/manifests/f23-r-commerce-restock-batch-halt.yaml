@@ -265,7 +265,7 @@
               "schema": "inventory_schema",
               "table": "inventory_movements",
               "movement_type": "RESTOCK",
-              "window_minutes": 12
+              "window_minutes": 5
             },
             "freshness": "60s"
           }
@@ -305,7 +305,8 @@
               "id": "restock-still-running",
               "observation": "restock_movement_count",
               "op": "gt",
-              "value": 0
+              "value": 0,
+              "_note": "룩백 창 12m → 5m. 이 값은 감별력을 깎는 완화가 아니라 배치 주기에 맞춘 재척도다 — 12분은 종전 주기 10분에 맞춰 잡힌 값이었고, 2026-08-07에 주기가 60초로 바뀌면서 낡은 척도가 됐다. 5분은 새 주기의 5배라 배치가 계속 돌고 있으면 창 안에 ~5개 행이 들어오므로 '정지 명령이 먹지 않았다'를 여전히 넉넉히 잡는다. 줄이지 않으면 오히려 오발화한다: 주기 60초에서는 주입 직전과 k8s.env 롤아웃 중(구 파드가 수십 초 더 산다)에 RESTOCK 행이 거의 확실히 쓰이고, t=+60s 행은 12분 창에서 t=13m까지 남는다. 판정은 min_hold 12m에 열리므로 그 행 하나가 15초 틱 5개를 덮어 3연속 요건을 넘겨 실격시킨다. 5분이면 t≤+60s 행이 6분에 창을 빠져나가 판정 시작까지 5.5분 여유가 생긴다. 주기·min_hold·이 창은 함께 움직여야 한다(ReconciliationBatch javadoc의 제약 3항)."
             }
           ],
           "consecutive_ticks": 3
