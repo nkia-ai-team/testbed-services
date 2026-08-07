@@ -33,6 +33,7 @@ class AnswerKeyContractTests(unittest.TestCase):
         cls.catalog = {row["id"]: row for row in _load("catalog.json")["scenarios"]}
         cls.controllers = _load("registry/controllers.json")["controllers"]
         cls.metadata = _load("registry/scenario-metadata.json")["scenarios"]
+        cls.profiles = _load("registry/profiles.json")
         # parked과 cut은 실행 집합 밖이라 정답지를 요구하지 않는다. 둘을 나눈 이유는
         # 회생 가능성이지 정답지 의무가 아니므로, 여기서는 같은 취급이다.
         cls.active = {
@@ -139,6 +140,43 @@ class AnswerKeyContractTests(unittest.TestCase):
                 )
                 checked += 1
         self.assertGreater(checked, 0, "no code anchors were verifiable")
+
+    def test_injection_summary_names_a_profile_the_scenario_actually_binds(self) -> None:
+        # 정답지 산문이 실제로 주입하지 않는 실행기를 설명하고 있었다(2026-08-07 실측 3건).
+        # 구조화된 injected_fault.levels 는 컨트롤러와 대조되지만 산문은 아무도 안 봐서
+        # 조용히 낡는다 — 그런데 데이터셋을 채점하는 사람이 읽는 것은 산문 쪽이다.
+        #   F12-H: "k8s.resource" 라고 적었으나 실제 primary 는 k8s.patch
+        #   F15-R: "timeline.flap" — 레지스트리에 아예 없는 프로파일 이름
+        #   F18-P: "k8s.env … rollout" — e1f17b6 이 버린 옛 설계 그대로. 그 설계는
+        #          maxSurge=0 에서 자기 감별자를 켜서 폐기된 것이라 특히 오도적이다.
+        # 산문이 primary 대신 companion 을 먼저 소개하는 것은 정상이다(F11-R) —
+        # 그래서 검사는 "바인딩된 프로파일 중 하나인가"이지 "primary 인가"가 아니다.
+        known_profiles = set(self.profiles["profiles"])
+        for scenario_id in sorted(self.active):
+            summary = self.metadata[scenario_id].get("injection_summary")
+            if not summary:
+                continue
+            match = re.match(r"\s*([a-z0-9][a-z0-9._]*)\s+executor", summary)
+            if match is None:
+                continue
+            named = match.group(1)
+            self.assertIn(
+                named,
+                known_profiles,
+                f"{scenario_id}: injection_summary names profile {named!r}, "
+                "which is not in the profile registry",
+            )
+            controller = self.controllers.get(scenario_id)
+            if controller is None:
+                continue  # 컨트롤러가 없는 활성 항목은 바인딩을 대조할 대상이 없다
+            profile = controller["profile"]
+            bound = {profile["primary_ref"], *(profile.get("companion_refs") or [])}
+            self.assertIn(
+                named,
+                bound,
+                f"{scenario_id}: injection_summary names {named!r} but the scenario "
+                f"binds {sorted(bound)}",
+            )
 
 
 if __name__ == "__main__":
