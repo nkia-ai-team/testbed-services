@@ -5804,7 +5804,8 @@
             "id": "order-create-5xx",
             "observation": "order_create_5xx_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 0.5,
+            "_note": "dispatch 노이즈 상한은 0.098이다(run 4957e483 트레이스 직독: POST /api/orders 200=358·429=33·400=5·503=43 → 43/439). 그 503은 주입과 무관하게 dispatch-service 자체 500에서 오며 OrderService가 checkCapacity·dispatchCourier 실패를 무조건 503으로 바꾼다(OrderService.java:94-112, DispatchClient.java:66-79). 임계 0.1은 이 노이즈 바로 위라 '주입 없이도 성공이 설 수 있는' 거짓 양성 구조였다. 실측 주입 피해는 그보다 한 자릿수 위다 — run d68b4fb3의 평가 틱에서 0.73→0.99로 올라 0.93~0.98에 머문다. 0.5는 노이즈의 5배이면서 주입 정상구간의 절반이라 양쪽에서 안전하다. AND를 하나 더 붙이는 방식은 쓰지 않는다 — c887e20이 이미 order_hikari_pending을 뺐고(mock이 경로를 대신해 풀 대기가 구조적으로 안 움직인다) 그 판단은 유효하다. 질문 '주입 없이 이 조건이 설 수 있는가'의 답은 이제 '없다'이다."
           }
         ],
         "consecutive_ticks": 3
@@ -5992,7 +5993,8 @@
             "id": "order-502-propagated",
             "observation": "order_create_5xx_rate",
             "op": "gte",
-            "value": 0.1
+            "value": 0.5,
+            "_note": "dispatch 노이즈 상한은 0.098이다(run 4957e483 트레이스 직독: POST /api/orders 200=358·429=33·400=5·503=43 → 43/439). 그 503은 주입과 무관하게 dispatch-service 자체 500에서 오며 OrderService가 checkCapacity·dispatchCourier 실패를 무조건 503으로 바꾼다(OrderService.java:94-112, DispatchClient.java:66-79). 임계 0.1은 이 노이즈 바로 위라 '주입 없이도 성공이 설 수 있는' 거짓 양성 구조였다. 실측 주입 피해는 run b7d83934의 평가 틱 41개 전부가 0.913~1.0으로, 최솟값조차 노이즈의 9배다. 0.5는 그 아래로 충분히 떨어져 있다. payment_error_rate를 두 번째 AND로 되살리지 않는 이유도 같은 런에 있다 — 초반 3틱만 66.67이고 이후 내내 0.0이다. 서킷이 열리면 payment가 PG를 부르지 않고 즉시 반려하므로 자기 오류율이 사라진다(c887e20의 '구조적으로 움직이지 않는다'가 실측으로 확인된다). 감별자로서의 payment_error_rate는 must_rule_out에 두는 것이 맞고 성공 조건에는 둘 수 없다. 질문 '주입 없이 이 조건이 설 수 있는가'의 답은 이제 '없다'이다."
           }
         ],
         "consecutive_ticks": 3
