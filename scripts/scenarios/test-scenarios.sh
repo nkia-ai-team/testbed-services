@@ -51,8 +51,13 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 발화시킬 쓰기 실패다. ledger_entries만 READ ONLY로 뒤집는다(db.table_readonly 신설).
 # 짝인 F14-R은 같은 심사에서 반증돼 parked로 남았다: 중첩 타임아웃이 안쪽(10s) <
 # 바깥쪽(15s)이라 "커밋됐는데 응답만 유실"이 구조적으로 생기지 않는다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 44 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 11 ]]
+# 2026-08-06: ready 44→41, parked 11→14. c887e20 이 F02-H·F21-P·F21-Q 를 파킹할 때
+# 카탈로그만 옮기고 이 게이트를 안 고쳐서, 그날부터 clean tree 에서도 이 스크립트가
+# exit 1 이었다(0806 배치 수리 중 발견). 셋 다 라이브 두 번이 인과 부재·성공↔감별자
+# 상호배타를 실증한 건이고, 재설계는 별도 트랙(F21 은 app.control 지연 표면 구현 완료,
+# 승격은 사다리 실측 후).
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 41 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 14 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
