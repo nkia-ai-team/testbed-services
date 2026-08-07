@@ -68,9 +68,14 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-08-06: 18 → 19. 9e23a9a 가 F25-H 를 320Mi 고정에서 실측 사다리로 돌리며
 # load_mode 를 adaptive 로 바꿨는데 이 개수를 안 고쳤다. 게이트가 첫 실패에서 멈추는
 # 탓에 위쪽 ready 개수(8d1ef6b)를 고치고 나서야 드러났다 — 같은 계열의 두 번째 누락.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 19 ]]
+# 2026-08-07: 19 → 20. F20-R(d1df8a5). rps 30 고정은 정체성을 위반하고 있었다 —
+# 그 부하에서 order 는 느려진 게 아니라 30초 타임아웃 벽에 처박혔고 헬스체크마저 503 이었다.
+# 쓸 수 있는 띠는 실측상 1 rps 부근이라(단일 풀스캔이 1 rps 에서 이미 p95 1826ms,
+# 2~3 rps 에서 곧장 5xx) 사다리 1·2·3 으로 강등해 런타임이 그 좁은 띠를 찾게 한다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 20 ]]
 # 2026-08-06: 42 → 41. adaptive 의 짝 — F25-H 가 fixed 에서 빠져나갔으므로 함께 움직인다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 41 ]]
+# 2026-08-07: 41 → 40. adaptive 의 짝 — F20-R 이 fixed 에서 빠져나갔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 40 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의
