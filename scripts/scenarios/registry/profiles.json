@@ -127,16 +127,49 @@
       }
     },
     "db.workload": {
-      "executor": "profiles/db-workload.sh",
+      "executor": "profiles/db_workload_executor.py",
       "location_strategy": "fixed",
       "default_location": "tb-runner",
       "allowed_locations": [
         "tb-runner"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "database.tagged_session_count"
-      ]
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F02-H"
+        ],
+        "allowed_modes": [
+          "scan"
+        ],
+        "allowed_targets": [
+          "payment_schema.payment_logs"
+        ],
+        "period_seconds": {
+          "minimum": 1,
+          "maximum": 60
+        }
+      },
+      "scenario_parameters": {
+        "F02-H": {
+          "engine": "postgresql",
+          "access": "in-cluster-pod",
+          "mode": "scan",
+          "namespace": "rca-testbed-commerce",
+          "db_pod": "testbed-postgres-0",
+          "service": "testbed-postgres",
+          "secret": "postgres-secret",
+          "image": "postgres:16-alpine",
+          "schema": "payment_schema",
+          "table": "payment_logs",
+          "client_identity": "PostgreSQL JDBC Driver",
+          "period_seconds": 10,
+          "runtime_seconds": 600,
+          "statement_timeout_seconds": 120
+        }
+      }
     },
     "mock.expectation": {
       "executor": "profiles/mock_expectation_executor.py",

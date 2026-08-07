@@ -49,6 +49,10 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "kafka.control", "k8s.resource", "k8s.probe", "k8s.env", "host.stress", "timeline.multi",
                 # 2026-08-06: F18-P 재설계 — 재기동 없는 DB 플래그 토글(0804 #13 집행).
                 "app.control",
+                # 2026-08-07: F02-H 캐시 무력화 재설계의 companion 주입 표면.
+                # 읽기 전용 광역 스캔 한 모드만 라이브다(F03-P 커넥션 점유 지연은
+                # 기전·자백 양쪽에서 성립하지 않아 별건 — 실행기 docstring 참조).
+                "db.workload",
             },
         )
 

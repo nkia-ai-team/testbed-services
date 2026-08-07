@@ -66,15 +66,29 @@ class DbHostFoundations(unittest.TestCase):
                 self.assertNotIn("pg_sleep", text)
 
     def test_batch_workload_is_read_only_tagged_and_bounded(self) -> None:
-        p = workload.CONTRACTS["F02-G"]
-        workload.validate("F02-G", p, {})
-        _, body = workload.build_invocation(plan("db.workload", "F02-G", p), "run")
+        # 2026-08-07 F02-H 캐시 무력화 재설계로 이 프로파일이 라이브가 되면서, 이 테스트가
+        # 고정하던 세 가지가 전부 뒤집혔다 — 전부 db.lock이 실측으로 금지한 패턴이었다.
+        #   · PGAPPNAME이 `rca-F02-G-batch-heavy-sql` — 시나리오 이름을 세션에 적는 자백.
+        #   · 정리가 `pg_terminate_backend` — 신원이 앱과 같아진 뒤에는 실 서비스 세션을
+        #     죽인다. 정리는 클라이언트 파드 삭제여야 한다.
+        #   · 대상 시나리오 F02-G가 카탈로그에서 사라졌다(계획될 수 없는 시나리오를
+        #     라이브 allowlist에 두는 것은 fail-open이라 계약에서 제거).
+        # 그래서 같은 이름으로 새 계약을 고정한다: 읽기 전용·유한·앱 신원 사칭.
+        scenario_id = "F02-H"
+        p = workload.CONTRACTS[scenario_id]
+        workload.validate(scenario_id, p, {})
+        _, body = workload.build_invocation(plan("db.workload", scenario_id, p), "run")
         text = body.decode()
         self.assertIn("PGAPPNAME", text)
         self.assertIn("statement_timeout", text)
         self.assertIn("SELECT count(*)", text)
+        self.assertIn("default_transaction_read_only = on", text)
         self.assertNotIn("DELETE FROM", text.upper())
-        self.assertIn("pg_terminate_backend", text)
+        self.assertNotIn("pg_terminate_backend", text)
+        self.assertNotIn("pg_sleep", text)
+        self.assertIn("delete pod", text)
+        # 유한성: 파드가 스스로 끝나는 상한(RUNTIME)을 갖는다.
+        self.assertIn("RUNTIME", text)
 
     def test_storage_contracts_use_measured_pvc_workers_and_exact_cleanup(self) -> None:
         # 2026-07-28 nodeSelector 도입 후 실측 배치. 각 도메인 DB가 자기 워커의 장치를

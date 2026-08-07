@@ -37,6 +37,7 @@ db_ddl = load("db_ddl_executor")
 kafka_control = load("kafka_control_executor")
 host_stress = load("host_stress_executor")
 app_control = load("app_control_executor")
+db_workload = load("db_workload_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -443,6 +444,111 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             if module is not None:
                 for level in instance["approved_levels"]:
                     module.validate(plan["scenario"]["id"], level["parameters"], self.profiles[profile_id])
+
+
+    def _db_workload_plan(self) -> dict:
+        """F02-H는 아직 db.workload에 묶여 있지 않다(판정 계약은 실측 후 별건).
+
+        그래서 `compile_plan`으로는 이 프로파일 인스턴스를 얻을 수 없다. 실행기가
+        받는 것과 같은 모양의 계획을 계약 표에서 직접 만든다 — 검증 대상은 계획
+        컴파일러가 아니라 실행기 자신이다.
+        """
+        scenario_id = "F02-H"
+        return {
+            "scenario": {"id": scenario_id},
+            "profile_instances": [
+                {
+                    "profile_id": "db.workload",
+                    "parameters": dict(db_workload.CONTRACTS[scenario_id]),
+                }
+            ],
+        }
+
+    def test_db_workload_contract_matches_the_approved_profile(self) -> None:
+        # 실행기 표와 레지스트리가 갈라지면 주입은 승인되지 않은 값으로 나간다.
+        profile = self.profiles["db.workload"]
+        self.assertTrue(profile["live_supported"])
+        self.assertEqual(
+            sorted(profile["parameter_contract"]["allowed_scenarios"]),
+            sorted(db_workload.CONTRACTS),
+        )
+        for scenario_id, contract in db_workload.CONTRACTS.items():
+            self.assertEqual(profile["scenario_parameters"][scenario_id], contract)
+
+    def test_db_workload_scan_never_confesses_the_injection(self) -> None:
+        # G6/L2. 세 축이 전부 자연 분포 안에 있어야 한다(2026-07-27 캡처 실측).
+        plan = self._db_workload_plan()
+        params = plan["profile_instances"][0]["parameters"]
+        argv, stdin = db_workload.build_invocation(plan, "run")
+        script = stdin.decode()
+
+        # ① 세션 신원이 실제 앱과 같아야 한다 — 시나리오 이름이 새면 그 자체가 정답이다.
+        self.assertEqual(params["client_identity"], "PostgreSQL JDBC Driver")
+        for fragment in db_workload.FORBIDDEN_IDENTITY_FRAGMENTS:
+            with self.assertRaises(ExecutorError):
+                db_workload.validate(
+                    "F02-H", dict(params, client_identity=f"batch-{fragment}-job"), {}
+                )
+
+        # ② 주기 대기는 클라이언트측이어야 한다. 서버측 pg_sleep은 실운영에 없는
+        #    PgSleep 대기를 남겨 주입을 혼자 식별시킨다.
+        self.assertNotIn("pg_sleep", script.lower())
+        self.assertIn('sleep "\\$PERIOD"', script)
+
+        # ③ 질의문이 파드 argv에 실리면 노드 프로세스 수집기가 그대로 캡처한다.
+        #    SQL은 env(SCAN_SQL)로만 들어가고, 러너 argv에도 완성된 SELECT는 없다.
+        self.assertIn("SCAN_SQL", script)
+        self.assertNotIn("SELECT count(*)", " ".join(argv))
+        self.assertNotIn("payment_logs;", " ".join(argv))
+
+    def test_db_workload_stays_read_only_and_inside_the_cluster(self) -> None:
+        plan = self._db_workload_plan()
+        params = plan["profile_instances"][0]["parameters"]
+        script = db_workload.build_invocation(plan, "run")[1].decode()
+
+        # 읽기 전용은 선언이 아니라 서버측 강제여야 한다. 업무 테이블 쓰기·잠금은
+        # F02-H 설계의 명시 금지이고, 잠금은 db.lock의 표면이라 겹치면 원인이 갈리지 않는다.
+        self.assertIn("default_transaction_read_only = on", script)
+        self.assertIn("statement_timeout", script)
+        for banned in ("LOCK TABLE", "FOR UPDATE", "INSERT ", "UPDATE ", "DELETE "):
+            self.assertNotIn(banned, script)
+
+        # 정리는 파드 삭제여야 한다. 신원이 앱과 같아졌으므로 이름으로 쏘는
+        # pg_terminate_backend는 실 서비스 세션을 죽인다(db.lock이 먼저 배운 것).
+        self.assertNotIn("pg_terminate_backend", script)
+        self.assertIn("delete pod", script)
+
+        # 클러스터 밖에서 붙으면 client_addr이 tb-runner의 NAT 주소로 드러난다.
+        with self.assertRaises(ExecutorError):
+            db_workload.validate("F02-H", dict(params, access="tb-runner"), {})
+
+    def test_db_workload_period_is_a_range_not_an_equality(self) -> None:
+        # 사다리가 단마다 주기를 바꾼다. 동일성으로만 검증하면 기본값 아닌 단이
+        # 통째로 거부된다(배치 #12의 재발 형태).
+        params = dict(db_workload.CONTRACTS["F02-H"])
+        for good in (db_workload.MIN_PERIOD_SECONDS, 2, 5, db_workload.MAX_PERIOD_SECONDS):
+            db_workload.validate("F02-H", dict(params, period_seconds=good), {})
+        for bad in (0, -1, db_workload.MAX_PERIOD_SECONDS + 1, "10", 10.0, True, None):
+            with self.assertRaises(ExecutorError):
+                db_workload.validate("F02-H", dict(params, period_seconds=bad), {})
+        # 나머지 키는 여전히 동일성이다 — 대상이 조용히 바뀌면 안 된다.
+        for drift in ("table", "schema", "namespace", "db_pod"):
+            with self.assertRaises(ExecutorError):
+                db_workload.validate("F02-H", dict(params, **{drift: "somewhere-else"}), {})
+
+    def test_db_workload_refuses_unlisted_scenarios_and_modes(self) -> None:
+        params = dict(db_workload.CONTRACTS["F02-H"])
+        with self.assertRaises(ExecutorError):
+            db_workload.validate("F03-P", params, {})
+        with self.assertRaises(ExecutorError):
+            db_workload.validate("F02-H", dict(params, mode="occupy"), {})
+        with self.assertRaises(ExecutorError):
+            db_workload.validate("F02-H", dict(params, engine="mysql"), {})
+        # 레지스트리가 막으면 실행기도 막아야 한다.
+        with self.assertRaises(ExecutorError):
+            db_workload.validate(
+                "F02-H", params, {"parameter_contract": {"allowed_scenarios": ["F09-Z"]}}
+            )
 
 
 if __name__ == "__main__":
