@@ -65,8 +65,12 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-07-28: 13 → 17. 스토리지 IO 3종(F02-H·F10-H·F10-P)과 F15-P를 고정 계약에서
 # 캘리브레이션 사다리로 전환했다. 고정 rate_iops가 장치 능력의 16~21%뿐이라 피해를
 # 낼 수 없었고, 무릎은 정적으로 알 수 없어 런타임이 찾아야 한다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 18 ]]
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 42 ]]
+# 2026-08-06: 18 → 19. 9e23a9a 가 F25-H 를 320Mi 고정에서 실측 사다리로 돌리며
+# load_mode 를 adaptive 로 바꿨는데 이 개수를 안 고쳤다. 게이트가 첫 실패에서 멈추는
+# 탓에 위쪽 ready 개수(8d1ef6b)를 고치고 나서야 드러났다 — 같은 계열의 두 번째 누락.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 19 ]]
+# 2026-08-06: 42 → 41. adaptive 의 짝 — F25-H 가 fixed 에서 빠져나갔으므로 함께 움직인다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 41 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의
@@ -218,8 +222,12 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # 애초에 들어 있지 않았다).
 # 2026-07-29: 29→31. F15-H·F15-T2 승격분(둘 다 bin/ 스크립트를 갖고 있다).
 # 2026-07-29: 31→32. F14-P 승격분(bin/ 스크립트를 이미 갖고 있었다).
-[[ $((ready_live_false + ready_live_true)) -eq 32 ]]
-[[ "$ready_live_true" -eq 32 ]]
+# 2026-08-07: 32→31. c887e20 의 파킹 3종 중 bin/ 스크립트를 가진 것은 F02-H 하나뿐이라
+# (F21-P·F21-Q 는 애초에 이 집합 밖) 하나만 빠진다. 8d1ef6b 가 위쪽 ready 개수를 고치자
+# 드러난 같은 계열의 세 번째 누락이다 — 게이트가 첫 실패에서 멈추므로 낡은 핀은
+# 한 번에 하나씩만 보인다.
+[[ $((ready_live_false + ready_live_true)) -eq 31 ]]
+[[ "$ready_live_true" -eq 31 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then
