@@ -94,64 +94,91 @@ class LiveDocumentBuilder:
             if len(self.iterations) > 1
             else 1.0
         )
+        # 요청이 한 건도 없는 창은 비율 필드를 **싣지 않는다**.
+        #
+        # 종전에는 `... if checkout_count else 0.0`으로 0을 발행했다. 비율의
+        # 분모가 0이면 비율은 정의되지 않는데, 0.0은 "오류가 없었다"로 읽힌다 —
+        # 측정 실패를 정상이라는 값으로 접는 것이다. 2026-08-07 러너에서 같은
+        # 병을 두 번 고쳤다(APM 백분위 게이지의 표본 없는 창, clickhouse 오류율의
+        # `if(count()=0, 0, ...)`). 그 전수 점검이 러너 안에만 닿아서 이 세 번째
+        # 인스턴스는 밖에 남아 있었다.
+        #
+        # 해가 큰 이유는 소비자가 전부 감별자이기 때문이다. F03-P·F19-P·F20-Q·
+        # F06-P·F10-H·F14-P·F16-H는 이 비율들을 must_rule_out으로 읽는다. 서비스가
+        # 죽어 요청이 한 건도 못 나간 창이 "정상"으로 답하면, 배제됐어야 할 교란
+        # 요인이 배제된 것처럼 통과한다.
+        #
+        # 필드를 생략하면 러너의 `_loadgen_observation`이 `document.get(field)`에서
+        # None을 받아 `LiveProbeError`를 던지고 그대로 unusable이 된다. 러너는 한
+        # 줄도 바꿀 필요가 없다.
+        #
+        # `achieved_rps`는 여기 해당하지 않는다 — 분모가 요청 수가 아니라 시간이고,
+        # 0은 "부하가 전달되지 않았다"는 **진짜 측정값**이다. 여러 시나리오가
+        # `achieved_rps < 15`를 must_rule_out으로 읽으므로 이걸 부재로 바꾸면
+        # 감별자가 발화해야 할 때 침묵한다. 정확히 반대 방향의 결함이 된다.
         checkout_count = len(self.checkout_results)
-        business_2xx_rate = (
-            sum(200 <= status <= 299 for _, status in self.checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_4xx_rate = (
-            sum(400 <= status <= 499 for _, status in self.checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_5xx_rate = (
-            sum(status >= 500 for _, status in self.checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_nonok_rate = business_4xx_rate + business_5xx_rate
-        # checkout_5xx_rate is kept for backward compatibility (pre-existing
-        # query_id/consumer contract); business_5xx_rate is its replacement value.
-        checkout_5xx_rate = business_5xx_rate
-        # F23-R decisive evidence: 409 (stock-exhausted) is a subset of the
-        # 4xx bucket that business_nonok_rate can't isolate from other 4xx
-        # causes (e.g. coupon validation) - tracked separately here.
-        business_409_rate = (
-            sum(status == 409 for _, status in self.checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        # F06-P decisive evidence: 429 (downstream rate limit) is another 4xx
-        # subset that business_nonok_rate cannot isolate. Without it a partial
-        # 429 outage is indistinguishable from validation rejects, and
-        # business_5xx_rate is blind to it entirely - the app propagates the
-        # downstream status verbatim rather than promoting it to 5xx.
-        business_429_rate = (
-            sum(status == 429 for _, status in self.checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
+        read_count = len(self.read_results)
         document = {
             "achieved_rps": len(self.iterations) / span,
             "entry_status": self.entry_status,
-            "checkout_5xx_rate": checkout_5xx_rate,
-            "business_2xx_rate": business_2xx_rate,
-            "business_4xx_rate": business_4xx_rate,
-            "business_5xx_rate": business_5xx_rate,
-            "business_409_rate": business_409_rate,
-            "business_429_rate": business_429_rate,
-            "business_nonok_rate": business_nonok_rate,
+            # 비율이 몇 개의 요청 위에서 계산됐는지 — 게이트가 표본 수를 알아야
+            # 최소 표본 가드를 걸 수 있다. 2026-08-07 실측: 대조 팔의 창당 요청이
+            # 2~15건이라 p≈0.3에서 표준오차가 ~0.20이었다. 그 분모가 문서에 없어서
+            # 소비자는 0.33이 1/3인지 100/300인지 구분할 수 없었다.
+            "checkout_count": checkout_count,
             "business_ok": self.entry_status in {200, 400, 409},
             "observed_at": self.last_stamp.astimezone(datetime.timezone.utc)
             .isoformat()
             .replace("+00:00", "Z"),
         }
+        if checkout_count:
+            business_2xx_rate = (
+                sum(200 <= status <= 299 for _, status in self.checkout_results) / checkout_count
+            )
+            business_4xx_rate = (
+                sum(400 <= status <= 499 for _, status in self.checkout_results) / checkout_count
+            )
+            business_5xx_rate = (
+                sum(status >= 500 for _, status in self.checkout_results) / checkout_count
+            )
+            # F23-R decisive evidence: 409 (stock-exhausted) is a subset of the
+            # 4xx bucket that business_nonok_rate can't isolate from other 4xx
+            # causes (e.g. coupon validation) - tracked separately here.
+            business_409_rate = (
+                sum(status == 409 for _, status in self.checkout_results) / checkout_count
+            )
+            # F06-P decisive evidence: 429 (downstream rate limit) is another 4xx
+            # subset that business_nonok_rate cannot isolate. Without it a partial
+            # 429 outage is indistinguishable from validation rejects, and
+            # business_5xx_rate is blind to it entirely - the app propagates the
+            # downstream status verbatim rather than promoting it to 5xx.
+            business_429_rate = (
+                sum(status == 429 for _, status in self.checkout_results) / checkout_count
+            )
+            document.update(
+                {
+                    # checkout_5xx_rate is kept for backward compatibility
+                    # (pre-existing query_id/consumer contract);
+                    # business_5xx_rate is its replacement value.
+                    "checkout_5xx_rate": business_5xx_rate,
+                    "business_2xx_rate": business_2xx_rate,
+                    "business_4xx_rate": business_4xx_rate,
+                    "business_5xx_rate": business_5xx_rate,
+                    "business_409_rate": business_409_rate,
+                    "business_429_rate": business_429_rate,
+                    "business_nonok_rate": business_4xx_rate + business_5xx_rate,
+                }
+            )
         if self.read_step:
-            read_count = len(self.read_results)
-            document["read_2xx_rate"] = (
-                sum(200 <= status <= 299 for _, status in self.read_results) / read_count
-                if read_count else 0.0
-            )
-            document["read_nonok_rate"] = (
-                sum(status >= 400 or status == 0 for _, status in self.read_results) / read_count
-                if read_count else 0.0
-            )
+            document["read_count"] = read_count
+            if read_count:
+                document["read_2xx_rate"] = (
+                    sum(200 <= status <= 299 for _, status in self.read_results) / read_count
+                )
+                document["read_nonok_rate"] = (
+                    sum(status >= 400 or status == 0 for _, status in self.read_results)
+                    / read_count
+                )
         document.update(self.identity)
         return document
 

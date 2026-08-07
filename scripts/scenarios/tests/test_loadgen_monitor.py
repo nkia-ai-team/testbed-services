@@ -96,6 +96,56 @@ class LoadgenMonitorTests(unittest.TestCase):
         self.assertAlmostEqual(scenario["business_5xx_rate"], 0.2)
         self.assertEqual(scenario["read_nonok_rate"], 0.0)
 
+    def test_a_request_free_window_publishes_no_rate_at_all(self) -> None:
+        """분모가 0인 창은 비율을 발행하지 않는다.
+
+        종전에는 `if checkout_count else 0.0`으로 0을 실었다. 이 비율들의 소비자는
+        전부 감별자라(F03-P·F19-P·F20-Q·F06-P·F10-H·F14-P·F16-H의 must_rule_out)
+        요청이 한 건도 못 나간 창이 "오류율 0% = 정상"으로 답하면 배제되지 않은
+        교란 요인이 배제된 것처럼 통과한다. 필드를 생략하면 러너의
+        _loadgen_observation이 None을 받아 LiveProbeError를 던져 unusable이 된다.
+        """
+        builder = monitor.LiveDocumentBuilder({"domain": "commerce", "unit": "u"}, "checkout", "list")
+        base = datetime.datetime(2026, 8, 7, 3, 0, tzinfo=datetime.timezone.utc)
+        for index in range(6):
+            builder.consume(_point("iterations", base + datetime.timedelta(seconds=index)))
+        document = builder.build()
+        assert document is not None
+
+        for field in (
+            "checkout_5xx_rate",
+            "business_2xx_rate",
+            "business_4xx_rate",
+            "business_5xx_rate",
+            "business_409_rate",
+            "business_429_rate",
+            "business_nonok_rate",
+            "read_2xx_rate",
+            "read_nonok_rate",
+        ):
+            self.assertNotIn(field, document)
+        # 분모는 실린다 — 0건이라는 사실 자체가 읽는 쪽에 필요한 정보다.
+        self.assertEqual(document["checkout_count"], 0)
+        self.assertEqual(document["read_count"], 0)
+        # achieved_rps는 접기가 아니다: 분모가 시간이고 0은 "부하가 전달되지
+        # 않았다"는 진짜 측정값이다. 이걸 부재로 만들면 achieved_rps < 15를 읽는
+        # load-not-delivered 감별자가 발화해야 할 때 침묵한다.
+        self.assertIn("achieved_rps", document)
+
+    def test_rates_and_their_denominator_are_published_together(self) -> None:
+        document = self._feed(
+            monitor.LiveDocumentBuilder({"domain": "commerce", "unit": "u"}, "checkout", "list")
+        )
+        self.assertEqual(document["checkout_count"], 20)
+        self.assertEqual(document["read_count"], 20)
+        self.assertAlmostEqual(document["business_5xx_rate"], 0.2)
+        # 분모 없이는 0.2가 1/5인지 20/100인지 구분되지 않는다. 2026-08-07 실측에서
+        # 대조 팔의 창당 요청이 2~15건이라 p≈0.3의 표준오차가 ~0.20이었고, 그게
+        # 차분 게이트가 성립하지 않은 이유였다.
+        self.assertEqual(
+            round(document["business_5xx_rate"] * document["checkout_count"]), 4
+        )
+
     def test_identity_is_mutually_exclusive_and_domain_requires_a_unit(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):

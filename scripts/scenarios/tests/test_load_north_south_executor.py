@@ -134,7 +134,9 @@ class NorthSouthExecutorTests(unittest.TestCase):
         self.assertIn('systemctl is-active --quiet "$baseline_unit"', script)
         self.assertIn('--out "json=$samples"', script)
         self.assertIn('"entry_status": self.entry_status', script)
-        self.assertIn('"checkout_5xx_rate": checkout_5xx_rate', script)
+        # 발행되는 키만 확인한다. 종전에는 monitor 안의 지역 변수 이름까지 박아
+        # 두어, 빈 창 가드를 넣느라 그 줄이 바뀌자 계약과 무관하게 깨졌다.
+        self.assertIn('"checkout_5xx_rate"', script)
         self.assertIn("checkout_results", script)
         self.assertIn('"business_ok": self.entry_status in {200, 400, 409}', script)
         self.assertIn('rca-scenario-${safe_id}-live.json', script)
