@@ -221,6 +221,14 @@ CREATE TABLE IF NOT EXISTS order_schema.orders (
 );
 
 CREATE INDEX IF NOT EXISTS idx_orders_user ON order_schema.orders(user_id);
+-- preflight baseline-business-success(러너 BASELINE_PAID_ORDERS_SQL) 전용.
+-- 런당 1회지만 ready 41종 전부가 지나므로 배치 전체에 얇게 깔린다.
+-- 2026-08-07 실측: 1.19M 행 / 149MB, Parallel Seq Scan cost 24,297.
+-- 부분 인덱스인 이유가 idx_inventory_movements_restock 과 다르다 —
+-- status='PAID' 는 전체의 99.84%(pg_stats)라 **크기는 줄지 않는다.** 목적은 술어를
+-- 정확히 일치시켜 status 재검사를 없애고 count(*) 가 Index Only Scan 이 되게 하는 것이다.
+-- 같은 DB 의 outbox_events 가 1.12M 행에서 cost 4.31 인 이유가 정확히 이 술어 일치다.
+CREATE INDEX IF NOT EXISTS idx_orders_paid_created ON order_schema.orders(created_at) WHERE status = 'PAID';
 
 CREATE TABLE IF NOT EXISTS order_schema.order_items (
     id          BIGSERIAL PRIMARY KEY,
@@ -263,6 +271,14 @@ CREATE TABLE IF NOT EXISTS payment_schema.payments (
 
 CREATE INDEX IF NOT EXISTS idx_payments_order ON payment_schema.payments(order_id);
 CREATE INDEX IF NOT EXISTS idx_payments_unsettled ON payment_schema.payments(created_at) WHERE settled_at IS NULL;
+-- F15-R 감별자(러너 business.order_duplicate_count_since_t1)가 15초마다 도는 질의 전용.
+-- 술어는 created_at 창 하나뿐이고 그 뒤 order_id 로 묶는다. 바로 위 부분 인덱스는
+-- settled_at IS NULL 이 붙어 있어 이 질의(그 술어가 없다)에는 쓸 수 없었고,
+-- idx_payments_order 는 선두가 order_id 라 시간 범위를 못 자른다.
+-- 2026-08-07 실측: 1.19M 행 / 252MB, Parallel Seq Scan cost 27,245.
+-- 두 컬럼을 다 실어 힙에 안 가는 Index Only Scan 이 되게 한다. 부분 인덱스가 아닌
+-- 이유는 이 질의에 상수 술어가 없기 때문이다(시간 범위뿐).
+CREATE INDEX IF NOT EXISTS idx_payments_created_order ON payment_schema.payments(created_at, order_id);
 
 CREATE TABLE IF NOT EXISTS payment_schema.payment_logs (
     id          BIGSERIAL PRIMARY KEY,

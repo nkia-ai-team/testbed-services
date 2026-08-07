@@ -3883,8 +3883,8 @@
     },
     "F20-R": {
       "title": "commerce 주문 통계·검색 풀스캔 — 공유 PostgreSQL을 통해 남의 스키마까지 느려진다",
-      "description": "commerce order의 일별 통계와 무제한 검색은 orders(5만 행)를 인덱스 없이 풀스캔한다. orders에는 user_id 인덱스 하나뿐이고 통계는 FUNCTION('DATE', createdAt) GROUP BY라 애초에 탈 인덱스가 없다. 문제는 이 부담이 order에서 끝나지 않는다는 것이다 — commerce의 8개 스키마가 **같은 PostgreSQL 인스턴스**에 얹혀 있어 CPU가 오르면 payment·inventory 조회까지 함께 느려진다. 그 서비스들은 5xx를 내지 않고 느려지기만 하므로 '오류는 없는데 느린 서비스'가 여럿 생기고, 원인은 전혀 다른 곳(order의 쿼리)에 있다.",
-      "cause": "GET /api/orders/stats/daily?days=90 + 무제한 검색 반복 호출 → OrderRepository.dailyStats(FUNCTION('DATE') GROUP BY)·search(OR-null 술어)가 orders 풀스캔(created_at·status 인덱스 부재) → order 지연 + 단일 PostgreSQL 인스턴스 CPU 상승 → 동일 인스턴스의 payment_schema·inventory_schema 조회 동반 지연 → payment·inventory는 5xx 없이 지연만",
+      "description": "commerce order의 일별 통계와 무제한 검색은 orders(1,185,713행 — 2026-08-07 실측)를 인덱스 없이 풀스캔한다. 통계는 FUNCTION('DATE', createdAt) GROUP BY라 **createdAt 인덱스가 있어도 탈 수 없고**, 검색은 OR-null 술어라 조건이 비면 전 행을 훑는다. 즉 이 두 질의는 인덱스 유무와 무관하게 풀스캔이다. 문제는 이 부담이 order에서 끝나지 않는다는 것이다 — commerce의 8개 스키마가 **같은 PostgreSQL 인스턴스**에 얹혀 있어 CPU가 오르면 payment·inventory 조회까지 함께 느려진다. 그 서비스들은 5xx를 내지 않고 느려지기만 하므로 '오류는 없는데 느린 서비스'가 여럿 생기고, 원인은 전혀 다른 곳(order의 쿼리)에 있다.",
+      "cause": "GET /api/orders/stats/daily?days=90 + 무제한 검색 반복 호출 → OrderRepository.dailyStats(FUNCTION('DATE') GROUP BY)·search(OR-null 술어)가 orders 풀스캔(두 질의 모두 sargable 하지 않다 — 함수 그룹핑·OR-null) → order 지연 + 단일 PostgreSQL 인스턴스 CPU 상승 → 동일 인스턴스의 payment_schema·inventory_schema 조회 동반 지연 → payment·inventory는 5xx 없이 지연만",
       "injection_summary": "load.north_south가 commerce loadgen의 slowquery.js를 켜 일별 통계(40%)와 넓은 조건의 무제한 검색(40%)을 반복하고, 대표 체크아웃 여정을 20%로 섞어 관측 태그와 abort 판정이 끊기지 않게 한다. DB 변형이 없으므로 cleanup은 부하 종료뿐이다.",
       "user_impact": "주문 통계·검색 응답이 느려지고, 같은 PostgreSQL을 공유하는 결제·재고 조회까지 동반 지연된다. 사용자는 '결제나 재고가 느린데 그쪽엔 오류가 없다'는 부분 열화를 겪는다 — 체크아웃이 실패하지는 않지만 전반적으로 굼떠진다.",
       "distinguishing_evidence": "결정 증거는 **건강한 서비스가 함께 느려진다**는 것이다. payment의 p95는 오르는데 오류율은 낮게 유지되므로 그 서비스 자체 결함이 아니고, 두 서비스를 잇는 것은 호출 관계가 아니라 공유 PostgreSQL 인스턴스다. 인덱스는 드롭된 것이 아니라 **애초에 없다**는 점이 인덱스 삭제 계열과 구분되고, 증상이 지연이지 커넥션 타임아웃 5xx가 아니라는 점이 롱-트랜잭션 풀 고갈 계열(F19-P)과 구분된다. F20-P(자체 커넥션풀·502)와는 교차 스키마 오염 유무로, F20-Q(자체 힙·단일 MySQL)와는 번짐 유무로 갈린다.",
@@ -3899,11 +3899,11 @@
         "target_kind": "service",
         "target_id": "commerce-order",
         "trigger_target_id": "commerce-payment",
-        "mechanism": "결함은 order-service의 조회 쿼리 두 개다. OrderRepository.dailyStats는 FUNCTION('DATE', o.createdAt)로 그룹핑하므로 createdAt 인덱스가 있더라도 쓸 수 없고, 실제로는 orders에 idx_orders_user(user_id) 하나뿐이라 애초에 탈 인덱스가 없다. search는 OR-null 술어 구조라 조건이 비면 전 행을 훑는다. orders는 5만 행 규모이므로 두 쿼리 모두 풀스캔이며 CPU를 크게 쓴다. 핵심은 이 부담이 **공유 자원을 통해 전파**된다는 점이다 — commerce의 8개 스키마는 하나의 PostgreSQL 인스턴스에 들어 있어 CPU와 버퍼를 공유하고, order의 스캔이 그 자원을 잠식하면 payment_schema·inventory_schema를 읽는 다른 서비스의 쿼리도 함께 느려진다. 그 서비스들은 자기 코드에도 자기 스키마에도 문제가 없어 오류를 내지 않고 지연만 늘므로, 신호만 보면 '여러 서비스가 이유 없이 느리다'가 된다. 노드 CPU 경합(F09-R)과 형상이 닮았지만 여기서는 공유되는 것이 노드가 아니라 DB 인스턴스이며, 느려지는 집합이 '같은 노드'가 아니라 '같은 DB를 쓰는 것'으로 정의된다.",
+        "mechanism": "결함은 order-service의 조회 쿼리 두 개다. OrderRepository.dailyStats는 FUNCTION('DATE', o.createdAt)로 그룹핑하므로 createdAt 인덱스가 있더라도 쓸 수 없다. search는 OR-null 술어 구조라 조건이 비면 전 행을 훑는다. **둘 다 sargable 하지 않으므로 인덱스를 무엇을 얹든 풀스캔이다** — 이 시나리오의 전제는 '인덱스가 없다'가 아니라 '질의가 인덱스를 탈 수 없는 모양이다'가 정확하다. orders는 1,185,713행(2026-08-07 실측)이라 두 쿼리 모두 그만큼을 훑으며 CPU를 크게 쓴다. 참고: 2026-08-07에 idx_orders_paid_created((created_at) WHERE status='PAID')를 추가했으나 그것은 preflight 프로브(baseline-business-success) 전용이고 위 두 질의는 여전히 타지 못한다. 핵심은 이 부담이 **공유 자원을 통해 전파**된다는 점이다 — commerce의 8개 스키마는 하나의 PostgreSQL 인스턴스에 들어 있어 CPU와 버퍼를 공유하고, order의 스캔이 그 자원을 잠식하면 payment_schema·inventory_schema를 읽는 다른 서비스의 쿼리도 함께 느려진다. 그 서비스들은 자기 코드에도 자기 스키마에도 문제가 없어 오류를 내지 않고 지연만 늘므로, 신호만 보면 '여러 서비스가 이유 없이 느리다'가 된다. 노드 CPU 경합(F09-R)과 형상이 닮았지만 여기서는 공유되는 것이 노드가 아니라 DB 인스턴스이며, 느려지는 집합이 '같은 노드'가 아니라 '같은 DB를 쓰는 것'으로 정의된다.",
         "code_anchor": [
           "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java:32-35 (dailyStats — FUNCTION('DATE', o.createdAt) GROUP BY로 인덱스를 탈 수 없다)",
           "commerce/order-service/src/main/java/com/commerce/order/repository/OrderRepository.java:24 (search — OR-null 술어라 조건이 비면 풀스캔)",
-          "commerce/db/init-schemas.sql:223 (idx_orders_user — orders의 유일한 인덱스. created_at·status 인덱스가 애초에 없다는 근거)",
+          "commerce/db/init-schemas.sql:223 (idx_orders_user — orders 의 원래 유일한 인덱스. 2026-08-07에 preflight 프로브용 idx_orders_paid_created 가 추가됐으나 F20-R 의 두 질의는 sargable 하지 않아 어느 인덱스도 타지 못한다)",
           "commerce/db/init-schemas.sql:16-23 (order_schema~shipping_schema 8개 — 같은 인스턴스를 공유해 오염이 번지는 근거)",
           "commerce/payment-service/src/main/resources/application.yml:7-10 (payment datasource — order와 같은 인스턴스를 바라본다)"
         ],

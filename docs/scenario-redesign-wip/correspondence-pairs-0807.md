@@ -97,7 +97,7 @@ loadgen    →  VM · ClickHouse  →  러너 어댑터  →  게이트/컨트�
 | E2 | `companions` ↔ `companion_refs` ↔ `catalog.profiles` | `test_stated_companions_agree_with_controller_and_catalog` (`59c484c`) | — | — |
 | E3 | `injection_summary`의 실행기명 ↔ 바인딩 | `test_injection_summary_names_a_profile_the_scenario_actually_binds` (`bd10144`) | — | — |
 | E4 | 산문의 **나열형** 사다리 수치 ↔ 계약 | `test_prose_ladders_match_the_contract_ladder` (`f833e50`) | — | — |
-| E5 | 산문의 **비나열형** 수치(주기·행수·용량·임계) ↔ 실제 | **없음** | ⚠ 어려움 | "10분마다"·"137만 행"·"실사용 124MiB" 같은 서술. 계약 밖 실측을 정당하게 인용할 수도 있어 자동 대조가 위험하다 |
+| E5 | 산문의 **비나열형** 수치(주기·행수·용량·임계) ↔ 실제 | **없음** | ❌ 사실상 불가 | "10분마다"·"137만 행"·"실사용 124MiB" 같은 서술. 계약 밖 실측을 정당하게 인용할 수도 있어 자동 대조가 위험하다. **실제 사례**: F20-R "orders(5만 행)"이 실측 1,185,713행이었다(§19). **사람이 볼 때**: 자라는 데이터를 인용할 때, 그리고 **인과의 전제가 되는 사실을 바꾸는 커밋**을 낼 때 그 사실을 인용한 정답지를 함께 열 것 |
 | E6 | `code_anchor` ↔ 실제 줄번호·심볼 | `test_code_anchors_still_name_a_symbol_that_lives_there` | — | — |
 | E7 | 산문이 가리키는 설계 ↔ **현재 설계** | **없음** | ❌ | **원리적으로 불가.** 값이 아니라 접근이 낡는다 — F18-P가 폐기된 k8s.env 설계를 정답으로 가리키고 있었다(§19 유형 1). 재설계 커밋마다 사람이 산문을 다시 읽어야 한다 |
 
