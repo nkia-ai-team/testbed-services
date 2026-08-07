@@ -180,12 +180,96 @@ commerce는 서비스 5종·제어 필드 부재라는 **더 나쁜 조건**에�
 
 ---
 
-## D. 러너 — companion cleanup이 recovery 판정보다 먼저 프로브 파일을 지운다
+## D. 러너 — 프로브 파일이 판정 도중 사라진다 **(승격 시에도. 심각도 상향)**
 
+`/tmp/rca-scenario-<id>-live.json`이 사라져 관측이 통째로 unusable이 되는 결함.
+**두 경로가 확인됐고, 둘째가 훨씬 나쁘다.**
+
+### D-1. companion cleanup (런 끝, 1회) — F18-P
 중단 후 5틱에서 `entry_status`·`transfer_2xx_rate`가 전부 unusable:
 `exit 1: cat: /tmp/rca-scenario-F18-P-live.json: No such file or directory`.
 이번엔 recovery 조건이 그 둘을 안 봐서 통과했을 뿐이다.
 첫 aborted 틱의 `pod_ready=False`도 이 구간 것이라 "회복 실패"로 오독될 수 있다.
+
+### D-2. **레벨 승격 (런 도중, 단을 올릴 때마다)** — F20-R **(확정)**
+`F20-R-run-0c92dfd2`가 **승격 집행 순간(20:03:13Z, `slowquery-rps1`→`rps2`)에 중단**됐다.
+중단 틱 실측:
+```
+entry_status : usable=False  error="exit 1: cat: /tmp/rca-scenario-F20-R-live.json: No such file or directory"
+order_p95    : usable=False  error="APM gauge has no usable sample: ... last 60s ..."
+payment_p95  : usable=False  (동일)
+```
+**F18-P와 같은 파일·같은 에러다.** 승격은 부하 교체이고 `load.north_south`가 k6를 죽였다 다시 띄우는데,
+그 사이 프로브 파일이 사라진다. `entry_status`는 abort(`eq 0`)와 must_rule_out(`eq 429`) 양쪽에 쓰이므로
+값이 없으면 **안전 판정 자체가 불가능**해져 `decision_observation_unavailable`로 중단된다.
+
+**cleanup은 런 끝에 한 번이지만 승격은 사다리를 가진 모든 시나리오가 단을 올릴 때마다 밟는다.**
+승격이 관측 중단이어야 할 이유가 없다. → 러너 수리 대상, D-1과 병합.
+
+⚠ **사다리 2단 이상 시나리오 전수 확인 필요**(미조사). 반증법: 과거 런에서 승격 시각과 관측 unusable이 겹치는지 대조.
+
+---
+
+## I. F20-R — **판정 임계가 도달 불가능하다. 6/6 실패의 근본.** (확정)
+
+정체 정정: **commerce 도메인**이고 `injected_fault.profile = null`·`companions = []`,
+**부하 자체가 주입**이다(`load.north_south` 사다리 + `/opt/loadgen/commerce/slowquery.js`). food가 아니다.
+
+### 성공 조건
+```json
+"success": {"all": [
+  {"id": "order-latency-up",               "observation": "order_p95",   "op": "gte", "value": 1500},
+  {"id": "payment-crossschema-latency-up", "observation": "payment_p95", "op": "gte", "value": 500}
+], "consecutive_ticks": 3}
+```
+
+**`payment_p95 >= 500`은 역대 6회 중 한 번도 성립한 적이 없다.**
+게이지 최댓값이 rps=30에서조차 **269.7 / 275.4 / 286.9 / 288.6 / 290.0 / 302.3 ms**다.
+**임계가 실측 상한의 약 1.65배다. rps를 30으로 되돌려도 성공하지 못한다.**
+
+### 이력 — 6/6 실패, 성공 0회
+
+| run | t1 (UTC) | outcome | reason | rps | max order_p95 | max payment_p95 |
+|---|---|---|---|---|---|---|
+| 0328ea75 | 08-03 05:09 | aborted | `safety_observation_unavailable` | 30 | 30,010 | 290.0 |
+| 04b423f5 | 08-03 05:27 | aborted | 〃 | 30 | 21,200 | 302.3 |
+| c6e87a5c | 08-03 05:46 | aborted | 〃 | 30 | 22,629 | 288.6 |
+| 56a859db | 08-05 00:54 | **failed** | `evaluation_level_timeout` | 30 | 23,885 | 287.0 |
+| fa6749a8 | 08-07 05:07 | **failed** | 〃 | 30 | 25,773 | 269.7 |
+| 0c92dfd2 | 08-07 19:54 | aborted | `decision_observation_unavailable` | **1** | 1,831 | 44.2 |
+
+`evaluation_level_timeout` 2회가 정확히 "order는 임계를 넘었는데 payment가 안 넘어 3틱 연속이 영원히 안 서고 타임아웃"이다.
+**만족 불가능한 조건이 6회 내내 서로 다른 사인으로 위장돼 나타났다.**
+
+### 그런데 시나리오 설계 자체는 옳다 (확정)
+
+트레이스 3구간(BEFORE는 직전 런 `t2` 이후로 절단):
+
+| | rps=1 (오늘) | rps=30 (fa6749a8) |
+|---|---|---|
+| commerce-order | 55.7 → **1,701.7** → 51.4 | 126.3 → **43,348.1** → 133.5 |
+| commerce-payment | 20.0 → **59.8** → 18.6 | 60.4 → **275.4** → 75.2 |
+| commerce-inventory | 3.3 → **50.0** → 3.7 | 3.3 → **90.6** → 3.7 |
+
+**공유 PostgreSQL을 통한 크로스스키마 전파가 실재한다.** payment 3~4.6배, inventory 15배, AFTER 완전 복귀.
+`distinguishing_evidence`("건강한 서비스가 함께 느려진다")가 그대로 관측된다. **문제는 설계가 아니라 임계다.**
+
+교차 확인: `pg_slow_active_queries`가 전 구간 0인 것은 관측 오류가 아니라
+질의 문턱이 `now() - query_start > interval '2 seconds'`인데 rps1의 order 지연이 1.7초라 **못 넘은 것**이다.
+
+### 층 2 — 사다리 재설계가 rps를 30 → 1/2/3으로 낮췄다
+3단을 다 합쳐도 이전 고정값의 1/10이다. order조차 임계 근처(1,831 vs 1,500)에서 진동해
+낮은 쪽 3틱이 잡히며 escalate가 잘못 켜졌다.
+
+### 수리 순서 — **R1을 먼저 하지 않으면 나머지가 헛돈다**
+1. **R1 `payment_p95` 임계 재보정** — 500은 근거 불명이고 실측 상한(302)을 넘는다.
+   BEFORE 대비 배수는 rps30에서 4.6배·rps1에서 3.0배로 **일관되게 크다** — 신호는 분명히 있다.
+   절대값보다 **상대 배수**가 이 시나리오에 맞아 보이나 컨트롤러 지원 여부는 미확인.
+   절대값이면 rps30 기준 **200ms 안팎**이 후보. **⚠ 두 점(rps 1·30)뿐이므로 사다리 확정 후 실측으로 정할 것.**
+2. **R2 사다리 rps 재설계** — 10/20/30 범위가 후보. R1 뒤에 두는 이유: rps를 올려도 임계 500은 못 넘는다.
+3. **R3 승격 시 관측 단절** — D-2와 병합.
+4. **R4 `order_p95` 게이지 분해능**(별건) — 슬로우쿼리(1200~1800ms)와 체크아웃(6~53ms)이 같은 게이지에 섞여 진동한다.
+   부하 구성 40/40/20은 의도된 설계이므로 **게이지를 스텝별로 가르는 쪽**이 맞아 보인다. (미조사)
 
 ---
 
