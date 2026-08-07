@@ -58,6 +58,7 @@ loadgen    →  VM · ClickHouse  →  러너 어댑터  →  게이트/컨트�
 | A3 | 빈 창은 비율을 안 싣는다 ↔ 러너가 필드 부재를 에러로 | `test_a_request_free_window_publishes_no_rate_at_all` · `test_rates_and_their_denominator_are_published_together` (`4e07550`) | — | 새 비율 지표를 추가할 때 **분모도 함께 발행**하는지 |
 | A4 | baseline entrypoint ↔ domain 문서 | `test_every_baseline_entrypoint_publishes_a_domain_document` | — | — |
 | A5 | "0이 아티팩트인가 측정값인가" | **없음** | ❌ | `achieved_rps`처럼 **분모가 시간**인 지표는 0이 진짜 값이다. 새 지표마다 사람이 판단해야 한다(§1c) |
+| A6 | **한 문서 안 필드들의 분모** ↔ 그 필드들을 AND로 묶는 게이트 | **없음** | ⚠ | 같은 문서에서 와도 분모가 다르다. `checkout_5xx_rate`는 **30초 창 비율**, `business_ok`는 **마지막 한 건**(`entry_status in {200,400,409}`, 창이 바뀌어도 안 지워짐)이다. 성공 조건이 둘을 AND로 묶어 분모 1짜리 신호가 streak을 리셋했다(§23-c, F11-R). **새 필드를 발행할 때 그 값의 분모가 무엇인지 문서에 남길 것** |
 
 ## B. 저장소 (VictoriaMetrics · ClickHouse)
 
@@ -88,6 +89,9 @@ loadgen    →  VM · ClickHouse  →  러너 어댑터  →  게이트/컨트�
 | D6 | 임계 단위 ↔ 지표 단위 | `test_latency_thresholds_…` · `test_rate_thresholds_…` | — | — |
 | D7 | 감별자 바닥 ↔ 평시 분포 | ⚠ `test_discriminator_floors_sit_at_rest_not_inside_the_ladder` | ⚠ | 평시 분포는 **라이브 실측**이라 코드가 모른다. 임계를 정할 때 run 아티팩트를 열 것 |
 | D8 | 성공 신호 ↔ **대조 팔 오염** | ⚠ 5종만(`7c90e08`·`5862289`) | ⚠ 러너 `compare_to` 필요 | 25종 미적용(§11c/§11d). **주입면이 baseline 경로 밖일 때만** 대조 팔을 쓸 수 있다 |
+| D9 | **부하 `target_rps`** ↔ 그 부하를 하한으로 재는 감별자 | `test_load_floor_discriminators_sit_below_the_load_they_judge` (**이번 추가**, F06-P·F15-H는 열거된 기지 결함) | — | **부하를 바꾸는 커밋은 그 부하를 재는 감별자를 함께 연다.** `765e99f`가 40→5로 내리며 `lt 15`를 남겨 두 시나리오가 상시 실격이 됐다(§24-c) |
+| D10 | 성공 신호 ↔ **그 성공의 부수 효과** | **없음** | ❌ | 자동 대조 불가 — "무엇이 성공에 뒤따르는가"는 앱 거동 지식이다. 실패율이 성공 신호인 9종은 완전 실패 → 타임아웃 → 처리량 붕괴가 **정상 경로**라 `achieved_rps` 하한에 스스로 걸린다(§24-b). **감별자를 쓸 때 "성공했을 때 이 값이 어디로 가는가"를 물을 것** |
+| D11 | **판정 로직 수리** ↔ 그 수리가 바꾸는 **노출 시간** | **없음** | ❌ | `e723d9b`(escalate streak 리셋)는 레벨 체류를 3.3분 → 8분으로 늘렸고, 길어진 창에서 F11-R이 전에 못 만나던 플랩을 두 번 만나 abort했다(§23-d). 수리 커밋 자신의 "판정 안 바뀜" 예측이 빗나갔다(§22-b) — **타이밍을 바꾸는 수리는 통과 이력 전체를 재검증 대상으로 만든다** |
 
 ## E. 정답지 (metadata)
 
@@ -146,6 +150,10 @@ loadgen    →  VM · ClickHouse  →  러너 어댑터  →  게이트/컨트�
   `set -e`라 **첫 실패에서 죽어서** 낡은 핀이 08-06부터 세 번에 걸쳐 하나씩만 드러났다
   (`8d1ef6b`가 둘, `2b02a98`이 하나). pytest는 안 죽으므로 **어긋난 핀을 한 번에 전부**
   보고한다. 역검증했다 — 핀 둘을 되돌리면 둘 다 한 번에 잡힌다.
+- **D9** `test_load_floor_discriminators_sit_below_the_load_they_judge` — `achieved_rps`
+  하한 감별자가 그 시나리오 사다리 최저 단의 `target_rps`보다 아래인지 본다. **이미
+  깨진 F06-P·F15-H는 `known_broken`에 열거**했다 — 침묵이 아니라 목록이고, 고치면
+  집합에서 빼는 순간부터 재발을 막는다. 역검증했다(집합을 비우면 red).
 - **F3** `test_parked_controllers_stay_out_of_the_live_registry` — 파킹 사본이 live
   레지스트리와 겹치면 두 벌이 따로 낡고 승격 때 낡은 쪽이 되살아난다. F21-Q가 이미 그
   위험을 안고 대기 중이다(파킹 사본은 `host.stress`인데 재설계는 `app.control`).
@@ -156,7 +164,13 @@ loadgen    →  VM · ClickHouse  →  러너 어댑터  →  게이트/컨트�
 1-b. ~~**B4 프로브 질의 실행 계획** 훑기~~ — **완료**(2026-08-07). 🔴 셋의 인덱스 DDL 제안은 §20에 있고 **배포 묶음** 대상이다. 이 점검은 표가 자라면 판정이 바뀌므로(오늘 orders 가 5만→119만) **주기적으로 다시 돌려야 한다.**
 2. **B2 clickhouse 빈 창** — 미수리 결함이 남아 있다(§1b). 러너 레포 건.
 3. **D8 대조 팔** — 25종 미적용. 러너 `compare_to`가 선행돼야 제대로 풀린다.
-4. **E5 비나열형 산문 수치** — 자동 대조가 위험해서 설계가 필요하다.
+4. **D9 기지 결함 2종 해소** — F06-P·F15-H의 `load-not-delivered` 임계를 설계 부하에
+   맞춰 내리고 `known_broken`에서 뺀다. **러너 변경 없이 지금 할 수 있는 유일한
+   §24 수리**다.
+5. **D10 `achieved_rps` 하한 일반 수리** — 13종 노출. 분모(`checkout_count`)를 함께
+   보거나 5xx가 높을 때 면제하는 형태인데, **두 신호를 한 조건에 묶으려면 러너 문법이
+   필요**하다(D8의 `compare_to`와 같은 대기줄).
+6. **E5 비나열형 산문 수치** — 자동 대조가 위험해서 설계가 필요하다.
 
 ## 이 문서 쓰는 법
 

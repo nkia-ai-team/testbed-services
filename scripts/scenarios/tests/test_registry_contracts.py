@@ -632,6 +632,59 @@ class RegistryContractTests(unittest.TestCase):
         self.assertGreater(steps[0]["value"], 138.69)
         self.assertLess(steps[0]["value"], 170.69)
 
+    def test_load_floor_discriminators_sit_below_the_load_they_judge(self) -> None:
+        # "부하가 전달되지 않았다"를 배제하는 감별자(`achieved_rps < N`)는 그
+        # 시나리오가 **실제로 거는 부하보다 아래**에 있어야 한다. 임계가 설계 부하
+        # 위로 올라가면 감별자가 주입과 무관하게 매 틱 참이 되고, 시나리오는
+        # 구조적으로 통과 불가가 된다.
+        #
+        # 실제로 그렇게 됐다(2026-08-07 §24-c). `765e99f`가 F06-P·F15-H의
+        # target_rps를 40 → 5로 내리면서 "감별자는 그대로 둔다 — 정당한 감별자다"라고
+        # 적었다. 임계 15는 target 40에서는 정당했지만(여유 62%) 5 위에서는 벽이다.
+        # **부하를 바꾸는 커밋과 그 부하를 재는 감별자는 한 짝이다.**
+        #
+        # 아래 둘은 이미 깨진 채로 라이브에 있어 red로 두면 게이트를 막는다.
+        # 침묵시키지 않고 여기 열거해 둔다 — 수리하면 이 집합에서 빼고, 그때 이
+        # 테스트가 재발을 막는다.
+        known_broken = {"F06-P", "F15-H"}
+        load_profiles = {
+            name: profile
+            for name, profile in self.profiles["profiles"].items()
+            if name.startswith("load.")
+        }
+        for scenario_id, controller in self.controllers["controllers"].items():
+            floors = [
+                condition
+                for condition in controller.get("must_rule_out", {}).get("any", [])
+                if condition["observation"] == "achieved_rps" and condition["op"] == "lt"
+            ]
+            if not floors:
+                continue
+            rps_values = []
+            for profile in load_profiles.values():
+                parameters = profile.get("scenario_parameters", {}).get(scenario_id)
+                if parameters and "target_rps" in parameters:
+                    rps_values.append(parameters["target_rps"])
+                for level in profile.get("scenario_levels", {}).get(scenario_id, []):
+                    rps_values.append(level["parameters"]["target_rps"])
+            if not rps_values:
+                continue
+            lowest_rung = min(rps_values)
+            for floor in floors:
+                if scenario_id in known_broken:
+                    self.assertGreaterEqual(
+                        floor["value"],
+                        lowest_rung,
+                        f"{scenario_id}:{floor['id']} 가 고쳐졌다면 known_broken 에서 뺄 것",
+                    )
+                    continue
+                self.assertLess(
+                    floor["value"],
+                    lowest_rung,
+                    f"{scenario_id}:{floor['id']} 의 임계 {floor['value']} 가 "
+                    f"설계 부하 {lowest_rung} rps 위에 있다 — 주입과 무관하게 발화한다",
+                )
+
     def test_recovery_gates_read_metrics_that_actually_return(self) -> None:
         # 회복 게이트는 "부하가 끝나면 되돌아오는" 지표만 읽어야 한다.
         # prometheus.jvm_daemon_thread_count는 그렇지 않다 — JVM 스레드 풀은 한 번
