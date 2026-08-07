@@ -30,7 +30,72 @@
 
 **수리 방향**: 앱이 아니라 **부하 계약** 쪽. 무제한 조회는 앱의 의도된 동작이고 주석에 근거가 있다.
 엔드포인트에 상한을 두면 F17-R 등 다른 시나리오의 전제를 건드린다.
-→ `load.north_south`가 page/size를 명시하게 한다.
+
+### 수리 표면 — 41종이 아니라 **한 줄 × 3파일** (확정)
+
+`load.north_south`를 쓰는 시나리오는 41종이지만(companion 38 + 주입 자체 3),
+**무제한 목록 조회는 banking 스크립트에만, 각 한 줄씩 있다.** k6 스크립트 9종 전수 확인:
+
+```
+/opt/loadgen/core-banking/surge.js:82                 ← F10-P, F15-P, F18-P
+/opt/loadgen/core-banking/transfer-heavy-surge.js:82  ← F21-P (parked)
+/opt/loadgen/core-banking/script.js:64                ← 기저 부하 (항상 도는 것, TARGET_RPS=1)
+```
+```js
+const res = http.get(`${GATEWAY_URL}/api/transfers?fromAccount=${id}`, {   // page/size 없음
+```
+
+**같은 파일의 나머지 호출은 전부 유계다** — `/api/accounts?status=ACTIVE&size=20`(:89), 단건 조회, POST.
+commerce·food surge 계열에는 무제한 목록 조회가 **없다**(전부 `size=20`).
+**banking 이체 목록만 관행에서 빠져 있었다. 설계 실수 한 줄이다.**
+
+→ **`&page=0&size=20` 추가.** 새 값을 고르는 게 아니라 이 테스트베드가 이미 쓰는 값을 맞추는 것이다
+(commerce products, food restaurants/deliveries, banking accounts 전부 20).
+호스트: tb-runner `nkia@192.168.122.206`, `/opt/loadgen/` 아래.
+
+### 실측 근거
+
+```
+GET /api/transfers?fromAccount=ACC-1001                → 10,518,310 B (10.0 MiB), 49,266행, 0.258s
+GET /api/transfers?fromAccount=ACC-1001&page=0&size=20 →      4,089 B,            20행, 0.066s
+GET /api/accounts?status=ACTIVE&size=20  (대조군)       →      1,618 B,                  0.004s
+```
+
+**2,572배.** 30 rps × 10 MiB ≈ 300 MiB/s 직렬화, transfer 힙은 `-Xmx512m`. 풀 고갈 + GC 압박을 함께 만든다.
+
+`banking.transfers` 980,970행의 계정별 분포 — loadgen이 쓰는 ACC-1001~1007이 **각 약 5만 행**:
+```
+commerce-settlement 618,607 (loadgen 미사용) / ACC-1005 50,345 / ACC-1002 49,687 / ACC-1007 49,329
+ACC-1001 49,266 / ACC-1006 49,263 / ACC-1004 47,298 / ACC-1003 47,118
+```
+**이체가 계속 쌓이므로 매일 커진다** — 오늘 10MB면 다음 주엔 더 크다. 시간이 갈수록 나빠지는 형태다(→ 보존 정책).
+
+### 건드리면 안 되는 것 (확정)
+
+**F20-Q "food 주문 목록의 페이지네이션 부재 — 무제한 결과셋이 힙을 채운다"** — 페이지네이션 부재가 **주입 자체**다.
+다행히 별개 스크립트(`food-delivery/slowquery.js:94` `/api/orders`)의 별개 엔드포인트라 banking 수리와 겹치지 않는다.
+F20-P("trunc() 풀스캔")도 `/api/transfers/stats/daily?days=90` — 통계 엔드포인트라 무관.
+
+### 임계 조정 — 불필요 (확정)
+
+north_south 사용 시나리오의 부하 임계는 전부 `achieved_rps`(초당 요청 수)이고 **응답 크기와 무관**하다.
+```
+F10-P·F15-P  achieved_rps > 60 (target 20)   F17-P  > 40 (frozen-bypass, 무관)
+F18-P        transfer_2xx_rate < 0.95 (target 30)
+```
+※ 가설: 응답이 작아지면 k6가 목표 rps를 더 쉽게 달성해 `achieved_rps`가 **오른다**.
+임계 60은 target 20~30 대비 여유가 크지만 수리 후 첫 실행에서 실측 확인할 것.
+반증법: 수리 후 F18-P를 동일 target_rps로 1회 실행해 대조.
+
+### 미확인 — 수리 전 반드시 확인
+**`plan_digest`/`manifest_digest`가 k6 스크립트 내용을 해싱하는가.**
+레지스트리 `allowed_script_paths`는 경로만 고정하고 내용은 안 보므로 레지스트리 변경은 불필요하다(확정).
+다이제스트가 내용을 해싱하면 얘기가 다르다.
+
+### 별도 확인 대상
+F15-P는 `transfer_2xx_rate`를 관측하지 않는다(p95·노드 자원만). 무제한 조회는 F15-P에서
+**`transfer_p95`·`account_p95`를 부풀리는** 형태로 오염된다 — 중단은 안 시키지만 지연 신호를 못 믿게 만든다.
+반증법: 수리 전후 `transfer_p95` 대조. (미조사)
 
 **타이밍 함정 (확정)**: F18-P에서 2xx는 주입 **45초 뒤부터** 무너져 24틱 내내 임계 아래였다.
 `min_hold` 8분이 그걸 가리다가 만료 직후 2틱으로 집행했다. **중단은 처음부터 예약돼 있었다.**
@@ -171,15 +236,44 @@ commerce는 서비스 5종·제어 필드 부재라는 **더 나쁜 조건**에�
 
 ---
 
-## 예측 (측정 전에 박아둔다)
+## 예측 — **정정됨**
 
-**F10-P는 주입과 무관하게 `transfer_2xx_rate < 0.95`로 must_rule_out 중단된다.**
-남은 큐 banking 4종 중 F10-P만 `north_south` + `transfer_2xx_rate` 조합을 갖는다(= F18-P와 동일 서명).
-F15-P·F17-P는 north_south만, F14-P는 transfer_2xx_rate만.
+### 틀린 예측 (기록으로 남긴다)
+> "F10-P는 주입과 무관하게 `transfer_2xx_rate < 0.95`로 must_rule_out 중단된다."
 
-대조 시 볼 것:
-- **언제 무너졌나** — 부하 가설이면 settle 직후 첫 평가 틱부터 (F18-P는 +52s). 주입 탓이면 주입 고유 지연을 두고.
-- **GET vs POST 502 비율** — 부하 가설이면 GET이 훨씬 많아야 한다 (F18-P: GET 3459 vs POST 915). nginx 로그를 method로 가를 것.
-- **빗나가면**: F10-P 주입이 transfer 자체나 DB 풀을 건드리면 두 원인이 겹쳐 구분 불가.
-  그때는 `/api/accounts` 성공률(대조 팔)을 볼 것 — 풀 고갈이면 accounts는 멀쩡하다.
-- min_hold 길이가 다르면 중단 **시각**만 달라지지 결론은 안 달라진다.
+**틀렸다. F10-P에는 `sync-path-also-broken` must_rule_out이 없다.** `controllers.json` 실측:
+
+```
+F10-P  success        [{"id":"transfer-2xx-collapse", "observation":"transfer_2xx_rate", "op":"lt", "value":0.5}]
+       must_rule_out  [{"id":"user-load-overshot",    "observation":"achieved_rps",      "op":"gt", "value":60}]
+```
+
+`transfer_2xx_rate < 0.5`는 F10-P의 **성공 조건**이다. F18-P에서 부하만으로 실측된 2xx는 **0.30~0.49** — 그 임계 아래다.
+
+### 정정된 예측
+**F10-P는 중단되지 않고 `succeeded`로 판정될 가능성이 높다. 주입(fio)이 걸렸든 안 걸렸든.**
+
+**거짓 중단보다 나쁘다.** 중단은 눈에 보이지만 거짓 성공은 유효 표본으로 조용히 데이터셋에 들어간다.
+
+### 자체 감별자가 못 막는 이유 — 일반화할 만한 맹점
+F10-P의 must_rule_out은 `achieved_rps > 60`이고 target_rps는 20이다. 감별자는 통과한다.
+
+**감별자가 부하의 *양*을 보고 *건당 비용*을 안 보기 때문이다.**
+무제한 조회는 rps를 그대로 둔 채 요청 하나의 원가만 **2,572배**로 올린다(10.0 MiB vs 4,089 B 실측).
+`achieved_rps` 계열 감별자 전부가 이 형태에 눈이 멀어 있다. — 오늘 확인된 40개 감별자 조건 재검토 시 이 각도를 넣을 것.
+
+### 그래서 볼 것 — "중단되는가"가 아니라 "성공이 주입 때문인가"
+
+F10-P는 판별에 필요한 신호를 이미 관측한다. **`disk_io_util`과 `transfer_hikari_pending`의 선후:**
+
+| 원인 | `disk_io_util` | `hikari_pending` | 순서 |
+|---|---|---|---|
+| 주입(fio)이 진짜 원인 | **급등** | 상승 | disk가 **먼저**, hikari가 따라온다 |
+| 부하(무제한 조회)가 원인 | **평온** | 상승 | disk는 안 움직이고 hikari만 오른다 |
+
+`disk_io_util` 평온 + 2xx가 0.5 아래 → **거짓 양성 확정.**
+
+**F10-P 자신의 must_support 1번("PVC 백킹 디바이스 busy 비율 급등")이 곧 판별식인데 success 조건에 안 들어 있다.**
+이게 이 시나리오의 별도 결함이다. → 수리 대상.
+
+**중요**: F10-P가 안 멈춘다고 부하 가설이 반증되는 게 아니다. `disk_io_util` 평온 + 2xx 붕괴면 **확증**이다.
