@@ -990,3 +990,79 @@ class RegistryContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CorrespondencePairTests(unittest.TestCase):
+    """대조 쌍 레지스트리(docs/scenario-redesign-wip/correspondence-pairs-0807.md)의 가드.
+
+    2026-08-07에 드리프트를 다섯 겹 이상 찾았는데 매번 **앞의 것을 고친 뒤에야 다음이
+    드러났다**. 그건 운에 기댄 발견이라, "무엇이 무엇과 일치해야 하는가"를 목록으로
+    관리하고 그중 기계화 가능한 것을 여기로 옮긴다.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(__file__).resolve().parent.parent
+        cls.root = root
+        cls.catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+        cls.controllers = json.loads(
+            (root / "registry" / "controllers.json").read_text(encoding="utf-8")
+        )["controllers"]
+        parked = json.loads(
+            (root / "registry" / "controllers-parked.json").read_text(encoding="utf-8")
+        )
+        cls.parked = parked.get("controllers", parked)
+
+    def test_parked_controllers_stay_out_of_the_live_registry(self) -> None:
+        """파킹된 컨트롤러 사본이 live 레지스트리와 겹치면 두 벌이 따로 낡는다.
+
+        c887e20이 F02-H·F21-P·F21-Q를 controllers.json에서 controllers-parked.json으로
+        옮겼다. 두 곳에 같은 시나리오가 남으면 어느 쪽이 정본인지 알 수 없고, 승격할 때
+        낡은 사본이 되살아난다 — F21-Q의 산문이 이미 그 위험을 보여준다(파킹 사본은
+        host.stress인데 a709606의 재설계는 app.control이다, §19).
+
+        readiness=parked인데 파킹 사본이 없는 것은 정상이다. 07-27 감사에서 컨트롤러를
+        가진 적 없이 파킹된 것들이 있다.
+        """
+        readiness = {row["id"]: row["readiness"] for row in self.catalog["scenarios"]}
+        both = sorted(set(self.controllers) & set(self.parked))
+        self.assertEqual(
+            both, [], f"controllers.json과 controllers-parked.json에 동시에 있다: {both}"
+        )
+        not_parked = sorted(
+            scenario_id
+            for scenario_id in self.parked
+            if readiness.get(scenario_id) != "parked"
+        )
+        self.assertEqual(
+            not_parked,
+            [],
+            f"파킹 사본이 있는데 readiness가 parked가 아니다: {not_parked}",
+        )
+
+    def test_shell_gate_catalog_pins_match_the_catalog(self) -> None:
+        """test-scenarios.sh의 하드코딩 개수를 pytest에서도 전부 한 번에 본다.
+
+        그 게이트는 `set -e`라 **첫 실패에서 죽는다.** 그래서 c887e20이 남긴 낡은 핀이
+        08-06부터 세 번에 걸쳐 하나씩만 드러났다(8d1ef6b가 ready/parked·adaptive를,
+        2b02a98이 ready_live를). 핀 자체는 거버넌스 결정이라 유지하되, **어긋난 것을
+        모아서 한 번에** 보고하면 같은 일이 반복되지 않는다.
+        """
+        gate = (self.root / "test-scenarios.sh").read_text(encoding="utf-8")
+        pattern = re.compile(
+            r"""select\(\.(readiness|load_mode)=="([a-z-]+)"\)\]\s*\|\s*length'\s*"\$catalog"\)"\s*-eq\s*(\d+)"""
+        )
+        pinned = [
+            (field, value, int(count)) for field, value, count in pattern.findall(gate)
+        ]
+        self.assertTrue(pinned, "test-scenarios.sh에서 핀을 하나도 못 읽었다 — 형식이 바뀌었나")
+        problems = []
+        for field, value, count in pinned:
+            actual = sum(1 for row in self.catalog["scenarios"] if row[field] == value)
+            if actual != count:
+                problems.append(f"{field}={value}: 핀 {count} != 실제 {actual}")
+        self.assertFalse(
+            problems,
+            "test-scenarios.sh의 핀이 카탈로그와 어긋난다(승격·강등·파킹 커밋과 핀 갱신은 "
+            "같은 커밋에 있어야 한다):\n" + "\n".join(problems),
+        )
