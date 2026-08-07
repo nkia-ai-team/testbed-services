@@ -12,7 +12,8 @@
     "matrix_location_transport": "tb-w2/ssh",
     "transport": "ssh",
     "profile_refs": [
-      "injector-profiles/host.stress"
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
     ]
   },
   "execution": {
@@ -24,14 +25,17 @@
       "target-health",
       "profile-prerequisites",
       "transport-ssh-access",
-      "host-placement-and-oob-recovery"
+      "host-placement-and-oob-recovery",
+      "baseline-loadgen-active"
     ],
     "controller": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
       "binding": {
         "primary_ref": "host.stress",
-        "companion_refs": []
+        "companion_refs": [
+          "load.north_south"
+        ]
       },
       "runtime": {
         "mode": "calibration",
@@ -184,6 +188,12 @@
             "parameters": {
               "service_name": "core-banking-account"
             }
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -251,6 +261,12 @@
               "observation": "node_ready",
               "op": "eq",
               "value": false
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
             }
           ],
           "consecutive_ticks": 3
@@ -322,7 +338,8 @@
       "mode": "dry-run",
       "mutation": false,
       "adapter_refs": [
-        "host.stress"
+        "host.stress",
+        "load.north_south"
       ]
     },
     "run": {
@@ -330,7 +347,8 @@
       "mutation": false,
       "requires_preflight": true,
       "adapter_refs": [
-        "host.stress"
+        "host.stress",
+        "load.north_south"
       ]
     },
     "cleanup": {
@@ -340,6 +358,7 @@
       "order": "reverse",
       "recovery_gate": true,
       "adapter_refs": [
+        "load.north_south",
         "host.stress"
       ]
     }

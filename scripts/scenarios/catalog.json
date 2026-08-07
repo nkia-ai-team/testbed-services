@@ -437,7 +437,8 @@
       "id": "F15-P",
       "slug": "f15-p-common-node-pressure",
       "profiles": [
-        "host.stress"
+        "host.stress",
+        "load.north_south"
       ],
       "readiness": "ready",
       "load_mode": "adaptive",

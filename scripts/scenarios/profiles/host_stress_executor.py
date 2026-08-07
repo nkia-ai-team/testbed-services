@@ -130,6 +130,41 @@ F05P_LEVELS = [
 # 메모리는 eviction 무릎 아래로 묶는다. tb-w2 available ~7103 MiB(2026-07-28 실측)에서
 # 최대 5000 MiB만 잡아 파드 축출은 일으키지 않는다 — 축출은 F05-P의 표면이고,
 # F15-P는 "축출 없이 전반적으로 느려지는" 상태를 노린다.
+#
+# 2026-08-07(run 8f317c57): 두 가지가 함께 고쳐졌다.
+#
+# ① 메모리 축이 아예 주입되지 않고 있었다 — stress-ng에 `--vm-keep`이 빠져 있었다.
+#    이 플래그가 없으면 vm stressor가 매 반복 munmap/mmap을 되풀이해 페이지가 상주하지
+#    않는다. 8f317c57의 실측이 그 증거다: node_cpu_util이 99.36%까지 올라가는 동안
+#    node_mem_util은 settling 값 61.62%를 한 번도 넘지 못하고 오히려 57.83~57.91%로
+#    **내려갔다**. 이 한 플래그가 F15-P의 세 게이트를 동시에 깨고 있었다 — success는
+#    mem >= 75가 필요한데 도달 불가, escalate는 mem < 75로 영구 발화해 사다리가 CPU
+#    축만으로 올라가고, must_rule_out `cpu-only-pressure`(mem < 60)가 elapsed 370s에
+#    confirm되어 run을 abort시켰다. 복합 자원 고갈이라는 정체성 중 CPU 절반만 주입되고
+#    있었던 것이다. `--vm-keep`("redirty memory instead of reallocating", tb-w2의
+#    stress-ng 0.17.06 --help 실측)이 vm-bytes 사다리를 비로소 '상주 RSS'로 만든다 —
+#    F05-P의 memhog가 touch-and-hold bytearray로 이미 의도적으로 하는 일과 같다.
+#    사다리 수치는 그대로 둔다: 이 사다리는 메모리가 실제로 상주한다는 전제로
+#    설계됐고(tb-w2 available ~7103 MiB 대비 최대 5000 MiB), 지금까지 그 전제가
+#    코드에서 깨져 있었을 뿐이다. 무릎의 위치는 캘리브레이션이 라이브에서 찾는다.
+#
+# ② 시나리오 전용 부하가 없었다 — host.stress 계열 5종(F05-P·F09-R·F10-P·F10-H·F15-P)
+#    중 F15-P만 companion_refs가 비어 있었다. 동종은 전부 load.north_south를 달고
+#    achieved_rps 관측 + `user-load-overshot` 감별자를 함께 갖는다. F15-P에도 같은
+#    3종을 붙였다. 파라미터는 F10-P를 그대로 따른다 — 같은 노드(tb-w2)·같은 도메인
+#    (banking, entry 30082 / core-banking/surge.js / loadgen-banking)이고 역할도 같다
+#    (노드 압박을 드러내는 배경 부하이지 원인이 아니다). target_rps 20은 F09-R·F10-P와
+#    동일하고, overshoot 감별자 임계 60도 F09-R과 동일한 3배 여유다.
+#
+# 피해 임계(transfer_p95 >= 4000 / account_p95 >= 1000)는 **의도적으로 건드리지 않았다**.
+# 8f317c57에서 account_p95가 3~33ms에 머문 것은 사실이지만, 그 run은 압박의 절반
+# (CPU)만 주입된 상태였으므로 "account는 압박을 안 받는다"는 결론의 근거가 되지 못한다.
+# account 컨테이너의 cpu_throttled_time이 0이었다는 관측도 배제 근거가 아니다 — 이
+# 시나리오는 정답지(scenario-metadata.json root_cause.mechanism)가 명시하듯 "cgroup
+# 한도를 넘지 않으므로 컨테이너 지표는 정상"인 상태를 노린다. 즉 throttle 0은 설계된
+# 결과이지 피해 부재의 증거가 아니다. 또한 must_support가 "앱(transfer·account)이 함께
+# 지연 — 한 서비스가 아니다"를 감별선으로 삼으므로 account를 판정에서 빼면 시나리오
+# 정체성이 무너진다. 임계 재조정은 ①②가 적용된 재실행 실측을 보고 판단한다.
 F15P_LEVELS = [
     {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 2, "vm_workers": 1, "vm_bytes": "1500M", "runtime_seconds": 600},
     {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 3, "vm_workers": 1, "vm_bytes": "3000M", "runtime_seconds": 600},
@@ -206,7 +241,10 @@ case "$mode" in
   case "$action" in preflight) [[ -d "$target" && ! -L "$target" && ! -e "$artifact" ]]; calculate;; run) [[ ! -e "$artifact" ]]; calculate; fallocate -l "${desired}K" "$artifact"; sync -f "$artifact";; cleanup) rm -f -- "$artifact"; sync -f "$target";; recovery) [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
  pressure)
   cpu="$1"; vm="$2"; bytes="$3"; runtime="$4"
-  case "$action" in preflight) command -v stress-ng >/dev/null; ! alive;; run) ! alive; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --timeout "${runtime}s" --metrics-brief >"$state_root/${scenario}.log" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f "$state_root/${scenario}.log";; recovery) ! alive;; *) exit 2;; esac ;;
+  # --vm-keep is load-bearing, not a tuning knob: without it the vm stressor munmaps
+  # and re-mmaps every iteration, so pages are never held resident and node memory
+  # utilisation does not move at all. See the F15P_LEVELS note for run 8f317c57.
+  case "$action" in preflight) command -v stress-ng >/dev/null; ! alive;; run) ! alive; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --vm-keep --timeout "${runtime}s" --metrics-brief >"$state_root/${scenario}.log" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f "$state_root/${scenario}.log";; recovery) ! alive;; *) exit 2;; esac ;;
  cpu)
   # stress-ng-free CPU noisy neighbor: N `yes` busy loops at normal priority (no nice),
   # confined to one session so cleanup can reap the whole group by negative PGID. The

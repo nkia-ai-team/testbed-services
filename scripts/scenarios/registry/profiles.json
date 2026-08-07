@@ -263,7 +263,8 @@
           "F10-P",
           "F04-H",
           "F15-H",
-          "F15-T2"
+          "F15-T2",
+          "F15-P"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -322,7 +323,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-T2|14-P)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|14-P)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -828,6 +829,17 @@
           "entry_url": "http://192.168.122.77:30082",
           "script_path": "/opt/loadgen/core-banking/surge.js",
           "scenario_tag": "scenario_id=F10-P",
+          "seed": 4242,
+          "baseline_unit": "loadgen-banking"
+        },
+        "F15-P": {
+          "target_rps": 20,
+          "ramp_up": "2m",
+          "hold": "8m",
+          "ramp_down": "1m",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/surge.js",
+          "scenario_tag": "scenario_id=F15-P",
           "seed": 4242,
           "baseline_unit": "loadgen-banking"
         },

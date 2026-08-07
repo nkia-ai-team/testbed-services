@@ -5309,7 +5309,9 @@
       },
       "injected_fault": {
         "profile": null,
-        "companions": [],
+        "companions": [
+          "load.north_south"
+        ],
         "levels": [
           {
             "id": "pressure-cpu2-vm1x1500m",
