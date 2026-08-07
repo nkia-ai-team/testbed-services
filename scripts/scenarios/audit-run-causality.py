@@ -285,6 +285,8 @@ def causal_check(
     entry_service: str,
     targets: set[str],
     query: Callable[[str], list[dict[str, Any]]],
+    injection_from: str | None = None,
+    injection_to: str | None = None,
 ) -> dict[str, Any]:
     """실패한 사용자 요청 트레이스 중 주입 대상 스팬을 포함한 비율."""
     if not targets:
@@ -321,13 +323,55 @@ WHERE trace_id IN (SELECT trace_id FROM failed)
         return {"status": "undetermined", "reason": f"표본 부족({total} < {MIN_TRACE_SAMPLE})",
                 "failed_traces": total, "traces_touching_target": touching}
     ratio = touching / total
+    extra: dict[str, Any] = {}
     if ratio <= CAUSAL_ABSENT_RATIO:
+        # 스팬이 없다고 인과가 없는 것은 아니다. **차단기가 열리면 하류 호출 자체가
+        # 사라진다** — F01-H 실측(2026-08-07): mock /v1/payments 429 → payment 실패 →
+        # @CircuitBreaker(paymentClient) open → 이후 checkout 은 requestPaymentFallback
+        # 의 502 를 받고 payment 를 **부르지 않는다**. 그래서 order 502 가 734건인데
+        # payment 스팬은 30초당 1~5건(half-open 탐침)만 남았다. 이걸 그대로 "인과 없음"
+        # 이라고 적으면 차단기를 가진 시나리오 전부가 거짓 음성이 된다.
+        #
+        # 가르는 기준은 **대상이 그 창에서 실제로 실패하고 있었는가**다. F19-P 는
+        # 대상(food payment)의 스팬이 0건이고 오류도 0건이었다 — 그건 진짜 인과 없음이다.
+        # 두 질문은 창이 다르다. "무엇이 판정을 만들었나"는 판정 창(위 비율)이고,
+        # "대상이 애초에 연루돼 있었나"는 **주입 구간 전체**의 질문이다. 판정 창은
+        # 대개 30초~1분이라(신호가 이미 포화돼 일찍 confirm 된다) 차단기의 half-open
+        # 탐침(30초당 1~5건)이 잡히지 않는다 — F01-H 가 정확히 그랬다.
+        act_lo = _parse(injection_from).strftime("%Y-%m-%d %H:%M:%S") if injection_from else win_lo
+        act_hi = _parse(injection_to).strftime("%Y-%m-%d %H:%M:%S") if injection_to else win_hi
+        target_health = _target_activity(targets, act_lo, act_hi, entry_service, query)
+        # 대상 오류가 진입 실패를 설명할 만한 규모여야 한다. 스팬 두어 건이 실패한
+        # 것만으로 차단기를 주장하면, 실제 원인이 딴 데 있는 run 이 전부 "인과 가능"으로
+        # 흐려진다 — F19-S 는 payment 업무 오류가 2건인데 order 실패는 258건이었고,
+        # 진짜 원인은 dispatch 였다(독립 증거: dispatch 500·헬스 503·재시작 10회).
+        tgt_err = target_health.get("errors", 0)
+        entry_fail = target_health.get("entry_failures", 0)
+        proportionate = tgt_err > 0 and (entry_fail == 0 or tgt_err / entry_fail >= CAUSAL_ABSENT_RATIO)
+        if proportionate:
+            return {
+                "status": "causality_via_breaker",
+                "failed_traces": total, "traces_touching_target": touching,
+                "ratio": round(ratio, 4),
+                "confidence": "low",
+                "confidence_note": (
+                    "대상 스팬은 거의 없지만 대상 자체가 실패 중이다 — 차단기가 열려 하류 "
+                    "호출이 사라진 형태와 일치한다. 스팬 부재만으로 인과를 부정할 수 없다"),
+                "target_spans": target_health.get("spans"),
+                "target_errors": target_health.get("errors"),
+                "target_window": f"{act_lo} ~ {act_hi} (주입 구간 전체)",
+                "entry_failures": entry_fail,
+                "targets": sorted(targets), "entry_service": entry_service,
+            }
         status = "causality_absent"
+        extra = {"target_spans": target_health.get("spans"),
+                 "target_errors": tgt_err, "entry_failures": entry_fail}
     elif ratio >= CAUSAL_PRESENT_RATIO:
         status = "causality_present"
     else:
         status = "causality_partial"
     return {
+        **extra,
         "status": status,
         "failed_traces": total,
         "traces_touching_target": touching,
@@ -340,6 +384,39 @@ WHERE trace_id IN (SELECT trace_id FROM failed)
         "targets": sorted(targets),
         "entry_service": entry_service,
     }
+
+
+def _target_activity(targets: set[str], lo: str, hi: str, entry_service: str,
+                     query: Callable[[str], list[dict[str, Any]]]) -> dict[str, Any]:
+    """대상 서비스가 그 창에서 **업무** 스팬을 남겼는지, 그중 실패가 있었는지.
+
+    `/actuator/**` 는 뺀다 — 헬스체크는 주입과 무관하게 항상 돌므로, 세면 "대상이
+    관여했다"가 언제나 참이 된다. F19-S 가 그 함정에 걸려 payment 업무 호출이 0건인데
+    헬스 스팬 16건 때문에 차단기로 오분류됐다.
+
+    "실패 트레이스에 대상 스팬이 없다"를 인과 부정으로 읽으려면, 대상이 아예
+    조용했는지(진짜 무관) 아니면 실패하고 있었는지(차단기로 호출이 끊긴 것)를
+    구분해야 한다.
+    """
+    sql = f"""
+SELECT
+  countIf(service_name IN ({_quote(targets)})) AS spans,
+  countIf(service_name IN ({_quote(targets)})
+          AND toUInt16OrZero(span_attributes['http.response.status_code']) >= 500) AS errors,
+  countIf(service_name = '{entry_service}'
+          AND toUInt16OrZero(span_attributes['http.response.status_code']) >= 500) AS entry_failures
+FROM {TRACE_TABLE}
+WHERE span_kind = 'SERVER'
+  AND service_name IN ({_quote(targets | {entry_service})})
+  AND NOT startsWith(span_attributes['http.route'], '/actuator')
+  AND timestamp BETWEEN '{lo}' AND '{hi}'
+"""
+    rows = query(sql)
+    if not rows:
+        return {"spans": 0, "errors": 0, "entry_failures": 0}
+    return {"spans": int(rows[0].get("spans") or 0),
+            "errors": int(rows[0].get("errors") or 0),
+            "entry_failures": int(rows[0].get("entry_failures") or 0)}
 
 
 def _parse(value: str) -> datetime:
@@ -436,6 +513,7 @@ def audit_run(run_dir: Path, metadata: dict[str, Any],
         report["causal_evidence"] = causal_check(
             start_at=report["verdict_window"]["from"], end_at=report["verdict_window"]["to"],
             entry_service=entry, targets=targets, query=query,
+            injection_from=run["result"].get("t1"), injection_to=run["result"].get("t2"),
         )
     except Exception as exc:  # 트레이스 백엔드 장애를 판정으로 둔갑시키지 않는다
         report["causal_evidence"] = {"status": "undetermined", "reason": f"트레이스 질의 실패: {exc}"}
@@ -444,6 +522,7 @@ def audit_run(run_dir: Path, metadata: dict[str, Any],
 
 VERDICT_LABEL = {
     "causality_present": "인과 입증",
+    "causality_via_breaker": "인과 가능 — 차단기로 하류 호출이 사라진 형태",
     "causality_absent": "인과 미입증 — 판정은 났으나 주입과 연결되지 않는다",
     "causality_partial": "부분 인과",
     "undetermined": "판정 불가",

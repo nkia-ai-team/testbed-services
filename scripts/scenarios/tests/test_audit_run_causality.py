@@ -164,6 +164,56 @@ class CausalCheckTests(unittest.TestCase):
         self.assertIn("'o''brien'", captured["sql"])
 
 
+class CircuitBreakerTests(unittest.TestCase):
+    """차단기가 열리면 하류 스팬이 사라진다 — 스팬 부재를 인과 부정으로 읽으면 안 된다.
+
+    F01-H 실측: mock /v1/payments 429 → payment 실패 → @CircuitBreaker open → 이후
+    checkout 은 fallback 의 502 를 받고 payment 를 부르지 않는다. order 502 가 734건인데
+    payment 스팬은 half-open 탐침만 남았다.
+    """
+
+    def _check(self, failed, touching, tgt_spans, tgt_errors, entry_failures):
+        def query(sql):
+            if "entry_failures" in sql:      # 두 번째 질의: 대상 활동
+                return [{"spans": tgt_spans, "errors": tgt_errors,
+                         "entry_failures": entry_failures}]
+            return [{"failed_traces": failed, "traces_touching_target": touching}]
+
+        return audit.causal_check(
+            start_at="2026-08-07T00:00:00Z", end_at="2026-08-07T00:01:00Z",
+            entry_service="commerce-order", targets={"commerce-payment"}, query=query,
+            injection_from="2026-08-07T00:00:00Z", injection_to="2026-08-07T00:08:00Z")
+
+    def test_breaker_shape_is_not_reported_as_absent(self) -> None:
+        # F01-H 모양: 대상 스팬은 거의 없지만 대상이 비례적으로 실패 중이다.
+        result = self._check(failed=18, touching=0, tgt_spans=43, tgt_errors=38,
+                             entry_failures=734)
+        self.assertEqual(result["status"], "causality_via_breaker")
+        self.assertEqual(result["target_errors"], 38)
+
+    def test_quiet_target_is_genuinely_absent(self) -> None:
+        # F19-P 모양: 대상이 아예 조용하다 — 진짜 인과 없음.
+        result = self._check(failed=482, touching=0, tgt_spans=0, tgt_errors=0,
+                             entry_failures=482)
+        self.assertEqual(result["status"], "causality_absent")
+
+    def test_disproportionate_target_errors_do_not_earn_a_breaker_verdict(self) -> None:
+        # F19-S 모양: payment 오류 2건인데 order 실패는 258건이고 진짜 원인은 dispatch 였다.
+        # 스팬 두어 건으로 차단기를 주장하면 원인이 딴 데 있는 run 이 전부 흐려진다.
+        result = self._check(failed=15, touching=0, tgt_spans=2, tgt_errors=2,
+                             entry_failures=258)
+        self.assertEqual(result["status"], "causality_absent")
+        self.assertEqual(result["entry_failures"], 258)
+
+    def test_absent_verdict_always_shows_the_numbers_it_judged_on(self) -> None:
+        # 임계 근처(F06-R)가 있으므로 읽는 사람이 직접 판단할 수 있어야 한다.
+        result = self._check(failed=24, touching=1, tgt_spans=17, tgt_errors=17,
+                             entry_failures=900)
+        self.assertEqual(result["status"], "causality_absent")
+        self.assertEqual(result["target_errors"], 17)
+        self.assertEqual(result["entry_failures"], 900)
+
+
 class ControlArmTests(unittest.TestCase):
     def test_baseline_without_denominator_is_uninterpretable(self) -> None:
         run = {"ticks": [tick(0, "t", {}, {"checkout_5xx_rate_baseline": {"value": 0.0}})]}
