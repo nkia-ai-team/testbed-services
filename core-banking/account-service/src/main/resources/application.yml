@@ -62,3 +62,9 @@ management:
   endpoint:
     health:
       show-details: always
+      # /actuator/health/liveness 는 livenessState 만 본다. 기본 /actuator/health 는
+      # DataSource 인디케이터를 타므로 Hikari 풀이 마르면 probe timeout(3s)을 넘고,
+      # liveness 가 거기 걸려 있으면 DB 경합이 곧 SIGKILL 이 된다. readiness 는 DB 를
+      # 계속 본다 — 커넥션을 못 얻는 파드는 트래픽에서 빠지는 것이 맞다.
+      probes:
+        enabled: true

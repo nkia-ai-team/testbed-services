@@ -3503,7 +3503,7 @@
           "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')",
           "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:53-59 (PaymentService.processPayment — @Transactional. 이 경계 안에서 외부 승인과 이체가 함께 일어난다)",
           "commerce/payment-service/src/main/java/com/commerce/payment/service/PaymentService.java:63-71 (pgApiClient.requestPayment 성공과 결제 행 갱신 — 롤백돼도 외부 승인은 남는다)",
-          "core-banking/k8s/22-transfer-service.yaml:80-86 (readinessProbe — periodSeconds 10·failureThreshold 3. 주입이 이 블록의 path만 바꾼다)",
+          "core-banking/k8s/22-transfer-service.yaml:87-93 (readinessProbe — periodSeconds 10·failureThreshold 3. 주입이 이 블록의 path만 바꾼다)",
           "core-banking/k8s/22-transfer-service.yaml:14-18 (strategy maxUnavailable 1·maxSurge 0 — 엔드포인트가 실제로 비게 만드는 전제)"
         ],
         "infra_anchor": "k8s.probe executor가 probe 블록 전체를 baseline/fault 스냅샷으로 교체한다. readiness만 건드리고 liveness는 그대로 두므로 컨테이너는 재시작되지 않는다 — '죽지 않고 사라지는' 형상이 F05-H(liveness 재시작 루프)와의 감별 축이다. rollout 전략을 이 Deployment와 testbed-user 두 곳에만 명시한 것은 라이브 실측 결과로, 전역 적용하면 F08-H의 무해한 distractor 롤아웃이 진짜 장애가 되기 때문이다(기준서 롤아웃 의미론)."
@@ -3596,9 +3596,9 @@
         "target_id": "banking-transfer",
         "mechanism": "결함은 transfer-service의 outbox relay 활성화 설정이다. OutboxRelay는 @ConditionalOnProperty(prefix=\"outbox.relay\", name=\"enabled\", havingValue=\"true\")로 조건부 생성되며, 생성되면 @Scheduled(fixedDelayString=\"${outbox.relay.poll-interval-ms:2000}\")로 2초마다 published_at이 null인 상위 100건을 읽어 Kafka로 보내고 published_at을 채운다. env로 이 조건을 끄면 빈 자체가 만들어지지 않으므로 스케줄러가 없다 — 예외도 로그도 나지 않는다. 이체 트랜잭션은 outbox INSERT를 포함해 정상 커밋되므로 동기 경로는 완전히 건강하고, 고장은 **커밋 이후의 전달 단계**에만 있다. 이 구조에서 관측 가능한 신호는 두 가지뿐이다: 미발행 outbox 행의 증가(생산 측)와 컨슈머 lag의 정체(소비 측). 후자가 중요한 이유는 lag 감소·정체가 보통 '건강함'으로 읽히기 때문이다 — 여기서는 같은 신호가 굶주림을 뜻한다.",
         "code_anchor": [
-          "core-banking/shop-common/src/main/java/com/corebanking/common/outbox/OutboxRelay.java:20-21 (@ConditionalOnProperty outbox.relay.enabled — 주입이 끄는 스위치)",
-          "core-banking/shop-common/src/main/java/com/corebanking/common/outbox/OutboxRelay.java:33-46 (@Scheduled relay — published_at이 null인 행을 Kafka로 보내고 표시한다. 빈이 없으면 이 루프가 없다)",
-          "core-banking/transfer-service/src/main/resources/application.yml:36-38 (outbox.relay.enabled true — baseline 값)",
+          "core-banking/shop-common/src/main/java/com/corebanking/common/outbox/OutboxRelay.java:31-32 (@ConditionalOnProperty outbox.relay.enabled — 주입이 끄는 스위치)",
+          "core-banking/shop-common/src/main/java/com/corebanking/common/outbox/OutboxRelay.java:56-69 (@Scheduled relay — published_at이 null인 행을 Kafka로 보내고 표시한다. 빈이 없으면 이 루프가 없다)",
+          "core-banking/transfer-service/src/main/resources/application.yml:42-44 (outbox.relay.enabled true — baseline 값)",
           "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:100-105 (eventPublisher.publish — 이체 커밋 시 outbox에 기록. 이 경로는 계속 정상 동작한다)",
           "core-banking/ledger-service/src/main/java/com/corebanking/ledger/consumer/TransferEventConsumer.java:28 (@KafkaListener(topics = \"${topics.transfers:banking.transfers}\", groupId = \"ledger-service\") — 굶는 소비자)"
         ],
@@ -4321,7 +4321,7 @@
           "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:66-71 (ACTIVE — 정상 경로만 FROZEN/CLOSED를 400으로 거절한다)",
           "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:74-86 (getBalance/COMPLETED — 잔액만 보고 계좌 상태는 보지 않는다)",
           "core-banking/db/init.sql:118-119 (ACC-9001 FROZEN / ACC-9002 CLOSED 시드 — 이 시나리오의 전제)",
-          "core-banking/k8s/22-transfer-service.yaml:125-131 (NodePort nodePort 30282 — transfer가 account 검증을 거치지 않는 경로로 직접 노출된다)"
+          "core-banking/k8s/22-transfer-service.yaml:133-139 (NodePort nodePort 30282 — transfer가 account 검증을 거치지 않는 경로로 직접 노출된다)"
         ],
         "infra_anchor": "2026-07-28 승격(readiness: ready). 배선 4항 중 (1)30282 진입점 등록과 (2)frozen-bypass.js는 이미 완료돼 있었다 — 카탈로그 사유가 낡았다. (3)controller를 신설했고, (4)원장 역분개는 **금액 하향으로 대체**했다: load.north_south의 cleanup은 부하 종료만 하고 DB 쓰기 권한이 없으며, 위반의 증거는 금액이 아니라 성사되었다는 사실이므로 1~5로 낮추면 회차당 계좌 차감이 잔액의 0.3% 수준이 되어 오염이 사라진다. 원래 1000~5000은 ACC-9001 잔액(100,000)을 3배 초과해 8분 hold 중반부터 잔액부족 FAILED가 섞이는, 성공조건이 스스로 무너지는 구조이기도 했다. **남은 갭**: database.integrity_violation_count는 'since'를 실행 시작 시각으로 받아야 하는데 러너에 run-scoped 파라미터 바인딩이 없어 아직 쓸 수 없다. 결정적 증거는 경로 비대칭이고 그 두 신호는 배선돼 있으므로 승격은 성립한다."
       },
