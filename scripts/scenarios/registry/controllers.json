@@ -7971,14 +7971,15 @@
             "id": "device-saturated",
             "observation": "disk_io_util",
             "op": "gte",
-            "value": 70
+            "value": 60,
+            "_note": "임계 70 → 60. run 748dd9c8의 최상위 레벨(io-20000)에서 disk_io_util은 62~78을 오가며 70을 규칙적으로 들락거렸다(69·66·66 같은 골이 3연속 창을 계속 깼다) — 장치는 내내 포화였는데 3연속만 못 채웠다. 러너 문법에 M-of-N(최근 6틱 중 3회)이 없어 '연속' 계약은 유지하고 임계를 실측 골 아래로 내리는 쪽을 택한다. 장치 인과의 하한은 감별자 symptom-without-device-load(<30)가 그대로 지킨다."
           },
           {
-            "id": "order-latency-damage",
-            "observation": "order_p95",
+            "id": "order-create-failures",
+            "observation": "order_create_5xx_rate",
             "op": "gte",
-            "value": 2500,
-            "_note": "풀 대기(order_hikari_pending>0)는 성공 게이트에서 뺐다 — 2026-08-03 배치에서 disk 77·p95 5632ms로 손상을 크게 재현하고도 풀 대기가 진짜 0이라 실패했다(지표 자체는 살아 있음을 VM 직질의로 확인, 24h 최대 192). 이 시나리오의 정체성은 디스크 포화→사용자 지연이고 풀 경합은 경로의 하나일 뿐 필요조건이 아니다. order_hikari_pending은 관측으로 남아 증거로는 계속 캡처된다"
+            "value": 0.5,
+            "_note": "피해 신호를 order_p95에서 주문 생성 5xx로 교체한다. run 748dd9c8에서 피해는 확실히 실증됐다 — order_create_5xx_rate가 세 레벨 내내 0.90~0.99로 안정이다. 실패한 건 판정이지 주입이 아니었다: order_p95는 update_interval 60s라 이 gate 전체를 60초 페이스로 묶어놓고, 그 독립 표본들이 797ms와 7691ms 사이를 톱니로 오가 2500 이상 3연속이 한 번도 서지 않았다(같은 레벨에서 disk 75·77·75·76으로 장치는 포화였는데 success streak은 1에서 못 올라갔다). 30s 케이던스의 5xx는 gate 페이스도 함께 풀어준다. p95는 관측으로 남아 증거로는 계속 캡처된다 — F10-P(c1a52be)에서 '디스크 포화의 피해는 느려짐이 아니라 죽음'이라고 판정한 것과 같은 결론이다."
           }
         ],
         "consecutive_ticks": 3
@@ -7989,7 +7990,8 @@
             "id": "device-not-yet-saturated",
             "observation": "disk_io_util",
             "op": "lt",
-            "value": 70
+            "value": 60,
+            "_note": "success의 device-saturated와 같은 값을 봐야 한다. 60/70으로 어긋나 있으면 disk_io_util 60~69 구간에서 성공과 승급이 동시에 참이 되어 서로를 잡아먹는다 — F06-P류 상호배타(c1a52be에서 제거한 것과 같은 병)를 여기서 만들지 않는다."
           }
         ],
         "consecutive_ticks": 3
