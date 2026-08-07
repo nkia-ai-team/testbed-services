@@ -135,7 +135,21 @@ F05P_LEVELS = [
 #
 # ① 메모리 축이 아예 주입되지 않고 있었다 — stress-ng에 `--vm-keep`이 빠져 있었다.
 #    이 플래그가 없으면 vm stressor가 매 반복 munmap/mmap을 되풀이해 페이지가 상주하지
-#    않는다. 8f317c57의 실측이 그 증거다: node_cpu_util이 99.36%까지 올라가는 동안
+#    않는다.
+#
+#    ⚠️ 2026-08-07 정정: 아래 "node_mem_util이 안 올랐다"는 **증거는 무효다.**
+#    러너가 읽던 `kcm.node.mem_utilization`이 파드/cgroup 회계라, ssh로 띄운 파드 밖
+#    프로세스(stress-ng·memhog)를 아예 보지 못했다. F05-P run 1f444bc5에서 같은 노드·
+#    같은 창의 두 계열이 93.74% vs 46.85%로 갈라지는 것이 확인됐고, 러너는 f1f0f81로
+#    `system_mem_utilization`으로 교체했다. 즉 8f317c57에서 메모리가 실제로는 올라가
+#    있었는데 장님 값을 보고 있었을 수 있다.
+#
+#    `--vm-keep`이 필요하다는 것 자체는 stress-ng 문서·`--help` 실측("redirty memory
+#    instead of reallocating")으로 독립적으로 서므로 이 수리는 유지한다. 다만 아래
+#    실측 수치를 근거로 인용하지 말 것 — 메트릭 수리 후 재실행으로 다시 세워야 한다.
+#    같은 이유로 must_rule_out `cpu-only-pressure(mem<60)` 발화도 오발화였을 수 있다.
+#
+#    (원 기록) 8f317c57: node_cpu_util이 99.36%까지 올라가는 동안
 #    node_mem_util은 settling 값 61.62%를 한 번도 넘지 못하고 오히려 57.83~57.91%로
 #    **내려갔다**. 이 한 플래그가 F15-P의 세 게이트를 동시에 깨고 있었다 — success는
 #    mem >= 75가 필요한데 도달 불가, escalate는 mem < 75로 영구 발화해 사다리가 CPU
