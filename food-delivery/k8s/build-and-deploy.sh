@@ -126,7 +126,7 @@ kubectl -n rca-testbed-food rollout status statefulset --timeout=180s
 
 echo ""
 echo "========================================="
-echo "  Phase 4.1: app.control 제어 테이블 멱등 적용(기존 PVC 대응)"
+echo "  Phase 4.1: 제어 테이블 + dispatches 인덱스 멱등 적용(기존 PVC 대응)"
 echo "========================================="
 # db/init.sql 은 데이터 디렉터리가 비어 있을 때만 MySQL 엔트리포인트가 실행한다. PVC 를
 # 그대로 물려받는 테스트베드에서는 나중에 추가된 제어 테이블이 영영 생기지 않고, 앱은
@@ -141,6 +141,29 @@ CREATE TABLE IF NOT EXISTS response_delay_control (
     CONSTRAINT chk_response_delay_ms CHECK (delay_ms BETWEEN 0 AND 10000)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 INSERT IGNORE INTO response_delay_control (service_id, delay_ms) VALUES ('restaurant', 0);
+
+-- dispatches(status, assigned_at) — 2026-08-07 실측. countByStatus("ASSIGNED") 가 주문
+-- 생성마다 두 번 도는데 status 인덱스가 없어 표가 커질수록 풀스캔이 된다. 137만 행에서
+-- /api/deliveries/capacity 가 500 을 내기 시작했고, OrderService 가 그것을 payment 호출
+-- **이전에** 503 으로 바꿔(:108-111) 하류 주입을 통째로 가렸다. init.sql 은 빈 데이터
+-- 디렉터리에서만 도니 기존 PVC 에는 여기서 넣어야 한다.
+--
+-- MySQL 에는 CREATE INDEX IF NOT EXISTS 가 없다. 이 블록은 실패 시 30회 재시도로 통째로
+-- 다시 실행되므로 그냥 ALTER 를 쓰면 두 번째 시도가 "Duplicate key name" 으로 죽고,
+-- 그러면 재시도 루프가 끝내 성공하지 못해 배포가 중단된다. information_schema 로 존재를
+-- 먼저 확인하고 동적 SQL 로 분기해 멱등하게 만든다.
+SET @idx_exists := (
+    SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE table_schema = DATABASE()
+      AND table_name = 'dispatches'
+      AND index_name = 'idx_dispatches_status_assigned'
+);
+SET @idx_ddl := IF(@idx_exists = 0,
+    'ALTER TABLE dispatches ADD INDEX idx_dispatches_status_assigned (status, assigned_at)',
+    'DO 0');
+PREPARE add_idx FROM @idx_ddl;
+EXECUTE add_idx;
+DEALLOCATE PREPARE add_idx;
 SQL
 )
 control_applied=no
