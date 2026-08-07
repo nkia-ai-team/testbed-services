@@ -834,6 +834,41 @@ F03-P·F20-R의 reason은 `decision_observation_unavailable`이다.
 
 ## M. 게이지 전수 감사 — blind는 둘이 전부. p95는 표본 부족.
 
+### M-0. 판별 규칙 — 기전을 몰라도 이것으로 충분하다 (확정, 2026-08-07 23:10)
+
+> **`kcm.node.*_utilization` 중 `system_` 접두가 없는 것은 신뢰할 수 없다.**
+> **`system_` 버전은 `usage / capacity`와 소수점까지 일치하며 참값이다.**
+
+tb-w2 @22:52:00Z 순간값이 이를 확정한다:
+```
+system_cpu_utilization = 83.094  =  cpu_usage/cpu_capacity = 83.094   ← 일치
+cpu_utilization (비-system)      = 26.615                              ← 참값과 불일치
+cpu_request/cpu_capacity         = 47.500                              ← 이것과도 불일치
+```
+
+#### "파드 requests 집계" 가설은 **반증됐다**
+
+| | tb-w1 (F05-P 창) | tb-w2 (F15-P 창) |
+|---|---|---|
+| A `mem_utilization` | 46.18 ~ **55.35** (변동) | 56.89 ~ **60.39** (변동) |
+| `request/capacity` | **56.52 (상수)** | **42.57 (상수)** |
+| `usage/capacity` (참값) | 51.80 ~ **93.74** | 38.00 ~ **64.25** |
+
+**requests는 파드 스펙이라 런 중 안 바뀌는데 A는 변한다. 값도 안 맞는다.**
+→ **A는 requests가 아니다.** `limit/capacity`도 아니다.
+
+> ⚠ **`live_probes.py:170-172` 주석의 설명이 부정확하다** — "cpu_utilization은 파드 CPU requests를 추적한다"고
+> 적혀 있으나 requests/capacity는 47.5인데 게이지는 26.6이다. **결론(blind다)은 맞고 설명이 틀렸다.**
+> 게이지 교체 시 이 주석도 함께 정정할 것.
+
+**A의 정확한 정의는 미확정이다**(역산 분모 7.89GB가 `capacity−usage` 7.76GB와 1.7% 차이나 결론 안 냄).
+**그래도 실무에 지장이 없다** — 위 판별 규칙이 기전과 무관하게 성립하기 때문이다.
+
+#### 범위 확정 — **§M-1 수리는 여전히 한 줄이다**
+이 규칙에 해당하는 게이지는 CPU·메모리 **둘뿐**이고(`.system_` 전수 조회), **CPU는 이미 수리됐다.**
+- `kcm.pod.*_utilization_by_limit/_by_request/_by_node_capacity` — **이름이 분모를 명시**하므로 모호성이 없고 **현재 미사용**
+- 나머지 템플릿 9개는 절대 카운터·앱 에이전트 계측이라 "노드를 파생 지표로 재는" 구조가 아니다
+
 ### M-1. blind 쌍둥이는 **정확히 둘**이고 더 없다 (확정)
 
 VictoriaMetrics `__name__` 전수에서 `.system_` 접두 시리즈:
