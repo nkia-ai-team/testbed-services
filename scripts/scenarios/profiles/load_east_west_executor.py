@@ -39,6 +39,11 @@ F07P_LEVELS = {
 # days=120은 x86에서 ~7.6ms(상한 ~131 rps)이고 워커가 aarch64라 실제 상한은 더
 # 낮으므로, 30/45/60 rps가 포화 아래/근처/너머에 걸린다. 정확한 무릎은 사다리가
 # 라이브에서 찾는다. max_vus는 포화 고원 전체를 덮어야 k6가 도착률을 조용히 떨구지 않는다.
+# 2026-08-07(run a4875aa9): 60rps 단이 근접 실패했다. order_p95가 2000ms를 7틱 연속
+# 넘겼는데(1638 → 2904ms) escalate streak 2/4에서 렌더 부하가 꺼져 p95가 15ms로
+# 돌아왔고, 사다리는 그대로 max_injection_duration까지 갔다. rps를 더 올려도 도착률이
+# 아니라 렌더 상한이 병목이므로, 최상위 단은 요청 수가 아니라 **요청 하나의 무게**를
+# 올린다 — 위 실측대로 렌더 비용은 days에 제곱 비례한다(120 → 240이면 요청당 ~4배).
 F03H_LEVELS = {
     rps: {
         "namespace": "rca-testbed-commerce",
@@ -46,13 +51,13 @@ F03H_LEVELS = {
         "configmap": "scenario-f03-h-order-thread-pool",
         "node_name": "tb-w1",
         "image": "grafana/k6:latest",
-        "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
+        "target_url": f"http://testbed-order:8080/api/orders/reports/render?days={days}",
         "target_rps": rps,
         "duration_seconds": 480,
         "preallocated_vus": 64,
         "max_vus": 360,
     }
-    for rps in (30, 45, 60)
+    for rps, days in ((30, 120), (45, 120), (60, 240))
 }
 
 # scenario -> (approved levels, readiness deployment, k6 http method)

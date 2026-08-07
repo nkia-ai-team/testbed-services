@@ -2983,7 +2983,7 @@
       "title": "tb-w1 노드 메모리 고갈 — kubelet eviction으로 여러 도메인이 동시에 무너진다",
       "description": "commerce·food·banking 파드가 함께 배치된 워커 노드 tb-w1의 메모리를 kubelet hard-eviction 임계까지 밀어 올린다. 노드가 메모리를 회수하려고 파드를 축출하면 gateway·cart·inventory 등 그 노드에 있던 파드들이 동시에 사라지고, 재스케줄과 부팅이 끝날 때까지 여러 도메인의 API가 한꺼번에 실패한다. 어떤 서비스의 결함도 아니고 어떤 컨테이너의 한도 문제도 아니다 — **노드라는 공유 자원**이 원인이며, 증상의 공통분모가 '같은 노드에 있었다'는 것뿐이라는 점이 이 케이스의 정체성이다.",
       "cause": "tb-w1의 익명 메모리를 hog가 점유 → 노드 memory.available이 kubelet hard-eviction 임계 미만 → kubelet이 QoS·우선순위 순으로 파드 축출 → gateway·cart·inventory 등 동거 파드 소멸 → 재스케줄·부팅 공백 동안 commerce checkout과 다른 도메인 API가 동시에 5xx",
-      "injection_summary": "host.stress executor가 tb-w1(192.168.122.184)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→7000→8500 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
+      "injection_summary": "host.stress executor가 tb-w1(192.168.122.184)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→6250→7000→8500 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
       "user_impact": "tb-w1에 있던 서비스가 축출·재스케줄되는 공백 동안 commerce 체크아웃이 실패하고, 같은 노드에 있던 다른 도메인의 API도 동시에 실패한다. 피해의 경계가 **도메인이 아니라 노드**를 따르는 것이 특징이다 — 다른 노드에 배치된 서비스는 멀쩡하다. 축출된 파드가 다른 노드로 옮겨 붙으면 주입이 계속돼도 서비스는 부분적으로 회복된다.",
       "distinguishing_evidence": "결정 증거는 노드 메모리 포화와 eviction 이벤트가 같은 시각에 함께 관측되고, 무너진 서비스 목록이 정확히 그 노드의 파드 목록과 일치한다는 것이다. 앱 쪽 지표는 무죄를 가리킨다 — JVM heap after-GC는 정상이고 어떤 컨테이너도 자기 한도를 넘지 않았다. F05-R(컨테이너 한도)과는 층위로, F09-R(같은 노드 계열)과는 자원 종류로 갈린다 — CPU는 정상이고 메모리·eviction만 신호다.",
       "domain": "commerce",
@@ -3046,6 +3046,23 @@
               "mode": "memhog",
               "host": "192.168.122.184",
               "mib": 5500,
+              "runtime_seconds": 480,
+              "required_cohort": [
+                "testbed-gateway",
+                "testbed-cart",
+                "testbed-inventory",
+                "testbed-redis",
+                "testbed-kafka",
+                "testbed-payment"
+              ]
+            }
+          },
+          {
+            "id": "mem-6250",
+            "parameters": {
+              "mode": "memhog",
+              "host": "192.168.122.184",
+              "mib": 6250,
               "runtime_seconds": 480,
               "required_cohort": [
                 "testbed-gateway",
@@ -3380,7 +3397,7 @@
       "title": "order 서블릿 스레드풀 고갈 — 직렬화된 리포트 렌더러가 처리율 상한을 만든다",
       "description": "order-service의 리포트 렌더링은 요청 스레드에서 동기로 수행된다. 렌더러(OrderReportRenderer)는 조립 버퍼를 인스턴스 필드로 재사용하므로 스레드 안전하지 않고, 그 때문에 render()가 통째로 synchronized다 — 모든 리포트 요청이 모니터 하나에서 직렬화된다. 게다가 렌더 비용이 요청 구간에 비례하지 않고 제곱으로 늘어난다(일별 이동평균을 지점마다 창 전체로 다시 합산). 따라서 서비스의 리포트 처리율 상한은 1/렌더시간으로 고정되고, 도착률이 그 상한을 넘으면 초과 요청은 모니터 앞에 줄을 선다. 줄 선 요청은 서블릿 워커 스레드를 쥔 채 기다리므로 Tomcat 워커 풀(기본 200)이 마르고, 그 순간부터 리포트와 무관한 체크아웃·주문 조회까지 큐에서 굶는다. DB와 커넥션 풀은 끝까지 정상이다.",
       "cause": "OrderReportRenderer가 재사용 버퍼를 인스턴스 상태로 들고 있어 render()가 synchronized → 리포트 렌더가 전역 직렬화 → movingAverages의 O(n^2) 재합산으로 긴 구간의 렌더가 비싸짐 → 처리율 상한(1/렌더시간)을 넘는 도착률에서 대기 요청이 서블릿 워커를 점유 → Tomcat 워커 풀 고갈 → 같은 풀을 쓰는 체크아웃·주문 조회가 큐 대기 후 지연·5xx",
-      "injection_summary": "tb-w1의 클러스터 내부 k6 Job이 testbed-order:8080의 리포트 엔드포인트를 days=120으로 30/45/60rps 사다리 호출한다. 주입은 '평범한 업무 파라미터로 리포트를 요청하는 것'뿐이며 지연 시간을 지정하지 않는다 — 느려지는 원인은 전적으로 앱 안의 직렬화된 O(n^2) 렌더러다. north-south 35rps companion이 체크아웃 사용자 영향을 표면화한다. cleanup은 k6 Job·ConfigMap 삭제이며 앱 상태는 남기지 않는다.",
+      "injection_summary": "tb-w1의 클러스터 내부 k6 Job이 testbed-order:8080의 리포트 엔드포인트를 30rps/days=120 → 45rps/days=120 → 60rps/days=240 사다리로 호출한다. 요청당 렌더 비용이 days에 제곱 비례하므로(findings #22 실측) 최상위 단은 rps가 아니라 요청 하나의 무게를 올린다. 주입은 '평범한 업무 파라미터로 리포트를 요청하는 것'뿐이며 지연 시간을 지정하지 않는다 — 느려지는 원인은 전적으로 앱 안의 직렬화된 O(n^2) 렌더러다. north-south 35rps companion이 체크아웃 사용자 영향을 표면화한다. cleanup은 k6 Job·ConfigMap 삭제이며 앱 상태는 남기지 않는다.",
       "user_impact": "체크아웃과 주문 조회가 큐에서 대기하다 지연·타임아웃(5xx)된다. 리포트를 쓰지 않는 사용자까지 함께 느려지는 것이 특징이다 — 워커 풀이 공유 자원이기 때문이다. DB 계층은 정상이라 'DB는 멀쩡한데 앱이 안 받는' 상태로 보인다.",
       "distinguishing_evidence": "order p95 급등과 checkout 5xx가 있는데 (1) DB 차단 세션 0·커넥션풀 정상 → F03-P(Hikari 축소)·F01-R/F06-H(락) 배제, (2) 하류(pricing·inventory·payment) p95 정상 → 의존 결함 배제, (3) 노드 CPU가 포화되지 않음 → F09-R(노드 CPU noisy neighbor) 배제. 렌더가 직렬화돼 있어 아무리 부하를 올려도 CPU는 코어 하나치 이상 쓰지 않는다는 점이 결정적이다 — 스레드는 RUNNABLE이 아니라 같은 모니터에서 BLOCKED로 쌓인다. 즉 '바쁜 것'이 아니라 '줄 서 있는 것'이다.",
       "domain": "commerce",
@@ -3448,7 +3465,7 @@
               "configmap": "scenario-f03-h-order-thread-pool",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",
               "target_rps": 60,
               "duration_seconds": 480,
               "preallocated_vus": 64,
@@ -4130,7 +4147,7 @@
       "title": "commerce PostgreSQL OOMKill — 공유 DB 한 대가 죽어 도메인 전체가 순단한다",
       "description": "commerce의 8개 스키마는 모두 하나의 PostgreSQL StatefulSet에 들어 있다. 그 컨테이너의 메모리 한도를 조이고 체크아웃 부하를 얹으면 postgres 파드가 OOMKill되고, 재기동 수십 초 동안 8개 스키마가 전부 접속 불가가 된다. 주문·결제·재고·장바구니·가격·사용자·배송이 **동시에** 5xx를 내다 한꺼번에 회복하므로, 개별 앱 로그만 보면 모두가 피해자이고 범인이 없다. 앱 파드 OOM(F05-R)과 같은 메커니즘이지만 대상이 공유 자원이라 폭발 반경이 도메인 전체다.",
       "cause": "testbed-postgres 컨테이너 memory limit 축소(512Mi → 320Mi) → shared_buffers와 백엔드별 work_mem·페이지 캐시 합이 cgroup 상한 초과 → postgres-0 OOMKill → 재기동(PVC로 데이터 보존) 동안 8개 스키마 접속 불가 → commerce 전 서비스 동시 5xx → postgres 복귀와 함께 자동 회복",
-      "injection_summary": "k8s.resource executor가 testbed-postgres(StatefulSet)의 postgres 컨테이너 memory limit을 512Mi에서 320Mi로 패치하고, north-south companion이 체크아웃 부하를 흘려 cgroup OOM을 유도한다. cleanup은 한도 원복 후 파드 Ready 회복 확인이다. 데이터는 PVC에 있어 재기동으로 유실되지 않는다.",
+      "injection_summary": "k8s.resource executor가 testbed-postgres의 postgres 컨테이너 memory limit을 512Mi에서 192Mi→128Mi→96Mi 사다리로 조여 cgroup OOM을 유도하고, north-south companion이 체크아웃 부하를 흘려 사용자 영향을 표면화한다. cleanup은 한도 원복 후 파드 Ready 회복 확인이다. 데이터는 PVC에 있어 재기동으로 유실되지 않는다.",
       "user_impact": "commerce 전 기능이 동시에 실패한 뒤 자동 회복한다. 특정 화면이 아니라 사이트 전체가 잠깐 멎는 형태이며, 재기동이 끝나면 별도 조치 없이 정상으로 돌아온다. 다만 순단 구간에 진행 중이던 트랜잭션은 롤백되므로 그 시점의 주문은 실패로 끝난다.",
       "distinguishing_evidence": "결정 증거는 postgres 컨테이너의 OOMKilled 종료와 restart_count 증가이며, 그 시각과 **모든 서비스의 동시 5xx**가 정확히 겹친다는 점이 결합 증거다. 피해의 경계가 서비스도 노드도 아니라 '이 DB를 쓰는 것 전부'라는 사실이 공유 자원을 지목한다. 앱 컨테이너는 어느 것도 OOMKilled가 아니고 자원 한도도 그대로다 — F05-R과의 결정적 구분점이다. 노드 메모리는 정상이므로 F05-P(노드 압박)도 배제된다.",
       "domain": "commerce",
@@ -4192,35 +4209,6 @@
         ],
         "levels": [
           {
-            "id": "squeeze-256mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "256Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              }
-            }
-          },
-          {
             "id": "squeeze-192mi",
             "parameters": {
               "namespace": "rca-testbed-commerce",
@@ -4274,6 +4262,35 @@
                 "requests": {
                   "cpu": "200m",
                   "memory": "128Mi"
+                }
+              }
+            }
+          },
+          {
+            "id": "floor-96mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "96Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "96Mi"
                 }
               }
             }

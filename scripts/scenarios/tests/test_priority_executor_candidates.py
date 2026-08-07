@@ -74,10 +74,18 @@ class PriorityExecutorCandidateTests(unittest.TestCase):
         # 07-20 승격: order-service에 DB 비접촉 slow 렌더 엔드포인트가 신설되어
         # 기존 "no slow read-only order endpoint" 차단 사유가 해소되었다.
         self.assertEqual(set(east_west.F03H_LEVELS), {30, 45, 60})
+        # 최상위 단만 days=240이다(2026-08-07, run a4875aa9): 60rps에서 p95가 7틱
+        # 연속 2000ms를 넘기고도 근접 실패했고, 병목이 도착률이 아니라 직렬 렌더
+        # 상한이라 요청 수 대신 요청 하나의 무게를 올렸다.
+        self.assertEqual(
+            {rps: params["target_url"].rsplit("days=", 1)[1]
+             for rps, params in east_west.F03H_LEVELS.items()},
+            {30: "120", 45: "120", 60: "240"},
+        )
         for rps, params in east_west.F03H_LEVELS.items():
             east_west.validate("F03-H", params, {})
             self.assertEqual(params["target_rps"], rps)
-            self.assertIn("/api/orders/reports/render?days=120", params["target_url"])
+            self.assertIn("/api/orders/reports/render?days=", params["target_url"])
             # 지연 시간을 호출자가 지정하던 옛 계약(delayMs)은 결함이 아니라
             # 파라미터였고 접근 로그가 정답을 자백했다. 이제 평범한 업무 파라미터다.
             self.assertNotIn("delayMs", params["target_url"])

@@ -98,8 +98,14 @@ _F05P_COHORT = [
     "testbed-gateway", "testbed-cart", "testbed-inventory",
     "testbed-redis", "testbed-kafka", "testbed-payment",
 ]
+#
+# 2026-08-07(run 3ce101d5): 5500과 7000 사이가 비어 있었다. 5500은 node_mem 47~56%로
+# 무효과라 4분 뒤 escalate했고, 다음 단 7000은 67초 만에 노드를 NotReady로 보내
+# abort로 끝냈다 — 성공 구간(node_mem >= 92%이면서 노드는 살아 있는 상태)을 사다리가
+# 통째로 건너뛴 것이다. 그 사이에 6250을 넣어 무릎을 더 좁게 감싼다.
 F05P_LEVELS = [
     {"mode": "memhog", "host": "192.168.122.184", "mib": 5500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.184", "mib": 6250, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
     {"mode": "memhog", "host": "192.168.122.184", "mib": 7000, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
     {"mode": "memhog", "host": "192.168.122.184", "mib": 8500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
 ]

@@ -45,6 +45,13 @@ F25_H_BASELINE = {
 # 2026-08-06 사다리 전환(0804 #19): 고정 320Mi는 실사용 124MiB의 2.6배라 OOM이
 # 불가능했다. requests(256Mi)가 limit보다 크면 쿠버네티스가 패치를 거부하므로
 # (765e99f에서 k8s.patch가 먼저 겪은 문제) 단마다 requests를 limit에 맞춰 내린다.
+#
+# 2026-08-07(run af660719): 첫 단 256Mi는 min_hold+timeout 내내 pg_restart 0으로
+# 무효과였다 — 실사용의 2배라 여전히 넉넉했다. 무효과 단은 사다리 시간만 먹고 레벨
+# 전환 recovery 위험만 늘리므로 제거하고 192Mi에서 시작한다. 바닥은 96Mi로 한 단
+# 더 내린다. 이 아래는 postgres가 OOM이 아니라 기동 자체를 실패할 수 있는데, 그때는
+# 성공 조건(termination_reason == OOMKilled)이 서지 않아 조용히 통과하는 대신
+# 정직하게 실패한다.
 F25_H_LEVELS = tuple(
     {
         "namespace": "rca-testbed-commerce",
@@ -57,7 +64,7 @@ F25_H_LEVELS = tuple(
             "requests": {"cpu": "200m", "memory": limit},
         },
     }
-    for limit in ("256Mi", "192Mi", "128Mi")
+    for limit in ("192Mi", "128Mi", "96Mi")
 )
 
 _MEM_UNITS = {"Ki": 1, "Mi": 2, "Gi": 3}

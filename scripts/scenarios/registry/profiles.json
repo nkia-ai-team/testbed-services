@@ -1089,7 +1089,7 @@
               "configmap": "scenario-f03-h-order-thread-pool",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
+              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",
               "target_rps": 60,
               "duration_seconds": 480,
               "preallocated_vus": 64,
@@ -3051,11 +3051,11 @@
           "fault": {
             "limits": {
               "cpu": "500m",
-              "memory": "256Mi"
+              "memory": "192Mi"
             },
             "requests": {
               "cpu": "200m",
-              "memory": "256Mi"
+              "memory": "192Mi"
             }
           }
         }
@@ -3152,35 +3152,6 @@
         ],
         "F25-H": [
           {
-            "level_id": "squeeze-256mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "256Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              }
-            }
-          },
-          {
             "level_id": "squeeze-192mi",
             "parameters": {
               "namespace": "rca-testbed-commerce",
@@ -3234,6 +3205,35 @@
                 "requests": {
                   "cpu": "200m",
                   "memory": "128Mi"
+                }
+              }
+            }
+          },
+          {
+            "level_id": "floor-96mi",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-postgres",
+              "container": "postgres",
+              "resource": "memory",
+              "baseline": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "256Mi"
+                }
+              },
+              "fault": {
+                "limits": {
+                  "cpu": "500m",
+                  "memory": "96Mi"
+                },
+                "requests": {
+                  "cpu": "200m",
+                  "memory": "96Mi"
                 }
               }
             }
@@ -3513,6 +3513,23 @@
               "mode": "memhog",
               "host": "192.168.122.184",
               "mib": 5500,
+              "runtime_seconds": 480,
+              "required_cohort": [
+                "testbed-gateway",
+                "testbed-cart",
+                "testbed-inventory",
+                "testbed-redis",
+                "testbed-kafka",
+                "testbed-payment"
+              ]
+            }
+          },
+          {
+            "level_id": "mem-6250",
+            "parameters": {
+              "mode": "memhog",
+              "host": "192.168.122.184",
+              "mib": 6250,
               "runtime_seconds": 480,
               "required_cohort": [
                 "testbed-gateway",

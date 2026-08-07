@@ -41,7 +41,7 @@
         "mode": "calibration",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "30m",
+        "max_injection_duration": "32m",
         "preflight": [
           "kube-context",
           "kube-node-set",
@@ -84,6 +84,26 @@
                 "mode": "memhog",
                 "host": "192.168.122.184",
                 "mib": 5500,
+                "runtime_seconds": 480,
+                "required_cohort": [
+                  "testbed-gateway",
+                  "testbed-cart",
+                  "testbed-inventory",
+                  "testbed-redis",
+                  "testbed-kafka",
+                  "testbed-payment"
+                ]
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "mem-6250",
+              "parameters": {
+                "mode": "memhog",
+                "host": "192.168.122.184",
+                "mib": 6250,
                 "runtime_seconds": 480,
                 "required_cohort": [
                   "testbed-gateway",
