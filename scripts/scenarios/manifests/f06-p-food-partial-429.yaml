@@ -187,10 +187,11 @@
               "value": 15
             },
             {
-              "id": "promoted-to-5xx",
-              "observation": "order_create_5xx_rate",
+              "id": "payment-also-erroring",
+              "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 5,
+              "_note": "감별자를 order 집계에서 payment 기원 신호로 교체한다(2026-08-07, run 4957e483 트레이스 직독). 옛 promoted-to-5xx는 order_create_5xx_rate>=0.1로 '429가 5xx로 승격됐는가'를 재려 했지만, 그 지표가 세는 order의 5xx는 payment가 아니라 dispatch에서 온다 — 같은 창구에서 POST /api/orders는 200=358·429=33·400=5·503=43이었고 그 503은 dispatch-service의 자체 SERVER 500(capacity 3·상세 2·목록 2)과 order의 CLIENT 500=3에 대응한다. OrderService가 checkCapacity 실패와 dispatchCourier 실패를 무조건 503으로 바꾸고 CB fallback도 503이라 (OrderService.java:94-112, DispatchClient.java:66-79) dispatch 노이즈만으로 43/439≈0.098이 상시로 서고, 임계 0.1에 붙어 감별자가 주입과 무관하게 발화한다. 더구나 payment 호출은 capacity 검증(96)과 dispatch fan-out(145)을 통과해야 도달하므로(154) dispatch 503은 정의상 payment 이전에 끝난 요청이며 429 pass-through의 실격 사유가 될 수 없다. 실측에서 payment 자신은 429=33·200=2·5xx 0건으로 pass-through가 정상 동작했다. payment_error_rate>=5는 F19-P·F20-Q·F20-R이 이미 쓰는 같은 이름의 감별자이며, 'payment가 429가 아니라 스스로 5xx를 낸다'는 진짜 교란만 잡는다."
             },
             {
               "id": "read-path-also-broken",
