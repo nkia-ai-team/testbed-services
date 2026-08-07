@@ -933,6 +933,60 @@ inventory_movements(2,465,557)와 **같은 자릿수**다. 그런데 한쪽은 c
 형태다. 같은 설계 실수를 한쪽만 피한 것이고, **프로브 질의가 인덱스를 타는지 아무도
 확인하지 않았다**는 게 공백이다.
 
+### 전 프로브 전수 점검 (2026-08-07) — 🔴 셋, 그중 둘은 새 발견
+
+러너의 DB·ClickHouse 프로브 **전부**를 훑었다. **`EXPLAIN`만 썼고 `ANALYZE`는 한 번도
+쓰지 않았다** — 질의를 실제로 실행하면 그 자체가 교란이라, 이 점검이 지키려는 것을
+점검이 깨뜨리게 된다.
+
+| 프로브 | 대상 | 행수 / 크기 | 계획 | 주기 | 판정 |
+|---|---|---|---|---|---|
+| `restock_movement_rate` (F23-R) | `inventory_movements` | 2,465,557 / 353 MB | Parallel Seq Scan, 161MB read | **15s** | 🔴 |
+| `order_duplicate_count_since_t1` (F15-R) | `payment_schema.payments` | 1,187,765 / 252 MB | **Parallel Seq Scan** cost 27,245 | **15s** | 🔴 **신규** |
+| `baseline-business-success` (preflight) | `order_schema.orders` | 1,185,713 / 149 MB | **Parallel Seq Scan** cost 24,297 | 런당 1회 × **41종** | 🔴 **신규** |
+| `outbox_unpublished_count` (F04-H·F18-P) | `order_schema.outbox_events` | 1,123,649 / 279 MB | **Index Only Scan cost 4.31** | 15s | 🟢 |
+| `inventory_stock_level` (F23-R) | `inventory_schema.inventory` | 16 / 1000 kB | Seq Scan cost 117 | 15s | 🟢 |
+| `ledger_unmatched_transfer_count` (F14-P) | Oracle `transfers`⋈`ledger_entries` | 882K / 1.29M | 인덱스 서브 | 15s | 🟢 |
+| `service_error_rate` (CH) | `otel_traces_local` | — | 정렬키 `service_name, timestamp` 접두 일치 + 일 파티션 | 60s | 🟢 |
+| `pg_stat_activity`·`pg_locks`·`pg_indexes` 계열 | 시스템 뷰 | — | 힙 스캔 없음 | 15s | 🟢 |
+
+**`outbox_events`가 결정적 대조다.** 1,123,649행 · 279MB로 `inventory_movements`와 같은
+자릿수인데 **cost 4.31**이다. 부분 인덱스 `(created_at) WHERE published_at IS NULL`의
+술어가 질의 술어와 정확히 일치해 Index Only Scan을 탄다. **같은 인스턴스·같은 규모에서
+cost 4와 cost 27,245가 갈리는 이유는 인덱스 설계뿐이다.**
+
+### 🔴 셋의 수리안 (DDL은 배포 묶음 — 여기서는 제안만)
+
+```sql
+-- 1) F23-R (기존에 확인된 것)
+CREATE INDEX CONCURRENTLY idx_inventory_movements_restock
+  ON inventory_schema.inventory_movements (created_at)
+  WHERE movement_type = 'RESTOCK';
+
+-- 2) F15-R (신규) — 질의는 created_at 창구 뒤 order_id 로 묶는다
+CREATE INDEX CONCURRENTLY idx_payments_created_order
+  ON payment_schema.payments (created_at, order_id);
+
+-- 3) preflight (신규) — status='PAID' 고정 술어이므로 부분 인덱스가 가장 좁다
+CREATE INDEX CONCURRENTLY idx_orders_paid_created
+  ON order_schema.orders (created_at) WHERE status = 'PAID';
+```
+
+셋 다 `CONCURRENTLY`를 붙였다 — 353MB·252MB·149MB 표라 배타 잠금으로 만들면 그
+자체가 교란이다(§20의 교훈이 수리에도 적용된다).
+
+**우선순위**: F15-R(2번)이 F23-R과 같은 15초 주기에 252MB라 교란 크기가 비슷하다.
+3번은 주기가 낮지만(런당 1회) **41종 전부의 preflight**라 배치 전체에 얇게 깔린다.
+
+### 곁가지로 나온 것 둘
+
+- **`outbox_events`에 동일한 부분 인덱스가 둘 있다** —
+  `idx_order_outbox_unpublished`와 `idx_outbox_events_unpublished`가 정의까지 같다.
+  읽기에는 무해하나 쓰기마다 두 번 갱신된다. 정리 대상(배포 묶음).
+- **F20-R 정답지가 "orders(5만 행)"이라고 적었는데 실측 1,185,713행이다** — §19의
+  E5(비나열형 산문 수치) 부류라 가드가 못 잡는다. 스무 배 넘게 벌어졌고, 그 산문이
+  "인덱스 없이 풀스캔한다"는 인과 설명의 근거로 쓰이므로 갱신이 필요하다.
+
 > **규칙: 새 프로브를 붙일 때 "이 질의가 대상 시스템에 무엇을 하는가"를 물어라.**
 > 지금까지 프로브를 볼 때 물어온 것은 "값이 정확한가 / 표본이 있는가"였다. 그것만으로는
 > 부족하다. 프로브도 **워크로드**다 — 실행 계획과 버퍼 영향을 보고 붙여야 한다.
