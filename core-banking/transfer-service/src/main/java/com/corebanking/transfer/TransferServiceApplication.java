@@ -9,9 +9,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
-@EntityScan(basePackages = {"com.corebanking.transfer.entity", "com.corebanking.common.outbox"})
-@EnableJpaRepositories(basePackages = {"com.corebanking.transfer.repository", "com.corebanking.common.outbox"})
-@ComponentScan(basePackages = {"com.corebanking.transfer", "com.corebanking.common.outbox"})
+@EntityScan(basePackages = {"com.corebanking.transfer.entity", "com.corebanking.common.outbox",
+        "com.corebanking.common.delay"})
+@EnableJpaRepositories(basePackages = {"com.corebanking.transfer.repository", "com.corebanking.common.outbox",
+        "com.corebanking.common.delay"})
+@ComponentScan(basePackages = {"com.corebanking.transfer", "com.corebanking.common.outbox",
+        "com.corebanking.common.delay"})
 public class TransferServiceApplication {
 
     public static void main(String[] args) {

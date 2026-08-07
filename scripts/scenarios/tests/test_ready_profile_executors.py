@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles"
 sys.path.insert(0, str(PROFILES))
 
+from executor_common import ExecutorError  # noqa: E402  (sys.path 조작 뒤에야 import 가능)
+
 
 def load(name: str):
     path = PROFILES / f"{name}.py"
@@ -276,11 +278,38 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         # maxSurge=0 아래서 자기 감별자(transfer-pod-failure)를 켜는 원래 병이 재발한다.
         script = self.assert_contract(app_control, "f18-p-banking-outbox-relay-halt", "app.control")
         self.assertIn("sqlplus", script)
-        self.assertIn("update $table set enabled=$1", script)
+        self.assertIn("update $table set $col=$1", script)
         for rollout_verb in ("kubectl patch", "rollout", "set env"):
             self.assertNotIn(rollout_verb, script)
         # 정리는 상태 파일 없이 멱등 UPDATE 하나여야 한다.
         self.assertNotIn("state_root", script)
+
+    def test_app_control_delay_scenarios_carry_a_bounded_value(self) -> None:
+        # F21-P·F21-Q 병합 재설계(0804 #27·#28): 무딘 레버가 대상을 죽여버렸으므로
+        # 제어 행은 켜고 끄는 플래그가 아니라 "얼마나 느리게"라는 값을 나른다. 값형은
+        # 사다리가 단마다 다른 값을 물고 오므로 동일성이 아니라 범위로 검증해야 한다 —
+        # 실행기가 한 벌만 보고 다른 단을 전부 막던 병(배치 #12)을 물려받지 않는다.
+        for scenario_id, contract in app_control.CONTRACTS.items():
+            if "delay_ms" not in contract:
+                continue
+            with self.subTest(scenario=scenario_id):
+                profile = self.profiles["app.control"]
+                app_control.validate(scenario_id, dict(contract, delay_ms=2500), profile)
+                column, injected, clean = app_control.control_values(contract)
+                self.assertEqual(column, "delay_ms")
+                self.assertEqual(injected, str(contract["delay_ms"]))
+                # 평시 값이 0 이어야 preflight·cleanup 이 "지연 없음"을 기대치로 삼는다.
+                self.assertEqual(clean, "0")
+                for bad in (-1, app_control.MAX_DELAY_MS + 1, "1000", 1000.0, True, None):
+                    with self.assertRaises(ExecutorError):
+                        app_control.validate(scenario_id, dict(contract, delay_ms=bad), profile)
+                with self.assertRaises(ExecutorError):
+                    app_control.validate(scenario_id, dict(contract, service_id="somebody-else"), profile)
+
+    def test_app_control_flag_scenarios_keep_their_one_or_zero_contract(self) -> None:
+        # 값형을 들이면서 플래그형(F18-P)의 의미가 뒤집히면 릴레이가 정리 후에도
+        # 멈춘 채로 남는다. enabled 는 주입 0 / 평시 1 이다.
+        self.assertEqual(app_control.control_values(app_control.CONTRACTS["F18-P"]), ("enabled", "0", "1"))
 
     def test_app_control_contract_matches_the_approved_profile(self) -> None:
         approved = self.profiles["app.control"]["scenario_parameters"]

@@ -4153,7 +4153,8 @@
       ],
       "parameter_contract": {
         "allowed_scenarios": [
-          "F18-P"
+          "F18-P",
+          "F21-P"
         ]
       },
       "scenario_parameters": {
@@ -4164,6 +4165,15 @@
           "schema": "BANKING",
           "control_table": "outbox_relay_control",
           "service_id": "transfer"
+        },
+        "F21-P": {
+          "engine": "oracle",
+          "namespace": "rca-testbed-banking",
+          "db_pod": "testbed-oracle-0",
+          "schema": "BANKING",
+          "control_table": "response_delay_control",
+          "service_id": "transfer",
+          "delay_ms": 1000
         }
       }
     }

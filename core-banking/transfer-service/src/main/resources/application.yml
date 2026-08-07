@@ -39,6 +39,12 @@ outbox:
     # outbox_relay_control 행으로 재기동 없이 정지 가능(F18-P 표면).
     control-id: transfer
 
+# response_delay_control 행으로 api->transfer 홉만 재기동 없이 늦춘다(F21-P 표면).
+# 이 프로퍼티가 있는 서비스에서만 ResponseDelayFilter 가 뜬다.
+response:
+  delay:
+    service-id: transfer
+
 topics:
   transfers: banking.transfers
 

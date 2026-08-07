@@ -82,6 +82,20 @@ USING (SELECT 'transfer' AS service_id FROM dual) s
 ON (c.service_id = s.service_id)
 WHEN NOT MATCHED THEN INSERT (service_id, enabled) VALUES (s.service_id, 1);
 
+-- 응답 고정 지연 스위치(재기동 없는 지연 표면 — ResponseDelayFilter 가 2초 주기로 조회).
+-- 무딘 레버(노드 CPU 스트레스, CPU limit 스로틀)는 대상을 선택적으로 늦추지 못하고
+-- 죽여버렸다(0804 #27·#28). 지연할 홉만, 정해진 만큼, 죽지 않게 늦추는 값이 여기 있다.
+-- 상한 10000ms 는 DDL 과 앱 양쪽에서 조인다 — 잘못된 UPDATE 하나로 홉을 죽이지 않도록.
+CREATE TABLE IF NOT EXISTS response_delay_control (
+    service_id  VARCHAR2(32) PRIMARY KEY,
+    delay_ms    NUMBER(6) DEFAULT 0 NOT NULL CHECK (delay_ms BETWEEN 0 AND 10000),
+    updated_at  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+MERGE INTO response_delay_control c
+USING (SELECT 'transfer' AS service_id FROM dual) s
+ON (c.service_id = s.service_id)
+WHEN NOT MATCHED THEN INSERT (service_id, delay_ms) VALUES (s.service_id, 0);
+
 -- ============================================================
 -- 시드 데이터: 계좌 14개(개인/법인 혼합, 잔액 보유)
 -- 'commerce-settlement'/'commerce-merchant' 는 commerce/payment-service의
