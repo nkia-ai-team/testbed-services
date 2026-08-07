@@ -155,7 +155,8 @@
               "id": "order-memory-climbing",
               "observation": "order_memory_current",
               "op": "gte",
-              "value": 805306368
+              "value": 805306368,
+              "_note": "consecutive_ticks 2 → 1: run 543dda48에서 유효 평가 틱이 물리적으로 하나뿐이었다 — 31초 틱에서 메모리 867MB·주문 생성 5xx 0.6으로 두 조건이 동시에 서고(streak 1), 46초 틱에는 이미 파드가 죽어 entry_status 0·5xx usable=false였다(2026-08-07). 2연속은 이 정체성에서 구조적으로 채울 수 없다. 1틱이 정당한 근거는 둘이다 — 이 gate는 서로 다른 평면의 독립 신호 AND(k8s 컨테이너 메모리 · k6 주문 생성 5xx)라 단일 틱도 우연 일치가 아니고, 죽기 전 창이 물리적으로 1틱이다."
             },
             {
               "id": "order-create-errors",
@@ -164,7 +165,7 @@
               "value": 0.3
             }
           ],
-          "consecutive_ticks": 2
+          "consecutive_ticks": 1
         },
         "must_rule_out": {
           "any": [
