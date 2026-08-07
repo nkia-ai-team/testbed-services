@@ -66,8 +66,11 @@ public class ResponseDelayFilter extends OncePerRequestFilter {
 
     @PostConstruct
     void startPolling() {
+        // 스레드에 이름을 붙이지 않는다. JDK 기본 이름(pool-N-thread-M)이면 APM 스레드
+        // 덤프·로그 패턴 수집에서 흔한 하우스킵 풀과 구별되지 않는다. "delay"나
+        // "control" 이 든 이름은 덤프를 뜨는 순간 주입 수단을 그대로 자백한다.
         poller = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "response-delay-control-poller");
+            Thread thread = Executors.defaultThreadFactory().newThread(runnable);
             thread.setDaemon(true);
             return thread;
         });
@@ -114,7 +117,10 @@ public class ResponseDelayFilter extends OncePerRequestFilter {
             long value = rows.isEmpty() || rows.get(0) == null ? 0L : rows.get(0);
             delayMs = Math.max(0L, Math.min(MAX_DELAY_MS, value));
             controlUnavailable = false;
-        } catch (Exception ex) {
+        } catch (Throwable ex) {
+            // Exception 만 잡으면 Error 하나가 폴러를 영구 정지시킨다. 그러면 지연은
+            // 마지막 값에 얼어붙은 채로 남고, cleanup 은 행만 0 으로 되돌려 확인하므로
+            // 정상 회수를 보고한다 — 다음 시나리오가 남은 지연 위에서 실행된다.
             // 제어 표면이 죽어도 앱은 정상이어야 한다. 조회 실패는 지연 근거가 아니다.
             delayMs = 0L;
             if (!controlUnavailable) {
