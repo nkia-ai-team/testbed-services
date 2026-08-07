@@ -646,9 +646,9 @@
           "baseline_unit": "loadgen-commerce"
         },
         "F20-R": {
-          "target_rps": 30,
-          "ramp_up": "2m",
-          "hold": "8m",
+          "target_rps": 1,
+          "ramp_up": "1m",
+          "hold": "6m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/slowquery.js",
@@ -878,6 +878,50 @@
         }
       },
       "scenario_levels": {
+        "F20-R": [
+          {
+            "level_id": "slowquery-rps1",
+            "parameters": {
+              "target_rps": 1,
+              "ramp_up": "1m",
+              "hold": "6m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30080",
+              "script_path": "/opt/loadgen/commerce/slowquery.js",
+              "scenario_tag": "scenario_id=F20-R",
+              "seed": 4242,
+              "baseline_unit": "loadgen-commerce"
+            }
+          },
+          {
+            "level_id": "slowquery-rps2",
+            "parameters": {
+              "target_rps": 2,
+              "ramp_up": "1m",
+              "hold": "6m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30080",
+              "script_path": "/opt/loadgen/commerce/slowquery.js",
+              "scenario_tag": "scenario_id=F20-R",
+              "seed": 4242,
+              "baseline_unit": "loadgen-commerce"
+            }
+          },
+          {
+            "level_id": "slowquery-rps3",
+            "parameters": {
+              "target_rps": 3,
+              "ramp_up": "1m",
+              "hold": "6m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30080",
+              "script_path": "/opt/loadgen/commerce/slowquery.js",
+              "scenario_tag": "scenario_id=F20-R",
+              "seed": 4242,
+              "baseline_unit": "loadgen-commerce"
+            }
+          }
+        ],
         "F07-H": [
           {
             "level_id": "healthy-high-120",

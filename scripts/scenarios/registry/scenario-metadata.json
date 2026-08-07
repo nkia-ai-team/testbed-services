@@ -3906,7 +3906,7 @@
           "commerce/db/init-schemas.sql:16-23 (order_schema~shipping_schema 8개 — 같은 인스턴스를 공유해 오염이 번지는 근거)",
           "commerce/payment-service/src/main/resources/application.yml:7-10 (payment datasource — order와 같은 인스턴스를 바라본다)"
         ],
-        "infra_anchor": "주입은 부하 생성기뿐이고 DB 변형이 없어 cleanup이 부하 종료로 끝난다. 대표 체크아웃 여정을 20% 섞는 것은 관측 계약(business_step 태그) 유지와 abort 판정 연속성을 위한 것으로, 슬로우쿼리만 흘리면 사용자 경로 신호가 끊겨 피해 판정이 불가능해진다."
+        "infra_anchor": "주입은 부하 생성기뿐이고 DB 변형이 없어 cleanup이 부하 종료로 끝난다. 대표 체크아웃 여정을 20% 섞는 것은 관측 계약(business_step 태그) 유지와 abort 판정 연속성을 위한 것으로, 슬로우쿼리만 흘리면 사용자 경로 신호가 끊겨 피해 판정이 불가능해진다. 2026-08-07(run fa6749a8) 재진단 후 evaluation/fixed(target_rps 30)에서 calibration/adaptive_ladder(1·2·3 rps)로 강등했다. 근거: 트레이스 실측상 rps 30은 order-service를 30초 타임아웃 벽에 처박아 /api/orders 99건 전부 500, /actuator/health마저 p95 26129ms에 503을 냈다 — 정답지 must_rule_out('증상은 지연이지 타임아웃 5xx가 아니다')을 주입 자신이 위반해 F19-P를 연기하는 상태였다. 사다리 하단이 1 rps인 것도 실측이다: k6 ramp-up 첫 15초 버킷(≈1 rps)에서 단일 풀스캔이 min 1826.8ms / med 14781ms / p95 23618.8ms에 500은 0건이었고, ≈2~3 rps 버킷에서는 이미 4건 중 3건이 500이었다. 즉 '지연만 남는' 구간은 1 rps 부근이며 그 위는 전부 5xx다. must_rule_out은 team-lead 지시대로 유지한다 — 사다리의 목적이 그 조건을 만족하는 단을 찾는 것이다. pg_slow_active_queries는 인과 사슬의 중간 고리(공유 PG 부하)가 fa6749a8에서 전혀 관측되지 않았기에 신설 배선했으나 **관측만 붙였고 성공·감별 게이트에는 미배선이다 — 실측 후 판단한다**. payment 독립 조회 경로 신설(cross-schema 피해자를 checkout에 의존하지 않고 관측하는 안)은 **의도적으로 보류**했다: fa6749a8에서 payment가 분당 0~5스팬(11분 중 3분은 0건)이었던 것은 주입이 checkout을 500으로 무너뜨려 피해자 관측 경로를 스스로 파괴했기 때문인데, 5xx 없는 단을 사다리가 찾으면 checkout이 살아나며 표본 부족 자체가 사라질 수 있다. 즉 이 안의 필요 여부가 사다리 결과에 달려 있으므로, 다음 배치에서 단별 payment 분당 스팬 수를 다시 보고 판단한다. 주의: 이 사다리는 러너의 관측 계약 수리(표본 없는 창의 apm p95 0.0을 값이 아니라 unusable로 표시)가 배포된 뒤에 돌려야 한다 — 그 전에는 order_p95의 0.0 아티팩트가 escalate를 즉시 발화시켜 사다리가 최상단까지 헛돈다."
       },
       "must_support": [
         "commerce-order p95 상승(≥ 1.5초)",
@@ -3940,15 +3940,43 @@
         ]
       },
       "injected_fault": {
-        "profile": "load.north_south",
+        "profile": null,
         "companions": [],
         "levels": [
           {
-            "id": "approved-fixed-f20-r",
+            "id": "slowquery-rps1",
             "parameters": {
-              "target_rps": 30,
-              "ramp_up": "2m",
-              "hold": "8m",
+              "target_rps": 1,
+              "ramp_up": "1m",
+              "hold": "6m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30080",
+              "script_path": "/opt/loadgen/commerce/slowquery.js",
+              "scenario_tag": "scenario_id=F20-R",
+              "seed": 4242,
+              "baseline_unit": "loadgen-commerce"
+            }
+          },
+          {
+            "id": "slowquery-rps2",
+            "parameters": {
+              "target_rps": 2,
+              "ramp_up": "1m",
+              "hold": "6m",
+              "ramp_down": "1m",
+              "entry_url": "http://192.168.122.77:30080",
+              "script_path": "/opt/loadgen/commerce/slowquery.js",
+              "scenario_tag": "scenario_id=F20-R",
+              "seed": 4242,
+              "baseline_unit": "loadgen-commerce"
+            }
+          },
+          {
+            "id": "slowquery-rps3",
+            "parameters": {
+              "target_rps": 3,
+              "ramp_up": "1m",
+              "hold": "6m",
               "ramp_down": "1m",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/slowquery.js",

@@ -31,14 +31,13 @@
       "live_enabled": true,
       "binding": {
         "primary_ref": "load.north_south",
-        "companion_refs": [],
-        "approved_profile_id": "load.north_south"
+        "companion_refs": []
       },
       "runtime": {
-        "mode": "evaluation",
+        "mode": "calibration",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "15m",
+        "max_injection_duration": "30m",
         "preflight": [
           "kube-context",
           "kube-node-set",
@@ -69,14 +68,14 @@
           ]
         },
         "profile": {
-          "kind": "fixed",
+          "kind": "adaptive_ladder",
           "levels": [
             {
-              "id": "approved-fixed-f20-r",
+              "id": "slowquery-rps1",
               "parameters": {
-                "target_rps": 30,
-                "ramp_up": "2m",
-                "hold": "8m",
+                "target_rps": 1,
+                "ramp_up": "1m",
+                "hold": "6m",
                 "ramp_down": "1m",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/slowquery.js",
@@ -84,9 +83,43 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "8m",
+              "min_hold": "5m",
               "settle": "30s",
-              "timeout": "11m"
+              "timeout": "8m"
+            },
+            {
+              "id": "slowquery-rps2",
+              "parameters": {
+                "target_rps": 2,
+                "ramp_up": "1m",
+                "hold": "6m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30080",
+                "script_path": "/opt/loadgen/commerce/slowquery.js",
+                "scenario_tag": "scenario_id=F20-R",
+                "seed": 4242,
+                "baseline_unit": "loadgen-commerce"
+              },
+              "min_hold": "5m",
+              "settle": "30s",
+              "timeout": "8m"
+            },
+            {
+              "id": "slowquery-rps3",
+              "parameters": {
+                "target_rps": 3,
+                "ramp_up": "1m",
+                "hold": "6m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30080",
+                "script_path": "/opt/loadgen/commerce/slowquery.js",
+                "scenario_tag": "scenario_id=F20-R",
+                "seed": 4242,
+                "baseline_unit": "loadgen-commerce"
+              },
+              "min_hold": "5m",
+              "settle": "30s",
+              "timeout": "8m"
             }
           ]
         },
@@ -139,6 +172,18 @@
               "service_name": "commerce-payment"
             },
             "freshness": "60s"
+          },
+          {
+            "id": "pg_slow_active_queries",
+            "adapter": "database",
+            "query_id": "database.pg_slow_active_query_count",
+            "parameters": {
+              "db_host": "192.168.122.77",
+              "db_port": 30432,
+              "db_name": "commerce",
+              "db_user": "commerce"
+            },
+            "freshness": "30s"
           }
         ],
         "success": {
@@ -154,6 +199,17 @@
               "observation": "payment_p95",
               "op": "gte",
               "value": 500
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "escalate": {
+          "any": [
+            {
+              "id": "order-latency-not-yet-elevated",
+              "observation": "order_p95",
+              "op": "lt",
+              "value": 1500
             }
           ],
           "consecutive_ticks": 3
@@ -261,7 +317,7 @@
   "prerequisite_gate": {
     "state": "satisfied",
     "required": false,
-    "description": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py)",
+    "description": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py) + F20-R observations 배선(게이트 미배선)",
     "live_allowed": true
   },
   "capture_policy": {

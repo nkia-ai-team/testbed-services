@@ -569,9 +569,9 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "fixed",
+      "load_mode": "adaptive",
       "injection_location": "tb-runner",
-      "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py)"
+      "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py) + F20-R observations 배선(게이트 미배선)"
     },
     {
       "id": "F20-P",
