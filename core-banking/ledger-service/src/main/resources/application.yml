@@ -45,7 +45,29 @@ topics:
 
 outbox:
   relay:
-    enabled: true
+    # false 로 두는 것이 의도다. banking 은 transfer·ledger 가 같은
+    # BANKING.outbox_events 를 공유하는데(두 서비스 모두 default_schema 미설정)
+    # OutboxRelay 의 findPending 이 무스코프라, 릴레이를 둘 다 켜면 서로의 행을
+    # 무차별로 집어간다. 24h 트레이스 전수(2026-08-07): transfer 가 banking.ledger 로
+    # 13,154건, ledger 가 banking.transfers 로 13,696건 — 어느 릴레이에 집히는지가
+    # 동전 던지기였다.
+    #
+    # 그래서 F18-P(transfer 릴레이 정지)가 5회 연속 실패했다. 주입은 정확히
+    # 작동했지만(주입 창 transfer 발행 10 -> 0 -> 19) ledger 릴레이가 빈자리를
+    # 흡수해(4 -> 110) 미발행이 쌓이지 않았다.
+    #
+    # ledger 를 끄는 쪽을 택한 근거: banking.ledger 토픽에 컨슈머가 없다.
+    # 전 도메인 @KafkaListener 8개 중 구독 0개이고 Kafka --all-groups 에도 부재이며
+    # 약 862,565건이 소비된 적 없이 쌓여 있다(LedgerEventPublisher:14-15 주석도
+    # "현재 consumer 없음, 향후 확장 지점"이라 적고 있다). 끈 뒤에도 ledger 의
+    # LEDGER 행 INSERT 는 계속되고(OutboxPublisher 는 무조건 빈) 그 발행은 transfer
+    # 릴레이가 맡는다 — 이미 13,154건 하고 있다는 직접 증거가 있다.
+    #
+    # ⚠ 이건 결함 제거가 아니라 발현 봉쇄다. 무스코프 findPending 은 그대로 남는다.
+    # 세 번째 relay-enabled banking 서비스가 생기거나 이 줄을 되켜면 조용히 재발하고,
+    # 재발해도 오류가 나지 않는다 — 5회를 놓친 그대로다.
+    # 근본 수리는 별도 항목(서비스별 스키마 / 서비스별 테이블 / aggregate_type 스코프).
+    enabled: false
 
 ledger:
   reconciliation:
