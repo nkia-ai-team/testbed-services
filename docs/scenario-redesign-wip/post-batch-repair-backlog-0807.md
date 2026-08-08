@@ -96,6 +96,45 @@
 
 ---
 
+## §0-5. ★ 게이지 수리 검증 — **성공. 그리고 다음 층이 드러났다** (F05-P, 08-08 06:33)
+
+`F05-P-run-6db01235` — 수리 전후 대조:
+
+| | 수리 전 (08-07) | **수리 후 (08-08)** |
+|---|---|---|
+| `node_mem_util` max | **55.35** | **94.94** |
+| 임계 92 충족 틱 | **0** | **39/42** |
+
+**게이지 교체(§M-1)가 의도대로 작동했다.** 이제 러너가 실제 압박을 본다.
+그리고 **레벨 0(`mem-5500`)만으로 success 조건 둘(`node_mem_util>=92` AND `checkout_5xx_rate>=0.1`)이 성립한다** —
+어젯밤 "5500이 이미 93%로 성공 중이었다"는 판단이 실측으로 확인됐다.
+
+### 그런데 여전히 중단됐다 — **success 증거가 전부 `min_hold` 안에 있다**
+```
+ 79s  success=2  mem=94.94  ready=True   reason=min_hold
+145s  success=3  mem=94.94  ready=True   reason=min_hold   ← 이미 3틱 충족
+164s  success=3  mem=94.94  ready=False  reason=min_hold   ← 노드가 죽기 시작
+211s  success=4  mem=94.94  ready=True   reason=min_hold
+227s  success=4  mem=94.94  ready=False  reason=min_hold   ← abort streak 2 → 중단
+```
+
+**min_hold 동안 success 는 쌓이기만 하고 평가되지 않는다**(문서화된 비대칭).
+그 사이 노드가 무너졌고, **abort 는 min_hold 앞에서 평가되므로**(`adaptive.py:229` 대 `:264`) 먼저 확정됐다.
+
+> **min_hold(240s 추정)가 노드의 생존 시간보다 길다.**
+> 성공 증거는 145초에 3틱을 채웠는데 선언되지 못했다.
+
+### → **`776d993` 등재 목록에 F05-P 를 추가해야 한다**
+`success`/`abort` 가 같은 신호를 같은 방향으로 굴리는 조합의 5번째 사례다
+(기존 F05-H·F05-R·F15-T1·F25-H). 여기서는 `node_mem_util` 상승이
+success(`>=92`)와 노드 사망(→ `node_ready==false` abort)을 동시에 몰고 간다.
+
+**수리 후보**: F05-P 의 `min_hold` 단축(성공 증거가 145초에 이미 선다) 또는
+abort 를 min_hold 뒤로 옮기는 판정 로직 변경(영향 넓음).
+**⚠ 사다리 rung 6250 은 여전히 노드를 죽인다** — 레벨 0 에서 끝낼 수 있으면 거기 갈 일이 없다.
+
+---
+
 ## §1. 시나리오별 현재 판정
 
 | 시나리오 | 계열 | 이번 주기 | 선행 조건 / 비고 |
