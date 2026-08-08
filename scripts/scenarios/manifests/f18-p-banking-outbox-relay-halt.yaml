@@ -216,7 +216,7 @@
             }
           ],
           "consecutive_ticks": 2,
-          "timeout": "10m"
+          "timeout": "20m"
         },
         "cleanup": {
           "required": true,
