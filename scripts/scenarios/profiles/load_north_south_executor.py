@@ -130,12 +130,20 @@ tagged_pids() {
   done
 }
 
-check_read_only() {
+entry_health() {
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$entry_url$health_path" 2>/dev/null || true
+}
+
+check_tools() {
   command -v k6 >/dev/null
   command -v curl >/dev/null
   systemctl is-active --quiet "$baseline_unit"
   [[ -r "$script_path" ]]
-  [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$entry_url$health_path")" == "200" ]]
+}
+
+check_read_only() {
+  check_tools
+  [[ "$(entry_health)" == "200" ]]
 }
 
 case "$action" in
@@ -171,7 +179,24 @@ _REMOTE_SUFFIX = br'''PY
     rm -f -- "$summary" "$samples" "$live" "$monitor" "$monitor_pid" "$log_file"
     ;;
   recovery)
-    check_read_only
+    # Recovery's whole job is to wait for the system to come back, so nothing here
+    # may assert on a not-yet-recovered state. check_read_only() was doing exactly
+    # that: its entry-health probe demanded 200 at that instant, and it ran before
+    # everything else. Scenarios that deliberately break the entry (F25-H squeezes
+    # commerce postgres until it OOMs) therefore failed recovery while the entry was
+    # still coming back -- run 7bcd31eb died that way with
+    # "load.north_south:recovery failed" even though its judgement had already
+    # succeeded. Tool/unit checks stay immediate (they are environment invariants,
+    # not recovery state); only the health probe waits.
+    check_tools
+    deadline=$((SECONDS + 120))
+    while [[ "$(entry_health)" != "200" ]]; do
+      if (( SECONDS >= deadline )); then
+        echo "entry $entry_url$health_path not healthy after 120s (last=$(entry_health))" >&2
+        exit 1
+      fi
+      sleep 2
+    done
     # Do not assert immediately. k6 termination is asynchronous: even right after
     # cleanup SIGKILLs, the zombie stays in /proc until the parent reaps it, so
     # tagged_pids still sees it. F25-H run 4771bc5b died that way -- its
