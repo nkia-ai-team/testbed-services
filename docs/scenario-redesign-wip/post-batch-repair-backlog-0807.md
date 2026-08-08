@@ -74,6 +74,50 @@
 | **F12-H** | (통과 확인) | — | success 구간 주입 파드 단독 — 깨끗하다 |
 | **F04-H** | (통과 확인, **4연속**) | — | **§A "commerce는 안전"을 강화.** §L-3 검사 통과 |
 | **F15-H** | **§F 계열 B + §M-2b** (0승 3패) | **가능** | 감별자 하한 + 케이던스 둘 다 |
+| **F15-T2** | **계열 밖 — 러너 인프라 결함** | 러너 수리 | apply 242초 → 워치독 → 펜싱 거부. **틱 0개** |
+
+### ★ F15-T2 — **아홉 계열 어디에도 안 들어간다. 판정을 시작조차 못 했다.**
+
+`F15-T2-run-344e8546`, `dirty / cleanup_failed after runner_exception:RuntimeError`, **`ticks.jsonl` 자체가 없다.**
+```
+[ERROR] Adaptive controller failed closed: operation rejected by fencing token
+cleanup.reason: "timeline.compose:CalledProcessError:profile control refused:
+                 operation rejected by runner lease/fencing proof; load.north_south:(동일)"
+lease: fencing_token 347   /   현재 coordinator: next_fencing_token 348, active_lease null
+```
+
+#### 시간 사슬 (확정)
+```
+00:54:31  companion load.north_south apply        → 00:54:32 완료 (1초)
+00:54:32  timeline.compose apply                  → 00:58:34 완료  ★ 242초
+00:55:55  시터 poll error: timed out                     ← 그 사이 러너 API 무응답
+00:57:25  시터 poll error: timed out                     ←
+00:58:39  watchdog-cleanup 시작 (timeline.compose)
+00:58:43  watchdog-cleanup (load.north_south)
+00:58:49  cleanup 실패 — 펜싱 거부 → dirty
+00:59:34  시터가 DIRTY 감지 → skip
+```
+
+#### 해석 (가설, 강함)
+**`timeline.compose` apply가 242초 동안 러너를 붙잡았고**(다른 프로파일 apply는 1초),
+그 사이 API가 무응답이라 시터 폴링이 두 번 타임아웃했으며,
+**워치독이 발동했을 때는 리스가 이미 밀려나(347 → 348) 자기 cleanup조차 거부됐다.**
+
+**확정된 것**: apply 242초 / 폴링 2회 타임아웃 / 워치독 발동 / 펜싱 거부 / 틱 0개.
+**추론**: 긴 apply가 무응답과 워치독 발동의 원인이다. **누가 348을 가져갔는지는 확인 못 했다.**
+
+#### 왜 중요한가
+- **판정 결함이 아니다.** F15-T2는 관측을 한 번도 못 했다 — 오늘 아홉 계열과 층이 다르다
+- **`timeline.compose`를 쓰는 다른 시나리오도 같은 위험**을 진다. **F15-T1이 같은 프로파일**이다(오늘 스킵됨)
+- **자기 cleanup이 거부되면 dirty로 남는다** — 시터 액션을 소비하고 클러스터에 잔여 효과가 남을 수 있다.
+  이번엔 워치독 cleanup이 apply 직후라 잔여가 적었을 것으로 보이나 **확인 안 했다**
+
+#### 수리 방향 (미확정)
+- **apply에 타임아웃·비동기화**가 필요해 보인다 — 242초 동안 러너가 잡히면 안 된다
+- **리스 갱신이 긴 apply 중에도 이어져야 한다.** 지금은 apply가 길면 자기 리스를 잃는다
+- **워치독과 펜싱의 상호작용** — 워치독이 살리려고 부른 cleanup이 펜싱에 막히면 회복 경로가 없다
+
+**러너 소스 조사 필요. 이번 배치 범위 밖이다.**
 
 ### ★ F15-H 판독 (2026-08-08 00:55) — **예측 절반만 맞음**
 
