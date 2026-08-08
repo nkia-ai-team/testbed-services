@@ -61,7 +61,7 @@ function balanceCheckJourney() {
 
 function transactionHistoryJourney() {
   const id = pick(ACTIVE_ACCOUNTS);
-  const res = http.get(`${GATEWAY_URL}/api/transfers?fromAccount=${id}`,
+  const res = http.get(`${GATEWAY_URL}/api/transfers?fromAccount=${id}&page=0&size=20`,
     { tags: { journey: 'history', step: 'history' } });
   check(res, { 'transaction history status ok': (r) => r.status === 200 || r.status === 404 });
 }
