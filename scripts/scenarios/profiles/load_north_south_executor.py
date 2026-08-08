@@ -172,7 +172,26 @@ _REMOTE_SUFFIX = br'''PY
     ;;
   recovery)
     check_read_only
-    [[ -z "$(tagged_pids)" ]]
+    # Do not assert immediately. k6 termination is asynchronous: even right after
+    # cleanup SIGKILLs, the zombie stays in /proc until the parent reaps it, so
+    # tagged_pids still sees it. F25-H run 4771bc5b died that way -- its
+    # transition-cleanup ran 20:45:44->20:45:52 (8s) and recovery failed straight
+    # after. Across every recorded run (n=88) this cleanup took p50 1.66s /
+    # p90 4.42s / max 7.57s, and that max IS this run; the other 87 sat near p50
+    # and slipped through, which is why the failure looked intermittent.
+    #
+    # 30s is ~4x the measured max. The cost is asymmetric, so take the
+    # conservative side: overshooting costs a few seconds on a rare tail (k8s
+    # level transitions already take 60-80s, so the transition profile is
+    # unaffected), while undershooting costs a dirty run plus a babysitter action.
+    deadline=$((SECONDS + 30))
+    while [[ -n "$(tagged_pids)" ]]; do
+      if (( SECONDS >= deadline )); then
+        echo "tagged k6 still present after 30s: $(tagged_pids | tr '\n' ' ')" >&2
+        exit 1
+      fi
+      sleep 1
+    done
     ;;
   *) echo "unsupported remote action: $action" >&2; exit 2 ;;
 esac
