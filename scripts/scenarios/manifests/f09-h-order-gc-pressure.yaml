@@ -41,7 +41,7 @@
         "mode": "calibration",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "30m",
+        "max_injection_duration": "40m",
         "preflight": [
           "kube-context",
           "kube-node-set",

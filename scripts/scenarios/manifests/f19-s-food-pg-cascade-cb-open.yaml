@@ -174,13 +174,6 @@
               "observation": "pod_ready",
               "op": "eq",
               "value": false
-            },
-            {
-              "id": "baseline-arm-also-failing",
-              "observation": "order_create_5xx_rate_baseline",
-              "op": "gte",
-              "value": 0.2,
-              "_note": "무주입 대조 팔이 오염되면 주입 효과를 귀속할 수 없다. run cae8c16c 실측: 주입 팔 0.795~0.978 인데 **대조 팔이 0.840~1.000** 으로 같거나 더 높았고(el=79 에서 0.911 대 1.000), payment_error_rate 는 전 구간 0.000 이었다 — 즉 /pay 429 주입이 만든 피해가 없는데 성공이 확정됐다. 기록된 F19 런 6개 전부 대조 팔 중앙값이 0.93~1.00 이다(aa75203a·cae8c16c·d68b4fb3·01df886f·377a2aad·b7d83934). 원인은 food courier 풀 포화로, 풀이 마르면 주문 생성이 전부 503 이 되어 order 집계 5xx 를 양쪽 팔 모두 1.0 으로 민다. 따라서 **임계 상향으로는 못 막는다** — 147363d 가 0.1→0.5 로 올렸으나 대조 팔이 그 두 배였다. 올바른 게이트는 '주입 팔 − 대조 팔'이지만 러너 Condition 은 signal↔리터럴 비교만 지원하고 (adaptive.py Condition: signal/operator/value:Scalar, StrictModel) 두 관측 비교 문법이 없다 — 러너 변경 대기. 그때까지 이 감별자로 **fail-closed** 한다: 대조 팔이 0.2 이상이면 환경이 이미 신호를 포화시킨 것이므로 이 런은 귀속 불가로 실격시킨다. 성공 임계 0.5 의 절반을 경계로 잡았다."
             }
           ],
           "consecutive_ticks": 2
