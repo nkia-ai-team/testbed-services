@@ -2143,7 +2143,7 @@
             "value": 0
           }
         ],
-        "consecutive_ticks": 3
+        "consecutive_ticks": 2
       },
       "escalate": {
         "any": [
@@ -9697,7 +9697,7 @@
             "value": 500
           }
         ],
-        "consecutive_ticks": 3
+        "consecutive_ticks": 2
       },
       "escalate": {
         "any": [

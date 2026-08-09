@@ -129,6 +129,8 @@ state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-stat
 state_dir="$state_root/${scenario_id}-lockmock"
 expectations="$state_dir/mock-expectations.json"
 pg_state="$state_dir/pg-client.pod"
+arm_pid="$state_dir/food-arm.pid"
+arm_log="$state_dir/food-arm.log"
 kc=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$pg_ns")
 kf=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$food_ns")
 sel="lucida.io/db-client=session"
@@ -218,6 +220,26 @@ retrieve() { curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/re
 reset_mock() { curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/reset" >/dev/null; }
 mock_check() { command -v curl >/dev/null; "${kf[@]}" rollout status "$mock_resource" --timeout=1s >/dev/null; start_pf; retrieve >/dev/null; stop_pf; }
 
+# The food arm, separated from `run` so it can be deferred without blocking apply.
+arm_food() {
+  start_pf; reset_mock
+  curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' -d "{\"id\":\"rca-$scenario_id\",\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$mock_path\"},\"httpResponse\":{\"statusCode\":$mock_status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
+  stop_pf
+}
+
+# A cleanup that lands while the deferred arm is still sleeping must cancel it,
+# or the mock is armed after the restore and the expectation leaks past the run.
+cancel_arm() {
+  local apid
+  [[ -f "$arm_pid" ]] || return 0
+  apid="$(cat "$arm_pid" 2>/dev/null || true)"
+  rm -f -- "$arm_pid"
+  [[ -n "$apid" ]] || return 0
+  kill -TERM "$apid" 2>/dev/null || return 0
+  for _ in {1..50}; do kill -0 "$apid" 2>/dev/null || return 0; sleep 0.2; done
+  kill -KILL "$apid" 2>/dev/null || true
+}
+
 case "$action" in
   preflight)
     command -v kubectl >/dev/null
@@ -231,20 +253,30 @@ case "$action" in
     # [0] first, always. F15-H then lands the food arm immediately (offset 0);
     # F15-T2 holds the lock alone for the offset so the roots are separable in time.
     pg run
-    [[ "$offset" -eq 0 ]] || sleep "$offset"
-    start_pf; reset_mock
-    curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' -d "{\"id\":\"rca-$scenario_id\",\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$mock_path\"},\"httpResponse\":{\"statusCode\":$mock_status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
-    stop_pf
+    if [[ "$offset" -eq 0 ]]; then
+      arm_food
+    else
+      # The offset must NOT be waited out inside apply. The runner renews its lease
+      # on the same thread that waits for this control call, so a multi-minute sleep
+      # here starves the heartbeat: the watchdog declares the run dead, tears it down
+      # first, and every later control call is refused by the lease/fencing proof.
+      # F15-T2 failed exactly this way on 2026-08-08 -- a 243s apply (offset 240)
+      # ended DIRTY with zero ticks executed.
+      ( trap '' HUP; sleep "$offset"; arm_food ) >>"$arm_log" 2>&1 &
+      echo $! >"$arm_pid"
+      disown
+    fi
     ;;
   cleanup)
     [[ -e "$state_dir" ]] || exit 0
     rc=0
+    cancel_arm
     start_pf; reset_mock
     curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' --data-binary "@$expectations" >/dev/null || rc=1
     stop_pf
     pg cleanup || rc=1
     [[ $rc -eq 0 ]]
-    rm -f -- "$expectations"; rmdir -- "$state_dir"
+    rm -f -- "$expectations" "$arm_pid" "$arm_log"; rmdir -- "$state_dir"
     ;;
   recovery)
     [[ ! -e "$state_dir" ]]
