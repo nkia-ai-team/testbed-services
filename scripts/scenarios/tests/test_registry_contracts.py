@@ -643,10 +643,15 @@ class RegistryContractTests(unittest.TestCase):
         # 적었다. 임계 15는 target 40에서는 정당했지만(여유 62%) 5 위에서는 벽이다.
         # **부하를 바꾸는 커밋과 그 부하를 재는 감별자는 한 짝이다.**
         #
-        # 아래 둘은 이미 깨진 채로 라이브에 있어 red로 두면 게이트를 막는다.
-        # 침묵시키지 않고 여기 열거해 둔다 — 수리하면 이 집합에서 빼고, 그때 이
-        # 테스트가 재발을 막는다.
-        known_broken = {"F06-P", "F15-H"}
+        # 2026-08-09 수리 완료로 집합을 비웠다. F06-P·F15-H 의 임계를 15 → 1 로
+        # 내렸다(설계 부하 5 rps). 3차 배치까지 두 시나리오 6런 전부 achieved_rps
+        # 2.16~5.11 로 15 를 한 번도 넘지 못했고(0/29틱 × 6런) must_rule_out 이
+        # 매 런 발화해 구조적으로 통과 불가였다. 1 은 관측된 최저 2.16 의 절반 아래라
+        # 부하가 실제로 끊길 때만 발화한다.
+        #
+        # F15-T2 는 같은 임계 15 를 쓰지만 설계 부하가 40 rps 라 정당하다 — 건드리지
+        # 않았다. "같은 값이니 같은 결함"이 아니라 **부하 대비**로 판단할 것.
+        known_broken: set[str] = set()
         load_profiles = {
             name: profile
             for name, profile in self.profiles["profiles"].items()

@@ -7803,7 +7803,7 @@
             "id": "load-not-delivered",
             "observation": "achieved_rps",
             "op": "lt",
-            "value": 15
+            "value": 1
           },
           {
             "id": "payment-also-erroring",
@@ -10467,7 +10467,7 @@
             "id": "load-not-delivered",
             "observation": "achieved_rps",
             "op": "lt",
-            "value": 15
+            "value": 1
           },
           {
             "id": "food-order-pod-down",
