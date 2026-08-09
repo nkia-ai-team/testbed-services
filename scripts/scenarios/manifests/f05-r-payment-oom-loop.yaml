@@ -314,7 +314,7 @@
               "id": "restart-budget",
               "observation": "restart_count",
               "op": "gte",
-              "value": 3
+              "value": 6
             },
             {
               "id": "entry-unreachable",

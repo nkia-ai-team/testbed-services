@@ -75,8 +75,8 @@
               "parameters": {
                 "target_rps": 120,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F07-H",
@@ -92,8 +92,8 @@
               "parameters": {
                 "target_rps": 140,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F07-H",
@@ -109,8 +109,8 @@
               "parameters": {
                 "target_rps": 160,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F07-H",

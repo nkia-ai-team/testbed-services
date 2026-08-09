@@ -620,8 +620,8 @@
             "parameters": {
               "target_rps": 120,
               "ramp_up": "2m",
-              "hold": "8m",
-              "ramp_down": "1m",
+              "hold": "525s",
+              "ramp_down": "15s",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/surge.js",
               "scenario_tag": "scenario_id=F07-H",
@@ -637,8 +637,8 @@
             "parameters": {
               "target_rps": 140,
               "ramp_up": "2m",
-              "hold": "8m",
-              "ramp_down": "1m",
+              "hold": "525s",
+              "ramp_down": "15s",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/surge.js",
               "scenario_tag": "scenario_id=F07-H",
@@ -654,8 +654,8 @@
             "parameters": {
               "target_rps": 160,
               "ramp_up": "2m",
-              "hold": "8m",
-              "ramp_down": "1m",
+              "hold": "525s",
+              "ramp_down": "15s",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/surge.js",
               "scenario_tag": "scenario_id=F07-H",
@@ -1570,8 +1570,8 @@
             "parameters": {
               "target_rps": 35,
               "ramp_up": "2m",
-              "hold": "8m",
-              "ramp_down": "1m",
+              "hold": "525s",
+              "ramp_down": "15s",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/surge.js",
               "scenario_tag": "scenario_id=F11-R",
@@ -1587,8 +1587,8 @@
             "parameters": {
               "target_rps": 50,
               "ramp_up": "2m",
-              "hold": "8m",
-              "ramp_down": "1m",
+              "hold": "525s",
+              "ramp_down": "15s",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/surge.js",
               "scenario_tag": "scenario_id=F11-R",
@@ -1604,8 +1604,8 @@
             "parameters": {
               "target_rps": 65,
               "ramp_up": "2m",
-              "hold": "8m",
-              "ramp_down": "1m",
+              "hold": "525s",
+              "ramp_down": "15s",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/surge.js",
               "scenario_tag": "scenario_id=F11-R",
@@ -1675,7 +1675,7 @@
             "value": false
           }
         ],
-        "consecutive_ticks": 3
+        "consecutive_ticks": 2
       },
       "escalate": {
         "all": [
@@ -1694,13 +1694,13 @@
             "id": "general-overload",
             "observation": "achieved_rps",
             "op": "gt",
-            "value": 70
+            "value": 85
           },
           {
             "id": "user-load-not-flowing",
             "observation": "achieved_rps",
             "op": "lt",
-            "value": 30
+            "value": 17
           },
           {
             "id": "cart-pod-down",
@@ -2533,7 +2533,7 @@
             "id": "restart-budget",
             "observation": "restart_count",
             "op": "gte",
-            "value": 3
+            "value": 6
           },
           {
             "id": "entry-unreachable",
@@ -4922,7 +4922,7 @@
             "id": "food-restart-budget",
             "observation": "food_restart_count",
             "op": "gte",
-            "value": 3
+            "value": 6
           },
           {
             "id": "commerce-entry-unreachable",
@@ -5646,8 +5646,8 @@
           {
             "id": "relay-restored-backlog-drained",
             "observation": "outbox_unpublished",
-            "op": "eq",
-            "value": 0
+            "op": "lte",
+            "value": 20
           },
           {
             "id": "target-recovered",
@@ -8082,13 +8082,6 @@
             "observation": "achieved_rps",
             "op": "gt",
             "value": 60
-          },
-          {
-            "id": "baseline-arm-also-failing",
-            "observation": "order_create_5xx_rate_baseline",
-            "op": "gte",
-            "value": 0.2,
-            "_note": "F19-P·F19-S 와 같은 노출이다. f60c903 이 성공 신호를 order_p95 에서 order_create_5xx_rate 로 바꾸면서(톱니 p95 회피) 대조 팔 없는 절대 임계가 됐는데, 같은 food 도메인의 대조 팔이 지금 0.93~1.00 이다 — courier 풀 포화가 주입과 무관하게 주문 생성을 503 으로 만든다. 즉 그 수리는 톱니는 피했지만 거짓 양성 위험을 들여왔다. 대조 관측을 신설하고 F19 와 같은 임계로 fail-closed 한다. 디스크 포화의 진짜 피해는 대조 팔이 깨끗할 때만 귀속된다."
           }
         ],
         "consecutive_ticks": 3

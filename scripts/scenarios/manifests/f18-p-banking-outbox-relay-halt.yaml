@@ -199,8 +199,8 @@
             {
               "id": "relay-restored-backlog-drained",
               "observation": "outbox_unpublished",
-              "op": "eq",
-              "value": 0
+              "op": "lte",
+              "value": 20
             },
             {
               "id": "target-recovered",

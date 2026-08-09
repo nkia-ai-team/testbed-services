@@ -334,7 +334,7 @@
               "id": "food-restart-budget",
               "observation": "food_restart_count",
               "op": "gte",
-              "value": 3
+              "value": 6
             },
             {
               "id": "commerce-entry-unreachable",

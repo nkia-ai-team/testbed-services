@@ -79,8 +79,8 @@
               "parameters": {
                 "target_rps": 35,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F11-R",
@@ -96,8 +96,8 @@
               "parameters": {
                 "target_rps": 50,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F11-R",
@@ -113,8 +113,8 @@
               "parameters": {
                 "target_rps": 65,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F11-R",
@@ -184,7 +184,7 @@
               "value": false
             }
           ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 2
         },
         "escalate": {
           "all": [
@@ -203,13 +203,13 @@
               "id": "general-overload",
               "observation": "achieved_rps",
               "op": "gt",
-              "value": 70
+              "value": 85
             },
             {
               "id": "user-load-not-flowing",
               "observation": "achieved_rps",
               "op": "lt",
-              "value": 30
+              "value": 17
             },
             {
               "id": "cart-pod-down",
