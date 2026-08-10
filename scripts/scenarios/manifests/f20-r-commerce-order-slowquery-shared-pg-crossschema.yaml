@@ -198,7 +198,8 @@
               "id": "payment-crossschema-latency-up",
               "observation": "payment_p95",
               "op": "gte",
-              "value": 500
+              "value": 150,
+              "_note": "임계 500 -> 150 (2026-08-10). 20런 583틱 전체에서 payment_p95 가 500 을 넘은 틱은 0개이고 관측 사상 최대가 401.5ms 다 — 500 은 이 시나리오의 물리적 상한 위에 있었고, 다섯 배치 연속 스킵이 전부 이것으로 설명된다. 하한 근거는 settling(주입 미도달) 틱의 payment_p95 최대 115.7ms 이다. 100 으로 내리면 평시 노이즈가 통과해 거짓 통과가 된다. 150 은 관측된 모든 비주입 값 위이고 평시 median 19.6ms 의 7.6배다. 주입 자체는 확실히 작동한다: order_p95 평시 43.8ms -> rps2 주입 p50 9,916ms(226배), pg_slow_active_queries 평시 0 -> p50 8. 임계 재보정은 거짓 통과가 아니다."
             }
           ],
           "consecutive_ticks": 3
