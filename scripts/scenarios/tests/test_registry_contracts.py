@@ -67,8 +67,8 @@ class RegistryContractTests(unittest.TestCase):
         # 옮겼다. 2026-07-28 F03-H가 복귀했다 — 주입 표면을 자백하던 Thread.sleep을
         # 실제 결함(직렬화된 O(n^2) 리포트 렌더러)으로 교체해 G6 누설을 없앴다.
         live_ids = {
-            "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
-            "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P", "F09-R",
+            "F01-H", "F01-P", "F01-R", "F04-R", "F05-H", "F05-P", "F05-R",
+            "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P",
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
             "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
@@ -329,8 +329,8 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(
             live_ids,
             {
-                "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
-                "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P", "F09-R",
+                "F01-H", "F01-P", "F01-R", "F04-R", "F05-H", "F05-P", "F05-R",
+                "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P",
                 "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
                 "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
                 "F03-H", "F06-P",
@@ -351,8 +351,8 @@ class RegistryContractTests(unittest.TestCase):
             self.controllers["live_scenario_ids"],
             [
                 "F01-R", "F01-H", "F06-R", "F07-H", "F08-H", "F11-R", "F04-R", "F12-H",
-                "F05-R", "F05-H", "F08-P", "F09-R", "F01-P", "F08-G", "F15-G",
-                "F06-H", "F03-P", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S",
+                "F05-R", "F05-H", "F08-P", "F01-P", "F08-G", "F15-G",
+                "F06-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S",
                 "F16-H", "F20-R", "F20-Q", "F25-H", "F23-R", "F15-R",
                 # 2026-07-28 복귀: 앱의 Thread.sleep 자백을 실제 결함으로 교체했다.
                 "F03-H",

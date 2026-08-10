@@ -390,8 +390,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
 
     def test_live_matrix_matches_the_governed_ready_set(self) -> None:
         expected = {
-            "F01-H", "F01-P", "F01-R", "F03-P", "F04-R", "F05-H", "F05-P", "F05-R",
-            "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P", "F09-R",
+            "F01-H", "F01-P", "F01-R", "F04-R", "F05-H", "F05-P", "F05-R",
+            "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P",
             "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
             "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
@@ -432,7 +432,11 @@ class ReadyProfileExecutorTests(unittest.TestCase):
     def test_new_adaptive_profiles_accept_only_predeclared_levels(self) -> None:
         cases = [
             ("f11-r-redis-down-fallback-overload", "load.north_south", None),
-            ("f09-r-worker-cpu-noisy-neighbor", "host.stress", host_stress),
+            # 2026-08-09: host.stress 사례를 F09-R 에서 F10-H 로 옮겼다. F09-R 이 파킹되어
+            # live_allowed 가 False 가 됐기 때문이고, 이 테스트가 보려는 것은 시나리오가
+            # 아니라 "사다리 레벨이 사전 선언된 것만 통과하는가"이므로 같은 프로파일을
+            # 쓰는 라이브 3단 시나리오면 목적이 유지된다.
+            ("f10-h-mysql-io-saturation", "host.stress", host_stress),
         ]
         for slug, profile_id, module in cases:
             plan = compiler.compile_plan(slug)

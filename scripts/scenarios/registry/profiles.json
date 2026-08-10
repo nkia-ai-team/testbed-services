@@ -701,7 +701,7 @@
           "baseline_unit": "loadgen-banking"
         },
         "F20-Q": {
-          "target_rps": 30,
+          "target_rps": 15,
           "ramp_up": "2m",
           "hold": "8m",
           "ramp_down": "1m",
@@ -899,7 +899,7 @@
           "baseline_unit": "loadgen-food"
         },
         "F15-T2": {
-          "target_rps": 40,
+          "target_rps": 5,
           "ramp_up": "2m",
           "hold": "18m",
           "ramp_down": "1m",

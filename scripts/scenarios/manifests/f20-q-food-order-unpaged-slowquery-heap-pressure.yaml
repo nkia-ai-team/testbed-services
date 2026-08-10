@@ -74,7 +74,7 @@
             {
               "id": "approved-fixed-f20-q",
               "parameters": {
-                "target_rps": 30,
+                "target_rps": 15,
                 "ramp_up": "2m",
                 "hold": "8m",
                 "ramp_down": "1m",

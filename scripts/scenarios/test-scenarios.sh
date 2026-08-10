@@ -56,8 +56,13 @@ total="$(jq '.scenarios | length' "$catalog")"
 # exit 1 이었다(0806 배치 수리 중 발견). 셋 다 라이브 두 번이 인과 부재·성공↔감별자
 # 상호배타를 실증한 건이고, 재설계는 별도 트랙(F21 은 app.control 지연 표면 구현 완료,
 # 승격은 사다리 실측 후).
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 41 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 14 ]]
+# 2026-08-09: ready 41→39, parked 14→16. F09-R·F03-P 파킹. 라이브 4회(0806~0809)에서
+# 네 번 모두 스킵이고 실패 성격이 같다 — 주입은 도달하는데 피해가 생기지 않는다.
+# F09-R 은 노드 CPU 99.9% 에 pricing 12.8, F03-P 는 payment 1,614ms 에 checkout 5xx 가
+# 전 틱 0 이다. 살리려면 주입 지점 자체를 바꿔야 하므로 사실상 새 시나리오이고,
+# 그동안 매 배치 40분 이상을 쓴다. 삭제가 아니라 보관이다(controllers-parked.json).
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 39 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 16 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
@@ -231,8 +236,9 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # (F21-P·F21-Q 는 애초에 이 집합 밖) 하나만 빠진다. 8d1ef6b 가 위쪽 ready 개수를 고치자
 # 드러난 같은 계열의 세 번째 누락이다 — 게이트가 첫 실패에서 멈추므로 낡은 핀은
 # 한 번에 하나씩만 보인다.
-[[ $((ready_live_false + ready_live_true)) -eq 31 ]]
-[[ "$ready_live_true" -eq 31 ]]
+# 2026-08-09: 31→29. F09-R·F03-P 파킹분. 둘 다 bin/ 스크립트를 갖고 있어 함께 빠진다.
+[[ $((ready_live_false + ready_live_true)) -eq 29 ]]
+[[ "$ready_live_true" -eq 29 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

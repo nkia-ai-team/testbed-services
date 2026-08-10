@@ -81,7 +81,7 @@
         "k8s.env",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "pool size and minimum effective RPS"
@@ -261,7 +261,7 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "worker-w1",
       "prerequisite": "runtime placement lock"

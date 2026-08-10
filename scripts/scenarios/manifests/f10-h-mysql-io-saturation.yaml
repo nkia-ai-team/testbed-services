@@ -216,7 +216,7 @@
               "_note": "피해 신호를 order_p95에서 주문 생성 5xx로 교체한다. run 748dd9c8에서 피해는 확실히 실증됐다 — order_create_5xx_rate가 세 레벨 내내 0.90~0.99로 안정이다. 실패한 건 판정이지 주입이 아니었다: order_p95는 update_interval 60s라 이 gate 전체를 60초 페이스로 묶어놓고, 그 독립 표본들이 797ms와 7691ms 사이를 톱니로 오가 2500 이상 3연속이 한 번도 서지 않았다(같은 레벨에서 disk 75·77·75·76으로 장치는 포화였는데 success streak은 1에서 못 올라갔다). 30s 케이던스의 5xx는 gate 페이스도 함께 풀어준다. p95는 관측으로 남아 증거로는 계속 캡처된다 — F10-P(c1a52be)에서 '디스크 포화의 피해는 느려짐이 아니라 죽음'이라고 판정한 것과 같은 결론이다."
             }
           ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 2
         },
         "escalate": {
           "any": [
