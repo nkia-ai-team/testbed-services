@@ -233,6 +233,16 @@
               "resource": "testbed-gateway"
             },
             "freshness": "30s"
+          },
+          {
+            "id": "gateway_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-gateway"
+            },
+            "_note": "2026-08-10 추가. **어느 게이트에도 쓰지 않는다 — 데이터 수집이 목적이다.** F05-P 는 success 가 node_mem_util>=92 AND checkout_5xx_rate>=0.1 인데 실측상 두 조건이 겹치지 않는다: mem 92.85~93.69 로 내내 임계 위인 런에서 5xx 는 첫 틱 0.288 뒤 29틱 내내 0.0 이었고, 5xx 가 1.0 까지 오른 다른 런은 mem 96.83 구간이며 그 직후 노드가 NotReady 로 죽었다. 즉 피해는 ~96% 부근에서만 나타나고 거기는 축출 직전이다. 92~94% 구간에서 반응하는 신호가 관측 목록에 하나도 없었다(5xx·rps·상태코드·노드 지표뿐, 지연 신호 없음). 임계를 만지면 거짓 통과가 되므로 건드리지 않고, 대신 지연을 기록해 다음 주기에 근거 있는 성공 조건을 세운다."
           }
         ],
         "success": {

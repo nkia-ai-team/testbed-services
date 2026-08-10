@@ -205,7 +205,8 @@
               "value": 0.3
             }
           ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 2,
+          "_note": "consecutive_ticks 3 -> 2 (2026-08-10). D0(관측 불가 틱에서 success 스트릭 유지)을 최근 런에 모의 적용하면 최대 스트릭이 1 -> 2 로 오르지만 3 에는 못 닿는다. commerce_order_p95 가 21/53 틱(40%) unusable 이라 D0 이 공백을 메워도 독립 표본 세 개가 연달아 서지 않는다. 세 성공 조건 자체는 충족된다(blocked_db_sessions max 13 / order_p95 max 3,623 / 429_rate 0.80~1.00). F09-P·F12-H·F11-R·F10-H 와 같은 근거다 — 실측 최대 스트릭에 ct 를 맞춘다."
         },
         "must_rule_out": {
           "any": [
