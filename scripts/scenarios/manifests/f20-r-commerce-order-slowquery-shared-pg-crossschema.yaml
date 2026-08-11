@@ -83,7 +83,8 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "5m",
+              "_note_min_hold": "세 단 모두 5m -> 3m (2026-08-11). F15-H 와 같은 구조 — 성공 창이 min_hold 안에서 닫힌다. 6차 run 2bbb3499 실측: success 스트릭이 el=265 에 ct=3 을 채웠으나 전부 reason=min_hold 였고, min_hold 300s 이후에는 2 까지밖에 못 올라갔다. 단 timeout 은 8m 이므로 3m 은 판정 구간 180~480s 를 남긴다. 검증된 모의에서 el=265 발화.",
+              "min_hold": "3m",
               "settle": "30s",
               "timeout": "8m"
             },
@@ -100,7 +101,7 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "5m",
+              "min_hold": "3m",
               "settle": "30s",
               "timeout": "8m"
             },
@@ -117,7 +118,7 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-commerce"
               },
-              "min_hold": "5m",
+              "min_hold": "3m",
               "settle": "30s",
               "timeout": "8m"
             }

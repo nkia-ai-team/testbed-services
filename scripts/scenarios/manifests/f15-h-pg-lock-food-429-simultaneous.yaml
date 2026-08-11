@@ -108,7 +108,8 @@
                 "food_mock_status": 429,
                 "start_offset_seconds": 0
               },
-              "min_hold": "8m",
+              "_note_min_hold": "8m -> 4m (2026-08-11). 성공 창이 min_hold 안에서 닫히고 있었다. 6차 run f2829049 실측: success 스트릭이 el=260 에 ct=2 를 채웠는데 reason=min_hold 라 평가 줄(adaptive.py:264)까지 가지 못했고, min_hold 가 끝난 el=480 뒤에는 스트릭이 1 로 내려앉아 있었다. 주입의 유효 구간은 pg_hold_seconds=600 이므로 min_hold 8m 은 판정 가능 구간을 뒤쪽 120s(8틱)만 남긴다. 4m 은 240~600s(24틱)를 남기고 실측 발화 시각 260s 를 포함한다. 러너 판정 로직을 그대로 재생한 모의(기록 스트릭과 55틱 전부 일치)에서 el=260 발화.",
+              "min_hold": "4m",
               "settle": "45s",
               "timeout": "15m"
             }
