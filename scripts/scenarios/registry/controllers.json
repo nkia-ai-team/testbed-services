@@ -7660,15 +7660,16 @@
             "timeout": "8m"
           },
           {
-            "id": "pressure-cpu4-vm2x2500m",
+            "id": "pressure-cpu4-vm1x5000m",
             "parameters": {
               "mode": "pressure",
               "host": "192.168.122.11",
               "cpu_workers": 4,
-              "vm_workers": 2,
-              "vm_bytes": "2500M",
+              "vm_workers": 1,
+              "vm_bytes": "5000M",
               "runtime_seconds": 600
             },
+            "_note_ladder": "vm2x2500M -> vm1x5000M (2026-08-11). 총 바이트(5000MiB)도 정체성(cpu4 + 메모리 압박)도 그대로다. 워커 수만 되돌린다. 6차 run f836678b 실측이 사다리의 메모리 역전을 보여준다 — 0단 vm1x1500M 30.6->42.8%(+12.3pp), 1단 vm1x3000M ->58.9%(+25pp)로 둘 다 명목치를 선형으로 전달하는데, 최상단 vm2x2500M 은 51~54%(+21~24pp)로 **중간단보다 낮다**. 워커 하나치(~2,500MiB)만 상주한다는 뜻이다. cpu_workers 4 가 4코어를 전부 점유해 vm 워커들이 --vm-keep 의 redirty 루프를 돌릴 CPU 를 못 얻고 페이지를 회수당한 것으로 본다(가설). 확정된 것은 '올라갈수록 메모리가 줄어든다'는 실측 자체다. 6차 노트의 '최상단 ~72%' 산술은 2x2500=5000 을 가정했고 실측이 반증했다. 예측(가설): vm1x5000M -> 약 71.5%(선형 8.2pp/1000MiB, vm1 단 두 개로 보정). 7차 배치가 잰다.",
             "min_hold": "4m",
             "settle": "30s",
             "timeout": "8m"
@@ -7795,7 +7796,8 @@
             "id": "memory-not-yet-pressured",
             "observation": "node_mem_util",
             "op": "lt",
-            "value": 75
+            "value": 65,
+            "_note": "임계 75 -> 65 (2026-08-11). success 의 `node-memory-pressured`(>= 65) 와 정확한 여집합으로 맞춘다. 75 로 두면 최상단이 목표대로 ~71.5% 에 서는 순간 success(>=65)와 escalate(<75)가 **동시에 참**이 되어 같은 틱에 둘 다 스트릭을 채운다. 지금은 success 가 코드상 먼저 평가되므로(adaptive.py:264 vs :272) 우연히 success 가 이기지만, 그건 계약이 아니라 줄 순서에 기댄 것이다. 6차에 must_rule_out 에서 고친 것과 같은 형태의 충돌이다 — escalate 는 '아직 success 수준이 아니다'만 뜻해야 한다."
           }
         ],
         "consecutive_ticks": 3

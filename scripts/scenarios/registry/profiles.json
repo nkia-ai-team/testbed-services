@@ -3765,13 +3765,13 @@
             }
           },
           {
-            "level_id": "pressure-cpu4-vm2x2500m",
+            "level_id": "pressure-cpu4-vm1x5000m",
             "parameters": {
               "mode": "pressure",
               "host": "192.168.122.11",
               "cpu_workers": 4,
-              "vm_workers": 2,
-              "vm_bytes": "2500M",
+              "vm_workers": 1,
+              "vm_bytes": "5000M",
               "runtime_seconds": 600
             }
           }

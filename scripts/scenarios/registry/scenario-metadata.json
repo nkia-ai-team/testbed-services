@@ -5292,7 +5292,7 @@
       "title": "노드 복합 자원 고갈 — CPU 하나도 메모리 하나도 아니라서 어느 쪽으로도 안 읽힌다",
       "description": "tb-w2에 CPU와 메모리 압박을 **동시에** 건다. 이 테스트베드의 다른 노드 시나리오는 일부러 한 축만 건드리도록 격리돼 있다 — F09-R은 CPU만, F05-P는 메모리만이다. 따라서 둘을 함께 미는 것 자체가 감별선이 된다. 대상은 banking 노드이므로 앱(transfer· account)과 DB(Oracle)가 같은 노드에서 함께 무너지고, 이는 노드가 근본임을 가리키는 더 강한 증거가 된다. 메모리는 eviction 무릎 아래로 묶어 축출이 일어나지 않게 한다 — 축출은 F05-P의 표면이고, 이 시나리오는 '아무것도 안 죽는데 전반적으로 느려지는' 상태를 노린다.",
       "cause": "tb-w2에 stress-ng pressure 모드로 CPU 워커와 vm 워커를 동시 투입 → 노드 CPU 포화와 메모리 압박이 함께 발생 → 같은 노드의 banking 앱과 Oracle이 동시에 자원을 못 얻음 → 이체·조회가 함께 느려진다. 축출·OOM 없이 전반적 지연만 남는다",
-      "injection_summary": "host.stress executor의 pressure 모드로 tb-w2(192.168.122.11)에 cpu2+vm1x1500M / cpu3+vm1x3000M / cpu4+vm2x2500M 사다리로 압박을 준다. 메모리 상한은 5000MiB로, tb-w2 available(실측 약 7.7G) 아래이자 eviction 무릎 아래다. cleanup은 stress-ng 프로세스 종료이며 노드 상태는 원상 복구된다.",
+      "injection_summary": "host.stress executor의 pressure 모드로 tb-w2(192.168.122.11)에 cpu2+vm1x1500M / cpu3+vm1x3000M / cpu4+vm1x5000M 사다리로 압박을 준다. 메모리 상한은 5000MiB로, tb-w2 available(실측 약 7.7G) 아래이자 eviction 무릎 아래다. cleanup은 stress-ng 프로세스 종료이며 노드 상태는 원상 복구된다.",
       "user_impact": "banking 이체와 조회가 함께 느려진다. 파드는 죽지 않고 축출도 없어 가용성 지표는 정상으로 보이지만, 그 노드에 있는 것은 앱이든 DB든 전부 굼떠진다.",
       "distinguishing_evidence": "결정 증거는 **두 축이 동시에 오른다**는 것이다. 노드 CPU만 보면 F09-R처럼 보이고 메모리만 보면 F05-P처럼 보이지만, 그 둘은 각각 한 축만 건드리도록 격리돼 있으므로 동시 상승은 어느 쪽으로도 설명되지 않는다. 축출·OOM이 없다는 점이 F05-P와의 결정적 차이다(F05-P는 축출이 표면이다). 또한 같은 노드의 앱과 DB가 함께 나빠지므로 특정 서비스 결함으로도 읽히지 않는다 — 서비스 결함이면 그 서비스만 아프다. 디스크는 평온하므로 F10-P(같은 노드의 스토리지 포화)와도 갈린다.",
       "domain": "core-banking",
@@ -5365,13 +5365,13 @@
             }
           },
           {
-            "id": "pressure-cpu4-vm2x2500m",
+            "id": "pressure-cpu4-vm1x5000m",
             "parameters": {
               "mode": "pressure",
               "host": "192.168.122.11",
               "cpu_workers": 4,
-              "vm_workers": 2,
-              "vm_bytes": "2500M",
+              "vm_workers": 1,
+              "vm_bytes": "5000M",
               "runtime_seconds": 600
             }
           }
