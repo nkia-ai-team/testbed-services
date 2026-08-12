@@ -3585,45 +3585,45 @@
             }
           },
           {
+            "level_id": "mem-5750",
+            "parameters": {
+              "mode": "memhog",
+              "host": "192.168.122.184",
+              "mib": 5750,
+              "runtime_seconds": 480,
+              "required_cohort": [
+                "testbed-gateway",
+                "testbed-cart",
+                "testbed-inventory",
+                "testbed-redis",
+                "testbed-kafka",
+                "testbed-payment"
+              ]
+            }
+          },
+          {
+            "level_id": "mem-6000",
+            "parameters": {
+              "mode": "memhog",
+              "host": "192.168.122.184",
+              "mib": 6000,
+              "runtime_seconds": 480,
+              "required_cohort": [
+                "testbed-gateway",
+                "testbed-cart",
+                "testbed-inventory",
+                "testbed-redis",
+                "testbed-kafka",
+                "testbed-payment"
+              ]
+            }
+          },
+          {
             "level_id": "mem-6250",
             "parameters": {
               "mode": "memhog",
               "host": "192.168.122.184",
               "mib": 6250,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "level_id": "mem-7000",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 7000,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "level_id": "mem-8500",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 8500,
               "runtime_seconds": 480,
               "required_cohort": [
                 "testbed-gateway",

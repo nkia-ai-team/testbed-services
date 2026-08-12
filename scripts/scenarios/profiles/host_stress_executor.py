@@ -85,10 +85,11 @@ F09R_LEVELS = [
 # 특히 `testbed-payment` 접두사는 tb-w2에 있던 **food**-payment에 매칭됐다(commerce
 # payment는 다른 노드). 이제 commerce 전체가 tb-w1에 고정되어 cohort가 설계대로다.
 #
-# 사다리 MiB는 유지한다. 이전 대상(tb-w2)의 available ~7985 MiB 기준이었고 새 대상
-# tb-w1은 commerce 집결 후 available ~6865 MiB(2026-07-28 실측)라, 5500은 압박만,
-# 7000이 eviction 무릎을 넘고 8500은 확실히 넘는다 — 무릎을 더 좁게 감싼다.
-# 무릎의 정확한 위치는 라이브 캘리브레이션으로만 확정하며 정적 측정으로 단정하지 않는다.
+# 사다리 MiB의 기준: 이전 대상(tb-w2)의 available ~7985 MiB 였고 새 대상 tb-w1은
+# commerce 집결 후 available ~6865 MiB(2026-07-28 실측)다. 당시 추정은 "5500은
+# 압박만, 7000이 eviction 무릎을 넘는다"였는데, 2026-08-11 실측이 무릎을 훨씬
+# 아래로 옮겼다(아래 참조) — 정적 측정으로 단정하지 않는다는 원칙이 그대로 맞았다.
+# 무릎의 정확한 위치는 라이브 캘리브레이션으로만 확정한다.
 #
 # `required_cohort`는 fail-closed 런타임 배치 게이트다. nodeSelector로 배치가 고정된
 # 뒤에도 이 게이트는 남긴다 — 매니페스트가 되돌려지거나 노드가 빠지면 엉뚱한 노드를
@@ -103,11 +104,32 @@ _F05P_COHORT = [
 # 무효과라 4분 뒤 escalate했고, 다음 단 7000은 67초 만에 노드를 NotReady로 보내
 # abort로 끝냈다 — 성공 구간(node_mem >= 92%이면서 노드는 살아 있는 상태)을 사다리가
 # 통째로 건너뛴 것이다. 그 사이에 6250을 넣어 무릎을 더 좁게 감싼다.
+#
+# ⚠️ 위 "5500은 node_mem 47~56%로 무효과"는 **장님 게이지가 만든 값이다**(f1f0f81
+# 이전의 pod/cgroup 회계). 게이지 수리 후 6차 배치 run dcf596e9 실측은 정반대다:
+#
+#   5500 단: node_mem 94.35 -> 95.38%를 8분 내내 유지. 그런데 **피해가 0이다** —
+#            checkout_5xx 0.0 (첫 틱 0.283 뒤 29틱), gateway_p95 43~128ms 평탄.
+#   6250 단: 피해는 명백하다 — gateway_p95 1,319 -> 16,820ms, checkout_5xx 1.0,
+#            entry 500/502. 그러나 **노드가 죽는다**: 06:21:30~06:27:00 동안
+#            kcm 시계열이 통째로 사라지고, 곧 entry_status 0 으로 abort.
+#
+# 즉 무릎은 5500(압박은 있으나 무해)과 6250(치명) 사이에 있고, 7000·8500은 이미
+# 노드를 죽이는 단 **위**라 도달할 수 없는 죽은 계단이었다. 사다리를 위로 늘리는
+# 대신 그 구간을 5750·6000으로 채운다 — 단 수(4)도 시간 예산(4 x 8m =
+# max_injection_duration 32m)도 그대로다.
+#
+# 2026-08-11 갱신: 5500 -> 5750 -> 6000 -> 6250.
+# 이것은 무릎의 위치에 대한 주장이 아니라 **무릎을 찾으라는 지시**다. 어느 단이
+# 성공 구간인지는 라이브 캘리브레이션이 답한다. 함께 배포되는 러너 수리(instant
+# PromQL 의 stale 표본 가드)가 있어야 이 사다리가 의미를 갖는다 — 그 수리 전에는
+# 노드가 죽는 단에서 게이지가 마지막 값을 fresh 로 계속 돌려주어, escalate 가
+# `node_mem_util < 92`로 발화해 **작동하는 단에서 도망친다.**
 F05P_LEVELS = [
     {"mode": "memhog", "host": "192.168.122.184", "mib": 5500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.184", "mib": 5750, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
+    {"mode": "memhog", "host": "192.168.122.184", "mib": 6000, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
     {"mode": "memhog", "host": "192.168.122.184", "mib": 6250, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
-    {"mode": "memhog", "host": "192.168.122.184", "mib": 7000, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
-    {"mode": "memhog", "host": "192.168.122.184", "mib": 8500, "runtime_seconds": 480, "required_cohort": _F05P_COHORT},
 ]
 
 # F15-P — 2026-07-28 재설계.

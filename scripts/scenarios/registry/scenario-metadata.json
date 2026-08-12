@@ -2955,7 +2955,7 @@
       "title": "tb-w1 노드 메모리 고갈 — kubelet eviction으로 여러 도메인이 동시에 무너진다",
       "description": "commerce·food·banking 파드가 함께 배치된 워커 노드 tb-w1의 메모리를 kubelet hard-eviction 임계까지 밀어 올린다. 노드가 메모리를 회수하려고 파드를 축출하면 gateway·cart·inventory 등 그 노드에 있던 파드들이 동시에 사라지고, 재스케줄과 부팅이 끝날 때까지 여러 도메인의 API가 한꺼번에 실패한다. 어떤 서비스의 결함도 아니고 어떤 컨테이너의 한도 문제도 아니다 — **노드라는 공유 자원**이 원인이며, 증상의 공통분모가 '같은 노드에 있었다'는 것뿐이라는 점이 이 케이스의 정체성이다.",
       "cause": "tb-w1의 익명 메모리를 hog가 점유 → 노드 memory.available이 kubelet hard-eviction 임계 미만 → kubelet이 QoS·우선순위 순으로 파드 축출 → gateway·cart·inventory 등 동거 파드 소멸 → 재스케줄·부팅 공백 동안 commerce checkout과 다른 도메인 API가 동시에 5xx",
-      "injection_summary": "host.stress executor가 tb-w1(192.168.122.184)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→6250→7000→8500 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
+      "injection_summary": "host.stress executor가 tb-w1(192.168.122.184)에서 python 익명 메모리 hog를 실행해 전 페이지를 터치하며 5500→5750→6000→6250 MiB 사다리로 노드를 포화시킨다. 주입 전 crictl로 실제 동거 파드 목록을 재확인해 기대 cohort와 다르면 fail-closed한다. north-south 20rps companion으로 사용자 경로를 확인하며, cleanup은 프로세스 그룹 전멸 확인이다. 메모리만 점유하고 CPU·설정·파일은 건드리지 않아 F09-R(CPU)과 표면이 분리된다.",
       "user_impact": "tb-w1에 있던 서비스가 축출·재스케줄되는 공백 동안 commerce 체크아웃이 실패하고, 같은 노드에 있던 다른 도메인의 API도 동시에 실패한다. 피해의 경계가 **도메인이 아니라 노드**를 따르는 것이 특징이다 — 다른 노드에 배치된 서비스는 멀쩡하다. 축출된 파드가 다른 노드로 옮겨 붙으면 주입이 계속돼도 서비스는 부분적으로 회복된다.",
       "distinguishing_evidence": "결정 증거는 노드 메모리 포화와 eviction 이벤트가 같은 시각에 함께 관측되고, 무너진 서비스 목록이 정확히 그 노드의 파드 목록과 일치한다는 것이다. 앱 쪽 지표는 무죄를 가리킨다 — JVM heap after-GC는 정상이고 어떤 컨테이너도 자기 한도를 넘지 않았다. F05-R(컨테이너 한도)과는 층위로, F09-R(같은 노드 계열)과는 자원 종류로 갈린다 — CPU는 정상이고 메모리·eviction만 신호다.",
       "domain": "commerce",
@@ -3030,45 +3030,45 @@
             }
           },
           {
+            "id": "mem-5750",
+            "parameters": {
+              "mode": "memhog",
+              "host": "192.168.122.184",
+              "mib": 5750,
+              "runtime_seconds": 480,
+              "required_cohort": [
+                "testbed-gateway",
+                "testbed-cart",
+                "testbed-inventory",
+                "testbed-redis",
+                "testbed-kafka",
+                "testbed-payment"
+              ]
+            }
+          },
+          {
+            "id": "mem-6000",
+            "parameters": {
+              "mode": "memhog",
+              "host": "192.168.122.184",
+              "mib": 6000,
+              "runtime_seconds": 480,
+              "required_cohort": [
+                "testbed-gateway",
+                "testbed-cart",
+                "testbed-inventory",
+                "testbed-redis",
+                "testbed-kafka",
+                "testbed-payment"
+              ]
+            }
+          },
+          {
             "id": "mem-6250",
             "parameters": {
               "mode": "memhog",
               "host": "192.168.122.184",
               "mib": 6250,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "id": "mem-7000",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 7000,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "id": "mem-8500",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 8500,
               "runtime_seconds": 480,
               "required_cohort": [
                 "testbed-gateway",
