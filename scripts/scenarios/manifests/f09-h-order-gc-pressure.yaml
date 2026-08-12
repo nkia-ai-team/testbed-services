@@ -109,7 +109,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -165,7 +165,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -232,7 +232,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -288,7 +288,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -355,7 +355,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -411,7 +411,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -478,7 +478,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -534,7 +534,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -601,7 +601,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -657,7 +657,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
