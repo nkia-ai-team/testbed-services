@@ -959,6 +959,101 @@ class RegistryContractTests(unittest.TestCase):
             )
             self.assertEqual(refused.returncode, 3)
 
+    def test_success_can_be_confirmed_before_the_injection_ends(self) -> None:
+        # 6차 배치(2026-08-10)에서 세 시나리오가 **요구 스트릭을 실제로 채우고도**
+        # 스킵됐다. 평가 순서가 `abort -> min_hold 조기 반환 -> must_rule_out ->
+        # success` 라(adaptive.py:241 vs :264) min_hold 동안 스트릭은 쌓이지만
+        # success 는 평가조차 되지 않는다. min_hold 가 끝났을 땐 주입이 이미
+        # 약해져 스트릭이 깨져 있었다:
+        #
+        #   F15-H  ct=2  el=260·276·292·308 에서 스트릭 2   전부 reason=min_hold
+        #   F20-R  ct=3  el=265·281        에서 스트릭 3   전부 reason=min_hold
+        #   F15-T2 ct=3  el=372·388·405    에서 스트릭 2   전부 reason=min_hold
+        #
+        # 형제 계약(test_success_and_abort_do_not_share_a_signal_in_the_same_direction)의
+        # 주석이 F15-T1 에 대해 이 구조를 이미 서술했지만 **abort 임계에 닿는
+        # 경우만** 다뤘고, "주입이 그냥 끝나버리는" 쪽은 비어 있었다. 그래서
+        # F15-H·F20-R 에 같은 위험이 있는지 아무도 확인하지 않았다.
+        #
+        # 여기서 고정하는 것: min_hold 가 끝난 뒤 **주입이 살아 있는 동안**
+        # consecutive_ticks 개의 독립 관측이 들어갈 자리가 남아야 한다.
+        # 스트릭은 틱이 아니라 독립 표본을 센다(adaptive.py `_updated_streaks`)
+        # 이므로 간격은 max(관측 freshness, tick_interval) 이다.
+        #
+        #     min_hold + consecutive_ticks x spacing  <  주입 유효 종료
+        #
+        # 마지막 관측이 주입 종료와 **같은** 순간에 떨어지면 안 되므로 strict 다 —
+        # 수리 전 F15-H 가 정확히 그 경계였다(480 + 2x60 = 600 = pg_hold 600).
+        #
+        # 주입 유효 종료를 레지스트리에서 읽을 수 있는 레벨만 검사한다
+        # (pg_hold_seconds / runtime_seconds / ramp_up+hold+ramp_down, 필요하면
+        # start_offset_seconds 를 더한다). 읽을 수 없는 형태는 건너뛴다 —
+        # 기계가 답할 수 있는 데까지만 답하는 것이 조용히 틀린 답보다 낫다.
+        #
+        # ⚠️ 이 가드는 **필요조건이지 충분조건이 아니다.** 수리 전 레지스트리로
+        # 돌려보면 F20-R 세 단(300+3x60 = 480 = 주입 종료)과 F15-H(480+2x60 = 600
+        # = pg_hold 600)를 경계에서 잡지만 **F15-T2 는 못 잡는다** — 그쪽은
+        # 600+3x60 = 780 < 840 으로 자리가 남아 있었고, 실제 원인은 피해가 그
+        # 자리까지 이어지지 않은 것(실측 최대 스트릭 2 < ct 3)이었다. 자리가
+        # 있다는 것과 그때까지 피해가 살아 있다는 것은 다른 문제이고, 후자는
+        # 레지스트리가 알 수 없다. 여기서 red 가 안 뜬다고 성공 창이 열려 있다는
+        # 뜻은 아니다.
+        def seconds(value: str) -> int:
+            match = re.fullmatch(r"(\d+)([sm])", value)
+            assert match, value
+            return int(match.group(1)) * (60 if match.group(2) == "m" else 1)
+
+        def injection_end(parameters: dict) -> int | None:
+            offset = int(parameters.get("start_offset_seconds", 0) or 0)
+            for key in ("pg_hold_seconds", "runtime_seconds"):
+                if key in parameters:
+                    return offset + int(parameters[key])
+            if {"ramp_up", "hold", "ramp_down"} <= set(parameters):
+                return offset + sum(
+                    seconds(parameters[key])
+                    for key in ("ramp_up", "hold", "ramp_down")
+                )
+            return None
+
+        problems = []
+        for scenario_id in self.controllers["live_scenario_ids"]:
+            controller = self.controllers["controllers"][scenario_id]
+            success = controller.get("success") or {}
+            conditions = (success.get("all") or []) + (success.get("any") or [])
+            if not conditions:
+                continue
+            ticks = int(success.get("consecutive_ticks", 1))
+            # 간격은 `freshness`(허용 staleness)가 아니라 질의의
+            # `update_interval_sec` 다 — 러너가 독립 표본을 세는 창이 그것이다
+            # (adaptive.py `_independence_sec`). 둘은 다르다: apm_service_p95 는
+            # freshness_sec 120 / update_interval_sec 60 이고, 120 을 쓰면
+            # F20-R·F15-P 가 실제로는 멀쩡한데 red 로 선다.
+            queries = self.queries["queries"]
+            intervals = {
+                observation["id"]: int(
+                    queries[observation["query_id"]].get("update_interval_sec", 0)
+                )
+                for observation in controller.get("observations", [])
+                if observation.get("query_id") in queries
+            }
+            spacing = max(
+                [seconds(controller["tick_interval"])]
+                + [intervals.get(c["observation"], 0) for c in conditions]
+            )
+            needed = ticks * spacing
+            for level in controller["profile"]["levels"]:
+                end = injection_end(level["parameters"])
+                if end is None:
+                    continue
+                min_hold = seconds(level["min_hold"])
+                if min_hold + needed >= end:
+                    problems.append(
+                        f"{scenario_id}/{level['id']}: min_hold {min_hold}s + "
+                        f"{ticks}x{spacing}s = {min_hold + needed}s 가 주입 종료 {end}s "
+                        f"이후다 — 성공 창이 min_hold 안에서 닫힌다"
+                    )
+        self.assertEqual(problems, [], "\n".join(problems))
+
     def test_north_south_load_outlives_every_judgment_window(self) -> None:
         # 배치 #16 (2026-08-03, F19-P·F19-S 실증): 부하(ramp_up+hold+ramp_down)가
         # 판정 창보다 먼저 끝나면 시나리오-출처 관측(live.json)이 사라져,
