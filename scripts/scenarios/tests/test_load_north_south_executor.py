@@ -59,7 +59,9 @@ class NorthSouthExecutorTests(unittest.TestCase):
     def test_allowlisted_parameters_bind_capacity_profiles(self) -> None:
         profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
         profile = profiles["load.north_south"]
-        expected = {"F07-H": 160, "F01-R": 35, "F01-H": 35, "F05-R": 35, "F05-H": 20}
+        # 2026-08-20: F07-H 160 → 120. 사다리 pin(healthy-high-120)이 고정 evaluation
+        # 계약으로 승격되며 scenario_parameters 가 pin 단 값이 됐다.
+        expected = {"F07-H": 120, "F01-R": 35, "F01-H": 35, "F05-R": 35, "F05-H": 20}
         for scenario_id, target_rps in expected.items():
             params = profile["scenario_parameters"][scenario_id]
             executor.validate_parameters(scenario_id, params, profile)
@@ -72,36 +74,47 @@ class NorthSouthExecutorTests(unittest.TestCase):
         profile = profiles["load.north_south"]
         params = dict(profile["scenario_parameters"]["F07-H"])
         params["entry_url"] = "http://attacker.invalid"
-        with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
+        # 2026-08-20: F07-H 가 고정 계약이 되어 사다리 대조("predeclared")보다 먼저
+        # entry_url 허용목록에서 거부된다. 어느 쪽이든 변조는 거부돼야 한다.
+        with self.assertRaisesRegex(executor.ExecutorError, "not allowlisted|predeclared"):
             executor.validate_parameters("F07-H", params, profile)
 
-    def test_f07h_capacity_ladder_is_exact_and_tamper_proof(self) -> None:
+    def test_f07h_fixed_contract_is_exact_and_tamper_proof(self) -> None:
+        # 2026-08-20: F07-H 사다리(120→140→160)를 pin 단 healthy-high-120 으로 고정
+        # 승격했다(approved-fixed-f07-h). load.north_south 에는 더 이상 사다리가 없으므로
+        # 이 테스트는 고정 계약의 정확성과 변조 거부를 본다 — 고정 계약의 변조 방어선은
+        # validate_parameters(범위 검사)가 아니라 bind_level_parameters 의 승인 단 대조다.
         profile = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]["load.north_south"]
-        levels = profile["scenario_levels"]["F07-H"]
-        self.assertEqual([level["level_id"] for level in levels], ["healthy-high-120", "knee-140", "overload-160"])
-        self.assertEqual([level["parameters"]["target_rps"] for level in levels], [120, 140, 160])
-        for level in levels:
-            executor.validate_parameters("F07-H", level["parameters"], profile)
+        self.assertNotIn("F07-H", profile.get("scenario_levels", {}))
+        params = profile["scenario_parameters"]["F07-H"]
+        self.assertEqual(params["target_rps"], 120)
+        executor.validate_parameters("F07-H", params, profile)
         plan = compiler.compile_plan("f07-h-north-south-surge")
         instance = executor.load_instance(plan)
-        self.assertEqual(instance["selected_level_id"], "overload-160")
-        self.assertEqual(instance["scenario_levels"], levels)
-        tampered = dict(levels[1]["parameters"])
+        self.assertEqual(instance["selected_level_id"], "approved-fixed-f07-h")
+        self.assertEqual(instance["scenario_levels"], [])
+        self.assertEqual(
+            instance["approved_levels"],
+            [{"level_id": "approved-fixed-f07-h", "parameters": params}],
+        )
+        tampered = dict(params)
         tampered["target_rps"] = 69
         with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
-            executor.validate_parameters("F07-H", tampered, profile)
+            executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(tampered))
 
     def test_level_override_changes_exact_builder_argv(self) -> None:
+        # 2026-08-20: load.north_south 의 마지막 사다리 셋(F07-H·F11-R·F20-R)이 고정
+        # 승격돼 이 프로파일에는 단이 하나뿐이다. 단일 단에서도 override 경로는 같은
+        # 규칙을 지켜야 한다 — 0번은 정확히 묶이고, 범위 밖 인덱스와 변조는 거부된다.
         plan = compiler.compile_plan("f07-h-north-south-surge")
         levels = executor.load_instance(plan)["approved_levels"]
-        low, low_id = executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(levels[0]["parameters"]))
-        knee, knee_id = executor.bind_level_parameters(plan, "load.north_south", 1, self.canonical(levels[1]["parameters"]))
-        low_argv, _ = executor.build_invocation(low, "run")
-        knee_argv, _ = executor.build_invocation(knee, "run")
-        self.assertEqual((low_id, knee_id), ("healthy-high-120", "knee-140"))
-        self.assertIn("120", low_argv)
-        self.assertIn("140", knee_argv)
-        self.assertNotEqual(low_argv, knee_argv)
+        self.assertEqual(len(levels), 1)
+        bound, bound_id = executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(levels[0]["parameters"]))
+        bound_argv, _ = executor.build_invocation(bound, "run")
+        self.assertEqual(bound_id, "approved-fixed-f07-h")
+        self.assertIn("120", bound_argv)
+        with self.assertRaisesRegex(executor.ExecutorError, "outside the predeclared adaptive ladder"):
+            executor.bind_level_parameters(plan, "load.north_south", 1, self.canonical(levels[0]["parameters"]))
         tampered = dict(levels[0]["parameters"])
         tampered["target_rps"] = 61
         with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):

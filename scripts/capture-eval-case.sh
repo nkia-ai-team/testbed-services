@@ -199,7 +199,7 @@ if [[ "$self_check" == true ]]; then
     # queue is allowed to start; a missing table means either a schema
     # drift or a v2-era ClickHouse that hasn't caught up.
     sc_ch_v3_tables() {
-      local expected="otel_traces_local lucida_logs_local lucida_events_local dpm_session_local dpm_topsql_local kcm_events_local process_snapshot trace_error_chains_local trace_path_signatures_local syslog_local host_connections process_meta"
+      local expected="otel_traces_local lucida_logs_local lucida_events_local dpm_session_local dpm_topsql_local kcm_events_local process_snapshot trace_error_chains_local trace_path_signatures_local syslog_local host_connections process_meta event_cluster_projection_local"
       local found missing=() t
       found=$(printf 'user = "%s:%s"\n' "$CH_USER" "$CH_PASSWORD" | curl --config - --fail --silent --max-time 10 --data-binary "SELECT name FROM system.tables WHERE database='lucida' FORMAT TSV" "${CH_URL%/}/") || return 1
       for t in $expected; do
@@ -820,13 +820,22 @@ if [[ "$v3_mode" == true ]]; then
     'syslog_local:received_at:slice'
     'host_connections:timestamp:slice'
     'process_meta:seen_at:snap'
+    # 이벤트↔클러스터 매핑의 CH 정본 (2026-08-13 신 코드가 lucida_events_local.cluster_id
+    # 직기입을 폐지하고 이 조인 표로 교체 — 구 컬럼은 rolling migration fallback 으로 빈 값).
+    # 클러스터 모듈 채점("같은 사건을 하나로 잘 묶었나")의 입력이라 케이스에 실어야 한다.
+    'event_cluster_projection_local:assigned_at:slice'
   )
+  # meta.json 정책 검증이 표 수를 검사한다 — 카탈로그에서 파생시켜 하드코딩 드리프트를
+  # 막는다(2026-08-20: 13번째 표 추가 때 12 하드코딩이 남아 캡처가 죽은 실사고).
+  ch_v3_table_count=${#ch_v3_tables[@]}
   for entry in "${ch_v3_tables[@]}"; do
     IFS=':' read -r tbl time_col mode <<<"$entry"
     file="$staging_dir/data/clickhouse/${tbl}.parquet"
     select_expr='*'
     [[ "$tbl" == lucida_events_local ]] &&
       select_expr='* REPLACE(toString(event_id) AS event_id, toString(episode_id) AS episode_id)'
+    [[ "$tbl" == event_cluster_projection_local ]] &&
+      select_expr='* REPLACE(toString(event_id) AS event_id)'
     if [[ "$mode" == snap ]]; then
       where_clause=" WHERE (target_id, proc_key) IN (SELECT target_id, proc_key FROM lucida.process_snapshot WHERE ts >= $ch_start AND ts <= $ch_end)"
     else
@@ -878,11 +887,43 @@ else
     "$staging_dir/data/clickhouse/host_connections.parquet"
 fi
 
-log 'dumping PostgreSQL full control/inventory snapshot'
+log 'dumping PostgreSQL (inventory snapshot + window-scoped history)'
 pg_dump_data_dir="$staging_dir/data"
 if [[ -n "$CAPTURE_HOST_OUTPUT_ROOT" ]]; then
   pg_dump_data_dir="${CAPTURE_HOST_OUTPUT_ROOT%/}/${staging_dir##*/}/data"
 fi
+
+# ------------------------------------------------------------
+# PG scope (2026-08-13). 이 덤프는 DB 통째였다. case-f03-g-v3 실측: 케이스 창 밖
+# incidents 55/56행이 그대로 실려 다른 시나리오의 정답을 한국어 제목으로 누설했고
+# (RCA 소비자는 PG incidents 를 backing store 로 읽는다, spec §3), 그와 별개로
+# automation_dist_artifacts 한 표가 덤프 3.1GB 중 2.48GB 를 먹고 있었다.
+#
+# scripts/scenarios/pg-scope.json 이 표를 셋으로 가른다 —
+#   snap  : 인벤토리·정의·모델 상태. pg_dump 가 통째로 담는다(기본값)
+#   slice : 파이프라인이 만든 관측·판정. 덤프에서 빼고 창으로 잘라 CSV 로 낸다
+#   drop  : 평가에 안 쓰이고 공개 위험만 있는 것. 스키마만 남기고 비운다
+# 실측 결과 3.1GB/14분 → 16MB/3.6초 + CSV 98MB, FK 361개 전부 유효, 창 밖 0행.
+# ------------------------------------------------------------
+# 정본 배치는 레포의 scripts/scenarios/ 지만, 러너 컨테이너에서는 같은 디렉터리가
+# /opt/lucida/scenario-contracts 라는 **다른 이름**으로 bind mount 된다. 형제
+# 디렉터리 이름을 하나로 가정하면 배포 배치에서만 깨진다 — 2026-08-14 첫 캡처
+# 파일럿이 정확히 여기서 멎었다(주입·쿨다운·CH 12표·VM 까지 전부 성공한 뒤).
+pg_scope_tool="${PG_SCOPE_TOOL:-}"
+pg_scope_base="$(dirname "$(realpath "$0")")"
+if [[ -z "$pg_scope_tool" ]]; then
+  for candidate in "$pg_scope_base/scenarios/pg-scope-export.py" \
+                   "$pg_scope_base/scenario-contracts/pg-scope-export.py"; do
+    [[ -f "$candidate" ]] && { pg_scope_tool="$candidate"; break; }
+  done
+fi
+[[ -n "$pg_scope_tool" && -f "$pg_scope_tool" ]] ||
+  die "pg-scope-export.py 없음 (시도: $pg_scope_base/{scenarios,scenario-contracts}; PG_SCOPE_TOOL 로 직접 지정 가능)"
+log "pg-scope tool: $pg_scope_tool"
+mkdir -p "$staging_dir/data/postgres"
+pg_scope_excl=$(python3 "$pg_scope_tool" --emit exclude-args | tr '\n' ' ')
+python3 "$pg_scope_tool" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
+python3 "$pg_scope_tool" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
 # TCP keepalives + a hard timeout on the cross-network (109->119 AP bridge)
 # pg_dump. Without keepalives an idle COPY period lets the bridge/NAT reap the
 # connection and pg_dump blocks forever in poll() (2026-07-25 production run:
@@ -896,8 +937,36 @@ PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker 
   --volume "$pg_dump_data_dir:/out" \
   "$PG_DUMP_IMAGE" \
   pg_dump -Fc --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" \
+  $pg_scope_excl \
   --dbname "dbname=$PG_DATABASE keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5" \
   --file /out/postgres.dump
+
+# slice 표를 캡처 창으로 잘라 CSV 로. \copy 가 아니라 서버측 COPY ... TO STDOUT +
+# \o 를 쓴다 — \copy 는 psql 자체 파서를 타는 한 줄 메타명령이라 인용 식별자와
+# :'변수' 를 쪼개 질의를 깨뜨린다(2026-08-13 실측).
+log 'exporting window-scoped PostgreSQL history'
+PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --env PGPASSWORD \
+  --volume "$pg_dump_data_dir:/out" \
+  "$PG_DUMP_IMAGE" \
+  psql --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" --dbname "$PG_DATABASE" \
+  --set ON_ERROR_STOP=1 \
+  --set win_start="$capture_start" --set win_end="$capture_end" \
+  --file /out/postgres/.export.sql
+rm -f "$staging_dir/data/postgres/.export.sql"
+
+# meta.postgres_tables[] — 파일을 열지 않고 meta 만으로 "데이터가 들었는가"를
+# 판정할 수 있어야 한다(clickhouse_tables[] 와 같은 계약, spec §2.2).
+postgres_tables_json='[]'
+while IFS= read -r pg_t; do
+  pg_csv="$staging_dir/data/postgres/${pg_t}.csv"
+  [[ -f "$pg_csv" ]] || die "pg slice 누락: $pg_t"
+  pg_rows=$(( $(wc -l < "$pg_csv") - 1 ))
+  postgres_tables_json=$(jq -c \
+    --arg table "$pg_t" --arg file "data/postgres/${pg_t}.csv" --argjson rows "$pg_rows" \
+    '. + [{table:$table, file:$file, rows:$rows, scope:"slice"}]' <<<"$postgres_tables_json")
+done < <(python3 "$pg_scope_tool" --emit slice-tables)
 
 # ------------------------------------------------------------
 # Topology snapshot (spec §4, 2026-07-20): the query API's cross-domain graph
@@ -963,6 +1032,7 @@ fi
 required_files=(
   data/victoriametrics.export
   data/postgres.dump
+  data/postgres/restore.sql
   data/topology/topology-graph.json
   data/topology/asset-tree-service-unified.json
   models/stream-anomaly/global/v1/model.json
@@ -1056,6 +1126,7 @@ if [[ "$v3_mode" == true ]]; then
     --arg run_plan_sha256 "$run_plan_sha256" \
     --argjson phases "$phases_enriched" \
     --argjson clickhouse_tables "$clickhouse_tables_json" \
+    --argjson postgres_tables "$postgres_tables_json" \
     --argjson preflight "$preflight" \
     --argjson topology_snapshot "$topology_snapshot" \
     --argjson topology_bundle "$topology_bundle_meta" \
@@ -1076,6 +1147,7 @@ if [[ "$v3_mode" == true ]]; then
       run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
       run_plan_sha256:$run_plan_sha256,
       phases:$phases, clickhouse_tables:$clickhouse_tables,
+      postgres_tables:$postgres_tables,
       preflight:$preflight, topology_snapshot:$topology_snapshot,
       topology_bundle:$topology_bundle,
       golden_anomaly_file:false}' > "$staging_dir/meta.json"
@@ -1085,6 +1157,8 @@ if [[ "$v3_mode" == true ]]; then
     --arg capture_end "$capture_end" \
     --arg case_label "$case_label" \
     --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+    --argjson pg_slice_count "$(python3 "$pg_scope_tool" --emit slice-tables | wc -l)" \
+    --argjson ch_table_count "${ch_v3_table_count:?ch_v3_tables catalog missing}" \
     '.schema_version == $schema_version and .timeline == "continuous" and
      .time_basis == "UTC" and .capture_end == $capture_end and
      .scenario_metadata_sha256 == $scenario_metadata_sha256 and
@@ -1097,7 +1171,9 @@ if [[ "$v3_mode" == true ]]; then
      .model_snapshot_at >= $capture_end and .case_label == $case_label and
      .golden_anomaly_file == false and
      (.phases | type == "array" and length == 5) and
-     (.clickhouse_tables | type == "array" and length == 12) and
+     (.clickhouse_tables | type == "array" and length == $ch_table_count) and
+     (.postgres_tables | type == "array" and length == $pg_slice_count) and
+     (.postgres_tables | all(.scope == "slice" and (.rows | type == "number"))) and
      (.topology_bundle == null or
        (.topology_bundle.path == "topology/" and
         (.topology_bundle.snapshot_count | type == "number") and

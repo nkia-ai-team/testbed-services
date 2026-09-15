@@ -401,7 +401,12 @@ case-01-inventory-lock/
       lucida_logs_local.parquet
       lucida_events_local.parquet
       host_connections.parquet
-    postgres.dump           # 클러스터·인시던트·targets·정책·토폴로지 (pg_dump -Fc)
+    postgres.dump           # 인벤토리·정의·모델 상태 (pg_dump -Fc, snap 표만)
+    postgres/               # 창으로 자른 사건 이력 (2026-08-13 추가) — 표별 CSV
+      incidents.csv         # 파일명 = 표 이름
+      event_clusters.csv
+      ...
+      restore.sql           # pg_restore **뒤에** 돌린다. 순서가 곧 FK 순서다
     topology/               # 토폴로지 API 응답 스냅샷 (2026-07-20 추가)
       topology-graph.json                # GET /api/v1/topology/graph 응답
       asset-tree-service-unified.json    # GET /api/v1/asset-tree/service/unified 응답
@@ -484,6 +489,48 @@ YAML의 `expected_anomalies`를 정본으로 사용하며 **`golden.anomaly.json
 시간창 안의 시계열만으로는 부족하다. 라이브로 계산되는 토폴로지·HostKin도
 결국 PG `targets` + CH `host_connections`를 읽으므로(§3), 이 참조 테이블은
 반드시 전체를 뜬다.
+
+### 5.1 PostgreSQL도 이 구분을 따른다 (2026-08-13)
+
+**여기가 오래 빠져 있었다.** CH는 12종 전부 창으로 슬라이스했는데 PG만 `pg_dump`
+통짜였다. 그래서 위 표의 "시간 데이터" 중 **인시던트·클러스터가 창을 무시하고
+전량 실려 나갔다.** `case-f03-g-v3` 실측 — 케이스 창은 3시간인데 `incidents` 56행이
+2주에 걸쳐 있고 창 안은 **1행**뿐이었다. 나머지 55행은 다른 시나리오의 인시던트이며,
+AI가 붙인 한국어 제목에 그 시나리오의 근본원인이 그대로 적혀 있다:
+
+```
+192.168.200.136 호스트의 자원 포화로 인해 commerce-order 응답이 느려지고 있어요
+core-banking-api의 오류가 commerce-order와 commerce-payment의 실패...
+```
+
+RCA의 `IncidentSeed`는 PG `incidents`를 backing store로 읽는다(§3). 즉 케이스를
+복원하면 **과거 정답표가 같이 딸려온다.** 07-27에 `process_meta`에서 고친 누설
+(품질 기준서 L3)과 같은 계열이고 규모만 더 크다.
+
+분류 정본은 `scripts/scenarios/pg-scope.json`이고 세 갈래다.
+
+| scope | 무엇 | 뜨는 방식 |
+|---|---|---|
+| `snap` | 인벤토리·정의·모델 상태 (`targets`·`metric_definitions`·`mib_*`·`trainer_thresholds` …) | `pg_dump`가 통째로 |
+| `slice` | 파이프라인이 만든 관측·판정 (`incidents`·`event_clusters`·`coverage_events` …) | 덤프에서 빼고 창으로 잘라 CSV |
+| `drop` | 평가 입력이 아니면서 공개 위험만 있는 것 | 스키마만 남기고 비움 |
+
+- **`created_at`이 창 밖이라고 무조건 자르면 안 된다.** `targets`·`metric_definitions`의
+  `created_at`은 자산 등록 시각이라 언제나 창 밖이고, 자르면 RCA가 볼 자산이 사라진다.
+  같은 이유로 `trainer_thresholds`도 `snap`이다 — 창으로 자르면 창 이전에 학습된
+  임계가 사라져 AI 계층의 거동 자체가 바뀐다(2,277행 중 창 안 24행).
+- **자식은 시간이 아니라 소속으로 고른다.** `incident_members`를 자기 시각으로 자르면
+  창 밖 부모를 참조해 복원이 깨진다. 뿌리(`incidents`·`event_clusters`)를 창으로 고르고
+  자식은 그 id로 고른다. 뿌리의 자기참조(`superseded_by`·`merged_into`)는 창 밖(대개
+  미래)을 가리킬 수 있어 **재귀 폐포**로 함께 싣는다.
+- **`drop`은 용량 대책이기도 하다.** `automation_dist_artifacts`는 20행짜리인데
+  **2,480MB로 덤프의 80%**였다(에이전트 배포 번들 바이너리).
+- 케이스별 실적재 행수는 `meta.json`의 `postgres_tables[]`에 적는다 —
+  `clickhouse_tables[]`와 같은 계약(파일을 열지 않고 meta만으로 판정 가능할 것).
+
+2026-08-13 왕복 실측: `postgres.dump` **3.1GB/14분 → 16MB/3.6초** + CSV 98MB,
+빈 DB 복원 후 **FK 제약 361개 전부 유효**, 창 밖 인시던트·클러스터 **0행**,
+고아 행 0. 소비자 복원 절차는 [복원 runbook §3.3](runbook-eval-case-restore.md).
 
 ## 6. 캡처 두 종류와 소비자
 

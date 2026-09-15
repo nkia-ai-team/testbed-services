@@ -87,6 +87,26 @@ CAUSAL_ABSENT_RATIO = 0.05     # 5% 이하면 인과 없음(F19는 0.00이었다
 # 말을 못 하게 막는 대신 **신뢰도를 함께 적는다** — 읽는 사람이 과대 해석하지 않도록.
 CONFIDENT_SAMPLE = int(3 / CAUSAL_ABSENT_RATIO)
 
+# --- 중단 시계열(ITS) 검사 -------------------------------------------------
+# 위 비율 검사는 "실패한 요청이 대상을 지나갔는가"를 묻는다. 그 질문은 **대상이
+# 응답을 멈추는 형태에서 구조적으로 틀린다** — 지나갈 스팬 자체가 없기 때문이다.
+# 2026-08-13 F06-H 실측(payments 테이블 EXCLUSIVE 잠금):
+#     주입 전 commerce-payment 103.7 spans/분, 오류 0
+#     주입 중                   0.6 spans/분   ← 얼어붙음
+#     주입 후                 132.7 spans/분, 오류 0   ← 회복
+# 러너 판정은 succeeded, 비율 검사는 `causality_absent`(confidence high, 149건 중
+# 0건). 인과는 완벽히 맞는데 도구가 틀렸다. 차단기 예외 조항도 `target_errors > 0`
+# 을 요구해서 이 형태를 못 잡는다 — 얼어붙은 서비스는 오류도 0이다.
+#
+# 그래서 "지나갔는가" 대신 **t1 에서 꺾이고 t2 에서 돌아오는가**를 함께 본다.
+# 되돌아오는 것까지 봐야 인과다 — 꺾이기만 하면 추세일 수 있다.
+ITS_PRE_MIN = 5            # 주입 직전 관측 창(분)
+ITS_POST_MIN = 5           # 주입 종료 후 관측 창(분)
+ITS_POST_SETTLE_SEC = 30   # t2 직후는 정리 작업이 섞이므로 건너뛴다
+ITS_MIN_BASELINE_RPM = 20  # 이보다 조용한 서비스는 붕괴를 말할 수 없다
+ITS_COLLAPSE_RATIO = 0.20  # 주입 전 대비 20% 이하로 떨어지면 붕괴
+ITS_RECOVERY_RATIO = 0.50  # 주입 후 전 수준의 50% 이상 돌아오면 회복
+
 
 class AuditError(RuntimeError):
     pass
@@ -101,14 +121,37 @@ def load_run(run_dir: Path) -> dict[str, Any]:
             raise AuditError(f"{run_dir.name}: {name} 없음")
         return json.loads(path.read_text())
 
+    def _result_or_state(state: dict[str, Any]) -> dict[str, Any]:
+        """result.json 이 없으면 state.json 에서 같은 값을 만든다.
+
+        큐(live-queue)로 돈 런은 result.json 을 남기지만 수동 실행
+        (`POST /api/scenarios/{id}/run`)은 안 남긴다 — 2026-08-13 실측.
+        수리 검증·파일럿은 대부분 수동 실행이라, 이걸 못 읽으면 정작 감사해야 할
+        런을 감사하지 못한다. t1/t2 는 첫 레벨 적용 ~ 마지막 레벨 종료다.
+        """
+        path = run_dir / "result.json"
+        if path.is_file():
+            return json.loads(path.read_text())
+        changes = state.get("level_changes") or []
+        if not changes:
+            raise AuditError(f"{run_dir.name}: result.json 도 level_changes 도 없다")
+        return {
+            "scenario_id": state.get("scenario_id"),
+            "outcome": (state.get("controller_state") or {}).get("phase"),
+            "t1": changes[0].get("applied_at"),
+            "t2": changes[-1].get("effect_ended_at"),
+            "_source": "state.json (result.json 부재)",
+        }
+
     ticks_path = run_dir / "ticks.jsonl"
     if not ticks_path.is_file():
         raise AuditError(f"{run_dir.name}: ticks.jsonl 없음")
     ticks = [json.loads(line) for line in ticks_path.read_text().splitlines() if line.strip()]
+    state = _json("state.json")
     return {
         "run_id": run_dir.name,
-        "result": _json("result.json"),
-        "state": _json("state.json"),
+        "result": _result_or_state(state),
+        "state": state,
         "decisions": _json("decisions.json"),
         "ticks": ticks,
     }
@@ -278,6 +321,135 @@ def _quote(values: Iterable[str]) -> str:
     return ", ".join("'" + v.replace("'", "''") + "'" for v in sorted(values))
 
 
+def activity_shift(
+    *,
+    injection_from: str,
+    injection_to: str,
+    targets: set[str],
+    entry_service: str | None,
+    query: Callable[[str], list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """주입 대상의 거동이 t1 에서 꺾이고 t2 에서 돌아오는가.
+
+    비율 검사와 달리 트레이스의 **모양**이 아니라 **양**을 본다. 그래서 대상이
+    얼어붙어 스팬이 사라지는 형태도 잡힌다(모듈 주석의 F06-H 참조).
+
+    ⚠ **진입 서비스의 급증은 인과 근거가 아니다.** 다수 시나리오가 companion 으로
+    부하 프로파일(load.north_south 등)을 함께 흘리므로, 진입 급증은 부하 생성기가
+    만든 것일 수 있다. 근거로 쓰는 것은 **대상 쪽** 붕괴/오류 급증뿐이고, 진입은
+    맥락으로만 싣는다.
+    """
+    services = sorted(set(targets) | ({entry_service} if entry_service else set()))
+    if not services:
+        return {"status": "undetermined", "reason": "관측할 서비스가 없다"}
+
+    t1, t2 = _parse(injection_from), _parse(injection_to)
+    windows = {
+        "pre": (t1 - timedelta(minutes=ITS_PRE_MIN), t1 - timedelta(seconds=5)),
+        "during": (t1, t2),
+        "post": (t2 + timedelta(seconds=ITS_POST_SETTLE_SEC),
+                 t2 + timedelta(seconds=ITS_POST_SETTLE_SEC) + timedelta(minutes=ITS_POST_MIN)),
+    }
+
+    measured: dict[str, dict[str, dict[str, float]]] = {}
+    for name, (lo, hi) in windows.items():
+        minutes = max((hi - lo).total_seconds() / 60.0, 1e-9)
+        sql = f"""
+SELECT service_name,
+       count() AS spans,
+       countIf(toUInt16OrZero(span_attributes['http.response.status_code']) >= 500) AS errors
+FROM {TRACE_TABLE}
+WHERE timestamp BETWEEN '{lo.strftime("%Y-%m-%d %H:%M:%S")}' AND '{hi.strftime("%Y-%m-%d %H:%M:%S")}'
+  AND service_name IN ({_quote(set(services))})
+  AND NOT startsWith(span_name, 'GET /actuator')
+GROUP BY service_name
+"""
+        for row in query(sql):
+            svc = row["service_name"]
+            measured.setdefault(svc, {})[name] = {
+                "rpm": round(int(row.get("spans") or 0) / minutes, 1),
+                "err_rpm": round(int(row.get("errors") or 0) / minutes, 1),
+            }
+
+    def at(svc: str, win: str, field: str) -> float:
+        return float(((measured.get(svc) or {}).get(win) or {}).get(field, 0.0))
+
+    # 대상의 절대 spans/분 은 주변 부하에 따라 통째로 오르내린다 — 다수 시나리오가
+    # companion 부하 프로파일을 함께 흘리기 때문이다. **진입 서비스로 정규화한 점유율**
+    # 을 쓰면 그 흔들림이 상쇄된다. 2026-08-14 실측(전 → 중 → 후):
+    #   F06-H  절대 76.5→3.9→1536.4   점유율 1.01→0.00→0.91
+    #   F15-H  절대 205.8→18.3→84.4   점유율 0.99→0.47→0.96  ← 절대값으로는 회복 미달
+    #   F15-T2 절대 84.2→28.7→32.0    점유율 1.05→1.06→1.06  ← 실제로는 무변화
+    # F15-H 는 절대값으로 보면 "회복 안 됨"이지만 주변 부하가 같이 내려간 것뿐이었다.
+    entry_rpm = {w: 0.0 for w in ("pre", "during", "post")}
+    if entry_service:
+        entry_rpm = {w: at(entry_service, w, "rpm") for w in entry_rpm}
+
+    per_service: dict[str, dict[str, Any]] = {}
+    for svc in services:
+        pre, during, post = (at(svc, w, "rpm") for w in ("pre", "during", "post"))
+        is_target = svc in targets
+        normalize = is_target and all(entry_rpm[w] > 0 for w in entry_rpm)
+        if normalize:
+            share = {w: v / entry_rpm[w] for w, v in
+                     (("pre", pre), ("during", during), ("post", post))}
+            collapsed = (pre >= ITS_MIN_BASELINE_RPM
+                         and share["during"] <= share["pre"] * ITS_COLLAPSE_RATIO)
+            recovered = share["pre"] > 0 and share["post"] >= share["pre"] * ITS_RECOVERY_RATIO
+        else:
+            share = None
+            collapsed = pre >= ITS_MIN_BASELINE_RPM and during <= pre * ITS_COLLAPSE_RATIO
+            recovered = pre > 0 and post >= pre * ITS_RECOVERY_RATIO
+        per_service[svc] = {
+            "role": "target" if svc in targets else "entry",
+            "pre_rpm": pre, "during_rpm": during, "post_rpm": post,
+            "pre_err_rpm": at(svc, "pre", "err_rpm"),
+            "during_err_rpm": at(svc, "during", "err_rpm"),
+            "share_of_entry": ({k: round(v, 3) for k, v in share.items()} if share else None),
+            "collapsed": collapsed,
+            "recovered": recovered,
+            "surged": pre > 0 and during >= pre * 2,
+            "error_spike": at(svc, "during", "err_rpm") > max(at(svc, "pre", "err_rpm") * 3, 1.0),
+        }
+
+    tgt = {s: v for s, v in per_service.items() if v["role"] == "target"}
+
+    # 주입 후 창에 부하가 없으면 "회복"을 판정할 수 없다. cleanup 이 부하 프로파일을
+    # 내리므로, 런을 연달아 돌리면 이 창이 무부하 구간에 떨어진다 — 2026-08-14 실측:
+    #   F03-H entry 837.4 → 1522.9 → 51.4   F19-P entry 95.4 → 158.0 → 4.6
+    # 대상이 분명히 붕괴한 F15-H(205.8 → 18.3)까지 "회복 안 됨"으로 접혀 no_shift 가
+    # 됐다. v3 캡처 사이클은 쿨다운 30분 동안 부하가 계속 돌아 이 문제가 없지만,
+    # 수동 런에서는 매번 오판한다. 판정을 접지 말고 **판정 불가라고 말한다.**
+    entry_v = next((v for v in per_service.values() if v["role"] == "entry"), None)
+    post_has_load = entry_v is None or entry_v["post_rpm"] >= entry_v["pre_rpm"] * 0.2
+    recovery_readable = post_has_load
+
+    silent = [s for s, v in tgt.items() if v["collapsed"] and v["recovered"]]
+    collapsed_only = [s for s, v in tgt.items() if v["collapsed"]]
+    erring = [s for s, v in tgt.items() if v["error_spike"]]
+    if silent:
+        status, reason = "target_silenced", f"주입 구간에 {', '.join(silent)} 이(가) 멎었다가 회복했다"
+    elif collapsed_only and not recovery_readable:
+        status = "target_collapsed_recovery_unknown"
+        reason = (f"주입 구간에 {', '.join(collapsed_only)} 이(가) 멎었다. 다만 주입 후 창에"
+                  " 부하가 없어(진입 트래픽이 주입 전의 20% 미만) 회복은 판정할 수 없다")
+    elif erring:
+        status, reason = "target_erring", f"주입 구간에 {', '.join(erring)} 의 오류가 뛰었다"
+    elif not tgt:
+        status, reason = "undetermined", "APM 스팬을 내는 주입 대상이 없다"
+    elif all(v["pre_rpm"] < ITS_MIN_BASELINE_RPM for v in tgt.values()):
+        status, reason = "undetermined", "주입 전 대상 활동이 판정 최소치 미만이다"
+    elif not recovery_readable:
+        status = "undetermined"
+        reason = "주입 후 창에 부하가 없어 거동 변화를 판정할 수 없다"
+    else:
+        status, reason = "no_shift", "대상 거동이 주입 구간에 유의미하게 변하지 않았다"
+
+    return {"status": status, "reason": reason, "services": per_service,
+            "post_window_has_load": post_has_load,
+            "windows": {k: [v[0].isoformat(), v[1].isoformat()] for k, v in windows.items()}}
+
+
 def causal_check(
     *,
     start_at: str,
@@ -420,7 +592,16 @@ WHERE span_kind = 'SERVER'
 
 
 def _parse(value: str) -> datetime:
-    return datetime.strptime(value.replace("Z", ""), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    """틱의 `at` 은 초 단위지만 `level_changes` 의 시각은 마이크로초를 달고 온다
+    (2026-08-13: `...T23:28:32.340568Z`). 둘 다 받는다 — 한쪽만 받으면 result.json
+    이 없는 수동 실행에서 t1/t2 를 못 읽어 인과 검사가 통째로 건너뛰어진다."""
+    text = value.replace("Z", "")
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise AuditError(f"시각을 해석할 수 없다: {value}")
 
 
 # ------------------------------------------------------------------------ 대조 팔
@@ -499,10 +680,37 @@ def audit_run(run_dir: Path, metadata: dict[str, Any],
 
     report["control_arm"] = control_arm(run, end_index)
 
+    # ITS 검사는 게이트 종류와 무관하게 돈다. 비율 검사가 `not_applicable` 인
+    # 시나리오(2026-08-13 기준 35종 중 15종)도 "주입이 효과를 냈는가"는 물어야 한다 —
+    # 그 15종이 통째로 미검증으로 남아 있었다.
+    domain = (metadata.get(scenario_id) or {}).get("domain")
+    entry = entry_service_for(signals, domain)
+    try:
+        targets, _ = injection_targets(scenario_id, metadata, known_services, entry)
+    except AuditError as exc:
+        targets = set()
+        report["activity_shift"] = {"status": "undetermined", "reason": str(exc)}
+    if "activity_shift" not in report:
+        t1, t2 = run["result"].get("t1"), run["result"].get("t2")
+        if query is None:
+            report["activity_shift"] = {"status": "undetermined",
+                                        "reason": "트레이스 백엔드에 접근할 수 없다"}
+        elif not (t1 and t2):
+            report["activity_shift"] = {"status": "undetermined", "reason": "주입 구간 미상"}
+        else:
+            try:
+                report["activity_shift"] = activity_shift(
+                    injection_from=t1, injection_to=t2, targets=targets,
+                    entry_service=entry, query=query)
+            except Exception as exc:  # 백엔드 장애를 판정으로 둔갑시키지 않는다
+                report["activity_shift"] = {"status": "undetermined",
+                                            "reason": f"트레이스 질의 실패: {exc}"}
+
     if not failure_signals:
         report["causal_evidence"] = {
             "status": "not_applicable",
-            "reason": "판정을 만든 신호가 실패율 계열이 아니다(지연·자원 계열은 이 함정이 약하다)",
+            "reason": "판정을 만든 신호가 실패율 계열이 아니다(지연·자원 계열은 이 함정이 약하다)"
+                      " — 인과는 activity_shift 로 본다",
         }
         return report
     if "verdict_window" in report and "error" in report["verdict_window"]:
@@ -512,27 +720,40 @@ def audit_run(run_dir: Path, metadata: dict[str, Any],
         report["causal_evidence"] = {"status": "undetermined", "reason": "트레이스 백엔드에 접근할 수 없다"}
         return report
 
-    domain = (metadata.get(scenario_id) or {}).get("domain")
-    entry = entry_service_for(failure_signals, domain)
-    if entry is None:
+    # 진입 서비스는 신호에서 고른다 — 실패율 신호가 있으면 그쪽이 더 정확하다.
+    entry_from_failure = entry_service_for(failure_signals, domain) or entry
+    if entry_from_failure is None:
         report["causal_evidence"] = {"status": "undetermined",
                                      "reason": f"진입 서비스 미상(신호={failure_signals}, domain={domain})"}
         return report
-    targets, _ = injection_targets(scenario_id, metadata, known_services, entry)
+    ratio_targets, _ = injection_targets(scenario_id, metadata, known_services, entry_from_failure)
     try:
         report["causal_evidence"] = causal_check(
             start_at=report["verdict_window"]["from"], end_at=report["verdict_window"]["to"],
-            entry_service=entry, targets=targets, query=query,
+            entry_service=entry_from_failure, targets=ratio_targets, query=query,
             injection_from=run["result"].get("t1"), injection_to=run["result"].get("t2"),
         )
     except Exception as exc:  # 트레이스 백엔드 장애를 판정으로 둔갑시키지 않는다
         report["causal_evidence"] = {"status": "undetermined", "reason": f"트레이스 질의 실패: {exc}"}
+
+    # 비율 검사가 "미입증"이라도 대상이 멎었다가 회복했다면 그것이 인과다.
+    # 비율 검사의 구조적 사각지대이므로 ITS 쪽 결론이 이긴다(모듈 주석 F06-H).
+    shift = report.get("activity_shift") or {}
+    if (report["causal_evidence"].get("status") in {"causality_absent", "undetermined"}
+            and shift.get("status") == "target_silenced"):
+        report["causal_evidence"] = {
+            **report["causal_evidence"],
+            "status": "causality_via_silence",
+            "superseded_status": report["causal_evidence"].get("status"),
+            "reason": shift.get("reason"),
+        }
     return report
 
 
 VERDICT_LABEL = {
     "causality_present": "인과 입증",
     "causality_via_breaker": "인과 가능 — 차단기로 하류 호출이 사라진 형태",
+    "causality_via_silence": "인과 입증 — 대상이 주입 구간에 멎었다가 회복(중단시계열)",
     "causality_absent": "인과 미입증 — 판정은 났으나 주입과 연결되지 않는다",
     "causality_partial": "부분 인과",
     "undetermined": "판정 불가",

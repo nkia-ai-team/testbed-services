@@ -87,7 +87,49 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                     with self.subTest(profile=profile_id, scenario=scenario_id, rung=rung["level_id"]):
                         module.validate(scenario_id, rung["parameters"], profile)
                         checked += 1
-        self.assertGreater(checked, 20, "ladder sweep found almost nothing to check")
+        # 2026-08-20: pin 14종이 고정 승격되며 남은 사다리는 F10-P 와 비라이브 5종
+        # (F02-H·F03-P·F07-P·F09-R·F21-P) = 18단. 고정 계약 쪽은 아래
+        # test_every_live_fixed_contract_passes_its_own_executor 가 같은 질문을 던진다.
+        self.assertGreater(checked, 15, "ladder sweep found almost nothing to check")
+
+    def test_every_live_fixed_contract_passes_its_own_executor(self) -> None:
+        # 2026-08-20 승격이 드러낸 사각: k8s_patch 의 validate 가 사다리(scenario_levels)
+        # 만 보고 있어, F09-P·F12-H 가 고정 계약이 되는 순간 정작 승인된 고정 파라미터를
+        # "사전 선언된 단이 아니다"로 거부했다 — 라이브였다면 주입과 정리가 함께 막혀
+        # 전역 DIRTY 가 됐을 형태(F15-T1 768Mi 단, 배치 #12 와 동일). 사다리 스윕이
+        # 사다리만 훑는 동안 고정 계약은 아무도 안 훑었으므로, 라이브 컨트롤러 전부의
+        # 모든 프로파일 인스턴스를 그 실행기의 validate 에 통과시킨다 — 신뢰 디스패처가
+        # apply·cleanup 에서 묻는 것과 같은 질문이다.
+        controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())["controllers"]
+        catalog = {row["id"]: row for row in json.loads((ROOT / "catalog.json").read_text())["scenarios"]}
+        checked = 0
+        for scenario_id, controller in sorted(controllers.items()):
+            plan = compiler.compile_plan(catalog[scenario_id]["slug"])
+            self.assertTrue(plan["live_allowed"], scenario_id)
+            for instance in plan["profile_instances"]:
+                profile = self.profiles[instance["profile_id"]]
+                stem = Path(profile["executor"]).stem
+                if profile["executor"].endswith(".sh"):
+                    stem = f"{stem.replace('-', '_')}_executor"
+                module = load(stem)
+                validate = getattr(module, "validate", None) or getattr(
+                    module, "validate_parameters", None
+                )
+                self.assertIsNotNone(validate, f"{stem} has no validate")
+                with self.subTest(scenario=scenario_id, profile=instance["profile_id"]):
+                    validate(scenario_id, instance["parameters"], profile)
+                    checked += 1
+                if instance["profile_id"] == controller["profile"]["primary_ref"]:
+                    expected = [
+                        {"level_id": level["id"], "parameters": level["parameters"]}
+                        for level in controller["profile"]["levels"]
+                    ]
+                    self.assertEqual(instance["approved_levels"], expected, scenario_id)
+                    if controller["mode"] == "evaluation":
+                        self.assertEqual(
+                            instance["selected_level_id"], expected[0]["level_id"], scenario_id
+                        )
+        self.assertGreater(checked, 60, "fixed sweep found almost nothing to check")
 
     def test_db_lock_injects_inside_the_cluster_and_reclaims_its_client(self) -> None:
         # 품질 기준서 G6 / 부록 A: 주입 세션은 실 앱 세션과 구별되지 않아야 하므로
@@ -170,29 +212,43 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         # inventory는 200m에서 Ready 12/12·재시작 0인데 175m에서는 12틱 내내 Ready가
         # 되지 못하고 재시작한다. 같은 날 product는 175m을 버텼다 — 바닥은 서비스마다
         # 다르므로 사다리마다 재야 한다.
-        rungs = [
-            int(level["parameters"]["fault_cpu_limit"].removesuffix("m"))
-            for level in self.profiles["k8s.patch"]["scenario_levels"]["F12-H"]
-        ]
-        self.assertTrue(
-            [rung for rung in rungs if rung < 200],
-            "F12-H ladder no longer reaches under the 200m request",
-        )
+        #
+        # 2026-08-20: F12-H·F09-P 가 pin 단(둘 다 250m, request 200m 위)으로 고정
+        # 승격돼 k8s.patch 에는 request 아래로 내려가는 라이브 단이 더 없다. clamp 는
+        # 계약이 다시 request 아래를 쓸 때를 위해 스크립트에 남긴다(위 단언이 지킨다).
+        # 고정값 자체가 request 위에 있다는 사실만 기록해 둔다.
+        for scenario_id in ("F12-H", "F09-P"):
+            limit = int(
+                self.profiles["k8s.patch"]["scenario_parameters"][scenario_id]["fault_cpu_limit"]
+                .removesuffix("m")
+            )
+            self.assertGreaterEqual(limit, 200, f"{scenario_id} fixed limit sits under the 200m request")
 
     def test_kubernetes_patch_adaptive_ladder_accepts_only_exact_levels(self) -> None:
+        # 2026-08-20: F09-P 가 pin 단(conservative-250m)으로 고정 승격돼 k8s.patch 의
+        # 사다리는 F21-P(파킹, 비라이브)만 남았다. 보려는 성질은 "사다리 단이 사전 선언된
+        # 것만 통과하는가"이므로 같은 실행기의 남은 사다리로 옮긴다.
         profile = self.profiles["k8s.patch"]
-        levels = profile["scenario_levels"]["F09-P"]
-        self.assertEqual([level["level_id"] for level in levels], ["conservative-250m", "constrained-225m", "endpoint-200m"])
-        self.assertEqual([level["parameters"]["fault_cpu_limit"] for level in levels], ["250m", "225m", "200m"])
+        levels = profile["scenario_levels"]["F21-P"]
+        self.assertEqual([level["level_id"] for level in levels], ["conservative-400m", "constrained-300m", "floor-200m"])
+        self.assertEqual([level["parameters"]["fault_cpu_limit"] for level in levels], ["400m", "300m", "200m"])
         for level in levels:
-            k8s_patch.validate("F09-P", level["parameters"], profile)
-        instance = next(row for row in compiler.compile_plan("f09-p-inventory-cpu-throttle")["profile_instances"] if row["profile_id"] == "k8s.patch")
-        self.assertEqual(instance["selected_level_id"], "endpoint-200m")
+            k8s_patch.validate("F21-P", level["parameters"], profile)
+        instance = next(row for row in compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation")["profile_instances"] if row["profile_id"] == "k8s.patch")
+        self.assertEqual(instance["selected_level_id"], "floor-200m")
         self.assertEqual(instance["scenario_levels"], levels)
         tampered = dict(levels[1]["parameters"])
         tampered["fault_cpu_limit"] = "99m"
         with self.assertRaisesRegex(k8s_patch.ExecutorError, "predeclared"):
-            k8s_patch.validate("F09-P", tampered, profile)
+            k8s_patch.validate("F21-P", tampered, profile)
+        # 고정 승격된 F09-P 는 scenario_parameters 한 벌만 승인된다 — 그 값은 통과하고
+        # 옛 사다리의 다른 단(225m·200m)은 이제 거부돼야 한다.
+        fixed = profile["scenario_parameters"]["F09-P"]
+        self.assertEqual(fixed["fault_cpu_limit"], "250m")
+        k8s_patch.validate("F09-P", fixed, profile)
+        for retired in ("225m", "200m"):
+            with self.assertRaisesRegex(k8s_patch.ExecutorError, "predeclared"):
+                k8s_patch.validate("F09-P", {**fixed, "fault_cpu_limit": retired}, profile)
 
     def test_kubernetes_patch_reaches_banking_and_still_pins_each_scenario(self) -> None:
         # Until 2026-07-31 build_invocation hardcoded the commerce namespace, so
@@ -209,7 +265,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         # scenario may only patch the deployment its own answer key names.
         with self.assertRaisesRegex(k8s_patch.ExecutorError, "not allowlisted"):
             k8s_patch.validate(
-                "F21-P", profile["scenario_levels"]["F09-P"][0]["parameters"], profile
+                "F21-P", profile["scenario_parameters"]["F09-P"], profile
             )
         with self.assertRaisesRegex(k8s_patch.ExecutorError, "not allowlisted"):
             k8s_patch.validate(
@@ -231,7 +287,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             self.assertGreaterEqual(millicores, 200, level["level_id"])
 
     def test_kubernetes_patch_level_override_changes_exact_builder_argv(self) -> None:
-        plan = compiler.compile_plan("f09-p-inventory-cpu-throttle")
+        # 2026-08-20: F09-P 고정 승격으로 k8s.patch 의 다단 사다리는 F21-P 만 남았다.
+        plan = compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation")
         instance = next(row for row in plan["profile_instances"] if row["profile_id"] == "k8s.patch")
         levels = instance["approved_levels"]
         canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -239,12 +296,12 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         endpoint, endpoint_id = sys.modules["executor_common"].bind_level_parameters(plan, "k8s.patch", 2, canonical(levels[2]["parameters"]))
         low_argv, _ = k8s_patch.build_invocation(low, "run")
         endpoint_argv, _ = k8s_patch.build_invocation(endpoint, "run")
-        self.assertEqual((low_id, endpoint_id), ("conservative-250m", "endpoint-200m"))
-        self.assertIn("250m", low_argv)
+        self.assertEqual((low_id, endpoint_id), ("conservative-400m", "floor-200m"))
+        self.assertIn("400m", low_argv)
         self.assertIn("200m", endpoint_argv)
         self.assertNotEqual(low_argv, endpoint_argv)
         tampered = dict(levels[0]["parameters"])
-        tampered["fault_cpu_limit"] = "249m"
+        tampered["fault_cpu_limit"] = "399m"
         with self.assertRaisesRegex(Exception, "predeclared"):
             sys.modules["executor_common"].bind_level_parameters(plan, "k8s.patch", 0, canonical(tampered))
 
@@ -253,7 +310,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         instance = next(row for row in plan["profile_instances"] if row["profile_id"] == "k8s.patch")
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"] for level in instance["approved_levels"]],
-            ["250m", "200m", "175m"],
+            # 2026-08-20: 사다리(250→200→175m)를 pin 단 conservative-250m 으로 고정 승격.
+            ["250m"],
         )
         self.assertEqual(instance["parameters"]["deployment"], "testbed-product")
         self.assertEqual(instance["parameters"]["container"], "product-service")
@@ -431,12 +489,14 @@ class ReadyProfileExecutorTests(unittest.TestCase):
 
     def test_new_adaptive_profiles_accept_only_predeclared_levels(self) -> None:
         cases = [
-            ("f11-r-redis-down-fallback-overload", "load.north_south", None),
             # 2026-08-09: host.stress 사례를 F09-R 에서 F10-H 로 옮겼다. F09-R 이 파킹되어
             # live_allowed 가 False 가 됐기 때문이고, 이 테스트가 보려는 것은 시나리오가
             # 아니라 "사다리 레벨이 사전 선언된 것만 통과하는가"이므로 같은 프로파일을
             # 쓰는 라이브 3단 시나리오면 목적이 유지된다.
-            ("f10-h-mysql-io-saturation", "host.stress", host_stress),
+            # 2026-08-20: F11-R·F10-H 가 pin 단으로 고정 승격됐다. 라이브 3단 사다리로
+            # 남은 것은 F10-P(미pin) 하나라 그리로 옮긴다. load.north_south 에는 더 이상
+            # 사다리가 없어 그 사례는 뺀다.
+            ("f10-p-oracle-io-saturation", "host.stress", host_stress),
         ]
         for slug, profile_id, module in cases:
             plan = compiler.compile_plan(slug)
