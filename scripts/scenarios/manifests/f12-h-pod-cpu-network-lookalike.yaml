@@ -35,10 +35,11 @@
         "primary_ref": "k8s.patch",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "k8s.patch"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -72,39 +73,15 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "conservative-250m",
+              "id": "approved-fixed-f12-h",
               "parameters": {
                 "deployment": "testbed-product",
                 "container": "product-service",
                 "baseline_cpu_limit": "500m",
                 "fault_cpu_limit": "250m"
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "constrained-200m",
-              "parameters": {
-                "deployment": "testbed-product",
-                "container": "product-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "200m"
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "endpoint-175m",
-              "parameters": {
-                "deployment": "testbed-product",
-                "container": "product-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "175m"
               },
               "min_hold": "4m",
               "settle": "30s",
@@ -226,23 +203,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "product-impact-not-visible",
-              "observation": "product_p95",
-              "op": "lt",
-              "value": 500
-            },
-            {
-              "id": "cpu-throttle-not-visible",
-              "observation": "cpu_throttled_time",
-              "op": "eq",
-              "value": 0
-            }
-          ],
-          "consecutive_ticks": 3
         },
         "must_rule_out": {
           "any": [

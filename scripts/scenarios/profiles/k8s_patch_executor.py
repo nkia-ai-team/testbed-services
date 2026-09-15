@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
+from executor_common import (
+    ExecutorError,
+    approved_parameter_sets,
+    cli,
+    kubectl_bash_argv,
+    profile_instance,
+)
 
 PROFILE_ID = "k8s.patch"
 
@@ -32,8 +38,12 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     approved = ALLOWLIST.get(scenario_id)
     if approved is None or (params["deployment"], params["container"]) != approved[1:]:
         raise ExecutorError("scenario patch target is not allowlisted")
-    levels = profile.get("scenario_levels", {}).get(scenario_id, [])
-    if params not in [level["parameters"] for level in levels]:
+    # 2026-08-20: F09-P·F12-H 가 사다리에서 고정 evaluation 계약으로 승격되며
+    # scenario_levels 가 사라졌다. 사다리만 보던 이 검사는 고정 파라미터를 "사전
+    # 선언된 단이 아니다"로 거부해 주입과 정리를 함께 막았을 것이다(F15-T1 768Mi
+    # 단과 같은 형태, 배치 #12). timeline 실행기 셋이 이미 쓰는 승인 집합(고정 기본값
+    # + 사다리 단)으로 묻는다.
+    if params not in approved_parameter_sets(profile, scenario_id):
         raise ExecutorError("parameters must exactly match a predeclared scenario level")
     if params["baseline_cpu_limit"] != "500m":
         raise ExecutorError("CPU baseline is outside the approved profile")

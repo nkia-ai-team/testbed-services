@@ -38,10 +38,11 @@
         "companion_refs": [
           "k8s.env",
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "k8s.resource"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -75,10 +76,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "measured-640mi",
+              "id": "approved-fixed-f05-r",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "deployment": "testbed-payment",
@@ -98,38 +99,6 @@
                   "limits": {
                     "cpu": "500m",
                     "memory": "640Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                }
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "deterministic-576mi",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "deployment": "testbed-payment",
-                "container": "payment-service",
-                "resource": "memory",
-                "baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "1Gi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "576Mi"
                   },
                   "requests": {
                     "cpu": "200m",
@@ -267,17 +236,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "oom-not-reached",
-              "observation": "restart_count",
-              "op": "eq",
-              "value": 0
-            }
-          ],
-          "consecutive_ticks": 4
         },
         "must_rule_out": {
           "any": [

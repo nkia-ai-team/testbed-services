@@ -77,10 +77,16 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 그 부하에서 order 는 느려진 게 아니라 30초 타임아웃 벽에 처박혔고 헬스체크마저 503 이었다.
 # 쓸 수 있는 띠는 실측상 1 rps 부근이라(단일 풀스캔이 1 rps 에서 이미 p95 1826ms,
 # 2~3 rps 에서 곧장 5xx) 사다리 1·2·3 으로 강등해 런타임이 그 좁은 띠를 찾게 한다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 20 ]]
+# 2026-08-20: 20 → 6. 사다리 pin 14종(F03-H·F05-P·F05-R·F07-H·F09-H·F09-P·F10-H·F11-R·
+# F12-H·F15-P·F15-R·F15-T1·F20-R·F25-H)을 evaluation 고정 계약으로 승격했다. pin 은
+# 강도를 고정할 뿐 승인이 아니어서 첫 캠페인 케이스(F15-R 82e0537f)가 규격은 완벽한데
+# case_label=calibration·evaluation_eligible=false 로 찍혔다. 남은 adaptive 는 F10-P(미pin)
+# 와 비라이브 5종(F02-H·F03-P·F07-P·F09-R·F21-P).
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 6 ]]
 # 2026-08-06: 42 → 41. adaptive 의 짝 — F25-H 가 fixed 에서 빠져나갔으므로 함께 움직인다.
 # 2026-08-07: 41 → 40. adaptive 의 짝 — F20-R 이 fixed 에서 빠져나갔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 40 ]]
+# 2026-08-20: 40 → 54. adaptive 의 짝 — pin 14종이 fixed 로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 54 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

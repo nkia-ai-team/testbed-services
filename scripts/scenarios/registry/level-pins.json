@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "_note": "캡처 재생용 사다리 pin. pin 된 시나리오는 해당 단 하나로 직행하며 탐색하지 않는다(level_pins.py). F20-R: rps1 이 유일하게 p95 게이지가 살아남는 단 — rps2+ 는 완료 트랜잭션 기아로 decision_observation_unavailable abort(3adcd962 외 다수 실측), 유일 성공 7845f25c 도 rps1. F05-P: mem-6250 — 계약 수리(success=5xx 단독·min_hold 90s) 후 검증 런 64c1bb8f 이 e95 에 성공 확정(5xx 1.0, mem 96.3~96.9, node Ready). 역사적으로도 피해 창은 6250 단에서만 안정적으로 열렸다(재생 5/7). F15-P: pressure-cpu8-vm1x5000m — 계측 런 c7eca02c 에서 tp95>=200 을 e250 에 충족한 최저 강도 단(부수 피해 최소). | 0820 병합: ladder-pin 산출 11종 복구(과거 성공 최빈 레벨, F25-H=L1 사용자 결정) + scenario-fix 2종. 파일 갱신 시 전체 병합 유지할 것 — 통째 재작성 금지. | 2026-08-20 승격: pin 14종을 evaluation 계약(fixed 단일 레벨)으로 올렸다. 레벨 id 는 기존 24종 선례대로 approved-fixed-<sid> 로 개명했고 pin 값도 같이 옮겼다(evaluation 단일 레벨과 같은 id 를 가리키는 pin 은 pin_controller_spec 에서 no-op). 사다리 시절 id 대응: F03-H past-saturation-60rps->approved-fixed-f03-h, F05-P mem-6250->approved-fixed-f05-p, F05-R measured-640mi->approved-fixed-f05-r, F07-H healthy-high-120->approved-fixed-f07-h, F09-H heap-96->approved-fixed-f09-h, F09-P conservative-250m->approved-fixed-f09-p, F10-H io-20000->approved-fixed-f10-h, F11-R fallback-load-50->approved-fixed-f11-r, F12-H conservative-250m->approved-fixed-f12-h, F15-P pressure-cpu8-vm1x5000m->approved-fixed-f15-p, F15-R episode-fault-240->approved-fixed-f15-r, F15-T1 food-headroom-768mi->approved-fixed-f15-t1, F20-R slowquery-rps1->approved-fixed-f20-r, F25-H floor-128mi->approved-fixed-f25-h.",
+  "pins": {
+    "F20-R": "approved-fixed-f20-r",
+    "F05-P": "approved-fixed-f05-p",
+    "F03-H": "approved-fixed-f03-h",
+    "F05-R": "approved-fixed-f05-r",
+    "F07-H": "approved-fixed-f07-h",
+    "F09-H": "approved-fixed-f09-h",
+    "F09-P": "approved-fixed-f09-p",
+    "F10-H": "approved-fixed-f10-h",
+    "F11-R": "approved-fixed-f11-r",
+    "F12-H": "approved-fixed-f12-h",
+    "F15-R": "approved-fixed-f15-r",
+    "F15-T1": "approved-fixed-f15-t1",
+    "F25-H": "approved-fixed-f25-h",
+    "F15-P": "approved-fixed-f15-p"
+  }
+}

@@ -31,10 +31,11 @@
       "live_enabled": true,
       "binding": {
         "primary_ref": "load.north_south",
-        "companion_refs": []
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -68,14 +69,14 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "slowquery-rps1",
+              "id": "approved-fixed-f20-r",
               "parameters": {
                 "target_rps": 1,
                 "ramp_up": "1m",
-                "hold": "6m",
+                "hold": "10m",
                 "ramp_down": "1m",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/slowquery.js",
@@ -84,43 +85,10 @@
                 "baseline_unit": "loadgen-commerce"
               },
               "_note_min_hold": "세 단 모두 5m -> 3m (2026-08-11). F15-H 와 같은 구조 — 성공 창이 min_hold 안에서 닫힌다. 6차 run 2bbb3499 실측: success 스트릭이 el=265 에 ct=3 을 채웠으나 전부 reason=min_hold 였고, min_hold 300s 이후에는 2 까지밖에 못 올라갔다. 단 timeout 은 8m 이므로 3m 은 판정 구간 180~480s 를 남긴다. 검증된 모의에서 el=265 발화.",
-              "min_hold": "3m",
+              "min_hold": "90s",
               "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "slowquery-rps2",
-              "parameters": {
-                "target_rps": 2,
-                "ramp_up": "1m",
-                "hold": "6m",
-                "ramp_down": "1m",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/slowquery.js",
-                "scenario_tag": "scenario_id=F20-R",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "3m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "slowquery-rps3",
-              "parameters": {
-                "target_rps": 3,
-                "ramp_up": "1m",
-                "hold": "6m",
-                "ramp_down": "1m",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/slowquery.js",
-                "scenario_tag": "scenario_id=F20-R",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "3m",
-              "settle": "30s",
-              "timeout": "8m"
+              "timeout": "12m",
+              "_note_hold": "hold 6m->10m, timeout 8m->12m (2026-08-20). rps1 이 유일하게 게이지가 살아남는 단(rps2+ 는 p95 게이지 기아로 decision_observation_unavailable abort — 실측 3adcd962 외 다수)이므로 pin 대상. 판정 창을 넓혀 요동하는 게이지가 확정 틱을 만날 기회를 늘린다. ramp+hold+ramp == timeout 등식은 유지. | min_hold 3m->90s (2026-08-20 2차). 검증 런 9b6b9382 실측: ct2 스트릭이 el=143(min_hold 안)에서 이미 찼는데 확정이 180s 게이트에 막혔고, 첫 확정 기회(e190) 직전 op95 이봉의 저봉(27.96ms)이 리셋했다. 스트릭 재생: mh180 은 이 런 escalate/실패, mh90 은 e143 성공 — 08-10 수리 이후 4런 기준 mh90 3/4, mh180 2/4. min_hold 90s 는 ramp_up 60s 보다 길어 주입 과도기는 여전히 배제된다. 거짓 통과 불가: op95>=1500 은 베이스라인(최대 ~400ms)이 물리적으로 못 넘는다(583틱 0건)."
             }
           ]
         },
@@ -207,18 +175,8 @@
               "_note": "임계 500 -> 150 (2026-08-10). 20런 583틱 전체에서 payment_p95 가 500 을 넘은 틱은 0개이고 관측 사상 최대가 401.5ms 다 — 500 은 이 시나리오의 물리적 상한 위에 있었고, 다섯 배치 연속 스킵이 전부 이것으로 설명된다. 하한 근거는 settling(주입 미도달) 틱의 payment_p95 최대 115.7ms 이다. 100 으로 내리면 평시 노이즈가 통과해 거짓 통과가 된다. 150 은 관측된 모든 비주입 값 위이고 평시 median 19.6ms 의 7.6배다. 주입 자체는 확실히 작동한다: order_p95 평시 43.8ms -> rps2 주입 p50 9,916ms(226배), pg_slow_active_queries 평시 0 -> p50 8. 임계 재보정은 거짓 통과가 아니다."
             }
           ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "order-latency-not-yet-elevated",
-              "observation": "order_p95",
-              "op": "lt",
-              "value": 1500
-            }
-          ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 1,
+          "_note_ct": "ct 3 -> 2 -> 1 (2026-08-20). 검증 런 2개(9b6b9382·ec55c8c3) 실측: order_p95 는 60s 수집창 게이지라 '슬로쿼리가 완료된 분'(1만~5.8만ms)과 '안 걸린 분'(15~1300ms)이 교대하는 이봉이고, 교대 주기가 독립창(60s)과 같은 차수라 연속 2 독립표본(ct2)이 확률 게임이 된다(9b6b: ct2 도달 2회 모두 확정 틱 직전 리셋, ec55: 최대 1). 표본 하나가 이미 max_over_time 으로 붕괴된 60s 집계이므로 ct1 = '완전한 1분간 양 축 동시 피해'다. 거짓 통과 audit: op95>=1500 은 비주입 583틱 실측 상한 ~400ms 로 도달 불가, pp>=150 은 settling 상한 115.7ms 위. 스트릭 재생: ct1 = 08-10 수리 이후 5런 5/5(발화 e93~327), 전체 20/28; ct2+mh90 은 3/5."
         },
         "must_rule_out": {
           "any": [

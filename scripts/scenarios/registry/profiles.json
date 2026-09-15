@@ -360,7 +360,7 @@
       },
       "scenario_parameters": {
         "F07-H": {
-          "target_rps": 160,
+          "target_rps": 120,
           "ramp_up": "2m",
           "hold": "525s",
           "ramp_down": "15s",
@@ -459,7 +459,7 @@
           "baseline_unit": "loadgen-commerce"
         },
         "F11-R": {
-          "target_rps": 65,
+          "target_rps": 50,
           "ramp_up": "2m",
           "hold": "525s",
           "ramp_down": "15s",
@@ -681,7 +681,7 @@
         "F20-R": {
           "target_rps": 1,
           "ramp_up": "1m",
-          "hold": "6m",
+          "hold": "10m",
           "ramp_down": "1m",
           "entry_url": "http://192.168.122.77:30080",
           "script_path": "/opt/loadgen/commerce/slowquery.js",
@@ -909,140 +909,6 @@
           "seed": 4242,
           "baseline_unit": "loadgen-food"
         }
-      },
-      "scenario_levels": {
-        "F20-R": [
-          {
-            "level_id": "slowquery-rps1",
-            "parameters": {
-              "target_rps": 1,
-              "ramp_up": "1m",
-              "hold": "6m",
-              "ramp_down": "1m",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/slowquery.js",
-              "scenario_tag": "scenario_id=F20-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          },
-          {
-            "level_id": "slowquery-rps2",
-            "parameters": {
-              "target_rps": 2,
-              "ramp_up": "1m",
-              "hold": "6m",
-              "ramp_down": "1m",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/slowquery.js",
-              "scenario_tag": "scenario_id=F20-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          },
-          {
-            "level_id": "slowquery-rps3",
-            "parameters": {
-              "target_rps": 3,
-              "ramp_up": "1m",
-              "hold": "6m",
-              "ramp_down": "1m",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/slowquery.js",
-              "scenario_tag": "scenario_id=F20-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          }
-        ],
-        "F07-H": [
-          {
-            "level_id": "healthy-high-120",
-            "parameters": {
-              "target_rps": 120,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F07-H",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          },
-          {
-            "level_id": "knee-140",
-            "parameters": {
-              "target_rps": 140,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F07-H",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          },
-          {
-            "level_id": "overload-160",
-            "parameters": {
-              "target_rps": 160,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F07-H",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          }
-        ],
-        "F11-R": [
-          {
-            "level_id": "fallback-load-35",
-            "parameters": {
-              "target_rps": 35,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F11-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          },
-          {
-            "level_id": "fallback-load-50",
-            "parameters": {
-              "target_rps": 50,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F11-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          },
-          {
-            "level_id": "fallback-load-65",
-            "parameters": {
-              "target_rps": 65,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F11-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            }
-          }
-        ]
       }
     },
     "load.east_west": {
@@ -1084,8 +950,8 @@
           "configmap": "scenario-f03-h-order-thread-pool",
           "node_name": "tb-w1",
           "image": "grafana/k6:latest",
-          "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-          "target_rps": 30,
+          "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",
+          "target_rps": 60,
           "duration_seconds": 480,
           "preallocated_vus": 64,
           "max_vus": 360
@@ -1136,53 +1002,6 @@
               "duration_seconds": 480,
               "preallocated_vus": 32,
               "max_vus": 64
-            }
-          }
-        ],
-        "F03-H": [
-          {
-            "level_id": "below-saturation-30rps",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "job": "scenario-f03-h-order-thread-pool",
-              "configmap": "scenario-f03-h-order-thread-pool",
-              "node_name": "tb-w1",
-              "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-              "target_rps": 30,
-              "duration_seconds": 480,
-              "preallocated_vus": 64,
-              "max_vus": 360
-            }
-          },
-          {
-            "level_id": "at-saturation-45rps",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "job": "scenario-f03-h-order-thread-pool",
-              "configmap": "scenario-f03-h-order-thread-pool",
-              "node_name": "tb-w1",
-              "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-              "target_rps": 45,
-              "duration_seconds": 480,
-              "preallocated_vus": 64,
-              "max_vus": 360
-            }
-          },
-          {
-            "level_id": "past-saturation-60rps",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "job": "scenario-f03-h-order-thread-pool",
-              "configmap": "scenario-f03-h-order-thread-pool",
-              "node_name": "tb-w1",
-              "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",
-              "target_rps": 60,
-              "duration_seconds": 480,
-              "preallocated_vus": 64,
-              "max_vus": 360
             }
           }
         ]
@@ -1536,7 +1355,7 @@
             },
             {
               "name": "JAVA_TOOL_OPTIONS",
-              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+AlwaysPreTouch"
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx96m -Xms96m -XX:+AlwaysPreTouch"
             },
             {
               "name": "OTEL_SERVICE_NAME",
@@ -2306,608 +2125,6 @@
               ]
             }
           }
-        ],
-        "F09-H": [
-          {
-            "level_id": "heap-208",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            }
-          },
-          {
-            "level_id": "heap-160",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx160m -Xms160m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            }
-          },
-          {
-            "level_id": "heap-128",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx128m -Xms128m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            }
-          },
-          {
-            "level_id": "heap-112",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx112m -Xms112m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            }
-          },
-          {
-            "level_id": "heap-96",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx96m -Xms96m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            }
-          }
         ]
       }
     },
@@ -2938,13 +2155,13 @@
           "deployment": "testbed-inventory",
           "container": "inventory-service",
           "baseline_cpu_limit": "500m",
-          "fault_cpu_limit": "200m"
+          "fault_cpu_limit": "250m"
         },
         "F12-H": {
           "deployment": "testbed-product",
           "container": "product-service",
           "baseline_cpu_limit": "500m",
-          "fault_cpu_limit": "175m"
+          "fault_cpu_limit": "250m"
         },
         "F21-P": {
           "deployment": "testbed-transfer",
@@ -2954,64 +2171,6 @@
         }
       },
       "scenario_levels": {
-        "F09-P": [
-          {
-            "level_id": "conservative-250m",
-            "parameters": {
-              "deployment": "testbed-inventory",
-              "container": "inventory-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "250m"
-            }
-          },
-          {
-            "level_id": "constrained-225m",
-            "parameters": {
-              "deployment": "testbed-inventory",
-              "container": "inventory-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "225m"
-            }
-          },
-          {
-            "level_id": "endpoint-200m",
-            "parameters": {
-              "deployment": "testbed-inventory",
-              "container": "inventory-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "200m"
-            }
-          }
-        ],
-        "F12-H": [
-          {
-            "level_id": "conservative-250m",
-            "parameters": {
-              "deployment": "testbed-product",
-              "container": "product-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "250m"
-            }
-          },
-          {
-            "level_id": "constrained-200m",
-            "parameters": {
-              "deployment": "testbed-product",
-              "container": "product-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "200m"
-            }
-          },
-          {
-            "level_id": "endpoint-175m",
-            "parameters": {
-              "deployment": "testbed-product",
-              "container": "product-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "175m"
-            }
-          }
-        ],
         "F21-P": [
           {
             "level_id": "conservative-400m",
@@ -3114,7 +2273,7 @@
           "fault": {
             "limits": {
               "cpu": "500m",
-              "memory": "576Mi"
+              "memory": "640Mi"
             },
             "requests": {
               "cpu": "200m",
@@ -3140,165 +2299,14 @@
           "fault": {
             "limits": {
               "cpu": "500m",
-              "memory": "192Mi"
+              "memory": "128Mi"
             },
             "requests": {
               "cpu": "200m",
-              "memory": "192Mi"
+              "memory": "128Mi"
             }
           }
         }
-      },
-      "scenario_levels": {
-        "F05-R": [
-          {
-            "level_id": "measured-640mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-payment",
-              "container": "payment-service",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "640Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              }
-            }
-          },
-          {
-            "level_id": "deterministic-576mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-payment",
-              "container": "payment-service",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "576Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              }
-            }
-          }
-        ],
-        "F25-H": [
-          {
-            "level_id": "squeeze-192mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "192Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "192Mi"
-                }
-              }
-            }
-          },
-          {
-            "level_id": "floor-128mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "128Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "128Mi"
-                }
-              }
-            }
-          },
-          {
-            "level_id": "floor-96mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "96Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "96Mi"
-                }
-              }
-            }
-          }
-        ]
       }
     },
     "k8s.probe": {
@@ -3492,7 +2500,7 @@
         "F05-P": {
           "mode": "memhog",
           "host": "192.168.122.184",
-          "mib": 5500,
+          "mib": 6250,
           "runtime_seconds": 480,
           "required_cohort": [
             "testbed-gateway",
@@ -3517,7 +2525,7 @@
           "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
           "size_mib": 2048,
           "runtime_seconds": 600,
-          "rate_iops": 6000
+          "rate_iops": 20000
         },
         "F10-P": {
           "mode": "fio",
@@ -3530,9 +2538,9 @@
         "F15-P": {
           "mode": "pressure",
           "host": "192.168.122.11",
-          "cpu_workers": 2,
+          "cpu_workers": 8,
           "vm_workers": 1,
-          "vm_bytes": "1500M",
+          "vm_bytes": "5000M",
           "runtime_seconds": 600
         }
       },
@@ -3563,76 +2571,6 @@
               "host": "192.168.122.184",
               "cpu_workers": 4,
               "runtime_seconds": 480
-            }
-          }
-        ],
-        "F05-P": [
-          {
-            "level_id": "mem-5500",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 5500,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "level_id": "mem-5750",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 5750,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "level_id": "mem-6000",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 6000,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            }
-          },
-          {
-            "level_id": "mem-6250",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 6250,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
             }
           }
         ],
@@ -3671,41 +2609,6 @@
             }
           }
         ],
-        "F10-H": [
-          {
-            "level_id": "io-6000",
-            "parameters": {
-              "mode": "fio",
-              "host": "192.168.122.14",
-              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-              "size_mib": 2048,
-              "runtime_seconds": 600,
-              "rate_iops": 6000
-            }
-          },
-          {
-            "level_id": "io-12000",
-            "parameters": {
-              "mode": "fio",
-              "host": "192.168.122.14",
-              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-              "size_mib": 2048,
-              "runtime_seconds": 600,
-              "rate_iops": 12000
-            }
-          },
-          {
-            "level_id": "io-20000",
-            "parameters": {
-              "mode": "fio",
-              "host": "192.168.122.14",
-              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-              "size_mib": 2048,
-              "runtime_seconds": 600,
-              "rate_iops": 20000
-            }
-          }
-        ],
         "F10-P": [
           {
             "level_id": "io-6000",
@@ -3738,41 +2641,6 @@
               "size_mib": 2048,
               "runtime_seconds": 600,
               "rate_iops": 20000
-            }
-          }
-        ],
-        "F15-P": [
-          {
-            "level_id": "pressure-cpu2-vm1x1500m",
-            "parameters": {
-              "mode": "pressure",
-              "host": "192.168.122.11",
-              "cpu_workers": 2,
-              "vm_workers": 1,
-              "vm_bytes": "1500M",
-              "runtime_seconds": 600
-            }
-          },
-          {
-            "level_id": "pressure-cpu3-vm1x3000m",
-            "parameters": {
-              "mode": "pressure",
-              "host": "192.168.122.11",
-              "cpu_workers": 3,
-              "vm_workers": 1,
-              "vm_bytes": "3000M",
-              "runtime_seconds": 600
-            }
-          },
-          {
-            "level_id": "pressure-cpu4-vm1x5000m",
-            "parameters": {
-              "mode": "pressure",
-              "host": "192.168.122.11",
-              "cpu_workers": 4,
-              "vm_workers": 1,
-              "vm_bytes": "5000M",
-              "runtime_seconds": 600
             }
           }
         ]
@@ -3903,7 +2771,7 @@
           "mock_path": "/v1/payments",
           "fault_status": 429,
           "episode_count": 2,
-          "fault_hold_seconds": 300,
+          "fault_hold_seconds": 240,
           "recovery_gap_seconds": 720
         },
         "F15-T1": {
@@ -3935,7 +2803,7 @@
           "food_fault": {
             "limits": {
               "cpu": "500m",
-              "memory": "576Mi"
+              "memory": "768Mi"
             },
             "requests": {
               "cpu": "200m",
@@ -3982,159 +2850,6 @@
           "food_mock_status": 429,
           "start_offset_seconds": 240
         }
-      },
-      "scenario_levels": {
-        "F15-R": [
-          {
-            "level_id": "episode-fault-240",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "mock_resource": "deployment/testbed-external-pg-mock",
-              "mock_path": "/v1/payments",
-              "fault_status": 429,
-              "episode_count": 2,
-              "fault_hold_seconds": 240,
-              "recovery_gap_seconds": 720
-            }
-          },
-          {
-            "level_id": "episode-fault-300",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "mock_resource": "deployment/testbed-external-pg-mock",
-              "mock_path": "/v1/payments",
-              "fault_status": 429,
-              "episode_count": 2,
-              "fault_hold_seconds": 300,
-              "recovery_gap_seconds": 720
-            }
-          }
-        ],
-        "F15-T1": [
-          {
-            "level_id": "food-headroom-768mi",
-            "parameters": {
-              "commerce_namespace": "rca-testbed-commerce",
-              "pg_access": "in-cluster-pod",
-              "pg_db_pod": "testbed-postgres-0",
-              "pg_service": "testbed-postgres",
-              "pg_secret": "postgres-secret",
-              "pg_image": "postgres:16-alpine",
-              "pg_schema": "inventory_schema",
-              "pg_table": "inventory",
-              "pg_key_column": "product_id",
-              "pg_key_value": "1",
-              "pg_client_identity": "PostgreSQL JDBC Driver",
-              "pg_hold_seconds": 600,
-              "food_namespace": "rca-testbed-food",
-              "food_deployment": "testbed-payment",
-              "food_container": "payment-service",
-              "food_baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "food_fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "768Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "start_offset_seconds": 0
-            }
-          },
-          {
-            "level_id": "food-measured-640mi",
-            "parameters": {
-              "commerce_namespace": "rca-testbed-commerce",
-              "pg_access": "in-cluster-pod",
-              "pg_db_pod": "testbed-postgres-0",
-              "pg_service": "testbed-postgres",
-              "pg_secret": "postgres-secret",
-              "pg_image": "postgres:16-alpine",
-              "pg_schema": "inventory_schema",
-              "pg_table": "inventory",
-              "pg_key_column": "product_id",
-              "pg_key_value": "1",
-              "pg_client_identity": "PostgreSQL JDBC Driver",
-              "pg_hold_seconds": 600,
-              "food_namespace": "rca-testbed-food",
-              "food_deployment": "testbed-payment",
-              "food_container": "payment-service",
-              "food_baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "food_fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "640Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "start_offset_seconds": 0
-            }
-          },
-          {
-            "level_id": "food-deterministic-576mi",
-            "parameters": {
-              "commerce_namespace": "rca-testbed-commerce",
-              "pg_access": "in-cluster-pod",
-              "pg_db_pod": "testbed-postgres-0",
-              "pg_service": "testbed-postgres",
-              "pg_secret": "postgres-secret",
-              "pg_image": "postgres:16-alpine",
-              "pg_schema": "inventory_schema",
-              "pg_table": "inventory",
-              "pg_key_column": "product_id",
-              "pg_key_value": "1",
-              "pg_client_identity": "PostgreSQL JDBC Driver",
-              "pg_hold_seconds": 600,
-              "food_namespace": "rca-testbed-food",
-              "food_deployment": "testbed-payment",
-              "food_container": "payment-service",
-              "food_baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "food_fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "576Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "start_offset_seconds": 0
-            }
-          }
-        ]
       }
     },
     "timeline.multi": {

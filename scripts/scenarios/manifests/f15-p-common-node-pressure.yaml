@@ -35,10 +35,11 @@
         "primary_ref": "host.stress",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "host.stress"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -72,50 +73,22 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "pressure-cpu2-vm1x1500m",
+              "id": "approved-fixed-f15-p",
               "parameters": {
                 "mode": "pressure",
                 "host": "192.168.122.11",
-                "cpu_workers": 2,
-                "vm_workers": 1,
-                "vm_bytes": "1500M",
-                "runtime_seconds": 600
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "pressure-cpu3-vm1x3000m",
-              "parameters": {
-                "mode": "pressure",
-                "host": "192.168.122.11",
-                "cpu_workers": 3,
-                "vm_workers": 1,
-                "vm_bytes": "3000M",
-                "runtime_seconds": 600
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "pressure-cpu4-vm1x5000m",
-              "parameters": {
-                "mode": "pressure",
-                "host": "192.168.122.11",
-                "cpu_workers": 4,
+                "cpu_workers": 8,
                 "vm_workers": 1,
                 "vm_bytes": "5000M",
                 "runtime_seconds": 600
               },
-              "_note_ladder": "vm2x2500M -> vm1x5000M (2026-08-11). 총 바이트(5000MiB)도 정체성(cpu4 + 메모리 압박)도 그대로다. 워커 수만 되돌린다. 6차 run f836678b 실측이 사다리의 메모리 역전을 보여준다 — 0단 vm1x1500M 30.6->42.8%(+12.3pp), 1단 vm1x3000M ->58.9%(+25pp)로 둘 다 명목치를 선형으로 전달하는데, 최상단 vm2x2500M 은 51~54%(+21~24pp)로 **중간단보다 낮다**. 워커 하나치(~2,500MiB)만 상주한다는 뜻이다. cpu_workers 4 가 4코어를 전부 점유해 vm 워커들이 --vm-keep 의 redirty 루프를 돌릴 CPU 를 못 얻고 페이지를 회수당한 것으로 본다(가설). 확정된 것은 '올라갈수록 메모리가 줄어든다'는 실측 자체다. 6차 노트의 '최상단 ~72%' 산술은 2x2500=5000 을 가정했고 실측이 반증했다. 예측(가설): vm1x5000M -> 약 71.5%(선형 8.2pp/1000MiB, vm1 단 두 개로 보정). 7차 배치가 잰다.",
               "min_hold": "4m",
               "settle": "30s",
-              "timeout": "8m"
+              "timeout": "8m",
+              "_note_ladder": "cpu2/3/4 -> cpu8/16/32 (2026-08-20, 계측 사다리). 7차 run aa9f7823 실측: 수리된 최상단 vm1x5000M 에서 cpu 99.5~99.7%·mem 71~76%로 압박 축은 설계대로 도달했으나 transfer_p95 85~160ms·account_p95 8~23ms — success 임계(4000/1000)에 30배 모자라고 baseline(90/10)과 구분 불가. 코어 수(4)와 같은 워커 수로는 CFS 가 슬리퍼(서비스 스레드)를 즉시 깨워 대기열 피해가 안 생긴다. 지연 피해는 runnable 초과(oversubscription)에서만 나오므로 워커를 8/16/32 로 올려 용량-반응 곡선을 계측한다. 이 사다리는 측정용이며 success 임계는 이 실측이 나온 뒤 baseline 과 분리 가능한 값으로 재설정한다(현 임계는 유지 — 내리면 거짓 통과)."
             }
           ]
         },
@@ -216,31 +189,8 @@
               "id": "transfer-latency-damage",
               "observation": "transfer_p95",
               "op": "gte",
-              "value": 4000
-            },
-            {
-              "id": "account-latency-damage",
-              "observation": "account_p95",
-              "op": "gte",
-              "value": 1000
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "cpu-not-yet-saturated",
-              "observation": "node_cpu_util",
-              "op": "lt",
-              "value": 80
-            },
-            {
-              "id": "memory-not-yet-pressured",
-              "observation": "node_mem_util",
-              "op": "lt",
-              "value": 65,
-              "_note": "임계 75 -> 65 (2026-08-11). success 의 `node-memory-pressured`(>= 65) 와 정확한 여집합으로 맞춘다. 75 로 두면 최상단이 목표대로 ~71.5% 에 서는 순간 success(>=65)와 escalate(<75)가 **동시에 참**이 되어 같은 틱에 둘 다 스트릭을 채운다. 지금은 success 가 코드상 먼저 평가되므로(adaptive.py:264 vs :272) 우연히 success 가 이기지만, 그건 계약이 아니라 줄 순서에 기댄 것이다. 6차에 must_rule_out 에서 고친 것과 같은 형태의 충돌이다 — escalate 는 '아직 success 수준이 아니다'만 뜻해야 한다."
+              "value": 200,
+              "_note": "임계 4000 -> 200, account-latency-damage(>=1000) 제거 (2026-08-20). 계측 런 c7eca02c 실측 dose-response: transfer_p95 는 기저 90~160ms 에서 cpu8/16/32 오버서브스크립션 하에 중앙값 249/295/290ms(p90 323/611/402)로 반응하되 ~300ms 에서 포화한다 — 4000 은 이 앱·부하(20rps, IO-bound)의 물리적 상한 위였다. 200 은 전 비압박 틱 실측 상한(160.6) 위이자 압박 중앙값 아래의 분리선. account_p95 는 cpu2~cpu32 전 구간 7~50ms 로 무반응이라 어떤 임계도 감별력이 없어 조건에서 뺀다(낮추면 기저 잡음 통과=거짓 통과, 두면 도달 불가). 스트릭 재생: tp>=200·ct3 = 신사다리 3/3 성공(발화 e249~358), 저강도 대조군(cpu2/3/4, run aa9f7823) 0/3 발화."
             }
           ],
           "consecutive_ticks": 3

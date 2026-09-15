@@ -70,7 +70,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -131,7 +131,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "verified payment memory ladder and OOMKilled observation"
     },
@@ -155,7 +155,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "worker-w1",
       "prerequisite": "placement and safe eviction"
     },
@@ -202,7 +202,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
     },
@@ -274,7 +274,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -286,7 +286,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -310,7 +310,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "worker-w3",
       "prerequisite": ""
     },
@@ -334,7 +334,7 @@
         "cache.control"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -346,7 +346,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -417,7 +417,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
     },
@@ -441,7 +441,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "worker-w2",
       "prerequisite": ""
     },
@@ -464,7 +464,7 @@
         "timeline.compose"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
     },
@@ -569,7 +569,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py) + F20-R observations 배선(게이트 미배선)"
     },
@@ -603,7 +603,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "postgres StatefulSet kind 일반화(k8s_resource_executor) + postgres 관측 allowlist(live_probes.py F25_H_POSTGRES_TARGET) 배선 완료(07-24)"
     },

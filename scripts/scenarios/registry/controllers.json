@@ -574,7 +574,7 @@
     "F07-H": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "40m",
@@ -608,49 +608,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "load.north_south",
         "companion_refs": [],
-        "approved_profile_id": null,
+        "approved_profile_id": "load.north_south",
         "levels": [
           {
-            "id": "healthy-high-120",
+            "id": "approved-fixed-f07-h",
             "parameters": {
               "target_rps": 120,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F07-H",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            },
-            "min_hold": "6m",
-            "settle": "30s",
-            "timeout": "11m"
-          },
-          {
-            "id": "knee-140",
-            "parameters": {
-              "target_rps": 140,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F07-H",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            },
-            "min_hold": "6m",
-            "settle": "30s",
-            "timeout": "11m"
-          },
-          {
-            "id": "overload-160",
-            "parameters": {
-              "target_rps": 160,
               "ramp_up": "2m",
               "hold": "525s",
               "ramp_down": "15s",
@@ -735,23 +701,6 @@
           }
         ],
         "consecutive_ticks": 2
-      },
-      "escalate": {
-        "all": [
-          {
-            "id": "surge-delivered",
-            "observation": "achieved_rps",
-            "op": "gte",
-            "value": 100
-          },
-          {
-            "id": "latency-not-elevated",
-            "observation": "user_p95",
-            "op": "lt",
-            "value": 500
-          }
-        ],
-        "consecutive_ticks": 3
       },
       "must_rule_out": {
         "any": [
@@ -1288,7 +1237,7 @@
     "F11-R": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "40m",
@@ -1322,51 +1271,17 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "load.north_south",
         "companion_refs": [
           "cache.control"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "load.north_south",
         "levels": [
           {
-            "id": "fallback-load-35",
-            "parameters": {
-              "target_rps": 35,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F11-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            },
-            "min_hold": "2m",
-            "settle": "30s",
-            "timeout": "11m"
-          },
-          {
-            "id": "fallback-load-50",
+            "id": "approved-fixed-f11-r",
             "parameters": {
               "target_rps": 50,
-              "ramp_up": "2m",
-              "hold": "525s",
-              "ramp_down": "15s",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/surge.js",
-              "scenario_tag": "scenario_id=F11-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            },
-            "min_hold": "2m",
-            "settle": "30s",
-            "timeout": "11m"
-          },
-          {
-            "id": "fallback-load-65",
-            "parameters": {
-              "target_rps": 65,
               "ramp_up": "2m",
               "hold": "525s",
               "ramp_down": "15s",
@@ -1440,17 +1355,6 @@
           }
         ],
         "consecutive_ticks": 2
-      },
-      "escalate": {
-        "all": [
-          {
-            "id": "fallback-headroom-remains",
-            "observation": "checkout_5xx_rate",
-            "op": "lt",
-            "value": 0.05
-          }
-        ],
-        "consecutive_ticks": 3
       },
       "must_rule_out": {
         "any": [
@@ -1715,7 +1619,7 @@
     "F12-H": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -1749,44 +1653,20 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "k8s.patch",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "k8s.patch",
         "levels": [
           {
-            "id": "conservative-250m",
+            "id": "approved-fixed-f12-h",
             "parameters": {
               "deployment": "testbed-product",
               "container": "product-service",
               "baseline_cpu_limit": "500m",
               "fault_cpu_limit": "250m"
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "constrained-200m",
-            "parameters": {
-              "deployment": "testbed-product",
-              "container": "product-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "200m"
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "endpoint-175m",
-            "parameters": {
-              "deployment": "testbed-product",
-              "container": "product-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "175m"
             },
             "min_hold": "4m",
             "settle": "30s",
@@ -1909,23 +1789,6 @@
         ],
         "consecutive_ticks": 2
       },
-      "escalate": {
-        "any": [
-          {
-            "id": "product-impact-not-visible",
-            "observation": "product_p95",
-            "op": "lt",
-            "value": 500
-          },
-          {
-            "id": "cpu-throttle-not-visible",
-            "observation": "cpu_throttled_time",
-            "op": "eq",
-            "value": 0
-          }
-        ],
-        "consecutive_ticks": 3
-      },
       "must_rule_out": {
         "any": [
           {
@@ -2018,7 +1881,7 @@
     "F05-R": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -2052,16 +1915,16 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "k8s.resource",
         "companion_refs": [
           "k8s.env",
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "k8s.resource",
         "levels": [
           {
-            "id": "measured-640mi",
+            "id": "approved-fixed-f05-r",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-payment",
@@ -2081,38 +1944,6 @@
                 "limits": {
                   "cpu": "500m",
                   "memory": "640Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              }
-            },
-            "min_hold": "2m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "deterministic-576mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-payment",
-              "container": "payment-service",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "576Mi"
                 },
                 "requests": {
                   "cpu": "200m",
@@ -2250,17 +2081,6 @@
           }
         ],
         "consecutive_ticks": 2
-      },
-      "escalate": {
-        "all": [
-          {
-            "id": "oom-not-reached",
-            "observation": "restart_count",
-            "op": "eq",
-            "value": 0
-          }
-        ],
-        "consecutive_ticks": 4
       },
       "must_rule_out": {
         "any": [
@@ -3468,7 +3288,7 @@
     "F05-P": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "32m",
@@ -3506,75 +3326,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "host.stress",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "host.stress",
         "levels": [
           {
-            "id": "mem-5500",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 5500,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "mem-5750",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 5750,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "mem-6000",
-            "parameters": {
-              "mode": "memhog",
-              "host": "192.168.122.184",
-              "mib": 6000,
-              "runtime_seconds": 480,
-              "required_cohort": [
-                "testbed-gateway",
-                "testbed-cart",
-                "testbed-inventory",
-                "testbed-redis",
-                "testbed-kafka",
-                "testbed-payment"
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "mem-6250",
+            "id": "approved-fixed-f05-p",
             "parameters": {
               "mode": "memhog",
               "host": "192.168.122.184",
@@ -3589,7 +3349,7 @@
                 "testbed-payment"
               ]
             },
-            "min_hold": "4m",
+            "min_hold": "90s",
             "settle": "30s",
             "timeout": "8m"
           }
@@ -3683,39 +3443,17 @@
       "success": {
         "all": [
           {
-            "id": "node-memory-saturated",
-            "observation": "node_mem_util",
-            "op": "gte",
-            "value": 92
-          },
-          {
             "id": "cohort-user-impact",
             "observation": "checkout_5xx_rate",
             "op": "gte",
-            "value": 0.1
-          }
-        ],
-        "consecutive_ticks": 3
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "pressure-not-yet-enough",
-            "observation": "node_mem_util",
-            "op": "lt",
-            "value": 92
+            "value": 0.1,
+            "_note": "node-memory-saturated(>=92) 제거 (2026-08-20). 6250 단 실측 4런(dcf596e9·a9f85d62·6db01235·b956d0f1)에서 checkout_5xx 1.0 피해 창(130~250s)이 실재했지만, 그 창에서 node_mem_util 은 KCM 에이전트가 메모리 압박의 첫 희생자가 되어 발행을 멈춘 채 주입 전 값(47.6~49.5)으로 얼어 있었다 — damage 창과 mem>=92 가 게이지 수준에서 동시 관측 불가능하다(관측자가 피해 기전의 일부). 기전 감별은 mro(node-lost·user-load-overshot)와 주입 인과 감사(audit-run-causality)가 진다. 스트릭 재생: 신계약 min_hold 90s 에서 6250 피해 구간 7건 중 5건 success(잔여 2건은 노드 조기 사망 abort), 현행 계약은 0건."
           }
         ],
         "consecutive_ticks": 3
       },
       "must_rule_out": {
         "any": [
-          {
-            "id": "impact-without-node-pressure",
-            "observation": "node_mem_util",
-            "op": "lt",
-            "value": 40
-          },
           {
             "id": "node-lost",
             "observation": "node_ready",
@@ -3729,7 +3467,8 @@
             "value": 60
           }
         ],
-        "consecutive_ticks": 3
+        "consecutive_ticks": 3,
+        "_note": "impact-without-node-pressure(mem<40) 제거 (2026-08-20). 같은 stale 게이지가 회복기 값(실측 08-12 런 32.38)으로 얼면 주입이 실제 작동 중인데 <40 이 3틱 차 거짓 abort 가 된다. 또한 mem unusable 이면 any 게이트가 unknown 이 되어 fail-closed 로 success 확정 자체를 막는다(adaptive.py safety_unknown). node-lost 와 user-load-overshot 은 오프노드 신호라 유지."
       },
       "abort": {
         "any": [
@@ -3806,7 +3545,7 @@
     "F15-T1": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -3840,13 +3579,13 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "timeline.compose",
         "companion_refs": [],
-        "approved_profile_id": null,
+        "approved_profile_id": "timeline.compose",
         "levels": [
           {
-            "id": "food-headroom-768mi",
+            "id": "approved-fixed-f15-t1",
             "parameters": {
               "commerce_namespace": "rca-testbed-commerce",
               "pg_access": "in-cluster-pod",
@@ -3877,94 +3616,6 @@
                 "limits": {
                   "cpu": "500m",
                   "memory": "768Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "start_offset_seconds": 0
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "food-measured-640mi",
-            "parameters": {
-              "commerce_namespace": "rca-testbed-commerce",
-              "pg_access": "in-cluster-pod",
-              "pg_db_pod": "testbed-postgres-0",
-              "pg_service": "testbed-postgres",
-              "pg_secret": "postgres-secret",
-              "pg_image": "postgres:16-alpine",
-              "pg_schema": "inventory_schema",
-              "pg_table": "inventory",
-              "pg_key_column": "product_id",
-              "pg_key_value": "1",
-              "pg_client_identity": "PostgreSQL JDBC Driver",
-              "pg_hold_seconds": 600,
-              "food_namespace": "rca-testbed-food",
-              "food_deployment": "testbed-payment",
-              "food_container": "payment-service",
-              "food_baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "food_fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "640Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "start_offset_seconds": 0
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "food-deterministic-576mi",
-            "parameters": {
-              "commerce_namespace": "rca-testbed-commerce",
-              "pg_access": "in-cluster-pod",
-              "pg_db_pod": "testbed-postgres-0",
-              "pg_service": "testbed-postgres",
-              "pg_secret": "postgres-secret",
-              "pg_image": "postgres:16-alpine",
-              "pg_schema": "inventory_schema",
-              "pg_table": "inventory",
-              "pg_key_column": "product_id",
-              "pg_key_value": "1",
-              "pg_client_identity": "PostgreSQL JDBC Driver",
-              "pg_hold_seconds": 600,
-              "food_namespace": "rca-testbed-food",
-              "food_deployment": "testbed-payment",
-              "food_container": "payment-service",
-              "food_baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "1Gi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "512Mi"
-                }
-              },
-              "food_fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "576Mi"
                 },
                 "requests": {
                   "cpu": "200m",
@@ -4081,17 +3732,6 @@
         ],
         "consecutive_ticks": 2
       },
-      "escalate": {
-        "all": [
-          {
-            "id": "food-oom-not-reached",
-            "observation": "food_restart_count",
-            "op": "eq",
-            "value": 0
-          }
-        ],
-        "consecutive_ticks": 4
-      },
       "must_rule_out": {
         "any": [
           {
@@ -4166,7 +3806,7 @@
     "F15-R": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -4200,15 +3840,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "timeline.compose",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "timeline.compose",
         "levels": [
           {
-            "id": "episode-fault-240",
+            "id": "approved-fixed-f15-r",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "mock_resource": "deployment/testbed-external-pg-mock",
@@ -4221,21 +3861,6 @@
             "min_hold": "18m",
             "settle": "30s",
             "timeout": "23m"
-          },
-          {
-            "id": "episode-fault-300",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "mock_resource": "deployment/testbed-external-pg-mock",
-              "mock_path": "/v1/payments",
-              "fault_status": 429,
-              "episode_count": 2,
-              "fault_hold_seconds": 300,
-              "recovery_gap_seconds": 720
-            },
-            "min_hold": "18m",
-            "settle": "30s",
-            "timeout": "25m"
           }
         ]
       },
@@ -4319,17 +3944,6 @@
           }
         ],
         "consecutive_ticks": 2
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "episode-impact-not-visible",
-            "observation": "checkout_5xx_rate",
-            "op": "lt",
-            "value": 0.02
-          }
-        ],
-        "consecutive_ticks": 4
       },
       "must_rule_out": {
         "any": [
@@ -5479,7 +5093,7 @@
     "F20-R": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -5513,17 +5127,17 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "load.north_south",
         "companion_refs": [],
-        "approved_profile_id": null,
+        "approved_profile_id": "load.north_south",
         "levels": [
           {
-            "id": "slowquery-rps1",
+            "id": "approved-fixed-f20-r",
             "parameters": {
               "target_rps": 1,
               "ramp_up": "1m",
-              "hold": "6m",
+              "hold": "10m",
               "ramp_down": "1m",
               "entry_url": "http://192.168.122.77:30080",
               "script_path": "/opt/loadgen/commerce/slowquery.js",
@@ -5532,43 +5146,10 @@
               "baseline_unit": "loadgen-commerce"
             },
             "_note_min_hold": "세 단 모두 5m -> 3m (2026-08-11). F15-H 와 같은 구조 — 성공 창이 min_hold 안에서 닫힌다. 6차 run 2bbb3499 실측: success 스트릭이 el=265 에 ct=3 을 채웠으나 전부 reason=min_hold 였고, min_hold 300s 이후에는 2 까지밖에 못 올라갔다. 단 timeout 은 8m 이므로 3m 은 판정 구간 180~480s 를 남긴다. 검증된 모의에서 el=265 발화.",
-            "min_hold": "3m",
+            "min_hold": "90s",
             "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "slowquery-rps2",
-            "parameters": {
-              "target_rps": 2,
-              "ramp_up": "1m",
-              "hold": "6m",
-              "ramp_down": "1m",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/slowquery.js",
-              "scenario_tag": "scenario_id=F20-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            },
-            "min_hold": "3m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "slowquery-rps3",
-            "parameters": {
-              "target_rps": 3,
-              "ramp_up": "1m",
-              "hold": "6m",
-              "ramp_down": "1m",
-              "entry_url": "http://192.168.122.77:30080",
-              "script_path": "/opt/loadgen/commerce/slowquery.js",
-              "scenario_tag": "scenario_id=F20-R",
-              "seed": 4242,
-              "baseline_unit": "loadgen-commerce"
-            },
-            "min_hold": "3m",
-            "settle": "30s",
-            "timeout": "8m"
+            "timeout": "12m",
+            "_note_hold": "hold 6m->10m, timeout 8m->12m (2026-08-20). rps1 이 유일하게 게이지가 살아남는 단(rps2+ 는 p95 게이지 기아로 decision_observation_unavailable abort — 실측 3adcd962 외 다수)이므로 pin 대상. 판정 창을 넓혀 요동하는 게이지가 확정 틱을 만날 기회를 늘린다. ramp+hold+ramp == timeout 등식은 유지. | min_hold 3m->90s (2026-08-20 2차). 검증 런 9b6b9382 실측: ct2 스트릭이 el=143(min_hold 안)에서 이미 찼는데 확정이 180s 게이트에 막혔고, 첫 확정 기회(e190) 직전 op95 이봉의 저봉(27.96ms)이 리셋했다. 스트릭 재생: mh180 은 이 런 escalate/실패, mh90 은 e143 성공 — 08-10 수리 이후 4런 기준 mh90 3/4, mh180 2/4. min_hold 90s 는 ramp_up 60s 보다 길어 주입 과도기는 여전히 배제된다. 거짓 통과 불가: op95>=1500 은 베이스라인(최대 ~400ms)이 물리적으로 못 넘는다(583틱 0건)."
           }
         ]
       },
@@ -5655,18 +5236,8 @@
             "_note": "임계 500 -> 150 (2026-08-10). 20런 583틱 전체에서 payment_p95 가 500 을 넘은 틱은 0개이고 관측 사상 최대가 401.5ms 다 — 500 은 이 시나리오의 물리적 상한 위에 있었고, 다섯 배치 연속 스킵이 전부 이것으로 설명된다. 하한 근거는 settling(주입 미도달) 틱의 payment_p95 최대 115.7ms 이다. 100 으로 내리면 평시 노이즈가 통과해 거짓 통과가 된다. 150 은 관측된 모든 비주입 값 위이고 평시 median 19.6ms 의 7.6배다. 주입 자체는 확실히 작동한다: order_p95 평시 43.8ms -> rps2 주입 p50 9,916ms(226배), pg_slow_active_queries 평시 0 -> p50 8. 임계 재보정은 거짓 통과가 아니다."
           }
         ],
-        "consecutive_ticks": 3
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "order-latency-not-yet-elevated",
-            "observation": "order_p95",
-            "op": "lt",
-            "value": 1500
-          }
-        ],
-        "consecutive_ticks": 3
+        "consecutive_ticks": 1,
+        "_note_ct": "ct 3 -> 2 -> 1 (2026-08-20). 검증 런 2개(9b6b9382·ec55c8c3) 실측: order_p95 는 60s 수집창 게이지라 '슬로쿼리가 완료된 분'(1만~5.8만ms)과 '안 걸린 분'(15~1300ms)이 교대하는 이봉이고, 교대 주기가 독립창(60s)과 같은 차수라 연속 2 독립표본(ct2)이 확률 게임이 된다(9b6b: ct2 도달 2회 모두 확정 틱 직전 리셋, ec55: 최대 1). 표본 하나가 이미 max_over_time 으로 붕괴된 60s 집계이므로 ct1 = '완전한 1분간 양 축 동시 피해'다. 거짓 통과 audit: op95>=1500 은 비주입 583틱 실측 상한 ~400ms 로 도달 불가, pp>=150 은 settling 상한 115.7ms 위. 스트릭 재생: ct1 = 08-10 수리 이후 5런 5/5(발화 e93~327), 전체 20/28; ct2+mh90 은 3/5."
       },
       "must_rule_out": {
         "any": [
@@ -5866,13 +5437,14 @@
             "observation": "order_memory_current",
             "op": "gte",
             "value": 805306368,
-            "_note": "consecutive_ticks 2 → 1: run 543dda48에서 유효 평가 틱이 물리적으로 하나뿐이었다 — 31초 틱에서 메모리 867MB·주문 생성 5xx 0.6으로 두 조건이 동시에 서고(streak 1), 46초 틱에는 이미 파드가 죽어 entry_status 0·5xx usable=false였다(2026-08-07). 2연속은 이 정체성에서 구조적으로 채울 수 없다. 1틱이 정당한 근거는 둘이다 — 이 gate는 서로 다른 평면의 독립 신호 AND(k8s 컨테이너 메모리 · k6 주문 생성 5xx)라 단일 틱도 우연 일치가 아니고, 죽기 전 창이 물리적으로 1틱이다."
+            "_note": "consecutive_ticks 2→1 (2026-08-07): 사망 전 유효 평가 틱이 물리적으로 하나뿐. 2026-08-22 실측: 기준 메모리가 이미 ~830MB(limit 1Gi)라 이 조건은 전제일 뿐 변별은 5xx 가 한다."
           },
           {
             "id": "order-create-errors",
             "observation": "order_create_5xx_rate",
             "op": "gte",
-            "value": 0.3
+            "value": 0.1,
+            "_note": "2026-08-22 0.3→0.1: 캠페인 실측(runs 5c81e143·4f1c0644, 과거 7/10 abort) — GC 스래싱으로 probe 가 ~30초에 끊겨 entry=0 abort(2틱, 러너가 success 보다 먼저 평가)가 5xx 집계(60s trailing, freshness 30s)보다 빨랐다. 사망 전 창에서 5xx 분율이 0.3 에 닿기 전에 죽으므로 0.1 로 낮춰 같은 창에서 잡히게 한다. 기준 5xx 는 0 이라 0.1 도 명백한 피해 신호."
           }
         ],
         "consecutive_ticks": 1
@@ -5946,12 +5518,13 @@
         "post_window": "20m",
         "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
         "create_golden_anomaly": false
-      }
+      },
+      "_note": "2026-08-22 "
     },
     "F25-H": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -5985,47 +5558,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "k8s.resource",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "k8s.resource",
         "levels": [
           {
-            "id": "squeeze-192mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "192Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "192Mi"
-                }
-              }
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "floor-128mi",
+            "id": "approved-fixed-f25-h",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-postgres",
@@ -6049,38 +5590,6 @@
                 "requests": {
                   "cpu": "200m",
                   "memory": "128Mi"
-                }
-              }
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "floor-96mi",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres",
-              "resource": "memory",
-              "baseline": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "512Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "256Mi"
-                }
-              },
-              "fault": {
-                "limits": {
-                  "cpu": "500m",
-                  "memory": "96Mi"
-                },
-                "requests": {
-                  "cpu": "200m",
-                  "memory": "96Mi"
                 }
               }
             },
@@ -6249,17 +5758,6 @@
         "post_window": "20m",
         "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
         "create_golden_anomaly": false
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "oom-not-yet",
-            "observation": "pg_restart_count",
-            "op": "lt",
-            "value": 1
-          }
-        ],
-        "consecutive_ticks": 3
       }
     },
     "F23-R": {
@@ -6593,7 +6091,7 @@
     "F03-H": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "35m",
@@ -6627,51 +6125,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "load.east_west",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "load.east_west",
         "levels": [
           {
-            "id": "below-saturation-30rps",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "job": "scenario-f03-h-order-thread-pool",
-              "configmap": "scenario-f03-h-order-thread-pool",
-              "node_name": "tb-w1",
-              "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-              "target_rps": 30,
-              "duration_seconds": 480,
-              "preallocated_vus": 64,
-              "max_vus": 360
-            },
-            "min_hold": "6m",
-            "settle": "30s",
-            "timeout": "10m"
-          },
-          {
-            "id": "at-saturation-45rps",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "job": "scenario-f03-h-order-thread-pool",
-              "configmap": "scenario-f03-h-order-thread-pool",
-              "node_name": "tb-w1",
-              "image": "grafana/k6:latest",
-              "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-              "target_rps": 45,
-              "duration_seconds": 480,
-              "preallocated_vus": 64,
-              "max_vus": 360
-            },
-            "min_hold": "6m",
-            "settle": "30s",
-            "timeout": "10m"
-          },
-          {
-            "id": "past-saturation-60rps",
+            "id": "approved-fixed-f03-h",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "job": "scenario-f03-h-order-thread-pool",
@@ -6755,23 +6217,6 @@
         ],
         "consecutive_ticks": 3,
         "_note": "success 에서 `order-latency-damage`(order_p95 >= 2000) 를 뺐다 (2026-08-11). 임계를 낮춘 것이 아니라 **이 게이트에서 쓸 수 없는 신호**임이 확정됐다. 5xx 로 실패한 요청은 백분위 표본이 아니므로 order_p95 는 피해가 클수록 사라진다 — 6차 run 12752f9b 에서 24/108 틱 unusable 이고, 독립창이 60s 라 스트릭은 분당 한 번만 오르는데 피해 절정에서 5틱 연속(80s+) unusable 이 되어 D0 의 hold 상한(2x60s)을 넘겨 리셋된다. 그래서 두 조건이 실제로 함께 참인 틱이 있는데도 최대 스트릭이 1 에 머물렀다. order_p95 는 escalate 에 그대로 남아 제 몫을 한다: 서비스가 응답할 수 있을 때(=피해 없음)는 신뢰할 수 있고 escalate 는 정확히 그 경우를 판정한다. 실측 대조 — 피해 단 run 12752f9b 스트릭 16 발화(el=365), 피해 없는 단 run 8695f8d4 스트릭 0 미발화. 대조 팔(checkout_5xx_rate_baseline)이 주입 팔과 같이 움직이지만(0.52/0.52, 0.81/0.83, 1.0/1.0) 이는 오염이 아니다 — 부하 포화 시나리오라 baseline 트래픽도 같은 checkout 을 지나며, 대조군은 여기서 구조적으로 감별자가 아니다."
-      },
-      "escalate": {
-        "all": [
-          {
-            "id": "render-load-delivered",
-            "observation": "order_p95",
-            "op": "gte",
-            "value": 2000
-          },
-          {
-            "id": "checkout-not-impacted",
-            "observation": "checkout_5xx_rate",
-            "op": "lt",
-            "value": 0.02
-          }
-        ],
-        "consecutive_ticks": 4
       },
       "must_rule_out": {
         "any": [
@@ -7054,7 +6499,7 @@
     "F10-H": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -7088,43 +6533,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "host.stress",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "host.stress",
         "levels": [
           {
-            "id": "io-6000",
-            "parameters": {
-              "mode": "fio",
-              "host": "192.168.122.14",
-              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-              "size_mib": 2048,
-              "runtime_seconds": 600,
-              "rate_iops": 6000
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "io-12000",
-            "parameters": {
-              "mode": "fio",
-              "host": "192.168.122.14",
-              "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-              "size_mib": 2048,
-              "runtime_seconds": 600,
-              "rate_iops": 12000
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "io-20000",
+            "id": "approved-fixed-f10-h",
             "parameters": {
               "mode": "fio",
               "host": "192.168.122.14",
@@ -7238,18 +6655,6 @@
           }
         ],
         "consecutive_ticks": 2
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "device-not-yet-saturated",
-            "observation": "disk_io_util",
-            "op": "lt",
-            "value": 60,
-            "_note": "success의 device-saturated와 같은 값을 봐야 한다. 60/70으로 어긋나 있으면 disk_io_util 60~69 구간에서 성공과 승급이 동시에 참이 되어 서로를 잡아먹는다 — F06-P류 상호배타(c1a52be에서 제거한 것과 같은 병)를 여기서 만들지 않는다."
-          }
-        ],
-        "consecutive_ticks": 3
       },
       "must_rule_out": {
         "any": [
@@ -7590,7 +6995,7 @@
     "F15-P": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -7624,55 +7029,27 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "host.stress",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "host.stress",
         "levels": [
           {
-            "id": "pressure-cpu2-vm1x1500m",
+            "id": "approved-fixed-f15-p",
             "parameters": {
               "mode": "pressure",
               "host": "192.168.122.11",
-              "cpu_workers": 2,
-              "vm_workers": 1,
-              "vm_bytes": "1500M",
-              "runtime_seconds": 600
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "pressure-cpu3-vm1x3000m",
-            "parameters": {
-              "mode": "pressure",
-              "host": "192.168.122.11",
-              "cpu_workers": 3,
-              "vm_workers": 1,
-              "vm_bytes": "3000M",
-              "runtime_seconds": 600
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "pressure-cpu4-vm1x5000m",
-            "parameters": {
-              "mode": "pressure",
-              "host": "192.168.122.11",
-              "cpu_workers": 4,
+              "cpu_workers": 8,
               "vm_workers": 1,
               "vm_bytes": "5000M",
               "runtime_seconds": 600
             },
-            "_note_ladder": "vm2x2500M -> vm1x5000M (2026-08-11). 총 바이트(5000MiB)도 정체성(cpu4 + 메모리 압박)도 그대로다. 워커 수만 되돌린다. 6차 run f836678b 실측이 사다리의 메모리 역전을 보여준다 — 0단 vm1x1500M 30.6->42.8%(+12.3pp), 1단 vm1x3000M ->58.9%(+25pp)로 둘 다 명목치를 선형으로 전달하는데, 최상단 vm2x2500M 은 51~54%(+21~24pp)로 **중간단보다 낮다**. 워커 하나치(~2,500MiB)만 상주한다는 뜻이다. cpu_workers 4 가 4코어를 전부 점유해 vm 워커들이 --vm-keep 의 redirty 루프를 돌릴 CPU 를 못 얻고 페이지를 회수당한 것으로 본다(가설). 확정된 것은 '올라갈수록 메모리가 줄어든다'는 실측 자체다. 6차 노트의 '최상단 ~72%' 산술은 2x2500=5000 을 가정했고 실측이 반증했다. 예측(가설): vm1x5000M -> 약 71.5%(선형 8.2pp/1000MiB, vm1 단 두 개로 보정). 7차 배치가 잰다.",
             "min_hold": "4m",
             "settle": "30s",
-            "timeout": "8m"
+            "timeout": "8m",
+            "_note_ladder": "cpu2/3/4 -> cpu8/16/32 (2026-08-20, 계측 사다리). 7차 run aa9f7823 실측: 수리된 최상단 vm1x5000M 에서 cpu 99.5~99.7%·mem 71~76%로 압박 축은 설계대로 도달했으나 transfer_p95 85~160ms·account_p95 8~23ms — success 임계(4000/1000)에 30배 모자라고 baseline(90/10)과 구분 불가. 코어 수(4)와 같은 워커 수로는 CFS 가 슬리퍼(서비스 스레드)를 즉시 깨워 대기열 피해가 안 생긴다. 지연 피해는 runnable 초과(oversubscription)에서만 나오므로 워커를 8/16/32 로 올려 용량-반응 곡선을 계측한다. 이 사다리는 측정용이며 success 임계는 이 실측이 나온 뒤 baseline 과 분리 가능한 값으로 재설정한다(현 임계는 유지 — 내리면 거짓 통과)."
           }
         ]
       },
@@ -7773,31 +7150,8 @@
             "id": "transfer-latency-damage",
             "observation": "transfer_p95",
             "op": "gte",
-            "value": 4000
-          },
-          {
-            "id": "account-latency-damage",
-            "observation": "account_p95",
-            "op": "gte",
-            "value": 1000
-          }
-        ],
-        "consecutive_ticks": 3
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "cpu-not-yet-saturated",
-            "observation": "node_cpu_util",
-            "op": "lt",
-            "value": 80
-          },
-          {
-            "id": "memory-not-yet-pressured",
-            "observation": "node_mem_util",
-            "op": "lt",
-            "value": 65,
-            "_note": "임계 75 -> 65 (2026-08-11). success 의 `node-memory-pressured`(>= 65) 와 정확한 여집합으로 맞춘다. 75 로 두면 최상단이 목표대로 ~71.5% 에 서는 순간 success(>=65)와 escalate(<75)가 **동시에 참**이 되어 같은 틱에 둘 다 스트릭을 채운다. 지금은 success 가 코드상 먼저 평가되므로(adaptive.py:264 vs :272) 우연히 success 가 이기지만, 그건 계약이 아니라 줄 순서에 기댄 것이다. 6차에 must_rule_out 에서 고친 것과 같은 형태의 충돌이다 — escalate 는 '아직 success 수준이 아니다'만 뜻해야 한다."
+            "value": 200,
+            "_note": "임계 4000 -> 200, account-latency-damage(>=1000) 제거 (2026-08-20). 계측 런 c7eca02c 실측 dose-response: transfer_p95 는 기저 90~160ms 에서 cpu8/16/32 오버서브스크립션 하에 중앙값 249/295/290ms(p90 323/611/402)로 반응하되 ~300ms 에서 포화한다 — 4000 은 이 앱·부하(20rps, IO-bound)의 물리적 상한 위였다. 200 은 전 비압박 틱 실측 상한(160.6) 위이자 압박 중앙값 아래의 분리선. account_p95 는 cpu2~cpu32 전 구간 7~50ms 로 무반응이라 어떤 임계도 감별력이 없어 조건에서 뺀다(낮추면 기저 잡음 통과=거짓 통과, 두면 도달 불가). 스트릭 재생: tp>=200·ct3 = 신사다리 3/3 성공(발화 e249~358), 저강도 대조군(cpu2/3/4, run aa9f7823) 0/3 발화."
           }
         ],
         "consecutive_ticks": 3
@@ -7896,7 +7250,7 @@
     "F09-H": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "40m",
@@ -7930,507 +7284,15 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "k8s.env",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "k8s.env",
         "levels": [
           {
-            "id": "heap-208",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "heap-160",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx160m -Xms160m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "heap-128",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx128m -Xms128m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "heap-112",
-            "parameters": {
-              "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-order",
-              "container": "order-service",
-              "baseline": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ],
-              "fault": [
-                {
-                  "name": "DB_USER",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_USER",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "DB_PASS",
-                  "valueFrom": {
-                    "secretKeyRef": {
-                      "key": "POSTGRES_PASSWORD",
-                      "name": "postgres-secret"
-                    }
-                  }
-                },
-                {
-                  "name": "JAVA_TOOL_OPTIONS",
-                  "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx112m -Xms112m -XX:+AlwaysPreTouch"
-                },
-                {
-                  "name": "OTEL_SERVICE_NAME",
-                  "value": "commerce-order"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                  "value": "http://192.168.200.109:14318"
-                },
-                {
-                  "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                  "value": "grpc"
-                },
-                {
-                  "name": "OTEL_RESOURCE_ATTRIBUTES",
-                  "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                },
-                {
-                  "name": "OTEL_TRACES_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRICS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_LOGS_EXPORTER",
-                  "value": "otlp"
-                },
-                {
-                  "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                  "value": "10000"
-                }
-              ]
-            },
-            "min_hold": "4m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "heap-96",
+            "id": "approved-fixed-f09-h",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-order",
@@ -8642,17 +7504,6 @@
         ],
         "consecutive_ticks": 3
       },
-      "escalate": {
-        "any": [
-          {
-            "id": "heap-not-yet-pressured",
-            "observation": "order_old_gen_ratio",
-            "op": "lt",
-            "value": 0.7
-          }
-        ],
-        "consecutive_ticks": 3
-      },
       "must_rule_out": {
         "any": [
           {
@@ -8733,7 +7584,7 @@
     "F09-P": {
       "dispatcher_mode": "trusted",
       "live_enabled": true,
-      "mode": "calibration",
+      "mode": "evaluation",
       "tick_interval": "15s",
       "settle_after_change": "30s",
       "max_injection_duration": "30m",
@@ -8767,44 +7618,20 @@
         ]
       },
       "profile": {
-        "kind": "adaptive_ladder",
+        "kind": "fixed",
         "primary_ref": "k8s.patch",
         "companion_refs": [
           "load.north_south"
         ],
-        "approved_profile_id": null,
+        "approved_profile_id": "k8s.patch",
         "levels": [
           {
-            "id": "conservative-250m",
+            "id": "approved-fixed-f09-p",
             "parameters": {
               "deployment": "testbed-inventory",
               "container": "inventory-service",
               "baseline_cpu_limit": "500m",
               "fault_cpu_limit": "250m"
-            },
-            "min_hold": "2m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "constrained-225m",
-            "parameters": {
-              "deployment": "testbed-inventory",
-              "container": "inventory-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "225m"
-            },
-            "min_hold": "2m",
-            "settle": "30s",
-            "timeout": "8m"
-          },
-          {
-            "id": "endpoint-200m",
-            "parameters": {
-              "deployment": "testbed-inventory",
-              "container": "inventory-service",
-              "baseline_cpu_limit": "500m",
-              "fault_cpu_limit": "200m"
             },
             "min_hold": "2m",
             "settle": "30s",
@@ -8885,17 +7712,6 @@
           }
         ],
         "consecutive_ticks": 2
-      },
-      "escalate": {
-        "any": [
-          {
-            "id": "throttling-not-yet-biting",
-            "observation": "inventory_throttled",
-            "op": "eq",
-            "value": 0
-          }
-        ],
-        "consecutive_ticks": 3
       },
       "must_rule_out": {
         "any": [

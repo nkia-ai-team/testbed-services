@@ -35,10 +35,11 @@
         "primary_ref": "timeline.compose",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "timeline.compose"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -72,10 +73,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "episode-fault-240",
+              "id": "approved-fixed-f15-r",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "mock_resource": "deployment/testbed-external-pg-mock",
@@ -88,21 +89,6 @@
               "min_hold": "18m",
               "settle": "30s",
               "timeout": "23m"
-            },
-            {
-              "id": "episode-fault-300",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "mock_resource": "deployment/testbed-external-pg-mock",
-                "mock_path": "/v1/payments",
-                "fault_status": 429,
-                "episode_count": 2,
-                "fault_hold_seconds": 300,
-                "recovery_gap_seconds": 720
-              },
-              "min_hold": "18m",
-              "settle": "30s",
-              "timeout": "25m"
             }
           ]
         },
@@ -186,17 +172,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "episode-impact-not-visible",
-              "observation": "checkout_5xx_rate",
-              "op": "lt",
-              "value": 0.02
-            }
-          ],
-          "consecutive_ticks": 4
         },
         "must_rule_out": {
           "any": [

@@ -223,10 +223,16 @@ F05P_LEVELS = [
 # 131ms · 30ms 에서 **30배 이상** 떨어져 있다. node_cpu_util 이 99.8% 인데도 앱 지연이
 # 100ms 대에 머문다 — 20rps 에서 이 앱은 CPU 를 그만큼 쓰지 않는다. 그 격차는 임계
 # 재보정으로 메울 것이 아니라(내리면 거짓 통과다) 부하·주입 설계를 다시 봐야 한다.
+# 2026-08-20: cpu2/3/4 사다리를 cpu8/16/32 계측 사다리로 교체. 7차 run aa9f7823 실측 —
+# cpu4(=코어 수) + vm1x5000M 은 cpu 99.5~99.7%·mem 71~76%로 압박 축 도달에 성공했으나
+# transfer_p95 85~160ms·account_p95 8~23ms 로 baseline(90/10ms)과 구분 불가. 워커 수가
+# 코어 수 이하면 CFS 가 잠자던 서비스 스레드를 깨울 때 즉시 스케줄해 대기열 피해가 없다.
+# 지연 피해는 runnable 초과분에서만 나오므로 8/16/32 로 dose-response 를 계측한다.
+# vm 축은 검증된 vm1x5000M(mem ~71%, eviction 무릎 아래)을 유지 — F05-P 표면과 분리.
 F15P_LEVELS = [
-    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 2, "vm_workers": 1, "vm_bytes": "1500M", "runtime_seconds": 600},
-    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 3, "vm_workers": 1, "vm_bytes": "3000M", "runtime_seconds": 600},
-    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 4, "vm_workers": 1, "vm_bytes": "5000M", "runtime_seconds": 600},
+    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 8, "vm_workers": 1, "vm_bytes": "5000M", "runtime_seconds": 600},
+    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 16, "vm_workers": 1, "vm_bytes": "5000M", "runtime_seconds": 600},
+    {"mode": "pressure", "host": "192.168.122.11", "cpu_workers": 32, "vm_workers": 1, "vm_bytes": "5000M", "runtime_seconds": 600},
 ]
 
 

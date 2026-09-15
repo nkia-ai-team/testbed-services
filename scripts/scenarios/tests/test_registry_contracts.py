@@ -409,9 +409,13 @@ class RegistryContractTests(unittest.TestCase):
 
     def test_adaptive_ladders_and_fixed_profiles_are_registry_bound(self) -> None:
         controllers = self.controllers["controllers"]
+        # 2026-08-20: 사다리 pin 14종(F07-H·F09-P·F12-H 포함)을 고정 evaluation 계약으로
+        # 승격했다 — pin 은 강도를 고정할 뿐 승인이 아니어서 캠페인 첫 케이스가
+        # case_label=calibration 으로 찍혔다. 각 사다리는 pin 단 하나로 줄고 레벨 id 는
+        # 선례대로 approved-fixed-<sid> 다(대응은 level-pins.json _note).
         self.assertEqual(
             [level["parameters"]["target_rps"] for level in controllers["F07-H"]["profile"]["levels"]],
-            [120, 140, 160],
+            [120],
         )
         # F09-P returned to the live registry on 2026-07-28. The 07-27 audit
         # parked it for two reasons and both are now addressed: its success rules
@@ -423,7 +427,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"]
              for level in controllers["F09-P"]["profile"]["levels"]],
-            ["250m", "225m", "200m"],
+            ["250m"],
         )
         # F12-H's floor was measured on the live pod (2026-08-04, 3 minutes per
         # rung under baseline load): 200m and 175m held Ready 12/12 with zero
@@ -432,7 +436,7 @@ class RegistryContractTests(unittest.TestCase):
         # `product-pod-down` fired on its own injection.
         self.assertEqual(
             [level["parameters"]["fault_cpu_limit"] for level in controllers["F12-H"]["profile"]["levels"]],
-            ["250m", "200m", "175m"],
+            ["250m"],
         )
         for scenario_id, controller in controllers.items():
             if controller["mode"] == "evaluation":
@@ -490,7 +494,8 @@ class RegistryContractTests(unittest.TestCase):
             [level["parameters"]["fault"]["limits"]["memory"] for level in f05r["profile"]["levels"]],
             # 768Mi는 2026-08-07에 뺐다(run 95b07798) — 고정 힙 384m + 비힙 ~160MiB로
             # 바닥이 ~544MiB라 768Mi는 OOM이 구조적으로 불가능했고 승급만 하며 시간을 먹었다.
-            ["640Mi", "576Mi"],
+            # 2026-08-20: pin 단 measured-640mi 하나로 고정 승격(approved-fixed-f05-r).
+            ["640Mi"],
         )
         self.assertEqual(f05r["profile"]["levels"][0]["parameters"]["baseline"]["limits"]["memory"], "1Gi")
         r_success = {item["observation"]: item for item in f05r["success"]["all"]}

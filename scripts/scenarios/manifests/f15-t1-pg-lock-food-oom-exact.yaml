@@ -31,10 +31,11 @@
       "live_enabled": true,
       "binding": {
         "primary_ref": "timeline.compose",
-        "companion_refs": []
+        "companion_refs": [],
+        "approved_profile_id": "timeline.compose"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -68,10 +69,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "food-headroom-768mi",
+              "id": "approved-fixed-f15-t1",
               "parameters": {
                 "commerce_namespace": "rca-testbed-commerce",
                 "pg_access": "in-cluster-pod",
@@ -102,94 +103,6 @@
                   "limits": {
                     "cpu": "500m",
                     "memory": "768Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "start_offset_seconds": 0
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "food-measured-640mi",
-              "parameters": {
-                "commerce_namespace": "rca-testbed-commerce",
-                "pg_access": "in-cluster-pod",
-                "pg_db_pod": "testbed-postgres-0",
-                "pg_service": "testbed-postgres",
-                "pg_secret": "postgres-secret",
-                "pg_image": "postgres:16-alpine",
-                "pg_schema": "inventory_schema",
-                "pg_table": "inventory",
-                "pg_key_column": "product_id",
-                "pg_key_value": "1",
-                "pg_client_identity": "PostgreSQL JDBC Driver",
-                "pg_hold_seconds": 600,
-                "food_namespace": "rca-testbed-food",
-                "food_deployment": "testbed-payment",
-                "food_container": "payment-service",
-                "food_baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "1Gi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "food_fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "640Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "start_offset_seconds": 0
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "food-deterministic-576mi",
-              "parameters": {
-                "commerce_namespace": "rca-testbed-commerce",
-                "pg_access": "in-cluster-pod",
-                "pg_db_pod": "testbed-postgres-0",
-                "pg_service": "testbed-postgres",
-                "pg_secret": "postgres-secret",
-                "pg_image": "postgres:16-alpine",
-                "pg_schema": "inventory_schema",
-                "pg_table": "inventory",
-                "pg_key_column": "product_id",
-                "pg_key_value": "1",
-                "pg_client_identity": "PostgreSQL JDBC Driver",
-                "pg_hold_seconds": 600,
-                "food_namespace": "rca-testbed-food",
-                "food_deployment": "testbed-payment",
-                "food_container": "payment-service",
-                "food_baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "1Gi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "food_fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "576Mi"
                   },
                   "requests": {
                     "cpu": "200m",
@@ -305,17 +218,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "food-oom-not-reached",
-              "observation": "food_restart_count",
-              "op": "eq",
-              "value": 0
-            }
-          ],
-          "consecutive_ticks": 4
         },
         "must_rule_out": {
           "any": [

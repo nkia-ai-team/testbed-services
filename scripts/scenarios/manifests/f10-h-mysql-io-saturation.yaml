@@ -35,10 +35,11 @@
         "primary_ref": "host.stress",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "host.stress"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -72,38 +73,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "io-6000",
-              "parameters": {
-                "mode": "fio",
-                "host": "192.168.122.14",
-                "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-                "size_mib": 2048,
-                "runtime_seconds": 600,
-                "rate_iops": 6000
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "io-12000",
-              "parameters": {
-                "mode": "fio",
-                "host": "192.168.122.14",
-                "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
-                "size_mib": 2048,
-                "runtime_seconds": 600,
-                "rate_iops": 12000
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "io-20000",
+              "id": "approved-fixed-f10-h",
               "parameters": {
                 "mode": "fio",
                 "host": "192.168.122.14",
@@ -217,18 +190,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "device-not-yet-saturated",
-              "observation": "disk_io_util",
-              "op": "lt",
-              "value": 60,
-              "_note": "success의 device-saturated와 같은 값을 봐야 한다. 60/70으로 어긋나 있으면 disk_io_util 60~69 구간에서 성공과 승급이 동시에 참이 되어 서로를 잡아먹는다 — F06-P류 상호배타(c1a52be에서 제거한 것과 같은 병)를 여기서 만들지 않는다."
-            }
-          ],
-          "consecutive_ticks": 3
         },
         "must_rule_out": {
           "any": [

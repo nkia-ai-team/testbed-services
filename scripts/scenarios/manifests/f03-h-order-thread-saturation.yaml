@@ -35,10 +35,11 @@
         "primary_ref": "load.east_west",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "load.east_west"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "35m",
@@ -72,46 +73,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "below-saturation-30rps",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "job": "scenario-f03-h-order-thread-pool",
-                "configmap": "scenario-f03-h-order-thread-pool",
-                "node_name": "tb-w1",
-                "image": "grafana/k6:latest",
-                "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-                "target_rps": 30,
-                "duration_seconds": 480,
-                "preallocated_vus": 64,
-                "max_vus": 360
-              },
-              "min_hold": "6m",
-              "settle": "30s",
-              "timeout": "10m"
-            },
-            {
-              "id": "at-saturation-45rps",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "job": "scenario-f03-h-order-thread-pool",
-                "configmap": "scenario-f03-h-order-thread-pool",
-                "node_name": "tb-w1",
-                "image": "grafana/k6:latest",
-                "target_url": "http://testbed-order:8080/api/orders/reports/render?days=120",
-                "target_rps": 45,
-                "duration_seconds": 480,
-                "preallocated_vus": 64,
-                "max_vus": 360
-              },
-              "min_hold": "6m",
-              "settle": "30s",
-              "timeout": "10m"
-            },
-            {
-              "id": "past-saturation-60rps",
+              "id": "approved-fixed-f03-h",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "job": "scenario-f03-h-order-thread-pool",
@@ -195,23 +160,6 @@
           ],
           "consecutive_ticks": 3,
           "_note": "success 에서 `order-latency-damage`(order_p95 >= 2000) 를 뺐다 (2026-08-11). 임계를 낮춘 것이 아니라 **이 게이트에서 쓸 수 없는 신호**임이 확정됐다. 5xx 로 실패한 요청은 백분위 표본이 아니므로 order_p95 는 피해가 클수록 사라진다 — 6차 run 12752f9b 에서 24/108 틱 unusable 이고, 독립창이 60s 라 스트릭은 분당 한 번만 오르는데 피해 절정에서 5틱 연속(80s+) unusable 이 되어 D0 의 hold 상한(2x60s)을 넘겨 리셋된다. 그래서 두 조건이 실제로 함께 참인 틱이 있는데도 최대 스트릭이 1 에 머물렀다. order_p95 는 escalate 에 그대로 남아 제 몫을 한다: 서비스가 응답할 수 있을 때(=피해 없음)는 신뢰할 수 있고 escalate 는 정확히 그 경우를 판정한다. 실측 대조 — 피해 단 run 12752f9b 스트릭 16 발화(el=365), 피해 없는 단 run 8695f8d4 스트릭 0 미발화. 대조 팔(checkout_5xx_rate_baseline)이 주입 팔과 같이 움직이지만(0.52/0.52, 0.81/0.83, 1.0/1.0) 이는 오염이 아니다 — 부하 포화 시나리오라 baseline 트래픽도 같은 checkout 을 지나며, 대조군은 여기서 구조적으로 감별자가 아니다."
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "render-load-delivered",
-              "observation": "order_p95",
-              "op": "gte",
-              "value": 2000
-            },
-            {
-              "id": "checkout-not-impacted",
-              "observation": "checkout_5xx_rate",
-              "op": "lt",
-              "value": 0.02
-            }
-          ],
-          "consecutive_ticks": 4
         },
         "must_rule_out": {
           "any": [

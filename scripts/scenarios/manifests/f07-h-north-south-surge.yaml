@@ -31,10 +31,11 @@
       "live_enabled": true,
       "binding": {
         "primary_ref": "load.north_south",
-        "companion_refs": []
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "40m",
@@ -68,46 +69,12 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "healthy-high-120",
+              "id": "approved-fixed-f07-h",
               "parameters": {
                 "target_rps": 120,
-                "ramp_up": "2m",
-                "hold": "525s",
-                "ramp_down": "15s",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/surge.js",
-                "scenario_tag": "scenario_id=F07-H",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "6m",
-              "settle": "30s",
-              "timeout": "11m"
-            },
-            {
-              "id": "knee-140",
-              "parameters": {
-                "target_rps": 140,
-                "ramp_up": "2m",
-                "hold": "525s",
-                "ramp_down": "15s",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/surge.js",
-                "scenario_tag": "scenario_id=F07-H",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "6m",
-              "settle": "30s",
-              "timeout": "11m"
-            },
-            {
-              "id": "overload-160",
-              "parameters": {
-                "target_rps": 160,
                 "ramp_up": "2m",
                 "hold": "525s",
                 "ramp_down": "15s",
@@ -192,23 +159,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "surge-delivered",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 100
-            },
-            {
-              "id": "latency-not-elevated",
-              "observation": "user_p95",
-              "op": "lt",
-              "value": 500
-            }
-          ],
-          "consecutive_ticks": 3
         },
         "must_rule_out": {
           "any": [

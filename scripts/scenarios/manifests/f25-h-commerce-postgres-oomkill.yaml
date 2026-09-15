@@ -35,10 +35,11 @@
         "primary_ref": "k8s.resource",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "k8s.resource"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -72,42 +73,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "squeeze-192mi",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "deployment": "testbed-postgres",
-                "container": "postgres",
-                "resource": "memory",
-                "baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "512Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "256Mi"
-                  }
-                },
-                "fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "192Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "192Mi"
-                  }
-                }
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "floor-128mi",
+              "id": "approved-fixed-f25-h",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "deployment": "testbed-postgres",
@@ -131,38 +100,6 @@
                   "requests": {
                     "cpu": "200m",
                     "memory": "128Mi"
-                  }
-                }
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "floor-96mi",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "deployment": "testbed-postgres",
-                "container": "postgres",
-                "resource": "memory",
-                "baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "512Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "256Mi"
-                  }
-                },
-                "fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "96Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "96Mi"
                   }
                 }
               },
@@ -331,17 +268,6 @@
           "post_window": "20m",
           "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
           "create_golden_anomaly": false
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "oom-not-yet",
-              "observation": "pg_restart_count",
-              "op": "lt",
-              "value": 1
-            }
-          ],
-          "consecutive_ticks": 3
         }
       }
     }

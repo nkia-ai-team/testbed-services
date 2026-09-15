@@ -35,10 +35,11 @@
         "primary_ref": "load.north_south",
         "companion_refs": [
           "cache.control"
-        ]
+        ],
+        "approved_profile_id": "load.north_south"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "40m",
@@ -72,46 +73,12 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "fallback-load-35",
-              "parameters": {
-                "target_rps": 35,
-                "ramp_up": "2m",
-                "hold": "525s",
-                "ramp_down": "15s",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/surge.js",
-                "scenario_tag": "scenario_id=F11-R",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "11m"
-            },
-            {
-              "id": "fallback-load-50",
+              "id": "approved-fixed-f11-r",
               "parameters": {
                 "target_rps": 50,
-                "ramp_up": "2m",
-                "hold": "525s",
-                "ramp_down": "15s",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/surge.js",
-                "scenario_tag": "scenario_id=F11-R",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "11m"
-            },
-            {
-              "id": "fallback-load-65",
-              "parameters": {
-                "target_rps": 65,
                 "ramp_up": "2m",
                 "hold": "525s",
                 "ramp_down": "15s",
@@ -185,17 +152,6 @@
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "fallback-headroom-remains",
-              "observation": "checkout_5xx_rate",
-              "op": "lt",
-              "value": 0.05
-            }
-          ],
-          "consecutive_ticks": 3
         },
         "must_rule_out": {
           "any": [
