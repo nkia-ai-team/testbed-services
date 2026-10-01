@@ -12,6 +12,7 @@
 - 이벤트 백본: **Kafka**(KRaft 단일 브로커) + outbox 패턴. 기존 Redis Streams(`transfer-events`)는 제거하고 Kafka 로 전면 대체(commerce 이벤트 백본 정합, 판단 근거는 최종 구현 보고 참조).
 - 복원성: Resilience4j(timeout+retry+circuit breaker) — account→transfer, api→account 동기 호출. HikariCP 풀 명시.
 - 상주 배치 3종: 원장 대사(ledger reconciliation), 이자 계산/기표(interest accrual), 미완료 이체 정리(stale transfer cleanup).
+- 보존 기간 배치 2종: 90일 지난 이체(`TransferRetentionBatch`)와 원장(`LedgerRetentionBatch`)을 1분마다 최대 500건씩 지운다. Oracle Free 의 DB 크기 상한(12GB) 때문에 둔다. 기간은 `transfer.retention.days` 와 `ledger.retention.days` 를 함께 바꾼다.
 - 상주 부하생성기: `loadgen/`(k6, diurnal 프로파일 피크 4 / 저점 1 req/s).
 - 서비스 개수: 4 (api / account / transfer / ledger) + shop-common
 - 시연 가능 장애 패턴: lock-contention(이체 row-lock), slow query, connection pool 고갈, Kafka consumer lag/outbox 적체, cross-domain 경계 timeout, circuit breaker open

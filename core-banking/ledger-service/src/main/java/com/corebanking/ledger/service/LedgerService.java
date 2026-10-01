@@ -6,11 +6,13 @@ import com.corebanking.ledger.event.LedgerEventPublisher;
 import com.corebanking.ledger.repository.LedgerEntryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
@@ -54,6 +56,26 @@ public class LedgerService {
         debit = debit != null ? debit : BigDecimal.ZERO;
         credit = credit != null ? credit : BigDecimal.ZERO;
         return debit.subtract(credit);
+    }
+
+    /**
+     * 보존 기간 정리 배치용. 가장 오래된 batchSize 줄 중 보존 기간이 지난 줄의 이체를 골라
+     * 그 이체의 원장 줄을 전부 지우고, 지운 줄 수를 돌려준다. 줄 단위가 아니라 이체
+     * 참조번호 단위로 지우는 이유: 출금·입금 한쪽만 지워지면 sumImbalance() 가 0 이 아니게
+     * 되고, 그 WARN 은 장애 주입 시나리오의 관측 대상이다.
+     */
+    @Transactional
+    public int purgeOlderThan(int retentionDays, int batchSize) {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(retentionDays);
+        List<String> refs = ledgerEntryRepository.findOldest(PageRequest.of(0, batchSize)).stream()
+                .filter(head -> head.getCreatedAt() != null && head.getCreatedAt().isBefore(cutoff))
+                .map(LedgerEntryRepository.Head::getTransferRef)
+                .distinct()
+                .toList();
+        if (refs.isEmpty()) {
+            return 0;
+        }
+        return ledgerEntryRepository.deleteByTransferRefIn(refs);
     }
 
     /**
