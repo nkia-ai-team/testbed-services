@@ -1,6 +1,7 @@
 package com.corebanking.common.outbox;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,5 +41,22 @@ class OutboxRelayStore {
     @Transactional
     void markPublished(List<Long> ids, LocalDateTime publishedAt) {
         outboxEventRepository.markPublished(ids, publishedAt);
+    }
+
+    /**
+     * 가장 오래된 batchSize 행 중 cutoff 이전에 발행된 것만 지우고 지운 수를 돌려준다.
+     * id 순으로 앞머리만 보므로 PK 만 타고, 테이블이 얼마나 크든 한 주기 비용이 같다.
+     * 미발행 행은 published_at 이 null 이라 남는다.
+     */
+    @Transactional
+    int purgePublishedBefore(LocalDateTime cutoff, int batchSize) {
+        List<Long> ids = outboxEventRepository.findOldest(PageRequest.of(0, batchSize)).stream()
+                .filter(head -> head.getPublishedAt() != null && head.getPublishedAt().isBefore(cutoff))
+                .map(OutboxEventRepository.Head::getId)
+                .toList();
+        if (!ids.isEmpty()) {
+            outboxEventRepository.deleteAllByIdInBatch(ids);
+        }
+        return ids.size();
     }
 }

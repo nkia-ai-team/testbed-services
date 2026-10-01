@@ -107,6 +107,8 @@ Oracle 단일 PDB(`FREEPDB1`), 스키마 사용자 `banking`. 테이블 4개(out
 | payload | CLOB | |
 | created_at / published_at | TIMESTAMP | |
 
+발행이 끝난 행은 24시간 뒤 `OutboxPurger`(transfer-service, 30초 주기, 주기당 최대 500행)가 지운다. 미발행 행은 지우지 않는다. 지우지 않던 시절에는 이 테이블이 스키마의 58%까지 자라 Oracle Free 의 DB 크기 상한(12GB, `ORA-12954`)에 닿았다(2026-09-29). 조정은 `outbox.purge.enabled` / `retention-hours` / `batch-size` / `interval-ms`.
+
 ## 관측 태깅 (식별자 계약 §3)
 
 - APM `service.name`: deployment env `OTEL_SERVICE_NAME=core-banking-<svc>` (등록 application target `meta.service_name` 과 정확일치).
