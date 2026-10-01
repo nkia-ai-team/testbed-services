@@ -1,8 +1,11 @@
 package com.fooddelivery.common.outbox;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.NoRepositoryBean;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -14,4 +17,14 @@ import java.util.List;
 public interface OutboxEventRepository<T extends OutboxEvent> extends JpaRepository<T, Long> {
 
     List<T> findTop100ByPublishedAtIsNullOrderByCreatedAtAsc();
+
+    /** 정리 대상 판정에 필요한 두 컬럼만 읽는다 — 엔티티로 읽으면 payload(TEXT)까지 끌려온다. */
+    interface Head {
+        Long getId();
+
+        LocalDateTime getPublishedAt();
+    }
+
+    @Query("select e.id as id, e.publishedAt as publishedAt from #{#entityName} e order by e.id asc")
+    List<Head> findOldest(Pageable pageable);
 }
