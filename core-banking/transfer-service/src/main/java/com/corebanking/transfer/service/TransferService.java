@@ -13,6 +13,7 @@ import com.corebanking.transfer.repository.AccountRepository;
 import com.corebanking.transfer.repository.TransferRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -170,5 +171,20 @@ public class TransferService {
             transferRepository.save(t);
         }
         return stale.size();
+    }
+
+    /**
+     * 보존 기간 정리 배치용. 보존 기간이 지난 이체를 오래된 순으로 batchSize 건까지 지우고
+     * 지운 수를 돌려준다. 상태는 가리지 않는다 — 기간이 지난 이체는 조회·통계(최대 90일)
+     * 어디에도 쓰이지 않는다. 계좌 잔액은 건드리지 않는다.
+     */
+    @Transactional
+    public int purgeOlderThan(int retentionDays, int batchSize) {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(retentionDays);
+        List<Long> ids = transferRepository.findIdsCreatedBefore(cutoff, PageRequest.of(0, batchSize));
+        if (!ids.isEmpty()) {
+            transferRepository.deleteAllByIdInBatch(ids);
+        }
+        return ids.size();
     }
 }

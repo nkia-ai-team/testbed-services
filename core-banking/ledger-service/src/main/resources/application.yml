@@ -72,6 +72,13 @@ outbox:
 ledger:
   reconciliation:
     interval-ms: ${LEDGER_RECONCILIATION_INTERVAL_MS:600000}
+  # 보존 기간이 지난 원장 줄을 주기마다 조금씩 지운다(LedgerRetentionBatch).
+  # 이체 쪽 같은 설정은 transfer-service 의 transfer.retention 이다 — 기간을 바꾸면 둘을 함께 바꾼다.
+  retention:
+    enabled: ${LEDGER_RETENTION_ENABLED:true}
+    days: ${LEDGER_RETENTION_DAYS:90}
+    interval-ms: ${LEDGER_RETENTION_INTERVAL_MS:60000}
+    batch-size: ${LEDGER_RETENTION_BATCH_SIZE:500}
 
 management:
   health:

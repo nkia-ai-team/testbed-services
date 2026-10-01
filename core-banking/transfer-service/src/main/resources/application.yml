@@ -58,6 +58,13 @@ transfer:
   cleanup:
     interval-ms: ${TRANSFER_CLEANUP_INTERVAL_MS:600000}
     stale-after-minutes: ${TRANSFER_STALE_AFTER_MINUTES:30}
+  # 보존 기간이 지난 이체를 주기마다 batch-size 건씩 지운다(TransferRetentionBatch).
+  # 원장 쪽 같은 설정은 ledger-service 의 ledger.retention 이다 — 기간을 바꾸면 둘을 함께 바꾼다.
+  retention:
+    enabled: ${TRANSFER_RETENTION_ENABLED:true}
+    days: ${TRANSFER_RETENTION_DAYS:90}
+    interval-ms: ${TRANSFER_RETENTION_INTERVAL_MS:60000}
+    batch-size: ${TRANSFER_RETENTION_BATCH_SIZE:500}
 
 management:
   health:
