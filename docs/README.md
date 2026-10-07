@@ -62,6 +62,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
   공통 실행기와 catalog를 공유하는 64개 안전 wrapper, dry-run 및 live gate. (Draft)
 - [시나리오 작성 규칙과 ground truth 형식](spec-scenario-authoring.md):
   service-spec.yaml을 채점 가능한 golden 레코드로 끌어올리는 작성 규칙과 계열별 패턴. (Draft)
+- [실제 운영 장애 사례와 원인 분포](ref-real-world-incidents.md):
+  기업 포스트모템과 학술 실증 연구의 장애 원인 분포, 기전별 실제 사례와 출처.
+  새 시나리오를 고를 때의 근거 자료. (Active)
 - [부하 시나리오 규칙](spec-scenario-load.md):
   surge 주입 규칙(R0~R9), 시나리오 간 간격, RCA·이상감지 양축 커버리지,
   golden 이상감지 기대값과 사후 검증 패스. (Draft)
