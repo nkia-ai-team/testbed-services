@@ -14,6 +14,14 @@ APPROVED_TARGETS = {
     "F08-P": ("rca-testbed-commerce", "testbed-order", "order-service"),
     "F18-P": ("rca-testbed-banking", "testbed-transfer", "transfer-service"),
     "F23-R": ("rca-testbed-commerce", "testbed-inventory", "inventory-service"),
+    # 2026-07-29 승격 때 profiles.json 의 allowed_scenarios 에만 들어가고 이 표에는
+    # 빠져 있었다. 정리도 같은 검증을 지나므로 런이 스스로 못 씻고 전역 DIRTY 가 된다.
+    "F04-H": ("rca-testbed-commerce", "testbed-order", "order-service"),
+    # 2026-08-04. F05-R의 limit 사다리만으로는 JVM이 OOMKill되지 않는다 — limit을
+    # 내리면 힙 상한도 같이 내려가기 때문이다(배치 #2). 109 실측: payment의 anon은
+    # 413MiB로 사다리 바닥 576Mi보다 163MiB 낮다. 힙을 pretouch로 못 박아야 anon이
+    # 한도를 넘는다. k8s.resource와 함께 걸리는 companion 주입이다.
+    "F05-R": ("rca-testbed-commerce", "testbed-payment", "payment-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -21,6 +29,8 @@ APPROVED_KEYS = {
     "F08-P": {"SPRING_APPLICATION_JSON"},
     "F18-P": {"OUTBOX_RELAY_ENABLED"},
     "F23-R": {"SPRING_APPLICATION_JSON"},
+    "F04-H": {"OUTBOX_RELAY_ENABLED"},
+    "F05-R": {"JAVA_TOOL_OPTIONS"},
 }
 
 
@@ -64,10 +74,31 @@ state="$state_root/${scenario_id}-container-env.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 current() { "${k[@]}" get deploy "$deploy" -o json | jq -Sc --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | (.env // [])'; }
 patch() { idx=$("${k[@]}" get deploy "$deploy" -o json | jq -r --arg c "$container" '.spec.template.spec.containers | to_entries[] | select(.value.name==$c) | .key'); jq -cn --arg idx "$idx" --argjson e "$1" '[{op:"replace",path:("/spec/template/spec/containers/"+$idx+"/env"),value:$e}]' | "${k[@]}" patch deploy "$deploy" --type=json --patch-file=/dev/stdin >/dev/null; }
-healthy() { "${k[@]}" rollout status deploy/"$deploy" --timeout="$1" >/dev/null; }
+# Not `kubectl rollout-status` -- ProgressDeadlineExceeded freezes onto the
+# Deployment when an injection (e.g. F18-P's full stop under maxSurge=0)
+# holds pods unready past progressDeadlineSeconds, and rollout status then
+# re-reads that stale verdict after a successful restore (batch #17 class).
+healthy() {
+  local deadline=$((SECONDS + ${1%s}))
+  while :; do
+    if "${k[@]}" get deploy "$deploy" -o json | jq -e '
+        .status.observedGeneration >= .metadata.generation
+        and ((.status.updatedReplicas // 0) == .spec.replicas)
+        and ((.status.availableReplicas // 0) == .spec.replicas)
+        and ((.status.replicas // 0) == .spec.replicas)' >/dev/null; then return 0; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
 check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
+  # Deliberately does NOT wait for the rollout it starts. profile-control holds
+  # the coordinator lock for the whole apply, so the runner heartbeat cannot
+  # renew the 30s lease while this runs: a 58s wait here expired the lease and
+  # every later call died on "runner lease is expired" (2026-08-04, measured).
+  # Waiting for a peer's rollout belongs in preflight, which runs lock-free --
+  # see the settle budget in k8s_resource_executor.
   run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"; patch "$fault" ;;
   cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; patch "$original"; healthy 180s; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(current)" == "$baseline" ]]; healthy 1s ;;

@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -64,6 +65,9 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
@@ -75,9 +79,21 @@
               "observation": "entry_status",
               "op": "eq",
               "value": 429
+            },
+            {
+              "id": "injected-lock-absent",
+              "observation": "tagged_db_sessions",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "payment-pod-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [
@@ -127,7 +143,7 @@
                     "table": "accounts",
                     "key_column": "id",
                     "key_value": "commerce-settlement",
-                    "client_identifier": "rca-F08-G-oracle-lock",
+                    "client_identifier": "dba-maintenance",
                     "hold_seconds": 600
                   }
                 ]
@@ -164,9 +180,9 @@
           {
             "id": "tagged_db_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.oracle_tagged_session_count",
             "parameters": {
-              "scenario_tag": "rca-F08-G-oracle-lock"
+              "client_identifier": "dba-maintenance"
             },
             "freshness": "30s"
           },
@@ -180,22 +196,10 @@
         "success": {
           "all": [
             {
-              "id": "lock-present",
-              "observation": "tagged_db_sessions",
-              "op": "gt",
-              "value": 0
-            },
-            {
               "id": "checkout-impact",
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
-            },
-            {
-              "id": "fault-path-pod-stays-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
             }
           ],
           "consecutive_ticks": 3

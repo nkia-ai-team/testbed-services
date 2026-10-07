@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -62,6 +63,9 @@
             },
             {
               "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
             },
             {
               "check": "target-health"
@@ -116,27 +120,27 @@
             "adapter": "business_probe",
             "query_id": "business.checkout_invariant",
             "freshness": "60s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "checkout-impact",
-              "observation": "entry_status",
-              "op": "gte",
-              "value": 400
-            },
-            {
-              "id": "rollout-remains-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
               "id": "business-impact",
               "observation": "business_ok",
               "op": "eq",
               "value": false
+            },
+            {
+              "id": "checkout-impact",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2

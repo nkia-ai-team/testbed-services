@@ -3,13 +3,13 @@
     "title": "호스트 CPU 포화가 단일스레드 consumer를 stall시키는 중첩 단일사슬 장애",
     "description": "worker 노드 CPU를 포화시켜 그 위 단일스레드 Kafka consumer를 CPU 기아로 stall시키는 시나리오. root는 호스트 CPU 1개이고 consumer stall은 그 하류 전파(nested)이며, consumer 단일스레드는 독립 root가 아니라 취약성이다. multi-root가 아닌 단일 인과사슬(merge)이다.",
     "cause": "worker node CPU saturation -> single-thread Kafka consumer starved -> consumer stall (single causal chain, not two roots)",
-    "injection_summary": "host.stress(ssh)로 banking ledger consumer가 뜬 worker 노드(tb-w3)의 CPU를 포화시킨다. concurrency 미설정으로 단일스레드인 ledger TransferEventConsumer가 CPU 기아로 건당 처리속도가 급락해 banking.transfers consumer lag이 증가한다. 동기 이체 API는 200 정상.",
+    "injection_summary": "host.stress(ssh)로 banking ledger consumer가 뜬 worker 노드(tb-w2)의 CPU를 포화시킨다. concurrency 미설정으로 단일스레드인 ledger TransferEventConsumer가 CPU 기아로 건당 처리속도가 급락해 banking.transfers consumer lag이 증가한다. 동기 이체 API는 200 정상.",
     "user_impact": "이체 API는 200으로 성공하지만 원장(ledger_entries) 반영이 consumer stall로 지연된다(silent lag). host CPU를 제거하면 consumer도 회복된다.",
     "distinguishing_evidence": "대상 노드 host CPU 포화와 ledger consumer lag 증가가 동반 상승하고 host CPU 제거 시 lag이 회복돼 인과종속(단일사슬)이 입증된다. consumer replica는 살아있고(scale>0) outbox published_at=null 적체는 없다. consumer가 host와 무관히 독립 정지면 F04-R(split), outbox 적체면 F18-P다.",
     "root_cause": {
       "target_kind": "host",
       "id": "worker-node-cpu",
-      "namespace": "cluster-node(tb-w3)",
+      "namespace": "cluster-node(tb-w2)",
       "mechanism": "호스트 CPU 포화(ROOT, Class B) -> 노드 위 단일스레드 ledger consumer CPU 기아 -> 건당 처리속도 급락 -> banking.transfers consumer lag 단조 증가 -> ledger_entries 반영 지연(NESTED 전파). consumer 단일스레드(concurrency 미설정)는 stall을 증폭하는 취약성이지 독립 root가 아님 -> 단일 인과사슬(merge, has_single_cause=true). 동기 이체는 별 @Transactional이라 200 독립.",
       "pattern": "infra+P5",
       "has_single_cause": true,
@@ -30,6 +30,7 @@
     "must_rule_out": [
       "consumer replica down/scale=0(있으면 F04-R consumer 정지 = split)",
       "outbox published_at=null 적체(있으면 F18-P relay 정지)",
+      "lag 없이 ledger_entries 행이 영영 누락(있으면 F14-P 소비 유실 — 같은 TransferEventConsumer 표면이지만 T3는 적체라 CPU 회수 시 따라잡는다)",
       "타 노드 서비스 지연(host CPU root면 대상 노드만)",
       "이체 5xx 급증(있으면 lock/502 계열)",
       "entry_status=429"

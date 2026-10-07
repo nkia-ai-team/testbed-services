@@ -36,4 +36,9 @@ public interface TransferRepository extends JpaRepository<Transfer, Long> {
     List<Object[]> dailyStatsSince(@Param("since") LocalDateTime since);
 
     List<Transfer> findByStatusAndCreatedAtBefore(String status, LocalDateTime before);
+
+    // 보존 기간 정리용. idx_transfers_created 를 오래된 쪽부터 타므로 지울 것이 없을 때는
+    // 인덱스 앞머리만 보고 끝난다. 엔티티 대신 id 만 읽어 한 번의 IN 삭제로 넘긴다.
+    @Query("select t.id from Transfer t where t.createdAt < :cutoff order by t.createdAt asc")
+    List<Long> findIdsCreatedBefore(@Param("cutoff") LocalDateTime cutoff, Pageable pageable);
 }

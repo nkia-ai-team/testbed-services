@@ -31,10 +31,11 @@
       "live_enabled": true,
       "binding": {
         "primary_ref": "timeline.compose",
-        "companion_refs": []
+        "companion_refs": [],
+        "approved_profile_id": "timeline.compose"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -44,6 +45,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -59,24 +61,30 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "food-headroom-768mi",
+              "id": "approved-fixed-f15-t1",
               "parameters": {
                 "commerce_namespace": "rca-testbed-commerce",
-                "pg_runner_host": "192.168.122.206",
-                "pg_db_host": "192.168.122.77",
-                "pg_db_port": 30432,
-                "pg_db_name": "commerce",
-                "pg_db_user": "commerce",
-                "pg_application_name": "rca-F15-T1-inventory-lock",
-                "pg_product_id": 1,
+                "pg_access": "in-cluster-pod",
+                "pg_db_pod": "testbed-postgres-0",
+                "pg_service": "testbed-postgres",
+                "pg_secret": "postgres-secret",
+                "pg_image": "postgres:16-alpine",
+                "pg_schema": "inventory_schema",
+                "pg_table": "inventory",
+                "pg_key_column": "product_id",
+                "pg_key_value": "1",
+                "pg_client_identity": "PostgreSQL JDBC Driver",
                 "pg_hold_seconds": 600,
                 "food_namespace": "rca-testbed-food",
                 "food_deployment": "testbed-payment",
@@ -106,88 +114,6 @@
               "min_hold": "4m",
               "settle": "30s",
               "timeout": "8m"
-            },
-            {
-              "id": "food-measured-640mi",
-              "parameters": {
-                "commerce_namespace": "rca-testbed-commerce",
-                "pg_runner_host": "192.168.122.206",
-                "pg_db_host": "192.168.122.77",
-                "pg_db_port": 30432,
-                "pg_db_name": "commerce",
-                "pg_db_user": "commerce",
-                "pg_application_name": "rca-F15-T1-inventory-lock",
-                "pg_product_id": 1,
-                "pg_hold_seconds": 600,
-                "food_namespace": "rca-testbed-food",
-                "food_deployment": "testbed-payment",
-                "food_container": "payment-service",
-                "food_baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "1Gi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "food_fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "640Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "start_offset_seconds": 0
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "food-deterministic-576mi",
-              "parameters": {
-                "commerce_namespace": "rca-testbed-commerce",
-                "pg_runner_host": "192.168.122.206",
-                "pg_db_host": "192.168.122.77",
-                "pg_db_port": 30432,
-                "pg_db_name": "commerce",
-                "pg_db_user": "commerce",
-                "pg_application_name": "rca-F15-T1-inventory-lock",
-                "pg_product_id": 1,
-                "pg_hold_seconds": 600,
-                "food_namespace": "rca-testbed-food",
-                "food_deployment": "testbed-payment",
-                "food_container": "payment-service",
-                "food_baseline": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "1Gi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "food_fault": {
-                  "limits": {
-                    "cpu": "500m",
-                    "memory": "576Mi"
-                  },
-                  "requests": {
-                    "cpu": "200m",
-                    "memory": "512Mi"
-                  }
-                },
-                "start_offset_seconds": 0
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
             }
           ]
         },
@@ -196,7 +122,10 @@
             "id": "entry_status",
             "adapter": "http_probe",
             "query_id": "http.entry_health",
-            "freshness": "15s"
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            }
           },
           {
             "id": "target_health",
@@ -248,29 +177,27 @@
             "freshness": "30s"
           },
           {
-            "id": "commerce_tagged_db_sessions",
+            "id": "commerce_blocked_db_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.blocked_session_count",
             "parameters": {
-              "scenario_tag": "rca-F15-T1-inventory-lock"
+              "schema": "inventory_schema",
+              "table": "inventory"
             },
             "freshness": "30s"
           },
           {
-            "id": "achieved_rps",
+            "id": "checkout_5xx_rate",
             "adapter": "loadgen_summary",
-            "query_id": "loadgen.achieved_rps",
-            "freshness": "30s"
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            }
           }
         ],
         "success": {
           "all": [
-            {
-              "id": "pg-lock-present",
-              "observation": "commerce_tagged_db_sessions",
-              "op": "gt",
-              "value": 0
-            },
             {
               "id": "food-oom-direct",
               "observation": "food_termination_reason",
@@ -284,30 +211,19 @@
               "value": 1
             },
             {
-              "id": "commerce-checkout-impact",
-              "observation": "entry_status",
+              "id": "commerce-checkout-5xx-rate",
+              "observation": "checkout_5xx_rate",
               "op": "gte",
-              "value": 500
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "food-oom-not-reached",
-              "observation": "food_restart_count",
-              "op": "eq",
-              "value": 0
-            }
-          ],
-          "consecutive_ticks": 4
         },
         "must_rule_out": {
           "any": [
             {
               "id": "single-root-food-only",
-              "observation": "commerce_tagged_db_sessions",
+              "observation": "commerce_blocked_db_sessions",
               "op": "eq",
               "value": 0
             }
@@ -320,7 +236,7 @@
               "id": "food-restart-budget",
               "observation": "food_restart_count",
               "op": "gte",
-              "value": 3
+              "value": 6
             },
             {
               "id": "commerce-entry-unreachable",
@@ -353,7 +269,7 @@
             },
             {
               "id": "pg-lock-cleared",
-              "observation": "commerce_tagged_db_sessions",
+              "observation": "commerce_blocked_db_sessions",
               "op": "eq",
               "value": 0
             }

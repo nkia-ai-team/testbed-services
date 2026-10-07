@@ -8,7 +8,7 @@
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w2",
+    "location": "worker-w1",
     "matrix_location_transport": "대상 worker/ssh",
     "transport": "ssh",
     "profile_refs": [
@@ -35,19 +35,21 @@
         "primary_ref": "host.stress",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "host.stress"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "30m",
+        "max_injection_duration": "32m",
         "preflight": [
           "kube-context",
           "kube-node-set",
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health",
           "worker-cohort-placement"
         ],
@@ -64,6 +66,9 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             },
             {
@@ -72,14 +77,14 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "mem-5500",
+              "id": "approved-fixed-f05-p",
               "parameters": {
                 "mode": "memhog",
-                "host": "192.168.122.11",
-                "mib": 5500,
+                "host": "192.168.122.184",
+                "mib": 6250,
                 "runtime_seconds": 480,
                 "required_cohort": [
                   "testbed-gateway",
@@ -90,47 +95,7 @@
                   "testbed-payment"
                 ]
               },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "mem-7000",
-              "parameters": {
-                "mode": "memhog",
-                "host": "192.168.122.11",
-                "mib": 7000,
-                "runtime_seconds": 480,
-                "required_cohort": [
-                  "testbed-gateway",
-                  "testbed-cart",
-                  "testbed-inventory",
-                  "testbed-redis",
-                  "testbed-kafka",
-                  "testbed-payment"
-                ]
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "mem-8500",
-              "parameters": {
-                "mode": "memhog",
-                "host": "192.168.122.11",
-                "mib": 8500,
-                "runtime_seconds": 480,
-                "required_cohort": [
-                  "testbed-gateway",
-                  "testbed-cart",
-                  "testbed-inventory",
-                  "testbed-redis",
-                  "testbed-kafka",
-                  "testbed-payment"
-                ]
-              },
-              "min_hold": "4m",
+              "min_hold": "90s",
               "settle": "30s",
               "timeout": "8m"
             }
@@ -154,7 +119,7 @@
             "adapter": "kubernetes",
             "query_id": "kubernetes.node_ready",
             "parameters": {
-              "node": "tb-w2"
+              "node": "tb-w1"
             },
             "freshness": "30s"
           },
@@ -163,7 +128,7 @@
             "adapter": "prometheus",
             "query_id": "prometheus.node_memory_utilization",
             "parameters": {
-              "node": "tb-w2"
+              "node": "tb-w1"
             },
             "freshness": "60s"
           },
@@ -209,44 +174,26 @@
               "resource": "testbed-gateway"
             },
             "freshness": "30s"
+          },
+          {
+            "id": "gateway_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-gateway"
+            },
+            "_note": "2026-08-10 추가. **어느 게이트에도 쓰지 않는다 — 데이터 수집이 목적이다.** F05-P 는 success 가 node_mem_util>=92 AND checkout_5xx_rate>=0.1 인데 실측상 두 조건이 겹치지 않는다: mem 92.85~93.69 로 내내 임계 위인 런에서 5xx 는 첫 틱 0.288 뒤 29틱 내내 0.0 이었고, 5xx 가 1.0 까지 오른 다른 런은 mem 96.83 구간이며 그 직후 노드가 NotReady 로 죽었다. 즉 피해는 ~96% 부근에서만 나타나고 거기는 축출 직전이다. 92~94% 구간에서 반응하는 신호가 관측 목록에 하나도 없었다(5xx·rps·상태코드·노드 지표뿐, 지연 신호 없음). 임계를 만지면 거짓 통과가 되므로 건드리지 않고, 대신 지연을 기록해 다음 주기에 근거 있는 성공 조건을 세운다."
           }
         ],
         "success": {
           "all": [
             {
-              "id": "node-memory-saturated",
-              "observation": "node_mem_util",
-              "op": "gte",
-              "value": 92
-            },
-            {
               "id": "cohort-user-impact",
               "observation": "checkout_5xx_rate",
               "op": "gte",
-              "value": 0.1
-            },
-            {
-              "id": "node-survives",
-              "observation": "node_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "lte",
-              "value": 60
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "pressure-not-yet-enough",
-              "observation": "node_mem_util",
-              "op": "lt",
-              "value": 92
+              "value": 0.1,
+              "_note": "node-memory-saturated(>=92) 제거 (2026-08-20). 6250 단 실측 4런(dcf596e9·a9f85d62·6db01235·b956d0f1)에서 checkout_5xx 1.0 피해 창(130~250s)이 실재했지만, 그 창에서 node_mem_util 은 KCM 에이전트가 메모리 압박의 첫 희생자가 되어 발행을 멈춘 채 주입 전 값(47.6~49.5)으로 얼어 있었다 — damage 창과 mem>=92 가 게이지 수준에서 동시 관측 불가능하다(관측자가 피해 기전의 일부). 기전 감별은 mro(node-lost·user-load-overshot)와 주입 인과 감사(audit-run-causality)가 진다. 스트릭 재생: 신계약 min_hold 90s 에서 6250 피해 구간 7건 중 5건 success(잔여 2건은 노드 조기 사망 abort), 현행 계약은 0건."
             }
           ],
           "consecutive_ticks": 3
@@ -254,13 +201,20 @@
         "must_rule_out": {
           "any": [
             {
-              "id": "impact-without-node-pressure",
-              "observation": "node_mem_util",
-              "op": "lt",
-              "value": 50
+              "id": "node-lost",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
             }
           ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 3,
+          "_note": "impact-without-node-pressure(mem<40) 제거 (2026-08-20). 같은 stale 게이지가 회복기 값(실측 08-12 런 32.38)으로 얼면 주입이 실제 작동 중인데 <40 이 3틱 차 거짓 abort 가 된다. 또한 mem unusable 이면 any 게이트가 unknown 이 되어 fail-closed 로 success 확정 자체를 막는다(adaptive.py safety_unknown). node-lost 와 user-load-overshot 은 오프노드 신호라 유지."
         },
         "abort": {
           "any": [
@@ -309,7 +263,7 @@
               "id": "node-memory-normal",
               "observation": "node_mem_util",
               "op": "lt",
-              "value": 40
+              "value": 60
             },
             {
               "id": "gateway-rescheduled",

@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -64,6 +65,9 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
@@ -75,13 +79,19 @@
               "id": "approved-fixed-f06-h",
               "parameters": {
                 "engine": "postgresql",
+                "access": "in-cluster-pod",
                 "namespace": "rca-testbed-commerce",
-                "pod": "testbed-postgres-0",
+                "db_pod": "testbed-postgres-0",
+                "service": "testbed-postgres",
+                "secret": "postgres-secret",
+                "image": "postgres:16-alpine",
                 "schema": "payment_schema",
                 "table": "payments",
                 "lock_scope": "table",
                 "lock_mode": "EXCLUSIVE",
-                "application_name": "rca-F06-H-payment-lock",
+                "key_column": "",
+                "key_value": "",
+                "client_identity": "PostgreSQL JDBC Driver",
                 "hold_seconds": 600
               },
               "min_hold": "8m",
@@ -114,28 +124,23 @@
             "freshness": "30s"
           },
           {
-            "id": "tagged_session_count",
+            "id": "blocked_session_count",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.blocked_session_count",
+            "parameters": {
+              "schema": "payment_schema",
+              "table": "payments"
+            },
             "freshness": "30s"
           },
           {
             "id": "order_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
             "parameters": {
               "service_name": "commerce-order"
             },
             "freshness": "60s"
-          },
-          {
-            "id": "payment_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "parameters": {
-              "service_name": "commerce-payment"
-            },
-            "freshness": "120s"
           },
           {
             "id": "achieved_rps",
@@ -153,8 +158,8 @@
         "success": {
           "all": [
             {
-              "id": "db-lock-held",
-              "observation": "tagged_session_count",
+              "id": "lock-blocks-sessions",
+              "observation": "blocked_session_count",
               "op": "gte",
               "value": 1
             },
@@ -168,13 +173,7 @@
               "id": "order-timeout-symptom",
               "observation": "order_error_rate",
               "op": "gte",
-              "value": 0.1
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
+              "value": 10
             }
           ],
           "consecutive_ticks": 3
@@ -183,9 +182,15 @@
           "any": [
             {
               "id": "symptom-without-our-lock",
-              "observation": "tagged_session_count",
+              "observation": "blocked_session_count",
               "op": "eq",
               "value": 0
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
             }
           ],
           "consecutive_ticks": 3
@@ -217,7 +222,7 @@
             },
             {
               "id": "lock-released",
-              "observation": "tagged_session_count",
+              "observation": "blocked_session_count",
               "op": "eq",
               "value": 0
             }

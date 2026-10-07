@@ -28,6 +28,9 @@ COMMON_PREFLIGHTS = (
 PROFILE_PREFLIGHTS = {
     "db.lock": "db-session-tag-clean",
     "db.ddl": "db-inverse-ddl-ready",
+    # Same guarantee as db.ddl: the inverse is a single statement (READ WRITE)
+    # and must be proven available before the table is frozen.
+    "db.table_readonly": "db-inverse-ddl-ready",
     "db.workload": "db-session-tag-clean",
     "mock.expectation": "mock-restore-contract",
     "load.north_south": "baseline-loadgen-active",
@@ -44,6 +47,9 @@ PROFILE_PREFLIGHTS = {
     "app.release": "rollback-artifact",
     "wpm.probe": "wpm-probe-contract",
     "business.fault": "business-invariant-probe",
+    # 컨트롤 행(outbox_relay_control)이 존재하고 enabled=1인지 — 행이 없다는 것은
+    # 이 테스트베드의 앱 빌드가 스위치 이전이라는 뜻이므로 주입을 거부해야 한다.
+    "app.control": "app-control-flag-armed",
     "timeline.compose": "subinjection-timeline",
     "timeline.multi": "subinjection-timeline",
 }

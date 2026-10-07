@@ -2,17 +2,17 @@
   "schema_version": "1.0",
   "id": "F21-P",
   "slug": "f21-p-banking-api-tomcat-thread-saturation",
-  "readiness": "draft",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w3",
-    "matrix_location_transport": "W/ssh host.stress(worker-w3, cpu) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=90)",
-    "transport": "ssh",
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl transfer cpu limit 사다리(400m→300m→200m) + R/ssh load.north_south companion(core-banking/loadgen/transfer-heavy-surge.js, target_rps=50)",
+    "transport": "kubectl",
     "profile_refs": [
-      "injector-profiles/host.stress",
+      "injector-profiles/k8s.patch",
       "injector-profiles/load.north_south"
     ]
   },
@@ -24,17 +24,17 @@
       "baseline-clean-window",
       "target-health",
       "profile-prerequisites",
-      "transport-ssh-access",
-      "host-placement-and-oob-recovery",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
       "baseline-loadgen-active"
     ],
     "controller": {
       "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
+      "decision_mode": "calibration",
       "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f21-p-banking-api-tomcat-thread-saturation/fixed",
-        "requires_approved_fixed_profile": true
+        "kind": "adaptive",
+        "ref": "controller-profiles/f21-p-banking-api-tomcat-thread-saturation/adaptive",
+        "requires_approved_fixed_profile": false
       },
       "live_enabled": false
     }
@@ -44,7 +44,7 @@
       "mode": "dry-run",
       "mutation": false,
       "adapter_refs": [
-        "host.stress",
+        "k8s.patch",
         "load.north_south"
       ]
     },
@@ -53,7 +53,7 @@
       "mutation": false,
       "requires_preflight": true,
       "adapter_refs": [
-        "host.stress",
+        "k8s.patch",
         "load.north_south"
       ]
     },
@@ -65,14 +65,14 @@
       "recovery_gate": true,
       "adapter_refs": [
         "load.north_south",
-        "host.stress"
+        "k8s.patch"
       ]
     }
   },
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "calibration 미확정 — api_busy_threads 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(65)만으로 추정됨. cpu_workers 강도와 transfer 실제 응답지연(d≈8s) 간 관계 미검증, 지연이 read-timeout(10s) 초과 시 502→CB open(FS-2)으로 전이하는 경계 확인 필요",
+    "description": "k8s.patch CPU limit 레버로는 slow-not-failed 불성립(0804 #28: maxSurge=0 롤아웃 + 400m 스로틀로 api 즉시 실패) — 재기동 없는 정밀 지연 주입 표면(서버측 고정 지연, 호출자 파라미터 자백 금지) 확보 후 F21-Q와 병합 재설계",
     "live_allowed": false
   },
   "capture_policy": {

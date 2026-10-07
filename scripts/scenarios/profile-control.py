@@ -29,6 +29,15 @@ class ControlError(RuntimeError):
     pass
 
 
+def _identity(request: dict[str, Any] | None) -> dict[str, Any]:
+    """The part of a request that says *which* operation this is.
+
+    Everything except plan_digest, which fingerprints the executor code and is
+    allowed to change when a capsule is repaired.
+    """
+    return {k: v for k, v in (request or {}).items() if k != "plan_digest"}
+
+
 class Result(NamedTuple):
     returncode: int
     stdout: str = ""
@@ -222,9 +231,33 @@ class ProfileController:
             }
             existing = state.setdefault("results", {}).get(idempotency_key)
             if existing is not None:
-                if existing.get("request") != request:
+                # plan_digest is a fingerprint of the mechanism, not part of the
+                # operation's identity. A capsule repair replaces a defective
+                # executor and the digest moves with it, so comparing the whole
+                # request would reject the retry the repair exists to enable —
+                # with "already used for another request", which reads as abuse
+                # rather than as the same cleanup asked a second time. What
+                # identifies a cleanup is the run, the fence, the scenario, the
+                # profile and the level. The digest is still verified on its own
+                # merits by _plan() below; it just does not decide identity.
+                if _identity(existing.get("request")) != _identity(request):
                     raise ControlError("idempotency key was already used for another request")
-                return existing["response"]
+                # Idempotency exists to make a duplicate request safe. It must not
+                # make a retry impossible. A cleanup that failed never answered the
+                # question it was asked — "is the effect gone?" — so replaying that
+                # non-answer forever pins the run in DIRTY, and DIRTY is global: one
+                # stuck run stops every scenario. Both callers use a key fixed by
+                # (run_id, fencing_token), so without this the first failure is also
+                # the last attempt, no matter what gets fixed afterwards. 2026-07-30:
+                # F21-P's cleanup was repaired and re-requested, and the cache handed
+                # back the original failure without ever invoking the new executor.
+                #
+                # Only cleanup retries. It is idempotent by construction — kill the
+                # tagged pids, rm -f the artifacts — so running it twice costs
+                # nothing. Apply is not, and a cached apply keeps being replayed
+                # rather than risking a second injection.
+                if action == "apply" or existing["response"].get("succeeded", True):
+                    return existing["response"]
 
             selected, parameters = self._parameters(
                 instance, level_index, level_id, parameters_json

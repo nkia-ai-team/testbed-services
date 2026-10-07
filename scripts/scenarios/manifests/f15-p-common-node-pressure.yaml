@@ -2,17 +2,18 @@
   "schema_version": "1.0",
   "id": "F15-P",
   "slug": "f15-p-common-node-pressure",
-  "readiness": "blocked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "shared worker",
-    "matrix_location_transport": "공통 worker/ssh",
+    "location": "worker-w2",
+    "matrix_location_transport": "tb-w2/ssh",
     "transport": "ssh",
     "profile_refs": [
-      "injector-profiles/host.stress"
+      "injector-profiles/host.stress",
+      "injector-profiles/load.north_south"
     ]
   },
   "execution": {
@@ -24,17 +25,267 @@
       "target-health",
       "profile-prerequisites",
       "transport-ssh-access",
-      "host-placement-and-oob-recovery"
+      "host-placement-and-oob-recovery",
+      "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f15-p-common-node-pressure/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.stress"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f15-p",
+              "parameters": {
+                "mode": "pressure",
+                "host": "192.168.122.11",
+                "cpu_workers": 8,
+                "vm_workers": 1,
+                "vm_bytes": "5000M",
+                "runtime_seconds": 600
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m",
+              "_note_ladder": "cpu2/3/4 -> cpu8/16/32 (2026-08-20, 계측 사다리). 7차 run aa9f7823 실측: 수리된 최상단 vm1x5000M 에서 cpu 99.5~99.7%·mem 71~76%로 압박 축은 설계대로 도달했으나 transfer_p95 85~160ms·account_p95 8~23ms — success 임계(4000/1000)에 30배 모자라고 baseline(90/10)과 구분 불가. 코어 수(4)와 같은 워커 수로는 CFS 가 슬리퍼(서비스 스레드)를 즉시 깨워 대기열 피해가 안 생긴다. 지연 피해는 runnable 초과(oversubscription)에서만 나오므로 워커를 8/16/32 로 올려 용량-반응 곡선을 계측한다. 이 사다리는 측정용이며 success 임계는 이 실측이 나온 뒤 baseline 과 분리 가능한 값으로 재설정한다(현 임계는 유지 — 내리면 거짓 통과)."
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            }
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            }
+          },
+          {
+            "id": "node_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.node_ready",
+            "freshness": "30s",
+            "parameters": {
+              "node": "tb-w2"
+            }
+          },
+          {
+            "id": "node_cpu_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_cpu_utilization",
+            "freshness": "60s",
+            "parameters": {
+              "node": "tb-w2"
+            }
+          },
+          {
+            "id": "node_mem_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_memory_utilization",
+            "freshness": "60s",
+            "parameters": {
+              "node": "tb-w2"
+            }
+          },
+          {
+            "id": "transfer_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "core-banking-transfer"
+            }
+          },
+          {
+            "id": "account_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "core-banking-account"
+            }
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "node-cpu-saturated",
+              "observation": "node_cpu_util",
+              "op": "gte",
+              "value": 80
+            },
+            {
+              "id": "node-memory-pressured",
+              "observation": "node_mem_util",
+              "op": "gte",
+              "value": 65,
+              "_note": "임계 75 -> 65 (2026-08-10). 사다리가 이 임계에 물리적으로 닿지 않았다. tb-w2 MemTotal 11,929MiB / MemAvailable 6,486MiB, 베이스라인 30.2% 위에 0단 1500MiB 가 얹혀 43.1% 실측(증분 12.9pp vs 이론 12.6pp — 선형). 같은 계산으로 1단(3000MiB) ~55%, 최상단(5000MiB) ~72% 라 75 에 3pp 못 미친다. 75 를 채우려면 상주 5,344MiB 가 필요한데 available 6,486 에서 그만큼 잡으면 여유가 ~1.1GiB 로 줄어 eviction 무릎에 닿는다 — 축출이 나면 F05-P 와 구분이 사라져 시나리오가 무너지므로(root_cause.mechanism 이 '무릎 아래'를 정체성으로 못박았다) 주입을 키우는 대신 임계를 내린다. 65 는 최상단 예상 72% 와 1단 55% 사이라 '두 축 동시 상승' 감별선을 유지한다. **주의: 1·2단 실측이 아직 없다(mro 가 매번 0단에서 죽였다). 55/72 는 0단 1점 + 선형 가정의 계산치이므로 실측이 나오면 재확인할 것.**"
+            },
+            {
+              "id": "transfer-latency-damage",
+              "observation": "transfer_p95",
+              "op": "gte",
+              "value": 200,
+              "_note": "임계 4000 -> 200, account-latency-damage(>=1000) 제거 (2026-08-20). 계측 런 c7eca02c 실측 dose-response: transfer_p95 는 기저 90~160ms 에서 cpu8/16/32 오버서브스크립션 하에 중앙값 249/295/290ms(p90 323/611/402)로 반응하되 ~300ms 에서 포화한다 — 4000 은 이 앱·부하(20rps, IO-bound)의 물리적 상한 위였다. 200 은 전 비압박 틱 실측 상한(160.6) 위이자 압박 중앙값 아래의 분리선. account_p95 는 cpu2~cpu32 전 구간 7~50ms 로 무반응이라 어떤 임계도 감별력이 없어 조건에서 뺀다(낮추면 기저 잡음 통과=거짓 통과, 두면 도달 불가). 스트릭 재생: tp>=200·ct3 = 신사다리 3/3 성공(발화 e249~358), 저강도 대조군(cpu2/3/4, run aa9f7823) 0/3 발화."
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "cpu-only-pressure",
+              "observation": "node_mem_util",
+              "op": "lt",
+              "value": 35,
+              "_note": "임계 60 -> 35 (2026-08-10). 이 감별자가 escalate 의 memory-not-yet-pressured(<75)의 진부분집합이라 mro 가 먼저 평가되며 항상 이겼다. 세 런의 streak_marks 가 escalate 와 must_rule_out 이 같은 틱(374s)에 동시 3 에 도달했음을 직접 기록한다. 실측: 베이스라인 node_mem_util 30.2~30.5, 최저단 43.1~43.9. 임계 35 는 베이스라인 위이자 최저단 아래이므로 '메모리 축이 실제로 안 실렸을 때'만 발화한다 — 감별자의 의미는 그대로다. 원칙은 test_load_floor_discriminators_sit_below_the_load_they_judge 와 같다: 감별자는 그 시나리오가 실제로 만드는 값보다 바깥에 있어야 한다."
+            },
+            {
+              "id": "memory-only-pressure",
+              "observation": "node_cpu_util",
+              "op": "lt",
+              "value": 50
+            },
+            {
+              "id": "node-lost",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "node-notready-total-collapse",
+              "observation": "node_ready",
+              "op": "eq",
+              "value": false
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "node-cpu-normal",
+              "observation": "node_cpu_util",
+              "op": "lt",
+              "value": 30
+            },
+            {
+              "id": "node-memory-normal",
+              "observation": "node_mem_util",
+              "op": "lt",
+              "value": 50,
+              "_note": "임계 60 -> 50 (2026-08-10). success 를 65 로 내리면서 함께 내린다. 60 이면 성공선과 5pp 밖에 안 떨어져 회복 판정이 성공 구간에 붙는다. 베이스라인 30.2 대비 20pp 여유인 50 이 맞다."
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -42,7 +293,8 @@
       "mode": "dry-run",
       "mutation": false,
       "adapter_refs": [
-        "host.stress"
+        "host.stress",
+        "load.north_south"
       ]
     },
     "run": {
@@ -50,7 +302,8 @@
       "mutation": false,
       "requires_preflight": true,
       "adapter_refs": [
-        "host.stress"
+        "host.stress",
+        "load.north_south"
       ]
     },
     "cleanup": {
@@ -60,15 +313,16 @@
       "order": "reverse",
       "recovery_gate": true,
       "adapter_refs": [
+        "load.north_south",
         "host.stress"
       ]
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "shared placement topology",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

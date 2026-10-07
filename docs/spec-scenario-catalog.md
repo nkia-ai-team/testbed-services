@@ -99,7 +99,7 @@ summary: 이상감지·이벤트 클러스터·인시던트 격상·RCA를 폭�
 | ID | 역할 | 시나리오 | 사용자 영향과 전파 | 결정적 구분 근거 | 상태 |
 | --- | --- | --- | --- | --- | --- |
 | F04-R | R | commerce shipping consumer 지속 정지 | 주문·결제 성공 후 배송 생성 SLA 위반 | orders publish·outbox 정상, consumer lag 증가, shipment 미생성 | prerequisite |
-| F04-H | H | order outbox relay만 정지 | 주문 성공 후 배송·알림 지연은 같지만 Kafka consumer lag은 낮음 | outbox row 증가, publish 부재, broker·consumer 정상 | prerequisite |
+| F04-H | H | order outbox relay만 정지 | 주문 성공 후 배송·알림 지연은 같지만 Kafka consumer lag은 낮음 | outbox row 증가, publish 부재, broker·consumer 정상 | ready |
 | F04-P | P | banking ledger consumer 처리율 제한 | 이체 성공 후 원장 반영·대사 지연 | transfers lag 증가, transfer DB commit 정상, ledger row 부재 | prerequisite |
 | F04-G | G | 짧은 broker 장애를 outbox가 흡수하고 SLA 안에 catch-up | produce 오류·적체는 있으나 최종 사용자 기능과 비동기 SLA 정상 | backlog 완전 소진, 누락·중복 없음, 인시던트로 볼 실영향 없음 | calibrate |
 

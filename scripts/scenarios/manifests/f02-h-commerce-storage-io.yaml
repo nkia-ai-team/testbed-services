@@ -2,14 +2,14 @@
   "schema_version": "1.0",
   "id": "F02-H",
   "slug": "f02-h-commerce-storage-io",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
     "location": "worker-w1",
-    "matrix_location_transport": "commerce worker/ssh",
+    "matrix_location_transport": "tb-w1/ssh",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",
@@ -30,11 +30,11 @@
     ],
     "controller": {
       "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
+      "decision_mode": "calibration",
       "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f02-h-commerce-storage-io/fixed",
-        "requires_approved_fixed_profile": true
+        "kind": "adaptive",
+        "ref": "controller-profiles/f02-h-commerce-storage-io/adaptive",
+        "requires_approved_fixed_profile": false
       },
       "live_enabled": false
     }
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "PG PVC backing device",
+    "description": "commerce/PG 인과 부재 실측 확정(0804 #24: disk 81%에 p95 41.9ms) — 캐시 밖 디스크 경로(shared_buffers 축소 또는 캐시 밖 질의) 신설 + 사다리 실측 후 회생. 디스크 포화 대표성은 F10-H가 보유",
     "live_allowed": false
   },
   "capture_policy": {

@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 REGISTRY = Path(__file__).resolve().parent.parent / "registry" / "controllers.json"
+QUERIES = Path(__file__).resolve().parent.parent / "registry" / "queries.json"
 
 # APM percentile series land in per-minute batches (two 15s samples at :00/:15),
 # so the newest-sample age routinely approaches 60s before the next batch.
@@ -32,6 +33,7 @@ class TimingContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.controllers = json.loads(REGISTRY.read_text(encoding="utf-8"))["controllers"]
+        cls.queries = json.loads(QUERIES.read_text(encoding="utf-8"))["queries"]
 
     def test_level_timeout_covers_its_own_load_profile(self) -> None:
         for scenario_id, controller in self.controllers.items():
@@ -66,20 +68,56 @@ class TimingContracts(unittest.TestCase):
             )
 
     def test_success_window_fits_inside_the_level(self) -> None:
+        # consecutive_ticks counts independent samples, not polls: a gate whose
+        # slowest signal refreshes every 60s needs 60s between confirmations no
+        # matter how often the controller ticks (adaptive.py _updated_streaks).
+        # Budgeting `consecutive_ticks * tick_interval` understated the need by
+        # 4x on every prometheus gate.
         for scenario_id, controller in self.controllers.items():
             success = controller.get("success")
             if not success:
                 continue
             tick_sec = _seconds(controller.get("tick_interval", "15s"))
-            needed = success.get("consecutive_ticks", 1) * tick_sec
+            ticks = success.get("consecutive_ticks", 1)
+            step = max(tick_sec, self._gate_update_interval(controller, success))
+            needed = (ticks - 1) * step + tick_sec
             for level in controller.get("profile", {}).get("levels", []):
-                budget = _seconds(level["timeout"]) - _seconds(level.get("settle", 0))
+                # Success is not evaluated until min_hold, so that — not settle —
+                # is where the confirmation window can first start.
+                budget = _seconds(level["timeout"]) - _seconds(level.get("min_hold", 0))
                 self.assertGreaterEqual(
                     budget,
                     needed,
-                    f"{scenario_id}/{level['id']}: settle leaves no room for "
-                    f"{success.get('consecutive_ticks')} consecutive success ticks",
+                    f"{scenario_id}/{level['id']}: {needed}s needed for {ticks} "
+                    f"independent success samples ({step}s apart) but only "
+                    f"{budget}s remain after min_hold",
                 )
+
+    def _gate_update_interval(self, controller: dict, gate: dict) -> int:
+        """Source cadence that paces a gate, mirroring adaptive.py.
+
+        An ``all`` gate waits on its slowest signal; an ``any`` gate is carried
+        by whichever condition fires, so its quickest sets the pace.
+        """
+        query_by_observation = {
+            item["id"]: item["query_id"] for item in controller.get("observations", [])
+        }
+
+        def intervals_for(conditions: list) -> list[int]:
+            return [
+                self.queries[query_by_observation[condition["observation"]]][
+                    "update_interval_sec"
+                ]
+                for condition in conditions
+                if condition.get("observation") in query_by_observation
+            ]
+
+        paces = [0]
+        if gate.get("all"):
+            paces.append(max(intervals_for(gate["all"]) or [0]))
+        if gate.get("any"):
+            paces.append(min(intervals_for(gate["any"]) or [0]))
+        return max(paces)
 
     def test_p95_freshness_matches_measured_ingestion_cadence(self) -> None:
         for scenario_id, controller in self.controllers.items():

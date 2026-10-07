@@ -67,7 +67,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "calibration 미확정 — target_rps=70이 restaurant Hikari 10·Tomcat을 order 5xx 임계까지 실제로 밀어내는지 첫 run 확정 필요. 러너 APPROVED_APM_SERVICES(food-delivery-restaurant)+APPROVED_K8S_TARGETS(rca-testbed-food, testbed-restaurant) 배선이 F02-P 선행 결함 수리와 함께 선행조건",
+    "description": "2026-07-28 캘리브레이션 1회로 반증됨(target_rps=70, 4.5분). restaurant /menu가 67~95ms로 read-timeout 5s의 1/50에 머물러 의도한 포화가 전혀 발생하지 않았고, 대신 dispatch가 먼저 무너져(커넥션 거부·500) order의 dispatch CB가 열리며 order 503이 나왔다 — 이 시나리오 자신의 must_rule_out('503 우세면 F19-Q')에 걸리는 결과다. 상한 180까지 올려도 restaurant는 2.6배뿐이고 필요한 것은 50배다. food의 실제 무릎은 restaurant가 아니라 dispatch이므로 부하만으로는 재설계 불가",
     "live_allowed": false
   },
   "capture_policy": {

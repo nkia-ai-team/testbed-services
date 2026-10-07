@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -64,6 +65,9 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
@@ -74,12 +78,20 @@
             {
               "id": "approved-fixed-f01-r",
               "parameters": {
-                "db_host": "192.168.122.77",
-                "db_port": 30432,
-                "db_name": "commerce",
-                "db_user": "commerce",
-                "application_name": "rca-F01-R-inventory-lock",
-                "product_id": 1,
+                "engine": "postgresql",
+                "access": "in-cluster-pod",
+                "namespace": "rca-testbed-commerce",
+                "db_pod": "testbed-postgres-0",
+                "service": "testbed-postgres",
+                "secret": "postgres-secret",
+                "image": "postgres:16-alpine",
+                "schema": "inventory_schema",
+                "table": "inventory",
+                "lock_scope": "row",
+                "lock_mode": "",
+                "key_column": "product_id",
+                "key_value": "1",
+                "client_identity": "PostgreSQL JDBC Driver",
                 "hold_seconds": 600
               },
               "min_hold": "8m",
@@ -108,28 +120,35 @@
             "freshness": "30s"
           },
           {
-            "id": "tagged_db_sessions",
+            "id": "blocked_db_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.blocked_session_count",
             "parameters": {
-              "scenario_tag": "rca-F01-R-inventory-lock"
+              "schema": "inventory_schema",
+              "table": "inventory"
             },
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
             "freshness": "30s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "lock-present",
-              "observation": "tagged_db_sessions",
-              "op": "gt",
-              "value": 0
+              "id": "lock-blocks-sessions",
+              "observation": "blocked_db_sessions",
+              "op": "gte",
+              "value": 1
             },
             {
-              "id": "checkout-impact",
-              "observation": "entry_status",
+              "id": "checkout-5xx-rate",
+              "observation": "checkout_5xx_rate",
               "op": "gte",
-              "value": 500
+              "value": 0.05
             }
           ],
           "consecutive_ticks": 2
@@ -143,7 +162,7 @@
               "value": 429
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [
@@ -172,7 +191,7 @@
             },
             {
               "id": "lock-cleared",
-              "observation": "tagged_db_sessions",
+              "observation": "blocked_db_sessions",
               "op": "eq",
               "value": 0
             }

@@ -32,6 +32,12 @@ management:
     health:
       show-details: always
 
+# response_delay_control 행으로 order->restaurant 홉만 재기동 없이 늦춘다(F21-Q 표면).
+# 이 프로퍼티가 있는 서비스에서만 ResponseDelayFilter 가 뜬다.
+response:
+  delay:
+    service-id: restaurant
+
 menu:
   popularity:
     interval-ms: 3600000

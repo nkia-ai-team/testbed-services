@@ -41,10 +41,18 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
             controllers["live_scenario_ids"][-5:],
-            ["F20-Q", "F25-H", "F23-R", "F15-R", "F03-H"],
+            ["F17-P", "F04-H", "F15-H", "F15-T2", "F14-P"],
         )
 
-        f02 = controllers["controllers"]["F02-P"]
+        # F02-P was parked on 2026-07-27 (nothing in food queries
+        # idx_menus_category, and its only success rule — entry_status ne 0 —
+        # is true whenever the service answers at all). The definition is kept
+        # for recovery, so the executor contract stays guarded here; what
+        # changed is that it must live in the parked archive, not the live
+        # registry, or compile-plan would treat it as executable.
+        parked = json.loads((ROOT / "registry" / "controllers-parked.json").read_text())
+        self.assertNotIn("F02-P", controllers["controllers"])
+        f02 = parked["controllers"]["F02-P"]
         self.assertEqual(f02["profile"]["levels"][0]["parameters"], db_ddl.CONTRACTS["F02-P"])
         self.assertEqual(
             {(rule["observation"], rule["op"], rule["value"]) for rule in f02["success"]["all"]},
@@ -53,13 +61,17 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
 
         f04 = controllers["controllers"]["F04-R"]
         self.assertEqual(f04["profile"]["levels"][0]["parameters"], kafka.CONTRACTS["F04-R"])
+        # success carries only damage. "shipping_replicas == 0" is a read-back of
+        # the injection itself (we scaled the consumer down), so on 2026-07-28 it
+        # moved to must_rule_out inverted: if the consumer is still running, the
+        # injection never took and the run is invalid.
         self.assertEqual(
             {(rule["observation"], rule["op"], rule["value"]) for rule in f04["success"]["all"]},
-            {("shipping_replicas", "eq", 0), ("shipping_lag", "gt", 0)},
+            {("shipping_lag", "gt", 0)},
         )
         self.assertEqual(
-            {rule["observation"] for rule in f04["must_rule_out"]["any"]},
-            {"entry_status", "pod_ready"},
+            {(rule["observation"], rule["op"], rule["value"]) for rule in f04["must_rule_out"]["any"]},
+            {("entry_status", "eq", 0), ("pod_ready", "eq", False), ("shipping_replicas", "gt", 0)},
         )
 
     def test_f04r_kafka_contract_snapshots_replicas_and_requires_lag_drain(self) -> None:

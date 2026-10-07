@@ -45,6 +45,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -60,6 +61,9 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
@@ -70,7 +74,7 @@
             {
               "id": "approved-fixed-f20-q",
               "parameters": {
-                "target_rps": 30,
+                "target_rps": 15,
                 "ramp_up": "2m",
                 "hold": "8m",
                 "ramp_down": "1m",
@@ -80,9 +84,9 @@
                 "seed": 4242,
                 "baseline_unit": "loadgen-food"
               },
-              "min_hold": "8m",
+              "min_hold": "30s",
               "settle": "30s",
-              "timeout": "13m"
+              "timeout": "11m"
             }
           ]
         },
@@ -130,31 +134,9 @@
             "freshness": "30s"
           },
           {
-            "id": "order_memory_limit",
-            "adapter": "kubernetes",
-            "query_id": "kubernetes.deployment_container_memory_limit",
-            "parameters": {
-              "namespace": "rca-testbed-food",
-              "deployment": "testbed-order",
-              "container": "order-service"
-            },
-            "freshness": "30s"
-          },
-          {
-            "id": "order_restart_count",
-            "adapter": "kubernetes",
-            "query_id": "kubernetes.container_restart_count",
-            "parameters": {
-              "namespace": "rca-testbed-food",
-              "deployment": "testbed-order",
-              "container": "order-service"
-            },
-            "freshness": "30s"
-          },
-          {
             "id": "payment_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
             "parameters": {
               "service_name": "food-delivery-payment"
             },
@@ -165,36 +147,26 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.food_create_status_rate",
             "freshness": "30s"
-          },
-          {
-            "id": "order_slowquery_read_rate",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.read_step_status_rate",
-            "freshness": "30s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "order-latency-up",
-              "observation": "order_p95",
-              "op": "gte",
-              "value": 2.0
-            },
-            {
               "id": "order-memory-climbing",
               "observation": "order_memory_current",
               "op": "gte",
-              "value": 805306368
+              "value": 805306368,
+              "_note": "consecutive_ticks 2→1 (2026-08-07): 사망 전 유효 평가 틱이 물리적으로 하나뿐. 2026-08-22 실측: 기준 메모리가 이미 ~830MB(limit 1Gi)라 이 조건은 전제일 뿐 변별은 5xx 가 한다."
             },
             {
-              "id": "payment-not-5xx",
-              "observation": "payment_error_rate",
-              "op": "lt",
-              "value": 0.05
+              "id": "order-create-errors",
+              "observation": "order_create_5xx_rate",
+              "op": "gte",
+              "value": 0.1,
+              "_note": "2026-08-22 0.3→0.1: 캠페인 실측(runs 5c81e143·4f1c0644, 과거 7/10 abort) — GC 스래싱으로 probe 가 ~30초에 끊겨 entry=0 abort(2틱, 러너가 success 보다 먼저 평가)가 5xx 집계(60s trailing, freshness 30s)보다 빨랐다. 사망 전 창에서 5xx 분율이 0.3 에 닿기 전에 죽으므로 0.1 로 낮춰 같은 창에서 잡히게 한다. 기준 5xx 는 0 이라 0.1 도 명백한 피해 신호."
             }
           ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 1
         },
         "must_rule_out": {
           "any": [
@@ -205,16 +177,10 @@
               "value": 429
             },
             {
-              "id": "payment-5xx-cascade",
+              "id": "payment-also-erroring",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.2
-            },
-            {
-              "id": "dispatch-capacity-503",
-              "observation": "order_create_5xx_rate",
-              "op": "gte",
-              "value": 0.3
+              "value": 5
             }
           ],
           "consecutive_ticks": 2
@@ -248,7 +214,7 @@
               "id": "order-latency-recovered",
               "observation": "order_p95",
               "op": "lt",
-              "value": 0.8
+              "value": 800
             },
             {
               "id": "order-memory-recovered",
@@ -271,7 +237,8 @@
           "post_window": "20m",
           "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
           "create_golden_anomaly": false
-        }
+        },
+        "_note": "2026-08-22 "
       }
     }
   },

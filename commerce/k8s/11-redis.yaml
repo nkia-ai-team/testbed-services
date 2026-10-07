@@ -21,6 +21,8 @@ spec:
       labels:
         app: testbed-redis
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       containers:
         - name: redis
           image: redis:7-alpine

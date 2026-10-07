@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F06-P",
   "slug": "f06-p-food-partial-429",
-  "readiness": "blocked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -29,14 +29,221 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f06-p-food-partial-429/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "mock.expectation",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "mock.expectation"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f06-p",
+              "parameters": {
+                "path": "/pay",
+                "mode": "status",
+                "status_code": 429,
+                "delay_seconds": 0
+              },
+              "min_hold": "8m",
+              "settle": "45s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_429_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_429_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "read_step_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "payment_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "food-delivery-payment"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_429_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_429_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-rejected",
+              "observation": "order_create_429_rate",
+              "op": "gte",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1
+            },
+            {
+              "id": "payment-also-erroring",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 5,
+              "_note": "감별자를 order 집계에서 payment 기원 신호로 교체한다(2026-08-07, run 4957e483 트레이스 직독). 옛 promoted-to-5xx는 order_create_5xx_rate>=0.1로 '429가 5xx로 승격됐는가'를 재려 했지만, 그 지표가 세는 order의 5xx는 payment가 아니라 dispatch에서 온다 — 같은 창구에서 POST /api/orders는 200=358·429=33·400=5·503=43이었고 그 503은 dispatch-service의 자체 SERVER 500(capacity 3·상세 2·목록 2)과 order의 CLIENT 500=3에 대응한다. OrderService가 checkCapacity 실패와 dispatchCourier 실패를 무조건 503으로 바꾸고 CB fallback도 503이라 (OrderService.java:94-112, DispatchClient.java:66-79) dispatch 노이즈만으로 43/439≈0.098이 상시로 서고, 임계 0.1에 붙어 감별자가 주입과 무관하게 발화한다. 더구나 payment 호출은 capacity 검증(96)과 dispatch fan-out(145)을 통과해야 도달하므로(154) dispatch 503은 정의상 payment 이전에 끝난 요청이며 429 pass-through의 실격 사유가 될 수 없다. 실측에서 payment 자신은 429=33·200=2·5xx 0건으로 pass-through가 정상 동작했다. payment_error_rate>=5는 F19-P·F20-Q·F20-R이 이미 쓰는 같은 이름의 감별자이며, 'payment가 429가 아니라 스스로 5xx를 낸다'는 진짜 교란만 잡는다."
+            },
+            {
+              "id": "read-path-also-broken",
+              "observation": "read_step_rate",
+              "op": "gte",
+              "value": 0.1
+            },
+            {
+              "id": "order-pod-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_429_rate_baseline",
+              "op": "lt",
+              "value": 0.02
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +277,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "food courier pool recovery",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

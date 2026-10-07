@@ -75,6 +75,25 @@ def bind_level_parameters(
     return bound, level["level_id"]
 
 
+def approved_parameter_sets(profile: dict[str, Any], scenario_id: str) -> list[dict[str, Any]]:
+    """Every parameter set the registry approves: the fixed default plus each ladder rung.
+
+    사다리 시나리오의 검증이 `scenario_parameters` 한 벌만 보면, 기본값과 다른 단은
+    전부 거부된다 — 승인 레지스트리에는 멀쩡히 등재돼 있는데도 그렇다. F15-T1이
+    768Mi 단에서 그렇게 막혔고(배치 #12), F15-R의 `episode-fault-240`도 같은 상태였다.
+    `bind_level_parameters`가 이미 단을 정확히 묶어 주므로, 검증은 승인된 집합 어디에
+    들어 있는지만 물으면 된다.
+    """
+    approved: list[dict[str, Any]] = []
+    default = profile.get("scenario_parameters", {}).get(scenario_id)
+    if default is not None:
+        approved.append(default)
+    for level in profile.get("scenario_levels", {}).get(scenario_id, []):
+        if level["parameters"] not in approved:
+            approved.append(level["parameters"])
+    return approved
+
+
 def kubectl_bash_argv(arguments: Sequence[str]) -> list[str]:
     return ["/usr/bin/bash", "-s", "--", *arguments]
 

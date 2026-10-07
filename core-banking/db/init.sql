@@ -69,6 +69,33 @@ CREATE TABLE outbox_events (
 );
 CREATE INDEX idx_outbox_unpublished ON outbox_events (published_at, created_at);
 
+-- 릴레이 일시정지 스위치(재기동 없는 정지 표면 — OutboxRelay 가 매 주기 조회).
+-- env 토글은 롤아웃을 유발하고(maxSurge=0 이라 유일한 파드가 먼저 내려간다),
+-- HTTP 관리 엔드포인트는 otel 서버 스팬으로 정지 시각을 자백한다. DB 행이면 둘 다 없다.
+CREATE TABLE outbox_relay_control (
+    service_id  VARCHAR2(32) PRIMARY KEY,
+    enabled     NUMBER(1) DEFAULT 1 NOT NULL CHECK (enabled IN (0, 1)),
+    updated_at  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+MERGE INTO outbox_relay_control c
+USING (SELECT 'transfer' AS service_id FROM dual) s
+ON (c.service_id = s.service_id)
+WHEN NOT MATCHED THEN INSERT (service_id, enabled) VALUES (s.service_id, 1);
+
+-- 응답 고정 지연 스위치(재기동 없는 지연 표면 — ResponseDelayFilter 가 2초 주기로 조회).
+-- 무딘 레버(노드 CPU 스트레스, CPU limit 스로틀)는 대상을 선택적으로 늦추지 못하고
+-- 죽여버렸다(0804 #27·#28). 지연할 홉만, 정해진 만큼, 죽지 않게 늦추는 값이 여기 있다.
+-- 상한 10000ms 는 DDL 과 앱 양쪽에서 조인다 — 잘못된 UPDATE 하나로 홉을 죽이지 않도록.
+CREATE TABLE IF NOT EXISTS response_delay_control (
+    service_id  VARCHAR2(32) PRIMARY KEY,
+    delay_ms    NUMBER(6) DEFAULT 0 NOT NULL CHECK (delay_ms BETWEEN 0 AND 10000),
+    updated_at  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+MERGE INTO response_delay_control c
+USING (SELECT 'transfer' AS service_id FROM dual) s
+ON (c.service_id = s.service_id)
+WHEN NOT MATCHED THEN INSERT (service_id, delay_ms) VALUES (s.service_id, 0);
+
 -- ============================================================
 -- 시드 데이터: 계좌 14개(개인/법인 혼합, 잔액 보유)
 -- 'commerce-settlement'/'commerce-merchant' 는 commerce/payment-service의
@@ -96,7 +123,16 @@ USING (
     SELECT 'commerce-merchant', '커머스 가맹점 계좌', 10000000.00, 'ACTIVE' FROM dual
 ) src
 ON (a.id = src.id)
-WHEN MATCHED THEN UPDATE SET a.holder = src.holder
+-- 저수지 계좌(정산)는 재시딩 때 설계 시드까지 되채운다. holder만 갱신하던
+-- 시절엔 5천만→1조 상향이 기존 DB에 영영 반영되지 않아 같은 고갈이 재발했다
+-- (2026-08-03 배치 #13: 2h40m 동안 정산 발 이체 전건 침묵 실패). 일반 계좌
+-- 잔액은 건드리지 않는다 — 앱이 움직인 상태는 보존해야 한다.
+WHEN MATCHED THEN UPDATE SET
+    a.holder = src.holder,
+    a.balance = CASE
+        WHEN a.id = 'commerce-settlement' AND a.balance < src.balance THEN src.balance
+        ELSE a.balance
+    END
 WHEN NOT MATCHED THEN INSERT (id, holder, balance, status) VALUES (src.id, src.holder, src.balance, src.status);
 
 COMMIT;

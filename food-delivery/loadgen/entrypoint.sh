@@ -42,6 +42,15 @@ calc_rps() {
 
 echo "[loadgen] starting diurnal loop: PEAK_RPS=${PEAK_RPS} TROUGH_RPS=${TROUGH_RPS} LOADGEN_SEED=${LOADGEN_SEED} RESTAURANT_URL=${RESTAURANT_URL}"
 
+# baseline 관측 문서 발행 (docs/spec-scenario-observation-plane.md).
+# step 이름은 profiles.json domain_profiles 의 food-delivery 항목과 같아야 한다.
+BASELINE_PUBLISH="${BASELINE_PUBLISH:-/opt/loadgen/baseline-publish.sh}"
+BASELINE_K6_OUT=""
+if [ -r "$BASELINE_PUBLISH" ]; then
+    . "$BASELINE_PUBLISH"
+    baseline_publisher_start food-delivery loadgen-food create menu
+fi
+
 while true; do
     HOUR=$(TZ=Asia/Seoul date +%H)
     HOUR=${HOUR#0}
@@ -50,7 +59,9 @@ while true; do
 
     echo "[loadgen] $(date -Iseconds 2>/dev/null || date) KST_hour=${HOUR} target_rps=${RPS} — starting 1h k6 run"
 
+    # shellcheck disable=SC2086 # BASELINE_K6_OUT 은 비어 있으면 인자 자체가 사라져야 한다
     k6 run \
+        ${BASELINE_K6_OUT:+--out "$BASELINE_K6_OUT"} \
         --env TARGET_RPS="${RPS}" \
         --env LOADGEN_SEED="${LOADGEN_SEED}" \
         --env RESTAURANT_URL="${RESTAURANT_URL}" \

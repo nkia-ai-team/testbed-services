@@ -131,7 +131,24 @@ state="$state_root/${scenario_id}-${probe}.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 current() { "${k[@]}" get deploy "$deploy" -o json | jq -Sc --arg c "$container" --arg p "$probe" '.spec.template.spec.containers[] | select(.name==$c) | .[$p]'; }
 patch() { jq -cn --arg c "$container" --arg p "$probe" --argjson v "$1" '{spec:{template:{spec:{containers:[{name:$c,($p):$v}]}}}}' | "${k[@]}" patch deploy "$deploy" --type=strategic --patch-file=/dev/stdin >/dev/null; }
-healthy() { "${k[@]}" rollout status deploy/"$deploy" --timeout="$1" >/dev/null; }
+# Not `kubectl rollout-status`: once the injected fault holds pods unready past
+# progressDeadlineSeconds, ProgressDeadlineExceeded freezes onto the
+# Deployment and the rollout verifier re-reads that stale verdict immediately even
+# after the restore has actually succeeded (batch #17, 2026-08-03: F16-H was
+# restored, the pod turned Ready 68s later, yet cleanup_failed -> global
+# DIRTY). Compute the same completion predicate from live status instead.
+healthy() {
+  local deadline=$((SECONDS + ${1%s}))
+  while :; do
+    if "${k[@]}" get deploy "$deploy" -o json | jq -e '
+        .status.observedGeneration >= .metadata.generation
+        and ((.status.updatedReplicas // 0) == .spec.replicas)
+        and ((.status.availableReplicas // 0) == .spec.replicas)
+        and ((.status.replicas // 0) == .spec.replicas)' >/dev/null; then return 0; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
 check() { command -v kubectl >/dev/null; command -v jq >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; [[ "$(current)" == "$baseline" ]]; healthy 1s; }
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Capture one immutable evaluation case after a scenario injection.
-# Contract: docs/spec-eval-data-capture.md §2.1/§4.
+# Contract: docs/spec-eval-data-capture.md §2.1/§4 (v2, daily-cycle) and
+# §2.2 (v3, continuous-cycle — schema 2.0, triggered by --phases-json).
 
 set -Eeuo pipefail
 
@@ -14,12 +15,34 @@ Usage:
     --scenario-metadata-sha256 <sha256> \
     --t1 <YYYY-MM-DDTHH:MM:SSZ> --t2 <YYYY-MM-DDTHH:MM:SSZ> \
     [--case-label <calibration|evaluation|failed>] [--run-result <result.json>] \
+    [--phases-json <file>] [--topology-bundle <dir>] \
     [--output-root <dir>] [--dry-run]
 
 Case labels:
   calibration       tuning/reproducibility capture; not used for scoring (default)
   evaluation        immutable capture eligible for scoring
   failed            diagnostic capture from a failed scenario run; not used for scoring
+
+Capture contract version:
+  Default (no --phases-json)  v2, daily-cycle contract (spec §2.1, schema 1.3):
+                               window [t1-10m, t2+20m], assembled/ from
+                               --normal-segment, segments[]/rebase/normal_provenance.
+  --phases-json <file>         v3, continuous-cycle contract (spec §2.2, schema 2.0):
+                               window [normal.start, t2+30m], phases[]/
+                               clickhouse_tables[] (12-table CH catalog), no
+                               assembled/. Mutually exclusive with --normal-segment.
+                               phases JSON is the phases[] array the runner
+                               produced: trainer_reset{at,golden_id,golden_sha256}
+                               and normal|buffer|injection|cooldown{start,end}.
+                               injection.start/.end must equal --t1/--t2.
+  --topology-bundle <dir>      v3-only. Runner-collected periodic topology/
+                               service-tree bundle (dir with graph/,
+                               service-tree/, manifest.json — spec §2.2). Verified
+                               (sha256 + chronological + ≥1 snapshot inside
+                               [t1,t2]) and re-homed byte-for-byte into the
+                               case's topology/ (only manifest.json's case_id
+                               is patched). Omitted: capture proceeds fail-open
+                               with a warning; meta.topology_bundle is null.
 
 Required environment for a live capture:
   VM_URL             default: http://192.168.230.119:18428
@@ -95,6 +118,13 @@ run_result=''
 #                        <domain>/<date>/) used for provenance + assembled/ merge
 preflight_json=''
 normal_segment=''
+# Capture contract v3 (spec §2.2) input, supplied by the runner: the phases[]
+# array covering trainer_reset/normal/buffer/injection/cooldown. Presence of
+# this flag switches the whole script into v3 (continuous-cycle) mode.
+phases_json=''
+# Periodic topology/service-tree bundle (spec §2.2, EventCluster contract,
+# v3-only). Runner-collected dir with graph/, service-tree/, manifest.json.
+topology_bundle=''
 dry_run=false
 self_check=false
 
@@ -115,6 +145,8 @@ while (( $# > 0 )); do
     --run-result) run_result="${2:-}"; shift 2 ;;
     --preflight-json) preflight_json="${2:-}"; shift 2 ;;
     --normal-segment) normal_segment="${2:-}"; shift 2 ;;
+    --phases-json) phases_json="${2:-}"; shift 2 ;;
+    --topology-bundle) topology_bundle="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --self-check) self_check=true; shift ;;
@@ -163,6 +195,22 @@ if [[ "$self_check" == true ]]; then
   if [[ -n "$CH_PASSWORD" ]]; then
     sc_ch() { printf 'user = "%s:%s"\n' "$CH_USER" "$CH_PASSWORD" | curl --config - --fail --silent --max-time 10 --data-binary 'SELECT 1' "${CH_URL%/}/"; }
     sc_run "clickhouse auth ($CH_URL)" sc_ch
+    # v3 (spec §2.2) 12-table catalog must exist before a continuous-cycle
+    # queue is allowed to start; a missing table means either a schema
+    # drift or a v2-era ClickHouse that hasn't caught up.
+    sc_ch_v3_tables() {
+      local expected="otel_traces_local lucida_logs_local lucida_events_local dpm_session_local dpm_topsql_local kcm_events_local process_snapshot trace_error_chains_local trace_path_signatures_local syslog_local host_connections process_meta event_cluster_projection_local"
+      local found missing=() t
+      found=$(printf 'user = "%s:%s"\n' "$CH_USER" "$CH_PASSWORD" | curl --config - --fail --silent --max-time 10 --data-binary "SELECT name FROM system.tables WHERE database='lucida' FORMAT TSV" "${CH_URL%/}/") || return 1
+      for t in $expected; do
+        grep -qx "$t" <<<"$found" || missing+=("$t")
+      done
+      if (( ${#missing[@]} > 0 )); then
+        printf 'missing v3 tables: %s\n' "${missing[*]}" >&2
+        return 1
+      fi
+    }
+    sc_run "clickhouse v3 12-table catalog present ($CH_URL)" sc_ch_v3_tables
   fi
   if [[ -n "$QUERY_API_PASSWORD" ]]; then
     sc_login() { printf '{"username":"%s","password":"%s"}' "$QUERY_API_USER" "$QUERY_API_PASSWORD" | curl --fail --silent --max-time 10 -X POST -H 'Content-Type: application/json' --data-binary @- "${QUERY_API_URL%/}/api/v1/login"; }
@@ -201,12 +249,41 @@ fi
 [[ -n "$t2_raw" ]] || die '--t2 is required'
 [[ "$case_label" =~ ^(calibration|evaluation|failed)$ ]] ||
   die '--case-label must be one of: calibration, evaluation, failed'
+[[ -z "$phases_json" || -z "$normal_segment" ]] ||
+  die '--phases-json and --normal-segment are mutually exclusive (v3 phases[] replaces v2 assembled/ provenance)'
+v3_mode=false
+[[ -n "$phases_json" ]] && v3_mode=true
+[[ -z "$topology_bundle" || "$v3_mode" == true ]] ||
+  die '--topology-bundle requires --phases-json (v3-only)'
 
 require_command date
 require_command jq
 require_command realpath
 require_command stat
 require_command sha256sum
+
+# ------------------------------------------------------------
+# Evaluation-label integrity guard (2026-07-25). A v3 case keeps the
+# scoring-grade `evaluation` label only if its normal lead-in met the contract
+# 2h (spec §2.2). Shortened smoke cycles (CYCLE_NORMAL_SEC override) would
+# otherwise be minted as evaluation — the 2026-07-24 overnight incident, where
+# 72s-normal cases were labelled evaluation/eligible. Downgrade to calibration
+# (not fail) so the capture still completes with an honest label. The floor is
+# hard-coded on purpose — it must not follow the same env override that shortens
+# the cycle. v2 (no phases) is unaffected.
+# ------------------------------------------------------------
+CONTRACT_NORMAL_MIN_SEC=7140  # 2h minus 1m clock tolerance
+if [[ "$v3_mode" == true && "$case_label" == evaluation ]]; then
+  guard_ns=$(jq -r '.phases[] | select(.phase == "normal") | .start' "$phases_json")
+  guard_ne=$(jq -r '.phases[] | select(.phase == "normal") | .end' "$phases_json")
+  guard_normal_sec=$(( $(parse_utc_epoch "$guard_ne" 'phases-json normal.end') - \
+                       $(parse_utc_epoch "$guard_ns" 'phases-json normal.start') ))
+  if (( guard_normal_sec < CONTRACT_NORMAL_MIN_SEC )); then
+    printf '[WARN] normal lead-in %ss < contract %ss; downgrading case_label evaluation -> calibration\n' \
+      "$guard_normal_sec" "$CONTRACT_NORMAL_MIN_SEC" >&2
+    case_label='calibration'
+  fi
+fi
 
 scenario_metadata=$(jq -cn \
   --arg title "$scenario_title" \
@@ -285,11 +362,72 @@ t1_epoch=$(parse_utc_epoch "$t1_raw" t1)
 t2_epoch=$(parse_utc_epoch "$t2_raw" t2)
 (( t2_epoch >= t1_epoch )) || die 't2 must be greater than or equal to t1'
 
-# Capture window contract v2 (spec-eval-data-capture §2.1, 2026-07-20):
-# scenario segment is [t1-10m, t2+20m]; the 2h normal lead-in moved to the
-# shared daily normal segment (dump-normal-segment.sh).
-capture_start_epoch=$(( t1_epoch - 10 * 60 ))
-capture_end_epoch=$(( t2_epoch + 20 * 60 ))
+phases_enriched='[]'
+if [[ "$v3_mode" == true ]]; then
+  # Capture window contract v3 (spec-eval-data-capture §2.2, 2026-07-24):
+  # capture_start = normal.start (=cycle_start), capture_end = cooldown.end
+  # (= t2+30m in production; the runner's phases.json is the single source of
+  # truth so shortened smoke cycles capture without a hardcoded 30m wait).
+  # injection.start/.end must equal --t1/--t2 (runner/capture consistency).
+  [[ -r "$phases_json" ]] || die "--phases-json is not readable: $phases_json"
+  # The runner emits an envelope object {schema_version, run_id, scenario_id,
+  # phases: [...]}; golden_sha256 may be null until restore emits a digest
+  # (known TODO). Validate the envelope, then work off .phases below.
+  jq -e '
+    (type == "object") and (.phases | type == "array") and
+    ([.phases[].phase] as $p |
+      ($p | index("trainer_reset")) != null and
+      ($p | index("normal")) != null and
+      ($p | index("buffer")) != null and
+      ($p | index("injection")) != null and
+      ($p | index("cooldown")) != null) and
+    (.phases[] | select(.phase == "trainer_reset") |
+      (.at | type == "string") and (.golden_id | type == "string") and
+      ((.golden_sha256 | type == "string") or .golden_sha256 == null)) and
+    (.phases[] | select(.phase != "trainer_reset") |
+      (.start | type == "string") and (.end | type == "string"))
+  ' "$phases_json" >/dev/null ||
+    die 'phases-json is missing required phases (trainer_reset/normal/buffer/injection/cooldown) or fields'
+
+  normal_start_raw=$(jq -r '.phases[] | select(.phase == "normal") | .start' "$phases_json")
+  injection_start_raw=$(jq -r '.phases[] | select(.phase == "injection") | .start' "$phases_json")
+  injection_end_raw=$(jq -r '.phases[] | select(.phase == "injection") | .end' "$phases_json")
+  injection_start_epoch=$(parse_utc_epoch "$injection_start_raw" 'phases-json injection.start')
+  injection_end_epoch=$(parse_utc_epoch "$injection_end_raw" 'phases-json injection.end')
+  (( injection_start_epoch == t1_epoch )) ||
+    die "phases-json injection.start ($injection_start_raw) must equal --t1 ($t1_raw)"
+  (( injection_end_epoch == t2_epoch )) ||
+    die "phases-json injection.end ($injection_end_raw) must equal --t2 ($t2_raw)"
+
+  capture_start_epoch=$(parse_utc_epoch "$normal_start_raw" 'phases-json normal.start')
+  cooldown_end_raw=$(jq -r '.phases[] | select(.phase == "cooldown") | .end' "$phases_json")
+  capture_end_epoch=$(parse_utc_epoch "$cooldown_end_raw" 'phases-json cooldown.end')
+  (( capture_end_epoch >= t2_epoch )) ||
+    die "phases-json cooldown.end ($cooldown_end_raw) must not precede --t2 ($t2_raw)"
+
+  # Carry phases[] into meta.json verbatim, plus *_kst companions per field.
+  while IFS= read -r phase_obj; do
+    phase_name=$(jq -r '.phase' <<<"$phase_obj")
+    if [[ "$phase_name" == trainer_reset ]]; then
+      at_epoch=$(parse_utc_epoch "$(jq -r '.at' <<<"$phase_obj")" 'phases-json trainer_reset.at')
+      enriched=$(jq -c --arg at_kst "$(kst_from_epoch "$at_epoch")" '. + {at_kst:$at_kst}' <<<"$phase_obj")
+    else
+      start_epoch=$(parse_utc_epoch "$(jq -r '.start' <<<"$phase_obj")" "phases-json $phase_name.start")
+      end_epoch=$(parse_utc_epoch "$(jq -r '.end' <<<"$phase_obj")" "phases-json $phase_name.end")
+      enriched=$(jq -c \
+        --arg start_kst "$(kst_from_epoch "$start_epoch")" \
+        --arg end_kst "$(kst_from_epoch "$end_epoch")" \
+        '. + {start_kst:$start_kst, end_kst:$end_kst}' <<<"$phase_obj")
+    fi
+    phases_enriched=$(jq -c --argjson obj "$enriched" '. + [$obj]' <<<"$phases_enriched")
+  done < <(jq -c '.phases[]' "$phases_json")
+else
+  # Capture window contract v2 (spec-eval-data-capture §2.1, 2026-07-20):
+  # scenario segment is [t1-10m, t2+20m]; the 2h normal lead-in moved to the
+  # shared daily normal segment (dump-normal-segment.sh).
+  capture_start_epoch=$(( t1_epoch - 10 * 60 ))
+  capture_end_epoch=$(( t2_epoch + 20 * 60 ))
+fi
 t1=$(iso_utc_from_epoch "$t1_epoch")
 t2=$(iso_utc_from_epoch "$t2_epoch")
 capture_start=$(iso_utc_from_epoch "$capture_start_epoch")
@@ -299,6 +437,80 @@ t2_kst=$(kst_from_epoch "$t2_epoch")
 capture_start_kst=$(kst_from_epoch "$capture_start_epoch")
 capture_end_kst=$(kst_from_epoch "$capture_end_epoch")
 final_dir="${output_root%/}/$case_id"
+
+# ------------------------------------------------------------
+# Topology periodic bundle (spec §2.2, EventCluster contract, 2026-07-24,
+# v3-only): the runner polls topology/service-tree throughout the cycle and
+# hands the raw bundle off via --topology-bundle. Verified here (sha256 +
+# chronological + >=1 snapshot inside [t1,t2]) so a bad/incomplete bundle
+# dies before any live capture work starts; a missing bundle is fail-open —
+# a collector outage must not kill the whole capture (spec: "수집기 장애는
+# 큐를 멈추지 않고... 캡처는 번들 부재 시 경고 후 진행").
+# ------------------------------------------------------------
+topology_bundle_meta='null'
+if [[ -n "$topology_bundle" ]]; then
+  [[ -d "$topology_bundle" ]] || die "--topology-bundle is not a directory: $topology_bundle"
+  tb_manifest="${topology_bundle%/}/manifest.json"
+  [[ -r "$tb_manifest" ]] || die "topology bundle has no readable manifest.json: $tb_manifest"
+  # A snapshot is either a full pair or a blank failure tick (graph=[] and
+  # service_tree=null) — the collector appends blanks for failed ticks and
+  # records the failure in capture_failures[] (수집 공백도 기록 원칙).
+  jq -e '
+    ((.schema_version | tostring) == "1") and
+    (.capture_interval_seconds | type == "number") and
+    (.capture_failures | type == "array") and
+    (.snapshots | type == "array" and length > 0) and
+    (.snapshots[] |
+      (.captured_at | type == "string") and
+      (((.graph | type == "array" and length == 0) and .service_tree == null) or
+       ((.graph | type == "array" and length > 0) and
+        (.graph[] |
+          (.path | type == "string") and (.request_url | type == "string") and
+          (.http_status | type == "number") and (.sha256 | type == "string")) and
+        (.service_tree |
+          (.path | type == "string") and (.request_url | type == "string") and
+          (.http_status | type == "number") and (.sha256 | type == "string")))))
+  ' "$tb_manifest" >/dev/null ||
+    die 'topology bundle manifest.json is missing required fields (spec §2.2: schema_version/capture_interval_seconds/capture_failures[]/snapshots[].graph[]/service_tree)'
+
+  # Raw-bytes re-verification: every referenced file must exist and hash to
+  # the value manifest.json recorded (원본 무가공 원칙 — no re-derivation).
+  while IFS=$'\t' read -r tb_rel_path tb_sha256; do
+    tb_file="${topology_bundle%/}/$tb_rel_path"
+    [[ -r "$tb_file" ]] || die "topology bundle references a missing file: $tb_rel_path"
+    [[ "$(sha256sum "$tb_file" | awk '{print $1}')" == "$tb_sha256" ]] ||
+      die "topology bundle sha256 mismatch: $tb_rel_path"
+  done < <(jq -r '.snapshots[] | select((.graph | length) > 0) | (.graph[] | [.path, .sha256]), ([.service_tree.path, .service_tree.sha256]) | @tsv' "$tb_manifest")
+
+  # Chronological order + minimum coverage: >=1 snapshot inside [t1, t2].
+  tb_prev_epoch=''
+  tb_covered=0
+  while IFS= read -r tb_captured_at; do
+    tb_cur_epoch=$(parse_utc_epoch "$tb_captured_at" 'topology bundle snapshots[].captured_at')
+    if [[ -n "$tb_prev_epoch" ]]; then
+      (( tb_cur_epoch >= tb_prev_epoch )) ||
+        die "topology bundle snapshots[].captured_at is not chronological at $tb_captured_at"
+    fi
+    tb_prev_epoch=$tb_cur_epoch
+    if (( tb_cur_epoch >= t1_epoch && tb_cur_epoch <= t2_epoch )); then
+      tb_covered=$(( tb_covered + 1 ))
+    fi
+  done < <(jq -r '.snapshots[] | select((.graph | length) > 0) | .captured_at' "$tb_manifest")
+  (( tb_covered >= 1 )) ||
+    die 'topology bundle has no successful snapshots[] inside the injection window [t1, t2]'
+
+  tb_snapshot_count=$(jq -r '.snapshots | length' "$tb_manifest")
+  tb_failure_count=$(jq -r '.capture_failures | length' "$tb_manifest")
+  tb_interval_seconds=$(jq -r '.capture_interval_seconds' "$tb_manifest")
+  topology_bundle_meta=$(jq -cn \
+    --argjson snapshot_count "$tb_snapshot_count" \
+    --argjson capture_failure_count "$tb_failure_count" \
+    --argjson interval_seconds "$tb_interval_seconds" \
+    '{path:"topology/", snapshot_count:$snapshot_count,
+      capture_failure_count:$capture_failure_count, interval_seconds:$interval_seconds}')
+elif [[ "$v3_mode" == true ]]; then
+  printf '[WARN] --topology-bundle not supplied; case will have no periodic topology snapshots (fail-open)\n' >&2
+fi
 
 # ------------------------------------------------------------
 # schema 1.3 companion metadata (spec-eval-data-capture §2.1):
@@ -332,74 +544,116 @@ if [[ "$case_label" == evaluation ]]; then
 fi
 
 normal_provenance='null'
-segments=$(jq -cn \
-  --arg start "$capture_start" --arg finish "$capture_end" \
-  '[{role:"scenario", ref:null, original_start:$start, original_end:$finish, tod_phase:null}]')
+segments='null'
 rebase='null'
-if [[ -n "$normal_segment" ]]; then
-  normal_meta="${normal_segment%/}/meta.json"
-  [[ -r "$normal_meta" ]] || die "--normal-segment has no readable meta.json: $normal_meta"
-  jq -e '
-    (.segment_start | type == "string") and (.segment_end | type == "string")
-  ' "$normal_meta" >/dev/null || die 'normal-segment meta.json is missing segment bounds'
-  normal_start=$(jq -r '.segment_start' "$normal_meta")
-  normal_end=$(jq -r '.segment_end' "$normal_meta")
-  normal_tod_phase=$(jq -r '.tod_phase // empty' "$normal_meta")
-  normal_end_epoch=$(parse_utc_epoch "$normal_end" 'normal-segment segment_end')
-  rebase_delta_sec=$(( capture_start_epoch - normal_end_epoch ))
-  normal_ref=$(realpath -m "$normal_segment")
-  segments=$(jq -c \
-    --arg ref "$normal_ref" --arg start "$normal_start" --arg finish "$normal_end" \
-    --arg phase "$normal_tod_phase" \
-    '. + [{role:"normal", ref:$ref, original_start:$start, original_end:$finish,
-           tod_phase:(if $phase == "" then null else $phase end)}]' \
-    <<<"$segments")
-  rebase=$(jq -cn \
-    --argjson delta "$rebase_delta_sec" --arg seam "$capture_start" \
-    '{policy:"shift_normal_forward", delta_sec:$delta, seam_at:$seam}')
-  normal_provenance=$(jq -c '{
-    captured_at: (.captured_at // null), loadgen_seed: (.loadgen_seed // null),
-    baseline_rps: (.baseline_rps // null), testbed_commit: (.testbed_commit // null)
-  }' "$normal_meta")
+if [[ "$v3_mode" == false ]]; then
+  segments=$(jq -cn \
+    --arg start "$capture_start" --arg finish "$capture_end" \
+    '[{role:"scenario", ref:null, original_start:$start, original_end:$finish, tod_phase:null}]')
+  if [[ -n "$normal_segment" ]]; then
+    normal_meta="${normal_segment%/}/meta.json"
+    [[ -r "$normal_meta" ]] || die "--normal-segment has no readable meta.json: $normal_meta"
+    jq -e '
+      (.segment_start | type == "string") and (.segment_end | type == "string")
+    ' "$normal_meta" >/dev/null || die 'normal-segment meta.json is missing segment bounds'
+    normal_start=$(jq -r '.segment_start' "$normal_meta")
+    normal_end=$(jq -r '.segment_end' "$normal_meta")
+    normal_tod_phase=$(jq -r '.tod_phase // empty' "$normal_meta")
+    normal_end_epoch=$(parse_utc_epoch "$normal_end" 'normal-segment segment_end')
+    rebase_delta_sec=$(( capture_start_epoch - normal_end_epoch ))
+    normal_ref=$(realpath -m "$normal_segment")
+    segments=$(jq -c \
+      --arg ref "$normal_ref" --arg start "$normal_start" --arg finish "$normal_end" \
+      --arg phase "$normal_tod_phase" \
+      '. + [{role:"normal", ref:$ref, original_start:$start, original_end:$finish,
+             tod_phase:(if $phase == "" then null else $phase end)}]' \
+      <<<"$segments")
+    rebase=$(jq -cn \
+      --argjson delta "$rebase_delta_sec" --arg seam "$capture_start" \
+      '{policy:"shift_normal_forward", delta_sec:$delta, seam_at:$seam}')
+    normal_provenance=$(jq -c '{
+      captured_at: (.captured_at // null), loadgen_seed: (.loadgen_seed // null),
+      baseline_rps: (.baseline_rps // null), testbed_commit: (.testbed_commit // null)
+    }' "$normal_meta")
+  fi
 fi
 
 if [[ "$dry_run" == true ]]; then
-  jq -n \
-    --arg case_id "$case_id" \
-    --arg scenario_id "$scenario_id" \
-    --argjson scenario_metadata "$scenario_metadata" \
-    --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
-    --arg case_label "$case_label" \
-    --arg t1 "$t1" \
-    --arg t2 "$t2" \
-    --arg capture_start "$capture_start" \
-    --arg capture_end "$capture_end" \
-    --arg final_dir "$final_dir" \
-    --arg run_script_sha256 "$run_script_sha256" \
-    --arg run_catalog_sha256 "$run_catalog_sha256" \
-    --arg run_plan_sha256 "$run_plan_sha256" \
-    --arg t1_kst "$t1_kst" \
-    --arg t2_kst "$t2_kst" \
-    --arg capture_start_kst "$capture_start_kst" \
-    --arg capture_end_kst "$capture_end_kst" \
-    --argjson segments "$segments" \
-    --argjson rebase "$rebase" \
-    --argjson normal_provenance "$normal_provenance" \
-    --argjson preflight "$preflight" \
-    --argjson evaluation_eligible "$evaluation_eligible" \
-    '{mode:"dry-run", schema_version:"1.3", case_id:$case_id, scenario_id:$scenario_id,
-      scenario_metadata:$scenario_metadata,
-      scenario_metadata_sha256:$scenario_metadata_sha256,
-      case_label:$case_label, evaluation_eligible:$evaluation_eligible,
-      time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
-      capture_end:$capture_end, model_snapshot_not_before:$capture_end,
-      t1_kst:$t1_kst, t2_kst:$t2_kst, capture_start_kst:$capture_start_kst,
-      capture_end_kst:$capture_end_kst,
-      segments:$segments, rebase:$rebase, normal_provenance:$normal_provenance,
-      preflight:$preflight, topology_snapshot:null,
-      run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
-      run_plan_sha256:$run_plan_sha256,
-      golden_anomaly_file:false, final_dir:$final_dir}'
+  if [[ "$v3_mode" == true ]]; then
+    jq -n \
+      --arg case_id "$case_id" \
+      --arg scenario_id "$scenario_id" \
+      --argjson scenario_metadata "$scenario_metadata" \
+      --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+      --arg case_label "$case_label" \
+      --arg t1 "$t1" \
+      --arg t2 "$t2" \
+      --arg capture_start "$capture_start" \
+      --arg capture_end "$capture_end" \
+      --arg final_dir "$final_dir" \
+      --arg run_script_sha256 "$run_script_sha256" \
+      --arg run_catalog_sha256 "$run_catalog_sha256" \
+      --arg run_plan_sha256 "$run_plan_sha256" \
+      --arg t1_kst "$t1_kst" \
+      --arg t2_kst "$t2_kst" \
+      --arg capture_start_kst "$capture_start_kst" \
+      --arg capture_end_kst "$capture_end_kst" \
+      --argjson phases "$phases_enriched" \
+      --argjson preflight "$preflight" \
+      --argjson topology_bundle "$topology_bundle_meta" \
+      --argjson evaluation_eligible "$evaluation_eligible" \
+      '{mode:"dry-run", schema_version:"2.0", timeline:"continuous",
+        case_id:$case_id, scenario_id:$scenario_id,
+        scenario_metadata:$scenario_metadata,
+        scenario_metadata_sha256:$scenario_metadata_sha256,
+        case_label:$case_label, evaluation_eligible:$evaluation_eligible,
+        time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
+        capture_end:$capture_end, model_snapshot_not_before:$capture_end,
+        t1_kst:$t1_kst, t2_kst:$t2_kst, capture_start_kst:$capture_start_kst,
+        capture_end_kst:$capture_end_kst,
+        phases:$phases, clickhouse_tables:[], topology_bundle:$topology_bundle,
+        preflight:$preflight, topology_snapshot:null,
+        run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
+        run_plan_sha256:$run_plan_sha256,
+        golden_anomaly_file:false, final_dir:$final_dir}'
+  else
+    jq -n \
+      --arg case_id "$case_id" \
+      --arg scenario_id "$scenario_id" \
+      --argjson scenario_metadata "$scenario_metadata" \
+      --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+      --arg case_label "$case_label" \
+      --arg t1 "$t1" \
+      --arg t2 "$t2" \
+      --arg capture_start "$capture_start" \
+      --arg capture_end "$capture_end" \
+      --arg final_dir "$final_dir" \
+      --arg run_script_sha256 "$run_script_sha256" \
+      --arg run_catalog_sha256 "$run_catalog_sha256" \
+      --arg run_plan_sha256 "$run_plan_sha256" \
+      --arg t1_kst "$t1_kst" \
+      --arg t2_kst "$t2_kst" \
+      --arg capture_start_kst "$capture_start_kst" \
+      --arg capture_end_kst "$capture_end_kst" \
+      --argjson segments "$segments" \
+      --argjson rebase "$rebase" \
+      --argjson normal_provenance "$normal_provenance" \
+      --argjson preflight "$preflight" \
+      --argjson evaluation_eligible "$evaluation_eligible" \
+      '{mode:"dry-run", schema_version:"1.3", case_id:$case_id, scenario_id:$scenario_id,
+        scenario_metadata:$scenario_metadata,
+        scenario_metadata_sha256:$scenario_metadata_sha256,
+        case_label:$case_label, evaluation_eligible:$evaluation_eligible,
+        time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
+        capture_end:$capture_end, model_snapshot_not_before:$capture_end,
+        t1_kst:$t1_kst, t2_kst:$t2_kst, capture_start_kst:$capture_start_kst,
+        capture_end_kst:$capture_end_kst,
+        segments:$segments, rebase:$rebase, normal_provenance:$normal_provenance,
+        preflight:$preflight, topology_snapshot:null,
+        run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
+        run_plan_sha256:$run_plan_sha256,
+        golden_anomaly_file:false, final_dir:$final_dir}'
+  fi
   exit 0
 fi
 
@@ -490,9 +744,19 @@ curl --fail --silent --show-error --get "${VM_URL%/}/api/v1/export" \
   --data-urlencode "end=$capture_end" \
   --output "$staging_dir/data/victoriametrics.export"
 
+# ClickHouse Parquet exports buffer a full row group in memory. The default
+# 1M-row row group made the production window's otel_traces (~567k wide trace
+# rows) allocate 2.78 GiB and blow CH's 2.5 GiB per-query limit → HTTP 500
+# (2026-07-25 F01-H). Bounding the row group (+ read block) keeps peak memory
+# well under the limit regardless of window size, and a multi-row-group Parquet
+# is standard/readable. Passed as URL settings so every FORMAT Parquet export
+# is memory-bounded.
+CH_EXPORT_SETTINGS="output_format_parquet_row_group_size=50000&max_block_size=50000&max_threads=2"
+
 ch_export() {
   local table=$1 query=$2 output=$3 credential
   log "exporting ClickHouse table=$table"
+  local url="${CH_URL%/}/?${CH_EXPORT_SETTINGS}"
   if [[ -n "$CH_USER" ]]; then
     # Feed credentials through curl's stdin config so they never appear in argv.
     credential="${CH_USER}:${CH_PASSWORD}"
@@ -502,42 +766,207 @@ ch_export() {
     credential=${credential//$'\r'/\\r}
     printf 'user = "%s"\n' "$credential" |
       curl --config - --fail --silent --show-error \
-        --data-binary "$query" "${CH_URL%/}/" \
+        --data-binary "$query" "$url" \
         --output "$output"
     return
   fi
   curl --fail --silent --show-error \
-    --data-binary "$query" "${CH_URL%/}/" \
+    --data-binary "$query" "$url" \
     --output "$output"
+}
+
+ch_query() {
+  local query=$1 credential
+  if [[ -n "$CH_USER" ]]; then
+    credential="${CH_USER}:${CH_PASSWORD}"
+    credential=${credential//\\/\\\\}
+    credential=${credential//\"/\\\"}
+    credential=${credential//$'\n'/\\n}
+    credential=${credential//$'\r'/\\r}
+    printf 'user = "%s"\n' "$credential" |
+      curl --config - --fail --silent --show-error --data-binary "$query" "${CH_URL%/}/"
+    return
+  fi
+  curl --fail --silent --show-error --data-binary "$query" "${CH_URL%/}/"
 }
 
 ch_start="parseDateTime64BestEffort('$capture_start')"
 ch_end="parseDateTime64BestEffort('$capture_end')"
-ch_export otel_traces_local \
-  "SELECT * FROM lucida.otel_traces_local WHERE timestamp >= $ch_start AND timestamp <= $ch_end FORMAT Parquet" \
-  "$staging_dir/data/clickhouse/otel_traces_local.parquet"
-ch_export lucida_logs_local \
-  "SELECT * FROM lucida.lucida_logs_local WHERE timestamp >= $ch_start AND timestamp <= $ch_end FORMAT Parquet" \
-  "$staging_dir/data/clickhouse/lucida_logs_local.parquet"
-ch_export lucida_events_local \
-  "SELECT * REPLACE(toString(event_id) AS event_id, toString(episode_id) AS episode_id) FROM lucida.lucida_events_local WHERE occurred_at >= $ch_start AND occurred_at <= $ch_end FORMAT Parquet" \
-  "$staging_dir/data/clickhouse/lucida_events_local.parquet"
-ch_export host_connections \
-  'SELECT * FROM lucida.host_connections FORMAT Parquet' \
-  "$staging_dir/data/clickhouse/host_connections.parquet"
+clickhouse_tables_json='[]'
+if [[ "$v3_mode" == true ]]; then
+  # ClickHouse capture — v3 12-table catalog (spec §2.2). Every table is scoped
+  # to the capture window; none is exported whole. Each entry records
+  # rows/time_min/time_max in meta.clickhouse_tables[] so "did data land" is
+  # answerable without opening a file (2026-07-24 "CH 데이터 없음" 논쟁 재발 방지).
+  #
+  # Scoping modes:
+  #   slice — WHERE <time_col> BETWEEN window bounds.
+  #   snap  — no usable own time column for scoping; scope by the (target_id,
+  #           proc_key) pairs that process_snapshot actually observed inside the
+  #           window. process_meta registers a process at first sight, so a
+  #           seen_at slice would drop the metadata of every process that was
+  #           already running when the window opened (2026-07-27 실측: 창 내
+  #           1157 proc_key 중 499개만 커버 = 57% 유실).
+  ch_v3_tables=(
+    'otel_traces_local:timestamp:slice'
+    'lucida_logs_local:timestamp:slice'
+    'lucida_events_local:occurred_at:slice'
+    'dpm_session_local:timestamp:slice'
+    'dpm_topsql_local:timestamp:slice'
+    'kcm_events_local:timestamp:slice'
+    'process_snapshot:ts:slice'
+    'trace_error_chains_local:window_start:slice'
+    'trace_path_signatures_local:window_start:slice'
+    'syslog_local:received_at:slice'
+    'host_connections:timestamp:slice'
+    'process_meta:seen_at:snap'
+    # 이벤트↔클러스터 매핑의 CH 정본 (2026-08-13 신 코드가 lucida_events_local.cluster_id
+    # 직기입을 폐지하고 이 조인 표로 교체 — 구 컬럼은 rolling migration fallback 으로 빈 값).
+    # 클러스터 모듈 채점("같은 사건을 하나로 잘 묶었나")의 입력이라 케이스에 실어야 한다.
+    'event_cluster_projection_local:assigned_at:slice'
+  )
+  # meta.json 정책 검증이 표 수를 검사한다 — 카탈로그에서 파생시켜 하드코딩 드리프트를
+  # 막는다(2026-08-20: 13번째 표 추가 때 12 하드코딩이 남아 캡처가 죽은 실사고).
+  ch_v3_table_count=${#ch_v3_tables[@]}
+  for entry in "${ch_v3_tables[@]}"; do
+    IFS=':' read -r tbl time_col mode <<<"$entry"
+    file="$staging_dir/data/clickhouse/${tbl}.parquet"
+    select_expr='*'
+    [[ "$tbl" == lucida_events_local ]] &&
+      select_expr='* REPLACE(toString(event_id) AS event_id, toString(episode_id) AS episode_id)'
+    [[ "$tbl" == event_cluster_projection_local ]] &&
+      select_expr='* REPLACE(toString(event_id) AS event_id)'
+    if [[ "$mode" == snap ]]; then
+      where_clause=" WHERE (target_id, proc_key) IN (SELECT target_id, proc_key FROM lucida.process_snapshot WHERE ts >= $ch_start AND ts <= $ch_end)"
+    else
+      where_clause=" WHERE $time_col >= $ch_start AND $time_col <= $ch_end"
+    fi
+    ch_export "$tbl" "SELECT $select_expr FROM lucida.$tbl${where_clause} FORMAT Parquet" "$file"
+    stats_line=$(ch_query "SELECT count(), toString(min($time_col)), toString(max($time_col)) FROM lucida.$tbl${where_clause} FORMAT TSV")
+    rows=$(cut -f1 <<<"$stats_line")
+    if [[ "$rows" == 0 ]]; then
+      entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
+        --arg time_column "$time_col" --argjson rows "$rows" --arg scope "$mode" \
+        '{table:$table, file:$file, rows:$rows, time_column:$time_column, scope:$scope, time_min:null, time_max:null}')
+    else
+      time_min_raw=$(cut -f2 <<<"$stats_line")
+      time_max_raw=$(cut -f3 <<<"$stats_line")
+      entry_json=$(jq -cn --arg table "$tbl" --arg file "data/clickhouse/${tbl}.parquet" \
+        --arg time_column "$time_col" --argjson rows "$rows" --arg scope "$mode" \
+        --arg time_min "$time_min_raw" --arg time_max "$time_max_raw" \
+        '{table:$table, file:$file, rows:$rows, time_column:$time_column, scope:$scope, time_min:$time_min, time_max:$time_max}')
+    fi
+    clickhouse_tables_json=$(jq -c --argjson e "$entry_json" '. + [$e]' <<<"$clickhouse_tables_json")
+  done
 
-log 'dumping PostgreSQL full control/inventory snapshot'
+  # Drift warning (spec §2.2): any base table outside the 12-table list that
+  # currently holds data is a schema-drift signal, not a capture failure.
+  known_tables=$(printf '%s\n' "${ch_v3_tables[@]}" | cut -d: -f1)
+  # Join against system.tables so MV backing tables (.inner_id.*) and
+  # AggregatingMergeTree MV targets do not raise false drift warnings — both
+  # hold physical parts (2026-07-24 실측: .inner_id.* 16M행) and are rebuilt
+  # from base-table re-insert on restore, so they are intentionally uncaptured.
+  drift_tables=$(ch_query "SELECT p.table FROM system.parts AS p INNER JOIN system.tables AS t ON t.database = p.database AND t.name = p.table WHERE p.database='lucida' AND p.active AND t.engine IN ('MergeTree','ReplacingMergeTree','SummingMergeTree') AND p.table NOT LIKE '.inner%' AND p.table != 'schema_migrations' GROUP BY p.table HAVING sum(p.rows) > 0 FORMAT TSV") || drift_tables=''
+  while IFS= read -r drift_table; do
+    [[ -z "$drift_table" ]] && continue
+    grep -qx "$drift_table" <<<"$known_tables" ||
+      printf '[WARN] unlisted table with data: %s\n' "$drift_table" >&2
+  done <<<"$drift_tables"
+else
+  ch_export otel_traces_local \
+    "SELECT * FROM lucida.otel_traces_local WHERE timestamp >= $ch_start AND timestamp <= $ch_end FORMAT Parquet" \
+    "$staging_dir/data/clickhouse/otel_traces_local.parquet"
+  ch_export lucida_logs_local \
+    "SELECT * FROM lucida.lucida_logs_local WHERE timestamp >= $ch_start AND timestamp <= $ch_end FORMAT Parquet" \
+    "$staging_dir/data/clickhouse/lucida_logs_local.parquet"
+  ch_export lucida_events_local \
+    "SELECT * REPLACE(toString(event_id) AS event_id, toString(episode_id) AS episode_id) FROM lucida.lucida_events_local WHERE occurred_at >= $ch_start AND occurred_at <= $ch_end FORMAT Parquet" \
+    "$staging_dir/data/clickhouse/lucida_events_local.parquet"
+  ch_export host_connections \
+    "SELECT * FROM lucida.host_connections WHERE timestamp >= $ch_start AND timestamp <= $ch_end FORMAT Parquet" \
+    "$staging_dir/data/clickhouse/host_connections.parquet"
+fi
+
+log 'dumping PostgreSQL (inventory snapshot + window-scoped history)'
 pg_dump_data_dir="$staging_dir/data"
 if [[ -n "$CAPTURE_HOST_OUTPUT_ROOT" ]]; then
   pg_dump_data_dir="${CAPTURE_HOST_OUTPUT_ROOT%/}/${staging_dir##*/}/data"
 fi
-PGPASSWORD="$PG_PASSWORD" docker run --rm \
+
+# ------------------------------------------------------------
+# PG scope (2026-08-13). 이 덤프는 DB 통째였다. case-f03-g-v3 실측: 케이스 창 밖
+# incidents 55/56행이 그대로 실려 다른 시나리오의 정답을 한국어 제목으로 누설했고
+# (RCA 소비자는 PG incidents 를 backing store 로 읽는다, spec §3), 그와 별개로
+# automation_dist_artifacts 한 표가 덤프 3.1GB 중 2.48GB 를 먹고 있었다.
+#
+# scripts/scenarios/pg-scope.json 이 표를 셋으로 가른다 —
+#   snap  : 인벤토리·정의·모델 상태. pg_dump 가 통째로 담는다(기본값)
+#   slice : 파이프라인이 만든 관측·판정. 덤프에서 빼고 창으로 잘라 CSV 로 낸다
+#   drop  : 평가에 안 쓰이고 공개 위험만 있는 것. 스키마만 남기고 비운다
+# 실측 결과 3.1GB/14분 → 16MB/3.6초 + CSV 98MB, FK 361개 전부 유효, 창 밖 0행.
+# ------------------------------------------------------------
+# 정본 배치는 레포의 scripts/scenarios/ 지만, 러너 컨테이너에서는 같은 디렉터리가
+# /opt/lucida/scenario-contracts 라는 **다른 이름**으로 bind mount 된다. 형제
+# 디렉터리 이름을 하나로 가정하면 배포 배치에서만 깨진다 — 2026-08-14 첫 캡처
+# 파일럿이 정확히 여기서 멎었다(주입·쿨다운·CH 12표·VM 까지 전부 성공한 뒤).
+pg_scope_tool="${PG_SCOPE_TOOL:-}"
+pg_scope_base="$(dirname "$(realpath "$0")")"
+if [[ -z "$pg_scope_tool" ]]; then
+  for candidate in "$pg_scope_base/scenarios/pg-scope-export.py" \
+                   "$pg_scope_base/scenario-contracts/pg-scope-export.py"; do
+    [[ -f "$candidate" ]] && { pg_scope_tool="$candidate"; break; }
+  done
+fi
+[[ -n "$pg_scope_tool" && -f "$pg_scope_tool" ]] ||
+  die "pg-scope-export.py 없음 (시도: $pg_scope_base/{scenarios,scenario-contracts}; PG_SCOPE_TOOL 로 직접 지정 가능)"
+log "pg-scope tool: $pg_scope_tool"
+mkdir -p "$staging_dir/data/postgres"
+pg_scope_excl=$(python3 "$pg_scope_tool" --emit exclude-args | tr '\n' ' ')
+python3 "$pg_scope_tool" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
+python3 "$pg_scope_tool" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
+# TCP keepalives + a hard timeout on the cross-network (109->119 AP bridge)
+# pg_dump. Without keepalives an idle COPY period lets the bridge/NAT reap the
+# connection and pg_dump blocks forever in poll() (2026-07-25 production run:
+# F01-H pg_dump hung 55m at 2.48GB, PG backend already gone). keepalives keep
+# the socket alive; `timeout` bounds any residual hang so the capture fails and
+# the scheduler retries instead of stalling the queue indefinitely.
+PG_DUMP_TIMEOUT_SEC="${PG_DUMP_TIMEOUT_SEC:-900}"
+PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker run --rm \
   --user "$(id -u):$(id -g)" \
   --env PGPASSWORD \
   --volume "$pg_dump_data_dir:/out" \
   "$PG_DUMP_IMAGE" \
   pg_dump -Fc --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" \
-  --dbname "$PG_DATABASE" --file /out/postgres.dump
+  $pg_scope_excl \
+  --dbname "dbname=$PG_DATABASE keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5" \
+  --file /out/postgres.dump
+
+# slice 표를 캡처 창으로 잘라 CSV 로. \copy 가 아니라 서버측 COPY ... TO STDOUT +
+# \o 를 쓴다 — \copy 는 psql 자체 파서를 타는 한 줄 메타명령이라 인용 식별자와
+# :'변수' 를 쪼개 질의를 깨뜨린다(2026-08-13 실측).
+log 'exporting window-scoped PostgreSQL history'
+PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --env PGPASSWORD \
+  --volume "$pg_dump_data_dir:/out" \
+  "$PG_DUMP_IMAGE" \
+  psql --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" --dbname "$PG_DATABASE" \
+  --set ON_ERROR_STOP=1 \
+  --set win_start="$capture_start" --set win_end="$capture_end" \
+  --file /out/postgres/.export.sql
+rm -f "$staging_dir/data/postgres/.export.sql"
+
+# meta.postgres_tables[] — 파일을 열지 않고 meta 만으로 "데이터가 들었는가"를
+# 판정할 수 있어야 한다(clickhouse_tables[] 와 같은 계약, spec §2.2).
+postgres_tables_json='[]'
+while IFS= read -r pg_t; do
+  pg_csv="$staging_dir/data/postgres/${pg_t}.csv"
+  [[ -f "$pg_csv" ]] || die "pg slice 누락: $pg_t"
+  pg_rows=$(( $(wc -l < "$pg_csv") - 1 ))
+  postgres_tables_json=$(jq -c \
+    --arg table "$pg_t" --arg file "data/postgres/${pg_t}.csv" --argjson rows "$pg_rows" \
+    '. + [{table:$table, file:$file, rows:$rows, scope:"slice"}]' <<<"$postgres_tables_json")
+done < <(python3 "$pg_scope_tool" --emit slice-tables)
 
 # ------------------------------------------------------------
 # Topology snapshot (spec §4, 2026-07-20): the query API's cross-domain graph
@@ -584,18 +1013,45 @@ snapshot_topology() {
 }
 snapshot_topology
 
+# ------------------------------------------------------------
+# Topology periodic bundle re-home (spec §2.2, v3-only): byte-identical copy
+# of the runner's verified bundle into the case's topology/ — only
+# manifest.json is re-emitted, and only to inject case_id (원본 무가공
+# 원칙: graph/*.json, service-tree/*.json are never re-serialized).
+# ------------------------------------------------------------
+if [[ -n "$topology_bundle" ]]; then
+  log "re-homing topology bundle from $topology_bundle"
+  mkdir -p "$staging_dir/topology"
+  cp -a "$topology_bundle/." "$staging_dir/topology/"
+  tb_manifest_out=$(mktemp)
+  jq --arg case_id "$case_id" '.case_id = $case_id' "$staging_dir/topology/manifest.json" \
+    > "$tb_manifest_out"
+  mv "$tb_manifest_out" "$staging_dir/topology/manifest.json"
+fi
+
 required_files=(
   data/victoriametrics.export
-  data/clickhouse/otel_traces_local.parquet
-  data/clickhouse/lucida_logs_local.parquet
-  data/clickhouse/lucida_events_local.parquet
-  data/clickhouse/host_connections.parquet
   data/postgres.dump
+  data/postgres/restore.sql
   data/topology/topology-graph.json
   data/topology/asset-tree-service-unified.json
   models/stream-anomaly/global/v1/model.json
   models/stream-anomaly/global/v1/model.json.sha256
 )
+[[ -z "$topology_bundle" ]] || required_files+=(topology/manifest.json)
+if [[ "$v3_mode" == true ]]; then
+  for entry in "${ch_v3_tables[@]}"; do
+    tbl="${entry%%:*}"
+    required_files+=("data/clickhouse/${tbl}.parquet")
+  done
+else
+  required_files+=(
+    data/clickhouse/otel_traces_local.parquet
+    data/clickhouse/lucida_logs_local.parquet
+    data/clickhouse/lucida_events_local.parquet
+    data/clickhouse/host_connections.parquet
+  )
+fi
 for relative in "${required_files[@]}"; do
   [[ -s "$staging_dir/$relative" ]] || die "capture artifact is missing or empty: $relative"
 done
@@ -608,12 +1064,13 @@ done
   die 'golden.anomaly.json is forbidden; expected anomalies belong in the scenario YAML'
 
 # ------------------------------------------------------------
-# assembled/ (spec §2.1/§4): when a normal segment is supplied, build the
-# continuous-timeline merge (shift normal prefix forward by rebase.delta_sec,
-# concat scenario window). Scenario data/ stays real wall clock; originals are
-# not mutated. Skipped when no normal segment is available (e.g. calibration).
+# assembled/ (spec §2.1/§4, v2 only): when a normal segment is supplied,
+# build the continuous-timeline merge (shift normal prefix forward by
+# rebase.delta_sec, concat scenario window). Scenario data/ stays real wall
+# clock; originals are not mutated. v3's capture window is already a real
+# continuous timeline (§2.2), so assembled/ never applies there.
 # ------------------------------------------------------------
-if [[ -n "$normal_segment" ]]; then
+if [[ "$v3_mode" == false && -n "$normal_segment" ]]; then
   assemble_script="${ASSEMBLE_SCRIPT:-$(dirname "$(realpath "$0")")/assemble-eval-case.sh}"
   [[ -x "$assemble_script" ]] || die "assemble script is not executable: $assemble_script"
   log "assembling continuous timeline (delta=${rebase_delta_sec}s)"
@@ -639,84 +1096,183 @@ topology_snapshot=$(jq -cn \
   --argjson graph_params "$graph_params" \
   '{snapshot_at:$snapshot_at, endpoints:$endpoints, graph_params:$graph_params}')
 
-jq -n \
-  --arg schema_version '1.3' \
-  --arg case_id "$case_id" \
-  --arg scenario_id "$scenario_id" \
-  --argjson scenario_metadata "$scenario_metadata" \
-  --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
-  --arg case_label "$case_label" \
-  --arg t1 "$t1" \
-  --arg t2 "$t2" \
-  --arg capture_start "$capture_start" \
-  --arg capture_end "$capture_end" \
-  --arg t1_kst "$t1_kst" \
-  --arg t2_kst "$t2_kst" \
-  --arg capture_start_kst "$capture_start_kst" \
-  --arg capture_end_kst "$capture_end_kst" \
-  --arg dump_started_at "$dump_started_at" \
-  --arg dump_completed_at "$dump_completed_at" \
-  --arg dump_started_at_kst "$dump_started_at_kst" \
-  --arg dump_completed_at_kst "$dump_completed_at_kst" \
-  --arg model_snapshot_at "$model_snapshot_at" \
-  --arg model_snapshot_at_kst "$model_snapshot_at_kst" \
-  --argjson model_snapshot_lag_sec "$model_snapshot_lag_sec" \
-  --arg model_source_path "$MODEL_SOURCE" \
-  --arg model_sha256 "$model_sha256" \
-  --arg run_script_sha256 "$run_script_sha256" \
-  --arg run_catalog_sha256 "$run_catalog_sha256" \
-  --arg run_plan_sha256 "$run_plan_sha256" \
-  --argjson segments "$segments" \
-  --argjson rebase "$rebase" \
-  --argjson normal_provenance "$normal_provenance" \
-  --argjson preflight "$preflight" \
-  --argjson topology_snapshot "$topology_snapshot" \
-  --argjson evaluation_eligible "$evaluation_eligible" \
-  '{schema_version:$schema_version, case_id:$case_id, scenario_id:$scenario_id,
-    scenario_metadata:$scenario_metadata,
-    scenario_metadata_sha256:$scenario_metadata_sha256,
-    case_label:$case_label, evaluation_eligible:$evaluation_eligible,
-    time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
-    capture_end:$capture_end, t1_kst:$t1_kst, t2_kst:$t2_kst,
-    capture_start_kst:$capture_start_kst, capture_end_kst:$capture_end_kst,
-    dump_started_at:$dump_started_at, dump_completed_at:$dump_completed_at,
-    dump_started_at_kst:$dump_started_at_kst, dump_completed_at_kst:$dump_completed_at_kst,
-    model_snapshot_at:$model_snapshot_at, model_snapshot_at_kst:$model_snapshot_at_kst,
-    model_snapshot_lag_sec:$model_snapshot_lag_sec,
-    model_source_path:$model_source_path, model_sha256:$model_sha256,
-    run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
-    run_plan_sha256:$run_plan_sha256,
-    segments:$segments, rebase:$rebase, normal_provenance:$normal_provenance,
-    preflight:$preflight, topology_snapshot:$topology_snapshot,
-    golden_anomaly_file:false}' > "$staging_dir/meta.json"
+if [[ "$v3_mode" == true ]]; then
+  jq -n \
+    --arg schema_version '2.0' \
+    --arg case_id "$case_id" \
+    --arg scenario_id "$scenario_id" \
+    --argjson scenario_metadata "$scenario_metadata" \
+    --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+    --arg case_label "$case_label" \
+    --arg t1 "$t1" \
+    --arg t2 "$t2" \
+    --arg capture_start "$capture_start" \
+    --arg capture_end "$capture_end" \
+    --arg t1_kst "$t1_kst" \
+    --arg t2_kst "$t2_kst" \
+    --arg capture_start_kst "$capture_start_kst" \
+    --arg capture_end_kst "$capture_end_kst" \
+    --arg dump_started_at "$dump_started_at" \
+    --arg dump_completed_at "$dump_completed_at" \
+    --arg dump_started_at_kst "$dump_started_at_kst" \
+    --arg dump_completed_at_kst "$dump_completed_at_kst" \
+    --arg model_snapshot_at "$model_snapshot_at" \
+    --arg model_snapshot_at_kst "$model_snapshot_at_kst" \
+    --argjson model_snapshot_lag_sec "$model_snapshot_lag_sec" \
+    --arg model_source_path "$MODEL_SOURCE" \
+    --arg model_sha256 "$model_sha256" \
+    --arg run_script_sha256 "$run_script_sha256" \
+    --arg run_catalog_sha256 "$run_catalog_sha256" \
+    --arg run_plan_sha256 "$run_plan_sha256" \
+    --argjson phases "$phases_enriched" \
+    --argjson clickhouse_tables "$clickhouse_tables_json" \
+    --argjson postgres_tables "$postgres_tables_json" \
+    --argjson preflight "$preflight" \
+    --argjson topology_snapshot "$topology_snapshot" \
+    --argjson topology_bundle "$topology_bundle_meta" \
+    --argjson evaluation_eligible "$evaluation_eligible" \
+    '{schema_version:$schema_version, timeline:"continuous",
+      case_id:$case_id, scenario_id:$scenario_id,
+      scenario_metadata:$scenario_metadata,
+      scenario_metadata_sha256:$scenario_metadata_sha256,
+      case_label:$case_label, evaluation_eligible:$evaluation_eligible,
+      time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
+      capture_end:$capture_end, t1_kst:$t1_kst, t2_kst:$t2_kst,
+      capture_start_kst:$capture_start_kst, capture_end_kst:$capture_end_kst,
+      dump_started_at:$dump_started_at, dump_completed_at:$dump_completed_at,
+      dump_started_at_kst:$dump_started_at_kst, dump_completed_at_kst:$dump_completed_at_kst,
+      model_snapshot_at:$model_snapshot_at, model_snapshot_at_kst:$model_snapshot_at_kst,
+      model_snapshot_lag_sec:$model_snapshot_lag_sec,
+      model_source_path:$model_source_path, model_sha256:$model_sha256,
+      run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
+      run_plan_sha256:$run_plan_sha256,
+      phases:$phases, clickhouse_tables:$clickhouse_tables,
+      postgres_tables:$postgres_tables,
+      preflight:$preflight, topology_snapshot:$topology_snapshot,
+      topology_bundle:$topology_bundle,
+      golden_anomaly_file:false}' > "$staging_dir/meta.json"
 
-jq -e \
-  --arg schema_version '1.3' \
-  --arg capture_end "$capture_end" \
-  --arg case_label "$case_label" \
-  --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
-  '.schema_version == $schema_version and
-   .time_basis == "UTC" and .capture_end == $capture_end and
-   .scenario_metadata_sha256 == $scenario_metadata_sha256 and
-   (.scenario_metadata.title | length > 0) and
-   (.scenario_metadata.description | length > 0) and
-   (.scenario_metadata.cause | length > 0) and
-   (.scenario_metadata.injection_summary | length > 0) and
-   (.scenario_metadata.user_impact | length > 0) and
-   (.scenario_metadata.distinguishing_evidence | length > 0) and
-   .model_snapshot_at >= $capture_end and .case_label == $case_label and
-   .golden_anomaly_file == false and
-   (.segments | type == "array" and length >= 1) and
-   (.topology_snapshot.snapshot_at | type == "string" and length > 0) and
-   (if $case_label == "evaluation" then
-      .evaluation_eligible == true and
-      (.preflight.verdict | IN("clean", "clean_after_wait", "ai_judged_clean")) and
-      (.run_plan_sha256 | test("^[0-9a-f]{64}$")) and
-      (.run_script_sha256 | test("^[0-9a-f]{64}$")) and
-      (.run_catalog_sha256 | test("^[0-9a-f]{64}$"))
-    else .evaluation_eligible == false end)' \
-  "$staging_dir/meta.json" >/dev/null || die 'meta.json violates capture policy'
+  jq -e \
+    --arg schema_version '2.0' \
+    --arg capture_end "$capture_end" \
+    --arg case_label "$case_label" \
+    --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+    --argjson pg_slice_count "$(python3 "$pg_scope_tool" --emit slice-tables | wc -l)" \
+    --argjson ch_table_count "${ch_v3_table_count:?ch_v3_tables catalog missing}" \
+    '.schema_version == $schema_version and .timeline == "continuous" and
+     .time_basis == "UTC" and .capture_end == $capture_end and
+     .scenario_metadata_sha256 == $scenario_metadata_sha256 and
+     (.scenario_metadata.title | length > 0) and
+     (.scenario_metadata.description | length > 0) and
+     (.scenario_metadata.cause | length > 0) and
+     (.scenario_metadata.injection_summary | length > 0) and
+     (.scenario_metadata.user_impact | length > 0) and
+     (.scenario_metadata.distinguishing_evidence | length > 0) and
+     .model_snapshot_at >= $capture_end and .case_label == $case_label and
+     .golden_anomaly_file == false and
+     (.phases | type == "array" and length == 5) and
+     (.clickhouse_tables | type == "array" and length == $ch_table_count) and
+     (.postgres_tables | type == "array" and length == $pg_slice_count) and
+     (.postgres_tables | all(.scope == "slice" and (.rows | type == "number"))) and
+     (.topology_bundle == null or
+       (.topology_bundle.path == "topology/" and
+        (.topology_bundle.snapshot_count | type == "number") and
+        (.topology_bundle.capture_failure_count | type == "number") and
+        (.topology_bundle.interval_seconds | type == "number"))) and
+     (.topology_snapshot.snapshot_at | type == "string" and length > 0) and
+     (if $case_label == "evaluation" then
+        .evaluation_eligible == true and
+        (.preflight.verdict | IN("clean", "clean_after_wait", "ai_judged_clean")) and
+        (.run_plan_sha256 | test("^[0-9a-f]{64}$")) and
+        (.run_script_sha256 | test("^[0-9a-f]{64}$")) and
+        (.run_catalog_sha256 | test("^[0-9a-f]{64}$"))
+      else .evaluation_eligible == false end)' \
+    "$staging_dir/meta.json" >/dev/null || die 'meta.json violates capture policy'
+else
+  jq -n \
+    --arg schema_version '1.3' \
+    --arg case_id "$case_id" \
+    --arg scenario_id "$scenario_id" \
+    --argjson scenario_metadata "$scenario_metadata" \
+    --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+    --arg case_label "$case_label" \
+    --arg t1 "$t1" \
+    --arg t2 "$t2" \
+    --arg capture_start "$capture_start" \
+    --arg capture_end "$capture_end" \
+    --arg t1_kst "$t1_kst" \
+    --arg t2_kst "$t2_kst" \
+    --arg capture_start_kst "$capture_start_kst" \
+    --arg capture_end_kst "$capture_end_kst" \
+    --arg dump_started_at "$dump_started_at" \
+    --arg dump_completed_at "$dump_completed_at" \
+    --arg dump_started_at_kst "$dump_started_at_kst" \
+    --arg dump_completed_at_kst "$dump_completed_at_kst" \
+    --arg model_snapshot_at "$model_snapshot_at" \
+    --arg model_snapshot_at_kst "$model_snapshot_at_kst" \
+    --argjson model_snapshot_lag_sec "$model_snapshot_lag_sec" \
+    --arg model_source_path "$MODEL_SOURCE" \
+    --arg model_sha256 "$model_sha256" \
+    --arg run_script_sha256 "$run_script_sha256" \
+    --arg run_catalog_sha256 "$run_catalog_sha256" \
+    --arg run_plan_sha256 "$run_plan_sha256" \
+    --argjson segments "$segments" \
+    --argjson rebase "$rebase" \
+    --argjson normal_provenance "$normal_provenance" \
+    --argjson preflight "$preflight" \
+    --argjson topology_snapshot "$topology_snapshot" \
+    --argjson evaluation_eligible "$evaluation_eligible" \
+    '{schema_version:$schema_version, case_id:$case_id, scenario_id:$scenario_id,
+      scenario_metadata:$scenario_metadata,
+      scenario_metadata_sha256:$scenario_metadata_sha256,
+      case_label:$case_label, evaluation_eligible:$evaluation_eligible,
+      time_basis:"UTC", t1:$t1, t2:$t2, capture_start:$capture_start,
+      capture_end:$capture_end, t1_kst:$t1_kst, t2_kst:$t2_kst,
+      capture_start_kst:$capture_start_kst, capture_end_kst:$capture_end_kst,
+      dump_started_at:$dump_started_at, dump_completed_at:$dump_completed_at,
+      dump_started_at_kst:$dump_started_at_kst, dump_completed_at_kst:$dump_completed_at_kst,
+      model_snapshot_at:$model_snapshot_at, model_snapshot_at_kst:$model_snapshot_at_kst,
+      model_snapshot_lag_sec:$model_snapshot_lag_sec,
+      model_source_path:$model_source_path, model_sha256:$model_sha256,
+      run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
+      run_plan_sha256:$run_plan_sha256,
+      segments:$segments, rebase:$rebase, normal_provenance:$normal_provenance,
+      preflight:$preflight, topology_snapshot:$topology_snapshot,
+      golden_anomaly_file:false}' > "$staging_dir/meta.json"
 
+  jq -e \
+    --arg schema_version '1.3' \
+    --arg capture_end "$capture_end" \
+    --arg case_label "$case_label" \
+    --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
+    '.schema_version == $schema_version and
+     .time_basis == "UTC" and .capture_end == $capture_end and
+     .scenario_metadata_sha256 == $scenario_metadata_sha256 and
+     (.scenario_metadata.title | length > 0) and
+     (.scenario_metadata.description | length > 0) and
+     (.scenario_metadata.cause | length > 0) and
+     (.scenario_metadata.injection_summary | length > 0) and
+     (.scenario_metadata.user_impact | length > 0) and
+     (.scenario_metadata.distinguishing_evidence | length > 0) and
+     .model_snapshot_at >= $capture_end and .case_label == $case_label and
+     .golden_anomaly_file == false and
+     (.segments | type == "array" and length >= 1) and
+     (.topology_snapshot.snapshot_at | type == "string" and length > 0) and
+     (if $case_label == "evaluation" then
+        .evaluation_eligible == true and
+        (.preflight.verdict | IN("clean", "clean_after_wait", "ai_judged_clean")) and
+        (.run_plan_sha256 | test("^[0-9a-f]{64}$")) and
+        (.run_script_sha256 | test("^[0-9a-f]{64}$")) and
+        (.run_catalog_sha256 | test("^[0-9a-f]{64}$"))
+      else .evaluation_eligible == false end)' \
+    "$staging_dir/meta.json" >/dev/null || die 'meta.json violates capture policy'
+fi
+
+# Group-readable promotion (spec §2.2, 2026-07-24): a case staged under a
+# restrictive umask must not read as "no data" to consumers on the storage
+# host's shared group (07-24 root-700 사고 재발 방지). Fixed up on staging_dir
+# right before the atomic rename so final_dir never exists with stale perms.
+chmod -R g+rX "$staging_dir"
 [[ ! -e "$final_dir" ]] || die "case appeared during capture: $final_dir"
 mv -T "$staging_dir" "$final_dir"
 staging_dir=''

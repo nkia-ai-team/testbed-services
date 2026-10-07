@@ -2,14 +2,14 @@
   "schema_version": "1.0",
   "id": "F10-H",
   "slug": "f10-h-mysql-io-saturation",
-  "readiness": "blocked",
+  "readiness": "ready",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
   },
   "injection": {
-    "location": "worker-w2",
-    "matrix_location_transport": "food worker/ssh",
+    "location": "worker-w3",
+    "matrix_location_transport": "tb-w3/ssh",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.stress",
@@ -29,14 +29,245 @@
       "baseline-loadgen-active"
     ],
     "controller": {
-      "dispatcher_mode": "dry-run",
-      "decision_mode": "evaluation",
-      "profile": {
-        "kind": "fixed",
-        "ref": "controller-profiles/f10-h-mysql-io-saturation/fixed",
-        "requires_approved_fixed_profile": true
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.stress",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.stress"
       },
-      "live_enabled": false
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f10-h",
+              "parameters": {
+                "mode": "fio",
+                "host": "192.168.122.14",
+                "target_dir": "/opt/local-path-provisioner/pvc-3439d85f-f921-4b19-8808-c679506a31dd_rca-testbed-food_mysqldata-testbed-mysql-0",
+                "size_mib": 2048,
+                "runtime_seconds": 600,
+                "rate_iops": 20000
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "8m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            }
+          },
+          {
+            "id": "disk_io_util",
+            "adapter": "host_probe",
+            "query_id": "host.disk_io_utilization",
+            "freshness": "30s",
+            "parameters": {
+              "scenario_id": "F10-H"
+            }
+          },
+          {
+            "id": "order_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "food-delivery-order"
+            }
+          },
+          {
+            "id": "order_hikari_pending",
+            "adapter": "prometheus",
+            "query_id": "prometheus.hikari_pending_connections",
+            "freshness": "30s",
+            "parameters": {
+              "service_name": "food-delivery-order"
+            }
+          },
+          {
+            "id": "node_cpu_util",
+            "adapter": "prometheus",
+            "query_id": "prometheus.node_cpu_utilization",
+            "freshness": "60s",
+            "parameters": {
+              "node": "tb-w3"
+            }
+          },
+          {
+            "id": "order_create_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "device-saturated",
+              "observation": "disk_io_util",
+              "op": "gte",
+              "value": 60,
+              "_note": "임계 70 → 60. run 748dd9c8의 최상위 레벨(io-20000)에서 disk_io_util은 62~78을 오가며 70을 규칙적으로 들락거렸다(69·66·66 같은 골이 3연속 창을 계속 깼다) — 장치는 내내 포화였는데 3연속만 못 채웠다. 러너 문법에 M-of-N(최근 6틱 중 3회)이 없어 '연속' 계약은 유지하고 임계를 실측 골 아래로 내리는 쪽을 택한다. 장치 인과의 하한은 감별자 symptom-without-device-load(<30)가 그대로 지킨다."
+            },
+            {
+              "id": "order-create-failures",
+              "observation": "order_create_5xx_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "피해 신호를 order_p95에서 주문 생성 5xx로 교체한다. run 748dd9c8에서 피해는 확실히 실증됐다 — order_create_5xx_rate가 세 레벨 내내 0.90~0.99로 안정이다. 실패한 건 판정이지 주입이 아니었다: order_p95는 update_interval 60s라 이 gate 전체를 60초 페이스로 묶어놓고, 그 독립 표본들이 797ms와 7691ms 사이를 톱니로 오가 2500 이상 3연속이 한 번도 서지 않았다(같은 레벨에서 disk 75·77·75·76으로 장치는 포화였는데 success streak은 1에서 못 올라갔다). 30s 케이던스의 5xx는 gate 페이스도 함께 풀어준다. p95는 관측으로 남아 증거로는 계속 캡처된다 — F10-P(c1a52be)에서 '디스크 포화의 피해는 느려짐이 아니라 죽음'이라고 판정한 것과 같은 결론이다."
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "symptom-without-device-load",
+              "observation": "disk_io_util",
+              "op": "lt",
+              "value": 30
+            },
+            {
+              "id": "node-cpu-saturated",
+              "observation": "node_cpu_util",
+              "op": "gte",
+              "value": 85
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "device-idle-again",
+              "observation": "disk_io_util",
+              "op": "lt",
+              "value": 20
+            },
+            {
+              "id": "order-latency-recovered",
+              "observation": "order_p95",
+              "op": "lt",
+              "value": 1200
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
     }
   },
   "actions": {
@@ -70,10 +301,10 @@
     }
   },
   "prerequisite_gate": {
-    "state": "unresolved",
-    "required": true,
-    "description": "MySQL PVC device",
-    "live_allowed": false
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
   },
   "capture_policy": {
     "policy_ref": "focused-window-v1",

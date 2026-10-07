@@ -45,10 +45,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
+      "readiness": "parked",
+      "load_mode": "adaptive",
       "injection_location": "worker-w1",
-      "prerequisite": "PG PVC backing device"
+      "prerequisite": "commerce/PG 인과 부재 실측 확정(0804 #24: disk 81%에 p95 41.9ms) — 캐시 밖 디스크 경로(shared_buffers 축소 또는 캐시 밖 질의) 신설 + 사다리 실측 후 회생. 디스크 포화 대표성은 F10-H가 보유"
     },
     {
       "id": "F02-P",
@@ -57,10 +57,10 @@
         "db.ddl",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": ""
+      "prerequisite": "food에 idx_menus_category를 타는 조회 경로 신설 + 성공조건을 5xx 비율로 교체"
     },
     {
       "id": "F03-H",
@@ -70,7 +70,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -81,7 +81,7 @@
         "k8s.env",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
       "prerequisite": "pool size and minimum effective RPS"
@@ -102,13 +102,13 @@
       "id": "F04-H",
       "slug": "f04-h-order-outbox-relay-stop",
       "profiles": [
-        "kafka.control",
+        "k8s.env",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": "outbox relay control"
+      "prerequisite": ""
     },
     {
       "id": "F04-P",
@@ -117,20 +117,21 @@
         "kafka.control",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "ledger consumer rate control"
+      "prerequisite": "단일스레드 소비 병목이 실측으로 반증됨(2026-07-28: 건당 서비스시간 1~3ms=능력 300~500/s vs 도달 가능 유입 ≤72/s, transfer relay 상한 ~50/s). 재현하려면 소비 경로에 앱 결함 필요 → T2 앱 결함 묶음에서 재설계"
     },
     {
       "id": "F05-R",
       "slug": "f05-r-payment-oom-loop",
       "profiles": [
         "k8s.resource",
+        "k8s.env",
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "verified payment memory ladder and OOMKilled observation"
     },
@@ -154,8 +155,8 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
-      "injection_location": "worker-w2",
+      "load_mode": "fixed",
+      "injection_location": "worker-w1",
       "prerequisite": "placement and safe eviction"
     },
     {
@@ -189,10 +190,10 @@
         "mock.expectation",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
-      "prerequisite": "food courier pool recovery"
+      "prerequisite": ""
     },
     {
       "id": "F07-H",
@@ -201,7 +202,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
     },
@@ -212,10 +213,10 @@
         "load.east_west",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "commerce namespace",
-      "prerequisite": "bulkhead configuration/reject surface"
+      "prerequisite": "2026-07-28 실측 반증. pricing bulkhead는 max-concurrent-calls=20인데 견적 응답이 2.5~12ms라 target_rps=20에서 동시성이 0.1에 불과하다. 거부(pricing_error_rate≥0.1)가 나려면 4,000rps 또는 견적 1초가 필요하다 — 부하 상한 180으로 도달 불가. 재현하려면 pricing 경로에 앱 결함 필요 → T2 재설계"
     },
     {
       "id": "F08-H",
@@ -260,9 +261,9 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "adaptive",
-      "injection_location": "worker-w3",
+      "injection_location": "worker-w1",
       "prerequisite": "runtime placement lock"
     },
     {
@@ -273,9 +274,9 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
-      "prerequisite": "stable pre-OOM GC range"
+      "prerequisite": ""
     },
     {
       "id": "F09-P",
@@ -285,7 +286,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -296,10 +297,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "worker-w1",
-      "prerequisite": "PG PVC path and reserve"
+      "prerequisite": "구조적 불가 — PGDATA 전용 볼륨이 선행되어야 한다. PVC가 tb-w1 루트FS(/dev/vda1, 38G) 위에 있어 계약대로면 3.1GiB만 차서 사용률 66→74%, PostgreSQL 무피해(G3 실패). 예비를 없애 14G를 채우면 kubelet·containerd가 함께 죽어 노드 DiskPressure 사건이 되어 정답과 다른 사건이 된다(2026-07-28 실측)"
     },
     {
       "id": "F10-H",
@@ -308,10 +309,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
-      "injection_location": "worker-w2",
-      "prerequisite": "MySQL PVC device"
+      "injection_location": "worker-w3",
+      "prerequisite": ""
     },
     {
       "id": "F10-P",
@@ -320,10 +321,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "blocked",
-      "load_mode": "fixed",
-      "injection_location": "worker-w3",
-      "prerequisite": "Oracle device and safe IO"
+      "readiness": "ready",
+      "load_mode": "adaptive",
+      "injection_location": "worker-w2",
+      "prerequisite": ""
     },
     {
       "id": "F11-R",
@@ -333,7 +334,7 @@
         "cache.control"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -345,7 +346,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
     },
@@ -356,10 +357,10 @@
         "k8s.patch",
         "wpm.probe"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "edge route",
-      "prerequisite": "WPM TTFB contract/probe"
+      "prerequisite": "commerce에 Ingress 리소스 도입 + k8s.patch allowlist 등록"
     },
     {
       "id": "F13-H",
@@ -368,10 +369,10 @@
         "network.fault",
         "wpm.probe"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "probe edge",
-      "prerequisite": "probe source/interface"
+      "prerequisite": "network_fault_executor.py:21 BLOCKED stub 해제 + connect-phase 관측 소스 확보"
     },
     {
       "id": "F13-P",
@@ -380,10 +381,10 @@
         "business.fault",
         "wpm.probe"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "large response surface"
+      "prerequisite": "business_fault_executor.py:13 BLOCKED stub 해제 + WPM download-phase 계약 구성"
     },
     {
       "id": "F14-R",
@@ -392,22 +393,21 @@
         "timeline.compose",
         "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "response-loss proxy/fault image"
+      "prerequisite": "2026-07-29 실측 반증. 중복이 생기려면 1차 시도가 커밋되면서(각 하류 타임아웃 PG 10s·뱅킹 10s 이내) 동시에 order 측 15s를 넘겨야 하는데, pg-mock 한 곳만 늦추면 총 소요가 10s를 못 넘어 재시도 자체가 발생하지 않는다. 15s 이상으로 올리면 PG 구간이 먼저 터져 @Transactional이 롤백되어 결제 행이 남지 않는다. 성립하려면 PG 9s + 뱅킹 이체 8s 동시 주입이 필요하나 뱅킹 이체 구간에 유한·제어 가능한 지연 수단이 없다 (db.lock은 해제까지 대기라 10s 초과). 앵커 자체는 실재 — PaymentService.processPayment 멱등성 부재 × PaymentClient.java:28 @Retry(max-attempts=2)"
     },
     {
       "id": "F14-P",
       "slug": "f14-p-selective-ledger-loss",
       "profiles": [
-        "business.fault",
-        "load.north_south"
+        "db.table_readonly"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
-      "prerequisite": "selective event-drop surface"
+      "prerequisite": "verified ledger read-only injection (db.table_readonly) + transfer/ledger reconciliation observation. imbalance 쿼리는 폐기 — DEBIT/CREDIT가 함께 사라져 구조적으로 항상 0 (docs/scenario-redesign-wip/design-F14-sheet.md)"
     },
     {
       "id": "F15-R",
@@ -417,7 +417,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
     },
@@ -425,23 +425,25 @@
       "id": "F15-H",
       "slug": "f15-h-pg-lock-food-429-simultaneous",
       "profiles": [
-        "timeline.compose"
+        "timeline.compose",
+        "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "food courier pool recovery"
+      "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
     },
     {
       "id": "F15-P",
       "slug": "f15-p-common-node-pressure",
       "profiles": [
-        "host.stress"
+        "host.stress",
+        "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
-      "injection_location": "shared worker",
-      "prerequisite": "shared placement topology"
+      "injection_location": "worker-w2",
+      "prerequisite": ""
     },
     {
       "id": "F15-G",
@@ -462,7 +464,7 @@
         "timeline.compose"
       ],
       "readiness": "ready",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
     },
@@ -470,12 +472,13 @@
       "id": "F15-T2",
       "slug": "f15-t2-pg-lock-then-food-429",
       "profiles": [
-        "timeline.compose"
+        "timeline.compose",
+        "load.north_south"
       ],
-      "readiness": "blocked",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "food courier pool recovery"
+      "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
     },
     {
       "id": "F15-T3",
@@ -483,10 +486,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "partial",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "consumer SLA and placement"
+      "prerequisite": "2026-07-29 재심사로 잔여 축소(parked-reaudit-0729.md §2). 주입기 host.stress·관측 kubernetes.kafka_consumer_lag+prometheus.node_cpu_utilization 모두 실재하고 배치 고정으로 대상 노드는 tb-w2로 확정(정답지 tb-w3는 오기, 정정함). 단일 주입이라 timeline.compose는 오배정 — profiles를 host.stress 단독으로 재배정 + metadata 반입(F14-P 배제 포함) + controller + 캘리브레이션이 잔여"
     },
     {
       "id": "F15-T4",
@@ -494,10 +497,10 @@
       "profiles": [
         "timeline.compose"
       ],
-      "readiness": "partial",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "incident hand-off interval"
+      "prerequisite": "2026-07-29 재심사로 잔여 명확화(parked-reaudit-0729.md §3). 주입기 db.lock(inventory)·kafka.control(shipping) 둘 다 실재하고 순차 오프셋 스케줄은 F15-T2로 라이브 실증됨. 잔여는 비중첩 인계 — timeline_lock_mock_executor 변형(1구간 해제 후 2구간 시작, 신규 executor 아님) + dispatcher ROUTES 등록 + metadata + controller + 구간별 시간창 분리 기록"
     },
     {
       "id": "F17-R",
@@ -515,7 +518,7 @@
       "id": "F18-P",
       "slug": "f18-p-banking-outbox-relay-halt",
       "profiles": [
-        "k8s.env",
+        "app.control",
         "load.north_south"
       ],
       "readiness": "ready",
@@ -568,7 +571,7 @@
       "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py)"
+      "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py) + F20-R observations 배선(게이트 미배선)"
     },
     {
       "id": "F20-P",
@@ -576,10 +579,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "ready",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "verified TransferRepository.dailyStatsSince native trunc(created_at) 풀스캔 앵커(idx_transfers_created 존재/무력화); 신규 slowquery.js(stats/daily 80%+대표 이체 20%) + load.north_south 계약 등록; 러너 APPROVED_HIKARI_SERVICES/APPROVED_APM_SERVICES에 core-banking-transfer/account/api/ledger 추가"
+      "prerequisite": "2026-07-28 실측 반증. ① 부하가 때리는 진입점(30082 nginx→api-service)에 /api/transfers/stats/daily 패스스루가 없어 404로 20ms만에 튕긴다 — 주입이 아무것도 하지 않는다. ② 직행 포트(30282)로 우회해도 그 쿼리가 12~300ms(transfers 43,369행)라 transfer_p95≥3000ms 임계와 무관하다. 살리려면 api-service 패스스루 신설 + 쿼리 자체를 무겁게 만드는 앱/데이터 작업이 선행"
     },
     {
       "id": "F20-Q",
@@ -622,10 +625,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "draft",
+      "readiness": "ready",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "cleanup(원장 정정 SQL) 구현·검증 전까지 live 보류 — direct arm이 생성하는 FROZEN/CLOSED 계좌 관여 COMPLETED transfer의 역이체 정정이 미구현"
+      "prerequisite": ""
     },
     {
       "id": "F21-Q",
@@ -634,22 +637,22 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "draft",
+      "readiness": "parked",
       "load_mode": "fixed",
-      "injection_location": "worker-w2",
-      "prerequisite": "calibration 미확정 — order_busy_threads/order_p95_latency 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(52)만으로 추정됨. cpu_workers 강도와 restaurant 실제 응답지연(d≈4s) 간 관계도 미검증"
+      "injection_location": "worker-w3",
+      "prerequisite": "노드 CPU 스트레스는 상류 지연을 만들지 못하고 입구를 죽임(0804 #27: entry=0 catastrophic abort) — F21-P와 병합, 정밀 delay injector 확보 후 회생"
     },
     {
       "id": "F21-P",
       "slug": "f21-p-banking-api-tomcat-thread-saturation",
       "profiles": [
-        "host.stress",
+        "k8s.patch",
         "load.north_south"
       ],
-      "readiness": "draft",
-      "load_mode": "fixed",
-      "injection_location": "worker-w3",
-      "prerequisite": "calibration 미확정 — api_busy_threads 절대 임계치가 host.stress 캘리브레이션 실측(포화 시 값) 없이 baseline(65)만으로 추정됨. cpu_workers 강도와 transfer 실제 응답지연(d≈8s) 간 관계 미검증, 지연이 read-timeout(10s) 초과 시 502→CB open(FS-2)으로 전이하는 경계 확인 필요"
+      "readiness": "parked",
+      "load_mode": "adaptive",
+      "injection_location": "banking namespace",
+      "prerequisite": "k8s.patch CPU limit 레버로는 slow-not-failed 불성립(0804 #28: maxSurge=0 롤아웃 + 400m 스로틀로 api 즉시 실패) — 재기동 없는 정밀 지연 주입 표면(서버측 고정 지연, 호출자 파라미터 자백 금지) 확보 후 F21-Q와 병합 재설계"
     },
     {
       "id": "F24-Q",
@@ -660,7 +663,54 @@
       "readiness": "draft",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "calibration 미확정 — target_rps=70이 restaurant Hikari 10·Tomcat을 order 5xx 임계까지 실제로 밀어내는지 첫 run 확정 필요. 러너 APPROVED_APM_SERVICES(food-delivery-restaurant)+APPROVED_K8S_TARGETS(rca-testbed-food, testbed-restaurant) 배선이 F02-P 선행 결함 수리와 함께 선행조건"
+      "prerequisite": "2026-07-28 캘리브레이션 1회로 반증됨(target_rps=70, 4.5분). restaurant /menu가 67~95ms로 read-timeout 5s의 1/50에 머물러 의도한 포화가 전혀 발생하지 않았고, 대신 dispatch가 먼저 무너져(커넥션 거부·500) order의 dispatch CB가 열리며 order 503이 나왔다 — 이 시나리오 자신의 must_rule_out('503 우세면 F19-Q')에 걸리는 결과다. 상한 180까지 올려도 restaurant는 2.6배뿐이고 필요한 것은 50배다. food의 실제 무릎은 restaurant가 아니라 dispatch이므로 부하만으로는 재설계 불가"
+    },
+    {
+      "id": "F01-G",
+      "slug": "f01-g-absorbed-pg-delay",
+      "profiles": [
+        "mock.expectation",
+        "load.north_south"
+      ],
+      "readiness": "cut",
+      "load_mode": "fixed",
+      "injection_location": "commerce external-pg-mock",
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 기술적 결손 0 — 재편입은 헌장 개정이 선행한다"
+    },
+    {
+      "id": "F03-G",
+      "slug": "f03-g-high-pool-usage-no-impact",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "cut",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 결함 주입 자체가 없다 — 재편입은 헌장 개정이 선행한다"
+    },
+    {
+      "id": "F05-G",
+      "slug": "f05-g-invalid-image-no-impact",
+      "profiles": [
+        "k8s.lifecycle",
+        "load.north_south"
+      ],
+      "readiness": "cut",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 기술적 결손 0 — 재편입은 헌장 개정이 선행한다"
+    },
+    {
+      "id": "F11-G",
+      "slug": "f11-g-redis-down-absorbed",
+      "profiles": [
+        "cache.control",
+        "load.north_south"
+      ],
+      "readiness": "cut",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 성공조건 3건이 구조적 참 — 재편입은 헌장 개정이 선행한다"
     }
   ]
 }

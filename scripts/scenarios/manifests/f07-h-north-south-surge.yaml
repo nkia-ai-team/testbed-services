@@ -31,10 +31,11 @@
       "live_enabled": true,
       "binding": {
         "primary_ref": "load.north_south",
-        "companion_refs": []
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "40m",
@@ -44,6 +45,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -59,20 +61,23 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "healthy-high-120",
+              "id": "approved-fixed-f07-h",
               "parameters": {
                 "target_rps": 120,
                 "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
+                "hold": "525s",
+                "ramp_down": "15s",
                 "entry_url": "http://192.168.122.77:30080",
                 "script_path": "/opt/loadgen/commerce/surge.js",
                 "scenario_tag": "scenario_id=F07-H",
@@ -81,41 +86,7 @@
               },
               "min_hold": "6m",
               "settle": "30s",
-              "timeout": "12m"
-            },
-            {
-              "id": "knee-140",
-              "parameters": {
-                "target_rps": 140,
-                "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/surge.js",
-                "scenario_tag": "scenario_id=F07-H",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "6m",
-              "settle": "30s",
-              "timeout": "12m"
-            },
-            {
-              "id": "overload-160",
-              "parameters": {
-                "target_rps": 160,
-                "ramp_up": "2m",
-                "hold": "8m",
-                "ramp_down": "1m",
-                "entry_url": "http://192.168.122.77:30080",
-                "script_path": "/opt/loadgen/commerce/surge.js",
-                "scenario_tag": "scenario_id=F07-H",
-                "seed": 4242,
-                "baseline_unit": "loadgen-commerce"
-              },
-              "min_hold": "6m",
-              "settle": "30s",
-              "timeout": "12m"
+              "timeout": "11m"
             }
           ]
         },
@@ -124,7 +95,11 @@
             "id": "entry_status",
             "adapter": "http_probe",
             "query_id": "http.entry_health",
-            "freshness": "15s"
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "2026-08-10: domain 추가. http.entry_health 는 adapter 이름과 달리 HTTP 를 치지 않고 시나리오 자신의 k6 live 문서를 읽는다. load.north_south 가 primary 인 5종(F07-H·F11-R·F17-P·F20-Q·F20-R)은 레벨 전환이 곧 부하 재시작이라, 레벨 타임아웃 판정 시각과 부하 종료 시각이 정확히 겹친다(ramp+hold+ramp == timeout, 여유 0). 그 한 틱에서 entry_status 가 unusable 이 되면 adaptive.py:234 의 safety_unknown 이 서고 success·escalate 가 **둘 다** 막힌 채 :282 에서 safety_observation_unavailable 로 abort 한다. 실측: F20-R 은 정상 에스컬레이션 5회 대 좌초 100회(성공률 4.8%), F07-H 는 타임아웃 도달 8회 중 8회 unusable. domain 을 주면 상주 baseline 문서를 읽으므로 시나리오 부하와 무관해진다. abort 는 entry_status==0(도달 불가)이라 도메인 수준 신호로 읽어도 의미 손실이 없다."
           },
           {
             "id": "target_health",
@@ -154,62 +129,59 @@
             "freshness": "120s"
           },
           {
-            "id": "tagged_db_sessions",
+            "id": "blocked_inventory_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.blocked_session_count",
+            "parameters": {
+              "schema": "inventory_schema",
+              "table": "inventory"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "blocked_payment_sessions",
+            "adapter": "database",
+            "query_id": "database.blocked_session_count",
+            "parameters": {
+              "schema": "payment_schema",
+              "table": "payments"
+            },
             "freshness": "30s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "surge-achieved",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 100
-            },
-            {
               "id": "latency-elevated",
               "observation": "user_p95",
               "op": "gte",
               "value": 500
-            },
-            {
-              "id": "entry-still-reachable",
-              "observation": "entry_status",
-              "op": "ne",
-              "value": 0
             }
           ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "surge-delivered",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 100
-            },
-            {
-              "id": "latency-not-elevated",
-              "observation": "user_p95",
-              "op": "lt",
-              "value": 500
-            }
-          ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 2
         },
         "must_rule_out": {
           "any": [
             {
-              "id": "db-lock-alternative",
-              "observation": "tagged_db_sessions",
+              "id": "db-lock-alternative-inventory",
+              "observation": "blocked_inventory_sessions",
               "op": "gt",
               "value": 0
+            },
+            {
+              "id": "db-lock-alternative-payment",
+              "observation": "blocked_payment_sessions",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "surge-not-achieved",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 100
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [

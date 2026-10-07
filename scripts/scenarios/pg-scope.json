@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "_why": [
+    "2026-08-13. postgres.dump 이 DB 통째였다. case-f03-g-v3(창 07-26 12:19~15:02) 실측:",
+    "incidents 56행 중 창 안은 1행, 나머지 55행은 다른 날 다른 시나리오의 인시던트이며",
+    "AI 생성 제목에 그 시나리오의 근본원인이 한국어로 그대로 적혀 있다. RCA 소비자는",
+    "PG incidents 를 backing store 로 읽으므로(spec §3) 케이스를 복원하면 과거 정답표가",
+    "같이 딸려온다. 07-27 에 process_meta 에서 고친 누설(품질 기준서 L3)과 같은 계열이다.",
+    "",
+    "세 갈래로 나눈다 — 인벤토리(무엇이 존재하는가)는 통째로 남기고(snap),",
+    "파이프라인이 만들어낸 관측·판정(무엇이 일어났는가)만 창으로 자르고(slice),",
+    "평가에 쓰이지 않으면서 공개 위험만 있는 것은 비운다(drop).",
+    "created_at 이 창 밖이라고 무조건 자르면 안 된다 — targets·metric_definitions 의",
+    "created_at 은 자산 등록 시각이라 언제나 창 밖이고, 자르면 RCA 가 볼 자산이 사라진다."
+  ],
+
+  "default_scope": "snap",
+
+  "slice_roots": {
+    "incidents": {
+      "time_column": "created_at",
+      "self_reference": "superseded_by",
+      "_note": "superseded_by 는 창 밖(대개 미래)을 가리킬 수 있어 재귀 폐포로 함께 싣는다"
+    },
+    "event_clusters": {
+      "time_column": "created_at",
+      "self_reference": "merged_into",
+      "_note": "merged_into 동일"
+    }
+  },
+
+  "slice_children": {
+    "incident_members":        {"root": "incidents",      "column": "incident_id"},
+    "incident_timeline":       {"root": "incidents",      "column": "incident_id"},
+    "incident_judge_decisions":{"root": "incidents",      "column": "incident_id"},
+    "incident_rca":            {"root": "incidents",      "column": "incident_id"},
+    "incident_rca_requests":   {"root": "incidents",      "column": "incident_id"},
+    "incident_runbooks":       {"root": "incidents",      "column": "incident_id"},
+    "incident_feedback":       {"root": "incidents",      "column": "incident_id"},
+    "incident_cluster_links":  {"root": "incidents",      "column": "incident_id"},
+    "cluster_outbox":          {"root": "event_clusters", "column": "cluster_id"},
+    "event_cluster_tag_outbox":{"root": "event_clusters", "column": "cluster_id"},
+    "event_cluster_episode_links": {"root": "event_clusters", "column": "cluster_id"}
+  },
+
+  "slice_grandchildren": {
+    "incident_rca_steps": {"parent": "incident_rca_requests", "column": "request_id", "parent_key": "id"}
+  },
+
+  "slice_by_time": {
+    "event_saved_outbox":              "occurred_at",
+    "coverage_events":                 "occurred_at",
+    "target_availability_history":     "created_at",
+    "target_trait_history":            "created_at",
+    "kcm_resources_history":           "captured_at",
+    "alert_history":                   "started_at",
+    "change_history":                  "occurred_at",
+    "policy_deployments":              "deployed_at",
+    "trainer_stream_snapshot_history": "created_at",
+    "trainer_stream_drift":            "created_at",
+    "ai_model_state_snapshots":        "created_at"
+  },
+
+  "slice_by_epoch_ms": {
+    "db_sql_plan": "captured_at_ms"
+  },
+  "_epoch_note": "captured_at_ms 는 timestamptz 가 아니라 bigint(epoch ms) 라 시간컬럼 자동탐지에 안 걸린다. DPM 실행계획은 DB 계열 시나리오(F06-H 등)의 근거라 버리지 않고 창으로 자른다. 92MB.",
+
+  "_snap_rationale": {
+    "targets / metric_definitions / resource_types / mib_* / collector_sms_*_inv / collection_*_policies / nms_*": "인벤토리·정의. 무엇이 존재하는가이지 무엇이 일어났는가가 아니다",
+    "trainer_thresholds / trainer_stream_threshold / trainer_*_profiles / trainer_masking_rules / trainer_forecast_*": "현재 유효한 모델 상태. 창으로 자르면 창 이전에 학습된 임계가 사라져 AI 계층의 거동이 바뀐다(trainer_thresholds 2277행 중 창 안 24행뿐)",
+    "coverage_signal_state / target_availability_latest / target_trait_latest / detector_seen_signatures": "latest/state 계열. 캡처 시점의 상태가 정당한 입력이다"
+  },
+
+  "drop_data": [
+    "automation_dist_artifacts", "manual_assets",
+    "chat_sessions", "chat_turns", "chat_reasoning_events", "chat_agent_proposals",
+    "chat_attachments", "chat_attachment_text", "chat_attachment_images",
+    "chat_attachment_image_stats", "chat_attachment_rag_units", "chat_turn_attachments",
+    "compact_summaries", "tool_runs", "tool_admin_queries", "ai_audit_log",
+    "kdb_documents", "kdb_chunks", "kdb_document_files", "kdb_image_assets", "kdb_upload_jobs",
+    "kedb_cases", "kedb_pending",
+    "files", "file_blobs", "manual_documents",
+    "shared_notes", "shared_note_versions", "shared_note_mentions",
+    "login_history", "user_sessions", "user_invitations", "user_ui_state",
+    "user_settings", "user_password_history", "user_memory_profiles",
+    "notification_channels", "system_mail_settings",
+    "licenses", "license_events", "license_install_identity",
+    "collector_sms_agent_keys", "collector_sms_enrollment_tokens", "kcm_agent_identity"
+  ],
+  "_drop_rationale": [
+    "평가 입력이 아니면서 공개 위험만 있는 것들 — 사내 LLM 대화·업로드 문서·세션 토큰 평문·",
+    "에이전트 등록 토큰 해시·SMTP/SMS 비밀번호·라이선스 식별자.",
+    "automation_dist_artifacts 는 20행짜리인데 **2,480MB 로 덤프의 80%** 다(에이전트 배포",
+    "번들 바이너리). 평가에 안 쓰이고 제품 IP 이므로 뺀다. manual_assets(576행 68MB)도 매뉴얼",
+    "이미지라 같은 이유. 둘 다 참조하는 FK 는 없다(2026-08-13 확인).",
+    "users 는 46개 표가 FK 로 참조하므로 비우지 못한다 → _users_note 참조."
+  ],
+
+  "_users_note": [
+    "users 는 snap 으로 그대로 남긴다. 2026-08-13 실측 3행 전부 합성 계정이고",
+    "(e2e@lucida.test·manager@lucida.local·test@lucida.test) phone·slack_user_id 는 비어 있다.",
+    "남는 것은 password_hash(bcrypt) 뿐인데, 이걸 캡처 단계에서 마스킹하면 복원 순서가 꼬인다 —",
+    "pg_restore 는 데이터를 넣은 뒤 FK 제약을 만드는데 users 를 비워두면 users 를 참조하는",
+    "46개 표의 제약 생성이 그 시점에 실패한다. 공개 직전 스크러빙 패스에서 다룬다."
+  ],
+
+  "release_scrub_backlog": [
+    "users.password_hash — bcrypt 해시(개발 계정)",
+    "host_connections.remote_addr — 실제 공인 IP 221.141.145.157 등 54개",
+    "process_meta.cmdline — /home/nkia/... 경로·운영자 sudo 명령 69종",
+    "otel_traces span_attributes.url.full — verify-token 쿼리 파라미터"
+  ]
+}

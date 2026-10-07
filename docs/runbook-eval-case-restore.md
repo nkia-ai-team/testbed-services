@@ -133,10 +133,29 @@ done
 
 ### 3.3 PostgreSQL (클러스터·인시던트·targets·정책·토폴로지)
 
+**두 단계다** (2026-08-13 개정). `postgres.dump`는 인벤토리·정의·모델 상태를 담고,
+사건 이력(인시던트·클러스터·커버리지 이벤트 등)은 캡처 창으로 잘려 `data/postgres/`에
+테이블별 CSV로 들어 있다. 덤프를 먼저 복원한 **뒤에** CSV를 적재한다.
+
 ```bash
 docker compose -p eval-case01 exec -T postgres \
   pg_restore -U lucida -d lucida --no-owner --if-exists --clean < "$CASE/data/postgres.dump"
+
+# 창으로 자른 이력 — restore.sql 의 순서가 곧 FK 순서다(뿌리 → 자식). 바꾸지 말 것.
+docker cp "$CASE/data/postgres" eval-case01-postgres-1:/tmp/pg
+docker compose -p eval-case01 exec -T postgres \
+  sh -c 'cd /tmp/pg && psql -U lucida -d lucida -v ON_ERROR_STOP=1 -f restore.sql'
 ```
+
+> **왜 나눴나.** 이전 계약은 DB를 통째로 떴다. 그 결과 케이스 창이 3시간인데
+> `incidents`에는 2주치 56건이 실렸고 그중 창 안은 1건뿐이었다 — 나머지 55건은
+> **다른 시나리오의 정답이 한국어 제목에 그대로 적힌 채** 들어 있었다(RCA는 PG
+> `incidents`를 backing store로 읽는다). 덤으로 `automation_dist_artifacts` 한 표가
+> 3.1GB 중 2.48GB를 먹고 있었다. 지금은 덤프 16MB + CSV 98MB이고 창 밖 행은 0이다.
+>
+> 무엇이 어느 쪽인지는 `testbed-services/scripts/scenarios/pg-scope.json`이 정본이고,
+> 케이스별 실적재 행수는 `meta.json`의 `postgres_tables[]`에 있다 — 파일을 열지 않고
+> "데이터가 들었는가"를 판정할 수 있어야 한다는 `clickhouse_tables[]`와 같은 계약이다.
 
 ## 4. 복원 검증
 
@@ -203,4 +222,6 @@ docker compose -f eval-dbs.compose.yml -p eval-case01 down -v   # -v 필수(볼�
 | lucida-next compose 재사용 | 워커가 복원본에 되쓰기 → 입력 오염 | DB 3개만 있는 전용 compose (§1) |
 | CH 스키마 부재 | Parquet INSERT 실패 | DDL 선적용 (§2) |
 | 볼륨 재사용 | 2회차 평가부터 결과 달라짐 | `down -v` 후 재복원 (§6) |
+| `restore.sql` 미실행 | 인시던트·클러스터가 0건이라 "데이터 없음"으로 오인 | §3.3 2단계를 반드시 수행 |
+| `restore.sql` 순서 변경 | FK 위반으로 적재 실패 | 뿌리(incidents·event_clusters) 먼저 — 파일 순서 그대로 |
 | 벽시계 가드 | 실워커가 과거 이벤트를 stale로 버림 | 캡처 설계 §8 참조 |

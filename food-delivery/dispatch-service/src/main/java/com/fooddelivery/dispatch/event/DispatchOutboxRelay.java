@@ -20,4 +20,9 @@ public class DispatchOutboxRelay extends OutboxRelay<DispatchOutboxEvent> {
     public void poll() {
         relay();
     }
+
+    @Scheduled(fixedDelayString = "${outbox.purge.interval-ms:30000}")
+    public void purge() {
+        purgePublished();
+    }
 }

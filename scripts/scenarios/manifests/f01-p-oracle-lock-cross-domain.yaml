@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -64,6 +65,9 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
@@ -75,9 +79,15 @@
               "observation": "entry_status",
               "op": "eq",
               "value": 429
+            },
+            {
+              "id": "injected-lock-absent",
+              "observation": "tagged_db_sessions",
+              "op": "eq",
+              "value": 0
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [
@@ -115,8 +125,8 @@
                 "table": "accounts",
                 "key_column": "id",
                 "key_value": "commerce-settlement",
-                "client_identifier": "rca-F01-P-oracle-lock",
-                "hold_seconds": 600
+                "client_identifier": "dba-maintenance",
+                "hold_seconds": 900
               },
               "min_hold": "8m",
               "settle": "30s",
@@ -150,16 +160,16 @@
           {
             "id": "tagged_db_sessions",
             "adapter": "database",
-            "query_id": "database.tagged_session_count",
+            "query_id": "database.oracle_tagged_session_count",
             "parameters": {
-              "scenario_tag": "rca-F01-P-oracle-lock"
+              "client_identifier": "dba-maintenance"
             },
             "freshness": "30s"
           },
           {
             "id": "payment_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
             "parameters": {
               "service_name": "commerce-payment"
             },
@@ -175,16 +185,10 @@
         "success": {
           "all": [
             {
-              "id": "lock-present",
-              "observation": "tagged_db_sessions",
-              "op": "gt",
-              "value": 0
-            },
-            {
               "id": "cross-domain-payment-impact",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 10
             },
             {
               "id": "checkout-impact",

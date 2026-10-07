@@ -60,7 +60,24 @@ echo "========================================="
 echo "  Phase 2.5: namespace + DB init/seed ConfigMap (원본 파일에서 직접 생성)"
 echo "========================================="
 kubectl apply -f "${PROJECT_ROOT}/k8s/00-namespace.yaml"
+
+# DPM 모니터링 계정은 시드에 있어야 한다. 2026-07-28 Oracle 이사로 PV 가 새로
+# 생기며 손으로 만들어 둔 lucida_mon 이 사라졌고 DPM 이 ORA-01017 로 멈췄다.
+# 자격증명 정본은 01-secrets.yaml 이므로 여기서 읽어 치환한다 — 템플릿에 값을
+# 복제해 두면 다음 변경 때 둘이 어긋난다. 환경변수로 덮어쓸 수 있다.
+mon_user=${MON_USER:-$(awk '$1=="MON_USER:"{print $2}' "${PROJECT_ROOT}/k8s/01-secrets.yaml")}
+mon_password=${MON_PASSWORD:-$(awk '$1=="MON_PASSWORD:"{print $2}' "${PROJECT_ROOT}/k8s/01-secrets.yaml")}
+if [[ -z "$mon_user" || -z "$mon_password" ]]; then
+  echo "ERROR: 01-secrets.yaml 에서 MON_USER/MON_PASSWORD 를 읽지 못했다" >&2
+  exit 1
+fi
+monitoring_sql=$(mktemp)
+trap 'rm -f "$monitoring_sql"' EXIT
+sed -e "s/__MON_USER__/${mon_user}/g" -e "s/__MON_PASSWORD__/${mon_password}/g" \
+  "${PROJECT_ROOT}/db/monitoring.sql.tmpl" > "$monitoring_sql"
+
 kubectl create configmap oracle-init-scripts \
+  --from-file=00-monitoring.sql="$monitoring_sql" \
   --from-file=01-init.sql="${PROJECT_ROOT}/db/init.sql" \
   --from-file=02-seed-all.sql="${PROJECT_ROOT}/db/seed-all.sql" \
   -n rca-testbed-banking --dry-run=client -o yaml | kubectl apply -f -
@@ -83,6 +100,57 @@ echo "========================================="
 # 그대로 남는다 — 명시적 restart 로 앱 Deployment 교체 강제 (StatefulSet 은 외부 고정 이미지라 제외).
 kubectl -n rca-testbed-banking rollout restart deployment
 kubectl -n rca-testbed-banking rollout status statefulset/testbed-oracle --timeout=600s
+
+echo ""
+echo "========================================="
+echo "  Phase 4.1: app.control 제어 테이블 멱등 적용(기존 PVC 대응)"
+echo "========================================="
+# db/init.sql 은 데이터 디렉터리가 비어 있을 때만 DB 엔트리포인트가 실행한다. PVC 를
+# 그대로 물려받는 테스트베드에서는 나중에 추가된 제어 테이블이 영영 생기지 않고,
+# 앱은 없는 테이블을 폴링하며 실패만 반복한다(주입 표면이 조용히 죽어 있다).
+# 여기서 같은 정의를 멱등으로 다시 넣는다 — 상한 10000 은 init.sql·앱·실행기와
+# 함께 가드 테스트가 한 값으로 묶는다.
+control_ddl=$(cat <<'SQL'
+whenever sqlerror exit failure
+alter session set container=FREEPDB1;
+alter session set current_schema=BANKING;
+CREATE TABLE IF NOT EXISTS outbox_relay_control (
+    service_id  VARCHAR2(32) PRIMARY KEY,
+    enabled     NUMBER(1) DEFAULT 1 NOT NULL CHECK (enabled IN (0, 1)),
+    updated_at  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+MERGE INTO outbox_relay_control c
+USING (SELECT 'transfer' AS service_id FROM dual) s
+ON (c.service_id = s.service_id)
+WHEN NOT MATCHED THEN INSERT (service_id, enabled) VALUES (s.service_id, 1);
+CREATE TABLE IF NOT EXISTS response_delay_control (
+    service_id  VARCHAR2(32) PRIMARY KEY,
+    delay_ms    NUMBER(6) DEFAULT 0 NOT NULL CHECK (delay_ms BETWEEN 0 AND 10000),
+    updated_at  TIMESTAMP DEFAULT SYSTIMESTAMP
+);
+MERGE INTO response_delay_control c
+USING (SELECT 'transfer' AS service_id FROM dual) s
+ON (c.service_id = s.service_id)
+WHEN NOT MATCHED THEN INSERT (service_id, delay_ms) VALUES (s.service_id, 0);
+commit;
+exit;
+SQL
+)
+control_applied=no
+for attempt in $(seq 1 30); do
+  if printf '%s\n' "$control_ddl" \
+      | kubectl -n rca-testbed-banking exec -i testbed-oracle-0 -- sqlplus -s / as sysdba; then
+    control_applied=yes
+    break
+  fi
+  echo "[retry ${attempt}/30] Oracle 이 아직 DDL 을 받지 않는다. 10초 후 재시도..."
+  sleep 10
+done
+if [[ "$control_applied" != "yes" ]]; then
+  echo "ERROR: 제어 테이블 DDL 적용 실패 — app.control 주입 표면 없이 배포를 끝내지 않는다" >&2
+  exit 1
+fi
+
 kubectl -n rca-testbed-banking rollout status statefulset/testbed-kafka --timeout=180s
 for svc in "${SERVICES[@]}"; do
   kubectl -n rca-testbed-banking rollout status deployment/testbed-${svc} --timeout=180s

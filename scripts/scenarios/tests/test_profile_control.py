@@ -228,21 +228,77 @@ class ProfileControlTests(unittest.TestCase):
         cleaned = self.call("cleanup", "cleanup:claimed-expired")
         self.assertTrue(cleaned["succeeded"])
 
-    def test_cleanup_failure_is_persistently_idempotent_and_not_claimed_success(self) -> None:
+    def test_repaired_capsule_retry_is_not_mistaken_for_key_reuse(self) -> None:
+        # A capsule repair swaps a defective executor, which moves plan_digest.
+        # If the digest counts as part of the request's identity, the retry the
+        # repair exists to enable is rejected as "already used for another
+        # request" — which is exactly what happened on 2026-07-30, and it reads
+        # as key abuse rather than as the same cleanup asked again. Identity is
+        # the run, fence, scenario, profile and level; the digest is verified
+        # separately by _plan().
         calls: list[list[str]] = []
+        outcome = module.Result(9, stderr="cleanup failed")
 
-        def failing_runner(argv: Sequence[str]):
+        def runner(argv: Sequence[str]):
             calls.append(list(argv))
-            return module.Result(9, stderr="cleanup failed")
+            return outcome
 
-        self.controller.runner = failing_runner
+        self.controller.runner = runner
+        first = self.call("cleanup", "cleanup:repaired")
+        self.assertFalse(first["succeeded"])
+
+        control_state = self.base / "profile-state.json"
+        state = json.loads(control_state.read_text())
+        record = state["results"]["cleanup:repaired"]
+        record["request"]["plan_digest"] = "f" * 64
+        control_state.write_text(json.dumps(state), encoding="utf-8")
+
+        outcome = module.Result(0)
+        retried = self.call("cleanup", "cleanup:repaired")
+        self.assertTrue(retried["succeeded"], "the post-repair retry was refused")
+
+    def test_failed_cleanup_is_retried_and_never_laundered_into_success(self) -> None:
+        # This used to assert the opposite — that a failed cleanup is answered
+        # from cache forever and never re-invoked. That is what deadlocked the
+        # fleet on 2026-07-30: F21-P's cleanup failed on an executor defect, the
+        # defect was fixed, and the retry was served from cache without ever
+        # running the new code. Both callers key on (run_id, fencing_token), so
+        # the first failure was permanently the last attempt, and DIRTY is global.
+        #
+        # The half of the old intent that was right is kept: a failure is never
+        # recorded as success. Cleanup is idempotent by construction, so retrying
+        # it is free; what must not happen is a non-answer hardening into one.
+        calls: list[list[str]] = []
+        outcome = module.Result(9, stderr="cleanup failed")
+
+        def runner(argv: Sequence[str]):
+            calls.append(list(argv))
+            return outcome
+
+        self.controller.runner = runner
         result = self.call("cleanup", "cleanup:failed")
         self.assertEqual(result, {
             "succeeded": False, "effect_ended_at": None, "reason": "cleanup failed"
         })
+
         again = self.call("cleanup", "cleanup:failed")
-        self.assertEqual(again, result)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(again, result, "a still-failing retry must not claim success")
+        self.assertEqual(len(calls), 4, "the retry did not re-invoke the executor")
+
+        outcome = module.Result(0)
+        recovered = self.call("cleanup", "cleanup:failed")
+        self.assertTrue(recovered["succeeded"])
+        self.assertIsNotNone(recovered["effect_ended_at"])
+
+        # Once it actually succeeds the answer is final and stops re-running.
+        settled = self.call("cleanup", "cleanup:failed")
+        invocations = len(calls)
+        self.assertEqual(settled, recovered)
+        self.assertEqual(len(calls), invocations, "a settled cleanup was re-invoked")
+
+        # Apply keeps replaying its cached result instead — a second injection is
+        # a different fault, not a retry. test_apply_is_idempotent_without_a_
+        # second_profile_invocation covers that side.
 
 
 if __name__ == "__main__":

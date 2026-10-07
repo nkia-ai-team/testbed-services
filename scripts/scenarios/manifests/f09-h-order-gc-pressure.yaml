@@ -35,19 +35,21 @@
         "primary_ref": "k8s.env",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "k8s.env"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "30m",
+        "max_injection_duration": "40m",
         "preflight": [
           "kube-context",
           "kube-node-set",
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -63,15 +65,18 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "heap-256",
+              "id": "approved-fixed-f09-h",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "deployment": "testbed-order",
@@ -105,7 +110,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -153,7 +158,7 @@
                   },
                   {
                     "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx256m -Xms256m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx96m -Xms96m -XX:+AlwaysPreTouch"
                   },
                   {
                     "name": "OTEL_SERVICE_NAME",
@@ -161,253 +166,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                    "value": "grpc"
-                  },
-                  {
-                    "name": "OTEL_RESOURCE_ATTRIBUTES",
-                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                  },
-                  {
-                    "name": "OTEL_TRACES_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRICS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_LOGS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                    "value": "10000"
-                  }
-                ]
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "heap-208",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "deployment": "testbed-order",
-                "container": "order-service",
-                "baseline": [
-                  {
-                    "name": "DB_USER",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_USER",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "DB_PASS",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_PASSWORD",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                  },
-                  {
-                    "name": "OTEL_SERVICE_NAME",
-                    "value": "commerce-order"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                    "value": "grpc"
-                  },
-                  {
-                    "name": "OTEL_RESOURCE_ATTRIBUTES",
-                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                  },
-                  {
-                    "name": "OTEL_TRACES_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRICS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_LOGS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                    "value": "10000"
-                  }
-                ],
-                "fault": [
-                  {
-                    "name": "DB_USER",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_USER",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "DB_PASS",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_PASSWORD",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx208m -Xms208m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
-                  },
-                  {
-                    "name": "OTEL_SERVICE_NAME",
-                    "value": "commerce-order"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                    "value": "grpc"
-                  },
-                  {
-                    "name": "OTEL_RESOURCE_ATTRIBUTES",
-                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                  },
-                  {
-                    "name": "OTEL_TRACES_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRICS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_LOGS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                    "value": "10000"
-                  }
-                ]
-              },
-              "min_hold": "4m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "heap-176",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "deployment": "testbed-order",
-                "container": "order-service",
-                "baseline": [
-                  {
-                    "name": "DB_USER",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_USER",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "DB_PASS",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_PASSWORD",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                  },
-                  {
-                    "name": "OTEL_SERVICE_NAME",
-                    "value": "commerce-order"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                    "value": "grpc"
-                  },
-                  {
-                    "name": "OTEL_RESOURCE_ATTRIBUTES",
-                    "value": "lucida.groupId=commerce,lucida.target_id=93df2d34-b054-4ecd-8f8e-bafa098dc6cd"
-                  },
-                  {
-                    "name": "OTEL_TRACES_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRICS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_LOGS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                    "value": "10000"
-                  }
-                ],
-                "fault": [
-                  {
-                    "name": "DB_USER",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_USER",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "DB_PASS",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "POSTGRES_PASSWORD",
-                        "name": "postgres-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx176m -Xms176m -XX:+UseParallelGC -XX:+AlwaysPreTouch"
-                  },
-                  {
-                    "name": "OTEL_SERVICE_NAME",
-                    "value": "commerce-order"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -458,84 +217,73 @@
             "id": "pod_ready",
             "adapter": "kubernetes",
             "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "resource": "testbed-order"
-            },
-            "freshness": "30s"
+            }
           },
           {
             "id": "order_restart_count",
             "adapter": "kubernetes",
             "query_id": "kubernetes.container_restart_count",
+            "freshness": "30s",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-order",
               "container": "order-service"
-            },
-            "freshness": "30s"
+            }
           },
           {
-            "id": "order_error_rate",
+            "id": "order_old_gen_ratio",
             "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "query_id": "prometheus.jvm_old_gen_after_gc_ratio",
+            "freshness": "60s",
             "parameters": {
               "service_name": "commerce-order"
-            },
-            "freshness": "60s"
+            }
           },
           {
             "id": "order_p95",
             "adapter": "prometheus",
             "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
             "parameters": {
               "service_name": "commerce-order"
-            },
-            "freshness": "120s"
+            }
+          },
+          {
+            "id": "order_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-order"
+            }
           },
           {
             "id": "achieved_rps",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.achieved_rps",
             "freshness": "30s"
+          },
+          {
+            "id": "order_tenured_limit_mib",
+            "adapter": "prometheus",
+            "query_id": "prometheus.jvm_tenured_limit_mib",
+            "parameters": {
+              "service_name": "commerce-order"
+            },
+            "freshness": "60s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "gc-pause-visible",
-              "observation": "order_p95",
+              "id": "heap-cannot-be-reclaimed",
+              "observation": "order_old_gen_ratio",
               "op": "gte",
-              "value": 400
-            },
-            {
-              "id": "order-still-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "no-oom",
-              "observation": "order_restart_count",
-              "op": "eq",
-              "value": 0
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "pause-not-yet-visible",
-              "observation": "order_p95",
-              "op": "lt",
-              "value": 400
+              "value": 0.7
             }
           ],
           "consecutive_ticks": 3
@@ -547,9 +295,21 @@
               "observation": "order_restart_count",
               "op": "gt",
               "value": 0
+            },
+            {
+              "id": "injection-not-reflected",
+              "observation": "order_tenured_limit_mib",
+              "op": "gt",
+              "value": 145
+            },
+            {
+              "id": "user-load-overshot",
+              "observation": "achieved_rps",
+              "op": "gt",
+              "value": 60
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 3
         },
         "abort": {
           "any": [
@@ -577,10 +337,16 @@
               "value": true
             },
             {
-              "id": "gc-pressure-cleared",
+              "id": "heap-reclaimable-again",
+              "observation": "order_old_gen_ratio",
+              "op": "lt",
+              "value": 0.5
+            },
+            {
+              "id": "order-latency-recovered",
               "observation": "order_p95",
               "op": "lt",
-              "value": 200
+              "value": 300
             }
           ],
           "consecutive_ticks": 2,
@@ -634,7 +400,7 @@
   "prerequisite_gate": {
     "state": "satisfied",
     "required": false,
-    "description": "stable pre-OOM GC range",
+    "description": "none",
     "live_allowed": true
   },
   "capture_policy": {

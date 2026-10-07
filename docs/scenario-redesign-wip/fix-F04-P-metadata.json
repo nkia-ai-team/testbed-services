@@ -38,6 +38,6 @@
     "class_label": "A",
     "readiness": "draft",
     "prerequisite_gate": "blocked",
-    "prerequisite_reason": "rate-control 전용 injector 부재(현 manifest kafka.control은 consumer 정지=F04-R 의미로 오배선). load.north_south banking surge로 재정의 필요(F04-P + banking surge 등록) + 지속 lag 재현 신뢰성 검증 + ledger 반영지연 DB selector 신설"
+    "prerequisite_reason": "2026-07-28 실측으로 정답 자체가 반증됐다. 라이브 ledger 파드 로그에서 'Received transfer event'→'Ledger recorded' 간격이 건당 1~3ms로, 단일 스레드 처리 능력이 300~500 msg/s다. 반면 도달 가능한 이체 유입은 load.north_south target_rps 상한 180 × transfer-heavy-surge.js 이체비중 40% = 최대 72/s이고, 그마저도 transfer-service outbox relay(2초마다 top 100)가 앞에서 ~50/s로 자른다. 5~7배 여유이므로 어떤 부하로도 lag이 쌓이지 않는다 — 배선했다면 lag이 오르지 않는 실행이 나왔을 것이다. 곁가지 확인: idx_ledger_ref가 있어 멱등 조회는 인덱스를 타고, ledger_entries 83,736행·미발행 outbox 0건으로 현 파이프라인은 건강하다. 재현하려면 소비 경로에 앱 결함이 필요하다(유력 후보: LedgerService.sumImbalance의 전체 테이블 합산 대사를 배치가 아니라 건당 호출 — 정답 'consumer concurrency 미설정'은 유지되고 주입은 자백형이 아니다). T2 앱 결함 묶음에서 재설계한다."
   }
 }

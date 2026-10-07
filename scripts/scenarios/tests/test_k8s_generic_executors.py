@@ -39,12 +39,8 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             "baseline": {"requests": {"cpu": "200m"}, "limits": {"cpu": "500m"}},
             "fault": {"requests": {"cpu": "50m"}, "limits": {"cpu": "100m"}},
         }
-        postgres = {
-            "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres",
-            "container": "postgres", "resource": "memory",
-            "baseline": {"limits": {"cpu": "500m", "memory": "512Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-            "fault": {"limits": {"cpu": "500m", "memory": "320Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-        }
+        # 2026-08-06: 고정 320Mi(실사용의 2.6배, OOM 불가)를 실측 사다리로 교체(0804 #19).
+        postgres = resource.F25_H_LEVELS[0]
         resource.validate("F05-R", payment, {})
         resource.validate("F09-P", inventory, {})
         resource.validate("F25-H", postgres, {})
@@ -57,7 +53,7 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             resource.validate("F25-H", dict(postgres, container="postgres-2"), {})
 
     def test_resource_script_snapshots_then_restores_exact_original(self) -> None:
-        params = resource.F05_R_LEVELS[2]
+        params = resource.F05_R_LEVELS[-1]
         argv, stdin = resource.build_invocation(plan(resource.PROFILE_ID, "F05-R", params), "run")
         self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
         self.assertIn("rca-testbed-commerce", argv)
@@ -72,20 +68,25 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         self.assertNotIn("kubectl exec", script)
 
     def test_resource_executor_uses_statefulset_kind_for_f25_h(self) -> None:
-        postgres = {
-            "namespace": "rca-testbed-commerce", "deployment": "testbed-postgres",
-            "container": "postgres", "resource": "memory",
-            "baseline": {"limits": {"cpu": "500m", "memory": "512Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-            "fault": {"limits": {"cpu": "500m", "memory": "320Mi"}, "requests": {"cpu": "200m", "memory": "256Mi"}},
-        }
+        postgres = resource.F25_H_LEVELS[0]
         argv, stdin = resource.build_invocation(plan(resource.PROFILE_ID, "F25-H", postgres), "run")
         self.assertIn("statefulset", argv)
         self.assertNotIn("deploy", argv)
         script = stdin.decode()
         self.assertIn('get "$kind" "$deploy"', script)
         self.assertIn('patch "$kind" "$deploy"', script)
-        self.assertIn('rollout status "$kind"/"$deploy"', script)
-        self.assertIn('can-i patch "${kind}s"', script)
+        # 배치 #17: rollout status는 ProgressDeadlineExceeded가 굳으면 복원
+        # 성공 뒤에도 실패를 되읽는다 — healthy()는 상태 필드를 직접 계산한다.
+        self.assertNotIn("rollout status", script)
+        self.assertIn(".status.observedGeneration >= .metadata.generation", script)
+        self.assertIn(".status.readyReplicas", script)
+        # `${kind}s` made "deploys" out of the "deploy" kind. kubectl still
+        # answered yes, so the check passed — but it warned on stderr, and
+        # profile-control reports a failed preflight's stderr as the reason, so
+        # unrelated failures arrived labelled with this warning (2026-08-04).
+        # The permission check must ask about the same spelling get/patch use.
+        self.assertIn('can-i patch "$kind"', script)
+        self.assertNotIn('can-i patch "${kind}s"', script)
 
     def test_probe_executor_allows_only_payment_liveness(self) -> None:
         params = probe.F05_H_PARAMETERS
@@ -126,6 +127,41 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         script = env.build_invocation(plan(env.PROFILE_ID, "F09-H", gc), "recovery")[1].decode()
         self.assertIn("(.env // [])", script)
         self.assertIn('[[ ! -e "$state" ]]', script)
+
+    def test_a_peers_rollout_is_waited_out_in_preflight_not_in_apply(self) -> None:
+        """Measured 2026-08-04 on 109, both halves of it.
+
+        F05-R's k8s.env companion patches testbed-payment ~1s before the
+        k8s.resource primary runs against the same Deployment, and payment takes
+        ~58s to roll; for those seconds a steady-baseline check refuses. Waiting
+        inside the companion's apply fixed that and broke something worse:
+        profile-control holds the coordinator lock through apply, so the 30s
+        lease could not be heartbeat-renewed and expired mid-run. preflight runs
+        with the lock released, so the budget belongs there.
+        """
+        pretouch = {
+            "namespace": "rca-testbed-commerce", "deployment": "testbed-payment",
+            "container": "payment-service",
+            "baseline": [{"name": "JAVA_TOOL_OPTIONS", "value": "-javaagent:/opt/apm/x.jar"}],
+            "fault": [{
+                "name": "JAVA_TOOL_OPTIONS",
+                "value": "-javaagent:/opt/apm/x.jar -Xms768m -XX:+AlwaysPreTouch",
+            }],
+        }
+        env.validate("F05-R", pretouch, {})
+        env_run = (
+            env.build_invocation(plan(env.PROFILE_ID, "F05-R", pretouch), "run")[1]
+            .decode().split("run)")[1].split(";;")[0]
+        )
+        self.assertNotIn("healthy", env_run.split('patch "$fault"')[1])
+
+        script = resource.build_invocation(
+            plan(resource.PROFILE_ID, "F05-R", resource.F05_R_LEVELS[0]), "preflight"
+        )[1].decode()
+        preflight_case = script.split("preflight)")[1].split(";;")[0]
+        self.assertIn("settle=90s check", preflight_case)
+        # apply keeps the tight budget; by then preflight has settled it.
+        self.assertIn('healthy "${settle:-1s}"', script)
 
     def test_registry_gate_is_fail_closed_when_present(self) -> None:
         params = resource.F05_R_LEVELS[0]

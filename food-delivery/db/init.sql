@@ -115,7 +115,19 @@ CREATE TABLE IF NOT EXISTS dispatches (
     eta_minutes  INT,
     status       VARCHAR(16) NOT NULL DEFAULT 'ASSIGNED',
     assigned_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_dispatches_order (order_id)
+    KEY idx_dispatches_order (order_id),
+    -- 2026-08-07 실측으로 추가. DispatchService.countByStatus("ASSIGNED") 가 주문 생성마다
+    -- 두 번(용량 게이트 :60, capacity 조회 :107) 돈다. status 인덱스가 없어 이 표가 커질수록
+    -- 매번 풀스캔이 되고, 137만 행에 이르자 /api/deliveries/capacity 가 500 을 내기 시작했다.
+    -- OrderService 는 그 실패를 503 "Dispatch service unreachable"(:108-111)로 바꾸는데,
+    -- 그 지점이 payment 호출보다 앞이라 하류 주입이 통째로 가려진다 — F19-P·F19-S 통과가
+    -- 실제로는 dispatch 고장이었다(order 503 트레이스 482건 중 payment 스팬 0건).
+    --
+    -- assigned_at 을 두 번째 열로 둔 것은 만료 스윕(findExpiredAssigned)을 위해서다. 다만
+    -- 그 술어는 DATE_ADD(assigned_at, INTERVAL eta_minutes MINUTE) 이라 sargable 하지 않아
+    -- 범위 스캔은 못 탄다. 이득은 ASSIGNED 접두(현재 ~1.4천 행)로 먼저 좁힌 뒤 그 안에서만
+    -- 함수를 평가하게 되는 것이다 — 137만 행 전수 평가와의 차이가 본질이다.
+    KEY idx_dispatches_status_assigned (status, assigned_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- (7번 이식) 배차 상태 전이 이력 — DispatchService.recordEvent() 가 기록.
@@ -184,6 +196,18 @@ CREATE TABLE IF NOT EXISTS menu_popularity_summary (
     order_count    BIGINT NOT NULL,
     computed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 응답 고정 지연 스위치(재기동 없는 지연 표면 — ResponseDelayFilter 가 2초 주기로 조회).
+-- core-banking 의 response_delay_control 과 같은 계보다: k8s.env 는 롤아웃을 유발하고,
+-- HTTP 관리 엔드포인트는 otel 서버 스팬으로, 호출자 파라미터는 접근 로그로 정답을 자백한다.
+-- 상한 10000ms 는 DDL 과 앱 양쪽에서 조인다 — 잘못된 UPDATE 하나로 홉을 죽이지 않도록.
+CREATE TABLE IF NOT EXISTS response_delay_control (
+    service_id  VARCHAR(32) PRIMARY KEY,
+    delay_ms    INT NOT NULL DEFAULT 0,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_response_delay_ms CHECK (delay_ms BETWEEN 0 AND 10000)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO response_delay_control (service_id, delay_ms) VALUES ('restaurant', 0);
 
 -- ------------------------------------------------------------
 -- 기존 소량 데모 시드 (그대로 유지 — id 1~3 restaurants / 1~15 menus 는 하위호환 앵커)

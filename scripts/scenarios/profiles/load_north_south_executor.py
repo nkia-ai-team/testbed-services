@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -87,7 +88,21 @@ def build_ssh_argv(location: dict[str, Any]) -> list[str]:
 
 
 def remote_script() -> bytes:
-    return br'''#!/usr/bin/env bash
+    """원격 bash 스크립트를 조립한다.
+
+    monitor 본문은 `loadgen_monitor.py`(정본)에서 읽어 주입한다. 예전에는 이 함수 안에
+    heredoc으로 박혀 있었는데, baseline 경로가 같은 파서를 필요로 하면서 사본이 둘이 될
+    참이었다 — 손으로 관리하는 두 번째 사본이 정본과 갈라져 시나리오의 유일한 성공 조건을
+    죽인 게 2026-07-29 F06-P다. 읽어서 주입하면 ssh stdin 한 번으로 보내는 기존 구조를
+    유지하면서도 정본이 하나로 남는다.
+    """
+    monitor_source = (HERE / "loadgen_monitor.py").read_bytes()
+    if b"\nPY\n" in monitor_source or monitor_source.startswith(b"PY\n"):
+        raise ExecutorError("monitor source collides with the heredoc terminator")
+    return _REMOTE_PREFIX + monitor_source + _REMOTE_SUFFIX
+
+
+_REMOTE_PREFIX = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; target_rps="$3"; ramp_up="$4"; hold="$5"; ramp_down="$6"
 entry_url="$7"; script_path="$8"; scenario_tag="$9"; seed="${10}"; baseline_unit="${11}"
@@ -115,12 +130,20 @@ tagged_pids() {
   done
 }
 
-check_read_only() {
+entry_health() {
+  curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$entry_url$health_path" 2>/dev/null || true
+}
+
+check_tools() {
   command -v k6 >/dev/null
   command -v curl >/dev/null
   systemctl is-active --quiet "$baseline_unit"
   [[ -r "$script_path" ]]
-  [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$entry_url$health_path")" == "200" ]]
+}
+
+check_read_only() {
+  check_tools
+  [[ "$(entry_health)" == "200" ]]
 }
 
 case "$action" in
@@ -132,132 +155,18 @@ case "$action" in
     check_read_only
     [[ -z "$(tagged_pids)" ]] || { echo "tagged k6 already running" >&2; exit 4; }
     cat >"$monitor" <<'PY'
-# The live document must be rewritten at most once per drain cycle, not per
-# parsed line: a per-line fsync cannot keep up with k6's json output at high
-# arrival rates, the parser falls minutes behind, and observed_at then trips
-# the 30s staleness contract (F07-H run 158b449c, 80rps, 07-19).
-import collections, datetime, json, os, sys, time
-source, output, scenario_id, business_step, read_step = (sys.argv[1:] + [""])[:5]
-iterations = collections.deque()
-checkout_results = collections.deque()
-read_results = collections.deque()
-entry_status = None
-last_stamp = None
-position = 0
-while True:
-    parsed_any = False
-    try:
-        with open(source, encoding="utf-8") as stream:
-            stream.seek(position)
-            while True:
-                line = stream.readline()
-                if not line:
-                    break
-                position = stream.tell()
-                if '"iterations"' not in line and '"http_reqs"' not in line:
-                    continue
-                try:
-                    point = json.loads(line)
-                    if point.get("type") != "Point":
-                        continue
-                    data = point.get("data", {})
-                    observed = data.get("time")
-                    if not observed:
-                        continue
-                    stamp = datetime.datetime.fromisoformat(observed.replace("Z", "+00:00"))
-                    metric = point.get("metric")
-                    tags = data.get("tags", {})
-                    if metric == "iterations":
-                        iterations.append(stamp)
-                    elif metric == "http_reqs" and tags.get("step") == business_step:
-                        raw = tags.get("status")
-                        entry_status = int(raw) if raw and str(raw).isdigit() else 0
-                        checkout_results.append((stamp, entry_status))
-                    elif metric == "http_reqs" and read_step and tags.get("step") == read_step:
-                        raw = tags.get("status")
-                        read_results.append((stamp, int(raw) if raw and str(raw).isdigit() else 0))
-                    else:
-                        continue
-                    last_stamp = stamp
-                    parsed_any = True
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except FileNotFoundError:
-        pass
-    if parsed_any and last_stamp is not None:
-        cutoff = last_stamp - datetime.timedelta(seconds=30)
-        while iterations and iterations[0] < cutoff:
-            iterations.popleft()
-        while checkout_results and checkout_results[0][0] < cutoff:
-            checkout_results.popleft()
-        while read_results and read_results[0][0] < cutoff:
-            read_results.popleft()
-        span = max(1.0, min(30.0, (iterations[-1] - iterations[0]).total_seconds())) if len(iterations) > 1 else 1.0
-        checkout_count = len(checkout_results)
-        business_2xx_rate = (
-            sum(200 <= status <= 299 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_4xx_rate = (
-            sum(400 <= status <= 499 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_5xx_rate = (
-            sum(status >= 500 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        business_nonok_rate = business_4xx_rate + business_5xx_rate
-        # checkout_5xx_rate is kept for backward compatibility (pre-existing
-        # query_id/consumer contract); business_5xx_rate is its replacement value.
-        checkout_5xx_rate = business_5xx_rate
-        # F23-R decisive evidence: 409 (stock-exhausted) is a subset of the
-        # 4xx bucket that business_nonok_rate can't isolate from other 4xx
-        # causes (e.g. coupon validation) - tracked separately here.
-        business_409_rate = (
-            sum(status == 409 for _, status in checkout_results) / checkout_count
-            if checkout_count else 0.0
-        )
-        document = {
-            "scenario_id": scenario_id,
-            "scenario_tag": f"scenario_id={scenario_id}",
-            "achieved_rps": len(iterations) / span,
-            "entry_status": entry_status,
-            "checkout_5xx_rate": checkout_5xx_rate,
-            "business_2xx_rate": business_2xx_rate,
-            "business_4xx_rate": business_4xx_rate,
-            "business_5xx_rate": business_5xx_rate,
-            "business_409_rate": business_409_rate,
-            "business_nonok_rate": business_nonok_rate,
-            "business_ok": entry_status in {200, 400, 409},
-            "observed_at": last_stamp.astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-        if read_step:
-            read_count = len(read_results)
-            read_2xx_rate = (
-                sum(200 <= status <= 299 for _, status in read_results) / read_count
-                if read_count else 0.0
-            )
-            document["read_2xx_rate"] = read_2xx_rate
-            document["read_nonok_rate"] = (
-                sum(status >= 400 or status == 0 for _, status in read_results) / read_count
-                if read_count else 0.0
-            )
-        temporary = output + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as target:
-            json.dump(document, target, sort_keys=True)
-            target.write("\n")
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, output)
-    time.sleep(1)
-PY
+'''
+
+_REMOTE_SUFFIX = br'''PY
     rm -f -- "$samples" "$live"
     nohup k6 run --tag "$scenario_tag" \
       --env "$gateway_env=$entry_url" --env "TARGET_RPS=$target_rps" \
       --env "RAMP_UP=$ramp_up" --env "HOLD=$hold" --env "RAMP_DOWN=$ramp_down" \
       --env "SURGE_SEED=$seed" --out "json=$samples" --summary-export "$summary" "$script_path" \
       >"$log_file" 2>&1 &
-    nohup python3 "$monitor" "$samples" "$live" "$scenario_id" "$business_step" "$read_step" \
+    nohup python3 "$monitor" --source "$samples" --output "$live" \
+      --business-step "$business_step" --read-step "$read_step" \
+      --mode tail --scenario-id "$scenario_id" \
       >>"$log_file" 2>&1 & echo $! >"$monitor_pid"
     ;;
   cleanup)
@@ -270,8 +179,44 @@ PY
     rm -f -- "$summary" "$samples" "$live" "$monitor" "$monitor_pid" "$log_file"
     ;;
   recovery)
-    check_read_only
-    [[ -z "$(tagged_pids)" ]]
+    # Recovery's whole job is to wait for the system to come back, so nothing here
+    # may assert on a not-yet-recovered state. check_read_only() was doing exactly
+    # that: its entry-health probe demanded 200 at that instant, and it ran before
+    # everything else. Scenarios that deliberately break the entry (F25-H squeezes
+    # commerce postgres until it OOMs) therefore failed recovery while the entry was
+    # still coming back -- run 7bcd31eb died that way with
+    # "load.north_south:recovery failed" even though its judgement had already
+    # succeeded. Tool/unit checks stay immediate (they are environment invariants,
+    # not recovery state); only the health probe waits.
+    check_tools
+    deadline=$((SECONDS + 120))
+    while [[ "$(entry_health)" != "200" ]]; do
+      if (( SECONDS >= deadline )); then
+        echo "entry $entry_url$health_path not healthy after 120s (last=$(entry_health))" >&2
+        exit 1
+      fi
+      sleep 2
+    done
+    # Do not assert immediately. k6 termination is asynchronous: even right after
+    # cleanup SIGKILLs, the zombie stays in /proc until the parent reaps it, so
+    # tagged_pids still sees it. F25-H run 4771bc5b died that way -- its
+    # transition-cleanup ran 20:45:44->20:45:52 (8s) and recovery failed straight
+    # after. Across every recorded run (n=88) this cleanup took p50 1.66s /
+    # p90 4.42s / max 7.57s, and that max IS this run; the other 87 sat near p50
+    # and slipped through, which is why the failure looked intermittent.
+    #
+    # 30s is ~4x the measured max. The cost is asymmetric, so take the
+    # conservative side: overshooting costs a few seconds on a rare tail (k8s
+    # level transitions already take 60-80s, so the transition profile is
+    # unaffected), while undershooting costs a dirty run plus a babysitter action.
+    deadline=$((SECONDS + 30))
+    while [[ -n "$(tagged_pids)" ]]; do
+      if (( SECONDS >= deadline )); then
+        echo "tagged k6 still present after 30s: $(tagged_pids | tr '\n' ' ')" >&2
+        exit 1
+      fi
+      sleep 1
+    done
     ;;
   *) echo "unsupported remote action: $action" >&2; exit 2 ;;
 esac
@@ -286,8 +231,15 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     domain_profile = contract["domain_profiles"].get(parameters["entry_url"])
     if domain_profile is None:
         raise ExecutorError("entry_url has no domain profile")
-    argv = build_ssh_argv(instance["location"])
-    argv.extend([
+    # ssh joins argv with spaces into one remote command line, so every remote
+    # argument must be shell-quoted (db_ddl_executor does the same). The banking
+    # health_path is `/api/accounts?status=ACTIVE&size=1`: unquoted, that `&` cut
+    # the command in two and the rest ran as a new one, which is where
+    # "GATEWAY_URL: command not found" came from. Every banking north-south
+    # scenario — F10-P, F14-P, F18-P, F20-P, F21-P — died on contact. The `?` in
+    # all three health paths was surviving only because pathname expansion found
+    # no match; quoting removes that coin flip too.
+    remote_args = [
         action,
         plan["scenario"]["id"],
         str(parameters["target_rps"]),
@@ -303,7 +255,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         domain_profile["gateway_env"],
         domain_profile["business_step"],
         domain_profile.get("read_step", ""),
-    ])
+    ]
+    argv = build_ssh_argv(instance["location"])
+    argv.extend(shlex.quote(arg) for arg in remote_args)
     return argv, remote_script()
 
 

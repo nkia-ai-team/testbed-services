@@ -24,6 +24,8 @@ spec:
       labels:
         app: testbed-kafka
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w1
       containers:
         - name: kafka
           # ARM64(aarch64) 배포 대상 — apache/kafka는 멀티아치(arm64 포함) 공식 이미지.

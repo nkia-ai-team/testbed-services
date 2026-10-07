@@ -74,9 +74,21 @@ const randInt = (min, max) => Math.floor(rand() * (max - min + 1)) + min;
 const FROZEN_FROM_ACCOUNT = 'ACC-9001'; // FROZEN, 잔액 100000
 const CLOSED_TO_ACCOUNT = 'ACC-9002';   // CLOSED, 잔액 0
 const ACTIVE_COUNTERPARTY = 'ACC-1001'; // ACTIVE, 상대방 계좌
-const AMOUNT_MIN = 1000;
-const AMOUNT_MAX = 5000; // FROZEN 잔액(100000)에 항상 충분 — balance 검사(TransferService.java:77)로
-                          // FAILED가 섞여 direct arm 200 판정이 흐려지는 것을 방지(설계시트 §2 must_rule_out).
+// 2026-07-28 하향(1000~5000 → 1~5). 원래 값은 잔액을 감당하지 못했다: 8분 hold를
+// TARGET_RPS=20으로 흘리면 iteration이 약 9,600회이고 DIRECT_ARM_RATIO 2%면 direct가
+// 약 192건, variant A가 절반이면 ACC-9001에서 평균 3,000씩 약 96건 = 288,000이 빠진다.
+// FROZEN 잔액은 100,000이므로 3분의 1 지점에서 balance 검사(TransferService.java:77)에
+// 걸려 FAILED로 돌아서고, 그 순간부터 direct arm 200 비율이 무너져 성공조건이 스스로
+// 깨진다. variant B가 차감하는 ACC-1001은 surge.js가 쓰는 **공유 baseline 계좌**라
+// 같은 규모의 차감이 다음 케이스까지 오염시킨다.
+//
+// 위반의 증거는 금액이 아니라 **성사되었다는 사실**이다(FROZEN 계좌에서 돈이 움직였다).
+// 금액을 1~5로 낮추면 한 회차 총 차감이 계좌당 300 남짓이라 잔액 대비 0.3% 수준으로
+// 떨어지고, 잔액 고갈로 인한 자기-거부도 사라진다. 정리 단계의 원장 역분개가 필요했던
+// 이유가 이 차감 규모였으므로, 규모를 없애는 쪽이 역분개보다 단순하고 안전하다
+// (load.north_south cleanup은 부하 종료만 하며 DB 쓰기 권한이 없다).
+const AMOUNT_MIN = 1;
+const AMOUNT_MAX = 5;
 
 // direct arm(위반 유발) 발생 비율 — 매 iteration마다 흘리지 않는다. 두 가지 잔액
 // 제약이 있다: (1) variant A는 ACC-9001(FROZEN, 잔액 100000)에서 매번 차감되므로

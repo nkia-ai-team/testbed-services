@@ -2,7 +2,7 @@
 title: 평가용 데이터 캡처·재생 설계
 status: Draft
 owner: project
-last_reviewed: 2026-07-20
+last_reviewed: 2026-07-24
 tags:
   - evaluation
   - testbed
@@ -48,7 +48,8 @@ summary: 평가 입력 데이터를 재현 가능하게 고정하는 방법을 �
 
 평가는 두 단계로 분리한다. 이 둘을 섞으면 혼란해진다.
 
-**Phase A · 캡처 (녹화)** — 라이브 테스트베드, 일일 사이클(2026-07-20 개정, §2.1).
+**Phase A · 캡처 (녹화)** — 라이브 테스트베드. 현행 계약은 **연속 사이클
+v3(§2.2)** 이며, 아래 1~5 절차 서술은 v2(일일 사이클, §2.1) 당시 기록이다.
 
 1. 테스트베드에 에이전트·collector 설치(최초 1회).
 2. **일일 정상 세그먼트** 확보 — 매일 00:00~02:00(보호 구간, 주입 금지)을
@@ -64,8 +65,11 @@ summary: 평가 입력 데이터를 재현 가능하게 고정하는 방법을 �
    **연속 시간축 완성본(`assembled/`)까지 생성해 동봉**하고, 레시피를
    `meta.json`에 기록한다(§2.1).
 
-### 2.1 캡처 시간창 계약 (2026-07-20 개정 — 일일 사이클·세그먼트 분리)
+### 2.1 캡처 시간창 계약 (2026-07-20 개정 — 일일 사이클·세그먼트 분리) — §2.2로 대체됨
 
+> **[2026-07-24] 이 계약(v2)은 §2.2 연속 사이클 계약(v3)으로 대체되었다.**
+> 07-21 큐(13케이스)가 이 계약으로 캡처되었으므로 기록으로 보존한다.
+>
 > 2026-07-15 계약(시나리오당 단일 창 `[t1-2h, t2+45m]`)을 대체한다. 시나리오마다
 > 정상 2시간을 실시간으로 기다리던 구조를 "일일 공유 정상 세그먼트 + 짧은
 > 시나리오 창"으로 바꿔 대기 시간을 없애고 하루 처리량을 높인다. settle window
@@ -165,6 +169,156 @@ SHA-256에 결속된다. 자동 캡처의 기본 라벨은 기존 호출과의
 최대 event-time과 dump 시각의 차이를 `meta.json` 또는 캡처 로그에 기록하고,
 인시던트가 창 밖에서 생성된 정황이 보이면 settle window를 재협의한다.
 
+### 2.2 연속 사이클 캡처 계약 v3 (2026-07-24 — schema 2.0)
+
+> §2.1(v2, 일일 공유 정상 세그먼트 + rebase/`assembled/` 조립)을 대체한다. 동인
+> 셋(2026-07-24 사용자 확정): ① 조립식 시간축은 이음새(diurnal 위상차) 처리를
+> 소비자에게 떠넘기고 rebase 역산 부담을 남긴다 — 실제 연속 시간축이면 둘 다
+> 소멸. ② CH 캡처가 4테이블뿐이라 소비자(이상감지)가 필요한 dpm·kcm·process
+> 계열이 빠졌고, 07-24에 사후 백필로 메꾸는 사건이 있었다(TTL 경과 시 소실
+> 위험). ③ trainer 초기화(golden 복원)와 정상 리드인을 한 사이클로 묶어 "리셋
+> 직후 2시간 정상 학습 → 주입"의 인과를 케이스 안에 담는다. 첫 적용 대상 =
+> 검증된 13개 시나리오(F01-G/H/R·F02-R·F03-G·F04-R·F05-G·F06-R·F07-H·F08-H·
+> F09-P·F11-G·F11-R) 재캡처 큐.
+
+**사이클 구조** — 케이스 1개 = 사이클 1개, 시간축은 실벽시계 그대로 연속:
+
+```
+[trainer_reset] → normal(2h) → buffer(10m) → injection[t1,t2] → cooldown(30m)
+                                                                      └→ 캡처 시작
+```
+
+- `trainer_reset`: golden 스냅샷 복원([Trainer 초기화 설계](spec-trainer-reset.md))
+  을 **사이클 시작 시** 수행한다(v2는 주입 직전이었음). 리셋 후 정상 2시간 동안
+  trainer는 **가동 상태로 학습**한다 — 정상만 보는 구간이므로 오염이 없고, 매
+  사이클 "golden + 갓 학습한 2h 정상"으로 두뇌 상태가 동일하게 재현된다.
+  stream-anomaly(60분 적응형)도 이 리드인에서 자가 회복한다(동 스펙 §3.2).
+- `buffer(10m)`: 주입 전 완충. **buffer 시작(=t1−10m)에 trainer 동결**(docker
+  stop), 캡처 완료 후 해동. preflight 검사창도 이 10분이다(v2와 동일 게이트).
+- `injection[t1,t2]`: 기존 controller 소유 실행(변경 없음).
+- `cooldown(30m)`: 회복·settle 통합 창. v2의 settle 20m을 30m으로 흡수 통일.
+- **캡처 창 = `[cycle_start, t2+30m]` 통짜 1개.** `cycle_start`=trainer 리셋
+  직후 normal 시작 시각. 조립이 없으므로 `assembled/`·`normal-segments/` 참조·
+  `rebase`·이음새 계약이 **모두 소멸**한다. 일일 정상 세그먼트 cron과 00:00~02:00
+  보호 구간은 이 큐에서 사용하지 않는다.
+- 처리량: 사이클당 약 2h40m + 주입 시간 → 13개 연속 약 1.5~2일. 사이클은
+  시간대 제약 없이 연속 실행한다(시간대별 golden 최근접 선택은 trainer 스펙 §8).
+
+**ClickHouse 캡처 테이블 — 12종 고정 목록** (v2의 4종에서 확장, 07-24 백필
+사건의 재발 방지. 2026-07-24 라이브 CH 스키마 34테이블 전수 실측으로 확정 —
+행수 보유 베이스 테이블 11종 전부 + `syslog_local` 예비 1종이며, MV·`.inner`·
+AggregatingMergeTree는 소비자 복원 시 base 재삽입으로 재구축되므로 제외,
+`schema_migrations` 제외). **12종 전부 캡처 창으로 스코프한다** — 전체 스냅샷은
+없다(2026-07-27, 품질 기준서 G6/L3):
+
+| 테이블 | 시간 컬럼 | 방식 |
+|---|---|---|
+| `otel_traces_local` | `timestamp` | 창 슬라이스 |
+| `lucida_logs_local` | `timestamp` | 창 슬라이스 |
+| `lucida_events_local` | `occurred_at` | 창 슬라이스 (UUID→String 캐스팅, §8.3) |
+| `dpm_session_local` | `timestamp` | 창 슬라이스 |
+| `dpm_topsql_local` | `timestamp` | 창 슬라이스 |
+| `kcm_events_local` | `timestamp` | 창 슬라이스 |
+| `process_snapshot` | `ts` | 창 슬라이스 |
+| `trace_error_chains_local` | `window_start` | 창 슬라이스 |
+| `trace_path_signatures_local` | `window_start` | 창 슬라이스 |
+| `syslog_local` | `received_at` | 창 슬라이스 (현재 0행 — 유입 시 대비, 컬럼명 07-24 실측) |
+| `host_connections` | `timestamp` | 창 슬라이스 |
+| `process_meta` | `seen_at` | **스냅샷 조인** — 창 안 `process_snapshot`의 `(target_id, proc_key)`로 스코프 |
+
+> **전체 스냅샷 폐지 (2026-07-27).** `host_connections`·`process_meta` 두 종만
+> 창 없이 통째로 떴고, 그 결과 v3 케이스 **11건 전부**의 `process_meta.cmdline`에
+> 07-22에 돌았던 F09-R CPU 부하 프로세스가 실려 무관한 케이스에 **틀린 단서**를
+> 제공했다(품질 기준서 정답 누설 L3).
+>
+> `process_meta`만 방식이 다른 이유: 이 테이블은 프로세스를 **처음 봤을 때 등록**한다
+> (`ReplacingMergeTree(target_id, proc_key, seen_at)`, 실측 min `seen_at` = 07-13).
+> `seen_at`으로 단순 슬라이스하면 창이 열리기 전부터 돌던 프로세스—즉 앱 프로세스
+> 대부분—의 메타가 사라진다(2026-07-27 실측: 창 내 1157 proc_key 중 **499개만 커버,
+> 57% 유실**). 그래서 창 안에서 **실제로 관측된** 프로세스의 메타만 조인으로 가져온다.
+>
+> 실측 검증: F09-R 자기 창(07-22 03:00–04:00)에는 해당 메타 2행이 그대로 남고,
+> 무관한 창(07-27 20:00–21:00)에는 **0행**. 행수 217,189 → 2,768.
+
+- §3 ⚠의 "로그 정본 싱크" 우려는 실측으로 해소: 정본 후보 `otel_logs_local`은
+  현 배포에서 **0행**(미사용)이고 로그는 `lucida_logs_local`로 들어온다. 캡처
+  스크립트는 **런타임에 베이스 테이블을 전수 열거**해 위 목록에 없는 비어있지
+  않은 테이블을 발견하면 경고를 남긴다(스키마 드리프트 조기 감지 — 예:
+  `otel_logs_local`·wpm·netflow 계열이 유입을 시작하는 경우 목록 개정).
+
+캡처 스크립트는 **테이블별 행수와 실제 시간범위(min/max)를 `meta.json.
+clickhouse_tables[]`에 기록**한다 — "데이터가 들었는가"를 파일을 열지 않고
+meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 구조적 방지).
+
+**meta.json schema 2.0** — v3 계약을 담는 케이스는 `schema_version: "2.0"`:
+
+- 신규: `timeline: "continuous"` (v2 케이스와 기계 구분).
+- 신규 `phases[]`: 사이클 실측 기록 —
+  `{phase: trainer_reset, at, golden_id, golden_sha256}` /
+  `{phase: normal|buffer|injection|cooldown, start, end}` (UTC 정본 + `*_kst`
+  병기). `injection.start`=`t1`, `injection.end`=`t2`와 일치해야 한다.
+- 신규 `clickhouse_tables[]`: `{table, file, rows, time_column,
+  scope: slice|snap, time_min, time_max | null(0행)}`.
+- 유지: `t1`/`t2`/`capture_start`/`capture_end`(+`_kst`), `dump_*`,
+  `scenario_metadata` 6필드 + `scenario_metadata_sha256`(정본 운반, 불일치 시
+  승격 거부), `case_label`, `evaluation_eligible`(v2와 동일 결속 규칙),
+  `preflight`(창=buffer 10분), `topology_snapshot`, 모델 스냅샷 계보
+  (`model_snapshot_at >= capture_end` 검증 포함).
+- 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.
+
+**토폴로지 주기 스냅샷 번들 (2026-07-24 신설 — EventCluster 소비자 계약)**:
+EventCluster의 event-time replay 평가는 "사건 당시" 토폴로지가 필요하므로,
+단발 사후 스냅샷(§4 `data/topology/`)과 별도로 **사이클 실행 동안 주기
+수집한 원본 번들**을 케이스 `topology/`에 동봉한다. 계약 정본은 07-24
+EventCluster 담당(장재훈) 전달사항이며 요지:
+
+- 러너가 cycle_reset~캡처 완료 동안 주기(기본 30s, ≤ topology refresh
+  주기)로 `GET /api/v1/topology/graph`(`range=24h`·`depth=1`·edgeKinds
+  13종·`includeSelfMonitor=true`, **global graph 모드** — 07-24 실측
+  171노드/172엣지 `truncated=false`라 anchor 64분할 불요) +
+  `GET /api/v1/asset-tree/service/unified` 쌍을 수집.
+- 저장: `topology/graph/<UTC>-part-NNN.json` + `topology/service-tree/
+  <UTC>.json` + `manifest.json`(schema_version=1, case_id,
+  capture_interval_seconds, snapshots[]의 request_url·http_status·
+  raw-bytes SHA-256, **capture_failures[] — 실패도 기록**).
+- **원본 무가공**: 응답 바이트 그대로 보존(재직렬화·필드 삭제·보정 금지),
+  캡처는 sha 재검증·시간순·injection 구간 [t1,t2] 커버(≥1 스냅샷) 검증 후
+  바이트 그대로 반입. manifest의 case_id 주입만 허용.
+- 수집기 장애는 큐를 멈추지 않고(capture_failures 기록) 캡처는 번들 부재
+  시 경고 후 진행(fail-open). meta.json에 `topology_bundle` 요약 기록.
+
+**산출물 권한 (2026-07-24 신설)**: 케이스 디렉터리·파일은 승격 시점부터 **그룹
+읽기 가능**(`g+rX`, 그룹은 저장 호스트 관례를 따름 — .104는 `sudo`)이어야 한다.
+07-24에 109 사본이 root 700으로 떨어져 소비자가 "데이터 없음"으로 오인한 사건의
+재발 방지. 정본 아카이브는 .104 `/data/eval-cases/`이며 소비자 안내는 항상 정본
+경로로 한다.
+
+**scenario.md (동반 문서)**: 형식 정본은 [AI Scenario Supervisor §6]
+(spec-scenario-supervisor.md)의 AI 저술 규칙을 승계하되, v3 케이스는 다음을
+추가·변경한다 — ① "사이클 타임라인" 표 신설(리셋~쿨다운 종료의 실측 UTC/KST),
+② 시간축이 실제 연속임을 명기하고 rebase/이음새 서술 금지, ③ 관측 실측 절은
+AI 계층 온전 전제(리셋+2h 학습)로 탐지 이벤트 타임라인을 수록.
+
+**무인 실행·자가 복구 (2026-07-24 사용자 핵심 요구)**: 사이클이 길어(13개
+~2일) 실패 시 사람 개입 대기는 허용되지 않는다. 두 겹으로 보장한다.
+
+1. **큐 상태기계의 재개 가능성(코드)**: 상태를 매 구간 전환마다 영속화하고,
+   실패 구간별 재개 정책을 고정한다:
+
+   | 실패 구간 | 재개 정책 | 근거 |
+   |---|---|---|
+   | trainer_reset | 1회 자동 재시도 → 실패 시 pause | 기존 restore 재시도 계보 |
+   | normal(2h) 중 | **사이클 처음(리셋)부터 재시작** | 리드인 학습·시간축 오염 방지 |
+   | buffer·injection 중 | cleanup 보장 → 사이클 재시작 | dirty 상태에서 진행 금지 |
+   | cooldown 중 | 쿨다운만 이어서 완료 → 캡처 진행 | 데이터는 이미 저장소에 있음 |
+   | 캡처 실패 | 캡처만 재시도(창 불변) | 저장소 TTL 내 데이터 잔존 |
+
+2. **supervisor 감시 루프(AI)**: [AI Scenario Supervisor](spec-scenario-supervisor.md)
+   계약대로 주기 감시 — pause 감지 → 진단 분류(동 스펙 §5 권한 경계 준수) →
+   자율 수리 → 위 정책표의 안전 지점부터 재개. 사이클 진행(현재 구간·경과·
+   다음 전환 예정 시각)은 큐 상태 API로 노출해 감시 루프가 stall도 판정할 수
+   있게 한다(전환 예정 시각 + 유예를 넘기면 stalled).
+
 **Phase B · 평가 (재생)** — 라이브 없이 무한 반복. **소비자 소유.**
 
 1. 케이스 파일을 받아 자기 방식으로 입력을 구성한다 — 배치형은 격리 DB에
@@ -247,7 +401,12 @@ case-01-inventory-lock/
       lucida_logs_local.parquet
       lucida_events_local.parquet
       host_connections.parquet
-    postgres.dump           # 클러스터·인시던트·targets·정책·토폴로지 (pg_dump -Fc)
+    postgres.dump           # 인벤토리·정의·모델 상태 (pg_dump -Fc, snap 표만)
+    postgres/               # 창으로 자른 사건 이력 (2026-08-13 추가) — 표별 CSV
+      incidents.csv         # 파일명 = 표 이름
+      event_clusters.csv
+      ...
+      restore.sql           # pg_restore **뒤에** 돌린다. 순서가 곧 FK 순서다
     topology/               # 토폴로지 API 응답 스냅샷 (2026-07-20 추가)
       topology-graph.json                # GET /api/v1/topology/graph 응답
       asset-tree-service-unified.json    # GET /api/v1/asset-tree/service/unified 응답
@@ -330,6 +489,48 @@ YAML의 `expected_anomalies`를 정본으로 사용하며 **`golden.anomaly.json
 시간창 안의 시계열만으로는 부족하다. 라이브로 계산되는 토폴로지·HostKin도
 결국 PG `targets` + CH `host_connections`를 읽으므로(§3), 이 참조 테이블은
 반드시 전체를 뜬다.
+
+### 5.1 PostgreSQL도 이 구분을 따른다 (2026-08-13)
+
+**여기가 오래 빠져 있었다.** CH는 12종 전부 창으로 슬라이스했는데 PG만 `pg_dump`
+통짜였다. 그래서 위 표의 "시간 데이터" 중 **인시던트·클러스터가 창을 무시하고
+전량 실려 나갔다.** `case-f03-g-v3` 실측 — 케이스 창은 3시간인데 `incidents` 56행이
+2주에 걸쳐 있고 창 안은 **1행**뿐이었다. 나머지 55행은 다른 시나리오의 인시던트이며,
+AI가 붙인 한국어 제목에 그 시나리오의 근본원인이 그대로 적혀 있다:
+
+```
+192.168.200.136 호스트의 자원 포화로 인해 commerce-order 응답이 느려지고 있어요
+core-banking-api의 오류가 commerce-order와 commerce-payment의 실패...
+```
+
+RCA의 `IncidentSeed`는 PG `incidents`를 backing store로 읽는다(§3). 즉 케이스를
+복원하면 **과거 정답표가 같이 딸려온다.** 07-27에 `process_meta`에서 고친 누설
+(품질 기준서 L3)과 같은 계열이고 규모만 더 크다.
+
+분류 정본은 `scripts/scenarios/pg-scope.json`이고 세 갈래다.
+
+| scope | 무엇 | 뜨는 방식 |
+|---|---|---|
+| `snap` | 인벤토리·정의·모델 상태 (`targets`·`metric_definitions`·`mib_*`·`trainer_thresholds` …) | `pg_dump`가 통째로 |
+| `slice` | 파이프라인이 만든 관측·판정 (`incidents`·`event_clusters`·`coverage_events` …) | 덤프에서 빼고 창으로 잘라 CSV |
+| `drop` | 평가 입력이 아니면서 공개 위험만 있는 것 | 스키마만 남기고 비움 |
+
+- **`created_at`이 창 밖이라고 무조건 자르면 안 된다.** `targets`·`metric_definitions`의
+  `created_at`은 자산 등록 시각이라 언제나 창 밖이고, 자르면 RCA가 볼 자산이 사라진다.
+  같은 이유로 `trainer_thresholds`도 `snap`이다 — 창으로 자르면 창 이전에 학습된
+  임계가 사라져 AI 계층의 거동 자체가 바뀐다(2,277행 중 창 안 24행).
+- **자식은 시간이 아니라 소속으로 고른다.** `incident_members`를 자기 시각으로 자르면
+  창 밖 부모를 참조해 복원이 깨진다. 뿌리(`incidents`·`event_clusters`)를 창으로 고르고
+  자식은 그 id로 고른다. 뿌리의 자기참조(`superseded_by`·`merged_into`)는 창 밖(대개
+  미래)을 가리킬 수 있어 **재귀 폐포**로 함께 싣는다.
+- **`drop`은 용량 대책이기도 하다.** `automation_dist_artifacts`는 20행짜리인데
+  **2,480MB로 덤프의 80%**였다(에이전트 배포 번들 바이너리).
+- 케이스별 실적재 행수는 `meta.json`의 `postgres_tables[]`에 적는다 —
+  `clickhouse_tables[]`와 같은 계약(파일을 열지 않고 meta만으로 판정 가능할 것).
+
+2026-08-13 왕복 실측: `postgres.dump` **3.1GB/14분 → 16MB/3.6초** + CSV 98MB,
+빈 DB 복원 후 **FK 제약 361개 전부 유효**, 창 밖 인시던트·클러스터 **0행**,
+고아 행 0. 소비자 복원 절차는 [복원 runbook §3.3](runbook-eval-case-restore.md).
 
 ## 6. 캡처 두 종류와 소비자
 
@@ -442,7 +643,7 @@ RCA 유사 장애 기능을 고려한 사례군의 의미 관계와 시간 순�
 
 - ~~실제 export 메커니즘~~ → **수동 절차로 실증 완료(2026-07-15, 첫 케이스
   `case-l1-blackfriday-surge`)**: VM `/api/v1/export`(전 시리즈 시간창), CH
-  HTTP `FORMAT Parquet`(테이블별 시간창 슬라이스 + host_connections 전체),
+  HTTP `FORMAT Parquet`(테이블별 시간창 슬라이스),
   원격 `pg_dump -Fc`(lucida 전체). **자동화 초안도 구현 완료** —
   `scripts/capture-eval-case.sh`가 시간 가드·3개 저장소 덤프·모델 스냅샷·checksum·
   meta·원자적 승격을 수행한다. `--dry-run`과 저장소별 읽기 전용 연결/쿼리 검증은

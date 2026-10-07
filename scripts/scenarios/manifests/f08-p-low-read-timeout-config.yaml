@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -62,6 +63,9 @@
             },
             {
               "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
             },
             {
               "check": "target-health"
@@ -106,7 +110,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -162,7 +166,7 @@
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.230.119:14317"
+                    "value": "http://192.168.200.109:14318"
                   },
                   {
                     "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -190,7 +194,7 @@
                   },
                   {
                     "name": "SPRING_APPLICATION_JSON",
-                    "value": "{\"services\":{\"payment\":{\"read-timeout\":\"250ms\"}}}"
+                    "value": "{\"services\":{\"payment\":{\"read-timeout\":\"20ms\"}}}"
                   }
                 ]
               },
@@ -225,21 +229,12 @@
           },
           {
             "id": "order_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
             "parameters": {
               "service_name": "commerce-order"
             },
             "freshness": "60s"
-          },
-          {
-            "id": "order_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "parameters": {
-              "service_name": "commerce-order"
-            },
-            "freshness": "120s"
           },
           {
             "id": "achieved_rps",
@@ -260,25 +255,13 @@
               "id": "timeout-symptom-visible",
               "observation": "order_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 10
             },
             {
               "id": "checkout-impact",
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
-            },
-            {
-              "id": "order-still-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
             }
           ],
           "consecutive_ticks": 3
@@ -290,6 +273,12 @@
               "observation": "pod_ready",
               "op": "eq",
               "value": false
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
             }
           ],
           "consecutive_ticks": 3
@@ -323,7 +312,7 @@
               "id": "timeout-config-cleared",
               "observation": "order_error_rate",
               "op": "lt",
-              "value": 0.05
+              "value": 5
             }
           ],
           "consecutive_ticks": 2,

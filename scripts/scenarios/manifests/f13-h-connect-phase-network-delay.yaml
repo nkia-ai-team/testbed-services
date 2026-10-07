@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "id": "F13-H",
   "slug": "f13-h-connect-phase-network-delay",
-  "readiness": "blocked",
+  "readiness": "parked",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
@@ -72,7 +72,7 @@
   "prerequisite_gate": {
     "state": "unresolved",
     "required": true,
-    "description": "probe source/interface",
+    "description": "network_fault_executor.py:21 BLOCKED stub 해제 + connect-phase 관측 소스 확보",
     "live_allowed": false
   },
   "capture_policy": {

@@ -1,0 +1,25 @@
+-- DPM 모니터링 계정 (lucida-next collector-dpm 전용, 읽기 전용)
+--
+-- 왜 템플릿인가: 이 계정은 2026-07-13 등록 이래 손으로 만들어져 있었고
+-- init.sql 밖에 있었다. 2026-07-28 Oracle 을 tb-w2 로 옮길 때 local-path PV 가
+-- 새로 생기며 DB 가 재시딩됐고, 계정이 함께 사라져 DPM 이 ORA-01017 로 36시간
+-- 넘게 수집을 멈췄다(Oracle 지표 1종 vs PG 158·MySQL 198). runbook 에 "볼륨
+-- 리셋 시 재생성 필요"라는 경고는 있었지만 문장이라 실행되지 않았다.
+-- 그래서 시드에 넣는다 — 재시딩이 곧 복원이 되도록.
+--
+-- 자격증명 정본은 k8s/01-secrets.yaml 하나다. build-and-deploy.sh Phase 2.5 가
+-- 거기서 읽어 아래 자리표시자를 치환한 뒤 ConfigMap 으로 넣는다. 이 파일에는
+-- 값을 적지 않는다(중복 정의가 곧 다음 번 불일치다).
+--
+-- 실행 컨텍스트: /container-entrypoint-initdb.d 스크립트는 SYSDBA 로 CDB$ROOT
+-- 에서 시작한다(init.sql 머리말 참조). 계정은 앱 스키마와 같은 PDB 에 있어야
+-- 하므로 컨테이너를 먼저 옮긴다. 파일명이 00- 이라 01-init.sql 보다 먼저 돈다.
+ALTER SESSION SET CONTAINER = FREEPDB1;
+
+CREATE USER __MON_USER__ IDENTIFIED BY "__MON_PASSWORD__";
+
+-- runbook-observability-agents.md §3-1 이 요구하는 최소 권한.
+-- 조회 전용이라 부하·장애 주입에 영향을 주지 않는다.
+GRANT CREATE SESSION TO __MON_USER__;
+GRANT SELECT_CATALOG_ROLE TO __MON_USER__;
+GRANT SELECT ANY DICTIONARY TO __MON_USER__;

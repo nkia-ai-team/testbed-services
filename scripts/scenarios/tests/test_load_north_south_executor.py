@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -23,6 +24,14 @@ compiler = load_module("scenario_compile_plan_for_load", ROOT / "compile-plan.py
 executor = load_module(
     "load_north_south_executor", ROOT / "profiles" / "load_north_south_executor.py"
 )
+host_stress = load_module(
+    "host_stress_executor", ROOT / "profiles" / "host_stress_executor.py"
+)
+
+SLUG_BY_SCENARIO = {
+    json.loads(path.read_text())["id"]: json.loads(path.read_text())["slug"]
+    for path in sorted((ROOT / "manifests").glob("*.yaml"))
+}
 
 
 class NorthSouthExecutorTests(unittest.TestCase):
@@ -35,16 +44,24 @@ class NorthSouthExecutorTests(unittest.TestCase):
         self.assertEqual(
             live,
             {
-                "db.lock", "mock.expectation", "load.north_south", "k8s.patch",
-                "cache.control", "timeline.compose", "db.ddl", "load.east_west",
+                "db.lock", "db.table_readonly", "mock.expectation", "load.north_south", "k8s.patch",
+                "k8s.lifecycle", "cache.control", "timeline.compose", "db.ddl", "load.east_west",
                 "kafka.control", "k8s.resource", "k8s.probe", "k8s.env", "host.stress", "timeline.multi",
+                # 2026-08-06: F18-P 재설계 — 재기동 없는 DB 플래그 토글(0804 #13 집행).
+                "app.control",
+                # 2026-08-07: F02-H 캐시 무력화 재설계의 companion 주입 표면.
+                # 읽기 전용 광역 스캔 한 모드만 라이브다(F03-P 커넥션 점유 지연은
+                # 기전·자백 양쪽에서 성립하지 않아 별건 — 실행기 docstring 참조).
+                "db.workload",
             },
         )
 
     def test_allowlisted_parameters_bind_capacity_profiles(self) -> None:
         profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
         profile = profiles["load.north_south"]
-        expected = {"F07-H": 160, "F01-R": 35, "F01-H": 35, "F05-R": 35, "F05-H": 20}
+        # 2026-08-20: F07-H 160 → 120. 사다리 pin(healthy-high-120)이 고정 evaluation
+        # 계약으로 승격되며 scenario_parameters 가 pin 단 값이 됐다.
+        expected = {"F07-H": 120, "F01-R": 35, "F01-H": 35, "F05-R": 35, "F05-H": 20}
         for scenario_id, target_rps in expected.items():
             params = profile["scenario_parameters"][scenario_id]
             executor.validate_parameters(scenario_id, params, profile)
@@ -57,36 +74,47 @@ class NorthSouthExecutorTests(unittest.TestCase):
         profile = profiles["load.north_south"]
         params = dict(profile["scenario_parameters"]["F07-H"])
         params["entry_url"] = "http://attacker.invalid"
-        with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
+        # 2026-08-20: F07-H 가 고정 계약이 되어 사다리 대조("predeclared")보다 먼저
+        # entry_url 허용목록에서 거부된다. 어느 쪽이든 변조는 거부돼야 한다.
+        with self.assertRaisesRegex(executor.ExecutorError, "not allowlisted|predeclared"):
             executor.validate_parameters("F07-H", params, profile)
 
-    def test_f07h_capacity_ladder_is_exact_and_tamper_proof(self) -> None:
+    def test_f07h_fixed_contract_is_exact_and_tamper_proof(self) -> None:
+        # 2026-08-20: F07-H 사다리(120→140→160)를 pin 단 healthy-high-120 으로 고정
+        # 승격했다(approved-fixed-f07-h). load.north_south 에는 더 이상 사다리가 없으므로
+        # 이 테스트는 고정 계약의 정확성과 변조 거부를 본다 — 고정 계약의 변조 방어선은
+        # validate_parameters(범위 검사)가 아니라 bind_level_parameters 의 승인 단 대조다.
         profile = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]["load.north_south"]
-        levels = profile["scenario_levels"]["F07-H"]
-        self.assertEqual([level["level_id"] for level in levels], ["healthy-high-120", "knee-140", "overload-160"])
-        self.assertEqual([level["parameters"]["target_rps"] for level in levels], [120, 140, 160])
-        for level in levels:
-            executor.validate_parameters("F07-H", level["parameters"], profile)
+        self.assertNotIn("F07-H", profile.get("scenario_levels", {}))
+        params = profile["scenario_parameters"]["F07-H"]
+        self.assertEqual(params["target_rps"], 120)
+        executor.validate_parameters("F07-H", params, profile)
         plan = compiler.compile_plan("f07-h-north-south-surge")
         instance = executor.load_instance(plan)
-        self.assertEqual(instance["selected_level_id"], "overload-160")
-        self.assertEqual(instance["scenario_levels"], levels)
-        tampered = dict(levels[1]["parameters"])
+        self.assertEqual(instance["selected_level_id"], "approved-fixed-f07-h")
+        self.assertEqual(instance["scenario_levels"], [])
+        self.assertEqual(
+            instance["approved_levels"],
+            [{"level_id": "approved-fixed-f07-h", "parameters": params}],
+        )
+        tampered = dict(params)
         tampered["target_rps"] = 69
         with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
-            executor.validate_parameters("F07-H", tampered, profile)
+            executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(tampered))
 
     def test_level_override_changes_exact_builder_argv(self) -> None:
+        # 2026-08-20: load.north_south 의 마지막 사다리 셋(F07-H·F11-R·F20-R)이 고정
+        # 승격돼 이 프로파일에는 단이 하나뿐이다. 단일 단에서도 override 경로는 같은
+        # 규칙을 지켜야 한다 — 0번은 정확히 묶이고, 범위 밖 인덱스와 변조는 거부된다.
         plan = compiler.compile_plan("f07-h-north-south-surge")
         levels = executor.load_instance(plan)["approved_levels"]
-        low, low_id = executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(levels[0]["parameters"]))
-        knee, knee_id = executor.bind_level_parameters(plan, "load.north_south", 1, self.canonical(levels[1]["parameters"]))
-        low_argv, _ = executor.build_invocation(low, "run")
-        knee_argv, _ = executor.build_invocation(knee, "run")
-        self.assertEqual((low_id, knee_id), ("healthy-high-120", "knee-140"))
-        self.assertIn("120", low_argv)
-        self.assertIn("140", knee_argv)
-        self.assertNotEqual(low_argv, knee_argv)
+        self.assertEqual(len(levels), 1)
+        bound, bound_id = executor.bind_level_parameters(plan, "load.north_south", 0, self.canonical(levels[0]["parameters"]))
+        bound_argv, _ = executor.build_invocation(bound, "run")
+        self.assertEqual(bound_id, "approved-fixed-f07-h")
+        self.assertIn("120", bound_argv)
+        with self.assertRaisesRegex(executor.ExecutorError, "outside the predeclared adaptive ladder"):
+            executor.bind_level_parameters(plan, "load.north_south", 1, self.canonical(levels[0]["parameters"]))
         tampered = dict(levels[0]["parameters"])
         tampered["target_rps"] = 61
         with self.assertRaisesRegex(executor.ExecutorError, "predeclared"):
@@ -118,11 +146,22 @@ class NorthSouthExecutorTests(unittest.TestCase):
         self.assertNotIn("pkill", script)
         self.assertIn('systemctl is-active --quiet "$baseline_unit"', script)
         self.assertIn('--out "json=$samples"', script)
-        self.assertIn('"entry_status": entry_status', script)
-        self.assertIn('"checkout_5xx_rate": checkout_5xx_rate', script)
+        self.assertIn('"entry_status": self.entry_status', script)
+        # 발행되는 키만 확인한다. 종전에는 monitor 안의 지역 변수 이름까지 박아
+        # 두어, 빈 창 가드를 넣느라 그 줄이 바뀌자 계약과 무관하게 깨졌다.
+        self.assertIn('"checkout_5xx_rate"', script)
         self.assertIn("checkout_results", script)
-        self.assertIn('"business_ok": entry_status in {200, 400, 409}', script)
+        self.assertIn('"business_ok": self.entry_status in {200, 400, 409}', script)
         self.assertIn('rca-scenario-${safe_id}-live.json', script)
+        # The monitor body is injected from the canonical loadgen_monitor.py
+        # rather than restated here — a second hand-maintained copy is what
+        # killed F06-P's sole success condition on 2026-07-29.
+        self.assertIn("--mode tail --scenario-id", script)
+        self.assertEqual(
+            (Path(executor.__file__).resolve().parent / "loadgen_monitor.py").read_text()
+            in script,
+            True,
+        )
 
     def test_live_requires_exact_digest_and_confirmation_before_dispatch(self) -> None:
         plan = compiler.compile_plan("f07-h-north-south-surge")
@@ -142,3 +181,74 @@ class NorthSouthExecutorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemoteArgumentQuotingTests(unittest.TestCase):
+    """ssh hands the trailing argv to a *shell*, not to exec.
+
+    Everything after the destination is joined with spaces into one command line
+    that the remote login shell parses. Any metacharacter in a value therefore
+    changes the command's structure instead of travelling as data. The banking
+    health_path `/api/accounts?status=ACTIVE&size=1` did exactly that: the `&`
+    backgrounded the first half and the remainder ran as a second command, which
+    surfaced as `bash: line 1: GATEWAY_URL: command not found`. F10-P, F14-P,
+    F18-P, F20-P and F21-P all failed within ten seconds of dispatch.
+
+    These tests do not assert on the argv string — that is what let the defect
+    ship. They replay the join through a real shell and compare what the remote
+    script would actually receive in "$@".
+    """
+
+    PROBE = b'printf "%s\\n" "$#" "$@"\n'
+
+    def _round_trip(self, argv: list[str]) -> list[str]:
+        """Feed argv through a shell the way sshd does and read back "$@"."""
+        marker = argv.index("--", argv.index("-s"))
+        remote_command = " ".join(argv[marker - 2:])  # bash -s -- <joined args>
+        completed = subprocess.run(
+            ["bash", "-c", remote_command],
+            input=self.PROBE, capture_output=True, timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        lines = completed.stdout.decode().splitlines()
+        self.assertEqual(int(lines[0]), len(lines) - 1, "argument count disagrees with $#")
+        return lines[1:]
+
+    def test_banking_health_path_ampersand_survives_the_remote_shell(self) -> None:
+        plan = compiler.compile_plan("f21-p-banking-api-tomcat-thread-saturation")
+        argv, _ = executor.build_invocation(plan, "cleanup")
+        received = self._round_trip(argv)
+        self.assertEqual(len(received), 15, f"remote script needs 15 positional args, got {received}")
+        self.assertEqual(received[11], "/api/accounts?status=ACTIVE&size=1")
+        self.assertEqual(received[12], "GATEWAY_URL")
+        self.assertEqual(received[13], "transfer")
+
+    def test_every_domain_profile_survives_the_remote_shell(self) -> None:
+        profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
+        contract = profiles["load.north_south"]["parameter_contract"]
+        seen_entry_urls = set()
+        for scenario_id, parameters in profiles["load.north_south"]["scenario_parameters"].items():
+            entry_url = parameters.get("entry_url")
+            if entry_url in seen_entry_urls or entry_url not in contract["domain_profiles"]:
+                continue
+            seen_entry_urls.add(entry_url)
+            slug = SLUG_BY_SCENARIO[scenario_id]
+            argv, _ = executor.build_invocation(compiler.compile_plan(slug), "cleanup")
+            received = self._round_trip(argv)
+            domain_profile = contract["domain_profiles"][entry_url]
+            self.assertEqual(
+                received[11], domain_profile["health_path"],
+                f"{scenario_id}: health_path did not survive the remote shell",
+            )
+            self.assertEqual(received[12], domain_profile["gateway_env"])
+        self.assertEqual(len(seen_entry_urls), len(contract["domain_profiles"]))
+
+    def test_host_stress_arguments_survive_the_remote_shell(self) -> None:
+        # F21-P held this guard until 2026-07-31, when its injection moved from
+        # node-wide CPU pressure to a transfer-only CPU limit. F21-Q is the same
+        # cpu-mode host.stress contract on the food worker, so the quoting
+        # property stays covered by a scenario that still dispatches it.
+        plan = compiler.compile_plan("f21-q-food-order-tomcat-thread-saturation")
+        argv, _ = host_stress.build_invocation(plan, "cleanup")
+        received = self._round_trip(argv)
+        self.assertEqual(received[:4], ["cleanup", "F21-Q", "cpu", "192.168.122.14"])

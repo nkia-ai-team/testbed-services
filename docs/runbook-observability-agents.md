@@ -86,8 +86,15 @@ summary: 109 테스트베드에 lucida-next(AP 119) 관측 4계층을 붙이는 
    - MySQL: `PROCESS, REPLICATION CLIENT ON *.*` + `SELECT ON performance_schema.*`
      + `SELECT, EXECUTE ON sys.*` + **`SELECT ON fooddelivery.*`**
      (마지막이 없으면 접속은 되고 수집만 Error 1044로 실패)
-   - Oracle(FREEPDB1): `CREATE SESSION, SELECT_CATALOG_ROLE, SELECT ANY DICTIONARY`
-   - ⚠ 계정은 init.sql에 미반영 — DB 볼륨 리셋 시 재생성 필요.
+   - Oracle(FREEPDB1): **시드에 반영됨(2026-07-29)** — `core-banking/db/monitoring.sql.tmpl`을
+     `build-and-deploy.sh` Phase 2.5가 `01-secrets.yaml`의 `MON_USER`/`MON_PASSWORD`로
+     치환해 `00-monitoring.sql`로 넣는다. 자격증명 정본은 시크릿 한 곳이므로
+     값을 바꾸면 collector 등록(`collectors.config_encrypted`)도 함께 갱신할 것.
+     재시딩이 곧 복원이라 볼륨이 새로 생겨도 손댈 필요가 없다.
+   - ⚠ **PG·MySQL은 아직 수작업** — 볼륨 리셋 시 재생성 필요. 두 PVC는 07-13 생성분이
+     그대로라 아직 겪지 않았을 뿐이고, Oracle과 같은 사고가 예약돼 있다.
+     (Oracle 사례: 07-28 tb-w2 이사로 PV가 새로 생기며 계정 소실 → DPM이 ORA-01017로
+     36시간 정지, Oracle 지표 1종 vs PG 158·MySQL 198. 판정은 `last_collect_status`.)
 
 ### 3-2. 등록 (API)
 
@@ -125,6 +132,41 @@ Oracle은 `database` 필드가 곧 서비스명이다(`service_name` 키 없음)
 - ⚠ `GET /databases/{id}/sessions`(시계열)는 **레거시 메트릭명**을 조회해서
   DPM 수집이 정상이어도 0을 반환한다. collector-dpm의 발행 이름은
   `dpm.<engine>.session.*`.
+
+## 3-5. syslog — 노드 OS 로그 (2026-07-30 신설)
+
+에이전트가 아니라 노드의 rsyslog 가 `119:514/udp` 로 직접 보낸다. 수집기는
+`lucida-collector-syslog`(host 네트워크, UDP 514 리슨).
+
+**배선은 `scripts/setup-syslog-forwarding.sh` 가 정본이다.** 멱등하며
+`--check` 로 현재 상태만 볼 수 있다. 대상 6곳 = 109(KVM 호스트) + tb-cp +
+tb-w1/w2/w3 + tb-runner. 119 는 제외한다(수집기 자신 — 되먹임, selfsystem 수집기 별도).
+
+```bash
+bash scripts/setup-syslog-forwarding.sh --check   # 상태만
+bash scripts/setup-syslog-forwarding.sh           # 적용
+```
+
+- ⚠ **왜 스크립트인가**: 2026-07-30 확인 시점까지 `syslog_local` 이 **0 행**이었다.
+  수집기는 멀쩡했고 없던 것은 보내는 쪽이다 — 그때까지 만든 모든 평가 케이스에서
+  12 테이블 중 이 하나가 비어 있었다. 노드를 다시 만들면 `/etc/rsyslog.d` 도
+  사라지므로 배선을 문장이 아니라 실행 가능한 형태로 둔다(Oracle `lucida_mon` 과 같은 교훈).
+- **등록은 선행 조건이 아니다.** 미등록 송신 IP 도 버리지 않고 `registered=0`
+  으로 적재한다(`collector-syslog/syslog/receiver.go:342`). 등록하면 자원 귀속만 좋아진다.
+- ⚠ **source_ip 로 노드를 구분하지 말 것.** 워커만 전용 NAT 주소를 갖는다:
+
+  | 노드 | source_ip | 구분 |
+  |---|---|---|
+  | tb-w1 / tb-w2 / tb-w3 | 200.136 / .137 / .138 | source_ip 로 구분 가능 |
+  | 109 · tb-cp · tb-runner | **셋 다 200.109** | `hostname` 으로만 구분 |
+
+  따라서 IP 기반 대상 등록은 이 셋을 한 자원으로 뭉갠다. 소비자는 `hostname` 을 쓸 것.
+
+검증:
+```bash
+ssh 192.168.230.119 'docker exec lucida-clickhouse clickhouse-client -q \
+  "select hostname, source_ip, count() from lucida.syslog_local group by hostname, source_ip"'
+```
 
 ## 4. KCM — k8s pod/node (kubeadm 클러스터)
 
@@ -253,7 +295,9 @@ curl -sG "$VM/api/v1/query" --data-urlencode \
 
 로그 수집 커버리지(2026-07-14 기준): 앱=OTLP 자동 ✅ · k8s=KCM 이벤트 ✅ ·
 서버/DB=아래 로그 모니터 등록 필요 · 네트워크=trap 수신기만 존재(장비측 설정 필요) ·
-Oracle alert log=미구현(diag 경로가 마운트 볼륨 밖 — manifest 볼륨 추가 필요).
+Oracle alert log=✅ (2026-07-31 구현 — diag를 oracledata PVC subPath로 마운트해
+호스트 노출, 10-oracle.yaml 커밋 e51456f. 주의: subPath 디렉토리 `<PVC>/diag`는
+kubelet이 root로 만들므로 배치 전 uid 54321(oracle)로 선생성 필요).
 
 ### 6-1. 구조
 
@@ -279,6 +323,7 @@ SMS 에이전트의 로그 모니터(kind=log)가 유일한 파일 tail 수단�
 | syslog / auth-log ×3 | w1·w2·w3 | /var/log/syslog, /var/log/auth.log | 호스트 |
 | pg-serverlog | w1 | `<local-path PV>/…_pgdata-testbed-postgres-0/log/postgresql.log` | PostgreSQL-commerce |
 | mysql-errorlog | **w3**(PV 노드 고정 — w2 아님 주의) | `<local-path PV>/…_mysqldata-testbed-mysql-0/error.log` | MySQL-fooddelivery |
+| oracle-alertlog (2026-07-31, id 8a0c8037) | w2 | `<local-path PV>/…_oracledata-testbed-oracle-0/diag/rdbms/free/FREE/trace/alert_FREE.log` | Oracle-corebanking |
 
 DB 로그 파일을 PVC 안 고정 경로에 만들기 위한 선행 설정:
 - **PG**: `ALTER SYSTEM SET logging_collector=on, log_directory='log',
@@ -286,6 +331,8 @@ DB 로그 파일을 PVC 안 고정 경로에 만들기 위한 선행 설정:
   한 문장씩 실행(트랜잭션 불가). 설정은 PGDATA(PVC)의 postgresql.auto.conf에 영속 —
   **레포 manifest에는 없음**, PVC 리셋 시 재적용 필요.
 - **MySQL**: manifest args `--log-error=/var/lib/mysql/error.log` (커밋 9cfab0a).
+- **Oracle**: manifest에서 oracledata PVC의 `subPath: diag`를 `/opt/oracle/diag`에
+  마운트(커밋 e51456f). 배치 전 호스트에서 `<PVC>/diag`를 uid 54321로 mkdir 필수.
 
 ### 6-3. 함정
 

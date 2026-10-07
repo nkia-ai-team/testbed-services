@@ -16,6 +16,8 @@ spec:
       labels:
         app: testbed-mysql
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: tb-w3
       containers:
         - name: mysql
           image: mysql:8.0

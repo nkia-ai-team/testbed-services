@@ -49,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -62,6 +63,9 @@
             },
             {
               "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
             },
             {
               "check": "target-health"
@@ -163,8 +167,8 @@
           },
           {
             "id": "payment_error_rate",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
             "parameters": {
               "service_name": "commerce-payment"
             },
@@ -186,22 +190,10 @@
         "success": {
           "all": [
             {
-              "id": "controlled-load",
-              "observation": "achieved_rps",
-              "op": "gte",
-              "value": 15
-            },
-            {
-              "id": "banking-transfer-down",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": false
-            },
-            {
               "id": "cross-domain-payment-impact",
               "observation": "payment_error_rate",
               "op": "gte",
-              "value": 0.1
+              "value": 10
             },
             {
               "id": "checkout-impact",
@@ -231,9 +223,21 @@
               "observation": "banking_transfer_restart_count",
               "op": "gte",
               "value": 2
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
+            },
+            {
+              "id": "banking-still-up",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
             }
           ],
-          "consecutive_ticks": 1
+          "consecutive_ticks": 2
         },
         "abort": {
           "any": [

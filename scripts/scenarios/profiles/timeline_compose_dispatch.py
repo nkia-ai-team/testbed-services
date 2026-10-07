@@ -24,17 +24,31 @@ HERE = Path(__file__).resolve().parent
 BLOCKED_TIMELINES = {
     "F08-G": "Oracle lock row, credential, and inverse transaction are unresolved",
     "F14-R": "response-loss proxy and duplicate-row cleanup do not exist",
-    "F15-H": "food dispatch baseline is not healthy enough for a simultaneous fault",
     "F15-G": "Oracle and PostgreSQL lock rows and acquisition order are unresolved",
-    "F15-T2": "food dispatch recovery is a prerequisite",
-    "F15-T3": "worker placement and consumer stall SLA are unresolved",
-    "F15-T4": "handoff close interval and consumer drain SLA are unresolved",
+    # 2026-07-29 re-audit (parked-reaudit-0729.md): both reasons below were
+    # restated. F15-T3's placement was pinned on 07-28 (ledger runs on tb-w2) and
+    # its stall SLA is a calibration value, not a missing contract — the real
+    # blocker is that it is a single injection wearing a compose profile, so it
+    # leaves this dispatcher entirely for host.stress. F15-T4 keeps a real gap,
+    # but a narrower one than "handoff interval unresolved": F15-T2 proved the
+    # offset schedule live, and what is missing is releasing arm 1 before arm 2
+    # starts so the two windows do not overlap.
+    "F15-T3": "single-injection timeline mis-assigned to compose; belongs to host.stress",
+    "F15-T4": "sequential offset exists (F15-T2) but non-overlapping handoff release does not",
 }
 
 ROUTES = {
     "F08-H": "timeline_compose_executor",
     "F15-R": "timeline_flap_executor",
     "F15-T1": "timeline_dual_fault_executor",
+    # 2026-07-29: F15-H/F15-T2 were blocked on "food dispatch baseline/recovery",
+    # a leftover of the discarded dispatch-503 reading of their food arm. food has
+    # no 429 of its own, but the external PG mock's 429 propagates through
+    # PgApiClient.java:50 to the food entry point unchanged — the F06-P surface.
+    # Both arms are therefore already-proven injections; only the composition and
+    # its observation plane were missing.
+    "F15-H": "timeline_lock_mock_executor",
+    "F15-T2": "timeline_lock_mock_executor",
 }
 
 

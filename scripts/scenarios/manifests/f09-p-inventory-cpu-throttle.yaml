@@ -35,10 +35,11 @@
         "primary_ref": "k8s.patch",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "k8s.patch"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -48,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -63,44 +65,23 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "conservative-250m",
+              "id": "approved-fixed-f09-p",
               "parameters": {
                 "deployment": "testbed-inventory",
                 "container": "inventory-service",
                 "baseline_cpu_limit": "500m",
                 "fault_cpu_limit": "250m"
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "constrained-100m",
-              "parameters": {
-                "deployment": "testbed-inventory",
-                "container": "inventory-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "100m"
-              },
-              "min_hold": "2m",
-              "settle": "30s",
-              "timeout": "8m"
-            },
-            {
-              "id": "endpoint-50m",
-              "parameters": {
-                "deployment": "testbed-inventory",
-                "container": "inventory-service",
-                "baseline_cpu_limit": "500m",
-                "fault_cpu_limit": "50m"
               },
               "min_hold": "2m",
               "settle": "30s",
@@ -125,10 +106,36 @@
             "id": "pod_ready",
             "adapter": "kubernetes",
             "query_id": "kubernetes.pod_ready",
+            "freshness": "30s",
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "resource": "testbed-inventory"
-            },
+            }
+          },
+          {
+            "id": "inventory_throttled",
+            "adapter": "prometheus",
+            "query_id": "prometheus.container_cpu_throttled_time",
+            "freshness": "60s",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-inventory",
+              "container": "inventory-service"
+            }
+          },
+          {
+            "id": "gateway_p95",
+            "adapter": "prometheus",
+            "query_id": "prometheus.apm_service_p95",
+            "freshness": "120s",
+            "parameters": {
+              "service_name": "commerce-gateway"
+            }
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
             "freshness": "30s"
           },
           {
@@ -136,61 +143,49 @@
             "adapter": "loadgen_summary",
             "query_id": "loadgen.achieved_rps",
             "freshness": "30s"
-          },
-          {
-            "id": "user_p95",
-            "adapter": "prometheus",
-            "query_id": "prometheus.apm_service_p95",
-            "parameters": {
-              "service_name": "commerce-gateway"
-            },
-            "freshness": "120s"
           }
         ],
         "success": {
           "all": [
             {
-              "id": "throttle-symptom",
-              "observation": "user_p95",
+              "id": "cfs-throttling-active",
+              "observation": "inventory_throttled",
+              "op": "gt",
+              "value": 0
+            },
+            {
+              "id": "user-latency-damage",
+              "observation": "gateway_p95",
               "op": "gte",
-              "value": 500
-            },
-            {
-              "id": "inventory-still-ready",
-              "observation": "pod_ready",
-              "op": "eq",
-              "value": true
-            },
-            {
-              "id": "controlled-load",
-              "observation": "achieved_rps",
-              "op": "lte",
-              "value": 60
+              "value": 500,
+              "_note": "임계 350 -> 500 되돌림 (2026-08-12). 2026-08-10 에 500 -> 350 으로 내렸는데, 그 근거였던 리플레이('500 은 4/6, 350 은 6/6')가 재현되지 않는다. 검증된 모의로 — 러너 _updated_streaks 를 그대로 재생하고 기록된 스트릭과 대조해 일치를 확인한 뒤 — F09-P 런 8개를 두 임계로 각각 돌리면 결과가 **완전히 동일하다**: 최대 스트릭도 발화 시각도 8/8 에서 같고(76e6c190 발화 235s, cc7c758b 283s, ed63c549 204s, 나머지 5런 미발화), 통과 3/8 로 두 임계가 구분되지 않는다. 이유는 같은 노트가 이미 적어둔 이봉성이다 — gateway_p95 는 저모드 20~100ms 와 고모드 900~10,000ms 로 갈리므로 그 사이 어느 임계든 같은 틱을 고른다. 즉 인하는 효과가 없었고, 되돌리는 것도 공짜다. 500 은 baseline(65~90ms)의 5.5~7.7배로 '사용자 지연 피해' 주장이 더 강하고, 6차 통과의 귀속도 흐려지지 않는다. 하한 근거는 그대로 149.6ms(부하 정상·주입 적용·피해 시작 전 구간의 최대치)이며 settling 틱은 이미 주입 적용 후라 1,103ms 로 오염돼 하한으로 쓸 수 없다. 단서(유지): 이 시나리오가 실증하는 것은 지속적 지연이 아니라 부하 램프 과도구간(120~300초)의 지연이다 — 420초 이후엔 스로틀이 2~9만 누적인데도 p95 가 78ms 로 복귀한다."
             }
           ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "all": [
-            {
-              "id": "symptom-not-yet-visible",
-              "observation": "user_p95",
-              "op": "lt",
-              "value": 500
-            }
-          ],
-          "consecutive_ticks": 3
+          "consecutive_ticks": 2
         },
         "must_rule_out": {
           "any": [
             {
-              "id": "overload-alternative",
+              "id": "symptom-without-throttling",
+              "observation": "inventory_throttled",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "user-load-overshot",
               "observation": "achieved_rps",
               "op": "gt",
               "value": 65
+            },
+            {
+              "id": "target-not-in-rotation",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "2026-08-10 추가. L2(endpoint-200m)는 죽은 계단이다 — 그 단에서 inventory 파드의 readiness 가 **100% 실패**(pod_ready 0%)라 Service 엔드포인트에서 빠지고, 스로틀된 서비스에 트래픽이 아예 닿지 않는다. 결과로 502 0%, 5xx 0%, p95 가 baseline 으로 복귀해 **사다리를 올릴수록 피해가 줄어드는 역전**이 난다(L0 pod_ready 77% / L1 72% / L2 0%). 7월 계약에는 inventory-still-ready(pod_ready eq true) 성공 조건이 있었는데 현행 계약으로 재작성하며 빠졌고, 지금은 이 상태를 잡는 게이트가 없었다. 임계를 내려도 L2 는 못 잡는다(L2 최대 p95 192·337·513·6,141). 대상이 로테이션에서 빠진 것은 '주입이 사용자에게 닿지 않았다'는 뜻이므로 must_rule_out 이 맞는 자리다."
             }
           ],
-          "consecutive_ticks": 2
+          "consecutive_ticks": 3
         },
         "abort": {
           "any": [
@@ -216,6 +211,18 @@
               "observation": "pod_ready",
               "op": "eq",
               "value": true
+            },
+            {
+              "id": "throttling-cleared",
+              "observation": "inventory_throttled",
+              "op": "eq",
+              "value": 0
+            },
+            {
+              "id": "user-latency-recovered",
+              "observation": "gateway_p95",
+              "op": "lt",
+              "value": 200
             }
           ],
           "consecutive_ticks": 2,

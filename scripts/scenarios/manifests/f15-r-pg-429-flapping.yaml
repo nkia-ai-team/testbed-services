@@ -35,10 +35,11 @@
         "primary_ref": "timeline.compose",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "timeline.compose"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "30m",
@@ -48,6 +49,7 @@
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -63,15 +65,18 @@
               "check": "baseline-traffic"
             },
             {
+              "check": "baseline-business-success"
+            },
+            {
               "check": "target-health"
             }
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "episode-fault-240",
+              "id": "approved-fixed-f15-r",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "mock_resource": "deployment/testbed-external-pg-mock",
@@ -81,24 +86,9 @@
                 "fault_hold_seconds": 240,
                 "recovery_gap_seconds": 720
               },
-              "min_hold": "21m",
+              "min_hold": "18m",
               "settle": "30s",
               "timeout": "23m"
-            },
-            {
-              "id": "episode-fault-300",
-              "parameters": {
-                "namespace": "rca-testbed-commerce",
-                "mock_resource": "deployment/testbed-external-pg-mock",
-                "mock_path": "/v1/payments",
-                "fault_status": 429,
-                "episode_count": 2,
-                "fault_hold_seconds": 300,
-                "recovery_gap_seconds": 720
-              },
-              "min_hold": "23m",
-              "settle": "30s",
-              "timeout": "25m"
             }
           ]
         },
@@ -168,42 +158,20 @@
         "success": {
           "all": [
             {
-              "id": "fault-episode-active",
-              "observation": "mock_flap_fault_active",
-              "op": "eq",
-              "value": true
-            },
-            {
               "id": "checkout-impact",
               "observation": "checkout_5xx_rate",
               "op": "gte",
               "value": 0.05
             },
             {
-              "id": "controlled-user-load",
-              "observation": "achieved_rps",
+              "id": "all-episodes-run",
+              "observation": "mock_flap_episode",
               "op": "gte",
-              "value": 15
-            },
-            {
-              "id": "no-duplicate-order",
-              "observation": "order_duplicate_count",
-              "op": "eq",
-              "value": 0
+              "value": 2,
+              "_note": "플랩(에피소드 반복)이 이 시나리오의 정체성이므로 성공 조건이다. 회복 조건에 있던 시절엔 2에피소드 전에 끝난 런이 영원히 회복을 못 해 반드시 DIRTY가 됐다"
             }
           ],
           "consecutive_ticks": 2
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "episode-impact-not-visible",
-              "observation": "checkout_5xx_rate",
-              "op": "lt",
-              "value": 0.02
-            }
-          ],
-          "consecutive_ticks": 4
         },
         "must_rule_out": {
           "any": [
@@ -212,6 +180,18 @@
               "observation": "order_duplicate_count",
               "op": "gt",
               "value": 0
+            },
+            {
+              "id": "injected-episode-absent",
+              "observation": "mock_flap_fault_active",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "user-load-not-flowing",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 15
             }
           ],
           "consecutive_ticks": 2
@@ -245,13 +225,8 @@
               "id": "fault-cleared",
               "observation": "mock_flap_fault_active",
               "op": "eq",
-              "value": false
-            },
-            {
-              "id": "all-episodes-run",
-              "observation": "mock_flap_episode",
-              "op": "gte",
-              "value": 2
+              "value": false,
+              "_note": "회복은 '원상복구됐는가'만 묻는다. all-episodes-run(mock_flap_episode>=2)이 여기 있던 시절엔 2에피소드 전에 끝난 런이 회복을 영원히 통과 못 해 반드시 DIRTY가 됐다 — 주입 진행 산출물은 성공 조건으로 옮겼다(배치 후 수리, 2026-08-04)"
             },
             {
               "id": "no-residual-duplicate",

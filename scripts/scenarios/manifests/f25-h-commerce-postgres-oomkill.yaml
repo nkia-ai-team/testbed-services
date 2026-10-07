@@ -42,13 +42,14 @@
         "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
-        "max_injection_duration": "15m",
+        "max_injection_duration": "30m",
         "preflight": [
           "kube-context",
           "kube-node-set",
           "coordinator-clean",
           "clean-window",
           "baseline-traffic",
+          "baseline-business-success",
           "target-health"
         ],
         "baseline": {
@@ -62,6 +63,9 @@
             },
             {
               "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
             },
             {
               "check": "target-health"
@@ -91,17 +95,17 @@
                 "fault": {
                   "limits": {
                     "cpu": "500m",
-                    "memory": "320Mi"
+                    "memory": "128Mi"
                   },
                   "requests": {
                     "cpu": "200m",
-                    "memory": "256Mi"
+                    "memory": "128Mi"
                   }
                 }
               },
-              "min_hold": "8m",
+              "min_hold": "4m",
               "settle": "30s",
-              "timeout": "13m"
+              "timeout": "8m"
             }
           ]
         },
@@ -151,26 +155,29 @@
             "freshness": "30s"
           },
           {
-            "id": "pg_mem_current",
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "app_termination_reason",
             "adapter": "kubernetes",
-            "query_id": "kubernetes.container_memory_current_bytes",
+            "query_id": "kubernetes.container_last_termination_reason",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "deployment": "testbed-postgres",
-              "container": "postgres"
+              "deployment": "testbed-payment",
+              "container": "payment-service"
             },
             "freshness": "30s"
           },
           {
-            "id": "achieved_rps",
-            "adapter": "loadgen_summary",
-            "query_id": "loadgen.achieved_rps",
-            "freshness": "30s"
-          },
-          {
-            "id": "checkout_5xx_rate",
+            "id": "checkout_5xx_rate_baseline",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
             "freshness": "30s"
           }
         ],
@@ -200,10 +207,10 @@
         "must_rule_out": {
           "any": [
             {
-              "id": "postgres-unready",
-              "observation": "pod_ready",
+              "id": "app-container-oom",
+              "observation": "app_termination_reason",
               "op": "eq",
-              "value": false
+              "value": "OOMKilled"
             }
           ],
           "consecutive_ticks": 2
@@ -241,9 +248,10 @@
             },
             {
               "id": "checkout-recovered",
-              "observation": "checkout_5xx_rate",
+              "observation": "checkout_5xx_rate_baseline",
               "op": "lt",
-              "value": 0.05
+              "value": 0.05,
+              "_note": "이 조건은 완화하지 않는다. run af660719에서 레벨 전환 recovery가 commerce 입구의 baseline 409 flakiness에 걸려 dirty로 끝났지만, 회복 검증은 전역 계약이라 여기서 느슨하게 하면 이 시나리오 하나가 아니라 뒤따르는 모든 런의 clean-window가 거짓이 된다. 409는 주입과 무관한 baseline 입구의 문제이므로 그쪽에서 고쳐야 한다. 2026-08-07 후속: 그 입구 문제의 정체가 재고 공급 버스트로 확인됐고(소비 ~110 units/min 대 10분 주기 배치, flagship 16종 전부 stock=0 실측) ReconciliationBatch를 60초 주기·target 60으로 재척도했다. 평시 재고가 0에 닿지 않으면 이 dirty도 함께 풀릴 것으로 본다 — 다만 이는 아직 가설이며 재배치 후 런으로 확인해야 한다. 확인 전까지 이 조건은 그대로 둔다."
             }
           ],
           "consecutive_ticks": 2,

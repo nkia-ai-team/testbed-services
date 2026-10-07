@@ -12,6 +12,7 @@
 - 이벤트 백본: **Kafka**(KRaft 단일 브로커) + outbox 패턴. 기존 Redis Streams(`transfer-events`)는 제거하고 Kafka 로 전면 대체(commerce 이벤트 백본 정합, 판단 근거는 최종 구현 보고 참조).
 - 복원성: Resilience4j(timeout+retry+circuit breaker) — account→transfer, api→account 동기 호출. HikariCP 풀 명시.
 - 상주 배치 3종: 원장 대사(ledger reconciliation), 이자 계산/기표(interest accrual), 미완료 이체 정리(stale transfer cleanup).
+- 보존 기간 배치 2종: 90일 지난 이체(`TransferRetentionBatch`)와 원장(`LedgerRetentionBatch`)을 1분마다 최대 500건씩 지운다. Oracle Free 의 DB 크기 상한(12GB) 때문에 둔다. 기간은 `transfer.retention.days` 와 `ledger.retention.days` 를 함께 바꾼다.
 - 상주 부하생성기: `loadgen/`(k6, diurnal 프로파일 피크 4 / 저점 1 req/s).
 - 서비스 개수: 4 (api / account / transfer / ledger) + shop-common
 - 시연 가능 장애 패턴: lock-contention(이체 row-lock), slow query, connection pool 고갈, Kafka consumer lag/outbox 적체, cross-domain 경계 timeout, circuit breaker open
@@ -106,6 +107,8 @@ Oracle 단일 PDB(`FREEPDB1`), 스키마 사용자 `banking`. 테이블 4개(out
 | aggregate_type / aggregate_id / event_type / topic | VARCHAR2 | |
 | payload | CLOB | |
 | created_at / published_at | TIMESTAMP | |
+
+발행이 끝난 행은 24시간 뒤 `OutboxPurger`(transfer-service, 30초 주기, 주기당 최대 500행)가 지운다. 미발행 행은 지우지 않는다. 지우지 않던 시절에는 이 테이블이 스키마의 58%까지 자라 Oracle Free 의 DB 크기 상한(12GB, `ORA-12954`)에 닿았다(2026-09-29). 조정은 `outbox.purge.enabled` / `retention-hours` / `batch-size` / `interval-ms`.
 
 ## 관측 태깅 (식별자 계약 §3)
 

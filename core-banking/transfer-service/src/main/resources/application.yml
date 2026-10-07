@@ -32,10 +32,24 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # 명시하지 않으면 delivery.timeout 이 120s, max.block 이 60s 다. 브로커가 느려질
+      # 때 릴레이 한 주기가 그만큼 늘어져 폴링 간격(2s)과 무관해진다.
+      properties:
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 15000
+        max.block.ms: 5000
 
 outbox:
   relay:
     enabled: true
+    # outbox_relay_control 행으로 재기동 없이 정지 가능(F18-P 표면).
+    control-id: transfer
+
+# response_delay_control 행으로 api->transfer 홉만 재기동 없이 늦춘다(F21-P 표면).
+# 이 프로퍼티가 있는 서비스에서만 ResponseDelayFilter 가 뜬다.
+response:
+  delay:
+    service-id: transfer
 
 topics:
   transfers: banking.transfers
@@ -44,6 +58,13 @@ transfer:
   cleanup:
     interval-ms: ${TRANSFER_CLEANUP_INTERVAL_MS:600000}
     stale-after-minutes: ${TRANSFER_STALE_AFTER_MINUTES:30}
+  # 보존 기간이 지난 이체를 주기마다 batch-size 건씩 지운다(TransferRetentionBatch).
+  # 원장 쪽 같은 설정은 ledger-service 의 ledger.retention 이다 — 기간을 바꾸면 둘을 함께 바꾼다.
+  retention:
+    enabled: ${TRANSFER_RETENTION_ENABLED:true}
+    days: ${TRANSFER_RETENTION_DAYS:90}
+    interval-ms: ${TRANSFER_RETENTION_INTERVAL_MS:60000}
+    batch-size: ${TRANSFER_RETENTION_BATCH_SIZE:500}
 
 management:
   health:
@@ -56,3 +77,9 @@ management:
   endpoint:
     health:
       show-details: always
+      # /actuator/health/liveness 는 livenessState 만 본다. 기본 /actuator/health 는
+      # DataSource 인디케이터를 타므로 Hikari 풀이 마르면 probe timeout(3s)을 넘고,
+      # liveness 가 거기 걸려 있으면 DB 경합이 곧 SIGKILL 이 된다. readiness 는 DB 를
+      # 계속 본다 — 커넥션을 못 얻는 파드는 트래픽에서 빠지는 것이 맞다.
+      probes:
+        enabled: true
