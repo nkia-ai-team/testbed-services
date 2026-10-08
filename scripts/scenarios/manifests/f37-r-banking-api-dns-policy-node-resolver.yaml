@@ -1,0 +1,309 @@
+{
+  "schema_version": "1.0",
+  "id": "F37-R",
+  "slug": "f37-r-banking-api-dns-policy-node-resolver",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-api 파드 템플릿 dnsPolicy patch(ClusterFirst→Default) + R/ssh load.north_south companion(core-banking surge.js, target_rps=6, 하루 주기 1~4 iter/s 기준선 위 core-banking-api 표본 스팬 확보)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.dns",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.dns",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.dns"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f37-r",
+              "parameters": {
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-api",
+                "baseline_dns_policy": "ClusterFirst",
+                "fault_dns_policy": "Default"
+              },
+              "min_hold": "15m",
+              "settle": "60s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 고장 중 api 는 살아서 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-api"
+            },
+            "_note": "api 파드. health 가 이름 해석과 무관해 고장 중에도 Ready 다(롤아웃 중 잠깐 두 파드가 겹칠 뿐). 회복 판정에 쓴다",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하(core-banking surge.js 6rps)의 잔액 조회(step get, 55%, nginx → account 직행) 실패율. 30초 창에 약 100건. 평시 0 이고 이 시나리오에서도 0 이어야 한다(api 를 거치지 않음)",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하의 이체(step transfer, 10%, nginx → api → account) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 잔액 조회 실패율. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "transfers-failing-5xx",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "새 api 파드가 testbed-account 를 해석하지 못해 이체가 재시도와 서킷 열림 끝에 502 다. 이 502 가 core-banking-api 서버 스팬을 ERROR 로 만들어 골든 시그널 오류율을 올린다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m: 롤아웃(새 파드 Ready 까지 약 1분) 뒤 실패가 약 14분 이어진 다음 판정된다. 119 promote 는 대개 열린 묶음의 첫 판정(고장 2~4분째)에서 나므로 이 길이면 첫 판정과 재판정 모두 고장 중에 든다(시트 §6)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1.5,
+              "_note": "동반 부하 6rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "account-path-failing",
+              "observation": "balance_read_nonok_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "nginx → account 직행 잔액 조회까지 실패하면 api 의 이름 해석이 아니라 account 나 Oracle 쪽 장애(F35-R 꼴)다"
+            },
+            {
+              "id": "transfer-down",
+              "observation": "transfer_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 파드가 빠지면 하류 장애(F17-R 꼴)다. 이 주입은 transfer 를 건드리지 않는다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "api-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "transfer_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "balance-reads-recovered",
+              "observation": "balance_read_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 dnsPolicy 를 되돌리고 새 파드가 available 이 될 때까지(보통 약 1분, 상한 180초) 기다리므로 회복은 cleanup 안에서 끝난다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.dns",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.dns",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.dns"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -39,6 +39,7 @@ host_stress = load("host_stress_executor")
 app_control = load("app_control_executor")
 db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
+k8s_dns = load("k8s_dns_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -203,6 +204,33 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             db_account.validate("F35-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified database account contract"):
             db_account.validate("F14-P", db_account.CONTRACTS["F35-R"], {})
+
+    def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
+        # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
+        # 넣거나 Service, CoreDNS 를 건드리면 "배포된 resolver 설정이 내부 이름을 모른다"는
+        # 지문이 아니라 다른 장애(F31 폐기 후보의 Service 삭제, 공용 DNS 장애)가 된다.
+        plan = compiler.compile_plan("f37-r-banking-api-dns-policy-node-resolver")
+        argv, stdin = k8s_dns.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-api", "ClusterFirst", "Default"])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8). 상태 파일도 Deployment 로 이름 짓는다.
+        self.assertNotIn("F37-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F37-R", script)
+        self.assertIn('"/spec/template/spec/dnsPolicy"', script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn('patch "$fault"', run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('patch "$original"', cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        for forbidden in ("dnsConfig\"", "nameservers", "delete", "coredns", "configmap"):
+            self.assertNotIn(forbidden, script)
+        params = dict(k8s_dns.CONTRACTS["F37-R"])
+        params["deployment"] = "testbed-account"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_dns.validate("F37-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified DNS policy contract"):
+            k8s_dns.validate("F35-R", k8s_dns.CONTRACTS["F37-R"], {})
 
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
@@ -501,6 +529,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F35-R",
             # 2026-10-08: food restaurants 열 이름 변경 마이그레이션(스키마와 ORM 형식 불일치). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-R",
+            # 2026-10-08: banking api 파드 DNS 정책을 노드 resolver 로 바꾸는 배포(이름 해석 실패). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F37-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

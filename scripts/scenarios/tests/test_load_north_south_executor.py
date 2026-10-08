@@ -55,6 +55,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.workload",
                 # 2026-10-08: F35-R — Oracle 애플리케이션 계정 잠금과 해제(역 문장 하나).
                 "db.account",
+                # 2026-10-08: F37-R — Deployment 파드 템플릿 dnsPolicy 한 칸의 롤아웃과 원복.
+                "k8s.dns",
             },
         )
 

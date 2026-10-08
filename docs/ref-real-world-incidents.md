@@ -17,7 +17,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 자료 모음이다. **출처가 말한 내용만 적는다.** 이 테스트베드에서 재현할 수 있는지,
 무엇을 먼저 만들지 같은 판단은 이 문서에 넣지 않고 각 시나리오 설계 시트에 둔다.
 
-- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례는 2026-10-08 추가)
+- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례는 2026-10-08 추가)
 - 출처 표기: 공식 = 기업 공식 포스트모템 또는 상태 페이지, 논문 = 학술 논문,
   보도 = 언론 보도, 2차 = 집계 사이트나 요약 글. 보도와 2차 출처는 원문을 확인하지 못했다는 뜻이다.
 
@@ -162,6 +162,8 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 | AWS, 2025-10-19~20 | DynamoDB DNS 자동화의 경쟁 조건으로 빈 레코드 생성 | [공식](https://aws.amazon.com/message/101925/) |
 | OpenAI, 2024-12-11 | 텔레메트리 배포가 K8s API 서버를 과부하시켰고 DNS가 그 API 서버에 의존. DNS 캐시 때문에 증상이 20분 늦게 드러남 | [공식](https://status.openai.com/incidents/ctrsv3lwd797) |
 | Meta, 2021-10-04 | BGP 경로 철회 | [공식](https://engineering.fb.com/2021/10/05/networking-traffic/outage-details/) |
+| Intercom(현 Fin), 2024-11-05 | 03:30~06:00 UTC(약 2.5시간) 미국 호스팅 지역. 앞선 장애의 후속 조치이자 가끔 생기던 DNS 지연을 고치려고 Linux 서버 이미지에 캐싱 resolver(unbound)를 더함. 이 이미지는 이미 많은 애플리케이션에 문제없이 배포된 상태였음. 미국 애플리케이션은 MySQL 앞의 ProxySQL 클러스터를 사설 DNS 영역으로 찾는데, unbound 는 호스트가 인터넷 DNS 에 닿을 수 있으면 사설 레코드를 해석하지 못함("the private DNS records were not resolvable"). 인터넷 DNS 질의가 막힌 스테이징과 사전 운영에서는 드러나지 않음. 서버 이미지는 자동으로 다시 빌드되고 애플리케이션 서버가 매주 교체되는데, 03:27 운영에 닿은 뒤 교체된 백그라운드 워커가 ProxySQL 엔드포인트를 해석하지 못해 Rails 프로세스를 띄우지 못하고 작업이 쌓임. 웹 서버는 교체 호스트가 health check 를 통과해야 넘겨받으므로 영향 없음. 03:44 경보, 04:48 이미지 롤아웃을 원인으로 식별하고 롤백 시작, 롤백이 배포 잠금에 걸려 05:46 재시도, 06:00 정상. 데이터 유실 없음. 재발 방지로 이미지 롤아웃 강화와 사설 DNS 레코드 사용 제거 | [공식](https://www.intercomstatus.com/us-hosting/incidents/01JBX9TND1N4J6PM95X6X5ZP0K/write-up) (현재 같은 경로의 [finstatus.com](https://www.finstatus.com/us-hosting/incidents/01JBX9TND1N4J6PM95X6X5ZP0K/write-up) 으로 넘겨짐) |
+| Let's Encrypt, 2025-07-21 | 18:35 UTC~07-22 02:22 UTC 모든 데이터센터에서 ACME API 전면 중단. 내부 DNS resolver 클러스터 4대 중 마지막 한 대의 OS 업그레이드 뒤, 서비스 설정 스크립트의 플래그가 필요 없는 내부 전달자(forwarder)를 자동 설정해 클러스터의 다른 복제본을 전달 대상으로 고름. 복제본을 하나씩 올리는 동안 전달 대상이 사라진 복제본이기도 해서 마지막 업그레이드 뒤 모든 머신의 resolver 설정이 잘못됨. 질의는 막다른 곳이면 SERVFAIL, 무한 순환이면 시간 초과. DB 서버, MPIC 서버, 외부 CT 로그 이름 해석이 깨짐. 임시로 Boulder 워커의 /etc/hosts 에 DB 서버 주소를 적어 발급을 일부 되살리고, 잘못된 resolver 설정을 서버마다 지워 복구. 재발 방지로 데이터센터, 환경별 독립 DNS 클러스터와 소스 관리되는 설정 | [공식(커뮤니티 사고 보고)](https://community.letsencrypt.org/t/2025-07-21-complete-api-outage/240985) |
 
 ### M17. 시간 어긋남, 윤초
 
