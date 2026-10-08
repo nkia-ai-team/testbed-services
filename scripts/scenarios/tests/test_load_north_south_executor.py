@@ -57,6 +57,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.account",
                 # 2026-10-08: F37-R — Deployment 파드 템플릿 dnsPolicy 한 칸의 롤아웃과 원복.
                 "k8s.dns",
+                # 2026-10-08: F38-R — MySQL 인스턴스 전체 read_only 켜기와 끄기(역 문장 하나).
+                "db.instance_readonly",
             },
         )
 

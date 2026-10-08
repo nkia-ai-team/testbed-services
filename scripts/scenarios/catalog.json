@@ -824,6 +824,19 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F38-R",
+      "slug": "f38-r-food-mysql-global-read-only",
+      "profiles": [
+        "db.instance_readonly",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

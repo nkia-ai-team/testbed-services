@@ -35,7 +35,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-08: 3 → 4. F35-R(banking Oracle 애플리케이션 계정 잠금) 후보 추가.
         # 2026-10-08: 4 → 5. F36-R(food restaurants 열 이름 변경 마이그레이션) 후보 추가.
         # 2026-10-08: 5 → 6. F37-R(banking api 파드 DNS 정책 노드 resolver 배포) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 6)
+        # 2026-10-08: 6 → 7. F38-R(food MySQL 인스턴스 전체 read_only) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 7)
 
 
 class RecordingQueueTests(unittest.TestCase):

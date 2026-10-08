@@ -33,6 +33,8 @@ PROFILE_PREFLIGHTS = {
     "db.table_readonly": "db-inverse-ddl-ready",
     # Same again: the inverse of an account lock is one statement (ACCOUNT UNLOCK).
     "db.account": "db-inverse-ddl-ready",
+    # And again: the inverse of a global read_only is one statement (read_only=OFF).
+    "db.instance_readonly": "db-inverse-ddl-ready",
     "db.workload": "db-session-tag-clean",
     "mock.expectation": "mock-restore-contract",
     "load.north_south": "baseline-loadgen-active",

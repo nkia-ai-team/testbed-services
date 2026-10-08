@@ -5828,6 +5828,95 @@
      }
     ]
    }
+  },
+  "F38-R": {
+   "title": "An operator's SQL session switches the whole food MySQL instance to read-only (SET GLOBAL read_only=ON): every write in every food service is refused with error 1290 '--read-only option', reads keep working, and every order fails with 500",
+   "description": "All food services (order, restaurant, dispatch, payment) share one MySQL 8.0 instance through one ordinary application account (fooddelivery, no SUPER or CONNECTION_ADMIN). An operator's SQL client session, connected as root, runs SET GLOBAL read_only = ON (reconstruction narrative: why it was run is stated neither by the source nor by the scenario). From that moment MySQL refuses every INSERT, UPDATE and DELETE coming from the application account with ER_OPTION_PREVENTS_STATEMENT 1290 \"The MySQL server is running with the --read-only option so it cannot execute this statement\", while every SELECT, every connection check (ping) and every readiness probe keep succeeding. order-service runs createOrder in one transaction: it reads the restaurant, the menu and the courier capacity over HTTP (all still 200), then inserts the order row (IDENTITY, executed at save) and gets 1290; the exception is not mapped by its GlobalExceptionHandler, so every POST /api/orders answers 500 within milliseconds and the transaction is rolled back. dispatch-service's 30-second expiry batch (UPDATE dispatches to DELIVERED and INSERT dispatch_events) fails the same way on every cycle. Nothing else changes: no rollout, no restart, no pod leaves Ready, MySQL sessions and response time stay normal. A 2 rps order companion (order-surge.js) keeps a steady order sample at every hour of the daily baseline cycle (1 to 6 iterations/s). It raises order intake, but the failures are immediate SQL errors whose text names the read-only option, the same reads keep answering 200 under the same load, and the database accepts zero writes no matter how many are attempted.",
+   "cause": "SET GLOBAL read_only = ON on the food MySQL instance (operator session, not persisted) → every write from the application account fooddelivery is refused with 1290 '--read-only option' while reads and pings succeed → order-service createOrder fails at orderRepository.save (INSERT INTO orders) → unhandled exception, POST /api/orders 500 for every order, transaction rolled back (DPM rollback_count up) → dispatch expiry batch UPDATE/INSERT fails every 30 s → DPM insert_count and update_count fall to about 0 while select_count continues",
+   "injection_summary": "The db.instance_readonly executor checks that @@global.read_only and @@global.super_read_only are both 0 and that the application account fooddelivery holds neither SUPER nor CONNECTION_ADMIN (so it cannot bypass the flag), then, inside testbed-mysql-0 with the MySQL client as root, runs SET SESSION lock_wait_timeout=10; SET GLOBAL read_only=ON and confirms the state is read_only=1, super_read_only=0. Nothing is persisted (SET GLOBAL, not SET PERSIST), no account, table, row or session is touched, and no scenario id reaches the database. Cleanup runs SET GLOBAL read_only=OFF and confirms 0. A 2 rps order-surge.js companion runs on tb-runner for the same window.",
+   "user_impact": "Every order fails with 500: customers can browse restaurants and menus and open past orders and deliveries, but cannot place an order. Couriers whose delivery time has passed are not released (the expiry batch cannot write), which does not reach customers during the window because no new dispatch is requested. No data is lost or corrupted: refused writes roll back, and as soon as read_only is turned off writes succeed again and the expiry batch catches up.",
+   "distinguishing_evidence": "The decisive evidence is the error text itself, in the full logs of more than one service: ERROR 'The MySQL server is running with the --read-only option so it cannot execute this statement' (also carried in the Tomcat SEVERE body of each failed order) in order-service (every order) and dispatch-service (every 30 s expiry cycle), 0 occurrences in the 7 days of logs kept on 2026-10-08, all starting in the same minute, next to WARN 'SQL Error: 1290, SQLState: HY000' (the Hibernate 'SQL Error: N, SQLState: X' line itself is an existing log shape). It names an instance-wide state, not a table, an account or a connection problem. DPM agrees on the database side: dpm.mysql.sql.insert_count and update_count (Com_insert, Com_update, which do not count refused statements) drop to about 0 while select_count continues and rollback_count jumps (8-day median 1/min). Reads in the same services and the same database keep answering 200 (restaurant, menu, capacity check), the pools have no waits, no pod restarts or rolls out (KCM), and MySQL stays Ready with normal sessions and response time. The SET GLOBAL statement itself is not recorded in 119 (DPM Top SQL keeps only frequent digests, 0 SET GLOBAL in 10 days).",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "DPM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 인스턴스(testbed-mysql-0)의 전역 설정 read_only 다. 운영자의 SQL 세션이 SET GLOBAL read_only = ON 을 실행해 인스턴스 전체가 읽기 전용이 됐다(재구성 서사, 실행 의도는 원본에도 없고 정답에 요구하지 않는다). 원본 사례(Vapi 2025-01-21, 공식 상태 페이지 \"A configuration error caused the production database to switch to read-only mode\", 운영 DB 에 붙은 SQL 클라이언트 세션의 읽기 전용 설정이 커넥션 풀러를 거쳐 모든 세션에 퍼져 쓰기가 막히고 API 가 중단, DB 재시작으로 복구)처럼, 데이터베이스가 쓰기를 거절하는 상태로 바뀐 것이 원인이고 그 층위(DB 인스턴스의 설정 상태)가 정답이다. order, dispatch 등 앱의 코드, 설정, 요청은 늘 하던 그대로라 정당하다(원칙 6: 정당한 요청이 결함 있는 곳에서 실패). 근본과 계기가 같은 곳(인스턴스 전역 변수)이라 trigger_target_id 는 비운다. target_id 는 F25-H 의 commerce-postgres 와 같은 'DB 인스턴스' 표기다. 관제 데이터로의 도달 경로: ① order 와 dispatch 로그에 WARN 'SQL Error: 1290, SQLState: HY000' 와 ERROR 'The MySQL server is running with the --read-only option so it cannot execute this statement' 가 같은 분에 시작해 이어진다(로그 전수, 평시 7일 0건). 오류 문장이 인스턴스 전체의 상태(--read-only)를 직접 가리키고, 서로 다른 서비스, 서로 다른 테이블(orders, dispatches, dispatch_events)의 쓰기가 같은 문장으로 실패한다 ② DPM: dpm.mysql.sql.insert_count, update_count 가 0 근처로 떨어지고(거절된 문장은 Com_insert, Com_update 에 세지 않는다) select_count 는 이어지며 rollback_count 가 평시(8일 중앙 분당 1)보다 크게 뛴다 ③ 같은 서비스, 같은 DB 의 읽기(가게, 메뉴, 배차 용량 조회, 주문 조회)는 200 그대로이고 POST /api/orders 만 500 이다(스팬, 로그) ④ rca-testbed-food 에 롤아웃, 새 ReplicaSet, 재시작이 없고(KCM) MySQL 은 Ready, 세션과 응답 시간이 평시이며 Hikari 대기가 없다. SET GLOBAL 문장 자체는 119 에 남지 않는다(DPM Top SQL 은 자주 도는 다이제스트만 남기고 10일 동안 SET GLOBAL 0건). 그래서 계기의 흔적은 오류 문장(--read-only)과 시작 시각, 쓰기 지표만 끊긴 DB 쪽 모양, 그 시각에 다른 변경이 없다는 사실이다. 누가 왜 그 명령을 실행했는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57-128 (createOrder — @Transactional, 가게, 메뉴, 배차 용량을 HTTP 로 읽은 뒤 orderRepository.save 에서 처음 쓴다. 쓰기가 거절되면 배차와 결제를 부르기 전에 끝난다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/entity/Order.java:12-13 (@GeneratedValue IDENTITY — save 때 INSERT 가 바로 실행돼 거기서 1290 을 받는다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/config/GlobalExceptionHandler.java:9-21 (ServiceException 만 매핑, SQL 오류는 처리되지 않은 예외로 500)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:116-130 (deliverExpiredDispatches — 30초마다 ETA 가 지난 ASSIGNED 를 DELIVERED 로 UPDATE, dispatch_events INSERT. 읽기 전용이면 매 주기 실패)",
+     "food-delivery/order-service/src/main/resources/application.yml:7-17 (datasource — 모든 food 서비스와 같은 계정 fooddelivery, 같은 인스턴스)",
+     "food-delivery/k8s/10-mysql.yaml:1-23 (StatefulSet testbed-mysql, image mysql:8.0 — food 4개 서비스가 함께 쓰는 단일 인스턴스)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, tb-w3). 앱 계정 fooddelivery 는 fooddelivery.* 에 ALL PRIVILEGES 만 있고 SUPER, CONNECTION_ADMIN 이 없다(2026-10-08 SHOW GRANTS, mysql.global_grants 0건)라 read_only 를 우회하지 못한다. 관측 계정 lucida_mon 은 읽기 권한뿐이다. persisted_variables 가 비어 있어 SET GLOBAL 은 재시작하면 사라진다. 로컬 mysql:8.0.46 실측: read_only=ON 뒤 일반 계정의 INSERT, UPDATE 는 ERROR 1290, SELECT 와 mysqladmin ping 은 정상, SET SESSION TRANSACTION READ WRITE 는 허용, 거절된 INSERT, UPDATE 는 Com_insert, Com_update 를 올리지 않고 ROLLBACK 은 Com_rollback 을 올린다. 다른 세션이 쓰기 트랜잭션을 열어 둔 상태에서도 SET GLOBAL read_only=ON 은 0.11초에 끝났다. db.instance_readonly executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 root 로 열어 실행한다."
+   },
+   "must_support": [
+    "order 와 dispatch 로그에 WARN 'SQL Error: 1290, SQLState: HY000' 와 ERROR 'The MySQL server is running with the --read-only option so it cannot execute this statement' 가 주입 분부터 이어진다(2026-10-08 18:08 UTC 조회 시 남아 있던 약 7일 로그에서 food, 다른 도메인 모두 0건)",
+    "order 서버 스팬 POST /api/orders 가 500(ERROR)으로 바뀌고 'Created order' INFO 가 끊긴다. 같은 order 의 주문 조회, restaurant 의 가게, 메뉴 조회, dispatch 의 용량 조회는 200 그대로다. order 표본 스팬 오류는 평시 7일 53,351건 중 58건이다. 동반 부하의 주문 생성 5xx 비율이 0.5 이상, 2xx 비율이 0.2 미만이 된다",
+    "DPM(target c8c558e5-…): dpm.mysql.sql.insert_count, update_count 가 0 근처로 떨어지고(평시 8일 1분 값 중앙 456, 266, 하위 1% 84, 50) select_count 는 이어지며(평시 중앙 1,260) rollback_count 가 평시(중앙 1, 99분위 6.9)보다 크게 오른다",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작이 없다(KCM). MySQL 과 order 파드는 Ready 이고, MySQL 활성 세션과 평균 응답 시간(dpm.mysql.session.active_session, dpm.mysql.instance.avg_query_response_time)이 평시 근처이며 Hikari 대기(db.client.connections.pending_requests)가 0 이다"
+   ],
+   "must_rule_out": [
+    "MySQL 다운이나 재시작(F25-H 꼴, testbed-mysql-0 의 OOM 재시작)이 아님: 파드가 Ready 이고 'Communications link failure', 'SQLState: 08S01' 와 Hikari 연결 대기 실패가 없으며, 같은 DB 의 읽기가 모두 정상이다. 재시작이면 모든 질의가 함께 끊기고 몇 분 안에 회복한다(재시작은 SET GLOBAL 로 켠 read_only 도 지운다)",
+    "디스크 가득이나 IO 포화(F10-H 꼴)가 아님: 질의가 느려지는 것이 아니라 쓰기만 즉시 거절되고, 오류 문장이 공간이나 IO 가 아니라 --read-only 옵션을 가리킨다. 읽기 응답 시간은 평시다",
+    "특정 테이블 하나의 문제(F14-P 꼴 테이블 읽기 전용, F36-R 꼴 스키마 변경, F33-R 꼴 인덱스 제거)가 아님: 서로 다른 서비스가 서로 다른 테이블(orders, dispatches, dispatch_events)에 쓰는 문장이 같은 오류로 실패하고, 오류 문장이 테이블이 아니라 서버 상태를 가리킨다",
+    "DB 계정 문제(F35-R 꼴 계정 잠금, 권한 회수)가 아님: 같은 계정의 로그인과 읽기가 계속 성공하고 세션 수가 줄지 않는다. 권한 회수라면 1142 'command denied' 가 난다",
+    "잠금 대기(D 묶음)가 아님: 쓰기가 기다리다 시간 초과되는 것이 아니라 밀리초 안에 거절되고, DPM 차단 세션과 잠금 대기 지표가 평시다",
+    "order 새 버전이나 설정 배포가 아님: testbed-order 롤아웃, 새 ReplicaSet, env 변경이 없고 파드가 그대로다. 오류는 앱이 아니라 MySQL 이 낸 1290 이며 dispatch 의 배치에서도 같다",
+    "부하 증가나 용량 부족이 아님: 동반 부하로 주문 유입이 시간대에 따라 약 2~8배가 되지만 실패는 시간 초과가 아니라 즉시 나는 SQL 오류이고 그 문장이 읽기 전용 상태를 가리킨다. 부하와 무관하게 30초마다 도는 dispatch 배치도 같은 문장으로 실패하고, 같은 부하에서 같은 DB 의 읽기는 200 이며, DB 가 받아들이는 쓰기 수는 부하가 늘어도 오르지 않고 0 근처로 떨어진다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F14-P (Oracle 테이블 하나(LEDGER_ENTRIES)를 읽기 전용으로 바꿔 원장 쓰기만 조용히 사라진다. F38-R 은 인스턴스 전체가 읽기 전용이라 모든 서비스의 모든 쓰기가 같은 1290 으로 실패하고 주문이 500 으로 드러난다)",
+     "F36-R (같은 food MySQL 이 원인이지만 한 테이블의 스키마가 바뀌어 그 열을 고르는 읽기가 1054 로 실패한다. F38-R 은 스키마가 그대로이고 읽기는 모두 성공하며 쓰기만 실패한다)",
+     "F25-H (공유 DB 가 원인이지만 DB 프로세스가 죽어 읽기와 쓰기가 함께 끊긴다. F38-R 은 DB 가 살아 있고 빠르며 쓰기만 거절한다)",
+     "F35-R (DB 쪽 한 칸(계정 상태)을 바꿔 새 로그인이 막힌다. F38-R 은 로그인과 읽기는 되고 쓰기가 막힌다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-mysql"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order",
+     "food-delivery-dispatch",
+     "food-dispatch"
+    ]
+   },
+   "title_ko": "운영자의 SQL 세션이 food MySQL 인스턴스 전체를 읽기 전용으로 바꿈(SET GLOBAL read_only=ON): food 모든 서비스의 쓰기가 1290 '--read-only option' 으로 거절되고 읽기는 그대로이며 모든 주문이 500 으로 실패한다",
+   "description_ko": "food 의 네 서비스(order, restaurant, dispatch, payment)는 MySQL 8.0 인스턴스 하나를 일반 앱 계정 하나(fooddelivery, SUPER, CONNECTION_ADMIN 없음)로 함께 쓴다. 운영자의 root SQL 클라이언트 세션이 SET GLOBAL read_only = ON 을 실행한다(재구성 서사: 실행 의도는 원본에도 없고 시나리오도 정하지 않는다). 그 순간부터 MySQL 은 앱 계정에서 오는 모든 INSERT, UPDATE, DELETE 를 ER_OPTION_PREVENTS_STATEMENT 1290 \"The MySQL server is running with the --read-only option so it cannot execute this statement\" 로 거절하고, SELECT, 연결 확인(ping), readiness 는 계속 성공한다. order-service 의 createOrder 는 트랜잭션 하나 안에서 가게, 메뉴, 배차 용량을 HTTP 로 읽은 뒤(모두 200) 주문 행을 INSERT 하다가(IDENTITY 라 save 때 실행) 1290 을 받는다. GlobalExceptionHandler 가 이 예외를 매핑하지 않아 POST /api/orders 가 밀리초 안에 모두 500 으로 끝나고 트랜잭션은 롤백된다. dispatch-service 의 30초 만료 배치(dispatches 를 DELIVERED 로 UPDATE, dispatch_events INSERT)도 매 주기 같은 문장으로 실패한다. 다른 변화는 없다: 롤아웃, 재시작, Ready 이탈이 없고 MySQL 세션과 응답 시간이 평시다. 동반 부하 2rps(order-surge.js)는 하루 주기 기준선(1~6 iter/s)의 어느 시간대에도 주문 표본을 일정하게 둔다. 주문 유입은 늘지만 실패는 읽기 전용 옵션을 가리키는 즉시 SQL 오류이고, 같은 부하에서 같은 읽기는 200 이며, DB 가 받아들이는 쓰기 수는 시도와 무관하게 0 이다.",
+   "cause_ko": "food MySQL 인스턴스에 SET GLOBAL read_only = ON(운영자 세션, 영속 아님) → 앱 계정 fooddelivery 의 모든 쓰기가 1290 '--read-only option' 으로 거절, 읽기와 ping 은 성공 → order-service createOrder 가 orderRepository.save(INSERT INTO orders)에서 실패 → 처리되지 않은 예외로 모든 주문 POST /api/orders 500, 트랜잭션 롤백(DPM rollback_count 상승) → dispatch 만료 배치 UPDATE/INSERT 가 30초마다 실패 → DPM insert_count, update_count 가 0 근처로 떨어지고 select_count 는 이어짐",
+   "injection_summary_ko": "db.instance_readonly executor 가 @@global.read_only 와 @@global.super_read_only 가 모두 0 이고 앱 계정 fooddelivery 에 SUPER 도 CONNECTION_ADMIN 도 없는지(플래그를 우회하지 못하는지) 확인한 뒤, testbed-mysql-0 안의 MySQL 클라이언트를 root 로 열어 SET SESSION lock_wait_timeout=10; SET GLOBAL read_only=ON 을 실행하고 상태가 read_only=1, super_read_only=0 인지 확인한다. 아무것도 영속하지 않고(SET PERSIST 가 아님) 계정, 테이블, 행, 세션을 건드리지 않으며 시나리오 id 가 DB 에 닿지 않는다. cleanup 은 SET GLOBAL read_only=OFF 를 실행하고 0 을 확인한다. 같은 창에 tb-runner 에서 order-surge.js 2rps 동반 부하가 돈다.",
+   "user_impact_ko": "모든 주문이 500 으로 실패한다. 고객은 가게와 메뉴를 보고 지난 주문과 배달을 열 수 있지만 주문을 넣을 수 없다. 배달 예정 시각이 지난 배달원이 풀려나지 않지만(만료 배치가 쓰지 못함) 그 창에는 새 배차 요청이 없어 고객에게 닿지 않는다. 데이터는 잃거나 깨지지 않는다: 거절된 쓰기는 롤백되고, read_only 를 끄면 바로 쓰기가 성공하며 만료 배치가 밀린 일을 따라잡는다.",
+   "distinguishing_evidence_ko": "결정 증거는 여러 서비스의 전수 로그에 남는 오류 문장 자체다: order(모든 주문, 실패한 주문의 Tomcat SEVERE 본문에도 실림)와 dispatch(30초 만료 배치마다)의 ERROR 'The MySQL server is running with the --read-only option so it cannot execute this statement'(2026-10-08 조회 시 남아 있던 7일 로그 0건)가 WARN 'SQL Error: 1290, SQLState: HY000'(Hibernate 'SQL Error: N, SQLState: X' 줄 자체는 기존 로그 꼴)와 함께 같은 분에 시작한다. 문장이 테이블, 계정, 연결이 아니라 인스턴스 전체의 상태를 가리킨다. DB 쪽 DPM 도 같은 말을 한다: dpm.mysql.sql.insert_count, update_count(거절된 문장을 세지 않는 Com_insert, Com_update)가 0 근처로 떨어지고 select_count 는 이어지며 rollback_count 가 뛴다(평시 8일 중앙 분당 1). 같은 서비스, 같은 DB 의 읽기(가게, 메뉴, 용량 조회)는 200 그대로이고 풀 대기가 없으며, 롤아웃이나 재시작이 없고(KCM) MySQL 은 Ready 에 세션과 응답 시간이 평시다. SET GLOBAL 문장 자체는 119 에 남지 않는다(DPM Top SQL 은 자주 도는 다이제스트만 남기고 10일 동안 SET GLOBAL 0건).",
+   "injected_fault": {
+    "profile": "db.instance_readonly",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f38-r",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "app_account": "fooddelivery"
+      }
+     }
+    ]
+   }
   }
  }
 }
