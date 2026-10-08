@@ -468,6 +468,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F30-R",
             # 2026-10-08: food dispatch 배차 한도 설정 배포(설정 오배포). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-R",
+            # 2026-10-08: food dispatches 인덱스 제거(느린 쿼리). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

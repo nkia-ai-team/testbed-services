@@ -50,7 +50,8 @@ class RegistryContractTests(unittest.TestCase):
     def test_registry_closure_covers_catalog_scenarios_and_profiles(self) -> None:
         # 2026-10-08: 60 → 61. F30-R(draft) 추가.
         # 2026-10-08: 61 → 62. F32-R(후보) 추가.
-        self.assertEqual(len(self.catalog["scenarios"]), 62)
+        # 2026-10-08: 62 → 63. F33-R(후보) 추가.
+        self.assertEqual(len(self.catalog["scenarios"]), 63)
         self.assertEqual(len(self.profiles["profiles"]), 22)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -97,6 +98,8 @@ class RegistryContractTests(unittest.TestCase):
             "F30-R",
             # 2026-10-08: food dispatch 배차 한도 설정 배포(설정 오배포). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-R",
+            # 2026-10-08: food dispatches 인덱스 제거(느린 쿼리). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -359,6 +362,8 @@ class RegistryContractTests(unittest.TestCase):
             "F30-R",
             # 2026-10-08: food dispatch 배차 한도 설정 배포(설정 오배포). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-R",
+            # 2026-10-08: food dispatches 인덱스 제거(느린 쿼리). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-R",
             },
         )
         self.assertEqual(
@@ -405,6 +410,8 @@ class RegistryContractTests(unittest.TestCase):
             "F30-R",
             # 2026-10-08: food dispatch 배차 한도 설정 배포(설정 오배포). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-R",
+            # 2026-10-08: food dispatches 인덱스 제거(느린 쿼리). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -541,8 +548,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
         # 2026-10-08: F15-T2 폐기(정상 녹화 없음, 사용자 결정)로 빠져 F17-P 가 끝 5개에 들어왔다.
         # 2026-10-08: F32-R(후보, 고정 evaluation)이 끝에 붙어 F17-P 가 끝 5개에서 빠졌다.
+        # 2026-10-08: F33-R(후보, 고정 evaluation)이 끝에 붙어 F04-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F04-H", "F15-H", "F14-P", "F30-R", "F32-R"])
+                         ["F15-H", "F14-P", "F30-R", "F32-R", "F33-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -5445,6 +5445,103 @@
      }
     ]
    }
+  },
+  "F33-R": {
+   "title": "An index removal on the food dispatches table turns the per-order courier-capacity count into a 5-million-row full scan: MySQL saturates, the dispatch connection pool runs dry and order creation fails with 503",
+   "description": "The food dispatches table holds about 5.01 million rows (about 1,200 ASSIGNED, the rest DELIVERED). dispatch-service counts ASSIGNED rows (DispatchRepository.countByStatus) twice per order: once when order-service asks GET /api/deliveries/capacity before creating the order and once more inside POST /api/deliveries/dispatch. The query is answered by the composite index idx_dispatches_status_assigned (status, assigned_at) in about 1 ms, examining about 1,300 rows. A schema change removes that index. The same count now reads the whole table: about 5 million rows and 2.5 to 5 seconds per call on a MySQL pod limited to 0.5 CPU with a 128 MB buffer pool, while such counts keep arriving: the resident baseline load follows a daily cycle (1 to 6 iterations/s, DPM 12 to 139 calls per minute by hour) and a 2 rps order companion adds about 1.4 capacity checks per second at every hour, and the 30-second expiry sweep of the same table loses the same index. MySQL saturates, the 10 connections of the dispatch Hikari pool stay busy with full scans, further requests wait 3 s for a connection and fail with 500, and order-service's capacity check times out or gets 500, retries, opens its dispatch circuit breaker and rejects the order with 503 before anything is saved. Nothing about the services changed: no rollout, no config change, no restart of MySQL. Order intake does rise (the companion adds about 1.4 orders/s, roughly 2 to 8 times the baseline intake depending on the hour) and the status COUNT call count rises with it, but what identifies the cause is rows examined per call (~1,300 → ~5 million), which load alone does not change.",
+   "cause": "Index idx_dispatches_status_assigned removed from fooddelivery.dispatches (DDL) → DispatchRepository.countByStatus(\"ASSIGNED\") becomes a full scan of ~5.01M rows (Top SQL rowExamined ~1.3k → ~5M per call, ~1 ms → seconds) → food MySQL (0.5 CPU) saturates and the dispatch Hikari pool (10) is exhausted → GET /api/deliveries/capacity times out or returns 500 → order-service capacity check fails, retries and opens the dispatch circuit breaker → POST /api/orders 503 before the order row is written; dispatch's /actuator/health DB check fails and its probes may restart the pod.",
+   "injection_summary": "The db.ddl executor checks that fooddelivery.dispatches has at least 1,000 rows (reading at most 1,000) and that idx_dispatches_status_assigned is exactly (status, assigned_at), then runs ALTER TABLE dispatches DROP INDEX idx_dispatches_status_assigned through the MySQL client inside testbed-mysql-0. A north-south companion at 2 rps (order-surge.js, order journeys 75%) drives the food entry point on top of the resident baseline load. The baseline follows a daily cycle of 1 to 6 iterations/s, and at its low hours (KST 02-06, status COUNT 12-14 per minute, full scan ~1.6 s) the index loss alone would only slow orders; the companion sets an intensity floor of about 1.4 capacity checks per second at every hour and gives the runner a steady order sample. Cleanup recreates the index with the same name and columns (CREATE INDEX idx_dispatches_status_assigned ON dispatches(status,assigned_at)); the executor's recovery action then checks the definition. If the 900 s executor limit cuts kubectl exec during CREATE INDEX, the DDL inside the pod may still finish or be rolled back, so the outcome is read from the DPM index count (31 = restored). No app code, image, configuration or row data is changed and no value carries the scenario id.",
+   "user_impact": "Order creation fails (503) for nearly every order that passes the restaurant and menu checks: the capacity check cannot get an answer from dispatch in time. Restaurant lookups and menus keep answering but may slow down because they share the saturated MySQL; delivery tracking by id keeps working, delivery lists slow down. dispatch may be restarted by its liveness probe because its health endpoint includes the database check. Orders already dispatched are unaffected.",
+   "distinguishing_evidence": "The decisive pair is in DPM: the fooddelivery index count (dpm.mysql.database.index_count) drops from 31, flat for the previous 8 days, to 30, and in the same minute the Top SQL entry 'SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status = ?' goes from ~1,300 rows examined and ~1 ms per call to ~5 million rows and seconds per call, (as supporting evidence, the expiry-sweep query on the same index jumps the same way while its call count does not rise: at most 2 per minute, and a minute can have no completed call when the scan runs long or the connection wait fails). The companion raises order intake and the COUNT call count, but load alone does not change rows examined per call: in the two baseline windows where a burst of delivery-list counts exhausted the dispatch pool (2026-10-01 14:30, list counts 434 to 596 per 5 minutes overlapping a MySQL restart at 14:40; 2026-10-08 09:15, F30-R's surge.js companion) the index count stayed 31 and rows examined per call stayed at most 1,701. Everything downstream follows from that: dispatch Hikari 'Connection is not available, request timed out after 3000ms' and 'DataSource health check failed', order 'Failed to check dispatch capacity' and order 503, 'Created order' and 'Dispatched courier' collapsing. There is no Deployment rollout in rca-testbed-food (unlike the dispatch limit config of F32-R, which keeps dispatch healthy and logs 'Order rejected: courier pool exhausted'), MySQL is not restarted (unlike F25-H), and the delivery-list count that already scans 5 million rows per call at baseline ('(? IS NULL OR status = ?)') shows no change in rows examined per call.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "DPM",
+    "APM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery.dispatches",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 의 fooddelivery.dispatches 테이블이다. 스키마 변경(DDL)이 이 테이블의 복합 인덱스 idx_dispatches_status_assigned(status, assigned_at)를 제거했다. dispatch-service 는 주문마다 두 번(order 의 용량 조회 GET /api/deliveries/capacity, 배차 요청 POST /api/deliveries/dispatch) DispatchRepository.countByStatus(\"ASSIGNED\") 를 부르는데, 이 질의를 받쳐 주던 인덱스가 사라져 약 501만 행 전수 스캔이 된다(호출당 약 1ms, 약 1,300행 검사 → 2.5~5초, 약 500만 행). MySQL 은 CPU 0.5 코어, 버퍼 풀 128MB 라 상주 기준선(하루 주기 1~6 iter/s, DPM 분당 12~139회)과 2rps 동반 부하(시간대와 무관하게 용량 확인 초당 약 1.4건, 실패 시 재시도 3회)가 함께 내는 전수 스캔을 감당하지 못해 포화되고, dispatch Hikari 풀(10)이 스캔에 묶여 나머지 요청은 3초 대기 뒤 500 으로 실패한다. order 의 용량 확인은 그 500 이나 5초 read-timeout 을 받아 재시도(3회)하고 dispatch 서킷브레이커를 열어 주문 저장 전에 503 을 낸다. dispatch 와 order 의 코드, 설정, 요청량은 늘 하던 그대로라 정당하다(원칙 6: 정당한 요청이 결함 있는 곳에서 실패). 근본과 계기가 같은 곳(dispatches 테이블에 대한 DDL)이라 trigger_target_id 는 비운다. target_id 는 '인스턴스:스키마.테이블' 꼴로 F06-H, F01-R 과 같은 표기이고 같은 이름의 다른 개체가 없다. 관제 데이터로의 도달 경로: ① DPM 지표 dpm.mysql.database.index_count{db_name=fooddelivery} 가 31 에서 30 으로(평시 8일 내내 31, 60초 수집) ② 같은 분부터 DPM Top SQL 의 'SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status = ?' 이 호출당 rowExamined 약 1,300 → 약 500만, avgExecTime 약 1ms → 수 초. 호출 수는 동반 부하만큼 늘지만, 부하만으로는 호출당 검사 행 수가 바뀌지 않는다. 30초마다 도는 만료 배치 'SELECT * FROM dispatches WHERE STATUS = ? AND DATE_ADD(...) < NOW()' 도 같은 인덱스를 잃어 rowExamined 약 1,100~1,400 → 약 500만 ③ dispatch ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms', WARN 'DataSource health check failed', order ERROR 'Failed to check dispatch capacity: ...' 가 급증하고 'Created order', 'Dispatched courier' 가 끊긴다(로그 전수) ④ rca-testbed-food 에 롤아웃이 없고 MySQL 파드는 재시작하지 않는다. 원본 사후 보고(Buildkite 2025-11-10, \"a database migration was applied to remove an index\")처럼 '인덱스를 제거한 스키마 변경 때문에 고빈도 질의가 인덱스를 못 타 DB 가 과부하'가 정답의 층위이고, 누가 왜 제거했는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java:14 (countByStatus — status 조건 COUNT, idx_dispatches_status_assigned 가 없으면 전수 스캔)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:105-114 (getCapacity — 용량 조회마다 countByStatus(\"ASSIGNED\"))",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java:26-29 (findExpiredAssigned — 30초 만료 배치, status='ASSIGNED' 접두로 같은 인덱스를 탄다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:51-64 (dispatchCourier — 배차 요청에서도 같은 countByStatus 로 한도를 확인)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java:59-66 (getCapacity — GET /api/deliveries/capacity, order 가 주문 전에 부른다)",
+     "food-delivery/dispatch-service/src/main/resources/application.yml:12-17 (hikari — maximum-pool-size 10, connection-timeout 3000)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:31-50 (checkCapacity — 실패 시 ERROR 'Failed to check dispatch capacity' 와 502, @Retry/@CircuitBreaker dispatch, checkCapacityFallback 은 503)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-112 (dispatchClient.checkCapacity — createOrder 도메인 검증 3, 용량 확인이 실패하면 주문 저장 전에 503)",
+     "food-delivery/db/init.sql:111-131 (dispatches — KEY idx_dispatches_status_assigned (status, assigned_at), 2026-08-07 이 인덱스가 없어 137만 행에서 용량 조회가 500 을 냈다는 주석)",
+     "food-delivery/k8s/build-and-deploy.sh:145-165 (idx_dispatches_status_assigned — 기존 PVC 에 멱등하게 더하는 배포 단계)",
+     "food-delivery/k8s/22-dispatch-deploy.yaml:73-86 (readinessProbe, livenessProbe — /actuator/health, DB 확인이 실패하면 dispatch 가 트래픽에서 빠지고 재시작될 수 있다)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0, tb-w3), 컨테이너 CPU limit 500m, memory limit 1Gi(food-delivery/k8s/10-mysql.yaml:40-46), innodb_buffer_pool_size 128MB. fooddelivery.dispatches 는 2026-10-08 기준 약 501만 행(ASSIGNED 약 1,200, 나머지 DELIVERED), 데이터 239MB, 인덱스 225MB 이고 인덱스는 PRIMARY(id), idx_dispatches_order(order_id), idx_dispatches_status_assigned(status, assigned_at) 셋이다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 열어 ALTER TABLE dispatches DROP INDEX idx_dispatches_status_assigned 를 실행하고, cleanup 에서 같은 이름과 열로 CREATE INDEX 한다. DDL 은 메타데이터 잠금을 잠깐 잡으므로 실행 중인 전수 스캔이 끝날 때까지 기다릴 수 있다(원본 사례의 재생성 지연과 같은 꼴)."
+   },
+   "must_support": [
+    "DPM 지표 dpm.mysql.database.index_count{db_name=\"fooddelivery\"} 가 31 에서 30 으로 줄고(평시 8일 내내 31), cleanup 뒤 31 로 돌아온다",
+    "DPM Top SQL 'SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status = ?' 의 호출당 rowExamined 가 평시 약 1,070~1,370 에서 약 500만으로, avgExecTime 이 약 1ms 에서 수 초로 바뀐다. 호출 수는 동반 부하(주문 초당 약 1.4건)만큼 늘 수 있고, 판단 근거는 호출 수가 아니라 호출당 검사 행 수다",
+    "DPM Top SQL 의 만료 배치 'SELECT * FROM dispatches WHERE STATUS = ? AND DATE_ADD ( assigned_at , INTERVAL eta_minutes SQL_TSI_MINUTE ) < NOW ( )' 도 호출당 rowExamined 가 평시 약 1,080~1,380 에서 약 500만으로 오른다(보조 증거. 호출 수는 늘지 않는다: 분당 2회 이하이고, 스캔이 길어지거나 연결 대기 끝에 실패하면 그 분에 완료 기록이 없을 수 있다)",
+    "dispatch ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms' 와 WARN 'DataSource health check failed', order ERROR 'Failed to check dispatch capacity' 가 평시 5분 창 0(p99 7, 3) 에서 급증한다",
+    "order 'Created order' 와 dispatch 'Dispatched courier' INFO 로그가 끊기고(평시 5분당 중앙 218), 동반 부하의 주문 생성 5xx 비율이 평시 0 에서 0.5 이상, 2xx 비율이 평시 0.92~1.0 에서 0.2 미만으로 바뀐다",
+    "rca-testbed-food 에 Deployment 롤아웃이 없고 MySQL 파드는 Ready 이며 재시작하지 않는다. MySQL 활성 세션과 평균 응답 시간(dpm.mysql.session.active_session, dpm.mysql.instance.avg_query_response_time)이 평시(중앙 2, 12.4ms)보다 오른다"
+   ],
+   "must_rule_out": [
+    "배차 한도 설정 오배포(F32-R)가 아님: dispatch 롤아웃과 새 ReplicaSet 이 없고, order 에 'Order rejected: courier pool exhausted' 가 없으며, dispatch 가 용량 조회에 200 대신 500 이나 타임아웃으로 답한다",
+    "MySQL 다운이나 재시작이 아님: testbed-mysql-0 Ready, KCM 에 Created 나 OOMKilled 가 없고 다른 질의는 느려질 뿐 끊기지 않는다. 재시작이면 F25-H 처럼 모든 질의가 함께 끊기고 연결 오류('Communications link failure')가 난다",
+    "부하 증가나 MySQL 자원 한도 변경이 아님: 동반 부하로 주문 유입은 시간대에 따라 약 2~8배가 되고 status COUNT 호출 수도 그만큼 늘지만, 같은 유입에서 status COUNT 와 만료 배치의 호출당 검사 행 수가 약 1,300 에서 약 500만으로 뛰었다(호출 수가 아니라 검사 행 수). 만료 배치도 호출 수가 늘지 않는데(분당 2회 이하) 같이 뛴다. MySQL StatefulSet 스펙과 노드 자원도 그대로다. 평시 목록 COUNT 가 몰려 dispatch 풀이 고갈된 창(2026-10-01 14:30 은 목록 COUNT 5분당 434~596회 폭주에 14:40 MySQL 재시작이 겹친 창, 2026-10-08 09:15 는 F30-R 의 surge.js 5rps 동반 부하가 목록 조회를 늘린 창)은 index_count 가 31 그대로이고 status COUNT 의 호출당 rowExamined 가 약 700~1,700 에 머물렀다(DPM Top SQL 5분 창 실측)",
+    "평시부터 있던 배차 목록 조회의 전수 스캔('(? IS NULL OR d1_0.status = ?)' COUNT, 평시에도 호출당 약 500만 행, 2~9초)이 원인이 아님: 그 질의는 호출당 rowExamined 가 그대로이고(대기가 늘어 실행 시간만 길어질 수 있다), 새로 호출당 수백만 행을 읽기 시작한 것은 status = ? COUNT 와 만료 배치 질의, 곧 idx_dispatches_status_assigned 를 쓰던 질의들이다",
+    "dispatch 앱의 결함이나 프로브 오설정(F05-H 꼴)이 아님: dispatch 롤아웃과 설정 변경이 없고, dispatch 재시작이 있다면 'DataSource health check failed' 와 Hikari 고갈 뒤에 따라온다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F32-R (같은 food 용량 조회 경로에서 주문이 503 으로 끝나지만 원인이 dispatch 의 한도 설정 배포다. dispatch 는 건강하게 200 'available 0' 으로 답하고 order 가 'courier pool exhausted' 를 남긴다. F33-R 은 dispatch 가 DB 에서 답을 얻지 못한다)",
+     "F20-R (같은 느린 쿼리 묶음이지만 질의 모양이 처음부터 인덱스를 탈 수 없고 부하가 계기다. F33-R 은 인덱스를 타던 질의가 스키마 변경으로 인덱스를 잃는다)",
+     "F25-H (같은 공유 DB 가 원인이지만 DB 프로세스가 죽어 모든 질의가 끊긴다. F33-R 은 DB 가 살아 있고 한 질의의 비용만 바뀐다)",
+     "F10-H (같은 food MySQL 이 느려지지만 원인이 노드 디스크 IO 포화다. F33-R 은 노드 자원이 그대로이고 Top SQL 의 검사 행 수가 바뀐다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery.dispatches"
+    ],
+    "partial": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "food dispatches 테이블의 인덱스 제거로 주문마다 도는 배차 용량 COUNT 가 500만 행 전수 스캔이 됨: MySQL 이 포화되고 dispatch 커넥션 풀이 말라 주문 생성이 503 으로 실패한다",
+   "description_ko": "food dispatches 테이블은 약 501만 행이다(ASSIGNED 약 1,200, 나머지 DELIVERED). dispatch-service 는 주문 하나에 ASSIGNED 행 수를 두 번 센다(DispatchRepository.countByStatus): order-service 가 주문을 만들기 전에 GET /api/deliveries/capacity 로 물을 때 한 번, POST /api/deliveries/dispatch 안에서 한 번. 이 질의는 복합 인덱스 idx_dispatches_status_assigned(status, assigned_at) 로 약 1ms, 약 1,300행 검사로 끝난다. 스키마 변경이 이 인덱스를 제거한다. 같은 COUNT 가 이제 표 전체를 읽는다: CPU 0.5 코어, 버퍼 풀 128MB 인 MySQL 에서 호출당 약 500만 행, 2.5~5초인데 상주 기준선(하루 주기 1~6 iter/s, DPM 분당 12~139회)에 2rps 동반 부하가 시간대와 무관하게 용량 확인을 초당 약 1.4건 더하고, 30초마다 도는 같은 표의 만료 배치도 같은 인덱스를 잃는다. MySQL 이 포화되고, dispatch Hikari 풀 10개 연결이 전수 스캔에 묶여 나머지 요청은 연결을 3초 기다리다 500 으로 실패하고, order 의 용량 확인은 타임아웃이나 500 을 받아 재시도하고 dispatch 서킷브레이커를 열어 아무것도 저장하기 전에 503 으로 주문을 거절한다. 서비스 쪽은 바뀐 것이 없다: 롤아웃도 설정 변경도 MySQL 재시작도 없다. 동반 부하로 주문 유입(시간대에 따라 약 2~8배)과 COUNT 호출 수는 늘지만, 원인을 가리키는 것은 호출당 검사 행 수(약 1,300 → 약 500만)이고 부하만으로는 이 값이 바뀌지 않는다.",
+   "cause_ko": "fooddelivery.dispatches 에서 인덱스 idx_dispatches_status_assigned 제거(DDL) → DispatchRepository.countByStatus(\"ASSIGNED\") 가 약 501만 행 전수 스캔이 됨(Top SQL 호출당 rowExamined 약 1,300 → 약 500만, 약 1ms → 수 초) → food MySQL(0.5 CPU) 포화, dispatch Hikari 풀(10) 고갈 → GET /api/deliveries/capacity 가 타임아웃이나 500 → order 용량 확인 실패, 재시도, dispatch 서킷브레이커 열림 → 주문 행을 쓰기 전에 POST /api/orders 503. dispatch 의 /actuator/health DB 확인이 실패해 프로브가 파드를 재시작할 수 있다.",
+   "injection_summary_ko": "db.ddl executor 가 fooddelivery.dispatches 가 1,000행 이상(최대 1,000행만 읽음)이고 idx_dispatches_status_assigned 가 정확히 (status, assigned_at) 인지 확인한 뒤, testbed-mysql-0 안의 MySQL 클라이언트로 ALTER TABLE dispatches DROP INDEX idx_dispatches_status_assigned 를 실행한다. north-south 2rps 동반 부하(order-surge.js, 주문 여정 75%)가 상주 기준선 위에 food 진입점으로 더해진다. 기준선은 하루 주기 1~6 iter/s 라 낮은 시간대(KST 02~06시, status COUNT 분당 12~14회, 전수 스캔 약 1.6초)에는 인덱스 제거만으로 주문이 느려질 뿐이다. 동반 부하가 모든 시간대에 용량 확인 초당 약 1.4건의 강도 바닥을 만들고 러너에 일정한 주문 표본을 준다. cleanup 은 같은 이름과 열로 인덱스를 다시 만들고(CREATE INDEX idx_dispatches_status_assigned ON dispatches(status,assigned_at)), 정의 확인은 실행기의 recovery 단계가 한다. 실행기 상한 900초에 kubectl exec 가 끊겨도 파드 안 DDL 은 계속되거나 되돌려질 수 있어 결과는 DPM 인덱스 수(31 이면 복원)로 확인한다. 앱 코드, 이미지, 설정, 행 데이터는 바꾸지 않으며 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "식당과 메뉴 확인을 지난 주문 생성이 거의 전부 503 으로 실패한다: 용량 확인이 dispatch 에서 제때 답을 받지 못한다. 식당 조회와 메뉴는 답하지만 포화된 MySQL 을 함께 써서 느려질 수 있고, id 로 하는 배달 추적은 정상이며 배달 목록 조회는 느려진다. dispatch 의 health 엔드포인트가 DB 확인을 포함해 liveness 프로브가 dispatch 를 재시작할 수 있다. 이미 배차된 주문은 영향이 없다.",
+   "distinguishing_evidence_ko": "결정 증거는 DPM 의 한 쌍이다: fooddelivery 인덱스 수(dpm.mysql.database.index_count)가 직전 8일 내내 31 이다가 30 으로 줄고, 같은 분에 Top SQL 'SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status = ?' 이 호출당 약 1,300행, 약 1ms 에서 약 500만 행, 수 초로 바뀐다. 보조 증거로, 같은 인덱스를 쓰던 만료 배치 질의도 호출 수가 늘지 않는데(분당 2회 이하, 스캔이 길어지면 그 분에 완료 기록이 없을 수 있다) 같이 뛴다. 동반 부하가 주문 유입과 COUNT 호출 수를 늘리지만 부하만으로는 호출당 검사 행 수가 바뀌지 않는다: 평시 목록 COUNT 가 몰려 dispatch 풀이 고갈된 창 둘(2026-10-01 14:30 은 목록 COUNT 폭주와 14:40 MySQL 재시작이 겹친 창, 2026-10-08 09:15 는 F30-R 의 surge.js 동반 부하 창)에서 인덱스 수는 31, 호출당 검사 행 수는 최대 1,701 이었다. 나머지는 모두 그 결과다: dispatch Hikari 'Connection is not available, request timed out after 3000ms' 와 'DataSource health check failed', order 'Failed to check dispatch capacity' 와 주문 503, 'Created order' 와 'Dispatched courier' 의 급감. rca-testbed-food 에 Deployment 롤아웃이 없고(dispatch 가 건강하게 200 으로 답하며 order 가 'Order rejected: courier pool exhausted' 를 남기는 F32-R 의 한도 설정과 다르다), MySQL 은 재시작하지 않았고(F25-H 와 다르다), 평시부터 호출당 500만 행을 훑던 배차 목록 COUNT('(? IS NULL OR status = ?)')는 호출당 검사 행 수가 그대로다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f33-r",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "database": "fooddelivery",
+       "table": "dispatches",
+       "index": "idx_dispatches_status_assigned",
+       "column": "status,assigned_at",
+       "minimum_rows": 1000
+      }
+     }
+    ]
+   }
   }
  }
 }

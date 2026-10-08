@@ -28,6 +28,12 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "database": "fooddelivery", "table": "menus", "index": "idx_menus_category",
         "column": "category_id", "minimum_rows": 1000,
     },
+    # 복합 인덱스는 column 에 열을 순서대로 쉼표로 잇는다(CREATE INDEX 열 목록 그대로).
+    "F33-R": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "dispatches", "index": "idx_dispatches_status_assigned",
+        "column": "status,assigned_at", "minimum_rows": 1000,
+    },
 }
 
 
@@ -121,8 +127,10 @@ set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; db="$5"; table="$6"; index="$7"; column="$8"; minimum="$9"
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
 mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>/dev/null'; }
-definition() { mysql "SELECT CONCAT(INDEX_NAME,':',COLUMN_NAME) FROM information_schema.statistics WHERE table_schema='$db' AND table_name='$table' AND index_name='$index' ORDER BY seq_in_index;"; }
-check() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM $table;")" == 1 ]]; [[ "$(definition)" == "$index:$column" ]]; }
+# A multi-column index prints as one line (index:col1,col2); a single column prints as before.
+definition() { mysql "SELECT CONCAT(INDEX_NAME,':',GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX)) FROM information_schema.statistics WHERE table_schema='$db' AND table_name='$table' AND index_name='$index' GROUP BY INDEX_NAME;"; }
+# Read at most $minimum rows: a full COUNT of a multi-million-row table would itself be a heavy query in the recording window.
+check() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; [[ "$(definition)" == "$index:$column" ]]; }
 case "$action" in
  preflight) check ;;
  run) check; mysql "ALTER TABLE $table DROP INDEX $index;" >/dev/null; [[ -z "$(definition)" ]] ;;

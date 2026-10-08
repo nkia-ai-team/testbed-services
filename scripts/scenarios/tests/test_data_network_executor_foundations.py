@@ -45,7 +45,8 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
             # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
             # 2026-10-08: F15-T2 폐기(정상 녹화 없음, 사용자 결정)로 빠져 F09-P 가 끝 6개에 들어왔다.
             # 2026-10-08: F32-R(후보, 고정 evaluation)이 끝에 붙어 F09-P 가 끝 6개에서 빠졌다.
-            ["F17-P", "F04-H", "F15-H", "F14-P", "F30-R", "F32-R"],
+            # 2026-10-08: F33-R(후보, 고정 evaluation)이 끝에 붙어 F17-P 가 끝 6개에서 빠졌다.
+            ["F04-H", "F15-H", "F14-P", "F30-R", "F32-R", "F33-R"],
         )
 
         # F02-P was parked on 2026-07-27 (nothing in food queries
