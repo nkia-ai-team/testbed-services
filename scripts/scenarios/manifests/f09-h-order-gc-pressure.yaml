@@ -3,6 +3,7 @@
   "id": "F09-H",
   "slug": "f09-h-order-gc-pressure",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

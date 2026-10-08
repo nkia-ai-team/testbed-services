@@ -3,6 +3,7 @@
   "id": "F03-G",
   "slug": "f03-g-high-pool-usage-no-impact",
   "readiness": "cut",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

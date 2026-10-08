@@ -3,6 +3,7 @@
   "id": "F12-H",
   "slug": "f12-h-pod-cpu-network-lookalike",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

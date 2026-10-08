@@ -3,6 +3,7 @@
   "id": "F05-H",
   "slug": "f05-h-payment-liveness-loop",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

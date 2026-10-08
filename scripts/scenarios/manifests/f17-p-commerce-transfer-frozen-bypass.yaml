@@ -3,6 +3,7 @@
   "id": "F17-P",
   "slug": "f17-p-commerce-transfer-frozen-bypass",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

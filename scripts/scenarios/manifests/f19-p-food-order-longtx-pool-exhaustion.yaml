@@ -3,6 +3,7 @@
   "id": "F19-P",
   "slug": "f19-p-food-order-longtx-pool-exhaustion",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

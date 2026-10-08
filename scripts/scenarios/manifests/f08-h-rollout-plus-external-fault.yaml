@@ -3,6 +3,7 @@
   "id": "F08-H",
   "slug": "f08-h-rollout-plus-external-fault",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

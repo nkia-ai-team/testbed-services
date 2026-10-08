@@ -3,6 +3,7 @@
   "id": "F10-R",
   "slug": "f10-r-postgres-volume-full",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

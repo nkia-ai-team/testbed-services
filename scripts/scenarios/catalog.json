@@ -10,6 +10,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
@@ -22,6 +23,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce external-pg-mock",
       "prerequisite": ""
@@ -34,6 +36,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "Oracle lock SQL/session tagging"
@@ -70,6 +73,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -94,6 +98,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -106,6 +111,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -131,6 +137,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "verified payment memory ladder and OOMKilled observation"
@@ -143,6 +150,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "verified payment liveness snapshot and Error observation"
@@ -155,6 +163,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "worker-w1",
       "prerequisite": "placement and safe eviction"
@@ -167,6 +176,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce external-pg-mock",
       "prerequisite": ""
@@ -179,6 +189,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "payments table exclusive lock blocks payment writes"
@@ -191,6 +202,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
       "prerequisite": ""
@@ -202,6 +214,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
@@ -226,6 +239,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
@@ -238,6 +252,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "client binding verification"
@@ -250,6 +265,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
@@ -274,6 +290,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -286,6 +303,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -310,6 +328,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "worker-w3",
       "prerequisite": ""
@@ -322,6 +341,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "candidate",
       "load_mode": "adaptive",
       "injection_location": "worker-w2",
       "prerequisite": ""
@@ -334,6 +354,7 @@
         "cache.control"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -346,6 +367,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
@@ -405,6 +427,7 @@
         "db.table_readonly"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": "verified ledger read-only injection (db.table_readonly) + transfer/ledger reconciliation observation. imbalance 쿼리는 폐기 — DEBIT/CREDIT가 함께 사라져 구조적으로 항상 0 (docs/scenario-redesign-wip/design-F14-sheet.md)"
@@ -417,6 +440,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "candidate",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
@@ -429,6 +453,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
@@ -441,6 +466,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "worker-w2",
       "prerequisite": ""
@@ -453,6 +479,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
@@ -464,6 +491,7 @@
         "timeline.compose"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": ""
@@ -476,6 +504,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "candidate",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
       "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
@@ -510,6 +539,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": "verified transfer readiness snapshot and banking observation allowlist (runner 94bb225)"
@@ -522,6 +552,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": "verified transfer env snapshot; outbox count + banking kafka lag observation (runner 674c092)"
@@ -534,6 +565,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
       "prerequisite": "verified food mock /pay delay 8s; hikari_pending·food_create_status 관측 (runner e1a34b4)"
@@ -546,6 +578,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "food external-pg-mock",
       "prerequisite": "verified food mock /pay delay 30s>read-timeout; CB게이트는 상태코드 rate로 대체 관측 (runner e1a34b4)"
@@ -558,6 +591,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "verified user readinessProbe snapshot; write/read status-class + user 관측 allowlist (monitor read_step 증분)"
@@ -569,6 +603,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "verified OrderRepository.dailyStats/search 풀스캔 앵커(created_at 인덱스 부재); 신규 slowquery.js(stats/daily+무제한 search, checkout 대표여정 20%) + load.north_south 계약 등록; DB-side pg_slow_active_query_count 신설(러너 backend/app/live_probes.py) + F20-R observations 배선(게이트 미배선)"
@@ -591,6 +626,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "candidate",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": "verified OrderController unpaged GET /api/orders(무조건 Pageable.unpaged()) + aggregateDailyStats native GROUP BY DATE() 필소트 앵커; 신규 slowquery.js(무제한목록+통계 80%, 대표 create 20%) + load.north_south 계약 등록; 러너 F20_FOOD_ORDER_TARGET 신설(container_memory_current_bytes/limit/restart_count를 food testbed-order로 확장)"
@@ -603,6 +639,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "postgres StatefulSet kind 일반화(k8s_resource_executor) + postgres 관측 allowlist(live_probes.py F25_H_POSTGRES_TARGET) 배선 완료(07-24)"
@@ -615,6 +652,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "k8s.env interval-ms stopgap 배선 + database.inventory_stock_level/restock_movement_rate/loadgen.checkout_409_rate 관측 배선 완료(07-24)"
@@ -626,6 +664,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
@@ -720,6 +759,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
+      "stage": "candidate",
       "load_mode": "adaptive",
       "injection_location": "food namespace",
       "prerequisite": ""

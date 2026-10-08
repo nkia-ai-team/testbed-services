@@ -3,6 +3,7 @@
   "id": "F15-R",
   "slug": "f15-r-pg-429-flapping",
   "readiness": "ready",
+  "stage": "candidate",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

@@ -3,6 +3,7 @@
   "id": "F14-R",
   "slug": "f14-r-non-idempotent-response-loss",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

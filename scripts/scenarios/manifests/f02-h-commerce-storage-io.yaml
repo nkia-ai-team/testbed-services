@@ -3,6 +3,7 @@
   "id": "F02-H",
   "slug": "f02-h-commerce-storage-io",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

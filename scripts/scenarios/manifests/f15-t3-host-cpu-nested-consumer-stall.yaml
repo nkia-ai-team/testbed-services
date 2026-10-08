@@ -3,6 +3,7 @@
   "id": "F15-T3",
   "slug": "f15-t3-host-cpu-nested-consumer-stall",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

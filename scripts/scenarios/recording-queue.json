@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "_doc": "docs/spec-scenario-lifecycle.md §3. 운영 하네스가 앞에서부터 waiting 인 첫 항목을 돌린다.",
+  "entries": [
+    {
+      "scenario_id": "F30-R",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-08",
+      "attempts": 0,
+      "status": "waiting"
+    },
+    {
+      "scenario_id": "F10-P",
+      "reason": "no-recording",
+      "note": "ready 였지만 정상 녹화가 없음(2026-10-08 정식 기준 전환)",
+      "requested_by": "spec-scenario-lifecycle",
+      "requested_at": "2026-10-08",
+      "attempts": 0,
+      "status": "waiting"
+    },
+    {
+      "scenario_id": "F15-R",
+      "reason": "no-recording",
+      "note": "보정(calibration) 녹화만 있고 정상 녹화가 없음(2026-10-08 정식 기준 전환)",
+      "requested_by": "spec-scenario-lifecycle",
+      "requested_at": "2026-10-08",
+      "attempts": 0,
+      "status": "waiting"
+    },
+    {
+      "scenario_id": "F15-T2",
+      "reason": "no-recording",
+      "note": "ready 였지만 정상 녹화가 없음(2026-10-08 정식 기준 전환)",
+      "requested_by": "spec-scenario-lifecycle",
+      "requested_at": "2026-10-08",
+      "attempts": 0,
+      "status": "waiting"
+    },
+    {
+      "scenario_id": "F20-Q",
+      "reason": "no-recording",
+      "note": "ready 였지만 정상 녹화가 없음(2026-10-08 정식 기준 전환)",
+      "requested_by": "spec-scenario-lifecycle",
+      "requested_at": "2026-10-08",
+      "attempts": 0,
+      "status": "waiting"
+    }
+  ]
+}

@@ -3,6 +3,7 @@
   "id": "F25-H",
   "slug": "f25-h-commerce-postgres-oomkill",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

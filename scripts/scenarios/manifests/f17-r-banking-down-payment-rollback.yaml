@@ -3,6 +3,7 @@
   "id": "F17-R",
   "slug": "f17-r-banking-down-payment-rollback",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

@@ -1,0 +1,80 @@
+"""시나리오 수명주기 표시(stage)와 녹화 대기 큐의 계약 (docs/spec-scenario-lifecycle.md)."""
+from __future__ import annotations
+
+import json
+import re
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CATALOG = json.loads((ROOT / "catalog.json").read_text(encoding="utf-8"))
+QUEUE = json.loads((ROOT / "recording-queue.json").read_text(encoding="utf-8"))
+CONTROLLERS = json.loads((ROOT / "registry" / "controllers.json").read_text(encoding="utf-8"))
+
+REASONS = {"new", "no-recording", "recapture", "user"}
+STATUSES = {"waiting", "hold"}
+ENTRY_KEYS = {"scenario_id", "reason", "note", "requested_by", "requested_at", "attempts", "status"}
+
+
+class StageTests(unittest.TestCase):
+    def test_every_ready_row_has_a_stage_and_only_ready_rows_do(self) -> None:
+        for row in CATALOG["scenarios"]:
+            if row["readiness"] == "ready":
+                self.assertIn(row.get("stage"), {"official", "candidate"}, row["id"])
+            else:
+                self.assertNotIn("stage", row, row["id"])
+
+    def test_stage_counts(self) -> None:
+        # 2026-10-08: 정식 기준을 "정상 녹화 1개 이상"으로 바꾸며 ready 40종을 정식 35, 후보 5로 나눴다.
+        stages = [row.get("stage") for row in CATALOG["scenarios"] if row["readiness"] == "ready"]
+        self.assertEqual(stages.count("official"), 35)
+        self.assertEqual(stages.count("candidate"), 5)
+
+
+class RecordingQueueTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ready = {row["id"]: row for row in CATALOG["scenarios"] if row["readiness"] == "ready"}
+        self.entries = QUEUE["entries"]
+
+    def test_schema(self) -> None:
+        self.assertEqual(QUEUE["schema_version"], 1)
+        for entry in self.entries:
+            sid = entry.get("scenario_id")
+            self.assertTrue(ENTRY_KEYS <= set(entry), sid)
+            self.assertLessEqual(set(entry) - ENTRY_KEYS, {"hold_reason"}, sid)
+            self.assertIn(entry["reason"], REASONS, sid)
+            self.assertIn(entry["status"], STATUSES, sid)
+            self.assertIsInstance(entry["attempts"], int, sid)
+            self.assertGreaterEqual(entry["attempts"], 0, sid)
+            self.assertRegex(entry["requested_at"], r"^\d{4}-\d{2}-\d{2}", sid)
+            if entry["status"] == "hold":
+                self.assertTrue(entry.get("hold_reason"), sid)
+            else:
+                self.assertNotIn("hold_reason", entry, sid)
+
+    def test_entries_are_unique_runnable_scenarios(self) -> None:
+        ids = [entry["scenario_id"] for entry in self.entries]
+        self.assertEqual(len(ids), len(set(ids)))
+        live = set(CONTROLLERS["live_scenario_ids"])
+        for sid in ids:
+            self.assertIn(sid, self.ready, f"{sid}: 큐에는 ready 시나리오만 넣는다")
+            self.assertIn(sid, live, f"{sid}: 러너가 돌릴 수 있어야 한다(controller 등록)")
+
+    def test_reason_matches_stage(self) -> None:
+        for entry in self.entries:
+            stage = self.ready[entry["scenario_id"]]["stage"]
+            if entry["reason"] in {"new", "no-recording"}:
+                self.assertEqual(stage, "candidate", entry["scenario_id"])
+            if entry["reason"] == "recapture":
+                self.assertEqual(stage, "official", entry["scenario_id"])
+
+    def test_every_candidate_is_queued(self) -> None:
+        queued = {entry["scenario_id"] for entry in self.entries}
+        for sid, row in self.ready.items():
+            if row["stage"] == "candidate":
+                self.assertIn(sid, queued, f"{sid}: 후보는 정식이 되거나 폐기될 때까지 큐에 있어야 한다")
+
+
+if __name__ == "__main__":
+    unittest.main()

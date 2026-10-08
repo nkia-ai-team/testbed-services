@@ -3,6 +3,7 @@
   "id": "F03-H",
   "slug": "f03-h-order-thread-saturation",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

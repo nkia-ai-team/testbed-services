@@ -3,6 +3,7 @@
   "id": "F09-R",
   "slug": "f09-r-worker-cpu-noisy-neighbor",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

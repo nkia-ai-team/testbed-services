@@ -3,6 +3,7 @@
   "id": "F24-Q",
   "slug": "f24-q-food-restaurant-upstream-block-order-502",
   "readiness": "draft",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

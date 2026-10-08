@@ -3,6 +3,7 @@
   "id": "F05-G",
   "slug": "f05-g-invalid-image-no-impact",
   "readiness": "cut",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

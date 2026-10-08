@@ -3,6 +3,7 @@
   "id": "F09-P",
   "slug": "f09-p-inventory-cpu-throttle",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

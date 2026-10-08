@@ -3,6 +3,7 @@
   "id": "F11-R",
   "slug": "f11-r-redis-down-fallback-overload",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

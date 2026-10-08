@@ -3,6 +3,7 @@
   "id": "F04-P",
   "slug": "f04-p-banking-ledger-rate-limit",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

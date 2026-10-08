@@ -3,6 +3,7 @@
   "id": "F15-H",
   "slug": "f15-h-pg-lock-food-429-simultaneous",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

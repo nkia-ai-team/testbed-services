@@ -3,6 +3,7 @@
   "id": "F15-T4",
   "slug": "f15-t4-pg-lock-handoff-kafka-lag",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

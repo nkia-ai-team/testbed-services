@@ -3,6 +3,7 @@
   "id": "F01-P",
   "slug": "f01-p-oracle-lock-cross-domain",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

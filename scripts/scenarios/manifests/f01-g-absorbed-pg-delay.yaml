@@ -3,6 +3,7 @@
   "id": "F01-G",
   "slug": "f01-g-absorbed-pg-delay",
   "readiness": "cut",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

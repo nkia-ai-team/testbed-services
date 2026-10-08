@@ -3,6 +3,7 @@
   "id": "F20-Q",
   "slug": "f20-q-food-order-unpaged-slowquery-heap-pressure",
   "readiness": "ready",
+  "stage": "candidate",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

@@ -3,6 +3,7 @@
   "id": "F15-T2",
   "slug": "f15-t2-pg-lock-then-food-429",
   "readiness": "ready",
+  "stage": "candidate",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

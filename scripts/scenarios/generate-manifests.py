@@ -137,6 +137,9 @@ def build_manifest(
         "id": row["id"],
         "slug": row["slug"],
         "readiness": row["readiness"],
+        # 정식(official)은 eval-cases 에 정상 녹화가 1개 이상 있는 것, 후보(candidate)는
+        # 실행은 되지만 아직 검증, 녹화 전인 것(docs/spec-scenario-lifecycle.md).
+        "stage": row.get("stage"),
         "authoritative_sources": {
             "catalog": "scripts/scenarios/catalog.json",
             "execution_matrix": "docs/spec-scenario-execution-matrix.md",

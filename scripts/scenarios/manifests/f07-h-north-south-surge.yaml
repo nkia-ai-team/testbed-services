@@ -3,6 +3,7 @@
   "id": "F07-H",
   "slug": "f07-h-north-south-surge",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

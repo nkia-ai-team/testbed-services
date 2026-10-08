@@ -3,6 +3,7 @@
   "id": "F13-R",
   "slug": "f13-r-checkout-edge-ttfb-delay",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

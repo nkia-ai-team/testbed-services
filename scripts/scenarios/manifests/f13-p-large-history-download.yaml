@@ -3,6 +3,7 @@
   "id": "F13-P",
   "slug": "f13-p-large-history-download",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

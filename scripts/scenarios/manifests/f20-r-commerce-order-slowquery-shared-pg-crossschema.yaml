@@ -3,6 +3,7 @@
   "id": "F20-R",
   "slug": "f20-r-commerce-order-slowquery-shared-pg-crossschema",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

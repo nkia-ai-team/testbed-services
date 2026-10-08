@@ -3,6 +3,7 @@
   "id": "F18-P",
   "slug": "f18-p-banking-outbox-relay-halt",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

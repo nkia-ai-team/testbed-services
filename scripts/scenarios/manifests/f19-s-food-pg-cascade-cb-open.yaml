@@ -3,6 +3,7 @@
   "id": "F19-S",
   "slug": "f19-s-food-pg-cascade-cb-open",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

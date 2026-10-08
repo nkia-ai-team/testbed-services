@@ -3,6 +3,7 @@
   "id": "F20-P",
   "slug": "f20-p-banking-transfer-slowquery-trunc-pool-contention",
   "readiness": "parked",
+  "stage": null,
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

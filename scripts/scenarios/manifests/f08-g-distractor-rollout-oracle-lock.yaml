@@ -3,6 +3,7 @@
   "id": "F08-G",
   "slug": "f08-g-distractor-rollout-oracle-lock",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

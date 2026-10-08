@@ -3,6 +3,7 @@
   "id": "F10-H",
   "slug": "f10-h-mysql-io-saturation",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

@@ -3,6 +3,7 @@
   "id": "F15-T1",
   "slug": "f15-t1-pg-lock-food-oom-exact",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

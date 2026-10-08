@@ -3,6 +3,7 @@
   "id": "F05-R",
   "slug": "f05-r-payment-oom-loop",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

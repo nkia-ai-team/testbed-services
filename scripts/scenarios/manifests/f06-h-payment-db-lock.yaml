@@ -3,6 +3,7 @@
   "id": "F06-H",
   "slug": "f06-h-payment-db-lock",
   "readiness": "ready",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
