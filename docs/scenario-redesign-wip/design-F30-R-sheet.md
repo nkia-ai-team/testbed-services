@@ -120,7 +120,8 @@ payment 는 400 을 낼 때 로그를 남기지 않는다(`GlobalExceptionHandle
 
 ## 9. 러너 판정과 강도, 부하 계산
 
-- controller 위치: `compile-plan.py:150-152` 가 controller 를 readiness=ready 시나리오에만 허용하므로, draft 동안은
+- **2026-10-08 승격 완료**: 첫 시험 실행을 위해 아래 ①~④대로 ready + mode calibration 으로 올렸다(controller 는 `registry/controllers.json`, WIP 사본은 삭제).
+- controller 위치(승격 전 기록): `compile-plan.py:150-152` 가 controller 를 readiness=ready 시나리오에만 허용하므로, draft 동안은
   `registry/controllers.json` 에 넣지 않고 `docs/scenario-redesign-wip/design-F30-R-controller.json` 에 둔다(F24-Q 와 같은 방식).
   정답지 `injected_fault` 도 같은 이유로 null 이다. 이 저장소에서는 첫 시험 실행(calibration) 자체가 ready 승격을 먼저 요구한다(F10-P 처럼 ready + mode calibration).
   승격 때 할 일: ① WIP 블록을 controllers 와 `live_scenario_ids` 끝에 옮긴다 ② `injected_fault` 를 companions 까지 채운다(실제 적용된 단 기준) ③ 끝 순서 고정 테스트(test_f02p_and_f04r..., live matrix 등)와 test-scenarios.sh 의 ready, draft 핀을 갱신한다 ④ 장부 §4-1 에서 §4 로 옮긴다

@@ -719,10 +719,10 @@
         "k8s.env",
         "load.north_south"
       ],
-      "readiness": "draft",
+      "readiness": "ready",
       "load_mode": "adaptive",
       "injection_location": "food namespace",
-      "prerequisite": "첫 시험 실행(calibration) 대기"
+      "prerequisite": ""
     }
   ]
 }

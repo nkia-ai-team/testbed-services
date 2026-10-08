@@ -40,8 +40,9 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
     def test_f02p_and_f04r_controller_evaluation_contracts(self) -> None:
         controllers = json.loads((ROOT / "registry" / "controllers.json").read_text())
         self.assertEqual(
-            controllers["live_scenario_ids"][-5:],
-            ["F17-P", "F04-H", "F15-H", "F15-T2", "F14-P"],
+            controllers["live_scenario_ids"][-6:],
+            # 2026-10-08: F30-R(ready, calibration)이 끝에 붙었다.
+            ["F17-P", "F04-H", "F15-H", "F15-T2", "F14-P", "F30-R"],
         )
 
         # F02-P was parked on 2026-07-27 (nothing in food queries

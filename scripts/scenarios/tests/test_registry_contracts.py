@@ -90,6 +90,8 @@ class RegistryContractTests(unittest.TestCase):
             # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
             # 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
+            "F30-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -346,6 +348,8 @@ class RegistryContractTests(unittest.TestCase):
             # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
             # 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: food payment JSON 명명 규칙 설정 배포. 첫 시험 실행을 위해 ready + calibration.
+            "F30-R",
             },
         )
         self.assertEqual(
@@ -386,6 +390,8 @@ class RegistryContractTests(unittest.TestCase):
             # 2026-07-29: 원장 테이블 READ ONLY. 삼킴 + 자동 ack = 영구 유실은 이미
             # 코드에 있었고, 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: food payment JSON 명명 규칙 설정 배포. 첫 시험 실행을 위해 ready + calibration.
+            "F30-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -518,8 +524,9 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
-        self.assertEqual(self.controllers["live_scenario_ids"][-4:],
-                         ["F04-H", "F15-H", "F15-T2", "F14-P"])
+        # 2026-10-08: F30-R(ready, calibration)이 끝에 붙었다.
+        self.assertEqual(self.controllers["live_scenario_ids"][-5:],
+                         ["F04-H", "F15-H", "F15-T2", "F14-P", "F30-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

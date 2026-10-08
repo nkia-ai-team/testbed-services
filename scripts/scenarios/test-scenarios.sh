@@ -62,12 +62,15 @@ total="$(jq '.scenarios | length' "$catalog")"
 # F09-R 은 노드 CPU 99.9% 에 pricing 12.8, F03-P 는 payment 1,614ms 에 checkout 5xx 가
 # 전 틱 0 이다. 살리려면 주입 지점 자체를 바꿔야 하므로 사실상 새 시나리오이고,
 # 그동안 매 배치 40분 이상을 쓴다. 삭제가 아니라 보관이다(controllers-parked.json).
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 39 ]]
+# 2026-10-08: ready 39→40. F30-R 을 첫 시험 실행(calibration)을 위해 ready + mode calibration 으로 올렸다
+# (F10-P 방식). compile-plan 이 controller 를 ready 에만 허용하므로 러너에서 돌리려면 승격이 먼저다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 40 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 16 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 # 2026-10-08: draft 1 → 2. F30-R(food payment JSON 명명 규칙 설정 배포) 추가, 첫 시험 실행 대기.
-[[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 2 ]]
+# 2026-10-08: draft 2 → 1. F30-R 이 ready(calibration)로 올라갔다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-28: 13 → 17. 스토리지 IO 3종(F02-H·F10-H·F10-P)과 F15-P를 고정 계약에서
 # 캘리브레이션 사다리로 전환했다. 고정 rate_iops가 장치 능력의 16~21%뿐이라 피해를

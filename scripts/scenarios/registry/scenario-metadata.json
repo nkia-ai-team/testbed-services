@@ -5112,7 +5112,262 @@
    "injection_summary_ko": "k8s.env executor 가 rca-testbed-food 의 testbed-payment/payment-service 컨테이너 env 를 승인된 baseline 에서 fault 집합으로 바꿔 롤아웃한다. 차이는 한 줄, SPRING_APPLICATION_JSON={\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\"}}} 이다(2단은 deserialization.fail-on-unknown-properties=true 를 더해 조용한 null 을 명시적 400 파싱 오류로 바꾼다). north-south 5rps 동반 부하가 food 진입점(30181)으로 조회와 주문 생성을 흘린다. cleanup 은 env 를 baseline 으로 되돌리고 롤아웃을 원복한다. 앱 코드, 이미지, DB 상태는 바꾸지 않으며 시나리오 id 를 담은 값은 없다.",
    "user_impact_ko": "결제 단계에 닿는 주문 생성이 전부 400 으로 실패한다. 식당 조회, 메뉴, 배달 추적은 정상이다. 4xx 이고 5xx 급증도 파드나 DB 이상도 없어 가용성 알람은 거의 반응하지 않으며, order 의 ERROR 로그가 0 에서 주문당 1줄로 늘어난다. 부수 피해: order 가 결제 전에 dispatch 를 호출하므로 실패한 주문도 배달원을 점유한다(고아 배차 행). 만료 배치가 풀 때까지 남는다.",
    "distinguishing_evidence_ko": "결정 증거는 'payment Deployment 롤아웃' 뒤 곧바로 나타나는 order ERROR 로그다. 로그가 인용한 하류 응답은 400 이고(1단은 본문에 'orderId required', 2단은 payment 에 WARN Unrecognized field \"orderId\"), 같은 줄에 order 가 보낸 orderId 가 적혀 있어 필드를 잃은 쪽이 보낸 쪽이 아니라 받은 쪽임을 보여 준다. payment 파드 Ready, payment 5xx 없음, payment 의 'Processed payment' 로그가 완전히 끊기고 외부 PG mock 은 호출을 받지 않는다(payment 가 PG 를 호출해 PG 429 를 ERROR 로 남기는 F06-P 와 다르다). 조회 경로는 무영향이라 가용성 장애와도 갈린다.",
-   "injected_fault": null
+   "injected_fault": {
+     "profile": null,
+     "companions": [
+       "load.north_south"
+     ],
+     "levels": [
+       {
+         "id": "snake-case-lenient",
+         "parameters": {
+           "namespace": "rca-testbed-food",
+           "deployment": "testbed-payment",
+           "container": "payment-service",
+           "baseline": [
+             {
+               "name": "DB_USER",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_USER",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "DB_PASSWORD",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_PASSWORD",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "JAVA_TOOL_OPTIONS",
+               "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+             },
+             {
+               "name": "OTEL_SERVICE_NAME",
+               "value": "food-delivery-payment"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+               "value": "http://192.168.200.109:14318"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+               "value": "grpc"
+             },
+             {
+               "name": "OTEL_RESOURCE_ATTRIBUTES",
+               "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+             },
+             {
+               "name": "OTEL_TRACES_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRICS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_LOGS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRIC_EXPORT_INTERVAL",
+               "value": "10000"
+             }
+           ],
+           "fault": [
+             {
+               "name": "DB_USER",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_USER",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "DB_PASSWORD",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_PASSWORD",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "JAVA_TOOL_OPTIONS",
+               "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+             },
+             {
+               "name": "OTEL_SERVICE_NAME",
+               "value": "food-delivery-payment"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+               "value": "http://192.168.200.109:14318"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+               "value": "grpc"
+             },
+             {
+               "name": "OTEL_RESOURCE_ATTRIBUTES",
+               "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+             },
+             {
+               "name": "OTEL_TRACES_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRICS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_LOGS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRIC_EXPORT_INTERVAL",
+               "value": "10000"
+             },
+             {
+               "name": "SPRING_APPLICATION_JSON",
+               "value": "{\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\"}}}"
+             }
+           ]
+         }
+       },
+       {
+         "id": "snake-case-strict",
+         "parameters": {
+           "namespace": "rca-testbed-food",
+           "deployment": "testbed-payment",
+           "container": "payment-service",
+           "baseline": [
+             {
+               "name": "DB_USER",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_USER",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "DB_PASSWORD",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_PASSWORD",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "JAVA_TOOL_OPTIONS",
+               "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+             },
+             {
+               "name": "OTEL_SERVICE_NAME",
+               "value": "food-delivery-payment"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+               "value": "http://192.168.200.109:14318"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+               "value": "grpc"
+             },
+             {
+               "name": "OTEL_RESOURCE_ATTRIBUTES",
+               "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+             },
+             {
+               "name": "OTEL_TRACES_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRICS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_LOGS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRIC_EXPORT_INTERVAL",
+               "value": "10000"
+             }
+           ],
+           "fault": [
+             {
+               "name": "DB_USER",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_USER",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "DB_PASSWORD",
+               "valueFrom": {
+                 "secretKeyRef": {
+                   "key": "MYSQL_PASSWORD",
+                   "name": "mysql-secret"
+                 }
+               }
+             },
+             {
+               "name": "JAVA_TOOL_OPTIONS",
+               "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+             },
+             {
+               "name": "OTEL_SERVICE_NAME",
+               "value": "food-delivery-payment"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+               "value": "http://192.168.200.109:14318"
+             },
+             {
+               "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+               "value": "grpc"
+             },
+             {
+               "name": "OTEL_RESOURCE_ATTRIBUTES",
+               "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+             },
+             {
+               "name": "OTEL_TRACES_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRICS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_LOGS_EXPORTER",
+               "value": "otlp"
+             },
+             {
+               "name": "OTEL_METRIC_EXPORT_INTERVAL",
+               "value": "10000"
+             },
+             {
+               "name": "SPRING_APPLICATION_JSON",
+               "value": "{\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\",\"deserialization\":{\"fail-on-unknown-properties\":true}}}}"
+             }
+           ]
+         }
+       }
+     ]
+   }
   }
  }
 }

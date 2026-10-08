@@ -462,6 +462,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
             # 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
+            "F30-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
