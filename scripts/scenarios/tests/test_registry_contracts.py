@@ -55,7 +55,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-08: 64 → 65. F36-R(후보) 추가. 프로파일은 그대로(db.ddl 재사용).
         # 2026-10-08: 65 → 66. F37-R(후보) 추가. 프로파일 23 → 24(k8s.dns 신설).
         # 2026-10-08: 66 → 67. F38-R(후보) 추가. 프로파일 24 → 25(db.instance_readonly 신설).
-        self.assertEqual(len(self.catalog["scenarios"]), 67)
+        # 2026-10-08: 67 → 68. F39-R(후보) 추가. 기존 k8s.env 를 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 68)
         self.assertEqual(len(self.profiles["profiles"]), 25)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -112,6 +113,8 @@ class RegistryContractTests(unittest.TestCase):
             "F37-R",
             # 2026-10-08: food MySQL 인스턴스 전체 read_only(운영 세션의 설정 실수로 모든 쓰기 거절). 새 후보, 설계 강도 1단 고정 evaluation.
             "F38-R",
+            # 2026-10-08: banking account 의 이체 하류 주소를 다른 내부 호스트로 덮어쓰는 설정 배포(잘못된 호스트로 연결 시간 초과). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -384,6 +387,8 @@ class RegistryContractTests(unittest.TestCase):
             "F37-R",
             # 2026-10-08: food MySQL 인스턴스 전체 read_only(운영 세션의 설정 실수로 모든 쓰기 거절). 새 후보, 설계 강도 1단 고정 evaluation.
             "F38-R",
+            # 2026-10-08: banking account 의 이체 하류 주소를 다른 내부 호스트로 덮어쓰는 설정 배포(잘못된 호스트로 연결 시간 초과). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-R",
             },
         )
         self.assertEqual(
@@ -440,6 +445,8 @@ class RegistryContractTests(unittest.TestCase):
             "F37-R",
             # 2026-10-08: food MySQL 인스턴스 전체 read_only(운영 세션의 설정 실수로 모든 쓰기 거절). 새 후보, 설계 강도 1단 고정 evaluation.
             "F38-R",
+            # 2026-10-08: banking account 의 이체 하류 주소를 다른 내부 호스트로 덮어쓰는 설정 배포(잘못된 호스트로 연결 시간 초과). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -581,8 +588,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-08: F36-R(후보, 고정 evaluation)이 끝에 붙어 F14-P 가 끝 5개에서 빠졌다.
         # 2026-10-08: F37-R(후보, 고정 evaluation)이 끝에 붙어 F30-R 이 끝 5개에서 빠졌다.
         # 2026-10-08: F38-R(후보, 고정 evaluation)이 끝에 붙어 F32-R 이 끝 5개에서 빠졌다.
+        # 2026-10-08: F39-R(후보, 고정 evaluation)이 끝에 붙어 F33-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F33-R", "F35-R", "F36-R", "F37-R", "F38-R"])
+                         ["F35-R", "F36-R", "F37-R", "F38-R", "F39-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

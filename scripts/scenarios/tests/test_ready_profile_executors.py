@@ -564,6 +564,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F37-R",
             # 2026-10-08: food MySQL 인스턴스 전체 read_only(운영 세션의 설정 실수로 모든 쓰기 거절). 새 후보, 설계 강도 1단 고정 evaluation.
             "F38-R",
+            # 2026-10-08: banking account 의 이체 하류 주소를 다른 내부 호스트로 덮어쓰는 설정 배포(잘못된 호스트로 연결 시간 초과). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

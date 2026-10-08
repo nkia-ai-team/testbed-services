@@ -5917,6 +5917,213 @@
      }
     ]
    }
+  },
+  "F39-R": {
+   "title": "Config rollout points the banking account-service's transfer endpoint at the wrong internal host: every transfer that account forwards fails to connect and the transfer request returns 502",
+   "description": "A rollout of the banking account-service Deployment (testbed-account) adds one environment variable to its container, TRANSFER_SERVICE_URL=http://testbed-ledger:8082. Explicit env wins over the shared ConfigMap service-config, whose value is http://testbed-transfer:8082, so the new account pod sends the transfers it validates to the ledger-service's Service name with the transfer port. testbed-ledger resolves (ClusterIP 10.101.6.9) but its Service exposes only 8083, so nothing answers on 8082: the TCP connect is silently dropped and times out (measured inside the account pod: curl to testbed-ledger:8082 waits until its connect timeout, 10.0 s with a 10 s limit, while testbed-ledger:8083 and testbed-transfer:8082 answer in milliseconds). account-service's /actuator/health checks only its own database, so the new pod becomes Ready and replaces the old one about a minute after the patch. From then on POST /api/accounts/transfer (api → account) still validates the accounts in Oracle and logs 'Account validation passed ... forwarding to transfer-service', then TransferClient.executeTransfer fails after the 3 s connect timeout with 'Transfer service call failed for order null: I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out', retries twice, its circuit breaker transferClient opens after five failed attempts and the remaining calls fail at once with 502 ('Transfer service circuit open/exhausted'); the half-open probe every few seconds repeats the connect timeout and the log line with the wrong host. api-service receives the 502, retries, opens its own accountClient breaker and answers the transfer request through nginx with 502. Balance lookups and account lists (nginx sends /api/accounts straight to account), transaction history (api → transfer), the commerce settlement transfer (commerce-payment → transfer) and the direct transfers of the commerce baseline load (NodePort 30282 → transfer) keep working; transfer-service, ledger-service and Oracle are healthy, transfer simply stops receiving the transfers that come through account, and ledger never sees the misdirected connections because they are dropped before reaching any pod. The only change before the failures is the account rollout, and the new ReplicaSet captured by KCM carries the explicit TRANSFER_SERVICE_URL that no banking ReplicaSet on record has ever had. This reconstructs GitHub's 2026-03-05 Actions incident, where Redis infrastructure updates rolled out to production introduced incorrect configuration changes into the Redis load balancer that routed internal traffic to an incorrect host, fixed by correcting the configuration (with GitHub's 2026-06-10 incident, where a rollout made the authentication service pick up an incorrect host configuration, as a second instance of the same mechanism).",
+   "cause": "Rollout of testbed-account (banking) with an explicit env TRANSFER_SERVICE_URL=http://testbed-ledger:8082 that overrides the ConfigMap value http://testbed-transfer:8082 → the new account pod's transfer client targets testbed-ledger (ClusterIP 10.101.6.9) on a port that Service does not expose → its health does not depend on that call, so it becomes Ready and replaces the old pod → every forwarded transfer waits for the 3 s connect timeout and fails ('I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out'), the retry runs three attempts and the transferClient circuit breaker opens → account answers POST /api/accounts/transfer with 502 → api retries, opens its accountClient breaker and returns 502 for POST /api/transfers until the variable is removed.",
+   "injection_summary": "The existing k8s.env executor replaces the env array of container account-service in Deployment testbed-account (rca-testbed-banking) with the same array plus one entry, TRANSFER_SERVICE_URL=http://testbed-ledger:8082, and lets the Deployment roll out (replicas 1, maxSurge 1, maxUnavailable 0, so the new pod replaces the old one once it is Ready). The ConfigMap, image, probes, Services, ledger and transfer are not touched. A north-south 5 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) drives the banking entry point (30082) on top of the resident baseline load so that account and api server spans are sampled at any hour. Cleanup restores the original env array and waits until the rollout is available. No value carries the scenario id.",
+   "user_impact": "Money transfers through the banking gateway (POST /api/transfers → api → account) fail with 502. The first few wait for the connect timeouts (about 10 s inside account, so some may hit api's 10 s read timeout instead), then the open circuit breakers make the rest fail at once. Balance lookups, account lists and transaction history keep returning 200, commerce checkout settlement (commerce-payment → transfer) and the direct transfers to transfer's NodePort are unaffected. Nothing restarts and transfer, ledger and Oracle report no errors; the visible signals are core-banking-account and core-banking-api 5xx, account ERROR logs naming http://testbed-ledger:8082 as the transfer endpoint, and the transfers from account's path disappearing from transfer's 'Transfer COMPLETED' logs while the commerce ones continue.",
+   "distinguishing_evidence": "Decisive evidence is the pair 'testbed-account rollout' (KCM ScalingReplicaSet event for Deployment testbed-account, the first in the KCM event retention that began on 2026-08-13, and a new ReplicaSet whose captured spec in kcm_resources_history has an explicit env TRANSFER_SERVICE_URL=http://testbed-ledger:8082, while none of the 290 banking ReplicaSet records on file has an explicit TRANSFER_SERVICE_URL because the value normally comes from the ConfigMap) followed within about a minute by account ERROR logs 'Transfer service call failed for order null: I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out'. No log in the 7-day retention mentions testbed-ledger at all, account never called ledger before, and ledger's Service listens on 8083, so the logged URL itself shows the endpoint configuration is wrong. The failure is a connect timeout towards one host, not an unresolvable name (F37-R logs only the host name) and not a refused connection to the right host (F17-R logs 'Connection refused' to testbed-transfer). The same account pod keeps validating accounts in Oracle ('Account validation passed') and answering balance lookups, so account's database and the account itself are fine; transfer keeps logging 'Transfer COMPLETED' for commerce-settlement and the direct transfers and answering history GETs, so the intended callee is healthy; only the transfers that go through account stop reaching it. 10% sampled account CLIENT spans with server.address testbed-ledger and server.port 8082 support this.",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "config",
+    "target_id": "core-banking-account",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking account-service 의 배포 설정(Deployment testbed-account 컨테이너 env 의 TRANSFER_SERVICE_URL)이다. 이 롤아웃이 공용 ConfigMap service-config 의 값(http://testbed-transfer:8082)을 덮어쓰는 명시 env TRANSFER_SERVICE_URL=http://testbed-ledger:8082 를 더해, 새 account 파드의 transfer 호출이 다른 내부 호스트(ledger Service, ClusterIP 10.101.6.9)의 열려 있지 않은 포트로 간다. 그 Service 는 8083 만 열어 8082 로 가는 연결은 응답 없이 버려지고(account 파드 안 curl 실측: testbed-ledger:8082 는 connect 제한 시간까지 대기, testbed-ledger:8083 과 testbed-transfer:8082 는 수 ms 응답) Java 클라이언트는 connect-timeout 3초 뒤 'Connect timed out' 으로 실패한다. account 의 health 는 자기 DB 만 보므로 새 파드가 Ready 가 되고 옛 파드를 대체해 롤아웃이 막히지 않는다. transfer, ledger, Oracle 은 정상이고 transfer 는 다른 호출자(commerce-payment 정산, commerce 기준선 부하의 NodePort 직행 이체, api 의 거래 내역 조회)에게 계속 답한다. 원칙 6: api 가 보내는 이체 요청과 account 의 계좌 검증은 늘 하던 그대로 정당하고, 그 요청을 엉뚱한 호스트로 보내게 만든 것은 account 자신의 배포 설정이므로 근본과 계기가 같은 곳(account 배포)이다. target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME, 로그와 트레이스의 service_name)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 rca-testbed-banking Deployment testbed-account ScalingReplicaSet(2026-08-13 에 시작된 KCM 이벤트 보존 안에서 처음)와 KCM 이 새 ReplicaSet 을 처음 볼 때 남기는 스펙(PG kcm_resources_history.yaml)의 명시 env {\"name\":\"TRANSFER_SERVICE_URL\",\"value\":\"http://testbed-ledger:8082\"}(그 전 banking ReplicaSet 레코드 290건 중 명시 TRANSFER_SERVICE_URL 0건, 값은 늘 ConfigMap 에서 옴) ② 그 직후 account ERROR 로그 'Transfer service call failed for order null: I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out' 와 서킷 열림 fallback 로그. 로그 문장이 잘못된 호스트와 포트를 그대로 담는다(TransferClient 가 ex.getMessage() 를 남기고, 그 메시지는 RestClient 가 만든 'I/O error on POST request for \"<URL>\": <원인>' 이다). testbed-ledger 를 담은 로그는 평시 7일 0건이다 ③ 같은 시각 account 'Account validation passed' 와 잔액 조회 200 은 계속되고, transfer 는 commerce-settlement 'Transfer COMPLETED' 와 거래 내역 조회를 계속 처리하며 account 경로의 이체만 끊긴다 ④ transfer, ledger, Oracle 에 Connection refused, 시간 초과, readiness 실패, 롤아웃이 없다. 원본 사후 보고처럼 '롤아웃된 설정이 내부 트래픽을 잘못된 호스트로 보냈다'가 정답의 층위이고, 누가 왜 그 값을 넣었는지는 요구하지 않는다.",
+    "code_anchor": [
+     "core-banking/k8s/21-account-service.yaml:31-33 (envFrom service-config — TRANSFER_SERVICE_URL 의 평시 출처. 주입은 같은 컨테이너의 env(38~) 에 같은 이름을 더해 덮어쓴다)",
+     "core-banking/k8s/02-configmaps.yaml:15 (TRANSFER_SERVICE_URL: http://testbed-transfer:8082 — 평시 값)",
+     "core-banking/account-service/src/main/resources/application.yml:26-30 (services.transfer — url 을 TRANSFER_SERVICE_URL 에서 받고 connect-timeout 3s, read-timeout 15s)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/config/RestClientConfig.java:14-24 (transferRestClient — SimpleClientHttpRequestFactory, connectTimeout 3s)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:58-80 (validateAndForward — 계좌 검증 뒤 'Account validation passed ... forwarding to transfer-service' INFO, transferClient.executeTransfer)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:28-48 (executeTransfer — RestClientException 을 log.error 'Transfer service call failed for order {}: {}' 후 BAD_GATEWAY, Retry 와 CircuitBreaker transferClient)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:50-58 (executeTransferFallback — 'Transfer service circuit open/exhausted' 후 502)",
+     "core-banking/account-service/src/main/resources/application.yml:32-52 (transferClient 서킷 최소 5회, 실패율 50%, 열림 5초, half-open 3회 / 재시도 3회 200ms 지수 백오프)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/AccountClient.java:28-58 (requestTransfer — account 의 502 를 'Account service call failed' 로 남기고 BAD_GATEWAY, fallback 'Account service circuit open/exhausted')",
+     "core-banking/k8s/23-ledger-service.yaml:97-105 (Service testbed-ledger — port 8083 만 연다)",
+     "core-banking/k8s/02-configmaps.yaml:38-50 (location — /api/transfers 는 api 로, /api/accounts 는 account 로 바로 간다)"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-account(replicas 1, RollingUpdate maxSurge 25%(올림 1) / maxUnavailable 25%(내림 0), envFrom ConfigMap service-config, readiness /actuator/health(DB), liveness /actuator/health/liveness, 109 kubectl 2026-10-08 확인). Service testbed-ledger ClusterIP 10.101.6.9 port 8083 만, Service testbed-transfer ClusterIP 10.107.84.55 port 8082. 109 실측(2026-10-08, testbed-account 파드 안 curl): testbed-ledger 는 10.101.6.9 로 해석되고, POST http://testbed-ledger:8082/api/transfers 는 connect-timeout 10초 설정에서 10.0초 뒤 rc=28(응답 없이 연결 시간 초과, 2회 같음), testbed-ledger:8083/actuator/health 200(4.5ms), testbed-transfer:8082/actuator/health 200. Service 에 없는 포트로 가는 ClusterIP 연결은 kube-proxy 가 바꾸지 않아 어느 파드에도 닿지 않고 버려진다. account 의 OTLP 내보내기 주소는 IP(192.168.200.109:14318)라 관측 데이터는 끊기지 않는다."
+   },
+   "must_support": [
+    "testbed-account 롤아웃 KCM 이벤트(rca-testbed-banking Deployment testbed-account ScalingReplicaSet, 새 ReplicaSet SuccessfulCreate, 파드 Created/Started, 옛 ReplicaSet 축소) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet 스펙(PG kcm_resources_history.yaml)에 명시 env TRANSFER_SERVICE_URL=http://testbed-ledger:8082 가 있고 그 전 banking ReplicaSet 레코드 290건에는 명시 TRANSFER_SERVICE_URL 이 없다(값은 늘 ConfigMap 에서 왔다). KCM 이벤트 보존(2026-08-13~) 안에서 testbed-account 롤아웃 이벤트는 이것이 처음이다",
+    "core-banking-account ERROR 로그 'Transfer service call failed for order null: I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out' 가 롤아웃 직후 생기고 서킷 열림 fallback 'Transfer service circuit open/exhausted' 가 뒤따르며, half-open 시도마다 같은 URL 의 Connect timed out 이 반복된다. testbed-ledger 를 담은 로그는 평시 7일 0건이다",
+    "core-banking-account 서버 스팬 POST /api/accounts/transfer 와 core-banking-api 서버 스팬 POST /api/transfers 가 502 로 끝나 두 서비스 오류율이 평시 0(골든 시그널 하루 오류 0건)에서 오른다",
+    "같은 시각 account 는 'Account validation passed' 를 계속 남기고 잔액 조회와 계좌 목록에 200 으로 답한다. transfer 는 commerce-settlement 와 NodePort 직행 이체의 'Transfer COMPLETED' 를 계속 남기고 거래 내역 조회에 답하며, account 경로 이체만 끊긴다",
+    "동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.5 이상으로 오르고, 잔액 조회(step get) 실패율은 평시 0 그대로다"
+   ],
+   "must_rule_out": [
+    "transfer 장애가 아님: transfer 파드 Ready, 다른 호출자(commerce-payment 정산, NodePort 직행 이체, api 거래 내역)에게 정상 응답하고 오류가 없다. account 로그의 실패 대상 URL 이 testbed-transfer 가 아니라 testbed-ledger:8082 다. transfer 가 죽었다면 F17-R 처럼 testbed-transfer 로 'Connection refused' 가 나고 commerce 정산도 실패한다",
+    "ledger 장애가 아님: ledger 파드 Ready, health 200, 오류 로그와 롤아웃이 없고, ledger 는 원래 account 의 호출 대상이 아니며 Service 가 8083 만 연다. 8082 로 간 연결은 ledger 파드에 닿지 않는다",
+    "account 나 Oracle 장애가 아님: 같은 account 파드가 Oracle 로 계좌를 검증해 'Account validation passed' 를 남기고 잔액 조회에 200 으로 답한다. 계정 잠금(F35-R)이면 잔액 조회까지 실패하고 파드가 NotReady 가 된다",
+    "이름 해석 실패나 DNS 장애가 아님: testbed-ledger 는 해석되고 실패는 연결 시간 초과(Connect timed out)다. F37-R 처럼 호스트 이름만 남는 I/O 오류가 아니고, 다른 banking 호출(nginx → account, api → transfer, commerce-payment → transfer)은 정상이다",
+    "부하 증가가 아님: 동반 부하 5rps 로 유입은 늘지만 오류가 풀 고갈이나 DB 지연이 아니라 잘못된 호스트로의 연결 시간 초과이고, 같은 부하를 받는 잔액 조회와 거래 내역은 실패하지 않는다. 동반 부하는 패치와 함께 오르기 시작하지만 오류는 새 account 파드가 Ready 가 된 뒤에만 나고(그 전 약 1분은 같은 부하에서 이체가 성공), 고장 중 Oracle 에는 이체 쓰기가 오히려 줄어든다",
+    "코드나 이미지 배포가 아님: 새 ReplicaSet 의 이미지(core-banking-account:latest), 프로브, 자원이 옛 ReplicaSet 과 같고 env 한 줄만 다르다. 애플리케이션 시작 로그와 health 는 정상이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F37-R (같은 banking 에서 호출하는 쪽의 배포가 하류 호출을 끊는 꼴이지만, 바뀐 것은 api 의 dnsPolicy 라 모든 하류 이름이 해석되지 않아 호스트 이름뿐인 I/O 오류가 나고 이체와 거래 내역이 함께 실패한다. F39-R 은 이름이 해석되고 한 하류(transfer)의 주소 값만 다른 호스트로 바뀌어 그 경로만 연결 시간 초과로 실패하며, 로그가 잘못된 URL 을 그대로 담는다)",
+     "F17-R (같은 증상(account → transfer 실패로 이체 502)이지만 원인은 transfer 의 readiness 오설정이라 transfer 가 NotReady 이고 로그는 testbed-transfer 로의 'Connection refused', commerce 정산도 실패한다. F39-R 은 transfer 가 Ready 이고 다른 호출자에게 계속 답한다)",
+     "F08-P (호출하는 쪽의 설정 배포가 정상 하류 호출을 스스로 끊는 같은 계열. 바뀐 것이 commerce order 의 read-timeout 이라 요청이 하류에 닿은 뒤 시간 초과로 끊긴다. F39-R 은 요청이 엉뚱한 호스트로 가서 하류에 닿지 않는다)",
+     "F35-R (같은 banking 이체 502 지만 Oracle 계정 잠금으로 account, transfer, ledger 가 NotReady 가 되고 잔액 조회까지 실패한다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-account",
+     "banking-account"
+    ],
+    "partial": [
+     "core-banking-api",
+     "banking-api"
+    ]
+   },
+   "title_ko": "설정 롤아웃이 banking account-service 의 이체 하류 주소를 다른 내부 호스트로 바꿈: account 가 넘기는 이체가 모두 연결에 실패해 이체 요청이 502 가 된다",
+   "description_ko": "banking account-service Deployment(testbed-account) 롤아웃이 컨테이너에 환경 변수 하나, TRANSFER_SERVICE_URL=http://testbed-ledger:8082 를 더한다. 명시 env 는 공용 ConfigMap service-config 의 값(http://testbed-transfer:8082)보다 앞서므로, 새 account 파드는 검증한 이체를 ledger-service 의 Service 이름에 transfer 포트를 붙인 곳으로 보낸다. testbed-ledger 는 해석되지만(ClusterIP 10.101.6.9) 그 Service 는 8083 만 열어 8082 에는 아무도 답하지 않는다: TCP 연결이 응답 없이 버려져 시간 초과가 된다(account 파드 안 실측: testbed-ledger:8082 로의 curl 은 connect 제한 10초에서 10.0초 대기, testbed-ledger:8083 과 testbed-transfer:8082 는 수 ms 응답). account 의 /actuator/health 는 자기 DB 만 보므로 새 파드가 Ready 가 되어 패치 약 1분 뒤 옛 파드를 대체한다. 그 뒤로 POST /api/accounts/transfer(api → account)는 Oracle 에서 계좌 검증을 마치고 'Account validation passed ... forwarding to transfer-service' 를 남긴 다음, TransferClient.executeTransfer 가 connect-timeout 3초 뒤 'Transfer service call failed for order null: I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out' 으로 실패하고, 두 번 더 재시도하고, 실패 다섯 번에 서킷 transferClient 가 열려 나머지 호출은 바로 502('Transfer service circuit open/exhausted')가 된다. 몇 초마다 도는 half-open 시도가 같은 연결 시간 초과와 잘못된 호스트를 담은 로그를 되풀이한다. api-service 는 그 502 를 받아 재시도하고 자기 accountClient 서킷을 열어 nginx 를 거친 이체 요청에 502 로 답한다. 잔액 조회와 계좌 목록(nginx 가 /api/accounts 를 account 로 바로 보냄), 거래 내역(api → transfer), commerce 정산 이체(commerce-payment → transfer), commerce 기준선 부하의 직행 이체(NodePort 30282 → transfer)는 정상이다. transfer-service, ledger-service, Oracle 은 멀쩡하다: transfer 는 account 를 거치는 이체를 받지 못할 뿐이고, ledger 는 잘못 간 연결이 어느 파드에도 닿기 전에 버려져 아무것도 보지 못한다. 실패 직전의 변화는 account 롤아웃 하나이고, KCM 이 잡은 새 ReplicaSet 에는 기록에 있는 어떤 banking ReplicaSet 에도 없던 명시 TRANSFER_SERVICE_URL 이 있다. GitHub 2026-03-05 Actions 장애(운영에 롤아웃한 Redis 인프라 갱신이 Redis 로드밸런서에 잘못된 설정 변경을 넣어 내부 트래픽을 잘못된 호스트로 보냈고, 설정을 바로잡아 복구)의 재구성이다(같은 기전의 두 번째 사례: GitHub 2026-06-10, 롤아웃이 인증 서비스가 잘못된 호스트 설정을 집어 들게 함).",
+   "cause_ko": "testbed-account(banking) 롤아웃에서 명시 env TRANSFER_SERVICE_URL=http://testbed-ledger:8082 가 ConfigMap 값 http://testbed-transfer:8082 를 덮어씀 → 새 account 파드의 transfer 클라이언트가 testbed-ledger(ClusterIP 10.101.6.9)의 열리지 않은 포트를 향함 → health 는 이 호출과 무관해 Ready 가 되고 옛 파드를 대체 → 넘기는 이체마다 connect-timeout 3초를 기다려 실패('I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out'), 재시도 세 번 뒤 서킷 transferClient 가 열림 → account 가 POST /api/accounts/transfer 에 502 → api 가 재시도하고 accountClient 서킷을 열어 변수를 걷어낼 때까지 POST /api/transfers 에 502.",
+   "injection_summary_ko": "기존 k8s.env executor 가 rca-testbed-banking 의 Deployment testbed-account 컨테이너 account-service 의 env 배열을, 같은 배열에 한 줄 TRANSFER_SERVICE_URL=http://testbed-ledger:8082 를 더한 것으로 바꾸고 롤아웃에 맡긴다(replicas 1, maxSurge 1, maxUnavailable 0 이라 새 파드가 Ready 가 되면 옛 파드를 대체한다). ConfigMap, 이미지, 프로브, Service, ledger, transfer 는 건드리지 않는다. north-south 5rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더해 어느 시간대에도 account, api 서버 스팬 표본이 나오게 한다. cleanup 은 원래 env 배열을 되돌리고 롤아웃이 끝나기를 기다린다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "banking 게이트웨이를 거치는 이체(POST /api/transfers → api → account)가 502 로 실패한다. 처음 몇 건은 연결 시간 초과(account 안에서 약 10초, 그래서 일부는 api 의 read-timeout 10초에 먼저 걸릴 수 있다)를 기다리고, 그 뒤에는 열린 서킷 때문에 바로 실패한다. 잔액 조회, 계좌 목록, 거래 내역은 200 그대로이고 commerce checkout 정산(commerce-payment → transfer)과 transfer NodePort 직행 이체는 영향이 없다. 재시작이 없고 transfer, ledger, Oracle 에 오류가 없어서, 겉으로 보이는 신호는 core-banking-account 와 core-banking-api 의 5xx, 이체 하류 주소로 http://testbed-ledger:8082 를 적은 account ERROR 로그, transfer 의 'Transfer COMPLETED' 에서 account 경로 이체만 사라지고 commerce 것은 계속되는 모습이다.",
+   "distinguishing_evidence_ko": "결정 증거는 'testbed-account 롤아웃'(Deployment testbed-account 의 KCM ScalingReplicaSet 이벤트, 2026-08-13 에 시작된 KCM 이벤트 보존 안에서는 처음, 새 ReplicaSet 의 스펙이 kcm_resources_history 에 명시 env TRANSFER_SERVICE_URL=http://testbed-ledger:8082 로 남고, 그 전 banking ReplicaSet 레코드 290건에는 명시 TRANSFER_SERVICE_URL 이 없다. 값은 평소 ConfigMap 에서 온다) 뒤 약 1분 안에 나타나는 account ERROR 로그 'Transfer service call failed for order null: I/O error on POST request for \"http://testbed-ledger:8082/api/transfers\": Connect timed out' 다. 보존 7일 동안 testbed-ledger 를 담은 로그는 하나도 없었고, account 는 ledger 를 부른 적이 없으며, ledger 의 Service 는 8083 을 연다. 그러니 로그에 적힌 URL 자체가 하류 주소 설정이 틀렸음을 보여 준다. 실패는 한 호스트로의 연결 시간 초과이지 이름 해석 실패(F37-R 은 호스트 이름만 남는다)도, 맞는 호스트로의 연결 거부(F17-R 은 testbed-transfer 로 'Connection refused')도 아니다. 같은 account 파드는 Oracle 로 계좌를 계속 검증하고('Account validation passed') 잔액 조회에 답하므로 account 와 그 DB 는 정상이고, transfer 는 commerce-settlement 와 직행 이체의 'Transfer COMPLETED' 를 계속 남기고 거래 내역에 답하므로 원래 하류도 정상이며, account 를 거치는 이체만 transfer 에 닿지 않는다. server.address testbed-ledger, server.port 8082 인 10% 표본 account CLIENT 스팬이 보조 증거다.",
+   "injected_fault": {
+    "profile": "k8s.env",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f39-r",
+      "parameters": {
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-account",
+       "container": "account-service",
+       "baseline": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASS",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER_PASSWORD",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "core-banking-account"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=core-banking,lucida.target_id=c2efb1d9-00ec-4ca7-8fd9-80bd122c9d10"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        }
+       ],
+       "fault": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASS",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER_PASSWORD",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "core-banking-account"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=core-banking,lucida.target_id=c2efb1d9-00ec-4ca7-8fd9-80bd122c9d10"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        },
+        {
+         "name": "TRANSFER_SERVICE_URL",
+         "value": "http://testbed-ledger:8082"
+        }
+       ]
+      }
+     }
+    ]
+   }
   }
  }
 }

@@ -28,6 +28,9 @@ APPROVED_TARGETS = {
     # 2026-10-08. F32-R: food dispatch 의 배차 동시 한도(DISPATCH_MAX_CAPACITY)를 실제 배차 수
     # 아래로 내리는 설정 배포. order 의 용량 확인이 available=0 을 받아 주문을 503 으로 거절한다.
     "F32-R": ("rca-testbed-food", "testbed-dispatch", "dispatch-service"),
+    # 2026-10-08. F39-R: banking account 의 이체 하류 주소(TRANSFER_SERVICE_URL)를 다른 내부 호스트
+    # (testbed-ledger:8082)로 덮어쓰는 설정 배포. 이름은 해석되지만 그 포트에 아무도 없어 연결이 시간 초과된다.
+    "F39-R": ("rca-testbed-banking", "testbed-account", "account-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -39,6 +42,7 @@ APPROVED_KEYS = {
     "F05-R": {"JAVA_TOOL_OPTIONS"},
     "F30-R": {"SPRING_APPLICATION_JSON"},
     "F32-R": {"DISPATCH_MAX_CAPACITY"},
+    "F39-R": {"TRANSFER_SERVICE_URL"},
 }
 
 

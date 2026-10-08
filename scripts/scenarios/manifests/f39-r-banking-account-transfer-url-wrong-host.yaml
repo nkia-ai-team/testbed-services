@@ -1,0 +1,410 @@
+{
+  "schema_version": "1.0",
+  "id": "F39-R",
+  "slug": "f39-r-banking-account-transfer-url-wrong-host",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-account env(TRANSFER_SERVICE_URL=http://testbed-ledger:8082 한 줄 추가) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=5, 하루 주기 1~4 iter/s 기준선 위 core-banking-account, api 표본 스팬 확보)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.env",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-env-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.env",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.env"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f39-r",
+              "parameters": {
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-account",
+                "container": "account-service",
+                "baseline": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "APP_USER",
+                        "name": "oracle-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "APP_USER_PASSWORD",
+                        "name": "oracle-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "core-banking-account"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=core-banking,lucida.target_id=c2efb1d9-00ec-4ca7-8fd9-80bd122c9d10"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "APP_USER",
+                        "name": "oracle-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "APP_USER_PASSWORD",
+                        "name": "oracle-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "core-banking-account"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=core-banking,lucida.target_id=c2efb1d9-00ec-4ca7-8fd9-80bd122c9d10"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  },
+                  {
+                    "name": "TRANSFER_SERVICE_URL",
+                    "value": "http://testbed-ledger:8082"
+                  }
+                ]
+              },
+              "min_hold": "15m",
+              "settle": "60s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 고장 중 api 와 account 는 살아서 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "_note": "transfer 파드. 이 주입은 transfer 를 건드리지 않아 고장 중에도 Ready 여야 한다(빠지면 F17-R 꼴의 하류 장애, must_rule_out). recovery 의 pod_ready==true 는 compile-plan 이 요구해서 두는 것이고 고장 중에도 true 라 회복 판정력은 없다. account 파드는 러너 kubernetes 프로브 허용 목록(live_probes APPROVED_K8S_TARGETS)에 없어 보지 않는다",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 잔액 조회(step get, 35%, nginx → account 직행) 실패율. 30초 창에 약 50건. 평시 0 이고 이 시나리오에서도 0 이어야 한다(같은 account 파드가 Oracle 로 답한다)",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%, nginx → api → account → transfer) 5xx 비율. 평시 0(2026-10-08 19:33 UTC KST 04:33 기준선 문서 checkout_count 4, business_5xx_rate 0.0), 고장 중 기준선 이체도 account 를 거쳐 약 1.0. 가장 한가한 1 iter/s 에서 30초 창 이체 기대 약 3건이라 창에 이체가 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "transfers-failing-5xx",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "새 account 파드가 이체를 testbed-ledger:8082 로 보내 연결 시간 초과, 재시도, 서킷 열림 끝에 502 이고 api 도 502 로 답한다. 이 502 가 core-banking-account, core-banking-api 서버 스팬을 ERROR 로 만들어 골든 시그널 오류율을 올린다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m: 롤아웃(새 파드 Ready 까지 약 1분) 뒤 실패가 약 14분 이어진 다음 판정된다. banking 선례(2026-10-02 08:00~08:10 UTC)는 promote 지연이 약 18~20분이라 회복 뒤 promote 될 수 있고, 동반 부하 없는 약 10분 고장으로도 인시던트가 생겼다. 이 고장 길이는 그보다 길다(시트 §6)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1.25,
+              "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "account-path-failing",
+              "observation": "balance_read_nonok_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "nginx → account 직행 잔액 조회까지 실패하면 account 의 하류 주소가 아니라 account 자체나 Oracle 쪽 장애(F35-R 꼴)다"
+            },
+            {
+              "id": "transfer-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 파드가 빠지면 하류 장애(F17-R 꼴)다. 이 주입은 transfer 를 건드리지 않는다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "baseline-transfers-recovered",
+              "observation": "transfer_5xx_rate_baseline",
+              "op": "lt",
+              "value": 0.05,
+              "_note": "판정력을 가진 회복 조건. 평시 0.0, 고장 중 약 1.0(기준선 이체도 nginx → api → account 를 타고, api 서킷이 열리면 잔액 부족 400 도 502 가 된다). 30초 창 이체 약 3건이라 5xx 가 한 건만 있어도 0.25 이상이 되어 통과하지 못한다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 env 배열을 되돌리고 account 롤아웃이 available 이 될 때까지(보통 약 1분, 상한 180초) 기다린 뒤, 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 와 pod_ready 는 compile-plan 이 요구하는 형식 조건이고 고장 중에도 참이라 회복을 가르는 것은 기준선 이체 5xx 비율뿐이다. 잔액 조회는 고장 난 account 파드도 200 으로 답하므로 회복 근거로 쓰지 않는다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.env"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

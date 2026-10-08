@@ -38,7 +38,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-08: 5 → 6. F37-R(banking api 파드 DNS 정책 노드 resolver 배포) 후보 추가.
         # 2026-10-08: 6 → 7. F38-R(food MySQL 인스턴스 전체 read_only) 후보 추가.
         # 2026-10-08: 7 → 6. F30-R 정식 승격(녹화 case-f30-r-v3-0cd9193b).
-        self.assertEqual(stages.count("candidate"), 6)
+        # 2026-10-08: 6 → 7. F39-R(banking account 이체 하류 주소 오설정) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 7)
 
 
 class RecordingQueueTests(unittest.TestCase):

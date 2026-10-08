@@ -124,6 +124,21 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
             env.validate("F03-P", unsafe, {})
         with self.assertRaisesRegex(env.ExecutorError, "not allowlisted"):
             env.validate("F23-R", dict(restock_stopgap, deployment="testbed-order"), {})
+        # 2026-10-08: F39-R 은 banking account 의 TRANSFER_SERVICE_URL 한 줄만 더한다. 다른 키(DB 주소)를
+        # 함께 바꾸거나 다른 Deployment(transfer)를 겨누면 거절한다.
+        wrong_host = {
+            "namespace": "rca-testbed-banking", "deployment": "testbed-account", "container": "account-service",
+            "baseline": [{"name": "OTEL_SERVICE_NAME", "value": "core-banking-account"}],
+            "fault": [
+                {"name": "OTEL_SERVICE_NAME", "value": "core-banking-account"},
+                {"name": "TRANSFER_SERVICE_URL", "value": "http://testbed-ledger:8082"},
+            ],
+        }
+        env.validate("F39-R", wrong_host, {})
+        with self.assertRaisesRegex(env.ExecutorError, "non-allowlisted key"):
+            env.validate("F39-R", dict(wrong_host, fault=wrong_host["fault"] + [{"name": "DB_HOST", "value": "x"}]), {})
+        with self.assertRaisesRegex(env.ExecutorError, "not allowlisted"):
+            env.validate("F39-R", dict(wrong_host, deployment="testbed-transfer", container="transfer-service"), {})
         script = env.build_invocation(plan(env.PROFILE_ID, "F09-H", gc), "recovery")[1].decode()
         self.assertIn("(.env // [])", script)
         self.assertIn('[[ ! -e "$state" ]]', script)
