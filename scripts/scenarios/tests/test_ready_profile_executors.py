@@ -450,18 +450,19 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         expected = {
             "F01-H", "F01-P", "F01-R", "F04-R", "F05-H", "F05-P", "F05-R",
             "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P",
-            "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
-            "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
+            "F11-R", "F12-H", "F15-G", "F15-T1", "F16-H", "F17-R", "F18-P",
+            "F19-P", "F19-S", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
             # 2026-08-06: F02-H·F21-P·F21-Q parked (0804 #24·27·28)
-            "F10-H", "F10-P", "F15-P",
+            "F10-H", "F15-P",
             "F09-H", "F09-P", "F17-P",
             "F04-H",
-            "F15-H", "F15-T2",
+            "F15-H",
             # 2026-07-29: 원장 테이블 READ ONLY. 필요하던 "catch-swallow injector"는
             # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
             # 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
             "F30-R",
         }
@@ -498,15 +499,18 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             # 2026-08-20: F11-R·F10-H 가 pin 단으로 고정 승격됐다. 라이브 3단 사다리로
             # 남은 것은 F10-P(미pin) 하나라 그리로 옮긴다. load.north_south 에는 더 이상
             # 사다리가 없어 그 사례는 뺀다.
-            ("f10-p-oracle-io-saturation", "host.stress", host_stress),
+            # 2026-10-08: F10-P 가 폐기(정상 녹화 없음, 사용자 결정)돼 라이브 host.stress 사다리가
+            # 하나도 남지 않았다. 이 테스트가 보는 것은 사다리 레벨 검증이고 그 계약은 파킹 뒤에도
+            # 그대로 컴파일되므로 F10-P 를 두고, 라이브 여부만 현재 상태(False)로 맞춘다.
+            ("f10-p-oracle-io-saturation", "host.stress", host_stress, False),
         ]
-        for slug, profile_id, module in cases:
+        for slug, profile_id, module, expected_live in cases:
             plan = compiler.compile_plan(slug)
             instance = next(
                 row for row in plan["profile_instances"] if row["profile_id"] == profile_id
             )
             self.assertEqual(len(instance["approved_levels"]), 3)
-            self.assertTrue(plan["live_allowed"])
+            self.assertEqual(plan["live_allowed"], expected_live)
             if module is not None:
                 for level in instance["approved_levels"]:
                     module.validate(plan["scenario"]["id"], level["parameters"], self.profiles[profile_id])

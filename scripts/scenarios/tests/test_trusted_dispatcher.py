@@ -123,7 +123,9 @@ class TrustedDispatcherTests(unittest.TestCase):
     def test_adaptive_load_refuses_one_shot_dispatch(self) -> None:
         # 2026-08-20: F07-H 가 고정 승격돼 더는 adaptive 가 아니다. 라이브 adaptive 로
         # 남은 유일한 시나리오(F10-P, 미pin)로 같은 성질을 본다.
-        slug = "f10-p-oracle-io-saturation"
+        # 2026-10-08: F10-P 가 폐기(정상 녹화 없음, 사용자 결정)돼 컴파일 단계에서 이미 막힌다.
+        # 라이브 adaptive 로 남은 것은 F30-R(calibration 사다리)뿐이라 그리로 옮긴다.
+        slug = "f30-r-food-payment-json-naming-contract-break"
         with tempfile.TemporaryDirectory() as temporary:
             invoker = FakeInvoker()
             dispatcher = dispatcher_module.Dispatcher(

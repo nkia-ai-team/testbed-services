@@ -42,7 +42,8 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
         self.assertEqual(
             controllers["live_scenario_ids"][-6:],
             # 2026-10-08: F30-R(ready, calibration)이 끝에 붙었다.
-            ["F17-P", "F04-H", "F15-H", "F15-T2", "F14-P", "F30-R"],
+            # 2026-10-08: F15-T2 폐기(정상 녹화 없음, 사용자 결정)로 빠져 F09-P 가 끝 6개에 들어왔다.
+            ["F09-P", "F17-P", "F04-H", "F15-H", "F14-P", "F30-R"],
         )
 
         # F02-P was parked on 2026-07-27 (nothing in food queries

@@ -64,8 +64,9 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 그동안 매 배치 40분 이상을 쓴다. 삭제가 아니라 보관이다(controllers-parked.json).
 # 2026-10-08: ready 39→40. F30-R 을 첫 시험 실행(calibration)을 위해 ready + mode calibration 으로 올렸다
 # (F10-P 방식). compile-plan 이 controller 를 ready 에만 허용하므로 러너에서 돌리려면 승격이 먼저다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 40 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 16 ]]
+# 2026-10-08: ready 40→36, parked 16→20. 정상 녹화가 없는 후보 4종(F10-P, F15-R, F15-T2, F20-Q)을 사용자 결정으로 폐기했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 36 ]]
+[[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
 # 2026-10-08: draft 1 → 2. F30-R(food payment JSON 명명 규칙 설정 배포) 추가, 첫 시험 실행 대기.
@@ -249,8 +250,9 @@ done < <(jq -r '.scenarios[].slug' "$catalog")
 # 드러난 같은 계열의 세 번째 누락이다 — 게이트가 첫 실패에서 멈추므로 낡은 핀은
 # 한 번에 하나씩만 보인다.
 # 2026-08-09: 31→29. F09-R·F03-P 파킹분. 둘 다 bin/ 스크립트를 갖고 있어 함께 빠진다.
-[[ $((ready_live_false + ready_live_true)) -eq 29 ]]
-[[ "$ready_live_true" -eq 29 ]]
+# 2026-10-08: 29→26. F10-P, F15-R, F15-T2 폐기분(셋 다 bin/ 스크립트가 있다. F20-Q 는 없어 애초에 이 집합 밖).
+[[ $((ready_live_false + ready_live_true)) -eq 26 ]]
+[[ "$ready_live_true" -eq 26 ]]
 [[ "$ready_live_false" -eq 0 ]]
 
 if "$script_dir/bin/f15-t2-pg-lock-then-food-429.sh" --live 2>/dev/null; then

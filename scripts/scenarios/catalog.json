@@ -340,11 +340,10 @@
         "host.stress",
         "load.north_south"
       ],
-      "readiness": "ready",
-      "stage": "candidate",
+      "readiness": "parked",
       "load_mode": "adaptive",
       "injection_location": "worker-w2",
-      "prerequisite": ""
+      "prerequisite": "2026-10-08 폐기: 정상 녹화 없음, 관리 대상에서 뺌(사용자 결정)"
     },
     {
       "id": "F11-R",
@@ -439,11 +438,10 @@
         "timeline.compose",
         "load.north_south"
       ],
-      "readiness": "ready",
-      "stage": "candidate",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": ""
+      "prerequisite": "2026-10-08 폐기: 정상 녹화 없음, 관리 대상에서 뺌(사용자 결정)"
     },
     {
       "id": "F15-H",
@@ -503,11 +501,10 @@
         "timeline.compose",
         "load.north_south"
       ],
-      "readiness": "ready",
-      "stage": "candidate",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "scenario-runner",
-      "prerequisite": "commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
+      "prerequisite": "2026-10-08 폐기: 정상 녹화 없음, 관리 대상에서 뺌(사용자 결정). 이전 전제: commerce inventory EXCLUSIVE table lock + food mock /pay 429 (F06-P surface); food arm carries the k6 because 429 has no signal outside the load summary, so the commerce arm is sized to be measurable against baseline traffic alone"
     },
     {
       "id": "F15-T3",
@@ -625,11 +622,10 @@
       "profiles": [
         "load.north_south"
       ],
-      "readiness": "ready",
-      "stage": "candidate",
+      "readiness": "parked",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
-      "prerequisite": "verified OrderController unpaged GET /api/orders(무조건 Pageable.unpaged()) + aggregateDailyStats native GROUP BY DATE() 필소트 앵커; 신규 slowquery.js(무제한목록+통계 80%, 대표 create 20%) + load.north_south 계약 등록; 러너 F20_FOOD_ORDER_TARGET 신설(container_memory_current_bytes/limit/restart_count를 food testbed-order로 확장)"
+      "prerequisite": "2026-10-08 폐기: 정상 녹화 없음, 관리 대상에서 뺌(사용자 결정). 이전 전제: verified OrderController unpaged GET /api/orders(무조건 Pageable.unpaged()) + aggregateDailyStats native GROUP BY DATE() 필소트 앵커; 신규 slowquery.js(무제한목록+통계 80%, 대표 create 20%) + load.north_south 계약 등록; 러너 F20_FOOD_ORDER_TARGET 신설(container_memory_current_bytes/limit/restart_count를 food testbed-order로 확장)"
     },
     {
       "id": "F25-H",

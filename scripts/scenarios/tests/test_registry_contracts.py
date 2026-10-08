@@ -70,14 +70,14 @@ class RegistryContractTests(unittest.TestCase):
         live_ids = {
             "F01-H", "F01-P", "F01-R", "F04-R", "F05-H", "F05-P", "F05-R",
             "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P",
-            "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
-            "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
+            "F11-R", "F12-H", "F15-G", "F15-T1", "F16-H", "F17-R", "F18-P",
+            "F19-P", "F19-S", "F20-R", "F23-R", "F25-H",
             "F03-H", "F06-P",
             # 2026-07-28: 스토리지 포화 3종 + 복합 자원 고갈. 셋을 막고 있던 것은
             # fio 부재·약한 고정 계약·디스크 IO 관측 부재였고 모두 해소됐다.
             # 2026-08-06: F02-H는 인과 부재 실측 확정, F21-P·F21-Q는 레버가
             # slow-not-failed를 못 만들어 병합 재설계 — 셋 다 parked로 이동(0804 #24·27·28).
-            "F10-H", "F10-P", "F15-P",
+            "F10-H", "F15-P",
             "F09-H", "F09-P", "F17-P",
             # 2026-07-28: relay 정지의 commerce 정합판. 스위치는 이미 앱에 있었고
             # 막고 있던 것은 commerce PG용 미발행 outbox 관측의 부재였다.
@@ -85,11 +85,12 @@ class RegistryContractTests(unittest.TestCase):
             # 2026-07-29: 두 도메인 동시/순차 복합. food arm의 429는 외부 PG mock에서
             # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
             # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
-            "F15-H", "F15-T2",
+            "F15-H",
             # 2026-07-29: 원장 테이블 READ ONLY. 필요하던 "catch-swallow injector"는
             # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
             # 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
             "F30-R",
         }
@@ -334,20 +335,21 @@ class RegistryContractTests(unittest.TestCase):
             {
                 "F01-H", "F01-P", "F01-R", "F04-R", "F05-H", "F05-P", "F05-R",
                 "F06-H", "F06-R", "F07-H", "F08-G", "F08-H", "F08-P",
-                "F11-R", "F12-H", "F15-G", "F15-R", "F15-T1", "F16-H", "F17-R", "F18-P",
-                "F19-P", "F19-S", "F20-Q", "F20-R", "F23-R", "F25-H",
+                "F11-R", "F12-H", "F15-G", "F15-T1", "F16-H", "F17-R", "F18-P",
+                "F19-P", "F19-S", "F20-R", "F23-R", "F25-H",
                 "F03-H", "F06-P",
-                "F10-H", "F10-P", "F15-P",
+                "F10-H", "F15-P",
                 "F09-H", "F09-P", "F17-P",
                 "F04-H",
             # 2026-07-29: 두 도메인 동시/순차 복합. food arm의 429는 외부 PG mock에서
             # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
             # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
-            "F15-H", "F15-T2",
+            "F15-H",
             # 2026-07-29: 원장 테이블 READ ONLY. 필요하던 "catch-swallow injector"는
             # 앱에 심을 필요가 없었다 — 삼킴 + 자동 ack = 영구 유실이 이미 코드에 있고,
             # 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포. 첫 시험 실행을 위해 ready + calibration.
             "F30-R",
             },
@@ -358,7 +360,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F01-R", "F01-H", "F06-R", "F07-H", "F08-H", "F11-R", "F04-R", "F12-H",
                 "F05-R", "F05-H", "F08-P", "F01-P", "F08-G", "F15-G",
                 "F06-H", "F05-P", "F15-T1", "F17-R", "F18-P", "F19-P", "F19-S",
-                "F16-H", "F20-R", "F20-Q", "F25-H", "F23-R", "F15-R",
+                "F16-H", "F20-R", "F25-H", "F23-R",
                 # 2026-07-28 복귀: 앱의 Thread.sleep 자백을 실제 결함으로 교체했다.
                 "F03-H",
                 # 2026-07-28 신규: food 429 경로는 앱에 이미 완결돼 있었고,
@@ -366,7 +368,7 @@ class RegistryContractTests(unittest.TestCase):
                 "F06-P",
                 # 2026-07-28 신규: 스토리지 포화 3종 — 2026-08-06 F02-H는 인과 부재
                 # 실측 확정으로 parked(0804 #24).
-                "F10-H", "F10-P",
+                "F10-H",
                 # 2026-07-28 신규: 복합 자원 고갈. 배치 고정으로 원 전제(공용 노드)가
                 # 사라져 CPU+메모리 동시 압박으로 재정의했다.
                 "F15-P",
@@ -386,10 +388,11 @@ class RegistryContractTests(unittest.TestCase):
             # 2026-07-29: 두 도메인 동시/순차 복합. food arm의 429는 외부 PG mock에서
             # 오는 것이라 F06-P 표면 그대로이고, commerce arm은 부하를 food에 내주므로
             # baseline만으로 측정되도록 테이블 락으로 규모를 맞췄다.
-            "F15-H", "F15-T2",
+            "F15-H",
             # 2026-07-29: 원장 테이블 READ ONLY. 삼킴 + 자동 ack = 영구 유실은 이미
             # 코드에 있었고, 없던 것은 그것을 발화시킬 쓰기 실패였다.
             "F14-P",
+            # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포. 첫 시험 실행을 위해 ready + calibration.
             "F30-R",
             ],
@@ -525,8 +528,9 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         # 2026-10-08: F30-R(ready, calibration)이 끝에 붙었다.
+        # 2026-10-08: F15-T2 폐기(정상 녹화 없음, 사용자 결정)로 빠져 F17-P 가 끝 5개에 들어왔다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F04-H", "F15-H", "F15-T2", "F14-P", "F30-R"])
+                         ["F17-P", "F04-H", "F15-H", "F14-P", "F30-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
