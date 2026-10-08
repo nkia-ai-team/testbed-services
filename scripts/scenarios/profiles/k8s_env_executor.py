@@ -22,6 +22,9 @@ APPROVED_TARGETS = {
     # 413MiB로 사다리 바닥 576Mi보다 163MiB 낮다. 힙을 pretouch로 못 박아야 anon이
     # 한도를 넘는다. k8s.resource와 함께 걸리는 companion 주입이다.
     "F05-R": ("rca-testbed-commerce", "testbed-payment", "payment-service"),
+    # 2026-10-08. F30-R: food payment 의 JSON 명명 규칙을 snake_case 로 바꾸는 설정 배포.
+    # 호출자 order 는 camelCase 그대로라 결제 요청의 orderId 를 못 읽는다(L 데이터 형식 불일치).
+    "F30-R": ("rca-testbed-food", "testbed-payment", "payment-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -31,6 +34,7 @@ APPROVED_KEYS = {
     "F23-R": {"SPRING_APPLICATION_JSON"},
     "F04-H": {"OUTBOX_RELAY_ENABLED"},
     "F05-R": {"JAVA_TOOL_OPTIONS"},
+    "F30-R": {"SPRING_APPLICATION_JSON"},
 }
 
 

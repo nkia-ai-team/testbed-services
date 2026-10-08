@@ -1,0 +1,475 @@
+{
+  "_note": "F30-R 승격용 controller 초안. compile-plan.py:150-152 가 controller 를 readiness=ready 시나리오에만 허용하므로 draft 동안은 registry/controllers.json 에 넣지 않는다(F24-Q 와 같은 방식). 첫 시험 실행(calibration)을 위해 승격할 때 이 블록을 controllers.json 의 controllers 와 live_scenario_ids 끝에 그대로 옮긴다. 레벨 parameters 는 registry/profiles.json k8s.env scenario_levels.F30-R 과 같다.",
+  "scenario_id": "F30-R",
+  "controller": {
+    "dispatcher_mode": "trusted",
+    "live_enabled": true,
+    "mode": "calibration",
+    "tick_interval": "15s",
+    "settle_after_change": "30s",
+    "max_injection_duration": "25m",
+    "preflight": [
+      "kube-context",
+      "kube-node-set",
+      "coordinator-clean",
+      "clean-window",
+      "baseline-traffic",
+      "baseline-business-success",
+      "target-health"
+    ],
+    "baseline": {
+      "clean_window": "30m",
+      "required": [
+        {
+          "check": "coordinator-clean"
+        },
+        {
+          "check": "clean-window"
+        },
+        {
+          "check": "baseline-traffic"
+        },
+        {
+          "check": "baseline-business-success"
+        },
+        {
+          "check": "target-health"
+        }
+      ]
+    },
+    "profile": {
+      "kind": "adaptive_ladder",
+      "primary_ref": "k8s.env",
+      "companion_refs": [
+        "load.north_south"
+      ],
+      "approved_profile_id": null,
+      "levels": [
+        {
+          "id": "snake-case-lenient",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-payment",
+            "container": "payment-service",
+            "baseline": [
+              {
+                "name": "DB_USER",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_USER",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "DB_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_PASSWORD",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "JAVA_TOOL_OPTIONS",
+                "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              },
+              {
+                "name": "OTEL_SERVICE_NAME",
+                "value": "food-delivery-payment"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "value": "http://192.168.200.109:14318"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "value": "grpc"
+              },
+              {
+                "name": "OTEL_RESOURCE_ATTRIBUTES",
+                "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+              },
+              {
+                "name": "OTEL_TRACES_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRICS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_LOGS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                "value": "10000"
+              }
+            ],
+            "fault": [
+              {
+                "name": "DB_USER",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_USER",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "DB_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_PASSWORD",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "JAVA_TOOL_OPTIONS",
+                "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              },
+              {
+                "name": "OTEL_SERVICE_NAME",
+                "value": "food-delivery-payment"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "value": "http://192.168.200.109:14318"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "value": "grpc"
+              },
+              {
+                "name": "OTEL_RESOURCE_ATTRIBUTES",
+                "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+              },
+              {
+                "name": "OTEL_TRACES_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRICS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_LOGS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                "value": "10000"
+              },
+              {
+                "name": "SPRING_APPLICATION_JSON",
+                "value": "{\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\"}}}"
+              }
+            ]
+          },
+          "min_hold": "6m",
+          "settle": "60s",
+          "timeout": "10m"
+        },
+        {
+          "id": "snake-case-strict",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-payment",
+            "container": "payment-service",
+            "baseline": [
+              {
+                "name": "DB_USER",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_USER",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "DB_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_PASSWORD",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "JAVA_TOOL_OPTIONS",
+                "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              },
+              {
+                "name": "OTEL_SERVICE_NAME",
+                "value": "food-delivery-payment"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "value": "http://192.168.200.109:14318"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "value": "grpc"
+              },
+              {
+                "name": "OTEL_RESOURCE_ATTRIBUTES",
+                "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+              },
+              {
+                "name": "OTEL_TRACES_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRICS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_LOGS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                "value": "10000"
+              }
+            ],
+            "fault": [
+              {
+                "name": "DB_USER",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_USER",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "DB_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MYSQL_PASSWORD",
+                    "name": "mysql-secret"
+                  }
+                }
+              },
+              {
+                "name": "JAVA_TOOL_OPTIONS",
+                "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+              },
+              {
+                "name": "OTEL_SERVICE_NAME",
+                "value": "food-delivery-payment"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "value": "http://192.168.200.109:14318"
+              },
+              {
+                "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "value": "grpc"
+              },
+              {
+                "name": "OTEL_RESOURCE_ATTRIBUTES",
+                "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
+              },
+              {
+                "name": "OTEL_TRACES_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRICS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_LOGS_EXPORTER",
+                "value": "otlp"
+              },
+              {
+                "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                "value": "10000"
+              },
+              {
+                "name": "SPRING_APPLICATION_JSON",
+                "value": "{\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\",\"deserialization\":{\"fail-on-unknown-properties\":true}}}}"
+              }
+            ]
+          },
+          "min_hold": "6m",
+          "settle": "60s",
+          "timeout": "10m"
+        }
+      ]
+    },
+    "observations": [
+      {
+        "id": "entry_status",
+        "adapter": "http_probe",
+        "query_id": "http.entry_health",
+        "freshness": "15s"
+      },
+      {
+        "id": "target_health",
+        "adapter": "http_probe",
+        "query_id": "http.target_health",
+        "freshness": "15s"
+      },
+      {
+        "id": "pod_ready",
+        "adapter": "kubernetes",
+        "query_id": "kubernetes.pod_ready",
+        "parameters": {
+          "namespace": "rca-testbed-food",
+          "resource": "testbed-payment"
+        },
+        "freshness": "30s"
+      },
+      {
+        "id": "order_create_2xx_rate",
+        "adapter": "loadgen_summary",
+        "query_id": "loadgen.transfer_2xx_rate",
+        "freshness": "30s"
+      },
+      {
+        "id": "order_create_429_rate",
+        "adapter": "loadgen_summary",
+        "query_id": "loadgen.food_create_429_rate",
+        "freshness": "30s"
+      },
+      {
+        "id": "read_step_rate",
+        "adapter": "loadgen_summary",
+        "query_id": "loadgen.read_step_status_rate",
+        "freshness": "30s"
+      },
+      {
+        "id": "payment_error_rate",
+        "adapter": "clickhouse",
+        "query_id": "clickhouse.service_error_rate",
+        "parameters": {
+          "service_name": "food-delivery-payment"
+        },
+        "freshness": "60s"
+      },
+      {
+        "id": "achieved_rps",
+        "adapter": "loadgen_summary",
+        "query_id": "loadgen.achieved_rps",
+        "freshness": "30s"
+      },
+      {
+        "id": "order_create_2xx_rate_baseline",
+        "adapter": "loadgen_summary",
+        "query_id": "loadgen.transfer_2xx_rate",
+        "parameters": {
+          "domain": "food-delivery"
+        },
+        "freshness": "30s"
+      }
+    ],
+    "success": {
+      "all": [
+        {
+          "id": "order-create-collapsed",
+          "observation": "order_create_2xx_rate",
+          "op": "lt",
+          "value": 0.2
+        }
+      ],
+      "consecutive_ticks": 3
+    },
+    "escalate": {
+      "any": [
+        {
+          "id": "contract-break-not-visible",
+          "observation": "order_create_2xx_rate",
+          "op": "gte",
+          "value": 0.5
+        }
+      ],
+      "consecutive_ticks": 3
+    },
+    "must_rule_out": {
+      "any": [
+        {
+          "id": "load-not-delivered",
+          "observation": "achieved_rps",
+          "op": "lt",
+          "value": 1
+        },
+        {
+          "id": "payment-also-erroring",
+          "observation": "payment_error_rate",
+          "op": "gte",
+          "value": 5
+        },
+        {
+          "id": "pg-rate-limited",
+          "observation": "order_create_429_rate",
+          "op": "gte",
+          "value": 0.1
+        },
+        {
+          "id": "read-path-also-broken",
+          "observation": "read_step_rate",
+          "op": "gte",
+          "value": 0.1
+        },
+        {
+          "id": "payment-pod-down",
+          "observation": "pod_ready",
+          "op": "eq",
+          "value": false
+        }
+      ],
+      "consecutive_ticks": 2
+    },
+    "abort": {
+      "any": [
+        {
+          "id": "entry-unreachable",
+          "observation": "entry_status",
+          "op": "eq",
+          "value": 0
+        }
+      ],
+      "consecutive_ticks": 2
+    },
+    "recovery": {
+      "all": [
+        {
+          "id": "target-recovered",
+          "observation": "target_health",
+          "op": "eq",
+          "value": 200
+        },
+        {
+          "id": "pod-recovered",
+          "observation": "pod_ready",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "id": "create-recovered",
+          "observation": "order_create_2xx_rate_baseline",
+          "op": "gte",
+          "value": 0.7
+        }
+      ],
+      "consecutive_ticks": 2,
+      "timeout": "10m"
+    },
+    "cleanup": {
+      "required": true,
+      "order": "reverse",
+      "timeout": "10m"
+    },
+    "capture": {
+      "enabled": true,
+      "pre_window": "10m",
+      "post_window": "20m",
+      "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+      "create_golden_anomaly": false
+    }
+  }
+}

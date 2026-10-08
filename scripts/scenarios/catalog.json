@@ -711,6 +711,18 @@
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": "CUT 확정(2026-07-28): 음성 시나리오 폐지(헌장 §1)를 유지하기로 결정. 성공조건 3건이 구조적 참 — 재편입은 헌장 개정이 선행한다"
+    },
+    {
+      "id": "F30-R",
+      "slug": "f30-r-food-payment-json-naming-contract-break",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "draft",
+      "load_mode": "adaptive",
+      "injection_location": "food namespace",
+      "prerequisite": "첫 시험 실행(calibration) 대기"
     }
   ]
 }

@@ -6,7 +6,8 @@ catalog="$script_dir/catalog.json"
 manifest_dir="$script_dir/manifests"
 
 total="$(jq '.scenarios | length' "$catalog")"
-[[ "$total" -eq 60 ]]
+# 2026-10-08: 60 → 61. F30-R(draft) 추가.
+[[ "$total" -eq 61 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -65,7 +66,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 16 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
-[[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 1 ]]
+# 2026-10-08: draft 1 → 2. F30-R(food payment JSON 명명 규칙 설정 배포) 추가, 첫 시험 실행 대기.
+[[ "$(jq '[.scenarios[] | select(.readiness=="draft")] | length' "$catalog")" -eq 2 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="partial")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-28: 13 → 17. 스토리지 IO 3종(F02-H·F10-H·F10-P)과 F15-P를 고정 계약에서
 # 캘리브레이션 사다리로 전환했다. 고정 rate_iops가 장치 능력의 16~21%뿐이라 피해를
@@ -82,7 +84,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 강도를 고정할 뿐 승인이 아니어서 첫 캠페인 케이스(F15-R 82e0537f)가 규격은 완벽한데
 # case_label=calibration·evaluation_eligible=false 로 찍혔다. 남은 adaptive 는 F10-P(미pin)
 # 와 비라이브 5종(F02-H·F03-P·F07-P·F09-R·F21-P).
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 6 ]]
+# 2026-10-08: 6 → 7. F30-R 은 강도 사다리(snake-case-lenient, snake-case-strict)로 들어온다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 7 ]]
 # 2026-08-06: 42 → 41. adaptive 의 짝 — F25-H 가 fixed 에서 빠져나갔으므로 함께 움직인다.
 # 2026-08-07: 41 → 40. adaptive 의 짝 — F20-R 이 fixed 에서 빠져나갔다.
 # 2026-08-20: 40 → 54. adaptive 의 짝 — pin 14종이 fixed 로 들어왔다.

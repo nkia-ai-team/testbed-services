@@ -48,7 +48,8 @@ class RegistryContractTests(unittest.TestCase):
     # Counts stay out of the name: it already read "64 scenarios" while asserting
     # 60, which is how the stale pins of 2026-07-29 got past review.
     def test_registry_closure_covers_catalog_scenarios_and_profiles(self) -> None:
-        self.assertEqual(len(self.catalog["scenarios"]), 60)
+        # 2026-10-08: 60 → 61. F30-R(draft) 추가.
+        self.assertEqual(len(self.catalog["scenarios"]), 61)
         self.assertEqual(len(self.profiles["profiles"]), 22)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:

@@ -5047,6 +5047,72 @@
    "injection_summary_ko": "db.table_readonly executor가 testbed-oracle-0에서 ALTER TABLE BANKING.LEDGER_ENTRIES READ ONLY를 실행하고 ALL_TABLES.READ_ONLY로 확인한다. 대상은 원장 테이블 하나뿐이라 transfers·accounts는 영향이 없다. 부하는 baseline loadgen이 공급한다. cleanup은 READ WRITE 한 문장이며, 쓰기는 재개되지만 주입 중 유실된 이벤트는 돌아오지 않는다 — 오프셋이 이미 커밋됐기 때문이다.",
    "user_impact_ko": "이체는 200 COMPLETED로 정상 응답하고 잔액도 움직인다. 그러나 그 이체가 원장에 남지 않아 대사가 영구히 어긋난다. F18-P와 달리 복구해도 따라잡히지 않는다 — 지연이 아니라 손실이다. 사용자는 장애 시점에도, 복구 이후에도 아무 오류 화면을 보지 못한다.",
    "distinguishing_evidence_ko": "결정 증거는 **소비는 됐는데 결과가 없다**는 조합이다. ledger 컨슈머 lag이 0 부근에 머무르고 outbox 미발행 행도 쌓이지 않는데(= 생산·전달은 정상), 창구 내 COMPLETED 이체 중 매칭 원장행이 없는 건수만 증가한다. 여기에 ledger-service의 ORA-12081 ERROR 로그가 원인을 지목한다. 메시지가 아예 없는 F18-P와, lag이 자라는 F04-P/F04-R이 이 조합으로 배제된다. 주의: 복식부기 imbalance(DEBIT-CREDIT)는 두 행이 같은 트랜잭션에서 함께 사라지므로 **끝까지 0이다** — 대사 배치가 침묵하는 것 자체가 이 사건의 특징이지 건강함의 증거가 아니다."
+  },
+  "F30-R": {
+   "title": "Config deploy switches food payment-service to snake_case JSON: order keeps sending camelCase, every payment request loses its orderId",
+   "description": "A configuration rollout to the food payment-service sets spring.jackson.property-naming-strategy=SNAKE_CASE (via SPRING_APPLICATION_JSON), so the service now reads and writes JSON as order_id / pg_provider. Its only caller, order-service, was not changed and keeps posting {orderId, amount, pgProvider}. Jackson ignores the unknown camelCase keys, so PaymentRequest arrives with orderId=null and pgProvider=null, and PaymentService rejects every request with 400 'orderId required' before touching the DB or the external PG. order propagates the 4xx unchanged (ClientErrorException is ignored by its retry and circuit breaker), rolls back the order and returns 400 to the user. Nothing crashes: payment pods are Ready, the DB is idle, the PG is never called. The only visible change before the failures is the payment Deployment rollout. This reconstructs Flagsmith 2026-03-03, where an Edge API release changed the JSON serialization of values and broke statically typed clients until the release was rolled back.",
+   "cause": "Config rollout of testbed-payment (food) with spring.jackson.property-naming-strategy=SNAKE_CASE → payment's request/response JSON contract changes from camelCase to snake_case → order-service PaymentClient still sends camelCase → payment deserializes orderId=null → PaymentService returns 400 'orderId required' (no DB write, no PG call) → order logs ERROR 'Failed to process payment ... 400 ...', propagates 4xx, rolls back the order → order creation fails for every request that reaches the payment step.",
+   "injection_summary": "The k8s.env executor replaces the testbed-payment/payment-service container env in rca-testbed-food from the approved baseline with the fault set and rolls out. The only difference is one added line, SPRING_APPLICATION_JSON={\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\"}}} (level 2 adds deserialization.fail-on-unknown-properties=true, which turns the silent null into an explicit 400 parse error). A north-south 5 rps companion drives the food entry point (30181) with lookups and order creation. Cleanup restores the env to baseline and rolls back the rollout. No app code, image or DB state is changed and no value carries the scenario id.",
+   "user_impact": "Order creation fails with 400 for every order that reaches the payment step, while restaurant lookups, menus and delivery tracking stay normal. Because it is a 4xx with no 5xx spike and no pod or DB trouble, availability-style alerts barely react; the order service's ERROR log volume goes from 0 to one line per order. Side effect: order calls dispatch before payment, so each failed order still claims a courier (orphan dispatch rows) until the expiry batch releases it.",
+   "distinguishing_evidence": "Decisive evidence is the pair 'payment Deployment rollout' followed within the settle time by order ERROR logs 'Failed to process payment ... 400' (at level 1 the quoted downstream body says 'orderId required', at level 2 payment itself logs WARN Unrecognized field \"orderId\"): order logs the orderId it sent in the same line, so the receiver, not the sender, lost the field. Payment pods are Ready, payment produces no 5xx, payment's own 'Processed payment' log stream stops entirely and the external PG mock receives no calls (unlike F06-P, where payment does call the PG and logs the PG 429). The read path is unaffected, unlike an availability outage.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "service",
+    "target_id": "food-payment",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food payment-service 의 설정 배포다. 이 배포가 Spring Boot 의 JSON 명명 규칙을 snake_case 로 바꿔 payment 가 받는 요청 형식(order_id, pg_provider)과 유일한 호출자 order 가 보내는 형식(orderId, pgProvider)이 어긋났다. Jackson 은 모르는 키를 무시하므로 PaymentRequest.orderId 가 null 이 되고 PaymentService 가 모든 결제를 400 'orderId required' 로 거절한다. order 의 요청 자체는 기존 계약 그대로라 정당하고(원칙 6), 형식을 바꾼 쪽이 payment 이므로 근본과 계기가 같은 곳(payment 배포)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 rca-testbed-food Deployment testbed-payment ScalingReplicaSet(롤아웃) ② 그 직후 order ERROR 로그 'Failed to process payment for order <id>: 400 ...' (1단은 하류 본문에 orderId required) 가 0 에서 주문당 1줄로 급증(로그는 전수 수집) ③ payment 의 'Processed payment' 로그가 끊김, payment 5xx 없음, 파드 Ready. '명명 규칙 설정' 자체는 관제 데이터에 없으므로 정답은 '그 배포가 결제 요청 형식 해석을 깨뜨렸다'까지다.",
+    "code_anchor": [
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/controller/PaymentController.java:26-27 (@PostMapping + @RequestBody PaymentRequest: Boot ObjectMapper 가 요청 본문을 해석한다. 명명 규칙 설정이 여기에 적용된다)",
+     "food-delivery/shop-common/src/main/java/com/fooddelivery/common/dto/PaymentRequest.java:5-9 (record PaymentRequest(orderId, amount, pgProvider): 호출자와 공유하는 camelCase 계약)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentService.java:54-55 (orderId == null → 400 'orderId required'. DB 쓰기와 PG 호출 이전)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/PaymentClient.java:40-44 (log.error 'Failed to process payment for order' + 4xx 를 ClientErrorException 으로 그대로 전파)",
+     "food-delivery/order-service/src/main/resources/application.yml:94-95 (circuitbreaker payment ignore-exceptions ClientErrorException: 회로가 열리지 않아 502 로 바뀌지 않는다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:154-158 (paymentClient.processPayment 실패 → 'Order fan-out payment failed' 후 예외 전파, @Transactional 롤백)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-payment, container payment-service 의 env(저장소 food-delivery/k8s/23-payment-deploy.yaml:38-66, 실배치는 109 kubectl 로 확인한 11개 항목). k8s.env executor 가 SPRING_APPLICATION_JSON 한 줄을 더해 롤아웃한다. 재빌드 없이 Spring 속성이 application.yml 보다 우선 적용된다. maxSurge 1 / maxUnavailable 0 이라 롤아웃 중 결제 가용성 공백은 없다."
+   },
+   "must_support": [
+    "payment 롤아웃 KCM 이벤트(rca-testbed-food Deployment testbed-payment ScalingReplicaSet, 새 파드 Created/Started) 직후 주문 실패가 시작된다",
+    "order ERROR 로그 'Failed to process payment for order <id>: 400 ...' 가 평시 0 에서 주문마다 생긴다. 1단(관대)이면 인용된 하류 본문에 'orderId required' 가 있고, 2단(엄격)이면 payment 에 WARN 'Resolved [...HttpMessageNotReadableException: JSON parse error: Unrecognized field \"orderId\" ...]' 가 남는다",
+    "payment 'Processed payment' INFO 로그가 끊긴다(평시 시간당 수백~1,700여 건)",
+    "주문 생성 2xx 비율이 평시 0.91~1.0 에서 0.2 미만으로 떨어진다",
+    "payment 파드 Ready, payment 5xx 없음, 조회 경로 정상"
+   ],
+   "must_rule_out": [
+    "외부 PG 거절이 아님: payment 가 PG 를 호출하지 않으며 order 로그의 하류 응답 본문이 429 가 아니라 400 'orderId required'. PG 429 면 F06-P",
+    "payment 가용성 장애가 아님: 파드 Ready, 연결 거부나 5xx 없음. 그렇다면 'I/O error ... Connection refused' 나 502 가 나온다",
+    "order 쪽 변경이 아님: order 에는 롤아웃이 없고 order 로그가 보낸 orderId 를 그대로 적는다. order 설정 오배포면 F08-P 처럼 order 롤아웃이 계기다",
+    "배차 용량 부족이 아님: 실패가 503 'No courier available' 이 아니라 400 이며 dispatch 호출은 성공한 뒤 결제 단계에서 끊긴다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F06-P (같은 order→payment 단계에서 4xx 로 주문만 실패하지만 원인은 외부 PG 429. payment 가 PG 를 호출하고 PG 429 를 ERROR 로 남긴다. F30-R 은 payment 가 PG 에 가기 전에 400 으로 거절하고 payment 롤아웃이 앞선다)",
+     "F08-P (설정 오배포가 계기인 점은 같지만 commerce order 자신의 read-timeout 을 깎아 order 쪽이 끊는다. F30-R 은 바뀐 쪽이 하류 payment 이고 상류 order 의 요청은 정당하다)",
+     "F19-S (food PG 지연으로 payment 가 502 를 내고 order 가 502. F30-R 은 지연도 5xx 도 없이 즉시 400)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-payment"
+    ],
+    "partial": [
+     "food-order"
+    ]
+   },
+   "title_ko": "설정 배포로 food payment 의 JSON 명명 규칙이 snake_case 로 바뀜: camelCase 로 보내는 order 의 모든 결제 요청에서 orderId 가 사라진다",
+   "description_ko": "food payment-service 에 spring.jackson.property-naming-strategy=SNAKE_CASE 를 거는 설정(SPRING_APPLICATION_JSON)이 롤아웃되어 payment 가 JSON 을 order_id, pg_provider 형식으로 읽고 쓴다. 유일한 호출자 order-service 는 바뀌지 않아 {orderId, amount, pgProvider} 를 그대로 보낸다. Jackson 은 모르는 camelCase 키를 무시하므로 PaymentRequest 는 orderId=null, pgProvider=null 로 도착하고, PaymentService 는 DB 와 외부 PG 에 닿기 전에 모든 요청을 400 'orderId required' 로 거절한다. order 는 4xx 를 그대로 올리고(retry 와 CB 가 ClientErrorException 을 무시) 주문을 롤백해 사용자에게 400 을 돌려준다. 죽은 것은 없다: payment 파드 Ready, DB 한가함, PG 는 호출조차 안 됨. 실패 직전에 보이는 변화는 payment Deployment 롤아웃 하나다. Flagsmith 2026-03-03(Edge API 배포가 값의 JSON 직렬화 형식을 바꿔 정적 타입 클라이언트가 깨졌고 롤백으로 복구)의 재구성이다.",
+   "cause_ko": "testbed-payment(food) 설정 롤아웃으로 spring.jackson.property-naming-strategy=SNAKE_CASE → payment 의 요청과 응답 JSON 계약이 camelCase 에서 snake_case 로 바뀜 → order PaymentClient 는 camelCase 그대로 전송 → payment 가 orderId=null 로 해석 → PaymentService 가 400 'orderId required'(DB 쓰기와 PG 호출 없음) → order 가 ERROR 'Failed to process payment ... 400 ...' 를 남기고 4xx 전파, 주문 롤백 → 결제 단계에 닿는 주문 생성이 전부 실패.",
+   "injection_summary_ko": "k8s.env executor 가 rca-testbed-food 의 testbed-payment/payment-service 컨테이너 env 를 승인된 baseline 에서 fault 집합으로 바꿔 롤아웃한다. 차이는 한 줄, SPRING_APPLICATION_JSON={\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\"}}} 이다(2단은 deserialization.fail-on-unknown-properties=true 를 더해 조용한 null 을 명시적 400 파싱 오류로 바꾼다). north-south 5rps 동반 부하가 food 진입점(30181)으로 조회와 주문 생성을 흘린다. cleanup 은 env 를 baseline 으로 되돌리고 롤아웃을 원복한다. 앱 코드, 이미지, DB 상태는 바꾸지 않으며 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "결제 단계에 닿는 주문 생성이 전부 400 으로 실패한다. 식당 조회, 메뉴, 배달 추적은 정상이다. 4xx 이고 5xx 급증도 파드나 DB 이상도 없어 가용성 알람은 거의 반응하지 않으며, order 의 ERROR 로그가 0 에서 주문당 1줄로 늘어난다. 부수 피해: order 가 결제 전에 dispatch 를 호출하므로 실패한 주문도 배달원을 점유한다(고아 배차 행). 만료 배치가 풀 때까지 남는다.",
+   "distinguishing_evidence_ko": "결정 증거는 'payment Deployment 롤아웃' 뒤 곧바로 나타나는 order ERROR 로그다. 로그가 인용한 하류 응답은 400 이고(1단은 본문에 'orderId required', 2단은 payment 에 WARN Unrecognized field \"orderId\"), 같은 줄에 order 가 보낸 orderId 가 적혀 있어 필드를 잃은 쪽이 보낸 쪽이 아니라 받은 쪽임을 보여 준다. payment 파드 Ready, payment 5xx 없음, payment 의 'Processed payment' 로그가 완전히 끊기고 외부 PG mock 은 호출을 받지 않는다(payment 가 PG 를 호출해 PG 429 를 ERROR 로 남기는 F06-P 와 다르다). 조회 경로는 무영향이라 가용성 장애와도 갈린다.",
+   "injected_fault": null
   }
  }
 }
