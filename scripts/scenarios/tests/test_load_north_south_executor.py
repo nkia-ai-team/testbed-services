@@ -53,6 +53,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 # 읽기 전용 광역 스캔 한 모드만 라이브다(F03-P 커넥션 점유 지연은
                 # 기전·자백 양쪽에서 성립하지 않아 별건 — 실행기 docstring 참조).
                 "db.workload",
+                # 2026-10-08: F35-R — Oracle 애플리케이션 계정 잠금과 해제(역 문장 하나).
+                "db.account",
             },
         )
 

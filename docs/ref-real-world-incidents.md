@@ -17,7 +17,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 자료 모음이다. **출처가 말한 내용만 적는다.** 이 테스트베드에서 재현할 수 있는지,
 무엇을 먼저 만들지 같은 판단은 이 문서에 넣지 않고 각 시나리오 설계 시트에 둔다.
 
-- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례는 2026-10-08 추가)
+- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례는 2026-10-08 추가)
 - 출처 표기: 공식 = 기업 공식 포스트모템 또는 상태 페이지, 논문 = 학술 논문,
   보도 = 언론 보도, 2차 = 집계 사이트나 요약 글. 보도와 2차 출처는 원문을 확인하지 못했다는 뜻이다.
 
@@ -96,6 +96,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 | Azure Storage, 2013-02-22 | HTTPS 인증서 만료 | [보도](https://www.datacenterknowledge.com/archives/2013/02/25/windows-azure-cloud-crashed-by-expired-ssl-certificate) |
 | Azure AD, 2021-03-15 | 자동화가 보존 표시를 무시하고 서명 키를 삭제 | [공식 RCA 사본](https://s3.documentcloud.org/documents/20515443/authentication-errors-across-multiple-microsoft-services-tracking-id-ln01-p8z.pdf) |
 | Microsoft Teams, 2020-02-03 | 인증 인증서 만료 | [보도](https://geekwire.com/2020/microsofts-slack-competitor-teams-due-expired-authentication-certificate) |
+| Harness, 2026-01-08 | 10:25~10:47 UTC. 예정된 비밀(secret) 회전 중 DB 사용자 자격 증명 하나가 회전 과정에서 잘못되어("one database user credential errored out during rotation") Template Service 가 DB 인증을 잃고 인증 실패를 냄. 고객이 Harness UI 에서 템플릿을 불러오지 못함, 실행 중인 파이프라인은 무영향. 옛 DB 사용자를 다시 활성화해("Re-enabled the old database user") 인증과 기능을 복구, 탐지 뒤 2분 안에 완전 복구. 재발 방지로 옛 사용자를 비활성화하기 전에 새 사용자가 GCP Secret Manager 에서 활성인지 확인하는 단계를 더하고 회전 절차의 자격 증명 갱신 틈을 막음 | [공식](https://status.harness.io/incidents/5650h9byz6l5) |
 
 ### M8. 데이터 형식 불일치 (버전 비호환)
 

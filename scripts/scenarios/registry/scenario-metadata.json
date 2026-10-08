@@ -5542,6 +5542,108 @@
      }
     ]
    }
+  },
+  "F35-R": {
+   "title": "A credential rotation step locks the banking Oracle application account BANKING while account, transfer and ledger still log in with it: as their pooled sessions age out the services cannot reconnect (ORA-28000), drop out of readiness, and banking reads, transfers and commerce settlement fail with 502",
+   "description": "account-service, transfer-service and ledger-service all log in to the banking Oracle PDB (FREEPDB1) as the single application account BANKING (Secret oracle-secret APP_USER, injected as DB_USER). A credential rotation step disables that account with ALTER USER BANKING ACCOUNT LOCK while nothing on the service side changes: no rollout, no new Secret, no restart. Oracle refuses every new login with ORA-28000 but leaves the sessions already open alone, so for a while nothing breaks. Each Hikari pool keeps its idle sessions (3 for account, 5 for transfer, 3 for ledger at baseline) only until max-lifetime (600000 ms, 10 minutes) and cannot replace them, so within 10 minutes of the lock every pool is empty. From then on every request that needs the database waits 3 s for a connection and fails, the /actuator/health database check fails, and the readiness probe takes account, transfer and ledger out of their Services (liveness only checks livenessState, so nothing restarts). nginx answers balance lookups and account lists with 502, api-service's call to account is refused and its circuit opens (502), and commerce-payment's settlement transfer to banking is refused (502), so commerce checkouts fail as well. The Oracle instance itself stays up: SYS, the background processes and the DPM monitoring account keep working; only the application sessions disappear. A north-south companion (core-banking surge.js, 10 rps) runs on top of the resident baseline from before the pools drain, so the request rate is the same before and after the failure starts; it gives core-banking-api enough sampled server spans for its error rate to show the 502s.",
+   "cause": "ALTER USER BANKING ACCOUNT LOCK on the banking Oracle PDB → new logins as BANKING fail with ORA-28000 while existing sessions survive → the Hikari pools of account, transfer and ledger shrink as each session reaches max-lifetime (10 min) and cannot be replaced (DPM dpm.oracle.session.idle_session falls from about 11 to 0) → requests wait 3 s and fail ('Connection is not available ...' chained with ORA-28000), /actuator/health DOWN → account, transfer and ledger NotReady → nginx 502 for balance and list reads, api 502 (account call refused, circuit open), commerce-payment settlement transfer refused → commerce checkout 502.",
+   "injection_summary": "db.account executor checks through sqlplus inside testbed-oracle-0 that DBA_USERS.ACCOUNT_STATUS of BANKING in FREEPDB1 is OPEN, runs ALTER USER BANKING ACCOUNT LOCK and confirms the status is LOCKED. Cleanup runs ALTER USER BANKING ACCOUNT UNLOCK and confirms OPEN; the Hikari pools then refill on their own and readiness returns. No password, Secret, table, row, Deployment or application setting is changed, no session is killed, and nothing that reaches the database carries the scenario id. A north-south companion at 10 rps (core-banking surge.js through nginx: balance 55%, history 25%, account list 10%, transfer 10%) runs on top of the resident baseline (loadgen-banking, 1 to 4 iterations/s on a daily cycle). The damage does not depend on the rate, because every pooled session ages out within 10 minutes at any hour; the companion is there so that core-banking-api (history and transfer, about 3.5 requests/s, about 21 sampled server spans per minute against a baseline of about 5) has enough spans for its error rate to rise, and so that the runner has a large sample.",
+   "user_impact": "Within about 10 minutes of the lock, every banking user path fails: balance lookups and account lists through nginx return 502, transfers and transfer history through api-service return 502. Every commerce checkout whose payment settles through the banking transfer fails with 502 after the external PG has already approved it (the F17-R shape: the approval stays at the PG while the commerce payment row is rolled back). The account's interest batch and the transfer outbox relay fail on every run. If ledger's pool empties before transfer's, transfers completed in between lose their ledger entries, because the ledger consumer logs and swallows write failures. Data already written is not touched; everything recovers within about a minute of the unlock. Lost ledger entries stay lost: the unlock does not bring them back (their DEBIT and CREDIT rows vanish together, so the ledger balance check is not skewed).",
+   "distinguishing_evidence": "The decisive evidence is the error text itself: account, transfer and ledger log 'ORA-28000: The account is locked' (chained under HikariPool-1 'Connection is not available, request timed out after 3000ms (...)' and in 'DataSource health check failed'), never seen in the previous 7 days (the log retention limit). It says the database was reached and refused the login, which rules out a dead database or network (no 'Connection refused' to port 1521, no ORA-12541) and lock contention (no blocked sessions, and the pool timeouts carry the refused login as their cause). On the database side DPM shows the application sessions draining without replacement: dpm.oracle.session.idle_session, 11 at the 8-day median (1st percentile 10, minimum 6 during a transfer restart), steps down to 0 within 10 minutes and stays there while the instance, its background sessions and the DPM collection carry on. KCM shows readiness failures on all three Oracle clients at once (account had none since 2026-08-24, the start of the KCM event table) with no restart, no rollout and no new ReplicaSet in rca-testbed-banking. Unlike F17-R (a readiness probe deployed with a failing path on transfer only, probe answering 404) the probe definitions are unchanged and time out on the real health check; unlike the Oracle lock family (F01-P, F08-G, F15-G) requests do not wait on row locks; unlike F25-H the database process never stops. Load does not explain it either: the companion runs from before the pools drain, every Hikari timeout carries ORA-28000 as its cause (a pool that is merely busy has none), Oracle active sessions do not rise, and the same banking path served a 30 rps surge.js companion for 9 minutes without a single Hikari timeout (F18-P recording, 2026-08-22 07:15-07:24).",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "DPM",
+    "APM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "banking-oracle:BANKING",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking Oracle(FREEPDB1)의 애플리케이션 계정 BANKING 이다. Oracle 에서 계정은 곧 스키마라 'banking-oracle:BANKING' 으로 적고, 인스턴스만 지목한 답(banking-oracle)은 덜 정밀해 partial 이다. 자격 증명 회전 단계가 ALTER USER BANKING ACCOUNT LOCK 으로 이 계정을 비활성화했는데, account, transfer, ledger 는 그대로 BANKING 으로 접속한다(Secret oracle-secret 의 APP_USER 를 DB_USER 로 받는다). Oracle 은 이미 열린 세션은 두고 새 로그인만 ORA-28000 으로 거절하므로 바로는 아무것도 깨지지 않는다. 세 서비스의 Hikari 풀은 평시 유휴 세션(account 3, transfer 5, ledger 3)을 max-lifetime(600000ms, 10분)까지만 쓰고 새로 만들지 못해, 잠금 뒤 10분 안에 모든 풀이 빈다. 그 뒤 DB 가 필요한 요청은 연결을 3초 기다리다 실패하고, /actuator/health 의 DB 확인이 실패해 readiness 가 세 파드를 Service 에서 뺀다(liveness 는 livenessState 만 봐서 재시작은 없다). nginx 는 잔액 조회와 계좌 목록에 502, api 는 account 호출이 거절되어 서킷을 열고 502, commerce-payment 의 정산 이체도 거절되어 checkout 이 502 로 끝난다. 서비스 쪽 코드와 설정은 그대로이고 요청량은 실패 전후가 같아 정당하다(원칙 6: 정당한 요청이 잠긴 계정에서 거절된다). 근본과 계기가 같은 곳(BANKING 계정에 대한 잠금)이라 trigger_target_id 는 비운다. 관제 데이터로의 도달 경로: ① account, transfer, ledger 로그 'ORA-28000: The account is locked'(Hikari 'Connection is not available ...' 에 이어진 다음 예외, 'DataSource health check failed' 의 원인), 평시 7일(로그 보존 한계) 0건. 잠금 명령 자체와 거절된 로그인 시도는 119 에 남지 않으므로(DPM Oracle 지표에 로그인 실패, 계정 상태 항목이 없고 Hikari 의 연결 생성 실패 로그는 debug) 첫 흔적은 ② 의 세션 감소와 풀이 빈 뒤의 ORA-28000 이다 ② DPM dpm.oracle.session.idle_session 이 평시 중앙 11 에서 10분 안에 계단식으로 0 이 되고 다시 오르지 않으며 인스턴스와 백그라운드 세션, DPM 수집은 그대로 ③ KCM 에 세 파드의 readiness 실패, 재시작과 롤아웃은 없음 ④ api 'Account service call failed' 가 평시의 400(잔액 부족)이 아니라 연결 거부와 502 로, commerce-payment 'core-banking transfer call failed' 와 502. 원본 사후 보고(Harness 2026-01-08, \"one database user credential errored out during rotation\", 완화는 \"Re-enabled the old database user\")처럼 '회전 중 쓰고 있던 DB 사용자가 비활성화되어 서비스가 DB 인증을 잃었다'가 정답의 층위이고, 회전 절차의 어느 단계가 왜 잘못됐는지는 요구하지 않는다.",
+    "code_anchor": [
+     "core-banking/account-service/src/main/resources/application.yml:7-17 (username, hikari — DB_USER 기본 banking, minimum-idle 3, connection-timeout 3000, max-lifetime 600000)",
+     "core-banking/transfer-service/src/main/resources/application.yml:7-17 (username, hikari — minimum-idle 5, connection-timeout 3000, max-lifetime 600000)",
+     "core-banking/ledger-service/src/main/resources/application.yml:7-17 (username, hikari — minimum-idle 3, connection-timeout 3000, max-lifetime 600000)",
+     "core-banking/k8s/01-secrets.yaml:9 (APP_USER — 세 서비스가 함께 쓰는 단일 애플리케이션 계정 banking)",
+     "core-banking/k8s/21-account-service.yaml:39-48 (DB_USER, APP_USER — account 가 Secret 의 APP_USER 로 접속)",
+     "core-banking/k8s/22-transfer-service.yaml:48-57 (DB_USER, APP_USER — transfer 가 같은 계정으로 접속)",
+     "core-banking/k8s/23-ledger-service.yaml:39-48 (DB_USER, APP_USER — ledger 가 같은 계정으로 접속)",
+     "core-banking/k8s/21-account-service.yaml:73-87 (readinessProbe, livenessProbe — readiness 는 DB 를 보는 /actuator/health, liveness 는 /actuator/health/liveness 라 재시작 없이 트래픽에서만 빠진다)",
+     "core-banking/k8s/22-transfer-service.yaml:87-103 (readinessProbe, livenessProbe — transfer 도 같은 구성)",
+     "core-banking/k8s/23-ledger-service.yaml:73-87 (readinessProbe, livenessProbe — ledger 도 같은 구성)",
+     "core-banking/account-service/src/main/resources/application.yml:65-70 (probes — readiness 는 DB 를 계속 보고 liveness 는 livenessState 만 본다는 설계 주석)",
+     "core-banking/k8s/02-configmaps.yaml:45-46 (location /api/accounts, account-service — 잔액 조회와 계좌 목록은 nginx 가 account 로 바로 넘긴다)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:35-36 (getAccount, findById — 잔액 조회마다 Oracle 조회)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/AccountClient.java:28-58 (requestTransfer, requestTransferFallback — account 호출 실패와 서킷 열림이 502 BAD_GATEWAY)",
+     "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:37-58 (transfer — banking 이체 호출 실패가 502 BAD_GATEWAY)"
+    ],
+    "infra_anchor": "rca-testbed-banking StatefulSet testbed-oracle(파드 testbed-oracle-0, gvenzl/oracle-free:23-slim, PDB FREEPDB1, tb-w2). 애플리케이션 계정 BANKING 은 DEFAULT 프로필(PASSWORD_LIFE_TIME, FAILED_LOGIN_ATTEMPTS 모두 UNLIMITED, 2026-10-08 109 조회로 ACCOUNT_STATUS OPEN)이고 account, transfer, ledger 세 서비스가 함께 쓴다. DPM 은 별도 계정 LUCIDA_MON 으로 수집하고 러너의 Oracle 조회와 이 실행기는 sysdba 로 들어가므로 잠금의 영향을 받지 않는다. db.account executor 가 러너 컨테이너에서 kubectl exec 로 sqlplus / as sysdba 를 열어 ALTER USER BANKING ACCOUNT LOCK 을 실행하고, cleanup 에서 ACCOUNT UNLOCK 한다. 로컬 gvenzl/oracle-free:23-slim 실측(2026-10-08): 잠금 뒤 열려 있던 세션은 질의를 계속 처리하고 새 로그인은 'ORA-28000: The account is locked; login denied.' 로 거절되며, 잠금 해제 직후 로그인이 된다."
+   },
+   "must_support": [
+    "account, transfer, ledger 로그에 'ORA-28000: The account is locked' 가 나온다. Hikari ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms (...)' 에 이어진 다음 예외와 WARN 'DataSource health check failed' 의 원인으로 남는다. 직전 7일(로그 보존 한계) core-banking 로그에 ORA-28000 은 0건이다. 이 경로는 HikariCP 5.1.0 HikariPool.createTimeoutException 이 마지막 연결 실패를 원인과 다음 예외(setNextException)로 달고, Hibernate 6.6 SqlExceptionHelper.logExceptions 가 다음 예외까지 WARN 'SQL Error: 28000, SQLState: …' 와 ERROR 메시지로 남기는 것이다",
+    "DPM dpm.oracle.session.idle_session 이 평시(8일 중앙 11, 1백분위 10, 최소 6)에서 잠금 뒤 10분 안에 계단식으로 0 까지 내려가 cleanup 전까지 오르지 않는다. dpm.oracle.session.current_session 도 같은 만큼 줄어 8일 최저(86) 아래로 간다. 인스턴스, 백그라운드 세션, DPM 수집(LUCIDA_MON)은 그대로다",
+    "KCM 에 testbed-account, testbed-transfer, testbed-ledger 의 'Readiness probe failed ... /actuator/health' 가 함께 나온다(account 는 KCM 이벤트 표의 최소 시각 2026-08-24 이후 0건). 재시작, Deployment 롤아웃, 새 ReplicaSet 은 없다",
+    "api ERROR 'Account service call failed' 가 4xx 업무 거절(평시의 'Insufficient balance' 400)이 아니라 연결 거부나 5xx 로 급증하고(평시 7일 5분 창 2,051개 중 10개, 모두 다른 시나리오 실행 창), commerce-payment 의 'core-banking transfer call failed' 502 가 나오며(평시 5분 창 3개), 동반 부하의 잔액 조회(step get) 실패율과 이체(step transfer) 5xx 비율이 평시 0 에서 0.5 이상이 된다",
+    "골든 시그널(인시던트 판정이 이 서비스를 입력으로 쓸지는 묶음 멤버 구성에 달려 있어 판정 근거로 단정하지 않는다): core-banking-api 의 서버 스팬(POST /api/transfers, GET /api/transfers)이 502 로 끝나 스팬 상태가 ERROR 가 되고, apm.agent.otel.java.error_rate{service_name=\"core-banking-api\"} 가 평시(7일 중앙과 99백분위 모두 0)에서 크게 오른다. 동반 부하로 api 표본 스팬이 분당 약 21개(평시 약 5개)라 전면 실패 구간 내내 값이 이어진다. 평시 2026-10-01 20:13 의 transfer 풀 고갈 때도 502 가 난 20:13~20:14 에 이 값이 100 이었다. commerce-payment 와 commerce-order 의 오류율도 정산 실패만큼 오른다",
+    "피해는 잠금 직후가 아니라 풀이 비는 순간부터 시작된다: 세션이 max-lifetime 10분 안에 하나씩 사라져 서비스마다 마지막 세션이 사라지면 전면 실패가 된다(그 전에도 남은 세션이 바빠 일부 요청이 3초 대기 끝에 실패할 수 있다). 동반 부하(10rps)는 그 전부터 흐르고 있어 실패 전후의 요청량이 같다"
+   ],
+   "must_rule_out": [
+    "Oracle 다운이나 재시작(F25-H 꼴)이 아님: testbed-oracle-0 Ready, KCM 에 재시작이 없고 백그라운드 세션과 DPM 수집(LUCIDA_MON)이 계속된다. 오류는 연결 거부(1521 Connection refused, ORA-12541)가 아니라 DB 가 로그인을 받아 거절한 ORA-28000 이다",
+    "Oracle 행 잠금 경합(F01-P, F08-G, F15-G)이 아님: 차단 세션(dpm.oracle.session.blocked_session, blocking_session)이 없고, 요청이 잠금을 10초 기다리지 않으며, Hikari 시간 초과 예외에 ORA-28000 이 원인으로 붙어 연결을 새로 만들지 못한 풀임이 드러난다",
+    "transfer readiness 프로브 오설정(F17-R)이 아님: 롤아웃과 프로브 정의 변경이 없고, transfer 만이 아니라 account, ledger 도 함께 NotReady 이며 프로브는 404 가 아니라 실제 health 확인에서 시간 초과로 실패한다. 로그에 ORA-28000 이 있다",
+    "부하 증가나 커넥션 풀 고갈이 아님: 동반 부하(10rps)는 풀이 비기 전부터 흐르고, 오류가 나도 Hikari 시간 초과 예외에 ORA-28000 이 원인으로 붙으며(부하로 바쁜 풀이면 원인 예외가 없다), Oracle 활성 세션이 오르지 않는다. 같은 banking 경로는 surge.js 30rps 동반 부하를 9분 동안 Hikari 시간 초과 없이 받았다(F18-P 녹화, 2026-08-22 07:15~07:24, 이체 1,590건, 오류는 400 잔액 부족뿐)",
+    "네트워크 단절이 아님: ORA-28000 은 로그인 요청이 DB 에 도달해 거절됐다는 뜻이고, 같은 DB 에 대한 DPM 수집은 계속된다",
+    "앱 배포나 설정 변경이 아님: rca-testbed-banking 에 롤아웃, 새 ReplicaSet, 재시작이 없다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F17-R (같은 transfer NotReady 와 commerce checkout 502 이지만 원인이 transfer readiness 프로브 경로 오설정이다. 프로브가 404 로 실패하고 transfer 하나만 빠지며 ORA 오류가 없다. F35-R 은 프로브 정의가 그대로이고 Oracle 을 쓰는 세 서비스가 함께 빠진다)",
+     "F01-P (같은 banking Oracle 이 원인이지만 행 잠금으로 이체가 10초 기다린다. F35-R 은 기다릴 연결 자체가 없다)",
+     "F25-H (같은 공유 DB 가 원인이지만 DB 프로세스가 죽어 모든 접속이 끊긴다. F35-R 은 DB 가 살아 있고 한 계정의 새 로그인만 거절된다)",
+     "F33-R (같은 Hikari 'Connection is not available' 이지만 풀이 느린 질의로 꽉 차 있다(active=10). F35-R 은 연결을 새로 만들지 못해 풀이 비어 가고 시간 초과에 ORA-28000 이 원인으로 붙는다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "banking-oracle:BANKING"
+    ],
+    "partial": [
+     "banking-oracle",
+     "banking-account",
+     "banking-transfer",
+     "banking-ledger",
+     "banking-api",
+     "commerce-payment"
+    ]
+   },
+   "title_ko": "자격 증명 회전 단계가 banking Oracle 애플리케이션 계정 BANKING 을 잠갔는데 account, transfer, ledger 가 그 계정으로 계속 접속함: 풀의 세션이 수명을 다하며 다시 접속하지 못해(ORA-28000) readiness 에서 빠지고, banking 조회와 이체, commerce 정산이 502 로 실패한다",
+   "description_ko": "account-service, transfer-service, ledger-service 는 모두 banking Oracle PDB(FREEPDB1)에 애플리케이션 계정 BANKING 하나로 접속한다(Secret oracle-secret 의 APP_USER 를 DB_USER 로 받는다). 자격 증명 회전 단계가 ALTER USER BANKING ACCOUNT LOCK 으로 이 계정을 비활성화하는데 서비스 쪽은 바뀐 것이 없다: 롤아웃도, 새 Secret 도, 재시작도 없다. Oracle 은 새 로그인을 모두 ORA-28000 으로 거절하지만 이미 열린 세션은 그대로 두어 한동안은 아무것도 깨지지 않는다. Hikari 풀은 평시 유휴 세션(account 3, transfer 5, ledger 3)을 max-lifetime(600000ms, 10분)까지만 쓰고 새로 만들지 못해 잠금 뒤 10분 안에 모든 풀이 빈다. 그때부터 DB 가 필요한 요청은 연결을 3초 기다리다 실패하고, /actuator/health 의 DB 확인이 실패해 readiness 프로브가 account, transfer, ledger 를 Service 에서 뺀다(liveness 는 livenessState 만 봐서 재시작은 없다). nginx 는 잔액 조회와 계좌 목록에 502 를, api 는 account 호출이 거절되어 서킷을 열고 502 를 내고, commerce-payment 의 banking 정산 이체도 거절되어(502) commerce checkout 도 실패한다. Oracle 인스턴스 자체는 살아 있다: SYS, 백그라운드 프로세스, DPM 모니터링 계정은 그대로이고 애플리케이션 세션만 사라진다. north-south 동반 부하(core-banking surge.js 10rps)가 상주 기준선 위에 풀이 비기 전부터 흘러, 실패가 시작되기 전과 후의 요청량이 같다. 동반 부하는 core-banking-api 의 표본 서버 스팬을 늘려 그 오류율이 502 를 드러내게 한다.",
+   "cause_ko": "banking Oracle PDB 에서 ALTER USER BANKING ACCOUNT LOCK → BANKING 의 새 로그인은 ORA-28000 으로 실패하고 기존 세션은 유지 → account, transfer, ledger 의 Hikari 풀이 세션마다 max-lifetime(10분)에 닿으면 사라지고 채워지지 않음(DPM dpm.oracle.session.idle_session 약 11 에서 0) → 요청이 3초 기다린 뒤 실패('Connection is not available ...' 에 ORA-28000 이 이어짐), /actuator/health DOWN → account, transfer, ledger NotReady → 잔액 조회와 목록은 nginx 502, api 502(account 호출 거절, 서킷 열림), commerce-payment 정산 이체 거절 → commerce checkout 502.",
+   "injection_summary_ko": "db.account executor 가 testbed-oracle-0 안의 sqlplus 로 FREEPDB1 의 BANKING 계정 DBA_USERS.ACCOUNT_STATUS 가 OPEN 인지 확인하고, ALTER USER BANKING ACCOUNT LOCK 을 실행한 뒤 LOCKED 인지 확인한다. cleanup 은 ALTER USER BANKING ACCOUNT UNLOCK 뒤 OPEN 을 확인하고, 그 뒤 Hikari 풀은 스스로 다시 차고 readiness 가 돌아온다. 비밀번호, Secret, 테이블, 행, Deployment, 앱 설정은 바꾸지 않고 세션도 끊지 않으며, DB 에 닿는 어떤 값에도 시나리오 id 가 없다. north-south 10rps 동반 부하(core-banking surge.js, nginx 경유: 잔액 55%, 거래 내역 25%, 계좌 목록 10%, 이체 10%)가 상주 기준선(loadgen-banking, 하루 주기 1~4 iter/s) 위에 흐른다. 풀의 세션은 어느 시간대에도 10분 안에 모두 수명을 다하므로 피해는 요청량과 무관하다. 동반 부하를 두는 이유는 core-banking-api(거래 내역과 이체, 초당 약 3.5건, 표본 서버 스팬 분당 약 21개, 평시 약 5개)에 오류율이 오를 만큼 스팬을 주고 러너에 큰 표본을 주기 위해서다.",
+   "user_impact_ko": "잠금 뒤 약 10분 안에 banking 사용자 경로가 모두 실패한다: nginx 를 거치는 잔액 조회와 계좌 목록은 502, api 를 거치는 이체와 거래 내역도 502 다. banking 이체로 정산하는 commerce checkout 은 외부 PG 승인이 난 뒤 502 로 실패한다(F17-R 과 같은 꼴: 승인은 PG 에 남고 commerce 결제 행은 롤백된다). account 의 이자 배치와 transfer 의 outbox 릴레이는 매번 실패한다. ledger 풀이 transfer 풀보다 먼저 비면 그 사이 완료된 이체의 원장 반영이 사라질 수 있다(ledger 컨슈머가 쓰기 실패를 로그만 남기고 넘긴다). 이미 쓴 데이터는 건드리지 않으며, 잠금 해제 뒤 약 1분 안에 회복된다. 사라진 원장 반영은 잠금 해제로 돌아오지 않는다(DEBIT, CREDIT 두 행이 함께 사라져 원장 차대 균형은 어긋나지 않는다).",
+   "distinguishing_evidence_ko": "결정 증거는 오류 문구 그 자체다: account, transfer, ledger 가 'ORA-28000: The account is locked' 를 남긴다(HikariPool-1 'Connection is not available, request timed out after 3000ms (...)' 에 이어진 다음 예외와 'DataSource health check failed' 안). 직전 7일(로그 보존 한계)에 한 번도 없던 문구다. DB 에 닿았고 DB 가 로그인을 거절했다는 뜻이라 DB 다운이나 네트워크(1521 연결 거부, ORA-12541 없음)와 잠금 경합(차단 세션 없음, 풀 시간 초과에 거절된 로그인이 원인으로 붙음)이 빠진다. DB 쪽에서는 DPM 이 애플리케이션 세션이 채워지지 않고 빠지는 것을 보여 준다: dpm.oracle.session.idle_session 이 8일 중앙 11(1백분위 10, transfer 재시작 때 최소 6)에서 10분 안에 계단식으로 0 이 되어 머물고, 인스턴스, 백그라운드 세션, DPM 수집은 계속된다. KCM 에는 Oracle 을 쓰는 세 파드의 readiness 실패가 함께 나오고(account 는 KCM 이벤트 표의 시작 2026-08-24 이후 0건) 재시작, 롤아웃, 새 ReplicaSet 은 없다. F17-R(transfer 하나에 실패하는 경로의 readiness 프로브 배포, 404)과 달리 프로브 정의는 그대로이고 실제 health 확인이 시간 초과로 실패하며, Oracle 잠금 계열(F01-P, F08-G, F15-G)과 달리 요청이 행 잠금을 기다리지 않고, F25-H 와 달리 DB 프로세스는 멈추지 않는다. 부하로도 설명되지 않는다: 동반 부하는 풀이 비기 전부터 흐르고, Hikari 시간 초과마다 ORA-28000 이 원인으로 붙으며(부하로 바쁘기만 한 풀이면 원인 예외가 없다), Oracle 활성 세션이 오르지 않고, 같은 banking 경로는 surge.js 30rps 동반 부하를 9분 동안 Hikari 시간 초과 한 건 없이 받았다(F18-P 녹화, 2026-08-22 07:15~07:24).",
+   "injected_fault": {
+    "profile": "db.account",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f35-r",
+      "parameters": {
+       "engine": "oracle",
+       "namespace": "rca-testbed-banking",
+       "pod": "testbed-oracle-0",
+       "pdb": "FREEPDB1",
+       "account": "BANKING"
+      }
+     }
+    ]
+   }
   }
  }
 }

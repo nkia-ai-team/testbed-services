@@ -38,6 +38,7 @@ kafka_control = load("kafka_control_executor")
 host_stress = load("host_stress_executor")
 app_control = load("app_control_executor")
 db_workload = load("db_workload_executor")
+db_account = load("db_account_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -176,6 +177,32 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         quote = "'\"'\"'"
         self.assertIn(f"set_identifier({quote}$TAG{quote})", remote)
         self.assertIn(f"{quote}$KEY{quote}", remote)
+
+    def test_db_account_locks_only_the_app_account_and_unlocks_it(self) -> None:
+        # F35-R: 주입은 계정 상태 한 칸(ACCOUNT_STATUS)만 뒤집는다. 세션을 끊거나
+        # 비밀번호를 바꾸면 "기존 세션은 살고 새 로그인만 막힌다"는 지문이 사라진다.
+        plan = compiler.compile_plan("f35-r-banking-oracle-app-account-locked")
+        argv, stdin = db_account.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8).
+        self.assertNotIn("F35-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F35-R", script)
+        run_case = script.split("run)")[1].split(";;")[0]
+        self.assertIn("expect OPEN", run_case)
+        self.assertIn("flip lock", run_case)
+        self.assertIn("expect LOCKED", run_case)
+        cleanup_case = script.split("cleanup)")[1].split(";;")[0]
+        self.assertIn("flip unlock", cleanup_case)
+        self.assertIn("expect OPEN", cleanup_case)
+        for forbidden in ("kill session", "identified by", "drop user", "password"):
+            self.assertNotIn(forbidden, script.lower())
+        params = dict(db_account.CONTRACTS["F35-R"])
+        params["account"] = "LUCIDA_MON"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_account.validate("F35-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified database account contract"):
+            db_account.validate("F14-P", db_account.CONTRACTS["F35-R"], {})
 
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
@@ -470,6 +497,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F32-R",
             # 2026-10-08: food dispatches 인덱스 제거(느린 쿼리). 새 후보, 설계 강도 1단 고정 evaluation.
             "F33-R",
+            # 2026-10-08: banking Oracle 애플리케이션 계정 잠금(자격 증명 회전 실수). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F35-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
