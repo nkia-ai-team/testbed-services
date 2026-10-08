@@ -759,6 +759,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F32-R",
+      "slug": "f32-r-food-dispatch-capacity-limit-config-cut",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }

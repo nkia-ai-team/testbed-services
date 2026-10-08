@@ -7,7 +7,8 @@ manifest_dir="$script_dir/manifests"
 
 total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-08: 60 → 61. F30-R(draft) 추가.
-[[ "$total" -eq 61 ]]
+# 2026-10-08: 61 → 62. F32-R(후보) 추가.
+[[ "$total" -eq 62 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -65,7 +66,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-08: ready 39→40. F30-R 을 첫 시험 실행(calibration)을 위해 ready + mode calibration 으로 올렸다
 # (F10-P 방식). compile-plan 이 controller 를 ready 에만 허용하므로 러너에서 돌리려면 승격이 먼저다.
 # 2026-10-08: ready 40→36, parked 16→20. 정상 녹화가 없는 후보 4종(F10-P, F15-R, F15-T2, F20-Q)을 사용자 결정으로 폐기했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 36 ]]
+# 2026-10-08: ready 36→37. F32-R(food dispatch 배차 한도 설정 배포)을 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 37 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -97,7 +99,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-08-07: 41 → 40. adaptive 의 짝 — F20-R 이 fixed 에서 빠져나갔다.
 # 2026-08-20: 40 → 54. adaptive 의 짝 — pin 14종이 fixed 로 들어왔다.
 # 2026-10-08: 54 → 55. adaptive 의 짝 — F30-R 이 lenient 1단 고정 evaluation 으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 55 ]]
+# 2026-10-08: 55 → 56. F32-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f32-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 56 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

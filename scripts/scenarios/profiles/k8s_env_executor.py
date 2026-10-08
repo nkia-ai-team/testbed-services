@@ -25,6 +25,9 @@ APPROVED_TARGETS = {
     # 2026-10-08. F30-R: food payment 의 JSON 명명 규칙을 snake_case 로 바꾸는 설정 배포.
     # 호출자 order 는 camelCase 그대로라 결제 요청의 orderId 를 못 읽는다(L 데이터 형식 불일치).
     "F30-R": ("rca-testbed-food", "testbed-payment", "payment-service"),
+    # 2026-10-08. F32-R: food dispatch 의 배차 동시 한도(DISPATCH_MAX_CAPACITY)를 실제 배차 수
+    # 아래로 내리는 설정 배포. order 의 용량 확인이 available=0 을 받아 주문을 503 으로 거절한다.
+    "F32-R": ("rca-testbed-food", "testbed-dispatch", "dispatch-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -35,6 +38,7 @@ APPROVED_KEYS = {
     "F04-H": {"OUTBOX_RELAY_ENABLED"},
     "F05-R": {"JAVA_TOOL_OPTIONS"},
     "F30-R": {"SPRING_APPLICATION_JSON"},
+    "F32-R": {"DISPATCH_MAX_CAPACITY"},
 }
 
 

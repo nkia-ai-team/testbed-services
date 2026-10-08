@@ -5244,6 +5244,207 @@
        }
      ]
    }
+  },
+  "F32-R": {
+   "title": "Config deploy cuts the food dispatch courier-capacity limit below the couriers already assigned: every new order is rejected with 503",
+   "description": "A configuration rollout to the food dispatch-service sets DISPATCH_MAX_CAPACITY=200, overriding the 2000 default in application.yml. Around 1,700 couriers are assigned at any time under normal load (orders ~1.15/s x ETA 15-34 min), so the new limit is far below the usage that already exists. Nothing breaks inside dispatch: its pod is Ready, its DB is fine and it keeps answering GET /api/deliveries/capacity with 200, but the answer is now {currentAssigned ~1700, maxCapacity 200, available 0}. order-service asks for capacity before it creates an order, sees available <= 0, logs INFO 'Order rejected: courier pool exhausted (assigned=..., max=200)' and returns 503 'No courier available (capacity full)'. No order row is written, dispatch is never asked to assign and payment is never called, so order creation drops to zero while restaurant lookups and delivery tracking stay normal. Because nothing is assigned any more the assigned count only drains (the expiry batch keeps delivering ~35 per 30 s), and it would take about 20 minutes to fall under 200. The only change before the rejections is the dispatch Deployment rollout, and the new ReplicaSet spec captured by KCM carries the added DISPATCH_MAX_CAPACITY=200. This reconstructs Google's 2020-12-14 authentication outage, where the quota management system cut the User ID Service's quota below its real usage and the service could no longer serve, until quota enforcement was switched off.",
+   "cause": "Config rollout of testbed-dispatch (food) with DISPATCH_MAX_CAPACITY=200 (default 2000) → dispatch.max-capacity drops below the ~1,700 couriers already ASSIGNED → GET /api/deliveries/capacity returns available=0 → order-service's capacity check rejects every order before creating it: INFO 'Order rejected: courier pool exhausted (assigned=~1700, max=200)' and 503 'No courier available (capacity full)' → order creation fails for every order that passes the restaurant and menu checks, until the limit is restored.",
+   "injection_summary": "The k8s.env executor replaces the testbed-dispatch/dispatch-service container env in rca-testbed-food from the approved baseline with the fault set and rolls out. The only difference is one added line, DISPATCH_MAX_CAPACITY=200 (the property dispatch.max-capacity reads it, default 2000). A north-south 3 rps companion drives the food entry point (30181) with lookups and order creation on top of the resident baseline load. Cleanup restores the env to baseline and rolls back the rollout. No app code, image or DB state is changed and no value carries the scenario id.",
+   "user_impact": "Order creation fails with 503 'No courier available (capacity full)' for every order that passes the restaurant-open and menu checks; restaurant lookups, menus and delivery tracking keep working. Nothing crashes and dispatch reports no errors, so the visible signals are order 5xx on POST /api/orders, the order INFO log 'Order rejected: courier pool exhausted' going from 0 to every order, and 'Created order' / 'Dispatched courier' logs stopping. Couriers already on the road are unaffected and keep being delivered by the expiry batch.",
+   "distinguishing_evidence": "Decisive evidence is the pair 'dispatch Deployment rollout' (KCM ScalingReplicaSet event, new ReplicaSet whose captured spec adds DISPATCH_MAX_CAPACITY=200) followed within the settle time by order logs 'Order rejected: courier pool exhausted (assigned=N, max=200)' in which assigned is about 8 times max and falls over time. Real courier saturation would show assigned at or just over max with max unchanged, after an order surge or a stalled expiry batch; here order intake did not rise beforehand and the dispatch expiry batch keeps logging 'delivered=N' every 30 s. dispatch is Ready and answers capacity with 200 (no 'Failed to check dispatch capacity' errors, unlike a dispatch outage), there is no order or payment rollout, and payment is never reached (unlike F30-R, where orders fail with 400 at the payment step).",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "config",
+    "target_id": "food-delivery-dispatch",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food dispatch-service 의 설정 배포다. 이 배포가 DISPATCH_MAX_CAPACITY=200 을 더해 배차 동시 한도(dispatch.max-capacity, 기본 2000)를 평시 실제 배차 수(ASSIGNED 약 1,700) 아래로 내렸다. dispatch 의 용량 응답이 available=0 이 되고, order 는 주문을 만들기 전에 그 응답을 확인해 모든 주문을 503 'No courier available (capacity full)' 로 거절한다. order 의 확인 로직과 요청은 늘 하던 그대로라 정당하고(원칙 6), 잘못된 값을 가진 것은 dispatch 의 설정이므로 근본과 계기가 같은 곳(dispatch 배포)이다. target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME, 로그와 트레이스의 service_name)이고, 같은 이름을 쓰는 다른 개체는 없다. 관제 데이터로의 도달 경로: ① KCM 이벤트 rca-testbed-food Deployment testbed-dispatch ScalingReplicaSet(롤아웃)과, KCM 이 새 ReplicaSet 을 처음 볼 때 남기는 스펙(PG kcm_resources_history.yaml)에 더해진 env DISPATCH_MAX_CAPACITY=200 ② 그 직후 order INFO 로그 'Order rejected: courier pool exhausted (assigned=<약 1,700>, max=200)' 가 평시 0 에서 주문마다 생김(로그는 전수 수집). assigned 가 max 의 약 8배이고 시간이 갈수록 줄어 수요 포화가 아니라 한도가 사용량 아래로 내려간 것임을 보인다 ③ order 'Created order', dispatch 'Dispatched courier' 로그가 끊기고, dispatch 만료 배치 로그 'delivered=N' 은 30초마다 계속된다 ④ dispatch 파드 Ready, dispatch 5xx 없음, order 와 payment 롤아웃 없음. 원본 사후 보고처럼 '한도(쿼터) 설정이 실제 사용량 아래로 줄어 정상 요청이 거절됐다'가 정답의 층위이고, 누가 왜 그 값을 넣었는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/dispatch-service/src/main/resources/application.yml:78-83 (dispatch.max-capacity: ${DISPATCH_MAX_CAPACITY:2000} — env 하나로 한도가 바뀐다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:39-48 (DispatchService 생성자 — @Value dispatch.max-capacity 를 maxCapacity 로 받는다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:105-114 (getCapacity — available = max(0, maxCapacity - currentAssigned))",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java:59-66 (getCapacity — GET /api/deliveries/capacity, order 가 주문 전에 부른다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:31-45 (checkCapacity — 용량 응답을 그대로 돌려준다. 200 이라 retry 와 CB 가 끼지 않는다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-105 (createOrder 도메인 검증 3 — available <= 0 이면 log.info 'Order rejected: courier pool exhausted (assigned, max)' 후 503 'No courier available', 주문 저장 이전)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/config/GlobalExceptionHandler.java:12-19 (handleServiceException — ServiceException 상태 그대로 503 응답)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:119-130 (deliverExpiredDispatches — 만료 배치는 계속 돌아 ASSIGNED 가 줄기만 한다)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-dispatch, container dispatch-service 의 env(저장소 food-delivery/k8s/22-dispatch-deploy.yaml:38-66, 실배치는 109 kubectl 로 확인한 11개 항목이며 DISPATCH_MAX_CAPACITY 는 없어 기본 2000). k8s.env executor 가 DISPATCH_MAX_CAPACITY=200 한 줄을 더해 롤아웃한다. 재빌드 없이 application.yml 자리표시자가 env 를 읽는다. replicas 1, maxSurge 25%(올림 1) / maxUnavailable 25%(내림 0)라 새 파드가 Ready 된 뒤 옛 파드가 내려간다."
+   },
+   "must_support": [
+    "dispatch 롤아웃 KCM 이벤트(rca-testbed-food Deployment testbed-dispatch ScalingReplicaSet, 새 ReplicaSet SuccessfulCreate, 파드 Created/Started) 직후 주문 거절이 시작된다. 새 ReplicaSet 스펙(PG kcm_resources_history)에 DISPATCH_MAX_CAPACITY=200 이 더해져 있다",
+    "order INFO 로그 'Order rejected: courier pool exhausted (assigned=N, max=200)' 가 평시 0(보존 7일 전체 0건)에서 주문마다 생긴다. assigned 가 max 보다 훨씬 크고 시간이 갈수록 준다",
+    "order 'Created order' 와 dispatch 'Dispatched courier' INFO 로그가 끊긴다(평시 5분당 224~370건, 7일 408,658건)",
+    "주문 생성 5xx 비율이 평시 0 에서 0.5 이상으로, 2xx 비율이 평시 0.91~1.0 에서 0.2 미만으로 바뀐다",
+    "dispatch 파드 Ready, dispatch 5xx 없음, 만료 배치 'Dispatch expiry batch finished: delivered=N' 30초마다 계속, 조회 경로 정상"
+   ],
+   "must_rule_out": [
+    "실제 배차 포화가 아님: 거절 로그의 assigned 가 max 의 약 8배이고 시간이 갈수록 줄며, 직전에 주문 유입이 늘지 않았고 만료 배치가 계속 돈다. 수요 포화나 배치 정지면 assigned 가 바뀌지 않은 max(2000) 근처에서 막힌다",
+    "dispatch 가용성 장애가 아님: dispatch 파드 Ready, 용량 조회가 200 으로 응답하고 order 에 'Failed to check dispatch capacity' 나 'Dispatch service unavailable' 이 없다",
+    "order 쪽 변경이 아님: order 에는 롤아웃이 없고 거절 로그가 dispatch 가 알려 준 max 를 그대로 적는다. order 설정 오배포면 F08-P 처럼 order 롤아웃이 계기다",
+    "결제 단계 실패가 아님: 주문이 저장되기 전에 503 으로 끝나 payment 를 부르지 않는다. 결제 400 이면 F30-R, 외부 PG 429 면 F06-P"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F23-R (commerce 재입고 배치가 멈춰 재고가 실제로 바닥나 409 거절. 같은 '업무 한도에 걸린 거절'이지만 사용량이 한도까지 차서 막힌다. F32-R 은 사용량은 그대로이고 한도 값이 배포로 내려갔다)",
+     "F30-R (같은 food 에서 설정 배포가 계기지만 바뀐 쪽이 payment 이고 주문이 결제 단계에서 400. F32-R 은 주문 저장 전에 503)",
+     "F08-P (설정 오배포가 계기인 점은 같지만 commerce order 자신의 read-timeout 을 깎아 order 쪽이 끊는다. F32-R 은 바뀐 쪽이 하류 dispatch 이고 상류 order 의 확인은 정당하다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-dispatch",
+     "food-dispatch"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order"
+    ]
+   },
+   "title_ko": "설정 배포로 food dispatch 의 배차 동시 한도가 이미 배정된 배차 수 아래로 내려감: 새 주문이 전부 503 으로 거절된다",
+   "description_ko": "food dispatch-service 에 DISPATCH_MAX_CAPACITY=200 을 거는 설정이 롤아웃되어 application.yml 의 기본값 2000 을 덮는다. 평시 부하에서는 늘 약 1,700 건의 배차가 배정돼 있으므로(주문 약 1.15/s × ETA 15~34분) 새 한도는 이미 있는 사용량보다 한참 낮다. dispatch 안에서는 아무것도 깨지지 않는다: 파드 Ready, DB 정상, GET /api/deliveries/capacity 도 200 으로 답하지만 그 답이 {currentAssigned 약 1700, maxCapacity 200, available 0} 이 된다. order-service 는 주문을 만들기 전에 용량을 묻고 available <= 0 을 보면 INFO 'Order rejected: courier pool exhausted (assigned=..., max=200)' 를 남기고 503 'No courier available (capacity full)' 를 돌려준다. 주문 행은 쓰이지 않고 배차 요청도 결제도 일어나지 않아 주문 생성이 0 으로 떨어지고, 식당 조회와 배달 추적은 정상이다. 새 배정이 없으니 배정 수는 줄기만 하고(만료 배치가 30초마다 약 35건씩 배달 완료 처리) 200 아래로 내려가려면 약 20분이 걸린다. 거절 직전의 변화는 dispatch Deployment 롤아웃 하나이고, KCM 이 잡은 새 ReplicaSet 스펙에 DISPATCH_MAX_CAPACITY=200 이 더해져 있다. Google 2020-12-14 인증 장애(쿼터 관리 시스템이 User ID Service 의 쿼터를 실제 사용량 아래로 줄여 서비스가 요청을 처리하지 못했고, 쿼터 적용을 끄는 것으로 복구)의 재구성이다.",
+   "cause_ko": "testbed-dispatch(food) 설정 롤아웃으로 DISPATCH_MAX_CAPACITY=200(기본 2000) → dispatch.max-capacity 가 이미 ASSIGNED 인 약 1,700 건 아래로 내려감 → GET /api/deliveries/capacity 가 available=0 → order 의 용량 확인이 주문을 만들기 전에 모두 거절: INFO 'Order rejected: courier pool exhausted (assigned=약 1700, max=200)' 와 503 'No courier available (capacity full)' → 식당과 메뉴 확인을 지난 주문 생성이 한도를 되돌릴 때까지 전부 실패.",
+   "injection_summary_ko": "k8s.env executor 가 rca-testbed-food 의 testbed-dispatch/dispatch-service 컨테이너 env 를 승인된 baseline 에서 fault 집합으로 바꿔 롤아웃한다. 차이는 한 줄, DISPATCH_MAX_CAPACITY=200 이다(속성 dispatch.max-capacity 가 이 값을 읽고 기본은 2000). north-south 3rps 동반 부하가 상주 기준선 부하 위에 food 진입점(30181)으로 조회와 주문 생성을 더한다. cleanup 은 env 를 baseline 으로 되돌리고 롤아웃을 원복한다. 앱 코드, 이미지, DB 상태는 바꾸지 않으며 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "식당 영업과 메뉴 확인을 지난 주문 생성이 전부 503 'No courier available (capacity full)' 로 실패한다. 식당 조회, 메뉴, 배달 추적은 정상이다. 죽은 것도 dispatch 오류도 없어서 겉으로 보이는 신호는 POST /api/orders 의 5xx, order INFO 로그 'Order rejected: courier pool exhausted' 의 0 → 주문당 1줄, 'Created order' 와 'Dispatched courier' 로그의 정지다. 이미 배차된 배달은 영향이 없고 만료 배치가 계속 배달 완료 처리한다.",
+   "distinguishing_evidence_ko": "결정 증거는 'dispatch Deployment 롤아웃'(KCM ScalingReplicaSet 이벤트, 새 ReplicaSet 스펙에 DISPATCH_MAX_CAPACITY=200 추가) 뒤 곧바로 나타나는 order 로그 'Order rejected: courier pool exhausted (assigned=N, max=200)' 이고, 그 assigned 가 max 의 약 8배이며 시간이 갈수록 준다는 점이다. 진짜 배차 포화라면 주문 급증이나 만료 배치 정지 뒤에 바뀌지 않은 max 근처에서 assigned 가 막힌다. 여기서는 직전에 주문 유입이 늘지 않았고 dispatch 만료 배치가 30초마다 'delivered=N' 을 계속 남긴다. dispatch 는 Ready 이고 용량 조회에 200 으로 답해(dispatch 가용성 장애와 달리 'Failed to check dispatch capacity' 오류가 없다), order 와 payment 롤아웃이 없고, payment 에는 닿지도 않는다(결제 단계에서 400 으로 실패하는 F30-R 과 다르다).",
+   "injected_fault": {
+    "profile": "k8s.env",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f32-r",
+      "parameters": {
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-dispatch",
+       "container": "dispatch-service",
+       "baseline": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "MYSQL_USER",
+           "name": "mysql-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASSWORD",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "MYSQL_PASSWORD",
+           "name": "mysql-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "food-delivery-dispatch"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=food-delivery,lucida.target_id=1f1eb9b2-a368-4a70-a003-5fe70b1a983b"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        }
+       ],
+       "fault": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "MYSQL_USER",
+           "name": "mysql-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASSWORD",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "MYSQL_PASSWORD",
+           "name": "mysql-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "food-delivery-dispatch"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=food-delivery,lucida.target_id=1f1eb9b2-a368-4a70-a003-5fe70b1a983b"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        },
+        {
+         "name": "DISPATCH_MAX_CAPACITY",
+         "value": "200"
+        }
+       ]
+      }
+     }
+    ]
+   }
   }
  }
 }

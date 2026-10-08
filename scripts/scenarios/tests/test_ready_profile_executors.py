@@ -466,6 +466,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
             # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
             "F30-R",
+            # 2026-10-08: food dispatch 배차 한도 설정 배포(설정 오배포). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F32-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
