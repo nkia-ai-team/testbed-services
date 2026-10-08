@@ -80,6 +80,7 @@ food-delivery/
 | Stale order cleanup | order-service | 1시간(`order.cleanup.interval-ms`) | `retention-days`(기본 30일) 넘긴 PENDING 주문 → CANCELLED |
 | SettlementBatch | payment-service | 1시간(`settlement.poll-interval-ms`) | 미정산 완료 결제 집계 → settlement_summary 기록 |
 | PopularMenuBatch | restaurant-service | 1시간(`menu.popularity.interval-ms`) | 최근 `lookback-days`(기본 7일) 주문 집계 → menu_popularity_summary 재계산 |
+| 보존 기간 정리 3종 (`OrderRetentionBatch`·`DispatchRetentionBatch`·`PaymentRetentionBatch`) | order·dispatch·payment | 6초(`*.retention.interval-ms`), 주기당 2,000건(`*.retention.batch-size`) | `*.retention.days`(기본 30일) 지난 **끝난** 행만 지운다 — 주문 DELIVERED·CANCELLED(+order_items 먼저), 배차 DELIVERED(+dispatch_events 먼저), 결제 FAILED·정산 완료 승인. 진행 중(PENDING, ASSIGNED, 미정산 승인)은 남긴다. 기간은 셋을 함께 바꾼다 |
 
 ## DB 구조
 

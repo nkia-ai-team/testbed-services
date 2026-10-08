@@ -83,10 +83,10 @@ public class DispatchService {
         return toResponse(d);
     }
 
-    // §7 신규 — status/page/size 필터. 배열 응답(하위호환).
+    // §7 신규 — status/page/size 필터. 배열 응답(하위호환). 전체 건수를 세지 않는다(Slice).
     @Transactional(readOnly = true)
     public List<DispatchResponse> searchDispatches(String status, Pageable pageable) {
-        return dispatchRepository.search(status, pageable).getContent().stream()
+        return (status != null ? dispatchRepository.findByStatus(status, pageable) : dispatchRepository.findAllBy(pageable)).getContent().stream()
                 .map(this::toResponse)
                 .toList();
     }

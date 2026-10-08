@@ -1,7 +1,7 @@
 package com.fooddelivery.dispatch.repository;
 
 import com.fooddelivery.dispatch.entity.Dispatch;
-import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -13,9 +13,9 @@ public interface DispatchRepository extends JpaRepository<Dispatch, Long> {
 
     long countByStatus(String status);
 
-    // §7 신규 — status 선택적 필터.
-    @Query("SELECT d FROM Dispatch d WHERE (:status IS NULL OR d.status = :status)")
-    Page<Dispatch> search(@Param("status") String status, Pageable pageable);
+    // 목록 조회(GET /api/deliveries): status 가 있으면 idx_dispatches_status_assigned 를 타는 파생 쿼리, 없으면 전체. Slice 라 COUNT 를 내지 않는다.
+    Slice<Dispatch> findByStatus(String status, Pageable pageable);
+    Slice<Dispatch> findAllBy(Pageable pageable);
 
     // ASSIGNED → DELIVERED 자동 전이 대상 조회.
     // (7번 이식 중 발견한 버그 수정) 기존엔 PostgreSQL 문법(assigned_at + (eta_minutes * INTERVAL
@@ -27,4 +27,19 @@ public interface DispatchRepository extends JpaRepository<Dispatch, Long> {
             + "AND DATE_ADD(assigned_at, INTERVAL eta_minutes MINUTE) < NOW()",
             nativeQuery = true)
     List<Dispatch> findExpiredAssigned();
+
+    /** 보존 기간 정리 대상 판정에 필요한 세 컬럼만 읽는다. */
+    interface RetentionHead {
+        Long getId();
+
+        String getStatus();
+
+        java.time.LocalDateTime getAssignedAt();
+    }
+
+    // 보존 기간 정리용. PK 만 타고 커서 뒤 한 묶음을 읽는다 — status·assigned_at 인덱스에 기대지
+    // 않는 것은 F33-R 이 그 인덱스를 지우기 때문이다(그때도 정리가 전수 스캔이 되지 않는다).
+    @Query("select d.id as id, d.status as status, d.assignedAt as assignedAt from Dispatch d "
+            + "where d.id > :afterId order by d.id asc")
+    List<RetentionHead> findRetentionHeads(@Param("afterId") long afterId, Pageable pageable);
 }

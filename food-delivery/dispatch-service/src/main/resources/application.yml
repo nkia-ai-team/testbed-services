@@ -81,3 +81,11 @@ dispatch:
   # 거절됐다(2026-07-15 용량 프로브에서 발견 — spec-scenario-load §8.2 결함 4).
   # 배차 부족 시나리오는 이 env를 낮춰 재현한다.
   max-capacity: ${DISPATCH_MAX_CAPACITY:2000}
+  # 보존 기간이 지난 끝난 배차(DELIVERED)와 그 전이 이력을 주기마다 batch-size 건씩 지운다(DispatchRetentionBatch).
+  # 분당 상한 = batch-size × 60000 / interval-ms (기본 2만 건). 주문·배차·결제 셋이 같은 기간을 쓴다
+  # (order·dispatch·payment.retention) — 기간을 바꾸면 셋을 함께 바꾼다.
+  retention:
+    enabled: ${DISPATCH_RETENTION_ENABLED:true}
+    days: ${DISPATCH_RETENTION_DAYS:30}
+    interval-ms: ${DISPATCH_RETENTION_INTERVAL_MS:6000}
+    batch-size: ${DISPATCH_RETENTION_BATCH_SIZE:2000}

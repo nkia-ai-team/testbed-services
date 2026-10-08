@@ -22,7 +22,7 @@ import java.util.List;
 public class SettlementBatch {
 
     private static final Logger log = LoggerFactory.getLogger(SettlementBatch.class);
-    private static final List<String> SETTLEABLE_STATUSES = List.of("APPROVED", "COMPLETED", "SUCCESS");
+    static final List<String> SETTLEABLE_STATUSES = List.of("APPROVED", "COMPLETED", "SUCCESS");
 
     private final PaymentRepository paymentRepository;
     private final SettlementSummaryRepository settlementSummaryRepository;
