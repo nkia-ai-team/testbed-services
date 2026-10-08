@@ -5644,6 +5644,102 @@
      }
     ]
    }
+  },
+  "F36-R": {
+   "title": "A schema migration renames a column of the food restaurants table while restaurant-service still reads the old name: every restaurant lookup and search fails with 'Unknown column' and order creation fails with 502",
+   "description": "The food restaurants table (23 rows: id, name, region, status) is read by restaurant-service through the JPA entity Restaurant, whose field region is mapped to the column region. Every restaurant lookup (findById, GET /api/restaurants/{id}) and every search (GET /api/restaurants?region=&status=) selects that column. A schema migration renames restaurants.region to delivery_region (ALTER TABLE ... RENAME COLUMN, metadata only) while the running restaurant-service, which nobody redeployed, keeps selecting r1_0.region. From that moment MySQL rejects each of those statements with ER_BAD_FIELD_ERROR 1054 \"Unknown column 'r1_0.region' in 'field list'\", restaurant-service answers 500, and order-service, whose first step in createOrder is the restaurant lookup, retries three times, opens its restaurant circuit breaker and answers 502 to every order before saving anything. The endpoints that never select region keep working on the same pod and the same database: the menu (GET /api/restaurants/{id}/menu, which checks the restaurant with a COUNT on id and reads menus) and the popular menu. Nothing else changes: no rollout, no restart, MySQL is healthy and fast, connection pools are idle. A 2 rps order companion (order-surge.js) keeps a steady order sample at every hour of the daily baseline cycle (1 to 6 iterations/s). It raises order intake, but the failures are immediate SQL errors whose text names a missing column, which more load cannot produce, and the menu endpoint of the same service on the same database keeps answering 200 under the same load.",
+   "cause": "Column restaurants.region renamed to delivery_region by a schema migration (DDL, ALGORITHM=INSTANT) while restaurant-service still maps Restaurant.region to the column region → every findById and search on restaurants fails with MySQL 1054 Unknown column 'r1_0.region' → restaurant GET /api/restaurants/{id} and GET /api/restaurants answer 500 → order-service createOrder fails at its first step (restaurantClient.getRestaurant), retries 3 times, opens the restaurant circuit breaker → POST /api/orders 502 before the order row is written. Menu and popular-menu endpoints do not select region and keep answering 200.",
+   "injection_summary": "The db.ddl executor checks that fooddelivery.restaurants has at least 20 rows (reading at most 20) and that the column region exists and delivery_region does not (information_schema.columns), then runs SET SESSION lock_wait_timeout=10; ALTER TABLE restaurants RENAME COLUMN region TO delivery_region, ALGORITHM=INSTANT through the MySQL client inside testbed-mysql-0. The rename changes metadata only: no row is rewritten and no index changes (restaurants has only its primary key). If in-flight transactions hold the table's metadata lock for more than 10 seconds the statement fails and nothing changes. A north-south companion at 2 rps (order-surge.js, order journeys 75%) drives the food entry point on top of the resident baseline, so the order sample does not depend on the hour of the daily cycle. Cleanup renames delivery_region back to region with the same statement form and checks the original columns. No app code, image, configuration, Kubernetes object or row data is changed and no value carries the scenario id.",
+   "user_impact": "Every order fails with 502 (the restaurant check cannot be answered), restaurant detail pages and restaurant search fail with 500. Menus and popular menus still load, so a customer can browse a restaurant's menu but cannot open the restaurant page or place an order. Delivery tracking and payments already made are unaffected. No data is lost: the column keeps its values under the new name and the rename back restores service immediately.",
+   "distinguishing_evidence": "The decisive evidence is the error text itself in restaurant-service logs: WARN 'SQL Error: 1054, SQLState: 42S22' and ERROR \"Unknown column 'r1_0.region' in 'field list'\" (0 occurrences in the 7 days of logs kept on 2026-10-08), starting in one minute and naming the missing column, together with the split by endpoint on the same pod and the same database: restaurant lookup and search (the statements that select region) fail at 100% while menu and popular-menu (statements that do not) keep answering 200. That is a schema mismatch between the table and the code reading it, not a capacity, network or database outage problem: restaurant p95 stays in milliseconds, its Hikari pool has no pending requests, MySQL active sessions and average response time stay at baseline (median 1 and 7.3 ms over 8 days), and MySQL is not restarted (no 'Communications link failure', unlike the MySQL OOM restarts of 2026-10-01, 10-04, 10-06 and 10-08). Nothing in Kubernetes changed: no rollout or new ReplicaSet of testbed-restaurant (same pod since at least 2026-08-24 in KCM), so it is not a new restaurant version. Downstream: order ERROR 'Failed to fetch restaurant N: 500 ...' (while the circuit breaker is open only the half-open probes reach restaurant and log it; the other orders get the fallback 502 'Restaurant service unavailable' as the response body without a log line), POST /api/orders 502, 'Created order' disappears. The companion raises order intake, but load cannot produce an unknown-column error and the menu endpoint on the same database is unaffected under the same load.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery.restaurants",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 의 fooddelivery.restaurants 테이블 스키마다. 스키마 마이그레이션(DDL)이 region 열의 이름을 delivery_region 으로 바꿨는데, 이 열을 읽는 restaurant-service 는 새 이름을 쓰는 코드로 바뀌지 않은 채 돌고 있다(엔티티 Restaurant 의 @Column(name = \"region\")). 원본 사후 보고(Onfido 2024-10-18, \"a database schema migration ... caused a temporary mismatch between the database and the application-side ORM model\", 옛 인스턴스가 더는 없는 열을 조회해 5xx)처럼, 두 단계(확장 뒤 수축)로 나눠야 할 스키마 변경을 코드보다 먼저 적용한 것이 원인이고 그 층위가 정답이다. restaurant-service 와 order-service 의 코드, 설정, 요청은 늘 하던 그대로라 정당하다(원칙 6: 정당한 요청이 결함 있는 곳에서 실패). 근본과 계기가 같은 곳(restaurants 테이블에 대한 DDL)이라 trigger_target_id 는 비운다. target_id 는 '인스턴스:스키마.테이블' 꼴로 F33-R, F06-H 와 같은 표기이고 같은 이름의 다른 개체가 없다. 관제 데이터로의 도달 경로: ① restaurant WARN 'SQL Error: 1054, SQLState: 42S22' 와 ERROR \"Unknown column 'r1_0.region' in 'field list'\" 가 한 분 안에 시작해 이어진다(로그 전수, 평시 7일 0건). 오류 문장이 없는 열의 이름을 직접 가리킨다 ② 같은 파드, 같은 DB 에서 region 을 고르는 질의(가게 상세 findById, 가게 검색)만 실패하고 region 을 고르지 않는 메뉴(existsById 의 id COUNT 와 menus 조회), 인기 메뉴는 200 그대로다(스팬, 로그) ③ order ERROR 'Failed to fetch restaurant N: 500 ...'(서킷브레이커가 열린 동안은 반열림 호출에서만 남고, 나머지 주문은 로그 없이 fallback 502 'Restaurant service unavailable' 응답), POST /api/orders 502, 'Created order' 급감 ④ rca-testbed-food 에 롤아웃이나 새 ReplicaSet 이 없고(KCM), restaurant 파드와 MySQL 파드는 재시작하지 않으며, MySQL 세션과 응답 시간, restaurant Hikari 대기가 평시 그대로다(DPM, Hikari 지표). 열 이름을 바꾼 DDL 문장 자체는 119 에 남지 않는다(DPM Top SQL 은 DML 다이제스트만 남기고 8주 동안 ALTER 기록이 0건). 그래서 계기의 흔적은 오류 문장(없는 열 이름)과 시작 시각, 그리고 그 시각에 다른 변경(배포, 재시작, 설정)이 없다는 사실이다. 누가 왜 마이그레이션을 먼저 적용했는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/entity/Restaurant.java:16-17 (@Column(name = \"region\") — 엔티티가 옛 열 이름을 읽는다, findById 와 검색이 모두 이 열을 고른다)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java:54-59 (getRestaurant — restaurantRepository.findById, 'select r1_0.id,r1_0.name,r1_0.region,r1_0.status from restaurants r1_0 where r1_0.id=?')",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/repository/RestaurantRepository.java:12-16 (search — region, status 선택 필터 JPQL, 같은 열을 고르고 거른다)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java:61-69 (getMenu — existsById 는 id 만 세고 menus 를 읽어 region 을 고르지 않는다, 같은 파드에서 계속 200)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/config/GlobalExceptionHandler.java:9-20 (ServiceException 만 매핑, SQL 오류는 처리되지 않은 예외로 500)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:29-56 (getRestaurant — 5xx 를 ERROR 'Failed to fetch restaurant' 와 502 로, @Retry/@CircuitBreaker restaurant, fallback 'Restaurant service unavailable' 502)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57-61 (createOrder — 첫 단계가 restaurantClient.getRestaurant, 실패하면 주문 저장 전에 끝난다)",
+     "food-delivery/order-service/src/main/resources/application.yml:51-54 (restaurant — services.restaurant read-timeout 5s)",
+     "food-delivery/order-service/src/main/resources/application.yml:69-77 (restaurant — 서킷브레이커 sliding-window-size 10, failure-rate-threshold 50, wait-duration-in-open-state 5s)",
+     "food-delivery/order-service/src/main/resources/application.yml:98-104 (restaurant — 재시도 max-attempts 3, wait-duration 200ms 지수 백오프)",
+     "food-delivery/db/init.sql:29-34 (restaurants — id, name, region, status, 기본 키 외 인덱스 없음)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, tb-w3). fooddelivery.restaurants 는 2026-10-08 기준 23행, 열 id, name, region(varchar 64), status, 기본 키만 있고 menus.restaurant_id 와 orders.restaurant_id 가 외래 키로 참조한다(열 이름 변경은 외래 키 열이 아니라 영향 없음). MySQL 8.0 은 RENAME COLUMN 을 ALGORITHM=INSTANT 로 메타데이터만 바꾼다(로컬 mysql:8.0.46 실측: 변경 직후 같은 SELECT 가 ERROR 1054, 되돌리면 즉시 정상, 진행 중인 트랜잭션이 메타데이터 잠금을 잡고 있으면 lock_wait_timeout 10초 뒤 아무것도 바꾸지 않고 실패). db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 열어 실행한다."
+   },
+   "must_support": [
+    "restaurant WARN 'SQL Error: 1054, SQLState: 42S22' 와 ERROR \"Unknown column 'r1_0.region' in 'field list'\" 가 주입 분부터 이어진다(2026-10-08 조회 시 남아 있던 약 7일 로그에서 0건)",
+    "restaurant 서버 스팬 중 GET /api/restaurants/{id} 와 GET /api/restaurants 가 500(ERROR)으로 바뀌고, 같은 파드의 GET /api/restaurants/{id}/menu 와 /popular-menu 는 200 그대로다. restaurant 표본 스팬 오류는 평시 7일 436,163건 중 12건이다",
+    "order ERROR 'Failed to fetch restaurant N: 500 ...' 가 평시 7일 0건에서 나타나 서킷브레이커 반열림마다 이어지고(나머지 주문은 로그 없이 fallback 502 'Restaurant service unavailable' 응답), POST /api/orders 가 502(ERROR)로 바뀌며 'Created order' INFO 가 끊긴다. 동반 부하의 주문 생성 5xx 비율이 0.5 이상, 2xx 비율이 0.2 미만이 된다",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작이 없다(KCM). restaurant 파드는 Ready 이고 2026-08-24 이후 같은 파드다",
+    "MySQL 은 Ready 이고 재시작하지 않으며, 활성 세션과 평균 응답 시간(dpm.mysql.session.active_session, dpm.mysql.instance.avg_query_response_time)이 평시(8일 중앙 1, 7.3ms) 근처에 머물고, restaurant Hikari 대기(db.client.connections.pending_requests)가 0 이다"
+   ],
+   "must_rule_out": [
+    "restaurant 새 버전 배포(결함 있는 코드)가 아님: testbed-restaurant 롤아웃, 새 ReplicaSet, 이미지 변경이 없고 파드가 그대로다. 오류는 앱이 아니라 MySQL 이 낸 1054 다",
+    "MySQL 다운이나 재시작(F25-H 꼴, 2026-10-01, 10-04, 10-06, 10-08 의 OOM 재시작)이 아님: testbed-mysql-0 Ready, 'Communications link failure' 와 Hikari 연결 대기 실패가 없고, 같은 DB 의 메뉴 질의와 다른 서비스 질의가 정상이다. 재시작이면 모든 질의가 함께 끊기고 3분 안팎에 회복한다",
+    "부하 증가나 용량 부족이 아님: 동반 부하로 주문 유입이 시간대에 따라 약 2~8배가 되지만 restaurant p95 는 밀리초대이고 Hikari 대기가 0, MySQL 세션과 응답 시간이 평시다. 실패는 기다림 끝의 시간 초과가 아니라 즉시 나는 SQL 오류이고 그 문장이 없는 열 이름을 가리킨다. 같은 부하에서 같은 DB 를 읽는 메뉴 엔드포인트는 200 이다",
+    "가게 데이터 변경(전부 CLOSED 같은 운영 명령)이 아님: 그러면 restaurant 는 200 으로 답하고 order 가 'Order rejected: restaurant N status=CLOSED' 와 400 을 남긴다. 여기서는 restaurant 가 500, order 가 502 다",
+    "느린 쿼리(F33-R 꼴 인덱스 제거)가 아님: DPM index_count 가 그대로이고 질의가 느려지지 않는다. 질의는 실행 전에 거절된다",
+    "서비스 사이 데이터 형식 불일치(F30-R 꼴 직렬화 설정 배포)가 아님: 서비스 간 요청 본문은 그대로이고 롤아웃이 없다. 형식이 안 맞는 곳은 서비스와 서비스 사이가 아니라 테이블과 그 테이블을 읽는 코드 사이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F33-R (같은 food MySQL 의 스키마 변경(DDL)이 계기지만 인덱스가 사라져 질의가 느려지고 DB 가 포화된다. F36-R 은 DB 가 빠르고 건강한데 질의가 없는 열 때문에 즉시 거절된다)",
+     "F30-R (같은 묶음 L, 데이터 형식 불일치지만 서비스와 서비스 사이의 JSON 형식이고 계기가 payment 설정 배포와 롤아웃이다. F36-R 은 테이블 스키마와 그것을 읽는 ORM 사이이고 롤아웃이 없다)",
+     "F25-H (공유 DB 가 원인이지만 DB 프로세스가 죽어 모든 질의가 끊긴다. F36-R 은 DB 가 살아 있고 한 테이블의 한 열을 고르는 질의만 실패한다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery.restaurants"
+    ],
+    "partial": [
+     "food-delivery-restaurant",
+     "food-restaurant",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "스키마 마이그레이션이 food restaurants 테이블의 열 이름을 바꿨는데 restaurant-service 는 옛 이름을 그대로 읽음: 가게 조회와 검색이 모두 'Unknown column' 으로 실패하고 주문 생성이 502 로 실패한다",
+   "description_ko": "food restaurants 테이블(23행: id, name, region, status)은 restaurant-service 가 JPA 엔티티 Restaurant 로 읽고, 엔티티 필드 region 은 열 region 에 매핑돼 있다. 가게 조회(findById, GET /api/restaurants/{id})와 가게 검색(GET /api/restaurants?region=&status=)은 모두 이 열을 고른다. 스키마 마이그레이션이 restaurants.region 의 이름을 delivery_region 으로 바꾼다(ALTER TABLE ... RENAME COLUMN, 메타데이터만 바뀜). 다시 배포되지 않은 restaurant-service 는 계속 r1_0.region 을 고른다. 그 순간부터 MySQL 이 그 문장마다 ER_BAD_FIELD_ERROR 1054 \"Unknown column 'r1_0.region' in 'field list'\" 로 거절하고, restaurant-service 는 500 으로 답하며, createOrder 의 첫 단계가 가게 조회인 order-service 는 세 번 재시도하고 restaurant 서킷브레이커를 열어 아무것도 저장하기 전에 모든 주문에 502 로 답한다. region 을 고르지 않는 엔드포인트는 같은 파드, 같은 DB 에서 계속 동작한다: 메뉴(GET /api/restaurants/{id}/menu, 가게 확인은 id COUNT 이고 menus 를 읽는다)와 인기 메뉴. 그 밖에는 바뀐 것이 없다: 롤아웃도 재시작도 없고 MySQL 은 건강하고 빠르며 커넥션 풀은 한가하다. 2rps 주문 동반 부하(order-surge.js)가 하루 주기 기준선(1~6 iter/s)의 어느 시간대에도 일정한 주문 표본을 만든다. 동반 부하가 주문 유입을 늘리지만, 실패는 없는 열 이름을 가리키는 즉시 SQL 오류이고 부하로는 이런 오류가 생기지 않으며, 같은 부하에서 같은 서비스, 같은 DB 의 메뉴 엔드포인트는 200 으로 답한다.",
+   "cause_ko": "스키마 마이그레이션(DDL, ALGORITHM=INSTANT)이 restaurants.region 을 delivery_region 으로 바꿈, restaurant-service 는 여전히 Restaurant.region 을 열 region 에 매핑 → restaurants 에 대한 findById 와 검색이 모두 MySQL 1054 Unknown column 'r1_0.region' 으로 실패 → restaurant GET /api/restaurants/{id} 와 GET /api/restaurants 가 500 → order-service createOrder 가 첫 단계(restaurantClient.getRestaurant)에서 실패, 3회 재시도, restaurant 서킷브레이커 열림 → 주문 행을 쓰기 전에 POST /api/orders 502. 메뉴와 인기 메뉴 엔드포인트는 region 을 고르지 않아 200 그대로.",
+   "injection_summary_ko": "db.ddl executor 가 fooddelivery.restaurants 가 20행 이상(최대 20행만 읽음)이고 열 region 이 있고 delivery_region 이 없는지(information_schema.columns) 확인한 뒤, testbed-mysql-0 안의 MySQL 클라이언트로 SET SESSION lock_wait_timeout=10; ALTER TABLE restaurants RENAME COLUMN region TO delivery_region, ALGORITHM=INSTANT 를 실행한다. 이름 변경은 메타데이터만 바꾼다: 행을 다시 쓰지 않고 인덱스도 바뀌지 않는다(restaurants 에는 기본 키뿐). 진행 중인 트랜잭션이 테이블 메타데이터 잠금을 10초 넘게 잡고 있으면 문장이 실패하고 아무것도 바뀌지 않는다. north-south 2rps 동반 부하(order-surge.js, 주문 여정 75%)가 상주 기준선 위에 food 진입점으로 더해져 주문 표본이 하루 주기의 시간대에 좌우되지 않는다. cleanup 은 같은 문장 꼴로 delivery_region 을 region 으로 되돌리고 원래 열을 확인한다. 앱 코드, 이미지, 설정, 쿠버네티스 객체, 행 데이터는 바꾸지 않으며 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "모든 주문이 502 로 실패하고(가게 확인에 답을 못 받음), 가게 상세와 가게 검색이 500 으로 실패한다. 메뉴와 인기 메뉴는 열리므로 고객은 가게의 메뉴를 볼 수는 있지만 가게 화면을 열거나 주문할 수 없다. 배달 추적과 이미 끝난 결제는 영향이 없다. 데이터는 잃지 않는다: 열의 값은 새 이름 아래 그대로 있고 이름을 되돌리면 바로 정상이 된다.",
+   "distinguishing_evidence_ko": "결정 증거는 restaurant-service 로그의 오류 문장 자체다: WARN 'SQL Error: 1054, SQLState: 42S22' 와 ERROR \"Unknown column 'r1_0.region' in 'field list'\"(직전 7일 로그 0건)가 한 분 안에 시작하고 없는 열의 이름을 가리킨다. 여기에 같은 파드, 같은 DB 에서의 엔드포인트별 갈림이 짝을 이룬다: region 을 고르는 가게 조회와 검색은 100% 실패하고 그렇지 않은 메뉴와 인기 메뉴는 200 그대로다. 이것은 테이블과 그것을 읽는 코드 사이의 스키마 불일치이지 용량, 네트워크, DB 장애가 아니다: restaurant p95 는 밀리초대이고 Hikari 대기가 없으며, MySQL 활성 세션과 평균 응답 시간이 평시(8일 중앙 1, 7.3ms)이고 MySQL 은 재시작하지 않는다(2026-10-01, 10-04, 10-06, 10-08 MySQL OOM 재시작 때와 달리 'Communications link failure' 가 없다). 쿠버네티스에서도 바뀐 것이 없다: testbed-restaurant 롤아웃이나 새 ReplicaSet 이 없어(KCM 에서 2026-08-24 이후 같은 파드) restaurant 새 버전이 아니다. 하류는 그 결과다: order ERROR 'Failed to fetch restaurant N: 500 ...'(서킷브레이커가 열린 동안은 반열림 호출에서만 남고 나머지 주문은 로그 없이 fallback 502 'Restaurant service unavailable' 응답), POST /api/orders 502, 'Created order' 소멸. 동반 부하가 주문 유입을 늘리지만, 부하로는 없는 열 오류가 생기지 않고 같은 부하에서 같은 DB 의 메뉴 엔드포인트는 영향이 없다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f36-r",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "database": "fooddelivery",
+       "table": "restaurants",
+       "column": "region",
+       "renamed_to": "delivery_region",
+       "minimum_rows": 20
+      }
+     }
+    ]
+   }
   }
  }
 }

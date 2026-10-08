@@ -47,7 +47,8 @@ class DataNetworkExecutorFoundationTests(unittest.TestCase):
             # 2026-10-08: F32-R(후보, 고정 evaluation)이 끝에 붙어 F09-P 가 끝 6개에서 빠졌다.
             # 2026-10-08: F33-R(후보, 고정 evaluation)이 끝에 붙어 F17-P 가 끝 6개에서 빠졌다.
             # 2026-10-08: F35-R(후보, 고정 evaluation)이 끝에 붙어 F04-H 가 끝 6개에서 빠졌다.
-            ["F15-H", "F14-P", "F30-R", "F32-R", "F33-R", "F35-R"],
+            # 2026-10-08: F36-R(후보, 고정 evaluation)이 끝에 붙어 F15-H 가 끝 6개에서 빠졌다.
+            ["F14-P", "F30-R", "F32-R", "F33-R", "F35-R", "F36-R"],
         )
 
         # F02-P was parked on 2026-07-27 (nothing in food queries

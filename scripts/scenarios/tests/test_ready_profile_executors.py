@@ -499,6 +499,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F33-R",
             # 2026-10-08: banking Oracle 애플리케이션 계정 잠금(자격 증명 회전 실수). 새 후보, 설계 강도 1단 고정 evaluation.
             "F35-R",
+            # 2026-10-08: food restaurants 열 이름 변경 마이그레이션(스키마와 ORM 형식 불일치). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F36-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

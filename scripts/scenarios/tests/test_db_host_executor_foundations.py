@@ -40,6 +40,30 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("ALTER TABLE $table DROP INDEX $index", script)
         self.assertIn("CREATE INDEX $index ON $table($column)", script)
 
+    def test_mysql_column_rename_is_exact_bounded_and_reversible(self) -> None:
+        # F36-R: 마이그레이션이 열 이름만 바꾼다(메타데이터, 행 재작성 없음). 역 DDL 은 같은 꼴로 되돌리기.
+        p = ddl.CONTRACTS["F36-R"]
+        ddl.validate("F36-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F36-R", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "restaurants", "region", "delivery_region", "20"])
+        self.assertNotIn("F36-R", argv)
+        script = body.decode()
+        self.assertNotIn("F36-R", script)
+        self.assertIn("information_schema.columns", script)
+        self.assertIn("SET SESSION lock_wait_timeout=10; ALTER TABLE $table RENAME COLUMN $1 TO $2, ALGORITHM=INSTANT;", script)
+        self.assertIn('rename "$column" "$renamed"', script)
+        self.assertIn('rename "$renamed" "$column"', script)
+        self.assertNotIn("DROP", script)
+        # 메타데이터 잠금 대기 실패(1205) 같은 MySQL 오류 첫 줄을 러너 로그에 남긴다.
+        self.assertIn('grep -v "Using a password" "$e" | head -n 1 >&2', script)
+        self.assertNotIn("2>/dev/null", script)
+        # 인덱스 계약(F33-R)은 여전히 인덱스 스크립트로 간다.
+        _, index_body = ddl.build_invocation(plan("db.ddl", "F33-R", ddl.CONTRACTS["F33-R"]), "run")
+        self.assertIn("DROP INDEX", index_body.decode())
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F36-R", {**p, "renamed_to": "region_v2"}, {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

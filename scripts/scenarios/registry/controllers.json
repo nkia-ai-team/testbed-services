@@ -39,7 +39,8 @@
     "F30-R",
     "F32-R",
     "F33-R",
-    "F35-R"
+    "F35-R",
+    "F36-R"
   ],
   "controllers": {
     "F01-R": {
@@ -9138,6 +9139,227 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F36-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f36-r",
+            "parameters": {
+              "engine": "mysql",
+              "namespace": "rca-testbed-food",
+              "pod": "testbed-mysql-0",
+              "database": "fooddelivery",
+              "table": "restaurants",
+              "column": "region",
+              "renamed_to": "delivery_region",
+              "minimum_rows": 20
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "restaurant_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-restaurant"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)은 하루 주기로 1~6 iter/s(entrypoint.sh 시간대 표)라 KST 02~06시에는 주문 생성이 초당 약 0.2건뿐이다. 피해(가게 조회 실패)는 요청량과 무관하게 모든 주문에 나지만, 러너 판정 표본과 order 의 가게 조회 실패 로그(119 로그 이상 탐지가 묶음을 만드는 근거)가 시간대에 좌우되지 않도록 동반 부하가 주문 생성을 초당 약 1.4건 더한다. 119 promote 는 대개 열린 묶음을 고장 중에 판정할 때 나서 고장 중 order 오류율이 1차 근거가 되므로, 가장 한가한 시간에도 order 표본 스팬이 충분해야 한다(시트 §6)",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. 주문이 서킷브레이커로 곧바로 502 를 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 열 이름 변경이 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "restaurant-down",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "restaurant 파드가 빠지면 order 의 가게 조회 실패가 SQL 오류가 아니라 연결 실패다. 열 이름 변경은 health 의 SELECT 1 을 건드리지 않아 restaurant 는 Ready 로 남아야 한다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "restaurant-ready",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
       },
       "capture": {
         "enabled": true,

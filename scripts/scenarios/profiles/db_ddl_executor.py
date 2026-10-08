@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Exact inverse-DDL executor for the verified PostgreSQL product-search index."""
+"""Exact inverse-DDL executor for the verified PostgreSQL product-search index.
+
+The MySQL path drops and recreates one verified index (F02-P, F33-R) or renames
+one verified column and renames it back (F36-R).  A column rename is the
+"migration applied before the code that reads the new name" shape: the running
+service keeps selecting the old column and every such query fails with
+ER_BAD_FIELD_ERROR (1054) until the rename is reverted.  MySQL 8.0 renames a
+column in place (ALGORITHM=INSTANT, metadata only), so no row is rewritten and
+the inverse is a single statement.
+"""
 from __future__ import annotations
 
 import shlex
@@ -34,6 +43,12 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "database": "fooddelivery", "table": "dispatches", "index": "idx_dispatches_status_assigned",
         "column": "status,assigned_at", "minimum_rows": 1000,
     },
+    # 열 이름 바꾸기: column 을 renamed_to 로 바꾸고 cleanup 에서 되돌린다(인덱스 계약과 키가 달라 섞이지 않는다).
+    "F36-R": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "restaurants", "column": "region",
+        "renamed_to": "delivery_region", "minimum_rows": 20,
+    },
 }
 
 
@@ -52,6 +67,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     instance = profile_instance(plan, PROFILE_ID)
     p = instance["parameters"]
     validate(plan["scenario"]["id"], p, {})
+    if p["engine"] == "mysql" and "renamed_to" in p:
+        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
     if p["engine"] == "mysql":
         return ["/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"], p["namespace"], p["pod"], p["database"], p["table"], p["index"], p["column"], str(p["minimum_rows"])], MYSQL_REMOTE
     location = instance["location"]
@@ -135,6 +152,27 @@ case "$action" in
  preflight) check ;;
  run) check; mysql "ALTER TABLE $table DROP INDEX $index;" >/dev/null; [[ -z "$(definition)" ]] ;;
  cleanup) current=$(definition); if [[ -z "$current" ]]; then mysql "CREATE INDEX $index ON $table($column);" >/dev/null; else [[ "$current" == "$index:$column" ]]; fi ;;
+ recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+MYSQL_RENAME_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; renamed="$7"; minimum="$8"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed rename is readable in the runner log.
+mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+# Column presence is read from information_schema only (no table access, no metadata lock on the table).
+has_column() { mysql "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$db' AND table_name='$table' AND column_name='$1';"; }
+# lock_wait_timeout bounds the metadata-lock wait behind in-flight transactions (server default is a year).
+rename() { mysql "SET SESSION lock_wait_timeout=10; ALTER TABLE $table RENAME COLUMN $1 TO $2, ALGORITHM=INSTANT;" >/dev/null; }
+original() { [[ "$(has_column "$column")" == 1 && "$(has_column "$renamed")" == 0 ]]; }
+check() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; original; }
+case "$action" in
+ preflight) check ;;
+ run) check; rename "$column" "$renamed"; [[ "$(has_column "$column")" == 0 && "$(has_column "$renamed")" == 1 ]] ;;
+ cleanup) if [[ "$(has_column "$renamed")" == 1 ]]; then rename "$renamed" "$column"; fi; original ;;
  recovery) check ;;
  *) exit 2 ;;
 esac
