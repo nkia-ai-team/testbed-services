@@ -756,7 +756,7 @@
       ],
       "readiness": "ready",
       "stage": "candidate",
-      "load_mode": "adaptive",
+      "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
     }

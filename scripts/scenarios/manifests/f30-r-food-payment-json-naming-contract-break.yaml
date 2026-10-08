@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "food namespace",
-    "matrix_location_transport": "K/kubectl food testbed-payment env(SPRING_APPLICATION_JSON spring.jackson.property-naming-strategy=SNAKE_CASE, 2단 fail-on-unknown-properties) + R/ssh load.north_south companion(food-delivery surge.js, target_rps=5)",
+    "matrix_location_transport": "K/kubectl food testbed-payment env(SPRING_APPLICATION_JSON spring.jackson.property-naming-strategy=SNAKE_CASE) + R/ssh load.north_south companion(food-delivery surge.js, target_rps=5)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.env",
@@ -36,10 +36,11 @@
         "primary_ref": "k8s.env",
         "companion_refs": [
           "load.north_south"
-        ]
+        ],
+        "approved_profile_id": "k8s.env"
       },
       "runtime": {
-        "mode": "calibration",
+        "mode": "evaluation",
         "tick_interval": "15s",
         "settle_after_change": "30s",
         "max_injection_duration": "25m",
@@ -73,10 +74,10 @@
           ]
         },
         "profile": {
-          "kind": "adaptive_ladder",
+          "kind": "fixed",
           "levels": [
             {
-              "id": "snake-case-lenient",
+              "id": "approved-fixed-f30-r",
               "parameters": {
                 "namespace": "rca-testbed-food",
                 "deployment": "testbed-payment",
@@ -201,133 +202,6 @@
               "min_hold": "6m",
               "settle": "60s",
               "timeout": "10m"
-            },
-            {
-              "id": "snake-case-strict",
-              "parameters": {
-                "namespace": "rca-testbed-food",
-                "deployment": "testbed-payment",
-                "container": "payment-service",
-                "baseline": [
-                  {
-                    "name": "DB_USER",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "MYSQL_USER",
-                        "name": "mysql-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "DB_PASSWORD",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "MYSQL_PASSWORD",
-                        "name": "mysql-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                  },
-                  {
-                    "name": "OTEL_SERVICE_NAME",
-                    "value": "food-delivery-payment"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.200.109:14318"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                    "value": "grpc"
-                  },
-                  {
-                    "name": "OTEL_RESOURCE_ATTRIBUTES",
-                    "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
-                  },
-                  {
-                    "name": "OTEL_TRACES_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRICS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_LOGS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                    "value": "10000"
-                  }
-                ],
-                "fault": [
-                  {
-                    "name": "DB_USER",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "MYSQL_USER",
-                        "name": "mysql-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "DB_PASSWORD",
-                    "valueFrom": {
-                      "secretKeyRef": {
-                        "key": "MYSQL_PASSWORD",
-                        "name": "mysql-secret"
-                      }
-                    }
-                  },
-                  {
-                    "name": "JAVA_TOOL_OPTIONS",
-                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
-                  },
-                  {
-                    "name": "OTEL_SERVICE_NAME",
-                    "value": "food-delivery-payment"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                    "value": "http://192.168.200.109:14318"
-                  },
-                  {
-                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
-                    "value": "grpc"
-                  },
-                  {
-                    "name": "OTEL_RESOURCE_ATTRIBUTES",
-                    "value": "lucida.groupId=food-delivery,lucida.target_id=2e6120e3-37fa-4c44-a224-6ab13afdd9ee"
-                  },
-                  {
-                    "name": "OTEL_TRACES_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRICS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_LOGS_EXPORTER",
-                    "value": "otlp"
-                  },
-                  {
-                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
-                    "value": "10000"
-                  },
-                  {
-                    "name": "SPRING_APPLICATION_JSON",
-                    "value": "{\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\",\"deserialization\":{\"fail-on-unknown-properties\":true}}}}"
-                  }
-                ]
-              },
-              "min_hold": "6m",
-              "settle": "60s",
-              "timeout": "10m"
             }
           ]
         },
@@ -404,17 +278,6 @@
               "observation": "order_create_2xx_rate",
               "op": "lt",
               "value": 0.2
-            }
-          ],
-          "consecutive_ticks": 3
-        },
-        "escalate": {
-          "any": [
-            {
-              "id": "contract-break-not-visible",
-              "observation": "order_create_2xx_rate",
-              "op": "gte",
-              "value": 0.5
             }
           ],
           "consecutive_ticks": 3

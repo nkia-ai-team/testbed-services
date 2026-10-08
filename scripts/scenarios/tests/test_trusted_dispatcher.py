@@ -125,19 +125,32 @@ class TrustedDispatcherTests(unittest.TestCase):
         # 남은 유일한 시나리오(F10-P, 미pin)로 같은 성질을 본다.
         # 2026-10-08: F10-P 가 폐기(정상 녹화 없음, 사용자 결정)돼 컴파일 단계에서 이미 막힌다.
         # 라이브 adaptive 로 남은 것은 F30-R(calibration 사다리)뿐이라 그리로 옮긴다.
-        slug = "f30-r-food-payment-json-naming-contract-break"
+        # 2026-10-08: F30-R 도 설계 강도 고정 evaluation 으로 바뀌어(수명주기 결정) 라이브
+        # adaptive 가 0개다. 새 후보는 고정 등록이 원칙이라 앞으로도 0개일 수 있다. 실레지스트리에
+        # 기대면 검사가 사라지므로, 폐기된 adaptive 사다리(F10-P)의 실제 컴파일 계획에서
+        # live_allowed 만 켠 합성 계획을 디스패처에 물린다. 다른 관문(라이브 허용, digest,
+        # 확인 문자열)은 모두 통과시키고 adaptive 관문 하나만 거절하게 해 의도("라이브
+        # adaptive 계획은 one-shot 디스패치가 거절한다")를 그대로 본다.
+        slug = "f10-p-oracle-io-saturation"
+        parked_plan = compile_plan_module.compile_plan(slug)
+        self.assertFalse(parked_plan["live_allowed"])
+        self.assertEqual(parked_plan["scenario"]["load_mode"], "adaptive")
+        live_adaptive_plan = json.loads(json.dumps(parked_plan))
+        live_adaptive_plan["live_allowed"] = True
         with tempfile.TemporaryDirectory() as temporary:
             invoker = FakeInvoker()
             dispatcher = dispatcher_module.Dispatcher(
-                state_dir=Path(temporary), invoker=invoker
+                state_dir=Path(temporary),
+                compile_plan=lambda requested: json.loads(json.dumps(live_adaptive_plan)),
+                invoker=invoker,
             )
-            plan = compile_plan_module.compile_plan(slug)
             with self.assertRaisesRegex(dispatcher_module.DispatchError, "profile-control"):
                 dispatcher.dispatch(
-                    slug=slug, action="run", digest=plan["plan_digest"],
-                    confirmation=dispatcher.confirmation(plan),
+                    slug=slug, action="run", digest=live_adaptive_plan["plan_digest"],
+                    confirmation=dispatcher.confirmation(live_adaptive_plan),
                 )
             self.assertEqual(invoker.calls, [])
+            self.assertFalse((Path(temporary) / "state.json").exists())
 
     def test_every_current_live_plan_uses_the_same_generic_dispatch_contract(self) -> None:
         catalog, _, _, _, _ = compile_plan_module.load_contracts()

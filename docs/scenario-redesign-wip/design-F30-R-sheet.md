@@ -121,6 +121,7 @@ payment 는 400 을 낼 때 로그를 남기지 않는다(`GlobalExceptionHandle
 ## 9. 러너 판정과 강도, 부하 계산
 
 - **2026-10-08 승격 완료**: 첫 시험 실행을 위해 아래 ①~④대로 ready + mode calibration 으로 올렸다(controller 는 `registry/controllers.json`, WIP 사본은 삭제).
+- **2026-10-08 수명주기 결정**으로 lenient 1단 고정 evaluation 으로 등록, strict 단 폐기(`docs/spec-scenario-lifecycle.md` §2: 새 후보는 설계 강도로 고정, 첫 실행이 곧 녹화 실행). 레벨 id 는 고정 선례대로 `snake-case-lenient` → `approved-fixed-f30-r`, escalate 조건은 뺐다. 아래 사다리 항목은 그 전 기록이다.
 - controller 위치(승격 전 기록): `compile-plan.py:150-152` 가 controller 를 readiness=ready 시나리오에만 허용하므로, draft 동안은
   `registry/controllers.json` 에 넣지 않고 `docs/scenario-redesign-wip/design-F30-R-controller.json` 에 둔다(F24-Q 와 같은 방식).
   정답지 `injected_fault` 도 같은 이유로 null 이다. 이 저장소에서는 첫 시험 실행(calibration) 자체가 ready 승격을 먼저 요구한다(F10-P 처럼 ready + mode calibration).

@@ -89,11 +89,15 @@ total="$(jq '.scenarios | length' "$catalog")"
 # case_label=calibration·evaluation_eligible=false 로 찍혔다. 남은 adaptive 는 F10-P(미pin)
 # 와 비라이브 5종(F02-H·F03-P·F07-P·F09-R·F21-P).
 # 2026-10-08: 6 → 7. F30-R 은 강도 사다리(snake-case-lenient, snake-case-strict)로 들어온다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 7 ]]
+# 2026-10-08: 7 → 6. 수명주기 결정(새 후보는 설계 강도로 고정 등록, spec-scenario-lifecycle §2)으로
+# F30-R 을 lenient 1단 고정 evaluation(approved-fixed-f30-r)으로 바꾸고 strict 단을 버렸다.
+# 남은 adaptive 는 비라이브(parked) 6종뿐이다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="adaptive")] | length' "$catalog")" -eq 6 ]]
 # 2026-08-06: 42 → 41. adaptive 의 짝 — F25-H 가 fixed 에서 빠져나갔으므로 함께 움직인다.
 # 2026-08-07: 41 → 40. adaptive 의 짝 — F20-R 이 fixed 에서 빠져나갔다.
 # 2026-08-20: 40 → 54. adaptive 의 짝 — pin 14종이 fixed 로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 54 ]]
+# 2026-10-08: 54 → 55. adaptive 의 짝 — F30-R 이 lenient 1단 고정 evaluation 으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 55 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

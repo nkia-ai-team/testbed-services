@@ -92,6 +92,7 @@ class RegistryContractTests(unittest.TestCase):
             "F14-P",
             # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
+            # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
             "F30-R",
         }
         for scenario in self.catalog["scenarios"]:
@@ -351,6 +352,7 @@ class RegistryContractTests(unittest.TestCase):
             "F14-P",
             # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포. 첫 시험 실행을 위해 ready + calibration.
+            # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
             "F30-R",
             },
         )
@@ -394,6 +396,7 @@ class RegistryContractTests(unittest.TestCase):
             "F14-P",
             # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포. 첫 시험 실행을 위해 ready + calibration.
+            # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
             "F30-R",
             ],
         )
@@ -528,6 +531,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(h_success["restart_count"]["value"], 2)
         self.assertEqual(self.profiles["profiles"]["load.north_south"]["scenario_parameters"]["F05-H"]["target_rps"], 20)
         # 2026-10-08: F30-R(ready, calibration)이 끝에 붙었다.
+        # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
         # 2026-10-08: F15-T2 폐기(정상 녹화 없음, 사용자 결정)로 빠져 F17-P 가 끝 5개에 들어왔다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
                          ["F17-P", "F04-H", "F15-H", "F14-P", "F30-R"])

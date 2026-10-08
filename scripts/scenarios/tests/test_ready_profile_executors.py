@@ -464,6 +464,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F14-P",
             # 2026-10-08: F10-P, F15-R, F15-T2, F20-Q 폐기(정상 녹화 없음, 사용자 결정)로 이 목록에서 뺐다.
             # 2026-10-08: food payment JSON 명명 규칙 설정 배포(데이터 형식 불일치). 첫 시험 실행을 위해 ready + calibration.
+            # 2026-10-08: 같은 날 F30-R 을 lenient 1단 고정 evaluation 으로 바꿨다(수명주기 결정). 라이브 소속과 순서는 그대로다.
             "F30-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
