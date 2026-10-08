@@ -9,8 +9,7 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-08",
       "attempts": 0,
-      "status": "hold",
-      "hold_reason": "덤프 3회 실패(러너 자동 재시도 포함), 오류 원문 'capture failed: F30-R-run-055ec69e: capture command failed: pg_dump: terminated by user'. 109 /opt/lucida/capture-eval-case.sh 의 pg_dump 하드 타임아웃 PG_DUMP_TIMEOUT_SEC 기본 900초가 119 lucida DB(17GB) 덤프를 SIGTERM 으로 끊은 것으로 보임(3차 시도 pg_dump 시작 10:24:46Z, paused 10:39:50Z = 약 904초). 러너 설정(타임아웃)이나 109->119 덤프 경로를 사람이 확인한 뒤 waiting 으로. 주입 실행 자체는 정상(dirty false, cleanup succeeded). 근거 109 /root/rca-scenario-runner/runs/F30-R-run-055ec69e/capture-error.log, ~/dev/testbed-ops/operator/log.md"
+      "status": "waiting"
     },
     {
       "scenario_id": "F32-R",
