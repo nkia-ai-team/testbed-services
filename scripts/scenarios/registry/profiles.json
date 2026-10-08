@@ -953,7 +953,7 @@
           "baseline_unit": "loadgen-food"
         },
         "F30-R": {
-          "target_rps": 5,
+          "target_rps": 2,
           "ramp_up": "2m",
           "hold": "21m",
           "ramp_down": "15s",

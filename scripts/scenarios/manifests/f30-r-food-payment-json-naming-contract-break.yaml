@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "food namespace",
-    "matrix_location_transport": "K/kubectl food testbed-payment env(SPRING_APPLICATION_JSON spring.jackson.property-naming-strategy=SNAKE_CASE) + R/ssh load.north_south companion(food-delivery surge.js, target_rps=5)",
+    "matrix_location_transport": "K/kubectl food testbed-payment env(SPRING_APPLICATION_JSON spring.jackson.property-naming-strategy=SNAKE_CASE) + R/ssh load.north_south companion(food-delivery surge.js, target_rps=2)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.env",
