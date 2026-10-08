@@ -11,7 +11,14 @@
     "파이프라인이 만들어낸 관측·판정(무엇이 일어났는가)만 창으로 자르고(slice),",
     "평가에 쓰이지 않으면서 공개 위험만 있는 것은 비운다(drop).",
     "created_at 이 창 밖이라고 무조건 자르면 안 된다 — targets·metric_definitions 의",
-    "created_at 은 자산 등록 시각이라 언제나 창 밖이고, 자르면 RCA 가 볼 자산이 사라진다."
+    "created_at 은 자산 등록 시각이라 언제나 창 밖이고, 자르면 RCA 가 볼 자산이 사라진다.",
+    "",
+    "2026-10-08. 8/13 이후 커진 군집 기록 표 5개가 목록에 없어 기본값(snap)으로 통째 덤프되고 있었다",
+    "(119 기준 토폴로지 스냅샷 1.5GB, 상태 1.3GB, 이벤트 사실 1.3GB, 배정 0.8GB, 멤버 0.7GB).",
+    "F30-R 녹화 pg_dump 가 900초 제한을 세 번 넘겨 실패했고, 다른 날 군집 기록이 딸려 오는 누설이며,",
+    "멤버, 상태, 스냅샷, 이벤트 사실은 event_clusters(slice)를 FK 로 참조해 복원 때 제약 생성이 깨질 수 있었다.",
+    "넷은 event_clusters 자식으로, FK 없는 배정(desired_cluster_id 는 text)은 created_at 창으로 자른다.",
+    "새 표가 생기면 같은 일이 반복되므로 운영 하네스가 녹화 전에 '분류 안 된 100MB 넘는 표'를 확인한다."
   ],
 
   "default_scope": "snap",
@@ -40,7 +47,11 @@
     "incident_cluster_links":  {"root": "incidents",      "column": "incident_id"},
     "cluster_outbox":          {"root": "event_clusters", "column": "cluster_id"},
     "event_cluster_tag_outbox":{"root": "event_clusters", "column": "cluster_id"},
-    "event_cluster_episode_links": {"root": "event_clusters", "column": "cluster_id"}
+    "event_cluster_episode_links": {"root": "event_clusters", "column": "cluster_id"},
+    "event_cluster_members": {"root": "event_clusters", "column": "cluster_id"},
+    "event_cluster_states": {"root": "event_clusters", "column": "cluster_id"},
+    "event_cluster_topology_snapshots": {"root": "event_clusters", "column": "cluster_id"},
+    "event_cluster_event_facts": {"root": "event_clusters", "column": "current_cluster_id"}
   },
 
   "slice_grandchildren": {
@@ -58,7 +69,8 @@
     "policy_deployments":              "deployed_at",
     "trainer_stream_snapshot_history": "created_at",
     "trainer_stream_drift":            "created_at",
-    "ai_model_state_snapshots":        "created_at"
+    "ai_model_state_snapshots":        "created_at",
+    "event_cluster_assignments":       "created_at"
   },
 
   "slice_by_epoch_ms": {
