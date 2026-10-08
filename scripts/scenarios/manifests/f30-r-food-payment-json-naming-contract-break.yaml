@@ -3,7 +3,7 @@
   "id": "F30-R",
   "slug": "f30-r-food-payment-json-naming-contract-break",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

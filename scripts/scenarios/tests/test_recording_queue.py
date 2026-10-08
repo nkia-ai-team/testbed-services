@@ -28,7 +28,8 @@ class StageTests(unittest.TestCase):
     def test_stage_counts(self) -> None:
         # 2026-10-08: 정식 기준을 "정상 녹화 1개 이상"으로 바꾸며 ready 40종을 정식 35, 후보 5로 나눴다.
         stages = [row.get("stage") for row in CATALOG["scenarios"] if row["readiness"] == "ready"]
-        self.assertEqual(stages.count("official"), 35)
+        # 2026-10-08: 35 → 36. F30-R 정식 승격(녹화 case-f30-r-v3-0cd9193b).
+        self.assertEqual(stages.count("official"), 36)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -36,7 +37,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-08: 4 → 5. F36-R(food restaurants 열 이름 변경 마이그레이션) 후보 추가.
         # 2026-10-08: 5 → 6. F37-R(banking api 파드 DNS 정책 노드 resolver 배포) 후보 추가.
         # 2026-10-08: 6 → 7. F38-R(food MySQL 인스턴스 전체 read_only) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 7)
+        # 2026-10-08: 7 → 6. F30-R 정식 승격(녹화 case-f30-r-v3-0cd9193b).
+        self.assertEqual(stages.count("candidate"), 6)
 
 
 class RecordingQueueTests(unittest.TestCase):
