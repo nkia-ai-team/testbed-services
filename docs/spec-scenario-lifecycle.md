@@ -22,16 +22,16 @@ summary: 시나리오가 설계(draft)에서 후보(candidate)를 거쳐 정식(
 | 폐기 | `readiness: parked` (`stage` 없음) | 검증을 통과하지 못해 뺀 것. 정의와 설계 시트는 참고 자료로 남김 | 실행 목록에서 빠짐 | §5 |
 
 - 정식인지는 녹화본이 정한다. 녹화본은 104 `/data/eval-cases/case-*/meta.json`이다. `stage`는 그 사실을 저장소에 옮겨 적은 표시이고, 운영 하네스가 녹화에 성공했을 때만 `official`로 바꾼다.
-- 설계 원칙 문서와 분류 장부의 모든 수(묶음 비율, 서비스 균형)는 정식만 센다.
+- 분류 장부 §3 집계와 "지금 쓸 수 있는 데이터"는 정식만 센다. 단 **새 시나리오를 고를 때의 쏠림 상한과 서비스 균형은 정식 + 후보 합계로 센다**: 녹화가 설계보다 느려 후보가 쌓이는 동안 같은 묶음, 같은 서비스에 몰리지 않게 하기 위해서다(2026-10-08 사용자 결정).
 - 2026-10-08 전환 시점: ready 40종 중 정상 녹화가 있는 35종을 정식, 나머지 5종(F10-P, F15-R, F15-T2, F20-Q, F30-R)을 후보로 표시했다. 같은 날 그중 정상 녹화가 하나도 없는 기존 4종(F10-P, F15-R, F15-T2, F20-Q)을 사용자 결정으로 폐기해 후보는 F30-R 하나다.
 
 ## 2. 누가 상태를 바꾸는가
 
 | 전이 | 하는 쪽 | 함께 바꾸는 것 |
 |---|---|---|
-| (없음) → 후보 | 시나리오 생성 하네스(`testbed-scenario-create`) | catalog 행, controller 등록(강도 찾기 `calibration` 모드), 정답지, 장부 §4-1, **큐에 `reason: new`로 추가** |
-| 후보 → 정식 | 운영 하네스(tmux) | 녹화 성공 뒤 `stage: official`, 찾은 강도를 고정(`evaluation` 모드), 장부 §4-1 → §4, 큐에서 제거 |
-| 후보 → 후보(재시도) | 운영 하네스 | 검증 결과가 "시나리오 보강"이면 강도나 부하 조정, 큐 항목 `attempts` +1 |
+| (없음) → 후보 | 시나리오 생성 하네스(`testbed-scenario-create`) | catalog 행, controller 등록(**설계 강도 하나로 고정한 `evaluation` 모드**. 강도 찾기 단계를 따로 두지 않는다: 첫 실행이 곧 녹화 실행이고, 검증 하네스가 강도가 충분했는지 판정한다), 정답지, 장부 §4-1, **큐에 `reason: new`로 추가** |
+| 후보 → 정식 | 운영 하네스(tmux) | 검증을 통과한 녹화본을 eval 세트(104 `/data/eval-cases`)에 적재한 뒤 `stage: official`, 장부 §4-1 → §4, 큐에서 제거 |
+| 후보 → 후보(재시도) | 운영 하네스 | 검증 결과가 "시나리오 보강"이면 고정 강도(profiles.json `scenario_parameters`, controller level, 정답지 `injected_fault`)나 부하를 조정해 커밋, 큐 항목 `attempts` +1 |
 | 후보 → 폐기 | 운영 하네스 | `attempts`가 3을 넘거나 검증이 "폐기 제안"이면 `readiness: parked`, `stage` 삭제, controller 를 `registry/controllers-parked.json`으로 옮기고 `live_scenario_ids`에서 뺌, 장부 §5에 사유와 검증 보고서 위치, 큐에서 제거 |
 | 큐 보류 | 운영 하네스 | 환경 문제(수집기 정지 등)면 `status: hold`, `hold_reason`. 재시도 횟수에 세지 않는다 |
 | 정식 → 큐(재녹화) | 사람, 또는 사람이 지시한 세션 | 큐에 `reason: recapture`(새 제품 버전 등) 또는 `user`로 추가. 정식 상태는 그대로 |

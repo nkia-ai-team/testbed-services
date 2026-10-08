@@ -26,7 +26,7 @@ controller는 golden에 맞춰 결과를 만들거나 기대값을 관측에 맞
 | --- | --- | --- | --- |
 | `dry_run` | schema·위치·script hash·시간·cleanup 계획만 검증 | 없음 | 불가 |
 | `calibration` | 사전 선언된 ladder 안에서 목표 증상을 찾음 | 자동 | 불가 |
-| `evaluation` | calibration에서 확정한 단일 profile을 재현 | 금지 | 검증 통과 시 가능 |
+| `evaluation` | calibration에서 확정한 단일 profile, 또는 설계 시트가 계산한 강도로 처음부터 고정 등록한 후보([수명주기](spec-scenario-lifecycle.md))를 재현 | 금지 | 검증 통과 시 가능 |
 | `cleanup` | 이전 실행의 잔존 상태를 멱등 복구 | 없음 | 해당 없음 |
 
 순수 판정 core는 부작용을 만들지 않으므로 `calibration|evaluation`만 해석한다.
