@@ -3,7 +3,7 @@
   "id": "F38-R",
   "slug": "f38-r-food-mysql-global-read-only",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

@@ -34,7 +34,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 38 → 39. F35-R 정식 승격(녹화 case-f35-r-v3-bbbee443).
         # 2026-10-09: 39 → 40. F36-R 정식 승격(녹화 case-f36-r-v3-776b522b).
         # 2026-10-09: 40 → 41. F37-R 정식 승격(녹화 case-f37-r-v3-43c16731).
-        self.assertEqual(stages.count("official"), 41)
+        # 2026-10-09: 41 → 42. F38-R 정식 승격(녹화 case-f38-r-v3-54918c10).
+        self.assertEqual(stages.count("official"), 42)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -59,7 +60,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 11 → 12. F44-P(banking 워커 tb-w2 방화벽 허용 목록이 commerce 파드 대역을 빠뜨려 정산 이체 새 연결이 버려짐) 후보 추가.
         # 2026-10-09: 12 → 11. F37-R 정식 승격(녹화 case-f37-r-v3-43c16731).
         # 2026-10-09: 11 → 12. F47-R(banking api 릴리스가 이체마다 account 계좌 목록 전체를 다시 읽어 account 포화) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 12)
+        # 2026-10-09: 12 → 11. F38-R 정식 승격(녹화 case-f38-r-v3-54918c10).
+        self.assertEqual(stages.count("candidate"), 11)
 
 
 class RecordingQueueTests(unittest.TestCase):
