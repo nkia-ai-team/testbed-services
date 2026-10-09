@@ -69,7 +69,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 15 → 14. F39-R 정식 승격(녹화 case-f39-r-v3-dc45499a).
         # 2026-10-09: 14 → 15. F50-R(banking 네임스페이스 메모리 할당량이 사용량 아래라 transfer 재배포의 새 파드가 거절됨) 후보 추가.
         # 2026-10-09: 15 → 16. F48-P(food 주문 이벤트 outbox 표를 취소된 인덱스 백필이 치워 주문 생성이 1146 으로 되돌려짐) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 16)
+        # 2026-10-09: 16 → 17. F51-R(운영 용량 명령 입력 실수로 banking account Deployment 가 replicas 0) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 17)
 
 
 class RecordingQueueTests(unittest.TestCase):

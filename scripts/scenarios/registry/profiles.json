@@ -465,7 +465,8 @@
           "F49-R",
           "F33-H",
           "F49-H",
-          "F50-R"
+          "F50-R",
+          "F51-R"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -526,7 +527,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H|33-P|41-R|42-R|43-R|44-R|44-P|47-R|48-R|49-R|33-H|49-H|50-R)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H|33-P|41-R|42-R|43-R|44-R|44-P|47-R|48-R|49-R|33-H|49-H|50-R|51-R)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -1330,6 +1331,17 @@
           "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
           "scenario_tag": "scenario_id=F50-R",
           "seed": 5050,
+          "baseline_unit": "loadgen-banking"
+        },
+        "F51-R": {
+          "target_rps": 5,
+          "ramp_up": "2m",
+          "hold": "21m",
+          "ramp_down": "15s",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
+          "scenario_tag": "scenario_id=F51-R",
+          "seed": 5151,
           "baseline_unit": "loadgen-banking"
         }
       }
@@ -3088,6 +3100,32 @@
           "resource": "requests.memory",
           "hard": "4Gi",
           "deployment": "testbed-transfer"
+        }
+      },
+      "scenario_levels": {}
+    },
+    "k8s.scale": {
+      "executor": "profiles/k8s_scale_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "banking-namespace"
+      ],
+      "live_supported": true,
+      "default_queries": [
+        "kubernetes.pod_ready",
+        "http.entry_health"
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F51-R"
+        ]
+      },
+      "scenario_parameters": {
+        "F51-R": {
+          "namespace": "rca-testbed-banking",
+          "deployment": "testbed-account",
+          "from_replicas": 1,
+          "replicas": 0
         }
       },
       "scenario_levels": {}

@@ -1057,6 +1057,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F51-R",
+      "slug": "f51-r-banking-account-scaled-to-zero-by-operator-command",
+      "profiles": [
+        "k8s.scale",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": ""
     }
   ]
 }

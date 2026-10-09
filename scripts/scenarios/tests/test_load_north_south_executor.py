@@ -67,6 +67,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "host.firewall",
                 # 2026-10-09: F50-R — 네임스페이스 ResourceQuota 하나 만들기와 지우기(+ Deployment 일상 재배포).
                 "k8s.quota",
+                # 2026-10-09: F51-R — Deployment 하나의 replicas 를 줄이고 되돌리기(kubectl scale).
+                "k8s.scale",
             },
         )
 

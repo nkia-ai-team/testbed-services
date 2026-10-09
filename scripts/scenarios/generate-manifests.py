@@ -52,6 +52,9 @@ PROFILE_PREFLIGHTS = {
     # The inverse of a namespace quota is deleting that one object, after which the
     # namespace must be able to create the refused pod again.
     "k8s.quota": "kubernetes-recovery-capacity",
+    # The inverse of scaling a Deployment down is scaling it back to the recorded count,
+    # after which the Deployment must have its pods available again.
+    "k8s.scale": "kubernetes-recovery-capacity",
     "k8s.resource": "kubernetes-original-resource-snapshot",
     "k8s.probe": "kubernetes-original-probe-snapshot",
     "kafka.control": "kafka-drain-capacity",

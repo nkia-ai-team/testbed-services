@@ -7744,6 +7744,96 @@
      }
     ]
    }
+  },
+  "F51-R": {
+   "title": "An operator's capacity command with a wrong input scales banking account-service to zero replicas: the Deployment is unchanged except for its replica count, the account pod terminates and is never replaced, so balance lookups, account lists and money transfers fail with 502 while transaction history and commerce settlement keep working",
+   "description": "An operator runs a routine capacity command against the rca-testbed-banking namespace and one of its inputs is wrong: instead of the subsystem the playbook meant to take down, it removes the capacity of account-service, which sits on the request path (kubectl scale deployment testbed-account --replicas=0). The Deployment controller scales the current ReplicaSet of testbed-account from 1 to 0 and the account pod terminates; nothing replaces it, because the Deployment now asks for zero pods and the namespace has no autoscaler. The Deployment's template is untouched (same image core-banking-account:latest, probes, env, resources), no other ReplicaSet is scaled up, nothing crashes, is evicted or fails a probe. From then on the testbed-account Service has no endpoints and kube-proxy refuses every connection to testbed-account:8081. Balance lookups and account lists go nginx → account directly, so nginx answers 502 (its upstream connection is refused). Money transfers go nginx → api → account → transfer: api's AccountClient logs 'Account service call failed for order ...: I/O error on POST request for \"http://testbed-account:8081/api/accounts/transfer\": Connection refused', retries, opens its accountClient breaker ('Account service circuit open/exhausted') and answers 502. Transaction history (api → transfer) and the commerce checkout settlement (commerce-payment → transfer) do not pass through account and keep working. account-service stops emitting spans and logs altogether. This reconstructs the AWS S3 us-east-1 summary of 2017-02-28: an authorized operator using an established playbook ran a command intended to remove a small number of servers from one subsystem, one of the inputs was entered incorrectly, a larger set of servers was removed, and the servers removed supported request-path subsystems (index, placement) that could not serve until their capacity was brought back.",
+   "cause": "Operator scale command with a wrong input sets Deployment testbed-account (account-service, request path) to 0 replicas → the current ReplicaSet is scaled from 1 to 0, the only account pod terminates and nothing replaces it (no autoscaler, template unchanged) → the testbed-account Service has no endpoints and every connection to testbed-account:8081 is refused → nginx answers balance lookups and account lists with 502, api answers transfers with 502 after retries and an open accountClient breaker, until the replica count is restored.",
+   "injection_summary": "A new k8s.scale executor records the replica count of Deployment testbed-account in rca-testbed-banking (1) and runs kubectl scale --replicas=0 on it, without waiting for the pod to terminate. Its preflight checks that the namespace has no HorizontalPodAutoscaler (which would put the capacity back), that the Deployment has exactly 1 replica and is available, and that the runner may patch deployments/scale. The image, probes, env, resources, Services and other Deployments are not touched, and nothing is deleted. A north-south 5 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) drives the banking entry point (30082) on top of the resident baseline load so that api server spans are sampled at any hour. Cleanup scales the Deployment back to the recorded count and waits until it is available (bound 180 seconds). No value carries the scenario id.",
+   "user_impact": "Balance lookups and account lists through the banking gateway fail with 502 from nginx, and money transfers (POST /api/transfers → api → account) fail with 502 from api, quickly, because connections are refused at once and the breaker opens. Transaction history and commerce checkout settlement keep working because they reach transfer without account. Nothing crashes or restarts; account simply has no pod.",
+   "distinguishing_evidence": "Decisive evidence is the capacity removal itself: a KCM ScalingReplicaSet event for Deployment testbed-account, 'Scaled down replica set testbed-account-<hash> to 0 from 1', where <hash> is the ReplicaSet that was serving (the newest revision), with no 'Scaled up replica set' for testbed-account before or after it; PG kcm_resources_history captures that ReplicaSet again with \"replicas\":0 and its spec otherwise unchanged, and no other testbed-account ReplicaSet is captured with replicas 1. Then a Pod 'Killing' event for the account pod and no 'SuccessfulCreate', 'Scheduled', 'Pulled' or 'Started' for testbed-account afterwards. A rolling update looks different: a new ReplicaSet is scaled up first, its pod starts (startup and readiness), and only then is the old one scaled down to 0 (e.g. 2026-10-09 20:49:38 up d466dc8d4, 20:50:19 down 787b559b5c). Right after the scale-down api logs 'Connection refused' towards http://testbed-account:8081 and its breaker opens; core-banking-account emits no spans or logs at all. In the 8 days before 2026-10-09 22:40 UTC 'testbed-account ... Connection refused' appeared only in one other run's window (2026-10-09 06:57~07:12, when account was running but failing readiness). What sets this apart from the same symptom with other causes: the account pod does not exist rather than failing (no 'Unhealthy', 'OOMKilled', 'BackOff' or restart, unlike F41-R's memory leak or an Oracle-side outage where account stays up and fails readiness); the Deployment template is unchanged (unlike a release or config rollout, F41-R, F39-R); no pod creation was refused (unlike F50-R's FailedCreate 'exceeded quota'); and the failing calls are all to testbed-account while account's own downstream (transfer, Oracle) is healthy: history through api → transfer and commerce settlement keep succeeding.",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "service",
+    "target_id": "core-banking-account",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 운영 명령이 용량을 없앤 account-service 의 Deployment testbed-account 다: 운영자의 용량 명령 입력이 잘못되어 의도한 대상 대신 요청 경로에 있는 account 를 replicas 0 으로 만들었다(kubectl scale). Deployment 컨트롤러가 서비스 중이던 ReplicaSet 을 1 에서 0 으로 줄이고 account 파드가 종료되며, Deployment 가 0 개를 원하고 HPA 가 없어 아무것도 다시 만들지 않는다. 템플릿(이미지, 프로브, env, 자원)은 그대로라 결함 있는 릴리스나 설정이 아니고, 파드가 실패한 것이 아니라 없다. 그 뒤 testbed-account Service 는 엔드포인트가 없어 kube-proxy 가 testbed-account:8081 로의 연결을 모두 거절한다: nginx → account 잔액 조회, 계좌 목록은 nginx 502, nginx → api → account 이체는 api 의 Connection refused, 재시도, accountClient 서킷 열림 끝에 502. account 를 지나지 않는 거래 내역(api → transfer)과 commerce 정산(→ transfer)은 정상이다. 원칙 6: 계기와 근본이 같은 곳(운영 명령이 account 의 용량을 0 으로 둔 것)이라 trigger_target_id 는 비운다. 요청 A(이체, 잔액 조회)는 정당하고, 그것을 받을 account 용량을 없앤 운영 명령이 원인이다. 원본 AWS S3 2017-02-28 사후 보고가 원인을 '잘못 입력된 명령이 의도보다 많은 서버(요청 경로 하위 시스템의 용량)를 제거'로 지목한 층위와 같다. 의도한 대상이 무엇이었는지는 관제 데이터에 없고 정답이 요구하지 않는다. 관제 데이터로의 도달 경로: ① KCM ScalingReplicaSet 'Scaled down replica set testbed-account-<서비스 중이던 해시> to 0 from 1', 앞뒤 2분 안에 testbed-account 의 Scaled up 없음 ② PG kcm_resources_history 의 그 ReplicaSet 레코드 \"replicas\":0(스펙 나머지 그대로), 다른 testbed-account ReplicaSet 은 replicas 0 ③ account 파드 Killing, 그 뒤 testbed-account 의 SuccessfulCreate, Scheduled, Started 없음, core-banking-account 스팬과 로그가 끊김 ④ api 'Account service call failed ... http://testbed-account:8081/api/accounts/transfer: Connection refused' 와 'Account service circuit open/exhausted', core-banking-api 서버 스팬 502 ⑤ 거래 내역(api → transfer)과 commerce 정산은 정상, transfer, Oracle 은 Ready.",
+    "code_anchor": [
+     "core-banking/k8s/21-account-service.yaml:9 (replicas: 1 — 운영 명령이 0 으로 바꾼 값. HPA 없음)",
+     "core-banking/k8s/02-configmaps.yaml:45-46 (location /api/accounts, proxy_pass account-service — upstream testbed-account:8081 직행이라 잔액 조회와 계좌 목록이 nginx 502 가 되는 경로)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/AccountClient.java:28-58 (requestTransfer — 'Account service call failed for order {}: {}' 후 BAD_GATEWAY, 서킷 열림 fallback 'Account service circuit open/exhausted')",
+     "core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java:28-41 (submitTransfer → accountClient.requestTransfer, listTransfers → transferClient — 거래 내역은 account 를 지나지 않음)"
+    ],
+    "infra_anchor": "rca-testbed-banking 네임스페이스(노드 tb-w2), Deployment testbed-account replicas 1, RollingUpdate 기본 전략(maxSurge 25% / maxUnavailable 25%), revision 18(2026-10-09). HPA 없음(kubectl get hpa 빈 결과). 러너 kubeconfig 는 deployments/scale 패치 권한이 있다(kubectl auth can-i). 엔드포인트가 빈 Service 로의 연결은 kube-proxy 가 거절한다(2026-10-09 06:57~07:12 account NotReady 때 api 로그 'Connection refused' 423건 실측). 쿠버네티스 v1.31.14."
+   },
+   "must_support": [
+    "KCM ScalingReplicaSet 'Scaled down replica set testbed-account-<서비스 중이던 해시> to 0 from 1' 이 있고 그 앞뒤에 testbed-account 의 'Scaled up replica set' 이 없다(롤링 업데이트라면 새 ReplicaSet 이 먼저 1 로 올라가고 그 파드가 뜬 뒤 옛 것이 0 으로 내려간다)",
+    "PG kcm_resources_history 가 그 ReplicaSet 을 \"replicas\":0 으로 다시 담고, 이미지(core-banking-account:latest), 프로브, env, 자원은 앞 레코드와 같다. testbed-account 의 어느 ReplicaSet 도 replicas 1 이 아니다",
+    "account 파드 Killing 뒤 testbed-account 의 SuccessfulCreate, Scheduled, Pulled, Started 이벤트가 없고, Unhealthy, OOMKilled, BackOff 도 없으며, core-banking-account 의 스팬과 로그가 끊긴다",
+    "core-banking-api 의 'Account service call failed for order ...: I/O error on POST request for \"http://testbed-account:8081/api/accounts/transfer\": Connection refused' 와 'Account service circuit open/exhausted' 로그가 scale 직후 생기고, api 서버 스팬(POST /api/transfers)이 502 로 끝나 오류율이 평시 0 에서 오른다",
+    "동반 부하 이체(step transfer) 5xx 와 잔액 조회(step get) 실패율이 평시 0 에서 0.5 이상으로 오르고, 거래 내역(api → transfer)과 commerce checkout 정산은 정상이며, transfer, Oracle, Kafka, ledger, nginx 는 재시작 없이 Ready 다"
+   ],
+   "must_rule_out": [
+    "account 의 릴리스나 설정 배포가 아님(F41-R, F39-R): 새 ReplicaSet 이 없고 템플릿이 그대로이며, 줄어든 것은 replicas 하나다",
+    "account 의 크래시나 메모리 고갈이 아님(F41-R): OOMKilled, 재시작, Unhealthy 가 없고 파드가 다시 뜨지 않는다",
+    "할당량이나 스케줄링이 새 파드를 막은 것이 아님(F50-R): FailedCreate 'exceeded quota' 나 FailedScheduling 이 없고, 애초에 만들 파드가 없다(Deployment 가 0 개를 원한다)",
+    "Oracle 이나 DB 계정 장애가 아님(F35-R, F01-P): 그 꼴은 떠 있는 account 가 Hikari, ORA 오류를 남기고 readiness 가 빠진다. 여기서는 account 가 아무 로그도 남기지 않고 transfer 의 거래 내역 조회(Oracle)는 정상이다",
+    "transfer 장애가 아님(F17-R, F17-H, F50-R): 거래 내역(api → transfer)과 commerce 정산이 성공하고, 실패 대상 URL 이 모두 testbed-account 다",
+    "api 의 결함이 아님(F47-R, F37-R): api 는 이미지 그대로 떠서 거래 내역에 200 으로 답하고, nginx → account 직행 잔액 조회도 함께 실패한다",
+    "노드 장애가 아님: tb-w2 의 다른 파드는 Ready 이고 노드 조건 이벤트가 없다",
+    "부하 증가가 아님: 실패는 거절된 연결이고 같은 부하의 거래 내역은 정상이며, 실패는 부하 곡선이 아니라 scale 시각에 맞춰 0 에서 거의 1 로 뛴다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F41-R (같은 증상: account 가 답하지 못해 잔액 조회와 이체 실패. 원인은 결함 있는 릴리스의 메모리 누수라 새 이미지 태그의 ReplicaSet, OOM, 재시작, readiness 실패가 지문이다. F51-R 은 템플릿이 그대로이고 파드가 없다)",
+     "F39-R (같은 account 가 정답이지만 하류 주소 오설정이라 account 는 떠서 잔액 조회에 200, 이체만 연결 시간 초과로 실패)",
+     "F50-R, F17-H, F17-R (같은 '서비스에 파드가 없어 Connection refused' 꼴이지만 대상이 transfer 이고 원인이 할당량 거절, 없는 이미지, readiness 오설정이다. 그쪽은 거래 내역과 commerce 정산이 실패하고 잔액 조회가 정상이라 실패 범위가 거꾸로다)",
+     "F35-R (account, transfer, ledger 가 NotReady 로 빠져 Connection refused 가 나지만 파드는 떠 있고 ORA-28000 이 지문)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-account",
+     "testbed-account",
+     "account-service",
+     "deployment/testbed-account"
+    ],
+    "partial": [
+     "core-banking-api",
+     "testbed-nginx",
+     "rca-testbed-banking"
+    ]
+   },
+   "title_ko": "운영자의 용량 명령 입력이 잘못되어 banking account-service 가 replicas 0 이 됨: Deployment 는 replicas 말고 그대로이고 account 파드가 종료된 뒤 다시 생기지 않아 잔액 조회, 계좌 목록, 이체가 502 로 실패한다. 거래 내역과 commerce 정산은 정상",
+   "description_ko": "운영자가 rca-testbed-banking 네임스페이스에 일상 용량 명령을 실행했는데 입력 하나가 잘못되어, 플레이북이 내리려던 하위 시스템 대신 요청 경로에 있는 account-service 의 용량을 없앤다(kubectl scale deployment testbed-account --replicas=0). Deployment 컨트롤러가 testbed-account 의 현재 ReplicaSet 을 1 에서 0 으로 줄이고 account 파드가 종료된다. Deployment 가 이제 0 개를 원하고 네임스페이스에 오토스케일러가 없어 아무것도 다시 만들지 않는다. 템플릿(이미지 core-banking-account:latest, 프로브, env, 자원)은 그대로이고, 다른 ReplicaSet 이 올라가지도 않으며, 무엇도 죽거나 축출되거나 프로브에 실패하지 않는다. 그 뒤 testbed-account Service 는 엔드포인트가 없어 kube-proxy 가 testbed-account:8081 로의 연결을 모두 거절한다. 잔액 조회와 계좌 목록은 nginx → account 직행이라 nginx 가 502 로 답한다(upstream 연결 거절). 이체는 nginx → api → account → transfer 라 api 의 AccountClient 가 'Account service call failed for order ...: I/O error on POST request for \"http://testbed-account:8081/api/accounts/transfer\": Connection refused' 를 남기고 재시도 뒤 accountClient 서킷을 열어('Account service circuit open/exhausted') 502 로 답한다. account 를 지나지 않는 거래 내역(api → transfer)과 commerce checkout 정산(commerce-payment → transfer)은 정상이다. account-service 는 스팬과 로그를 하나도 남기지 않는다. AWS S3 us-east-1 2017-02-28 사후 보고의 재구성이다: 권한 있는 운영자가 정해진 플레이북으로 한 하위 시스템의 서버 몇 대를 빼려는 명령을 실행했는데 입력 하나가 잘못 들어가 더 많은 서버가 빠졌고, 빠진 서버는 요청 경로의 하위 시스템(index, placement)을 받치고 있어 그 용량을 되살릴 때까지 요청을 처리하지 못했다.",
+   "cause_ko": "잘못된 입력의 운영 scale 명령이 Deployment testbed-account(account-service, 요청 경로)를 replicas 0 으로 → 현재 ReplicaSet 이 1 에서 0 으로, 하나뿐인 account 파드가 종료되고 다시 생기지 않음(오토스케일러 없음, 템플릿 그대로) → testbed-account Service 엔드포인트가 비어 testbed-account:8081 로의 연결이 모두 거절 → nginx 는 잔액 조회와 계좌 목록에 502, api 는 재시도와 accountClient 서킷 열림 끝에 이체에 502. replicas 를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "새 k8s.scale 실행기가 rca-testbed-banking 의 Deployment testbed-account 의 replicas(1)를 상태 파일에 적고 kubectl scale --replicas=0 을 실행하며 파드 종료를 기다리지 않는다. preflight 는 네임스페이스에 HorizontalPodAutoscaler 가 없는지(있으면 용량을 되돌린다), Deployment 가 replicas 1 이고 available 인지, 러너가 deployments/scale 을 패치할 권한이 있는지 확인한다. 이미지, 프로브, env, 자원, Service, 다른 Deployment 는 건드리지 않고 아무것도 지우지 않는다. north-south 5rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더해 어느 시간대에도 api 서버 스팬 표본이 나오게 한다. cleanup 은 적어 둔 replicas 로 되돌리고 Deployment 가 available 이 될 때까지(상한 180초) 기다린다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "banking 게이트웨이를 거치는 잔액 조회와 계좌 목록은 nginx 502, 이체(POST /api/transfers → api → account)는 api 502 로 실패한다. 연결이 바로 거절되고 서킷이 열려 빨리 실패한다. 거래 내역과 commerce checkout 정산은 account 를 지나지 않아 정상이다. 무엇도 죽거나 재시작하지 않는다. account 에 파드가 없을 뿐이다.",
+   "distinguishing_evidence_ko": "결정 증거는 용량 제거 자체다: Deployment testbed-account 의 KCM ScalingReplicaSet 'Scaled down replica set testbed-account-<해시> to 0 from 1' 에서 <해시>는 서비스 중이던(가장 새 revision) ReplicaSet 이고, 그 앞뒤에 testbed-account 의 'Scaled up replica set' 이 없다. PG kcm_resources_history 는 그 ReplicaSet 을 \"replicas\":0 으로 다시 담고 스펙 나머지는 그대로이며, 다른 testbed-account ReplicaSet 은 replicas 1 로 잡히지 않는다. 이어서 account 파드의 'Killing' 이벤트가 있고 그 뒤 testbed-account 의 'SuccessfulCreate', 'Scheduled', 'Pulled', 'Started' 가 없다. 롤링 업데이트는 모양이 다르다: 새 ReplicaSet 이 먼저 올라가고 그 파드가 뜬(startup, readiness) 뒤에야 옛 것이 0 으로 내려간다(예: 2026-10-09 20:49:38 d466dc8d4 up, 20:50:19 787b559b5c down). scale 직후 api 가 http://testbed-account:8081 로의 'Connection refused' 를 남기고 서킷이 열리며, core-banking-account 는 스팬도 로그도 남기지 않는다. 2026-10-09 22:40 UTC 까지 8일 동안 'testbed-account ... Connection refused' 는 다른 실행 하나의 창(2026-10-09 06:57~07:12, account 가 떠 있으나 readiness 실패)에만 있었다. 같은 증상의 다른 원인과 가르는 것: account 파드가 실패한 것이 아니라 없다(Unhealthy, OOMKilled, BackOff, 재시작이 없음. F41-R 의 메모리 누수나 Oracle 쪽 장애는 account 가 떠서 readiness 에 실패한다). Deployment 템플릿이 그대로다(릴리스나 설정 롤아웃 F41-R, F39-R 와 다름). 파드 생성이 거절된 것이 아니다(F50-R 의 FailedCreate 'exceeded quota' 없음). 실패하는 호출은 모두 testbed-account 로 가고 account 의 하류(transfer, Oracle)는 멀쩡해 api → transfer 거래 내역과 commerce 정산은 계속 성공한다.",
+   "injected_fault": {
+    "profile": "k8s.scale",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f51-r",
+      "parameters": {
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-account",
+       "from_replicas": 1,
+       "replicas": 0
+      }
+     }
+    ]
+   }
   }
  }
 }

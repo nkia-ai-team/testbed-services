@@ -42,6 +42,7 @@ db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
 k8s_dns = load("k8s_dns_executor")
 k8s_quota = load("k8s_quota_executor")
+k8s_scale = load("k8s_scale_executor")
 k8s_image = load("k8s_image_executor")
 host_firewall = load("host_firewall_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
@@ -317,6 +318,37 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             k8s_quota.validate("F50-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified resource quota contract"):
             k8s_quota.validate("F17-H", k8s_quota.CONTRACTS["F50-R"], {})
+
+    def test_k8s_scale_only_lowers_one_deployment_replica_count_and_restores_it(self) -> None:
+        # F51-R: 주입은 Deployment 하나의 replicas 를 1 에서 0 으로 줄이는 운영 명령뿐이다.
+        # 이미지, 프로브, env, 자원을 바꾸면 F41-R, F39-R 의 지문(바뀐 파드 템플릿)이 섞이고,
+        # 파드나 Deployment 를 지우면 용량 제거가 아니라 삭제가 원인이 된다.
+        plan = compiler.compile_plan("f51-r-banking-account-scaled-to-zero-by-operator-command")
+        argv, stdin = k8s_scale.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-account", "1", "0"])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8). 상태 파일은 네임스페이스와 Deployment 이름으로 짓는다.
+        self.assertNotIn("F51-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F51-R", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn('scale deploy "$deploy" --replicas="$to"', run_case)
+        # 되돌릴 값을 먼저 적고 나서 줄인다.
+        self.assertLess(run_case.index('replicas >"$state.tmp"'), run_case.index("scale deploy"))
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('--replicas="$original"', cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        preflight = script.split("\ncheck() {")[1].split("\n}")[0]
+        self.assertIn("no_autoscaler", preflight)
+        self.assertIn('[[ "$(replicas)" == "$from" ]]', preflight)
+        for forbidden in ("set image", "set env", "delete", "rollout restart", "patch deploy \"$deploy\"", "evict"):
+            self.assertNotIn(forbidden, script)
+        params = dict(k8s_scale.CONTRACTS["F51-R"])
+        params["deployment"] = "testbed-transfer"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_scale.validate("F51-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified deployment scale contract"):
+            k8s_scale.validate("F50-R", k8s_scale.CONTRACTS["F51-R"], {})
 
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
@@ -977,6 +1009,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F50-R",
             # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-P",
+            # 2026-10-09: 운영자의 용량 명령 입력이 잘못되어 banking account-service Deployment 가 replicas 0(kubectl scale), account 파드가 없어 잔액 조회, 계좌 목록, 이체 502(거래 내역, commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

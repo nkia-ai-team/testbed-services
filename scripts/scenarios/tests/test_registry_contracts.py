@@ -72,8 +72,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 81 → 82. F49-H(후보) 추가. 기존 k8s.image release 모드를 food order 에 써서 프로파일 수는 그대로.
         # 2026-10-09: 82 → 83. F50-R(후보) 추가. 프로파일 28 → 29(k8s.quota 신설).
         # 2026-10-09: 83 → 84. F48-P(후보) 추가. 기존 db.ddl MySQL 보류 표 모드에 계약만 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 84)
-        self.assertEqual(len(self.profiles["profiles"]), 29)
+        # 2026-10-09: 84 → 85. F51-R(후보) 추가. 프로파일 29 → 30(k8s.scale 신설).
+        self.assertEqual(len(self.catalog["scenarios"]), 85)
+        self.assertEqual(len(self.profiles["profiles"]), 30)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -163,6 +164,8 @@ class RegistryContractTests(unittest.TestCase):
             "F50-R",
             # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-P",
+            # 2026-10-09: 운영자의 용량 명령 입력이 잘못되어 banking account-service Deployment 가 replicas 0(kubectl scale), account 파드가 없어 잔액 조회, 계좌 목록, 이체 502(거래 내역, commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -469,6 +472,8 @@ class RegistryContractTests(unittest.TestCase):
             "F50-R",
             # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-P",
+            # 2026-10-09: 운영자의 용량 명령 입력이 잘못되어 banking account-service Deployment 가 replicas 0(kubectl scale), account 파드가 없어 잔액 조회, 계좌 목록, 이체 502(거래 내역, commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-R",
             },
         )
         self.assertEqual(
@@ -559,6 +564,8 @@ class RegistryContractTests(unittest.TestCase):
             "F50-R",
             # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-P",
+            # 2026-10-09: 운영자의 용량 명령 입력이 잘못되어 banking account-service Deployment 가 replicas 0(kubectl scale), account 파드가 없어 잔액 조회, 계좌 목록, 이체 502(거래 내역, commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -717,8 +724,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F49-H(후보, 고정 evaluation)이 끝에 붙어 F44-P 가 끝 5개에서 빠졌다.
         # 2026-10-09: F50-R(후보, 고정 evaluation)이 끝에 붙어 F47-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F48-P(후보, 고정 evaluation)이 끝에 붙어 F48-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F51-R(후보, 고정 evaluation)이 끝에 붙어 F49-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F49-R", "F33-H", "F49-H", "F50-R", "F48-P"])
+                         ["F33-H", "F49-H", "F50-R", "F48-P", "F51-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
