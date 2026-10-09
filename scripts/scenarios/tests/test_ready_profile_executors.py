@@ -251,6 +251,37 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 row["location"] = {**row["location"], "host": "192.168.122.11"}
         with self.assertRaisesRegex(ExecutorError, "measured worker"):
             host_firewall.build_invocation(bad, "run")
+        # 같은 노드 호출자(F44-R)는 호출자 네임스페이스, 노드, 대역이 지켜지는 쪽과 같다.
+        self.assertEqual(argv[16:], ["rca-testbed-food", "tb-w3", "10.244.2.0/24"])
+
+    def test_host_firewall_cross_node_caller_and_cleanup_without_state(self) -> None:
+        # F44-P: 지켜지는 transfer 는 tb-w2, 빠진 호출자 commerce payment 는 다른 노드 tb-w1 의 다른 네임스페이스에
+        # 있다. preflight 는 호출자를 자기 노드, 자기 대역에서 찾고 허용 목록 밖인지 본다(지켜지는 대역 안에서
+        # 찾으면 다른 노드 호출자는 늘 실패한다). 주입은 F44-R 과 같은 꼴(FORWARD 맨 위 NEW 점프와 체인 하나)이다.
+        plan = compiler.compile_plan("f44-p-banking-node-firewall-omits-commerce-settlement")
+        argv, stdin = host_firewall.build_invocation(plan, "run")
+        self.assertEqual(argv[3:10], ["run", "192.168.122.11", "tb-w2", "rca-testbed-banking",
+                                      "testbed-transfer", "testbed-payment", "10.244.1.0/24"])
+        self.assertEqual(argv[16:], ["rca-testbed-commerce", "tb-w1", "10.244.3.0/24"])
+        self.assertFalse(any("F44" in arg or "f44" in arg for arg in argv))
+        script = stdin.decode()
+        placement = script.split("\nplacement_ok()")[1].split("\n}")[0]
+        self.assertIn('placed "$caller_ns" "$caller" "$caller_node"', placement)
+        self.assertIn('in_cidr "$from" "$caller_cidr"', placement)
+        self.assertIn("allowed_by_list", placement)
+        # 러너 컨테이너가 규칙이 걸린 채 다시 만들어져 상태 파일을 잃어도 cleanup 이 노드의 규칙을 읽어 지운다.
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertNotIn('[[ -e "$state" ]] || exit 0', cleanup_case)
+        self.assertLess(cleanup_case.index("r=$(rules)"), cleanup_case.index('ipt -D "${jump[@]}"'))
+        contract = host_firewall.CONTRACTS["F44-P"]
+        # 빠진 호출자 대역은 허용 목록에 없고, banking 자신의 파드 대역과 진입 노드 대역은 있다.
+        self.assertNotIn(contract["omitted_caller_cidr"], contract["allowed_sources"])
+        self.assertIn(contract["protected_cidr"], contract["allowed_sources"])
+        self.assertIn("10.244.0.0/24", contract["allowed_sources"])
+        params = dict(contract)
+        params["allowed_sources"] = params["allowed_sources"] + ["10.244.3.0/24"]
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            host_firewall.validate("F44-P", params, {})
 
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
@@ -803,6 +834,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F43-R",
             # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
             "F44-R",
+            # 2026-10-09: banking 워커 tb-w2 호스트 방화벽에 transfer API(8082) 허용 목록을 넣으며 다른 노드 tb-w1 의 commerce 파드 대역(정산 이체 호출자 payment)을 빠뜨림(Central 1 2025-04-09 재구성, host.firewall 에 다른 노드 호출자 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

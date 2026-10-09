@@ -1,0 +1,360 @@
+{
+  "schema_version": "1.0",
+  "id": "F44-P",
+  "slug": "f44-p-banking-node-firewall-omits-commerce-settlement",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "worker-w2",
+    "matrix_location_transport": "W/ssh host.firewall(worker-w2, 러너가 kubectl 로 tb-w2 transfer 와 tb-w1 payment 배치 확인 후 ssh nkia@192.168.122.11 로 규칙마다 sudo -n iptables) + R/ssh load.north_south companion(commerce surge.js, target_rps=3)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/host.firewall",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "network-oob-recovery",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.firewall",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.firewall"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f44-p",
+              "parameters": {
+                "host": "192.168.122.11",
+                "node": "tb-w2",
+                "namespace": "rca-testbed-banking",
+                "protected_app": "testbed-transfer",
+                "omitted_caller_app": "testbed-payment",
+                "protected_cidr": "10.244.1.0/24",
+                "port": 8082,
+                "chain": "TRANSFER-API-IN",
+                "allowed_sources": [
+                  "10.244.1.0/24",
+                  "10.244.0.0/24",
+                  "192.168.122.0/24",
+                  "192.168.200.0/24"
+                ],
+                "comment": "transfer-api: allow banking pods and entry networks",
+                "log_prefix": "[FW BLOCK] ",
+                "log_limit": "6/min",
+                "omitted_caller_namespace": "rca-testbed-commerce",
+                "omitted_caller_node": "tb-w1",
+                "omitted_caller_cidr": "10.244.3.0/24"
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "commerce 진입점(nginx → gateway) 상태. 규칙은 tb-w2 파드 대역의 8082 로 가는 새 연결만 거르고 commerce 진입 경로와 무관하다. checkout 이 502 여도 nginx, gateway 는 상품 목록에 200 으로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s",
+            "_note": "banking transfer 파드. kubelet 프로브는 노드 자신(10.244.1.1)에서 오고 허용 목록(10.244.1.0/24) 안이라 Ready 가 유지되어야 한다. 빠지면 경로 차단이 아니라 transfer 다운(F17-R, F17-H 꼴)이다"
+          },
+          {
+            "id": "payment_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s",
+            "_note": "commerce payment 파드. 정산 이체를 부르는 쪽이다. 빠지면 결제 서비스 자체 장애다. 이 주입은 payment 를 건드리지 않는다"
+          },
+          {
+            "id": "postgres_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-postgres"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "_note": "동반 부하(commerce surge.js 3rps, 여정의 50% 가 checkout)의 k6 live 문서. checkout 은 order → payment → (외부 결제 mock 뒤) core-banking transfer 정산 이체를 동기로 부른다. 규칙이 들어간 뒤에도 payment 가 열어 둔 keep-alive 연결(평시 tb-w2 conntrack 에 10.244.3.81 출발 1~2개)은 ESTABLISHED 라 계속 통하고, transfer Tomcat 이 연결당 100 요청 뒤 닫거나 쉬는 연결을 JDK 가 닫으면 끝난다(checkout 초당 약 2건이면 1분 안팎). 그 뒤 payment 의 새 연결 SYN 이 버려져 connect-timeout 3초 뒤 'core-banking transfer call failed: I/O error ... Connect timed out' 502, order 는 결제 재시도 2회 뒤 서킷 열림, checkout 502"
+          },
+          {
+            "id": "checkout_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "freshness": "30s",
+            "_note": "상주 기준선(loadgen-banking)의 잔액 조회(nginx → account, 55%) 실패율. banking 자신의 경로는 허용 목록 안이라 고장 중에도 0 이어야 한다. 30초 창에 약 15~30건"
+          },
+          {
+            "id": "checkout_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-failed-5xx",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "checkout-collapsed",
+              "observation": "checkout_2xx_rate",
+              "op": "lt",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m. 규칙 적용 뒤 payment 의 기존 keep-alive 연결이 닫히는 데 길어야 1분 안팎이고, 그 뒤 정산 이체의 새 연결은 모두 3초 connect-timeout 이다. payment 의 banking 호출에는 재시도와 서킷이 없어 checkout 마다 약 3초 뒤 502 이고, order 의 paymentClient 는 2회 시도 뒤 서킷(10회 중 50%, 5초 열림)이 열려 열린 동안의 checkout 은 fallback 502 다. 연결이 닫힌 뒤 checkout 성공은 0 이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1,
+              "_note": "동반 부하 3rps 의 1/3. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "transfer-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 파드가 빠지면 연결 거부(엔드포인트 없음)로 정산이 실패하는 F17-R, F17-H 꼴이다. 이 주입에서 transfer 는 Ready 이고 banking 자신의 이체, 내역 조회에 계속 답한다"
+            },
+            {
+              "id": "payment-down",
+              "observation": "payment_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "commerce payment 가 빠지면 결제 서비스 자체 장애(F05-R, F05-H 꼴)다"
+            },
+            {
+              "id": "commerce-db-down",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "PostgreSQL 이 빠지면 F25-H 꼴이다"
+            },
+            {
+              "id": "banking-own-path-failing",
+              "observation": "balance_read_nonok_rate_baseline",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "banking 자신의 잔액 조회까지 실패하면 경로 차단이 아니라 banking 쪽 장애(F35-R 의 Oracle 계정, F41-R 의 account 재시작 꼴)다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "payment-ready",
+              "observation": "payment_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "writes-recovered",
+              "observation": "checkout_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.1
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 FORWARD 의 점프 규칙을 지우고 TRANSFER-API-IN 체인을 비워 지운 뒤 iptables -S 로 둘 다 없음을 확인하고 평가한다. payment 의 다음 새 연결부터 통하고, order 의 paymentClient 서킷은 반열림 3회 성공으로 닫힌다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "host.firewall",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "host.firewall",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "host.firewall"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

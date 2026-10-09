@@ -64,7 +64,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 73 → 74. F42-R(후보) 추가. 기존 k8s.image release 모드를 써서 프로파일 수는 그대로.
         # 2026-10-09: 74 → 75. F43-R(후보) 추가. 기존 k8s.image release 모드를 commerce 네임스페이스로 넓혀 써서 프로파일 수는 그대로.
         # 2026-10-09: 75 → 76. F44-R(후보) 추가. 프로파일 27 → 28(host.firewall 신설).
-        self.assertEqual(len(self.catalog["scenarios"]), 76)
+        # 2026-10-09: 76 → 77. F44-P(후보) 추가. 기존 host.firewall 에 다른 노드 호출자 계약을 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 77)
         self.assertEqual(len(self.profiles["profiles"]), 28)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -139,6 +140,8 @@ class RegistryContractTests(unittest.TestCase):
             "F43-R",
             # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(Harness 2024-09-01 재구성, 새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
             "F44-R",
+            # 2026-10-09: banking 워커 tb-w2 호스트 방화벽에 transfer API(8082) 허용 목록을 넣으며 다른 노드 tb-w1 의 commerce 파드 대역(정산 이체 호출자 payment)을 빠뜨림(Central 1 2025-04-09 재구성, host.firewall 에 다른 노드 호출자 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -429,6 +432,8 @@ class RegistryContractTests(unittest.TestCase):
             "F43-R",
             # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(Harness 2024-09-01 재구성, 새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
             "F44-R",
+            # 2026-10-09: banking 워커 tb-w2 호스트 방화벽에 transfer API(8082) 허용 목록을 넣으며 다른 노드 tb-w1 의 commerce 파드 대역(정산 이체 호출자 payment)을 빠뜨림(Central 1 2025-04-09 재구성, host.firewall 에 다른 노드 호출자 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-P",
             },
         )
         self.assertEqual(
@@ -503,6 +508,8 @@ class RegistryContractTests(unittest.TestCase):
             "F43-R",
             # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(Harness 2024-09-01 재구성, 새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
             "F44-R",
+            # 2026-10-09: banking 워커 tb-w2 호스트 방화벽에 transfer API(8082) 허용 목록을 넣으며 다른 노드 tb-w1 의 commerce 파드 대역(정산 이체 호출자 payment)을 빠뜨림(Central 1 2025-04-09 재구성, host.firewall 에 다른 노드 호출자 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -653,8 +660,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F42-R(후보, 고정 evaluation)이 끝에 붙어 F40-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F43-R(후보, 고정 evaluation)이 끝에 붙어 F17-H 가 끝 5개에서 빠졌다.
         # 2026-10-09: F44-R(후보, 고정 evaluation)이 끝에 붙어 F32-H 가 끝 5개에서 빠졌다.
+        # 2026-10-09: F44-P(후보, 고정 evaluation)이 끝에 붙어 F33-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F33-P", "F41-R", "F42-R", "F43-R", "F44-R"])
+                         ["F41-R", "F42-R", "F43-R", "F44-R", "F44-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

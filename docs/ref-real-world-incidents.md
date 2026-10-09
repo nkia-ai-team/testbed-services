@@ -17,7 +17,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 자료 모음이다. **출처가 말한 내용만 적는다.** 이 테스트베드에서 재현할 수 있는지,
 무엇을 먼저 만들지 같은 판단은 이 문서에 넣지 않고 각 시나리오 설계 시트에 둔다.
 
-- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례, M1 Vapi 2025-01-21 사례, M1 GitHub 2026-03-05 와 2026-06-10 사례는 2026-10-08 추가, M1 Google Cloud 2025-06-12 세부는 2026-10-09 공식 보고에서 보강, M2 Harness 2025-10-28 과 Pipefy 2024-05-22 사례는 2026-10-09 추가, M21 Vapi 2024-10-02 사례는 2026-10-09 추가, M12 Honeycomb 2019-11-06 세부는 2026-10-09 공식 보고에서 보강, M2 GitHub 2025-01-09 사례는 2026-10-09 추가, M2 Octopus Deploy 2025-11-25 사례는 2026-10-09 추가, M15 Harness 2024-09-01 사례는 2026-10-09 추가)
+- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례, M1 Vapi 2025-01-21 사례, M1 GitHub 2026-03-05 와 2026-06-10 사례는 2026-10-08 추가, M1 Google Cloud 2025-06-12 세부는 2026-10-09 공식 보고에서 보강, M2 Harness 2025-10-28 과 Pipefy 2024-05-22 사례는 2026-10-09 추가, M21 Vapi 2024-10-02 사례는 2026-10-09 추가, M12 Honeycomb 2019-11-06 세부는 2026-10-09 공식 보고에서 보강, M2 GitHub 2025-01-09 사례는 2026-10-09 추가, M2 Octopus Deploy 2025-11-25 사례는 2026-10-09 추가, M15 Harness 2024-09-01 사례는 2026-10-09 추가, M15 Central 1 2025-04-09 사례는 2026-10-09 추가)
 - 출처 표기: 공식 = 기업 공식 포스트모템 또는 상태 페이지, 논문 = 학술 논문,
   보도 = 언론 보도, 2차 = 집계 사이트나 요약 글. 보도와 2차 출처는 원문을 확인하지 못했다는 뜻이다.
 
@@ -162,6 +162,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 | Datadog, 2023-03-08 | systemd 자동 보안 업데이트가 Cilium 경로를 지워 여러 리전에서 노드가 동시에 이탈 | [공식](https://www.datadoghq.com/blog/2023-03-08-multiregion-infrastructure-connectivity-issue/) |
 | GitHub, 2018-10-21 | 43초 네트워크 단절 뒤 리전 간 DB 페일오버 | [공식](https://github.blog/2018-10-30-oct21-post-incident-analysis/) |
 | Harness, 2024-09-01 | 상태 페이지 사고 "Harness cloud builds failing at initialise step for MAC users"(사후 보고 게시 2024-09-17). 9월 1일 17:00 UTC 방화벽 규칙을 좁힘: "We tightened a firewall rule for our Mac VM registry that was previously too permissive." 새 규칙이 레지스트리를 쓰는 구성 요소 하나의 NAT IP 를 빠뜨림("the new rule did not account for the NAT IP address of one of these components"). 그 구성 요소는 지속 소켓 연결을 유지해 연결이 다시 맺어지거나 재시작할 때까지 방화벽의 영향을 받지 않아 문제가 바로 드러나지 않음. 영향: 일부 고객의 macOS 호스팅 CI 파이프라인이 초기화 단계에서 실패. 탐지: 9월 4일 06:03 UTC 고객 보고. 완화: 9월 4일 08:39 UTC 방화벽 규칙을 다시 만들고 검증. 후속: 필요한 NAT IP 를 넣어 다시 좁히기, 방화벽 제한을 적용할 때 관련 서비스 재시작, 변경 시 연결을 비우고 다시 맺게 하기 | [공식](https://status.harness.io/incidents/bs6qp18g8l21) |
+| Central 1, 2025-04-09 | 상태 페이지 사고 INC198965 "Brief Interac e-Transfer outage"(사후 보고 게시 2025-05-06). 4월 9일 12:50~12:54 PT(4분 미만) e-Transfer 서비스 중단: MemberDirect/Forge 디지털 뱅킹(3.4/3.5)과 API 서비스 사용자가 이체를 보내거나 받을 때 오류. 영향 범위 Payment Services, Digital Banking Services. 원인: 방화벽 오류("firewall error")가 UCP 시스템과 Interac 사이 연결을 잠깐 끊음. UCP 는 밴쿠버(VAHC) 망 연결로 Interac 과 통신하지 못했지만 응답은 유지했고, Interac 쪽에는 문제가 없었음. 네트워크 팀이 방화벽 오류로 추적. 완화: 방화벽 규칙을 바로잡았고 서비스는 개입 없이 자동 회복. 후속: 방화벽 규칙 변경에 대한 네트워크 거버넌스와 안전장치 강화(PTASK0010325 완료), 네트워크 계층 로깅 강화. 탐지 경로는 적혀 있지 않음 | [공식](https://status.central1.com/incidents/nr0l5bvnmwpn) |
 
 ### M16. DNS
 

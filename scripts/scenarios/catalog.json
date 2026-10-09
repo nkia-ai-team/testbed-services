@@ -954,6 +954,19 @@
       "load_mode": "fixed",
       "injection_location": "worker-w3",
       "prerequisite": ""
+    },
+    {
+      "id": "F44-P",
+      "slug": "f44-p-banking-node-firewall-omits-commerce-settlement",
+      "profiles": [
+        "host.firewall",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "worker-w2",
+      "prerequisite": ""
     }
   ]
 }
