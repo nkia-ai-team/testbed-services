@@ -61,6 +61,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.instance_readonly",
                 # 2026-10-09: F40-R — 업무 설정 행 하나 넣기와 지우기(+ 그 행을 읽는 서비스 재시작).
                 "db.config_row",
+                # 2026-10-09: F17-H — Deployment 컨테이너 이미지 한 칸의 롤아웃과 원복.
+                "k8s.image",
             },
         )
 

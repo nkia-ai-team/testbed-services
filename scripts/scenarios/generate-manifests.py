@@ -46,6 +46,8 @@ PROFILE_PREFLIGHTS = {
     "k8s.env": "kubernetes-original-env-snapshot",
     # The DNS policy is one pod-template field snapshotted and restored the same way.
     "k8s.dns": "kubernetes-original-spec-snapshot",
+    # The container image is one pod-template field snapshotted and restored the same way.
+    "k8s.image": "kubernetes-original-spec-snapshot",
     "k8s.lifecycle": "kubernetes-recovery-capacity",
     "k8s.resource": "kubernetes-original-resource-snapshot",
     "k8s.probe": "kubernetes-original-probe-snapshot",

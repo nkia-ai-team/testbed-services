@@ -6218,6 +6218,96 @@
      }
     ]
    }
+  },
+  "F17-H": {
+   "title": "Release rollout of the banking transfer-service to an image tag the node never received: the old pod is removed first, the new one cannot start, and transfers, transaction history and commerce checkout settlement fail with 502",
+   "description": "A rollout of the banking transfer-service Deployment (testbed-transfer) changes one field of its pod template, the container image, from core-banking-transfer:latest to the release tag core-banking-transfer:2.1.0. Every testbed app image is imagePullPolicy Never and is loaded into each node's containerd store by the build script, so the node's store is the registry this Deployment pulls from, and tb-w2 holds only core-banking-transfer:latest (node status images, 2026-10-09). The Deployment's own strategy is maxSurge 0 / maxUnavailable 1 (the canonical manifest sets it for transfer), so the controller scales the old ReplicaSet to 0 and the new one to 1 at the same moment: the old pod terminates and leaves the Service endpoints, while the new pod is scheduled to tb-w2 and its container is never created ('ErrImageNeverPull: Container image \"core-banking-transfer:2.1.0\" is not present with pull policy of Never'). From then on the testbed-transfer Service has no endpoints and kube-proxy refuses every connection. account-service's transfer call (api → account → transfer) fails with 'I/O error on POST request for \"http://testbed-transfer:8082/api/transfers\": Connection refused', retries, opens its transferClient breaker and answers 502; api retries, opens its accountClient breaker and answers the transfer request through nginx with 502. api's transaction history call (api → transfer) fails the same way, and commerce-payment's settlement transfer (commerce-payment → transfer FQDN) is refused, so commerce checkout fails with 502 as well. Balance lookups and account lists (nginx → account → Oracle) keep working. transfer itself writes no log at all after the old pod's shutdown, because no container of the new version ever starts; no readiness probe fails, nothing restarts, Oracle is untouched. This reconstructs Harness's 2025-10-28 Feature Flags incident, where a routine deployment needed a container image that had been deleted from Google Artifact Registry, so the new pods failed to start and the auth endpoint returned 502 until the image was restored and the pods redeployed (with Pipefy's 2024-05-22 outage, where pods referenced an image that was not present in the container registry and the settings were reverted, as a second instance).",
+   "cause": "Rollout of testbed-transfer (banking) with the container image core-banking-transfer:2.1.0, a tag that was never loaded into tb-w2's image store (imagePullPolicy Never) → the strategy maxSurge 0 / maxUnavailable 1 removes the old pod first → the new pod's container cannot be created (ErrImageNeverPull), so the Deployment has 0 available replicas and the testbed-transfer Service has no endpoints → every caller's connection to testbed-transfer:8082 is refused → account and api answer transfers and history with 502 after retries and open circuit breakers, commerce-payment's settlement fails and commerce checkout returns 502, until the image reference is rolled back.",
+   "injection_summary": "A new k8s.image executor runs `kubectl set image` on Deployment testbed-transfer (rca-testbed-banking), container transfer-service, from core-banking-transfer:latest to core-banking-transfer:2.1.0 and does not wait for the rollout. Its preflight checks on the live objects that the current image is the baseline, the pull policy is Never, replicas 1 with maxSurge 0 (otherwise the old pod would keep serving, as in the cut F05-G), that tb-w2's node status lists the baseline image and not the fault tag, that tb-w2's image filesystem is below 80% (kubelet image GC low mark; above 85% GC could delete the unused baseline image, the only copy under imagePullPolicy Never), and that the Deployment is available. Nothing is deleted from the node, and probes, env, resources, Services and other Deployments are not touched. A north-south 5 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) drives the banking entry point (30082) on top of the resident baseline load so that account and api server spans are sampled at any hour. Cleanup sets the image back to core-banking-transfer:latest (the old ReplicaSet's template) and waits until the Deployment is available. No value carries the scenario id.",
+   "user_impact": "Money transfers through the banking gateway (POST /api/transfers → api → account → transfer) and transaction history (GET /api/transfers → api → transfer) fail with 502, quickly, because the connection is refused at once and the circuit breakers open. Commerce checkouts fail with 502 because the banking settlement transfer is refused, and the direct transfers of the commerce baseline load to transfer's NodePort are refused too. Balance lookups and account lists keep returning 200. Nothing crashes or restarts; transfer simply has no running pod.",
+   "distinguishing_evidence": "Decisive evidence is the rollout itself: a KCM ScalingReplicaSet pair for Deployment testbed-transfer (old ReplicaSet scaled to 0, new one to 1 in the same second), a new ReplicaSet whose spec captured in kcm_resources_history carries image core-banking-transfer:2.1.0 while all testbed-transfer records on file (175 ReplicaSet, 155 pod) carry core-banking-transfer:latest, and kubelet Warning events 'ErrImageNeverPull' for the new pod ('Container image \"core-banking-transfer:2.1.0\" is not present with pull policy of Never'), an event reason that never occurred in the KCM event retention (2026-08-13~). Right after it account and api log 'Connection refused' towards http://testbed-transfer:8082 and commerce-payment's settlement fails. What sets this apart from the same symptom with other causes: the new transfer pod never gets a 'Pulled', 'Created' or 'Started' event and transfer writes no startup or error log, so there is no readiness failure (F17-R produces 'Unhealthy' readiness events from a running container that answers 404 on the probe path), no database failure inside transfer (F01-P and F35-R produce Hikari and ORA errors from a running transfer), and no crash loop (restart count stays 0). Balance lookups through account and Oracle keep working, so the database and account are fine.",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "core-banking-transfer",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking transfer-service 의 배포 산출물이다: Deployment testbed-transfer 가 롤아웃한 컨테이너 이미지 core-banking-transfer:2.1.0 이 이 Deployment 가 이미지를 가져오는 저장소(imagePullPolicy Never 라 tb-w2 노드의 containerd 저장소)에 없다. 정본 전략 maxSurge 0 / maxUnavailable 1 이 옛 파드를 먼저 내리고, 새 파드는 ErrImageNeverPull 로 컨테이너조차 만들지 못해 가용 레플리카 0, Service 엔드포인트가 빈다. 그 뒤 transfer 로 가는 모든 연결(account 의 이체 실행, api 의 거래 내역, commerce-payment 의 정산 이체, commerce 기준선의 NodePort 직행 이체)이 즉시 거절되어 account, api 502, commerce checkout 502 가 된다. 원칙 6: 호출자들의 요청은 늘 하던 그대로 정당하고, 그 요청을 받을 파드를 없앤 것은 transfer 자신의 롤아웃(받을 수 없는 이미지를 가리킨 릴리스)이므로 근본과 계기가 같은 곳(transfer 배포)이다. 이미지가 왜 노드에 없었는지(빌드, 적재 누락)는 원본처럼 정답이 요구하지 않는다. target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 rca-testbed-banking Deployment testbed-transfer ScalingReplicaSet(옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초)와 KCM 이 새 ReplicaSet 을 처음 볼 때 남기는 스펙(PG kcm_resources_history.yaml)의 \"image\":\"core-banking-transfer:2.1.0\"(그 전 testbed-transfer ReplicaSet 175건, 파드 155건 전부 core-banking-transfer:latest) ② 새 파드의 kubelet Warning 이벤트 ErrImageNeverPull 'Container image \"core-banking-transfer:2.1.0\" is not present with pull policy of Never'(KCM 이벤트 보존 2026-08-13~ 안에서 이 reason 0건. 같은 kubelet 이 남기는 'Pulled ... already present on machine' 은 수집되고 있다) ③ 그 직후 account, api 의 'I/O error on POST/GET request for \"http://testbed-transfer:8082/api/transfers\": Connection refused' 와 서킷 열림 로그, commerce 쪽 정산 실패 ④ 새 transfer 파드는 Pulled, Created, Started 이벤트가 없고 transfer 는 기동 로그도 오류 로그도 남기지 않는다(readiness 실패, DB 오류, 크래시 루프가 아님) ⑤ 잔액 조회(nginx → account → Oracle)는 계속 200. 원본 사후 보고처럼 '배포가 요구한 이미지가 레지스트리에 없어 새 파드가 뜨지 못했다'가 정답의 층위다.",
+    "code_anchor": [
+     "core-banking/k8s/22-transfer-service.yaml:14-18 (strategy maxUnavailable 1, maxSurge 0 — 옛 파드가 새 파드보다 먼저 내려가는 정본 전제. 기본 전략이면 옛 파드가 계속 서비스한다(cut F05-G))",
+     "core-banking/k8s/22-transfer-service.yaml:36-37 (image core-banking-transfer:latest, imagePullPolicy Never — 노드 저장소에 적재된 이미지만 쓴다. 주입은 이 image 한 칸을 바꾼다)",
+     "core-banking/k8s/build-and-deploy.sh:30-50 (Phase 2 — 빌드한 이미지를 IMPORT_SSH_NODES 의 각 노드 containerd 에 ctr import 로 적재한다. 레지스트리가 없어 노드 저장소가 곧 이미지 출처다)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:28-58 (executeTransfer — 'Transfer service call failed for order {}: {}' 후 BAD_GATEWAY, 서킷 열림 fallback 'Transfer service circuit open/exhausted')",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/AccountClient.java:28-58 (requestTransfer — account 의 502 를 'Account service call failed' 로 남기고 BAD_GATEWAY)",
+     "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:45-58 (commerce 정산 이체 — transfer FQDN 동기 호출, RestClientException 을 502 로)"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-transfer(replicas 1, RollingUpdate maxSurge 0 / maxUnavailable 1, nodeSelector tb-w2, imagePullPolicy Never, progressDeadlineSeconds 600, terminationGracePeriodSeconds 30, 109 kubectl 2026-10-09 확인). tb-w2 노드 status.images 의 core-banking 이미지는 core-banking-{transfer,account,ledger,api}:latest 뿐이고 core-banking-transfer:2.1.0 은 없다(2026-10-09). Service testbed-transfer 는 ClusterIP 와 NodePort 30282. 엔드포인트가 빈 Service 로의 연결은 kube-proxy 가 거절한다(2026-10-02 transfer NotReady 때 account, api 로그 'Connection refused' 실측). transfer 의 OTLP 내보내기 주소는 IP 라 관측 데이터는 끊기지 않는다."
+   },
+   "must_support": [
+    "testbed-transfer 롤아웃 KCM 이벤트(Deployment testbed-transfer ScalingReplicaSet 두 줄: 옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet 스펙(PG kcm_resources_history.yaml)의 이미지가 core-banking-transfer:2.1.0 이고, 그 전 testbed-transfer ReplicaSet 175건, 파드 155건은 전부 core-banking-transfer:latest 다",
+    "새 transfer 파드의 kubelet Warning 이벤트 ErrImageNeverPull('Container image \"core-banking-transfer:2.1.0\" is not present with pull policy of Never')가 고장 내내 반복되고, 그 파드에는 Pulled, Created, Started 이벤트가 없다(설계 메모: KCM 이벤트 보존 2026-08-13~ 전체에 ErrImageNeverPull, Failed 사유가 0건이라 이 사유가 실제로 수집되는지는 첫 실행에서 확인한다. 녹화본에 없으면 이 항목은 새 ReplicaSet 의 image 2.1.0 과 그 파드의 Pulled/Created/Started 부재로 고친다)",
+    "core-banking-account, core-banking-api 의 'I/O error on ... request for \"http://testbed-transfer:8082/api/transfers\": Connection refused' 와 서킷 열림 로그가 롤아웃 직후 생기고, 두 서비스 서버 스팬(POST /api/accounts/transfer, POST/GET /api/transfers)이 502 로 끝나 오류율이 평시 0 에서 오른다. commerce 정산(commerce-payment → transfer)도 실패해 commerce checkout 이 502 다",
+    "transfer 는 옛 파드 종료 뒤 로그를 하나도 남기지 않는다(기동 로그, Hikari, ORA 오류 모두 없음). readiness 실패(Unhealthy) 이벤트와 재시작이 없다",
+    "동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.5 이상으로 오르고, 잔액 조회(step get) 실패율은 평시 0 그대로다"
+   ],
+   "must_rule_out": [
+    "readiness 오설정이 아님(F17-R): F17-R 은 컨테이너가 떠서 로그를 남기고 프로브 경로가 404 라 'Unhealthy' readiness 이벤트가 나며 스펙에서 바뀐 것이 readinessProbe 다. 여기서는 컨테이너가 만들어지지 않고(ErrImageNeverPull) 스펙에서 바뀐 것이 이미지 태그 하나다",
+    "transfer 의 DB 나 Oracle 장애가 아님(F01-P, F35-R): 그 꼴은 떠 있는 transfer 가 Hikari 시간 초과나 ORA 오류를 남기고 잔액 조회도 흔들린다. 여기서는 transfer 가 아무 로그도 남기지 않고 잔액 조회(account → Oracle)는 200 그대로다",
+    "결함 있는 새 버전의 기동 실패나 크래시 루프가 아님: 컨테이너가 시작조차 되지 않아 재시작 수 0, 애플리케이션 로그 없음",
+    "노드 장애나 자원 부족이 아님: 새 파드는 tb-w2 에 정상 스케줄되고(Scheduled), 같은 노드의 account, api, ledger, Oracle, nginx 는 Ready 이며 노드 조건 이벤트가 없다",
+    "account, api 장애가 아님: 같은 account 파드가 잔액 조회에 200 으로 답하고, 실패 대상 URL 이 모두 testbed-transfer 다",
+    "부하 증가가 아님: 실패는 거절된 연결이고 같은 부하를 받는 잔액 조회는 정상이며, 실패는 부하 곡선이 아니라 롤아웃 시각에 맞춰 0 에서 거의 1 로 뛴다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F17-R (같은 증상: transfer 엔드포인트가 비어 banking 이체와 commerce 정산이 실패. 원인은 readinessProbe 경로 오설정이라 컨테이너는 떠서 로그를 남기고 'Unhealthy' 이벤트가 난다. F17-H 는 이미지가 없어 컨테이너가 생기지 않고 ErrImageNeverPull 이벤트와 새 이미지 태그가 지문이다)",
+     "F39-R (같은 banking 이체 502 지만 transfer 는 멀쩡하고 account 의 하류 주소 설정이 다른 호스트를 가리켜 Connect timed out. transfer 는 다른 호출자에게 계속 답한다)",
+     "F35-R (같은 banking 502 지만 Oracle 계정 잠금으로 account, transfer, ledger 가 ORA-28000 을 남기며 NotReady 가 되고 잔액 조회까지 실패한다)",
+     "F05-G (cut, 같은 '없는 이미지로 롤아웃'이지만 commerce payment 의 기본 전략(maxSurge 1)이라 옛 파드가 계속 서비스해 피해가 없었다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-transfer",
+     "banking-transfer",
+     "testbed-transfer"
+    ],
+    "partial": [
+     "core-banking-account",
+     "core-banking-api",
+     "commerce-payment"
+    ]
+   },
+   "title_ko": "banking transfer-service 를 노드에 적재된 적 없는 이미지 태그로 릴리스 롤아웃: 옛 파드가 먼저 내려가고 새 파드는 뜨지 못해 이체, 거래 내역, commerce checkout 정산이 502 로 실패한다",
+   "description_ko": "banking transfer-service Deployment(testbed-transfer) 롤아웃이 파드 템플릿의 한 칸, 컨테이너 이미지를 core-banking-transfer:latest 에서 릴리스 태그 core-banking-transfer:2.1.0 으로 바꾼다. 테스트베드 앱 이미지는 모두 imagePullPolicy Never 이고 빌드 스크립트가 노드마다 containerd 저장소에 적재하므로, 이 Deployment 가 이미지를 가져오는 레지스트리는 노드 저장소이고 tb-w2 에는 core-banking-transfer:latest 만 있다(노드 status.images, 2026-10-09). 이 Deployment 의 정본 전략은 maxSurge 0 / maxUnavailable 1 이라 컨트롤러가 옛 ReplicaSet 을 0 으로, 새 ReplicaSet 을 1 로 같은 순간에 바꾼다: 옛 파드는 종료되며 Service 엔드포인트에서 빠지고, 새 파드는 tb-w2 에 스케줄되지만 컨테이너가 만들어지지 않는다('ErrImageNeverPull: Container image \"core-banking-transfer:2.1.0\" is not present with pull policy of Never'). 그 뒤 testbed-transfer Service 는 엔드포인트가 없어 kube-proxy 가 모든 연결을 거절한다. account 의 이체 실행 호출(api → account → transfer)은 'I/O error on POST request for \"http://testbed-transfer:8082/api/transfers\": Connection refused' 로 실패하고, 재시도 뒤 transferClient 서킷이 열려 502 로 답한다. api 도 재시도하고 accountClient 서킷을 열어 nginx 를 거친 이체 요청에 502 로 답한다. api 의 거래 내역 호출(api → transfer)도 같은 이유로 실패하고, commerce-payment 의 정산 이체(transfer FQDN)도 거절되어 commerce checkout 도 502 다. 잔액 조회와 계좌 목록(nginx → account → Oracle)은 정상이다. 새 버전 컨테이너가 하나도 뜨지 않으므로 transfer 는 옛 파드 종료 뒤 로그를 전혀 남기지 않는다. readiness 실패도 재시작도 없고 Oracle 은 그대로다. Harness 2025-10-28 Feature Flags 장애(일상 배포가 Google Artifact Registry 에서 삭제된 컨테이너 이미지를 필요로 해 새 파드가 뜨지 못하고 인증 엔드포인트가 502, 이미지를 복원하고 파드를 다시 배포해 복구)의 재구성이다(두 번째 사례: Pipefy 2024-05-22, 설정이 가리킨 이미지가 컨테이너 레지스트리에 없어 파드가 뜨지 못한 장애, 설정을 되돌려 복구).",
+   "cause_ko": "testbed-transfer(banking) 를 tb-w2 이미지 저장소에 적재된 적 없는 태그 core-banking-transfer:2.1.0 으로 롤아웃(imagePullPolicy Never) → 전략 maxSurge 0 / maxUnavailable 1 이 옛 파드를 먼저 내림 → 새 파드는 컨테이너를 만들지 못해(ErrImageNeverPull) 가용 레플리카 0, testbed-transfer Service 엔드포인트가 빔 → testbed-transfer:8082 로의 모든 연결이 거절 → account, api 가 재시도와 서킷 열림 끝에 이체와 거래 내역에 502, commerce-payment 정산이 실패해 commerce checkout 502. 이미지 참조를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "새 k8s.image 실행기가 rca-testbed-banking 의 Deployment testbed-transfer 컨테이너 transfer-service 에 `kubectl set image` 로 이미지를 core-banking-transfer:latest 에서 core-banking-transfer:2.1.0 으로 바꾸고 롤아웃을 기다리지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, pull 정책이 Never 인지, replicas 1 에 maxSurge 0 인지(아니면 옛 파드가 계속 서비스한다, cut F05-G), tb-w2 노드 status 에 기준 이미지가 있고 장애 태그가 없는지, tb-w2 이미지 파일시스템 사용률이 80%(kubelet 이미지 GC 하한) 미만인지(85% 를 넘으면 GC 가 쓰이지 않는 기준 이미지, Never 정책 아래 유일한 사본을 지울 수 있다), Deployment 가 available 인지 확인한다. 노드에서 아무것도 지우지 않고 프로브, env, 자원, Service, 다른 Deployment 는 건드리지 않는다. north-south 5rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더해 어느 시간대에도 account, api 서버 스팬 표본이 나오게 한다. cleanup 은 이미지를 core-banking-transfer:latest(옛 ReplicaSet 의 템플릿)로 되돌리고 Deployment 가 available 이 될 때까지 기다린다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "banking 게이트웨이를 거치는 이체(POST /api/transfers → api → account → transfer)와 거래 내역(GET /api/transfers → api → transfer)이 502 로 실패한다. 연결이 바로 거절되고 서킷이 열려 빨리 실패한다. banking 정산 이체가 거절되어 commerce checkout 도 502 이고, commerce 기준선 부하의 transfer NodePort 직행 이체도 거절된다. 잔액 조회와 계좌 목록은 200 그대로다. 무엇도 죽거나 재시작하지 않는다. transfer 에 떠 있는 파드가 없을 뿐이다.",
+   "distinguishing_evidence_ko": "결정 증거는 롤아웃 자체다: Deployment testbed-transfer 의 KCM ScalingReplicaSet 두 줄(옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초), kcm_resources_history 에 잡힌 새 ReplicaSet 스펙의 이미지 core-banking-transfer:2.1.0(기록에 있는 testbed-transfer ReplicaSet 175건, 파드 155건은 전부 core-banking-transfer:latest), 새 파드의 kubelet Warning 이벤트 'ErrImageNeverPull'('Container image \"core-banking-transfer:2.1.0\" is not present with pull policy of Never', KCM 이벤트 보존 2026-08-13~ 안에서 처음 나오는 reason). 그 직후 account, api 가 http://testbed-transfer:8082 로의 'Connection refused' 를 남기고 commerce-payment 정산이 실패한다. 같은 증상의 다른 원인과 가르는 것: 새 transfer 파드에는 'Pulled', 'Created', 'Started' 이벤트가 없고 transfer 는 기동 로그도 오류 로그도 남기지 않는다. 그래서 readiness 실패(F17-R 은 떠 있는 컨테이너가 프로브 경로에 404 로 답해 'Unhealthy' readiness 이벤트가 난다)도, transfer 안의 DB 장애(F01-P, F35-R 은 떠 있는 transfer 가 Hikari, ORA 오류를 남긴다)도, 크래시 루프(재시작 수 0)도 아니다. account 와 Oracle 을 거치는 잔액 조회는 계속 되므로 DB 와 account 는 정상이다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f17-h",
+      "parameters": {
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-transfer",
+       "container": "transfer-service",
+       "baseline_image": "core-banking-transfer:latest",
+       "fault_image": "core-banking-transfer:2.1.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

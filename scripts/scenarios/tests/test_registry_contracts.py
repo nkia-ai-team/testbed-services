@@ -57,8 +57,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-08: 66 → 67. F38-R(후보) 추가. 프로파일 24 → 25(db.instance_readonly 신설).
         # 2026-10-08: 67 → 68. F39-R(후보) 추가. 기존 k8s.env 를 써서 프로파일 수는 그대로.
         # 2026-10-09: 68 → 69. F40-R(후보) 추가. 프로파일 25 → 26(db.config_row 신설).
-        self.assertEqual(len(self.catalog["scenarios"]), 69)
-        self.assertEqual(len(self.profiles["profiles"]), 26)
+        # 2026-10-09: 69 → 70. F17-H(후보) 추가. 프로파일 26 → 27(k8s.image 신설).
+        self.assertEqual(len(self.catalog["scenarios"]), 70)
+        self.assertEqual(len(self.profiles["profiles"]), 27)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -118,6 +119,8 @@ class RegistryContractTests(unittest.TestCase):
             "F39-R",
             # 2026-10-09: commerce pricing 프로모션 행의 할인율 오입력(10%→100.00)과 pricing 재시작으로 모든 checkout 견적 0 원, 은행이 정산 이체 거절. 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-R",
+            # 2026-10-09: banking transfer 를 노드에 없는 릴리스 이미지 태그로 롤아웃(maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 ErrImageNeverPull). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F17-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -394,6 +397,8 @@ class RegistryContractTests(unittest.TestCase):
             "F39-R",
             # 2026-10-09: commerce pricing 프로모션 행의 할인율 오입력(10%→100.00)과 pricing 재시작으로 모든 checkout 견적 0 원, 은행이 정산 이체 거절. 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-R",
+            # 2026-10-09: banking transfer 를 노드에 없는 릴리스 이미지 태그로 롤아웃(maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 ErrImageNeverPull). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F17-H",
             },
         )
         self.assertEqual(
@@ -454,6 +459,8 @@ class RegistryContractTests(unittest.TestCase):
             "F39-R",
             # 2026-10-09: commerce pricing 프로모션 행의 할인율 오입력(10%→100.00)과 pricing 재시작으로 모든 checkout 견적 0 원, 은행이 정산 이체 거절. 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-R",
+            # 2026-10-09: banking transfer 를 노드에 없는 릴리스 이미지 태그로 롤아웃(maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 ErrImageNeverPull). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F17-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -597,8 +604,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-08: F38-R(후보, 고정 evaluation)이 끝에 붙어 F32-R 이 끝 5개에서 빠졌다.
         # 2026-10-08: F39-R(후보, 고정 evaluation)이 끝에 붙어 F33-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F40-R(후보, 고정 evaluation)이 끝에 붙어 F35-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F17-H(후보, 고정 evaluation)이 끝에 붙어 F36-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F36-R", "F37-R", "F38-R", "F39-R", "F40-R"])
+                         ["F37-R", "F38-R", "F39-R", "F40-R", "F17-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

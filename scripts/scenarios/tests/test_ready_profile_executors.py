@@ -40,6 +40,7 @@ app_control = load("app_control_executor")
 db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
 k8s_dns = load("k8s_dns_executor")
+k8s_image = load("k8s_image_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
 
@@ -303,6 +304,37 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             db_config_row.validate("F40-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified configuration row contract"):
             db_config_row.validate("F38-R", db_config_row.CONTRACTS["F40-R"], {})
+
+    def test_k8s_image_rolls_one_container_to_an_absent_tag_and_restores_it(self) -> None:
+        # F17-H: 주입은 컨테이너 image 한 칸을 노드에 없는 태그로 바꾸는 롤아웃뿐이다. 노드에서 이미지를
+        # 지우거나(정리가 다시 적재에 기대게 된다) 전략, 프로브를 바꾸면 다른 장애가 된다. 피해의 전제인
+        # maxSurge 0 과 "기준 이미지는 노드에 있고 장애 태그는 없다"는 preflight 가 살아 있는 객체에서 확인한다.
+        plan = compiler.compile_plan("f17-h-banking-transfer-release-image-missing")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-transfer", "transfer-service",
+                                    "core-banking-transfer:latest", "core-banking-transfer:2.1.0"])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8). 상태 파일도 Deployment 로 이름 짓는다.
+        self.assertNotIn("F17-H", argv)
+        script = stdin.decode()
+        self.assertNotIn("F17-H", script)
+        self.assertIn("set image deploy", script)
+        self.assertIn("maxSurge", script)
+        self.assertIn(".status.images", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn('set_image "$fault"', run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('set_image "$original"', cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn("proxy/stats/summary", script)
+        for forbidden in ("rmi", "images rm", "crictl", "delete", "strategy\":", "Probe"):
+            self.assertNotIn(forbidden, script)
+        params = dict(k8s_image.CONTRACTS["F17-H"])
+        params["deployment"] = "testbed-account"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_image.validate("F17-H", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified release image contract"):
+            k8s_image.validate("F17-R", k8s_image.CONTRACTS["F17-H"], {})
 
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
@@ -609,6 +641,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F39-R",
             # 2026-10-09: commerce pricing 프로모션 행의 할인율 오입력(10%→100.00)과 pricing 재시작으로 모든 checkout 견적 0 원, 은행이 정산 이체 거절. 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-R",
+            # 2026-10-09: banking transfer 를 노드에 없는 릴리스 이미지 태그로 롤아웃(maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 ErrImageNeverPull). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F17-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
