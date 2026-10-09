@@ -1,0 +1,288 @@
+{
+  "schema_version": "1.0",
+  "id": "F33-H",
+  "slug": "f33-h-food-dispatch-release-list-total-count-saturates-mysql",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "food namespace",
+    "matrix_location_transport": "K/kubectl food testbed-dispatch 컨테이너 image set(food-delivery-dispatch:latest→food-delivery-dispatch:1.6.0, 직전에 runner 가 109 docker 의 1.6.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery delivery-tracking-surge.js, target_rps=12, entry 30181)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f33-h",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-food",
+                "deployment": "testbed-dispatch",
+                "container": "dispatch-service",
+                "baseline_image": "food-delivery-dispatch:latest",
+                "fault_image": "food-delivery-dispatch:1.6.0"
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "food 진입점(동반 부하 k6 의 주문 생성 상태). 릴리스는 dispatch 의 배달 목록에 COUNT 를 붙여 MySQL 과 dispatch 풀을 말린다. order 는 용량 확인이 dispatch Hikari 대기 3초 뒤 500 이나 연결 거부로 끝나 재시도(3회)와 서킷 끝에 503 을 돌려주고, F33-R(같은 dispatch 풀 고갈, 실행 F33-R-run-73fed92a)에서 order 는 연결 가능 상태를 지켰다. 0(연결 불가)은 order 파드나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s",
+            "_note": "food MySQL 파드. 이 주입은 MySQL 설정, 스키마, 인덱스를 건드리지 않는다. 포화되어도 Ready 여야 한다(F33-R 실행에서 전 구간 True)"
+          },
+          {
+            "id": "order_create_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "_note": "동반 부하(delivery-tracking-surge.js 12rps: 추적 목록 60%, 추적 상세 15%, 주문 10%, 둘러보기 15%)의 k6 live 문서. 목록 요청 약 7.2건/초가 릴리스의 COUNT(호출당 끝난 배차 약 174만 행, 109 실측 0.44~0.53초)를 MySQL(CPU 0.5)이 감당할 수 있는 양(약 2건/초)의 3배 넘게 들이밀고, 주문 생성은 초당 약 1.2건으로 표본을 만든다. 상주 기준선의 목록 요청은 초당 약 0.1건뿐이라 동반 부하 없이는 포화되지 않는다",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate",
+              "op": "lt",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m. 새 dispatch 파드가 옛 파드를 대신한 뒤(약 1~2분) 목록 요청마다 COUNT 가 붙어 dispatch 풀 10개가 COUNT 에 묶이고, 용량 확인과 배차 요청이 Hikari 대기 3초 뒤 500 이 되어 order 가 재시도와 서킷 끝에 503 으로 거절한다. 로컬 실측(mysql:8.0 CPU 0.5, 끝난 배차 174만 행, 릴리스 jar, 목록 2.4건/초 = 109 의 약 6건/초에 해당): 용량 확인 120건 중 200 23건, 배차 요청 120건 중 200 23건, health 10회 중 7회 503. 2xx 기준을 0.3 으로 둔 것은 order 재시도 3회가 용량 확인과 배차 요청 각각에서 일부를 건져 2xx 가 0.1~0.3 사이를 오갈 수 있어서다(F33-R 실행 2xx 0.09~0.26). 5xx 0.5 이상과 함께면 주문 다수가 실제로 실패한 것이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 3,
+              "_note": "동반 부하 12rps 의 1/4. ramping-arrival-rate(maxVUs 300)라 목록 요청이 수 초씩 걸려도 반복률이 유지된다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 질의 비용이 아니라 DB 다운(F25-H 꼴)이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 dispatch 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 매니페스트 버전은 목록에서 COUNT 를 내지 않아(Slice) MySQL 이 바로 풀리고, order 의 dispatch 서킷브레이커는 반열림 3회 성공으로 닫힌다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

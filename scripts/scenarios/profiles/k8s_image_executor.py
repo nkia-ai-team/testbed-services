@@ -100,6 +100,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-restaurant:latest",
         "fault_image": "food-delivery-restaurant:1.4.0",
     },
+    # 2026-10-09. F33-H: food dispatch-service 를 배달 목록에 전체 건수(X-Total-Count)를 더한 릴리스 1.6.0 으로
+    # 롤아웃한다. 목록 조회가 Slice 에서 Page 로 바뀌어 요청마다 끝난 배차 약 174만 행을 세는 COUNT 가 붙고,
+    # food MySQL(CPU 0.5)이 포화되며 dispatch 풀이 마른다. 결함 이미지는 fault-images/f33-h 로 109 docker 에만
+    # 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다. 다른 시나리오의 릴리스 태그와 겹치지 않는다
+    # (dispatch 는 이 태그 하나뿐).
+    "F33-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-dispatch",
+        "container": "dispatch-service",
+        "baseline_image": "food-delivery-dispatch:latest",
+        "fault_image": "food-delivery-dispatch:1.6.0",
+    },
 }
 
 

@@ -7370,6 +7370,104 @@
      }
     ]
    }
+  },
+  "F33-H": {
+   "title": "Release rollout of the food dispatch-service that adds a total count (X-Total-Count) to the delivery list: every list request now counts about 1.74 million finished dispatches, food MySQL (0.5 CPU) saturates, the dispatch connection pool runs dry and order creation fails with 503",
+   "description": "A rollout of the food dispatch-service Deployment (testbed-dispatch) moves its container image from food-delivery-dispatch:latest to the release food-delivery-dispatch:1.6.0. The release adds the total number of matching deliveries to GET /api/deliveries as an X-Total-Count header for the delivery app's page numbers: the list query changes from a Slice to a Page, so Spring Data runs a count query with every page, SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=?. The body, the other endpoints, the health endpoint, the schema and the indexes are unchanged, so the new pod becomes Ready and replaces the old one. For the delivery-tracking list (status=DELIVERED) the count walks the idx_dispatches_status_assigned range of about 1.74 million finished dispatches (0.44-0.53 s each on the 109 MySQL when idle). The page itself still takes about 1 ms. Under a delivery-tracking peak (about 7 list requests per second) the counts exceed what the 0.5-CPU MySQL can execute, every dispatch Hikari connection (pool 10) is held by a running count, and the capacity check and the dispatch request that every order needs wait 3 s for a connection and fail with 500 ('Connection is not available, request timed out after 3000ms'). order-service retries (3 times) and its dispatch circuit breaker opens, so new orders are rejected with 503 'Dispatch service unreachable'. Other food queries slow down on the saturated MySQL. dispatch readiness and liveness (both /actuator/health with a DB check) can fail while health waits for a connection, so kubelet may restart the dispatch container (Unhealthy, Killing, BackOff); each restart briefly refuses calls and the release comes back saturated. Nothing recovers until the release is rolled back.",
+   "cause": "Rollout of testbed-dispatch (food) to the release food-delivery-dispatch:1.6.0, which turns the delivery list into a paged query with a total count → every list request runs a COUNT over about 1.74 million finished dispatches → under delivery-tracking traffic the counts saturate food MySQL (0.5 CPU) and hold every dispatch Hikari connection → the capacity check and dispatch request time out waiting for a connection (500) → order-service retries, opens its circuit breaker and rejects new orders with 503, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-dispatch (rca-testbed-food), container dispatch-service, from food-delivery-dispatch:latest to food-delivery-dispatch:1.6.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f33-h from origin/main food-delivery plus fault-images/f33-h/dispatch-service.patch (four files under dispatch-service/src: DispatchRepository list methods return Page instead of Slice, DispatchService.searchDispatches returns a Page, DispatchController adds the X-Total-Count header, and the release's own DispatchSearchTest updated to the Page contract so that the module, tests included, compiles with the Dockerfile's package -DskipTests); the manifest image, sources, manifests, schema and indexes are untouched, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion delivery-tracking-surge load (12 rps: tracking list 60%, tracking detail 15%, orders 10%, browsing 15%) supplies the delivery-tracking peak and about 1.2 order creations per second. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About one to two minutes after the rollout most new food orders fail with 503 after several seconds of retries; delivery tracking lists time out or fail with 500 and delivery detail lookups fail while the dispatch pool is held. Restaurant browsing and menus keep answering but slow down on the saturated MySQL. dispatch may restart repeatedly. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a dispatch release while the schema stays the same: a KCM ScalingReplicaSet for testbed-dispatch and the new pod's kubelet event 'Pulled: Container image \"food-delivery-dispatch:1.6.0\" already present on machine' (all 49 earlier testbed-dispatch Pulled events since 2026-08-14 carry food-delivery-dispatch:latest); DPM index_count for fooddelivery stays 31; the expiry sweep on the same table (sql_id b79f4ca8…) keeps examining only the ASSIGNED rows (about 300-600); and the status COUNT digest SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=? (sql_id 4ca1b0a1…), which the release's list count shares with the ASSIGNED count, shows an average rows examined that is a mix of about 300 and about 1.74 million (hundreds of thousands) instead of every call scanning the whole table. Its call count is not decisive: executions are capped by what MySQL can run and pool starvation reduces the ASSIGNED counts. Then dispatch logs Hikari 'Connection is not available, request timed out after 3000ms', order logs 'Failed to check dispatch capacity' and 'Dispatch capacity check failed, rejecting order', and the dispatch GET /api/deliveries server spans go from about 2.5 ms to seconds. Dispatch restarts (Unhealthy, Killing, BackOff), if any, follow from health waiting for a pool connection and still point at the released dispatch. MySQL stays Ready with no restart, no schema change and no lock waits; order, restaurant and MySQL have no rollout or configuration change.",
+   "domain": "food-delivery",
+   "class": "A",
+   "fault_pattern": "P8",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-dispatch",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food dispatch-service 의 새 릴리스 food-delivery-dispatch:1.6.0 이다. 이 버전이 배달 앱 목록 화면의 페이지 번호를 위해 GET /api/deliveries 에 전체 건수(X-Total-Count 헤더)를 더하면서 목록 쿼리를 Slice 에서 Page 로 바꿔, Spring Data 가 페이지마다 SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=? 를 함께 낸다. 배달 추적 목록(status=DELIVERED)에서는 이 COUNT 가 idx_dispatches_status_assigned 의 끝난 배차 약 174만 항목을 훑어(109 MySQL 한가할 때 0.44~0.53초) 운영 데이터 규모에서 비싸다. 배달 추적이 몰리면 COUNT 가 MySQL(CPU 0.5)이 감당할 양을 넘고, dispatch Hikari 연결 10개가 모두 COUNT 에 묶여, 주문마다 필요한 용량 확인과 배차 요청이 연결을 3초 기다리다 500 이 된다. order 의 재시도와 서킷브레이커 끝에 새 주문이 503 으로 거절된다. 스키마, 인덱스, 설정, 자원 한도는 그대로이고 바뀐 것은 릴리스가 들여온 질의다. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화시켜 여러 기능에서 서버 오류, 배포를 되돌려 복구)와 같은 꼴이고, 질의 꼴(페이지 응답의 전체 건수 COUNT 가 운영 데이터 규모에서만 비쌈)은 MIT Open Learning 2026 사후 보고와 같다. 고칠 곳은 dispatch 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f33-h/dispatch-service.patch:17-22 (DispatchController.getDeliveries — 릴리스 1.6.0 이 Page 를 받아 X-Total-Count 헤더에 getTotalElements() 를 실음)",
+     "scripts/scenarios/fault-images/f33-h/dispatch-service.patch:43-49 (DispatchRepository.findByStatus, findAllBy — 반환형이 Slice 에서 Page 로 바뀌어 Spring Data 가 COUNT 를 함께 냄)",
+     "scripts/scenarios/fault-images/f33-h/dispatch-service.patch:69-79 (DispatchService.searchDispatches — Page 를 그대로 돌려줌)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java:16-18 (매니페스트 버전 — Slice 라 COUNT 를 내지 않는다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:60 (dispatchCourier — 배차 요청이 countByStatus(\"ASSIGNED\") 를 dispatch 풀 연결로 실행)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:106-107 (getCapacity — 용량 조회도 같은 countByStatus 를 같은 풀에서 실행)",
+     "food-delivery/dispatch-service/src/main/resources/application.yml:12-15 (dispatch Hikari maximum-pool-size 10, connection-timeout 3000ms)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-112 (createOrder 가 주문 저장 전 용량 확인, 실패 시 503 'Dispatch service unreachable')",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:32-66 (checkCapacity, dispatchCourier — 재시도와 서킷브레이커, 'Failed to check dispatch capacity' ERROR)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-dispatch(food-delivery/k8s/22-dispatch-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-dispatch:latest imagePullPolicy Never :27-28, readinessProbe /actuator/health :73-79, livenessProbe :80-86, 기본 전략 maxSurge 25%). food MySQL StatefulSet testbed-mysql(food-delivery/k8s/10-mysql.yaml: CPU 한도 500m :48-50), fooddelivery.dispatches 끝난 배차 1,742,002행, 배정 중 307행(2026-10-09 19:24 UTC 실측), 인덱스 idx_dispatches_status_assigned(status, assigned_at)(food-delivery/db/init.sql:130). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-dispatch 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-dispatch:1.6.0 을 담는다(그 전 testbed-dispatch Pulled 49건은 2026-08-14 부터 전부 food-delivery-dispatch:latest)",
+    "DPM index_count(fooddelivery)는 31 그대로이고, 같은 표의 만료 스윕(sql_id b79f4ca8…)은 배정 중 행(약 300~600)만 읽는다. status COUNT digest(sql_id 4ca1b0a1…, 릴리스의 목록 COUNT 와 배정 중 COUNT 가 같은 문장)의 평균 rowExamined 가 약 1,200 에서 약 300 과 약 174만이 섞인 수십만으로 오른다(호출 수는 MySQL 처리량에 묶여 판별에 쓰지 않는다)",
+    "dispatch 로그에 Hikari 'Connection is not available, request timed out after 3000ms' 가, order 로그에 'Failed to check dispatch capacity' ERROR 와 'Dispatch capacity check failed, rejecting order' WARN 이 롤아웃 뒤 몰린다. dispatch GET /api/deliveries 서버 스팬이 평시 약 2.5ms 에서 초 단위가 된다",
+    "order POST /api/orders 가 503 으로 몰리고, MySQL 은 Ready 이며 재시작, 스키마 변경, 잠금 대기가 없다. order, restaurant, MySQL 에는 롤아웃이나 설정 변경이 없다. dispatch 재시작(Unhealthy, Killing)이 있다면 롤아웃 뒤 포화 구간에만 있다"
+   ],
+   "must_rule_out": [
+    "인덱스 제거가 아님(F33-R): DPM index_count 31 그대로, 만료 스윕(b79f4ca8…)의 rowExamined 가 그대로이고, status COUNT digest 의 평균 rowExamined 는 모든 호출이 전수인 약 175만이 아니라 배정 중(약 300)과 끝난 배차(약 174만)가 섞인 값이다. 그리고 dispatch 롤아웃이 있다",
+    "배차 한도 설정 오배포나 응답 형식 변경이 아님(F32-R, F32-H): 'courier pool exhausted' 거절이나 'cannot be cast' 해석 실패가 아니라 dispatch 풀 대기 시간 초과와 500 이다. dispatch 에 env 변경 없이 이미지 태그만 바뀌었다",
+    "DB 다운이나 DB 설정 변경이 아님(F25-H, F38-R): MySQL 은 Ready, 재시작 없음, 1290 같은 거절 오류 없음",
+    "부하만 늘어난 것이 아님: 같은 추적 목록 요청이 평시(매니페스트 버전)에는 COUNT 를 내지 않아 약 2.5ms 이고, 실패는 dispatch 롤아웃 시각에 시작해 되돌림과 함께 끝난다",
+    "order 자체 결함이나 설정 배포가 아님: order 에는 롤아웃, 재시작, 설정 변경이 없고 실패는 dispatch 호출에서 난다",
+    "dispatch 프로브 오설정이나 재시작 자체가 원인이 아님(F05-H 꼴): 프로브 설정은 그대로이고, 재시작이 있다면 릴리스 롤아웃 뒤 health 가 풀 연결을 기다리다 실패한 결과다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F33-R (dispatches 인덱스 제거 DDL: 같은 MySQL 포화, dispatch 풀 고갈, 주문 503 이지만 원인이 표의 인덱스이고 status COUNT 와 만료 스윕 모두 호출마다 약 175만 행 전수, index_count 31→30, dispatch 롤아웃 없음. F33-H 는 인덱스가 그대로이고 dispatch 릴리스가 목록에만 COUNT 를 새로 붙여 만료 스윕은 그대로다)",
+     "F42-R (banking transfer 릴리스가 이체마다 전수 스캔 질의를 들여와 Oracle 포화: 같은 '릴리스가 들여온 질의가 공유 DB 를 포화' 꼴, 다른 도메인, DB 엔진)",
+     "F32-R (dispatch 배차 한도 설정 오배포: 같은 주문 503 이지만 dispatch 가 200 'available 0' 으로 답하고 'courier pool exhausted' 로 거절)",
+     "F32-H (dispatch 설정 배포가 숫자를 문자열로 써 order 가 해석 실패: 같은 dispatch 쪽 정답, 같은 503 이지만 dispatch 는 빠르고 'cannot be cast')",
+     "F49-R (food restaurant 릴리스가 응답 계약을 깸: 같은 k8s.image release 수단, food, 다른 대상과 기전)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "testbed-dispatch"
+    ],
+    "partial": [
+     "food-mysql",
+     "food-mysql:fooddelivery.dispatches",
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food dispatch-service 를 배달 목록에 전체 건수(X-Total-Count)를 더한 릴리스로 롤아웃: 목록 요청마다 끝난 배차 약 174만 건을 세어 food MySQL(CPU 0.5)이 포화되고, dispatch 연결 풀이 말라 주문 생성이 503 으로 실패",
+   "description_ko": "food dispatch-service Deployment(testbed-dispatch) 롤아웃이 컨테이너 이미지를 food-delivery-dispatch:latest 에서 릴리스 food-delivery-dispatch:1.6.0 으로 바꾼다. 이 릴리스는 배달 앱 목록 화면의 페이지 번호를 위해 GET /api/deliveries 에 조건에 맞는 배달의 전체 건수를 X-Total-Count 헤더로 더한다. 목록 쿼리가 Slice 에서 Page 로 바뀌어 Spring Data 가 페이지마다 SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=? 를 함께 낸다. 본문, 다른 끝점, health, 스키마, 인덱스는 그대로라 새 파드가 Ready 가 되어 옛 파드를 대신한다. 배달 추적 목록(status=DELIVERED)에서 이 COUNT 는 idx_dispatches_status_assigned 의 끝난 배차 약 174만 항목을 훑는다(109 MySQL 이 한가할 때 0.44~0.53초). 페이지 자체는 여전히 약 1ms 다. 배달 추적이 몰리면(목록 초당 약 7건) COUNT 가 CPU 0.5 짜리 MySQL 이 실행할 수 있는 양을 넘고, dispatch Hikari 연결 10개가 모두 실행 중인 COUNT 에 묶여, 주문마다 필요한 용량 확인과 배차 요청이 연결을 3초 기다리다 500('Connection is not available, request timed out after 3000ms')으로 끝난다. order-service 는 재시도(3회) 끝에 dispatch 서킷브레이커를 열고 새 주문을 503 'Dispatch service unreachable' 로 거절한다. 다른 food 질의도 포화된 MySQL 에서 느려진다. health(둘 다 DB 를 보는 /actuator/health)가 연결을 기다리는 동안 dispatch readiness 와 liveness 가 실패할 수 있어 kubelet 이 dispatch 컨테이너를 재시작할 수 있다(Unhealthy, Killing, BackOff). 재시작마다 잠시 호출이 거부되고, 다시 뜬 릴리스는 곧 같은 포화에 든다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-dispatch(food) 를 릴리스 food-delivery-dispatch:1.6.0 으로 롤아웃. 이 버전이 배달 목록을 전체 건수가 붙은 페이지 질의로 바꿈 → 목록 요청마다 끝난 배차 약 174만 건을 세는 COUNT → 배달 추적 트래픽에서 COUNT 가 food MySQL(CPU 0.5)을 포화시키고 dispatch Hikari 연결을 모두 붙잡음 → 용량 확인과 배차 요청이 연결 대기 시간 초과(500) → order-service 가 재시도, 서킷브레이커 끝에 새 주문을 503 으로 거절, 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-dispatch 컨테이너 dispatch-service 이미지를 food-delivery-dispatch:latest 에서 food-delivery-dispatch:1.6.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f33-h 가 origin/main food-delivery 에 fault-images/f33-h/dispatch-service.patch(dispatch-service/src 안 네 파일: DispatchRepository 목록 메서드 반환형 Slice → Page, DispatchService.searchDispatches 가 Page 를 돌려줌, DispatchController 가 X-Total-Count 헤더를 더함, 릴리스 자신의 DispatchSearchTest 를 Page 계약으로 고쳐 Dockerfile 의 package -DskipTests 가 테스트까지 컴파일해도 통과)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트, 스키마, 인덱스는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 delivery-tracking-surge 부하(12rps: 추적 목록 60%, 추적 상세 15%, 주문 10%, 둘러보기 15%)가 배달 추적 피크와 초당 약 1.2건의 주문 생성을 만든다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "롤아웃 1~2분 뒤부터 food 의 새 주문 대부분이 몇 초의 재시도 끝에 503 으로 실패한다. 배달 추적 목록은 시간 초과나 500, 배달 상세 조회도 dispatch 풀이 묶인 동안 실패한다. 가게 둘러보기와 메뉴는 답하지만 포화된 MySQL 때문에 느려진다. dispatch 가 되풀이해 재시작할 수 있다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 스키마가 그대로인 채 일어난 dispatch 릴리스다: testbed-dispatch 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-dispatch:1.6.0\" already present on machine'(2026-08-14 부터의 testbed-dispatch Pulled 49건은 모두 food-delivery-dispatch:latest), DPM index_count(fooddelivery) 31 그대로, 같은 표의 만료 스윕(sql_id b79f4ca8…)이 배정 중 행(약 300~600)만 읽음, 그리고 릴리스의 목록 COUNT 가 배정 중 COUNT 와 함께 쓰는 digest SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=?(sql_id 4ca1b0a1…)의 평균 rowExamined 가 약 300 과 약 174만이 섞인 수십만이다(모든 호출이 전수 스캔인 꼴이 아님). 이 digest 의 호출 수는 판별 근거가 아니다: 실행 수는 MySQL 처리량에 묶이고 풀 고갈로 배정 중 COUNT 는 오히려 줄 수 있다. 이어 dispatch 로그의 Hikari 'Connection is not available, request timed out after 3000ms', order 로그의 'Failed to check dispatch capacity' 와 'Dispatch capacity check failed, rejecting order', dispatch GET /api/deliveries 서버 스팬이 약 2.5ms 에서 초 단위로. dispatch 재시작(Unhealthy, Killing, BackOff)이 나오더라도 health 가 풀 연결을 기다려서 생긴 결과이고 여전히 릴리스된 dispatch 를 가리킨다. MySQL 은 재시작, 스키마 변경, 잠금 대기 없이 Ready 이고, order, restaurant, MySQL 에는 롤아웃이나 설정 변경이 없다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f33-h",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-dispatch",
+       "container": "dispatch-service",
+       "baseline_image": "food-delivery-dispatch:latest",
+       "fault_image": "food-delivery-dispatch:1.6.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

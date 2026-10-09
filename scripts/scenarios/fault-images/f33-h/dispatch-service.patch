@@ -1,0 +1,160 @@
+diff --git a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
+index 29c7395..5aec9f6 100644
+--- a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
+@@ -4,6 +4,7 @@ import com.fooddelivery.common.dto.DispatchEventResponse;
+ import com.fooddelivery.common.dto.DispatchRequest;
+ import com.fooddelivery.common.dto.DispatchResponse;
+ import com.fooddelivery.dispatch.service.DispatchService;
++import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.http.ResponseEntity;
+@@ -36,7 +37,11 @@ public class DispatchController {
+         Pageable pageable = (page != null || size != null)
+                 ? PageRequest.of(page != null ? page : 0, size != null ? size : 20)
+                 : Pageable.unpaged();
+-        return ResponseEntity.ok(dispatchService.searchDispatches(status, pageable));
++        // 1.6.0: 본문은 그대로 배열이고, 앱이 페이지 수를 그릴 수 있게 전체 건수를 헤더로 준다.
++        Page<DispatchResponse> result = dispatchService.searchDispatches(status, pageable);
++        return ResponseEntity.ok()
++                .header("X-Total-Count", String.valueOf(result.getTotalElements()))
++                .body(result.getContent());
+     }
+ 
+     @GetMapping("/{id}")
+diff --git a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java
+index 1dd7dff..41bad6c 100644
+--- a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java
+@@ -1,7 +1,7 @@
+ package com.fooddelivery.dispatch.repository;
+ 
+ import com.fooddelivery.dispatch.entity.Dispatch;
+-import org.springframework.data.domain.Slice;
++import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Query;
+@@ -13,9 +13,10 @@ public interface DispatchRepository extends JpaRepository<Dispatch, Long> {
+ 
+     long countByStatus(String status);
+ 
+-    // 목록 조회(GET /api/deliveries): status 가 있으면 idx_dispatches_status_assigned 를 타는 파생 쿼리, 없으면 전체. Slice 라 COUNT 를 내지 않는다.
+-    Slice<Dispatch> findByStatus(String status, Pageable pageable);
+-    Slice<Dispatch> findAllBy(Pageable pageable);
++    // 목록 조회(GET /api/deliveries): status 가 있으면 idx_dispatches_status_assigned 를 타는 파생 쿼리, 없으면 전체.
++    // 1.6.0: 배달 앱 목록 화면의 페이지 번호 표시를 위해 전체 건수를 함께 돌려준다(Page).
++    Page<Dispatch> findByStatus(String status, Pageable pageable);
++    Page<Dispatch> findAllBy(Pageable pageable);
+ 
+     // ASSIGNED → DELIVERED 자동 전이 대상 조회.
+     // (7번 이식 중 발견한 버그 수정) 기존엔 PostgreSQL 문법(assigned_at + (eta_minutes * INTERVAL
+diff --git a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java
+index db7ae77..558ae78 100644
+--- a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java
+@@ -13,6 +13,7 @@ import com.fooddelivery.dispatch.repository.DispatchRepository;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.beans.factory.annotation.Value;
++import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.scheduling.annotation.Scheduled;
+@@ -83,12 +84,12 @@ public class DispatchService {
+         return toResponse(d);
+     }
+ 
+-    // §7 신규 — status/page/size 필터. 배열 응답(하위호환). 전체 건수를 세지 않는다(Slice).
++    // §7 신규 — status/page/size 필터. 배열 응답(하위호환).
++    // 1.6.0: 전체 건수를 함께 돌려줘 컨트롤러가 X-Total-Count 헤더로 내려준다.
+     @Transactional(readOnly = true)
+-    public List<DispatchResponse> searchDispatches(String status, Pageable pageable) {
+-        return (status != null ? dispatchRepository.findByStatus(status, pageable) : dispatchRepository.findAllBy(pageable)).getContent().stream()
+-                .map(this::toResponse)
+-                .toList();
++    public Page<DispatchResponse> searchDispatches(String status, Pageable pageable) {
++        return (status != null ? dispatchRepository.findByStatus(status, pageable) : dispatchRepository.findAllBy(pageable))
++                .map(this::toResponse);
+     }
+ 
+     // §7 신규 — 배차 상태 전이 이력.
+diff --git a/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DispatchSearchTest.java b/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DispatchSearchTest.java
+index fc22679..61b5384 100644
+--- a/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DispatchSearchTest.java
++++ b/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DispatchSearchTest.java
+@@ -5,10 +5,10 @@ import com.fooddelivery.dispatch.event.DispatchOutboxPublisher;
+ import com.fooddelivery.dispatch.repository.DispatchEventLogRepository;
+ import com.fooddelivery.dispatch.repository.DispatchRepository;
+ import org.junit.jupiter.api.Test;
++import org.springframework.data.domain.Page;
++import org.springframework.data.domain.PageImpl;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+-import org.springframework.data.domain.Slice;
+-import org.springframework.data.domain.SliceImpl;
+ import org.springframework.data.repository.query.parser.PartTree;
+ 
+ import java.util.Arrays;
+@@ -24,10 +24,9 @@ import static org.mockito.Mockito.verify;
+ import static org.mockito.Mockito.when;
+ 
+ /**
+- * GET /api/deliveries 는 부하 스크립트가 쉬지 않고 부른다(status=DELIVERED, size=20). 페이지마다
+- * 전체 건수를 세면 그 COUNT 가 끝난 배차 수백만 행을 훑어 Hikari 풀을 말렸다(2026-10-08 실측 평균 최대
+- * 5.4초, 부하 때 15.4초). 응답은 배열이라 건수가 필요 없다. 그래서 목록 쿼리가 Slice 를 돌려주는지
+- * (Spring Data 가 COUNT 를 내지 않는다), status 유무에 따라 어느 쿼리를 쓰는지를 고정한다.
++ * GET /api/deliveries 목록. 1.6.0 부터 배달 앱 목록 화면의 페이지 번호를 위해 전체 건수를
++ * X-Total-Count 헤더로 함께 내려주므로 목록 쿼리는 Page 를 돌려준다. status 유무에 따라 어느 쿼리를
++ * 쓰는지와 건수가 페이지에 실리는지를 고정한다.
+  */
+ class DispatchSearchTest {
+ 
+@@ -35,17 +34,19 @@ class DispatchSearchTest {
+     private final DispatchService service = new DispatchService(dispatches, mock(DispatchEventLogRepository.class),
+             mock(DispatchOutboxPublisher.class), 2000, "food.dispatch");
+ 
+-    private static Slice<Dispatch> slice(Dispatch... rows) {
+-        return new SliceImpl<>(List.of(rows));
++    private static Page<Dispatch> page(Dispatch... rows) {
++        return new PageImpl<>(List.of(rows));
+     }
+ 
+     @Test
+     void a_status_filter_goes_to_the_derived_status_query() {
+         Dispatch d = new Dispatch();
+         d.setStatus("DELIVERED");
+-        when(dispatches.findByStatus(anyString(), any())).thenReturn(slice(d));
++        when(dispatches.findByStatus(anyString(), any())).thenReturn(page(d));
+ 
+-        assertEquals(1, service.searchDispatches("DELIVERED", PageRequest.of(0, 20)).size());
++        Page<?> result = service.searchDispatches("DELIVERED", PageRequest.of(0, 20));
++        assertEquals(1, result.getContent().size());
++        assertEquals(1, result.getTotalElements());
+ 
+         verify(dispatches).findByStatus("DELIVERED", PageRequest.of(0, 20));
+         verify(dispatches, never()).findAllBy(any());
+@@ -53,7 +54,7 @@ class DispatchSearchTest {
+ 
+     @Test
+     void no_status_filter_goes_to_the_unfiltered_query() {
+-        when(dispatches.findAllBy(any())).thenReturn(slice());
++        when(dispatches.findAllBy(any())).thenReturn(page());
+ 
+         service.searchDispatches(null, Pageable.unpaged());
+ 
+@@ -62,10 +63,10 @@ class DispatchSearchTest {
+     }
+ 
+     @Test
+-    void list_queries_return_slices_so_spring_data_issues_no_count_query() throws Exception {
+-        assertEquals(Slice.class,
++    void list_queries_return_pages_with_the_total_count() throws Exception {
++        assertEquals(Page.class,
+                 DispatchRepository.class.getMethod("findByStatus", String.class, Pageable.class).getReturnType());
+-        assertEquals(Slice.class, DispatchRepository.class.getMethod("findAllBy", Pageable.class).getReturnType());
++        assertEquals(Page.class, DispatchRepository.class.getMethod("findAllBy", Pageable.class).getReturnType());
+         // 옛 OR-null 검색이 되살아나지 않게 한다.
+         assertFalse(Arrays.stream(DispatchRepository.class.getMethods()).anyMatch(m -> m.getName().equals("search")));
+     }

@@ -1006,6 +1006,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F33-H",
+      "slug": "f33-h-food-dispatch-release-list-total-count-saturates-mysql",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }
