@@ -122,6 +122,22 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F48-R", {**p, "table": "menus"}, {})
 
+    def test_mysql_cancelled_backfill_on_order_outbox_uses_the_same_hold_script(self) -> None:
+        # F48-P: 같은 보류 표 모드를 주문 이벤트 outbox 표에 쓴다. 스크립트는 F48-R 과 같고 계약(표, 인덱스, 최소 행)만 다르다.
+        p = ddl.CONTRACTS["F48-P"]
+        ddl.validate("F48-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F48-P", p), "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
+                                    "order_outbox_events", "idx_order_outbox_aggregate", "aggregate_id", "1000"])
+        self.assertNotIn("F48-P", argv)
+        self.assertNotIn("F48-P", body.decode())
+        _, f48r_body = ddl.build_invocation(plan("db.ddl", "F48-R", ddl.CONTRACTS["F48-R"]), "run")
+        self.assertEqual(body, f48r_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F48-P", ddl.CONTRACTS["F48-R"], {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F48-P", {**p, "table": "orders"}, {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

@@ -7653,6 +7653,97 @@
      }
     ]
    }
+  },
+  "F48-P": {
+   "title": "A cancelled index backfill removes the live food order event outbox table instead of its shadow copy: every order creation is rolled back with 'Table doesn't exist' while browsing, delivery tracking and payment keep working",
+   "description": "order-service writes each new order's event into fooddelivery.order_outbox_events in the same transaction as the order (transactional outbox, about 56,000 rows kept for 24 hours), and OrderOutboxRelay polls that table every 2 seconds to publish the events to Kafka. An operator starts an online index backfill to add an index on aggregate_id (order id lookups of event history): the tool creates a shadow copy (_vt_vrp_<uuid>_<time>_) with the new index idx_order_outbox_aggregate and copies the rows. The backfill is then cancelled, and the cancel's cleanup removes the live table instead of the shadow: order_outbox_events is renamed into the table-lifecycle hold state (_vt_hld_<uuid>_<hold-until>_), which is how Vitess drops a table, and the shadow is left behind. From that moment every statement that names order_outbox_events fails with MySQL ER_NO_SUCH_TABLE 1146 \"Table 'fooddelivery.order_outbox_events' doesn't exist\". createOrder still checks the restaurant, menu and courier capacity, saves the order and its items, dispatches a courier and charges the payment, then fails at the last step, recording the outbox event: the whole order transaction is rolled back and POST /api/orders answers 500 'Failed to record outbox event: ... Table ... doesn't exist'. The relay poll fails the same way every 2 seconds (scheduler ERROR 'Unexpected error occurred in scheduled task'). Everything else keeps working on the same pod and the same database: order reads, restaurant browsing, delivery tracking, and the dispatch and payment services, whose own outbox tables are untouched. Nothing else changes: no rollout, no restart, no configuration change, MySQL is healthy and fast, order stays Ready (its health check is a connection isValid()). The trigger leaves a trace in the database inventory the DPM collector reports every minute: the fooddelivery table count goes from 16 to 17 and the index count from 31 to 34 at the minute of the backfill. There is no companion load: an order companion would fill the courier capacity with the dispatches of rolled-back orders at busy hours; the resident baseline creates about 12 to 68 orders per minute, all of which fail.",
+   "cause": "Online index backfill on fooddelivery.order_outbox_events cancelled; the cancel's cleanup renamed the live table into the hold state (_vt_hld_...) instead of removing its shadow copy → order-service, whose createOrder writes the order event into that table in the order transaction, fails the outbox INSERT with MySQL 1146 Table doesn't exist → the order transaction is rolled back and POST /api/orders answers 500 after restaurant, dispatch and payment calls already succeeded; the outbox relay poll fails with the same error. Reads, browsing, delivery tracking, dispatch and payment do not use that table and keep working.",
+   "injection_summary": "The db.ddl executor checks that fooddelivery.order_outbox_events exists with at least 1000 rows (reading at most 1000) and that no backfill tool tables (_vt_vrp_, _vt_hld_) exist, then, through the MySQL client inside testbed-mysql-0 with lock_wait_timeout=10: CREATE TABLE <shadow> LIKE order_outbox_events; ALTER TABLE <shadow> ADD INDEX idx_order_outbox_aggregate (aggregate_id); INSERT INTO <shadow> SELECT * FROM order_outbox_events (about 56,000 rows, 1 to 2 seconds), and RENAME TABLE order_outbox_events TO <held>. The shadow and held names follow the Vitess table naming (_vt_vrp_ / _vt_hld_, a random uuid and a timestamp) and carry no scenario id. No row is deleted. No companion load; the resident baseline (loadgen-food) keeps creating orders. Cleanup renames the held table back to order_outbox_events, drops the shadow copy and checks that the original table is back with no tool tables left. No app code, image, configuration, Kubernetes object or row data is changed.",
+   "user_impact": "No customer can place an order: every order creation fails with 500. Browsing restaurants and menus, delivery tracking and order lookups keep working. Because the failure comes at the last step of createOrder, each failed attempt has already dispatched a courier and charged the payment for an order that is then rolled back, so the dispatch and payment services keep recording assignments and approved payments for orders that do not exist (left for reconciliation; a code design consequence, not the root cause). Order events are not published while the table is gone. No data is lost: the outbox rows are kept under the held name and renaming the table back restores order creation immediately.",
+   "distinguishing_evidence": "The decisive evidence is the error text in order-service logs: WARN 'SQL Error: 1146, SQLState: 42S02' and ERROR \"Table 'fooddelivery.order_outbox_events' doesn't exist\" (0 occurrences of 1146 in the order logs kept on 2026-10-09, earliest 2026-10-02 20:00 UTC), on every order creation and every 2-second relay poll (scheduler ERROR 'Unexpected error occurred in scheduled task' with that table in exception.message), naming the missing table. The order 500 body and the failing statement are the outbox INSERT ('insert into order_outbox_events'), not the order INSERT: 'Created order id=' is still logged for each attempt and the 'Recorded outbox event for order' line stops. The split on the same database points at one table: order reads answer 200, and the dispatch and payment services keep writing their rows and their own outbox events ('Dispatched courier', 'Processed payment' continue) for the same failed orders. The trigger is visible in the DPM database inventory: dpm.mysql.database.table_count for fooddelivery goes 16 → 17 (constant at 16 for 7 days) and dpm.mysql.database.index_count 31 → 34 in the same minute; a rollout would not touch these values. It is not the instance-wide read-only switch of F38-R: that fails the order INSERT itself with 1290 '--read-only' and also every dispatch and payment write, here only statements on one table fail with 1146 and the other writes succeed. It is not a new order version: no rollout, new ReplicaSet or restart of testbed-order (KCM). It is not a capacity, network or downstream failure: order answers within the usual hundreds of milliseconds, its Hikari pool has no pending requests, restaurant, dispatch and payment answer 200, and MySQL sessions and response time stay at baseline.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery.order_outbox_events",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 의 fooddelivery.order_outbox_events 테이블이다. 운영자가 이 표에 aggregate_id 인덱스를 더하는 온라인 인덱스 백필을 시작했다가 취소했고, 취소 정리가 그림자 표 대신 원래 표를 치웠다(테이블 수명주기의 보류 이름 _vt_hld_... 으로 바꿈, 행은 남음). 원본 사례(GitHub 2026-07-24, PR 데이터를 담은 Vitess keyspace 로의 백필 워크플로를 취소하자 잘못 이해된 Vitess 코드 경로가 그 기반 표를 지워 PR 생성만 실패, 데이터베이스 변경을 되돌려 즉시 복구)처럼, 운영 도구가 의도와 다른 대상(살아 있는 표)을 지운 것이 원인이고 그 표가 정답이다. order-service 의 코드, 설정, 요청과 릴레이는 늘 하던 그대로라 정당하다(원칙 6: 정당한 요청이 결함 있는 곳에서 실패). 근본과 계기가 같은 곳(이 표에 대한 운영 작업)이라 trigger_target_id 는 비운다. target_id 는 '인스턴스:스키마.테이블' 꼴로 F48-R, F36-R, F33-R 과 같은 표기이고 같은 이름의 다른 개체가 없다. 관제 데이터로의 도달 경로: ① order WARN 'SQL Error: 1146, SQLState: 42S02' 와 ERROR \"Table 'fooddelivery.order_outbox_events' doesn't exist\" 가 주문 생성마다, 그리고 2초마다 릴레이 폴링에서 이어진다(로그 전수, 평시 0건). 오류 문장이 사라진 표의 이름을 직접 가리키고, 스케줄러 ERROR 의 exception.message 에 그 표의 SELECT 문장이 담긴다 ② 실패한 문장은 주문 INSERT 가 아니라 outbox INSERT 다: 'Created order id=' 는 계속 찍히고 'Recorded outbox event for order' 는 멈추며, 주문 500 응답 본문이 'Failed to record outbox event' 와 그 표를 가리킨다 ③ 같은 DB 의 다른 쓰기(dispatch 배차, payment 결제와 각자의 outbox)와 order 읽기는 성공한다 ④ 같은 분에 DPM 데이터베이스 목록 지표 dpm.mysql.database.table_count(fooddelivery)가 16 에서 17 로, index_count 가 31 에서 34 로 바뀐다(그림자 표와 그 인덱스 셋, 7일 동안 16 고정) ⑤ rca-testbed-food 에 롤아웃이나 새 ReplicaSet 이 없고(KCM), order 와 MySQL 파드는 재시작하지 않으며, MySQL 세션과 응답 시간, order Hikari 대기가 평시 그대로다. DDL 문장 자체는 Top SQL 에 남지 않는다. 주문이 마지막 단계에서 되돌려져 배차와 결제가 남는 것은 코드 구조가 키운 피해(user_impact)이고 정답이 아니다. 누가 왜 백필을 취소했는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/entity/OrderOutboxEvent.java:7-9 (@Entity @Table(name = \"order_outbox_events\") — 엔티티가 이 표 이름에 쓴다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57-170 (createOrder @Transactional — 가게, 메뉴, 용량 확인, 주문과 품목 저장, 'Created order' 로그(:141), 배차와 결제 호출 뒤 마지막에 orderEventPublisher.publish(:162) 로 같은 트랜잭션에서 outbox 행을 쓴다)",
+     "food-delivery/shop-common/src/main/java/com/fooddelivery/common/outbox/OutboxPublisher.java:25-37 (outboxEventRepository.save — IDENTITY 라 곧바로 INSERT, 실패하면 ServiceException 500 'Failed to record outbox event: ...')",
+     "food-delivery/shop-common/src/main/java/com/fooddelivery/common/outbox/OutboxEvent.java:14-15 (@GeneratedValue IDENTITY)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/config/GlobalExceptionHandler.java:12-20 (ServiceException 을 그 상태 코드 500 과 메시지로 응답)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/event/OrderOutboxRelay.java:19-27 (2초마다 relay(), 30초마다 purge())",
+     "food-delivery/shop-common/src/main/java/com/fooddelivery/common/outbox/OutboxRelay.java:46-48 (@Transactional relay — findTop100ByPublishedAtIsNullOrderByCreatedAtAsc 가 실패하면 예외가 스케줄러로 나가 ERROR 'Unexpected error occurred in scheduled task')",
+     "food-delivery/order-service/src/main/resources/application.yml:20 (hibernate ddl-auto none — 재시작해도 표를 만들지 않는다)",
+     "food-delivery/db/init.sql:98-108 (order_outbox_events — 기본 키와 idx_order_outbox_unpublished(published_at, created_at), 외래 키 없음)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, tb-w3). fooddelivery.order_outbox_events 는 2026-10-09 22:10 UTC 기준 55,982행(24시간 보존, 미발행 3행), 인덱스는 PRIMARY 와 idx_order_outbox_unpublished 뿐이고 외래 키로 참조되지 않는다. fooddelivery 표 16개, 백필 도구 표(_vt_) 0개. RENAME TABLE 은 메타데이터만 바꾸고 행을 그대로 둔다. DPM 수집기(target c8c558e5-…)가 1분마다 데이터베이스별 표 수와 인덱스 수(dpm.mysql.database.table_count, index_count)를 보고한다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 열어 실행한다."
+   },
+   "must_support": [
+    "order WARN 'SQL Error: 1146, SQLState: 42S02' 와 ERROR \"Table 'fooddelivery.order_outbox_events' doesn't exist\" 가 주입 분부터 주문 생성마다, 그리고 2초마다(릴레이 폴링, 스케줄러 ERROR 'Unexpected error occurred in scheduled task') 이어진다(2026-10-09 조회 시 남아 있던 order 로그, 가장 이른 2026-10-02 20:00 UTC 부터 1146 0건)",
+    "order 서버 스팬 POST /api/orders 가 500 으로 바뀌고 응답이 'Failed to record outbox event' 다. 'Created order id=' 로그는 이어지고 'Recorded outbox event for order' 로그는 멈춘다",
+    "같은 분에 dpm.mysql.database.table_count{db_name=fooddelivery} 가 16 에서 17 로, dpm.mysql.database.index_count 가 31 에서 34 로 바뀐다(7일 동안 표 수 16 고정)",
+    "dispatch 'Dispatched courier', payment 'Processed payment' 로그와 각 서비스의 200 응답이 실패한 주문에 대해서도 이어진다. 기준선 주문 생성 5xx 비율이 0.8 이상이 된다",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작이 없다(KCM). order 파드는 Ready 이고 MySQL 은 재시작하지 않으며 order Hikari 대기가 0 이다"
+   ],
+   "must_rule_out": [
+    "order 새 버전 배포(결함 있는 코드)가 아님: testbed-order 롤아웃, 새 ReplicaSet, 이미지 변경이 없고 파드가 그대로다. 오류는 앱이 아니라 MySQL 이 낸 1146 이다",
+    "MySQL 인스턴스 읽기 전용(F38-R 꼴)이 아님: 오류가 1290 '--read-only' 가 아니라 1146 이고, 실패한 문장이 주문 INSERT 가 아니라 outbox INSERT 다. 같은 DB 의 dispatch, payment 쓰기는 성공한다",
+    "MySQL 다운이나 재시작(F25-H 꼴, OOM 재시작)이 아님: testbed-mysql-0 Ready, 'Communications link failure' 와 Hikari 연결 대기 실패가 없고 같은 DB 의 다른 질의가 정상이다",
+    "하류(가게, 배차, 결제) 고장이 아님: 주문마다 restaurant, dispatch, payment 호출이 200 이고 order 의 실패는 그 뒤 outbox 기록에서 난다(F36-R, F44-R, F49-R, F32 계열, F30-R 과 다름)",
+    "부하 증가나 용량 부족이 아님: 동반 부하가 없고 주문 요청량은 기준선 그대로다. 실패는 시간 초과가 아니라 즉시 나는 SQL 오류이고 그 문장이 없는 표 이름을 가리킨다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F48-R (같은 원본과 같은 취소된 백필 도구지만 사라진 표가 restaurant 의 인기 메뉴 집계 표라 인기 메뉴 읽기만 실패하고 주문은 정상이다. F48-P 는 order 가 주문 트랜잭션에서 쓰는 outbox 표라 주문 생성이 전량 되돌려지고, 읽기와 가게 화면은 정상이다)",
+     "F38-R (같은 order 주문 생성 500 이지만 원인이 인스턴스 전체 read_only 다. 주문 INSERT 가 1290 으로 실패하고 dispatch, payment 쓰기도 실패한다. F48-P 는 1146, outbox INSERT 하나만 실패하고 다른 쓰기는 성공한다)",
+     "F36-R (food MySQL 스키마 쪽 고장, 계획된 열 이름 변경 1054 로 가게 조회가 실패해 주문이 502 다. F48-P 는 가게 조회가 200 이고 주문이 order 자신의 SQL 오류 500 이다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery.order_outbox_events"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "취소된 인덱스 백필이 그림자 표 대신 food 주문 이벤트 outbox 표를 치움: 모든 주문 생성이 '표가 없음' 으로 되돌려지고 둘러보기, 배달 추적, 결제는 정상이다",
+   "description_ko": "order-service 는 새 주문의 이벤트를 주문과 같은 트랜잭션에서 fooddelivery.order_outbox_events 에 쓰고(트랜잭션 outbox, 24시간 보존 약 5만 6천 행), OrderOutboxRelay 가 2초마다 이 표를 폴링해 Kafka 로 발행한다. 운영자가 aggregate_id(주문 id 로 이벤트 이력 조회) 인덱스를 더하는 온라인 인덱스 백필을 시작한다: 도구가 새 인덱스 idx_order_outbox_aggregate 를 가진 그림자 표(_vt_vrp_<uuid>_<시각>_)를 만들고 행을 옮긴다. 그런데 백필이 취소되고, 취소 정리가 그림자 표 대신 살아 있는 표를 치운다: order_outbox_events 가 테이블 수명주기의 보류 이름(_vt_hld_<uuid>_<보류 기한>_, Vitess 가 표를 지우는 방식)으로 바뀌고 그림자 표는 남는다. 그 순간부터 order_outbox_events 를 부르는 모든 문장이 MySQL ER_NO_SUCH_TABLE 1146 \"Table 'fooddelivery.order_outbox_events' doesn't exist\" 로 실패한다. createOrder 는 가게, 메뉴, 배달원 용량을 확인하고 주문과 품목을 저장하고 배차와 결제까지 마친 뒤 마지막 단계인 outbox 기록에서 실패한다: 주문 트랜잭션 전체가 되돌려지고 POST /api/orders 가 500 'Failed to record outbox event: ... Table ... doesn't exist' 로 답한다. 릴레이 폴링도 2초마다 같은 오류로 실패한다(스케줄러 ERROR 'Unexpected error occurred in scheduled task'). 나머지는 같은 파드, 같은 DB 에서 그대로 동작한다: 주문 조회, 가게 둘러보기, 배달 추적, 그리고 자기 outbox 표가 멀쩡한 dispatch 와 payment 서비스. 그 밖에는 바뀐 것이 없다: 롤아웃도 재시작도 설정 변경도 없고, MySQL 은 건강하고 빠르며, order 는 Ready 다(health 확인이 연결 isValid()). 계기는 DPM 수집기가 1분마다 보고하는 데이터베이스 목록에 흔적을 남긴다: 백필한 분에 fooddelivery 표 수가 16 에서 17 로, 인덱스 수가 31 에서 34 로 바뀐다. 동반 부하는 두지 않는다: 주문 동반 부하는 되돌려진 주문의 배차로 바쁜 시간에 배달원 한도를 채우기 때문이다. 상주 기준선이 분당 약 12~68건 주문을 만들고 모두 실패한다.",
+   "cause_ko": "fooddelivery.order_outbox_events 의 온라인 인덱스 백필이 취소되면서, 취소 정리가 그림자 표를 지우는 대신 살아 있는 표를 보류 이름(_vt_hld_...)으로 바꿈 → createOrder 가 주문 트랜잭션 안에서 이 표에 주문 이벤트를 쓰는 order-service 의 outbox INSERT 가 MySQL 1146 Table doesn't exist 로 실패 → 가게, 배차, 결제 호출이 이미 성공한 뒤 주문 트랜잭션이 되돌려지고 POST /api/orders 500. 릴레이 폴링도 같은 오류로 실패. 조회, 둘러보기, 배달 추적, 배차, 결제는 이 표를 쓰지 않아 정상.",
+   "injection_summary_ko": "db.ddl executor 가 fooddelivery.order_outbox_events 가 있고 1000행 이상(최대 1000행만 읽음)이며 백필 도구의 표(_vt_vrp_, _vt_hld_)가 없는지 확인한 뒤, testbed-mysql-0 안의 MySQL 클라이언트로 lock_wait_timeout=10 아래에서 CREATE TABLE <그림자> LIKE order_outbox_events; ALTER TABLE <그림자> ADD INDEX idx_order_outbox_aggregate (aggregate_id); INSERT INTO <그림자> SELECT * FROM order_outbox_events(약 5만 6천 행, 1~2초), 이어서 RENAME TABLE order_outbox_events TO <보류 이름> 을 실행한다. 그림자와 보류 이름은 Vitess 의 표 이름 꼴(_vt_vrp_ / _vt_hld_, 무작위 uuid 와 시각)이고 시나리오 id 를 담지 않는다. 행은 지우지 않는다. 동반 부하는 없고 상주 기준선(loadgen-food)이 주문을 계속 만든다. cleanup 은 보류 표를 order_outbox_events 로 되돌리고 그림자 표를 지운 뒤, 원래 표가 돌아왔고 도구의 표가 남지 않았는지 확인한다. 앱 코드, 이미지, 설정, 쿠버네티스 객체, 행 데이터는 바꾸지 않는다.",
+   "user_impact_ko": "아무도 주문하지 못한다: 모든 주문 생성이 500 으로 실패한다. 가게와 메뉴 둘러보기, 배달 추적, 주문 조회는 정상이다. 실패가 createOrder 의 마지막 단계에서 나므로 실패한 시도마다 배차와 결제가 이미 끝나 있다. 그래서 dispatch 와 payment 는 되돌려진, 존재하지 않는 주문의 배차와 승인 결제를 계속 기록한다(정산 대상, 코드 구조가 키운 피해이지 근본 원인이 아니다). 표가 없는 동안 주문 이벤트는 발행되지 않는다. 데이터는 잃지 않는다: outbox 행은 보류 이름 아래 그대로 있고 이름을 되돌리면 주문 생성이 바로 정상이 된다.",
+   "distinguishing_evidence_ko": "결정 증거는 order-service 로그의 오류 문장이다: WARN 'SQL Error: 1146, SQLState: 42S02' 와 ERROR \"Table 'fooddelivery.order_outbox_events' doesn't exist\"(2026-10-09 조회 시 남아 있던 order 로그, 가장 이른 2026-10-02 20:00 UTC 부터 1146 0건)가 주문 생성마다, 그리고 2초마다 릴레이 폴링에서(스케줄러 ERROR 'Unexpected error occurred in scheduled task', exception.message 에 그 표) 나오며 사라진 표의 이름을 가리킨다. 주문 500 의 본문과 실패한 문장은 주문 INSERT 가 아니라 outbox INSERT('insert into order_outbox_events')다: 시도마다 'Created order id=' 는 찍히고 'Recorded outbox event for order' 는 멈춘다. 같은 DB 에서의 갈림이 표 하나를 가리킨다: 주문 조회는 200 이고, dispatch 와 payment 는 같은 실패 주문에 대해서도 자기 행과 자기 outbox 이벤트를 계속 쓴다('Dispatched courier', 'Processed payment' 계속). 계기는 DPM 데이터베이스 목록에 보인다: fooddelivery 의 dpm.mysql.database.table_count 가 16 에서 17 로(7일 내내 16), index_count 가 31 에서 34 로 같은 분에 바뀐다. 롤아웃은 이 값을 건드리지 않는다. F38-R 의 인스턴스 읽기 전용이 아니다: 그쪽은 주문 INSERT 자체가 1290 '--read-only' 로 실패하고 dispatch, payment 쓰기도 모두 실패한다. 여기서는 표 하나의 문장만 1146 으로 실패하고 다른 쓰기는 성공한다. order 새 버전도 아니다: testbed-order 롤아웃, 새 ReplicaSet, 재시작이 없다(KCM). 용량, 네트워크, 하류 장애도 아니다: order 는 평소처럼 수백 ms 안에 답하고 Hikari 대기가 없으며, restaurant, dispatch, payment 는 200 으로 답하고 MySQL 세션과 응답 시간은 평시다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f48-p",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "database": "fooddelivery",
+       "table": "order_outbox_events",
+       "backfill_index": "idx_order_outbox_aggregate",
+       "backfill_column": "aggregate_id",
+       "minimum_rows": 1000
+      }
+     }
+    ]
+   }
   }
  }
 }

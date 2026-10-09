@@ -26,7 +26,8 @@ the live table instead of its own shadow copy.  The backfill builds a shadow tab
 the hold state (`_vt_hld_<uuid>_<hold-until>_`), and leaves the shadow behind.  Every
 statement that names the table fails with ER_NO_SUCH_TABLE (1146) until the held table
 is renamed back.  No row is lost, so the inverse is the same rename the other way plus
-dropping the shadow copy.
+dropping the shadow copy.  F48-P runs the same path on the order event outbox table, which
+order-service writes in the same transaction as the order, so order creation is rolled back.
 """
 from __future__ import annotations
 
@@ -84,6 +85,14 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "database": "fooddelivery", "table": "menu_popularity_summary",
         "backfill_index": "idx_menu_popularity_restaurant", "backfill_column": "restaurant_id",
         "minimum_rows": 20,
+    },
+    # 같은 보류 표 모드를 주문 이벤트 outbox 표에: createOrder 가 같은 트랜잭션에서 이 표에 쓰므로 주문 생성이 1146 으로
+    # 되돌려지고, 릴레이 폴링도 같은 오류로 실패한다. 행 약 5만 6천(24시간 보존)이라 그림자 복사는 1~2초다.
+    "F48-P": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "order_outbox_events",
+        "backfill_index": "idx_order_outbox_aggregate", "backfill_column": "aggregate_id",
+        "minimum_rows": 1000,
     },
 }
 

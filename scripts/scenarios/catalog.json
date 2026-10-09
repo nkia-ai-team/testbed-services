@@ -1045,6 +1045,18 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F48-P",
+      "slug": "f48-p-food-order-outbox-table-dropped-by-cancelled-backfill",
+      "profiles": [
+        "db.ddl"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

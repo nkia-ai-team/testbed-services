@@ -201,7 +201,8 @@
           "F33-R",
           "F36-R",
           "F33-P",
-          "F48-R"
+          "F48-R",
+          "F48-P"
         ]
       },
       "scenario_parameters": {
@@ -257,6 +258,16 @@
           "backfill_index": "idx_menu_popularity_restaurant",
           "backfill_column": "restaurant_id",
           "minimum_rows": 20
+        },
+        "F48-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "order_outbox_events",
+          "backfill_index": "idx_order_outbox_aggregate",
+          "backfill_column": "aggregate_id",
+          "minimum_rows": 1000
         }
       }
     },

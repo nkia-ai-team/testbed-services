@@ -71,7 +71,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 80 → 81. F33-H(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 써서 프로파일 수는 그대로.
         # 2026-10-09: 81 → 82. F49-H(후보) 추가. 기존 k8s.image release 모드를 food order 에 써서 프로파일 수는 그대로.
         # 2026-10-09: 82 → 83. F50-R(후보) 추가. 프로파일 28 → 29(k8s.quota 신설).
-        self.assertEqual(len(self.catalog["scenarios"]), 83)
+        # 2026-10-09: 83 → 84. F48-P(후보) 추가. 기존 db.ddl MySQL 보류 표 모드에 계약만 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 84)
         self.assertEqual(len(self.profiles["profiles"]), 29)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -160,6 +161,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-H",
             # 2026-10-09: banking 네임스페이스에 사용량(4928Mi)보다 작은 메모리 할당량(ResourceQuota compute-resources, requests.memory 4Gi)을 건 뒤 transfer 일상 재배포의 새 파드가 exceeded quota 로 거절됨(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F50-R",
+            # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F48-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -464,6 +467,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-H",
             # 2026-10-09: banking 네임스페이스에 사용량(4928Mi)보다 작은 메모리 할당량(ResourceQuota compute-resources, requests.memory 4Gi)을 건 뒤 transfer 일상 재배포의 새 파드가 exceeded quota 로 거절됨(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F50-R",
+            # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F48-P",
             },
         )
         self.assertEqual(
@@ -552,6 +557,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-H",
             # 2026-10-09: banking 네임스페이스에 사용량(4928Mi)보다 작은 메모리 할당량(ResourceQuota compute-resources, requests.memory 4Gi)을 건 뒤 transfer 일상 재배포의 새 파드가 exceeded quota 로 거절됨(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F50-R",
+            # 2026-10-09: food 주문 이벤트 outbox 표(order_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, 주문 생성이 outbox 기록에서 되돌려져 전량 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F48-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -709,8 +716,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F33-H(후보, 고정 evaluation)이 끝에 붙어 F44-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F49-H(후보, 고정 evaluation)이 끝에 붙어 F44-P 가 끝 5개에서 빠졌다.
         # 2026-10-09: F50-R(후보, 고정 evaluation)이 끝에 붙어 F47-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F48-P(후보, 고정 evaluation)이 끝에 붙어 F48-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F48-R", "F49-R", "F33-H", "F49-H", "F50-R"])
+                         ["F49-R", "F33-H", "F49-H", "F50-R", "F48-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
