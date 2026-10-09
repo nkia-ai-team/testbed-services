@@ -403,6 +403,24 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             k8s_image.validate("F41-R", params, {})
 
+    def test_k8s_image_release_mode_rolls_transfer_to_its_own_release_tag(self) -> None:
+        # F42-R: 같은 release 스크립트로 transfer 를 2.2.0 으로 롤아웃한다. F17-H 의 2.1.0 은 노드에 없어야
+        # 하는 태그라 겹치면 F17-H 가 깨진다. 릴리스 태그는 fault-images/f42-r/image.json 과 같아야 한다.
+        plan = compiler.compile_plan("f42-r-banking-transfer-release-full-scan-limit-query")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-transfer", "transfer-service",
+                                    "core-banking-transfer:latest", "core-banking-transfer:2.2.0"])
+        self.assertNotIn("F42-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        self.assertNotEqual(k8s_image.CONTRACTS["F42-R"]["fault_image"], k8s_image.CONTRACTS["F17-H"]["fault_image"])
+        image = json.loads((ROOT / "fault-images" / "f42-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F42-R"]["baseline_image"], k8s_image.CONTRACTS["F42-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f42-r" / "transfer-service.patch").read_text()
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F42", "f42", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -716,6 +734,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F33-P",
             # 2026-10-09: banking account-service 를 메모리가 새는 릴리스 1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃(힙이 몇 분마다 차서 OutOfMemoryError, liveness 재시작이 되풀이). 새 후보, 설계 강도 1단 고정 evaluation.
             "F41-R",
+            # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F42-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

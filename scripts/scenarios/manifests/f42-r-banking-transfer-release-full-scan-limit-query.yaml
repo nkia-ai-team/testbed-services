@@ -1,0 +1,337 @@
+{
+  "schema_version": "1.0",
+  "id": "F42-R",
+  "slug": "f42-r-banking-transfer-release-full-scan-limit-query",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-transfer 컨테이너 image set(core-banking-transfer:latest→core-banking-transfer:2.2.0, 직전에 runner 가 109 docker 의 2.2.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=20, 이체 40% 약 8건/초)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f42-r",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-transfer",
+                "container": "transfer-service",
+                "baseline_image": "core-banking-transfer:latest",
+                "fault_image": "core-banking-transfer:2.2.0"
+              },
+              "min_hold": "10m",
+              "settle": "60s",
+              "timeout": "18m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api) 상태. Oracle 이 포화되고 transfer 가 readiness 로 빠졌다 들어와도 nginx, api 는 살아서 5xx 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "_note": "transfer 파드. 롤아웃(maxSurge 0)이 옛 파드를 먼저 내려 새 파드 기동 약 1분 동안 false, 그 뒤 새 버전이 떠서 true. 고장 중에는 Hikari 풀이 이체마다 도는 전수 스캔에 묶여 readiness(/actuator/health, DB 확인, 3초)가 실패할 때마다 잠깐 false 가 될 수 있어 판정에 쓰지 않는다. 회복 조건에만 쓴다",
+            "freshness": "30s"
+          },
+          {
+            "id": "oracle_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-oracle"
+            },
+            "_note": "Oracle 파드. 이 주입은 Oracle 설정, 자원, 데이터를 건드리지 않는다. CPU 가 포화되어도 파드는 Ready 여야 하고, 빠지면 DB 장애(F35-R, F01-P 계열)다",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_available_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer"
+            },
+            "_note": "회복 판정용. cleanup 이 매니페스트 이미지로 되돌린 뒤 1",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_restart_count",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_restart_count",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer",
+              "container": "transfer-service"
+            },
+            "_note": "transfer liveness 는 /actuator/health/liveness(livenessState)라 DB 가 느려도 재시작하지 않는다. 2 이상이면 새 버전이 기동 중 죽는 다른 장애(크래시 루프)다",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하(core-banking transfer-heavy-surge.js 20rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 transfer 의 Hikari 대기 3초 초과 500, api 의 account 읽기 10초 초과, account 서킷 열림, readiness 로 엔드포인트가 빈 순간의 연결 거부가 모두 502 로 나온다",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하의 잔액 조회(step get, 35%, nginx → account → Oracle PK 조회) 실패율. 기록만 한다. Oracle CPU 포화로 느려질 수는 있으나 PK 조회라 대개 성공한다(GitHub 원본처럼 같은 DB 를 쓰는 다른 경로도 느려지는 것은 장애의 일부라 배제 조건으로 쓰지 않는다)",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%) 5xx 비율. 평시 0. 30초 창에 이체가 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "transfers-failing-5xx",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.3,
+              "_note": "새 transfer 버전이 이체마다 출금 계좌의 오늘 합계를 trunc(created_at) = trunc(sysdate) 조건으로 구해 transfers 약 630만 행(약 9.9만 블록)을 전수 스캔한다(109 Oracle 실측 1회 0.24~0.43초 CPU). 동반 부하 이체 약 8건/초 + 기준선과 commerce 정산 약 0.3~1.4건/초면 이 질의만 Oracle CPU 2.0~4.0개분이고, 동반 부하 거래 내역의 건수 질의(전수 스캔, 초당 약 3건, 1회 약 0.2초)와 평시 Oracle 사용(0.1~0.46 CPU)을 더하면 2.7~5.0개분이라 2 CPU 상한(Oracle Free cpu_count 2, 컨테이너 2000m)을 넘는다. 같은 동반 부하에 이 질의가 없으면 약 0.7~1.1개분이다. 질의가 줄을 서며 transfer Hikari 15 가 스캔에 묶이고 3초 대기 초과 500, api 10초 읽기 초과, account 서킷 열림으로 이체가 5xx 가 된다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 10m: 롤아웃(옛 파드 먼저 내림, 새 파드 기동 약 1분)과 동반 부하 ramp 2m 뒤 Oracle 포화가 자리 잡고, 롤아웃 순간의 짧은 엔드포인트 공백(F17-H 꼴)만으로 판정되지 않게 한다. timeout 18m"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 5,
+              "_note": "동반 부하 20rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "oracle-down",
+              "observation": "oracle_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "Oracle 파드가 빠지면 새 질의가 아니라 DB 장애다"
+            },
+            {
+              "id": "transfer-crashloop-alternative",
+              "observation": "transfer_restart_count",
+              "op": "gte",
+              "value": 2,
+              "_note": "컨테이너가 떴다가 죽는다면 질의 부하가 아니라 기동 실패나 메모리 고갈 같은 다른 결함이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "transfer-replica-recovered",
+              "observation": "transfer_available_replicas",
+              "op": "eq",
+              "value": 1
+            },
+            {
+              "id": "baseline-transfers-recovered",
+              "observation": "transfer_5xx_rate_baseline",
+              "op": "lt",
+              "value": 0.05,
+              "_note": "판정력을 가진 회복 조건. 평시 0.0. 매니페스트 버전으로 돌아가 전수 스캔이 멈추면 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 이미지를 core-banking-transfer:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 2.2.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

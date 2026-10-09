@@ -1,0 +1,7 @@
+{
+  "base": "core-banking-transfer:latest",
+  "fault": "core-banking-transfer:2.2.0",
+  "domain": "core-banking",
+  "module": "transfer-service",
+  "node": "tb-w2"
+}

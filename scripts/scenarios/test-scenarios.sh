@@ -19,7 +19,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-09: 70 → 71. F32-H(후보) 추가.
 # 2026-10-09: 71 → 72. F33-P(후보) 추가.
 # 2026-10-09: 72 → 73. F41-R(후보) 추가.
-[[ "$total" -eq 73 ]]
+# 2026-10-09: 73 → 74. F42-R(후보) 추가.
+[[ "$total" -eq 74 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -89,7 +90,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-09: ready 45→46. F32-H(food dispatch JSON 숫자 문자열 직렬화 설정 배포)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-09: ready 46→47. F33-P(commerce auth_tokens 인덱스 교체 마이그레이션 실패)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-09: ready 47→48. F41-R(banking account 메모리 누수 릴리스 롤아웃)을 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 48 ]]
+# 2026-10-09: ready 48→49. F42-R(banking transfer 전수 스캔 한도 질의 릴리스 롤아웃)을 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 49 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -133,7 +135,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-09: 64 → 65. F32-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f32-h)으로 들어왔다.
 # 2026-10-09: 65 → 66. F33-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f33-p)으로 들어왔다.
 # 2026-10-09: 66 → 67. F41-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f41-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 67 ]]
+# 2026-10-09: 67 → 68. F42-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f42-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 68 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

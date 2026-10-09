@@ -61,7 +61,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 70 → 71. F32-H(후보) 추가. 기존 k8s.env 를 써서 프로파일 수는 그대로.
         # 2026-10-09: 71 → 72. F33-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 인덱스 교체 경로를 더해 프로파일 수는 그대로.
         # 2026-10-09: 72 → 73. F41-R(후보) 추가. 기존 k8s.image 에 release 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 73)
+        # 2026-10-09: 73 → 74. F42-R(후보) 추가. 기존 k8s.image release 모드를 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 74)
         self.assertEqual(len(self.profiles["profiles"]), 27)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -130,6 +131,8 @@ class RegistryContractTests(unittest.TestCase):
             "F33-P",
             # 2026-10-09: banking account-service 를 메모리가 새는 릴리스 1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃(힙이 몇 분마다 차서 OutOfMemoryError, liveness 재시작이 되풀이). 새 후보, 설계 강도 1단 고정 evaluation.
             "F41-R",
+            # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F42-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -414,6 +417,8 @@ class RegistryContractTests(unittest.TestCase):
             "F33-P",
             # 2026-10-09: banking account-service 를 메모리가 새는 릴리스 1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃(힙이 몇 분마다 차서 OutOfMemoryError, liveness 재시작이 되풀이). 새 후보, 설계 강도 1단 고정 evaluation.
             "F41-R",
+            # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F42-R",
             },
         )
         self.assertEqual(
@@ -482,6 +487,8 @@ class RegistryContractTests(unittest.TestCase):
             "F33-P",
             # 2026-10-09: banking account-service 를 메모리가 새는 릴리스 1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃(힙이 몇 분마다 차서 OutOfMemoryError, liveness 재시작이 되풀이). 새 후보, 설계 강도 1단 고정 evaluation.
             "F41-R",
+            # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F42-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -629,8 +636,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F32-H(후보, 고정 evaluation)이 끝에 붙어 F37-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F33-P(후보, 고정 evaluation)이 끝에 붙어 F38-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F41-R(후보, 고정 evaluation)이 끝에 붙어 F39-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F42-R(후보, 고정 evaluation)이 끝에 붙어 F40-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F40-R", "F17-H", "F32-H", "F33-P", "F41-R"])
+                         ["F17-H", "F32-H", "F33-P", "F41-R", "F42-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -1,0 +1,63 @@
+diff --git a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java
+index 4ae49d9..a48649a 100644
+--- a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java
++++ b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java
+@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Query;
+ import org.springframework.data.repository.query.Param;
+ 
++import java.math.BigDecimal;
+ import java.time.LocalDateTime;
+ import java.util.List;
+ import java.util.Optional;
+@@ -35,6 +36,12 @@ public interface TransferRepository extends JpaRepository<Transfer, Long> {
+             + "group by trunc(created_at) order by trunc(created_at) desc", nativeQuery = true)
+     List<Object[]> dailyStatsSince(@Param("since") LocalDateTime since);
+ 
++    // 일일 이체 한도 확인용: 출금 계좌의 오늘 완료 이체 합계.
++    @Query(value = "select coalesce(sum(amount), 0) from transfers "
++            + "where from_account = :account and status = 'COMPLETED' "
++            + "and trunc(created_at) = trunc(sysdate)", nativeQuery = true)
++    BigDecimal sumCompletedOutgoingToday(@Param("account") String account);
++
+     List<Transfer> findByStatusAndCreatedAtBefore(String status, LocalDateTime before);
+ 
+     // 보존 기간 정리용. idx_transfers_created 를 오래된 쪽부터 타므로 지울 것이 없을 때는
+diff --git a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java
+index a4c4d75..d995202 100644
+--- a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java
++++ b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java
+@@ -13,6 +13,7 @@ import com.corebanking.transfer.repository.AccountRepository;
+ import com.corebanking.transfer.repository.TransferRepository;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
++import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.http.HttpStatus;
+@@ -35,6 +36,10 @@ public class TransferService {
+     private final TransferRepository transferRepository;
+     private final TransferEventPublisher eventPublisher;
+ 
++    // 출금 계좌별 하루 이체 한도(원). 정산 계좌의 하루 합계보다 넉넉하게 잡는다.
++    @Value("${transfer.limit.daily-amount:50000000000}")
++    private BigDecimal dailyLimit;
++
+     public TransferService(AccountRepository accountRepository,
+                            TransferRepository transferRepository,
+                            TransferEventPublisher eventPublisher) {
+@@ -58,6 +63,14 @@ public class TransferService {
+             throw new ServiceException(HttpStatus.BAD_REQUEST, "fromAccount and toAccount must differ");
+         }
+ 
++        // 일일 이체 한도: 오늘 이미 나간 금액에 이번 금액을 더해 한도를 넘으면 거절한다.
++        BigDecimal sentToday = transferRepository.sumCompletedOutgoingToday(request.fromAccount());
++        if (sentToday.add(request.amount()).compareTo(dailyLimit) > 0) {
++            log.info("Transfer rejected (daily limit): from={} sentToday={} amount={} limit={}",
++                    request.fromAccount(), sentToday, request.amount(), dailyLimit);
++            throw new ServiceException(HttpStatus.BAD_REQUEST, "daily transfer limit exceeded");
++        }
++
+         String transferRef = UUID.randomUUID().toString();
+ 
+         // deadlock 회피: 항상 작은 id 를 먼저 lock

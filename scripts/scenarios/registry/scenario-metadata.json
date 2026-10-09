@@ -6697,6 +6697,100 @@
      }
     ]
    }
+  },
+  "F42-R": {
+   "title": "Release rollout of a banking transfer-service version that adds a daily-limit query scanning the whole transfers table on every transfer: the shared Oracle saturates its two CPUs, transfers and commerce settlements fail with 500/502 while the new version itself runs and passes its probes",
+   "description": "A rollout of the banking transfer-service Deployment (testbed-transfer) moves its container image from core-banking-transfer:latest to the release core-banking-transfer:2.2.0. The release adds a daily transfer limit: before locking the two accounts, TransferService.execute sums today's completed outgoing transfers of the source account with the native query 'select coalesce(sum(amount), 0) from transfers where from_account = :1 and status = 'COMPLETED' and trunc(created_at) = trunc(sysdate)'. The function on created_at keeps Oracle from using idx_transfers_created, and with the TOP-FREQUENCY histogram on from_account the optimizer reads the whole table: about 6.3 million rows, about 99,000 blocks per call, 0.24-0.43 s of CPU (measured once on the 109 Oracle on 2026-10-09 with the same predicate for commerce-settlement and ACC-1004 binds; both used TABLE ACCESS FULL). The limit itself (50,000,000,000) is never reached, so no transfer is rejected; the damage is the query's cost. The Deployment keeps its manifest strategy (maxSurge 0, maxUnavailable 1), so the old pod goes first and transfers fail for about a minute until the new pod is Ready; from then on the new version runs and passes its probes. A north-south 20 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) brings transfers to about 8 per second on top of the resident baseline and commerce settlements (0.3-1.4 per second). The new query alone then asks Oracle for 2.0-4.0 CPUs, 2.7-5.0 with the existing transaction-history count query and baseline work, against the instance's cap of two (Oracle Free cpu_count 2, container limit 2000m); without the release the same load needs about 0.7-1.1. Oracle sessions queue on CPU ('On CPU', 'resmgr:cpu quantum'), every Oracle user slows, the transfer Hikari pool (15) is held by scans, and transfers fail: transfer answers 500 after its 3 s connection wait ('Connection is not available, request timed out after 3000ms'), account retries and opens its circuit, api gives up after 10 s, and the banking gateway answers 502; commerce checkout fails when its settlement transfer fails. The transfer readiness probe (/actuator/health, DB check, 3 s) fails while the pool is held, so the pod leaves the Service endpoints for short spells and comes back; liveness (livenessState) does not restart it. Balance lookups (primary-key reads) slow down but mostly succeed. This reconstructs GitHub's 2025-01-09 incident, where a deployment introduced a query that saturated a primary database server and users received server errors across many features until the deployment was rolled back.",
+   "cause": "Rollout of testbed-transfer (banking) to the release core-banking-transfer:2.2.0, whose new daily-limit check runs, on every transfer and before the account locks, a sum over the source account's transfers filtered by trunc(created_at) = trunc(sysdate) that cannot use the created_at index and scans the whole transfers table (about 99,000 blocks, 0.24-0.43 s CPU per call) → at the companion's transfer rate the query asks for more CPU than Oracle's two → Oracle CPU saturated, sessions queue on CPU, the transfer connection pool is held by scans → transfer 500 (connection wait), account retries and circuit, api read timeout, banking 502, commerce settlement failures, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-transfer (rca-testbed-banking), container transfer-service, from core-banking-transfer:latest to core-banking-transfer:2.2.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f42-r from origin/main core-banking plus fault-images/f42-r/transfer-service.patch (two files under transfer-service/src: a new native query in TransferRepository and the daily-limit check in TransferService.execute); the manifest image, sources and manifests are untouched, and the tag differs from F17-H's 2.1.0 that must stay absent from the node. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w2's containerd holds the baseline and not the release, that tb-w2's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w2's containerd (docker save | ctr import), then sets the image and does not wait for the rollout. A north-south 20 rps companion (core-banking transfer-heavy-surge.js) drives the banking entry point (30082) on top of the resident baseline. Cleanup sets the image back to core-banking-transfer:latest, waits until the Deployment is available, waits until no pod uses the release, and removes both node references to the release (its name and the sha256:<image ID> reference) from tb-w2's containerd, then checks that neither is left. No value carries the scenario id; Oracle, its statistics, indexes and data are not touched.",
+   "user_impact": "About one minute after the rollout starts transfers fail while transfer has no pod (maxSurge 0). Once the new version runs and the transfer traffic rises, money transfers through the banking gateway slow down and a large share fail with 502 (transfer's connection wait, api's 10 s timeout, account's open circuit, short spells without a transfer endpoint), and commerce checkouts fail when their settlement transfer fails. Balance lookups and transaction history get slower because Oracle is saturated but mostly still answer. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release followed by a new, expensive statement that dominates Oracle: a KCM ScalingReplicaSet for testbed-transfer and the new pod's kubelet event 'Pulled: Container image \"core-banking-transfer:2.2.0\" already present on machine' (every testbed-transfer ReplicaSet and pod record on file carries core-banking-transfer:latest), then from the new pod's start a DPM Top SQL sql_id that did not exist before with about 99,000 logical reads per execution and executions tracking the transfer rate, DPM sessions from the new transfer pod (machine = the new ReplicaSet's pod name) on that sql_id in 'On CPU' and 'resmgr:cpu quantum', Oracle instance CPU (dpm.oracle.instance.cpu_time, normally 0.1-0.46) pinned at its two-CPU cap, and sampled core-banking-transfer database spans carrying the new statement 'select coalesce(sum(amount), 0) from transfers where from_account = ? and status = 'COMPLETED' and trunc(created_at) = trunc(sysdate)'. Transfer then logs Hikari 'Connection is not available, request timed out after 3000ms', account logs 'Transfer service call failed' and circuit open, commerce payment logs settlement failures. Oracle stays Ready with no lock waits (no 'enq: TX - row lock contention'), no ORA errors, no DDL or statistics change, and the transfer pod is not restarted, so this is not a row lock (F01-P), an account lock or credential failure (F35-R), a missing image (F17-H, the new pod runs), a readiness misconfiguration (F17-R, probes are unchanged), an index drop (F33-R, F33-P: the old statements keep their plans; the cost comes from a statement that appears only with the release) or a plain traffic surge (the same companion without the release keeps Oracle around half its cap; the transfer rate rises but the per-transfer Oracle cost jumps from about 1 ms to hundreds of ms).",
+   "domain": "core-banking",
+   "class": "A",
+   "fault_pattern": "P8",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "core-banking-transfer",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking transfer-service 의 새 릴리스 core-banking-transfer:2.2.0 이다. 이 버전이 더한 일일 이체 한도 확인이 이체마다(계좌 잠금 전) 출금 계좌의 오늘 완료 이체 합계를 'trunc(created_at) = trunc(sysdate)' 조건으로 구한다. 열에 함수를 씌워 idx_transfers_created 를 못 타고, from_account 의 TOP-FREQUENCY 히스토그램 때문에 옵티마이저가 전수 스캔을 고른다(transfers 약 630만 행, 호출당 약 9.9만 블록, CPU 0.24~0.43초, 2026-10-09 109 Oracle 실측: commerce-settlement 와 ACC-1004 바인드 모두 TABLE ACCESS FULL). 한도 값(500억)에는 닿지 않아 거절은 없고, 피해는 질의 비용이다. 동반 부하로 이체가 초당 약 8건이면 이 질의만 Oracle CPU 2.0~4.0개분을 요구해 2 CPU 상한(Oracle Free cpu_count 2, 컨테이너 2000m)을 넘고, 세션이 CPU 를 기다리며(On CPU, resmgr:cpu quantum) transfer Hikari 15 가 스캔에 묶여 3초 대기 초과 500, account 재시도와 서킷, api 10초 읽기 초과, banking 502, commerce 정산 실패로 번진다. 원칙 6: 호출자들의 이체 요청은 평시와 같은 정당한 요청이고, 같은 동반 부하에 매니페스트 버전이면 Oracle 은 약 0.7~1.1 CPU 로 여유가 있다. Oracle 은 시킨 질의를 실행했을 뿐이라 증상 위치다. 비용을 만든 질의를 들여온 transfer 의 새 버전이 결함 보유 대상이자 계기다(GitHub 2025-01-09 사후 보고의 '질의를 들여온 배포를 되돌려 복구'와 같은 층위). 패치 속 어느 줄인지는 요구하지 않는다(원칙 5). target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 testbed-transfer ScalingReplicaSet 과 새 파드 'Pulled ... \"core-banking-transfer:2.2.0\"', kcm_resources_history 의 새 ReplicaSet 스펙 image(그 전 transfer ReplicaSet 175건, 파드 155건 전부 :latest) ② DPM Top SQL(dpm_topsql_local)에 롤아웃 뒤 처음 보이는 sql_id 가 실행당 논리 읽기 약 9.9만, 실행 수는 이체 수를 따라감(평시 최상위 byb2y2hv7p4ag 거래 내역 건수 질의 약 10.1만, 시간당 약 3,200회) ③ DPM 세션(dpm_session_local)의 machine 이 새 transfer 파드 이름이고 그 sql_id 로 On CPU, resmgr:cpu quantum ④ VM dpm.oracle.instance.cpu_time 이 평시 0.1~0.46 에서 상한 2 근처로 ⑤ 표본 트레이스의 core-banking-transfer DB 스팬 db.statement 에 새 문장 ⑥ transfer Hikari 'Connection is not available', account 'Transfer service call failed'·서킷 열림, commerce 정산 실패 로그 ⑦ Oracle Ready, 잠금 대기, ORA 오류, DDL, 통계 변경 없음, transfer 재시작 없음.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f42-r/transfer-service.patch:17-21 (sumCompletedOutgoingToday — 릴리스 2.2.0 의 새 네이티브 질의: from_account, status 와 trunc(created_at) = trunc(sysdate) 로 오늘 합계를 구함. created_at 에 함수를 씌워 인덱스를 못 타고 전수 스캔)",
+     "scripts/scenarios/fault-images/f42-r/transfer-service.patch:53-59 (sumCompletedOutgoingToday 호출 — 릴리스 2.2.0 의 execute 가 계좌 잠금 전에 이체마다 위 질의를 부르고 한도 500억과 비교)",
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:52-75 (매니페스트 버전의 execute — 금액, 계좌 검증 뒤 바로 두 계좌를 id 순으로 FOR UPDATE, 합계 질의 없음)",
+     "core-banking/transfer-service/src/main/resources/application.yml:12-17 (Hikari maximum-pool-size 15, connection-timeout 3000 — 스캔이 풀을 잡으면 3초 뒤 'Connection is not available')",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:28-58 (executeTransfer — transfer 실패를 'Transfer service call failed' 로 남기고 재시도, 서킷 끝에 BAD_GATEWAY)"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-transfer(core-banking/k8s/22-transfer-service.yaml: replicas 1 :9, 전략 maxUnavailable 1 / maxSurge 0 :17-18, nodeSelector tb-w2 :27-28, image core-banking-transfer:latest imagePullPolicy Never :36-37, readinessProbe /actuator/health(DB 포함) timeout 3s :87-94, livenessProbe /actuator/health/liveness :97-103, limits cpu 500m memory 1Gi :108-110, 109 kubectl 2026-10-09). StatefulSet testbed-oracle(core-banking/k8s/10-oracle.yaml limits cpu 2000m, Oracle Free cpu_count 2). transfers 6,289,608행 97,817블록, 인덱스 idx_transfers_from(from_account), idx_transfers_created(created_at), from_account 열 TOP-FREQUENCY 히스토그램(956 값, commerce-settlement 3,957,098행), 2026-10-09 109 Oracle 조회. 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w2 containerd 에 올리며 cleanup 이 지운다(scripts/scenarios/fault-images/f42-r/image.json)."
+   },
+   "must_support": [
+    "testbed-transfer 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 core-banking-transfer:2.2.0 을 담고, 그 전 testbed-transfer ReplicaSet, 파드 기록은 전부 core-banking-transfer:latest 다",
+    "새 transfer 파드 기동 뒤 DPM Top SQL 에 그 전에 없던 sql_id 가 나타나 실행당 논리 읽기 약 9.9만(transfers 전수 스캔)이고 실행 수가 이체 수를 따라가며, Oracle 시간의 대부분을 차지한다. 표본 트레이스의 core-banking-transfer DB 스팬에 문장 'select coalesce(sum(amount), 0) from transfers where from_account = ? and status = 'COMPLETED' and trunc(created_at) = trunc(sysdate)' 가 보인다",
+    "Oracle 인스턴스 CPU(dpm.oracle.instance.cpu_time, 평시 0.1~0.46)가 상한 2 근처에 붙고, DPM 세션에서 새 transfer 파드(machine)의 세션들이 그 sql_id 로 On CPU, resmgr:cpu quantum 을 기다린다. 행 잠금 대기(enq: TX - row lock contention)는 늘지 않는다",
+    "core-banking-transfer 가 Hikari 'Connection is not available, request timed out after 3000ms' 오류를 남기고, account 가 'Transfer service call failed'·서킷 열림, commerce payment 가 정산 실패를 남기며, 동반 부하 이체(step transfer) 5xx 비율이 0.3 이상으로 오른다",
+    "transfer 파드는 재시작하지 않고(liveness 는 livenessState), Oracle 파드는 Ready 이며, Oracle 의 인덱스, 통계, 설정은 그대로다"
+   ],
+   "must_rule_out": [
+    "행 잠금이 아님(F01-P, F15-G, F08-G): DPM 대기 이벤트가 enq: TX 가 아니라 On CPU, resmgr:cpu quantum 이고, 차단 세션(blockingSession)이 없다",
+    "DB 계정이나 자격 증명 장애가 아님(F35-R): ORA-28000 이나 로그온 실패가 없고 새 연결도 맺어진다",
+    "이미지 부재나 readiness 오설정이 아님(F17-H, F17-R): 새 transfer 파드는 이미지를 가지고 떠서 동작하며 프로브 정의는 그대로다. 엔드포인트가 비는 것은 풀이 스캔에 묶여 DB 확인이 늦을 때뿐이다",
+    "인덱스 제거나 통계 변경이 아님(F33-R, F33-P): DDL 이나 통계 수집 이벤트가 없고 기존 질의의 실행 계획(planHashValue)은 그대로이며, 비용은 릴리스와 함께 처음 나타난 문장에서 나온다",
+    "단순 부하 급증이 아님: 같은 동반 부하에 매니페스트 버전이면 Oracle 은 약 0.7~1.1 CPU 에 머문다. 이체 1건당 Oracle 비용이 약 1ms 에서 수백 ms 로 뛰는 것은 새 문장 때문이다",
+    "Oracle 자체 장애가 아님: 파드가 Ready 이고 재시작, 메모리, 디스크 이상이 없으며 PK 조회(잔액 조회)는 느려졌을 뿐 대개 성공한다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F20-R (commerce order 통계·무제한 검색 슬로우 쿼리가 공유 PostgreSQL CPU 를 오염: 비싼 질의는 원래 있었고 그 경로를 부르는 트래픽이 늘었다. F42-R 은 비싼 질의 자체를 새 릴리스가 들여왔다)",
+     "F33-R (food dispatches 인덱스 제거 DDL 로 기존 고빈도 질의가 전수 스캔: 계기가 스키마 변경이고 정답이 테이블. F42-R 은 스키마 그대로, 계기와 결함이 transfer 릴리스)",
+     "F01-P (banking 정산 계좌 행 잠금으로 transfer 풀 고갈과 NotReady: 겉 증상이 비슷하나 대기 이벤트가 enq: TX)",
+     "F17-H (같은 transfer 의 다른 릴리스 장애: 이미지가 노드에 없어 새 파드가 아예 뜨지 않음. F42-R 은 새 버전이 떠서 동작하며 DB 를 포화시킴)",
+     "F41-R (banking account 릴리스의 메모리 누수: 결함이 JVM 안에 머묾. F42-R 은 결함이 공유 DB 로 번짐)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-transfer",
+     "banking-transfer",
+     "testbed-transfer"
+    ],
+    "partial": [
+     "banking-oracle",
+     "core-banking-account",
+     "core-banking-api",
+     "commerce-payment"
+    ]
+   },
+   "title_ko": "banking transfer-service 를 이체마다 transfers 테이블 전체를 훑는 일일 한도 질의를 더한 릴리스로 롤아웃: 공유 Oracle 이 2 CPU 를 다 써 이체와 commerce 정산이 500, 502 로 실패하고, 새 버전 자체는 떠서 프로브를 통과한다",
+   "description_ko": "banking transfer-service Deployment(testbed-transfer) 롤아웃이 컨테이너 이미지를 core-banking-transfer:latest 에서 릴리스 core-banking-transfer:2.2.0 으로 바꾼다. 이 릴리스는 일일 이체 한도를 더했다: TransferService.execute 가 두 계좌를 잠그기 전에 네이티브 질의 'select coalesce(sum(amount), 0) from transfers where from_account = :1 and status = 'COMPLETED' and trunc(created_at) = trunc(sysdate)' 로 출금 계좌의 오늘 완료 이체 합계를 구한다. created_at 에 함수를 씌워 idx_transfers_created 를 쓰지 못하고, from_account 의 TOP-FREQUENCY 히스토그램 때문에 옵티마이저가 테이블 전체(약 630만 행, 호출당 약 9.9만 블록, CPU 0.24~0.43초)를 읽는다(2026-10-09 109 Oracle 에서 같은 조건을 commerce-settlement, ACC-1004 바인드로 1회씩 실측, 둘 다 TABLE ACCESS FULL). 한도 값(500억)에는 닿지 않아 거절되는 이체는 없고 피해는 질의 비용이다. Deployment 는 매니페스트 전략(maxSurge 0, maxUnavailable 1)이라 옛 파드가 먼저 내려가 새 파드가 Ready 가 될 때까지 약 1분 이체가 실패하고, 그 뒤 새 버전은 떠서 프로브를 통과한다. north-south 20rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 상주 기준선과 commerce 정산(초당 0.3~1.4건) 위에 이체를 초당 약 8건 더한다. 그러면 새 질의만 Oracle CPU 2.0~4.0개분, 기존 거래 내역 건수 질의와 평시 사용을 더하면 2.7~5.0개분을 요구해 인스턴스 상한 2(Oracle Free cpu_count 2, 컨테이너 2000m)를 넘는다. 릴리스가 없으면 같은 부하에 약 0.7~1.1개분이다. Oracle 세션이 CPU 를 기다리며(On CPU, resmgr:cpu quantum) 모든 Oracle 사용자가 느려지고, transfer Hikari 풀(15)이 스캔에 묶여 이체가 실패한다: transfer 는 3초 연결 대기 뒤 500('Connection is not available, request timed out after 3000ms'), account 는 재시도하다 서킷을 열고, api 는 10초 뒤 포기해 banking 게이트웨이가 502 로 답하며, commerce checkout 은 정산 이체가 실패하면 실패한다. transfer readiness(/actuator/health, DB 확인, 3초)는 풀이 묶인 동안 실패해 파드가 잠깐씩 Service 엔드포인트에서 빠졌다 돌아오고, liveness(livenessState)는 재시작하지 않는다. 잔액 조회(PK 조회)는 느려지지만 대개 성공한다. GitHub 2025-01-09 장애(배포가 들여온 질의가 주 데이터베이스 서버를 포화시켜 여러 기능에서 서버 오류가 났고, 배포를 되돌려 복구)의 재구성이다.",
+   "cause_ko": "testbed-transfer(banking) 를 릴리스 core-banking-transfer:2.2.0 으로 롤아웃. 이 버전의 일일 한도 확인이 이체마다(계좌 잠금 전) trunc(created_at) = trunc(sysdate) 조건으로 출금 계좌의 오늘 합계를 구해, created_at 인덱스를 못 타고 transfers 전체를 스캔(호출당 약 9.9만 블록, CPU 0.24~0.43초) → 동반 부하의 이체 속도에서 Oracle 이 가진 2 CPU 보다 많은 CPU 를 요구 → Oracle CPU 포화, 세션이 CPU 를 기다리고 transfer 연결 풀이 스캔에 묶임 → transfer 500(연결 대기), account 재시도와 서킷, api 읽기 시간 초과, banking 502, commerce 정산 실패. 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-banking 의 Deployment testbed-transfer 컨테이너 transfer-service 이미지를 core-banking-transfer:latest 에서 core-banking-transfer:2.2.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f42-r 이 origin/main core-banking 에 fault-images/f42-r/transfer-service.patch(transfer-service/src 안 두 파일: TransferRepository 의 새 네이티브 질의, TransferService.execute 의 일일 한도 확인)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트는 그대로이고, 태그는 노드에 없어야 하는 F17-H 의 2.1.0 과 다르다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w2 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w2 이미지 파일시스템이 80% 미만인지, Deployment 가 available 인지 확인한다. run 은 릴리스를 tb-w2 containerd 에 올린 뒤(docker save | ctr import) 이미지를 바꾸고 롤아웃을 기다리지 않는다. north-south 20rps 동반 부하(core-banking transfer-heavy-surge.js)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더한다. cleanup 은 이미지를 core-banking-transfer:latest 로 되돌리고 Deployment available 을 기다린 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w2 containerd 에서 릴리스의 이름 참조와 sha256:<이미지 ID> 참조를 모두 지우고 둘 다 없는지 확인한다. 시나리오 id 를 담은 값은 없고, Oracle 과 그 통계, 인덱스, 데이터는 건드리지 않는다.",
+   "user_impact_ko": "롤아웃이 시작되고 약 1분은 transfer 파드가 없어(maxSurge 0) 이체가 실패한다. 새 버전이 뜨고 이체가 늘면 banking 게이트웨이를 거치는 이체가 느려지며 상당 부분이 502 로 실패하고(transfer 연결 대기, api 10초 시간 초과, account 서킷 열림, 잠깐씩 transfer 엔드포인트가 빔), commerce checkout 은 정산 이체가 실패하면 실패한다. 잔액 조회와 거래 내역은 Oracle 포화로 느려지지만 대개 답한다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 릴리스 뒤 Oracle 을 차지한 새 비싼 문장이다: testbed-transfer 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"core-banking-transfer:2.2.0\" already present on machine'(기록에 있는 testbed-transfer ReplicaSet, 파드는 모두 core-banking-transfer:latest), 그 뒤 새 파드 기동부터 DPM Top SQL 에 그 전에 없던 sql_id 가 실행당 논리 읽기 약 9.9만, 실행 수가 이체 수를 따라감, DPM 세션에서 새 transfer 파드(machine = 새 ReplicaSet 의 파드 이름)가 그 sql_id 로 On CPU, resmgr:cpu quantum, Oracle 인스턴스 CPU(dpm.oracle.instance.cpu_time, 평시 0.1~0.46)가 2 CPU 상한에 붙음, 표본 트레이스의 core-banking-transfer DB 스팬에 새 문장 'select coalesce(sum(amount), 0) from transfers where from_account = ? and status = 'COMPLETED' and trunc(created_at) = trunc(sysdate)'. 이어서 transfer Hikari 'Connection is not available, request timed out after 3000ms', account 'Transfer service call failed'·서킷 열림, commerce payment 정산 실패. Oracle 은 Ready 이고 잠금 대기(enq: TX - row lock contention), ORA 오류, DDL, 통계 변경이 없으며 transfer 파드도 재시작하지 않으므로 행 잠금(F01-P), 계정이나 자격 증명 장애(F35-R), 이미지 부재(F17-H, 새 파드는 동작), readiness 오설정(F17-R, 프로브 그대로), 인덱스 제거(F33-R, F33-P: 기존 문장의 계획은 그대로이고 비용은 릴리스와 함께 나타난 문장에서 나옴)가 아니고, 단순 트래픽 급증도 아니다(릴리스 없이 같은 동반 부하면 Oracle 은 상한의 절반 안팎이고, 이체 수가 늘어난 것보다 이체 1건당 Oracle 비용이 약 1ms 에서 수백 ms 로 뛴 것이 크다).",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f42-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-transfer",
+       "container": "transfer-service",
+       "baseline_image": "core-banking-transfer:latest",
+       "fault_image": "core-banking-transfer:2.2.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

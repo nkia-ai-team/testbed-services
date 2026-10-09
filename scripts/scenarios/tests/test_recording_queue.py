@@ -50,7 +50,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 8 → 9. F33-P(commerce auth_tokens 인덱스 교체 마이그레이션 실패) 후보 추가.
         # 2026-10-09: 9 → 8. F35-R 정식 승격(녹화 case-f35-r-v3-bbbee443).
         # 2026-10-09: 8 → 9. F41-R(banking account 메모리 누수 릴리스 롤아웃) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 9)
+        # 2026-10-09: 9 → 10. F42-R(banking transfer 전수 스캔 한도 질의 릴리스 롤아웃) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 10)
 
 
 class RecordingQueueTests(unittest.TestCase):

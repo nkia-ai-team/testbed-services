@@ -54,6 +54,17 @@ CONTRACTS = {
         "baseline_image": "core-banking-account:latest",
         "fault_image": "core-banking-account:1.3.0",
     },
+    # 2026-10-09. F42-R: banking transfer-service 를 일일 이체 한도 확인을 더한 릴리스 2.2.0 으로 롤아웃한다.
+    # 새 질의가 이체마다 transfers 약 630만 행을 전수 스캔해 Oracle(2 CPU)이 포화된다. 결함 이미지는
+    # fault-images/f42-r 로 109 docker 에만 빌드한다. F17-H 의 2.1.0(노드에 없어야 하는 태그)과 겹치지 않는다.
+    "F42-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-transfer",
+        "container": "transfer-service",
+        "baseline_image": "core-banking-transfer:latest",
+        "fault_image": "core-banking-transfer:2.2.0",
+    },
 }
 
 
