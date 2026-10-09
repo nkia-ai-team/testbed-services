@@ -63,8 +63,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 72 → 73. F41-R(후보) 추가. 기존 k8s.image 에 release 모드를 더해 프로파일 수는 그대로.
         # 2026-10-09: 73 → 74. F42-R(후보) 추가. 기존 k8s.image release 모드를 써서 프로파일 수는 그대로.
         # 2026-10-09: 74 → 75. F43-R(후보) 추가. 기존 k8s.image release 모드를 commerce 네임스페이스로 넓혀 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 75)
-        self.assertEqual(len(self.profiles["profiles"]), 27)
+        # 2026-10-09: 75 → 76. F44-R(후보) 추가. 프로파일 27 → 28(host.firewall 신설).
+        self.assertEqual(len(self.catalog["scenarios"]), 76)
+        self.assertEqual(len(self.profiles["profiles"]), 28)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -136,6 +137,8 @@ class RegistryContractTests(unittest.TestCase):
             "F42-R",
             # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
             "F43-R",
+            # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(Harness 2024-09-01 재구성, 새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -424,6 +427,8 @@ class RegistryContractTests(unittest.TestCase):
             "F42-R",
             # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
             "F43-R",
+            # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(Harness 2024-09-01 재구성, 새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-R",
             },
         )
         self.assertEqual(
@@ -496,6 +501,8 @@ class RegistryContractTests(unittest.TestCase):
             "F42-R",
             # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
             "F43-R",
+            # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(Harness 2024-09-01 재구성, 새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -645,8 +652,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F41-R(후보, 고정 evaluation)이 끝에 붙어 F39-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F42-R(후보, 고정 evaluation)이 끝에 붙어 F40-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F43-R(후보, 고정 evaluation)이 끝에 붙어 F17-H 가 끝 5개에서 빠졌다.
+        # 2026-10-09: F44-R(후보, 고정 evaluation)이 끝에 붙어 F32-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F32-H", "F33-P", "F41-R", "F42-R", "F43-R"])
+                         ["F33-P", "F41-R", "F42-R", "F43-R", "F44-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

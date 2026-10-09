@@ -50,7 +50,8 @@
     "F33-P",
     "F41-R",
     "F42-R",
-    "F43-R"
+    "F43-R",
+    "F44-R"
   ],
   "controllers": {
     "F01-R": {
@@ -11842,6 +11843,241 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F44-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "host.firewall",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.firewall",
+        "levels": [
+          {
+            "id": "approved-fixed-f44-r",
+            "parameters": {
+              "host": "192.168.122.14",
+              "node": "tb-w3",
+              "namespace": "rca-testbed-food",
+              "protected_app": "testbed-restaurant",
+              "omitted_caller_app": "testbed-order",
+              "protected_cidr": "10.244.2.0/24",
+              "port": 8081,
+              "chain": "RESTAURANT-API-IN",
+              "allowed_sources": [
+                "10.244.2.1/32",
+                "10.244.0.0/24",
+                "192.168.122.0/24",
+                "192.168.200.0/24"
+              ],
+              "comment": "restaurant-api: allow node and entry networks",
+              "log_prefix": "[FW BLOCK] ",
+              "log_limit": "6/min"
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 방화벽 규칙은 tb-w3 파드 대역의 8081 로 가는 새 연결만 거르고, NodePort 요청은 tb-cp 의 flannel 주소(10.244.0.0)로 SNAT 되어 허용 목록 안이라 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s",
+          "_note": "food MySQL 파드. 이 주입은 3306 을 건드리지 않는다"
+        },
+        {
+          "id": "restaurant_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-restaurant"
+          },
+          "freshness": "30s",
+          "_note": "restaurant 파드. kubelet 프로브는 노드 자신(10.244.2.1)에서 오고 허용 목록 안이라 Ready 가 유지되어야 한다. 빠지면 restaurant 다운이지 경로 차단이 아니다"
+        },
+        {
+          "id": "order_create_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)은 하루 주기로 1~6 iter/s 라 한가한 시간에는 주문 생성이 초당 약 0.2건뿐이어서, 러너 판정 표본과 order 의 연결 시간 초과 로그(119 로그 이상 탐지가 묶음을 만드는 근거)가 시간대에 좌우되지 않도록 동반 부하가 주문 생성을 초당 약 1.4건 더한다(F36-R 과 같은 값). 규칙이 들어간 뒤에도 order 가 이미 열어 둔 keep-alive 연결(평시 1개 유지, 2026-10-09 restaurant /proc/net/tcp)은 conntrack ESTABLISHED 라 계속 통하고, restaurant Tomcat 이 연결당 100 요청 뒤 닫거나 5초 쉬면 JDK 가 닫는다. 그 뒤 새 연결의 SYN 이 버려져 connect-timeout 3초, 재시도 3회, 서킷브레이커 열림으로 주문이 502 가 된다(원본의 '지속 소켓이 다시 맺어질 때까지 드러나지 않음')",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 규칙 적용 뒤 order 의 기존 keep-alive 연결이 닫히는 데 길어야 1분 안팎(주문 초당 약 1.6~3건이면 restaurant 호출 초당 3~6건, Tomcat 연결당 100 요청), 그 뒤로는 새 연결이 모두 시간 초과라 서킷브레이커가 5초 열림, 반열림 3회 실패를 되풀이하며 모든 주문이 502 다. 재시도 백오프(200ms, 400ms)만큼만 걸리는 fallback 502 와 반열림 때의 약 10초짜리 502 가 섞인다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. 주문이 서킷브레이커로 곧바로 502 를 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 경로 차단이 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "restaurant-down",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "restaurant 파드가 빠지면 order 의 연결 실패가 방화벽이 아니라 대상 다운(엔드포인트 없음, 연결 거부)이다. 이 주입에서 restaurant 는 Ready 이고 NodePort 로 오는 가게 조회에 계속 200 으로 답해야 한다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "restaurant-ready",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 FORWARD 의 점프 규칙을 지우고 RESTAURANT-API-IN 체인을 비워 지운 뒤 iptables -S 로 둘 다 없음을 확인하고 평가한다. order 의 다음 새 연결부터 통하고, 서킷브레이커는 반열림 3회 성공으로 닫힌다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
       },
       "capture": {
         "enabled": true,

@@ -941,6 +941,19 @@
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F44-R",
+      "slug": "f44-r-food-node-firewall-allowlist-omits-order",
+      "profiles": [
+        "host.firewall",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "worker-w3",
+      "prerequisite": ""
     }
   ]
 }

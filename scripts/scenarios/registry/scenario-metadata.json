@@ -6885,6 +6885,108 @@
      }
     ]
    }
+  },
+  "F44-R": {
+   "title": "A firewall rule tightened on worker tb-w3 lets new connections to the food restaurant API (port 8081) in only from the node and entry networks and leaves out the pod network of order-service, its in-cluster caller: once order's open keep-alive connection is closed, every new connection to restaurant is dropped and order creation fails with 502 while restaurant itself stays healthy",
+   "description": "All food services run on worker tb-w3 (nodeSelector) and talk over its pod network 10.244.2.0/24 through the cni0 bridge, whose traffic passes the node's iptables FORWARD chain (br_netfilter, bridge-nf-call-iptables=1). The restaurant API listens on 8081 and has two kinds of callers: customers, whose requests enter through the NodePort on the control-plane node tb-cp and arrive SNATed to tb-cp's flannel address 10.244.0.0, and order-service (10.244.2.x on the same node), which reads the restaurant and its menu at the start of every order (RestClient on HttpURLConnection, connect-timeout 3 s, read-timeout 5 s, retry 3 with exponential back-off from 200 ms, circuit breaker opening at 50 % of 10 calls for 5 s). An operator tightens the host firewall on tb-w3 for that port, which until now accepted everything: a new chain RESTAURANT-API-IN accepts sources 10.244.2.1 (the node itself, kubelet probes), 10.244.0.0/24 (the entry node), 192.168.122.0/24 and 192.168.200.0/24 (host networks), logs the rest as '[FW BLOCK] ' (6 per minute) and drops it, and a rule at the top of FORWARD sends new TCP connections to 10.244.2.0/24:8081 into that chain. The pod network of tb-w3 itself, where order lives, is not in the list. Connections that already exist are untouched (only conntrack NEW is filtered): order keeps one keep-alive connection to restaurant open in normal operation, so orders keep succeeding until restaurant's Tomcat closes it after 100 requests or JDK closes it after 5 s idle, typically within a minute. From then on every new connection's SYN is dropped, order's restaurant lookup fails with 'Connect timed out' after 3 s, retries, opens the restaurant circuit breaker and answers 502 to every order before saving anything; while the breaker is open orders fail within a second, each half-open probe waits about 10 s. Restaurant stays Ready, keeps answering customers' restaurant and menu requests through the NodePort, and receives nothing from order. MySQL, dispatch, payment and Kafka are untouched, nothing in Kubernetes changes. A 2 rps order companion (order-surge.js) keeps an order sample at every hour of the daily baseline cycle. This reconstructs Harness's incident of 2024-09-01 (status page post-mortem): a firewall rule for its Mac VM registry that was previously too permissive was tightened, the new rule did not account for the NAT IP address of one component, the failure surfaced only when that component's persistent socket connection was re-established, and re-creating the rule restored service.",
+   "cause": "Host firewall change on tb-w3: a new allowlist for new connections to the restaurant API port (FORWARD -d 10.244.2.0/24 -p tcp --dport 8081 --ctstate NEW → chain RESTAURANT-API-IN: RETURN for 10.244.2.1/32, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24, LOG '[FW BLOCK] ', DROP) leaves out the node's own pod network where order-service runs → order's existing keep-alive connection keeps working until it is closed, then every new connection from order to restaurant:8081 is dropped (SYN, no answer) → RestaurantClient.getRestaurant fails with 'Connect timed out' after 3 s, retries 3 times, opens the restaurant circuit breaker → POST /api/orders 502 before the order row is written. Restaurant is healthy and keeps serving NodePort traffic; other food paths (dispatch, payment, MySQL) are unaffected.",
+   "injection_summary": "The host.firewall executor runs in the runner. Preflight checks over kubectl that exactly one Ready testbed-restaurant pod and one Ready testbed-order pod run on tb-w3 with pod IPs inside 10.244.2.0/24, that order's IP is outside every allowed source, that Service testbed-restaurant targets 8081, and over SSH (nkia@192.168.122.14, key auth) that bridge-nf-call-iptables is 1 and that neither the chain RESTAURANT-API-IN nor a FORWARD jump to it exists. Run writes a local state file named after the node and the chain, then issues one 'sudo -n iptables' command per rule on tb-w3: -N RESTAURANT-API-IN, four -A ... -s <source> -m comment --comment 'restaurant-api: allow node and entry networks' -j RETURN, -A ... -m limit --limit 6/min -j LOG --log-prefix '[FW BLOCK] ', -A ... -j DROP, and -I FORWARD 1 -d 10.244.2.0/24 -p tcp --dport 8081 -m conntrack --ctstate NEW -m comment --comment ... -j RESTAURANT-API-IN, then confirms the jump with iptables -S. Each command appears in tb-w3's auth log (sudo COMMAND=...) and is forwarded to 119 as syslog. Cleanup deletes the jump, flushes and deletes the chain and confirms both are gone; the rules only match forwarded pod traffic to one port, so SSH over the host network (the recovery path) is never affected. A north-south companion at 2 rps (order-surge.js) drives the food entry point on top of the resident baseline. No app code, image, configuration, Kubernetes object or data is changed and no value, chain name, comment or log prefix carries the scenario id.",
+   "user_impact": "Every order fails with 502 (the restaurant check cannot be answered) once order's open connection to restaurant is gone, typically within a minute of the change. Browsing restaurants and menus keeps working because customer requests enter through the allowed entry network. Delivery tracking and payments already made are unaffected. No data is lost; removing the rule restores orders with the next new connection and the circuit breaker closes after its half-open probes succeed.",
+   "distinguishing_evidence": "The trigger is recorded on the node itself: tb-w3 syslog (auth, forwarded to 119) shows nkia running sudo /usr/sbin/iptables -N RESTAURANT-API-IN, the allowlist RETURN rules, LOG, DROP and -I FORWARD 1 ... --dport 8081 ... -j RESTAURANT-API-IN within seconds (iptables commands on the workers: 0 in 30 days before the design queries of 2026-10-09), and from the first dropped SYN the kernel logs '[FW BLOCK] IN=cni0 OUT=cni0 ... SRC=10.244.2.x DST=<restaurant pod> ... DPT=8081 ... SYN' (0 such lines in 30 days). Order then logs ERROR 'Failed to fetch restaurant N: I/O error on GET request for \"http://testbed-restaurant:8081/api/restaurants/N\": Connect timed out' (0 'Connect timed out' in 10 days of order logs): the name resolves to the right service and port, the connection is never answered. Everything else says the destination is fine: restaurant is Ready, not restarted (same pod since 2026-08-11), its APM rps from customer traffic continues and its spans stay 200; no rollout, ReplicaSet or env change in rca-testbed-food (KCM); MySQL sessions and response time stay at baseline; dispatch and payment are Ready and dispatch keeps answering the delivery-status lookups that reach it directly. So it is not restaurant down or slow (F36-R: restaurant answers 500 with an SQL error; F24-Q: slow answers), not a wrong address in order's configuration (F39-R pattern: a rollout changes the URL), not DNS (F37-R pattern: UnknownHostException), not a database or capacity problem. The cut is between two pods on the same node at one port, and the only change at the start is the firewall rule on that node.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "SMS"
+   ],
+   "root_cause": {
+    "target_kind": "node",
+    "target_id": "tb-w3",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 워커 노드 tb-w3 의 호스트 방화벽(iptables FORWARD) 설정이다. 운영자가 그동안 모두 받던 restaurant API 포트(8081)를 '노드와 진입 망에서만' 받도록 좁히면서 허용 목록에 이 노드의 파드 대역(10.244.2.0/24)을 넣지 않아, 같은 노드에서 restaurant 를 부르는 유일한 클러스터 안 호출자 order-service 의 새 연결이 버려진다. 원본 사후 보고(Harness 2024-09-01, \"We tightened a firewall rule for our Mac VM registry that was previously too permissive\", \"the new rule did not account for the NAT IP address of one of these components\", 지속 소켓 연결이라 다시 맺어질 때까지 드러나지 않음)와 같은 층위, 곧 '허용 목록에서 한 호출자를 빠뜨린 방화벽 규칙 변경'이 정답이다. order 와 restaurant 의 코드, 설정, 요청은 늘 하던 그대로라 정당하다(원칙 6: 정당한 요청이 잘못된 규칙에 막힘). 근본과 계기가 같은 곳(tb-w3 의 방화벽 규칙 변경)이라 trigger_target_id 는 비운다. target_id 는 F10-H, F05-P 처럼 노드 이름이다. 관제 데이터로의 도달 경로: ① 119 syslog(tb-w3 auth): sudo COMMAND=/usr/sbin/iptables -N RESTAURANT-API-IN, 허용 RETURN 4개, LOG, DROP, -I FORWARD 1 -d 10.244.2.0/24 -p tcp --dport 8081 ... -j RESTAURANT-API-IN 이 몇 초 안에 이어진다(워커의 iptables 명령은 2026-10-09 설계 조회 전 30일 0건) ② 같은 syslog 의 kernel '[FW BLOCK] IN=cni0 OUT=cni0 ... SRC=10.244.2.x DST=... DPT=8081 ... SYN'(30일 0건)이 버려진 연결의 출발지, 목적지, 포트를 직접 보여 준다 ③ order ERROR 'Failed to fetch restaurant N: I/O error on GET request for \"http://testbed-restaurant:8081/...\": Connect timed out'(order 로그 10일 0건), POST /api/orders 502, 'Created order' 급감 ④ restaurant 는 Ready, 재시작 없음, 진입 망으로 오는 손님 요청에 계속 답하고(APM rps, 표본 스팬 200), rca-testbed-food 에 롤아웃이나 설정 변경이 없으며(KCM), MySQL 과 dispatch, payment 는 평시 그대로다(주문은 가게 확인에서 끝나 dispatch, payment 까지 가지 않는다). 왜 그 대역을 빠뜨렸는지(변경 검토 절차)는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:58-60 (createOrder — 첫 단계가 restaurantClient.getRestaurant, 실패하면 주문 저장 전에 끝난다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:29-56 (getRestaurant — @CircuitBreaker/@Retry restaurant, 연결 실패를 ERROR 'Failed to fetch restaurant' 와 502 로, fallback 'Restaurant service unavailable' 502)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/config/RestClientConfig.java:15-43 (restaurantRestClient — SimpleClientHttpRequestFactory, setConnectTimeout: HttpURLConnection keep-alive 로 연결을 재사용하고 새 연결은 connect-timeout 에 걸린다)",
+     "food-delivery/order-service/src/main/resources/application.yml:51-54 (services.restaurant — url testbed-restaurant:8081, connect-timeout 3s, read-timeout 5s)",
+     "food-delivery/order-service/src/main/resources/application.yml:69-77 (restaurant — 서킷브레이커 sliding-window-size 10, failure-rate-threshold 50, wait-duration-in-open-state 5s)",
+     "food-delivery/order-service/src/main/resources/application.yml:98-104 (restaurant — 재시도 max-attempts 3, wait-duration 200ms 지수 백오프)",
+     "food-delivery/k8s/21-restaurant-deploy.yaml:95-120 (Service testbed-restaurant 8081 과 NodePort testbed-restaurant-external 30181 — 손님 요청은 NodePort 로 들어와 진입 노드 주소로 SNAT 된다)",
+     "food-delivery/k8s/20-order-deploy.yaml:18-19 (nodeSelector kubernetes.io/hostname: tb-w3 — order 와 restaurant 가 같은 노드의 파드 대역에 있다)"
+    ],
+    "infra_anchor": "워커 tb-w3(192.168.122.14, Ubuntu, iptables v1.8.10 nf_tables 백엔드, br_netfilter 적재, net.bridge.bridge-nf-call-iptables=1, ufw 비활성). 파드 대역 10.244.2.0/24(cni0 10.244.2.1), 제어 노드 tb-cp 대역 10.244.0.0/24(flannel). FORWARD 정책 ACCEPT, 기존 규칙은 KUBE-PROXY-FIREWALL, KUBE-FORWARD(ESTABLISHED 수용), KUBE-SERVICES, KUBE-EXTERNAL-SERVICES, FLANNEL-FWD(-s 10.244.0.0/16 ACCEPT, 10초에 약 2,400 패킷: 파드 출발 새 연결이 FORWARD 를 지난다). 2026-10-09 restaurant 파드(10.244.2.218)의 8081 상대: 10.244.2.77(order, ESTABLISHED 1개 유지), 10.244.2.1(kubelet 프로브), 10.244.0.0(tb-cp NodePort 로 들어온 손님 요청). /etc/rsyslog.d/60-lucida-forward.conf 가 *.* 를 119:514/udp 로 넘겨 sudo 명령과 커널 로그가 syslog_local 에 남는다(설계 조회의 sudo iptables 명령이 몇 초 안에 hostname tb-w3, app_name sudo 로 보임). host.firewall 실행기가 러너 컨테이너에서 kubectl 로 배치를 확인하고 ssh nkia@192.168.122.14 로 규칙마다 sudo -n iptables 를 실행한다."
+   },
+   "must_support": [
+    "tb-w3 syslog(sudo)에 /usr/sbin/iptables -N RESTAURANT-API-IN, -A RESTAURANT-API-IN ... -j RETURN 4개, LOG, DROP, -I FORWARD 1 -d 10.244.2.0/24 -p tcp --dport 8081 -m conntrack --ctstate NEW ... -j RESTAURANT-API-IN 이 주입 시각에 몇 초 안에 이어진다(워커의 iptables 명령은 2026-10-09 설계 조회 전 30일 0건)",
+    "tb-w3 kernel syslog 에 '[FW BLOCK] ' 로 시작하고 DPT=8081, SYN 인 줄이 나타나 분당 최대 6건씩 이어진다(커널의 SRC=, DPT= 줄은 30일 0건)",
+    "order ERROR 'Failed to fetch restaurant N: I/O error on GET request for \"http://testbed-restaurant:8081/api/restaurants/N\": Connect timed out' 가 order 의 기존 연결이 닫힌 뒤(대개 1분 안) 나타나 서킷브레이커 반열림마다 이어지고(나머지 주문은 로그 없이 fallback 502 'Restaurant service unavailable' 응답), POST /api/orders 가 502(ERROR)로 바뀌며 'Created order' INFO 가 끊긴다. order 로그의 'Connect timed out' 은 평시 10일 0건. 동반 부하의 주문 생성 5xx 비율이 0.5 이상, 2xx 비율이 0.2 미만이 된다",
+    "restaurant 는 Ready 이고 재시작하지 않으며(2026-08-11 이후 같은 파드), 진입 망으로 오는 손님 요청에 계속 답한다(APM rps 유지, 표본 스팬 200). restaurant 에서 오류 로그나 오류 스팬이 늘지 않는다",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작, 설정 변경이 없다(KCM). MySQL 활성 세션과 응답 시간이 평시이고, dispatch 와 payment 는 Ready 이며 dispatch 는 직접 오는 배달 상태 조회에 계속 답한다"
+   ],
+   "must_rule_out": [
+    "restaurant 다운이나 재시작이 아님: restaurant 파드가 Ready 이고 엔드포인트가 그대로이며 NodePort 로 오는 가게, 메뉴 조회에 계속 200 이다. 다운이면 연결이 거부되거나(엔드포인트 없음) 손님 조회도 함께 실패한다",
+    "restaurant 오류나 지연이 아님(F36-R 꼴 SQL 오류 500, F24-Q 꼴 느린 응답): restaurant 에 오류 로그, 오류 스팬이 없고 p95 가 밀리초대다. order 의 오류는 응답을 받은 뒤가 아니라 연결이 맺어지지 않아 나는 'Connect timed out' 이다",
+    "order 의 하류 주소 오설정이 아님(F39-R 꼴): order 롤아웃이나 env 변경이 없고 오류 문장의 주소가 평소 그대로 http://testbed-restaurant:8081 이다",
+    "DNS 장애가 아님(F37-R 꼴): UnknownHostException 이 없고 이름은 해석된다. 실패는 그 주소로의 연결 단계다",
+    "DB, 용량 문제가 아님: MySQL 세션과 응답 시간이 평시이고 order 의 Hikari 대기가 없다(주문은 가게 확인 단계에서 DB 연결을 잡기 전에 끝난다). 동반 부하는 2rps 로 F36-R 과 같고, 부하로는 연결이 맺어지지 않는 일이 생기지 않는다",
+    "노드 자원 고갈이나 노드 다운이 아님(F10-H, F21-Q 꼴): tb-w3 의 CPU, 메모리, 디스크가 평시이고 같은 노드의 다른 통신(각 서비스→MySQL 3306, Kafka 9092, 진입 노드에서 오는 dispatch 배달 상태 조회 8082)은 정상이다. 막힌 것은 한 포트로 가는 새 연결뿐이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F36-R (같은 order→restaurant 경로에서 주문이 502 가 되지만 restaurant 가 응답하고 그 응답이 SQL 오류 500 이다. F44-R 은 restaurant 가 멀쩡한데 연결 자체가 노드 방화벽에서 버려진다)",
+     "F39-R (호출하는 쪽 설정 배포가 하류 주소를 다른 호스트로 바꿔 연결 시간 초과가 난다. F44-R 은 주소가 그대로이고 롤아웃이 없으며, 바뀐 것은 노드의 방화벽 규칙이다)",
+     "F37-R (호출하는 쪽 배포가 DNS 정책을 바꿔 이름 해석이 실패한다. F44-R 은 이름이 해석되고 연결 단계에서 막힌다)",
+     "F10-H (같은 tb-w3 가 정답인 노드 원인이지만 디스크 IO 포화로 모든 것이 느려진다. F44-R 은 노드 자원이 평시이고 한 포트로 가는 새 연결만 버려진다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "node",
+    "accept": [
+     "tb-w3"
+    ],
+    "partial": [
+     "food-delivery-restaurant",
+     "food-delivery-order"
+    ]
+   },
+   "title_ko": "워커 tb-w3 의 방화벽 규칙을 좁히면서 food restaurant API(8081)로의 새 연결을 노드와 진입 망에서만 받게 하고 같은 노드의 클러스터 안 호출자 order-service 의 파드 대역을 빠뜨림: order 가 열어 둔 keep-alive 연결이 닫힌 뒤로 restaurant 로의 새 연결이 모두 버려져 주문 생성이 502 로 실패하고 restaurant 자신은 멀쩡하다",
+   "description_ko": "food 서비스는 모두 워커 tb-w3(nodeSelector)에서 돌고 파드 대역 10.244.2.0/24 의 cni0 브리지로 통신하며, 그 트래픽은 노드의 iptables FORWARD 체인을 지난다(br_netfilter, bridge-nf-call-iptables=1). restaurant API 는 8081 에서 받고 호출자는 두 종류다: 손님 요청은 제어 노드 tb-cp 의 NodePort 로 들어와 tb-cp 의 flannel 주소 10.244.0.0 으로 SNAT 되어 오고, order-service(같은 노드의 10.244.2.x)는 주문마다 처음에 가게와 메뉴를 읽는다(HttpURLConnection 기반 RestClient, connect-timeout 3초, read-timeout 5초, 재시도 3회 200ms 부터 두 배씩 백오프, 호출 10회 중 50% 실패면 5초 열리는 서킷브레이커). 운영자가 지금까지 모두 받던 그 포트의 호스트 방화벽을 좁힌다: 새 체인 RESTAURANT-API-IN 이 출발지 10.244.2.1(노드 자신, kubelet 프로브), 10.244.0.0/24(진입 노드), 192.168.122.0/24, 192.168.200.0/24(호스트 망)만 받고 나머지는 '[FW BLOCK] '(분당 6건)으로 남긴 뒤 버리며, FORWARD 맨 위 규칙이 10.244.2.0/24:8081 로 가는 새 TCP 연결을 이 체인으로 보낸다. order 가 있는 tb-w3 자신의 파드 대역은 목록에 없다. 이미 맺어진 연결은 그대로 둔다(conntrack NEW 만 거른다): order 는 평시 restaurant 로 keep-alive 연결 하나를 열어 두므로, restaurant Tomcat 이 100 요청 뒤 닫거나 JDK 가 5초 쉰 연결을 닫을 때까지(대개 1분 안) 주문이 계속 성공한다. 그 뒤로는 새 연결의 SYN 이 모두 버려져 order 의 가게 조회가 3초 뒤 'Connect timed out' 으로 실패하고, 재시도하고, restaurant 서킷브레이커를 열어 아무것도 저장하기 전에 모든 주문에 502 로 답한다. 서킷이 열린 동안 주문은 1초 안에 실패하고 반열림 확인은 약 10초 기다린다. restaurant 는 Ready 이고 NodePort 로 오는 손님의 가게, 메뉴 조회에 계속 답하며 order 에서 오는 요청만 받지 못한다. MySQL, dispatch, payment, Kafka 는 그대로이고 쿠버네티스에서 바뀌는 것은 없다. 2rps 주문 동반 부하(order-surge.js)가 하루 주기 기준선의 어느 시간대에도 주문 표본을 만든다. Harness 2024-09-01 사고(상태 페이지 사후 보고)의 재구성이다: 지나치게 열려 있던 Mac VM 레지스트리 방화벽 규칙을 좁혔는데 새 규칙이 한 구성 요소의 NAT IP 를 빠뜨렸고, 그 구성 요소의 지속 소켓 연결이 다시 맺어질 때에야 실패가 드러났으며, 규칙을 다시 만들어 복구했다.",
+   "cause_ko": "tb-w3 호스트 방화벽 변경: restaurant API 포트로의 새 연결에 대한 허용 목록(FORWARD -d 10.244.2.0/24 -p tcp --dport 8081 --ctstate NEW → 체인 RESTAURANT-API-IN: 10.244.2.1/32, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24 는 RETURN, LOG '[FW BLOCK] ', DROP)이 order-service 가 있는 노드 자신의 파드 대역을 빠뜨림 → order 의 기존 keep-alive 연결은 닫힐 때까지 통하고, 그 뒤 order 에서 restaurant:8081 로 가는 새 연결이 모두 버려짐(SYN 무응답) → RestaurantClient.getRestaurant 가 3초 뒤 'Connect timed out', 3회 재시도, restaurant 서킷브레이커 열림 → 주문 행을 쓰기 전에 POST /api/orders 502. restaurant 는 건강하고 NodePort 요청에 계속 답하며, 다른 food 경로(dispatch, payment, MySQL)는 영향이 없다.",
+   "injection_summary_ko": "host.firewall 실행기가 러너에서 돈다. preflight 는 kubectl 로 tb-w3 에 Ready 인 testbed-restaurant 파드와 testbed-order 파드가 하나씩 있고 파드 IP 가 10.244.2.0/24 안이며 order 의 IP 가 어느 허용 출발지에도 들지 않는지, Service testbed-restaurant 가 8081 을 가리키는지, SSH(nkia@192.168.122.14, 키 인증)로 bridge-nf-call-iptables 가 1 이고 체인 RESTAURANT-API-IN 과 그리로 가는 FORWARD 점프가 없는지 확인한다. run 은 노드와 체인 이름으로 지은 로컬 상태 파일을 먼저 쓰고, tb-w3 에서 규칙마다 'sudo -n iptables' 명령 하나씩을 실행한다: -N RESTAURANT-API-IN, -A ... -s <출발지> -m comment --comment 'restaurant-api: allow node and entry networks' -j RETURN 4개, -A ... -m limit --limit 6/min -j LOG --log-prefix '[FW BLOCK] ', -A ... -j DROP, -I FORWARD 1 -d 10.244.2.0/24 -p tcp --dport 8081 -m conntrack --ctstate NEW -m comment --comment ... -j RESTAURANT-API-IN. 그 뒤 iptables -S 로 점프를 확인한다. 명령마다 tb-w3 의 auth 로그(sudo COMMAND=...)에 남고 syslog 로 119 에 넘어간다. cleanup 은 점프를 지우고 체인을 비워 지운 뒤 둘 다 없음을 확인한다. 규칙은 한 포트로 가는 파드 트래픽의 전달만 맞추므로 호스트 망의 SSH(복구 경로)는 영향을 받지 않는다. north-south 2rps 동반 부하(order-surge.js)가 상주 기준선 위에 food 진입점으로 더해진다. 앱 코드, 이미지, 설정, 쿠버네티스 객체, 데이터는 바꾸지 않으며 값, 체인 이름, 주석, 로그 접두어 어디에도 시나리오 id 가 없다.",
+   "user_impact_ko": "변경 뒤 order 가 열어 둔 restaurant 연결이 사라지면(대개 1분 안) 모든 주문이 502 로 실패한다(가게 확인에 답을 못 받음). 손님 요청은 허용된 진입 망으로 들어오므로 가게와 메뉴 둘러보기는 계속 된다. 배달 추적과 이미 끝난 결제는 영향이 없다. 데이터는 잃지 않는다: 규칙을 지우면 다음 새 연결부터 주문이 되고 서킷브레이커는 반열림 확인이 성공하면 닫힌다.",
+   "distinguishing_evidence_ko": "계기가 노드 자신에 남는다: tb-w3 syslog(auth, 119 로 전달)에 nkia 의 sudo /usr/sbin/iptables -N RESTAURANT-API-IN, 허용 RETURN 규칙, LOG, DROP, -I FORWARD 1 ... --dport 8081 ... -j RESTAURANT-API-IN 이 몇 초 안에 이어지고(워커의 iptables 명령은 2026-10-09 설계 조회 전 30일 0건), 처음 버려진 SYN 부터 커널이 '[FW BLOCK] IN=cni0 OUT=cni0 ... SRC=10.244.2.x DST=<restaurant 파드> ... DPT=8081 ... SYN' 을 남긴다(30일 0건). 이어서 order 가 ERROR 'Failed to fetch restaurant N: I/O error on GET request for \"http://testbed-restaurant:8081/api/restaurants/N\": Connect timed out' 을 남긴다(order 로그 10일 'Connect timed out' 0건): 이름은 맞는 서비스와 포트로 해석되고, 연결이 끝내 응답받지 못한다. 나머지는 모두 목적지가 멀쩡하다고 말한다: restaurant 는 Ready 이고 재시작하지 않았으며(2026-08-11 이후 같은 파드), 손님 트래픽의 APM rps 가 이어지고 스팬은 200 이다. rca-testbed-food 에 롤아웃, ReplicaSet, env 변경이 없고(KCM), MySQL 세션과 응답 시간이 평시이며, dispatch 는 직접 오는 배달 상태 조회에 계속 답한다. 그래서 restaurant 다운이나 지연(F36-R: restaurant 가 SQL 오류 500, F24-Q: 느린 응답), order 설정의 잘못된 주소(F39-R 꼴: 롤아웃이 URL 을 바꿈), DNS(F37-R 꼴: UnknownHostException), DB 나 용량 문제가 아니다. 끊긴 곳은 같은 노드의 두 파드 사이 한 포트이고, 시작 시각에 바뀐 것은 그 노드의 방화벽 규칙뿐이다.",
+   "injected_fault": {
+    "profile": "host.firewall",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f44-r",
+      "parameters": {
+       "host": "192.168.122.14",
+       "node": "tb-w3",
+       "namespace": "rca-testbed-food",
+       "protected_app": "testbed-restaurant",
+       "omitted_caller_app": "testbed-order",
+       "protected_cidr": "10.244.2.0/24",
+       "port": 8081,
+       "chain": "RESTAURANT-API-IN",
+       "allowed_sources": [
+        "10.244.2.1/32",
+        "10.244.0.0/24",
+        "192.168.122.0/24",
+        "192.168.200.0/24"
+       ],
+       "comment": "restaurant-api: allow node and entry networks",
+       "log_prefix": "[FW BLOCK] ",
+       "log_limit": "6/min"
+      }
+     }
+    ]
+   }
   }
  }
 }

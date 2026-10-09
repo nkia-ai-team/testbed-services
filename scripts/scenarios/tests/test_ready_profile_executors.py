@@ -42,6 +42,7 @@ db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
 k8s_dns = load("k8s_dns_executor")
 k8s_image = load("k8s_image_executor")
+host_firewall = load("host_firewall_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
 
@@ -208,6 +209,48 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             db_account.validate("F35-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified database account contract"):
             db_account.validate("F14-P", db_account.CONTRACTS["F35-R"], {})
+
+    def test_host_firewall_adds_one_allowlist_chain_for_new_connections_and_removes_it(self) -> None:
+        # F44-R: 주입은 tb-w3 FORWARD 맨 위에 한 포트로 가는 새 연결(conntrack NEW)만 허용 목록 체인으로
+        # 보내는 규칙과 그 체인뿐이다. 이미 맺어진 연결을 끊거나(원본의 '지속 소켓은 다시 맺어질 때까지 무사'가
+        # 사라진다) 정책, INPUT, 다른 체인을 건드리면 다른 장애(노드 단절, SSH 복구 경로 차단)가 된다.
+        plan = compiler.compile_plan("f44-r-food-node-firewall-allowlist-omits-order")
+        argv, stdin = host_firewall.build_invocation(plan, "run")
+        self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
+        self.assertEqual(argv[3:10], ["run", "192.168.122.14", "tb-w3", "rca-testbed-food",
+                                      "testbed-restaurant", "testbed-order", "10.244.2.0/24"])
+        # 시나리오 id 는 체인 이름, 주석, 로그 접두어, 상태 파일 어디에도 없다(G6, 원칙 8).
+        self.assertFalse(any("F44" in arg or "f44" in arg for arg in argv))
+        script = stdin.decode()
+        self.assertNotIn("F44-R", script)
+        self.assertIn("--ctstate NEW", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn('ipt -N "$chain"', run_case)
+        self.assertIn('-j RETURN', run_case)
+        self.assertIn('-j LOG --log-prefix "$prefix"', run_case)
+        self.assertIn('ipt -A "$chain" -j DROP', run_case)
+        self.assertIn('ipt -I "${jump[@]:0:1}" 1', run_case)
+        # 상태 파일을 규칙보다 먼저 써서 중간에 실패한 run 도 cleanup 이 치운다.
+        self.assertLess(run_case.index('mv -T "$state.tmp" "$state"'), run_case.index('ipt -N "$chain"'))
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('ipt -D "${jump[@]}"', cleanup_case)
+        self.assertIn('ipt -F "$chain"; ipt -X "$chain"', cleanup_case)
+        for forbidden in ("-P FORWARD", "INPUT", "OUTPUT", "REJECT", "-F FORWARD", "conntrack -F", "ufw", "tc qdisc", "sudo bash"):
+            self.assertNotIn(forbidden, script)
+        # 빠뜨린 호출자(order)가 실제로 허용 목록 밖인지는 preflight 가 살아 있는 파드로 확인한다.
+        self.assertIn("allowed_by_list", script.split("\nplacement_ok()")[1].split("\n}")[0])
+        params = dict(host_firewall.CONTRACTS["F44-R"])
+        params["allowed_sources"] = params["allowed_sources"] + ["10.244.2.0/24"]
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            host_firewall.validate("F44-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified host firewall contract"):
+            host_firewall.validate("F10-H", host_firewall.CONTRACTS["F44-R"], {})
+        bad = json.loads(json.dumps(plan))
+        for row in bad["profile_instances"]:
+            if row["profile_id"] == "host.firewall":
+                row["location"] = {**row["location"], "host": "192.168.122.11"}
+        with self.assertRaisesRegex(ExecutorError, "measured worker"):
+            host_firewall.build_invocation(bad, "run")
 
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
@@ -758,6 +801,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F42-R",
             # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
             "F43-R",
+            # 2026-10-09: food 워커 tb-w3 호스트 방화벽에 restaurant API(8081) 허용 목록을 넣으며 같은 노드의 order 파드 대역을 빠뜨림(새 실행기 host.firewall). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F44-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

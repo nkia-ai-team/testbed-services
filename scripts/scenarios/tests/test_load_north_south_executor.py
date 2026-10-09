@@ -63,6 +63,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.config_row",
                 # 2026-10-09: F17-H — Deployment 컨테이너 이미지 한 칸의 롤아웃과 원복.
                 "k8s.image",
+                # 2026-10-09: F44-R — 워커 호스트 방화벽에 한 포트 허용 목록 체인 넣기와 지우기(ssh, 규칙마다 sudo iptables).
+                "host.firewall",
             },
         )
 

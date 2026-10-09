@@ -55,6 +55,8 @@ PROFILE_PREFLIGHTS = {
     "host.stress": "host-placement-and-oob-recovery",
     "cache.control": "cache-warmup-contract",
     "network.fault": "network-oob-recovery",
+    # A host firewall rule is removed over SSH on the host network, which the rule never matches.
+    "host.firewall": "network-oob-recovery",
     "app.release": "rollback-artifact",
     "wpm.probe": "wpm-probe-contract",
     "business.fault": "business-invariant-probe",
