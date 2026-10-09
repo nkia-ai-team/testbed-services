@@ -53,7 +53,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 8 → 9. F41-R(banking account 메모리 누수 릴리스 롤아웃) 후보 추가.
         # 2026-10-09: 9 → 10. F42-R(banking transfer 전수 스캔 한도 질의 릴리스 롤아웃) 후보 추가.
         # 2026-10-09: 10 → 9. F36-R 정식 승격(녹화 case-f36-r-v3-776b522b).
-        self.assertEqual(stages.count("candidate"), 9)
+        # 2026-10-09: 9 → 10. F43-R(commerce cart DB 연결 누수 릴리스 롤아웃) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 10)
 
 
 class RecordingQueueTests(unittest.TestCase):

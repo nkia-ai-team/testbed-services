@@ -421,6 +421,26 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for word in ("F42", "f42", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_commerce_cart_on_its_own_node(self) -> None:
+        # F43-R: 같은 release 스크립트를 commerce 네임스페이스(cart, tb-w1)에 쓴다. 노드는 스크립트가
+        # Deployment 의 nodeSelector 에서 읽는다. 릴리스 태그는 fault-images/f43-r/image.json 과 같아야 하고,
+        # 다른 시나리오의 릴리스 태그와 겹치지 않는다.
+        plan = compiler.compile_plan("f43-r-commerce-cart-release-db-connection-leak")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-cart", "cart-service",
+                                    "commerce-cart:latest", "commerce-cart:1.2.0"])
+        self.assertNotIn("F43-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F43-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F43-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f43-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F43-R"]["baseline_image"], k8s_image.CONTRACTS["F43-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f43-r" / "cart-service.patch").read_text()
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F43", "f43", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -736,6 +756,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F41-R",
             # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
             "F42-R",
+            # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F43-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

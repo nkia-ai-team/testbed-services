@@ -65,6 +65,17 @@ CONTRACTS = {
         "baseline_image": "core-banking-transfer:latest",
         "fault_image": "core-banking-transfer:2.2.0",
     },
+    # 2026-10-09. F43-R: commerce cart-service 를 장바구니 품목 수 상한 확인을 더한 릴리스 1.2.0 으로 롤아웃한다.
+    # 새 확인이 담기마다 풀에서 연결을 빌려 돌려주지 않아 Hikari 풀(20)이 몇 초 만에 마른다. 결함 이미지는
+    # fault-images/f43-r 로 109 docker 에만 빌드하고, 실행기가 tb-w1 에 올렸다가 cleanup 이 지운다.
+    "F43-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-commerce",
+        "deployment": "testbed-cart",
+        "container": "cart-service",
+        "baseline_image": "commerce-cart:latest",
+        "fault_image": "commerce-cart:1.2.0",
+    },
 }
 
 

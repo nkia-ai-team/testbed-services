@@ -1,0 +1,110 @@
+--- a/commerce/cart-service/src/main/java/com/commerce/cart/controller/CartController.java
++++ b/commerce/cart-service/src/main/java/com/commerce/cart/controller/CartController.java
+@@ -23,6 +23,7 @@
+ 
+     @PostMapping("/{userId}/items")
+     public ResponseEntity<CartResponse> addItem(@PathVariable Long userId, @RequestBody CartItemRequest request) {
++        cartService.checkItemLimit(userId);
+         return ResponseEntity.ok(cartService.addItem(userId, request));
+     }
+ 
+--- a/commerce/cart-service/src/main/java/com/commerce/cart/service/CartService.java
++++ b/commerce/cart-service/src/main/java/com/commerce/cart/service/CartService.java
+@@ -7,6 +7,7 @@
+ import com.commerce.common.dto.CartItemRequest;
+ import com.commerce.common.dto.CartItemResponse;
+ import com.commerce.common.dto.CartResponse;
++import com.commerce.common.exception.ServiceException;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+ import io.github.resilience4j.retry.annotation.Retry;
+@@ -14,10 +15,15 @@
+ import org.slf4j.LoggerFactory;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.data.redis.core.RedisTemplate;
++import org.springframework.http.HttpStatus;
+ import org.springframework.scheduling.annotation.Scheduled;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import javax.sql.DataSource;
++import java.sql.PreparedStatement;
++import java.sql.ResultSet;
++import java.sql.SQLException;
+ import java.time.Duration;
+ import java.time.LocalDateTime;
+ import java.util.List;
+@@ -33,19 +39,25 @@
+     private final ObjectMapper objectMapper;
+     private final long cacheTtlSeconds;
+     private final long idleExpiryHours;
++    private final DataSource dataSource;
++    private final int maxItems;
+ 
+     public CartService(CartRepository cartRepository,
+                         CartItemRepository cartItemRepository,
+                         RedisTemplate<String, String> cartRedisTemplate,
+                         ObjectMapper objectMapper,
++                        DataSource dataSource,
+                         @Value("${cart.cache.ttl-seconds:1800}") long cacheTtlSeconds,
+-                        @Value("${cart.cleanup.idle-expiry-hours:24}") long idleExpiryHours) {
++                        @Value("${cart.cleanup.idle-expiry-hours:24}") long idleExpiryHours,
++                        @Value("${cart.max-items:50}") int maxItems) {
+         this.cartRepository = cartRepository;
+         this.cartItemRepository = cartItemRepository;
+         this.cartRedisTemplate = cartRedisTemplate;
+         this.objectMapper = objectMapper;
++        this.dataSource = dataSource;
+         this.cacheTtlSeconds = cacheTtlSeconds;
+         this.idleExpiryHours = idleExpiryHours;
++        this.maxItems = maxItems;
+     }
+ 
+     // 유휴 cart 정리 배치 — 5분마다(§5) 오래(idleExpiryHours) 갱신되지 않은 cart를 DB에서 삭제하고
+@@ -87,6 +99,16 @@
+         return loadFromDb(userId);
+     }
+ 
++    // 장바구니 품목 수 상한 — 한 장바구니에 담을 수 있는 상품 종류를 cart.max-items 로 제한한다.
++    // 담기 트랜잭션을 열기 전에 확인한다.
++    public void checkItemLimit(Long userId) {
++        Long cartId = cartRepository.findByUserId(userId).map(Cart::getId).orElse(null);
++        if (cartId != null && countItems(cartId) >= maxItems) {
++            throw new ServiceException(HttpStatus.BAD_REQUEST,
++                    "Cart item limit reached for user " + userId + " (max " + maxItems + ")");
++        }
++    }
++
+     @Transactional
+     public CartResponse addItem(Long userId, CartItemRequest request) {
+         Cart cart = getOrCreateCart(userId);
+@@ -139,6 +161,18 @@
+         return refreshCache(userId);
+     }
+ 
++    private int countItems(Long cartId) {
++        try (PreparedStatement ps = dataSource.getConnection().prepareStatement(
++                "SELECT count(*) FROM cart_schema.cart_items WHERE cart_id = ?")) {
++            ps.setLong(1, cartId);
++            try (ResultSet rs = ps.executeQuery()) {
++                return rs.next() ? rs.getInt(1) : 0;
++            }
++        } catch (SQLException ex) {
++            throw new IllegalStateException("Failed to count cart items: " + ex.getMessage(), ex);
++        }
++    }
++
+     private Cart getOrCreateCart(Long userId) {
+         return cartRepository.findByUserId(userId).orElseGet(() -> {
+             Cart cart = new Cart();
+--- a/commerce/cart-service/src/main/resources/application.yml
++++ b/commerce/cart-service/src/main/resources/application.yml
+@@ -42,6 +42,8 @@
+       enabled: false
+ 
+ cart:
++  # 한 장바구니에 담을 수 있는 상품 종류 수 상한.
++  max-items: 50
+   cache:
+     ttl-seconds: 1800
+   cleanup:

@@ -1,0 +1,7 @@
+{
+  "base": "commerce-cart:latest",
+  "fault": "commerce-cart:1.2.0",
+  "domain": "commerce",
+  "module": "cart-service",
+  "node": "tb-w1"
+}

@@ -62,7 +62,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 71 → 72. F33-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 인덱스 교체 경로를 더해 프로파일 수는 그대로.
         # 2026-10-09: 72 → 73. F41-R(후보) 추가. 기존 k8s.image 에 release 모드를 더해 프로파일 수는 그대로.
         # 2026-10-09: 73 → 74. F42-R(후보) 추가. 기존 k8s.image release 모드를 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 74)
+        # 2026-10-09: 74 → 75. F43-R(후보) 추가. 기존 k8s.image release 모드를 commerce 네임스페이스로 넓혀 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 75)
         self.assertEqual(len(self.profiles["profiles"]), 27)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -133,6 +134,8 @@ class RegistryContractTests(unittest.TestCase):
             "F41-R",
             # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
             "F42-R",
+            # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F43-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -419,6 +422,8 @@ class RegistryContractTests(unittest.TestCase):
             "F41-R",
             # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
             "F42-R",
+            # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F43-R",
             },
         )
         self.assertEqual(
@@ -489,6 +494,8 @@ class RegistryContractTests(unittest.TestCase):
             "F41-R",
             # 2026-10-09: banking transfer-service 를 이체마다 transfers 를 전수 스캔하는 일일 한도 질의가 든 릴리스 2.2.0(fault-images/f42-r)으로 롤아웃(공유 Oracle 2 CPU 포화). 새 후보, 설계 강도 1단 고정 evaluation.
             "F42-R",
+            # 2026-10-09: commerce cart-service 를 담기마다 DB 연결을 빌려 돌려주지 않는 릴리스 1.2.0(fault-images/f43-r)으로 롤아웃(cart Hikari 풀 고갈, health 실패, 재시작 반복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F43-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -637,8 +644,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F33-P(후보, 고정 evaluation)이 끝에 붙어 F38-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F41-R(후보, 고정 evaluation)이 끝에 붙어 F39-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F42-R(후보, 고정 evaluation)이 끝에 붙어 F40-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F43-R(후보, 고정 evaluation)이 끝에 붙어 F17-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F17-H", "F32-H", "F33-P", "F41-R", "F42-R"])
+                         ["F32-H", "F33-P", "F41-R", "F42-R", "F43-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -49,7 +49,8 @@
     "F32-H",
     "F33-P",
     "F41-R",
-    "F42-R"
+    "F42-R",
+    "F43-R"
   ],
   "controllers": {
     "F01-R": {
@@ -11602,6 +11603,240 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 이미지를 core-banking-transfer:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 2.2.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F43-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f43-r",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-cart",
+              "container": "cart-service",
+              "baseline_image": "commerce-cart:latest",
+              "fault_image": "commerce-cart:1.2.0"
+            },
+            "min_hold": "8m",
+            "settle": "60s",
+            "timeout": "14m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "commerce 진입점(nginx → gateway) 상태. cart 가 연결을 다 잃거나 재시작해도 nginx, gateway 는 살아서 상품 목록에 200 으로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-cart"
+          },
+          "freshness": "30s",
+          "_note": "cart 파드. 새 버전이 풀을 다 빌려 쥐면 /actuator/health 의 DB 확인이 연결 대기 3초에 걸려 readiness(10초 간격 3회)가 빠지고 liveness(15초 간격 5회)가 재시작한다. 증상이라 성공, 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+        },
+        {
+          "id": "postgres_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-postgres"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "user_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-user"
+          },
+          "freshness": "30s",
+          "_note": "user 파드. 게이트웨이가 쓰기마다 토큰을 확인하는 곳이다. 빠지면 인증 경로 장애(F16-H, F33-P 꼴)다. 이 주입은 user 를 건드리지 않는다"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s",
+          "_note": "동반 부하(surge.js 3rps, 여정의 50% 가 checkout: 장바구니 비우기, 담기, checkout)의 k6 live 문서. 담기(POST /api/carts/{id}/items)마다 새 cart 버전이 품목 수 확인에서 풀 연결을 하나 빌려 돌려주지 않아, 담기 약 20번(기준선 담기 초당 약 1.2건 + 동반 부하 약 1.5~2건이면 10초 안팎) 뒤 Hikari 풀(20)이 전부 빌린 채로 남는다. 그 뒤 cart 의 DB 작업은 3초 대기 끝에 500, readiness 가 빠지면 엔드포인트가 비어 order 의 cart 조회(CartClient)가 연결 거부 → 재시도, 서킷 끝에 502 가 된다. cart 가 Ready 인 채로 풀만 마른 약 30초 동안은 cart 조회가 Redis 캐시로 답해 checkout 이 성공하거나 빈 장바구니 400 이 될 수 있어, 성공 판정은 NotReady, 재시작 구간에서 선다"
+        },
+        {
+          "id": "checkout_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_nonok_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.write_step_status_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "checkout-failed-5xx",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "checkout-collapsed",
+            "observation": "checkout_2xx_rate",
+            "op": "lt",
+            "value": 0.3
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 8m: 롤아웃 뒤 새 파드 기동 약 1분, 담기 약 20번에 풀이 마르고, readiness 3회 실패(약 30초)로 엔드포인트가 빈 뒤 liveness 5회 실패(약 75초)로 재시작, 기동 약 1분이 한 주기(약 2.5~3분)다. kubelet 재시작 대기(10초, 20초, 40초 …)가 붙어 주기가 점점 길어진다. 8분이면 재시작이 두세 번 녹화 구간에 들어간다(원본의 '재시작하면 잠깐 풀렸다가 다시 끊기는' 간헐 장애). 2026-10-09 로컬 실측: 같은 jar(JDK 21 x86_64, 운영은 JDK 17 aarch64), PostgreSQL 16 에서 담기 20번 뒤 담기, 비우기 500(3초), /actuator/health 3초 시간 초과, PostgreSQL 세션은 cart 20개 idle 로 고정"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1,
+            "_note": "동반 부하 3rps 의 1/3. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "commerce-db-down",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다. 이 시나리오에서 PostgreSQL 은 Ready 이고 바빠지지도 않는다(cart 가 쥔 세션은 idle)"
+          },
+          {
+            "id": "auth-down",
+            "observation": "user_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "user 가 빠지면 쓰기 인증 장애(F16-H, F33-P)다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "cart-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "db-ready",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "writes-recovered",
+            "observation": "checkout_nonok_rate_baseline",
+            "op": "lt",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 이미지를 commerce-cart:latest 로 되돌리고 롤아웃 available(상한 180초), 1.2.0 을 쓰는 파드가 없어진 뒤 tb-w1 containerd 에서 1.2.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 새 파드는 빈 풀로 시작하고 더 새지 않는다"
       },
       "cleanup": {
         "required": true,

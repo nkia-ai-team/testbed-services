@@ -6791,6 +6791,100 @@
      }
     ]
    }
+  },
+  "F43-R": {
+   "title": "Release rollout of a commerce cart-service version that leaks database connections: every add-to-cart borrows a pooled connection and never returns it, the cart's Hikari pool (20) is gone within seconds, cart requests time out, its health check fails and kubelet keeps restarting it, and checkouts fail with 502",
+   "description": "A rollout of the commerce cart-service Deployment (testbed-cart) moves its container image from commerce-cart:latest to the release commerce-cart:1.2.0. The release adds a cart item limit (cart.max-items, 50): before the add-to-cart transaction opens, CartController calls CartService.checkItemLimit, which counts the cart's items with plain JDBC through try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...)). The try-with-resources closes the statement but not the connection it was created from, so every add-to-cart keeps one connection of the Hikari pool (maximum 20, connection-timeout 3 s) borrowed for good; the connection is idle (autocommit, no open transaction) and PostgreSQL itself stays fast. Resources, env and probes are unchanged and the default strategy (maxSurge 25%) lets the new pod start, pass its probes and replace the old one. After about 20 adds (the resident baseline alone sends about 1.2 adds per second, so seconds to tens of seconds) the pool is exhausted with total=20, active=20, idle=0 while hardly any thread is waiting: every database call in cart, adds, cart clears and cache misses, fails after 3 s with 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=20, active=20, idle=0, waiting=0)', and /actuator/health, whose database check needs a connection, times out (measured locally on 2026-10-09 with the same jar on JDK 21 x86_64 against PostgreSQL 16: after 20 adds, adds and clears return 500 after 3 s and the health check times out at 3 s, with PostgreSQL holding 20 idle cart sessions). The readiness probe (every 10 s, 3 failures) takes the pod out of the Service endpoints and the liveness probe (every 15 s, 5 failures) makes kubelet restart the container, which closes the leaked connections; the restarted container runs the same release and loses its pool again after the next twenty adds, with kubelet's restart back-off growing between rounds. While the pool is gone or the pod is restarting, add-to-cart and cart clears through the gateway fail with 500 or 502, and checkout fails with 502 because order cannot read the cart (CartClient retries, then its circuit breaker opens). PostgreSQL, Redis, user-service and the other commerce services are unaffected. This reconstructs Octopus Deploy's incident of 2025-11-25 (status page post-mortem), where a change deployed to the authorization service introduced a bug that leaked database connections, sign-in requests intermittently timed out, restarting the services released the connections as a temporary mitigation, and a release without the leak fixed it.",
+   "cause": "Rollout of testbed-cart (commerce) to the release commerce-cart:1.2.0, whose new cart item limit check opens a connection from the pool on every add-to-cart and never closes it → the cart's Hikari pool (20) is fully borrowed after about twenty adds while PostgreSQL stays idle and fast → every cart database call waits 3 s and fails, the health check's database probe times out, readiness drops the pod and liveness restarts it, and the same release leaks the fresh pool again → add-to-cart and cart clears fail (500, 502) and checkouts fail with 502 (order cannot read the cart), recurring until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-cart (rca-testbed-commerce), container cart-service, from commerce-cart:latest to commerce-cart:1.2.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f43-r from origin/main commerce plus fault-images/f43-r/cart-service.patch (three files under cart-service/src: CartController.addItem calling the new CartService.checkItemLimit, CartService.countItems with the unclosed connection, and cart.max-items in application.yml); the manifest image, sources and manifests are untouched. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w1's containerd holds the baseline and not the release, that tb-w1's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w1's containerd (docker save | ctr import), then sets the image and does not wait for the rollout. A north-south 3 rps companion (commerce surge.js: browsing 35%, cart 15%, checkout 50% with clear-cart, add-to-cart and checkout) drives the commerce entry point (30080) on top of the resident baseline. Cleanup sets the image back to commerce-cart:latest, waits until the Deployment is available, waits until no pod uses the release, and removes both node references to the release from tb-w1's containerd, its name and the sha256:<image ID> reference CRI keeps beside it, then checks that neither is left. No value carries the scenario id.",
+   "user_impact": "A minute or two after the rollout, adding to the cart and clearing it start failing (500 after a 3 s wait, then 502 from the gateway while cart has no endpoint) and checkouts fail with 502 because order cannot read the cart. Each time kubelet restarts cart the service works again for seconds until its pool is gone, so the failure keeps coming back, with longer outages as the restart back-off grows. Product browsing, search, login and banking keep working.",
+   "distinguishing_evidence": "Decisive evidence is a release followed by a connection pool that fills while the database stays idle: a KCM ScalingReplicaSet for testbed-cart and the new pod's kubelet event 'Pulled: Container image \"commerce-cart:1.2.0\" already present on machine' (every testbed-cart ReplicaSet and pod record on file carries commerce-cart:latest), then the cart agent metric db.client.connections.usage{state=\"used\"} climbing in steps from the new pod's start to db.client.connections.max (20) and staying there (7-day baseline at most 2 used of 20) while db.client.connections.timeouts rises (flat at baseline), cart ERROR logs 'Unable to acquire JDBC Connection [HikariPool-1 - Connection is not available, request timed out after 3000ms (total=20, active=20, idle=0, waiting=0)]' with almost no waiting threads, WARN 'DataSource health check failed', KCM Unhealthy readiness and liveness and Killing for the same pod, the same climb after every restart, PostgreSQL idle sessions rising by about fifteen (dpm.postgresql.session.idle_session, 7-day range 45-64 of 100) while active, blocked and blocking sessions stay flat, and then gateway WARN 'Downstream unavailable for POST /api/carts/...' and checkout 502 from order (response body 'Cart service unavailable'; order does not log it). The new ReplicaSet's resources, env and probes are unchanged and the APM service_version stays 1.0.0 (the release changes only sources), so the image tag is where the version change shows; so this is not a slow query or lock in PostgreSQL (F33-P, F06-H, F01-R: no blocked sessions, no CPU climb, other services' pools stay low), not a PostgreSQL outage (F25-H: Ready throughout), not Redis (F11-R: cache reads keep answering and cart's health excludes Redis) and not the authentication path (F16-H: user is Ready and login works).",
+   "domain": "commerce",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "commerce-cart",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 commerce cart-service 의 새 릴리스 commerce-cart:1.2.0 이다. 이 버전이 더한 장바구니 품목 수 상한 확인(CartService.checkItemLimit → countItems)이 담기마다 'try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...))' 로 풀에서 연결을 빌리는데, try-with-resources 가 닫는 것은 문장뿐이라 연결은 돌아가지 않는다. Hikari 풀(최대 20, 대기 3초)이 담기 약 20번 뒤 total=20, active=20, idle=0 으로 굳고, cart 의 모든 DB 작업과 /actuator/health 의 DB 확인이 3초 대기 끝에 실패한다. readiness 가 엔드포인트를 비우고 liveness 가 재시작하면 연결이 풀려 잠깐 회복하지만 같은 버전이 다시 새게 한다. 원칙 6: 담기를 보내는 사용자와 loadgen 의 요청은 평시 그대로 정당하고, 연결을 쥐고 놓지 않는 것은 cart 자신의 새 버전이므로 근본과 계기가 같은 곳(cart 릴리스)이다. PostgreSQL 은 빌려 간 세션이 idle 로 늘 뿐 바쁘지 않고 잠금도 없다. 원본 사후 보고처럼 '배포한 변경이 DB 연결 누수 버그를 들여왔고, 재시작이 임시 완화, 누수를 고친 버전이 해결'이 정답의 층위이며, 패치 속 어느 줄인지는 요구하지 않는다(원칙 5). target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 testbed-cart ScalingReplicaSet 과 새 파드 'Pulled ... \"commerce-cart:1.2.0\"', kcm_resources_history 의 새 ReplicaSet 스펙 image(그 전 testbed-cart ReplicaSet 33건, 파드 22건 전부 :latest) ② VictoriaMetrics db.client.connections.usage{service_name=\"commerce-cart\", state=\"used\"} 가 새 파드(host_name 이 새 ReplicaSet 해시) 기동부터 계단식으로 올라 db.client.connections.max(20)에 붙고(평시 7일 최대 2), db.client.connections.timeouts 가 오름(평시 증가 없음) ③ cart ERROR 'Unable to acquire JDBC Connection [HikariPool-1 - Connection is not available, request timed out after 3000ms (total=20, active=20, idle=0, waiting=0)]' 와 WARN 'DataSource health check failed'(대기 스레드가 거의 없는데 풀이 꽉 참) ④ KCM Unhealthy(readiness, liveness), Killing, 재시작 뒤 같은 상승의 반복 ⑤ dpm.postgresql.session.idle_session 이 약 15 늘고 active, blocked, blocking 세션과 PostgreSQL CPU 는 그대로 ⑥ gateway WARN 'Downstream unavailable for POST /api/carts/...', order 의 checkout 502(응답 본문 'Cart service unavailable', order 는 이 예외를 로그로 남기지 않음).",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f43-r/cart-service.patch:85-95 (countItems — 릴리스 1.2.0: try (PreparedStatement ps = dataSource.getConnection().prepareStatement(\"SELECT count(*) FROM cart_schema.cart_items WHERE cart_id = ?\")) 가 문장만 닫고 연결은 닫지 않음)",
+     "scripts/scenarios/fault-images/f43-r/cart-service.patch:68-76 (checkItemLimit — 릴리스 1.2.0 의 품목 수 상한 확인, 담기 트랜잭션 밖에서 countItems 를 부름)",
+     "scripts/scenarios/fault-images/f43-r/cart-service.patch:7 (CartController.addItem — 릴리스 1.2.0 에서 담기마다 checkItemLimit 을 먼저 부름)",
+     "commerce/cart-service/src/main/java/com/commerce/cart/controller/CartController.java:24-27 (매니페스트 버전의 addItem — 품목 수 확인 없이 cartService.addItem 만 부름)",
+     "commerce/cart-service/src/main/resources/application.yml:11-15 (Hikari maximum-pool-size 20, minimum-idle 5, connection-timeout 3000)",
+     "commerce/order-service/src/main/java/com/commerce/order/client/CartClient.java:26-48 (getCart — cart 연결 실패를 재시도, 서킷 끝에 'Cart service unavailable' BAD_GATEWAY)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:63-67 (forwardToCart — cart 연결 실패를 재시도, 서킷 끝에 fallback 으로 넘김)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:103-105 (unavailable — WARN 'Downstream unavailable for POST /api/carts/...' 를 남기고 BAD_GATEWAY)"
+    ],
+    "infra_anchor": "rca-testbed-commerce Deployment testbed-cart(commerce/k8s/26-cart-service.yaml: replicas 1 :9, nodeSelector tb-w1 :19, image commerce-cart:latest imagePullPolicy Never :27-28, startupProbe /actuator/health 5s×30 :69-74, readinessProbe /actuator/health period 10s timeout 3s failureThreshold 3 :75-81, livenessProbe /actuator/health period 15s timeout 3s failureThreshold 5 :82-88, limits cpu 500m memory 1Gi :93-95, 전략 기본값 maxSurge 25% / maxUnavailable 25%, 109 kubectl 2026-10-09 generation 16). /actuator/health 는 db 구성 요소(validationQuery isValid())를 포함하고 redis 는 제외한다(application.yml management.health.redis.enabled false). commerce PostgreSQL max_connections 100, 평시 세션 45~64(dpm.postgresql.session.*, 119 VM 7일). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w1 containerd 에 올리며 cleanup 이 지운다(scripts/scenarios/fault-images/f43-r/image.json)."
+   },
+   "must_support": [
+    "testbed-cart 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 commerce-cart:1.2.0 을 담고, 그 전 testbed-cart ReplicaSet, 파드 기록은 전부 commerce-cart:latest 다",
+    "새 cart 파드의 db.client.connections.usage{state=\"used\"} 가 기동부터 계단식으로 올라 db.client.connections.max(20)에 붙어 내려오지 않고(평시 7일 최대 2), db.client.connections.timeouts 가 오른다. 재시작 뒤 같은 상승이 되풀이된다. APM service_version 은 1.0.0 그대로(릴리스가 소스만 바꿈)라 버전 변화는 이미지 태그로 본다",
+    "commerce-cart ERROR 'Connection is not available, request timed out after 3000ms (total=20, active=20, idle=0, waiting=...)' 가 대기 스레드 수가 작은 채로 남고(풀을 쥔 것은 처리 중인 요청이 아님), WARN 'DataSource health check failed' 가 함께 남는다. 평시 7일 cart 의 이 두 문장은 0건이다",
+    "같은 파드의 KCM Unhealthy(readiness, liveness /actuator/health 시간 초과)와 Killing, 그 뒤 재기동이 되풀이된다",
+    "commerce PostgreSQL 은 idle 세션만 약 15 늘고 active, blocked, blocking 세션, CPU 는 평시와 같다. 다른 commerce 서비스의 db.client.connections.usage 는 낮게 유지된다",
+    "gateway WARN 'Downstream unavailable for POST /api/carts/...' 와 동반 부하 checkout 5xx 비율 0.5 이상(order 응답 본문 'Cart service unavailable'). 상품 조회, 검색, 로그인은 정상이다"
+   ],
+   "must_rule_out": [
+    "PostgreSQL 의 느린 질의나 잠금이 아님(F33-P, F06-H, F01-R): 차단, 차단당한 세션이 없고 PostgreSQL CPU 와 active 세션이 평시와 같으며, 늘어난 것은 cart 가 쥔 idle 세션뿐이다. 다른 서비스의 풀은 낮게 유지된다",
+    "PostgreSQL 장애가 아님(F25-H): PostgreSQL 파드는 Ready 이고 다른 commerce 서비스의 DB 작업은 성공한다",
+    "Redis 장애가 아님(F11-R): cart 의 health 는 Redis 를 보지 않고, 실패 로그는 Redis 가 아니라 Hikari 연결 대기다",
+    "인증 경로 장애가 아님(F16-H, F33-P): user 는 Ready 이고 로그인과 토큰 확인이 성공한다",
+    "부하 증가가 아님: 요청률은 동반 부하 3rps 와 기준선으로 평탄하고, 풀은 처리 중인 요청 수(waiting 0~1)와 무관하게 가득 찬 채로 남는다",
+    "설정 변경이 아님: 새 ReplicaSet 의 resources, env, 프로브는 이전과 같고 바뀐 것은 이미지 태그 하나다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F33-P (commerce user 의 Hikari 고갈: 원인은 인덱스 교체로 느려진 질의, PostgreSQL CPU 포화와 대기 스레드 다수. F43-R 은 PostgreSQL 이 한가하고 풀이 처리 중 요청 없이 꽉 참)",
+     "F41-R (banking account 의 다른 결함 릴리스: 힙 메모리 누수로 주기적 OOM 재시작. F43-R 은 메모리는 그대로이고 DB 연결이 샌다)",
+     "F11-R (commerce Redis 중단 뒤 DB 폴백 폭주: 원인은 캐시, 여러 서비스의 DB 부하가 오름)",
+     "F25-H (commerce PostgreSQL OOMKill: DB 자체가 재시작)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "commerce-cart",
+     "testbed-cart",
+     "cart-service"
+    ],
+    "partial": [
+     "commerce-order",
+     "commerce-gateway"
+    ]
+   },
+   "title_ko": "commerce cart-service 를 DB 연결이 새는 릴리스로 롤아웃: 담기마다 풀 연결을 빌려 돌려주지 않아 cart 의 Hikari 풀(20)이 몇 초 만에 마르고, cart 요청이 시간 초과되며 health 실패로 kubelet 이 재시작을 되풀이하고, checkout 이 502 로 실패한다",
+   "description_ko": "commerce cart-service Deployment(testbed-cart) 롤아웃이 컨테이너 이미지를 commerce-cart:latest 에서 릴리스 commerce-cart:1.2.0 으로 바꾼다. 이 릴리스는 장바구니 품목 수 상한(cart.max-items, 50)을 더했다: 담기 트랜잭션을 열기 전에 CartController 가 CartService.checkItemLimit 을 부르고, 이것이 'try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...))' 로 품목 수를 센다. try-with-resources 는 문장만 닫고 그 문장을 만든 연결은 닫지 않아, 담기마다 Hikari 풀(최대 20, 대기 3초)의 연결 하나가 빌린 채로 남는다. 연결은 idle(autocommit, 열린 트랜잭션 없음)이라 PostgreSQL 은 빠른 그대로다. resources, env, 프로브는 그대로이고 기본 전략(maxSurge 25%)이라 새 파드가 떠서 프로브를 통과하고 옛 파드를 대체한다. 담기 약 20번 뒤(상주 기준선만으로 담기 초당 약 1.2건이라 수 초~수십 초) 풀이 total=20, active=20, idle=0 으로 굳고 대기 스레드는 거의 없다: cart 의 모든 DB 작업(담기, 비우기, 캐시 미스 조회)이 3초 뒤 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=20, active=20, idle=0, waiting=0)' 로 실패하고, DB 확인이 든 /actuator/health 가 시간 초과된다(2026-10-09 로컬 실측: 같은 jar, JDK 21 x86_64, PostgreSQL 16 에서 담기 20번 뒤 담기, 비우기 3초 뒤 500, health 3초 시간 초과, PostgreSQL 에 cart idle 세션 20개). readiness(10초 간격 3회)가 파드를 Service 엔드포인트에서 빼고 liveness(15초 간격 5회)로 kubelet 이 컨테이너를 재시작하면 새던 연결이 닫히지만, 다시 뜬 컨테이너도 같은 릴리스라 다음 담기 약 20번에 풀을 또 잃고, kubelet 재시작 대기가 점점 길어진다. 풀이 마르거나 재시작하는 동안 게이트웨이를 거치는 담기, 비우기는 500 이나 502 로 실패하고, checkout 은 order 가 장바구니를 읽지 못해(CartClient 재시도 뒤 서킷) 502 로 실패한다. PostgreSQL, Redis, user-service 와 다른 commerce 서비스는 영향이 없다. Octopus Deploy 2025-11-25 장애(상태 페이지 사후 보고: 인가 서비스에 배포한 변경이 DB 연결 누수 버그를 들여와 로그인 요청이 간헐적으로 시간 초과, 서비스 재시작으로 연결을 풀어 임시 완화, 누수를 없앤 버전 배포로 해결)의 재구성이다.",
+   "cause_ko": "testbed-cart(commerce) 를 릴리스 commerce-cart:1.2.0 으로 롤아웃. 이 버전의 품목 수 상한 확인이 담기마다 풀에서 연결을 열고 닫지 않음 → 담기 약 20번 뒤 cart Hikari 풀(20)이 전부 빌린 상태로 굳고 PostgreSQL 은 한가하고 빠름 → cart 의 DB 작업이 모두 3초 대기 끝에 실패, health 의 DB 확인 시간 초과로 readiness 가 파드를 빼고 liveness 가 재시작, 같은 릴리스가 새 풀을 또 새게 함 → 담기, 비우기 실패(500, 502)와 checkout 502(order 가 장바구니를 못 읽음)가 이미지를 되돌릴 때까지 되풀이된다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-commerce 의 Deployment testbed-cart 컨테이너 cart-service 이미지를 commerce-cart:latest 에서 commerce-cart:1.2.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f43-r 이 origin/main commerce 에 fault-images/f43-r/cart-service.patch(cart-service/src 안 세 파일: 새 CartService.checkItemLimit 을 부르는 CartController.addItem, 연결을 닫지 않는 CartService.countItems, application.yml 의 cart.max-items)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트는 그대로다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w1 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w1 이미지 파일시스템이 80% 미만인지, Deployment 가 available 인지 확인한다. run 은 릴리스를 tb-w1 containerd 에 올린 뒤(docker save | ctr import) 이미지를 바꾸고 롤아웃을 기다리지 않는다. north-south 3rps 동반 부하(commerce surge.js: 둘러보기 35%, 장바구니 15%, checkout 50%(비우기, 담기, checkout))가 상주 기준선 위에 commerce 진입점(30080)으로 요청을 더한다. cleanup 은 이미지를 commerce-cart:latest 로 되돌리고 Deployment available 을 기다린 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w1 containerd 에서 릴리스의 이름 참조와 CRI 가 따로 두는 sha256:<이미지 ID> 참조를 모두 지우고 둘 다 없는지 확인한다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "롤아웃 1~2분 뒤부터 장바구니 담기와 비우기가 실패하고(3초 대기 뒤 500, cart 엔드포인트가 빈 동안은 게이트웨이 502), checkout 은 order 가 장바구니를 읽지 못해 502 로 실패한다. kubelet 이 cart 를 재시작할 때마다 몇 초 동안 다시 되다가 풀이 마르면 또 끊기고, 재시작 대기가 길어지며 끊기는 시간이 늘어난다. 상품 둘러보기, 검색, 로그인, 은행은 정상이다.",
+   "distinguishing_evidence_ko": "결정 증거는 릴리스 직후, DB 는 한가한데 연결 풀만 차는 것이다: testbed-cart 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"commerce-cart:1.2.0\" already present on machine'(기록에 있는 testbed-cart ReplicaSet, 파드는 모두 commerce-cart:latest), 그 뒤 cart 에이전트 지표 db.client.connections.usage{state=\"used\"} 가 새 파드 기동부터 계단식으로 올라 db.client.connections.max(20)에 붙고(평시 7일 최대 2) db.client.connections.timeouts 가 오르며(평시 증가 없음), cart ERROR 'Unable to acquire JDBC Connection [HikariPool-1 - Connection is not available, request timed out after 3000ms (total=20, active=20, idle=0, waiting=0)]'(대기 스레드가 거의 없음)와 WARN 'DataSource health check failed', 같은 파드의 KCM Unhealthy readiness, liveness 와 Killing, 재시작 뒤 같은 상승의 반복, PostgreSQL idle 세션이 약 15 늘되(dpm.postgresql.session.idle_session, 평시 7일 45~64, 상한 100) active, blocked, blocking 세션은 그대로, 이어서 gateway WARN 'Downstream unavailable for POST /api/carts/...' 와 order 의 checkout 502(응답 본문 'Cart service unavailable'). 새 ReplicaSet 의 resources, env, 프로브는 이전과 같고 APM service_version 도 1.0.0 그대로라(버전 변화는 이미지 태그로 보인다) PostgreSQL 의 느린 질의나 잠금(F33-P, F06-H, F01-R: 차단 세션, CPU 상승이 없고 다른 서비스의 풀은 낮음), PostgreSQL 장애(F25-H: 내내 Ready), Redis(F11-R: 캐시 조회는 답하고 cart health 는 Redis 를 보지 않음), 인증 경로(F16-H: user Ready, 로그인 정상)가 아니다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f43-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-commerce",
+       "deployment": "testbed-cart",
+       "container": "cart-service",
+       "baseline_image": "commerce-cart:latest",
+       "fault_image": "commerce-cart:1.2.0"
+      }
+     }
+    ]
+   }
   }
  }
 }
