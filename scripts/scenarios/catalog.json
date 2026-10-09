@@ -967,6 +967,19 @@
       "load_mode": "fixed",
       "injection_location": "worker-w2",
       "prerequisite": ""
+    },
+    {
+      "id": "F47-R",
+      "slug": "f47-r-banking-api-release-account-directory-request-flood",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": ""
     }
   ]
 }

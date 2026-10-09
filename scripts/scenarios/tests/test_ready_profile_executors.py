@@ -515,6 +515,26 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for word in ("F43", "f43", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_banking_api(self) -> None:
+        # F47-R: 같은 release 스크립트로 banking api 를 1.4.0 으로 롤아웃한다(tb-w2, 노드는 스크립트가
+        # Deployment 의 nodeSelector 에서 읽는다). 릴리스 태그는 fault-images/f47-r/image.json 과 같아야 하고,
+        # 다른 시나리오의 릴리스 태그와 겹치지 않는다.
+        plan = compiler.compile_plan("f47-r-banking-api-release-account-directory-request-flood")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-api", "api-service",
+                                    "core-banking-api:latest", "core-banking-api:1.4.0"])
+        self.assertNotIn("F47-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F47-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F47-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f47-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F47-R"]["baseline_image"], k8s_image.CONTRACTS["F47-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f47-r" / "api-service.patch").read_text()
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F47", "f47", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -836,6 +856,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F44-R",
             # 2026-10-09: banking 워커 tb-w2 호스트 방화벽에 transfer API(8082) 허용 목록을 넣으며 다른 노드 tb-w1 의 commerce 파드 대역(정산 이체 호출자 payment)을 빠뜨림(Central 1 2025-04-09 재구성, host.firewall 에 다른 노드 호출자 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F44-P",
+            # 2026-10-09: banking api-service 를 이체마다 account 의 활성 계좌 목록 전체(페이지 약 49번)를 뒤에서 다시 읽는 릴리스 1.4.0(fault-images/f47-r)으로 롤아웃(account CPU 한도 포화, 잔액 조회 초 단위, 이체 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F47-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

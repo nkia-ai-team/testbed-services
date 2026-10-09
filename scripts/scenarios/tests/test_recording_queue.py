@@ -58,7 +58,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 10 → 11. F44-R(food 워커 tb-w3 방화벽 허용 목록이 order 파드 대역을 빠뜨려 restaurant 로의 새 연결이 버려짐) 후보 추가.
         # 2026-10-09: 11 → 12. F44-P(banking 워커 tb-w2 방화벽 허용 목록이 commerce 파드 대역을 빠뜨려 정산 이체 새 연결이 버려짐) 후보 추가.
         # 2026-10-09: 12 → 11. F37-R 정식 승격(녹화 case-f37-r-v3-43c16731).
-        self.assertEqual(stages.count("candidate"), 11)
+        # 2026-10-09: 11 → 12. F47-R(banking api 릴리스가 이체마다 account 계좌 목록 전체를 다시 읽어 account 포화) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 12)
 
 
 class RecordingQueueTests(unittest.TestCase):

@@ -7095,6 +7095,97 @@
      }
     ]
    }
+  },
+  "F47-R": {
+   "title": "Release rollout of the banking api-service with a new active-account check that re-reads the whole account directory from account-service after every transfer: account-service drowns in list requests at its CPU limit, balance lookups slow to seconds and transfers fail with 502 while the new api itself stays up",
+   "description": "A rollout of the banking api-service Deployment (testbed-api) moves its container image from core-banking-api:latest to the release core-banking-api:1.4.0. The release adds a pre-transfer check that both accounts are ACTIVE. It keeps a set of active account ids and builds it by paging through account-service's list API (GET /api/accounts?status=ACTIVE&page=N&size=20) until a short page: with 976 active accounts (queried on 2026-10-09) one load is 49 requests. To keep the response fast it refreshes that set in the background after every transfer with CompletableFuture.runAsync, without a cache lifetime or a guard against overlapping refreshes. The api container has one CPU (availableProcessors 1, as the JVM CPU-count metric shows), so runAsync does not use the common pool and starts a new thread per refresh. Every transfer therefore triggers about 49 list requests to account-service, plus the existing retries (3 attempts) when they fail. A north-south 20 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) brings transfers to about 8 per second, i.e. about 390 list requests per second against an account-service whose CPU limit is 500m; one list page costs about 1.8 ms of server time at rest (119 traces, 7 days) and a primary-key lookup about 1.4 ms of CPU per request (JVM CPU vs request rate), so the list traffic alone needs about 0.7-0.8 CPU. account-service runs at its CPU limit, its Tomcat and Hikari pool (10) queue, balance lookups and list pages take seconds, some requests fail with 500 after the 3 s pool wait, its readiness probe (/actuator/health, 3 s) can time out so the pod leaves the Service endpoints for short spells, and api's account circuit opens, so transfers fail with 502 in bursts and are slow otherwise. Refresh threads pile up in api (hundreds instead of about 45 daemon threads). Oracle has headroom (the list query reads a 1,001-row table) and commerce settlements, which call transfer-service directly, are not affected. Measured locally with the same jars, the OTel agent and 0.5-CPU containers: at 8 transfers per second account-service stayed at its CPU limit for the whole five minutes, balance p50 0.5-2 s, account health 1-3 s, 502 bursts on transfers. This reconstructs Cloudflare's 2025-09-12 incident, where a dashboard release with a bug triggered many more calls to the Tenant Service API (including retries), the Tenant Service was overwhelmed, and API requests depending on it failed with 5xx until the load was cut and the code fixed.",
+   "cause": "Rollout of testbed-api (banking) to the release core-banking-api:1.4.0, whose new active-account check reloads the full active-account list from account-service (about 49 paged list requests) in a new background thread after every transfer → at the companion's transfer rate account-service receives hundreds of list requests per second, more than its 500m CPU limit can serve → account-service saturates, balance lookups and transfers that pass through it slow to seconds, the account circuit in api opens and transfers fail with 502, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-api (rca-testbed-banking), container api-service, from core-banking-api:latest to core-banking-api:1.4.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f47-r from origin/main core-banking plus fault-images/f47-r/api-service.patch (three files under api-service/src: a new AccountDirectory, a paged list call in AccountClient and the check in ApiService.submitTransfer); the manifest image, sources and manifests are untouched, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w2's containerd holds the baseline and not the release, that tb-w2's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w2's containerd (docker save | ctr import), then sets the image and does not wait for the rollout (the manifest strategy keeps the old pod until the new one is Ready). A north-south 20 rps companion (core-banking transfer-heavy-surge.js) drives the banking entry point (30082) on top of the resident baseline. Cleanup sets the image back to core-banking-api:latest, waits until the Deployment is available, waits until no pod uses the release, and removes both node references to the release (its name and the sha256:<image ID> reference) from tb-w2's containerd, then checks that neither is left. No value carries the scenario id; account-service, Oracle and their data are not touched.",
+   "user_impact": "Within a few minutes of the rollout, balance lookups through the banking gateway slow from milliseconds to seconds and some fail (500 after the account pool wait, 502 while account-service is out of the endpoints), and money transfers fail with 502 in bursts while api's account circuit is open and are slow otherwise. Transaction history (served by transfer-service) and commerce checkouts (settlement goes to transfer-service directly) keep working. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release on the caller followed by a request flood on a service that did not change: a KCM ScalingReplicaSet for testbed-api and the new pod's kubelet event 'Pulled: Container image \"core-banking-api:1.4.0\" already present on machine' (every testbed-api ReplicaSet and pod record on file carries core-banking-api:latest), then from the new api pod's start the api log 'Loaded active account directory: pages=49 accounts=976' about once per transfer (never logged before), DPM Top SQL for account-service's list statements (sql_id 82k5d7uauh4xd page and 36z5znswd9sxt count, a few executions per day at rest) jumping to hundreds of executions per second, account-service's JVM CPU (apm jvm.cpu.recent_utilization, at rest 0.015 of one CPU) pinned at its 0.5 limit while its own request mix from the gateway is unchanged, sampled traces in which one api transfer span holds dozens of GET /api/accounts child calls, api daemon threads climbing from about 45 to hundreds, then account-service latency in seconds, its Hikari 'Connection is not available' errors and readiness failures, and api 'Account list call failed', 'Active account directory refresh failed' and account circuit-open errors. account-service has no rollout, no config change and no restart loop of its own making, Oracle has headroom and no lock waits, and transfer-service and commerce settlements are healthy, so this is not an account-service defect (F41-R: account's own release), a database problem (F42-R, F01-P, F35-R), a wrong downstream address (F39-R) or a plain traffic surge (gateway traffic to account is unchanged; the extra requests come from api).",
+   "domain": "core-banking",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "core-banking-api",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking api-service 의 새 릴리스 core-banking-api:1.4.0 이다. 이 버전이 더한 이체 전 활성 계좌 확인(AccountDirectory)이 account-service 의 계좌 목록 API(status=ACTIVE, size=20)를 짧은 페이지가 나올 때까지 읽어 활성 계좌 집합을 만들고(활성 976개 → 한 번에 49번 요청, 2026-10-09 109 조회), 응답을 늦추지 않으려고 이체마다 CompletableFuture.runAsync 로 그 집합을 뒤에서 다시 읽는다. 새로 고침에는 수명도, 겹침 방지도 없다. api 컨테이너는 CPU 하나(availableProcessors 1, VM jvm.cpu.count 1)라 runAsync 가 공용 풀 대신 작업마다 새 스레드를 만든다. 그래서 이체 1건이 account 목록 요청 약 49건(실패하면 재시도 3회)을 더하고, 동반 부하 이체 약 8건/초면 약 390건/초가 account(CPU 한도 500m)로 몰린다. 목록 한 페이지는 평시 서버 시간 1.8ms(119 트레이스 7일 p50), 같은 서비스 PK 조회의 요청당 CPU 는 약 1.4ms(VM jvm.cpu.recent_utilization 와 rps 대조)라 이 요청만 0.7~0.8 CPU 를 요구해 한도를 넘는다. account 가 CPU 한도에 붙어 잔액 조회와 목록이 초 단위로 늦어지고, Hikari(10) 대기 3초 초과 500, readiness(/actuator/health 3초) 실패로 잠깐씩 엔드포인트에서 빠지며, api 의 accountClient 서킷이 열려 이체가 502 로 몰려 실패한다. 원칙 6: account 는 받은 요청을 처리했을 뿐 코드, 설정, 자원이 그대로인 증상 위치다. 게이트웨이에서 account 로 오는 사용자 요청도 평시와 같다. 요청을 수십 배로 불린 api 의 새 버전이 결함 보유 대상이자 계기다(Cloudflare 2025-09-12 사후 보고의 '대시보드 릴리스의 버그가 Tenant Service API 호출을 크게 늘린 것이 직접 계기'와 같은 층위). 패치 속 어느 줄인지는 요구하지 않는다(원칙 5). target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 testbed-api ScalingReplicaSet 과 새 파드 'Pulled ... \"core-banking-api:1.4.0\"', kcm_resources_history 의 새 ReplicaSet 스펙 image(그 전 api ReplicaSet 36건, 파드 28건 전부 :latest) ② api 로그 'Loaded active account directory: pages=49 accounts=976'(평시 0건)가 이체마다, 실패 때 'Account list call failed', 'Active account directory refresh failed' ③ DPM Top SQL 의 account 목록 문장(sql_id 82k5d7uauh4xd 페이지, 36z5znswd9sxt 건수, 평시 7일 16행 110회)이 초당 수백 회로 ④ VM account jvm.cpu.recent_utilization 평시 0.015 에서 0.5 한도로, account p95 평시 7.7ms 에서 초 단위로 ⑤ VM api jvm.thread.count(daemon) 평시 약 45 에서 수백으로 ⑥ 표본 트레이스의 api 이체 스팬 아래 GET /api/accounts 자식 호출 수십 개 ⑦ account Hikari 'Connection is not available', KCM account Unhealthy ⑧ account 는 롤아웃, 설정 변경이 없고 Oracle 은 여유, transfer 와 commerce 정산은 정상.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f47-r/api-service.patch:101-115 (AccountDirectory.requireActive — 릴리스 1.4.0 이 이체마다 CompletableFuture.runAsync(this::refresh) 로 활성 계좌 집합을 뒤에서 다시 읽게 함. 수명, 겹침 방지 없음)",
+     "scripts/scenarios/fault-images/f47-r/api-service.patch:125-137 (AccountDirectory.load — account 목록 API 를 status=ACTIVE, size=20 으로 짧은 페이지가 나올 때까지 읽음. 활성 976개면 49번)",
+     "scripts/scenarios/fault-images/f47-r/api-service.patch:34-52 (AccountClient.listAccounts — GET /api/accounts?status=&page=&size=, accountClient 서킷과 재시도 3회를 이체 요청과 함께 씀)",
+     "scripts/scenarios/fault-images/f47-r/api-service.patch:162 (ApiService.submitTransfer 가 이체를 넘기기 전에 accountDirectory.requireActive 를 부름)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java:28-38 (매니페스트 버전의 submitTransfer — 금액 검증 뒤 바로 accountClient.requestTransfer, 목록 조회 없음)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java:32-42 (list — status, page, size 로 계좌 목록 페이지를 돌려줌. 페이지마다 건수 질의와 페이지 질의)"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-api(core-banking/k8s/20-api-service.yaml: replicas 1 :9, 기본 전략 maxSurge 25%, nodeSelector tb-w2 :19, image core-banking-api:latest imagePullPolicy Never :27-28, limits cpu 500m :81-82, 109 kubectl 2026-10-09 generation 20). Deployment testbed-account(core-banking/k8s/21-account-service.yaml: replicas 1 :9, tb-w2 :19, readinessProbe /actuator/health timeout 3s :73-79, livenessProbe /actuator/health/liveness :81-87, limits cpu 500m :92-94; Hikari 10, connection-timeout 3000 account-service/src/main/resources/application.yml:12-17). api 의 accountClient 서킷(10건 창, 50%), 재시도 3회(200ms 지수), 읽기 10초(api-service/src/main/resources/application.yml). 활성 계좌 976개(전체 1,001: FROZEN 24, CLOSED 1). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w2 containerd 에 올리며 cleanup 이 지운다(scripts/scenarios/fault-images/f47-r/image.json)."
+   },
+   "must_support": [
+    "testbed-api 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 core-banking-api:1.4.0 을 담고, 그 전 testbed-api ReplicaSet, 파드 기록은 전부 core-banking-api:latest 다",
+    "새 api 파드 기동 뒤 api 로그에 'Loaded active account directory: pages=49 accounts=976' 이 이체 수만큼 나타나고(평시 0건), DPM Top SQL 의 account 목록 문장(82k5d7uauh4xd, 36z5znswd9sxt) 실행 수가 평시 하루 몇 회에서 초당 수백 회로 뛴다. 표본 트레이스의 api 이체 스팬 아래 GET /api/accounts 자식 호출이 수십 개다",
+    "account 의 JVM CPU(jvm.cpu.recent_utilization)가 한도 0.5 에 붙고 account 서버 스팬 p95 가 평시 수 ms 에서 수백 ms~초 단위로 오른다. 게이트웨이를 거쳐 account 로 오는 잔액 조회 수는 평시 그대로다",
+    "account 가 Hikari 'Connection is not available' 과 readiness 실패(KCM Unhealthy)를 남기고, api 가 'Account list call failed', 'Active account directory refresh failed', accountClient 서킷 열림을 남기며, api daemon 스레드가 평시 약 45 에서 수백으로 늘어난다",
+    "account 는 롤아웃, 설정 변경이 없고, Oracle 파드는 Ready 이며 잠금 대기가 없고, transfer 와 commerce 정산은 정상이다"
+   ],
+   "must_rule_out": [
+    "account 자체 결함이 아님(F41-R): account 에는 롤아웃도 설정 변경도 없고, 늘어난 요청은 게이트웨이가 아니라 api 에서 온다(트레이스의 호출자, api 로그, 목록 문장 실행 수)",
+    "DB 문제가 아님(F42-R, F01-P, F35-R): Oracle 은 여유가 있고(목록 질의는 1,001행 표의 페이지), 잠금 대기, ORA 오류, 로그온 실패가 없으며 transfer 와 commerce 정산이 정상이다",
+    "하류 주소 오설정이 아님(F39-R): api 와 account 사이 연결은 맺어지고 요청이 처리되며, 실패는 연결 시간 초과가 아니라 과부하에서 온다",
+    "단순 트래픽 급증이 아님: 게이트웨이에서 account 로 오는 사용자 요청 수는 동반 부하 그대로이고, 폭증한 것은 api 가 만든 목록 요청이다. 같은 동반 부하에 매니페스트 api 면 account 는 한도의 절반 아래다",
+    "api 이름 해석 실패가 아님(F37-R): api 는 account 에 닿아 응답을 받는다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F41-R (banking account 릴리스의 메모리 누수: 증상도 account 에 나지만 결함과 롤아웃이 account 자신. F47-R 은 account 는 그대로이고 호출자 api 의 릴리스가 요청을 불렸다)",
+     "F42-R (banking transfer 릴리스가 들여온 비싼 질의로 공유 Oracle 포화: 결함이 공유 DB 로 번짐. F47-R 은 DB 는 여유가 있고 서비스 사이 요청 수가 폭증)",
+     "F07-H (commerce 진입 트래픽 폭주: 외부 요청이 늘었다. F47-R 은 외부 요청은 그대로이고 내부 호출자가 요청을 불렸다)",
+     "F39-R (banking account 의 하류 주소 오설정: 연결 시간 초과. F47-R 은 연결은 되고 과부하)",
+     "F37-R (banking api 배포의 DNS 설정: 같은 api 배포가 계기지만 이름 해석 실패로 하류에 닿지 못함. F47-R 은 하류에 너무 많이 닿음)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-api",
+     "banking-api",
+     "testbed-api"
+    ],
+    "partial": [
+     "core-banking-account",
+     "testbed-account"
+    ]
+   },
+   "title_ko": "banking api-service 를 이체마다 account 의 계좌 목록 전체를 다시 읽는 활성 계좌 확인을 더한 릴리스로 롤아웃: account-service 가 CPU 한도에서 목록 요청에 묻혀 잔액 조회가 초 단위로 늦어지고 이체가 502 로 실패하며, 새 api 자체는 떠 있다",
+   "description_ko": "banking api-service Deployment(testbed-api) 롤아웃이 컨테이너 이미지를 core-banking-api:latest 에서 릴리스 core-banking-api:1.4.0 으로 바꾼다. 이 릴리스는 이체 전에 두 계좌가 ACTIVE 인지 확인한다. 활성 계좌 id 집합을 두고, account-service 의 목록 API(GET /api/accounts?status=ACTIVE&page=N&size=20)를 짧은 페이지가 나올 때까지 읽어 만든다. 활성 계좌가 976개(2026-10-09 조회)라 한 번에 49번 요청이다. 응답을 늦추지 않으려고 이체마다 CompletableFuture.runAsync 로 그 집합을 뒤에서 다시 읽는데, 새로 고침에는 수명도 겹침 방지도 없다. api 컨테이너는 CPU 하나(availableProcessors 1, JVM CPU 수 지표)라 runAsync 가 공용 풀이 아니라 작업마다 새 스레드를 만든다. 그래서 이체 1건이 account 목록 요청 약 49건을 더하고, 실패하면 기존 재시도(3회)가 붙는다. north-south 20rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)로 이체가 초당 약 8건이면 목록 요청이 초당 약 390건 account 로 간다. account 의 CPU 한도는 500m 이고, 목록 한 페이지는 평시 서버 시간 약 1.8ms(119 트레이스 7일), PK 조회는 요청당 CPU 약 1.4ms(JVM CPU 와 요청률 대조)라 목록 요청만 약 0.7~0.8 CPU 를 요구한다. account 가 CPU 한도에 붙고 Tomcat 과 Hikari 풀(10)이 줄을 서서 잔액 조회와 목록이 초 단위로 늦어지고, 일부는 3초 풀 대기 뒤 500 이 되며, readiness(/actuator/health, 3초)가 늦어 잠깐씩 엔드포인트에서 빠지고, api 의 account 서킷이 열려 이체가 몰려서 502 로 실패하고 그 밖에는 느리다. api 에는 새로 고침 스레드가 쌓인다(평시 daemon 약 45 → 수백). Oracle 은 여유가 있고(목록 질의는 1,001행 표), transfer-service 를 바로 부르는 commerce 정산은 영향이 없다. 같은 jar 와 OTel 에이전트, CPU 0.5 컨테이너로 로컬 실측: 이체 8건/초에서 account CPU 가 5분 내내 한도에 붙고 잔액 조회 p50 0.5~2초, account health 1~3초, 이체 502 몰림. Cloudflare 2025-09-12 장애(대시보드 릴리스의 버그가 Tenant Service API 호출을 재시도까지 포함해 크게 늘려 Tenant Service 가 과부하되고, 거기 기대는 API 요청이 5xx 로 실패했으며, 부하를 줄이고 코드를 고쳐 복구)의 재구성이다.",
+   "cause_ko": "testbed-api(banking) 를 릴리스 core-banking-api:1.4.0 으로 롤아웃. 이 버전의 활성 계좌 확인이 이체마다 새 백그라운드 스레드에서 account-service 의 활성 계좌 목록 전체(페이지 요청 약 49건)를 다시 읽음 → 동반 부하의 이체 속도에서 account 가 초당 수백 건의 목록 요청을 받아 CPU 한도 500m 를 넘음 → account 포화, 그것을 거치는 잔액 조회와 이체가 초 단위로 늦어지고, api 의 account 서킷이 열려 이체가 502 로 실패. 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-banking 의 Deployment testbed-api 컨테이너 api-service 이미지를 core-banking-api:latest 에서 core-banking-api:1.4.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f47-r 이 origin/main core-banking 에 fault-images/f47-r/api-service.patch(api-service/src 안 세 파일: 새 AccountDirectory, AccountClient 의 목록 페이지 호출, ApiService.submitTransfer 의 확인 호출)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w2 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w2 이미지 파일시스템이 80% 미만인지, Deployment 가 available 인지 확인한다. run 은 릴리스를 tb-w2 containerd 에 올린 뒤(docker save | ctr import) 이미지를 바꾸고 롤아웃을 기다리지 않는다(매니페스트 전략은 새 파드가 Ready 가 될 때까지 옛 파드를 둔다). north-south 20rps 동반 부하(core-banking transfer-heavy-surge.js)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더한다. cleanup 은 이미지를 core-banking-api:latest 로 되돌리고 Deployment available 을 기다린 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w2 containerd 에서 릴리스의 이름 참조와 sha256:<이미지 ID> 참조를 모두 지우고 둘 다 없는지 확인한다. 시나리오 id 를 담은 값은 없고, account-service, Oracle 과 그 데이터는 건드리지 않는다.",
+   "user_impact_ko": "롤아웃 뒤 몇 분 안에 banking 게이트웨이를 거치는 잔액 조회가 밀리초에서 초 단위로 늦어지고 일부는 실패하며(account 풀 대기 뒤 500, account 가 엔드포인트에서 빠진 동안 502), 이체는 api 의 account 서킷이 열린 동안 502 로 몰려 실패하고 그 밖에는 느리다. 거래 내역(transfer 가 답함)과 commerce checkout(정산은 transfer 를 바로 부름)은 정상이다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 호출자의 릴리스 뒤 바뀌지 않은 서비스로 몰린 요청 폭증이다: testbed-api 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"core-banking-api:1.4.0\" already present on machine'(기록에 있는 testbed-api ReplicaSet, 파드는 모두 core-banking-api:latest), 그 뒤 새 api 파드 기동부터 api 로그 'Loaded active account directory: pages=49 accounts=976' 이 이체마다(전에는 없던 로그), DPM Top SQL 의 account 목록 문장(82k5d7uauh4xd 페이지, 36z5znswd9sxt 건수, 평시 하루 몇 회)이 초당 수백 회, account JVM CPU(jvm.cpu.recent_utilization, 평시 CPU 하나의 0.015)가 한도 0.5 에 붙는데 게이트웨이에서 오는 요청은 그대로, 표본 트레이스에서 api 이체 스팬 하나 아래 GET /api/accounts 자식 호출 수십 개, api daemon 스레드 약 45 → 수백. 이어서 account 의 초 단위 지연, Hikari 'Connection is not available', readiness 실패, api 'Account list call failed', 'Active account directory refresh failed', account 서킷 열림. account 는 롤아웃, 설정 변경, 스스로 만든 재시작 고리가 없고, Oracle 은 여유가 있고 잠금 대기가 없으며, transfer 와 commerce 정산은 정상이므로 account 결함(F41-R: account 자신의 릴리스), DB 문제(F42-R, F01-P, F35-R), 하류 주소 오설정(F39-R), 단순 트래픽 급증(게이트웨이에서 account 로 오는 요청은 그대로이고 늘어난 요청은 api 에서 옴)이 아니다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f47-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-api",
+       "container": "api-service",
+       "baseline_image": "core-banking-api:latest",
+       "fault_image": "core-banking-api:1.4.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

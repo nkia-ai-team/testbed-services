@@ -76,6 +76,18 @@ CONTRACTS = {
         "baseline_image": "commerce-cart:latest",
         "fault_image": "commerce-cart:1.2.0",
     },
+    # 2026-10-09. F47-R: banking api-service 를 이체 전 활성 계좌 확인을 더한 릴리스 1.4.0 으로 롤아웃한다.
+    # 새 확인이 이체마다 account 의 계좌 목록 API 를 끝 페이지까지(약 49번) 뒤에서 다시 읽어 account 가
+    # 요청에 묻힌다. 결함 이미지는 fault-images/f47-r 로 109 docker 에만 빌드하고, 실행기가 tb-w2 에 올렸다가
+    # cleanup 이 지운다. 다른 시나리오의 릴리스 태그와 겹치지 않는다(api 는 이 태그 하나뿐).
+    "F47-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-api",
+        "container": "api-service",
+        "baseline_image": "core-banking-api:latest",
+        "fault_image": "core-banking-api:1.4.0",
+    },
 }
 
 

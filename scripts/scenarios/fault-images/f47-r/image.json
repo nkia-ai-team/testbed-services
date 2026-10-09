@@ -1,0 +1,7 @@
+{
+  "base": "core-banking-api:latest",
+  "fault": "core-banking-api:1.4.0",
+  "domain": "core-banking",
+  "module": "api-service",
+  "node": "tb-w2"
+}
