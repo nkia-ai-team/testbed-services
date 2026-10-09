@@ -69,7 +69,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 78 → 79. F48-R(후보) 추가. 기존 db.ddl 에 MySQL 보류 표 모드를 더해 프로파일 수는 그대로.
         # 2026-10-09: 79 → 80. F49-R(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 써서 프로파일 수는 그대로.
         # 2026-10-09: 80 → 81. F33-H(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 81)
+        # 2026-10-09: 81 → 82. F49-H(후보) 추가. 기존 k8s.image release 모드를 food order 에 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 82)
         self.assertEqual(len(self.profiles["profiles"]), 28)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -154,6 +155,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-R",
             # 2026-10-09: food dispatch-service 를 배달 목록에 전체 건수(X-Total-Count)를 더한 릴리스 1.6.0(fault-images/f33-h)으로 롤아웃(목록마다 끝난 배차 약 174만 행 COUNT, MySQL 포화, dispatch 풀 고갈로 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F33-H",
+            # 2026-10-09: food order-service 를 시각 표기를 yyyy-MM-dd HH:mm:ss 로 바꾸고 하류 호출에도 같은 ObjectMapper 를 쓰게 한 릴리스 2.3.0(fault-images/f49-h)으로 롤아웃(dispatch 는 200, order 가 배차 응답의 ISO 시각을 못 읽어 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -454,6 +457,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-R",
             # 2026-10-09: food dispatch-service 를 배달 목록에 전체 건수(X-Total-Count)를 더한 릴리스 1.6.0(fault-images/f33-h)으로 롤아웃(목록마다 끝난 배차 약 174만 행 COUNT, MySQL 포화, dispatch 풀 고갈로 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F33-H",
+            # 2026-10-09: food order-service 를 시각 표기를 yyyy-MM-dd HH:mm:ss 로 바꾸고 하류 호출에도 같은 ObjectMapper 를 쓰게 한 릴리스 2.3.0(fault-images/f49-h)으로 롤아웃(dispatch 는 200, order 가 배차 응답의 ISO 시각을 못 읽어 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-H",
             },
         )
         self.assertEqual(
@@ -538,6 +543,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-R",
             # 2026-10-09: food dispatch-service 를 배달 목록에 전체 건수(X-Total-Count)를 더한 릴리스 1.6.0(fault-images/f33-h)으로 롤아웃(목록마다 끝난 배차 약 174만 행 COUNT, MySQL 포화, dispatch 풀 고갈로 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F33-H",
+            # 2026-10-09: food order-service 를 시각 표기를 yyyy-MM-dd HH:mm:ss 로 바꾸고 하류 호출에도 같은 ObjectMapper 를 쓰게 한 릴리스 2.3.0(fault-images/f49-h)으로 롤아웃(dispatch 는 200, order 가 배차 응답의 ISO 시각을 못 읽어 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -693,8 +700,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F48-R(후보, 고정 evaluation)이 끝에 붙어 F42-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F49-R(후보, 고정 evaluation)이 끝에 붙어 F43-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F33-H(후보, 고정 evaluation)이 끝에 붙어 F44-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F49-H(후보, 고정 evaluation)이 끝에 붙어 F44-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F44-P", "F47-R", "F48-R", "F49-R", "F33-H"])
+                         ["F47-R", "F48-R", "F49-R", "F33-H", "F49-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

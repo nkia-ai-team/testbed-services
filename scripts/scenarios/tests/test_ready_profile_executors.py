@@ -583,6 +583,30 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for word in ("F33", "f33", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_food_order(self) -> None:
+        # F49-H: 같은 release 스크립트로 food order 를 2.3.0 으로 롤아웃한다(tb-w3, 노드는 스크립트가
+        # Deployment 의 nodeSelector 에서 읽는다). 릴리스 태그는 fault-images/f49-h/image.json 과 같아야 하고,
+        # 다른 시나리오의 릴리스 태그와 겹치지 않는다. 패치는 order-service/src 안만 고친다.
+        plan = compiler.compile_plan("f49-h-food-order-release-date-format-breaks-dispatch-response")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-order", "order-service",
+                                    "food-delivery-order:latest", "food-delivery-order:2.3.0"])
+        self.assertNotIn("F49-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F49-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F49-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f49-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F49-H"]["baseline_image"], k8s_image.CONTRACTS["F49-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f49-h" / "order-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/order-service/src/",
+                                                     "b/food-delivery/order-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F49", "f49", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -912,6 +936,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F49-R",
             # 2026-10-09: food dispatch-service 를 배달 목록에 전체 건수(X-Total-Count)를 더한 릴리스 1.6.0(fault-images/f33-h)으로 롤아웃(목록마다 끝난 배차 약 174만 행 COUNT, MySQL 포화, dispatch 풀 고갈로 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F33-H",
+            # 2026-10-09: food order-service 를 시각 표기를 yyyy-MM-dd HH:mm:ss 로 바꾸고 하류 호출에도 같은 ObjectMapper 를 쓰게 한 릴리스 2.3.0(fault-images/f49-h)으로 롤아웃(dispatch 는 200, order 가 배차 응답의 ISO 시각을 못 읽어 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

@@ -56,7 +56,8 @@
     "F47-R",
     "F48-R",
     "F49-R",
-    "F33-H"
+    "F33-H",
+    "F49-H"
   ],
   "controllers": {
     "F01-R": {
@@ -13276,6 +13277,207 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 dispatch 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 매니페스트 버전은 목록에서 COUNT 를 내지 않아(Slice) MySQL 이 바로 풀리고, order 의 dispatch 서킷브레이커는 반열림 3회 성공으로 닫힌다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F49-H": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f49-h",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-order",
+              "container": "order-service",
+              "baseline_image": "food-delivery-order:latest",
+              "fault_image": "food-delivery-order:2.3.0"
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 롤아웃 동안 옛 order 파드가 새 파드 Ready 까지 요청을 받고(기본 전략 maxSurge 25%, 평시 롤아웃 46초: KCM 2026-10-08 18:52:14 → 18:53:00), 릴리스는 health 와 DB 를 건드리지 않는다. 새 order 는 배차 응답 해석 실패를 재시도 백오프 뒤 503 으로 곧바로 돌려줘(로컬 실측 240건 모두 503, p50 0.63초, 최대 1.3초, order health 내내 UP) 풀이 묶이지 않는다. 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s",
+          "_note": "food MySQL 파드. 이 주입은 DB 를 건드리지 않는다"
+        },
+        {
+          "id": "order_create_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)은 하루 주기로 1~6 iter/s 라 한가한 시간에는 주문 생성이 초당 약 0.2건뿐이어서, 러너 판정 표본과 order 의 해석 실패 로그가 시간대에 좌우되지 않도록 동반 부하가 주문 생성을 초당 약 1.4건 더한다(F36-R, F44-R, F49-R 과 같은 값)",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 새 order 파드가 Ready 가 되어 옛 파드를 대신하는 순간(약 1분)부터 dispatch 서킷(용량 확인과 배차 호출이 함께 씀)이 해석 실패로 열림과 반열림을 되풀이한다. 서킷이 닫히거나 반열림일 때 들어온 주문은 가게, 메뉴, 용량 확인을 지나 배차 요청에서 dispatch 가 배차를 기록해 200 으로 답하지만, order 가 응답의 assignedAt(ISO 'yyyy-MM-ddTHH:mm:ss.ffffff')을 새 표기 yyyy-MM-dd HH:mm:ss 로 읽지 못해 'Error while extracting response for type [com.fooddelivery.common.dto.DispatchResponse]' 로 실패한다. 서킷이 열려 있을 때 들어온 나머지는 용량 확인 단계에서 로그 없이 503 'CircuitBreaker 'dispatch' is OPEN' 이다. 어느 쪽이든 모든 주문이 503 이다(로컬 실측 2rps 240건 중 503 240건, 배차 단계까지 간 주문 65건, 용량 확인에서 끝난 주문 175건, 주문 행 0건 커밋)"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. 주문이 1초 안팎에 503 을 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 형식 불일치가 아니라 DB 다운(F25-H 꼴)이다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "_note": "dispatch 파드 준비 상태와 dispatch 서버 스팬 오류율은 러너 관측 허용 목록(APPROVED_K8S_TARGETS, APPROVED_APM_SERVICES)에 없어 러너 배제 조건으로 두지 않는다(F32-H, F33-H 와 같음). dispatch 가 멀쩡히 200 으로 답한다는 감별은 녹화된 dispatch 스팬과 로그로 RCA 쪽에서 한다(정답지 must_support, must_rule_out)"
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 order 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 고장 동안 dispatch 에 남은 주인 없는 배차(로컬 실측 초당 약 0.9건)는 평시 배차(초당 1.2~2.6건)보다 적어 용량 2000 을 채우지 않고, ETA(15~34분)가 지나면 만료 배치가 DELIVERED 로 넘긴다. dispatch 서킷브레이커는 반열림 3회 성공으로 닫힌다"
       },
       "cleanup": {
         "required": true,

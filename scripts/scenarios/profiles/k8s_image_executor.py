@@ -113,6 +113,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-dispatch:latest",
         "fault_image": "food-delivery-dispatch:1.6.0",
     },
+    # 2026-10-09. F49-H: food order-service 를 시각 표기를 앱 화면 표준(yyyy-MM-dd HH:mm:ss)으로 맞춘 릴리스 2.3.0 으로
+    # 롤아웃한다. 같은 ObjectMapper 를 하류 호출에도 써서 dispatch 가 그대로 보내는 ISO 시각(assignedAt)을 읽지 못하고,
+    # 배차는 dispatch 에 기록되는데 order 는 DispatchResponse 해석 실패로 주문이 503 이다. 결함 이미지는 fault-images/f49-h
+    # 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다. 다른 시나리오의 릴리스 태그와 겹치지 않는다
+    # (order 는 이 태그 하나뿐).
+    "F49-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-order",
+        "container": "order-service",
+        "baseline_image": "food-delivery-order:latest",
+        "fault_image": "food-delivery-order:2.3.0",
+    },
 }
 
 

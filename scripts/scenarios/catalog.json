@@ -1019,6 +1019,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F49-H",
+      "slug": "f49-h-food-order-release-date-format-breaks-dispatch-response",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }

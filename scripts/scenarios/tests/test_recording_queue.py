@@ -64,7 +64,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 11 → 12. F48-R(food 인기 메뉴 집계 표를 취소된 인덱스 백필이 치움) 후보 추가.
         # 2026-10-09: 12 → 13. F49-R(food restaurant 릴리스가 가게 상세 응답 구조를 바꿔 order 가 해석 실패) 후보 추가.
         # 2026-10-09: 13 → 14. F33-H(food dispatch 릴리스가 배달 목록에 전체 건수 COUNT 를 붙여 MySQL 포화) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 14)
+        # 2026-10-09: 14 → 15. F49-H(food order 릴리스가 시각 표기를 바꿔 dispatch 응답을 못 읽음) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 15)
 
 
 class RecordingQueueTests(unittest.TestCase):
