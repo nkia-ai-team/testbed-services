@@ -35,7 +35,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 39 → 40. F36-R 정식 승격(녹화 case-f36-r-v3-776b522b).
         # 2026-10-09: 40 → 41. F37-R 정식 승격(녹화 case-f37-r-v3-43c16731).
         # 2026-10-09: 41 → 42. F38-R 정식 승격(녹화 case-f38-r-v3-54918c10).
-        self.assertEqual(stages.count("official"), 42)
+        # 2026-10-09: 42 → 43. F39-R 정식 승격(녹화 case-f39-r-v3-dc45499a).
+        self.assertEqual(stages.count("official"), 43)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -65,7 +66,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 12 → 13. F49-R(food restaurant 릴리스가 가게 상세 응답 구조를 바꿔 order 가 해석 실패) 후보 추가.
         # 2026-10-09: 13 → 14. F33-H(food dispatch 릴리스가 배달 목록에 전체 건수 COUNT 를 붙여 MySQL 포화) 후보 추가.
         # 2026-10-09: 14 → 15. F49-H(food order 릴리스가 시각 표기를 바꿔 dispatch 응답을 못 읽음) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 15)
+        # 2026-10-09: 15 → 14. F39-R 정식 승격(녹화 case-f39-r-v3-dc45499a).
+        self.assertEqual(stages.count("candidate"), 14)
 
 
 class RecordingQueueTests(unittest.TestCase):

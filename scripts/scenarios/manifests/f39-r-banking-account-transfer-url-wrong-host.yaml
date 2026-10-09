@@ -3,7 +3,7 @@
   "id": "F39-R",
   "slug": "f39-r-banking-account-transfer-url-wrong-host",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
