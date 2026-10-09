@@ -91,6 +91,37 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F33-P", {**p, "statement_timeout": "60s"}, {})
 
+    def test_mysql_cancelled_backfill_holds_the_live_table_and_restores_it(self) -> None:
+        # F48-R: 취소된 인덱스 백필이 그림자 표 대신 살아 있는 표를 보류 이름으로 치운다. 행은 지우지 않고,
+        # cleanup 은 보류 표를 원래 이름으로 되돌린 뒤 도구가 만든 그림자 표만 지운다.
+        p = ddl.CONTRACTS["F48-R"]
+        ddl.validate("F48-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F48-R", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
+                                    "menu_popularity_summary", "idx_menu_popularity_restaurant", "restaurant_id", "20"])
+        self.assertNotIn("F48-R", argv)
+        script = body.decode()
+        self.assertNotIn("F48-R", script)
+        self.assertIn("CREATE TABLE $shadow LIKE $table; ALTER TABLE $shadow ADD INDEX $index ($column); INSERT INTO $shadow SELECT * FROM $table;", script)
+        self.assertIn("RENAME TABLE $table TO $held;", script)
+        self.assertIn("RENAME TABLE $held TO $table;", script)
+        self.assertIn('shadow="_vt_vrp_', script)
+        self.assertIn('held="_vt_hld_', script)
+        self.assertEqual(script.count("lock_wait_timeout=10"), 3)
+        # 지우는 것은 그림자 표뿐이고, 원래 표 곁에 보류 표가 남아 있으면 지우지 않고 멈춘다.
+        self.assertEqual(script.count("DROP TABLE"), 1)
+        self.assertIn('mysql "DROP TABLE $shadow;"', script)
+        self.assertIn("held table left beside", script)
+        self.assertNotIn("DELETE", script)
+        self.assertIn('grep -v "Using a password" "$e" | head -n 1 >&2', script)
+        # 열 이름 바꾸기(F36-R)와 인덱스 계약(F33-R)은 각자의 스크립트로 간다.
+        _, rename_body = ddl.build_invocation(plan("db.ddl", "F36-R", ddl.CONTRACTS["F36-R"]), "run")
+        self.assertIn("RENAME COLUMN", rename_body.decode())
+        self.assertNotIn("RENAME TABLE", rename_body.decode())
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F48-R", {**p, "table": "menus"}, {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

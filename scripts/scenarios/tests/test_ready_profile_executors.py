@@ -858,6 +858,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F44-P",
             # 2026-10-09: banking api-service 를 이체마다 account 의 활성 계좌 목록 전체(페이지 약 49번)를 뒤에서 다시 읽는 릴리스 1.4.0(fault-images/f47-r)으로 롤아웃(account CPU 한도 포화, 잔액 조회 초 단위, 이체 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F47-R",
+            # 2026-10-09: food 인기 메뉴 집계 표를 취소된 인덱스 백필이 치움(MySQL 1146, 인기 메뉴만 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F48-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

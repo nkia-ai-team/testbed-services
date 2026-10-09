@@ -1,0 +1,340 @@
+{
+  "schema_version": "1.0",
+  "id": "F48-R",
+  "slug": "f48-r-food-popular-menu-table-dropped-by-cancelled-backfill",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.ddl food testbed-mysql-0 CREATE TABLE LIKE + ADD INDEX + INSERT SELECT + RENAME TABLE(kubectl exec mysql, lock_wait_timeout 10초, 역 작업은 보류 표를 원래 이름으로 되돌리고 그림자 표 DROP) + R/ssh load.north_south companion(food-delivery popular-menu-surge.js, target_rps=5, 방문마다 가게 상세, 메뉴, 인기 메뉴, 주문 없음)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.ddl",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f48-r",
+              "parameters": {
+                "engine": "mysql",
+                "namespace": "rca-testbed-food",
+                "pod": "testbed-mysql-0",
+                "database": "fooddelivery",
+                "table": "menu_popularity_summary",
+                "backfill_index": "idx_menu_popularity_restaurant",
+                "backfill_column": "restaurant_id",
+                "minimum_rows": 20
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선 문서의 주문 생성 단계(30180 → order) 상태. 동반 부하(popular-menu-surge.js)는 주문을 넣지 않아 자기 문서의 entry_status 가 비므로 기준선 문서를 읽는다. 고장 중 order 는 인기 메뉴 표를 읽지 않아 그대로 답하므로 0(연결 불가)은 노드나 order 가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "restaurant_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-restaurant"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "popular_menu_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하(popular-menu-surge.js 5rps)의 인기 메뉴 조회(GET /api/restaurants/{id}/popular-menu, step 'menu' 로 태깅) 비정상 비율. 30초 창에 약 150건. 평시 0(119 표본 7일 16,057건 중 5xx 1건)",
+            "freshness": "30s"
+          },
+          {
+            "id": "restaurant_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "food-delivery-restaurant"
+            },
+            "_note": "restaurant 서버 스팬(표본 10%) 60초 창의 5xx 백분율. 동반 부하가 가게 화면마다 상세, 메뉴, 인기 메뉴를 하나씩 불러 고장 중에는 약 25~30%. 실패가 restaurant 가 답한 5xx 인지(연결 실패가 아닌지) 확인하는 몫이다. 평시 7일 표본 205,276건 중 5xx 8건",
+            "freshness": "60s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 주문 경로는 인기 메뉴 표를 읽지 않아 고장 중에도 0 근처여야 한다. 오르면 가게 조회나 배차 쪽 고장(F36-R, F32-R, F33-R 꼴)이지 이 시나리오가 아니다",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "popular-menu-failed",
+              "observation": "popular_menu_nonok_rate",
+              "op": "gte",
+              "value": 0.8
+            },
+            {
+              "id": "restaurant-5xx",
+              "observation": "restaurant_error_rate",
+              "op": "gte",
+              "value": 10
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1.25,
+              "_note": "동반 부하 5rps 의 1/4. 인기 메뉴가 즉시 500 으로 끝나 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 표 하나가 사라진 것이 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "restaurant-down",
+              "observation": "restaurant_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "restaurant 파드가 빠지면 인기 메뉴 실패가 SQL 오류가 아니라 연결 실패다. 표가 사라져도 health 의 SELECT 1 은 그대로라 restaurant 는 Ready 로 남아야 한다"
+            },
+            {
+              "id": "order-path-failing",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "주문 생성까지 실패하면 가게 표(F36-R)나 배차(F32-R, F33-R) 쪽 고장이다. 이 시나리오는 인기 메뉴 집계 표만 사라져 주문 경로는 그대로다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "restaurant-ready",
+              "observation": "restaurant_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "restaurant-recovered",
+              "observation": "restaurant_error_rate",
+              "op": "lt",
+              "value": 5
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.ddl",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.ddl",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "db.ddl"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -18,6 +18,15 @@ only index on the column is one the planner never uses, and the owning
 service's startup `CREATE INDEX IF NOT EXISTS` skips it because the name exists.
 Cleanup drops the invalid index, rebuilds the plain index first (which ends the scans)
 and then the unique index it reattaches as the original constraint.
+
+The MySQL held-table path (F48-R) is a cancelled index backfill whose cleanup removed
+the live table instead of its own shadow copy.  The backfill builds a shadow table
+(`_vt_vrp_<uuid>_<time>_`) with the new index and copies the rows; the cancel then
+"drops" the live table the way Vitess table lifecycle drops tables, by renaming it into
+the hold state (`_vt_hld_<uuid>_<hold-until>_`), and leaves the shadow behind.  Every
+statement that names the table fails with ER_NO_SUCH_TABLE (1146) until the held table
+is renamed back.  No row is lost, so the inverse is the same rename the other way plus
+dropping the shadow copy.
 """
 from __future__ import annotations
 
@@ -68,6 +77,14 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "rebuild_index": "idx_auth_tokens_token_new", "statement_timeout": "2s",
         "minimum_rows": 100000,
     },
+    # 취소된 인덱스 백필: 그림자 표에 backfill_index 를 만들고 행을 옮긴 뒤, 취소 정리가 그림자 대신
+    # 원래 표를 보류 이름(_vt_hld_)으로 치운다. cleanup 은 보류 표를 원래 이름으로 되돌리고 그림자를 지운다.
+    "F48-R": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "menu_popularity_summary",
+        "backfill_index": "idx_menu_popularity_restaurant", "backfill_column": "restaurant_id",
+        "minimum_rows": 20,
+    },
 }
 
 
@@ -86,6 +103,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     instance = profile_instance(plan, PROFILE_ID)
     p = instance["parameters"]
     validate(plan["scenario"]["id"], p, {})
+    if p["engine"] == "mysql" and "backfill_index" in p:
+        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
     if p["engine"] == "postgresql" and "rebuild_index" in p:
@@ -197,6 +216,49 @@ case "$action" in
  preflight) check ;;
  run) check; rename "$column" "$renamed"; [[ "$(has_column "$column")" == 0 && "$(has_column "$renamed")" == 1 ]] ;;
  cleanup) if [[ "$(has_column "$renamed")" == 1 ]]; then rename "$renamed" "$column"; fi; original ;;
+ recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+MYSQL_HOLD_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; index="$6"; column="$7"; minimum="$8"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
+mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+# Table presence is read from information_schema only (no metadata lock on the table).
+present() { mysql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$db' AND table_name='$1';"; }
+# The backfill tool's own tables: shadow copies (_vt_vrp_) and held tables (_vt_hld_).
+tool_tables() { mysql "SELECT table_name FROM information_schema.tables WHERE table_schema='$db' AND LEFT(table_name, 8) = '$1' ORDER BY table_name;"; }
+original() { [[ "$(present "$table")" == 1 && -z "$(tool_tables _vt_vrp_)" && -z "$(tool_tables _vt_hld_)" ]]; }
+check() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; original; }
+uuid() { tr -d '-' </proc/sys/kernel/random/uuid; }
+# lock_wait_timeout bounds the metadata-lock wait behind in-flight transactions (server default is a year).
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  shadow="_vt_vrp_$(uuid)_$(date -u +%Y%m%d%H%M%S)_"
+  mysql "SET SESSION lock_wait_timeout=10; CREATE TABLE $shadow LIKE $table; ALTER TABLE $shadow ADD INDEX $index ($column); INSERT INTO $shadow SELECT * FROM $table;" >/dev/null
+  # The cancel removes the live table instead of the shadow: renamed into the hold state, rows kept.
+  held="_vt_hld_$(uuid)_$(date -u -d '+2 days' +%Y%m%d%H%M%S)_"
+  mysql "SET SESSION lock_wait_timeout=10; RENAME TABLE $table TO $held;" >/dev/null
+  [[ "$(present "$table")" == 0 && "$(present "$held")" == 1 && "$(present "$shadow")" == 1 ]]
+  ;;
+ cleanup)
+  if [[ "$(present "$table")" == 0 ]]; then
+    held=$(tool_tables _vt_hld_)
+    [[ -n "$held" && "$held" != *$'\n'* ]] || { echo "expected exactly one held table, found: ${held//$'\n'/ }" >&2; exit 3; }
+    mysql "SET SESSION lock_wait_timeout=10; RENAME TABLE $held TO $table;" >/dev/null
+  fi
+  # A held table next to a present original would hold rows nobody restored; leave it for a person.
+  [[ -z "$(tool_tables _vt_hld_)" ]] || { echo "held table left beside $table" >&2; exit 3; }
+  for shadow in $(tool_tables _vt_vrp_); do
+    mysql "DROP TABLE $shadow;" >/dev/null
+  done
+  original
+  ;;
  recovery) check ;;
  *) exit 2 ;;
 esac
