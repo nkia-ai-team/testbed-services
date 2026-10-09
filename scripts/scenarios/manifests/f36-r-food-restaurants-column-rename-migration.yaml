@@ -3,7 +3,7 @@
   "id": "F36-R",
   "slug": "f36-r-food-restaurants-column-rename-migration",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

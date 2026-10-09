@@ -3,15 +3,6 @@
   "_doc": "docs/spec-scenario-lifecycle.md §3. 운영 하네스가 앞에서부터 waiting 인 첫 항목을 돌린다.",
   "entries": [
     {
-      "scenario_id": "F36-R",
-      "reason": "new",
-      "note": "새 시나리오 첫 검증",
-      "requested_by": "testbed-scenario-create",
-      "requested_at": "2026-10-08",
-      "attempts": 0,
-      "status": "waiting"
-    },
-    {
       "scenario_id": "F37-R",
       "reason": "new",
       "note": "새 시나리오 첫 검증",
