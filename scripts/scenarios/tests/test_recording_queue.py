@@ -31,7 +31,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-08: 35 → 36. F30-R 정식 승격(녹화 case-f30-r-v3-0cd9193b).
         # 2026-10-09: 36 → 37. F32-R 정식 승격(녹화 case-f32-r-v3-63b10537).
         # 2026-10-09: 37 → 38. F33-R 정식 승격(녹화 case-f33-r-v3-73fed92a).
-        self.assertEqual(stages.count("official"), 38)
+        # 2026-10-09: 38 → 39. F35-R 정식 승격(녹화 case-f35-r-v3-bbbee443).
+        self.assertEqual(stages.count("official"), 39)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -47,7 +48,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 6 → 7. F17-H(banking transfer 릴리스 이미지 부재) 후보 추가.
         # 2026-10-09: 7 → 8. F32-H(food dispatch JSON 숫자 문자열 직렬화 설정 배포) 후보 추가.
         # 2026-10-09: 8 → 9. F33-P(commerce auth_tokens 인덱스 교체 마이그레이션 실패) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 9)
+        # 2026-10-09: 9 → 8. F35-R 정식 승격(녹화 case-f35-r-v3-bbbee443).
+        self.assertEqual(stages.count("candidate"), 8)
 
 
 class RecordingQueueTests(unittest.TestCase):
