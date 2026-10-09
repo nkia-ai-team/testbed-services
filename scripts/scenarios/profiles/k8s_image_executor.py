@@ -14,6 +14,15 @@ because under the default strategy the old pod keeps serving (cut F05-G).
 The scenario id never reaches kubectl: the remote script gets the namespace, the
 Deployment, the container and the two image references, and its state file is keyed
 by Deployment.
+
+A second mode ("release") rolls a Deployment to a defective new release instead
+(F41-R reconstructs Honeycomb 2019-11-06: a bad commit leaked memory at the same rate
+on every backend until they crashed). The defective image is built from a patch kept
+under scripts/scenarios/fault-images/ and lives only in 109 docker; this mode loads it
+into the target node's containerd right before the rollout, and cleanup rolls back to
+the manifest image and removes the release from the node again (its name and the
+sha256:<image ID> reference CRI keeps beside it). App sources,
+manifests and the manifest image are never touched. F17-H keeps its own script.
 """
 from __future__ import annotations
 
@@ -33,6 +42,17 @@ CONTRACTS = {
         "container": "transfer-service",
         "baseline_image": "core-banking-transfer:latest",
         "fault_image": "core-banking-transfer:2.1.0",
+    },
+    # 2026-10-09. F41-R: banking account-service 를 메모리 누수가 든 릴리스 1.3.0 으로 롤아웃한다.
+    # 결함 이미지는 fault-images/f41-r(패치 + image.json)로 109 docker 에만 빌드해 두고, 실행기가
+    # 주입 직전에 tb-w2 에 올리며 cleanup 이 매니페스트 이미지로 되돌린 뒤 노드에서 지운다.
+    "F41-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-account",
+        "container": "account-service",
+        "baseline_image": "core-banking-account:latest",
+        "fault_image": "core-banking-account:1.3.0",
     },
 }
 
@@ -61,7 +81,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         raise ExecutorError("release image executor requires its canonical Kubernetes namespace")
     return kubectl_bash_argv([
         action, p["namespace"], p["deployment"], p["container"], p["baseline_image"], p["fault_image"],
-    ]), SCRIPT
+    ]), RELEASE_SCRIPT if p.get("mode") == "release" else SCRIPT
 
 
 SCRIPT = br'''#!/usr/bin/env bash
@@ -132,6 +152,120 @@ case "$action" in
     fi
     set_image "$original"; healthy 180s; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s ;;
+  *) exit 2 ;;
+esac
+'''
+
+
+# Defective release (mode "release"). The node holds only manifest images (imagePullPolicy
+# Never, no registry), so the release tag is copied from 109 docker into the node's
+# containerd just before the rollout and removed again by cleanup. The Deployment keeps its
+# own strategy: the new pod starts and passes its probes, then the release misbehaves.
+RELEASE_SCRIPT = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; deploy="$3"; container="$4"; baseline="$5"; fault="$6"
+state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+state="$state_root/${ns}-${deploy}-image"
+# The release's image ID (docker config digest), kept from run until cleanup has removed every
+# node reference to it: CRI keeps its own "sha256:<ID>" reference beside the name, and removing
+# only the name would leave the release's content on the node.
+release_ref="$state_root/${ns}-${deploy}-release-id"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+spec() { "${k[@]}" get deploy "$deploy" -o json; }
+image() { spec | jq -r --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | .image'; }
+never_pull() { [[ "$(spec | jq -r --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | .imagePullPolicy')" == "Never" ]]; }
+node() { spec | jq -r '.spec.template.spec.nodeSelector["kubernetes.io/hostname"] // empty'; }
+node_ip() {
+  local n; n=$(node); [[ -n "$n" ]]
+  kubectl --kubeconfig=/root/tb-kubeconfig get node "$n" -o json \
+    | jq -r '.status.addresses[] | select(.type=="InternalIP") | .address' | head -n1
+}
+on_node_status() {
+  local n; n=$(node); [[ -n "$n" ]]
+  kubectl --kubeconfig=/root/tb-kubeconfig get node "$n" -o json \
+    | jq -e --arg i "$1" --arg d "docker.io/library/$1" '[.status.images[] | (.names // [])[]] | any(. == $i or . == $d)' >/dev/null
+}
+node_sh() {
+  ssh -i /root/.ssh/tb_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "nkia@$(node_ip)" "$@"
+}
+# containerd's own list is current; node status.images lags the import by a status update.
+# grep reads the whole list (no -q): an early exit would SIGPIPE ssh and fail the pipeline.
+in_containerd() { node_sh sudo -n ctr -n k8s.io images ls -q | grep -Fx "docker.io/library/$1" >/dev/null; }
+# The pulled-in release only adds its app layer (same eclipse-temurin base as the manifest
+# image), but while it runs the manifest image is unused and kubelet image GC (high 85%,
+# low 80%) could reclaim it. Start only below the GC low mark, as F17-H does.
+disk_ok() {
+  local n; n=$(node); [[ -n "$n" ]]
+  kubectl --kubeconfig=/root/tb-kubeconfig get --raw "/api/v1/nodes/$n/proxy/stats/summary" \
+    | jq -e '.node.runtime.imageFs | (1 - .availableBytes / .capacityBytes) < 0.80' >/dev/null
+}
+set_image() { "${k[@]}" set image deploy "$deploy" "$container=$1" >/dev/null; }
+healthy() {
+  local deadline=$((SECONDS + ${1%s}))
+  while :; do
+    if spec | jq -e '
+        .status.observedGeneration >= .metadata.generation
+        and ((.status.updatedReplicas // 0) == .spec.replicas)
+        and ((.status.availableReplicas // 0) == .spec.replicas)
+        and ((.status.replicas // 0) == .spec.replicas)' >/dev/null; then return 0; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
+# No pod of the namespace may still run the release when its tag leaves the node.
+release_unused() {
+  local deadline=$((SECONDS + 90))
+  while "${k[@]}" get pods -o json | jq -e --arg f "$fault" \
+      '[.items[] | .spec.containers[].image] | any(. == $f)' >/dev/null; do
+    (( SECONDS < deadline )) || return 1
+    sleep 3
+  done
+}
+release_id() { docker image inspect --format '{{.Id}}' "$fault" 2>/dev/null || true; }
+# Every node reference to the release: its name and its ID reference ($1, may be empty).
+# A failed listing must not read as "absent": capture it before filtering.
+release_refs() {
+  local list; list=$(node_sh sudo -n ctr -n k8s.io images ls -q) || return 1
+  grep -Fx -e "docker.io/library/$fault" ${1:+-e "$1"} <<<"$list" || true
+}
+release_absent() { local refs; refs=$(release_refs "$1") || return 1; [[ -z "$refs" ]]; }
+unload() {
+  local id=$1 ref
+  for ref in $(release_refs "$id"); do node_sh sudo -n ctr -n k8s.io images rm "$ref" >/dev/null; done
+  release_absent "$id"
+}
+check() {
+  command -v kubectl >/dev/null; command -v jq >/dev/null; command -v docker >/dev/null; command -v ssh >/dev/null
+  "${k[@]}" auth can-i patch deployments | grep -qx yes
+  [[ "$(image)" == "$baseline" ]]; never_pull
+  [[ "$(spec | jq -r '.spec.replicas')" == "1" ]]
+  docker image inspect "$fault" >/dev/null
+  on_node_status "$baseline"; in_containerd "$baseline"
+  local id; id=$(release_id); [[ "$id" == sha256:* ]]
+  release_absent "$id"
+  disk_ok
+  healthy 1s
+}
+case "$action" in
+  preflight) check; [[ ! -e "$state" ]] ;;
+  # Loading takes seconds (only the app layer is new); the rollout itself is not awaited,
+  # like k8s.env, so the coordinator lock is not held for the JVM start.
+  run) check; mkdir -p "$state_root"; image >"$state.tmp"; mv -T "$state.tmp" "$state"
+    release_id >"$release_ref.tmp"; mv -T "$release_ref.tmp" "$release_ref"
+    docker save "$fault" | node_sh sudo -n ctr -n k8s.io images import - >/dev/null
+    in_containerd "$fault"
+    set_image "$fault" ;;
+  cleanup) id=$(cat "$release_ref" 2>/dev/null || release_id)
+    [[ -e "$state" ]] || { unload "$id"; rm -f "$release_ref"; exit 0; }
+    original=$(cat "$state"); [[ "$original" == "$baseline" ]]
+    if ! in_containerd "$original"; then
+      echo "baseline image $original is gone from node $(node): reload it on 109 with" \
+        "docker save $original | ssh -i /root/.ssh/tb_key nkia@$(node_ip) 'sudo ctr -n k8s.io images import -'" >&2
+      exit 1
+    fi
+    set_image "$original"; healthy 180s; release_unused; unload "$id"; rm -f "$release_ref" "$state" ;;
+  recovery) [[ ! -e "$state" ]]; [[ ! -e "$release_ref" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s
+    release_absent "$(release_id)" ;;
   *) exit 2 ;;
 esac
 '''

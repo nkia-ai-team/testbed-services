@@ -902,6 +902,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F41-R",
+      "slug": "f41-r-banking-account-release-memory-leak",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": ""
     }
   ]
 }

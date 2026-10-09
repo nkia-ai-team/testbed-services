@@ -1,0 +1,80 @@
+diff --git a/core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java b/core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java
+index 6395fec..b027909 100644
+--- a/core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java
++++ b/core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java
+@@ -25,17 +25,23 @@ public class AccountService {
+ 
+     private final AccountRepository accountRepository;
+     private final TransferClient transferClient;
++    private final BalanceSnapshotCache balanceSnapshotCache;
+ 
+-    public AccountService(AccountRepository accountRepository, TransferClient transferClient) {
++    public AccountService(AccountRepository accountRepository, TransferClient transferClient,
++                          BalanceSnapshotCache balanceSnapshotCache) {
+         this.accountRepository = accountRepository;
+         this.transferClient = transferClient;
++        this.balanceSnapshotCache = balanceSnapshotCache;
+     }
+ 
+     @Transactional(readOnly = true)
+     public AccountResponse getAccount(String id) {
+-        Account account = accountRepository.findById(id)
+-                .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND, "Account not found: " + id));
+-        return toResponse(account);
++        // 스냅샷에 아직 없는 계좌(첫 갱신 전, 갓 개설된 계좌)만 Oracle 에서 읽는다.
++        return balanceSnapshotCache.latest(id).orElseGet(() -> {
++            Account account = accountRepository.findById(id)
++                    .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND, "Account not found: " + id));
++            return toResponse(account);
++        });
+     }
+ 
+     /**
+diff --git a/core-banking/account-service/src/main/java/com/corebanking/account/service/BalanceSnapshotCache.java b/core-banking/account-service/src/main/java/com/corebanking/account/service/BalanceSnapshotCache.java
+new file mode 100644
+index 0000000..456c6de
+--- /dev/null
++++ b/core-banking/account-service/src/main/java/com/corebanking/account/service/BalanceSnapshotCache.java
+@@ -0,0 +1,42 @@
++package com.corebanking.account.service;
++
++import com.corebanking.account.entity.Account;
++import com.corebanking.account.repository.AccountRepository;
++import com.corebanking.common.dto.AccountResponse;
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++
++import java.util.Deque;
++import java.util.Map;
++import java.util.Optional;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentLinkedDeque;
++
++/**
++ * 잔액 조회를 Oracle 대신 메모리 스냅샷으로 답한다.
++ * 전체 계좌를 짧은 주기로 다시 읽어 계좌별 이력 끝에 붙이고, 조회는 가장 최근 값을 쓴다.
++ * 이력은 잔액 추이 조회(다음 릴리스)에서 쓴다.
++ */
++@Component
++public class BalanceSnapshotCache {
++
++    private final AccountRepository accountRepository;
++    private final Map<String, Deque<AccountResponse>> history = new ConcurrentHashMap<>();
++
++    public BalanceSnapshotCache(AccountRepository accountRepository) {
++        this.accountRepository = accountRepository;
++    }
++
++    @Scheduled(fixedDelayString = "${account.balance-snapshot.refresh-ms:500}")
++    public void refresh() {
++        for (Account a : accountRepository.findAll()) {
++            history.computeIfAbsent(a.getId(), id -> new ConcurrentLinkedDeque<>())
++                    .addLast(new AccountResponse(a.getId(), a.getHolder(), a.getBalance(), a.getStatus()));
++        }
++    }
++
++    public Optional<AccountResponse> latest(String id) {
++        Deque<AccountResponse> trail = history.get(id);
++        return trail == null ? Optional.empty() : Optional.ofNullable(trail.peekLast());
++    }
++}

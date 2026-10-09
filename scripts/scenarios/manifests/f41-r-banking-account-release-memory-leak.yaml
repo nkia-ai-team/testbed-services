@@ -1,0 +1,308 @@
+{
+  "schema_version": "1.0",
+  "id": "F41-R",
+  "slug": "f41-r-banking-account-release-memory-leak",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-account 컨테이너 image set(core-banking-account:latest→core-banking-account:1.3.0, 직전에 runner 가 109 docker 의 1.3.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=5, 하루 주기 1~4 iter/s 기준선 위 잔액 조회 표본 확보)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f41-r",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-account",
+                "container": "account-service",
+                "baseline_image": "core-banking-account:latest",
+                "fault_image": "core-banking-account:1.3.0"
+              },
+              "min_hold": "14m",
+              "settle": "60s",
+              "timeout": "28m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api) 상태. account 가 죽거나 재시작해도 nginx 와 api 는 살아서 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "_note": "transfer 파드. 이 주입은 transfer 를 건드리지 않아 고장 중에도 Ready 여야 한다(빠지면 F17-R, F17-H 꼴의 하류 장애). account 파드는 러너 kubernetes 프로브 허용 목록(live_probes APPROVED_K8S_TARGETS)에 없어 보지 않는다",
+            "freshness": "30s"
+          },
+          {
+            "id": "oracle_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-oracle"
+            },
+            "_note": "Oracle 파드. 이 주입은 Oracle 을 건드리지 않는다. 빠지면 DB 장애(F35-R, F01-P 계열)다",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 잔액 조회(step get, 35%, nginx → account 직행) 실패율. 평시 0. 새 account 가 힙을 다 채워 OutOfMemoryError 로 Tomcat 요청 처리가 멈춘 구간(응답 없이 시간 초과, 일부 500)과 readiness 로 엔드포인트에서 빠지고 liveness 재시작 뒤 기동하는 구간(nginx 502)에 거의 1 이다. 그 사이 힙이 다시 찰 때까지는 0 근처로 돌아간다(전체 GC 연속 구간은 느리지만 대개 성공)",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 판정에 쓰지 않고 기록만 한다(api 서킷이 열리면 account 가 살아난 뒤에도 5초 남짓 502 가 이어진다)",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 잔액 조회(step get, 55%, nginx → account 직행) 실패율. 평시 0, 하루 주기 1~4 iter/s 라 30초 창에 잔액 조회 약 16~66건. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "balance-reads-failing",
+              "observation": "balance_read_nonok_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "새 account 버전이 잔액 스냅샷을 0.5초마다 다시 읽어 계좌별 이력에 쌓기만 하고 비우지 않아 힙(최대 약 246MiB)이 분당 약 30MB 씩 찬다. 그러면 Serial GC 전체 수집이 잇따르고(지연), 이어서 OutOfMemoryError 로 요청 처리가 멈추며 readiness, liveness(/actuator/health/liveness, 15초 간격 5회)가 실패해 kubelet 이 컨테이너를 다시 띄운다. 새 컨테이너도 같은 버전이라 같은 일을 되풀이한다. 그 구간마다 nginx → account 잔액 조회가 시간 초과, 500, 502 로 실패한다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 14m: 롤아웃 뒤 새 파드 기동 약 1분, 힙이 차 전체 GC 가 잇따르기까지 약 6분, 전체 GC 연속(지연) 약 3분, OutOfMemoryError 로 Tomcat 요청 처리가 멈춘 뒤 liveness 실패와 재기동 약 2~3분이 한 주기(약 11~13분)다(2026-10-09 로컬 실측: 같은 jar, JDK 21 x86_64(운영은 JDK 17 aarch64), 0.5 CPU, 1GiB, Serial GC 에서 기동 6분 뒤 전체 GC 연속, 8분 뒤 OOM 으로 acceptor 스레드가 죽어 요청이 응답 없이 걸림). 실패 구간 사이에는 잔액 조회가 정상이라 성공 판정은 실패 구간 안에서만 선다. 14분이 지나면 두 번째 실패 구간(약 21~24분)이 판정되어 녹화 구간에 실패 구간 두 번이 들어간다. timeout 28m 은 주기가 14분까지 길어져도 두 번째 구간을 받는다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1.25,
+              "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "transfer-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 파드가 빠지면 하류 장애(F17-R, F17-H 꼴)다. 이 주입은 transfer 를 건드리지 않는다"
+            },
+            {
+              "id": "oracle-down",
+              "observation": "oracle_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "Oracle 파드가 빠지면 account 가 아니라 DB 쪽 장애다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "baseline-balance-reads-recovered",
+              "observation": "balance_read_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.05,
+              "_note": "판정력을 가진 회복 조건. 평시 0.0. cleanup 이 매니페스트 이미지로 되돌려 새 account 파드가 Ready 가 된 뒤 기준선 잔액 조회가 30초 창 두 번 연속 실패 없이 끝나야 회복이다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 이미지를 core-banking-account:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 1.3.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. target_health 와 pod_ready 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

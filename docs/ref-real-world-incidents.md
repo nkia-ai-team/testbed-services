@@ -17,7 +17,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 자료 모음이다. **출처가 말한 내용만 적는다.** 이 테스트베드에서 재현할 수 있는지,
 무엇을 먼저 만들지 같은 판단은 이 문서에 넣지 않고 각 시나리오 설계 시트에 둔다.
 
-- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례, M1 Vapi 2025-01-21 사례, M1 GitHub 2026-03-05 와 2026-06-10 사례는 2026-10-08 추가, M1 Google Cloud 2025-06-12 세부는 2026-10-09 공식 보고에서 보강, M2 Harness 2025-10-28 과 Pipefy 2024-05-22 사례는 2026-10-09 추가, M21 Vapi 2024-10-02 사례는 2026-10-09 추가)
+- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례, M1 Vapi 2025-01-21 사례, M1 GitHub 2026-03-05 와 2026-06-10 사례는 2026-10-08 추가, M1 Google Cloud 2025-06-12 세부는 2026-10-09 공식 보고에서 보강, M2 Harness 2025-10-28 과 Pipefy 2024-05-22 사례는 2026-10-09 추가, M21 Vapi 2024-10-02 사례는 2026-10-09 추가, M12 Honeycomb 2019-11-06 세부는 2026-10-09 공식 보고에서 보강)
 - 출처 표기: 공식 = 기업 공식 포스트모템 또는 상태 페이지, 논문 = 학술 논문,
   보도 = 언론 보도, 2차 = 집계 사이트나 요약 글. 보도와 2차 출처는 원문을 확인하지 못했다는 뜻이다.
 
@@ -137,7 +137,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 
 | 사례 | 무엇이 일어났나 | 출처 |
 |---|---|---|
-| Honeycomb, 2019-11-06 | 느린 누수가 모든 백엔드에서 같은 속도로 진행되어 수 분 간격으로 전부 죽음. 처음에는 ALB 문제로 오판 | [공식](https://www.honeycomb.io/blog/incident-report-running-dry-on-memory-without-noticing) |
+| Honeycomb, 2019-11-06 | 느린 누수가 모든 백엔드에서 같은 속도로 진행되어 수 분 간격으로 전부 죽음. 처음에는 ALB 문제로 오판. 세부(공식 보고): 수집(ingest) 워커의 메모리 누수로 약 20분짜리 오류 구간이 네 번 생겨 고객 텔레메트리의 1~3% 가 간헐적으로 거절됨. 누수는 "a slow memory leak that manifested over hours, which leaked at the same rate on each ingest backend" 라 백엔드들이 몇 분 차이로 함께 죽고 진행 중 요청이 실패, 새 요청은 건강한 백엔드를 찾지 못함. ALB 로그에는 'backend unreachable', 'backend timed out while processing'. SLO 소진 경보가 몇 분 안에 울렸지만 호출 경보가 아니었고, 최근 배포가 없었다는 이유로 ALB 를 의심(AWS 지원 요청까지 함). 다른 엔지니어가 재시작과 메모리 누수를 찾아 잘못된 커밋을 되돌리고 고친 릴리스를 배포해 메모리가 일정해지고 크래시가 멈춤. 재발 방지로 프로세스 크래시(panic, OOM) 비율을 진단 신호로 쓰고, 사용자 SLO 소진 경보를 호출 경보로 올림 | [공식](https://www.honeycomb.io/blog/incident-report-running-dry-on-memory-without-noticing) |
 | Twitter | GC가 증폭 기전이 된 사례 (Huang 2022 §4) | [USENIX](https://www.usenix.org/conference/osdi22/presentation/huang-lexiang) |
 
 ### M13. 리소스 limit 오설정, 노드 과밀

@@ -6608,6 +6608,95 @@
      }
     ]
    }
+  },
+  "F41-R": {
+   "title": "Release rollout of a banking account-service version that leaks memory: every few minutes the new account JVM fills its heap, fails with OutOfMemoryError and is restarted by its liveness probe, and balance lookups and transfers fail with 500/502 in recurring windows",
+   "description": "A rollout of the banking account-service Deployment (testbed-account) moves its container image from core-banking-account:latest to the release core-banking-account:1.3.0. The release adds an in-memory balance snapshot: a scheduled task re-reads all accounts (about 1,000 rows) from Oracle every 500 ms and appends each account's latest values to a per-account history, and GET /api/accounts/{id} answers from the newest entry. Nothing ever trims the history, so every refresh keeps about 250 KB more on the heap, roughly 30 MB per minute. The Deployment keeps its default strategy (maxSurge 25%), so the new pod starts, passes its probes and replaces the old one; memory limit (1Gi), JVM options, probes and env are unchanged, which leaves the JVM its default heap of about 246 MiB (Serial GC, Tenured Gen 170 MiB). About six minutes after the new container starts, the live set reaches the heap limit and full collections run back to back for about three minutes (slow responses); then java.lang.OutOfMemoryError: Java heap space is thrown in request threads ('Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.OutOfMemoryError: Java heap space]') and kills Tomcat's acceptor thread, so requests hang without an answer (measured locally on 2026-10-09 with the same jar on JDK 21 x86_64 (production runs JDK 17 on aarch64), 0.5 CPU, 1 GiB, Serial GC: full GCs from minute 6, OutOfMemoryError and hanging requests from minute 8). The readiness probe (/actuator/health) times out and the pod leaves the Service endpoints, the liveness probe (/actuator/health/liveness, every 15 s, 5 failures) fails, and kubelet restarts the container. The restarted container runs the same release, so the cycle repeats every eleven to thirteen minutes for as long as the release stays. In each failure window balance lookups (nginx → account) time out or fail with 500 or 502 and transfers (nginx → api → account → transfer) fail with 502 after api's retries and circuit breaker; between windows everything works. Transaction history (api → transfer), commerce settlement (commerce-payment → transfer) and Oracle are unaffected. This reconstructs Honeycomb's 2019-11-06 incident, where a bad commit introduced a slow memory leak that grew at the same rate on every ingest backend, so the backends crashed within minutes of each other in recurring windows of errors until the commit was reverted and a fixed release pushed.",
+   "cause": "Rollout of testbed-account (banking) to the release core-banking-account:1.3.0, whose new balance snapshot appends every 500 ms refresh of all accounts to a per-account history that is never trimmed → the JVM heap (default ~246 MiB, limits unchanged) fills a few minutes after each start → back-to-back full GCs, then OutOfMemoryError stops request handling, readiness and liveness probes fail, kubelet restarts the container, and the same release fills its heap again → recurring windows in which balance lookups (timeouts, 500, 502) and transfers through account (502) fail, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-account (rca-testbed-banking), container account-service, from core-banking-account:latest to core-banking-account:1.3.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f41-r from origin/main core-banking plus fault-images/f41-r/account-service.patch (two files under account-service/src: a new BalanceSnapshotCache and AccountService.getAccount reading from it); the manifest image, sources and manifests are untouched. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w2's containerd holds the baseline and not the release, that tb-w2's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w2's containerd (docker save | ctr import), then sets the image and does not wait for the rollout. A north-south 5 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) drives the banking entry point (30082) on top of the resident baseline. Cleanup sets the image back to core-banking-account:latest, waits until the Deployment is available, waits until no pod uses the release, and removes both node references to the release from tb-w2's containerd, its name and the sha256:<image ID> reference CRI keeps beside it (run records the ID from 109 docker), then checks that neither is left. No value carries the scenario id.",
+   "user_impact": "Every eleven to thirteen minutes, first for about three minutes balance lookups through the banking gateway slow down (full GCs), then for about two to three minutes they hang until they time out, fail with 500 (OutOfMemoryError) or with 502 (no account endpoint while the container restarts), and money transfers fail with 502 because api cannot reach account. Between the windows balance lookups and transfers succeed. Transaction history, commerce checkout and its settlement keep working.",
+   "distinguishing_evidence": "Decisive evidence is a release followed by memory that only grows: a KCM ScalingReplicaSet for testbed-account and the new pod's kubelet event 'Pulled: Container image \"core-banking-account:1.3.0\" already present on machine' (every testbed-account ReplicaSet and pod record on file carries core-banking-account:latest), then the account JVM metric apm.agent.otel.java.jvm.memory.used for Tenured Gen climbing in a straight line from the new pod's start (7-day baseline 75-82 MB) to the 170 MiB pool limit while used_after_last_gc (55 MB, the same value for the past 7 days) no longer comes back down after full collections, followed by an account ERROR log 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.OutOfMemoryError: Java heap space]', KCM Unhealthy readiness and liveness events and Killing for the same pod, and then the same climb again after each restart. The memory limit, JVM options, probes and env of the new ReplicaSet are the same as before and the APM service_version stays 1.0.0 (the release changes only sources, not the pom version), so the image tag is where the version change shows; so this is not a limit or heap setting change (F05-R, F09-H), not an external load surge (the request rate is flat and the climb continues between failures), not Oracle (it stays Ready, transaction history and commerce settlement keep working) and not transfer (Ready, serves history and settlement).",
+   "domain": "core-banking",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "core-banking-account",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking account-service 의 새 릴리스 core-banking-account:1.3.0 이다. 이 버전이 더한 잔액 스냅샷(0.5초마다 전체 계좌 약 1,000건을 다시 읽어 계좌별 이력 끝에 붙임)이 이력을 비우지 않아 JVM 힙이 분당 약 30MB 씩 찬다. 메모리 한도(1Gi), JVM 옵션, 프로브는 그대로라 기본 힙(약 246MiB, Serial GC, Tenured Gen 170MiB)이 기동 약 6분 뒤 차고, 약 3분 동안 전체 GC 가 잇따른 뒤 OutOfMemoryError 로 요청 처리가 멈추며(Tomcat acceptor 스레드가 죽어 요청이 응답 없이 걸림) readiness, liveness 가 실패해 kubelet 이 컨테이너를 재시작한다. 같은 버전이 다시 떠 주기가 되풀이된다. 원칙 6: 호출자들의 요청은 평시 그대로 정당하고, 힙을 채운 것은 account 자신의 새 버전이므로 근본과 계기가 같은 곳(account 릴리스)이다. 원본 사후 보고처럼 '배포된 커밋이 메모리를 새게 했고 되돌려 복구했다'가 정답의 층위이며, 패치 속 어느 줄인지는 요구하지 않는다(원칙 5). target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 testbed-account ScalingReplicaSet 과 새 파드 'Pulled ... \"core-banking-account:1.3.0\"', kcm_resources_history 의 새 ReplicaSet 스펙 image(그 전 testbed-account ReplicaSet 33건, 파드 24건 전부 :latest) ② VictoriaMetrics apm.agent.otel.java.jvm.memory.used{service_name=\"core-banking-account\", jvm_memory_pool_name=\"Tenured Gen\"} 가 새 파드(host_name 이 새 ReplicaSet 해시) 기동부터 직선 상승해 jvm.memory.limit(170MiB)에 닿고 재시작 뒤 다시 낮은 값에서 같은 기울기로 오름(평시 7일 75~82MB). 전체 GC 때만 갱신되는 used_after_last_gc(평시 55MB, 7일 내내 같은 값)는 전체 GC 뒤에도 내려오지 않는다. APM service_version 은 릴리스가 소스만 바꿔 1.0.0 그대로라 버전 변화는 이미지 태그로 보인다 ③ account ERROR 로그 'Servlet.service() ... threw exception [Request processing failed: java.lang.OutOfMemoryError: Java heap space]' ④ KCM Unhealthy(readiness, liveness), Killing ⑤ 그 구간 api 'Account service call failed'·서킷 열림, account 서버 스팬 오류율과 지연 ⑥ 요청률은 평탄하고 Oracle, transfer 는 Ready, 거래 내역과 commerce 정산은 정상.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f41-r/account-service.patch:68-74 (refresh — 릴리스 1.3.0 의 BalanceSnapshotCache: @Scheduled fixedDelay 500ms 로 accountRepository.findAll() 결과를 계좌별 ConcurrentLinkedDeque 끝에 addLast 하고 지우는 곳이 없음)",
+     "scripts/scenarios/fault-images/f41-r/account-service.patch:20-30 (getAccount — 릴리스 1.3.0 에서 balanceSnapshotCache.latest(id) 로 답하고 스냅샷에 없는 계좌만 Oracle 조회)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:34-39 (매니페스트 버전의 getAccount — Oracle findById, 메모리에 쌓는 것 없음)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/AccountServiceApplication.java:7-9 (EnableScheduling — 새 버전의 @Scheduled 갱신이 스케줄러 스레드에서 돈다)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/AccountClient.java:28-58 (requestTransfer — account 연결 실패를 'Account service call failed' 로 남기고 재시도, 서킷 끝에 BAD_GATEWAY)"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-account(core-banking/k8s/21-account-service.yaml: replicas 1 :9, nodeSelector tb-w2 :18-19, image core-banking-account:latest imagePullPolicy Never :27-28, readinessProbe /actuator/health timeout 3s :73-79, livenessProbe /actuator/health/liveness period 15s timeout 3s failureThreshold 5 :81-87, limits cpu 500m memory 1Gi :88-94, 전략 기본값 maxSurge 25% / maxUnavailable 25%, 109 kubectl 2026-10-09). JVM 옵션은 OTel javaagent 뿐이라 힙은 컨테이너 한도의 기본 25%(jvm.memory.limit: Eden 68MiB, Survivor 8MiB, Tenured 170MiB, 119 VM 2026-10-09). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w2 containerd 에 올리며 cleanup 이 지운다(scripts/scenarios/fault-images/f41-r/image.json)."
+   },
+   "must_support": [
+    "testbed-account 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 core-banking-account:1.3.0 을 담고, 그 전 testbed-account ReplicaSet, 파드 기록은 전부 core-banking-account:latest 다",
+    "새 account 파드의 apm.agent.otel.java.jvm.memory.used(Tenured Gen)가 기동부터 요청률과 무관하게 직선으로 올라 jvm.memory.limit(170MiB)에 닿고, 재시작 뒤 같은 기울기로 다시 오른다(평시 7일 75~82MB). 전체 GC 때만 갱신되는 used_after_last_gc(평시 55MB, 7일 내내 같은 값)는 전체 GC 뒤에도 내려오지 않는다. APM service_version 은 1.0.0 그대로(릴리스가 소스만 바꿈)라 버전 변화는 이미지 태그로 본다",
+    "힙이 찬 구간에 core-banking-account ERROR 로그 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.OutOfMemoryError: Java heap space]' 가 남는다(로컬 실측 문장. 설계 메모: OTel 내보내기 스레드도 힙을 못 얻어 일부가 빠질 수 있어 첫 실행에서 녹화본에 남은 문장을 확인하고, 없으면 이 항목을 JVM 지표와 KCM 재시작으로 좁힌다)",
+    "같은 파드의 KCM Unhealthy(readiness /actuator/health, liveness /actuator/health/liveness 시간 초과나 500)와 Killing, 그 뒤 재기동이 실패 구간마다 반복된다",
+    "실패 구간마다 동반 부하 잔액 조회(step get) 실패율이 0.5 이상으로 오르고 api 가 'Account service call failed'·서킷 열림 로그를 남기며, 구간 사이에는 0 으로 돌아간다. 거래 내역과 commerce 정산은 내내 정상이다"
+   ],
+   "must_rule_out": [
+    "메모리 한도나 힙 설정 축소가 아님(F05-R, F09-H): 새 ReplicaSet 의 resources, JAVA_TOOL_OPTIONS 는 그대로이고 jvm.memory.limit 도 평시와 같다. 바뀐 것은 이미지 태그 하나다",
+    "컨테이너 메모리 한도 초과 OOMKill 이 아님: 재시작 사유는 liveness 실패(Killing)이고 힙 바깥 메모리는 1Gi 한도에 한참 못 미친다",
+    "부하 증가가 아님: 요청률은 동반 부하 5rps 와 기준선으로 평탄하고, 힙은 요청이 아니라 시간에 비례해 오르며 실패 구간 사이에도 계속 오른다",
+    "Oracle 이나 DB 계정 장애가 아님(F35-R, F01-P): Oracle 은 Ready, transfer 의 거래 내역과 commerce 정산이 계속 성공하고 account 에 ORA 오류가 없다",
+    "transfer 장애가 아님(F17-R, F17-H): transfer 는 Ready 이고 실패는 account 를 거치는 경로에만 있다",
+    "account 의 하류 주소 오설정이 아님(F39-R): 잔액 조회(account 단독 경로)도 실패하고 실패가 연속이 아니라 주기적이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F09-H (commerce order GC 압박: 힙을 env 로 96MiB 로 좁힌 설정 변경. 힙 한도가 바뀐다. F41-R 은 한도는 그대로이고 새 버전이 사용량을 끝없이 늘린다)",
+     "F05-R (commerce payment 메모리 한도 축소로 OOMKill 재시작: 원인은 resources 변경, 재시작 사유가 OOMKilled. F41-R 은 한도 그대로, 재시작 사유가 liveness 실패)",
+     "F39-R (같은 account 서비스의 설정 롤아웃 장애지만 이체 하류 주소만 틀려 이체만 연속 실패, 잔액 조회는 정상)",
+     "F17-H (banking 의 다른 릴리스 장애: 이미지가 노드에 없어 새 transfer 파드가 아예 뜨지 않음. F41-R 은 새 버전이 잘 떠서 동작하다가 몇 분마다 죽는다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-account",
+     "banking-account",
+     "testbed-account"
+    ],
+    "partial": [
+     "core-banking-api",
+     "banking-api"
+    ]
+   },
+   "title_ko": "banking account-service 를 메모리가 새는 릴리스로 롤아웃: 새 account JVM 이 몇 분마다 힙을 채워 OutOfMemoryError 를 내고 liveness 로 재시작되며, 그때마다 잔액 조회와 이체가 500, 502 로 실패한다",
+   "description_ko": "banking account-service Deployment(testbed-account) 롤아웃이 컨테이너 이미지를 core-banking-account:latest 에서 릴리스 core-banking-account:1.3.0 으로 바꾼다. 이 릴리스는 메모리 잔액 스냅샷을 더했다: 스케줄 작업이 0.5초마다 Oracle 에서 전체 계좌(약 1,000행)를 다시 읽어 계좌별 이력 끝에 최신 값을 붙이고, GET /api/accounts/{id} 는 가장 최근 항목으로 답한다. 이력을 줄이는 곳이 없어 갱신마다 힙에 약 250KB 가 더 남는다(분당 약 30MB). Deployment 는 기본 전략(maxSurge 25%)이라 새 파드가 떠서 프로브를 통과하고 옛 파드를 대체한다. 메모리 한도(1Gi), JVM 옵션, 프로브, env 는 그대로라 JVM 은 기본 힙 약 246MiB(Serial GC, Tenured Gen 170MiB)를 쓴다. 새 컨테이너 기동 약 6분 뒤 살아 있는 객체가 힙 한도에 닿아 약 3분 동안 전체 GC 가 잇따르고(응답 지연), 이어서 요청 스레드에서 java.lang.OutOfMemoryError: Java heap space 가 나('Servlet.service() ... threw exception [Request processing failed: java.lang.OutOfMemoryError: Java heap space]') Tomcat acceptor 스레드까지 죽어 요청이 응답 없이 걸린다(2026-10-09 로컬 실측: 같은 jar, JDK 21 x86_64(운영은 JDK 17 aarch64), 0.5 CPU, 1GiB, Serial GC 에서 기동 6분 뒤 전체 GC 연속, 8분 뒤 OOM). readiness(/actuator/health)가 시간 초과로 실패해 파드가 Service 엔드포인트에서 빠지고, liveness(/actuator/health/liveness, 15초 간격 5회)가 실패해 kubelet 이 컨테이너를 재시작한다. 다시 뜬 컨테이너도 같은 릴리스라 릴리스가 남아 있는 동안 약 11~13분 주기로 되풀이된다. 실패 구간마다 잔액 조회(nginx → account)는 시간 초과, 500, 502, 이체(nginx → api → account → transfer)는 api 재시도와 서킷 끝에 502 이고, 구간 사이에는 모두 정상이다. 거래 내역(api → transfer), commerce 정산(commerce-payment → transfer), Oracle 은 영향이 없다. Honeycomb 2019-11-06 장애(잘못된 커밋이 모든 수집 백엔드에서 같은 속도로 메모리를 새게 해 백엔드들이 몇 분 차이로 함께 죽는 오류 구간이 되풀이되었고, 커밋을 되돌린 릴리스로 복구)의 재구성이다.",
+   "cause_ko": "testbed-account(banking) 를 릴리스 core-banking-account:1.3.0 으로 롤아웃. 이 버전의 잔액 스냅샷이 0.5초마다 전체 계좌를 다시 읽어 계좌별 이력에 붙이기만 하고 비우지 않음 → 한도는 그대로인 JVM 힙(기본 약 246MiB)이 기동 몇 분 뒤 참 → 전체 GC 연속 뒤 OutOfMemoryError 로 요청 처리가 멈추고 readiness, liveness 실패, kubelet 이 컨테이너 재시작, 같은 릴리스가 다시 힙을 채움 → 잔액 조회(시간 초과, 500, 502)와 account 를 거치는 이체(502)가 주기적으로 실패. 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-banking 의 Deployment testbed-account 컨테이너 account-service 이미지를 core-banking-account:latest 에서 core-banking-account:1.3.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f41-r 이 origin/main core-banking 에 fault-images/f41-r/account-service.patch(account-service/src 안 두 파일: 새 BalanceSnapshotCache, 그것을 읽는 AccountService.getAccount)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트는 그대로다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w2 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w2 이미지 파일시스템이 80% 미만인지, Deployment 가 available 인지 확인한다. run 은 릴리스를 tb-w2 containerd 에 올린 뒤(docker save | ctr import) 이미지를 바꾸고 롤아웃을 기다리지 않는다. north-south 5rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더한다. cleanup 은 이미지를 core-banking-account:latest 로 되돌리고 Deployment available 을 기다린 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w2 containerd 에서 릴리스의 이름 참조와 CRI 가 따로 두는 sha256:<이미지 ID> 참조(run 이 109 docker 에서 ID 를 남김)를 모두 지우고 둘 다 없는지 확인한다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "약 11~13분마다 banking 게이트웨이를 거치는 잔액 조회가 먼저 약 3분 동안 느려지고(전체 GC), 이어서 2~3분 동안 응답 없이 시간 초과되거나 500(OutOfMemoryError), 502(컨테이너 재시작 중 account 엔드포인트 없음)로 실패하고, 이체는 api 가 account 에 닿지 못해 502 로 실패한다. 구간 사이에는 잔액 조회와 이체가 성공한다. 거래 내역, commerce checkout 과 정산은 계속 된다.",
+   "distinguishing_evidence_ko": "결정 증거는 릴리스 직후 줄지 않는 메모리다: testbed-account 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"core-banking-account:1.3.0\" already present on machine'(기록에 있는 testbed-account ReplicaSet, 파드는 모두 core-banking-account:latest), 그 뒤 account JVM 지표 apm.agent.otel.java.jvm.memory.used(Tenured Gen)가 새 파드 기동부터 직선으로 올라(평시 7일 75~82MB) 풀 한도 170MiB 에 닿고 used_after_last_gc(평시 55MB)는 전체 GC 뒤에도 내려오지 않으며, 이어서 account ERROR 로그 'Servlet.service() ... threw exception [Request processing failed: java.lang.OutOfMemoryError: Java heap space]', 같은 파드의 KCM Unhealthy readiness, liveness 와 Killing, 재시작 뒤 같은 상승의 반복. 새 ReplicaSet 의 메모리 한도, JVM 옵션, 프로브, env 는 이전과 같고 APM service_version 도 1.0.0 그대로라(버전 변화는 이미지 태그로 보인다) 한도나 힙 설정 변경(F05-R, F09-H)이 아니고, 요청률이 평탄하고 실패 구간 사이에도 힙이 오르므로 외부 부하 급증이 아니며, Oracle 은 Ready 이고 거래 내역과 commerce 정산이 계속 되므로 DB 도, transfer 도 아니다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f41-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-account",
+       "container": "account-service",
+       "baseline_image": "core-banking-account:latest",
+       "fault_image": "core-banking-account:1.3.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

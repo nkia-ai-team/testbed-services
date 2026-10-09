@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -336,6 +337,72 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "no verified release image contract"):
             k8s_image.validate("F17-R", k8s_image.CONTRACTS["F17-H"], {})
 
+    def test_k8s_image_release_mode_loads_the_release_only_for_the_fault(self) -> None:
+        # F41-R: 결함 릴리스는 109 docker 에만 있다. 노드에는 주입 직전에 올리고(run), 매니페스트 이미지로
+        # 되돌려 그 릴리스를 쓰는 파드가 없어진 뒤 노드에서 지운다(cleanup). 기존 F17-H 스크립트는 그대로다.
+        plan = compiler.compile_plan("f41-r-banking-account-release-memory-leak")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-account", "account-service",
+                                    "core-banking-account:latest", "core-banking-account:1.3.0"])
+        self.assertNotIn("F41-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F41-R", script)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        self.assertNotEqual(k8s_image.RELEASE_SCRIPT, k8s_image.SCRIPT)
+        preflight_case = script.split("\n  preflight)")[1].split(";;")[0]
+        self.assertIn("check", preflight_case)
+        check_fn = script.split("\ncheck() {")[1].split("\n}")[0]
+        for needle in ('docker image inspect "$fault"', 'in_containerd "$baseline"', "disk_ok", 'release_absent "$id"'):
+            self.assertIn(needle, check_fn)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn("ctr -n k8s.io images import -", run_case)
+        self.assertLess(run_case.index("images import"), run_case.index('set_image "$fault"'))
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('set_image "$original"; healthy 180s; release_unused; unload "$id"; rm -f "$release_ref" "$state"', cleanup_case)
+        # CRI 는 이미지마다 이름 참조 말고 "sha256:<이미지 ID>" 참조를 따로 둔다. 이름만 지우면 릴리스 내용이
+        # 노드에 남으므로(tb-w2 에 이름 없는 ID 참조가 이미 있었다) run 이 ID 를 남기고 cleanup 이 둘 다 지운다.
+        self.assertIn('release_id >"$release_ref.tmp"', run_case)
+        self.assertIn("docker image inspect --format '{{.Id}}' \"$fault\"", script)
+        refs_fn = script.split("\nrelease_refs() {")[1].split("\n}")[0]
+        self.assertIn('-e "docker.io/library/$fault" ${1:+-e "$1"}', refs_fn)
+        self.assertIn("|| return 1", refs_fn)
+        unload_fn = script.split("\nunload() {")[1].split("\n}")[0]
+        self.assertIn('for ref in $(release_refs "$id")', unload_fn)
+        self.assertIn('images rm "$ref"', unload_fn)
+        self.assertIn('release_absent "$id"', unload_fn)
+        recovery_case = script.split("\n  recovery)")[1].split(";;")[0]
+        self.assertIn('release_absent "$(release_id)"', recovery_case)
+        self.assertIn('[[ ! -e "$release_ref" ]]', recovery_case)
+        # 매니페스트 이미지, 전략, 프로브, 자원은 건드리지 않는다.
+        for forbidden in ("docker rmi", "docker tag", "docker build", "strategy\":", "Probe", "set resources", "set env"):
+            self.assertNotIn(forbidden, script)
+        # 함수를 그대로 떼어 가짜 노드(ctr images ls/rm)에 돌려, 이름 참조와 ID 참조가 모두 지워지고
+        # 기준 이미지와 다른 ID 참조는 남는지, 목록 조회가 실패하면 "없음"으로 읽지 않는지 본다.
+        functions = "\n".join([
+            "release_refs() {" + refs_fn + "\n}",
+            next(line for line in script.splitlines() if line.startswith("release_absent()")),
+            "unload() {" + unload_fn + "\n}",
+        ])
+        harness = (
+            "set -euo pipefail\nfault=core-banking-account:1.3.0\n"
+            "REFS=$'docker.io/library/core-banking-account:latest\\nsha256:base\\n"
+            "docker.io/library/core-banking-account:1.3.0\\nsha256:release'\n"
+            "node_sh() { [[ -n \"${DOWN:-}\" ]] && return 255\n"
+            "  if [[ \"$*\" == *'images ls -q'* ]]; then printf '%s\\n' \"$REFS\"; "
+            "else REFS=$(grep -vFx \"${@: -1}\" <<<\"$REFS\"); fi; }\n"
+            + functions +
+            "\nif DOWN=1 release_absent sha256:release; then echo listing-failure-read-as-absent; fi\n"
+            "if release_absent sha256:release; then echo release-missed; fi\n"
+            "unload sha256:release\nprintf '%s\\n' \"$REFS\"\n"
+        )
+        result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.split(),
+                         ["docker.io/library/core-banking-account:latest", "sha256:base"])
+        params = dict(k8s_image.CONTRACTS["F41-R"])
+        params["fault_image"] = "core-banking-account:latest"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_image.validate("F41-R", params, {})
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -647,6 +714,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F32-H",
             # 2026-10-09: commerce auth_tokens 인덱스 교체 마이그레이션이 동시 재생성을 INVALID 로 남긴 채 옛 인덱스를 지움(토큰 확인 전수 스캔, PostgreSQL 포화). 새 후보, 설계 강도 1단 고정 evaluation.
             "F33-P",
+            # 2026-10-09: banking account-service 를 메모리가 새는 릴리스 1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃(힙이 몇 분마다 차서 OutOfMemoryError, liveness 재시작이 되풀이). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F41-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

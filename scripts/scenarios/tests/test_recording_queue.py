@@ -49,7 +49,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 7 → 8. F32-H(food dispatch JSON 숫자 문자열 직렬화 설정 배포) 후보 추가.
         # 2026-10-09: 8 → 9. F33-P(commerce auth_tokens 인덱스 교체 마이그레이션 실패) 후보 추가.
         # 2026-10-09: 9 → 8. F35-R 정식 승격(녹화 case-f35-r-v3-bbbee443).
-        self.assertEqual(stages.count("candidate"), 8)
+        # 2026-10-09: 8 → 9. F41-R(banking account 메모리 누수 릴리스 롤아웃) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 9)
 
 
 class RecordingQueueTests(unittest.TestCase):
