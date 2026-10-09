@@ -3,7 +3,7 @@
   "id": "F33-R",
   "slug": "f33-r-food-dispatch-status-index-drop-fullscan",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

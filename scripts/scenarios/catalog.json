@@ -781,7 +781,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "stage": "candidate",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
