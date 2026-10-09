@@ -643,6 +643,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F40-R",
             # 2026-10-09: banking transfer 를 노드에 없는 릴리스 이미지 태그로 롤아웃(maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 ErrImageNeverPull). 새 후보, 설계 강도 1단 고정 evaluation.
             "F17-H",
+            # 2026-10-09: food dispatch 가 JSON 숫자를 문자열로 쓰게 하는 직렬화 설정 배포(값 형식 불일치로 order 의 용량 응답 캐스트 실패). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F32-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

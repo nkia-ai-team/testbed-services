@@ -416,7 +416,8 @@
           "F38-R",
           "F39-R",
           "F40-R",
-          "F17-H"
+          "F17-H",
+          "F32-H"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -475,7 +476,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -1137,6 +1138,17 @@
           "scenario_tag": "scenario_id=F17-H",
           "seed": 1717,
           "baseline_unit": "loadgen-banking"
+        },
+        "F32-H": {
+          "target_rps": 3,
+          "ramp_up": "2m",
+          "hold": "16m",
+          "ramp_down": "15s",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/surge.js",
+          "scenario_tag": "scenario_id=F32-H",
+          "seed": 3233,
+          "baseline_unit": "loadgen-food"
         }
       }
     },
@@ -1260,7 +1272,8 @@
           "F05-R",
           "F30-R",
           "F32-R",
-          "F39-R"
+          "F39-R",
+          "F32-H"
         ]
       },
       "scenario_parameters": {
@@ -2342,6 +2355,127 @@
             {
               "name": "TRANSFER_SERVICE_URL",
               "value": "http://testbed-ledger:8082"
+            }
+          ]
+        },
+        "F32-H": {
+          "namespace": "rca-testbed-food",
+          "deployment": "testbed-dispatch",
+          "container": "dispatch-service",
+          "baseline": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "MYSQL_USER",
+                  "name": "mysql-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASSWORD",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "MYSQL_PASSWORD",
+                  "name": "mysql-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "food-delivery-dispatch"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.200.109:14318"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=food-delivery,lucida.target_id=1f1eb9b2-a368-4a70-a003-5fe70b1a983b"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            }
+          ],
+          "fault": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "MYSQL_USER",
+                  "name": "mysql-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASSWORD",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "MYSQL_PASSWORD",
+                  "name": "mysql-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "food-delivery-dispatch"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.200.109:14318"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=food-delivery,lucida.target_id=1f1eb9b2-a368-4a70-a003-5fe70b1a983b"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            },
+            {
+              "name": "SPRING_JACKSON_GENERATOR_WRITE_NUMBERS_AS_STRINGS",
+              "value": "true"
             }
           ]
         }

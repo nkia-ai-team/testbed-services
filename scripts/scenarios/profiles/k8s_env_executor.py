@@ -31,6 +31,9 @@ APPROVED_TARGETS = {
     # 2026-10-08. F39-R: banking account 의 이체 하류 주소(TRANSFER_SERVICE_URL)를 다른 내부 호스트
     # (testbed-ledger:8082)로 덮어쓰는 설정 배포. 이름은 해석되지만 그 포트에 아무도 없어 연결이 시간 초과된다.
     "F39-R": ("rca-testbed-banking", "testbed-account", "account-service"),
+    # 2026-10-09. F32-H: food dispatch 의 JSON 직렬화 설정(숫자를 문자열로 쓰기)을 켜는 설정 배포.
+    # 용량 응답의 정수가 "500" 처럼 문자열로 나가고 order 의 Integer 캐스트가 실패해 주문이 503 이 된다.
+    "F32-H": ("rca-testbed-food", "testbed-dispatch", "dispatch-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -43,6 +46,7 @@ APPROVED_KEYS = {
     "F30-R": {"SPRING_APPLICATION_JSON"},
     "F32-R": {"DISPATCH_MAX_CAPACITY"},
     "F39-R": {"TRANSFER_SERVICE_URL"},
+    "F32-H": {"SPRING_JACKSON_GENERATOR_WRITE_NUMBERS_AS_STRINGS"},
 }
 
 
