@@ -3,7 +3,7 @@
   "id": "F37-R",
   "slug": "f37-r-banking-api-dns-policy-node-resolver",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
