@@ -67,7 +67,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 13 → 14. F33-H(food dispatch 릴리스가 배달 목록에 전체 건수 COUNT 를 붙여 MySQL 포화) 후보 추가.
         # 2026-10-09: 14 → 15. F49-H(food order 릴리스가 시각 표기를 바꿔 dispatch 응답을 못 읽음) 후보 추가.
         # 2026-10-09: 15 → 14. F39-R 정식 승격(녹화 case-f39-r-v3-dc45499a).
-        self.assertEqual(stages.count("candidate"), 14)
+        # 2026-10-09: 14 → 15. F50-R(banking 네임스페이스 메모리 할당량이 사용량 아래라 transfer 재배포의 새 파드가 거절됨) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 15)
 
 
 class RecordingQueueTests(unittest.TestCase):

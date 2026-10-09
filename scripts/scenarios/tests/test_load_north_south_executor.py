@@ -65,6 +65,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "k8s.image",
                 # 2026-10-09: F44-R — 워커 호스트 방화벽에 한 포트 허용 목록 체인 넣기와 지우기(ssh, 규칙마다 sudo iptables).
                 "host.firewall",
+                # 2026-10-09: F50-R — 네임스페이스 ResourceQuota 하나 만들기와 지우기(+ Deployment 일상 재배포).
+                "k8s.quota",
             },
         )
 

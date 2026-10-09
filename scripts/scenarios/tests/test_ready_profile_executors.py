@@ -41,6 +41,7 @@ app_control = load("app_control_executor")
 db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
 k8s_dns = load("k8s_dns_executor")
+k8s_quota = load("k8s_quota_executor")
 k8s_image = load("k8s_image_executor")
 host_firewall = load("host_firewall_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
@@ -282,6 +283,40 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         params["allowed_sources"] = params["allowed_sources"] + ["10.244.3.0/24"]
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             host_firewall.validate("F44-P", params, {})
+
+    def test_k8s_quota_only_adds_one_namespace_quota_and_a_routine_restart(self) -> None:
+        # F50-R: 주입은 네임스페이스 ResourceQuota 하나를 만들고 transfer 를 일상 재배포하는 것뿐이다.
+        # 이미지, 프로브, env, 자원 한도를 바꾸면 F17-H, F17-R, F42-R 의 지문(바뀐 파드 템플릿)이 섞이고,
+        # 떠 있는 파드를 지우면 할당량이 아니라 삭제가 원인이 된다.
+        plan = compiler.compile_plan("f50-r-banking-namespace-quota-blocks-transfer-rollout")
+        argv, stdin = k8s_quota.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "compute-resources",
+                                    "requests.memory", "4Gi", "testbed-transfer"])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8). 상태 파일은 네임스페이스와 할당량 이름으로 짓는다.
+        self.assertNotIn("F50-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F50-R", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn('create quota "$quota" --hard="$resource=$hard"', run_case)
+        self.assertIn('rollout restart deploy "$deploy"', run_case)
+        # 할당량이 사용량을 센 뒤에 재배포해야 거절 사유가 'status unknown' 이 아니라 'exceeded quota' 다.
+        self.assertLess(run_case.index("quota_counted"), run_case.index("rollout restart"))
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('delete resourcequota "$quota"', cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        preflight = script.split("\ncheck() {")[1].split("\n}")[0]
+        self.assertIn("! any_quota", preflight)
+        self.assertIn("replace_first", preflight)
+        self.assertIn("$u > $h", preflight)
+        for forbidden in ("set image", "delete pod", "delete deploy", "scale", "patch deploy \"$deploy\"", "evict"):
+            self.assertNotIn(forbidden, script)
+        params = dict(k8s_quota.CONTRACTS["F50-R"])
+        params["hard"] = "8Gi"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_quota.validate("F50-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified resource quota contract"):
+            k8s_quota.validate("F17-H", k8s_quota.CONTRACTS["F50-R"], {})
 
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
@@ -938,6 +973,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F33-H",
             # 2026-10-09: food order-service 를 시각 표기를 yyyy-MM-dd HH:mm:ss 로 바꾸고 하류 호출에도 같은 ObjectMapper 를 쓰게 한 릴리스 2.3.0(fault-images/f49-h)으로 롤아웃(dispatch 는 200, order 가 배차 응답의 ISO 시각을 못 읽어 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F49-H",
+            # 2026-10-09: banking 네임스페이스에 사용량(4928Mi)보다 작은 메모리 할당량(ResourceQuota compute-resources, requests.memory 4Gi)을 건 뒤 transfer 일상 재배포의 새 파드가 exceeded quota 로 거절됨(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F50-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

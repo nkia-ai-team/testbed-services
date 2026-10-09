@@ -49,6 +49,9 @@ PROFILE_PREFLIGHTS = {
     # The container image is one pod-template field snapshotted and restored the same way.
     "k8s.image": "kubernetes-original-spec-snapshot",
     "k8s.lifecycle": "kubernetes-recovery-capacity",
+    # The inverse of a namespace quota is deleting that one object, after which the
+    # namespace must be able to create the refused pod again.
+    "k8s.quota": "kubernetes-recovery-capacity",
     "k8s.resource": "kubernetes-original-resource-snapshot",
     "k8s.probe": "kubernetes-original-probe-snapshot",
     "kafka.control": "kafka-drain-capacity",

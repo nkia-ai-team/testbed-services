@@ -57,7 +57,8 @@
     "F48-R",
     "F49-R",
     "F33-H",
-    "F49-H"
+    "F49-H",
+    "F50-R"
   ],
   "controllers": {
     "F01-R": {
@@ -13483,6 +13484,243 @@
         "required": true,
         "order": "reverse",
         "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F50-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.quota",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.quota",
+        "levels": [
+          {
+            "id": "approved-fixed-f50-r",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "quota": "compute-resources",
+              "resource": "requests.memory",
+              "hard": "4Gi",
+              "deployment": "testbed-transfer"
+            },
+            "min_hold": "15m",
+            "settle": "60s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 할당량은 새 파드만 막고 nginx, api, account 는 그대로 떠서 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-transfer"
+          },
+          "_note": "transfer 파드. 일상 재배포(rollout restart)가 옛 파드를 먼저 내리고(maxSurge 0) 새 파드는 할당량 승인 단계에서 거절되어(exceeded quota) 만들어지지조차 않으므로 고장 중 false 다. 성공 조건에는 쓰지 않는다. cleanup 이 할당량을 지우고(필요하면 다시 배포해) 새 파드가 뜨면 true 가 된다(회복 조건)",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_available_replicas",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.deployment_available_replicas",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer"
+          },
+          "_note": "고장 중 0, 회복 뒤 1",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer",
+            "container": "transfer-service"
+          },
+          "_note": "새 파드가 만들어지지 않아 재시작 수가 오르지 않는다. 2 이상이면 파드는 생겼고 새 컨테이너가 기동 중 죽는 다른 장애(크래시 루프)다",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 잔액 조회(step get, 35%, nginx → account 직행) 실패율. account 는 transfer 를 부르지 않고 Oracle 로 답하므로 고장 중에도 0 이어야 한다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 account 의 transfer 호출이 Connection refused 로 끝나 502",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%) 5xx 비율. 평시 0, 고장 중 약 1.0. 30초 창에 이체가 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "transfers-failing-5xx",
+            "observation": "transfer_5xx_rate",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "transfer 엔드포인트가 비어 account 의 이체 호출이 Connection refused, 재시도, 서킷 열림 끝에 502 이고 api 도 502 로 답한다. core-banking-account, core-banking-api 서버 스팬이 ERROR 가 되어 골든 시그널 오류율을 올린다"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m: 재배포 직후 옛 파드가 내려가 실패가 약 15분 이어진 다음 판정된다. banking 선례는 promote 지연이 약 18~20분이라 회복 뒤 promote 될 수 있다(F39-R 시트 §6)"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1.25,
+            "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "account-path-failing",
+            "observation": "balance_read_nonok_rate",
+            "op": "gte",
+            "value": 0.2,
+            "_note": "nginx → account 직행 잔액 조회까지 실패하면 transfer 가 아니라 account 자체나 Oracle 쪽 장애(F35-R 꼴)다. 할당량은 떠 있는 account, Oracle 을 건드리지 않는다"
+          },
+          {
+            "id": "transfer-crashloop-alternative",
+            "observation": "transfer_restart_count",
+            "op": "gte",
+            "value": 2,
+            "_note": "컨테이너가 떴다가 죽는다면 할당량 거절이 아니라 새 파드의 기동 실패다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "transfer-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "transfer-replica-recovered",
+            "observation": "transfer_available_replicas",
+            "op": "eq",
+            "value": 1
+          },
+          {
+            "id": "baseline-transfers-recovered",
+            "observation": "transfer_5xx_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "평시 0.0, 고장 중 약 1.0. 30초 창 이체 약 3건이라 5xx 가 한 건만 있어도 0.25 이상이 되어 통과하지 못한다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 할당량을 지운 뒤 새 파드가 30초 안에 뜨지 않으면(ReplicaSet 컨트롤러가 거절된 생성을 지수 백오프로 다시 시도해 길게는 분 단위) 다시 배포한다. 새 파드가 Ready 가 되고(JVM 기동 약 45초) 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
       },
       "capture": {
         "enabled": true,
