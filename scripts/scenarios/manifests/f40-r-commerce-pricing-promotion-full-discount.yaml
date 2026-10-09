@@ -1,0 +1,324 @@
+{
+  "schema_version": "1.0",
+  "id": "F40-R",
+  "slug": "f40-r-commerce-pricing-promotion-full-discount",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.config_row commerce testbed-postgres-0 pricing_schema.promotions 행 4 INSERT(kubectl exec psql, discount_percent 100.00) 후 kubectl rollout restart deployment testbed-pricing(기다리지 않음, 역 동작은 그 행 DELETE 와 재시작) + R/ssh load.north_south companion(commerce surge.js, target_rps=6, 여정의 50% checkout, 초당 약 3건)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.config_row",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.config_row",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.config_row"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f40-r",
+              "parameters": {
+                "engine": "postgresql",
+                "namespace": "rca-testbed-commerce",
+                "db_pod": "testbed-postgres-0",
+                "table": "pricing_schema.promotions",
+                "row_id": 4,
+                "name": "가을 정기 세일",
+                "description": "전 품목 10% 할인",
+                "discount_percent": "100.00",
+                "consumer_deployment": "testbed-pricing"
+              },
+              "min_hold": "12m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-pricing"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "payment_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "commerce-order"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "pricing_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "commerce-pricing"
+            },
+            "freshness": "60s",
+            "_note": "pricing 은 견적을 200 으로 돌려준다(금액이 0 일 뿐). pricing 스팬 오류가 오르면 pricing 자체의 고장(F12-H 꼴 CPU 한도, 기동 실패)이지 이 시나리오가 아니다"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "_note": "동반 부하(surge.js 6rps, 여정의 50% 가 checkout, 초당 약 3건)의 k6 live 문서. 주입 뒤 새 pricing 파드가 Ready 가 되는 약 1분 뒤부터 모든 checkout 견적이 0 원이 되고 core-banking 이 정산 이체를 400 'amount must be positive' 로 거절해 payment 502, order 502 가 된다. 6rps 는 실패 전 구간(램프 2분과 재시작 약 1분)의 재고 소비(초당 약 4.5개 + 기준선)를 재입고 배치(1분마다 20 미만 상품을 60 으로)가 따라가게 고른 값이다. 고장 중에는 실패한 checkout 이 예약 재고를 돌려주므로 재고가 줄지 않는다"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-failed-5xx",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "checkout-failing-at-order",
+              "observation": "order_error_rate",
+              "op": "gte",
+              "value": 10,
+              "_note": "order 서버 스팬(10% 표본) POST /api/orders/checkout 이 502 로 끝난다. payment 서버 스팬은 order 의 서킷브레이커가 열리면 반열림 시도만 남아 60초 창에 표본이 비기 쉬워 판정에 쓰지 않는다"
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 3,
+              "_note": "동반 부하 6rps 의 절반. checkout 이 결제 단계에서 곧바로 502 를 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "banking-transfer-down",
+              "observation": "transfer_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 가 빠지면 연결 실패로 정산이 깨지는 F17-R 꼴이다. 이 시나리오에서 transfer 는 Ready 로 남아 금액 0 인 요청만 400 으로 거절한다"
+            },
+            {
+              "id": "payment-down",
+              "observation": "payment_ready",
+              "op": "eq",
+              "value": false
+            },
+            {
+              "id": "pricing-failing",
+              "observation": "pricing_error_rate",
+              "op": "gte",
+              "value": 10
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pricing-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "checkout-recovered",
+              "observation": "order_error_rate",
+              "op": "lt",
+              "value": 5
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.config_row",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.config_row",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "db.config_row"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

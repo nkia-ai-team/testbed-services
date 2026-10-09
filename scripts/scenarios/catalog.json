@@ -850,6 +850,19 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F40-R",
+      "slug": "f40-r-commerce-pricing-promotion-full-discount",
+      "profiles": [
+        "db.config_row",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

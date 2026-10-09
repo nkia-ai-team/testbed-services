@@ -17,7 +17,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 자료 모음이다. **출처가 말한 내용만 적는다.** 이 테스트베드에서 재현할 수 있는지,
 무엇을 먼저 만들지 같은 판단은 이 문서에 넣지 않고 각 시나리오 설계 시트에 둔다.
 
-- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례, M1 Vapi 2025-01-21 사례, M1 GitHub 2026-03-05 와 2026-06-10 사례는 2026-10-08 추가)
+- 조사일: 2026-10-07 (M8 Flagsmith 사례와 M1 Google 2020-12-14 사례, M21 Buildkite 2025-11-10 과 Chargebee 2018-03-02 사례, M7 Harness 2026-01-08 사례, M8 Onfido 2024-10-18 사례, M16 Intercom 2024-11-05 와 Let's Encrypt 2025-07-21 사례, M1 Vapi 2025-01-21 사례, M1 GitHub 2026-03-05 와 2026-06-10 사례는 2026-10-08 추가, M1 Google Cloud 2025-06-12 세부는 2026-10-09 공식 보고에서 보강)
 - 출처 표기: 공식 = 기업 공식 포스트모템 또는 상태 페이지, 논문 = 학술 논문,
   보도 = 언론 보도, 2차 = 집계 사이트나 요약 글. 보도와 2차 출처는 원문을 확인하지 못했다는 뜻이다.
 
@@ -44,7 +44,7 @@ summary: 공개된 기업 포스트모템과 학술 실증 연구에서 모은 �
 
 | 사례 | 무엇이 일어났나 | 출처 |
 |---|---|---|
-| Google Cloud, 2025-06-12 | 빈 필드가 든 정책 데이터가 전역으로 배포되어 널 포인터로 Service Control이 다운. 해당 코드 경로에 기능 플래그가 없었음. 재시작한 작업들이 무작위 지수 백오프 없이 Spanner로 몰림 | [공식](https://status.cloud.google.com/incidents/ow5i3PPK96RduMcb1SsW) |
+| Google Cloud, 2025-06-12 | 빈 필드가 든 정책 데이터가 전역으로 배포되어 널 포인터로 Service Control이 다운. 해당 코드 경로에 기능 플래그가 없었음. 재시작한 작업들이 무작위 지수 백오프 없이 Spanner로 몰림. 세부(공식 보고): 약 10:45 PDT 정책 변경이 Service Control 이 정책을 읽는 지역 Spanner 테이블에 들어갔고, 쿼터 메타데이터라 몇 초 안에 전역 복제됨. 정책 데이터에 의도치 않은 빈 필드가 있었고, 지역마다 쿼터 검사가 그 값을 읽어 널 포인터 경로를 타 바이너리가 크래시 루프. 그 코드 경로는 5월 29일 기능 추가로 생겼는데 "did not have appropriate error handling nor was it feature flag protected". 외부 API 요청이 503. 2분 안에 분류, 10분 안에 원인 식별, 약 40분 안에 해당 서빙 경로를 끄는 red-button 배포 완료. 보고서의 근본 원인 요약: "an invalid automated quota update to our API management system which was distributed globally". 재발 방지로 fail open, 전역 복제 데이터의 점진 전파와 검증, 기능 플래그 보호 | [공식](https://status.cloud.google.com/incidents/ow5i3PPK96RduMcb1SsW) |
 | Cloudflare, 2025-11-18 | DB 권한 변경 뒤 피처 파일이 2배로 커져 200개 한도를 넘었고 프록시가 panic. 5분마다 정상 파일과 불량 파일이 번갈아 생성됨 | [공식](https://blog.cloudflare.com/18-november-2025-outage/) |
 | Facebook, 2010-09-23 | 잘못된 설정값 때문에 모든 클라이언트가 캐시를 버리고 DB를 다시 조회하는 되먹임이 생김 | [공식](https://engineering.fb.com/2010/09/23/uncategorized/more-details-on-today-s-outage/) |
 | Cloudflare, 2019-07-02 | WAF 규칙의 정규식 하나가 CPU를 100%까지 사용 | [공식](https://blog.cloudflare.com/details-of-the-cloudflare-outage-on-july-2-2019/) |

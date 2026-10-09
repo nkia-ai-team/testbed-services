@@ -43,7 +43,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-08: 6 → 7. F39-R(banking account 이체 하류 주소 오설정) 후보 추가.
         # 2026-10-09: 7 → 6. F32-R 정식 승격(녹화 case-f32-r-v3-63b10537).
         # 2026-10-09: 6 → 5. F33-R 정식 승격(녹화 case-f33-r-v3-73fed92a).
-        self.assertEqual(stages.count("candidate"), 5)
+        # 2026-10-09: 5 → 6. F40-R(commerce pricing 프로모션 할인율 오입력) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 6)
 
 
 class RecordingQueueTests(unittest.TestCase):

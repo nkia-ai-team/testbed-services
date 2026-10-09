@@ -41,6 +41,7 @@ db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
 k8s_dns = load("k8s_dns_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
+db_config_row = load("db_config_row_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -262,6 +263,46 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             db_instance_readonly.validate("F38-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified read-only instance contract"):
             db_instance_readonly.validate("F36-R", db_instance_readonly.CONTRACTS["F38-R"], {})
+
+    def test_db_config_row_inserts_one_row_restarts_its_reader_and_takes_it_back(self) -> None:
+        # F40-R: 주입은 pricing_schema.promotions 의 행 하나(할인율 100.00)와 그 행을 읽는 pricing 재시작뿐이다.
+        # 스키마, 다른 행, pricing 의 이미지와 env 를 건드리면 "검증 없이 들어간 정책 데이터를 소비 경로가 그대로
+        # 쓴다"는 지문이 아니라 다른 장애(F36-R 꼴 스키마 변경, F08-P 꼴 설정 배포)가 된다.
+        plan = compiler.compile_plan("f40-r-commerce-pricing-promotion-full-discount")
+        argv, stdin = db_config_row.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], [
+            "run", "rca-testbed-commerce", "testbed-postgres-0", "pricing_schema.promotions", "4",
+            "가을 정기 세일", "전 품목 10% 할인", "100.00", "testbed-pricing",
+        ])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8).
+        self.assertNotIn("F40-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F40-R", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn("check; insert;", run_case)
+        self.assertIn('[[ "$(row_count)" == 1 ]]', run_case)
+        self.assertIn("restart", run_case)
+        # run 은 롤아웃을 기다리지 않는다(조정 잠금 동안 러너 임대가 끊기지 않게, k8s.env 와 같은 이유).
+        self.assertNotIn("healthy 180s", run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn("remove", cleanup_case)
+        self.assertIn("restart", cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn('DELETE FROM $table WHERE id = $row_id;', script)
+        # 확인 조회는 행 id 만 묻는다. Top SQL 에 남아도 할인율이나 활성 여부(정답 필드)를 가리키지 않게.
+        for line in script.splitlines():
+            if "SELECT" in line:
+                self.assertNotIn("discount_percent", line)
+                self.assertNotIn("active", line)
+        for forbidden in ("drop ", "truncate", "alter ", "update ", "set image", "set env", '"${k[@]}" patch'):
+            self.assertNotIn(forbidden, script.lower())
+        params = dict(db_config_row.CONTRACTS["F40-R"])
+        params["discount_percent"] = "10.00"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_config_row.validate("F40-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified configuration row contract"):
+            db_config_row.validate("F38-R", db_config_row.CONTRACTS["F40-R"], {})
 
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
@@ -566,6 +607,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F38-R",
             # 2026-10-08: banking account 의 이체 하류 주소를 다른 내부 호스트로 덮어쓰는 설정 배포(잘못된 호스트로 연결 시간 초과). 새 후보, 설계 강도 1단 고정 evaluation.
             "F39-R",
+            # 2026-10-09: commerce pricing 프로모션 행의 할인율 오입력(10%→100.00)과 pricing 재시작으로 모든 checkout 견적 0 원, 은행이 정산 이체 거절. 새 후보, 설계 강도 1단 고정 evaluation.
+            "F40-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

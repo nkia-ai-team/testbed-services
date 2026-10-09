@@ -35,6 +35,9 @@ PROFILE_PREFLIGHTS = {
     "db.account": "db-inverse-ddl-ready",
     # And again: the inverse of a global read_only is one statement (read_only=OFF).
     "db.instance_readonly": "db-inverse-ddl-ready",
+    # And again: the inverse of a configuration row is one DELETE of exactly that
+    # row (plus the same consumer restart that loaded it).
+    "db.config_row": "db-inverse-ddl-ready",
     "db.workload": "db-session-tag-clean",
     "mock.expectation": "mock-restore-contract",
     "load.north_south": "baseline-loadgen-active",

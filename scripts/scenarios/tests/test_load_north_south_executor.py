@@ -59,6 +59,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "k8s.dns",
                 # 2026-10-08: F38-R — MySQL 인스턴스 전체 read_only 켜기와 끄기(역 문장 하나).
                 "db.instance_readonly",
+                # 2026-10-09: F40-R — 업무 설정 행 하나 넣기와 지우기(+ 그 행을 읽는 서비스 재시작).
+                "db.config_row",
             },
         )
 
