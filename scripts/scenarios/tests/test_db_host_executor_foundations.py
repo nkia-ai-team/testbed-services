@@ -64,6 +64,33 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F36-R", {**p, "renamed_to": "region_v2"}, {})
 
+    def test_postgres_index_swap_leaves_only_an_invalid_index_and_is_reversible(self) -> None:
+        # F33-P: 동시 재생성이 statement_timeout 에 끊겨 INVALID 로 남은 채 옛 제약과 인덱스를 지우고 이름을 바꾼다.
+        p = ddl.CONTRACTS["F33-P"]
+        ddl.validate("F33-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F33-P", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], [
+            "run", "rca-testbed-commerce", "testbed-postgres-0", "user_schema", "auth_tokens", "token",
+            "auth_tokens_token_key", "idx_auth_tokens_token", "idx_auth_tokens_token_new", "2s", "100000",
+        ])
+        self.assertNotIn("F33-P", argv)
+        script = body.decode()
+        self.assertNotIn("F33-P", script)
+        # CIC 는 여러 문장 문자열(암묵 트랜잭션) 안에서 돌 수 없어 statement_timeout 을 PGOPTIONS 로 건다.
+        self.assertIn('"CREATE UNIQUE INDEX CONCURRENTLY $rebuild ON $rel ($column);" "-c statement_timeout=$timeout"', script)
+        # 끊긴 생성이 INVALID 로 남지 않았으면 교체하지 않고 멈춘다.
+        self.assertIn('if [[ "$state" != f ]]; then', script)
+        self.assertIn("ALTER TABLE $rel DROP CONSTRAINT $constraint; DROP INDEX $schema.$index; ALTER INDEX $schema.$rebuild RENAME TO $index;", script)
+        self.assertIn("ADD CONSTRAINT $constraint UNIQUE USING INDEX $constraint", script)
+        self.assertIn("CREATE INDEX IF NOT EXISTS $index ON $rel ($column)", script)
+        # 행 수 확인은 LIMIT 으로 묶어 녹화 구간에 전수 COUNT 를 남기지 않는다.
+        self.assertIn("FROM (SELECT 1 FROM $rel LIMIT $minimum) t", script)
+        # 기존 PostgreSQL 인덱스 계약(F02-R)은 tb-runner ssh 경로 그대로다.
+        self.assertEqual(ddl.build_invocation(plan("db.ddl", "F02-R", ddl.CONTRACTS["F02-R"], {"host": "192.168.122.206", "transport": "ssh"}), "run")[0][0], "/usr/bin/ssh")
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F33-P", {**p, "statement_timeout": "60s"}, {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

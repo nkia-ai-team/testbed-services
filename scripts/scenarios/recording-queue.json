@@ -73,6 +73,15 @@
       "requested_at": "2026-10-09",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F33-P",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증. 녹화 검증: Top SQL auth_tokens 토큰 조회(sql_hash 618727859340325129)의 호출당 블록 약 5 → 약 3만과 DPM used_size 약 350MB 감소가 같은 분인지, gateway SEVERE verify-token, checkout 표본 0 틱 여부와 cleanup 소요 시간, cleanup 뒤 인덱스 정의 복원(실행기 recovery)",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-09",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

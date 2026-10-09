@@ -59,7 +59,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 68 → 69. F40-R(후보) 추가. 프로파일 25 → 26(db.config_row 신설).
         # 2026-10-09: 69 → 70. F17-H(후보) 추가. 프로파일 26 → 27(k8s.image 신설).
         # 2026-10-09: 70 → 71. F32-H(후보) 추가. 기존 k8s.env 를 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 71)
+        # 2026-10-09: 71 → 72. F33-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 인덱스 교체 경로를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 72)
         self.assertEqual(len(self.profiles["profiles"]), 27)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -124,6 +125,8 @@ class RegistryContractTests(unittest.TestCase):
             "F17-H",
             # 2026-10-09: food dispatch 가 JSON 숫자를 문자열로 쓰게 하는 직렬화 설정 배포(값 형식 불일치로 order 의 용량 응답 캐스트 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-H",
+            # 2026-10-09: commerce auth_tokens 인덱스 교체 마이그레이션이 동시 재생성을 INVALID 로 남긴 채 옛 인덱스를 지움(토큰 확인 전수 스캔, PostgreSQL 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -404,6 +407,8 @@ class RegistryContractTests(unittest.TestCase):
             "F17-H",
             # 2026-10-09: food dispatch 가 JSON 숫자를 문자열로 쓰게 하는 직렬화 설정 배포(값 형식 불일치로 order 의 용량 응답 캐스트 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-H",
+            # 2026-10-09: commerce auth_tokens 인덱스 교체 마이그레이션이 동시 재생성을 INVALID 로 남긴 채 옛 인덱스를 지움(토큰 확인 전수 스캔, PostgreSQL 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-P",
             },
         )
         self.assertEqual(
@@ -468,6 +473,8 @@ class RegistryContractTests(unittest.TestCase):
             "F17-H",
             # 2026-10-09: food dispatch 가 JSON 숫자를 문자열로 쓰게 하는 직렬화 설정 배포(값 형식 불일치로 order 의 용량 응답 캐스트 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-H",
+            # 2026-10-09: commerce auth_tokens 인덱스 교체 마이그레이션이 동시 재생성을 INVALID 로 남긴 채 옛 인덱스를 지움(토큰 확인 전수 스캔, PostgreSQL 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -613,8 +620,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F40-R(후보, 고정 evaluation)이 끝에 붙어 F35-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F17-H(후보, 고정 evaluation)이 끝에 붙어 F36-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F32-H(후보, 고정 evaluation)이 끝에 붙어 F37-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F33-P(후보, 고정 evaluation)이 끝에 붙어 F38-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F38-R", "F39-R", "F40-R", "F17-H", "F32-H"])
+                         ["F39-R", "F40-R", "F17-H", "F32-H", "F33-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

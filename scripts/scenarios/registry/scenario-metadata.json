@@ -6510,6 +6510,104 @@
      }
     ]
    }
+  },
+  "F33-P": {
+   "title": "An index-consolidation migration on commerce auth_tokens leaves its concurrent rebuild INVALID and drops the old token indexes: every write's token check becomes a 2.4-million-row scan, PostgreSQL saturates and authorised writes fail with 500",
+   "description": "Every write through the commerce api-gateway (cart changes, checkout) is authorised by calling user-service POST /api/users/verify-token, which looks the token up in user_schema.auth_tokens (about 2.4 million rows, 238 MB). The lookup is served by two identical btree indexes on token, the UNIQUE constraint auth_tokens_token_key and idx_auth_tokens_token, at about 0.13 ms and 5 buffer blocks per call. A migration consolidates them: it builds a replacement unique index concurrently (CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new) under the migration session's 2-second statement timeout, then drops the constraint and the old index and renames the replacement to idx_auth_tokens_token. The concurrent build is cancelled by the timeout and leaves its catalog entry INVALID; the migration does not stop on that error, so after the swap the only index on token is one the planner never uses. Each token check now reads the whole table (about 1 s and 30,000 blocks per call, measured read-only) on a PostgreSQL pod limited to 0.5 CPU while about 5 to 7 checks per second arrive (a 3 rps companion plus the resident baseline). PostgreSQL saturates, the 10 connections of the user-service Hikari pool stay busy with scans, and further checks wait 3 s for a connection and fail with 500. The gateway's AuthGuard calls its own verifyToken directly, so the @Retry and @CircuitBreaker annotations and the 401 fallback never apply: a failed check (user 500, a 10 s read timeout, or connection refused while user-service is unready) propagates as an unhandled exception, the write is answered with 500 and the gateway logs a SEVERE 'Servlet.service() ... threw exception' naming verify-token. Without retries or a breaker nothing sheds the load. Writes that pass the check slow down on the shared, saturated database. user-service's health endpoint includes the database check, so Kubernetes may mark it unready and restart it; the restart re-runs its startup schema script, but CREATE INDEX IF NOT EXISTS idx_auth_tokens_token skips because the invalid index holds that name. No application, image, configuration or row data changes.",
+   "cause": "Migration on commerce-postgres user_schema.auth_tokens: CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new cancelled by statement_timeout (left INVALID) → DROP CONSTRAINT auth_tokens_token_key, DROP INDEX idx_auth_tokens_token, rename the INVALID index to idx_auth_tokens_token → AuthTokenRepository.findByToken becomes a parallel sequential scan of ~2.4M rows (Top SQL ~5 → ~30,000 blocks per call, ~0.13 ms → seconds) → PostgreSQL (0.5 CPU) saturates, user-service Hikari pool (10) exhausted → verify-token 500 after 3 s (or a gateway read timeout, or connection refused while user-service is unready) → the gateway's self-invoked verifyToken bypasses retry, breaker and 401 fallback → writes answered 500 with gateway SEVERE 'Servlet.service() ... verify-token'. user-service may be marked unready and restarted (health includes the DB check); its startup CREATE INDEX IF NOT EXISTS skips the invalid index of the same name.",
+   "injection_summary": "The db.ddl executor checks that user_schema.auth_tokens has at least 100,000 rows (reading at most that many) and that its non-primary indexes are exactly auth_tokens_token_key (UNIQUE constraint) and idx_auth_tokens_token, both valid btree(token). Through psql inside testbed-postgres-0 (kubectl exec) it runs CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new with statement_timeout 2s for that session only, requires the cancelled build to have left an INVALID index (otherwise it drops it and stops), then in one transaction drops the constraint and idx_auth_tokens_token and renames the invalid index to idx_auth_tokens_token. A north-south companion at 3 rps (commerce surge.js, 50% checkout journeys with three authorised writes each) sets an intensity floor of about 4.5 token checks per second (the gateway does not retry them) at every hour; the commerce baseline follows a daily cycle of 2 to 10 rps. Cleanup drops the invalid index, recreates idx_auth_tokens_token first (the scans stop as soon as it is valid), then rebuilds the unique index and attaches it as the constraint auth_tokens_token_key; recovery checks both definitions. Builds are not concurrent and block logins (token inserts) for their duration. No application code, image, configuration or row data is changed and no value carries the scenario id.",
+   "user_impact": "Almost every authorised write through the commerce gateway fails with 500: cart changes and checkouts cannot get their token checked. Logins slow down or fail while the user-service pool is busy. Product browsing keeps answering but slows down because it shares the saturated PostgreSQL. Already placed orders and core-banking are unaffected. (Anonymous cart writes keep getting their usual 401 'Missing Authorization token', which is baseline behaviour, not a symptom.)",
+   "distinguishing_evidence": "The decisive evidence is in DPM Top SQL: 'select at1_0.id, ... from user_schema.auth_tokens at1_0 where at1_0.token=$1' (sql_hash 618727859340325129; caught intermittently at baseline, 617 snapshots in 8 days, ~0.13 ms and ~5 shared blocks per call) shows up in the injection minute with about 30,000 blocks and seconds per call, and DPM sessions show many active sessions running that statement. Call count does not explain it: the companion adds a few token checks per second, while blocks per call is what changed. In the same minute the commerce database size (dpm.postgresql.database.used_size) falls by about 350 MB (two 175 MB indexes gone; 4 other minutes in 8 days fell by more than 250 MB, so this is supporting evidence read together with the Top SQL change) and the database's sequential-scan rate (dpm.postgresql.sql.seq_scans, 24-hour p99 about 30) jumps. Everything else follows from that: commerce-gateway logs SEVERE 'Servlet.service() ... threw exception [... HttpServerErrorException / ResourceAccessException ... verify-token ...]' (none in the 7-day log retention), commerce-user logs Hikari 'Connection is not available, request timed out after 3000ms' and Servlet errors (none in the 7-day retention), KCM shows testbed-user Unhealthy (none in the previous 8 days) and possibly restarts. Against F33-R (same cause shape, an index lost under a hot query): the statement, table and database differ (PostgreSQL user_schema.auth_tokens token lookup reached through every authorised commerce write, versus the food MySQL dispatches status COUNT reached through order capacity checks), and the failures surface as gateway write 500 on cart and checkout instead of food order 503. There is no Deployment rollout or configuration change in rca-testbed-commerce (unlike F16-H, where user-service's readiness probe is broken and the database is idle), PostgreSQL is not restarted (unlike F25-H), and the heavy statement is not the order statistics scan that F20-R's traffic drives.",
+   "domain": "commerce",
+   "class": "B",
+   "observation_domains": [
+    "DPM",
+    "APM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "commerce-postgres:user_schema.auth_tokens",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 commerce PostgreSQL 의 user_schema.auth_tokens 테이블이다. 인덱스 정리 마이그레이션이 token 열에 겹쳐 있던 두 인덱스(UNIQUE 제약 auth_tokens_token_key, 일반 인덱스 idx_auth_tokens_token)를 하나로 합치려고 새 유일 인덱스를 동시 생성(CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new)했는데, 마이그레이션 세션의 statement_timeout 2초에 걸려 취소되었고 PostgreSQL 은 취소된 동시 생성의 카탈로그 항목을 INVALID 로 남긴다. 마이그레이션은 그 오류에 멈추지 않고 옛 제약과 인덱스를 지운 뒤 INVALID 인덱스를 idx_auth_tokens_token 으로 이름을 바꿨다. 플래너는 INVALID 인덱스를 쓰지 않으므로 게이트웨이가 쓰기마다 부르는 user-service verify-token 의 AuthTokenRepository.findByToken 이 약 240만 행(238MB) 병렬 전수 스캔이 된다(호출당 약 0.13ms, 5블록 → 약 1초, 약 3만 블록, 읽기 전용 실측). PostgreSQL 은 CPU 0.5 코어라 동반 부하(초당 약 4.5건)와 기준선이 함께 내는 초당 약 5~7건의 토큰 확인을 감당하지 못하고 포화되며, user-service Hikari 풀(10)이 스캔에 묶여 나머지 확인은 3초 대기 뒤 500 으로 실패한다. 게이트웨이 AuthGuard.verifyIfWrite 는 같은 클래스의 verifyToken 을 직접 불러(AuthGuard.java:44) @Retry, @CircuitBreaker 와 401 fallback 이 프록시를 타지 않는다. 그래서 확인 실패(user 500, 10초 read timeout, user NotReady 때 Connection refused)는 처리되지 않은 예외로 올라가 쓰기가 500 으로 끝나고 게이트웨이가 SEVERE 'Servlet.service() ... threw exception'(verify-token)을 남긴다. 재시도도 서킷도 없어 부하가 줄지 않는다. user-service 와 게이트웨이의 코드, 설정, 요청량은 그대로라 정당하다(원칙 6). user-service 가 재시작되면 기동 스크립트(schema.sql)의 CREATE INDEX IF NOT EXISTS idx_auth_tokens_token 이 같은 이름의 INVALID 인덱스 때문에 건너뛰어 스스로 낫지 않는다. 근본과 계기가 같은 곳(이 테이블에 대한 DDL)이라 trigger_target_id 는 비운다. target_id 는 F06-H, F01-R 과 같은 '인스턴스:스키마.테이블' 꼴이다. 관제 데이터 도달 경로: ① DPM Top SQL 의 토큰 조회(sql_hash 618727859340325129)가 호출당 블록 약 5 → 약 3만, avgExecTime 약 0.13ms → 수 초 ② 같은 분 DPM dpm.postgresql.database.used_size 약 350MB 감소(지워진 두 인덱스 크기), dpm.postgresql.sql.seq_scans 급증, 활성 세션 급증 ③ commerce-gateway SEVERE 'Servlet.service() ... verify-token'(HttpServerErrorException 또는 ResourceAccessException), commerce-user 로그 'HikariPool-1 - Connection is not available, request timed out after 3000ms' 와 Servlet 오류(둘 다 로그 보존 7일 안 0건), KCM testbed-user Unhealthy ④ rca-testbed-commerce 에 롤아웃과 설정 변경이 없고 PostgreSQL 은 재시작하지 않는다. 원본(Vapi 2024-10-02, 새 복합 인덱스 생성이 실패해 INVALID 로 남은 줄 모르고 옛 인덱스를 지워 가장 큰 테이블에 인덱스가 없어짐, DB CPU 100%, API 타임아웃)처럼 '인덱스를 잃은 테이블의 고빈도 질의가 DB 를 포화시킴'이 정답의 층위이고, 동시 생성이 왜 끊겼는지는 요구하지 않는다.",
+    "code_anchor": [
+     "commerce/user-service/src/main/java/com/commerce/user/repository/AuthTokenRepository.java:10 (findByToken — token 조건 조회, token 인덱스가 없으면 전수 스캔)",
+     "commerce/user-service/src/main/java/com/commerce/user/service/UserService.java:88-94 (verifyToken — 쓰기 인가마다 findByToken)",
+     "commerce/user-service/src/main/java/com/commerce/user/controller/UserController.java:31-32 (POST /api/users/verify-token)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:31-63 (verifyIfWrite — 쓰기마다 verifyToken 을 같은 클래스 안에서 직접 부름(44). 자기 호출이라 @Retry/@CircuitBreaker user 와 verifyTokenFallback(401)이 적용되지 않아 확인 실패가 예외 그대로 올라감)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/controller/GatewayProxyController.java:28-52 (carts, orders 등 프록시 앞에서 authGuard.verifyIfWrite)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/config/GlobalExceptionHandler.java:12-20 (handleServiceException — ServiceException 만 처리, HttpServerErrorException/ResourceAccessException 은 Servlet 오류 500 과 SEVERE 로그)",
+     "commerce/user-service/src/main/resources/application.yml:11-15 (hikari — maximum-pool-size 10, connection-timeout 3000)",
+     "commerce/user-service/src/main/resources/application.yml:26-28 (init — mode always, schema-locations schema.sql: 기동마다 schema.sql 실행)",
+     "commerce/user-service/src/main/resources/schema.sql:29-37 (auth_tokens token UNIQUE, CREATE INDEX IF NOT EXISTS idx_auth_tokens_token — 같은 이름이 있으면 건너뜀)",
+     "commerce/k8s/25-user-service.yaml:90-103 (readinessProbe, livenessProbe — /actuator/health, DB 확인 포함)"
+    ],
+    "infra_anchor": "rca-testbed-commerce StatefulSet testbed-postgres(파드 testbed-postgres-0, PostgreSQL 16.14, tb-w1), CPU limit 500m, memory limit 512Mi(commerce/k8s/10-postgres.yaml:68-72), shared_buffers 128MB, max_parallel_workers_per_gather 2. user_schema.auth_tokens 는 2026-10-09 기준 약 244만 행, 테이블 238MB, auth_tokens_pkey 52MB, auth_tokens_token_key 178MB, idx_auth_tokens_token 178MB(둘 다 btree(token)). db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 psql 을 열어 statement_timeout 2s 세션에서 CREATE UNIQUE INDEX CONCURRENTLY 를 실행하고(취소되어 INVALID), 한 트랜잭션에서 DROP CONSTRAINT, DROP INDEX, ALTER INDEX RENAME 을 한다. cleanup 은 INVALID 인덱스를 지우고 CREATE INDEX idx_auth_tokens_token(이것이 유효해지면 스캔이 멈춘다), CREATE UNIQUE INDEX auth_tokens_token_key, ALTER TABLE ADD CONSTRAINT ... UNIQUE USING INDEX 순으로 되돌린다."
+   },
+   "must_support": [
+    "DPM Top SQL 토큰 조회 'select at1_0.id,at1_0.created_at,at1_0.expires_at,at1_0.token,at1_0.user_id from user_schema.auth_tokens at1_0 where at1_0.token=$1'(sql_hash 618727859340325129)의 호출당 공유 블록(sharedHit+sharedRead)/calls 가 평시 약 5 에서 약 3만으로, avgExecTime 이 평시 약 0.13ms 에서 수백 ms~수 초로 바뀐다. 판단 근거는 호출 수가 아니라 호출당 블록 수다",
+    "같은 분에 DPM dpm.postgresql.database.used_size{db_name=\"commerce\"} 가 약 350MB 줄고(평시 분당 변화 -57~+0.9MB, 8일 중 운영 정리로 수백 MB~1.4GB 줄어든 분이 4번 있어 보조 증거), dpm.postgresql.sql.seq_scans 가 평시(24시간 p50 16, p99 30)보다 크게 오르며 활성 세션이 늘어난다",
+    "commerce-gateway 로그에 SEVERE 'Servlet.service() ... threw exception [... HttpServerErrorException 또는 ResourceAccessException ... verify-token ...]' 가, commerce-user 로그에 'HikariPool-1 - Connection is not available, request timed out after 3000ms' 와 'Servlet.service() ... threw exception' 이 나타난다(로그 보존 7일 안 둘 다 0건)",
+    "KCM 에 testbed-user 의 Unhealthy(readiness, liveness)가 생기고 재시작(Killing, Started)이 따를 수 있다(평시 8일 testbed-user 이벤트 0건)",
+    "동반 부하의 checkout nonok 비율이 0.5 이상, 2xx 비율이 0.3 미만으로 바뀌고 실패는 게이트웨이 500 이다(평시 장바구니 쓰기의 약 25% 는 토큰 없는 여정의 401 이라 401 은 증상으로 보지 않는다)",
+    "rca-testbed-commerce 에 Deployment 롤아웃(ScalingReplicaSet)과 ConfigMap 변경이 없고, testbed-postgres-0 은 Ready 이며 재시작하지 않는다"
+   ],
+   "must_rule_out": [
+    "user-service 프로브 오설정이나 user-service 자체 고장(F16-H)이 아님: user Deployment 롤아웃이 없고 프로브 스펙이 그대로이며, user 가 Unhealthy 가 되기 전에 Top SQL 토큰 조회의 호출당 블록이 먼저 뛴다. F16-H 에서는 DB 가 한가하고 user 로그에 Hikari 고갈이 없다",
+    "PostgreSQL 다운이나 재시작(F25-H)이 아님: testbed-postgres-0 Ready, KCM 에 OOMKilled 나 Created 가 없고 다른 질의는 느려질 뿐 연결이 끊기지 않는다",
+    "무거운 질의를 부르는 부하(F20-R 꼴)가 아님: 포화를 만든 문장은 주문 통계 전수 스캔이 아니라 평시 0.13ms 이던 토큰 조회이고, 동반 부하가 토큰 확인 호출 수를 늘려도 호출당 블록 수는 부하로 바뀌지 않는다",
+    "부하 증가나 PostgreSQL 자원 한도 변경이 아님: StatefulSet 스펙과 노드 자원이 그대로이고, 같은 유입에서 바뀐 것은 한 질의의 호출당 블록 수와 데이터베이스 크기(인덱스 두 개만큼 감소)다",
+    "게이트웨이 설정 오배포(user 주소, 타임아웃)가 아님: 게이트웨이 롤아웃이 없고 user-service 가 응답은 하되 DB 연결 대기 끝에 500 을 내며, 같은 시각 Top SQL 토큰 조회의 호출당 블록이 뛴다"
+   ],
+   "difficulty": "high",
+   "related_scenarios": {
+    "contrast_with": [
+     "F33-R (같은 '인덱스를 잃은 고빈도 질의가 DB 를 포화' 원인 꼴이지만 food MySQL dispatches 의 status COUNT 가 주문 용량 확인 경로로 불려 주문이 503 이 된다. F33-P 는 PostgreSQL user_schema.auth_tokens 의 토큰 조회가 모든 인가된 commerce 쓰기 경로로 불려 장바구니와 checkout 이 게이트웨이 500 이 된다. 녹화에서는 Top SQL 문장, DB 엔진, 실패하는 진입 경로로 갈린다. 인덱스가 INVALID 로 남는 방식은 119 에 직접 보이지 않아 감별 근거로 쓰지 않는다)",
+     "F16-H (같은 commerce 쓰기 실패 + user 경로지만 user-service readiness 오설정으로 user 가 트래픽에서 빠진다. DB 는 한가하고 Top SQL 이 그대로다)",
+     "F20-R (같은 commerce PostgreSQL 포화지만 처음부터 인덱스를 탈 수 없는 통계 질의를 부하가 몰아 부른다)",
+     "F25-H (같은 commerce 공유 DB 가 원인이지만 DB 프로세스가 OOMKill 로 죽어 모든 질의가 끊긴다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "commerce-postgres:user_schema.auth_tokens"
+    ],
+    "partial": [
+     "commerce-user",
+     "commerce-postgres"
+    ]
+   },
+   "title_ko": "commerce auth_tokens 인덱스 정리 마이그레이션이 동시 재생성을 INVALID 로 남긴 채 옛 토큰 인덱스를 지움: 쓰기마다 도는 토큰 확인이 240만 행 전수 스캔이 되어 PostgreSQL 이 포화되고 인가된 쓰기가 500 으로 실패한다",
+   "description_ko": "commerce api-gateway 를 지나는 모든 쓰기(장바구니 변경, checkout)는 user-service POST /api/users/verify-token 으로 토큰을 확인하고, 이 확인은 user_schema.auth_tokens(약 240만 행, 238MB)에서 토큰을 찾는다. 이 조회는 token 열에 겹쳐 있는 두 btree 인덱스(UNIQUE 제약 auth_tokens_token_key, idx_auth_tokens_token)로 호출당 약 0.13ms, 5블록이다. 마이그레이션이 둘을 하나로 합친다: 새 유일 인덱스를 동시 생성(CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new)하고, 옛 제약과 인덱스를 지운 뒤 새 인덱스 이름을 idx_auth_tokens_token 으로 바꾼다. 동시 생성은 마이그레이션 세션의 statement_timeout 2초에 끊겨 카탈로그 항목이 INVALID 로 남고, 마이그레이션은 그 오류에 멈추지 않아 교체 뒤 token 열에는 플래너가 쓰지 않는 인덱스 하나만 남는다. 토큰 확인이 표 전체를 읽는다(호출당 약 1초, 약 3만 블록, 읽기 전용 실측). CPU 0.5 코어인 PostgreSQL 에 초당 약 5~7건(3rps 동반 부하와 상주 기준선)이 들어오니 포화되고, user-service Hikari 풀 10개가 스캔에 묶여 나머지 확인은 3초 대기 뒤 500 이 된다. 게이트웨이 AuthGuard 는 verifyToken 을 같은 클래스 안에서 직접 불러 @Retry, @CircuitBreaker, 401 fallback 이 적용되지 않으므로, 확인 실패(user 500, 10초 read timeout, user NotReady 때 연결 거부)가 그대로 예외로 올라가 쓰기가 500 이 되고 게이트웨이가 SEVERE 'Servlet.service() ... threw exception'(verify-token)을 남긴다. 재시도도 서킷도 없어 부하가 줄지 않는다. 확인을 통과한 쓰기도 포화된 공유 DB 에서 늦어진다. user-service 의 health 가 DB 확인을 포함해 쿠버네티스가 user 를 빼거나 재시작할 수 있는데, 재시작해도 기동 스크립트의 CREATE INDEX IF NOT EXISTS idx_auth_tokens_token 이 같은 이름의 INVALID 인덱스 때문에 건너뛴다. 앱, 이미지, 설정, 행 데이터는 바뀌지 않는다.",
+   "cause_ko": "commerce-postgres user_schema.auth_tokens 마이그레이션: CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new 가 statement_timeout 으로 취소(INVALID 로 남음) → DROP CONSTRAINT auth_tokens_token_key, DROP INDEX idx_auth_tokens_token, INVALID 인덱스를 idx_auth_tokens_token 으로 이름 변경 → AuthTokenRepository.findByToken 이 약 240만 행 병렬 전수 스캔(Top SQL 호출당 블록 약 5 → 약 3만, 약 0.13ms → 수 초) → PostgreSQL(0.5 CPU) 포화, user-service Hikari 풀(10) 고갈 → verify-token 3초 대기 뒤 500(또는 게이트웨이 read timeout, user NotReady 때 연결 거부) → 게이트웨이의 자기 호출 verifyToken 이라 재시도, 서킷, 401 fallback 없이 → 쓰기 500 과 게이트웨이 SEVERE 'Servlet.service() ... verify-token'. user-service 가 Unhealthy 로 빠지거나 재시작될 수 있고, 기동 때 CREATE INDEX IF NOT EXISTS 는 같은 이름의 INVALID 인덱스 때문에 건너뛴다.",
+   "injection_summary_ko": "db.ddl executor 가 user_schema.auth_tokens 가 10만 행 이상(그만큼만 읽음)이고 기본 키를 뺀 인덱스가 정확히 auth_tokens_token_key(UNIQUE 제약)와 idx_auth_tokens_token, 둘 다 유효한 btree(token)인지 확인한다. testbed-postgres-0 안의 psql(kubectl exec)로 그 세션에만 statement_timeout 2s 를 걸고 CREATE UNIQUE INDEX CONCURRENTLY idx_auth_tokens_token_new 를 실행해, 취소된 생성이 INVALID 인덱스를 남겼는지 확인한다(아니면 지우고 멈춘다). 이어 한 트랜잭션에서 제약과 idx_auth_tokens_token 을 지우고 INVALID 인덱스를 idx_auth_tokens_token 으로 바꾼다. north-south 3rps 동반 부하(commerce surge.js, 여정 50% 가 인가된 쓰기 셋을 하는 checkout)가 모든 시간대에 토큰 확인 초당 약 4.5건의 강도 바닥을 만든다(commerce 기준선은 하루 주기 2~10rps). cleanup 은 INVALID 인덱스를 지우고 idx_auth_tokens_token 을 먼저 다시 만든 뒤(유효해지는 순간 스캔이 멈춘다) 유일 인덱스를 다시 만들어 제약 auth_tokens_token_key 로 붙인다. 정의 확인은 recovery 가 한다. 재생성은 동시 생성이 아니라 그동안 로그인(토큰 INSERT)이 기다린다. 앱 코드, 이미지, 설정, 행 데이터는 바꾸지 않으며 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "commerce 게이트웨이를 지나는 인가된 쓰기가 거의 모두 500 으로 실패한다: 장바구니 변경과 checkout 이 토큰 확인을 받지 못한다. user-service 풀이 바쁜 동안 로그인이 느려지거나 실패한다. 상품 조회는 답하지만 같은 PostgreSQL 을 써서 느려진다. 이미 들어간 주문과 core-banking 은 영향이 없다(토큰 없이 하는 장바구니 쓰기의 401 'Missing Authorization token' 은 평시 동작이라 증상이 아니다).",
+   "distinguishing_evidence_ko": "결정 증거는 DPM Top SQL 이다: 토큰 조회 'select ... from user_schema.auth_tokens at1_0 where at1_0.token=$1'(sql_hash 618727859340325129, 평시에는 간헐적으로만 잡힘: 8일 617 스냅샷, 호출당 약 0.13ms, 약 5블록)이 주입한 분부터 호출당 약 3만 블록, 수 초로 나타나고, DPM 세션에 그 문장을 도는 활성 세션이 몰린다. 호출 수로는 설명되지 않는다: 동반 부하가 토큰 확인을 초당 몇 건 늘리지만 바뀐 것은 호출당 블록 수다. 같은 분에 commerce 데이터베이스 크기(dpm.postgresql.database.used_size)가 약 350MB(175MB 인덱스 두 개) 줄고(8일 중 250MB 넘게 준 분이 4번 더 있어 Top SQL 변화와 같은 분인지로 읽는 보조 증거) 순차 스캔 수(dpm.postgresql.sql.seq_scans, 24시간 p99 약 30)가 뛴다. 나머지는 그 결과다: commerce-gateway SEVERE 'Servlet.service() ... threw exception [... HttpServerErrorException 또는 ResourceAccessException ... verify-token ...]'(로그 보존 7일 안 0건), commerce-user Hikari 'Connection is not available, request timed out after 3000ms' 와 Servlet 오류(보존 7일 안 0건), KCM testbed-user Unhealthy(직전 8일 0건)와 재시작. F33-R 과는(같은 '고빈도 질의가 인덱스를 잃음' 꼴) 문장, 테이블, DB 가 다르고(PostgreSQL user_schema.auth_tokens 토큰 조회가 모든 인가된 commerce 쓰기로 불림 대 food MySQL dispatches status COUNT 가 주문 용량 확인으로 불림), 실패가 food 주문 503 이 아니라 장바구니, checkout 의 게이트웨이 500 으로 나온다. rca-testbed-commerce 에 롤아웃과 설정 변경이 없고(user readiness 프로브가 깨지고 DB 는 한가한 F16-H 와 다르다), PostgreSQL 은 재시작하지 않았고(F25-H 와 다르다), 무거운 문장은 F20-R 의 부하가 부르는 주문 통계 스캔이 아니다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f33-p",
+      "parameters": {
+       "engine": "postgresql",
+       "namespace": "rca-testbed-commerce",
+       "db_pod": "testbed-postgres-0",
+       "schema": "user_schema",
+       "table": "auth_tokens",
+       "column": "token",
+       "constraint": "auth_tokens_token_key",
+       "index": "idx_auth_tokens_token",
+       "rebuild_index": "idx_auth_tokens_token_new",
+       "statement_timeout": "2s",
+       "minimum_rows": 100000
+      }
+     }
+    ]
+   }
   }
  }
 }

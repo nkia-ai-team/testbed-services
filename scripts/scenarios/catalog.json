@@ -889,6 +889,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F33-P",
+      "slug": "f33-p-commerce-auth-token-index-swap-invalid",
+      "profiles": [
+        "db.ddl",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

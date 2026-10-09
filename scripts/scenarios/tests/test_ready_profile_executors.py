@@ -645,6 +645,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F17-H",
             # 2026-10-09: food dispatch 가 JSON 숫자를 문자열로 쓰게 하는 직렬화 설정 배포(값 형식 불일치로 order 의 용량 응답 캐스트 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-H",
+            # 2026-10-09: commerce auth_tokens 인덱스 교체 마이그레이션이 동시 재생성을 INVALID 로 남긴 채 옛 인덱스를 지움(토큰 확인 전수 스캔, PostgreSQL 포화). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F33-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

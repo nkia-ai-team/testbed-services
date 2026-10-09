@@ -46,7 +46,8 @@
     "F39-R",
     "F40-R",
     "F17-H",
-    "F32-H"
+    "F32-H",
+    "F33-P"
   ],
   "controllers": {
     "F01-R": {
@@ -10917,6 +10918,224 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F33-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f33-p",
+            "parameters": {
+              "engine": "postgresql",
+              "namespace": "rca-testbed-commerce",
+              "db_pod": "testbed-postgres-0",
+              "schema": "user_schema",
+              "table": "auth_tokens",
+              "column": "token",
+              "constraint": "auth_tokens_token_key",
+              "index": "idx_auth_tokens_token",
+              "rebuild_index": "idx_auth_tokens_token_new",
+              "statement_timeout": "2s",
+              "minimum_rows": 100000
+            },
+            "min_hold": "5m",
+            "settle": "60s",
+            "timeout": "10m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-user"
+          },
+          "freshness": "30s",
+          "_note": "user-service 는 /actuator/health 에 DB 확인이 들어 있어 Hikari 풀(10)이 전수 스캔에 묶이면 readiness 가 빠지고 liveness 가 재시작할 수 있다(원본 Vapi 의 '쿠버네티스가 건강하지 않은 파드를 재시작해 부하가 더 나빠짐'). 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+        },
+        {
+          "id": "postgres_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-postgres"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s",
+          "_note": "동반 부하(surge.js 3rps, 여정의 50% 가 checkout)의 k6 live 문서. checkout 여정은 쓰기 셋(장바구니 비우기, 담기, checkout)마다 게이트웨이가 user verify-token 으로 토큰을 확인한다(초당 약 4.5건 + 기준선). 주입 뒤 이 확인이 auth_tokens 약 240만 행 전수 스캔(호출당 약 1초, 3만 블록)이 되어 PostgreSQL(0.5 CPU)이 포화되고 user 풀이 마른다. 게이트웨이 AuthGuard 는 verifyToken 을 같은 클래스 안에서 직접 불러(AuthGuard.java:44) @Retry, @CircuitBreaker, 401 fallback 이 적용되지 않으므로, user 500 이나 read timeout, 연결 거부가 그대로 쓰기 500 이 된다. 401 은 평시에도 토큰 없는 장바구니 여정에서 쓰기의 약 25% 라 판정에 쓰지 않는다. surge.js 는 VU 별로 토큰을 캐시해(24시간) 로그인이 막혀도 checkout 표본이 이어지지만, 캐시가 없는 새 VU 의 여정은 로그인 실패로 checkout 없이 끝나 표본이 줄 수 있다"
+        },
+        {
+          "id": "checkout_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_nonok_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.write_step_status_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "checkout-failed-5xx",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "checkout-collapsed",
+            "observation": "checkout_2xx_rate",
+            "op": "lt",
+            "value": 0.3
+          }
+        ],
+        "consecutive_ticks": 3
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1,
+            "_note": "동반 부하 3rps 의 1/3. 실패한 여정은 짧아져 반복률이 떨어지지 않는다(ramping-arrival-rate, maxVUs 900). 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "commerce-db-down",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다. 이 시나리오에서 PostgreSQL 은 Ready 로 남아 느려질 뿐이다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "user-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "db-ready",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "writes-recovered",
+            "observation": "checkout_nonok_rate_baseline",
+            "op": "lt",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "15m"
       },
       "capture": {
         "enabled": true,

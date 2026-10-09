@@ -8,13 +8,23 @@ service keeps selecting the old column and every such query fails with
 ER_BAD_FIELD_ERROR (1054) until the rename is reverted.  MySQL 8.0 renames a
 column in place (ALGORITHM=INSTANT, metadata only), so no row is rewritten and
 the inverse is a single statement.
+
+The PostgreSQL swap path (F33-P) runs an index-consolidation migration on one
+verified table: a concurrent rebuild under the migration session's statement
+timeout, then the old unique constraint and plain index are dropped and the
+rebuild is renamed into the plain index's name.  A cancelled CREATE INDEX
+CONCURRENTLY leaves its catalog entry behind as INVALID, so after the swap the
+only index on the column is one the planner never uses, and the owning
+service's startup `CREATE INDEX IF NOT EXISTS` skips it because the name exists.
+Cleanup drops the invalid index, rebuilds the plain index first (which ends the scans)
+and then the unique index it reattaches as the original constraint.
 """
 from __future__ import annotations
 
 import shlex
 from typing import Any
 
-from executor_common import ExecutorError, cli, profile_instance
+from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
 
 PROFILE_ID = "db.ddl"
 
@@ -49,6 +59,15 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "database": "fooddelivery", "table": "restaurants", "column": "region",
         "renamed_to": "delivery_region", "minimum_rows": 20,
     },
+    # 인덱스 교체 마이그레이션: rebuild_index 를 statement_timeout 안에서 동시 생성하다 끊겨 INVALID 로 남은 채
+    # constraint 와 index 를 지우고 rebuild_index 를 index 이름으로 바꾼다. cleanup 은 원래 둘을 다시 만든다.
+    "F33-P": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "user_schema", "table": "auth_tokens", "column": "token",
+        "constraint": "auth_tokens_token_key", "index": "idx_auth_tokens_token",
+        "rebuild_index": "idx_auth_tokens_token_new", "statement_timeout": "2s",
+        "minimum_rows": 100000,
+    },
 }
 
 
@@ -69,6 +88,11 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
+    if p["engine"] == "postgresql" and "rebuild_index" in p:
+        return kubectl_bash_argv([
+            action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["column"],
+            p["constraint"], p["index"], p["rebuild_index"], p["statement_timeout"], str(p["minimum_rows"]),
+        ]), PG_SWAP_REMOTE
     if p["engine"] == "mysql":
         return ["/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"], p["namespace"], p["pod"], p["database"], p["table"], p["index"], p["column"], str(p["minimum_rows"])], MYSQL_REMOTE
     location = instance["location"]
@@ -173,6 +197,60 @@ case "$action" in
  preflight) check ;;
  run) check; rename "$column" "$renamed"; [[ "$(has_column "$column")" == 0 && "$(has_column "$renamed")" == 1 ]] ;;
  cleanup) if [[ "$(has_column "$renamed")" == 1 ]]; then rename "$renamed" "$column"; fi; original ;;
+ recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+PG_SWAP_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"
+constraint="$7"; index="$8"; rebuild="$9"; timeout="${10}"; minimum="${11}"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# SQL travels in the environment; the first psql error line goes to stderr for the runner log.
+# PGOPTIONS carries a per-session setting (the migration's statement_timeout) without a multi-statement
+# string, because CREATE INDEX CONCURRENTLY refuses to run inside the implicit transaction of one.
+sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="${2:-}" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+rel="$schema.$table"
+# Every index on the table except the primary key, one line each: name|valid|definition.
+indexes() { sql "SELECT c.relname || '|' || i.indisvalid || '|' || pg_get_indexdef(i.indexrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = '$rel'::regclass AND NOT i.indisprimary ORDER BY c.relname;"; }
+has_constraint() { sql "SELECT count(*) FROM pg_constraint WHERE conrelid = '$rel'::regclass AND conname = '$constraint' AND contype = 'u';"; }
+expected="$constraint|true|CREATE UNIQUE INDEX $constraint ON $rel USING btree ($column)
+$index|true|CREATE INDEX $index ON $rel USING btree ($column)"
+swapped="$index|false|CREATE UNIQUE INDEX $index ON $rel USING btree ($column)"
+original() { [[ "$(indexes)" == "$expected" && "$(has_constraint)" == 1 ]]; }
+# Read at most $minimum rows: a full count of a multi-million-row table is itself a heavy query in the recording window.
+check() { [[ "$(sql "SELECT count(*) >= $minimum FROM (SELECT 1 FROM $rel LIMIT $minimum) t;")" == t ]]; original; }
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  # The rebuild must be cancelled by the timeout and leave an INVALID entry; if it finished, undo it and stop.
+  sql "CREATE UNIQUE INDEX CONCURRENTLY $rebuild ON $rel ($column);" "-c statement_timeout=$timeout" >/dev/null || true
+  state=$(sql "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = '$rel'::regclass AND c.relname = '$rebuild';")
+  if [[ "$state" != f ]]; then
+    [[ -z "$state" ]] || sql "DROP INDEX $schema.$rebuild;" >/dev/null
+    echo "concurrent rebuild did not end invalid (state='$state')" >&2
+    exit 4
+  fi
+  sql "SET lock_timeout = '10s'; ALTER TABLE $rel DROP CONSTRAINT $constraint; DROP INDEX $schema.$index; ALTER INDEX $schema.$rebuild RENAME TO $index;" >/dev/null
+  [[ "$(indexes)" == "$swapped" && "$(has_constraint)" == 0 ]]
+  ;;
+ cleanup)
+  original && exit 0
+  for name in $(sql "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = '$rel'::regclass AND NOT i.indisvalid ORDER BY 1;"); do
+    [[ "$name" == "$index" || "$name" == "$rebuild" ]] || { echo "unexpected invalid index $name" >&2; exit 3; }
+    sql "DROP INDEX $schema.$name;" >/dev/null
+  done
+  # The plain index first: the moment it is valid the hot lookup stops scanning, so the
+  # unique rebuild that follows no longer competes with a saturated server.
+  sql "CREATE INDEX IF NOT EXISTS $index ON $rel ($column);" >/dev/null
+  if [[ "$(has_constraint)" == 0 ]]; then
+    sql "CREATE UNIQUE INDEX IF NOT EXISTS $constraint ON $rel ($column);" >/dev/null
+    sql "ALTER TABLE $rel ADD CONSTRAINT $constraint UNIQUE USING INDEX $constraint;" >/dev/null
+  fi
+  original
+  ;;
  recovery) check ;;
  *) exit 2 ;;
 esac

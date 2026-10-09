@@ -46,7 +46,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 5 → 6. F40-R(commerce pricing 프로모션 할인율 오입력) 후보 추가.
         # 2026-10-09: 6 → 7. F17-H(banking transfer 릴리스 이미지 부재) 후보 추가.
         # 2026-10-09: 7 → 8. F32-H(food dispatch JSON 숫자 문자열 직렬화 설정 배포) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 8)
+        # 2026-10-09: 8 → 9. F33-P(commerce auth_tokens 인덱스 교체 마이그레이션 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 9)
 
 
 class RecordingQueueTests(unittest.TestCase):
