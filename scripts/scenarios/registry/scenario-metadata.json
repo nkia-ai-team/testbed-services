@@ -5478,7 +5478,7 @@
      "food-delivery/k8s/build-and-deploy.sh:145-165 (idx_dispatches_status_assigned — 기존 PVC 에 멱등하게 더하는 배포 단계)",
      "food-delivery/k8s/22-dispatch-deploy.yaml:73-86 (readinessProbe, livenessProbe — /actuator/health, DB 확인이 실패하면 dispatch 가 트래픽에서 빠지고 재시작될 수 있다)"
     ],
-    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0, tb-w3), 컨테이너 CPU limit 500m, memory limit 1Gi(food-delivery/k8s/10-mysql.yaml:40-46), innodb_buffer_pool_size 128MB. fooddelivery.dispatches 는 2026-10-08 기준 약 501만 행(ASSIGNED 약 1,200, 나머지 DELIVERED), 데이터 239MB, 인덱스 225MB 이고 인덱스는 PRIMARY(id), idx_dispatches_order(order_id), idx_dispatches_status_assigned(status, assigned_at) 셋이다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 열어 ALTER TABLE dispatches DROP INDEX idx_dispatches_status_assigned 를 실행하고, cleanup 에서 같은 이름과 열로 CREATE INDEX 한다. DDL 은 메타데이터 잠금을 잠깐 잡으므로 실행 중인 전수 스캔이 끝날 때까지 기다릴 수 있다(원본 사례의 재생성 지연과 같은 꼴)."
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0, tb-w3), 컨테이너 CPU limit 500m, memory limit 1Gi(food-delivery/k8s/10-mysql.yaml:44-50), innodb_buffer_pool_size 128MB. fooddelivery.dispatches 는 2026-10-08 기준 약 501만 행(ASSIGNED 약 1,200, 나머지 DELIVERED), 데이터 239MB, 인덱스 225MB 이고 인덱스는 PRIMARY(id), idx_dispatches_order(order_id), idx_dispatches_status_assigned(status, assigned_at) 셋이다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 열어 ALTER TABLE dispatches DROP INDEX idx_dispatches_status_assigned 를 실행하고, cleanup 에서 같은 이름과 열로 CREATE INDEX 한다. DDL 은 메타데이터 잠금을 잠깐 잡으므로 실행 중인 전수 스캔이 끝날 때까지 기다릴 수 있다(원본 사례의 재생성 지연과 같은 꼴)."
    },
    "must_support": [
     "DPM 지표 dpm.mysql.database.index_count{db_name=\"fooddelivery\"} 가 31 에서 30 으로 줄고(평시 8일 내내 31), cleanup 뒤 31 로 돌아온다",

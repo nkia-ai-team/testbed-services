@@ -27,6 +27,10 @@ spec:
             # Polestar DPM 로그 수집용 — datadir(PVC)에 에러 로그를 고정 경로로 남겨
             # 호스트 SMS 로그 모니터(owner_kind=dpm)가 tail한다.
             - --log-error=/var/lib/mysql/error.log
+            # binlog 는 복제와 시점 복구용인데 테스트베드에는 읽는 곳이 없다. 기본 30일이면
+            # 하루 1GB 남짓씩 쌓여 15GB 를 넘고, tb-w3(40GB) 가 kubelet 축출선 85% 에 닿는다
+            # (2026-10-09 82.6%). 3일이면 사고 직후 원인 조사에는 충분하다.
+            - --binlog-expire-logs-seconds=259200
           ports:
             - containerPort: 3306
           envFrom:
