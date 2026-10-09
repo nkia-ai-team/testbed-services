@@ -54,7 +54,8 @@
     "F44-R",
     "F44-P",
     "F47-R",
-    "F48-R"
+    "F48-R",
+    "F49-R"
   ],
   "controllers": {
     "F01-R": {
@@ -12833,6 +12834,247 @@
         ],
         "consecutive_ticks": 2,
         "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F49-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f49-r",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-restaurant",
+              "container": "restaurant-service",
+              "baseline_image": "food-delivery-restaurant:latest",
+              "fault_image": "food-delivery-restaurant:1.4.0"
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 릴리스는 restaurant 의 가게 상세 응답 모양만 바꾸고 order 는 해석 실패를 재시도 백오프(200ms, 400ms) 뒤 502 로 곧바로 돌려줘 order 풀이 묶이지 않는다(로컬 실측 240건 모두 502, p50 0.61초, 최대 0.71초, order health UP). 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s",
+          "_note": "food MySQL 파드. 이 주입은 DB 를 건드리지 않는다"
+        },
+        {
+          "id": "restaurant_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-restaurant"
+          },
+          "freshness": "30s",
+          "_note": "restaurant 파드. 릴리스 1.4.0 은 health, 메뉴, 목록을 그대로 두어 새 파드가 Ready 가 되고 기본 전략(maxSurge 25%)으로 옛 파드를 대신한다. 빠지면 응답 모양이 아니라 대상 다운이다"
+        },
+        {
+          "id": "order_create_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)은 하루 주기로 1~6 iter/s 라 한가한 시간에는 주문 생성이 초당 약 0.2건뿐이어서, 러너 판정 표본과 order 의 해석 실패 로그가 시간대에 좌우되지 않도록 동반 부하가 주문 생성을 초당 약 1.4건 더한다(F36-R, F44-R 과 같은 값)",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "restaurant_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
+          "parameters": {
+            "service_name": "food-delivery-restaurant"
+          },
+          "freshness": "60s",
+          "_note": "restaurant 서버 스팬(표본 10%) 60초 창의 5xx 백분율. 릴리스 뒤에도 restaurant 는 가게 상세에 200 으로 답해(바뀐 것은 본문 모양) 0 근처여야 한다. 평시 7일 표본 상세 76,020건 중 5xx 316건(다른 시나리오 실행 구간)"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 새 파드가 Ready 가 되어 옛 파드를 대신하는 순간(약 1분)부터 order 의 가게 조회가 모두 'Error while extracting response for type [com.fooddelivery.common.dto.RestaurantResponse]' 로 실패하고, 서킷브레이커가 열림, 반열림을 되풀이하며 모든 주문이 재시도 백오프만큼 걸린 502 다(로컬 실측 2rps 240건 중 502 240건)"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. 주문이 0.6초 남짓에 502 를 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 응답 모양이 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "restaurant-down",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "restaurant 파드가 빠지면 order 의 실패가 해석 실패가 아니라 연결 실패(엔드포인트 없음)다"
+          },
+          {
+            "id": "restaurant-answers-5xx",
+            "observation": "restaurant_error_rate",
+            "op": "gte",
+            "value": 10,
+            "_note": "restaurant 가 스스로 5xx 를 내면 가게 표나 restaurant 자체 고장(F36-R 꼴)이다. 이 릴리스에서 restaurant 는 200 으로 답한다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "restaurant-ready",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 restaurant 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. order 의 서킷브레이커는 반열림 3회 성공으로 닫힌다"
       },
       "cleanup": {
         "required": true,

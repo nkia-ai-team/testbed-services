@@ -88,6 +88,18 @@ CONTRACTS = {
         "baseline_image": "core-banking-api:latest",
         "fault_image": "core-banking-api:1.4.0",
     },
+    # 2026-10-09. F49-R: food restaurant-service 를 가게 상세 응답의 status 를 문자열에서 {code, label} 객체로 바꾼
+    # 릴리스 1.4.0 으로 롤아웃한다. restaurant 는 200 으로 답하고, 그 응답을 RestaurantResponse(status 문자열)로 읽는
+    # order 가 해석에 실패해 주문이 502 다. 결함 이미지는 fault-images/f49-r 로 109 docker 에만 빌드하고, 실행기가
+    # tb-w3 에 올렸다가 cleanup 이 지운다. 다른 시나리오의 릴리스 태그와 겹치지 않는다(restaurant 는 이 태그 하나뿐).
+    "F49-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-restaurant",
+        "container": "restaurant-service",
+        "baseline_image": "food-delivery-restaurant:latest",
+        "fault_image": "food-delivery-restaurant:1.4.0",
+    },
 }
 
 

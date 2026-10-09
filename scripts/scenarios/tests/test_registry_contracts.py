@@ -67,7 +67,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 76 → 77. F44-P(후보) 추가. 기존 host.firewall 에 다른 노드 호출자 계약을 더해 프로파일 수는 그대로.
         # 2026-10-09: 77 → 78. F47-R(후보) 추가. 기존 k8s.image release 모드를 banking api 에 써서 프로파일 수는 그대로.
         # 2026-10-09: 78 → 79. F48-R(후보) 추가. 기존 db.ddl 에 MySQL 보류 표 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 79)
+        # 2026-10-09: 79 → 80. F49-R(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 80)
         self.assertEqual(len(self.profiles["profiles"]), 28)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -148,6 +149,8 @@ class RegistryContractTests(unittest.TestCase):
             "F47-R",
             # 2026-10-09: food 인기 메뉴 집계 표를 취소된 인덱스 백필이 치움(MySQL 1146, 인기 메뉴만 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-R",
+            # 2026-10-09: food restaurant-service 를 가게 상세 응답의 status 를 문자열에서 {code, label} 객체로 바꾼 릴리스 1.4.0(fault-images/f49-r)으로 롤아웃(restaurant 200, order 해석 실패로 주문 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -444,6 +447,8 @@ class RegistryContractTests(unittest.TestCase):
             "F47-R",
             # 2026-10-09: food 인기 메뉴 집계 표를 취소된 인덱스 백필이 치움(MySQL 1146, 인기 메뉴만 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-R",
+            # 2026-10-09: food restaurant-service 를 가게 상세 응답의 status 를 문자열에서 {code, label} 객체로 바꾼 릴리스 1.4.0(fault-images/f49-r)으로 롤아웃(restaurant 200, order 해석 실패로 주문 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-R",
             },
         )
         self.assertEqual(
@@ -524,6 +529,8 @@ class RegistryContractTests(unittest.TestCase):
             "F47-R",
             # 2026-10-09: food 인기 메뉴 집계 표를 취소된 인덱스 백필이 치움(MySQL 1146, 인기 메뉴만 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F48-R",
+            # 2026-10-09: food restaurant-service 를 가게 상세 응답의 status 를 문자열에서 {code, label} 객체로 바꾼 릴리스 1.4.0(fault-images/f49-r)으로 롤아웃(restaurant 200, order 해석 실패로 주문 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -677,8 +684,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F44-P(후보, 고정 evaluation)이 끝에 붙어 F33-P 가 끝 5개에서 빠졌다.
         # 2026-10-09: F47-R(후보, 고정 evaluation)이 끝에 붙어 F41-R 이 끝 5개에서 빠졌다.
         # 2026-10-09: F48-R(후보, 고정 evaluation)이 끝에 붙어 F42-R 이 끝 5개에서 빠졌다.
+        # 2026-10-09: F49-R(후보, 고정 evaluation)이 끝에 붙어 F43-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F43-R", "F44-R", "F44-P", "F47-R", "F48-R"])
+                         ["F44-R", "F44-P", "F47-R", "F48-R", "F49-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

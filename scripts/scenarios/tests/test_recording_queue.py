@@ -62,7 +62,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 11 → 12. F47-R(banking api 릴리스가 이체마다 account 계좌 목록 전체를 다시 읽어 account 포화) 후보 추가.
         # 2026-10-09: 12 → 11. F38-R 정식 승격(녹화 case-f38-r-v3-54918c10).
         # 2026-10-09: 11 → 12. F48-R(food 인기 메뉴 집계 표를 취소된 인덱스 백필이 치움) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 12)
+        # 2026-10-09: 12 → 13. F49-R(food restaurant 릴리스가 가게 상세 응답 구조를 바꿔 order 가 해석 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 13)
 
 
 class RecordingQueueTests(unittest.TestCase):

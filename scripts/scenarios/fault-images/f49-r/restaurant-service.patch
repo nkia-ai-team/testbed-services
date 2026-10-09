@@ -1,0 +1,82 @@
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java
+index b7f4f4c..cad02f7 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java
+@@ -3,6 +3,7 @@ package com.fooddelivery.restaurant.controller;
+ import com.fooddelivery.common.dto.MenuResponse;
+ import com.fooddelivery.common.dto.PopularMenuResponse;
+ import com.fooddelivery.common.dto.RestaurantResponse;
++import com.fooddelivery.restaurant.dto.RestaurantDetailResponse;
+ import com.fooddelivery.restaurant.service.RestaurantService;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.domain.PageRequest;
+@@ -34,9 +35,10 @@ public class RestaurantController {
+         return ResponseEntity.ok(restaurantService.searchRestaurants(region, status, pageable));
+     }
+ 
++    // 1.4.0 공개 API 정비 — 상세는 상태를 코드와 표시 이름으로 내려준다.
+     @GetMapping("/{id}")
+-    public ResponseEntity<RestaurantResponse> getRestaurant(@PathVariable Long id) {
+-        return ResponseEntity.ok(restaurantService.getRestaurant(id));
++    public ResponseEntity<RestaurantDetailResponse> getRestaurant(@PathVariable Long id) {
++        return ResponseEntity.ok(restaurantService.getRestaurantDetail(id));
+     }
+ 
+     @GetMapping("/{id}/menu")
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/dto/RestaurantDetailResponse.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/dto/RestaurantDetailResponse.java
+new file mode 100644
+index 0000000..8fe1232
+--- /dev/null
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/dto/RestaurantDetailResponse.java
+@@ -0,0 +1,14 @@
++package com.fooddelivery.restaurant.dto;
++
++/**
++ * 가게 상세 공개 응답(1.4.0). 앱 화면이 영업 상태를 그대로 보여 줄 수 있게
++ * 상태를 코드와 표시 이름으로 나눠 내려준다.
++ */
++public record RestaurantDetailResponse(
++        Long id,
++        String name,
++        String region,
++        Status status
++) {
++    public record Status(String code, String label) {}
++}
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+index 174dafc..c370a42 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+@@ -4,6 +4,7 @@ import com.fooddelivery.common.dto.MenuResponse;
+ import com.fooddelivery.common.dto.PopularMenuResponse;
+ import com.fooddelivery.common.dto.RestaurantResponse;
+ import com.fooddelivery.common.exception.ServiceException;
++import com.fooddelivery.restaurant.dto.RestaurantDetailResponse;
+ import com.fooddelivery.restaurant.entity.Menu;
+ import com.fooddelivery.restaurant.entity.MenuPopularitySummary;
+ import com.fooddelivery.restaurant.entity.Restaurant;
+@@ -58,6 +59,24 @@ public class RestaurantService {
+         return new RestaurantResponse(r.getId(), r.getName(), r.getRegion(), r.getStatus());
+     }
+ 
++    @Transactional(readOnly = true)
++    public RestaurantDetailResponse getRestaurantDetail(Long id) {
++        Restaurant r = restaurantRepository.findById(id)
++                .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND, "Restaurant not found: " + id));
++        return new RestaurantDetailResponse(r.getId(), r.getName(), r.getRegion(),
++                new RestaurantDetailResponse.Status(r.getStatus(), statusLabel(r.getStatus())));
++    }
++
++    private static String statusLabel(String status) {
++        if ("OPEN".equalsIgnoreCase(status)) {
++            return "영업 중";
++        }
++        if ("CLOSED".equalsIgnoreCase(status)) {
++            return "영업 종료";
++        }
++        return status;
++    }
++
+     @Transactional(readOnly = true)
+     public List<MenuResponse> getMenu(Long restaurantId) {
+         if (!restaurantRepository.existsById(restaurantId)) {
