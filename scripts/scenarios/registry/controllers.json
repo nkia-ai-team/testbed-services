@@ -60,7 +60,8 @@
     "F49-H",
     "F50-R",
     "F48-P",
-    "F51-R"
+    "F51-R",
+    "F43-P"
   ],
   "controllers": {
     "F01-R": {
@@ -14173,6 +14174,207 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F43-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f43-p",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-dispatch",
+              "container": "dispatch-service",
+              "baseline_image": "food-delivery-dispatch:latest",
+              "fault_image": "food-delivery-dispatch:1.7.0"
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 릴리스는 dispatch 만 바꾸고 order, restaurant, MySQL 은 그대로다. dispatch 풀이 마르면 order 의 용량 확인이 dispatch Hikari 대기 3초 뒤 500 이나(Ready 인 동안) 연결 거부(NotReady, 재시작 중)로 끝나 재시도와 서킷 끝에 503 을 돌려준다. 로컬 실측(1.5 주문/초, 180초)에서 order 응답은 503, 최대 3.7초였고 order health 는 내내 200 이었다. F33-R(같은 dispatch 풀 고갈, 실행 F33-R-run-73fed92a)에서도 order 는 연결 가능 상태를 지켰다. 0(연결 불가)은 order 파드나 노드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s",
+          "_note": "food MySQL 파드. 이 주입은 MySQL 설정, 스키마, 부하를 건드리지 않는다(새는 연결은 MySQL 에서 Sleep 세션 약 10개, max_connections 151)"
+        },
+        {
+          "id": "order_create_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)의 주문은 하루 주기로 초당 약 0.2~1.2건이라(119 dispatch 'Dispatched courier' 로그, 2026-10-09 시간별) 한가한 시간에는 누수 속도와 러너 판정 표본이 작아지므로, 동반 부하가 주문 생성을 초당 약 1.4건 더한다(F36-R, F44-R, F49-R, F49-H 와 같은 값). 누수는 배차 요청 1건에 연결 1개라 이 부하에서 풀(10)은 새 파드가 트래픽을 받은 뒤 약 5~10초 안에 마른다",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 새 dispatch 파드가 Ready 가 되어 옛 파드를 대신한 뒤(평시 롤아웃 약 41초: KCM 2026-10-09 00:26:52 Pulled → 00:27:33 옛 ReplicaSet 축소) 배차 요청 약 10건에 풀이 마른다(total=10, active=10, idle=0). 그 뒤 용량 확인(GET /api/deliveries/capacity)과 배차 요청이 연결 대기 3초 끝에 500 이고, order 는 'Failed to check dispatch capacity: 500' 뒤 재시도와 서킷 끝에 503 'Dispatch service unreachable' 로 주문을 거절한다. 약 30초 뒤 readiness(DB 확인이 든 /actuator/health)가 빠지면 order 는 연결 거부로 곧바로 503, liveness 5회 실패(약 75초)에 kubelet 이 재시작하면 쥐었던 연결이 풀려 새 파드가 다시 배차 약 10건을 받고 또 마른다. 로컬 실측(패치 jar, mysql:8.0, 1.5 주문/초, 180초, kubelet 없음): 첫 주문 9건 뒤로 주문 전부 503(p50 3.6초), dispatch health 503, MySQL fooddelivery Sleep 세션 13 → 23 고정. 운영에서 2xx 는 재시작 직후 풀이 새것일 때의 약 10건(한 15초 창의 절반 정도)뿐이라 한 주기(재기동 약 40초 + 고갈 뒤 약 75초 + 재시작 대기)에서 2xx<0.2 인 창이 3틱 넘게 이어진다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. ramping-arrival-rate(maxVUs 300)라 주문이 3~4초씩 걸려도 반복률이 유지된다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 연결 누수가 아니라 DB 다운(F25-H 꼴)이다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "_note": "dispatch 파드 준비 상태와 dispatch 서버 스팬 오류율은 러너 관측 허용 목록(APPROVED_K8S_TARGETS, APPROVED_APM_SERVICES)에 없어 러너 배제 조건으로 두지 않는다(F32-H, F33-H, F49-H 와 같음). MySQL 이 한가하다는 감별(F33-R, F33-H 와 가르기)은 녹화된 DPM 세션, 응답 시간 지표와 dispatch Hikari 지표로 RCA 쪽에서 한다(정답지 must_support, must_rule_out)"
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 dispatch 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 매니페스트 버전은 연결을 새지 않아 새 파드의 풀이 그대로 유지되고, order 의 dispatch 서킷브레이커는 반열림 3회 성공으로 닫힌다. 고장 동안 실패한 주문은 용량 확인 단계에서 끝나 주문 행과 배차를 남기지 않는다. 만료 배치가 고갈 동안 실패해 밀린 ASSIGNED 배차는 복구 뒤 첫 주기(30초)에 DELIVERED 로 넘어간다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
       },
       "capture": {
         "enabled": true,

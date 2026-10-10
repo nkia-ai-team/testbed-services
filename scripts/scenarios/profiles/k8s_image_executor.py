@@ -126,6 +126,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-order:latest",
         "fault_image": "food-delivery-order:2.3.0",
     },
+    # 2026-10-10. F43-P: food dispatch-service 를 같은 주문의 중복 배차 확인을 더한 릴리스 1.7.0 으로 롤아웃한다.
+    # 새 확인이 배차 요청마다 풀에서 연결을 빌려 중복이 없을 때(거의 모든 요청) 돌려주지 않아 Hikari 풀(10)이 배차 약
+    # 10건 만에 마르고, 용량 확인과 배차가 연결 대기 3초 끝에 500, order 가 주문을 503 으로 거절한다. 결함 이미지는
+    # fault-images/f43-p 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다. dispatch 의 다른
+    # 릴리스 태그(F33-H 1.6.0)와 겹치지 않는다.
+    "F43-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-dispatch",
+        "container": "dispatch-service",
+        "baseline_image": "food-delivery-dispatch:latest",
+        "fault_image": "food-delivery-dispatch:1.7.0",
+    },
 }
 
 

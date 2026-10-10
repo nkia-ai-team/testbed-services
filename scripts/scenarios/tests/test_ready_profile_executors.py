@@ -674,6 +674,30 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for word in ("F49", "f49", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_food_dispatch_second_release(self) -> None:
+        # F43-P: 같은 release 스크립트로 food dispatch 를 1.7.0 으로 롤아웃한다(tb-w3, 노드는 스크립트가
+        # Deployment 의 nodeSelector 에서 읽는다). F33-H 도 dispatch 릴리스(1.6.0)를 쓰므로 태그가 겹치지 않아야
+        # 둘 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 dispatch-service/src 안만 고친다.
+        plan = compiler.compile_plan("f43-p-food-dispatch-release-connection-leak-rejects-orders")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-dispatch", "dispatch-service",
+                                    "food-delivery-dispatch:latest", "food-delivery-dispatch:1.7.0"])
+        self.assertNotIn("F43-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F43-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F43-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f43-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F43-P"]["baseline_image"], k8s_image.CONTRACTS["F43-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f43-p" / "dispatch-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/dispatch-service/src/",
+                                                     "b/food-delivery/dispatch-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F43", "f43", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1011,6 +1035,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F48-P",
             # 2026-10-09: 운영자의 용량 명령 입력이 잘못되어 banking account-service Deployment 가 replicas 0(kubectl scale), account 파드가 없어 잔액 조회, 계좌 목록, 이체 502(거래 내역, commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F51-R",
+            # 2026-10-10: food dispatch-service 를 같은 주문의 중복 배차 확인을 더한 릴리스 1.7.0(fault-images/f43-p)으로 롤아웃(확인이 배차 요청마다 풀 연결을 빌려 중복일 때만 돌려줘 Hikari 풀 10 이 배차 약 10건 만에 고갈, MySQL 은 한가함, 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F43-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

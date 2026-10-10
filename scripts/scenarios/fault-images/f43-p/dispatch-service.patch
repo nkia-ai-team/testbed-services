@@ -1,0 +1,143 @@
+--- a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
+@@ -24,6 +24,7 @@
+ 
+     @PostMapping("/dispatch")
+     public ResponseEntity<DispatchResponse> dispatchCourier(@RequestBody DispatchRequest request) {
++        dispatchService.rejectDuplicateAssignment(request.orderId());
+         return ResponseEntity.ok(dispatchService.dispatchCourier(request));
+     }
+ 
+--- a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java
+@@ -19,6 +19,11 @@
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import javax.sql.DataSource;
++import java.sql.Connection;
++import java.sql.PreparedStatement;
++import java.sql.ResultSet;
++import java.sql.SQLException;
+ import java.util.LinkedHashMap;
+ import java.util.List;
+ import java.util.Map;
+@@ -33,21 +38,49 @@
+     private final DispatchRepository dispatchRepository;
+     private final DispatchEventLogRepository dispatchEventLogRepository;
+     private final DispatchOutboxPublisher outboxPublisher;
++    private final DataSource dataSource;
+     private final int maxCapacity;
+     private final String dispatchTopic;
+ 
+     public DispatchService(DispatchRepository dispatchRepository,
+                            DispatchEventLogRepository dispatchEventLogRepository,
+                            DispatchOutboxPublisher outboxPublisher,
++                           DataSource dataSource,
+                            @Value("${dispatch.max-capacity:50}") int maxCapacity,
+                            @Value("${topics.dispatch}") String dispatchTopic) {
+         this.dispatchRepository = dispatchRepository;
+         this.dispatchEventLogRepository = dispatchEventLogRepository;
+         this.outboxPublisher = outboxPublisher;
++        this.dataSource = dataSource;
+         this.maxCapacity = maxCapacity;
+         this.dispatchTopic = dispatchTopic;
+     }
+ 
++    // 같은 주문의 중복 배차 방지. order 는 배차 호출을 재시도하므로(최대 3회) 앞선 시도가 이미 배달원을
++    // 잡았으면 또 잡지 않고 409 로 알린다. 배차 트랜잭션을 열기 전에 확인한다.
++    public void rejectDuplicateAssignment(Long orderId) {
++        if (orderId == null) {
++            return;
++        }
++        try {
++            Connection conn = dataSource.getConnection();
++            PreparedStatement ps = conn.prepareStatement(
++                    "SELECT count(*) FROM dispatches WHERE order_id = ? AND status = 'ASSIGNED'");
++            ps.setLong(1, orderId);
++            ResultSet rs = ps.executeQuery();
++            long assigned = rs.next() ? rs.getLong(1) : 0;
++            rs.close();
++            ps.close();
++            if (assigned > 0) {
++                conn.close();
++                throw new ServiceException(HttpStatus.CONFLICT,
++                        "Courier already assigned for order " + orderId);
++            }
++        } catch (SQLException ex) {
++            throw new IllegalStateException("Failed to check existing assignment: " + ex.getMessage(), ex);
++        }
++    }
++
+     @Transactional
+     public DispatchResponse dispatchCourier(DispatchRequest request) {
+         // order ID 는 request 그대로 신뢰 (microservice 경계).
+--- a/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DispatchSearchTest.java
++++ b/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DispatchSearchTest.java
+@@ -11,6 +11,7 @@
+ import org.springframework.data.domain.SliceImpl;
+ import org.springframework.data.repository.query.parser.PartTree;
+ 
++import javax.sql.DataSource;
+ import java.util.Arrays;
+ import java.util.List;
+ 
+@@ -33,7 +34,7 @@
+ 
+     private final DispatchRepository dispatches = mock(DispatchRepository.class);
+     private final DispatchService service = new DispatchService(dispatches, mock(DispatchEventLogRepository.class),
+-            mock(DispatchOutboxPublisher.class), 2000, "food.dispatch");
++            mock(DispatchOutboxPublisher.class), mock(DataSource.class), 2000, "food.dispatch");
+ 
+     private static Slice<Dispatch> slice(Dispatch... rows) {
+         return new SliceImpl<>(List.of(rows));
+--- a/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DuplicateAssignmentTest.java
++++ b/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/service/DuplicateAssignmentTest.java
+@@ -0,0 +1,47 @@
++package com.fooddelivery.dispatch.service;
++
++import com.fooddelivery.common.exception.ServiceException;
++import com.fooddelivery.dispatch.event.DispatchOutboxPublisher;
++import com.fooddelivery.dispatch.repository.DispatchEventLogRepository;
++import com.fooddelivery.dispatch.repository.DispatchRepository;
++import org.junit.jupiter.api.Test;
++import org.springframework.http.HttpStatus;
++
++import javax.sql.DataSource;
++import java.sql.Connection;
++import java.sql.PreparedStatement;
++import java.sql.ResultSet;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++import static org.mockito.ArgumentMatchers.anyString;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++/**
++ * order 의 배차 호출이 재시도되어 같은 주문이 두 번 들어오면, 두 번째는 배달원을 새로 잡지 않고 409 다.
++ */
++class DuplicateAssignmentTest {
++
++    @Test
++    void a_second_request_for_an_assigned_order_is_rejected() throws Exception {
++        DataSource dataSource = mock(DataSource.class);
++        Connection conn = mock(Connection.class);
++        PreparedStatement ps = mock(PreparedStatement.class);
++        ResultSet rs = mock(ResultSet.class);
++        when(dataSource.getConnection()).thenReturn(conn);
++        when(conn.prepareStatement(anyString())).thenReturn(ps);
++        when(ps.executeQuery()).thenReturn(rs);
++        when(rs.next()).thenReturn(true);
++        when(rs.getLong(1)).thenReturn(1L);
++        DispatchService service = new DispatchService(mock(DispatchRepository.class),
++                mock(DispatchEventLogRepository.class), mock(DispatchOutboxPublisher.class), dataSource,
++                2000, "food.dispatch");
++
++        ServiceException ex = assertThrows(ServiceException.class, () -> service.rejectDuplicateAssignment(42L));
++
++        assertEquals(HttpStatus.CONFLICT, ex.getStatus());
++        verify(conn).close();
++    }
++}

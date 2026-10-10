@@ -1,0 +1,7 @@
+{
+  "base": "food-delivery-dispatch:latest",
+  "fault": "food-delivery-dispatch:1.7.0",
+  "domain": "food-delivery",
+  "module": "dispatch-service",
+  "node": "tb-w3"
+}
