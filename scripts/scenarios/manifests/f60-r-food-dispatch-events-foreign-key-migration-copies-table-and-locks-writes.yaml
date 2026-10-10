@@ -1,0 +1,295 @@
+{
+  "schema_version": "1.0",
+  "id": "F60-R",
+  "slug": "f60-r-food-dispatch-events-foreign-key-migration-copies-table-and-locks-writes",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.ddl food testbed-mysql-0 ALTER TABLE dispatch_events ADD CONSTRAINT fk_dispatch_events_dispatch FOREIGN KEY (dispatch_id) REFERENCES dispatches (id)(kubectl exec mysql root 를 DB 파드 안에서 백그라운드로 띄우고 세션이 보이면 run 종료, ALGORITHM, LOCK 없음, preflight 가 외래 키 없음, 고아 이력 0, dispatch_id 인덱스, foreign_key_checks 1, 세션 90 이하, 데이터 볼륨 여유 표 크기의 2배를 확인). 동반 부하 없음(상주 기준선 loadgen-food 가 주문 생성, 동반 주문은 처음 수십 초 order 풀을 배차 대기로 더 묶음)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.ddl"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [],
+        "approved_profile_id": "db.ddl"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f60-r",
+              "parameters": {
+                "engine": "mysql",
+                "namespace": "rca-testbed-food",
+                "pod": "testbed-mysql-0",
+                "database": "fooddelivery",
+                "table": "dispatch_events",
+                "column": "dispatch_id",
+                "foreign_key": "fk_dispatch_events_dispatch",
+                "referenced_table": "dispatches",
+                "referenced_column": "id",
+                "drain_seconds": 300,
+                "minimum_rows": 1000,
+                "maximum_sessions": 90
+              },
+              "min_hold": "60s",
+              "settle": "30s",
+              "timeout": "6m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 복사가 도는 동안 order 는 배차 요청(5초 시간 제한, 3회)과 용량 확인(dispatch 풀 대기 3초) 실패 끝에 503 으로 답하고, dispatch 가 NotReady 가 되면 연결 거부를 곧바로 503 으로 바꾼다. order 자신의 표는 잠기지 않는다. 0(연결 불가)은 order 파드가 빠지거나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기 1~6 iter/s 라 주문 생성은 분당 약 12~68건, 30초 창에 6~34건이다. 복사가 도는 동안 배차 INSERT 가 메타데이터 잠금을 기다려 모든 주문 생성이 503 이다(처음 수십 초는 배차 요청 시간 초과로 약 16초 뒤, 그 뒤는 dispatch 서킷 열림과 NotReady 로 곧바로). 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "min_hold 60s, 2틱. 이 고장은 스스로 끝난다: 마이그레이션의 표 복사가 끝나면 막힌 쓰기가 풀린다. 109 testbed-mysql-0 은 평시 거의 한가하고(cgroup CPU 약 2%, active_session 중앙 1) 같은 판, 같은 크기의 로컬 실측이 한가할 때 76~97초라 복사는 약 60~100초로 본다. 판정에 쓰는 두 관측(loadgen.food_create_status_rate, loadgen.transfer_2xx_rate)은 update_interval 30초라 연속 틱은 표본 사이가 30초 이상일 때만 오른다(adaptive.py _independence_sec, _updated_streaks). 주입 뒤 수 초 안에 배차 INSERT 가 막히고 첫 주문들은 약 16초 뒤 503, 약 5~15초에 dispatch 풀이 비어 그 뒤 주문은 곧바로 503 이라, 30초 창이 처음 조건을 넘는 표본은 약 30~45초, 둘째 표본은 약 60~75초에 찍힌다. 둘째 창(약 30~75초)이 통째로 복사 안에 들어 min_hold 60s 직후 성공한다. 3틱이면 셋째 창(약 60~105초)이 복사 끝(약 76~97초)과 회복(readiness 10초, 서킷 5초)에 걸려 깨질 수 있어 2틱으로 둔다(같은 2틱 선례 controller 15개). cleanup 이 복사가 끝나기를 기다리므로(최대 300초) 녹화에는 복사 전체가 담긴다. timeout 6m 은 복사가 늦게 시작해도 받는다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 표 하나의 잠금이 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "order-down",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 주문 실패가 하류 배차 실패가 아니라 order 연결 실패다. 잠기는 표는 dispatch 의 두 표뿐이고 order 의 health 확인은 자기 풀의 isValid() 라 Ready 로 남아야 한다(처음 수십 초 동안 주문 트랜잭션이 배차 응답을 기다리며 연결을 쥐지만 서킷이 열리면 풀린다)"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "order-ready",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

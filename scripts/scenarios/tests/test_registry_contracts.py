@@ -93,7 +93,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 102 → 103. F59-P(후보) 추가. 기존 k8s.job 에 계좌별 내역 백필 모드를 더해 프로파일 수는 그대로.
         # 2026-10-10: 103 → 104. F36-H(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 104 → 105. F41-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 105)
+        # 2026-10-10: 105 → 106. F60-R(후보) 추가. 기존 db.ddl 에 MySQL 외래 키 추가 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 106)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -226,6 +227,8 @@ class RegistryContractTests(unittest.TestCase):
             "F36-H",
             # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
             "F41-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatch_events 에 외래 키를 ALGORITHM, LOCK 없이 더하는 정합성 보강 마이그레이션(MySQL 이 표를 복사하며 dispatch_events 와 부모 dispatches 쓰기가 메타데이터 잠금 대기, dispatch 풀 고갈과 재시작, 주문 503, 복사가 끝나면 스스로 회복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -574,6 +577,8 @@ class RegistryContractTests(unittest.TestCase):
             "F36-H",
             # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
             "F41-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatch_events 에 외래 키를 ALGORITHM, LOCK 없이 더하는 정합성 보강 마이그레이션(MySQL 이 표를 복사하며 dispatch_events 와 부모 dispatches 쓰기가 메타데이터 잠금 대기, dispatch 풀 고갈과 재시작, 주문 503, 복사가 끝나면 스스로 회복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-R",
             },
         )
         self.assertEqual(
@@ -706,6 +711,8 @@ class RegistryContractTests(unittest.TestCase):
             "F36-H",
             # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
             "F41-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatch_events 에 외래 키를 ALGORITHM, LOCK 없이 더하는 정합성 보강 마이그레이션(MySQL 이 표를 복사하며 dispatch_events 와 부모 dispatches 쓰기가 메타데이터 잠금 대기, dispatch 풀 고갈과 재시작, 주문 503, 복사가 끝나면 스스로 회복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -885,8 +892,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F59-P(후보, 고정 evaluation)이 끝에 붙어 F51-H 가 끝 5개에서 빠졌다.
         # 2026-10-10: F36-H(후보, 고정 evaluation)이 끝에 붙어 F57-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F41-H(후보, 고정 evaluation)이 끝에 붙어 F23-P 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F60-R(후보, 고정 evaluation)이 끝에 붙어 F58-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F58-R", "F59-R", "F59-P", "F36-H", "F41-H"])
+                         ["F59-R", "F59-P", "F36-H", "F41-H", "F60-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

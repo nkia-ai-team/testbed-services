@@ -352,6 +352,52 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F57-R", ddl.CONTRACTS["F35-H"], {})
 
+    def test_mysql_foreign_key_migration_copies_the_table_in_the_background_and_is_dropped_after(self) -> None:
+        # F60-R: 정합성 보강 마이그레이션이 dispatch_events 에 dispatches 로의 외래 키를 ALGORITHM, LOCK 없이 더한다.
+        # foreign_key_checks 가 켜져 있으면 MySQL 은 표를 복사하고 그동안 자식, 부모 표 쓰기가 메타데이터 잠금을 기다린다.
+        p = ddl.CONTRACTS["F60-R"]
+        ddl.validate("F60-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F60-R", p), "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "dispatch_events",
+                                    "dispatch_id", "fk_dispatch_events_dispatch", "dispatches", "id", "300", "1000", "90"])
+        self.assertNotIn("F60-R", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F60-R", script)
+        # 마이그레이션은 쓴 그대로: 방식 지정이 없어야 서버가 복사를 고른다. 방식 지정은 되돌리기(외래 키 지우기)에만 있다.
+        self.assertIn('statement="ALTER TABLE $table ADD CONSTRAINT $fk FOREIGN KEY ($column) REFERENCES $parent ($parent_column)"', script)
+        self.assertEqual(script.count("ALGORITHM="), 1)
+        self.assertIn("DROP FOREIGN KEY $fk, ALGORITHM=INPLACE, LOCK=NONE", script)
+        self.assertIn("@@global.foreign_key_checks", script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # run 은 러너 coordinator lock 을 쥔 채 돈다: 마이그레이션은 DB 파드 안에서 백그라운드로 띄우고, 세션이 보이는지 1초씩
+        # 많아야 10번 본 뒤 돌아온다. 복사를 기다리지 않는다.
+        self.assertIn("nohup mysql", run)
+        self.assertIn("</dev/null &", run)
+        self.assertIn("for _ in 1 2 3 4 5 6 7 8 9 10; do", run)
+        self.assertEqual(run.count("sleep"), 1)
+        # 마이그레이션 세션은 문장으로 찾고 찾는 질의 자기 세션은 뺀다.
+        self.assertIn("id <> CONNECTION_ID()", script)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        # cleanup 은 복사가 스스로 끝나기를 drain 까지 기다리고, 남았으면 멈춘 뒤 외래 키를 지운다.
+        order = ["end=$((SECONDS + drain))", "KILL QUERY", "DROP FOREIGN KEY", "rm -f"]
+        positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("lock_wait_timeout=10", cleanup)
+        # preflight 만 고아 이력을 센다(전체 조인이라 run 에서는 다시 하지 않는다).
+        self.assertIn(" preflight) check; [[ \"$(orphans)\" == 0 ]] ;;", script)
+        self.assertNotIn("orphans", run)
+        # 행, 인덱스, 부모 표는 손대지 않는다.
+        for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "rename "):
+            self.assertNotIn(word, script.lower())
+        _, f33r_body = ddl.build_invocation(plan("db.ddl", "F33-R", ddl.CONTRACTS["F33-R"]), "run")
+        self.assertNotEqual(body, f33r_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-R", {**p, "table": "dispatches"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-R", {**p, "drain_seconds": 3600}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-R", ddl.CONTRACTS["F32-P"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

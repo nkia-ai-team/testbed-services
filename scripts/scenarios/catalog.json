@@ -1328,6 +1328,18 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F60-R",
+      "slug": "f60-r-food-dispatch-events-foreign-key-migration-copies-table-and-locks-writes",
+      "profiles": [
+        "db.ddl"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

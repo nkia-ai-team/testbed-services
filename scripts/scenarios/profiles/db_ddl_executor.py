@@ -82,6 +82,17 @@ read-only hold, run makes the table writable again and stops.  The inverse is RE
 and START WITH LIMIT VALUE, which moves the generator past the highest key; DDL is retried a bounded
 number of times when it times out behind in-flight transactions, it needs no state file and it is a no-op once the table is
 writable and the generator is ahead again.
+
+The MySQL foreign-key path (F60-R) is an integrity migration that adds the missing foreign key from
+the dispatch status-history table to the dispatch table, written the way it would be in place on
+another engine: a plain ADD CONSTRAINT ... FOREIGN KEY with no ALGORITHM or LOCK clause.  With
+foreign_key_checks on, MySQL cannot add a foreign key in place and silently copies the whole table
+instead; for the length of the copy every write to the child table and to the referenced parent table
+waits for the metadata lock ("Waiting for table metadata lock") while reads go on.  Run starts the
+migration in the background inside the database pod (it outlives run, which holds the runner's
+coordinator lock) and returns once the server shows its session.  The copy ends on its own; cleanup
+waits for it up to `drain_seconds`, stops it if it is still running (the server drops the half-built
+copy), then drops the foreign key, which is metadata only.  Rows, indexes and the parent are untouched.
 """
 from __future__ import annotations
 
@@ -205,6 +216,16 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "primary_key": "SYS_C008658", "rewind_rows": 400000, "read_only_seconds": 6,
         "minimum_rows": 1000,
     },
+    # 무결성 보강 마이그레이션: 배차 이력 표 dispatch_events 에 빠져 있던 dispatches 로의 외래 키를 ALGORITHM, LOCK 없이 더한다.
+    # foreign_key_checks 가 켜져 있으면 MySQL 은 제자리 추가를 못 하고 표를 통째로 복사하며, 복사하는 동안 자식 표와 부모 표의
+    # 쓰기가 메타데이터 잠금을 기다린다(읽기는 통과). run 은 마이그레이션을 DB 파드 안에서 백그라운드로 띄우고 세션이 보이면
+    # 돌아온다. cleanup 은 복사가 끝나기를 drain_seconds 까지 기다렸다가(남았으면 멈춤) 외래 키를 지운다(메타데이터만).
+    "F60-R": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "dispatch_events", "column": "dispatch_id",
+        "foreign_key": "fk_dispatch_events_dispatch", "referenced_table": "dispatches",
+        "referenced_column": "id", "drain_seconds": 300, "minimum_rows": 1000, "maximum_sessions": 90,
+    },
 }
 
 
@@ -223,6 +244,10 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     instance = profile_instance(plan, PROFILE_ID)
     p = instance["parameters"]
     validate(plan["scenario"]["id"], p, {})
+    if p["engine"] == "mysql" and "foreign_key" in p:
+        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"],
+                p["foreign_key"], p["referenced_table"], p["referenced_column"], str(p["drain_seconds"]),
+                str(p["minimum_rows"]), str(p["maximum_sessions"])], MYSQL_FK_REMOTE
     if p["engine"] == "mysql" and "backfill_index" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
     if p["engine"] == "oracle" and "identity_column" in p:
@@ -698,6 +723,77 @@ case "$action" in
   original
   ;;
  recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+
+MYSQL_FK_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; fk="$7"; parent="$8"; parent_column="$9"
+drain="${10}"; minimum="${11}"; max_sessions="${12}"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
+mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+# The migration as written: no ALGORITHM or LOCK clause, so with foreign_key_checks on the server copies the table.
+statement="ALTER TABLE $table ADD CONSTRAINT $fk FOREIGN KEY ($column) REFERENCES $parent ($parent_column)"
+log=/tmp/schema-migration.log
+# An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
+number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
+foreign_keys() { number "$(mysql "SELECT COUNT(*) FROM information_schema.referential_constraints WHERE constraint_schema='$db' AND table_name='$table';")"; }
+# The migration's own session, found by its statement text (never the probe's own session).
+migration() { mysql "SELECT id FROM information_schema.processlist WHERE id <> CONNECTION_ID() AND info LIKE 'ALTER TABLE $table ADD CONSTRAINT $fk %' ORDER BY id LIMIT 1;"; }
+original() { n=$(foreign_keys) || return 1; [[ "$n" == 0 && -z "$(migration)" ]]; }
+rows() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; }
+check() {
+  rows
+  original
+  # The referencing column is already indexed, so the key reuses that index and its removal leaves it in place.
+  [[ "$(mysql "SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema='$db' AND table_name='$table' AND column_name='$column' AND seq_in_index=1;")" =~ ^[1-9][0-9]*$ ]]
+  # With foreign_key_checks off the server would add the key in place, without the copy and its lock.
+  [[ "$(mysql "SELECT @@global.foreign_key_checks;")" == 1 ]]
+  # Sessions that give up waiting stay on the server until the copy ends: keep room under max_connections.
+  sessions=$(number "$(mysql "SELECT COUNT(*) FROM information_schema.processlist;")")
+  [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
+  # The copy needs about the table's size again on the data volume; ask for twice that.
+  need=$(number "$(mysql "SELECT CEIL((data_length + index_length) / 1024) * 2 FROM information_schema.tables WHERE table_schema='$db' AND table_name='$table';")")
+  free=$(number "$("${k[@]}" exec "$pod" -- df -Pk /var/lib/mysql | awk 'NR==2 {print $4}')")
+  [[ "$free" -ge "$need" ]] || { echo "only ${free}K free on the data volume, the copy needs ${need}K" >&2; return 1; }
+}
+# A child row whose parent is gone fails the copy part way (1452) and ends the lock early.
+orphans() { number "$(mysql "SELECT COUNT(*) FROM $table c LEFT JOIN $parent p ON p.$parent_column = c.$column WHERE p.$parent_column IS NULL;")"; }
+case "$action" in
+ preflight) check; [[ "$(orphans)" == 0 ]] ;;
+ run)
+  check
+  "${k[@]}" exec "$pod" -- env DB="$db" SQL="$statement" LOG="$log" sh -c 'nohup mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" >"$LOG" 2>&1 </dev/null &'
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -z "$(migration)" ]] || exit 0
+    sleep 1
+  done
+  echo "migration did not start: $("${k[@]}" exec "$pod" -- sh -c "grep -v 'Using a password' $log | head -n 1")" >&2
+  exit 4
+  ;;
+ cleanup)
+  # The copy ends on its own (the original migration was let finish); wait for it up to the drain bound,
+  # then stop it, and the server drops the half-built copy.
+  end=$((SECONDS + drain))
+  while [[ -n "$(migration)" && $SECONDS -lt $end ]]; do sleep 5; done
+  id=$(migration)
+  if [[ -n "$id" ]]; then
+    mysql "KILL QUERY $id;" >/dev/null
+    for _ in $(seq 1 30); do [[ -n "$(migration)" ]] || break; sleep 1; done
+    [[ -z "$(migration)" ]] || { echo "migration session $id is still running" >&2; exit 3; }
+  fi
+  n=$(foreign_keys)
+  if [[ "$n" != 0 ]]; then
+    # Dropping a foreign key is metadata only; lock_wait_timeout bounds the brief metadata lock.
+    mysql "SET SESSION lock_wait_timeout=10; ALTER TABLE $table DROP FOREIGN KEY $fk, ALGORITHM=INPLACE, LOCK=NONE;" >/dev/null
+  fi
+  "${k[@]}" exec "$pod" -- rm -f "$log"
+  original
+  ;;
+ recovery) rows; original ;;
  *) exit 2 ;;
 esac
 '''

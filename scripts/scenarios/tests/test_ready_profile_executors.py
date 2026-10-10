@@ -1686,6 +1686,8 @@ esac
             "F36-H",
             # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
             "F41-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatch_events 에 외래 키를 ALGORITHM, LOCK 없이 더하는 정합성 보강 마이그레이션(MySQL 이 표를 복사하며 dispatch_events 와 부모 dispatches 쓰기가 메타데이터 잠금 대기, dispatch 풀 고갈과 재시작, 주문 503, 복사가 끝나면 스스로 회복). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

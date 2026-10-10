@@ -253,7 +253,8 @@
           "F35-H",
           "F32-P",
           "F57-R",
-          "F23-P"
+          "F23-P",
+          "F60-R"
         ]
       },
       "scenario_parameters": {
@@ -380,6 +381,20 @@
           "table": "products",
           "hold_schema": "public",
           "minimum_rows": 1000
+        },
+        "F60-R": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "dispatch_events",
+          "column": "dispatch_id",
+          "foreign_key": "fk_dispatch_events_dispatch",
+          "referenced_table": "dispatches",
+          "referenced_column": "id",
+          "drain_seconds": 300,
+          "minimum_rows": 1000,
+          "maximum_sessions": 90
         }
       }
     },

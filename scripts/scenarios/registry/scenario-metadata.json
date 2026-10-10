@@ -9747,6 +9747,104 @@
      }
     ]
    }
+  },
+  "F60-R": {
+   "title": "An integrity migration adds the missing foreign key from the food dispatch status-history table to the dispatch table without saying how; MySQL copies the whole table instead of adding it in place, every courier assignment waits for the metadata lock for minutes, dispatch's connection pool fills with blocked writes and every new order is rejected with 503 until the copy ends",
+   "description": "dispatch-service writes two tables in the transaction that assigns a courier: a row in fooddelivery.dispatches and a status-history row in fooddelivery.dispatch_events (about 3.48 million rows, 178 MB data and 197 MB indexes, one index on dispatch_id). The history table points at dispatches by dispatch_id but has no foreign key, and the retention code says so. An integrity migration adds it: ALTER TABLE dispatch_events ADD CONSTRAINT fk_dispatch_events_dispatch FOREIGN KEY (dispatch_id) REFERENCES dispatches (id), with no ALGORITHM or LOCK clause, on the assumption that a foreign key can be added in place. With foreign_key_checks on (the server default), MySQL cannot add a foreign key in place and copies the whole table instead (session state 'copy to tmp table'); for the length of the copy every write to the child table and to the referenced dispatches table waits for the metadata lock ('Waiting for table metadata lock') while reads go on. On the testbed's MySQL 8.0.46 with 0.5 CPU the copy takes about one and a half to five minutes depending on how busy the instance is. dispatch's POST /api/deliveries/dispatch stops at its INSERT into dispatches and holds its pooled connection; order-service's dispatch call times out after 5 seconds (ERROR 'Failed to dispatch courier for order N: I/O error on POST request ... Read timed out'), retries and turns the order into 503 'Dispatch service unavailable'. Each timed-out call leaves its blocked write and its connection behind, so within seconds dispatch's ten connections are all held by waiting writes (together with the retention purge every 6 seconds and the expiry batch every 30 seconds, which also write these tables); the courier-capacity check that order makes before saving an order then waits 3 seconds for a connection ('HikariPool-1 - Connection is not available, request timed out after 3000ms') and fails, order's dispatch circuit opens, and every new order is rejected with 503. dispatch's health check cannot get a connection either: after about 30 seconds it drops out of the Service (readiness) and after about 75 seconds kubelet restarts it (liveness); the server-side sessions of the killed pod keep waiting, and the new pod blocks again on its first assignment. When the copy ends the waiting writes go through, the foreign key is in place, and dispatch and order recover on their own. Browsing restaurants and menus and looking up orders keep working; payment is never reached. No rollout, configuration change or restart of order or MySQL is involved.",
+   "cause": "Integrity migration on the food MySQL adds a foreign key fooddelivery.dispatch_events(dispatch_id) → dispatches(id) without ALGORITHM or LOCK → with foreign_key_checks on, MySQL rebuilds the history table by copying it (minutes) and holds a metadata lock that blocks every write to dispatch_events and to the parent dispatches for the whole copy → dispatch's courier assignment (INSERT into dispatches) waits, order's dispatch call times out and the blocked writes fill dispatch's connection pool → the capacity check order makes before saving an order cannot get a connection, dispatch's circuit opens in order, dispatch fails its health checks and is restarted → every new order is rejected with 503 until the copy finishes.",
+   "injection_summary": "The db.ddl executor checks that fooddelivery.dispatch_events has at least 1000 rows (reading at most 1000), that it has no foreign key and no migration session is running, that dispatch_id is indexed, that @@global.foreign_key_checks is 1, that at most 90 sessions are open, that the data volume has twice the table's size free, and (preflight only) that no history row lacks its dispatch. Run then starts, through the MySQL client inside testbed-mysql-0 in the background, ALTER TABLE dispatch_events ADD CONSTRAINT fk_dispatch_events_dispatch FOREIGN KEY (dispatch_id) REFERENCES dispatches (id) — the migration exactly as written, with no ALGORITHM or LOCK clause — and returns as soon as the server shows that session. The copy then runs and ends by itself. Cleanup waits for the migration session to finish (up to 300 seconds, then KILL QUERY, after which the server drops the half-built copy), drops the foreign key (metadata only, ALGORITHM=INPLACE, LOCK=NONE, lock_wait_timeout 10) and removes the client's log file. Rows, indexes, the parent table, application code, images, configuration and Kubernetes objects are not changed. There is no companion load: the standing food baseline (loadgen-food) places the orders.",
+   "user_impact": "For as long as the copy runs (about one and a half to five minutes) nobody can place a food order: the first orders hang for about 16 seconds before 503 'Dispatch service unavailable', then every order is rejected with 503 at once; delivery tracking fails while dispatch is out of the Service. Browsing restaurants and menus and looking up existing orders keep working. Failed orders leave no order row and no payment; a few courier assignments that were waiting when the copy ended may be written for orders that were already rolled back (they expire with their ETA). Service comes back by itself when the copy ends; in the original incident the outage lasted 24 minutes and 74.7% of requests failed.",
+   "distinguishing_evidence": "The decisive evidence is in the database session snapshots the DPM collector takes every minute (lucida.dpm_session_local): a root@localhost session in state 'copy to tmp table' in fooddelivery whose query time grows minute by minute, alongside sessions from the dispatch pod in 'Waiting for table metadata lock' (and, after dispatch restarts, waiting sessions from the old pod IP). 'copy to tmp table' does not occur in the 60 days of food sessions kept on 2026-10-10 and 'Waiting for table metadata lock' only in one snapshot (2026-10-09 03:43). In the same minutes dpm.mysql.session.active_session rises from its usual 1 (7-day maximum 12), and dpm.mysql.instance.data_file_write_bytes rises while the table is rewritten; the table count and index count of fooddelivery do not change. order-service logs ERROR 'Failed to dispatch courier for order N: I/O error on POST request for \"http://testbed-dispatch:8082/api/deliveries/dispatch\": Read timed out' (0 in the 30 days of food logs kept on 2026-10-10), then 'Failed to check dispatch capacity' and 503 'Dispatch service unavailable'; dispatch logs 'HikariPool-1 - Connection is not available', and KCM shows testbed-dispatch Unhealthy and Killing without any rollout or new ReplicaSet. It is not the dropped dispatches table of F32-P: there dispatch fails at once with 1146 \"Table 'fooddelivery.dispatches' doesn't exist\", the table count falls 16 → 15 and dispatch stays Ready; here no statement fails, writes wait. It is not the dispatch index removal of F33-R or the backfill job of F59-R: there dispatch's connections are held by long reads that keep MySQL busy (Top SQL rows examined in the millions, active sessions running SELECTs) and the capacity check times out reading; here the connections are held by INSERTs, UPDATEs and DELETEs waiting for a metadata lock behind one DDL session, and reads that get a connection are fast. It is not a dispatch release or configuration deploy (F33-H, F43-P, F55-R, F32-R, F32-H): testbed-dispatch keeps its ReplicaSet and image. It is not the cancelled backfill of F48-R/F48-P: no table disappears and nothing fails with 1146. It is not an instance-wide problem (F38-R read-only, MySQL down): other tables on the same instance keep serving writes (orders, payments).",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery.dispatch_events",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 의 fooddelivery.dispatch_events 테이블에 가해진 스키마 변경이다. 배차 상태 이력 표 dispatch_events 는 dispatch_id 로 dispatches 를 가리키지만 외래 키가 없고(보존 정리 코드 주석도 그렇게 적는다), 정합성 보강 마이그레이션이 그 외래 키를 ALGORITHM, LOCK 지정 없이 더했다. foreign_key_checks 가 켜진 MySQL 은 외래 키를 제자리에 더하지 못하고 표를 통째로 복사하며(세션 상태 'copy to tmp table'), 복사하는 동안 자식 표와 부모 dispatches 의 쓰기가 모두 메타데이터 잠금을 기다린다. 원본 사례(Pulumi 2023-10-06, 표의 외래 키를 바꾸는 마이그레이션이 일으킨 표 복사가 오래 잠금을 쥐어 질의가 쌓이고 DB 연결이 모두 말라 24분 동안 요청의 74.7% 실패. 외래 키 추가는 '제자리'로 된다는 가정의 단서 조건을 놓침)처럼 잘못된 것은 그 마이그레이션이고, dispatch-service 와 order-service 의 코드, 설정, 요청은 늘 하던 그대로라 정당하다(원칙 6). 근본과 계기가 같은 곳(이 표에 대한 마이그레이션)이라 trigger_target_id 는 비운다. 세션 기록에는 DDL 문장이 남지 않아 어느 표가 복사되는지까지는 직접 보이지 않으므로, 잠긴 두 표 가운데 부모 dispatches 를 지목한 답도 정답으로 받는다(원칙 5). 관제 데이터로의 도달 경로: ① DPM 세션 스냅숏(1분)에 root@localhost 의 'copy to tmp table' 세션이 fooddelivery 에서 분마다 길어지고, dispatch 파드 IP 의 세션들이 'Waiting for table metadata lock' 으로 쌓인다(60일 동안 'copy to tmp table' 0건, 메타데이터 잠금 대기는 한 스냅숏뿐) ② 같은 때 active_session 이 평시 1(7일 최대 12)에서 오르고 data_file_write_bytes 가 표를 다시 쓰는 만큼 오르며, 표 수와 인덱스 수는 그대로다 ③ order ERROR 'Failed to dispatch courier for order N: ... Read timed out'(30일 0건) 뒤 'Failed to check dispatch capacity' 와 503 'Dispatch service unavailable', dispatch 'HikariPool-1 - Connection is not available', KCM testbed-dispatch Unhealthy 와 Killing ④ rca-testbed-food 에 롤아웃, 새 ReplicaSet, 이미지와 설정 변경이 없고 order 와 MySQL 은 재시작하지 않는다 ⑤ 복사가 끝나면 스스로 회복한다. 누가 왜 마이그레이션을 돌렸는지, 외래 키라는 세부까지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/db/init.sql:134-140 (dispatch_events — dispatch_id 에 인덱스 idx_dispatch_events_dispatch 만 있고 외래 키가 없다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchRetentionService.java:37-66 (purgeOlderThan — 이력에는 FK 가 없지만 deleteByDispatchIdIn 으로 배차보다 먼저 지운다 — 외래 키를 더해도 정리 순서는 맞다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:50-77 (dispatchCourier — 용량 COUNT(읽기, 통과) 뒤 dispatchRepository.save(:71) 의 dispatches INSERT 와 recordEvent(:72)의 dispatch_events INSERT 를 한 트랜잭션에서 쓴다. 복사 중에는 :71 에서 메타데이터 잠금을 기다리며 Hikari 연결을 쥔다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:119-129 (deliverExpiredDispatches — 30초마다 만료 배치, dispatches UPDATE 와 이력 INSERT 도 같은 잠금을 기다린다)",
+     "food-delivery/dispatch-service/src/main/resources/application.yml:13-15 (hikari maximum-pool-size 10, connection-timeout 3000)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:55-75 (dispatchCourier — 하류 시간 초과를 ERROR 'Failed to dispatch courier for order {}: {}' 로 남기고 @Retry, @CircuitBreaker 끝에 fallback 503 'Dispatch service unavailable')",
+     "food-delivery/order-service/src/main/resources/application.yml:55-58 (dispatch read-timeout 5s — 재시도는 같은 파일 105-111 의 max-attempts 3, 200ms 지수 백오프)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-151 (createOrder 의 checkCapacity 와 dispatchCourier — 주문 저장 전 용량 확인과 저장 뒤 배차 요청. 실패하면 트랜잭션이 되돌려져 주문 행과 결제가 남지 않는다)",
+     "food-delivery/k8s/22-dispatch-deploy.yaml:73-86 (readinessProbe /actuator/health 10초 x 3, livenessProbe 15초 x 5 — health 의 DB 확인이 풀에서 연결을 못 얻으면 실패한다)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, CPU 한도 500m, 버퍼 풀 128MB, max_connections 151, tb-w3). 2026-10-10 109 읽기 전용 실측: dispatch_events 약 348만 행(데이터 178MB, 인덱스 197MB), dispatches 약 174만 행, fooddelivery 의 외래 키 5개(dispatch_events 0개), dispatch_events 의 고아 이력 0행, @@global.foreign_key_checks 1, lock_wait_timeout 31536000, 데이터 볼륨 여유 19GB. 로컬 MySQL 8.0.46(CPU 0.5, 버퍼 풀 128MB, 같은 크기 표) 실측: 이 마이그레이션은 'copy to tmp table' 로 한가할 때 76~97초, 읽기 세션 넷과 함께 300초 걸렸고, 그동안 dispatches 와 dispatch_events 의 INSERT 가 끝까지 'Waiting for table metadata lock', dispatches SELECT 는 0.27초. 외래 키 지우기는 0.07초, 복사 중 KILL QUERY 뒤 되감기 0.4초. DPM 수집기(target c8c558e5-…)가 1분마다 세션 목록(lucida.dpm_session_local: user, hostname, state, queryTime)과 세션, 쓰기 지표를 보고한다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 DB 파드 안의 MySQL 클라이언트를 띄운다."
+   },
+   "must_support": [
+    "dpm_session_local 에 root@localhost 의 'copy to tmp table' 세션(fooddelivery)이 1분 스냅숏마다 이어지고 queryTime 이 늘며, dispatch 파드 IP 의 세션들이 'Waiting for table metadata lock' 으로 쌓인다(2026-10-10 조회 시 남아 있던 60일 동안 'copy to tmp table' 0건, 메타데이터 잠금 대기 한 스냅숏)",
+    "order ERROR 'Failed to dispatch courier for order N: I/O error on POST request ... Read timed out'(평시 30일 0건) 뒤 'Failed to check dispatch capacity' 와 503 'Dispatch service unavailable' 이 이어지고 'Created order id=' 와 dispatch 'Dispatched courier' 가 멈춘다",
+    "dispatch 'HikariPool-1 - Connection is not available, request timed out after 3000ms' 와 KCM testbed-dispatch Unhealthy, Killing(liveness 재시작)이 롤아웃이나 새 ReplicaSet 없이 나온다",
+    "dpm.mysql.session.active_session 이 평시 1(7일 최대 12)에서 오르고 data_file_write_bytes 가 오르며, fooddelivery 의 table_count, index_count 는 그대로다",
+    "restaurant 둘러보기와 메뉴, 주문 조회가 200 으로 이어지고, 복사가 끝나면 주문 생성이 스스로 돌아온다. 기준선 주문 생성 5xx 비율이 0.5 이상이 된다"
+   ],
+   "must_rule_out": [
+    "배차 표가 지워진 것(F32-P 꼴)이 아님: 1146 이 없고 표 수가 16 그대로이며, 실패가 즉시가 아니라 쓰기 대기와 시간 초과다",
+    "배차 인덱스 제거나 백필 작업의 무거운 읽기(F33-R, F59-R 꼴)가 아님: dispatch 연결을 쥔 세션이 SELECT 실행이 아니라 메타데이터 잠금을 기다리는 쓰기이고, 그 앞에 DDL 세션 하나('copy to tmp table')가 있다. Top SQL 의 검사 행 수가 수백만으로 뛰지 않는다",
+    "dispatch 새 버전이나 설정 배포(F33-H, F43-P, F55-R, F32-R, F32-H 꼴)가 아님: testbed-dispatch 롤아웃, 새 ReplicaSet, 이미지와 env 변경이 없다. 재시작은 liveness 실패로 같은 ReplicaSet 안에서 일어난다",
+    "MySQL 인스턴스 다운, 읽기 전용, 재시작(F25-H, F38-R 꼴)이 아님: testbed-mysql-0 Ready, 1290 과 'Communications link failure' 가 없고 orders, payments 같은 다른 표 쓰기와 모든 읽기가 성공한다",
+    "부하 증가나 배달원 한도 소진이 아님: 주문 요청량은 기준선 그대로이고 'Order rejected: courier pool exhausted' 가 없다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F32-P (같은 food 배차 쪽 DB 표 문제로 같은 order 503 이지만 표가 지워져 dispatch 가 1146 으로 즉시 실패한다. 표 수 16→15, dispatch Ready. F60-R 은 표가 그대로이고 쓰기가 메타데이터 잠금을 기다려 dispatch 풀이 묶이고 NotReady, 재시작에 이른다)",
+     "F33-R (같은 order 503 과 dispatch 풀 고갈이지만 인덱스 제거로 용량 COUNT 가 전수 스캔이 되어 MySQL 이 포화된다. F60-R 은 풀을 쥔 것이 잠금을 기다리는 쓰기이고 앞에 DDL 세션 하나가 있다)",
+     "F59-R (같은 dispatch 풀 고갈과 order 503 이지만 원인이 클러스터 안의 백필 Job 의 깊은 페이지 읽기다. F60-R 은 Job 도 롤아웃도 없고 DB 안의 마이그레이션 세션이 원인이다)",
+     "F48-R (같은 '취소되거나 잘못 짠 스키마 작업' 꼴이지만 표가 보류 이름으로 치워져 1146 으로 실패한다. F60-R 은 표가 있고 실패가 대기와 시간 초과다)",
+     "F43-P (같은 dispatch 풀 고갈과 NotReady 이지만 dispatch 릴리스의 연결 누수다. KCM 에 롤아웃과 새 이미지가 있다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery.dispatch_events",
+     "food-mysql:fooddelivery.dispatches"
+    ],
+    "partial": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "정합성 보강 마이그레이션이 food 배차 이력 표에 빠져 있던 배차 표로의 외래 키를 방식 지정 없이 더함: MySQL 이 제자리 추가 대신 표를 통째로 복사하며 몇 분 동안 배차 쓰기가 모두 메타데이터 잠금을 기다리고, 막힌 쓰기가 dispatch 연결 풀을 채워 복사가 끝날 때까지 모든 새 주문이 503 으로 거절된다",
+   "description_ko": "dispatch-service 는 배달원을 배정하는 트랜잭션에서 두 표에 쓴다: fooddelivery.dispatches 에 배차 한 행, fooddelivery.dispatch_events 에 상태 이력 한 행(약 348만 행, 데이터 178MB, 인덱스 197MB, dispatch_id 인덱스 하나). 이력 표는 dispatch_id 로 dispatches 를 가리키지만 외래 키가 없고 보존 정리 코드도 그렇게 적는다. 정합성 보강 마이그레이션이 그 외래 키를 더한다: ALTER TABLE dispatch_events ADD CONSTRAINT fk_dispatch_events_dispatch FOREIGN KEY (dispatch_id) REFERENCES dispatches (id), 외래 키는 제자리에 더할 수 있다는 가정 아래 ALGORITHM 도 LOCK 도 적지 않았다. foreign_key_checks 가 켜진(서버 기본값) MySQL 은 외래 키를 제자리에 더하지 못하고 표를 통째로 복사하며(세션 상태 'copy to tmp table'), 복사하는 동안 자식 표와 부모 dispatches 의 모든 쓰기가 메타데이터 잠금을 기다린다('Waiting for table metadata lock'). 읽기는 통과한다. 테스트베드의 MySQL 8.0.46(CPU 0.5)에서 복사는 인스턴스가 얼마나 바쁜지에 따라 약 1분 반에서 5분 걸린다. dispatch 의 POST /api/deliveries/dispatch 는 dispatches INSERT 에서 멈춰 풀 연결을 쥐고, order-service 의 배차 호출은 5초 뒤 시간 초과(ERROR 'Failed to dispatch courier for order N: I/O error on POST request ... Read timed out')로 재시도하다 주문을 503 'Dispatch service unavailable' 로 끝낸다. 시간 초과된 호출마다 막힌 쓰기와 그 연결이 남아, 몇 초 안에 dispatch 의 연결 10개가 모두 기다리는 쓰기에 묶인다(6초마다 도는 보존 정리와 30초마다 도는 만료 배치도 이 표들에 쓰며 함께 기다린다). 그러면 order 가 주문 저장 전에 부르는 배달원 용량 확인도 연결을 3초 기다리다('HikariPool-1 - Connection is not available, request timed out after 3000ms') 실패하고, order 의 dispatch 서킷이 열려 모든 새 주문이 503 이 된다. dispatch 의 health 확인도 연결을 못 얻어 약 30초 뒤 Service 에서 빠지고(readiness), 약 75초 뒤 kubelet 이 재시작한다(liveness). 죽은 파드의 서버 쪽 세션은 계속 기다리고, 새 파드는 첫 배정에서 다시 막힌다. 복사가 끝나면 기다리던 쓰기가 지나가고 외래 키가 생기며 dispatch 와 order 는 스스로 회복한다. 가게와 메뉴 둘러보기, 주문 조회는 정상이고 결제는 불리지 않는다. 롤아웃, 설정 변경, order 나 MySQL 재시작은 없다.",
+   "cause_ko": "food MySQL 의 정합성 보강 마이그레이션이 fooddelivery.dispatch_events(dispatch_id) → dispatches(id) 외래 키를 ALGORITHM, LOCK 없이 더함 → foreign_key_checks 가 켜진 MySQL 이 이력 표를 복사로 다시 만들며(몇 분) 그동안 dispatch_events 와 부모 dispatches 의 모든 쓰기를 막는 메타데이터 잠금을 쥠 → dispatch 의 배달원 배정(dispatches INSERT)이 기다리고 order 의 배차 호출이 시간 초과, 막힌 쓰기가 dispatch 연결 풀을 채움 → order 가 주문 저장 전에 부르는 용량 확인이 연결을 못 얻고 order 의 dispatch 서킷이 열리며 dispatch 는 health 실패로 빠지고 재시작 → 복사가 끝날 때까지 모든 새 주문 503.",
+   "injection_summary_ko": "db.ddl executor 가 fooddelivery.dispatch_events 가 1000행 이상(최대 1000행만 읽음)이고, 외래 키와 진행 중인 마이그레이션 세션이 없으며, dispatch_id 에 인덱스가 있고, @@global.foreign_key_checks 가 1 이며, 열린 세션이 90 이하이고, 데이터 볼륨에 표 크기의 두 배가 비어 있는지, 그리고 preflight 에서만 배차가 없는 이력 행이 없는지 확인한다. run 은 testbed-mysql-0 안의 MySQL 클라이언트로 ALTER TABLE dispatch_events ADD CONSTRAINT fk_dispatch_events_dispatch FOREIGN KEY (dispatch_id) REFERENCES dispatches (id) 를 백그라운드로 시작하고(쓴 그대로, ALGORITHM, LOCK 없음) 서버에 그 세션이 보이면 곧 돌아온다. 복사는 스스로 돌고 끝난다. cleanup 은 마이그레이션 세션이 끝나기를 기다리고(최대 300초, 넘으면 KILL QUERY, 서버가 반쯤 만든 복사본을 버림), 외래 키를 지우고(메타데이터만, ALGORITHM=INPLACE, LOCK=NONE, lock_wait_timeout 10) 클라이언트 로그 파일을 지운다. 행, 인덱스, 부모 표, 앱 코드, 이미지, 설정, 쿠버네티스 객체는 바꾸지 않는다. 동반 부하는 없다: 상주 food 기준선(loadgen-food)이 주문을 낸다.",
+   "user_impact_ko": "복사가 도는 동안(약 1분 반~5분) 아무도 음식을 주문하지 못한다: 처음 주문들은 약 16초 매달린 뒤 503 'Dispatch service unavailable', 그 뒤로는 모든 주문이 곧바로 503 이다. dispatch 가 Service 에서 빠진 동안 배달 추적도 실패한다. 가게와 메뉴 둘러보기, 기존 주문 조회는 정상이다. 실패한 주문은 주문 행과 결제를 남기지 않는다. 복사가 끝날 때 기다리던 배차 쓰기 몇 건은 이미 되돌려진 주문의 배차로 남을 수 있다(ETA 가 지나면 끝난다). 복사가 끝나면 스스로 회복한다. 원본 장애는 24분 동안 요청의 74.7% 가 실패했다.",
+   "distinguishing_evidence_ko": "결정 증거는 DPM 수집기가 1분마다 남기는 DB 세션 스냅숏(lucida.dpm_session_local)이다: fooddelivery 에서 root@localhost 세션이 'copy to tmp table' 상태로 분마다 queryTime 을 늘리고, 그 곁에서 dispatch 파드의 세션들이 'Waiting for table metadata lock' 으로 쌓인다(dispatch 재시작 뒤에는 옛 파드 IP 의 대기 세션도 남는다). 2026-10-10 조회 시 남아 있던 60일 food 세션에 'copy to tmp table' 은 0건, 'Waiting for table metadata lock' 은 한 스냅숏(2026-10-09 03:43)뿐이다. 같은 분들에 dpm.mysql.session.active_session 이 평시 1(7일 최대 12)에서 오르고 dpm.mysql.instance.data_file_write_bytes 가 표를 다시 쓰는 만큼 오르며, fooddelivery 의 표 수와 인덱스 수는 그대로다. order-service 는 ERROR 'Failed to dispatch courier for order N: I/O error on POST request for \"http://testbed-dispatch:8082/api/deliveries/dispatch\": Read timed out'(2026-10-10 조회 시 남아 있던 30일 food 로그에 0건) 뒤 'Failed to check dispatch capacity' 와 503 'Dispatch service unavailable' 을 남기고, dispatch 는 'HikariPool-1 - Connection is not available' 을 남기며, KCM 에는 롤아웃이나 새 ReplicaSet 없이 testbed-dispatch Unhealthy 와 Killing 이 보인다. F32-P 의 배차 표 지우기가 아니다: 그쪽은 dispatch 가 1146 \"Table 'fooddelivery.dispatches' doesn't exist\" 로 즉시 실패하고 표 수가 16→15 로 줄며 dispatch 는 Ready 다. 여기서는 실패하는 문장이 없고 쓰기가 기다린다. F33-R 의 배차 인덱스 제거나 F59-R 의 백필 Job 이 아니다: 그쪽은 dispatch 연결을 쥔 것이 MySQL 을 바쁘게 하는 긴 읽기이고(Top SQL 검사 행 수 수백만, 실행 중인 SELECT 세션) 용량 확인이 읽다가 시간 초과된다. 여기서는 연결을 쥔 것이 DDL 세션 하나 뒤에서 메타데이터 잠금을 기다리는 INSERT, UPDATE, DELETE 이고 연결을 얻은 읽기는 빠르다. dispatch 릴리스나 설정 배포(F33-H, F43-P, F55-R, F32-R, F32-H)도 아니다: testbed-dispatch 의 ReplicaSet 과 이미지가 그대로다. F48-R, F48-P 의 취소된 백필도 아니다: 사라지는 표가 없고 1146 이 없다. 인스턴스 전체 문제(F38-R 읽기 전용, MySQL 다운)도 아니다: 같은 인스턴스의 다른 표(orders, payments) 쓰기가 계속 성공한다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f60-r",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "database": "fooddelivery",
+       "table": "dispatch_events",
+       "column": "dispatch_id",
+       "foreign_key": "fk_dispatch_events_dispatch",
+       "referenced_table": "dispatches",
+       "referenced_column": "id",
+       "drain_seconds": 300,
+       "minimum_rows": 1000,
+       "maximum_sessions": 90
+      }
+     }
+    ]
+   }
   }
  }
 }
