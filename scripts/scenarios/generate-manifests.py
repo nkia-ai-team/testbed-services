@@ -63,6 +63,9 @@ PROFILE_PREFLIGHTS = {
     "network.fault": "network-oob-recovery",
     # A host firewall rule is removed over SSH on the host network, which the rule never matches.
     "host.firewall": "network-oob-recovery",
+    # The inverse of removing node images is loading the same images (same image IDs) back
+    # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
+    "host.image": "kubernetes-recovery-capacity",
     "app.release": "rollback-artifact",
     "wpm.probe": "wpm-probe-contract",
     "business.fault": "business-invariant-probe",

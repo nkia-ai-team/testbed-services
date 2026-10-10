@@ -72,7 +72,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 16 → 17. F51-R(운영 용량 명령 입력 실수로 banking account Deployment 가 replicas 0) 후보 추가.
         # 2026-10-10: 17 → 18. F43-P(food dispatch 릴리스의 중복 배차 확인이 배차마다 풀 연결을 새어 dispatch 풀 고갈) 후보 추가.
         # 2026-10-10: 18 → 19. F40-H(banking transfer 릴리스의 원 단위 금액 검증이 commerce 정산 이체를 400 으로 거절) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 19)
+        # 2026-10-10: 19 → 20. F52-R(banking 워커 tb-w2 의 이미지 보존 정리가 쓰고 있는 앱 이미지를 지워 transfer 재배포의 새 파드가 ErrImageNeverPull) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 20)
 
 
 class RecordingQueueTests(unittest.TestCase):

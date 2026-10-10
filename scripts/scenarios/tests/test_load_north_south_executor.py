@@ -69,6 +69,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "k8s.quota",
                 # 2026-10-09: F51-R — Deployment 하나의 replicas 를 줄이고 되돌리기(kubectl scale).
                 "k8s.scale",
+                # 2026-10-10: F52-R — 워커 노드 containerd 에서 이미지 지우기와 109 docker 에서 되돌려 넣기(ssh, sudo ctr) + Deployment 일상 재배포.
+                "host.image",
             },
         )
 

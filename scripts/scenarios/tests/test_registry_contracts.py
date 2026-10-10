@@ -75,8 +75,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: 84 → 85. F51-R(후보) 추가. 프로파일 29 → 30(k8s.scale 신설).
         # 2026-10-10: 85 → 86. F43-P(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 86 → 87. F40-H(후보) 추가. 기존 k8s.image release 모드를 banking transfer 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 87)
-        self.assertEqual(len(self.profiles["profiles"]), 30)
+        # 2026-10-10: 87 → 88. F52-R(후보) 추가. 프로파일 30 → 31(host.image 신설).
+        self.assertEqual(len(self.catalog["scenarios"]), 88)
+        self.assertEqual(len(self.profiles["profiles"]), 31)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -172,6 +173,8 @@ class RegistryContractTests(unittest.TestCase):
             "F43-P",
             # 2026-10-10: banking transfer-service 를 원 단위 정수 금액 검증을 더한 릴리스 2.3.0(fault-images/f40-h)으로 롤아웃(검증이 값이 아니라 표기 자릿수로 판정해 소수 둘째 자리까지 적힌 commerce 정산 이체를 400 으로 거절, checkout 502, banking 자체 정수 이체는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-H",
+            # 2026-10-10: banking 워커 tb-w2 의 이미지 보존 정리가 레지스트리 다이제스트 없는 banking 앱 이미지를 지운 뒤 transfer 일상 재배포의 새 파드가 ErrImageNeverPull(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F52-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -484,6 +487,8 @@ class RegistryContractTests(unittest.TestCase):
             "F43-P",
             # 2026-10-10: banking transfer-service 를 원 단위 정수 금액 검증을 더한 릴리스 2.3.0(fault-images/f40-h)으로 롤아웃(검증이 값이 아니라 표기 자릿수로 판정해 소수 둘째 자리까지 적힌 commerce 정산 이체를 400 으로 거절, checkout 502, banking 자체 정수 이체는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-H",
+            # 2026-10-10: banking 워커 tb-w2 의 이미지 보존 정리가 레지스트리 다이제스트 없는 banking 앱 이미지를 지운 뒤 transfer 일상 재배포의 새 파드가 ErrImageNeverPull(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F52-R",
             },
         )
         self.assertEqual(
@@ -580,6 +585,8 @@ class RegistryContractTests(unittest.TestCase):
             "F43-P",
             # 2026-10-10: banking transfer-service 를 원 단위 정수 금액 검증을 더한 릴리스 2.3.0(fault-images/f40-h)으로 롤아웃(검증이 값이 아니라 표기 자릿수로 판정해 소수 둘째 자리까지 적힌 commerce 정산 이체를 400 으로 거절, checkout 502, banking 자체 정수 이체는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-H",
+            # 2026-10-10: banking 워커 tb-w2 의 이미지 보존 정리가 레지스트리 다이제스트 없는 banking 앱 이미지를 지운 뒤 transfer 일상 재배포의 새 파드가 ErrImageNeverPull(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F52-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -741,8 +748,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-09: F51-R(후보, 고정 evaluation)이 끝에 붙어 F49-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F43-P(후보, 고정 evaluation)이 끝에 붙어 F33-H 가 끝 5개에서 빠졌다.
         # 2026-10-10: F40-H(후보, 고정 evaluation)이 끝에 붙어 F49-H 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F52-R(후보, 고정 evaluation)이 끝에 붙어 F50-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F50-R", "F48-P", "F51-R", "F43-P", "F40-H"])
+                         ["F48-P", "F51-R", "F43-P", "F40-H", "F52-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

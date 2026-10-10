@@ -1096,6 +1096,19 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F52-R",
+      "slug": "f52-r-banking-node-image-retention-removes-live-transfer-image",
+      "profiles": [
+        "host.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "worker-w2",
+      "prerequisite": ""
     }
   ]
 }

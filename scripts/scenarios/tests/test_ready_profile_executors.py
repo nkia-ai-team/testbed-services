@@ -4,6 +4,8 @@ import importlib.util
 import json
 import re
 import subprocess
+import tempfile
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -45,6 +47,7 @@ k8s_quota = load("k8s_quota_executor")
 k8s_scale = load("k8s_scale_executor")
 k8s_image = load("k8s_image_executor")
 host_firewall = load("host_firewall_executor")
+host_image = load("host_image_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
 
@@ -318,6 +321,167 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             k8s_quota.validate("F50-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified resource quota contract"):
             k8s_quota.validate("F17-H", k8s_quota.CONTRACTS["F50-R"], {})
+
+    def test_host_image_only_removes_node_images_and_restarts_one_deployment(self) -> None:
+        # F52-R: 주입은 워커 노드 저장소에서 쓰고 있는 앱 이미지를 지우는 정리(이미지마다 sudo ctr images rm)와
+        # transfer 일상 재배포뿐이다. 파드 템플릿(이미지 태그, 프로브, env, 자원)을 바꾸면 F17-H, F17-R, F42-R 의
+        # 지문이 섞이고, 파드를 지우면 이미지가 아니라 삭제가 원인이 된다.
+        plan = compiler.compile_plan("f52-r-banking-node-image-retention-removes-live-transfer-image")
+        argv, stdin = host_image.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], [
+            "run", "192.168.122.11", "tb-w2", "rca-testbed-banking",
+            "core-banking-api:latest,core-banking-account:latest,core-banking-transfer:latest,core-banking-ledger:latest",
+            "api-service,account-service,transfer-service,ledger-service",
+            "testbed-transfer", "transfer-service",
+        ])
+        # 시나리오 id 는 러너 쪽에 머문다(G6, 원칙 8). 상태 파일은 노드와 네임스페이스 이름으로 짓는다.
+        self.assertNotIn("F52-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F52-R", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn("sudo -n ctr -n k8s.io images rm $refs", run_case)
+        self.assertIn('rollout restart deploy "$deploy"', run_case)
+        # 상태 파일을 먼저 쓰고, 모든 이미지가 노드에서 사라진 것을 확인한 뒤에 재배포한다.
+        self.assertLess(run_case.index('"$state.tmp"'), run_case.index("images rm"))
+        self.assertLess(run_case.index("images rm"), run_case.index("rollout restart"))
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn("restore_one", cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        restore = script.split("\nrestore_one() {")[1].split("\n}")[0]
+        self.assertIn('docker save "$img" | node_sh sudo -n ctr -n k8s.io images import -', restore)
+        # 지울 때의 이미지 ID 를 지우기 전에 적는다.
+        self.assertLess(run_case.index('>>"$state.tmp"'), run_case.index("images rm"))
+        preflight = script.split("\ncheck() {")[1].split("\n}")[0]
+        for guard in ("never_pull", "replace_first", "on_node", "local_build", "same_image", "healthy 1s"):
+            self.assertIn(guard, preflight)
+        for forbidden in ("set image", "set env", "delete pod", "delete deploy", "scale deploy", "evict", "crictl rmi", "--prune"):
+            self.assertNotIn(forbidden, script)
+        params = dict(host_image.CONTRACTS["F52-R"])
+        params["containers"] = ["transfer-service"]
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            host_image.validate("F52-R", params, {})
+        params = dict(host_image.CONTRACTS["F52-R"])
+        params["images"] = ["core-banking-transfer:latest"]
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            host_image.validate("F52-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified node image retention contract"):
+            host_image.validate("F17-H", host_image.CONTRACTS["F52-R"], {})
+
+    def _host_image_stub(self, tmp: Path, node: dict[str, str], docker: dict[str, str],
+                         running: dict[str, str]) -> tuple[Path, dict[str, str]]:
+        """Fake ssh/docker/kubectl around the real script: the node store is a file of
+        "<ref> <id>" lines, crictl ps reports the given running containers' imageRefs."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        store = tmp / "store"
+        store.write_text("".join(f"docker.io/library/{name} {iid}\n" for name, iid in node.items()))
+        (tmp / "docker_ids").write_text("".join(f"{name} {iid}\n" for name, iid in docker.items()))
+        (tmp / "running").write_text(json.dumps({"containers": [
+            {"metadata": {"name": c}, "imageRef": r, "state": "CONTAINER_RUNNING",
+             "labels": {"io.kubernetes.pod.namespace": "rca-testbed-banking"}} for c, r in running.items()]}))
+        deploy = json.dumps({
+            "metadata": {"generation": 1},
+            "spec": {"replicas": 1, "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}},
+                     "template": {"spec": {"nodeSelector": {"kubernetes.io/hostname": "tb-w2"},
+                                           "containers": [{"name": "transfer-service", "image": "core-banking-transfer:latest",
+                                                           "imagePullPolicy": "Never"}]}}},
+            "status": {"observedGeneration": 1, "updatedReplicas": 1, "availableReplicas": 1, "replicas": 1}})
+        (tmp / "deploy.json").write_text(deploy)
+        scripts = {
+            "ssh": f"""#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do [[ "$1" == -i || "$1" == -o ]] && shift; shift; done
+shift  # nkia@host
+cmd="$*"
+case "$cmd" in
+  *"images ls -q"*) awk '{{print $1; print $2}}' {store} ;;
+  *"images rm"*) for r in ${{cmd#*images rm }}; do grep -v -F -e "$r" {store} >{store}.n || true; mv {store}.n {store}; done ;;
+  *"images import"*) name=$(cat); echo "docker.io/library/$name $(awk -v n="$name" '$1==n{{print $2}}' {tmp}/docker_ids)" >>{store} ;;
+  *"crictl inspecti"*) id=$(awk -v r="${{cmd##* }}" '$1==r{{print $2}}' {store}); printf '{{"status":{{"id":"%s","repoDigests":[]}}}}' "$id" ;;
+  *"crictl ps"*) cat {tmp}/running ;;
+  *) exit 9 ;;
+esac
+""",
+            "docker": f"""#!/usr/bin/env bash
+case "$1" in
+  image) awk -v n="${{@: -1}}" '$1==n{{print $2}}' {tmp}/docker_ids ;;
+  save) printf '%s' "$2" ;;
+esac
+""",
+            "kubectl": f"""#!/usr/bin/env bash
+case "$*" in
+  *"auth can-i"*) echo yes ;;
+  *"get deploy"*) cat {tmp}/deploy.json ;;
+  *"rollout restart"*) echo restart >>{tmp}/restarts ;;
+esac
+""",
+        }
+        for name, body in scripts.items():
+            path = bindir / name
+            path.write_text(body)
+            path.chmod(0o755)
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", SCENARIO_PROFILE_STATE_ROOT=str(tmp / "state"))
+        return store, env
+
+    def _host_image_run(self, action: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+        plan = compiler.compile_plan("f52-r-banking-node-image-retention-removes-live-transfer-image")
+        argv, stdin = host_image.build_invocation(plan, action)
+        return subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=60, check=False)
+
+    def test_host_image_cleanup_restores_only_the_build_the_node_held(self) -> None:
+        # F52-R: cleanup 은 run 이 적어 둔 이미지 ID 와 같은 빌드만 되돌린다. 그 사이 109 docker 의 :latest 가
+        # 다시 빌드되었으면(평소 배포가 하는 일) 아무것도 넣지 않고 실패해야 한다. 새 빌드를 넣으면 앱 버전이 조용히 바뀐다.
+        ids = {f"core-banking-{s}:latest": f"sha256:{c * 64}" for s, c in
+               (("api", "a"), ("account", "b"), ("transfer", "c"), ("ledger", "d"))}
+        running = {"api-service": ids["core-banking-api:latest"], "account-service": ids["core-banking-account:latest"],
+                   "transfer-service": ids["core-banking-transfer:latest"], "ledger-service": ids["core-banking-ledger:latest"]}
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            store, env = self._host_image_stub(tmp, dict(ids), dict(ids), running)
+            self.assertEqual(self._host_image_run("run", env).returncode, 0)
+            state = (tmp / "state" / "tb-w2-rca-testbed-banking-images").read_text().split("\n")
+            self.assertIn(f"core-banking-transfer:latest {ids['core-banking-transfer:latest']}", state)
+            self.assertNotIn("core-banking-transfer", store.read_text())
+            # 109 의 transfer :latest 가 다시 빌드됨
+            (tmp / "docker_ids").write_text((tmp / "docker_ids").read_text().replace("c" * 64, "e" * 64))
+            result = self._host_image_run("cleanup", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"not loading a different build", result.stderr)
+            self.assertNotIn("e" * 64, store.read_text())
+            # 같은 빌드가 돌아오면 cleanup 이 넷을 되돌리고 상태 파일을 지운다.
+            (tmp / "docker_ids").write_text((tmp / "docker_ids").read_text().replace("e" * 64, "c" * 64))
+            self.assertEqual(self._host_image_run("cleanup", env).returncode, 0)
+            for name, iid in ids.items():
+                self.assertIn(f"docker.io/library/{name} {iid}", store.read_text())
+            self.assertFalse((tmp / "state" / "tb-w2-rca-testbed-banking-images").exists())
+            self.assertEqual(self._host_image_run("recovery", env).returncode, 0)
+
+    def test_host_image_cleanup_without_state_uses_running_containers_or_fails(self) -> None:
+        # 상태 파일이 없으면(러너 컨테이너가 다시 만들어짐) 기대 ID 는 노드에서 그 이미지로 아직 도는 컨테이너의
+        # imageRef 다. 도는 컨테이너가 없는 이미지(재배포로 옛 파드가 내려간 transfer)는 넣지 않고 실패한다.
+        ids = {f"core-banking-{s}:latest": f"sha256:{c * 64}" for s, c in
+               (("api", "a"), ("account", "b"), ("transfer", "c"), ("ledger", "d"))}
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            running = {"api-service": ids["core-banking-api:latest"], "account-service": ids["core-banking-account:latest"],
+                       "ledger-service": ids["core-banking-ledger:latest"]}
+            store, env = self._host_image_stub(tmp, {}, dict(ids), running)
+            result = self._host_image_run("cleanup", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"no known image ID for core-banking-transfer:latest", result.stderr)
+            self.assertNotIn("core-banking-transfer", store.read_text())
+        # api 의 도는 컨테이너와 109 빌드가 다르면 그 이미지도 넣지 않는다.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            node = {k: v for k, v in ids.items() if k != "core-banking-api:latest"}
+            docker = dict(ids, **{"core-banking-api:latest": "sha256:" + "f" * 64})
+            store, env = self._host_image_stub(tmp, node, docker, {"api-service": ids["core-banking-api:latest"]})
+            result = self._host_image_run("cleanup", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"not loading a different build", result.stderr)
+            # recovery 는 이름만이 아니라 도는 컨테이너와 같은 ID 인지 본다.
+            store.write_text(store.read_text() + f"docker.io/library/core-banking-api:latest {'f' * 64}\n")
+            self.assertNotEqual(self._host_image_run("recovery", env).returncode, 0)
 
     def test_k8s_scale_only_lowers_one_deployment_replica_count_and_restores_it(self) -> None:
         # F51-R: 주입은 Deployment 하나의 replicas 를 1 에서 0 으로 줄이는 운영 명령뿐이다.
@@ -1063,6 +1227,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F43-P",
             # 2026-10-10: banking transfer-service 를 원 단위 정수 금액 검증을 더한 릴리스 2.3.0(fault-images/f40-h)으로 롤아웃(검증이 값이 아니라 표기 자릿수로 판정해 소수 둘째 자리까지 적힌 commerce 정산 이체를 400 으로 거절, checkout 502, banking 자체 정수 이체는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F40-H",
+            # 2026-10-10: banking 워커 tb-w2 의 이미지 보존 정리가 레지스트리 다이제스트 없는 banking 앱 이미지를 지운 뒤 transfer 일상 재배포의 새 파드가 ErrImageNeverPull(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F52-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

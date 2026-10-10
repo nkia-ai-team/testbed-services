@@ -173,6 +173,15 @@
       "requested_at": "2026-10-10",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F52-R",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-10",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }
