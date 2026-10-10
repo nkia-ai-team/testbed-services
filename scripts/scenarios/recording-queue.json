@@ -9,8 +9,7 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-09",
       "attempts": 0,
-      "status": "hold",
-      "hold_reason": "러너 직렬화 버그로 F40-R 주입이 매번 거부된다. rca-scenario-runner/backend/app/production_runtime.py:836 의 json.dumps(request.parameters, sort_keys=True, separators=(\",\", \":\")) 에 ensure_ascii=False 가 없어 한글 파라미터(db.config_row 의 '가을 정기 세일', '전 품목 10% 할인')가 \\uXXXX 로 이스케이프되고, testbed-services/scripts/scenarios/profile-control.py:80,178(ensure_ascii=False 정본 비교)이 '--parameters-json must use canonical JSON encoding' 으로 거부한다. 근거: 109 /root/rca-scenario-runner/logs/F40-R-run-cda8e1e1.log, F40-R-run-20e55552.log 마지막 줄 '[END] status=clean phase=aborted reason=profile_apply_failed:CalledProcessError:profile control refused: --parameters-json must use canonical JSON encoding'(두 번 모두 주입 5초 만에 abort, 덤프 없음). 큐 cycle-1-05a81ea9 가 이 때문에 2회 주기 재시작했고 세 번째에 paused 예정. 사람 조치: 러너 직렬화를 profile-control _canonical 과 맞추고(비ASCII 파라미터 테스트 추가, adaptive_runtime.py:888 ensure_ascii=True 도 확인) 109 러너 재빌드 후, 러너 큐 resume 또는 이 항목을 waiting 으로 되돌린다."
+      "status": "waiting"
     },
     {
       "scenario_id": "F17-H",
