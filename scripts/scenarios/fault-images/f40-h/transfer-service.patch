@@ -1,0 +1,68 @@
+diff --git a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/KrwAmountPolicy.java b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/KrwAmountPolicy.java
+new file mode 100644
+index 0000000..cc0fd21
+--- /dev/null
++++ b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/KrwAmountPolicy.java
+@@ -0,0 +1,16 @@
++package com.corebanking.transfer.service;
++
++import java.math.BigDecimal;
++
++/**
++ * 원화 금액 규칙. 원화에는 보조 단위(전)가 없어 이체 금액은 원 단위 정수여야 한다.
++ */
++public final class KrwAmountPolicy {
++
++    private KrwAmountPolicy() {
++    }
++
++    public static boolean isWholeWon(BigDecimal amount) {
++        return amount.scale() <= 0;
++    }
++}
+diff --git a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java
+index a4c4d75..8e03fbe 100644
+--- a/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java
++++ b/core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java
+@@ -54,6 +54,12 @@ public class TransferService {
+         if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
+             throw new ServiceException(HttpStatus.BAD_REQUEST, "amount must be positive");
+         }
++        // 원화 금액은 원 단위 정수만 받는다(보조 단위 없음).
++        if (!KrwAmountPolicy.isWholeWon(request.amount())) {
++            log.info("Transfer rejected (amount not in whole won): from={} to={} amount={}",
++                    request.fromAccount(), request.toAccount(), request.amount());
++            throw new ServiceException(HttpStatus.BAD_REQUEST, "amount must be in whole won: " + request.amount());
++        }
+         if (request.fromAccount().equals(request.toAccount())) {
+             throw new ServiceException(HttpStatus.BAD_REQUEST, "fromAccount and toAccount must differ");
+         }
+diff --git a/core-banking/transfer-service/src/test/java/com/corebanking/transfer/service/KrwAmountPolicyTest.java b/core-banking/transfer-service/src/test/java/com/corebanking/transfer/service/KrwAmountPolicyTest.java
+new file mode 100644
+index 0000000..247c7be
+--- /dev/null
++++ b/core-banking/transfer-service/src/test/java/com/corebanking/transfer/service/KrwAmountPolicyTest.java
+@@ -0,0 +1,23 @@
++package com.corebanking.transfer.service;
++
++import org.junit.jupiter.api.Test;
++
++import java.math.BigDecimal;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class KrwAmountPolicyTest {
++
++    @Test
++    void acceptsWholeWon() {
++        assertTrue(KrwAmountPolicy.isWholeWon(new BigDecimal("15000")));
++        assertTrue(KrwAmountPolicy.isWholeWon(BigDecimal.valueOf(23807)));
++    }
++
++    @Test
++    void rejectsFractionalWon() {
++        assertFalse(KrwAmountPolicy.isWholeWon(new BigDecimal("1000.5")));
++        assertFalse(KrwAmountPolicy.isWholeWon(new BigDecimal("0.01")));
++    }
++}

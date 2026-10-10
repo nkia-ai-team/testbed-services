@@ -139,6 +139,18 @@ CONTRACTS = {
         "baseline_image": "food-delivery-dispatch:latest",
         "fault_image": "food-delivery-dispatch:1.7.0",
     },
+    # 2026-10-10. F40-H: banking transfer-service 를 원화 금액은 원 단위 정수만 받는 검증을 더한 릴리스 2.3.0 으로
+    # 롤아웃한다. 검증이 BigDecimal 의 값이 아니라 표기 자릿수(scale)를 봐서, 소수 둘째 자리까지 적어 보내는 commerce
+    # 정산 이체(27000.00 꼴)를 400 으로 거절하고 정수로 보내는 banking 자체 이체는 통과시킨다. 결함 이미지는
+    # fault-images/f40-h 로 109 docker 에만 빌드한다. transfer 의 다른 릴리스 태그(F17-H 2.1.0, F42-R 2.2.0)와 겹치지 않는다.
+    "F40-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-transfer",
+        "container": "transfer-service",
+        "baseline_image": "core-banking-transfer:latest",
+        "fault_image": "core-banking-transfer:2.3.0",
+    },
 }
 
 

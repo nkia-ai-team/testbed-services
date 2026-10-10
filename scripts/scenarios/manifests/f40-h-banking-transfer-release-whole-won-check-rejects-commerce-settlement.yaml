@@ -1,0 +1,331 @@
+{
+  "schema_version": "1.0",
+  "id": "F40-H",
+  "slug": "f40-h-banking-transfer-release-whole-won-check-rejects-commerce-settlement",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-transfer 컨테이너 image set(core-banking-transfer:latest→core-banking-transfer:2.3.0, 직전에 runner 가 109 docker 의 2.3.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(commerce surge.js, target_rps=6, 여정의 약 절반 checkout, 초당 약 3건)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f40-h",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-transfer",
+                "container": "transfer-service",
+                "baseline_image": "core-banking-transfer:latest",
+                "fault_image": "core-banking-transfer:2.3.0"
+              },
+              "min_hold": "12m",
+              "settle": "60s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "commerce 진입점(nginx 30080) 상태. 릴리스는 banking transfer 만 바꾸고 commerce 의 nginx, gateway, order, payment 는 그대로라 checkout 은 502 로 답한다. 0(연결 불가)은 commerce 진입점이나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s",
+            "_note": "transfer 파드. 롤아웃(maxSurge 0)이 옛 파드를 먼저 내려 새 파드 기동 약 1분 동안 false, 그 뒤 새 버전이 떠서 true 로 남는다(새 검증은 요청을 빠르게 400 으로 거절할 뿐 풀, 프로브, Oracle 을 건드리지 않는다). 회복 조건에만 쓴다"
+          },
+          {
+            "id": "transfer_available_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer"
+            },
+            "freshness": "30s",
+            "_note": "회복 판정용. cleanup 이 매니페스트 이미지로 되돌린 뒤 1"
+          },
+          {
+            "id": "transfer_restart_count",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.container_restart_count",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer",
+              "container": "transfer-service"
+            },
+            "freshness": "30s",
+            "_note": "새 버전은 기동하고 계속 돈다. 2 이상이면 새 버전이 기동 중 죽는 다른 장애(크래시 루프)다"
+          },
+          {
+            "id": "payment_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "commerce-order"
+            },
+            "freshness": "60s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "_note": "동반 부하(commerce surge.js 6rps, 여정의 50% 가 checkout, 초당 약 3건)의 k6 live 문서. 새 transfer 파드가 Ready 가 된 뒤 commerce payment 가 보내는 정산 이체(금액이 소수 둘째 자리까지 적힌 27000.00 꼴, 119 7일 290,166건 전부)가 모두 400 'amount must be in whole won: ...' 으로 거절되고 BankingTransferClient 가 502 로 바꿔 payment, order, gateway 가 502 로 답한다. 롤아웃 공백(약 1분, 연결 거부)도 502 지만 min_hold 12m 뒤에 판정하므로 공백만으로 판정되지 않는다. 6rps 는 F40-R 과 같은 값(실패 전 구간의 재고 소비를 재입고 배치가 따라감)"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-failed-5xx",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "checkout-failing-at-order",
+              "observation": "order_error_rate",
+              "op": "gte",
+              "value": 10,
+              "_note": "order 서버 스팬(10% 표본) POST /api/orders/checkout 이 502 로 끝난다. F40-R 과 같은 판정"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 12m: 롤아웃(옛 파드 먼저 내림, 새 파드 기동 약 1분)과 동반 부하 ramp 2m 뒤에 판정해, 롤아웃 순간의 짧은 엔드포인트 공백(F17-H 꼴)만으로 판정되지 않게 한다. 새 버전이 뜬 뒤에는 정산 이체가 하나도 통과하지 못하므로 checkout 5xx 비율은 1 에 가깝다. timeout 20m"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 3,
+              "_note": "동반 부하 6rps 의 절반. checkout 이 정산 단계에서 곧바로 502 를 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "payment-down",
+              "observation": "payment_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "commerce payment 가 빠지면 정산 거절이 아니라 payment 장애(F05-R 꼴)다"
+            },
+            {
+              "id": "transfer-crashloop-alternative",
+              "observation": "transfer_restart_count",
+              "op": "gte",
+              "value": 2,
+              "_note": "새 transfer 가 떴다가 죽는다면 검증 거절이 아니라 기동 실패나 메모리 고갈 같은 다른 결함이다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "transfer 파드 준비 상태는 롤아웃 공백(약 1분) 동안 false 라 배제 조건으로 두지 않는다(F42-R 과 같음). banking 자체 이체가 계속 COMPLETED 로 끝나는지(이 릴리스가 정수 금액은 통과시킨다는 감별)는 녹화된 로그로 RCA 쪽에서 본다(정답지 must_support)"
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "transfer-replica-recovered",
+              "observation": "transfer_available_replicas",
+              "op": "eq",
+              "value": 1
+            },
+            {
+              "id": "checkout-recovered",
+              "observation": "order_error_rate",
+              "op": "lt",
+              "value": 5,
+              "_note": "판정력을 가진 회복 조건. 매니페스트 버전은 금액 표기를 따지지 않아 정산 이체가 다시 COMPLETED 로 끝나고 order 의 payment 서킷브레이커가 반열림 3회 성공으로 닫힌다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 이미지를 core-banking-transfer:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 2.3.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 거절된 정산 이체는 transfers 행을 남기지 않고 commerce 결제 트랜잭션도 되돌려졌으므로 고칠 데이터가 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

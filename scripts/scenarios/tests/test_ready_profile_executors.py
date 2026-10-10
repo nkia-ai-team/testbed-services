@@ -698,6 +698,30 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for word in ("F43", "f43", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_banking_transfer_third_release(self) -> None:
+        # F40-H: 같은 release 스크립트로 banking transfer 를 2.3.0 으로 롤아웃한다(tb-w2). transfer 의 다른 릴리스
+        # F17-H(2.1.0, 노드에 없어야 하는 태그), F42-R(2.2.0)과 태그가 겹치지 않아야 셋 다 preflight 를 지킨다.
+        # 패치는 transfer-service/src 안만 고친다.
+        plan = compiler.compile_plan("f40-h-banking-transfer-release-whole-won-check-rejects-commerce-settlement")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-transfer", "transfer-service",
+                                    "core-banking-transfer:latest", "core-banking-transfer:2.3.0"])
+        self.assertNotIn("F40-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F40-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F40-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f40-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F40-H"]["baseline_image"], k8s_image.CONTRACTS["F40-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f40-h" / "transfer-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/transfer-service/src/",
+                                                     "b/core-banking/transfer-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F40", "f40", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1037,6 +1061,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             "F51-R",
             # 2026-10-10: food dispatch-service 를 같은 주문의 중복 배차 확인을 더한 릴리스 1.7.0(fault-images/f43-p)으로 롤아웃(확인이 배차 요청마다 풀 연결을 빌려 중복일 때만 돌려줘 Hikari 풀 10 이 배차 약 10건 만에 고갈, MySQL 은 한가함, 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F43-P",
+            # 2026-10-10: banking transfer-service 를 원 단위 정수 금액 검증을 더한 릴리스 2.3.0(fault-images/f40-h)으로 롤아웃(검증이 값이 아니라 표기 자릿수로 판정해 소수 둘째 자리까지 적힌 commerce 정산 이체를 400 으로 거절, checkout 502, banking 자체 정수 이체는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F40-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
