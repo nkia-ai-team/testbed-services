@@ -1,0 +1,289 @@
+{
+  "schema_version": "1.0",
+  "id": "F55-R",
+  "slug": "f55-r-food-dispatch-release-client-rate-limit-rejects-orders",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "food namespace",
+    "matrix_location_transport": "K/kubectl food testbed-dispatch 컨테이너 image set(food-delivery-dispatch:latest→food-delivery-dispatch:1.8.0, 직전에 runner 가 109 docker 의 1.8.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery order-surge.js, target_rps=2, entry 30181, 주문 초당 약 1.4건)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f55-r",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-food",
+                "deployment": "testbed-dispatch",
+                "container": "dispatch-service",
+                "baseline_image": "food-delivery-dispatch:latest",
+                "fault_image": "food-delivery-dispatch:1.8.0"
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 릴리스는 dispatch 만 바꾸고 order, restaurant, MySQL 은 그대로다. 새 요청 한도는 /api/deliveries 로 시작하는 경로에만 걸리고 프로브(/actuator/health)는 제한하지 않아 dispatch 도 Ready 로 남는다. order 의 용량 확인과 배차는 429 를 곧바로 받아 재시도(200ms, 400ms)와 서킷 끝에 503 으로 끝나 order 가 자기 DB 연결을 오래 쥐지 않는다. 로컬 실측(패치 jar, mysql:8.0, 1.5 주문/초, 180초)에서 order 응답 p50 0.63초, order, dispatch health 는 내내 200 이었다. 0(연결 불가)은 order 파드나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s",
+            "_note": "food MySQL 파드. 이 주입은 MySQL 설정, 스키마, 부하를 건드리지 않는다(거절된 요청은 DB 에 닿기 전에 필터에서 끝난다)"
+          },
+          {
+            "id": "order_create_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)의 배차는 하루 주기로 초당 약 0.13~1.15건이라(119 dispatch 'Dispatched courier' 로그, 2026-10-09~10 시간별) 한가한 시간에는 order 가 dispatch 를 부르는 수(주문당 용량 확인 1 + 배차 1)가 한도의 보충 속도(3초에 1회)와 비슷해진다. 동반 부하가 주문 생성을 초당 약 1.4건 더해 order 한 클라이언트의 호출이 초당 약 3~5회가 되므로 보충 속도의 약 10배다(F43-P, F49-H 와 같은 값)",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m. 새 dispatch 파드가 Ready 가 되어 옛 파드를 대신한 뒤(평시 롤아웃 약 41초: KCM 2026-10-09 00:26:52 Pulled → 00:27:33 옛 ReplicaSet 축소) order 파드 주소(10.244.2.x) 하나에 걸린 토큰 20개가 몇 초 만에 바닥나고, 그 뒤로는 3초에 1회만 통과한다. 주문 하나가 용량 확인과 배차 두 번을 통과해야 하므로 성공 주문은 많아야 6초에 1건(초당 약 0.17건)이고 나머지는 용량 확인이나 배차에서 429 를 받아 order 가 'Failed to check dispatch capacity: 429 ...' 또는 'Failed to dispatch courier ...: 429 ...' 를 남기고 재시도, 서킷 끝에 503 으로 거절한다. 로컬 실측(패치 jar, mysql:8.0, 1.5 주문/초, 180초, 결제 서비스 없음): 처음 15초 동안 12건이 배차까지 갔고 그 뒤 15초 창마다 22~23건 중 1~2건만 배차를 지났으며(나머지 503 'Dispatch service unavailable: ...'), 합계 270건 중 503 244건. 운영에서 동반 부하 2xx 는 초당 0.17건을 기준선 주문과 나눠 0.1 안팎이라 2xx<0.2 와 5xx≥0.5 가 매 틱 이어진다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 0.5,
+              "_note": "동반 부하 2rps 의 1/4. 거절이 빨라(로컬 p50 0.63초) 반복률이 유지된다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 요청 한도가 아니라 DB 다운(F25-H 꼴)이다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "dispatch 파드 준비 상태와 dispatch 서버 스팬 오류율은 러너 관측 허용 목록(APPROVED_K8S_TARGETS, APPROVED_APM_SERVICES)에 없어 러너 배제 조건으로 두지 않는다(F32-H, F33-H, F43-P 와 같음). dispatch 가 Ready 이고 빠르며 DB 가 한가하다는 감별(F43-P, F33-R, F33-H 와 가르기)은 녹화된 KCM 이벤트, dispatch Hikari 지표, DPM 세션 지표와 로그(429 본문, 'Rate limit exceeded for client ...')로 RCA 쪽에서 한다(정답지 must_support, must_rule_out)"
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 dispatch 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 매니페스트 버전에는 요청 한도가 없어 새 파드는 모든 호출을 받고, order 의 dispatch 서킷브레이커는 반열림 3회 성공으로 닫힌다. 거절된 주문은 용량 확인이나 배차 단계에서 트랜잭션이 되돌려져 주문 행과 배차를 남기지 않는다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

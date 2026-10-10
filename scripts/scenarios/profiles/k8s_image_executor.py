@@ -177,6 +177,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-payment:latest",
         "fault_image": "food-delivery-payment:1.3.0",
     },
+    # 2026-10-10. F55-R: food dispatch-service 를 배달 API 에 클라이언트(요청 IP)별 요청 한도(순간 20회, 3초에 1회
+    # 보충)를 더한 릴리스 1.8.0 으로 롤아웃한다. dispatch 를 부르는 쪽이 order 파드 하나(10.244.2.x)와 NodePort
+    # 진입의 노드 주소 하나(10.244.0.0)로 모여 있어 한도가 사실상 모든 요청에 걸리고, order 의 용량 확인과 배차가 429 를
+    # 받아 재시도와 서킷 끝에 주문이 503 이 된다. 결함 이미지는 fault-images/f55-r 로 109 docker 에만 빌드하고, 실행기가
+    # tb-w3 에 올렸다가 cleanup 이 지운다. dispatch 의 다른 릴리스 태그(F33-H 1.6.0, F43-P 1.7.0)와 겹치지 않는다.
+    "F55-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-dispatch",
+        "container": "dispatch-service",
+        "baseline_image": "food-delivery-dispatch:latest",
+        "fault_image": "food-delivery-dispatch:1.8.0",
+    },
 }
 
 

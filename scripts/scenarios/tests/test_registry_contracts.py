@@ -83,7 +83,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 92 → 93. F32-P(후보) 추가. 기존 db.ddl MySQL 표 지우기 모드를 dispatches 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 93 → 94. F54-R(후보) 추가. 기존 db.account 실행기에 프로필 한도 모드를 더해 프로파일 수는 그대로.
         # 2026-10-10: 94 → 95. F49-P(후보) 추가. 기존 k8s.image release 모드를 food payment 에 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 95)
+        # 2026-10-10: 95 → 96. F55-R(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 96)
         self.assertEqual(len(self.profiles["profiles"]), 31)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -196,6 +197,8 @@ class RegistryContractTests(unittest.TestCase):
             "F54-R",
             # 2026-10-10: food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열로 바꾼 릴리스 1.3.0(fault-images/f49-p)으로 롤아웃(payment 200, order 해석 실패로 주문 502 롤백, 승인 결제만 남음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F49-P",
+            # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F55-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -524,6 +527,8 @@ class RegistryContractTests(unittest.TestCase):
             "F54-R",
             # 2026-10-10: food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열로 바꾼 릴리스 1.3.0(fault-images/f49-p)으로 롤아웃(payment 200, order 해석 실패로 주문 502 롤백, 승인 결제만 남음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F49-P",
+            # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F55-R",
             },
         )
         self.assertEqual(
@@ -636,6 +641,8 @@ class RegistryContractTests(unittest.TestCase):
             "F54-R",
             # 2026-10-10: food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열로 바꾼 릴리스 1.3.0(fault-images/f49-p)으로 롤아웃(payment 200, order 해석 실패로 주문 502 롤백, 승인 결제만 남음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F49-P",
+            # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F55-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -805,8 +812,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F32-P(후보, 고정 evaluation)이 끝에 붙어 F52-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F54-R(후보, 고정 evaluation)이 끝에 붙어 F53-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F49-P(후보, 고정 evaluation)이 끝에 붙어 F53-P 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F55-R(후보, 고정 evaluation)이 끝에 붙어 F42-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F42-P", "F35-H", "F32-P", "F54-R", "F49-P"])
+                         ["F35-H", "F32-P", "F54-R", "F49-P", "F55-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

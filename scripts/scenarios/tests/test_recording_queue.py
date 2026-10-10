@@ -80,7 +80,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 24 → 25. F32-P(운영을 가리킨 로컬 마이그레이션이 food dispatches 표를 지워 주문이 배달원 용량 확인에서 전량 503) 후보 추가.
         # 2026-10-10: 25 → 26. F54-R(banking Oracle 앱 계정의 호출당 논리 읽기 한도로 거래 내역 502) 후보 추가.
         # 2026-10-10: 26 → 27. F49-P(food payment 릴리스가 결제 응답 id 형식을 바꿔 order 가 해석 실패) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 27)
+        # 2026-10-10: 27 → 28. F55-R(food dispatch 릴리스의 요청 IP 기준 요청 한도로 order 호출이 429, 주문 503) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 28)
 
 
 class RecordingQueueTests(unittest.TestCase):

@@ -8792,6 +8792,99 @@
      }
     ]
    }
+  },
+  "F55-R": {
+   "title": "Release rollout of the food dispatch-service that adds a per-client (request IP) rate limit to the delivery API: every call to dispatch arrives from one order pod address or from the single node address that NodePort traffic is translated to, so the limit (burst 20, then one request per 3 s) applies to practically all traffic; dispatch stays Ready and fast but answers 429, and order-service turns the 429s on its capacity check and dispatch call into 503 for almost every new order",
+   "description": "A rollout of the food dispatch-service Deployment (testbed-dispatch) moves its container image from food-delivery-dispatch:latest to the release food-delivery-dispatch:1.8.0. To keep delivery-tracking polling from one client from slowing the dispatch API, the release adds a servlet filter in front of every /api/deliveries request that limits each client, identified by the request's remote address, to a burst of 20 requests and then one request per 3 seconds, and answers anything above that with 429 Too Many Requests ('{\"status\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded for client <address>\"}'). Probes (/actuator/health) are not limited. The release's own unit test checks that one polling client is limited while other clients keep their own allowance, using distinct client addresses. In this cluster the callers are not distinct: every internal call comes from the one order-service pod (10.244.2.x) and every external NodePort call (delivery tracking from the load generator) is translated to the control-plane node's flannel address 10.244.0.0, which is what dispatch's server spans already record as client.address. After the new pod takes traffic the order pod's 20 tokens are gone in a few seconds; from then on only one call per 3 s passes, while order-service needs two dispatch calls per order (GET /api/deliveries/capacity before saving the order and POST /api/deliveries/dispatch after it). order-service logs 'Failed to check dispatch capacity: 429 : \"{...Rate limit exceeded for client 10.244.2.x\"}' or 'Failed to dispatch courier for order N: 429 ...', retries (3 attempts, 200 ms exponential), opens its dispatch circuit breaker and rejects the order with 503 ('Dispatch service unavailable: ...'), rolling back the order row. dispatch logs at most one WARN per client per 30 s: 'Rate limit exceeded for client 10.244.2.x: N requests rejected in the last 30s (limit: burst 20, 1 request per 3s)'. dispatch stays Ready with fast responses, its connection pool and MySQL are untouched, restaurant browsing and menus keep working, and delivery tracking gets 429. At most about one order per 6 s gets through. Nothing recovers until the release is rolled back.",
+   "cause": "Rollout of testbed-dispatch (food) to the release food-delivery-dispatch:1.8.0, which adds a per-client rate limit keyed on the request's remote address to the delivery API → every caller in this deployment shares one address (the order pod for internal calls, the node's NAT address for NodePort traffic) → the limit (burst 20, then one request per 3 s) throttles practically all dispatch traffic with 429 while dispatch stays healthy → order-service's capacity checks and dispatch calls fail, retry, open the circuit breaker and almost every new order is rejected with 503, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-dispatch (rca-testbed-food), container dispatch-service, from food-delivery-dispatch:latest to food-delivery-dispatch:1.8.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f55-r from origin/main food-delivery plus fault-images/f55-r/dispatch-service.patch (under dispatch-service/src only: a new config/ClientRateLimitFilter and the release's own ClientRateLimitFilterTest); the manifest image, sources and manifests are untouched, and the tag differs from the other dispatch releases (1.6.0, 1.7.0). Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion order-surge load (2 rps, about 1.4 orders per second) keeps order creation steady regardless of the time of day. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "Within seconds of the new dispatch pod taking traffic almost every new food order fails with 503 (quickly, in well under a second); at most about one order per 6 s gets through, shared between all customers. Rejected orders keep no order row or dispatch. Delivery tracking gets 429 for most requests; restaurant browsing, menus and search keep working. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a dispatch release followed by 429 answers from a healthy dispatch: a KCM ScalingReplicaSet for testbed-dispatch and the new pod's kubelet event 'Pulled: Container image \"food-delivery-dispatch:1.8.0\" already present on machine' (every testbed-dispatch ReplicaSet and pod record on file, the last from 2026-10-09, carries food-delivery-dispatch:latest), then order ERROR 'Failed to check dispatch capacity: 429 : \"{\\\"status\\\":429,\\\"error\\\":\\\"Too Many Requests\\\",\\\"message\\\":\\\"Rate limit exceeded for client 10.244.2.x\\\"}\"' and 'Failed to dispatch courier for order N: 429 ...' (no 429 or 'Too Many Requests' log anywhere in the 30 days on file), dispatch WARN 'Rate limit exceeded for client 10.244.2.x: N requests rejected in the last 30s (limit: burst 20, 1 request per 3s)' and the same for 10.244.0.0, with order POST /api/orders answering 503 'Dispatch service unavailable: ...'. dispatch itself stays Ready with no Unhealthy or Killing events, its Hikari usage stays at the usual one or two connections with nothing pending, MySQL active sessions and response time stay flat, and a trickle of orders (about one per 6 s) still completes. Sampled dispatch server spans show that the API traffic comes from exactly two client addresses (the order pod and 10.244.0.0) and that they now end with status 429. The earlier dispatch failures on file come with a full connection pool and restarts (F43-P), MySQL saturation (F33-R, F33-H), 'Courier pool exhausted' (F32-R) or a ClassCastException in order (F32-H); here dispatch is fast and the rejection is an HTTP 429 written by dispatch itself.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-dispatch",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food dispatch-service 의 새 릴리스 food-delivery-dispatch:1.8.0 이다. 배달 앱의 배달 상태 폴링이 한 클라이언트에서 몰려 배차 API 가 느려지는 것을 막으려고, /api/deliveries 요청 앞에 클라이언트별 요청 한도(순간 20회, 이후 3초에 1회 보충)를 더했다. 클라이언트는 요청의 원격 주소(request.getRemoteAddr())로 구분하고, 한도를 넘으면 처리하지 않고 429 를 돌려준다. 릴리스의 단위 시험은 서로 다른 주소의 클라이언트로만 확인한다. 이 배포에서 dispatch 를 부르는 쪽은 order 파드 하나(10.244.2.x)와 NodePort 진입을 노드 주소로 바꾼 10.244.0.0 하나뿐이라(평시 dispatch 서버 스팬의 client.address 가 이 둘), 한도가 사실상 모든 요청에 걸린다. order 는 주문마다 용량 확인(GET /api/deliveries/capacity)과 배차(POST /api/deliveries/dispatch) 두 번을 불러야 하는데 3초에 1회만 통과해, 나머지는 'Failed to check dispatch capacity: 429 ...' 나 'Failed to dispatch courier ...: 429 ...' 뒤 재시도와 서킷 끝에 503 으로 주문을 거절하고 트랜잭션을 되돌린다. dispatch 는 Ready 이고 빠르며 연결 풀과 MySQL 은 그대로다. 원본 PostHog 2025-10-24(보호 조치로 /flags 에 IP 기준 요청 한도를 배포했는데, 한도가 실제 클라이언트가 아니라 로드밸런서 IP 하나에서 온 것으로 보고 요청의 약 97% 를 429 로 거절, 한도를 꺼서 복구)와 같은 꼴이다. 고칠 곳은 dispatch 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f55-r/dispatch-service.patch:32-38 (ClientRateLimitFilter — 릴리스 1.8.0 이 더한 배달 API 요청 한도, 순간 20회, 3초에 1회 보충)",
+     "scripts/scenarios/fault-images/f55-r/dispatch-service.patch:55-78 (shouldNotFilter 는 /api/deliveries 만 제한, 클라이언트 키는 request.getRemoteAddr(), 한도를 넘으면 WARN 'Rate limit exceeded for client ...' 와 429 본문)",
+     "scripts/scenarios/fault-images/f55-r/dispatch-service.patch:158-166 (ClientRateLimitFilterTest.otherClientsKeepTheirOwnLimit — 릴리스의 시험은 서로 다른 클라이언트 주소로만 확인)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:32-50 (checkCapacity — 429 를 'Failed to check dispatch capacity' ERROR 로 남기고 502 로 바꿔 재시도, 서킷 끝에 503)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:55-71 (dispatchCourier — 429 를 'Failed to dispatch courier' ERROR 로 남기고 503)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-112 (checkCapacity — 주문 저장 전 용량 확인, 실패하면 503 으로 거절)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:143-151 (dispatchCourier — 주문 저장 뒤 배차, 실패하면 주문 트랜잭션이 되돌려짐)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-dispatch(food-delivery/k8s/22-dispatch-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-dispatch:latest imagePullPolicy Never :27-28, 프로브 /actuator/health :67-86, 기본 전략 maxSurge 25%), Service testbed-dispatch(ClusterIP, order 가 부름) :95-105 와 testbed-dispatch-external(NodePort 30182, tb-runner 의 배달 추적, 노드에서 주소 변환) :108-120. order 의 dispatch 호출: 읽기 5초, 재시도 3회(200ms 지수), 서킷 10건 창 50% 5초 열림(food-delivery/order-service/src/main/resources/application.yml:55-58, 78-86, 105-111). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-dispatch 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-dispatch:1.8.0 을 담고, 그 전 testbed-dispatch ReplicaSet, 파드 기록은 전부 food-delivery-dispatch:latest 다(kcm_resources_history 마지막 2026-10-09)",
+    "롤아웃 직후부터 order ERROR 'Failed to check dispatch capacity: 429 ...Too Many Requests...Rate limit exceeded for client 10.244.2.x' 와 'Failed to dispatch courier for order N: 429 ...' 가 이어진다. 기록된 30일 동안 어느 서비스에도 429, 'Too Many Requests', 'Rate limit exceeded' 로그가 없었다",
+    "food-delivery-dispatch WARN 'Rate limit exceeded for client 10.244.2.x: N requests rejected in the last 30s (limit: burst 20, 1 request per 3s)' 가 30초마다, 같은 꼴로 10.244.0.0 도 남는다. dispatch 를 부르는 클라이언트 주소가 이 둘뿐이다(표본 서버 스팬 client.address)",
+    "dispatch 는 Ready 이고 KCM Unhealthy, Killing 이 없으며 Hikari 사용량(db.client.connections.usage)과 pending 은 평시 그대로, food MySQL active 세션과 응답 시간도 평시와 같다",
+    "동반 부하 주문 생성 503 비율 0.5 이상, 성공 주문이 약 6초에 1건으로 줄어든다. 가게 조회, 메뉴는 정상이다"
+   ],
+   "must_rule_out": [
+    "dispatch 연결 누수나 풀 고갈이 아님(F43-P): dispatch 는 Ready 이고 재시작이 없으며 Hikari 사용량이 평시 그대로이고 'Connection is not available' 로그가 없다. 실패 응답은 3초 대기 끝의 500 이 아니라 곧바로 오는 429 다",
+    "MySQL 포화나 느린 질의가 아님(F33-R, F33-H): MySQL active 세션, 응답 시간이 평시와 같고 거절된 요청은 DB 에 닿지 않는다",
+    "배차 한도 설정이나 응답 형식 변경이 아님(F32-R, F32-H): dispatch env 와 설정은 그대로이고 'Courier pool exhausted' 거절이나 ClassCastException 이 없다. 바뀐 것은 이미지 태그다",
+    "order 쪽 고장이 아님(F49-H): order 는 롤아웃이 없고 Ready 이며 실패 로그는 응답 해석이 아니라 dispatch 가 돌려준 429 다",
+    "부하 폭주가 아님: 요청률은 평시와 동반 부하 그대로이고 한도는 dispatch 새 버전이 처음 들여온 것이다(이전 기록에 429 가 없음)",
+    "가게 쪽이나 결제 쪽 고장이 아님(F49-R, F36-R, F44-R, F49-P): 실패는 용량 확인과 배차 단계에서 나고 가게 조회와 결제 호출 로그는 정상이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F43-P (dispatch 릴리스 1.7.0 의 DB 연결 누수: 같은 dispatch 릴리스와 order 503 이지만 dispatch 풀이 차서 3초 대기 끝 500, NotReady 와 재시작 반복. F55-R 은 dispatch 가 건강하고 곧바로 429)",
+     "F33-H (dispatch 릴리스 1.6.0 의 목록 COUNT 로 MySQL 포화: 같은 dispatch 릴리스와 order 503 이지만 MySQL 이 포화되고 Top SQL 에 COUNT)",
+     "F33-R (dispatches 인덱스 제거로 MySQL 포화: 같은 order 503 이지만 롤아웃이 없고 MySQL 이 포화)",
+     "F32-R (dispatch 배차 동시 한도 설정 축소: 같은 '한도에 걸린 거절'과 order 503 이지만 env 롤아웃과 'Courier pool exhausted', 한도가 업무 용량)",
+     "F32-H (dispatch 설정 배포로 용량 응답 숫자가 문자열: 같은 order 503 이지만 dispatch 는 200 이고 order 가 ClassCastException)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "testbed-dispatch"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food dispatch-service 를 배달 API 에 클라이언트(요청 IP)별 요청 한도를 더한 릴리스로 롤아웃. dispatch 를 부르는 쪽이 order 파드 주소 하나와 NodePort 진입의 노드 주소 하나로 모여 있어 한도(순간 20회, 이후 3초에 1회)가 사실상 모든 요청에 걸리고, dispatch 는 Ready 이고 빠른데 429 를 돌려줘 order 가 용량 확인과 배차의 429 를 503 으로 바꿔 거의 모든 새 주문을 거절한다",
+   "description_ko": "food dispatch-service Deployment(testbed-dispatch)의 컨테이너 이미지를 food-delivery-dispatch:latest 에서 릴리스 food-delivery-dispatch:1.8.0 으로 롤아웃한다. 한 클라이언트의 배달 추적 폴링이 배차 API 를 느리게 하지 않도록, 릴리스는 /api/deliveries 요청마다 앞에서 도는 서블릿 필터를 더해 요청의 원격 주소로 구분한 클라이언트마다 순간 20회, 이후 3초에 1회만 받고 넘는 요청은 429 Too Many Requests('{\"status\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded for client <주소>\"}')로 돌려준다. 프로브(/actuator/health)는 제한하지 않는다. 릴리스의 단위 시험은 서로 다른 주소의 클라이언트로 '한 클라이언트만 막히고 다른 클라이언트는 자기 몫을 쓴다' 를 확인한다. 이 클러스터에서 호출자는 서로 다르지 않다. 내부 호출은 모두 order 파드 하나(10.244.2.x)에서 오고, 외부 NodePort 호출(부하 발생기의 배달 추적)은 모두 tb-cp 노드의 flannel 주소 10.244.0.0 으로 바뀌어 들어온다(평시 dispatch 서버 스팬의 client.address). 새 파드가 트래픽을 받고 몇 초 만에 order 주소의 토큰 20개가 바닥나고, 그 뒤로는 3초에 1회만 통과한다. order 는 주문마다 dispatch 를 두 번(주문 저장 전 GET /api/deliveries/capacity, 저장 뒤 POST /api/deliveries/dispatch) 불러야 한다. order 는 'Failed to check dispatch capacity: 429 : \"{...Rate limit exceeded for client 10.244.2.x\"}' 나 'Failed to dispatch courier for order N: 429 ...' 를 남기고 재시도(3회, 200ms 지수), dispatch 서킷 열림 끝에 503('Dispatch service unavailable: ...')으로 주문을 거절하고 주문 행을 되돌린다. dispatch 는 클라이언트마다 30초에 한 번 WARN 'Rate limit exceeded for client 10.244.2.x: N requests rejected in the last 30s (limit: burst 20, 1 request per 3s)' 를 남긴다. dispatch 는 Ready 이고 응답이 빠르며 연결 풀과 MySQL 은 그대로다. 가게 둘러보기와 메뉴는 정상이고 배달 추적은 429 를 받는다. 주문은 많아야 약 6초에 1건만 통과한다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-dispatch(food) 를 릴리스 food-delivery-dispatch:1.8.0 으로 롤아웃. 새 버전이 요청의 원격 주소로 클라이언트를 구분하는 배달 API 요청 한도를 더함 → 이 배포에서는 모든 호출자가 주소 하나를 함께 씀(내부 호출은 order 파드, NodePort 호출은 노드 주소 변환) → 한도(순간 20회, 이후 3초에 1회)가 dispatch 가 건강한 채로 사실상 모든 요청을 429 로 거절 → order-service 의 용량 확인과 배차가 실패, 재시도, 서킷 열림 끝에 거의 모든 새 주문이 503 으로 거절된다. 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 Deployment testbed-dispatch(rca-testbed-food), 컨테이너 dispatch-service 를 food-delivery-dispatch:latest 에서 food-delivery-dispatch:1.8.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f55-r 로 origin/main food-delivery 에 fault-images/f55-r/dispatch-service.patch(dispatch-service/src 안만: 새 config/ClientRateLimitFilter 와 릴리스 자신의 ClientRateLimitFilterTest)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트는 그대로이고 태그는 dispatch 의 다른 릴리스(1.6.0, 1.7.0)와 다르다. preflight 는 살아 있는 객체에서 현재 이미지가 기본 이미지인지, imagePullPolicy Never, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기본 이미지가 있고 릴리스가 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 확인한다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 order-surge 부하(2rps, 주문 초당 약 1.4건)가 시간대와 무관하게 주문 생성을 유지한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "새 dispatch 파드가 트래픽을 받고 몇 초 안에 거의 모든 새 음식 주문이 503 으로 실패한다(1초 안쪽으로 빠르게). 모든 고객을 통틀어 약 6초에 1건만 통과한다. 거절된 주문은 주문 행과 배차를 남기지 않는다. 배달 추적은 대부분 429 를 받고, 가게 둘러보기, 메뉴, 검색은 정상이다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 dispatch 릴리스 뒤 건강한 dispatch 가 돌려주는 429 다. testbed-dispatch 의 KCM ScalingReplicaSet 과 새 파드 kubelet 이벤트 'Pulled: Container image \"food-delivery-dispatch:1.8.0\" already present on machine'(기록된 testbed-dispatch ReplicaSet, 파드는 마지막 2026-10-09 까지 전부 :latest), 그 뒤 order ERROR 'Failed to check dispatch capacity: 429 : \"{...Too Many Requests...Rate limit exceeded for client 10.244.2.x\"}' 와 'Failed to dispatch courier for order N: 429 ...'(기록된 30일 동안 429, 'Too Many Requests' 로그는 어디에도 없음), dispatch WARN 'Rate limit exceeded for client 10.244.2.x: N requests rejected in the last 30s (limit: burst 20, 1 request per 3s)' 와 10.244.0.0 의 같은 로그, order POST /api/orders 503 'Dispatch service unavailable: ...'. dispatch 는 Ready 이고 Unhealthy, Killing 이 없으며 Hikari 사용량은 평시처럼 1~2 에 대기 없음, MySQL active 세션과 응답 시간은 평탄하고, 주문이 약 6초에 1건씩은 끝난다. 표본 서버 스팬은 API 호출자가 주소 둘(order 파드, 10.244.0.0)뿐이고 이제 429 로 끝남을 보여 준다. 기록에 있는 이전 dispatch 실패는 풀 고갈과 재시작(F43-P), MySQL 포화(F33-R, F33-H), 'Courier pool exhausted'(F32-R), order 의 ClassCastException(F32-H)과 함께였다. 여기서는 dispatch 가 빠르고 거절은 dispatch 자신이 쓴 HTTP 429 다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f55-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-dispatch",
+       "container": "dispatch-service",
+       "baseline_image": "food-delivery-dispatch:latest",
+       "fault_image": "food-delivery-dispatch:1.8.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

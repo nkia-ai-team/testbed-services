@@ -1,0 +1,183 @@
+diff --git a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/config/ClientRateLimitFilter.java b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/config/ClientRateLimitFilter.java
+new file mode 100644
+index 0000000..f9537c6
+--- /dev/null
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/config/ClientRateLimitFilter.java
+@@ -0,0 +1,111 @@
++package com.fooddelivery.dispatch.config;
++
++import jakarta.servlet.FilterChain;
++import jakarta.servlet.ServletException;
++import jakarta.servlet.http.HttpServletRequest;
++import jakarta.servlet.http.HttpServletResponse;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.http.HttpStatus;
++import org.springframework.http.MediaType;
++import org.springframework.stereotype.Component;
++import org.springframework.web.filter.OncePerRequestFilter;
++
++import java.io.IOException;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.TimeUnit;
++import java.util.function.LongSupplier;
++
++/**
++ * 배달 API 클라이언트별 요청 한도.
++ * 배달 앱의 배달 상태 폴링(3초 주기)이 한 클라이언트에서 몰리면 배차 API 까지 느려지므로,
++ * 요청한 클라이언트(요청 IP)마다 순간 20회, 이후 3초에 1회씩 채워지는 토큰으로 /api/deliveries 요청을 제한한다.
++ * 한도를 넘은 요청은 처리하지 않고 429 로 돌려준다. 프로브(/actuator)는 제한하지 않는다.
++ */
++@Component
++public class ClientRateLimitFilter extends OncePerRequestFilter {
++
++    private static final Logger log = LoggerFactory.getLogger(ClientRateLimitFilter.class);
++
++    static final String LIMITED_PATH = "/api/deliveries";
++    static final int BURST = 20;
++    static final long REFILL_SECONDS = 3;
++    private static final long REFILL_NANOS = TimeUnit.SECONDS.toNanos(REFILL_SECONDS);
++    private static final long REPORT_INTERVAL_SECONDS = 30;
++    private static final long REPORT_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(REPORT_INTERVAL_SECONDS);
++
++    private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
++    private final LongSupplier clock;
++
++    public ClientRateLimitFilter() {
++        this(System::nanoTime);
++    }
++
++    ClientRateLimitFilter(LongSupplier clock) {
++        this.clock = clock;
++    }
++
++    @Override
++    protected boolean shouldNotFilter(HttpServletRequest request) {
++        return !request.getRequestURI().startsWith(LIMITED_PATH);
++    }
++
++    @Override
++    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
++                                    FilterChain chain) throws ServletException, IOException {
++        String client = request.getRemoteAddr();
++        long now = clock.getAsLong();
++        Bucket bucket = buckets.computeIfAbsent(client, k -> new Bucket(now));
++        if (bucket.tryAcquire(now)) {
++            chain.doFilter(request, response);
++            return;
++        }
++        long rejected = bucket.rejectedSinceLastReport(now);
++        if (rejected > 0) {
++            log.warn("Rate limit exceeded for client {}: {} requests rejected in the last {}s (limit: burst {}, 1 request per {}s)",
++                    client, rejected, REPORT_INTERVAL_SECONDS, BURST, REFILL_SECONDS);
++        }
++        response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
++        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
++        response.setHeader("Retry-After", String.valueOf(REFILL_SECONDS));
++        response.getWriter().write("{\"status\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded for client "
++                + client + "\"}");
++    }
++
++    private static final class Bucket {
++        private long tokens = BURST;
++        private long refilledAt;
++        private long rejected;
++        private long reportedAt;
++
++        Bucket(long now) {
++            this.refilledAt = now;
++            this.reportedAt = now - REPORT_INTERVAL_NANOS;
++        }
++
++        synchronized boolean tryAcquire(long now) {
++            long refill = (now - refilledAt) / REFILL_NANOS;
++            if (refill > 0) {
++                tokens = Math.min(BURST, tokens + refill);
++                refilledAt = tokens == BURST ? now : refilledAt + refill * REFILL_NANOS;
++            }
++            if (tokens > 0) {
++                tokens--;
++                return true;
++            }
++            rejected++;
++            return false;
++        }
++
++        // 거절 로그는 클라이언트마다 30초에 한 번, 그동안 거절한 수를 함께 남긴다.
++        synchronized long rejectedSinceLastReport(long now) {
++            if (now - reportedAt < REPORT_INTERVAL_NANOS) {
++                return 0;
++            }
++            long count = rejected;
++            rejected = 0;
++            reportedAt = now;
++            return count;
++        }
++    }
++}
+diff --git a/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/config/ClientRateLimitFilterTest.java b/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/config/ClientRateLimitFilterTest.java
+new file mode 100644
+index 0000000..c4f40dd
+--- /dev/null
++++ b/food-delivery/dispatch-service/src/test/java/com/fooddelivery/dispatch/config/ClientRateLimitFilterTest.java
+@@ -0,0 +1,60 @@
++package com.fooddelivery.dispatch.config;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.mock.web.MockFilterChain;
++import org.springframework.mock.web.MockHttpServletRequest;
++import org.springframework.mock.web.MockHttpServletResponse;
++
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++class ClientRateLimitFilterTest {
++
++    private final AtomicLong now = new AtomicLong(1_000_000_000L);
++    private final ClientRateLimitFilter filter = new ClientRateLimitFilter(now::get);
++
++    private int call(String client, String path) throws Exception {
++        MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
++        request.setRemoteAddr(client);
++        MockHttpServletResponse response = new MockHttpServletResponse();
++        filter.doFilter(request, response, new MockFilterChain());
++        return response.getStatus();
++    }
++
++    @Test
++    void pollingClientIsLimitedAfterBurst() throws Exception {
++        for (int i = 0; i < ClientRateLimitFilter.BURST; i++) {
++            assertThat(call("203.0.113.10", "/api/deliveries/7")).isEqualTo(200);
++        }
++        assertThat(call("203.0.113.10", "/api/deliveries/7")).isEqualTo(429);
++    }
++
++    @Test
++    void otherClientsKeepTheirOwnLimit() throws Exception {
++        for (int i = 0; i < ClientRateLimitFilter.BURST + 5; i++) {
++            call("203.0.113.10", "/api/deliveries/7");
++        }
++        assertThat(call("203.0.113.11", "/api/deliveries/8")).isEqualTo(200);
++        assertThat(call("198.51.100.20", "/api/deliveries")).isEqualTo(200);
++    }
++
++    @Test
++    void tokenIsRefilledEveryThreeSeconds() throws Exception {
++        for (int i = 0; i < ClientRateLimitFilter.BURST; i++) {
++            call("203.0.113.10", "/api/deliveries/7");
++        }
++        assertThat(call("203.0.113.10", "/api/deliveries/7")).isEqualTo(429);
++        now.addAndGet(TimeUnit.SECONDS.toNanos(ClientRateLimitFilter.REFILL_SECONDS));
++        assertThat(call("203.0.113.10", "/api/deliveries/7")).isEqualTo(200);
++        assertThat(call("203.0.113.10", "/api/deliveries/7")).isEqualTo(429);
++    }
++
++    @Test
++    void probesAreNotLimited() throws Exception {
++        for (int i = 0; i < ClientRateLimitFilter.BURST + 5; i++) {
++            assertThat(call("203.0.113.10", "/actuator/health")).isEqualTo(200);
++        }
++    }
++}

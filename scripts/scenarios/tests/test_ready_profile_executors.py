@@ -970,6 +970,51 @@ esac
         for word in ("F49", "f49", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_food_dispatch_third_release(self) -> None:
+        # F55-R: 같은 release 스크립트로 food dispatch 를 1.8.0 으로 롤아웃한다(tb-w3). F33-H(1.6.0), F43-P(1.7.0)도
+        # dispatch 릴리스를 쓰므로 태그가 겹치지 않아야 셋 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는
+        # dispatch-service/src 안만 고친다.
+        plan = compiler.compile_plan("f55-r-food-dispatch-release-client-rate-limit-rejects-orders")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-dispatch", "dispatch-service",
+                                    "food-delivery-dispatch:latest", "food-delivery-dispatch:1.8.0"])
+        self.assertNotIn("F55-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F55-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F55-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f55-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F55-R"]["baseline_image"], k8s_image.CONTRACTS["F55-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f55-r" / "dispatch-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/dispatch-service/src/",
+                                                     "b/food-delivery/dispatch-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F55", "f55", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
+    def test_f55r_relies_on_order_dispatch_client_turning_4xx_into_5xx(self) -> None:
+        # F55-R 은 dispatch 릴리스가 돌려주는 429 를 food order 의 DispatchClient 가 502, 503 으로 바꿔 order 서버 스팬
+        # 오류와 오류율이 오르는 데 기댄다. 다른 클라이언트들은 4xx 를 그대로 전파하도록 고쳐졌는데(dc44dc6, 4d2df10)
+        # DispatchClient 만 모든 RestClientException 을 ServiceException 으로 바꾼다. 이 매핑이 바뀌어 4xx 가 그대로
+        # 전파되면 F55-R 은 429 단일 신호(막힌 restaurant 판과 같은 벽)가 되므로 시나리오를 다시 평가해야 한다.
+        source = (ROOT.parent.parent / "food-delivery" / "order-service" / "src" / "main" / "java" / "com"
+                  / "fooddelivery" / "order" / "client" / "DispatchClient.java").read_text()
+        self.assertNotIn("ClientErrorException", source)
+        self.assertNotIn("is4xxClientError", source)
+        for method, status in (("checkCapacity", "BAD_GATEWAY"), ("dispatchCourier", "SERVICE_UNAVAILABLE")):
+            body = source[source.index(f" {method}("):]
+            body = body[:body.index("\n    }\n")]
+            self.assertIn("catch (RestClientException ex)", body, method)
+            self.assertIn(f"throw new ServiceException(HttpStatus.{status},", body, method)
+        config = (ROOT.parent.parent / "food-delivery" / "order-service" / "src" / "main" / "resources"
+                  / "application.yml").read_text()
+        dispatch_blocks = re.findall(r"\n      dispatch:\n((?:        .*\n)+)", config)
+        self.assertEqual(len(dispatch_blocks), 2)
+        for block in dispatch_blocks:
+            self.assertIn("ignore-exceptions:\n          - com.fooddelivery.common.exception.ClientErrorException", block)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1327,6 +1372,8 @@ esac
             "F54-R",
             # 2026-10-10: food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열로 바꾼 릴리스 1.3.0(fault-images/f49-p)으로 롤아웃(payment 200, order 해석 실패로 주문 502 롤백, 승인 결제만 남음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F49-P",
+            # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F55-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
