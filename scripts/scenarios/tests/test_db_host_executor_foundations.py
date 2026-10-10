@@ -182,6 +182,41 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F53-P", {**p, "hold_schema": "fooddelivery"}, {})
 
+    def test_oracle_dropped_transfers_table_goes_to_the_recycle_bin_and_back(self) -> None:
+        # F35-H: 같은 표 지우기를 banking Oracle 에. 실제 DROP TABLE(PURGE 없음)이라 공간이 빈 공간으로 세어지고, cleanup 은
+        # FLASHBACK TABLE 뒤 BIN$ 이름으로 돌아온 인덱스와 제약에 계약의 원래 이름을 다시 붙인다(상태 파일 없음).
+        p = ddl.CONTRACTS["F35-H"]
+        ddl.validate("F35-H", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F35-H", p), "run")
+        self.assertEqual(argv[3:9], ["run", "rca-testbed-banking", "testbed-oracle-0", "FREEPDB1",
+                                     "BANKING", "TRANSFERS"])
+        self.assertEqual(argv[9:], [p["indexes"], p["constraints"], "1000", "2048"])
+        self.assertNotIn("F35-H", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F35-H", script)
+        self.assertIn("drop table $schema.$table;", script)
+        # PURGE 가 있으면 휴지통을 거치지 않아 되돌릴 수 없다.
+        self.assertNotIn("purge;", script.lower())
+        self.assertNotIn("purge recyclebin", script.lower())
+        self.assertIn("flashback table $schema.$table to before drop;", script)
+        self.assertIn("rename constraint", script)
+        self.assertEqual(script.count("ddl_lock_timeout = 10"), 3)
+        self.assertIn("whenever sqlerror exit failure", script)
+        self.assertIn("name='recyclebin'", script)
+        # 계약의 이름이 109 실측(2026-10-10) 그대로이고 덮는 열마다 하나씩이다.
+        self.assertEqual(sorted(x.split("=")[1] for x in p["indexes"].split(",")),
+                         sorted(["SYS_C008658", "SYS_C008659", "IDX_TRANSFERS_FROM", "IDX_TRANSFERS_TO",
+                                 "IDX_TRANSFERS_ORDER", "IDX_TRANSFERS_STATUS", "IDX_TRANSFERS_CREATED"]))
+        self.assertEqual(len({x.split("=")[0] for x in p["constraints"].split(",")}), 8)
+        _, f53r_body = ddl.build_invocation(plan("db.ddl", "F53-R", ddl.CONTRACTS["F53-R"]), "run")
+        self.assertNotEqual(body, f53r_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F35-H", {**p, "table": "ACCOUNTS"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F35-H", {**p, "minimum_free_mb": 0}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F35-H", ddl.CONTRACTS["F53-R"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

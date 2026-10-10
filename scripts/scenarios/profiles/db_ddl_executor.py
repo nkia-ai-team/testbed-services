@@ -39,6 +39,17 @@ with ER_NO_SUCH_TABLE (1146).  Foreign keys follow a rename, so the inverse is t
 back and the rows, indexes and constraints return unchanged.  F53-P runs the same path on the
 payments table, which only payment-service writes, so order creation fails one hop away: payment
 answers 500 on its first write and order turns that into 502 after the courier is dispatched.
+
+The Oracle dropped-table path (F35-H) is the same wrong-environment migration against the banking
+Oracle: its drop step removes the live transfers table.  It is a real DROP TABLE (no PURGE), so
+the database does what it does for any drop with the recycle bin on: the table leaves the schema,
+every statement that names it fails (ORA-00942, or ORA-04043 where the driver describes the table
+for generated keys), and its space counts as free again, so the tablespace usage the DPM collector
+reports falls by the size of the table and its indexes.  Its segment stays in the recycle bin.  The
+inverse is FLASHBACK TABLE ... TO BEFORE DROP, which brings back the rows, indexes, constraints and
+identity sequence but leaves the indexes and constraints under their recycle-bin names (BIN$...);
+cleanup gives each its original name back from the contract, keyed by what it covers, so it needs
+no state file and finishes a cleanup that stopped between the restore and the renames.
 """
 from __future__ import annotations
 
@@ -120,6 +131,20 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "database": "fooddelivery", "table": "payments", "hold_schema": "mysql",
         "minimum_rows": 1000,
     },
+    # 같은 표 지우기를 banking Oracle 이체 표에: 실제 DROP TABLE(휴지통 on, PURGE 없음). 지우면 USERS 사용량이 표와
+    # 인덱스만큼(109 실측 784+1600MB) 줄어 DPM 이 보고하는 tablespace used 가 떨어진다. cleanup 은 FLASHBACK TABLE 로
+    # 되돌린 뒤 BIN$ 이름으로 돌아온 인덱스와 제약에 아래 원래 이름을 다시 붙인다(덮는 열과 제약 종류로 짝지음).
+    "F35-H": {
+        "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
+        "pdb": "FREEPDB1", "schema": "BANKING", "table": "TRANSFERS",
+        "indexes": "ID=SYS_C008658,TRANSFER_REF=SYS_C008659,FROM_ACCOUNT=IDX_TRANSFERS_FROM,"
+                   "TO_ACCOUNT=IDX_TRANSFERS_TO,ORDER_ID=IDX_TRANSFERS_ORDER,STATUS=IDX_TRANSFERS_STATUS,"
+                   "CREATED_AT=IDX_TRANSFERS_CREATED",
+        "constraints": "C:ID=SYS_C008652,C:TRANSFER_REF=SYS_C008653,C:FROM_ACCOUNT=SYS_C008654,"
+                       "C:TO_ACCOUNT=SYS_C008655,C:AMOUNT=SYS_C008656,C:STATUS=SYS_C008657,"
+                       "P:ID=SYS_C008658,U:TRANSFER_REF=SYS_C008659",
+        "minimum_rows": 1000, "minimum_free_mb": 2048,
+    },
 }
 
 
@@ -140,6 +165,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     if p["engine"] == "mysql" and "backfill_index" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
+    if p["engine"] == "oracle" and "indexes" in p:
+        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["pdb"], p["schema"], p["table"],
+                p["indexes"], p["constraints"], str(p["minimum_rows"]), str(p["minimum_free_mb"])], ORACLE_DROP_REMOTE
     if p["engine"] == "mysql" and "hold_schema" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
@@ -327,6 +355,82 @@ case "$action" in
     [[ "$(present "$db" "$table")" == 0 ]] || { echo "$table exists beside $hold.$held" >&2; exit 3; }
     move "$hold.$held" "$db.$table"
   fi
+  original
+  ;;
+ recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+ORACLE_DROP_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; pdb="$4"; schema="$5"; table="$6"; index_map="$7"; constraint_map="$8"; minimum="$9"; free_mb="${10}"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# Run one SQL script; every error is fatal and its first ORA- line goes to stderr for the runner log.
+# feedback off comes first: while it is on, sqlplus echoes "Session altered." into the output.
+sql() {
+  local out
+  out=$(printf 'set pages 0 lines 400 feedback off heading off trimspool on\nwhenever sqlerror exit failure\nalter session set container=%s;\n%s\nexit;\n' "$pdb" "$1" \
+    | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba) || { grep -m1 'ORA-' <<<"$out" >&2 || true; return 1; }
+  printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
+}
+value() { sql "$1" | tr -d '[:space:]'; }
+present() { value "select count(*) from dba_tables where owner='$schema' and table_name='$table';"; }
+# The dropped table in the recycle bin, restorable (exactly one, or the restore would be ambiguous).
+binned() { value "select count(*) from dba_recyclebin where owner='$schema' and original_name='$table' and type='TABLE' and can_undrop='YES';"; }
+# Index and constraint names keyed by what they cover, one line each, so a restored table can be compared to the contract.
+inventory() {
+  sql "select 'I:'||(select listagg(column_name,',') within group (order by column_position) from dba_ind_columns c where c.index_owner=i.owner and c.index_name=i.index_name)||'='||i.index_name from dba_indexes i where i.owner='$schema' and i.table_name='$table'
+union all
+select 'C:'||k.constraint_type||':'||(select listagg(column_name,',') within group (order by position) from dba_cons_columns c where c.owner=k.owner and c.constraint_name=k.constraint_name)||'='||k.constraint_name from dba_constraints k where k.owner='$schema' and k.table_name='$table';" | LC_ALL=C sort
+}
+expected() { { tr ',' '\n' <<<"$index_map" | sed 's/^/I:/'; tr ',' '\n' <<<"$constraint_map" | sed 's/^/C:/'; } | sed 's/;/,/g' | LC_ALL=C sort; }
+original() { [[ "$(present)" == 1 && "$(binned)" == 0 && "$(inventory)" == "$(expected)" ]]; }
+check() {
+  [[ "$(value "select lower(value) from v\$parameter where name='recyclebin';")" == on ]]
+  [[ "$(value "select count(*) from (select 1 from $schema.$table where rownum <= $minimum);")" == "$minimum" ]]
+  original
+}
+# Renames take the table lock too, so they wait behind in-flight transactions like the drop.
+# Restored indexes and constraints keep their recycle-bin names (BIN$...); give each its contract name back by what it covers.
+rename_back() {
+  local line key name stmts=""
+  declare -A want=()
+  while IFS= read -r line; do want["${line%%=*}"]="${line#*=}"; done < <(expected)
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    key="${line%%=*}"; name="${line#*=}"
+    [[ "$name" == BIN\$* ]] || continue
+    [[ -n "${want[$key]:-}" ]] || { echo "no contract name for $key ($name)" >&2; return 3; }
+    if [[ "$key" == I:* ]]; then
+      stmts+="alter index $schema.\"$name\" rename to ${want[$key]};"$'\n'
+    else
+      stmts+="alter table $schema.$table rename constraint \"$name\" to ${want[$key]};"$'\n'
+    fi
+  done < <(inventory)
+  [[ -z "$stmts" ]] || sql "alter session set ddl_lock_timeout = 10;"$'\n'"$stmts" >/dev/null
+}
+case "$action" in
+ preflight)
+  check
+  # Enough free space that the database never reclaims the dropped table's space from the recycle bin during the window.
+  [[ "$(value "select nvl(floor(sum(bytes)/1048576),0) from dba_free_space where tablespace_name=(select tablespace_name from dba_tables where owner='$schema' and table_name='$table');")" -ge "$free_mb" ]]
+  ;;
+ run)
+  check
+  # ddl_lock_timeout bounds the wait behind in-flight transactions (the server default 0 fails at once with ORA-00054).
+  # No PURGE: with the recycle bin on, the drop renames the table in place and keeps its segment for the restore.
+  sql "alter session set ddl_lock_timeout = 10;
+drop table $schema.$table;" >/dev/null
+  [[ "$(present)" == 0 && "$(binned)" == 1 ]]
+  ;;
+ cleanup)
+  if [[ "$(present)" == 0 ]]; then
+    [[ "$(binned)" == 1 ]] || { echo "$schema.$table is gone and not restorable from the recycle bin" >&2; exit 3; }
+    sql "alter session set ddl_lock_timeout = 10;
+flashback table $schema.$table to before drop;" >/dev/null
+  fi
+  rename_back
   original
   ;;
  recovery) check ;;

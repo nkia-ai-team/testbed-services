@@ -37,7 +37,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 88 → 89. F53-R(후보) 추가.
 # 2026-10-10: 89 → 90. F53-P(후보) 추가.
 # 2026-10-10: 90 → 91. F42-P(후보) 추가.
-[[ "$total" -eq 91 ]]
+# 2026-10-10: 91 → 92. F35-H(후보) 추가.
+[[ "$total" -eq 92 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -125,7 +126,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: ready 63→64. F53-R(운영을 가리킨 로컬 마이그레이션이 food orders 표를 지워 주문 생성이 1146 으로 전량 500)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 64→65. F53-P(운영을 가리킨 로컬 마이그레이션이 food payments 표를 지워 payment 가 1146 으로 500, 주문이 배차 뒤 결제 단계에서 전량 502)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 65→66. F42-P(food restaurant 릴리스가 인기 메뉴를 주문 원장에서 바로 세어 MySQL 포화, restaurant 풀 고갈)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 66 ]]
+# 2026-10-10: ready 66→67. F35-H(운영을 가리킨 로컬 마이그레이션이 banking Oracle TRANSFERS 를 지워 이체, 거래 내역, commerce 정산이 ORA-04043/00942 로 실패)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 67 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -187,7 +189,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 82 → 83. F53-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f53-r)으로 들어왔다.
 # 2026-10-10: 83 → 84. F53-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f53-p)으로 들어왔다.
 # 2026-10-10: 84 → 85. F42-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f42-p)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 85 ]]
+# 2026-10-10: 85 → 86. F35-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f35-h)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 86 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

@@ -76,7 +76,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 20 → 21. F53-R(운영을 가리킨 로컬 마이그레이션이 food orders 표를 지워 주문 생성이 1146 으로 전량 500) 후보 추가.
         # 2026-10-10: 21 → 22. F53-P(운영을 가리킨 로컬 마이그레이션이 food payments 표를 지워 주문이 결제 단계에서 502) 후보 추가.
         # 2026-10-10: 22 → 23. F42-P(food restaurant 릴리스가 인기 메뉴를 주문 원장에서 바로 세어 MySQL 포화) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 23)
+        # 2026-10-10: 23 → 24. F35-H(운영을 가리킨 로컬 마이그레이션이 banking Oracle TRANSFERS 를 지워 이체와 commerce 정산 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 24)
 
 
 class RecordingQueueTests(unittest.TestCase):

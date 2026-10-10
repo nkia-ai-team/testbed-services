@@ -1259,6 +1259,8 @@ esac
             "F53-P",
             # 2026-10-10: food restaurant-service 를 인기 메뉴를 주문 원장에서 바로 세는 릴리스 1.5.0(fault-images/f42-p)으로 롤아웃(인기 메뉴 요청마다 가게 한 곳의 주문 품목 수만 행 조인 집계, MySQL 포화, restaurant 풀 고갈로 가게 조회와 주문 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F42-P",
+            # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 운영을 가리킨 로컬 마이그레이션이 지움(같은 스키마 안 이름 바꾸기, 이체 INSERT ORA-04043, 거래 내역 ORA-00942, account, api 502, commerce 정산 502, 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F35-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
