@@ -77,7 +77,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 86 → 87. F40-H(후보) 추가. 기존 k8s.image release 모드를 banking transfer 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 87 → 88. F52-R(후보) 추가. 프로파일 30 → 31(host.image 신설).
         # 2026-10-10: 88 → 89. F53-R(후보) 추가. 기존 db.ddl 에 MySQL 표 지우기 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 89)
+        # 2026-10-10: 89 → 90. F53-P(후보) 추가. 기존 db.ddl 표 지우기 모드를 payments 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 90)
         self.assertEqual(len(self.profiles["profiles"]), 31)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -178,6 +179,8 @@ class RegistryContractTests(unittest.TestCase):
             "F52-R",
             # 2026-10-10: food MySQL fooddelivery.orders 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, 주문 생성이 첫 주문 INSERT 에서 전량 500, 배차, 결제 전). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-R",
+            # 2026-10-10: food MySQL fooddelivery.payments 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, payment 가 결제 INSERT 에서 500, order 가 배차 뒤 결제 단계에서 전량 502, PG 미호출). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F53-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -494,6 +497,8 @@ class RegistryContractTests(unittest.TestCase):
             "F52-R",
             # 2026-10-10: food MySQL fooddelivery.orders 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, 주문 생성이 첫 주문 INSERT 에서 전량 500, 배차, 결제 전). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-R",
+            # 2026-10-10: food MySQL fooddelivery.payments 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, payment 가 결제 INSERT 에서 500, order 가 배차 뒤 결제 단계에서 전량 502, PG 미호출). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F53-P",
             },
         )
         self.assertEqual(
@@ -594,6 +599,8 @@ class RegistryContractTests(unittest.TestCase):
             "F52-R",
             # 2026-10-10: food MySQL fooddelivery.orders 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, 주문 생성이 첫 주문 INSERT 에서 전량 500, 배차, 결제 전). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-R",
+            # 2026-10-10: food MySQL fooddelivery.payments 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, payment 가 결제 INSERT 에서 500, order 가 배차 뒤 결제 단계에서 전량 502, PG 미호출). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F53-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -757,8 +764,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F40-H(후보, 고정 evaluation)이 끝에 붙어 F49-H 가 끝 5개에서 빠졌다.
         # 2026-10-10: F52-R(후보, 고정 evaluation)이 끝에 붙어 F50-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F53-R(후보, 고정 evaluation)이 끝에 붙어 F48-P 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F53-P(후보, 고정 evaluation)이 끝에 붙어 F51-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F51-R", "F43-P", "F40-H", "F52-R", "F53-R"])
+                         ["F43-P", "F40-H", "F52-R", "F53-R", "F53-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

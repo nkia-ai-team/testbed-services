@@ -1231,6 +1231,8 @@ esac
             "F52-R",
             # 2026-10-10: food MySQL fooddelivery.orders 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, 주문 생성이 첫 주문 INSERT 에서 전량 500, 배차, 결제 전). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-R",
+            # 2026-10-10: food MySQL fooddelivery.payments 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, payment 가 결제 INSERT 에서 500, order 가 배차 뒤 결제 단계에서 전량 502, PG 미호출). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F53-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

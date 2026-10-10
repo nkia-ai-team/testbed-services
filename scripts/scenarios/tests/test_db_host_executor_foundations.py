@@ -164,6 +164,24 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F53-R", ddl.CONTRACTS["F48-P"], {})
 
+    def test_mysql_dropped_payments_table_uses_the_same_drop_path(self) -> None:
+        # F53-P: F53-R 과 같은 표 지우기 모드를 결제 표에. 계약은 표 이름만 다르고 원격 스크립트는 같다.
+        p = ddl.CONTRACTS["F53-P"]
+        ddl.validate("F53-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F53-P", p), "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
+                                    "payments", "mysql", "1000"])
+        self.assertNotIn("F53-P", argv)
+        self.assertNotIn("F53-P", body.decode())
+        _, f53r_body = ddl.build_invocation(plan("db.ddl", "F53-R", ddl.CONTRACTS["F53-R"]), "run")
+        self.assertEqual(body, f53r_body)
+        self.assertEqual({k: v for k, v in p.items() if k != "table"},
+                         {k: v for k, v in ddl.CONTRACTS["F53-R"].items() if k != "table"})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-P", {**p, "table": "orders"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-P", {**p, "hold_schema": "fooddelivery"}, {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

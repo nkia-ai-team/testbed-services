@@ -36,7 +36,9 @@ lose the rows, so the table is moved out of the application schema into the syst
 application and to the inventory metrics this is the drop itself: the table, its rows and its
 indexes leave the schema (table and index counts fall) and every statement that names it fails
 with ER_NO_SUCH_TABLE (1146).  Foreign keys follow a rename, so the inverse is the same rename
-back and the rows, indexes and constraints return unchanged.
+back and the rows, indexes and constraints return unchanged.  F53-P runs the same path on the
+payments table, which only payment-service writes, so order creation fails one hop away: payment
+answers 500 on its first write and order turns that into 502 after the courier is dispatched.
 """
 from __future__ import annotations
 
@@ -109,6 +111,13 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F53-R": {
         "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
         "database": "fooddelivery", "table": "orders", "hold_schema": "mysql",
+        "minimum_rows": 1000,
+    },
+    # 같은 표 지우기를 결제 표에: payments 를 mysql.fooddelivery_payments 로 옮긴다. payment 만 이 표를 쓰므로
+    # payment 가 첫 쓰기(결제 PENDING INSERT)에서 500 을 내고, order 는 배차 뒤 그 500 을 502 로 돌려준다.
+    "F53-P": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "payments", "hold_schema": "mysql",
         "minimum_rows": 1000,
     },
 }

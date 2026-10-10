@@ -203,7 +203,8 @@
           "F33-P",
           "F48-R",
           "F48-P",
-          "F53-R"
+          "F53-R",
+          "F53-P"
         ]
       },
       "scenario_parameters": {
@@ -276,6 +277,15 @@
           "pod": "testbed-mysql-0",
           "database": "fooddelivery",
           "table": "orders",
+          "hold_schema": "mysql",
+          "minimum_rows": 1000
+        },
+        "F53-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "payments",
           "hold_schema": "mysql",
           "minimum_rows": 1000
         }

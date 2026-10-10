@@ -8218,6 +8218,99 @@
      }
     ]
    }
+  },
+  "F53-P": {
+   "title": "A schema migration run from a developer's machine points at production and drops the live food payments table: payment-service fails every charge with 'Table doesn't exist' at its first write, so every food order is dispatched and then answered 502 at the payment step, while the external payment gateway is never called",
+   "description": "payment-service keeps the food payments in fooddelivery.payments (about 1.74 million rows, 318 MB data and 97 MB indexes, three indexes; nothing references it by foreign key and no other service reads it). A developer building a change to the payment tables runs a migration from their own machine, but the command's connection points at the production food MySQL instead of the local database, and the migration's drop step removes the live payments table. From that moment every statement that names payments fails with MySQL ER_NO_SUCH_TABLE 1146 \"Table 'fooddelivery.payments' doesn't exist\". processPayment fails at its first write, the PENDING payment INSERT, before the external payment gateway (PG mock) is called: POST /api/payments answers 500. order-service has already checked the restaurant, menu and courier capacity, saved the order ('Created order' is still logged) and dispatched a courier when it calls payment; its payment client turns the 500 into 502 'Payment service failed' (two attempts), and after a few failures the payment circuit breaker opens and the following orders get 502 'Payment service unavailable: CircuitBreaker 'payment' is OPEN' at once. The order transaction is rolled back, so every order creation answers 502 about 0.4 s later. payment-service's retention purge, which reads payments every 6 seconds, logs WARN 'Payment retention purge failed' with the same error. Everything else keeps working on the same database: restaurant browsing and menus, delivery tracking, dispatch, the order rows themselves until rollback. Nothing else changes: no rollout, no restart, no configuration change; MySQL is healthy and fast, payment and order stay Ready (their health checks are a connection isValid()), and the PG mock is idle rather than failing. The drop leaves a trace in the database inventory the DPM collector reports every minute: for fooddelivery the table count goes from 16 to 15, the index count from 31 to 28 and the row count falls by about 1.7 million at the minute of the drop. No companion load is used: failed orders still dispatch a courier, as F48-P, and the resident baseline load alone fails every order.",
+   "cause": "Migration run from a developer's machine against the production food MySQL instead of the local database; its drop step removed the live fooddelivery.payments table → payment-service's processPayment fails its first write (the PENDING payment INSERT) with MySQL 1146 Table doesn't exist before calling the external PG → POST /api/payments 500 → order-service, which has already saved the order and dispatched a courier, answers 502 (payment client retry, then the payment circuit breaker opens) and rolls the order back; the payment retention purge fails with the same error. Browsing, delivery tracking, dispatch and the PG do not use that table and keep working.",
+   "injection_summary": "The db.ddl executor checks that fooddelivery.payments exists with at least 1000 rows (reading at most 1000) and that nothing is held in the system schema under mysql.fooddelivery_payments, then, through the MySQL client inside testbed-mysql-0 with lock_wait_timeout=10, runs RENAME TABLE fooddelivery.payments TO mysql.fooddelivery_payments. A real DROP would lose the rows, so the table is moved out of the application schema into the system schema mysql, which the DPM collector does not report: to the application and to the inventory metrics it is the drop itself (the table, its rows and its three indexes leave fooddelivery), and the rows and indexes move with the table. The statement is metadata only and finishes at once regardless of the table size. It is the same executor mode as F53-R with the payments table instead of orders. No companion load. Cleanup renames mysql.fooddelivery_payments back to fooddelivery.payments and checks that the original table is back and nothing is left in the system schema. No app code, image, configuration, Kubernetes object or row data is changed.",
+   "user_impact": "No customer can place an order: every order creation fails with 502 at the payment step after the order was checked and a courier was dispatched; the order is rolled back, so the dispatched courier belongs to an order that does not exist (it stays ASSIGNED until it expires). No payment is charged: the gateway is never called. Browsing restaurants and menus and delivery tracking keep working. No data is lost in the testbed: the rows move with the table and renaming it back restores order creation as soon as the payment circuit breaker closes (about 5 seconds; in the original incident the tables had to be restored from backup over hours).",
+   "distinguishing_evidence": "The decisive evidence is the error text in payment-service logs: WARN 'SQL Error: 1146, SQLState: 42S02' and ERROR \"Table 'fooddelivery.payments' doesn't exist\" on every payment request (with 'Servlet.service() ... InvalidDataAccessResourceUsageException' carrying the failing statement 'insert into payments'), and every 6 seconds from the retention purge (WARN 'Payment retention purge failed, will retry next cycle: ... from payments ...'), naming the missing table; neither 1146 nor that table message occurs in the payment logs kept on 2026-10-10 (earliest 2026-10-03 04:00 UTC). The failing statement is payment's first write: 'Processed payment' stops while order still logs 'Created order' and dispatch 'Dispatched courier' for the same attempts, and order logs ERROR 'Failed to process payment for order N: 500' and then 'CircuitBreaker 'payment' is OPEN'. The external PG is not the cause: payment logs no 'PG /pay failed' and its outbound POST to the PG disappears instead of failing or slowing. The drop is visible in the DPM database inventory: dpm.mysql.database.table_count for fooddelivery goes 16 → 15 (constant at 16 for 7 days), dpm.mysql.database.index_count 31 → 28 and dpm.mysql.database.row_count falls by about 1.7 million in the same minute; a rollout or an outage would not change these values. It is not an external payment gateway failure: in F06-P the PG's 429 reaches the customer as 429, in F19-P the slow PG keeps payment answering 200 slowly until order's own pool dries up, and in F19-S payment times out on the PG, logs 'PG /pay failed', writes FAILED payments and opens its pg circuit before answering 502. Here payment never reaches the PG. It is not the orders table drop of F53-R: that fails order's own first INSERT with 500, 'Created order' stops and no courier is dispatched. It is not the instance-wide read-only switch of F38-R: that fails with 1290 '--read-only' in order, dispatch and payment at once. It is not a new payment version or configuration: no rollout, new ReplicaSet or restart of testbed-payment (KCM), unlike F30-R. It is not a capacity or network failure: payment answers within milliseconds, its Hikari pool has no pending requests, and MySQL sessions and response time stay at baseline.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery.payments",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 의 fooddelivery.payments 테이블이다. 결제 표를 바꾸는 기능을 만들던 개발자가 자기 PC 에서 마이그레이션을 돌렸는데 그 명령의 연결이 로컬 DB 가 아니라 운영 food MySQL 을 가리켜, 마이그레이션의 표 지우기 단계가 운영 payments 표를 지웠다. 원본 사례(Resend 2024-02-21, 기능을 만들던 엔지니어가 로컬에서 돌린 마이그레이션 명령이 운영 환경을 가리켜 운영의 모든 표를 지움, API 와 대시보드 약 12시간 중단, 백업에서 복원)처럼, 의도한 변경 내용은 맞았는데 적용 대상(환경)이 틀린 운영 작업이 살아 있는 표를 지운 것이 원인이고 그 표가 정답이다. payment-service 와 order-service 의 코드, 설정, 요청과 배치는 늘 하던 그대로라 정당하다(원칙 6: 정당한 요청이 결함 있는 곳에서 실패). 외부 PG 는 불리지도 않는다. 근본과 계기가 같은 곳(이 표에 대한 잘못된 대상의 마이그레이션)이라 trigger_target_id 는 비운다. target_id 는 '인스턴스:스키마.테이블' 꼴로 F53-R, F48-P, F48-R, F36-R, F33-R 과 같은 표기다. 관제 데이터로의 도달 경로: ① payment WARN 'SQL Error: 1146, SQLState: 42S02' 와 ERROR \"Table 'fooddelivery.payments' doesn't exist\" 가 결제 요청마다, 그리고 6초마다 보존 정리 배치(WARN 'Payment retention purge failed')에서 이어진다(로그 전수, 평시 0건). 오류 문장이 사라진 표의 이름을 직접 가리킨다 ② 실패한 문장은 processPayment 의 첫 쓰기인 결제 PENDING INSERT 다: payment 'Processed payment' 가 멈추고 PG 로 가는 POST 가 사라지며 'PG /pay failed' 는 없다. order 는 'Created order' 와 dispatch 'Dispatched courier' 를 남긴 뒤 ERROR 'Failed to process payment for order N: 500' 과 서킷 열림으로 502 다 ③ 같은 DB 의 다른 읽기와 쓰기(가게, 메뉴, 배달 추적, 주문 저장, 배차)는 성공한다 ④ 같은 분에 DPM 데이터베이스 목록 지표 dpm.mysql.database.table_count(fooddelivery)가 16 에서 15 로, index_count 가 31 에서 28 로, row_count 가 약 170만 줄어든다(표 수 7일 동안 16 고정) ⑤ rca-testbed-food 에 롤아웃이나 새 ReplicaSet 이 없고(KCM), payment, order, MySQL 파드는 재시작하지 않으며, MySQL 세션과 응답 시간, payment Hikari 대기가 평시 그대로다. DDL 문장 자체는 Top SQL 에 남지 않는다. 누가 왜 어느 PC 에서 마이그레이션을 돌렸는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/entity/Payment.java:7-12 (@Entity @Table(name = \"payments\"), @GeneratedValue IDENTITY — save 가 곧바로 INSERT 를 보낸다)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentService.java:50-88 (processPayment @Transactional — 첫 쓰기 paymentRepository.save(payment)(:66, PENDING)에서 실패. PG 호출 pgApiClient.pay(:70)와 'Processed payment' 로그(:85)는 그 뒤라 실행되지 않는다)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/config/GlobalExceptionHandler.java:10-20 (ServiceException 만 다룬다 — DataAccessException 은 Spring 기본 처리로 500 과 'Servlet.service() ... threw exception' ERROR)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentRetentionBatch.java:41-57 (6초마다 purge(), 실패를 WARN 'Payment retention purge failed, will retry next cycle: {}' 로 남기고 다음 주기에 다시)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/SettlementBatch.java:36-42 (run — 1시간 주기 정산 배치가 paymentRepository.findByStatusInAndSettledAtIsNullAndCreatedAtLessThan 으로 결제 표를 읽는다. 창 안에 돌면 같은 오류)",
+     "food-delivery/payment-service/src/main/resources/application.yml:20 (hibernate ddl-auto none — 재시작해도 표를 만들지 않는다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:128-159 (주문 저장(:128), 'Created order'(:141), 배차(:145) 뒤 결제 호출(:154) 실패를 그대로 던져 트랜잭션이 되돌려진다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/PaymentClient.java:30-57 (5xx 를 ERROR 'Failed to process payment for order' 와 502 로, Retry max-attempts 2, 서킷 열림 시 502 'Payment service unavailable')",
+     "food-delivery/db/init.sql:154-165 (payments — PRIMARY 와 idx_payments_order, idx_payments_settlement. 외래 키 없음)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, tb-w3). fooddelivery.payments 는 2026-10-10 기준 약 174만 행(데이터 318MB, 인덱스 97MB), 인덱스 3개(fooddelivery 전체 31개), fooddelivery 표 16개, 시스템 스키마 mysql 에 fooddelivery_ 로 시작하는 표 0개, payments 를 참조하는 외래 키 없음. RENAME TABLE 은 메타데이터만 바꾸고 행과 인덱스를 그대로 둔다(로컬 MySQL 8.0 실측). DPM 수집기(target c8c558e5-…)가 1분마다 데이터베이스별 표 수, 인덱스 수, 행 수(dpm.mysql.database.table_count, index_count, row_count)를 fooddelivery, information_schema, performance_schema, sys 에 대해 보고하고 mysql 스키마는 보고하지 않는다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 열어 실행한다."
+   },
+   "must_support": [
+    "payment WARN 'SQL Error: 1146, SQLState: 42S02' 와 ERROR \"Table 'fooddelivery.payments' doesn't exist\" 가 주입 분부터 결제 요청마다, 그리고 6초마다(보존 정리 배치 WARN 'Payment retention purge failed') 이어진다(2026-10-10 조회 시 남아 있던 food 로그, 가장 이른 2026-10-03 04:00 UTC 부터 1146 과 그 표 문장 0건)",
+    "order 서버 스팬 POST /api/orders 가 502 로 바뀌고 order ERROR 'Failed to process payment for order N: 500' 뒤 'CircuitBreaker 'payment' is OPEN' 이 이어진다. 같은 시도에 order 'Created order', dispatch 'Dispatched courier' 는 남고 payment 'Processed payment' 는 멈춘다",
+    "payment 의 PG 호출(POST CLIENT 스팬)이 사라지고 'PG /pay failed' 로그가 없다(PG 가 실패하거나 느려진 것이 아니라 불리지 않는다)",
+    "같은 분에 dpm.mysql.database.table_count{db_name=fooddelivery} 가 16 에서 15 로, dpm.mysql.database.index_count 가 31 에서 28 로 바뀌고 dpm.mysql.database.row_count 가 약 170만 줄어든다(7일 동안 표 수 16 고정)",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작이 없다(KCM). payment, order 파드는 Ready 이고 MySQL 은 재시작하지 않으며 payment Hikari 대기가 0 이다"
+   ],
+   "must_rule_out": [
+    "외부 결제 의존(PG) 장애가 아님(F06-P 429 전달, F19-P 느린 200 과 order 풀 고갈, F19-S PG 시간 초과와 pg 서킷 열림 꼴): payment 에 'PG /pay failed' 와 PG 응답 코드, 시간 초과, FAILED 결제 행이 없고 PG 호출 자체가 사라진다. 실패는 PG 호출 전 자기 INSERT 의 1146 이다",
+    "payment 새 버전이나 설정 배포가 아님(F30-R 꼴): testbed-payment 롤아웃, 새 ReplicaSet, 이미지와 env 변경이 없고 파드가 그대로다. 오류는 앱이 아니라 MySQL 이 낸 1146 이다",
+    "주문 표가 사라진 것(F53-R 꼴)이 아님: order 의 주문 INSERT 는 성공해 'Created order' 와 배차가 남고, 오류가 가리키는 표가 payments 이며 order 가 아니라 payment 로그에 1146 이 난다. 인덱스 수는 27 이 아니라 28 이 된다",
+    "MySQL 인스턴스 읽기 전용(F38-R 꼴)이 아님: 오류가 1290 '--read-only' 가 아니라 1146 이고, 같은 DB 의 order 주문 저장과 dispatch 배차 쓰기는 성공한다",
+    "MySQL 다운이나 재시작(F25-H 꼴, OOM 재시작)이 아님: testbed-mysql-0 Ready, 'Communications link failure' 와 Hikari 연결 대기 실패가 없고 같은 DB 의 다른 질의가 정상이다",
+    "payment 파드 멈춤(연결 거부)이나 부하, 용량 부족이 아님: payment 는 Ready 로 수 ms 안에 500 을 돌려주고, 주문 요청량은 기준선 그대로이며 실패가 시간 초과가 아닌 즉시 나는 SQL 오류다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F53-R (같은 원본과 같은 표 지우기 수단이지만 orders 표라 order 자신의 첫 INSERT 가 500 이고 배차, 결제가 없다. F53-P 는 payments 표라 order 는 주문 저장과 배차를 마친 뒤 payment 의 500 을 502 로 돌려주고, 1146 은 payment 로그에 난다)",
+     "F19-S (같은 food 주문 502 'Payment service failed' 이지만 외부 PG 지연이 원인이다. payment 가 PG 호출에서 시간 초과로 실패하고 'PG /pay failed' 를 남긴다. F53-P 는 PG 를 부르기 전에 1146 으로 실패한다)",
+     "F06-P (같은 food 결제 단계 실패지만 외부 PG 429 가 원인이라 주문이 429 로 거절되고 payment 가 FAILED 결제를 쓴다. F53-P 는 주문이 502 이고 결제 행을 쓰지 못한다)",
+     "F38-R (food MySQL 쓰기 실패지만 인스턴스 전체 read_only 1290 이라 order, dispatch, payment 쓰기가 모두 실패한다. F53-P 는 payments 를 부르는 문장만 1146 으로 실패한다)",
+     "F30-R (같은 food payment 쪽 고장으로 주문이 실패하지만 payment 설정 배포가 원인이고 롤아웃이 KCM 에 남으며 payment 가 400 'orderId required' 를 낸다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery.payments"
+    ],
+    "partial": [
+     "food-delivery-payment",
+     "food-payment",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "개발자 PC 에서 돌린 마이그레이션이 운영을 가리켜 살아 있는 food 결제 표를 지움: payment 가 모든 결제를 첫 쓰기에서 '표가 없음' 으로 실패시켜, 모든 주문이 배차까지 된 뒤 결제 단계에서 502 가 되고 외부 PG 는 불리지도 않는다",
+   "description_ko": "payment-service 는 음식 결제를 fooddelivery.payments 에 둔다(약 174만 행, 데이터 318MB, 인덱스 97MB, 인덱스 3개. 외래 키로 참조하는 표도, 이 표를 읽는 다른 서비스도 없다). 결제 표를 바꾸는 기능을 만들던 개발자가 자기 PC 에서 마이그레이션을 돌리는데, 명령의 연결이 로컬 DB 가 아니라 운영 food MySQL 을 가리켜 마이그레이션의 표 지우기 단계가 살아 있는 payments 를 지운다. 그 순간부터 payments 를 부르는 모든 문장이 MySQL ER_NO_SUCH_TABLE 1146 \"Table 'fooddelivery.payments' doesn't exist\" 로 실패한다. processPayment 는 외부 결제 대행(PG mock)을 부르기 전 첫 쓰기인 결제 PENDING INSERT 에서 실패해 POST /api/payments 가 500 이다. order-service 는 그때 이미 가게, 메뉴, 배달원 용량을 확인하고 주문을 저장했으며('Created order' 는 그대로 찍힘) 배달원을 배차했다. order 의 결제 클라이언트가 500 을 502 'Payment service failed' 로 바꾸고(두 번 시도), 실패가 몇 번 쌓이면 결제 서킷이 열려 다음 주문은 곧바로 502 'Payment service unavailable: CircuitBreaker 'payment' is OPEN' 을 받는다. 주문 트랜잭션은 되돌려져 모든 주문 생성이 약 0.4초 뒤 502 로 끝난다. 6초마다 payments 를 읽는 payment 의 보존 정리 배치는 같은 오류로 WARN 'Payment retention purge failed' 를 남긴다. 나머지는 같은 DB 에서 그대로 동작한다: 가게 둘러보기와 메뉴, 배달 추적, 배차, 되돌려지기 전의 주문 저장. 그 밖에는 바뀐 것이 없다: 롤아웃도 재시작도 설정 변경도 없고, MySQL 은 건강하고 빠르며, payment 와 order 는 Ready 다(health 확인이 연결 isValid()). PG mock 은 실패하는 것이 아니라 한가해진다. 지우기는 DPM 수집기가 1분마다 보고하는 데이터베이스 목록에 흔적을 남긴다: 지운 분에 fooddelivery 의 표 수가 16 에서 15 로, 인덱스 수가 31 에서 28 로 바뀌고 행 수가 약 170만 줄어든다. 동반 부하는 두지 않는다: 실패한 주문도 배차를 남기므로(F48-P 와 같음) 상주 기준선 부하만으로 모든 주문이 실패한다.",
+   "cause_ko": "개발자 PC 에서 돌린 마이그레이션이 로컬 DB 대신 운영 food MySQL 을 가리켜 그 표 지우기 단계가 살아 있는 fooddelivery.payments 를 지움 → payment-service 의 processPayment 가 외부 PG 를 부르기 전 첫 쓰기(결제 PENDING INSERT)에서 MySQL 1146 Table doesn't exist 로 실패해 POST /api/payments 500 → 이미 주문을 저장하고 배차한 order-service 가 502 로 답하고(결제 재시도 뒤 결제 서킷 열림) 주문을 되돌림. payment 보존 정리 배치도 같은 오류로 실패. 둘러보기, 배달 추적, 배차, PG 는 이 표를 쓰지 않아 정상.",
+   "injection_summary_ko": "db.ddl executor 가 fooddelivery.payments 가 있고 1000행 이상(최대 1000행만 읽음)이며 시스템 스키마에 mysql.fooddelivery_payments 가 없는지 확인한 뒤, testbed-mysql-0 안의 MySQL 클라이언트로 lock_wait_timeout=10 아래에서 RENAME TABLE fooddelivery.payments TO mysql.fooddelivery_payments 를 실행한다. 진짜 DROP 은 행을 잃으므로, 표를 앱 스키마 밖의 시스템 스키마 mysql(DPM 수집기가 보고하지 않음)로 옮긴다: 앱과 DB 목록 지표에는 지우기 그 자체로 보이고(표, 행, 인덱스 셋이 fooddelivery 에서 빠짐), 행과 인덱스는 표를 따라간다. 메타데이터만 바꾸는 문장이라 표 크기와 무관하게 즉시 끝난다. F53-R 과 같은 실행기 모드에 표만 orders 대신 payments 다. 동반 부하는 없다. cleanup 은 mysql.fooddelivery_payments 를 fooddelivery.payments 로 되돌리고, 원래 표가 돌아왔고 시스템 스키마에 남은 것이 없는지 확인한다. 앱 코드, 이미지, 설정, 쿠버네티스 객체, 행 데이터는 바꾸지 않는다.",
+   "user_impact_ko": "아무도 주문하지 못한다: 모든 주문 생성이 주문 확인과 배차를 마친 뒤 결제 단계에서 502 로 실패한다. 주문은 되돌려지므로 배차된 배달원은 없는 주문에 묶여(만료될 때까지 ASSIGNED) 남는다. 결제는 일어나지 않는다: PG 를 부르지 않는다. 가게와 메뉴 둘러보기, 배달 추적은 정상이다. 테스트베드에서는 데이터를 잃지 않는다: 행이 표를 따라가 이름을 되돌리면 결제 서킷이 닫히는 대로(약 5초) 주문 생성이 정상이 된다(원본 장애에서는 백업에서 몇 시간에 걸쳐 복원해야 했다).",
+   "distinguishing_evidence_ko": "결정 증거는 payment-service 로그의 오류 문장이다: WARN 'SQL Error: 1146, SQLState: 42S02' 와 ERROR \"Table 'fooddelivery.payments' doesn't exist\" 가 결제 요청마다('Servlet.service() ... InvalidDataAccessResourceUsageException' 에 실패한 문장 'insert into payments'), 그리고 6초마다 보존 정리 배치(WARN 'Payment retention purge failed, will retry next cycle: ... from payments ...')에서 나오며 사라진 표의 이름을 가리킨다. 1146 과 그 표 문장은 2026-10-10 조회 시 남아 있던 payment 로그(가장 이른 2026-10-03 04:00 UTC)에 0건이다. 실패한 문장은 payment 의 첫 쓰기다: 'Processed payment' 가 멈추는데 같은 시도에 order 'Created order' 와 dispatch 'Dispatched courier' 는 남고, order 는 ERROR 'Failed to process payment for order N: 500' 뒤 'CircuitBreaker 'payment' is OPEN' 을 남긴다. 외부 PG 가 원인이 아니다: payment 에 'PG /pay failed' 가 없고 PG 로 가는 호출이 실패하거나 느려지는 대신 사라진다. 지우기는 DPM 데이터베이스 목록에 보인다: fooddelivery 의 dpm.mysql.database.table_count 가 16 에서 15 로(7일 내내 16), index_count 가 31 에서 28 로 바뀌고 row_count 가 같은 분에 약 170만 줄어든다. 롤아웃이나 장애는 이 값을 바꾸지 않는다. 외부 PG 장애가 아니다: F06-P 는 PG 의 429 가 손님에게 429 로 가고, F19-P 는 느린 PG 때문에 payment 가 늦은 200 을 주다 order 자신의 풀이 마르며, F19-S 는 payment 가 PG 시간 초과로 'PG /pay failed' 를 남기고 FAILED 결제를 쓰고 pg 서킷을 연 뒤 502 를 준다. 여기서는 payment 가 PG 에 닿지 않는다. F53-R 의 주문 표 지우기가 아니다: 그쪽은 order 자신의 첫 INSERT 가 500 이고 'Created order' 가 멈추며 배차가 없다. F38-R 의 인스턴스 읽기 전용이 아니다: 그쪽은 order, dispatch, payment 가 함께 1290 '--read-only' 로 실패한다. payment 새 버전이나 설정 배포도 아니다: testbed-payment 롤아웃, 새 ReplicaSet, 재시작이 없다(KCM, F30-R 과 다름). 용량, 네트워크 장애도 아니다: payment 는 수 ms 안에 답하고 Hikari 대기가 없으며, MySQL 세션과 응답 시간은 평시다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f53-p",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "database": "fooddelivery",
+       "table": "payments",
+       "hold_schema": "mysql",
+       "minimum_rows": 1000
+      }
+     }
+    ]
+   }
   }
  }
 }
