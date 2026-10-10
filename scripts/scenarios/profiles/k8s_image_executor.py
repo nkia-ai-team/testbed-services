@@ -164,6 +164,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-restaurant:latest",
         "fault_image": "food-delivery-restaurant:1.5.0",
     },
+    # 2026-10-10. F49-P: food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열(pay_ + 8자리)로 바꾼
+    # 릴리스 1.3.0 으로 롤아웃한다. payment 는 결제를 끝내고(외부 PG 승인, 행 저장) 200 으로 답하는데, 그 응답을
+    # PaymentResponse(id Long)로 읽는 order 가 해석에 실패해 주문이 502 로 롤백된다. 결함 이미지는 fault-images/f49-p 로
+    # 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다. 다른 시나리오의 릴리스 태그와 겹치지 않는다
+    # (payment 는 이 태그 하나뿐).
+    "F49-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-payment",
+        "container": "payment-service",
+        "baseline_image": "food-delivery-payment:latest",
+        "fault_image": "food-delivery-payment:1.3.0",
+    },
 }
 
 

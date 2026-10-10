@@ -8703,6 +8703,95 @@
      }
     ]
    }
+  },
+  "F49-P": {
+   "title": "Release rollout of the food payment-service that changes the payment id in its response from a number to an external payment key string (pay_ + 8 digits): payment completes every charge and answers 200, but order-service can no longer read the response, rolls every new order back with 502 and leaves approved payments behind",
+   "description": "A rollout of the food payment-service Deployment (testbed-payment) moves its container image from food-delivery-payment:latest to the release food-delivery-payment:1.3.0. The release reworks the public payment API so that POST /api/payments and GET /api/payments return a new PaymentView in which id is an external payment key string such as \"pay_00020061\" instead of the numeric row id. Charging is unchanged: payment still saves the payment, calls the external PG mock, stores APPROVED and logs 'Processed payment id=..., order=..., status=APPROVED'; its health endpoint and database are untouched, so the new pod passes its probes, replaces the old one under the default rolling strategy and answers every charge with 200. order-service, the only internal client of that endpoint, calls it as the last synchronous step of order creation (after the order row and the dispatch assignment) and reads the body into the shared DTO PaymentResponse whose id is a Long; Jackson cannot turn \"pay_...\" into a Long, RestClient raises 'Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse] and content type [application/json]', PaymentClient logs 'Failed to process payment for order <id>: ...' and turns it into a 502. The payment retry (2 attempts, 300 ms) charges the same order a second time before giving up, and the payment circuit breaker (opens at 50% of 10 calls, 5 s open, 3 half-open calls) then fails most orders fast without calling payment. Every order is rolled back with 502 in about 0.35 s, while the charges that did go through stay APPROVED in the payments table with no order. Restaurant browsing, menus and delivery tracking keep working. Nothing recovers until the release is rolled back.",
+   "cause": "Rollout of testbed-payment (food) to the release food-delivery-payment:1.3.0, which changes the payment response contract (id number → external key string \"pay_...\") without keeping the type its client depends on → payment completes each charge and answers 200, but order-service cannot deserialize the response into PaymentResponse → the payment step of every order fails, the retry charges again and the circuit breaker repeats the failure → all new orders are rolled back with 502 while payment-service itself answers 200, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-payment (rca-testbed-food), container payment-service, from food-delivery-payment:latest to food-delivery-payment:1.3.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f49-p from origin/main food-delivery plus fault-images/f49-p/payment-service.patch (two files under payment-service/src: a new dto/PaymentView and the response mapping in PaymentController); the manifest image, sources and manifests are untouched, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. There is no companion load: the failed orders have already passed the courier capacity check and been assigned, so an extra order load would pile up ASSIGNED dispatches (ETA 15 to 35 minutes) and fill the 2000-courier limit within minutes; the resident food baseline load alone carries order creation and the verdict. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the rollout every new food order fails with 502 (in about 0.35 s) after a courier has been assigned. Some of those orders are still charged: while the payment circuit breaker is closed or half-open, payment approves the charge at the external PG and stores it as APPROVED, often twice for the same order because of the retry, but the order itself is rolled back (local run: 240 orders, 0 committed, 65 approved charges for 43 order ids, 22 of them charged twice). Courier assignments of the failed orders stay ASSIGNED until the expiry batch moves them on; with only the baseline load they appear at the rate successful orders normally leave them. The orphan approved charges raise no error or metric; they only make the next hourly settlement summary (count, total) slightly larger. The PG is the in-cluster mock, so no real money moves. Restaurant browsing, menus, popular menus, search and delivery tracking keep working. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release of payment-service followed by parse failures in its client while payment itself keeps completing charges: a KCM ScalingReplicaSet for testbed-payment and the new pod's kubelet event 'Pulled: Container image \"food-delivery-payment:1.3.0\" already present on machine' (every testbed-payment ReplicaSet and pod record on file, 137 and 130 up to 2026-10-08, carries food-delivery-payment:latest), then from the new payment pod's start the order ERROR log 'Failed to process payment for order <id>: Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse] and content type [application/json]' (never logged in the 30 days before 2026-10-10) and 'Order fan-out payment failed: ... status=502', while payment logs 'Processed payment id=..., order=<same id>, ..., status=APPROVED' for those very orders (often twice), payment's POST /api/payments server spans and its client spans to the PG mock end with 200, and order POST /api/orders server spans end with 502. payment-service logs no error, stays Ready without restarts, and MySQL shows no new errors, schema change or lock waits; order has no rollout or configuration change.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-payment",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food payment-service 의 새 릴리스 food-delivery-payment:1.3.0 이다. 이 버전이 결제 공개 API 정비로 POST/GET /api/payments 응답을 새 PaymentView 로 바꾸며 id 를 숫자 행 번호에서 외부 결제 키 문자열(pay_ + 8자리)로 바꿨다. 결제 처리(행 저장, 외부 PG 승인, APPROVED 저장, 'Processed payment' 로그)는 그대로라 payment 는 결제를 끝내고 200 으로 답한다. 이 끝점의 유일한 내부 호출자인 order-service 는 주문 생성의 마지막 동기 단계(주문 행 저장, 배차 뒤)에서 응답을 공용 DTO PaymentResponse(id 는 Long)로 읽으므로 Jackson 이 \"pay_...\" 를 Long 으로 바꾸지 못하고, RestClient 가 'Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse]' 를 던져 PaymentClient 가 502 로 바꾼다. 재시도 1회는 같은 주문을 한 번 더 결제시키고, payment 서킷브레이커는 열림과 반열림을 되풀이하며 같은 해석 실패를 반복한다. 모든 주문이 약 0.35초 만에 502 로 롤백되고, 승인된 결제는 주문 없이 남는다. 원본 GitHub 2021-10-08 의 Codespaces API 응답 구조 변경(공개 API 출시 중 의도치 않은 구조 변경으로 안정 스키마에 기대던 기존 클라이언트가 깨짐)과 같은 꼴이다. 고칠 곳은 응답 계약을 깬 payment 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f49-p/payment-service.patch:17-23 (PaymentController.processPayment — 릴리스 1.3.0 이 결제 응답 형식을 PaymentResponse 에서 PaymentView 로 바꿈)",
+     "scripts/scenarios/fault-images/f49-p/payment-service.patch:60-77 (PaymentView — id 가 Long 이 아니라 String, of() 가 'pay_%08d' 결제 키로 채움)",
+     "food-delivery/shop-common/src/main/java/com/fooddelivery/common/dto/PaymentResponse.java:6-13 (order 가 읽는 공용 DTO — id 는 Long)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/PaymentClient.java:30-47 (processPayment — body(PaymentResponse.class) 해석 실패가 RestClientException 이 되어 'Failed to process payment for order' ERROR 로그와 502, 재시도 2회와 서킷)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:128-160 (createOrder 가 주문 행 저장, 배차 호출 뒤 마지막 동기 단계로 paymentClient.processPayment 를 부르고 실패를 다시 던져 트랜잭션 롤백)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentService.java:51-89 (processPayment — PENDING 저장, 외부 PG 승인, APPROVED 저장과 'Processed payment' 로그. 릴리스에서도 그대로)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/controller/PaymentController.java:26-29 (매니페스트 버전의 processPayment — 공용 PaymentResponse 를 그대로 돌려줌)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-payment(food-delivery/k8s/23-payment-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-payment:latest imagePullPolicy Never :27-28, readinessProbe /actuator/health :73-79, livenessProbe /actuator/health :80-86, 기본 전략 maxSurge 25%(109 kubectl 2026-10-10)). order 의 payment 호출: 읽기 10초, 재시도 2회(300ms 지수), 서킷 10건 창 50% 5초 열림(food-delivery/order-service/src/main/resources/application.yml:59-62, 87-95, 112-118). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다(tb-w3 이미지 파일시스템 53%, 2026-10-10)."
+   },
+   "must_support": [
+    "testbed-payment 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-payment:1.3.0 을 담고, 그 전 testbed-payment ReplicaSet, 파드 기록은 전부 food-delivery-payment:latest 다(kcm_resources_history ReplicaSet 137건, 파드 130건, 마지막 2026-10-08)",
+    "새 payment 파드가 Ready 가 된 뒤 order 로그에 'Failed to process payment for order <id>: Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse] and content type [application/json]' ERROR 와 'Order fan-out payment failed: ... status=502' 가 나타난다(평시 30일 0건)",
+    "같은 주문 번호에 대해 payment 로그 'Processed payment id=..., order=<id>, ..., status=APPROVED' 가 남고(재시도로 한 주문에 두 번인 경우가 많다), payment 의 POST /api/payments 서버 스팬과 외부 PG 호출 클라이언트 스팬은 200 인데 order POST /api/orders 서버 스팬은 502 다",
+    "payment 는 ERROR 로그가 없고 Ready 이며 재시작하지 않는다. MySQL 은 Ready 이고 새 오류, 스키마 변경, 잠금 대기가 없으며, order 에는 롤아웃이나 설정 변경이 없다"
+   ],
+   "must_rule_out": [
+    "결제 표나 스키마 고장이 아님(F53-P): payment 는 5xx 를 내지 않고 MySQL 1146 같은 오류가 없으며 결제를 끝내 'Processed payment ... APPROVED' 를 남긴다",
+    "외부 결제 대행사 고장이 아님(F06-P, F19-P, F19-S): payment 의 외부 PG 호출은 200 으로 빠르게 끝나고 'PG /pay failed' 나 429, 지연이 없다",
+    "결제 요청 계약 고장이 아님(F30-R): payment 는 요청을 읽어 결제를 처리하고, 'orderId required' 400 이 아니라 order 가 응답을 읽지 못한 502 다",
+    "가게, 배달 쪽 고장이 아님(F49-R, F36-R, F44-R, F32-R, F32-H, F33-H, F49-H): 주문은 가게 조회, 용량 확인, 배차를 지나 'Created order' 와 dispatch 배차 기록을 남긴 뒤 결제 단계에서 끝난다",
+    "order 자체 결함이나 설정 배포가 아님: order 에는 롤아웃, 재시작, 설정 변경이 없고 order health 는 UP 이며, 실패는 payment 롤아웃 시각에 시작해 되돌림과 함께 끝난다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F53-P (food payments 표를 지운 마이그레이션: 같은 '주문이 배차 뒤 결제 단계에서 502' 꼴이지만 payment 가 1146 으로 500 을 내고 결제를 끝내지 못함. F49-P 는 payment 가 결제를 끝내고 200 으로 답하며 order 가 못 읽음)",
+     "F49-R (food restaurant 릴리스의 가게 상세 응답 구조 변경: 같은 '피호출자 릴리스가 응답 계약을 깨고 피호출자는 200' 꼴이지만 대상이 restaurant 이고 주문이 첫 단계(가게 조회)에서 아무것도 쓰지 않고 끝남. F49-P 는 결제까지 일어난 뒤 롤백되어 승인된 결제가 남음)",
+     "F30-R (food payment 설정 배포의 JSON 명명 규칙 변경: 같은 payment 의 JSON 계약 문제지만 계기가 env 설정 배포이고 payment 가 요청을 못 읽어 400. F49-P 는 이미지 릴리스이고 payment 는 200)",
+     "F06-P, F19-P (외부 결제 대행사 429, 지연: 같은 결제 단계 502 지만 payment 의 외부 PG 호출이 실패)",
+     "F49-H (food order 릴리스의 시각 표기 변경: 해석 실패 꼴이지만 바뀐 쪽이 호출자 order 이고 배차 응답을 못 읽어 503)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-payment",
+     "food-payment",
+     "testbed-payment"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열(pay_ + 8자리)로 바꾼 릴리스로 롤아웃: payment 는 결제를 끝내고 200 으로 답하는데, order 가 응답을 읽지 못해 모든 새 주문을 502 로 롤백하고 승인된 결제만 남음",
+   "description_ko": "food payment-service Deployment(testbed-payment) 롤아웃이 컨테이너 이미지를 food-delivery-payment:latest 에서 릴리스 food-delivery-payment:1.3.0 으로 바꾼다. 이 릴리스는 결제 공개 API 를 정비하며 POST /api/payments 와 GET /api/payments 가 새 PaymentView 를 돌려주게 하고, id 를 숫자 행 번호 대신 \"pay_00020061\" 같은 외부 결제 키 문자열로 내려준다. 결제 처리는 그대로다: payment 는 결제 행을 저장하고 외부 PG mock 을 불러 APPROVED 를 저장하고 'Processed payment id=..., order=..., status=APPROVED' 를 남긴다. health 끝점과 DB 도 그대로라 새 파드가 프로브를 통과해 기본 롤링 전략으로 옛 파드를 대신하고, 결제마다 200 으로 답한다. 이 끝점의 유일한 내부 호출자인 order-service 는 주문 생성의 마지막 동기 단계(주문 행 저장, 배차 뒤)에서 이를 부르고 본문을 id 가 Long 인 공용 DTO PaymentResponse 로 읽는다. Jackson 이 \"pay_...\" 를 Long 으로 바꾸지 못해 RestClient 가 'Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse] and content type [application/json]' 을 던지고, PaymentClient 가 'Failed to process payment for order <id>: ...' 로 남기고 502 로 바꾼다. 결제 재시도(2회, 300ms)는 포기하기 전에 같은 주문을 한 번 더 결제시키고, payment 서킷브레이커(10건 중 50% 에 열림, 5초 열림, 반열림 3건)가 열린 동안에는 대부분의 주문이 payment 를 부르지 않고 바로 실패한다. 모든 주문이 약 0.35초 만에 502 로 롤백되고, 통과한 결제는 주문 없이 payments 표에 APPROVED 로 남는다. 가게 둘러보기, 메뉴, 배달 조회는 정상이다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-payment(food) 를 릴리스 food-delivery-payment:1.3.0 으로 롤아웃. 이 버전이 결제 응답 계약을 바꿔(id 숫자 → 외부 결제 키 문자열 \"pay_...\") 호출자가 기대던 형식을 깸 → payment 는 결제를 끝내고 200 으로 답하지만 order-service 가 응답을 PaymentResponse 로 해석하지 못함 → 모든 주문의 결제 단계가 실패하고, 재시도가 한 번 더 결제시키며 서킷브레이커가 실패를 되풀이 → payment 자신은 200 으로 답하는 동안 모든 새 주문이 502 로 롤백, 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-payment 컨테이너 payment-service 이미지를 food-delivery-payment:latest 에서 food-delivery-payment:1.3.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f49-p 가 origin/main food-delivery 에 fault-images/f49-p/payment-service.patch(payment-service/src 안 두 파일: 새 dto/PaymentView, PaymentController 의 응답 매핑)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 부하는 두지 않는다: 실패한 주문은 이미 배달원 용량 확인과 배차를 지난 뒤라, 주문 부하를 더하면 ASSIGNED 배차(ETA 15~35분)가 쌓여 몇 분 안에 배달원 한도 2000 이 찬다. 상주 food 기준선 부하만으로 주문 생성과 판정을 한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "롤아웃 약 1분 뒤부터 food 의 모든 새 주문이 배달원 배정 뒤 502 로 실패한다(약 0.35초). 그 가운데 일부는 돈이 빠져나간다: payment 서킷이 닫히거나 반열림일 때 들어온 주문은 payment 가 외부 PG 에서 승인받아 APPROVED 로 저장하고(재시도 때문에 한 주문에 두 번인 경우가 많다), 주문 자체는 롤백된다(로컬 실측 주문 240건, 커밋 0, 주문 번호 43개에 승인 결제 65건, 그중 22개는 두 번). 실패한 주문의 배차는 만료 배치가 넘길 때까지 ASSIGNED 로 남는데, 기준선 부하만 쓰면 평소 성공한 주문이 남기던 만큼과 같은 속도다. 주문 없는 승인 결제는 오류나 지표를 만들지 않고 다음 1시간 주기 정산 요약(count, total)만 조금 키운다. PG 는 클러스터 안 mock 이라 실제 돈은 움직이지 않는다. 가게 둘러보기, 메뉴, 인기 메뉴, 검색, 배달 조회는 정상이다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 payment-service 릴리스 뒤 그 호출자의 해석 실패, 그리고 그동안 결제를 계속 끝내는 payment 다: testbed-payment 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-payment:1.3.0\" already present on machine'(기록에 있는 testbed-payment ReplicaSet 137건, 파드 130건은 2026-10-08 까지 모두 food-delivery-payment:latest), 그 뒤 새 payment 파드 기동부터 order ERROR 로그 'Failed to process payment for order <id>: Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse] and content type [application/json]'(2026-10-10 이전 30일 0건)과 'Order fan-out payment failed: ... status=502', 반면 payment 는 바로 그 주문 번호들로 'Processed payment id=..., order=<같은 번호>, ..., status=APPROVED' 를 남기고(한 주문에 두 번인 경우가 많다), payment 의 POST /api/payments 서버 스팬과 외부 PG 호출 클라이언트 스팬은 200, order POST /api/orders 서버 스팬은 502. payment 는 오류 로그가 없고 재시작 없이 Ready 이며, MySQL 은 새 오류, 스키마 변경, 잠금 대기가 없고, order 에는 롤아웃이나 설정 변경이 없다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f49-p",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-payment",
+       "container": "payment-service",
+       "baseline_image": "food-delivery-payment:latest",
+       "fault_image": "food-delivery-payment:1.3.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

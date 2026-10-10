@@ -1,0 +1,327 @@
+{
+  "schema_version": "1.0",
+  "id": "F49-P",
+  "slug": "f49-p-food-payment-release-payment-key-breaks-order",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "food namespace",
+    "matrix_location_transport": "K/kubectl food testbed-payment 컨테이너 image set(food-delivery-payment:latest→food-delivery-payment:1.3.0, 직전에 runner 가 109 docker 의 1.3.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) (동반 부하 없음: 실패한 주문이 이미 배차를 지나 주문 부하를 더하면 ASSIGNED 가 쌓여 배달원 한도 2000 이 몇 분 만에 참)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f49-p",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-food",
+                "deployment": "testbed-payment",
+                "container": "payment-service",
+                "baseline_image": "food-delivery-payment:latest",
+                "fault_image": "food-delivery-payment:1.3.0"
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 릴리스는 payment 의 결제 응답 모양만 바꾸고, payment 는 결제를 끝낸 뒤 바로 200 을 돌려주며 order 는 해석 실패를 재시도 1회(300ms) 뒤 502 로 곧바로 돌려줘 order 풀이 묶이지 않는다(로컬 실측 240건 모두 502, p50 0.35초, 최대 0.74초, order, payment health UP). 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다",
+            "parameters": {
+              "domain": "food-delivery"
+            }
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s",
+            "_note": "food MySQL 파드. 이 주입은 DB 를 건드리지 않는다"
+          },
+          {
+            "id": "payment_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s",
+            "_note": "payment 파드. 릴리스 1.3.0 은 health, DB, 외부 PG 호출을 그대로 두어 새 파드가 Ready 가 되고 기본 전략(maxSurge 25%)으로 옛 파드를 대신한다. 빠지면 응답 모양이 아니라 대상 다운(F17-R 꼴)이다"
+          },
+          {
+            "id": "order_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s",
+            "_note": "order 파드. 해석 실패는 빠르게 502 로 끝나 order 풀과 readiness(DB)에 영향이 없어야 한다"
+          },
+          {
+            "id": "payment_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "food-delivery-payment"
+            },
+            "freshness": "60s",
+            "_note": "payment 서버 스팬(표본 10%) 60초 창의 5xx 백분율. 릴리스 뒤에도 payment 는 결제를 끝내고 200 으로 답해(바뀐 것은 본문의 id 모양) 0 근처여야 한다. 평시 7일 표본 POST /api/payments 200 18,230건, 400 78건, 5xx 0건(2026-10-10)"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기 1~6 iter/s 라 주문 생성은 분당 약 12~68건, 30초 창에 6~34건이다(F53-P 와 같은 관측). 릴리스가 도는 동안 결제 단계에 닿는 모든 주문이 502 라 1.0. 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.8
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m. 동반 부하를 두지 않는다: 이 고장에서 주문은 가게, 메뉴, 용량 확인과 배차를 지난 뒤 결제 단계에서 되돌려지므로 배차 행(ASSIGNED)이 평소처럼 남는다(로컬 실측: 주문 240건에 ASSIGNED 240건 증가). 기준선만 쓰면 실패한 주문의 배차는 평소 성공한 주문이 남기던 만큼과 같아 ASSIGNED 수준이 그대로다. 주문 생성 동반 부하(order-surge.js 2rps, 초당 약 1.2~1.4건)를 더하면 그만큼 ASSIGNED 가 ETA 15~35분 동안 쌓여 남은 칸(2026-10-10 11:16 UTC 실조회 currentAssigned 1475, 한도 2000, 남은 525)이 약 7분 만에 차고, 실패 지점이 용량 확인 503 'No courier available' 로 옮겨 간다(F53-P, F48-P 와 같은 이유, 시트 §9). 새 payment 파드가 Ready 가 되어 옛 파드를 대신하는 순간(약 1분)부터 결제 단계에 닿은 주문은 payment 가 결제를 끝내고 200 을 돌려줘도 order 가 'Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse]' 로 읽지 못하고, 재시도 1회와 payment 서킷브레이커가 열림, 반열림을 되풀이하며 모든 주문이 502 로 롤백된다(로컬 실측 2rps 240건 중 502 240건, 주문 커밋 0)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 응답 모양이 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "payment-down",
+              "observation": "payment_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "payment 파드가 빠지면 order 의 실패가 해석 실패가 아니라 연결 실패(엔드포인트 없음)다"
+            },
+            {
+              "id": "order-down",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 주문 실패가 결제 응답 해석 실패가 아니라 order 자체 다운이다"
+            },
+            {
+              "id": "payment-answers-5xx",
+              "observation": "payment_error_rate",
+              "op": "gte",
+              "value": 10,
+              "_note": "payment 가 스스로 5xx 를 내면 결제 표나 payment 자체 고장(F53-P 꼴), 외부 PG 고장(F06-P, F19-P 꼴)이다. 이 릴리스에서 payment 는 200 으로 답한다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "payment-ready",
+              "observation": "payment_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 payment 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. order 의 payment 서킷브레이커는 반열림 3회 성공으로 닫힌다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

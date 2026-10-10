@@ -946,6 +946,30 @@ esac
         for word in ("F42", "f42", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_food_payment(self) -> None:
+        # F49-P: 같은 release 스크립트로 food payment 를 1.3.0 으로 롤아웃한다(tb-w3). 릴리스 태그는
+        # fault-images/f49-p/image.json 과 같아야 하고, 다른 시나리오의 릴리스 태그와 겹치지 않는다.
+        # 패치는 payment-service/src 안만 고친다.
+        plan = compiler.compile_plan("f49-p-food-payment-release-payment-key-breaks-order")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-payment", "payment-service",
+                                    "food-delivery-payment:latest", "food-delivery-payment:1.3.0"])
+        self.assertNotIn("F49-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F49-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F49-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f49-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F49-P"]["baseline_image"], k8s_image.CONTRACTS["F49-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f49-p" / "payment-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/payment-service/src/",
+                                                     "b/food-delivery/payment-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F49", "f49", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1301,6 +1325,8 @@ esac
             "F32-P",
             # 2026-10-10: banking Oracle 애플리케이션 계정 BANKING 에 호출당 논리 읽기 한도(30000) 프로필을 붙임(거래 내역 건수 질의가 ORA-02395 로 끊겨 api 502, 이체와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F54-R",
+            # 2026-10-10: food payment-service 를 결제 응답의 id 를 숫자에서 외부 결제 키 문자열로 바꾼 릴리스 1.3.0(fault-images/f49-p)으로 롤아웃(payment 200, order 해석 실패로 주문 502 롤백, 승인 결제만 남음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F49-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

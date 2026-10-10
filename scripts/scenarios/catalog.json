@@ -1186,6 +1186,18 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F49-P",
+      "slug": "f49-p-food-payment-release-payment-key-breaks-order",
+      "profiles": [
+        "k8s.image"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }

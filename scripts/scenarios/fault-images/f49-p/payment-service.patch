@@ -1,0 +1,78 @@
+diff --git a/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/controller/PaymentController.java b/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/controller/PaymentController.java
+index 973c3b2..35b711f 100644
+--- a/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/controller/PaymentController.java
++++ b/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/controller/PaymentController.java
+@@ -3,6 +3,7 @@ package com.fooddelivery.payment.controller;
+ import com.fooddelivery.common.dto.PaymentRequest;
+ import com.fooddelivery.common.dto.PaymentResponse;
+ import com.fooddelivery.common.dto.SettlementSummaryResponse;
++import com.fooddelivery.payment.dto.PaymentView;
+ import com.fooddelivery.payment.service.PaymentService;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.domain.PageRequest;
+@@ -23,14 +24,15 @@ public class PaymentController {
+         this.paymentService = paymentService;
+     }
+ 
++    // 1.3.0 결제 공개 API 정비 — 결제 식별자를 외부 결제 키로 내려준다.
+     @PostMapping("")
+-    public ResponseEntity<PaymentResponse> processPayment(@RequestBody PaymentRequest request) {
+-        return ResponseEntity.ok(paymentService.processPayment(request));
++    public ResponseEntity<PaymentView> processPayment(@RequestBody PaymentRequest request) {
++        return ResponseEntity.ok(PaymentView.of(paymentService.processPayment(request)));
+     }
+ 
+     // §7 신규 — status/from/to/page/size. 전부 없으면 무제한 목록 조회.
+     @GetMapping
+-    public ResponseEntity<List<PaymentResponse>> getPayments(
++    public ResponseEntity<List<PaymentView>> getPayments(
+             @RequestParam(required = false) String status,
+             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
+@@ -39,7 +41,9 @@ public class PaymentController {
+         Pageable pageable = (page != null || size != null)
+                 ? PageRequest.of(page != null ? page : 0, size != null ? size : 20)
+                 : Pageable.unpaged();
+-        return ResponseEntity.ok(paymentService.searchPayments(status, from, to, pageable));
++        return ResponseEntity.ok(paymentService.searchPayments(status, from, to, pageable).stream()
++                .map(PaymentView::of)
++                .toList());
+     }
+ 
+     // §7 신규 — SettlementBatch 정산 요약 목록.
+diff --git a/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/dto/PaymentView.java b/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/dto/PaymentView.java
+new file mode 100644
+index 0000000..d310c29
+--- /dev/null
++++ b/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/dto/PaymentView.java
+@@ -0,0 +1,30 @@
++package com.fooddelivery.payment.dto;
++
++import com.fooddelivery.common.dto.PaymentResponse;
++
++import java.math.BigDecimal;
++import java.time.LocalDateTime;
++
++/**
++ * 결제 공개 응답(1.3.0). 내부 행 번호를 그대로 내보내지 않고 외부에 보여 줄 결제 키
++ * (pay_ + 8자리 번호)로 내려준다. 고객센터와 정산 화면이 같은 키로 결제를 찾는다.
++ */
++public record PaymentView(
++        String id,
++        Long orderId,
++        String pgProvider,
++        BigDecimal amount,
++        String status,
++        LocalDateTime processedAt
++) {
++    public static PaymentView of(PaymentResponse p) {
++        return new PaymentView(
++                p.id() != null ? String.format("pay_%08d", p.id()) : null,
++                p.orderId(),
++                p.pgProvider(),
++                p.amount(),
++                p.status(),
++                p.processedAt()
++        );
++    }
++}

@@ -1,0 +1,7 @@
+{
+  "base": "food-delivery-payment:latest",
+  "fault": "food-delivery-payment:1.3.0",
+  "domain": "food-delivery",
+  "module": "payment-service",
+  "node": "tb-w3"
+}

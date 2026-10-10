@@ -79,7 +79,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 23 → 24. F35-H(운영을 가리킨 로컬 마이그레이션이 banking Oracle TRANSFERS 를 지워 이체와 commerce 정산 실패) 후보 추가.
         # 2026-10-10: 24 → 25. F32-P(운영을 가리킨 로컬 마이그레이션이 food dispatches 표를 지워 주문이 배달원 용량 확인에서 전량 503) 후보 추가.
         # 2026-10-10: 25 → 26. F54-R(banking Oracle 앱 계정의 호출당 논리 읽기 한도로 거래 내역 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 26)
+        # 2026-10-10: 26 → 27. F49-P(food payment 릴리스가 결제 응답 id 형식을 바꿔 order 가 해석 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 27)
 
 
 class RecordingQueueTests(unittest.TestCase):
