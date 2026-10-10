@@ -86,7 +86,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 30 → 31. F57-R(표 이전이 banking TRANSFERS identity 생성기 상태를 옮기지 않아 새 이체가 기본 키 ORA-00001 로 실패) 후보 추가.
         # 2026-10-10: 31 → 32. F23-P(운영을 가리킨 로컬 마이그레이션이 commerce 상품 표를 지워 상품 조회 42P01, checkout 502) 후보 추가.
         # 2026-10-10: 32 → 33. F58-R(food order 릴리스가 개발 프로필에만 있는 정책값을 읽다 운영에서 없어 주문 생성 전량 500) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 33)
+        # 2026-10-10: 33 → 34. F59-R(food 내부 백필 Job 이 dispatch 배달 목록을 깊은 offset 페이지로 읽어 dispatch 풀이 묶이고 주문 503) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 34)
 
 
 class RecordingQueueTests(unittest.TestCase):

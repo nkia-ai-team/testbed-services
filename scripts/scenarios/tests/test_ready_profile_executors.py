@@ -45,6 +45,7 @@ db_account = load("db_account_executor")
 k8s_dns = load("k8s_dns_executor")
 k8s_quota = load("k8s_quota_executor")
 k8s_scale = load("k8s_scale_executor")
+k8s_job = load("k8s_job_executor")
 k8s_image = load("k8s_image_executor")
 host_firewall = load("host_firewall_executor")
 host_image = load("host_image_executor")
@@ -550,6 +551,54 @@ esac
             k8s_scale.validate("F51-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified deployment scale contract"):
             k8s_scale.validate("F50-R", k8s_scale.CONTRACTS["F51-R"], {})
+
+    def test_k8s_job_only_creates_one_backfill_job_and_deletes_it(self) -> None:
+        # F59-R: 주입은 네임스페이스에 일회성 Job 하나(알림 쪽 보관소 백필)를 만드는 것뿐이다. dispatch, order,
+        # MySQL 의 이미지, 설정, 스키마, 인덱스를 바꾸면 F33-H(릴리스), F33-R(인덱스 제거)의 지문이 섞인다.
+        plan = compiler.compile_plan("f59-r-food-notify-backfill-deep-pages-drain-dispatch-pool")
+        argv, stdin = k8s_job.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:10], ["run", "rca-testbed-food", "notify-delivery-backfill", "testbed-dispatch",
+                                      "testbed-notify", "food-delivery-notify:latest", "tb-w3"])
+        manifest = json.loads(argv[10])
+        # 시나리오 id 는 Job, 레이블, 스크립트, 환경 어디에도 없다(G6, 원칙 8). 상태 파일은 네임스페이스와 Job 이름으로 짓는다.
+        script = stdin.decode()
+        for text in (" ".join(argv), script):
+            self.assertNotIn("F59-R", text)
+            self.assertNotIn("f59", text.lower())
+        for word in ("scenario", "fault", "chaos", "inject", "rca-"):
+            self.assertNotIn(word, json.dumps(manifest["metadata"]["labels"]).lower())
+            self.assertNotIn(word, k8s_job.BACKFILL_SCRIPT.lower())
+        self.assertEqual(manifest["kind"], "Job")
+        self.assertEqual(manifest["metadata"]["labels"], {"app": "notify-delivery-backfill"})
+        pod = manifest["spec"]["template"]["spec"]
+        self.assertEqual(pod["restartPolicy"], "Never")
+        self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w3"})
+        container = pod["containers"][0]
+        self.assertEqual((container["image"], container["imagePullPolicy"]), ("food-delivery-notify:latest", "Never"))
+        env = {item["name"]: item["value"] for item in container["env"]}
+        self.assertEqual(env["DISPATCH_URL"], "http://testbed-dispatch:8082")
+        self.assertEqual((env["WORKERS"], env["PAGES_PER_WORKER"], env["PAGE_SIZE"]), ("12", "290", "500"))
+        # 작업은 목록 API 를 읽기만 한다(GET). 쓰는 요청이나 DB 직접 접속이 없다.
+        self.assertIn("/api/deliveries?status=$DELIVERY_STATUS&page=$page&size=$PAGE_SIZE", k8s_job.BACKFILL_SCRIPT)
+        for forbidden in ("-X", "--data", "mysql", "POST"):
+            self.assertNotIn(forbidden, k8s_job.BACKFILL_SCRIPT)
+        self.assertEqual(manifest["spec"]["activeDeadlineSeconds"], 1800)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        # 지울 대상을 먼저 적고 나서 만든다.
+        self.assertLess(run_case.index('>"$state.tmp"'), run_case.index("apply -f -"))
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('delete job "$job"', cleanup_case)
+        self.assertIn("until job_absent", cleanup_case)
+        self.assertIn("available 300s", cleanup_case)
+        for forbidden in ("set image", "set env", "scale ", "patch ", "rollout restart", "delete deploy", "delete pod"):
+            self.assertNotIn(forbidden, script)
+        params = dict(k8s_job.CONTRACTS["F59-R"])
+        params["workers"] = 40
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_job.validate("F59-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified batch job contract"):
+            k8s_job.validate("F51-R", k8s_job.CONTRACTS["F59-R"], {})
 
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
@@ -1504,6 +1553,8 @@ esac
             "F23-P",
             # 2026-10-10: food order-service 를 최소 주문 금액 검사를 더한 릴리스 2.5.0(fault-images/f58-r)으로 롤아웃(새 검사가 주문마다 읽는 정책값 order.policy.minimum-amount 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 주문 생성 전량 500, 하류 호출 없음, order Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F58-R",
+            # 2026-10-10: food 알림 쪽 보관소 백필 Job(notify-delivery-backfill, 워커 12)이 dispatch 배달 목록을 offset 페이지로 끝까지 읽어 깊은 페이지마다 MySQL 이 앞선 끝난 배달을 모두 읽음(k8s.job, dispatch Hikari 고갈과 MySQL 포화, 용량 확인 500, 주문 503, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F59-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

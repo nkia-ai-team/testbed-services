@@ -58,6 +58,9 @@ PROFILE_PREFLIGHTS = {
     # The inverse of scaling a Deployment down is scaling it back to the recorded count,
     # after which the Deployment must have its pods available again.
     "k8s.scale": "kubernetes-recovery-capacity",
+    # A one-off namespace Job is undone by deleting it, as the east-west load Job is;
+    # the Deployment it called must then be available again.
+    "k8s.job": "east-west-job-contract",
     "k8s.resource": "kubernetes-original-resource-snapshot",
     "k8s.probe": "kubernetes-original-probe-snapshot",
     "kafka.control": "kafka-drain-capacity",
