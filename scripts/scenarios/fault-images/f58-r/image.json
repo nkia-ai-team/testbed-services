@@ -1,0 +1,7 @@
+{
+  "base": "food-delivery-order:latest",
+  "fault": "food-delivery-order:2.5.0",
+  "domain": "food-delivery",
+  "module": "order-service",
+  "node": "tb-w3"
+}

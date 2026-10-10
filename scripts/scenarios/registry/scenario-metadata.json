@@ -9271,6 +9271,92 @@
      }
     ]
    }
+  },
+  "F58-R": {
+   "title": "Release rollout of the food order-service that adds a minimum-order-amount check reading a policy setting configured only in the release's development profile: production has no such setting, so every new order fails with 500 before order-service calls anything, while order-service stays Ready",
+   "description": "A rollout of the food order-service Deployment (testbed-order) moves its container image from food-delivery-order:latest to the release food-delivery-order:2.5.0. The release adds a minimum order amount check as the first step of order creation and, so that the policy can be changed without a redeploy, reads it on every request with Environment.getRequiredProperty(\"order.policy.minimum-amount\", BigDecimal.class). The value is set only in the new application-dev.yml that ships in the release (dev profile, 12000); the base application.yml, the ConfigMap service-config, the pod environment and the active profiles in production carry no such key. Startup and /actuator/health do not touch the key, so the new pod passes its startup, readiness and liveness probes, becomes Ready and replaces the old pod under the default rolling strategy. From then on every POST /api/orders throws IllegalStateException 'Required key 'order.policy.minimum-amount' not found' at its first line; no handler maps it, so the request ends with 500 in about 0.01 s and Tomcat logs SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'order.policy.minimum-amount' not found] with root cause'. Order creation never reaches the restaurant, menu, capacity, dispatch or payment calls and writes nothing (locally 200 of 200 requests failed with 500, mean 0.011 s, max 0.084 s, no order row, no downstream call, health UP; the same jar started with the dev profile passes the check and goes on to the restaurant lookup). Order reads, restaurant browsing, menus, search and delivery tracking keep working; restaurant, dispatch and payment stop receiving calls from order. Nothing recovers until the release is rolled back or the setting is added to production.",
+   "cause": "Rollout of testbed-order (food) to the release food-delivery-order:2.5.0, whose new minimum-order-amount check reads the policy setting order.policy.minimum-amount on every order, while the setting exists only in the release's development profile and was never added to the production configuration → IllegalStateException 'Required key ... not found' at the first line of order creation → every new order fails with 500 before any downstream call, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-order (rca-testbed-food), container order-service, from food-delivery-order:latest to food-delivery-order:2.5.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f58-r from origin/main food-delivery plus fault-images/f58-r/order-service.patch (under order-service/src only: the minimum-amount check at the top of OrderService.createOrder that reads order.policy.minimum-amount through Environment.getRequiredProperty, its requestedTotal helper, and a new application-dev.yml that sets the value for the dev profile only); the manifest image, sources, ConfigMap and manifests are untouched, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion order-surge load (2 rps, about 1.4 orders per second) keeps order creation steady regardless of the time of day. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the rollout every new food order fails with 500 in about 0.01 s; nothing is kept, no courier is reserved and no payment is attempted. Order lookups, restaurant browsing, menus, popular menus, search and delivery tracking keep working. Nothing recovers until the release is rolled back (or the missing production setting is added).",
+   "distinguishing_evidence": "Decisive evidence is a release of order-service itself followed by order failing locally on a configuration lookup, with no database or downstream error anywhere: a KCM ScalingReplicaSet for testbed-order and the new pod's kubelet event 'Pulled: Container image \"food-delivery-order:2.5.0\" already present on machine' (every testbed-order rollout on file pulled food-delivery-order:latest, the last on 2026-10-08), then from the new pod's start the order SEVERE log 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'order.policy.minimum-amount' not found] with root cause' on every order (no 'Required key' or IllegalStateException log in any service in the 30 days before 2026-10-10), order POST /api/orders server spans in error with 500 and no child client spans, and 'Created order' logs dropping to zero. Restaurant, dispatch and payment have no rollout, no error and stay Ready; they simply stop seeing calls from order (dispatch 'Dispatched courier', payment logs for food orders stop) while restaurant still serves browsing. MySQL shows no 1146 'doesn't exist', no 1290 '--read-only', no lock waits, no schema change and order's connection pool stays idle; order stays Ready and does not restart.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-order",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food order-service 의 새 릴리스 food-delivery-order:2.5.0 과 그것이 기대한 운영 설정 사이의 틈이다. 이 버전이 주문 생성 첫 단계에 최소 주문 금액 검사를 더하면서, 재배포 없이 정책을 바꿀 수 있게 값을 요청마다 Environment.getRequiredProperty(\"order.policy.minimum-amount\", BigDecimal.class) 로 읽는다. 그 값은 릴리스에 함께 든 개발 프로필 파일(application-dev.yml, 12000)에만 있고, 운영 쪽(기본 application.yml, ConfigMap service-config, 파드 env, 활성 프로필 없음)에는 옮겨지지 않았다. 기동과 /actuator/health 는 이 값을 읽지 않아 새 파드가 프로브를 통과해 Ready 가 되고 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 모든 POST /api/orders 가 첫 줄에서 IllegalStateException 'Required key 'order.policy.minimum-amount' not found' 를 던지고, 처리기가 없어 500 이 되며 Tomcat 이 SEVERE 'Servlet.service() ... threw exception [... IllegalStateException: Required key ...]' 를 남긴다. 가게, 메뉴, 용량, 배차, 결제 호출과 주문 행 쓰기 전에 끝나므로 하류와 MySQL 에는 오류가 없다. 원본 ServiceChannel 2025-05-08(정기 운영 코드 릴리스의 새 코드가 개발 환경에만 설정되고 운영에 동기화되지 않은 설정을 읽으려다 실패해 대시보드 기능 중단, 운영에 필요한 설정을 모두 적용해 복구)과 같은 꼴이다. 고칠 곳은 운영 설정 없이 나간 order 릴리스(되돌림 또는 운영 설정 추가)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f58-r/order-service.patch:38-45 (릴리스 2.5.0 의 createOrder 첫 단계 — Environment.getRequiredProperty(\"order.policy.minimum-amount\") 로 요청마다 정책값을 읽음, 없으면 IllegalStateException)",
+     "scripts/scenarios/fault-images/f58-r/order-service.patch:54-63 (requestedTotal — 요청 품목 합계)",
+     "scripts/scenarios/fault-images/f58-r/order-service.patch:68-78 (application-dev.yml — 정책값이 dev 프로필에만 있음)",
+     "food-delivery/order-service/src/main/resources/application.yml:120-131 (운영 기본 설정의 order 블록 — cleanup, retention 뿐이고 policy.minimum-amount 가 없음)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/config/GlobalExceptionHandler.java:9-21 (ServiceException 만 처리 — IllegalStateException 은 500 과 Tomcat SEVERE 로그가 됨)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57-60 (createOrder 진입 — 릴리스는 이 앞에 검사를 넣어 가게 조회 전에 실패)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-order(food-delivery/k8s/20-order-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-order:latest imagePullPolicy Never :27-28, envFrom ConfigMap service-config :31-33, startupProbe, readinessProbe, livenessProbe 모두 /actuator/health :72-91, 기본 전략 maxSurge 25%). ConfigMap service-config(food-delivery/k8s/02-configmaps.yaml:4-18)에 order 정책 키와 SPRING_PROFILES_ACTIVE 가 없다. 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-order 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-order:2.5.0 을 담고, 그 전 testbed-order 롤아웃 기록은 전부 food-delivery-order:latest 다(마지막 2026-10-08)",
+    "새 order 파드가 Ready 가 된 뒤 주문마다 order SEVERE 로그 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'order.policy.minimum-amount' not found] with root cause' 가 나온다(2026-10-10 이전 30일 동안 어느 서비스에도 'Required key', IllegalStateException 로그 0건)",
+    "order POST /api/orders 서버 스팬이 500 오류로 몰리고 자식 클라이언트 스팬(restaurant, dispatch, payment 호출)이 없으며, 'Created order' 로그가 0 으로 떨어진다. dispatch 'Dispatched courier' 와 food 결제 로그도 함께 끊긴다",
+    "order 는 Ready 이고 재시작하지 않으며 health 가 UP 이다. restaurant, dispatch, payment 는 롤아웃과 오류가 없고 Ready 다. MySQL 은 새 오류(1146, 1290), 스키마 변경, 잠금 대기가 없다"
+   ],
+   "must_rule_out": [
+    "주문 표나 outbox 표가 사라진 것이 아님(F53-R, F48-P): MySQL 1146 'doesn't exist' 가 없고, 주문은 주문 행 쓰기는커녕 가게 조회 전에 끝나며 DPM 표 수, 인덱스 수가 그대로다",
+    "DB 인스턴스 읽기 전용이 아님(F38-R): 1290 '--read-only' 오류가 없고 dispatch, payment, 보존 정리의 쓰기가 평소대로다(order 의 쓰기만 시도조차 없음)",
+    "하류 서비스 고장이 아님(F49-R, F44-R, F42-P 가게, F32-R, F33-H, F43-P, F55-R 배달, F06-P, F19-P 결제): order 가 하류를 부르지 않고(자식 스팬 없음) 실패 로그에 하류 이름이 없으며, 응답이 502, 503 이 아니라 500 이다",
+    "order 의 다른 릴리스 결함이 아님(F49-H): 주문이 배차 단계까지 가지 않고 'Error while extracting response' 가 아니라 'Required key ... not found' 이며, dispatch 에 주인 없는 배차가 남지 않는다",
+    "order 의 자원 고갈이나 다운이 아님: order 는 Ready 이고 재시작, OOM, CPU 포화, 풀 고갈이 없으며 응답이 0.1초 안이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F53-R (운영을 가리킨 로컬 마이그레이션이 fooddelivery.orders 를 지움: 같은 'order 주문 생성 전량 500' 이지만 MySQL 1146, 가게와 용량 확인 뒤 주문 INSERT 에서 실패하고 롤아웃이 없다. F58-R 은 order 롤아웃 뒤 하류를 부르기 전 설정 조회에서 실패)",
+     "F48-P (취소된 백필이 order_outbox_events 를 치움: 같은 order 500 이지만 모든 하류 호출 뒤 outbox INSERT 1146)",
+     "F38-R (운영자가 food MySQL 을 read_only 로: 같은 order 500 이지만 1290 이고 다른 서비스의 쓰기도 함께 거절)",
+     "F49-H (order 자신의 다른 릴리스가 dispatch 응답을 못 읽음: 같은 '정답 order 릴리스' 이지만 주문이 배차까지 가서 503, 로그가 응답 해석 실패)",
+     "F17-H (banking transfer 를 노드에 없는 릴리스 태그로 롤아웃: 같은 '릴리스 산출물이 운영에서 쓸 수 없음' 계열이지만 파드가 뜨지 못해 엔드포인트가 비고 transfer 로그가 없다. F58-R 은 파드가 Ready 이고 요청마다 오류)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ],
+    "partial": []
+   },
+   "title_ko": "food order-service 를 개발 프로필에만 설정된 정책값을 읽는 최소 주문 금액 검사가 든 릴리스로 롤아웃: 운영에는 그 설정이 없어 order 가 Ready 인 채 하류를 부르기도 전에 모든 새 주문이 500 으로 실패",
+   "description_ko": "food order-service Deployment(testbed-order) 롤아웃이 컨테이너 이미지를 food-delivery-order:latest 에서 릴리스 food-delivery-order:2.5.0 으로 바꾼다. 이 릴리스는 주문 생성 첫 단계에 최소 주문 금액 검사를 더하고, 재배포 없이 정책을 바꿀 수 있게 값을 요청마다 Environment.getRequiredProperty(\"order.policy.minimum-amount\", BigDecimal.class) 로 읽는다. 그 값은 릴리스에 함께 든 새 application-dev.yml(dev 프로필, 12000)에만 있고, 운영의 기본 application.yml, ConfigMap service-config, 파드 env, 활성 프로필 어디에도 없다. 기동과 /actuator/health 는 이 값을 읽지 않아 새 파드가 startup, readiness, liveness 프로브를 통과해 Ready 가 되고 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 모든 POST /api/orders 가 첫 줄에서 IllegalStateException 'Required key 'order.policy.minimum-amount' not found' 를 던지고, 처리기가 없어 약 0.01초 만에 500 이 되며 Tomcat 이 SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'order.policy.minimum-amount' not found] with root cause' 를 남긴다. 주문 생성은 가게, 메뉴, 용량, 배차, 결제 호출에 닿지 않고 아무것도 쓰지 않는다(로컬 200건 모두 500, 평균 0.011초, 최대 0.084초, 주문 행 0건, 하류 호출 0건, health UP. 같은 jar 를 dev 프로필로 띄우면 검사를 지나 가게 조회로 넘어감). 주문 조회, 가게 둘러보기, 메뉴, 검색, 배달 조회는 정상이고, restaurant, dispatch, payment 는 order 에서 오는 호출만 끊긴다. 릴리스를 되돌리거나 운영에 설정을 더할 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-order(food) 를 릴리스 food-delivery-order:2.5.0 으로 롤아웃. 이 버전의 새 최소 주문 금액 검사가 주문마다 정책값 order.policy.minimum-amount 를 읽는데, 그 값은 릴리스의 개발 프로필에만 있고 운영 설정에는 옮겨지지 않음 → 주문 생성 첫 줄에서 IllegalStateException 'Required key ... not found' → 하류를 부르기 전에 모든 새 주문이 500, 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-order 컨테이너 order-service 이미지를 food-delivery-order:latest 에서 food-delivery-order:2.5.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f58-r 이 origin/main food-delivery 에 fault-images/f58-r/order-service.patch(order-service/src 안만: OrderService.createOrder 맨 앞의 최소 주문 금액 검사와 Environment.getRequiredProperty 로 order.policy.minimum-amount 읽기, requestedTotal 도우미, dev 프로필에만 값을 둔 새 application-dev.yml)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, ConfigMap, 매니페스트는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 order-surge 부하(2rps, 주문 생성 초당 약 1.4건)가 시간대와 상관없이 주문 생성을 유지한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "롤아웃 약 1분 뒤부터 food 의 모든 새 주문이 약 0.01초 만에 500 으로 실패한다. 아무것도 남지 않고 배달원도 잡지 않으며 결제도 부르지 않는다. 주문 조회, 가게 둘러보기, 메뉴, 인기 메뉴, 검색, 배달 조회는 정상이다. 릴리스를 되돌리거나 빠진 운영 설정을 더할 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 order-service 자신의 릴리스 뒤 order 가 설정 조회에서 스스로 실패하고, DB 나 하류에는 오류가 하나도 없다는 것이다: testbed-order 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-order:2.5.0\" already present on machine'(기록에 있는 testbed-order 롤아웃은 모두 food-delivery-order:latest, 마지막 2026-10-08), 그 뒤 새 파드 기동부터 주문마다 나오는 order SEVERE 로그 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'order.policy.minimum-amount' not found] with root cause'(2026-10-10 이전 30일 동안 어느 서비스에도 'Required key', IllegalStateException 로그 0건), 자식 클라이언트 스팬 없이 500 으로 끝나는 order POST /api/orders 서버 스팬, 0 으로 떨어진 'Created order' 로그. restaurant, dispatch, payment 는 롤아웃과 오류 없이 Ready 이고 order 에서 오는 호출만 사라진다(food 주문의 dispatch 'Dispatched courier', payment 로그가 끊기고 restaurant 는 둘러보기에 계속 답함). MySQL 은 1146 'doesn't exist', 1290 '--read-only', 잠금 대기, 스키마 변경이 없고 order 풀은 한가하다. order 는 Ready 이고 재시작하지 않는다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f58-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-order",
+       "container": "order-service",
+       "baseline_image": "food-delivery-order:latest",
+       "fault_image": "food-delivery-order:2.5.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

@@ -1095,6 +1095,46 @@ esac
         self.assertIn("connection-timeout: 3000", config)
         self.assertIn("probes:\n        enabled: true", config)
 
+    def test_k8s_image_release_mode_rolls_food_order_policy_release(self) -> None:
+        # F58-R: 같은 release 스크립트로 food order 를 2.5.0 으로 롤아웃한다(tb-w3). F49-H(2.3.0)도 order 릴리스를
+        # 쓰므로 태그가 겹치지 않아야 둘 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 order-service/src 안만 고친다.
+        plan = compiler.compile_plan("f58-r-food-order-release-reads-unsynced-setting")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-order", "order-service",
+                                    "food-delivery-order:latest", "food-delivery-order:2.5.0"])
+        self.assertNotIn("F58-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F58-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F58-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f58-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F58-R"]["baseline_image"], k8s_image.CONTRACTS["F58-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f58-r" / "order-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/order-service/src/",
+                                                     "b/food-delivery/order-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F58", "f58", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        self.assertIn('getRequiredProperty("order.policy.minimum-amount", BigDecimal.class)', added)
+
+    def test_f58r_relies_on_policy_key_missing_from_production_config(self) -> None:
+        # F58-R 은 릴리스가 읽는 정책값 order.policy.minimum-amount 가 릴리스의 개발 프로필 파일에만 있고 운영 쪽
+        # (기본 application.yml, ConfigMap service-config, order 파드 env, 활성 프로필)에는 없다는 데 기댄다. 운영 설정에
+        # 그 값이 생기거나 dev 프로필이 켜지면 주문이 실패하지 않으므로 시나리오를 다시 평가해야 한다.
+        food = ROOT.parent.parent / "food-delivery"
+        config = (food / "order-service" / "src" / "main" / "resources" / "application.yml").read_text()
+        configmap = (food / "k8s" / "02-configmaps.yaml").read_text()
+        deploy = (food / "k8s" / "20-order-deploy.yaml").read_text()
+        for text in (config, configmap, deploy):
+            self.assertNotIn("minimum-amount", text)
+            self.assertNotIn("MINIMUM_AMOUNT", text)
+            self.assertNotIn("SPRING_PROFILES_ACTIVE", text)
+        self.assertIn("path: /actuator/health\n", deploy[deploy.index("readinessProbe:"):])
+        patch = (ROOT / "fault-images" / "f58-r" / "order-service.patch").read_text()
+        self.assertIn("+++ b/food-delivery/order-service/src/main/resources/application-dev.yml", patch)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1462,6 +1502,8 @@ esac
             "F57-R",
             # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F23-P",
+            # 2026-10-10: food order-service 를 최소 주문 금액 검사를 더한 릴리스 2.5.0(fault-images/f58-r)으로 롤아웃(새 검사가 주문마다 읽는 정책값 order.policy.minimum-amount 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 주문 생성 전량 500, 하류 호출 없음, order Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F58-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

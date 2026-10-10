@@ -88,7 +88,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 97 → 98. F51-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 98 → 99. F57-R(후보) 추가. 기존 db.ddl 에 Oracle identity 되감기 모드를 더해 프로파일 수는 그대로.
         # 2026-10-10: 99 → 100. F23-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 표 지우기 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 100)
+        # 2026-10-10: 100 → 101. F58-R(후보) 추가. 기존 k8s.image release 모드를 food order 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 101)
         self.assertEqual(len(self.profiles["profiles"]), 32)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -211,6 +212,8 @@ class RegistryContractTests(unittest.TestCase):
             "F57-R",
             # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F23-P",
+            # 2026-10-10: food order-service 를 최소 주문 금액 검사를 더한 릴리스 2.5.0(fault-images/f58-r)으로 롤아웃(새 검사가 주문마다 읽는 정책값 order.policy.minimum-amount 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 주문 생성 전량 500, 하류 호출 없음, order Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F58-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -549,6 +552,8 @@ class RegistryContractTests(unittest.TestCase):
             "F57-R",
             # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F23-P",
+            # 2026-10-10: food order-service 를 최소 주문 금액 검사를 더한 릴리스 2.5.0(fault-images/f58-r)으로 롤아웃(새 검사가 주문마다 읽는 정책값 order.policy.minimum-amount 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 주문 생성 전량 500, 하류 호출 없음, order Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F58-R",
             },
         )
         self.assertEqual(
@@ -671,6 +676,8 @@ class RegistryContractTests(unittest.TestCase):
             "F57-R",
             # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F23-P",
+            # 2026-10-10: food order-service 를 최소 주문 금액 검사를 더한 릴리스 2.5.0(fault-images/f58-r)으로 롤아웃(새 검사가 주문마다 읽는 정책값 order.policy.minimum-amount 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 주문 생성 전량 500, 하류 호출 없음, order Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F58-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -845,8 +852,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F51-H(후보, 고정 evaluation)이 끝에 붙어 F32-P 가 끝 5개에서 빠졌다.
         # 2026-10-10: F57-R(후보, 고정 evaluation)이 끝에 붙어 F54-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F23-P(후보, 고정 evaluation)이 끝에 붙어 F49-P 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F58-R(후보, 고정 evaluation)이 끝에 붙어 F55-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F55-R", "F56-R", "F51-H", "F57-R", "F23-P"])
+                         ["F56-R", "F51-H", "F57-R", "F23-P", "F58-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

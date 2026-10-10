@@ -1,0 +1,289 @@
+{
+  "schema_version": "1.0",
+  "id": "F58-R",
+  "slug": "f58-r-food-order-release-reads-unsynced-setting",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "food namespace",
+    "matrix_location_transport": "K/kubectl food testbed-order 컨테이너 image set(food-delivery-order:latest→food-delivery-order:2.5.0, 직전에 runner 가 109 docker 의 2.5.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery order-surge.js, target_rps=2, entry 30181)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f58-r",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-food",
+                "deployment": "testbed-order",
+                "container": "order-service",
+                "baseline_image": "food-delivery-order:latest",
+                "fault_image": "food-delivery-order:2.5.0"
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 롤아웃 동안 옛 order 파드가 새 파드 Ready 까지 요청을 받고(기본 전략 maxSurge 25%, 평시 롤아웃 46초: KCM 2026-10-08 18:52:14 → 18:53:00), 릴리스는 health 와 DB 를 건드리지 않는다. 새 order 는 주문 생성 첫 줄에서 정책값 order.policy.minimum-amount 를 읽지 못해 하류를 부르기 전에 500 을 곧바로 돌려줘(로컬 실측 200건 모두 500, 평균 0.011초, 최대 0.084초, health 내내 UP) 풀이 묶이지 않는다. 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s",
+            "_note": "food MySQL 파드. 이 주입은 DB 를 건드리지 않는다"
+          },
+          {
+            "id": "order_create_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)은 하루 주기로 주문 생성이 초당 약 0.2~1.2건이라(119 'Created order' 로그 2026-10-09 16시~10-10 16시 시간당 196~4,145건) 한가한 시간에는 표본이 적어, 러너 판정 표본과 order 의 실패 로그가 시간대에 좌우되지 않도록 동반 부하가 주문 생성을 초당 약 1.4건 더한다(F36-R, F44-R, F49-R, F49-H 와 같은 값)",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m. 새 order 파드가 Ready 가 되어 옛 파드를 대신하는 순간(약 1분)부터 모든 주문 생성이 첫 검증 단계에서 끝난다: 릴리스 2.5.0 이 createOrder 첫 줄에서 Environment.getRequiredProperty(\"order.policy.minimum-amount\") 로 최소 주문 금액을 읽는데, 이 값은 릴리스에 함께 든 개발 프로필 파일(application-dev.yml)에만 있고 운영(기본 application.yml, ConfigMap service-config, 파드 env)에는 없다. IllegalStateException 'Required key 'order.policy.minimum-amount' not found' 가 처리되지 않고 나가 500 이 되고, Tomcat 이 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'order.policy.minimum-amount' not found]' 를 SEVERE 로 남긴다. 가게, 메뉴, 용량 확인, 배차, 결제를 부르지 않고 주문 행도 쓰지 않는다(로컬 실측 200건 모두 500, 평균 0.011초, 주문 행 0건, 하류 호출 0건. 같은 jar 를 개발 프로필로 띄우면 검사를 지나 가게 조회로 넘어감)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 0.5,
+              "_note": "동반 부하 2rps 의 1/4. 주문이 0.1초 안에 500 을 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 설정 누락이 아니라 DB 다운(F25-H 꼴)이다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "restaurant, dispatch, payment 파드 준비 상태와 서버 스팬 오류율은 러너 관측 허용 목록(APPROVED_K8S_TARGETS, APPROVED_APM_SERVICES)에 없어 러너 배제 조건으로 두지 않는다(F49-H 와 같음). 하류가 멀쩡하고 order 에서 오는 호출이 사라졌다는 감별은 녹화된 스팬과 로그로 RCA 쪽에서 한다(정답지 must_support, must_rule_out)"
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 order 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 고장 동안 order 는 하류를 부르지 않고 아무것도 쓰지 않아 남는 데이터가 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

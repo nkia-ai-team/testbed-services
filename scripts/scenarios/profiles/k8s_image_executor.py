@@ -203,6 +203,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-account:latest",
         "fault_image": "core-banking-account:1.4.0",
     },
+    # 2026-10-10. F58-R: food order-service 를 최소 주문 금액 검사를 더한 릴리스 2.5.0 으로 롤아웃한다. 새 검사가
+    # 주문마다 정책값 order.policy.minimum-amount 를 설정에서 읽는데, 그 값은 릴리스에 든 개발 프로필 파일에만 있고
+    # 운영 설정에는 없어 모든 주문 생성이 하류를 부르기 전에 500 으로 끝난다(health 는 그대로 UP). 결함 이미지는
+    # fault-images/f58-r 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다. order 의 다른
+    # 릴리스 태그(F49-H 2.3.0)와 겹치지 않는다.
+    "F58-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-order",
+        "container": "order-service",
+        "baseline_image": "food-delivery-order:latest",
+        "fault_image": "food-delivery-order:2.5.0",
+    },
 }
 
 
