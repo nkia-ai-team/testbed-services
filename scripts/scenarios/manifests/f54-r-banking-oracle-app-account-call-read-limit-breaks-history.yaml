@@ -1,0 +1,335 @@
+{
+  "schema_version": "1.0",
+  "id": "F54-R",
+  "slug": "f54-r-banking-oracle-app-account-call-read-limit-breaks-history",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.account banking testbed-oracle-0 CREATE PROFILE APP_CALL_LIMITS LIMIT LOGICAL_READS_PER_CALL 30000, ALTER USER BANKING PROFILE APP_CALL_LIMITS(kubectl exec sqlplus / as sysdba, 역 문장 ALTER USER BANKING PROFILE DEFAULT 와 DROP PROFILE) + R/ssh load.north_south companion(core-banking surge.js, target_rps=10, 거래 내역 25%, core-banking-api 표본 스팬 확보)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.account",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.account",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.account"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f54-r",
+              "parameters": {
+                "engine": "oracle",
+                "namespace": "rca-testbed-banking",
+                "pod": "testbed-oracle-0",
+                "pdb": "FREEPDB1",
+                "account": "BANKING",
+                "profile": "APP_CALL_LIMITS",
+                "resource": "LOGICAL_READS_PER_CALL",
+                "limit": 30000
+              },
+              "min_hold": "21m",
+              "settle": "60s",
+              "timeout": "27m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api → account → transfer) 상태. 이체는 한도 아래의 가벼운 호출뿐이라 고장 중에도 200 이다. 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-oracle"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "api_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "core-banking-api"
+            },
+            "_note": "core-banking-api 서버 스팬(표본 10%) 60초 창의 5xx 백분율. api 가 받는 요청은 거래 내역(GET /api/transfers)과 이체(POST)뿐이고, 동반 부하 10rps 와 기준선을 합치면 거래 내역이 약 70% 다. 고장 중 거래 내역은 transfer 의 500 을 받아 502 로 끝나 약 70%, 평시 1시간 표본 441건 중 5xx 0",
+            "freshness": "60s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하의 이체(step transfer, 10%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 이지만 선택자는 도메인 공통 business.5xx.rate 다. 이체 경로의 질의는 모두 호출당 100 블록 아래라 한도에 걸리지 않아 0 근처여야 한다",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하의 잔액 조회(step get, 55%, nginx → account, 기본 키 조회 3 블록) 실패율. 고장 중에도 0 근처여야 한다",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 잔액 조회 실패율. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "history-failing-at-api",
+              "observation": "api_error_rate",
+              "op": "gte",
+              "value": 30,
+              "_note": "거래 내역 요청이 transfer 의 ORA-02395(호출당 논리 읽기 한도 초과) 500 을 받아 api 에서 502 로 끝난다. 이체는 성공하므로 값은 100 이 아니라 거래 내역 비중(약 70%) 근처다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 21m: 한도는 로그인 때 읽혀 이미 열린 세션은 그대로이고, transfer 풀이 세션을 max-lifetime(10분) 안에 바꾸며 피해가 퍼진다. 최악에도 약 10분 뒤 모든 거래 내역이 실패하고 그 상태가 약 11분 이어진 뒤 판정된다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 2.5,
+              "_note": "동반 부하 10rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "banking-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "Oracle 파드가 빠지면 호출 한도가 아니라 DB 다운이다"
+            },
+            {
+              "id": "transfers-also-failing",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "이체까지 5xx 면 계정 잠금(F35-R), Oracle 포화(F42-R), 이체 표 삭제(F35-H) 같은 다른 원인이다. 이 장애는 무거운 호출만 끊는다"
+            },
+            {
+              "id": "balance-reads-failing",
+              "observation": "balance_read_nonok_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "잔액 조회까지 실패하면 account 나 DB 전체의 고장이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "transfer_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "balance-reads-recovered",
+              "observation": "balance_read_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.05
+            },
+            {
+              "id": "history-recovered",
+              "observation": "api_error_rate",
+              "op": "lt",
+              "value": 10
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "15m",
+          "_note": "cleanup 이 계정을 DEFAULT 프로필로 돌려도 한도 아래에서 열린 세션은 한도를 그대로 지닌다(로컬 gvenzl/oracle-free:23-slim 실측). transfer 풀이 그 세션을 max-lifetime(10분) 안에 바꾸면 거래 내역이 돌아온다. 15m 은 그 10분과 표본 창(60초)의 여유다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.account",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.account",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "db.account"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -13,6 +13,19 @@ account (LUCIDA_MON) and SYS keep logging in, and no table, row or password is
 touched.  The inverse is a single statement (`ACCOUNT UNLOCK`), which is why this
 is a profile of its own rather than a mode bolted onto `db.table_readonly` (one
 table) or `app.control` (a control row the services read).
+
+F54-R reconstructs Google 2020-12-14 (status.cloud.google.com/incident/zall/20013):
+automated quota management cut one service's quota below what it really used, and
+the service's legitimate requests were refused.  Here the limit is an Oracle
+resource profile on the same application account: a new profile whose
+LOGICAL_READS_PER_CALL sits below the heaviest call the services make (the
+transfer history page count, about 50k to 200k logical reads per execute) is
+assigned to BANKING.  Oracle reads a session's limits at login, so -- exactly
+like the lock -- the sessions already open keep working and the damage arrives
+as the Hikari pools replace them; from then on every call over the cap is cut
+with ORA-02395 while the session itself stays usable and every light call
+succeeds.  Undoing it is two statements (back to the DEFAULT profile, drop the
+new one); sessions opened under the limit keep it until the pools retire them.
 """
 from __future__ import annotations
 
@@ -32,6 +45,20 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "pod": "testbed-oracle-0",
         "pdb": "FREEPDB1",
         "account": "BANKING",
+    },
+    # The cap is 30000 logical reads per call: the outbox relay poll (about 10k,
+    # 7-day max 10.5k) and every OLTP statement stay under it, the history page
+    # count (7-day minimum about 46k) and the ledger reconciliation sums (about
+    # 146k) do not.  The profile name carries no scenario id.
+    "F54-R": {
+        "engine": "oracle",
+        "namespace": "rca-testbed-banking",
+        "pod": "testbed-oracle-0",
+        "pdb": "FREEPDB1",
+        "account": "BANKING",
+        "profile": "APP_CALL_LIMITS",
+        "resource": "LOGICAL_READS_PER_CALL",
+        "limit": 30000,
     },
 }
 
@@ -56,6 +83,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         "/usr/bin/bash", "-s", "--", action,
         p["namespace"], p["pod"], p["pdb"], p["account"],
     ]
+    if "profile" in p:
+        argv += [p["profile"], p["resource"], str(p["limit"])]
+        return argv, ORACLE_PROFILE_REMOTE
     return argv, ORACLE_REMOTE
 
 
@@ -96,6 +126,58 @@ case "$action" in
   recovery)
     # Logins work again; the pools refill on their own and readiness follows.
     expect OPEN
+    ;;
+  *) exit 2 ;;
+esac
+'''
+
+
+ORACLE_PROFILE_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; pdb="$4"; account="$5"
+profile="$6"; resource="$7"; limit="$8"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+q="'"
+
+# One line, three facts: the account's profile, the limit the named profile sets
+# (NONE when the profile does not exist), and whether Oracle enforces kernel
+# limits at all (RESOURCE_LIMIT). The dictionary is the authority, not the exit
+# status of the DDL: sqlplus -s exits 0 on ORA errors.
+state() {
+  printf '%s\n' 'set pages 0 feedback off heading off' \
+    "alter session set container=$pdb;" \
+    "select u.profile||'|'||nvl((select p.limit from dba_profiles p where p.profile=$q$profile$q and p.resource_name=$q$resource$q),'NONE')||'|'||(select upper(value) from v\$parameter where name='resource_limit') from dba_users u where u.username=$q$account$q;" \
+    'exit;' | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'
+}
+sql() {
+  printf '%s\n' "alter session set container=$pdb;" "$@" 'exit;' \
+    | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba >/dev/null
+}
+expect() { [[ "$(state)" == "$1" ]]; }
+
+case "$action" in
+  preflight)
+    # Plain DEFAULT, no leftover profile from an uncleaned run, limits enforced.
+    expect "DEFAULT|NONE|TRUE"
+    ;;
+  run)
+    expect "DEFAULT|NONE|TRUE"
+    sql "create profile $profile limit $resource $limit;" "alter user $account profile $profile;"
+    expect "$profile|$limit|TRUE"
+    ;;
+  cleanup)
+    # Idempotent: back to DEFAULT first (a profile still assigned cannot be
+    # dropped without CASCADE), then drop the profile only if it is there.
+    sql "alter user $account profile default;"
+    if [[ "$(state)" != "DEFAULT|NONE|TRUE" ]]; then
+      sql "drop profile $profile;"
+    fi
+    expect "DEFAULT|NONE|TRUE"
+    ;;
+  recovery)
+    # The dictionary is clean; sessions opened under the cap keep it until the
+    # pools retire them (max-lifetime 10 min), which the controller waits for.
+    expect "DEFAULT|NONE|TRUE"
     ;;
   *) exit 2 ;;
 esac

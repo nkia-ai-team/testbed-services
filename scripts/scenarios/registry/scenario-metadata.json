@@ -8605,6 +8605,104 @@
      }
     ]
    }
+  },
+  "F54-R": {
+   "title": "A database resource-limit rollout assigns the banking Oracle application account BANKING a new profile whose per-call logical-read cap (30000) sits below the transfer history page count (about 50k to 200k reads per call): as transfer's pooled sessions renew, every transaction-history request is cut with ORA-02395 and fails with 502 at api, while balances, transfers and commerce settlement keep working",
+   "description": "account-service, transfer-service and ledger-service all log in to the banking Oracle PDB (FREEPDB1) as the single application account BANKING, which runs on the DEFAULT profile with no kernel limits (RESOURCE_LIMIT is TRUE, so Oracle enforces any limit a profile sets). A DBA rollout of resource limits creates the profile APP_CALL_LIMITS with LOGICAL_READS_PER_CALL 30000 and assigns it to BANKING. The cap was meant to stop runaway statements, but it is below the heaviest call the banking services make on purpose: the count query behind every transaction-history page (GET /api/transfers through api to transfer, Spring Data Page count over transfers with optional filters) scans the whole table at about 50k to 200k logical reads per execute (7-day DPM top SQL: minimum about 46k, median about 96k). Oracle reads a session's limits at login, so nothing changes for the sessions already open. Transfer's Hikari pool replaces its sessions within max-lifetime (600000 ms) and above minimum-idle within idle-timeout (60 s); each new session carries the cap, and from then on every history count is cut with ORA-02395 'exceeded call limit on IO usage' after 30000 reads. Transfer answers the history request with 500, api retries three times, opens its transferClient circuit and answers 502. The session stays usable and every light call keeps working: transfers (account and row locks, insert, outbox; under 100 reads per call), balance lookups, account lists, the outbox relay poll (about 10k reads) and commerce settlement transfers all succeed. Ledger's reconciliation batch (two SUM queries over ledger_entries, about 146k reads each, every 10 minutes) fails the same way. A north-south companion (core-banking surge.js, 10 rps) runs on top of the resident baseline so that core-banking-api has enough sampled server spans for its error rate to show the history failures.",
+   "cause": "CREATE PROFILE APP_CALL_LIMITS LIMIT LOGICAL_READS_PER_CALL 30000 and ALTER USER BANKING PROFILE APP_CALL_LIMITS on the banking Oracle PDB → new BANKING sessions carry a 30000-read cap per call while existing ones do not → transfer's Hikari pool renews its sessions (idle-timeout 60 s above minimum-idle, max-lifetime 10 min) → each transaction-history page count over transfers (about 50k to 200k reads) is cut with ORA-02395 → transfer 500 → api retry and transferClient circuit open → GET /api/transfers 502; ledger reconciliation SUMs fail with the same error every 10 minutes; transfers, balances, account lists and commerce settlement are untouched.",
+   "injection_summary": "db.account executor checks through sqlplus inside testbed-oracle-0 that BANKING in FREEPDB1 is on the DEFAULT profile, that no profile APP_CALL_LIMITS exists and that RESOURCE_LIMIT is TRUE, then runs CREATE PROFILE APP_CALL_LIMITS LIMIT LOGICAL_READS_PER_CALL 30000 and ALTER USER BANKING PROFILE APP_CALL_LIMITS and confirms both in DBA_USERS and DBA_PROFILES. Cleanup puts BANKING back on DEFAULT, drops APP_CALL_LIMITS and confirms; sessions opened under the cap keep it until the pools retire them (max-lifetime 10 min), so history recovers over up to 10 minutes. No password, account status, table, index, row, Deployment or application setting is changed, no session is killed, and nothing that reaches the database carries the scenario id. A north-south companion at 10 rps (core-banking surge.js through nginx: balance 55%, history 25%, account list 10%, transfer 10%) runs on top of the resident baseline (about 0.8 history requests per second).",
+   "user_impact": "Within about 10 minutes of the change, every transaction-history request fails with 502 (the api retries each one three times and then its circuit answers immediately); before that, a growing share fails as transfer's sessions renew. Balance lookups, account lists, transfers and commerce checkouts with their banking settlement keep working. The ledger reconciliation batch stops producing results (it fails every 10 minutes), so imbalance checks are blind for the duration. No data is written wrongly or lost. After the profile is reverted, history recovers as the pools replace the capped sessions, within about 10 minutes.",
+   "distinguishing_evidence": "The decisive evidence is the error text: transfer and ledger log 'ORA-02395: exceeded call limit on IO usage' (Hibernate SqlExceptionHelper ERROR, Tomcat 'Servlet.service() ... threw exception' for GET /api/transfers in transfer, Spring 'Unexpected error occurred in scheduled task' for the ledger reconciliation), never seen in the retained logs (since 2026-10-03). It names a per-call resource limit of the database account: the database was reached, the session was authenticated and the statement ran until the cap stopped it. Only the two statements that read far more than everything else fail, both owned by BANKING and in two different services, which points at the account, not at a table, a service or the instance; the DPM top SQL for the history count (sql_id byb2y2hv7p4ag, avgLogicalReads about 96k at the 7-day median) shows why it is the one that trips. Everything light keeps working on the same sessions: transfers complete ('Transfer COMPLETED' keeps flowing, including from=commerce-settlement), balance lookups succeed, the outbox relay publishes. Unlike F35-R (BANKING locked) there is no ORA-28000, no pool exhaustion, no readiness failure and DPM idle sessions stay normal; unlike F35-H (TRANSFERS dropped) transfers still insert and there is no ORA-00942 or ORA-04043; unlike F42-R (a release full-scanning transfers on every transfer) Oracle CPU does not rise (the capped count stops early, so database work falls) and there is no rollout; unlike a dead or saturated transfer, transfer is Ready and fast. KCM shows no rollout, restart or readiness failure in rca-testbed-banking.",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "DPM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "banking-oracle:BANKING",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking Oracle(FREEPDB1)의 애플리케이션 계정 BANKING 이 새로 받은 자원 한도 프로필이다. Oracle 에서 계정은 곧 스키마라 'banking-oracle:BANKING' 으로 적고(F35-R 과 같은 표기), 인스턴스만 지목한 답(banking-oracle)은 덜 정밀해 partial 이다. DB 자원 한도 정비가 프로필 APP_CALL_LIMITS(LOGICAL_READS_PER_CALL 30000)를 만들어 BANKING 에 붙였는데, 한도가 서비스가 정상으로 하는 가장 무거운 호출보다 낮다: 거래 내역 페이지마다 도는 transfers 건수 질의(Spring Data Page 의 count, 조건이 모두 'is null or' 라 전수 스캔)가 호출당 약 5만~20만 블록을 읽는다(DPM top SQL 7일 최소 약 4.6만, 중앙 약 9.6만). Oracle 은 한도를 로그인 때 읽어 이미 열린 세션은 그대로라 바로는 아무것도 깨지지 않는다. transfer 의 Hikari 풀이 세션을 idle-timeout(60초, minimum-idle 위)과 max-lifetime(10분) 안에 새로 만들면서 새 세션마다 한도를 지니고, 그때부터 거래 내역 건수 질의가 3만 블록에서 ORA-02395 'exceeded call limit on IO usage' 로 끊긴다. transfer 는 거래 내역 요청에 500, api 는 세 번 재시도한 뒤 transferClient 서킷을 열고 502 로 답한다. 세션은 살아 있고 가벼운 호출(이체의 계좌 잠금, INSERT, outbox 는 호출당 100 블록 아래, 잔액 조회, 계좌 목록, outbox 릴레이 폴링 약 1만 블록, commerce 정산 이체)은 모두 성공한다. ledger 의 대사 배치(ledger_entries 방향별 SUM 두 번, 각 약 14.6만 블록, 10분마다)도 같은 오류로 실패한다. 요청과 질의는 늘 하던 그대로라 정당하고(원칙 6), 잘못된 것은 그것을 끊는 한도다. 근본과 계기가 같은 곳(BANKING 계정의 프로필 변경)이라 trigger_target_id 는 비운다. 관제 데이터로의 도달 경로: ① transfer 와 ledger 로그 'ORA-02395: exceeded call limit on IO usage'(Hibernate ERROR, transfer 의 Tomcat 'Servlet.service() ... threw exception', ledger 의 'Unexpected error occurred in scheduled task'), 보존된 로그(2026-10-03~) 0건. 프로필 변경 명령 자체는 119 에 남지 않으므로(DPM 에 DDL, 계정 속성 항목이 없음) 첫 흔적은 이 오류다 ② 실패하는 것이 서로 다른 두 서비스의 가장 무거운 질의 둘뿐이고 같은 세션의 가벼운 호출은 성공한다(계정 단위 호출 한도의 지문) ③ DPM top SQL 의 거래 내역 건수 질의(sql_id byb2y2hv7p4ag) avgLogicalReads 가 다른 BANKING 질의보다 한 자리 이상 크다 ④ api 'Transfer service list call failed: 500' 과 서킷 열림, 이체 'Transfer COMPLETED' 는 계속 ⑤ KCM 무변화. 원본(Google 2020-12-14, 자동 쿼터 관리가 한 서비스의 쿼터를 실제 사용량 아래로 줄여 그 서비스의 정상 요청이 거절됨)처럼 '한도가 실제 사용량 아래로 잡혀 정상 요청이 거절됐다'가 정답의 층위이고, 한도 값을 어떻게 정했는지는 요구하지 않는다.",
+    "code_anchor": [
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java:17-28 (search — 조건이 모두 'is null or' 인 Page 질의, Spring Data 가 페이지마다 같은 조건의 count 를 따로 돌린다)",
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:122-124 (search — 거래 내역 조회가 transferRepository.search 를 부른다)",
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/controller/TransferController.java:51-63 (list — page, size 가 있으면 Page 조회)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/TransferClient.java:32-60 (listTransfers, listTransfersFallback — transfer 의 5xx 를 재시도 뒤 502, 서킷 열림)",
+     "core-banking/api-service/src/main/resources/application.yml:30-54 (transferClient 서킷 10회 중 50%, 5초 열림, 재시도 3회 200ms 지수)",
+     "core-banking/transfer-service/src/main/resources/application.yml:7-17 (username, hikari — DB_USER 기본 banking, minimum-idle 5, idle-timeout 60000, max-lifetime 600000)",
+     "core-banking/ledger-service/src/main/java/com/corebanking/ledger/batch/ReconciliationBatch.java:26-34 (reconcile — 예외를 잡지 않아 스케줄러가 ERROR 로 남긴다)",
+     "core-banking/ledger-service/src/main/java/com/corebanking/ledger/repository/LedgerEntryRepository.java:19-20 (sumAmountByDirection — ledger_entries 전수 SUM)",
+     "core-banking/k8s/22-transfer-service.yaml:48-57 (DB_USER, APP_USER — transfer 가 BANKING 계정으로 접속)",
+     "core-banking/k8s/02-configmaps.yaml:38-39 (location /api/transfers — 거래 내역은 nginx 가 api 로 넘긴다)"
+    ],
+    "infra_anchor": "rca-testbed-banking StatefulSet testbed-oracle(파드 testbed-oracle-0, gvenzl/oracle-free:23-slim, PDB FREEPDB1, tb-w2). RESOURCE_LIMIT=TRUE(2026-10-10 109 조회), 애플리케이션 계정 BANKING 은 DEFAULT 프로필(커널 한도 모두 UNLIMITED)이고 account, transfer, ledger 가 함께 쓴다. DPM 은 별도 계정 LUCIDA_MON(DEFAULT 프로필), 실행기와 러너의 Oracle 조회는 sysdba 라 한도의 영향을 받지 않는다. 109 v$sql(2026-10-10): 거래 내역 건수 byb2y2hv7p4ag 실행당 60,829 블록(345만 회), ledger SUM bzbd2xfdtjdxv 146,033, outbox 릴레이 폴링 470as8m1vuxbs 10,100, 그 밖의 BANKING 질의는 모두 400 아래(거래 내역 페이지 본 질의 78, 계좌 FOR UPDATE 5). 로컬 gvenzl/oracle-free:23-slim 실측(2026-10-10): 프로필을 붙인 뒤 이미 열린 세션은 한도 없이 전수 스캔을 마치고, 새 세션은 같은 질의에서 ORA-02395 를 받고도 가벼운 질의는 계속 성공하며, 프로필을 DEFAULT 로 되돌리거나 한도를 UNLIMITED 로 바꾸거나 프로필을 지워도 한도를 지닌 세션은 그대로이고 새 세션은 정상이다."
+   },
+   "must_support": [
+    "transfer 로그에 'ORA-02395: exceeded call limit on IO usage' 가 Hibernate ERROR 와 GET /api/transfers 의 Tomcat 'Servlet.service() ... threw exception' 으로 나온다. 보존된 core-banking 로그(2026-10-03~)에 ORA-02395 는 0건이다",
+    "ledger 의 대사 배치가 'Ledger reconciliation batch started' 뒤 'finished' 없이 'Unexpected error occurred in scheduled task' 와 ORA-02395 로 끝난다(평시 7일 started 1,004회, finished 1,003회, 약 10분마다)",
+    "api ERROR 'Transfer service list call failed: 500' 과 'Transfer service circuit open/exhausted' 가 급증하고(평시 7일에는 다른 시나리오 실행 창 2026-10-09 06:55~14:08 에만 있음), core-banking-api 서버 스팬의 5xx 비율이 평시 0 에서 거래 내역 비중(동반 부하 중 약 70%)만큼 오른다",
+    "같은 시각 이체는 계속 완료된다: transfer 'Transfer COMPLETED'(from=ACC- 와 from=commerce-settlement 모두)와 commerce checkout 이 평시대로이고, 동반 부하의 이체 5xx 와 잔액 조회 실패율은 0 근처다",
+    "DPM top SQL 에서 거래 내역 건수 질의(sql_id byb2y2hv7p4ag)의 avgLogicalReads 가 7일 중앙 약 9.6만으로 다른 BANKING 질의(outbox 릴레이 약 1만, 나머지 수백 이하)보다 한 자리 이상 크다. 실패하는 것이 바로 이 질의와 ledger SUM 이다",
+    "KCM 에 rca-testbed-banking 의 롤아웃, 새 ReplicaSet, 재시작, readiness 실패가 없고 Oracle 은 Ready 다. DPM idle_session 은 평시 범위다(풀이 비지 않는다)"
+   ],
+   "must_rule_out": [
+    "계정 잠금이나 자격 증명 문제(F35-R)가 아님: ORA-28000 이 없고 새 로그인과 풀 채우기가 정상이며 같은 세션이 가벼운 질의를 계속 처리한다. 실패는 로그인이 아니라 무거운 호출 하나하나에서 ORA-02395 로 난다",
+    "표 삭제나 이름 변경(F35-H)이 아님: 이체 INSERT 와 거래 내역 페이지 본 질의가 transfers 를 계속 읽고 쓰며 ORA-00942, ORA-04043 이 없다",
+    "Oracle 포화나 느린 질의(F42-R)가 아님: 롤아웃이 없고 Oracle CPU 와 활성 세션이 오르지 않는다(한도에 걸린 질의가 일찍 끝나 DB 일은 오히려 준다). 오류는 시간 초과가 아니라 즉시 반환되는 ORA-02395 다",
+    "transfer 다운이나 엔드포인트 비움(F17-R, F17-H, F50-R, F52-R)이 아님: transfer 는 Ready 이고 이체와 commerce 정산 이체에 계속 200 으로 답한다",
+    "DNS, 네트워크(F37-R, F44-P)가 아님: api 는 transfer 에 닿아 500 을 받고, 같은 경로의 이체는 성공한다",
+    "앱 배포나 설정 변경이 아님: rca-testbed-banking 에 롤아웃, 새 ReplicaSet, 재시작이 없다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F35-R (같은 BANKING 계정이 원인이지만 계정 잠금으로 새 로그인이 ORA-28000 으로 거절되어 풀이 비고 banking 전체와 commerce 정산이 502 다. F54-R 은 로그인과 풀이 정상이고 무거운 호출만 ORA-02395 로 끊긴다)",
+     "F35-H (거래 내역이 같은 transfer 500, api 502 로 실패하지만 TRANSFERS 표가 지워져 이체도 실패한다. F54-R 은 이체와 정산이 정상이다)",
+     "F42-R (같은 transfers 전수 스캔이 문제의 중심이지만 릴리스가 이체마다 스캔을 더해 Oracle CPU 가 포화된다. F54-R 은 스캔이 원래부터 있던 정상 질의이고 그것을 끊는 한도가 새로 생겼다)",
+     "F51-R (banking 의 한 경로만 실패하는 꼴이지만 account 를 replicas 0 으로 줄여 잔액 조회와 이체가 실패한다. F54-R 은 거래 내역만 실패한다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "banking-oracle:BANKING"
+    ],
+    "partial": [
+     "banking-oracle",
+     "banking-transfer",
+     "banking-api",
+     "banking-ledger"
+    ]
+   },
+   "title_ko": "DB 자원 한도 정비가 banking Oracle 애플리케이션 계정 BANKING 에 호출당 논리 읽기 한도(30000)를 둔 새 프로필을 붙였는데, 한도가 거래 내역 페이지의 건수 질의(호출당 약 5만~20만 블록)보다 낮음: transfer 풀의 세션이 새로 열리면서 거래 내역 요청마다 ORA-02395 로 끊겨 api 에서 502 가 되고, 잔액 조회, 이체, commerce 정산은 정상이다",
+   "description_ko": "account-service, transfer-service, ledger-service 는 모두 banking Oracle PDB(FREEPDB1)에 애플리케이션 계정 BANKING 하나로 접속하고, 이 계정은 커널 한도가 없는 DEFAULT 프로필이다(RESOURCE_LIMIT 은 TRUE 라 프로필이 정한 한도는 적용된다). DB 자원 한도 정비가 프로필 APP_CALL_LIMITS(LOGICAL_READS_PER_CALL 30000)를 만들어 BANKING 에 붙인다. 폭주 질의를 막으려는 한도였지만, banking 서비스가 일부러 하는 가장 무거운 호출보다 낮다: 거래 내역 페이지(GET /api/transfers, api → transfer)마다 도는 transfers 건수 질의(Spring Data Page 의 count, 선택 조건이 모두 'is null or')는 표를 전수 스캔해 호출당 약 5만~20만 블록을 읽는다(DPM top SQL 7일 최소 약 4.6만, 중앙 약 9.6만). Oracle 은 세션의 한도를 로그인 때 읽어 이미 열린 세션은 그대로다. transfer 의 Hikari 풀은 세션을 max-lifetime(600000ms) 안에, minimum-idle 위의 것은 idle-timeout(60초) 안에 새로 만들고, 새 세션마다 한도를 지녀 그때부터 거래 내역 건수 질의가 3만 블록에서 ORA-02395 'exceeded call limit on IO usage' 로 끊긴다. transfer 는 거래 내역 요청에 500, api 는 세 번 재시도한 뒤 transferClient 서킷을 열고 502 로 답한다. 세션은 살아 있고 가벼운 호출은 모두 그대로다: 이체(계좌 잠금, INSERT, outbox, 호출당 100 블록 아래), 잔액 조회, 계좌 목록, outbox 릴레이 폴링(약 1만 블록), commerce 정산 이체가 성공한다. ledger 의 대사 배치(ledger_entries 방향별 SUM 두 번, 각 약 14.6만 블록, 10분마다)는 같은 방식으로 실패한다. north-south 동반 부하(core-banking surge.js 10rps)가 상주 기준선 위에 흘러 core-banking-api 의 표본 서버 스팬이 거래 내역 실패를 드러낼 만큼 쌓인다.",
+   "cause_ko": "banking Oracle PDB 에서 CREATE PROFILE APP_CALL_LIMITS LIMIT LOGICAL_READS_PER_CALL 30000, ALTER USER BANKING PROFILE APP_CALL_LIMITS → 새 BANKING 세션은 호출당 3만 블록 한도를 지니고 기존 세션은 아님 → transfer Hikari 풀이 세션을 새로 만듦(minimum-idle 위 idle-timeout 60초, max-lifetime 10분) → 거래 내역 페이지의 transfers 건수 질의(약 5만~20만 블록)가 ORA-02395 로 끊김 → transfer 500 → api 재시도와 transferClient 서킷 열림 → GET /api/transfers 502. ledger 대사 SUM 도 10분마다 같은 오류로 실패. 이체, 잔액 조회, 계좌 목록, commerce 정산은 그대로.",
+   "injection_summary_ko": "db.account executor 가 testbed-oracle-0 안의 sqlplus 로 FREEPDB1 의 BANKING 이 DEFAULT 프로필이고 APP_CALL_LIMITS 프로필이 없으며 RESOURCE_LIMIT 이 TRUE 인지 확인한 뒤, CREATE PROFILE APP_CALL_LIMITS LIMIT LOGICAL_READS_PER_CALL 30000 과 ALTER USER BANKING PROFILE APP_CALL_LIMITS 를 실행하고 DBA_USERS, DBA_PROFILES 로 둘 다 확인한다. cleanup 은 BANKING 을 DEFAULT 로 되돌리고 APP_CALL_LIMITS 를 지운 뒤 확인한다. 한도 아래에서 열린 세션은 풀이 바꿀 때까지(max-lifetime 10분) 한도를 지녀 거래 내역은 최대 10분에 걸쳐 돌아온다. 비밀번호, 계정 상태, 표, 인덱스, 행, Deployment, 앱 설정은 바꾸지 않고 세션도 끊지 않으며, DB 에 닿는 어떤 값에도 시나리오 id 가 없다. north-south 10rps 동반 부하(core-banking surge.js, nginx 경유: 잔액 55%, 거래 내역 25%, 계좌 목록 10%, 이체 10%)가 상주 기준선(거래 내역 초당 약 0.8건) 위에 흐른다.",
+   "user_impact_ko": "변경 뒤 약 10분 안에 모든 거래 내역 요청이 502 로 실패한다(api 가 한 건마다 세 번 재시도한 뒤 서킷이 즉시 답한다). 그 전에는 transfer 세션이 바뀌는 만큼 실패 비중이 늘어난다. 잔액 조회, 계좌 목록, 이체, banking 정산을 거치는 commerce checkout 은 그대로 된다. ledger 대사 배치는 10분마다 실패해 그동안 차대 불일치 점검이 비어 있다. 잘못 쓰이거나 사라지는 데이터는 없다. 프로필을 되돌리면 풀이 한도를 지닌 세션을 바꾸는 대로 최대 약 10분에 걸쳐 거래 내역이 돌아온다.",
+   "distinguishing_evidence_ko": "결정 증거는 오류 문구다: transfer 와 ledger 가 'ORA-02395: exceeded call limit on IO usage' 를 남긴다(Hibernate SqlExceptionHelper ERROR, transfer 의 GET /api/transfers 에 대한 Tomcat 'Servlet.service() ... threw exception', ledger 대사의 'Unexpected error occurred in scheduled task'). 보존된 로그(2026-10-03~)에 한 번도 없던 문구이고, DB 계정의 호출당 자원 한도라는 뜻이다: DB 에 닿았고 세션은 인증됐고 질의는 한도가 멈출 때까지 돌았다. 실패하는 것은 다른 모든 것보다 훨씬 많이 읽는 두 질의뿐이고, 둘 다 BANKING 소유이며 서로 다른 서비스의 것이라 표, 서비스, 인스턴스가 아니라 계정을 가리킨다. DPM top SQL 의 거래 내역 건수 질의(sql_id byb2y2hv7p4ag, avgLogicalReads 7일 중앙 약 9.6만)가 왜 그 질의가 걸리는지 보여 준다. 같은 세션의 가벼운 일은 계속된다: 이체가 완료되고('Transfer COMPLETED' 가 from=commerce-settlement 를 포함해 계속), 잔액 조회가 성공하고, outbox 릴레이가 발행한다. F35-R(BANKING 잠금)과 달리 ORA-28000, 풀 고갈, readiness 실패가 없고 DPM idle_session 이 평시다. F35-H(TRANSFERS 삭제)와 달리 이체 INSERT 가 되고 ORA-00942, ORA-04043 이 없다. F42-R(이체마다 transfers 를 전수 스캔하는 릴리스)과 달리 롤아웃이 없고 Oracle CPU 가 오르지 않는다(한도에 걸린 건수 질의가 일찍 끝나 DB 일이 준다). transfer 가 죽거나 느린 것과도 달리 transfer 는 Ready 이고 빠르다. KCM 에는 rca-testbed-banking 의 롤아웃, 재시작, readiness 실패가 없다.",
+   "injected_fault": {
+    "profile": "db.account",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f54-r",
+      "parameters": {
+       "engine": "oracle",
+       "namespace": "rca-testbed-banking",
+       "pod": "testbed-oracle-0",
+       "pdb": "FREEPDB1",
+       "account": "BANKING",
+       "profile": "APP_CALL_LIMITS",
+       "resource": "LOGICAL_READS_PER_CALL",
+       "limit": 30000
+      }
+     }
+    ]
+   }
   }
  }
 }

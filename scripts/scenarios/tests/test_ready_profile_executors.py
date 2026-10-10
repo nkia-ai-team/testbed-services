@@ -215,6 +215,42 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "no verified database account contract"):
             db_account.validate("F14-P", db_account.CONTRACTS["F35-R"], {})
 
+    def test_db_account_profile_limit_assigns_one_capped_profile_and_reverts_it(self) -> None:
+        # F54-R: 주입은 새 프로필 하나(호출당 논리 읽기 한도)를 만들어 앱 계정에 붙이는 것뿐이다.
+        # 계정 상태를 잠그거나 세션을 끊으면 "기존 세션은 그대로, 새 세션의 무거운 호출만 끊긴다"는
+        # 지문이 F35-R(잠금)이나 다른 장애가 된다. DEFAULT 프로필을 고치면 DPM 계정(LUCIDA_MON)까지 묶인다.
+        plan = compiler.compile_plan("f54-r-banking-oracle-app-account-call-read-limit-breaks-history")
+        argv, stdin = db_account.build_invocation(plan, "run")
+        self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
+        self.assertEqual(argv[4:], ["rca-testbed-banking", "testbed-oracle-0", "FREEPDB1", "BANKING",
+                                    "APP_CALL_LIMITS", "LOGICAL_READS_PER_CALL", "30000"])
+        self.assertNotIn("F54-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F54-R", script)
+        self.assertNotEqual(stdin, db_account.ORACLE_REMOTE)
+        run_case = script.split("run)")[1].split(";;")[0]
+        self.assertIn('expect "DEFAULT|NONE|TRUE"', run_case)
+        self.assertIn('"create profile $profile limit $resource $limit;" "alter user $account profile $profile;"', run_case)
+        self.assertIn('expect "$profile|$limit|TRUE"', run_case)
+        cleanup_case = script.split("cleanup)")[1].split(";;")[0]
+        self.assertIn('"alter user $account profile default;"', cleanup_case)
+        self.assertIn('"drop profile $profile;"', cleanup_case)
+        self.assertIn('expect "DEFAULT|NONE|TRUE"', cleanup_case)
+        for forbidden in ("kill session", "identified by", "account lock", "drop user", "password",
+                          "alter profile default", "$profile cascade"):
+            self.assertNotIn(forbidden, script.lower())
+        # F35-R 은 그대로 잠금 스크립트를 쓴다.
+        f35r_argv, f35r_stdin = db_account.build_invocation(
+            compiler.compile_plan("f35-r-banking-oracle-app-account-locked"), "run")
+        self.assertEqual(f35r_stdin, db_account.ORACLE_REMOTE)
+        self.assertEqual(len(f35r_argv), 8)
+        params = dict(db_account.CONTRACTS["F54-R"])
+        params["limit"] = 100000
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_account.validate("F54-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_account.validate("F54-R", db_account.CONTRACTS["F35-R"], {})
+
     def test_host_firewall_adds_one_allowlist_chain_for_new_connections_and_removes_it(self) -> None:
         # F44-R: 주입은 tb-w3 FORWARD 맨 위에 한 포트로 가는 새 연결(conntrack NEW)만 허용 목록 체인으로
         # 보내는 규칙과 그 체인뿐이다. 이미 맺어진 연결을 끊거나(원본의 '지속 소켓은 다시 맺어질 때까지 무사'가
@@ -1263,6 +1299,8 @@ esac
             "F35-H",
             # 2026-10-10: food MySQL fooddelivery.dispatches 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, dispatch 의 배달원 용량 확인 500, order 가 주문 저장 전에 전량 503, 주문 행, 배차, 결제 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F32-P",
+            # 2026-10-10: banking Oracle 애플리케이션 계정 BANKING 에 호출당 논리 읽기 한도(30000) 프로필을 붙임(거래 내역 건수 질의가 ORA-02395 로 끊겨 api 502, 이체와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F54-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
