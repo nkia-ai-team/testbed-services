@@ -65,7 +65,8 @@
     "F40-H",
     "F52-R",
     "F53-R",
-    "F53-P"
+    "F53-P",
+    "F42-P"
   ],
   "controllers": {
     "F01-R": {
@@ -15318,6 +15319,290 @@
         ],
         "consecutive_ticks": 2,
         "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F42-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health",
+        "db-memory-headroom"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          },
+          {
+            "check": "db-memory-headroom",
+            "_note": "food MySQL 은 1Gi 한도에 붙어 있고(2026-10-10 memory.current 1,073,078,272, anon 919,715,840, kernel 약 16MB, VmHWM 934MB) 하루 이틀 간격으로 OOMKill 재시작한다(재시작 44회, 30일 KCM Started 26회). 집계 세션 하나가 약 2.3MiB(109 performance_schema 실측)라 restaurant 풀 10개와 재시작이 끊고 떠난 집계를 합쳐 약 20개면 약 46MiB 가 더 든다. 러너가 memory.stat 의 anon 이 900MiB 이하이고 MySQL 컨테이너가 30분 넘게 떠 있을 때만 시작한다(memory.current 는 페이지 캐시 때문에 늘 한도에 붙어 있어 여유 조건으로 쓸 수 없다)"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f42-p",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-restaurant",
+              "container": "restaurant-service",
+              "baseline_image": "food-delivery-restaurant:latest",
+              "fault_image": "food-delivery-restaurant:1.5.0"
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "기준선 문서의 주문 생성 단계(30180 → order) 상태. 동반 부하(popular-menu-surge.js)는 주문을 넣지 않아 자기 문서의 entry_status 가 비므로 기준선 문서를 읽는다(F48-R 과 같은 계약). 릴리스는 restaurant 의 인기 메뉴 조회에 무거운 집계를 붙여 MySQL 과 restaurant 풀을 말리고, order 는 restaurant 호출 실패를 재시도(3회)와 서킷 끝에 502 로 돌려준다. order 는 health 의 DB 확인이 ping 이라 포화된 MySQL 에서도 연결 가능 상태를 지킨다(같은 MySQL 포화 꼴의 F33-R 실행에서 order 는 재시작 없이 연결 가능). 0(연결 불가)은 order 파드나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "_note": "food MySQL 파드. 이 주입은 MySQL 설정, 스키마, 인덱스를 건드리지 않는다. 포화되어도 Ready 여야 한다(MySQL 에는 프로브가 없어 OOMKill 같은 재시작 때만 빠진다)",
+          "freshness": "30s"
+        },
+        {
+          "id": "mysql_uptime_seconds",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_uptime_seconds",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-mysql",
+            "container": "mysql"
+          },
+          "freshness": "30s",
+          "_note": "food MySQL 컨테이너가 떠 있은 초. preflight(db-memory-headroom)가 1800 이상에서만 시작하므로 실행 중 1800 아래로 내려가면 실행 중 재시작(OOMKill 등)이다. MySQL 에 프로브가 없어 pod_ready 는 OOM 뒤 몇 초 만에 True 로 돌아와 이를 놓친다"
+        },
+        {
+          "id": "mysql_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-mysql",
+            "container": "mysql"
+          },
+          "freshness": "30s",
+          "_note": "기록용. 평시 이미 44(2026-10-10)라 절댓값 판정에 쓰지 않는다"
+        },
+        {
+          "id": "mysql_termination_reason",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_last_termination_reason",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-mysql",
+            "container": "mysql"
+          },
+          "freshness": "30s",
+          "_note": "기록용. 평시 이미 OOMKilled(2026-10-08 20:33 UTC)라 판정에 쓰지 않는다"
+        },
+        {
+          "id": "mysql_memory_current_bytes",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_memory_current_bytes",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "deployment": "testbed-mysql",
+            "container": "mysql"
+          },
+          "freshness": "30s",
+          "_note": "기록용. 페이지 캐시를 포함해 평시에도 한도(1,073,741,824) 근처다"
+        },
+        {
+          "id": "restaurant_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-restaurant"
+          },
+          "_note": "restaurant 파드. 판정에 쓰지 않고 회복 확인에만 쓴다: 포화 중에는 health 의 DB 확인이 풀 연결을 3초 기다리다 실패해 readiness 에서 빠지거나 liveness 로 재시작할 수 있다(결과이지 원인이 아니다)",
+          "freshness": "30s"
+        },
+        {
+          "id": "popular_menu_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "_note": "동반 부하(popular-menu-surge.js 2rps)의 인기 메뉴 조회(GET /api/restaurants/{id}/popular-menu, step 'menu' 로 태깅) 비정상 비율(4xx, 5xx, 연결 실패). 30초 창에 약 60건. 평시 0(119 표본 3일 15,015건 중 5xx 1건). 릴리스는 인기 메뉴 요청마다 4~7.5초(109 한가할 때) 걸리는 집계를 내므로 초당 2건이면 MySQL(CPU 0.5)과 restaurant 풀(10)이 감당하는 양을 몇 배 넘고, 대부분 풀 대기 3초 뒤 500 이나 readiness 이탈에 따른 연결 실패가 된다",
+          "freshness": "30s"
+        },
+        {
+          "id": "restaurant_error_rate",
+          "adapter": "clickhouse",
+          "query_id": "clickhouse.service_error_rate",
+          "parameters": {
+            "service_name": "food-delivery-restaurant"
+          },
+          "_note": "restaurant 서버 스팬(표본 10%) 60초 창의 5xx 백분율. 기록용(판정에 쓰지 않음): restaurant 가 readiness 에서 빠지는 동안은 스팬이 없어 값이 흔들린다. 평시 3일 표본 189,647건 중 5xx 385건(가게 상세 316건, 목록 65건)",
+          "freshness": "60s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "popular-menu-failed",
+            "observation": "popular_menu_nonok_rate",
+            "op": "gte",
+            "value": 0.8
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 새 restaurant 파드가 옛 파드를 대신한 뒤(약 1분) 인기 메뉴 요청마다 가게 한 곳의 주문 품목을 주문 표와 조인해 세는 집계가 붙는다(가게 1 기준 키 읽기 약 16만 3천 번)(109 실측 4.05, 4.39, 7.47초, 버퍼 풀 밖 읽기 약 2만 9천 쪽). 동반 부하 인기 메뉴 초당 2건 + 기준선 약 0.3~0.6건은 MySQL 이 이 집계를 처리하는 양(동시에 하나면 초당 약 0.2건)의 열 배쯤이라, restaurant Hikari 10개가 모두 실행 중인 집계에 묶이고 나머지 요청은 풀 대기 3초 뒤 500 이 된다. 같은 풀을 쓰는 health 도 실패해 readiness 에서 빠지면 연결 실패로 센다. 판정을 인기 메뉴 하나로 둔 이유: restaurant 의 5xx 스팬 비율은 readiness 이탈 동안 스팬이 없어 흔들리고, 기준선 주문은 loadgen 주문 여정이 메뉴 조회 실패에서 멈춰 표본이 줄기 때문이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. ramping-arrival-rate(maxVUs 100)라 요청이 수 초씩 걸려도 반복률이 유지된다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 오래 빠지면 질의 비용이 아니라 DB 다운(F25-H 꼴)이다. MySQL 에는 프로브가 없어 OOMKill 뒤 몇 초 만에 Ready 로 돌아오므로 실행 중 재시작은 food-db-restarted(uptime)가 잡는다"
+          },
+          {
+            "id": "food-db-restarted",
+            "observation": "mysql_uptime_seconds",
+            "op": "lt",
+            "value": 1800,
+            "_note": "실행 중 MySQL 컨테이너가 다시 떴다(OOMKill 등). DB 재시작(F25-H 꼴)이 섞인 실행은 이 시나리오의 녹화가 아니다. preflight 가 1800 이상을 보장하므로 재시작이 없으면 실행 내내 1800 이상이다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "restaurant-ready",
+            "observation": "restaurant_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "restaurant-recovered",
+            "observation": "restaurant_error_rate",
+            "op": "lt",
+            "value": 5
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 restaurant 이미지를 매니페스트 이미지로 되돌리고 Deployment 가 사용 가능해진 뒤, 릴리스를 쓰는 파드가 없어지면 tb-w3 containerd 에서 릴리스 이름과 ID 참조를 지운다. 매니페스트 버전은 인기 메뉴를 캐시 표(88행)에서 읽어 집계를 내지 않는다. 옛 파드가 끊고 떠난 집계는 MySQL 이 끝까지 실행하므로(하나당 수 초~수십 초) 되돌린 뒤 1~2분 안에 풀린다. order 의 restaurant 서킷브레이커는 반열림 3회 성공으로 닫힌다"
       },
       "cleanup": {
         "required": true,

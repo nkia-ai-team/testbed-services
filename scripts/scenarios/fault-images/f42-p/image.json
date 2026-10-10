@@ -1,0 +1,7 @@
+{
+  "base": "food-delivery-restaurant:latest",
+  "fault": "food-delivery-restaurant:1.5.0",
+  "domain": "food-delivery",
+  "module": "restaurant-service",
+  "node": "tb-w3"
+}

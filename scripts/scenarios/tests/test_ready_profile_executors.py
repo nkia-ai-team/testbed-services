@@ -886,6 +886,30 @@ esac
         for word in ("F40", "f40", "fault", "bug", "chaos", "scenario"):
             self.assertNotIn(word, added)
 
+    def test_k8s_image_release_mode_rolls_food_restaurant_live_popular_ranking(self) -> None:
+        # F42-P: 같은 release 스크립트로 food restaurant 를 1.5.0 으로 롤아웃한다(tb-w3). F49-R 도 restaurant 를 쓰지만
+        # 태그가 1.4.0 이라 겹치지 않는다. 릴리스 태그는 fault-images/f42-p/image.json 과 같아야 하고, 패치는
+        # restaurant-service/src 안만 고친다.
+        plan = compiler.compile_plan("f42-p-food-restaurant-release-live-popular-menu-aggregation-saturates-mysql")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-restaurant", "restaurant-service",
+                                    "food-delivery-restaurant:latest", "food-delivery-restaurant:1.5.0"])
+        self.assertNotIn("F42-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F42-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F42-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f42-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F42-P"]["baseline_image"], k8s_image.CONTRACTS["F42-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f42-p" / "restaurant-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/restaurant-service/src/",
+                                                     "b/food-delivery/restaurant-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F42", "f42", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1233,6 +1257,8 @@ esac
             "F53-R",
             # 2026-10-10: food MySQL fooddelivery.payments 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, payment 가 결제 INSERT 에서 500, order 가 배차 뒤 결제 단계에서 전량 502, PG 미호출). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-P",
+            # 2026-10-10: food restaurant-service 를 인기 메뉴를 주문 원장에서 바로 세는 릴리스 1.5.0(fault-images/f42-p)으로 롤아웃(인기 메뉴 요청마다 가게 한 곳의 주문 품목 수만 행 조인 집계, MySQL 포화, restaurant 풀 고갈로 가게 조회와 주문 실패). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F42-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

@@ -1134,6 +1134,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F42-P",
+      "slug": "f42-p-food-restaurant-release-live-popular-menu-aggregation-saturates-mysql",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }

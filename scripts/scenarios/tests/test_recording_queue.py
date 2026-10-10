@@ -75,7 +75,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 19 → 20. F52-R(banking 워커 tb-w2 의 이미지 보존 정리가 쓰고 있는 앱 이미지를 지워 transfer 재배포의 새 파드가 ErrImageNeverPull) 후보 추가.
         # 2026-10-10: 20 → 21. F53-R(운영을 가리킨 로컬 마이그레이션이 food orders 표를 지워 주문 생성이 1146 으로 전량 500) 후보 추가.
         # 2026-10-10: 21 → 22. F53-P(운영을 가리킨 로컬 마이그레이션이 food payments 표를 지워 주문이 결제 단계에서 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 22)
+        # 2026-10-10: 22 → 23. F42-P(food restaurant 릴리스가 인기 메뉴를 주문 원장에서 바로 세어 MySQL 포화) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 23)
 
 
 class RecordingQueueTests(unittest.TestCase):

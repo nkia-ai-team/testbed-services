@@ -1,0 +1,78 @@
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/repository/MenuRepository.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/repository/MenuRepository.java
+index 55a4aff..d05c5ac 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/repository/MenuRepository.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/repository/MenuRepository.java
+@@ -24,6 +24,18 @@ public interface MenuRepository extends JpaRepository<Menu, Long> {
+             nativeQuery = true)
+     List<PopularMenuProjection> aggregatePopularMenus(@Param("since") LocalDateTime since);
+ 
++    // 가게 한 곳의 최근 주문 메뉴 순위를 주문 원장에서 바로 센다(1시간 배치를 기다리지 않는 실시간 순위).
++    @Query(value = "SELECT oi.menu_id AS menuId, m.restaurant_id AS restaurantId, m.name AS menuName, COUNT(*) AS orderCount "
++            + "FROM order_items oi "
++            + "JOIN orders o ON o.id = oi.order_id "
++            + "JOIN menus m ON m.id = oi.menu_id "
++            + "WHERE m.restaurant_id = :restaurantId AND o.created_at >= :since "
++            + "GROUP BY oi.menu_id, m.restaurant_id, m.name "
++            + "ORDER BY orderCount DESC",
++            nativeQuery = true)
++    List<PopularMenuProjection> rankRecentMenus(@Param("restaurantId") Long restaurantId,
++                                                @Param("since") LocalDateTime since);
++
+     interface PopularMenuProjection {
+         Long getMenuId();
+         Long getRestaurantId();
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+index 174dafc..c019314 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+@@ -10,11 +10,13 @@ import com.fooddelivery.restaurant.entity.Restaurant;
+ import com.fooddelivery.restaurant.repository.MenuPopularitySummaryRepository;
+ import com.fooddelivery.restaurant.repository.MenuRepository;
+ import com.fooddelivery.restaurant.repository.RestaurantRepository;
++import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import java.time.LocalDateTime;
+ import java.util.List;
+ 
+ @Service
+@@ -23,13 +25,16 @@ public class RestaurantService {
+     private final RestaurantRepository restaurantRepository;
+     private final MenuRepository menuRepository;
+     private final MenuPopularitySummaryRepository popularitySummaryRepository;
++    private final int popularLookbackDays;
+ 
+     public RestaurantService(RestaurantRepository restaurantRepository,
+                               MenuRepository menuRepository,
+-                              MenuPopularitySummaryRepository popularitySummaryRepository) {
++                              MenuPopularitySummaryRepository popularitySummaryRepository,
++                              @Value("${menu.popularity.lookback-days:7}") int popularLookbackDays) {
+         this.restaurantRepository = restaurantRepository;
+         this.menuRepository = menuRepository;
+         this.popularitySummaryRepository = popularitySummaryRepository;
++        this.popularLookbackDays = popularLookbackDays;
+     }
+ 
+     // §7 신규 — region/status 필터 + 페이지네이션. 배열 응답(하위호환 원칙, page/size 미지정 시 무제한).
+@@ -40,14 +45,15 @@ public class RestaurantService {
+                 .toList();
+     }
+ 
+-    // §7 신규 — PopularMenuBatch가 채운 캐시 테이블 조회.
++    // 1.5.0 — 인기 메뉴를 1시간마다 채우는 캐시 표 대신 최근 주문에서 바로 센다(가게 화면의 순위가 한 시간 늦던 문제).
+     @Transactional(readOnly = true)
+     public List<PopularMenuResponse> getPopularMenu(Long restaurantId) {
+         if (!restaurantRepository.existsById(restaurantId)) {
+             throw new ServiceException(HttpStatus.NOT_FOUND, "Restaurant not found: " + restaurantId);
+         }
+-        return popularitySummaryRepository.findByRestaurantIdOrderByOrderCountDesc(restaurantId).stream()
+-                .map(s -> new PopularMenuResponse(s.getMenuId(), s.getMenuName(), s.getOrderCount()))
++        LocalDateTime since = LocalDateTime.now().minusDays(popularLookbackDays);
++        return menuRepository.rankRecentMenus(restaurantId, since).stream()
++                .map(r -> new PopularMenuResponse(r.getMenuId(), r.getMenuName(), r.getOrderCount()))
+                 .toList();
+     }
+ 

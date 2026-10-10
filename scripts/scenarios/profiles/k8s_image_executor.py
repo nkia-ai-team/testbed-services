@@ -151,6 +151,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-transfer:latest",
         "fault_image": "core-banking-transfer:2.3.0",
     },
+    # 2026-10-10. F42-P: food restaurant-service 를 인기 메뉴를 1시간 배치가 채우는 캐시 표 대신 최근 7일 주문에서
+    # 바로 세는 릴리스 1.5.0 으로 롤아웃한다. 인기 메뉴 요청마다 가게 한 곳의 주문 품목을 주문 표와 조인해 세는
+    # 집계가 붙어(109 실측 4~7.5초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽), food MySQL(CPU 0.5)이 포화되고
+    # restaurant 풀이 마른다. 결함 이미지는 fault-images/f42-p 로 109 docker 에만 빌드한다. restaurant 의 다른
+    # 릴리스 태그(F49-R 1.4.0)와 겹치지 않는다.
+    "F42-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-restaurant",
+        "container": "restaurant-service",
+        "baseline_image": "food-delivery-restaurant:latest",
+        "fault_image": "food-delivery-restaurant:1.5.0",
+    },
 }
 
 

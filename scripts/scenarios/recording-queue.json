@@ -200,6 +200,16 @@
       "requested_at": "2026-10-10",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F42-P",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-10",
+      "attempts": 0,
+      "status": "hold",
+      "hold_reason": "109 러너 재빌드 대기. F42-P 는 러너 새 preflight 검사 db-memory-headroom 과 새 질의 kubernetes.container_uptime_seconds(rca-scenario-runner 2095678)가 있어야 돈다. 옛 러너는 'unknown approved check ids' 로 첫 시도를 버린다. 2026-10-10 커밋 때 /api/active 는 비었지만 /api/live-queue 가 paused(cycle-1-05a81ea9, F40-R)라 재빌드 규칙(idle 일 때만)에 맞지 않아 재빌드하지 않았다. 사람 조치: 라이브 큐가 idle 일 때 109 에서 cd /root/rca-scenario-runner && git pull --ff-only origin main && ./build-and-deploy.sh, 그 뒤 /api/scenarios 에서 F42-P 확인하고 이 항목을 waiting 으로 되돌린다(hold_reason 삭제)."
     }
   ]
 }

@@ -8311,6 +8311,105 @@
      }
     ]
    }
+  },
+  "F42-P": {
+   "title": "Release rollout of the food restaurant-service that computes popular menus live from the order tables: every popular-menu request joins and counts tens of thousands of a restaurant's order items, food MySQL (0.5 CPU) saturates, the restaurant connection pool runs dry and restaurant pages and order creation fail",
+   "description": "A rollout of the food restaurant-service Deployment (testbed-restaurant) moves its container image from food-delivery-restaurant:latest to the release food-delivery-restaurant:1.5.0. The release makes the popular-menu ranking real time: GET /api/restaurants/{id}/popular-menu no longer reads the 88-row cache table menu_popularity_summary that an hourly batch fills, it counts the restaurant's orders of the last 7 days directly (SELECT oi.menu_id, m.restaurant_id, m.name, COUNT(*) FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN menus m ON m.id = oi.menu_id WHERE m.restaurant_id = ? AND o.created_at >= ? GROUP BY ... ORDER BY orderCount DESC). The response shape, the other endpoints, the health endpoint, the schema and the indexes are unchanged, so the new pod becomes Ready and replaces the old one. For one restaurant the query walks the restaurant's order items through the menu_id index (restaurant 1 took about 163,000 key reads: its order items plus one primary-key lookup each) and looks each order up by primary key to apply the date filter; on the 109 MySQL when idle it took 4.05, 4.39 and 7.47 s and one run read about 29,000 pages from disk because orders and order_items do not fit the 128 MB buffer pool. At the normal browsing rate plus a popular-menu companion load (about 2.5 popular-menu requests per second) the aggregations exceed what the 0.5-CPU MySQL can run many times over, every restaurant Hikari connection (pool 10) is held by a running aggregation, and restaurant detail, menu and popular-menu requests wait 3 s for a connection and fail with 500 ('Connection is not available, request timed out after 3000ms'). order-service calls restaurant for the restaurant and the menu of every order, so it retries (3 times), opens its restaurant circuit breaker and fails new orders with 502; the baseline order journey also stops at its menu lookup. Other food queries slow down on the saturated MySQL. restaurant readiness and liveness (both /actuator/health with a DB check) fail while health waits for a connection, so the pod leaves the Service endpoints and kubelet may restart the container (Unhealthy, Killing); aggregations already started keep running in MySQL after their client gave up. Nothing recovers until the release is rolled back.",
+   "cause": "Rollout of testbed-restaurant (food) to the release food-delivery-restaurant:1.5.0, which computes the popular-menu ranking per request from order_items joined with orders instead of reading the cache table → every popular-menu request runs a multi-second aggregation over the restaurant's order history → the aggregations saturate food MySQL (0.5 CPU, buffer pool churn) and hold every restaurant Hikari connection → restaurant pages time out waiting for a connection (500), restaurant drops out of readiness → order-service retries, opens its circuit breaker and fails orders with 502, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-restaurant (rca-testbed-food), container restaurant-service, from food-delivery-restaurant:latest to food-delivery-restaurant:1.5.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f42-p from origin/main food-delivery plus fault-images/f42-p/restaurant-service.patch (two files under restaurant-service/src: MenuRepository gains rankRecentMenus, a per-restaurant version of the batch's aggregation, and RestaurantService.getPopularMenu calls it with a 7-day window instead of reading menu_popularity_summary); the manifest image, sources, manifests, schema and indexes are untouched, and the tag is not used by any other scenario (F49-R uses 1.4.0). Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion popular-menu-surge load (2 rps restaurant visits: detail, menu, popular-menu, no orders) keeps popular-menu traffic at a steady browsing level. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About one minute after the rollout restaurant pages (popular menus first, then details and menus) start failing with 500 or timing out, and most new food orders fail with 502 after a few seconds of retries because order-service cannot read the restaurant and its menu. Delivery tracking and other food calls slow down on the saturated MySQL. restaurant may drop out of the Service and restart repeatedly. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a restaurant release with nothing else changed: a KCM ScalingReplicaSet for testbed-restaurant and the new pod's kubelet event 'Pulled: Container image \"food-delivery-restaurant:1.5.0\" already present on machine' (no testbed-restaurant Pulled event exists in 119 KCM before the run; the running pod is 60 days old on :latest), followed by MySQL saturation that comes from the restaurant pod: DPM sessions (dpm_session_local) from the new restaurant pod's IP stay active for seconds to tens of seconds (normally 39 active samples in 3 days, max 1.4 s), dpm.mysql.session.active_session rises from about 1 to about 10, data_file_read_bytes and row_examined_count jump and the buffer pool hit ratio falls from 99.96%. The schema is unchanged (DPM table_count and index_count for fooddelivery stay the same), the cache table menu_popularity_summary still exists (the popular-menu endpoint is slow or 500 with Hikari timeouts, not 1146 'doesn't exist'), and dispatch, order and payment have no rollout. Then restaurant logs Hikari 'Connection is not available, request timed out after 3000ms', order logs 'Failed to fetch restaurant' / 'Failed to fetch menu' errors, restaurant server spans for popular-menu go from about 1.6 ms (p50) to seconds and KCM shows restaurant readiness failures. Restarts, if any, follow from health waiting for a pool connection and still point at the released restaurant.",
+   "domain": "food-delivery",
+   "class": "A",
+   "fault_pattern": "P8",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-restaurant",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food restaurant-service 의 새 릴리스 food-delivery-restaurant:1.5.0 이다. 이 버전이 인기 메뉴 순위를 '실시간'으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 최근 7일 주문을 바로 세게 했다: 가게 한 곳의 주문 품목(order_items)을 메뉴 색인으로 훑고 주문마다 orders 를 기본 키로 찾아 날짜를 거른 뒤 메뉴별로 센다. 가게 1 기준 키 읽기 약 16만 3천 번(품목과 품목마다 주문 기본 키 조회)이라 109 MySQL 이 한가할 때도 4~7.5초 걸리고 한 번에 버퍼 풀(128MB) 밖에서 약 2만 9천 쪽을 읽는다. 둘러보기 트래픽의 인기 메뉴 요청(초당 2건 남짓)이면 MySQL(CPU 0.5)이 감당하는 양의 몇 배라, restaurant Hikari 연결 10개가 모두 집계에 묶이고 가게 상세, 메뉴, 인기 메뉴가 연결을 3초 기다리다 500 이 된다. 주문마다 가게와 메뉴를 restaurant 에 묻는 order 는 재시도와 서킷브레이커 끝에 502 로 실패한다. 스키마, 인덱스, 설정, 자원 한도는 그대로이고 바뀐 것은 릴리스가 요청 경로에 넣은 집계다. 원본 GitHub 2025-01-09(배포가 들여온 질의 하나가 주 DB 서버를 포화시켜 여러 기능에서 서버 오류, 그 질의의 출처를 찾아 배포를 되돌려 복구)와 같은 꼴이다(F42-R, F33-H 와 같은 원본, 다른 서비스와 질의). 고칠 곳은 restaurant 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f42-p/restaurant-service.patch:8-19 (MenuRepository.rankRecentMenus — 릴리스 1.5.0 이 더한 가게 한 곳의 최근 주문 집계, order_items JOIN orders JOIN menus GROUP BY)",
+     "scripts/scenarios/fault-images/f42-p/restaurant-service.patch:60-76 (RestaurantService.getPopularMenu — 캐시 표 조회 대신 요청마다 rankRecentMenus 를 7일 창으로 부름)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java:43-52 (RestaurantService.getPopularMenu — 매니페스트 버전, PopularMenuBatch 가 채운 캐시 표 menu_popularity_summary 를 읽음)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/PopularMenuBatch.java:37-56 (PopularMenuBatch.run — 매니페스트 버전의 집계, 1시간마다 한 번 전체 가게를 세어 캐시 표를 채움)",
+     "food-delivery/restaurant-service/src/main/resources/application.yml:12-16 (restaurant Hikari maximum-pool-size 10, connection-timeout 3000ms)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:58-83 (createOrder 가 restaurant 의 가게와 메뉴를 먼저 조회)",
+     "food-delivery/order-service/src/main/resources/application.yml:51-54 (order 의 restaurant 읽기 시간 제한 5초. 재시도 3회와 서킷브레이커는 같은 파일의 resilience4j restaurant 인스턴스)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-restaurant(food-delivery/k8s/21-restaurant-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-restaurant:latest imagePullPolicy Never :27-28, readinessProbe /actuator/health :73-79, livenessProbe :80-86, 기본 전략 maxSurge 25%). food MySQL StatefulSet testbed-mysql(food-delivery/k8s/10-mysql.yaml: CPU 한도 500m, 메모리 1Gi :45-50, 프로브 없음), fooddelivery.order_items 약 258만 행(138+158MB), orders 약 173만 행(114+250MB), 버퍼 풀 128MB, 인덱스 fk_order_items_menu(menu_id), idx_menus_restaurant(food-delivery/db/init.sql:48, :87-96). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-restaurant 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-restaurant:1.5.0 을 담는다(그 전 119 KCM 에 testbed-restaurant Pulled 이벤트가 없고, 돌던 파드는 60일 된 :latest)",
+    "롤아웃 뒤 MySQL 포화가 restaurant 새 파드에서 온다: dpm_session_local 에서 새 restaurant 파드 IP 의 활성 세션이 수 초~수십 초씩 이어지고(평시 3일 39건, 최대 1.4초), dpm.mysql.session.active_session 이 약 1 에서 10 안팎으로, data_file_read_bytes 와 row_examined_count 가 크게 오르며 buffer_pool.hit_ratio 가 99.96% 에서 내려간다",
+    "restaurant 로그에 Hikari 'Connection is not available, request timed out after 3000ms' 가, order 로그에 가게, 메뉴 조회 실패 ERROR 가 롤아웃 뒤 몰린다. restaurant GET /api/restaurants/{id}/popular-menu 서버 스팬이 평시 p50 약 1.6ms 에서 초 단위가 되고, 가게 상세와 메뉴도 500 이나 지연이 된다",
+    "스키마와 캐시 표는 그대로다: DPM table_count, index_count(fooddelivery) 불변, 인기 메뉴 실패는 1146 'doesn't exist' 가 아니라 풀 대기 시간 초과와 지연이다. MySQL 은 재시작 없이 Ready 이고, order, dispatch, payment, MySQL 에는 롤아웃이나 설정 변경이 없다. restaurant 재시작(Unhealthy, Killing)이 있다면 롤아웃 뒤 포화 구간에만 있다"
+   ],
+   "must_rule_out": [
+    "인기 메뉴 캐시 표가 사라진 것이 아님(F48-R): table_count 그대로, 1146 'Table doesn't exist' 오류 없음, 실패가 인기 메뉴만이 아니라 가게 상세와 메뉴, 주문까지 번지고 MySQL 이 포화된다. 그리고 restaurant 롤아웃이 있다",
+    "가게 표 스키마 변경이 아님(F36-R): 1054 'Unknown column' 같은 즉시 오류가 아니라 풀 대기 시간 초과이고 스키마가 그대로다",
+    "restaurant 응답 계약 변경이 아님(F49-R): order 의 해석 실패('Error while extracting response')가 아니라 restaurant 의 연결 대기 500 과 지연이고, 이미지 태그가 1.5.0 이다",
+    "dispatch 쪽 질의 포화가 아님(F33-R, F33-H): dispatch 롤아웃과 dispatch 풀 고갈이 없고, 긴 활성 세션이 restaurant 파드 IP 에서 온다. order 의 실패는 'Failed to check dispatch capacity' 가 아니라 가게, 메뉴 조회 실패다",
+    "MySQL 디스크 IO 포화나 DB 다운이 아님(F10-H, F25-H): 노드 IO 를 누르는 바깥 작업이 없고 MySQL 은 재시작 없이 Ready 다. 읽기는 restaurant 의 집계가 만든다",
+    "부하만 늘어난 것이 아님: 같은 인기 메뉴 요청이 평시(매니페스트 버전)에는 캐시 표 88행을 읽어 약 1.6ms 이고, 실패는 restaurant 롤아웃 시각에 시작해 되돌림과 함께 끝난다",
+    "restaurant 프로브 오설정이나 재시작 자체가 원인이 아님(F05-H 꼴): 프로브 설정은 그대로이고, 재시작이 있다면 health 가 풀 연결을 기다리다 실패한 결과다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F33-H (food dispatch 릴리스가 배달 목록에 전체 건수 COUNT 를 붙여 MySQL 포화: 같은 '릴리스가 요청 경로에 비싼 질의를 넣어 공유 MySQL 과 자기 풀을 말림' 꼴, 다른 서비스와 질의, 피해 경로(용량 확인 대 가게, 메뉴 조회))",
+     "F42-R (banking transfer 릴리스가 이체마다 전수 스캔 질의를 들여와 Oracle 포화: 같은 꼴, 다른 도메인과 DB 엔진)",
+     "F48-R (인기 메뉴 캐시 표를 취소된 백필이 치움: 같은 인기 메뉴 끝점이 실패하지만 즉시 1146 이고 MySQL 은 한가하며 다른 끝점과 주문은 정상, 롤아웃 없음)",
+     "F33-R (dispatches 인덱스 제거: 같은 MySQL 포화지만 원인이 표의 인덱스이고 index_count 가 줄며 dispatch 풀이 마름)",
+     "F49-R (food restaurant 릴리스가 응답 계약을 깸: 같은 restaurant 릴리스 수단, 주문 502 지만 restaurant 는 빠르게 200 으로 답하고 order 가 해석 실패)",
+     "F36-R (restaurants 열 이름 변경 마이그레이션: restaurant 가 즉시 1054 로 500, 스키마 변경)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-restaurant",
+     "food-restaurant",
+     "testbed-restaurant"
+    ],
+    "partial": [
+     "food-mysql",
+     "food-mysql:fooddelivery.order_items",
+     "food-mysql:fooddelivery.orders",
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food restaurant-service 를 인기 메뉴를 주문 원장에서 바로 세는 릴리스로 롤아웃: 인기 메뉴 요청마다 가게 한 곳의 주문 품목 수만 행을 주문 표와 조인해 세어 food MySQL(CPU 0.5)이 포화되고, restaurant 연결 풀이 말라 가게 조회와 주문 생성이 실패",
+   "description_ko": "food restaurant-service Deployment(testbed-restaurant) 롤아웃이 컨테이너 이미지를 food-delivery-restaurant:latest 에서 릴리스 food-delivery-restaurant:1.5.0 으로 바꾼다. 이 릴리스는 인기 메뉴 순위를 실시간으로 바꿨다: GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표 menu_popularity_summary(88행)를 읽지 않고, 그 가게의 최근 7일 주문을 바로 센다(SELECT oi.menu_id, m.restaurant_id, m.name, COUNT(*) FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN menus m ON m.id = oi.menu_id WHERE m.restaurant_id = ? AND o.created_at >= ? GROUP BY ... ORDER BY orderCount DESC). 응답 모양, 다른 끝점, health, 스키마, 인덱스는 그대로라 새 파드가 Ready 가 되어 옛 파드를 대신한다. 가게 한 곳이면 이 질의는 메뉴 색인(menu_id)으로 그 가게의 주문 품목(가게 1 기준 키 읽기 약 16만 3천 번)을 훑고 날짜를 거르려고 주문마다 orders 를 기본 키로 찾는다. 109 MySQL 이 한가할 때 4.05, 4.39, 7.47초 걸렸고, orders 와 order_items 가 128MB 버퍼 풀에 다 들어가지 않아 한 번에 약 2만 9천 쪽을 디스크에서 읽었다. 평소 둘러보기와 인기 메뉴 동반 부하(인기 메뉴 초당 약 2.5건)면 집계가 CPU 0.5 짜리 MySQL 이 실행할 수 있는 양을 몇 배 넘고, restaurant Hikari 연결 10개가 모두 실행 중인 집계에 묶여, 가게 상세, 메뉴, 인기 메뉴 요청이 연결을 3초 기다리다 500('Connection is not available, request timed out after 3000ms')으로 끝난다. 주문마다 가게와 메뉴를 restaurant 에 묻는 order-service 는 재시도(3회) 끝에 restaurant 서킷브레이커를 열고 새 주문을 502 로 실패시키며, 기준선 주문 여정도 메뉴 조회에서 멈춘다. 다른 food 질의도 포화된 MySQL 에서 느려진다. health(둘 다 DB 를 보는 /actuator/health)가 연결을 기다리는 동안 restaurant readiness 와 liveness 가 실패해 파드가 Service 엔드포인트에서 빠지고 kubelet 이 컨테이너를 재시작할 수 있다(Unhealthy, Killing). 이미 시작한 집계는 클라이언트가 떠나도 MySQL 안에서 끝까지 돈다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-restaurant(food) 를 릴리스 food-delivery-restaurant:1.5.0 으로 롤아웃. 이 버전이 인기 메뉴 순위를 캐시 표 대신 요청마다 order_items 와 orders 를 조인해 셈 → 인기 메뉴 요청마다 가게의 주문 이력을 훑는 수 초짜리 집계 → 집계가 food MySQL(CPU 0.5, 버퍼 풀 밖 읽기)을 포화시키고 restaurant Hikari 연결을 모두 붙잡음 → 가게 화면이 연결 대기 시간 초과(500), restaurant 가 readiness 에서 빠짐 → order-service 가 재시도, 서킷브레이커 끝에 주문을 502 로 실패, 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-restaurant 컨테이너 restaurant-service 이미지를 food-delivery-restaurant:latest 에서 food-delivery-restaurant:1.5.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f42-p 가 origin/main food-delivery 에 fault-images/f42-p/restaurant-service.patch(restaurant-service/src 안 두 파일: MenuRepository 에 배치 집계의 가게 한 곳 판인 rankRecentMenus 를 더하고, RestaurantService.getPopularMenu 가 menu_popularity_summary 를 읽는 대신 7일 창으로 그것을 부름)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트, 스키마, 인덱스는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다(F49-R 은 1.4.0). preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 popular-menu-surge 부하(가게 방문 2rps: 상세, 메뉴, 인기 메뉴, 주문 없음)가 인기 메뉴 요청을 평소 둘러보기 수준으로 고르게 유지한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "롤아웃 1분쯤 뒤부터 가게 화면(먼저 인기 메뉴, 이어 가게 상세와 메뉴)이 500 이나 시간 초과로 실패하고, order-service 가 가게와 메뉴를 읽지 못해 food 의 새 주문 대부분이 몇 초의 재시도 끝에 502 로 실패한다. 배달 조회와 다른 food 호출도 포화된 MySQL 때문에 느려진다. restaurant 가 Service 에서 빠지고 되풀이해 재시작할 수 있다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 다른 것은 그대로인 채 일어난 restaurant 릴리스다: testbed-restaurant 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-restaurant:1.5.0\" already present on machine'(실행 전 119 KCM 에 testbed-restaurant Pulled 이벤트가 없고 돌던 파드는 60일 된 :latest), 그 뒤 restaurant 파드에서 오는 MySQL 포화: dpm_session_local 에 새 restaurant 파드 IP 의 활성 세션이 수 초~수십 초씩 이어지고(평시 3일 39건, 최대 1.4초), dpm.mysql.session.active_session 이 약 1 에서 10 안팎으로, data_file_read_bytes 와 row_examined_count 가 뛰고 buffer_pool.hit_ratio 가 99.96% 에서 내려간다. 스키마는 그대로이고(DPM table_count, index_count 불변) 캐시 표 menu_popularity_summary 도 있다(인기 메뉴는 1146 'doesn't exist' 가 아니라 느리거나 Hikari 시간 초과 500), dispatch, order, payment 에는 롤아웃이 없다. 이어 restaurant 로그의 Hikari 'Connection is not available, request timed out after 3000ms', order 로그의 가게, 메뉴 조회 실패, 인기 메뉴 서버 스팬이 p50 약 1.6ms 에서 초 단위로, KCM 의 restaurant readiness 실패. 재시작이 나오더라도 health 가 풀 연결을 기다려서 생긴 결과이고 여전히 릴리스된 restaurant 를 가리킨다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f42-p",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-restaurant",
+       "container": "restaurant-service",
+       "baseline_image": "food-delivery-restaurant:latest",
+       "fault_image": "food-delivery-restaurant:1.5.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

@@ -343,6 +343,18 @@
       "freshness_sec": 30,
       "update_interval_sec": 0
     },
+    "kubernetes.container_uptime_seconds": {
+      "adapter": "kubernetes",
+      "selector": "pod.container.state.running.uptime_seconds",
+      "allowed_parameters": [
+        "namespace",
+        "deployment",
+        "container"
+      ],
+      "value_type": "integer",
+      "freshness_sec": 30,
+      "update_interval_sec": 0
+    },
     "kubernetes.deployment_container_memory_limit": {
       "adapter": "kubernetes",
       "selector": "deployment.container.resources.limits.memory",
