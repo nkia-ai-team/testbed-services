@@ -39,6 +39,8 @@ with ER_NO_SUCH_TABLE (1146).  Foreign keys follow a rename, so the inverse is t
 back and the rows, indexes and constraints return unchanged.  F53-P runs the same path on the
 payments table, which only payment-service writes, so order creation fails one hop away: payment
 answers 500 on its first write and order turns that into 502 after the courier is dispatched.
+F32-P runs it on the dispatches table, which only dispatch-service uses: the courier capacity check
+order makes before saving an order answers 500, so order answers 503 before any write of its own.
 
 The Oracle dropped-table path (F35-H) is the same wrong-environment migration against the banking
 Oracle: its drop step removes the live transfers table.  It is a real DROP TABLE (no PURGE), so
@@ -129,6 +131,13 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F53-P": {
         "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
         "database": "fooddelivery", "table": "payments", "hold_schema": "mysql",
+        "minimum_rows": 1000,
+    },
+    # 같은 표 지우기를 배차 표에: dispatches 를 mysql.fooddelivery_dispatches 로 옮긴다. dispatch 만 이 표를 쓰고 외래 키도
+    # 없다. order 가 주문 저장 전에 부르는 배달원 용량 확인이 500 이 되어 order 는 자기 쓰기 없이 503 으로 답한다.
+    "F32-P": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "dispatches", "hold_schema": "mysql",
         "minimum_rows": 1000,
     },
     # 같은 표 지우기를 banking Oracle 이체 표에: 실제 DROP TABLE(휴지통 on, PURGE 없음). 지우면 USERS 사용량이 표와

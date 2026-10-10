@@ -182,6 +182,24 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F53-P", {**p, "hold_schema": "fooddelivery"}, {})
 
+    def test_mysql_dropped_dispatches_table_uses_the_same_drop_path(self) -> None:
+        # F32-P: 같은 표 지우기 모드를 배차 표에. 계약은 표 이름만 다르고 원격 스크립트는 같다.
+        p = ddl.CONTRACTS["F32-P"]
+        ddl.validate("F32-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F32-P", p), "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
+                                    "dispatches", "mysql", "1000"])
+        self.assertNotIn("F32-P", argv)
+        self.assertNotIn("F32-P", body.decode())
+        _, f53r_body = ddl.build_invocation(plan("db.ddl", "F53-R", ddl.CONTRACTS["F53-R"]), "run")
+        self.assertEqual(body, f53r_body)
+        self.assertEqual({k: v for k, v in p.items() if k != "table"},
+                         {k: v for k, v in ddl.CONTRACTS["F53-R"].items() if k != "table"})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F32-P", {**p, "table": "dispatch_events"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F32-P", ddl.CONTRACTS["F33-R"], {})
+
     def test_oracle_dropped_transfers_table_goes_to_the_recycle_bin_and_back(self) -> None:
         # F35-H: 같은 표 지우기를 banking Oracle 에. 실제 DROP TABLE(PURGE 없음)이라 공간이 빈 공간으로 세어지고, cleanup 은
         # FLASHBACK TABLE 뒤 BIN$ 이름으로 돌아온 인덱스와 제약에 계약의 원래 이름을 다시 붙인다(상태 파일 없음).

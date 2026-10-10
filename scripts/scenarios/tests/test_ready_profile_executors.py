@@ -1261,6 +1261,8 @@ esac
             "F42-P",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 운영을 가리킨 로컬 마이그레이션이 지움(같은 스키마 안 이름 바꾸기, 이체 INSERT ORA-04043, 거래 내역 ORA-00942, account, api 502, commerce 정산 502, 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F35-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatches 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, dispatch 의 배달원 용량 확인 500, order 가 주문 저장 전에 전량 503, 주문 행, 배차, 결제 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F32-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

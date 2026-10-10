@@ -205,7 +205,8 @@
           "F48-P",
           "F53-R",
           "F53-P",
-          "F35-H"
+          "F35-H",
+          "F32-P"
         ]
       },
       "scenario_parameters": {
@@ -301,6 +302,15 @@
           "constraints": "C:ID=SYS_C008652,C:TRANSFER_REF=SYS_C008653,C:FROM_ACCOUNT=SYS_C008654,C:TO_ACCOUNT=SYS_C008655,C:AMOUNT=SYS_C008656,C:STATUS=SYS_C008657,P:ID=SYS_C008658,U:TRANSFER_REF=SYS_C008659",
           "minimum_rows": 1000,
           "minimum_free_mb": 2048
+        },
+        "F32-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "dispatches",
+          "hold_schema": "mysql",
+          "minimum_rows": 1000
         }
       }
     },
@@ -505,7 +515,8 @@
           "F52-R",
           "F53-R",
           "F42-P",
-          "F35-H"
+          "F35-H",
+          "F32-P"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -566,7 +577,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H|33-P|41-R|42-R|43-R|44-R|44-P|47-R|48-R|49-R|33-H|49-H|50-R|51-R|43-P|40-H|52-R|53-R|42-P|35-H)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H|33-P|41-R|42-R|43-R|44-R|44-P|47-R|48-R|49-R|33-H|49-H|50-R|51-R|43-P|40-H|52-R|53-R|42-P|35-H|32-P)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -1448,6 +1459,17 @@
           "scenario_tag": "scenario_id=F35-H",
           "seed": 3536,
           "baseline_unit": "loadgen-banking"
+        },
+        "F32-P": {
+          "target_rps": 2,
+          "ramp_up": "2m",
+          "hold": "21m",
+          "ramp_down": "15s",
+          "entry_url": "http://192.168.122.77:30181",
+          "script_path": "/opt/loadgen/food-delivery/order-surge.js",
+          "scenario_tag": "scenario_id=F32-P",
+          "seed": 3216,
+          "baseline_unit": "loadgen-food"
         }
       }
     },

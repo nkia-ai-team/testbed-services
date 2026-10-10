@@ -80,7 +80,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 89 → 90. F53-P(후보) 추가. 기존 db.ddl 표 지우기 모드를 payments 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 90 → 91. F42-P(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 91 → 92. F35-H(후보) 추가. 기존 db.ddl 에 Oracle 표 지우기 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 92)
+        # 2026-10-10: 92 → 93. F32-P(후보) 추가. 기존 db.ddl MySQL 표 지우기 모드를 dispatches 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 93)
         self.assertEqual(len(self.profiles["profiles"]), 31)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -187,6 +188,8 @@ class RegistryContractTests(unittest.TestCase):
             "F42-P",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 운영을 가리킨 로컬 마이그레이션이 지움(같은 스키마 안 이름 바꾸기, 이체 INSERT ORA-04043, 거래 내역 ORA-00942, account, api 502, commerce 정산 502, 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F35-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatches 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, dispatch 의 배달원 용량 확인 500, order 가 주문 저장 전에 전량 503, 주문 행, 배차, 결제 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F32-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -509,6 +512,8 @@ class RegistryContractTests(unittest.TestCase):
             "F42-P",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 운영을 가리킨 로컬 마이그레이션이 지움(같은 스키마 안 이름 바꾸기, 이체 INSERT ORA-04043, 거래 내역 ORA-00942, account, api 502, commerce 정산 502, 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F35-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatches 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, dispatch 의 배달원 용량 확인 500, order 가 주문 저장 전에 전량 503, 주문 행, 배차, 결제 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F32-P",
             },
         )
         self.assertEqual(
@@ -615,6 +620,8 @@ class RegistryContractTests(unittest.TestCase):
             "F42-P",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 운영을 가리킨 로컬 마이그레이션이 지움(같은 스키마 안 이름 바꾸기, 이체 INSERT ORA-04043, 거래 내역 ORA-00942, account, api 502, commerce 정산 502, 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F35-H",
+            # 2026-10-10: food MySQL fooddelivery.dispatches 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, dispatch 의 배달원 용량 확인 500, order 가 주문 저장 전에 전량 503, 주문 행, 배차, 결제 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F32-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -781,8 +788,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F53-P(후보, 고정 evaluation)이 끝에 붙어 F51-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F42-P(후보, 고정 evaluation)이 끝에 붙어 F43-P 가 끝 5개에서 빠졌다.
         # 2026-10-10: F35-H(후보, 고정 evaluation)이 끝에 붙어 F40-H 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F32-P(후보, 고정 evaluation)이 끝에 붙어 F52-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F52-R", "F53-R", "F53-P", "F42-P", "F35-H"])
+                         ["F53-R", "F53-P", "F42-P", "F35-H", "F32-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

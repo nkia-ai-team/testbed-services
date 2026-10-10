@@ -67,7 +67,8 @@
     "F53-R",
     "F53-P",
     "F42-P",
-    "F35-H"
+    "F35-H",
+    "F32-P"
   ],
   "controllers": {
     "F01-R": {
@@ -15865,6 +15866,228 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F32-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f32-p",
+            "parameters": {
+              "engine": "mysql",
+              "namespace": "rca-testbed-food",
+              "pod": "testbed-mysql-0",
+              "database": "fooddelivery",
+              "table": "dispatches",
+              "hold_schema": "mysql",
+              "minimum_rows": 1000
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "food 진입점(동반 부하 k6 의 order 와 restaurant NodePort, tb-cp 30180, 30181) 상태. 표가 없는 동안 order 는 가게, 메뉴 확인 뒤 배달원 용량 확인(GET /api/deliveries/capacity)이 dispatch 의 1146 으로 500 이 되어, 재시도와 서킷 끝에 자기 쓰기 없이 503 으로 답한다(로컬 실측 약 0.65~0.8초, 주문 저장, 배차, 결제 전). 주문 트랜잭션이 그동안 연결 하나를 쥐지만 (기준선 최대 약 1.1 + 동반 1.4)건/초 × 0.8초 ≈ 2개로 풀 15 아래이고, order 와 dispatch 의 health 는 질의 없는 isValid() 라 Ready 다(로컬 실측 내내 UP). 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "_note": "동반 부하(order-surge.js 2rps)의 k6 live 문서. 상주 기준선(loadgen-food)은 하루 주기 1~6 iter/s 라 KST 03~06시에는 주문 생성이 분당 약 12건뿐이다. 피해(배달원 용량 확인이 dispatch 의 1146 으로 실패)는 요청량과 무관하게 모든 주문에 나지만, 러너 판정 표본과 order 의 POST /api/orders 503 표본 스팬이 시간대에 좌우되지 않도록 동반 부하가 주문 생성을 초당 약 1.4건 더한다(F53-R, F38-R 과 같은 값). 실패가 주문 저장과 배차 전이고 배차 표 자체가 없어 동반 부하가 배달원 한도(ASSIGNED)를 채우지 않는다",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 표가 없는 순간부터 모든 주문 생성이 배달원 용량 확인 단계에서 503 이다(로컬 실측 8/8, 첫 건은 dispatch 500 세 번 뒤, 이후는 dispatch 서킷 열림으로 곧바로). 강도 축이 없다: 표가 없으면 그 표를 부르는 문장은 요청량과 무관하게 100% 실패한다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 0.5,
+            "_note": "동반 부하 2rps 의 1/4. 주문이 용량 확인 단계에서 1초 안에 503 을 받아 여정이 짧아지므로 반복률은 떨어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 표 하나가 사라진 것이 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "order-down",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "order 파드가 빠지면 주문 실패가 하류 용량 확인 실패가 아니라 연결 실패다. 표가 사라져도 order 는 그 표를 쓰지 않고 health 의 DB 확인(isValid)도 그대로라 Ready 로 남아야 한다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "order-ready",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
       },
       "capture": {
         "enabled": true,
