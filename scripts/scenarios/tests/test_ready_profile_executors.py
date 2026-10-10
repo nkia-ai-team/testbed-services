@@ -1229,6 +1229,8 @@ esac
             "F40-H",
             # 2026-10-10: banking 워커 tb-w2 의 이미지 보존 정리가 레지스트리 다이제스트 없는 banking 앱 이미지를 지운 뒤 transfer 일상 재배포의 새 파드가 ErrImageNeverPull(transfer 파드 없음, 이체와 commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F52-R",
+            # 2026-10-10: food MySQL fooddelivery.orders 를 운영을 가리킨 로컬 마이그레이션이 지움(MySQL 1146, 주문 생성이 첫 주문 INSERT 에서 전량 500, 배차, 결제 전). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F53-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

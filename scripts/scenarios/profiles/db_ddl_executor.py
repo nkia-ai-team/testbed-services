@@ -28,6 +28,15 @@ statement that names the table fails with ER_NO_SUCH_TABLE (1146) until the held
 is renamed back.  No row is lost, so the inverse is the same rename the other way plus
 dropping the shadow copy.  F48-P runs the same path on the order event outbox table, which
 order-service writes in the same transaction as the order, so order creation is rolled back.
+
+The MySQL dropped-table path (F53-R) is a migration run from a developer's machine whose
+connection pointed at production: its drop step removes one live table.  A real DROP would
+lose the rows, so the table is moved out of the application schema into the system schema
+`mysql` under `<database>_<table>`, which the DPM collector does not report.  To the
+application and to the inventory metrics this is the drop itself: the table, its rows and its
+indexes leave the schema (table and index counts fall) and every statement that names it fails
+with ER_NO_SUCH_TABLE (1146).  Foreign keys follow a rename, so the inverse is the same rename
+back and the rows, indexes and constraints return unchanged.
 """
 from __future__ import annotations
 
@@ -94,6 +103,14 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "backfill_index": "idx_order_outbox_aggregate", "backfill_column": "aggregate_id",
         "minimum_rows": 1000,
     },
+    # 운영 DB 를 가리킨 로컬 마이그레이션의 표 지우기: orders 를 DPM 이 보지 않는 시스템 스키마 mysql 로
+    # 옮겨(이름 fooddelivery_orders) 앱과 DB 목록 지표에는 DROP 과 같게 보이게 한다. 행, 인덱스, 외래 키는
+    # 그대로 따라가고 cleanup 이 같은 RENAME 으로 되돌린다. 메타데이터만 바꾸므로 표 크기와 무관하게 즉시 끝난다.
+    "F53-R": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "orders", "hold_schema": "mysql",
+        "minimum_rows": 1000,
+    },
 }
 
 
@@ -114,6 +131,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     if p["engine"] == "mysql" and "backfill_index" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
+    if p["engine"] == "mysql" and "hold_schema" in p:
+        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
     if p["engine"] == "postgresql" and "rebuild_index" in p:
@@ -266,6 +285,39 @@ case "$action" in
   for shadow in $(tool_tables _vt_vrp_); do
     mysql "DROP TABLE $shadow;" >/dev/null
   done
+  original
+  ;;
+ recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+MYSQL_DROP_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; hold="$6"; minimum="$7"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
+mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+# The dropped table waits in the system schema under <database>_<table>; presence is read from information_schema only.
+held="${db}_${table}"
+present() { mysql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$1' AND table_name='$2';"; }
+original() { [[ "$(present "$db" "$table")" == 1 && "$(present "$hold" "$held")" == 0 ]]; }
+check() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; original; }
+# lock_wait_timeout bounds the metadata-lock wait behind in-flight transactions (server default is a year).
+move() { mysql "SET SESSION lock_wait_timeout=10; RENAME TABLE $1 TO $2;" >/dev/null; }
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  move "$db.$table" "$hold.$held"
+  [[ "$(present "$db" "$table")" == 0 && "$(present "$hold" "$held")" == 1 ]]
+  ;;
+ cleanup)
+  if [[ "$(present "$hold" "$held")" == 1 ]]; then
+    # A table back under the original name next to the held one would hold rows nobody restored; leave it for a person.
+    [[ "$(present "$db" "$table")" == 0 ]] || { echo "$table exists beside $hold.$held" >&2; exit 3; }
+    move "$hold.$held" "$db.$table"
+  fi
   original
   ;;
  recovery) check ;;

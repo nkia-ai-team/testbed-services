@@ -1109,6 +1109,19 @@
       "load_mode": "fixed",
       "injection_location": "worker-w2",
       "prerequisite": ""
+    },
+    {
+      "id": "F53-R",
+      "slug": "f53-r-food-orders-table-dropped-by-local-migration-against-production",
+      "profiles": [
+        "db.ddl",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

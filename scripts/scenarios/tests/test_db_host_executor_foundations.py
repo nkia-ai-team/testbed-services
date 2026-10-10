@@ -138,6 +138,32 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F48-P", {**p, "table": "orders"}, {})
 
+    def test_mysql_dropped_table_moves_out_of_the_schema_and_back(self) -> None:
+        # F53-R: 운영을 가리킨 로컬 마이그레이션의 표 지우기. 진짜 DROP 대신 DPM 이 보지 않는 시스템 스키마 mysql 로
+        # 옮기고(RENAME 한 문장), cleanup 은 같은 RENAME 을 반대로 한다. 그림자 표나 _vt_ 이름이 없다.
+        p = ddl.CONTRACTS["F53-R"]
+        ddl.validate("F53-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F53-R", p), "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
+                                    "orders", "mysql", "1000"])
+        self.assertNotIn("F53-R", argv)
+        script = body.decode()
+        self.assertNotIn("F53-R", script)
+        self.assertIn('held="${db}_${table}"', script)
+        self.assertIn('move "$db.$table" "$hold.$held"', script)
+        self.assertIn('move "$hold.$held" "$db.$table"', script)
+        self.assertIn("lock_wait_timeout=10", script)
+        self.assertNotIn("DROP TABLE", script)
+        self.assertNotIn("_vt_", script)
+        _, f48p_body = ddl.build_invocation(plan("db.ddl", "F48-P", ddl.CONTRACTS["F48-P"]), "run")
+        self.assertNotEqual(body, f48p_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-R", {**p, "hold_schema": "fooddelivery"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-R", {**p, "table": "order_items"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-R", ddl.CONTRACTS["F48-P"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

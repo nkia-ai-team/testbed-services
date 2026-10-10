@@ -34,7 +34,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 85 → 86. F43-P(후보) 추가.
 # 2026-10-10: 86 → 87. F40-H(후보) 추가.
 # 2026-10-10: 87 → 88. F52-R(후보) 추가.
-[[ "$total" -eq 88 ]]
+# 2026-10-10: 88 → 89. F53-R(후보) 추가.
+[[ "$total" -eq 89 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -119,7 +120,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: ready 60→61. F43-P(food dispatch 릴리스의 중복 배차 확인이 배차마다 풀 연결을 새어 dispatch 풀 고갈, 주문 503)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 61→62. F40-H(banking transfer 릴리스의 원 단위 금액 검증이 소수 표기 commerce 정산 이체를 400 으로 거절, checkout 502)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 62→63. F52-R(banking 워커 tb-w2 의 이미지 보존 정리가 쓰고 있는 앱 이미지를 지워 transfer 일상 재배포의 새 파드가 ErrImageNeverPull, 이체와 commerce 정산 502)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 63 ]]
+# 2026-10-10: ready 63→64. F53-R(운영을 가리킨 로컬 마이그레이션이 food orders 표를 지워 주문 생성이 1146 으로 전량 500)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 64 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -178,7 +180,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 79 → 80. F43-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f43-p)으로 들어왔다.
 # 2026-10-10: 80 → 81. F40-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f40-h)으로 들어왔다.
 # 2026-10-10: 81 → 82. F52-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f52-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 82 ]]
+# 2026-10-10: 82 → 83. F53-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f53-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 83 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의
