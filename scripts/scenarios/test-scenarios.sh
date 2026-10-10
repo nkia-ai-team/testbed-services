@@ -45,7 +45,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 96 → 97. F56-R(후보) 추가.
 # 2026-10-10: 97 → 98. F51-H(후보) 추가.
 # 2026-10-10: 98 → 99. F57-R(후보) 추가.
-[[ "$total" -eq 99 ]]
+# 2026-10-10: 99 → 100. F23-P(후보) 추가.
+[[ "$total" -eq 100 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -141,7 +142,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: ready 71→72. F56-R(banking 운영자의 해지 계좌 정리가 잘못된 id 목록으로 commerce 정산 계좌 두 행을 지워 정산 이체 400, checkout 502)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 72→73. F51-H(banking account 릴리스가 잔액 조회에 더한 마지막 이체 조회가 빌린 DB 연결을 돌려주지 않아 풀이 굳고 readiness 이탈, 잔액 조회와 이체 500, 502)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 73→74. F57-R(표 이전이 banking Oracle TRANSFERS 의 identity 생성기 상태를 옮기지 않아 새 이체마다 기본 키 ORA-00001, 이체와 commerce 정산 실패)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 74 ]]
+# 2026-10-10: ready 74→75. F23-P(운영을 가리킨 로컬 마이그레이션이 commerce PostgreSQL 상품 표를 지워 상품 조회 42P01, 둘러보기 500, checkout 502)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 75 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -211,7 +213,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 90 → 91. F56-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f56-r)으로 들어왔다.
 # 2026-10-10: 91 → 92. F51-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f51-h)으로 들어왔다.
 # 2026-10-10: 92 → 93. F57-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f57-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 93 ]]
+# 2026-10-10: 93 → 94. F23-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f23-p)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 94 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

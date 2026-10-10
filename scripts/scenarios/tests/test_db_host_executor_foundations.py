@@ -236,6 +236,54 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F35-H", ddl.CONTRACTS["F53-R"], {})
 
+    def test_postgres_dropped_table_moves_out_unrecorded_and_back(self) -> None:
+        # F23-P: 운영을 가리킨 로컬 마이그레이션의 표 지우기, PostgreSQL 판. 기록되지 않는 세션(track=none)이 원본을 public 으로
+        # 옮기고 옮긴 표의 통계 카운터를 0 으로 돌린다(DPM 이 합산하는 seq_scan, idx_scan 이 실제 지우기처럼 내려감).
+        # cleanup 도 기록되지 않는 세션에서 원본을 되돌린다.
+        p = ddl.CONTRACTS["F23-P"]
+        ddl.validate("F23-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F23-P", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "product_schema",
+                                    "products", "public", "1000"])
+        self.assertNotIn("F23-P", argv)
+        script = body.decode()
+        self.assertNotIn("F23-P", script)
+        self.assertIn('quiet="-c pg_stat_statements.track=none"', script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # 순서: 확인 → 원본을 옮김 → 옮긴 표의 카운터 초기화 → 결과 확인.
+        order = ["check", 'move "$schema" "$hold"', "count(pg_stat_reset_single_table_counters(o))",
+                 '[[ "$(present "$schema" "$table")" == 0']
+        positions = [run.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        # 주입이 보내는 SQL 은 모두 기록되지 않는 세션에서 돈다(Top SQL 에 주입 흔적이 남지 않음).
+        calls = [line for line in script.splitlines() if "sql \"" in line and not line.lstrip().startswith(("sql()", "#"))]
+        self.assertTrue(calls)
+        for line in calls:
+            self.assertIn("$quiet", line, line)
+        # 표 idx_scan 은 인덱스 카운터에서 읽으므로 인덱스도 함께 0 으로 돌린다.
+        self.assertIn("SELECT indexrelid FROM pg_index WHERE indrelid = '$hold.$table'::regclass", run)
+        self.assertNotIn("DROP TABLE IF EXISTS", script)
+        self.assertNotIn("LIKE", script)
+        self.assertIn("SET lock_timeout = '10s'; ALTER TABLE $1.$table SET SCHEMA $2;", script)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        self.assertIn('move "$hold" "$schema"', cleanup)
+        # 재시작한 서비스가 만든 빈 표만 지운다(1000행 미만이고 아무도 참조하지 않을 때). 아니면 사람에게 남긴다.
+        self.assertIn('[[ "$small" == t && "$refs" == 0 ]] || {', cleanup)
+        self.assertIn("exit 3", cleanup)
+        self.assertIn("original", cleanup)
+        self.assertIn("FROM (SELECT 1 FROM $schema.$table LIMIT $minimum) t", script)
+        _, f33p_body = ddl.build_invocation(plan("db.ddl", "F33-P", ddl.CONTRACTS["F33-P"]), "run")
+        _, f53r_body = ddl.build_invocation(plan("db.ddl", "F53-R", ddl.CONTRACTS["F53-R"]), "run")
+        self.assertNotEqual(body, f33p_body)
+        self.assertNotEqual(body, f53r_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F23-P", {**p, "hold_schema": "product_schema"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F23-P", {**p, "table": "product_variants"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F23-P", ddl.CONTRACTS["F53-R"], {})
+
     def test_oracle_identity_generator_rewinds_behind_the_table_and_returns_past_it(self) -> None:
         # F57-R: 행만 옮긴 표 이전의 전환. TRANSFERS 를 read_only_seconds 동안 읽기 전용으로 둔 뒤 identity 생성기를 최대 키보다
         # rewind_rows 뒤에서 다시 시작시키고 쓰기를 연다. cleanup 은 READ WRITE 와 START WITH LIMIT VALUE 로 되돌린다.

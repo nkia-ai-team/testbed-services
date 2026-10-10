@@ -84,7 +84,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 28 → 29. F56-R(banking 해지 계좌 정리가 잘못된 id 로 commerce 정산 계좌 두 행을 지워 checkout 502) 후보 추가.
         # 2026-10-10: 29 → 30. F51-H(banking account 릴리스의 DB 연결 누수로 풀이 굳어 잔액 조회와 이체 500, 502) 후보 추가.
         # 2026-10-10: 30 → 31. F57-R(표 이전이 banking TRANSFERS identity 생성기 상태를 옮기지 않아 새 이체가 기본 키 ORA-00001 로 실패) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 31)
+        # 2026-10-10: 31 → 32. F23-P(운영을 가리킨 로컬 마이그레이션이 commerce 상품 표를 지워 상품 조회 42P01, checkout 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 32)
 
 
 class RecordingQueueTests(unittest.TestCase):

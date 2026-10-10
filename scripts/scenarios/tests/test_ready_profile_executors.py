@@ -1460,6 +1460,8 @@ esac
             "F51-H",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 옮긴 표 이전이 identity 생성기 상태를 옮기지 않아 생성기가 표보다 40만 키 뒤에서 다시 시작(db.ddl Oracle identity 되감기, 새 이체 INSERT 가 기본 키 ORA-00001 로 실패, account, api 502, commerce 정산 502, 거래 내역과 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-R",
+            # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F23-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

@@ -87,7 +87,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 96 → 97. F56-R(후보) 추가. 프로파일 31 → 32(db.row_delete 신설).
         # 2026-10-10: 97 → 98. F51-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 98 → 99. F57-R(후보) 추가. 기존 db.ddl 에 Oracle identity 되감기 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 99)
+        # 2026-10-10: 99 → 100. F23-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 표 지우기 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 100)
         self.assertEqual(len(self.profiles["profiles"]), 32)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -208,6 +209,8 @@ class RegistryContractTests(unittest.TestCase):
             "F51-H",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 옮긴 표 이전이 identity 생성기 상태를 옮기지 않아 생성기가 표보다 40만 키 뒤에서 다시 시작(db.ddl Oracle identity 되감기, 새 이체 INSERT 가 기본 키 ORA-00001 로 실패, account, api 502, commerce 정산 502, 거래 내역과 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-R",
+            # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F23-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -544,6 +547,8 @@ class RegistryContractTests(unittest.TestCase):
             "F51-H",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 옮긴 표 이전이 identity 생성기 상태를 옮기지 않아 생성기가 표보다 40만 키 뒤에서 다시 시작(db.ddl Oracle identity 되감기, 새 이체 INSERT 가 기본 키 ORA-00001 로 실패, account, api 502, commerce 정산 502, 거래 내역과 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-R",
+            # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F23-P",
             },
         )
         self.assertEqual(
@@ -664,6 +669,8 @@ class RegistryContractTests(unittest.TestCase):
             "F51-H",
             # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 옮긴 표 이전이 identity 생성기 상태를 옮기지 않아 생성기가 표보다 40만 키 뒤에서 다시 시작(db.ddl Oracle identity 되감기, 새 이체 INSERT 가 기본 키 ORA-00001 로 실패, account, api 502, commerce 정산 502, 거래 내역과 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-R",
+            # 2026-10-10: commerce PostgreSQL product_schema.products 를 운영을 가리킨 로컬 마이그레이션이 지움(db.ddl PostgreSQL 표 지우기, 기록되지 않는 세션이 public 으로 옮기고 옮긴 표와 인덱스의 통계 카운터를 0 으로, 상품 조회 42P01, 둘러보기 500, checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F23-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -837,8 +844,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F56-R(후보, 고정 evaluation)이 끝에 붙어 F35-H 가 끝 5개에서 빠졌다.
         # 2026-10-10: F51-H(후보, 고정 evaluation)이 끝에 붙어 F32-P 가 끝 5개에서 빠졌다.
         # 2026-10-10: F57-R(후보, 고정 evaluation)이 끝에 붙어 F54-R 이 끝 5개에서 빠졌다.
+        # 2026-10-10: F23-P(후보, 고정 evaluation)이 끝에 붙어 F49-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F49-P", "F55-R", "F56-R", "F51-H", "F57-R"])
+                         ["F55-R", "F56-R", "F51-H", "F57-R", "F23-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

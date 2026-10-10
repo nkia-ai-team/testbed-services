@@ -42,6 +42,21 @@ answers 500 on its first write and order turns that into 502 after the courier i
 F32-P runs it on the dispatches table, which only dispatch-service uses: the courier capacity check
 order makes before saving an order answers 500, so order answers 503 before any write of its own.
 
+The PostgreSQL dropped-table path (F23-P) is the same wrong-environment migration against the commerce
+PostgreSQL: its drop step removes the live products table.  A real DROP would lose the rows and the foreign key
+from product_variants, so a session that pg_stat_statements does not record (PGOPTIONS track=none) first moves the
+table into the `public` schema, where the application never looks (product-service names product_schema on every
+entity), and zeroes the moved table's statistics counters.  A real drop takes the table's scan counters out of
+pg_stat_user_tables, which the DPM collector sums per database (dpm.postgresql.sql.seq_scans, .index_scans), so the
+sums step down in the minute of the drop; the moved table would keep its counters under its OID, and zeroing them
+leaves the same step (and matches a table restored from backup, whose counters start at zero).  The drop statement
+itself is not reproduced: the DPM Top SQL collector only publishes deltas of statements it has seen in an earlier
+poll, so a one-off DROP never reaches it.  To the application this is the drop itself: every statement that names
+product_schema.products fails with 42P01 (relation does not exist).  Indexes, the owned id sequence and the foreign
+keys follow the move, so the inverse is the same move back, again unrecorded.  If product-service restarted in the
+window, its startup schema.sql recreated an empty products table; cleanup drops that one only when it holds fewer than
+`minimum_rows` rows and nothing references it, and otherwise leaves both tables for a person.
+
 The Oracle dropped-table path (F35-H) is the same wrong-environment migration against the banking
 Oracle: its drop step removes the live transfers table.  It is a real DROP TABLE (no PURGE), so
 the database does what it does for any drop with the recycle bin on: the table leaves the schema,
@@ -155,6 +170,15 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "database": "fooddelivery", "table": "dispatches", "hold_schema": "mysql",
         "minimum_rows": 1000,
     },
+    # 같은 표 지우기를 commerce PostgreSQL 상품 표에: pg_stat_statements 가 기록하지 않는 세션(track=none)이 products 를
+    # public 스키마로 옮기고(앱은 늘 product_schema 를 이름에 붙여 부르므로 찾지 못함) 옮긴 표의 통계 카운터를 0 으로
+    # 돌린다(실제 지우기처럼 DPM 이 합산하는 pg_stat_user_tables 의 seq_scan, idx_scan 합이 그 분에 내려간다).
+    # 인덱스, id 시퀀스, 외래 키는 원본을 따라가고 cleanup 이 기록되지 않는 세션으로 되돌린다.
+    "F23-P": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "product_schema", "table": "products", "hold_schema": "public",
+        "minimum_rows": 1000,
+    },
     # 같은 표 지우기를 banking Oracle 이체 표에: 실제 DROP TABLE(휴지통 on, PURGE 없음). 지우면 USERS 사용량이 표와
     # 인덱스만큼(109 실측 784+1600MB) 줄어 DPM 이 보고하는 tablespace used 가 떨어진다. cleanup 은 FLASHBACK TABLE 로
     # 되돌린 뒤 BIN$ 이름으로 돌아온 인덱스와 제약에 아래 원래 이름을 다시 붙인다(덮는 열과 제약 종류로 짝지음).
@@ -212,6 +236,10 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
+    if p["engine"] == "postgresql" and "hold_schema" in p:
+        return kubectl_bash_argv([
+            action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["hold_schema"], str(p["minimum_rows"]),
+        ]), PG_DROP_REMOTE
     if p["engine"] == "postgresql" and "rebuild_index" in p:
         return kubectl_bash_argv([
             action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["column"],
@@ -622,6 +650,50 @@ case "$action" in
   if [[ "$(has_constraint)" == 0 ]]; then
     sql "CREATE UNIQUE INDEX IF NOT EXISTS $constraint ON $rel ($column);" >/dev/null
     sql "ALTER TABLE $rel ADD CONSTRAINT $constraint UNIQUE USING INDEX $constraint;" >/dev/null
+  fi
+  original
+  ;;
+ recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+
+PG_DROP_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; hold="$6"; minimum="$7"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# SQL travels in the environment; the first psql line on stderr (error or notice) goes to stderr for the runner log.
+# PGOPTIONS carries per-session settings: every step runs with pg_stat_statements tracking off, so nothing it runs reaches Top SQL.
+sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="${2:-}" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+quiet="-c pg_stat_statements.track=none"
+# Presence is read from the catalog only (no lock on the table).
+present() { sql "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$1' AND c.relname = '$2' AND c.relkind = 'r';" "$quiet"; }
+original() { [[ "$(present "$schema" "$table")" == 1 && "$(present "$hold" "$table")" == 0 ]]; }
+check() { [[ "$(sql "SELECT count(*) >= $minimum FROM (SELECT 1 FROM $schema.$table LIMIT $minimum) t;" "$quiet")" == t ]]; original; }
+# lock_timeout bounds the ACCESS EXCLUSIVE wait behind in-flight transactions.
+move() { sql "SET lock_timeout = '10s'; ALTER TABLE $1.$table SET SCHEMA $2;" "$quiet" >/dev/null; }
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  move "$schema" "$hold"
+  # A dropped table takes its scan counters out of pg_stat_user_tables, which the DPM collector sums per
+  # database; the held table keeps them under its OID, so they are zeroed to leave the same step.  The table's
+  # idx_scan is read from its indexes' counters, so the indexes are zeroed with it.
+  sql "SELECT count(pg_stat_reset_single_table_counters(o)) FROM (SELECT '$hold.$table'::regclass::oid AS o UNION ALL SELECT indexrelid FROM pg_index WHERE indrelid = '$hold.$table'::regclass) r;" "$quiet" >/dev/null
+  [[ "$(present "$schema" "$table")" == 0 && "$(present "$hold" "$table")" == 1 ]]
+  ;;
+ cleanup)
+  if [[ "$(present "$hold" "$table")" == 1 ]]; then
+    if [[ "$(present "$schema" "$table")" == 1 ]]; then
+      # A restarted service recreates an empty table from its startup schema.sql; drop only that one.
+      small=$(sql "SELECT count(*) < $minimum FROM (SELECT 1 FROM $schema.$table LIMIT $minimum) t;" "$quiet")
+      refs=$(sql "SELECT count(*) FROM pg_constraint WHERE confrelid = '$schema.$table'::regclass;" "$quiet")
+      [[ "$small" == t && "$refs" == 0 ]] || { echo "$schema.$table exists beside $hold.$table" >&2; exit 3; }
+      sql "SET lock_timeout = '10s'; DROP TABLE $schema.$table;" "$quiet" >/dev/null
+    fi
+    move "$hold" "$schema"
   fi
   original
   ;;
