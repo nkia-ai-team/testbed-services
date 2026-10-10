@@ -1211,6 +1211,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F56-R",
+      "slug": "f56-r-banking-partner-settlement-accounts-deleted-by-purge-with-wrong-ids",
+      "profiles": [
+        "db.row_delete",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

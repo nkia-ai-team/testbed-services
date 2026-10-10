@@ -81,7 +81,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 25 → 26. F54-R(banking Oracle 앱 계정의 호출당 논리 읽기 한도로 거래 내역 502) 후보 추가.
         # 2026-10-10: 26 → 27. F49-P(food payment 릴리스가 결제 응답 id 형식을 바꿔 order 가 해석 실패) 후보 추가.
         # 2026-10-10: 27 → 28. F55-R(food dispatch 릴리스의 요청 IP 기준 요청 한도로 order 호출이 429, 주문 503) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 28)
+        # 2026-10-10: 28 → 29. F56-R(banking 해지 계좌 정리가 잘못된 id 로 commerce 정산 계좌 두 행을 지워 checkout 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 29)
 
 
 class RecordingQueueTests(unittest.TestCase):

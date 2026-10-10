@@ -84,8 +84,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 93 → 94. F54-R(후보) 추가. 기존 db.account 실행기에 프로필 한도 모드를 더해 프로파일 수는 그대로.
         # 2026-10-10: 94 → 95. F49-P(후보) 추가. 기존 k8s.image release 모드를 food payment 에 써서 프로파일 수는 그대로.
         # 2026-10-10: 95 → 96. F55-R(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 96)
-        self.assertEqual(len(self.profiles["profiles"]), 31)
+        # 2026-10-10: 96 → 97. F56-R(후보) 추가. 프로파일 31 → 32(db.row_delete 신설).
+        self.assertEqual(len(self.catalog["scenarios"]), 97)
+        self.assertEqual(len(self.profiles["profiles"]), 32)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -199,6 +200,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-P",
             # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F55-R",
+            # 2026-10-10: banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 지움(정산 이체마다 transfer 400 'Account not found: commerce-merchant', payment 502, checkout 502, banking 자신의 거래 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F56-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -529,6 +532,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-P",
             # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F55-R",
+            # 2026-10-10: banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 지움(정산 이체마다 transfer 400 'Account not found: commerce-merchant', payment 502, checkout 502, banking 자신의 거래 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F56-R",
             },
         )
         self.assertEqual(
@@ -643,6 +648,8 @@ class RegistryContractTests(unittest.TestCase):
             "F49-P",
             # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F55-R",
+            # 2026-10-10: banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 지움(정산 이체마다 transfer 400 'Account not found: commerce-merchant', payment 502, checkout 502, banking 자신의 거래 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F56-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -813,8 +820,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F54-R(후보, 고정 evaluation)이 끝에 붙어 F53-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F49-P(후보, 고정 evaluation)이 끝에 붙어 F53-P 가 끝 5개에서 빠졌다.
         # 2026-10-10: F55-R(후보, 고정 evaluation)이 끝에 붙어 F42-P 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F56-R(후보, 고정 evaluation)이 끝에 붙어 F35-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F35-H", "F32-P", "F54-R", "F49-P", "F55-R"])
+                         ["F32-P", "F54-R", "F49-P", "F55-R", "F56-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

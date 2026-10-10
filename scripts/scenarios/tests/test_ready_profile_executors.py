@@ -50,6 +50,7 @@ host_firewall = load("host_firewall_executor")
 host_image = load("host_image_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
+db_row_delete = load("db_row_delete_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -646,6 +647,46 @@ esac
             db_config_row.validate("F40-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified configuration row contract"):
             db_config_row.validate("F38-R", db_config_row.CONTRACTS["F40-R"], {})
+
+    def test_db_row_delete_archives_and_deletes_two_listed_rows_and_puts_them_back(self) -> None:
+        # F56-R: 주입은 BANKING.ACCOUNTS 의 계약된 두 행(commerce 정산 계좌)을 보관 표에 옮기고 지우는 것뿐이다.
+        # 표를 지우거나(F35-H), 잠그거나(F01-P), 다른 행이나 스키마를 바꾸면 "정리 작업이 살아 있는 대상을 잘못
+        # 지웠다"는 지문이 아니라 다른 장애가 된다. 되돌리기는 보관한 행을 그대로 되넣는 것이고 값을 지어내지 않는다.
+        plan = compiler.compile_plan("f56-r-banking-partner-settlement-accounts-deleted-by-purge-with-wrong-ids")
+        argv, stdin = db_row_delete.build_invocation(plan, "run")
+        self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
+        self.assertEqual(argv[3:], [
+            "run", "rca-testbed-banking", "testbed-oracle-0", "BANKING", "ACCOUNTS", "ID",
+            "ACCOUNTS_PURGE_ARCHIVE", "commerce-merchant,commerce-settlement",
+        ])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8). 보관 표 이름에도 없다.
+        self.assertNotIn("F56-R", " ".join(argv))
+        script = stdin.decode()
+        self.assertNotIn("F56-R", script)
+        self.assertNotIn("f56", script.lower())
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        # 보관이 지우기보다 먼저이고, 잠금, 보관, 지우기, 커밋이 한 트랜잭션이다.
+        self.assertLess(run_case.index("create table $schema.$archive"), run_case.index("delete from"))
+        self.assertIn("for update;\ninsert into $schema.$archive", run_case)
+        self.assertIn("delete from $schema.$table where $keycol in ($inlist);\ncommit;", run_case)
+        self.assertIn('[[ "$(live_rows)" == 0 ]]', run_case)
+        self.assertIn('[[ "$(archived_rows)" == "$want" ]]', run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn("insert into $schema.$table select a.* from $schema.$archive a", cleanup_case)
+        self.assertIn("not exists", cleanup_case)
+        self.assertIn("drop table $schema.$archive purge;", cleanup_case)
+        self.assertIn('[[ "$(live_rows)" == "$want" ]]', cleanup_case)
+        preflight_case = script.split("\n  preflight)")[1].split(";;")[0]
+        self.assertIn("check", preflight_case)
+        self.assertIn('[[ "$(archive_exists)" == 0 ]]', script.split("check() {")[1].split("}")[0])
+        for forbidden in ("truncate", "drop table $schema.$table", "alter ", "update ", "lock table", "grant ", "revoke "):
+            self.assertNotIn(forbidden, script.lower().replace("alter session set container", ""))
+        params = dict(db_row_delete.CONTRACTS["F56-R"])
+        params["keys"] = ["commerce-merchant", "commerce-settlement", "ACC-1001"]
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_row_delete.validate("F56-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified row deletion contract"):
+            db_row_delete.validate("F35-H", db_row_delete.CONTRACTS["F56-R"], {})
 
     def test_k8s_image_rolls_one_container_to_an_absent_tag_and_restores_it(self) -> None:
         # F17-H: 주입은 컨테이너 image 한 칸을 노드에 없는 태그로 바꾸는 롤아웃뿐이다. 노드에서 이미지를
@@ -1374,6 +1415,8 @@ esac
             "F49-P",
             # 2026-10-10: food dispatch-service 를 배달 API 에 요청 IP 기준 클라이언트별 요청 한도를 더한 릴리스 1.8.0(fault-images/f55-r)으로 롤아웃(호출자가 order 파드와 노드 주소 하나씩뿐이라 한도가 사실상 모든 요청에 걸려 429, order 가 503 으로 주문 거절, dispatch 는 Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F55-R",
+            # 2026-10-10: banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 지움(정산 이체마다 transfer 400 'Account not found: commerce-merchant', payment 502, checkout 502, banking 자신의 거래 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F56-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

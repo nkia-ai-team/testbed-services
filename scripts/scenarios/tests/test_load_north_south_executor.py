@@ -71,6 +71,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "k8s.scale",
                 # 2026-10-10: F52-R — 워커 노드 containerd 에서 이미지 지우기와 109 docker 에서 되돌려 넣기(ssh, sudo ctr) + Deployment 일상 재배포.
                 "host.image",
+                # 2026-10-10: F56-R — Oracle 표의 행 몇 개를 보관 표에 옮기고 지우기, 보관 행 되넣기(역 문장).
+                "db.row_delete",
             },
         )
 
