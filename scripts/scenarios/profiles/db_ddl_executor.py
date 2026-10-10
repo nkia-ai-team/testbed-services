@@ -52,6 +52,21 @@ inverse is FLASHBACK TABLE ... TO BEFORE DROP, which brings back the rows, index
 identity sequence but leaves the indexes and constraints under their recycle-bin names (BIN$...);
 cleanup gives each its original name back from the contract, keyed by what it covers, so it needs
 no state file and finishes a cleanup that stopped between the restore and the renames.
+
+The Oracle identity-rewind path (F57-R) is a table migration that carried the rows but not the
+identity generator's state.  Run replays the cut-over: the transfers table goes read-only for
+`read_only_seconds` (the old side switched to read-only, so writes fail with ORA-12081 while reads go
+on; kept short because run holds the runner's coordinator lock under a 30 s lease), then its identity generator restarts from the snapshot's high-water mark, `rewind_rows` keys
+behind the table, and the table takes writes again.  Every new row then gets a key that is already
+taken, and the primary key rejects it with ORA-00001 (Oracle 23ai names the table and column and adds
+ORA-03301 with the key that exists).  The rows, indexes and constraints are untouched and reads keep
+working.  Run refuses unless the primary key named in the contract covers the identity column (without
+it the rewind would write duplicates instead of failing) and every key from the restart point up to
+1000 below the highest key exists (so no insert lands in a gap and succeeds); if that check fails after the
+read-only hold, run makes the table writable again and stops.  The inverse is READ WRITE if needed
+and START WITH LIMIT VALUE, which moves the generator past the highest key; DDL is retried a bounded
+number of times when it times out behind in-flight transactions, it needs no state file and it is a no-op once the table is
+writable and the generator is ahead again.
 """
 from __future__ import annotations
 
@@ -154,6 +169,18 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                        "P:ID=SYS_C008658,U:TRANSFER_REF=SYS_C008659",
         "minimum_rows": 1000, "minimum_free_mb": 2048,
     },
+    # 행은 옮겼지만 식별자 생성기 상태는 옮기지 않은 표 이전의 전환: TRANSFERS 를 read_only_seconds 동안 읽기 전용으로 두고(run 이 러너
+    # coordinator lock 을 쥔 채 도는데 lease 가 30초라 짧게 둔다)
+    # (옛 쪽 쓰기 중지, 이체 ORA-12081), identity 생성기를 표의 최대 키보다 rewind_rows 뒤(이전 스냅숏 시점)에서 다시
+    # 시작시킨 뒤 쓰기를 연다. 새 이체마다 이미 있는 키를 받아 기본 키(primary_key)가 ORA-00001 로 거절한다. 다시 시작하는
+    # 자리부터 최대 키까지 키가 모두 있어야 한다(빈 키에 떨어져 성공하는 이체가 없게). cleanup 은 READ WRITE 와
+    # START WITH LIMIT VALUE 로 생성기를 최대 키 뒤로 보낸다(행, 인덱스, 제약은 손대지 않음).
+    "F57-R": {
+        "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
+        "pdb": "FREEPDB1", "schema": "BANKING", "table": "TRANSFERS", "identity_column": "ID",
+        "primary_key": "SYS_C008658", "rewind_rows": 400000, "read_only_seconds": 6,
+        "minimum_rows": 1000,
+    },
 }
 
 
@@ -174,6 +201,10 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     if p["engine"] == "mysql" and "backfill_index" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
+    if p["engine"] == "oracle" and "identity_column" in p:
+        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["pdb"], p["schema"], p["table"],
+                p["identity_column"], p["primary_key"], str(p["rewind_rows"]), str(p["read_only_seconds"]),
+                str(p["minimum_rows"])], ORACLE_IDENTITY_REMOTE
     if p["engine"] == "oracle" and "indexes" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["pdb"], p["schema"], p["table"],
                 p["indexes"], p["constraints"], str(p["minimum_rows"]), str(p["minimum_free_mb"])], ORACLE_DROP_REMOTE
@@ -443,6 +474,104 @@ flashback table $schema.$table to before drop;" >/dev/null
   original
   ;;
  recovery) check ;;
+ *) exit 2 ;;
+esac
+'''
+
+ORACLE_IDENTITY_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; pdb="$4"; schema="$5"; table="$6"; column="$7"; pk="$8"; rewind="$9"; hold="${10}"; minimum="${11}"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# Run one SQL script; every error is fatal and its first ORA- line goes to stderr for the runner log.
+sql() {
+  local out
+  out=$(printf 'set pages 0 lines 400 feedback off heading off trimspool on\nwhenever sqlerror exit failure\nalter session set container=%s;\n%s\nexit;\n' "$pdb" "$1" \
+    | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba) || { grep -m1 'ORA-' <<<"$out" >&2 || true; return 1; }
+  printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
+}
+value() { sql "$1" | tr -d '[:space:]'; }
+# Run holds the runner's coordinator lock while it runs, and the runner's lease is 30 s, so every wait inside
+# run is bounded: each DDL waits at most run_wait seconds behind in-flight transactions (ORA-00054 after that)
+# and is tried run_tries times, 1 s apart.  Run issues at most three DDL calls (read only, restart + read write,
+# and read write again on failure), so its worst case is read_only_seconds + 3 x (run_tries x run_wait +
+# run_tries - 1) plus a few queries, about 21 s.  Cleanup waits a little longer (5 s, twice) per DDL.
+run_wait=2; run_tries=2
+ddl() {
+  local wait=$1 tries=$2 i
+  for ((i = 1; i <= tries; i++)); do
+    sql "alter session set ddl_lock_timeout = $wait;"$'\n'"$3" >/dev/null && return 0
+    (( i < tries )) && sleep 1
+  done
+  return 1
+}
+ident="from dba_tab_identity_cols c join dba_sequences s on s.sequence_owner=c.owner and s.sequence_name=c.sequence_name where c.owner='$schema' and c.table_name='$table' and c.column_name='$column'"
+# A number or the script stops: an empty answer must never read as "behind" or "ahead".
+number() {
+  local v
+  v=$(value "$1") || { echo "query failed: $1" >&2; exit 5; }
+  [[ "$v" =~ ^[0-9]+$ ]] || { echo "not a number ($v): $1" >&2; exit 5; }
+  printf '%s' "$v"
+}
+# last_number is the first key the generator has not handed out (its cache included).
+next_key() { number "select s.last_number $ident;"; }
+high_key() { number "select nvl(max($column),0) from $schema.$table;"; }
+# Highest key first: the generator only moves up, so reading it second cannot fall behind a key handed out
+# between the two reads (the other order fails whenever a cache block is taken in between).
+ahead() { local n h; h=$(high_key) || exit 5; n=$(next_key) || exit 5; (( n > h )); }
+read_only() { value "select read_only from dba_tables where owner='$schema' and table_name='$table';"; }
+# The contract's primary key must be the only column of a P constraint on the identity column, so a reused key fails instead of duplicating.
+guarded() { [[ "$(value "select count(*) from dba_constraints k join dba_cons_columns c on c.owner=k.owner and c.constraint_name=k.constraint_name where k.owner='$schema' and k.table_name='$table' and k.constraint_type='P' and k.constraint_name='$pk' and c.column_name='$column' and (select count(*) from dba_cons_columns x where x.owner=k.owner and x.constraint_name=k.constraint_name)=1;")" == 1 ]]; }
+check() {
+  [[ "$(value "select count(*) $ident and c.generation_type='BY DEFAULT';")" == 1 ]]
+  [[ "$(value "select count(*) from (select 1 from $schema.$table where rownum <= $minimum);")" == "$minimum" ]]
+  guarded
+}
+# Every key from the restart point up to 1000 below the highest key exists, so no new row lands in a gap and
+# succeeds.  The newest 1000 keys are left out: before the table is read-only some of them can belong to
+# transactions that have not committed yet (keys are handed out before commit, so the committed set has
+# momentary holes there), and the restarted generator never gets near them (a run uses some 14 thousand keys).
+dense() {
+  local high=$1
+  (( high - rewind >= minimum ))
+  [[ "$(number "select count(*) from $schema.$table where $column between $((high - rewind + 1)) and $((high - 1000));")" == "$((rewind - 1000))" ]]
+}
+original() { check; [[ "$(read_only)" == NO ]]; ahead; }
+case "$action" in
+ preflight)
+  original
+  high=$(high_key)
+  dense "$high"
+  ;;
+ run)
+  original
+  high=$(high_key)
+  dense "$high"
+  # Cut-over: the old side goes read-only first (writes fail, reads go on) for the hold, as in the original switch.
+  ddl "$run_wait" "$run_tries" "alter table $schema.$table read only;"
+  sleep "$hold"
+  # Nothing is written while read-only, so the restart point is final; recheck it before switching.
+  high=$(high_key)
+  if ! dense "$high"; then
+    ddl "$run_wait" "$run_tries" "alter table $schema.$table read write;"
+    echo "keys behind the restart point are not all present" >&2
+    exit 4
+  fi
+  # The new side takes writes with its generator at the snapshot's high-water mark.
+  if ! ddl "$run_wait" "$run_tries" "alter table $schema.$table modify ($column generated by default as identity (start with $((high - rewind + 1))));
+alter table $schema.$table read write;"; then
+    ddl "$run_wait" "$run_tries" "alter table $schema.$table read write;"
+    echo "could not restart the identity generator" >&2
+    exit 4
+  fi
+  [[ "$(read_only)" == NO ]]
+  if ahead; then echo "identity generator did not restart behind the table" >&2; exit 4; fi
+  ;;
+ cleanup)
+  [[ "$(read_only)" == NO ]] || ddl 5 2 "alter table $schema.$table read write;"
+  ahead || ddl 5 2 "alter table $schema.$table modify ($column generated by default as identity (start with limit value));"
+  original
+  ;;
+ recovery) original ;;
  *) exit 2 ;;
 esac
 '''

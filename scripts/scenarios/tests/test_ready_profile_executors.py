@@ -1458,6 +1458,8 @@ esac
             "F56-R",
             # 2026-10-10: banking account-service 를 잔액 조회에 마지막 이체 시각 헤더를 더한 릴리스 1.4.0(fault-images/f51-h)으로 롤아웃(새 조회가 트랜잭션 밖에서 빌린 Hikari 연결을 돌려주지 않아 잔액 조회 약 10건 만에 풀 active=10 으로 굳고 readiness 이탈, 잔액 조회, 계좌 목록, 이체 500, 502, 거래 내역과 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F51-H",
+            # 2026-10-10: banking Oracle BANKING.TRANSFERS 를 옮긴 표 이전이 identity 생성기 상태를 옮기지 않아 생성기가 표보다 40만 키 뒤에서 다시 시작(db.ddl Oracle identity 되감기, 새 이체 INSERT 가 기본 키 ORA-00001 로 실패, account, api 502, commerce 정산 502, 거래 내역과 잔액 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F57-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

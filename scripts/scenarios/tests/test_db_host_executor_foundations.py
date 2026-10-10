@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import sys
+import re
 import unittest
 from pathlib import Path
 
@@ -234,6 +235,74 @@ class DbHostFoundations(unittest.TestCase):
             ddl.validate("F35-H", {**p, "minimum_free_mb": 0}, {})
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F35-H", ddl.CONTRACTS["F53-R"], {})
+
+    def test_oracle_identity_generator_rewinds_behind_the_table_and_returns_past_it(self) -> None:
+        # F57-R: 행만 옮긴 표 이전의 전환. TRANSFERS 를 read_only_seconds 동안 읽기 전용으로 둔 뒤 identity 생성기를 최대 키보다
+        # rewind_rows 뒤에서 다시 시작시키고 쓰기를 연다. cleanup 은 READ WRITE 와 START WITH LIMIT VALUE 로 되돌린다.
+        p = ddl.CONTRACTS["F57-R"]
+        ddl.validate("F57-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F57-R", p), "run")
+        self.assertEqual(argv[3:9], ["run", "rca-testbed-banking", "testbed-oracle-0", "FREEPDB1",
+                                     "BANKING", "TRANSFERS"])
+        self.assertEqual(argv[9:], ["ID", "SYS_C008658", "400000", "6", "1000"])
+        self.assertNotIn("F57-R", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F57-R", script)
+        self.assertIn("whenever sqlerror exit failure", script)
+        self.assertIn("ddl_lock_timeout = $wait", script)
+        # 기본 키가 없으면 되감기가 실패 대신 중복 키를 쓴다: 계약의 기본 키가 그 열 하나를 덮는지 본다.
+        self.assertIn("k.constraint_type='P' and k.constraint_name='$pk'", script)
+        self.assertIn("generation_type='BY DEFAULT'", script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # 전환 순서: 원래 상태와 키 구간 확인 → 읽기 전용 → 유지 → 멈춘 최대 키로 다시 확인 → 되감기 → 쓰기 열기.
+        order = ["original", 'dense "$high"', "read only;", 'sleep "$hold"', "if ! dense",
+                 "(start with $((high - rewind + 1)))"]
+        positions = [run.index(x) for x in order] + [run.rindex("read write;")]
+        self.assertEqual(positions, sorted(positions))
+        # 다시 확인이 실패하면 쓰기를 먼저 열고 멈춘다.
+        failed = run[run.index("if ! dense"):run.index("fi\n", run.index("if ! dense"))]
+        self.assertIn("read write;", failed)
+        self.assertIn("exit 4", failed)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        self.assertIn("read write;", cleanup)
+        self.assertIn("(start with limit value)", cleanup)
+        self.assertIn("original", cleanup)
+        self.assertIn("original", script[script.index(" recovery)"):])
+        # 빈 답이 '앞' 이나 '뒤' 로 읽히지 않는다: 수는 숫자인지 확인하고 아니면 멈춘다(fail-closed).
+        self.assertIn('[[ "$v" =~ ^[0-9]+$ ]] || { echo "not a number', script)
+        self.assertIn("n=$(next_key) || exit 5", script)
+        # run 은 러너 coordinator lock 을 쥔 채 돌고 lease 는 30초다(profile-control.py, runner.py). run 안의 대기를 모두
+        # 묶는다: DDL 은 run_wait 초씩 run_tries 번(1초 간격), run 이 내는 DDL 은 많아야 셋, 그 밖의 대기는 읽기 전용 유지뿐.
+        wait = int(re.search(r"run_wait=(\d+)", script).group(1))
+        tries = int(re.search(r"run_tries=(\d+)", script).group(1))
+        # DDL 호출은 넷이지만 한 경로에서는 많아야 셋이다(읽기 전용 → 재확인 실패면 쓰기 열기, 또는 되감기와 쓰기 열기 →
+        # 실패면 쓰기 열기). 넷 모두 run 예산(run_wait, run_tries)을 쓴다.
+        self.assertEqual(run.count("ddl "), 4)
+        self.assertEqual(run.count('ddl "$run_wait" "$run_tries"'), 4)
+        self.assertEqual(run.count("sleep"), 1)
+        worst = p["read_only_seconds"] + 3 * (tries * wait + tries - 1)
+        self.assertLessEqual(worst, 22, "run must stay well inside the runner's 30 s lease")
+        # cleanup 도 대기를 묶는다(5초씩 두 번).
+        self.assertEqual(cleanup.count("ddl 5 2 "), 2)
+        # 키 구간은 다시 시작할 자리부터 최대 키 - 1000 까지 전부를 센다(가장 새 1000 키는 커밋 전 거래의 것일 수 있다).
+        self.assertIn("between $((high - rewind + 1)) and $((high - 1000))", script)
+        self.assertIn('== "$((rewind - 1000))"', script)
+        # 생성기가 앞인지 볼 때 최대 키를 먼저 읽는다(반대 순서는 캐시 블록이 넘어가는 순간 거짓이 된다).
+        ahead = script[script.index("ahead() {"):]
+        self.assertLess(ahead.index("high_key"), ahead.index("next_key"))
+        # 행, 인덱스, 제약은 손대지 않는다.
+        for word in ("drop ", "delete ", "truncate", "insert ", "update "):
+            self.assertNotIn(word, script.lower())
+        _, f35h_body = ddl.build_invocation(plan("db.ddl", "F35-H", ddl.CONTRACTS["F35-H"]), "run")
+        self.assertNotEqual(body, f35h_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-R", {**p, "rewind_rows": 4000000}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-R", {**p, "primary_key": "SYS_C008659"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-R", {**p, "read_only_seconds": 0}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-R", ddl.CONTRACTS["F35-H"], {})
 
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):

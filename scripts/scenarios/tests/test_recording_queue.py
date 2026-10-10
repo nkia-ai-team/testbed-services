@@ -83,7 +83,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 27 → 28. F55-R(food dispatch 릴리스의 요청 IP 기준 요청 한도로 order 호출이 429, 주문 503) 후보 추가.
         # 2026-10-10: 28 → 29. F56-R(banking 해지 계좌 정리가 잘못된 id 로 commerce 정산 계좌 두 행을 지워 checkout 502) 후보 추가.
         # 2026-10-10: 29 → 30. F51-H(banking account 릴리스의 DB 연결 누수로 풀이 굳어 잔액 조회와 이체 500, 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 30)
+        # 2026-10-10: 30 → 31. F57-R(표 이전이 banking TRANSFERS identity 생성기 상태를 옮기지 않아 새 이체가 기본 키 ORA-00001 로 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 31)
 
 
 class RecordingQueueTests(unittest.TestCase):

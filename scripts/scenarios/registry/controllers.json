@@ -73,7 +73,8 @@
     "F49-P",
     "F55-R",
     "F56-R",
-    "F51-H"
+    "F51-H",
+    "F57-R"
   ],
   "controllers": {
     "F01-R": {
@@ -17311,6 +17312,263 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 이미지를 core-banking-account:latest 로 되돌리고 롤아웃 available(상한 180초)을 기다린 뒤, 1.4.0 을 쓰는 파드가 없어지면 tb-w2 containerd 에서 1.4.0 의 이름 참조와 ID 참조를 지운다. 옛 파드가 내려가며 빌린 연결도 닫혀 Oracle 세션이 풀린다. 그 뒤 기준선 이체와 잔액 조회가 30초 창 두 번 연속 실패 없이 끝나야 회복이다. target_health 와 pod_ready 는 compile-plan 이 요구하는 형식 조건이고 고장 중에도 참이다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F57-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f57-r",
+            "parameters": {
+              "engine": "oracle",
+              "namespace": "rca-testbed-banking",
+              "pod": "testbed-oracle-0",
+              "pdb": "FREEPDB1",
+              "schema": "BANKING",
+              "table": "TRANSFERS",
+              "identity_column": "ID",
+              "primary_key": "SYS_C008658",
+              "rewind_rows": 400000,
+              "read_only_seconds": 6,
+              "minimum_rows": 1000
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 생성기 되감기는 파드와 nginx 를 건드리지 않아 api 가 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 판정력은 없다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. commerce 진입점은 정산 실패와 무관하게 200 이다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-oracle"
+          },
+          "_note": "banking Oracle 파드. 표 읽기 전용 전환과 identity 생성기 시작값을 바꾸는 ALTER 는 인스턴스를 건드리지 않아 내내 Ready 여야 한다. 빠지면 생성기가 아니라 DB 다운(F25-H 꼴)이다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-transfer"
+          },
+          "_note": "transfer 파드. health 가 연결 isValid() 라 INSERT 가 ORA-00001 로 실패해도 Ready 다(로컬 실측). 빠지면 transfer 자체가 빠진 다른 장애(F17-H, F52-R 꼴)다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer",
+            "container": "transfer-service"
+          },
+          "_note": "생성기 되감기는 transfer 를 재시작시키지 않는다. 2 이상이면 다른 장애(크래시 루프)가 섞였다",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 잔액 조회(step get, 35%, nginx → account → Oracle accounts) 실패율. 생성기를 쓰지 않아 고장 중에도 0 이어야 한다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 transfer 가 transfers INSERT 에서 먼저 전환 앞 읽기 전용 구간(6초) 동안 ORA-12081, 전환 뒤 ORA-00001(기본 키 SYS_C008658, 이미 있는 키)로 500, account 가 재시도 뒤 502, api 502",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%) 5xx 비율. 평시 0, 고장 중 약 1.0. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "transfers-failing-5xx",
+            "observation": "transfer_5xx_rate",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "전환 앞 읽기 전용 구간(6초)에는 ORA-12081, 전환 뒤에는 생성기가 꽉 찬 키 구간에 있는 동안 계좌 검증을 통과한 모든 이체가 transfers INSERT 에서 ORA-00001 로 실패한다(로컬 실측 읽기 전용 중과 되감은 뒤 모두 500, 약 0.02~0.09초). 잔액 부족 400 만 5xx 가 아니라 실제 값은 약 1.0 이다. api, account, transfer 서버 스팬이 ERROR 가 되어 골든 시그널 오류율을 올린다"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 강도 축이 없다: run 이 다시 시작할 자리부터 최대 키까지 40만 키가 모두 있음을 읽기 전용 구간 뒤에 다시 확인하므로 창 안의 INSERT 는 요청량과 무관하게 100% 실패한다(25분 시도 약 1.4만). 동반 부하는 시간대와 무관하게 이체 실패 표본(초당 약 2건)을 보장하려는 것이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1.25,
+            "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "account-path-failing",
+            "observation": "balance_read_nonok_rate",
+            "op": "gte",
+            "value": 0.2,
+            "_note": "nginx → account 직행 잔액 조회까지 실패하면 이체 표의 생성기가 아니라 account 나 Oracle 전체(F35-R 계정 잠금, F25-H 꼴) 장애다"
+          },
+          {
+            "id": "banking-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "Oracle 파드가 빠지면 생성기가 아니라 DB 다운이다"
+          },
+          {
+            "id": "transfer-pod-gone",
+            "observation": "transfer_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "transfer 파드가 빠지면 생성기가 아니라 transfer 자체가 빠진 장애(F17-H, F52-R 꼴)다"
+          },
+          {
+            "id": "transfer-crashloop-alternative",
+            "observation": "transfer_restart_count",
+            "op": "gte",
+            "value": 2,
+            "_note": "생성기 되감기는 재시작을 일으키지 않는다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "transfer-ready",
+            "observation": "transfer_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "baseline-transfers-recovered",
+            "observation": "transfer_5xx_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "평시 0.0, 고장 중 약 1.0. 생성기를 최대 키 뒤로 보낸 뒤 다음 INSERT 부터 성공한다(로컬 실측 10/10 200). account 와 api 의 서킷이 반열림(5초)을 거쳐 닫힌다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 표가 읽기 전용이면 READ WRITE 로 돌리고 START WITH LIMIT VALUE 로 생성기를 표의 최대 키 다음으로 보내면 transfer 의 다음 INSERT 가 새 키를 받아 성공한다(로컬 실측 되돌린 뒤 모두 200). 재시작이나 재배포가 필요 없다"
       },
       "cleanup": {
         "required": true,
