@@ -1226,6 +1226,47 @@ esac
         patch = (ROOT / "fault-images" / "f58-r" / "order-service.patch").read_text()
         self.assertIn("+++ b/food-delivery/order-service/src/main/resources/application-dev.yml", patch)
 
+    def test_k8s_image_release_mode_rolls_food_restaurant_policy_release(self) -> None:
+        # F36-H: 같은 release 스크립트로 food restaurant 를 1.6.0 으로 롤아웃한다(tb-w3). F49-R(1.4.0), F42-P(1.5.0)도
+        # restaurant 릴리스를 쓰므로 태그가 겹치지 않아야 셋 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는
+        # restaurant-service/src 안만 고친다.
+        plan = compiler.compile_plan("f36-h-food-restaurant-release-reads-unsynced-setting")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-restaurant", "restaurant-service",
+                                    "food-delivery-restaurant:latest", "food-delivery-restaurant:1.6.0"])
+        self.assertNotIn("F36-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F36-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F36-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f36-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F36-H"]["baseline_image"], k8s_image.CONTRACTS["F36-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f36-h" / "restaurant-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/restaurant-service/src/",
+                                                     "b/food-delivery/restaurant-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F36", "f36", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        self.assertIn('getRequiredProperty("restaurant.policy.paused-regions")', added)
+
+    def test_f36h_relies_on_policy_key_missing_from_production_config(self) -> None:
+        # F36-H 는 릴리스가 가게 상세마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만
+        # 있고 운영 쪽(기본 application.yml, ConfigMap service-config, restaurant 파드 env, 활성 프로필)에는 없다는 데
+        # 기댄다. 운영 설정에 그 값이 생기거나 dev 프로필이 켜지면 가게 상세가 실패하지 않으므로 시나리오를 다시 평가해야 한다.
+        food = ROOT.parent.parent / "food-delivery"
+        config = (food / "restaurant-service" / "src" / "main" / "resources" / "application.yml").read_text()
+        configmap = (food / "k8s" / "02-configmaps.yaml").read_text()
+        deploy = (food / "k8s" / "21-restaurant-deploy.yaml").read_text()
+        for text in (config, configmap, deploy):
+            self.assertNotIn("paused-regions", text)
+            self.assertNotIn("PAUSED_REGIONS", text)
+            self.assertNotIn("SPRING_PROFILES_ACTIVE", text)
+        self.assertIn("path: /actuator/health\n", deploy[deploy.index("readinessProbe:"):])
+        patch = (ROOT / "fault-images" / "f36-h" / "restaurant-service.patch").read_text()
+        self.assertIn("+++ b/food-delivery/restaurant-service/src/main/resources/application-dev.yml", patch)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1599,6 +1640,8 @@ esac
             "F59-R",
             # 2026-10-10: banking 원장 쪽 계좌 명세서 백필 Job(ledger-statement-backfill, 워커 48)이 계좌마다 transfer 이체 내역을 페이지 500 으로 끝까지 읽어 호출마다 Oracle 이 transfers 전수 스캔(k8s.job, transfer Hikari 고갈, 이체 500, api 502, commerce 정산 실패, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F59-P",
+            # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F36-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

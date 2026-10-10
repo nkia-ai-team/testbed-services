@@ -9569,6 +9569,98 @@
      }
     ]
    }
+  },
+  "F36-H": {
+   "title": "Release rollout of the food restaurant-service that adds a region pause policy to the restaurant detail lookup, reading the policy setting configured only in the release's development profile: production has no such setting, so every restaurant detail request fails with 500 while restaurant-service stays Ready, and every new food order fails with 502 at its first step",
+   "description": "A rollout of the food restaurant-service Deployment (testbed-restaurant) moves its container image from food-delivery-restaurant:latest to the release food-delivery-restaurant:1.6.0. The release adds a region-level pause (bad weather, courier outage) to GET /api/restaurants/{id}: after loading the restaurant it reads the list of paused regions on every request with Environment.getRequiredProperty(\"restaurant.policy.paused-regions\") so that operators can change it without a redeploy, and reports a restaurant in a paused region as CLOSED. The value is set only in the new application-dev.yml that ships in the release (dev profile, empty list); the base application.yml, the ConfigMap service-config, the pod environment and the active profiles in production carry no such key. Startup and /actuator/health do not touch the key, so the new pod passes its probes, becomes Ready and replaces the old pod under the default rolling strategy. From then on every restaurant detail request loads the row successfully and then throws IllegalStateException 'Required key 'restaurant.policy.paused-regions' not found'; no handler maps it, so the request ends with 500 in about 0.01 s and Tomcat logs SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'restaurant.policy.paused-regions' not found] with root cause'. Menus, popular menus, the restaurant list and search, and health keep answering 200. order-service looks the restaurant up as the first step of every order: it logs 'Failed to fetch restaurant N: 500 ...', retries with back-off (200 ms, 400 ms), opens its restaurant circuit breaker and answers every POST /api/orders with 502 before it checks the menu, capacity, dispatch or payment and before it writes anything (locally 240 of 240 orders failed with 502, p50 0.61 s, max 0.76 s, no order row; 20 of 20 detail requests 500 while 20 of 20 menu, list and popular-menu requests were 200; order and restaurant health UP; the same jar started with the dev profile answers the detail with 200). Nothing recovers until the release is rolled back or the setting is added to production.",
+   "cause": "Rollout of testbed-restaurant (food) to the release food-delivery-restaurant:1.6.0, whose new region pause check in the restaurant detail lookup reads the policy setting restaurant.policy.paused-regions on every request, while the setting exists only in the release's development profile and was never added to the production configuration → IllegalStateException 'Required key ... not found' on every restaurant detail request (500) → order-service's restaurant lookup fails and every new food order fails with 502, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-restaurant (rca-testbed-food), container restaurant-service, from food-delivery-restaurant:latest to food-delivery-restaurant:1.6.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f36-h from origin/main food-delivery plus fault-images/f36-h/restaurant-service.patch (under restaurant-service/src only: the paused-region check in RestaurantService.getRestaurant that reads restaurant.policy.paused-regions through Environment.getRequiredProperty, its isPausedRegion helper, and a new application-dev.yml that sets the value for the dev profile only); the manifest image, sources, ConfigMap and manifests are untouched, and the tag is not used by any other scenario (restaurant's other releases are 1.4.0 for F49-R and 1.5.0 for F42-P). Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion order-surge load (2 rps, about 1.5 orders per second plus restaurant browsing) keeps order creation steady regardless of the time of day. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the rollout every new food order fails with 502 in about 0.6 s and every restaurant detail page fails with 500; nothing is kept, no courier is reserved and no payment is attempted. Menus, popular menus, restaurant search and lists, order lookups and delivery tracking keep working. Nothing recovers until the release is rolled back (or the missing production setting is added).",
+   "distinguishing_evidence": "Decisive evidence is a release of restaurant-service followed by restaurant failing its own detail endpoint on a configuration lookup after a successful database read, while its list, menus and the database stay healthy: a KCM ScalingReplicaSet for testbed-restaurant and the new pod's kubelet event 'Pulled: Container image \"food-delivery-restaurant:1.6.0\" already present on machine' (every testbed-restaurant ReplicaSet and pod on file carries food-delivery-restaurant:latest), then from the new pod's start restaurant SEVERE logs 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'restaurant.policy.paused-regions' not found] with root cause' on every detail request (no 'Required key' or 'paused-regions' log in any service in the 30 days before 2026-10-10), with no preceding WARN 'SQL Error' or ERROR from the driver. Restaurant GET /api/restaurants/{id} server spans end with 500 while their child SELECT spans succeed, and GET /api/restaurants, /menu and /popular-menu stay 200. order logs 'Failed to fetch restaurant N: 500' and answers POST /api/orders with 502 and 'Created order' stops; dispatch and payment have no rollout or error and simply stop receiving food orders. MySQL shows no 1054 'Unknown column', no schema change, no lock waits; no node or network change.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-restaurant",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food restaurant-service 의 새 릴리스 food-delivery-restaurant:1.6.0 과 그것이 기대한 운영 설정 사이의 틈이다. 이 버전이 가게 상세 조회(GET /api/restaurants/{id})에 지역 단위 영업 일시 중지(기상 악화, 배달 대행 중단 등)를 더하면서, 재배포 없이 바꿀 수 있게 멈춘 지역 목록을 요청마다 Environment.getRequiredProperty(\"restaurant.policy.paused-regions\") 로 읽는다. 그 값은 릴리스에 함께 든 개발 프로필 파일(application-dev.yml, 빈 목록)에만 있고, 운영 쪽(기본 application.yml, ConfigMap service-config, 파드 env, 활성 프로필 없음)에는 옮겨지지 않았다. 기동과 /actuator/health 는 이 값을 읽지 않아 새 파드가 프로브를 통과해 Ready 가 되고 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 모든 가게 상세 요청이 가게 행을 정상으로 읽은 다음 IllegalStateException 'Required key 'restaurant.policy.paused-regions' not found' 를 던지고, 처리기가 없어 500 이 되며 Tomcat 이 SEVERE 'Servlet.service() ... threw exception [... IllegalStateException: Required key ...]' 를 남긴다. 메뉴, 인기 메뉴, 목록과 검색, health 는 그대로 200 이다. order 는 주문 생성 첫 단계에서 가게 상세를 불러 'Failed to fetch restaurant N: 500' 뒤 재시도와 서킷 끝에 모든 주문을 502 로 끝낸다. 원본 ServiceChannel 2025-05-08(정기 운영 코드 릴리스의 새 코드가 개발 환경에만 설정되고 운영에 동기화되지 않은 설정을 읽으려다 실패해 대시보드 기능 중단, 운영에 필요한 설정을 모두 적용해 복구)과 같은 꼴이다. 고칠 곳은 운영 설정 없이 나간 restaurant 릴리스(되돌림 또는 운영 설정 추가)이고, 증상이 가장 크게 보이는 order 는 정당하게 가게를 조회했을 뿐이다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f36-h/restaurant-service.patch:36-39 (릴리스 1.6.0 의 getRestaurant — 가게 행을 읽은 뒤 Environment.getRequiredProperty(\"restaurant.policy.paused-regions\") 로 요청마다 정책값을 읽음, 없으면 IllegalStateException)",
+     "scripts/scenarios/fault-images/f36-h/restaurant-service.patch:42-51 (isPausedRegion — 멈춘 지역이면 CLOSED 로 보고)",
+     "scripts/scenarios/fault-images/f36-h/restaurant-service.patch:55-65 (application-dev.yml — 정책값이 dev 프로필에만 있음)",
+     "food-delivery/restaurant-service/src/main/resources/application.yml:1-44 (운영 기본 설정 — restaurant.policy 블록이 없음)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/config/GlobalExceptionHandler.java:9-21 (ServiceException 만 처리 — IllegalStateException 은 500 과 Tomcat SEVERE 로그가 됨)",
+     "food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java:54-59 (getRestaurant — 릴리스는 이 반환 앞에 검사를 넣음)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/RestaurantClient.java:29-56 (order 의 가게 조회 — 5xx 를 'Failed to fetch restaurant' 로 남기고 재시도, 서킷 뒤 502)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:60 (createOrder — 주문 생성 첫 단계의 restaurantClient.getRestaurant 가게 조회)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-restaurant(food-delivery/k8s/21-restaurant-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-restaurant:latest imagePullPolicy Never :27-28, envFrom ConfigMap service-config :31-33, startupProbe, readinessProbe, livenessProbe 모두 /actuator/health :67-86, 기본 전략 maxSurge 25%, NodePort 30181). ConfigMap service-config(food-delivery/k8s/02-configmaps.yaml:4-18)에 restaurant 정책 키와 SPRING_PROFILES_ACTIVE 가 없다. 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-restaurant 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-restaurant:1.6.0 을 담고, 그 전 testbed-restaurant ReplicaSet, 파드 기록은 전부 food-delivery-restaurant:latest 다",
+    "새 restaurant 파드가 Ready 가 된 뒤 가게 상세 요청마다 restaurant SEVERE 로그 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'restaurant.policy.paused-regions' not found] with root cause' 가 나오고 그 앞에 WARN 'SQL Error' 가 없다(2026-10-10 이전 30일 동안 어느 서비스에도 'Required key', 'paused-regions' 로그 0건)",
+    "restaurant GET /api/restaurants/{id} 서버 스팬이 500 으로 끝나는데 자식 SELECT 스팬은 성공하고, GET /api/restaurants, /menu, /popular-menu 는 200 이다",
+    "order 가 'Failed to fetch restaurant N: 500' 을 남기고 POST /api/orders 를 502 로 답하며 'Created order' 가 0 으로 떨어진다. order, restaurant 는 Ready 이고 재시작하지 않는다. dispatch, payment 는 롤아웃과 오류가 없다"
+   ],
+   "must_rule_out": [
+    "가게 표 스키마 변경이 아님(F36-R): MySQL 1054 'Unknown column', WARN 'SQL Error: 1054' 가 없고 가게 목록과 검색이 200 이며, 상세의 DB 조회 스팬은 성공한다. 롤아웃이 있다",
+    "restaurant 다른 릴리스의 응답 모양 변경이 아님(F49-R): restaurant 가 상세에 200 이 아니라 500 으로 답하고, order 로그가 'Error while extracting response' 가 아니라 'Failed to fetch restaurant N: 500' 이다",
+    "order 와 restaurant 사이 네트워크 차단이 아님(F44-R): order 가 연결 시간 초과가 아니라 500 응답을 받고, 둘러보기 요청이 restaurant 에 닿아 SEVERE 로그를 남기며 노드 방화벽 변경이 없다",
+    "order 자신의 릴리스 결함이 아님(F58-R, F49-H): order 롤아웃이 없고 order 의 실패 로그가 가게 조회 실패이며, 가게 상세를 직접 부르는 둘러보기도 500 이다",
+    "restaurant 의 자원 고갈, 다운, DB 고장이 아님(F42-P, F25-H 꼴): restaurant 는 Ready 이고 재시작, OOM, CPU 포화, 풀 고갈이 없으며 메뉴와 목록이 빠르게 200, MySQL 은 오류와 포화가 없다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F36-R (restaurants.region 열 이름을 바꾼 마이그레이션이 코드보다 먼저 적용: 같은 '가게 상세 500 → order 주문 502' 이지만 원인이 가게 표이고 MySQL 1054, 목록과 검색도 500, 롤아웃이 없다. F36-H 는 restaurant 롤아웃 뒤 DB 조회는 성공하고 설정 조회에서 상세만 실패)",
+     "F49-R (restaurant 다른 릴리스가 가게 상세 응답 모양을 바꿈: 같은 'restaurant 릴리스 → order 502' 이지만 restaurant 는 200 으로 답하고 order 가 응답 해석에 실패)",
+     "F44-R (tb-w3 방화벽이 order → restaurant 새 연결을 막음: 같은 order 502 이지만 연결 시간 초과이고 restaurant 에 요청이 닿지 않음)",
+     "F58-R (order 자신의 릴리스가 운영에 없는 설정을 읽음: 같은 원본, 같은 결함 꼴이지만 order 가 스스로 500 이고 하류를 부르지 않음. F36-H 는 피호출자 restaurant 의 결함이 order 의 502 로 번짐)",
+     "F42-P (restaurant 다른 릴리스가 인기 메뉴를 요청마다 집계해 MySQL 포화: 같은 restaurant 릴리스 정답이지만 피해가 MySQL 포화와 지연)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-restaurant",
+     "food-restaurant",
+     "testbed-restaurant"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food restaurant-service 를 개발 프로필에만 설정된 정책값을 읽는 지역 영업 일시 중지가 든 릴리스로 롤아웃: 운영에는 그 설정이 없어 restaurant 가 Ready 인 채 가게 상세가 모두 500, 그것을 부르는 order 의 새 주문이 모두 502",
+   "description_ko": "food restaurant-service Deployment(testbed-restaurant) 롤아웃이 컨테이너 이미지를 food-delivery-restaurant:latest 에서 릴리스 food-delivery-restaurant:1.6.0 으로 바꾼다. 이 릴리스는 가게 상세 GET /api/restaurants/{id} 에 지역 단위 영업 일시 중지(기상 악화, 배달 대행 중단)를 더한다. 가게 행을 읽은 뒤, 운영자가 재배포 없이 바꿀 수 있게 멈춘 지역 목록을 요청마다 Environment.getRequiredProperty(\"restaurant.policy.paused-regions\") 로 읽어 그 지역 가게를 CLOSED 로 보고한다. 그 값은 릴리스에 함께 든 새 application-dev.yml(dev 프로필, 빈 목록)에만 있고, 운영의 기본 application.yml, ConfigMap service-config, 파드 env, 활성 프로필 어디에도 없다. 기동과 /actuator/health 는 이 값을 읽지 않아 새 파드가 프로브를 통과해 Ready 가 되고 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 모든 가게 상세 요청이 가게 행을 정상으로 읽은 다음 IllegalStateException 'Required key 'restaurant.policy.paused-regions' not found' 를 던지고, 처리기가 없어 약 0.01초 만에 500 이 되며 Tomcat 이 SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'restaurant.policy.paused-regions' not found] with root cause' 를 남긴다. 메뉴, 인기 메뉴, 가게 목록과 검색, health 는 200 이다. order 는 주문 생성 첫 단계에서 가게를 조회하다 'Failed to fetch restaurant N: 500 ...' 을 남기고 재시도 백오프(200ms, 400ms)와 서킷 끝에 메뉴, 용량, 배차, 결제 확인과 쓰기 전에 모든 POST /api/orders 를 502 로 끝낸다(로컬 실측: 주문 240건 모두 502, p50 0.61초, 최대 0.76초, 주문 행 0건, 상세 20건 모두 500, 메뉴, 목록, 인기 메뉴 각 20건 모두 200, order 와 restaurant health UP. 같은 jar 를 dev 프로필로 띄우면 상세 200). 릴리스를 되돌리거나 운영에 설정을 더할 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-restaurant(food) 를 릴리스 food-delivery-restaurant:1.6.0 으로 롤아웃. 이 버전의 새 지역 영업 일시 중지 검사가 가게 상세마다 정책값 restaurant.policy.paused-regions 를 읽는데, 그 값은 릴리스의 개발 프로필에만 있고 운영 설정에는 옮겨지지 않음 → 모든 가게 상세가 IllegalStateException 'Required key ... not found' 로 500 → order 의 가게 조회가 실패해 모든 새 주문이 502, 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-restaurant 컨테이너 restaurant-service 이미지를 food-delivery-restaurant:latest 에서 food-delivery-restaurant:1.6.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f36-h 가 origin/main food-delivery 에 fault-images/f36-h/restaurant-service.patch(restaurant-service/src 안만: RestaurantService.getRestaurant 의 멈춘 지역 검사와 Environment.getRequiredProperty 로 restaurant.policy.paused-regions 읽기, isPausedRegion 도우미, dev 프로필에만 값을 둔 새 application-dev.yml)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, ConfigMap, 매니페스트는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다(restaurant 의 다른 릴리스는 F49-R 1.4.0, F42-P 1.5.0). preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 order-surge 부하(2rps, 주문 생성 초당 약 1.5건과 가게 둘러보기)가 시간대와 상관없이 주문 생성을 유지한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "롤아웃 약 1분 뒤부터 food 의 모든 새 주문이 약 0.6초 만에 502 로, 모든 가게 상세 화면이 500 으로 실패한다. 아무것도 남지 않고 배달원도 잡지 않으며 결제도 부르지 않는다. 메뉴, 인기 메뉴, 가게 검색과 목록, 주문 조회, 배달 조회는 정상이다. 릴리스를 되돌리거나 빠진 운영 설정을 더할 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 restaurant-service 의 릴리스 뒤 restaurant 가 DB 조회는 성공한 채 설정 조회에서 자기 상세 엔드포인트만 스스로 실패하고, 목록, 메뉴, DB 는 멀쩡하다는 것이다: testbed-restaurant 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-restaurant:1.6.0\" already present on machine'(기록에 있는 testbed-restaurant ReplicaSet, 파드는 모두 food-delivery-restaurant:latest), 그 뒤 새 파드 기동부터 가게 상세마다 나오는 restaurant SEVERE 로그 'Servlet.service() for servlet [dispatcherServlet] ... threw exception [Request processing failed: java.lang.IllegalStateException: Required key 'restaurant.policy.paused-regions' not found] with root cause'(2026-10-10 이전 30일 동안 어느 서비스에도 'Required key', 'paused-regions' 로그 0건)와 그 앞에 없는 WARN 'SQL Error', 자식 SELECT 스팬은 성공한 채 500 으로 끝나는 restaurant GET /api/restaurants/{id} 서버 스팬, 200 인 GET /api/restaurants, /menu, /popular-menu. order 는 'Failed to fetch restaurant N: 500' 을 남기고 POST /api/orders 를 502 로 답하며 'Created order' 가 끊긴다. dispatch, payment 는 롤아웃과 오류 없이 food 주문만 끊긴다. MySQL 은 1054 'Unknown column', 스키마 변경, 잠금 대기가 없고, 노드와 네트워크 변경도 없다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f36-h",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-restaurant",
+       "container": "restaurant-service",
+       "baseline_image": "food-delivery-restaurant:latest",
+       "fault_image": "food-delivery-restaurant:1.6.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

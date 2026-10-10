@@ -49,7 +49,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 100 → 101. F58-R(후보) 추가.
 # 2026-10-10: 101 → 102. F59-R(후보) 추가.
 # 2026-10-10: 102 → 103. F59-P(후보) 추가.
-[[ "$total" -eq 103 ]]
+# 2026-10-10: 103 → 104. F36-H(후보) 추가.
+[[ "$total" -eq 104 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -149,7 +150,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: ready 75→76. F58-R(food order 릴리스가 개발 프로필에만 있는 정책값을 주문마다 읽다 운영에서 없어 주문 생성 전량 500)을 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 76→77. F59-R(food 내부 백필 Job 이 dispatch 배달 목록을 깊은 offset 페이지로 읽어 dispatch 풀이 묶이고 MySQL 포화, 주문 503)을 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 77→78. F59-P(banking 원장 쪽 명세서 백필 Job 이 계좌마다 이체 내역을 읽어 Oracle 전수 스캔, transfer 풀이 묶여 이체 500, 정산 실패)을 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 78 ]]
+# 2026-10-10: ready 78→79. F36-H(food restaurant 릴리스가 개발 프로필에만 있는 정책값을 가게 상세마다 읽다 운영에서 없어 가게 상세 전량 500, order 주문 502)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 79 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -223,7 +225,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 94 → 95. F58-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f58-r)으로 들어왔다.
 # 2026-10-10: 95 → 96. F59-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f59-r)으로 들어왔다.
 # 2026-10-10: 96 → 97. F59-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f59-p)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 97 ]]
+# 2026-10-10: 97 → 98. F36-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f36-h)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 98 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

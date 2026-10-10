@@ -1,0 +1,65 @@
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+index 174dafc..0a0b09a 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+@@ -10,6 +10,7 @@ import com.fooddelivery.restaurant.entity.Restaurant;
+ import com.fooddelivery.restaurant.repository.MenuPopularitySummaryRepository;
+ import com.fooddelivery.restaurant.repository.MenuRepository;
+ import com.fooddelivery.restaurant.repository.RestaurantRepository;
++import org.springframework.core.env.Environment;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.stereotype.Service;
+@@ -23,13 +24,16 @@ public class RestaurantService {
+     private final RestaurantRepository restaurantRepository;
+     private final MenuRepository menuRepository;
+     private final MenuPopularitySummaryRepository popularitySummaryRepository;
++    private final Environment environment;
+ 
+     public RestaurantService(RestaurantRepository restaurantRepository,
+                               MenuRepository menuRepository,
+-                              MenuPopularitySummaryRepository popularitySummaryRepository) {
++                              MenuPopularitySummaryRepository popularitySummaryRepository,
++                              Environment environment) {
+         this.restaurantRepository = restaurantRepository;
+         this.menuRepository = menuRepository;
+         this.popularitySummaryRepository = popularitySummaryRepository;
++        this.environment = environment;
+     }
+ 
+     // §7 신규 — region/status 필터 + 페이지네이션. 배열 응답(하위호환 원칙, page/size 미지정 시 무제한).
+@@ -55,7 +59,22 @@ public class RestaurantService {
+     public RestaurantResponse getRestaurant(Long id) {
+         Restaurant r = restaurantRepository.findById(id)
+                 .orElseThrow(() -> new ServiceException(HttpStatus.NOT_FOUND, "Restaurant not found: " + id));
+-        return new RestaurantResponse(r.getId(), r.getName(), r.getRegion(), r.getStatus());
++        // 지역 단위 영업 일시 중지(기상 악화, 배달 대행 중단 등). 운영 정책값이라 재배포 없이 바꿀 수 있도록 요청마다 설정에서 읽는다.
++        String pausedRegions = environment.getRequiredProperty("restaurant.policy.paused-regions");
++        String status = isPausedRegion(pausedRegions, r.getRegion()) ? "CLOSED" : r.getStatus();
++        return new RestaurantResponse(r.getId(), r.getName(), r.getRegion(), status);
++    }
++
++    private boolean isPausedRegion(String pausedRegions, String region) {
++        if (region == null || pausedRegions.isBlank()) {
++            return false;
++        }
++        for (String paused : pausedRegions.split(",")) {
++            if (paused.trim().equalsIgnoreCase(region)) {
++                return true;
++            }
++        }
++        return false;
+     }
+ 
+     @Transactional(readOnly = true)
+diff --git a/food-delivery/restaurant-service/src/main/resources/application-dev.yml b/food-delivery/restaurant-service/src/main/resources/application-dev.yml
+new file mode 100644
+index 0000000..5570f53
+--- /dev/null
++++ b/food-delivery/restaurant-service/src/main/resources/application-dev.yml
+@@ -0,0 +1,5 @@
++# 로컬, 개발 환경 전용 값(SPRING_PROFILES_ACTIVE=dev).
++restaurant:
++  policy:
++    # 영업을 잠시 멈춘 지역(쉼표로 구분, 비우면 없음). RestaurantService 가 가게 상세 조회마다 읽는다.
++    paused-regions: ""

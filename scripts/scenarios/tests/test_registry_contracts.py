@@ -91,7 +91,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 100 → 101. F58-R(후보) 추가. 기존 k8s.image release 모드를 food order 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 101 → 102. F59-R(후보) 추가. 프로파일 32 → 33(k8s.job 신설).
         # 2026-10-10: 102 → 103. F59-P(후보) 추가. 기존 k8s.job 에 계좌별 내역 백필 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 103)
+        # 2026-10-10: 103 → 104. F36-H(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 104)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -220,6 +221,8 @@ class RegistryContractTests(unittest.TestCase):
             "F59-R",
             # 2026-10-10: banking 원장 쪽 계좌 명세서 백필 Job(ledger-statement-backfill, 워커 48)이 계좌마다 transfer 이체 내역을 페이지 500 으로 끝까지 읽어 호출마다 Oracle 이 transfers 전수 스캔(k8s.job, transfer Hikari 고갈, 이체 500, api 502, commerce 정산 실패, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F59-P",
+            # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F36-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -564,6 +567,8 @@ class RegistryContractTests(unittest.TestCase):
             "F59-R",
             # 2026-10-10: banking 원장 쪽 계좌 명세서 백필 Job(ledger-statement-backfill, 워커 48)이 계좌마다 transfer 이체 내역을 페이지 500 으로 끝까지 읽어 호출마다 Oracle 이 transfers 전수 스캔(k8s.job, transfer Hikari 고갈, 이체 500, api 502, commerce 정산 실패, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F59-P",
+            # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F36-H",
             },
         )
         self.assertEqual(
@@ -692,6 +697,8 @@ class RegistryContractTests(unittest.TestCase):
             "F59-R",
             # 2026-10-10: banking 원장 쪽 계좌 명세서 백필 Job(ledger-statement-backfill, 워커 48)이 계좌마다 transfer 이체 내역을 페이지 500 으로 끝까지 읽어 호출마다 Oracle 이 transfers 전수 스캔(k8s.job, transfer Hikari 고갈, 이체 500, api 502, commerce 정산 실패, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F59-P",
+            # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F36-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -869,8 +876,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F58-R(후보, 고정 evaluation)이 끝에 붙어 F55-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F59-R(후보, 고정 evaluation)이 끝에 붙어 F56-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F59-P(후보, 고정 evaluation)이 끝에 붙어 F51-H 가 끝 5개에서 빠졌다.
+        # 2026-10-10: F36-H(후보, 고정 evaluation)이 끝에 붙어 F57-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F57-R", "F23-P", "F58-R", "F59-R", "F59-P"])
+                         ["F23-P", "F58-R", "F59-R", "F59-P", "F36-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

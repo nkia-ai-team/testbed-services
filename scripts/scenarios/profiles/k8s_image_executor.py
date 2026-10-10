@@ -216,6 +216,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-order:latest",
         "fault_image": "food-delivery-order:2.5.0",
     },
+    # 2026-10-10. F36-H: food restaurant-service 를 지역 단위 영업 일시 중지를 더한 릴리스 1.6.0 으로 롤아웃한다. 가게 상세
+    # 조회가 요청마다 정책값 restaurant.policy.paused-regions 를 설정에서 읽는데, 그 값은 릴리스에 든 개발 프로필 파일에만
+    # 있고 운영 설정에는 없어 가게 상세가 모두 500 이 되고, 그것을 부르는 order 의 주문 생성이 502 로 끝난다(health,
+    # 메뉴, 목록은 그대로). 결함 이미지는 fault-images/f36-h 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가
+    # cleanup 이 지운다. restaurant 의 다른 릴리스 태그(F49-R 1.4.0, F42-P 1.5.0)와 겹치지 않는다.
+    "F36-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-restaurant",
+        "container": "restaurant-service",
+        "baseline_image": "food-delivery-restaurant:latest",
+        "fault_image": "food-delivery-restaurant:1.6.0",
+    },
 }
 
 
