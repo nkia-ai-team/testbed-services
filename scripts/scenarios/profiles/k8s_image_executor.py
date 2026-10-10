@@ -190,6 +190,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-dispatch:latest",
         "fault_image": "food-delivery-dispatch:1.8.0",
     },
+    # 2026-10-10. F51-H: banking account-service 를 잔액 조회 응답에 마지막 이체 시각 헤더를 더한 릴리스 1.4.0 으로
+    # 롤아웃한다. 새 조회가 DataSourceUtils 로 빌린 Hikari 연결을 트랜잭션 밖에서 돌려주지 않아, 잔액 조회 약 10건 만에
+    # 풀(10)이 active=10 으로 굳고 DB 확인이 든 readiness 가 실패해 account 가 엔드포인트에서 빠진다(liveness 는 DB 와
+    # 떨어져 있어 재시작하지 않는다). 결함 이미지는 fault-images/f51-h 로 109 docker 에만 빌드하고, 실행기가 tb-w2 에
+    # 올렸다가 cleanup 이 지운다. account 의 다른 릴리스 태그(F41-R 1.3.0)와 겹치지 않는다.
+    "F51-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-account",
+        "container": "account-service",
+        "baseline_image": "core-banking-account:latest",
+        "fault_image": "core-banking-account:1.4.0",
+    },
 }
 
 

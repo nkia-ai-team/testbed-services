@@ -1056,6 +1056,45 @@ esac
         for block in dispatch_blocks:
             self.assertIn("ignore-exceptions:\n          - com.fooddelivery.common.exception.ClientErrorException", block)
 
+    def test_k8s_image_release_mode_rolls_banking_account_second_release(self) -> None:
+        # F51-H: 같은 release 스크립트로 banking account 를 1.4.0 으로 롤아웃한다(tb-w2). F41-R(1.3.0)도 account 릴리스를
+        # 쓰므로 태그가 겹치지 않아야 둘 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 account-service/src 안만 고친다.
+        plan = compiler.compile_plan("f51-h-banking-account-release-connection-leak-drains-pool")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-account", "account-service",
+                                    "core-banking-account:latest", "core-banking-account:1.4.0"])
+        self.assertNotIn("F51-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F51-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F51-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f51-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F51-H"]["baseline_image"], k8s_image.CONTRACTS["F51-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f51-h" / "account-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/account-service/src/",
+                                                     "b/core-banking/account-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F51", "f51", "fault", "bug", "chaos", "scenario", "leak"):
+            self.assertNotIn(word, added)
+
+    def test_f51h_relies_on_account_probes_and_pool_settings(self) -> None:
+        # F51-H 는 새 릴리스가 빌린 연결을 돌려주지 않아 account 풀(10)이 굳으면 readiness(/actuator/health 의 DataSource
+        # 확인)가 실패해 엔드포인트에서 빠지고, liveness(/actuator/health/liveness)는 DB 를 보지 않아 재시작으로 연결이
+        # 풀리지 않는 데 기댄다. 프로브 경로나 풀 크기, 연결 대기 시간이 바뀌면 피해 모양(지속 대 재시작 반복)과
+        # 성공 판정 시간이 달라지므로 시나리오를 다시 평가해야 한다.
+        manifest = (ROOT.parent.parent / "core-banking" / "k8s" / "21-account-service.yaml").read_text()
+        readiness = manifest[manifest.index("readinessProbe:"):manifest.index("livenessProbe:")]
+        liveness = manifest[manifest.index("livenessProbe:"):manifest.index("resources:", manifest.index("livenessProbe:"))]
+        self.assertIn("path: /actuator/health\n", readiness)
+        self.assertIn("path: /actuator/health/liveness", liveness)
+        config = (ROOT.parent.parent / "core-banking" / "account-service" / "src" / "main" / "resources"
+                  / "application.yml").read_text()
+        self.assertIn("maximum-pool-size: ${DB_POOL_MAX:10}", config)
+        self.assertIn("connection-timeout: 3000", config)
+        self.assertIn("probes:\n        enabled: true", config)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1417,6 +1456,8 @@ esac
             "F55-R",
             # 2026-10-10: banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 지움(정산 이체마다 transfer 400 'Account not found: commerce-merchant', payment 502, checkout 502, banking 자신의 거래 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F56-R",
+            # 2026-10-10: banking account-service 를 잔액 조회에 마지막 이체 시각 헤더를 더한 릴리스 1.4.0(fault-images/f51-h)으로 롤아웃(새 조회가 트랜잭션 밖에서 빌린 Hikari 연결을 돌려주지 않아 잔액 조회 약 10건 만에 풀 active=10 으로 굳고 readiness 이탈, 잔액 조회, 계좌 목록, 이체 500, 502, 거래 내역과 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

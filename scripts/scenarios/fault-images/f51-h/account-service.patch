@@ -1,0 +1,91 @@
+diff --git a/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java b/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java
+index ad192f0..cf05e28 100644
+--- a/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java
++++ b/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java
+@@ -1,6 +1,7 @@
+ package com.corebanking.account.controller;
+ 
+ import com.corebanking.account.service.AccountService;
++import com.corebanking.account.service.LastTransferLookup;
+ import com.corebanking.common.dto.AccountResponse;
+ import com.corebanking.common.dto.TransferRequest;
+ import com.corebanking.common.dto.TransferResponse;
+@@ -16,14 +17,20 @@ import java.util.List;
+ public class AccountController {
+ 
+     private final AccountService accountService;
++    private final LastTransferLookup lastTransferLookup;
+ 
+-    public AccountController(AccountService accountService) {
++    public AccountController(AccountService accountService, LastTransferLookup lastTransferLookup) {
+         this.accountService = accountService;
++        this.lastTransferLookup = lastTransferLookup;
+     }
+ 
+     @GetMapping("/{id}")
+     public ResponseEntity<AccountResponse> getAccount(@PathVariable String id) {
+-        return ResponseEntity.ok(accountService.getAccount(id));
++        AccountResponse account = accountService.getAccount(id);
++        ResponseEntity.BodyBuilder ok = ResponseEntity.ok();
++        lastTransferLookup.lastOutgoingTransferAt(id)
++                .ifPresent(at -> ok.header("X-Last-Transfer-At", at.toString()));
++        return ok.body(account);
+     }
+ 
+     /**
+diff --git a/core-banking/account-service/src/main/java/com/corebanking/account/service/LastTransferLookup.java b/core-banking/account-service/src/main/java/com/corebanking/account/service/LastTransferLookup.java
+new file mode 100644
+index 0000000..1acec92
+--- /dev/null
++++ b/core-banking/account-service/src/main/java/com/corebanking/account/service/LastTransferLookup.java
+@@ -0,0 +1,50 @@
++package com.corebanking.account.service;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.jdbc.datasource.DataSourceUtils;
++import org.springframework.stereotype.Component;
++
++import javax.sql.DataSource;
++import java.sql.Connection;
++import java.sql.PreparedStatement;
++import java.sql.ResultSet;
++import java.sql.SQLException;
++import java.sql.Timestamp;
++import java.time.LocalDateTime;
++import java.util.Optional;
++
++/**
++ * 잔액 화면의 '마지막 이체일' 표시용. 계좌에서 나간 이체 중 가장 최근 시각을 돌려준다.
++ * 공용 응답(AccountResponse)은 다른 서비스와 함께 쓰므로 바꾸지 않고 응답 헤더로 낸다.
++ * 한 번 묻고 끝나는 가벼운 조회라 JPA 를 거치지 않고, 계좌 조회 트랜잭션의 연결을 그대로 쓴다(DataSourceUtils).
++ */
++@Component
++public class LastTransferLookup {
++
++    private static final Logger log = LoggerFactory.getLogger(LastTransferLookup.class);
++    private static final String LAST_OUTGOING_SQL =
++            "SELECT MAX(created_at) FROM transfers WHERE from_account = ?";
++
++    private final DataSource dataSource;
++
++    public LastTransferLookup(DataSource dataSource) {
++        this.dataSource = dataSource;
++    }
++
++    public Optional<LocalDateTime> lastOutgoingTransferAt(String accountId) {
++        try {
++            Connection conn = DataSourceUtils.getConnection(dataSource);
++            try (PreparedStatement ps = conn.prepareStatement(LAST_OUTGOING_SQL)) {
++                ps.setString(1, accountId);
++                try (ResultSet rs = ps.executeQuery()) {
++                    Timestamp last = rs.next() ? rs.getTimestamp(1) : null;
++                    return Optional.ofNullable(last).map(Timestamp::toLocalDateTime);
++                }
++            }
++        } catch (SQLException | RuntimeException ex) {
++            log.warn("Last transfer lookup failed for account {}: {}", accountId, ex.getMessage());
++            return Optional.empty();
++        }
++    }
++}
