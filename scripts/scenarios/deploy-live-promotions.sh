@@ -25,6 +25,12 @@ python3 scripts/scenarios/generate-manifests.py --check
     'import json;from pathlib import Path;from app.manifests import load_manifests;root=Path("../../testbed-services/scripts/scenarios");expected=len(json.loads((root/"catalog.json").read_text())["scenarios"]);manifests=load_manifests(root/"manifests");assert len({item.id for item in manifests.values()}) == expected, f"manifests {len(manifests)} != catalog {expected}"'
 )
 
+# 녹화 구간(주입 직전부터 덤프 끝까지)에는 109 에 아무것도 쓰지 않는다. 덤프는 실행 끝에
+# 적은 카탈로그 해시를 라이브 카탈로그와 다시 비교하므로, 그 사이 배포는 녹화 하나를
+# 잃게 한다(2026-10-10 F40-R). 위 검사가 몇 분 걸리므로 원격 쓰기 직전에 본다.
+ssh "$remote" "curl -sS '$runner_url/api/live-queue'" \
+  | python3 "$scenario_root/recording-guard.py"
+
 # Publish the load scripts the live profiles reference. 2026-07-28: this step did
 # not exist, and tb-runner still held only what was hand-copied on 07-14/07-15 —
 # commerce/surge.js and the three baseline script.js. Every scenario authored
