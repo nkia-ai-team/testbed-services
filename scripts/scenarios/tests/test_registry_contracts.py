@@ -92,7 +92,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 101 → 102. F59-R(후보) 추가. 프로파일 32 → 33(k8s.job 신설).
         # 2026-10-10: 102 → 103. F59-P(후보) 추가. 기존 k8s.job 에 계좌별 내역 백필 모드를 더해 프로파일 수는 그대로.
         # 2026-10-10: 103 → 104. F36-H(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 104)
+        # 2026-10-10: 104 → 105. F41-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 105)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -223,6 +224,8 @@ class RegistryContractTests(unittest.TestCase):
             "F59-P",
             # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-H",
+            # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
+            "F41-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -569,6 +572,8 @@ class RegistryContractTests(unittest.TestCase):
             "F59-P",
             # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-H",
+            # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
+            "F41-H",
             },
         )
         self.assertEqual(
@@ -699,6 +704,8 @@ class RegistryContractTests(unittest.TestCase):
             "F59-P",
             # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-H",
+            # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
+            "F41-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -877,8 +884,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F59-R(후보, 고정 evaluation)이 끝에 붙어 F56-R 이 끝 5개에서 빠졌다.
         # 2026-10-10: F59-P(후보, 고정 evaluation)이 끝에 붙어 F51-H 가 끝 5개에서 빠졌다.
         # 2026-10-10: F36-H(후보, 고정 evaluation)이 끝에 붙어 F57-R 이 끝 5개에서 빠졌다.
+        # 2026-10-10: F41-H(후보, 고정 evaluation)이 끝에 붙어 F23-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F23-P", "F58-R", "F59-R", "F59-P", "F36-H"])
+                         ["F58-R", "F59-R", "F59-P", "F36-H", "F41-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

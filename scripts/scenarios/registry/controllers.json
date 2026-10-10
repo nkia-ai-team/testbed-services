@@ -79,7 +79,8 @@
     "F58-R",
     "F59-R",
     "F59-P",
-    "F36-H"
+    "F36-H",
+    "F41-H"
   ],
   "controllers": {
     "F01-R": {
@@ -18693,6 +18694,226 @@
         "required": true,
         "order": "reverse",
         "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F41-H": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f41-h",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-account",
+              "container": "account-service",
+              "baseline_image": "core-banking-account:latest",
+              "fault_image": "core-banking-account:1.5.0"
+            },
+            "min_hold": "12m",
+            "settle": "60s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "기준선 문서의 이체 단계(nginx → api) 상태. account 가 재시작으로 빠져도 nginx 와 api 는 살아서 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-transfer"
+          },
+          "_note": "transfer 파드. 이 주입은 transfer 를 건드리지 않아 고장 중에도 Ready 여야 한다(빠지면 F17-R, F17-H 꼴의 하류 장애). account 파드는 러너 kubernetes 프로브 허용 목록(live_probes APPROVED_K8S_TARGETS)에 없어 보지 않는다",
+          "freshness": "30s"
+        },
+        {
+          "id": "oracle_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-oracle"
+          },
+          "_note": "Oracle 파드. 이 주입은 Oracle 을 건드리지 않는다. 빠지면 DB 장애(F35-R, F01-P 계열)다",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 잔액 조회(step get, 35%, nginx → account 직행) 실패율. 평시 0. 새 account 는 시작, 준비 프로브(/actuator/health)를 통과해 요청을 받다가 liveness(/actuator/health/liveness)가 404 로 다섯 번 실패하면(약 75초) kubelet 에 죽고, 재시작 대기(10초부터 두 배씩, 최대 5분)와 기동(약 40초) 동안 엔드포인트가 비어 nginx 가 502 로 답한다. 그 구간에 거의 1, 다시 Ready 인 약 75초 동안은 0 근처다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 판정에 쓰지 않고 기록만 한다(api 서킷이 열리면 account 가 다시 Ready 가 된 뒤에도 5초 남짓 502 가 이어진다)",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 잔액 조회(step get, 55%, nginx → account 직행) 실패율. 평시 0, 하루 주기 1~4 iter/s 라 30초 창에 잔액 조회 약 16~66건. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "balance-reads-failing",
+            "observation": "balance_read_nonok_rate",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "새 account 버전이 관리 끝점을 정리하며 헬스 하위 경로를 꺼(management.endpoint.health.probes.enabled=false) /actuator/health/liveness 가 404 다. 매니페스트의 시작, 준비 프로브는 /actuator/health 라 통과해 새 파드가 옛 파드를 대체하지만, liveness(15초 간격, 5회)가 404 로 실패해 kubelet 이 멀쩡한 컨테이너를 죽이고, 재시작 대기가 10초, 20초, 40초, 80초, 160초, 300초로 늘며 되풀이한다. 엔드포인트가 빈 구간마다 nginx → account 잔액 조회가 502 로 실패한다"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 12m: 롤아웃 뒤 새 파드 기동과 Ready 약 40초(109 KCM 2026-10-09: 시작 프로브 연결 거부 약 30초), Ready 뒤 liveness 404 다섯 번(약 75초)에 첫 재시작. 그 뒤 주기마다 엔드포인트가 비는 구간이 재시작 대기 + 기동(10+40, 20+40, 40+40, 80+40, 160+40초)으로 길어지고 Ready 구간은 약 75초로 그대로라, 30초 창의 실패율 0.5 이상 3틱(45초)은 두 번째나 세 번째 빈 구간(롤아웃 약 4~7분 뒤)에서 선다(2026-10-10 로컬 실측: 같은 패치 jar 에서 /actuator/health 는 그대로 답하고 /actuator/health/liveness, /readiness 는 404, 기준 jar 는 둘 다 200). 12분을 버티면 녹화 구간에 재시작 주기 너덧 번과 길어지는 빈 구간이 들어간다. timeout 20m 은 기동이 느려 첫 판정이 늦어져도 받는다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1.25,
+            "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "transfer-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "transfer 파드가 빠지면 하류 장애(F17-R, F17-H 꼴)다. 이 주입은 transfer 를 건드리지 않는다"
+          },
+          {
+            "id": "oracle-down",
+            "observation": "oracle_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "Oracle 파드가 빠지면 account 가 아니라 DB 쪽 장애다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "transfer-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "baseline-balance-reads-recovered",
+            "observation": "balance_read_nonok_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "판정력을 가진 회복 조건. 평시 0.0. cleanup 이 매니페스트 이미지로 되돌려 새 account 파드가 Ready 가 된 뒤 기준선 잔액 조회가 30초 창 두 번 연속 실패 없이 끝나야 회복이다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 이미지를 core-banking-account:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 1.5.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 되돌린 이미지는 /actuator/health/liveness 를 다시 열어 재시작이 멈춘다. target_health 와 pod_ready 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
       },
       "capture": {
         "enabled": true,

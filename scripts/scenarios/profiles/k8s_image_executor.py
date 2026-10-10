@@ -229,6 +229,20 @@ CONTRACTS = {
         "baseline_image": "food-delivery-restaurant:latest",
         "fault_image": "food-delivery-restaurant:1.6.0",
     },
+    # 2026-10-10. F41-H: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0 으로 롤아웃한다. 릴리스가 헬스 하위
+    # 경로(/actuator/health/liveness, /readiness)를 꺼서(management.endpoint.health.probes.enabled=false) 시작, 준비
+    # 프로브(/actuator/health)는 통과하고 새 파드가 옛 파드를 대체하지만, 매니페스트의 liveness(/actuator/health/liveness)는
+    # 404 를 받아 kubelet 이 멀쩡한 컨테이너를 되풀이해 재시작한다. 결함 이미지는 fault-images/f41-h 로 109 docker 에만
+    # 빌드하고, 실행기가 tb-w2 에 올렸다가 cleanup 이 지운다. account 의 다른 릴리스 태그(F41-R 1.3.0, F51-H 1.4.0)와
+    # 겹치지 않는다.
+    "F41-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-account",
+        "container": "account-service",
+        "baseline_image": "core-banking-account:latest",
+        "fault_image": "core-banking-account:1.5.0",
+    },
 }
 
 

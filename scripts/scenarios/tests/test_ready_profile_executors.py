@@ -1267,6 +1267,48 @@ esac
         patch = (ROOT / "fault-images" / "f36-h" / "restaurant-service.patch").read_text()
         self.assertIn("+++ b/food-delivery/restaurant-service/src/main/resources/application-dev.yml", patch)
 
+    def test_k8s_image_release_mode_rolls_banking_account_probe_cleanup_release(self) -> None:
+        # F41-H: 같은 release 스크립트로 banking account 를 1.5.0 으로 롤아웃한다(tb-w2). F41-R(1.3.0), F51-H(1.4.0)도
+        # account 릴리스를 쓰므로 태그가 겹치지 않아야 셋 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는
+        # account-service/src 안만 고친다.
+        plan = compiler.compile_plan("f41-h-banking-account-release-drops-liveness-endpoint")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-account", "account-service",
+                                    "core-banking-account:latest", "core-banking-account:1.5.0"])
+        self.assertNotIn("F41-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F41-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F41-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f41-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F41-H"]["baseline_image"], k8s_image.CONTRACTS["F41-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f41-h" / "account-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/account-service/src/",
+                                                     "b/core-banking/account-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F41", "f41", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        self.assertIn("+        enabled: false", patch)
+        self.assertIn("-        enabled: true", patch)
+
+    def test_f41h_relies_on_liveness_probe_using_health_sub_path(self) -> None:
+        # F41-H 는 매니페스트의 시작, 준비 프로브가 /actuator/health 이고 liveness 만 /actuator/health/liveness 를 쓴다는 데
+        # 기댄다. 릴리스가 하위 그룹을 끄면 새 파드는 Ready 가 되어 옛 파드를 대체한 뒤 liveness 404 로만 죽는다. 프로브
+        # 경로가 바뀌거나 운영 설정이 management.endpoint.health.probes.enabled 를 따로 켜면 시나리오를 다시 평가해야 한다.
+        banking = ROOT.parent.parent / "core-banking"
+        deploy = (banking / "k8s" / "21-account-service.yaml").read_text()
+        self.assertIn("path: /actuator/health\n", deploy[deploy.index("startupProbe:"):deploy.index("readinessProbe:")])
+        self.assertIn("path: /actuator/health\n", deploy[deploy.index("readinessProbe:"):deploy.index("livenessProbe:")])
+        self.assertIn("path: /actuator/health/liveness\n", deploy[deploy.index("livenessProbe:"):])
+        configmap = (banking / "k8s" / "02-configmaps.yaml").read_text()
+        for text in (configmap, deploy):
+            self.assertNotIn("PROBES_ENABLED", text)
+            self.assertNotIn("probes.enabled", text)
+        config = (banking / "account-service" / "src" / "main" / "resources" / "application.yml").read_text()
+        self.assertIn("probes:\n        enabled: true", config)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1642,6 +1684,8 @@ esac
             "F59-P",
             # 2026-10-10: food restaurant-service 를 지역 영업 일시 중지를 더한 릴리스 1.6.0(fault-images/f36-h)으로 롤아웃(가게 상세가 요청마다 읽는 정책값 restaurant.policy.paused-regions 가 릴리스의 개발 프로필 파일에만 있고 운영 설정에 없어 IllegalStateException, 가게 상세 전량 500, order 주문 502, restaurant Ready). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-H",
+            # 2026-10-10: banking account-service 를 관리 끝점을 정리한 릴리스 1.5.0(fault-images/f41-h)으로 롤아웃(헬스 하위 그룹을 꺼 매니페스트 liveness /actuator/health/liveness 가 404, 멀쩡한 컨테이너가 재시작을 되풀이해 잔액 조회 nginx 502, 이체 api 502)
+            "F41-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

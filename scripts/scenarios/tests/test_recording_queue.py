@@ -89,7 +89,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 33 → 34. F59-R(food 내부 백필 Job 이 dispatch 배달 목록을 깊은 offset 페이지로 읽어 dispatch 풀이 묶이고 주문 503) 후보 추가.
         # 2026-10-10: 34 → 35. F59-P(banking 원장 쪽 명세서 백필 Job 이 계좌마다 이체 내역을 읽어 transfer 풀이 묶이고 이체 500, 정산 실패) 후보 추가.
         # 2026-10-10: 35 → 36. F36-H(food restaurant 릴리스가 개발 프로필에만 있는 정책값을 가게 상세마다 읽다 운영에서 없어 상세 500, 주문 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 36)
+        # 2026-10-10: 36 → 37. F41-H(banking account 릴리스가 헬스 하위 그룹을 꺼 liveness 404 재시작 반복, 잔액 조회와 이체 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 37)
 
 
 class RecordingQueueTests(unittest.TestCase):

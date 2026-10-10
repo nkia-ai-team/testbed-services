@@ -1,0 +1,18 @@
+diff --git a/core-banking/account-service/src/main/resources/application.yml b/core-banking/account-service/src/main/resources/application.yml
+index 5bf0f1b..587257d 100644
+--- a/core-banking/account-service/src/main/resources/application.yml
++++ b/core-banking/account-service/src/main/resources/application.yml
+@@ -62,9 +62,8 @@ management:
+   endpoint:
+     health:
+       show-details: always
+-      # /actuator/health/liveness 는 livenessState 만 본다. 기본 /actuator/health 는
+-      # DataSource 인디케이터를 타므로 Hikari 풀이 마르면 probe timeout(3s)을 넘고,
+-      # liveness 가 거기 걸려 있으면 DB 경합이 곧 SIGKILL 이 된다. readiness 는 DB 를
+-      # 계속 본다 — 커넥션을 못 얻는 파드는 트래픽에서 빠지는 것이 맞다.
++      # 관리 끝점 정리(1.5.0): 상태 확인은 /actuator/health 하나로 통일한다.
++      # 하위 경로(/actuator/health/liveness, /actuator/health/readiness)는 따로 쓰는 곳이
++      # 없어 끈다. 쿠버네티스에서 자동으로 켜지므로 명시적으로 false 를 둔다.
+       probes:
+-        enabled: true
++        enabled: false
