@@ -600,6 +600,48 @@ esac
         with self.assertRaisesRegex(ExecutorError, "no verified batch job contract"):
             k8s_job.validate("F51-R", k8s_job.CONTRACTS["F59-R"], {})
 
+    def test_k8s_job_statement_backfill_only_reads_history_and_leaves_the_food_contract(self) -> None:
+        # F59-P: 같은 실행기로 banking 네임스페이스에 원장 쪽 명세서 백필 Job 하나를 만든다. transfer, account, api,
+        # Oracle 의 이미지, 설정, 스키마, 인덱스를 바꾸면 F42-R(릴리스), F57-R(표 이전)의 지문이 섞인다.
+        plan = compiler.compile_plan("f59-p-banking-ledger-statement-backfill-drains-transfer-pool")
+        argv, stdin = k8s_job.build_invocation(plan, "run")
+        self.assertEqual(argv[3:10], ["run", "rca-testbed-banking", "ledger-statement-backfill", "testbed-transfer",
+                                      "testbed-ledger", "core-banking-ledger:latest", "tb-w2"])
+        manifest = json.loads(argv[10])
+        script = stdin.decode()
+        for text in (" ".join(argv), script):
+            self.assertNotIn("F59-P", text)
+            self.assertNotIn("f59", text.lower())
+        for word in ("scenario", "fault", "chaos", "inject", "rca-"):
+            self.assertNotIn(word, json.dumps(manifest["metadata"]["labels"]).lower())
+            self.assertNotIn(word, k8s_job.STATEMENT_SCRIPT.lower())
+        self.assertEqual(manifest["metadata"]["labels"], {"app": "ledger-statement-backfill"})
+        pod = manifest["spec"]["template"]["spec"]
+        self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w2"})
+        container = pod["containers"][0]
+        self.assertEqual(container["args"], [k8s_job.STATEMENT_SCRIPT])
+        self.assertEqual((container["image"], container["imagePullPolicy"]), ("core-banking-ledger:latest", "Never"))
+        env = {item["name"]: item["value"] for item in container["env"]}
+        self.assertEqual(env, {"ACCOUNT_URL": "http://testbed-account:8081", "TRANSFER_URL": "http://testbed-transfer:8082",
+                               "PAGE_SIZE": "500", "WORKERS": "48", "REQUEST_TIMEOUT": "60"})
+        # 작업은 계좌 목록과 이체 내역을 읽기만 한다(GET). 이체를 만들거나 DB 에 바로 붙지 않는다.
+        self.assertIn("$ACCOUNT_URL/api/accounts", k8s_job.STATEMENT_SCRIPT)
+        self.assertIn("/api/transfers?fromAccount=$account&page=$page&size=$PAGE_SIZE", k8s_job.STATEMENT_SCRIPT)
+        # 계좌를 워커에 나누지 않고 계좌마다 쪽을 나눈다: 이체가 몰린 몇 계좌에서도 워커 전부가 바빠야
+        # 동시 호출이 transfer 풀(15)을 늘 넘는다(1차 평가: 계좌를 나누면 몇 분 뒤 동시 8 로 줄었다).
+        self.assertIn('page="$1"', k8s_job.STATEMENT_SCRIPT)
+        self.assertIn("page=$((page + WORKERS))", k8s_job.STATEMENT_SCRIPT)
+        self.assertIn('for account in "${accounts[@]}"', k8s_job.STATEMENT_SCRIPT)
+        for forbidden in ("-X", "--data", "sqlplus", "POST"):
+            self.assertNotIn(forbidden, k8s_job.STATEMENT_SCRIPT)
+        # food 판의 Job 은 그대로 배달 목록 스크립트를 돈다.
+        food = k8s_job.job_manifest(k8s_job.CONTRACTS["F59-R"])["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(food["args"], [k8s_job.BACKFILL_SCRIPT])
+        params = dict(k8s_job.CONTRACTS["F59-P"])
+        params["workers"] = 96
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_job.validate("F59-P", params, {})
+
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
         # 넣거나 Service, CoreDNS 를 건드리면 "배포된 resolver 설정이 내부 이름을 모른다"는
@@ -1555,6 +1597,8 @@ esac
             "F58-R",
             # 2026-10-10: food 알림 쪽 보관소 백필 Job(notify-delivery-backfill, 워커 12)이 dispatch 배달 목록을 offset 페이지로 끝까지 읽어 깊은 페이지마다 MySQL 이 앞선 끝난 배달을 모두 읽음(k8s.job, dispatch Hikari 고갈과 MySQL 포화, 용량 확인 500, 주문 503, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F59-R",
+            # 2026-10-10: banking 원장 쪽 계좌 명세서 백필 Job(ledger-statement-backfill, 워커 48)이 계좌마다 transfer 이체 내역을 페이지 500 으로 끝까지 읽어 호출마다 Oracle 이 transfers 전수 스캔(k8s.job, transfer Hikari 고갈, 이체 500, api 502, commerce 정산 실패, 롤아웃·설정·인덱스 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F59-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

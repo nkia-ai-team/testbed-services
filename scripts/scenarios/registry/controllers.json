@@ -77,7 +77,8 @@
     "F57-R",
     "F23-P",
     "F58-R",
-    "F59-R"
+    "F59-R",
+    "F59-P"
   ],
   "controllers": {
     "F01-R": {
@@ -18207,6 +18208,261 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 Job 을 foreground 로 지우고 백필 파드가 없어진 뒤 testbed-dispatch 가 사용 가능해질 때까지 기다린다. 파드가 사라질 때 진행 중이던 깊은 페이지 질의는 dispatch 쪽에서 끝까지 돈 뒤(1분 안팎) 연결을 돌려준다. 백필은 읽기만 하므로 남는 데이터가 없다(받은 페이지는 파드의 emptyDir 와 함께 사라진다)"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "15m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F59-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.job",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.job",
+        "levels": [
+          {
+            "id": "approved-fixed-f59-p",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "job": "ledger-statement-backfill",
+              "image": "core-banking-ledger:latest",
+              "image_owner": "testbed-ledger",
+              "node": "tb-w2",
+              "target_deployment": "testbed-transfer",
+              "target_url": "http://testbed-transfer:8082",
+              "directory_url": "http://testbed-account:8081",
+              "page_size": 500,
+              "workers": 48,
+              "request_timeout_seconds": 60,
+              "active_deadline_seconds": 1800
+            },
+            "min_hold": "10m",
+            "settle": "60s",
+            "timeout": "18m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 백필은 클러스터 안 Job 파드에서 testbed-transfer Service 로 바로 들어가 진입점을 지나지 않는다. transfer 풀이 묶이고 readiness 로 빠졌다 들어와도 nginx, api 는 살아서 5xx 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-transfer"
+          },
+          "_note": "transfer 파드. 백필 호출이 Hikari 15 를 모두 쥐면 readiness(/actuator/health, DB 확인, 3초)가 연결을 기다리다 실패해 잠깐씩 false 가 될 수 있어 판정에 쓰지 않는다. 회복 조건에만 쓴다",
+          "freshness": "30s"
+        },
+        {
+          "id": "oracle_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-oracle"
+          },
+          "_note": "Oracle 파드. 이 주입은 Oracle 설정, 자원, 데이터를 건드리지 않는다. 전수 스캔이 몰려 CPU 가 포화되어도 파드는 Ready 여야 하고, 빠지면 DB 장애(F35-R, F25-H 꼴)다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_available_replicas",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.deployment_available_replicas",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer"
+          },
+          "_note": "회복 판정용. Job 을 지운 뒤 진행 중이던 스캔이 끝나 풀이 풀리면 1",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer",
+            "container": "transfer-service"
+          },
+          "_note": "transfer liveness 는 /actuator/health/liveness(livenessState)라 풀이 묶여도 재시작하지 않는다. 2 이상이면 질의 부하가 아니라 기동 실패나 메모리 고갈 같은 다른 결함이다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 transfer 의 Hikari 연결 대기 3초 초과 500, account 재시도와 서킷 열림, readiness 로 엔드포인트가 빈 순간의 연결 거부가 모두 502 로 나온다",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "_note": "동반 부하의 잔액 조회(step get, nginx → api → account → Oracle PK 조회) 실패율. 기록만 한다. account 풀은 백필과 무관하고 PK 조회라 대개 성공한다(Oracle CPU 포화로 느려질 수는 있다)",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%) 5xx 비율. 평시 0. 30초 창에 이체가 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "transfers-failing-5xx",
+            "observation": "transfer_5xx_rate",
+            "op": "gte",
+            "value": 0.3,
+            "_note": "백필 워커 48개가 계좌를 같은 순서로 돌며 계좌마다 쪽을 나눠(워커 w 는 w, w+48, ... 쪽) GET /api/transfers?fromAccount=<계좌>&page=N&size=500 을 transfer 로 바로 부른다. 목록 앞머리 ACC-1001~1007(각 약 650~700쪽, 합 약 4,700쪽)이 처리량 초당 3~6 호출로 13~26분 걸려 min_hold 와 성공 틱이 이 국면에 들고, 그 뒤 작은 계좌에서도 워커마다 빈 쪽 하나씩을 불러 동시 48 이 유지된다. 목록과 건수 질의가 선택 조건(:x is null or ...) 꼴이라 호출마다 transfers 약 638만 행을 전수 스캔한다(109 Oracle 실측 건수 질의 0.23~0.25초, DPM byb2y2hv7p4ag 평균 약 0.25초 CPU, 끝까지 훑는 페이지 0.22초 이상). Oracle 은 2 CPU 라 초당 약 3~6 호출만 끝내고, 호출 하나가 transfer Hikari 연결 하나를 그동안 쥔다. 동시 48 > 풀 15 라 풀은 늘 스캔에 묶이고 나머지 33 이 3초 연결 대기 끝에 실패, 2초 뒤 다시 줄을 선다. 이체 한 건도 같은 풀에서 연결을 얻어야 해 대기 끝에 500 이 되고 account 재시도와 서킷 열림, api 502 로 이어진다. 연결을 얻는 몫은 대략 처리량/도착률(약 3~6 / 10~13)이라 이체의 절반 이상이 실패한다"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 10m: 백필 파드 기동(이미지가 노드에 있어 수 초), 계좌 목록 1회, 동반 부하 ramp 2m 뒤 풀 경합이 자리 잡는다. timeout 18m. 같은 transfer 풀 고갈, Oracle 전수 스캔 꼴의 F42-R 녹화 조건(동반 부하 이체 5xx ≥ 0.3, 3틱)과 같은 값이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1.25,
+            "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "oracle-down",
+            "observation": "oracle_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "Oracle 파드가 빠지면 백필 호출이 아니라 DB 장애다"
+          },
+          {
+            "id": "transfer-crashloop-alternative",
+            "observation": "transfer_restart_count",
+            "op": "gte",
+            "value": 2,
+            "_note": "컨테이너가 떴다가 죽는다면 풀 경합이 아니라 기동 실패나 메모리 고갈 같은 다른 결함이다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "transfer-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "transfer-replica-recovered",
+            "observation": "transfer_available_replicas",
+            "op": "eq",
+            "value": 1
+          },
+          {
+            "id": "baseline-transfers-recovered",
+            "observation": "transfer_5xx_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "판정력을 가진 회복 조건. 평시 0.0. Job 이 지워지고 진행 중이던 스캔이 끝나 풀이 풀리면 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 Job 을 foreground 로 지우고 백필 파드가 없어진 뒤 testbed-transfer 가 사용 가능해질 때까지 기다린 뒤 평가한다. 파드가 사라질 때 진행 중이던 스캔은 transfer 쪽에서 끝까지 돈 뒤(수 초) 연결을 돌려준다. 백필은 읽기만 해 남는 데이터가 없다(받은 마지막 페이지와 명세서 줄은 파드의 emptyDir 와 함께 사라진다). target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
       },
       "cleanup": {
         "required": true,

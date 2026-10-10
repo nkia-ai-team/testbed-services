@@ -71,16 +71,99 @@ wait
 '''
 
 
+# F59-P is the same incident on core-banking: the ledger team's statement backfill, run from the
+# ledger-service image, takes the account directory from account-service once and then, with
+# many parallel workers, reads every account's transfer history page by page from
+# transfer-service (GET /api/transfers?fromAccount=...&page=N&size=500). That list filters with
+# optional parameters, so Oracle answers each page and its total count with a full scan of the
+# transfers table, and every call holds one transfer Hikari connection while it runs. Nothing
+# about transfer, account, api, Oracle or their configuration changes; the only new object is
+# the Job.
+# 2026-10-10. F59-P: 원장 쪽 계좌 명세서 백필 Job 이 계좌 목록(1,001개)을 한 번 받고 워커 48개로
+# 계좌마다 이체 내역을 페이지 500 으로 끝까지 읽는다. 워커들이 계좌를 같은 순서로 돌며 계좌마다 쪽을
+# 나눠(워커 w 는 w, w+48, ... 쪽) 읽으므로, 이체가 몰린 계좌 8개(settlement 401만, ACC-1001~1007 각
+# 약 33만)에서도 작은 계좌에서도 동시 호출이 늘 48 이다(작은 계좌는 대부분 워커가 빈 쪽을 받는데,
+# offset 이 0 이 아닌 빈 쪽은 페이지 질의와 건수 질의를 둘 다 전수 스캔한다). 109 실측(2026-10-10): 거래 내역 질의는 선택
+# 조건(:x is null or ...) 꼴이라 transfers 약 638만 행 전수 스캔이고, 건수 질의(DPM byb2y2hv7p4ag)
+# 호출당 약 0.23~0.25초, 페이지 질의도 끝까지 훑으면 0.22초 이상. transfer Hikari 풀은 15, 연결 대기
+# 3초라 워커 48 개면 풀 15 를 늘 스캔이 쥐고 나머지가 대기열을 채운다.
+CONTRACTS["F59-P"] = {
+    "namespace": "rca-testbed-banking",
+    "job": "ledger-statement-backfill",
+    "image": "core-banking-ledger:latest",
+    "image_owner": "testbed-ledger",
+    "node": "tb-w2",
+    "target_deployment": "testbed-transfer",
+    "target_url": "http://testbed-transfer:8082",
+    "directory_url": "http://testbed-account:8081",
+    "page_size": 500,
+    "workers": 48,
+    "request_timeout_seconds": 60,
+    "active_deadline_seconds": 1800,
+}
+
+# The statement backfill. The account directory is read once; every worker then walks the
+# accounts in the same order and, for each account, reads its share of the history pages
+# (worker w reads pages w, w+WORKERS, ...) until a short page, keeps the last page for the
+# statement loader and appends one line per account. A failed page is retried after two
+# seconds. Splitting each account's pages rather than the accounts keeps all workers busy on
+# the few accounts that hold almost all transfers.
+STATEMENT_SCRIPT = r'''set -u
+trap 'kill 0' TERM INT
+until code=$(curl -s -o /work/accounts.json -w '%{http_code}' --max-time "$REQUEST_TIMEOUT" "$ACCOUNT_URL/api/accounts") \
+    && [ "$code" = 200 ]; do
+  echo "account directory unavailable, retrying"
+  sleep 2
+done
+mapfile -t accounts < <(grep -o '"id": *"[^"]*"' /work/accounts.json | cut -d'"' -f4)
+echo "accounts: ${#accounts[@]}"
+read_history() {
+  local worker="$1" account="$2" page="$1" code rows
+  while :; do
+    code=$(curl -s -o "/work/page-$worker.json" -w '%{http_code}' --max-time "$REQUEST_TIMEOUT" \
+      "$TRANSFER_URL/api/transfers?fromAccount=$account&page=$page&size=$PAGE_SIZE")
+    if [ "$code" != 200 ]; then
+      echo "worker $worker: $account page $page returned $code, retrying"
+      sleep 2
+      continue
+    fi
+    rows=$(grep -o '"transferRef"' "/work/page-$worker.json" | wc -l)
+    [ "$rows" -lt "$PAGE_SIZE" ] && break
+    page=$((page + WORKERS))
+  done
+  echo "$account $page" >>"/work/statements-$worker.txt"
+}
+run_worker() {
+  local worker="$1" account
+  for account in "${accounts[@]}"; do read_history "$worker" "$account"; done
+  echo "worker $worker: done"
+}
+for worker in $(seq 0 $((WORKERS - 1))); do run_worker "$worker" & done
+wait
+'''
+
+
 def job_manifest(p: dict[str, Any]) -> dict[str, Any]:
     labels = {"app": p["job"]}
-    env = {
-        "DISPATCH_URL": p["target_url"],
-        "DELIVERY_STATUS": p["status"],
-        "PAGE_SIZE": str(p["page_size"]),
-        "WORKERS": str(p["workers"]),
-        "PAGES_PER_WORKER": str(p["pages_per_worker"]),
-        "REQUEST_TIMEOUT": str(p["request_timeout_seconds"]),
-    }
+    if "directory_url" in p:
+        script = STATEMENT_SCRIPT
+        env = {
+            "ACCOUNT_URL": p["directory_url"],
+            "TRANSFER_URL": p["target_url"],
+            "PAGE_SIZE": str(p["page_size"]),
+            "WORKERS": str(p["workers"]),
+            "REQUEST_TIMEOUT": str(p["request_timeout_seconds"]),
+        }
+    else:
+        script = BACKFILL_SCRIPT
+        env = {
+            "DISPATCH_URL": p["target_url"],
+            "DELIVERY_STATUS": p["status"],
+            "PAGE_SIZE": str(p["page_size"]),
+            "WORKERS": str(p["workers"]),
+            "PAGES_PER_WORKER": str(p["pages_per_worker"]),
+            "REQUEST_TIMEOUT": str(p["request_timeout_seconds"]),
+        }
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -100,7 +183,7 @@ def job_manifest(p: dict[str, Any]) -> dict[str, Any]:
                         "image": p["image"],
                         "imagePullPolicy": "Never",
                         "command": ["bash", "-c"],
-                        "args": [BACKFILL_SCRIPT],
+                        "args": [script],
                         "env": [{"name": k, "value": v} for k, v in env.items()],
                         "resources": {
                             "requests": {"cpu": "50m", "memory": "64Mi"},
@@ -124,7 +207,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("scenario is not enabled by the profile registry")
     if params != contract:
         raise ExecutorError("parameters must exactly match the approved batch job contract")
-    if params["workers"] * params["pages_per_worker"] <= 0:
+    if params["workers"] * params.get("pages_per_worker", params["page_size"]) <= 0:
         raise ExecutorError("batch job contract must read at least one page")
 
 

@@ -9462,6 +9462,113 @@
      }
     ]
    }
+  },
+  "F59-P": {
+   "title": "An internal statement backfill Job reads every banking account's transfer history page by page with 48 parallel workers: each call makes Oracle full-scan the 6.4-million-row transfers table, the backfill's calls hold the transfer-service connection pool, and transfers and commerce settlements fail with 500/502",
+   "description": "A one-off Kubernetes Job, ledger-statement-backfill, starts in the rca-testbed-banking namespace. It is the ledger team's account statement backfill, run from the ledger-service image (core-banking-ledger:latest) with a shell script: it reads the account directory once from account-service (GET http://testbed-account:8081/api/accounts, 1,001 accounts), then 48 parallel workers walk the accounts in the same order and split each account's history pages between them: worker w reads pages w, w+48, w+96, ... of GET http://testbed-transfer:8082/api/transfers?fromAccount=<account>&page=N&size=500 from transfer-service with curl until it gets a short page, so all 48 stay busy on the seven ACC-100x accounts at the head of the directory (about 0.33-0.35 million transfers each) as well as on the small accounts (where most workers get an empty page past the end, which costs Oracle a full scan for the page and another for the count). Each worker keeps the last page for the statement loader and retries a failed page after two seconds. The history list filters with optional parameters ((:fromAccount is null or from_account = :fromAccount) and ...), so Oracle answers every page, and the total count Spring Data adds to a paged query, with a full scan of BANKING.TRANSFERS (about 6.38 million rows, about 100,000 blocks): on the 109 Oracle the count takes 0.23-0.25 s and a page that has to scan to the end at least 0.22 s (DPM Top SQL byb2y2hv7p4ag, about 0.25 s CPU per execution in normal operation). Oracle Free runs on 2 CPUs, so it finishes only about 3-6 such calls per second, and every call holds one of transfer-service's 15 Hikari connections while it runs. With 48 calls in flight the pool is always held by backfill scans and the rest wait; a transfer (POST /api/transfers, from api via account and from commerce's settlement) needs a connection from the same pool, waits 3 s and fails with 500 ('Connection is not available, request timed out after 3000ms'); account retries and opens its circuit breaker, api answers 502 and commerce checkout fails at the settlement step. transfer readiness (/actuator/health with a DB check, 3 s) waits for the same pool, so transfer may drop out of its Service for moments, after which the workers retry and fill the pool again. Nothing about the services changes: no rollout, no configuration change, no schema or index change, Oracle stays Ready. The only new object is the Job; the history query it sends is the one the banking app already sends for seven accounts at page 0 with size 20 (about 0.25 s, about 0.25 calls per second), and what is new is the volume, the caller and the deep pages over every account.",
+   "cause": "Internal statement backfill Job ledger-statement-backfill (rca-testbed-banking, image core-banking-ledger:latest) started with 48 parallel workers reading every account's transfer history page by page (size 500) straight from transfer-service → each call makes Oracle full-scan TRANSFERS for the page and its count (about 0.25 s CPU each, about 6.38 million rows) → the backfill's calls hold all 15 transfer Hikari connections and saturate Oracle's 2 CPUs → transfers wait 3 s for a connection and fail with 500 → account retries and opens its circuit breaker, api answers 502, commerce settlement fails, until the Job is stopped.",
+   "injection_summary": "The k8s.job executor creates one Kubernetes Job in rca-testbed-banking: ledger-statement-backfill (label app=ledger-statement-backfill, node tb-w2 by nodeSelector, image core-banking-ledger:latest with imagePullPolicy Never, container backfill running a bash script with curl, backoffLimit 0, activeDeadlineSeconds 1800, an emptyDir for the last page and the statement lines). The script reads GET http://testbed-account:8081/api/accounts once, then starts 48 workers that walk the accounts in the directory order; for each account worker w reads pages w, w+48, w+96, ... of GET http://testbed-transfer:8082/api/transfers?fromAccount=<account>&page=N&size=500 until a page has fewer than 500 rows, with a 60 s timeout, retrying a non-200 page after 2 s. Preflight checks that kubectl may create and delete Jobs, that tb-w2 is Ready, that the ledger Deployment uses exactly that image and has a running pod on tb-w2, that testbed-transfer is available and that no Job of that name exists. Run records the Job name in a state file keyed by namespace and Job and applies the manifest without waiting. Cleanup deletes the Job in the foreground, waits until no pod of the Job is left and until testbed-transfer is available again. No scenario identifier appears in the Job, its labels, its script or its environment. A companion transfer-heavy-surge load (5 rps, 40% transfers) drives the banking entry point on top of the resident baseline, as in F57-R, so that the transfer sample does not depend on the hour.",
+   "user_impact": "About a minute after the backfill starts more than half of banking transfers fail: api answers 502 after account's retries, transfer answers 500 after a 3 s wait, and commerce checkouts fail at the settlement transfer and release their reserved stock. Transfer history lookups in the banking app slow down or fail too. Balance lookups and account lists keep working (account's own pool, primary-key reads), slower on the saturated Oracle. transfer may leave its Service for moments. Nothing recovers until the backfill Job is stopped; in-flight scans finish within seconds after that.",
+   "distinguishing_evidence": "Decisive evidence is a new batch Job and a burst of an old query from a new caller while nothing else changes: KCM events in rca-testbed-banking for Job ledger-statement-backfill (SuccessfulCreate) and its pod (Scheduled to tb-w2, 'Pulled: Container image \"core-banking-ledger:latest\" already present on machine', Created and Started container backfill) right before the failures (no Job event in this namespace in the 30 days before 2026-10-10); DPM Top SQL shows the history count statement byb2y2hv7p4ag and the history page statements executing many times more often than in normal operation (about 15-30 executions per minute) at about 0.25 s CPU and about 100,000 logical reads each, with an offset form of the page statement that nothing sends in normal operation, and Oracle CPU, DB time and active sessions rise; transfer GET /api/transfers server spans carry url.query fromAccount=<hundreds of different accounts>&page=<n>&size=500, client.address of the backfill pod and user_agent curl, instead of the seven ACC-100x accounts at page=0&size=20 from api (Java). Then transfer logs Hikari 'Connection is not available, request timed out after 3000ms', account logs 'Transfer service call failed' and circuit-open messages, api answers 502 and 'Transfer COMPLETED' thins out. No Deployment in the namespace rolls out, no image changes, the transfers table and its indexes are untouched, Oracle stays Ready with no lock waits (enq: TX) and transfer does not restart.",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "batch_job",
+    "target_id": "rca-testbed-banking/job/ledger-statement-backfill",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 원장 쪽이 띄운 일회성 계좌 명세서 백필 작업 Job ledger-statement-backfill 이다. 이 작업이 계좌 목록(1,001개)을 한 번 받고 병렬 48개 워커로 계좌마다 transfer 의 이체 내역 API(GET /api/transfers?fromAccount=<계좌>&page=N&size=500)를 짧은 페이지가 나올 때까지 읽는다. 이체 내역 목록은 선택 조건((:fromAccount is null or from_account = :fromAccount) and ...) 꼴이라(TransferRepository.search) Oracle 이 페이지와 Spring Data 가 붙이는 건수 질의를 모두 transfers 약 638만 행 전수 스캔으로 답한다(109 실측 건수 0.23~0.25초, 끝까지 훑는 페이지 0.22초 이상, DPM byb2y2hv7p4ag 평시 실행당 약 0.25초 CPU, 논리 읽기 약 10만). Oracle Free 는 2 CPU 라 이런 호출을 초당 약 3~6개만 끝내고, 호출 하나가 transfer Hikari 연결 하나를 그동안 쥔다. 48개가 동시에 들어오면 풀 15 가 늘 백필 스캔에 묶이고, 이체(api 에서 account 를 거친 것과 commerce 정산)가 같은 풀에서 연결을 3초 기다리다 500 이 되며 account 재시도와 서킷 열림, api 502, commerce checkout 정산 실패로 이어진다. transfer, account, api, Oracle 의 코드, 설정, 스키마, 인덱스는 그대로이고, 같은 내역 질의는 은행 앱이 일곱 계좌를 0쪽 20건으로 초당 약 0.25회 부르는 평시 경로다. 원칙 6: 요청을 받은 transfer 와 Oracle 은 정당한 질의를 처리했을 뿐이고, 그 질의를 감당할 수 없는 양으로 보낸 작업이 원인이다. 계기(작업 시작)와 근본(작업)이 같은 곳이라 trigger_target_id 는 비운다. 원본 Atlassian Bitbucket 2025-05-08 사후 보고가 원인을 '내부 서비스의 대규모 백필 작업이 비싼 질의를 과도하게 불러 주 DB 를 압박'으로 지목하고 그 작업을 멈춰 완화한 층위와 같다. 관제 데이터로의 도달 경로: ① KCM 이벤트 Job ledger-statement-backfill SuccessfulCreate 와 그 파드의 Scheduled(tb-w2), Pulled(core-banking-ledger:latest), Started(컨테이너 backfill) ② DPM Top SQL 의 이체 내역 건수, 페이지 문장 실행 수 급증(실행당 약 0.25초, 논리 읽기 약 10만)과 평시 없던 offset 꼴 페이지 문장, Oracle CPU, DB time, active_session 상승 ③ transfer GET /api/transfers 서버 스팬의 url.query 가 수백 개 계좌와 size=500, client.address 가 작업 파드, user_agent 가 curl ④ transfer Hikari 고갈 로그, account 'Transfer service call failed' 와 서킷 열림, api 502 ⑤ 롤아웃, 설정, 인덱스 변경 없음.",
+    "code_anchor": [
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/controller/TransferController.java:51-64 (list — fromAccount, page, size 를 받아 PageRequest.of(page, size). page 상한 없음, 호출자 구분 없음)",
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java:17-28 (search — (:x is null or 열 = :x) 꼴 선택 조건의 Page 질의. Oracle 이 페이지와 건수 질의를 transfers 전수 스캔으로 답함)",
+     "core-banking/transfer-service/src/main/resources/application.yml:12-17 (Hikari maximum-pool-size 15, connection-timeout 3000 — 백필 스캔이 풀을 다 쥐면 이체가 3초 뒤 실패)",
+     "core-banking/k8s/22-transfer-service.yaml:87-103 (readiness /actuator/health DB 확인 3초 — 같은 풀을 기다려 잠깐 빠질 수 있음, liveness 는 livenessState 만이라 재시작 없음)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:28-58 (account → transfer 재시도와 서킷브레이커 — 이체 실패가 502 로 번짐)",
+     "scripts/scenarios/profiles/k8s_job_executor.py:111-143 (STATEMENT_SCRIPT — 계좌 목록 1회, 워커들이 계좌를 같은 순서로 돌며 계좌마다 쪽을 나눠 이체 내역을 curl 로 페이지마다 읽고 실패한 페이지를 2초 뒤 다시 부르는 백필 작업의 요청 모양)"
+    ],
+    "infra_anchor": "rca-testbed-banking 네임스페이스(노드 tb-w2)의 Job ledger-statement-backfill(이미지 core-banking-ledger:latest, 워커 48, 페이지 500, 계좌 1,001개). 대상 Service testbed-transfer:8082(파드 1, Hikari 15, 연결 대기 3초, CPU 한도 500m). banking Oracle testbed-oracle-0(gvenzl/oracle-free:23-slim, cpu_count 2, parallel_max_servers 1, 한도 cpu 2000m), BANKING.TRANSFERS 6,383,259행(2026-10-10), 인덱스 idx_transfers_from 등 7개가 있으나 선택 조건 꼴 질의는 쓰지 않음"
+   },
+   "must_support": [
+    "KCM 이벤트(rca-testbed-banking)에 Job ledger-statement-backfill 의 SuccessfulCreate 와 그 파드의 Scheduled(tb-w2), Pulled('Container image \"core-banking-ledger:latest\" already present on machine'), Created, Started(컨테이너 backfill)가 실패 직전에 있다. 2026-10-10 전 30일 동안 이 네임스페이스에 Job 이벤트는 0건이다",
+    "DPM Top SQL 에서 이체 내역 건수 문장 byb2y2hv7p4ag 와 내역 페이지 문장의 실행 수가 평시(분당 약 15~30회)보다 몇 배로 늘고 실행당 약 0.25초 CPU, 논리 읽기 약 10만이다. 평시 없던 offset 꼴 페이지 문장이 새 sql_id 로 나타난다. dpm.oracle.instance.cpu_time, db_time, session.active_session 이 오른다",
+    "transfer GET /api/transfers 서버 스팬의 url.query 가 fromAccount=<수백 개 계좌>&page=<n>&size=500, client.address 가 작업 파드 IP, user_agent.original 이 curl 이다(평시는 api 파드에서 ACC-1001~1007 의 page=0&size=20, Java). 표본 스팬이라 보조 근거다",
+    "transfer 로그에 Hikari 'Connection is not available, request timed out after 3000ms', account 로그에 'Transfer service call failed' 와 서킷 열림, api POST /api/transfers 502 가 작업 시작 뒤 몰리고 'Transfer COMPLETED' 가 줄어든다",
+    "Oracle 은 Ready 이고 재시작, 잠금 대기(enq: TX)가 없다. 네임스페이스의 어떤 Deployment 도 롤아웃하지 않았고 transfer 는 재시작하지 않는다"
+   ],
+   "must_rule_out": [
+    "transfer 새 릴리스가 아님(F42-R): testbed-transfer 롤아웃(ScalingReplicaSet)과 새 이미지 Pulled 가 없다. 늘어난 문장은 새 문장(이체마다 오늘 합계)이 아니라 평시 이체 내역 건수, 페이지 문장이고, 그 호출자는 api 가 아니라 작업 파드(curl)다",
+    "Oracle 행 잠금이 아님(F01-P): 대기 이벤트가 enq: TX 가 아니고 blocking_session 이 없다. 정산 계좌 행을 쥔 세션이 없다",
+    "DB 계정 한도나 잠금이 아님(F54-R, F35-R): ORA-02395, ORA-28000 이 없고 로그인과 다른 서비스의 풀은 정상이다",
+    "transfer 프로브 설정이 원인이 아님(F17-R): 프로브 설정은 그대로이고, 준비 상태가 흔들린다면 health 가 작업에 묶인 풀 연결을 기다리다 실패한 결과다",
+    "TRANSFERS 표나 identity 이상이 아님(F35-H, F57-R): ORA-00942, ORA-04043, ORA-00001 이 없고 표와 인덱스가 그대로다",
+    "진입 트래픽 폭주가 아님(F07-H 꼴): nginx, api 진입 요청 수는 동반 부하만큼만 늘고, 늘어난 내역 호출은 클러스터 안 작업 파드에서 transfer 로 바로 들어간다",
+    "api 릴리스의 하류 호출 폭주가 아님(F47-R): api 롤아웃이 없고, 늘어난 호출은 api 가 아니라 작업 파드에서 온다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F59-R (같은 원본의 food 판: 내부 백필 Job 이 dispatch 배달 목록을 깊은 offset 페이지로 읽어 dispatch 풀과 food MySQL 이 묶임. F59-P 는 원장 쪽 명세서 백필이 계좌마다 이체 내역을 읽어 transfer 풀과 banking Oracle 이 묶임)",
+     "F42-R (transfer 릴리스가 이체마다 오늘 합계 전수 스캔을 더함: 같은 transfer 풀 고갈, Oracle 포화, 이체 5xx 이지만 계기가 transfer 롤아웃이고 무거운 문장이 이체 경로의 새 문장이다. F59-P 는 롤아웃 없음, 무거운 것은 평시 내역 문장, 호출자는 새 Job)",
+     "F01-P (banking 정산 계좌 행 잠금으로 transfer 풀 고갈: 겉 증상이 비슷하나 대기 이벤트가 enq: TX)",
+     "F54-R (계정 프로필의 호출당 읽기 한도로 거래 내역만 ORA-02395: 같은 내역 문장이 중심이지만 이체는 정상이다)",
+     "F47-R (api 릴리스가 account 계좌 목록을 이체마다 불러 account 를 누름: 같은 은행 내부 호출 폭주 꼴이지만 원인이 api 릴리스)",
+     "F17-R (transfer readiness 실패로 정산 롤백: 같은 transfer 의 Service 이탈 꼴이지만 원인이 프로브 설정)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "ledger-statement-backfill",
+     "job/ledger-statement-backfill",
+     "rca-testbed-banking/job/ledger-statement-backfill"
+    ],
+    "partial": [
+     "core-banking-transfer",
+     "banking-transfer",
+     "testbed-transfer",
+     "banking-oracle",
+     "banking-oracle:BANKING.TRANSFERS",
+     "core-banking-ledger",
+     "core-banking-account",
+     "core-banking-api",
+     "commerce-payment"
+    ]
+   },
+   "title_ko": "내부 명세서 백필 Job 이 병렬 48개로 은행 모든 계좌의 이체 내역을 페이지마다 읽음: 호출마다 Oracle 이 이체 표 638만 행을 전수 스캔하고 백필 호출이 transfer 연결 풀을 쥐어 이체와 commerce 정산이 500, 502 로 실패한다",
+   "description_ko": "rca-testbed-banking 네임스페이스에 일회성 쿠버네티스 Job ledger-statement-backfill 이 시작된다. 원장 쪽의 계좌 명세서 백필로, ledger-service 이미지(core-banking-ledger:latest)에서 셸 스크립트로 돈다. account-service 에서 계좌 목록(GET http://testbed-account:8081/api/accounts, 1,001개)을 한 번 받은 뒤, 워커 48개가 계좌를 같은 순서로 돌며 계좌마다 쪽을 나눠(워커 w 는 w, w+48, w+96, ... 쪽) transfer-service 의 이체 내역 GET http://testbed-transfer:8082/api/transfers?fromAccount=<계좌>&page=N&size=500 을 curl 로 짧은 페이지가 나올 때까지 읽는다. 그래서 목록 앞머리의 ACC-1001~1007(각 약 33~35만 건)에서도, 대부분 워커가 끝 너머의 빈 쪽을 받는 작은 계좌에서도(빈 쪽은 페이지와 건수를 둘 다 전수 스캔한다) 48개가 늘 바쁘다. 워커는 마지막 페이지를 명세서 적재용으로 남기며, 실패한 페이지는 2초 뒤 다시 부른다. 이체 내역 목록은 선택 조건((:fromAccount is null or from_account = :fromAccount) and ...) 꼴이라 Oracle 이 페이지마다, 그리고 Spring Data 가 페이지 질의에 붙이는 건수 질의마다 BANKING.TRANSFERS(약 638만 행, 약 10만 블록)를 전수 스캔한다. 109 Oracle 에서 건수 질의는 0.23~0.25초, 끝까지 훑는 페이지는 0.22초 이상이다(DPM Top SQL byb2y2hv7p4ag 평시 실행당 약 0.25초 CPU). Oracle Free 는 2 CPU 라 이런 호출을 초당 약 3~6개만 끝내고, 호출 하나가 transfer-service 의 Hikari 연결 15개 중 하나를 그동안 쥔다. 48개가 동시에 들어오면 풀이 늘 백필 스캔에 묶이고 나머지는 기다린다. 이체(api 에서 account 를 거친 POST /api/transfers 와 commerce 정산)도 같은 풀에서 연결을 얻어야 해 3초 기다리다 500('Connection is not available, request timed out after 3000ms')이 되고, account 가 재시도하다 서킷브레이커를 열어 api 가 502, commerce checkout 이 정산 단계에서 실패한다. transfer 의 readiness(/actuator/health, DB 확인, 3초)도 같은 풀을 기다려 transfer 가 잠깐씩 Service 에서 빠질 수 있고, 그 뒤에도 워커들이 다시 시도해 풀을 다시 채운다. 서비스 쪽은 아무것도 바뀌지 않는다: 롤아웃, 설정 변경, 스키마와 인덱스 변경이 없고 Oracle 은 Ready 다. 새로 생긴 것은 Job 하나뿐이고, 백필이 보내는 내역 질의는 은행 앱이 일곱 계좌를 0쪽 20건으로 이미 부르는 것(약 0.25초, 초당 약 0.25회)이다. 새로운 것은 양과 호출자, 그리고 모든 계좌에 걸친 깊은 페이지다.",
+   "cause_ko": "내부 명세서 백필 Job ledger-statement-backfill(rca-testbed-banking, 이미지 core-banking-ledger:latest)이 워커 48개로 모든 계좌의 이체 내역을 transfer-service 에서 바로 페이지마다 읽기 시작(페이지 500) → 호출마다 Oracle 이 페이지와 건수를 TRANSFERS 전수 스캔으로 답함(각 약 0.25초 CPU, 약 638만 행) → 백필 호출이 transfer Hikari 연결 15개를 모두 쥐고 Oracle 2 CPU 를 포화 → 이체가 연결을 3초 기다리다 500 → account 재시도와 서킷 열림, api 502, commerce 정산 실패, Job 을 멈출 때까지 계속.",
+   "injection_summary_ko": "k8s.job 실행기가 rca-testbed-banking 에 쿠버네티스 Job 하나를 만든다: ledger-statement-backfill(레이블 app=ledger-statement-backfill, nodeSelector 로 tb-w2, 이미지 core-banking-ledger:latest 와 imagePullPolicy Never, 컨테이너 backfill 이 curl 로 bash 스크립트 실행, backoffLimit 0, activeDeadlineSeconds 1800, 마지막 페이지와 명세서 줄을 담는 emptyDir). 스크립트는 GET http://testbed-account:8081/api/accounts 를 한 번 읽고 워커 48개를 띄운다. 워커들은 계좌를 목록 순서로 돌고, 계좌마다 워커 w 가 GET http://testbed-transfer:8082/api/transfers?fromAccount=<계좌>&page=N&size=500 의 w, w+48, w+96, ... 쪽을 500행 미만 페이지가 나올 때까지 시간 제한 60초로 읽고, 200 이 아닌 페이지는 2초 뒤 다시 부른다. preflight 는 kubectl 의 Job 생성, 삭제 권한, tb-w2 Ready, ledger Deployment 가 정확히 그 이미지를 쓰고 tb-w2 에 도는 파드가 있음, testbed-transfer 사용 가능, 같은 이름의 Job 없음을 확인한다. run 은 네임스페이스와 Job 이름으로 지은 상태 파일에 Job 이름을 적고 매니페스트를 기다리지 않고 적용한다. cleanup 은 Job 을 foreground 로 지우고 그 Job 의 파드가 남지 않을 때까지, testbed-transfer 가 다시 사용 가능해질 때까지 기다린다. Job, 레이블, 스크립트, 환경 변수 어디에도 시나리오 식별자가 없다. 동반 부하 transfer-heavy-surge(5rps, 이체 40%)가 F57-R 과 같이 상주 기준선 위에 banking 진입점을 몰아, 이체 표본이 시간대에 좌우되지 않게 한다.",
+   "user_impact_ko": "백필이 시작되고 약 1분 뒤부터 은행 이체의 절반 이상이 실패한다: account 재시도 끝에 api 가 502, transfer 가 3초 대기 끝에 500 을 돌려주고, commerce checkout 이 정산 이체에서 실패해 예약 재고를 푼다. 은행 앱의 거래 내역 조회도 느려지거나 실패한다. 잔액 조회와 계좌 목록은 account 자기 풀과 기본 키 조회라 계속 되지만 포화된 Oracle 위에서 느려진다. transfer 가 잠깐씩 Service 에서 빠질 수 있다. 백필 Job 을 멈출 때까지 회복되지 않고, 멈춘 뒤 진행 중이던 스캔이 수 초 안에 끝나며 풀린다.",
+   "distinguishing_evidence_ko": "결정 증거는 다른 것은 그대로인데 배치 Job 하나와 새 호출자의 기존 질의 폭증이 나타난 것이다: rca-testbed-banking 의 KCM 이벤트에 Job ledger-statement-backfill(SuccessfulCreate)과 그 파드(tb-w2 Scheduled, 'Pulled: Container image \"core-banking-ledger:latest\" already present on machine', 컨테이너 backfill Created, Started)가 실패 직전에 있다(2026-10-10 전 30일 동안 이 네임스페이스 Job 이벤트 0건). DPM Top SQL 에서 이체 내역 건수 문장 byb2y2hv7p4ag 와 페이지 문장의 실행 수가 평시(분당 약 15~30회)의 몇 배로 늘고 실행당 약 0.25초 CPU, 논리 읽기 약 10만이며, 평시 없던 offset 꼴 페이지 문장이 나타나고, Oracle CPU, DB time, active_session 이 오른다. transfer GET /api/transfers 서버 스팬의 url.query 가 fromAccount=<수백 개 계좌>&page=<n>&size=500, client.address 가 백필 파드, user_agent 가 curl 이다(평시는 api 의 ACC-100x 일곱 계좌 page=0&size=20, Java). 이어 transfer 로그에 Hikari 'Connection is not available, request timed out after 3000ms', account 로그에 'Transfer service call failed' 와 서킷 열림, api 502, 'Transfer COMPLETED' 감소. 네임스페이스의 어떤 Deployment 도 롤아웃하지 않았고 이미지 변화가 없으며, transfers 표와 인덱스는 그대로, Oracle 은 잠금 대기(enq: TX) 없이 Ready, transfer 는 재시작하지 않는다.",
+   "injected_fault": {
+    "profile": "k8s.job",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f59-p",
+      "parameters": {
+       "namespace": "rca-testbed-banking",
+       "job": "ledger-statement-backfill",
+       "image": "core-banking-ledger:latest",
+       "image_owner": "testbed-ledger",
+       "node": "tb-w2",
+       "target_deployment": "testbed-transfer",
+       "target_url": "http://testbed-transfer:8082",
+       "directory_url": "http://testbed-account:8081",
+       "page_size": 500,
+       "workers": 48,
+       "request_timeout_seconds": 60,
+       "active_deadline_seconds": 1800
+      }
+     }
+    ]
+   }
   }
  }
 }

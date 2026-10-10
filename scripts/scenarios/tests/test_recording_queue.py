@@ -87,7 +87,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 31 → 32. F23-P(운영을 가리킨 로컬 마이그레이션이 commerce 상품 표를 지워 상품 조회 42P01, checkout 502) 후보 추가.
         # 2026-10-10: 32 → 33. F58-R(food order 릴리스가 개발 프로필에만 있는 정책값을 읽다 운영에서 없어 주문 생성 전량 500) 후보 추가.
         # 2026-10-10: 33 → 34. F59-R(food 내부 백필 Job 이 dispatch 배달 목록을 깊은 offset 페이지로 읽어 dispatch 풀이 묶이고 주문 503) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 34)
+        # 2026-10-10: 34 → 35. F59-P(banking 원장 쪽 명세서 백필 Job 이 계좌마다 이체 내역을 읽어 transfer 풀이 묶이고 이체 500, 정산 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 35)
 
 
 class RecordingQueueTests(unittest.TestCase):
