@@ -3,7 +3,7 @@
   "id": "F17-H",
   "slug": "f17-h-banking-transfer-release-image-missing",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
