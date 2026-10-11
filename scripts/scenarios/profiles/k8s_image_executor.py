@@ -269,6 +269,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-account:latest",
         "fault_image": "core-banking-account:1.6.0",
     },
+    # 2026-10-11. F63-P: food dispatch-service 를 배달 목록, 상세 조회에 처리 마감 시간(2초)을 더한 릴리스 1.9.0 으로
+    # 롤아웃한다. 릴리스가 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 멈춘 비데몬 스레드가 요청마다 남고, 컨테이너가
+    # 메모리 한도(1Gi)에서 OOM 으로 죽기를 되풀이하는 동안 order 의 배달원 용량 확인이 실패해 주문이 503 이 된다.
+    # 결함 이미지는 fault-images/f63-p 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다.
+    # dispatch 의 다른 릴리스 태그(F33-H 1.6.0, F43-P 1.7.0, F55-R 1.8.0)와 겹치지 않는다.
+    "F63-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-dispatch",
+        "container": "dispatch-service",
+        "baseline_image": "food-delivery-dispatch:latest",
+        "fault_image": "food-delivery-dispatch:1.9.0",
+    },
 }
 
 

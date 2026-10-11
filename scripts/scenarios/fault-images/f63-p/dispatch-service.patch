@@ -1,0 +1,85 @@
+diff --git a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
+index 29c7395..57e8108 100644
+--- a/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
++++ b/food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java
+@@ -3,19 +3,39 @@ package com.fooddelivery.dispatch.controller;
+ import com.fooddelivery.common.dto.DispatchEventResponse;
+ import com.fooddelivery.common.dto.DispatchRequest;
+ import com.fooddelivery.common.dto.DispatchResponse;
++import com.fooddelivery.common.exception.ServiceException;
+ import com.fooddelivery.dispatch.service.DispatchService;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.domain.PageRequest;
++import org.springframework.http.HttpStatus;
+ import org.springframework.http.ResponseEntity;
+ import org.springframework.web.bind.annotation.*;
+ 
+ import java.util.List;
+ import java.util.Map;
++import java.util.concurrent.Callable;
++import java.util.concurrent.ExecutionException;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.TimeoutException;
+ 
+ @RestController
+ @RequestMapping("/api/deliveries")
+ public class DispatchController {
+ 
++    private static final Logger log = LoggerFactory.getLogger(DispatchController.class);
++
++    /**
++     * 배달 목록, 상세 조회의 처리 마감 시간.
++     * 저녁 피크에 손님들이 배달 상태를 되풀이해 확인하는데, DB 가 느릴 때 조회가 요청 스레드를 오래 붙잡으면
++     * 같은 서버의 배차 요청까지 밀린다. 손님에게는 이 시간 안에 결과든 504 든 돌려준다.
++     */
++    private static final long LOOKUP_DEADLINE_MS = 2000;
++
+     private final DispatchService dispatchService;
+ 
+     public DispatchController(DispatchService dispatchService) {
+@@ -36,12 +56,13 @@ public class DispatchController {
+         Pageable pageable = (page != null || size != null)
+                 ? PageRequest.of(page != null ? page : 0, size != null ? size : 20)
+                 : Pageable.unpaged();
+-        return ResponseEntity.ok(dispatchService.searchDispatches(status, pageable));
++        return ResponseEntity.ok(withinDeadline("delivery list",
++                () -> dispatchService.searchDispatches(status, pageable)));
+     }
+ 
+     @GetMapping("/{id}")
+     public ResponseEntity<DispatchResponse> getDispatch(@PathVariable Long id) {
+-        return ResponseEntity.ok(dispatchService.getDispatch(id));
++        return ResponseEntity.ok(withinDeadline("delivery lookup", () -> dispatchService.getDispatch(id)));
+     }
+ 
+     // §7 신규 — 배차 상태 전이 이력.
+@@ -64,4 +85,24 @@ public class DispatchController {
+     public ResponseEntity<Map<String, Integer>> getCapacity() {
+         return ResponseEntity.ok(dispatchService.getCapacity());
+     }
++
++    private <T> T withinDeadline(String operation, Callable<T> call) {
++        ExecutorService executor = Executors.newFixedThreadPool(1);
++        Future<T> future = executor.submit(call);
++        try {
++            return future.get(LOOKUP_DEADLINE_MS, TimeUnit.MILLISECONDS);
++        } catch (TimeoutException ex) {
++            future.cancel(true);
++            log.warn("{} did not finish within {}ms", operation, LOOKUP_DEADLINE_MS);
++            throw new ServiceException(HttpStatus.GATEWAY_TIMEOUT, operation + " timed out");
++        } catch (ExecutionException ex) {
++            if (ex.getCause() instanceof RuntimeException re) {
++                throw re;
++            }
++            throw new ServiceException(HttpStatus.INTERNAL_SERVER_ERROR, operation + " failed: " + ex.getCause());
++        } catch (InterruptedException ex) {
++            Thread.currentThread().interrupt();
++            throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE, operation + " interrupted");
++        }
++    }
+ }

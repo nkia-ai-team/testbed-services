@@ -1472,6 +1472,57 @@ esac
         self.assertIn("location /api/transfers {\n            proxy_pass http://api-service;", configmap)
         self.assertIn("location /api/accounts {\n            proxy_pass http://account-service;", configmap)
 
+    def test_k8s_image_release_mode_rolls_food_dispatch_thread_leak_release(self) -> None:
+        # F63-P: 같은 release 스크립트로 food dispatch 를 1.9.0 으로 롤아웃한다(tb-w3). F33-H(1.6.0), F43-P(1.7.0),
+        # F55-R(1.8.0)도 dispatch 릴리스를 쓰므로 태그가 겹치지 않아야 넷 다 "노드에 릴리스 없음" preflight 를 지킨다.
+        # 패치는 dispatch-service/src 안만 고친다.
+        plan = compiler.compile_plan("f63-p-food-dispatch-release-thread-leak-oom-restarts-reject-orders")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-dispatch", "dispatch-service",
+                                    "food-delivery-dispatch:latest", "food-delivery-dispatch:1.9.0"])
+        self.assertNotIn("F63-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F63-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F63-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f63-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F63-P"]["baseline_image"], k8s_image.CONTRACTS["F63-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f63-p" / "dispatch-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/dispatch-service/src/",
+                                                     "b/food-delivery/dispatch-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F63", "f63", "fault", "bug", "chaos", "scenario", "leak"):
+            self.assertNotIn(word, added)
+        # 누수의 고리는 F63-R 과 같다: 요청마다 고정 크기 풀을 만들고 닫지 않는다(newSingleThreadExecutor 는 스스로 닫힘).
+        self.assertIn("Executors.newFixedThreadPool(1)", added)
+        self.assertNotIn("newSingleThreadExecutor", added)
+        self.assertNotIn("shutdown", added)
+        self.assertIn('withinDeadline("delivery list"', added)
+        self.assertIn('withinDeadline("delivery lookup"', added)
+        # 용량 확인과 배차 요청(order 가 부르는 두 경로)은 감싸지 않는다: 주문 실패는 dispatch 가 죽고 다시 뜨는 구간에만 난다.
+        self.assertNotIn("getCapacity()", added)
+        self.assertNotIn("dispatchCourier(request)", added)
+
+    def test_f63p_relies_on_dispatch_memory_limit_order_path_and_status_surge(self) -> None:
+        # F63-P 의 주기는 매니페스트 dispatch 의 메모리 한도 1Gi, JVM 옵션이 OTel 에이전트뿐이라는 것, 동반 부하가 배달 조회만
+        # 부르고 주문을 만들지 않는다는 것(배차 한도 2000 을 채우지 않음)에 기댄다. order 가 주문 행을 저장하기 전에 용량을
+        # 확인한다는 것(실패한 주문이 배차를 남기지 않음)도 전제다. 어느 하나가 바뀌면 다시 평가해야 한다.
+        food = ROOT.parent.parent / "food-delivery"
+        deploy = (food / "k8s" / "22-dispatch-deploy.yaml").read_text()
+        self.assertIn("memory: 1Gi", deploy[deploy.index("limits:"):])
+        self.assertIn('value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"', deploy)
+        self.assertNotIn("-Xss", deploy)
+        surge = (food / "loadgen" / "delivery-status-surge.js").read_text()
+        self.assertIn("/api/deliveries?status=DELIVERED&page=0&size=20", surge)
+        self.assertIn("/api/deliveries/${dispatchId}", surge)
+        self.assertNotIn("/api/orders", surge)
+        self.assertNotIn("RESTAURANT_URL", surge)
+        service = (food / "order-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "order" / "service"
+                   / "OrderService.java").read_text()
+        self.assertLess(service.index("dispatchClient.checkCapacity()"), service.index("orderRepository.save(order)"))
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1873,6 +1924,8 @@ esac
             "F51-P",
             # 2026-10-11: banking account-service 를 이체 접수 응답을 정비한 릴리스 1.6.0(fault-images/f39-h)으로 롤아웃(POST /api/accounts/transfer 응답의 status 가 {code, label} 객체가 되어 account 와 transfer 는 이체를 실행하고 200 인데 api 가 공용 TransferResponse 로 읽지 못해 api 를 거치는 이체 전량 502, 잔액 조회와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F39-H",
+            # 2026-10-11: food dispatch-service 를 배달 조회 처리 마감 시간을 더한 릴리스 1.9.0(fault-images/f63-p)으로 롤아웃(배달 목록, 상세 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 요청마다 멈춘 비데몬 스레드가 남고, dispatch 컨테이너가 메모리 한도 1Gi 에서 커널 OOM 으로 죽고 다시 뜨기를 되풀이하며, 그 구간마다 order 의 배달원 용량 확인이 연결 거부로 끝나 주문 503. order, restaurant, MySQL 은 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F63-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

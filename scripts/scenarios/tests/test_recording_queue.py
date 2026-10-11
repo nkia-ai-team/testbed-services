@@ -110,7 +110,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 44 → 43. F33-P 정식 승격(녹화 case-f33-p-v3-e79a2db0).
         # 2026-10-11: 43 → 44. F51-P(food 재배차 정정 작업의 입력 누락으로 끝난 배차가 모두 배정 중으로 되살아나 배달원 용량이 차고 주문 503) 후보 추가.
         # 2026-10-11: 44 → 45. F39-H(banking account 릴리스의 이체 접수 응답 구조 변경으로 api 가 응답을 읽지 못해 api 를 거치는 이체 전량 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 45)
+        # 2026-10-11: 45 → 46. F63-P(food dispatch 릴리스의 배달 조회 스레드 누수로 컨테이너 OOM 재시작이 되풀이되고 그 구간마다 주문 503) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 46)
 
 
 class RecordingQueueTests(unittest.TestCase):

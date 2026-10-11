@@ -92,7 +92,8 @@
     "F60-H",
     "F54-P",
     "F51-P",
-    "F39-H"
+    "F39-H",
+    "F63-P"
   ],
   "controllers": {
     "F01-R": {
@@ -21956,6 +21957,228 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 이미지를 core-banking-account:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 1.6.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 되돌린 이미지는 이체 접수 응답을 공용 TransferResponse 그대로 돌려줘 api 가 다시 읽는다. target_health 와 pod_ready 는 compile-plan 이 요구하는 형식 조건이고 고장 중에도 참이라 회복을 가르는 것은 기준선 이체 5xx 비율뿐이다. 잔액 조회는 고장 난 account 파드도 200 으로 답하므로 회복 근거로 쓰지 않는다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F63-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "30m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f63-p",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-food",
+              "deployment": "testbed-dispatch",
+              "container": "dispatch-service",
+              "baseline_image": "food-delivery-dispatch:latest",
+              "fault_image": "food-delivery-dispatch:1.9.0"
+            },
+            "min_hold": "8m",
+            "settle": "60s",
+            "timeout": "28m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하(delivery-status-surge.js)는 주문을 만들지 않아 자기 문서에 주문 단계가 없다. 릴리스는 dispatch 만 바꾸고 order, restaurant, MySQL 은 그대로다. dispatch 가 메모리 한도에서 짧게 느려지는 동안 order 의 용량 확인은 읽기 5초 시간 제한과 재시도(최대 약 15.6초) 끝에, 서킷이 열린 뒤와 dispatch 가 죽고 다시 뜨는 동안은 연결 거부로 곧바로 503 을 돌려준다. 기준선 주문 여정은 restaurant 메뉴 조회 뒤 order 를 부르므로 dispatch 가 빠져도 주문 단계 표본은 계속 나온다. 0(연결 불가)은 k6 60초 제한을 넘거나 order 파드, 노드가 죽었을 때만 나온다(F43-P, F60-H 의 dispatch 재시작, NotReady 에서도 order 는 연결 가능 상태를 지킴)",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 food 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "_note": "food MySQL 파드. 이 주입은 MySQL 설정, 스키마, 데이터를 건드리지 않는다(누수 스레드는 조회를 끝낸 뒤 연결을 돌려준 채 멈춰 있다)",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "_note": "order 파드. 이 주입은 order 를 건드리지 않아 고장 중에도 Ready 여야 한다. order 의 health 는 자기 풀의 isValid() 이고, dispatch 가 느린 짧은 구간에 주문 트랜잭션이 용량 확인 응답을 기다리며 연결을 쥐지만 서킷이 열리면 풀린다(F60-H 와 같은 구간)",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "_note": "동반 부하(delivery-status-surge.js 10rps: 배달 목록 75%, 배달 상세 25%, 주문과 가게 둘러보기 없음)의 반복률. 누수 속도가 이 부하에 비례한다",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "상주 기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기로 주문이 초당 약 0.2~1.15건이라(2026-10-11 시간별 orders 720~4,133건) 30초 창에 6~34건이다. 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처. dispatch 가 OOM 으로 죽고 다시 떠 Ready 가 될 때까지(109 KCM Started → 옛 파드 Killing 41~45초) order 는 용량 확인에서 연결 거부 끝에 503 'Dispatch service unavailable' 을 돌려준다. 주문 행은 용량 확인보다 뒤에서 저장되므로 실패한 주문은 주문 행도 배차도 남기지 않는다",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate_baseline",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "새 dispatch 버전이 배달 목록, 상세 조회마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 조회를 맡기고 닫지 않아 요청 하나마다 멈춘 비데몬 스레드가 남는다. 동반 부하 10rps 와 기준선 배달 추적(초당 0.05~0.3건)으로 스레드가 초당 약 10개 쌓이고, 스레드마다 스택 접근 페이지와 커널 스택 16KiB 가 컨테이너 메모리로 잡혀(로컬 x86_64 실측 평균 약 125KiB, 스레드 약 6,000개에서 OOM. F63-R 운영 aarch64 smaps 평균 약 97KiB) 기동 직후 약 350MiB 에서 한도 1GiB 까지 스레드 약 5,500~7,100 개다. 한도에 닿으면 짧게 느려지다 커널 memcg OOM 이 java 를 죽이고, 같은 파드가 다시 떠 Ready 가 될 때까지 약 41~45초 order 의 용량 확인이 연결 거부로 끝나 기준선 주문이 503 이다"
+          }
+        ],
+        "consecutive_ticks": 1,
+        "_note": "consecutive_ticks 1(선례 F63-R, F20-R). 러너 실제 틱 간격은 15~25초이고 이 관측은 갱신 30초다. 비율 ≥0.5 인 구간은 [dispatch 가 엔드포인트에서 빠지거나 죽은 뒤 + 약 15초, 엔드포인트 복귀 + 15초]라 재기동에서 Ready 까지 41~45초(109 KCM 2026-10-08~11 dispatch 롤아웃 다섯 번: Started → 옛 파드 Killing 41~45초)만으로도 길이가 약 41초 이상이고, 최대 틱 간격 25초보다 길어 어느 위상이든 한 틱은 든다. 그 앞의 멈춤 구간(readiness 3회 × 10초 안)에도 order 의 용량 확인이 5초 시간 제한과 재시도, 서킷 끝에 503 이라 구간이 더 길어진다. 30초 창 하나가 기준선 주문 6~34건의 집계이고 평시 0 근처다. 주기: 롤아웃 뒤 새 파드 Ready 약 41~45초, 동반 부하 ramp 2m(평균 약 5건/초) 뒤 초당 약 10개, 첫 OOM 은 롤아웃 뒤 약 11~14분, 그 뒤 재기동 약 45초 + 다시 차는 약 9~12분과 한도에서 버티는 약 1분이 한 주기라 두 번째 OOM 은 약 22~28분. min_hold 8m 은 첫 OOM 보다 앞이고 롤아웃 직후 과도 구간(새 파드 기동, ramp)을 막는다. timeout 28m 은 운영에서 스레드당 메모리가 작아(97KiB) 첫 OOM 이 늦어져도(약 14분) 첫 구간을 넉넉히 받고, 두 번째 구간(약 22~28분)도 대개 받는다. 2026-10-11 로컬 실측(패치 jar, eclipse-temurin 17-jre, OTel 에이전트, 0.5 CPU, 1GiB, mysql:8.0, 10건/초)은 설계 시트 §4"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 2.5,
+            "_note": "동반 부하 10rps 의 1/4. ramping-arrival-rate(maxVUs 300)라 조회가 느려져도 반복률이 유지된다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 dispatch 릴리스가 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "order-down",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "order 파드가 빠지면 주문 실패가 하류 배차 실패가 아니라 order 연결 실패다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "_note": "dispatch 파드 준비 상태와 dispatch JVM 스레드 수는 러너 관측 허용 목록(APPROVED_K8S_TARGETS, APPROVED_JVM_THREAD_SERVICES)에 없어 러너 조건으로 두지 않는다(F43-P, F33-H 와 같음). 스레드 상승, 힙 평탄, tb-w3 커널 OOM 보고, 같은 파드 재시작의 감별은 녹화된 VM, syslog, KCM 으로 RCA 쪽에서 한다(정답지 must_support, must_rule_out)"
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "order-ready",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 이미지를 food-delivery-dispatch:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 1.9.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 옛 dispatch 프로세스가 내려가면 쌓인 스레드도 함께 사라지고, order 의 dispatch 서킷은 반열림 3회 성공으로 닫힌다. 고장 동안 실패한 주문은 용량 확인 단계에서 끝나 주문 행과 배차를 남기지 않는다. 재기동 동안 밀린 만료 배치는 복구 뒤 첫 주기(30초)에 따라잡는다"
       },
       "cleanup": {
         "required": true,
