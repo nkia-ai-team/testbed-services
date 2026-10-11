@@ -39,7 +39,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 43 → 44. F40-R 정식 승격(녹화 case-f40-r-v3-50e3ecb9).
         # 2026-10-11: 44 → 45. F17-H 정식 승격(녹화 case-f17-h-v3-632a04d1).
         # 2026-10-11: 45 → 46. F32-H 정식 승격(녹화 case-f32-h-v3-531094f2).
-        self.assertEqual(stages.count("official"), 46)
+        # 2026-10-11: 46 → 47. F33-P 정식 승격(녹화 case-f33-p-v3-e79a2db0).
+        self.assertEqual(stages.count("official"), 47)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -106,7 +107,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 41 → 42. F66-P(commerce 재고 이벤트 outbox 열 추가 마이그레이션이 느린 이벤트 내보내기 뒤에서 잠금을 기다려 재고 예약이 멈춤) 후보 추가.
         # 2026-10-11: 42 → 43. F60-H(food 배차 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 배차 표 질의가 모두 줄을 섬) 후보 추가.
         # 2026-10-11: 43 → 44. F54-P(food MySQL 앱 계정의 시간당 쓰기 한도로 주문 저장이 1226, 주문 500) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 44)
+        # 2026-10-11: 44 → 43. F33-P 정식 승격(녹화 case-f33-p-v3-e79a2db0).
+        self.assertEqual(stages.count("candidate"), 43)
 
 
 class RecordingQueueTests(unittest.TestCase):
