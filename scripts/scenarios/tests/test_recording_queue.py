@@ -36,7 +36,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 40 → 41. F37-R 정식 승격(녹화 case-f37-r-v3-43c16731).
         # 2026-10-09: 41 → 42. F38-R 정식 승격(녹화 case-f38-r-v3-54918c10).
         # 2026-10-09: 42 → 43. F39-R 정식 승격(녹화 case-f39-r-v3-dc45499a).
-        self.assertEqual(stages.count("official"), 43)
+        # 2026-10-11: 43 → 44. F40-R 정식 승격(녹화 case-f40-r-v3-50e3ecb9).
+        self.assertEqual(stages.count("official"), 44)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -92,7 +93,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-10: 36 → 37. F41-H(banking account 릴리스가 헬스 하위 그룹을 꺼 liveness 404 재시작 반복, 잔액 조회와 이체 502) 후보 추가.
         # 2026-10-10: 37 → 38. F60-R(food 배차 이력 표 외래 키 마이그레이션의 표 복사 잠금으로 배차 쓰기 대기, dispatch 풀 고갈, 주문 503) 후보 추가.
         # 2026-10-11: 38 → 39. F57-P(표 이전이 commerce 재고 이동 이력 표 id 시퀀스 상태를 옮기지 않아 재고 예약이 기본 키 23505 로 실패, checkout 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 39)
+        # 2026-10-11: 39 → 38. F40-R 정식 승격(녹화 case-f40-r-v3-50e3ecb9).
+        self.assertEqual(stages.count("candidate"), 38)
 
 
 class RecordingQueueTests(unittest.TestCase):

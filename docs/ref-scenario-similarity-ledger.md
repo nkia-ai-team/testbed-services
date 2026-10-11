@@ -81,7 +81,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 맞는 말이 없으면 이 표에 한 줄 더한다. **결제 경로**(외부 결제 의존 + 결제 서비스 + DB 테이블(결제))는 따로 합쳐서도 센다: 서로 다른 부품이라도 "결제 쪽이 범인"이라는 같은 지름길을 만든다.
 
-## 3. 집계 (2026-10-09, 정식만, 주 묶음 기준)
+## 3. 집계 (2026-10-11, 정식만, 주 묶음 기준)
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
@@ -91,7 +91,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | D DB 잠금 | 7 | 16% |
 | E 처리 용량 초과 | 2 | 5% |
 | F 느린 쿼리 | 2 | 5% |
-| G 설정 오배포 | 5 | 12% |
+| G 설정 오배포 | 6 | 14% |
 | H 데이터가 조용히 틀어짐 | 2 | 5% |
 | I 인증 의존 실패 | 1 | 2% |
 | J 결함 있는 새 버전 배포 | 0 | 0% |
@@ -101,12 +101,12 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 23, 은행 11, 음식배달 9. 후보 14종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 24, 은행 11, 음식배달 9. 후보 38종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 5개뿐이고(계기가 설정 배포인 F30-R 은 주 묶음 L, F37-R 은 주 묶음 M 으로 센다) J, K, N은 0이다(K, N은 §5에 막힌 시도가 있다).
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 6개뿐이고(계기가 설정 배포인 F30-R 은 주 묶음 L, F37-R 은 주 묶음 M 으로 센다) J, K, N은 0이다(K, N은 §5에 막힌 시도가 있다).
 A, B, D는 각 7개(16%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 43종):
+정답 위치별 정식 (2-1 정의, 정식 44종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -123,6 +123,7 @@ A, B, D는 각 7개(16%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | DB 테이블(가게) | 1 | 2% |
 | DB 테이블(결제) | 1 | 2% |
 | DB 테이블(배차) | 1 | 2% |
+| 가격 서비스 | 1 | 2% |
 | 배달 서비스 | 1 | 2% |
 | 배송 서비스 | 1 | 2% |
 | 사용자 서비스 | 1 | 2% |
@@ -184,6 +185,7 @@ A, B, D는 각 7개(16%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | F37-R | 정식 | 은행 | M+G | 은행 API | api-service 배포가 파드 dnsPolicy 를 노드 resolver(Default)로 바꿔 클러스터 Service 이름(testbed-account, testbed-transfer)을 해석하지 못함(노드에서는 SERVFAIL, 파드 네트워크에서는 응답 없이 시간 초과, 호스트 이름뿐인 I/O 오류), 이체와 거래 내역 502, 잔액 조회와 commerce 정산은 정상 |
 | F38-R | 정식 | 음식배달 | G | DB 인스턴스 | 운영자의 SQL 세션이 food MySQL 에 SET GLOBAL read_only=ON 을 실행해 인스턴스 전체가 읽기 전용, 앱 계정의 모든 쓰기가 1290 '--read-only option' 으로 거절(읽기, ping, readiness 는 정상), order 주문 전량 500, dispatch 만료 배치 매 주기 실패 |
 | F39-R | 정식 | 은행 | G | 은행 계좌 서비스 | account-service 설정 롤아웃이 이체 하류 주소 TRANSFER_SERVICE_URL 을 다른 내부 호스트(testbed-ledger:8082, 그 Service 는 8083 만 엶)로 덮어써 account 가 넘기는 이체가 연결 시간 초과(Connect timed out)로 실패, 재시도와 서킷 끝에 account, api 502. 잔액 조회, 거래 내역, commerce 정산, NodePort 직행 이체는 정상 |
+| F40-R | 정식 | 쇼핑몰 | G | 가격 서비스 | 운영자가 pricing 프로모션을 '10% 할인' 대신 할인율 100.00 으로 넣고 반영하려고 pricing 을 재시작, 모든 checkout 견적이 0 원이 되어 core-banking 이 정산 이체를 400 'amount must be positive' 로 거절, payment, order 502 로 모든 checkout 실패. pricing, banking 은 Ready 이고 빠르다 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -193,7 +195,6 @@ A, B, D는 각 7개(16%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
 | F17-H | 후보 | 은행 | J+B | 은행 이체 서비스 | banking transfer-service 를 노드 이미지 저장소(imagePullPolicy Never)에 적재된 적 없는 릴리스 태그 core-banking-transfer:2.1.0 으로 롤아웃, 정본 전략 maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 ErrImageNeverPull 로 컨테이너를 만들지 못해 엔드포인트가 빔, account, api 이체와 거래 내역 502, commerce 정산 실패로 checkout 502. 잔액 조회는 정상, transfer 는 로그도 재시작도 없음 |
-| F40-R | 후보 | 쇼핑몰 | G | 가격 서비스 | 운영자가 pricing 프로모션을 '10% 할인' 대신 할인율 100.00 으로 넣고 반영하려고 pricing 을 재시작, 모든 checkout 견적이 0 원이 되어 core-banking 이 정산 이체를 400 'amount must be positive' 로 거절, payment, order 502 로 모든 checkout 실패. pricing, banking 은 Ready 이고 빠르다 |
 | F32-H | 후보 | 음식배달 | L+G | 배달 서비스 | dispatch-service 설정 배포가 Jackson 의 '숫자를 문자열로 쓰기'(SPRING_JACKSON_GENERATOR_WRITE_NUMBERS_AS_STRINGS=true)를 켜 용량 응답이 "available":"N" 이 되고, order 가 그 값을 Integer 로 꺼내다 ClassCastException 으로 주문 저장 전에 503 'Dispatch service unreachable'. dispatch 는 Ready 이고 200 으로 답하며 한도는 그대로, notify 가 받는 dispatch 이벤트의 숫자도 따옴표로 바뀜 |
 | F33-P | 후보 | 쇼핑몰 | F | DB 테이블(인증 토큰) | user_schema.auth_tokens 의 겹친 token 인덱스 두 개(UNIQUE 제약, idx_auth_tokens_token)를 합치는 마이그레이션이 새 유일 인덱스 동시 생성을 statement_timeout 으로 끊겨 INVALID 로 남긴 채 옛 둘을 지우고 이름을 바꿔, 게이트웨이가 쓰기마다 부르는 토큰 확인이 약 240만 행 전수 스캔이 됨. PostgreSQL(0.5 CPU) 포화, user Hikari 고갈, 게이트웨이가 확인을 자기 호출해 재시도·서킷 없이 인가된 쓰기 500. user 재시작 때 CREATE INDEX IF NOT EXISTS 는 같은 이름 때문에 건너뜀 |
 | F41-R | 후보 | 은행 | J | 은행 계좌 서비스 | banking account-service 를 릴리스 core-banking-account:1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 잔액 스냅샷이 0.5초마다 전체 계좌를 다시 읽어 계좌별 이력에 붙이기만 하고 비우지 않아, 한도는 그대로인 힙(약 246MiB)이 기동 약 6분 뒤 참. 전체 GC 연속 뒤 OutOfMemoryError 로 요청 처리가 멈추고 readiness, liveness 실패로 kubelet 이 재시작, 같은 릴리스가 다시 채워 약 11~13분 주기로 잔액 조회 시간 초과, 500, 502 와 account 를 거치는 이체 502 가 되풀이. 거래 내역, commerce 정산, Oracle 은 정상 |
@@ -336,3 +337,4 @@ A, B, D는 각 7개(16%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 - 2026-10-11: F57-P(후보) 1차 평가 FAIL 반영(원칙 4, 8). 전환 흔적으로 넣었던 표 통계 카운터 0(pg_stat_reset_single_table_counters, DPM live_rows 약 969만 하락)은 실제 전환에 없는 흔적이었다: 스냅숏 복사와 논리 복제로 채운 표는 n_live_tup 이 이미 행 수만큼 차 있다(평가 로컬 실측). 관제 AI 가 'DB 행 수 급락 = 표 이전, 시퀀스 문제' 라는 현실에 없는 지름길을 배우지 않도록 run 의 카운터 리셋과 cleanup 의 ANALYZE 를 빼고, 계기 흔적을 실제 전환이 남기는 전수 로그의 경계(그 분까지 이어지던 checkout 완료 로그가 끊기고 같은 분부터 시퀀스가 낸 키의 23505, N 이 하나씩 커짐)로 다시 세웠다. 이야기는 '새 PostgreSQL 인스턴스로 옮김' 으로 정리했다. 묶음, 정답 위치, 서비스 숫자는 그대로.
 - 2026-10-11: 관계 접미사 관례 메모. 같은 원본, 같은 원인 꼴을 다른 대상에 다시 쓴 두 번째 시나리오는 첫 번째가 R 을 차지했으므로 P 를 붙여 왔다(F53-R/F53-P, F48-R/F48-P, F43-R/F43-P, F49-R/F49-P, F57-R/F57-P). 카탈로그 §1 의 R 정의(같은 원인, 다른 대상)에 더 가깝지만 id 하나에 접미사 하나라 이렇게 쓴다.
 - 2026-10-11: F57-P(후보) 재평가 1회차 FAIL 반영(원칙 4, 8). 전환 잠금과 setval 만으로는 원본의 계기(옛 쪽 읽기 전용, 짧은 쓰기 실패, 트래픽 전환)가 녹화에 남지 않았고, 'checkout 완료 로그가 끊기는 분' 은 증상 시작 시각이지 계기의 흔적이 아니며(F57-R 1차 판과 같은 꼴), 정답지가 '다른 변경 없음' 을 지지 근거로 썼다. 평가의 길 (나)를 골라 원본 그대로의 전환을 PostgreSQL 안에서 재현하게 고쳤다: DB 읽기 전용 기본값(ALTER DATABASE ... SET default_transaction_read_only)과 앱 세션 끊기(pg_terminate_backend)로 약 6초 commerce 쓰기가 25006 으로 실패하고(읽기는 됨, 풀 로그 57P01), 시퀀스를 되감은 뒤 해제와 다시 끊기로 새 쪽에 붙는다. 이 문장들은 평시 0건이다(로컬 실측 57P01 → 25006 6초 → 57P01 → 23505). '다른 변경 없음' 은 must_support, mechanism, distinguishing_evidence 에서 빼고 must_rule_out 으로만 옮겼다. 테스트 주석 네 곳의 옛 '표 통계 카운터 0' 표현도 지금 동작으로 고쳤다. 묶음, 정답 위치, 서비스 숫자는 그대로.
+- 2026-10-11: `F40-R` 정식 승격(케이스 `case-f40-r-v3-50e3ecb9`). 첫 실행 F40-R-run-50e3ecb9 이 검증에서 녹화 가능(주입: pricing 새 파드 'Promotion cache refresh finished: activeCount=3', 피해: checkout 5xx 1.0 success 9틱, 원인 근거: order ERROR 본문의 core-banking 400 'amount must be positive' 185건(평시 0건), 장애 구간 must_rule_out 신호 없음). 근거 `~/dev/testbed-ops/verifications/2026-10-11-0057-F40-R-run-50e3ecb9.md`. §4-1 → §4, §3 을 정식 44종으로 다시 셈(G 5→6 12%→14%, 쇼핑몰 23→24, 정답 위치 가격 서비스 0→1 로 행 추가, 결제 경로 10 23% 그대로, 나머지 비율은 분모 44 로 다시 셈해 변동 없음). §3 의 후보 수는 §4-1 실제 행 수로 맞춰 38종(그동안 후보 추가 때 14 로 남아 있었다).

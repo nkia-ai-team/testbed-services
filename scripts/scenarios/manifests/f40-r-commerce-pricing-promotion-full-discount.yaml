@@ -3,7 +3,7 @@
   "id": "F40-R",
   "slug": "f40-r-commerce-pricing-promotion-full-discount",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
