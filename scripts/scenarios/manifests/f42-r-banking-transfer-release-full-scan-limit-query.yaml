@@ -3,7 +3,7 @@
   "id": "F42-R",
   "slug": "f42-r-banking-transfer-release-full-scan-limit-query",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

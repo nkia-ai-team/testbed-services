@@ -924,7 +924,7 @@
         "load.north_south"
       ],
       "readiness": "ready",
-      "stage": "candidate",
+      "stage": "official",
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""

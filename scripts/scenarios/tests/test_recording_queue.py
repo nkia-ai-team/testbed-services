@@ -41,7 +41,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 45 → 46. F32-H 정식 승격(녹화 case-f32-h-v3-531094f2).
         # 2026-10-11: 46 → 47. F33-P 정식 승격(녹화 case-f33-p-v3-e79a2db0).
         # 2026-10-11: 47 → 48. F41-R 정식 승격(녹화 case-f41-r-v3-f37b1984).
-        self.assertEqual(stages.count("official"), 48)
+        # 2026-10-11: 48 → 49. F42-R 정식 승격(녹화 case-f42-r-v3-26143861).
+        self.assertEqual(stages.count("official"), 49)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -116,7 +117,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 45 → 46. F67-R(운영자의 VACUUM FULL 이 commerce 결제 감사 로그를 다시 쓰는 내내 잠가 결제가 멈추고 checkout 502) 후보 추가.
         # 2026-10-11: 46 → 47. F37-H(banking api 릴리스가 개발 프로필에만 있는 이체 한도 설정을 읽어 모든 이체 접수 500) 후보 추가.
         # 2026-10-11: 47 → 48. F53-H(food 결제 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 모든 새 주문이 결제 단계에서 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 48)
+        # 2026-10-11: 48 → 47. F42-R 정식 승격(녹화 case-f42-r-v3-26143861).
+        self.assertEqual(stages.count("candidate"), 47)
 
 
 class RecordingQueueTests(unittest.TestCase):
