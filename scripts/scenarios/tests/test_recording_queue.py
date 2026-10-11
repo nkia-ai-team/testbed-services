@@ -100,7 +100,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 38 → 39. F64-R(commerce api-gateway 설정 롤아웃이 order 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계를 켬) 후보 추가.
         # 2026-10-11: 39 → 40. F65-R(banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름을 다시 넣어 transfer 가 Oracle 에 붙지 못함) 후보 추가.
         # 2026-10-11: 40 → 41. F66-R(commerce 회원 표 열 추가 마이그레이션이 느린 내보내기 질의 뒤에서 잠금을 기다려 회원 표 질의가 모두 줄을 섬) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 41)
+        # 2026-10-11: 41 → 42. F64-P(banking api 설정 롤아웃이 거래 내역 서킷브레이커에 거래 내역 정상 지연보다 낮은 느린 호출 임계를 켬) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 42)
 
 
 class RecordingQueueTests(unittest.TestCase):

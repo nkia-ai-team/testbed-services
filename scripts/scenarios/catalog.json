@@ -1404,6 +1404,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F64-P",
+      "slug": "f64-p-banking-api-history-breaker-slow-call-threshold",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": ""
     }
   ]
 }

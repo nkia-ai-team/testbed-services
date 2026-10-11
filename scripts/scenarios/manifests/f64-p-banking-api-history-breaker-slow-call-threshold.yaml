@@ -1,0 +1,431 @@
+{
+  "schema_version": "1.0",
+  "id": "F64-P",
+  "slug": "f64-p-banking-api-history-breaker-slow-call-threshold",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-api env(SPRING_APPLICATION_JSON resilience4j transferClient slow-call 100ms·50% 한 줄 추가) + R/ssh load.north_south companion(core-banking surge.js, target_rps=10, 거래 내역 초당 약 3건)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.env",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-env-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.env",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.env"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f64-p",
+              "parameters": {
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-api",
+                "container": "api-service",
+                "baseline": [
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "core-banking-api"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=core-banking,lucida.target_id=b3d586c3-4443-4581-8f2e-be12f3504448"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "core-banking-api"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=core-banking,lucida.target_id=b3d586c3-4443-4581-8f2e-be12f3504448"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  },
+                  {
+                    "name": "SPRING_APPLICATION_JSON",
+                    "value": "{\"resilience4j\":{\"circuitbreaker\":{\"instances\":{\"transferClient\":{\"slow-call-duration-threshold\":\"100ms\",\"slow-call-rate-threshold\":50}}}}}"
+                  }
+                ]
+              },
+              "min_hold": "10m",
+              "settle": "60s",
+              "timeout": "16m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api → account → transfer) 상태. 이 주입은 api 의 거래 내역 서킷(transferClient)만 바꾸고 이체는 다른 서킷(accountClient)을 지나므로 고장 중에도 200 이다. 0(연결 불가)은 nginx, api, 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "_note": "transfer 파드. 이 주입은 transfer 를 건드리지 않아 고장 중에도 Ready 여야 한다(빠지면 transfer 자체 장애, F17-R, F17-H, F65-R 꼴)",
+            "freshness": "30s"
+          },
+          {
+            "id": "api_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-api"
+            },
+            "_note": "api 파드. 새 파드는 설정 한 줄만 다르고 health 는 서킷 상태와 무관해 Ready 다. 회복 판정의 형식 조건",
+            "freshness": "30s"
+          },
+          {
+            "id": "api_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "core-banking-api"
+            },
+            "_note": "core-banking-api 서버 스팬(표본 10%) 60초 창의 5xx 백분율. api 가 받는 요청은 거래 내역(GET /api/transfers, transferClient 서킷)과 이체(POST, accountClient 서킷)뿐이고, 동반 부하 10rps(거래 내역 25%, 이체 10%)와 기준선을 합치면 거래 내역이 약 70% 다. 고장 중 거래 내역의 약 85% 가 서킷에 막혀 502 라 계산상 약 60%, 평시 24시간 표본 5,405건 중 5xx 0",
+            "freshness": "60s"
+          },
+          {
+            "id": "transfer_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "core-banking-transfer"
+            },
+            "_note": "core-banking-transfer 서버 스팬 5xx 백분율(표본). 고장 중 transfer 에 닿는 거래 내역은 서킷이 허용한 시험 호출뿐이고 모두 200, 이체도 정상이라 0 근처다. 오르면 하류가 실제로 실패하는 것(F54-R ORA-02395 500)이다",
+            "freshness": "60s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하의 이체(step transfer, 10%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 이지만 선택자는 도메인 공통 business.5xx.rate 다. 이체는 accountClient 서킷을 지나 이 주입과 무관해 0 근처여야 한다",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하의 잔액 조회(step get, 55%, nginx → account) 실패율. api 를 지나지 않아 고장 중에도 0 근처여야 한다",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 잔액 조회 실패율. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "history-refused-at-api",
+              "observation": "api_error_rate",
+              "op": "gte",
+              "value": 30,
+              "_note": "api 설정 롤아웃이 거래 내역 서킷(transferClient)에 느린 호출 임계 100ms, 비율 50% 를 넣어, 평시 약 240~250ms 인 transfer 거래 내역 호출이 200 으로 끝나도 모두 느린 호출로 세어진다. 서킷이 열린 동안 거래 내역은 transfer 에 닿지 않고 fallback 이 ERROR 'Transfer service circuit open/exhausted: CircuitBreaker 'transferClient' is OPEN and does not permit further calls' 를 남기며 502 로 끝난다. 이체는 성공하므로 값은 100 이 아니라 거래 내역 비중(약 70%) × 막힌 비율(약 85%) 근처다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 10m: 패치 뒤 새 api 파드 Ready 까지 약 1분, 그 뒤 고장이 약 9분 이어진 다음 판정된다. 고장은 요청량과 무관하게 서킷 주기마다 되풀이된다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 2.5,
+              "_note": "동반 부하 10rps 의 1/4. 막힌 거래 내역은 약 0.6초 만에 502 라 여정이 길어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "transfer-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 파드가 빠지면 transfer 자체 장애다(F17-R, F17-H, F65-R). 이 주입은 transfer 를 건드리지 않는다"
+            },
+            {
+              "id": "transfer-erroring",
+              "observation": "transfer_error_rate",
+              "op": "gte",
+              "value": 10,
+              "_note": "transfer 서버 스팬이 5xx 로 끝나면 하류가 실제로 실패하는 것이다(F54-R 호출 한도 ORA-02395). 이 시나리오에서 transfer 에 닿은 호출은 200 이다"
+            },
+            {
+              "id": "transfers-also-failing",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "이체까지 5xx 면 transfer, Oracle, 계정 쪽 장애(F35-R, F42-R, F65-R)거나 api 전체 장애(F63-R)다. 이 장애는 거래 내역 서킷만 끊는다"
+            },
+            {
+              "id": "balance-reads-failing",
+              "observation": "balance_read_nonok_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "잔액 조회까지 실패하면 account 나 DB, nginx 의 고장이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "api-ready",
+              "observation": "api_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "balance-reads-recovered",
+              "observation": "balance_read_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.05
+            },
+            {
+              "id": "history-recovered",
+              "observation": "api_error_rate",
+              "op": "lt",
+              "value": 10,
+              "_note": "판정력을 가진 회복 조건. 평시 0, 고장 중(기준선만) 약 60%. cleanup 이 env 를 되돌린 새 api 파드는 서킷 상태를 새로 시작하고 기본 설정(느린 호출 기준 60초)이라 거래 내역이 바로 통과한다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 env 배열을 되돌리고 api 롤아웃이 available 이 될 때까지(보통 약 1분, 상한 180초) 기다린 뒤, 표본 창(60초) 두 번 연속 api 5xx 가 10% 아래여야 회복이다. target_health 와 pod_ready 는 형식 조건이다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.env"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

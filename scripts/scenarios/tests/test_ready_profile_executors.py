@@ -1740,6 +1740,8 @@ esac
             "F65-R",
             # 2026-10-11: commerce 회원 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 내보내기 질의 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 회원 표 질의가 모두 줄을 섬(토큰 확인이 user 풀을 채워 인가된 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F66-R",
+            # 2026-10-11: banking api 설정 롤아웃이 거래 내역 서킷브레이커(transferClient)에 거래 내역 정상 지연(약 240~250ms)보다 낮은 느린 호출 임계(100ms)를 켜 멀쩡한 transfer 앞에서 서킷이 계속 열림. 새 후보, 설계 강도 1단 고정 evaluation.
+            "F64-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
