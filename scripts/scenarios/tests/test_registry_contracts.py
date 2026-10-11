@@ -103,8 +103,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 112 → 113. F66-P(후보) 추가. 기존 db.ddl 잠금 대기열 모드에 내보내기 열 목록 인자를 더해 프로파일 수는 그대로.
         # 2026-10-11: 113 → 114. F60-H(후보) 추가. 기존 db.ddl 에 MySQL 메타데이터 잠금 대기열 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 114 → 115. F54-P(후보) 추가. 기존 db.account 실행기에 MySQL 시간당 쓰기 한도 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 115)
-        self.assertEqual(len(self.profiles["profiles"]), 33)
+        # 2026-10-11: 115 → 116. F51-P(후보) 추가. 프로파일 33 → 34(db.row_update 신설).
+        self.assertEqual(len(self.catalog["scenarios"]), 116)
+        self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)
@@ -256,6 +257,8 @@ class RegistryContractTests(unittest.TestCase):
             "F60-H",
             # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F54-P",
+            # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -624,6 +627,8 @@ class RegistryContractTests(unittest.TestCase):
             "F60-H",
             # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F54-P",
+            # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-P",
             },
         )
         self.assertEqual(
@@ -776,6 +781,8 @@ class RegistryContractTests(unittest.TestCase):
             "F60-H",
             # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F54-P",
+            # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -965,8 +972,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F66-P(후보, 고정 evaluation)이 끝에 붙어 F63-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F60-H(후보, 고정 evaluation)이 끝에 붙어 F64-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F54-P(후보, 고정 evaluation)이 끝에 붙어 F65-R 이 끝 5개에서 빠졌다.
+        # 2026-10-11: F51-P(후보, 고정 evaluation)이 끝에 붙어 F66-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F66-R", "F64-P", "F66-P", "F60-H", "F54-P"])
+                         ["F64-P", "F66-P", "F60-H", "F54-P", "F51-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

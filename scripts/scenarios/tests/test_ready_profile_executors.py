@@ -52,6 +52,7 @@ host_image = load("host_image_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
 db_row_delete = load("db_row_delete_executor")
+db_row_update = load("db_row_update_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -816,6 +817,46 @@ esac
             db_row_delete.validate("F56-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "no verified row deletion contract"):
             db_row_delete.validate("F35-H", db_row_delete.CONTRACTS["F56-R"], {})
+
+    def test_db_row_update_backs_up_one_window_reopens_exactly_those_rows_and_writes_them_back(self) -> None:
+        # F51-P: 주입은 fooddelivery.dispatches 에서 최근 4시간에 끝난 배차를 백업 표에 복사하고 그 행들만 배정 중으로
+        # 되돌리는 것뿐이다. 표를 지우거나(F32-P), 잠그거나(F60-H), 배차 한도 설정을 바꾸면(F32-R) "정정 작업이 의도보다
+        # 큰 집합에 적용됐다"는 지문이 아니라 다른 장애가 된다. 되돌리기는 백업한 상태와 배정 시각을 같은 id 에 되쓰는 것이다.
+        plan = compiler.compile_plan("f51-p-food-redispatch-correction-reopens-finished-deliveries-fills-courier-pool")
+        argv, stdin = db_row_update.build_invocation(plan, "run")
+        self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
+        self.assertEqual(argv[3:], [
+            "run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "dispatches",
+            "dispatches_redispatch_backup", "DELIVERED", "ASSIGNED", "4", "2500", "2000",
+        ])
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8). 백업 표 이름에도 없다.
+        self.assertNotIn("F51-P", " ".join(argv))
+        script = stdin.decode()
+        self.assertNotIn("F51-P", script)
+        self.assertNotIn("f51", script.lower())
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        # 백업이 바꾸기보다 먼저이고, 바꾸는 행은 정확히 백업한 행이다.
+        self.assertLess(run_case.index("CREATE TABLE $db.$backup AS SELECT id, status, assigned_at"), run_case.index("UPDATE $db.$table d JOIN $db.$backup b"))
+        self.assertIn("SET d.status = '$to', d.assigned_at = NOW() WHERE d.status = '$from';", run_case)
+        self.assertIn('[[ "$(reopened_rows)" == "$saved" ]]', run_case)
+        self.assertIn("(( $(busy_rows) >= capacity ))", run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn("SET d.status = b.status, d.assigned_at = b.assigned_at;", cleanup_case)
+        self.assertIn('[[ "$(unrestored_rows)" == 0 ]]', cleanup_case)
+        self.assertIn("DROP TABLE $db.$backup;", cleanup_case)
+        self.assertIn("(( $(busy_rows) < capacity ))", cleanup_case)
+        check = script.split("check() {")[1].split("\n}")[0]
+        self.assertIn('[[ "$(backup_exists)" == 0 ]]', check)
+        self.assertIn("(( $(window_rows) >= minimum ))", check)
+        self.assertIn("(( $(busy_rows) < capacity ))", check)
+        for forbidden in ("truncate", "drop table $db.$table", "alter ", "delete ", "lock table", "grant ", "set global", "rename "):
+            self.assertNotIn(forbidden, script.lower())
+        params = dict(db_row_update.CONTRACTS["F51-P"])
+        for change in ({"window_hours": 24}, {"minimum_rows": 1000}, {"table": "orders"}, {"backup_table": "dispatches"}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                db_row_update.validate("F51-P", {**params, **change}, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified row update contract"):
+            db_row_update.validate("F56-R", db_row_update.CONTRACTS["F51-P"], {})
 
     def test_k8s_image_rolls_one_container_to_an_absent_tag_and_restores_it(self) -> None:
         # F17-H: 주입은 컨테이너 image 한 칸을 노드에 없는 태그로 바꾸는 롤아웃뿐이다. 노드에서 이미지를
@@ -1786,6 +1827,8 @@ esac
             "F60-H",
             # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F54-P",
+            # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F51-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

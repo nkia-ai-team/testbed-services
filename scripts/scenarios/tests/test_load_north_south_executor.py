@@ -75,6 +75,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "host.image",
                 # 2026-10-10: F56-R — Oracle 표의 행 몇 개를 보관 표에 옮기고 지우기, 보관 행 되넣기(역 문장).
                 "db.row_delete",
+                # 2026-10-11: F51-P — MySQL 표의 한 기간 행을 백업 표에 복사하고 상태를 되돌리기, 백업 값 되쓰기(역 문장).
+                "db.row_update",
             },
         )
 

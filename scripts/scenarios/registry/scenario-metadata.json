@@ -10980,6 +10980,102 @@
      }
     ]
    }
+  },
+  "F51-P": {
+   "title": "An operator's re-dispatch correction runs with its order-id filter left empty and puts every delivery finished in the last four hours back to ASSIGNED: dispatch counts those rows as busy couriers, the courier pool reads full at once and every new order is rejected with 503, while dispatch, order and MySQL stay healthy and the capacity setting is unchanged",
+   "description": "dispatch-service does not keep a separate courier counter: it counts the rows of fooddelivery.dispatches with status ASSIGNED (GET /api/deliveries/capacity, countByStatus) against dispatch.max-capacity 2000, and a batch every 30 seconds turns ASSIGNED rows whose ETA (15 to 34 minutes) has passed into DELIVERED. In normal operation the app assigns 720 to 4,130 deliveries an hour and about 300 to 1,700 are ASSIGNED at any time; no order was ever refused at max=2000 in the retained logs. Customers report that a few deliveries were wrongly marked delivered by the courier app, and an operator runs the usual re-dispatch correction: it copies the target rows' id, status and assignment time into a backup table in the same database (dispatches_redispatch_backup) and then sets those rows back to ASSIGNED with a fresh assignment time. The order-id list it should have been given is empty, so the tool applies only its time window and re-opens every delivery finished in the last four hours, about 2,600 rows at night and up to about 16,000 in the day. From the next request on, dispatch answers the capacity check with 200 and available 0; order-service logs INFO 'Order rejected: courier pool exhausted (assigned=<thousands>, max=2000)' and answers POST /api/orders with 503 'No courier available (capacity full)' before writing anything, so no order row, courier assignment or payment is created. The re-opened rows carry an assignment time of that minute, so dispatch's expiry batch will not touch them for at least 15 minutes and the pool stays full. Browsing restaurants and menus, order lookups and payment keep working. Nothing else changes: no rollout, no restart, no configuration change (max=2000 as before); dispatch, order and MySQL are Ready and fast. The correction leaves a trace in the database inventory the DPM collector reports every minute: the fooddelivery table count goes from 16 to 17 and its row count jumps by the size of the backup at the minute of the run.",
+   "cause": "Re-dispatch correction run with its order-id filter empty, so it applied only its four-hour window → every delivery finished in that window (thousands of rows of fooddelivery.dispatches) set back to ASSIGNED with a fresh assignment time → dispatch's courier capacity, which is the count of ASSIGNED rows against max 2000, is full at once → order-service's capacity check before its first write gets available 0 and every POST /api/orders answers 503 'No courier available (capacity full)'; the re-opened rows do not expire for at least 15 minutes. The capacity setting, the services and MySQL are unchanged and healthy.",
+   "injection_summary": "The db.row_update executor checks that no backup table dispatches_redispatch_backup exists in fooddelivery, that at least 2,500 dispatches finished (DELIVERED) in the last four hours and that fewer than 2,000 are ASSIGNED, then, through the MySQL client inside testbed-mysql-0, runs CREATE TABLE fooddelivery.dispatches_redispatch_backup AS SELECT id, status, assigned_at FROM fooddelivery.dispatches WHERE status = 'DELIVERED' AND assigned_at >= NOW() - INTERVAL 4 HOUR, followed by UPDATE fooddelivery.dispatches d JOIN the backup b ON b.id = d.id SET d.status = 'ASSIGNED', d.assigned_at = NOW() WHERE d.status = 'DELIVERED', and checks that exactly the backed-up rows are ASSIGNED and that ASSIGNED is at least 2,000. There is no companion load: the resident baseline loadgen-food places the orders (a companion order load would fill the courier pool by itself before the run). Cleanup writes the backed-up status and assignment time back onto the same ids, checks that none differ, drops the backup table and checks that ASSIGNED is below 2,000 again; it finishes before the earliest re-opened row's ETA (15 minutes), so the expiry batch never re-delivers a re-opened row. No schema of the live table, other row, app code, image, configuration or Kubernetes object is changed.",
+   "user_impact": "No customer can place an order for the whole window: every order creation is rejected with 503 'No courier available (capacity full)' at the courier capacity check, with no order row, assignment or payment left behind. Browsing, order lookups and payment keep working. Restoring the rows from the backup frees the pool for the next order; left alone, the pool would free itself only as the re-opened rows' ETAs pass 15 to 34 minutes later, and every re-opened delivery would then be 'delivered' a second time with its own delivery event and notification.",
+   "distinguishing_evidence": "The decisive evidence is the pair of numbers in order-service's rejection log against the app's own assignment log. From the minute of the run every order is rejected with INFO 'Order rejected: courier pool exhausted (assigned=<thousands to about 17,000>, max=2000)'; in the logs kept since 2026-10-04 there is no rejection at max=2000 at all (the only ones are F32-R runs at max=200 with assigned 213 to 582). In the same hours dispatch logs 'Dispatched courier=' 720 to 4,130 times an hour and its expiry batch delivers as many ('Dispatch expiry batch finished: delivered=N'), so the app itself never made more than about 2,000 assignments within one maximum ETA: the jump of ASSIGNED in one minute is not the app's doing, and during the outage 'Dispatched courier' and 'Created order' stop while the expiry batch keeps reporting its normal small counts. At the same minute the DPM inventory changes: dpm.mysql.database.table_count for fooddelivery goes 16 → 17 (16 for the whole previous week) and dpm.mysql.database.row_count jumps by about the number of re-opened rows, and both return when the backup is dropped. It is not the dispatch capacity setting of F32-R: there testbed-dispatch rolls out (a new ReplicaSet in KCM) and the log says max=200 with assigned in its normal range; here no Kubernetes object changes and max stays 2000 while assigned balloons. It is not the number-format deploy of F32-H (rollout, 'Dispatch capacity check failed', no 'courier pool exhausted'), nor the dispatch table drop, index drop or lock queue of F32-P, F33-R and F60-H (dispatch fails or times out on SQL; here dispatch answers 200 within milliseconds). It is not a load surge: order requests and the app's assignments stay at their baseline. It is not a stalled expiry batch: the batch keeps running every 30 seconds, and ASSIGNED does not creep up, it jumps in one minute.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "DPM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery.dispatches",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL 의 fooddelivery.dispatches 테이블 데이터다. 배달원 앱 오류로 '배달 완료'가 잘못 찍힌 몇 건을 되돌리려던 재배차 정정 작업이 주문 id 목록 없이 실행되어 기간 조건(최근 4시간)만으로 대상을 골라, 그 4시간에 끝난 배차 전부(평시 약 2,600~16,000 행)를 배정 중(ASSIGNED, 새 배정 시각)으로 되돌렸다. 원본 사례(AWS S3 2017-02-28, 정해진 플레이북 명령의 입력 하나가 잘못 들어가 의도보다 많은 서버가 빠져 그 용량에 기대던 하위 시스템이 요청을 처리하지 못함, 보조 Atlassian 2022-04-05 잘못된 id 를 그대로 믿은 정리 스크립트)처럼, 의도한 작업 내용은 맞았는데 적용 범위가 틀린 운영 작업이 살아 있는 서비스가 기대던 용량을 없앤 것이 원인이고 그 작업이 바꾼 표가 정답이다. dispatch-service 의 용량 계산(배정 중 행 수 대 max-capacity 2000)과 order-service 의 거절은 표에 적힌 대로 정당하게 동작했다(원칙 6). 근본과 계기가 같은 곳(이 표에 대한 잘못된 범위의 정정 작업)이라 trigger_target_id 는 비운다. target_id 는 F33-R, F32-P, F60-H 와 같은 '인스턴스:스키마.테이블' 꼴이다. 관제 데이터로의 도달 경로: ① 주입 분부터 order INFO 'Order rejected: courier pool exhausted (assigned=<수천~만여>, max=2000)' 와 POST /api/orders 503(보존 로그에 max=2000 거절 0건) ② 같은 시간 dispatch 'Dispatched courier=' 는 시간당 720~4,130 건, 만료 배치 'delivered=' 도 같은 크기라 앱이 최대 ETA 안에 만든 배정은 2,000 미만이다. 곧 assigned 의 한 분 급증은 앱이 만든 것이 아니다 ③ 같은 분 DPM dpm.mysql.database.table_count(fooddelivery)가 16 에서 17 로(7일 내내 16), row_count 가 되살린 행 수만큼 뛴다 ④ rca-testbed-food 에 롤아웃, 새 ReplicaSet, 재시작이 없고(KCM) max 값도 2000 그대로다 ⑤ dispatch 는 용량 확인에 200 으로 빠르게 답하고 MySQL 세션과 응답 시간은 평시다. 정정 문장 자체는 Top SQL 에 남지 않는다. 누가 왜 그 작업을 돌렸는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:106-114 (getCapacity — countByStatus(\"ASSIGNED\") 로 배정 중 행을 세어 available = max(0, maxCapacity - currentAssigned))",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java:63-66 (GET /api/deliveries/capacity — order 가 주문 저장 전에 부른다)",
+     "food-delivery/dispatch-service/src/main/resources/application.yml:83 (dispatch.max-capacity ${DISPATCH_MAX_CAPACITY:2000} — 주입은 이 값을 바꾸지 않는다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:32-45 (checkCapacity — 용량 응답 200 본문을 그대로 돌려준다. 서킷과 재시도는 예외에만 걸린다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-104 (createOrder 의 도메인 검증 3 — available ≤ 0 이면 INFO 'Order rejected: courier pool exhausted (assigned={}, max={})' 와 503 'No courier available (capacity full)', 첫 쓰기(:128) 앞)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:119-130 (30초마다 deliverExpiredDispatches — 배정 시각 + ETA 가 지난 행만 DELIVERED 로. 되살린 행은 배정 시각이 방금이라 15분 전에는 후보가 아니다)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java:26-29 (findExpiredAssigned — DATE_ADD(assigned_at, INTERVAL eta_minutes MINUTE) < NOW())",
+     "food-delivery/db/init.sql:111-131 (dispatches — idx_dispatches_status_assigned (status, assigned_at) 로 배정 중 행 COUNT 가 범위 스캔)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, tb-w3, gtid_mode OFF, binlog ROW, REPEATABLE-READ). fooddelivery.dispatches 는 2026-10-11 11:06 UTC 109 읽기 전용 실측 1,744,576 행, ASSIGNED 1,443, 최근 4시간 DELIVERED 14,389. 시간당 배정 720~4,130(10-09~10-11). fooddelivery 표 16개(DPM 7일 내내 16). DPM 수집기(target c8c558e5-…)가 1분마다 데이터베이스별 표 수와 행 수(dpm.mysql.database.table_count, row_count)를 보고한다. db.row_update executor 가 러너 컨테이너에서 kubectl exec 로 MySQL 클라이언트를 root 로 열어 실행한다."
+   },
+   "must_support": [
+    "주입 분부터 order INFO 'Order rejected: courier pool exhausted (assigned=<수천~만여>, max=2000)' 와 POST /api/orders 503 이 이어진다(2026-10-04 이후 보존 로그에 max=2000 거절 0건)",
+    "같은 시간 dispatch 'Dispatched courier=' 와 만료 배치 'delivered=' 는 평시 크기(시간당 720~4,130)라 앱이 만든 배정으로는 assigned 의 급증을 설명할 수 없고, 고장 중 'Created order id=' 와 'Dispatched courier' 가 멈춘다",
+    "같은 분에 dpm.mysql.database.table_count{db_name=fooddelivery} 가 16 에서 17 로 바뀌고 dpm.mysql.database.row_count 가 되살린 행 수만큼 뛴다(7일 동안 표 수 16 고정). cleanup 뒤 16 으로 돌아온다",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작이 없다(KCM). dispatch, order, MySQL 은 Ready 이고 dispatch 는 용량 확인에 200 으로 빠르게 답한다",
+    "가게와 메뉴 둘러보기, 주문 조회, 결제는 200 으로 이어진다. 기준선 주문 생성 5xx 비율이 0.5 이상이 된다"
+   ],
+   "must_rule_out": [
+    "배차 한도 설정 배포(F32-R 꼴)가 아님: testbed-dispatch 롤아웃이 없고 거절 로그의 max 가 2000 그대로다. assigned 가 부풀었다",
+    "dispatch 직렬화 설정 배포(F32-H 꼴)가 아님: 롤아웃이 없고 order 가 용량 응답을 읽어 'courier pool exhausted' 로 거절한다",
+    "배차 표 지우기, 인덱스 제거, 잠금 대기열(F32-P, F33-R, F60-H 꼴)이 아님: dispatch 에 SQL 오류와 시간 초과가 없고 용량 확인이 200 으로 빠르다",
+    "부하 급증이 아님: 주문 요청량과 앱의 배정 수가 기준선 그대로다",
+    "배차 만료 배치 정지가 아님: 만료 배치가 30초마다 돌며 'delivered=' 를 남기고, assigned 는 서서히가 아니라 한 분에 뛴다",
+    "MySQL 이나 dispatch 다운이 아님: 둘 다 Ready 이고 세션과 응답 시간이 평시다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F32-R (같은 order 503 과 같은 'Order rejected: courier pool exhausted' 문장이지만 원인이 dispatch 배차 한도 설정 배포(2000→200)다. 롤아웃이 KCM 에 남고 로그의 max 가 200, assigned 는 평시 크기다. F51-P 는 롤아웃 없이 max 2000 그대로 assigned 가 수천~만여로 뛴다)",
+     "F32-H (같은 order 503 이지만 dispatch 숫자 형식 설정 배포로 order 가 용량 응답을 읽지 못해 'Dispatch capacity check failed' 로 거절한다)",
+     "F32-P (같은 배차 표가 정답이고 같은 order 503 이지만 표가 지워져 dispatch 가 1146 으로 실패하고 표 수가 16→15 다. F51-P 는 표와 dispatch 가 멀쩡하고 표 수가 16→17 이다)",
+     "F51-R (같은 원본의 운영 명령 입력 실수지만 banking account Deployment 를 replicas 0 으로 줄여 파드가 사라진다. F51-P 는 쿠버네티스 객체가 아니라 배차 표 데이터가 바뀐다)",
+     "F56-R (같은 꼴의 운영 정리 작업이 잘못된 대상 행을 지운다. 그쪽은 행이 사라져 400, F51-P 는 행이 되살아나 용량이 찬다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery.dispatches"
+    ],
+    "partial": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "재배차 정정 작업이 주문 id 목록 없이 실행되어 최근 4시간에 끝난 배차를 모두 배정 중으로 되돌림: dispatch 가 그 행들을 일하는 배달원으로 세어 배달원 풀이 한 번에 가득 차고 모든 새 주문이 503 으로 거절된다. dispatch, order, MySQL 은 건강하고 용량 설정은 그대로다",
+   "description_ko": "dispatch-service 는 배달원 수를 따로 세지 않고 fooddelivery.dispatches 의 배정 중(ASSIGNED) 행 수를 dispatch.max-capacity 2000 과 견준다(GET /api/deliveries/capacity, countByStatus). 30초마다 도는 배치가 ETA(15~34분)가 지난 배정 중 행을 배달 완료(DELIVERED)로 바꾼다. 평시 앱은 시간당 720~4,130 건을 배정하고 배정 중 행은 약 300~1,700 이다. 보존 로그에 max=2000 에서 거절된 주문은 한 건도 없다. 배달원 앱 오류로 몇 건이 '배달 완료'로 잘못 찍혔다는 문의가 들어와 운영자가 늘 쓰던 재배차 정정 작업을 돌린다: 대상 행의 id, 상태, 배정 시각을 같은 DB 의 백업 표(dispatches_redispatch_backup)에 복사한 뒤 그 행들을 새 배정 시각으로 배정 중으로 되돌린다. 넘겨야 했던 주문 id 목록이 비어 작업이 기간 조건만으로 대상을 골라, 최근 4시간에 끝난 배차 전부(새벽 약 2,600 행, 낮 최대 약 16,000 행)가 되살아난다. 다음 요청부터 dispatch 는 용량 확인에 200 과 available 0 으로 답하고, order-service 는 INFO 'Order rejected: courier pool exhausted (assigned=<수천>, max=2000)' 을 남기고 아무것도 쓰기 전에 POST /api/orders 를 503 'No courier available (capacity full)' 로 답한다. 주문 행, 배차, 결제는 생기지 않는다. 되살린 행은 배정 시각이 그 분이라 만료 배치가 적어도 15분 동안 손대지 않아 풀이 가득 찬 채로 남는다. 가게와 메뉴 둘러보기, 주문 조회, 결제는 정상이다. 그 밖에는 바뀐 것이 없다: 롤아웃도 재시작도 설정 변경도 없고(max=2000 그대로), dispatch, order, MySQL 은 Ready 이고 빠르다. 정정 작업은 DPM 수집기가 1분마다 보고하는 데이터베이스 목록에 흔적을 남긴다: 실행 분에 fooddelivery 의 표 수가 16 에서 17 로 바뀌고 행 수가 백업 크기만큼 뛴다.",
+   "cause_ko": "재배차 정정 작업이 주문 id 목록 없이 실행되어 4시간 기간 조건만 적용 → 그 기간에 끝난 배차 전부(fooddelivery.dispatches 수천 행)가 새 배정 시각으로 배정 중(ASSIGNED)으로 되돌아감 → 배정 중 행 수를 max 2000 과 견주는 dispatch 의 배달원 용량이 한 번에 가득 참 → order-service 가 첫 쓰기 전에 하는 용량 확인이 available 0 을 받아 모든 POST /api/orders 가 503 'No courier available (capacity full)'. 되살린 행은 적어도 15분 동안 만료되지 않는다. 용량 설정, 서비스, MySQL 은 그대로이고 건강하다.",
+   "injection_summary_ko": "db.row_update executor 가 fooddelivery 에 백업 표 dispatches_redispatch_backup 이 없고, 최근 4시간에 끝난(DELIVERED) 배차가 2,500 이상이며, 배정 중(ASSIGNED)이 2,000 미만인지 확인한 뒤, testbed-mysql-0 안의 MySQL 클라이언트로 CREATE TABLE fooddelivery.dispatches_redispatch_backup AS SELECT id, status, assigned_at FROM fooddelivery.dispatches WHERE status = 'DELIVERED' AND assigned_at >= NOW() - INTERVAL 4 HOUR 와 UPDATE fooddelivery.dispatches d JOIN 백업 b ON b.id = d.id SET d.status = 'ASSIGNED', d.assigned_at = NOW() WHERE d.status = 'DELIVERED' 를 실행하고, 백업한 행이 정확히 배정 중이 되었고 배정 중이 2,000 이상인지 확인한다. 동반 부하는 없다: 상주 기준선 loadgen-food 가 주문을 낸다(동반 주문 부하는 주입 전에 배달원 풀을 스스로 채울 수 있다). cleanup 은 백업한 상태와 배정 시각을 같은 id 에 되돌리고, 다른 값이 남지 않았는지 본 뒤 백업 표를 지우고, 배정 중이 다시 2,000 미만인지 확인한다. 가장 이른 되살린 행의 ETA(15분) 전에 끝나므로 만료 배치가 되살린 행을 다시 배달 완료로 처리하지 않는다. 살아 있는 표의 스키마, 다른 행, 앱 코드, 이미지, 설정, 쿠버네티스 객체는 바꾸지 않는다.",
+   "user_impact_ko": "창 내내 아무도 주문하지 못한다: 모든 주문 생성이 배달원 용량 확인에서 503 'No courier available (capacity full)' 로 거절되고 주문 행, 배차, 결제는 남지 않는다. 둘러보기, 주문 조회, 결제는 정상이다. 백업에서 행을 되돌리면 다음 주문부터 풀이 비고, 그대로 두면 되살린 행의 ETA 가 지나는 15~34분 뒤에야 풀이 저절로 비며 그때 되살린 배달 하나하나가 이력과 알림까지 남기며 두 번째로 '배달 완료'된다.",
+   "distinguishing_evidence_ko": "결정 증거는 order-service 거절 로그의 두 숫자와 앱 자신의 배정 로그를 견주는 것이다. 실행 분부터 모든 주문이 INFO 'Order rejected: courier pool exhausted (assigned=<수천~약 17,000>, max=2000)' 로 거절되는데, 2026-10-04 이후 보존 로그에 max=2000 거절은 하나도 없다(있는 것은 F32-R 실행의 max=200, assigned 213~582 뿐). 같은 시간 dispatch 는 'Dispatched courier=' 를 시간당 720~4,130 번 남기고 만료 배치가 그만큼 배달 완료로 바꾸므로('Dispatch expiry batch finished: delivered=N'), 앱이 최대 ETA 안에 만든 배정은 2,000 을 넘은 적이 없다. 곧 한 분 사이 배정 중 행의 급증은 앱이 한 일이 아니고, 고장 중에는 'Dispatched courier' 와 'Created order' 가 멈춘 채 만료 배치만 평시처럼 작은 수를 보고한다. 같은 분 DPM 목록이 바뀐다: fooddelivery 의 dpm.mysql.database.table_count 가 16 → 17(직전 일주일 내내 16), dpm.mysql.database.row_count 가 되살린 행 수쯤 뛰고 백업 표를 지우면 둘 다 돌아온다. F32-R 의 배차 한도 설정이 아니다: 그쪽은 testbed-dispatch 롤아웃(KCM 새 ReplicaSet)이 있고 로그가 max=200 에 assigned 평시 크기다. 여기서는 쿠버네티스 객체가 바뀌지 않고 max 는 2000 그대로 assigned 가 부푼다. F32-H 의 숫자 형식 배포(롤아웃, 'Dispatch capacity check failed', 'courier pool exhausted' 없음)도, F32-P, F33-R, F60-H 의 배차 표 지우기, 인덱스 제거, 잠금 대기열(dispatch 가 SQL 에서 실패하거나 시간 초과)도 아니다. 여기서는 dispatch 가 수 ms 안에 200 으로 답한다. 부하 급증도 아니다: 주문 요청과 앱 배정이 기준선 그대로다. 만료 배치 정지도 아니다: 배치는 30초마다 돌고, 배정 중 행은 서서히가 아니라 한 분에 뛴다.",
+   "injected_fault": {
+    "profile": "db.row_update",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f51-p",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "database": "fooddelivery",
+       "table": "dispatches",
+       "backup_table": "dispatches_redispatch_backup",
+       "from_status": "DELIVERED",
+       "to_status": "ASSIGNED",
+       "window_hours": 4,
+       "minimum_rows": 2500,
+       "capacity": 2000
+      }
+     }
+    ]
+   }
   }
  }
 }

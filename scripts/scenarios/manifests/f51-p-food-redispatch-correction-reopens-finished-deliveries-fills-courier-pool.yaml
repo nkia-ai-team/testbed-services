@@ -1,0 +1,313 @@
+{
+  "schema_version": "1.0",
+  "id": "F51-P",
+  "slug": "f51-p-food-redispatch-correction-reopens-finished-deliveries-fills-courier-pool",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.row_update food testbed-mysql-0 CREATE TABLE fooddelivery.dispatches_redispatch_backup AS SELECT id, status, assigned_at ... WHERE status='DELIVERED' AND assigned_at >= NOW() - INTERVAL 4 HOUR + UPDATE dispatches JOIN 백업 SET status='ASSIGNED', assigned_at=NOW()(kubectl exec mysql root, preflight 가 백업 표 없음, 창 2,500 행 이상, 배정 중 2,000 미만 확인) (동반 부하 없음, 상주 기준선 loadgen-food 가 주문 생성. 동반 주문 부하는 주입 전에 배달원 풀을 스스로 채울 수 있음)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.row_update"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.row_update",
+        "companion_refs": [],
+        "approved_profile_id": "db.row_update"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "13m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f51-p",
+              "parameters": {
+                "engine": "mysql",
+                "namespace": "rca-testbed-food",
+                "pod": "testbed-mysql-0",
+                "database": "fooddelivery",
+                "table": "dispatches",
+                "backup_table": "dispatches_redispatch_backup",
+                "from_status": "DELIVERED",
+                "to_status": "ASSIGNED",
+                "window_hours": 4,
+                "minimum_rows": 2500,
+                "capacity": 2000
+              },
+              "min_hold": "9m",
+              "settle": "30s",
+              "timeout": "11m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 배정 중 행이 용량을 넘으면 order 는 용량 확인(dispatch 200, available 0) 뒤 503 'No courier available (capacity full)' 로 답한다. order, dispatch 는 Ready 이고 빠르게 답하므로 0(연결 불가)은 order 파드가 빠지거나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "_note": "order 파드. 용량 확인 뒤 503 을 내는 쪽이다. 거절은 도메인 검증이라 order 는 Ready 로 남아야 한다. 빠지면 배차 표 데이터가 아니라 order 다운이다. 이 주입은 order 도, dispatch 도 건드리지 않는다",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기 1~6 iter/s 라 주문 생성은 분당 약 12~68건, 30초 창에 6~34건이다. 정정 작업이 최근 4시간에 끝난 배차(평시 약 2,600~16,000 행)를 배정 중으로 되돌린 커밋 직후부터 dispatch 의 배정 중 행 수가 용량 2000 을 넘어 order 의 용량 확인이 available 0 을 받고 모든 주문이 503 이다. 되살린 행만으로 2,500 이상이라 평시 배정 중 행이 줄어도 가득 찬 채로 남는다. 평시는 0 근처(max=2000 거절은 보존 로그에 0건)",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "read_step_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선의 가게, 메뉴 둘러보기 실패율. 배차 표 데이터만 바뀌어 읽기는 고장 중에도 0 근처여야 한다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 9m, 3틱. 정정 작업의 UPDATE 커밋 직후 첫 주문부터 order 가 용량 확인에서 503 으로 거절한다(dispatch 는 200, order 의 dispatch 서킷과 재시도는 걸리지 않음). 되살린 행의 배정 시각이 실행 분이라 가장 짧은 ETA(15분) 전에는 만료 배치가 손대지 않아 판정 내내 가득 차 있다. timeout 11m, max_injection_duration 13m 으로 cleanup 이 15분 전에 끝난다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 배차 데이터가 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "order-down",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 주문 실패가 용량 거절이 아니라 연결 실패다. dispatch 다운은 order 의 용량 확인이 'Dispatch service unavailable' 로 바뀌는 다른 장애이고 녹화 검증에서 로그로 가른다"
+            },
+            {
+              "id": "read-path-also-broken",
+              "observation": "read_step_rate_baseline",
+              "op": "gte",
+              "value": 0.1,
+              "_note": "둘러보기까지 실패하면 배차 표 데이터가 아니라 food 넓은 장애다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "order-ready",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 백업 표의 상태와 배정 시각을 같은 id 에 되돌리면 배정 중 행이 평시 크기로 돌아와 다음 주문부터 용량 확인이 available > 0 이다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.row_update"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.row_update"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "db.row_update"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

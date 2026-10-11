@@ -238,6 +238,40 @@
       },
       "scenario_levels": {}
     },
+    "db.row_update": {
+      "executor": "profiles/db_row_update_executor.py",
+      "location_strategy": "fixed",
+      "default_location": "tb-runner",
+      "allowed_locations": [
+        "tb-runner"
+      ],
+      "live_supported": true,
+      "default_queries": [
+        "loadgen.food_create_status_rate",
+        "http.entry_health"
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F51-P"
+        ]
+      },
+      "scenario_parameters": {
+        "F51-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "dispatches",
+          "backup_table": "dispatches_redispatch_backup",
+          "from_status": "DELIVERED",
+          "to_status": "ASSIGNED",
+          "window_hours": 4,
+          "minimum_rows": 2500,
+          "capacity": 2000
+        }
+      },
+      "scenario_levels": {}
+    },
     "db.ddl": {
       "executor": "profiles/db_ddl_executor.py",
       "location_strategy": "fixed",

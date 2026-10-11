@@ -41,6 +41,9 @@ PROFILE_PREFLIGHTS = {
     # And again: the inverse of a purge is re-inserting exactly the archived rows
     # from the archive table the purge wrote in the same transaction.
     "db.row_delete": "db-inverse-ddl-ready",
+    # And again: the inverse of a correction update is writing the backed-up
+    # status and assignment time back onto the same ids from its backup table.
+    "db.row_update": "db-inverse-ddl-ready",
     "db.workload": "db-session-tag-clean",
     "mock.expectation": "mock-restore-contract",
     "load.north_south": "baseline-loadgen-active",
