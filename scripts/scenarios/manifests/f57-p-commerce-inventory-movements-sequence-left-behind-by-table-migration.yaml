@@ -1,0 +1,319 @@
+{
+  "schema_version": "1.0",
+  "id": "F57-P",
+  "slug": "f57-p-commerce-inventory-movements-sequence-left-behind-by-table-migration",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.ddl commerce testbed-postgres-0 PostgreSQL 시퀀스 되감기(kubectl exec psql 앱 계정, PGOPTIONS pg_stat_statements.track=none, default_transaction_read_only=off 세션. preflight 와 run 이 1000행 이상, id 기본값이 계약 시퀀스, 계약 기본 키가 id 한 열, 시퀀스가 최대 키 앞, DB 읽기 전용 기본값 없음, 최대 키 - 99999 부터 최대 키 - 1000 까지 키가 모두 있음을 확인. run: ALTER DATABASE commerce SET default_transaction_read_only = on, 앱 계정 클라이언트 세션 pg_terminate_backend(자기 세션 제외), 6초 유지(셸 sleep), 한 트랜잭션(lock_timeout 2s)에서 LOCK TABLE ... IN EXCLUSIVE MODE, 잠금 아래 키 구간 다시 세기, setval(시퀀스, 최대 키 - 100000, true), ALTER DATABASE ... RESET default_transaction_read_only, 다시 세션 끊기. 읽기 전용 뒤 실패하면 되돌리고 끊은 뒤 중단. 표 통계는 건드리지 않음, 행 복사는 하지 않음, 러너 lease 30초 안(로컬 run 8.5초, 109 preflight 1.4초)) + R/ssh load.north_south companion(commerce surge.js, target_rps=3, 여정 절반이 checkout, 진입 nginx 30080)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.ddl",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f57-p",
+              "parameters": {
+                "engine": "postgresql",
+                "namespace": "rca-testbed-commerce",
+                "db_pod": "testbed-postgres-0",
+                "schema": "inventory_schema",
+                "table": "inventory_movements",
+                "column": "id",
+                "sequence": "inventory_movements_id_seq",
+                "primary_key": "inventory_movements_pkey",
+                "rewind_rows": 100000,
+                "read_only_seconds": 6,
+                "minimum_rows": 1000
+              },
+              "min_hold": "15m",
+              "settle": "30s",
+              "timeout": "20m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "commerce 진입점(nginx 30080 → gateway). 시퀀스 되감기는 파드와 nginx, gateway 를 건드리지 않아 gateway 가 order 의 502 를 그대로 돌려준다. 0(연결 불가)은 nginx, gateway 나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health). gateway health 는 inventory 와 무관해 내내 200 이다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-inventory"
+            },
+            "freshness": "30s",
+            "_note": "inventory 파드. 전환 때 DB 쪽에서 세션이 끊겨도 풀이 다시 붙을 뿐이고, health 가 DB 연결 확인뿐이라 재고 이동 이력 INSERT 가 23505 로 실패해도 Ready 다(로컬 실측 /actuator/health 200, 재고 조회 GET 내내 200). 빠지면 시퀀스가 아니라 inventory 자체가 빠진 다른 장애(재시작, 파드 소실)다. 평시 109 재시작 0회"
+          },
+          {
+            "id": "postgres_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-postgres"
+            },
+            "freshness": "30s",
+            "_note": "commerce PostgreSQL 파드. 전환(DB 읽기 전용 기본값, 앱 세션 끊기)과 시퀀스 값 옮기기는 인스턴스를 재시작시키지 않아 내내 Ready 여야 한다. 빠지면 시퀀스가 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "_note": "동반 부하(commerce surge.js 3rps, 여정 절반이 checkout)의 checkout 5xx 비율. 전환의 약 6초는 commerce 의 모든 쓰기가 25006(읽기 전용)으로 실패하고, 그 뒤 checkout 은 장바구니 담기 뒤 order 가 cart, pricing 을 거쳐 품목마다 product reserve-stock 을 부르고, product 는 상품을 찾은 뒤 inventory POST /api/inventory/reserve 를 부른다. inventory 는 재고 행을 FOR UPDATE 로 잡고 재고를 줄인 뒤 같은 트랜잭션에서 inventory_movements 에 RESERVE 행을 넣는데(id 는 시퀀스 기본값), 되감긴 시퀀스가 이미 있는 키를 내줘 기본 키가 23505 로 거절하고 트랜잭션이 되돌려져 500 을 즉시 낸다. product 가 500 을 그대로 넘기고 order 의 productClient 가 200ms, 400ms 재시도 뒤 서킷 끝에 502 'Product service unavailable for product N' 을 던져 checkout 이 결제 전에 502 로 끝난다. 평시 checkout 5xx 는 0 근처(409 재고 부족, 400 쿠폰은 업무 거절)"
+          },
+          {
+            "id": "checkout_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s",
+            "_note": "상주 기준선(loadgen-commerce)의 쓰기 단계 실패율. 동반 부하가 끝난 뒤 회복 판정에 쓴다"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-failed-5xx",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "checkout-collapsed",
+              "observation": "checkout_2xx_rate",
+              "op": "lt",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 15m. run(약 8~9초)이 옛 쪽 읽기 전용과 앱 세션 끊기로 약 6초 쓰기를 25006 으로 막은 뒤, 시퀀스를 되감고 쓰기 가능으로 다시 붙게 한다. 그 순간부터 inventory 의 재고 이동 이력 INSERT 가 모두 23505 'duplicate key value violates unique constraint \"inventory_movements_pkey\"' + 'Key (id)=(N) already exists' 로 실패한다(로컬 실측: 예약 200건 중 run 앞 31건 200, 나머지 169건 500 이고 그중 약 6초는 25006, 그 뒤 23505. 재고 조회 GET 은 내내 200). checkout 은 결제 전 재고 예약 단계에서 전량 502 이고 성공이 없다. 강도 축이 없다: run 이 다시 시작할 자리부터 최대 키 - 1000 까지 키가 모두 있음을 잠금 아래에서 세므로 창 안의 INSERT 는 요청량과 무관하게 100% 실패한다(실패한 시도마다 키 하나, 25분 약 1만 개 대 확인한 9.9만 칸)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1,
+              "_note": "동반 부하 3rps 의 1/3. 실패가 즉시 나서 여정이 짧아질 뿐 반복률은 유지된다(ramping-arrival-rate). 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "commerce-db-down",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "PostgreSQL 이 빠지면 시퀀스가 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "inventory-pod-gone",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "inventory 파드가 빠지면 시퀀스가 아니라 inventory 자체가 빠진 장애다. 창 안 재시작도 기동 동안 NotReady 로 여기서 배제된다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "inventory-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "db-ready",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "writes-recovered",
+              "observation": "checkout_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.1
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 읽기 전용 기본값이 남았으면 풀고 세션을 끊은 뒤, 시퀀스를 표의 최대 키로 올리면(setval, 원본의 해결) inventory 의 다음 INSERT 가 새 키를 받아 성공한다(로컬 실측 되돌린 뒤 200). order 의 productClient 서킷은 5초 뒤 반열림 3회 성공으로 닫힌다. 실패한 예약은 트랜잭션이 되돌려져 재고가 줄지 않았고, 실패한 checkout 은 결제 전 단계라 주문, 결제, 정산 이체를 남기지 않는다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.ddl",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.ddl",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "db.ddl"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

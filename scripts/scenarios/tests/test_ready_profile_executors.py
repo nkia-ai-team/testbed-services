@@ -1688,6 +1688,8 @@ esac
             "F41-H",
             # 2026-10-10: food MySQL fooddelivery.dispatch_events 에 외래 키를 ALGORITHM, LOCK 없이 더하는 정합성 보강 마이그레이션(MySQL 이 표를 복사하며 dispatch_events 와 부모 dispatches 쓰기가 메타데이터 잠금 대기, dispatch 풀 고갈과 재시작, 주문 503, 복사가 끝나면 스스로 회복). 새 후보, 설계 강도 1단 고정 evaluation.
             "F60-R",
+            # 2026-10-11: commerce PostgreSQL 을 새 인스턴스로 옮긴 이전이 inventory_schema.inventory_movements 의 id 시퀀스 상태를 옮기지 않아 시퀀스가 표보다 10만 키 뒤에서 다시 시작(db.ddl PostgreSQL 시퀀스 되감기: 옛 쪽 읽기 전용 기본값과 앱 세션 끊기로 약 6초 쓰기 25006, 잠금 아래 키 구간 확인 뒤 setval, 읽기 전용 해제와 다시 끊기, 표 통계는 그대로, 재고 예약 INSERT 가 기본 키 23505 로 실패, product 500, checkout 502, 둘러보기와 재고 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F57-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

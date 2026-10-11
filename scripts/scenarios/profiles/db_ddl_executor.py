@@ -93,6 +93,21 @@ migration in the background inside the database pod (it outlives run, which hold
 coordinator lock) and returns once the server shows its session.  The copy ends on its own; cleanup
 waits for it up to `drain_seconds`, stops it if it is still running (the server drops the half-built
 copy), then drops the foreign key, which is metadata only.  Rows, indexes and the parent are untouched.
+
+The PostgreSQL sequence-rewind path (F57-P) is the same migration on the commerce PostgreSQL, the original's
+engine: the database moved to a new instance by snapshot and logical replication, which carries table rows but not
+sequence state, so after the switch the key column's sequence is still at the snapshot's high-water mark.  Run
+replays the switch as the original did it: the old side goes read-only (ALTER DATABASE ... SET
+default_transaction_read_only = on) and the application sessions are cut (pg_terminate_backend), so the pools
+reconnect read-only and every write fails with 25006 while reads go on, for `read_only_seconds` (kept short because
+run holds the runner's coordinator lock under a 30 s lease).  Then the new side takes over: in one transaction under
+an EXCLUSIVE lock (waited for at most 2 s) every key from the restart point up to 1000 below the highest key is
+counted and the sequence is set `rewind_rows` keys behind the table; the read-only default is reset and the
+sessions are cut again, so the pools reconnect writable.  Every new row then takes a key that is already there and
+the primary key rejects it with 23505.  The rows, indexes, constraints and table statistics are untouched and reads
+keep working.  If any step fails after the database went read-only, run resets it and cuts the sessions before it
+stops.  The inverse is the read-only reset if it is still set, and the original's fix: setval to the highest key;
+it needs no state file and is a no-op once the sequence is ahead and the database is writable.
 """
 from __future__ import annotations
 
@@ -226,6 +241,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "foreign_key": "fk_dispatch_events_dispatch", "referenced_table": "dispatches",
         "referenced_column": "id", "drain_seconds": 300, "minimum_rows": 1000, "maximum_sessions": 90,
     },
+    # 같은 이전(행은 옮기고 시퀀스 상태는 옮기지 않음)을 원본 엔진인 PostgreSQL 에: 원본의 전환처럼 옛 쪽을 읽기 전용으로
+    # (ALTER DATABASE ... SET default_transaction_read_only = on) 두고 앱 세션을 끊어 read_only_seconds 동안 쓰기가 25006 으로
+    # 실패하게 한 뒤, EXCLUSIVE 잠금 아래(대기 최대 2초) 키 구간을 다시 세고 inventory_movements 의 id 시퀀스를 최대 키보다
+    # rewind_rows 뒤(스냅숏 시점)로 돌리고, 읽기 전용을 풀고 세션을 다시 끊어 쓰기 가능으로 다시 붙게 한다. 새 이동 이력
+    # INSERT 마다 기본 키가 23505 로 거절한다. 표 통계는 건드리지 않는다. cleanup 은 읽기 전용이 남았으면 풀고 setval(최대 키).
+    "F57-P": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "inventory_schema", "table": "inventory_movements", "column": "id",
+        "sequence": "inventory_movements_id_seq", "primary_key": "inventory_movements_pkey",
+        "rewind_rows": 100000, "read_only_seconds": 6, "minimum_rows": 1000,
+    },
 }
 
 
@@ -261,6 +287,11 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
+    if p["engine"] == "postgresql" and "sequence" in p:
+        return kubectl_bash_argv([
+            action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["column"], p["sequence"],
+            p["primary_key"], str(p["rewind_rows"]), str(p["read_only_seconds"]), str(p["minimum_rows"]),
+        ]), PG_SEQUENCE_REMOTE
     if p["engine"] == "postgresql" and "hold_schema" in p:
         return kubectl_bash_argv([
             action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["hold_schema"], str(p["minimum_rows"]),
@@ -727,6 +758,101 @@ case "$action" in
 esac
 '''
 
+
+PG_SEQUENCE_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"; sequence="$7"; pk="$8"; rewind="$9"; hold="${10}"; minimum="${11}"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# SQL travels in the environment; the first psql line on stderr (error or notice) goes to stderr for the runner log.
+# PGOPTIONS carries per-session settings: every step runs with pg_stat_statements tracking off, so nothing it runs
+# reaches Top SQL, and writable, so it is not caught by the database's read-only default during the switch.
+sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="${2:-}" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+quiet="-c pg_stat_statements.track=none -c default_transaction_read_only=off"
+# Run holds the runner's coordinator lock while it runs, and the runner's lease is 30 s: the read-only hold is
+# `hold` seconds, the table lock is waited for at most 2 s, and run makes about fifteen short calls besides
+# (about 0.4 s each), so it stays near 15 s.
+cutover="$quiet -c lock_timeout=2s"
+# A number or the script stops: an empty answer must never read as "behind" or "ahead".
+number() {
+  local v
+  v=$(sql "$1" "$quiet") || { echo "query failed: $1" >&2; exit 5; }
+  [[ "$v" =~ ^[0-9]+$ ]] || { echo "not a number ($v): $1" >&2; exit 5; }
+  printf '%s' "$v"
+}
+high_key() { number "SELECT coalesce(max($column), 0) FROM $schema.$table;"; }
+# The key nextval() hands out next.
+next_key() { number "SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM $schema.$sequence;"; }
+# Highest key first: the sequence only moves up, so reading it second cannot fall behind a key handed out in between.
+ahead() { local n h; h=$(high_key) || exit 5; n=$(next_key) || exit 5; (( n > h )); }
+# The database's own read-only default (ALTER DATABASE ... SET default_transaction_read_only), as on the old side
+# of the switch.  It applies to sessions opened after it is set.
+read_only_set() { [[ "$(number "SELECT count(*) FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase WHERE d.datname = current_database() AND s.setrole = 0 AND 'default_transaction_read_only=on' = ANY (s.setconfig);")" != 0 ]]; }
+read_only() { sql "DO \$\$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database()); END \$\$;" "$quiet" >/dev/null; }
+read_write() { sql "DO \$\$ BEGIN EXECUTE format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()); END \$\$;" "$quiet" >/dev/null; }
+# Cut the applications' connections to the database so their pools reconnect under the current default
+# (the switch moves them from one side to the other).  Only client sessions of the application account.
+cut() { sql "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = current_database() AND usename = current_user AND backend_type = 'client backend' AND pid <> pg_backend_pid();" "$quiet" >/dev/null; }
+# Back to writable: reset the read-only default, then cut so every session opened under it reconnects writable.
+restore() { read_write; cut; }
+# The key column takes its default from the contract's sequence, and the contract's primary key covers that column
+# alone, so a reused key fails instead of duplicating.
+check() {
+  [[ "$(sql "SELECT pg_get_serial_sequence('$schema.$table', '$column');" "$quiet")" == "$schema.$sequence" ]]
+  [[ "$(sql "SELECT count(*) FROM pg_constraint WHERE conrelid = '$schema.$table'::regclass AND contype = 'p' AND conname = '$pk' AND conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = '$schema.$table'::regclass AND attname = '$column')];" "$quiet")" == 1 ]]
+  [[ "$(sql "SELECT count(*) >= $minimum FROM (SELECT 1 FROM $schema.$table LIMIT $minimum) t;" "$quiet")" == t ]]
+}
+# Every key from the restart point up to 1000 below the highest key exists, so no new row lands in a gap and
+# succeeds.  The newest 1000 keys are left out: keys are handed out before commit, so the committed set can have
+# momentary holes there, and the restarted sequence never gets near them (a run uses some ten thousand keys).
+dense() {
+  local high=$1
+  (( high - rewind >= minimum ))
+  [[ "$(number "SELECT count(*) FROM $schema.$table WHERE $column BETWEEN $((high - rewind + 1)) AND $((high - 1000));")" == "$((rewind - 1000))" ]]
+}
+original() { check; ahead; ! read_only_set; }
+case "$action" in
+ preflight)
+  original
+  dense "$(high_key)"
+  ;;
+ run)
+  original
+  dense "$(high_key)"
+  # Switch, as in the original: the old side goes read-only and the applications' connections are cut, so they
+  # reconnect read-only (writes fail, reads go on) for the hold.
+  read_only
+  cut || { restore; echo "could not cut the connections" >&2; exit 4; }
+  sleep "$hold"
+  # The new side takes over with its sequence at the snapshot's high-water mark.  In one transaction under a lock
+  # that makes writes wait, the key range is counted again (setval is not rolled back, so it comes after the check).
+  if ! sql "DO \$\$ DECLARE h bigint; n bigint; BEGIN
+  LOCK TABLE $schema.$table IN EXCLUSIVE MODE;
+  SELECT coalesce(max($column), 0) INTO h FROM $schema.$table;
+  SELECT count(*) INTO n FROM $schema.$table WHERE $column BETWEEN h - $rewind + 1 AND h - 1000;
+  IF h - $rewind < $minimum OR n <> $rewind - 1000 THEN
+    RAISE EXCEPTION 'keys behind the restart point are not all present';
+  END IF;
+  PERFORM setval('$schema.$sequence', h - $rewind, true);
+END \$\$;" "$cutover" >/dev/null; then
+    restore
+    echo "cut-over did not complete" >&2
+    exit 4
+  fi
+  # The applications reconnect to the new side, writable.
+  restore
+  read_only_set && { echo "read-only default is still set" >&2; exit 4; }
+  if ahead; then echo "sequence did not restart behind the table" >&2; exit 4; fi
+  ;;
+ cleanup)
+  if read_only_set; then restore; fi
+  # The original's fix: move the sequence past the highest key.
+  ahead || sql "SELECT setval('$schema.$sequence', (SELECT max($column) FROM $schema.$table));" "$quiet" >/dev/null
+  original
+  ;;
+ recovery) original ;;
+ *) exit 2 ;;
+esac
+'''
 
 MYSQL_FK_REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail

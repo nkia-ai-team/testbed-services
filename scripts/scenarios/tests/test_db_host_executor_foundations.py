@@ -398,6 +398,91 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F60-R", ddl.CONTRACTS["F32-P"], {})
 
+    def test_postgres_sequence_rewinds_behind_the_table_after_a_read_only_switch_and_returns_past_it(self) -> None:
+        # F57-P: 행만 옮긴 DB 이전의 전환, 원본 엔진(PostgreSQL) 판. 원본처럼 옛 쪽을 읽기 전용으로 두고(DB 기본값) 앱 세션을 끊어
+        # read_only_seconds 동안 쓰기가 실패하게 한 뒤, 한 트랜잭션의 EXCLUSIVE 잠금 아래 키 구간을 다시 세고 id 시퀀스를 최대 키보다
+        # rewind_rows 뒤로 돌리고, 읽기 전용을 풀고 세션을 다시 끊는다. 표 통계는 건드리지 않는다(복사와 복제로 채운 표는 이미
+        # 행을 센다). cleanup 은 읽기 전용이 남았으면 풀고 setval(최대 키)(원본의 해결). 모든 SQL 은 기록되지 않는 세션에서 돈다.
+        p = ddl.CONTRACTS["F57-P"]
+        ddl.validate("F57-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F57-P", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "inventory_schema",
+                                    "inventory_movements", "id", "inventory_movements_id_seq",
+                                    "inventory_movements_pkey", "100000", "6", "1000"])
+        self.assertNotIn("F57-P", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F57-P", script)
+        # 실행기 세션은 기록되지 않고(track=none), 전환 중 DB 기본값(읽기 전용)에 걸리지 않게 쓰기 가능으로 연다.
+        self.assertIn('quiet="-c pg_stat_statements.track=none -c default_transaction_read_only=off"', script)
+        self.assertIn('cutover="$quiet -c lock_timeout=2s"', script)
+        # 여러 줄에 걸친 DO 블록까지 sql 호출마다 세션 옵션을 넘기는지 본다.
+        calls = re.findall(r'(?<!\w)sql "((?:[^"\\]|\\.)*)"( "\$\w+")?', script)
+        self.assertGreaterEqual(len(calls), 8)
+        for text, option in calls:
+            self.assertIn(option, (' "$quiet"', ' "$cutover"'), text[:60])
+        # 계약 시퀀스가 키 열의 기본값이고 계약 기본 키가 그 열 하나를 덮어야 한다(아니면 되감기가 실패 대신 중복을 쓴다).
+        self.assertIn("pg_get_serial_sequence('$schema.$table', '$column')", script)
+        self.assertIn("contype = 'p' AND conname = '$pk' AND conkey = ARRAY[", script)
+        # 전환: DB 기본값을 읽기 전용으로, 앱 계정의 클라이언트 세션만 끊는다(자기 세션 제외).
+        self.assertIn("ALTER DATABASE %I SET default_transaction_read_only = on', current_database()", script)
+        self.assertIn("ALTER DATABASE %I RESET default_transaction_read_only', current_database()", script)
+        self.assertIn("usename = current_user AND backend_type = 'client backend' AND pid <> pg_backend_pid()", script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # 순서: 원래 상태와 키 구간 확인 → 읽기 전용 → 세션 끊기 → 유지 → 잠금 → 잠금 아래 다시 세기 → 맞지 않으면 실패 →
+        # 시퀀스 되감기 → 쓰기 가능으로 되돌리고 세션 끊기 → 시퀀스가 뒤인지 확인.
+        order = ["original", 'dense "$(high_key)"', "  read_only\n", "  cut ||", 'sleep "$hold"',
+                 "LOCK TABLE $schema.$table IN EXCLUSIVE MODE;", "SELECT count(*) INTO n", "RAISE EXCEPTION",
+                 "PERFORM setval('$schema.$sequence', h - $rewind, true);", "  restore\n  read_only_set &&",
+                 "if ahead; then"]
+        positions = [run.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        # 읽기 전용 뒤 어느 단계가 실패해도 먼저 쓰기 가능으로 되돌리고 세션을 끊는다.
+        failed = run[run.index("if ! sql"):run.index("  fi\n", run.index("if ! sql"))]
+        self.assertIn("restore", failed)
+        self.assertIn("exit 4", failed)
+        self.assertIn('cut || { restore;', run)
+        self.assertIn("restore() { read_write; cut; }", script)
+        self.assertIn("BETWEEN h - $rewind + 1 AND h - 1000", run)
+        self.assertIn("n <> $rewind - 1000", run)
+        # run 은 러너 coordinator lock(lease 30초)을 쥔 채 돈다: 유지 대기는 셸 sleep 하나뿐(SQL 안에 대기 문장 없음),
+        # 잠금 대기는 2초로 묶는다. 호출 약 15번 × 0.4초 + 유지 + 잠금 대기가 lease 안이다.
+        self.assertEqual(run.count("sleep"), 1)
+        self.assertNotIn("pg_sleep", script)
+        self.assertEqual(run.count('"$cutover"'), 1)
+        self.assertLessEqual(p["read_only_seconds"] + 2 + 15 * 0.4, 22, "run must stay well inside the runner's 30 s lease")
+        # 실제 전환에 없는 흔적(누적 통계 0, 통계 수집, 정리)을 만들지 않는다.
+        for word in ("pg_stat_reset", "analyze", "vacuum"):
+            self.assertNotIn(word, script.lower())
+        # 빈 답이 '앞' 이나 '뒤' 로 읽히지 않는다(fail-closed), 시퀀스보다 최대 키를 먼저 읽는다.
+        self.assertIn('[[ "$v" =~ ^[0-9]+$ ]] || { echo "not a number', script)
+        ahead = script[script.index("ahead() {"):]
+        self.assertLess(ahead.index("high_key"), ahead.index("next_key"))
+        self.assertIn("BETWEEN $((high - rewind + 1)) AND $((high - 1000))", script)
+        self.assertIn('== "$((rewind - 1000))"', script)
+        self.assertIn("original() { check; ahead; ! read_only_set; }", script)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        self.assertIn("if read_only_set; then restore; fi", cleanup)
+        self.assertIn("ahead || sql \"SELECT setval('$schema.$sequence', (SELECT max($column) FROM $schema.$table));\"", cleanup)
+        # cleanup 과 recovery 는 끝에 원래 상태를 실제로 확인한다(주석의 낱말이 아니라 호출 줄).
+        self.assertRegex(cleanup, r"\n  original\n  ;;")
+        self.assertRegex(script[script.index(" recovery)"):], r"^ recovery\) original ;;")
+        # 행, 인덱스, 제약, 권한은 손대지 않는다.
+        for word in ("drop ", "delete ", "truncate", "insert ", "update ", "revoke", "grant ", "alter table"):
+            self.assertNotIn(word, script.lower())
+        _, f23p_body = ddl.build_invocation(plan("db.ddl", "F23-P", ddl.CONTRACTS["F23-P"]), "run")
+        _, f57r_body = ddl.build_invocation(plan("db.ddl", "F57-R", ddl.CONTRACTS["F57-R"]), "run")
+        self.assertNotEqual(body, f23p_body)
+        self.assertNotEqual(body, f57r_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-P", {**p, "rewind_rows": 1000000}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-P", {**p, "read_only_seconds": 60}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-P", {**p, "table": "inventory"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F57-P", ddl.CONTRACTS["F57-R"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

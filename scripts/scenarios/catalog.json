@@ -1340,6 +1340,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F57-P",
+      "slug": "f57-p-commerce-inventory-movements-sequence-left-behind-by-table-migration",
+      "profiles": [
+        "db.ddl",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }
