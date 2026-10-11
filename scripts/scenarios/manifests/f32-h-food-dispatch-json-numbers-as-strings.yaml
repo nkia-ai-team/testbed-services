@@ -3,7 +3,7 @@
   "id": "F32-H",
   "slug": "f32-h-food-dispatch-json-numbers-as-strings",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

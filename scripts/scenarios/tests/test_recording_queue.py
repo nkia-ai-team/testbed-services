@@ -38,7 +38,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-09: 42 → 43. F39-R 정식 승격(녹화 case-f39-r-v3-dc45499a).
         # 2026-10-11: 43 → 44. F40-R 정식 승격(녹화 case-f40-r-v3-50e3ecb9).
         # 2026-10-11: 44 → 45. F17-H 정식 승격(녹화 case-f17-h-v3-632a04d1).
-        self.assertEqual(stages.count("official"), 45)
+        # 2026-10-11: 45 → 46. F32-H 정식 승격(녹화 case-f32-h-v3-531094f2).
+        self.assertEqual(stages.count("official"), 46)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -101,7 +102,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 39 → 40. F65-R(banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름을 다시 넣어 transfer 가 Oracle 에 붙지 못함) 후보 추가.
         # 2026-10-11: 40 → 41. F66-R(commerce 회원 표 열 추가 마이그레이션이 느린 내보내기 질의 뒤에서 잠금을 기다려 회원 표 질의가 모두 줄을 섬) 후보 추가.
         # 2026-10-11: 41 → 42. F64-P(banking api 설정 롤아웃이 거래 내역 서킷브레이커에 거래 내역 정상 지연보다 낮은 느린 호출 임계를 켬) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 42)
+        # 2026-10-11: 42 → 41. F32-H 정식 승격(녹화 case-f32-h-v3-531094f2).
+        self.assertEqual(stages.count("candidate"), 41)
 
 
 class RecordingQueueTests(unittest.TestCase):
