@@ -1744,6 +1744,8 @@ esac
             "F64-P",
             # 2026-10-11: commerce 재고 이벤트 outbox 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 이벤트 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 outbox INSERT 가 모두 줄을 섬(재고 예약이 재고 행 잠금과 연결을 쥔 채 멈춰 inventory 풀 고갈, 상품 조회와 checkout 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F66-P",
+            # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

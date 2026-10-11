@@ -601,6 +601,83 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F66-P", ddl.CONTRACTS["F66-R"], {})
 
+    def test_mysql_instant_column_migration_queues_behind_a_slow_export_on_the_metadata_lock(self) -> None:
+        # F60-H: F66-R 의 잠금 대기열을 원본 엔진 MySQL 에. 배차 표 자기 행을 한 행씩 일정한 속도로 내보내는 동안
+        # ALGORITHM=INSTANT 열 추가가 배타 메타데이터 잠금을 기다리고, 그 뒤의 배차 표 질의가 모두 줄을 선다.
+        p = ddl.CONTRACTS["F60-H"]
+        ddl.validate("F60-H", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F60-H", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "dispatches",
+                                    "cancel_reason", "varchar(64)",
+                                    "id, order_id, courier_id, eta_minutes, status, assigned_at",
+                                    "360", "300", "100000", "90"])
+        self.assertNotIn("F60-H", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F60-H", script)
+        self.assertEqual(body, ddl.MYSQL_QUEUE_REMOTE)
+        _, f66r_body = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
+        _, f60r_body = ddl.build_invocation(plan("db.ddl", "F60-R", ddl.CONTRACTS["F60-R"]), "run")
+        self.assertNotEqual(body, f66r_body)
+        self.assertNotEqual(body, f60r_body)
+        # 두 문장은 원본 꼴 그대로: 표 자기 행의 내보내기, 메타데이터만 바꾸는 INSTANT 열 추가. 세션은 이 문장으로 찾는다.
+        self.assertIn('export_sql="SELECT $export_columns FROM $table"', script)
+        self.assertIn('migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INSTANT"', script)
+        self.assertNotIn("DEFAULT", p["add_column_type"].upper())
+        self.assertNotIn("NOT NULL", p["add_column_type"].upper())
+        self.assertIn("WHERE id <> CONNECTION_ID() AND info = '$1'", script)
+        # 열 목록은 문장 텍스트로 세션을 찾는 탐침의 작은따옴표 안에 들어가므로 따옴표가 없어야 한다.
+        self.assertNotIn("'", p["export_columns"])
+        self.assertNotIn(";", p["export_columns"])
+        # 마이그레이션이 포기하지 않고 줄을 서고 내보내기가 끝까지 돌려면 시간 제한이 없어야 하고,
+        # INSTANT 행 버전 여유, 메타데이터 잠금 계측, 연결 한도 아래의 세션 수를 확인한다.
+        self.assertIn('[[ "$(number "$(mysql "SELECT @@global.lock_wait_timeout;")")" -ge 3600 ]]', script)
+        self.assertIn('[[ "$(mysql "SELECT @@global.max_execution_time;")" == 0 ]]', script)
+        self.assertIn("wait/lock/metadata/sql/mdl", script)
+        self.assertIn('[[ "$versions" -le 60 ]]', script)
+        self.assertIn('[[ "$sessions" -le "$max_sessions" ]]', script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # 순서: 확인 → 행 추정으로 속도 → 내보내기를 백그라운드로(앱 계정, 한 행씩) → 그 잠금 확인 → 마이그레이션을
+        # 백그라운드로(root) → 메타데이터 잠금 대기 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 기다리지 않는다.
+        order = ["  check\n", "table_rows", "rate=$(( est / export_seconds + 1 ))", "nohup sh \"$SH\"",
+                 "lock_status = 'GRANTED'", "nohup mysql -uroot", "'Waiting for table metadata lock'"]
+        positions = [run.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 2)
+        self.assertIn('mysql --quick -N -B -u"$MYSQL_USER"', run)
+        self.assertIn("NR % r == 0 { system(\"sleep 1\") }", run)
+        # 인위 지연(SLEEP())이 아니라 받는 쪽이 천천히 받아 문장이 활성으로 남는다.
+        self.assertNotIn("SLEEP(", script)
+        self.assertIn("|| { stop_export;", run)
+        self.assertIn("cancel_migration; stop_export", run)
+        # 파드 안 파일 이름에 시나리오 id 가 없다.
+        self.assertIn("export_sh=/tmp/table-export.sh", script)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration",
+                 "DROP COLUMN $column, ALGORITHM=INSTANT", "rm -f"]
+        positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("SET SESSION lock_wait_timeout = 5", cleanup)
+        self.assertRegex(cleanup, r"\n  original\n  ;;")
+        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;', script)
+        # 세션은 문장으로 찾은 id 로만 끝낸다. 행, 인덱스, 다른 표, 권한은 손대지 않는다.
+        self.assertIn("KILL QUERY $id;", script)
+        for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "revoke", "grant ",
+                     "create index", "lock table", "rename"):
+            self.assertNotIn(word, script.lower())
+        # 행 추정 약 174만: 내보내기 시작 조건(행 추정 >= 100 x 360)과 preflight 최소 행.
+        self.assertLessEqual(100 * p["export_seconds"], 1_000_000)
+        self.assertGreaterEqual(p["minimum_rows"], 100 * p["export_seconds"])
+        self.assertLessEqual(p["maximum_sessions"], 90)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-H", {**p, "table": "dispatch_events"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-H", {**p, "export_columns": "*"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-H", {**p, "export_seconds": 3600}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-H", ddl.CONTRACTS["F60-R"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

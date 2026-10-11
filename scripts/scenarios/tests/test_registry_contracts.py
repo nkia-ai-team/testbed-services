@@ -101,7 +101,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 110 → 111. F66-R(후보) 추가. 기존 db.ddl 에 PostgreSQL 잠금 대기열 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 111 → 112. F64-P(후보) 추가. 기존 k8s.env 를 banking api 에 써서 프로파일 수는 그대로.
         # 2026-10-11: 112 → 113. F66-P(후보) 추가. 기존 db.ddl 잠금 대기열 모드에 내보내기 열 목록 인자를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 113)
+        # 2026-10-11: 113 → 114. F60-H(후보) 추가. 기존 db.ddl 에 MySQL 메타데이터 잠금 대기열 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 114)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -250,6 +251,8 @@ class RegistryContractTests(unittest.TestCase):
             "F64-P",
             # 2026-10-11: commerce 재고 이벤트 outbox 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 이벤트 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 outbox INSERT 가 모두 줄을 섬(재고 예약이 재고 행 잠금과 연결을 쥔 채 멈춰 inventory 풀 고갈, 상품 조회와 checkout 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F66-P",
+            # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -614,6 +617,8 @@ class RegistryContractTests(unittest.TestCase):
             "F64-P",
             # 2026-10-11: commerce 재고 이벤트 outbox 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 이벤트 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 outbox INSERT 가 모두 줄을 섬(재고 예약이 재고 행 잠금과 연결을 쥔 채 멈춰 inventory 풀 고갈, 상품 조회와 checkout 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F66-P",
+            # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-H",
             },
         )
         self.assertEqual(
@@ -762,6 +767,8 @@ class RegistryContractTests(unittest.TestCase):
             "F64-P",
             # 2026-10-11: commerce 재고 이벤트 outbox 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 이벤트 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 outbox INSERT 가 모두 줄을 섬(재고 예약이 재고 행 잠금과 연결을 쥔 채 멈춰 inventory 풀 고갈, 상품 조회와 checkout 실패). 새 후보, 설계 강도 1단 고정 evaluation.
             "F66-P",
+            # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F60-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -949,8 +956,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F66-R(후보, 고정 evaluation)이 끝에 붙어 F60-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F64-P(후보, 고정 evaluation)이 끝에 붙어 F57-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F66-P(후보, 고정 evaluation)이 끝에 붙어 F63-R 이 끝 5개에서 빠졌다.
+        # 2026-10-11: F60-H(후보, 고정 evaluation)이 끝에 붙어 F64-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F64-R", "F65-R", "F66-R", "F64-P", "F66-P"])
+                         ["F65-R", "F66-R", "F64-P", "F66-P", "F60-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

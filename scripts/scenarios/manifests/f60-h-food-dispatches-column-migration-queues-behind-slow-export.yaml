@@ -1,0 +1,296 @@
+{
+  "schema_version": "1.0",
+  "id": "F60-H",
+  "slug": "f60-h-food-dispatches-column-migration-queues-behind-slow-export",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.ddl food testbed-mysql-0 내보내기 SELECT(dispatches 자기 행, 행 추정/360 행마다 1초 쉬는 읽기 쪽, 앱 계정) + ALTER TABLE dispatches ADD COLUMN cancel_reason varchar(64) NULL, ALGORITHM=INSTANT(root)(kubectl exec mysql 을 DB 파드 안에서 백그라운드로, 내보내기 메타데이터 잠금 확인 뒤 마이그레이션을 띄우고 'Waiting for table metadata lock' 이 보이면 run 종료, preflight 가 열 없음, 두 세션 없음, lock_wait_timeout≥3600·max_execution_time 0, 메타데이터 잠금 계측 켜짐, 그 표 대기 잠금 0, INSTANT 행 버전 ≤60, 열린 세션 ≤90) (동반 부하 없음, 상주 기준선 loadgen-food 가 주문 생성)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.ddl"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [],
+        "approved_profile_id": "db.ddl"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f60-h",
+              "parameters": {
+                "engine": "mysql",
+                "namespace": "rca-testbed-food",
+                "pod": "testbed-mysql-0",
+                "database": "fooddelivery",
+                "table": "dispatches",
+                "add_column": "cancel_reason",
+                "add_column_type": "varchar(64)",
+                "export_columns": "id, order_id, courier_id, eta_minutes, status, assigned_at",
+                "export_seconds": 360,
+                "drain_seconds": 300,
+                "minimum_rows": 100000,
+                "maximum_sessions": 90
+              },
+              "min_hold": "90s",
+              "settle": "30s",
+              "timeout": "6m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 잠금 대기열 동안 order 는 용량 확인과 배차 요청이 dispatch 에서 막혀(처음 수십 초는 5초 시간 제한과 재시도, 그 뒤는 dispatch 풀 대기 3초, 서킷 열림, dispatch NotReady 의 연결 거부) 503 으로 답한다. order 자신의 표는 dispatches 와 외래 키가 없어 줄에 서지 않는다. 0(연결 불가)은 order 파드가 빠지거나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기 1~6 iter/s 라 주문 생성은 분당 약 12~68건, 30초 창에 6~34건이다. 잠금 대기열 동안 배달원 용량 COUNT 와 배차 INSERT 가 모두 'Waiting for table metadata lock' 으로 줄을 서서 모든 주문 생성이 503 이다(처음 수십 초는 용량 확인 시간 초과로 약 16초 뒤, 그 뒤는 dispatch 풀 대기, 서킷 열림, NotReady 로 곧바로). 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 90s, 3틱. run 이 내보내기(약 360초 동안 활성)를 띄우고 그 메타데이터 잠금이 잡힌 것을 본 뒤 마이그레이션을 띄워, 서버가 마이그레이션을 'Waiting for table metadata lock' 으로 보이면 돌아온다(로컬 mysql 8.0.46 실측 약 2.6초). 그 순간부터 dispatches 를 부르는 모든 질의(용량 COUNT, 배차 INSERT, 배달 목록, 보존 정리, 만료 배치)가 줄을 서서 dispatch Hikari 10개가 수십 초 안에 차고 주문 생성이 503 이다. 판정 관측은 30초마다 갱신돼 min_hold 뒤 약 90초에 3틱이 차므로 판정은 약 3분에 끝나고 잠금 대기열(약 6분) 안에 든다. 성공 뒤 cleanup 이 내보내기가 스스로 끝나기를 기다리므로(drain 300초) 녹화에는 잠금 대기열 전체와 스스로 풀리는 모습이 담긴다. timeout 6m 은 내보내기가 끝나는 시각이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 표 하나의 잠금 대기열이 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "order-down",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 주문 실패가 하류 배차 실패가 아니라 order 연결 실패다. 줄을 서는 것은 dispatches 질의뿐이고 order 의 health 확인은 자기 풀의 isValid() 라 Ready 로 남아야 한다(처음 수십 초 동안 주문 트랜잭션이 용량 확인 응답을 기다리며 연결을 쥐지만 서킷이 열리면 풀린다)"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "order-ready",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "내보내기가 끝나면 마이그레이션이 메타데이터 잠금을 얻어 열을 즉시 더하고(ALGORITHM=INSTANT) 줄 선 질의가 모두 풀린다. 재시작 고리에 있던 dispatch 는 CrashLoopBackOff 지연(최대 수 분)이 남을 수 있어 timeout 10m 이다. cleanup 은 그 뒤 더해진 열을 즉시 지운다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

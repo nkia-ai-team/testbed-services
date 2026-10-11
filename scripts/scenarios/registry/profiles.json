@@ -257,7 +257,8 @@
           "F60-R",
           "F57-P",
           "F66-R",
-          "F66-P"
+          "F66-P",
+          "F60-H"
         ]
       },
       "scenario_parameters": {
@@ -440,6 +441,20 @@
           "drain_seconds": 300,
           "minimum_rows": 10000,
           "maximum_sessions": 70
+        },
+        "F60-H": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "dispatches",
+          "add_column": "cancel_reason",
+          "add_column_type": "varchar(64)",
+          "export_columns": "id, order_id, courier_id, eta_minutes, status, assigned_at",
+          "export_seconds": 360,
+          "drain_seconds": 300,
+          "minimum_rows": 100000,
+          "maximum_sessions": 90
         }
       }
     },

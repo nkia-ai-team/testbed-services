@@ -130,6 +130,20 @@ nullable trace column.  The statements that queue are not reads but the outbox i
 reservation transactions, which already hold the stock row (SELECT ... FOR UPDATE) and their connection, so the
 reservations of the same product wait on that row behind them and the inventory pool drains.  Without
 `export_columns` the arguments and the export are exactly F66-R's.
+
+The MySQL lock-queue path (F60-H) is the same queue on the original's engine.  The migration adds one nullable column
+with ALGORITHM=INSTANT, as the original did: metadata only, but it needs the table's exclusive metadata lock for that
+instant.  A slow export of the table's own rows is running: the export client reads the result row by row (--quick)
+and takes it at a fixed pace, so the statement stays active for about `export_seconds` and keeps its shared metadata
+lock that long.  The ALTER waits ("Waiting for table metadata lock") with the server's lock_wait_timeout (one year by
+default), and because a pending exclusive request outranks new shared requests, every later statement on the table,
+plain reads included, waits behind it.  Run checks that the table can still take an instant change (InnoDB allows 64
+row versions per table; each run adds one and its cleanup one more), starts the export in the background inside the
+database pod as the application account, waits until it holds its lock, starts the migration in the background as
+root and returns once the server shows the migration waiting while the export runs.  The export ends on its own; the
+migration then takes its lock, adds the column and the queue drains.  Cleanup waits for that up to `drain_seconds`
+(ending the export and the migration with KILL QUERY if either is still there), then drops the column, also instantly.
+Rows, indexes and other tables are untouched.
 """
 from __future__ import annotations
 
@@ -295,6 +309,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "export_columns": "id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at",
         "export_seconds": 420, "drain_seconds": 300, "minimum_rows": 10000, "maximum_sessions": 70,
     },
+    # 같은 잠금 대기열을 원본 엔진인 MySQL 에: 배차 실적을 분석 저장소로 옮기는 내보내기(배차 표 자기 행을 한 행씩 받아 일정한
+    # 속도로 내보내 export_seconds 동안 활성)가 도는 중에 취소 사유 열을 ALGORITHM=INSTANT 로 더하는 마이그레이션(메타데이터만)을
+    # 돌린다. ALTER 가 배타 메타데이터 잠금을 못 얻어 기다리고, 그 뒤의 배차 표 질의(용량 COUNT, 배차 INSERT, 목록 읽기)가 모두
+    # 'Waiting for table metadata lock' 으로 줄을 선다. cleanup 은 drain_seconds 까지 기다렸다가(남았으면 KILL QUERY) 열을 즉시 지운다.
+    # 세션이 maximum_sessions 를 넘으면 시작하지 않는다(재시작된 dispatch 파드가 남긴 대기 세션이 max_connections 151 을 넘지 않게).
+    "F60-H": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "dispatches", "add_column": "cancel_reason", "add_column_type": "varchar(64)",
+        "export_columns": "id, order_id, courier_id, eta_minutes, status, assigned_at",
+        "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 100000, "maximum_sessions": 90,
+    },
 }
 
 
@@ -317,6 +342,12 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"],
                 p["foreign_key"], p["referenced_table"], p["referenced_column"], str(p["drain_seconds"]),
                 str(p["minimum_rows"]), str(p["maximum_sessions"])], MYSQL_FK_REMOTE
+    if p["engine"] == "mysql" and "add_column" in p:
+        return kubectl_bash_argv([
+            action, p["namespace"], p["pod"], p["database"], p["table"], p["add_column"], p["add_column_type"],
+            p["export_columns"], str(p["export_seconds"]), str(p["drain_seconds"]), str(p["minimum_rows"]),
+            str(p["maximum_sessions"]),
+        ]), MYSQL_QUEUE_REMOTE
     if p["engine"] == "mysql" and "backfill_index" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
     if p["engine"] == "oracle" and "identity_column" in p:
@@ -1075,6 +1106,107 @@ EOS
   for _ in 1 2 3 4 5; do
     [[ "$(has_column)" == 0 ]] && break
     sql "SET lock_timeout = '5s'; ALTER TABLE $rel DROP COLUMN IF EXISTS $column;" >/dev/null || sleep 2
+  done
+  "${k[@]}" exec "$pod" -- rm -f "$export_sh" "$export_log" "$migration_log"
+  original
+  ;;
+ recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
+ *) exit 2 ;;
+esac
+'''
+
+
+MYSQL_QUEUE_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; ctype="$7"; export_columns="$8"
+export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# Probes run as root; the first MySQL error line goes to stderr so a failed step is readable in the runner log.
+mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+# The two statements as the export job and the migration send them; their sessions are found by this exact text.
+export_sql="SELECT $export_columns FROM $table"
+migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INSTANT"
+export_sh=/tmp/table-export.sh
+export_log=/tmp/table-export.log
+migration_log=/tmp/schema-migration.log
+# An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
+number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
+# A session by its exact statement text, never the probe's own.
+id_of() { mysql "SELECT id FROM information_schema.processlist WHERE id <> CONNECTION_ID() AND info = '$1' ORDER BY id LIMIT 1;"; }
+has_column() { number "$(mysql "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = '$db' AND table_name = '$table' AND column_name = '$column';")"; }
+# Metadata lock requests on the table not granted yet: the queue.
+waiting() { number "$(mysql "SELECT COUNT(*) FROM performance_schema.metadata_locks WHERE object_schema = '$db' AND object_name = '$table' AND lock_status = 'PENDING';")"; }
+original() { n=$(has_column) || return 1; [[ "$n" == 0 && -z "$(id_of "$export_sql")" && -z "$(id_of "$migration_sql")" ]]; }
+rows() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; }
+check() {
+  rows
+  original
+  # A lock wait timeout would make the migration give up instead of queueing, and a statement time limit would end the
+  # export early; the server keeps neither (lock_wait_timeout is a year, max_execution_time 0), as the original had none.
+  [[ "$(number "$(mysql "SELECT @@global.lock_wait_timeout;")")" -ge 3600 ]]
+  [[ "$(mysql "SELECT @@global.max_execution_time;")" == 0 ]]
+  # Without metadata lock instrumentation the queue could not be seen or confirmed.
+  [[ "$(mysql "SELECT enabled FROM performance_schema.setup_instruments WHERE name = 'wait/lock/metadata/sql/mdl';")" == YES ]]
+  [[ "$(waiting)" == 0 ]]
+  # InnoDB keeps at most 64 row versions per table for instant changes; a run and its cleanup use two.
+  versions=$(number "$(mysql "SELECT total_row_versions FROM information_schema.innodb_tables WHERE name = '$db/$table';")")
+  [[ "$versions" -le 60 ]] || { echo "$versions instant row versions on the table, no room for an instant change" >&2; return 1; }
+  # Sessions queued behind the migration stay on the server until it goes through, even after their pod restarts:
+  # keep room under max_connections.
+  sessions=$(number "$(mysql "SELECT COUNT(*) FROM information_schema.processlist;")")
+  [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
+}
+stop_export() { local id; id=$(id_of "$export_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; }
+cancel_migration() { local id; id=$(id_of "$migration_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; }
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  # Pace the export so it stays active for about export_seconds: the reader pauses a second every `rate` rows.
+  est=$(number "$(mysql "SELECT table_rows FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$table';")")
+  (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
+  rate=$(( est / export_seconds + 1 ))
+  "${k[@]}" exec -i "$pod" -- sh -c "cat >$export_sh" <<'EOS'
+mysql --quick -N -B -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$DB" -e "$EXPORT_SQL" | awk -v r="$RATE" 'NR % r == 0 { system("sleep 1") }'
+EOS
+  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background inside the
+  # database pod and outlive run; run only waits to see each one in place, at most ten one-second looks each.
+  "${k[@]}" exec "$pod" -- env DB="$db" EXPORT_SQL="$export_sql" RATE="$rate" SH="$export_sh" LOG="$export_log" \
+    sh -c 'nohup sh "$SH" >"$LOG" 2>&1 </dev/null &'
+  held=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    id=$(id_of "$export_sql")
+    if [[ -n "$id" ]]; then
+      held=$(mysql "SELECT COUNT(*) FROM performance_schema.metadata_locks l JOIN performance_schema.threads t ON t.thread_id = l.owner_thread_id WHERE t.processlist_id = $id AND l.object_schema = '$db' AND l.object_name = '$table' AND l.lock_status = 'GRANTED';")
+      [[ "$held" == 1 ]] && break
+    fi
+    sleep 1
+  done
+  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $("${k[@]}" exec "$pod" -- sh -c "grep -v 'Using a password' $export_log | head -n 1")" >&2; exit 4; }
+  "${k[@]}" exec "$pod" -- env DB="$db" SQL="$migration_sql" LOG="$migration_log" \
+    sh -c 'nohup mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" >"$LOG" 2>&1 </dev/null &'
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ "$(mysql "SELECT COUNT(*) FROM information_schema.processlist m WHERE m.info = '$migration_sql' AND m.state = 'Waiting for table metadata lock' AND EXISTS (SELECT 1 FROM information_schema.processlist e WHERE e.info = '$export_sql');")" == 1 ]] && exit 0
+    sleep 1
+  done
+  cancel_migration; stop_export
+  echo "migration did not queue behind the export: $("${k[@]}" exec "$pod" -- sh -c "grep -v 'Using a password' $migration_log | head -n 1")" >&2
+  exit 4
+  ;;
+ cleanup)
+  # The export ends on its own and the migration then goes through, as in the original; wait for that up to the
+  # drain bound, then end the export and the migration if either is still there.
+  end=$((SECONDS + drain))
+  while [[ -n "$(id_of "$export_sql")" && $SECONDS -lt $end ]]; do sleep 5; done
+  stop_export
+  for _ in $(seq 1 30); do [[ -n "$(id_of "$migration_sql")" ]] || break; sleep 1; done
+  cancel_migration
+  for _ in $(seq 1 30); do [[ -z "$(id_of "$export_sql")$(id_of "$migration_sql")" ]] && break; sleep 1; done
+  [[ -z "$(id_of "$export_sql")$(id_of "$migration_sql")" ]] || { echo "export or migration session still open" >&2; exit 3; }
+  # Dropping the column is instant too; lock_wait_timeout bounds the brief wait behind in-flight transactions.
+  for _ in 1 2 3 4 5; do
+    [[ "$(has_column)" == 0 ]] && break
+    mysql "SET SESSION lock_wait_timeout = 5; ALTER TABLE $table DROP COLUMN $column, ALGORITHM=INSTANT;" >/dev/null || sleep 2
   done
   "${k[@]}" exec "$pod" -- rm -f "$export_sh" "$export_log" "$migration_log"
   original

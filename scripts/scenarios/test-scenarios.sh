@@ -59,7 +59,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 110 → 111. F66-R(후보) 추가.
 # 2026-10-11: 111 → 112. F64-P(후보) 추가.
 # 2026-10-11: 112 → 113. F66-P(후보) 추가.
-[[ "$total" -eq 113 ]]
+# 2026-10-11: 113 → 114. F60-H(후보) 추가.
+[[ "$total" -eq 114 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -169,7 +170,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: ready 85→86. F66-R(commerce 회원 표 열 추가 마이그레이션이 느린 내보내기 질의 뒤에서 잠금을 기다려 회원 표 질의가 모두 줄을 서고 인가된 쓰기 500)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 86→87. F64-P(banking api 설정 롤아웃이 거래 내역 서킷브레이커에 거래 내역 정상 지연보다 낮은 느린 호출 임계를 켬)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 87→88. F66-P(commerce 재고 이벤트 outbox 열 추가 마이그레이션이 느린 이벤트 내보내기 뒤에서 잠금을 기다려 재고 예약이 멈춤)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 88 ]]
+# 2026-10-11: ready 88→89. F60-H(food 배차 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 배차 표 질의가 모두 줄을 서고 모든 새 주문 503)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 89 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -253,7 +255,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 104 → 105. F66-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f66-r)으로 들어왔다.
 # 2026-10-11: 105 → 106. F64-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f64-p)으로 들어왔다.
 # 2026-10-11: 106 → 107. F66-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f66-p)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 107 ]]
+# 2026-10-11: 107 → 108. F60-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f60-h)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 108 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의
