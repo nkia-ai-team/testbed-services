@@ -109,7 +109,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 118 → 119. F67-R(후보) 추가. 기존 db.ddl 에 PostgreSQL 표 정리(VACUUM FULL) 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 119 → 120. F37-H(후보) 추가. 기존 k8s.image release 모드를 banking api 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-11: 120 → 121. F53-H(후보) 추가. 기존 db.ddl MySQL 메타데이터 잠금 대기열 모드를 food payments 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 121)
+        # 2026-10-11: 121 → 122. F67-H(후보) 추가. 기존 db.ddl PostgreSQL 잠금 대기열 모드를 commerce order_items 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 122)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -274,6 +275,8 @@ class RegistryContractTests(unittest.TestCase):
             "F37-H",
             # 2026-10-11: food 결제 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 결제 표 질의가 모두 줄을 섬(payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-H",
+            # 2026-10-11: commerce 주문 품목 표에 열을 더하는 마이그레이션이 같은 표의 느린 매출 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 order_items 문장이 모두 줄을 섬(checkout 마다 품목 INSERT 가 결제 전에 order 연결을 쥔 채 멈춰 order 풀 고갈과 재시작, checkout 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -654,6 +657,8 @@ class RegistryContractTests(unittest.TestCase):
             "F37-H",
             # 2026-10-11: food 결제 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 결제 표 질의가 모두 줄을 섬(payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-H",
+            # 2026-10-11: commerce 주문 품목 표에 열을 더하는 마이그레이션이 같은 표의 느린 매출 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 order_items 문장이 모두 줄을 섬(checkout 마다 품목 INSERT 가 결제 전에 order 연결을 쥔 채 멈춰 order 풀 고갈과 재시작, checkout 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-H",
             },
         )
         self.assertEqual(
@@ -818,6 +823,8 @@ class RegistryContractTests(unittest.TestCase):
             "F37-H",
             # 2026-10-11: food 결제 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 결제 표 질의가 모두 줄을 섬(payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-H",
+            # 2026-10-11: commerce 주문 품목 표에 열을 더하는 마이그레이션이 같은 표의 느린 매출 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 order_items 문장이 모두 줄을 섬(checkout 마다 품목 INSERT 가 결제 전에 order 연결을 쥔 채 멈춰 order 풀 고갈과 재시작, checkout 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1013,8 +1020,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F67-R(후보, 고정 evaluation)이 끝에 붙어 F60-H 가 끝 5개에서 빠졌다.
         # 2026-10-11: F37-H(후보, 고정 evaluation)이 끝에 붙어 F54-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F53-H(후보, 고정 evaluation)이 끝에 붙어 F51-P 가 끝 5개에서 빠졌다.
+        # 2026-10-11: F67-H(후보, 고정 evaluation)이 끝에 붙어 F39-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F39-H", "F63-P", "F67-R", "F37-H", "F53-H"])
+                         ["F63-P", "F67-R", "F37-H", "F53-H", "F67-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -163,6 +163,12 @@ the server shows every session holding its table's ACCESS EXCLUSIVE lock.  The r
 drain.  Cleanup waits for that up to `drain_seconds` and cancels what is still running (a cancelled VACUUM FULL keeps
 the old copy); nothing else needs undoing, because a rewrite keeps every row, index and constraint.  The probes run
 untracked by pg_stat_statements; the maintenance statements are ordinary sessions.
+
+F67-H runs F66-P's queue on the commerce order line table (order_schema.order_items, about 6.4 million rows): the export
+copies the table's own rows out for the sales warehouse, paced by that table's row estimate, and the migration adds a
+nullable line discount column.  The statements that queue are the line inserts order-service sends right after the
+order row inside every checkout transaction, before it calls payment, so each checkout waits holding its order
+connection and the order pool drains; the order row itself, the payment, product and cart tables are untouched.
 """
 from __future__ import annotations
 
@@ -361,6 +367,18 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "add_column_type": "varchar(64)",
         "export_columns": "id, order_id, pg_provider, amount, status, processed_at, settled_at, created_at",
         "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 100000, "maximum_sessions": 90,
+    },
+    # F66-P 와 같은 PostgreSQL 잠금 대기열을 주문 품목 표에: 주문 품목을 데이터 웨어하우스로 옮기는 매출 적재 내보내기(표 자기 행을
+    # 일정한 속도로 내보내 export_seconds 동안 활성)가 도는 중에 품목 할인 금액 열을 더하는 마이그레이션(카탈로그만)을 돌린다.
+    # order 의 checkout 트랜잭션은 주문 행을 넣은 바로 뒤 이 표에 품목을 INSERT 하므로, 그 INSERT 가 ALTER 뒤에 줄을 서며 order
+    # 연결을 쥔 채 멈추고(결제 호출 전) order 풀이 마른다. 주문 행이 든 다른 표(orders)와 상품, 장바구니 표는 그대로다.
+    # 세션이 maximum_sessions 를 넘으면 시작하지 않는다(재시작된 order 파드가 남긴 대기 세션이 max_connections 100 을 넘지 않게).
+    "F67-H": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "order_schema", "table": "order_items", "add_column": "discount_amount",
+        "add_column_type": "numeric(12,2)",
+        "export_columns": "id, order_id, product_id, product_name, quantity, unit_price, subtotal",
+        "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 1000000, "maximum_sessions": 70,
     },
 }
 

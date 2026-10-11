@@ -700,6 +700,36 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F53-H", ddl.CONTRACTS["F60-H"], {})
 
+    def test_postgres_lock_queue_on_the_order_line_table_reuses_the_f66p_path(self) -> None:
+        # F67-H: F66-P 와 같은 PostgreSQL 잠금 대기열을 주문 품목 표에. 표 자기 행을 일정한 속도로 내보내는 동안 품목 할인
+        # 금액 열 추가가 기다리고, checkout 마다 주문 행 뒤에 보내는 품목 INSERT 가 그 뒤에 줄을 선다. 실행기 본문은 F66-P 와 같다.
+        p = ddl.CONTRACTS["F67-H"]
+        ddl.validate("F67-H", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F67-H", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "order_schema", "order_items",
+                                    "discount_amount", "numeric(12,2)", "", "", "360", "300", "1000000", "70",
+                                    "id, order_id, product_id, product_name, quantity, unit_price, subtotal"])
+        self.assertNotIn("F67-H", " ".join(argv))
+        self.assertNotIn("F67-H", body.decode())
+        _, f66p_body = ddl.build_invocation(plan("db.ddl", "F66-P", ddl.CONTRACTS["F66-P"]), "run")
+        self.assertEqual(body, f66p_body, "both run the same remote script; only the arguments differ")
+        # 열 목록은 문장 텍스트로 세션을 찾는 탐침의 작은따옴표 안에 들어가므로 따옴표와 세미콜론이 없어야 한다.
+        self.assertNotIn("'", p["export_columns"])
+        self.assertNotIn(";", p["export_columns"])
+        # 더하는 열은 기본값도 NOT NULL 도 없어 카탈로그만 바꾼다.
+        self.assertNotIn("DEFAULT", p["add_column_type"].upper())
+        self.assertNotIn("NOT NULL", p["add_column_type"].upper())
+        # 약 643만 행: 내보내기 시작 조건(행 추정 >= 100 x 360)과 preflight 최소 행.
+        self.assertGreaterEqual(p["minimum_rows"], 100 * p["export_seconds"])
+        self.assertLessEqual(p["maximum_sessions"], 70)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-H", {**p, "table": "orders"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-H", {**p, "export_seconds": 3600}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-H", ddl.CONTRACTS["F66-P"], {})
+
     def test_postgres_vacuum_full_holds_the_tables_until_the_rewrite_ends_and_nothing_is_undone(self) -> None:
         # F67-R: 운영자가 공간을 되찾으려고 가장 큰 두 표에 VACUUM (FULL) 을 나란히 돌린다. 다시 쓰는 내내 각 표의
         # ACCESS EXCLUSIVE 를 쥐어 결제마다 쓰는 payment_logs INSERT 가 기다린다. 다시 쓰기가 끝나면 스스로 풀린다.

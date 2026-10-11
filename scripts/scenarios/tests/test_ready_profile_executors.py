@@ -1980,6 +1980,8 @@ esac
             "F37-H",
             # 2026-10-11: food 결제 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 결제 표 질의가 모두 줄을 섬(payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F53-H",
+            # 2026-10-11: commerce 주문 품목 표에 열을 더하는 마이그레이션이 같은 표의 느린 매출 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 order_items 문장이 모두 줄을 섬(checkout 마다 품목 INSERT 가 결제 전에 order 연결을 쥔 채 멈춰 order 풀 고갈과 재시작, checkout 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
