@@ -1542,6 +1542,18 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F60-P",
+      "slug": "f60-p-food-dispatch-outbox-table-dropped-by-cancelled-backfill",
+      "profiles": [
+        "db.ddl"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

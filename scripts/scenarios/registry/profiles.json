@@ -305,7 +305,8 @@
           "F60-H",
           "F67-R",
           "F53-H",
-          "F67-H"
+          "F67-H",
+          "F60-P"
         ]
       },
       "scenario_parameters": {
@@ -541,6 +542,16 @@
           "drain_seconds": 300,
           "minimum_rows": 1000000,
           "maximum_sessions": 70
+        },
+        "F60-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "dispatch_outbox_events",
+          "backfill_index": "idx_dispatch_outbox_aggregate",
+          "backfill_column": "aggregate_id",
+          "minimum_rows": 1000
         }
       }
     },

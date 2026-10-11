@@ -28,6 +28,9 @@ statement that names the table fails with ER_NO_SUCH_TABLE (1146) until the held
 is renamed back.  No row is lost, so the inverse is the same rename the other way plus
 dropping the shadow copy.  F48-P runs the same path on the order event outbox table, which
 order-service writes in the same transaction as the order, so order creation is rolled back.
+F60-P runs it on the dispatch event outbox table: dispatch-service catches the failed outbox
+write as non-critical, but the failed repository call has already marked the courier
+assignment's transaction rollback-only, so every assignment is rolled back at commit.
 
 The MySQL dropped-table path (F53-R) is a migration run from a developer's machine whose
 connection pointed at production: its drop step removes one live table.  A real DROP would
@@ -233,6 +236,15 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
         "database": "fooddelivery", "table": "order_outbox_events",
         "backfill_index": "idx_order_outbox_aggregate", "backfill_column": "aggregate_id",
+        "minimum_rows": 1000,
+    },
+    # 같은 보류 표 모드를 배차 이벤트 outbox 표에: dispatch 는 outbox 기록 실패를 'non-critical' 로 잡지만 실패한
+    # 저장소 호출이 배차 트랜잭션을 rollback-only 로 표시해 커밋에서 배차가 되돌려진다. 행 약 11만 6천(24시간 보존,
+    # 25MB)이라 그림자 복사는 2~3초다.
+    "F60-P": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "dispatch_outbox_events",
+        "backfill_index": "idx_dispatch_outbox_aggregate", "backfill_column": "aggregate_id",
         "minimum_rows": 1000,
     },
     # 운영 DB 를 가리킨 로컬 마이그레이션의 표 지우기: orders 를 DPM 이 보지 않는 시스템 스키마 mysql 로

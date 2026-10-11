@@ -119,7 +119,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 47 → 48. F53-H(food 결제 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 모든 새 주문이 결제 단계에서 502) 후보 추가.
         # 2026-10-11: 48 → 47. F42-R 정식 승격(녹화 case-f42-r-v3-26143861).
         # 2026-10-11: 47 → 48. F67-H(commerce 주문 품목 표 열 추가 마이그레이션이 느린 매출 내보내기 뒤에서 잠금을 기다려 checkout 마다 품목 INSERT 가 order 연결을 쥔 채 멈추고 checkout 5xx) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 48)
+        # 2026-10-11: 48 → 49. F60-P(food 배차 이벤트 outbox 표를 취소된 인덱스 백필이 치워 배차가 커밋에서 되돌려지고 모든 새 주문 503) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 49)
 
 
 class RecordingQueueTests(unittest.TestCase):

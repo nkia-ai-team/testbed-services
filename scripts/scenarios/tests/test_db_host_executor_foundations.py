@@ -139,6 +139,22 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F48-P", {**p, "table": "orders"}, {})
 
+    def test_mysql_cancelled_backfill_on_dispatch_outbox_uses_the_same_hold_script(self) -> None:
+        # F60-P: 같은 보류 표 모드를 배차 이벤트 outbox 표에 쓴다. 스크립트는 F48-R, F48-P 와 같고 계약(표, 인덱스)만 다르다.
+        p = ddl.CONTRACTS["F60-P"]
+        ddl.validate("F60-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F60-P", p), "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
+                                    "dispatch_outbox_events", "idx_dispatch_outbox_aggregate", "aggregate_id", "1000"])
+        self.assertNotIn("F60-P", argv)
+        self.assertNotIn("F60-P", body.decode())
+        _, f48p_body = ddl.build_invocation(plan("db.ddl", "F48-P", ddl.CONTRACTS["F48-P"]), "run")
+        self.assertEqual(body, f48p_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-P", ddl.CONTRACTS["F48-P"], {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F60-P", {**p, "table": "dispatches"}, {})
+
     def test_mysql_dropped_table_moves_out_of_the_schema_and_back(self) -> None:
         # F53-R: 운영을 가리킨 로컬 마이그레이션의 표 지우기. 진짜 DROP 대신 DPM 이 보지 않는 시스템 스키마 mysql 로
         # 옮기고(RENAME 한 문장), cleanup 은 같은 RENAME 을 반대로 한다. 그림자 표나 _vt_ 이름이 없다.
