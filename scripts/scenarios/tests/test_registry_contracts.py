@@ -97,7 +97,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 106 → 107. F57-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 시퀀스 되감기 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 107 → 108. F63-R(후보) 추가. 기존 k8s.image release 모드를 banking api 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-11: 108 → 109. F64-R(후보) 추가. 기존 k8s.env 를 commerce api-gateway 에 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 109)
+        # 2026-10-11: 109 → 110. F65-R(후보) 추가. 기존 k8s.env 를 banking transfer 에 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 110)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -238,6 +239,8 @@ class RegistryContractTests(unittest.TestCase):
             "F63-R",
             # 2026-10-11: commerce api-gateway 설정 롤아웃이 order 라우트 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계(30ms)를 켜 멀쩡한 order 앞에서 서킷이 계속 열림. 새 후보, 설계 강도 1단 고정 evaluation.
             "F64-R",
+            # 2026-10-11: banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름(DB_SERVICE=XEPDB1)을 다시 넣어 새 파드가 ORA-12514 로 Oracle 에 붙지 못하고 maxSurge 0 이라 transfer 가 빔(이체·거래 내역·commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -594,6 +597,8 @@ class RegistryContractTests(unittest.TestCase):
             "F63-R",
             # 2026-10-11: commerce api-gateway 설정 롤아웃이 order 라우트 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계(30ms)를 켜 멀쩡한 order 앞에서 서킷이 계속 열림. 새 후보, 설계 강도 1단 고정 evaluation.
             "F64-R",
+            # 2026-10-11: banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름(DB_SERVICE=XEPDB1)을 다시 넣어 새 파드가 ORA-12514 로 Oracle 에 붙지 못하고 maxSurge 0 이라 transfer 가 빔(이체·거래 내역·commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-R",
             },
         )
         self.assertEqual(
@@ -734,6 +739,8 @@ class RegistryContractTests(unittest.TestCase):
             "F63-R",
             # 2026-10-11: commerce api-gateway 설정 롤아웃이 order 라우트 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계(30ms)를 켜 멀쩡한 order 앞에서 서킷이 계속 열림. 새 후보, 설계 강도 1단 고정 evaluation.
             "F64-R",
+            # 2026-10-11: banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름(DB_SERVICE=XEPDB1)을 다시 넣어 새 파드가 ORA-12514 로 Oracle 에 붙지 못하고 maxSurge 0 이라 transfer 가 빔(이체·거래 내역·commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -917,8 +924,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F57-P(후보, 고정 evaluation)이 끝에 붙어 F59-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F63-R(후보, 고정 evaluation)이 끝에 붙어 F59-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F64-R(후보, 고정 evaluation)이 끝에 붙어 F36-H 가 끝 5개에서 빠졌다.
+        # 2026-10-11: F65-R(후보, 고정 evaluation)이 끝에 붙어 F41-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F41-H", "F60-R", "F57-P", "F63-R", "F64-R"])
+                         ["F60-R", "F57-P", "F63-R", "F64-R", "F65-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

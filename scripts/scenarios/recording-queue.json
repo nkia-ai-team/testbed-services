@@ -353,6 +353,15 @@
       "requested_at": "2026-10-11",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F65-R",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증. 녹화 검증: transfer 새 파드가 Running 인데 Ready 가 못 되고 core-banking-transfer ERROR 'ORA-12514 ... Service XEPDB1 is not registered with the listener' 가 있으며, 같은 구간 account·ledger 의 ORA 오류와 잔액 조회 실패가 없음(transfer 의 연결 설정만 낡음)",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-11",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

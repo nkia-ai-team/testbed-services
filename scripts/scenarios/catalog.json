@@ -1379,6 +1379,19 @@
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F65-R",
+      "slug": "f65-r-banking-transfer-stale-db-service-rollout",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": ""
     }
   ]
 }

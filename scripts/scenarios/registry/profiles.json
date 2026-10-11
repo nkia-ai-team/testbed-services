@@ -628,7 +628,8 @@
           "F41-H",
           "F57-P",
           "F63-R",
-          "F64-R"
+          "F64-R",
+          "F65-R"
         ],
         "allowed_entry_urls": [
           "http://192.168.122.77:30080",
@@ -689,7 +690,7 @@
           "maximum": 180
         },
         "duration_pattern": "^[1-9][0-9]*[sm]$",
-        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H|33-P|41-R|42-R|43-R|44-R|44-P|47-R|48-R|49-R|33-H|49-H|50-R|51-R|43-P|40-H|52-R|53-R|42-P|35-H|32-P|54-R|55-R|56-R|51-H|57-R|23-P|58-R|59-R|59-P|36-H|41-H|57-P|63-R|64-R)$"
+        "tag_pattern": "^scenario_id=F(07-H|01-R|01-H|06-R|08-H|09-P|11-R|04-R|12-H|05-R|05-H|07-P|08-P|09-R|01-P|08-G|15-G|06-H|03-P|09-H|05-P|15-R|03-H|02-P|17-R|18-P|19-P|19-S|16-H|20-R|20-P|20-Q|25-H|23-R|17-P|21-Q|21-P|24-Q|03-G|01-G|05-G|11-G|04-H|06-P|02-H|10-H|10-P|15-H|15-P|15-T2|30-R|32-R|33-R|35-R|36-R|37-R|38-R|39-R|40-R|17-H|32-H|33-P|41-R|42-R|43-R|44-R|44-P|47-R|48-R|49-R|33-H|49-H|50-R|51-R|43-P|40-H|52-R|53-R|42-P|35-H|32-P|54-R|55-R|56-R|51-H|57-R|23-P|58-R|59-R|59-P|36-H|41-H|57-P|63-R|64-R|65-R)$"
       },
       "scenario_parameters": {
         "F07-H": {
@@ -1736,6 +1737,17 @@
           "scenario_tag": "scenario_id=F64-R",
           "seed": 6464,
           "baseline_unit": "loadgen-commerce"
+        },
+        "F65-R": {
+          "target_rps": 5,
+          "ramp_up": "2m",
+          "hold": "21m",
+          "ramp_down": "15s",
+          "entry_url": "http://192.168.122.77:30082",
+          "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
+          "scenario_tag": "scenario_id=F65-R",
+          "seed": 6565,
+          "baseline_unit": "loadgen-banking"
         }
       }
     },
@@ -1861,7 +1873,8 @@
           "F32-R",
           "F39-R",
           "F32-H",
-          "F64-R"
+          "F64-R",
+          "F65-R"
         ]
       },
       "scenario_parameters": {
@@ -3149,6 +3162,127 @@
             {
               "name": "SPRING_APPLICATION_JSON",
               "value": "{\"resilience4j\":{\"circuitbreaker\":{\"instances\":{\"order\":{\"slow-call-duration-threshold\":\"30ms\",\"slow-call-rate-threshold\":50}}}}}"
+            }
+          ]
+        },
+        "F65-R": {
+          "namespace": "rca-testbed-banking",
+          "deployment": "testbed-transfer",
+          "container": "transfer-service",
+          "baseline": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER_PASSWORD",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx512m"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "core-banking-transfer"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.200.109:14318"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
+            }
+          ],
+          "fault": [
+            {
+              "name": "DB_USER",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_PASS",
+              "valueFrom": {
+                "secretKeyRef": {
+                  "key": "APP_USER_PASSWORD",
+                  "name": "oracle-secret"
+                }
+              }
+            },
+            {
+              "name": "DB_SERVICE",
+              "value": "XEPDB1"
+            },
+            {
+              "name": "JAVA_TOOL_OPTIONS",
+              "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx512m"
+            },
+            {
+              "name": "OTEL_SERVICE_NAME",
+              "value": "core-banking-transfer"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+              "value": "http://192.168.200.109:14318"
+            },
+            {
+              "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+              "value": "grpc"
+            },
+            {
+              "name": "OTEL_RESOURCE_ATTRIBUTES",
+              "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
+            },
+            {
+              "name": "OTEL_TRACES_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRICS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_LOGS_EXPORTER",
+              "value": "otlp"
+            },
+            {
+              "name": "OTEL_METRIC_EXPORT_INTERVAL",
+              "value": "10000"
             }
           ]
         }

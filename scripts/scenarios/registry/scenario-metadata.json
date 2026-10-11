@@ -10207,6 +10207,213 @@
      }
     ]
    }
+  },
+  "F65-R": {
+   "title": "Routine infrastructure update re-applies a stale database connection setting to the banking transfer-service: the replacement pod cannot reach its Oracle service, transfer goes unavailable, and banking transfers and commerce checkout fail with 502",
+   "description": "A routine update of the banking transfer-service Deployment (testbed-transfer) re-applies the deployment definition kept in infrastructure code, which still pins the Oracle connection to an outdated service name: the container gets an explicit env DB_SERVICE=XEPDB1. The live connection setting is FREEPDB1 and comes from the shared ConfigMap service-config (the PDB of the Oracle Free instance); an explicit env wins over envFrom, so only transfer's JDBC URL becomes jdbc:oracle:thin:@//testbed-oracle:1521/XEPDB1. The Deployment's strategy is maxSurge 0 / maxUnavailable 1 (the canonical manifest sets it for transfer), so the rollout removes the only running pod first and replaces it with one that loads the stale setting, leaving no healthy instance. The new container starts the application (Spring Boot, about 30 s), but every connection attempt is rejected by the Oracle listener with 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener at host ...': Hibernate's SqlExceptionHelper logs WARN 'SQL Error: 12514, SQLState: 08006' and ERROR with that ORA-12514 message, Hibernate logs HHH000342 'Could not obtain connection to query metadata' at startup, and the outbox relay and the other schedulers log 'Unexpected error occurred in scheduled task' with the same ORA-12514 about once a second. /actuator/health reports db DOWN (503, about 2 s per check), so the startup probe (/actuator/health, timeout 1 s, 30 x 5 s) fails, the pod never becomes Ready and kubelet restarts the container after 150 s, again and again. The testbed-transfer Service has no endpoints from the moment the old pod terminates: account's transfer call (api → account → transfer) fails with 'Connection refused', retries, opens its transferClient breaker and answers 502; api's transfer and history calls fail the same way; commerce-payment's settlement transfer is refused, so commerce checkout fails with 502. Balance lookups and account lists (nginx → account → Oracle FREEPDB1), ledger and Oracle itself are healthy. This reconstructs E2B's 2026-06-25 outage, where production database credentials had been changed directly in production without updating infrastructure-as-code, and a later routine infrastructure update re-applied the stale configuration, publishing a database secret with an outdated connection string; the restart that followed reloaded the bad configuration on every API instance at once, none could connect to the database, and the service was down until the correct connection string was restored.",
+   "cause": "Routine rollout of testbed-transfer (banking) re-applies an explicit env DB_SERVICE=XEPDB1 from stale infrastructure code, overriding the ConfigMap value FREEPDB1 → maxSurge 0 removes the only healthy pod first → the new pod's JDBC URL names a service the Oracle listener does not know, every connection fails with ORA-12514, health reports db DOWN (503), the startup probe fails and the pod never becomes Ready (restarted every 150 s) → testbed-transfer has no endpoints → account's transfer call, api's transfer and history calls and commerce-payment's settlement transfer are refused → banking POST /api/transfers 502 and commerce checkout 502 until the setting is removed.",
+   "injection_summary": "The existing k8s.env executor replaces the env array of container transfer-service in Deployment testbed-transfer (rca-testbed-banking) with the same array plus one entry, DB_SERVICE=XEPDB1, and lets the Deployment roll out (replicas 1, maxSurge 0, maxUnavailable 1, so the old pod is removed before the new one is ready). The ConfigMap, the Secret, the image, the probes, the Services, Oracle and the other banking services are not touched; the stale value only fails at the Oracle listener, so no login is attempted with the BANKING account and no password is involved. A north-south 5 rps companion (core-banking transfer-heavy-surge.js: transfer 40%, balance 35%, history 15%, account list 10%) drives the banking entry point (30082) on top of the resident baseline load. Cleanup restores the original env array and waits until the rollout is available. No value carries the scenario id.",
+   "user_impact": "Money transfers through the banking gateway (POST /api/transfers → api → account → transfer) and transaction history (GET /api/transfers → api → transfer) fail with 502, quickly, because the connection is refused and the circuit breakers open. Commerce checkouts fail with 502 because the banking settlement transfer is refused, and the commerce baseline's direct transfers to transfer's NodePort are refused too. Balance lookups and account lists keep returning 200. The transfer pod is Running but never Ready and its container is restarted every few minutes; transfer logs a stream of ORA-12514 errors naming the service XEPDB1.",
+   "distinguishing_evidence": "Decisive evidence is the pair 'testbed-transfer rollout with a new explicit DB_SERVICE' and 'transfer's own ORA-12514 naming XEPDB1'. KCM records the rollout (Deployment testbed-transfer ScalingReplicaSet: old ReplicaSet to 0 and new one to 1 in the same second) and the new ReplicaSet's captured spec in kcm_resources_history carries the explicit env DB_SERVICE=XEPDB1, while none of the 303 banking ReplicaSet records on file has an explicit DB_SERVICE because the value always comes from the ConfigMap (FREEPDB1). Within about 30 s the new transfer container logs its normal startup lines and then WARN 'SQL Error: 12514, SQLState: 08006' with ERROR 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener', repeated about every second by the schedulers; no log in the retention mentions ORA-12514 or XEPDB1 before. KCM then shows Unhealthy 'Startup probe failed: ... statuscode: 503' (or context deadline exceeded) and Killing 'failed startup probe, will be restarted' for the transfer pod, which have never occurred in the banking namespace. account and api log 'Connection refused' to http://testbed-transfer:8082, while account keeps answering balance lookups from the same Oracle instance (service FREEPDB1), ledger keeps writing, and no other banking service logs any ORA error, so Oracle, the BANKING account and the listener are healthy; only transfer's connection setting is wrong. This separates it from F17-H (same empty-endpoint symptom, but the container never starts, ErrImageNeverPull, no transfer logs), F17-R (readiness probe path 404, no DB errors) and F35-R (ORA-28000 account locked on the database side, every banking service fails and balance lookups break).",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "config",
+    "target_id": "core-banking-transfer",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking transfer-service 의 배포 설정(Deployment testbed-transfer 컨테이너 env 의 DB_SERVICE)이다. 일상 갱신이 다시 적용한 배포 정의가 Oracle 연결 서비스 이름을 옛 값 XEPDB1 로 고정해, 공용 ConfigMap service-config 의 실제 값 FREEPDB1 을 덮어쓴다(명시 env 가 envFrom 보다 앞선다). transfer 의 JDBC URL(application.yml spring.datasource.url = jdbc:oracle:thin:@//${DB_HOST}:${DB_PORT}/${DB_SERVICE})이 리스너가 모르는 서비스를 가리켜, 모든 연결이 인증 전에 ORA-12514 로 거절된다. 정본 전략 maxSurge 0 / maxUnavailable 1 이 옛 파드를 먼저 내리므로 건강한 인스턴스가 남지 않는다(원본의 '모든 인스턴스가 한꺼번에 나쁜 설정을 다시 읽음'). 새 파드는 앱이 뜨지만 health 의 db 가 DOWN(503)이라 기동 프로브가 실패하고 Ready 가 되지 못해 Service 엔드포인트가 빈다. 그 뒤 transfer 로 가는 모든 연결(account 의 이체 실행, api 의 이체와 거래 내역, commerce-payment 의 정산 이체, commerce 기준선의 NodePort 직행 이체)이 거절된다. 원칙 6: 호출자들의 요청은 늘 하던 그대로 정당하고, Oracle 과 BANKING 계정, 리스너도 다른 서비스(account, ledger)에 정상 응답한다. 연결을 망가뜨린 것은 transfer 자신의 배포 설정이므로 근본과 계기가 같은 곳(transfer 배포)이다. 왜 인프라 코드에 옛 값이 남았는지(드리프트)는 원본처럼 정답이 요구하지 않는다. target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 rca-testbed-banking Deployment testbed-transfer ScalingReplicaSet(옛 0, 새 1, 같은 초)과 KCM 이 새 ReplicaSet 을 처음 볼 때 남기는 스펙(PG kcm_resources_history.yaml)의 명시 env {\"name\":\"DB_SERVICE\",\"value\":\"XEPDB1\"}(그 전 banking ReplicaSet 레코드 303건 중 명시 DB_SERVICE 0건) ② 새 transfer 컨테이너의 기동 로그 뒤 WARN 'SQL Error: 12514, SQLState: 08006' 과 ERROR 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener at host ...'(Hibernate 메타데이터, 배치 예외의 원인으로 약 1초마다, 로그 보존 안에서 ORA-12514 와 XEPDB1 은 평시 0건) ③ transfer 파드의 Unhealthy 'Startup probe failed' 503 과 Killing 'failed startup probe'(banking 네임스페이스에서 처음) ④ 그 직후 account, api, commerce-payment 의 testbed-transfer 'Connection refused' 와 서킷 열림 로그 ⑤ 잔액 조회(nginx → account → Oracle FREEPDB1)는 계속 200 이고 account, ledger 에 ORA 오류가 없다. 원본 사후 보고처럼 '갱신이 다시 적용한 낡은 DB 연결 설정 때문에 서비스가 DB 에 붙지 못했다'가 정답의 층위다.",
+    "code_anchor": [
+     "core-banking/k8s/22-transfer-service.yaml:14-18 (strategy maxUnavailable 1, maxSurge 0 — 옛 파드가 새 파드보다 먼저 내려가는 정본 전제. 기본 전략이면 Ready 가 못 된 새 파드 옆에 옛 파드가 남는다)",
+     "core-banking/k8s/22-transfer-service.yaml:40-42 (envFrom service-config — DB_SERVICE 의 평시 출처. 주입은 같은 컨테이너의 env(45~)에 같은 이름을 더해 덮어쓴다)",
+     "core-banking/k8s/02-configmaps.yaml:8-10 (DB_HOST testbed-oracle, DB_PORT 1521, DB_SERVICE FREEPDB1 — 평시 값)",
+     "core-banking/transfer-service/src/main/resources/application.yml:8 (spring.datasource.url = jdbc:oracle:thin:@//${DB_HOST}:${DB_PORT}/${DB_SERVICE} — DB_SERVICE 가 JDBC URL 의 서비스 이름이 된다)",
+     "core-banking/transfer-service/src/main/resources/application.yml:12-15 (Hikari maximum-pool-size 15, connection-timeout 3000)",
+     "core-banking/k8s/22-transfer-service.yaml:81-86 (startupProbe /actuator/health, failureThreshold 30, periodSeconds 5, 매니페스트에 timeoutSeconds 없음 = 1초 — db DOWN 이면 150초 뒤 컨테이너 재시작)",
+     "core-banking/k8s/22-transfer-service.yaml:87-93 (readinessProbe /actuator/health, DB 포함 — db DOWN 이면 NotReady, 엔드포인트에서 빠짐)",
+     "core-banking/shop-common/src/main/java/com/corebanking/common/outbox/OutboxRelay.java:56 (@Scheduled 2초 — DB 연결 실패 시 'Unexpected error occurred in scheduled task' 로 ORA-12514 를 되풀이해 남김)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:28-58 (executeTransfer — 'Transfer service call failed for order {}: {}' 후 BAD_GATEWAY, 서킷 열림 fallback 'Transfer service circuit open/exhausted')"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-transfer(replicas 1, RollingUpdate maxSurge 0 / maxUnavailable 1, progressDeadlineSeconds 600, envFrom ConfigMap service-config, env DB_USER/DB_PASS 는 Secret oracle-secret, startupProbe /actuator/health 5초 × 30 timeout 1초, readiness /actuator/health, liveness /actuator/health/liveness, 109 kubectl 2026-10-11 확인). StatefulSet testbed-oracle(Oracle AI Database 26ai Free 23.26.2, PDB 서비스 FREEPDB1, tb-w2). 104 실측(2026-10-11, 같은 소스로 빌드한 transfer jar 를 DB_SERVICE=XEPDB1 로 109 Oracle 리스너 NodePort 에 붙임): 앱은 11.5초에 Started, 연결 시도마다 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener at host ... port ...', /actuator/health 503(db DOWN, 응답 약 2.1초), liveness 200, POST /api/transfers 500, ERROR 로그 약 1초마다. 리스너 단계에서 거절되어 로그인 시도가 없다(BANKING 의 실패 로그인 지연 _sys_logon_delay=1 과 무관)."
+   },
+   "must_support": [
+    "testbed-transfer 롤아웃 KCM 이벤트(Deployment testbed-transfer ScalingReplicaSet 두 줄: 옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet 스펙(PG kcm_resources_history.yaml)에 명시 env DB_SERVICE=XEPDB1 이 있고 그 전 banking ReplicaSet 레코드 303건에는 명시 DB_SERVICE 가 없다(값은 늘 ConfigMap 의 FREEPDB1)",
+    "새 transfer 컨테이너가 기동 로그('Starting TransferServiceApplication', 'HikariPool-1 - Starting...') 뒤 WARN 'SQL Error: 12514, SQLState: 08006' 과 ERROR 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener' 를 Hibernate HHH000342, 배치 예외 'Unexpected error occurred in scheduled task' 와 함께 고장 내내 되풀이한다. 로그 보존 안에서 ORA-12514 와 XEPDB1 은 평시 0건이다",
+    "transfer 파드가 Running 이지만 Ready 가 되지 못한다: KCM Unhealthy 'Startup probe failed: ... statuscode: 503'(또는 context deadline exceeded)와 Killing 'failed startup probe, will be restarted', 재시작이 이어진다(banking 네임스페이스에서 처음)",
+    "core-banking-account, core-banking-api 의 'I/O error on ... request for \"http://testbed-transfer:8082/api/transfers\": Connection refused' 와 서킷 열림 로그가 롤아웃 직후 생기고, 두 서비스 서버 스팬(POST /api/accounts/transfer, POST/GET /api/transfers)이 502 로 끝나 오류율이 평시 0 에서 오른다. commerce 정산(commerce-payment → transfer)도 실패해 commerce checkout 이 502 다",
+    "동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.5 이상으로 오르고, 잔액 조회(step get) 실패율은 평시 0 그대로다"
+   ],
+   "must_rule_out": [
+    "Oracle 이나 BANKING 계정 장애가 아님(F35-R, F25-H 꼴): 같은 Oracle 인스턴스의 FREEPDB1 로 account 가 잔액 조회에 계속 200 으로 답하고 ledger 도 계속 쓰며, account, ledger 에 ORA 오류가 없다. 오류는 transfer 하나에서만, 인증 전 리스너 단계의 ORA-12514(알 수 없는 서비스 XEPDB1)다. 계정 잠금이면 모든 banking 서비스가 ORA-28000 을 남긴다",
+    "이미지 부재(F17-H)가 아님: 새 ReplicaSet 의 이미지는 core-banking-transfer:latest 그대로이고, 컨테이너가 떠서 기동 로그와 ORA 오류를 남기며 재시작한다. F17-H 는 ErrImageNeverPull 로 컨테이너가 만들어지지 않아 transfer 로그가 없다",
+    "readiness 프로브 오설정(F17-R)이 아님: 프로브 정의는 그대로이고 health 가 503(db DOWN)이다. F17-R 은 프로브 경로가 404 이고 DB 오류가 없다",
+    "결함 있는 새 코드가 아님: 이미지와 코드가 그대로이고 새 ReplicaSet 스펙에서 바뀐 것은 env 한 줄(DB_SERVICE)이다. 같은 이미지가 cleanup 뒤 FREEPDB1 로 정상 기동한다",
+    "account, api 장애가 아님: 같은 account 파드가 잔액 조회에 200 으로 답하고, 실패 대상 URL 이 모두 testbed-transfer 다",
+    "부하 증가가 아님: 실패는 거절된 연결과 DB 연결 불가이고 같은 부하를 받는 잔액 조회는 정상이며, 실패는 부하 곡선이 아니라 롤아웃 시각에 맞춰 0 에서 거의 1 로 뛴다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F17-H (같은 증상: transfer 의 maxSurge 0 롤아웃이 옛 파드를 먼저 내리고 새 파드가 서지 못해 엔드포인트가 빔. 원인은 노드에 없는 이미지 태그라 컨테이너가 생기지 않고 ErrImageNeverPull, transfer 로그가 없다. F65-R 은 컨테이너가 떠서 XEPDB1 을 적은 ORA-12514 를 남기고 바뀐 것은 env 한 줄이다)",
+     "F17-R (같은 증상이지만 readinessProbe 경로 오설정이라 health 경로가 404 이고 DB 오류가 없다)",
+     "F35-R (같은 banking 이체 502 와 ORA 오류지만 DB 쪽 계정 잠금(ORA-28000)이라 account, transfer, ledger 가 모두 실패하고 잔액 조회도 깨진다. F65-R 은 transfer 하나의 연결 설정만 틀려 다른 서비스는 같은 Oracle 에 정상으로 붙는다)",
+     "F39-R (같은 banking 이체 502 이고 같은 꼴(설정 롤아웃의 명시 env 가 ConfigMap 값을 덮어씀)이지만, 바뀐 것은 account 의 하류 HTTP 주소라 account 는 Ready 이고 Connect timed out 이 난다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-transfer",
+     "banking-transfer",
+     "testbed-transfer"
+    ],
+    "partial": [
+     "core-banking-account",
+     "core-banking-api",
+     "commerce-payment"
+    ]
+   },
+   "title_ko": "일상 인프라 갱신이 banking transfer-service 에 낡은 DB 연결 설정을 다시 적용: 교체된 파드가 Oracle 서비스에 붙지 못해 transfer 가 비고, banking 이체와 commerce checkout 이 502 가 된다",
+   "description_ko": "banking transfer-service Deployment(testbed-transfer)의 일상 갱신이 인프라 코드에 남아 있던 배포 정의를 다시 적용하는데, 그 정의는 Oracle 연결을 옛 서비스 이름으로 고정하고 있다: 컨테이너에 명시 env DB_SERVICE=XEPDB1 이 들어간다. 실제 연결 설정은 FREEPDB1(Oracle Free 인스턴스의 PDB)이고 공용 ConfigMap service-config 에서 온다. 명시 env 가 envFrom 보다 앞서므로 transfer 의 JDBC URL 만 jdbc:oracle:thin:@//testbed-oracle:1521/XEPDB1 이 된다. 이 Deployment 의 전략은 maxSurge 0 / maxUnavailable 1(정본 매니페스트가 transfer 에 둔 값)이라, 롤아웃이 하나뿐인 파드를 먼저 내리고 낡은 설정을 읽는 파드로 바꿔 건강한 인스턴스가 하나도 남지 않는다. 새 컨테이너는 애플리케이션을 띄우지만(Spring Boot, 약 30초) 모든 연결 시도가 Oracle 리스너에서 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener at host ...' 로 거절된다: Hibernate SqlExceptionHelper 가 WARN 'SQL Error: 12514, SQLState: 08006' 과 그 ORA-12514 문장의 ERROR 를, 기동 때 HHH000342 'Could not obtain connection to query metadata' 를 남기고, outbox 릴레이와 다른 배치가 같은 ORA-12514 로 'Unexpected error occurred in scheduled task' 를 약 1초마다 남긴다. /actuator/health 가 db DOWN(503, 한 번에 약 2초)이라 기동 프로브(/actuator/health, 제한 1초, 5초 × 30회)가 실패하고, 파드는 Ready 가 되지 못하며 kubelet 이 150초마다 컨테이너를 다시 띄운다. 옛 파드가 끝나는 순간부터 testbed-transfer Service 의 엔드포인트가 비어: account 의 이체 호출(api → account → transfer)이 'Connection refused' 로 실패하고 재시도, 서킷 transferClient 열림 끝에 502, api 의 이체와 거래 내역 호출도 같은 식으로 실패하고, commerce-payment 의 정산 이체가 거절되어 commerce checkout 이 502 가 된다. 잔액 조회와 계좌 목록(nginx → account → Oracle FREEPDB1), ledger, Oracle 자체는 정상이다. E2B 2026-06-25 장애(운영 DB 자격 증명을 인프라 코드 갱신 없이 운영에서 직접 바꿨고, 뒤의 일상 인프라 갱신이 낡은 설정을 다시 적용해 낡은 연결 문자열을 가진 DB 비밀값을 내보냄. 뒤이은 재시작으로 모든 API 인스턴스가 한꺼번에 나쁜 설정을 읽어 DB 에 붙지 못했고, 올바른 연결 문자열을 되돌릴 때까지 서비스가 내려감)의 재구성이다.",
+   "cause_ko": "testbed-transfer(banking) 일상 롤아웃이 낡은 인프라 코드의 명시 env DB_SERVICE=XEPDB1 을 다시 넣어 ConfigMap 값 FREEPDB1 을 덮어씀 → maxSurge 0 이 하나뿐인 건강한 파드를 먼저 내림 → 새 파드의 JDBC URL 이 Oracle 리스너가 모르는 서비스를 가리켜 모든 연결이 ORA-12514, health 가 db DOWN(503), 기동 프로브 실패로 Ready 가 되지 못함(150초마다 재시작) → testbed-transfer 엔드포인트가 빔 → account 의 이체, api 의 이체와 거래 내역, commerce-payment 의 정산 이체가 거절 → 설정을 걷어낼 때까지 banking POST /api/transfers 502, commerce checkout 502.",
+   "injection_summary_ko": "기존 k8s.env executor 가 rca-testbed-banking 의 Deployment testbed-transfer 컨테이너 transfer-service 의 env 배열을, 같은 배열에 한 줄 DB_SERVICE=XEPDB1 을 더한 것으로 바꾸고 롤아웃에 맡긴다(replicas 1, maxSurge 0, maxUnavailable 1 이라 새 파드가 준비되기 전에 옛 파드가 내려간다). ConfigMap, Secret, 이미지, 프로브, Service, Oracle, 다른 banking 서비스는 건드리지 않는다. 낡은 값은 Oracle 리스너 단계에서 거절되어 BANKING 계정으로 로그인을 시도하지도 않고 비밀번호와 무관하다. north-south 5rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 상주 기준선 위에 banking 진입점(30082)으로 요청을 더한다. cleanup 은 원래 env 배열을 되돌리고 롤아웃이 끝나기를 기다린다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "banking 게이트웨이를 거치는 이체(POST /api/transfers → api → account → transfer)와 거래 내역(GET /api/transfers → api → transfer)이 502 로, 연결이 바로 거절되고 서킷이 열려 빠르게 실패한다. commerce checkout 은 은행 정산 이체가 거절되어 502 가 되고, commerce 기준선의 transfer NodePort 직행 이체도 거절된다. 잔액 조회와 계좌 목록은 200 그대로다. transfer 파드는 Running 이지만 Ready 가 되지 못하고 컨테이너가 몇 분마다 다시 뜨며, transfer 는 서비스 XEPDB1 을 적은 ORA-12514 오류를 끊임없이 남긴다.",
+   "distinguishing_evidence_ko": "결정 증거는 '새 명시 DB_SERVICE 를 가진 testbed-transfer 롤아웃'과 'transfer 자신이 남긴, XEPDB1 을 적은 ORA-12514' 의 쌍이다. KCM 이 롤아웃(Deployment testbed-transfer ScalingReplicaSet: 옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초)을 남기고, kcm_resources_history 에 잡힌 새 ReplicaSet 스펙에 명시 env DB_SERVICE=XEPDB1 이 있다. 기록에 있는 banking ReplicaSet 303건에는 명시 DB_SERVICE 가 하나도 없다(값은 늘 ConfigMap 의 FREEPDB1). 약 30초 안에 새 transfer 컨테이너가 평소 기동 로그를 남긴 뒤 WARN 'SQL Error: 12514, SQLState: 08006' 과 ERROR 'ORA-12514: Cannot connect to database. Service XEPDB1 is not registered with the listener' 를 남기고, 배치가 이를 약 1초마다 되풀이한다. 보존 기간 안에 ORA-12514 나 XEPDB1 을 담은 로그는 그 전에 없다. 이어서 KCM 에 transfer 파드의 Unhealthy 'Startup probe failed: ... statuscode: 503'(또는 context deadline exceeded)와 Killing 'failed startup probe, will be restarted' 가 나오는데 banking 네임스페이스에서 처음이다. account 와 api 는 http://testbed-transfer:8082 로의 'Connection refused' 를 남기지만 account 는 같은 Oracle 인스턴스(서비스 FREEPDB1)로 잔액 조회에 계속 답하고, ledger 도 계속 쓰며, 다른 banking 서비스에는 ORA 오류가 없다. 그러니 Oracle, BANKING 계정, 리스너는 정상이고 transfer 의 연결 설정만 틀렸다. F17-H(같은 빈 엔드포인트 증상이지만 컨테이너가 아예 뜨지 않음, ErrImageNeverPull, transfer 로그 없음), F17-R(readiness 프로브 경로 404, DB 오류 없음), F35-R(DB 쪽 계정 잠금 ORA-28000, 모든 banking 서비스가 실패하고 잔액 조회도 깨짐)과 이렇게 갈린다.",
+   "injected_fault": {
+    "profile": "k8s.env",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f65-r",
+      "parameters": {
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-transfer",
+       "container": "transfer-service",
+       "baseline": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASS",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER_PASSWORD",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx512m"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "core-banking-transfer"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        }
+       ],
+       "fault": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASS",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "APP_USER_PASSWORD",
+           "name": "oracle-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_SERVICE",
+         "value": "XEPDB1"
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar -Xmx512m"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "core-banking-transfer"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=core-banking,lucida.target_id=f0ce5940-a7e2-44a2-843f-196de379d898"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        }
+       ]
+      }
+     }
+    ]
+   }
   }
  }
 }

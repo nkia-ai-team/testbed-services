@@ -37,6 +37,9 @@ APPROVED_TARGETS = {
     # 2026-10-11. F64-R: commerce api-gateway 의 order 라우트 서킷브레이커에 느린 호출 차단을 켜는 설정 배포.
     # 임계(30ms)가 checkout 정상 처리 시간(약 37ms 이상)보다 낮아 멀쩡한 order 호출이 모두 느린 호출로 세어지고 서킷이 계속 열린다.
     "F64-R": ("rca-testbed-commerce", "testbed-gateway", "api-gateway"),
+    # 2026-10-11. F65-R: banking transfer 롤아웃이 낡은 DB 연결 서비스 이름(DB_SERVICE=XEPDB1)을 명시 env 로 다시 넣는다.
+    # 공용 ConfigMap 의 FREEPDB1 을 덮어써 새 파드가 ORA-12514 로 DB 에 붙지 못하고, maxSurge 0 이라 옛 파드가 먼저 내려가 transfer 가 빈다.
+    "F65-R": ("rca-testbed-banking", "testbed-transfer", "transfer-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -51,6 +54,7 @@ APPROVED_KEYS = {
     "F39-R": {"TRANSFER_SERVICE_URL"},
     "F32-H": {"SPRING_JACKSON_GENERATOR_WRITE_NUMBERS_AS_STRINGS"},
     "F64-R": {"SPRING_APPLICATION_JSON"},
+    "F65-R": {"DB_SERVICE"},
 }
 
 

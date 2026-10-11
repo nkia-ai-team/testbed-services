@@ -1736,6 +1736,8 @@ esac
             "F63-R",
             # 2026-10-11: commerce api-gateway 설정 롤아웃이 order 라우트 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계(30ms)를 켜 멀쩡한 order 앞에서 서킷이 계속 열림. 새 후보, 설계 강도 1단 고정 evaluation.
             "F64-R",
+            # 2026-10-11: banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름(DB_SERVICE=XEPDB1)을 다시 넣어 새 파드가 ORA-12514 로 Oracle 에 붙지 못하고 maxSurge 0 이라 transfer 가 빔(이체·거래 내역·commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
