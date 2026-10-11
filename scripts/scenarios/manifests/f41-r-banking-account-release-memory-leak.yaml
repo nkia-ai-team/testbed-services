@@ -3,7 +3,7 @@
   "id": "F41-R",
   "slug": "f41-r-banking-account-release-memory-leak",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
