@@ -108,6 +108,21 @@ the primary key rejects it with 23505.  The rows, indexes, constraints and table
 keep working.  If any step fails after the database went read-only, run resets it and cuts the sessions before it
 stops.  The inverse is the read-only reset if it is still set, and the original's fix: setval to the highest key;
 it needs no state file and is a no-op once the sequence is ahead and the database is writable.
+
+The PostgreSQL lock-queue path (F66-R) is a column addition that is safe on its own (a nullable column without a
+default is a catalog change only) but needs the table's ACCESS EXCLUSIVE lock for that instant, run while a slow
+export query is reading the same table.  The export streams the users joined with their login tokens to a reader
+that takes them at a fixed pace, so the statement stays active for about `export_seconds` and keeps its ACCESS SHARE
+lock on the table that long.  The ALTER cannot get its lock and waits, and because a waiting ACCESS EXCLUSIVE
+request conflicts with every other lock, every later statement on the table, reads included, queues behind it.
+Nothing fails at once: the queued sessions wait with no timeout (the role keeps lock_timeout and statement_timeout at
+0, as the original had no database-side timeouts).  Run starts the export in the background inside the database pod,
+waits until it holds its lock, starts the migration in the background and returns once the server shows the
+migration waiting behind the export.  The export ends on its own; the migration then takes its lock, adds the column
+and the queue drains.  Cleanup waits for that up to `drain_seconds` (ending the export if it is still running and
+cancelling the migration if it still waits), then drops the column, also a catalog change only.  Rows, indexes and
+the joined table are untouched.  The probes run untracked by pg_stat_statements; the export and the migration are
+ordinary sessions.
 """
 from __future__ import annotations
 
@@ -252,6 +267,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "sequence": "inventory_movements_id_seq", "primary_key": "inventory_movements_pkey",
         "rewind_rows": 100000, "read_only_seconds": 6, "minimum_rows": 1000,
     },
+    # 잠금 대기열: 회원 표에 null 허용 열 하나를 더하는 마이그레이션(카탈로그만 바꿈)을, 같은 표를 읽는 느린 내보내기 질의
+    # (회원과 로그인 토큰을 이어 일정한 속도로 내보내 export_seconds 동안 활성)가 도는 중에 돌린다. ALTER 가 ACCESS EXCLUSIVE 를
+    # 못 얻어 기다리고, 그 뒤의 모든 질의(읽기 포함)가 ALTER 뒤에 줄을 선다. 내보내기가 끝나면 열이 더해지고 줄이 풀린다.
+    # cleanup 은 drain_seconds 까지 기다렸다가(남았으면 내보내기를 끝내고 마이그레이션을 취소) 더한 열을 지운다(카탈로그만).
+    # 세션이 maximum_sessions 를 넘으면 시작하지 않는다(재시작된 파드가 남긴 대기 세션이 max_connections 100 을 넘지 않게).
+    "F66-R": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "user_schema", "table": "users", "add_column": "marketing_opt_in", "add_column_type": "boolean",
+        "export_join_table": "auth_tokens", "export_join_column": "user_id", "export_seconds": 420,
+        "drain_seconds": 300, "minimum_rows": 10, "maximum_sessions": 70,
+    },
 }
 
 
@@ -287,6 +313,12 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
+    if p["engine"] == "postgresql" and "add_column" in p:
+        return kubectl_bash_argv([
+            action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["add_column"], p["add_column_type"],
+            p["export_join_table"], p["export_join_column"], str(p["export_seconds"]), str(p["drain_seconds"]),
+            str(p["minimum_rows"]), str(p["maximum_sessions"]),
+        ]), PG_QUEUE_REMOTE
     if p["engine"] == "postgresql" and "sequence" in p:
         return kubectl_bash_argv([
             action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["column"], p["sequence"],
@@ -920,6 +952,101 @@ case "$action" in
   original
   ;;
  recovery) rows; original ;;
+ *) exit 2 ;;
+esac
+'''
+
+
+PG_QUEUE_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"; ctype="$7"; join="$8"; join_column="$9"
+export_seconds="${10}"; drain="${11}"; minimum="${12}"; max_sessions="${13}"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# Probes travel in the environment and run untracked by pg_stat_statements, so none of them reaches Top SQL;
+# the first psql line on stderr goes to stderr for the runner log.
+sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+rel="$schema.$table"
+# The two statements as the export job and the migration send them; their sessions are found by this exact text.
+export_sql="COPY (SELECT u.id, u.email, u.name, t.created_at, t.expires_at FROM $rel u JOIN $schema.$join t ON t.$join_column = u.id) TO STDOUT"
+migration_sql="ALTER TABLE $rel ADD COLUMN $column $ctype"
+# Both connect the way the application's own tools do (the driver's default application name).
+identity="PostgreSQL JDBC Driver"
+export_sh=/tmp/user-export.sh
+export_log=/tmp/user-export.log
+migration_log=/tmp/schema-migration.log
+# An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
+number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
+# A session by its exact statement text, never the probe's own.
+pid_of() { sql "SELECT pid FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query = '$1' ORDER BY backend_start LIMIT 1;"; }
+has_column() { number "$(sql "SELECT count(*) FROM information_schema.columns WHERE table_schema = '$schema' AND table_name = '$table' AND column_name = '$column';")"; }
+# Locks on the table not granted yet: the queue.
+waiting() { number "$(sql "SELECT count(*) FROM pg_locks WHERE relation = '$rel'::regclass AND NOT granted;")"; }
+original() { n=$(has_column) || return 1; [[ "$n" == 0 && -z "$(pid_of "$export_sql")" && -z "$(pid_of "$migration_sql")" ]]; }
+rows() { [[ "$(sql "SELECT count(*) >= $minimum FROM (SELECT 1 FROM $rel LIMIT $minimum) t;")" == t ]]; }
+check() {
+  rows
+  original
+  # With a lock or statement timeout on the role or database the migration would give up instead of queueing.
+  [[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]
+  [[ "$(waiting)" == 0 ]]
+  # Sessions queued behind the migration stay on the server until it goes through, even after their pod restarts:
+  # keep room under max_connections.
+  sessions=$(number "$(sql "SELECT count(*) FROM pg_stat_activity;")")
+  [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
+}
+stop_export() { local pid; pid=$(pid_of "$export_sql"); [[ -z "$pid" ]] || sql "SELECT pg_terminate_backend($pid);" >/dev/null; }
+cancel_migration() { local pid; pid=$(pid_of "$migration_sql"); [[ -z "$pid" ]] || sql "SELECT pg_cancel_backend($pid);" >/dev/null; }
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  # Pace the export so it stays active for about export_seconds: the reader pauses a second every `rate` rows.
+  est=$(number "$(sql "SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = '$schema.$join'::regclass;")")
+  (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
+  rate=$(( est / export_seconds + 1 ))
+  "${k[@]}" exec -i "$pod" -- sh -c "cat >$export_sh" <<'EOS'
+psql -X -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$EXPORT_SQL" | awk -v r="$RATE" 'NR % r == 0 { system("sleep 1") }'
+EOS
+  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background inside the
+  # database pod and outlive run; run only waits to see each one in place, at most ten one-second looks each.
+  "${k[@]}" exec "$pod" -- env EXPORT_SQL="$export_sql" RATE="$rate" PGAPPNAME="$identity" SH="$export_sh" LOG="$export_log" \
+    sh -c 'nohup sh "$SH" >"$LOG" 2>&1 </dev/null &'
+  held=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    held=$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.query = '$export_sql' AND l.relation = '$rel'::regclass AND l.granted;")
+    [[ "$held" == 1 ]] && break
+    sleep 1
+  done
+  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $("${k[@]}" exec "$pod" -- head -n 1 "$export_log")" >&2; exit 4; }
+  "${k[@]}" exec "$pod" -- env MIGRATION_SQL="$migration_sql" PGAPPNAME="$identity" LOG="$migration_log" \
+    sh -c 'nohup psql -X -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$MIGRATION_SQL" >"$LOG" 2>&1 </dev/null &'
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ "$(sql "SELECT count(*) FROM pg_stat_activity m WHERE m.query = '$migration_sql' AND m.wait_event_type = 'Lock' AND (SELECT e.pid FROM pg_stat_activity e WHERE e.query = '$export_sql' LIMIT 1) = ANY (pg_blocking_pids(m.pid));")" == 1 ]] && exit 0
+    sleep 1
+  done
+  cancel_migration; stop_export
+  echo "migration did not queue behind the export: $("${k[@]}" exec "$pod" -- head -n 1 "$migration_log")" >&2
+  exit 4
+  ;;
+ cleanup)
+  # The export ends on its own and the migration then goes through, as in the original; wait for that up to the
+  # drain bound, then end the export and cancel the migration if either is still there.
+  end=$((SECONDS + drain))
+  while [[ -n "$(pid_of "$export_sql")" && $SECONDS -lt $end ]]; do sleep 5; done
+  stop_export
+  for _ in $(seq 1 30); do [[ -n "$(pid_of "$migration_sql")" ]] || break; sleep 1; done
+  cancel_migration
+  for _ in $(seq 1 30); do [[ -z "$(pid_of "$export_sql")$(pid_of "$migration_sql")" ]] && break; sleep 1; done
+  [[ -z "$(pid_of "$export_sql")$(pid_of "$migration_sql")" ]] || { echo "export or migration session still open" >&2; exit 3; }
+  # Dropping the column is a catalog change too; lock_timeout bounds the brief wait behind in-flight statements.
+  for _ in 1 2 3 4 5; do
+    [[ "$(has_column)" == 0 ]] && break
+    sql "SET lock_timeout = '5s'; ALTER TABLE $rel DROP COLUMN IF EXISTS $column;" >/dev/null || sleep 2
+  done
+  "${k[@]}" exec "$pod" -- rm -f "$export_sh" "$export_log" "$migration_log"
+  original
+  ;;
+ recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
  *) exit 2 ;;
 esac
 '''

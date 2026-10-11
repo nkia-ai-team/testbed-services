@@ -1,0 +1,334 @@
+{
+  "schema_version": "1.0",
+  "id": "F66-R",
+  "slug": "f66-r-commerce-users-column-migration-queues-behind-slow-export",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.ddl commerce testbed-postgres-0 내보내기 COPY(users ⋈ auth_tokens, 행 추정/420 행마다 1초 쉬는 읽기 쪽) + ALTER TABLE user_schema.users ADD COLUMN marketing_opt_in boolean(kubectl exec psql 을 DB 파드 안에서 백그라운드로, 내보내기 잠금 확인 뒤 마이그레이션을 띄우고 내보내기 뒤에서 기다리는 것이 보이면 run 종료, 두 세션 application_name 'PostgreSQL JDBC Driver', 탐침은 pg_stat_statements 기록 안 함, preflight 가 열 없음, 두 세션 없음, lock_timeout·statement_timeout 0, 그 표 대기 잠금 0, 열린 세션 ≤70) (동반 부하 없음, 상주 commerce 기준선이 쓰기를 냄)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.ddl"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [],
+        "approved_profile_id": "db.ddl"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f66-r",
+              "parameters": {
+                "engine": "postgresql",
+                "namespace": "rca-testbed-commerce",
+                "db_pod": "testbed-postgres-0",
+                "schema": "user_schema",
+                "table": "users",
+                "add_column": "marketing_opt_in",
+                "add_column_type": "boolean",
+                "export_join_table": "auth_tokens",
+                "export_join_column": "user_id",
+                "export_seconds": 420,
+                "drain_seconds": 300,
+                "minimum_rows": 10,
+                "maximum_sessions": 70
+              },
+              "min_hold": "150s",
+              "settle": "30s",
+              "timeout": "7m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "상주 기준선(loadgen-commerce)의 마지막 checkout 응답 상태. 동반 부하가 없다. 게이트웨이(30080)는 DB 를 쓰지 않고 읽기는 인가를 거치지 않아 users 줄에 걸리지 않으며, 인가된 쓰기는 user 응답(3초) 또는 연결 거부로 곧 500 을 받는다. 0(연결 불가)은 게이트웨이나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-user"
+            },
+            "freshness": "30s",
+            "_note": "user-service 는 /actuator/health 에 DB 확인이 들어 있어, 토큰 확인과 로그인이 회원 표 잠금 대기열에 묶여 Hikari 풀(10)이 차면 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다. 다시 뜬 파드는 기동 때 data.sql 의 회원 시드 INSERT 가 같은 줄에 서서 startupProbe(5초 x 30) 안에 뜨지 못하고 다시 시작한다. 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+          },
+          {
+            "id": "postgres_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-postgres"
+            },
+            "freshness": "30s",
+            "_note": "commerce PostgreSQL. 이 주입은 프로세스, 설정, 자원을 바꾸지 않는다(세션 둘과 열 하나). Ready 가 빠지면 표 하나의 잠금 대기열이 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            }
+          },
+          {
+            "id": "checkout_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "상주 기준선(loadgen-commerce, 하루 주기 2~10rps, 여정의 8% 가 checkout, 사전 할당 VU 20)의 checkout 단계. checkout 여정은 login(userId) 로 시작하는데 VU 마다 (사용자 20명) 토큰을 24시간 캐시해, 캐시가 있으면 로그인 요청 없이 장바구니 비우기, 담기, checkout 을 보낸다(commerce/loadgen/script.js:93-113, 194-230). 주입 뒤 캐시가 없는 쌍은 login 이 users 줄(findByEmail)에 막혀 실패하고 여정을 끝내 checkout 을 보내지 않으므로 표본이 되지 않는다. 캐시가 있는 쌍은 쓰기 셋 모두 게이트웨이 인가(verify-token 의 users 읽기)에서 500 이라 checkout 이 5xx 다. 그래서 표본이 있는 창은 5xx 비율이 1 에 가깝다. 표본 수는 캐시된 쌍의 비율에 달린다: 기준선 k6 는 매시 정각 다시 시작해 캐시가 비고, 쌍 400 개(VU 20 x 사용자 20)가 시간당 checkout 576~2,880 번으로 채워진다. 정각 뒤 약 10~30분이 지나면 30초 창마다 checkout 약 2~20건이 표본이 된다. 정각 직후이거나 주입 중 정각이 지나면 표본이 줄어 판정이 늦어질 수 있다(F16-H 와 같은 성질, 그래서 min_hold 를 150s 로 짧게 둔다). 표본이 0 인 창은 필드가 빠져 unusable 이고 0.0 으로 읽히지 않는다(loadgen_monitor.py)"
+          },
+          {
+            "id": "checkout_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            }
+          },
+          {
+            "id": "read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "기준선 상품 목록(GET /api/products, 인가 없음, product-service, 다른 스키마). 주입은 users 만 줄 세우므로 읽기는 그대로여야 한다"
+          },
+          {
+            "id": "write_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            }
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-failed-5xx",
+              "observation": "checkout_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "checkout-collapsed",
+              "observation": "checkout_2xx_rate_baseline",
+              "op": "lt",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 150s, 3틱. run 이 내보내기(약 420초 동안 활성)를 띄우고 그 잠금이 잡힌 것을 본 뒤 마이그레이션을 띄워, 서버가 마이그레이션을 내보내기 뒤에서 기다리는 것으로 보이면 돌아온다(로컬 실측 2.2초). 그 순간부터 users 를 읽는 모든 질의가 줄을 서서 캐시된 토큰의 checkout 이 곧 500 이다. 판정은 동반 부하가 아니라 주입 전부터 토큰을 캐시해 둔 상주 기준선에서 한다(동반 k6 는 주입과 거의 같은 순간에 떠 캐시가 비어 checkout 이 로그인에서 끝나 표본이 생기지 않는다). min_hold 를 150s 로 둔 것은 표본이 사라질 수 있는 기준선 k6 의 매시 재시작 전에 판정을 끝내기 위해서다(F16-H 와 같은 이유). 판정 관측은 30초마다 갱신돼 min_hold 뒤 약 90초에 3틱이 찬다. 성공 뒤 cleanup 이 내보내기가 스스로 끝나기를 기다리므로(drain 300초) 녹화에는 잠금 대기열 전체(약 7분)와 스스로 풀리는 모습이 담긴다. timeout 7m 은 내보내기가 끝나는 시각이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1,
+              "_note": "기준선 2~10rps. 부하 자체가 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "reads-also-broken",
+              "observation": "read_nonok_rate",
+              "op": "gte",
+              "value": 0.1,
+              "_note": "상품 목록까지 실패하면 표 하나의 대기열이 아니라 게이트웨이나 DB 전체 문제다"
+            },
+            {
+              "id": "commerce-db-down",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다. 이 시나리오에서 PostgreSQL 은 Ready 로 남고 한 표의 질의만 줄을 선다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "user-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "db-ready",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "writes-recovered",
+              "observation": "write_nonok_rate",
+              "op": "lt",
+              "value": 0.1
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "내보내기가 끝나면 마이그레이션이 잠금을 얻어 열을 더하고(카탈로그만, 즉시) 줄 선 질의가 모두 풀린다. 재시작 중이던 user 는 기동 시드 INSERT 가 끝나 곧 Ready 가 된다(로컬 실측: 잠금이 풀린 뒤 3초). 재시작 고리에서 CrashLoopBackOff 지연(최대 수 분)이 남을 수 있어 timeout 10m 이다. cleanup 은 그 뒤 더해진 열을 지운다(카탈로그만)"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "12m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "db.ddl"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

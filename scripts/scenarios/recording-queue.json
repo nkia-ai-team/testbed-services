@@ -362,6 +362,15 @@
       "requested_at": "2026-10-11",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F66-R",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증. 녹화 검증: dpm_session_local 에 user 파드 세션의 Lock/relation(relNames users) 대기와 그것을 막는 대기 세션, 그 앞의 오래 도는 활성 세션 사슬이 있고, 같은 구간 commerce PostgreSQL CPU 와 Top SQL 토큰 조회 호출당 블록이 평시이며 다른 표에 대기가 없음(회원 표 하나의 잠금 대기열)",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-11",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

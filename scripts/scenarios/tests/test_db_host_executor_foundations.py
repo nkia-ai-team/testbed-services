@@ -483,6 +483,76 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F57-P", ddl.CONTRACTS["F57-R"], {})
 
+    def test_postgres_column_migration_queues_behind_a_slow_export_and_the_column_is_dropped_after(self) -> None:
+        # F66-R: 회원 표에 null 허용 열을 더하는 마이그레이션(카탈로그만)이 같은 표를 읽는 느린 내보내기 질의 뒤에서
+        # ACCESS EXCLUSIVE 를 기다리고, 그 뒤의 회원 표 질의가 모두 줄을 선다. 내보내기가 스스로 끝나면 줄이 풀린다.
+        p = ddl.CONTRACTS["F66-R"]
+        ddl.validate("F66-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F66-R", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "user_schema", "users",
+                                    "marketing_opt_in", "boolean", "auth_tokens", "user_id", "420", "300", "10", "70"])
+        self.assertNotIn("F66-R", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F66-R", script)
+        # 두 문장은 원본 꼴 그대로: 기본값 없는 열 추가(카탈로그만), 같은 표를 읽는 내보내기. 세션은 이 문장으로 찾는다.
+        self.assertIn('migration_sql="ALTER TABLE $rel ADD COLUMN $column $ctype"', script)
+        self.assertIn('export_sql="COPY (SELECT u.id, u.email, u.name, t.created_at, t.expires_at FROM $rel u JOIN '
+                      '$schema.$join t ON t.$join_column = u.id) TO STDOUT"', script)
+        # 기본값도 NOT NULL 도 없는 열이라야 표를 다시 쓰지 않는 카탈로그 변경이다.
+        self.assertEqual(p["add_column_type"], "boolean")
+        migration_line = next(line for line in script.splitlines() if line.startswith("migration_sql="))
+        self.assertNotIn("DEFAULT", migration_line.upper())
+        self.assertNotIn("NOT NULL", migration_line.upper())
+        self.assertIn("pid <> pg_backend_pid() AND query = '$1'", script)
+        # 탐침은 Top SQL 에 남지 않고, 두 세션은 드라이버 기본 이름으로 붙는다(시나리오 id 없음).
+        self.assertIn('PGOPTIONS="-c pg_stat_statements.track=none"', script)
+        self.assertIn('identity="PostgreSQL JDBC Driver"', script)
+        # 마이그레이션이 포기하지 않고 줄을 서려면 시간 제한이 없어야 하고, 대기 세션이 쌓여도 연결 한도 아래여야 한다.
+        self.assertIn('[[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]', script)
+        self.assertIn('[[ "$sessions" -le "$max_sessions" ]]', script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # 순서: 확인 → 행 추정으로 속도 → 내보내기를 백그라운드로 → 그 잠금 확인 → 마이그레이션을 백그라운드로 →
+        # 내보내기 뒤에서 기다리는지 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 둘 다 기다리지 않는다.
+        order = ["  check\n", "reltuples", "rate=$(( est / export_seconds + 1 ))", "nohup sh \"$SH\"",
+                 "l.granted", "nohup psql", "pg_blocking_pids(m.pid)"]
+        positions = [run.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 2)
+        self.assertEqual(run.count("sleep 1\n"), 2)
+        self.assertIn("NR % r == 0 { system(\"sleep 1\") }", run)
+        self.assertNotIn("pg_sleep", script)
+        # 어느 쪽이 자리를 잡지 못하면 띄운 것을 거두고 멈춘다.
+        self.assertIn("|| { stop_export;", run)
+        self.assertIn("cancel_migration; stop_export", run)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        # cleanup 은 내보내기가 스스로 끝나기를 drain 까지 기다리고, 남았으면 끝내고 마이그레이션을 취소한 뒤 열을 지운다.
+        order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration", "DROP COLUMN IF EXISTS $column",
+                 "rm -f"]
+        positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("SET lock_timeout = '5s'", cleanup)
+        self.assertRegex(cleanup, r"\n  original\n  ;;")
+        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;', script)
+        # 세션은 문장으로 찾은 pid 로만 끝내거나 취소한다. 행, 인덱스, 다른 표, 권한은 손대지 않는다.
+        self.assertIn("pg_terminate_backend($pid)", script)
+        self.assertIn("pg_cancel_backend($pid)", script)
+        for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "revoke", "grant ",
+                     "create index", "lock table"):
+            self.assertNotIn(word, script.lower())
+        _, f57p_body = ddl.build_invocation(plan("db.ddl", "F57-P", ddl.CONTRACTS["F57-P"]), "run")
+        _, f33p_body = ddl.build_invocation(plan("db.ddl", "F33-P", ddl.CONTRACTS["F33-P"]), "run")
+        self.assertNotEqual(body, f57p_body)
+        self.assertNotEqual(body, f33p_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-R", {**p, "table": "auth_tokens"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-R", {**p, "export_seconds": 3600}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-R", {**p, "maximum_sessions": 95}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-R", ddl.CONTRACTS["F57-P"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

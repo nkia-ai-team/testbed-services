@@ -255,7 +255,8 @@
           "F57-R",
           "F23-P",
           "F60-R",
-          "F57-P"
+          "F57-P",
+          "F66-R"
         ]
       },
       "scenario_parameters": {
@@ -409,6 +410,21 @@
           "rewind_rows": 100000,
           "read_only_seconds": 6,
           "minimum_rows": 1000
+        },
+        "F66-R": {
+          "engine": "postgresql",
+          "namespace": "rca-testbed-commerce",
+          "db_pod": "testbed-postgres-0",
+          "schema": "user_schema",
+          "table": "users",
+          "add_column": "marketing_opt_in",
+          "add_column_type": "boolean",
+          "export_join_table": "auth_tokens",
+          "export_join_column": "user_id",
+          "export_seconds": 420,
+          "drain_seconds": 300,
+          "minimum_rows": 10,
+          "maximum_sessions": 70
         }
       }
     },

@@ -1738,6 +1738,8 @@ esac
             "F64-R",
             # 2026-10-11: banking transfer 일상 롤아웃이 낡은 DB 연결 서비스 이름(DB_SERVICE=XEPDB1)을 다시 넣어 새 파드가 ORA-12514 로 Oracle 에 붙지 못하고 maxSurge 0 이라 transfer 가 빔(이체·거래 내역·commerce 정산 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F65-R",
+            # 2026-10-11: commerce 회원 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 내보내기 질의 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 회원 표 질의가 모두 줄을 섬(토큰 확인이 user 풀을 채워 인가된 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F66-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
