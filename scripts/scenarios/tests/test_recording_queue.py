@@ -105,7 +105,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 42 → 41. F32-H 정식 승격(녹화 case-f32-h-v3-531094f2).
         # 2026-10-11: 41 → 42. F66-P(commerce 재고 이벤트 outbox 열 추가 마이그레이션이 느린 이벤트 내보내기 뒤에서 잠금을 기다려 재고 예약이 멈춤) 후보 추가.
         # 2026-10-11: 42 → 43. F60-H(food 배차 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 배차 표 질의가 모두 줄을 섬) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 43)
+        # 2026-10-11: 43 → 44. F54-P(food MySQL 앱 계정의 시간당 쓰기 한도로 주문 저장이 1226, 주문 500) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 44)
 
 
 class RecordingQueueTests(unittest.TestCase):

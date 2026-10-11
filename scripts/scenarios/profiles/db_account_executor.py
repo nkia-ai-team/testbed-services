@@ -26,6 +26,18 @@ as the Hikari pools replace them; from then on every call over the cap is cut
 with ORA-02395 while the session itself stays usable and every light call
 succeeds.  Undoing it is two statements (back to the DEFAULT profile, drop the
 new one); sessions opened under the limit keep it until the pools retire them.
+
+F54-P is the same Google 2020-12-14 quota cut on the food MySQL application
+account, and closer to the original, whose quota was on the account database's
+writes: `ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500`, far below
+the tens of thousands of writes an hour the food services make.  MySQL attaches
+the per-hour counters to a connection at login, so -- like the Oracle profile --
+connections already open are not counted and the damage arrives as the Hikari
+pools replace them; the new connections share one counter, and once it passes
+the cap every INSERT, UPDATE and DELETE on them is refused with 1226 ("has
+exceeded the 'max_updates' resource") while SELECT, SET, COMMIT and ping keep
+working.  Setting the limit back to 0 lifts it at once for every connection
+(verified on a local mysql:8.0.46).
 """
 from __future__ import annotations
 
@@ -35,9 +47,9 @@ from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.account"
 
-# Oracle only, and only the banking application account.  Widening this dict is
-# a design change: LUCIDA_MON is the observer, and locking it would blind DPM
-# instead of breaking the services.
+# Only the banking (Oracle) and food (MySQL) application accounts.  Widening this
+# dict is a design change: LUCIDA_MON / lucida_mon is the observer, and limiting
+# it would blind DPM instead of breaking the services.
 CONTRACTS: dict[str, dict[str, Any]] = {
     "F35-R": {
         "engine": "oracle",
@@ -60,6 +72,21 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "resource": "LOGICAL_READS_PER_CALL",
         "limit": 30000,
     },
+    # 500 updates an hour: the food services make about 59k at the 10:15 UTC
+    # sample (performance_schema per-user insert 597, update 360, delete 26 a
+    # minute) and DPM's 7-day 1st percentile is still about 130 a minute, so the
+    # cap is spent within minutes of the first capped connections at any hour.
+    # Only MAX_UPDATES_PER_HOUR: MAX_QUERIES_PER_HOUR would also refuse the
+    # driver's connection set-up and the health checks and empty the pools.
+    "F54-P": {
+        "engine": "mysql",
+        "namespace": "rca-testbed-food",
+        "pod": "testbed-mysql-0",
+        "account": "fooddelivery",
+        "host": "%",
+        "resource": "MAX_UPDATES_PER_HOUR",
+        "limit": 500,
+    },
 }
 
 
@@ -79,6 +106,12 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(scenario_id, p, {})
     # The scenario id stays on this side of kubectl: nothing that reaches the
     # database carries it.
+    if p["engine"] == "mysql":
+        argv = [
+            "/usr/bin/bash", "-s", "--", action,
+            p["namespace"], p["pod"], p["account"], p["host"], p["resource"], str(p["limit"]),
+        ]
+        return argv, MYSQL_LIMIT_REMOTE
     argv = [
         "/usr/bin/bash", "-s", "--", action,
         p["namespace"], p["pod"], p["pdb"], p["account"],
@@ -178,6 +211,51 @@ case "$action" in
     # The dictionary is clean; sessions opened under the cap keep it until the
     # pools retire them (max-lifetime 10 min), which the controller waits for.
     expect "DEFAULT|NONE|TRUE"
+    ;;
+  *) exit 2 ;;
+esac
+'''
+
+
+MYSQL_LIMIT_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; account="$4"; host="$5"; resource="$6"; limit="$7"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+case "$resource" in
+  MAX_UPDATES_PER_HOUR) ;;
+  *) exit 2 ;;
+esac
+# The first MySQL error line goes to stderr so a failed change is readable in the runner log.
+mysql() { "${k[@]}" exec "$pod" -- env SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+
+# mysql.user is the authority: the account's four resource limits in one line
+# (updates|questions|connections per hour|user connections). Empty when the
+# account does not exist, so every expect fails. Never trust the ALTER's exit
+# status alone: setting the same limit again also succeeds.
+state() {
+  mysql "SELECT CONCAT_WS('|', max_updates, max_questions, max_connections, max_user_connections) FROM mysql.user WHERE user='$account' AND host='$host';" | tr -d '[:space:]'
+}
+expect() { [[ "$(state)" == "$1" ]]; }
+cap() { mysql "ALTER USER '$account'@'$host' WITH $resource $1;" >/dev/null; }
+
+case "$action" in
+  preflight)
+    # No limit of any kind on the account, or the run would "succeed" against
+    # an account an earlier, uncleaned run left capped.
+    expect "0|0|0|0"
+    ;;
+  run)
+    expect "0|0|0|0"
+    cap "$limit"
+    expect "$limit|0|0|0"
+    ;;
+  cleanup)
+    # 0 means no limit; it applies at once to the connections already capped.
+    cap 0
+    expect "0|0|0|0"
+    ;;
+  recovery)
+    expect "0|0|0|0"
     ;;
   *) exit 2 ;;
 esac

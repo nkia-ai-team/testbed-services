@@ -111,7 +111,8 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F35-R",
-          "F54-R"
+          "F54-R",
+          "F54-P"
         ]
       },
       "scenario_parameters": {
@@ -131,6 +132,15 @@
           "profile": "APP_CALL_LIMITS",
           "resource": "LOGICAL_READS_PER_CALL",
           "limit": 30000
+        },
+        "F54-P": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "account": "fooddelivery",
+          "host": "%",
+          "resource": "MAX_UPDATES_PER_HOUR",
+          "limit": 500
         }
       },
       "scenario_levels": {}

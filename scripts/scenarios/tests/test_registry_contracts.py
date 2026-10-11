@@ -102,7 +102,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 111 → 112. F64-P(후보) 추가. 기존 k8s.env 를 banking api 에 써서 프로파일 수는 그대로.
         # 2026-10-11: 112 → 113. F66-P(후보) 추가. 기존 db.ddl 잠금 대기열 모드에 내보내기 열 목록 인자를 더해 프로파일 수는 그대로.
         # 2026-10-11: 113 → 114. F60-H(후보) 추가. 기존 db.ddl 에 MySQL 메타데이터 잠금 대기열 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 114)
+        # 2026-10-11: 114 → 115. F54-P(후보) 추가. 기존 db.account 실행기에 MySQL 시간당 쓰기 한도 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 115)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -253,6 +254,8 @@ class RegistryContractTests(unittest.TestCase):
             "F66-P",
             # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F60-H",
+            # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F54-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -619,6 +622,8 @@ class RegistryContractTests(unittest.TestCase):
             "F66-P",
             # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F60-H",
+            # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F54-P",
             },
         )
         self.assertEqual(
@@ -769,6 +774,8 @@ class RegistryContractTests(unittest.TestCase):
             "F66-P",
             # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F60-H",
+            # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F54-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -957,8 +964,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F64-P(후보, 고정 evaluation)이 끝에 붙어 F57-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F66-P(후보, 고정 evaluation)이 끝에 붙어 F63-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F60-H(후보, 고정 evaluation)이 끝에 붙어 F64-R 이 끝 5개에서 빠졌다.
+        # 2026-10-11: F54-P(후보, 고정 evaluation)이 끝에 붙어 F65-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F65-R", "F66-R", "F64-P", "F66-P", "F60-H"])
+                         ["F66-R", "F64-P", "F66-P", "F60-H", "F54-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

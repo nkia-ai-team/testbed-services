@@ -89,7 +89,8 @@
     "F66-R",
     "F64-P",
     "F66-P",
-    "F60-H"
+    "F60-H",
+    "F54-P"
   ],
   "controllers": {
     "F01-R": {
@@ -21293,6 +21294,214 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F54-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.account",
+        "companion_refs": [],
+        "approved_profile_id": "db.account",
+        "levels": [
+          {
+            "id": "approved-fixed-f54-p",
+            "parameters": {
+              "engine": "mysql",
+              "namespace": "rca-testbed-food",
+              "pod": "testbed-mysql-0",
+              "account": "fooddelivery",
+              "host": "%",
+              "resource": "MAX_UPDATES_PER_HOUR",
+              "limit": 500
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "22m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 쓰기 한도가 다 쓰인 연결에서 order 는 주문 INSERT 가 1226 으로 거절되어 500 으로 답한다. 읽기, ping, health 는 한도를 받지 않아 order 는 Ready 로 남고, 0(연결 불가)은 order 파드가 빠지거나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기 1~6 iter/s 라 주문 생성은 분당 약 12~68건, 30초 창에 6~34건이다. 변경 뒤 한도는 새로 열린 연결에만 붙고(MySQL 이 시간당 카운터를 로그인 때 붙인다) 그 연결들이 카운터 하나를 함께 쓴다. 풀이 연결을 idle-timeout 60초, max-lifetime 10분 안에 바꾸므로 늦어도 약 10분 뒤에는 모든 연결이 한도를 지니고, 카운터 500 은 그 전에 다 쓰여(쓰기 문장 평시 분당 약 130~980) 모든 주문 저장이 1226 으로 500 이다. 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처",
+          "freshness": "30s"
+        },
+        {
+          "id": "order_create_2xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "order-create-failed-5xx",
+            "observation": "order_create_5xx_rate_baseline",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "order-create-collapsed",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m, 3틱. 한도는 run 직후가 아니라 풀이 연결을 바꾸는 대로 번진다: 처음 몇 분은 한도 없는 옛 연결과 한도 있는 새 연결이 섞여 일부 주문만 실패하고, 새 연결들이 함께 쓰는 카운터가 500 을 넘은 뒤 옛 연결이 다 바뀌는 약 10분째부터는 모든 주문 저장이 1226 으로 실패한다(로컬 mysql 8.0.46 실측: 옛 연결은 세지도 막지도 않고, 새 연결은 카운터 하나를 함께 써서 넘으면 INSERT, UPDATE, DELETE 만 1226, SELECT, SET, COMMIT 은 정상). min_hold 15분은 전면 실패 구간이 판정과 녹화에 5분 넘게 들어가게 하는 길이다. timeout 22m 안에 판정이 끝난다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 계정 한도가 아니라 DB 다운(F25-H 꼴)이다. 재시작해도 한도는 mysql.user 에 남지만 그때는 읽기도 함께 끊겨 다른 장애다"
+          },
+          {
+            "id": "order-down",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "order 파드가 빠지면 주문 실패가 쓰기 거절이 아니라 연결 실패다. 한도는 INSERT, UPDATE, DELETE 만 세고 health 의 연결 확인(ping)과 읽기는 막지 않아 order 는 Ready 로 남아야 한다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "order-ready",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "create-recovered",
+            "observation": "order_create_2xx_rate_baseline",
+            "op": "gte",
+            "value": 0.7
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 한도를 0(없음)으로 되돌리면 MySQL 이 이미 한도를 지닌 연결의 한도도 그 자리에서 풀어 쓰기가 곧바로 돌아온다(로컬 실측). 그동안 밀린 배차 만료와 outbox 발행은 다음 주기에 따라잡는다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
       },
       "capture": {
         "enabled": true,

@@ -253,6 +253,44 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             db_account.validate("F54-R", db_account.CONTRACTS["F35-R"], {})
 
+    def test_db_account_mysql_hourly_write_cap_sets_one_limit_and_lifts_it(self) -> None:
+        # F54-P: 주입은 food 앱 계정 하나에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR) 하나를 거는 것뿐이다.
+        # 질의 수 한도(MAX_QUERIES_PER_HOUR)는 드라이버의 접속 초기화와 health 까지 막아 풀이 비고 입구가 끊긴다.
+        # 연결을 끊거나 잠그거나 권한을 건드리면 "기존 연결은 그대로, 새 연결의 쓰기만 공유 카운터가 차면 1226"이라는
+        # 지문이 F35-R(잠금), 권한 회수(1142), F38-R(인스턴스 read_only) 같은 다른 장애가 된다. DPM 계정 lucida_mon 은 대상이 아니다.
+        plan = compiler.compile_plan("f54-p-food-mysql-app-account-hourly-write-cap-breaks-orders")
+        argv, stdin = db_account.build_invocation(plan, "run")
+        self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
+        self.assertEqual(argv[4:], ["rca-testbed-food", "testbed-mysql-0", "fooddelivery", "%",
+                                    "MAX_UPDATES_PER_HOUR", "500"])
+        self.assertNotIn("F54-P", argv)
+        self.assertEqual(stdin, db_account.MYSQL_LIMIT_REMOTE)
+        script = stdin.decode()
+        self.assertNotIn("F54-P", script)
+        self.assertIn("  MAX_UPDATES_PER_HOUR) ;;\n  *) exit 2 ;;", script)
+        self.assertIn("FROM mysql.user WHERE user='$account' AND host='$host'", script)
+        run_case = script.split("  run)")[1].split(";;")[0]
+        order = ['expect "0|0|0|0"', 'cap "$limit"', 'expect "$limit|0|0|0"']
+        positions = [run_case.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("ALTER USER '$account'@'$host' WITH $resource $1;", script)
+        cleanup_case = script.split("  cleanup)")[1].split(";;")[0]
+        self.assertIn("cap 0", cleanup_case)
+        self.assertIn('expect "0|0|0|0"', cleanup_case)
+        for forbidden in ("kill", "identified", "account lock", "revoke", "grant ", "drop ", "password expire",
+                          "max_queries_per_hour", "set global", "lucida_mon"):
+            self.assertNotIn(forbidden, script.lower())
+        # Oracle 두 시나리오는 그대로 자기 스크립트를 쓴다.
+        _, f54r_stdin = db_account.build_invocation(
+            compiler.compile_plan("f54-r-banking-oracle-app-account-call-read-limit-breaks-history"), "run")
+        self.assertEqual(f54r_stdin, db_account.ORACLE_PROFILE_REMOTE)
+        params = dict(db_account.CONTRACTS["F54-P"])
+        for change in ({"resource": "MAX_QUERIES_PER_HOUR"}, {"account": "lucida_mon"}, {"limit": 0}, {"host": "localhost"}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                db_account.validate("F54-P", {**params, **change}, {})
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_account.validate("F54-P", db_account.CONTRACTS["F54-R"], {})
+
     def test_host_firewall_adds_one_allowlist_chain_for_new_connections_and_removes_it(self) -> None:
         # F44-R: 주입은 tb-w3 FORWARD 맨 위에 한 포트로 가는 새 연결(conntrack NEW)만 허용 목록 체인으로
         # 보내는 규칙과 그 체인뿐이다. 이미 맺어진 연결을 끊거나(원본의 '지속 소켓은 다시 맺어질 때까지 무사'가
@@ -1746,6 +1784,8 @@ esac
             "F66-P",
             # 2026-10-11: food 배차 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 배차 표 질의가 모두 줄을 섬(dispatch 풀 고갈과 재시작, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F60-H",
+            # 2026-10-11: food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸음(연결이 바뀌는 대로 공유 카운터가 다 쓰여 주문 저장이 1226 으로 500, 읽기와 파드는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F54-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

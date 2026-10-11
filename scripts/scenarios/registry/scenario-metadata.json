@@ -10886,6 +10886,100 @@
      }
     ]
    }
+  },
+  "F54-P": {
+   "title": "A database resource-limit rollout puts an hourly write cap (MAX_UPDATES_PER_HOUR 500) on the food MySQL application account fooddelivery, far below the tens of thousands of writes an hour the food services make: as the services' pooled connections renew, the capped connections share one counter that is spent within minutes, and from then on every order save is refused with MySQL 1226 and food orders fail with 500, while menus, restaurants, delivery lookups and every pod stay healthy",
+   "description": "order-service, restaurant-service, dispatch-service and payment-service all log in to the single food MySQL instance (testbed-mysql-0, MySQL 8.0.46) as one application account, 'fooddelivery'@'%', which has no resource limits. A DBA rollout of per-account resource limits runs ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500. The cap was meant to stop runaway batch writes, but it sits far below what the account writes on purpose: at a 10:15 UTC sample the account issued about 597 INSERT, 360 UPDATE and 26 DELETE statements a minute (performance_schema per-user summary), and DPM's insert plus update count stays above about 130 a minute even at the 7-day 1st percentile. MySQL attaches the per-hour counters to a connection at login, so the connections already open are neither counted nor refused and nothing breaks at once. Every Hikari pool replaces its connections within max-lifetime (600000 ms) and those above minimum-idle within idle-timeout (60 s); each new connection carries the cap, and all of them share one per-account counter. Once that counter passes 500 (within a few minutes at any hour), every INSERT, UPDATE and DELETE on a capped connection is refused with error 1226 'User 'fooddelivery' has exceeded the 'max_updates' resource (current value: 500)', while SELECT, SET, COMMIT and the connection checks keep working. When the last uncapped connections have been replaced (about 10 minutes after the change), every order save fails: order reads the restaurant, menu and courier capacity over HTTP (all 200), then its first write, INSERT INTO orders, gets 1226 and POST /api/orders answers 500. Dispatch's expiry batch (every 30 s), the outbox relays and purges of order, dispatch and payment, and the retention batches fail with the same error. No pod restarts or loses readiness. The scenario runs on the resident baseline load only (no companion), because a companion order surge would fill the courier pool (about 1,600 of 2,000 assigned) during the minutes before the cap bites.",
+   "cause": "ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 on the food MySQL → new connections of the shared application account carry an hourly write counter while existing ones do not → the Hikari pools renew their connections (idle-timeout 60 s above minimum-idle, max-lifetime 10 min) → the capped connections' shared counter passes 500 within minutes → every INSERT, UPDATE and DELETE on them fails with 1226 'has exceeded the 'max_updates' resource' → order's INSERT INTO orders fails → POST /api/orders 500; dispatch expiry batch, outbox relays and retention purges in order, dispatch and payment fail with the same error; reads, connection checks and readiness are untouched.",
+   "injection_summary": "db.account executor checks through the mysql client inside testbed-mysql-0 (root) that 'fooddelivery'@'%' has no resource limit at all (mysql.user max_updates, max_questions, max_connections, max_user_connections all 0), then runs ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 and confirms '500|0|0|0' in mysql.user. Cleanup sets the limit back to 0 (no limit), which MySQL applies at once to the connections already capped, and confirms '0|0|0|0'. No password, account state, privilege, table, row, global variable, Deployment or application setting is changed, no connection is killed, the DPM account lucida_mon is not touched, and nothing that reaches the database carries the scenario id. No companion load: the resident baseline (loadgen-food, 1 to 6 iterations a second, orders 20%) is the traffic.",
+   "user_impact": "Within about 10 minutes of the change nobody can place a food order: every POST /api/orders fails with 500 after the restaurant, menu and courier checks succeed. Before that, a growing share of orders fails as the services' connections renew and the shared hourly counter is spent. Browsing restaurants and menus, popular menus, delivery and order lookups keep working. Expired deliveries are not closed and order, dispatch and payment events are not published for the duration (they catch up after the cap is lifted). No data is written wrongly or lost. Lifting the cap restores writes at once.",
+   "distinguishing_evidence": "The decisive evidence is the error text: order, dispatch and payment log WARN 'SQL Error: 1226, SQLState: 42000' and ERROR 'User 'fooddelivery' has exceeded the 'max_updates' resource (current value: 500)' (Hibernate SqlExceptionHelper; Tomcat 'Servlet.service() ... threw exception' for POST /api/orders in order; 'Failed to publish outbox event ... will retry next cycle', 'Outbox purge failed' and 'Unexpected error occurred in scheduled task' in the batches), never seen in the retained logs (since 2026-10-04). It names an hourly per-account resource limit: the database was reached, the connection was authenticated, and only data-changing statements of one account are refused, in four services and on many different tables at once, which points at the account, not at a table, a service or the instance. The onset is gradual (a growing share of failures over up to about 10 minutes as connections renew), unlike an instance-wide switch. DPM shows insert_count and update_count falling towards 0 while select_count goes on and rollback_count rises; refused statements are not counted. Unlike F38-R (the whole instance read-only) the error is 1226 about the account's 'max_updates' resource, not 1290 '--read-only option', and it does not hit everything at the same instant; unlike F35-R (an account locked) logins and reads keep working and pools do not drain; unlike a revoked privilege there is no 1142 'command denied'; unlike F53-R or F32-P (a table dropped) there is no 1146 and the writes to every table fail, not those to one table. MySQL and all food pods stay Ready and fast, active sessions and response time stay normal, and KCM shows no rollout or restart in rca-testbed-food.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "APM",
+    "DPM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "food-mysql:fooddelivery",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food MySQL(testbed-mysql-0)의 애플리케이션 계정 'fooddelivery'@'%' 에 새로 걸린 시간당 쓰기 한도다. food 네 서비스(order, restaurant, dispatch, payment)가 이 계정 하나로 접속한다. 표기는 F54-R 의 'banking-oracle:BANKING' 과 같은 '인스턴스:계정' 꼴이고, 인스턴스만 지목한 답(food-mysql)은 덜 정밀해 partial 이다(이 DB 는 계정 이름과 스키마 이름이 같다). DB 자원 한도 정비가 ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 을 실행했는데, 한도가 서비스가 정상으로 하는 쓰기 양보다 한참 낮다: 10:15 UTC 표본에서 이 계정의 문장은 분당 INSERT 약 597, UPDATE 360, DELETE 26(performance_schema 사용자별 요약), DPM insert+update 는 7일 1백분위에서도 분당 약 130 이다. MySQL 은 시간당 카운터를 로그인 때 연결에 붙여 이미 열린 연결은 세지도 막지도 않아 바로는 아무것도 깨지지 않는다. 각 Hikari 풀이 연결을 max-lifetime(10분) 안에, minimum-idle 위의 것은 idle-timeout(60초) 안에 새로 만들면서 새 연결마다 한도를 지니고, 그 연결들은 계정 하나의 카운터를 함께 쓴다. 카운터가 500 을 넘으면 한도 있는 연결의 INSERT, UPDATE, DELETE 가 모두 1226 'User 'fooddelivery' has exceeded the 'max_updates' resource (current value: 500)' 로 거절되고 SELECT, SET, COMMIT, 연결 확인은 정상이다(로컬 mysql 8.0.46 실측). 옛 연결이 다 바뀌는 약 10분 뒤부터 order 의 주문 저장(INSERT INTO orders)이 모두 실패해 POST /api/orders 가 500 이고, dispatch 만료 배치, 세 서비스의 outbox 발행과 정리, 보존 정리가 같은 오류로 실패한다. 쓰기와 요청은 늘 하던 그대로라 정당하고(원칙 6), 잘못된 것은 그것을 막는 한도다. 근본과 계기가 같은 곳(계정의 한도 변경)이라 trigger_target_id 는 비운다. 관제 데이터로의 도달 경로: ① order, dispatch, payment 로그 WARN 'SQL Error: 1226, SQLState: 42000' 와 ERROR '... has exceeded the 'max_updates' resource (current value: 500)', 보존된 로그(2026-10-04~)에 0건. 한도 변경 명령 자체는 119 에 남지 않으므로(DPM Top SQL 에 ALTER USER 0건, 계정 속성 항목 없음) 첫 흔적은 이 오류다 ② 실패하는 것이 네 서비스, 여러 표의 데이터 변경 문장뿐이고 같은 계정의 읽기와 로그인은 성공한다(계정 단위 쓰기 한도의 지문) ③ DPM insert_count, update_count 가 0 근처로 떨어지고 select_count 는 이어진다 ④ 실패가 몇 분에 걸쳐 늘어난다(연결이 바뀌는 대로) ⑤ KCM 무변화. 원본(Google 2020-12-14, 자동 쿼터 관리가 User ID Service 의 사용량을 0 으로 잘못 보고받아 계정 DB 쿼터를 줄였고 Paxos 리더가 쓰기를 못 해 인증 조회가 실패)처럼 '한도가 실제 쓰기 양 아래로 잡혀 정상 쓰기가 거절됐다'가 정답의 층위이고, 한도 값을 어떻게 정했는지는 요구하지 않는다.",
+    "code_anchor": [
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:57-170 (createOrder — @Transactional, 가게, 메뉴, 배차 용량을 HTTP 로 읽은 뒤 128행 orderRepository.save 에서 처음 쓴다. 쓰기가 거절되면 배차와 결제를 부르기 전에 끝난다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/entity/Order.java:12 (@GeneratedValue IDENTITY — save 때 INSERT 가 바로 실행돼 거기서 1226 을 받는다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/config/GlobalExceptionHandler.java:9-21 (ServiceException 만 매핑, SQL 오류는 처리되지 않은 예외로 500)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:119-130 (deliverExpiredDispatches — 30초마다 ETA 가 지난 ASSIGNED 를 DELIVERED 로 UPDATE, dispatch_events INSERT. 한도가 다 쓰인 연결에서는 매 주기 실패)",
+     "food-delivery/order-service/src/main/resources/application.yml:7-17 (datasource, hikari — 계정 fooddelivery, minimum-idle 5, idle-timeout 60000, max-lifetime 600000. restaurant, dispatch, payment 도 같은 계정과 같은 수명)",
+     "food-delivery/k8s/01-secrets.yaml:10-11 (MYSQL_USER fooddelivery — 네 서비스 Deployment 의 DB_USER 가 모두 이 값)",
+     "food-delivery/k8s/10-mysql.yaml:1-23 (StatefulSet testbed-mysql, image mysql:8.0 — food 네 서비스가 함께 쓰는 단일 인스턴스)"
+    ],
+    "infra_anchor": "rca-testbed-food StatefulSet testbed-mysql(파드 testbed-mysql-0, MySQL 8.0.46, tb-w3). 계정 'fooddelivery'@'%' 는 max_updates, max_questions, max_connections, max_user_connections 가 모두 0(한도 없음), 전역 max_user_connections 0(2026-10-11 109 조회). DPM 은 별도 계정 lucida_mon, 실행기와 러너의 조회는 root 라 한도의 영향을 받지 않는다. performance_schema.events_statements_summary_by_user_by_event_name(2026-10-11 10:15~10:16 UTC, 1분 차): fooddelivery 의 insert +597, update +360, delete_multi +26, select +1,481, set_option +3,594, commit +1,089. 로컬 mysql:8.0.46 실측(2026-10-11): 한도를 건 뒤 이미 열린 연결은 쓰기를 세지도 막지도 않고, 새 연결들은 카운터 하나를 함께 써서 넘으면 INSERT, UPDATE, DELETE 가 1226 이며 SELECT, SET SESSION TRANSACTION READ ONLY/READ WRITE, SET autocommit, SET NAMES, COMMIT, ROLLBACK 은 정상이다. 거절된 INSERT 는 Com_insert 에 세지 않는다. 한도를 0 으로 되돌리면 한도를 지닌 연결도 그 자리에서 다시 쓴다."
+   },
+   "must_support": [
+    "order, dispatch, payment 로그에 WARN 'SQL Error: 1226, SQLState: 42000' 와 ERROR 'User 'fooddelivery' has exceeded the 'max_updates' resource (current value: 500)' 가 주입 몇 분 뒤부터 이어진다. 보존된 로그(2026-10-04~)에는 'max_updates', 'SQL Error: 1226', 'has exceeded the' 가 모든 서비스에서 0건이다",
+    "order 서버 스팬 POST /api/orders 가 500(ERROR)으로 바뀌고 Tomcat 'Servlet.service() ... threw exception' 이 남으며 'Created order' INFO 가 끊긴다. 실패 비중은 몇 분에 걸쳐 늘어 약 10분 뒤 전부가 된다. 같은 order 의 주문 조회, restaurant 의 가게, 메뉴 조회, dispatch 의 용량, 배달 조회는 200 그대로다. 기준선의 주문 생성 5xx 비율이 0.5 이상, 2xx 비율이 0.2 미만이 된다",
+    "같은 오류가 서로 다른 서비스의 서로 다른 표 쓰기에서 난다: dispatch 만료 배치('Unexpected error occurred in scheduled task'), order, dispatch, payment 의 'Failed to publish outbox event ... will retry next cycle' 와 'Outbox purge failed'. 읽기는 실패하지 않는다",
+    "DPM(target c8c558e5-…): dpm.mysql.sql.insert_count, update_count 가 0 근처로 떨어지고(평시 7일 1분 값 중앙 약 443, 258, 1백분위 약 83) select_count 는 이어지며 rollback_count 가 평시보다 오른다",
+    "rca-testbed-food 에 Deployment 롤아웃, 새 ReplicaSet, 파드 재시작, readiness 실패가 없다(KCM). MySQL 과 모든 food 파드는 Ready 이고, MySQL 활성 세션과 평균 응답 시간이 평시 근처이며 Hikari 대기가 0 이다"
+   ],
+   "must_rule_out": [
+    "인스턴스 전체 읽기 전용(F38-R)이 아님: 오류가 1290 '--read-only option' 이 아니라 1226 이고 그 문장이 서버 상태가 아니라 계정 fooddelivery 의 시간당 'max_updates' 자원을 가리킨다. 실패가 한순간에 전부가 아니라 연결이 바뀌는 대로 몇 분에 걸쳐 늘어난다",
+    "계정 잠금, 자격 증명 문제(F35-R 꼴)가 아님: 같은 계정의 새 로그인과 읽기가 계속 성공하고 풀이 비지 않으며 'Access denied', 'Account is locked' 가 없다",
+    "권한 회수가 아님: 1142 'command denied' 가 아니고, 같은 표의 읽기는 되며 실패가 특정 표, 특정 명령이 아니라 모든 데이터 변경 문장이다",
+    "표 삭제, 스키마 변경, 인덱스 문제(F53-R, F32-P, F36-R, F33-R 꼴)가 아님: 1146, 1054 가 없고 실패가 한 표가 아니라 orders, dispatches, dispatch_events, outbox 표들 모두의 쓰기이며 읽기는 정상이다",
+    "MySQL 다운이나 재시작, 디스크나 IO 포화, 잠금 대기(F25-H, F10-H, D 묶음 꼴)가 아님: 파드가 Ready 이고 'Communications link failure' 가 없으며, 쓰기는 기다리다 시간 초과되는 것이 아니라 밀리초 안에 거절되고 활성 세션, 응답 시간, 차단 세션이 평시다",
+    "food 서비스 새 버전이나 설정 배포가 아님: rca-testbed-food 에 롤아웃, 새 ReplicaSet, env 변경이 없다. 오류는 앱이 아니라 MySQL 이 낸 1226 이고 네 서비스에서 같다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F38-R (같은 food MySQL 의 모든 쓰기가 거절되고 주문이 500 인 같은 겉 증상이지만, 인스턴스 전역 read_only 라 오류가 1290 '--read-only option' 이고 한순간에 전부 실패한다. F54-P 는 계정의 시간당 쓰기 한도라 오류가 1226 'max_updates' 이고 연결이 바뀌는 대로 몇 분에 걸쳐 번진다)",
+     "F54-R (같은 원본, 같은 '계정 자원 한도' 꼴이지만 banking Oracle 계정의 호출당 읽기 한도라 가장 무거운 질의 둘만 ORA-02395 로 끊기고 이체는 정상이다. F54-P 는 시간당 쓰기 양 한도라 쓰기 전부가 막히고 읽기는 정상이다)",
+     "F35-R (DB 계정이 원인이지만 잠금으로 새 로그인이 거절되어 풀이 빈다. F54-P 는 로그인과 읽기는 되고 쓰기만 막힌다)",
+     "F53-R (주문 저장이 실패해 주문이 깨지지만 orders 표가 지워져 1146 이고 한 표의 문제다. F54-P 는 모든 표의 쓰기가 같은 1226 으로 실패한다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "food-mysql:fooddelivery"
+    ],
+    "partial": [
+     "food-mysql",
+     "food-delivery-order",
+     "food-order",
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "food-delivery-payment",
+     "food-payment"
+    ]
+   },
+   "title_ko": "DB 자원 한도 정비가 food MySQL 애플리케이션 계정 fooddelivery 에 시간당 쓰기 한도(MAX_UPDATES_PER_HOUR 500)를 걸었는데, food 서비스가 시간당 하는 수만 건의 쓰기보다 한참 낮음: 서비스 풀의 연결이 새로 열리면서 한도 있는 연결들이 함께 쓰는 카운터가 몇 분 만에 다 쓰이고, 그 뒤로 주문 저장이 모두 MySQL 1226 으로 거절되어 음식 주문이 500 이 된다. 가게, 메뉴, 배달 조회와 모든 파드는 정상이다",
+   "description_ko": "order-service, restaurant-service, dispatch-service, payment-service 는 모두 food MySQL 인스턴스 하나(testbed-mysql-0, MySQL 8.0.46)에 애플리케이션 계정 'fooddelivery'@'%' 하나로 접속하고, 이 계정에는 자원 한도가 없다. DB 자원 한도 정비가 계정별 한도를 걸면서 ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 을 실행한다. 폭주하는 배치 쓰기를 막으려는 한도였지만 계정이 정상으로 하는 쓰기보다 한참 낮다: 10:15 UTC 표본에서 이 계정은 분당 INSERT 약 597, UPDATE 360, DELETE 26 문장을 냈고(performance_schema 사용자별 요약), DPM insert+update 는 7일 1백분위에서도 분당 약 130 이다. MySQL 은 시간당 카운터를 로그인 때 연결에 붙여 이미 열린 연결은 세지도 막지도 않아 바로는 아무것도 깨지지 않는다. 각 Hikari 풀은 연결을 max-lifetime(600000ms) 안에, minimum-idle 위의 것은 idle-timeout(60초) 안에 새로 만들고, 새 연결마다 한도를 지니며 모두 계정 하나의 카운터를 함께 쓴다. 그 카운터가 500 을 넘으면(어느 시간대든 몇 분 안) 한도 있는 연결의 INSERT, UPDATE, DELETE 는 모두 1226 'User 'fooddelivery' has exceeded the 'max_updates' resource (current value: 500)' 로 거절되고 SELECT, SET, COMMIT, 연결 확인은 그대로다. 마지막 옛 연결까지 바뀌는 약 10분 뒤에는 주문 저장이 모두 실패한다: order 는 가게, 메뉴, 배달원 용량을 HTTP 로 읽고(모두 200) 첫 쓰기 INSERT INTO orders 에서 1226 을 받아 POST /api/orders 에 500 으로 답한다. dispatch 만료 배치(30초마다), order, dispatch, payment 의 outbox 발행과 정리, 보존 정리도 같은 오류로 실패한다. 파드는 재시작하지도 Ready 에서 빠지지도 않는다. 동반 부하 없이 상주 기준선만으로 돌린다. 한도가 다 쓰이기 전 몇 분 동안 주문 동반 부하가 배달원 풀(2,000 중 약 1,600 배정)을 채워 다른 증상이 섞이기 때문이다.",
+   "cause_ko": "food MySQL 에서 ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 → 공유 앱 계정의 새 연결은 시간당 쓰기 카운터를 지니고 기존 연결은 아님 → Hikari 풀들이 연결을 새로 만듦(minimum-idle 위 idle-timeout 60초, max-lifetime 10분) → 한도 있는 연결들이 함께 쓰는 카운터가 몇 분 안에 500 을 넘음 → 그 연결들의 INSERT, UPDATE, DELETE 가 모두 1226 'has exceeded the 'max_updates' resource' → order 의 INSERT INTO orders 실패 → POST /api/orders 500. dispatch 만료 배치, 세 서비스의 outbox 발행과 보존 정리도 같은 오류로 실패. 읽기, 연결 확인, readiness 는 그대로.",
+   "injection_summary_ko": "db.account executor 가 testbed-mysql-0 안의 mysql 클라이언트(root)로 'fooddelivery'@'%' 에 자원 한도가 하나도 없는지(mysql.user 의 max_updates, max_questions, max_connections, max_user_connections 가 모두 0) 확인한 뒤, ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 을 실행하고 mysql.user 에서 '500|0|0|0' 을 확인한다. cleanup 은 한도를 0(없음)으로 되돌리고(MySQL 이 이미 한도를 지닌 연결에도 바로 적용한다) '0|0|0|0' 을 확인한다. 비밀번호, 계정 상태, 권한, 표, 행, 전역 변수, Deployment, 앱 설정은 바꾸지 않고 연결도 끊지 않으며, DPM 계정 lucida_mon 은 건드리지 않고, DB 에 닿는 어떤 값에도 시나리오 id 가 없다. 동반 부하 없음: 상주 기준선(loadgen-food, 초당 1~6 반복, 주문 20%)이 트래픽이다.",
+   "user_impact_ko": "변경 뒤 약 10분 안에 아무도 음식을 주문할 수 없다: 가게, 메뉴, 배달원 확인은 통과하고 모든 POST /api/orders 가 500 으로 실패한다. 그 전에는 연결이 바뀌고 공유 카운터가 쓰이는 만큼 실패 비중이 늘어난다. 가게와 메뉴 둘러보기, 인기 메뉴, 배달 조회, 주문 조회는 그대로 된다. 그동안 ETA 가 지난 배달이 끝나지 않고 주문, 배차, 결제 이벤트가 발행되지 않는다(한도를 풀면 따라잡는다). 잘못 쓰이거나 사라지는 데이터는 없다. 한도를 풀면 쓰기가 곧바로 돌아온다.",
+   "distinguishing_evidence_ko": "결정 증거는 오류 문구다: order, dispatch, payment 가 WARN 'SQL Error: 1226, SQLState: 42000' 와 ERROR 'User 'fooddelivery' has exceeded the 'max_updates' resource (current value: 500)' 를 남긴다(Hibernate SqlExceptionHelper. order 의 POST /api/orders 에 대한 Tomcat 'Servlet.service() ... threw exception', 배치의 'Failed to publish outbox event ... will retry next cycle', 'Outbox purge failed', 'Unexpected error occurred in scheduled task'). 보존된 로그(2026-10-04~)에 한 번도 없던 문구이고, 계정의 시간당 자원 한도라는 뜻이다: DB 에 닿았고 연결은 인증됐고 한 계정의 데이터 변경 문장만 거절된다. 네 서비스의 여러 표에서 한꺼번에 나므로 표, 서비스, 인스턴스가 아니라 계정을 가리킨다. 실패가 연결이 바뀌는 대로 약 10분에 걸쳐 늘어나는 것도 인스턴스 스위치와 다르다. DPM 에서는 insert_count, update_count 가 0 근처로 떨어지고 select_count 는 이어지며 rollback_count 가 오른다(거절된 문장은 세지 않는다). F38-R(인스턴스 읽기 전용)과 달리 오류가 1290 '--read-only option' 이 아니라 계정의 'max_updates' 자원을 말하는 1226 이고 한순간에 전부 실패하지 않는다. F35-R(계정 잠금)과 달리 로그인과 읽기가 되고 풀이 비지 않는다. 권한 회수와 달리 1142 'command denied' 가 없다. F53-R, F32-P(표 삭제)와 달리 1146 이 없고 한 표가 아니라 모든 표의 쓰기가 막힌다. MySQL 과 모든 food 파드는 Ready 이고 빠르며, 활성 세션과 응답 시간이 평시이고, KCM 에 rca-testbed-food 의 롤아웃, 재시작이 없다.",
+   "injected_fault": {
+    "profile": "db.account",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f54-p",
+      "parameters": {
+       "engine": "mysql",
+       "namespace": "rca-testbed-food",
+       "pod": "testbed-mysql-0",
+       "account": "fooddelivery",
+       "host": "%",
+       "resource": "MAX_UPDATES_PER_HOUR",
+       "limit": 500
+      }
+     }
+    ]
+   }
   }
  }
 }

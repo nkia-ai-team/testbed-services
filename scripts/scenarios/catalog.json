@@ -1441,6 +1441,18 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F54-P",
+      "slug": "f54-p-food-mysql-app-account-hourly-write-cap-breaks-orders",
+      "profiles": [
+        "db.account"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }
