@@ -97,7 +97,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 39 → 38. F40-R 정식 승격(녹화 case-f40-r-v3-50e3ecb9).
         # 2026-10-11: 38 → 39. F63-R(banking api 릴리스가 요청마다 스레드 하나짜리 풀을 만들고 닫지 않아 컨테이너 메모리 한도에서 OOM 재시작 반복, 이체와 거래 내역 502) 후보 추가.
         # 2026-10-11: 39 → 38. F17-H 정식 승격(녹화 case-f17-h-v3-632a04d1).
-        self.assertEqual(stages.count("candidate"), 38)
+        # 2026-10-11: 38 → 39. F64-R(commerce api-gateway 설정 롤아웃이 order 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계를 켬) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 39)
 
 
 class RecordingQueueTests(unittest.TestCase):

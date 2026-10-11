@@ -1,0 +1,388 @@
+{
+  "schema_version": "1.0",
+  "id": "F64-R",
+  "slug": "f64-r-gateway-order-breaker-slow-call-threshold",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "commerce namespace",
+    "matrix_location_transport": "K/kubectl commerce testbed-gateway env(SPRING_APPLICATION_JSON resilience4j order slow-call 30ms·50% 한 줄 추가) + R/ssh load.north_south companion(commerce surge.js, target_rps=8, checkout 초당 약 4건)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.env",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-env-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.env",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.env"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f64-r",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-gateway",
+                "container": "api-gateway",
+                "baseline": [
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-gateway"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=e9f5f307-9ebd-4403-8461-164b989e5d62"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-gateway"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=e9f5f307-9ebd-4403-8461-164b989e5d62"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  },
+                  {
+                    "name": "SPRING_APPLICATION_JSON",
+                    "value": "{\"resilience4j\":{\"circuitbreaker\":{\"instances\":{\"order\":{\"slow-call-duration-threshold\":\"30ms\",\"slow-call-rate-threshold\":50}}}}}"
+                  }
+                ]
+              },
+              "min_hold": "10m",
+              "settle": "60s",
+              "timeout": "16m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "_note": "commerce 진입점(nginx → gateway, 상품 목록) 상태. 고장 중 게이트웨이는 살아서 다른 라우트에 200 으로 답하고 checkout 만 502 로 돌려보내므로 0(연결 불가)은 nginx, 게이트웨이, 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health). compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 게이트웨이 health 는 서킷 상태와 무관해 고장 중에도 200 이라 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-order"
+            },
+            "_note": "order 파드. 이 주입은 order 를 건드리지 않아 고장 중에도 Ready 여야 한다(빠지면 order 자체 장애, F03-H 나 2026-10-06 order 재기동 꼴)",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_error_rate",
+            "adapter": "clickhouse",
+            "query_id": "clickhouse.service_error_rate",
+            "parameters": {
+              "service_name": "commerce-order"
+            },
+            "_note": "order 서버 스팬 5xx 비율(1분, 10% 표본). 고장 중 order 에 닿는 호출은 서킷이 허용한 시험 호출뿐이고 모두 200 이라 0 근처다. 오르면 하류가 실제로 실패하는 것(F08-P, F03-H, 결제 쪽 장애)이지 이 시나리오가 아니다",
+            "freshness": "60s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "_note": "동반 부하(commerce surge.js 8rps, 여정의 50% 가 checkout, 초당 약 4건)의 checkout 5xx 비율. 평시 0(업무 거절은 400, 409). 새 게이트웨이 파드가 Ready 가 된 뒤 order 서킷이 느린 호출(임계 30ms < 게이트웨이에서 본 order 호출 최소 약 37ms)로 5건마다 열리고, 열림 5초 동안의 checkout 이 fallback 502, half-open 시험 3건만 order 에 닿아 200 이다. 계산상 약 0.85~0.9",
+            "freshness": "30s"
+          },
+          {
+            "id": "list_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하 상품 목록(step list, GET /api/products, product 서킷) 실패율. 평시 0 이고 이 시나리오에서도 0 이어야 한다(바뀐 것은 order 서킷뿐)",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "상주 기준선(loadgen-commerce)의 checkout 5xx 비율. 평시 0. 고장 중 기준선 checkout 도 같은 게이트웨이 서킷을 지나 실패한다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다. 30초 창에 checkout 이 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-refused-at-gateway",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "게이트웨이 설정 롤아웃이 order 서킷에 느린 호출 임계 30ms, 비율 50% 를 넣어 멀쩡한 order 호출이 모두 느린 호출로 세어진다. 서킷이 열린 동안 checkout 은 order 에 닿지 않고 게이트웨이 fallback 이 WARN 'CircuitBreaker 'order' is OPEN and does not permit further calls' 를 남기며 502 로 답한다. 이 502 가 commerce-gateway 서버 스팬 오류율을 올린다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 10m: 패치 뒤 새 게이트웨이 파드 Ready 까지 약 1분, 그 뒤 고장이 약 9분 이어진 다음 판정된다. 고장은 요청량과 무관하게 서킷 주기마다 되풀이되어 3틱 연속(약 45~75초)이 안정적으로 선다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 2,
+              "_note": "동반 부하 8rps 의 1/4. 막힌 checkout 은 약 0.3초 만에 502 라 여정이 길어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "reads-failing",
+              "observation": "list_nonok_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "상품 목록까지 실패하면 order 서킷이 아니라 게이트웨이 전체나 product 장애다"
+            },
+            {
+              "id": "order-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 order 자체 장애다. 이 주입은 order 를 건드리지 않는다"
+            },
+            {
+              "id": "order-erroring",
+              "observation": "order_error_rate",
+              "op": "gte",
+              "value": 10,
+              "_note": "order 서버 스팬이 5xx 로 끝나면 하류가 실제로 실패하는 것이다(F08-P, F03-H, 결제 쪽 장애). 이 시나리오에서 order 에 닿은 호출은 200 이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "order-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "baseline-checkout-recovered",
+              "observation": "checkout_5xx_rate_baseline",
+              "op": "lt",
+              "value": 0.05,
+              "_note": "판정력을 가진 회복 조건. 평시 0, 고장 중(기준선만) 약 0.5 안팎. cleanup 이 env 를 되돌린 새 게이트웨이 파드는 서킷 상태를 새로 시작하고 기본 설정(느린 호출 기준 60초)이라 checkout 이 바로 통과한다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 env 배열을 되돌리고 게이트웨이 롤아웃이 available 이 될 때까지(보통 약 1분, 상한 180초) 기다린 뒤, 기준선 checkout 이 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 와 pod_ready 는 compile-plan 이 요구하는 형식 조건이고 고장 중에도 참이다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.env"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

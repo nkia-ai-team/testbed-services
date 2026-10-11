@@ -1734,6 +1734,8 @@ esac
             "F57-P",
             # 2026-10-11: banking api-service 를 처리 마감 시간을 더한 릴리스 1.5.0(fault-images/f63-r)으로 롤아웃(요청마다 Executors.newFixedThreadPool(1) 을 만들고 닫지 않아 멈춘 스레드가 쌓여 컨테이너 메모리 한도에서 OOM 재시작 반복, 이체와 거래 내역 502).
             "F63-R",
+            # 2026-10-11: commerce api-gateway 설정 롤아웃이 order 라우트 서킷브레이커에 checkout 정상 지연보다 낮은 느린 호출 임계(30ms)를 켜 멀쩡한 order 앞에서 서킷이 계속 열림. 새 후보, 설계 강도 1단 고정 evaluation.
+            "F64-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

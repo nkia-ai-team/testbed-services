@@ -34,6 +34,9 @@ APPROVED_TARGETS = {
     # 2026-10-09. F32-H: food dispatch 의 JSON 직렬화 설정(숫자를 문자열로 쓰기)을 켜는 설정 배포.
     # 용량 응답의 정수가 "500" 처럼 문자열로 나가고 order 의 Integer 캐스트가 실패해 주문이 503 이 된다.
     "F32-H": ("rca-testbed-food", "testbed-dispatch", "dispatch-service"),
+    # 2026-10-11. F64-R: commerce api-gateway 의 order 라우트 서킷브레이커에 느린 호출 차단을 켜는 설정 배포.
+    # 임계(30ms)가 checkout 정상 처리 시간(약 37ms 이상)보다 낮아 멀쩡한 order 호출이 모두 느린 호출로 세어지고 서킷이 계속 열린다.
+    "F64-R": ("rca-testbed-commerce", "testbed-gateway", "api-gateway"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -47,6 +50,7 @@ APPROVED_KEYS = {
     "F32-R": {"DISPATCH_MAX_CAPACITY"},
     "F39-R": {"TRANSFER_SERVICE_URL"},
     "F32-H": {"SPRING_JACKSON_GENERATOR_WRITE_NUMBERS_AS_STRINGS"},
+    "F64-R": {"SPRING_APPLICATION_JSON"},
 }
 
 
