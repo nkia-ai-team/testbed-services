@@ -103,7 +103,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 40 → 41. F66-R(commerce 회원 표 열 추가 마이그레이션이 느린 내보내기 질의 뒤에서 잠금을 기다려 회원 표 질의가 모두 줄을 섬) 후보 추가.
         # 2026-10-11: 41 → 42. F64-P(banking api 설정 롤아웃이 거래 내역 서킷브레이커에 거래 내역 정상 지연보다 낮은 느린 호출 임계를 켬) 후보 추가.
         # 2026-10-11: 42 → 41. F32-H 정식 승격(녹화 case-f32-h-v3-531094f2).
-        self.assertEqual(stages.count("candidate"), 41)
+        # 2026-10-11: 41 → 42. F66-P(commerce 재고 이벤트 outbox 열 추가 마이그레이션이 느린 이벤트 내보내기 뒤에서 잠금을 기다려 재고 예약이 멈춤) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 42)
 
 
 class RecordingQueueTests(unittest.TestCase):

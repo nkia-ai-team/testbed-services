@@ -256,7 +256,8 @@
           "F23-P",
           "F60-R",
           "F57-P",
-          "F66-R"
+          "F66-R",
+          "F66-P"
         ]
       },
       "scenario_parameters": {
@@ -424,6 +425,20 @@
           "export_seconds": 420,
           "drain_seconds": 300,
           "minimum_rows": 10,
+          "maximum_sessions": 70
+        },
+        "F66-P": {
+          "engine": "postgresql",
+          "namespace": "rca-testbed-commerce",
+          "db_pod": "testbed-postgres-0",
+          "schema": "inventory_schema",
+          "table": "outbox_events",
+          "add_column": "trace_id",
+          "add_column_type": "varchar(64)",
+          "export_columns": "id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at",
+          "export_seconds": 420,
+          "drain_seconds": 300,
+          "minimum_rows": 10000,
           "maximum_sessions": 70
         }
       }

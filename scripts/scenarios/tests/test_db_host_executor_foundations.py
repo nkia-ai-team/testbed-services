@@ -553,6 +553,54 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F66-R", ddl.CONTRACTS["F57-P"], {})
 
+    def test_postgres_event_table_migration_queues_behind_an_event_export_with_writes_in_flight(self) -> None:
+        # F66-P: F66-R 의 잠금 대기열을 재고 이벤트 outbox 에. 내보내기는 그 표 자기 행을 일정한 속도로 내보내고(열 목록 인자),
+        # 줄을 서는 것은 재고 예약 트랜잭션 끝의 outbox INSERT 다. F66-R 의 인자와 내보내기 문장은 그대로다.
+        p = ddl.CONTRACTS["F66-P"]
+        ddl.validate("F66-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F66-P", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "inventory_schema",
+                                    "outbox_events", "trace_id", "varchar(64)", "", "", "420", "300", "10000", "70",
+                                    "id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, "
+                                    "published_at"])
+        self.assertNotIn("F66-P", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F66-P", script)
+        _, f66r_body = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
+        self.assertEqual(body, f66r_body, "both run the same remote script; only the arguments differ")
+        f66r_argv, _ = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
+        self.assertEqual(len(f66r_argv), 3 + 13, "F66-R keeps its thirteen arguments and its joined export")
+        # 열 목록이 있으면 표 자기 행을 내보내고 그 표의 행 추정으로 속도를 정한다. 없으면 F66-R 의 회원 ⋈ 토큰이다.
+        self.assertIn('export_columns="${14:-}"', script)
+        branch = script[script.index('if [[ -n "$export_columns" ]]; then'):script.index("fi\nmigration_sql=")]
+        self.assertIn('export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"', branch)
+        self.assertIn('paced="$rel"', branch)
+        self.assertIn('paced="$schema.$join"', branch)
+        self.assertIn("oid = '$paced'::regclass", script)
+        self.assertIn("(( est >= 100 * export_seconds ))", script)
+        # 열 목록은 문장 텍스트로 세션을 찾는 탐침의 작은따옴표 안에 들어가므로 따옴표가 없어야 한다.
+        self.assertNotIn("'", p["export_columns"])
+        self.assertNotIn(";", p["export_columns"])
+        # 더하는 열은 기본값도 NOT NULL 도 없어 카탈로그만 바꾼다.
+        self.assertNotIn("DEFAULT", p["add_column_type"].upper())
+        self.assertNotIn("NOT NULL", p["add_column_type"].upper())
+        # 파드 안 파일 이름에 시나리오 id 가 없다.
+        self.assertIn("export_sh=/tmp/event-export.sh", branch)
+        self.assertIn("export_log=/tmp/event-export.log", branch)
+        # 24시간 보존 약 7만 2천 행: 내보내기 시작 조건(행 추정 >= 100 x 420)과 preflight 최소 행.
+        self.assertLessEqual(100 * p["export_seconds"], 72000)
+        self.assertGreaterEqual(p["minimum_rows"], 10000)
+        self.assertLessEqual(p["maximum_sessions"], 70)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-P", {**p, "table": "inventory"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-P", {**p, "export_columns": "*"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-P", {**p, "export_seconds": 3600}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F66-P", ddl.CONTRACTS["F66-R"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

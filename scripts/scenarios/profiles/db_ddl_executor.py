@@ -123,6 +123,13 @@ and the queue drains.  Cleanup waits for that up to `drain_seconds` (ending the 
 cancelling the migration if it still waits), then drops the column, also a catalog change only.  Rows, indexes and
 the joined table are untouched.  The probes run untracked by pg_stat_statements; the export and the migration are
 ordinary sessions.
+
+F66-P runs the same queue on the commerce inventory event outbox with `export_columns`: the export copies the table's
+own rows out (an event table read into the warehouse), paced by that table's row estimate, and the migration adds a
+nullable trace column.  The statements that queue are not reads but the outbox inserts at the end of inventory's
+reservation transactions, which already hold the stock row (SELECT ... FOR UPDATE) and their connection, so the
+reservations of the same product wait on that row behind them and the inventory pool drains.  Without
+`export_columns` the arguments and the export are exactly F66-R's.
 """
 from __future__ import annotations
 
@@ -278,6 +285,16 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "export_join_table": "auth_tokens", "export_join_column": "user_id", "export_seconds": 420,
         "drain_seconds": 300, "minimum_rows": 10, "maximum_sessions": 70,
     },
+    # 같은 잠금 대기열을 재고 이벤트 outbox 표에: 재고 이벤트를 데이터 웨어하우스로 옮기는 내보내기(표 자기 행을 일정한 속도로
+    # 내보내 export_seconds 동안 활성)가 도는 중에 추적 id 열을 더하는 마이그레이션(카탈로그만)을 돌린다. inventory 의 예약,
+    # 해제는 재고 행을 FOR UPDATE 로 잡고 이동 이력을 쓴 뒤 같은 트랜잭션에서 이 표에 INSERT 하므로, 그 INSERT 가 ALTER 뒤에
+    # 줄을 서며 재고 행 잠금과 연결을 쥔 채 멈춘다. 행 추정이 export_seconds 의 100배보다 적으면 시작하지 않는다(24시간 보존 약 7만 행).
+    "F66-P": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "inventory_schema", "table": "outbox_events", "add_column": "trace_id", "add_column_type": "varchar(64)",
+        "export_columns": "id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at",
+        "export_seconds": 420, "drain_seconds": 300, "minimum_rows": 10000, "maximum_sessions": 70,
+    },
 }
 
 
@@ -313,6 +330,12 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
+    if p["engine"] == "postgresql" and "export_columns" in p:
+        return kubectl_bash_argv([
+            action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["add_column"], p["add_column_type"],
+            "", "", str(p["export_seconds"]), str(p["drain_seconds"]), str(p["minimum_rows"]),
+            str(p["maximum_sessions"]), p["export_columns"],
+        ]), PG_QUEUE_REMOTE
     if p["engine"] == "postgresql" and "add_column" in p:
         return kubectl_bash_argv([
             action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["add_column"], p["add_column_type"],
@@ -960,19 +983,29 @@ esac
 PG_QUEUE_REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"; ctype="$7"; join="$8"; join_column="$9"
-export_seconds="${10}"; drain="${11}"; minimum="${12}"; max_sessions="${13}"
+export_seconds="${10}"; drain="${11}"; minimum="${12}"; max_sessions="${13}"; export_columns="${14:-}"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 # Probes travel in the environment and run untracked by pg_stat_statements, so none of them reaches Top SQL;
 # the first psql line on stderr goes to stderr for the runner log.
 sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
 rel="$schema.$table"
 # The two statements as the export job and the migration send them; their sessions are found by this exact text.
-export_sql="COPY (SELECT u.id, u.email, u.name, t.created_at, t.expires_at FROM $rel u JOIN $schema.$join t ON t.$join_column = u.id) TO STDOUT"
+# With export columns the export copies the table's own rows out (an event table read into the warehouse) and is paced
+# by that table's row estimate; without them it is the members joined with their login tokens, paced by the tokens.
+if [[ -n "$export_columns" ]]; then
+  export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"
+  paced="$rel"
+  export_sh=/tmp/event-export.sh
+  export_log=/tmp/event-export.log
+else
+  export_sql="COPY (SELECT u.id, u.email, u.name, t.created_at, t.expires_at FROM $rel u JOIN $schema.$join t ON t.$join_column = u.id) TO STDOUT"
+  paced="$schema.$join"
+  export_sh=/tmp/user-export.sh
+  export_log=/tmp/user-export.log
+fi
 migration_sql="ALTER TABLE $rel ADD COLUMN $column $ctype"
 # Both connect the way the application's own tools do (the driver's default application name).
 identity="PostgreSQL JDBC Driver"
-export_sh=/tmp/user-export.sh
-export_log=/tmp/user-export.log
 migration_log=/tmp/schema-migration.log
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
@@ -1001,7 +1034,7 @@ case "$action" in
  run)
   check
   # Pace the export so it stays active for about export_seconds: the reader pauses a second every `rate` rows.
-  est=$(number "$(sql "SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = '$schema.$join'::regclass;")")
+  est=$(number "$(sql "SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = '$paced'::regclass;")")
   (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
   rate=$(( est / export_seconds + 1 ))
   "${k[@]}" exec -i "$pod" -- sh -c "cat >$export_sh" <<'EOS'

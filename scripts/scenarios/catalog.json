@@ -1417,6 +1417,18 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F66-P",
+      "slug": "f66-p-commerce-inventory-outbox-column-migration-queues-behind-event-export",
+      "profiles": [
+        "db.ddl"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

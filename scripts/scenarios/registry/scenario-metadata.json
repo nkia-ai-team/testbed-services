@@ -10684,6 +10684,108 @@
      }
     ]
    }
+  },
+  "F66-P": {
+   "title": "A column-addition migration on the commerce inventory event outbox queues behind a slow event export: inventory reservations stop at their outbox insert while holding stock row locks and connections, the inventory-service pool drains and product pages and checkout fail for about seven minutes",
+   "description": "A data job that copies inventory events to the analytics store starts a slow read of the commerce PostgreSQL table inventory_schema.outbox_events: COPY (SELECT id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at FROM inventory_schema.outbox_events) TO STDOUT, streaming the table's roughly 72,000 rows (24 hours of events) to a reader that takes them at a fixed pace, so the statement stays active for about seven minutes and holds an ACCESS SHARE lock on the table. A few seconds later another team runs a migration that adds one nullable column without a default (trace_id varchar(64)) to the same table. On its own the change only edits the catalog, but it needs the table's ACCESS EXCLUSIVE lock for that instant, so it waits behind the export, and because a waiting ACCESS EXCLUSIVE request conflicts with every other lock, every later statement on the outbox, inserts included, queues behind it. inventory-service reserves stock in one transaction: it locks the stock row with SELECT ... FOR UPDATE, lowers the stock, inserts a movement row and finally inserts the event into the outbox. That last insert now waits, so the transaction keeps the stock row lock and its database connection. The next reservation of the same product waits for that row lock. The inventory Hikari pool (10, default 30 s connection wait) is held within seconds and even plain stock lookups cannot get a connection. product-service looks up stock for every product page and makes reservations on behalf of order; it gives up on inventory after its 10 s read timeout and answers 500. The gateway's product circuit breaker opens, so product lists and categories fail with 502 as well, and checkout fails with 5xx. inventory-service health includes the database, so readiness drops and liveness restarts it; the restarted pod's startup schema script (CREATE INDEX IF NOT EXISTS on the movement and outbox tables) waits behind the same locks and the startup probe restarts it again. Login, carts and the other domains keep working. When the export finishes the migration gets its lock, adds the column at once and the queue drains; cleanup then drops the column.",
+   "cause": "Migration ALTER TABLE inventory_schema.outbox_events ADD COLUMN trace_id varchar(64) (catalog-only, but needs ACCESS EXCLUSIVE) started while a slow event export COPY over the same table held ACCESS SHARE for about seven minutes -> the ALTER waits in the lock queue and every later statement on the outbox queues behind it with no timeout -> inventory reserve/release transactions stop at their outbox insert while holding the stock row lock (FOR UPDATE) and their connection; reservations of the same product wait on that row -> inventory-service Hikari pool (10) held, stock lookups time out -> product-service 500 after its 10 s read timeout, gateway product circuit opens (product pages, lists, categories 502), checkout 5xx -> inventory-service NotReady and restarting, its startup CREATE INDEX statements queue too -> when the export ends the migration goes through and the queue drains on its own.",
+   "injection_summary": "The db.ddl executor checks that inventory_schema.outbox_events has at least 10,000 rows, that the column trace_id does not exist, that neither the export nor the migration session is already there, that lock_timeout and statement_timeout are 0, that no lock on the table is waiting and that at most 70 sessions are open. Run writes a small reader script into the testbed-postgres-0 pod and starts, in the background inside the pod, the export COPY (SELECT id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at FROM inventory_schema.outbox_events) TO STDOUT piped to a reader that pauses one second every N rows (N from the table's row estimate so the export lasts about 420 s; it refuses to start below 42,000 estimated rows), waits until that session holds its lock on the table, then starts ALTER TABLE inventory_schema.outbox_events ADD COLUMN trace_id varchar(64) in the background and returns once the server shows the ALTER waiting behind the export. Both sessions carry the driver's default application name. Cleanup waits for the export to end on its own (up to 300 s; then it ends the export and cancels the migration if still there), drops the column (catalog only, lock_timeout 5 s) and removes the pod-side files. Rows, indexes, other tables, application code, images, settings and Kubernetes objects are not changed. There is no companion load: the resident commerce baseline (loadgen-commerce) sends the traffic.",
+   "user_impact": "For about seven minutes commerce shoppers cannot open product pages, browse product lists or categories, or check out: product requests fail with 502 (the first ones after hanging for about 10 s), and checkouts fail with 5xx. Login and carts still work, so customers can fill a cart they cannot pay for. No orders are created in that window; reservations that were in flight are rolled back, so no stock is lost. The inventory events stop flowing to Kafka until the queue drains and then catch up. The commerce database itself stays up and fast for every other table. It clears on its own when the export finishes. The original outage rejected 75% of API requests for about 20 minutes.",
+   "distinguishing_evidence": "The decisive evidence is the DPM session snapshot (lucida.dpm_session_local, every minute): sessions from the inventory-service pod are blocked on waitType Lock / waitEvent relation with relNames that include outbox_events (and inventory, inventory_movements: the reservation transaction's own tables), all with the same blockingPid; a few more inventory sessions wait on transactionid behind them (the same product's stock row). That blocking session is itself waiting on a relation lock on outbox_events and is blocked by one long active session (waitEvent ClientWrite, queryTime growing toward about 420 s, relNames outbox_events). Before this, outbox_events never appeared under a relation-lock wait. commerce-inventory logs 'HikariPool-1 - Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, ...)', commerce-product logs Servlet errors, the gateway logs 'Downstream unavailable for GET /api/products...' and '... /api/orders/checkout' with CallNotPermittedException, and KCM shows testbed-inventory Unhealthy, Killing and restarts with no rollout. Unlike F01-R, the sessions that hold the stock rows are not idle: they are waiting on the outbox table, and the chain ends at a DDL and a long read on outbox_events. Unlike F57-P, inventory writes do not fail fast with 23505. Everything clears at the same minute when the export session disappears.",
+   "domain": "commerce",
+   "class": "B",
+   "observation_domains": [
+    "DPM",
+    "APM",
+    "KCM"
+   ],
+   "root_cause": {
+    "target_kind": "database",
+    "target_id": "commerce-postgres:inventory_schema.outbox_events",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 commerce PostgreSQL 의 inventory_schema.outbox_events(재고 이벤트 outbox) 테이블에 걸린 잠금 대기열이다. 이벤트에 추적 id 를 싣는 마이그레이션(ALTER TABLE inventory_schema.outbox_events ADD COLUMN trace_id varchar(64))은 기본값이 없어 카탈로그만 바꾸는 안전한 변경이지만 그 순간에 표의 ACCESS EXCLUSIVE 잠금이 필요하다. 몇 초 앞서 재고 이벤트를 분석 저장소로 옮기는 내보내기(COPY (SELECT id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at FROM inventory_schema.outbox_events) TO STDOUT, 24시간 보존 약 7만 2천 행을 일정한 속도로 받는 쪽에 흘려 약 7분 동안 활성)가 ACCESS SHARE 잠금을 쥐고 있어 마이그레이션이 잠금을 얻지 못하고 기다린다. 기다리는 ACCESS EXCLUSIVE 요청은 모든 잠금과 충돌하므로 그 뒤의 outbox 문장은 INSERT 까지 모두 마이그레이션 뒤에 줄을 선다. 역할과 DB 에 lock_timeout, statement_timeout 이 없어(0) 누구도 포기하지 않는다(원본도 DB 쪽 시간 제한이 없었다). inventory 의 예약은 한 트랜잭션에서 재고 행을 FOR UPDATE 로 잡고(InventoryService.java:75, InventoryRepository.java:17) 재고를 줄이고 이동 이력을 쓴 뒤 같은 트랜잭션에서 outbox 에 이벤트를 INSERT 한다(InventoryService.java:89, 138-142, OutboxPublisher.java:24-32). 이 INSERT 가 줄을 서면서 트랜잭션이 재고 행 잠금과 DB 연결을 쥔 채 멈추고, 같은 상품의 다음 예약은 그 행 잠금을 기다린다. inventory Hikari 풀(10, 기본 연결 대기 30초)이 몇 초 만에 묶여 outbox 와 무관한 재고 조회까지 연결을 얻지 못한다. product 는 상품 상세마다 재고를 조회하고 예약을 대신 부르는데 10초 읽기 시간 제한 끝에 500 을 내고, 게이트웨이 product 서킷이 열려 상품 목록, 카테고리까지 502, checkout 은 order 의 product 호출 실패로 5xx 다. inventory 의 health 에 DB 확인이 있어 readiness 가 빠지고 liveness 가 재시작하며, 다시 뜬 파드는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS(이동 이력 표, outbox 표)가 같은 잠금 뒤에 서서 startupProbe 에 다시 시작된다. 내보내기가 끝나면 마이그레이션이 잠금을 얻어 열을 즉시 더하고 줄이 풀린다. inventory, product, order, 게이트웨이의 코드, 설정, 요청량은 그대로라 정당하다(원칙 6). 근본과 계기가 같은 곳(이 표에 대한 스키마 변경과 그 표를 읽는 긴 질의의 겹침)이라 trigger_target_id 는 비운다. target_id 는 F66-R, F06-H, F01-R 과 같은 '인스턴스:스키마.테이블' 꼴이다. 관제 데이터 도달 경로: ① DPM 세션 스냅숏(1분)에 inventory 파드 IP 의 세션들이 Lock/relation 으로 blocked 이고 relNames 에 outbox_events(와 예약 트랜잭션이 잡은 inventory, inventory_movements)가 있으며 blockingPid 가 한 세션을 가리킨다. 그 세션도 outbox_events 의 relation 잠금을 기다리며, queryTime 이 수백 초로 늘어나는 활성 세션(ClientWrite, relNames outbox_events) 하나에 막혀 있다. 같은 상품을 예약하려는 세션은 Lock/transactionid 로 그 뒤에 선다(60일 동안 outbox_events 로의 Lock/relation 대기 0건) ② commerce-inventory 로그 'HikariPool-1 - Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, ...)'(평시 0, 다른 실행 날만), commerce-product Servlet 오류, 게이트웨이 'Downstream unavailable for GET /api/products..., POST /api/orders/checkout ...' ③ KCM testbed-inventory Unhealthy, Killing, 재시작(롤아웃 없음) ④ DB CPU 와 Top SQL 은 평시이고 outbox INSERT 호출이 멎는다 ⑤ 내보내기 세션이 사라지는 분에 대기가 한꺼번에 풀린다. 원본(Honeycomb 2024-08-06: teams 표에 INSTANT 열 추가 마이그레이션이 몇 초 앞서 시작된 5분 넘는 느린 SELECT 뒤에서 메타데이터 잠금을 기다리며 그 표의 모든 질의를 막아 API 요청의 75% 거절)처럼 '표 하나의 잠금 대기열이 그 표를 쓰는 요청 경로를 막음'이 정답의 층위다. 대기가 눈에 보이는 재고 행(inventory)이 아니라 사슬 맨 앞의 outbox 표가 고칠 곳이다. 마이그레이션이 무슨 열을 더했는지, 내보내기가 무엇이었는지까지는 요구하지 않는다.",
+    "code_anchor": [
+     "commerce/inventory-service/src/main/java/com/commerce/inventory/service/InventoryService.java:73-96 (reserve @Transactional — findByProductIdForUpdate(75)로 재고 행을 잡고 재고 UPDATE, 이동 이력 INSERT 뒤 publishEvent(89)로 같은 트랜잭션에서 outbox INSERT. 그 INSERT 가 줄을 서면 행 잠금과 연결을 쥔 채 멈춘다. release(98-111), updateStock(113-127)도 같다)",
+     "commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java:17 (@Lock PESSIMISTIC_WRITE — SELECT ... FOR UPDATE)",
+     "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxPublisher.java:24-32 (publish — 호출한 트랜잭션 안에서 outbox_events 에 INSERT)",
+     "commerce/commerce-common/src/main/java/com/commerce/common/outbox/OutboxRelay.java:33-47 (2초마다 outbox 를 읽는 릴레이도 줄에 선다)",
+     "commerce/inventory-service/src/main/resources/application.yml:7-10 (datasource, hikari 설정 없음 — 기본 최대 10, 연결 대기 30초)",
+     "commerce/inventory-service/src/main/resources/application.yml:18-22 (spring.sql.init.mode always — 기동마다 schema.sql 을 돈다)",
+     "commerce/inventory-service/src/main/resources/schema.sql:21-34 (이동 이력 표 CREATE INDEX IF NOT EXISTS(21), outbox_events 정의와 미발행 부분 인덱스 CREATE INDEX IF NOT EXISTS(23-34) — 기동 문장도 같은 잠금 뒤에 선다)",
+     "commerce/product-service/src/main/java/com/commerce/product/service/ProductService.java:75-98 (getProductWithStock 이 상세마다 inventoryClient.getStock, reserveStock 이 inventoryClient.reserve)",
+     "commerce/product-service/src/main/resources/application.yml:25-28 (inventory read-timeout 10s)",
+     "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:144-160 (checkout — cart, pricing 뒤 productClient.reserveStock)",
+     "commerce/api-gateway/src/main/resources/application.yml:38-41 (product read-timeout 10s), 86-91 (product 서킷: 창 10, 최소 5, 실패율 50%, 열림 5초 — 상세, 목록, 카테고리를 함께 묶음)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:102-106 ('Downstream unavailable for ...' WARN 과 502)",
+     "commerce/k8s/22-inventory-service.yaml:69-88 (startupProbe 5초 x 30, readinessProbe 10초 x 3, livenessProbe 15초 x 5, 모두 /actuator/health — DB 확인이 풀에서 연결을 못 얻으면 실패)"
+    ],
+    "infra_anchor": "rca-testbed-commerce StatefulSet testbed-postgres(파드 testbed-postgres-0, PostgreSQL 16.14 alpine, max_connections 100, tb-w1). 2026-10-11 109 읽기 전용 실측: inventory_schema.outbox_events 71,965행(24시간 보존, 행 추정 71,947, 미발행 2, payload 평균 75바이트), 인덱스 pkey 와 같은 정의의 미발행 부분 인덱스 둘, 열린 세션 62, commerce 역할의 lock_timeout 0, statement_timeout 0. DPM 수집기가 1분마다 세션 목록(lucida.dpm_session_local: pid, program, ip, waitType, waitEvent, sessionType blocked/blocking, blockingPid, relNames, queryTime)을 보고한다. 로컬 PostgreSQL 16.14 + 같은 inventory-service jar + Kafka 실측(2026-10-11): run 15초 뒤 inventory 세션 9개가 outbox INSERT 의 Lock/relation, 1개가 Lock/transactionid 로 막히고 예약, 재고 조회가 모두 10초 시간 초과, inventory 로그 Hikari 30000ms 666줄. inventory 를 죽여도 줄 선 백엔드 10개는 잠금이 풀릴 때까지 남고, 다시 띄운 inventory 는 기동 CREATE INDEX 가 줄에 서서 뜨지 못하다가 내보내기가 끝나자 곧 떴다. db.ddl executor 가 러너 컨테이너에서 kubectl exec 로 DB 파드 안의 psql 을 띄운다."
+   },
+   "must_support": [
+    "dpm_session_local 에 inventory 파드 IP 의 PostgreSQL JDBC 세션들이 sessionType blocked, waitType Lock, waitEvent relation, relNames 에 outbox_events(와 inventory, inventory_movements)로 나타나고 같은 blockingPid 를 가리키며, 그 세션도 relNames outbox_events 의 relation 잠금을 기다리는 세션이고, 그것을 막는 것은 queryTime 이 분마다 늘어 약 420초에 이르는 활성 세션 하나(waitEvent ClientWrite, relNames outbox_events)다. 같은 상품을 예약하는 inventory 세션은 Lock/transactionid 로 그 뒤에 선다(2026-10-11 조회 시 60일 동안 outbox_events 로의 Lock/relation 대기 0건)",
+    "commerce-inventory 로그에 'HikariPool-1 - Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, ...)' 와 Servlet 오류가, commerce-product 에 Servlet 오류가, commerce-gateway 에 'Downstream unavailable for GET /api/products...' 와 'POST /api/orders/checkout' 이 나타난다(평시 4일 commerce-product, 게이트웨이 WARN 이상 0줄, inventory Hikari 는 다른 실행 날 하루만)",
+    "KCM 에 testbed-inventory 의 Unhealthy(readiness, liveness, startup)와 Killing, 재시작이 롤아웃(ScalingReplicaSet)이나 ConfigMap 변경 없이 나온다(평시 testbed-inventory 롤아웃은 2026-10-01 이 마지막)",
+    "상주 기준선의 checkout 5xx 비율이 0.5 이상, 2xx 비율이 0.3 미만이고 상품 상세, 목록, 카테고리가 502 다. 로그인과 장바구니는 200 이다",
+    "testbed-postgres-0 은 Ready 이고 재시작하지 않으며, DB CPU 와 Top SQL 은 평시이고 outbox INSERT 호출이 멎는다. 다른 commerce 표 세션에는 잠금 대기가 없다",
+    "내보내기 세션이 사라지는 분(약 7분 뒤)에 blocked 세션이 한꺼번에 사라지고 inventory 가 곧 Ready 로 돌아와 상품 조회와 checkout 이 회복된다"
+   ],
+   "must_rule_out": [
+    "재고 행을 쥔 채 노는 트랜잭션(F01-R)이 아님: 재고 행을 쥔 세션이 ClientRead 로 놀지 않고 outbox_events 의 relation 잠금을 기다리며, 사슬 맨 앞은 outbox_events 를 읽는 오래 도는 활성 세션과 그 뒤에서 기다리는 DDL 이다",
+    "재고 이동 이력 시퀀스 되감기(F57-P)가 아님: inventory 쓰기가 23505 로 곧바로 실패하지 않고 매달리며, 앞서 DB 전체가 읽기 전용이 되거나 세션이 끊기는 일이 없다",
+    "inventory 배포, 설정, 프로브 오설정이 아님: testbed-inventory 롤아웃이 없고 프로브 스펙이 그대로이며, inventory 가 Unhealthy 가 되기 전에 DB 세션의 잠금 대기가 먼저 나타난다",
+    "재입고 배치 정지(F23-R)가 아님: 실패는 409 재고 부족이 아니라 inventory 연결 고갈의 500/502 이고 재고 조회까지 막힌다",
+    "PostgreSQL 다운이나 재시작(F25-H)이 아님: testbed-postgres-0 Ready, KCM 에 OOMKilled 나 Created 가 없고 다른 표의 질의는 평시대로 빠르다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F01-R (같은 inventory 풀 고갈, checkout 5xx, 게이트웨이 product 서킷, inventory 재시작이지만 재고 한 행을 FOR UPDATE 로 쥔 트랜잭션이 놀고 있어 생긴다. F66-P 는 재고 행을 쥔 예약 트랜잭션들이 outbox 표의 잠금 대기열에 서 있고, 사슬 맨 앞이 outbox 를 읽는 내보내기와 그 뒤의 DDL 이다)",
+     "F66-R (같은 '안전한 열 추가가 느린 읽기 뒤에서 잠금 대기열을 만듦' 원인이지만 회원 표의 단순 읽기(토큰 확인)를 막아 인가된 쓰기만 500 이고 둘러보기는 정상이다. F66-P 는 트랜잭션 끝의 쓰기를 막아 앞서 잡은 재고 행 잠금까지 붙들리고 둘러보기까지 실패한다)",
+     "F57-P (같은 inventory 쓰기 경로이지만 이동 이력 시퀀스가 되감겨 INSERT 가 23505 로 곧바로 실패하고 연결을 쥐지 않는다)",
+     "F23-R (같은 checkout 실패이지만 재입고 배치가 멈춰 재고가 바닥나 409 다)",
+     "F25-H (같은 commerce PostgreSQL 이지만 DB 자체가 죽는다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "database-relation",
+    "accept": [
+     "commerce-postgres:inventory_schema.outbox_events"
+    ],
+    "partial": [
+     "commerce-inventory",
+     "commerce-postgres",
+     "commerce-postgres:inventory_schema.inventory"
+    ]
+   },
+   "title_ko": "commerce 재고 이벤트 outbox 표에 열을 더하는 마이그레이션이 같은 표를 읽는 느린 이벤트 내보내기 뒤에서 잠금을 기다림: 재고 예약이 outbox 쓰기에서 재고 행 잠금과 연결을 쥔 채 멈춰 inventory 풀이 마르고, 약 7분 동안 상품 조회와 checkout 이 실패한다",
+   "description_ko": "재고 이벤트를 분석 저장소로 옮기는 데이터 작업이 commerce PostgreSQL 의 inventory_schema.outbox_events 를 통째로 읽는 느린 내보내기(COPY ... TO STDOUT, 24시간 보존 약 7만 2천 행을 일정한 속도로 받는 쪽에 흘려 약 7분 동안 활성)를 시작해 이 표의 ACCESS SHARE 잠금을 쥔다. 몇 초 뒤 다른 팀이 같은 표에 기본값 없는 null 허용 열 하나(trace_id varchar(64))를 더하는 마이그레이션을 돌린다. 그 자체는 카탈로그만 바꾸는 안전한 변경이지만 그 순간에 ACCESS EXCLUSIVE 잠금이 필요해 내보내기 뒤에서 기다리고, 기다리는 ACCESS EXCLUSIVE 는 모든 잠금과 충돌하므로 그 뒤의 outbox 문장은 INSERT 까지 모두 줄을 선다. inventory 의 예약은 한 트랜잭션에서 재고 행을 FOR UPDATE 로 잡고 재고를 줄이고 이동 이력을 쓴 뒤 마지막으로 outbox 에 이벤트를 INSERT 하는데, 이 INSERT 가 줄을 서면서 트랜잭션이 재고 행 잠금과 DB 연결을 쥔 채 멈춘다. 같은 상품의 다음 예약은 그 행 잠금을 기다린다. inventory Hikari 풀(10, 기본 연결 대기 30초)이 몇 초 만에 묶여 재고 조회까지 연결을 얻지 못한다. product 는 상품 상세마다 재고를 조회하고 예약을 대신 부르는데 10초 읽기 시간 제한 끝에 500 을 내고, 게이트웨이 product 서킷이 열려 상품 목록과 카테고리까지 502, checkout 은 5xx 다. inventory 의 health 에 DB 확인이 있어 readiness 가 빠지고 liveness 가 재시작하며, 다시 뜬 파드는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS(이동 이력 표, outbox 표)가 같은 잠금 뒤에 서서 startupProbe 에 다시 시작된다. 로그인, 장바구니, 다른 도메인은 정상이다. 내보내기가 끝나면 마이그레이션이 잠금을 얻어 열을 즉시 더하고 줄이 풀린다. cleanup 이 더한 열을 지운다.",
+   "cause_ko": "마이그레이션 ALTER TABLE inventory_schema.outbox_events ADD COLUMN trace_id varchar(64)(카탈로그만 바꾸지만 ACCESS EXCLUSIVE 필요)이 같은 표의 느린 이벤트 내보내기 COPY 가 약 7분 동안 ACCESS SHARE 를 쥔 사이에 시작됨 → 마이그레이션이 잠금 대기열에서 기다리고 그 뒤의 outbox 문장이 시간 제한 없이 모두 줄을 섬 → inventory 예약, 해제 트랜잭션이 outbox INSERT 에서 재고 행 잠금(FOR UPDATE)과 연결을 쥔 채 멈추고 같은 상품의 예약이 그 행을 기다림 → inventory Hikari 풀(10) 고갈, 재고 조회 시간 초과 → product 가 10초 읽기 시간 제한 끝에 500, 게이트웨이 product 서킷 열림(상품 상세, 목록, 카테고리 502), checkout 5xx → inventory NotReady 와 재시작, 기동 CREATE INDEX 도 줄에 섬 → 내보내기가 끝나면 마이그레이션이 지나가고 줄이 스스로 풀림.",
+   "injection_summary_ko": "db.ddl executor 가 inventory_schema.outbox_events 에 행이 10,000 이상 있고, trace_id 열이 없고, 내보내기와 마이그레이션 세션이 이미 있지 않으며, lock_timeout 과 statement_timeout 이 0 이고, 그 표에 기다리는 잠금이 없고, 열린 세션이 70 이하인지 확인한다. run 은 testbed-postgres-0 파드 안에 작은 읽기 스크립트를 쓰고, 파드 안에서 백그라운드로 내보내기 COPY (SELECT id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at FROM inventory_schema.outbox_events) TO STDOUT 를 N 행마다 1초 쉬는 읽기 쪽에 흘린다(N 은 그 표의 행 추정으로 정해 약 420초 동안 돈다, 행 추정이 42,000 미만이면 시작하지 않음). 그 세션이 표 잠금을 쥔 것을 본 뒤 ALTER TABLE inventory_schema.outbox_events ADD COLUMN trace_id varchar(64) 를 백그라운드로 띄우고, 서버가 ALTER 를 내보내기 뒤에서 기다리는 것으로 보이면 돌아온다. 두 세션은 드라이버 기본 애플리케이션 이름을 쓴다. cleanup 은 내보내기가 스스로 끝나기를 기다리고(최대 300초, 넘으면 내보내기를 끝내고 남은 마이그레이션을 취소), 열을 지우고(카탈로그만, lock_timeout 5초) 파드 안 파일을 지운다. 행, 인덱스, 다른 표, 앱 코드, 이미지, 설정, 쿠버네티스 객체는 바꾸지 않는다. 동반 부하는 없다: 상주 commerce 기준선(loadgen-commerce)이 트래픽을 낸다.",
+   "user_impact_ko": "약 7분 동안 commerce 에서 상품 상세, 목록, 카테고리를 볼 수 없고 checkout 이 되지 않는다: 상품 요청은 502(처음 것들은 약 10초 매달린 뒤), checkout 은 5xx 다. 로그인과 장바구니는 되어 결제할 수 없는 장바구니만 채워진다. 그동안 주문은 만들어지지 않고, 진행 중이던 예약은 되돌려져 재고를 잃지 않는다. 재고 이벤트는 줄이 풀릴 때까지 Kafka 로 나가지 않다가 그 뒤 따라잡는다. commerce DB 는 다른 표에서는 평시대로 빠르다. 내보내기가 끝나면 스스로 풀린다. 원본 장애는 약 20분 동안 API 요청의 75% 를 거절했다.",
+   "distinguishing_evidence_ko": "결정 증거는 DPM 이 1분마다 남기는 DB 세션 스냅숏(lucida.dpm_session_local)이다: inventory 파드의 세션들이 waitType Lock, waitEvent relation 으로 blocked 이고 relNames 에 outbox_events(와 예약 트랜잭션이 잡은 inventory, inventory_movements)가 있으며 모두 같은 blockingPid 를 가리킨다. 몇 세션은 그 뒤에서 transactionid(같은 상품의 재고 행)를 기다린다. 그 blockingPid 세션은 자신도 outbox_events 의 relation 잠금을 기다리며, queryTime 이 약 420초까지 늘어나는 활성 세션 하나(waitEvent ClientWrite, relNames outbox_events)에 막혀 있다. 그전에는 outbox_events 로의 relation 잠금 대기가 한 번도 없었다. commerce-inventory 로그 'HikariPool-1 - Connection is not available, request timed out after 30000ms (total=10, active=10, idle=0, ...)', commerce-product Servlet 오류, 게이트웨이의 CallNotPermittedException 'Downstream unavailable for GET /api/products...', '... /api/orders/checkout', KCM 의 롤아웃 없는 testbed-inventory Unhealthy, Killing, 재시작이 따른다. F01-R 과 달리 재고 행을 쥔 세션이 놀지 않고 outbox 표를 기다리며 사슬이 outbox 의 DDL 과 긴 읽기에서 끝난다. F57-P 와 달리 inventory 쓰기가 23505 로 곧바로 실패하지 않는다. 내보내기 세션이 사라지는 분에 모두 함께 풀린다.",
+   "injected_fault": {
+    "profile": "db.ddl",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f66-p",
+      "parameters": {
+       "engine": "postgresql",
+       "namespace": "rca-testbed-commerce",
+       "db_pod": "testbed-postgres-0",
+       "schema": "inventory_schema",
+       "table": "outbox_events",
+       "add_column": "trace_id",
+       "add_column_type": "varchar(64)",
+       "export_columns": "id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, published_at",
+       "export_seconds": 420,
+       "drain_seconds": 300,
+       "minimum_rows": 10000,
+       "maximum_sessions": 70
+      }
+     }
+    ]
+   }
   }
  }
 }
