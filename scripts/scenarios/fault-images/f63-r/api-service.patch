@@ -1,0 +1,64 @@
+diff --git a/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java b/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java
+index de4d0f2..5402057 100644
+--- a/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java
++++ b/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java
+@@ -12,11 +12,26 @@ import org.springframework.stereotype.Service;
+ import org.springframework.util.MultiValueMap;
+ 
+ import java.math.BigDecimal;
++import java.util.concurrent.Callable;
++import java.util.concurrent.ExecutionException;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.TimeoutException;
+ 
+ @Service
+ public class ApiService {
+ 
+     private static final Logger log = LoggerFactory.getLogger(ApiService.class);
++
++    /**
++     * 이체 접수와 거래 내역 조회의 전체 처리 마감 시간.
++     * 하류 호출은 읽기 10초에 재시도 3회라 최악이면 30초를 넘게 붙잡힌다. 사용자에게는 이 시간 안에
++     * 성공이든 504 든 답을 준다.
++     */
++    private static final long DEADLINE_MS = 5000;
++
+     private final AccountClient accountClient;
+     private final TransferClient transferClient;
+ 
+@@ -34,10 +49,30 @@ public class ApiService {
+         }
+         log.info("Submitting transfer: from={} to={} amount={} orderId={}",
+                 request.fromAccount(), request.toAccount(), request.amount(), request.orderId());
+-        return accountClient.requestTransfer(request);
++        return withinDeadline("transfer submit", () -> accountClient.requestTransfer(request));
+     }
+ 
+     public String listTransfers(MultiValueMap<String, String> params) {
+-        return transferClient.listTransfers(params);
++        return withinDeadline("transfer list", () -> transferClient.listTransfers(params));
++    }
++
++    private <T> T withinDeadline(String operation, Callable<T> call) {
++        ExecutorService executor = Executors.newFixedThreadPool(1);
++        Future<T> future = executor.submit(call);
++        try {
++            return future.get(DEADLINE_MS, TimeUnit.MILLISECONDS);
++        } catch (TimeoutException ex) {
++            future.cancel(true);
++            log.warn("{} did not finish within {}ms", operation, DEADLINE_MS);
++            throw new ServiceException(HttpStatus.GATEWAY_TIMEOUT, operation + " timed out");
++        } catch (ExecutionException ex) {
++            if (ex.getCause() instanceof RuntimeException re) {
++                throw re;
++            }
++            throw new ServiceException(HttpStatus.BAD_GATEWAY, operation + " failed: " + ex.getCause());
++        } catch (InterruptedException ex) {
++            Thread.currentThread().interrupt();
++            throw new ServiceException(HttpStatus.SERVICE_UNAVAILABLE, operation + " interrupted");
++        }
+     }
+ }

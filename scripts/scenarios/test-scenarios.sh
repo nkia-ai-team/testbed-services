@@ -53,7 +53,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 104 → 105. F41-H(후보) 추가.
 # 2026-10-10: 105 → 106. F60-R(후보) 추가.
 # 2026-10-11: 106 → 107. F57-P(후보) 추가.
-[[ "$total" -eq 107 ]]
+# 2026-10-11: 107 → 108. F63-R(후보) 추가.
+[[ "$total" -eq 108 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -157,7 +158,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: ready 79→80. F41-H(banking account 릴리스가 헬스 하위 그룹을 꺼 liveness 404 로 멀쩡한 컨테이너가 재시작을 되풀이, 잔액 조회와 이체 502)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-10: ready 80→81. F60-R(food 배차 이력 표에 외래 키를 더하는 마이그레이션이 표를 복사하며 배차 쓰기를 메타데이터 잠금으로 막아 dispatch 풀 고갈, 주문 503)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 81→82. F57-P(표 이전이 commerce PostgreSQL 재고 이동 이력 표의 id 시퀀스 상태를 옮기지 않아 새 이동 이력 INSERT 가 기본 키 23505 로 실패, 재고 예약 500, checkout 502)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 82 ]]
+# 2026-10-11: ready 82→83. F63-R(banking api 릴리스가 요청마다 스레드 하나짜리 풀을 만들고 닫지 않아 스레드가 쌓여 컨테이너 메모리 한도에서 OOM 재시작을 되풀이, 이체와 거래 내역 502)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 83 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -235,7 +237,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-10: 98 → 99. F41-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f41-h)으로 들어왔다.
 # 2026-10-10: 99 → 100. F60-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f60-r)으로 들어왔다.
 # 2026-10-11: 100 → 101. F57-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f57-p)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 101 ]]
+# 2026-10-11: 101 → 102. F63-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f63-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 102 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

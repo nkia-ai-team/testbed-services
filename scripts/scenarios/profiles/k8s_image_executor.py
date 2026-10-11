@@ -243,6 +243,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-account:latest",
         "fault_image": "core-banking-account:1.5.0",
     },
+    # 2026-10-11. F63-R: banking api-service 를 이체 접수와 거래 내역 조회에 처리 마감 시간을 더한 릴리스 1.5.0 으로
+    # 롤아웃한다. 새 마감 처리가 요청마다 스레드 하나짜리 풀을 만들어 하류 호출을 맡기고 닫지 않아, 요청마다 멈춘
+    # 스레드가 하나씩 남는다. 스레드 스택과 커널 스택이 컨테이너 메모리 한도(1GiB)를 채우면 api 가 느려지다 멈추고
+    # 재시작된다. 결함 이미지는 fault-images/f63-r 로 109 docker 에만 빌드하고, 실행기가 tb-w2 에 올렸다가 cleanup 이
+    # 지운다. api 의 다른 릴리스 태그(F47-R 1.4.0)와 겹치지 않는다.
+    "F63-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-api",
+        "container": "api-service",
+        "baseline_image": "core-banking-api:latest",
+        "fault_image": "core-banking-api:1.5.0",
+    },
 }
 
 

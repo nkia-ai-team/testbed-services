@@ -95,7 +95,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: 104 → 105. F41-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-10: 105 → 106. F60-R(후보) 추가. 기존 db.ddl 에 MySQL 외래 키 추가 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 106 → 107. F57-P(후보) 추가. 기존 db.ddl 에 PostgreSQL 시퀀스 되감기 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 107)
+        # 2026-10-11: 107 → 108. F63-R(후보) 추가. 기존 k8s.image release 모드를 banking api 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 108)
         self.assertEqual(len(self.profiles["profiles"]), 33)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -232,6 +233,8 @@ class RegistryContractTests(unittest.TestCase):
             "F60-R",
             # 2026-10-11: commerce PostgreSQL 을 새 인스턴스로 옮긴 이전이 inventory_schema.inventory_movements 의 id 시퀀스 상태를 옮기지 않아 시퀀스가 표보다 10만 키 뒤에서 다시 시작(db.ddl PostgreSQL 시퀀스 되감기: 옛 쪽 읽기 전용 기본값과 앱 세션 끊기로 약 6초 쓰기 25006, 잠금 아래 키 구간 확인 뒤 setval, 읽기 전용 해제와 다시 끊기, 표 통계는 그대로, 재고 예약 INSERT 가 기본 키 23505 로 실패, product 500, checkout 502, 둘러보기와 재고 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-P",
+            # 2026-10-11: banking api-service 를 처리 마감 시간을 더한 릴리스 1.5.0(fault-images/f63-r)으로 롤아웃(요청마다 Executors.newFixedThreadPool(1) 을 만들고 닫지 않아 멈춘 스레드가 쌓여 컨테이너 메모리 한도에서 OOM 재시작 반복, 이체와 거래 내역 502).
+            "F63-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -584,6 +587,8 @@ class RegistryContractTests(unittest.TestCase):
             "F60-R",
             # 2026-10-11: commerce PostgreSQL 을 새 인스턴스로 옮긴 이전이 inventory_schema.inventory_movements 의 id 시퀀스 상태를 옮기지 않아 시퀀스가 표보다 10만 키 뒤에서 다시 시작(db.ddl PostgreSQL 시퀀스 되감기: 옛 쪽 읽기 전용 기본값과 앱 세션 끊기로 약 6초 쓰기 25006, 잠금 아래 키 구간 확인 뒤 setval, 읽기 전용 해제와 다시 끊기, 표 통계는 그대로, 재고 예약 INSERT 가 기본 키 23505 로 실패, product 500, checkout 502, 둘러보기와 재고 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-P",
+            # 2026-10-11: banking api-service 를 처리 마감 시간을 더한 릴리스 1.5.0(fault-images/f63-r)으로 롤아웃(요청마다 Executors.newFixedThreadPool(1) 을 만들고 닫지 않아 멈춘 스레드가 쌓여 컨테이너 메모리 한도에서 OOM 재시작 반복, 이체와 거래 내역 502).
+            "F63-R",
             },
         )
         self.assertEqual(
@@ -720,6 +725,8 @@ class RegistryContractTests(unittest.TestCase):
             "F60-R",
             # 2026-10-11: commerce PostgreSQL 을 새 인스턴스로 옮긴 이전이 inventory_schema.inventory_movements 의 id 시퀀스 상태를 옮기지 않아 시퀀스가 표보다 10만 키 뒤에서 다시 시작(db.ddl PostgreSQL 시퀀스 되감기: 옛 쪽 읽기 전용 기본값과 앱 세션 끊기로 약 6초 쓰기 25006, 잠금 아래 키 구간 확인 뒤 setval, 읽기 전용 해제와 다시 끊기, 표 통계는 그대로, 재고 예약 INSERT 가 기본 키 23505 로 실패, product 500, checkout 502, 둘러보기와 재고 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-P",
+            # 2026-10-11: banking api-service 를 처리 마감 시간을 더한 릴리스 1.5.0(fault-images/f63-r)으로 롤아웃(요청마다 Executors.newFixedThreadPool(1) 을 만들고 닫지 않아 멈춘 스레드가 쌓여 컨테이너 메모리 한도에서 OOM 재시작 반복, 이체와 거래 내역 502).
+            "F63-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -901,8 +908,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-10: F41-H(후보, 고정 evaluation)이 끝에 붙어 F23-P 가 끝 5개에서 빠졌다.
         # 2026-10-10: F60-R(후보, 고정 evaluation)이 끝에 붙어 F58-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F57-P(후보, 고정 evaluation)이 끝에 붙어 F59-R 이 끝 5개에서 빠졌다.
+        # 2026-10-11: F63-R(후보, 고정 evaluation)이 끝에 붙어 F59-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F59-P", "F36-H", "F41-H", "F60-R", "F57-P"])
+                         ["F36-H", "F41-H", "F60-R", "F57-P", "F63-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

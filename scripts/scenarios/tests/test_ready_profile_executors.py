@@ -1309,6 +1309,48 @@ esac
         config = (banking / "account-service" / "src" / "main" / "resources" / "application.yml").read_text()
         self.assertIn("probes:\n        enabled: true", config)
 
+    def test_k8s_image_release_mode_rolls_banking_api_thread_leak_release(self) -> None:
+        # F63-R: 같은 release 스크립트로 banking api 를 1.5.0 으로 롤아웃한다(tb-w2). F47-R 도 api 릴리스(1.4.0)를 쓰므로
+        # 태그가 겹치지 않아야 둘 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 api-service/src 안만 고친다.
+        plan = compiler.compile_plan("f63-r-banking-api-release-leaks-thread-per-request")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-api", "api-service",
+                                    "core-banking-api:latest", "core-banking-api:1.5.0"])
+        self.assertNotIn("F63-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F63-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F63-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f63-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F63-R"]["baseline_image"], k8s_image.CONTRACTS["F63-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f63-r" / "api-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/api-service/src/",
+                                                     "b/core-banking/api-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F63", "f63", "fault", "bug", "chaos", "scenario", "leak"):
+            self.assertNotIn(word, added)
+        # 누수의 고리: 요청마다 고정 크기 풀(작업 스레드가 비데몬이고 풀을 붙잡아 회수되지 않음)을 만들고 닫지 않는다.
+        # newSingleThreadExecutor 는 감싼 객체가 회수될 때 스스로 닫혀 누수가 되지 않는다(2026-10-11 로컬 실측).
+        self.assertIn("Executors.newFixedThreadPool(1)", added)
+        self.assertNotIn("newSingleThreadExecutor", added)
+        self.assertNotIn("shutdown", added)
+        self.assertIn('withinDeadline("transfer submit"', added)
+        self.assertIn('withinDeadline("transfer list"', added)
+
+    def test_f63r_relies_on_api_memory_limit_and_default_jvm_options(self) -> None:
+        # F63-R 의 주기(약 8분에 한도 도달)는 매니페스트 api 의 메모리 한도 1Gi 와 JVM 옵션이 OTel 에이전트뿐이라는 데
+        # 기댄다. 한도나 스레드 스택(-Xss)이 바뀌거나 nginx 가 /api/transfers 를 api 로 보내지 않으면 다시 평가해야 한다.
+        banking = ROOT.parent.parent / "core-banking"
+        deploy = (banking / "k8s" / "20-api-service.yaml").read_text()
+        self.assertIn("memory: 1Gi", deploy[deploy.index("limits:"):])
+        self.assertIn('value: "-javaagent:/opt/apm/opentelemetry-javaagent.jar"', deploy)
+        self.assertNotIn("-Xss", deploy)
+        configmap = (banking / "k8s" / "02-configmaps.yaml").read_text()
+        self.assertIn("location /api/transfers {\n            proxy_pass http://api-service;", configmap)
+        self.assertIn("location /api/accounts {\n            proxy_pass http://account-service;", configmap)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -1690,6 +1732,8 @@ esac
             "F60-R",
             # 2026-10-11: commerce PostgreSQL 을 새 인스턴스로 옮긴 이전이 inventory_schema.inventory_movements 의 id 시퀀스 상태를 옮기지 않아 시퀀스가 표보다 10만 키 뒤에서 다시 시작(db.ddl PostgreSQL 시퀀스 되감기: 옛 쪽 읽기 전용 기본값과 앱 세션 끊기로 약 6초 쓰기 25006, 잠금 아래 키 구간 확인 뒤 setval, 읽기 전용 해제와 다시 끊기, 표 통계는 그대로, 재고 예약 INSERT 가 기본 키 23505 로 실패, product 500, checkout 502, 둘러보기와 재고 조회 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F57-P",
+            # 2026-10-11: banking api-service 를 처리 마감 시간을 더한 릴리스 1.5.0(fault-images/f63-r)으로 롤아웃(요청마다 Executors.newFixedThreadPool(1) 을 만들고 닫지 않아 멈춘 스레드가 쌓여 컨테이너 메모리 한도에서 OOM 재시작 반복, 이체와 거래 내역 502).
+            "F63-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

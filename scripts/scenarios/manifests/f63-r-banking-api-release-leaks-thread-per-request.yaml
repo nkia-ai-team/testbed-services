@@ -1,0 +1,319 @@
+{
+  "schema_version": "1.0",
+  "id": "F63-R",
+  "slug": "f63-r-banking-api-release-leaks-thread-per-request",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "banking namespace",
+    "matrix_location_transport": "K/kubectl banking testbed-api 컨테이너 image set(core-banking-api:latest→core-banking-api:1.5.0, 직전에 runner 가 109 docker 의 1.5.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=20, api 요청 약 11건/초)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f63-r",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-banking",
+                "deployment": "testbed-api",
+                "container": "api-service",
+                "baseline_image": "core-banking-api:latest",
+                "fault_image": "core-banking-api:1.5.0"
+              },
+              "min_hold": "9m",
+              "settle": "60s",
+              "timeout": "28m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 새 api 는 메모리 한도에 닿은 뒤 짧게 느려지다 커널 OOM 으로 죽는다(2026-10-11 로컬 실측: 멈춘 구간의 최장 응답 22.9초, 60초 초과 0건). 죽는 순간 걸려 있던 요청은 연결이 끊겨 nginx 502 가 되고, 재기동 동안 엔드포인트가 비어 nginx 가 바로 502 로 답한다. 0(연결 불가)은 k6 60초 제한(nginx 도 proxy_read_timeout 기본 60초라 비슷한 때 504)을 넘거나 nginx, 노드가 죽었을 때만 나온다. JVM 이 엔드포인트에 남은 채 60초 넘게 멈추면 0 이 날 수 있으나 readiness(3회 × 10초)와 liveness(5회 × 15초)가 그 전에 떼어 낸다(첫 실행에서 확인)",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 banking 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-api"
+            },
+            "_note": "api 파드. 기본 롤아웃 전략(maxSurge 25%)이라 새 파드가 Ready 가 된 뒤 옛 파드가 내려간다. 고장 중에는 재시작마다 잠깐 빠진다. 회복 조건에만 쓴다",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "_note": "transfer 파드. 이 주입은 transfer 를 건드리지 않아 고장 중에도 Ready 여야 한다(빠지면 F17-R, F17-H 꼴의 하류 장애)",
+            "freshness": "30s"
+          },
+          {
+            "id": "oracle_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-oracle"
+            },
+            "_note": "Oracle 파드. 이 주입은 Oracle 을 건드리지 않는다. 빠지면 DB 장애(F35-R, F01-P 계열)다",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하(core-banking transfer-heavy-surge.js 20rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 0. 새 api 가 요청마다 남기는 멈춘 스레드로 컨테이너 메모리(1GiB)가 차면 짧게 느려지다 OOM 으로 죽고, 걸려 있던 이체와 재기동(재시작 대기 약 0초, Ready 까지 26~29초) 동안의 이체가 모두 nginx 502 다. 그 사이(스레드가 다시 찰 때까지 약 8~11분)는 0 근처다. 기록: 멈춤이 길면 transfer-heavy-surge.js 의 VU(최대 400)가 바닥나 achieved_rps 가 내려갈 수 있다(첫 실행에서 최저값 확인)",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하의 잔액 조회(step get, 35%, nginx → account 직행) 비정상 비율. 기록만 한다. api 를 거치지 않아 고장 중에도 0 근처여야 한다(F41-R, F41-H 처럼 account 가 고장 나면 이 값이 오른다)",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%) 5xx 비율. 평시 0. 30초 창에 이체가 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "transfers-failing",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "새 api 버전이 이체 접수와 거래 내역 조회마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아, 요청 하나마다 멈춘 비데몬 스레드가 하나씩 남는다. 동반 부하에서 api 로 오는 요청이 초당 약 11건(이체 8, 거래 내역 3)이면 스레드가 초당 약 11개, 컨테이너 메모리가 스레드당 약 100~130KiB(스레드 스택 접근 페이지 + 커널 스택 16KiB) 늘어 평시 약 290MiB 에서 한도 1GiB 까지 약 8~11분이다. 한도에 닿으면 회수할 파일 페이지가 거의 없어(운영 api cgroup file 160KiB) 짧게 느려지다 커널이 컨테이너 안 java 를 OOM 으로 죽이고, 걸려 있던 이체와 재기동(첫 크래시는 kubelet 이 바로 재시작, 109 실측 기동에서 Ready 까지 26~29초) 동안의 이체가 nginx 502 다. 비율은 이체 완료 시각 기준 30초 창이라 0.5 이상인 구간은 엔드포인트 복귀 + 15초까지이고, 길이는 멈춤 중 걸린 요청이 한꺼번에 502 가 되는 길이에 따라 약 30~45초다. 새 컨테이너도 같은 버전이라 되풀이한다"
+            }
+          ],
+          "consecutive_ticks": 1,
+          "_note": "consecutive_ticks 1(선례 F20-R). 러너는 틱을 끝낸 뒤 15초를 쉬어 실제 틱 간격이 15~25초(109 ticks.jsonl 평균 약 18초)이고, 이 관측은 갱신 30초라 2틱이 서려면 첫 참 틱과 약 38초 뒤의 참 틱이 모두 실패 구간 안에 들어야 한다(평가 시뮬레이션: 참 구간 43초면 33%, 30초면 0%). 1틱 근거: ① 비율 ≥0.5 인 구간은 [OOM 순간 − (걸린 요청이 한꺼번에 502 가 되는 길이 − 15초), 엔드포인트 복귀 + 15초] 라 엔드포인트 복귀까지 약 28~31초(109 KCM Started → 옛 파드 Killing 26~29초 + 재기동 1~2초)만으로도 L ≥ 28초이고, 최대 틱 간격 25초보다 길어 어느 위상이든 한 틱은 든다. ② 30초 창 하나가 동반 부하 이체 약 240건(8건/초 × 30초)의 집계라 표본 한 개짜리 잡음이 아니다. 평시 이 비율은 0 이다. ③ min_hold 9m 이 롤아웃 직후 과도 구간(새 파드 기동, 동반 부하 ramp)을 막는다. 주기: 롤아웃 뒤 새 파드 Ready 약 30초(109 KCM 2026-10-09 testbed-api Started 13:52:27 → 옛 파드 Killing 13:52:56, 다른 롤아웃 Started 14:07:41 → Ready 14:08:07), 동반 부하 ramp 2m 동안은 누수가 느리고, 그 뒤 초당 약 11개씩 쌓여 한도까지 약 8~9분(스레드 RSS 97~130KiB 면 OOM 이 롤아웃 뒤 약 9.7~12.8분), 짧은 멈춤 뒤 OOM, 재기동 약 30초가 한 주기다. kubelet 은 앞 크래시 뒤 10분(2 × 최대 대기 5분)을 넘겨야 재시작 대기를 초기화하므로, 주기가 10분보다 짧으면 두 번째 크래시는 10초 대기를 받는다(실패 구간이 늘어 판정엔 유리).  첫 실패 구간이 약 10~11분, 두 번째가 약 20~22분이라 min_hold 9m 이면 두 구간이 모두 판정 기회다. 첫 구간에서 판정되면 녹화 구간에는 되풀이가 한 번(누수 → OOM → 재시작 → 다시 상승)만 들어간다. (2026-10-11 로컬 실측: 같은 패치 jar, eclipse-temurin 17-jre, OTel 에이전트, 0.5 CPU, 1GiB, 하류 흉내 서버, 11건/초: 기동 직후 287MiB, 8분 20초에 스레드 5,544개 1,016MiB, 그 뒤 약 80초 만에 OOMKilled(137). 마지막 약 30초만 응답이 0.2초에서 최장 22.9초로 늘고, 죽기 전까지 오류는 없었다). timeout 28m 은 운영(aarch64, 내보내기 켬)에서 스레드당 메모리나 요청률이 달라 주기가 늘어도 두 번째 구간을 받는다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 5,
+              "_note": "동반 부하 20rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "transfer-down",
+              "observation": "transfer_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "transfer 파드가 빠지면 하류 장애(F17-R, F17-H 꼴)다. 이 주입은 transfer 를 건드리지 않는다"
+            },
+            {
+              "id": "oracle-down",
+              "observation": "oracle_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "Oracle 파드가 빠지면 api 가 아니라 DB 쪽 장애다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "api-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "baseline-transfers-recovered",
+              "observation": "transfer_5xx_rate_baseline",
+              "op": "lt",
+              "value": 0.05,
+              "_note": "판정력을 가진 회복 조건. 평시 0.0. cleanup 이 매니페스트 이미지로 되돌려 새 api 파드가 Ready 가 된 뒤 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 이미지를 core-banking-api:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 1.5.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 옛 api 프로세스가 내려가면 쌓인 스레드도 함께 사라진다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}
