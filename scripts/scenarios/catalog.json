@@ -1491,6 +1491,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F67-R",
+      "slug": "f67-r-commerce-payment-log-vacuum-full-blocks-payments",
+      "profiles": [
+        "db.ddl",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

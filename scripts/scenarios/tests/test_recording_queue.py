@@ -113,7 +113,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 44 → 45. F39-H(banking account 릴리스의 이체 접수 응답 구조 변경으로 api 가 응답을 읽지 못해 api 를 거치는 이체 전량 502) 후보 추가.
         # 2026-10-11: 45 → 46. F63-P(food dispatch 릴리스의 배달 조회 스레드 누수로 컨테이너 OOM 재시작이 되풀이되고 그 구간마다 주문 503) 후보 추가.
         # 2026-10-11: 46 → 45. F41-R 정식 승격(녹화 case-f41-r-v3-f37b1984).
-        self.assertEqual(stages.count("candidate"), 45)
+        # 2026-10-11: 45 → 46. F67-R(운영자의 VACUUM FULL 이 commerce 결제 감사 로그를 다시 쓰는 내내 잠가 결제가 멈추고 checkout 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 46)
 
 
 class RecordingQueueTests(unittest.TestCase):

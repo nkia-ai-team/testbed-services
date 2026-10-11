@@ -678,6 +678,55 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F60-H", ddl.CONTRACTS["F60-R"], {})
 
+    def test_postgres_vacuum_full_holds_the_tables_until_the_rewrite_ends_and_nothing_is_undone(self) -> None:
+        # F67-R: 운영자가 공간을 되찾으려고 가장 큰 두 표에 VACUUM (FULL) 을 나란히 돌린다. 다시 쓰는 내내 각 표의
+        # ACCESS EXCLUSIVE 를 쥐어 결제마다 쓰는 payment_logs INSERT 가 기다린다. 다시 쓰기가 끝나면 스스로 풀린다.
+        p = ddl.CONTRACTS["F67-R"]
+        ddl.validate("F67-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F67-R", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0",
+                                    "payment_schema.payment_logs shipping_schema.shipment_events", "720", "1000000",
+                                    "70", "8000"])
+        self.assertNotIn("F67-R", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F67-R", script)
+        # 문장은 원본 꼴 그대로(VACUUM FULL), 표마다 세션 하나. 세션은 이 문장으로 찾고 운영자의 psql 이름으로 붙는다.
+        self.assertIn("statement() { printf 'VACUUM (FULL) %s' \"$1\"; }", script)
+        self.assertIn("PGAPPNAME=psql", script)
+        self.assertIn("pid <> pg_backend_pid() AND query = '$(statement \"$1\")'", script)
+        self.assertIn('PGOPTIONS="-c pg_stat_statements.track=none"', script)
+        # 쓰기가 포기하지 않고 줄을 서려면 시간 제한이 없어야 하고, 대기 세션과 디스크 사본에 자리가 있어야 한다.
+        self.assertIn('[[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]', script)
+        self.assertIn('[[ "$sessions" -le "$max_sessions" ]]', script)
+        self.assertIn("(used + need + 1024) * 100 < size * 80", script)
+        run = script[script.index(" run)"):script.index(" cleanup)")]
+        # 순서: 확인 → 표마다 백그라운드 세션 → 모든 세션이 자기 표의 AccessExclusiveLock 을 쥔 것 확인. 못 쥐면 거두고 멈춤.
+        order = ["  check\n", "nohup psql", "l.mode = 'AccessExclusiveLock' AND l.granted", "cancel_all"]
+        positions = [run.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 1)
+        cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
+        # cleanup 은 다시 쓰기가 스스로 끝나기를 drain 까지 기다리고, 남았으면 취소(옛 사본 유지)한 뒤 로그만 지운다.
+        order = ["end=$((SECONDS + drain))", "cancel_all", "rm -f"]
+        positions = [cleanup.index(x) for x in order] + [cleanup.rindex("rows")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn(" recovery) rows; original; quiet ;;", script)
+        self.assertIn("pg_cancel_backend($pid)", script)
+        for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "revoke", "grant ",
+                     "create index", "lock table", "alter ", "pg_terminate_backend"):
+            self.assertNotIn(word, script.lower())
+        _, f66r_body = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
+        self.assertNotEqual(body, f66r_body)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-R", {**p, "tables": "payment_schema.payments"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-R", {**p, "drain_seconds": 3600}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-R", {**p, "minimum_free_mb": 100}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F67-R", ddl.CONTRACTS["F66-R"], {})
+
     def test_oracle_and_payment_locks_are_bounded_and_reversible(self) -> None:
         for sid in ("F01-P", "F06-H"):
             p = lock.CONTRACTS[sid]

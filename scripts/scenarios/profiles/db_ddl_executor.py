@@ -144,6 +144,21 @@ root and returns once the server shows the migration waiting while the export ru
 migration then takes its lock, adds the column and the queue drains.  Cleanup waits for that up to `drain_seconds`
 (ending the export and the migration with KILL QUERY if either is still there), then drops the column, also instantly.
 Rows, indexes and other tables are untouched.
+
+The PostgreSQL table-maintenance path (F67-R) is an operator's space-reclaim run of VACUUM (FULL) on the two largest
+commerce tables, the payment audit log and the shipment event log.  Nothing reads either (their scan counters stay near
+zero), so the operator took them for cold and ran the rewrites side by side during traffic.  VACUUM FULL rewrites a table
+and rebuilds its indexes under the table's ACCESS EXCLUSIVE lock for the whole run, so every write to the table waits until
+it ends; payment-service writes a log row inside every payment transaction, so every payment waits holding its
+connection, and the two rewrites share the database's CPU and disk, so each lasts longer than it would alone.  Run checks
+that no maintenance session is open, that the role and database keep lock_timeout and statement_timeout at 0 (as the
+original had no database-side timeouts), that open sessions leave room under max_connections and that the data volume
+has room for a second copy of the tables and their indexes; it then starts one statement per table in the background
+inside the database pod, each as an operator's psql session (the client's default application name), and returns once
+the server shows every session holding its table's ACCESS EXCLUSIVE lock.  The rewrites end on their own and the queues
+drain.  Cleanup waits for that up to `drain_seconds` and cancels what is still running (a cancelled VACUUM FULL keeps
+the old copy); nothing else needs undoing, because a rewrite keeps every row, index and constraint.  The probes run
+untracked by pg_stat_statements; the maintenance statements are ordinary sessions.
 """
 from __future__ import annotations
 
@@ -320,6 +335,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "export_columns": "id, order_id, courier_id, eta_minutes, status, assigned_at",
         "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 100000, "maximum_sessions": 90,
     },
+    # 표 정리: 운영자가 공간을 되찾으려고 commerce DB 에서 가장 큰 두 표인 결제 감사 로그(payment_logs)와 배송 이벤트 로그
+    # (shipment_events)에 VACUUM (FULL) 을 나란히 돌린다(둘 다 읽는 질의가 없어 스캔 수가 0 근처라 차가운 표로 본 것). 표를 다시
+    # 쓰고 인덱스를 다시 만드는 내내 ACCESS EXCLUSIVE 를 쥐어, 결제 트랜잭션마다 payment_logs 에 쓰는 로그 INSERT 가 끝날 때까지
+    # 기다린다. 끝나면 스스로 풀린다. cleanup 은 drain_seconds 까지 기다렸다가 남았으면 취소한다(취소된 VACUUM FULL 은 옛 사본을
+    # 그대로 둔다). 행, 인덱스, 제약은 그대로다. 세션이 maximum_sessions 를 넘거나 데이터 볼륨에 두 표와 인덱스 사본, WAL 1GB 를
+    # 더 둘 자리(minimum_free_mb 이상, 사용률 80% 미만)가 없으면 시작하지 않는다.
+    "F67-R": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "maintenance": "vacuum_full", "tables": "payment_schema.payment_logs shipping_schema.shipment_events",
+        "drain_seconds": 720, "minimum_rows": 1000000, "maximum_sessions": 70, "minimum_free_mb": 8000,
+    },
 }
 
 
@@ -361,6 +387,11 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["column"], p["renamed_to"], str(p["minimum_rows"])], MYSQL_RENAME_REMOTE
+    if p["engine"] == "postgresql" and p.get("maintenance") == "vacuum_full":
+        return kubectl_bash_argv([
+            action, p["namespace"], p["db_pod"], p["tables"], str(p["drain_seconds"]),
+            str(p["minimum_rows"]), str(p["maximum_sessions"]), str(p["minimum_free_mb"]),
+        ]), PG_VACUUM_REMOTE
     if p["engine"] == "postgresql" and "export_columns" in p:
         return kubectl_bash_argv([
             action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["add_column"], p["add_column_type"],
@@ -1212,6 +1243,90 @@ EOS
   original
   ;;
  recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
+ *) exit 2 ;;
+esac
+'''
+
+
+PG_VACUUM_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; tables="$4"; drain="$5"; minimum="$6"; max_sessions="$7"; min_free_mb="$8"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# Probes travel in the environment and run untracked by pg_stat_statements, so none of them reaches Top SQL;
+# the first psql line on stderr goes to stderr for the runner log.
+sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+read -r -a rels <<<"$tables"
+(( ${#rels[@]} > 0 ))
+# The statement as the operator sends it, one session per table; each session is found by this exact text.
+statement() { printf 'VACUUM (FULL) %s' "$1"; }
+log_of() { printf '/tmp/table-maintenance-%s.log' "${1//./-}"; }
+# An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
+number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
+# A session by its exact statement text, never the probe's own.
+pid_of() { sql "SELECT pid FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query = '$(statement "$1")' ORDER BY backend_start LIMIT 1;"; }
+# Locks on a table not granted yet: its queue.
+waiting() { number "$(sql "SELECT count(*) FROM pg_locks WHERE relation = '$1'::regclass AND NOT granted;")"; }
+original() { local rel; for rel in "${rels[@]}"; do [[ -z "$(pid_of "$rel")" ]] || return 1; done; }
+rows() { local rel; for rel in "${rels[@]}"; do [[ "$(sql "SELECT count(*) >= $minimum FROM (SELECT 1 FROM $rel LIMIT $minimum) t;")" == t ]] || return 1; done; }
+quiet() { local rel; for rel in "${rels[@]}"; do [[ "$(waiting "$rel")" == 0 ]] || return 1; done; }
+check() {
+  rows
+  original
+  # With a lock or statement timeout on the role or database the writes would give up instead of queueing,
+  # and a statement timeout would also stop the rewrite.
+  [[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]
+  quiet
+  # Sessions queued behind a rewrite stay on the server until it ends, even after their pod restarts:
+  # keep room under max_connections.
+  sessions=$(number "$(sql "SELECT count(*) FROM pg_stat_activity;")")
+  [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
+  # Each rewrite writes a second copy of its table and indexes before it drops the first, and the WAL it writes
+  # stays bounded by max_wal_size (1 GB here) until the next checkpoint.
+  need=0
+  for rel in "${rels[@]}"; do need=$(( need + $(number "$(sql "SELECT (pg_total_relation_size('$rel') / 1048576)::bigint;")") )); done
+  dir=$(sql "SHOW data_directory;")
+  read -r size used avail < <("${k[@]}" exec "$pod" -- df -Pm "$dir" | tail -n 1 | awk '{ print $2, $3, $4 }')
+  size=$(number "$size"); used=$(number "$used"); avail=$(number "$avail")
+  (( avail >= min_free_mb && avail >= need + 1024 && (used + need + 1024) * 100 < size * 80 )) || {
+    echo "data volume has ${avail} MB free of ${size} MB for ${need} MB of tables" >&2; return 1; }
+}
+cancel_all() { local rel pid; for rel in "${rels[@]}"; do pid=$(pid_of "$rel"); [[ -z "$pid" ]] || sql "SELECT pg_cancel_backend($pid);" >/dev/null; done; }
+case "$action" in
+ preflight) check ;;
+ run)
+  check
+  # Run holds the runner's coordinator lock (30 s lease): the statements start together in the background inside the
+  # database pod, each as an operator's psql session, and outlive run; run only waits to see every one hold its
+  # table, at most ten one-second looks.
+  for rel in "${rels[@]}"; do
+    "${k[@]}" exec "$pod" -- env MAINTENANCE_SQL="$(statement "$rel")" PGAPPNAME=psql LOG="$(log_of "$rel")" \
+      sh -c 'nohup psql -X -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$MAINTENANCE_SQL" >"$LOG" 2>&1 </dev/null &'
+  done
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    held=0
+    for rel in "${rels[@]}"; do
+      [[ "$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.query = '$(statement "$rel")' AND l.relation = '$rel'::regclass AND l.mode = 'AccessExclusiveLock' AND l.granted;")" == 1 ]] && held=$((held + 1))
+    done
+    (( held == ${#rels[@]} )) && exit 0
+    sleep 1
+  done
+  cancel_all
+  for rel in "${rels[@]}"; do echo "$rel: $("${k[@]}" exec "$pod" -- head -n 1 "$(log_of "$rel")")" >&2; done
+  echo "maintenance did not take every table" >&2
+  exit 4
+  ;;
+ cleanup)
+  # The rewrites end on their own and the queues drain, as in the original once they finished; wait for that up to
+  # the drain bound, then cancel what is still running (a cancelled VACUUM FULL keeps the old copy).
+  end=$((SECONDS + drain))
+  while ! original && [[ $SECONDS -lt $end ]]; do sleep 5; done
+  cancel_all
+  for _ in $(seq 1 30); do original && break; sleep 1; done
+  original || { echo "maintenance session still open" >&2; exit 3; }
+  for rel in "${rels[@]}"; do "${k[@]}" exec "$pod" -- rm -f "$(log_of "$rel")"; done
+  rows
+  ;;
+ recovery) rows; original; quiet ;;
  *) exit 2 ;;
 esac
 '''

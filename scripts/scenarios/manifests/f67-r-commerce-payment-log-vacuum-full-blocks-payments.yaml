@@ -1,0 +1,310 @@
+{
+  "schema_version": "1.0",
+  "id": "F67-R",
+  "slug": "f67-r-commerce-payment-log-vacuum-full-blocks-payments",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh db.ddl commerce testbed-postgres-0 VACUUM (FULL) payment_schema.payment_logs + VACUUM (FULL) shipping_schema.shipment_events(kubectl exec psql 을 DB 파드 안에서 표마다 백그라운드 세션 하나로 나란히, application_name psql, 두 세션이 각 표 AccessExclusiveLock 을 쥔 것이 보이면 run 종료, 탐침은 pg_stat_statements 기록 안 함, preflight 가 두 표 행≥100만, 정리 세션 없음, lock_timeout·statement_timeout 0, 두 표 대기 잠금 0, 열린 세션 ≤70, 데이터 볼륨 여유 ≥8000MB 이고 두 표 사본 + WAL 1GB 를 더해도 사용률 80% 미만) + R/ssh load.north_south companion(commerce surge.js, target_rps=10, ramp 30s, hold 12m, checkout 초당 약 5건)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/db.ddl",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "db-inverse-ddl-ready",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f67-r",
+              "parameters": {
+                "engine": "postgresql",
+                "namespace": "rca-testbed-commerce",
+                "db_pod": "testbed-postgres-0",
+                "maintenance": "vacuum_full",
+                "tables": "payment_schema.payment_logs shipping_schema.shipment_events",
+                "drain_seconds": 720,
+                "minimum_rows": 1000000,
+                "maximum_sessions": 70,
+                "minimum_free_mb": 8000
+              },
+              "min_hold": "1m",
+              "settle": "30s",
+              "timeout": "5m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "동반 부하(surge.js)의 마지막 checkout 응답 상태. 게이트웨이(30080)는 DB 를 쓰지 않아 표 잠금에 걸리지 않는다. 0(연결 불가)은 게이트웨이나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-payment"
+            },
+            "freshness": "30s",
+            "_note": "payment-service 는 결제마다 payment_logs 에 쓰는 INSERT 가 VACUUM FULL 의 ACCESS EXCLUSIVE 뒤에서 연결을 쥔 채 기다려 Hikari 풀(10)이 차고, /actuator/health 의 DB 확인이 연결을 못 얻어 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다(F06-H 실행 때 2026-08-20 22:40 실제로 Unhealthy, Killing). 다시 뜬 파드는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS idx_payment_logs_payment 가 같은 줄에 서서 startupProbe 안에 뜨지 못할 수 있다. 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+          },
+          {
+            "id": "postgres_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-postgres"
+            },
+            "freshness": "30s",
+            "_note": "commerce PostgreSQL. 이 주입은 프로세스, 설정, 자원 한도를 바꾸지 않는다(세션 둘). Ready 가 빠지면 표 정리가 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "_note": "동반 부하(surge.js, 10rps, 여정의 50% 가 checkout) 의 checkout 단계. 결제가 payment_logs INSERT 에서 멈춰 order 의 결제 호출이 15초 read-timeout, 재시도 2회 뒤 서킷이 열리고 fallback 502 가 된다"
+          },
+          {
+            "id": "checkout_2xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "freshness": "30s"
+          },
+          {
+            "id": "read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "기준선 상품 목록(GET /api/products, product-service, product_schema). 두 VACUUM FULL 이 DB CPU 와 I/O 를 나눠 쓰지만 다른 표의 읽기는 이어져야 한다(로컬 0.5 CPU 실측: 다른 표 단순 조회 평균 0.24초, 최대 1.5초)"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "checkout-failed-5xx",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "checkout-collapsed",
+              "observation": "checkout_2xx_rate",
+              "op": "lt",
+              "value": 0.3
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "run 은 두 VACUUM (FULL) 세션을 DB 파드 안에서 백그라운드로 띄우고 둘 다 표의 AccessExclusiveLock 을 쥔 것을 보면 돌아온다(로컬 실측 5.3초). 그 순간부터 결제마다 payment_logs INSERT 가 줄을 서서 checkout 이 약 15초(게이트웨이 order read-timeout) 뒤부터 5xx 다. 잠금 구간은 payment_logs 다시 쓰기 시간이다: 로컬(x86, 0.5 CPU, 512Mi, 같은 크기 사본) 두 표 병렬 197초, payment_logs 혼자 99~109초. 109 속도는 실제 인덱스 생성으로 견줬다: 2026-10-11 10:12 idx_auth_tokens_token 생성이 109 에서 14.7초(Top SQL sharedRead 15,578, tempWritten 31,272, WAL 131MB), 같은 크기 로컬 사본에서 16.0~17.4초라 109 는 로컬과 같거나 조금 빠르다. 그래서 109 잠금 구간은 약 170~200초, payment 재시작 꼬리(기동이 잠금 해제 뒤 끝나고 readiness 10초, 서킷 반열림 5초)를 더한 피해 구간은 약 190~230초다. 성공 streak 은 min_hold 동안에도 쌓이고(adaptive.py 는 must_rule_out, escalate 만 버림) 독립 표본 간격이 30초라, 첫 참 표본(약 45초: 15초 시간 초과 + 30초 창) 뒤 60초인 약 105초에 판정한다. min_hold 1m 은 이보다 짧아 판정을 늦추지 않는다. 판정은 잠금 구간의 약 5~6할 지점이다. timeout 5m 은 피해 구간 상한(약 230초)에 여유를 둔 값이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 5,
+              "_note": "동반 부하 10rps. 부하 자체가 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "reads-also-broken",
+              "observation": "read_nonok_rate",
+              "op": "gte",
+              "value": 0.2,
+              "_note": "상품 목록까지 실패하면 표 하나의 잠금이 아니라 게이트웨이나 DB 전체 문제다"
+            },
+            {
+              "id": "commerce-db-down",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "payment-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "db-ready",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": true
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "payment_logs 다시 쓰기가 끝나면 줄 선 INSERT 가 한꺼번에 지나가고 결제가 돌아온다. 재시작 고리에 있던 payment 는 기동 CREATE INDEX 가 잠금 해제 뒤 끝나 곧 Ready 가 되지만 CrashLoopBackOff 지연이 남을 수 있어 timeout 10m 이다. 동반 부하는 cleanup 에서 먼저 멈추므로 checkout 비율은 복구 조건에 넣지 않는다(F06-H 와 같음). cleanup 은 두 세션이 스스로 끝나기를 최대 720초 기다리고 남으면 취소한다(옛 사본 유지)"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "14m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "db.ddl",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "db.ddl",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "db.ddl"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

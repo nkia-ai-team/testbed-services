@@ -1926,6 +1926,8 @@ esac
             "F39-H",
             # 2026-10-11: food dispatch-service 를 배달 조회 처리 마감 시간을 더한 릴리스 1.9.0(fault-images/f63-p)으로 롤아웃(배달 목록, 상세 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 요청마다 멈춘 비데몬 스레드가 남고, dispatch 컨테이너가 메모리 한도 1Gi 에서 커널 OOM 으로 죽고 다시 뜨기를 되풀이하며, 그 구간마다 order 의 배달원 용량 확인이 연결 거부로 끝나 주문 503. order, restaurant, MySQL 은 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F63-P",
+            # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

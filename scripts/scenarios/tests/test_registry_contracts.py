@@ -106,7 +106,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 115 → 116. F51-P(후보) 추가. 프로파일 33 → 34(db.row_update 신설).
         # 2026-10-11: 116 → 117. F39-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-11: 117 → 118. F63-P(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 118)
+        # 2026-10-11: 118 → 119. F67-R(후보) 추가. 기존 db.ddl 에 PostgreSQL 표 정리(VACUUM FULL) 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 119)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -265,6 +266,8 @@ class RegistryContractTests(unittest.TestCase):
             "F39-H",
             # 2026-10-11: food dispatch-service 를 배달 조회 처리 마감 시간을 더한 릴리스 1.9.0(fault-images/f63-p)으로 롤아웃(배달 목록, 상세 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 요청마다 멈춘 비데몬 스레드가 남고, dispatch 컨테이너가 메모리 한도 1Gi 에서 커널 OOM 으로 죽고 다시 뜨기를 되풀이하며, 그 구간마다 order 의 배달원 용량 확인이 연결 거부로 끝나 주문 503. order, restaurant, MySQL 은 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F63-P",
+            # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -639,6 +642,8 @@ class RegistryContractTests(unittest.TestCase):
             "F39-H",
             # 2026-10-11: food dispatch-service 를 배달 조회 처리 마감 시간을 더한 릴리스 1.9.0(fault-images/f63-p)으로 롤아웃(배달 목록, 상세 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 요청마다 멈춘 비데몬 스레드가 남고, dispatch 컨테이너가 메모리 한도 1Gi 에서 커널 OOM 으로 죽고 다시 뜨기를 되풀이하며, 그 구간마다 order 의 배달원 용량 확인이 연결 거부로 끝나 주문 503. order, restaurant, MySQL 은 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F63-P",
+            # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-R",
             },
         )
         self.assertEqual(
@@ -797,6 +802,8 @@ class RegistryContractTests(unittest.TestCase):
             "F39-H",
             # 2026-10-11: food dispatch-service 를 배달 조회 처리 마감 시간을 더한 릴리스 1.9.0(fault-images/f63-p)으로 롤아웃(배달 목록, 상세 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 요청마다 멈춘 비데몬 스레드가 남고, dispatch 컨테이너가 메모리 한도 1Gi 에서 커널 OOM 으로 죽고 다시 뜨기를 되풀이하며, 그 구간마다 order 의 배달원 용량 확인이 연결 거부로 끝나 주문 503. order, restaurant, MySQL 은 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F63-P",
+            # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F67-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -989,8 +996,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F51-P(후보, 고정 evaluation)이 끝에 붙어 F66-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F39-H(후보, 고정 evaluation)이 끝에 붙어 F64-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F63-P(후보, 고정 evaluation)이 끝에 붙어 F66-P 가 끝 5개에서 빠졌다.
+        # 2026-10-11: F67-R(후보, 고정 evaluation)이 끝에 붙어 F60-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F60-H", "F54-P", "F51-P", "F39-H", "F63-P"])
+                         ["F54-P", "F51-P", "F39-H", "F63-P", "F67-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
