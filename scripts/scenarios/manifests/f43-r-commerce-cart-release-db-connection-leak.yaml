@@ -3,7 +3,7 @@
   "id": "F43-R",
   "slug": "f43-r-commerce-cart-release-db-connection-leak",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

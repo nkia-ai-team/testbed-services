@@ -42,7 +42,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 46 → 47. F33-P 정식 승격(녹화 case-f33-p-v3-e79a2db0).
         # 2026-10-11: 47 → 48. F41-R 정식 승격(녹화 case-f41-r-v3-f37b1984).
         # 2026-10-11: 48 → 49. F42-R 정식 승격(녹화 case-f42-r-v3-26143861).
-        self.assertEqual(stages.count("official"), 49)
+        # 2026-10-11: 49 → 50. F43-R 정식 승격(녹화 case-f43-r-v3-aecd7e38).
+        self.assertEqual(stages.count("official"), 50)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -120,7 +121,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 48 → 47. F42-R 정식 승격(녹화 case-f42-r-v3-26143861).
         # 2026-10-11: 47 → 48. F67-H(commerce 주문 품목 표 열 추가 마이그레이션이 느린 매출 내보내기 뒤에서 잠금을 기다려 checkout 마다 품목 INSERT 가 order 연결을 쥔 채 멈추고 checkout 5xx) 후보 추가.
         # 2026-10-11: 48 → 49. F60-P(food 배차 이벤트 outbox 표를 취소된 인덱스 백필이 치워 배차가 커밋에서 되돌려지고 모든 새 주문 503) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 49)
+        # 2026-10-11: 49 → 48. F43-R 정식 승격(녹화 case-f43-r-v3-aecd7e38).
+        self.assertEqual(stages.count("candidate"), 48)
 
 
 class RecordingQueueTests(unittest.TestCase):

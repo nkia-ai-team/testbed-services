@@ -94,19 +94,19 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | G 설정 오배포 | 6 | 12% |
 | H 데이터가 조용히 틀어짐 | 2 | 4% |
 | I 인증 의존 실패 | 1 | 2% |
-| J 결함 있는 새 버전 배포 | 3 | 6% |
+| J 결함 있는 새 버전 배포 | 4 | 8% |
 | K 네트워크 지연, 손실, 단절 | 0 | 0% |
 | L 데이터 형식 불일치 | 3 | 6% |
 | M DNS | 1 | 2% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 25, 은행 14, 음식배달 10. 후보 47종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 14, 음식배달 10. 후보 48종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 9개뿐이고(J 3, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M 으로 센다) K, N은 0이다(K, N은 §5에 막힌 시도가 있다).
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 10개뿐이고(J 4, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M 으로 센다) K, N은 0이다(K, N은 §5에 막힌 시도가 있다).
 A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 49종):
+정답 위치별 정식 (2-1 정의, 정식 50종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -132,10 +132,11 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | 상품 서비스 | 1 | 2% |
 | 은행 API | 1 | 2% |
 | 은행 원장 서비스 | 1 | 2% |
+| 장바구니 서비스 | 1 | 2% |
 | 캐시 | 1 | 2% |
 | **결제 경로 합계** | **10** | **20%** |
 
-결제 경로는 정식만으로도 20.4%(10/49)라 상한(20%)을 넘는다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로도 20%(10/50)라 상한(20%)에 닿아 있다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -192,6 +193,7 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | F33-P | 정식 | 쇼핑몰 | F | DB 테이블(인증 토큰) | user_schema.auth_tokens 의 겹친 token 인덱스 두 개(UNIQUE 제약, idx_auth_tokens_token)를 합치는 마이그레이션이 새 유일 인덱스 동시 생성을 statement_timeout 으로 끊겨 INVALID 로 남긴 채 옛 둘을 지우고 이름을 바꿔, 게이트웨이가 쓰기마다 부르는 토큰 확인이 약 240만 행 전수 스캔이 됨. PostgreSQL(0.5 CPU) 포화, user Hikari 고갈, 게이트웨이가 확인을 자기 호출해 재시도·서킷 없이 인가된 쓰기 500. user 재시작 때 CREATE INDEX IF NOT EXISTS 는 같은 이름 때문에 건너뜀 |
 | F41-R | 정식 | 은행 | J | 은행 계좌 서비스 | banking account-service 를 릴리스 core-banking-account:1.3.0(fault-images/f41-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 잔액 스냅샷이 0.5초마다 전체 계좌를 다시 읽어 계좌별 이력에 붙이기만 하고 비우지 않아, 한도는 그대로인 힙(약 246MiB)이 기동 약 6분 뒤 참. 전체 GC 연속 뒤 OutOfMemoryError 로 요청 처리가 멈추고 readiness, liveness 실패로 kubelet 이 재시작, 같은 릴리스가 다시 채워 약 11~13분 주기로 잔액 조회 시간 초과, 500, 502 와 account 를 거치는 이체 502 가 되풀이. 거래 내역, commerce 정산, Oracle 은 정상 |
 | F42-R | 정식 | 은행 | J+F | 은행 이체 서비스 | banking transfer-service 를 릴리스 core-banking-transfer:2.2.0(fault-images/f42-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 일일 이체 한도 확인이 이체마다 'trunc(created_at) = trunc(sysdate)' 조건으로 출금 계좌의 오늘 합계를 구해 인덱스를 못 타고 transfers 약 630만 행을 전수 스캔(호출당 약 9.9만 블록, CPU 0.24~0.43초). 동반 부하 이체 약 8건/초에 공유 Oracle(2 CPU)이 포화되어 세션이 CPU 를 기다리고, transfer Hikari 가 스캔에 묶여 500, account 서킷, api 시간 초과로 이체 502, commerce 정산 실패. 새 버전은 떠서 프로브를 통과하고 재시작 없음, Oracle 은 Ready 이고 잠금 대기, DDL, 통계 변경 없음 |
+| F43-R | 정식 | 쇼핑몰 | J+E | 장바구니 서비스 | commerce cart-service 를 릴리스 commerce-cart:1.2.0(fault-images/f43-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 장바구니 품목 수 상한 확인이 담기마다 'try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...))' 로 풀 연결을 빌려 문장만 닫고 연결은 돌려주지 않아, 담기 약 20번에 Hikari 풀(20)이 total=20, active=20, idle=0 으로 굳음(대기 스레드는 거의 없음, PostgreSQL 은 idle 세션만 늘고 한가함). cart 의 DB 작업이 3초 대기 끝에 실패하고 health 의 DB 확인이 시간 초과되어 readiness 가 엔드포인트를 비우고 liveness 가 재시작, 같은 버전이 다시 새게 해 되풀이. 담기, 비우기 500, 502, order 가 장바구니를 못 읽어 checkout 502. 원본 Octopus Deploy 2025-11-25(인가 서비스 배포가 DB 연결 누수를 들여와 로그인 간헐 시간 초과, 재시작으로 임시 완화) |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -200,7 +202,6 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
-| F43-R | 후보 | 쇼핑몰 | J+E | 장바구니 서비스 | commerce cart-service 를 릴리스 commerce-cart:1.2.0(fault-images/f43-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 장바구니 품목 수 상한 확인이 담기마다 'try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...))' 로 풀 연결을 빌려 문장만 닫고 연결은 돌려주지 않아, 담기 약 20번에 Hikari 풀(20)이 total=20, active=20, idle=0 으로 굳음(대기 스레드는 거의 없음, PostgreSQL 은 idle 세션만 늘고 한가함). cart 의 DB 작업이 3초 대기 끝에 실패하고 health 의 DB 확인이 시간 초과되어 readiness 가 엔드포인트를 비우고 liveness 가 재시작, 같은 버전이 다시 새게 해 되풀이. 담기, 비우기 500, 502, order 가 장바구니를 못 읽어 checkout 502. 원본 Octopus Deploy 2025-11-25(인가 서비스 배포가 DB 연결 누수를 들여와 로그인 간헐 시간 초과, 재시작으로 임시 완화) |
 | F44-R | 후보 | 음식배달 | K+G | 노드, 디스크 | 운영자가 워커 tb-w3 의 호스트 방화벽(iptables FORWARD)에서 restaurant API 포트 8081 로 가는 새 연결을 노드와 진입 망(10.244.2.1, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 같은 노드 파드 대역의 order-service 를 빠뜨림. order 가 열어 둔 keep-alive 연결이 닫힌 뒤 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8081') 가게 조회가 'Connect timed out', 재시도와 서킷 끝에 주문 전량 502. restaurant 는 Ready 이고 NodePort 로 오는 손님 조회에 계속 답함 |
 | F44-P | 후보 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 transfer API 포트 8082 로 가는 새 연결을 banking 파드 대역과 진입 망(10.244.1.0/24, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 다른 노드 tb-w1 의 commerce 파드 대역(모든 checkout 의 정산 이체를 부르는 payment-service)을 빠뜨림. payment 가 열어 둔 keep-alive 연결이 닫힌 뒤 정산 이체 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8082') payment 가 'Connect timed out' 502, order 결제 재시도와 서킷 끝에 commerce checkout 전량 502. transfer 는 Ready 이고 banking 자신의 이체, 조회와 NodePort 직행 이체에 계속 답하며 'from=commerce-settlement' 이체만 끊김 |
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
@@ -378,3 +379,4 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 - 2026-10-11: `F42-R` 정식 승격(케이스 `case-f42-r-v3-26143861`). 첫 실행 F42-R-run-26143861 이 검증에서 녹화 가능(주입: 17:02:30 k8s.image 가 transfer 를 core-banking-transfer:2.2.0 으로 롤아웃, 새 파드 'Pulled: Container image "core-banking-transfer:2.2.0" already present on machine', 피해: 동반 부하 이체 5xx 0.67~0.81 로 success 17틱, 원인 근거: 롤아웃 직후 처음 보인 sql_id 9hx2j1yrcu00z(실행당 논리 읽기 약 10.2만), Oracle CPU 2.0 상한, 새 transfer 파드 세션의 resmgr:cpu quantum, 트레이스의 새 문장, must_rule_out 신호 없음. 제품은 한 장애를 인시던트 5건으로 갈랐다). 근거 `~/dev/testbed-ops/verifications/2026-10-11-1754-F42-R-run-26143861.md`. §4-1 → §4, §3 을 정식 49종으로 다시 셈(J 2→3 4%→6%, 은행 13→14, 정답 위치 은행 이체 서비스 4→5 8%→10%, 분모 49 로 A, B, D 15%→14%, C, G 13%→12%, 외부 결제 의존, 주문 서비스 13%→12%, 결제 경로 10 21%→20%(20.4%, 상한 초과 그대로), 나머지 비율은 같음). 후보는 §4-1 실제 행 수 47종(본문의 45종 표기도 바로잡음).
 - 2026-10-11: F67-H(후보)를 §4-1에 추가. 사례군 F67 의 H(같은 증상, 다른 원인): F67-R 은 운영자의 VACUUM FULL 이 결제 로그 표를 다시 쓰는 내내 잠가 payment 가 결제 단계에서 멈추고 payment 풀이 말라 checkout 5xx 이며, F67-H 는 표가 그대로인 채 주문 품목 표의 열 추가 마이그레이션이 느린 매출 내보내기 뒤에서 기다리는 잠금 대기열이라 checkout 이 결제 전 order 안(품목 INSERT)에서 멈추고 order 풀이 마른다(가르는 근거: DPM 세션 사슬의 relNames order_items 와 맨 앞의 ClientWrite 내보내기, 마르는 풀이 order, payment 호출 없음). 원본 Honeycomb 2024-08-06(자료 문서 M21 에 이미 있음, F66-R, F66-P, F60-H, F53-H 와 같은 원본, db.ddl PostgreSQL 잠금 대기열 모드에 계약만 더함). 주 묶음 D(DB 잠금, 정식 + 후보 13 → 14, 97 중 14.4%, 상한 아래). 정답 위치 DB 테이블(주문 품목) 0 → 1(§2-1 의 'DB 테이블(<무엇>)' 행, DB 테이블(주문) 과 다른 표). 결제 경로 13/97(13.4%, 그대로). 서비스 쇼핑몰 32 → 33(세 도메인 32 동률이라 정답 위치 0 부품만, 원칙 2). 같은 반복에서 같은 표의 비온라인 인덱스 생성(Harness 2026-01-26)은 로컬 0.5 CPU 같은 크기 사본에서 12~33초라 판정 창보다 짧아(원칙 9) 버렸다.
 - 2026-10-11: F60-P(후보)를 §4-1에 추가. 사례군 F60 의 P(전파 일부만 같음): F60-R 은 외래 키 추가의 표 복사 잠금으로 dispatch 배차 트랜잭션의 상태 이력 기록(dispatch_events)이 몇 분씩 기다려 dispatch 풀이 차고, F60-P 는 같은 배차 트랜잭션의 이벤트 기록(dispatch_outbox_events)이 표가 사라져 즉시 실패하고 'non-critical' 로 잡힌 그 실패가 배차를 커밋에서 되돌린다(기다림 없음, 풀 정상). 원본 GitHub 2026-07-24(자료 문서 M21 에 이미 있음, F48-R, F48-P 와 같은 원본, db.ddl MySQL 보류 표 모드에 계약만 더함: 표 dispatch_outbox_events, 인덱스 idx_dispatch_outbox_aggregate). F48-P 와는 실패하는 서비스(order 자신 대 하류 dispatch), 진입 경로(order 500 대 dispatch 500 → order 503), 영향 범위(배차, 결제가 남음 대 배차가 되돌려지고 결제 전 중단, 배달 만료 멈춤)가 다르다. 주 묶음 P(운영 작업의 대상 착오, 정식 + 후보 11 → 12, 98 중 12.2%), F48-R, F48-P 처럼 결함이 앱이 기대하는 표가 없는 꼴로 드러나 P+L 로 적는다(L 로 세도 8 → 9, 9.2%). 정답 위치 DB 테이블(배차 이벤트 outbox) 0 → 1(§2-1 의 'DB 테이블(<무엇>)' 행, DB 테이블(배차)·DB 테이블(배차 이력) 과 다른 표). 결제 경로 13/98(13.3%, 그대로). 서비스 음식배달 32 → 33(은행과 함께 가장 적은 서비스). 겉 증상(order 503)이 같은 F32-R, F32-P, F60-H 와 가르는 근거: dispatch 로그의 1146 과 'rollback-only', 용량 확인과 배달 조회 200, 'No courier available' 아님, 배정 중 수 그대로, DPM 표 수 16 → 17.
+- 2026-10-11: `F43-R` 정식 승격(케이스 `case-f43-r-v3-aecd7e38`). 첫 실행 F43-R-run-aecd7e38 이 검증에서 녹화 가능(주입: 20:22:08 k8s.image 가 cart 를 commerce-cart:1.2.0 으로 롤아웃, 새 파드 'Pulled 1.2.0', 피해: checkout 5xx 1.0 으로 success 3틱, 원인 근거: cart Hikari used 0→20 고착이 재시작마다 4번 반복, 'Connection is not available (total=20, active=20, idle=0)' 392건, PostgreSQL idle 세션만 증가, must_rule_out 신호와 겹친 실행 없음. 제품은 한 장애를 인시던트 3건으로 갈랐다). 근거 `~/dev/testbed-ops/verifications/2026-10-11-2113-F43-R-run-aecd7e38.md`. §4-1 → §4, §3 을 정식 50종으로 다시 셈(J 3→4 6%→8%, 쇼핑몰 25→26, 정답 위치 장바구니 서비스 0→1 2%, 분모 50 이라 나머지 비율은 같음, 결제 경로 10 20.4%→20%(10/50, 상한과 같음)). 후보는 §4-1 실제 행 수 48종(본문의 47종 표기는 F67-H, F60-P 추가 뒤 49종이었음).
