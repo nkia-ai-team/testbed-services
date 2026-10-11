@@ -678,6 +678,28 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F60-H", ddl.CONTRACTS["F60-R"], {})
 
+    def test_mysql_metadata_lock_queue_on_the_payments_table_reuses_the_f60h_path(self) -> None:
+        # F53-H: F60-H 와 같은 MySQL 메타데이터 잠금 대기열을 결제 표에. 결제 표 자기 행을 한 행씩 일정한 속도로 내보내는
+        # 동안 INSTANT 열 추가가 기다리고, 결제마다 처음 하는 결제 INSERT 가 그 뒤에 줄을 선다. 실행기 본문은 F60-H 와 같다.
+        p = ddl.CONTRACTS["F53-H"]
+        ddl.validate("F53-H", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F53-H", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "payments",
+                                    "pg_transaction_id", "varchar(64)",
+                                    "id, order_id, pg_provider, amount, status, processed_at, settled_at, created_at",
+                                    "360", "300", "100000", "90"])
+        self.assertNotIn("F53-H", " ".join(argv))
+        self.assertNotIn("F53-H", body.decode())
+        self.assertEqual(body, ddl.MYSQL_QUEUE_REMOTE)
+        # 행 추정 약 173만: 내보내기 시작 조건(행 추정 >= 100 x 360)과 preflight 최소 행.
+        self.assertGreaterEqual(p["minimum_rows"], 100 * p["export_seconds"])
+        self.assertLessEqual(p["maximum_sessions"], 90)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-H", {**p, "table": "payment_outbox_events"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F53-H", ddl.CONTRACTS["F60-H"], {})
+
     def test_postgres_vacuum_full_holds_the_tables_until_the_rewrite_ends_and_nothing_is_undone(self) -> None:
         # F67-R: 운영자가 공간을 되찾으려고 가장 큰 두 표에 VACUUM (FULL) 을 나란히 돌린다. 다시 쓰는 내내 각 표의
         # ACCESS EXCLUSIVE 를 쥐어 결제마다 쓰는 payment_logs INSERT 가 기다린다. 다시 쓰기가 끝나면 스스로 풀린다.

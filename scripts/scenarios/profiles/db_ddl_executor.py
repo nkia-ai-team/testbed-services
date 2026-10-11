@@ -145,6 +145,10 @@ migration then takes its lock, adds the column and the queue drains.  Cleanup wa
 (ending the export and the migration with KILL QUERY if either is still there), then drops the column, also instantly.
 Rows, indexes and other tables are untouched.
 
+F53-H runs the same MySQL queue on the food payments table with the same arguments: a warehouse export of the payment
+history and a migration adding a nullable PG transaction id column.  The first statement of every payment (the
+PENDING row INSERT) and the payment retention and settlement batches wait behind the migration.
+
 The PostgreSQL table-maintenance path (F67-R) is an operator's space-reclaim run of VACUUM (FULL) on the two largest
 commerce tables, the payment audit log and the shipment event log.  Nothing reads either (their scan counters stay near
 zero), so the operator took them for cold and ran the rewrites side by side during traffic.  VACUUM FULL rewrites a table
@@ -345,6 +349,18 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
         "maintenance": "vacuum_full", "tables": "payment_schema.payment_logs shipping_schema.shipment_events",
         "drain_seconds": 720, "minimum_rows": 1000000, "maximum_sessions": 70, "minimum_free_mb": 8000,
+    },
+    # F60-H 와 같은 MySQL 잠금 대기열을 결제 표에: 결제 이력을 데이터 웨어하우스로 옮기는 내보내기(결제 표 자기 행을 한 행씩
+    # 받아 일정한 속도로 내보내 export_seconds 동안 활성)가 도는 중에 PG 거래 번호 열을 ALGORITHM=INSTANT 로 더하는 마이그레이션
+    # (메타데이터만)을 돌린다. ALTER 가 배타 메타데이터 잠금을 못 얻어 기다리고, 결제 처리의 첫 문장인 결제 INSERT 와 보존 정리,
+    # 정산 배치의 결제 표 질의가 모두 'Waiting for table metadata lock' 으로 줄을 선다. cleanup 은 F60-H 와 같다.
+    # 세션이 maximum_sessions 를 넘으면 시작하지 않는다(재시작된 payment 파드가 남긴 대기 세션이 max_connections 151 을 넘지 않게).
+    "F53-H": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "payments", "add_column": "pg_transaction_id",
+        "add_column_type": "varchar(64)",
+        "export_columns": "id, order_id, pg_provider, amount, status, processed_at, settled_at, created_at",
+        "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 100000, "maximum_sessions": 90,
     },
 }
 

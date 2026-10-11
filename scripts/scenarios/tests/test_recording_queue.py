@@ -115,7 +115,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 46 → 45. F41-R 정식 승격(녹화 case-f41-r-v3-f37b1984).
         # 2026-10-11: 45 → 46. F67-R(운영자의 VACUUM FULL 이 commerce 결제 감사 로그를 다시 쓰는 내내 잠가 결제가 멈추고 checkout 502) 후보 추가.
         # 2026-10-11: 46 → 47. F37-H(banking api 릴리스가 개발 프로필에만 있는 이체 한도 설정을 읽어 모든 이체 접수 500) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 47)
+        # 2026-10-11: 47 → 48. F53-H(food 결제 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 모든 새 주문이 결제 단계에서 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 48)
 
 
 class RecordingQueueTests(unittest.TestCase):

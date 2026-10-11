@@ -1978,6 +1978,8 @@ esac
             "F67-R",
             # 2026-10-11: banking api-service 를 1회 이체 한도 확인을 더한 릴리스 1.6.0(fault-images/f37-h)으로 롤아웃(한도값을 이체마다 Environment.getRequiredProperty 로 읽는데 값이 개발 프로필 파일에만 있어 운영에서 Required key 예외, api 가 Ready 인 채 모든 이체 접수 500, 거래 내역과 잔액 조회 정상).
             "F37-H",
+            # 2026-10-11: food 결제 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 같은 표의 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 결제 표 질의가 모두 줄을 섬(payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F53-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

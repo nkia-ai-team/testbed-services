@@ -66,7 +66,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 117 → 118. F63-P(후보) 추가.
 # 2026-10-11: 118 → 119. F67-R(후보) 추가.
 # 2026-10-11: 119 → 120. F37-H(후보) 추가.
-[[ "$total" -eq 120 ]]
+# 2026-10-11: 120 → 121. F53-H(후보) 추가.
+[[ "$total" -eq 121 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -183,7 +184,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: ready 92→93. F63-P(food dispatch 릴리스가 배달 조회마다 스레드 하나짜리 풀을 만들고 닫지 않아 컨테이너가 메모리 한도에서 OOM 재시작을 되풀이하고, 그 구간마다 order 의 배달원 용량 확인이 실패해 주문 503)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 93→94. F67-R(운영자가 공간을 되찾으려고 commerce 결제 감사 로그와 배송 이벤트 로그에 VACUUM FULL 을 나란히 돌려 다시 쓰는 내내 잠가, 결제마다 쓰는 로그 INSERT 가 기다리고 checkout 502)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 94→95. F37-H(banking api 릴리스가 개발 프로필에만 있는 1회 이체 한도 설정을 이체마다 읽어, 운영에서 api 가 Ready 인 채 모든 이체 접수를 account 호출 전에 500 으로 끝냄)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 95 ]]
+# 2026-10-11: ready 95→96. F53-H(food 결제 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 메타데이터 잠금을 기다려 결제 표 질의가 모두 줄을 서고 모든 새 주문이 결제 단계에서 502)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 96 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -274,7 +276,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 111 → 112. F63-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f63-p)으로 들어왔다.
 # 2026-10-11: 112 → 113. F67-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f67-r)으로 들어왔다.
 # 2026-10-11: 113 → 114. F37-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f37-h)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 114 ]]
+# 2026-10-11: 114 → 115. F53-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f53-h)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 115 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

@@ -303,7 +303,8 @@
           "F66-R",
           "F66-P",
           "F60-H",
-          "F67-R"
+          "F67-R",
+          "F53-H"
         ]
       },
       "scenario_parameters": {
@@ -511,6 +512,20 @@
           "minimum_rows": 1000000,
           "maximum_sessions": 70,
           "minimum_free_mb": 8000
+        },
+        "F53-H": {
+          "engine": "mysql",
+          "namespace": "rca-testbed-food",
+          "pod": "testbed-mysql-0",
+          "database": "fooddelivery",
+          "table": "payments",
+          "add_column": "pg_transaction_id",
+          "add_column_type": "varchar(64)",
+          "export_columns": "id, order_id, pg_provider, amount, status, processed_at, settled_at, created_at",
+          "export_seconds": 360,
+          "drain_seconds": 300,
+          "minimum_rows": 100000,
+          "maximum_sessions": 90
         }
       }
     },
