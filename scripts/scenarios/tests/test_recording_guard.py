@@ -37,6 +37,13 @@ class RecordingGuardTests(unittest.TestCase):
         self.assertLess(guard_at, script.index("tar czf"))
         self.assertLess(guard_at, script.index("rsync -az"))
 
+    def test_deploy_script_builds_missing_fault_images_after_guard(self) -> None:
+        # 2026-10-11: 녹화로 미룬 배포에서 build.sh 가 빠져 F63-R 이미지가 없었다.
+        script = (ROOT / "deploy-live-promotions.sh").read_text(encoding="utf-8")
+        build_at = script.index("fault-images/build.sh")
+        self.assertLess(script.index("recording-guard.py"), build_at)
+        self.assertLess(build_at, script.index("rsync -az"))
+
 
 if __name__ == "__main__":
     unittest.main()

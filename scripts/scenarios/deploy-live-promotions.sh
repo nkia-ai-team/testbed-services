@@ -31,6 +31,17 @@ python3 scripts/scenarios/generate-manifests.py --check
 ssh "$remote" "curl -sS '$runner_url/api/live-queue'" \
   | python3 "$scenario_root/recording-guard.py"
 
+# 결함 버전 이미지가 109 docker 에 없으면 만든다. 배포가 녹화 때문에 미뤄지면 그 반복의
+# build.sh 도 함께 빠져, 나중 배포에서 시나리오만 나가고 preflight 가 이미지 없음으로
+# 막힌다(2026-10-11 F63-R). 이미 있는 태그는 다시 만들지 않는다.
+for image_json in "$scenario_root"/fault-images/*/image.json; do
+  [[ -f "$image_json" ]] || continue
+  fault_tag=$(jq -r .fault "$image_json")
+  if ! ssh "$remote" docker image inspect "$fault_tag" > /dev/null 2>&1; then
+    BUILD_HOST="$remote" bash "$scenario_root/fault-images/build.sh" "$(basename "$(dirname "$image_json")")"
+  fi
+done
+
 # Publish the load scripts the live profiles reference. 2026-07-28: this step did
 # not exist, and tb-runner still held only what was hand-copied on 07-14/07-15 —
 # commerce/surge.js and the three baseline script.js. Every scenario authored
