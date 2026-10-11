@@ -1,0 +1,52 @@
+diff --git a/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java b/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java
+index de4d0f2..54494ba 100644
+--- a/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java
++++ b/core-banking/api-service/src/main/java/com/corebanking/api/service/ApiService.java
+@@ -7,6 +7,7 @@ import com.corebanking.common.dto.TransferResponse;
+ import com.corebanking.common.exception.ServiceException;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
++import org.springframework.core.env.Environment;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.stereotype.Service;
+ import org.springframework.util.MultiValueMap;
+@@ -19,10 +20,12 @@ public class ApiService {
+     private static final Logger log = LoggerFactory.getLogger(ApiService.class);
+     private final AccountClient accountClient;
+     private final TransferClient transferClient;
++    private final Environment environment;
+ 
+-    public ApiService(AccountClient accountClient, TransferClient transferClient) {
++    public ApiService(AccountClient accountClient, TransferClient transferClient, Environment environment) {
+         this.accountClient = accountClient;
+         this.transferClient = transferClient;
++        this.environment = environment;
+     }
+ 
+     public TransferResponse submitTransfer(TransferRequest request) {
+@@ -32,6 +35,14 @@ public class ApiService {
+         if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
+             throw new ServiceException(HttpStatus.BAD_REQUEST, "amount must be positive");
+         }
++        // 1회 이체 한도. 운영 정책값이라 재배포 없이 바꿀 수 있도록 이체마다 설정에서 읽는다.
++        BigDecimal singleTransferLimit =
++                environment.getRequiredProperty("api.policy.single-transfer-limit", BigDecimal.class);
++        if (request.amount().compareTo(singleTransferLimit) > 0) {
++            log.info("Transfer rejected: amount {} above single transfer limit {}", request.amount(), singleTransferLimit);
++            throw new ServiceException(HttpStatus.BAD_REQUEST,
++                    "amount exceeds the single transfer limit " + singleTransferLimit);
++        }
+         log.info("Submitting transfer: from={} to={} amount={} orderId={}",
+                 request.fromAccount(), request.toAccount(), request.amount(), request.orderId());
+         return accountClient.requestTransfer(request);
+diff --git a/core-banking/api-service/src/main/resources/application-dev.yml b/core-banking/api-service/src/main/resources/application-dev.yml
+new file mode 100644
+index 0000000..1e7f848
+--- /dev/null
++++ b/core-banking/api-service/src/main/resources/application-dev.yml
+@@ -0,0 +1,5 @@
++# 로컬, 개발 환경 전용 값(SPRING_PROFILES_ACTIVE=dev).
++api:
++  policy:
++    # 1회 이체 한도(원). ApiService 가 이체마다 읽는다.
++    single-transfer-limit: 3000000

@@ -1472,6 +1472,54 @@ esac
         self.assertIn("location /api/transfers {\n            proxy_pass http://api-service;", configmap)
         self.assertIn("location /api/accounts {\n            proxy_pass http://account-service;", configmap)
 
+
+    def test_k8s_image_release_mode_rolls_banking_api_transfer_limit_release(self) -> None:
+        # F37-H: 같은 release 스크립트로 banking api 를 1.6.0 으로 롤아웃한다(tb-w2). F47-R(1.4.0), F63-R(1.5.0)도 api
+        # 릴리스를 쓰므로 태그가 겹치지 않아야 셋 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 api-service/src 안만 고친다.
+        plan = compiler.compile_plan("f37-h-banking-api-release-reads-unsynced-transfer-limit")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-api", "api-service",
+                                    "core-banking-api:latest", "core-banking-api:1.6.0"])
+        self.assertNotIn("F37-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F37-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F37-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f37-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F37-H"]["baseline_image"], k8s_image.CONTRACTS["F37-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f37-h" / "api-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/api-service/src/",
+                                                     "b/core-banking/api-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F37", "f37", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        self.assertIn('getRequiredProperty("api.policy.single-transfer-limit", BigDecimal.class)', added)
+        # 확인은 'Submitting transfer' 로그와 account 호출보다 앞에 있어 account 를 부르기 전에 실패한다.
+        body = patch[patch.index("public TransferResponse submitTransfer"):]
+        self.assertLess(body.index("getRequiredProperty"), body.index("accountClient.requestTransfer"))
+        self.assertNotIn("listTransfers", added)
+
+    def test_f37h_relies_on_policy_key_missing_from_production_config(self) -> None:
+        # F37-H 는 릴리스가 이체마다 읽는 정책값 api.policy.single-transfer-limit 이 릴리스의 개발 프로필 파일에만 있고 운영
+        # 쪽(기본 application.yml, ConfigMap service-config, api 파드 env, 활성 프로필)에는 없다는 데 기댄다. 운영 설정에 그
+        # 값이 생기거나 dev 프로필이 켜지거나 api 예외 처리기가 IllegalStateException 을 다르게 다루면 다시 평가해야 한다.
+        banking = ROOT.parent.parent / "core-banking"
+        config = (banking / "api-service" / "src" / "main" / "resources" / "application.yml").read_text()
+        configmap = (banking / "k8s" / "02-configmaps.yaml").read_text()
+        deploy = (banking / "k8s" / "20-api-service.yaml").read_text()
+        for text in (config, configmap, deploy):
+            self.assertNotIn("single-transfer-limit", text)
+            self.assertNotIn("SINGLE_TRANSFER_LIMIT", text)
+            self.assertNotIn("SPRING_PROFILES_ACTIVE", text)
+        self.assertIn("path: /actuator/health\n", deploy[deploy.index("readinessProbe:"):])
+        handler = (banking / "api-service" / "src" / "main" / "java" / "com" / "corebanking" / "api" / "config"
+                   / "GlobalExceptionHandler.java").read_text()
+        self.assertEqual(handler.count("@ExceptionHandler("), 1)
+        self.assertIn("@ExceptionHandler(ServiceException.class)", handler)
+        patch = (ROOT / "fault-images" / "f37-h" / "api-service.patch").read_text()
+        self.assertIn("+++ b/core-banking/api-service/src/main/resources/application-dev.yml", patch)
     def test_k8s_image_release_mode_rolls_food_dispatch_thread_leak_release(self) -> None:
         # F63-P: 같은 release 스크립트로 food dispatch 를 1.9.0 으로 롤아웃한다(tb-w3). F33-H(1.6.0), F43-P(1.7.0),
         # F55-R(1.8.0)도 dispatch 릴리스를 쓰므로 태그가 겹치지 않아야 넷 다 "노드에 릴리스 없음" preflight 를 지킨다.
@@ -1928,6 +1976,8 @@ esac
             "F63-P",
             # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F67-R",
+            # 2026-10-11: banking api-service 를 1회 이체 한도 확인을 더한 릴리스 1.6.0(fault-images/f37-h)으로 롤아웃(한도값을 이체마다 Environment.getRequiredProperty 로 읽는데 값이 개발 프로필 파일에만 있어 운영에서 Required key 예외, api 가 Ready 인 채 모든 이체 접수 500, 거래 내역과 잔액 조회 정상).
+            "F37-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

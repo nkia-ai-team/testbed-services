@@ -282,6 +282,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-dispatch:latest",
         "fault_image": "food-delivery-dispatch:1.9.0",
     },
+    # 2026-10-11. F37-H: banking api-service 를 이체 접수 첫 단계에 1회 이체 한도 확인을 더한 릴리스 1.6.0 으로
+    # 롤아웃한다. 한도값을 요청마다 설정(api.policy.single-transfer-limit)에서 읽는데 그 값은 릴리스의 개발 프로필
+    # 파일에만 있어, 운영에서는 Ready 인 api 가 모든 이체를 account 를 부르기 전에 500 으로 끝낸다. 결함 이미지는
+    # fault-images/f37-h 로 109 docker 에만 빌드하고, 실행기가 tb-w2 에 올렸다가 cleanup 이 지운다. api 의 다른
+    # 릴리스 태그(F47-R 1.4.0, F63-R 1.5.0)와 겹치지 않는다.
+    "F37-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-api",
+        "container": "api-service",
+        "baseline_image": "core-banking-api:latest",
+        "fault_image": "core-banking-api:1.6.0",
+    },
 }
 
 

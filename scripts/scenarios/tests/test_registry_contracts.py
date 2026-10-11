@@ -107,7 +107,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 116 → 117. F39-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-11: 117 → 118. F63-P(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-11: 118 → 119. F67-R(후보) 추가. 기존 db.ddl 에 PostgreSQL 표 정리(VACUUM FULL) 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 119)
+        # 2026-10-11: 119 → 120. F37-H(후보) 추가. 기존 k8s.image release 모드를 banking api 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 120)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -268,6 +269,8 @@ class RegistryContractTests(unittest.TestCase):
             "F63-P",
             # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F67-R",
+            # 2026-10-11: banking api-service 를 1회 이체 한도 확인을 더한 릴리스 1.6.0(fault-images/f37-h)으로 롤아웃(한도값을 이체마다 Environment.getRequiredProperty 로 읽는데 값이 개발 프로필 파일에만 있어 운영에서 Required key 예외, api 가 Ready 인 채 모든 이체 접수 500, 거래 내역과 잔액 조회 정상).
+            "F37-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -644,6 +647,8 @@ class RegistryContractTests(unittest.TestCase):
             "F63-P",
             # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F67-R",
+            # 2026-10-11: banking api-service 를 1회 이체 한도 확인을 더한 릴리스 1.6.0(fault-images/f37-h)으로 롤아웃(한도값을 이체마다 Environment.getRequiredProperty 로 읽는데 값이 개발 프로필 파일에만 있어 운영에서 Required key 예외, api 가 Ready 인 채 모든 이체 접수 500, 거래 내역과 잔액 조회 정상).
+            "F37-H",
             },
         )
         self.assertEqual(
@@ -804,6 +809,8 @@ class RegistryContractTests(unittest.TestCase):
             "F63-P",
             # 2026-10-11: 운영자가 공간을 되찾으려고 commerce 의 가장 큰 두 표 payment_logs, shipment_events 에 VACUUM (FULL) 을 트래픽 중에 나란히 돌려 다시 쓰는 내내 ACCESS EXCLUSIVE 를 쥠(결제마다 쓰는 payment_logs INSERT 가 기다려 payment 풀이 차고 order 결제 호출이 시간 초과 끝에 서킷 502, checkout 실패. 상품 둘러보기와 payments 표는 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F67-R",
+            # 2026-10-11: banking api-service 를 1회 이체 한도 확인을 더한 릴리스 1.6.0(fault-images/f37-h)으로 롤아웃(한도값을 이체마다 Environment.getRequiredProperty 로 읽는데 값이 개발 프로필 파일에만 있어 운영에서 Required key 예외, api 가 Ready 인 채 모든 이체 접수 500, 거래 내역과 잔액 조회 정상).
+            "F37-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -997,8 +1004,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F39-H(후보, 고정 evaluation)이 끝에 붙어 F64-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F63-P(후보, 고정 evaluation)이 끝에 붙어 F66-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F67-R(후보, 고정 evaluation)이 끝에 붙어 F60-H 가 끝 5개에서 빠졌다.
+        # 2026-10-11: F37-H(후보, 고정 evaluation)이 끝에 붙어 F54-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F54-P", "F51-P", "F39-H", "F63-P", "F67-R"])
+                         ["F51-P", "F39-H", "F63-P", "F67-R", "F37-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
