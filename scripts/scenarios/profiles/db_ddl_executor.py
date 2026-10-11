@@ -70,6 +70,9 @@ inverse is FLASHBACK TABLE ... TO BEFORE DROP, which brings back the rows, index
 identity sequence but leaves the indexes and constraints under their recycle-bin names (BIN$...);
 cleanup gives each its original name back from the contract, keyed by what it covers, so it needs
 no state file and finishes a cleanup that stopped between the restore and the renames.
+F35-P runs the same drop on the banking accounts table, which carries a row trigger: the trigger goes
+to the recycle bin with the table and FLASHBACK brings it back under a recycle-bin name too, so the
+contract also names it, keyed by its event, timing and status, and cleanup renames it back the same way.
 
 The Oracle identity-rewind path (F57-R) is a table migration that carried the rows but not the
 identity generator's state.  Run replays the cut-over: the transfers table goes read-only for
@@ -292,6 +295,17 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                        "P:ID=SYS_C008658,U:TRANSFER_REF=SYS_C008659",
         "minimum_rows": 1000, "minimum_free_mb": 2048,
     },
+    # 같은 표 지우기를 banking Oracle 계좌 표에: 잔액 조회, 이체 계좌 확인(account)과 이체의 계좌 잠금(transfer)이 모두 이 표를
+    # 부른다. 행 트리거(updated_at 갱신) 하나가 표와 함께 휴지통으로 가고 FLASHBACK 뒤 BIN$ 이름으로 돌아오므로 트리거도 원래
+    # 이름을 다시 붙인다(사건:시점:상태로 짝지음). 표와 인덱스가 각각 128KB 라 지워도 테이블스페이스 사용량은 거의 그대로다.
+    "F35-P": {
+        "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
+        "pdb": "FREEPDB1", "schema": "BANKING", "table": "ACCOUNTS",
+        "indexes": "ID=SYS_C008651",
+        "constraints": "C:HOLDER=SYS_C008648,C:BALANCE=SYS_C008649,C:STATUS=SYS_C008650,P:ID=SYS_C008651",
+        "triggers": "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT",
+        "minimum_rows": 1000, "minimum_free_mb": 1024,
+    },
     # 행은 옮겼지만 식별자 생성기 상태는 옮기지 않은 표 이전의 전환: TRANSFERS 를 read_only_seconds 동안 읽기 전용으로 두고(run 이 러너
     # coordinator lock 을 쥔 채 도는데 lease 가 30초라 짧게 둔다)
     # (옛 쪽 쓰기 중지, 이체 ORA-12081), identity 생성기를 표의 최대 키보다 rewind_rows 뒤(이전 스냅숏 시점)에서 다시
@@ -427,8 +441,11 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
                 p["identity_column"], p["primary_key"], str(p["rewind_rows"]), str(p["read_only_seconds"]),
                 str(p["minimum_rows"])], ORACLE_IDENTITY_REMOTE
     if p["engine"] == "oracle" and "indexes" in p:
-        return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["pdb"], p["schema"], p["table"],
-                p["indexes"], p["constraints"], str(p["minimum_rows"]), str(p["minimum_free_mb"])], ORACLE_DROP_REMOTE
+        argv = ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["pdb"], p["schema"], p["table"],
+                p["indexes"], p["constraints"], str(p["minimum_rows"]), str(p["minimum_free_mb"])]
+        if "triggers" in p:
+            argv.append(p["triggers"])
+        return argv, ORACLE_DROP_REMOTE
     if p["engine"] == "mysql" and "hold_schema" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["hold_schema"], str(p["minimum_rows"])], MYSQL_DROP_REMOTE
     if p["engine"] == "mysql" and "renamed_to" in p:
@@ -652,6 +669,7 @@ esac
 ORACLE_DROP_REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; pdb="$4"; schema="$5"; table="$6"; index_map="$7"; constraint_map="$8"; minimum="$9"; free_mb="${10}"
+trigger_map="${11:-}"
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
 # Run one SQL script; every error is fatal and its first ORA- line goes to stderr for the runner log.
 # feedback off comes first: while it is on, sqlplus echoes "Session altered." into the output.
@@ -669,9 +687,11 @@ binned() { value "select count(*) from dba_recyclebin where owner='$schema' and 
 inventory() {
   sql "select 'I:'||(select listagg(column_name,',') within group (order by column_position) from dba_ind_columns c where c.index_owner=i.owner and c.index_name=i.index_name)||'='||i.index_name from dba_indexes i where i.owner='$schema' and i.table_name='$table'
 union all
-select 'C:'||k.constraint_type||':'||(select listagg(column_name,',') within group (order by position) from dba_cons_columns c where c.owner=k.owner and c.constraint_name=k.constraint_name)||'='||k.constraint_name from dba_constraints k where k.owner='$schema' and k.table_name='$table';" | LC_ALL=C sort
+select 'C:'||k.constraint_type||':'||(select listagg(column_name,',') within group (order by position) from dba_cons_columns c where c.owner=k.owner and c.constraint_name=k.constraint_name)||'='||k.constraint_name from dba_constraints k where k.owner='$schema' and k.table_name='$table'
+union all
+select 'T:'||t.triggering_event||':'||replace(t.trigger_type,' ','_')||':'||t.status||'='||t.trigger_name from dba_triggers t where t.table_owner='$schema' and t.table_name='$table';" | LC_ALL=C sort
 }
-expected() { { tr ',' '\n' <<<"$index_map" | sed 's/^/I:/'; tr ',' '\n' <<<"$constraint_map" | sed 's/^/C:/'; } | sed 's/;/,/g' | LC_ALL=C sort; }
+expected() { { tr ',' '\n' <<<"$index_map" | sed 's/^/I:/'; tr ',' '\n' <<<"$constraint_map" | sed 's/^/C:/'; [[ -z "$trigger_map" ]] || tr ',' '\n' <<<"$trigger_map" | sed 's/^/T:/'; } | sed 's/;/,/g' | LC_ALL=C sort; }
 original() { [[ "$(present)" == 1 && "$(binned)" == 0 && "$(inventory)" == "$(expected)" ]]; }
 check() {
   [[ "$(value "select lower(value) from v\$parameter where name='recyclebin';")" == on ]]
@@ -679,7 +699,7 @@ check() {
   original
 }
 # Renames take the table lock too, so they wait behind in-flight transactions like the drop.
-# Restored indexes and constraints keep their recycle-bin names (BIN$...); give each its contract name back by what it covers.
+# Restored indexes, constraints and triggers keep their recycle-bin names (BIN$...); give each its contract name back by what it covers.
 rename_back() {
   local line key name stmts=""
   declare -A want=()
@@ -691,6 +711,8 @@ rename_back() {
     [[ -n "${want[$key]:-}" ]] || { echo "no contract name for $key ($name)" >&2; return 3; }
     if [[ "$key" == I:* ]]; then
       stmts+="alter index $schema.\"$name\" rename to ${want[$key]};"$'\n'
+    elif [[ "$key" == T:* ]]; then
+      stmts+="alter trigger $schema.\"$name\" rename to ${want[$key]};"$'\n'
     else
       stmts+="alter table $schema.$table rename constraint \"$name\" to ${want[$key]};"$'\n'
     fi

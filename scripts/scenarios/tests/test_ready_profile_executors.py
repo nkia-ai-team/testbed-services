@@ -1984,6 +1984,8 @@ esac
             "F67-H",
             # 2026-10-11: food 배차 이벤트 outbox 표(dispatch_outbox_events)를 취소된 인덱스 백필이 치움(MySQL 1146, dispatch 가 outbox 기록 실패를 'non-critical' 로 잡지만 배차 트랜잭션이 rollback-only 라 커밋에서 되돌려져 500, 모든 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F60-P",
+            # 2026-10-11: 운영을 가리킨 로컬 마이그레이션이 banking Oracle 계좌 표(ACCOUNTS)를 지움(ORA-00942, 잔액 조회와 계좌 목록 500, 고객 이체는 account 계좌 확인에서 500 → api 502, commerce 정산은 transfer 계좌 잠금에서 500 → checkout 502, 거래 내역은 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F35-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

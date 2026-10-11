@@ -252,6 +252,30 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F35-H", ddl.CONTRACTS["F53-R"], {})
 
+    def test_oracle_dropped_accounts_table_brings_its_row_trigger_back(self) -> None:
+        # F35-P: 같은 Oracle 표 지우기를 계좌 표에. 표의 행 트리거도 휴지통으로 갔다가 FLASHBACK 뒤 BIN$ 이름으로 돌아오므로
+        # 계약이 트리거 이름을 사건:시점:상태로 짝지어 들고, cleanup 이 인덱스, 제약과 함께 원래 이름을 다시 붙인다.
+        p = ddl.CONTRACTS["F35-P"]
+        ddl.validate("F35-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F35-P", p), "run")
+        self.assertEqual(argv[3:9], ["run", "rca-testbed-banking", "testbed-oracle-0", "FREEPDB1",
+                                     "BANKING", "ACCOUNTS"])
+        self.assertEqual(argv[9:], [p["indexes"], p["constraints"], "1000", "1024", p["triggers"]])
+        self.assertEqual(p["triggers"], "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT")
+        self.assertNotIn("F35-P", " ".join(argv))
+        script = body.decode()
+        self.assertNotIn("F35-P", script)
+        self.assertIn("alter trigger $schema.", script)
+        self.assertIn("from dba_triggers t where t.table_owner='$schema' and t.table_name='$table'", script)
+        # F35-H 는 트리거 인자 없이 같은 스크립트를 그대로 쓴다(트리거 없는 표는 목록에 트리거 줄이 없다).
+        h_argv, h_body = ddl.build_invocation(plan("db.ddl", "F35-H", ddl.CONTRACTS["F35-H"]), "run")
+        self.assertEqual(h_body, body)
+        self.assertEqual(len(h_argv), len(argv) - 1)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F35-P", {k: v for k, v in p.items() if k != "triggers"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F35-P", ddl.CONTRACTS["F35-H"], {})
+
     def test_postgres_dropped_table_moves_out_unrecorded_and_back(self) -> None:
         # F23-P: 운영을 가리킨 로컬 마이그레이션의 표 지우기, PostgreSQL 판. 기록되지 않는 세션(track=none)이 원본을 public 으로
         # 옮기고 옮긴 표의 통계 카운터를 0 으로 돌린다(DPM 이 합산하는 seq_scan, idx_scan 이 실제 지우기처럼 내려감).

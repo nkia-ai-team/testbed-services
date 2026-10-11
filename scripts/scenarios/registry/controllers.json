@@ -98,7 +98,8 @@
     "F37-H",
     "F53-H",
     "F67-H",
-    "F60-P"
+    "F60-P",
+    "F35-P"
   ],
   "controllers": {
     "F01-R": {
@@ -23288,6 +23289,262 @@
         "required": true,
         "order": "reverse",
         "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F35-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f35-p",
+            "parameters": {
+              "engine": "oracle",
+              "namespace": "rca-testbed-banking",
+              "pod": "testbed-oracle-0",
+              "pdb": "FREEPDB1",
+              "schema": "BANKING",
+              "table": "ACCOUNTS",
+              "indexes": "ID=SYS_C008651",
+              "constraints": "C:HOLDER=SYS_C008648,C:BALANCE=SYS_C008649,C:STATUS=SYS_C008650,P:ID=SYS_C008651",
+              "triggers": "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT",
+              "minimum_rows": 1000,
+              "minimum_free_mb": 1024
+            },
+            "min_hold": "15m",
+            "settle": "30s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 표 지우기는 파드와 nginx 를 건드리지 않아 api 가 502 로 답하므로 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 판정력은 없다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. commerce 진입점은 정산 실패와 무관하게 200 이다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-oracle"
+          },
+          "_note": "banking Oracle 파드. 표 하나를 휴지통으로 옮기는 DROP 은 인스턴스를 건드리지 않아 내내 Ready 여야 한다. 빠지면 표가 아니라 DB 다운(F25-H 꼴)이다",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-transfer"
+          },
+          "_note": "transfer 파드. 계좌 표가 없어도 health 가 연결 isValid() 라 Ready 다(로컬 실측). 빠지면 transfer 자체가 빠진 다른 장애(F17-H, F52-R 꼴)다",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 5rps)의 잔액 조회(step get, 35%, nginx → account → Oracle accounts) 실패율. 이 시나리오의 주 증상이다: account getAccount 의 계좌 표 SELECT 가 ORA-00942 로 실패해 500(로컬 실측 3/3, 약 0.01~0.06초)",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 account validateAndForward 의 첫 계좌 조회가 ORA-00942 로 500(transfer 를 부르기 전), api 가 재시도 뒤 502",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%) 5xx 비율. 평시 0, 고장 중 약 1.0. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        },
+        {
+          "id": "balance_read_nonok_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 잔액 조회(step get, 55%) 실패율. 평시 0, 고장 중 약 1.0. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "balance-reads-failing",
+            "observation": "balance_read_nonok_rate",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "표가 없는 순간부터 잔액 조회(nginx → account) 가 모두 ORA-00942 로 500 이다(로컬 실측 3/3). 실제 값은 약 1.0. account 서버 스팬이 ERROR 가 되어 골든 시그널 오류율을 올린다"
+          },
+          {
+            "id": "transfers-failing-5xx",
+            "observation": "transfer_5xx_rate",
+            "op": "gte",
+            "value": 0.5,
+            "_note": "이체는 account 계좌 확인에서 먼저 실패한다(로컬 실측 500, 약 0.02초). 잔액 부족 400 만 5xx 가 아니라 실제 값은 약 1.0"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 15m. 강도 축이 없다: 표가 없으면 그 표를 부르는 문장은 요청량과 무관하게 100% 실패한다. 동반 부하는 시간대와 무관하게 잔액 조회와 이체 실패 표본(초당 약 1.75건, 2건)을 보장하려는 것이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1.25,
+            "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "banking-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "Oracle 파드가 빠지면 표 지우기가 아니라 DB 다운이다"
+          },
+          {
+            "id": "transfer-pod-gone",
+            "observation": "transfer_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "transfer 파드가 빠지면 표가 아니라 transfer 자체가 빠진 장애(F17-H, F52-R 꼴)다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "_note": "account 파드 Ready 와 재시작 수는 러너 관측 허용 목록(live_probes)에 banking account 대상이 없어 러너 배제 조건으로 두지 않는다. 대신 잔액 조회가 연결 거절이 아니라 500 이라는 것과 KCM 의 롤아웃, 스케일, 재시작 부재를 검증(녹화본)에서 확인한다(정답지 must_support)"
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "transfer-ready",
+            "observation": "transfer_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "baseline-balance-recovered",
+            "observation": "balance_read_nonok_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "평시 0.0, 고장 중 약 1.0. 되돌린 뒤 다음 문장부터 성공한다(로컬 실측 200)"
+          },
+          {
+            "id": "baseline-transfers-recovered",
+            "observation": "transfer_5xx_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "평시 0.0, 고장 중 약 1.0. api 의 account 서킷이 반열림(5초)을 거쳐 닫힌다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 FLASHBACK TABLE 로 표를 되돌리고 인덱스, 제약, 트리거 이름을 다시 붙이면 account, transfer 의 다음 문장이 다시 파싱되어 성공한다(로컬 Oracle 23.26 실측: 잔액 200, 이체 200, 트리거가 updated_at 갱신). 재시작이나 재배포가 필요 없다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
       },
       "capture": {
         "enabled": true,

@@ -1554,6 +1554,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F35-P",
+      "slug": "f35-p-banking-accounts-table-dropped-by-local-migration-against-production",
+      "profiles": [
+        "db.ddl",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }
