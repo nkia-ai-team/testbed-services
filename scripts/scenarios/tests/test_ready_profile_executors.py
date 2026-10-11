@@ -1388,6 +1388,48 @@ esac
         config = (banking / "account-service" / "src" / "main" / "resources" / "application.yml").read_text()
         self.assertIn("probes:\n        enabled: true", config)
 
+    def test_k8s_image_release_mode_rolls_banking_account_transfer_receipt_release(self) -> None:
+        # F39-H: 같은 release 스크립트로 banking account 를 1.6.0 으로 롤아웃한다(tb-w2). F41-R(1.3.0), F51-H(1.4.0),
+        # F41-H(1.5.0)도 account 릴리스를 쓰므로 태그가 겹치지 않아야 넷 다 "노드에 릴리스 없음" preflight 를 지킨다.
+        # 패치는 account-service/src 안만 고치고, 바꾸는 것은 이체 접수 응답의 status 모양뿐이다.
+        plan = compiler.compile_plan("f39-h-banking-account-release-transfer-receipt-breaks-api")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-account", "account-service",
+                                    "core-banking-account:latest", "core-banking-account:1.6.0"])
+        self.assertNotIn("F39-H", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F39-H"]
+        self.assertNotIn(k8s_image.CONTRACTS["F39-H"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f39-h" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F39-H"]["baseline_image"], k8s_image.CONTRACTS["F39-H"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f39-h" / "account-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/account-service/src/",
+                                                     "b/core-banking/account-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F39", "f39", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        self.assertIn("+    public ResponseEntity<TransferReceiptResponse> transfer(@RequestBody TransferRequest request) {", patch)
+        self.assertIn("+    public record Status(String code, String label) {}", patch)
+
+    def test_f39h_relies_on_api_reading_account_transfer_answer_as_shared_dto(self) -> None:
+        # F39-H 는 POST /api/accounts/transfer 의 유일한 호출자가 api 이고, api 가 그 응답을 status 가 String 인 공용
+        # TransferResponse 로 읽는다는 데 기댄다. 호출자가 응답을 문자열로 그대로 넘기거나(거래 내역 프록시처럼) DTO 가
+        # 바뀌면 릴리스가 api 를 깨지 않으므로 시나리오를 다시 평가해야 한다.
+        banking = ROOT.parent.parent / "core-banking"
+        client = (banking / "api-service" / "src" / "main" / "java" / "com" / "corebanking" / "api" / "client"
+                  / "AccountClient.java").read_text()
+        self.assertIn('.uri("/api/accounts/transfer")', client)
+        self.assertIn(".body(TransferResponse.class);", client)
+        dto = (banking / "shop-common" / "src" / "main" / "java" / "com" / "corebanking" / "common" / "dto"
+               / "TransferResponse.java").read_text()
+        self.assertIn("String status", dto)
+        controller = (banking / "account-service" / "src" / "main" / "java" / "com" / "corebanking" / "account"
+                      / "controller" / "AccountController.java").read_text()
+        self.assertIn("public ResponseEntity<TransferResponse> transfer(@RequestBody TransferRequest request)", controller)
+
     def test_k8s_image_release_mode_rolls_banking_api_thread_leak_release(self) -> None:
         # F63-R: 같은 release 스크립트로 banking api 를 1.5.0 으로 롤아웃한다(tb-w2). F47-R 도 api 릴리스(1.4.0)를 쓰므로
         # 태그가 겹치지 않아야 둘 다 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 api-service/src 안만 고친다.
@@ -1829,6 +1871,8 @@ esac
             "F54-P",
             # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F51-P",
+            # 2026-10-11: banking account-service 를 이체 접수 응답을 정비한 릴리스 1.6.0(fault-images/f39-h)으로 롤아웃(POST /api/accounts/transfer 응답의 status 가 {code, label} 객체가 되어 account 와 transfer 는 이체를 실행하고 200 인데 api 가 공용 TransferResponse 로 읽지 못해 api 를 거치는 이체 전량 502, 잔액 조회와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

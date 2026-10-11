@@ -1,0 +1,56 @@
+diff --git a/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java b/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java
+index ad192f0..f5de087 100644
+--- a/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java
++++ b/core-banking/account-service/src/main/java/com/corebanking/account/controller/AccountController.java
+@@ -1,5 +1,6 @@
+ package com.corebanking.account.controller;
+ 
++import com.corebanking.account.dto.TransferReceiptResponse;
+ import com.corebanking.account.service.AccountService;
+ import com.corebanking.common.dto.AccountResponse;
+ import com.corebanking.common.dto.TransferRequest;
+@@ -41,8 +42,10 @@ public class AccountController {
+         return ResponseEntity.ok(accountService.search(status, holder, pageable));
+     }
+ 
++    // 1.6.0 공개 API 정비 — 이체 접수 결과는 상태를 코드와 표시 이름으로 내려준다.
+     @PostMapping("/transfer")
+-    public ResponseEntity<TransferResponse> transfer(@RequestBody TransferRequest request) {
+-        return ResponseEntity.ok(accountService.validateAndForward(request));
++    public ResponseEntity<TransferReceiptResponse> transfer(@RequestBody TransferRequest request) {
++        TransferResponse result = accountService.validateAndForward(request);
++        return ResponseEntity.ok(TransferReceiptResponse.of(result.transferId(), result.status()));
+     }
+ }
+diff --git a/core-banking/account-service/src/main/java/com/corebanking/account/dto/TransferReceiptResponse.java b/core-banking/account-service/src/main/java/com/corebanking/account/dto/TransferReceiptResponse.java
+new file mode 100644
+index 0000000..14994d6
+--- /dev/null
++++ b/core-banking/account-service/src/main/java/com/corebanking/account/dto/TransferReceiptResponse.java
+@@ -0,0 +1,26 @@
++package com.corebanking.account.dto;
++
++/**
++ * 이체 접수 공개 응답(1.6.0). 앱 화면이 처리 결과를 그대로 보여 줄 수 있게
++ * 상태를 코드와 표시 이름으로 나눠 내려준다.
++ */
++public record TransferReceiptResponse(
++        String transferId,
++        Status status
++) {
++    public record Status(String code, String label) {}
++
++    public static TransferReceiptResponse of(String transferId, String code) {
++        return new TransferReceiptResponse(transferId, new Status(code, label(code)));
++    }
++
++    private static String label(String code) {
++        if ("COMPLETED".equalsIgnoreCase(code)) {
++            return "이체 완료";
++        }
++        if ("FAILED".equalsIgnoreCase(code)) {
++            return "이체 실패";
++        }
++        return code;
++    }
++}

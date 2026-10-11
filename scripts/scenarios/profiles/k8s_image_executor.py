@@ -256,6 +256,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-api:latest",
         "fault_image": "core-banking-api:1.5.0",
     },
+    # 2026-10-11. F39-H: banking account-service 를 이체 접수 응답을 정비한 릴리스 1.6.0 으로 롤아웃한다. 릴리스가
+    # POST /api/accounts/transfer 응답의 status 를 문자열에서 {code, label} 객체로 바꿔, account 는 이체를 transfer 에
+    # 넘기고 200 으로 답하지만 그 응답을 공용 TransferResponse(status 는 String)로 읽는 api 가 해석에 실패해 이체 접수가
+    # 502 가 된다. 결함 이미지는 fault-images/f39-h 로 109 docker 에만 빌드하고, 실행기가 tb-w2 에 올렸다가 cleanup 이
+    # 지운다. account 의 다른 릴리스 태그(F41-R 1.3.0, F51-H 1.4.0, F41-H 1.5.0)와 겹치지 않는다.
+    "F39-H": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-account",
+        "container": "account-service",
+        "baseline_image": "core-banking-account:latest",
+        "fault_image": "core-banking-account:1.6.0",
+    },
 }
 
 

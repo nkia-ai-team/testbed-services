@@ -104,7 +104,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 113 → 114. F60-H(후보) 추가. 기존 db.ddl 에 MySQL 메타데이터 잠금 대기열 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 114 → 115. F54-P(후보) 추가. 기존 db.account 실행기에 MySQL 시간당 쓰기 한도 모드를 더해 프로파일 수는 그대로.
         # 2026-10-11: 115 → 116. F51-P(후보) 추가. 프로파일 33 → 34(db.row_update 신설).
-        self.assertEqual(len(self.catalog["scenarios"]), 116)
+        # 2026-10-11: 116 → 117. F39-H(후보) 추가. 기존 k8s.image release 모드를 banking account 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 117)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -259,6 +260,8 @@ class RegistryContractTests(unittest.TestCase):
             "F54-P",
             # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F51-P",
+            # 2026-10-11: banking account-service 를 이체 접수 응답을 정비한 릴리스 1.6.0(fault-images/f39-h)으로 롤아웃(POST /api/accounts/transfer 응답의 status 가 {code, label} 객체가 되어 account 와 transfer 는 이체를 실행하고 200 인데 api 가 공용 TransferResponse 로 읽지 못해 api 를 거치는 이체 전량 502, 잔액 조회와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -629,6 +632,8 @@ class RegistryContractTests(unittest.TestCase):
             "F54-P",
             # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F51-P",
+            # 2026-10-11: banking account-service 를 이체 접수 응답을 정비한 릴리스 1.6.0(fault-images/f39-h)으로 롤아웃(POST /api/accounts/transfer 응답의 status 가 {code, label} 객체가 되어 account 와 transfer 는 이체를 실행하고 200 인데 api 가 공용 TransferResponse 로 읽지 못해 api 를 거치는 이체 전량 502, 잔액 조회와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-H",
             },
         )
         self.assertEqual(
@@ -783,6 +788,8 @@ class RegistryContractTests(unittest.TestCase):
             "F54-P",
             # 2026-10-11: food 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어 fooddelivery.dispatches 의 끝난 배차 수천 행을 배정 중으로 되돌려 배달원 용량(2000)이 가득 차고 모든 새 주문이 503(dispatch, order, MySQL 은 Ready, 설정 그대로). 새 후보, 설계 강도 1단 고정 evaluation.
             "F51-P",
+            # 2026-10-11: banking account-service 를 이체 접수 응답을 정비한 릴리스 1.6.0(fault-images/f39-h)으로 롤아웃(POST /api/accounts/transfer 응답의 status 가 {code, label} 객체가 되어 account 와 transfer 는 이체를 실행하고 200 인데 api 가 공용 TransferResponse 로 읽지 못해 api 를 거치는 이체 전량 502, 잔액 조회와 commerce 정산 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F39-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -973,8 +980,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F60-H(후보, 고정 evaluation)이 끝에 붙어 F64-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F54-P(후보, 고정 evaluation)이 끝에 붙어 F65-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F51-P(후보, 고정 evaluation)이 끝에 붙어 F66-R 이 끝 5개에서 빠졌다.
+        # 2026-10-11: F39-H(후보, 고정 evaluation)이 끝에 붙어 F64-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F64-P", "F66-P", "F60-H", "F54-P", "F51-P"])
+                         ["F66-P", "F60-H", "F54-P", "F51-P", "F39-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
