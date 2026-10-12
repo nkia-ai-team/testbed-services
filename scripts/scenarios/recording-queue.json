@@ -9,7 +9,8 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-09",
       "attempts": 1,
-      "status": "waiting"
+      "status": "hold",
+      "hold_reason": "강도로 해결 불가. 보강 1회차(7827413, 동반 부하 target_rps 20→8) 뒤 세 실행(F47-R-run-43c47026, F47-R-run-f866f01f, F47-R-run-8592be57) 모두 evaluation_level_timeout 실패로 러너 큐 cycle-1-caa86bd4 가 paused. 지금 동반 부하 믹스(거래 내역 15%)는 20rps 면 Oracle CPU 포화로 must_rule_out 'DB 문제 아님' 위반, 8rps 면 피해가 1~3분 묶음뿐이라 성공 조건 미달, 사이 값도 안 된다. 사람 조치: 거래 내역 단계를 뺀 동반 부하 loadgen 스크립트 추가(허용 목록 등록, 부하기 배포) 또는 시나리오 재설계 후 waiting 으로 되돌린다(hold_reason 삭제). 근거: ~/dev/testbed-ops/verifications/2026-10-12-1607-F47-R-run-8592be57.md, ~/dev/testbed-ops/verifications/2026-10-12-0741-F47-R-run-3d446438.md"
     },
     {
       "scenario_id": "F48-R",
