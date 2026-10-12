@@ -23,6 +23,14 @@ into the target node's containerd right before the rollout, and cleanup rolls ba
 the manifest image and removes the release from the node again (its name and the
 sha256:<image ID> reference CRI keeps beside it). App sources,
 manifests and the manifest image are never touched. F17-H keeps its own script.
+
+A third mode ("foreign") rolls a Deployment to the image of another workload of the same
+namespace that already runs on the same node (F77-R reconstructs Coinbase 2026-07-14: a
+routine configuration change collided with the name of a live gateway's Kubernetes
+resources and modified them instead of its own). The new workload's manifest was copied
+from transfer-service's and kept its name, so applying it changes exactly one field of the
+live testbed-transfer pod template: the container image. Nothing is loaded or removed: the
+image belongs to the other workload, and cleanup only rolls the image field back.
 """
 from __future__ import annotations
 
@@ -360,6 +368,20 @@ CONTRACTS = {
         "baseline_image": "food-delivery-restaurant:latest",
         "fault_image": "food-delivery-restaurant:1.7.0",
     },
+    # 2026-10-12. F77-R: 원장 재처리 워커를 띄우려고 transfer-service 매니페스트를 복사해 이미지만 원장 이미지로 바꾸고
+    # 이름(testbed-transfer)을 그대로 둔 채 적용한다. 살아 있는 transfer Deployment 의 컨테이너 이미지 한 칸이
+    # core-banking-ledger:latest 로 바뀌고, maxSurge 0 이라 옛 파드가 먼저 내려가며 새 파드는 원장 앱으로 떠
+    # 8083 에서 듣는다. 프로브는 transfer 의 8082 를 보므로 기동 확인이 끝내 실패해 재시작을 되풀이한다.
+    # 원장 이미지는 testbed-ledger 가 같은 노드(tb-w2)에서 쓰는 것이라 적재도 삭제도 하지 않는다.
+    "F77-R": {
+        "mode": "foreign",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-transfer",
+        "container": "transfer-service",
+        "baseline_image": "core-banking-transfer:latest",
+        "fault_image": "core-banking-ledger:latest",
+        "fault_owner": "testbed-ledger",
+    },
 }
 
 
@@ -374,7 +396,15 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("parameters must exactly match the approved release image contract")
     if params["baseline_image"] == params["fault_image"]:
         raise ExecutorError("fault image must differ from the baseline")
-    if params["baseline_image"].split(":")[0] != params["fault_image"].split(":")[0]:
+    same_repository = params["baseline_image"].split(":")[0] == params["fault_image"].split(":")[0]
+    if params.get("mode") == "foreign":
+        # The image of another live workload: never a tag of the target's own repository, and
+        # never the target itself as owner (cleanup would then roll the owner back too).
+        if same_repository:
+            raise ExecutorError("foreign image must come from another workload's repository")
+        if params["fault_owner"] == params["deployment"]:
+            raise ExecutorError("foreign image owner must be another Deployment")
+    elif not same_repository:
         raise ExecutorError("fault image must be another tag of the same repository")
 
 
@@ -385,9 +415,10 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     location = instance["location"]
     if location.get("transport") != "kubectl" or location.get("namespace") != p["namespace"]:
         raise ExecutorError("release image executor requires its canonical Kubernetes namespace")
-    return kubectl_bash_argv([
-        action, p["namespace"], p["deployment"], p["container"], p["baseline_image"], p["fault_image"],
-    ]), RELEASE_SCRIPT if p.get("mode") == "release" else SCRIPT
+    arguments = [action, p["namespace"], p["deployment"], p["container"], p["baseline_image"], p["fault_image"]]
+    if p.get("mode") == "foreign":
+        return kubectl_bash_argv([*arguments, p["fault_owner"]]), FOREIGN_SCRIPT
+    return kubectl_bash_argv(arguments), RELEASE_SCRIPT if p.get("mode") == "release" else SCRIPT
 
 
 SCRIPT = br'''#!/usr/bin/env bash
@@ -572,6 +603,79 @@ case "$action" in
     set_image "$original"; healthy 180s; release_unused; unload "$id"; rm -f "$release_ref" "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ ! -e "$release_ref" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s
     release_absent "$(release_id)" ;;
+  *) exit 2 ;;
+esac
+'''
+
+
+# Another workload's image (mode "foreign"). The node already holds it because the owner
+# Deployment runs it there; nothing is copied in or removed. Only the target's image field
+# changes, exactly what applying a copied manifest that kept the target's name changes.
+FOREIGN_SCRIPT = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; deploy="$3"; container="$4"; baseline="$5"; fault="$6"; owner="$7"
+state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+state="$state_root/${ns}-${deploy}-image"
+k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+spec() { "${k[@]}" get deploy "$1" -o json; }
+image() { spec "$deploy" | jq -r --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | .image'; }
+never_pull() { [[ "$(spec "$deploy" | jq -r --arg c "$container" '.spec.template.spec.containers[] | select(.name==$c) | .imagePullPolicy')" == "Never" ]]; }
+# The outage needs the old pod to go before the new one has to pass its probes.
+replace_first() { spec "$deploy" | jq -e '.spec.replicas == 1 and .spec.strategy.type == "RollingUpdate"
+    and (.spec.strategy.rollingUpdate.maxSurge | tostring) == "0"' >/dev/null; }
+node() { spec "$1" | jq -r '.spec.template.spec.nodeSelector["kubernetes.io/hostname"] // empty'; }
+on_node() {
+  local n; n=$(node "$deploy"); [[ -n "$n" ]]
+  kubectl --kubeconfig=/root/tb-kubeconfig get node "$n" -o json \
+    | jq -e --arg i "$1" --arg d "docker.io/library/$1" '[.status.images[] | (.names // [])[]] | any(. == $i or . == $d)' >/dev/null
+}
+# The foreign image must be the one the owner runs, on the same node, and the owner must be up:
+# the rollout then needs no image the node does not already hold, and the owner is left alone.
+owner_ok() {
+  spec "$owner" | jq -e --arg f "$fault" '[.spec.template.spec.containers[].image] | any(. == $f)' >/dev/null
+  [[ "$(node "$owner")" == "$(node "$deploy")" ]]
+  spec "$owner" | jq -e '(.status.availableReplicas // 0) >= 1' >/dev/null
+}
+# While the fault holds no container uses the baseline image; kubelet image GC (high 85%, low 80%)
+# could reclaim it. Start only below the GC low mark, as F17-H does.
+disk_ok() {
+  local n; n=$(node "$deploy"); [[ -n "$n" ]]
+  kubectl --kubeconfig=/root/tb-kubeconfig get --raw "/api/v1/nodes/$n/proxy/stats/summary" \
+    | jq -e '.node.runtime.imageFs | (1 - .availableBytes / .capacityBytes) < 0.80' >/dev/null
+}
+set_image() { "${k[@]}" set image deploy "$deploy" "$container=$1" >/dev/null; }
+healthy() {
+  local deadline=$((SECONDS + ${1%s}))
+  while :; do
+    if spec "$deploy" | jq -e '
+        .status.observedGeneration >= .metadata.generation
+        and ((.status.updatedReplicas // 0) == .spec.replicas)
+        and ((.status.availableReplicas // 0) == .spec.replicas)
+        and ((.status.replicas // 0) == .spec.replicas)' >/dev/null; then return 0; fi
+    (( SECONDS < deadline )) || return 1
+    sleep 2
+  done
+}
+check() {
+  command -v kubectl >/dev/null; command -v jq >/dev/null
+  "${k[@]}" auth can-i patch deployments | grep -qx yes
+  [[ "$(image)" == "$baseline" ]]; never_pull; replace_first
+  on_node "$baseline"; on_node "$fault"; owner_ok
+  disk_ok
+  healthy 1s
+}
+case "$action" in
+  preflight) check; [[ ! -e "$state" ]] ;;
+  # Like k8s.env, run does not wait for the rollout it starts; this rollout never completes.
+  run) check; mkdir -p "$state_root"; image >"$state.tmp"; mv -T "$state.tmp" "$state"; set_image "$fault" ;;
+  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]
+    if ! on_node "$original"; then
+      echo "baseline image $original is gone from node $(node "$deploy"): reload it on 109 with" \
+        "docker save $original | ssh -i /root/.ssh/tb_key nkia@<node ip> 'sudo ctr -n k8s.io images import -'" >&2
+      exit 1
+    fi
+    set_image "$original"; healthy 180s; rm -f "$state" ;;
+  recovery) [[ ! -e "$state" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s; owner_ok ;;
   *) exit 2 ;;
 esac
 '''

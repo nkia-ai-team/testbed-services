@@ -1005,6 +1005,47 @@ esac
         with self.assertRaisesRegex(ExecutorError, "no verified release image contract"):
             k8s_image.validate("F17-R", k8s_image.CONTRACTS["F17-H"], {})
 
+    def test_k8s_image_foreign_mode_rolls_transfer_to_the_ledger_image_and_back(self) -> None:
+        # F77-R: 이름이 겹친 매니페스트 적용이 바꾸는 것은 transfer 컨테이너 image 한 칸뿐이다. 그 이미지는 같은 노드의
+        # testbed-ledger 가 쓰는 것이라 노드에 올리지도 지우지도 않는다(지우면 진짜 원장이 다음 재시작에 뜨지 못한다).
+        # preflight 는 원장 이미지가 원장 Deployment 의 것이고 같은 노드에서 가용인지, maxSurge 0 인지 살아 있는 객체에서 본다.
+        plan = compiler.compile_plan("f77-r-banking-transfer-deployment-overwritten-by-name-colliding-ledger-manifest")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-transfer", "transfer-service",
+                                    "core-banking-transfer:latest", "core-banking-ledger:latest", "testbed-ledger"])
+        self.assertNotIn("F77-R", argv)
+        self.assertEqual(stdin, k8s_image.FOREIGN_SCRIPT)
+        script = stdin.decode()
+        self.assertNotIn("F77-R", script)
+        self.assertIn("set image deploy", script)
+        self.assertIn("maxSurge", script)
+        self.assertIn("owner_ok", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn('set_image "$fault"', run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('set_image "$original"', cleanup_case)
+        self.assertIn("healthy 180s", cleanup_case)
+        recovery_case = script.split("\n  recovery)")[1].split(";;")[0]
+        self.assertIn("owner_ok", recovery_case)
+        for forbidden in ("rmi", "images rm", "crictl", "delete", "strategy\":", "Probe"):
+            self.assertNotIn(forbidden, script)
+        # 노드 적재는 run 에 없다(cleanup 의 재적재 안내 문구만 docker save 를 말한다).
+        for forbidden in ("docker save", "images import", "node_sh"):
+            self.assertNotIn(forbidden, run_case)
+        # 원장 Deployment 의 매니페스트 이미지가 곧 장애 이미지다.
+        ledger = (ROOT.parent.parent / "core-banking" / "k8s" / "23-ledger-service.yaml").read_text()
+        self.assertIn("image: core-banking-ledger:latest", ledger)
+        self.assertIn("port: 8083", ledger)
+        transfer = (ROOT.parent.parent / "core-banking" / "k8s" / "22-transfer-service.yaml").read_text()
+        self.assertIn("maxSurge: 0", transfer)
+        self.assertIn("port: 8082", transfer)
+        params = dict(k8s_image.CONTRACTS["F77-R"])
+        k8s_image.validate("F77-R", params, {})
+        for change in ({"fault_image": "core-banking-transfer:2.9.9"}, {"fault_owner": "testbed-account"},
+                       {"mode": "release"}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                k8s_image.validate("F77-R", {**params, **change}, {})
+
     def test_k8s_image_release_mode_loads_the_release_only_for_the_fault(self) -> None:
         # F41-R: 결함 릴리스는 109 docker 에만 있다. 노드에는 주입 직전에 올리고(run), 매니페스트 이미지로
         # 되돌려 그 릴리스를 쓰는 파드가 없어진 뒤 노드에서 지운다(cleanup). 기존 F17-H 스크립트는 그대로다.
@@ -2411,6 +2452,8 @@ esac
             "F76-R",
             # 2026-10-12: food restaurant-service 를 메뉴 응답에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 Map.get 확인 없이 int 로 받아 카테고리 4~8 가게 11곳의 메뉴가 NullPointerException 으로 500(상세, 검색, 인기 메뉴, 주문 정상, GitLab 2026-03-17 production#21573 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F76-P",
+            # 2026-10-12: 원장 재처리 워커를 띄우려고 transfer 매니페스트를 복사해 이미지만 원장 이미지로 바꾸고 이름을 그대로 둔 채 적용, 살아 있는 transfer Deployment 가 core-banking-ledger:latest 로 롤아웃되어 원장 앱이 8082 프로브에 답하지 못하고 재시작을 되풀이, transfer 엔드포인트가 비어 banking 이체와 거래 내역, commerce checkout 502(Coinbase 2026-07-14 재구성, k8s.image 에 foreign 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F77-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

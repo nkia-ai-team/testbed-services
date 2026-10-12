@@ -141,7 +141,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 58 → 59. F75-R(food dispatch 만 용량 API 경로를 옮긴 릴리스로 롤아웃되어 짝 order 릴리스 없이 옛 경로가 400, 모든 새 주문 503) 후보 추가.
         # 2026-10-12: 59 → 60. F76-R(commerce product-service 릴리스 1.4.0 이 액상 상품 니코틴 함량을 설명에서 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록 500) 후보 추가.
         # 2026-10-12: 60 → 61. F76-P(food restaurant-service 릴리스 1.7.0 이 메뉴의 카테고리별 조리 시간을 확인 없이 읽어 카테고리 4~8 가게의 메뉴 500) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 61)
+        # 2026-10-12: 61 → 62. F77-R(이름이 겹친 원장 워커 매니페스트 적용이 transfer Deployment 를 원장 이미지로 바꿔 transfer 가 비고 banking 이체와 commerce checkout 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 62)
 
 
 class RecordingQueueTests(unittest.TestCase):

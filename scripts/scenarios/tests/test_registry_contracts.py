@@ -126,7 +126,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 135 → 136. F75-R(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 136 → 137. F76-R(후보) 추가. 기존 k8s.image release 모드를 commerce product 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 137 → 138. F76-P(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 138)
+        # 2026-10-12: 138 → 139. F77-R(후보) 추가. 기존 k8s.image 에 foreign 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 139)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -325,6 +326,8 @@ class RegistryContractTests(unittest.TestCase):
             "F76-R",
             # 2026-10-12: food restaurant-service 를 메뉴에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500
             "F76-P",
+            # 2026-10-12: transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지(core-banking-ledger:latest)로 바꿔, 원장 앱이 transfer 프로브(8082)에 답하지 못하고 재시작을 되풀이해 banking 이체와 commerce checkout 이 502
+            "F77-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -739,6 +742,8 @@ class RegistryContractTests(unittest.TestCase):
             "F76-R",
             # 2026-10-12: food restaurant-service 를 메뉴에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500
             "F76-P",
+            # 2026-10-12: transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지(core-banking-ledger:latest)로 바꿔, 원장 앱이 transfer 프로브(8082)에 답하지 못하고 재시작을 되풀이해 banking 이체와 commerce checkout 이 502
+            "F77-R",
             },
         )
         self.assertEqual(
@@ -937,6 +942,8 @@ class RegistryContractTests(unittest.TestCase):
             "F76-R",
             # 2026-10-12: food restaurant-service 를 메뉴에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500
             "F76-P",
+            # 2026-10-12: transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지(core-banking-ledger:latest)로 바꿔, 원장 앱이 transfer 프로브(8082)에 답하지 못하고 재시작을 되풀이해 banking 이체와 commerce checkout 이 502
+            "F77-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1149,8 +1156,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F75-R(후보, 고정 evaluation)이 끝에 붙어 F71-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F76-R(후보, 고정 evaluation)이 끝에 붙어 F72-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F76-P(후보, 고정 evaluation)이 끝에 붙어 F70-P 가 끝 5개에서 빠졌다.
+        # 2026-10-12: F77-R(후보, 고정 evaluation)이 끝에 붙어 F73-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F73-R", "F74-R", "F75-R", "F76-R", "F76-P"])
+                         ["F74-R", "F75-R", "F76-R", "F76-P", "F77-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -13308,6 +13308,103 @@
      }
     ]
    }
+  },
+  "F77-R": {
+   "title": "A new banking workload's manifest, copied from transfer-service and still named testbed-transfer, is applied: the live transfer Deployment is rolled to the ledger image, the ledger application never answers transfer's probes, and transfers, transaction history and commerce checkout settlement fail with 502",
+   "description": "The banking team adds a ledger reprocessing worker. Its manifest was made by copying transfer-service's Deployment (core-banking/k8s/22-transfer-service.yaml: same Secret references, heap option, resources, probes and node) and replacing the container image with the ledger image core-banking-ledger:latest; the metadata name testbed-transfer, the labels and the rest were left as they were. Applying it therefore does not create a new workload: the names collide with the live transfer-service Deployment, and the apply changes exactly one field of its pod template, the container image, from core-banking-transfer:latest to core-banking-ledger:latest. The image is already on tb-w2 because the real ledger Deployment (testbed-ledger) runs it there, so nothing has to be pulled. transfer's own strategy is maxSurge 0 / maxUnavailable 1, so the controller scales the old ReplicaSet to 0 and the new one to 1 in the same second: the old transfer pod terminates and leaves the testbed-transfer Service, and the new pod starts the ledger application with transfer's environment. It logs 'Starting LedgerServiceApplication', listens on the ledger's own port 8083 (server.port in the ledger image) and joins the ledger-service Kafka consumer group, all under transfer's telemetry identity (OTEL_SERVICE_NAME core-banking-transfer, host name testbed-transfer-<hash>). transfer's probes still ask port 8082: the startup probe (/actuator/health:8082, 30 x 5 s) gets 'connection refused' until kubelet kills the container after about 150 s ('failed startup probe, will be restarted'), and the container is restarted with a growing back-off. The pod never becomes Ready, so the Service has no endpoints and kube-proxy refuses every connection to testbed-transfer:8082: account's transfer call (api → account → transfer) fails with 'Connection refused', retries and opens its transferClient breaker, and api answers transfers with 502; api's transaction history call is refused too; commerce-payment's settlement transfer is refused and commerce checkout fails with 502. Balance lookups and account lists (nginx → account → Oracle) keep working, and the real ledger keeps running. This reconstructs Coinbase 2026-07-14, where a routine, low-risk configuration change to a shared production Kubernetes cluster modified the Kubernetes resources of the Istio ingress gateway because of a resource name collision that pre-production checks did not catch, the gateway became unavailable and all inbound traffic to the cluster stopped until the change was rolled back.",
+   "cause": "A new workload's manifest copied from transfer-service kept the name testbed-transfer and only swapped the image to core-banking-ledger:latest → applying it modified the live transfer Deployment instead of creating a new one (name collision) → maxSurge 0 / maxUnavailable 1 removes the old transfer pod first → the new pod runs the ledger application on port 8083 while transfer's probes check 8082, so it never passes the startup probe and is restarted over and over → the testbed-transfer Service has no endpoints and every connection to testbed-transfer:8082 is refused → account and api answer transfers and history with 502 after retries and open circuit breakers, commerce-payment's settlement fails and commerce checkout returns 502, until transfer's image is rolled back.",
+   "injection_summary": "The k8s.image executor in its 'foreign' mode runs `kubectl set image` on Deployment testbed-transfer (rca-testbed-banking), container transfer-service, from core-banking-transfer:latest to core-banking-ledger:latest, which is the one field the colliding manifest changes, and does not wait for the rollout. Its preflight checks on the live objects that the current image is the baseline with pull policy Never, replicas 1 with maxSurge 0, that tb-w2's node status lists both the baseline and the ledger image, that Deployment testbed-ledger runs exactly that image on the same node and is available, that tb-w2's image filesystem is below 80% (kubelet image GC low mark; while the fault holds no container uses the baseline transfer image), and that testbed-transfer is available. Nothing is loaded onto or removed from the node; probes, env, resources, Services and the ledger Deployment are not touched. Cleanup sets the image back to core-banking-transfer:latest and waits until the Deployment is available again. A north-south 5 rps companion load (core-banking transfer-heavy-surge.js: transfers 40%, balance 35%, history 15%, account list 10%) drives the banking entry point (30082) on top of the resident baseline, as in F17-H.",
+   "user_impact": "Money transfers through the banking gateway (POST /api/transfers → api → account → transfer) and transaction history (GET /api/transfers → api → transfer) fail with 502, quickly, because the connection is refused at once and the circuit breakers open. Commerce checkouts fail with 502 because the banking settlement transfer is refused. Balance lookups and account lists keep returning 200. The ledger keeps recording transfers that still complete elsewhere; nothing is lost.",
+   "distinguishing_evidence": "Decisive evidence is the image of the rollout and what the new transfer pod runs: a KCM ScalingReplicaSet pair for Deployment testbed-transfer (old ReplicaSet to 0, new one to 1 in the same second), the new ReplicaSet and pod specs captured in PG kcm_resources_history with image core-banking-ledger:latest (every earlier testbed-transfer record carries a core-banking-transfer image: 165 ReplicaSet and 153 pod records with :latest, a few with release tags), and the kubelet event 'Pulled: Container image \"core-banking-ledger:latest\" already present on machine' on a testbed-transfer pod. The container starts (Created, Started) and logs under service core-banking-transfer with host name testbed-transfer-<hash> the ledger application's start ('Starting LedgerServiceApplication', Tomcat on port 8083) and ledger work, then kubelet repeats 'Startup probe failed: ... :8082/actuator/health ... connection refused' for about 150 s, 'Killing: Container transfer-service failed startup probe, will be restarted' and BackOff, so transfer's restart count climbs. Right after the rollout account and api log 'Connection refused' towards http://testbed-transfer:8082 and commerce checkout fails at the settlement step. This separates it from F17-H (release tag missing from the node: no container, ErrImageNeverPull, no logs), F52-R (images removed from tb-w2 by a retention cleanup: syslog ctr images rm, ErrImageNeverPull for :latest), F65-R (transfer's own application starts but cannot reach its Oracle service: ORA-12514 with XEPDB1) and F17-R (readiness probe path misconfigured on transfer's own application).",
+   "domain": "core-banking",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "core-banking-transfer",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking transfer-service 의 배포 정의(Deployment testbed-transfer 의 파드 템플릿)다. 새 원장 재처리 워커를 띄우려고 transfer 매니페스트를 복사해 이미지만 core-banking-ledger:latest 로 바꾸고 이름(testbed-transfer)과 라벨을 그대로 둔 매니페스트를 적용해, 새 워크로드가 생기는 대신 이름이 겹친 살아 있는 transfer Deployment 의 컨테이너 이미지 한 칸이 원장 이미지로 바뀌었다. 정본 전략 maxSurge 0 / maxUnavailable 1 이 옛 transfer 파드를 먼저 내리고, 새 파드는 원장 앱으로 떠 8083 에서 듣는데 transfer 의 프로브는 8082 를 본다: 기동 확인(30회 x 5초)이 끝내 실패해 kubelet 이 약 150초마다 재시작하고 재시작 대기가 길어진다. Ready 파드가 없어 testbed-transfer Service 엔드포인트가 비고, transfer 로 가는 모든 연결(account 의 이체 실행, api 의 거래 내역, commerce-payment 의 정산 이체)이 즉시 거절되어 account, api 502, commerce checkout 502 다. 원칙 6: 호출자 요청은 늘 하던 그대로 정당하고, 원장 이미지와 원장 서비스는 멀쩡하다(원래 자리 testbed-ledger 에서 계속 돈다). 요청을 받을 transfer 파드를 없앤 것은 transfer 자신의 배포 정의를 덮어쓴 적용이므로 근본과 계기가 같은 곳(transfer 배포)이다. 원본 Coinbase 2026-07-14 가 지목한 층위('일상 설정 변경이 이름 충돌로 게이트웨이의 쿠버네티스 자원을 바꿔 게이트웨이를 쓸 수 없게 됨')와 같다. 왜 이름이 겹쳤는지(복사 실수, 사전 검사 부재)는 정답이 요구하지 않는다. 관제 데이터로의 도달 경로: ① KCM Deployment testbed-transfer ScalingReplicaSet 두 줄(같은 초)과 PG kcm_resources_history 의 새 ReplicaSet, 파드 스펙 \"image\":\"core-banking-ledger:latest\"(그 전 testbed-transfer 기록은 ReplicaSet 165건, 파드 153건이 core-banking-transfer:latest, 나머지는 transfer 릴리스 태그이고 원장 이미지는 0건) ② testbed-transfer 파드의 kubelet 'Pulled: Container image \"core-banking-ledger:latest\" already present on machine', Created, Started ③ service core-banking-transfer, host_name testbed-transfer-<hash> 로 수집되는 원장 앱 로그('Starting LedgerServiceApplication', 'Tomcat started on port 8083', 원장 대사 배치와 이체 이벤트 소비) ④ 'Startup probe failed: ... :8082/actuator/health ... connection refused' 반복, 'Killing ... failed startup probe, will be restarted', BackOff ⑤ account, api 의 'I/O error on POST/GET request for \"http://testbed-transfer:8082/api/transfers\": Connection refused' 와 서킷 열림, commerce-order 의 'Checkout payment failed ... core-banking transfer call failed' ⑥ 잔액 조회(nginx → account → Oracle)는 계속 200, testbed-ledger 는 Ready.",
+    "code_anchor": [
+     "core-banking/k8s/22-transfer-service.yaml:4 (metadata.name testbed-transfer — 복사한 매니페스트가 그대로 둔 이름. 같은 이름이라 적용이 새 Deployment 를 만들지 않고 살아 있는 transfer 를 바꾼다)",
+     "core-banking/k8s/22-transfer-service.yaml:14-18 (strategy maxUnavailable 1, maxSurge 0 — 옛 파드가 새 파드보다 먼저 내려가는 정본 전제. 기본 전략이면 옛 파드가 계속 서비스한다)",
+     "core-banking/k8s/22-transfer-service.yaml:36-37 (image core-banking-transfer:latest, imagePullPolicy Never — 주입이 바꾸는 한 칸. 원장 이미지는 같은 노드에 이미 있다)",
+     "core-banking/k8s/22-transfer-service.yaml:81-103 (startupProbe /actuator/health:8082 30 x 5초, readiness /actuator/health:8082, liveness /actuator/health/liveness:8082 — 원장 앱은 8082 를 열지 않는다)",
+     "core-banking/ledger-service/src/main/resources/application.yml:1-2 (server.port 8083 — 원장 이미지는 env 와 무관하게 8083 에서 듣는다)",
+     "core-banking/k8s/23-ledger-service.yaml:25-30 (원래의 원장 Deployment: 같은 이미지 core-banking-ledger:latest, 포트와 프로브 8083, tb-w2)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/client/TransferClient.java:28-58 (executeTransfer — 'Transfer service call failed for order {}: {}' 후 BAD_GATEWAY, 서킷 열림 fallback 'Transfer service circuit open/exhausted')",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/TransferClient.java:32-58 (listTransfers 거래 내역 — 'Transfer service list call failed', 서킷 열림 뒤 BAD_GATEWAY)",
+     "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:45-60 (commerce 정산 이체 — transfer FQDN 동기 호출, RestClientException 을 502 로)"
+    ],
+    "infra_anchor": "rca-testbed-banking Deployment testbed-transfer(replicas 1, RollingUpdate maxSurge 0 / maxUnavailable 1, nodeSelector tb-w2, imagePullPolicy Never, 109 kubectl 2026-10-12 확인)와 testbed-ledger(core-banking-ledger:latest, 기본 전략, tb-w2, 가용 1). tb-w2 노드 status.images 의 core-banking 이미지는 core-banking-{transfer,account,ledger,api}:latest 넷(2026-10-12), 이미지 파일시스템 71.5%. Service testbed-transfer 는 ClusterIP 와 NodePort 30282. 엔드포인트가 빈 Service 로의 연결은 kube-proxy 가 거절한다(2026-10-11 transfer 롤아웃 때 account, api 로그 'Connection refused' 실측)."
+   },
+   "must_support": [
+    "testbed-transfer 롤아웃 KCM 이벤트(Deployment testbed-transfer ScalingReplicaSet 두 줄: 옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet, 파드 스펙(PG kcm_resources_history.yaml)의 이미지가 core-banking-ledger:latest 이고, 그 전 testbed-transfer 기록에 원장 이미지는 한 번도 없다",
+    "새 transfer 파드의 kubelet 이벤트 'Pulled: Container image \"core-banking-ledger:latest\" already present on machine' 뒤 Created, Started 가 있고, 'Startup probe failed: Get \"http://<pod ip>:8082/actuator/health\": ... connection refused' 가 약 150초 이어진 뒤 'Killing'(failed startup probe, will be restarted)과 BackOff 가 되풀이된다",
+    "service core-banking-transfer 로 수집되는 로그 가운데 host_name 이 새 testbed-transfer 파드인 줄이 원장 앱의 것이다: 'Starting LedgerServiceApplication', 'Tomcat started on port 8083', 원장 대사 배치와 이체 이벤트 소비 로그. 'Transfer COMPLETED' 는 고장 동안 나오지 않는다",
+    "core-banking-account, core-banking-api 의 'I/O error on ... request for \"http://testbed-transfer:8082/api/transfers\": Connection refused' 와 서킷 열림 로그가 롤아웃 직후 생기고, 두 서비스 서버 스팬이 502 로 끝나 오류율이 평시 0 에서 오른다. commerce 정산(commerce-payment → transfer)도 실패해 commerce checkout 이 502 다",
+    "동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.5 이상으로 오르고, 잔액 조회(step get) 실패율은 평시 0 그대로다"
+   ],
+   "must_rule_out": [
+    "릴리스 이미지 부재가 아님(F17-H): F17-H 는 노드에 없는 transfer 태그라 컨테이너가 만들어지지 않고(ErrImageNeverPull) 로그가 없다. 여기서는 컨테이너가 떠서 원장 앱 로그를 남기고 이미지는 다른 서비스의 것이다",
+    "노드 이미지 정리가 아님(F52-R): 그 꼴은 tb-w2 syslog 의 ctr images rm 과 :latest 의 ErrImageNeverPull 이 지문이다. 여기서 노드 이미지는 그대로이고 Pulled 가 '이미 있음'이다",
+    "transfer 의 DB 연결 설정 오류가 아님(F65-R): 그 꼴은 transfer 자신의 앱이 떠 ORA-12514 를 남긴다. 여기서는 transfer 앱이 아니라 원장 앱이 떠 있다",
+    "transfer 의 readiness 경로 오설정이 아님(F17-R): 그 꼴은 transfer 앱이 떠서 8082 에 답하고 경로만 404 다. 여기서는 8082 가 연결 거절이고 앱이 8083 에서 듣는다",
+    "원장 서비스 장애가 아님: testbed-ledger 는 같은 이미지로 Ready 이고 원장 쪽 오류가 없다. 원장 이미지는 고장 난 곳이 아니라 잘못 놓인 것이다",
+    "Oracle, account, api 장애가 아님: 같은 account 파드가 잔액 조회에 200 으로 답하고, 실패 대상 URL 이 모두 testbed-transfer 다",
+    "부하 증가가 아님: 실패는 거절된 연결이고 같은 부하를 받는 잔액 조회는 정상이다"
+   ],
+   "difficulty": "high",
+   "related_scenarios": {
+    "contrast_with": [
+     "F17-H (같은 증상: transfer 롤아웃 뒤 엔드포인트가 비어 banking 이체와 commerce 정산이 502. 원인은 노드에 없는 transfer 릴리스 태그라 컨테이너가 생기지 않는다. F77-R 은 다른 서비스의 이미지가 떠서 원장 앱 로그를 남기고 기동 확인에서 죽는다)",
+     "F52-R (같은 증상: transfer 재배포 뒤 엔드포인트가 빔. 원인은 tb-w2 이미지 보존 정리가 쓰고 있는 이미지를 지운 것이고 근본은 노드다)",
+     "F65-R (같은 증상: transfer 롤아웃 뒤 새 파드가 Ready 가 못 됨. transfer 앱이 낡은 DB 연결 설정으로 Oracle 에 붙지 못한다)",
+     "F51-R (운영 작업의 대상 착오로 banking 서비스가 사라짐: 용량 명령이 account 를 replicas 0 으로. 여기서는 새 워크로드 적용이 이름 충돌로 transfer 의 배포 정의를 덮어씀)",
+     "F17-R (같은 증상: transfer 엔드포인트가 빔. 원인은 transfer 자신의 readiness 경로 오설정)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-transfer",
+     "banking-transfer",
+     "testbed-transfer"
+    ],
+    "partial": [
+     "core-banking-account",
+     "core-banking-api",
+     "commerce-payment"
+    ]
+   },
+   "title_ko": "transfer-service 매니페스트를 복사해 이름을 그대로 둔 새 banking 워크로드를 적용: 살아 있는 transfer Deployment 가 원장 이미지로 롤아웃되어 원장 앱이 transfer 프로브에 답하지 못하고, 이체, 거래 내역, commerce checkout 정산이 502 로 실패한다",
+   "description_ko": "banking 팀이 원장 재처리 워커를 더한다. 그 매니페스트는 transfer-service Deployment(core-banking/k8s/22-transfer-service.yaml: 같은 Secret 참조, 힙 옵션, 자원, 프로브, 노드)를 복사해 컨테이너 이미지만 원장 이미지 core-banking-ledger:latest 로 바꾼 것이고, metadata 이름 testbed-transfer 와 라벨, 나머지는 그대로다. 그래서 적용이 새 워크로드를 만들지 않는다: 이름이 살아 있는 transfer-service Deployment 와 겹쳐, 그 파드 템플릿의 한 칸인 컨테이너 이미지를 core-banking-transfer:latest 에서 core-banking-ledger:latest 로 바꾼다. 진짜 원장 Deployment(testbed-ledger)가 tb-w2 에서 그 이미지를 쓰고 있어 받을 것이 없다. transfer 의 정본 전략은 maxSurge 0 / maxUnavailable 1 이라 컨트롤러가 옛 ReplicaSet 을 0 으로, 새 ReplicaSet 을 1 로 같은 초에 바꾼다: 옛 transfer 파드가 종료되며 testbed-transfer Service 에서 빠지고, 새 파드는 transfer 의 환경으로 원장 앱을 띄운다. 그 앱은 'Starting LedgerServiceApplication' 을 남기고 원장 이미지의 포트 8083(server.port)에서 들으며 ledger-service Kafka 소비자 그룹에 들어간다. 모두 transfer 의 관측 신원(OTEL_SERVICE_NAME core-banking-transfer, 호스트 이름 testbed-transfer-<hash>)으로 남는다. transfer 의 프로브는 여전히 8082 를 본다: 기동 확인(/actuator/health:8082, 30회 x 5초)이 'connection refused' 를 받다가 약 150초 뒤 kubelet 이 컨테이너를 죽이고('failed startup probe, will be restarted') 대기가 길어지며 재시작을 되풀이한다. 파드가 Ready 가 되지 않아 Service 엔드포인트가 비고 kube-proxy 가 testbed-transfer:8082 로의 모든 연결을 거절한다: account 의 이체 호출(api → account → transfer)이 'Connection refused' 로 실패해 재시도 뒤 transferClient 서킷을 열고 api 가 이체에 502, api 의 거래 내역 호출도 거절되고, commerce-payment 의 정산 이체가 거절되어 commerce checkout 이 502 다. 잔액 조회와 계좌 목록(nginx → account → Oracle)은 정상이고 진짜 원장은 계속 돈다. Coinbase 2026-07-14(공유 운영 쿠버네티스 클러스터에 낸 일상적이고 위험이 낮아 보인 설정 변경이 사전 검사가 잡지 못한 자원 이름 충돌로 Istio 인그레스 게이트웨이의 쿠버네티스 자원을 바꿔 게이트웨이를 쓸 수 없게 되고, 변경을 되돌릴 때까지 클러스터로 들어오는 트래픽이 모두 멈춤)의 재구성이다.",
+   "cause_ko": "transfer-service 를 복사한 새 워크로드 매니페스트가 이름 testbed-transfer 를 그대로 두고 이미지만 core-banking-ledger:latest 로 바꿈 → 적용이 새 Deployment 를 만들지 않고 살아 있는 transfer Deployment 를 바꿈(이름 충돌) → maxSurge 0 / maxUnavailable 1 이 옛 transfer 파드를 먼저 내림 → 새 파드는 원장 앱으로 8083 에서 듣고 transfer 프로브는 8082 를 봐 기동 확인을 끝내 통과하지 못하고 재시작을 되풀이 → testbed-transfer Service 엔드포인트가 비어 testbed-transfer:8082 로의 모든 연결 거절 → account, api 가 재시도와 서킷 열림 끝에 이체와 거래 내역에 502, commerce-payment 정산 실패로 commerce checkout 502. transfer 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 foreign 모드가 rca-testbed-banking 의 Deployment testbed-transfer 컨테이너 transfer-service 에 `kubectl set image` 로 이미지를 core-banking-transfer:latest 에서 core-banking-ledger:latest 로 바꾼다(이름이 겹친 매니페스트가 바꾸는 단 한 칸). 롤아웃은 기다리지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값이고 pull 정책이 Never 인지, replicas 1 에 maxSurge 0 인지, tb-w2 노드 status 에 기준 이미지와 원장 이미지가 모두 있는지, Deployment testbed-ledger 가 같은 노드에서 바로 그 이미지를 쓰며 가용인지, tb-w2 이미지 파일시스템이 80%(kubelet 이미지 GC 하한) 미만인지(고장 동안 기준 transfer 이미지를 쓰는 컨테이너가 없다), testbed-transfer 가 가용인지 확인한다. 노드에 아무것도 올리거나 지우지 않고 프로브, env, 자원, Service, 원장 Deployment 는 건드리지 않는다. cleanup 은 이미지를 core-banking-transfer:latest 로 되돌리고 Deployment 가 다시 가용이 될 때까지 기다린다. north-south 5rps 동반 부하(core-banking transfer-heavy-surge.js: 이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%)가 F17-H 처럼 상주 기준선 위에 banking 진입점(30082)으로 요청을 보낸다.",
+   "user_impact_ko": "banking 게이트웨이를 거치는 이체(POST /api/transfers → api → account → transfer)와 거래 내역(GET /api/transfers → api → transfer)이 502 로 실패한다. 연결이 바로 거절되고 서킷이 열려 빨리 실패한다. banking 정산 이체가 거절되어 commerce checkout 도 502 다. 잔액 조회와 계좌 목록은 200 그대로다. 원장은 계속 돌고 잃는 데이터가 없다.",
+   "distinguishing_evidence_ko": "결정 증거는 롤아웃의 이미지와 새 transfer 파드가 실제로 돌리는 것이다: Deployment testbed-transfer 의 KCM ScalingReplicaSet 두 줄(같은 초), PG kcm_resources_history 에 잡힌 새 ReplicaSet, 파드 스펙의 이미지 core-banking-ledger:latest(그 전 testbed-transfer 기록은 ReplicaSet 165건, 파드 153건이 :latest 이고 몇 건이 transfer 릴리스 태그, 원장 이미지는 0건), testbed-transfer 파드의 kubelet 이벤트 'Pulled: Container image \"core-banking-ledger:latest\" already present on machine'. 컨테이너는 떠서(Created, Started) service core-banking-transfer, host_name testbed-transfer-<hash> 로 원장 앱의 기동('Starting LedgerServiceApplication', Tomcat 8083)과 원장 작업 로그를 남기고, kubelet 이 'Startup probe failed: ... :8082/actuator/health ... connection refused' 를 약 150초 되풀이한 뒤 'Killing: Container transfer-service failed startup probe, will be restarted' 와 BackOff 를 남겨 transfer 재시작 수가 오른다. 롤아웃 직후 account, api 가 http://testbed-transfer:8082 로의 'Connection refused' 를 남기고 commerce checkout 이 정산 단계에서 실패한다. 이것이 F17-H(노드에 없는 릴리스 태그: 컨테이너 없음, ErrImageNeverPull, 로그 없음), F52-R(tb-w2 이미지 보존 정리: syslog 의 ctr images rm, :latest 의 ErrImageNeverPull), F65-R(transfer 자신의 앱이 떠서 Oracle 서비스에 붙지 못함: XEPDB1, ORA-12514), F17-R(transfer 자신의 앱에 readiness 경로 오설정)과 가르는 근거다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f77-r",
+      "parameters": {
+       "mode": "foreign",
+       "namespace": "rca-testbed-banking",
+       "deployment": "testbed-transfer",
+       "container": "transfer-service",
+       "baseline_image": "core-banking-transfer:latest",
+       "fault_image": "core-banking-ledger:latest",
+       "fault_owner": "testbed-ledger"
+      }
+     }
+    ]
+   }
   }
  }
 }
