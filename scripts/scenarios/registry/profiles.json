@@ -4110,7 +4110,8 @@
       "parameter_contract": {
         "allowed_scenarios": [
           "F59-R",
-          "F59-P"
+          "F59-P",
+          "F69-R"
         ]
       },
       "scenario_parameters": {
@@ -4141,6 +4142,21 @@
           "page_size": 500,
           "workers": 48,
           "request_timeout_seconds": 60,
+          "active_deadline_seconds": 1800
+        },
+        "F69-R": {
+          "namespace": "rca-testbed-food",
+          "job": "payment-audit-export",
+          "image": "mysql:8.0",
+          "image_owner": "statefulset/testbed-mysql",
+          "node": "tb-w3",
+          "target_deployment": "testbed-payment",
+          "db_host": "testbed-mysql",
+          "db_secret": "mysql-secret",
+          "database": "fooddelivery",
+          "tables": "payments settlement_summary",
+          "cpu_limit": "150m",
+          "memory_limit": "256Mi",
           "active_deadline_seconds": 1800
         }
       },

@@ -1593,6 +1593,18 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F69-R",
+      "slug": "f69-r-food-payment-audit-export-locks-payment-tables",
+      "profiles": [
+        "k8s.job"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }

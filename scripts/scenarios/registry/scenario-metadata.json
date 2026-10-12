@@ -12034,6 +12034,112 @@
      }
     ]
    }
+  },
+  "F69-R": {
+   "title": "A payment audit export Job dumps the food payment tables with mysqldump defaults: its table read locks hold every payment write for the whole dump, the payment connection pool fills with waiting inserts and every new food order fails at the payment step with 502",
+   "description": "A one-off Kubernetes Job, payment-audit-export, starts in the rca-testbed-food namespace. It is the finance team's payment audit export, run from the MySQL image that is already on the node (mysql:8.0, the client tools ship with it) with the food application account from the mysql-secret Secret: mysqldump --no-tablespaces fooddelivery payments settlement_summary, piped through xz -6 into a file for the archive upload, inside a 150m CPU limit. mysqldump's defaults include --lock-tables, so without --single-transaction it first runs LOCK TABLES payments READ LOCAL, settlement_summary READ LOCAL and keeps those locks until the last row is written; it then streams payments (about 1.73 million rows, about 190 MB of SQL text) row by row at the pace of the compressor, which on that CPU budget takes well over ten minutes. A table read lock lets reads through but every INSERT, UPDATE and DELETE on the locked tables waits for a metadata lock ('Waiting for table metadata lock'), and the server's lock_wait_timeout is the default one year, so nobody gives up. payment-service inserts a PENDING payment row first in every payment, inside a transaction that holds a Hikari connection, so after about 15 payment attempts all 15 connections are held by waiting inserts; later payment requests fail after waiting 3 s for a connection (500). The 6-second retention purge and the hourly settlement batch wait on the same tables. order-service has already checked the restaurant, menu and courier capacity, saved the order and requested a courier when it calls payment, so every new order now fails at that last step: first on the 10-second payment read timeout and retry, then on 500 and the open payment circuit breaker, and the order transaction rolls back with 502. payment readiness and liveness (/actuator/health with a DB check) wait for the same pool, so payment leaves its Service and restarts, and the restarted pod blocks again on its first payment. Orders, order items, dispatches and every other table keep working, and MySQL is not saturated because the dump moves only as fast as xz compresses. Nothing about payment, order, MySQL or their configuration changes: no rollout, no schema change, no configuration change. The only new object is the Job, and its pod is the one client that holds a long 'Sending to client' session. The locks go away when the Job is removed (the dump connection closes) or when the dump finishes. This reconstructs the KnowBe4 incident of 2025-10-13, where a newly deployed data export workflow's queries took shared locks on shared transactional tables that blocked concurrent updates until the workflow was removed.",
+   "cause": "Payment audit export Job payment-audit-export (rca-testbed-food, image mysql:8.0) runs mysqldump with its default --lock-tables on fooddelivery payments and settlement_summary, compressing with xz -6 in a 150m CPU limit → LOCK TABLES ... READ LOCAL is held for the whole slow dump → every payments INSERT/UPDATE/DELETE waits for a metadata lock with no time limit → the 15 payment Hikari connections are held by waiting PENDING-payment inserts and later payment requests fail after 3 s → order's payment call times out, then fails and opens the circuit; every new order rolls back with 502; payment becomes NotReady and restarts → the locks go away when the Job is removed.",
+   "injection_summary": "The k8s.job executor (extended with an export contract) creates one Kubernetes Job in rca-testbed-food: payment-audit-export (label app=payment-audit-export, node tb-w3 by nodeSelector, image mysql:8.0 with imagePullPolicy Never, container export running a bash script, backoffLimit 0, activeDeadlineSeconds 1800, CPU limit 150m, memory limit 256Mi, an emptyDir for the dump). The script runs mysqldump --host=testbed-mysql --user=$DB_USER --no-tablespaces fooddelivery payments settlement_summary | xz -6 -T1 into /work, with DB_USER and MYSQL_PWD taken from the mysql-secret Secret (the account the food services use). Preflight checks that kubectl may create and delete Jobs, that tb-w3 is Ready, that the testbed-mysql StatefulSet uses exactly mysql:8.0 and has a running pod on tb-w3, that testbed-payment is available and that no Job of that name exists. Run records the Job name in a state file keyed by namespace and Job and applies the manifest without waiting. Cleanup deletes the Job in the foreground (the dump connection closes and MySQL releases the table locks), waits until no pod of the Job is left and until testbed-payment is available again. No scenario identifier appears in the Job, its labels, its script or its environment. There is no companion load: the resident food baseline (0.2 to 1.15 orders per second over the day) fills the payment pool within about a minute, as in F53-H.",
+   "user_impact": "About a minute after the export starts every new food order fails with 502 at the payment step, first after up to about 20 seconds of payment timeouts and retries, then at once. Orders are saved and couriers requested before payment is called, so the failed orders roll back but leave their courier assignments behind at the normal rate. Restaurant browsing, menus and delivery tracking keep answering. payment leaves its Service and restarts. Nothing recovers until the export Job is removed or the dump ends; then the waiting payment writes go through and payment and orders come back within minutes.",
+   "distinguishing_evidence": "Decisive evidence is a new batch Job whose pod holds the only long database session while payment writes wait for a metadata lock: KCM events in rca-testbed-food for Job payment-audit-export (SuccessfulCreate) and its pod (Scheduled to tb-w3, 'Pulled: Container image \"mysql:8.0\" already present on machine', Created and Started container export) right before the failures (no Job event in this namespace in the 30 days before 2026-10-12); the DPM session snapshots (lucida.dpm_session_local, one a minute) show a fooddelivery session from the export pod's IP, not a service pod, in 'Sending to client' with queryTime rising every minute (no 'Sending to client' row in 60 days) while sessions from the payment pod IPs sit in 'Waiting for table metadata lock' (one snapshot in 60 days, 2026-10-09 03:43); no session runs or waits with a schema change. Once the dump ends, DPM Top SQL shows mysqldump's statement SELECT /*!40001 SQL_NO_CACHE */ * FROM `payments` with minutes of execution time and hundreds of thousands of rows sent (never seen in 60 days). Then food-delivery-payment stops logging 'Processed payment id=' and logs Hikari 'Connection is not available, request timed out after 3000ms', food-delivery-order keeps logging 'Created order id=' and dispatch assignments but adds 'Failed to process payment for order' (Read timed out, then 500) and 'Order fan-out payment failed ... status=502', and KCM shows testbed-payment Unhealthy and Killing with no rollout. MySQL and order stay Ready, writes to orders and dispatches go on, MySQL CPU and data file writes stay at their normal level, and the fooddelivery table, column and index counts do not change. Unlike F53-H no migration waits behind the long session, and unlike F59-R the Job reads the database directly instead of calling a service API.",
+   "domain": "food-delivery",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "batch_job",
+    "target_id": "rca-testbed-food/job/payment-audit-export",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 재무 쪽이 띄운 일회성 결제 감사 자료 내보내기 Job payment-audit-export 다. 이 작업이 운영 food MySQL 에서 결제 표를 mysqldump 기본값으로 뜬다(mysqldump --no-tablespaces fooddelivery payments settlement_summary | xz -6). mysqldump 기본값(--opt)에 든 --lock-tables 는 --single-transaction 없이 쓰면 덤프를 시작할 때 LOCK TABLES payments READ LOCAL, settlement_summary READ LOCAL 을 걸고 마지막 행을 쓸 때까지 쥔다. InnoDB 에서 이 읽기 잠금은 읽기는 통과시키지만 그 표의 INSERT, UPDATE, DELETE 를 모두 메타데이터 잠금('Waiting for table metadata lock')에서 기다리게 하고, 서버의 lock_wait_timeout 이 기본값(1년)이라 누구도 포기하지 않는다. 덤프는 payments 약 173만 행(SQL 약 190MB)을 받는 쪽이 읽는 속도로 흘려보내는데, 받는 쪽이 CPU 한도 150m 안에서 xz -6 으로 압축하므로 덤프가 10분 넘게 걸리고 그동안 잠금이 이어진다. payment-service 는 결제마다 외부 PG 를 부르기 전에 PENDING 결제 행을 먼저 INSERT 하므로(PaymentService.java:50-66) 결제 시도 약 15번에 Hikari 풀(15)이 기다리는 INSERT 로 차고, 뒤의 결제 요청은 연결 대기 3초 끝에 500 이다. 6초마다 도는 보존 정리 DELETE(PaymentRetentionService.java:52-64)와 정산 배치 UPDATE(SettlementBatch.java:36-62)도 같은 잠금에서 기다린다. order 는 가게, 메뉴, 배달원 용량 확인과 주문 저장, 배차 요청을 평시대로 끝낸 뒤 결제를 부르므로(OrderService.java:152-160) 처음엔 결제 응답 10초 시간 제한과 재시도로, 그 뒤엔 500 과 서킷 열림으로 실패해 모든 새 주문이 롤백되고 502 다(PaymentClient.java:30-59). payment 의 health 에 DB 확인이 있어 readiness 가 빠지고 liveness 가 재시작하며, 다시 뜬 파드도 첫 결제에서 다시 막힌다. Job 을 치우면 덤프 연결이 끊겨 잠금이 풀리고 기다리던 쓰기가 한꺼번에 지나간다. payment, order, MySQL 의 코드, 설정, 스키마, 요청량은 그대로라 정당하다(원칙 6: 정당한 쓰기를 막는 잠금을 건 작업이 원인이다). 계기(작업 시작)와 근본(작업)이 같은 곳이라 trigger_target_id 는 비운다. 원본 KnowBe4 2025-10-13 사후 보고가 원인을 '새로 배포한 데이터 내보내기 작업이 공유 인증 표에 무거운 질의를 돌려 동시 갱신과 맞지 않는 공유 잠금을 만들어 로그인과 등록 갱신이 막힘'으로 지목하고 그 작업을 치워 완화한 층위와 같다. 관제 데이터로의 도달 경로: ① KCM 이벤트 Job payment-audit-export SuccessfulCreate 와 그 파드의 Scheduled, Pulled(mysql:8.0), Started(컨테이너 export) ② DPM 세션 스냅숏에 작업 파드 IP 의 fooddelivery 세션 하나가 'Sending to client' 로 queryTime 이 분마다 늘고, payment 파드 IP 의 세션들이 'Waiting for table metadata lock' 이며 스키마 변경 세션은 없다 ③ 덤프가 끝나거나 끊긴 뒤 DPM Top SQL 에 SELECT /*!40001 SQL_NO_CACHE */ * FROM `payments`(분 단위 실행, 보낸 행 수십만 이상) ④ payment 'Processed payment' 멈춤과 Hikari 고갈 로그, order 'Failed to process payment for order', 'Order fan-out payment failed ... status=502', KCM testbed-payment Unhealthy, Killing(롤아웃 없음) ⑤ 작업 파드가 사라지는 분에 대기가 한꺼번에 풀린다.",
+    "code_anchor": [
+     "scripts/scenarios/profiles/k8s_job_executor.py:182-187 (EXPORT_SCRIPT — mysqldump --no-tablespaces fooddelivery payments settlement_summary | xz -6 -T1. --single-transaction 이 없어 기본값 --lock-tables 가 덤프 내내 표 읽기 잠금을 쥔다)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentService.java:50-66 (processPayment — @Transactional 안에서 외부 PG 를 부르기 전에 PENDING 결제 행을 먼저 INSERT(66). 잠금에서 기다리면 이 트랜잭션이 연결을 쥔 채 멈춘다)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentRetentionService.java:48-64 (purgeOlderThan, findRetentionHeads, deleteAllByIdInBatch — 6초마다 도는 보존 정리. 읽기(통과) 뒤 지우기(대기)에서 줄에 선다)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/SettlementBatch.java:36-62 (findByStatusInAndSettledAtIsNullAndCreatedAtLessThan, saveAll — 정산 배치. 미정산 결제 읽기(통과) 뒤 정산 표시 쓰기(대기)에서 줄에 선다)",
+     "food-delivery/payment-service/src/main/resources/application.yml:12-15 (hikari maximum-pool-size 15, connection-timeout 3000)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:152-160 (Fan-out 2 — 주문 저장과 배차 요청 뒤 마지막 동기 단계로 결제를 부르고, 실패하면 주문 트랜잭션이 롤백된다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/PaymentClient.java:30-59 (processPayment 의 서킷과 재시도 2회, 실패와 fallback 을 502 로)",
+     "food-delivery/k8s/23-payment-deploy.yaml:67-86 (startupProbe, readinessProbe, livenessProbe 모두 /actuator/health — DB 확인이 풀에서 연결을 못 얻으면 실패)"
+    ],
+    "infra_anchor": "rca-testbed-food 네임스페이스(노드 tb-w3)의 Job payment-audit-export(이미지 mysql:8.0 = testbed-mysql StatefulSet 과 같은 이미지, CPU 한도 150m, 메모리 256Mi, 계정은 mysql-secret 의 앱 계정 fooddelivery = fooddelivery.* 전체 권한, LOCK TABLES 포함). 대상 food MySQL testbed-mysql-0(mysql 8.0.46, CPU 한도 0.5, max_connections 151). 2026-10-12 109 읽기 전용 실측: fooddelivery.payments 행 추정 1,726,617(데이터 298MB, 인덱스 99MB), settlement_summary 1,288 행, @@lock_wait_timeout 31536000, @@net_write_timeout 60, Threads_connected 21(Max_used_connections 38). 로컬 mysql:8.0(8.0.46, CPU 0.5) + 같은 payments 정의 1,726,617 행 실측(2026-10-12): 이 스크립트 그대로의 덤프 세션이 'Sending to client'(SELECT /*!40001 SQL_NO_CACHE */ * FROM `payments`)인 동안 performance_schema.metadata_locks 에 payments, settlement_summary 의 SHARED_READ_ONLY GRANTED, 다른 세션의 payments INSERT 는 SHARED_WRITE PENDING('Waiting for table metadata lock'), 같은 표 SELECT 는 즉시 끝남. 덤프 컨테이너를 죽이자 덤프 세션이 사라지고 기다리던 INSERT 가 곧바로 끝남. 덤프 길이(SQL 193,995,997 바이트, xz -6 뒤 5,332,108 바이트)는 압축이 정한다: x86 Xeon Silver 4514Y 에서 CPU 0.5 302초, 0.2 829초."
+   },
+   "must_support": [
+    "KCM 이벤트(rca-testbed-food)에 Job payment-audit-export 의 SuccessfulCreate 와 그 파드의 Scheduled(tb-w3), Pulled('Container image \"mysql:8.0\" already present on machine'), Created, Started(컨테이너 export)가 실패 직전에 있다. 2026-10-12 전 30일 동안 이 네임스페이스에 Job 이벤트는 0건이다",
+    "dpm_session_local 에 서비스 파드가 아닌 작업 파드 IP 의 fooddelivery 세션 하나가 'Sending to client' 상태로 queryTime 이 분마다 늘고(2026-10-12 조회 시 60일 동안 이 상태 0건), payment 파드 IP(재시작 뒤엔 옛 파드 IP 도)의 fooddelivery 세션들이 'Waiting for table metadata lock' 이다(60일 동안 2026-10-09 03:43 한 스냅숏뿐). 스키마 변경을 돌리거나 기다리는 세션은 없다",
+    "덤프가 끝나거나 끊긴 뒤 DPM Top SQL 에 mysqldump 의 문장 SELECT /*!40001 SQL_NO_CACHE */ * FROM `payments` 가 분 단위 실행 시간과 수십만 행 넘는 rowSent 로 나타난다(60일 동안 0건)",
+    "food-delivery-payment 의 'Processed payment id=' 가 멈추고 'HikariPool-1 - Connection is not available, request timed out after 3000ms' 가 나타나며, food-delivery-order 의 'Created order id=' 와 dispatch 배정 로그는 이어지는데 'Failed to process payment for order'(처음엔 Read timed out, 그 뒤엔 500)와 'Order fan-out payment failed ... status=502' 가 나타난다",
+    "KCM 에 testbed-payment 의 Unhealthy 와 Killing, 재시작이 롤아웃(ScalingReplicaSet)이나 이미지 변경 없이 나온다",
+    "기준선 loadgen-food 의 주문 생성 5xx 비율이 0.5 이상, 2xx 비율이 0.2 미만이다. 가게, 메뉴 둘러보기와 배달 조회는 200 으로 이어진다",
+    "testbed-mysql-0 과 testbed-order 는 Ready 이고, orders, dispatches 등 다른 표의 쓰기는 평시대로 끝난다. MySQL CPU 와 data_file_write_bytes 는 평시 수준이고 fooddelivery 의 표, 열, 인덱스 수가 바뀌지 않는다",
+    "작업 파드가 사라지는 분(cleanup 의 Job 삭제, KCM Killing)에 대기 세션이 한꺼번에 사라지고 payment 가 곧 Ready 로 돌아와 주문이 회복된다"
+   ],
+   "must_rule_out": [
+    "결제 표 열 추가 마이그레이션이 느린 내보내기 뒤에서 기다린 경우(F53-H)가 아님: 기다리는 스키마 변경 세션(ALTER, root@localhost)이 없고 표의 열이 그대로다. 오래 도는 세션의 주인이 DB 파드 안(localhost)이 아니라 새로 뜬 Job 파드이고, 그 문장이 mysqldump 의 SELECT /*!40001 SQL_NO_CACHE */ * 다",
+    "내부 백필 작업이 서비스 API 를 몰아친 경우(F59-R)가 아님: 작업이 서비스를 부르지 않고 DB 에 바로 붙는다. dispatch 풀 고갈과 MySQL 포화가 없고 주문은 503 이 아니라 결제 단계 502 로 실패한다",
+    "결제 표가 치워진 경우(F53-P)가 아님: 1146 오류가 없고 표 수가 그대로다. payment 는 곧바로 500 을 내지 않고 결제 INSERT 가 기다려 풀이 차고 재시작된다",
+    "payment 릴리스나 설정 배포(F49-P, F30-R)가 아님: testbed-payment 의 ReplicaSet 과 이미지가 그대로이고 롤아웃이 없으며, 잠금 동안 'Processed payment' 가 나오지 않는다",
+    "외부 PG 장애(F06-P, F19-S)가 아님: payment 가 PG 에 닿지 못해 'PG /pay failed' 로그가 없고, 실패는 PG 응답이 아니라 결제 INSERT 대기와 payment 풀 고갈이다",
+    "배차 표 잠금 대기열(F60-H)이나 dispatch 고장이 아님: 배달원 용량 확인과 배차 INSERT 는 평시대로 끝나고 주문은 503 이 아니라 결제 단계 502 로 실패한다. 대기 세션의 주인은 payment 파드다",
+    "MySQL 다운, 읽기 전용, 인스턴스 전체 문제(F25-H 꼴, F38-R)가 아님: testbed-mysql-0 Ready, 다른 표의 쓰기가 평시대로 끝나고 1290 오류가 없다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F53-H (같은 food 결제 표의 쓰기가 'Waiting for table metadata lock' 으로 줄을 서 결제 단계 502 이지만, 잠금을 기다리게 한 것이 느린 내보내기 뒤에서 기다리는 열 추가 마이그레이션이다. 정답은 표(DB 테이블(결제))이고 DB 파드 안 root 세션의 ALTER 가 기다리며 읽기도 줄을 선다. F69-R 은 스키마 변경 없이 새 Job 의 덤프가 표 읽기 잠금을 직접 쥐어 쓰기만 막고 정답은 작업이다)",
+     "F59-R (같은 '새로 뜬 내부 일회성 Job 이 원인' 정답 꼴이지만 백필이 dispatch API 를 깊은 페이지로 몰아쳐 dispatch 풀과 MySQL 을 포화시키고 주문이 503 이다. F69-R 은 DB 에 바로 붙은 덤프의 표 잠금이고 MySQL 은 한가하다)",
+     "F60-H (같은 메타데이터 잠금 대기열 꼴의 배차 표 판: 주문이 저장 전에 503)",
+     "F06-H (commerce PostgreSQL 결제 표의 배타 표 잠금: 같은 '결제 표 쓰기 차단, 결제 단계 502' 꼴이지만 잠금 주인이 드러나지 않고 정답이 표다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "payment-audit-export",
+     "job/payment-audit-export",
+     "rca-testbed-food/job/payment-audit-export"
+    ],
+    "partial": [
+     "food-mysql:fooddelivery.payments",
+     "food-delivery-payment",
+     "food-payment",
+     "testbed-payment",
+     "food-mysql",
+     "food-delivery-order"
+    ]
+   },
+   "title_ko": "결제 감사 자료 내보내기 Job 이 food 결제 표를 mysqldump 기본값으로 뜸: 표 읽기 잠금이 덤프 내내 모든 결제 쓰기를 붙잡아 payment 연결 풀이 기다리는 INSERT 로 차고 모든 새 음식 주문이 결제 단계에서 502 로 실패한다",
+   "description_ko": "rca-testbed-food 네임스페이스에 일회성 쿠버네티스 Job payment-audit-export 가 시작된다. 재무 쪽의 결제 감사 자료 내보내기로, 노드에 이미 있는 MySQL 이미지(mysql:8.0, 클라이언트 도구가 들어 있음)에서 mysql-secret 의 food 앱 계정으로 mysqldump --no-tablespaces fooddelivery payments settlement_summary 를 돌리고 xz -6 으로 압축해 보관소에 올릴 파일로 남긴다(CPU 한도 150m). mysqldump 기본값에는 --lock-tables 가 들어 있어 --single-transaction 없이 쓰면 먼저 LOCK TABLES payments READ LOCAL, settlement_summary READ LOCAL 을 걸고 마지막 행을 쓸 때까지 쥔다. 그 뒤 payments(약 173만 행, SQL 약 190MB)를 받는 쪽 압축기 속도로 한 행씩 흘리는데, 그 CPU 한도에서는 10분을 훌쩍 넘긴다. 표 읽기 잠금은 읽기는 통과시키지만 잠긴 표의 INSERT, UPDATE, DELETE 를 모두 메타데이터 잠금('Waiting for table metadata lock')에서 기다리게 하고, 서버의 lock_wait_timeout 이 기본값(1년)이라 누구도 포기하지 않는다. payment-service 는 결제마다 PENDING 결제 행을 먼저 INSERT 하며 그 트랜잭션이 Hikari 연결을 쥐므로, 결제 시도 약 15번 뒤 연결 15개가 모두 기다리는 INSERT 에 묶이고 뒤의 결제 요청은 연결을 3초 기다리다 500 이다. 6초마다 도는 보존 정리와 매시 정산 배치도 같은 표에서 기다린다. order-service 는 가게, 메뉴, 배달원 용량 확인과 주문 저장, 배차 요청을 끝낸 뒤 결제를 부르므로 모든 새 주문이 그 마지막 단계에서 실패한다: 처음엔 결제 응답 10초 시간 제한과 재시도로, 그 뒤엔 500 과 열린 결제 서킷브레이커로 주문 트랜잭션이 롤백되고 502 다. payment 의 readiness, liveness(/actuator/health, DB 확인 포함)도 같은 풀을 기다려 payment 가 Service 에서 빠지고 재시작하며, 다시 뜬 파드도 첫 결제에서 다시 막힌다. 주문, 주문 품목, 배차 등 다른 표는 평시대로 쓰이고, 덤프가 xz 가 압축하는 만큼만 나아가므로 MySQL 은 포화되지 않는다. payment, order, MySQL 과 그 설정은 그대로다: 롤아웃, 스키마 변경, 설정 변경이 없다. 새로 생긴 것은 Job 하나뿐이고, 그 파드가 오래 도는 'Sending to client' 세션의 유일한 주인이다. Job 을 치우면(덤프 연결이 닫힘) 또는 덤프가 끝나면 잠금이 풀린다. KnowBe4 2025-10-13 사고(새로 배포한 데이터 내보내기 작업의 질의가 공유 트랜잭션 표에 동시 갱신을 막는 공유 잠금을 걸어, 작업을 치울 때까지 로그인과 등록 갱신이 막힘)의 재구성이다.",
+   "cause_ko": "결제 감사 자료 내보내기 Job payment-audit-export(rca-testbed-food, 이미지 mysql:8.0)가 fooddelivery payments, settlement_summary 를 mysqldump 기본값(--lock-tables)으로 뜨고 CPU 한도 150m 안에서 xz -6 으로 압축 → 느린 덤프 내내 LOCK TABLES ... READ LOCAL 을 쥠 → payments 의 INSERT, UPDATE, DELETE 가 시간 제한 없이 메타데이터 잠금을 기다림 → payment Hikari 연결 15개가 기다리는 PENDING 결제 INSERT 에 묶이고 뒤의 결제 요청은 3초 뒤 500 → order 의 결제 호출이 시간 초과, 실패, 서킷 열림으로 끝나 모든 새 주문이 롤백되고 502, payment NotReady 와 재시작 → Job 을 치우면 잠금이 풀림.",
+   "injection_summary_ko": "k8s.job 실행기(내보내기 계약을 더해 확장)가 rca-testbed-food 에 쿠버네티스 Job 하나를 만든다: payment-audit-export(레이블 app=payment-audit-export, nodeSelector 로 tb-w3, 이미지 mysql:8.0 과 imagePullPolicy Never, 컨테이너 export 가 bash 스크립트 실행, backoffLimit 0, activeDeadlineSeconds 1800, CPU 한도 150m, 메모리 한도 256Mi, 덤프를 담는 emptyDir). 스크립트는 mysqldump --host=testbed-mysql --user=$DB_USER --no-tablespaces fooddelivery payments settlement_summary | xz -6 -T1 을 /work 에 쓰고, DB_USER 와 MYSQL_PWD 는 food 서비스들이 쓰는 mysql-secret 에서 받는다. preflight 는 kubectl 의 Job 생성, 삭제 권한, tb-w3 Ready, testbed-mysql StatefulSet 이 정확히 mysql:8.0 을 쓰고 tb-w3 에 도는 파드가 있음, testbed-payment 사용 가능, 같은 이름의 Job 없음을 확인한다. run 은 네임스페이스와 Job 이름으로 지은 상태 파일에 Job 이름을 적고 매니페스트를 기다리지 않고 적용한다. cleanup 은 Job 을 foreground 로 지우고(덤프 연결이 닫혀 MySQL 이 표 잠금을 푼다) 그 Job 의 파드가 남지 않을 때까지, testbed-payment 가 다시 사용 가능해질 때까지 기다린다. Job, 레이블, 스크립트, 환경 변수 어디에도 시나리오 식별자가 없다. 동반 부하는 없다: 상주 food 기준선(하루 주기로 주문 초당 0.2~1.15건)이 F53-H 와 같이 약 1분 안에 payment 풀을 채운다.",
+   "user_impact_ko": "내보내기가 시작되고 약 1분 뒤부터 모든 새 음식 주문이 결제 단계에서 502 로 실패한다. 처음엔 결제 시간 초과와 재시도로 최대 약 20초 뒤에, 그 뒤엔 곧바로. 주문 저장과 배차 요청이 결제 전에 끝나므로 실패한 주문은 롤백되지만 배차는 평시 속도로 남는다. 가게, 메뉴 둘러보기와 배달 조회는 계속 답한다. payment 는 Service 에서 빠지고 재시작한다. 내보내기 Job 을 치우거나 덤프가 끝날 때까지 회복되지 않고, 그 뒤 기다리던 결제 쓰기가 지나가며 payment 와 주문이 몇 분 안에 돌아온다.",
+   "distinguishing_evidence_ko": "결정 증거는 새 배치 Job 의 파드가 유일하게 오래 도는 DB 세션을 쥔 동안 결제 쓰기가 메타데이터 잠금을 기다린다는 것이다: rca-testbed-food 의 KCM 이벤트에 Job payment-audit-export(SuccessfulCreate)와 그 파드(tb-w3 Scheduled, 'Pulled: Container image \"mysql:8.0\" already present on machine', 컨테이너 export Created, Started)가 실패 직전에 있다(2026-10-12 전 30일 동안 이 네임스페이스 Job 이벤트 0건). DPM 세션 스냅숏(lucida.dpm_session_local, 1분)에 서비스 파드가 아닌 작업 파드 IP 의 fooddelivery 세션이 'Sending to client' 로 queryTime 이 분마다 늘고(60일 동안 이 상태 0건), payment 파드 IP 의 세션들이 'Waiting for table metadata lock' 이다(60일 동안 2026-10-09 03:43 한 스냅숏뿐). 스키마 변경을 돌리거나 기다리는 세션은 없다. 덤프가 끝나면 DPM Top SQL 에 mysqldump 의 SELECT /*!40001 SQL_NO_CACHE */ * FROM `payments` 가 분 단위 실행 시간과 수십만 행 넘는 rowSent 로 남는다(60일 동안 0건). 이어 food-delivery-payment 의 'Processed payment id=' 가 멈추고 Hikari 'Connection is not available, request timed out after 3000ms' 가 나오며, food-delivery-order 는 'Created order id=' 와 배차를 이어 가면서 'Failed to process payment for order'(Read timed out, 그 뒤 500)와 'Order fan-out payment failed ... status=502' 를 남기고, KCM 에 롤아웃 없는 testbed-payment Unhealthy, Killing 이 나온다. MySQL 과 order 는 Ready, orders 와 dispatches 쓰기는 이어지고, MySQL CPU 와 데이터 파일 쓰기는 평시 수준이며 fooddelivery 의 표, 열, 인덱스 수는 그대로다. F53-H 와 달리 긴 세션 뒤에서 기다리는 마이그레이션이 없고, F59-R 과 달리 작업이 서비스 API 가 아니라 DB 를 바로 읽는다.",
+   "injected_fault": {
+    "profile": "k8s.job",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f69-r",
+      "parameters": {
+       "namespace": "rca-testbed-food",
+       "job": "payment-audit-export",
+       "image": "mysql:8.0",
+       "image_owner": "statefulset/testbed-mysql",
+       "node": "tb-w3",
+       "target_deployment": "testbed-payment",
+       "db_host": "testbed-mysql",
+       "db_secret": "mysql-secret",
+       "database": "fooddelivery",
+       "tables": "payments settlement_summary",
+       "cpu_limit": "150m",
+       "memory_limit": "256Mi",
+       "active_deadline_seconds": 1800
+      }
+     }
+    ]
+   }
   }
  }
 }

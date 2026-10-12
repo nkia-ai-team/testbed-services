@@ -1,0 +1,297 @@
+{
+  "schema_version": "1.0",
+  "id": "F69-R",
+  "slug": "f69-r-food-payment-audit-export-locks-payment-tables",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "food namespace",
+    "matrix_location_transport": "xz -6 -T1 을 돌림 → --single-transaction 없이 기본값 --lock-tables 라 LOCK TABLES payments READ LOCAL, settlement_summary READ LOCAL 을 덤프 내내 쥠(payments 약 173만 행, SQL 약 190MB 를 압축기 속도로 흘려 10분 넘게, 로컬 같은 크기 사본 x86 CPU 0.5 302초, 0.2 829초) → payments 의 INSERT, UPDATE, DELETE 가 'Waiting for table metadata lock'(lock_wait_timeout 1년), 읽기는 통과 → 결제마다 처음 하는 PENDING 결제 INSERT 가 payment Hikari(15)를 채우고 뒤의 결제 요청 3초 뒤 500 → order 결제 호출 시간 초과, 서킷 열림, 모든 새 주문 결제 단계 502, payment NotReady 와 재시작. 롤아웃, 설정, 스키마 변경 없음(KnowBe4 2025-10-13 새 데이터 내보내기 작업의 질의가 공유 트랜잭션 표에 동시 갱신을 막는 공유 잠금 재구성)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.job"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "east-west-job-contract"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.job",
+        "companion_refs": [],
+        "approved_profile_id": "k8s.job"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f69-r",
+              "parameters": {
+                "namespace": "rca-testbed-food",
+                "job": "payment-audit-export",
+                "image": "mysql:8.0",
+                "image_owner": "statefulset/testbed-mysql",
+                "node": "tb-w3",
+                "target_deployment": "testbed-payment",
+                "db_host": "testbed-mysql",
+                "db_secret": "mysql-secret",
+                "database": "fooddelivery",
+                "tables": "payments settlement_summary",
+                "cpu_limit": "150m",
+                "memory_limit": "256Mi",
+                "active_deadline_seconds": 1800
+              },
+              "min_hold": "4m",
+              "settle": "30s",
+              "timeout": "10m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 내보내기가 잠근 것은 payments, settlement_summary 두 표의 쓰기뿐이라 order 는 가게, 메뉴, 배달원 용량 확인과 주문 저장, 배차 요청을 평시대로 지나 마지막 결제 단계에서 실패해 502 로 답한다(처음 십여 초는 결제 응답 10초 시간 제한, 그 뒤는 payment 풀 대기 3초 끝 500, 서킷 열림, payment NotReady 의 연결 거부로 곧바로). order 자신의 표(orders, order_items, order_outbox_events)는 잠기지 않는다. 0(연결 불가)은 order 파드가 빠지거나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기로 주문이 초당 약 0.2~1.15건이라 30초 창에 6~34건이다. 내보내기가 표 잠금을 쥔 동안 결제 처리의 첫 문장인 PENDING 결제 INSERT 가 'Waiting for table metadata lock' 으로 기다려 결제 단계에 닿은 모든 주문이 502 다. 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5
+            },
+            {
+              "id": "order-create-collapsed",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "lt",
+              "value": 0.2
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 4m, 3틱. run 은 Job 을 적용하고 기다리지 않는다. 내보내기 파드가 뜨면 mysqldump 가 LOCK TABLES payments READ LOCAL, settlement_summary READ LOCAL 을 잡고 payments 를 한 행씩 xz 압축기 속도로 흘린다(CPU 한도 150m. 로컬 mysql:8.0 같은 크기 사본 실측 x86 Xeon Silver 4514Y 에서 CPU 0.5 에 302초, 0.2 에 829초. 150m 이면 그보다 길다). 그 순간부터 payments 를 쓰는 모든 문장(결제마다 처음 하는 PENDING 결제 INSERT, 6초마다 보존 정리 DELETE, 정산 배치)이 시간 제한 없이 기다려(lock_wait_timeout 1년) payment Hikari 15개가 결제 시도 15번 안에 차고(기준선 주문 초당 0.2~1.15건, 결제 재시도 2회) 주문 생성이 결제 단계에서 502 다. 판정 관측은 30초마다 갱신돼 min_hold 뒤 약 90초에 3틱이 차므로 판정은 약 5분 30초에 끝나고, 그때 내보내기는 아직 돌고 있다(덤프가 압축기 속도로 9분 넘게 걸림). 성공 뒤 cleanup 이 Job 을 지우면 덤프 연결이 끊겨 잠금이 풀린다(원본의 완화도 작업을 치운 것이다)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 표 잠금이 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "order-down",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 주문 실패가 하류 결제 실패가 아니라 order 연결 실패다. 잠기는 것은 결제 표 쓰기뿐이고 order 의 health 확인은 자기 풀의 isValid() 라 Ready 로 남아야 한다(처음 십여 초 동안 주문 트랜잭션이 결제 응답을 최대 10초씩 기다리며 연결을 쥐지만 결제 서킷이 열리면 풀린다)"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "order-ready",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 Job 을 foreground 로 지우면 덤프 파드가 사라지며 서버 쪽 덤프 세션이 끊기고 LOCK TABLES 가 풀려 기다리던 결제 문장이 한꺼번에 지나간다(로컬 실측: 덤프 세션이 없어지자 기다리던 INSERT 가 곧바로 끝남). 재시작 고리에 있던 payment 는 CrashLoopBackOff 지연(최대 수 분)이 남을 수 있어 timeout 10m 이다. 실패한 주문은 결제 단계에서 끝나 배차를 하나씩 남기지만 기준선만 쓰므로 평시 성공 주문이 남기던 만큼과 같은 속도라 배정 수준이 그대로다. 내보내기는 읽기만 하므로 남는 데이터가 없다(덤프 파일은 파드의 emptyDir 와 함께 사라진다)"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.job"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.job"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "k8s.job"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

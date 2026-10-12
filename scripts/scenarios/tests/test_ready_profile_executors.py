@@ -681,6 +681,55 @@ esac
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             k8s_job.validate("F59-P", params, {})
 
+    def test_k8s_job_payment_export_dumps_with_default_table_locks_and_leaves_the_backfills(self) -> None:
+        # F69-R: 같은 실행기로 food 네임스페이스에 결제 감사 자료 내보내기 Job 하나를 만든다. payment, order, MySQL 의
+        # 이미지, 설정, 스키마를 바꾸면 F49-P(릴리스), F53-H(열 추가 마이그레이션)의 지문이 섞인다. 잠금은 mysqldump 기본값
+        # (--lock-tables)에서만 나와야 한다: 스크립트가 LOCK TABLES 를 직접 쓰거나 --single-transaction 을 쓰면 원본 고리가 아니다.
+        plan = compiler.compile_plan("f69-r-food-payment-audit-export-locks-payment-tables")
+        argv, stdin = k8s_job.build_invocation(plan, "run")
+        self.assertEqual(argv[3:10], ["run", "rca-testbed-food", "payment-audit-export", "testbed-payment",
+                                      "statefulset/testbed-mysql", "mysql:8.0", "tb-w3"])
+        manifest = json.loads(argv[10])
+        script = stdin.decode()
+        for text in (" ".join(argv), script):
+            self.assertNotIn("F69-R", text)
+            self.assertNotIn("f69", text.lower())
+        for word in ("scenario", "fault", "chaos", "inject", "rca-"):
+            self.assertNotIn(word, json.dumps(manifest["metadata"]["labels"]).lower())
+            self.assertNotIn(word, k8s_job.EXPORT_SCRIPT.lower())
+        self.assertEqual(manifest["metadata"]["labels"], {"app": "payment-audit-export"})
+        pod = manifest["spec"]["template"]["spec"]
+        self.assertEqual(pod["restartPolicy"], "Never")
+        self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w3"})
+        container = pod["containers"][0]
+        self.assertEqual(container["args"], [k8s_job.EXPORT_SCRIPT])
+        self.assertEqual((container["image"], container["imagePullPolicy"]), ("mysql:8.0", "Never"))
+        self.assertEqual(container["resources"]["limits"], {"cpu": "150m", "memory": "256Mi"})
+        # 계정은 food 서비스들이 쓰는 Secret 에서 받는다. 매니페스트와 인자에 비밀번호가 없다.
+        env = {item["name"]: item for item in container["env"]}
+        self.assertEqual(env["EXPORT_TABLES"]["value"], "payments settlement_summary")
+        self.assertEqual(env["MYSQL_PWD"]["valueFrom"]["secretKeyRef"], {"name": "mysql-secret", "key": "MYSQL_PASSWORD"})
+        self.assertEqual(env["DB_USER"]["valueFrom"]["secretKeyRef"], {"name": "mysql-secret", "key": "MYSQL_USER"})
+        self.assertTrue(all("value" not in item or "PASS" not in item["name"] for item in container["env"]))
+        self.assertIn('mysqldump --host="$DB_HOST" --user="$DB_USER" --no-tablespaces "$DB_NAME" $EXPORT_TABLES | xz -6 -T1',
+                      k8s_job.EXPORT_SCRIPT)
+        for forbidden in ("--single-transaction", "LOCK TABLES", "--lock-all-tables", "FLUSH", "INSERT", "DELETE", "UPDATE",
+                          "ALTER", "DROP", "sleep"):
+            self.assertNotIn(forbidden, k8s_job.EXPORT_SCRIPT)
+        # 이미지 주인이 StatefulSet 이면 kind/name 으로 찾는다. Deployment 이름만 적은 백필 계약은 그대로 deploy/ 로 찾는다.
+        self.assertIn('[[ "$ref" == */* ]] || ref="deploy/$ref"', script)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('delete job "$job"', cleanup_case)
+        self.assertIn("available 300s", cleanup_case)
+        # 백필 계약은 그대로 API 스크립트를 돈다.
+        food = k8s_job.job_manifest(k8s_job.CONTRACTS["F59-R"])["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(food["args"], [k8s_job.BACKFILL_SCRIPT])
+        self.assertEqual(food["resources"]["limits"], {"cpu": "500m", "memory": "256Mi"})
+        params = dict(k8s_job.CONTRACTS["F69-R"])
+        params["tables"] = "payments orders"
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            k8s_job.validate("F69-R", params, {})
+
     def test_k8s_dns_flips_only_the_pod_dns_policy_and_restores_it(self) -> None:
         # F37-R: 주입은 파드 템플릿의 dnsPolicy 한 칸만 바꾼다. dnsConfig 로 가짜 네임서버를
         # 넣거나 Service, CoreDNS 를 건드리면 "배포된 resolver 설정이 내부 이름을 모른다"는
@@ -2109,6 +2158,8 @@ esac
             "F16-P",
             # 2026-10-12: banking transfer-service 를 '출금 계좌당 초당 2건' 이상 거래 방지 한도를 더한 릴리스 2.4.0(fault-images/f68-r)으로 롤아웃(한도를 이름 하나의 resilience4j @RateLimiter 로 걸어 모든 계좌의 이체와 commerce 정산이 초당 2건 한 몫을 나눠 쓰고, 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 → banking 이체 502, commerce checkout 502, 합친 부하에 비례). 새 후보, 설계 강도 1단 고정 evaluation.
             "F68-R",
+            # 2026-10-12: food 결제 감사 자료 내보내기 Job(payment-audit-export, mysql:8.0)이 mysqldump 기본값(--lock-tables)으로 payments, settlement_summary 를 떠 덤프 내내 표 읽기 잠금을 쥠(k8s.job 내보내기 계약, 결제 INSERT 가 메타데이터 잠금을 기다려 payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502, 스키마·설정·롤아웃 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F69-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

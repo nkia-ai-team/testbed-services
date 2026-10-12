@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""One-off batch Job executor (an internal backfill that calls another service's API at scale).
+"""One-off batch Job executor (an internal backfill that calls another service's API at scale,
+or a data export that reads a service's tables straight from its database).
 
 F59-R reconstructs the Atlassian Bitbucket incident of 2025-05-08: an internal high-scale
 backfill job from an internal service sent an excessive volume of expensive queries through
@@ -11,7 +12,8 @@ dispatch-service delivery list (GET /api/deliveries?status=DELIVERED) page by pa
 has no sort key, so a page deep in the history makes MySQL step over every earlier finished
 delivery (LIMIT offset, size), and each such call holds one dispatch Hikari connection for
 seconds. Nothing about dispatch, order, MySQL or their configuration changes; the only new
-object is the Job.
+object is the Job. F59-P is the banking statement backfill and F69-R the food payment audit
+export (see their contracts below).
 
 The scenario id never reaches kubectl: the remote script gets the namespace, the Job name and
 the Job manifest built from the contract, and its state file is keyed by namespace and Job.
@@ -143,8 +145,74 @@ wait
 '''
 
 
-def job_manifest(p: dict[str, Any]) -> dict[str, Any]:
-    labels = {"app": p["job"]}
+# F69-R reconstructs the KnowBe4 incident of 2025-10-13: a newly deployed data export workflow
+# ran its extraction queries against shared transactional tables and took shared locks that
+# concurrent updates could not pass, so logins and enrollment updates timed out until the
+# workflow was removed. Here the finance team's payment audit export is a Kubernetes Job in the
+# food namespace, run from the MySQL image already on the node (the client tools ship with it):
+# it dumps the payment tables with mysqldump's defaults and compresses the dump with xz inside a
+# small CPU budget. Without --single-transaction mysqldump takes LOCK TABLES ... READ LOCAL on
+# every table it dumps and keeps the locks until the last row is written, so the dump runs at
+# the pace of the compressor and every INSERT, UPDATE and DELETE on payments waits for a
+# metadata lock the whole time, while reads go on. Nothing about payment, order, MySQL or their
+# configuration changes; the only new object is the Job.
+# 2026-10-12. F69-R: 결제 감사 자료 내보내기 Job 이 payments(약 173만 행, 덤프 약 190MB),
+# settlement_summary 를 mysqldump 기본값(--lock-tables)으로 떠서 xz -6 으로 압축한다. 로컬 mysql:8.0
+# 같은 크기 사본 실측(2026-10-12): 잠금 중 INSERT 는 'Waiting for table metadata lock', SELECT 는 통과,
+# 덤프 세션은 'Sending to client'. x86(Xeon Silver 4514Y) CPU 0.5 에서 302초, 0.2 에서 829초(압축이
+# 속도를 정한다). 한도 150m 이면 109(GB10 코어가 x86 보다 빨라도) 판정 시각(약 5분 30초)까지 덤프가 끝나지 않는다.
+CONTRACTS["F69-R"] = {
+    "namespace": "rca-testbed-food",
+    "job": "payment-audit-export",
+    "image": "mysql:8.0",
+    "image_owner": "statefulset/testbed-mysql",
+    "node": "tb-w3",
+    "target_deployment": "testbed-payment",
+    "db_host": "testbed-mysql",
+    "db_secret": "mysql-secret",
+    "database": "fooddelivery",
+    "tables": "payments settlement_summary",
+    "cpu_limit": "150m",
+    "memory_limit": "256Mi",
+    "active_deadline_seconds": 1800,
+}
+
+# The export. The account comes from the same Secret the food services use; the dump goes to
+# the work directory for the archive upload.
+EXPORT_SCRIPT = r'''set -euo pipefail
+out="/work/$DB_NAME-$(date -u +%Y%m%dT%H%M%SZ).sql.xz"
+echo "export $DB_NAME ($EXPORT_TABLES) to $out"
+mysqldump --host="$DB_HOST" --user="$DB_USER" --no-tablespaces "$DB_NAME" $EXPORT_TABLES | xz -6 -T1 >"$out"
+echo "export finished: $(stat -c %s "$out") bytes"
+'''
+
+
+def export_container(p: dict[str, Any]) -> dict[str, Any]:
+    def secret(key: str) -> dict[str, Any]:
+        return {"valueFrom": {"secretKeyRef": {"name": p["db_secret"], "key": key}}}
+
+    return {
+        "name": "export",
+        "image": p["image"],
+        "imagePullPolicy": "Never",
+        "command": ["bash", "-c"],
+        "args": [EXPORT_SCRIPT],
+        "env": [
+            {"name": "DB_HOST", "value": p["db_host"]},
+            {"name": "DB_NAME", "value": p["database"]},
+            {"name": "EXPORT_TABLES", "value": p["tables"]},
+            {"name": "DB_USER", **secret("MYSQL_USER")},
+            {"name": "MYSQL_PWD", **secret("MYSQL_PASSWORD")},
+        ],
+        "resources": {
+            "requests": {"cpu": "50m", "memory": "64Mi"},
+            "limits": {"cpu": p["cpu_limit"], "memory": p["memory_limit"]},
+        },
+        "volumeMounts": [{"name": "work", "mountPath": "/work"}],
+    }
+
+
+def api_container(p: dict[str, Any]) -> dict[str, Any]:
     if "directory_url" in p:
         script = STATEMENT_SCRIPT
         env = {
@@ -165,6 +233,24 @@ def job_manifest(p: dict[str, Any]) -> dict[str, Any]:
             "REQUEST_TIMEOUT": str(p["request_timeout_seconds"]),
         }
     return {
+        "name": "backfill",
+        "image": p["image"],
+        "imagePullPolicy": "Never",
+        "command": ["bash", "-c"],
+        "args": [script],
+        "env": [{"name": k, "value": v} for k, v in env.items()],
+        "resources": {
+            "requests": {"cpu": "50m", "memory": "64Mi"},
+            "limits": {"cpu": "500m", "memory": "256Mi"},
+        },
+        "volumeMounts": [{"name": "work", "mountPath": "/work"}],
+    }
+
+
+def job_manifest(p: dict[str, Any]) -> dict[str, Any]:
+    labels = {"app": p["job"]}
+    container = export_container(p) if "tables" in p else api_container(p)
+    return {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {"name": p["job"], "namespace": p["namespace"], "labels": labels},
@@ -178,19 +264,7 @@ def job_manifest(p: dict[str, Any]) -> dict[str, Any]:
                     "restartPolicy": "Never",
                     "terminationGracePeriodSeconds": 5,
                     "nodeSelector": {"kubernetes.io/hostname": p["node"]},
-                    "containers": [{
-                        "name": "backfill",
-                        "image": p["image"],
-                        "imagePullPolicy": "Never",
-                        "command": ["bash", "-c"],
-                        "args": [script],
-                        "env": [{"name": k, "value": v} for k, v in env.items()],
-                        "resources": {
-                            "requests": {"cpu": "50m", "memory": "64Mi"},
-                            "limits": {"cpu": "500m", "memory": "256Mi"},
-                        },
-                        "volumeMounts": [{"name": "work", "mountPath": "/work"}],
-                    }],
+                    "containers": [container],
                     "volumes": [{"name": "work", "emptyDir": {"sizeLimit": "512Mi"}}],
                 },
             },
@@ -207,7 +281,10 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("scenario is not enabled by the profile registry")
     if params != contract:
         raise ExecutorError("parameters must exactly match the approved batch job contract")
-    if params["workers"] * params.get("pages_per_worker", params["page_size"]) <= 0:
+    if "tables" in params:
+        if not params["tables"].split():
+            raise ExecutorError("export job contract must name at least one table")
+    elif params["workers"] * params.get("pages_per_worker", params["page_size"]) <= 0:
         raise ExecutorError("batch job contract must read at least one page")
 
 
@@ -246,10 +323,13 @@ available() {
     sleep 2
   done
 }
-# The Job runs an image that is already on the node (imagePullPolicy Never): the Deployment
-# that owns that image must use exactly it and have a running pod on the same node.
+# The Job runs an image that is already on the node (imagePullPolicy Never): the workload
+# that owns that image (a Deployment, or kind/name such as statefulset/testbed-mysql) must use
+# exactly it and have a running pod on the same node.
 image_on_node() {
-  [[ "$("${k[@]}" get deploy "$owner" -o jsonpath='{.spec.template.spec.containers[0].image}')" == "$image" ]]
+  local ref="$owner"
+  [[ "$ref" == */* ]] || ref="deploy/$ref"
+  [[ "$("${k[@]}" get "$ref" -o jsonpath='{.spec.template.spec.containers[0].image}')" == "$image" ]]
   "${k[@]}" get pods -o json | jq -e --arg node "$node" --arg image "$image" '
       [.items[] | select(.spec.nodeName == $node and .status.phase == "Running")
                 | select(any(.spec.containers[]; .image == $image))] | length > 0' >/dev/null
