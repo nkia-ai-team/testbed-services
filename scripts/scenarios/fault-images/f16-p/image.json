@@ -1,0 +1,7 @@
+{
+  "base": "commerce-notification:latest",
+  "fault": "commerce-notification:1.3.0",
+  "domain": "commerce",
+  "module": "notification-service",
+  "node": "tb-w1"
+}

@@ -1567,6 +1567,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F16-P",
+      "slug": "f16-p-commerce-notification-release-user-directory-flood-breaks-auth",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": ""
     }
   ]
 }

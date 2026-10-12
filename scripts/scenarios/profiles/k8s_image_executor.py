@@ -295,6 +295,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-api:latest",
         "fault_image": "core-banking-api:1.6.0",
     },
+    # 2026-10-11. F16-P: commerce notification-service 를 주문 이벤트 수신자 이메일을 회원 목록에서 찾는 릴리스 1.3.0
+    # 으로 롤아웃한다. 목록에 없는 이름이 오면 뒤에서(CompletableFuture.runAsync) user-service 회원 목록을 페이지로 끝까지
+    # 다시 읽는데, 회원 목록 API 는 페이지 인자를 받지 않고 전부를 돌려줘 새로 고침마다 전체 목록 요청이 상한(100번)까지
+    # 간다. 게이트웨이가 쓰기마다 토큰을 확인하는 user-service 가 그 요청에 묻힌다. 결함 이미지는 fault-images/f16-p 로
+    # 109 docker 에만 빌드하고, 실행기가 tb-w1 에 올렸다가 cleanup 이 지운다. notification 의 다른 릴리스 태그는 없다.
+    "F16-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-commerce",
+        "deployment": "testbed-notification",
+        "container": "notification-service",
+        "baseline_image": "commerce-notification:latest",
+        "fault_image": "commerce-notification:1.3.0",
+    },
 }
 
 

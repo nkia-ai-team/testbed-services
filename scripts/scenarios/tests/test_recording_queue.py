@@ -123,7 +123,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 48 → 49. F60-P(food 배차 이벤트 outbox 표를 취소된 인덱스 백필이 치워 배차가 커밋에서 되돌려지고 모든 새 주문 503) 후보 추가.
         # 2026-10-11: 49 → 48. F43-R 정식 승격(녹화 case-f43-r-v3-aecd7e38).
         # 2026-10-11: 48 → 49. F35-P(운영을 가리킨 로컬 마이그레이션이 banking Oracle 계좌 표를 지워 잔액 조회, 고객 이체, commerce 정산 실패) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 49)
+        # 2026-10-11: 49 → 50. F16-P(commerce notification 릴리스가 회원 목록 전체를 이벤트마다 다시 읽어 user-service 가 묻히고 쓰기 토큰 확인 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 50)
 
 
 class RecordingQueueTests(unittest.TestCase):

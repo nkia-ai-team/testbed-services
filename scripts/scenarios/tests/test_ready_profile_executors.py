@@ -1520,6 +1520,66 @@ esac
         self.assertIn("@ExceptionHandler(ServiceException.class)", handler)
         patch = (ROOT / "fault-images" / "f37-h" / "api-service.patch").read_text()
         self.assertIn("+++ b/core-banking/api-service/src/main/resources/application-dev.yml", patch)
+    def test_k8s_image_release_mode_rolls_commerce_notification_recipient_directory_release(self) -> None:
+        # F16-P: 같은 release 스크립트로 commerce notification 을 1.3.0 으로 롤아웃한다(tb-w1). notification 의 다른 릴리스
+        # 태그는 없지만 모든 계약의 태그가 서로 달라야 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 notification-service/src
+        # 안만 고친다.
+        plan = compiler.compile_plan("f16-p-commerce-notification-release-user-directory-flood-breaks-auth")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-notification", "notification-service",
+                                    "commerce-notification:latest", "commerce-notification:1.3.0"])
+        self.assertNotIn("F16-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F16-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F16-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f16-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F16-P"]["baseline_image"], k8s_image.CONTRACTS["F16-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f16-p" / "notification-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/commerce/notification-service/src/",
+                                                     "b/commerce/notification-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F16", "f16", "fault", "bug", "chaos", "scenario", "flood"):
+            self.assertNotIn(word, added)
+        # 홍수의 고리: 목록에 없는 이름마다 뒤에서(겹침 방지 없이) 새로 고치고, 짧은 페이지가 올 때까지 상한 100번 읽는다.
+        self.assertIn("CompletableFuture.runAsync(this::refresh);", added)
+        self.assertIn("while (chunk.size() >= PAGE_SIZE && page < MAX_PAGES);", added)
+        self.assertIn("MAX_PAGES = 100;", added)
+        self.assertIn('.uri("/api/users?page={page}&size={size}", page, size)', added)
+        self.assertIn("recipientDirectory.findEmail(event.customerName())", added)
+
+    def test_f16p_relies_on_unpaged_user_list_and_write_token_check(self) -> None:
+        # F16-P 는 user-service 회원 목록 API 가 페이지 인자를 받지 않고 전부를 돌려준다는 데(그래서 새 notification 의
+        # 페이지 읽기가 짧은 페이지를 못 만나 상한까지 간다), 주문 이벤트의 이메일이 비어 있고 이름이 회원 표의 이름과
+        # 다르다는 데(그래서 이벤트마다 목록을 못 찾아 새로 고친다), 게이트웨이가 쓰기마다 user-service 로 토큰을 확인하고
+        # notification 이 service-config 의 USER_SERVICE_URL 을 받는다는 데, 두 컨테이너의 CPU 한도가 500m 라는 데 기댄다.
+        commerce = ROOT.parent.parent / "commerce"
+        controller = (commerce / "user-service" / "src" / "main" / "java" / "com" / "commerce" / "user" / "controller"
+                      / "UserController.java").read_text()
+        listing = controller[controller.index("    @GetMapping\n"):controller.index('@GetMapping("/{id}")')]
+        self.assertNotIn("page", listing)
+        self.assertNotIn("Pageable", listing)
+        service = (commerce / "user-service" / "src" / "main" / "java" / "com" / "commerce" / "user" / "service"
+                   / "UserService.java").read_text()
+        self.assertIn("users = userRepository.findAll();", service)
+        guard = (commerce / "api-gateway" / "src" / "main" / "java" / "com" / "commerce" / "gateway" / "service"
+                 / "AuthGuard.java").read_text()
+        self.assertIn('Set.of("POST", "PUT", "DELETE", "PATCH")', guard)
+        self.assertIn('.path("/api/users/verify-token")', guard)
+        configmap = (commerce / "k8s" / "02-configmaps.yaml").read_text()
+        self.assertIn("USER_SERVICE_URL: http://testbed-user:8085", configmap)
+        notification = (commerce / "k8s" / "24-notification-service.yaml").read_text()
+        self.assertIn("name: service-config", notification)
+        self.assertIn("cpu: 500m", notification[notification.index("limits:"):])
+        user = (commerce / "k8s" / "25-user-service.yaml").read_text()
+        self.assertIn("cpu: 500m", user[user.index("limits:"):])
+        self.assertIn("path: /actuator/health\n", user[user.index("readinessProbe:"):user.index("livenessProbe:")])
+        order = (commerce / "order-service" / "src" / "main" / "java" / "com" / "commerce" / "order" / "service"
+                 / "OrderService.java").read_text()
+        self.assertIn("order.getCustomerEmail(),", order)
+
     def test_k8s_image_release_mode_rolls_food_dispatch_thread_leak_release(self) -> None:
         # F63-P: 같은 release 스크립트로 food dispatch 를 1.9.0 으로 롤아웃한다(tb-w3). F33-H(1.6.0), F43-P(1.7.0),
         # F55-R(1.8.0)도 dispatch 릴리스를 쓰므로 태그가 겹치지 않아야 넷 다 "노드에 릴리스 없음" preflight 를 지킨다.
@@ -1986,6 +2046,8 @@ esac
             "F60-P",
             # 2026-10-11: 운영을 가리킨 로컬 마이그레이션이 banking Oracle 계좌 표(ACCOUNTS)를 지움(ORA-00942, 잔액 조회와 계좌 목록 500, 고객 이체는 account 계좌 확인에서 500 → api 502, commerce 정산은 transfer 계좌 잠금에서 500 → checkout 502, 거래 내역은 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F35-P",
+            # 2026-10-11: commerce notification-service 를 주문 이벤트 수신자 이메일을 회원 목록에서 찾는 릴리스 1.3.0(fault-images/f16-p)으로 롤아웃(목록에 없는 이름마다 뒤에서 user-service 회원 목록 전체를 페이지 상한 100번까지 다시 읽어 user 가 CPU 한도와 풀 대기에 묻히고, 게이트웨이의 쓰기 토큰 확인이 늦어지다 500·401 로 실패, 읽기 정상). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F16-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

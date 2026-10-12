@@ -99,7 +99,8 @@
     "F53-H",
     "F67-H",
     "F60-P",
-    "F35-P"
+    "F35-P",
+    "F16-P"
   ],
   "controllers": {
     "F01-R": {
@@ -23540,6 +23541,253 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 FLASHBACK TABLE 로 표를 되돌리고 인덱스, 제약, 트리거 이름을 다시 붙이면 account, transfer 의 다음 문장이 다시 파싱되어 성공한다(로컬 Oracle 23.26 실측: 잔액 200, 이체 200, 트리거가 updated_at 갱신). 재시작이나 재배포가 필요 없다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F16-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f16-p",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-notification",
+              "container": "notification-service",
+              "baseline_image": "commerce-notification:latest",
+              "fault_image": "commerce-notification:1.3.0"
+            },
+            "min_hold": "8m",
+            "settle": "60s",
+            "timeout": "14m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "commerce 진입점(nginx → gateway) 상태. 게이트웨이는 DB 를 쓰지 않고 읽기는 토큰 확인을 거치지 않는다. 쓰기의 토큰 확인은 AuthGuard 안의 자기 호출이라 재시도, 서킷, 폴백 없이 user 의 응답을 그대로 따른다: 풀 대기 3초 뒤 500, user 가 엔드포인트에서 빠진 동안은 연결 거부로 곧 500, 가장 늦어도 읽기 10초 뒤 500. 0(연결 불가)은 nginx, 게이트웨이, 노드가 죽었을 때만 나온다(로컬 실측 쓰기 최대 약 5초)"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "gateway_p95",
+          "adapter": "prometheus",
+          "query_id": "prometheus.apm_service_p95",
+          "parameters": {
+            "service_name": "commerce-gateway"
+          },
+          "freshness": "120s",
+          "_note": "게이트웨이 서버 스팬 p95(ms, APM 표본 기반, 60초 창 최대). 평시 7일 중앙값 9.4ms, 99분위 58ms(119 VM 2026-10-11). 토큰 확인이 붙은 쓰기는 user 응답을 그대로 기다리므로 user 가 묻히면 쓰기가 1~4초로 늘어난다. 판정의 주 신호다: user 가 readiness 로 빠지는 약 10초 동안은 쓰기가 연결 거부로 곧 500 이 되어 빨라지지만 60초 창 최대라 주기를 건너 높게 남는다(로컬 kubelet 프로브 흉내 실측: 고장 2분째부터 끝까지 게이트웨이 p95 2~4초, 54틱 연속). user-service 자신의 p95 는 러너 APM 허용 목록 밖이라 녹화로 본다(평시 중앙값 2.33ms)"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-user"
+          },
+          "freshness": "30s",
+          "_note": "user 파드. /actuator/health 에 DB 확인이 들어 있어 Hikari 풀(10)이 목록 요청에 묶이면 readiness(10초 x 3)가 빠지고 liveness(15초 x 5)가 재시작할 수 있다. 증상이라 성공, 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+        },
+        {
+          "id": "postgres_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-postgres"
+          },
+          "freshness": "30s",
+          "_note": "commerce PostgreSQL. 목록 질의는 3,020행 표의 전체 읽기라 PostgreSQL 은 여유가 있다. 빠지면 DB 장애(F25-H 꼴)다"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.write_step_status_rate",
+          "freshness": "30s",
+          "_note": "기록만 한다. 동반 부하(surge.js 3rps, 여정의 50% 가 checkout: 로그인 뒤 장바구니 비우기, 담기, checkout)의 checkout 단계 4xx+5xx 비율. 쿠폰, 재고 4xx 가 섞인다"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s",
+          "_note": "동반 부하 checkout 단계 5xx 비율. 동반 k6 는 사용자 20명의 토큰을 처음 몇 초에 받아 캐시하므로(commerce/loadgen/surge.js:67-83) 홍수가 자라기 전에 로그인을 마치고, 그 뒤 checkout 마다 게이트웨이가 user 에 토큰을 확인한다. 토큰 확인은 AuthGuard 의 자기 호출(AuthGuard.java:44)이라 재시도, 서킷, 401 폴백이 적용되지 않아, user 가 풀 대기 3초 뒤 500 을 내면 게이트웨이도 500(HttpServerErrorException), user 가 엔드포인트에서 빠지면 연결 거부로 곧 500(ResourceAccessException)이다(F33-P 실행 구간 119 게이트웨이 로그: 쓰기 실패가 전부 이 두 문장). 평시 0 근처. 기록만 한다: user 가 70~160초마다 약 10초 엔드포인트에서 빠지면 새로 고침 스레드가 모두 연결 거부로 끝나고 홍수가 0 부터 다시 쌓이므로 이 비율은 주기를 타고 오르내린다(로컬 실측 30초 창 0~0.51, 0.3 이상인 틱 40%, 가장 긴 연속 5틱)"
+        },
+        {
+          "id": "checkout_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "freshness": "30s",
+          "_note": "기록만 한다. 성공한 checkout 만 주문 이벤트를 만들어 새로 고침을 부르지만, 주기를 끊는 것은 이벤트 감소가 아니라 user 의 readiness 이탈이다(이탈 때 새로 고침 스레드가 연결 거부로 모두 끝남)"
+        },
+        {
+          "id": "read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s",
+          "_note": "상주 기준선의 상품 목록(GET /api/products, 토큰 확인 없음, product-service). 주입은 user 만 묶으므로 읽기는 그대로여야 한다"
+        },
+        {
+          "id": "checkout_nonok_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.write_step_status_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "gateway-writes-slow",
+            "observation": "gateway_p95",
+            "op": "gte",
+            "value": 1000,
+            "_note": "새 notification 은 주문 이벤트의 수신자 이름(user-N, 회원 표의 이름과 다름)을 회원 목록에서 못 찾을 때마다 뒤에서 목록을 page=0..99&size=100 으로 다시 읽는다. user-service 회원 목록 API(GET /api/users)는 페이지 인자가 없어 매번 3,020명 전체(약 400KB)를 돌려주므로 새로 고침 1번이 전체 목록 요청 100번이다(실패한 페이지는 3번까지 다시). 포화된 user 의 처리량은 초당 약 14건이라 평시 이벤트만으로도 넘친다. user 가 CPU 한도와 Hikari 대기에 묻히면 게이트웨이의 쓰기마다 하는 토큰 확인(자기 호출이라 재시도, 서킷, 폴백 없음)이 1~4초 걸리거나 500 이 된다. user 가 readiness 로 빠지면 새로 고침 스레드가 연결 거부로 모두 끝나고 약 10초 뒤 홍수가 0 부터 다시 쌓여, 실패 비율(checkout 5xx)은 70~160초 주기로 오르내려 3틱 연속이 들쭉날쭉하다. 그래서 주기를 건너 남는 게이트웨이 p95(60초 창 최대)를 판정 신호로 둔다. 로컬 실측(같은 jar, OTel 에이전트, user·notification·gateway --cpus 0.5, 운영 회원 3,020명을 복사한 PostgreSQL 16, 25-user-service.yaml 의 readiness·liveness 를 user 앞 프록시로 흉내, checkout 여정 초당 2건과 그 성공의 절반이 주문 이벤트, 15초 틱과 60초 창으로 다시 계산): 평시 게이트웨이 p95 최대 86~102ms, 고장 2분째부터 2~4초로 끝까지(54틱 연속, liveness 재시작이 낀 실행에서는 재시작 구간마다 끊겨 가장 긴 연속 17틱). 같은 실행에서 checkout 5xx 0.3 이상은 틱의 40%, 가장 긴 연속 5틱이었다. 읽기는 내내 정상"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 8m: 롤아웃(새 notification 파드 기동 약 40초~1분), 동반 부하 ramp 2m, 새로 고침 스레드가 쌓여 user 가 포화되는 데 1~2분(로컬 실측: 이벤트 초당 약 1건에서 고장 90초째 게이트웨이 p95 가 1초를 넘음). 8분이면 readiness 이탈 주기 서너 번이 녹화 구간에 들어간다. timeout 14m"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1,
+            "_note": "동반 부하 3rps 의 1/3. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "commerce-db-down",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다"
+          },
+          {
+            "id": "reads-also-broken",
+            "observation": "read_nonok_rate",
+            "op": "gte",
+            "value": 0.1,
+            "_note": "상품 목록까지 실패하면 인증 경로 하나가 아니라 게이트웨이나 DB 전체 문제다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "user-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "db-ready",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "writes-recovered",
+            "observation": "checkout_nonok_rate_baseline",
+            "op": "lt",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 이미지를 commerce-notification:latest 로 되돌리고 롤아웃 available(상한 180초, 실행기가 확인), 1.3.0 을 쓰는 파드가 없어진 뒤 tb-w1 containerd 에서 1.3.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 옛 notification 프로세스가 내려가면 쌓인 새로 고침 스레드도 함께 사라지고, user 는 요청이 멈추면 스스로 돌아온다(로컬 실측: 매니페스트 notification 으로 바꾼 뒤 user 회복). notification 파드 Ready 는 러너 관측 허용 목록 밖이라 두지 않는다(실행기 cleanup 이 available 을 확인한다). 재시작 고리에서 CrashLoopBackOff 지연이 남을 수 있어 timeout 10m 이다"
       },
       "cleanup": {
         "required": true,

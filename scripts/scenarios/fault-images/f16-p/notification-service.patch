@@ -1,0 +1,171 @@
+diff --git a/commerce/notification-service/src/main/java/com/commerce/notification/client/UserDirectoryClient.java b/commerce/notification-service/src/main/java/com/commerce/notification/client/UserDirectoryClient.java
+new file mode 100644
+index 0000000..b5598d3
+--- /dev/null
++++ b/commerce/notification-service/src/main/java/com/commerce/notification/client/UserDirectoryClient.java
+@@ -0,0 +1,35 @@
++package com.commerce.notification.client;
++
++import com.commerce.common.dto.UserResponse;
++import org.springframework.beans.factory.annotation.Value;
++import org.springframework.core.ParameterizedTypeReference;
++import org.springframework.http.client.SimpleClientHttpRequestFactory;
++import org.springframework.stereotype.Component;
++import org.springframework.web.client.RestClient;
++
++import java.time.Duration;
++import java.util.List;
++
++@Component
++public class UserDirectoryClient {
++
++    private final RestClient userRestClient;
++
++    public UserDirectoryClient(
++            @Value("${services.user.url:${USER_SERVICE_URL:http://localhost:8085}}") String baseUrl,
++            @Value("${services.user.connect-timeout:3s}") Duration connectTimeout,
++            @Value("${services.user.read-timeout:10s}") Duration readTimeout) {
++        var factory = new SimpleClientHttpRequestFactory();
++        factory.setConnectTimeout(connectTimeout);
++        factory.setReadTimeout(readTimeout);
++        this.userRestClient = RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
++    }
++
++    public List<UserResponse> listUsers(int page, int size) {
++        List<UserResponse> users = userRestClient.get()
++                .uri("/api/users?page={page}&size={size}", page, size)
++                .retrieve()
++                .body(new ParameterizedTypeReference<List<UserResponse>>() {});
++        return users != null ? users : List.of();
++    }
++}
+diff --git a/commerce/notification-service/src/main/java/com/commerce/notification/consumer/OrderEventConsumer.java b/commerce/notification-service/src/main/java/com/commerce/notification/consumer/OrderEventConsumer.java
+index 88b3300..e7330d2 100644
+--- a/commerce/notification-service/src/main/java/com/commerce/notification/consumer/OrderEventConsumer.java
++++ b/commerce/notification-service/src/main/java/com/commerce/notification/consumer/OrderEventConsumer.java
+@@ -2,6 +2,7 @@ package com.commerce.notification.consumer;
+ 
+ import com.commerce.common.dto.OrderEvent;
+ import com.commerce.notification.service.NotificationService;
++import com.commerce.notification.service.RecipientDirectory;
+ import com.fasterxml.jackson.databind.ObjectMapper;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -14,10 +15,13 @@ public class OrderEventConsumer {
+     private static final Logger log = LoggerFactory.getLogger(OrderEventConsumer.class);
+ 
+     private final NotificationService notificationService;
++    private final RecipientDirectory recipientDirectory;
+     private final ObjectMapper objectMapper;
+ 
+-    public OrderEventConsumer(NotificationService notificationService, ObjectMapper objectMapper) {
++    public OrderEventConsumer(NotificationService notificationService, RecipientDirectory recipientDirectory,
++                              ObjectMapper objectMapper) {
+         this.notificationService = notificationService;
++        this.recipientDirectory = recipientDirectory;
+         this.objectMapper = objectMapper;
+     }
+ 
+@@ -26,10 +30,13 @@ public class OrderEventConsumer {
+         log.info("Received order event: {}", message);
+         try {
+             OrderEvent event = objectMapper.readValue(message, OrderEvent.class);
++            String email = event.customerEmail() != null
++                    ? event.customerEmail()
++                    : recipientDirectory.findEmail(event.customerName());
+             notificationService.sendNotification(
+                     String.valueOf(event.orderId()),
+                     event.customerName(),
+-                    event.customerEmail(),
++                    email,
+                     event.totalAmount() != null ? event.totalAmount().toString() : null,
+                     event.status());
+         } catch (Exception ex) {
+diff --git a/commerce/notification-service/src/main/java/com/commerce/notification/service/RecipientDirectory.java b/commerce/notification-service/src/main/java/com/commerce/notification/service/RecipientDirectory.java
+new file mode 100644
+index 0000000..60a80d4
+--- /dev/null
++++ b/commerce/notification-service/src/main/java/com/commerce/notification/service/RecipientDirectory.java
+@@ -0,0 +1,82 @@
++package com.commerce.notification.service;
++
++import com.commerce.common.dto.UserResponse;
++import com.commerce.notification.client.UserDirectoryClient;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Component;
++
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.concurrent.CompletableFuture;
++
++/**
++ * 주문 이벤트에 수신자 이메일이 비어 있으면 회원 목록에서 이름으로 찾는다.
++ * 회원 목록은 user-service 의 회원 목록 API 를 페이지 단위로 끝까지 읽어 메모리에 두고,
++ * 없는 이름이 오면(새로 가입한 회원) 소비를 늦추지 않도록 뒤에서 새로 고친다.
++ */
++@Component
++public class RecipientDirectory {
++
++    private static final Logger log = LoggerFactory.getLogger(RecipientDirectory.class);
++    private static final int PAGE_SIZE = 100;
++    private static final int MAX_PAGES = 100;
++    private static final int MAX_ATTEMPTS = 3;
++
++    private final UserDirectoryClient userDirectoryClient;
++    private volatile Map<String, String> emailByName = Map.of();
++
++    public RecipientDirectory(UserDirectoryClient userDirectoryClient) {
++        this.userDirectoryClient = userDirectoryClient;
++    }
++
++    public String findEmail(String customerName) {
++        if (customerName == null) {
++            return null;
++        }
++        String email = emailByName.get(customerName);
++        if (email == null) {
++            CompletableFuture.runAsync(this::refresh);
++        }
++        return email;
++    }
++
++    private void refresh() {
++        try {
++            emailByName = load();
++        } catch (Exception ex) {
++            log.warn("Recipient directory refresh failed: {}", ex.getMessage());
++        }
++    }
++
++    private Map<String, String> load() {
++        Map<String, String> byName = new HashMap<>();
++        int page = 0;
++        List<UserResponse> chunk;
++        do {
++            chunk = fetchPage(page++);
++            for (UserResponse user : chunk) {
++                byName.putIfAbsent(user.name(), user.email());
++            }
++        } while (chunk.size() >= PAGE_SIZE && page < MAX_PAGES);
++        if (chunk.size() >= PAGE_SIZE) {
++            log.warn("Recipient directory paging stopped at page limit: pages={} recipients={}", page, byName.size());
++        } else {
++            log.info("Loaded recipient directory: pages={} recipients={}", page, byName.size());
++        }
++        return byName;
++    }
++
++    private List<UserResponse> fetchPage(int page) {
++        for (int attempt = 1; ; attempt++) {
++            try {
++                return userDirectoryClient.listUsers(page, PAGE_SIZE);
++            } catch (RuntimeException ex) {
++                if (attempt >= MAX_ATTEMPTS) {
++                    throw ex;
++                }
++            }
++        }
++    }
++}
