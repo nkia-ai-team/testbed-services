@@ -13130,6 +13130,96 @@
      }
     ]
    }
+  },
+  "F76-R": {
+   "title": "Release rollout of the commerce product-service to 1.4.0, which adds a nicotine-content field (mg) to product listings and details for e-liquid products but reads it from the description with a regex whose find() result it never checks; every e-liquid product whose description carries no 'N mg' (500 of the 504 in the catalog) throws IllegalStateException while the response is built, so product listing pages that contain one answer 500 while product details, carts and checkout keep working",
+   "description": "A rollout of the commerce product-service Deployment (testbed-product) moves its container image from commerce-product:latest to the release commerce-product:1.4.0. The release returns a product-service response type that adds nicotineMg to the shared product fields for the adult-verification badge and a nicotine filter: for category 2 (e-liquid) it returns 0 when the description says '무니코틴' and otherwise matches '(\\d+)\\s*mg' in the description, but calls group(1) without checking Matcher.find(). The development seed (the 16 flagship products) has 'N mg' or '무니코틴' in all four e-liquid descriptions, so the path never failed there; the production catalog holds 2,016 products, and the 500 bulk-listed e-liquid products describe themselves as '자동 생성 시드 상품 #n' with no nicotine figure. Startup and /actuator/health are unchanged, so the new pod becomes Ready and replaces the old one under the default rolling strategy. From then on any list response that contains such a product fails while it is being built: Tomcat logs SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: No match found] with root cause' with a stack through ProductService.nicotineMg and toResponse, and the request gets 500. Every page of the uncategorised listing (GET /api/products?page=N&size=20, about five bulk e-liquid products per page), the non-empty pages of category 2, and searches that return such products fail; categories 1, 3 and 4 and searches without e-liquids stay 200. Product detail still answers as before (the flagship products carry a figure or '무니코틴'; bulk products have no inventory row and end in 404 before the field is computed). The api-gateway forwards product's 500 as is without an exception, so its product circuit stays closed. Checkout is untouched because order calls POST /api/products/{id}/reserve-stock, whose response does not go through the new field. The queries, PostgreSQL and inventory are unchanged. Locally (jar built from the same sources, PostgreSQL 16 with the same 2,016-product seed) the uncategorised listing failed on 51 of 51 pages, category 2 on 26 of 51, categories 1, 3 and 4 on 0 of 51, details of products 1-16 answered 200 and 168 SEVERE lines named 'No match found'; the baseline jar answered every one of those requests 200. Nothing recovers until product-service is rolled back.",
+   "cause": "Rollout of testbed-product (commerce) to the release commerce-product:1.4.0, whose new nicotine-content field reads 'N mg' from the description of every e-liquid product without checking whether the pattern matched; the 500 production e-liquid products without such a figure throw IllegalStateException while list responses are built → listing and search pages containing them answer 500, until product-service is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-product (rca-testbed-commerce), container product-service, from commerce-product:latest to commerce-product:1.4.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f76-r from origin/main commerce plus fault-images/f76-r/product-service.patch (under product-service/src only: a CatalogProductResponse record with nicotineMg, ProductService.nicotineMg and the controllers returning the new type); the manifest image, sources and manifests are untouched, the product data is not changed, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w1's containerd holds the baseline and not the release, that tb-w1's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w1's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w1. A companion surge load (3 rps; 35% browsing the uncategorised listing, 50% checkout) adds listing and checkout traffic on top of the resident baseline. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the product rollout, more than half of the product listing views fail with 500: every page of the full catalogue, the e-liquid category and searches that hit e-liquid products. Other categories, product details, carts, login and checkout keep working. Nothing recovers until product-service is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release of product-service immediately followed by product's own response-building exception on a subset of products while its database and dependencies stay healthy: a KCM ScalingReplicaSet for testbed-product and the new pod's kubelet event 'Pulled: Container image \"commerce-product:1.4.0\" already present on machine' (no testbed-product rollout in the 30 days before 2026-10-12; commerce release rollouts on file carry their tag in the same event, e.g. commerce-cart:1.2.0). From the new pod's start product logs SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.IllegalStateException: No match found] with root cause' (0 lines in any service in the 30 days before 2026-10-12; product's SEVERE lines on file are RestClient errors toward inventory, the last on 2026-10-06), product server spans GET /api/products turn to 500 (all 41,804 sampled in the previous day were 200) and gateway spans GET /api/products/** answer 500 (none in the previous day). The failures follow the data, not the load: uncategorised and category-2 listings fail while categories 1, 3 and 4, product details, variants and POST /api/products/{id}/reserve-stock answer as before, and checkout keeps succeeding. Product stays Ready with no restart, no OOM, no pool timeout and no inventory error; PostgreSQL shows no new error, lock wait, schema change or query shape (DPM top SQL for product is the same).",
+   "domain": "commerce",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "commerce-product",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 commerce product-service 의 새 릴리스 commerce-product:1.4.0 이다. 이 버전은 성인 인증 표시와 함량 필터를 위해 상품 목록, 상세 응답에 액상 상품의 니코틴 함량(nicotineMg)을 더한다. 카테고리 2(액상)면 설명에 '무니코틴' 이 있을 때 0 을, 아니면 설명에서 '(\\d+)\\s*mg' 를 찾아 그 숫자를 싣는데 Matcher.find() 의 결과를 보지 않고 group(1) 을 부른다. 개발 시드(대표 상품 16개)의 액상 4개는 설명에 'N mg' 이나 '무니코틴' 이 있어 실패하지 않았지만, 운영 카탈로그 2,016개 가운데 대량 등록 액상 500개는 설명이 '자동 생성 시드 상품 #n' 이라 함량 표기가 없다. 기동과 /actuator/health 는 그대로라 새 파드가 Ready 가 되어 기본 롤링 전략으로 옛 파드를 대신하고, 그 뒤 그런 상품이 하나라도 든 목록 응답은 만드는 중에 IllegalStateException('No match found')이 나 Tomcat 이 SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.IllegalStateException: No match found]' 를 남기고 500 을 준다. 카테고리 없는 목록의 모든 쪽(쪽마다 대량 등록 액상 약 5개), category=2 의 상품 있는 쪽, 그런 상품이 걸리는 검색이 실패하고 category=1,3,4 와 상세, checkout(reserve-stock 응답은 이 칸을 거치지 않음)은 그대로다. 질의, PostgreSQL, inventory 는 바뀌지 않는다. 원본 GitLab 2026-03-17 production#21573(Duo Code Review 기능 변경이 들인 잘못된 Feature.enabled? 호출이 GitLab Credits 애드온이 있는 네임스페이스의 프로젝트에서만 API 직렬화 중 NoMethodError 를 내 MR 생성과 /api/v4/projects 등이 500, 15,000건 넘는 오류, 되돌림으로 복구)과 같은 꼴이다. 고칠 곳은 응답 변환에 실패 처리 없는 코드를 들인 product 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f76-r/product-service.patch:107-109 (릴리스 1.4.0 의 LIQUID_CATEGORY_ID 2, NICOTINE_MG '(\\d+)\\s*mg')",
+     "scripts/scenarios/fault-images/f76-r/product-service.patch:172-183 (ProductService.nicotineMg — 액상이면 '무니코틴' 은 0, 아니면 matcher.find() 결과를 보지 않고 Integer.valueOf(matcher.group(1)), 함량 표기가 없으면 IllegalStateException 'No match found')",
+     "scripts/scenarios/fault-images/f76-r/product-service.patch:156-170 (toResponse — 목록의 상품마다 nicotineMg 를 불러 한 상품의 실패가 목록 응답 전체를 500 으로 만듦)",
+     "commerce/product-service/src/main/java/com/commerce/product/service/ProductService.java:75-87 (getProductWithStock — inventoryClient.getStock 이 먼저라 재고 행 없는 대량 등록 상품의 상세는 함량 계산 전에 404 로 끝남)",
+     "commerce/product-service/src/main/java/com/commerce/product/service/ProductService.java:89-99 (reserveStock — checkout 경로의 응답은 ReserveStockResponse 라 새 칸을 거치지 않음)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:108-128 (doForward — product 의 500 을 RestClientResponseException 으로 받아 같은 상태로 돌려줘 product 서킷이 열리지 않음)",
+     "commerce/db/seed-all.sql:122-131 (대량 등록 상품 2,000개: category_id 1 + (n % 4), description '자동 생성 시드 상품 #n' — 액상 500개에 함량 표기 없음)",
+     "commerce/product-service/src/main/resources/data.sql:8-16 (product_schema.products — 개발 시드 대표 상품, 그 가운데 액상 4개(13-16행)의 설명: '니코틴 9mg', '니코틴 6mg', '니코틴 3mg', '무니코틴')"
+    ],
+    "infra_anchor": "rca-testbed-commerce Deployment testbed-product(commerce/k8s/21-product-service.yaml: replicas 1 :9, nodeSelector tb-w1 :18-19, image commerce-product:latest imagePullPolicy Never :27-28, startupProbe, readinessProbe, livenessProbe 모두 /actuator/health :78-95, 기본 전략 maxSurge 25%). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w1 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-product 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 commerce-product:1.4.0 을 담는다. 2026-10-12 이전 30일 동안 testbed-product 롤아웃은 없었고, commerce 의 다른 릴리스 롤아웃도 같은 이벤트에 태그가 남는다(예: commerce-cart:1.2.0)",
+    "새 product 파드가 트래픽을 받은 뒤 product SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: No match found] with root cause' 가 나오고 스택이 ProductService.nicotineMg, toResponse 를 지난다(2026-10-12 이전 30일 동안 모든 서비스에서 'No match found' 0건, product 의 SEVERE 는 inventory 로 가는 RestClient 오류뿐이고 마지막이 2026-10-06)",
+    "product 서버 스팬 GET /api/products 와 게이트웨이 서버 스팬 GET /api/products/** 가 500 으로 답한다(이전 1일 표본 product 목록 41,804건, 게이트웨이 상품 경로 52,324건 200 과 54,982건 404, 500 은 0). 기준선 상품 목록 실패 비율이 0 근처에서 약 0.5 로 오른다",
+    "실패가 데이터를 따른다: 카테고리 없는 목록과 category=2 목록은 실패하고 category=1,3,4 목록, 상품 상세, 옵션 목록, POST /api/products/{id}/reserve-stock 와 checkout 은 평소대로 답한다. product 는 Ready 이고 재시작, OOM, 풀 대기, inventory 오류가 없으며 PostgreSQL 에 새 오류, 잠금 대기, 스키마 변경, 새 질의가 없다"
+   ],
+   "must_rule_out": [
+    "상품 표가 사라지거나 바뀐 것이 아님(F23-P): 'relation ... does not exist' 같은 DB 오류가 없고 PostgreSQL 에 DROP, ALTER 가 없으며 상품 상세와 reserve-stock 이 같은 표를 읽어 성공한다",
+    "상품 표 잠금 대기열이 아님(F73-R): 요청이 몇 ms 안에 500 으로 끝나고 시간 초과, Hikari 풀 대기, 재시작, PostgreSQL 잠금 대기 세션이 없다",
+    "product 의 CPU 한도나 자원 부족이 아님(F12-H): 지연이 늘지 않고 실패가 특정 카테고리 응답에만 난다",
+    "inventory 장애가 아님(F09-P, F01-R): product 의 실패가 inventory 를 부르지 않는 목록에서 나고, inventory 를 부르는 상세와 reserve-stock, checkout 은 성공한다",
+    "게이트웨이 설정이나 서킷 문제가 아님(F64-R): product 자신의 서버 스팬과 SEVERE 로그가 500 을 내고 게이트웨이는 그 상태를 그대로 넘긴다. 다른 경로의 게이트웨이 응답은 정상이다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F23-P (상품 표 지우기: 같은 '상품 둘러보기 500' 이지만 DB 오류와 DROP, 상세와 checkout 까지 실패, 롤아웃 없음)",
+     "F73-R (상품 표 잠금 대기열: 같은 상품 읽기 실패이지만 시간 초과와 풀 고갈, 재시작, PostgreSQL 잠금 대기, 롤아웃 없음)",
+     "F12-H (product CPU 한도: 같은 product 증상이지만 모든 요청이 느려지고 실패가 데이터와 무관)",
+     "F43-R (cart 릴리스의 연결 누수: 같은 commerce 서비스 릴리스이지만 풀 고갈과 재시작이 쓰기 전부로 번짐)",
+     "F49-R (restaurant 릴리스가 응답 구조를 바꿔 order 가 해석 실패: 릴리스가 응답을 바꾼 꼴이지만 실패가 호출자 쪽 해석에서 나고 모든 요청이 깨짐. F76-R 은 릴리스 자신이 특정 데이터에서 응답을 못 만듦)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "commerce-product",
+     "testbed-product",
+     "product-service"
+    ],
+    "partial": [
+     "commerce-gateway"
+    ]
+   },
+   "title_ko": "commerce product-service 를 릴리스 1.4.0 으로 롤아웃: 액상 상품의 니코틴 함량(mg)을 목록, 상세 응답에 더했는데 설명에서 정규식으로 읽으며 find() 결과를 보지 않아, 설명에 'N mg' 이 없는 액상 상품(카탈로그 504개 중 500개)을 응답에 담는 순간 IllegalStateException 이 나 그런 상품이 든 상품 목록 쪽이 500, 상세와 장바구니, checkout 은 정상",
+   "description_ko": "commerce product-service Deployment(testbed-product) 롤아웃이 컨테이너 이미지를 commerce-product:latest 에서 릴리스 commerce-product:1.4.0 으로 바꾼다. 이 릴리스는 성인 인증 표시와 함량 필터를 위해 공통 상품 칸에 nicotineMg 를 더한 product-service 응답 형을 돌려준다: 카테고리 2(액상)면 설명에 '무니코틴' 이 있을 때 0, 아니면 설명에서 '(\\d+)\\s*mg' 를 찾는데 Matcher.find() 를 확인하지 않고 group(1) 을 부른다. 개발 시드(대표 상품 16개)의 액상 4개는 모두 'N mg' 이나 '무니코틴' 이 있어 실패한 적이 없지만, 운영 카탈로그 2,016개 가운데 대량 등록 액상 500개는 설명이 '자동 생성 시드 상품 #n' 이라 함량이 없다. 기동과 /actuator/health 는 그대로라 새 파드가 Ready 가 되어 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 그런 상품이 든 목록 응답은 만드는 중에 실패한다: Tomcat 이 SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.IllegalStateException: No match found] with root cause' 를 ProductService.nicotineMg, toResponse 를 지나는 스택과 함께 남기고 500 을 준다. 카테고리 없는 목록(GET /api/products?page=N&size=20, 쪽마다 대량 등록 액상 약 5개)의 모든 쪽, category=2 의 상품 있는 쪽, 그런 상품이 걸리는 검색이 실패하고 category=1,3,4 와 액상이 없는 검색은 200 이다. 상품 상세는 그대로다(대표 상품은 함량이나 '무니코틴' 이 있고, 대량 등록 상품은 재고 행이 없어 함량 계산 전에 404). api-gateway 는 product 의 500 을 예외 없이 그대로 넘겨 product 서킷이 닫힌 채다. checkout 은 order 가 POST /api/products/{id}/reserve-stock 을 부르고 그 응답은 새 칸을 거치지 않아 영향이 없다. 질의, PostgreSQL, inventory 는 바뀌지 않는다. 로컬(같은 소스로 만든 jar, 같은 2,016개 시드의 PostgreSQL 16)에서 카테고리 없는 목록 51/51 쪽, category=2 26/51 쪽, category=1,3,4 0/51 쪽 실패, 상품 1~16 상세 200, 'No match found' SEVERE 168줄, 매니페스트 jar 는 같은 요청 모두 200. product-service 를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-product(commerce) 를 릴리스 commerce-product:1.4.0 으로 롤아웃. 새 니코틴 함량 칸이 모든 액상 상품의 설명에서 'N mg' 을 일치 여부 확인 없이 읽어, 함량 표기가 없는 운영 액상 상품 500개가 목록 응답을 만드는 중에 IllegalStateException 을 냄 → 그런 상품이 든 목록, 검색 쪽이 500, product-service 를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-commerce 의 Deployment testbed-product 컨테이너 product-service 이미지를 commerce-product:latest 에서 commerce-product:1.4.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f76-r 이 origin/main commerce 에 fault-images/f76-r/product-service.patch(product-service/src 안만: nicotineMg 를 더한 CatalogProductResponse, ProductService.nicotineMg, 새 형을 돌려주는 컨트롤러)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트, 상품 데이터는 그대로이고 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w1 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w1 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w1 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w1 에서 릴리스 이름과 ID 참조를 지운다. 동반 surge 부하(3rps, 35% 가 카테고리 없는 목록 둘러보기, 50% 가 checkout)가 상주 기준선 위에 목록과 checkout 트래픽을 더한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "product 롤아웃 약 1분 뒤부터 상품 목록 보기의 절반 넘게 500 으로 실패한다: 전체 카탈로그의 모든 쪽, 액상 카테고리, 액상 상품이 걸리는 검색. 다른 카테고리, 상품 상세, 장바구니, 로그인, checkout 은 정상이다. product-service 를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 product-service 릴리스 바로 뒤 DB 와 의존 서비스가 멀쩡한 채 product 자신이 일부 상품에서 응답을 만들다 예외를 낸다는 것이다: testbed-product 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"commerce-product:1.4.0\" already present on machine'(2026-10-12 이전 30일 동안 testbed-product 롤아웃 없음, commerce 의 다른 릴리스 롤아웃도 같은 이벤트에 태그가 남음, 예: commerce-cart:1.2.0). 새 파드 기동부터 product SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.IllegalStateException: No match found] with root cause'(2026-10-12 이전 30일 동안 모든 서비스에서 0건, 기록된 product SEVERE 는 inventory 로 가는 RestClient 오류뿐이고 마지막이 2026-10-06), product 서버 스팬 GET /api/products 가 500(이전 1일 표본 41,804건 모두 200), 게이트웨이 서버 스팬 GET /api/products/** 가 500(이전 1일 0건). 실패가 부하가 아니라 데이터를 따른다: 카테고리 없는 목록과 category=2 목록은 실패하고 category=1,3,4, 상품 상세, 옵션, POST /api/products/{id}/reserve-stock 은 평소대로 답하며 checkout 이 성공한다. product 는 재시작, OOM, 풀 대기, inventory 오류 없이 Ready 이고, PostgreSQL 은 새 오류, 잠금 대기, 스키마 변경, 새 질의 모양이 없다(product DPM Top SQL 그대로).",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f76-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-commerce",
+       "deployment": "testbed-product",
+       "container": "product-service",
+       "baseline_image": "commerce-product:latest",
+       "fault_image": "commerce-product:1.4.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

@@ -124,7 +124,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 133 → 134. F73-R(후보) 추가. 기존 db.ddl PostgreSQL 잠금 대기열 모드에 이어 읽는 표 인자를 더해 프로파일 수는 그대로.
         # 2026-10-12: 134 → 135. F74-R(후보) 추가. 기존 load.north_south 에 새 부하 스크립트만 더해 프로파일 수는 그대로.
         # 2026-10-12: 135 → 136. F75-R(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 136)
+        # 2026-10-12: 136 → 137. F76-R(후보) 추가. 기존 k8s.image release 모드를 commerce product 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 137)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -319,6 +320,8 @@ class RegistryContractTests(unittest.TestCase):
             "F74-R",
             # 2026-10-12: food dispatch-service 만 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮긴 릴리스 1.10.0(fault-images/f75-r)으로 롤아웃되고 짝 order 2.6.0 은 나가지 않아, 바뀌지 않은 order 의 용량 확인이 /api/deliveries/{id} 에 걸려 400 → 모든 새 주문 503(Stitch 2023-03-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F75-R",
+            # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명에서 함량을 일치 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500
+            "F76-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -729,6 +732,8 @@ class RegistryContractTests(unittest.TestCase):
             "F74-R",
             # 2026-10-12: food dispatch-service 만 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮긴 릴리스 1.10.0(fault-images/f75-r)으로 롤아웃되고 짝 order 2.6.0 은 나가지 않아, 바뀌지 않은 order 의 용량 확인이 /api/deliveries/{id} 에 걸려 400 → 모든 새 주문 503(Stitch 2023-03-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F75-R",
+            # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명에서 함량을 일치 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500
+            "F76-R",
             },
         )
         self.assertEqual(
@@ -923,6 +928,8 @@ class RegistryContractTests(unittest.TestCase):
             "F74-R",
             # 2026-10-12: food dispatch-service 만 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮긴 릴리스 1.10.0(fault-images/f75-r)으로 롤아웃되고 짝 order 2.6.0 은 나가지 않아, 바뀌지 않은 order 의 용량 확인이 /api/deliveries/{id} 에 걸려 400 → 모든 새 주문 503(Stitch 2023-03-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F75-R",
+            # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명에서 함량을 일치 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500
+            "F76-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1133,8 +1140,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F73-R(후보, 고정 evaluation)이 끝에 붙어 F65-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F74-R(후보, 고정 evaluation)이 끝에 붙어 F70-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F75-R(후보, 고정 evaluation)이 끝에 붙어 F71-R 이 끝 5개에서 빠졌다.
+        # 2026-10-12: F76-R(후보, 고정 evaluation)이 끝에 붙어 F72-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F72-R", "F70-P", "F73-R", "F74-R", "F75-R"])
+                         ["F70-P", "F73-R", "F74-R", "F75-R", "F76-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

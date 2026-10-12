@@ -1,0 +1,312 @@
+{
+  "schema_version": "1.0",
+  "id": "F76-R",
+  "slug": "f76-r-commerce-product-release-nicotine-label-breaks-liquid-listings",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "commerce namespace",
+    "matrix_location_transport": "K/kubectl commerce testbed-product 컨테이너 image set(commerce-product:latest→commerce-product:1.4.0, 직전에 runner 가 109 docker 의 1.4.0 을 docker save → ssh tb-w1 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(commerce surge.js, target_rps=3, 여정 35% 카테고리 없는 목록 둘러보기, 50% checkout)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.image",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-spec-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f76-r",
+              "parameters": {
+                "mode": "release",
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-product",
+                "container": "product-service",
+                "baseline_image": "commerce-product:latest",
+                "fault_image": "commerce-product:1.4.0"
+              },
+              "min_hold": "8m",
+              "settle": "60s",
+              "timeout": "14m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "_note": "commerce 진입점(nginx → gateway) 상태. 게이트웨이는 상품 요청을 product 로 넘기고 product 가 준 500 을 예외 없이 그대로 돌려준다(ProxyService.doForward 가 RestClientResponseException 을 받아 같은 상태로 응답). 그래서 게이트웨이 product 서킷도 열리지 않는다. 0(연결 불가)은 nginx, 게이트웨이, 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s",
+            "_note": "상주 기준선의 상품 목록 단계(step list: GET /api/products?page=0..50&size=20 이 절반, 나머지 절반은 category=1..4 를 붙인 같은 요청) 4xx+5xx 비율(60초 창). 평시 0 근처(119 product 서버 스팬 GET /api/products 1일 41,804건 모두 200, 표본 10%). 릴리스 1.4.0 은 응답에 액상 상품이 하나라도 들면 500 이라, 카테고리 없는 목록은 모든 페이지가(페이지마다 대량 등록 액상 상품 약 5개), category=2 는 상품이 있는 26쪽(0~25)이 실패하고 category=1,3,4 는 정상이다. 로컬 실측(같은 소스로 만든 jar, PostgreSQL 16 + 운영과 같은 시드 2,016개): 카테고리 없는 목록 51/51 쪽 500, category=2 26/51, 1,3,4 0/51 → 기준선 목록 실패 비율 약 0.5 + 0.5 × 0.25 × 0.51 ≈ 0.56"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-product"
+            },
+            "freshness": "30s",
+            "_note": "product 파드. 릴리스는 기동과 /actuator/health 를 바꾸지 않아 새 파드가 Ready 가 되고 그대로 머문다(예외는 요청 처리 중 응답을 만들 때만 난다). 롤아웃 순간에는 새 파드와 옛 파드가 겹치므로 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+          },
+          {
+            "id": "postgres_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-postgres"
+            },
+            "freshness": "30s",
+            "_note": "commerce PostgreSQL. 릴리스는 질의를 바꾸지 않아(같은 목록 질의 뒤 응답 변환에서 실패) DB 부하가 그대로다. 빠지면 DB 장애(F25-H 꼴)다"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "checkout_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "freshness": "30s",
+            "_note": "동반 부하(surge.js 3rps, 여정의 50% 가 checkout) checkout 단계 5xx 비율. checkout 은 order → product POST /api/products/{id}/reserve-stock 을 부르는데 이 경로는 ReserveStockResponse 를 만들어 니코틴 함량 계산을 거치지 않으므로 그대로 성공해야 한다. 평시 0 근처"
+          },
+          {
+            "id": "checkout_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s",
+            "_note": "기록만 한다. 상주 기준선 checkout 4xx+5xx(쿠폰, 재고 4xx 포함). 상품 목록과 무관한 쓰기 경로가 그대로임을 녹화에 남긴다"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "product-listings-failing",
+              "observation": "read_nonok_rate",
+              "op": "gte",
+              "value": 0.3,
+              "_note": "릴리스 1.4.0 의 ProductService.nicotineMg 는 카테고리 2(액상) 상품마다 설명에서 '숫자 mg' 표기를 정규식으로 찾는데 Matcher.find() 의 결과를 보지 않고 group(1) 을 불러, 설명에 함량 표기가 없는 액상 상품(대량 등록분 500개 '자동 생성 시드 상품 #n')을 응답에 담는 순간 IllegalStateException('No match found')이 나고 Tomcat 이 SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.IllegalStateException: No match found]' 를 남기며 500 을 준다. 개발 시드의 대표 상품 16개(액상 4개는 'N mg' 또는 '무니코틴')에서는 실패하지 않는다. 목록은 응답 전체가 실패하므로 카테고리 없는 목록 모든 쪽, category=2 의 상품 있는 쪽이 500 이고, 상세는 대량 등록 상품이 재고 행이 없어 함량 계산 전에 404 로 끝나 대표 상품은 정상이다. 로컬 실측 목록 실패 비율 약 0.56, 문턱 0.3 은 그 절반 남짓이다. 결정적 결함이라 강도 사다리가 없다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 8m: 롤아웃(새 product 파드 기동 약 40초~1분, 기본 전략 maxSurge 25% 라 새 파드가 Ready 가 된 뒤 옛 파드가 내려감), 동반 부하 ramp 2m. 실패는 새 파드가 트래픽을 받는 즉시 시작되고 강도가 시간에 따라 바뀌지 않는다. timeout 14m"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1,
+              "_note": "동반 부하 3rps 의 1/3. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "commerce-db-down",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다"
+            },
+            {
+              "id": "checkout-also-broken",
+              "observation": "checkout_5xx_rate",
+              "op": "gte",
+              "value": 0.3,
+              "_note": "checkout(order → product reserve-stock → inventory)까지 실패하면 응답 변환 결함 하나가 아니라 product 나 DB, 게이트웨이 전체 문제다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "product-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "db-ready",
+              "observation": "postgres_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "listings-recovered",
+              "observation": "read_nonok_rate",
+              "op": "lt",
+              "value": 0.1
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 이미지를 commerce-product:latest 로 되돌리고 롤아웃 available(상한 180초, 실행기가 확인), 1.4.0 을 쓰는 파드가 없어진 뒤 tb-w1 containerd 에서 1.4.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 매니페스트 이미지는 응답에 함량 칸이 없어 목록이 곧 200 으로 돌아온다. 남는 상태나 데이터가 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.image",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.image"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

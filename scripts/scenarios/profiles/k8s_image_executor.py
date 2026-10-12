@@ -334,6 +334,19 @@ CONTRACTS = {
         "baseline_image": "food-delivery-dispatch:latest",
         "fault_image": "food-delivery-dispatch:1.10.0",
     },
+    # 2026-10-12. F76-R: commerce product-service 를 액상 상품의 니코틴 함량(mg)을 목록과 상세 응답에 더한 릴리스
+    # 1.4.0 으로 롤아웃한다. 함량을 설명의 'N mg' 표기에서 읽는데 Matcher.find() 결과를 보지 않고 group(1) 을 불러,
+    # 설명에 함량이 없는 액상 상품(운영 카탈로그의 대량 등록분)을 응답에 담는 순간 IllegalStateException 으로 500 이 된다.
+    # 결함 이미지는 fault-images/f76-r 로 109 docker 에만 빌드하고, 실행기가 tb-w1 에 올렸다가 cleanup 이 지운다.
+    # product 의 다른 릴리스 태그는 없다.
+    "F76-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-commerce",
+        "deployment": "testbed-product",
+        "container": "product-service",
+        "baseline_image": "commerce-product:latest",
+        "fault_image": "commerce-product:1.4.0",
+    },
 }
 
 

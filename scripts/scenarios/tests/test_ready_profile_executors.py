@@ -1855,6 +1855,60 @@ esac
                    / "OrderService.java").read_text()
         self.assertLess(service.index("dispatchClient.checkCapacity()"), service.index("orderRepository.save(order)"))
 
+    def test_k8s_image_release_mode_rolls_commerce_product_nicotine_label(self) -> None:
+        # F76-R: 같은 release 스크립트로 commerce product 를 1.4.0 으로 롤아웃한다(tb-w1). product 의 다른 릴리스
+        # 태그는 없고, 다른 시나리오의 결함 태그와 겹치지 않아야 "노드에 릴리스 없음" preflight 를 지킨다. 패치는
+        # product-service/src 안만 고친다.
+        plan = compiler.compile_plan("f76-r-commerce-product-release-nicotine-label-breaks-liquid-listings")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-product", "product-service",
+                                    "commerce-product:latest", "commerce-product:1.4.0"])
+        self.assertNotIn("F76-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F76-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F76-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f76-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F76-R"]["baseline_image"], k8s_image.CONTRACTS["F76-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f76-r" / "product-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/commerce/product-service/src/",
+                                                     "b/commerce/product-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F76", "f76", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        # 릴리스는 액상 상품의 함량을 설명에서 읽는데 일치 여부를 보지 않고 group(1) 을 부른다. 질의와 reserve-stock 은
+        # 그대로다.
+        self.assertIn("private static final long LIQUID_CATEGORY_ID = 2L;", added)
+        self.assertIn("matcher.find();", added)
+        self.assertIn("return Integer.valueOf(matcher.group(1));", added)
+        self.assertNotIn("if (matcher.find())", added)
+        self.assertIn('description.contains("무니코틴")', added)
+        self.assertNotIn("reserveStock", added)
+
+    def test_f76r_relies_on_catalog_descriptions_and_gateway_passthrough(self) -> None:
+        # F76-R 의 고리는 운영 카탈로그의 대량 등록 액상 상품 설명에 함량 표기가 없고(개발 시드의 대표 액상 4개는 'N mg' 이나
+        # '무니코틴'), 목록 응답이 상품마다 toResponse 를 거치며, 상세는 inventory 확인이 먼저이고, checkout 의 reserve-stock 은
+        # 다른 응답 형을 쓰며, 게이트웨이가 product 의 500 을 그대로 넘긴다는 것에 기댄다. 어느 하나가 바뀌면 다시 평가해야 한다.
+        commerce = ROOT.parent.parent / "commerce"
+        seed = (commerce / "db" / "seed-all.sql").read_text()
+        self.assertIn("1 + (n % 4) AS category_id", seed)
+        self.assertIn("'자동 생성 시드 상품 #' || n AS description", seed)
+        data = (commerce / "product-service" / "src" / "main" / "resources" / "data.sql").read_text()
+        for described in ("니코틴 9mg", "니코틴 6mg", "니코틴 3mg", "무니코틴"):
+            self.assertIn(described, data)
+        service = (commerce / "product-service" / "src" / "main" / "java" / "com" / "commerce" / "product" / "service"
+                   / "ProductService.java").read_text()
+        self.assertIn("products.map(this::toResponse)", service)
+        detail = service[service.index("getProductWithStock"):]
+        self.assertLess(detail.index("inventoryClient.getStock(id)"), detail.index("product.getImageUrl()"))
+        reserve = service[service.index("public ReserveStockResponse reserveStock"):]
+        self.assertIn("return new ReserveStockResponse(", reserve[:reserve.index("private Product findById")])
+        proxy = (commerce / "api-gateway" / "src" / "main" / "java" / "com" / "commerce" / "gateway" / "service"
+                 / "ProxyService.java").read_text()
+        self.assertIn("return ResponseEntity.status(ex.getStatusCode()).body(ex.getResponseBodyAsByteArray());", proxy)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -2294,6 +2348,8 @@ esac
             "F74-R",
             # 2026-10-12: food dispatch-service 만 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮긴 릴리스 1.10.0(fault-images/f75-r)으로 롤아웃되고 짝 order 2.6.0 은 나가지 않아, 바뀌지 않은 order 의 용량 확인이 /api/deliveries/{id} 에 걸려 400 → 모든 새 주문 503(Stitch 2023-03-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F75-R",
+            # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 목록, 상세 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명의 'N mg' 을 Matcher.find() 확인 없이 group(1) 으로 읽어 함량 표기 없는 액상 상품이 든 상품 목록, 검색이 IllegalStateException 으로 500(상세, reserve-stock, checkout 정상, GitLab 2026-03-17 production#21573 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F76-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

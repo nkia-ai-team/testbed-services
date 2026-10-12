@@ -1,0 +1,7 @@
+{
+  "base": "commerce-product:latest",
+  "fault": "commerce-product:1.4.0",
+  "domain": "commerce",
+  "module": "product-service",
+  "node": "tb-w1"
+}
