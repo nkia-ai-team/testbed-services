@@ -1,0 +1,325 @@
+{
+  "schema_version": "1.0",
+  "id": "F72-R",
+  "slug": "f72-r-banking-node-firewall-omits-oracle-app-clients",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "worker-w2",
+    "matrix_location_transport": "W/ssh host.firewall(worker-w2, 러너가 kubectl 로 tb-w2 Oracle 과 transfer 배치 확인 후 ssh nkia@192.168.122.11 로 규칙마다 sudo -n iptables) + R/ssh load.north_south companion(core-banking surge.js, target_rps=10)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/host.firewall",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "network-oob-recovery",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "host.firewall",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "host.firewall"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "30m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f72-r",
+              "parameters": {
+                "host": "192.168.122.11",
+                "node": "tb-w2",
+                "namespace": "rca-testbed-banking",
+                "protected_app": "testbed-oracle",
+                "omitted_caller_app": "testbed-transfer",
+                "protected_cidr": "10.244.1.0/24",
+                "port": 1521,
+                "chain": "ORACLE-LSNR-IN",
+                "allowed_sources": [
+                  "10.244.1.1/32",
+                  "10.244.0.0/32",
+                  "10.244.2.0/32",
+                  "10.244.3.0/32",
+                  "192.168.122.0/24",
+                  "192.168.200.0/24",
+                  "192.168.230.0/24"
+                ],
+                "comment": "oracle-listener: allow nodes and management networks",
+                "log_prefix": "[FW BLOCK] ",
+                "log_limit": "6/min"
+              },
+              "min_hold": "21m",
+              "settle": "60s",
+              "timeout": "27m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 규칙은 tb-w2 파드 대역의 1521 로 가는 새 연결만 거르고, api 와 nginx 는 DB 를 쓰지 않아 고장 중에도 살아 502 로 답하므로, 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-oracle"
+            },
+            "freshness": "30s",
+            "_note": "banking Oracle 파드. 프로브는 exec(healthcheck.sh)라 방화벽과 무관하게 Ready 여야 한다. 빠지면 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "transfer_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-banking",
+              "resource": "testbed-transfer"
+            },
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "_note": "동반 부하(core-banking surge.js 10rps)의 잔액 조회(step get, 55%, nginx → account) 실패율. 30초 창에 약 165건. 평시 0. account 풀(평시 3세션)이 수명대로 비면 3초 대기 뒤 500, readiness 가 빠진 뒤에는 nginx 502",
+            "freshness": "30s"
+          },
+          {
+            "id": "transfer_5xx_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "_note": "동반 부하의 이체(step transfer, 10%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 이지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "freshness": "30s"
+          },
+          {
+            "id": "balance_read_nonok_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "core-banking"
+            },
+            "_note": "상주 기준선(loadgen-banking)의 잔액 조회 실패율. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "balance-reads-failing",
+              "observation": "balance_read_nonok_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "account 풀이 비면 잔액 조회가 3초 대기 뒤 500('ORA-12170: Cannot connect. TCP connect timeout of 3000ms for host testbed-oracle port 1521' 이 원인), readiness 가 빠진 뒤에는 nginx 502 가 된다"
+            },
+            {
+              "id": "transfers-failing-5xx",
+              "observation": "transfer_5xx_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "api 가 account 호출 실패와 서킷 열림으로 502 를 낸다"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "min_hold 21m: 규칙은 이미 맺어진 연결을 두고 새 연결만 버리므로, 세 서비스의 Hikari 풀 세션(account 3, transfer 5, ledger 3)이 max-lifetime(600000ms)대로 하나씩 물러나며 다시 맺지 못한다. 풀이 모두 비는 최악 시각이 약 10.5분(수명 10분 + readiness 30초)이라 최악에도 전면 실패가 약 10.5분 이어진 뒤 판정된다(F35-R 과 같은 시간 모양)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 2.5,
+              "_note": "동반 부하 10rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "banking-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "Oracle 파드가 빠지면 리스너 앞 방화벽이 아니라 DB 다운(F25-H 꼴)이다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "transfer-ready",
+              "observation": "transfer_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "balance-reads-recovered",
+              "observation": "balance_read_nonok_rate_baseline",
+              "op": "lt",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 FORWARD 의 점프 규칙을 지우고 ORACLE-LSNR-IN 체인을 비워 지운 뒤 iptables -S 로 둘 다 없음을 확인하고 평가한다. Hikari 가 다음 연결 시도에서 바로 다시 맺고 readiness 가 30초 안에 돌아온다(liveness 는 DB 를 보지 않아 재시작이 없다)"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "host.firewall",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "host.firewall",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "host.firewall"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

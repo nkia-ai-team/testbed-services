@@ -30,6 +30,16 @@ networks, leaving out the cross-domain caller: commerce payment-service on tb-w1
 settlement requests reach the transfer pod over the overlay with their own pod address.
 The caller sits on another node, so its namespace, node and pod network are given apart
 from the guarded ones (F44-R leaves them out and they default to the guarded ones).
+
+F72-R reconstructs the same Harness 2024-09-01 change one layer down: the guarded service is
+the banking Oracle listener (1521 on tb-w2's pod network). The allowlist names node
+addresses (this node's bridge, the other nodes' flannel addresses that NodePort clients such
+as the DB monitor are SNATed to) and the host and management networks, and leaves out the
+banking application pods on the same node, which reach the database with their own pod
+addresses. Their Hikari pools hold open connections (the persistent sockets of the
+original), so they keep working until each connection reaches its pool lifetime and has to
+be re-established. The representative omitted caller is transfer-service; account and
+ledger sit in the same pod network.
 """
 from __future__ import annotations
 
@@ -80,6 +90,28 @@ CONTRACTS = {
         "omitted_caller_namespace": "rca-testbed-commerce",
         "omitted_caller_node": "tb-w1",
         "omitted_caller_cidr": "10.244.3.0/24",
+    },
+    # 2026-10-12. F72-R: tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣는다. 허용 출발지는 노드 주소
+    # (이 노드 cni0 10.244.1.1, 다른 노드의 flannel.1 10.244.0.0, 10.244.2.0, 10.244.3.0: NodePort 30308 로 들어온
+    # 접속이 이 주소로 SNAT 되어 온다)와 호스트 망 둘, 관제망(192.168.230.0/24)이다. 같은 노드 파드 대역의 banking
+    # 앱(account, transfer, ledger, 10.244.1.x)이 빠진다. 2026-10-12 실측: tb-w2 conntrack 의 1521 상대는
+    # 10.244.1.230(transfer, ESTABLISHED 5), 10.244.1.228(account, 3), 10.244.1.218(ledger, 3), 10.244.2.0
+    # (119 DPM 이 tb-w3 192.168.200.138:30308 로 들어와 SNAT)이고, FORWARD 에서 보이는 NodePort 직행 출발지는
+    # 192.168.122.1(109), 192.168.230.128 이다.
+    "F72-R": {
+        "host": "192.168.122.11",
+        "node": "tb-w2",
+        "namespace": "rca-testbed-banking",
+        "protected_app": "testbed-oracle",
+        "omitted_caller_app": "testbed-transfer",
+        "protected_cidr": "10.244.1.0/24",
+        "port": 1521,
+        "chain": "ORACLE-LSNR-IN",
+        "allowed_sources": ["10.244.1.1/32", "10.244.0.0/32", "10.244.2.0/32", "10.244.3.0/32",
+                            "192.168.122.0/24", "192.168.200.0/24", "192.168.230.0/24"],
+        "comment": "oracle-listener: allow nodes and management networks",
+        "log_prefix": "[FW BLOCK] ",
+        "log_limit": "6/min",
     },
 }
 

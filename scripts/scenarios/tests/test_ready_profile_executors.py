@@ -406,6 +406,32 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             host_firewall.validate("F44-P", params, {})
 
+    def test_host_firewall_oracle_listener_allowlist_omits_same_node_app_pods(self) -> None:
+        # F72-R: 지켜지는 것은 tb-w2 의 Oracle 리스너(1521)이고, 빠진 호출자는 같은 노드에서 자기 파드 주소로
+        # 붙는 banking 앱(대표 transfer, account·ledger 도 같은 대역)이다. 허용 목록은 노드 주소(/32)와 호스트,
+        # 관리망뿐이라 앱 파드 대역(10.244.1.0/24)이 통째로 빠지고, NodePort 로 SNAT 되어 오는 DB 감시는 남는다.
+        plan = compiler.compile_plan("f72-r-banking-node-firewall-omits-oracle-app-clients")
+        argv, stdin = host_firewall.build_invocation(plan, "run")
+        self.assertEqual(argv[3:12], ["run", "192.168.122.11", "tb-w2", "rca-testbed-banking",
+                                      "testbed-oracle", "testbed-transfer", "10.244.1.0/24", "1521",
+                                      "ORACLE-LSNR-IN"])
+        # 같은 노드 호출자라 호출자 네임스페이스, 노드, 대역은 지켜지는 쪽과 같다.
+        self.assertEqual(argv[16:], ["rca-testbed-banking", "tb-w2", "10.244.1.0/24"])
+        self.assertFalse(any("F72" in arg or "f72" in arg for arg in argv))
+        self.assertNotIn(b"F72", stdin)
+        contract = host_firewall.CONTRACTS["F72-R"]
+        self.assertNotIn(contract["protected_cidr"], contract["allowed_sources"])
+        self.assertIn("10.244.1.1/32", contract["allowed_sources"])
+        # 119 DPM 은 tb-w3 NodePort 로 들어와 tb-w3 flannel 주소로 SNAT 되어 온다.
+        self.assertIn("10.244.2.0/32", contract["allowed_sources"])
+        self.assertTrue(all(src.endswith("/32") for src in contract["allowed_sources"] if src.startswith("10.244.")))
+        params = dict(contract)
+        params["allowed_sources"] = params["allowed_sources"] + ["10.244.1.0/24"]
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            host_firewall.validate("F72-R", params, {})
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            host_firewall.validate("F72-R", host_firewall.CONTRACTS["F44-P"], {})
+
     def test_k8s_quota_only_adds_one_namespace_quota_and_a_routine_restart(self) -> None:
         # F50-R: 주입은 네임스페이스 ResourceQuota 하나를 만들고 transfer 를 일상 재배포하는 것뿐이다.
         # 이미지, 프로브, env, 자원 한도를 바꾸면 F17-H, F17-R, F42-R 의 지문(바뀐 파드 템플릿)이 섞이고,
@@ -2209,6 +2235,8 @@ esac
             "F70-R",
             # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-R",
+            # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

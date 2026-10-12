@@ -1654,6 +1654,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F72-R",
+      "slug": "f72-r-banking-node-firewall-omits-oracle-app-clients",
+      "profiles": [
+        "host.firewall",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "worker-w2",
+      "prerequisite": ""
     }
   ]
 }

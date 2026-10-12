@@ -77,7 +77,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 128 → 129. F65-P(후보) 추가.
 # 2026-10-12: 129 → 130. F70-R(후보) 추가.
 # 2026-10-12: 130 → 131. F71-R(후보) 추가.
-[[ "$total" -eq 131 ]]
+# 2026-10-12: 131 → 132. F72-R(후보) 추가.
+[[ "$total" -eq 132 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -205,7 +206,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: ready 103→104. F65-P(commerce user 일상 롤아웃이 회전 전 DB 계정 이름을 다시 넣어 새 파드가 PostgreSQL 인증에 실패하고 maxSurge 0 이라 user 가 비어 쓰기 500)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-12: ready 104→105. F70-R(banking 정산 대사 시스템의 page 없는 30일 거래 내역 조회가 transfer 힙을 다 써 GC·OutOfMemoryError 로 멈추고 liveness 재시작 반복, banking 이체와 commerce checkout 502)를 후보로 추가.
 # 2026-10-12: ready 105→106. F71-R(commerce PostgreSQL 앱 역할 commerce 의 비밀번호 유효 기한이 갱신 없이 지나 새 로그인만 거절, 여덟 서비스 풀이 수명대로 비어 readiness 이탈·재시작 반복, 쓰기 500·상품 조회 502)를 후보로 추가.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 106 ]]
+# 2026-10-12: ready 106→107. F72-R(banking 워커 tb-w2 방화벽 허용 목록이 같은 노드 앱 파드를 빠뜨려 Oracle 재연결이 버려지고 세 서비스 풀이 수명대로 비어 readiness 이탈, banking·정산 502)을 후보로 추가.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 107 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -307,7 +309,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 122 → 123. F65-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f65-p)으로 들어왔다.
 # 2026-10-12: 123 → 124. F70-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f70-r)으로 들어왔다.
 # 2026-10-12: 124 → 125. F71-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f71-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 125 ]]
+# 2026-10-12: 125 → 126. F72-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f72-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 126 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

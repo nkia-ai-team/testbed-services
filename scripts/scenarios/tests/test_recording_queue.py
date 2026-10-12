@@ -134,7 +134,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 51 → 52. F65-P(commerce user 일상 롤아웃이 회전 전 DB 계정 이름을 다시 넣어 user 가 PostgreSQL 인증에 실패하고 비어 쓰기 500) 후보 추가.
         # 2026-10-12: 52 → 53. F70-R(banking 정산 대사 시스템의 page 없는 30일 거래 내역 조회가 transfer 힙을 다 써 GC·OutOfMemoryError 로 멈추고 liveness 재시작 반복, banking 이체와 commerce checkout 502) 후보 추가.
         # 2026-10-12: 53 → 54. F71-R(commerce PostgreSQL 앱 역할 비밀번호 기한 경과로 여덟 서비스의 풀이 수명대로 비어 쓰기 500, 상품 조회 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 54)
+        # 2026-10-12: 54 → 55. F72-R(banking 워커 tb-w2 방화벽이 같은 노드 앱 파드의 Oracle 재연결을 버려 세 서비스 풀이 수명대로 비어 banking·정산 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 55)
 
 
 class RecordingQueueTests(unittest.TestCase):

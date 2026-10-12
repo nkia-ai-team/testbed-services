@@ -119,7 +119,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 128 → 129. F65-P(후보) 추가. 기존 k8s.env 를 commerce user 에 써서 프로파일 수는 그대로.
         # 2026-10-12: 129 → 130. F70-R(후보) 추가. 기존 load.north_south 에 새 부하 스크립트만 더해 프로파일 수는 그대로.
         # 2026-10-12: 130 → 131. F71-R(후보) 추가. 기존 db.account 실행기에 PostgreSQL 비밀번호 기한 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 131)
+        # 2026-10-12: 131 → 132. F72-R(후보) 추가. 기존 host.firewall 에 Oracle 리스너 계약을 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 132)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -304,6 +305,8 @@ class RegistryContractTests(unittest.TestCase):
             "F70-R",
             # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-R",
+            # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -704,6 +707,8 @@ class RegistryContractTests(unittest.TestCase):
             "F70-R",
             # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-R",
+            # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-R",
             },
         )
         self.assertEqual(
@@ -888,6 +893,8 @@ class RegistryContractTests(unittest.TestCase):
             "F70-R",
             # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-R",
+            # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1093,8 +1100,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F65-P(후보, 고정 evaluation)이 끝에 붙어 F35-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F70-R(후보, 고정 evaluation)이 끝에 붙어 F16-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F71-R(후보, 고정 evaluation)이 끝에 붙어 F68-R 이 끝 5개에서 빠졌다.
+        # 2026-10-12: F72-R(후보, 고정 evaluation)이 끝에 붙어 F69-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F69-R", "F36-P", "F65-P", "F70-R", "F71-R"])
+                         ["F36-P", "F65-P", "F70-R", "F71-R", "F72-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
