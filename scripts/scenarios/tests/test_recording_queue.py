@@ -45,7 +45,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 49 → 50. F43-R 정식 승격(녹화 case-f43-r-v3-aecd7e38).
         # 2026-10-12: 50 → 51. F44-R 정식 승격(녹화 case-f44-r-v3-f7f70c65).
         # 2026-10-12: 51 → 52. F44-P 정식 승격(녹화 case-f44-p-v3-4ee5c786).
-        self.assertEqual(stages.count("official"), 52)
+        # 2026-10-12: 52 → 53. F48-R 정식 승격(녹화 case-f48-r-v3-574963e1).
+        self.assertEqual(stages.count("official"), 53)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -142,7 +143,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 59 → 60. F76-R(commerce product-service 릴리스 1.4.0 이 액상 상품 니코틴 함량을 설명에서 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록 500) 후보 추가.
         # 2026-10-12: 60 → 61. F76-P(food restaurant-service 릴리스 1.7.0 이 메뉴의 카테고리별 조리 시간을 확인 없이 읽어 카테고리 4~8 가게의 메뉴 500) 후보 추가.
         # 2026-10-12: 61 → 62. F77-R(이름이 겹친 원장 워커 매니페스트 적용이 transfer Deployment 를 원장 이미지로 바꿔 transfer 가 비고 banking 이체와 commerce checkout 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 62)
+        # 2026-10-12: 62 → 61. F48-R 정식 승격(녹화 case-f48-r-v3-574963e1).
+        self.assertEqual(stages.count("candidate"), 61)
 
 
 class RecordingQueueTests(unittest.TestCase):

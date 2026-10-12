@@ -87,11 +87,11 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 |---|---|---|
 | A 자원 부족, 한도 | 7 | 13% |
 | B 부품 멈춤 | 7 | 13% |
-| C 상대 서비스 오류, 지연 | 6 | 12% |
+| C 상대 서비스 오류, 지연 | 6 | 11% |
 | D DB 잠금 | 7 | 13% |
 | E 처리 용량 초과 | 2 | 4% |
 | F 느린 쿼리 | 3 | 6% |
-| G 설정 오배포 | 6 | 12% |
+| G 설정 오배포 | 6 | 11% |
 | H 데이터가 조용히 틀어짐 | 2 | 4% |
 | I 인증 의존 실패 | 1 | 2% |
 | J 결함 있는 새 버전 배포 | 4 | 8% |
@@ -100,23 +100,24 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | M DNS | 1 | 2% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 2% |
+| P 운영 작업의 대상 착오 | 1 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 15, 음식배달 11. 후보 49종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 15, 음식배달 12. 후보 61종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 10개뿐이고(J 4, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로 센다) K 는 F44-R, F44-P 둘뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 10개뿐이고(J 4, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R 하나뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
 A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 52종):
+정답 위치별 정식 (2-1 정의, 정식 53종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
-| 외부 결제 의존 | 6 | 12% |
-| 주문 서비스 | 6 | 12% |
-| 은행 이체 서비스 | 5 | 10% |
+| 외부 결제 의존 | 6 | 11% |
+| 주문 서비스 | 6 | 11% |
+| 은행 이체 서비스 | 5 | 9% |
 | DB 테이블(은행 계좌) | 3 | 6% |
 | DB 테이블(재고) | 3 | 6% |
 | 결제 서비스 | 3 | 6% |
-| 노드, 디스크 | 5 | 10% |
+| 노드, 디스크 | 5 | 9% |
 | DB 인스턴스 | 2 | 4% |
 | 배달 서비스 | 2 | 4% |
 | 은행 계좌 서비스 | 2 | 4% |
@@ -125,6 +126,7 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | DB 테이블(가게) | 1 | 2% |
 | DB 테이블(결제) | 1 | 2% |
 | DB 테이블(배차) | 1 | 2% |
+| DB 테이블(인기 메뉴 집계) | 1 | 2% |
 | DB 테이블(인증 토큰) | 1 | 2% |
 | 가격 서비스 | 1 | 2% |
 | 배송 서비스 | 1 | 2% |
@@ -136,7 +138,7 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | 캐시 | 1 | 2% |
 | **결제 경로 합계** | **10** | **19%** |
 
-결제 경로는 정식만으로 19%(19.2%, 10/52)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 19%(18.9%, 10/53)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -196,6 +198,7 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | F43-R | 정식 | 쇼핑몰 | J+E | 장바구니 서비스 | commerce cart-service 를 릴리스 commerce-cart:1.2.0(fault-images/f43-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 장바구니 품목 수 상한 확인이 담기마다 'try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...))' 로 풀 연결을 빌려 문장만 닫고 연결은 돌려주지 않아, 담기 약 20번에 Hikari 풀(20)이 total=20, active=20, idle=0 으로 굳음(대기 스레드는 거의 없음, PostgreSQL 은 idle 세션만 늘고 한가함). cart 의 DB 작업이 3초 대기 끝에 실패하고 health 의 DB 확인이 시간 초과되어 readiness 가 엔드포인트를 비우고 liveness 가 재시작, 같은 버전이 다시 새게 해 되풀이. 담기, 비우기 500, 502, order 가 장바구니를 못 읽어 checkout 502. 원본 Octopus Deploy 2025-11-25(인가 서비스 배포가 DB 연결 누수를 들여와 로그인 간헐 시간 초과, 재시작으로 임시 완화) |
 | F44-R | 정식 | 음식배달 | K+G | 노드, 디스크 | 운영자가 워커 tb-w3 의 호스트 방화벽(iptables FORWARD)에서 restaurant API 포트 8081 로 가는 새 연결을 노드와 진입 망(10.244.2.1, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 같은 노드 파드 대역의 order-service 를 빠뜨림. order 가 열어 둔 keep-alive 연결이 닫힌 뒤 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8081') 가게 조회가 'Connect timed out', 재시도와 서킷 끝에 주문 전량 502. restaurant 는 Ready 이고 NodePort 로 오는 손님 조회에 계속 답함 |
 | F44-P | 정식 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 transfer API 포트 8082 로 가는 새 연결을 banking 파드 대역과 진입 망(10.244.1.0/24, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 다른 노드 tb-w1 의 commerce 파드 대역(모든 checkout 의 정산 이체를 부르는 payment-service)을 빠뜨림. payment 가 열어 둔 keep-alive 연결이 닫힌 뒤 정산 이체 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8082') payment 가 'Connect timed out' 502, order 결제 재시도와 서킷 끝에 commerce checkout 전량 502. transfer 는 Ready 이고 banking 자신의 이체, 조회와 NodePort 직행 이체에 계속 답하며 'from=commerce-settlement' 이체만 끊김 |
+| F48-R | 정식 | 음식배달 | P+L | DB 테이블(인기 메뉴 집계) | 운영자가 food MySQL fooddelivery.menu_popularity_summary(인기 메뉴 집계 캐시 표, 88행)에 restaurant_id 인덱스를 더하는 온라인 인덱스 백필을 시작(그림자 표 _vt_vrp_..., 새 인덱스, 행 복사)했다가 취소, 취소 정리가 그림자 대신 살아 있는 표를 보류 이름 _vt_hld_... 으로 치움(행 보존). restaurant 의 인기 메뉴 조회가 모두 MySQL 1146 Table doesn't exist 로 500, 가게 상세, 메뉴, 검색과 주문은 정상. 롤아웃, 재시작, 설정 변경 없음, DPM 표 수 16→17, 인덱스 수 31→33. 원본 GitHub 2026-07-24(Vitess keyspace 백필 워크플로 취소가 기반 표를 지워 PR 생성만 실패, 변경을 되돌려 즉시 복구) |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -205,7 +208,6 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
-| F48-R | 후보 | 음식배달 | P+L | DB 테이블(인기 메뉴 집계) | 운영자가 food MySQL fooddelivery.menu_popularity_summary(인기 메뉴 집계 캐시 표, 88행)에 restaurant_id 인덱스를 더하는 온라인 인덱스 백필을 시작(그림자 표 _vt_vrp_..., 새 인덱스, 행 복사)했다가 취소, 취소 정리가 그림자 대신 살아 있는 표를 보류 이름 _vt_hld_... 으로 치움(행 보존). restaurant 의 인기 메뉴 조회가 모두 MySQL 1146 Table doesn't exist 로 500, 가게 상세, 메뉴, 검색과 주문은 정상. 롤아웃, 재시작, 설정 변경 없음, DPM 표 수 16→17, 인덱스 수 31→33. 원본 GitHub 2026-07-24(Vitess keyspace 백필 워크플로 취소가 기반 표를 지워 PR 생성만 실패, 변경을 되돌려 즉시 복구) |
 | F49-R | 후보 | 음식배달 | L+J | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.4.0(fault-images/f49-r 패치로 만든 별도 태그)으로 롤아웃. 공개 API 정비로 가게 상세 GET /api/restaurants/{id} 응답의 status 를 문자열 "OPEN" 에서 {code, label} 객체로 바꿈. restaurant 는 상세에 200 으로 답하고 health, 메뉴, 목록, DB 가 그대로라 Ready 를 유지하는데, 이 응답을 공용 RestaurantResponse(status String)로 읽는 order 가 'Error while extracting response for type [com.fooddelivery.common.dto.RestaurantResponse]' 로 해석에 실패, 재시도 3회와 서킷 끝에 주문 생성 전량 502(약 0.6초, 아무것도 쓰지 않음). 가게 둘러보기, 메뉴, 검색, 배달 조회는 정상. 원본 GitHub 2021-10-08(공개 API 출시 중 Codespaces 핵심 API 응답 구조가 의도치 않게 바뀌어 안정 스키마에 기대던 기존 클라이언트가 깨짐, 되돌려 복구) |
 | F33-H | 후보 | 음식배달 | J+F | 배달 서비스 | food dispatch-service 를 릴리스 food-delivery-dispatch:1.6.0(fault-images/f33-h 패치로 만든 별도 태그)으로 롤아웃. 배달 앱 목록의 페이지 번호를 위해 GET /api/deliveries 에 전체 건수(X-Total-Count)를 더하며 목록 쿼리를 Slice 에서 Page 로 바꿔, 목록 요청마다 SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=? 가 끝난 배차 약 174만 항목을 훑음(109 실측 0.44~0.53초). 배달 추적 피크(목록 약 7.2건/초)에서 food MySQL(CPU 0.5) 포화, dispatch Hikari 10개가 COUNT 에 묶여 용량 확인과 배차 요청이 3초 대기 뒤 500, order 재시도와 서킷 끝에 주문 503. 스키마, 인덱스(index_count 31), 설정은 그대로이고 같은 표 만료 스윕의 검사 행 수도 그대로다(F33-R 은 모든 COUNT 와 만료 스윕이 전수). 포화 중 dispatch health 실패로 재시작이 나올 수 있다. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화), 질의 꼴 MIT Open Learning 2026 |
 | F49-H | 후보 | 음식배달 | L+J | 주문 서비스 | food order-service 를 릴리스 food-delivery-order:2.3.0(fault-images/f49-h 패치로 만든 별도 태그)으로 롤아웃. 주문 API 시각 표기를 앱 화면 표준 yyyy-MM-dd HH:mm:ss 로 맞추려고 ObjectMapper 의 LocalDateTime 직렬화기와 역직렬화기를 바꾸고 하류 RestClient 도 같은 ObjectMapper 를 쓰게 해, 바뀌지 않은 dispatch 가 배차를 기록하고 200 과 ISO assignedAt 으로 답하는데 order 가 'Error while extracting response for type [...DispatchResponse]' 로 읽지 못함. 재시도와 dispatch 서킷 끝에 주문 생성 전량 503(주문 롤백, dispatch 에 주인 없는 배차가 남음). order, dispatch 모두 Ready. F49-R(피호출자 restaurant 릴리스)과 같은 '호출자가 하류 응답을 못 읽음' 증상에 정답이 호출자 자신인 H |
@@ -416,3 +418,4 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 - 2026-10-12: F76-R(후보)을 §4-1에 추가. 새 사례군 F76(원본 GitLab 2026-03-17 공식 운영 사고 기록 production#21573 'INC-8530 500 error when creating MR and API request': Duo Code Review 기능의 최근 변경이 Feature.enabled? 를 잘못 불러 GitLab Credits 애드온이 있는 네임스페이스의 프로젝트에서만 API 직렬화 중 NoMethodError, MR 생성과 /api/v4/projects 등 500 이 15,000건 넘게 나고 되돌림으로 복구, 자료 문서 M2 에 이번에 추가). 묶음 J(결함 있는 새 버전 배포, 정식 + 후보 17→18, 112 중 16.1%): 바뀐 것은 product-service 이미지 하나이고 설정, 자원, DB, 데이터는 그대로라 G, A, P 가 아니며, 보내는 쪽과 받는 쪽의 형식이 어긋난 것이 아니라 릴리스 자신이 특정 데이터에서 응답을 못 만들어 L 도 아니다. 정답 위치 상품 서비스(1→2, 112 중 1.8%), 결제 경로 13/112(11.6%), 쇼핑몰 37→38(세 서비스 37 동률에서). 같은 commerce 릴리스 F43-R(연결 누수), F16-P(회원 목록 홍수)와 결함 꼴이 다르고, 같은 '상품 둘러보기 500' 의 F23-P(표 지우기), F73-R(잠금 대기열)과는 롤아웃 이벤트, 'No match found' SEVERE, 실패가 카테고리를 따르고 상세와 checkout 이 정상인 점으로 갈린다.
 - 2026-10-12: F76-P(후보)을 §4-1에 추가. 사례군 F76 의 P 판(원본 GitLab 2026-03-17 production#21573, F76-R 과 같은 원본: 기능 변경의 잘못된 호출이 애드온 있는 네임스페이스의 프로젝트에서만 API 직렬화 중 NoMethodError, 되돌림으로 복구). 묶음 J(결함 있는 새 버전 배포, 정식 + 후보 18→19, 113 중 16.8%): 바뀐 것은 restaurant-service 이미지 하나이고 설정, 자원, DB, 데이터는 그대로라 G, A, P 가 아니며, 호출자 쪽 해석 실패가 아니라 릴리스 자신이 특정 데이터(카테고리 4~8 메뉴)에서 응답을 못 만들어 L 도 아니다. 정답 위치 가게 서비스(3→4, 113 중 3.5%), 결제 경로 13/113(11.5%), 음식배달 37→38(은행과 37 동률에서). F76-R 과 결함 꼴(운영에만 있는 데이터 모양에서 새 코드 경로 실패)은 같지만 도메인, 서비스, 엔진(MySQL), 데이터 축(메뉴 카테고리), 예외(자동 언박싱 NullPointerException), 전파(게이트웨이 없이 NodePort, 주문 여정이 메뉴 단계에서 멈춤)가 다르다. 같은 restaurant 릴리스 F36-H(설정 누락으로 모든 상세 500, 주문 502), F49-R(상세 구조 변경으로 order 해석 실패), F42-P(무거운 집계)와 실패 끝점과 예외가 다르고, 같은 '메뉴 읽기 실패'의 F36-P(메타데이터 잠금 대기)와는 롤아웃 이벤트, NullPointerException SEVERE, 실패가 가게 카테고리를 따르고 지연과 잠금 대기가 없는 점으로 갈린다.
 - 2026-10-12: F77-R(후보)을 §4-1에 추가. 새 사례군 F77(원본 Coinbase 2026-07-14 공식 사후 보고 'A postmortem of our July 14, 2026 incident': 공유 운영 쿠버네티스 클러스터에 낸 일상적이고 위험이 낮아 보인 설정 변경이 사전 검사가 잡지 못한 자원 이름 충돌로 Istio 인그레스 게이트웨이의 쿠버네티스 자원을 바꿔 게이트웨이를 쓸 수 없게 됐고 12:37~13:20 ET 클러스터로 들어오는 트래픽이 모두 멈춤, 되돌려 복구). 묶음 P(운영 작업의 대상 착오, 정식 + 후보 13→14, 114 중 12.3%): 의도한 변경(원장 워커 띄우기)은 맞았는데 이름이 겹쳐 살아 있는 transfer 를 바꿨다. 바뀐 것이 transfer 자신의 코드가 아니라 다른 서비스의 이미지라 J 가 아니고, 값을 잘못 넣은 설정이 아니라 대상이 틀려 G 가 아니다. 보조 B(transfer 파드가 뜨지 못함). 정답 위치 은행 이체 서비스(10→11, 114 중 9.6%, 이체 서비스의 배포 정의가 덮어써짐), 결제 경로 13/114(11.4%), 은행 37→38(세 도메인 38 동률). 같은 'transfer 롤아웃 뒤 엔드포인트가 빔' 증상의 F17-H(노드에 없는 transfer 릴리스 태그, 컨테이너 없음, ErrImageNeverPull), F52-R(노드 이미지 정리, 근본 노드), F65-R(transfer 앱이 낡은 DB 설정으로 ORA-12514)과는 새 ReplicaSet·파드 스펙과 Pulled 이벤트의 이미지가 다른 서비스(core-banking-ledger:latest)이고, 컨테이너가 떠서 service core-banking-transfer 로 원장 앱 기동 로그(LedgerServiceApplication, Tomcat 8083)를 남기며, 8082 기동 확인이 연결 거절 끝에 'failed startup probe' 로 재시작을 되풀이하는 점으로 갈린다(카탈로그 관계 H). F51-R(운영 명령이 account 를 replicas 0 으로)과는 같은 P 지만 수단(이름 충돌 적용)과 대상, 지문(다른 이미지)이 다르다.
+- 2026-10-12: `F48-R` 정식 승격(케이스 `case-f48-r-v3-574963e1`). 첫 실행 F48-R-run-574963e1 이 검증에서 녹화 가능(주입: 19:17:18 db.ddl 이 fooddelivery.menu_popularity_summary 를 보류 이름 _vt_hld_... 으로 치우고 그림자 표를 남김, 피해: 인기 메뉴 비정상 비율 1.0, restaurant 표본 5xx 19~43% 로 success 연속 13, 원인 근거: restaurant 1146 'Table ... doesn't exist' 로그, DPM 표 수 16→17·인덱스 수 31→33(cleanup 뒤 16, 31 로 복귀), 인기 메뉴만 실패하고 가게 상세, 메뉴, 주문은 정상, KCM 무변화, MySQL·Hikari 평시, must_rule_out 신호와 겹친 실행 없음. 제품은 한 장애를 restaurant 군집 4개, 인시던트 4건으로 갈랐고 RCA 가 없었다). 근거 `~/dev/testbed-ops/verifications/2026-10-12-2011-F48-R-run-574963e1.md`. §4-1 → §4, §3 을 정식 53종으로 다시 셈(P 0→1 2%, 음식배달 11→12, 정답 위치 DB 테이블(인기 메뉴 집계) 0→1 2%, 분모 53 이라 C, G 12%→11%, 외부 결제 의존, 주문 서비스 12%→11%, 은행 이체 서비스, 노드, 디스크 10%→9%, 나머지 비율은 반올림으로 같음, 결제 경로 10 19.2%(10/52)→18.9%(10/53)). 후보는 §4-1 실제 행 수 61종.
