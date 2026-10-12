@@ -406,6 +406,20 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "export_columns": "id, order_id, product_id, product_name, quantity, unit_price, subtotal",
         "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 1000000, "maximum_sessions": 70,
     },
+    # F60-H 와 같은 MySQL 잠금 대기열을 작은 메뉴 표에(원본 Honeycomb 의 teams 표처럼 요청마다 읽히는 작은 표): 메뉴별 판매
+    # 실적을 분석 저장소로 옮기는 내보내기가 주문 품목(약 258만 행)을 메뉴 표와 이어 메뉴 이름, 가격을 붙인 판매 줄을 일정한
+    # 속도로 내보내(주문 품목 행 추정으로 속도를 맞춰 export_seconds 동안 활성) 메뉴 표의 공유 메타데이터 잠금을 쥔 사이 알레르기
+    # 안내 열을 ALGORITHM=INSTANT 로 더하는 마이그레이션(메타데이터만)을 돌린다. ALTER 가 배타 메타데이터 잠금을 기다리고, 가게
+    # 메뉴 조회(restaurant 의 menus 읽기)가 모두 'Waiting for table metadata lock' 으로 줄을 선다. 주문 품목은 메뉴 표를 외래 키로
+    # 가리켜 그 INSERT 도 부모 표 잠금을 기다린다(로컬 mysql 8.0.46 실측). minimum_rows 는 메뉴 표(95행)의 하한이고 내보내기
+    # 시작 조건(행 추정 >= 100 x export_seconds)은 이어 붙이는 주문 품목 표에 건다. cleanup 은 F60-H 와 같다.
+    "F36-P": {
+        "engine": "mysql", "namespace": "rca-testbed-food", "pod": "testbed-mysql-0",
+        "database": "fooddelivery", "table": "menus", "add_column": "allergen_note", "add_column_type": "varchar(255)",
+        "export_columns": "m.id, m.name, m.price, i.order_id, i.qty, i.unit_price",
+        "export_join_table": "order_items", "export_join_column": "menu_id",
+        "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 50, "maximum_sessions": 90,
+    },
 }
 
 
@@ -429,11 +443,14 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
                 p["foreign_key"], p["referenced_table"], p["referenced_column"], str(p["drain_seconds"]),
                 str(p["minimum_rows"]), str(p["maximum_sessions"])], MYSQL_FK_REMOTE
     if p["engine"] == "mysql" and "add_column" in p:
-        return kubectl_bash_argv([
+        argv = [
             action, p["namespace"], p["pod"], p["database"], p["table"], p["add_column"], p["add_column_type"],
             p["export_columns"], str(p["export_seconds"]), str(p["drain_seconds"]), str(p["minimum_rows"]),
             str(p["maximum_sessions"]),
-        ]), MYSQL_QUEUE_REMOTE
+        ]
+        if "export_join_table" in p:
+            argv += [p["export_join_table"], p["export_join_column"]]
+        return kubectl_bash_argv(argv), MYSQL_QUEUE_REMOTE
     if p["engine"] == "mysql" and "backfill_index" in p:
         return ["/usr/bin/bash", "-s", "--", action, p["namespace"], p["pod"], p["database"], p["table"], p["backfill_index"], p["backfill_column"], str(p["minimum_rows"])], MYSQL_HOLD_REMOTE
     if p["engine"] == "oracle" and "identity_column" in p:
@@ -1218,12 +1235,19 @@ esac
 MYSQL_QUEUE_REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; ctype="$7"; export_columns="$8"
-export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"
+export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"; join="${13:-}"; join_column="${14:-}"
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
 # Probes run as root; the first MySQL error line goes to stderr so a failed step is readable in the runner log.
 mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
 # The two statements as the export job and the migration send them; their sessions are found by this exact text.
 export_sql="SELECT $export_columns FROM $table"
+paced="$table"
+# With a join table the export is the large table's rows joined with this small table (sales lines with the menu name
+# and price), paced by the large table's row estimate; the statement still holds this table's shared metadata lock.
+if [[ -n "$join" ]]; then
+  export_sql="SELECT $export_columns FROM $table m JOIN $join i ON i.$join_column = m.id"
+  paced="$join"
+fi
 migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INSTANT"
 export_sh=/tmp/table-export.sh
 export_log=/tmp/table-export.log
@@ -1237,8 +1261,11 @@ has_column() { number "$(mysql "SELECT COUNT(*) FROM information_schema.columns 
 waiting() { number "$(mysql "SELECT COUNT(*) FROM performance_schema.metadata_locks WHERE object_schema = '$db' AND object_name = '$table' AND lock_status = 'PENDING';")"; }
 original() { n=$(has_column) || return 1; [[ "$n" == 0 && -z "$(id_of "$export_sql")" && -z "$(id_of "$migration_sql")" ]]; }
 rows() { [[ "$(mysql "SELECT COUNT(*) >= $minimum FROM (SELECT 1 FROM $table LIMIT $minimum) t;")" == 1 ]]; }
+# A joined export must have enough rows in the large table to stay active for export_seconds.
+join_rows() { local n=$((100 * export_seconds)); [[ -z "$join" || "$(mysql "SELECT COUNT(*) >= $n FROM (SELECT 1 FROM $join LIMIT $n) t;")" == 1 ]]; }
 check() {
   rows
+  join_rows
   original
   # A lock wait timeout would make the migration give up instead of queueing, and a statement time limit would end the
   # export early; the server keeps neither (lock_wait_timeout is a year, max_execution_time 0), as the original had none.
@@ -1262,7 +1289,7 @@ case "$action" in
  run)
   check
   # Pace the export so it stays active for about export_seconds: the reader pauses a second every `rate` rows.
-  est=$(number "$(mysql "SELECT table_rows FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$table';")")
+  est=$(number "$(mysql "SELECT table_rows FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$paced';")")
   (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
   rate=$(( est / export_seconds + 1 ))
   "${k[@]}" exec -i "$pod" -- sh -c "cat >$export_sh" <<'EOS'

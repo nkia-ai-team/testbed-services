@@ -73,7 +73,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 124 → 125. F16-P(후보) 추가.
 # 2026-10-12: 125 → 126. F68-R(후보) 추가.
 # 2026-10-12: 126 → 127. F69-R(후보) 추가.
-[[ "$total" -eq 127 ]]
+# 2026-10-12: 127 → 128. F36-P(후보) 추가.
+[[ "$total" -eq 128 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -197,7 +198,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: ready 99→100. F16-P(commerce notification 릴리스가 주문 이벤트 수신자를 찾으려고 user-service 회원 목록 전체를 이벤트마다 페이지 상한까지 다시 읽어, 게이트웨이가 쓰기마다 토큰을 확인하는 user-service 가 묻히고 쓰기가 500·401 로 실패)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-12: ready 100→101. F68-R(banking transfer 릴리스의 계좌별 속도 제한이 이름 하나의 제한기라 모든 이체가 초당 2건을 나눠 쓰고 넘친 요청이 500, banking 이체와 commerce checkout 이 합친 부하에 비례해 실패)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-12: ready 101→102. F69-R(food 결제 감사 자료 내보내기 Job 이 mysqldump 기본값으로 결제 표를 떠 덤프 내내 표 읽기 잠금을 쥐고 결제 쓰기가 막혀 모든 새 주문이 결제 단계에서 502)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 102 ]]
+# 2026-10-12: ready 102→103. F36-P(food 메뉴 표 열 추가 마이그레이션이 메뉴를 주문 품목과 이어 읽는 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 메뉴 읽기가 모두 줄을 서고, restaurant 풀이 차서 메뉴 보기와 주문이 불가)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 103 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -295,7 +297,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 118 → 119. F16-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f16-p)으로 들어왔다.
 # 2026-10-12: 119 → 120. F68-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f68-r)으로 들어왔다.
 # 2026-10-12: 120 → 121. F69-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f69-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 121 ]]
+# 2026-10-12: 121 → 122. F36-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f36-p)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 122 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

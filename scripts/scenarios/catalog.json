@@ -1605,6 +1605,18 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F36-P",
+      "slug": "f36-p-food-menus-column-migration-queues-behind-sales-export",
+      "profiles": [
+        "db.ddl"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

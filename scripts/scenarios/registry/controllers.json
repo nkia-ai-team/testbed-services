@@ -102,7 +102,8 @@
     "F35-P",
     "F16-P",
     "F68-R",
-    "F69-R"
+    "F69-R",
+    "F36-P"
   ],
   "controllers": {
     "F01-R": {
@@ -24247,6 +24248,206 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 Job 을 foreground 로 지우면 덤프 파드가 사라지며 서버 쪽 덤프 세션이 끊기고 LOCK TABLES 가 풀려 기다리던 결제 문장이 한꺼번에 지나간다(로컬 실측: 덤프 세션이 없어지자 기다리던 INSERT 가 곧바로 끝남). 재시작 고리에 있던 payment 는 CrashLoopBackOff 지연(최대 수 분)이 남을 수 있어 timeout 10m 이다. 실패한 주문은 결제 단계에서 끝나 배차를 하나씩 남기지만 기준선만 쓰므로 평시 성공 주문이 남기던 만큼과 같은 속도라 배정 수준이 그대로다. 내보내기는 읽기만 하므로 남는 데이터가 없다(덤프 파일은 파드의 emptyDir 와 함께 사라진다)"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F36-P": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f36-p",
+            "parameters": {
+              "engine": "mysql",
+              "namespace": "rca-testbed-food",
+              "pod": "testbed-mysql-0",
+              "database": "fooddelivery",
+              "table": "menus",
+              "add_column": "allergen_note",
+              "add_column_type": "varchar(255)",
+              "export_columns": "m.id, m.name, m.price, i.order_id, i.qty, i.unit_price",
+              "export_join_table": "order_items",
+              "export_join_column": "menu_id",
+              "export_seconds": 360,
+              "drain_seconds": 300,
+              "minimum_rows": 50,
+              "maximum_sessions": 90
+            },
+            "min_hold": "90s",
+            "settle": "30s",
+            "timeout": "6m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하가 없어 기준선 문서를 읽는다. 잠금 대기열 동안 기준선의 주문 여정은 메뉴 조회(restaurant)가 200 이 아니면 주문을 내지 않아 주문 생성이 거의 끊기고, 이 값은 마지막 주문 생성의 상태(대개 200)로 남는다. order 는 Ready 이고 자기 표(orders)는 줄에 서지 않으므로 0(연결 불가)은 order 파드가 빠지거나 노드가 죽었을 때 나온다. 드물게 마이그레이션이 대기에 든 순간 메뉴 확인을 이미 마친 주문 하나가 주문 품목 INSERT(menus 외래 키)에서 줄을 서면 k6 시간 제한(60초) 뒤 0 이 남을 수 있다(주문 생성 초당 0.2~1.2건 x 메뉴 확인부터 품목 INSERT 까지 수십 ms 로 실행당 약 1~5%)",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-mysql"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "order_pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-food",
+            "resource": "testbed-order"
+          },
+          "freshness": "30s"
+        },
+        {
+          "id": "menu_read_nonok_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "food-delivery"
+          },
+          "_note": "기준선(loadgen-food)의 메뉴 보기(둘러보기 여정의 step menu, GET /api/restaurants/{id}/menu) 실패율(400 이상 또는 0). 하루 주기 1~6 iter/s 의 55% 라 30초 창에 약 16~100건이다. 잠금 대기열 동안 restaurant 의 메뉴 읽기가 모두 'Waiting for table metadata lock' 으로 줄을 서서, 처음 10건은 풀 연결을 쥔 채 매달리고(k6 시간 제한 60초 또는 파드 재시작에 0) 그 뒤는 연결 대기 3초 끝에 500, NotReady 동안은 연결 거절(0)이다. 평시 0 근처",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "menu-reads-failing",
+            "observation": "menu_read_nonok_rate_baseline",
+            "op": "gte",
+            "value": 0.5
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 90s, 3틱. run 이 내보내기(약 360초 동안 활성)를 띄우고 그 메타데이터 잠금이 잡힌 것을 본 뒤 마이그레이션을 띄워, 서버가 마이그레이션을 'Waiting for table metadata lock' 으로 보이면 돌아온다(로컬 mysql 8.0.46 실측 run 약 4초). 그 순간부터 menus 를 읽는 모든 질의(restaurant 의 메뉴 읽기, 인기 메뉴 집계)가 줄을 서서 restaurant Hikari 10개가 메뉴 보기 약 3~13건 만에 차고 메뉴 보기가 실패한다. 판정 관측은 30초마다 갱신돼 min_hold 뒤 약 90초에 3틱이 차므로 판정은 약 3분에 끝나고 잠금 대기열(약 6분) 안에 든다. 주문 생성은 기준선 주문 여정이 메뉴 단계에서 멈춰 표본이 끊기므로 판정에 쓰지 않는다. 성공 뒤 cleanup 이 내보내기가 스스로 끝나기를 기다리므로(drain 300초) 녹화에는 잠금 대기열 전체와 스스로 풀리는 모습이 담긴다. timeout 6m 은 내보내기가 끝나는 시각이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "food-db-down",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "MySQL 파드가 빠지면 표 하나의 잠금 대기열이 아니라 DB 다운(F25-H 꼴)이다"
+          },
+          {
+            "id": "order-down",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "order 파드가 빠지면 주문 실패가 메뉴 쪽이 아니라 order 다운이다. order 의 자기 표(orders)는 줄에 서지 않고 메뉴 확인 실패는 restaurant 서킷이 끊어 order 풀이 마르지 않으므로 Ready 로 남아야 한다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "db-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "order-ready",
+            "observation": "order_pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "menu-reads-recovered",
+            "observation": "menu_read_nonok_rate_baseline",
+            "op": "lt",
+            "value": 0.2
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "내보내기가 끝나면 마이그레이션이 메타데이터 잠금을 얻어 열을 즉시 더하고(ALGORITHM=INSTANT) 줄 선 메뉴 읽기가 모두 풀린다. 재시작 고리에 있던 restaurant 는 재시작 지연(최대 수 분)이 남을 수 있어 timeout 10m 이다. cleanup 은 그 뒤 더해진 열을 즉시 지운다"
       },
       "cleanup": {
         "required": true,

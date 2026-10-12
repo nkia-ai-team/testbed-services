@@ -740,6 +740,49 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F53-H", ddl.CONTRACTS["F60-H"], {})
 
+    def test_mysql_metadata_lock_queue_on_the_small_menus_table_behind_a_joined_sales_export(self) -> None:
+        # F36-P: F60-H 와 같은 MySQL 메타데이터 잠금 대기열을 요청마다 읽히는 작은 메뉴 표(95행)에. 판매 실적 내보내기가
+        # 큰 주문 품목 표를 메뉴 표와 이어 읽는 동안(주문 품목 행 추정으로 속도) INSTANT 열 추가가 기다리고, 메뉴 읽기가
+        # 그 뒤에 줄을 선다. 실행기 본문은 F60-H 와 같고 이어 읽는 표 인자 두 개만 끝에 더한다.
+        p = ddl.CONTRACTS["F36-P"]
+        ddl.validate("F36-P", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F36-P", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "menus",
+                                    "allergen_note", "varchar(255)",
+                                    "m.id, m.name, m.price, i.order_id, i.qty, i.unit_price",
+                                    "360", "300", "50", "90", "order_items", "menu_id"])
+        self.assertNotIn("F36-P", " ".join(argv))
+        self.assertNotIn("F36-P", body.decode())
+        self.assertEqual(body, ddl.MYSQL_QUEUE_REMOTE)
+        # 이어 읽는 인자가 없는 F60-H, F53-H 의 argv 는 그대로 12개다.
+        for other in ("F60-H", "F53-H"):
+            other_argv, _ = ddl.build_invocation(plan("db.ddl", other, ddl.CONTRACTS[other]), "run")
+            self.assertEqual(len(other_argv[3:]), 12)
+        script = body.decode()
+        # 이어 읽으면 내보내기는 큰 표의 판매 줄에 작은 표의 이름과 가격을 붙인 질의이고 속도는 큰 표의 행 추정으로 맞춘다.
+        self.assertIn('export_sql="SELECT $export_columns FROM $table m JOIN $join i ON i.$join_column = m.id"', script)
+        self.assertIn("table_name = '$paced'", script)
+        self.assertIn('join="${13:-}"; join_column="${14:-}"', script)
+        # preflight 가 이어 읽는 표에 내보내기가 export_seconds 동안 돌 행이 있는지 본다(작은 표의 minimum_rows 와 따로).
+        check = script[script.index("check() {"):script.index("stop_export()")]
+        self.assertLess(check.index("  rows\n"), check.index("  join_rows\n"))
+        self.assertIn('[[ -z "$join" ||', script)
+        # 열 목록은 문장 텍스트로 세션을 찾는 탐침의 작은따옴표 안에 들어가므로 따옴표와 세미콜론이 없어야 한다.
+        self.assertNotIn("'", p["export_columns"])
+        self.assertNotIn(";", p["export_columns"])
+        self.assertNotIn("DEFAULT", p["add_column_type"].upper())
+        self.assertNotIn("NOT NULL", p["add_column_type"].upper())
+        # 메뉴 표는 95행이라 minimum_rows 는 작은 표 하한이고, 주문 품목(행 추정 약 258만)은 시작 조건 100 x 360 을 넘는다.
+        self.assertLess(p["minimum_rows"], 100)
+        self.assertLessEqual(p["maximum_sessions"], 90)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F36-P", {**p, "table": "restaurants"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F36-P", {k: v for k, v in p.items() if not k.startswith("export_join")}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F36-P", ddl.CONTRACTS["F60-H"], {})
+
     def test_postgres_lock_queue_on_the_order_line_table_reuses_the_f66p_path(self) -> None:
         # F67-H: F66-P 와 같은 PostgreSQL 잠금 대기열을 주문 품목 표에. 표 자기 행을 일정한 속도로 내보내는 동안 품목 할인
         # 금액 열 추가가 기다리고, checkout 마다 주문 행 뒤에 보내는 품목 INSERT 가 그 뒤에 줄을 선다. 실행기 본문은 F66-P 와 같다.

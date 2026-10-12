@@ -2160,6 +2160,8 @@ esac
             "F68-R",
             # 2026-10-12: food 결제 감사 자료 내보내기 Job(payment-audit-export, mysql:8.0)이 mysqldump 기본값(--lock-tables)으로 payments, settlement_summary 를 떠 덤프 내내 표 읽기 잠금을 쥠(k8s.job 내보내기 계약, 결제 INSERT 가 메타데이터 잠금을 기다려 payment 풀 고갈과 재시작, 모든 새 주문이 결제 단계에서 502, 스키마·설정·롤아웃 변경 없음). 새 후보, 설계 강도 1단 고정 evaluation.
             "F69-R",
+            # 2026-10-12: food 메뉴 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 메뉴를 주문 품목과 이어 읽는 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 메뉴 읽기가 모두 줄을 섬(restaurant 풀 고갈과 재시작, 메뉴 보기와 주문 불가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F36-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

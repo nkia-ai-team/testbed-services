@@ -130,7 +130,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 49 → 50. F68-R(banking transfer 릴리스의 계좌별 속도 제한이 이름 하나의 제한기라 모든 이체가 초당 2건을 나눠 써 banking 이체와 commerce checkout 이 함께 실패) 후보 추가.
         # 2026-10-12: 50 → 49. F44-P 정식 승격(녹화 case-f44-p-v3-4ee5c786).
         # 2026-10-12: 49 → 50. F69-R(food 결제 감사 자료 내보내기 Job 의 mysqldump 표 읽기 잠금이 결제 쓰기를 막아 모든 새 주문이 결제 단계에서 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 50)
+        # 2026-10-12: 50 → 51. F36-P(food 메뉴 표 열 추가 마이그레이션이 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 메뉴 보기와 주문 불가) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 51)
 
 
 class RecordingQueueTests(unittest.TestCase):
