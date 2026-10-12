@@ -108,7 +108,8 @@
     "F70-R",
     "F71-R",
     "F72-R",
-    "F70-P"
+    "F70-P",
+    "F73-R"
   ],
   "controllers": {
     "F01-R": {
@@ -25708,6 +25709,239 @@
         "required": true,
         "order": "reverse",
         "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F73-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "db.ddl",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "db.ddl",
+        "levels": [
+          {
+            "id": "approved-fixed-f73-r",
+            "parameters": {
+              "engine": "postgresql",
+              "namespace": "rca-testbed-commerce",
+              "db_pod": "testbed-postgres-0",
+              "schema": "product_schema",
+              "table": "products",
+              "add_column": "brand",
+              "add_column_type": "varchar(100)",
+              "export_columns": "m.id, m.category_id, m.name, m.price, i.order_id, i.quantity, i.unit_price, i.subtotal",
+              "export_join_table": "order_schema.order_items",
+              "export_join_column": "product_id",
+              "export_seconds": 360,
+              "drain_seconds": 300,
+              "minimum_rows": 1000,
+              "maximum_sessions": 70
+            },
+            "min_hold": "1m",
+            "settle": "30s",
+            "timeout": "6m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "freshness": "15s",
+          "_note": "동반 부하(surge.js)의 마지막 checkout 응답 상태. 게이트웨이(30080)는 DB 를 쓰지 않아 상품 표 잠금 대기열에 걸리지 않고, product 가 멈추거나 NotReady 여도 게이트웨이가 5xx 로 답한다. 0(연결 불가)은 게이트웨이나 노드가 죽었을 때만 나온다"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health). 게이트웨이 health 는 product 와 무관해 내내 200 이다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-product"
+          },
+          "freshness": "30s",
+          "_note": "product-service 는 상품 표를 읽는 요청마다 연결을 쥔 채 마이그레이션 뒤에 줄을 서서 Hikari 풀(기본 10, 연결 대기 30초)이 곧 차고, /actuator/health 의 DB 확인이 연결을 못 얻어 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다. 다시 뜬 파드는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS idx_products_category(products SHARE 잠금)가 같은 줄에 서서 startupProbe(5초 x 30) 안에 뜨지 못한다(로컬 실측). 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+        },
+        {
+          "id": "postgres_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-commerce",
+            "resource": "testbed-postgres"
+          },
+          "freshness": "30s",
+          "_note": "commerce PostgreSQL. 이 주입은 프로세스, 설정, 자원 한도를 바꾸지 않는다(세션 둘과 열 하나). Ready 가 빠지면 표 하나의 잠금 대기열이 아니라 DB 다운(F25-H 꼴)이다"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "checkout_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.checkout_5xx_rate",
+          "freshness": "30s",
+          "_note": "동반 부하(commerce surge.js 3rps, 여정의 절반이 checkout)의 checkout 단계. 로그인(users), 장바구니(cart_schema, Redis), 견적(pricing)은 막히지 않아 여정이 checkout 까지 가고, order 가 품목마다 부르는 product reserve-stock 이 상품 조회(findById)에서 줄을 서서 order 의 productClient 가 10초 시간 초과, 재시도 끝에 서킷을 열고 502 'Product service unavailable for product N' 을 낸다(게이트웨이 order 읽기 시간 제한 15초가 먼저 끝나면 게이트웨이 5xx). 평시 checkout 5xx 는 0 근처(409 재고 부족, 400 쿠폰은 업무 거절)"
+        },
+        {
+          "id": "checkout_2xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.transfer_2xx_rate",
+          "freshness": "30s"
+        },
+        {
+          "id": "read_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "commerce"
+          },
+          "freshness": "30s",
+          "_note": "상주 기준선(loadgen-commerce)의 상품 목록(GET /api/products, 게이트웨이 → product-service → product_schema.products). 주입 뒤 목록 질의가 마이그레이션 뒤에 줄을 서서 게이트웨이의 product 읽기 시간 제한(10초, 재시도 3회) 끝에 5xx, 게이트웨이 product 서킷이 열리면 곧바로 5xx 다. 이 시나리오의 증상이라 성공 조건에 쓴다(F67-H 에서는 상품 목록이 정상이어야 해 배제 조건이었다)"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "checkout-failed-5xx",
+            "observation": "checkout_5xx_rate",
+            "op": "gte",
+            "value": 0.5
+          },
+          {
+            "id": "checkout-collapsed",
+            "observation": "checkout_2xx_rate",
+            "op": "lt",
+            "value": 0.3
+          },
+          {
+            "id": "browse-failed",
+            "observation": "read_nonok_rate",
+            "op": "gte",
+            "value": 0.5
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "run 은 내보내기(COPY, 약 360초 동안 활성)를 DB 파드 안에서 띄우고 그 세션이 상품 표의 ACCESS SHARE 를 쥔 것을 본 뒤 마이그레이션을 띄워, 서버가 마이그레이션을 내보내기 뒤에서 기다리는 것으로 보이면 돌아온다(로컬 실측 2.5초). 그 순간부터 상품 표를 읽는 문장이 모두 줄을 선다. 109 의 상품 문장은 평시 분당 약 1,060건(Top SQL 2026-10-12 KST 21~22시 한 시간, 상품 단건 조회만 분당 약 565건)이라 product 풀 10 은 1초 안에 차고, 그 뒤 요청은 30초 연결 대기 끝에 500 이거나 게이트웨이 시간 제한(목록 10초, checkout 15초)에서 5xx 다. 잠금 구간은 내보내기 시간이다: 로컬(0.5 CPU, 618만 행 사본) 목표 120초가 약 148초, 150초가 약 184초였다(받는 쪽 속도 오차 약 2할 3푼). 그래서 109 잠금 구간은 약 360~440초다. 성공 streak 은 min_hold 동안에도 쌓이고 독립 표본 간격이 30초라 첫 참 표본(약 45초) 뒤 60초인 약 105초에 판정한다. timeout 6m 은 내보내기가 끝나는 시각(360초)이다. 성공 뒤 cleanup 이 내보내기가 스스로 끝나기를 기다리므로(drain 300초) 녹화에는 대기열 전체와 스스로 풀리는 모습이 담긴다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 1,
+            "_note": "동반 부하 3rps 의 1/3. 실패한 여정은 짧아져 반복률이 떨어지지 않는다(ramping-arrival-rate, maxVUs 900). 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "commerce-db-down",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "PostgreSQL 이 죽거나 재시작하면 F25-H 꼴이다. 이 시나리오에서 PostgreSQL 은 Ready 로 남고 한 표의 질의만 줄을 선다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "product-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "db-ready",
+            "observation": "postgres_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "browse-recovered",
+            "observation": "read_nonok_rate",
+            "op": "lt",
+            "value": 0.1
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "내보내기가 끝나면 마이그레이션이 잠금을 얻어 열을 더하고(카탈로그만, 즉시) 줄 선 상품 읽기가 모두 지나간다. 재시작 고리에 있던 product 는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS 가 곧 지나가 Ready 가 되지만(로컬 3초) CrashLoopBackOff 지연이 남을 수 있어 timeout 10m 이다. 게이트웨이와 order 의 product 서킷은 5초 뒤 반열림 3회 성공으로 닫힌다. 동반 부하는 cleanup 에서 먼저 멈추므로 checkout 비율은 복구 조건에 넣지 않고 기준선 상품 목록으로 본다. cleanup 은 내보내기가 스스로 끝나기를 최대 300초 기다리고(넘으면 끝내고 마이그레이션은 취소) 더해진 열을 지운다(카탈로그만)"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "12m"
       },
       "capture": {
         "enabled": true,

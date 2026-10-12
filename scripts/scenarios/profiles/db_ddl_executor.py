@@ -175,6 +175,15 @@ copies the table's own rows out for the sales warehouse, paced by that table's r
 nullable line discount column.  The statements that queue are the line inserts order-service sends right after the
 order row inside every checkout transaction, before it calls payment, so each checkout waits holding its order
 connection and the order pool drains; the order row itself, the payment, product and cart tables are untouched.
+
+F73-R runs F66-R's queue on the small commerce products table with `export_columns` and a schema-qualified join table:
+the export is the order lines (order_schema.order_items, about 6.2 million rows) with each line's product category, name
+and price attached for the category sales warehouse, paced by the order lines' row estimate, so it holds the products
+table's ACCESS SHARE for about `export_seconds`, and the migration adds a nullable brand column.  The statements that
+queue are every products read product-service sends (browse lists, details, searches, variants, and the product lookup
+in front of each checkout's stock reservation) and, after a restart, its startup schema script, so the product pool
+drains; the order lines themselves only take ACCESS SHARE and keep their inserts going.  Without a join table the
+export is F66-P's own-rows export, and without export columns it is F66-R's members-with-tokens export.
 """
 from __future__ import annotations
 
@@ -420,6 +429,19 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "export_join_table": "order_items", "export_join_column": "menu_id",
         "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 50, "maximum_sessions": 90,
     },
+    # F66-R 와 같은 PostgreSQL 잠금 대기열을 작은 상품 표에(원본 Honeycomb 의 teams 표처럼 요청마다 읽히는 작은 표): 카테고리별 매출
+    # 적재 내보내기가 주문 품목(약 618만 행)에 상품의 카테고리, 이름, 가격을 붙여 일정한 속도로 내보내(주문 품목 행 추정으로 속도를 맞춰
+    # export_seconds 동안 활성) 상품 표의 ACCESS SHARE 를 쥔 사이 브랜드 열을 더하는 마이그레이션(카탈로그만)을 돌린다. ALTER 가 ACCESS
+    # EXCLUSIVE 를 기다리고, 그 뒤의 상품 표 문장(둘러보기의 목록, 상세, 검색, 변형 조회와 checkout 의 재고 예약 앞 상품 조회)이 모두
+    # 줄을 선다. 이어 붙이는 표는 스키마까지 적고(order_schema.order_items) 시작 조건(행 추정 >= 100 x export_seconds)을 그 표에 건다.
+    # 세션이 maximum_sessions 를 넘으면 시작하지 않는다(재시작된 product 파드가 남긴 대기 세션이 max_connections 100 을 넘지 않게).
+    "F73-R": {
+        "engine": "postgresql", "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
+        "schema": "product_schema", "table": "products", "add_column": "brand", "add_column_type": "varchar(100)",
+        "export_columns": "m.id, m.category_id, m.name, m.price, i.order_id, i.quantity, i.unit_price, i.subtotal",
+        "export_join_table": "order_schema.order_items", "export_join_column": "product_id",
+        "export_seconds": 360, "drain_seconds": 300, "minimum_rows": 1000, "maximum_sessions": 70,
+    },
 }
 
 
@@ -475,8 +497,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     if p["engine"] == "postgresql" and "export_columns" in p:
         return kubectl_bash_argv([
             action, p["namespace"], p["db_pod"], p["schema"], p["table"], p["add_column"], p["add_column_type"],
-            "", "", str(p["export_seconds"]), str(p["drain_seconds"]), str(p["minimum_rows"]),
-            str(p["maximum_sessions"]), p["export_columns"],
+            p.get("export_join_table", ""), p.get("export_join_column", ""), str(p["export_seconds"]),
+            str(p["drain_seconds"]), str(p["minimum_rows"]), str(p["maximum_sessions"]), p["export_columns"],
         ]), PG_QUEUE_REMOTE
     if p["engine"] == "postgresql" and "add_column" in p:
         return kubectl_bash_argv([
@@ -1139,7 +1161,15 @@ rel="$schema.$table"
 # The two statements as the export job and the migration send them; their sessions are found by this exact text.
 # With export columns the export copies the table's own rows out (an event table read into the warehouse) and is paced
 # by that table's row estimate; without them it is the members joined with their login tokens, paced by the tokens.
-if [[ -n "$export_columns" ]]; then
+# With export columns and a join table (schema-qualified, a large table that refers to this one) the export is the
+# large table's rows with this table's columns attached, paced by the large table's row estimate; it still holds this
+# table's ACCESS SHARE for as long as it runs.
+if [[ -n "$export_columns" && -n "$join" ]]; then
+  export_sql="COPY (SELECT $export_columns FROM $rel m JOIN $join i ON i.$join_column = m.id) TO STDOUT"
+  paced="$join"
+  export_sh=/tmp/sales-export.sh
+  export_log=/tmp/sales-export.log
+elif [[ -n "$export_columns" ]]; then
   export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"
   paced="$rel"
   export_sh=/tmp/event-export.sh
@@ -1163,8 +1193,15 @@ has_column() { number "$(sql "SELECT count(*) FROM information_schema.columns WH
 waiting() { number "$(sql "SELECT count(*) FROM pg_locks WHERE relation = '$rel'::regclass AND NOT granted;")"; }
 original() { n=$(has_column) || return 1; [[ "$n" == 0 && -z "$(pid_of "$export_sql")" && -z "$(pid_of "$migration_sql")" ]]; }
 rows() { [[ "$(sql "SELECT count(*) >= $minimum FROM (SELECT 1 FROM $rel LIMIT $minimum) t;")" == t ]]; }
+# A joined export must have enough rows in the large table to stay active for export_seconds.
+join_rows() {
+  if [[ -z "$export_columns" || -z "$join" ]]; then return 0; fi
+  local n=$((100 * export_seconds))
+  [[ "$(sql "SELECT count(*) >= $n FROM (SELECT 1 FROM $join LIMIT $n) t;")" == t ]]
+}
 check() {
   rows
+  join_rows
   original
   # With a lock or statement timeout on the role or database the migration would give up instead of queueing.
   [[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]

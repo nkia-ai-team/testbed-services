@@ -813,6 +813,55 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F67-H", ddl.CONTRACTS["F66-P"], {})
 
+    def test_postgres_lock_queue_on_the_small_products_table_behind_a_joined_sales_export(self) -> None:
+        # F73-R: F66-R 와 같은 PostgreSQL 잠금 대기열을 요청마다 읽히는 작은 상품 표(2,016행)에. 카테고리 매출 내보내기가 큰
+        # 주문 품목 표에 상품의 카테고리, 이름, 가격을 붙여 읽는 동안(주문 품목 행 추정으로 속도) 브랜드 열 추가가 기다리고, 상품
+        # 읽기가 모두 그 뒤에 줄을 선다. 실행기 본문은 F66-R, F66-P, F67-H 와 같고 이어 읽는 표 인자 두 자리만 채운다.
+        p = ddl.CONTRACTS["F73-R"]
+        ddl.validate("F73-R", p, {})
+        argv, body = ddl.build_invocation(plan("db.ddl", "F73-R", p), "run")
+        self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "product_schema", "products",
+                                    "brand", "varchar(100)", "order_schema.order_items", "product_id",
+                                    "360", "300", "1000", "70",
+                                    "m.id, m.category_id, m.name, m.price, i.order_id, i.quantity, i.unit_price, i.subtotal"])
+        self.assertNotIn("F73-R", " ".join(argv))
+        self.assertNotIn("F73-R", body.decode())
+        _, f66r_body = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
+        self.assertEqual(body, f66r_body, "all PostgreSQL queue scenarios run the same remote script")
+        # 이어 읽는 표가 없는 F66-P, F67-H 의 argv 는 그 두 자리가 빈 문자열 그대로다.
+        for other in ("F66-P", "F67-H"):
+            other_argv, _ = ddl.build_invocation(plan("db.ddl", other, ddl.CONTRACTS[other]), "run")
+            self.assertEqual(other_argv[3 + 7:3 + 9], ["", ""])
+        script = body.decode()
+        # 열 목록과 이어 읽는 표가 모두 있으면 내보내기는 큰 표의 줄에 작은 표의 열을 붙인 질의이고 속도는 큰 표의 행 추정으로
+        # 맞춘다. 열 목록만 있으면 F66-P 의 자기 행 내보내기, 열 목록이 없으면 F66-R 의 회원과 토큰 내보내기 그대로다.
+        self.assertIn('if [[ -n "$export_columns" && -n "$join" ]]; then\n'
+                      '  export_sql="COPY (SELECT $export_columns FROM $rel m JOIN $join i ON i.$join_column = m.id) TO STDOUT"\n'
+                      '  paced="$join"', script)
+        self.assertIn('elif [[ -n "$export_columns" ]]; then\n  export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"',
+                      script)
+        self.assertIn('paced="$schema.$join"', script)
+        # preflight 가 이어 읽는 표에 내보내기가 export_seconds 동안 돌 행이 있는지 본다(작은 표의 minimum_rows 와 따로).
+        check = script[script.index("check() {"):script.index("stop_export()")]
+        self.assertLess(check.index("  rows\n"), check.index("  join_rows\n"))
+        self.assertIn('if [[ -z "$export_columns" || -z "$join" ]]; then return 0; fi', script)
+        # 이어 읽는 표는 다른 스키마라 스키마까지 적고, 정규식 cast 와 LIMIT 질의에 그대로 들어간다.
+        self.assertEqual(p["export_join_table"].count("."), 1)
+        self.assertNotIn("'", p["export_columns"])
+        self.assertNotIn(";", p["export_columns"])
+        self.assertNotIn("DEFAULT", p["add_column_type"].upper())
+        self.assertNotIn("NOT NULL", p["add_column_type"].upper())
+        # 상품 표는 2,016행이라 minimum_rows 는 작은 표 하한이고, 주문 품목(행 추정 약 618만)은 시작 조건 100 x 360 을 넘는다.
+        self.assertLess(p["minimum_rows"], 100 * p["export_seconds"])
+        self.assertLessEqual(p["maximum_sessions"], 70)
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F73-R", {**p, "table": "categories"}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F73-R", {k: v for k, v in p.items() if not k.startswith("export_join")}, {})
+        with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
+            ddl.validate("F73-R", ddl.CONTRACTS["F67-H"], {})
+
     def test_postgres_vacuum_full_holds_the_tables_until_the_rewrite_ends_and_nothing_is_undone(self) -> None:
         # F67-R: 운영자가 공간을 되찾으려고 가장 큰 두 표에 VACUUM (FULL) 을 나란히 돌린다. 다시 쓰는 내내 각 표의
         # ACCESS EXCLUSIVE 를 쥐어 결제마다 쓰는 payment_logs INSERT 가 기다린다. 다시 쓰기가 끝나면 스스로 풀린다.

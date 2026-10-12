@@ -2239,6 +2239,8 @@ esac
             "F72-R",
             # 2026-10-12: food 배달원 정산 시스템이 배달 목록 API 에서 배달 완료 내역을 page 없이 받아 가자 dispatch 가 약 174만 행을 기본 256MiB 힙에 올려 연속 GC 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 rider-settlement-export.js, 배포·설정·DB 변경 없음 → order 용량 확인 실패로 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
             "F70-P",
+            # 2026-10-12: commerce 상품 표에 브랜드 열을 더하는 마이그레이션이 주문 품목에 상품을 붙여 읽는 느린 카테고리 매출 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 products 문장이 모두 줄을 섬(product 풀 고갈과 재시작, 상품 둘러보기와 checkout 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F73-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
