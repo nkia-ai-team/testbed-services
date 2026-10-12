@@ -1667,6 +1667,18 @@
       "load_mode": "fixed",
       "injection_location": "worker-w2",
       "prerequisite": ""
+    },
+    {
+      "id": "F70-P",
+      "slug": "f70-p-food-dispatch-unpaged-delivery-export-heap-exhaustion",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

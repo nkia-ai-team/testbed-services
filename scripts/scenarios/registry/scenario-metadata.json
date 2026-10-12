@@ -12746,6 +12746,101 @@
      }
     ]
    }
+  },
+  "F70-P": {
+   "title": "A rider settlement system pulls every delivered dispatch from the food delivery-list API without paging; dispatch-service, whose list endpoint returns every matching row when page/size are omitted, loads about 1.74 million rows into its 256 MiB default heap, stalls in back-to-back full GCs and is restarted by its liveness probe, so every new food order is rejected with 503 at the courier capacity check each time the client asks again",
+   "description": "A partner rider settlement system calls the food dispatch-service delivery list API directly on its NodePort (food-delivery has no gateway) once every couple of minutes with GET /api/deliveries?status=DELIVERED and no page or size. That is allowed by the API contract: DispatchController.getDeliveries documents that page/size are optional and that omitting both returns everything (Pageable.unpaged()). The resident traffic always pages (status=DELIVERED&page=0&size=20): 0 unpaged list requests in 7 days of sampled dispatch spans (5,104 with page=0&size=20, 1 with page=2&size=5, longest 81 ms). fooddelivery.dispatches holds about 1.74 million DELIVERED rows (30-day retention) and about 1,400 ASSIGNED. DispatchService.searchDispatches runs the derived query findByStatus without a row limit (a different statement from the paged one, which ends with LIMIT ?; DPM Top SQL shows the paged statement examining at most 21 rows), MySQL Connector/J buffers the whole result set and Hibernate materialises every row as a managed Dispatch entity before mapping it to a response list. dispatch runs without -Xmx under a 1 GiB / 0.5 CPU limit, so the JVM sizes the heap at 25% of the container (about 247 MiB: Eden 68, Survivor 8.5, Tenured 171 MiB) and uses Serial GC; the tenured pool normally peaks around 85 MiB. In a local reproduction with the same jar, the same limits and the same row count, one such request stopped dispatch within about 10 to 15 seconds: full collections ran back to back at the 0.5 CPU limit, every capacity check timed out at 5 s, after about a minute the process no longer accepted connections, and later java.lang.OutOfMemoryError: Java heap space hit request threads ('Failed to complete processing of a request', SqlExceptionHelper 'Java heap space') and killed the Tomcat acceptor and poller threads (those deaths are printed only to the container's stderr, which is not collected); health never answered again. MySQL served rows at its 0.5 CPU limit for the first ~10 seconds and then waited in 'Sending to client' once dispatch stopped reading. While dispatch is stalled, order-service's courier capacity check (DispatchClient.checkCapacity, 5 s read timeout, 3 attempts, circuit breaker) logs 'Failed to check dispatch capacity: I/O error on GET request for \"http://testbed-dispatch:8082/api/deliveries/capacity\": Read timed out', then the dispatch circuit opens and every new order is rejected with 503 before the order row is written; during the restart the same check ends in 'Connection refused'. readiness (/actuator/health, 10 s x 3) removes the pod and liveness (/actuator/health, 15 s x 5) has kubelet restart the container; after about 41 to 45 seconds dispatch is Ready again and healthy until the client's next call, so the outage repeats as long as the client keeps asking. Delivery tracking lookups (GET /api/deliveries/{id}, paged lists) time out too. Nothing was deployed, configured or changed in the database: the same image and spec keep running; MySQL stays up; order and restaurant are not restarted; restaurant browsing works. This reconstructs Cronofy's 2025-04-15 US incident (a customer's Availability Queries triggered a bug that made requests try to return values several orders of magnitude larger than intended; the servers handling them ran out of memory and were killed, in-flight requests got HTTP 500; the follow-up was to limit processing scale and apply stricter limits on allowed values), the same mechanism as F70-R on the banking transfer history API.",
+   "cause": "dispatch-service's delivery list endpoint has no upper bound: GET /api/deliveries without page/size runs findByStatus unpaged and builds the whole result in memory → a rider settlement client's legitimate request for all delivered dispatches (about 1.74 million rows) exhausts the 256 MiB default heap → back-to-back full GCs stop dispatch until liveness restarts it → order's courier capacity check times out, its dispatch circuit opens and every new order fails with 503, again at each repeat of the client's call.",
+   "injection_summary": "The load.north_south executor runs food-delivery/loadgen/rider-settlement-export.js on tb-runner against the food dispatch NodePort (30182) on top of the resident baselines. One k6 scenario keeps a 5 rps delivery-tracking mix with the same endpoints, seed ids and weights as delivery-status-surge.js (paged list 75, detail 25, no order creation and no restaurant browsing so the courier capacity is not consumed); a second scenario starts after the 2 minute ramp with one virtual user that calls GET /api/deliveries?status=DELIVERED without page/size (90 s client timeout) and waits 60 seconds after every answer or failure, for the 13 minute hold. Nothing is deployed or patched: the dispatch image, Deployment spec, configuration, MySQL schema and data stay as they are; the only change is who calls the existing API and how. Cleanup stops k6; a dispatch that is still stalled comes back through its own liveness restart. No scenario identifier reaches requests, the cluster or the logs (the k6 tag stays on the runner).",
+   "user_impact": "About two and a half minutes after the settlement client starts, every new food order fails with 503 at the courier capacity check for about two minutes at a time: dispatch stops answering, is removed from its Service and restarted, and comes back until the client's next call stalls it again. Delivery tracking (delivery detail and list) also times out or is refused. Restaurant and menu browsing keep working, and failed orders leave no order row or courier assignment behind. The settlement client never receives its export.",
+   "distinguishing_evidence": "Decisive evidence is a dispatch-service that runs out of heap while serving one delivery list call every couple of minutes, with no deployment or configuration change: the OTel JVM metrics of food-delivery-dispatch (jvm.memory.used and used_after_last_gc of the Tenured Gen pool) climbing from their usual level (Tenured Gen at most about 85 MiB over 6 hours, about 49 MiB after GC) to the pool limit (about 171 MiB of the 247 MiB heap) within seconds of each client call, with jvm.cpu.recent_utilization pinned at the 0.5 CPU limit; DPM MySQL Top SQL showing the dispatches select by status from dispatch without LIMIT, examining and sending about 1.74 million rows (the paged statement examines at most 21); sampled dispatch server spans GET /api/deliveries with url.query 'status=DELIVERED' and no page (0 in 7 days of samples); KCM Unhealthy readiness/liveness 'context deadline exceeded' for testbed-dispatch and Killing / Started of the same pod repeating about every two and a half minutes, while the ReplicaSet and image (food-delivery-dispatch:latest) stay the same; then order ERROR 'Failed to check dispatch capacity: I/O error on GET request for \"http://testbed-dispatch:8082/api/deliveries/capacity\": Read timed out' followed by 'Connection refused', and order 503 for new orders. If dispatch logs before the restart, ERROR 'Failed to complete processing of a request' with exception.type java.lang.OutOfMemoryError or SqlExceptionHelper 'Java heap space' appear (none in food within the log retention). order, restaurant and MySQL are not restarted, MySQL stays Ready with no lock waits, other food services keep their heap.",
+   "domain": "food-delivery",
+   "class": "A",
+   "fault_pattern": "P8",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "service",
+    "target_id": "food-delivery-dispatch",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food dispatch-service 의 배달 목록 API 다. DispatchController.getDeliveries 는 page 와 size 를 둘 다 빼면 Pageable.unpaged() 로 조회하고(주석이 '둘 다 없으면 무제한'이라고 적음), DispatchService.searchDispatches 는 파생 질의 findByStatus 를 행 수 상한 없이 돌려 결과 전부를 관리 엔티티(Dispatch)로 만든 뒤 응답 목록으로 바꾼다. MySQL Connector/J 는 기본으로 결과 집합 전체를 메모리에 받는다. fooddelivery.dispatches 는 약 174만 행(보존 30일), 그중 배달 완료(DELIVERED)가 약 174만 행이라 상한 없는 조회 한 건이 dispatch 힙(-Xmx 없이 1GiB 컨테이너의 기본 25%, 약 247MiB, 0.5 CPU, Serial GC)을 넘는다. 계기는 배달원 정산 시스템(바깥 파트너)이 API 계약대로 page 없이 배달 완료 내역 전부를 약 2분 반마다 받아 가려 한 것이다. 원칙 6: 요청은 공개 계약 안의 정당한 요청이고(평시 트래픽은 늘 page=0&size=20 을 쓸 뿐), 이를 받아 힙에 다 올린 dispatch 의 로직이 결함이므로 근본은 dispatch 다. 계기는 바깥 호출자라 이 테스트베드의 부품 이름이 없어 trigger_target_id 는 비운다(원본 Cronofy 도 고객 질의가 드러낸 엔진의 버그를 원인으로 적고 처리 규모 제한을 고쳤다). 관제 데이터로의 도달 경로: ① dispatch 의 OTel JVM 지표(VM apm.agent.otel.java.jvm.memory.used, used_after_last_gc, Tenured Gen, 서비스 food-delivery-dispatch)가 정산 호출 몇 초 안에 평시(6시간 최대 약 85MiB)에서 풀 한도 약 171MiB 까지 오르고 jvm.cpu.recent_utilization 이 한도에 붙음 ② DPM MySQL Top SQL 에 LIMIT 없는 dispatches status 조회(검사, 전송 행 약 174만, 평시 페이지 질의는 최대 21행) ③ KCM testbed-dispatch Unhealthy(readiness, liveness 'context deadline exceeded')와 Killing, 같은 파드 Started 반복, ReplicaSet 과 이미지 변화 없음 ④ order ERROR 'Failed to check dispatch capacity: ... /api/deliveries/capacity\": Read timed out' 뒤 'Connection refused' ⑤ 표본 트레이스의 GET /api/deliveries url.query 'status=DELIVERED'(page 없음). 원본 사후 보고처럼 '특정 호출이 의도보다 몇 자릿수 큰 결과를 만들게 한 서비스 쪽 무제한 처리가 메모리를 다 써 서버가 죽었다'가 정답의 층위다. F70-R(banking transfer 거래 내역)과 같은 원본, 같은 결함 꼴을 음식배달 배차 서비스에서 재구성했다.",
+    "code_anchor": [
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java:30-41 (getDeliveries — 주석 '둘 다 없으면 무제한', :38 Pageable.unpaged())",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/service/DispatchService.java:86-92 (searchDispatches — 상한 없이 결과 전부를 엔티티로 읽어 응답 목록으로 바꿈)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/repository/DispatchRepository.java:16-17 (findByStatus — Slice 파생 질의, unpaged 면 LIMIT 이 없다)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:32-50 (checkCapacity — @CircuitBreaker, @Retry(dispatch), 'Failed to check dispatch capacity' 로그, 서킷 열림 시 503)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-112 (용량 확인 실패 시 주문 행 저장 전에 503 'Dispatch service unreachable')",
+     "food-delivery/order-service/src/main/resources/application.yml:55-58 (services.dispatch read-timeout 5s), :78-86, :105-111 (dispatch 서킷, 재시도 3회)",
+     "food-delivery/k8s/22-dispatch-deploy.yaml:49-50 (JAVA_TOOL_OPTIONS 는 OTel 에이전트뿐, -Xmx 없음), :67-86 (startup, readiness, liveness 모두 /actuator/health, liveness 15s x 5), :87-93 (limits cpu 500m, memory 1Gi)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-dispatch(tb-w3, 1 replica, NodePort 30182) 컨테이너 dispatch-service 의 JVM 힙(기본 25%, 약 247MiB, Serial GC)과 liveness 재시작. food MySQL fooddelivery.dispatches 약 174만 행(DELIVERED 1,743,131, ASSIGNED 1,407, 2026-10-12 109 읽기 전용 실측)."
+   },
+   "must_support": [
+    "정산 호출이 들어가면 food-delivery-dispatch 의 OTel JVM 지표(jvm.memory.used, jvm.memory.used_after_last_gc 의 Tenured Gen)가 몇 초 안에 평시(6시간 최대 약 85MiB, GC 뒤 약 49MiB)에서 풀 한도 약 171MiB(힙 약 247MiB)까지 오르고 jvm.cpu.recent_utilization 이 0.5 CPU 한도에 붙는다. 같은 때 DPM MySQL Top SQL 에 dispatch 의 LIMIT 없는 SELECT ... FROM dispatches WHERE status = ? 가 약 174만 행을 검사, 전송한 기록이 남는다(평시 페이지 질의는 LIMIT ? 가 붙고 검사 최대 21행)",
+    "KCM 에 testbed-dispatch 파드의 Unhealthy(readiness, liveness /actuator/health 'context deadline exceeded')와 Killing, 같은 파드 Started 가 약 2분 반 주기로 되풀이되고, 같은 기간 testbed-dispatch 의 ScalingReplicaSet 과 새 이미지 Pulled 는 없다(이미지 food-delivery-dispatch:latest 그대로)",
+    "dispatch 가 멈춘 동안 order ERROR 'Failed to check dispatch capacity: I/O error on GET request for \"http://testbed-dispatch:8082/api/deliveries/capacity\": Read timed out' 이 먼저, 재시작 동안 'Connection refused' 가 남고, 기준선 주문 생성 5xx 비율이 평시 0 근처에서 0.5 이상이 된다. 실패한 주문은 주문 행과 배차를 남기지 않고, 재기동 뒤 다음 정산 호출 전까지는 정상으로 돌아간다",
+    "표본 트레이스에 잡히면 dispatch 의 GET /api/deliveries 서버 스팬 url.query 가 'status=DELIVERED' 이고 page 가 없으며(7일 표본 5,105건이 모두 page 있음, 가장 긴 것 81ms) 오류나 수십 초로 끝난다. dispatch 가 재시작 전에 로그를 내보내면 ERROR 'Failed to complete processing of a request'(exception.type java.lang.OutOfMemoryError)나 SqlExceptionHelper 'Java heap space' 가 남는다(로그 보존 안 food OOM 0건)"
+   ],
+   "must_rule_out": [
+    "결함 있는 새 버전이나 누수 릴리스가 아님(F63-P, F43-P, F33-H 꼴): testbed-dispatch 의 ReplicaSet 과 이미지(food-delivery-dispatch:latest)가 그대로이고 롤아웃 이벤트가 없다. 힙은 몇 분에 걸쳐 서서히 차지 않고 정산 호출 직후 몇 초 안에 한도까지 뛰며, 재기동 뒤 호출이 없으면 평시 수준에 머문다",
+    "설정 롤아웃이 아님(F32-R, F32-H 꼴): Deployment 스펙, env, ConfigMap 변화가 없고 dispatch 는 기동 직후 용량 확인과 배차를 정상으로 처리한다",
+    "MySQL 이나 배차 표 장애가 아님(F33-R, F60-R, F60-H, F38-R 꼴): 인덱스, 스키마, 잠금, 읽기 전용 변화가 없고 MySQL 은 Ready 다. MySQL CPU 는 정산 조회가 행을 보내는 처음 약 10초만 한도에 닿고, 그 뒤 그 세션은 'Sending to client' 로 기다린다. 배차 표를 읽는 다른 질의(용량 COUNT, 만료 배치)는 평소 계획 그대로다",
+    "백필 Job 이나 부하 폭주가 아님(F59-R, F07-H 꼴): 내부 Job 이나 새 파드가 없고, 입구 요청률은 평시에 배달 조회 5rps 를 더한 정도이며 무거운 호출은 약 2분 반에 한 건이다. F59-R 처럼 페이지를 깊게 넘기는 호출 수천 건이 아니라 page 없는 한 건이다",
+    "order 나 restaurant 장애가 아님: order, restaurant 는 재시작이 없고 가게, 메뉴 조회는 정상이다. order 의 실패는 모두 용량 확인 대상 testbed-dispatch 에서 생긴다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F70-R (같은 원본, 같은 결함 꼴: banking transfer 거래 내역 API 의 page 없는 조회가 transfer 힙을 다 씀. 도메인, DB, 피해 경로가 다르다. F70-P 는 order 가 주문 저장 전에 부르는 하류 dispatch 가 멈춰 주문이 503 이고 결제 단계까지 가지 않는다)",
+     "F63-P (같은 dispatch 가 메모리로 죽고 재시작해 주문이 용량 확인에서 503 이지만 새 릴리스 1.9.0 의 스레드 누수라 롤아웃 이벤트와 새 이미지가 있고, 힙이 아니라 스레드 스택이 몇 분에 걸쳐 차며 커널 OOM 으로 죽는다)",
+     "F43-P (같은 dispatch 릴리스 계열의 DB 연결 누수로 주문 503. 롤아웃이 있고 차오르는 것이 Hikari 연결이다)",
+     "F59-R (같은 배달 목록 API 가 과부하지만 원인은 알림 쪽 백필 Job 이 깊은 페이지를 수천 번 부른 것이라 정답이 내부 배치 작업이고 Job 이벤트가 있으며 힙이 아니라 dispatch 풀과 MySQL 이 찬다)",
+     "F33-H (같은 배달 목록 API 의 결함 릴리스가 목록마다 전체 건수 COUNT 를 돌려 MySQL 이 포화. 롤아웃이 있고 원인 경로가 MySQL 이다)",
+     "F32-R (같은 주문 503 이지만 배차 한도 설정 배포라 dispatch 는 살아서 'Courier pool exhausted' 503 을 낸다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "testbed-dispatch"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "testbed-order",
+     "food-mysql"
+    ]
+   },
+   "title_ko": "배달원 정산 시스템이 food 배달 목록 API 에서 배달 완료 내역을 페이지 없이 전부 받아 가려 하자, 무제한 조회를 그대로 받아 약 174만 행을 기본 256MiB 힙에 올린 dispatch-service 가 연속 GC 로 멈추고 liveness 로 재시작되기를 되풀이해, 호출이 반복될 때마다 모든 새 주문이 배달원 용량 확인에서 503 이 된다",
+   "description_ko": "배달원 정산 시스템(바깥 파트너)이 food dispatch-service 의 배달 목록 API 를 NodePort 로 바로(food 는 게이트웨이가 없다) 약 2분 반마다 GET /api/deliveries?status=DELIVERED 로 page, size 없이 부른다. API 계약상 허용된 호출이다: DispatchController.getDeliveries 는 page/size 를 둘 다 빼면 전부 반환(Pageable.unpaged())한다고 적는다. 상주 트래픽은 늘 페이지를 써서(status=DELIVERED&page=0&size=20) 무제한 경로가 쓰인 적이 없다(7일 표본 dispatch 목록 스팬 5,104건이 page=0&size=20, 1건이 page=2&size=5, 가장 긴 것 81ms). fooddelivery.dispatches 에는 배달 완료가 약 174만 행(보존 30일), 배정 중이 약 1,400 행 있다. DispatchService.searchDispatches 가 행 수 상한 없이 파생 질의 findByStatus 를 돌리고(페이지 질의의 LIMIT ? 가 없는 다른 문장. DPM Top SQL 에서 페이지 질의는 최대 21행 검사) MySQL Connector/J 가 결과 집합을 통째로 받고 Hibernate 가 모든 행을 관리 엔티티로 만든 뒤 응답 목록으로 바꾼다. dispatch 는 -Xmx 없이 1GiB, 0.5 CPU 라 JVM 이 힙을 컨테이너의 25%(약 247MiB: Eden 68, Survivor 8.5, Tenured 171MiB)로 잡고 Serial GC 를 쓴다(Tenured 평시 최대 약 85MiB). 같은 jar, 같은 한도, 같은 행 수의 로컬 재현에서 이런 호출 한 건 뒤 약 10~15초 만에 dispatch 가 멈췄다: 0.5 CPU 한도에서 전체 GC 가 잇따르며 용량 확인이 모두 5초 시간 초과로 끝나고, 약 1분 뒤부터는 연결도 받지 않았으며, 나중에 요청 스레드에 OutOfMemoryError('Failed to complete processing of a request', SqlExceptionHelper 'Java heap space')가 나고 Tomcat acceptor, poller 스레드도 죽어(이 줄은 수집되지 않는 컨테이너 stderr 에만 남는다) health 가 끝내 돌아오지 않았다. MySQL 은 처음 약 10초 동안 CPU 한도(0.5)로 행을 보내다 dispatch 가 읽기를 멈추자 'Sending to client' 로 기다렸다. dispatch 가 멈춘 동안 order 의 배달원 용량 확인(DispatchClient.checkCapacity, 읽기 5초, 재시도 3회, 서킷)이 'Failed to check dispatch capacity: ... Read timed out' 을 남기고 서킷이 열려 모든 새 주문이 주문 행 저장 전에 503 으로 거절된다. 재시작 동안에는 같은 확인이 'Connection refused' 로 끝난다. readiness(/actuator/health 10초 x 3)가 파드를 빼고 liveness(15초 x 5) 실패로 kubelet 이 컨테이너를 다시 띄우면 약 41~45초 뒤 Ready 가 되어 다음 정산 호출까지 정상이라, 호출이 이어지는 동안 장애가 되풀이된다. 배달 추적 조회(상세, 페이지 목록)도 시간 초과된다. 배포, 설정, DB 변경은 없다(같은 이미지와 스펙). MySQL 은 정상이고 order, restaurant 는 재시작되지 않으며 가게 둘러보기는 된다. Cronofy 2025-04-15 미국 장애(한 고객의 Availability Query 가 버그를 건드려 요청이 의도보다 몇 자릿수 큰 값을 돌려주려 했고, 그 요청을 처리하던 서버가 메모리가 바닥나 죽어 처리 중 요청이 HTTP 500. 재발 방지는 처리 규모 제한과 허용 값 제한)의 재구성이고, banking 거래 내역 API 의 F70-R 과 같은 기전이다.",
+   "cause_ko": "dispatch-service 배달 목록 API 에 상한이 없음(page/size 없는 GET /api/deliveries 를 unpaged 로 돌려 결과 전부를 메모리에 만듦) → 배달원 정산 시스템의 정당한 배달 완료 전체 조회(약 174만 행)가 기본 256MiB 힙을 다 씀 → 연속 전체 GC 로 dispatch 가 liveness 재시작 때까지 멈춤 → order 의 배달원 용량 확인이 시간 초과되고 dispatch 서킷이 열려 모든 새 주문 503, 호출이 되풀이될 때마다 다시.",
+   "injection_summary_ko": "load.north_south 실행기가 tb-runner 에서 food-delivery/loadgen/rider-settlement-export.js 를 food dispatch NodePort(30182)에 상주 기준선 위로 돌린다. 한 k6 시나리오는 delivery-status-surge.js 와 같은 엔드포인트, 시드 id, 비중(페이지 목록 75, 상세 25, 주문 생성과 가게 둘러보기 없음이라 배차 한도를 쓰지 않음)의 배달 추적 여정을 5rps 로 흘리고, 다른 시나리오는 2분 경사 뒤 VU 하나로 GET /api/deliveries?status=DELIVERED 를 page/size 없이(클라이언트 시간 제한 90초) 부르고 답이든 실패든 받은 뒤 60초 쉬기를 13분 유지 동안 되풀이한다. 배포나 패치는 없다: dispatch 이미지, Deployment 스펙, 설정, MySQL 스키마와 데이터가 그대로이고 바뀌는 것은 기존 API 를 누가 어떻게 부르는가뿐이다. cleanup 은 k6 를 끝내고, 아직 멈춰 있는 dispatch 는 자기 liveness 재시작으로 돌아온다. 시나리오 식별자는 요청, 클러스터, 로그 어디에도 닿지 않는다(k6 태그는 러너 안에만 있다).",
+   "user_impact_ko": "정산 시스템이 부르기 시작하고 약 2분 반 뒤부터 모든 새 음식 주문이 한 번에 약 2분씩 503 으로 실패한다: dispatch 가 답하지 않다가 Service 에서 빠지고 재시작되며, 다음 정산 호출에 다시 멈춘다. 배달 추적(배달 상세, 목록)도 시간 초과나 거절로 끝난다. 가게, 메뉴 둘러보기는 계속 되고, 실패한 주문은 주문 행이나 배달원 배정을 남기지 않는다. 정산 시스템은 끝내 자료를 받지 못한다.",
+   "distinguishing_evidence_ko": "결정적 증거는 배포나 설정 변화 없이 약 2분 반에 한 건 오는 배달 목록 호출을 처리하다 힙이 바닥난 dispatch 다: 정산 호출 몇 초 안에 평시(6시간 최대 약 85MiB, GC 뒤 약 49MiB)에서 풀 한도(약 171MiB, 힙 약 247MiB)까지 오르는 food-delivery-dispatch 의 OTel JVM 지표(Tenured Gen jvm.memory.used, used_after_last_gc)와 0.5 CPU 한도에 붙은 jvm.cpu.recent_utilization, DPM MySQL Top SQL 의 LIMIT 없는 dispatches status 조회(검사, 전송 약 174만 행. 평시 페이지 질의는 최대 21행), 표본 트레이스의 url.query 'status=DELIVERED'(page 없음) GET /api/deliveries(7일 표본 0건), KCM testbed-dispatch Unhealthy(readiness, liveness 'context deadline exceeded')와 같은 파드 Killing, Started 가 약 2분 반 주기로 반복(ReplicaSet, 이미지 food-delivery-dispatch:latest 그대로), 이어서 order ERROR 'Failed to check dispatch capacity: ... /api/deliveries/capacity\": Read timed out' 뒤 'Connection refused' 와 새 주문 503. dispatch 가 재시작 전에 로그를 내보내면 ERROR 'Failed to complete processing of a request'(exception.type java.lang.OutOfMemoryError)나 SqlExceptionHelper 'Java heap space' 가 남는다(로그 보존 안 food OOM 0건). order, restaurant, MySQL 재시작 없음, MySQL Ready 이고 잠금 대기 없음, 다른 food 서비스 힙은 평시다.",
+   "injected_fault": {
+    "profile": "load.north_south",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f70-p",
+      "parameters": {
+       "target_rps": 5,
+       "ramp_up": "2m",
+       "hold": "13m",
+       "ramp_down": "1m",
+       "entry_url": "http://192.168.122.77:30181",
+       "script_path": "/opt/loadgen/food-delivery/rider-settlement-export.js",
+       "scenario_tag": "scenario_id=F70-P",
+       "seed": 7016,
+       "baseline_unit": "loadgen-food"
+      }
+     }
+    ]
+   }
   }
  }
 }

@@ -1,0 +1,308 @@
+{
+  "schema_version": "1.0",
+  "id": "F70-P",
+  "slug": "f70-p-food-dispatch-unpaged-delivery-export-heap-exhaustion",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "tb-runner",
+    "matrix_location_transport": "R/ssh load.north_south(food-delivery rider-settlement-export.js, target_rps=5, entry 30181: delivery-status-surge.js 와 같은 배달 추적 여정(페이지 목록 75, 상세 25, 주문 없음) 5rps + 경사 2분 뒤 VU 1 의 page 없는 배달 완료 전체 조회(시간 제한 90초), 응답·실패 뒤 60초 쉼, 유지 13m, 내림 1m)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "load.north_south",
+        "companion_refs": [],
+        "approved_profile_id": "load.north_south"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "25m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f70-p",
+              "parameters": {
+                "target_rps": 5,
+                "ramp_up": "2m",
+                "hold": "13m",
+                "ramp_down": "1m",
+                "entry_url": "http://192.168.122.77:30181",
+                "script_path": "/opt/loadgen/food-delivery/rider-settlement-export.js",
+                "scenario_tag": "scenario_id=F70-P",
+                "seed": 7016,
+                "baseline_unit": "loadgen-food"
+              },
+              "min_hold": "10m",
+              "settle": "30s",
+              "timeout": "16m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "기준선 문서(loadgen-food)의 주문 생성 단계(30180 → order) 상태. 동반 부하(rider-settlement-export.js)는 주문을 만들지 않아 자기 문서에 주문 단계가 없다. 이 주입은 dispatch 만 멈추고 order, restaurant, MySQL 은 그대로다. dispatch 가 GC 로 멈춘 동안 order 의 용량 확인은 읽기 5초 시간 제한과 재시도(최대 약 15.6초) 끝에, 서킷이 열린 뒤와 dispatch 가 재시작되는 동안은 연결 거부로 곧바로 503 을 돌려준다(F63-P 와 같은 구간). 0(연결 불가)은 노드나 order 파드가 죽었을 때만 나온다",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health)이라 food 고장과 무관하다. compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. 판정력은 없다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-mysql"
+            },
+            "_note": "food MySQL 파드. 이 주입은 MySQL 설정, 스키마, 데이터를 건드리지 않는다. 무제한 조회 한 건은 MySQL 이 dispatch 로 행을 보내는 처음 약 10초 동안 MySQL CPU 한도(0.5)를 쓰고, dispatch 가 읽기를 멈추면 'Sending to client' 로 기다린다(로컬 실측 §4). 빠지면 DB 다운(F25-H 꼴)이다",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-food",
+              "resource": "testbed-order"
+            },
+            "_note": "order 파드. 이 주입은 order 를 건드리지 않아 고장 중에도 Ready 여야 한다. order 의 health 는 자기 풀의 isValid() 이고, dispatch 가 멈춘 짧은 구간에 주문 트랜잭션이 용량 확인 응답을 기다리며 연결을 쥐지만 서킷이 열리면 풀린다(F63-P, F60-H 와 같은 구간)",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "_note": "동반 부하(rider-settlement-export.js: 배달 목록 75%, 배달 상세 25% 를 5rps, 주문과 가게 둘러보기 없음, 정산 내역 조회 VU 1)의 반복률",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.food_create_status_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "상주 기준선(loadgen-food)의 주문 생성 5xx 비율. 하루 주기로 주문이 초당 약 0.2~1.15건이라 30초 창에 6~34건이다(F63-P 와 같은 관측). 평시는 배차 한도 거절(503)이 드물게 섞이는 0 근처. dispatch 가 멈추고 재시작되어 Ready 가 될 때까지 order 는 용량 확인에서 시간 초과, 서킷 열림, 연결 거부 끝에 503 'Dispatch service unreachable' 또는 'Dispatch service unavailable' 을 돌려준다. 주문 행은 용량 확인보다 뒤에서 저장되므로 실패한 주문은 주문 행도 배차도 남기지 않는다",
+            "freshness": "30s"
+          },
+          {
+            "id": "order_create_2xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.transfer_2xx_rate",
+            "parameters": {
+              "domain": "food-delivery"
+            },
+            "_note": "상주 기준선의 주문 생성 2xx 비율. 회복 판정에 쓴다",
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "order-create-failed-5xx",
+              "observation": "order_create_5xx_rate_baseline",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "정산 내역 조회 한 건(page 없는 GET /api/deliveries?status=DELIVERED, 배달 완료 약 174만 행)을 dispatch 가 Pageable.unpaged() 로 전부 읽어 응답 목록으로 만들려다 힙(-Xmx 없음, 1GiB 컨테이너의 기본 25% 인 256MiB, Serial GC)이 차서 전체 GC 가 잇따르고 Tomcat 이 응답을 멈춘다(로컬 실측: 같은 jar, 0.5 CPU, 1GiB, 같은 행 수, 조회 한 건 뒤 약 10~15초에 용량 확인이 모두 5초 시간 초과, 약 1분 뒤부터 연결도 받지 않고 health 가 끝내 돌아오지 않음, acceptor 스레드 OutOfMemoryError). 그동안 order 의 용량 확인이 시간 초과와 서킷 열림으로 끝나 기준선 주문이 503 이다. liveness(15초 x 5) 재시작과 기동(약 41~45초) 뒤 정산 시스템의 다음 호출(시간 제한 90초 + 60초 쉼, 약 150초 주기)이 다시 멈춘다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "min_hold 10m: 동반 부하 경사 2분 뒤 첫 정산 조회가 들어가고, 한 주기(멈춤까지 약 10~15초, 멈춘 뒤 liveness 재시작까지 약 75초, 기동 약 41~45초, 다음 호출까지)가 약 150초라 주기마다 약 2분 동안 기준선 주문이 503 이다. 비율 0.5 이상 구간(약 2분)이 2틱(최대 50초)보다 길어 어느 위상이든 두 틱이 든다. 10분이면 세 번째 안팎의 실패 구간 안에서 판정된다. timeout 16m 은 부하 길이(경사 2m + 유지 13m + 내림 1m)와 같다(primary 부하 계약)"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 1.25,
+              "_note": "동반 부하 5rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            },
+            {
+              "id": "food-db-down",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "MySQL 파드가 빠지면 dispatch 힙 고갈이 아니라 DB 다운(F25-H 꼴)이다"
+            },
+            {
+              "id": "order-down",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": false,
+              "_note": "order 파드가 빠지면 주문 실패가 하류 배차 실패가 아니라 order 연결 실패다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "dispatch 파드 준비 상태와 JVM 힙은 러너 관측 허용 목록(APPROVED_K8S_TARGETS, APPROVED_APM_SERVICES)에 없어 러너 조건으로 두지 않는다(F63-P, F43-P 와 같음). 롤아웃 없음, 힙 급등, liveness 재시작의 감별은 녹화된 VM, KCM, 로그로 RCA 쪽에서 한다(정답지 must_support, must_rule_out)"
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "db-ready",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "order-ready",
+              "observation": "order_pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "create-recovered",
+              "observation": "order_create_2xx_rate_baseline",
+              "op": "gte",
+              "value": 0.7,
+              "_note": "판정력을 가진 회복 조건. cleanup 이 k6 를 끝낸 뒤에도 이미 들어간 정산 조회가 dispatch 를 멈춰 있으면 liveness 재시작과 기동(약 3분)을 기다린다"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "12m",
+          "_note": "cleanup 은 동반 부하(정산 조회 포함)를 끝낼 뿐 dispatch 를 직접 재시작하지 않는다. 멈춘 dispatch 는 kubelet 의 liveness 재시작으로 돌아오고, order 의 dispatch 서킷은 반열림 3회 성공으로 닫힌다. 고장 동안 실패한 주문은 용량 확인 단계에서 끝나 주문 행과 배차를 남기지 않는다. 재기동 동안 밀린 만료 배치는 복구 뒤 첫 주기(30초)에 따라잡는다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

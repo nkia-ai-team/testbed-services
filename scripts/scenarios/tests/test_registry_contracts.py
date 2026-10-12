@@ -120,7 +120,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 129 → 130. F70-R(후보) 추가. 기존 load.north_south 에 새 부하 스크립트만 더해 프로파일 수는 그대로.
         # 2026-10-12: 130 → 131. F71-R(후보) 추가. 기존 db.account 실행기에 PostgreSQL 비밀번호 기한 모드를 더해 프로파일 수는 그대로.
         # 2026-10-12: 131 → 132. F72-R(후보) 추가. 기존 host.firewall 에 Oracle 리스너 계약을 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 132)
+        # 2026-10-12: 132 → 133. F70-P(후보) 추가. 기존 load.north_south 에 새 부하 스크립트만 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 133)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -307,6 +308,8 @@ class RegistryContractTests(unittest.TestCase):
             "F71-R",
             # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-R",
+            # 2026-10-12: food 배달원 정산 시스템이 배달 목록 API 에서 배달 완료 내역을 page 없이 받아 가자 dispatch 가 약 174만 행을 기본 256MiB 힙에 올려 연속 GC 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 rider-settlement-export.js, 배포·설정·DB 변경 없음 → order 용량 확인 실패로 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F70-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -709,6 +712,8 @@ class RegistryContractTests(unittest.TestCase):
             "F71-R",
             # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-R",
+            # 2026-10-12: food 배달원 정산 시스템이 배달 목록 API 에서 배달 완료 내역을 page 없이 받아 가자 dispatch 가 약 174만 행을 기본 256MiB 힙에 올려 연속 GC 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 rider-settlement-export.js, 배포·설정·DB 변경 없음 → order 용량 확인 실패로 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F70-P",
             },
         )
         self.assertEqual(
@@ -895,6 +900,8 @@ class RegistryContractTests(unittest.TestCase):
             "F71-R",
             # 2026-10-12: banking 워커 tb-w2 호스트 방화벽에 Oracle 리스너(1521) 허용 목록을 넣으며 같은 노드의 banking 앱 파드(account, transfer, ledger)를 빠뜨려 Hikari 풀이 수명대로 비고 readiness 이탈(Harness 2024-09-01 재구성, host.firewall 에 Oracle 리스너 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-R",
+            # 2026-10-12: food 배달원 정산 시스템이 배달 목록 API 에서 배달 완료 내역을 page 없이 받아 가자 dispatch 가 약 174만 행을 기본 256MiB 힙에 올려 연속 GC 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 rider-settlement-export.js, 배포·설정·DB 변경 없음 → order 용량 확인 실패로 새 주문 503). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F70-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1101,8 +1108,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F70-R(후보, 고정 evaluation)이 끝에 붙어 F16-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F71-R(후보, 고정 evaluation)이 끝에 붙어 F68-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F72-R(후보, 고정 evaluation)이 끝에 붙어 F69-R 이 끝 5개에서 빠졌다.
+        # 2026-10-12: F70-P(후보, 고정 evaluation)이 끝에 붙어 F36-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F36-P", "F65-P", "F70-R", "F71-R", "F72-R"])
+                         ["F65-P", "F70-R", "F71-R", "F72-R", "F70-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
