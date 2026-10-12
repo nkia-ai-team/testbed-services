@@ -118,7 +118,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 127 → 128. F36-P(후보) 추가. 기존 db.ddl MySQL 메타데이터 잠금 대기열 모드에 이어 읽는 표 인자를 더해 food menus 에 써서 프로파일 수는 그대로.
         # 2026-10-12: 128 → 129. F65-P(후보) 추가. 기존 k8s.env 를 commerce user 에 써서 프로파일 수는 그대로.
         # 2026-10-12: 129 → 130. F70-R(후보) 추가. 기존 load.north_south 에 새 부하 스크립트만 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 130)
+        # 2026-10-12: 130 → 131. F71-R(후보) 추가. 기존 db.account 실행기에 PostgreSQL 비밀번호 기한 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 131)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -301,6 +302,8 @@ class RegistryContractTests(unittest.TestCase):
             "F65-P",
             # 2026-10-12: banking 정산 대사 시스템이 거래 내역 API 에서 30일치 완료 이체를 page 없이 받아 가자 transfer 가 약 210만 행을 512MiB 힙에 올려 GC 와 OutOfMemoryError 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 statement-export.js, 배포·설정·DB 변경 없음 → banking 이체 502, commerce checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F70-R",
+            # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -699,6 +702,8 @@ class RegistryContractTests(unittest.TestCase):
             "F65-P",
             # 2026-10-12: banking 정산 대사 시스템이 거래 내역 API 에서 30일치 완료 이체를 page 없이 받아 가자 transfer 가 약 210만 행을 512MiB 힙에 올려 GC 와 OutOfMemoryError 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 statement-export.js, 배포·설정·DB 변경 없음 → banking 이체 502, commerce checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F70-R",
+            # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-R",
             },
         )
         self.assertEqual(
@@ -881,6 +886,8 @@ class RegistryContractTests(unittest.TestCase):
             "F65-P",
             # 2026-10-12: banking 정산 대사 시스템이 거래 내역 API 에서 30일치 완료 이체를 page 없이 받아 가자 transfer 가 약 210만 행을 512MiB 힙에 올려 GC 와 OutOfMemoryError 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 statement-export.js, 배포·설정·DB 변경 없음 → banking 이체 502, commerce checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F70-R",
+            # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1085,8 +1092,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F36-P(후보, 고정 evaluation)이 끝에 붙어 F60-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F65-P(후보, 고정 evaluation)이 끝에 붙어 F35-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F70-R(후보, 고정 evaluation)이 끝에 붙어 F16-P 가 끝 5개에서 빠졌다.
+        # 2026-10-12: F71-R(후보, 고정 evaluation)이 끝에 붙어 F68-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F68-R", "F69-R", "F36-P", "F65-P", "F70-R"])
+                         ["F69-R", "F36-P", "F65-P", "F70-R", "F71-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

@@ -292,6 +292,47 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             db_account.validate("F54-P", db_account.CONTRACTS["F54-R"], {})
 
+    def test_db_account_postgres_password_expiry_dates_one_role_and_renews_it(self) -> None:
+        # F71-R: 주입은 commerce 애플리케이션 역할 하나의 비밀번호 기한(VALID UNTIL)을 지금으로 두는 것뿐이다.
+        # 비밀번호를 바꾸거나 역할을 잠그거나(NOLOGIN) 세션을 끊으면 "열린 연결은 그대로, 새 비밀번호 로그인만 거절"이라는
+        # 지문이 F65-P(없는 역할 이름), F35-R(계정 잠금), F25-H(DB 다운) 같은 다른 장애가 된다. 실행기는 파드 local 소켓(trust)으로
+        # 들어가 만료에 막히지 않고, DPM 역할 lucida_mon 은 대상이 아니다.
+        plan = compiler.compile_plan("f71-r-commerce-postgres-app-account-password-expiry")
+        argv, stdin = db_account.build_invocation(plan, "run")
+        self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
+        self.assertEqual(argv[4:], ["rca-testbed-commerce", "testbed-postgres-0", "commerce"])
+        self.assertNotIn("F71-R", argv)
+        self.assertEqual(stdin, db_account.POSTGRES_EXPIRY_REMOTE)
+        script = stdin.decode()
+        self.assertNotIn("F71-R", script)
+        self.assertIn("pg_stat_statements.track=none", script)
+        self.assertIn('-U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL"', script)
+        run_case = script.split("  run)")[1].split(";;")[0]
+        order = ['expect "NONE|true|scram-sha-256"', "VALID UNTIL '$now'", 'expect "EXPIRED|true|scram-sha-256"',
+                 '[[ "$(netlogin)" == refused ]]']
+        positions = [run_case.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        preflight_case = script.split("  preflight)")[1].split(";;")[0]
+        self.assertIn('[[ "$(netlogin)" == ok ]]', preflight_case)
+        cleanup_case = script.split("  cleanup)")[1].split(";;")[0]
+        self.assertIn("VALID UNTIL 'infinity'", cleanup_case)
+        self.assertIn('expect "NONE|true|scram-sha-256"', cleanup_case)
+        self.assertIn('[[ "$(netlogin)" == ok ]]', cleanup_case)
+        for forbidden in ("password '", "encrypted password", "nologin", "pg_terminate_backend", "pg_cancel_backend",
+                          "revoke", "grant ", "drop ", "alter system", "lucida_mon", "pg_hba.conf"):
+            self.assertNotIn(forbidden, script.lower())
+        # 다른 세 시나리오는 그대로 자기 스크립트를 쓴다.
+        _, f35r_stdin = db_account.build_invocation(
+            compiler.compile_plan("f35-r-banking-oracle-app-account-locked"), "run")
+        self.assertEqual(f35r_stdin, db_account.ORACLE_REMOTE)
+        params = dict(db_account.CONTRACTS["F71-R"])
+        for change in ({"account": "lucida_mon"}, {"engine": "mysql"}, {"pod": "testbed-postgres-1"},
+                       {"change": "password-reset"}, {"namespace": "rca-testbed-food"}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                db_account.validate("F71-R", {**params, **change}, {})
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_account.validate("F71-R", db_account.CONTRACTS["F35-R"], {})
+
     def test_host_firewall_adds_one_allowlist_chain_for_new_connections_and_removes_it(self) -> None:
         # F44-R: 주입은 tb-w3 FORWARD 맨 위에 한 포트로 가는 새 연결(conntrack NEW)만 허용 목록 체인으로
         # 보내는 규칙과 그 체인뿐이다. 이미 맺어진 연결을 끊거나(원본의 '지속 소켓은 다시 맺어질 때까지 무사'가
@@ -2166,6 +2207,8 @@ esac
             "F65-P",
             # 2026-10-12: banking 정산 대사 시스템이 거래 내역 API 에서 30일치 완료 이체를 page 없이 받아 가자 transfer 가 약 210만 행을 512MiB 힙에 올려 GC 와 OutOfMemoryError 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 statement-export.js, 배포·설정·DB 변경 없음 → banking 이체 502, commerce checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
             "F70-R",
+            # 2026-10-12: commerce PostgreSQL 애플리케이션 역할 commerce 의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지나 새 로그인만 거절되고, 여덟 서비스의 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복(db.account PostgreSQL 비밀번호 기한 모드 → 쓰기 500, 상품 조회 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

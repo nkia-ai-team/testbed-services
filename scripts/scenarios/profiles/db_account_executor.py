@@ -38,6 +38,24 @@ the cap every INSERT, UPDATE and DELETE on them is refused with 1226 ("has
 exceeded the 'max_updates' resource") while SELECT, SET, COMMIT and ping keep
 working.  Setting the limit back to 0 lifts it at once for every connection
 (verified on a local mysql:8.0.46).
+
+F71-R reconstructs GitHub 2025-03 (availability report, March 2025): a credential an
+internal service used expired because the alerting for upcoming expirations was
+broken, and the service failed until the credential was renewed.  Here the
+credential is the password of the commerce PostgreSQL application role
+`commerce`, which every commerce service logs in with over the network
+(pg_hba `host all all all scram-sha-256`).  The expiry date is reached:
+`ALTER ROLE commerce VALID UNTIL <now>`.  PostgreSQL checks the date only during
+password authentication, so -- like the lock and the limits above -- the sessions
+already open keep working, and from then on every new network login is refused
+with "password authentication failed for user" (the server log alone adds "has
+an expired password").  The damage arrives as each Hikari pool retires its
+connections (max-lifetime 10 min for user, cart, pricing, shipping, the 30 min
+default for product, order, payment, inventory) and cannot replace them.  Local
+socket logins (trust) are not password checks, so this executor and the
+database's own tooling keep working; the DPM account lucida_mon is a different
+role.  Renewing is a single statement (`VALID UNTIL 'infinity'`, no expiry), and
+the pools refill on their own (verified on a local postgres:16-alpine).
 """
 from __future__ import annotations
 
@@ -47,9 +65,9 @@ from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.account"
 
-# Only the banking (Oracle) and food (MySQL) application accounts.  Widening this
-# dict is a design change: LUCIDA_MON / lucida_mon is the observer, and limiting
-# it would blind DPM instead of breaking the services.
+# Only the banking (Oracle), food (MySQL) and commerce (PostgreSQL) application
+# accounts.  Widening this dict is a design change: LUCIDA_MON / lucida_mon is the
+# observer, and limiting it would blind DPM instead of breaking the services.
 CONTRACTS: dict[str, dict[str, Any]] = {
     "F35-R": {
         "engine": "oracle",
@@ -87,6 +105,16 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "resource": "MAX_UPDATES_PER_HOUR",
         "limit": 500,
     },
+    # The password of the role every commerce service logs in with reaches its
+    # expiry date.  Only the date changes: the password, the role's other
+    # attributes and the open sessions stay as they are.
+    "F71-R": {
+        "engine": "postgresql",
+        "namespace": "rca-testbed-commerce",
+        "pod": "testbed-postgres-0",
+        "account": "commerce",
+        "change": "password-valid-until-now",
+    },
 }
 
 
@@ -112,6 +140,12 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
             p["namespace"], p["pod"], p["account"], p["host"], p["resource"], str(p["limit"]),
         ]
         return argv, MYSQL_LIMIT_REMOTE
+    if p["engine"] == "postgresql":
+        argv = [
+            "/usr/bin/bash", "-s", "--", action,
+            p["namespace"], p["pod"], p["account"],
+        ]
+        return argv, POSTGRES_EXPIRY_REMOTE
     argv = [
         "/usr/bin/bash", "-s", "--", action,
         p["namespace"], p["pod"], p["pdb"], p["account"],
@@ -256,6 +290,61 @@ case "$action" in
     ;;
   recovery)
     expect "0|0|0|0"
+    ;;
+  *) exit 2 ;;
+esac
+'''
+
+
+POSTGRES_EXPIRY_REMOTE = br'''#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; ns="$2"; pod="$3"; account="$4"
+k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+
+# SQL travels in the environment over the pod's local socket (trust, not a password
+# login, so the expiry never locks this executor out). pg_stat_statements does not
+# record these sessions, so nothing here reaches Top SQL. The first psql error line
+# goes to stderr for the runner log.
+sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+
+# pg_roles and pg_hba_file_rules are the authority, never the exit status of the
+# ALTER (setting the same date again also succeeds): whether the role's password
+# has an expiry and whether it has passed, whether the role may log in, and the
+# method of the network rule the services match. Empty when the role does not exist.
+state() {
+  sql "SELECT CASE WHEN r.rolvaliduntil IS NULL OR r.rolvaliduntil = 'infinity' THEN 'NONE' WHEN r.rolvaliduntil <= now() THEN 'EXPIRED' ELSE 'FUTURE' END || '|' || r.rolcanlogin::text || '|' || coalesce((SELECT h.auth_method FROM pg_hba_file_rules h WHERE h.type = 'host' AND h.address = 'all' ORDER BY h.line_number LIMIT 1), 'none') FROM pg_roles r WHERE r.rolname = '$account'" | tr -d '[:space:]'
+}
+expect() { [[ "$(state)" == "$1" ]]; }
+
+# A network login with the role's own password, the way the services log in: ok
+# or refused. The password stays inside the pod.
+netlogin() {
+  "${k[@]}" exec "$pod" -- sh -lc 'ip=$(hostname -i | awk "{print \$1}"); case "$ip" in ""|127.*|::1) echo noip; exit 0 ;; esac; if PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=5 psql -X -At -h "$ip" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select 1" >/dev/null 2>&1; then echo ok; else echo refused; fi' | tr -d '[:space:]'
+}
+
+case "$action" in
+  preflight)
+    # No expiry, login allowed, the network rule checks the password, and the
+    # services' kind of login works -- or the run would "succeed" against a role
+    # an earlier, uncleaned run left expired.
+    expect "NONE|true|scram-sha-256"
+    [[ "$(netlogin)" == ok ]]
+    ;;
+  run)
+    expect "NONE|true|scram-sha-256"
+    now=$(sql "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00'")
+    sql "ALTER ROLE \"$account\" VALID UNTIL '$now'" >/dev/null
+    expect "EXPIRED|true|scram-sha-256"
+    [[ "$(netlogin)" == refused ]]
+    ;;
+  cleanup)
+    # 'infinity' is PostgreSQL's "no expiry"; the pools refill on their own.
+    sql "ALTER ROLE \"$account\" VALID UNTIL 'infinity'" >/dev/null
+    expect "NONE|true|scram-sha-256"
+    [[ "$(netlogin)" == ok ]]
+    ;;
+  recovery)
+    expect "NONE|true|scram-sha-256"
     ;;
   *) exit 2 ;;
 esac

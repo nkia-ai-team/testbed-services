@@ -112,7 +112,8 @@
         "allowed_scenarios": [
           "F35-R",
           "F54-R",
-          "F54-P"
+          "F54-P",
+          "F71-R"
         ]
       },
       "scenario_parameters": {
@@ -141,6 +142,13 @@
           "host": "%",
           "resource": "MAX_UPDATES_PER_HOUR",
           "limit": 500
+        },
+        "F71-R": {
+          "engine": "postgresql",
+          "namespace": "rca-testbed-commerce",
+          "pod": "testbed-postgres-0",
+          "account": "commerce",
+          "change": "password-valid-until-now"
         }
       },
       "scenario_levels": {}

@@ -133,7 +133,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 50 → 51. F36-P(food 메뉴 표 열 추가 마이그레이션이 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 메뉴 보기와 주문 불가) 후보 추가.
         # 2026-10-12: 51 → 52. F65-P(commerce user 일상 롤아웃이 회전 전 DB 계정 이름을 다시 넣어 user 가 PostgreSQL 인증에 실패하고 비어 쓰기 500) 후보 추가.
         # 2026-10-12: 52 → 53. F70-R(banking 정산 대사 시스템의 page 없는 30일 거래 내역 조회가 transfer 힙을 다 써 GC·OutOfMemoryError 로 멈추고 liveness 재시작 반복, banking 이체와 commerce checkout 502) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 53)
+        # 2026-10-12: 53 → 54. F71-R(commerce PostgreSQL 앱 역할 비밀번호 기한 경과로 여덟 서비스의 풀이 수명대로 비어 쓰기 500, 상품 조회 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 54)
 
 
 class RecordingQueueTests(unittest.TestCase):

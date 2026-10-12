@@ -1642,6 +1642,18 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F71-R",
+      "slug": "f71-r-commerce-postgres-app-account-password-expiry",
+      "profiles": [
+        "db.account"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }
