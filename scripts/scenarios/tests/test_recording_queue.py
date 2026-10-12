@@ -44,7 +44,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 48 → 49. F42-R 정식 승격(녹화 case-f42-r-v3-26143861).
         # 2026-10-11: 49 → 50. F43-R 정식 승격(녹화 case-f43-r-v3-aecd7e38).
         # 2026-10-12: 50 → 51. F44-R 정식 승격(녹화 case-f44-r-v3-f7f70c65).
-        self.assertEqual(stages.count("official"), 51)
+        # 2026-10-12: 51 → 52. F44-P 정식 승격(녹화 case-f44-p-v3-4ee5c786).
+        self.assertEqual(stages.count("official"), 52)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -127,7 +128,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 49 → 50. F16-P(commerce notification 릴리스가 회원 목록 전체를 이벤트마다 다시 읽어 user-service 가 묻히고 쓰기 토큰 확인 실패) 후보 추가.
         # 2026-10-12: 50 → 49. F44-R 정식 승격(녹화 case-f44-r-v3-f7f70c65).
         # 2026-10-12: 49 → 50. F68-R(banking transfer 릴리스의 계좌별 속도 제한이 이름 하나의 제한기라 모든 이체가 초당 2건을 나눠 써 banking 이체와 commerce checkout 이 함께 실패) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 50)
+        # 2026-10-12: 50 → 49. F44-P 정식 승격(녹화 case-f44-p-v3-4ee5c786).
+        self.assertEqual(stages.count("candidate"), 49)
 
 
 class RecordingQueueTests(unittest.TestCase):

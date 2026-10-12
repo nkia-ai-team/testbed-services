@@ -3,7 +3,7 @@
   "id": "F44-P",
   "slug": "f44-p-banking-node-firewall-omits-commerce-settlement",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

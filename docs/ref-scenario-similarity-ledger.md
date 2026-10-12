@@ -85,28 +85,28 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
-| A 자원 부족, 한도 | 7 | 14% |
-| B 부품 멈춤 | 7 | 14% |
+| A 자원 부족, 한도 | 7 | 13% |
+| B 부품 멈춤 | 7 | 13% |
 | C 상대 서비스 오류, 지연 | 6 | 12% |
-| D DB 잠금 | 7 | 14% |
+| D DB 잠금 | 7 | 13% |
 | E 처리 용량 초과 | 2 | 4% |
 | F 느린 쿼리 | 3 | 6% |
 | G 설정 오배포 | 6 | 12% |
 | H 데이터가 조용히 틀어짐 | 2 | 4% |
 | I 인증 의존 실패 | 1 | 2% |
 | J 결함 있는 새 버전 배포 | 4 | 8% |
-| K 네트워크 지연, 손실, 단절 | 1 | 2% |
+| K 네트워크 지연, 손실, 단절 | 2 | 4% |
 | L 데이터 형식 불일치 | 3 | 6% |
 | M DNS | 1 | 2% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 14, 음식배달 11. 후보 49종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 15, 음식배달 11. 후보 49종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 10개뿐이고(J 4, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R 은 주 묶음 K 로 센다) K 는 F44-R 하나뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 10개뿐이고(J 4, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로 센다) K 는 F44-R, F44-P 둘뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 51종):
+정답 위치별 정식 (2-1 정의, 정식 52종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -116,7 +116,7 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | DB 테이블(은행 계좌) | 3 | 6% |
 | DB 테이블(재고) | 3 | 6% |
 | 결제 서비스 | 3 | 6% |
-| 노드, 디스크 | 4 | 8% |
+| 노드, 디스크 | 5 | 10% |
 | DB 인스턴스 | 2 | 4% |
 | 배달 서비스 | 2 | 4% |
 | 은행 계좌 서비스 | 2 | 4% |
@@ -134,9 +134,9 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | 은행 원장 서비스 | 1 | 2% |
 | 장바구니 서비스 | 1 | 2% |
 | 캐시 | 1 | 2% |
-| **결제 경로 합계** | **10** | **20%** |
+| **결제 경로 합계** | **10** | **19%** |
 
-결제 경로는 정식만으로 20%(19.6%, 10/51)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 19%(19.2%, 10/52)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -195,6 +195,7 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | F42-R | 정식 | 은행 | J+F | 은행 이체 서비스 | banking transfer-service 를 릴리스 core-banking-transfer:2.2.0(fault-images/f42-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 일일 이체 한도 확인이 이체마다 'trunc(created_at) = trunc(sysdate)' 조건으로 출금 계좌의 오늘 합계를 구해 인덱스를 못 타고 transfers 약 630만 행을 전수 스캔(호출당 약 9.9만 블록, CPU 0.24~0.43초). 동반 부하 이체 약 8건/초에 공유 Oracle(2 CPU)이 포화되어 세션이 CPU 를 기다리고, transfer Hikari 가 스캔에 묶여 500, account 서킷, api 시간 초과로 이체 502, commerce 정산 실패. 새 버전은 떠서 프로브를 통과하고 재시작 없음, Oracle 은 Ready 이고 잠금 대기, DDL, 통계 변경 없음 |
 | F43-R | 정식 | 쇼핑몰 | J+E | 장바구니 서비스 | commerce cart-service 를 릴리스 commerce-cart:1.2.0(fault-images/f43-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 장바구니 품목 수 상한 확인이 담기마다 'try (PreparedStatement ps = dataSource.getConnection().prepareStatement(...))' 로 풀 연결을 빌려 문장만 닫고 연결은 돌려주지 않아, 담기 약 20번에 Hikari 풀(20)이 total=20, active=20, idle=0 으로 굳음(대기 스레드는 거의 없음, PostgreSQL 은 idle 세션만 늘고 한가함). cart 의 DB 작업이 3초 대기 끝에 실패하고 health 의 DB 확인이 시간 초과되어 readiness 가 엔드포인트를 비우고 liveness 가 재시작, 같은 버전이 다시 새게 해 되풀이. 담기, 비우기 500, 502, order 가 장바구니를 못 읽어 checkout 502. 원본 Octopus Deploy 2025-11-25(인가 서비스 배포가 DB 연결 누수를 들여와 로그인 간헐 시간 초과, 재시작으로 임시 완화) |
 | F44-R | 정식 | 음식배달 | K+G | 노드, 디스크 | 운영자가 워커 tb-w3 의 호스트 방화벽(iptables FORWARD)에서 restaurant API 포트 8081 로 가는 새 연결을 노드와 진입 망(10.244.2.1, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 같은 노드 파드 대역의 order-service 를 빠뜨림. order 가 열어 둔 keep-alive 연결이 닫힌 뒤 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8081') 가게 조회가 'Connect timed out', 재시도와 서킷 끝에 주문 전량 502. restaurant 는 Ready 이고 NodePort 로 오는 손님 조회에 계속 답함 |
+| F44-P | 정식 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 transfer API 포트 8082 로 가는 새 연결을 banking 파드 대역과 진입 망(10.244.1.0/24, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 다른 노드 tb-w1 의 commerce 파드 대역(모든 checkout 의 정산 이체를 부르는 payment-service)을 빠뜨림. payment 가 열어 둔 keep-alive 연결이 닫힌 뒤 정산 이체 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8082') payment 가 'Connect timed out' 502, order 결제 재시도와 서킷 끝에 commerce checkout 전량 502. transfer 는 Ready 이고 banking 자신의 이체, 조회와 NodePort 직행 이체에 계속 답하며 'from=commerce-settlement' 이체만 끊김 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -203,7 +204,6 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
-| F44-P | 후보 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 transfer API 포트 8082 로 가는 새 연결을 banking 파드 대역과 진입 망(10.244.1.0/24, 10.244.0.0/24, 192.168.122.0/24, 192.168.200.0/24)에서만 받도록 좁히면서 다른 노드 tb-w1 의 commerce 파드 대역(모든 checkout 의 정산 이체를 부르는 payment-service)을 빠뜨림. payment 가 열어 둔 keep-alive 연결이 닫힌 뒤 정산 이체 새 연결 SYN 이 모두 버려져(커널 '[FW BLOCK] ... DPT=8082') payment 가 'Connect timed out' 502, order 결제 재시도와 서킷 끝에 commerce checkout 전량 502. transfer 는 Ready 이고 banking 자신의 이체, 조회와 NodePort 직행 이체에 계속 답하며 'from=commerce-settlement' 이체만 끊김 |
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
 | F48-R | 후보 | 음식배달 | P+L | DB 테이블(인기 메뉴 집계) | 운영자가 food MySQL fooddelivery.menu_popularity_summary(인기 메뉴 집계 캐시 표, 88행)에 restaurant_id 인덱스를 더하는 온라인 인덱스 백필을 시작(그림자 표 _vt_vrp_..., 새 인덱스, 행 복사)했다가 취소, 취소 정리가 그림자 대신 살아 있는 표를 보류 이름 _vt_hld_... 으로 치움(행 보존). restaurant 의 인기 메뉴 조회가 모두 MySQL 1146 Table doesn't exist 로 500, 가게 상세, 메뉴, 검색과 주문은 정상. 롤아웃, 재시작, 설정 변경 없음, DPM 표 수 16→17, 인덱스 수 31→33. 원본 GitHub 2026-07-24(Vitess keyspace 백필 워크플로 취소가 기반 표를 지워 PR 생성만 실패, 변경을 되돌려 즉시 복구) |
 | F49-R | 후보 | 음식배달 | L+J | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.4.0(fault-images/f49-r 패치로 만든 별도 태그)으로 롤아웃. 공개 API 정비로 가게 상세 GET /api/restaurants/{id} 응답의 status 를 문자열 "OPEN" 에서 {code, label} 객체로 바꿈. restaurant 는 상세에 200 으로 답하고 health, 메뉴, 목록, DB 가 그대로라 Ready 를 유지하는데, 이 응답을 공용 RestaurantResponse(status String)로 읽는 order 가 'Error while extracting response for type [com.fooddelivery.common.dto.RestaurantResponse]' 로 해석에 실패, 재시도 3회와 서킷 끝에 주문 생성 전량 502(약 0.6초, 아무것도 쓰지 않음). 가게 둘러보기, 메뉴, 검색, 배달 조회는 정상. 원본 GitHub 2021-10-08(공개 API 출시 중 Codespaces 핵심 API 응답 구조가 의도치 않게 바뀌어 안정 스키마에 기대던 기존 클라이언트가 깨짐, 되돌려 복구) |
@@ -387,3 +387,4 @@ A, B, D는 각 7개(14%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 - 2026-10-11: F16-P(후보)를 §4-1에 추가. 사례군 F16 의 P(부분 유사): F16-H 와 전파 뒤쪽(user-service 가 토큰을 확인하지 못해 게이트웨이의 인가된 쓰기만 실패, 읽기 정상)이 같지만 최초 원인이 다르다. F16-H 는 user 자신의 readiness 프로브 오설정, F16-P 는 요청 경로 밖 비동기 소비자(notification)의 새 릴리스가 user 회원 목록 API 를 홍수로 불러 user 가 CPU 와 풀에 묻힘(가르는 근거: KCM notification 롤아웃과 1.3.0 태그, notification 'Recipient directory' 로그, DPM 의 조건 없는 회원 조회, user CPU 한도). 원본 Cloudflare 2025-09-12 는 F47-R 과 같지만(자료 문서 M2 에 이미 있음) 묶인 곳이 원본처럼 인가 판단을 맡은 서비스이고 호출자가 실패한 요청 경로 위에 없다. 묶음 I+J(주 묶음 I 1→2), 정답 위치 알림 서비스 0→1(세 도메인 동률 33이라 정답 위치 0 인 부품만), 결제 경로 13/100 그대로, 쇼핑몰 33→34.
 - 2026-10-12: `F44-R` 정식 승격(케이스 `case-f44-r-v3-f7f70c65`). 첫 실행 F44-R-run-f7f70c65 가 검증에서 녹화 가능(주입: 23:41:14 host.firewall 이 tb-w3 에 RESTAURANT-API-IN 체인을 걸어 order 파드 대역 10.244.2.0/24 를 허용 목록에서 빠뜨림, 피해: 주문 5xx 1.0, 2xx 0 으로 success 연속 25, 원인 근거: tb-w3 sudo iptables 명령, 커널 '[FW BLOCK] ... DPT=8081 SYN' 91줄, order 'Connect timed out' 318건과 'Created order' 0, restaurant 정상, must_rule_out 신호와 겹친 실행 없음. 제품은 order 오류율 0→100% 를 지표 이상으로 잡지 못했고 tb-w3 이벤트를 order 군집과 따로 갈랐다). 근거 `~/dev/testbed-ops/verifications/2026-10-12-0047-F44-R-run-f7f70c65.md`. §4-1 → §4, §3 을 정식 51종으로 다시 셈(K 0→1 0%→2%, 음식배달 10→11, 정답 위치 노드, 디스크 3→4 6%→8%, 분모 51 이라 나머지 비율은 반올림으로 같음, 결제 경로 10 20%(10/50)→19.6%(10/51, 상한 바로 아래)). 후보는 §4-1 실제 행 수 49종(본문의 48종 표기는 F35-P, F16-P 추가 뒤 50종이었음).
 - 2026-10-12: F68-R(후보)을 §4-1에 추가. 새 사례군 F68(원본 GitHub 2026-04-09 Copilot coding agent: 속도 제한 로직의 버그가 한도를 설치별이 아니라 모든 사용자에게 전역으로 걸어 새 세션 약 84% 지연, 자료 문서 M19 에 이번에 추가, 앞선 시나리오에 없던 원본). 주 묶음 J(결함 있는 새 버전 배포, 정식 + 후보 16 → 17, 101 중 16.8%): 한도 값(계좌당 초당 2건)은 의도대로면 맞고 결함은 이름 하나의 resilience4j 속도 제한기가 계좌별 한도를 전역 한도로 만든 코드라 G 가 아니다. 정답 위치 은행 이체 서비스(정식 + 후보 7 → 8, 7.9%). 결제 경로 13/101(12.9%, 그대로). 서비스 은행 33 → 34(그때 셈: 쇼핑몰 34, 은행 33, 음식배달 33. 은행과 음식배달 동률이라 은행을 고른 이유는 같은 기전을 food 결제에 두면 order 가 하류 4xx·5xx 중 4xx 를 그대로 넘겨 4xx 단일 신호가 되고(처리된 429 로 쓸 때), food 에는 F55-R(클라이언트 주소별 한도 릴리스)이 이미 있어서다). F55-R 과는 '한도가 사실상 전역이 된 요청 한도 릴리스' 라는 꼴이 같지만 원본(PostHog 2025-10-24 의 로드밸런서 IP 대 GitHub 2026-04-09 의 전역 적용 버그), 도메인, 응답(429 대 처리되지 않은 500), 피해 범위(한 호출자 대 두 도메인의 모든 호출자, 실패 비율이 합친 부하를 따라감)가 다르다. 겉 증상이 같은 F42-R(하류의 'Transfer service call failed ... 500 Whitelabel' 이 같음)과 가르는 근거: transfer 의 예외가 RequestNotPermitted 이고 'Connection is not available' 이 없으며 Oracle 평시, 일부 이체가 계속 완료. 같은 반복에서 버린 후보: Clerk 2026-02-19 ANALYZE 계획 뒤집힘(세 DB 에 거의 전부 NULL 인 열을 거르는 뜨거운 질의가 없어 통계를 지어내야 함, 원칙 1), MIT Open Learning 2026-03-24 임시 공간(TEMP 자동 확장이 노드 디스크를 채워 F10-R 벽, 원칙 9), Oracle Free 12GB 상한(USERS 할당 10.7GB 중 사용 5.3GB 라 수 GB 를 억지로 채워야 함, 원칙 1·9), GitLab 2017-01-31 잘못된 대상 DB 명령을 PDB 닫기로(원본은 데이터 삭제, 원칙 1), Atlassian Confluence 2026-01-08 설정 변경의 DB 연결 급증(원본이 설정 내용 미공개, 피해 쪽 풀이 쥔 연결 유지 벽), WorkOS 2026-07-16 중첩 트랜잭션 hold-and-wait(동시성 15 필요, 원칙 9), Jim's Pckt 2026-04 TIME_WAIT 포트 고갈(개인 운영 블로그, 180rps 로 포트 범위에 못 미침), Azure AD 2021-03-15 보존 표시 무시 키 삭제를 Secret 삭제로(고리가 인증 실패가 아니라 컨테이너 생성 실패, F17-H 꼴), Socure 2026-06-25 소비자 그룹 미할당(비동기, 원칙 7), Astalty 2026-06-29 표 재구성 ALTER(엔진·표 미공개, F60-R 꼴), GitHub 2026-02-12 잘못된 네트워크 설정 배포로 헬스 체크 실패(transfer 는 F17-H 꼴, 나머지는 기본 롤링이 옛 파드를 남김), 같은 GitHub 2026-04-09 를 food payment 에(order 가 4xx 를 그대로 넘김, F55-R 과 같은 도메인).
+- 2026-10-12: `F44-P` 정식 승격(케이스 `case-f44-p-v3-4ee5c786`). 첫 실행 F44-P-run-4ee5c786 이 검증에서 녹화 가능(주입: 03:15:41 host.firewall 이 tb-w2 에 TRANSFER-API-IN 체인을 걸어 tb-w1 commerce 파드 대역 10.244.3.0/24 를 허용 목록에서 빠뜨림, 피해: checkout 5xx 1.0, 2xx 0.0 으로 success 연속 25, 원인 근거: tb-w2 커널 '[FW BLOCK] SRC=10.244.3.81 ... DPT=8082 SYN' 75줄, cleanup 의 iptables -F/-X TRANSFER-API-IN, order 'Checkout payment failed ... Connect timed out', 'from=commerce-settlement' 이체 소멸과 banking 자신의 이체 지속, must_rule_out 신호와 겹친 실행 없음. tb-w2 → 119 syslog 에서 규칙 생성 sudo 명령 줄은 유실(수집 환경 메모)). 근거 `~/dev/testbed-ops/verifications/2026-10-12-0420-F44-P-run-4ee5c786.md`. §4-1 → §4, §3 을 정식 52종으로 다시 셈(K 1→2 2%→4%, 은행 14→15, 정답 위치 노드, 디스크 4→5 8%→10%, 분모 52 라 A, B, D 7개는 14%→13%, 나머지 비율은 반올림으로 같음, 결제 경로 10 19.6%(10/51)→19.2%(10/52)). 후보는 §4-1 실제 행 수 49종.
