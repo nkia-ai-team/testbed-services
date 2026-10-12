@@ -12535,7 +12535,7 @@
           "id": "transfer_5xx_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
-          "_note": "동반 부하(core-banking transfer-heavy-surge.js 20rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 기록만 한다: account 서킷이 열리는 구간에는 502 가 몰리고(로컬 실측 첫 2분 대부분 502), 그 밖에는 느린 200 이다",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 8rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 기록만 한다: account 서킷이 열리는 구간에는 502 가 몰리고(로컬 실측 첫 2분 대부분 502), 그 밖에는 느린 200 이다",
           "freshness": "30s"
         },
         {
@@ -12569,7 +12569,7 @@
             "observation": "account_p95",
             "op": "gte",
             "value": 500,
-            "_note": "새 api 가 이체마다 account 계좌 목록을 status=ACTIVE&page=0..48&size=20 으로 끝까지 다시 읽는다(활성 976개, 109 조회 2026-10-09). 동반 부하 이체 약 8건/초면 목록 요청이 약 390건/초이고 실패하면 재시도(3회)가 더해진다. account 의 목록 한 페이지는 평시 서버 스팬 1.8ms(119 트레이스 7일 6,979건 p50), 같은 서비스의 PK 조회는 1.05ms 에 요청당 CPU 약 1.4ms(VM jvm.cpu.recent_utilization 와 rps 대조)라, 페이지 요청을 2ms CPU 로만 잡아도 0.78 CPU 를 요구해 한도 500m 를 넘는다. 로컬 실측(같은 jar, OTel 에이전트, account·api --cpus 0.5, Oracle Free 1,001계좌): 8건/초에서 account CPU 가 5분 내내 한도에 붙고 잔액 조회 p50 0.5~2초, account health 1~3초, 이체 502 몰림(서킷 열림). 같은 부하에 매니페스트 api 면 account 는 한도의 절반 아래이고 잔액 조회 10ms 안쪽이다"
+            "_note": "새 api 가 이체마다 account 계좌 목록을 status=ACTIVE&page=0..48&size=20 으로 끝까지 다시 읽는다(활성 976개, 109 조회 2026-10-09). 동반 부하(8rps) 이체 약 3건/초면 목록 요청이 약 160건/초이고 실패하면 재시도(3회)가 더해진다. 운영 실측(실행 F47-R-run-3d446438, 동반 부하 20rps)에서 account 는 목록 페이지를 초당 약 155건 처리하는 동안 이미 JVM CPU 0.67~0.80 으로 한도 500m 에 붙어 p95 가 2.6~3.1초였으므로, 160건/초만으로 처리량을 넘는다. 로컬 실측(같은 jar, OTel 에이전트, account·api --cpus 0.5, Oracle Free 1,001계좌): 8건/초에서 account CPU 가 5분 내내 한도에 붙고 잔액 조회 p50 0.5~2초, account health 1~3초, 이체 502 몰림(서킷 열림). 같은 부하에 매니페스트 api 면 account 는 한도의 절반 아래이고 잔액 조회 10ms 안쪽이다"
           }
         ],
         "consecutive_ticks": 3,
@@ -12582,7 +12582,7 @@
             "observation": "achieved_rps",
             "op": "lt",
             "value": 5,
-            "_note": "동반 부하 20rps 의 1/4. 부하가 실제로 끊겼을 때만 발화한다"
+            "_note": "동반 부하 8rps 의 약 3/5. 20rps 실행(F47-R-run-3d446438)의 주입 중 achieved 는 목표의 87% 이상이었으므로, 부하가 실제로 끊겼을 때만 발화한다"
           },
           {
             "id": "oracle-down",

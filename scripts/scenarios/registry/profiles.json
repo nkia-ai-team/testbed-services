@@ -1615,7 +1615,7 @@
           "baseline_unit": "loadgen-commerce"
         },
         "F47-R": {
-          "target_rps": 20,
+          "target_rps": 8,
           "ramp_up": "2m",
           "hold": "20m",
           "ramp_down": "15s",
