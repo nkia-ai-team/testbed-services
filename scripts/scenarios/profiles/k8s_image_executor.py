@@ -321,6 +321,19 @@ CONTRACTS = {
         "baseline_image": "core-banking-transfer:latest",
         "fault_image": "core-banking-transfer:2.4.0",
     },
+    # 2026-10-12. F75-R: food dispatch-service 만 릴리스 1.10.0 으로 롤아웃한다. 짝 릴리스(order 2.6.0)와 함께
+    # 나가야 했던 이 버전은 배달원 용량 조회를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮겨, 바뀌지 않은
+    # order 의 용량 확인이 옛 경로로 가 /api/deliveries/{id} 에 걸려 400 을 받고 모든 새 주문이 503 이 된다.
+    # 결함 이미지는 fault-images/f75-r 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다.
+    # dispatch 의 다른 릴리스 태그(F33-H 1.6.0, F43-P 1.7.0, F55-R 1.8.0, F63-P 1.9.0)와 겹치지 않는다.
+    "F75-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-dispatch",
+        "container": "dispatch-service",
+        "baseline_image": "food-delivery-dispatch:latest",
+        "fault_image": "food-delivery-dispatch:1.10.0",
+    },
 }
 
 

@@ -13039,6 +13039,97 @@
      }
     ]
    }
+  },
+  "F75-R": {
+   "title": "Release rollout of the food dispatch-service alone: release 1.10.0, meant to ship together with order-service 2.6.0, moves the courier-capacity API from /api/deliveries/capacity to /api/couriers/capacity, but the order release never goes out; the unchanged order-service keeps calling the old path, which the new dispatch now routes to GET /api/deliveries/{id} and rejects with 400, so every new order fails with 503 while dispatch stays Ready and delivery tracking keeps working",
+   "description": "A rollout of the food dispatch-service Deployment (testbed-dispatch) moves its container image from food-delivery-dispatch:latest to the release food-delivery-dispatch:1.10.0. The release is one half of a paired change: it moves the courier-capacity lookup out of the delivery resource into a new courier resource (GET /api/couriers/capacity, same body) and removes GET /api/deliveries/capacity, while the matching order-service release 2.6.0, which switches order's capacity check to the new path, is not deployed. Dispatch's startup and /actuator/health are unchanged, so the new pod becomes Ready and replaces the old one under the default rolling strategy (about 42 s). From then on order-service, still on its manifest image, calls GET /api/deliveries/capacity before every order; the new dispatch has no such mapping and routes the path to GET /api/deliveries/{id}, fails to convert 'capacity' to Long and answers 400, logging WARN 'Resolved [org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: Method parameter 'id': Failed to convert value of type 'java.lang.String' to required type 'java.lang.Long'; For input string: \"capacity\"]'. Order's DispatchClient logs ERROR 'Failed to check dispatch capacity: 400 ...' and turns it into 502; after three retries and the dispatch circuit breaker's fallback the order ends with 503 'Dispatch service unavailable: ...' in about 0.65 s. The check runs before the order row is written, so no order, courier assignment or payment is created and order's connection pool is not held. Restaurant browsing, menus, search, order lookups and delivery tracking (GET /api/deliveries, /api/deliveries/{id}) keep working; dispatch stays Ready, and its new /api/couriers/capacity answers 200. Locally (old order jar, release dispatch jar, mysql:8.0 with the food init.sql) 13 of 13 orders failed with 503 in 0.64-0.85 s with no order row and no ASSIGNED dispatch, the old path answered 400 and the new path 200. Nothing recovers until dispatch is rolled back or the matching order release is deployed.",
+   "cause": "Rollout of testbed-dispatch (food) alone to the release food-delivery-dispatch:1.10.0, whose courier-capacity API moved from /api/deliveries/capacity to /api/couriers/capacity on the assumption that order-service 2.6.0 would ship with it; order was not updated, so its capacity check on the old path now hits GET /api/deliveries/{id} and gets 400 → order turns the failure into 503 for every new order, until dispatch is rolled back or the matching order release is deployed.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-dispatch (rca-testbed-food), container dispatch-service, from food-delivery-dispatch:latest to food-delivery-dispatch:1.10.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f75-r from origin/main food-delivery plus fault-images/f75-r/dispatch-service.patch (under dispatch-service/src only: a new CourierController serving GET /api/couriers/capacity and the removal of GET /api/deliveries/capacity from DispatchController); order-service, the manifest image, sources and manifests are untouched, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion order-surge load (2 rps, about 1.4 orders per second) keeps order creation steady regardless of the time of day. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the dispatch rollout every new food order fails with 503 'Dispatch service unavailable' in under a second; no order is kept, no courier is reserved and no payment is attempted. Restaurant browsing, menus, search, order lookups and delivery tracking keep working. Nothing recovers until dispatch is rolled back or order-service is brought to the release that uses the new path.",
+   "distinguishing_evidence": "Decisive evidence is a release of dispatch-service immediately followed by order's capacity check getting 400 from a dispatch that is otherwise healthy: a KCM ScalingReplicaSet for testbed-dispatch and the new pod's kubelet event 'Pulled: Container image \"food-delivery-dispatch:1.10.0\" already present on machine' (every testbed-dispatch rollout on file pulled food-delivery-dispatch:latest, the last on 2026-10-11), with no rollout of testbed-order. From the new dispatch pod's start, order logs ERROR 'Failed to check dispatch capacity: 400 ...' (no such 400 in any food service in the 30 days before 2026-10-12; the capacity failures on file are 500 and I/O errors), dispatch logs WARN 'Resolved [...MethodArgumentTypeMismatchException: Method parameter 'id': ... For input string: \"capacity\"]', and dispatch server spans GET /api/deliveries/{id} answer 400 (that route answered only 404 in the previous 30 days) while GET /api/deliveries/capacity server spans (5,879 a day before) disappear. 'Created order' logs and new courier assignments ('Dispatched courier') drop to zero, order answers 503 in under a second, and order stays Ready without a restart. Dispatch stays Ready with no restart, no OOM, no pool or MySQL error, and keeps serving delivery tracking with its usual 200/404; MySQL has no new error, lock wait or schema change.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-dispatch",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 order-service 와 짝으로 나가야 했는데 혼자 배포된 food dispatch-service 의 새 릴리스 food-delivery-dispatch:1.10.0 이다. 이 버전은 배달원 용량 조회를 배차(delivery) 자원에서 배달원(courier) 자원으로 옮기며 GET /api/deliveries/capacity 를 지우고 GET /api/couriers/capacity 를 새로 둔다. 새 경로를 부르도록 바뀐 짝 릴리스 order-service 2.6.0 은 배포되지 않았다. dispatch 의 기동과 /actuator/health 는 그대로라 새 파드가 Ready 가 되어 기본 롤링 전략으로 옛 파드를 대신한다(약 42초). 그 뒤 매니페스트 이미지 그대로인 order 가 주문마다 옛 경로 GET /api/deliveries/capacity 로 용량을 확인하면, 새 dispatch 는 그 경로를 GET /api/deliveries/{id} 에 맞춰 'capacity' 를 Long 으로 바꾸지 못해 400 을 돌려주고 WARN 'Resolved [...MethodArgumentTypeMismatchException: Method parameter 'id': ... For input string: \"capacity\"]' 를 남긴다. order DispatchClient 가 ERROR 'Failed to check dispatch capacity: 400 ...' 를 남기고 502 로 바꾸며, 재시도 3회와 dispatch 서킷 대체 응답 끝에 주문이 약 0.65초 만에 503 'Dispatch service unavailable' 이 된다. 용량 확인은 주문 행을 쓰기 전이라 주문, 배차, 결제가 남지 않는다. 원본 Stitch 2023-03-13(정기 배포에서 일부 내부 서비스만 배포되어 서비스 사이 인터페이스 버전이 어긋나 모든 제품에서 시간 초과와 400~403, 모든 서비스를 다시 배포해 맞춤)과 같은 꼴이다. 고칠 곳은 짝 없이 나가 옛 계약을 끊은 dispatch 릴리스(되돌림, 또는 짝 order 릴리스를 함께 배포)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f75-r/dispatch-service.patch:17-39 (릴리스 1.10.0 의 CourierController — GET /api/couriers/capacity, 주석에 order-service 2.6.0 부터 새 경로를 부른다고 적음)",
+     "scripts/scenarios/fault-images/f75-r/dispatch-service.patch:53-64 (DispatchController 에서 GET /api/deliveries/capacity 매핑을 지움)",
+     "food-delivery/dispatch-service/src/main/java/com/fooddelivery/dispatch/controller/DispatchController.java:42-46 (GET /api/deliveries/{id} — @PathVariable Long id, 옛 capacity 경로가 여기에 걸려 형 변환 400)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/DispatchClient.java:32-50 (checkCapacity — 옛 경로 /api/deliveries/capacity 호출, 실패를 'Failed to check dispatch capacity' ERROR 와 502 로 바꾸고 서킷 대체 응답이 503)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:94-112 (checkCapacity — createOrder 의 배달원 용량 확인, 주문 행 저장 전이라 실패하면 아무것도 쓰지 않고 503 으로 끝남)",
+     "food-delivery/order-service/src/main/resources/application.yml:78-86 (dispatch — 서킷 10건 창 50% 5초 열림, 용량 확인과 배차 호출이 같은 서킷)",
+     "food-delivery/order-service/src/main/resources/application.yml:105-111 (dispatch — 재시도 3회 200ms 지수, 502 는 재시도 대상)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-dispatch(food-delivery/k8s/22-dispatch-deploy.yaml: replicas 1 :9, nodeSelector tb-w3, image food-delivery-dispatch:latest imagePullPolicy Never :27, startupProbe, readinessProbe, livenessProbe 모두 /actuator/health :67-86, 기본 전략 maxSurge 25%). testbed-order(food-delivery/k8s/20-order-deploy.yaml) 는 이미지 food-delivery-order:latest 그대로다. 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-dispatch 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-dispatch:1.10.0 을 담고, 그 전 testbed-dispatch 롤아웃 기록은 전부 food-delivery-dispatch:latest 다(마지막 2026-10-11). 같은 때 testbed-order 롤아웃은 없다",
+    "새 dispatch 파드가 Ready 가 된 뒤 order ERROR 'Failed to check dispatch capacity: 400 ...' 가 나오고(2026-10-12 이전 30일 동안 food 서비스 어디에도 이 400 은 0건, 기록된 용량 확인 실패는 500 과 I/O 오류뿐), dispatch WARN 'Resolved [org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: Method parameter 'id': Failed to convert value of type 'java.lang.String' to required type 'java.lang.Long'; For input string: \"capacity\"]' 가 함께 나온다",
+    "dispatch 서버 스팬 GET /api/deliveries/{id} 가 400 으로 답하고(이전 30일은 404 만), 하루 5,879건이던 GET /api/deliveries/capacity 서버 스팬이 사라지며, order POST /api/orders 가 1초 안에 503 으로 끝난다",
+    "'Created order' 로그와 dispatch 'Dispatched courier' 로그가 0 으로 떨어진다. order 는 Ready 이고 재시작하지 않는다. dispatch 도 Ready 이고 재시작, OOM, 풀 고갈, MySQL 오류가 없으며 배달 조회(GET /api/deliveries, /api/deliveries/{id})에 평소처럼 답한다"
+   ],
+   "must_rule_out": [
+    "order 자신의 릴리스 결함이 아님(F49-H, F58-R): testbed-order 롤아웃이 없고 order 이미지가 매니페스트 그대로이며, 롤아웃된 것은 dispatch 다. 실패 로그가 응답 해석 실패나 'Required key' 가 아니라 dispatch 가 돌려준 400 이다",
+    "배달원 용량이 실제로 찬 것이 아님(F32-R): dispatch 가 용량 확인에 200 과 available 0 을 주는 것이 아니라 400 을 주고, order 로그에 'courier pool exhausted' 가 없으며 ASSIGNED 수가 늘지 않는다",
+    "dispatch 의 요청 한도가 아님(F55-R): 429 가 아니라 400 이고, 배달 조회 같은 다른 dispatch 경로는 평소대로 답한다",
+    "dispatch 가 느려지거나 죽은 것이 아님(F63-P, F70-P, F43-P, F33-H, F33-R): 시간 초과, 연결 거부, 재시작, OOM, 풀 고갈, MySQL 포화가 없고 400 이 즉시 돌아온다",
+    "네트워크 차단이 아님(F44-P): 'I/O error on GET request' 연결 시간 초과가 아니라 HTTP 400 응답이고 같은 경로의 배달 조회가 통한다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F49-H (order 릴리스가 dispatch 응답을 못 읽음: 같은 order↔dispatch 계약 깨짐과 503 이지만 롤아웃된 쪽이 order 라 정답이 order. F75-R 은 dispatch 만 롤아웃되어 정답이 dispatch 이고, 배차 기록 없이 용량 확인에서 400)",
+     "F32-R (dispatch 배차 한도 설정 축소: 같은 '주문 전량 503' 이지만 dispatch 가 용량 확인에 200 과 available 0 을 주고 order 로그가 'courier pool exhausted')",
+     "F55-R (dispatch 릴리스의 요청 한도: 같은 dispatch 릴리스와 주문 503 이지만 429 와 요청 한도 로그)",
+     "F63-P (dispatch 릴리스의 스레드 누수 OOM: 같은 dispatch 릴리스와 주문 503 이지만 재시작, 시간 초과, 연결 거부)",
+     "F44-P (tb-w2 → dispatch 8082 방화벽: 같은 '용량 확인 실패 503' 이지만 연결 시간 초과 I/O 오류이고 롤아웃이 없음)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-dispatch",
+     "food-dispatch",
+     "testbed-dispatch"
+    ],
+    "partial": [
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food dispatch-service 만 릴리스 1.10.0 으로 롤아웃: order-service 2.6.0 과 짝으로 나가야 했던 이 버전이 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮겼는데 order 릴리스는 나가지 않아, 바뀌지 않은 order 의 용량 확인이 /api/deliveries/{id} 에 걸려 400 을 받고 dispatch 가 Ready 인 채 모든 새 주문이 503",
+   "description_ko": "food dispatch-service Deployment(testbed-dispatch) 롤아웃이 컨테이너 이미지를 food-delivery-dispatch:latest 에서 릴리스 food-delivery-dispatch:1.10.0 으로 바꾼다. 이 릴리스는 짝 변경의 한쪽이다: 배달원 용량 조회를 배차 자원에서 새 배달원 자원(GET /api/couriers/capacity, 본문 같음)으로 옮기고 GET /api/deliveries/capacity 를 지웠다. 용량 확인을 새 경로로 바꾼 짝 릴리스 order-service 2.6.0 은 배포되지 않았다. dispatch 의 기동과 /actuator/health 는 그대로라 새 파드가 Ready 가 되어 기본 롤링 전략으로 옛 파드를 대신한다(약 42초). 그 뒤 매니페스트 이미지 그대로인 order 가 주문마다 GET /api/deliveries/capacity 를 부르면, 새 dispatch 는 그 매핑이 없어 경로를 GET /api/deliveries/{id} 에 맞추고 'capacity' 를 Long 으로 바꾸지 못해 400 을 돌려주며 WARN 'Resolved [org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: Method parameter 'id': Failed to convert value of type 'java.lang.String' to required type 'java.lang.Long'; For input string: \"capacity\"]' 를 남긴다. order DispatchClient 가 ERROR 'Failed to check dispatch capacity: 400 ...' 를 남기고 502 로 바꾸며, 재시도 3회와 dispatch 서킷 대체 응답 끝에 주문이 약 0.65초 만에 503 'Dispatch service unavailable: ...' 이 된다. 용량 확인은 주문 행을 쓰기 전이라 주문, 배차, 결제가 남지 않고 order 풀도 묶이지 않는다. 가게 둘러보기, 메뉴, 검색, 주문 조회, 배달 조회(GET /api/deliveries, /api/deliveries/{id})는 정상이고, dispatch 는 Ready 이며 새 경로 /api/couriers/capacity 는 200 이다. 로컬(옛 order jar, 릴리스 dispatch jar, mysql:8.0 + food init.sql)에서 주문 13건 모두 0.64~0.85초에 503, 주문 행 0건, ASSIGNED 0건, 옛 경로 400, 새 경로 200. dispatch 를 되돌리거나 짝 order 릴리스를 배포할 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-dispatch(food) 만 릴리스 food-delivery-dispatch:1.10.0 으로 롤아웃. 이 버전은 order-service 2.6.0 이 함께 나간다는 전제로 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮겼는데 order 는 바뀌지 않아, 옛 경로로 가는 용량 확인이 GET /api/deliveries/{id} 에 걸려 400 → order 가 모든 새 주문을 503 으로 끝냄, dispatch 를 되돌리거나 짝 order 릴리스를 배포할 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-dispatch 컨테이너 dispatch-service 이미지를 food-delivery-dispatch:latest 에서 food-delivery-dispatch:1.10.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f75-r 이 origin/main food-delivery 에 fault-images/f75-r/dispatch-service.patch(dispatch-service/src 안만: GET /api/couriers/capacity 를 내는 새 CourierController 와 DispatchController 의 GET /api/deliveries/capacity 삭제)를 얹어 미리 빌드한다. order-service, 매니페스트 이미지, 소스, 매니페스트는 그대로이고, 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 order-surge 부하(2rps, 주문 생성 초당 약 1.4건)가 시간대와 상관없이 주문 생성을 유지한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "dispatch 롤아웃 약 1분 뒤부터 food 의 모든 새 주문이 1초 안에 503 'Dispatch service unavailable' 로 실패한다. 주문이 남지 않고 배달원도 잡지 않으며 결제도 부르지 않는다. 가게 둘러보기, 메뉴, 검색, 주문 조회, 배달 조회는 정상이다. dispatch 를 되돌리거나 order 를 새 경로를 쓰는 릴리스로 맞출 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 dispatch-service 릴리스 바로 뒤 order 의 용량 확인이 다른 면에서는 멀쩡한 dispatch 에게서 400 을 받는다는 것이다: testbed-dispatch 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-dispatch:1.10.0\" already present on machine'(기록에 있는 testbed-dispatch 롤아웃은 모두 food-delivery-dispatch:latest, 마지막 2026-10-11), 같은 때 testbed-order 롤아웃 없음. 새 dispatch 파드 기동부터 order ERROR 'Failed to check dispatch capacity: 400 ...'(2026-10-12 이전 30일 동안 food 서비스 어디에도 이 400 은 0건, 기록된 용량 확인 실패는 500 과 I/O 오류뿐), dispatch WARN 'Resolved [...MethodArgumentTypeMismatchException: Method parameter 'id': ... For input string: \"capacity\"]', 400 으로 답하는 dispatch 서버 스팬 GET /api/deliveries/{id}(이전 30일은 404 만)와 사라진 GET /api/deliveries/capacity 서버 스팬(하루 전 5,879건). 'Created order' 와 새 배차('Dispatched courier') 로그가 0 이 되고 order 는 1초 안에 503 을 주며 Ready 를 유지한다. dispatch 는 재시작, OOM, 풀이나 MySQL 오류 없이 Ready 이고 배달 조회에 평소 200, 404 로 답한다. MySQL 은 새 오류, 잠금 대기, 스키마 변경이 없다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f75-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-dispatch",
+       "container": "dispatch-service",
+       "baseline_image": "food-delivery-dispatch:latest",
+       "fault_image": "food-delivery-dispatch:1.10.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

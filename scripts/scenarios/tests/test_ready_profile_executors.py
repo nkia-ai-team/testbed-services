@@ -1806,6 +1806,55 @@ esac
                    / "OrderService.java").read_text()
         self.assertLess(service.index("dispatchClient.checkCapacity()"), service.index("orderRepository.save(order)"))
 
+    def test_k8s_image_release_mode_rolls_food_dispatch_capacity_path_move(self) -> None:
+        # F75-R: 같은 release 스크립트로 food dispatch 만 1.10.0 으로 롤아웃한다(tb-w3). order 는 건드리지 않는다.
+        # dispatch 의 다른 릴리스(F33-H 1.6.0, F43-P 1.7.0, F55-R 1.8.0, F63-P 1.9.0)와 태그가 겹치지 않아야 모두
+        # "노드에 릴리스 없음" preflight 를 지킨다. 패치는 dispatch-service/src 안만 고친다.
+        plan = compiler.compile_plan("f75-r-food-dispatch-release-moves-capacity-api-ahead-of-order")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-dispatch", "dispatch-service",
+                                    "food-delivery-dispatch:latest", "food-delivery-dispatch:1.10.0"])
+        self.assertNotIn("F75-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F75-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F75-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f75-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F75-R"]["baseline_image"], k8s_image.CONTRACTS["F75-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f75-r" / "dispatch-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/dispatch-service/src/",
+                                                     "b/food-delivery/dispatch-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        removed = "\n".join(line for line in patch.splitlines() if line.startswith("-") and not line.startswith("---"))
+        for word in ("F75", "f75", "fault", "bug", "chaos", "scenario", "mismatch", "skew"):
+            self.assertNotIn(word, added)
+        # 릴리스는 용량 조회를 새 자원으로 옮기고 옛 매핑을 지운다. 응답 본문(getCapacity)과 배차, 배달 조회는 그대로다.
+        self.assertIn('@RequestMapping("/api/couriers")', added)
+        self.assertIn('@GetMapping("/capacity")', added)
+        self.assertIn('@GetMapping("/capacity")', removed)
+        self.assertIn("dispatchService.getCapacity()", added)
+        for kept in ('@PostMapping("/dispatch")', '@GetMapping("/{id}")', "@GetMapping\n"):
+            self.assertNotIn(kept, removed)
+
+    def test_f75r_relies_on_order_old_capacity_path_and_id_route(self) -> None:
+        # F75-R 의 고리는 바뀌지 않은 order 가 옛 경로 /api/deliveries/capacity 를 부르고, dispatch 의
+        # GET /api/deliveries/{id} 가 Long id 라 옛 경로가 400 이 된다는 것, order 가 용량 확인 실패를 주문 행 저장
+        # 전에 503 으로 바꾼다는 것에 기댄다. 어느 하나가 바뀌면 다시 평가해야 한다.
+        food = ROOT.parent.parent / "food-delivery"
+        client = (food / "order-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "order" / "client"
+                  / "DispatchClient.java").read_text()
+        self.assertIn('.uri("/api/deliveries/capacity")', client)
+        self.assertIn("Failed to check dispatch capacity", client)
+        controller = (food / "dispatch-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "dispatch"
+                      / "controller" / "DispatchController.java").read_text()
+        self.assertIn('@GetMapping("/{id}")', controller)
+        self.assertIn("@PathVariable Long id", controller)
+        service = (food / "order-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "order" / "service"
+                   / "OrderService.java").read_text()
+        self.assertLess(service.index("dispatchClient.checkCapacity()"), service.index("orderRepository.save(order)"))
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -2243,6 +2292,8 @@ esac
             "F73-R",
             # 2026-10-12: banking 가맹점 입금 알림 제휴 연동이 거래 내역 API 확인 주기를 계좌당 1초로 줄이자 page=0&size=1 확인마다 transfer 가 표 전체를 세는 Page 건수 질의를 돌려 Oracle CPU 를 포화하고 transfer 풀이 묶임(load.north_south 새 부하 스크립트 settlement-arrival-poll.js, 배포·설정·DB 변경 없음 → banking 이체와 commerce checkout 간헐적 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
             "F74-R",
+            # 2026-10-12: food dispatch-service 만 배달원 용량 API 를 /api/deliveries/capacity 에서 /api/couriers/capacity 로 옮긴 릴리스 1.10.0(fault-images/f75-r)으로 롤아웃되고 짝 order 2.6.0 은 나가지 않아, 바뀌지 않은 order 의 용량 확인이 /api/deliveries/{id} 에 걸려 400 → 모든 새 주문 503(Stitch 2023-03-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F75-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
