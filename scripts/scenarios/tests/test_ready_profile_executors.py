@@ -2054,6 +2054,63 @@ esac
             self.assertLess(lookup, journey.index("if (menuRes.status !== 200) {", lookup))
             self.assertLess(journey.index("if (menuRes.status !== 200) {", lookup), journey.index("/api/orders", lookup))
 
+    def test_k8s_image_release_mode_rolls_food_payment_glued_pg_address(self) -> None:
+        # F79-R: 같은 release 스크립트로 food payment 를 1.4.0 으로 롤아웃한다(tb-w3). F49-P(1.3.0)와 태그가 겹치지
+        # 않아야 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 payment-service/src 안만 고친다.
+        plan = compiler.compile_plan("f79-r-food-payment-release-pg-address-missing-slash")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-payment", "payment-service",
+                                    "food-delivery-payment:latest", "food-delivery-payment:1.4.0"])
+        self.assertNotIn("F79-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F79-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F79-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f79-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F79-R"]["baseline_image"], k8s_image.CONTRACTS["F79-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f79-r" / "payment-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/payment-service/src/",
+                                                     "b/food-delivery/payment-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F79", "f79", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        # 릴리스는 결제 주소를 기본 주소와 결제 경로를 구분자 없이 이어 만들고, 끝 '/' 는 로컬 기본값에만 둔다.
+        # 결제 저장, 오류 처리, health 는 그대로다.
+        self.assertIn("this.payUrl = pgBaseUrl + payPath;", added)
+        self.assertIn(".uri(payUrl)", added)
+        self.assertIn("base-url: ${PG_API_URL:http://localhost:9090/}", added)
+        self.assertIn("pay-path: pay", added)
+        self.assertNotIn("catch (", added)
+        self.assertNotIn("log.", added)
+
+    def test_f79r_relies_on_production_pg_address_without_trailing_slash(self) -> None:
+        # F79-R 의 고리는 운영 PG_API_URL 이 '/' 로 끝나지 않고, PgApiClient 가 RestClientException 만 'PG /pay failed' 로
+        # 남기며 그 밖의 예외를 서킷 fallback 이 'PG mock unavailable: ' 502 로 바꾸고, processPayment 가 그 예외를 다시
+        # 던져 트랜잭션째 되돌리며, order 가 payment 의 5xx 를 'Failed to process payment for order' 로 남긴다는 것에
+        # 기댄다. 어느 하나가 바뀌면 다시 평가해야 한다.
+        food = ROOT.parent.parent / "food-delivery"
+        configmap = (food / "k8s" / "02-configmaps.yaml").read_text()
+        self.assertIn("  PG_API_URL: http://testbed-external-pg-mock:9090\n", configmap)
+        deploy = (food / "k8s" / "23-payment-deploy.yaml").read_text()
+        self.assertNotIn("PG_API_URL", deploy)
+        self.assertIn("name: service-config", deploy)
+        pg = (food / "payment-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "payment" / "client"
+              / "PgApiClient.java").read_text()
+        self.assertIn('.uri("/pay")', pg)
+        self.assertIn("} catch (RestClientException ex) {", pg)
+        self.assertIn('throw new ServiceException(HttpStatus.BAD_GATEWAY, "PG mock unavailable: " + ex.getMessage());', pg)
+        service = (food / "payment-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "payment" / "service"
+                   / "PaymentService.java").read_text()
+        body = service[service.index("public PaymentResponse processPayment("):service.index("Processed payment")]
+        self.assertIn("} catch (ServiceException ex) {", body)
+        self.assertIn("throw ex;", body)
+        self.assertIn("@Transactional\n    public PaymentResponse processPayment(", service)
+        client = (food / "order-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "order" / "client"
+                  / "PaymentClient.java").read_text()
+        self.assertIn('log.error("Failed to process payment for order {}: {}", orderId, ex.getMessage());', client)
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -2501,6 +2558,8 @@ esac
             "F77-R",
             # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-H",
+            # 2026-10-12: food payment-service 를 외부 PG 결제 주소를 기본 주소와 결제 경로를 구분자 없이 이어 만드는 릴리스 1.4.0(fault-images/f79-r)으로 롤아웃, 운영 PG_API_URL 이 '/' 로 끝나지 않아 'http://testbed-external-pg-mock:9090pay' 가 되어 결제 요청을 만들기 전에 'Bad authority' 로 모든 결제 502, 주문 전량 502(PG 수신 0, rust-lang crates.io 2023-07-20 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F79-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

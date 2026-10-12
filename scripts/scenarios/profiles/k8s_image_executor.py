@@ -382,6 +382,20 @@ CONTRACTS = {
         "fault_image": "core-banking-ledger:latest",
         "fault_owner": "testbed-ledger",
     },
+    # 2026-10-12. F79-R: food payment-service 를 외부 PG 결제 주소를 'PG 기본 주소 + 결제 경로' 문자열 이어 붙이기로
+    # 만드는 릴리스 1.4.0 으로 롤아웃한다. 릴리스는 기본 주소가 '/' 로 끝난다고 보고(로컬 기본값만 그렇다) 구분자 없이
+    # 잇는데, 운영 PG_API_URL 은 '/' 없이 끝나 결제 주소가 'http://testbed-external-pg-mock:9090pay' 가 되고, 요청을
+    # 만들기도 전에 'Bad authority' 로 실패해 payment 가 모든 결제를 502 로 돌려준다. PG 에는 요청이 가지 않는다.
+    # 결함 이미지는 fault-images/f79-r 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다.
+    # payment 의 다른 릴리스 태그(F49-P 1.3.0)와 겹치지 않는다.
+    "F79-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-payment",
+        "container": "payment-service",
+        "baseline_image": "food-delivery-payment:latest",
+        "fault_image": "food-delivery-payment:1.4.0",
+    },
 }
 
 

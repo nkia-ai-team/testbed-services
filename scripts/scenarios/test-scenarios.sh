@@ -86,7 +86,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 137 → 138. F76-P(후보) 추가.
 # 2026-10-12: 138 → 139. F77-R(후보) 추가.
 # 2026-10-12: 139 → 140. F71-H(후보) 추가.
-[[ "$total" -eq 140 ]]
+# 2026-10-12: 140 → 141. F79-R(후보) 추가.
+[[ "$total" -eq 141 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -223,7 +224,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: ready 112→113. F76-P(food restaurant-service 릴리스 1.7.0 이 메뉴의 카테고리별 조리 시간을 출시 카테고리 셋뿐인 표에서 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500, 후보) 추가.
 # 2026-10-12: ready 113→114. F77-R(transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지로 바꿔 transfer 가 비고 banking 이체와 commerce checkout 502, 후보) 추가.
 # 2026-10-12: ready 114→115. F71-H(commerce PostgreSQL 운영자가 pg_hba 모든 주소 규칙을 노드 주소와 관리망만 받도록 좁혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 거절되고 풀이 수명대로 비어 readiness 이탈·재시작 반복, 쓰기 500·상품 조회 502)를 후보로 추가.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 115 ]]
+# 2026-10-12: ready 115→116. F79-R(food payment-service 릴리스 1.4.0 이 외부 PG 결제 주소를 기본 주소와 경로를 구분자 없이 이어 만들어 운영 주소에서 'Bad authority' 로 모든 결제 502, 주문 전량 502, 후보) 추가.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 116 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -334,7 +336,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 131 → 132. F76-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f76-p)으로 들어왔다.
 # 2026-10-12: 132 → 133. F77-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f77-r)으로 들어왔다.
 # 2026-10-12: 133 → 134. F71-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f71-h)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 134 ]]
+# 2026-10-12: 134 → 135. F79-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f79-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 135 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

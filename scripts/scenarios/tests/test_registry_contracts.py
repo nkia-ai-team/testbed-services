@@ -128,7 +128,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 137 → 138. F76-P(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 138 → 139. F77-R(후보) 추가. 기존 k8s.image 에 foreign 모드를 더해 프로파일 수는 그대로.
         # 2026-10-12: 139 → 140. F71-H(후보) 추가. 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 140)
+        # 2026-10-12: 140 → 141. F79-R(후보) 추가. 기존 k8s.image release 모드를 food payment 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 141)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -331,6 +332,8 @@ class RegistryContractTests(unittest.TestCase):
             "F77-R",
             # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-H",
+            # 2026-10-12: food payment-service 를 외부 PG 결제 주소를 기본 주소와 결제 경로를 구분자 없이 이어 만드는 릴리스 1.4.0(fault-images/f79-r)으로 롤아웃, 운영 PG_API_URL 이 '/' 로 끝나지 않아 결제 요청을 만들기 전에 'Bad authority' 로 모든 결제 502, 주문 전량 502
+            "F79-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -749,6 +752,8 @@ class RegistryContractTests(unittest.TestCase):
             "F77-R",
             # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-H",
+            # 2026-10-12: food payment-service 를 외부 PG 결제 주소를 기본 주소와 결제 경로를 구분자 없이 이어 만드는 릴리스 1.4.0(fault-images/f79-r)으로 롤아웃, 운영 PG_API_URL 이 '/' 로 끝나지 않아 결제 요청을 만들기 전에 'Bad authority' 로 모든 결제 502, 주문 전량 502
+            "F79-R",
             },
         )
         self.assertEqual(
@@ -951,6 +956,8 @@ class RegistryContractTests(unittest.TestCase):
             "F77-R",
             # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F71-H",
+            # 2026-10-12: food payment-service 를 외부 PG 결제 주소를 기본 주소와 결제 경로를 구분자 없이 이어 만드는 릴리스 1.4.0(fault-images/f79-r)으로 롤아웃, 운영 PG_API_URL 이 '/' 로 끝나지 않아 결제 요청을 만들기 전에 'Bad authority' 로 모든 결제 502, 주문 전량 502
+            "F79-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1165,8 +1172,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F76-P(후보, 고정 evaluation)이 끝에 붙어 F70-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F77-R(후보, 고정 evaluation)이 끝에 붙어 F73-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F71-H(후보, 고정 evaluation)이 끝에 붙어 F74-R 이 끝 5개에서 빠졌다.
+        # 2026-10-12: F79-R(후보, 고정 evaluation)이 끝에 붙어 F75-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F75-R", "F76-R", "F76-P", "F77-R", "F71-H"])
+                         ["F76-R", "F76-P", "F77-R", "F71-H", "F79-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

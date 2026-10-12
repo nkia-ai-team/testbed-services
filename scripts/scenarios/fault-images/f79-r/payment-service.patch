@@ -1,0 +1,53 @@
+diff --git a/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/client/PgApiClient.java b/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/client/PgApiClient.java
+index 43f0ec0..9833b81 100644
+--- a/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/client/PgApiClient.java
++++ b/food-delivery/payment-service/src/main/java/com/fooddelivery/payment/client/PgApiClient.java
+@@ -7,6 +7,7 @@ import io.github.resilience4j.retry.annotation.Retry;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.beans.factory.annotation.Qualifier;
++import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.http.HttpStatus;
+ import org.springframework.http.MediaType;
+ import org.springframework.stereotype.Component;
+@@ -22,9 +23,15 @@ public class PgApiClient {
+ 
+     private static final Logger log = LoggerFactory.getLogger(PgApiClient.class);
+     private final RestClient pgRestClient;
++    private final String payUrl;
+ 
+-    public PgApiClient(@Qualifier("pgRestClient") RestClient pgRestClient) {
++    // 1.4.0: PG 공급자를 늘릴 때 코드를 고치지 않도록 결제 경로를 설정(pg.api.pay-path)으로 뺐다.
++    // 결제 주소는 PG 기본 주소와 결제 경로를 이어 만든다(기본 주소는 '/' 로 끝난다).
++    public PgApiClient(@Qualifier("pgRestClient") RestClient pgRestClient,
++                       @Value("${pg.api.base-url}") String pgBaseUrl,
++                       @Value("${pg.api.pay-path:pay}") String payPath) {
+         this.pgRestClient = pgRestClient;
++        this.payUrl = pgBaseUrl + payPath;
+     }
+ 
+     // 결제성 호출 — 재시도 증폭 위험 때문에 application.yml에서 max-attempts=2로 낮춰둠.
+@@ -39,7 +46,7 @@ public class PgApiClient {
+                     "pg_provider", pgProvider != null ? pgProvider : "default"
+             );
+             return pgRestClient.post()
+-                    .uri("/pay")
++                    .uri(payUrl)
+                     .contentType(MediaType.APPLICATION_JSON)
+                     .body(body)
+                     .retrieve()
+diff --git a/food-delivery/payment-service/src/main/resources/application.yml b/food-delivery/payment-service/src/main/resources/application.yml
+index 26ee006..a2f1804 100644
+--- a/food-delivery/payment-service/src/main/resources/application.yml
++++ b/food-delivery/payment-service/src/main/resources/application.yml
+@@ -36,7 +36,9 @@ services:
+ 
+ pg:
+   api:
+-    base-url: ${PG_API_URL:http://localhost:9090}
++    # 결제 주소 = base-url + pay-path. base-url 은 '/' 로 끝난다.
++    base-url: ${PG_API_URL:http://localhost:9090/}
++    pay-path: pay
+     connect-timeout: 3s
+     read-timeout: 10s
+ 

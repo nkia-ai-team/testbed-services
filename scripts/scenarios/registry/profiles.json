@@ -4496,7 +4496,8 @@
           "F75-R",
           "F76-R",
           "F76-P",
-          "F77-R"
+          "F77-R",
+          "F79-R"
         ]
       },
       "scenario_parameters": {
@@ -4715,6 +4716,14 @@
           "baseline_image": "core-banking-transfer:latest",
           "fault_image": "core-banking-ledger:latest",
           "fault_owner": "testbed-ledger"
+        },
+        "F79-R": {
+          "mode": "release",
+          "namespace": "rca-testbed-food",
+          "deployment": "testbed-payment",
+          "container": "payment-service",
+          "baseline_image": "food-delivery-payment:latest",
+          "fault_image": "food-delivery-payment:1.4.0"
         }
       },
       "scenario_levels": {}

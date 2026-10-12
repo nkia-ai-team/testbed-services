@@ -13509,6 +13509,99 @@
      }
     ]
    }
+  },
+  "F79-R": {
+   "title": "Release rollout of the food payment-service that builds the external PG charge address by gluing a base URL and a path together without a separator: in production the base URL has no trailing slash, every charge fails inside payment with 'Bad authority' before any request leaves, and every new order is rolled back with 502 although the PG itself is healthy",
+   "description": "A rollout of the food payment-service Deployment (testbed-payment) moves its container image from food-delivery-payment:latest to the release food-delivery-payment:1.4.0. The release moves the PG charge path into configuration (pg.api.pay-path, default 'pay') so that more PG providers can be added without code changes, and builds the charge address as the plain string pg.api.base-url + pg.api.pay-path, assuming the base URL ends with '/'. Only the local default in the release's application.yml (http://localhost:9090/) does; in production the base URL comes from the food ConfigMap value PG_API_URL=http://testbed-external-pg-mock:9090, so the address becomes 'http://testbed-external-pg-mock:9090pay'. Nothing reads that address at start-up and health does not call the PG, so the new pod passes its probes and replaces the old one under the default rolling strategy. From then on every POST /api/payments fails inside payment-service while the request is being built: RestClient rejects the address with InvalidUrlException 'Bad authority', which is not a RestClientException, so PgApiClient's own 'PG /pay failed' log is skipped; the pg retry (2 attempts, 300 ms) and the pg circuit breaker fallback turn it into ServiceException 502 'PG mock unavailable: Bad authority' (later 'PG mock unavailable: CircuitBreaker 'pg' is OPEN ...'), the payment transaction is rolled back, and payment answers 502 in about 0.3 s without logging anything. No request reaches the PG mock. order-service, which calls payment as the last synchronous step of order creation (after the order row and the courier assignment), logs 'Failed to process payment for order <id>: 502 ... PG mock unavailable: Bad authority', retries once, opens its own payment circuit breaker and rolls every new order back with 502. Restaurant browsing, menus and delivery tracking keep working. Nothing recovers until the release is rolled back.",
+   "cause": "Rollout of testbed-payment (food) to the release food-delivery-payment:1.4.0, which builds the PG charge address as base URL + path with no separator, relying on a trailing slash that only the local default has → with the production PG_API_URL (no trailing slash) the address is 'http://testbed-external-pg-mock:9090pay' → payment fails every charge with 'Bad authority' before sending anything and answers 502 → order-service rolls every new order back with 502, while the external PG mock receives nothing and stays healthy, until the image is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-payment (rca-testbed-food), container payment-service, from food-delivery-payment:latest to food-delivery-payment:1.4.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f79-r from origin/main food-delivery plus fault-images/f79-r/payment-service.patch (two files under payment-service/src: PgApiClient builds the charge address from pg.api.base-url + pg.api.pay-path, and application.yml adds pay-path and a trailing slash to the local default of base-url); the manifest image, sources, manifests and the ConfigMap are untouched, and the tag is not used by any other scenario. Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. There is no companion load: the failed orders have already passed the courier capacity check and been assigned, so an extra order load would pile up ASSIGNED dispatches (ETA 15 to 35 minutes) and fill the 2000-courier limit within minutes; the resident food baseline load alone carries order creation and the verdict. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the rollout every new food order fails with 502 after a courier has been assigned (payment answers 502 in about 0.3 s; local run of the release jar against MySQL 8.0 and a PG stub: 8 of 8 charges 502, the first two 'PG mock unavailable: Bad authority', the rest 'CircuitBreaker 'pg' is OPEN', the PG stub received 0 requests, no payment row left; with a base URL ending in '/' the same jar approved 8 of 8). No money moves and no payment row is kept, because payment rolls its own transaction back. Courier assignments of the failed orders stay ASSIGNED until the expiry batch moves them on; with only the baseline load they appear at the rate successful orders normally leave them. Restaurant browsing, menus, popular menus, search and delivery tracking keep working. Nothing recovers until the release is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release of payment-service after which payment stops calling the PG altogether and fails every charge itself: a KCM ScalingReplicaSet for testbed-payment and the new pod's kubelet event 'Pulled: Container image \"food-delivery-payment:1.4.0\" already present on machine', then from the new pod's start the order ERROR log 'Failed to process payment for order <id>: 502 ... \"message\":\"PG mock unavailable: Bad authority\"' (the 7 days of logs on file before 2026-10-12 hold no 'Bad authority', no 'PG mock unavailable' and no 502 from payment) and 'Order fan-out payment failed: ... status=502', while payment logs neither 'Processed payment' nor 'PG /pay failed', payment's POST /api/payments server spans end with 502 and its client spans to http://testbed-external-pg-mock:9090/pay (about 75 sampled per hour before) disappear. In a real PG outage payment's PG client spans exist and fail or run long and payment logs 'PG /pay failed for order=...: ...' (read timeout, 429, 5xx) before its breaker opens. payment stays Ready without restarts, MySQL shows no new errors, schema change or lock waits, and order has no rollout or configuration change.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-payment",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food payment-service 의 새 릴리스 food-delivery-payment:1.4.0 이다. 이 버전은 PG 공급자를 늘리려고 결제 경로를 설정(pg.api.pay-path, 기본 'pay')으로 빼고, 외부 PG 결제 주소를 pg.api.base-url 과 결제 경로를 구분자 없이 이은 문자열로 만든다. 기본 주소가 '/' 로 끝난다고 가정했는데 그런 값은 릴리스 application.yml 의 로컬 기본값(http://localhost:9090/)뿐이고, 운영은 food ConfigMap 의 PG_API_URL=http://testbed-external-pg-mock:9090 을 써서 결제 주소가 'http://testbed-external-pg-mock:9090pay' 가 된다. 기동과 health 는 이 주소를 쓰지 않아 새 파드가 Ready 가 되고 옛 파드를 대신한다. 그 뒤 모든 결제 요청이 payment 안에서 요청을 만드는 단계에 RestClient 의 InvalidUrlException 'Bad authority' 로 실패한다. 이 예외는 RestClientException 이 아니라 'PG /pay failed' 로그를 건너뛰고, pg 재시도(2회, 300ms)와 pg 서킷브레이커 fallback 이 ServiceException 502 'PG mock unavailable: Bad authority'(서킷이 열리면 'CircuitBreaker 'pg' is OPEN ...')로 바꾼다. payment 는 결제 트랜잭션을 롤백하고 아무 로그 없이 502 를 돌려주며, 외부 PG mock 에는 요청이 하나도 가지 않는다. order 는 주문 생성의 마지막 동기 단계에서 이 502 를 받아 'Failed to process payment for order <id>: 502 ...' 를 남기고 재시도 1회, payment 서킷브레이커 뒤 모든 주문을 502 로 롤백한다. 원본 rust-lang crates.io 2023-07-20(저장소 접근 정리 리팩터가 다운로드 리다이렉트 주소를 'CDN 접두어' 와 '경로' 로 이으며 '/' 를 빠뜨려 'static.crates.iocrates/...' 가 되고, 시험은 운영과 다른 값을 써 통과, 배포 직후 모든 다운로드 실패, 되돌림으로 복구)와 같은 꼴이다. 고칠 곳은 주소 조립을 바꾼 payment 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f79-r/payment-service.patch:17-26 (PgApiClient 생성자 — 릴리스 1.4.0 이 결제 주소를 pgBaseUrl + payPath 로 구분자 없이 이어 만듦)",
+     "scripts/scenarios/fault-images/f79-r/payment-service.patch:33-35 (pay — 결제 요청 주소가 상대 경로 '/pay' 에서 이어 붙인 절대 주소 payUrl 로 바뀜)",
+     "scripts/scenarios/fault-images/f79-r/payment-service.patch:45-50 (application.yml — pay-path: pay 를 더하고 base-url 의 로컬 기본값만 '/' 로 끝나게 바꿈)",
+     "food-delivery/k8s/02-configmaps.yaml:18 (운영 PG_API_URL: http://testbed-external-pg-mock:9090 — '/' 로 끝나지 않음)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/client/PgApiClient.java:32-66 (pay — RestClientException 만 'PG /pay failed' 로 남기고, 그 밖의 예외는 pg 재시도와 서킷 fallback 이 'PG mock unavailable: ' + 메시지 502 로 바꿈)",
+     "food-delivery/payment-service/src/main/java/com/fooddelivery/payment/service/PaymentService.java:50-89 (@Transactional processPayment — PG 실패 ServiceException 을 다시 던져 결제 행까지 롤백, 성공 때만 'Processed payment' 로그)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/client/PaymentClient.java:30-57 (processPayment — payment 의 502 응답을 'Failed to process payment for order <id>: ...' ERROR 로 남기고 502, 재시도 2회와 서킷)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:128-160 (createOrder 가 주문 행 저장, 배차 호출 뒤 마지막 동기 단계로 paymentClient.processPayment 를 부르고 실패를 다시 던져 트랜잭션 롤백)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-payment(food-delivery/k8s/23-payment-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-payment:latest imagePullPolicy Never :27-28, envFrom service-config :31-33, startupProbe/readinessProbe/livenessProbe /actuator/health :67-86, 기본 전략 maxSurge 25%). 운영 PG 주소는 ConfigMap service-config 의 PG_API_URL(food-delivery/k8s/02-configmaps.yaml:18, '/' 없이 끝남). payment 의 pg 재시도 2회 300ms, 서킷 10건 창 50% 5초 열림(food-delivery/payment-service/src/main/resources/application.yml). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-payment 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-payment:1.4.0 을 담는다",
+    "새 payment 파드가 Ready 가 된 뒤 order 로그에 'Failed to process payment for order <id>: 502 ...\"message\":\"PG mock unavailable: Bad authority\"' ERROR(서킷이 열린 동안은 'PG mock unavailable: CircuitBreaker 'pg' is OPEN ...')와 'Order fan-out payment failed: ... status=502' 가 나타난다(2026-10-12 기준 보존된 7일 로그에 'Bad authority', 'PG mock unavailable', payment 의 502 가 0건)",
+    "같은 구간 payment 로그에 'Processed payment' 도 'PG /pay failed' 도 없고, payment 의 POST /api/payments 서버 스팬은 502, payment 에서 외부 PG(http://testbed-external-pg-mock:9090/pay)로 가는 클라이언트 스팬이 사라진다(평시 표본 시간당 약 75건)",
+    "payment 는 재시작 없이 Ready 이고, MySQL 은 Ready 이며 새 오류, 스키마 변경, 잠금 대기가 없고, order 에는 롤아웃이나 설정 변경이 없다"
+   ],
+   "must_rule_out": [
+    "외부 결제 대행사 고장이 아님(F06-P, F06-R, F19-P, F19-S): 외부 PG 고장이면 payment 의 PG 클라이언트 스팬이 있고 실패하거나 길어지며 payment 가 'PG /pay failed for order=...' 를 남긴 뒤 서킷이 열린다. 여기서는 payment 가 PG 를 부르지 않고(클라이언트 스팬 소멸) 오류 문장이 요청을 만들기 전의 주소 오류('Bad authority')다",
+    "payment 응답 계약 변경이 아님(F49-P): F49-P 는 payment 가 결제를 끝내고 200 으로 답하며 'Processed payment ... APPROVED' 를 남기고 order 가 응답을 못 읽는다. 여기서는 payment 가 502 를 돌려주고 결제 처리 로그가 없다",
+    "결제 표나 스키마 고장이 아님(F53-P): MySQL 1146 같은 DB 오류가 없고 payment 의 DB 질의는 정상이다",
+    "결제 요청 계약 고장이 아님(F30-R): 'orderId required' 400 이 아니라 payment 의 502 다",
+    "가게, 배달 쪽 고장이 아님(F49-R, F36-R, F44-R, F32-R, F32-H, F33-H, F49-H, F75-R): 주문은 가게 조회, 용량 확인, 배차를 지나 'Created order' 와 dispatch 배차 기록을 남긴 뒤 결제 단계에서 끝난다",
+    "order 자체 결함이나 설정 배포가 아님: order 에는 롤아웃, 재시작, 설정 변경이 없고 order health 는 UP 이며, 실패는 payment 롤아웃 시각에 시작해 되돌림과 함께 끝난다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F19-S (외부 PG 지연으로 payment 의 pg 서킷이 열려 주문 502: 같은 'PG mock unavailable: CircuitBreaker 'pg' is OPEN' 과 결제 단계 502 지만 원인이 외부 PG 이고 payment 의 PG 클라이언트 스팬과 'PG /pay failed ... Read timed out' 이 남음. F79-R 은 payment 릴리스이고 PG 를 아예 부르지 않음)",
+     "F06-P, F06-R, F19-P (외부 결제 대행사 429, 지연: 같은 결제 단계 실패지만 payment 의 외부 PG 호출이 실제로 실패)",
+     "F49-P (food payment 릴리스의 결제 응답 id 형식 변경: 같은 payment 릴리스와 결제 단계 502 지만 payment 는 결제를 끝내고 200, order 가 응답 해석에 실패)",
+     "F53-P (food payments 표를 지운 마이그레이션: 같은 결제 단계 실패지만 payment 가 MySQL 1146 으로 500)",
+     "F30-R (food payment 설정 배포의 JSON 명명 규칙 변경: 같은 payment 설정 계열이지만 payment 가 요청을 못 읽어 400)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-payment",
+     "food-payment",
+     "testbed-payment"
+    ],
+    "partial": [
+     "testbed-external-pg-mock",
+     "food-external-pg",
+     "food-delivery-order",
+     "food-order",
+     "testbed-order"
+    ]
+   },
+   "title_ko": "food payment-service 를 외부 PG 결제 주소를 기본 주소와 경로를 구분자 없이 이어 만드는 릴리스로 롤아웃: 운영 기본 주소가 '/' 로 끝나지 않아 payment 가 요청을 보내기도 전에 'Bad authority' 로 모든 결제를 실패시키고, PG 는 멀쩡한데 모든 새 주문이 502 로 롤백됨",
+   "description_ko": "food payment-service Deployment(testbed-payment) 롤아웃이 컨테이너 이미지를 food-delivery-payment:latest 에서 릴리스 food-delivery-payment:1.4.0 으로 바꾼다. 이 릴리스는 PG 공급자를 코드 변경 없이 늘리려고 결제 경로를 설정(pg.api.pay-path, 기본 'pay')으로 빼고, 결제 주소를 pg.api.base-url 과 pg.api.pay-path 를 그대로 이은 문자열로 만든다. 기본 주소가 '/' 로 끝난다고 가정했지만 그런 값은 릴리스 application.yml 의 로컬 기본값(http://localhost:9090/)뿐이고, 운영은 food ConfigMap 의 PG_API_URL=http://testbed-external-pg-mock:9090 을 써서 주소가 'http://testbed-external-pg-mock:9090pay' 가 된다. 기동과 health 는 이 주소를 쓰지 않아 새 파드가 프로브를 통과해 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 모든 POST /api/payments 가 payment 안에서 요청을 만드는 단계에 실패한다: RestClient 가 주소를 InvalidUrlException 'Bad authority' 로 거부하고, 이 예외는 RestClientException 이 아니라 PgApiClient 의 'PG /pay failed' 로그를 건너뛰며, pg 재시도(2회, 300ms)와 pg 서킷브레이커 fallback 이 ServiceException 502 'PG mock unavailable: Bad authority'(서킷이 열리면 'PG mock unavailable: CircuitBreaker 'pg' is OPEN ...')로 바꾼다. 결제 트랜잭션은 롤백되고 payment 는 아무 로그 없이 약 0.3초 만에 502 를 돌려준다. 외부 PG mock 에는 요청이 하나도 가지 않는다. 주문 생성의 마지막 동기 단계(주문 행 저장, 배차 뒤)에서 payment 를 부르는 order-service 는 'Failed to process payment for order <id>: 502 ... PG mock unavailable: Bad authority' 를 남기고 재시도 1회 뒤 자기 payment 서킷브레이커를 열며 모든 새 주문을 502 로 롤백한다. 가게 둘러보기, 메뉴, 배달 조회는 정상이다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-payment(food) 를 릴리스 food-delivery-payment:1.4.0 으로 롤아웃. 이 버전이 PG 결제 주소를 기본 주소 + 경로로 구분자 없이 이어 만들며 로컬 기본값에만 있는 끝 '/' 에 기댐 → 운영 PG_API_URL('/' 없음)에서 주소가 'http://testbed-external-pg-mock:9090pay' 가 됨 → payment 가 아무것도 보내기 전에 'Bad authority' 로 모든 결제를 실패시키고 502 → order-service 가 모든 새 주문을 502 로 롤백, 외부 PG mock 은 요청을 받지 않고 멀쩡하다. 이미지를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-payment 컨테이너 payment-service 이미지를 food-delivery-payment:latest 에서 food-delivery-payment:1.4.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f79-r 가 origin/main food-delivery 에 fault-images/f79-r/payment-service.patch(payment-service/src 안 두 파일: PgApiClient 가 결제 주소를 pg.api.base-url + pg.api.pay-path 로 만들고, application.yml 이 pay-path 를 더하며 base-url 의 로컬 기본값만 '/' 로 끝나게 함)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트, ConfigMap 은 그대로이고, 태그는 다른 시나리오가 쓰지 않는다. preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 부하는 두지 않는다: 실패한 주문은 이미 배달원 용량 확인과 배차를 지난 뒤라, 주문 부하를 더하면 ASSIGNED 배차(ETA 15~35분)가 쌓여 몇 분 안에 배달원 한도 2000 이 찬다. 상주 food 기준선 부하만으로 주문 생성과 판정을 한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "롤아웃 약 1분 뒤부터 food 의 모든 새 주문이 배달원 배정 뒤 502 로 실패한다(payment 가 약 0.3초 만에 502. 릴리스 jar 를 MySQL 8.0 과 PG 대역에 붙인 로컬 실측: 결제 8건 모두 502, 첫 2건 'PG mock unavailable: Bad authority', 나머지 'CircuitBreaker 'pg' is OPEN', PG 대역 수신 0건, 결제 행 남지 않음. 기본 주소가 '/' 로 끝나면 같은 jar 가 8건 모두 승인). payment 가 자기 트랜잭션을 롤백해 돈은 움직이지 않고 결제 행도 남지 않는다. 실패한 주문의 배차는 만료 배치가 넘길 때까지 ASSIGNED 로 남는데, 기준선 부하만 쓰면 평소 성공한 주문이 남기던 만큼과 같은 속도다. 가게 둘러보기, 메뉴, 인기 메뉴, 검색, 배달 조회는 정상이다. 릴리스를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 payment-service 릴리스 뒤 payment 가 PG 를 아예 부르지 않고 스스로 모든 결제를 실패시키는 것이다: testbed-payment 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-payment:1.4.0\" already present on machine', 그 뒤 새 파드 기동부터 order ERROR 로그 'Failed to process payment for order <id>: 502 ...\"message\":\"PG mock unavailable: Bad authority\"'(2026-10-12 이전 보존된 7일 로그에 'Bad authority', 'PG mock unavailable', payment 의 502 가 0건)와 'Order fan-out payment failed: ... status=502'. 같은 구간 payment 는 'Processed payment' 도 'PG /pay failed' 도 남기지 않고, payment 의 POST /api/payments 서버 스팬은 502 이며, http://testbed-external-pg-mock:9090/pay 로 가는 payment 클라이언트 스팬(평시 표본 시간당 약 75건)이 사라진다. 외부 PG 고장이면 payment 의 PG 클라이언트 스팬이 있고 실패하거나 길어지며 서킷이 열리기 전에 'PG /pay failed for order=...: ...'(읽기 시간 초과, 429, 5xx)가 남는다. payment 는 재시작 없이 Ready, MySQL 은 새 오류, 스키마 변경, 잠금 대기가 없고, order 에는 롤아웃이나 설정 변경이 없다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f79-r",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-payment",
+       "container": "payment-service",
+       "baseline_image": "food-delivery-payment:latest",
+       "fault_image": "food-delivery-payment:1.4.0"
+      }
+     }
+    ]
+   }
   }
  }
 }

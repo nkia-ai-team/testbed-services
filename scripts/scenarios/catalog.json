@@ -1768,6 +1768,18 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F79-R",
+      "slug": "f79-r-food-payment-release-pg-address-missing-slash",
+      "profiles": [
+        "k8s.image"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "food namespace",
+      "prerequisite": ""
     }
   ]
 }
