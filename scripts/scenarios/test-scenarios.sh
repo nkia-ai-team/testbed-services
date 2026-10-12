@@ -83,7 +83,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 134 → 135. F74-R(후보) 추가.
 # 2026-10-12: 135 → 136. F75-R(후보) 추가.
 # 2026-10-12: 136 → 137. F76-R(후보) 추가.
-[[ "$total" -eq 137 ]]
+# 2026-10-12: 137 → 138. F76-P(후보) 추가.
+[[ "$total" -eq 138 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -217,7 +218,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: ready 109→110. F74-R(banking 가맹점 입금 확인 폴링 주기 단축이 거래 내역 Page 건수 질의를 초당 8회 늘려 Oracle CPU 를 포화, transfer 풀이 묶여 이체와 commerce checkout 이 간헐적으로 5xx)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-12: ready 110→111. F75-R(food dispatch 만 용량 API 경로를 옮긴 릴리스 1.10.0 으로 롤아웃되어 짝 order 릴리스 없이 옛 경로가 400, 모든 새 주문 503, 후보) 추가.
 # 2026-10-12: ready 111→112. F76-R(commerce product-service 릴리스 1.4.0 이 액상 상품 니코틴 함량을 설명에서 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500, 후보) 추가.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 112 ]]
+# 2026-10-12: ready 112→113. F76-P(food restaurant-service 릴리스 1.7.0 이 메뉴의 카테고리별 조리 시간을 출시 카테고리 셋뿐인 표에서 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500, 후보) 추가.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 113 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -325,7 +327,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 128 → 129. F74-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f74-r)으로 들어왔다.
 # 2026-10-12: 129 → 130. F75-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f75-r)으로 들어왔다.
 # 2026-10-12: 130 → 131. F76-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f76-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 131 ]]
+# 2026-10-12: 131 → 132. F76-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f76-p)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 132 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

@@ -140,7 +140,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 57 → 58. F74-R(banking 가맹점 입금 확인 폴링 주기 단축이 거래 내역 Page 건수 질의로 Oracle CPU 를 포화, transfer 풀이 묶여 이체와 commerce checkout 간헐적 5xx) 후보 추가.
         # 2026-10-12: 58 → 59. F75-R(food dispatch 만 용량 API 경로를 옮긴 릴리스로 롤아웃되어 짝 order 릴리스 없이 옛 경로가 400, 모든 새 주문 503) 후보 추가.
         # 2026-10-12: 59 → 60. F76-R(commerce product-service 릴리스 1.4.0 이 액상 상품 니코틴 함량을 설명에서 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록 500) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 60)
+        # 2026-10-12: 60 → 61. F76-P(food restaurant-service 릴리스 1.7.0 이 메뉴의 카테고리별 조리 시간을 확인 없이 읽어 카테고리 4~8 가게의 메뉴 500) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 61)
 
 
 class RecordingQueueTests(unittest.TestCase):

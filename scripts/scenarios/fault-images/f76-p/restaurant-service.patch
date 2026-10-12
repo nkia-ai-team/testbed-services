@@ -1,0 +1,108 @@
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java
+index b7f4f4c..bec3a26 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/controller/RestaurantController.java
+@@ -1,8 +1,8 @@
+ package com.fooddelivery.restaurant.controller;
+ 
+-import com.fooddelivery.common.dto.MenuResponse;
+ import com.fooddelivery.common.dto.PopularMenuResponse;
+ import com.fooddelivery.common.dto.RestaurantResponse;
++import com.fooddelivery.restaurant.dto.MenuItemResponse;
+ import com.fooddelivery.restaurant.service.RestaurantService;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.domain.PageRequest;
+@@ -40,7 +40,7 @@ public class RestaurantController {
+     }
+ 
+     @GetMapping("/{id}/menu")
+-    public ResponseEntity<List<MenuResponse>> getMenu(@PathVariable Long id) {
++    public ResponseEntity<List<MenuItemResponse>> getMenu(@PathVariable Long id) {
+         return ResponseEntity.ok(restaurantService.getMenu(id));
+     }
+ 
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/dto/MenuItemResponse.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/dto/MenuItemResponse.java
+new file mode 100644
+index 0000000..fde9620
+--- /dev/null
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/dto/MenuItemResponse.java
+@@ -0,0 +1,17 @@
++package com.fooddelivery.restaurant.dto;
++
++import java.math.BigDecimal;
++
++/**
++ * 가게 메뉴 응답. 공통 MenuResponse 칸에 예상 조리 시간(분)을 더해 앱 메뉴 화면이 '조리 약 N분'을 보여 준다.
++ * 주문 서비스는 메뉴를 공통 MenuResponse 로 읽으므로 더한 칸은 무시된다.
++ */
++public record MenuItemResponse(
++        Long id,
++        Long restaurantId,
++        Long categoryId,
++        String name,
++        BigDecimal price,
++        boolean available,
++        int cookMinutes
++) {}
+diff --git a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+index 174dafc..a90957c 100644
+--- a/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
++++ b/food-delivery/restaurant-service/src/main/java/com/fooddelivery/restaurant/service/RestaurantService.java
+@@ -1,9 +1,9 @@
+ package com.fooddelivery.restaurant.service;
+ 
+-import com.fooddelivery.common.dto.MenuResponse;
+ import com.fooddelivery.common.dto.PopularMenuResponse;
+ import com.fooddelivery.common.dto.RestaurantResponse;
+ import com.fooddelivery.common.exception.ServiceException;
++import com.fooddelivery.restaurant.dto.MenuItemResponse;
+ import com.fooddelivery.restaurant.entity.Menu;
+ import com.fooddelivery.restaurant.entity.MenuPopularitySummary;
+ import com.fooddelivery.restaurant.entity.Restaurant;
+@@ -16,10 +16,17 @@ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+ import java.util.List;
++import java.util.Map;
+ 
+ @Service
+ public class RestaurantService {
+ 
++    // 앱 메뉴 화면의 '조리 약 N분' 안내에 쓰는 카테고리별 평균 조리 시간(분). 매장 운영팀이 준 값이다.
++    private static final Map<Long, Integer> COOK_MINUTES_BY_CATEGORY = Map.of(
++            1L, 10,   // 분식
++            2L, 15,   // 중식
++            3L, 20);  // 치킨
++
+     private final RestaurantRepository restaurantRepository;
+     private final MenuRepository menuRepository;
+     private final MenuPopularitySummaryRepository popularitySummaryRepository;
+@@ -59,7 +66,7 @@ public class RestaurantService {
+     }
+ 
+     @Transactional(readOnly = true)
+-    public List<MenuResponse> getMenu(Long restaurantId) {
++    public List<MenuItemResponse> getMenu(Long restaurantId) {
+         if (!restaurantRepository.existsById(restaurantId)) {
+             throw new ServiceException(HttpStatus.NOT_FOUND, "Restaurant not found: " + restaurantId);
+         }
+@@ -68,14 +75,16 @@ public class RestaurantService {
+                 .toList();
+     }
+ 
+-    private MenuResponse toMenuResponse(Menu m) {
+-        return new MenuResponse(
++    private MenuItemResponse toMenuResponse(Menu m) {
++        int cookMinutes = COOK_MINUTES_BY_CATEGORY.get(m.getCategoryId());
++        return new MenuItemResponse(
+                 m.getId(),
+                 m.getRestaurantId(),
+                 m.getCategoryId(),
+                 m.getName(),
+                 m.getPrice(),
+-                Boolean.TRUE.equals(m.getAvailable())
++                Boolean.TRUE.equals(m.getAvailable()),
++                cookMinutes
+         );
+     }
+ }

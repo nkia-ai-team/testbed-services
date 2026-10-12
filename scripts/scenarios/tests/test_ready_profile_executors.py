@@ -1909,6 +1909,65 @@ esac
                  / "ProxyService.java").read_text()
         self.assertIn("return ResponseEntity.status(ex.getStatusCode()).body(ex.getResponseBodyAsByteArray());", proxy)
 
+    def test_k8s_image_release_mode_rolls_food_restaurant_cook_time(self) -> None:
+        # F76-P: 같은 release 스크립트로 food restaurant 를 1.7.0 으로 롤아웃한다(tb-w3). F49-R(1.4.0), F42-P(1.5.0),
+        # F36-H(1.6.0)와 태그가 겹치지 않아야 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 restaurant-service/src
+        # 안만 고친다.
+        plan = compiler.compile_plan("f76-p-food-restaurant-release-cook-time-breaks-expansion-category-menus")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-restaurant", "restaurant-service",
+                                    "food-delivery-restaurant:latest", "food-delivery-restaurant:1.7.0"])
+        self.assertNotIn("F76-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F76-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F76-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f76-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F76-P"]["baseline_image"], k8s_image.CONTRACTS["F76-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f76-p" / "restaurant-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/food-delivery/restaurant-service/src/",
+                                                     "b/food-delivery/restaurant-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F76", "f76", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        # 릴리스는 메뉴마다 카테고리별 조리 시간을 출시 카테고리 셋뿐인 표에서 꺼내 확인 없이 int 로 받는다. 질의,
+        # 가게 상세, 목록, 인기 메뉴는 그대로다.
+        self.assertIn("private static final Map<Long, Integer> COOK_MINUTES_BY_CATEGORY = Map.of(", added)
+        self.assertIn("3L, 20);", added)
+        self.assertNotIn("4L,", added)
+        self.assertIn("int cookMinutes = COOK_MINUTES_BY_CATEGORY.get(m.getCategoryId());", added)
+        self.assertNotIn("getOrDefault", added)
+        self.assertIn("public ResponseEntity<List<MenuItemResponse>> getMenu(@PathVariable Long id)", added)
+        self.assertNotIn("getRestaurant(", added)
+        self.assertNotIn("findByRestaurantId", added)
+
+    def test_f76p_relies_on_bulk_menu_categories_and_menu_gated_orders(self) -> None:
+        # F76-P 의 고리는 데모 시드(가게 1~3)의 메뉴가 카테고리 1~3 이고 대량 등록 가게의 메뉴 카테고리가 1 + id % 8
+        # 이라 일부 가게가 카테고리 4~8 이며, order 가 메뉴를 공통 MenuResponse 로 읽고(더한 칸은 무시), 주문 여정이 메뉴
+        # 조회가 200 일 때만 주문을 보낸다는 것에 기댄다. 어느 하나가 바뀌면 다시 평가해야 한다.
+        food = ROOT.parent.parent / "food-delivery"
+        init = (food / "db" / "init.sql").read_text()
+        self.assertIn("    1 + (r.id % 8),", init)
+        demo = init[init.index("INSERT IGNORE INTO menus"):init.index("대량 시드 1")]
+        self.assertIn("(5, 1, 1, ", demo)
+        self.assertIn("(10, 2, 2, ", demo)
+        self.assertIn("(15, 3, 3, ", demo)
+        for absent in (", 4, '", ", 5, '", ", 6, '", ", 7, '", ", 8, '"):
+            self.assertNotIn(absent, demo)
+        menu_dto = (food / "shop-common" / "src" / "main" / "java" / "com" / "fooddelivery" / "common" / "dto"
+                    / "MenuResponse.java").read_text()
+        self.assertNotIn("cookMinutes", menu_dto)
+        order = (food / "order-service" / "src" / "main" / "java" / "com" / "fooddelivery" / "order" / "service"
+                 / "OrderService.java").read_text()
+        self.assertIn("List<MenuResponse> menus = restaurantClient.getMenu(request.restaurantId());", order)
+        for script in ("script.js", "surge.js"):
+            journey = (food / "loadgen" / script).read_text()
+            lookup = journey.index("step: 'menu-lookup'")
+            self.assertLess(lookup, journey.index("if (menuRes.status !== 200) {", lookup))
+            self.assertLess(journey.index("if (menuRes.status !== 200) {", lookup), journey.index("/api/orders", lookup))
+
     def test_mock_expectations_are_snapshotted_and_restored(self) -> None:
         script = self.assert_contract(mock, "f01-h-commerce-pg-429", "mock.expectation")
         self.assertIn("ACTIVE_EXPECTATIONS", script)
@@ -2350,6 +2409,8 @@ esac
             "F75-R",
             # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 목록, 상세 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명의 'N mg' 을 Matcher.find() 확인 없이 group(1) 으로 읽어 함량 표기 없는 액상 상품이 든 상품 목록, 검색이 IllegalStateException 으로 500(상세, reserve-stock, checkout 정상, GitLab 2026-03-17 production#21573 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F76-R",
+            # 2026-10-12: food restaurant-service 를 메뉴 응답에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 Map.get 확인 없이 int 로 받아 카테고리 4~8 가게 11곳의 메뉴가 NullPointerException 으로 500(상세, 검색, 인기 메뉴, 주문 정상, GitLab 2026-03-17 production#21573 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F76-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

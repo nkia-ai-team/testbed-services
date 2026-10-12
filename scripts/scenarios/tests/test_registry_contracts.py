@@ -125,7 +125,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 134 → 135. F74-R(후보) 추가. 기존 load.north_south 에 새 부하 스크립트만 더해 프로파일 수는 그대로.
         # 2026-10-12: 135 → 136. F75-R(후보) 추가. 기존 k8s.image release 모드를 food dispatch 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 136 → 137. F76-R(후보) 추가. 기존 k8s.image release 모드를 commerce product 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 137)
+        # 2026-10-12: 137 → 138. F76-P(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 138)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -322,6 +323,8 @@ class RegistryContractTests(unittest.TestCase):
             "F75-R",
             # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명에서 함량을 일치 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500
             "F76-R",
+            # 2026-10-12: food restaurant-service 를 메뉴에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500
+            "F76-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -734,6 +737,8 @@ class RegistryContractTests(unittest.TestCase):
             "F75-R",
             # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명에서 함량을 일치 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500
             "F76-R",
+            # 2026-10-12: food restaurant-service 를 메뉴에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500
+            "F76-P",
             },
         )
         self.assertEqual(
@@ -930,6 +935,8 @@ class RegistryContractTests(unittest.TestCase):
             "F75-R",
             # 2026-10-12: commerce product-service 를 액상 상품 니코틴 함량(mg)을 응답에 더한 릴리스 1.4.0(fault-images/f76-r)으로 롤아웃, 설명에서 함량을 일치 확인 없이 읽어 함량 표기 없는 액상 상품이 든 상품 목록이 500
             "F76-R",
+            # 2026-10-12: food restaurant-service 를 메뉴에 카테고리별 예상 조리 시간을 더한 릴리스 1.7.0(fault-images/f76-p)으로 롤아웃, 출시 카테고리 셋뿐인 표를 확인 없이 읽어 카테고리 4~8 가게의 메뉴가 500
+            "F76-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1141,8 +1148,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F74-R(후보, 고정 evaluation)이 끝에 붙어 F70-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F75-R(후보, 고정 evaluation)이 끝에 붙어 F71-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F76-R(후보, 고정 evaluation)이 끝에 붙어 F72-R 이 끝 5개에서 빠졌다.
+        # 2026-10-12: F76-P(후보, 고정 evaluation)이 끝에 붙어 F70-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F70-P", "F73-R", "F74-R", "F75-R", "F76-R"])
+                         ["F73-R", "F74-R", "F75-R", "F76-R", "F76-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

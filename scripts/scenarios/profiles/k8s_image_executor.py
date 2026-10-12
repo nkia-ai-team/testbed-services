@@ -347,6 +347,19 @@ CONTRACTS = {
         "baseline_image": "commerce-product:latest",
         "fault_image": "commerce-product:1.4.0",
     },
+    # 2026-10-12. F76-P: food restaurant-service 를 메뉴 응답에 카테고리별 예상 조리 시간(분)을 더한 릴리스 1.7.0 으로
+    # 롤아웃한다. 조리 시간 표가 출시 카테고리(분식, 중식, 치킨) 셋뿐인데 Map.get 결과를 int 로 바로 받아, 표에 없는
+    # 카테고리의 메뉴(운영의 대량 등록 가게 11곳)를 응답에 담는 순간 NullPointerException 으로 500 이 된다.
+    # 결함 이미지는 fault-images/f76-p 로 109 docker 에만 빌드하고, 실행기가 tb-w3 에 올렸다가 cleanup 이 지운다.
+    # restaurant 의 다른 릴리스 태그(F49-R 1.4.0, F42-P 1.5.0, F36-H 1.6.0)와 겹치지 않는다.
+    "F76-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-food",
+        "deployment": "testbed-restaurant",
+        "container": "restaurant-service",
+        "baseline_image": "food-delivery-restaurant:latest",
+        "fault_image": "food-delivery-restaurant:1.7.0",
+    },
 }
 
 

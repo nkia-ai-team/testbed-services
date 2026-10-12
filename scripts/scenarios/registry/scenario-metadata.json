@@ -13220,6 +13220,94 @@
      }
     ]
    }
+  },
+  "F76-P": {
+   "title": "Release rollout of the food restaurant-service to 1.7.0, which adds an estimated cooking time per menu item from a category table that only knows the three launch categories (snack, Chinese, chicken) and unboxes the Map.get result straight into an int; every menu in any other category (the 11 bulk-listed restaurants in categories 4-8) throws NullPointerException while the response is built, so their menu pages answer 500 while restaurant details, search, popular menus, the other restaurants' menus and order creation keep working",
+   "description": "A rollout of the food restaurant-service Deployment (testbed-restaurant) moves its container image from food-delivery-restaurant:latest to the release food-delivery-restaurant:1.7.0. The release answers GET /api/restaurants/{id}/menu with a restaurant-service response type that adds cookMinutes to the shared menu fields so the app can show 'about N minutes to cook'. The value comes from a static table COOK_MINUTES_BY_CATEGORY holding the store team's averages for the launch categories only (1 snack 10, 2 Chinese 15, 3 chicken 20), and toMenuResponse assigns COOK_MINUTES_BY_CATEGORY.get(categoryId) to an int. The demo seed (restaurants 1-3 and their 15 menus) uses categories 1-3 only, so the path never failed there; in production each bulk-listed restaurant's menus share one category (1 + id % 8), and the 11 restaurants 19-23, 27-31 and 35 are in categories 4-8. Startup and /actuator/health are unchanged, so the new pod becomes Ready and replaces the old one under the default rolling strategy. From then on the menu of any of those 11 restaurants fails while it is being built: Map.get returns null, auto-unboxing throws NullPointerException 'Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \"java.util.Map.get(Object)\" is null', Tomcat logs SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.NullPointerException: ...] with root cause' with a stack through RestaurantService.toMenuResponse, and the request gets 500 within a few milliseconds. Menus of the other 12 restaurants, restaurant details, region search and popular menus stay 200. Order creation is untouched for what customers can still reach: the app (and the k6 journeys) only place an order after the menu loaded, order-service reads menus into the shared MenuResponse and ignores the extra field, so orders for restaurants whose menu loads succeed; customers of the 11 restaurants simply cannot get to an order. The queries, MySQL, order, dispatch and payment are unchanged. Locally (jar built from the same sources, MySQL 8.0 initialised with the same init.sql) menus of restaurants 1-3, 16-18, 24-26 and 32-34 answered 200 with cookMinutes, the other 11 answered 500 with that NullPointerException, details, popular menus and region search answered 200 for all, an order for restaurant 16 got past the menu into the capacity check, and the manifest jar answers all of them 200 (119: 29,243 sampled menu server spans in the day before 2026-10-12, all 200). Nothing recovers until restaurant-service is rolled back.",
+   "cause": "Rollout of testbed-restaurant (food) to the release food-delivery-restaurant:1.7.0, whose new cooking-time field reads a per-category table that covers only the three launch categories and unboxes the lookup result without a check; the menus of the 11 production restaurants in categories 4-8 throw NullPointerException while the menu response is built → their menu pages answer 500, until restaurant-service is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-restaurant (rca-testbed-food), container restaurant-service, from food-delivery-restaurant:latest to food-delivery-restaurant:1.7.0. The release image is built ahead of time on 109 by scripts/scenarios/fault-images/build.sh f76-p from origin/main food-delivery plus fault-images/f76-p/restaurant-service.patch (under restaurant-service/src only: a MenuItemResponse record with cookMinutes, the COOK_MINUTES_BY_CATEGORY table, toMenuResponse and the menu endpoint returning the new type); the manifest image, sources and manifests are untouched, the restaurant and menu data are not changed, and the tag is not used by any other scenario (restaurant releases 1.4.0, 1.5.0 and 1.6.0 belong to F49-R, F42-P and F36-H). Preflight checks on the live objects that the current image is the baseline, imagePullPolicy Never, replicas 1, that 109 docker holds the release, that tb-w3's containerd holds the baseline and not the release, that tb-w3's image filesystem is below 80% and that the Deployment is available. Run copies the release into tb-w3's containerd (docker save | ctr import) and sets the image; cleanup sets the manifest image back, waits for the Deployment to be available and for no pod to use the release, then removes the release name and its ID reference from tb-w3. A companion surge load (food surge.js 3 rps; 45% browsing detail, menu and popular menu, 30% region search, 10% bounded orders) adds menu traffic on top of the resident baseline. No scenario identifier reaches the cluster, the image or the logs.",
+   "user_impact": "About a minute after the restaurant rollout, nearly half of the menu views fail with 500: every menu of the 11 restaurants in categories 4-8 (café/dessert, Korean, Western, Japanese, pizza), so their customers cannot see a menu and cannot order. Restaurant pages, region search, popular menus, the menus of the other 12 restaurants and orders placed from them keep working. Nothing recovers until restaurant-service is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release of restaurant-service immediately followed by restaurant's own response-building exception on a subset of restaurants while MySQL and the callers stay healthy: a KCM ScalingReplicaSet for testbed-restaurant and the new pod's kubelet event 'Pulled: Container image \"food-delivery-restaurant:1.7.0\" already present on machine' (no testbed-restaurant rollout in the 30 days before 2026-10-12; release rollouts on file carry their tag in the same event, e.g. core-banking-api:1.4.0, commerce-cart:1.2.0). From the new pod's start restaurant logs SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.NullPointerException: Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \"java.util.Map.get(Object)\" is null] with root cause' (0 lines with that message in any service in the 30 days before 2026-10-12; restaurant's SEVERE lines on file are the 2026-10-09 column-rename and 2026-10-06~08 DB connection failures), restaurant server spans GET /api/restaurants/{id}/menu turn to 500 (all 29,243 sampled in the previous day were 200) and restaurant's APM error rate rises from 0. The failures follow the data, not the load: menus of restaurants in categories 4-8 fail on every request while those in categories 1-3, restaurant details GET /api/restaurants/{id}, region search and popular menus answer as before, and order creation keeps succeeding. Restaurant stays Ready with no restart, no OOM, no pool timeout and no SQL error; MySQL shows no new error, lock wait, schema change or query shape (the menu query is the same), and order, dispatch and payment log nothing new.",
+   "domain": "food-delivery",
+   "class": "A",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "food-delivery-restaurant",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 food restaurant-service 의 새 릴리스 food-delivery-restaurant:1.7.0 이다. 이 버전은 앱 메뉴 화면의 '조리 약 N분' 안내를 위해 메뉴 응답에 카테고리별 예상 조리 시간(cookMinutes)을 더한다. 값은 매장 운영팀이 준 표 COOK_MINUTES_BY_CATEGORY(1 분식 10, 2 중식 15, 3 치킨 20, 출시 카테고리 셋뿐)에서 꺼내는데 toMenuResponse 가 Map.get 결과를 확인 없이 int 로 받는다. 데모 시드(가게 1~3, 메뉴 15개)는 카테고리 1~3 만 써 실패하지 않았지만, 운영의 대량 등록 가게는 가게마다 메뉴 카테고리가 하나(1 + id % 8)이고 19~23, 27~31, 35 의 11곳이 카테고리 4~8 이다. 기동과 /actuator/health 는 그대로라 새 파드가 Ready 가 되어 기본 롤링 전략으로 옛 파드를 대신하고, 그 뒤 그 11곳의 메뉴 응답은 만드는 중에 Map.get 이 null 을 돌려 자동 언박싱에서 NullPointerException 이 나 Tomcat 이 SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.NullPointerException: Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \"java.util.Map.get(Object)\" is null]' 를 남기고 500 을 준다. 나머지 가게 메뉴, 가게 상세, 지역 검색, 인기 메뉴, 주문 생성(order 는 공통 MenuResponse 로 읽어 새 칸을 무시)은 그대로이고 질의, MySQL 은 바뀌지 않는다. 원본 GitLab 2026-03-17 production#21573(Duo Code Review 기능 변경이 들인 잘못된 Feature.enabled? 호출이 GitLab Credits 애드온이 있는 네임스페이스의 프로젝트에서만 API 직렬화 중 NoMethodError 를 내 MR 생성과 /api/v4/projects 등이 500, 15,000건 넘는 오류, 되돌림으로 복구)과 같은 꼴이다. 고칠 곳은 응답 변환에 실패 처리 없는 조회를 들인 restaurant 릴리스(되돌림)다.",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f76-p/restaurant-service.patch:71-75 (릴리스 1.7.0 의 COOK_MINUTES_BY_CATEGORY — 1 분식 10, 2 중식 15, 3 치킨 20, 출시 카테고리 셋뿐)",
+     "scripts/scenarios/fault-images/f76-p/restaurant-service.patch:93-106 (toMenuResponse — int cookMinutes = COOK_MINUTES_BY_CATEGORY.get(m.getCategoryId()), 표에 없는 카테고리면 자동 언박싱 NullPointerException 이라 메뉴 하나의 실패가 메뉴 응답 전체를 500 으로 만듦)",
+     "scripts/scenarios/fault-images/f76-p/restaurant-service.patch:30-46 (MenuItemResponse — 공통 MenuResponse 칸에 cookMinutes 를 더한 restaurant 응답 형)",
+     "scripts/scenarios/fault-images/f76-p/restaurant-service.patch:17-21 (컨트롤러 GET /api/restaurants/{id}/menu 가 새 형을 돌려줌. 상세, 목록, 인기 메뉴는 바뀌지 않음)",
+     "food-delivery/db/init.sql:212-239 (INSERT IGNORE INTO restaurants, menus — 데모 시드: 가게 1~3 과 메뉴 15개, 카테고리 1~3)",
+     "food-delivery/db/init.sql:257-271 (대량 등록 메뉴: category_id 1 + (r.id % 8) — 가게 19~23, 27~31, 35 의 메뉴가 카테고리 4~8)",
+     "food-delivery/order-service/src/main/java/com/fooddelivery/order/service/OrderService.java:71-91 (주문 생성의 메뉴 확인 — restaurantClient.getMenu 를 공통 MenuResponse 로 읽어 새 칸을 무시)",
+     "food-delivery/loadgen/script.js:120-126 (orderJourney menuRes — 주문 여정은 메뉴 조회가 200 일 때만 주문을 보냄)"
+    ],
+    "infra_anchor": "rca-testbed-food Deployment testbed-restaurant(food-delivery/k8s/21-restaurant-deploy.yaml: replicas 1 :9, nodeSelector tb-w3 :18-19, image food-delivery-restaurant:latest imagePullPolicy Never :27-28, startupProbe, readinessProbe, livenessProbe 모두 /actuator/health, 기본 전략 maxSurge 25%). 결함 이미지는 109 docker 에만 있고 실행기가 주입 직전에 tb-w3 containerd 에 올리며 cleanup 이 지운다."
+   },
+   "must_support": [
+    "testbed-restaurant 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 food-delivery-restaurant:1.7.0 을 담는다. 2026-10-12 이전 30일 동안 testbed-restaurant 롤아웃은 없었고, 다른 릴리스 롤아웃도 같은 이벤트에 태그가 남는다(예: core-banking-api:1.4.0, commerce-cart:1.2.0)",
+    "새 restaurant 파드가 트래픽을 받은 뒤 restaurant SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.NullPointerException: Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \"java.util.Map.get(Object)\" is null] with root cause' 가 나오고 스택이 RestaurantService.toMenuResponse 를 지난다(2026-10-12 이전 30일 동안 모든 서비스에서 그 문구 0건, 기록된 restaurant SEVERE 는 2026-10-09 열 이름 변경과 2026-10-06~08 DB 연결 실패뿐)",
+    "restaurant 서버 스팬 GET /api/restaurants/{id}/menu 가 500 으로 답하고(이전 1일 표본 29,243건 모두 200) restaurant APM 오류율이 0 에서 오른다. 기준선 메뉴 단계 실패 비율이 0 근처에서 약 0.48 로 오른다",
+    "실패가 데이터를 따른다: 카테고리 4~8 가게 11곳의 메뉴는 매번 실패하고 카테고리 1~3 가게의 메뉴, 가게 상세, 지역 검색, 인기 메뉴, 주문 생성은 평소대로 답한다. restaurant 는 Ready 이고 재시작, OOM, 풀 대기, SQL 오류가 없으며 MySQL 에 새 오류, 잠금 대기, 스키마 변경, 새 질의가 없다"
+   ],
+   "must_rule_out": [
+    "메뉴 표가 사라지거나 바뀐 것이 아님(F53-R, F36-P, F36-R 꼴): 'Table ... doesn't exist', 'Unknown column' 같은 SQL 오류가 없고 MySQL 에 DROP, ALTER, 메타데이터 잠금 대기가 없으며 같은 표를 읽는 정상 가게의 메뉴가 200 이다",
+    "restaurant 설정 누락이 아님(F36-H): 예외가 설정 조회(IllegalStateException 'Required key ... not found')가 아니라 응답 변환의 NullPointerException 이고, 가게 상세는 그대로이며 실패가 모든 요청이 아니라 특정 가게의 메뉴에만 난다",
+    "restaurant 응답 구조 변경으로 order 가 해석에 실패한 것이 아님(F49-R): 실패가 호출자 쪽 해석이 아니라 restaurant 자신의 500 이고 order 는 실패 로그가 없다",
+    "인기 메뉴 집계나 그 표 문제가 아님(F42-P, F48-R): 인기 메뉴는 200 이고 MySQL 부하와 질의가 그대로다",
+    "restaurant 자원 부족이나 재시작이 아님(F41-R, F63-P 꼴): 지연이 늘지 않고 재시작, OOM 이 없으며 실패가 가게의 카테고리를 따른다"
+   ],
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F76-R (commerce product 릴리스가 함량 표기 없는 액상 상품에서 응답을 못 만듦: 같은 원본, 같은 '운영에만 있는 데이터에서 새 코드 경로 실패' 꼴의 commerce 판. F76-P 는 food restaurant 메뉴, 카테고리 표 누락의 자동 언박싱)",
+     "F36-H (restaurant 릴리스가 개발 프로필에만 있는 설정을 읽어 가게 상세가 모두 500, order 502: 같은 restaurant 릴리스이지만 설정 조회 예외로 모든 상세가 실패하고 주문이 무너짐)",
+     "F49-R (restaurant 릴리스가 상세 응답 구조를 바꿔 order 가 해석 실패: 릴리스가 응답을 바꾼 꼴이지만 실패가 호출자 쪽 해석에서 나고 모든 주문이 깨짐)",
+     "F36-P (메뉴 표 열 추가가 느린 내보내기 뒤에서 메타데이터 잠금 대기: 같은 '메뉴 읽기 실패'이지만 모든 가게가 느려지다 실패하고 MySQL 잠금 대기, 롤아웃 없음)",
+     "F42-P (restaurant 릴리스의 무거운 인기 메뉴 집계: 같은 restaurant 릴리스이지만 MySQL 포화로 모든 요청이 느려짐)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "food-delivery-restaurant",
+     "food-restaurant",
+     "testbed-restaurant"
+    ],
+    "partial": []
+   },
+   "title_ko": "food restaurant-service 를 릴리스 1.7.0 으로 롤아웃: 메뉴 응답에 카테고리별 예상 조리 시간을 더했는데 조리 시간 표가 출시 카테고리(분식, 중식, 치킨) 셋뿐이고 조회 결과를 확인 없이 int 로 받아, 카테고리 4~8 의 메뉴를 담는 순간 NullPointerException 이 나 그런 가게 11곳의 메뉴가 500, 가게 상세와 검색, 인기 메뉴, 나머지 가게 메뉴와 주문은 정상",
+   "description_ko": "food restaurant-service Deployment(testbed-restaurant) 롤아웃이 컨테이너 이미지를 food-delivery-restaurant:latest 에서 릴리스 food-delivery-restaurant:1.7.0 으로 바꾼다. 이 릴리스는 앱 메뉴 화면의 '조리 약 N분' 을 위해 GET /api/restaurants/{id}/menu 를 공통 메뉴 칸에 cookMinutes 를 더한 restaurant 응답 형으로 답한다. 값은 매장 운영팀이 준 출시 카테고리의 평균 조리 시간 표 COOK_MINUTES_BY_CATEGORY(1 분식 10, 2 중식 15, 3 치킨 20)에서 꺼내고, toMenuResponse 가 COOK_MINUTES_BY_CATEGORY.get(categoryId) 를 int 에 바로 넣는다. 데모 시드(가게 1~3 과 메뉴 15개)는 카테고리 1~3 만 써 이 경로가 실패한 적이 없지만, 운영의 대량 등록 가게는 가게마다 메뉴 카테고리가 하나(1 + id % 8)이고 19~23, 27~31, 35 의 11곳이 카테고리 4~8 이다. 기동과 /actuator/health 는 그대로라 새 파드가 Ready 가 되어 기본 롤링 전략으로 옛 파드를 대신한다. 그 뒤 그 11곳의 메뉴는 만드는 중에 실패한다: Map.get 이 null 을 돌려 자동 언박싱에서 NullPointerException 'Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \"java.util.Map.get(Object)\" is null' 이 나고, Tomcat 이 SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: java.lang.NullPointerException: ...] with root cause' 를 RestaurantService.toMenuResponse 를 지나는 스택과 함께 남기며 몇 ms 안에 500 을 준다. 나머지 12곳의 메뉴, 가게 상세, 지역 검색, 인기 메뉴는 200 이다. 주문 생성은 고객이 닿을 수 있는 범위에서 그대로다: 앱(과 k6 여정)은 메뉴가 열린 뒤에만 주문을 보내고 order-service 는 메뉴를 공통 MenuResponse 로 읽어 새 칸을 무시하므로 메뉴가 열리는 가게의 주문은 성공하고, 11곳의 고객은 주문까지 가지 못한다. 질의, MySQL, order, dispatch, payment 는 바뀌지 않는다. 로컬(같은 소스로 만든 jar, 같은 init.sql 로 띄운 MySQL 8.0)에서 가게 1~3, 16~18, 24~26, 32~34 메뉴 200(cookMinutes 포함), 나머지 11곳 500(같은 NullPointerException), 상세, 인기 메뉴, 지역 검색은 23곳 모두 200, 가게 16 주문은 메뉴를 지나 용량 확인 단계까지 갔고, 매니페스트 jar 는 모두 200 이다(119: 2026-10-12 이전 1일 메뉴 서버 스팬 표본 29,243건 모두 200). restaurant-service 를 되돌릴 때까지 회복되지 않는다.",
+   "cause_ko": "testbed-restaurant(food) 를 릴리스 food-delivery-restaurant:1.7.0 으로 롤아웃. 새 조리 시간 칸이 출시 카테고리 셋뿐인 표를 확인 없이 읽어, 카테고리 4~8 인 운영 가게 11곳의 메뉴가 응답을 만드는 중에 NullPointerException 을 냄 → 그 가게들의 메뉴가 500, restaurant-service 를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-food 의 Deployment testbed-restaurant 컨테이너 restaurant-service 이미지를 food-delivery-restaurant:latest 에서 food-delivery-restaurant:1.7.0 으로 롤아웃한다. 릴리스 이미지는 109 에서 scripts/scenarios/fault-images/build.sh f76-p 가 origin/main food-delivery 에 fault-images/f76-p/restaurant-service.patch(restaurant-service/src 안만: cookMinutes 를 더한 MenuItemResponse, COOK_MINUTES_BY_CATEGORY 표, toMenuResponse, 새 형을 돌려주는 메뉴 끝점)를 얹어 미리 빌드한다. 매니페스트 이미지, 소스, 매니페스트, 가게와 메뉴 데이터는 그대로이고 태그는 다른 시나리오가 쓰지 않는다(restaurant 릴리스 1.4.0, 1.5.0, 1.6.0 은 F49-R, F42-P, F36-H). preflight 는 살아 있는 객체에서 현재 이미지가 기준값인지, imagePullPolicy Never, replicas 1 인지, 109 docker 에 릴리스가 있는지, tb-w3 containerd 에 기준 이미지가 있고 릴리스는 없는지, tb-w3 이미지 파일시스템이 80% 미만인지, Deployment 가 사용 가능한지 본다. run 은 릴리스를 tb-w3 containerd 에 올리고(docker save | ctr import) 이미지를 바꾼다. cleanup 은 매니페스트 이미지로 되돌려 Deployment 가 사용 가능해지고 릴리스를 쓰는 파드가 없어지기를 기다린 뒤 tb-w3 에서 릴리스 이름과 ID 참조를 지운다. 동반 surge 부하(food surge.js 3rps, 45% 가 상세, 메뉴, 인기 메뉴 둘러보기, 30% 지역 검색, 10% 제한된 주문)가 상주 기준선 위에 메뉴 트래픽을 더한다. 시나리오 식별자는 클러스터, 이미지, 로그 어디에도 남지 않는다.",
+   "user_impact_ko": "restaurant 롤아웃 약 1분 뒤부터 메뉴 보기의 절반 가까이가 500 으로 실패한다: 카테고리 4~8(카페/디저트, 한식, 양식, 일식, 피자)인 가게 11곳의 메뉴 전부라 그 가게 고객은 메뉴를 보지 못해 주문도 못 한다. 가게 화면, 지역 검색, 인기 메뉴, 나머지 12곳의 메뉴와 그 가게들의 주문은 정상이다. restaurant-service 를 되돌릴 때까지 회복되지 않는다.",
+   "distinguishing_evidence_ko": "결정 증거는 restaurant-service 릴리스 바로 뒤 MySQL 과 호출자가 멀쩡한 채 restaurant 자신이 일부 가게에서 응답을 만들다 예외를 낸다는 것이다: testbed-restaurant 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"food-delivery-restaurant:1.7.0\" already present on machine'(2026-10-12 이전 30일 동안 testbed-restaurant 롤아웃 없음, 다른 릴리스 롤아웃도 같은 이벤트에 태그가 남음, 예: core-banking-api:1.4.0, commerce-cart:1.2.0). 새 파드 기동부터 restaurant SEVERE 'Servlet.service() ... threw exception [Request processing failed: java.lang.NullPointerException: Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \"java.util.Map.get(Object)\" is null] with root cause'(2026-10-12 이전 30일 동안 모든 서비스에서 그 문구 0건, 기록된 restaurant SEVERE 는 2026-10-09 열 이름 변경과 2026-10-06~08 DB 연결 실패뿐), restaurant 서버 스팬 GET /api/restaurants/{id}/menu 가 500(이전 1일 표본 29,243건 모두 200), restaurant APM 오류율 상승. 실패가 부하가 아니라 데이터를 따른다: 카테고리 4~8 가게의 메뉴는 매번 실패하고 카테고리 1~3 가게의 메뉴, 가게 상세 GET /api/restaurants/{id}, 지역 검색, 인기 메뉴는 평소대로 답하며 주문 생성이 성공한다. restaurant 는 재시작, OOM, 풀 대기, SQL 오류 없이 Ready 이고, MySQL 은 새 오류, 잠금 대기, 스키마 변경, 새 질의 모양이 없으며(메뉴 질의 그대로) order, dispatch, payment 에 새 로그가 없다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f76-p",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-food",
+       "deployment": "testbed-restaurant",
+       "container": "restaurant-service",
+       "baseline_image": "food-delivery-restaurant:latest",
+       "fault_image": "food-delivery-restaurant:1.7.0"
+      }
+     }
+    ]
+   }
   }
  }
 }
