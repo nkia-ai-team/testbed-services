@@ -1,0 +1,405 @@
+{
+  "schema_version": "1.0",
+  "id": "F65-P",
+  "slug": "f65-p-commerce-user-stale-db-account-rollout",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "commerce namespace",
+    "matrix_location_transport": "K/kubectl commerce testbed-user 컨테이너 env 배열 교체(기준 배열에서 DB_USER 를 값 commerce_app 으로) + R/ssh load.north_south companion(commerce surge.js, target_rps=35)",
+    "transport": "kubectl",
+    "profile_refs": [
+      "injector-profiles/k8s.env",
+      "injector-profiles/load.north_south"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-kubernetes-rbac",
+      "kubernetes-original-env-snapshot",
+      "baseline-loadgen-active"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "k8s.env",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.env"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "15m",
+        "preflight": [
+          "kube-context",
+          "kube-node-set",
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "baseline-business-success",
+          "target-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "baseline-business-success"
+            },
+            {
+              "check": "target-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f65-p",
+              "parameters": {
+                "namespace": "rca-testbed-commerce",
+                "deployment": "testbed-user",
+                "container": "user-service",
+                "baseline": [
+                  {
+                    "name": "DB_USER",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_USER",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-user"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=252a3a37-77fd-495a-8e12-d79303753fda"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ],
+                "fault": [
+                  {
+                    "name": "DB_USER",
+                    "value": "commerce_app"
+                  },
+                  {
+                    "name": "DB_PASS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "POSTGRES_PASSWORD",
+                        "name": "postgres-secret"
+                      }
+                    }
+                  },
+                  {
+                    "name": "JAVA_TOOL_OPTIONS",
+                    "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+                  },
+                  {
+                    "name": "OTEL_SERVICE_NAME",
+                    "value": "commerce-user"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    "value": "http://192.168.200.109:14318"
+                  },
+                  {
+                    "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+                    "value": "grpc"
+                  },
+                  {
+                    "name": "OTEL_RESOURCE_ATTRIBUTES",
+                    "value": "lucida.groupId=commerce,lucida.target_id=252a3a37-77fd-495a-8e12-d79303753fda"
+                  },
+                  {
+                    "name": "OTEL_TRACES_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRICS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_LOGS_EXPORTER",
+                    "value": "otlp"
+                  },
+                  {
+                    "name": "OTEL_METRIC_EXPORT_INTERVAL",
+                    "value": "10000"
+                  }
+                ]
+              },
+              "min_hold": "150s",
+              "settle": "30s",
+              "timeout": "13m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "freshness": "15s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "commerce 진입점(게이트웨이 30080) 상태. 게이트웨이는 user 와 무관하게 살아서 쓰기에 500, 로그인에 502 로 답하므로 0(연결 불가)은 게이트웨이나 노드가 죽었을 때만 나온다"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "러너 고정 대상(commerce 진입점 30080/health). compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다"
+          },
+          {
+            "id": "pod_ready",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.pod_ready",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "resource": "testbed-user"
+            },
+            "freshness": "30s",
+            "_note": "user 파드. 롤아웃이 옛 파드를 먼저 내리고(maxSurge 0) 새 컨테이너는 기동 중 스키마 초기화에서 'password authentication failed for user \"commerce_app\"' 로 죽어 재시작을 되풀이하므로 고장 내내 false 다. 성공 조건에는 쓰지 않는다. cleanup 이 env 를 되돌리면 Secret 계정으로 붙어 true(회복 조건)"
+          },
+          {
+            "id": "user_available_replicas",
+            "adapter": "kubernetes",
+            "query_id": "kubernetes.deployment_available_replicas",
+            "parameters": {
+              "namespace": "rca-testbed-commerce",
+              "deployment": "testbed-user"
+            },
+            "freshness": "30s",
+            "_note": "고장 중 0, 회복 뒤 1"
+          },
+          {
+            "id": "write_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.write_step_status_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "쓰기 단계(장바구니 담기, 비우기, checkout) 비정상 비율. user 가 비면 게이트웨이 AuthGuard 의 토큰 확인이 연결 거부로 실패해(verifyToken 자기 호출이라 user 서킷, 재시도, 401 폴백이 적용되지 않음) 쓰기가 500 이 되어 약 1.0 이 된다(이 비율은 4xx+5xx 업무 실패 비율이다). 부하 쪽이 새 로그인을 못 해 쓰기를 보내지 않게 되면(F16-H 실행 aea47b5c 에서 약 267초 뒤) 0.0 으로 꺼진다"
+          },
+          {
+            "id": "read_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "freshness": "30s",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "_note": "조회 단계 비정상 비율. 조회는 AuthGuard 를 지나지 않고 user 를 부르지 않으므로 고장 중에도 0 이어야 한다"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "write-failure",
+              "observation": "write_nonok_rate",
+              "op": "gte",
+              "value": 0.3,
+              "_note": "F16-H 와 같은 판정 틀. user 엔드포인트가 비어 게이트웨이 토큰 확인이 연결 거부로 실패하고 쓰기가 500 이 된다. 신호가 부하 쪽 로그인 불능으로 꺼지기 전(약 4분) 창 안에서 3틱을 확정하도록 min_hold 150s"
+            }
+          ],
+          "consecutive_ticks": 3
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "external-rate-limit",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 429
+            },
+            {
+              "id": "user-service-still-up",
+              "observation": "user_available_replicas",
+              "op": "gt",
+              "value": 0,
+              "_note": "user 가 살아 있는데 쓰기가 실패하면 토큰이나 게이트웨이 쪽 문제다. 이 주입은 user 를 비운다"
+            },
+            {
+              "id": "reads-also-broken",
+              "observation": "read_nonok_rate",
+              "op": "gte",
+              "value": 0.1,
+              "_note": "조회까지 깨지면 게이트웨이, 네트워크, PostgreSQL 전체 장애 꼴(F07-H, F12-H, F25-H)이다. 이 주입은 user 의 계정 이름 한 줄만 바꾼다"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "pod-recovered",
+              "observation": "pod_ready",
+              "op": "eq",
+              "value": true
+            },
+            {
+              "id": "user-replicas-recovered",
+              "observation": "user_available_replicas",
+              "op": "eq",
+              "value": 1
+            },
+            {
+              "id": "writes-recovered",
+              "observation": "write_nonok_rate",
+              "op": "lt",
+              "value": 0.05
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 이 env 배열을 되돌리면(DB_USER 가 다시 Secret 참조) maxSurge 0 롤아웃으로 재시작 중인 파드가 내려가고 새 파드가 현재 계정으로 붙어(평시 기동 약 36초) Ready 가 된다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "10m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "k8s.env",
+        "load.north_south"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "load.north_south",
+        "k8s.env"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -131,7 +131,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 50 → 49. F44-P 정식 승격(녹화 case-f44-p-v3-4ee5c786).
         # 2026-10-12: 49 → 50. F69-R(food 결제 감사 자료 내보내기 Job 의 mysqldump 표 읽기 잠금이 결제 쓰기를 막아 모든 새 주문이 결제 단계에서 502) 후보 추가.
         # 2026-10-12: 50 → 51. F36-P(food 메뉴 표 열 추가 마이그레이션이 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 메뉴 보기와 주문 불가) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 51)
+        # 2026-10-12: 51 → 52. F65-P(commerce user 일상 롤아웃이 회전 전 DB 계정 이름을 다시 넣어 user 가 PostgreSQL 인증에 실패하고 비어 쓰기 500) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 52)
 
 
 class RecordingQueueTests(unittest.TestCase):

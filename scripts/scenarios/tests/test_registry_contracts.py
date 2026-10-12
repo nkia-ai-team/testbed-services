@@ -116,7 +116,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 125 → 126. F68-R(후보) 추가. 기존 k8s.image release 모드를 banking transfer 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 126 → 127. F69-R(후보) 추가. 기존 k8s.job 실행기에 DB 내보내기 계약을 더해 프로파일 수는 그대로.
         # 2026-10-12: 127 → 128. F36-P(후보) 추가. 기존 db.ddl MySQL 메타데이터 잠금 대기열 모드에 이어 읽는 표 인자를 더해 food menus 에 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 128)
+        # 2026-10-12: 128 → 129. F65-P(후보) 추가. 기존 k8s.env 를 commerce user 에 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 129)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -295,6 +296,8 @@ class RegistryContractTests(unittest.TestCase):
             "F69-R",
             # 2026-10-12: food 메뉴 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 메뉴를 주문 품목과 이어 읽는 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 메뉴 읽기가 모두 줄을 섬(restaurant 풀 고갈과 재시작, 메뉴 보기와 주문 불가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-P",
+            # 2026-10-12: commerce user 일상 롤아웃이 회전 전 DB 계정 이름(DB_USER=commerce_app)을 Secret 참조 대신 다시 넣어 새 파드가 PostgreSQL 인증에 실패해 기동 중 죽고 maxSurge 0 이라 user 가 빔(게이트웨이 토큰 확인이 연결 거부로 실패해 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -689,6 +692,8 @@ class RegistryContractTests(unittest.TestCase):
             "F69-R",
             # 2026-10-12: food 메뉴 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 메뉴를 주문 품목과 이어 읽는 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 메뉴 읽기가 모두 줄을 섬(restaurant 풀 고갈과 재시작, 메뉴 보기와 주문 불가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-P",
+            # 2026-10-12: commerce user 일상 롤아웃이 회전 전 DB 계정 이름(DB_USER=commerce_app)을 Secret 참조 대신 다시 넣어 새 파드가 PostgreSQL 인증에 실패해 기동 중 죽고 maxSurge 0 이라 user 가 빔(게이트웨이 토큰 확인이 연결 거부로 실패해 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-P",
             },
         )
         self.assertEqual(
@@ -867,6 +872,8 @@ class RegistryContractTests(unittest.TestCase):
             "F69-R",
             # 2026-10-12: food 메뉴 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 메뉴를 주문 품목과 이어 읽는 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 메뉴 읽기가 모두 줄을 섬(restaurant 풀 고갈과 재시작, 메뉴 보기와 주문 불가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-P",
+            # 2026-10-12: commerce user 일상 롤아웃이 회전 전 DB 계정 이름(DB_USER=commerce_app)을 Secret 참조 대신 다시 넣어 새 파드가 PostgreSQL 인증에 실패해 기동 중 죽고 maxSurge 0 이라 user 가 빔(게이트웨이 토큰 확인이 연결 거부로 실패해 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1069,8 +1076,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F68-R(후보, 고정 evaluation)이 끝에 붙어 F53-H 가 끝 5개에서 빠졌다.
         # 2026-10-12: F69-R(후보, 고정 evaluation)이 끝에 붙어 F67-H 가 끝 5개에서 빠졌다.
         # 2026-10-12: F36-P(후보, 고정 evaluation)이 끝에 붙어 F60-P 가 끝 5개에서 빠졌다.
+        # 2026-10-12: F65-P(후보, 고정 evaluation)이 끝에 붙어 F35-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F35-P", "F16-P", "F68-R", "F69-R", "F36-P"])
+                         ["F16-P", "F68-R", "F69-R", "F36-P", "F65-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

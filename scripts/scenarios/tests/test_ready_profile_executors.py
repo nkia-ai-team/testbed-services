@@ -2162,6 +2162,8 @@ esac
             "F69-R",
             # 2026-10-12: food 메뉴 표에 열을 더하는 마이그레이션(ALGORITHM=INSTANT)이 메뉴를 주문 품목과 이어 읽는 느린 판매 실적 내보내기 뒤에서 메타데이터 잠금을 기다려 그 뒤의 메뉴 읽기가 모두 줄을 섬(restaurant 풀 고갈과 재시작, 메뉴 보기와 주문 불가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F36-P",
+            # 2026-10-12: commerce user 일상 롤아웃이 회전 전 DB 계정 이름(DB_USER=commerce_app)을 Secret 참조 대신 다시 넣어 새 파드가 PostgreSQL 인증에 실패해 기동 중 죽고 maxSurge 0 이라 user 가 빔(게이트웨이 토큰 확인이 연결 거부로 실패해 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F65-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

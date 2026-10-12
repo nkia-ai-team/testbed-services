@@ -12244,6 +12244,203 @@
      }
     ]
    }
+  },
+  "F65-P": {
+   "title": "Routine infrastructure update re-applies a pre-rotation database account to the commerce user-service: the replacement pod dies at startup on PostgreSQL authentication, user goes unavailable, and every write through the gateway fails with 500 because its token check cannot reach user",
+   "description": "A routine update of the commerce user-service Deployment (testbed-user) re-applies the deployment definition kept in infrastructure code, which still pins the database account that was used before the credentials were rotated: the container env DB_USER becomes the literal value commerce_app instead of the reference to Secret postgres-secret (key POSTGRES_USER). The password stays the Secret's current value. The rotation had been applied in production (the account changed and the deployment was pointed at the Secret) without updating the infrastructure code. The Deployment's strategy is maxSurge 0 / maxUnavailable 1 (the canonical manifest sets it for user), so the rollout removes the only running pod first. The new container starts Spring Boot; because spring.sql.init.mode is always, the schema initializer asks for a connection during startup and PostgreSQL rejects the role with 'FATAL: password authentication failed for user \"commerce_app\"' (no such role exists; remote connections use scram-sha-256). The context fails, Spring logs WARN 'Exception encountered during context initialization - cancelling refresh attempt' and ERROR 'Application run failed' with the PSQLException at the end of the cause chain, and the JVM exits with code 1, about 15-20 s after starting. kubelet restarts it with the same env, it dies at the same point, and the pod goes into CrashLoopBackOff; it is never Ready. The testbed-user Service has no endpoints from the moment the old pod terminates. The api-gateway checks the token of every write request (POST/PUT/DELETE/PATCH except register and login) by calling user-service verify-token; the call is refused with Connection refused. Because AuthGuard.verifyIfWrite calls verifyToken on itself rather than through the Spring proxy, the method's user circuit breaker, retry and 401 fallback never apply; the ResourceAccessException escapes the controller (the gateway's exception handler only maps ServiceException) and becomes 500 with a SEVERE log 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused'. Adding to cart, clearing the cart and checkout all fail with 500; new logins, which the gateway proxies to user through ProxyService's user circuit, fail with 502 and a WARN 'Downstream unavailable for POST /api/users/login'. Reads (product list, detail, search, cart view) do not pass the guard and keep returning 200. PostgreSQL, the application account and the other eight commerce services are healthy. This reconstructs E2B's 2026-06-25 outage, where production database credentials had been rotated directly in production without updating infrastructure-as-code, and a later routine infrastructure update re-applied the stale configuration; every instance reloaded it, none could connect to the database, and the service was down until the correct connection settings were restored.",
+   "cause": "Routine rollout of testbed-user (commerce) re-applies DB_USER=commerce_app from stale infrastructure code in place of the Secret reference → maxSurge 0 removes the only healthy pod first → the new container's startup schema initialization is rejected by PostgreSQL ('password authentication failed for user \"commerce_app\"'), 'Application run failed', exit 1, CrashLoopBackOff, never Ready → testbed-user has no endpoints → the gateway's token verification call is refused (AuthGuard calls verifyToken on itself, so the user circuit, retry and 401 fallback do not apply) → every commerce write 500 and new logins 502 until the setting is reverted; reads stay 200.",
+   "injection_summary": "The existing k8s.env executor replaces the env array of container user-service in Deployment testbed-user (rca-testbed-commerce) with the same array in which DB_USER is the literal value commerce_app instead of the reference to Secret postgres-secret, and lets the Deployment roll out (replicas 1, maxSurge 0, maxUnavailable 1, so the old pod is removed before the new one is ready). DB_PASS keeps its Secret reference; no password value is written anywhere. The Secret, the ConfigMap, the image, the probes, the Services, PostgreSQL and the other commerce services are not touched. A north-south 35 rps companion (commerce surge.js: browsing 35%, cart 15%, checkout 50%) drives the commerce entry point (30080) on top of the resident baseline load, as in F16-H. Cleanup restores the original env array and waits until the rollout is available. No value carries the scenario id.",
+   "user_impact": "Every write through the commerce gateway that needs a token (add to cart, clear cart, checkout) fails with 500, so no order can be placed; users who need to log in get 502. Product browsing, search and cart views keep working, so the site looks up while nobody can buy. The user pod restarts again and again and never becomes Ready; user-service logs an authentication failure naming the account commerce_app on every start.",
+   "distinguishing_evidence": "Decisive evidence is the pair 'testbed-user rollout whose new ReplicaSet sets DB_USER to the literal commerce_app' and 'user-service's own startup failure naming that account'. KCM records the rollout (Deployment testbed-user ScalingReplicaSet: old ReplicaSet to 0 and new one to 1 in the same second), and the new ReplicaSet's captured spec in kcm_resources_history carries {\"name\":\"DB_USER\",\"value\":\"commerce_app\"}, while the 79 testbed-user ReplicaSet records on file (2026-10-12) all take DB_USER from the Secret and no ReplicaSet in the history mentions commerce_app. Within about 20 s the new user container logs its normal startup lines ('Starting UserServiceApplication', 'HikariPool-1 - Starting...') and then ERROR 'Application run failed' whose stack trace ends in 'PSQLException: FATAL: password authentication failed for user \"commerce_app\"', repeated at each restart; no log in the retention mentions that failure or 'Application run failed' before. KCM then shows BackOff 'Back-off restarting failed container user-service' for the user pod, which has never happened for testbed-user (the 25 BackOff events on file are food payment and commerce PostgreSQL). The gateway logs SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused' on writes (none in the log retention outside a 2026-10-11 10:06-10:11 user outage of another scenario) and WARN 'Downstream unavailable for POST /api/users/login', and the share of failed writes jumps to about 1 while reads stay 200 (401 is not a signal here: the load's token-less cart adds get 401 'Missing Authorization token' in normal operation); the other commerce services keep using the same PostgreSQL with the same Secret account without errors, so the database and the account are healthy and only user's account setting is wrong. This separates it from F16-H (same symptom: user is empty and gateway writes fail, but the readiness probe path is wrong, the container stays Running and user logs no database error), F16-P (user is Ready but buried under a notification release's member-list flood) and F65-R (same origin, but banking transfer's Oracle service name, ORA-12514 and transfer 502).",
+   "domain": "commerce",
+   "class": "B",
+   "observation_domains": [
+    "KCM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "config",
+    "target_id": "commerce-user",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 commerce user-service 의 배포 설정(Deployment testbed-user 컨테이너 env 의 DB_USER)이다. 일상 갱신이 다시 적용한 배포 정의가 DB 계정을 자격 증명 회전 전 이름 commerce_app 으로 고정해, Secret postgres-secret 의 현재 계정(POSTGRES_USER) 참조를 값으로 덮어쓴다(비밀번호는 Secret 의 현재 값 그대로). user 의 spring.datasource.username(application.yml:9 = ${DB_USER})이 없는 역할을 가리키고, spring.sql.init.mode always 라 기동 때 스키마 초기화가 연결을 얻는 순간 PostgreSQL 이 'FATAL: password authentication failed for user \"commerce_app\"' 으로 거절해 컨텍스트가 실패하고 JVM 이 종료 코드 1 로 끝난다. 정본 전략 maxSurge 0 / maxUnavailable 1 이 옛 파드를 먼저 내리므로 건강한 인스턴스가 남지 않는다(원본의 '모든 인스턴스가 한꺼번에 나쁜 설정을 다시 읽음'). kubelet 이 같은 env 로 다시 띄워도 같은 곳에서 죽어 CrashLoopBackOff, Service 엔드포인트가 빈다. 그 뒤 게이트웨이 AuthGuard 의 토큰 확인이 Connection refused 로 실패한다. verifyIfWrite 가 verifyToken 을 자기 안에서 불러 user 서킷, 재시도, 401 폴백이 적용되지 않으므로 ResourceAccessException 이 그대로 나가 모든 쓰기가 500 이고, 로그인 프록시(ProxyService user 서킷)는 502 다. 원칙 6: 게이트웨이의 확인 요청은 정당하고, 확인할 곳이 없을 때 쓰기를 통과시키지 않고 실패시키는 것도 정당하다(폴백이 걸리지 않아 401 대신 500 이 되는 것은 이 장애 전부터 있던 게이트웨이의 성질이며 user 가 비지 않으면 드러나지 않는다). PostgreSQL 은 없는 계정을 거절했을 뿐이고 같은 Secret 계정을 쓰는 다른 여덟 서비스에 정상으로 응답한다. 인증을 망가뜨린 것은 user 자신의 배포 설정이므로 근본과 계기가 같은 곳(user 배포)이다. 왜 인프라 코드에 회전 전 계정이 남았는지(드리프트)는 원본처럼 정답이 요구하지 않는다. target_id 는 lucida-next 가 이 앱을 부르는 APM 서비스 이름(OTEL_SERVICE_NAME)이다. 관제 데이터로의 도달 경로: ① KCM 이벤트 rca-testbed-commerce Deployment testbed-user ScalingReplicaSet(옛 0, 새 1, 같은 초)과 KCM 이 새 ReplicaSet 을 처음 볼 때 남기는 스펙(PG kcm_resources_history.yaml)의 {\"name\":\"DB_USER\",\"value\":\"commerce_app\"}(그 전 testbed-user ReplicaSet 레코드 79건(2026-10-12)은 모두 Secret 참조, 전체 기록에 commerce_app 0건) ② 새 user 컨테이너의 기동 로그 뒤 ERROR 'Application run failed'(log_attributes 스택 트레이스 끝 'PSQLException: FATAL: password authentication failed for user \"commerce_app\"'), 재시작마다 되풀이(평시 0건) ③ testbed-user 파드의 BackOff 'Back-off restarting failed container user-service'(testbed-user 첫 발생) ④ 게이트웨이 SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused'(쓰기마다, 평시 0건)와 WARN 'Downstream unavailable for POST /api/users/login', 쓰기 실패(500) 급증 ⑤ 조회는 계속 200 이고 다른 commerce 서비스에 PostgreSQL 오류가 없다. 원본 사후 보고처럼 '갱신이 다시 적용한 낡은 DB 자격 증명 때문에 서비스가 DB 에 붙지 못했다'가 정답의 층위다.",
+    "code_anchor": [
+     "commerce/k8s/25-user-service.yaml:20-24 (strategy maxUnavailable 1, maxSurge 0 — 옛 파드가 새 파드보다 먼저 내려가는 정본 전제. 기본 전략이면 Ready 가 못 된 새 파드 옆에 옛 파드가 남는다)",
+     "commerce/k8s/25-user-service.yaml:56-65 (env DB_USER, DB_PASS 의 Secret postgres-secret 참조 — DB_USER 의 평시 출처. 주입은 DB_USER 만 값 commerce_app 으로 바꾼다)",
+     "commerce/user-service/src/main/resources/application.yml:8-10 (spring.datasource url, username ${DB_USER}, password ${DB_PASS})",
+     "commerce/user-service/src/main/resources/application.yml:25-29 (spring.sql.init.mode always — 기동 때 연결을 얻어 스키마를 적용하므로 인증 실패가 곧 기동 실패가 된다)",
+     "commerce/k8s/25-user-service.yaml:84-101 (startupProbe 5초 × 30, readiness, liveness 모두 /actuator/health — 앱이 포트를 열기 전에 죽어 Ready 가 되지 않는다)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:31-63 (verifyIfWrite — 쓰기 메서드만 토큰 확인. :44 에서 verifyToken 을 자기 안에서 불러 그 메서드의 @CircuitBreaker user, @Retry user, verifyTokenFallback(401)이 적용되지 않음 → 연결 거부가 ResourceAccessException 그대로 나감)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/config/GlobalExceptionHandler.java:12-20 (ServiceException 만 상태 코드로 바꿈 — ResourceAccessException 은 서블릿 SEVERE 로그와 500 이 됨)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:57-61 (forwardToUser — user 서킷으로 로그인을 user 에 프록시. 컨트롤러가 프록시를 거쳐 불러 폴백이 적용됨)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:102-106 (unavailable — 'Downstream unavailable for {} {}' WARN 뒤 502)"
+    ],
+    "infra_anchor": "rca-testbed-commerce Deployment testbed-user(replicas 1, RollingUpdate maxSurge 0 / maxUnavailable 1, progressDeadlineSeconds 600, revision 46, env DB_USER/DB_PASS 는 Secret postgres-secret, 109 kubectl 2026-10-12 확인). StatefulSet testbed-postgres(PostgreSQL 16.14, 역할 commerce 와 lucida_mon 만 있음, pg_hba 원격 규칙 host all all all scram-sha-256, 실패 인증에 잠금이나 지연 없음, 109 읽기 조회 2026-10-12). 104 실측(2026-10-12, 109 docker 의 commerce-user:latest 이미지와 tb-w1 의 OTel javaagent 2.9.0, 로컬 postgres:16 같은 원격 규칙, DB_USER=commerce_app): 'Starting UserServiceApplication' → 'HikariPool-1 - Starting...' → WARN 'Exception encountered during context initialization' → ERROR 'Application run failed'(원인 사슬 끝 PSQLException FATAL password authentication failed for user \"commerce_app\") → 종료 코드 1. 같은 실측에서 OTLP 로 받은 로그 레코드에 다섯 줄이 모두 있었다."
+   },
+   "must_support": [
+    "testbed-user 롤아웃 KCM 이벤트(Deployment testbed-user ScalingReplicaSet 두 줄: 옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet 스펙(PG kcm_resources_history.yaml)에 {\"name\":\"DB_USER\",\"value\":\"commerce_app\"} 이 있고 그 전 testbed-user ReplicaSet 레코드 79건(2026-10-12)은 모두 Secret postgres-secret 참조다",
+    "새 user 컨테이너가 기동 로그('Starting UserServiceApplication', 'HikariPool-1 - Starting...') 뒤 ERROR 'Application run failed' 를 남기고, 그 스택 트레이스 끝이 'PSQLException: FATAL: password authentication failed for user \"commerce_app\"' 이며 재시작마다 되풀이된다. 로그 보존 안에서 이 인증 실패와 'Application run failed' 는 평시 0건이다",
+    "user 파드가 Ready 가 되지 못하고 컨테이너가 재시작을 되풀이한다: KCM BackOff 'Back-off restarting failed container user-service'(testbed-user 첫 발생), Deployment 가용 레플리카 0",
+    "commerce-gateway 가 쓰기마다 SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused'(스택 AuthGuard.verifyToken ← verifyIfWrite, resilience4j 프레임 없음, 보존 기간 안에서 다른 시나리오의 2026-10-11 10:06~10:11 user 장애 구간 밖 0건)와 WARN 'Downstream unavailable for POST /api/users/login' 을 남기고, 동반 부하와 기준선의 쓰기 단계(장바구니 담기, checkout) 비정상 비율이 평시 0 근처에서 0.3 이상(500)으로 오른다",
+    "조회 단계(상품 목록, 상세, 검색, 장바구니 조회) 비정상 비율은 평시 0 그대로이고, 다른 commerce 서비스에는 PostgreSQL 오류가 없다"
+   ],
+   "must_rule_out": [
+    "readiness 프로브 오설정(F16-H)이 아님: 새 ReplicaSet 에서 바뀐 것은 env DB_USER 한 줄이고 프로브 정의는 그대로다. 컨테이너가 기동 중에 죽어 재시작하며 user 로그에 인증 실패가 있다. F16-H 는 컨테이너가 Running 으로 남아 'Readiness probe failed ... 404' 가 반복되고 DB 오류가 없다",
+    "PostgreSQL 이나 앱 계정 장애가 아님(F25-H, F66-R 꼴): 같은 PostgreSQL 에 같은 Secret 계정으로 붙는 order, cart, inventory, payment 등이 정상으로 읽고 쓰며 PostgreSQL 오류가 없다. 거절된 것은 없는 역할 commerce_app 하나다",
+    "user 의 느린 응답이나 자원 고갈이 아님(F16-P 꼴): user 는 느린 것이 아니라 없다(가용 0, 재시작). CPU 와 풀 고갈 로그가 없다",
+    "결함 있는 새 코드가 아님: 이미지는 commerce-user:latest 그대로이고 새 ReplicaSet 스펙에서 바뀐 것은 env 한 줄이다. 같은 이미지가 cleanup 뒤 Secret 계정으로 정상 기동한다",
+    "게이트웨이 자체 장애나 설정 변경(F64-R 꼴)이 아님: 게이트웨이 롤아웃이 없고 조회 라우트는 정상이며, 실패는 user 를 부르는 쓰기 확인과 로그인뿐이다",
+    "부하 증가가 아님: 같은 부하의 조회는 정상이고 실패는 부하 곡선이 아니라 롤아웃 시각에 맞춰 0 에서 거의 1 로 뛴다"
+   ],
+   "difficulty": "high",
+   "related_scenarios": {
+    "contrast_with": [
+     "F16-H (같은 증상: user 가 비어 게이트웨이의 쓰기만 실패함. 원인은 readinessProbe 경로 오설정이라 컨테이너가 Running 으로 남고 'Readiness probe failed ... 404' 만 반복되며 DB 오류가 없다. F65-P 는 바뀐 것이 env DB_USER 한 줄이고 컨테이너가 인증 실패로 기동 중에 죽는다)",
+     "F16-P (같은 증상: user 를 부르는 쓰기만 실패. user 는 Ready 이지만 notification 릴리스의 회원 목록 홍수로 CPU 와 풀에 묻혀 느리다)",
+     "F65-R (같은 원본 E2B 2026-06-25: 낡은 연결 설정 재적용. banking transfer 의 Oracle 서비스 이름이라 리스너가 인증 전에 ORA-12514 로 거절하고 이체 502. F65-P 는 회전 전 계정 이름이라 PostgreSQL 인증 단계에서 거절된다)",
+     "F35-R (자격 증명 문제지만 DB 쪽에서 계정을 잠가 ORA-28000, 같은 계정을 쓰는 모든 banking 서비스가 실패한다. F65-P 는 DB 와 계정이 멀쩡하고 user 의 설정만 틀렸다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "commerce-user",
+     "testbed-user",
+     "user-service"
+    ],
+    "partial": [
+     "commerce-gateway",
+     "commerce-postgres"
+    ]
+   },
+   "title_ko": "일상 인프라 갱신이 commerce user-service 에 회전 전 DB 계정을 다시 적용: 교체된 파드가 PostgreSQL 인증에 실패해 기동 중 죽기를 되풀이하고 user 가 비어, 게이트웨이의 토큰 확인이 user 에 닿지 못해 모든 쓰기가 500 으로 실패한다",
+   "description_ko": "commerce user-service Deployment(testbed-user)의 일상 갱신이 인프라 코드에 남아 있던 배포 정의를 다시 적용하는데, 그 정의는 자격 증명 회전 전의 DB 계정을 고정하고 있다: 컨테이너 env DB_USER 가 Secret postgres-secret(POSTGRES_USER) 참조 대신 값 commerce_app 이 된다. 비밀번호는 Secret 의 현재 값 그대로다. 회전은 운영에 직접 적용됐고(계정을 바꾸고 배포를 Secret 참조로 고침) 인프라 코드에는 반영되지 않았다. 이 Deployment 의 전략은 maxSurge 0 / maxUnavailable 1(정본 매니페스트가 user 에 둔 값)이라 롤아웃이 하나뿐인 파드를 먼저 내린다. 새 컨테이너는 Spring Boot 를 띄우다가, spring.sql.init.mode 가 always 라 기동 때 스키마 초기화가 연결을 얻는 순간 PostgreSQL 이 'FATAL: password authentication failed for user \"commerce_app\"' 으로 거절한다(그런 역할이 없고 원격 접속은 scram-sha-256). 컨텍스트가 실패해 WARN 'Exception encountered during context initialization - cancelling refresh attempt' 와 ERROR 'Application run failed'(원인 사슬 끝에 그 PSQLException)를 남기고 JVM 이 종료 코드 1 로 끝난다(뜬 뒤 약 15~20초). kubelet 이 같은 env 로 다시 띄워도 같은 곳에서 죽어 CrashLoopBackOff 가 되고 Ready 가 되지 않는다. 옛 파드가 끝나는 순간부터 testbed-user Service 의 엔드포인트가 빈다. api-gateway 는 회원가입과 로그인을 뺀 모든 쓰기 요청(POST/PUT/DELETE/PATCH)의 토큰을 user-service verify-token 으로 확인하는데, 그 호출이 Connection refused 로 거절된다. AuthGuard.verifyIfWrite 가 verifyToken 을 Spring 프록시를 거치지 않고 자기 안에서 불러 그 메서드의 user 서킷, 재시도, 401 폴백이 적용되지 않고, ResourceAccessException 이 컨트롤러 밖으로 나가(게이트웨이 예외 처리기는 ServiceException 만 잡음) 500 과 SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused' 이 된다. 장바구니 담기, 비우기, checkout 이 모두 500 이고, ProxyService 의 user 서킷으로 user 에 프록시되는 새 로그인은 502 와 WARN 'Downstream unavailable for POST /api/users/login' 이다. 조회(상품 목록, 상세, 검색, 장바구니 조회)는 가드를 지나지 않아 200 그대로다. PostgreSQL, 앱 계정, 다른 여덟 commerce 서비스는 정상이다. E2B 2026-06-25 장애(운영 DB 자격 증명을 인프라 코드 갱신 없이 운영에서 직접 회전했고, 뒤의 일상 인프라 갱신이 낡은 설정을 다시 적용해 모든 인스턴스가 그것을 읽고 DB 에 붙지 못해, 올바른 연결 설정을 되돌릴 때까지 서비스가 내려감)의 재구성이다.",
+   "cause_ko": "testbed-user(commerce) 일상 롤아웃이 낡은 인프라 코드의 DB_USER=commerce_app 을 Secret 참조 자리에 다시 넣음 → maxSurge 0 이 하나뿐인 건강한 파드를 먼저 내림 → 새 컨테이너의 기동 스키마 초기화가 PostgreSQL 인증에서 거절('password authentication failed for user \"commerce_app\"'), 'Application run failed', 종료 코드 1, CrashLoopBackOff 로 Ready 가 되지 못함 → testbed-user 엔드포인트가 빔 → 게이트웨이 토큰 확인 호출이 연결 거부로 실패(AuthGuard 가 verifyToken 을 자기 안에서 불러 user 서킷, 재시도, 401 폴백이 적용되지 않음) → 설정을 되돌릴 때까지 commerce 의 모든 쓰기 500, 새 로그인 502, 조회는 200.",
+   "injection_summary_ko": "기존 k8s.env executor 가 rca-testbed-commerce 의 Deployment testbed-user 컨테이너 user-service 의 env 배열을, DB_USER 만 Secret postgres-secret 참조 대신 값 commerce_app 인 같은 배열로 바꾸고 롤아웃에 맡긴다(replicas 1, maxSurge 0, maxUnavailable 1 이라 새 파드가 준비되기 전에 옛 파드가 내려간다). DB_PASS 는 Secret 참조 그대로라 비밀번호 값은 어디에도 쓰지 않는다. Secret, ConfigMap, 이미지, 프로브, Service, PostgreSQL, 다른 commerce 서비스는 건드리지 않는다. north-south 35rps 동반 부하(commerce surge.js: 조회 35%, 장바구니 15%, checkout 50%, F16-H 와 같음)가 상주 기준선 위에 commerce 진입점(30080)으로 요청을 더한다. cleanup 은 원래 env 배열을 되돌리고 롤아웃이 끝나기를 기다린다. 시나리오 id 를 담은 값은 없다.",
+   "user_impact_ko": "commerce 게이트웨이에서 토큰이 필요한 모든 쓰기(장바구니 담기, 비우기, checkout)가 500 으로 실패해 주문을 할 수 없고, 새로 로그인해야 하는 사용자는 502 를 받는다. 상품 조회, 검색, 장바구니 조회는 되므로 사이트는 살아 보이는데 아무도 살 수 없다. user 파드는 재시작을 되풀이하며 Ready 가 되지 않고, 뜰 때마다 계정 commerce_app 을 적은 인증 실패를 남긴다.",
+   "distinguishing_evidence_ko": "결정 증거는 '새 ReplicaSet 이 DB_USER 를 값 commerce_app 으로 둔 testbed-user 롤아웃'과 'user 자신이 남긴, 그 계정을 적은 기동 실패'의 쌍이다. KCM 이 롤아웃(Deployment testbed-user ScalingReplicaSet: 옛 ReplicaSet 0 으로, 새 ReplicaSet 1 로, 같은 초)을 남기고, kcm_resources_history 에 잡힌 새 ReplicaSet 스펙에 {\"name\":\"DB_USER\",\"value\":\"commerce_app\"} 이 있다. 기록에 있는 testbed-user ReplicaSet 79건(2026-10-12)은 모두 DB_USER 를 Secret 에서 받고, 전체 기록에 commerce_app 은 없다. 약 20초 안에 새 user 컨테이너가 평소 기동 로그('Starting UserServiceApplication', 'HikariPool-1 - Starting...')를 남긴 뒤 ERROR 'Application run failed' 를 남기는데 그 스택 트레이스 끝이 'PSQLException: FATAL: password authentication failed for user \"commerce_app\"' 이고 재시작마다 되풀이된다. 보존 기간 안에 그 인증 실패나 'Application run failed' 는 그 전에 없다. 이어 KCM 에 user 파드의 BackOff 'Back-off restarting failed container user-service' 가 나오는데 testbed-user 에서 처음이다(기록된 BackOff 25건은 food payment 와 commerce PostgreSQL). 게이트웨이는 쓰기마다 SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused'(로그 보존 안에서 다른 시나리오의 2026-10-11 10:06~10:11 user 장애 구간 밖에는 0건)와 WARN 'Downstream unavailable for POST /api/users/login' 을 남기고, 쓰기 실패 비율이 1 가까이 뛰는데 조회는 200 이다(401 은 가르는 신호가 아니다: 부하의 토큰 없는 장바구니 담기가 평시에도 401 'Missing Authorization token' 을 받는다). 또 다른 commerce 서비스는 같은 PostgreSQL 에 같은 Secret 계정으로 오류 없이 붙는다. 그러니 DB 와 계정은 정상이고 user 의 계정 설정만 틀렸다. F16-H(같은 증상: user 가 비어 게이트웨이 쓰기가 실패하지만 readiness 프로브 경로 오설정이라 컨테이너가 Running 으로 남고 user 에 DB 오류가 없음), F16-P(user 는 Ready 인데 notification 릴리스의 회원 목록 홍수에 묻힘), F65-R(같은 원본이지만 banking transfer 의 Oracle 서비스 이름, ORA-12514, 이체 502)과 이렇게 갈린다.",
+   "injected_fault": {
+    "profile": "k8s.env",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f65-p",
+      "parameters": {
+       "namespace": "rca-testbed-commerce",
+       "deployment": "testbed-user",
+       "container": "user-service",
+       "baseline": [
+        {
+         "name": "DB_USER",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "POSTGRES_USER",
+           "name": "postgres-secret"
+          }
+         }
+        },
+        {
+         "name": "DB_PASS",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "POSTGRES_PASSWORD",
+           "name": "postgres-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "commerce-user"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=commerce,lucida.target_id=252a3a37-77fd-495a-8e12-d79303753fda"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        }
+       ],
+       "fault": [
+        {
+         "name": "DB_USER",
+         "value": "commerce_app"
+        },
+        {
+         "name": "DB_PASS",
+         "valueFrom": {
+          "secretKeyRef": {
+           "key": "POSTGRES_PASSWORD",
+           "name": "postgres-secret"
+          }
+         }
+        },
+        {
+         "name": "JAVA_TOOL_OPTIONS",
+         "value": "-javaagent:/opt/apm/opentelemetry-javaagent.jar"
+        },
+        {
+         "name": "OTEL_SERVICE_NAME",
+         "value": "commerce-user"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+         "value": "http://192.168.200.109:14318"
+        },
+        {
+         "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+         "value": "grpc"
+        },
+        {
+         "name": "OTEL_RESOURCE_ATTRIBUTES",
+         "value": "lucida.groupId=commerce,lucida.target_id=252a3a37-77fd-495a-8e12-d79303753fda"
+        },
+        {
+         "name": "OTEL_TRACES_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRICS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_LOGS_EXPORTER",
+         "value": "otlp"
+        },
+        {
+         "name": "OTEL_METRIC_EXPORT_INTERVAL",
+         "value": "10000"
+        }
+       ]
+      }
+     }
+    ]
+   }
   }
  }
 }

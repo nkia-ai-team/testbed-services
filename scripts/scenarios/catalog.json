@@ -1617,6 +1617,19 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F65-P",
+      "slug": "f65-p-commerce-user-stale-db-account-rollout",
+      "profiles": [
+        "k8s.env",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": ""
     }
   ]
 }

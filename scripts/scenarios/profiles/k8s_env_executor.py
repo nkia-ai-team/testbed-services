@@ -43,6 +43,9 @@ APPROVED_TARGETS = {
     # 2026-10-11. F64-P: banking api-service 의 거래 내역 서킷브레이커(transferClient)에 느린 호출 차단을 켜는 설정 배포.
     # 임계(100ms)가 거래 내역 정상 처리 시간(약 240~250ms)보다 낮아 멀쩡한 transfer 호출이 모두 느린 호출로 세어지고 서킷이 계속 열린다.
     "F64-P": ("rca-testbed-banking", "testbed-api", "api-service"),
+    # 2026-10-12. F65-P: commerce user 롤아웃이 회전 전 DB 계정 이름(DB_USER=commerce_app)을 Secret 참조 대신 값으로 다시 넣는다.
+    # 새 파드가 기동 중 PostgreSQL 인증에 실패해 죽기를 되풀이하고, maxSurge 0 이라 옛 파드가 먼저 내려가 user 가 빈다.
+    "F65-P": ("rca-testbed-commerce", "testbed-user", "user-service"),
 }
 APPROVED_KEYS = {
     "F03-P": {"SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE"},
@@ -59,6 +62,7 @@ APPROVED_KEYS = {
     "F64-R": {"SPRING_APPLICATION_JSON"},
     "F65-R": {"DB_SERVICE"},
     "F64-P": {"SPRING_APPLICATION_JSON"},
+    "F65-P": {"DB_USER"},
 }
 
 
