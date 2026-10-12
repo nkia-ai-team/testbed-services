@@ -137,7 +137,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 54 → 55. F72-R(banking 워커 tb-w2 방화벽이 같은 노드 앱 파드의 Oracle 재연결을 버려 세 서비스 풀이 수명대로 비어 banking·정산 502) 후보 추가.
         # 2026-10-12: 55 → 56. F70-P(food 배달원 정산 시스템의 page 없는 배달 완료 전체 조회가 dispatch 힙을 다 써 연속 GC 로 멈추고 liveness 재시작 반복, 새 주문이 용량 확인에서 503) 후보 추가.
         # 2026-10-12: 56 → 57. F73-R(commerce 상품 표 열 추가 마이그레이션이 느린 카테고리 매출 내보내기 뒤에서 잠금을 기다려 상품 둘러보기와 checkout 5xx) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 57)
+        # 2026-10-12: 57 → 58. F74-R(banking 가맹점 입금 확인 폴링 주기 단축이 거래 내역 Page 건수 질의로 Oracle CPU 를 포화, transfer 풀이 묶여 이체와 commerce checkout 간헐적 5xx) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 58)
 
 
 class RecordingQueueTests(unittest.TestCase):

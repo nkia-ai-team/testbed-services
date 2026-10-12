@@ -2241,6 +2241,8 @@ esac
             "F70-P",
             # 2026-10-12: commerce 상품 표에 브랜드 열을 더하는 마이그레이션이 주문 품목에 상품을 붙여 읽는 느린 카테고리 매출 내보내기 뒤에서 ACCESS EXCLUSIVE 를 기다려 그 뒤의 products 문장이 모두 줄을 섬(product 풀 고갈과 재시작, 상품 둘러보기와 checkout 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
             "F73-R",
+            # 2026-10-12: banking 가맹점 입금 알림 제휴 연동이 거래 내역 API 확인 주기를 계좌당 1초로 줄이자 page=0&size=1 확인마다 transfer 가 표 전체를 세는 Page 건수 질의를 돌려 Oracle CPU 를 포화하고 transfer 풀이 묶임(load.north_south 새 부하 스크립트 settlement-arrival-poll.js, 배포·설정·DB 변경 없음 → banking 이체와 commerce checkout 간헐적 5xx). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F74-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

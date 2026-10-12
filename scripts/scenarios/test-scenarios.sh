@@ -80,7 +80,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 131 → 132. F72-R(후보) 추가.
 # 2026-10-12: 132 → 133. F70-P(후보) 추가.
 # 2026-10-12: 133 → 134. F73-R(후보) 추가.
-[[ "$total" -eq 134 ]]
+# 2026-10-12: 134 → 135. F74-R(후보) 추가.
+[[ "$total" -eq 135 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -211,7 +212,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: ready 106→107. F72-R(banking 워커 tb-w2 방화벽 허용 목록이 같은 노드 앱 파드를 빠뜨려 Oracle 재연결이 버려지고 세 서비스 풀이 수명대로 비어 readiness 이탈, banking·정산 502)을 후보로 추가.
 # 2026-10-12: ready 107→108. F70-P(food 배달원 정산 시스템의 page 없는 배달 완료 전체 조회가 dispatch 힙을 다 써 연속 GC 로 멈추고 liveness 재시작 반복, 새 주문이 용량 확인에서 503)를 후보(ready + stage candidate)로 추가.
 # 2026-10-12: ready 108→109. F73-R(commerce 상품 표 열 추가 마이그레이션이 느린 카테고리 매출 내보내기 뒤에서 잠금을 기다려 상품 읽기가 모두 줄을 서고 product 풀 고갈과 재시작으로 상품 둘러보기와 checkout 5xx)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 109 ]]
+# 2026-10-12: ready 109→110. F74-R(banking 가맹점 입금 확인 폴링 주기 단축이 거래 내역 Page 건수 질의를 초당 8회 늘려 Oracle CPU 를 포화, transfer 풀이 묶여 이체와 commerce checkout 이 간헐적으로 5xx)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 110 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -316,7 +318,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 125 → 126. F72-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f72-r)으로 들어왔다.
 # 2026-10-12: 126 → 127. F70-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f70-p)으로 들어왔다.
 # 2026-10-12: 127 → 128. F73-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f73-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 128 ]]
+# 2026-10-12: 128 → 129. F74-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f74-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 129 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

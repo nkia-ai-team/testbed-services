@@ -1692,6 +1692,18 @@
       "load_mode": "fixed",
       "injection_location": "tb-runner",
       "prerequisite": ""
+    },
+    {
+      "id": "F74-R",
+      "slug": "f74-r-banking-transfer-arrival-poll-count-saturates-oracle",
+      "profiles": [
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

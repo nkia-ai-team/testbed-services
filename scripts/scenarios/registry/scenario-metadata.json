@@ -12943,6 +12943,102 @@
      }
     ]
    }
+  },
+  "F74-R": {
+   "title": "A merchant deposit-alert integration shortens its per-account polling interval from 60 s to 1 s against the banking transfer history API; every one-row existence check (page=0&size=1) also runs the list endpoint's Page count query, which reads the whole transfers table, so the existing count statement saturates the two Oracle CPUs, transfer-service's connection pool waits behind it, and banking transfers and commerce checkouts fail intermittently",
+   "description": "A partner integration that sends merchants deposit alerts checks, for each of eight merchant settlement accounts (seed accounts ACC-1001 to ACC-1007 and commerce-merchant, where commerce settlements land), whether at least one completed deposit has arrived today. It needs only the first row, so it calls the public banking transfer history API through the banking entry point (nginx -> api-service -> transfer-service) with GET /api/transfers?toAccount=<account>&status=COMPLETED&from=<today 00:00>&page=0&size=1. A new version of the integration shortened the per-account interval from 60 s to 1 s, so the calls went from about 0.13 to 8 per second. Nothing in banking changed. transfer-service's TransferController.list turns page/size into a PageRequest and TransferRepository.search returns a Spring Data Page; whenever the first page is full (one row for size=1) Spring Data runs a separate count query, select count(t1_0.id) from transfers t1_0 where (:1 is null or t1_0.from_account=:2 ) and (:3 is null or t1_0.to_account=:4 ) and (:5 is null or t1_0.status=:6 ) and (:7 is null or t1_0.created_at>=:8 ) and (:9 is null or t1_0.created_at<=:10 ) (sql_id byb2y2hv7p4ag, plan_hash_value 2603328921). Because of the OR-null predicates no index applies and every execution scans BANKING.TRANSFERS (about 6.5 million rows): measured read-only on the testbed Oracle on 2026-10-12 for ACC-1003, the one-row fetch cost 89 logical reads, the count 102,923 logical reads and 0.53 s of CPU. DPM Top SQL over 24 hours shows this statement at 101,500 to 103,063 logical reads and a median of 0.25 to 0.56 s CPU per execution, run 0.16 to 1.25 times per second by the resident history traffic (always fromAccount=...&page=0&size=20); it is already the top Oracle CPU consumer. Eight more executions per second add 2.0 to 4.8 CPUs of work against an Oracle Free instance capped at 2 (cpu_count 2, container limit 2000m). Sessions queue on 'resmgr:cpu quantum', each count takes several seconds, and transfer's 15 Hikari connections end up held by count queries, so transfer writes (TransferService.execute) cannot get a connection within 3 s ('HikariPool-1 - Connection is not available, request timed out after 3000ms', HTTP 500) and transfer may briefly fail readiness (/actuator/health includes the pool). account retries and opens its transferClient circuit breaker, api answers transfers with 502, and commerce payment's settlement transfer to transfer-service fails so checkouts are rolled back with 502. account holds a Hikari connection inside a read-only transaction while it waits for transfer (AccountService.validateAndForward), so some balance lookups fail as well. api's transferClient circuit breaker (window 10, 50 %, open 5 s) opens on the failing list calls and briefly stops the polling, the queued counts drain, then the half-open probes succeed and the polling floods in again, so failures come and go every few seconds. The same statement growing by about three executions per second was enough to push Oracle CPU to 1.87 to 1.93 and exhaust transfer's pool (726 'Connection is not available') in an earlier testbed run (F47-R run 3d446438). No image, spec, configuration, schema, data or lock changes; liveness does not look at the DB, so transfer is not restarted. This reconstructs Fly.io's 2026-04-23 incident (an extension provider increased how often it polled a private API endpoint whose Postgres query scanned far more rows than needed to check whether an organization had a registered extension; at the higher rate it saturated the CPU of the database behind the dashboard and GraphQL API, which returned intermittent 500s for about 40 minutes until the provider reverted the polling change; the query was rewritten to stop at the first match and rate limiting was added).",
+   "cause": "transfer-service's history list endpoint answers a one-row existence check (page=0&size=1) with a Spring Data Page whose count query scans the whole transfers table (OR-null predicates, about 103,000 logical reads and 0.25 to 0.6 s CPU per call) → a deposit-alert partner shortens its polling interval to 1 s per account (8 calls per second) → the existing count statement saturates the 2-CPU Oracle → transfer's Hikari pool is held by queued counts → transfer writes time out on connections, banking transfers and commerce checkouts fail with 5xx intermittently while the polling lasts.",
+   "injection_summary": "The load.north_south executor runs core-banking/loadgen/settlement-arrival-poll.js on tb-runner against the banking entry point (30082) on top of the resident baselines. One k6 scenario keeps a 5 rps journey mix with the endpoints and seed accounts of surge.js (transfer 50, balance 40, account list 10; no history step, so the companion load itself adds no count queries); a second scenario starts after the 2 minute ramp and, at a constant 8 requests per second for the 13 minute hold, calls GET /api/transfers?toAccount=<account>&status=COMPLETED&from=<today 00:00:00>&page=0&size=1 for the eight merchant accounts in turn (30 s client timeout). Nothing is deployed or patched: the transfer image, Deployment spec, configuration, Oracle schema and data stay as they are; the only change is how often an outside caller uses an existing API. Cleanup stops k6. No scenario identifier reaches requests, the cluster or the logs (the k6 tag stays on the runner).",
+   "user_impact": "About half a minute after the partner's polling starts, banking customers' transfers and commerce checkouts start failing with 500/502, on and off every few seconds, for as long as the polling lasts. Commerce payments approved by the external provider are rolled back and stock is released. Some balance lookups and account lists fail or slow down too. Product browsing and carts keep working. The partner's own checks fail intermittently.",
+   "distinguishing_evidence": "Decisive evidence is an Oracle CPU saturation driven by the existing transfer history count statement whose execution count follows a surge of small history list calls, with no deployment, configuration, DDL or lock change: DPM Top SQL shows sql_id byb2y2hv7p4ag (plan 2603328921, about 103,000 logical reads per execution, usually 0.2 to 1.2 executions per second) jump to hundreds of executions per minute with the same plan; VM dpm.oracle.instance.cpu_time sits at the 2-CPU cap (quiet hours 0.14 to 0.65) and db_time rises; DPM session snapshots show machine testbed-transfer-... with sqlId byb2y2hv7p4ag waiting on 'resmgr:cpu quantum' and On CPU; sampled api and transfer server spans GET /api/transfers carry url.query 'toAccount=...&status=COMPLETED&from=...&page=0&size=1' (0 of 18,038 sampled transfer list spans in the last 7 days had toAccount or size=1); then transfer ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=15, active=15 ...)', api 'Transfer service list call failed' and 'CircuitBreaker 'transferClient' is OPEN', account 'Transfer service call failed' and circuit-open logs, api 502 for transfers and commerce 'core-banking transfer call failed'. testbed-transfer keeps its ReplicaSet and image (core-banking-transfer:latest), shows at most readiness Unhealthy and no Killing/restart, no new sql_id appears, there is no ORA error, enq: TX wait or DDL, and no Job pod exists. Everything returns to normal within seconds of the polling stopping.",
+   "domain": "core-banking",
+   "class": "A",
+   "fault_pattern": "P8",
+   "observation_domains": [
+    "APM",
+    "KCM",
+    "DPM"
+   ],
+   "root_cause": {
+    "target_kind": "service",
+    "target_id": "core-banking-transfer",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 banking transfer-service 의 거래 내역 목록 API 다. TransferController.list 는 page/size 가 있으면 PageRequest 로, TransferRepository.search 는 Spring Data Page 를 돌려준다. 첫 쪽이 꽉 차면(size=1 이면 한 행) Spring Data 가 건수 질의 select count(t1_0.id) from transfers t1_0 where (:1 is null or t1_0.from_account=:2 ) and ... 를 따로 돌리는데, OR-null 술어라 어떤 인덱스도 못 타고 BANKING.TRANSFERS 약 650만 행을 매번 전수로 읽는다(sql_id byb2y2hv7p4ag, plan 2603328921, 실행당 논리 읽기 약 10.3만, CPU 0.25~0.6초. 109 읽기 전용 실측 2026-10-12: 한 건 찾기 89 읽기 대 건수 102,923 읽기, 0.53초). '오늘 입금이 하나라도 있나'에 필요한 것은 한 행인데 매번 표 전체를 센다. 계기는 가맹점 입금 알림 제휴 연동(외부 API 이용 기관)이 가맹점 계좌 8개의 확인 주기를 60초에서 1초로 줄인 것이다(초당 0.13 → 8건, page=0&size=1, API 계약상 허용). 기존 건수 질의가 초당 8건 더 돌아 Oracle Free CPU 2개(cpu_count 2, 컨테이너 2000m)를 넘기고, 세션이 resmgr:cpu quantum 을 기다리며 transfer Hikari 15개가 건수 질의에 묶여 이체 쓰기가 3초 안에 연결을 못 얻는다(500) → account 재시도·서킷, api 502, commerce 정산 실패로 checkout 502. 원칙 6: 폴링은 공개 계약 안의 정당한 호출이고, 존재 확인에 전체 건수를 세는 transfer 의 목록 로직이 결함이므로 근본은 transfer 다. 계기는 바깥 호출자라 이 테스트베드의 부품 이름이 없어 trigger_target_id 는 비운다(원본 Fly.io 도 질의를 첫 일치에서 멈추게 고치고 엔드포인트에 요청 한도를 더했다). 관제 데이터로의 도달 경로: ① DPM Top SQL 의 byb2y2hv7p4ag 실행 수가 평시 초당 0.16~1.25 에서 분당 수백 회로 뛰고 계획은 그대로 ② VM dpm.oracle.instance.cpu_time 이 상한 2 에 붙음(조용한 시간 0.14~0.65) ③ DPM 세션 machine=testbed-transfer 파드, sqlId byb2y2hv7p4ag, resmgr:cpu quantum·On CPU ④ transfer ERROR 'HikariPool-1 - Connection is not available ... (total=15, active=15 ...)' ⑤ 표본 트레이스 GET /api/transfers url.query 'toAccount=...&page=0&size=1'(7일 표본 0건) ⑥ 롤아웃·DDL·잠금 대기·Job 없음. 원본 사후 보고처럼 '바깥 폴링이 늘자 필요 이상으로 행을 훑는 질의가 공유 DB CPU 를 포화시켰다'가 정답의 층위다.",
+    "code_anchor": [
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/controller/TransferController.java:51-64 (list — page/size 가 있으면 PageRequest.of(page, size))",
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/service/TransferService.java:120-127 (search — Page 를 받아 getContent())",
+     "core-banking/transfer-service/src/main/java/com/corebanking/transfer/repository/TransferRepository.java:17-28 (search — Page 반환 OR-null 술어 JPQL, 첫 쪽이 차면 Spring Data 가 같은 술어의 count 질의를 따로 돌림: sql_id byb2y2hv7p4ag)",
+     "core-banking/transfer-service/src/main/resources/application.yml:12-17 (Hikari maximum-pool-size 15, connection-timeout 3000)",
+     "core-banking/api-service/src/main/java/com/corebanking/api/client/TransferClient.java:32-60 (listTransfers — 질의 문자열을 그대로 넘김, @Retry·@CircuitBreaker(transferClient), 'Transfer service list call failed' 와 서킷 열림 로그)",
+     "core-banking/api-service/src/main/resources/application.yml:30-38 (서킷 transferClient 창 10, 50%, 열림 5s), :48-54 (재시도 3)",
+     "core-banking/account-service/src/main/java/com/corebanking/account/service/AccountService.java:57-80 (validateAndForward — 읽기 전용 트랜잭션 안에서 transfer 를 기다리며 연결을 쥠: 잔액 조회 일부 실패의 전파 경로)",
+     "core-banking/k8s/10-oracle.yaml:43-49 (Oracle limits cpu 2000m; Oracle Free cpu_count 2)"
+    ],
+    "infra_anchor": "banking Oracle(testbed-oracle, Oracle Free 23, cpu_count 2, 컨테이너 cpu 2000m)의 CPU 와 rca-testbed-banking Deployment testbed-transfer(tb-w2, 1 replica) 의 Hikari 풀 15. BANKING.TRANSFERS 6,531,859행(2026-10-12 109 실측)."
+   },
+   "must_support": [
+    "폴링이 시작되면 DPM Oracle Top SQL 의 기존 문장 byb2y2hv7p4ag(transfers 건수 질의, planHashValue 2603328921 그대로, 실행당 논리 읽기 약 10.3만)의 실행 수가 평시 초당 0.16~1.25 에서 분당 수백 회로 뛰고(서킷 열림 5초 구간에는 잠깐 줄어든다), 새 sql_id 는 나타나지 않는다",
+    "VM dpm.oracle.instance.cpu_time 이 상한 2 에 붙고(조용한 시간 1시간 최대 0.14~0.65) db_time 이 뛰며, DPM 세션 스냅숏에 machine 이 testbed-transfer 파드인 sqlId byb2y2hv7p4ag 세션들이 'resmgr:cpu quantum' 과 On CPU 로 몰린다",
+    "표본 트레이스에 잡히면 api, transfer 의 GET /api/transfers url.query 가 'toAccount=<가맹점 계좌>&status=COMPLETED&from=<오늘 0시>&page=0&size=1' 이다(7일 표본 transfer 목록 스팬 18,038건이 모두 fromAccount=...&page=0&size=20, toAccount·size=1 0건). 입구의 다른 경로(이체, 잔액, 계좌 목록) 요청률은 평시 수준에 동반 부하만큼이다",
+    "transfer ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=15, active=15 ...)' 가 쌓이고, account 'Transfer service call failed' 와 서킷 열림, api 'Transfer service list call failed' 와 'CircuitBreaker 'transferClient' is OPEN', api 이체 502, commerce payment 'core-banking transfer call failed' 와 checkout 502 가 생기며, 동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.3 이상으로 몇 초 단위로 오르내린다",
+    "testbed-transfer 의 ReplicaSet 과 이미지(core-banking-transfer:latest)가 그대로이고 KCM 에 ScalingReplicaSet, Pulled, Killing 이 없다(readiness Unhealthy 만 있을 수 있음). ORA 오류, enq: TX 대기, DDL, Job 파드가 없고, 폴링이 멈추면 몇 초 안에 Oracle CPU 와 이체가 평시로 돌아온다"
+   ],
+   "must_rule_out": [
+    "결함 있는 새 버전의 질의가 아님(F42-R 꼴): 롤아웃 이벤트와 새 이미지가 없고, Oracle CPU 를 쓰는 문장은 롤아웃 뒤 처음 나타난 sql_id 가 아니라 평시부터 있던 byb2y2hv7p4ag 이며 계획도 같다. 실행 수는 이체 수가 아니라 거래 내역 목록 호출 수를 따라간다",
+    "바깥 호출 한 건의 힙 고갈이 아님(F70-R 꼴): transfer OutOfMemoryError, JVM 힙 한도 도달, liveness 재시작(Killing)이 없다. transfer 는 멀쩡히 DB 를 기다릴 뿐이고 호출은 늘 page=0&size=1 이다",
+    "내부 배치 작업 과부하가 아님(F59-P 꼴): Job 생성과 작업 파드가 없고, 목록 호출은 클러스터 안이 아니라 banking 입구(nginx → api)로 들어온다",
+    "DB 잠금이나 계정, Oracle 자체 장애가 아님(F01-P, F08-G, F35-R, F54-R, F25-H 꼴): enq: TX 대기와 blockingSession, ORA-01017·ORA-28000·ORA-02395 같은 오류가 없고 Oracle 파드는 Ready 다. 대기 사건은 resmgr:cpu quantum(CPU)이다",
+    "account 릴리스 폭주나 진입 트래픽 폭주 일반이 아님(F47-R, F07-H 꼴): account 롤아웃이 없고, 늘어난 것은 거래 내역 목록 한 경로(size=1, toAccount)뿐이며 이체·잔액 요청률은 평시 수준에 동반 부하만큼이다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F42-R (같은 banking Oracle CPU 포화와 transfer 풀 고갈, 이체와 commerce 정산 실패지만 원인은 transfer 새 릴리스가 이체마다 돌린 새 전수 스캔 질의라 롤아웃 이벤트, 새 이미지, 처음 나타난 sql_id 가 있다. F74-R 은 바뀐 것이 없고 기존 건수 질의의 실행 수만 바깥 목록 호출을 따라 늘어난다)",
+     "F70-R (같은 거래 내역 API 를 바깥 호출자가 부르지만 page 없는 한 건이 transfer 힙을 채워 OutOfMemoryError 와 liveness 재시작이 난다. F74-R 은 페이지를 지킨 작은 호출이 많아져 DB CPU 가 찬다)",
+     "F59-P (같은 transfer 거래 내역 경로가 과부하지만 원장 백필 Job 이 클러스터 안에서 부른 것이라 Job 이벤트가 있고 정답이 내부 배치 작업이다)",
+     "F47-R (banking api 새 릴리스의 계좌 목록 호출 폭주. 그 실행에서 동반 부하의 거래 내역 건수 질의가 우연히 같은 Oracle 포화를 냈다 — F74-R 은 그 포화 자체가 장애다)",
+     "F33-R (food 인덱스 삭제로 전수 스캔이 된 질의가 DB 를 무겁게 함. 원인이 DDL 이고 계획이 바뀐다. F74-R 은 DDL 이 없고 계획이 그대로다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "core-banking-transfer",
+     "banking-transfer",
+     "testbed-transfer"
+    ],
+    "partial": [
+     "banking-oracle",
+     "core-banking-api",
+     "core-banking-account"
+    ]
+   },
+   "title_ko": "가맹점 입금 알림 제휴 연동이 banking 거래 내역 API 확인 주기를 계좌당 60초에서 1초로 줄이자, 한 건만 필요한 확인(page=0&size=1)마다 transfer 목록 API 가 표 전체를 세는 Page 건수 질의를 함께 돌려 Oracle CPU 2개를 다 쓰고, transfer 연결 풀이 그 뒤에 묶여 banking 이체와 commerce checkout 이 간헐적으로 실패한다",
+   "description_ko": "가맹점 입금 알림을 해 주는 제휴 연동이 가맹점 정산 계좌 8개(시드 계좌 ACC-1001~1007, commerce 정산이 들어오는 commerce-merchant)마다 '오늘 완료된 입금이 한 건이라도 있는가'를 확인한다. 맨 앞 한 건만 있으면 되므로 banking 입구(nginx → api → transfer)로 GET /api/transfers?toAccount=<계좌>&status=COMPLETED&from=<오늘 0시>&page=0&size=1 을 부른다. 새 버전이 계좌당 확인 주기를 60초에서 1초로 줄여 호출이 초당 약 0.13건에서 8건이 됐다. banking 쪽은 아무것도 바뀌지 않았다. transfer 의 TransferController.list 는 page/size 를 PageRequest 로 바꾸고 TransferRepository.search 는 Spring Data Page 를 돌려주는데, 첫 쪽이 꽉 차면(size=1 이면 한 행) Spring Data 가 같은 술어의 건수 질의(sql_id byb2y2hv7p4ag, plan 2603328921)를 따로 돌린다. OR-null 술어라 어떤 인덱스도 못 타고 BANKING.TRANSFERS 약 650만 행을 매번 전수로 읽는다(109 읽기 전용 실측 2026-10-12, ACC-1003: 한 건 찾기 논리 읽기 89, 건수 102,923 읽기와 CPU 0.53초). DPM Top SQL 24시간 기준 이 문장은 실행당 101,500~103,063 읽기, CPU 중앙값 0.25~0.56초이고 상주 거래 내역 조회(늘 fromAccount=...&page=0&size=20)로 초당 0.16~1.25회 돌아 이미 Oracle CPU 1위다. 초당 8회가 더해지면 CPU 2.0~4.8개분이라 Oracle Free 상한 2(cpu_count 2, 컨테이너 2000m)를 넘는다. 세션이 'resmgr:cpu quantum' 을 기다리고 건수 질의가 몇 초씩 걸리며 transfer Hikari 15개가 그 뒤에 묶여, 이체 쓰기(TransferService.execute)가 3초 안에 연결을 못 얻어 500('HikariPool-1 - Connection is not available, request timed out after 3000ms')이 되고 readiness(DB 포함)가 잠깐 빠질 수 있다. account 가 재시도하고 서킷을 열어 api 가 이체를 502 로 답하며, commerce payment 의 정산 이체도 실패해 checkout 이 502 로 되돌려진다. account 는 읽기 전용 트랜잭션 안에서 transfer 를 기다리며 연결을 쥐어 잔액 조회 일부도 실패한다. api transferClient 서킷(창 10, 50%, 열림 5초)이 실패하는 목록 호출에 열리면 폴링이 잠깐 끊겨 줄이 빠지고, 반열림이 통과하면 다시 몰려 실패가 몇 초 단위로 오르내린다. 같은 문장이 초당 약 3회 늘어난 것만으로 Oracle CPU 1.87~1.93, transfer 풀 고갈('Connection is not available' 726건)이 난 테스트베드 선례가 있다(F47-R 실행 3d446438). 이미지, 스펙, 설정, 스키마, 데이터, 잠금 변화가 없고 liveness 는 DB 를 보지 않아 transfer 는 재시작되지 않는다. Fly.io 2026-04-23 장애(확장 기능 제공사가 비공개 API 엔드포인트의 폴링 빈도를 높였고, 조직의 확장 등록 여부를 확인하던 그 엔드포인트의 Postgres 질의가 필요한 것보다 훨씬 많은 행을 훑어, 높아진 빈도에서 대시보드와 GraphQL API 의 DB CPU 를 포화시켜 약 40분 간헐적 500. 제공사가 폴링 변경을 되돌려 회복, 질의를 첫 일치에서 멈추게 고치고 요청 한도 추가)의 재구성이다.",
+   "cause_ko": "transfer 거래 내역 목록 API 가 한 건짜리 존재 확인(page=0&size=1)에도 표 전체를 세는 Page 건수 질의(OR-null 술어, 실행당 약 10.3만 읽기, CPU 0.25~0.6초)를 돌림 → 가맹점 입금 알림 제휴 연동이 계좌당 확인 주기를 1초로 줄임(초당 8건) → 기존 건수 질의가 Oracle CPU 2개를 다 씀 → transfer Hikari 풀이 줄 선 건수 질의에 묶임 → 이체 쓰기가 연결을 못 얻어 banking 이체와 commerce checkout 이 폴링이 이어지는 동안 간헐적으로 5xx.",
+   "injection_summary_ko": "load.north_south 실행기가 tb-runner 에서 core-banking/loadgen/settlement-arrival-poll.js 를 banking 입구(30082)에 상주 기준선 위로 돌린다. 한 k6 시나리오는 surge.js 와 같은 엔드포인트와 시드 계좌로 이체 50, 잔액 40, 계좌 목록 10 의 여정을 5rps 로 흘린다(거래 내역 단계는 넣지 않아 동반 부하 자체는 건수 질의를 보태지 않는다). 다른 시나리오는 2분 경사 뒤 13분 유지 동안 초당 8건 일정하게 GET /api/transfers?toAccount=<계좌>&status=COMPLETED&from=<오늘 00:00:00>&page=0&size=1 을 가맹점 계좌 8개에 차례로 부른다(클라이언트 시간 제한 30초). 배포나 패치는 없다: transfer 이미지, Deployment 스펙, 설정, Oracle 스키마와 데이터가 그대로이고 바뀌는 것은 바깥 호출자가 기존 API 를 얼마나 자주 부르는가뿐이다. cleanup 은 k6 를 끝낸다. 시나리오 식별자는 요청, 클러스터, 로그 어디에도 닿지 않는다(k6 태그는 러너 안에만 있다).",
+   "user_impact_ko": "제휴 연동의 폴링이 시작되고 약 30초 뒤부터 banking 고객 이체와 commerce checkout 이 몇 초 단위로 500/502 로 실패했다 성공했다 하며, 폴링이 이어지는 동안 계속된다. 외부 결제사가 승인한 commerce 결제는 되돌려지고 재고가 풀린다. 잔액 조회, 계좌 목록 일부도 느려지거나 실패한다. 상품 조회, 장바구니는 계속 된다. 제휴 연동 자신의 확인도 간헐적으로 실패한다.",
+   "distinguishing_evidence_ko": "결정적 증거는 배포, 설정, DDL, 잠금 변화 없이 평시부터 있던 거래 내역 건수 질의가 작은 목록 호출 급증을 따라 실행 수가 뛰며 Oracle CPU 를 다 쓴 것이다: DPM Top SQL 에서 sql_id byb2y2hv7p4ag(plan 2603328921, 실행당 약 10.3만 읽기, 평시 초당 0.2~1.2회)가 같은 계획으로 분당 수백 회, VM dpm.oracle.instance.cpu_time 이 상한 2(조용한 시간 0.14~0.65)에 붙고 db_time 상승, DPM 세션 machine testbed-transfer-…, sqlId byb2y2hv7p4ag 의 'resmgr:cpu quantum' 과 On CPU, 표본 api·transfer 서버 스팬 GET /api/transfers 의 url.query 'toAccount=...&status=COMPLETED&from=...&page=0&size=1'(7일 표본 transfer 목록 스팬 18,038건 중 toAccount·size=1 0건), 이어서 transfer ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=15, active=15 ...)', api 'Transfer service list call failed' 와 'CircuitBreaker 'transferClient' is OPEN', account 'Transfer service call failed' 와 서킷 열림, api 이체 502, commerce 'core-banking transfer call failed'. testbed-transfer 의 ReplicaSet 과 이미지(core-banking-transfer:latest) 그대로, readiness Unhealthy 정도뿐 Killing·재시작 없음, 새 sql_id·ORA 오류·enq: TX·DDL·Job 파드 없음. 폴링이 멈추면 몇 초 안에 평시로 돌아온다.",
+   "injected_fault": {
+    "profile": "load.north_south",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f74-r",
+      "parameters": {
+       "target_rps": 5,
+       "ramp_up": "2m",
+       "hold": "13m",
+       "ramp_down": "1m",
+       "entry_url": "http://192.168.122.77:30082",
+       "script_path": "/opt/loadgen/core-banking/settlement-arrival-poll.js",
+       "scenario_tag": "scenario_id=F74-R",
+       "seed": 7474,
+       "baseline_unit": "loadgen-banking"
+      }
+     }
+    ]
+   }
   }
  }
 }
