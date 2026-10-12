@@ -2164,6 +2164,8 @@ esac
             "F36-P",
             # 2026-10-12: commerce user 일상 롤아웃이 회전 전 DB 계정 이름(DB_USER=commerce_app)을 Secret 참조 대신 다시 넣어 새 파드가 PostgreSQL 인증에 실패해 기동 중 죽고 maxSurge 0 이라 user 가 빔(게이트웨이 토큰 확인이 연결 거부로 실패해 쓰기 500). 새 후보, 설계 강도 1단 고정 evaluation.
             "F65-P",
+            # 2026-10-12: banking 정산 대사 시스템이 거래 내역 API 에서 30일치 완료 이체를 page 없이 받아 가자 transfer 가 약 210만 행을 512MiB 힙에 올려 GC 와 OutOfMemoryError 로 멈추고 liveness 재시작을 되풀이함(load.north_south 새 부하 스크립트 statement-export.js, 배포·설정·DB 변경 없음 → banking 이체 502, commerce checkout 502). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F70-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
