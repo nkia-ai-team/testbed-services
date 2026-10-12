@@ -144,7 +144,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-12: 60 → 61. F76-P(food restaurant-service 릴리스 1.7.0 이 메뉴의 카테고리별 조리 시간을 확인 없이 읽어 카테고리 4~8 가게의 메뉴 500) 후보 추가.
         # 2026-10-12: 61 → 62. F77-R(이름이 겹친 원장 워커 매니페스트 적용이 transfer Deployment 를 원장 이미지로 바꿔 transfer 가 비고 banking 이체와 commerce checkout 502) 후보 추가.
         # 2026-10-12: 62 → 61. F48-R 정식 승격(녹화 case-f48-r-v3-574963e1).
-        self.assertEqual(stages.count("candidate"), 61)
+        # 2026-10-12: 61 → 62. F71-H(commerce PostgreSQL 접근 규칙을 좁혀 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 거절되고 풀이 수명대로 비어 쓰기 500, 상품 조회 502) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 62)
 
 
 class RecordingQueueTests(unittest.TestCase):

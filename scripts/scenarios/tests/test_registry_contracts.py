@@ -127,7 +127,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 136 → 137. F76-R(후보) 추가. 기존 k8s.image release 모드를 commerce product 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 137 → 138. F76-P(후보) 추가. 기존 k8s.image release 모드를 food restaurant 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-12: 138 → 139. F77-R(후보) 추가. 기존 k8s.image 에 foreign 모드를 더해 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 139)
+        # 2026-10-12: 139 → 140. F71-H(후보) 추가. 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드를 더해 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 140)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -328,6 +329,8 @@ class RegistryContractTests(unittest.TestCase):
             "F76-P",
             # 2026-10-12: transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지(core-banking-ledger:latest)로 바꿔, 원장 앱이 transfer 프로브(8082)에 답하지 못하고 재시작을 되풀이해 banking 이체와 commerce checkout 이 502
             "F77-R",
+            # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -744,6 +747,8 @@ class RegistryContractTests(unittest.TestCase):
             "F76-P",
             # 2026-10-12: transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지(core-banking-ledger:latest)로 바꿔, 원장 앱이 transfer 프로브(8082)에 답하지 못하고 재시작을 되풀이해 banking 이체와 commerce checkout 이 502
             "F77-R",
+            # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-H",
             },
         )
         self.assertEqual(
@@ -944,6 +949,8 @@ class RegistryContractTests(unittest.TestCase):
             "F76-P",
             # 2026-10-12: transfer 매니페스트를 복사해 이름을 그대로 둔 원장 워커 매니페스트 적용이 살아 있는 transfer Deployment 를 원장 이미지(core-banking-ledger:latest)로 바꿔, 원장 앱이 transfer 프로브(8082)에 답하지 못하고 재시작을 되풀이해 banking 이체와 commerce checkout 이 502
             "F77-R",
+            # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1157,8 +1164,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F76-R(후보, 고정 evaluation)이 끝에 붙어 F72-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F76-P(후보, 고정 evaluation)이 끝에 붙어 F70-P 가 끝 5개에서 빠졌다.
         # 2026-10-12: F77-R(후보, 고정 evaluation)이 끝에 붙어 F73-R 이 끝 5개에서 빠졌다.
+        # 2026-10-12: F71-H(후보, 고정 evaluation)이 끝에 붙어 F74-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F74-R", "F75-R", "F76-R", "F76-P", "F77-R"])
+                         ["F75-R", "F76-R", "F76-P", "F77-R", "F71-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

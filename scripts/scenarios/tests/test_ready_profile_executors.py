@@ -333,6 +333,51 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             db_account.validate("F71-R", db_account.CONTRACTS["F35-R"], {})
 
+    def test_db_account_postgres_host_rule_narrows_the_catch_all_and_restores_it(self) -> None:
+        # F71-H: 주입은 pg_hba 의 모든 주소 네트워크 규칙 한 줄을 노드 주소와 관리망 규칙으로 바꾸고 설정을 다시 읽히는 것뿐이다.
+        # 역할의 비밀번호, 기한, 로그인 가능 여부를 건드리거나 세션을 끊으면 F71-R(기한 경과), F35-R(잠금), F25-H(DB 다운)의
+        # 지문이 된다. local 규칙은 그대로라 실행기는 파드 local 소켓(trust)으로 계속 들어가고, NodePort 로 노드 주소에 닿는 DPM 은
+        # 허용 목록 안이다. 빠지는 것은 같은 노드 서비스 파드 대역뿐이다.
+        plan = compiler.compile_plan("f71-h-commerce-postgres-access-rule-omits-app-pods")
+        argv, stdin = db_account.build_invocation(plan, "run")
+        self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
+        self.assertEqual(argv[4:], ["rca-testbed-commerce", "testbed-postgres-0", "commerce",
+                                    "10.244.3.1/32,192.168.122.0/24,192.168.200.0/24,192.168.230.0/24",
+                                    "10.244.3.0/24"])
+        self.assertNotIn("F71-H", argv)
+        self.assertEqual(stdin, db_account.POSTGRES_HBA_REMOTE)
+        script = stdin.decode()
+        self.assertNotIn("F71-H", script)
+        self.assertIn("pg_stat_statements.track=none", script)
+        self.assertIn("FROM pg_hba_file_rules", script)
+        self.assertIn('cat "$t" >"$HBA"', script)
+        run_case = script.split("  run)")[1].split(";;")[0]
+        order = ['expect "1|0|0"', "inside", "bites", "edit narrow", 'expect "0|$n|0"', "reload",
+                 "until_login refused"]
+        positions = [run_case.index(x) for x in order]
+        self.assertEqual(positions, sorted(positions))
+        preflight_case = script.split("  preflight)")[1].split(";;")[0]
+        self.assertIn('[[ "$(netlogin)" == ok ]]', preflight_case)
+        self.assertNotIn("edit", preflight_case)
+        cleanup_case = script.split("  cleanup)")[1].split(";;")[0]
+        self.assertIn("edit restore", cleanup_case)
+        self.assertIn("until_login ok", cleanup_case)
+        for forbidden in ("valid until", "nologin", "password '", "pg_terminate_backend", "pg_cancel_backend",
+                          "revoke", "grant ", "drop ", "alter system", "alter role", "lucida_mon", "pg_ctl",
+                          "postgresql.conf"):
+            self.assertNotIn(forbidden, script.lower())
+        # F71-R 은 그대로 기한 스크립트를 쓴다.
+        _, f71r_stdin = db_account.build_invocation(
+            compiler.compile_plan("f71-r-commerce-postgres-app-account-password-expiry"), "run")
+        self.assertEqual(f71r_stdin, db_account.POSTGRES_EXPIRY_REMOTE)
+        params = dict(db_account.CONTRACTS["F71-H"])
+        for change in ({"allowed_sources": ["10.244.3.0/24"]}, {"allowed_sources": []}, {"omitted_cidr": "10.244.1.0/24"},
+                       {"change": "password-valid-until-now"}, {"pod": "testbed-postgres-1"}, {"engine": "mysql"}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                db_account.validate("F71-H", {**params, **change}, {})
+        with self.assertRaisesRegex(ExecutorError, "exactly match"):
+            db_account.validate("F71-H", db_account.CONTRACTS["F71-R"], {})
+
     def test_host_firewall_adds_one_allowlist_chain_for_new_connections_and_removes_it(self) -> None:
         # F44-R: 주입은 tb-w3 FORWARD 맨 위에 한 포트로 가는 새 연결(conntrack NEW)만 허용 목록 체인으로
         # 보내는 규칙과 그 체인뿐이다. 이미 맺어진 연결을 끊거나(원본의 '지속 소켓은 다시 맺어질 때까지 무사'가
@@ -2454,6 +2499,8 @@ esac
             "F76-P",
             # 2026-10-12: 원장 재처리 워커를 띄우려고 transfer 매니페스트를 복사해 이미지만 원장 이미지로 바꾸고 이름을 그대로 둔 채 적용, 살아 있는 transfer Deployment 가 core-banking-ledger:latest 로 롤아웃되어 원장 앱이 8082 프로브에 답하지 못하고 재시작을 되풀이, transfer 엔드포인트가 비어 banking 이체와 거래 내역, commerce checkout 502(Coinbase 2026-07-14 재구성, k8s.image 에 foreign 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F77-R",
+            # 2026-10-12: commerce PostgreSQL 운영자가 pg_hba 의 모든 주소 네트워크 규칙을 노드 주소와 관리망만 받도록 좁히고 다시 읽혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 'no pg_hba.conf entry for host' 로 거절되고 Hikari 풀이 수명(10분, 30분)대로 비어 readiness 이탈과 재시작 반복, 쓰기 500·상품 조회 502(Harness 2024-09-01 재구성, 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F71-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

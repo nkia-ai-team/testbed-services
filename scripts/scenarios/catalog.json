@@ -1756,6 +1756,18 @@
       "load_mode": "fixed",
       "injection_location": "banking namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F71-H",
+      "slug": "f71-h-commerce-postgres-access-rule-omits-app-pods",
+      "profiles": [
+        "db.account"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "tb-runner",
+      "prerequisite": ""
     }
   ]
 }

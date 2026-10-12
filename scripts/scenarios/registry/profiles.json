@@ -113,7 +113,8 @@
           "F35-R",
           "F54-R",
           "F54-P",
-          "F71-R"
+          "F71-R",
+          "F71-H"
         ]
       },
       "scenario_parameters": {
@@ -149,6 +150,20 @@
           "pod": "testbed-postgres-0",
           "account": "commerce",
           "change": "password-valid-until-now"
+        },
+        "F71-H": {
+          "engine": "postgresql",
+          "namespace": "rca-testbed-commerce",
+          "pod": "testbed-postgres-0",
+          "account": "commerce",
+          "change": "host-rule-narrowed",
+          "allowed_sources": [
+            "10.244.3.1/32",
+            "192.168.122.0/24",
+            "192.168.200.0/24",
+            "192.168.230.0/24"
+          ],
+          "omitted_cidr": "10.244.3.0/24"
         }
       },
       "scenario_levels": {}
