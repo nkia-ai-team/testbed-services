@@ -113,7 +113,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: 122 → 123. F60-P(후보) 추가. 기존 db.ddl MySQL 보류 표 모드에 계약만 더해 프로파일 수는 그대로.
         # 2026-10-11: 123 → 124. F35-P(후보) 추가. 기존 db.ddl Oracle 표 지우기 모드에 선택 계약 triggers 를 더해 프로파일 수는 그대로.
         # 2026-10-11: 124 → 125. F16-P(후보) 추가. 기존 k8s.image release 모드를 commerce notification 에 한 번 더 써서 프로파일 수는 그대로.
-        self.assertEqual(len(self.catalog["scenarios"]), 125)
+        # 2026-10-12: 125 → 126. F68-R(후보) 추가. 기존 k8s.image release 모드를 banking transfer 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 126)
         self.assertEqual(len(self.profiles["profiles"]), 34)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -286,6 +287,8 @@ class RegistryContractTests(unittest.TestCase):
             "F35-P",
             # 2026-10-11: commerce notification-service 를 주문 이벤트 수신자 이메일을 회원 목록에서 찾는 릴리스 1.3.0(fault-images/f16-p)으로 롤아웃(목록에 없는 이름마다 뒤에서 user-service 회원 목록 전체를 페이지 상한 100번까지 다시 읽어 user 가 CPU 한도와 풀 대기에 묻히고, 게이트웨이의 쓰기 토큰 확인이 늦어지다 500·401 로 실패, 읽기 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F16-P",
+            # 2026-10-12: banking transfer-service 를 '출금 계좌당 초당 2건' 이상 거래 방지 한도를 더한 릴리스 2.4.0(fault-images/f68-r)으로 롤아웃(한도를 이름 하나의 resilience4j @RateLimiter 로 걸어 모든 계좌의 이체와 commerce 정산이 초당 2건 한 몫을 나눠 쓰고, 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 → banking 이체 502, commerce checkout 502, 합친 부하에 비례). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F68-R",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -674,6 +677,8 @@ class RegistryContractTests(unittest.TestCase):
             "F35-P",
             # 2026-10-11: commerce notification-service 를 주문 이벤트 수신자 이메일을 회원 목록에서 찾는 릴리스 1.3.0(fault-images/f16-p)으로 롤아웃(목록에 없는 이름마다 뒤에서 user-service 회원 목록 전체를 페이지 상한 100번까지 다시 읽어 user 가 CPU 한도와 풀 대기에 묻히고, 게이트웨이의 쓰기 토큰 확인이 늦어지다 500·401 로 실패, 읽기 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F16-P",
+            # 2026-10-12: banking transfer-service 를 '출금 계좌당 초당 2건' 이상 거래 방지 한도를 더한 릴리스 2.4.0(fault-images/f68-r)으로 롤아웃(한도를 이름 하나의 resilience4j @RateLimiter 로 걸어 모든 계좌의 이체와 commerce 정산이 초당 2건 한 몫을 나눠 쓰고, 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 → banking 이체 502, commerce checkout 502, 합친 부하에 비례). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F68-R",
             },
         )
         self.assertEqual(
@@ -846,6 +851,8 @@ class RegistryContractTests(unittest.TestCase):
             "F35-P",
             # 2026-10-11: commerce notification-service 를 주문 이벤트 수신자 이메일을 회원 목록에서 찾는 릴리스 1.3.0(fault-images/f16-p)으로 롤아웃(목록에 없는 이름마다 뒤에서 user-service 회원 목록 전체를 페이지 상한 100번까지 다시 읽어 user 가 CPU 한도와 풀 대기에 묻히고, 게이트웨이의 쓰기 토큰 확인이 늦어지다 500·401 로 실패, 읽기 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F16-P",
+            # 2026-10-12: banking transfer-service 를 '출금 계좌당 초당 2건' 이상 거래 방지 한도를 더한 릴리스 2.4.0(fault-images/f68-r)으로 롤아웃(한도를 이름 하나의 resilience4j @RateLimiter 로 걸어 모든 계좌의 이체와 commerce 정산이 초당 2건 한 몫을 나눠 쓰고, 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 → banking 이체 502, commerce checkout 502, 합친 부하에 비례). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F68-R",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1045,8 +1052,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-11: F60-P(후보, 고정 evaluation)이 끝에 붙어 F63-P 가 끝 5개에서 빠졌다.
         # 2026-10-11: F35-P(후보, 고정 evaluation)이 끝에 붙어 F67-R 이 끝 5개에서 빠졌다.
         # 2026-10-11: F16-P(후보, 고정 evaluation)이 끝에 붙어 F37-H 가 끝 5개에서 빠졌다.
+        # 2026-10-12: F68-R(후보, 고정 evaluation)이 끝에 붙어 F53-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F53-H", "F67-H", "F60-P", "F35-P", "F16-P"])
+                         ["F67-H", "F60-P", "F35-P", "F16-P", "F68-R"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

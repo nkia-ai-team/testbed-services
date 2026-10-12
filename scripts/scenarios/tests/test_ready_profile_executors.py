@@ -1580,6 +1580,65 @@ esac
                  / "OrderService.java").read_text()
         self.assertIn("order.getCustomerEmail(),", order)
 
+
+    def test_k8s_image_release_mode_rolls_banking_transfer_velocity_limit_release(self) -> None:
+        # F68-R: 같은 release 스크립트로 banking transfer 를 2.4.0 으로 롤아웃한다(tb-w2). transfer 의 다른 릴리스
+        # F17-H(2.1.0, 노드에 없어야 하는 태그), F42-R(2.2.0), F40-H(2.3.0)와 태그가 겹치지 않아야 넷 다 preflight 를
+        # 지킨다. 패치는 transfer-service/src 안만 고친다.
+        plan = compiler.compile_plan("f68-r-banking-transfer-release-velocity-limit-applied-globally")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-banking", "testbed-transfer", "transfer-service",
+                                    "core-banking-transfer:latest", "core-banking-transfer:2.4.0"])
+        self.assertNotIn("F68-R", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F68-R"]
+        self.assertNotIn(k8s_image.CONTRACTS["F68-R"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f68-r" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F68-R"]["baseline_image"], k8s_image.CONTRACTS["F68-R"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f68-r" / "transfer-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/core-banking/transfer-service/src/",
+                                                     "b/core-banking/transfer-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F68", "f68", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        # 결함의 고리: 계좌별로 쓴 한도가 이름 하나의 제한기라 모든 이체가 한 몫(초당 2건)을 나눠 쓰고, 넘치면 기다리지 않는다.
+        self.assertIn('@RateLimiter(name = "transferVelocity")', added)
+        self.assertIn("limit-for-period: 2", added)
+        self.assertIn("limit-refresh-period: 1s", added)
+        self.assertIn("timeout-duration: 0s", added)
+        self.assertNotIn("RequestNotPermitted", added)
+
+    def test_f68r_relies_on_unmapped_limiter_error_and_shared_transfer_callers(self) -> None:
+        # F68-R 은 매니페스트 transfer 에 속도 제한이 없고 예외 처리기가 ServiceException 만 매핑한다는 데(그래서 2.4.0 의
+        # RequestNotPermitted 가 처리되지 않은 500 이 된다), transfer 가 resilience4j 와 AOP 를 이미 의존성으로 갖는다는 데
+        # (패치가 src 만 고쳐도 주석이 동작한다), account 가 transfer 의 5xx 를 502 로 바꾸고 commerce payment 가 정산 이체를
+        # 재시도 없이 같은 transfer 로 보낸다는 데, transfer 롤아웃이 maxSurge 0 이라는 데 기댄다.
+        banking = ROOT.parent.parent / "core-banking"
+        transfer = banking / "transfer-service"
+        handler = (transfer / "src" / "main" / "java" / "com" / "corebanking" / "transfer" / "config"
+                   / "GlobalExceptionHandler.java").read_text()
+        self.assertEqual(handler.count("@ExceptionHandler("), 1)
+        self.assertIn("@ExceptionHandler(ServiceException.class)", handler)
+        self.assertNotIn("ratelimiter", (transfer / "src" / "main" / "resources" / "application.yml").read_text())
+        pom = (transfer / "pom.xml").read_text()
+        self.assertIn("<artifactId>resilience4j-spring-boot3</artifactId>", pom)
+        self.assertIn("<artifactId>spring-boot-starter-aop</artifactId>", pom)
+        service = (transfer / "src" / "main" / "java" / "com" / "corebanking" / "transfer" / "service"
+                   / "TransferService.java").read_text()
+        self.assertIn("    @Transactional\n    public TransferResponse execute(TransferRequest request) {", service)
+        client = (banking / "account-service" / "src" / "main" / "java" / "com" / "corebanking" / "account" / "client"
+                  / "TransferClient.java").read_text()
+        self.assertIn('log.error("Transfer service call failed for order {}: {}"', client)
+        self.assertIn("HttpStatus.BAD_GATEWAY", client)
+        commerce = ROOT.parent.parent / "commerce" / "payment-service" / "src" / "main" / "java" / "com" / "commerce"
+        settle = (commerce / "payment" / "client" / "BankingTransferClient.java").read_text()
+        self.assertIn('.uri("/api/transfers")', settle)
+        self.assertNotIn("@Retry", settle)
+        deploy = (banking / "k8s" / "22-transfer-service.yaml").read_text()
+        self.assertIn("maxSurge: 0", deploy)
     def test_k8s_image_release_mode_rolls_food_dispatch_thread_leak_release(self) -> None:
         # F63-P: 같은 release 스크립트로 food dispatch 를 1.9.0 으로 롤아웃한다(tb-w3). F33-H(1.6.0), F43-P(1.7.0),
         # F55-R(1.8.0)도 dispatch 릴리스를 쓰므로 태그가 겹치지 않아야 넷 다 "노드에 릴리스 없음" preflight 를 지킨다.
@@ -2048,6 +2107,8 @@ esac
             "F35-P",
             # 2026-10-11: commerce notification-service 를 주문 이벤트 수신자 이메일을 회원 목록에서 찾는 릴리스 1.3.0(fault-images/f16-p)으로 롤아웃(목록에 없는 이름마다 뒤에서 user-service 회원 목록 전체를 페이지 상한 100번까지 다시 읽어 user 가 CPU 한도와 풀 대기에 묻히고, 게이트웨이의 쓰기 토큰 확인이 늦어지다 500·401 로 실패, 읽기 정상). 새 후보, 설계 강도 1단 고정 evaluation.
             "F16-P",
+            # 2026-10-12: banking transfer-service 를 '출금 계좌당 초당 2건' 이상 거래 방지 한도를 더한 릴리스 2.4.0(fault-images/f68-r)으로 롤아웃(한도를 이름 하나의 resilience4j @RateLimiter 로 걸어 모든 계좌의 이체와 commerce 정산이 초당 2건 한 몫을 나눠 쓰고, 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 → banking 이체 502, commerce checkout 502, 합친 부하에 비례). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F68-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

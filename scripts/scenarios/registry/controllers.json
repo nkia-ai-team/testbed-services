@@ -100,7 +100,8 @@
     "F67-H",
     "F60-P",
     "F35-P",
-    "F16-P"
+    "F16-P",
+    "F68-R"
   ],
   "controllers": {
     "F01-R": {
@@ -23788,6 +23789,249 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 이 이미지를 commerce-notification:latest 로 되돌리고 롤아웃 available(상한 180초, 실행기가 확인), 1.3.0 을 쓰는 파드가 없어진 뒤 tb-w1 containerd 에서 1.3.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 옛 notification 프로세스가 내려가면 쌓인 새로 고침 스레드도 함께 사라지고, user 는 요청이 멈추면 스스로 돌아온다(로컬 실측: 매니페스트 notification 으로 바꾼 뒤 user 회복). notification 파드 Ready 는 러너 관측 허용 목록 밖이라 두지 않는다(실행기 cleanup 이 available 을 확인한다). 재시작 고리에서 CrashLoopBackOff 지연이 남을 수 있어 timeout 10m 이다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "10m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F68-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "25m",
+      "preflight": [
+        "kube-context",
+        "kube-node-set",
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "baseline-business-success",
+        "target-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "baseline-business-success"
+          },
+          {
+            "check": "target-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "k8s.image",
+        "companion_refs": [
+          "load.north_south"
+        ],
+        "approved_profile_id": "k8s.image",
+        "levels": [
+          {
+            "id": "approved-fixed-f68-r",
+            "parameters": {
+              "mode": "release",
+              "namespace": "rca-testbed-banking",
+              "deployment": "testbed-transfer",
+              "container": "transfer-service",
+              "baseline_image": "core-banking-transfer:latest",
+              "fault_image": "core-banking-transfer:2.4.0"
+            },
+            "min_hold": "12m",
+            "settle": "60s",
+            "timeout": "20m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "기준선 문서의 이체 단계(nginx → api) 상태. 릴리스는 transfer 만 바꾸고 nginx, api, account 는 그대로라 거절된 이체도 502 로 답한다. 0(연결 불가)은 nginx 나 노드가 죽었을 때만 나온다",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "러너 고정 대상(commerce 진입점 30080/health). compile-plan 이 recovery 에 target_health==200 을 요구해서 둔다. commerce 진입점은 이 고장에도 살아 있다"
+        },
+        {
+          "id": "pod_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-transfer"
+          },
+          "freshness": "30s",
+          "_note": "transfer 파드. 롤아웃(maxSurge 0)이 옛 파드를 먼저 내려 새 파드 기동 약 1분 동안 false, 그 뒤 새 버전이 떠서 true 로 남는다(속도 제한은 넘친 요청을 트랜잭션 전에 거절할 뿐 풀, 프로브, Oracle 을 건드리지 않는다). 회복 조건에만 쓴다"
+        },
+        {
+          "id": "transfer_available_replicas",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.deployment_available_replicas",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer"
+          },
+          "freshness": "30s",
+          "_note": "회복 판정용. cleanup 이 매니페스트 이미지로 되돌린 뒤 1"
+        },
+        {
+          "id": "transfer_restart_count",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.container_restart_count",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "deployment": "testbed-transfer",
+            "container": "transfer-service"
+          },
+          "freshness": "30s",
+          "_note": "새 버전은 기동하고 계속 돈다. 2 이상이면 새 버전이 기동 중 죽는 다른 장애(크래시 루프)다"
+        },
+        {
+          "id": "oracle_ready",
+          "adapter": "kubernetes",
+          "query_id": "kubernetes.pod_ready",
+          "parameters": {
+            "namespace": "rca-testbed-banking",
+            "resource": "testbed-oracle"
+          },
+          "freshness": "30s",
+          "_note": "Oracle 파드. 이 주입은 Oracle 을 건드리지 않는다. 빠지면 DB 장애(F35-R, F01-P 계열)다"
+        },
+        {
+          "id": "transfer_5xx_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "_note": "동반 부하(core-banking transfer-heavy-surge.js 10rps)의 이체(step transfer, 40%, 초당 약 4건, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 새 버전은 모든 출금 계좌의 이체가 한 한도(초당 2건)를 나눠 써 transfer 가 넘친 요청에 500 을 내고, account transferClient 서킷(10건 창 50%, 5초 열림)과 api accountClient 서킷이 그 실패율에서 대부분의 시간 열려 있어 api 가 곧바로 502 를 낸다. 서킷까지 넣은 로컬 전체 사슬 실측(api → account → transfer 2.4.0, 손님 이체 초당 4.35건, 정산 직접 0.45건, 6분)에서 이 비율은 0.90(30초 창 0.84~0.94)",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "freshness": "30s"
+        },
+        {
+          "id": "transfer_5xx_rate_baseline",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.food_create_status_rate",
+          "parameters": {
+            "domain": "core-banking"
+          },
+          "_note": "상주 기준선(loadgen-banking)의 이체(step transfer, 10%, nginx → api → account → transfer) 5xx 비율. 평시 0(2026-10-08 19:33 UTC KST 04:33 기준선 문서 checkout_count 4, business_5xx_rate 0.0), 고장 중 기준선 이체도 account 를 거쳐 약 1.0. 가장 한가한 1 iter/s 에서 30초 창 이체 기대 약 3건이라 창에 이체가 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다. 동반 부하가 끝난 뒤의 회복 판정에 쓴다",
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "transfers-failing-5xx",
+            "observation": "transfer_5xx_rate",
+            "op": "gte",
+            "value": 0.6,
+            "_note": "서킷까지 넣은 로컬 전체 사슬 실측 0.90(30초 창 0.84~0.94, 지휘 세션 이산 사건 모의 0.89)의 아래로 여유를 둔 값. 서킷이 열린 동안은 api 가 곧바로 502 라 비율이 한도 계산(1 - 2/4.8 = 58%)보다 높다"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "min_hold 12m: 롤아웃(옛 파드 먼저 내림, 새 파드 기동 약 1분)과 동반 부하 ramp 2m 뒤에 판정해 롤아웃 순간의 짧은 엔드포인트 공백(F17-H 꼴)만으로 판정되지 않게 한다. timeout 20m. commerce checkout 실패는 판정에 넣지 않는다: banking 서킷이 열린 동안 transfer 로 오는 호출이 한도 아래로 줄어 commerce 정산이 한도를 거의 혼자 쓰므로 정산 실패는 약 0.19(로컬 30초 창 0~0.44)로 낮고 흔들린다. commerce 쪽 증거는 녹화된 로그로 RCA 쪽에서 본다(정답지 must_support)"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 2.5,
+            "_note": "동반 부하 10rps 의 1/4. 거절은 밀리초 안에 끝나 여정이 길어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+          },
+          {
+            "id": "transfer-crashloop-alternative",
+            "observation": "transfer_restart_count",
+            "op": "gte",
+            "value": 2,
+            "_note": "새 transfer 가 떴다가 죽는다면 속도 제한이 아니라 기동 실패나 메모리 고갈 같은 다른 결함이다"
+          },
+          {
+            "id": "oracle-down",
+            "observation": "oracle_ready",
+            "op": "eq",
+            "value": false,
+            "_note": "Oracle 이 빠지면 DB 장애(F35-R, F01-P 계열)다. 이 주입은 Oracle 을 건드리지 않는다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "_note": "transfer 파드 준비 상태는 롤아웃 공백(약 1분) 동안 false 라 배제 조건으로 두지 않는다(F40-H, F42-R 과 같음). 거절이 모든 출금 계좌에 고르게 퍼지는지(계좌별 한도가 아니라 하나의 한도라는 감별)는 녹화된 로그로 RCA 쪽에서 본다(정답지 must_support)"
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "transfer-ready",
+            "observation": "pod_ready",
+            "op": "eq",
+            "value": true
+          },
+          {
+            "id": "transfer-replica-recovered",
+            "observation": "transfer_available_replicas",
+            "op": "eq",
+            "value": 1
+          },
+          {
+            "id": "baseline-transfers-recovered",
+            "observation": "transfer_5xx_rate_baseline",
+            "op": "lt",
+            "value": 0.05,
+            "_note": "판정력을 가진 회복 조건. 매니페스트 버전에는 속도 제한이 없어 기준선 이체가 다시 모두 통과한다. 평시 0.0"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 이 이미지를 core-banking-transfer:latest 로 되돌리고 롤아웃 available(상한 180초), 노드에서 2.4.0 의 이름 참조와 ID 참조 제거까지 마친 뒤 평가한다. 거절된 이체는 트랜잭션 전에 끝나 transfers 행을 남기지 않고 commerce 결제 트랜잭션도 되돌려졌으므로 고칠 데이터가 없다"
       },
       "cleanup": {
         "required": true,

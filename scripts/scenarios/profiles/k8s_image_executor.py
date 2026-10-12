@@ -308,6 +308,19 @@ CONTRACTS = {
         "baseline_image": "commerce-notification:latest",
         "fault_image": "commerce-notification:1.3.0",
     },
+    # 2026-10-12. F68-R: banking transfer-service 를 이상 거래 방지용 '출금 계좌당 초당 2건' 속도 제한을 더한
+    # 릴리스 2.4.0 으로 롤아웃한다. 제한을 @RateLimiter(name = "transferVelocity") 하나로 걸어 계좌별이 아니라
+    # 모든 이체가 한 한도(초당 2건)를 나눠 쓰고, 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 이 된다.
+    # 결함 이미지는 fault-images/f68-r 로 109 docker 에만 빌드한다. transfer 의 다른 릴리스 태그(F17-H 2.1.0,
+    # F42-R 2.2.0, F40-H 2.3.0)와 겹치지 않는다.
+    "F68-R": {
+        "mode": "release",
+        "namespace": "rca-testbed-banking",
+        "deployment": "testbed-transfer",
+        "container": "transfer-service",
+        "baseline_image": "core-banking-transfer:latest",
+        "fault_image": "core-banking-transfer:2.4.0",
+    },
 }
 
 

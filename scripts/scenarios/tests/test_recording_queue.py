@@ -126,7 +126,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-11: 48 → 49. F35-P(운영을 가리킨 로컬 마이그레이션이 banking Oracle 계좌 표를 지워 잔액 조회, 고객 이체, commerce 정산 실패) 후보 추가.
         # 2026-10-11: 49 → 50. F16-P(commerce notification 릴리스가 회원 목록 전체를 이벤트마다 다시 읽어 user-service 가 묻히고 쓰기 토큰 확인 실패) 후보 추가.
         # 2026-10-12: 50 → 49. F44-R 정식 승격(녹화 case-f44-r-v3-f7f70c65).
-        self.assertEqual(stages.count("candidate"), 49)
+        # 2026-10-12: 49 → 50. F68-R(banking transfer 릴리스의 계좌별 속도 제한이 이름 하나의 제한기라 모든 이체가 초당 2건을 나눠 써 banking 이체와 commerce checkout 이 함께 실패) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 50)
 
 
 class RecordingQueueTests(unittest.TestCase):

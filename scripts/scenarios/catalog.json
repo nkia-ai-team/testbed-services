@@ -1580,6 +1580,19 @@
       "load_mode": "fixed",
       "injection_location": "commerce namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F68-R",
+      "slug": "f68-r-banking-transfer-release-velocity-limit-applied-globally",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "banking namespace",
+      "prerequisite": ""
     }
   ]
 }

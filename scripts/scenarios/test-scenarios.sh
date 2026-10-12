@@ -71,7 +71,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 122 → 123. F60-P(후보) 추가.
 # 2026-10-11: 123 → 124. F35-P(후보) 추가.
 # 2026-10-11: 124 → 125. F16-P(후보) 추가.
-[[ "$total" -eq 125 ]]
+# 2026-10-12: 125 → 126. F68-R(후보) 추가.
+[[ "$total" -eq 126 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -193,7 +194,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: ready 97→98. F60-P(food 배차 이벤트 outbox 표를 취소된 인덱스 백필이 치워 배차가 커밋에서 되돌려지고 모든 새 주문 503)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 98→99. F35-P(운영을 가리킨 로컬 마이그레이션이 banking Oracle 계좌 표를 지워 잔액 조회, 고객 이체, commerce 정산이 ORA-00942 로 실패)를 후보(ready + stage candidate)로 추가했다.
 # 2026-10-11: ready 99→100. F16-P(commerce notification 릴리스가 주문 이벤트 수신자를 찾으려고 user-service 회원 목록 전체를 이벤트마다 페이지 상한까지 다시 읽어, 게이트웨이가 쓰기마다 토큰을 확인하는 user-service 가 묻히고 쓰기가 500·401 로 실패)를 후보(ready + stage candidate)로 추가했다.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 100 ]]
+# 2026-10-12: ready 100→101. F68-R(banking transfer 릴리스의 계좌별 속도 제한이 이름 하나의 제한기라 모든 이체가 초당 2건을 나눠 쓰고 넘친 요청이 500, banking 이체와 commerce checkout 이 합친 부하에 비례해 실패)를 후보(ready + stage candidate)로 추가했다.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 101 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -289,7 +291,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-11: 116 → 117. F60-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f60-p)으로 들어왔다.
 # 2026-10-11: 117 → 118. F35-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f35-p)으로 들어왔다.
 # 2026-10-11: 118 → 119. F16-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f16-p)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 119 ]]
+# 2026-10-12: 119 → 120. F68-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f68-r)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 120 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의
