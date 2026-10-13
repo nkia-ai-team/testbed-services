@@ -96,23 +96,23 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | I 인증 의존 실패 | 1 | 2% |
 | J 결함 있는 새 버전 배포 | 5 | 9% |
 | K 네트워크 지연, 손실, 단절 | 2 | 4% |
-| L 데이터 형식 불일치 | 4 | 7% |
+| L 데이터 형식 불일치 | 5 | 9% |
 | M DNS | 1 | 2% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 2% |
 | P 운영 작업의 대상 착오 | 1 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 15, 음식배달 14. 후보 61종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 15, 음식배달 15. 후보 60종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 11개뿐이고(J 5, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R 은 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R 하나뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 11개뿐이고(J 5, G 6. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R 하나뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
 A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 55종):
+정답 위치별 정식 (2-1 정의, 정식 56종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
+| 주문 서비스 | 7 | 13% |
 | 외부 결제 의존 | 6 | 11% |
-| 주문 서비스 | 6 | 11% |
 | 은행 이체 서비스 | 5 | 9% |
 | DB 테이블(은행 계좌) | 3 | 5% |
 | DB 테이블(재고) | 3 | 5% |
@@ -139,7 +139,7 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | 캐시 | 1 | 2% |
 | **결제 경로 합계** | **10** | **18%** |
 
-결제 경로는 정식만으로 18%(18.2%, 10/55)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 18%(17.9%, 10/56)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -202,6 +202,7 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | F48-R | 정식 | 음식배달 | P+L | DB 테이블(인기 메뉴 집계) | 운영자가 food MySQL fooddelivery.menu_popularity_summary(인기 메뉴 집계 캐시 표, 88행)에 restaurant_id 인덱스를 더하는 온라인 인덱스 백필을 시작(그림자 표 _vt_vrp_..., 새 인덱스, 행 복사)했다가 취소, 취소 정리가 그림자 대신 살아 있는 표를 보류 이름 _vt_hld_... 으로 치움(행 보존). restaurant 의 인기 메뉴 조회가 모두 MySQL 1146 Table doesn't exist 로 500, 가게 상세, 메뉴, 검색과 주문은 정상. 롤아웃, 재시작, 설정 변경 없음, DPM 표 수 16→17, 인덱스 수 31→33. 원본 GitHub 2026-07-24(Vitess keyspace 백필 워크플로 취소가 기반 표를 지워 PR 생성만 실패, 변경을 되돌려 즉시 복구) |
 | F49-R | 정식 | 음식배달 | L+J | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.4.0(fault-images/f49-r 패치로 만든 별도 태그)으로 롤아웃. 공개 API 정비로 가게 상세 GET /api/restaurants/{id} 응답의 status 를 문자열 "OPEN" 에서 {code, label} 객체로 바꿈. restaurant 는 상세에 200 으로 답하고 health, 메뉴, 목록, DB 가 그대로라 Ready 를 유지하는데, 이 응답을 공용 RestaurantResponse(status String)로 읽는 order 가 'Error while extracting response for type [com.fooddelivery.common.dto.RestaurantResponse]' 로 해석에 실패, 재시도 3회와 서킷 끝에 주문 생성 전량 502(약 0.6초, 아무것도 쓰지 않음). 가게 둘러보기, 메뉴, 검색, 배달 조회는 정상. 원본 GitHub 2021-10-08(공개 API 출시 중 Codespaces 핵심 API 응답 구조가 의도치 않게 바뀌어 안정 스키마에 기대던 기존 클라이언트가 깨짐, 되돌려 복구) |
 | F33-H | 정식 | 음식배달 | J+F | 배달 서비스 | food dispatch-service 를 릴리스 food-delivery-dispatch:1.6.0(fault-images/f33-h 패치로 만든 별도 태그)으로 롤아웃. 배달 앱 목록의 페이지 번호를 위해 GET /api/deliveries 에 전체 건수(X-Total-Count)를 더하며 목록 쿼리를 Slice 에서 Page 로 바꿔, 목록 요청마다 SELECT COUNT(d1_0.id) FROM dispatches d1_0 WHERE d1_0.status=? 가 끝난 배차 약 174만 항목을 훑음(109 실측 0.44~0.53초). 배달 추적 피크(목록 약 7.2건/초)에서 food MySQL(CPU 0.5) 포화, dispatch Hikari 10개가 COUNT 에 묶여 용량 확인과 배차 요청이 3초 대기 뒤 500, order 재시도와 서킷 끝에 주문 503. 스키마, 인덱스(index_count 31), 설정은 그대로이고 같은 표 만료 스윕의 검사 행 수도 그대로다(F33-R 은 모든 COUNT 와 만료 스윕이 전수). 포화 중 dispatch health 실패로 재시작이 나올 수 있다. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화), 질의 꼴 MIT Open Learning 2026 |
+| F49-H | 정식 | 음식배달 | L+J | 주문 서비스 | food order-service 를 릴리스 food-delivery-order:2.3.0(fault-images/f49-h 패치로 만든 별도 태그)으로 롤아웃. 주문 API 시각 표기를 앱 화면 표준 yyyy-MM-dd HH:mm:ss 로 맞추려고 ObjectMapper 의 LocalDateTime 직렬화기와 역직렬화기를 바꾸고 하류 RestClient 도 같은 ObjectMapper 를 쓰게 해, 바뀌지 않은 dispatch 가 배차를 기록하고 200 과 ISO assignedAt 으로 답하는데 order 가 'Error while extracting response for type [...DispatchResponse]' 로 읽지 못함. 재시도와 dispatch 서킷 끝에 주문 생성 전량 503(주문 롤백, dispatch 에 주인 없는 배차가 남음). order, dispatch 모두 Ready. F49-R(피호출자 restaurant 릴리스)과 같은 '호출자가 하류 응답을 못 읽음' 증상에 정답이 호출자 자신인 H |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -211,7 +212,6 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
-| F49-H | 후보 | 음식배달 | L+J | 주문 서비스 | food order-service 를 릴리스 food-delivery-order:2.3.0(fault-images/f49-h 패치로 만든 별도 태그)으로 롤아웃. 주문 API 시각 표기를 앱 화면 표준 yyyy-MM-dd HH:mm:ss 로 맞추려고 ObjectMapper 의 LocalDateTime 직렬화기와 역직렬화기를 바꾸고 하류 RestClient 도 같은 ObjectMapper 를 쓰게 해, 바뀌지 않은 dispatch 가 배차를 기록하고 200 과 ISO assignedAt 으로 답하는데 order 가 'Error while extracting response for type [...DispatchResponse]' 로 읽지 못함. 재시도와 dispatch 서킷 끝에 주문 생성 전량 503(주문 롤백, dispatch 에 주인 없는 배차가 남음). order, dispatch 모두 Ready. F49-R(피호출자 restaurant 릴리스)과 같은 '호출자가 하류 응답을 못 읽음' 증상에 정답이 호출자 자신인 H |
 | F50-R | 후보 | 은행 | G+B | 쿠버네티스 리소스 할당량 | 운영자가 rca-testbed-banking 네임스페이스에 ResourceQuota compute-resources(hard requests.memory 4Gi)를 걸었는데 떠 있는 파드의 요청 합이 이미 4928Mi 라, 떠 있는 파드는 그대로지만 transfer 일상 재배포(rollout restart, maxSurge 0)가 옛 파드를 내린 뒤 새 파드가 'exceeded quota: compute-resources' 로 거절되어 transfer 파드가 없음. account, api 의 transfer 호출 Connection refused 로 이체와 거래 내역 502, commerce checkout 정산 502. 이미지, 프로브, env 는 그대로, 잔액 조회 정상 |
 | F48-P | 후보 | 음식배달 | P+L | DB 테이블(주문 이벤트 outbox) | 운영자가 food MySQL fooddelivery.order_outbox_events(order 가 주문과 같은 트랜잭션에서 주문 이벤트를 쓰는 outbox 표, 24시간 보존 약 5만 6천 행)에 aggregate_id 인덱스를 더하는 온라인 인덱스 백필을 시작(그림자 표 _vt_vrp_..., 새 인덱스, 행 복사)했다가 취소, 취소 정리가 그림자 대신 살아 있는 표를 보류 이름 _vt_hld_... 으로 치움. createOrder 가 가게, 메뉴, 용량 확인, 배차, 결제를 마친 뒤 outbox INSERT 에서 MySQL 1146 'Table doesn't exist' 로 실패해 주문 트랜잭션이 되돌려지고 주문 생성 전량 500('Failed to record outbox event'), 릴레이 폴링도 2초마다 같은 오류. 주문 조회, 둘러보기, 배달 추적, dispatch, payment 는 정상(실패한 주문의 배차와 결제가 남음). order 와 MySQL 은 Ready, 롤아웃 없음, DPM 표 수 16→17 |
 | F51-R | 후보 | 은행 | P+B | 은행 계좌 서비스 | 운영자의 용량 명령 입력이 잘못되어 요청 경로의 banking account-service Deployment(testbed-account)를 replicas 0 으로 줄임(kubectl scale). 템플릿은 그대로이고 HPA 가 없어 파드가 다시 생기지 않아, testbed-account 엔드포인트가 비고 잔액 조회, 계좌 목록(nginx 502)과 이체(api 'Connection refused', 서킷 열림, 502)가 실패. 거래 내역(api → transfer)과 commerce 정산은 정상(AWS S3 2017-02-28 잘못 입력된 용량 제거 명령 재구성) |
@@ -426,3 +426,4 @@ A, B, D는 각 7개(13%)로 20%에 가깝다. 서비스는 음식배달, 은행 
 - 2026-10-12: F79-R(후보)을 §4-1에 추가. 새 사례군 F79(원본 rust-lang crates.io 2023-07-20 공식 사후 보고 'crates.io Postmortem: Broken Crate Downloads': S3 접근을 object_store 로 옮기는 PR #6834 가 다운로드 리다이렉트 주소를 'CDN 접두어' 와 '경로' 로 이으며 '/' 를 빠뜨려 'static.crates.iocrates/...' 가 되었고, 시험은 운영과 다른 값을 써 통과, 12:17 운영 배포 직후 약 13분 모든 다운로드 실패, 되돌려 복구). 묶음 J(결함 있는 새 버전 배포, 정식 + 후보 19→20, 116 중 17.2%), 정답 위치 결제 서비스(4→5), 결제 경로 합계 13→14(12.1%), 음식배달 38→39. 은행과 음식배달이 38 로 가장 적어 음식배달에서 골랐다. 겉 증상(결제 단계 502, 'PG mock unavailable')이 외부 결제 의존 정답(6)인 F19-S, F06-P 와 같아 '결제가 깨지면 PG 탓' 지름길을 막는 H 성격이다. catalog 와 장부 대조 결과 다른 변동 없음.
 - 2026-10-12: `F49-R` 정식 승격(케이스 `case-f49-r-v3-1af8dad9`). 첫 실행 F49-R-run-1af8dad9 가 검증에서 녹화 가능(주입: 22:36:51 k8s.image 가 testbed-restaurant 를 food-delivery-restaurant:1.4.0 으로 롤아웃, 피해: 주문 생성 5xx 1.0, 2xx 0.0 으로 success 연속 23, 원인 근거: KCM 의 testbed-restaurant 롤아웃과 Pulled food-delivery-restaurant:1.4.0, order 의 RestaurantResponse 해석 실패 ERROR 로그 480건(30일 동안 처음), order POST 502 와 restaurant 200 의 대비, restaurant·MySQL 정상, 주입 전 2시간 주문 생성 정상, must_rule_out 신호와 겹친 실행 없음. 제품은 한 장애를 order 로그 군집과 MySQL 군집, 인시던트 2건으로 갈랐고 order 오류율 APM 이상 이벤트가 없었다). 근거 `~/dev/testbed-ops/verifications/2026-10-12-2338-F49-R-run-1af8dad9.md`. §4-1 → §4, §3 을 정식 54종으로 다시 셈(L 3→4 6%→7%, 분모 54 라 J 8%→7%, 음식배달 12→13, 정답 위치 가게 서비스 0→1 2%, 나머지 비율은 반올림으로 같음, 결제 경로 10 18.9%(10/53)→18.5%(10/54)). 후보는 §4-1 실제 행 수 62종.
 - 2026-10-13: `F33-H` 정식 승격(케이스 `case-f33-h-v3-f19ed3f1`). 첫 실행 F33-H-run-f19ed3f1 이 검증에서 녹화 가능(주입: 06:46:58 k8s.image 가 testbed-dispatch 를 food-delivery-dispatch:1.6.0 으로 롤아웃, 피해: 주문 생성 5xx 0.87~1.0, 2xx 0~0.09 로 success 연속 23, 원인 근거: KCM 의 testbed-dispatch 롤아웃과 Pulled food-delivery-dispatch:1.6.0, index_count 31 유지, 만료 스윕 rowExamined 유지, COUNT digest 평균 rowExamined 1,625 → 142만, dispatch Hikari 대기 초과 ERROR 6,308건, order 용량 확인 실패 ERROR 396건, order POST 503, MySQL Ready, must_rule_out 신호와 겹친 실행 없음. 주의 사항: 녹화 구간 안 평시 05:12:30~05:23 에 OTel 로그·트레이스 수집 공백 약 10분(지표, DPM, syslog 는 정상, 장애 구간과 원인 근거에는 영향 없음). 제품은 한 장애를 promote 군집 4개, 인시던트 4건으로 갈랐다). 근거 `~/dev/testbed-ops/verifications/2026-10-13-0754-F33-H-run-f19ed3f1.md`. §4-1 → §4, §3 을 정식 55종으로 다시 셈(J 4→5 7%→9%, 분모 55 라 F 6%→5%, 음식배달 13→14, 정답 위치 배달 서비스 2→3 4%→5%, DB 테이블(은행 계좌), DB 테이블(재고), 결제 서비스 6%→5%, 나머지 비율은 반올림으로 같음, 결제 경로 10 18.5%(10/54)→18.2%(10/55)). 후보는 §4-1 실제 행 수 61종.
+- 2026-10-13: `F49-H` 정식 승격(케이스 `case-f49-h-v3-b873cb3e`). 첫 실행 F49-H-run-b873cb3e 가 검증에서 녹화 가능(주입: 10:25:02 k8s.image 가 testbed-order 를 food-delivery-order:2.3.0 으로 롤아웃, 피해: 주문 생성 5xx 0.86~1.0, 2xx 0.0 으로 success 연속 24, 원인 근거: KCM 의 testbed-order 롤아웃과 Pulled food-delivery-order:2.3.0, order 의 DispatchResponse 해석 실패 ERROR 로그 675건(application/json 판은 30일 동안 처음), 실패 주문 387개 전부에 dispatch 'Dispatched courier' 로그, order POST 503 과 dispatch 200 의 대비, dispatch·MySQL 정상, 주입 전 2시간 주문 생성 정상, must_rule_out 신호와 겹친 실행 없음. 제품은 한 장애를 food 군집 5개, 인시던트 3건으로 갈랐고 회복 뒤 창으로 order 오류율을 0.0% 로 읽었다). 근거 `~/dev/testbed-ops/verifications/2026-10-13-1126-F49-H-run-b873cb3e.md`. §4-1 → §4, §3 을 정식 56종으로 다시 셈(L 4→5 7%→9%, 음식배달 14→15, 정답 위치 주문 서비스 6→7 11%→13%, 나머지 비율은 반올림으로 같음, 결제 경로 10 18.2%(10/55)→17.9%(10/56)). 후보는 §4-1 실제 행 수 60종.
