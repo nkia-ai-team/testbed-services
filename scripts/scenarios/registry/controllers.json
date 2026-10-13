@@ -13659,7 +13659,7 @@
             "deployment": "testbed-transfer",
             "container": "transfer-service"
           },
-          "_note": "새 파드가 만들어지지 않아 재시작 수가 오르지 않는다. 2 이상이면 파드는 생겼고 새 컨테이너가 기동 중 죽는 다른 장애(크래시 루프)다",
+          "_note": "참고용. 고장 중에는 파드가 0개라 러너 프로브가 'payment pod is unavailable' 오류를 내는 것이 정상이다(2026-10-13 F50-R-run-cf34580f). 그래서 must_rule_out 에 두지 않는다(두면 안전 판정이 끝까지 미확인으로 남아 safety_observation_unavailable 로 abort). 크래시 루프 대안은 119 검증에서 파드 부재(Scheduled, Started, BackOff 없음)로 배제한다",
           "freshness": "30s"
         },
         {
@@ -13721,13 +13721,6 @@
             "op": "gte",
             "value": 0.2,
             "_note": "nginx → account 직행 잔액 조회까지 실패하면 transfer 가 아니라 account 자체나 Oracle 쪽 장애(F35-R 꼴)다. 할당량은 떠 있는 account, Oracle 을 건드리지 않는다"
-          },
-          {
-            "id": "transfer-crashloop-alternative",
-            "observation": "transfer_restart_count",
-            "op": "gte",
-            "value": 2,
-            "_note": "컨테이너가 떴다가 죽는다면 할당량 거절이 아니라 새 파드의 기동 실패다"
           }
         ],
         "consecutive_ticks": 2

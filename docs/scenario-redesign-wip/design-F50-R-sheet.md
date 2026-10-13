@@ -173,6 +173,8 @@ summary: 운영자가 rca-testbed-banking 에 이미 쓰는 양(4928Mi)보다 �
 
 새 관측 쿼리와 러너 변경은 없다. 새 실행기 `k8s.quota`(`scripts/scenarios/profiles/k8s_quota_executor.py`)를 더했다. 실행기는 `kubectl create quota` 로 할당량 하나를 만들고 집계를 기다린 뒤 `kubectl rollout restart` 한 번을 낸다. 이미지, 프로브, env, 자원, Service 는 건드리지 않고 아무것도 지우지 않는다(cleanup 의 할당량 삭제만).
 
+- **2026-10-13 운영 보강 1회차: 러너 must_rule_out 에서 `transfer-crashloop-alternative`(transfer_restart_count ≥ 2)를 뺀다**(controllers.json `F50-R`, 관측 `transfer_restart_count` 노트). 강도(hard requests.memory=4Gi, 고정 단 approved-fixed-f50-r), 주입 대상과 수단(k8s.quota + rollout restart), 동반 부하, success, 나머지 must_rule_out 두 개(load-not-delivered, account-path-failing), abort, recovery, 정답지 must_rule_out 은 그대로다. 위 표의 "transfer 재시작 수 장애 중 0(파드 없음)"은 틀린 가정이었다: 러너 `kubernetes.container_restart_count` 는 삭제 중이 아닌 파드가 하나도 없으면 0 이 아니라 'payment pod is unavailable' 오류(unusable)를 낸다. 그래서 고장 내내 이 조건이 미확인이었고, any 집합이 None 이 되어 안전 판정이 막힌 채 timeout 20m 에 `safety_observation_unavailable` 로 abort 됐다. 근거 `~/dev/testbed-ops/verifications/2026-10-13-1450-F50-R-run-cf34580f.md`: 주입(13:56:52 ScalingReplicaSet 두 줄과 FailedCreate 'exceeded quota: compute-resources'), 피해(이체 5xx 1.0, 성공 연속 34), must_support ①~⑤가 모두 남았고 설계와 다른 신호는 없었다. 66 tick 모두 `transfer_restart_count` 오류였고 cleanup 뒤 파드가 생기자 0 으로 읽혔다. 크래시 루프 대안은 119 검증에서 파드 부재(Scheduled, Started, BackOff, transfer 로그 없음)로 배제한다. 같은 transfer 고장, 같은 동반 부하인 F65-R 도 must_rule_out 을 이 두 개로 둔다
+
 ## 10. 설계 원칙 §5 점검표
 
 - [x] 원본 실제 사례(mybinder.org 2022 운영팀 사고 보고, 함께 볼 Google 2020-12-14)와 요소별 대응표가 있고, 기전("할당량 객체가 네임스페이스가 찼다고 말해 API 서버가 새 파드를 모두 거절, 새 파드가 필요한 기능이 멈춤, 객체를 지우면 회복")이 같다. 바꾼 두 가지(숫자가 틀린 이유, 새 파드가 필요한 이유)는 §2 에 적었다 (원칙 1)
