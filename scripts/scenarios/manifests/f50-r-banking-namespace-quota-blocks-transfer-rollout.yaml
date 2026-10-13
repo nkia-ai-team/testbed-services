@@ -3,7 +3,7 @@
   "id": "F50-R",
   "slug": "f50-r-banking-namespace-quota-blocks-transfer-rollout",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
