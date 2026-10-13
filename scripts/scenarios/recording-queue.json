@@ -19,7 +19,8 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-09",
       "attempts": 0,
-      "status": "waiting"
+      "status": "hold",
+      "hold_reason": "러너 문제(인프라). 109 호스트가 2026-10-13 02:00Z, 02:07Z 에 재부팅됐고(last -x reboot, 01:08Z~02:33Z 접속 불가) libvirt VM 5대(tb-cp, tb-runner, tb-w1, tb-w2, tb-w3)가 모두 shut off, autostart 없음. loadgen VM nkia@192.168.122.206 이 No route to host 라 러너 큐 cycle-1-01882806 이 preflight 에서 paused(주입 전, current_run_id 없음). reason 원문: preflight probe failed for F33-H: Command '['ssh', '-i', '/root/.ssh/tb_key', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', 'nkia@192.168.122.206', 'systemctl is-active loadgen-commerce; sudo journalctl -u loadgen-commerce -n 20 --no-pager']' returned non-zero exit status 255. 사람 조치: 109 에서 VM 과 테스트베드 클러스터, loadgen-commerce 를 다시 올리고 readiness(preflight_signals) 통과를 확인한 뒤 paused 큐를 resume 하거나 끝내고 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 근거: ~/dev/testbed-ops/operator/log.md 2026-10-13T02:33Z 이후"
     },
     {
       "scenario_id": "F49-H",
