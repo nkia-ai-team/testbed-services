@@ -3,7 +3,7 @@
   "id": "F40-H",
   "slug": "f40-h-banking-transfer-release-whole-won-check-rejects-commerce-settlement",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
