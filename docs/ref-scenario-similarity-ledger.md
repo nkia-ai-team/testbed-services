@@ -94,33 +94,33 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | G 설정 오배포 | 7 | 12% |
 | H 데이터가 조용히 틀어짐 | 2 | 3% |
 | I 인증 의존 실패 | 1 | 2% |
-| J 결함 있는 새 버전 배포 | 5 | 9% |
+| J 결함 있는 새 버전 배포 | 5 | 8% |
 | K 네트워크 지연, 손실, 단절 | 2 | 3% |
-| L 데이터 형식 불일치 | 5 | 9% |
+| L 데이터 형식 불일치 | 5 | 8% |
 | M DNS | 1 | 2% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 2% |
-| P 운영 작업의 대상 착오 | 2 | 3% |
+| P 운영 작업의 대상 착오 | 3 | 5% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 16, 음식배달 16. 후보 58종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 17, 음식배달 16. 후보 57종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 12개뿐이고(J 5, G 7. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P 둘뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 12개뿐이고(J 5, G 7. 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R 셋뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
 A, B, D, G는 각 7개(12%)로 20%에 가깝다. 서비스는 음식배달, 은행 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 58종):
+정답 위치별 정식 (2-1 정의, 정식 59종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
 | 주문 서비스 | 7 | 12% |
 | 외부 결제 의존 | 6 | 10% |
-| 은행 이체 서비스 | 5 | 9% |
+| 은행 이체 서비스 | 5 | 8% |
 | DB 테이블(은행 계좌) | 3 | 5% |
 | DB 테이블(재고) | 3 | 5% |
 | 결제 서비스 | 3 | 5% |
 | 배달 서비스 | 3 | 5% |
-| 노드, 디스크 | 5 | 9% |
+| 노드, 디스크 | 5 | 8% |
 | DB 인스턴스 | 2 | 3% |
-| 은행 계좌 서비스 | 2 | 3% |
+| 은행 계좌 서비스 | 3 | 5% |
 | 재고 서비스 | 2 | 3% |
 | DB 계정 | 1 | 2% |
 | DB 테이블(가게) | 1 | 2% |
@@ -141,7 +141,7 @@ A, B, D, G는 각 7개(12%)로 20%에 가깝다. 서비스는 음식배달, 은�
 | 쿠버네티스 리소스 할당량 | 1 | 2% |
 | **결제 경로 합계** | **10** | **17%** |
 
-결제 경로는 정식만으로 17%(17.2%, 10/58)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 17%(16.9%, 10/59)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -207,6 +207,7 @@ A, B, D, G는 각 7개(12%)로 20%에 가깝다. 서비스는 음식배달, 은�
 | F49-H | 정식 | 음식배달 | L+J | 주문 서비스 | food order-service 를 릴리스 food-delivery-order:2.3.0(fault-images/f49-h 패치로 만든 별도 태그)으로 롤아웃. 주문 API 시각 표기를 앱 화면 표준 yyyy-MM-dd HH:mm:ss 로 맞추려고 ObjectMapper 의 LocalDateTime 직렬화기와 역직렬화기를 바꾸고 하류 RestClient 도 같은 ObjectMapper 를 쓰게 해, 바뀌지 않은 dispatch 가 배차를 기록하고 200 과 ISO assignedAt 으로 답하는데 order 가 'Error while extracting response for type [...DispatchResponse]' 로 읽지 못함. 재시도와 dispatch 서킷 끝에 주문 생성 전량 503(주문 롤백, dispatch 에 주인 없는 배차가 남음). order, dispatch 모두 Ready. F49-R(피호출자 restaurant 릴리스)과 같은 '호출자가 하류 응답을 못 읽음' 증상에 정답이 호출자 자신인 H |
 | F50-R | 정식 | 은행 | G+B | 쿠버네티스 리소스 할당량 | 운영자가 rca-testbed-banking 네임스페이스에 ResourceQuota compute-resources(hard requests.memory 4Gi)를 걸었는데 떠 있는 파드의 요청 합이 이미 4928Mi 라, 떠 있는 파드는 그대로지만 transfer 일상 재배포(rollout restart, maxSurge 0)가 옛 파드를 내린 뒤 새 파드가 'exceeded quota: compute-resources' 로 거절되어 transfer 파드가 없음. account, api 의 transfer 호출 Connection refused 로 이체와 거래 내역 502, commerce checkout 정산 502. 이미지, 프로브, env 는 그대로, 잔액 조회 정상 |
 | F48-P | 정식 | 음식배달 | P+L | DB 테이블(주문 이벤트 outbox) | 운영자가 food MySQL fooddelivery.order_outbox_events(order 가 주문과 같은 트랜잭션에서 주문 이벤트를 쓰는 outbox 표, 24시간 보존 약 5만 6천 행)에 aggregate_id 인덱스를 더하는 온라인 인덱스 백필을 시작(그림자 표 _vt_vrp_..., 새 인덱스, 행 복사)했다가 취소, 취소 정리가 그림자 대신 살아 있는 표를 보류 이름 _vt_hld_... 으로 치움. createOrder 가 가게, 메뉴, 용량 확인, 배차, 결제를 마친 뒤 outbox INSERT 에서 MySQL 1146 'Table doesn't exist' 로 실패해 주문 트랜잭션이 되돌려지고 주문 생성 전량 500('Failed to record outbox event'), 릴레이 폴링도 2초마다 같은 오류. 주문 조회, 둘러보기, 배달 추적, dispatch, payment 는 정상(실패한 주문의 배차와 결제가 남음). order 와 MySQL 은 Ready, 롤아웃 없음, DPM 표 수 16→17 |
+| F51-R | 정식 | 은행 | P+B | 은행 계좌 서비스 | 운영자의 용량 명령 입력이 잘못되어 요청 경로의 banking account-service Deployment(testbed-account)를 replicas 0 으로 줄임(kubectl scale). 템플릿은 그대로이고 HPA 가 없어 파드가 다시 생기지 않아, testbed-account 엔드포인트가 비고 잔액 조회, 계좌 목록(nginx 502)과 이체(api 'Connection refused', 서킷 열림, 502)가 실패. 거래 내역(api → transfer)과 commerce 정산은 정상(AWS S3 2017-02-28 잘못 입력된 용량 제거 명령 재구성) |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -216,7 +217,6 @@ A, B, D, G는 각 7개(12%)로 20%에 가깝다. 서비스는 음식배달, 은�
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
-| F51-R | 후보 | 은행 | P+B | 은행 계좌 서비스 | 운영자의 용량 명령 입력이 잘못되어 요청 경로의 banking account-service Deployment(testbed-account)를 replicas 0 으로 줄임(kubectl scale). 템플릿은 그대로이고 HPA 가 없어 파드가 다시 생기지 않아, testbed-account 엔드포인트가 비고 잔액 조회, 계좌 목록(nginx 502)과 이체(api 'Connection refused', 서킷 열림, 502)가 실패. 거래 내역(api → transfer)과 commerce 정산은 정상(AWS S3 2017-02-28 잘못 입력된 용량 제거 명령 재구성) |
 | F43-P | 후보 | 음식배달 | J+E | 배달 서비스 | food dispatch-service 를 릴리스 food-delivery-dispatch:1.7.0(fault-images/f43-p 패치로 만든 별도 태그)으로 롤아웃. order 의 재시도로 같은 주문에 배달원을 두 번 잡지 않으려고 배차 요청 앞에 더한 중복 배차 확인이 DataSource 에서 연결을 직접 빌리고 중복을 찾아 409 를 던질 때만 닫아, 보통의 배차마다 연결 1개가 새고 Hikari 풀(10)이 배차 약 10건 만에 total=10, active=10, idle=0(대기 0~3)으로 굳음. 용량 확인, 배차, 배달 추적, 배치, health 가 연결 대기 3초 끝에 실패해 order 가 'Failed to check dispatch capacity: 500' 뒤 재시도와 서킷 끝에 주문을 503 으로 거절하고, dispatch 는 readiness 이탈과 liveness 재시작을 되풀이(재시작이 연결을 풀어 배차 약 10건 동안만 회복). MySQL 은 한가함(idle 세션만 약 10 증가). 풀 크기, 대기 시간, 프로브, 자원, 설정은 그대로 |
 | F40-H | 후보 | 은행 | L+J | 은행 이체 서비스 | banking transfer-service 를 릴리스 core-banking-transfer:2.3.0(fault-images/f40-h 패치로 만든 별도 태그)으로 롤아웃. 요청 검증 강화로 더한 '원화 금액은 원 단위 정수만' 확인이 값이 아니라 BigDecimal 표기 자릿수(scale)로 판정해, 금액을 소수 둘째 자리까지 적어 보내는 commerce 정산 이체(27000.00 꼴)를 모두 400 'amount must be in whole won' 으로 거절. commerce payment 가 502 로 바꾸고 롤백해 checkout 이 전부 502, 정각 정산 배치도 실패. banking 자체 정수 금액 이체는 계속 완료되고 transfer 는 Ready, Oracle 평시. F40-R 과 같은 증상(은행 400 → checkout 502)에 다른 원인(H) |
 | F52-R | 후보 | 은행 | P+B | 노드, 디스크 | 운영자의 이미지 보존 정리가 banking 워커 tb-w2 containerd 에서 '레지스트리 다이제스트가 없는 = 지난 빌드' 규칙으로 앱 이미지를 지웠는데, 이 테스트베드의 banking 앱 이미지는 레지스트리 없이 ctr import 로 적재되어 다이제스트가 없어 쓰고 있는 core-banking-api, account, transfer, ledger:latest 가 모두 지워짐(이미지마다 sudo ctr images rm, containerd ImageDelete). 떠 있는 컨테이너는 스냅숏으로 그대로지만 transfer 일상 재배포(rollout restart, maxSurge 0)가 옛 파드를 내린 뒤 새 파드가 ErrImageNeverPull 로 컨테이너를 못 만들어 transfer 파드가 없음. account, api 의 transfer 호출 Connection refused 로 이체와 거래 내역 502, commerce checkout 정산 502. 파드 템플릿(이미지 이름 :latest), replicas, 할당량은 그대로, 잔액 조회 정상. 원본 Logto 2023-12-17(자동 이미지 보존 작업이 '태그 없는 옛 이미지' 규칙으로 운영 이미지를 지워 서비스가 이미지를 가져오지 못함) |
@@ -431,3 +431,4 @@ A, B, D, G는 각 7개(12%)로 20%에 가깝다. 서비스는 음식배달, 은�
 - 2026-10-13: `F49-H` 정식 승격(케이스 `case-f49-h-v3-b873cb3e`). 첫 실행 F49-H-run-b873cb3e 가 검증에서 녹화 가능(주입: 10:25:02 k8s.image 가 testbed-order 를 food-delivery-order:2.3.0 으로 롤아웃, 피해: 주문 생성 5xx 0.86~1.0, 2xx 0.0 으로 success 연속 24, 원인 근거: KCM 의 testbed-order 롤아웃과 Pulled food-delivery-order:2.3.0, order 의 DispatchResponse 해석 실패 ERROR 로그 675건(application/json 판은 30일 동안 처음), 실패 주문 387개 전부에 dispatch 'Dispatched courier' 로그, order POST 503 과 dispatch 200 의 대비, dispatch·MySQL 정상, 주입 전 2시간 주문 생성 정상, must_rule_out 신호와 겹친 실행 없음. 제품은 한 장애를 food 군집 5개, 인시던트 3건으로 갈랐고 회복 뒤 창으로 order 오류율을 0.0% 로 읽었다). 근거 `~/dev/testbed-ops/verifications/2026-10-13-1126-F49-H-run-b873cb3e.md`. §4-1 → §4, §3 을 정식 56종으로 다시 셈(L 4→5 7%→9%, 음식배달 14→15, 정답 위치 주문 서비스 6→7 11%→13%, 나머지 비율은 반올림으로 같음, 결제 경로 10 18.2%(10/55)→17.9%(10/56)). 후보는 §4-1 실제 행 수 60종.
 - 2026-10-13: `F50-R` 정식 승격(케이스 `case-f50-r-v3-75ae96d0`). 보강 1회차(95124ff, must_rule_out 2개) 뒤 재실행 F50-R-run-75ae96d0 이 검증에서 녹화 가능(주입: 19:49:15 k8s.quota 가 rca-testbed-banking 에 ResourceQuota compute-resources(hard requests.memory 4Gi)를 만들고 testbed-transfer 를 rollout restart, 피해: 이체 5xx 1.0 으로 success 연속 26, 원인 근거: 새 ReplicaSet testbed-transfer-76f47c7885 의 KCM FailedCreate 'exceeded quota: compute-resources' 가 고장 내내 반복, 새 RS 스펙은 restartedAt 주석만 다르고 파드 레코드 없음, account, api 의 testbed-transfer Connection refused 1,976건(평시 0), commerce-payment 정산 5xx 11/11, 잔액 조회 실패 0, must_rule_out 신호와 겹친 실행 없음, 직전 실행 F50-R-run-c0369c40 이 건 재실행 조건(t1 ≥ 19:20:19, 덤프 평시 시작 ≥ 17:20:19) 충족. 주의 사항: 덤프 `lucida_events_local` 의 18:38:53 trace-anomaly 이벤트 10건은 앞 실행 F50-R-run-c0369c40 고장 구간을 계산한 17:38:53 일괄 결과의 재방출이고, 그것을 담은 군집 804b61ca 와 장애 중(20:12:28) 승격된 인시던트 e120a3c9 는 앞 실행 잔재다(이번 시나리오의 근거가 아니며 덤프는 고치지 않았다). 평시 창의 인시던트 1d19a073, 70c55e5e(ledger MISMATCH 배경)와 185d8a37(평시 api JVM 메모리 군집의 장애 중 승격)도 이번 시나리오의 근거가 아니다. 제품은 한 장애를 promote 군집 3개, 인시던트 3건으로 갈랐다). 근거 `~/dev/testbed-ops/verifications/2026-10-13-2053-F50-R-run-75ae96d0.md`. §4-1 → §4, §3 을 정식 57종으로 다시 셈(G 6→7 11%→12%, 분모 57 이라 A, B, D 13%→12%, 주문 서비스 13%→12%, 은행 15→16, 정답 위치 쿠버네티스 리소스 할당량 0→1 2%, 나머지 비율은 반올림으로 같음, 결제 경로 10 17.9%(10/56)→17.5%(10/57)). 후보는 §4-1 실제 행 수 59종.
 - 2026-10-14: `F48-P` 정식 승격(케이스 `case-f48-p-v3-3667031d`). 첫 실행 F48-P-run-3667031d 가 검증에서 녹화 가능(주입: 23:27:06 db.ddl 이 fooddelivery.order_outbox_events 를 그림자 표 복사 뒤 보류 이름 _vt_hld_... 으로 전환, 피해: 기준선 주문 생성 2xx 0.0, 5xx 0.78~1.0 으로 success 연속 11, 원인 근거: order 로그 1146 "Table 'fooddelivery.order_outbox_events' doesn't exist" WARN·ERROR 각 843건(덤프 평시 0건)과 2초 주기 스케줄러 ERROR 459건, POST /api/orders 500 스팬 42건이 모두 outbox INSERT 예외, 'Created order' 356건 대 'Recorded outbox event' 0건, dispatch 'Dispatched courier'·payment 'Processed payment' 각 356건 계속, DPM table_count 16→17·index_count 31→34(23:28 분, 23:43 원복), KCM rca-testbed-food 0건, order·MySQL Ready, Hikari 대기 0, must_rule_out 신호와 겹친 실행 없음, 주입 전 주문 생성 5xx 0. 제품은 한 장애를 order log 군집 4개와 MySQL stream 군집으로 갈라 인시던트 3건(f3db7948, 7625dfc8, 3a8045c2)을 냈고, 판정 근거가 주입 중 order 오류율 57~100% 를 "0.0%(평소 7.6%)"로 읽었다). 근거 `~/dev/testbed-ops/verifications/2026-10-14-0029-F48-P-run-3667031d.md`. §4-1 → §4, §3 을 정식 58종으로 다시 셈(P 1→2 2%→3%, 분모 58 이라 C 11%→10%, E, H, K 4%→3%, 음식배달 15→16, 정답 위치 DB 테이블(주문 이벤트 outbox) 0→1 2%, 외부 결제 의존 11%→10%, DB 인스턴스, 은행 계좌 서비스, 재고 서비스 4%→3%, 나머지 비율은 반올림으로 같음, 결제 경로 10 17.5%(10/57)→17.2%(10/58)). 후보는 §4-1 실제 행 수 58종.
+- 2026-10-14: `F51-R` 정식 승격(케이스 `case-f51-r-v3-0c3126f0`). 첫 실행 F51-R-run-0c3126f0 이 검증에서 녹화 가능(주입: 02:57:20 k8s.scale 이 rca-testbed-banking Deployment testbed-account 를 replicas 1→0 으로 줄임, 피해: 주입 중 49틱 내내 이체 5xx 1.0, 잔액 조회 실패율 1.0 으로 success 연속 25, 원인 근거: KCM 'Scaled down replica set testbed-account-d466dc8d4 to 0 from 1'(02:57:21) 앞뒤에 scale up 없음, PG ReplicaSet 레코드 replicas 0 에 템플릿 그대로, account 파드 Killing 뒤 생성 이벤트 없음, account 로그와 스팬 15분 끊김, api 'Connection refused' 516건과 서킷 OPEN 5,181건(평시 0), 거래 내역 5xx 0, must_rule_out 신호와 겹친 실행 없음, 주입 전 이체와 잔액 조회 정상. 제품은 같은 장애의 첫 로그 이벤트를 군집 3개로 갈랐고, 평시 군집 3개가 장애 중 promote 돼 인시던트가 3건 더 생겼으며, api 오류율이 0 에서 47~100% 로 뛰었는데 지표 이상 이벤트는 없었다). 근거 `~/dev/testbed-ops/verifications/2026-10-14-0400-F51-R-run-0c3126f0.md`. §4-1 → §4, §3 을 정식 59종으로 다시 셈(P 2→3 3%→5%, 분모 59 라 J, L 9%→8%, 은행 16→17, 정답 위치 은행 계좌 서비스 2→3 3%→5%, 은행 이체 서비스, 노드, 디스크 9%→8%, 나머지 비율은 반올림으로 같음, 결제 경로 10 17.2%(10/58)→16.9%(10/59)). 후보는 §4-1 실제 행 수 57종.
