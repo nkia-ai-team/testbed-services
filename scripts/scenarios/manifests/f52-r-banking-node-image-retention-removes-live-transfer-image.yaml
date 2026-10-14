@@ -3,7 +3,7 @@
   "id": "F52-R",
   "slug": "f52-r-banking-node-image-retention-removes-live-transfer-image",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
