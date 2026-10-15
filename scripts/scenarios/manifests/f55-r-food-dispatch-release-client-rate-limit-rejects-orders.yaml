@@ -3,7 +3,7 @@
   "id": "F55-R",
   "slug": "f55-r-food-dispatch-release-client-rate-limit-rejects-orders",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
