@@ -105,16 +105,28 @@ NMS 스위치 5대, 서버 192.168.200.57(지금 process_snapshot 의 대부분�
 - [x] 이미 끊긴 데이터 발견과 복구 (워커 119용 SMS 에이전트, 10-15)
 - [ ] 결정 D1~D7 (§5)
 
-### 1단계: 66 기반
+### 1단계: 66 기반 (2026-10-15 완료, 포트 포워딩과 전환 날 항목 제외)
 
-- [ ] Proxmox 에 내부 NAT 브리지(192.168.122.0/24, 게이트웨이 .1) 구성
-- [ ] x86 Ubuntu 24.04 cloud image 로 VM 5대 생성, 디스크는 `vmdata`
-- [ ] VM 자동 시작 켜기 (109 에서는 꺼져 있어 10-13 재부팅 뒤 사람이 켜야 했다)
-- [ ] 사용자 nkia, tb_key 공개키, NOPASSWD sudo
-- [ ] 워커 도구: containerd, ctr, crictl, fio, stress-ng, python3, iptables(nft), br_netfilter, `net.bridge.bridge-nf-call-iptables=1`, conntrack
-- [ ] 워커 정적 경로 `192.168.230.0/24 via 192.168.200.1` (119 DPM 수집에 필요, 109 에서는 `/etc/netplan/99-testbed-230-route.yaml`)
-- [ ] 66 호스트(200.66)의 포트 포워딩: DB NodePort 3개(30432, 30308, 30236)를 각 워커로, 러너 API(:8091)를 tb-ops 로. Proxmox 표준 방식(`/etc/network/interfaces` 의 masquerade, DNAT 규칙)으로 둔다
-- [ ] 워커에 전환 날 쓸 두 번째 NIC(vmbr0)를 미리 달아 두되 IP 는 비워 둔다
+- [x] Proxmox 에 내부 NAT 브리지 `vmbr1`(192.168.122.1/24) 구성. 설정은 `/etc/network/interfaces.d/tb-nat`(masquerade 포함), `vmbr0` 은 건드리지 않았다. IP 전달은 `/etc/sysctl.d/99-tb-forward.conf`
+- [x] x86 Ubuntu 24.04 cloud image 로 템플릿(9000 `tb-ubuntu2404-tpl`)을 만들고 VM 6대를 전체 복제, 디스크는 `vmdata`
+
+  | VMID | 이름 | vCPU | 메모리 | 디스크 | 내부 IP |
+  |---|---|---|---|---|---|
+  | 101 | tb-cp | 2 | 4G | 40G | 192.168.122.77 |
+  | 102 | tb-w1 | 4 | 8G | 100G | 192.168.122.184 |
+  | 103 | tb-w2 | 4 | 8G | 100G | 192.168.122.11 |
+  | 104 | tb-w3 | 4 | 8G | 100G | 192.168.122.14 |
+  | 105 | tb-runner | 2 | 4G | 40G | 192.168.122.206 |
+  | 106 | tb-ops | 8 | 16G | 200G | 192.168.122.20 |
+
+  CPU, 메모리는 109 와 같다(D2). 디스크는 thin 이라 109(38G)보다 넉넉히 잡았다(109 tb-w2 는 Oracle 추적 파일로 70% 를 넘나들었다). IP 는 cloud-init 고정값
+- [x] VM 자동 시작(`onboot=1`, 순서 cp → 워커 → runner, ops)
+- [x] 사용자 nkia, tb_key 공개키와 104 운영자 키, NOPASSWD sudo(cloud-init 기본 사용자). 접속은 `ssh -J root@192.168.200.66 nkia@192.168.122.<ip>`
+- [x] 공통 도구: qemu-guest-agent, jq, curl, python3, iptables, conntrack, `br_netfilter`, `net.bridge.bridge-nf-call-iptables=1`, `ip_forward=1`. 워커는 fio 3.36, stress-ng 0.17.06(109 와 같은 판)
+- [x] 6대 모두 인터넷과 119(:18090) 연결 확인
+- [ ] containerd, ctr, crictl 은 2단계 클러스터 설치 때
+- [ ] 66 호스트(200.66)의 포트 포워딩: DB NodePort 3개(30432, 30308, 30236)를 각 워커로, 러너 API(:8091)를 tb-ops 로. 3단계 관측 연결 때 둔다
+- 워커의 두 번째 NIC(vmbr0)와 `192.168.230.0/24 via 192.168.200.1` 정적 경로는 6단계 전환 날 IP 와 함께 단다(NIC 는 Proxmox 에서 켜진 채로 붙일 수 있다)
 
 ### 2단계: 클러스터와 앱
 
@@ -210,3 +222,5 @@ NMS 스위치 5대, 서버 192.168.200.57(지금 process_snapshot 의 대부분�
 - 2026-10-15: D1 결정(66 에 새 VM, 새 사내망 IP). D4 중 128 은 66 테스트베드도 계속 받기로 결정.
 - 2026-10-15: D3 결정(러너, 팬아웃, 빌드 docker 는 별도 VM).
 - 2026-10-15: D1 을 (나)로 바꿨다. 사내망 VM IP 는 인프라 담당자 요청이 필요하다는 66 관리자 답을 듣고, 109 워커 IP 3개를 전환 날 넘겨받기로 했다. 새 IP 0개.
+
+- 2026-10-15: 1단계 완료. 66 에 내부망 vmbr1 과 VM 6대(x86 Ubuntu 24.04)를 만들고 기본 도구를 깔았다. 녹화 중인 109 는 건드리지 않았다.
