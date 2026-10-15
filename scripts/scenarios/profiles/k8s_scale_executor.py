@@ -66,6 +66,11 @@ SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; deploy="$3"; from="$4"; to="$5"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state="$state_root/${ns}-${deploy}-scale"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 replicas() { "${k[@]}" get deploy "$deploy" -o jsonpath='{.spec.replicas}'; }
@@ -101,7 +106,7 @@ case "$action" in
     [[ -e "$state" ]] || exit 0
     original=$(cat "$state"); [[ "$original" == "$from" ]]
     "${k[@]}" scale deploy "$deploy" --replicas="$original" >/dev/null
-    healthy 180s
+    healthy "$cleanup_wait"
     rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(replicas)" == "$from" ]]; healthy 1s ;;
   *) exit 2 ;;

@@ -72,6 +72,11 @@ SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; deploy="$4"; container="$5"; baseline="$6"; fault="$7"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state="$state_root/${scenario_id}-cpu-limit"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 field() { "${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.spec.containers[?(@.name=='$container')].resources.$1.cpu}"; }
@@ -102,7 +107,7 @@ case "$action" in
       if "${k[@]}" set resources deploy "$deploy" -c "$container" "${restore[@]}" >/dev/null; then ok=1; break; fi
       sleep 2
     done; [[ -n "$ok" ]]
-    "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null; rm -f "$state" ;;
+    "${k[@]}" rollout status deploy/"$deploy" --timeout="$cleanup_wait" >/dev/null; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(field limits)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
   *) exit 2 ;;
 esac

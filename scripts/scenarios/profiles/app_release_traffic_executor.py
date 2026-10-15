@@ -51,13 +51,18 @@ SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; service="$4"; baseline_app="$5"; fault_app="$6"; deployment="$7"; configmap="$8"; node="$9"; image="${10}"; wrong_price="${11}"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state="$state_root/${scenario_id}-pricing-service-selector.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 selector() { "${k[@]}" get svc "$service" -o json | jq -cS '.spec.selector'; }
 baseline_json="$(jq -cn --arg app "$baseline_app" '{app:$app}')"
 fault_json="$(jq -cn --arg app "$fault_app" '{app:$app}')"
 resources_absent() { ! "${k[@]}" get deploy "$deployment" >/dev/null 2>&1 && ! "${k[@]}" get configmap "$configmap" >/dev/null 2>&1; }
-original_ready() { "${k[@]}" rollout status deploy/testbed-pricing --timeout=180s >/dev/null; }
+original_ready() { "${k[@]}" rollout status deploy/testbed-pricing --timeout="${1:-180s}" >/dev/null; }
 apply_fault_release() {
   "${k[@]}" apply -f - >/dev/null <<YAML
 apiVersion: v1
@@ -124,7 +129,7 @@ case "$action" in
     ;;
   cleanup)
     [[ -e "$state" ]] || exit 0
-    restore_selector; original_ready
+    restore_selector; original_ready "$cleanup_wait"
     "${k[@]}" delete deploy "$deployment" --ignore-not-found --wait=true >/dev/null
     "${k[@]}" delete configmap "$configmap" --ignore-not-found --wait=true >/dev/null
     resources_absent; rm -f "$state"

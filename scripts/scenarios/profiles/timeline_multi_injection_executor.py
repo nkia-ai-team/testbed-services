@@ -155,6 +155,11 @@ step_count=$(printf '%s' "$spec_b64" | base64 -d | python3 -c 'import json,sys;p
 field() { printf '%s' "$spec_b64" | base64 -d | python3 -c 'import json,sys;print(json.load(sys.stdin)["steps"]['"$1"'].get("'"$2"'",""))'; }
 
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-multi"
 kube=(kubectl --kubeconfig=/root/tb-kubeconfig)
 
@@ -300,7 +305,7 @@ rollout() {  # $1=verb $2=step_index
       else
         "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$ann\":\"$orig\"}}}}}" >/dev/null
       fi
-      "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null; rm -f "$saved" ;;
+      "${k[@]}" rollout status deploy/"$deploy" --timeout="$cleanup_wait" >/dev/null; rm -f "$saved" ;;
     recover)  "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
   esac
 }

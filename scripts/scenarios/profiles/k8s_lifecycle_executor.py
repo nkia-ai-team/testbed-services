@@ -30,6 +30,11 @@ SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; deploy="$4"; container="$5"; baseline="$6"; invalid="$7"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state="$state_root/${scenario_id}-image"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 current() { "${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.spec.containers[?(@.name=='$container')].image}"; }
@@ -38,7 +43,7 @@ check() { command -v kubectl >/dev/null; "${k[@]}" auth can-i patch deployments 
 case "$action" in
   preflight) check; [[ ! -e "$state" ]] ;;
   run) check; mkdir -p "$state_root"; current >"$state.tmp"; mv -T "$state.tmp" "$state"; "${k[@]}" set image deploy/"$deploy" "$container=$invalid" >/dev/null ;;
-  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; "${k[@]}" set image deploy/"$deploy" "$container=$original" >/dev/null; ok=""; for _ in 1 2 3 4 5 6; do if "${k[@]}" rollout status deploy/"$deploy" --timeout=30s >/dev/null; then ok=1; break; fi; sleep 5; done; [[ -n "$ok" ]]; rm -f "$state" ;;
+  cleanup) [[ -e "$state" ]] || exit 0; original=$(cat "$state"); [[ "$original" == "$baseline" ]]; "${k[@]}" set image deploy/"$deploy" "$container=$original" >/dev/null; deadline=$((SECONDS + ${cleanup_wait%s})); until "${k[@]}" rollout status deploy/"$deploy" --timeout=30s >/dev/null; do (( SECONDS < deadline )) || exit 1; sleep 5; done; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(current)" == "$baseline" ]]; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
   *) exit 2 ;;
 esac

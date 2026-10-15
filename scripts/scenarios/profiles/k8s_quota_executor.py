@@ -70,6 +70,11 @@ SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; quota="$3"; resource="$4"; hard="$5"; deploy="$6"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state="$state_root/${ns}-${quota}-quota"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 # Memory quantities in bytes (binary and decimal suffixes, as Kubernetes writes them).
@@ -125,7 +130,7 @@ case "$action" in
   cleanup)
     [[ -e "$state" ]] || exit 0
     "${k[@]}" delete resourcequota "$quota" --ignore-not-found >/dev/null
-    healthy 30s || { "${k[@]}" rollout restart deploy "$deploy" >/dev/null; healthy 180s; }
+    healthy 30s || { "${k[@]}" rollout restart deploy "$deploy" >/dev/null; healthy "$cleanup_wait"; }
     rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; ! any_quota; replace_first; healthy 1s ;;
   *) exit 2 ;;

@@ -156,6 +156,11 @@ pg_ns="$3"; db_pod="$4"; svc="$5"; secret="$6"; image="$7"; schema="$8"; table="
 identity="${12}"; hold="${13}"
 food_ns="${14}"; food_deploy="${15}"; food_container="${16}"; food_baseline="${17}"; food_fault="${18}"; offset="${19}"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-dual"
 food_state="$state_dir/food-resources.json"
 pg_state="$state_dir/pg-client.pod"
@@ -265,7 +270,7 @@ case "$action" in
     # Either failure aborts with a non-zero status so the run is marked DIRTY.
     rc=0
     original=$(cat "$food_state"); [[ "$original" == "$food_baseline" ]]
-    food_patch "$original"; "${k[@]}" rollout status deploy/"$food_deploy" --timeout=180s >/dev/null || rc=1
+    food_patch "$original"; "${k[@]}" rollout status deploy/"$food_deploy" --timeout="$cleanup_wait" >/dev/null || rc=1
     pg cleanup || rc=1
     [[ $rc -eq 0 ]]
     rm -f "$food_state"; rmdir "$state_dir"

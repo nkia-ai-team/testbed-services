@@ -435,6 +435,13 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return kubectl_bash_argv(arguments), RELEASE_SCRIPT if p.get("mode") == "release" else SCRIPT
 
 
+# cleanup 이 이미지를 되돌린 뒤 Ready 를 기다리는 한도(세 스크립트 공통). 66 실측: 앱 파드는 평소
+# 95~130초에 Ready 가 되고, 부하 중에는 startupProbe(5초 x 30회 = 150초)를 넘겨 한 번 재시작하며
+# 약 5분 걸린다(2026-10-15 F49-P 가 180초 안에 Ready 가 못 돼 cleanup_failed). 그 5분에 여유를 더해
+# 420초다. run 은 롤아웃을 기다리지 않으므로 이 값은 cleanup 에만 쓰인다.
+CLEANUP_WAIT = b"420s"
+
+
 SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; deploy="$3"; container="$4"; baseline="$5"; fault="$6"
@@ -501,11 +508,11 @@ case "$action" in
         "docker save $original | ssh -i /root/.ssh/tb_key nkia@<node ip> 'sudo ctr -n k8s.io images import -'" >&2
       exit 1
     fi
-    set_image "$original"; healthy 180s; rm -f "$state" ;;
+    set_image "$original"; healthy @CLEANUP_WAIT@; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s ;;
   *) exit 2 ;;
 esac
-'''
+'''.replace(b"@CLEANUP_WAIT@", CLEANUP_WAIT)
 
 
 # Defective release (mode "release"). The node holds only manifest images (imagePullPolicy
@@ -614,12 +621,12 @@ case "$action" in
         "docker save $original | ssh -i /root/.ssh/tb_key nkia@$(node_ip) 'sudo ctr -n k8s.io images import -'" >&2
       exit 1
     fi
-    set_image "$original"; healthy 180s; release_unused; unload "$id"; rm -f "$release_ref" "$state" ;;
+    set_image "$original"; healthy @CLEANUP_WAIT@; release_unused; unload "$id"; rm -f "$release_ref" "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ ! -e "$release_ref" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s
     release_absent "$(release_id)" ;;
   *) exit 2 ;;
 esac
-'''
+'''.replace(b"@CLEANUP_WAIT@", CLEANUP_WAIT)
 
 
 # Another workload's image (mode "foreign"). The node already holds it because the owner
@@ -688,11 +695,11 @@ case "$action" in
         "docker save $original | ssh -i /root/.ssh/tb_key nkia@<node ip> 'sudo ctr -n k8s.io images import -'" >&2
       exit 1
     fi
-    set_image "$original"; healthy 180s; rm -f "$state" ;;
+    set_image "$original"; healthy @CLEANUP_WAIT@; rm -f "$state" ;;
   recovery) [[ ! -e "$state" ]]; [[ "$(image)" == "$baseline" ]]; healthy 1s; owner_ok ;;
   *) exit 2 ;;
 esac
-'''
+'''.replace(b"@CLEANUP_WAIT@", CLEANUP_WAIT)
 
 
 if __name__ == "__main__":

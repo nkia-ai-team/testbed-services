@@ -30,6 +30,11 @@ SCRIPT = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; deploy="$4"; annotation="$5"; mock_resource="$6"; mock_path="$7"; mock_status="$8"; offset="$9"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-timeline"
 expectations="$state_dir/mock-expectations.json"; annotation_state="$state_dir/annotation"
 port=19188; pf_pid=""; k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
@@ -46,7 +51,7 @@ restore_rollout() {
   else
     "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$annotation\":\"$original\"}}}}}" >/dev/null
   fi
-  "${k[@]}" rollout status deploy/"$deploy" --timeout=180s >/dev/null
+  "${k[@]}" rollout status deploy/"$deploy" --timeout="$cleanup_wait" >/dev/null
 }
 check() { command -v kubectl >/dev/null; command -v curl >/dev/null; "${k[@]}" auth can-i patch deployments | grep -qx yes; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null; "${k[@]}" rollout status "$mock_resource" --timeout=1s >/dev/null; start_pf; retrieve >/dev/null; stop_pf; pf_pid=""; }
 case "$action" in

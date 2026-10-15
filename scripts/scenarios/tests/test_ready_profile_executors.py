@@ -497,7 +497,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertLess(run_case.index("quota_counted"), run_case.index("rollout restart"))
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('delete resourcequota "$quota"', cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn('healthy "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         preflight = script.split("\ncheck() {")[1].split("\n}")[0]
         self.assertIn("! any_quota", preflight)
         self.assertIn("replace_first", preflight)
@@ -536,7 +537,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertLess(run_case.index("images rm"), run_case.index("rollout restart"))
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn("restore_one", cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn('healthy "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         restore = script.split("\nrestore_one() {")[1].split("\n}")[0]
         self.assertIn('docker save "$img" | node_sh sudo -n ctr -n k8s.io images import -', restore)
         # 지울 때의 이미지 ID 를 지우기 전에 적는다.
@@ -690,7 +692,8 @@ esac
         self.assertLess(run_case.index('replicas >"$state.tmp"'), run_case.index("scale deploy"))
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('--replicas="$original"', cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn('healthy "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         preflight = script.split("\ncheck() {")[1].split("\n}")[0]
         self.assertIn("no_autoscaler", preflight)
         self.assertIn('[[ "$(replicas)" == "$from" ]]', preflight)
@@ -741,7 +744,8 @@ esac
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('delete job "$job"', cleanup_case)
         self.assertIn("until job_absent", cleanup_case)
-        self.assertIn("available 300s", cleanup_case)
+        self.assertIn('available "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         for forbidden in ("set image", "set env", "scale ", "patch ", "rollout restart", "delete deploy", "delete pod"):
             self.assertNotIn(forbidden, script)
         params = dict(k8s_job.CONTRACTS["F59-R"])
@@ -832,7 +836,8 @@ esac
         self.assertIn('[[ "$ref" == */* ]] || ref="deploy/$ref"', script)
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('delete job "$job"', cleanup_case)
-        self.assertIn("available 300s", cleanup_case)
+        self.assertIn('available "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         # 백필 계약은 그대로 API 스크립트를 돈다.
         food = k8s_job.job_manifest(k8s_job.CONTRACTS["F59-R"])["spec"]["template"]["spec"]["containers"][0]
         self.assertEqual(food["args"], [k8s_job.BACKFILL_SCRIPT])
@@ -859,7 +864,8 @@ esac
         self.assertIn('patch "$fault"', run_case)
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('patch "$original"', cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn('healthy "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         for forbidden in ("dnsConfig\"", "nameservers", "delete", "coredns", "configmap"):
             self.assertNotIn(forbidden, script)
         params = dict(k8s_dns.CONTRACTS["F37-R"])
@@ -919,11 +925,12 @@ esac
         self.assertIn('[[ "$(row_count)" == 1 ]]', run_case)
         self.assertIn("restart", run_case)
         # run 은 롤아웃을 기다리지 않는다(조정 잠금 동안 러너 임대가 끊기지 않게, k8s.env 와 같은 이유).
-        self.assertNotIn("healthy 180s", run_case)
+        self.assertNotIn('healthy "$cleanup_wait"', run_case)
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn("remove", cleanup_case)
         self.assertIn("restart", cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn('healthy "$cleanup_wait"', cleanup_case)
+        self.assertIn("\ncleanup_wait=420s\n", script)
         self.assertIn('DELETE FROM $table WHERE id = $row_id;', script)
         # 확인 조회는 행 id 만 묻는다. Top SQL 에 남아도 할인율이나 활성 여부(정답 필드)를 가리키지 않게.
         for line in script.splitlines():
@@ -1039,7 +1046,7 @@ esac
         self.assertIn('set_image "$fault"', run_case)
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('set_image "$original"', cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn("healthy 420s", cleanup_case)
         self.assertIn("proxy/stats/summary", script)
         for forbidden in ("rmi", "images rm", "crictl", "delete", "strategy\":", "Probe"):
             self.assertNotIn(forbidden, script)
@@ -1069,7 +1076,7 @@ esac
         self.assertIn('set_image "$fault"', run_case)
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
         self.assertIn('set_image "$original"', cleanup_case)
-        self.assertIn("healthy 180s", cleanup_case)
+        self.assertIn("healthy 420s", cleanup_case)
         recovery_case = script.split("\n  recovery)")[1].split(";;")[0]
         self.assertIn("owner_ok", recovery_case)
         for forbidden in ("rmi", "images rm", "crictl", "delete", "strategy\":", "Probe"):
@@ -1112,7 +1119,7 @@ esac
         self.assertIn("ctr -n k8s.io images import -", run_case)
         self.assertLess(run_case.index("images import"), run_case.index('set_image "$fault"'))
         cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
-        self.assertIn('set_image "$original"; healthy 180s; release_unused; unload "$id"; rm -f "$release_ref" "$state"', cleanup_case)
+        self.assertIn('set_image "$original"; healthy 420s; release_unused; unload "$id"; rm -f "$release_ref" "$state"', cleanup_case)
         # CRI 는 이미지마다 이름 참조 말고 "sha256:<이미지 ID>" 참조를 따로 둔다. 이름만 지우면 릴리스 내용이
         # 노드에 남으므로(tb-w2 에 이름 없는 ID 참조가 이미 있었다) run 이 ID 를 남기고 cleanup 이 둘 다 지운다.
         self.assertIn('release_id >"$release_ref.tmp"', run_case)

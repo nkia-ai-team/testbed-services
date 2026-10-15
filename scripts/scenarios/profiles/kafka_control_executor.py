@@ -55,6 +55,11 @@ set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; deployment="$4"; baseline="$5"
 kafka_pod="$6"; bootstrap="$7"; group="$8"; drain_timeout="$9"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
+# How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
+# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
+# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
+# scenario strength and the judging time).
+cleanup_wait=420s
 state="$state_root/${scenario_id}-kafka-consumer-replicas"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 current_replicas() { "${k[@]}" get deploy "$deployment" -o 'jsonpath={.spec.replicas}'; }
@@ -68,7 +73,7 @@ lag() {
     awk -v group="$group" '$1 == group {sum += $6; rows++} END {if (rows == 0) exit 2; print sum + 0}'
 }
 wait_available() {
-  deadline=$((SECONDS + 180))
+  deadline=$((SECONDS + ${cleanup_wait%s}))
   while (( SECONDS < deadline )); do
     [[ "$(available_replicas)" == "$baseline" ]] && return 0
     sleep 5
