@@ -131,7 +131,7 @@ rejected 기록, 장부 §4-1, §5, 이번 실행에서 막힌 목록에 같은 
 | dispatch Tomcat 오류 수집 | 같은 표 | `position(body,'Servlet.service')>0 OR position(body,'SQL Error')>0` (dispatch) | 'SQL Error: 0'(778), 'Servlet.service() … CannotCreateTransactionException'(686), 'SQL Error: 1290'(664) 등 시나리오 창 기록. 같은 로거 경로로 1146 문장이 수집된다 |
 | 전파: order 문장 | 같은 표 | order WARN/ERROR 중 'dispatch' 포함 템플릿 | 'Failed to check dispatch capacity: 500 : …' 313건, '… Read timed out' 292건(마지막 2026-10-09 03:44, F33-R 계열 실행 창), 'Dispatch service unavailable' 355건 |
 | 기준선 주문량 | 같은 표 | 'Created order id=' 시각별(최근 24시간) | 시간당 3,466~4,145건(04~08시 UTC) |
-| 계기: 표 지우기 | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `index_count`, `row_count` (target c8c558e5-…, 60초 간격) | 현재값, `min_over_time`, `max_over_time` [7d] | table_count 7일 16 고정, index_count 7일 30~31(F33-R 실행), 현재 31, row_count 현재 11,487,400. dispatches 는 인덱스 3개, 약 174만 행이라 지우면 15, 28, 약 174만 감소 |
+| 계기: 표 지우기 | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `index_count`, `row_count` (target c8c558e5-…, 60초 간격) | 현재값, `min_over_time`, `max_over_time` [7d] | table_count 7일 16 고정, index_count 7일 30~31(F33-R 실행), 현재 31, row_count 현재 11,487,400. dispatches 는 인덱스 3개, 약 174만 행이라 지우면 15, 28, 약 174만 감소. 2026-10-15 정정: 같은 fooddelivery MySQL 의 다른 표 삭제 시나리오 실행 창 때문에 7일 범위가 15~17 이 되어 "7일 동안 16 고정"은 더 이상 기준이 아니다. 기준은 평시 구간 동안 16(31) 고정이다(근거 `~/dev/testbed-ops/verifications/2026-10-15-0405-F32-P-run-58d43138.md`) |
 | 계기: 시스템 스키마는 보고 안 함 | VM `dpm.mysql.database.*` 의 `db_name` | F53-R 시트 §7 과 같은 조회 | db_name 은 fooddelivery, information_schema, performance_schema, sys 넷. mysql 로 옮긴 표는 어느 지표에도 새로 나타나지 않는다 |
 | 다른 변경 없음 | CH `kcm_events_local` | `namespace='rca-testbed-food' AND position(object_name,'testbed-dispatch')=1` 사유별 | Unhealthy 1,258(마지막 2026-10-09 03:44), ScalingReplicaSet 24, Pulled 49, Killing 48(마지막 2026-10-09 00:27). 롤아웃은 이 표에 남는다 |
 | 피해: 스팬 | CH `otel_traces_local` (dispatch) | 최근 1일 span_kind, span_name | CLIENT 'SELECT fooddelivery.dispatches' 16,602, INTERNAL 'DispatchRepository.countByStatus' 11,812 등. 표가 없는 동안 이 CLIENT 스팬이 오류가 된다(보조 증거) |
@@ -179,7 +179,7 @@ rejected 기록, 장부 §4-1, §5, 이번 실행에서 막힌 목록에 같은 
 - [x] 근본 원인 위치: `Dispatch.java:6-8`, `DispatchService.java:106-115`, `:119-129`, `DispatchRetentionBatch.java:41-57`, 인프라 testbed-mysql-0 fooddelivery.dispatches (§4)
 - [x] 근본 원인 흔적: CH `lucida_logs_local` 의 dispatch 1146 과 표 이름 오류 문장(전수, 평시 0건). 같은 로거의 문장 꼴은 로컬 실측과 119 의 기존 dispatch Hibernate, Tomcat 오류 수집으로 확인 (§4, §7)
 - [x] 핵심 증거가 표본 데이터에만 있지 않다: 로그 전수, DPM 표 수, 인덱스 수, 행 수, KCM. 스팬은 보조 (§7)
-- [x] 계기 흔적: DPM table_count 16→15, index_count 31→28, row_count 약 174만 감소(1분 간격, 표 수 7일 동안 16 고정), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
+- [x] 계기 흔적: DPM table_count 16→15, index_count 31→28, row_count 약 174만 감소(1분 간격, 표 수 평시 구간 동안 16 고정), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
 - [x] 정답이 관제 데이터로 낼 수 있는 결론이다 (§5)
 - [x] 정답지 세 칸이 원칙 6대로 (§5)
 - [x] 감지, 피해 판정, RCA 증거 구분과 인시던트 위험 (§6)
