@@ -3,7 +3,7 @@
   "id": "F49-P",
   "slug": "f49-p-food-payment-release-payment-key-breaks-order",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
