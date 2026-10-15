@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 ARCHIVE_ROOT = "/data/eval-cases"
-STAGING_HOST = "root@192.168.200.109"
+STAGING_HOST = "root@tb-ops"  # 66 tb-ops(192.168.122.20), ProxyJump root@192.168.200.66
 AP_HOST = "ydkim@192.168.230.119"
 
 

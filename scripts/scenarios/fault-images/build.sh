@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 결함 버전 이미지 빌드: fault-images/<id 소문자>/ 의 패치를 origin/main 위에 얹어 109 docker 에
+# 결함 버전 이미지 빌드: fault-images/<id 소문자>/ 의 패치를 origin/main 위에 얹어 러너 호스트(66 tb-ops) docker 에
 # 릴리스 태그로만 빌드한다. 노드에는 올리지 않는다(주입 직전에 k8s.image 실행기가 올리고 cleanup 이 지운다).
 #
 # 사용: bash scripts/scenarios/fault-images/build.sh f41-r      (testbed-services 작업 트리 어디서나)
-#       BUILD_HOST=root@192.168.200.109 (기본값), REF=origin/main (기본값)
+#       BUILD_HOST=root@tb-ops (기본값, 66 tb-ops 192.168.122.20), REF=origin/main (기본값)
 #
 # 규칙(docs/spec-scenario-design-principles.md §3 예외, 시나리오 생성 하네스 "결함 버전 이미지"):
 # - 앱 소스와 매니페스트, 기본 이미지는 그대로 둔다. 원본은 REF 의 도메인 폴더를 git archive 로 그대로 보낸다.
@@ -14,7 +14,7 @@ id="${1:?usage: build.sh <fault image dir, e.g. f41-r>}"
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(git -C "$here" rev-parse --show-toplevel)"
 dir="$here/$id"
-host="${BUILD_HOST:-root@192.168.200.109}"
+host="${BUILD_HOST:-root@tb-ops}"
 ref="${REF:-origin/main}"
 
 [[ -f "$dir/image.json" ]] || { echo "no $dir/image.json" >&2; exit 2; }

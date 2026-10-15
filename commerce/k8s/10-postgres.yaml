@@ -112,7 +112,7 @@ spec:
 # 리소스 4: PostgreSQL Service (NodePort) — 외부 접근용
 # ============================================================
 # Polestar10 DPM(DB 모니터링)이 K3s 밖에서 DB에 접속할 때 사용.
-# 192.168.200.109:30432 로 접근하면 PostgreSQL Pod로 연결된다.
+# <tb-w1 IP>:30432 (119 등록값 192.168.200.136:30432) 로 접근하면 PostgreSQL Pod로 연결된다.
 apiVersion: v1
 kind: Service
 metadata:

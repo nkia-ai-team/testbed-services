@@ -22,8 +22,10 @@ set -Eeuo pipefail
 
 collector_host=${SYSLOG_COLLECTOR_HOST:-192.168.230.119}
 collector_port=${SYSLOG_COLLECTOR_PORT:-514}
-gb10=${GB10_SSH:-root@192.168.200.109}
-# 109 위에서 해석되는 경로다. 여기서 ~ 를 쓰면 .104 의 홈으로 먼저 확장돼 버린다.
+# 하이퍼바이저(66 Proxmox)와 VM 접속 경유지(tb-ops, tb_key 보유)가 109 때와 달리 다른 호스트다.
+hv=${HV_SSH:-root@192.168.200.66}
+jump=${JUMP_SSH:-root@tb-ops}
+# jump 위에서 해석되는 경로다. 여기서 ~ 를 쓰면 .104 의 홈으로 먼저 확장돼 버린다.
 tb_key=${TB_SSH_KEY:-/root/.ssh/tb_key}
 conf_path=/etc/rsyslog.d/60-lucida-forward.conf
 
@@ -31,7 +33,7 @@ mode=apply
 [[ "${1:-}" == "--check" ]] && mode=check
 
 # 대상 = RCA 가 노드 레벨 사건을 물어야 하는 곳 전부.
-#   109        KVM 호스트. 여기서 난 일은 모든 VM 에 번진다.
+#   66         Proxmox 호스트. 여기서 난 일은 모든 VM 에 번진다. (rsyslog 는 기본 설치가 아니다: 처음엔 apt install rsyslog)
 #   tb-cp      control-plane
 #   tb-w1/2/3  앱과 DB 가 실제로 도는 워커. OOMKill·디스크·커널 메시지의 출처라
 #              F26 계열(노드 상실·PV·eviction) 판정의 직접 증거가 된다.
@@ -90,14 +92,15 @@ REMOTE
 
 printf '[syslog] 수집기=%s:%s  모드=%s\n\n' "$collector_host" "$collector_port" "$mode"
 
-printf '%-22s ' "gb10(109)"
-remote_script | ssh -o BatchMode=yes "$gb10" 'bash -s'
+printf '%-22s ' "hv(66)"
+# 66 Proxmox 호스트는 root 로 접속하고 sudo 가 없다. sudo 를 그대로 실행하는 함수로 대신한다
+{ echo 'sudo(){ "$@"; }'; remote_script; } | ssh -o BatchMode=yes "$hv" 'bash -s'
 
 for entry in "${tb_nodes[@]}"; do
   ip=${entry%%|*}
   name=${entry##*|}
   printf '%-22s ' "$name($ip)"
-  remote_script | ssh -o BatchMode=yes "$gb10" \
+  remote_script | ssh -o BatchMode=yes "$jump" \
     "ssh -i ${tb_key} -o BatchMode=yes -o ConnectTimeout=10 nkia@${ip} 'bash -s'"
 done
 

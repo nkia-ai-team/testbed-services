@@ -489,7 +489,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -545,7 +545,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -1993,7 +1993,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2049,7 +2049,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2117,7 +2117,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2173,7 +2173,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2241,7 +2241,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2297,7 +2297,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2388,7 +2388,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -2444,7 +2444,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -3827,7 +3827,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -3883,7 +3883,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -4345,7 +4345,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -4401,7 +4401,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -5153,7 +5153,7 @@
              },
              {
                "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-               "value": "http://192.168.200.109:14318"
+               "value": "http://192.168.122.20:14318"
              },
              {
                "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -5209,7 +5209,7 @@
              },
              {
                "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-               "value": "http://192.168.200.109:14318"
+               "value": "http://192.168.122.20:14318"
              },
              {
                "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -5354,7 +5354,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -5410,7 +5410,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -5771,7 +5771,7 @@
      "core-banking/api-service/src/main/resources/application.yml:39-54 (retry — accountClient, transferClient max-attempts 3, 200ms 지수 백오프)",
      "core-banking/k8s/02-configmaps.yaml:38-50 (location — /api/transfers 는 api 로, /api/accounts 는 account 로 바로 간다)"
     ],
-    "infra_anchor": "rca-testbed-banking Deployment testbed-api(replicas 1, RollingUpdate maxSurge 25%(올림 1) / maxUnavailable 25%(내림 0), 109 kubectl 2026-10-08 확인), 파드 템플릿 spec.dnsPolicy ClusterFirst(명시 없음, 기본값). tb-w2 kubelet resolvConf /run/systemd/resolve/resolv.conf = nameserver 192.168.122.1(libvirt dnsmasq), 그래서 Default 파드는 이 resolver 를 쓴다. 109 실측(2026-10-08): tb-w2 노드에서 dig @192.168.122.1 은 testbed-account, testbed-account.rca-testbed-banking.svc.cluster.local 에 SERVFAIL(1ms), github.com 에 NOERROR. banking nginx 파드(파드 네트워크)에서 nslookup testbed-account 192.168.122.1 은 'connection timed out; no servers could be reached'(5.0초), 같은 파드에서 github.com 은 해석된다. 즉 파드 네트워크에서는 SERVFAIL 이 아니라 응답 없이 시간 초과이고, glibc 기본(시간 초과 5초, 시도 2회)으로 약 10초가 설명된다. tb-w2 에서 같은 resolver 로 glibc getaddrinfo('testbed-account') 는 10.01초 뒤 EAI_AGAIN 'Temporary failure in name resolution', github.com 은 즉시 성공. banking nginx 파드(클러스터 DNS)에서 192.168.122.1 로 github.com 해석 성공(파드에서 그 resolver 에 닿음). api 의 OTLP 내보내기 주소는 IP(192.168.200.109:14318)라 관측 데이터는 끊기지 않는다. readiness, liveness, startup 은 /actuator/health(DB 없음)라 이름 해석과 무관하다."
+    "infra_anchor": "rca-testbed-banking Deployment testbed-api(replicas 1, RollingUpdate maxSurge 25%(올림 1) / maxUnavailable 25%(내림 0), 109 kubectl 2026-10-08 확인), 파드 템플릿 spec.dnsPolicy ClusterFirst(명시 없음, 기본값). tb-w2 kubelet resolvConf /run/systemd/resolve/resolv.conf = nameserver 192.168.122.1(libvirt dnsmasq), 그래서 Default 파드는 이 resolver 를 쓴다. 109 실측(2026-10-08): tb-w2 노드에서 dig @192.168.122.1 은 testbed-account, testbed-account.rca-testbed-banking.svc.cluster.local 에 SERVFAIL(1ms), github.com 에 NOERROR. banking nginx 파드(파드 네트워크)에서 nslookup testbed-account 192.168.122.1 은 'connection timed out; no servers could be reached'(5.0초), 같은 파드에서 github.com 은 해석된다. 즉 파드 네트워크에서는 SERVFAIL 이 아니라 응답 없이 시간 초과이고, glibc 기본(시간 초과 5초, 시도 2회)으로 약 10초가 설명된다. tb-w2 에서 같은 resolver 로 glibc getaddrinfo('testbed-account') 는 10.01초 뒤 EAI_AGAIN 'Temporary failure in name resolution', github.com 은 즉시 성공. banking nginx 파드(클러스터 DNS)에서 192.168.122.1 로 github.com 해석 성공(파드에서 그 resolver 에 닿음). api 의 OTLP 내보내기 주소는 IP(192.168.122.20:14318)라 관측 데이터는 끊기지 않는다. readiness, liveness, startup 은 /actuator/health(DB 없음)라 이름 해석과 무관하다."
    },
    "must_support": [
     "testbed-api 롤아웃 KCM 이벤트(rca-testbed-banking Deployment testbed-api ScalingReplicaSet, 새 ReplicaSet SuccessfulCreate, 파드 Created/Started, 옛 ReplicaSet 축소) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet, 파드 스펙(PG kcm_resources_history.yaml)이 \"dnsPolicy\":\"Default\" 이고 그 전 banking 앱 레코드는 모두 ClusterFirst 다. KCM 이벤트 보존(2026-08-13~) 안에서 testbed-api 롤아웃 이벤트는 이것이 처음이다(그 전 2026-08-07, 08-11 롤아웃은 kcm_resources_history 의 옛 ReplicaSet 으로만 남아 있다)",
@@ -5949,7 +5949,7 @@
      "core-banking/k8s/23-ledger-service.yaml:97-105 (Service testbed-ledger — port 8083 만 연다)",
      "core-banking/k8s/02-configmaps.yaml:38-50 (location — /api/transfers 는 api 로, /api/accounts 는 account 로 바로 간다)"
     ],
-    "infra_anchor": "rca-testbed-banking Deployment testbed-account(replicas 1, RollingUpdate maxSurge 25%(올림 1) / maxUnavailable 25%(내림 0), envFrom ConfigMap service-config, readiness /actuator/health(DB), liveness /actuator/health/liveness, 109 kubectl 2026-10-08 확인). Service testbed-ledger ClusterIP 10.101.6.9 port 8083 만, Service testbed-transfer ClusterIP 10.107.84.55 port 8082. 109 실측(2026-10-08, testbed-account 파드 안 curl): testbed-ledger 는 10.101.6.9 로 해석되고, POST http://testbed-ledger:8082/api/transfers 는 connect-timeout 10초 설정에서 10.0초 뒤 rc=28(응답 없이 연결 시간 초과, 2회 같음), testbed-ledger:8083/actuator/health 200(4.5ms), testbed-transfer:8082/actuator/health 200. Service 에 없는 포트로 가는 ClusterIP 연결은 kube-proxy 가 바꾸지 않아 어느 파드에도 닿지 않고 버려진다. account 의 OTLP 내보내기 주소는 IP(192.168.200.109:14318)라 관측 데이터는 끊기지 않는다."
+    "infra_anchor": "rca-testbed-banking Deployment testbed-account(replicas 1, RollingUpdate maxSurge 25%(올림 1) / maxUnavailable 25%(내림 0), envFrom ConfigMap service-config, readiness /actuator/health(DB), liveness /actuator/health/liveness, 109 kubectl 2026-10-08 확인). Service testbed-ledger ClusterIP 10.101.6.9 port 8083 만, Service testbed-transfer ClusterIP 10.107.84.55 port 8082. 109 실측(2026-10-08, testbed-account 파드 안 curl): testbed-ledger 는 10.101.6.9 로 해석되고, POST http://testbed-ledger:8082/api/transfers 는 connect-timeout 10초 설정에서 10.0초 뒤 rc=28(응답 없이 연결 시간 초과, 2회 같음), testbed-ledger:8083/actuator/health 200(4.5ms), testbed-transfer:8082/actuator/health 200. Service 에 없는 포트로 가는 ClusterIP 연결은 kube-proxy 가 바꾸지 않아 어느 파드에도 닿지 않고 버려진다. account 의 OTLP 내보내기 주소는 IP(192.168.122.20:14318)라 관측 데이터는 끊기지 않는다."
    },
    "must_support": [
     "testbed-account 롤아웃 KCM 이벤트(rca-testbed-banking Deployment testbed-account ScalingReplicaSet, 새 ReplicaSet SuccessfulCreate, 파드 Created/Started, 옛 ReplicaSet 축소) 직후 실패가 시작된다. KCM 이 남긴 새 ReplicaSet 스펙(PG kcm_resources_history.yaml)에 명시 env TRANSFER_SERVICE_URL=http://testbed-ledger:8082 가 있고 그 전 banking ReplicaSet 레코드 290건에는 명시 TRANSFER_SERVICE_URL 이 없다(값은 늘 ConfigMap 에서 왔다). KCM 이벤트 보존(2026-08-13~) 안에서 testbed-account 롤아웃 이벤트는 이것이 처음이다",
@@ -6033,7 +6033,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -6089,7 +6089,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -6419,7 +6419,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -6475,7 +6475,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -10134,7 +10134,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -10172,7 +10172,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -10323,7 +10323,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -10383,7 +10383,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -10534,7 +10534,7 @@
     "trigger_target_id": null,
     "mechanism": "결함 보유 대상은 banking api-service 의 배포 설정(Deployment testbed-api 컨테이너 env 의 SPRING_APPLICATION_JSON)이다. 이 롤아웃이 거래 내역 서킷브레이커(transferClient)에 느린 호출 차단(slow-call-duration-threshold 100ms, slow-call-rate-threshold 50%)을 켜는데, 임계가 거래 내역 호출의 정상 처리 시간(api 에서 본 transfer GET /api/transfers 24시간 p5 239.6ms, 중앙 248.9ms, 7일 16,547건 중 50~200ms 0건)보다 낮다. 이 서킷의 평시 실패율은 0 이고(transfer 가 살아 있으면 거래 내역은 200, 업무 4xx 는 ClientErrorException 으로 무시), 멀쩡한 하류에서 서킷을 여는 것은 이 느린 호출 기준뿐이다. 새 api 파드에서 transfer 로 간 거래 내역 호출은 200 으로 끝나도 모두 느린 호출로 기록되어 최소 5건이 모이면 서킷이 열리고(5초), 열린 동안 거래 내역은 transfer 에 닿지 않고 fallback 이 ERROR 'Transfer service circuit open/exhausted: CircuitBreaker 'transferClient' is OPEN and does not permit further calls' 를 남긴 뒤 502 를 낸다. half-open 시험 호출 3건은 transfer 에 닿아 200 이지만 다시 100ms 를 넘어 서킷이 또 열린다. 이체는 다른 서킷(accountClient)을 지나 영향이 없다. transfer 는 정당한 요청을 평소 시간 안에 처리했을 뿐이고, 서킷을 연 판단은 api 설정이 내렸다(원본 Spreedly 2022-03-28 도 서킷브레이커의 잘못된 설정을 원인으로 지목했다). 로컬 실측(2026-10-11, 같은 소스 jar, 250ms 가짜 transfer): 5건 뒤 열림, half-open 3건 통과 뒤 다시 열림(200×5, 502×6, 200×3 반복), 이체 POST 는 전부 200, env 없으면 전부 200",
     "code_anchor": [
-     "core-banking/k8s/20-api-service.yaml:38-56 (컨테이너 api-service 의 env — 평시 OTel 관련 9줄. 주입은 같은 배열에 SPRING_APPLICATION_JSON 한 줄을 더한다. 매니페스트의 OTLP 주소는 109 운영 값(192.168.200.109:14318)과 다르며 실행기 기준 배열은 운영 값을 쓴다)",
+     "core-banking/k8s/20-api-service.yaml:38-56 (컨테이너 api-service 의 env — 평시 OTel 관련 9줄. 주입은 같은 배열에 SPRING_APPLICATION_JSON 한 줄을 더한다. 매니페스트의 OTLP 주소는 109 운영 값(192.168.122.20:14318)과 다르며 실행기 기준 배열은 운영 값을 쓴다)",
      "core-banking/api-service/src/main/resources/application.yml:19-38 (서킷 설정 — accountClient, transferClient 모두 창 10, 최소 5, 실패율 50, 열림 5s, half-open 3, 자동 전이. 느린 호출 기준은 두지 않아 라이브러리 기본값 60s, 100%)",
      "core-banking/api-service/src/main/resources/application.yml:30-38 (transferClient 서킷 — 주입이 slow-call-duration-threshold, slow-call-rate-threshold 를 더하는 인스턴스)",
      "core-banking/api-service/src/main/resources/application.yml:48-54 (transferClient 재시도 — 최대 3회, 200ms, 지수 2배. 막힌 호출을 두 번 더 시도해 같은 ERROR 가 세 줄 남는다)",
@@ -10611,7 +10611,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -10649,7 +10649,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -12359,7 +12359,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -12410,7 +12410,7 @@
         },
         {
          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-         "value": "http://192.168.200.109:14318"
+         "value": "http://192.168.122.20:14318"
         },
         {
          "name": "OTEL_EXPORTER_OTLP_PROTOCOL",

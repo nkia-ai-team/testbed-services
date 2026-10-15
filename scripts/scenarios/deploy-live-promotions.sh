@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 scenario_root="$repo_root/scripts/scenarios"
-remote=${SCENARIO_REMOTE:-root@192.168.200.109}
+# 러너 호스트 = 66 tb-ops(192.168.122.20). 104 ~/.ssh/config 에 Host tb-ops (ProxyJump root@192.168.200.66) 별칭이 있어야 한다.
+remote=${SCENARIO_REMOTE:-root@tb-ops}
 remote_root=${SCENARIO_REMOTE_ROOT:-/root/testbed-services/scripts/scenarios}
 runner_url=${SCENARIO_RUNNER_URL:-http://localhost:8091}
 runner_repo=${RCA_SCENARIO_RUNNER_REPO:-"$repo_root/../rca-scenario-runner"}
@@ -25,13 +26,13 @@ python3 scripts/scenarios/generate-manifests.py --check
     'import json;from pathlib import Path;from app.manifests import load_manifests;root=Path("../../testbed-services/scripts/scenarios");expected=len(json.loads((root/"catalog.json").read_text())["scenarios"]);manifests=load_manifests(root/"manifests");assert len({item.id for item in manifests.values()}) == expected, f"manifests {len(manifests)} != catalog {expected}"'
 )
 
-# 녹화 구간(주입 직전부터 덤프 끝까지)에는 109 에 아무것도 쓰지 않는다. 덤프는 실행 끝에
+# 녹화 구간(주입 직전부터 덤프 끝까지)에는 러너 호스트(66 tb-ops)에 아무것도 쓰지 않는다. 덤프는 실행 끝에
 # 적은 카탈로그 해시를 라이브 카탈로그와 다시 비교하므로, 그 사이 배포는 녹화 하나를
 # 잃게 한다(2026-10-10 F40-R). 위 검사가 몇 분 걸리므로 원격 쓰기 직전에 본다.
 ssh "$remote" "curl -sS '$runner_url/api/live-queue'" \
   | python3 "$scenario_root/recording-guard.py"
 
-# 결함 버전 이미지가 109 docker 에 없으면 만든다. 배포가 녹화 때문에 미뤄지면 그 반복의
+# 결함 버전 이미지가 러너 호스트 docker 에 없으면 만든다. 배포가 녹화 때문에 미뤄지면 그 반복의
 # build.sh 도 함께 빠져, 나중 배포에서 시나리오만 나가고 preflight 가 이미지 없음으로
 # 막힌다(2026-10-11 F63-R). 이미 있는 태그는 다시 만들지 않는다.
 for image_json in "$scenario_root"/fault-images/*/image.json; do

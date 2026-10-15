@@ -15,8 +15,8 @@ CONTRACT = {
     "target_port": 39999,
     "rate_per_second": 5,
     "duration_seconds": 120,
-    "gateway": "192.168.200.109",
-    "forward_host": "192.168.200.109",
+    "gateway": "192.168.200.66",
+    "forward_host": "192.168.200.66",
     "forward_key": "/root/.ssh/tb_key",
 }
 
@@ -79,7 +79,7 @@ case "$action" in
   preflight)
     command -v sshpass >/dev/null; command -v ssh >/dev/null; [[ -n "${SSHPASS:-}" && ! -e "$state" && -r "$forward_key" ]]
     "${ssh_cmd[@]}" "$remote_check"
-    "${forward_ssh[@]}" 'test "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 && command -v iptables >/dev/null && ip -4 addr show dev br0 | grep -Fq "192.168.200.109/24" && ip -4 addr show dev virbr0 | grep -Fq "192.168.122.1/24"'
+    "${forward_ssh[@]}" 'test "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 && command -v iptables >/dev/null && ip -4 addr show dev vmbr0 | grep -Fq "192.168.200.66/24" && ip -4 addr show dev vmbr1 | grep -Fq "192.168.122.1/24"'
     route_absent; rule_absent
     ;;
   run)
