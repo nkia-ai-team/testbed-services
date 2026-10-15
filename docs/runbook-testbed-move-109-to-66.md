@@ -166,13 +166,17 @@ NMS 스위치 5대, 서버 192.168.200.57(지금 process_snapshot 의 대부분�
 - [x] 중계기 설정 4개(109 와 md5 같음)와 collector-contrib 0.128.0 이미지(같은 다이제스트). 기동 스크립트 초안은 확인 인자 없이는 거부한다. **컨테이너는 띄우지 않았다**
 - [x] 앱 코드 시점: 109 8월 빌드 9종 뒤 바뀐 것은 공통 모듈 outbox 정리 커밋 2개뿐이고 그 서비스들에서는 설정이 없어 꺼진다. 동작 차이 없음
 - [x] 109 하드코딩 주소 48개 파일, 전환 diff 3개(testbed-services, 러너, 스킬) 준비, 저장소 자체 검사 통과. **시나리오 계약과 매니페스트 12개 파일의 `192.168.200.109:14318`(121곳)을 66 러너를 처음 띄우기 전에 반드시 바꾼다.** 안 바꾸면 env 를 바꾸는 시나리오가 66 앱 데이터를 109 중계기로 보낸다
-- [ ] 104 에서 tb-ops root ssh(전환 diff 가 기대함), 66 호스트 rsyslog 설치(3단계 syslog 전)
-- [ ] 정상 구간 덤프 cron 이전 (결정 D5)
-- [ ] 119 root ssh(모델 스냅샷, 골든 복원)는 109 정지 뒤
+- [x] 전환 diff 반영(2026-10-15): testbed-services 18257d6(중계기 주소 121곳, 앱 매니페스트 19개, 배포 호스트, syslog 스크립트의 Proxmox sudo 대체), 러너 38f9077, 스킬 3개. tb-ops 의 `/root/testbed-services`, `/root/rca-scenario-runner/scenarios/services` 를 같은 커밋으로 덮었다(둘 다 git 이 아닌 사본)
+- [x] 104 → tb-ops root ssh: 104 `~/.ssh/config` 의 `Host tb-ops`(ProxyJump root@192.168.200.66, known_hosts_tb66). tb-ops root `authorized_keys` 에서 cloud-init 이 붙인 접속 거부 문구를 104 운영자 키에서만 뺐다(백업 `authorized_keys.bak-cloudinit`). 66 호스트 rsyslog 는 3단계에 설치
+- [x] 정상 구간 덤프 cron(D5): tb-ops root crontab `20 17 * * *`(UTC, = 109 의 02:20 KST), 명령과 저장 위치(`/data/eval-cases/normal-segments/commerce/<날짜>`)는 109 와 같다. 109 때도 104 로 자동으로 모으는 경로는 없었다(109 몫은 정지 때 손으로 옮김)
+- [x] 119 root ssh: `known_hosts.119-pending` 을 합쳤고 러너 컨테이너 안에서 tb_key 로 119 접속, 골든 목록 확인
+- [x] 러너 기동: `.env.66-draft` 를 `.env` 로(값은 109 와 같음), compose `up -d --no-build`(host 망, unless-stopped). 큐 idle, readiness `ready:true`. 66 호스트 `200.66:8091` → tb-ops 포워딩(`/etc/network/interfaces.d/tb-nat` post-up). `deploy-live-promotions.sh` 한 번 통과(결함 이미지 26종 이미 있음, 부하 스크립트 md5 같음). 캡처가 쓰는 `postgres:16-alpine`, `clickhouse/clickhouse-server:latest`(26.9) 를 tb-ops 에 받았다
+- **녹화 큐 시작 전 남은 것**: 운영 하네스의 덤프 범위 점검(`pg-scope-guard.py`)이 `trainer_forecast_conformal`(108MB, 분류 안 됨)로 막는다. 119 trainer 의 stream-anomaly 학습이 권한 오류(`trainer_stream_snapshot_history`)로 매 주기 실패하고 있다(109 때부터, 임계값 최신 행 07-28)
 
 ### 5단계: 검증과 강도 재보정
 
 - [ ] 66 기준선 쌓기: 상주 부하를 켜고 최소 3일 (이상 탐지 평소 패턴)
+  - 2026-10-15 조사: 녹화는 사이클마다 119 AI 상태 표 23개를 07-29~31 골든(109 데이터)으로 되돌리고 observer 를 재시작한 뒤 trainer 를 2시간 학습시킨다. 그래서 trainer 산출물은 기다림과 상관이 적고, 기다려야 하는 것은 원천 이력을 직접 읽는 워커 쪽이다. forecast 워커 학습 창 87~96시간(약 4일), trace-anomaly 기준선은 같은 시각 14일 중앙값(66 데이터가 과반이 되는 것이 8일째, 109 데이터가 다 빠지는 것이 14일째), log, trace trainer 24시간. 시험 녹화는 4일 뒤(10-19 06Z 이후), 정식 녹화는 trace 기준선이 66 과반이 되는 8일 뒤(10-23 06Z 이후)를 기준으로 본다
 - [ ] 실행기 종류별 대표 시나리오 시험 녹화. 66 에서는 러너 큐를 따로 돌려 109 녹화와 섞지 않는다
 
   | 실행기 | 대표 시나리오 | 재보정 위험 |
@@ -246,3 +250,4 @@ NMS 스위치 5대, 서버 192.168.200.57(지금 process_snapshot 의 대부분�
 - 2026-10-15: 109 정지. F32-P 승격(e990f0e) 뒤 운영 하네스 루프 종료. 앱 DB 3종을 109 에서 66 으로 옮겼다(PG pg_dump, MySQL mysqldump, Oracle 은 Free 12GB 상한으로 expdp 가 실패해 66 에서 109 를 읽는 network import). 표별 행 수 PG 25/25, MySQL 16/16, Oracle 6/6 일치. 이 과정에서 109 MySQL 이 mysqldump 메모리로 한 번 재시작(녹화 정지 뒤). 109 의 case 77개는 104 에 모두 있었고, 정상 구간 덤프 75일치(29.46GB, 07-21~10-15)는 104 `/data/testbed-109-archive/normal-segments/` 로 체크섬 대조 뒤 옮겼다. 109 정상 구간 cron 주석 처리(백업 `/root/crontab.bak-before-66-move-*`), scenario-runner, 중계기 컨테이너 정지, VM 5대 shut off(지우지 않음). 사내망 IP 200.136~138 을 66 워커 `ens19`(vmbr0)로 옮기고 109 와 같은 정책 경로와 230.0/24 경로를 넣었다. arping 으로 게이트웨이 주소 캐시를 갱신한 뒤 핑과 DB NodePort 3개 응답 확인. 3단계 시작.
 - 주의: 66 Oracle 도 Free 판이라 12GB 상한이 같다. 109 데이터 파일 합계가 이미 12.4GB 였으므로 66 에서도 outbox, 이력 정리가 계속 돌아야 한다.
 - 2026-10-15: 3단계 완료. 기준표 15가지가 66 에서 119 로 들어온다. server, application, database, 클러스터 대상 번호가 이어졌다. 남은 것은 119 방화벽(사용자 확인)과 4단계 나머지.
+- 2026-10-15: 4단계 완료. 전환 diff 3개 반영(testbed-services 18257d6, 러너 38f9077, 스킬), tb-ops 러너 기동(큐 idle, readiness ready), 66 호스트 :8091 포워딩, 정상 구간 덤프 cron 이전. 녹화 큐는 시작하지 않았다. 남은 것은 덤프 범위 점검 실패(표 1개)와 기준선 기간(5단계)
