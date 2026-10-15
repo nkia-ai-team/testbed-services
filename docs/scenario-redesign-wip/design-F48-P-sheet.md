@@ -163,7 +163,7 @@ db.ddl(mysql, 보류 표 모드): testbed-mysql-0 안 MySQL 클라이언트, loc
 | 근본 경로가 CH 에 남는가(같은 로거, 같은 릴레이) | 같은 표, `log_attributes` | 스케줄러 ERROR 한 건의 `log_attributes` | `exception.message` 에 실패한 문장 전체('JDBC exception executing SQL [select ooe1_0.id, ... from order_outbox_events ooe1_0 where ooe1_0.published_at is null order by ooe1_0.created_at limit ?] [Communications link failure ...]')와 `exception.stacktrace` 가 남는다. 1146 도 같은 경로로 표 이름이 남는다 |
 | 대조: F38-R 녹화 창(같은 주문 500) | 같은 표 | `position(body,'read-only')>0` 서비스별 | order 3,874, dispatch 1,298, payment 966건(2026-10-09 17:14~17:29 UTC). order 릴레이는 SELECT 는 되고 UPDATE 가 거절('Failed to publish outbox event ... read-only' 453건). F48-P 는 order 에만, 1146 으로, 릴레이 SELECT 부터 실패한다 |
 | 다른 쓰기는 계속 | 같은 표 | 최근 1일 'Dispatched courier=', 'Processed payment id=', 'Recorded outbox event for order' | dispatch 56,222, payment 56,068, order 56,069건(주문마다 하나씩). 고장 중 앞의 둘은 이어지고 마지막만 멈춘다 |
-| 계기: 백필(그림자 표와 새 인덱스) | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `dpm.mysql.database.index_count` (target c8c558e5-…, 60초 간격) | 현재값, `max_over_time`, `min_over_time` [7d] | table_count 현재 16, 7일 최대 16, 최소 16. index_count 31. F48-R 시트 §7 이 2026-10-01~10-09 표 수 16 고정과 F33-R 의 index_count 변화(30)를 같은 지표로 확인한 선례다 |
+| 계기: 백필(그림자 표와 새 인덱스) | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `dpm.mysql.database.index_count` (target c8c558e5-…, 60초 간격) | 현재값, `max_over_time`, `min_over_time` [7d] | table_count 현재 16, 7일 최대 16, 최소 16. index_count 31. F48-R 시트 §7 이 2026-10-01~10-09 표 수 16 고정과 F33-R 의 index_count 변화(30)를 같은 지표로 확인한 선례다. 2026-10-15 정정: 위 7일 고정과 절대값은 109 당시 측정 기록이고 기준이 아니다. 같은 MySQL 의 다른 표 시나리오 실행 창이 범위를 흔들고(F32-P 실행 때 7일 범위 15~17), 66 이전(앱 DB 논리 덤프) 직후에는 N일 이력이 없다. 기준은 주입 직전 평시 구간 값이고 녹화 평시 구간(주입 전 2시간) 동안 그 값으로 일정하다(근거 `~/dev/testbed-ops/verifications/2026-10-15-0405-F32-P-run-58d43138.md`) |
 | 계기: DDL 문장 자체 | CH `dpm_topsql_local` | DDL 검색 | F48-R 시트와 같이 DDL 은 Top SQL 에 남지 않는다 |
 | outbox 표의 평시 질의 | `dpm_topsql_local` `body.sqlText` | `order_outbox_events` 를 포함한 문장 | 릴레이 SELECT 11,351행, 정리 SELECT 2,496, DELETE 1,669, UPDATE 1,446, INSERT 1,076행(2026-08-13~10-09). 이 표가 주문마다 쓰이는 표임을 보여 준다 |
 | 다른 변경 없음 | CH `kcm_events_local` | `namespace='rca-testbed-food' AND position(object_name,'testbed-order')=1` 사유별 | Unhealthy 196건(마지막 2026-10-09 03:43), ScalingReplicaSet 8건(마지막 2026-10-08 18:53, 롤아웃은 이 표에 남는다). 109 kubectl: 파드 나이 27시간, 재시작 0 |
@@ -212,7 +212,7 @@ db.ddl(mysql, 보류 표 모드): testbed-mysql-0 안 MySQL 클라이언트, loc
 - [x] 근본 원인 위치: `OrderOutboxEvent.java:7-9`, `OrderService.java:162`, `OutboxPublisher.java:25-37`, 인프라 testbed-mysql-0 order_outbox_events (§4)
 - [x] 근본 원인 흔적: CH `lucida_logs_local` 1146 오류 문장(전수, 같은 릴레이 경로의 스케줄러 ERROR 가 exception.message 에 문장과 표 이름을 남기는 것 확인) (§7)
 - [x] 핵심 증거가 표본 데이터에만 있지 않다: 로그 전수, DPM 표 수와 인덱스 수, KCM. 스팬은 보조 (§7)
-- [x] 계기 흔적: DPM table_count 16→17, index_count 31→34(1분 간격, 7일 동안 16 고정), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
+- [x] 계기 흔적: DPM table_count 가 주입 직전 평시 구간 값보다 1, index_count 가 3 늘어남(1분 간격, 녹화 평시 구간(주입 전 2시간) 동안 표 수는 그 값으로 일정), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
 - [x] 정답이 관제 데이터로 낼 수 있는 결론이다. 배차, 결제가 남는 코드 구조는 피해 설명에만 둔다 (§5)
 - [x] 정답지 세 칸이 원칙 6대로 (§5)
 - [x] 감지, 피해 판정, RCA 증거 구분과 인시던트 위험 (§6)

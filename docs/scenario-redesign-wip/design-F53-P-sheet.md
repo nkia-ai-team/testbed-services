@@ -136,7 +136,7 @@ rejected 기록, 장부 §4-1, §5, 이번 실행에서 막힌 목록과 대조:
 | 수집 경로: payment 의 Hibernate 오류 로그 | 같은 표 | 최근 1일 payment 템플릿별 | F38-R 실행 창의 WARN 'SQL Error: 1290, SQLState: HY000' 483건, ERROR '--read-only …' 483건. 같은 로거(SqlExceptionHelper)의 1146 문장도 수집된다 |
 | 상류 증상의 평시 | 같은 표 | order 의 'Failed to process payment for order' 시간대별 | 750건 모두 2026-10-08(07시 500 2건, 09, 14, 18시 F30-R 실행 창의 400 'orderId required') |
 | 기준선 주문량 | 같은 표 | 'Created order id=' 를 KST 시각별 7일 평균(F53-R 시트) | 분당 11.8(06시)~68.4(17시)건 |
-| 계기: 표 지우기 | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `index_count`, `row_count` (target c8c558e5-…, 60초 간격) | 현재값, `min_over_time`, `max_over_time` [7d] | table_count 현재 16, 7일 최소 16 최대 16. index_count 현재 31. 109 실측으로 payments 인덱스 3개, 약 174만 행이라 지우면 15, 28, 약 174만 감소 |
+| 계기: 표 지우기 | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `index_count`, `row_count` (target c8c558e5-…, 60초 간격) | 현재값, `min_over_time`, `max_over_time` [7d] | table_count 현재 16, 7일 최소 16 최대 16. index_count 현재 31. 109 실측으로 payments 인덱스 3개, 약 174만 행이라 지우면 15, 28, 약 174만 감소. 2026-10-15 정정: 위 7일 고정과 절대값은 109 당시 측정 기록이고 기준이 아니다. 같은 MySQL 의 다른 표 시나리오 실행 창이 범위를 흔들고(F32-P 실행 때 7일 범위 15~17), 66 이전(앱 DB 논리 덤프) 직후에는 N일 이력이 없다. 기준은 주입 직전 평시 구간 값이고 녹화 평시 구간(주입 전 2시간) 동안 그 값으로 일정하다(근거 `~/dev/testbed-ops/verifications/2026-10-15-0405-F32-P-run-58d43138.md`) |
 | 계기: 시스템 스키마는 보고 안 함 | VM `dpm.mysql.database.*` 의 `db_name` 값 | F53-R 시트 §7 | db_name 은 fooddelivery, information_schema, performance_schema, sys 넷뿐. mysql 스키마로 옮긴 표는 어느 지표에도 새로 나타나지 않는다 |
 | 계기: DDL 문장 자체 | CH `dpm_topsql_local` | F48-R, F48-P 시트와 같음 | DDL 은 Top SQL 에 남지 않는다 |
 | 다른 변경 없음 | CH `kcm_events_local` | `namespace='rca-testbed-food' AND position(object_name,'testbed-payment')=1` 사유별 | Unhealthy 549건(마지막 2026-10-08 20:33), ScalingReplicaSet 135건(마지막 2026-10-08 18:53), Created, Pulled, Started 각 81건. 롤아웃은 이 표에 남는다 |
@@ -187,7 +187,7 @@ rejected 기록, 장부 §4-1, §5, 이번 실행에서 막힌 목록과 대조:
 - [x] 근본 원인 위치: `Payment.java:7-12`, `PaymentService.java:66`, `PaymentRetentionBatch.java:41-57`, 인프라 testbed-mysql-0 fooddelivery.payments (§4)
 - [x] 근본 원인 흔적: CH `lucida_logs_local` 1146 과 표 이름 오류 문장(전수, 평시 0건). 같은 로거의 문장이 payment 에서 수집되는 것은 F38-R 실행 창의 1290 문장으로 확인 (§7)
 - [x] 핵심 증거가 표본 데이터에만 있지 않다: 로그 전수, DPM 표 수, 인덱스 수, 행 수, KCM. 스팬은 보조 (§7)
-- [x] 계기 흔적: DPM table_count 16→15, index_count 31→28, row_count 약 174만 감소(1분 간격, 표 수 7일 동안 16 고정), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
+- [x] 계기 흔적: DPM table_count 가 주입 직전 평시 구간 값보다 1, index_count 가 3 줄고 row_count 가 약 174만(지운 표의 행 수) 급감(1분 간격, 녹화 평시 구간(주입 전 2시간) 동안 표 수는 그 값으로 일정), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
 - [x] 정답이 관제 데이터로 낼 수 있는 결론이다 (§5)
 - [x] 정답지 세 칸이 원칙 6대로 (§5)
 - [x] 감지, 피해 판정, RCA 증거 구분과 인시던트 근거 (§6)

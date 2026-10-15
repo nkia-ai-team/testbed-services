@@ -142,7 +142,7 @@ db.ddl(mysql, 보류 표 모드): testbed-mysql-0 안 MySQL 클라이언트, loc
 |---|---|---|---|
 | 근본: 없는 표 오류 | CH `lucida_logs_local` (`service_name`, `body`) | `SELECT min(timestamp), countIf(position(body,'1146')>0 AND position(body,'SQL Error')>0), countIf(position(body,'doesn''t exist')>0) FROM lucida.lucida_logs_local WHERE service_name='food-delivery-restaurant'` | 0건, 0건(보존 창의 가장 이른 로그 2026-10-02 17:29 UTC). food 전체로 넓히면 '1146' 이 든 행은 주문, 결제 id 숫자뿐 |
 | 근본 경로가 CH 에 남는가(같은 로거) | 같은 표 | restaurant 'SQL Error: 1054' 집계 | 3,952건, 2026-10-09 10:19:50~10:34:56 UTC(F36-R 녹화 실행). 같은 파드의 Hibernate SqlExceptionHelper WARN/ERROR 와 Tomcat SEVERE 가 전수로 남는다. 1146 도 같은 경로다 |
-| 계기: 백필(그림자 표와 새 인덱스) | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `dpm.mysql.database.index_count` (target c8c558e5-…, 60초 간격) | VM export 2026-10-01~10-09 | table_count 12,401점 모두 16(변화 0). index_count 31, 바뀐 것은 2026-10-09 03:36~03:44 UTC 30 한 번(F33-R 실행의 인덱스 제거). DDL 이 이 지표에 1분 해상도로 보인다는 선례다. 109 실측 표 16개, 고유 인덱스 31개와 같다 |
+| 계기: 백필(그림자 표와 새 인덱스) | VM `dpm.mysql.database.table_count{db_name="fooddelivery"}`, `dpm.mysql.database.index_count` (target c8c558e5-…, 60초 간격) | VM export 2026-10-01~10-09 | table_count 12,401점 모두 16(변화 0). index_count 31, 바뀐 것은 2026-10-09 03:36~03:44 UTC 30 한 번(F33-R 실행의 인덱스 제거). DDL 이 이 지표에 1분 해상도로 보인다는 선례다. 109 실측 표 16개, 고유 인덱스 31개와 같다. 2026-10-15 정정: 위 9일 고정과 절대값은 109 당시 측정 기록이고 기준이 아니다. 같은 MySQL 의 다른 표 시나리오 실행 창이 범위를 흔들고(F32-P 실행 때 7일 범위 15~17), 66 이전(앱 DB 논리 덤프) 직후에는 N일 이력이 없다. 기준은 주입 직전 평시 구간 값이고 녹화 평시 구간(주입 전 2시간) 동안 그 값으로 일정하다(근거 `~/dev/testbed-ops/verifications/2026-10-15-0405-F32-P-run-58d43138.md`) |
 | 계기: DDL 문장 자체 | CH `dpm_topsql_local` | food MySQL target 의 DDL 문장 검색 | 127만 행 중 0건. DDL 은 Top SQL 에 남지 않는다(F36-R 과 같음) |
 | 질의 모양 | `dpm_topsql_local` `body.sqlText` | `menu_popularity_summary` 를 포함한 문장 | 인기 메뉴 SELECT(restaurant_id 조건, 인덱스 없음) 3,355행(2026-08-13~10-08)과 그 EXPLAIN 77행. 이 질의가 Top SQL 에 자주 오르는 것이 인덱스 백필의 동기다 |
 | 다른 변경 없음 | CH `kcm_events_local` | `namespace='rca-testbed-food' AND object_name LIKE 'testbed-restaurant%'` | Unhealthy 70건(2026-08-24~10-08 간헐 프로브)뿐, ScalingReplicaSet 0건. 109 kubectl: 파드 `testbed-restaurant-549cc6cc64-8b2kz` 나이 59일, 재시작 0 |
@@ -190,7 +190,7 @@ db.ddl(mysql, 보류 표 모드): testbed-mysql-0 안 MySQL 클라이언트, loc
 - [x] 근본 원인 위치: `MenuPopularitySummary.java:6-7`, `RestaurantService.java:43-52`, 인프라 testbed-mysql-0 menu_popularity_summary (§4)
 - [x] 근본 원인 흔적: CH `lucida_logs_local` 1146 오류 문장(전수, 같은 로거의 1054 기록으로 경로 확인) (§7)
 - [x] 핵심 증거가 표본 데이터에만 있지 않다: 로그 전수, DPM 표 수와 인덱스 수, KCM. 스팬은 엔드포인트별 갈림의 보조 (§7)
-- [x] 계기 흔적: DPM table_count 16→17, index_count 31→33(1분 간격, 9일 동안 표 수 16 고정, F33-R 의 index_count 변화가 선례), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
+- [x] 계기 흔적: DPM table_count 가 주입 직전 평시 구간 값보다 1, index_count 가 2 늘어남(1분 간격, 녹화 평시 구간(주입 전 2시간) 동안 표 수는 그 값으로 일정, F33-R 의 index_count 변화가 선례), 오류 문장의 표 이름, 그 시각에 롤아웃과 재시작 없음. 인공 지연 없음 (§7)
 - [x] 정답이 관제 데이터로 낼 수 있는 결론이다 (§5)
 - [x] 정답지 세 칸이 원칙 6대로 (§5)
 - [x] 감지, 피해 판정, RCA 증거 구분과 인시던트 위험 (§6)

@@ -118,7 +118,7 @@ banking(가장 적은 서비스)을 먼저 보고, 은행 쪽 부품(api, accoun
 | 잔액 조회 경로 존재와 양 | CH `otel_traces_local` 표본 | 최근 1시간 account SERVER `GET /api/accounts/{id}` 194건(10% 표본, 실제 약 1,940/시), `POST /api/accounts/transfer` 48, `GET /api/accounts` 34 |
 | 고객 이체 흐름 | 로그 전수 | 최근 1시간 api 'Submitting transfer ... orderId=null' 383, account 'Account validation passed' 379, transfer 'Transfer COMPLETED' 계속(commerce-settlement 포함) |
 | 거래 내역 경로(성공해야 할 것) | 트레이스 표본 | transfer SERVER `GET /api/transfers` 99건/시(표본), p50 255ms. 이 경로의 SQL 은 `SELECT freepdb1.transfers` 만 |
-| 계기 흔적: 테이블스페이스 | VM `dpm.oracle.tablespace.used{tablespace="USERS"}` (1분) | 현재 5,535,301,632B(109 `used_space×8192` 와 같음). 2026-10-04 21:43 ~ 2026-10-11 의 10,080분 동안 분 단위 감소 0번, 증가 계단은 8MB 이상(2일 창 11번). 지우기는 −262,144B(로컬 실측) |
+| 계기 흔적: 테이블스페이스 | VM `dpm.oracle.tablespace.used{tablespace="USERS"}` (1분) | 현재 5,535,301,632B(109 `used_space×8192` 와 같음). 2026-10-04 21:43 ~ 2026-10-11 의 10,080분 동안 분 단위 감소 0번, 증가 계단은 8MB 이상(2일 창 11번). 지우기는 −262,144B(로컬 실측). 2026-10-15 정정: 위 10,080분(7일) 기록과 현재값은 109 당시 측정 기록이고 기준이 아니다. 66 이전(앱 DB 논리 덤프)으로 테이블스페이스 물리 크기와 이력이 이어지지 않는다. 기준은 녹화 평시 구간(주입 전 2시간) 동안 이 계열이 줄지 않는다(할당으로 늘어나는 계단만)는 것이다(근거 `~/dev/testbed-ops/verifications/2026-10-15-0037-F35-H-run-a1206bfd.md`: 같은 Oracle USERS 의 주입 직전 값이 설계 당시 절대값과 달랐다) |
 | cross-domain 문장 | 로그 전수 | commerce-order 'Checkout payment failed, releasing reserved stock: ...' 가 수집됨(3일 수천 건, 다른 실행) |
 | 풀 상태(정상이어야 할 것) | VM `db.client.connections.usage/max` | transfer max 15, account max 10, 최근 1시간 used 최대 2 |
 
