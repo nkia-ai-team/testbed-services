@@ -274,7 +274,19 @@ class RemoteArgumentQuotingTests(unittest.TestCase):
         # node-wide CPU pressure to a transfer-only CPU limit. F21-Q is the same
         # cpu-mode host.stress contract on the food worker, so the quoting
         # property stays covered by a scenario that still dispatches it.
+        #
+        # 2026-10-16: host.stress no longer puts arguments on the command line (sudo
+        # logs it to the worker's auth log, which reaches the recording). They ride on
+        # stdin as a `set --` line, which bash parses with the same quoting rules, so
+        # the round trip now goes through that line. The scenario id is not among them.
         plan = compiler.compile_plan("f21-q-food-order-tomcat-thread-saturation")
-        argv, _ = host_stress.build_invocation(plan, "cleanup")
-        received = self._round_trip(argv)
-        self.assertEqual(received[:4], ["cleanup", "F21-Q", "cpu", "192.168.122.14"])
+        argv, stdin = host_stress.build_invocation(plan, "cleanup")
+        self.assertEqual(argv[-3:], ["sudo", "bash", "-s"])
+        preamble = stdin.split(b"\n", 1)[0] + b"\n"
+        completed = subprocess.run(
+            ["bash", "-s"], input=preamble + self.PROBE, capture_output=True, timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        lines = completed.stdout.decode().splitlines()
+        self.assertEqual(int(lines[0]), len(lines) - 1, "argument count disagrees with $#")
+        self.assertEqual(lines[1:], ["cleanup", "cpu", "192.168.122.14", "3", "480"])

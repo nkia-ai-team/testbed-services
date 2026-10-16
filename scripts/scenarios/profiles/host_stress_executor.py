@@ -267,7 +267,15 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     if instance["location"].get("transport") != "ssh" or instance["location"].get("host") != p["host"]:
         raise ExecutorError("host.stress location must match the measured worker")
-    args = [action, plan["scenario"]["id"], p["mode"], p["host"]]
+    # The scenario id never leaves this process, and no argument rides on the command
+    # line at all. sudo logs its argv to the worker's auth log (forwarded to 119 as
+    # syslog and read back into every recording), so `bash -s -- run F15-P pressure ...`
+    # handed the captured cases their answer: case-f05-p, case-f10-h and case-f15-p
+    # (v3) carry exactly that line (design principle 8). Even without the id, words like
+    # `memhog` or `watermark` and the cohort list would still be a label no real
+    # incident leaves. The remote side names its job after the mode, which is unique per
+    # worker and identical across preflight, run, cleanup and recovery.
+    args = [action, p["mode"], p["host"]]
     if p["mode"] == "fio":
         args += [p["target_dir"], str(p["size_mib"]), str(p["runtime_seconds"]), str(p["rate_iops"])]
     elif p["mode"] == "watermark":
@@ -278,53 +286,95 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         args += [str(p["mib"]), str(p["runtime_seconds"]), ",".join(p["required_cohort"])]
     else:
         args += [str(p["cpu_workers"]), str(p["vm_workers"]), p["vm_bytes"], str(p["runtime_seconds"])]
-    # ssh joins argv with spaces into one remote command line, so remote arguments
-    # must be shell-quoted (db_ddl_executor and load_north_south_executor do the
-    # same). Nothing here carries a metacharacter today — these are paths, numbers
-    # and cohort names — but that is a property of the current parameters, not of
-    # the transport, and load.north_south lost five scenarios to exactly that
-    # assumption when one health_path grew an `&`.
-    return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s", "--", *(shlex.quote(arg) for arg in args)], REMOTE
+    # The arguments travel on stdin as the script's first line (`set -- ...`), so sudo
+    # logs only `bash -s`. They are still shell-quoted: bash parses that line like any
+    # other, and load.north_south lost five scenarios to an unquoted `&` in one
+    # health_path. Nothing here carries a metacharacter today (paths, numbers and
+    # cohort names), but that is a property of the parameters, not of the transport.
+    preamble = ("set -- " + " ".join(shlex.quote(arg) for arg in args) + "\n").encode()
+    return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s"], preamble + REMOTE
 
 
 REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail
-action="$1"; scenario="$2"; mode="$3"; expected_host="$4"; shift 4
-state_root=/var/lib/lucida/scenario-profile-state; mkdir -p "$state_root"; chmod 700 "$state_root"
-pidfile="$state_root/${scenario}.pid"; artifact=""
+# The positional arguments come from the `set --` line the executor puts in front of
+# this script, never from the sudo command line.
+action="$1"; mode="$2"; expected_host="$3"; shift 3
+# Everything this script leaves on the worker is observable: sudo's argv and every
+# process cmdline go to 119 (syslog, SMS process_meta) and files sit on the DB's own
+# volume. So nothing here may carry the scenario id or testbed wording. Each mode is
+# an operator's ad-hoc job with a plain name; one job per mode per worker is all the
+# contracts ever run at once, so the mode alone finds the same pid/state/artifact
+# from separate preflight, run, cleanup and recovery invocations. The two roots can
+# be moved only for the sandboxed tests: sudo resets the environment on the worker.
+state_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
+[[ -d "$state_root" ]] || { mkdir -p "$state_root"; chmod 700 "$state_root"; }
+case "$mode" in fio) job=iobench;; watermark) job=bulkcopy;; pressure) job=soak;; cpu) job=burnin;; memhog) job=memhold;; *) exit 2;; esac
+pidfile="$state_root/$job.pid"; logfile="$state_root/$job.log"; artifact=""
 alive() { [[ -s "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
 stop() { if alive; then kill "$(cat "$pidfile")"; for _ in {1..30}; do alive || break; sleep 1; done; alive && kill -9 "$(cat "$pidfile")"; fi; rm -f "$pidfile"; }
+# Until 2026-10-16 the names were /var/lib/lucida/scenario-profile-state/<id>.{pid,pgid,log}
+# and <target>/.lucida-<id>-{fio,watermark}. A run cut short under that executor can
+# still have left a process or a file, and nothing else knows those names any more, so
+# preflight and recovery refuse while one exists and cleanup removes it. The tests below
+# are bash builtins (globs, read, kill -0): the old names reach a process list only when
+# a leftover actually exists and has to be removed.
+legacy_root="${OPSJOB_LEGACY_ROOT:-/var/lib/lucida/scenario-profile-state}"
+shopt -s nullglob
+legacy_pid_live() { local pid comm; read -r pid <"$1" 2>/dev/null || return 1; [[ "$pid" =~ ^[0-9]+$ ]] || return 1; kill -0 "$pid" 2>/dev/null || return 1; read -r comm <"/proc/$pid/comm" 2>/dev/null || return 1; [[ "$comm" == fio || "$comm" == stress-ng* ]]; }
+legacy_group_live() { local pgid; read -r pgid <"$1" 2>/dev/null || return 1; [[ "$pgid" =~ ^[0-9]+$ ]] || return 1; kill -0 -"$pgid" 2>/dev/null; }
+legacy_artifacts() { [[ -n "${target:-}" ]] || return 0; case "$mode" in fio) printf '%s\n' "$target"/.lucida-*-fio;; watermark) printf '%s\n' "$target"/.lucida-*-watermark;; esac; }
+legacy_clear() {
+  local f
+  for f in "$legacy_root"/*.pid; do if legacy_pid_live "$f"; then return 1; fi; done
+  for f in "$legacy_root"/*.pgid; do if legacy_group_live "$f"; then return 1; fi; done
+  if [[ "$mode" == cpu || "$mode" == memhog ]]; then for f in "$legacy_root"/*.pgid; do return 1; done; fi
+  [[ -z "$(legacy_artifacts)" ]]
+}
+legacy_cleanup() {
+  local f pid pgid a
+  for f in "$legacy_root"/*.pid; do
+    if legacy_pid_live "$f"; then read -r pid <"$f"; kill "$pid" 2>/dev/null || true; for _ in {1..30}; do legacy_pid_live "$f" || break; sleep 1; done; if legacy_pid_live "$f"; then kill -9 "$pid" 2>/dev/null || true; fi; fi
+    rm -f -- "$f" "${f%.pid}.log"
+  done
+  for f in "$legacy_root"/*.pgid; do
+    if legacy_group_live "$f"; then read -r pgid <"$f"; kill -TERM -"$pgid" 2>/dev/null || true; for _ in {1..30}; do legacy_group_live "$f" || break; sleep 1; done; if legacy_group_live "$f"; then kill -KILL -"$pgid" 2>/dev/null || true; fi; fi
+    rm -f -- "$f" "$f.tmp" "${f%.pgid}.log"
+  done
+  while IFS= read -r a; do if [[ -n "$a" ]]; then rm -f -- "$a"; fi; done < <(legacy_artifacts)
+  return 0
+}
 case "$mode" in
  fio)
-  target="$1"; size="$2"; runtime="$3"; rate="$4"; artifact="$target/.lucida-${scenario}-fio"
+  target="$1"; size="$2"; runtime="$3"; rate="$4"; artifact="$target/.$job.dat"
   check() { command -v fio >/dev/null; [[ -d "$target" && ! -L "$target" ]]; [[ "$(df -P "$target" | awk 'NR==2{print $4}')" -gt $((size*1024+1048576)) ]]; }
-  case "$action" in preflight) check; [[ ! -e "$artifact" ]] && ! alive;; run) check; [[ ! -e "$artifact" ]] && ! alive; nohup fio --name="lucida-$scenario" --filename="$artifact" --size="${size}M" --rw=randwrite --bs=4k --iodepth=16 --direct=1 --time_based --runtime="$runtime" --rate_iops="$rate" --end_fsync=1 >"$state_root/${scenario}.log" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f -- "$artifact" "$state_root/${scenario}.log";; recovery) ! alive; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
+  case "$action" in preflight) legacy_clear; check; [[ ! -e "$artifact" ]] && ! alive;; run) legacy_clear; check; [[ ! -e "$artifact" ]] && ! alive; nohup fio --name="$job" --filename="$artifact" --size="${size}M" --rw=randwrite --bs=4k --iodepth=16 --direct=1 --time_based --runtime="$runtime" --rate_iops="$rate" --end_fsync=1 >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f -- "$artifact" "$logfile"; legacy_cleanup;; recovery) legacy_clear; ! alive; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
  watermark)
-  target="$1"; watermark="$2"; reserve_mib="$3"; max_mib="$4"; artifact="$target/.lucida-${scenario}-watermark"
+  target="$1"; watermark="$2"; reserve_mib="$3"; max_mib="$4"; artifact="$target/.$job.part"
   calculate() { read -r blocks used avail < <(df -Pk "$target" | awk 'NR==2{print $2,$3,$4}'); desired=$((blocks*watermark/100-used)); reserve_kib=$((reserve_mib*1024)); (( desired > avail-reserve_kib )) && desired=$((avail-reserve_kib)); (( desired > max_mib*1024 )) && desired=$((max_mib*1024)); (( desired > 0 )); }
-  case "$action" in preflight) [[ -d "$target" && ! -L "$target" && ! -e "$artifact" ]]; calculate;; run) [[ ! -e "$artifact" ]]; calculate; fallocate -l "${desired}K" "$artifact"; sync -f "$artifact";; cleanup) rm -f -- "$artifact"; sync -f "$target";; recovery) [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
+  case "$action" in preflight) legacy_clear; [[ -d "$target" && ! -L "$target" && ! -e "$artifact" ]]; calculate;; run) legacy_clear; [[ ! -e "$artifact" ]]; calculate; fallocate -l "${desired}K" "$artifact"; sync -f "$artifact";; cleanup) rm -f -- "$artifact"; legacy_cleanup; sync -f "$target";; recovery) legacy_clear; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
  pressure)
   cpu="$1"; vm="$2"; bytes="$3"; runtime="$4"
   # --vm-keep is load-bearing, not a tuning knob: without it the vm stressor munmaps
   # and re-mmaps every iteration, so pages are never held resident and node memory
   # utilisation does not move at all. See the F15P_LEVELS note for run 8f317c57.
-  case "$action" in preflight) command -v stress-ng >/dev/null; ! alive;; run) ! alive; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --vm-keep --timeout "${runtime}s" --metrics-brief >"$state_root/${scenario}.log" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f "$state_root/${scenario}.log";; recovery) ! alive;; *) exit 2;; esac ;;
+  case "$action" in preflight) legacy_clear; command -v stress-ng >/dev/null; ! alive;; run) legacy_clear; ! alive; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --vm-keep --timeout "${runtime}s" --metrics-brief >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f "$logfile"; legacy_cleanup;; recovery) legacy_clear; ! alive;; *) exit 2;; esac ;;
  cpu)
   # stress-ng-free CPU noisy neighbor: N `yes` busy loops at normal priority (no nice),
   # confined to one session so cleanup can reap the whole group by negative PGID. The
   # burner writes its own leader pid ($$ == pgid under setsid) so we never guess it, and a
   # self-bounded sleep + trap kill 0 guarantees teardown even if the controller never calls cleanup.
-  cpu="$1"; runtime="$2"; pgidfile="$state_root/${scenario}.pgid"
+  cpu="$1"; runtime="$2"; pgidfile="$state_root/$job.pgid"
   grouplive() { [[ -s "$pgidfile" ]] && kill -0 -"$(cat "$pgidfile")" 2>/dev/null; }
   case "$action" in
-   preflight) command -v yes >/dev/null; command -v setsid >/dev/null; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
-   run) [[ ! -e "$pgidfile" ]]; ! grouplive
-     setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; for _ in $(seq 1 '"$cpu"'); do yes >/dev/null 2>&1 & done; sleep '"$runtime"'' >"$state_root/${scenario}.log" 2>&1 &
+   preflight) legacy_clear; command -v yes >/dev/null; command -v setsid >/dev/null; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
+   run) legacy_clear; [[ ! -e "$pgidfile" ]]; ! grouplive
+     setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; for _ in $(seq 1 '"$cpu"'); do yes >/dev/null 2>&1 & done; sleep '"$runtime"'' >"$logfile" 2>&1 &
      for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
    cleanup)
      if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi
-     rm -f "$pgidfile" "$pgidfile.tmp" "$state_root/${scenario}.log" ;;
-   recovery) ! grouplive; [[ ! -e "$pgidfile" ]] ;;
+     rm -f "$pgidfile" "$pgidfile.tmp" "$logfile"; legacy_cleanup ;;
+   recovery) legacy_clear; ! grouplive; [[ ! -e "$pgidfile" ]] ;;
    *) exit 2 ;;
   esac ;;
  memhog)
@@ -332,14 +382,14 @@ case "$mode" in
   # allocates $mib MiB and touches every page (bytearray, 1 MiB stride) so the pages are
   # resident RSS, then holds for $runtime. Confined to a setsid session with a self-bound
   # sleep + trap kill 0 so cleanup reaps the whole group by negative PGID (identical
-  # lifecycle contract to the cpu mode). CPU stays idle to keep this distinct from F09-R.
+  # lifecycle contract to the cpu mode). CPU stays idle to keep this distinct from the cpu mode.
   #
   # Placement gate (fail-closed): before allocating we re-list the pods actually resident
   # on THIS node via node-local crictl and require every deployment prefix in $cohort to
   # be present. commerce has no nodeSelector/affinity so the cohort drifts; a stale target
   # map must not silently pressure the wrong node. Missing crictl, a crictl error, or any
   # absent cohort member aborts before a single byte is allocated.
-  mib="$1"; runtime="$2"; cohort="$3"; pgidfile="$state_root/${scenario}.pgid"
+  mib="$1"; runtime="$2"; cohort="$3"; pgidfile="$state_root/$job.pgid"
   grouplive() { [[ -s "$pgidfile" ]] && kill -0 -"$(cat "$pgidfile")" 2>/dev/null; }
   placement_ok() {
     command -v crictl >/dev/null || return 1
@@ -354,19 +404,19 @@ print("\n".join(p["metadata"]["name"] for p in d.get("items",[])))' 2>/dev/null)
     done
   }
   case "$action" in
-   preflight) command -v python3 >/dev/null; command -v setsid >/dev/null; placement_ok; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
-   run) [[ ! -e "$pgidfile" ]]; ! grouplive; placement_ok
+   preflight) legacy_clear; command -v python3 >/dev/null; command -v setsid >/dev/null; placement_ok; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
+   run) legacy_clear; [[ ! -e "$pgidfile" ]]; ! grouplive; placement_ok
      setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; python3 -c "import sys,time
 mib=int(sys.argv[1]); hold=int(sys.argv[2])
 buf=bytearray(mib*1024*1024)
 for off in range(0, len(buf), 1024*1024):
     buf[off]=1
-time.sleep(hold)" '"$mib"' '"$runtime"'' >"$state_root/${scenario}.log" 2>&1 &
+time.sleep(hold)" '"$mib"' '"$runtime"'' >"$logfile" 2>&1 &
      for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
    cleanup)
      if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi
-     rm -f "$pgidfile" "$pgidfile.tmp" "$state_root/${scenario}.log" ;;
-   recovery) ! grouplive; [[ ! -e "$pgidfile" ]] ;;
+     rm -f "$pgidfile" "$pgidfile.tmp" "$logfile"; legacy_cleanup ;;
+   recovery) legacy_clear; ! grouplive; [[ ! -e "$pgidfile" ]] ;;
    *) exit 2 ;;
   esac ;;
  *) exit 2 ;;

@@ -1058,5 +1058,164 @@ class HostStressRegistrationIsTwoSidedTests(unittest.TestCase):
         )
 
 
+class HostStressLeavesNoScenarioTraceTests(unittest.TestCase):
+    """Nothing host.stress leaves on a worker may name the scenario (design principle 8).
+
+    Until 2026-10-16 the scenario id rode on the sudo command line
+    (`bash -s -- run F15-P pressure ...`), which the worker's auth log forwards to 119,
+    and it named the fio job, the fill file on the DB volume and the state files whose
+    paths sit in process cmdlines. Recorded cases carried those lines as a ready answer.
+    """
+
+    FORBIDDEN = ("lucida", "scenario")
+
+    @staticmethod
+    def every_parameter_set():
+        sets = [(sid, p) for sid, p in host.CONTRACTS.items()]
+        sets += [(sid, p) for sid, levels in host.STORAGE_LEVELS.items() for p in levels]
+        sets += [("F09-R", p) for p in host.F09R_LEVELS]
+        sets += [("F05-P", p) for p in host.F05P_LEVELS]
+        sets += [("F15-P", p) for p in host.F15P_LEVELS]
+        return sets
+
+    def test_command_line_and_stdin_carry_no_scenario_id(self) -> None:
+        import subprocess
+
+        mode_words = {"fio", "watermark", "pressure", "cpu", "memhog"}
+        for sid, p in self.every_parameter_set():
+            for action in ("preflight", "run", "cleanup", "recovery"):
+                with self.subTest(scenario=sid, mode=p["mode"], action=action):
+                    argv, stdin = host.build_invocation(
+                        plan("host.stress", sid, p, {"transport": "ssh", "host": p["host"]}), action
+                    )
+                    # sudo logs exactly what follows it; nothing may follow `bash -s`.
+                    self.assertEqual(argv[-3:], ["sudo", "bash", "-s"])
+                    line = " ".join(argv)
+                    self.assertNotIn(sid, line)
+                    for word in (*self.FORBIDDEN, *mode_words):
+                        self.assertNotIn(word, line.split())
+                    # The id is not derivable on the worker at all: it is absent from the
+                    # script and its arguments, not merely from the logged command line.
+                    self.assertNotIn(sid.encode(), stdin)
+                    self.assertNotIn(sid.lower().encode(), stdin)
+                    preamble = stdin.split(b"\n", 1)[0] + b"\n"
+                    self.assertTrue(preamble.startswith(b"set -- "))
+                    completed = subprocess.run(
+                        ["bash", "-s"], input=preamble + b'printf "%s\\n" "$@"\n',
+                        capture_output=True, timeout=30,
+                    )
+                    received = completed.stdout.decode().splitlines()
+                    self.assertEqual(received[:3], [action, p["mode"], p["host"]])
+
+    def test_names_that_reach_the_worker_are_neutral(self) -> None:
+        # Comments never reach the worker. The only executable lines allowed to spell
+        # the old wording are the ones that find leftovers of the old names.
+        for raw in host.REMOTE.decode().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "legacy_root=" in line or ".lucida-*-" in line:
+                continue
+            with self.subTest(line=line[:80]):
+                for word in self.FORBIDDEN:
+                    self.assertNotIn(word, line)
+                self.assertNotIn("$scenario", line)
+
+    def _remote(self, sandbox: Path, *args: str) -> int:
+        import os
+        import shlex
+        import subprocess
+
+        preamble = ("set -- " + " ".join(shlex.quote(a) for a in args) + "\n").encode()
+        env = dict(os.environ, OPSJOB_STATE_ROOT=str(sandbox / "state"), OPSJOB_LEGACY_ROOT=str(sandbox / "legacy"))
+        return subprocess.run(["bash", "-s"], input=preamble + host.REMOTE, env=env, capture_output=True, timeout=120).returncode
+
+    def test_cpu_job_lifecycle_and_cmdline_in_a_sandbox(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            (sandbox / "legacy").mkdir()
+            cpu = ("cpu", "192.168.122.14", "1", "30")
+            self.assertEqual(self._remote(sandbox, "preflight", *cpu), 0)
+            try:
+                self.assertEqual(self._remote(sandbox, "run", *cpu), 0)
+                pgid = (sandbox / "state" / "burnin.pgid").read_text().strip()
+                cmdline = Path(f"/proc/{pgid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+                # The sandbox path is the test's own; on the worker it is the state root.
+                cmdline = cmdline.replace(str(sandbox / "state"), "/var/lib/opsjobs")
+                for word in self.FORBIDDEN:
+                    self.assertNotIn(word, cmdline)
+                self.assertNotEqual(self._remote(sandbox, "recovery", *cpu), 0, "a running job is not recovered")
+            finally:
+                self.assertEqual(self._remote(sandbox, "cleanup", *cpu), 0)
+            self.assertEqual(self._remote(sandbox, "recovery", *cpu), 0)
+            self.assertEqual(sorted(p.name for p in (sandbox / "state").iterdir()), [])
+
+    def test_leftovers_under_the_old_names_block_preflight_and_are_cleaned_up(self) -> None:
+        import os
+        import subprocess
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            legacy = sandbox / "legacy"
+            target = sandbox / "target"
+            legacy.mkdir()
+            target.mkdir()
+            # An old cpu burner group that outlived its run, with its log. Detached the
+            # way the old executor left it (orphaned, so init reaps it), not as our child.
+            subprocess.run(
+                ["bash", "-c", f'setsid bash -c \'echo $$ >"{legacy}/F09-R.pgid"; sleep 60\' >/dev/null 2>&1 &'],
+                check=True, timeout=10,
+            )
+            pgid = ""
+            for _ in range(50):
+                if (legacy / "F09-R.pgid").exists():
+                    pgid = (legacy / "F09-R.pgid").read_text().strip()
+                    if pgid:
+                        break
+                time.sleep(0.1)
+            self.assertTrue(pgid)
+            try:
+                (legacy / "F09-R.log").write_text("x")
+                cpu = ("cpu", "192.168.122.184", "1", "30")
+                self.assertNotEqual(self._remote(sandbox, "preflight", *cpu), 0)
+                self.assertNotEqual(self._remote(sandbox, "recovery", *cpu), 0)
+                self.assertEqual(self._remote(sandbox, "cleanup", *cpu), 0)
+                self.assertEqual(sorted(p.name for p in legacy.iterdir()), [])
+                self.assertEqual(self._remote(sandbox, "recovery", *cpu), 0)
+                time.sleep(0.5)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(int(pgid), 0)
+            finally:
+                try:
+                    os.killpg(int(pgid), 9)
+                except ProcessLookupError:
+                    pass
+            # An old fill file on the DB volume blocks recovery of the same mode only.
+            (target / ".lucida-F10-R-watermark").write_bytes(b"")
+            (target / ".lucida-F02-H-fio").write_bytes(b"")
+            watermark = ("watermark", "192.168.122.184", str(target), "85", "10240", "51200")
+            self.assertNotEqual(self._remote(sandbox, "recovery", *watermark), 0)
+            self.assertEqual(self._remote(sandbox, "cleanup", *watermark), 0)
+            self.assertEqual(self._remote(sandbox, "recovery", *watermark), 0)
+            self.assertEqual([p.name for p in target.iterdir()], [".lucida-F02-H-fio"])
+            # A stale old pid file whose pid now belongs to something else is dropped,
+            # and that process is left alone.
+            bystander = subprocess.Popen(["sleep", "60"])
+            try:
+                (legacy / "F10-H.pid").write_text(f"{bystander.pid}\n")
+                pressure = ("pressure", "192.168.122.11", "1", "1", "1M", "5")
+                self.assertEqual(self._remote(sandbox, "recovery", *pressure), 0)
+                self.assertEqual(self._remote(sandbox, "cleanup", *pressure), 0)
+                self.assertIsNone(bystander.poll())
+                self.assertFalse((legacy / "F10-H.pid").exists())
+            finally:
+                bystander.kill()
+                bystander.wait(timeout=10)
+
+
 if __name__ == "__main__":
     unittest.main()
