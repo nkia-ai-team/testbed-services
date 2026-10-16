@@ -29,7 +29,8 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-10",
       "attempts": 0,
-      "status": "waiting"
+      "status": "hold",
+      "hold_reason": "66 이전 뒤 계약 불일치(설정 문제). F57-R-run-1dfb3a8d 가 주입 전 db.ddl preflight 에서 'no detail' 로 거부되고 cleanup·수동 cleanup(manual-cleanup-c5b10091)도 같은 사유로 실패해 러너 큐 cycle-1-e935aa5a 가 paused(DIRTY coordinator state). 원인: 계약(registry/profiles.json scenario_parameters F57-R, controllers.json, db_ddl_executor.py 기본값)의 primary_key 가 109 에서 잰 시스템 생성 이름 SYS_C008658 인데, 66 의 BANKING.TRANSFERS 기본 키는 SYS_C008748(ID 한 열, 2026-10-16 08:2xZ 읽기 전용 조회)이라 ORACLE_IDENTITY_REMOTE 의 guarded 검사가 실패한다. DB 자체는 원상태(BY DEFAULT, read_only NO, 생성기 last_number 6903371 > max ID 6903366, 주입 안 됨). 사람 조치: 66 실측 이름으로 계약을 고치고(같은 표의 F35-H indexes·constraints 의 SYS_C00865x 이름도 66 에서 다시 확인) 러너 DIRTY 를 정리한 뒤(이 런의 plan.json 에 SYS_C008658 이 고정돼 있어 repair_capsule 로도 cleanup 이 통과하지 않을 수 있다, 정리 방법은 사람 판단) 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 근거: tb-ops /root/rca-scenario-runner/runs/F57-R-run-1dfb3a8d/{decisions,cleanup,mutations}.json"
     },
     {
       "scenario_id": "F23-P",
