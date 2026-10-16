@@ -81,7 +81,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 맞는 말이 없으면 이 표에 한 줄 더한다. **결제 경로**(외부 결제 의존 + 결제 서비스 + DB 테이블(결제))는 따로 합쳐서도 센다: 서로 다른 부품이라도 "결제 쪽이 범인"이라는 같은 지름길을 만든다.
 
-## 3. 집계 (2026-10-15, 정식만, 주 묶음 기준)
+## 3. 집계 (2026-10-16, 정식만, 주 묶음 기준)
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
@@ -91,7 +91,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | D DB 잠금 | 7 | 10% |
 | E 처리 용량 초과 | 2 | 3% |
 | F 느린 쿼리 | 3 | 4% |
-| G 설정 오배포 | 8 | 12% |
+| G 설정 오배포 | 8 | 11% |
 | H 데이터가 조용히 틀어짐 | 2 | 3% |
 | I 인증 의존 실패 | 1 | 1% |
 | J 결함 있는 새 버전 배포 | 7 | 10% |
@@ -100,21 +100,21 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | M DNS | 1 | 1% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 1 | 1% |
-| P 운영 작업의 대상 착오 | 8 | 12% |
+| P 운영 작업의 대상 착오 | 9 | 13% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 21, 음식배달 22. 후보 47종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 26, 은행 22, 음식배달 22. 후보 46종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 15개뿐이고(J 7, G 8. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)은 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R(G+A)은 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P 여덟뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-A, B, D, J, L은 각 7개(10%), G, P는 각 8개(12%)로 20%에 가깝다. 서비스는 은행(21), 음식배달(22) 순으로 채운다.
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 15개뿐이고(J 7, G 8. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)은 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R(G+A)은 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R 아홉뿐이고 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+A, B, D, J, L은 각 7개(10%), G는 8개(11%), P는 9개(13%)로 20%에 가깝다. 서비스는 은행, 음식배달(각 22)을 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 69종):
+정답 위치별 정식 (2-1 정의, 정식 70종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
 | 주문 서비스 | 7 | 10% |
 | 외부 결제 의존 | 6 | 9% |
 | 은행 이체 서비스 | 6 | 9% |
-| DB 테이블(은행 계좌) | 3 | 4% |
+| DB 테이블(은행 계좌) | 4 | 6% |
 | DB 테이블(재고) | 3 | 4% |
 | 결제 서비스 | 4 | 6% |
 | 배달 서비스 | 5 | 7% |
@@ -143,7 +143,7 @@ A, B, D, J, L은 각 7개(10%), G, P는 각 8개(12%)로 20%에 가깝다. 서�
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **12** | **17%** |
 
-결제 경로는 정식만으로 17%(17.4%, 12/69)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 17%(17.1%, 12/70)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -220,6 +220,7 @@ A, B, D, J, L은 각 7개(10%), G, P는 각 8개(12%)로 20%에 가깝다. 서�
 | F54-R | 정식 | 은행 | G+A | DB 계정 | DB 자원 한도 정비가 banking Oracle 애플리케이션 계정 BANKING 에 호출당 논리 읽기 한도(LOGICAL_READS_PER_CALL 30000)를 둔 새 프로필 APP_CALL_LIMITS 를 붙였는데, 한도가 거래 내역 페이지마다 도는 transfers 건수 질의(전수 스캔, 호출당 약 5만~20만 블록)보다 낮음. 한도는 로그인 때 읽혀 transfer 풀이 세션을 새로 여는 대로(idle-timeout 60초, max-lifetime 10분) 거래 내역이 ORA-02395 'exceeded call limit on IO usage' 로 끊겨 transfer 500, api 502(재시도, 서킷). ledger 대사 SUM(약 14.6만 블록)도 10분마다 실패. 같은 세션의 가벼운 호출(이체, 잔액 조회, 계좌 목록, outbox 릴레이 약 1만 블록, commerce 정산)은 정상, 롤아웃, 재시작, readiness 실패 없음. 원본 Google 2020-12-14(자동 쿼터 관리가 한 서비스의 쿼터를 실제 사용량 아래로 줄여 그 서비스의 정상 요청이 거절됨). F35-R(같은 계정 잠금, 로그인 거절로 banking 전체 실패), F35-H(이체 표 삭제, 거래 내역과 이체 모두 실패), F42-R(같은 표 전수 스캔을 이체마다 하는 릴리스로 Oracle 포화)과 같은 계정, 같은 표, 같은 거래 내역 실패의 다른 원인 |
 | F49-P | 정식 | 음식배달 | L+J | 결제 서비스 | food payment-service 를 릴리스 food-delivery-payment:1.3.0(fault-images/f49-p 패치로 만든 별도 태그)으로 롤아웃. 결제 공개 API 정비로 POST/GET /api/payments 응답의 id 를 숫자 행 번호에서 외부 결제 키 문자열 "pay_" + 8자리로 바꿈. payment 는 결제를 끝내고(외부 PG 승인, APPROVED 저장) 200 으로 답하며 Ready 를 유지하는데, 주문 생성의 마지막 동기 단계(주문 행, 배차 뒤)에서 이 응답을 공용 PaymentResponse(id Long)로 읽는 order 가 'Error while extracting response for type [com.fooddelivery.common.dto.PaymentResponse]' 로 해석에 실패, 재시도 1회가 같은 주문을 한 번 더 결제시키고 서킷 끝에 주문 생성 전량 502 롤백(약 0.35초), 승인된 결제는 주문 없이 남음(로컬 240건 중 주문 번호 43개에 승인 65건). 가게, 메뉴, 배달 조회는 정상. 원본 GitHub 2021-10-08(공개 API 출시 중 Codespaces 핵심 API 응답 구조가 의도치 않게 바뀌어 안정 스키마에 기대던 기존 클라이언트가 깨짐, 되돌려 복구) |
 | F55-R | 정식 | 음식배달 | J+G | 배달 서비스 | food dispatch-service 를 릴리스 food-delivery-dispatch:1.8.0(fault-images/f55-r 패치로 만든 별도 태그)으로 롤아웃. 배달 추적 폴링이 한 클라이언트에서 몰리지 않도록 /api/deliveries 앞에 요청의 원격 주소로 클라이언트를 구분하는 요청 한도(순간 20회, 이후 3초에 1회, 넘으면 429)를 더했는데, 이 배포에서 dispatch 를 부르는 쪽은 order 파드 하나와 NodePort 진입을 바꾼 노드 주소 10.244.0.0 하나뿐이라 한도가 사실상 모든 요청에 걸림. dispatch 는 Ready 이고 빠른데 order 의 용량 확인과 배차가 429 를 받아 재시도와 서킷 끝에 거의 모든 주문이 503(약 6초에 1건만 통과). 풀, MySQL 은 그대로(PostHog 2025-10-24 IP 기준 요청 한도가 로드밸런서 IP 하나만 보고 요청의 97% 를 429 로 거절한 장애 재구성) |
+| F56-R | 정식 | 은행 | P | DB 테이블(은행 계좌) | banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 가맹 계약의 살아 있는 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 보관 표에 옮기고 지움(Atlassian 2022-04-05 잘못된 id 를 받은 정리 스크립트가 고객 사이트를 지운 장애 재구성). 정산 이체마다 transfer 가 FOR UPDATE 로 계좌를 못 찾아 즉시 400 'Account not found: commerce-merchant', payment 502, checkout 502. transfer, Oracle 은 Ready 이고 banking 자신의 손님(ACC-*) 거래와 commerce 기준선의 ACC- 직행 이체는 정상 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -230,7 +231,6 @@ A, B, D, J, L은 각 7개(10%), G, P는 각 8개(12%)로 20%에 가깝다. 서�
 |---|---|---|---|---|---|
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
 | F42-P | 후보 | 음식배달 | J+F | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.5.0(fault-images/f42-p 패치로 만든 별도 태그)으로 롤아웃. 인기 메뉴 순위를 실시간으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 요청마다 최근 7일 주문을 바로 셈(order_items JOIN orders JOIN menus, 가게 한 곳, 메뉴별 COUNT). 109 MySQL 이 한가할 때 4.05~7.47초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽. 인기 메뉴 초당 약 2.5건이면 food MySQL(CPU 0.5) 포화, restaurant Hikari 10개가 집계에 묶여 가게 상세, 메뉴, 인기 메뉴가 3초 대기 뒤 500, readiness 이탈과 재시작 가능, order 가 가게, 메뉴 조회 실패로 주문 502. 스키마, 인덱스, 캐시 표는 그대로(1146 없음), 긴 활성 세션이 restaurant 파드 IP 에서 옴. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화, F42-R, F33-H 와 같은 원본). 실행 중 MySQL 재시작은 uptime 으로 배제, 시작은 MySQL anon 여유가 있을 때만 |
-| F56-R | 후보 | 은행 | P | DB 테이블(은행 계좌) | banking 운영자의 해지 계좌 정리가 잘못된 id 목록을 받아 Oracle BANKING.ACCOUNTS 에서 commerce 가맹 계약의 살아 있는 정산 계좌 두 행(commerce-settlement, commerce-merchant)을 보관 표에 옮기고 지움(Atlassian 2022-04-05 잘못된 id 를 받은 정리 스크립트가 고객 사이트를 지운 장애 재구성). 정산 이체마다 transfer 가 FOR UPDATE 로 계좌를 못 찾아 즉시 400 'Account not found: commerce-merchant', payment 502, checkout 502. transfer, Oracle 은 Ready 이고 banking 자신의 손님(ACC-*) 거래와 commerce 기준선의 ACC- 직행 이체는 정상 |
 | F51-H | 후보 | 은행 | J+E | 은행 계좌 서비스 | banking account-service 를 릴리스 core-banking-account:1.4.0(fault-images/f51-h 패치로 만든 별도 태그)으로 롤아웃. 잔액 조회에 더한 마지막 이체 시각 헤더의 조회가 DataSourceUtils 로 빌린 Hikari 연결을 트랜잭션 밖에서 돌려주지 않아, 잔액 조회 약 10건 만에 풀(10)이 total=10, active=10, idle=0 으로 굳음(Oracle 은 한가함). account 의 모든 DB 작업이 3초 대기 끝에 500, readiness(DataSource 확인) 이탈로 잔액 조회, 계좌 목록 nginx 502, 이체 api 502 가 롤백까지 이어짐(liveness 는 DB 를 보지 않아 재시작 없음). 거래 내역, commerce 정산, transfer, ledger, Oracle 은 정상. F51-R(운영 명령으로 account 0개)과 사용자 증상이 같고 원인이 다른 H, 원본은 Octopus Deploy 2025-11-25(F43-R, F43-P 와 같은 원본, Oracle 판) |
 | F57-R | 후보 | 은행 | Q | DB 테이블(이체) | 운영자가 banking Oracle BANKING.TRANSFERS 를 옮기는 이전 작업에서 행은 스냅숏과 따라잡기로 모두 옮겼지만 identity 생성기 상태는 옮기지 않아, 전환(표를 6초 읽기 전용, 그동안 이체 ORA-12081) 뒤 쓰기가 열리자 생성기가 스냅숏 시점 값(최대 키보다 40만 뒤, 약 5일치)에서 다시 시작(재구성: 행 복사는 하지 않고 READ ONLY, 6초, START WITH 되감기, READ WRITE 로 전환과 그 결과를 만듦, 되돌림은 READ WRITE 와 START WITH LIMIT VALUE). 새 이체 INSERT(id=default)마다 이미 있는 키를 받아 기본 키 SYS_C008658 이 ORA-00001 + ORA-03301 '(ID:N) already exists' 로 거절해 이체 500, account, api 502, commerce checkout 정산 502. 거래 내역(같은 표 읽기), 잔액 조회, 계좌 목록, 원장, Oracle, 파드, USERS 사용량은 그대로. 원본 RevenueCat 2022-11-23(논리 복제가 시퀀스 상태를 옮기지 않아 기본 키 시퀀스가 기존 값과 부딪힘). 같은 표가 정답인 F35-H(표 지움, ORA-04043/00942, 거래 내역도 실패, USERS 급락), F35-R(계정 잠금), F01-P(정산 계좌 잠금)와 같은 이체, 정산 실패 다른 원인 |
 | F23-P | 후보 | 쇼핑몰 | P+L | DB 테이블(상품) | 상품 표를 바꾸는 기능을 만들던 개발자가 자기 PC 에서 돌린 마이그레이션의 연결이 로컬 DB 대신 운영 commerce PostgreSQL 을 가리켜, 그 지우기 단계(DROP TABLE IF EXISTS ... CASCADE)가 살아 있는 product_schema.products(2,016행, product-service 만 씀)를 지움(재구성: 기록되지 않는 세션이 표를 public 스키마로 옮기고 그 통계 카운터를 0 으로 돌려, 실제 지우기처럼 DPM 의 DB 별 스캔 합이 그 표 몫만큼 내려감). product 의 상품 조회가 모두 42P01 'relation does not exist' 로 500, gateway 둘러보기 500, checkout 은 재고 예약 단계에서 전량 502(주문, 결제, 정산 전). 로그인, 장바구니, 가격, 다른 표는 정상. Resend 2024-02-21 의 commerce PostgreSQL 판 |
@@ -452,3 +452,5 @@ A, B, D, J, L은 각 7개(10%), G, P는 각 8개(12%)로 20%에 가깝다. 서�
 - 2026-10-15: `F55-R` 정식 승격(케이스 `case-f55-r-v3-ba950165`). 66 실행 F55-R-run-ba950165(러너 tb-ops 192.168.122.20)이 검증에서 녹화 가능(주입: 21:07:57~21:08:16 k8s.image 가 testbed-dispatch 를 food-delivery-dispatch:1.8.0 으로 롤아웃, 새 파드 startup probe 가 기동 중 21:08:21~21:10:06 실패해 옛 파드는 21:10:22 에 내려감. 피해: dispatch 가 order 파드 주소 10.244.2.23 에 429 를 21:10:31~21:28:08 동안 돌려줘 order 'Failed to check dispatch capacity: 429 …' 574줄, 'Failed to dispatch courier … 429' 183줄(30일 동안 429 0줄), dispatch WARN 'Rate limit exceeded for client 10.244.2.23' 34줄, 동반 부하 주문 5xx 0.82~0.94, 러너 succeeded/success 연속 21. must_support 5개 있음, must_rule_out 신호와 겹친 실행 없음). 데이터 메모: ① must_support 3 의 "10.244.0.0 도 같은 꼴" 은 이번 부하에서 일어나지 않았다(배달 추적 주소 429 0건, 호출률이 한도 보충 속도 아래). 정답지를 "order 파드 주소에서 429, 배달 추적 주소는 호출률이 낮으면 한도에 걸리지 않을 수 있다" 로 다듬자는 검증 제안이 있다(정답지는 이 승격에서 고치지 않았다) ② must_support 4 의 "Unhealthy 없음" 은 66 에서 약 2분 걸리는 기동 중 startup probe 실패(1.8.0 파드 22건, 되돌림 :latest 파드도 22건)를 빼고 읽도록 문구 보강 제안이 있다 ③ 되돌림 파드 pcr59 의 앱 기동 로그가 cleanup 구간(21:24:51, 21:27:14)에 두 번 나왔지만 KCM 에 Killing, BackOff 는 없고 recovery 는 21:28:56 에 통과했다(판정 영향 없음) ④ 이전 dispatch 기록에 :latest 아닌 RS(10-14 06:46 59c757d66b)가 있어 정답지의 "전부 :latest" 는 "1.8.0 은 처음" 으로 읽는다. 제품 관찰: dispatch 의 새 WARN 템플릿이 log-anomaly 로 잡히지 않았고, 한 장애가 군집 6개, 인시던트 6건(7e700392, 3f30f613, 8e56adf8, 47994b2d, 93ab6a28, ed4ef14e)으로 갈렸으며 accept(food-delivery-dispatch)를 주 대상으로 한 인시던트는 없고, promote 5건의 근거 원문이 '아니오 … 오류율 0.0%' 로 VM 실측(장애 평균 90.1)과 반대였다. 근거 `~/dev/testbed-ops/verifications/2026-10-15-2205-F55-R-run-ba950165.md`. §4-1 → §4, §3 을 정식 69종으로 다시 셈(J 6→7 9%→10%, 음식배달 21→22, 정답 위치 배달 서비스 4→5 6%→7%, 결제 경로 12 17.6%(12/68)→17.4%(12/69) 반올림 18%→17%, 나머지 비율은 분모 69 에서도 같음). 후보는 §4-1 실제 행 수 47종.
 - 2026-10-15: `case-f55-r-v3-ba950165` 기준선 표시(사람 결정, 운영 기록 2026-10-15T08:50:28Z): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
 - 2026-10-15: 녹화 데이터 결손 표시 2(사용자 결정: 지금은 표시만, v4 로 올린 뒤 우선 재녹화). 2026-08-31 ~ 2026-10-12 에 녹화된 케이스 29개는 VictoriaMetrics 덤프에 KCM 쿠버네티스 지표(`kcm.*`, 노드, 파드, 컨테이너 CPU, 메모리 등)가 없다. 119 VictoriaMetrics 실조회로 확인: 2026-10-12 22:00Z 에 `sms.*` 7,602 계열, `dpm.*` 1,554 계열은 있고 `kcm.*` 는 0, 109 재부팅 뒤 2026-10-13 06:00Z 에는 `kcm.*` 10,619 계열(그 전 구간은 VM 보존 기간 밖이라 덤프 자체로 판단, 덤프는 이름 제한 없이 전체를 내보낸다). KCM 이벤트(`kcm_events_local`)와 리소스 상태는 남아 있다. 해당 케이스: `case-f07-h-v3-4ab16f7a`, `case-f08-p-v3-ad967f62`, `case-f15-g-v3-fbe95718`, `case-f16-h-v3-f069f7c9`, `case-f01-p-v3-20bfac59`, `case-f06-p-v3-24f2e956`, `case-f06-p-v3-79c62cdb`, `case-f11-r-v3-6366db31`, `case-f17-p-v3-8adc39ba`, `case-f17-p-v3-e68c5992`, `case-f30-r-v3-0cd9193b`, `case-f32-r-v3-63b10537`, `case-f33-r-v3-73fed92a`, `case-f35-r-v3-bbbee443`, `case-f36-r-v3-776b522b`, `case-f37-r-v3-43c16731`, `case-f38-r-v3-54918c10`, `case-f39-r-v3-dc45499a`, `case-f17-h-v3-632a04d1`, `case-f32-h-v3-531094f2`, `case-f33-p-v3-e79a2db0`, `case-f40-r-v3-50e3ecb9`, `case-f41-r-v3-f37b1984`, `case-f42-r-v3-26143861`, `case-f43-r-v3-aecd7e38`, `case-f44-p-v3-4ee5c786`, `case-f44-r-v3-f7f70c65`, `case-f48-r-v3-574963e1`, `case-f49-r-v3-1af8dad9`. 정답이나 감별 근거가 노드, 파드 지표인 시나리오는 이 케이스로 범인을 추론할 증거가 부족할 수 있으므로 학습, 평가에서 걸러 쓰거나 따로 집계한다. 앞의 "워커 호스트 SMS 데이터 결손" 11건(2026-10-15 위 항목)과 함께, 대기열을 다 녹화하고 eval-cases 를 v4 로 올린 뒤 가장 먼저 다시 녹화하고, 그다음 새 시나리오를 녹화한다.
+- 2026-10-16: `F56-R` 정식 승격(케이스 `case-f56-r-v3-24b89933`). 66 실행 F56-R-run-24b89933(러너 tb-ops 192.168.122.20)이 검증에서 녹화 가능(주입: 00:31:54.82~00:31:58.77 db.row_delete 가 BANKING.ACCOUNTS 의 commerce-merchant, commerce-settlement 두 행을 보관 표로 옮기고 지움, cleanup 00:47:10.40~00:47:14.55 로 되살림. 피해: commerce-order 'Checkout payment failed …' 1,714줄(00:31:59.16~00:47:16.20), 그중 'Account not found: commerce-merchant' 본문 207줄(30일 동안 이번 실행 전 0줄), core-banking-transfer 정산 완료 로그가 00:31:57.83 에 끊기고 00:47:17.19 에 재개, transfer 서버 스팬 POST /api/transfers 장애 15분 400 44건(평시 0), 손님 이체(from=ACC-)는 평시와 같음, 동반 부하 checkout 5xx 1.0, 2xx 0.0, 러너 succeeded/success 연속 25. must_support 4개 있음, must_rule_out 신호와 겹친 실행 없음). 데이터 메모(재실행 사유 아님): 'Account not found' 본문을 실은 줄은 checkout 실패 줄의 12%(207/1,714)이고 나머지 1,507줄은 'CircuitBreaker 'paymentClient' is OPEN' fallback 이지만, 본문 줄이 15분 내내 분당 11~17줄로 고르게 나와 근거로 충분하다. 제품 관찰: 한 장애가 commerce-order log-anomaly 를 나눠 가진 군집 b2c4f77a(→38275b0a)와 9062ad7a(→1697a0a8, 동반 부하의 PostgreSQL-commerce 쓰기량 stream-anomaly 가 섞여 주 대상 PostgreSQL-commerce)로 갈렸고, accept(banking-oracle:BANKING.accounts)나 partial 을 주 대상으로 한 인시던트는 없으며, 두 promote 의 근거 원문이 '아니오 … 오류율 0.0%' 로 VM 실측(장애 중 error_rate 100)과 반대였다(F55-R 과 같은 꼴). 근거 `~/dev/testbed-ops/verifications/2026-10-16-0122-F56-R-run-24b89933.md`. §4-1 → §4, §3 을 정식 70종으로 다시 셈(P 8→9 12%→13%, G 8 은 분모 70 에서 12%→11%, 은행 21→22, 정답 위치 DB 테이블(은행 계좌) 3→4 4%→6%, 결제 경로 12 17.4%(12/69)→17.1%(12/70), 나머지 비율은 분모 70 에서도 같음). 후보는 §4-1 실제 행 수 46종.
+- 2026-10-16: `case-f56-r-v3-24b89933` 기준선 표시(사람 결정, 운영 기록 2026-10-15T08:50:28Z): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.

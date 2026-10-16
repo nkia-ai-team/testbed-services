@@ -3,7 +3,7 @@
   "id": "F56-R",
   "slug": "f56-r-banking-partner-settlement-accounts-deleted-by-purge-with-wrong-ids",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
