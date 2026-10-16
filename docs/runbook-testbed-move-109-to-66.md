@@ -252,6 +252,7 @@ NMS 스위치 5대, 서버 192.168.200.57(지금 process_snapshot 의 대부분�
 - 2026-10-15: 3단계 완료. 기준표 15가지가 66 에서 119 로 들어온다. server, application, database, 클러스터 대상 번호가 이어졌다. 남은 것은 119 방화벽(사용자 확인)과 4단계 나머지.
 - 2026-10-15: 4단계 완료. 전환 diff 3개 반영(testbed-services 18257d6, 러너 38f9077, 스킬), tb-ops 러너 기동(큐 idle, readiness ready), 66 호스트 :8091 포워딩, 정상 구간 덤프 cron 이전. 녹화 큐는 시작하지 않았다. 남은 것은 덤프 범위 점검 실패(표 1개)와 기준선 기간(5단계)
 - 2026-10-15: 사용자 결정으로 녹화를 바로 재개했다(첫 실행은 이전 뒤 확인용: 이상 이벤트가 109 때처럼 생기면 계속). 골든 상태 유지. 덤프 점검이 막히던 `trainer_forecast_conformal`(골든 복원 표, 녹화가 쉬어 108MB 로 커짐)은 운영 하네스 점검의 통째 담는 표 목록에 등록. 119 stream trainer 가 07-28 부터 `permission denied for table trainer_stream_snapshot_history` 로 실패하던 것을 `GRANT UPDATE ... TO polestar_ai_runtime` 로 고쳤다(UPSERT 의 ON CONFLICT DO UPDATE 에 UPDATE 권한 필요). 이후 케이스는 stream 임계값이 매 주기 학습되므로 이전 77개(07-28 값 고정)와 이 점이 다르다. lucida-next DDL `260_ai_service_role.sql` 의 권한 목록에도 이 표가 빠져 있어 제품 쪽 수정이 필요하다(팀 확인).
+- 2026-10-16: v4 할 일 목록(§8) 추가. 녹화된 시나리오 100개가 되면 v4 로 넘어간다(사용자 결정).
 
 ## 8. v4 전환 때 할 일 (2026-10-16 사용자 결정, 녹화된 시나리오 100개가 되면 전환)
 
@@ -266,4 +267,3 @@ NMS 스위치 5대, 서버 192.168.200.57(지금 process_snapshot 의 대부분�
 5. **골든 상태 다시 만들기**: 66 데이터로 새 출발점을 만든다(다시 만드는 스크립트의 k8s 대응 먼저). v3 케이스와 출발점이 갈리는 지점이라 v4 와 함께 한다.
 6. **119 패치(develop-ai 최신)**: 평가용 LB 의 200.66 허용이 되돌아가므로 다시 넣는다. stream trainer 권한(`trainer_stream_snapshot_history` UPDATE)이 제품 DDL 에 들어갔는지 확인한다.
 
-- 2026-10-16: v4 할 일 목록(§8) 추가. 녹화된 시나리오 100개가 되면 v4 로 넘어간다(사용자 결정).
