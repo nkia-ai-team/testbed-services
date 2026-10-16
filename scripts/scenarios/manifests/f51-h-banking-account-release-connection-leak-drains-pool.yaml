@@ -3,7 +3,7 @@
   "id": "F51-H",
   "slug": "f51-h-banking-account-release-connection-leak-drains-pool",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
