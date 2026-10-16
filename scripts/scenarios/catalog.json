@@ -1780,6 +1780,19 @@
       "load_mode": "fixed",
       "injection_location": "food namespace",
       "prerequisite": ""
+    },
+    {
+      "id": "F80-R",
+      "slug": "f80-r-banking-oradata-backup-zstd-exhausts-node-memory",
+      "profiles": [
+        "host.job",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "worker-w2",
+      "prerequisite": ""
     }
   ]
 }

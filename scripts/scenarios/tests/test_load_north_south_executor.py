@@ -73,6 +73,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "k8s.job",
                 # 2026-10-10: F52-R — 워커 노드 containerd 에서 이미지 지우기와 109 docker 에서 되돌려 넣기(ssh, sudo ctr) + Deployment 일상 재배포.
                 "host.image",
+                # 2026-10-16: F80-R — 워커 노드에서 일상 백업 작업을 systemd 일시 유닛으로 띄우고 멈추기(ssh, sudo systemd-run, systemctl stop) + 그 작업이 쓴 파일 지우기.
+                "host.job",
                 # 2026-10-10: F56-R — Oracle 표의 행 몇 개를 보관 표에 옮기고 지우기, 보관 행 되넣기(역 문장).
                 "db.row_delete",
                 # 2026-10-11: F51-P — MySQL 표의 한 기간 행을 백업 표에 복사하고 상태를 되돌리기, 백업 값 되쓰기(역 문장).

@@ -49,6 +49,7 @@ k8s_job = load("k8s_job_executor")
 k8s_image = load("k8s_image_executor")
 host_firewall = load("host_firewall_executor")
 host_image = load("host_image_executor")
+host_job = load("host_job_executor")
 db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
 db_row_delete = load("db_row_delete_executor")
@@ -673,6 +674,159 @@ esac
             # recovery 는 이름만이 아니라 도는 컨테이너와 같은 ID 인지 본다.
             store.write_text(store.read_text() + f"docker.io/library/core-banking-api:latest {'f' * 64}\n")
             self.assertNotEqual(self._host_image_run("recovery", env).returncode, 0)
+
+    def test_host_job_only_starts_one_backup_unit_and_removes_only_its_output(self) -> None:
+        # F80-R: 주입은 노드에서 일상 백업 작업 하나(systemd 일시 유닛)를 띄우는 것뿐이다. 파드, 매니페스트, 이미지,
+        # 설정을 건드리면 F25-H, F63-R 같은 다른 원인의 지문이 섞이고, 메모리를 직접 점유하면(F05-P memhog, F15-P
+        # stress-ng) 계기의 흔적(백업 유닛 시작, zstd 와 tar)이 사라진다.
+        plan = compiler.compile_plan("f80-r-banking-oradata-backup-zstd-exhausts-node-memory")
+        argv, stdin = host_job.build_invocation(plan, "run")
+        self.assertEqual(argv[0], "/usr/bin/bash")
+        self.assertEqual(argv[3:], [
+            "run", "192.168.122.11", "tb-w2", "rca-testbed-banking", "oracledata-testbed-oracle-0", "FREE",
+            "FREE/FREEPDB1/users01.dbf", "2048", "oradata-backup", "Oracle datafile backup", "/var/backups/oradata",
+            "12", "31", "10", "600", "20480", "1536", "3584",
+            "testbed-nginx,testbed-api,testbed-account,testbed-transfer,testbed-ledger", "testbed-oracle",
+        ])
+        # 시나리오 id 는 러너 쪽에 머문다(G6, 원칙 8). 노드의 sudo 기록에 남는 것은 백업 명령뿐이다.
+        self.assertNotIn("F80-R", argv)
+        script = stdin.decode()
+        self.assertNotIn("F80-R", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertIn("sudo -n systemd-run", run_case)
+        for flag in ('--unit="$unit"', "--collect", "--property=RuntimeMaxSec=", "--property=Nice=", "IOSchedulingClass=idle"):
+            self.assertIn(flag, run_case)
+        # 두 흐름을 나란히: 가장 큰 데이터 파일 하나, 나머지 디렉터리 tar 하나.
+        self.assertIn("tar -cf - --exclude=%q %q | zstd -q -%d --long=%d -T1 -o %q & zstd -q -%d --long=%d -T1 -o %q %q; wait;", run_case)
+        # 작업이 쓰는 곳은 preflight 가 없음을 확인한 출력 디렉터리 하나이고, cleanup 은 그 안의 백업 파일과
+        # 디렉터리만 지운다.
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn('sudo -n systemctl stop "$unit.service"', cleanup_case)
+        self.assertIn("-name '*.zst' -delete", cleanup_case)
+        self.assertIn('sudo -n rmdir "$outdir"', cleanup_case)
+        self.assertIn('healthy "$cleanup_wait"', cleanup_case)
+        preflight = script.split("\ncheck() {")[1].split("\n}")[0]
+        for guard in ("datadir", "largest_min_mib", "min_free_mib", "max_avail_mib", "min_avail_mib", "healthy 1s", "spec.nodeName"):
+            self.assertIn(guard, preflight)
+        for forbidden in ("rm -rf", "rm -r ", "drop_caches", "delete pod", "set image", "set env", "rollout restart",
+                          "scale deploy", "drain", "cordon", "MemoryMax", "stress-ng", "python3", "fallocate"):
+            self.assertNotIn(forbidden, script)
+        for change in ({"level": 19}, {"long_window_log": 27}, {"output_dir": "/var/lib/oradata"},
+                       {"runtime_seconds": 3600}, {"deployments": ["testbed-transfer"]}, {"max_available_mib": 8192}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                host_job.validate("F80-R", {**host_job.CONTRACTS["F80-R"], **change}, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified host maintenance job contract"):
+            host_job.validate("F15-P", host_job.CONTRACTS["F80-R"], {})
+
+    def _host_job_stub(self, tmp: Path) -> dict[str, str]:
+        """Fake ssh/kubectl around the real script. The node is two flag files (unit active,
+        output directory present); every remote command is unquoted and logged one argument per line."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        node = tmp / "node"
+        node.mkdir()
+        log = tmp / "log"
+        scripts = {
+            "ssh": f"""#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do [[ "$1" == -i || "$1" == -o ]] && shift; shift; done
+shift  # nkia@host
+cmd="$*"
+eval "set -- $cmd"
+printf '%s\\n' "--- $1" "$@" >>{log}
+case "$cmd" in
+  *"systemctl is-active"*) [[ -e {node}/active ]] ;;
+  "sh -c"*) echo /usr/bin/tar; echo /usr/bin/zstd; echo /usr/bin/systemd-run ;;
+  "test "*) [[ ! -e {node}/outdir ]] ;;
+  *"stat -c"*) echo 5369765888 ;;
+  "df "*) echo 80000 ;;
+  *"MemAvailable"*) cat {node}/memavail 2>/dev/null || echo 2700000 ;;
+  *"systemd-run"*) touch {node}/active {node}/outdir ;;
+  *"systemctl stop"*) rm -f {node}/active ;;
+  *"find "*) : ;;
+  *"rmdir"*) rm -f {node}/outdir ;;
+  *) exit 9 ;;
+esac
+""",
+            "kubectl": f"""#!/usr/bin/env bash
+case "$*" in
+  *"get pvc"*) printf 'pvc-x' ;;
+  *"get pv pvc-x"*) echo '{{"spec":{{"local":{{"path":"/opt/local-path-provisioner/pvc-x_rca-testbed-banking_oracledata-testbed-oracle-0"}},"nodeAffinity":{{"required":{{"nodeSelectorTerms":[{{"matchExpressions":[{{"key":"kubernetes.io/hostname","operator":"In","values":["tb-w2"]}}]}}]}}}}}}}}' ;;
+  *"get pod testbed-oracle-0"*) printf 'tb-w2' ;;
+  *"get deploy"*) echo '{{"metadata":{{"generation":1}},"spec":{{"replicas":1}},"status":{{"observedGeneration":1,"updatedReplicas":1,"availableReplicas":1}}}}' ;;
+  *"get sts"*) echo '{{"spec":{{"replicas":1}},"status":{{"readyReplicas":1}}}}' ;;
+  *) exit 9 ;;
+esac
+""",
+        }
+        for name, body in scripts.items():
+            path = bindir / name
+            path.write_text(body)
+            path.chmod(0o755)
+        return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+
+    @staticmethod
+    def _host_job_calls(tmp: Path) -> list[list[str]]:
+        calls: list[list[str]] = []
+        for line in (tmp / "log").read_text().split("\n"):
+            if line.startswith("--- "):
+                calls.append([])
+            elif line and calls:
+                calls[-1].append(line)
+        return calls
+
+    def _host_job_run(self, action: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+        plan = compiler.compile_plan("f80-r-banking-oradata-backup-zstd-exhausts-node-memory")
+        argv, stdin = host_job.build_invocation(plan, action)
+        return subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=60, check=False)
+
+    def test_host_job_runs_the_backup_as_one_unit_and_cleanup_undoes_exactly_it(self) -> None:
+        # F80-R: run 이 띄우는 것은 백업 유닛 하나이고 그 명령은 실제 Oracle 볼륨 디렉터리를 tar 로 묶어 zstd 장거리
+        # 모드로 두 흐름 나란히 압축한다. 이미 유닛이 돌거나 출력 디렉터리가 있으면 preflight 와 run 은 아무것도 하지
+        # 않고 실패한다.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._host_job_stub(tmp)
+            # 노드 여유가 작업(약 4.6 GiB)보다 1 GiB 이상 작을 때만, 이미 압박 중이 아닐 때만 주입한다.
+            for kib in ("3800000", "1400000"):
+                (tmp / "node" / "memavail").write_text(kib + "\n")
+                self.assertNotEqual(self._host_job_run("preflight", env).returncode, 0)
+                self.assertNotEqual(self._host_job_run("run", env).returncode, 0)
+            self.assertFalse((tmp / "node" / "active").exists())
+            (tmp / "node" / "memavail").write_text("2764800\n")
+            self.assertEqual(self._host_job_run("preflight", env).returncode, 0)
+            result = self._host_job_run("run", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            started = [c for c in self._host_job_calls(tmp) if c[:3] == ["sudo", "-n", "systemd-run"]]
+            self.assertEqual(len(started), 1)
+            started = started[0]
+            self.assertEqual(started[3], "--unit=oradata-backup")
+            self.assertIn("--description=Oracle datafile backup", started)
+            self.assertIn("--property=RuntimeMaxSec=600", started)
+            inner = started[started.index("-c") + 1]
+            self.assertRegex(inner, r"^mkdir -p /var/backups/oradata && cd /opt/local-path-provisioner/"
+                                    r"pvc-x_rca-testbed-banking_oracledata-testbed-oracle-0 && \{ "
+                                    r"tar -cf - --exclude=FREE/FREEPDB1/users01\.dbf FREE \| "
+                                    r"zstd -q -12 --long=31 -T1 -o /var/backups/oradata/oradata-[0-9]{8}\.tar\.zst & "
+                                    r"zstd -q -12 --long=31 -T1 -o /var/backups/oradata/users01-[0-9]{8}\.dbf\.zst "
+                                    r"FREE/FREEPDB1/users01\.dbf; wait; \}$")
+            # 두 번째 run 과 preflight 는 돌고 있는 유닛 앞에서 멈춘다.
+            self.assertNotEqual(self._host_job_run("preflight", env).returncode, 0)
+            self.assertNotEqual(self._host_job_run("run", env).returncode, 0)
+            self.assertEqual(len([c for c in self._host_job_calls(tmp) if c[:3] == ["sudo", "-n", "systemd-run"]]), 1)
+            # 회복 전에는 recovery 가 실패하고, cleanup 뒤에는 유닛도 출력도 없다.
+            self.assertNotEqual(self._host_job_run("recovery", env).returncode, 0)
+            self.assertEqual(self._host_job_run("cleanup", env).returncode, 0)
+            self.assertFalse((tmp / "node" / "active").exists())
+            self.assertFalse((tmp / "node" / "outdir").exists())
+            calls = self._host_job_calls(tmp)
+            self.assertIn(["sudo", "-n", "find", "/var/backups/oradata", "-maxdepth", "1", "-type", "f",
+                           "-name", "*.zst", "-delete"], calls)
+            self.assertIn(["sudo", "-n", "rmdir", "/var/backups/oradata"], calls)
+            self.assertIn(["sudo", "-n", "systemctl", "stop", "oradata-backup.service"], calls)
+            self.assertEqual(self._host_job_run("recovery", env).returncode, 0)
+            # 노드 메모리가 돌아오지 않았으면 회복이 아니다.
+            (tmp / "node" / "memavail").write_text("500000\n")
+            self.assertNotEqual(self._host_job_run("recovery", env).returncode, 0)
 
     def test_k8s_scale_only_lowers_one_deployment_replica_count_and_restores_it(self) -> None:
         # F51-R: 주입은 Deployment 하나의 replicas 를 1 에서 0 으로 줄이는 운영 명령뿐이다.
@@ -2567,6 +2721,8 @@ esac
             "F71-H",
             # 2026-10-12: food payment-service 를 외부 PG 결제 주소를 기본 주소와 결제 경로를 구분자 없이 이어 만드는 릴리스 1.4.0(fault-images/f79-r)으로 롤아웃, 운영 PG_API_URL 이 '/' 로 끝나지 않아 'http://testbed-external-pg-mock:9090pay' 가 되어 결제 요청을 만들기 전에 'Bad authority' 로 모든 결제 502, 주문 전량 502(PG 수신 0, rust-lang crates.io 2023-07-20 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F79-R",
+            # 2026-10-16: banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업(systemd 유닛 oradata-backup, tar | zstd -12 --long=31)이 2 GiB 장거리 창으로 노드 남은 메모리를 거의 다 써 kubelet 이 Oracle 을 축출하거나 커널이 banking 자바 컨테이너를 OOM 으로 죽임(배포·설정 변경 없음 → banking 이체 502, commerce checkout 502, GitHub 2026-09-20 재구성, 새 실행기 host.job). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F80-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

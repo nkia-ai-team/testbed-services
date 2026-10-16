@@ -75,6 +75,9 @@ PROFILE_PREFLIGHTS = {
     # The inverse of removing node images is loading the same images (same image IDs) back
     # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
     "host.image": "kubernetes-recovery-capacity",
+    # A host maintenance job runs as a transient systemd unit reached over SSH; its inverse is
+    # stopping that unit and removing the file it wrote, after which the node's pods must be ready.
+    "host.job": "host-placement-and-oob-recovery",
     "app.release": "rollback-artifact",
     "wpm.probe": "wpm-probe-contract",
     "business.fault": "business-invariant-probe",

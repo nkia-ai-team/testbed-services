@@ -182,7 +182,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-15: 48 → 47. F55-R 정식 승격(녹화 case-f55-r-v3-ba950165).
         # 2026-10-16: 47 → 46. F56-R 정식 승격(녹화 case-f56-r-v3-24b89933).
         # 2026-10-16: 46 → 45. F51-H 정식 승격(녹화 case-f51-h-v3-c093a2ed).
-        self.assertEqual(stages.count("candidate"), 45)
+        # 2026-10-16: 45 → 46. F80-R(banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업이 zstd 장거리 창으로 노드 메모리를 거의 다 써 banking 파드 축출, OOM) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 46)
 
 
 class RecordingQueueTests(unittest.TestCase):
