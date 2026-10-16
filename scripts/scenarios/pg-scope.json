@@ -70,7 +70,8 @@
     "trainer_stream_snapshot_history": "created_at",
     "trainer_stream_drift":            "created_at",
     "ai_model_state_snapshots":        "created_at",
-    "event_cluster_assignments":       "created_at"
+    "event_cluster_assignments":       "created_at",
+    "log_novel_classification_jobs":   "detected_at"
   },
 
   "slice_by_epoch_ms": {
