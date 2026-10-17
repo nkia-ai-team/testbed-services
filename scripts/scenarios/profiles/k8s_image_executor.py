@@ -436,8 +436,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
 
 
 # cleanup 이 이미지를 되돌린 뒤 Ready 를 기다리는 한도(세 스크립트 공통). 66 실측: 앱 파드는 평소
-# 95~130초에 Ready 가 되고, 부하 중에는 startupProbe(5초 x 30회 = 150초)를 넘겨 한 번 재시작하며
-# 약 5분 걸린다(2026-10-15 F49-P 가 180초 안에 Ready 가 못 돼 cleanup_failed). 그 5분에 여유를 더해
+# 55~145초에 Ready 가 된다. startupProbe 는 5초 x 60회 = 300초다(30회 = 150초일 때는 부하 중 기동이 재시작해
+# 약 5분 걸렸다. 2026-10-15 F49-P, 2026-10-17 F58-R 이 그래서 cleanup_failed). 300초 전체에 여유를 더해
 # 420초다. run 은 롤아웃을 기다리지 않으므로 이 값은 cleanup 에만 쓰인다.
 CLEANUP_WAIT = b"420s"
 

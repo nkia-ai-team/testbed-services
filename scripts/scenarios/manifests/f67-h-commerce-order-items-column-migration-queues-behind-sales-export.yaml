@@ -121,7 +121,7 @@
               "resource": "testbed-order"
             },
             "freshness": "30s",
-            "_note": "order-service 는 checkout 트랜잭션마다 주문 행을 넣은 바로 뒤 order_items 에 품목을 INSERT 하는데, 그 INSERT 가 마이그레이션 뒤에 줄을 서서 연결을 쥔 채 멈춰 Hikari 풀(10)이 차고, /actuator/health 의 DB 확인이 연결을 못 얻어 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다. 다시 뜬 파드는 기동 schema.sql:14 의 CREATE INDEX IF NOT EXISTS idx_orders_user(orders SHARE 잠금)가 죽은 파드의 멈춘 checkout 세션들이 주문 행 INSERT 로 쥔 orders ROW EXCLUSIVE 뒤에 서서 startupProbe(5초 x 30) 안에 뜨지 못한다(:26 의 order_items 인덱스까지 가지 못함). 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+            "_note": "order-service 는 checkout 트랜잭션마다 주문 행을 넣은 바로 뒤 order_items 에 품목을 INSERT 하는데, 그 INSERT 가 마이그레이션 뒤에 줄을 서서 연결을 쥔 채 멈춰 Hikari 풀(10)이 차고, /actuator/health 의 DB 확인이 연결을 못 얻어 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다. 다시 뜬 파드는 기동 schema.sql:14 의 CREATE INDEX IF NOT EXISTS idx_orders_user(orders SHARE 잠금)가 죽은 파드의 멈춘 checkout 세션들이 주문 행 INSERT 로 쥔 orders ROW EXCLUSIVE 뒤에 서서 잠금이 풀릴 때까지 뜨지 못한다(:26 의 order_items 인덱스까지 가지 못함. startupProbe 5초 x 60 = 300초를 넘기면 다시 시작한다). 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
           },
           {
             "id": "postgres_ready",

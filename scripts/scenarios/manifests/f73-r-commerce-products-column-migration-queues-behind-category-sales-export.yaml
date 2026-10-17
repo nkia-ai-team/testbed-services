@@ -124,7 +124,7 @@
               "resource": "testbed-product"
             },
             "freshness": "30s",
-            "_note": "product-service 는 상품 표를 읽는 요청마다 연결을 쥔 채 마이그레이션 뒤에 줄을 서서 Hikari 풀(기본 10, 연결 대기 30초)이 곧 차고, /actuator/health 의 DB 확인이 연결을 못 얻어 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다. 다시 뜬 파드는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS idx_products_category(products SHARE 잠금)가 같은 줄에 서서 startupProbe(5초 x 30) 안에 뜨지 못한다(로컬 실측). 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
+            "_note": "product-service 는 상품 표를 읽는 요청마다 연결을 쥔 채 마이그레이션 뒤에 줄을 서서 Hikari 풀(기본 10, 연결 대기 30초)이 곧 차고, /actuator/health 의 DB 확인이 연결을 못 얻어 readiness 가 빠지고 liveness(15초 x 5)가 재시작한다. 다시 뜬 파드는 기동 schema.sql 의 CREATE INDEX IF NOT EXISTS idx_products_category(products SHARE 잠금)가 같은 줄에 서서 잠금이 풀릴 때까지 뜨지 못한다(로컬 실측은 예전 5초 x 30 기준. 지금은 startupProbe 5초 x 60 = 300초를 넘기면 다시 시작한다). 증상이라 배제 조건에 넣지 않고 복구 확인에만 쓴다"
           },
           {
             "id": "postgres_ready",

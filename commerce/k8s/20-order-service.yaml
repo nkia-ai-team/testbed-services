@@ -83,12 +83,12 @@ spec:
               value: "10000"
 
           # --- 헬스체크 (Probe) ---
-          # startupProbe가 부팅 완료까지 liveness/readiness를 억제 → 최대 150초 부팅 허용
+          # startupProbe가 부팅 완료까지 liveness/readiness를 억제 → 최대 300초 부팅 허용
           startupProbe:
             httpGet:
               path: /actuator/health
               port: 8080
-            failureThreshold: 30         # 5초 x 30 = 최대 150초 부팅 대기
+            failureThreshold: 60         # 5초 x 60 = 최대 300초 부팅 대기
             periodSeconds: 5
           readinessProbe:
             httpGet:

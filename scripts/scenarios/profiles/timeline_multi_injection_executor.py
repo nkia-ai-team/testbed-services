@@ -156,9 +156,9 @@ field() { printf '%s' "$spec_b64" | base64 -d | python3 -c 'import json,sys;prin
 
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
 # How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
-# 95-130s, and under load they outlast the startupProbe (5s x 30 = 150s), restart once and take
-# about 5 minutes. 420s covers that with margin. Waits in run are left alone (they set the
-# scenario strength and the judging time).
+# 55-145s at idle. The startupProbe allows 5s x 60 = 300s (at 5s x 30 = 150s, loaded startups
+# restarted and took about 5 minutes). 420s covers the full 300s with margin. Waits in run are
+# left alone (they set the scenario strength and the judging time).
 cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-multi"
 kube=(kubectl --kubeconfig=/root/tb-kubeconfig)

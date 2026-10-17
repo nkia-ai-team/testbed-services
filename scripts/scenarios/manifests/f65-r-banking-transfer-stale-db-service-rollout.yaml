@@ -231,7 +231,7 @@
               "namespace": "rca-testbed-banking",
               "resource": "testbed-transfer"
             },
-            "_note": "transfer 파드. 롤아웃이 옛 파드를 먼저 내리고(maxSurge 0) 새 파드는 컨테이너가 떠도 DB 연결 서비스 이름이 낡아(XEPDB1) /actuator/health 의 db 가 DOWN(503)이라 고장 내내 false 다. 기동 프로브 30회(150초) 실패마다 kubelet 이 컨테이너를 다시 띄워도 같다. 성공 조건에는 쓰지 않는다. cleanup 이 env 를 되돌리면 새 파드가 Ready 가 되어 true(회복 조건)",
+            "_note": "transfer 파드. 롤아웃이 옛 파드를 먼저 내리고(maxSurge 0) 새 파드는 컨테이너가 떠도 DB 연결 서비스 이름이 낡아(XEPDB1) /actuator/health 의 db 가 DOWN(503)이라 고장 내내 false 다. 기동 프로브 60회(300초) 실패마다 kubelet 이 컨테이너를 다시 띄워도 같다. 성공 조건에는 쓰지 않는다. cleanup 이 env 를 되돌리면 새 파드가 Ready 가 되어 true(회복 조건)",
             "freshness": "30s"
           },
           {
