@@ -3,7 +3,7 @@
   "id": "F57-R",
   "slug": "f57-r-banking-transfers-identity-generator-left-behind-by-table-migration",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
