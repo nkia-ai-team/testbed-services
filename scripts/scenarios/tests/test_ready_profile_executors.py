@@ -8,6 +8,7 @@ import tempfile
 import os
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -685,7 +686,7 @@ esac
         self.assertEqual(argv[3:], [
             "run", "192.168.122.11", "tb-w2", "rca-testbed-banking", "oracledata-testbed-oracle-0", "FREE",
             "FREE/FREEPDB1/users01.dbf", "2048", "oradata-backup", "Oracle datafile backup", "/var/backups/oradata",
-            "12", "31", "10", "600", "20480", "1536", "3584",
+            "12", "31", "10", "600", "20480", "1536", "3584", "768", "256",
             "testbed-nginx,testbed-api,testbed-account,testbed-transfer,testbed-ledger", "testbed-oracle",
         ])
         # 시나리오 id 는 러너 쪽에 머문다(G6, 원칙 8). 노드의 sudo 기록에 남는 것은 백업 명령뿐이다.
@@ -694,8 +695,12 @@ esac
         self.assertNotIn("F80-R", script)
         run_case = script.split("\n  run)")[1].split(";;")[0]
         self.assertIn("sudo -n systemd-run", run_case)
-        for flag in ('--unit="$unit"', "--collect", "--property=RuntimeMaxSec=", "--property=Nice=", "IOSchedulingClass=idle"):
+        for flag in ('--unit="$unit"', "--collect", "--property=RuntimeMaxSec=", "--property=Nice=", "IOSchedulingClass=idle",
+                     '--property=MemoryHigh="${high_mib}M"', '--property=MemoryMax="${max_mib}M"'):
             self.assertIn(flag, run_case)
+        # 2026-10-17(F80-R-run-bad63a76): 상한 없는 작업이 노드를 헛돌게 해 NotReady, SSH 불통까지 갔다. 유닛의 메모리 상한은
+        # 시작 때 여유에서 노드 몫을 뺀 값이라 노드가 살아 증거(노드 에이전트 수집)가 남는다.
+        self.assertIn("high_mib=$(( avail_mib - reserve_mib )); max_mib=$(( high_mib + margin_mib ))", run_case)
         # 두 흐름을 나란히: 가장 큰 데이터 파일 하나, 나머지 디렉터리 tar 하나.
         self.assertIn("tar -cf - --exclude=%q %q | zstd -q -%d --long=%d -T1 -o %q & zstd -q -%d --long=%d -T1 -o %q %q; wait;", run_case)
         # 작업이 쓰는 곳은 preflight 가 없음을 확인한 출력 디렉터리 하나이고, cleanup 은 그 안의 백업 파일과
@@ -709,14 +714,22 @@ esac
         for guard in ("datadir", "largest_min_mib", "min_free_mib", "max_avail_mib", "min_avail_mib", "healthy 1s", "spec.nodeName"):
             self.assertIn(guard, preflight)
         for forbidden in ("rm -rf", "rm -r ", "drop_caches", "delete pod", "set image", "set env", "rollout restart",
-                          "scale deploy", "drain", "cordon", "MemoryMax", "stress-ng", "python3", "fallocate"):
+                          "scale deploy", "drain", "cordon", "stress-ng", "python3", "fallocate"):
             self.assertNotIn(forbidden, script)
         for change in ({"level": 19}, {"long_window_log": 27}, {"output_dir": "/var/lib/oradata"},
-                       {"runtime_seconds": 3600}, {"deployments": ["testbed-transfer"]}, {"max_available_mib": 8192}):
+                       {"runtime_seconds": 3600}, {"deployments": ["testbed-transfer"]}, {"max_available_mib": 8192},
+                       {"memory_reserve_mib": 0}, {"memory_hard_margin_mib": 4096}):
             with self.assertRaisesRegex(ExecutorError, "exactly match"):
                 host_job.validate("F80-R", {**host_job.CONTRACTS["F80-R"], **change}, {})
         with self.assertRaisesRegex(ExecutorError, "no verified host maintenance job contract"):
             host_job.validate("F15-P", host_job.CONTRACTS["F80-R"], {})
+        # 상한의 모양 자체도 계약이다: 노드 몫이 preflight 최소 여유보다 작아야 MemoryHigh 가 양수이고, 단단한 여유분이
+        # 노드 몫을 다 먹으면 안 된다.
+        for change in ({"memory_reserve_mib": 1536}, {"memory_hard_margin_mib": 768}, {"memory_hard_margin_mib": 0}):
+            bad = {**host_job.CONTRACTS["F80-R"], **change}
+            with unittest.mock.patch.dict(host_job.CONTRACTS, {"F80-R": bad}):
+                with self.assertRaisesRegex(ExecutorError, "memory bound"):
+                    host_job.validate("F80-R", bad, {})
 
     def _host_job_stub(self, tmp: Path) -> dict[str, str]:
         """Fake ssh/kubectl around the real script. The node is two flag files (unit active,
@@ -731,9 +744,18 @@ esac
 while [[ "$1" == -* ]]; do [[ "$1" == -i || "$1" == -o ]] && shift; shift; done
 shift  # nkia@host
 cmd="$*"
+# The node not answering: {node}/down holds how many more connections time out (ssh exits 255).
+if [[ -s {node}/down ]] && (( $(cat {node}/down) > 0 )); then
+  echo $(( $(cat {node}/down) - 1 )) >{node}/down
+  echo "Connection timed out during banner exchange" >&2; exit 255
+fi
+if [[ -e {node}/drop_is_active && "$cmd" == *"is-active"* ]]; then
+  echo "Connection to 192.168.122.11 port 22 timed out" >&2; exit 255
+fi
 eval "set -- $cmd"
 printf '%s\\n' "--- $1" "$@" >>{log}
 case "$cmd" in
+  true) : ;;
   *"systemctl is-active"*) [[ -e {node}/active ]] ;;
   "sh -c"*) echo /usr/bin/tar; echo /usr/bin/zstd; echo /usr/bin/systemd-run ;;
   "test "*) [[ ! -e {node}/outdir ]] ;;
@@ -746,6 +768,10 @@ case "$cmd" in
   *"rmdir"*) rm -f {node}/outdir ;;
   *) exit 9 ;;
 esac
+""",
+            # Backoff waits are recorded, not slept.
+            "sleep": f"""#!/usr/bin/env bash
+echo "$1" >>{tmp}/sleeps
 """,
             "kubectl": f"""#!/usr/bin/env bash
 case "$*" in
@@ -802,6 +828,9 @@ esac
             self.assertEqual(started[3], "--unit=oradata-backup")
             self.assertIn("--description=Oracle datafile backup", started)
             self.assertIn("--property=RuntimeMaxSec=600", started)
+            # 여유 2,700 MiB 에서 노드 몫 768 을 남긴 1,932 MiB 가 MemoryHigh, 그 256 위가 MemoryMax 다.
+            self.assertIn("--property=MemoryHigh=1932M", started)
+            self.assertIn("--property=MemoryMax=2188M", started)
             inner = started[started.index("-c") + 1]
             self.assertRegex(inner, r"^mkdir -p /var/backups/oradata && cd /opt/local-path-provisioner/"
                                     r"pvc-x_rca-testbed-banking_oracledata-testbed-oracle-0 && \{ "
@@ -827,6 +856,45 @@ esac
             # 노드 메모리가 돌아오지 않았으면 회복이 아니다.
             (tmp / "node" / "memavail").write_text("500000\n")
             self.assertNotEqual(self._host_job_run("recovery", env).returncode, 0)
+
+    def test_host_job_cleanup_waits_for_an_unreachable_node_and_never_reads_ssh_loss_as_idle(self) -> None:
+        # 2026-10-17 F80-R-run-bad63a76: abort 직후 cleanup 이 아직 메모리에 눌린 노드에 닿지 못했다(SSH banner 시간 초과).
+        # 첫 실패에서 멈추지 말고 정해진 백오프로 기다린다. 또 SSH 실패(255)를 "유닛 없음, 출력 없음"으로 읽으면 안 된다.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._host_job_stub(tmp)
+            node = tmp / "node"
+            (node / "memavail").write_text("2764800\n")
+            self.assertEqual(self._host_job_run("run", env).returncode, 0)
+            # 노드가 세 번 응답하지 않다가 돌아온다: cleanup 은 기다렸다가 유닛을 멈추고 출력을 지운다.
+            (node / "down").write_text("3\n")
+            result = self._host_job_run("cleanup", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((node / "active").exists())
+            self.assertFalse((node / "outdir").exists())
+            self.assertEqual((tmp / "sleeps").read_text().split()[:3], ["5", "10", "15"])
+            self.assertIn(["sudo", "-n", "systemctl", "stop", "oradata-backup.service"], self._host_job_calls(tmp))
+            # 노드가 끝내 돌아오지 않으면 백오프(합계 230초)를 다 쓴 뒤 실패하고, 노드에는 아무 명령도 보내지 않는다.
+            self.assertEqual(self._host_job_run("run", env).returncode, 0)
+            (tmp / "sleeps").unlink()
+            before = len(self._host_job_calls(tmp))
+            (node / "down").write_text("1000\n")
+            result = self._host_job_run("cleanup", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"unreachable over ssh", result.stderr)
+            self.assertIn(b"banner exchange", result.stderr)
+            self.assertEqual(sum(int(x) for x in (tmp / "sleeps").read_text().split()), 230)
+            self.assertEqual(len(self._host_job_calls(tmp)), before)
+            self.assertTrue((node / "active").exists())
+            # 연결이 된 뒤에도 질의 하나가 SSH 에서 끊기면 그것을 "유닛이 멈춤"으로 읽지 않고 실패한다.
+            (node / "down").write_text("0\n")
+            (node / "drop_is_active").touch()
+            for action in ("cleanup", "recovery"):
+                result = self._host_job_run(action, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"ssh to 192.168.122.11 failed during: systemctl is-active", result.stderr)
+            self.assertNotIn(["sudo", "-n", "rmdir", "/var/backups/oradata"], self._host_job_calls(tmp)[before:])
+            self.assertTrue((node / "outdir").exists())
 
     def test_k8s_scale_only_lowers_one_deployment_replica_count_and_restores_it(self) -> None:
         # F51-R: 주입은 Deployment 하나의 replicas 를 1 에서 0 으로 줄이는 운영 명령뿐이다.

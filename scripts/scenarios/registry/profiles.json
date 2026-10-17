@@ -5332,6 +5332,8 @@
           "min_free_mib": 20480,
           "min_available_mib": 1536,
           "max_available_mib": 3584,
+          "memory_reserve_mib": 768,
+          "memory_hard_margin_mib": 256,
           "deployments": [
             "testbed-nginx",
             "testbed-api",

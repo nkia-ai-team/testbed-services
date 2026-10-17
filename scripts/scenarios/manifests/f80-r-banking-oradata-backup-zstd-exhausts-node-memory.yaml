@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "worker-w2",
-    "matrix_location_transport": "R/ssh tb-w2 sudo systemd-run --unit=oradata-backup --collect --property=Nice=10 --property=IOSchedulingClass=idle --property=RuntimeMaxSec=600 /bin/sh -c 'mkdir -p /var/backups/oradata && cd <PVC oracledata-testbed-oracle-0 의 PV 디렉터리> && { users01.dbf 를 뺀 FREE 의 tar 출력을 파이프로 zstd -q -12 --long=31 -T1 -o oradata-<날짜>.tar.zst & zstd -q -12 --long=31 -T1 -o users01-<날짜>.dbf.zst FREE/FREEPDB1/users01.dbf; wait; }'(preflight: MemAvailable 1,536~3,584 MiB 일 때만) + R/ssh load.north_south core-banking transfer-heavy-surge.js 5rps companion",
+    "matrix_location_transport": "R/ssh tb-w2 sudo systemd-run --unit=oradata-backup --collect --property=Nice=10 --property=IOSchedulingClass=idle --property=RuntimeMaxSec=600 --property=MemoryHigh=<시작 때 MemAvailable − 768>M --property=MemoryMax=<MemoryHigh + 256>M /bin/sh -c 'mkdir -p /var/backups/oradata && cd <PVC oracledata-testbed-oracle-0 의 PV 디렉터리> && { users01.dbf 를 뺀 FREE 의 tar 출력을 파이프로 zstd -q -12 --long=31 -T1 -o oradata-<날짜>.tar.zst & zstd -q -12 --long=31 -T1 -o users01-<날짜>.dbf.zst FREE/FREEPDB1/users01.dbf; wait; }'(preflight: MemAvailable 1,536~3,584 MiB 일 때만) + R/ssh load.north_south core-banking transfer-heavy-surge.js 5rps companion",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.job",
@@ -96,6 +96,8 @@
                 "min_free_mib": 20480,
                 "min_available_mib": 1536,
                 "max_available_mib": 3584,
+                "memory_reserve_mib": 768,
+                "memory_hard_margin_mib": 256,
                 "deployments": [
                   "testbed-nginx",
                   "testbed-api",
@@ -109,6 +111,7 @@
               },
               "min_hold": "3m",
               "settle": "30s",
+              "_note_memory_bound": "2026-10-17: F80-R-run-bad63a76 에서 상한 없는 작업이 노드를 무너뜨렸다. 주입 뒤 약 100초에 이체 5xx 0.8 로 피해는 났지만 곧 파일 캐시가 바닥나 노드가 헛돌았다(load 227, NotReady, SSH 불통, 커널 전역 OOM 은 약 9분 뒤). 노드가 죽으면 노드 에이전트도 죽어 증거가 사라진다. 그래서 유닛에 메모리 상한을 단다: MemoryHigh = 시작 때 MemAvailable − memory_reserve_mib(768), MemoryMax = MemoryHigh + memory_hard_margin_mib(256). 작업은 MemoryHigh 에서 멈칫거리며 메모리를 쥐고, 이웃 파드는 파일 캐시를 잃어 느려지며, 노드는 최소 512 MiB 를 지켜 SSH 와 수집이 산다. 원인 계열(노드의 일상 백업 작업이 메모리를 가져감)과 정답(tb-w2)은 그대로이고 강도만 줄였다",
               "timeout": "10m"
             }
           ]
