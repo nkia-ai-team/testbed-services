@@ -66,7 +66,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-16: 70 → 71. F51-H 정식 승격(녹화 case-f51-h-v3-c093a2ed).
         # 2026-10-17: 71 → 72. F57-R 정식 승격(녹화 case-f57-r-v3-419736f6).
         # 2026-10-17: 72 → 73. F23-P 정식 승격(녹화 case-f23-p-v3-339d153c).
-        self.assertEqual(stages.count("official"), 73)
+        # 2026-10-17: 73 → 74. F58-R 정식 승격(녹화 case-f58-r-v3-4568fd65).
+        self.assertEqual(stages.count("official"), 74)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -187,7 +188,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-16: 45 → 46. F80-R(banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업이 zstd 장거리 창으로 노드 메모리를 거의 다 써 banking 파드 축출, OOM) 후보 추가.
         # 2026-10-17: 46 → 45. F57-R 정식 승격(녹화 case-f57-r-v3-419736f6).
         # 2026-10-17: 45 → 44. F23-P 정식 승격(녹화 case-f23-p-v3-339d153c).
-        self.assertEqual(stages.count("candidate"), 44)
+        # 2026-10-17: 44 → 43. F58-R 정식 승격(녹화 case-f58-r-v3-4568fd65).
+        self.assertEqual(stages.count("candidate"), 43)
 
 
 class RecordingQueueTests(unittest.TestCase):
