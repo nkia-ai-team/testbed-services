@@ -447,7 +447,7 @@
           "table": "TRANSFERS",
           "identity_column": "ID",
           "primary_key": "SYS_C008748",
-          "rewind_rows": 400000,
+          "rewind_rows": 60000,
           "read_only_seconds": 6,
           "minimum_rows": 1000
         },

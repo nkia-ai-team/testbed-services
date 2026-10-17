@@ -332,7 +332,7 @@ class DbHostFoundations(unittest.TestCase):
         argv, body = ddl.build_invocation(plan("db.ddl", "F57-R", p), "run")
         self.assertEqual(argv[3:9], ["run", "rca-testbed-banking", "testbed-oracle-0", "FREEPDB1",
                                      "BANKING", "TRANSFERS"])
-        self.assertEqual(argv[9:], ["ID", "SYS_C008748", "400000", "6", "1000"])
+        self.assertEqual(argv[9:], ["ID", "SYS_C008748", "60000", "6", "1000"])
         self.assertNotIn("F57-R", " ".join(argv))
         script = body.decode()
         self.assertNotIn("F57-R", script)

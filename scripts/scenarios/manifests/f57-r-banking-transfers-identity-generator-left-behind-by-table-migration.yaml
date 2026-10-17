@@ -87,7 +87,7 @@
                 "table": "TRANSFERS",
                 "identity_column": "ID",
                 "primary_key": "SYS_C008748",
-                "rewind_rows": 400000,
+                "rewind_rows": 60000,
                 "read_only_seconds": 6,
                 "minimum_rows": 1000
               },
@@ -191,7 +191,7 @@
             }
           ],
           "consecutive_ticks": 3,
-          "_note": "min_hold 15m. 강도 축이 없다: run 이 다시 시작할 자리부터 최대 키까지 40만 키가 모두 있음을 읽기 전용 구간 뒤에 다시 확인하므로 창 안의 INSERT 는 요청량과 무관하게 100% 실패한다(25분 시도 약 1.4만). 동반 부하는 시간대와 무관하게 이체 실패 표본(초당 약 2건)을 보장하려는 것이다"
+          "_note": "min_hold 15m. 강도 축이 없다: run 이 다시 시작할 자리부터 최대 키까지 6만 키가 모두 있음을 읽기 전용 구간 뒤에 다시 확인하므로 창 안의 INSERT 는 요청량과 무관하게 100% 실패한다(25분 시도 약 1.4만). 동반 부하는 시간대와 무관하게 이체 실패 표본(초당 약 2건)을 보장하려는 것이다"
         },
         "must_rule_out": {
           "any": [

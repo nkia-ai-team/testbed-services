@@ -324,7 +324,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F57-R": {
         "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
         "pdb": "FREEPDB1", "schema": "BANKING", "table": "TRANSFERS", "identity_column": "ID",
-        "primary_key": "SYS_C008748", "rewind_rows": 400000, "read_only_seconds": 6,
+        "primary_key": "SYS_C008748", "rewind_rows": 60000, "read_only_seconds": 6,
         "minimum_rows": 1000,
     },
     # 무결성 보강 마이그레이션: 배차 이력 표 dispatch_events 에 빠져 있던 dispatches 로의 외래 키를 ALGORITHM, LOCK 없이 더한다.
