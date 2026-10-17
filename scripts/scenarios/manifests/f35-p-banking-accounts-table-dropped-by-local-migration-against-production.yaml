@@ -85,8 +85,8 @@
                 "pdb": "FREEPDB1",
                 "schema": "BANKING",
                 "table": "ACCOUNTS",
-                "indexes": "ID=SYS_C008651",
-                "constraints": "C:HOLDER=SYS_C008648,C:BALANCE=SYS_C008649,C:STATUS=SYS_C008650,P:ID=SYS_C008651",
+                "indexes": "ID=SYS_C008747",
+                "constraints": "C:HOLDER=SYS_C008729,C:BALANCE=SYS_C008730,C:STATUS=SYS_C008731,P:ID=SYS_C008747",
                 "triggers": "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT",
                 "minimum_rows": 1000,
                 "minimum_free_mb": 1024

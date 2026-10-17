@@ -296,12 +296,12 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F35-H": {
         "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
         "pdb": "FREEPDB1", "schema": "BANKING", "table": "TRANSFERS",
-        "indexes": "ID=SYS_C008658,TRANSFER_REF=SYS_C008659,FROM_ACCOUNT=IDX_TRANSFERS_FROM,"
+        "indexes": "ID=SYS_C008748,TRANSFER_REF=SYS_C008749,FROM_ACCOUNT=IDX_TRANSFERS_FROM,"
                    "TO_ACCOUNT=IDX_TRANSFERS_TO,ORDER_ID=IDX_TRANSFERS_ORDER,STATUS=IDX_TRANSFERS_STATUS,"
                    "CREATED_AT=IDX_TRANSFERS_CREATED",
-        "constraints": "C:ID=SYS_C008652,C:TRANSFER_REF=SYS_C008653,C:FROM_ACCOUNT=SYS_C008654,"
-                       "C:TO_ACCOUNT=SYS_C008655,C:AMOUNT=SYS_C008656,C:STATUS=SYS_C008657,"
-                       "P:ID=SYS_C008658,U:TRANSFER_REF=SYS_C008659",
+        "constraints": "C:ID=SYS_C008732,C:TRANSFER_REF=SYS_C008733,C:FROM_ACCOUNT=SYS_C008734,"
+                       "C:TO_ACCOUNT=SYS_C008735,C:AMOUNT=SYS_C008736,C:STATUS=SYS_C008737,"
+                       "P:ID=SYS_C008748,U:TRANSFER_REF=SYS_C008749",
         "minimum_rows": 1000, "minimum_free_mb": 2048,
     },
     # 같은 표 지우기를 banking Oracle 계좌 표에: 잔액 조회, 이체 계좌 확인(account)과 이체의 계좌 잠금(transfer)이 모두 이 표를
@@ -310,8 +310,8 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F35-P": {
         "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
         "pdb": "FREEPDB1", "schema": "BANKING", "table": "ACCOUNTS",
-        "indexes": "ID=SYS_C008651",
-        "constraints": "C:HOLDER=SYS_C008648,C:BALANCE=SYS_C008649,C:STATUS=SYS_C008650,P:ID=SYS_C008651",
+        "indexes": "ID=SYS_C008747",
+        "constraints": "C:HOLDER=SYS_C008729,C:BALANCE=SYS_C008730,C:STATUS=SYS_C008731,P:ID=SYS_C008747",
         "triggers": "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT",
         "minimum_rows": 1000, "minimum_free_mb": 1024,
     },
@@ -324,7 +324,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     "F57-R": {
         "engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0",
         "pdb": "FREEPDB1", "schema": "BANKING", "table": "TRANSFERS", "identity_column": "ID",
-        "primary_key": "SYS_C008658", "rewind_rows": 400000, "read_only_seconds": 6,
+        "primary_key": "SYS_C008748", "rewind_rows": 400000, "read_only_seconds": 6,
         "minimum_rows": 1000,
     },
     # 무결성 보강 마이그레이션: 배차 이력 표 dispatch_events 에 빠져 있던 dispatches 로의 외래 키를 ALGORITHM, LOCK 없이 더한다.

@@ -240,7 +240,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("name='recyclebin'", script)
         # 계약의 이름이 109 실측(2026-10-10) 그대로이고 덮는 열마다 하나씩이다.
         self.assertEqual(sorted(x.split("=")[1] for x in p["indexes"].split(",")),
-                         sorted(["SYS_C008658", "SYS_C008659", "IDX_TRANSFERS_FROM", "IDX_TRANSFERS_TO",
+                         sorted(["SYS_C008748", "SYS_C008749", "IDX_TRANSFERS_FROM", "IDX_TRANSFERS_TO",
                                  "IDX_TRANSFERS_ORDER", "IDX_TRANSFERS_STATUS", "IDX_TRANSFERS_CREATED"]))
         self.assertEqual(len({x.split("=")[0] for x in p["constraints"].split(",")}), 8)
         _, f53r_body = ddl.build_invocation(plan("db.ddl", "F53-R", ddl.CONTRACTS["F53-R"]), "run")
@@ -332,7 +332,7 @@ class DbHostFoundations(unittest.TestCase):
         argv, body = ddl.build_invocation(plan("db.ddl", "F57-R", p), "run")
         self.assertEqual(argv[3:9], ["run", "rca-testbed-banking", "testbed-oracle-0", "FREEPDB1",
                                      "BANKING", "TRANSFERS"])
-        self.assertEqual(argv[9:], ["ID", "SYS_C008658", "400000", "6", "1000"])
+        self.assertEqual(argv[9:], ["ID", "SYS_C008748", "400000", "6", "1000"])
         self.assertNotIn("F57-R", " ".join(argv))
         script = body.decode()
         self.assertNotIn("F57-R", script)
@@ -386,7 +386,7 @@ class DbHostFoundations(unittest.TestCase):
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F57-R", {**p, "rewind_rows": 4000000}, {})
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
-            ddl.validate("F57-R", {**p, "primary_key": "SYS_C008659"}, {})
+            ddl.validate("F57-R", {**p, "primary_key": "SYS_C008749"}, {})
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):
             ddl.validate("F57-R", {**p, "read_only_seconds": 0}, {})
         with self.assertRaisesRegex(ddl.ExecutorError, "exactly match"):

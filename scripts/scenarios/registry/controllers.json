@@ -15714,8 +15714,8 @@
               "pdb": "FREEPDB1",
               "schema": "BANKING",
               "table": "TRANSFERS",
-              "indexes": "ID=SYS_C008658,TRANSFER_REF=SYS_C008659,FROM_ACCOUNT=IDX_TRANSFERS_FROM,TO_ACCOUNT=IDX_TRANSFERS_TO,ORDER_ID=IDX_TRANSFERS_ORDER,STATUS=IDX_TRANSFERS_STATUS,CREATED_AT=IDX_TRANSFERS_CREATED",
-              "constraints": "C:ID=SYS_C008652,C:TRANSFER_REF=SYS_C008653,C:FROM_ACCOUNT=SYS_C008654,C:TO_ACCOUNT=SYS_C008655,C:AMOUNT=SYS_C008656,C:STATUS=SYS_C008657,P:ID=SYS_C008658,U:TRANSFER_REF=SYS_C008659",
+              "indexes": "ID=SYS_C008748,TRANSFER_REF=SYS_C008749,FROM_ACCOUNT=IDX_TRANSFERS_FROM,TO_ACCOUNT=IDX_TRANSFERS_TO,ORDER_ID=IDX_TRANSFERS_ORDER,STATUS=IDX_TRANSFERS_STATUS,CREATED_AT=IDX_TRANSFERS_CREATED",
+              "constraints": "C:ID=SYS_C008732,C:TRANSFER_REF=SYS_C008733,C:FROM_ACCOUNT=SYS_C008734,C:TO_ACCOUNT=SYS_C008735,C:AMOUNT=SYS_C008736,C:STATUS=SYS_C008737,P:ID=SYS_C008748,U:TRANSFER_REF=SYS_C008749",
               "minimum_rows": 1000,
               "minimum_free_mb": 2048
             },
@@ -17416,7 +17416,7 @@
               "schema": "BANKING",
               "table": "TRANSFERS",
               "identity_column": "ID",
-              "primary_key": "SYS_C008658",
+              "primary_key": "SYS_C008748",
               "rewind_rows": 400000,
               "read_only_seconds": 6,
               "minimum_rows": 1000
@@ -17490,7 +17490,7 @@
           "id": "transfer_5xx_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
-          "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 transfer 가 transfers INSERT 에서 먼저 전환 앞 읽기 전용 구간(6초) 동안 ORA-12081, 전환 뒤 ORA-00001(기본 키 SYS_C008658, 이미 있는 키)로 500, account 가 재시도 뒤 502, api 502",
+          "_note": "동반 부하의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 고장 중 transfer 가 transfers INSERT 에서 먼저 전환 앞 읽기 전용 구간(6초) 동안 ORA-12081, 전환 뒤 ORA-00001(기본 키 SYS_C008748, 이미 있는 키)로 500, account 가 재시도 뒤 502, api 502",
           "freshness": "30s"
         },
         {
@@ -23362,8 +23362,8 @@
               "pdb": "FREEPDB1",
               "schema": "BANKING",
               "table": "ACCOUNTS",
-              "indexes": "ID=SYS_C008651",
-              "constraints": "C:HOLDER=SYS_C008648,C:BALANCE=SYS_C008649,C:STATUS=SYS_C008650,P:ID=SYS_C008651",
+              "indexes": "ID=SYS_C008747",
+              "constraints": "C:HOLDER=SYS_C008729,C:BALANCE=SYS_C008730,C:STATUS=SYS_C008731,P:ID=SYS_C008747",
               "triggers": "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT",
               "minimum_rows": 1000,
               "minimum_free_mb": 1024
