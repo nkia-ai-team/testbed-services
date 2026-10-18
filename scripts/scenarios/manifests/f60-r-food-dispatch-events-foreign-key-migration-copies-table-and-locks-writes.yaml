@@ -3,7 +3,7 @@
   "id": "F60-R",
   "slug": "f60-r-food-dispatch-events-foreign-key-migration-copies-table-and-locks-writes",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
