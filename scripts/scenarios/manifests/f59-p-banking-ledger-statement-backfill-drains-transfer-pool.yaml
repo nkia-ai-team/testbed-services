@@ -3,7 +3,7 @@
   "id": "F59-P",
   "slug": "f59-p-banking-ledger-statement-backfill-drains-transfer-pool",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
