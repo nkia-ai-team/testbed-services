@@ -3,7 +3,7 @@
   "id": "F59-R",
   "slug": "f59-r-food-notify-backfill-deep-pages-drain-dispatch-pool",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
