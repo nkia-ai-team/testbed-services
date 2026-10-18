@@ -3,7 +3,7 @@
   "id": "F36-H",
   "slug": "f36-h-food-restaurant-release-reads-unsynced-setting",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

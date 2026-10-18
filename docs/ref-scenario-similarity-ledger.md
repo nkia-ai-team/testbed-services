@@ -91,10 +91,10 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | D DB 잠금 | 7 | 9% |
 | E 처리 용량 초과 | 4 | 5% |
 | F 느린 쿼리 | 3 | 4% |
-| G 설정 오배포 | 8 | 11% |
+| G 설정 오배포 | 8 | 10% |
 | H 데이터가 조용히 틀어짐 | 2 | 3% |
 | I 인증 의존 실패 | 1 | 1% |
-| J 결함 있는 새 버전 배포 | 9 | 12% |
+| J 결함 있는 새 버전 배포 | 10 | 13% |
 | K 네트워크 지연, 손실, 단절 | 2 | 3% |
 | L 데이터 형식 불일치 | 7 | 9% |
 | M DNS | 1 | 1% |
@@ -103,22 +103,22 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | P 운영 작업의 대상 착오 | 10 | 13% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 1 | 1% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 27, 은행 25, 음식배달 24. 후보 41종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 27, 은행 25, 음식배달 25. 후보 40종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 17개뿐이고(J 9, G 8. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R(J+G)은 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R(G+A)은 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P 열뿐이고, Q 는 F57-R 하나뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-A, B, D, L은 각 7개(9%), G는 8개(11%), J는 9개(12%), P는 10개(13%)로 20%에 가깝다. 서비스는 음식배달(24), 은행(25) 순으로 채운다.
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 18개뿐이고(J 10, G 8. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R(G+A)은 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P 열뿐이고, Q 는 F57-R 하나뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+A, B, D, L은 각 7개(9%), G는 8개(10%), J, P는 각 10개(13%)로 20%에 가깝다. 서비스는 음식배달(25), 은행(25) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 76종):
+정답 위치별 정식 (2-1 정의, 정식 77종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
-| 주문 서비스 | 8 | 11% |
+| 주문 서비스 | 8 | 10% |
 | 외부 결제 의존 | 6 | 8% |
 | 은행 이체 서비스 | 6 | 8% |
 | DB 테이블(은행 계좌) | 4 | 5% |
 | DB 테이블(재고) | 3 | 4% |
 | 결제 서비스 | 4 | 5% |
-| 배달 서비스 | 5 | 7% |
+| 배달 서비스 | 5 | 6% |
 | 노드, 디스크 | 6 | 8% |
 | DB 인스턴스 | 2 | 3% |
 | 은행 계좌 서비스 | 4 | 5% |
@@ -128,13 +128,13 @@ A, B, D, L은 각 7개(9%), G는 8개(11%), J는 9개(12%), P는 10개(13%)로 2
 | DB 계정 | 2 | 3% |
 | DB 테이블(이체) | 2 | 3% |
 | 내부 배치 작업 | 2 | 3% |
+| 가게 서비스 | 2 | 3% |
 | DB 테이블(가게) | 1 | 1% |
 | DB 테이블(상품) | 1 | 1% |
 | DB 테이블(인기 메뉴 집계) | 1 | 1% |
 | DB 테이블(인증 토큰) | 1 | 1% |
 | DB 테이블(주문) | 1 | 1% |
 | DB 테이블(주문 이벤트 outbox) | 1 | 1% |
-| 가게 서비스 | 1 | 1% |
 | 가격 서비스 | 1 | 1% |
 | 배송 서비스 | 1 | 1% |
 | 사용자 서비스 | 1 | 1% |
@@ -146,7 +146,7 @@ A, B, D, L은 각 7개(9%), G는 8개(11%), J는 9개(12%), P는 10개(13%)로 2
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **12** | **16%** |
 
-결제 경로는 정식만으로 16%(15.8%, 12/76)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 16%(15.6%, 12/77)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -230,6 +230,7 @@ A, B, D, L은 각 7개(9%), G는 8개(11%), J는 9개(12%), P는 10개(13%)로 2
 | F58-R | 정식 | 음식배달 | J+G | 주문 서비스 | food order-service 를 릴리스 food-delivery-order:2.5.0(fault-images/f58-r 패치로 만든 별도 태그)으로 롤아웃. 주문 생성 첫 단계에 더한 최소 주문 금액 검사가 정책값 order.policy.minimum-amount 를 요청마다 설정에서 읽는데(Environment.getRequiredProperty), 그 값은 릴리스에 든 개발 프로필 파일(application-dev.yml)에만 있고 운영(application.yml, ConfigMap service-config, 파드 env)에는 옮겨지지 않아 모든 주문이 첫 줄에서 IllegalStateException 'Required key 'order.policy.minimum-amount' not found' 로 500(약 0.01초, Tomcat SEVERE 'Servlet.service() ... threw exception'). 가게, 메뉴, 용량, 배차, 결제 호출과 주문 행 쓰기 전에 끝나 하류와 MySQL 에 오류가 없고, order 는 Ready, health UP. 원본 ServiceChannel 2025-05-08(정기 운영 코드 릴리스의 새 코드가 개발 환경에만 설정되고 운영에 동기화되지 않은 설정을 읽으려다 실패, 운영에 설정을 적용해 복구). F53-R(주문 표 1146), F48-P(outbox 표 1146), F38-R(read_only 1290)과 같은 '주문 생성 전량 500' 에 정답이 다른 H 짝, F49-H(order 다른 릴리스, 배차 응답 해석 실패 503)와 같은 정답 다른 결함 |
 | F59-R | 정식 | 음식배달 | E+F | 내부 배치 작업 | 알림 쪽 보관소 백필 Job notify-delivery-backfill(rca-testbed-food, notify 이미지에서 bash + curl)이 워커 12개로 dispatch 배달 목록 GET /api/deliveries?status=DELIVERED&size=500 을 페이지마다 끝까지 읽음. 목록이 정렬 키 없는 offset 페이지라 깊은 페이지마다 MySQL 이 앞선 끝난 배달을 모두 읽어(109 실측 offset 20만 0.53초, 100만 6.3초) 백필 호출이 dispatch Hikari 10개를 모두 쥐고 food MySQL 을 포화, 용량 확인과 배차 요청이 연결 대기 3초 끝에 500, order 재시도와 서킷 열림 끝에 주문 503. 롤아웃, 설정, 인덱스 변경 없음. 원본 Atlassian Bitbucket 2025-05-08(내부 서비스의 대규모 백필 작업이 비싼 질의를 과도하게 불러 주 DB 를 압박, 웹과 API 지연과 간헐 실패, 작업을 멈춰 완화). F33-R(인덱스 제거), F33-H(dispatch 릴리스의 목록 COUNT)와 같은 dispatch 풀 고갈, 주문 503 에 정답이 다른 H 짝 |
 | F59-P | 정식 | 은행 | E+F | 내부 배치 작업 | 원장 쪽 계좌 명세서 백필 Job ledger-statement-backfill(rca-testbed-banking, ledger 이미지에서 bash + curl)이 계좌 목록(1,001개)을 한 번 받고 워커 48개가 계좌마다 쪽을 나눠 transfer 이체 내역 GET /api/transfers?fromAccount=<계좌>&page=N&size=500 을 짧은 페이지까지 읽음. 내역 목록이 선택 조건 꼴이라 호출마다 Oracle 이 페이지와 건수를 TRANSFERS 약 638만 행 전수 스캔으로 답해(109 실측 0.23~0.25초, Oracle 2 CPU 로 초당 약 3~6 호출) 백필 호출이 transfer Hikari 15 를 늘 쥐고, 이체가 연결 대기 3초 끝에 500, account 재시도와 서킷 열림, api 502, commerce 정산 실패. 롤아웃, 설정, 인덱스 변경 없음. 원본 Atlassian Bitbucket 2025-05-08(F59-R 과 같은 원본의 banking 판). F42-R(transfer 릴리스의 이체마다 전수 스캔), F01-P(정산 계좌 행 잠금)와 같은 transfer 풀 고갈, 이체 5xx 에 정답이 다른 H 짝 |
+| F36-H | 정식 | 음식배달 | J+G | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.6.0(fault-images/f36-h 패치로 만든 별도 태그)으로 롤아웃. 가게 상세에 더한 지역 단위 영업 일시 중지가 멈춘 지역 목록 restaurant.policy.paused-regions 를 요청마다 설정에서 읽는데(Environment.getRequiredProperty), 그 값은 릴리스에 든 개발 프로필 파일(application-dev.yml)에만 있고 운영(application.yml, ConfigMap service-config, 파드 env)에는 옮겨지지 않아 모든 가게 상세가 가게 행을 읽은 뒤 IllegalStateException 'Required key 'restaurant.policy.paused-regions' not found' 로 500(Tomcat SEVERE). order 는 주문 생성 첫 단계 가게 조회 실패('Failed to fetch restaurant N: 500') 뒤 재시도와 서킷 끝에 모든 주문 502. 메뉴, 인기 메뉴, 목록과 검색, health 는 200, restaurant 와 order 는 Ready. 원본 ServiceChannel 2025-05-08(F58-R 과 같은 원본, 피호출자 판). F36-R(가게 표 열 이름 변경 1054, 상세와 목록 500, 롤아웃 없음)과 '가게 상세 500 → 주문 502' 증상이 같고 정답이 다른 H 짝, F49-R(restaurant 다른 릴리스, 상세 200 응답 모양 변경)과 같은 정답 다른 결함 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -240,7 +241,6 @@ A, B, D, L은 각 7개(9%), G는 8개(11%), J는 9개(12%), P는 10개(13%)로 2
 |---|---|---|---|---|---|
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
 | F42-P | 후보 | 음식배달 | J+F | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.5.0(fault-images/f42-p 패치로 만든 별도 태그)으로 롤아웃. 인기 메뉴 순위를 실시간으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 요청마다 최근 7일 주문을 바로 셈(order_items JOIN orders JOIN menus, 가게 한 곳, 메뉴별 COUNT). 109 MySQL 이 한가할 때 4.05~7.47초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽. 인기 메뉴 초당 약 2.5건이면 food MySQL(CPU 0.5) 포화, restaurant Hikari 10개가 집계에 묶여 가게 상세, 메뉴, 인기 메뉴가 3초 대기 뒤 500, readiness 이탈과 재시작 가능, order 가 가게, 메뉴 조회 실패로 주문 502. 스키마, 인덱스, 캐시 표는 그대로(1146 없음), 긴 활성 세션이 restaurant 파드 IP 에서 옴. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화, F42-R, F33-H 와 같은 원본). 실행 중 MySQL 재시작은 uptime 으로 배제, 시작은 MySQL anon 여유가 있을 때만 |
-| F36-H | 후보 | 음식배달 | J+G | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.6.0(fault-images/f36-h 패치로 만든 별도 태그)으로 롤아웃. 가게 상세에 더한 지역 단위 영업 일시 중지가 멈춘 지역 목록 restaurant.policy.paused-regions 를 요청마다 설정에서 읽는데(Environment.getRequiredProperty), 그 값은 릴리스에 든 개발 프로필 파일(application-dev.yml)에만 있고 운영(application.yml, ConfigMap service-config, 파드 env)에는 옮겨지지 않아 모든 가게 상세가 가게 행을 읽은 뒤 IllegalStateException 'Required key 'restaurant.policy.paused-regions' not found' 로 500(Tomcat SEVERE). order 는 주문 생성 첫 단계 가게 조회 실패('Failed to fetch restaurant N: 500') 뒤 재시도와 서킷 끝에 모든 주문 502. 메뉴, 인기 메뉴, 목록과 검색, health 는 200, restaurant 와 order 는 Ready. 원본 ServiceChannel 2025-05-08(F58-R 과 같은 원본, 피호출자 판). F36-R(가게 표 열 이름 변경 1054, 상세와 목록 500, 롤아웃 없음)과 '가게 상세 500 → 주문 502' 증상이 같고 정답이 다른 H 짝, F49-R(restaurant 다른 릴리스, 상세 200 응답 모양 변경)과 같은 정답 다른 결함 |
 | F41-H | 후보 | 은행 | J+B | 은행 계좌 서비스 | banking account-service 를 릴리스 core-banking-account:1.5.0(fault-images/f41-h 패치로 만든 별도 태그)으로 롤아웃. 관리 끝점 정리로 application.yml 에 management.endpoint.health.probes.enabled=false 를 둬 /actuator/health/liveness 가 404(/actuator/health 는 그대로). 시작, 준비 프로브를 통과한 새 파드가 옛 파드를 대체한 뒤 그대로인 liveness 가 404 로 실패해 kubelet 이 멀쩡한 컨테이너를 되풀이해 죽이고, 재시작 대기가 늘며 account 엔드포인트가 빈 구간마다 잔액 조회 nginx 502, 이체 api 502. 메모리, Oracle, transfer, 거래 내역, commerce 정산은 정상. F41-R(같은 account 릴리스의 메모리 누수로 OOM 뒤 재시작)과 사용자 증상이 같고 원인이 다른 H, F05-H(프로브 경로 오설정)와 kubelet 증상이 같고 바뀐 곳(프로브 스펙 대 이미지)이 다름. 원본 Spreedly 2023-01-25 |
 | F60-R | 후보 | 음식배달 | D | DB 테이블(배차 이력) | 정합성 보강 마이그레이션이 food MySQL 배차 상태 이력 표 fooddelivery.dispatch_events(약 348만 행)에 빠져 있던 dispatches 로의 외래 키를 ALGORITHM, LOCK 지정 없이 더함(ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY). foreign_key_checks 가 켜진 MySQL 이 제자리 추가를 못 하고 표를 통째로 복사('copy to tmp table', 약 1분 반~5분)하는 동안 dispatch_events 와 부모 dispatches 의 모든 쓰기가 'Waiting for table metadata lock'. dispatch 배달원 배정 INSERT 가 멈춰 order 배차 호출 'Read timed out', 막힌 쓰기가 dispatch Hikari 10개를 묶어 용량 확인 'Connection is not available', 모든 새 주문 503, dispatch NotReady 와 liveness 재시작. 복사가 끝나면 스스로 회복. 원본 Pulumi 2023-10-06(외래 키를 바꾸는 마이그레이션의 표 복사 잠금이 연결을 말려 24분 동안 요청 74.7% 실패). F32-P(배차 표 지우기 1146), F33-R(인덱스 제거로 전수 스캔), F59-R(백필 Job 의 깊은 읽기)과 같은 order 503·dispatch 쪽 증상에 기전만 다름. 정답지가 잠긴 부모 dispatches 도 받아 채점 위치는 F33-R, F32-P 와 겹침(정답 위치를 배차로 묶어 세면 2→3, 3.7%) |
 | F57-P | 후보 | 쇼핑몰 | Q | DB 테이블(재고 이동 이력) | 운영자가 commerce DB 를 새 PostgreSQL 인스턴스로 옮기는 이전(스냅숏 복사, 논리 복제 따라잡기)에서 행은 모두 옮겼지만 논리 복제가 옮기지 않는 inventory_schema.inventory_movements(약 969만 행, inventory 만 씀)의 id 시퀀스 상태는 옮기지 않아, 전환(옛 쪽 읽기 전용과 연결 끊기로 약 6초 commerce 쓰기 25006, 다시 끊어 새 쪽으로) 뒤 시퀀스가 스냅숏 시점 값(최대 키보다 10만 뒤, 약 39시간치)에서 다시 시작(재구성: 행 복사는 하지 않고 DB 읽기 전용 기본값, 세션 끊기, 잠금 아래 setval 되감기, 읽기 전용 해제와 다시 끊기로 전환과 그 결과를 만듦, 되돌림은 setval(최대 키)). 재고 예약의 이동 이력 INSERT 가 모두 기본 키 23505 'Key (id)=(N) already exists' 로 되돌려져 inventory 500, product 500, checkout 502(결제 전), 같은 표에 쓰는 재조정 배치도 실패. 전환 뒤 둘러보기, 재고 조회, 장바구니, 가격은 정상. RevenueCat 2022-11-23 의 원본 엔진(PostgreSQL) 판, F57-R 의 commerce 판 |
@@ -477,3 +477,5 @@ A, B, D, L은 각 7개(9%), G는 8개(11%), J는 9개(12%), P는 10개(13%)로 2
 - 2026-10-18: `F59-P` 정식 승격(케이스 `case-f59-p-v3-6fd09c9b`). 66 실행 F59-P-run-6fd09c9b(러너 tb-ops, 큐 cycle-1-d1620a9f)가 검증에서 녹화 가능(주입: 05:23:48 k8s.job 이 rca-testbed-banking 에 Job ledger-statement-backfill 생성, 파드 ledger-statement-backfill-jc99d 가 tb-w2 에서 Started 05:23:49, Killing 05:34:04, cleanup 05:34:02~05:34:10, recovery 검증 05:35:11. 피해: 이체 5xx 0.58~1.0, entry 대부분 502, success 연속 17틱. 결정 증거: KCM Job SuccessfulCreate(이 네임스페이스 Job 이벤트 30일 0건), DPM Top SQL 에 30일 동안 없던 새 sql_id 35vxdaqwrs31x(장애 구간에만 610회, 실행당 4.9~7.0초), byb2y2hv7p4ag 실행당 경과 465~513ms → 3,788ms, Oracle db_time 0.6 → 15.4, active_session 16, 대기 resmgr:cpu quantum, transfer HikariPool 시간 초과 4,391건, account 'Transfer service call failed' 297건(평시 0건). 롤아웃 없음, enq: TX 0건, Oracle Ready, transfer 재시작 0. must_rule_out 신호 없음, 겹친 실행 없음). 데이터 메모: transfer readiness 실패 26건과 pod_ready False 2틱(재시작 0, 설계 허용). 근거 `~/dev/testbed-ops/verifications/2026-10-18-0626-F59-P-run-6fd09c9b.md`. §4-1 → §4, §3 을 정식 76종으로 다시 셈(E 3→4 4%→5%, 은행 24→25, 정답 위치 내부 배치 작업 1→2 1%→3%, 결제 경로 12 16.0%(12/75)→15.8%(12/76) 표 16% 그대로, 나머지 비율은 분모 76 에서도 같음). 후보는 §4-1 실제 행 수 41종.
 - 2026-10-18: `case-f59-p-v3-6fd09c9b` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
 - 2026-10-18: `F59-P` 정답지 관찰(정답지는 고치지 않는다). `registry/scenario-metadata.json` F59-P must_support 2 의 "건수 문장 byb2y2hv7p4ag 와 페이지 문장 실행 수 급증"은 이 녹화에서 실행 수가 평시 495~627 에서 708·646 으로 조금만 늘었고, Oracle 2 CPU 와 풀 15 의 처리량 상한 아래에서 실행당 경과 시간이 7배로 나타났다. must_support 3 의 "url.query 에 수백 개 계좌"는 10분 동안 48 워커가 머리의 큰 계좌에 머물러 계좌 4개만 나왔고, client.address 10.244.1.36 이 백필 파드 IP 인지는 KCM 본문에 없어 확인하지 못했다(평시에 없던 주소, curl/8.5.0 434건). 평가에서 이 두 근거를 쓸 때 감안한다. 근거 같은 검증 보고서 §3 의 2, 3 과 §4.
+- 2026-10-18: `F36-H` 정식 승격(케이스 `case-f36-h-v3-b671604f`). 66 실행 F36-H-run-b671604f(러너 tb-ops, 큐 cycle-1-9752bc6f)가 검증에서 녹화 가능(주입: 15:18:25 k8s.image release 가 rca-testbed-food testbed-restaurant 를 latest → food-delivery-restaurant:1.6.0 으로 롤아웃, KCM 15:18:43 ScalingReplicaSet 56dd99c59 와 Pulled "food-delivery-restaurant:1.6.0", 옛 파드 Killing 15:20:43, cleanup 롤백 15:36:01, recovery 검증 15:36:39. 피해: 'Created order' 5분 칸 15:25·15:30 이 0, 표본 order POST /api/orders 176건 모두 502, success 연속 21. 결정 증거: restaurant SEVERE 'Required key 'restaurant.policy.paused-regions' not found' 1,651건(15:20:46~15:35:50, 평시와 식힘 0건), 같은 구간 'SQL Error'·'Unknown column' 0, 상세 서버 스팬 500 175 인데 자식 SELECT 성공 611(목록, 메뉴, 인기 메뉴 200), order 'Failed to fetch restaurant N: 500' 491건. order·dispatch·payment 롤아웃 0, 재시작 증가 0. must_rule_out 신호 없음, 겹친 실행 없음). 데이터 메모: 직전 실행 F36-H-run-78a7238c 를 오염시킨 testbed-mysql-0 재시작·OOM 은 이번 capture(13:07:58~16:06:01)에 없었다(restart_count 1 유지, working set 864→878Mi, 1GiB 한도의 85% 남짓으로 천천히 오름). 직전 실행 덤프는 재실행 판정으로 tb-ops `_rejected/` 에 있다. 근거 `~/dev/testbed-ops/verifications/2026-10-18-1615-F36-H-run-b671604f.md`. §4-1 → §4, §3 을 정식 77종으로 다시 셈(J 9→10 12%→13%(주 묶음 J, F58-R 과 같은 규칙), G 8 11%→10%, 음식배달 24→25, 정답 위치 가게 서비스 1→2 1%→3%, 주문 서비스 8 11%→10%, 배달 서비스 5 7%→6%, 결제 경로 12 15.8%(12/76)→15.6%(12/77) 표 16% 그대로, 나머지 비율은 분모 77 에서도 같음). 후보는 §4-1 실제 행 수 40종.
+- 2026-10-18: `case-f36-h-v3-b671604f` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
