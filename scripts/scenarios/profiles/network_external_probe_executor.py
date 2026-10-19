@@ -79,7 +79,7 @@ case "$action" in
   preflight)
     command -v sshpass >/dev/null; command -v ssh >/dev/null; [[ -n "${SSHPASS:-}" && ! -e "$state" && -r "$forward_key" ]]
     "${ssh_cmd[@]}" "$remote_check"
-    "${forward_ssh[@]}" 'test "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 && command -v iptables >/dev/null && ip -4 addr show dev vmbr0 | grep -Fq "192.168.200.66/24" && ip -4 addr show dev vmbr1 | grep -Fq "192.168.122.1/24"'
+    "${forward_ssh[@]}" 'test "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 && command -v iptables >/dev/null && ip -4 addr show dev vmbr0.200 | grep -Fq "192.168.200.66/24" && ip -4 addr show dev vmbr1 | grep -Fq "192.168.122.1/24"'
     route_absent; rule_absent
     ;;
   run)

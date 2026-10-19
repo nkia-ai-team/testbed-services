@@ -23,7 +23,7 @@ commerce 의 여덟 서비스(user, cart, pricing, shipping, product, order, pay
 역할 `commerce` 로 PostgreSQL 에 네트워크 로그인을 한다. DB 의 호스트 기반 접근 파일 `pg_hba.conf` 에는 local 과 127.0.0.1 trust 말고
 네트워크 규칙이 하나뿐이다: 128행 `host all all all scram-sha-256`(모든 주소). 운영자가 이 너무 넓은 규칙을 좁힌다.
 "DB 에 바깥에서 오는 접속은 모두 NodePort 를 거쳐 노드 주소로 들어온다"고 보고 노드 주소 10.244.3.1(119 DPM, 109 러너가 SNAT 되어 닿는 주소)과
-호스트, 관리망(192.168.122.0/24, 192.168.200.0/24, 192.168.230.0/24)만 남기고 `SELECT pg_reload_conf()` 로 다시 읽힌다.
+호스트, 관리망(192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)만 남기고 `SELECT pg_reload_conf()` 로 다시 읽힌다.
 서비스는 같은 노드의 ClusterIP Service 로 들어와 자기 파드 주소를 그대로 가지므로 어느 규칙에도 맞지 않는다.
 PostgreSQL 은 pg_hba 를 연결을 시작할 때만 보므로 열린 연결은 그대로 쓰이고, 새 로그인만 비밀번호를 묻기 전에
 `FATAL: no pg_hba.conf entry for host "10.244.3.x", user "commerce", database "commerce", no encryption` 으로 거절된다.

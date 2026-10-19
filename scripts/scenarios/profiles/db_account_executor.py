@@ -145,7 +145,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "pod": "testbed-postgres-0",
         "account": "commerce",
         "change": "host-rule-narrowed",
-        "allowed_sources": ["10.244.3.1/32", "192.168.122.0/24", "192.168.200.0/24", "192.168.230.0/24"],
+        "allowed_sources": ["10.244.3.1/32", "192.168.122.0/24", "192.168.213.0/24", "192.168.230.0/24"],
         "omitted_cidr": "10.244.3.0/24",
     },
 }

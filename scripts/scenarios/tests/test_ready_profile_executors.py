@@ -344,7 +344,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         argv, stdin = db_account.build_invocation(plan, "run")
         self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
         self.assertEqual(argv[4:], ["rca-testbed-commerce", "testbed-postgres-0", "commerce",
-                                    "10.244.3.1/32,192.168.122.0/24,192.168.200.0/24,192.168.230.0/24",
+                                    "10.244.3.1/32,192.168.122.0/24,192.168.213.0/24,192.168.230.0/24",
                                     "10.244.3.0/24"])
         self.assertNotIn("F71-H", argv)
         self.assertEqual(stdin, db_account.POSTGRES_HBA_REMOTE)

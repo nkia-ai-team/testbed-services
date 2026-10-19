@@ -63,7 +63,7 @@ CONTRACTS = {
         "protected_cidr": "10.244.2.0/24",
         "port": 8081,
         "chain": "RESTAURANT-API-IN",
-        "allowed_sources": ["10.244.2.1/32", "10.244.0.0/24", "192.168.122.0/24", "192.168.200.0/24"],
+        "allowed_sources": ["10.244.2.1/32", "10.244.0.0/24", "192.168.122.0/24", "192.168.213.0/24"],
         "comment": "restaurant-api: allow node and entry networks",
         "log_prefix": "[FW BLOCK] ",
         "log_limit": "6/min",
@@ -83,7 +83,7 @@ CONTRACTS = {
         "protected_cidr": "10.244.1.0/24",
         "port": 8082,
         "chain": "TRANSFER-API-IN",
-        "allowed_sources": ["10.244.1.0/24", "10.244.0.0/24", "192.168.122.0/24", "192.168.200.0/24"],
+        "allowed_sources": ["10.244.1.0/24", "10.244.0.0/24", "192.168.122.0/24", "192.168.213.0/24"],
         "comment": "transfer-api: allow banking pods and entry networks",
         "log_prefix": "[FW BLOCK] ",
         "log_limit": "6/min",
@@ -96,7 +96,7 @@ CONTRACTS = {
     # 접속이 이 주소로 SNAT 되어 온다)와 호스트 망 둘, 관제망(192.168.230.0/24)이다. 같은 노드 파드 대역의 banking
     # 앱(account, transfer, ledger, 10.244.1.x)이 빠진다. 2026-10-12 실측: tb-w2 conntrack 의 1521 상대는
     # 10.244.1.230(transfer, ESTABLISHED 5), 10.244.1.228(account, 3), 10.244.1.218(ledger, 3), 10.244.2.0
-    # (119 DPM 이 tb-w3 192.168.200.138:30308 로 들어와 SNAT)이고, FORWARD 에서 보이는 NodePort 직행 출발지는
+    # (119 DPM 이 tb-w3 의 사내망 주소(2026-10-12 당시 192.168.200.138, 지금 192.168.213.144):30308 로 들어와 SNAT)이고, FORWARD 에서 보이는 NodePort 직행 출발지는
     # 192.168.122.1(109), 192.168.230.128 이다.
     "F72-R": {
         "host": "192.168.122.11",
@@ -108,7 +108,7 @@ CONTRACTS = {
         "port": 1521,
         "chain": "ORACLE-LSNR-IN",
         "allowed_sources": ["10.244.1.1/32", "10.244.0.0/32", "10.244.2.0/32", "10.244.3.0/32",
-                            "192.168.122.0/24", "192.168.200.0/24", "192.168.230.0/24"],
+                            "192.168.122.0/24", "192.168.213.0/24", "192.168.230.0/24"],
         "comment": "oracle-listener: allow nodes and management networks",
         "log_prefix": "[FW BLOCK] ",
         "log_limit": "6/min",

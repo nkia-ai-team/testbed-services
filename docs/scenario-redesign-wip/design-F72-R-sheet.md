@@ -66,7 +66,7 @@ Oracle 은 멀쩡하고 감시는 계속 붙어 있다.
 ## 4. 인과 사슬 (코드와 인프라 위치)
 
 1. 계기: tb-w2(192.168.122.11)에서 `sudo iptables -N ORACLE-LSNR-IN`, `-A ORACLE-LSNR-IN -s <허용 출발지> -m comment --comment "oracle-listener: allow nodes and management networks" -j RETURN` 7개
-   (10.244.1.1/32, 10.244.0.0/32, 10.244.2.0/32, 10.244.3.0/32, 192.168.122.0/24, 192.168.200.0/24, 192.168.230.0/24),
+   (10.244.1.1/32, 10.244.0.0/32, 10.244.2.0/32, 10.244.3.0/32, 192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24),
    `-A ORACLE-LSNR-IN -m limit --limit 6/min -j LOG --log-prefix "[FW BLOCK] "`, `-A ORACLE-LSNR-IN -j DROP`,
    `-I FORWARD 1 -d 10.244.1.0/24 -p tcp --dport 1521 -m conntrack --ctstate NEW -m comment --comment ... -j ORACLE-LSNR-IN`.
 2. 노드 망: tb-w2 는 br_netfilter 적재, `net.bridge.bridge-nf-call-iptables=1`(2026-10-12 실측). 앱 파드는 ClusterIP testbed-oracle(10.99.55.102):1521 로 붙고,

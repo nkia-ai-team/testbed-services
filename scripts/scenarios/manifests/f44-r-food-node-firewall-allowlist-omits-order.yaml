@@ -91,7 +91,7 @@
                   "10.244.2.1/32",
                   "10.244.0.0/24",
                   "192.168.122.0/24",
-                  "192.168.200.0/24"
+                  "192.168.213.0/24"
                 ],
                 "comment": "restaurant-api: allow node and entry networks",
                 "log_prefix": "[FW BLOCK] ",

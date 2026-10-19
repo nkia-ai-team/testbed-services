@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "tb-runner",
-    "matrix_location_transport": "R/ssh db.account commerce testbed-postgres-0 pg_hba.conf 128행 host all all all scram-sha-256 → host all all 10.244.3.1/32·192.168.122.0/24·192.168.200.0/24·192.168.230.0/24 scram-sha-256 제자리 편집 + SELECT pg_reload_conf()(kubectl exec psql local 소켓 trust, pg_stat_statements 기록 끔, preflight 가 pg_hba_file_rules 모든 주소 규칙 1·좁힌 규칙 0·오류 0, 역할 세션이 10.244.3.0/24 안·허용 밖, 파드 주소 네트워크 로그인 성공 확인, run 뒤 같은 로그인 거절 확인, 역 편집과 다시 읽기) (동반 부하 없음, 상주 기준선 loadgen-commerce 의 브라우징·검색 80% 는 로그인 없이 계속 흐름)",
+    "matrix_location_transport": "R/ssh db.account commerce testbed-postgres-0 pg_hba.conf 128행 host all all all scram-sha-256 → host all all 10.244.3.1/32·192.168.122.0/24·192.168.213.0/24·192.168.230.0/24 scram-sha-256 제자리 편집 + SELECT pg_reload_conf()(kubectl exec psql local 소켓 trust, pg_stat_statements 기록 끔, preflight 가 pg_hba_file_rules 모든 주소 규칙 1·좁힌 규칙 0·오류 0, 역할 세션이 10.244.3.0/24 안·허용 밖, 파드 주소 네트워크 로그인 성공 확인, run 뒤 같은 로그인 거절 확인, 역 편집과 다시 읽기) (동반 부하 없음, 상주 기준선 loadgen-commerce 의 브라우징·검색 80% 는 로그인 없이 계속 흐름)",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/db.account"
@@ -83,7 +83,7 @@
                 "allowed_sources": [
                   "10.244.3.1/32",
                   "192.168.122.0/24",
-                  "192.168.200.0/24",
+                  "192.168.213.0/24",
                   "192.168.230.0/24"
                 ],
                 "omitted_cidr": "10.244.3.0/24"
