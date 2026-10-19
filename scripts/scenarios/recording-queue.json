@@ -43,15 +43,6 @@
       "hold_reason": "강도로 해결 불가. F63-R-run-81153e98 에서 1.5.0 롤아웃·api 비데몬 스레드 누수·memcg OOM(09:54:21)은 났으나, 09:46:27 부터 동반 부하의 거래 내역 질의(byb2y2hv7p4ag)가 Oracle CPU 를 1.97/2 로 채워 account·transfer Hikari 고갈·잔액 조회 비정상 0.02~0.18 이 났고 러너 성공(09:53:51)이 첫 OOM 보다 앞서 must_rule_out ②에 걸림(F47-R 과 같은 꼴). rps 를 낮추는 것은 F47-R(068543b 선례) 8rps 에서도 Oracle 1.0~1.9/2 였고 더 낮추면 OOM 까지 타임아웃(28m)을 넘긴다. executor 는 정해진 파라미터만 받고 허용 목록에 거래 내역 없는 스크립트가 없다(settlement-arrival-poll.js 는 F74-R 원인 폴링이 항상 돈다). 사람 조치: 거래 내역 단계를 뺀 core-banking 동반 부하 loadgen 스크립트 추가(허용 목록 등록, 부하기 배포), 그 뒤 controller must_rule_out 에 balance_read_nonok_rate ≥ 0.05(2틱) 추가, 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 덤프본은 tb-ops /data/eval-cases/_rejected/case-f63-r-v3-81153e98. 근거: ~/dev/testbed-ops/verifications/2026-10-19-1052-F63-R-run-81153e98.md"
     },
     {
-      "scenario_id": "F64-R",
-      "reason": "new",
-      "note": "새 시나리오 첫 검증. 녹화 검증: 게이트웨이 WARN 'CircuitBreaker 'order' is OPEN' 있음, 같은 구간 게이트웨이 'I/O error'·'Read timed out' 과 order ERROR 없음(하류가 멀쩡한데 게이트웨이 서킷만 열림)",
-      "requested_by": "testbed-scenario-create",
-      "requested_at": "2026-10-11",
-      "attempts": 0,
-      "status": "waiting"
-    },
-    {
       "scenario_id": "F65-R",
       "reason": "new",
       "note": "새 시나리오 첫 검증. 녹화 검증: transfer 새 파드가 Running 인데 Ready 가 못 되고 core-banking-transfer ERROR 'ORA-12514 ... Service XEPDB1 is not registered with the listener' 가 있으며, 같은 구간 account·ledger 의 ORA 오류와 잔액 조회 실패가 없음(transfer 의 연결 설정만 낡음)",

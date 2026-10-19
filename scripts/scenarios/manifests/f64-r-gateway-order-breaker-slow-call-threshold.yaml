@@ -3,7 +3,7 @@
   "id": "F64-R",
   "slug": "f64-r-gateway-order-breaker-slow-call-threshold",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
