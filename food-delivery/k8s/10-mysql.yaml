@@ -49,10 +49,15 @@ spec:
               cpu: 500m
               memory: 1536Mi
             # 메모리 한도는 1Gi 였다(PostgreSQL 시절 512Mi 를 MySQL 전환 때 두 배로 한 값).
-            # 기본 설정 MySQL 8.0 은 기동 2시간 안에 약 850Mi 를 쓰고(performance_schema
-            # 약 230Mi, 버퍼 풀 128Mi, 나머지는 할당 잔여) 이후 하루 약 40Mi 씩 늘어 약 3일마다
-            # OOMKilled 로 재시작했다(2026-10-15 109, 2026-10-18 66). 녹화 창에 끼면 그 녹화를
-            # 버려야 해서 2026-10-19 1.5Gi 로 올렸다. tb-w3(8GB) 여유는 약 3GB 다.
+            # 기동 2시간 안에 약 850Mi 를 써 여유가 거의 없었다. 증가는 아래 MALLOC_ARENA_MAX 로
+            # 막고, 1.5Gi 는 안전 여유로 둔다(2026-10-19). tb-w3(8GB) 여유는 약 3GB 다.
+          env:
+            # glibc malloc 은 스레드마다 arena 를 만들어(기본 CPU 수 x 8, 4코어 노드에서 32개)
+            # 반납된 메모리를 운영체제에 돌려주지 않고 쥐고 있는다. 66 실측(2026-10-19): MySQL
+            # 자체 집계 542Mi 는 12시간 동안 거의 그대로인데 arena 30개가 422Mi 를 쥐고 하루
+            # 약 75Mi 씩 늘어 약 3일마다 OOMKilled 가 났다. arena 를 2개로 묶어 이 증가를 막는다.
+            - name: MALLOC_ARENA_MAX
+              value: "2"
       volumes:
         - name: init-scripts
           configMap:
