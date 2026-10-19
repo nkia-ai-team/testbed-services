@@ -148,6 +148,35 @@ class AnswerKeyContractTests(unittest.TestCase):
                 f"{scenario_id}: the root cause cannot also be partial credit",
             )
 
+    def test_beyond_data_notes_stay_out_of_the_scored_answer(self) -> None:
+        # 참고 메모 칸(beyond_data, beyond_data_ko): 수집 데이터로는 가를 수 없어 정답 칸에
+        # 넣지 못한 상세 원인을 연구원이 볼 수 있게 남긴다. 선택 칸이고, capture 가 meta.json
+        # scenario_notes 로 따로 싣는다. 채점과 정답 판정이 읽는 칸에 같은 글이 섞이면
+        # 관제 데이터로 낼 수 없는 답을 요구하게 되므로(원칙 5) 섞이지 않게 막는다.
+        note_keys = ["confirmed_by", "detail", "missing_data"]
+        scored = ("title", "description", "cause", "injection_summary", "user_impact",
+                  "distinguishing_evidence")
+        for scenario_id, entry in sorted(self.metadata.items()):
+            present = [key for key in ("beyond_data", "beyond_data_ko") if key in entry]
+            if not present:
+                continue
+            self.assertEqual(present, ["beyond_data", "beyond_data_ko"],
+                             f"{scenario_id}: beyond_data needs its _ko pair")
+            scored_text = [str(entry.get(field, "")) for field in scored]
+            scored_text += [str(entry.get(f"{field}_ko", "")) for field in scored]
+            scored_text.append(str((entry.get("root_cause") or {}).get("mechanism", "")))
+            for key in present:
+                note = entry[key]
+                self.assertIsInstance(note, dict, f"{scenario_id}.{key}")
+                self.assertEqual(sorted(note), note_keys, f"{scenario_id}.{key}")
+                for field, text in note.items():
+                    self.assertIsInstance(text, str, f"{scenario_id}.{key}.{field}")
+                    self.assertTrue(text.strip(), f"{scenario_id}.{key}.{field}")
+                self.assertFalse(
+                    any(note["detail"] in text for text in scored_text),
+                    f"{scenario_id}.{key}: the note detail must not be copied into a scored field",
+                )
+
     def test_code_anchors_still_name_a_symbol_that_lives_there(self) -> None:
         # Charter §3-1 fix 3 / G7 CI requirement. Line numbers rot as code moves;
         # the audit found three anchors that had drifted off the symbol they

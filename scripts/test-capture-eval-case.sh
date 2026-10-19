@@ -321,4 +321,38 @@ expect_rejected topology-bundle-without-phases-json \
   --t1 2026-07-15T01:00:00Z --t2 2026-07-15T01:10:00Z \
   --topology-bundle "$good_topology_bundle"
 
+# Scenario notes (정답 칸 밖 참고 메모): carried as meta.json scenario_notes, never folded
+# into scenario_metadata or its hash; absent when not supplied; malformed notes rejected.
+notes_file="$TMP_ROOT/scenario-notes.json"
+jq -n '{beyond_data:{detail:"Allocator arenas retain freed memory.",
+  missing_data:"MySQL internal memory total is not collected.",
+  confirmed_by:"sys.memory_global_total against process smaps."},
+  beyond_data_ko:{detail:"할당자 arena 가 반납된 메모리를 쥐고 있다.",
+  missing_data:"MySQL 자체 메모리 합계가 수집되지 않는다.",
+  confirmed_by:"sys.memory_global_total 과 프로세스 smaps 대조."}}' >"$notes_file"
+for mode_args in "" "--phases-json $phases_json"; do
+  # shellcheck disable=SC2086
+  output=$("$CAPTURE" "${base_args[@]}" --case-label calibration $mode_args \
+    --scenario-notes-file "$notes_file" --output-root "$TMP_ROOT/cases" --dry-run)
+  jq -e --slurpfile notes "$notes_file" --argjson scenario_metadata "$scenario_metadata" \
+    --arg sha "$scenario_metadata_sha256" '
+    .scenario_notes == $notes[0] and .scenario_metadata == $scenario_metadata and
+    .scenario_metadata_sha256 == $sha' \
+    <<<"$output" >/dev/null || fail "scenario notes not carried as scenario_notes (${mode_args:-v2})"
+  # shellcheck disable=SC2086
+  output=$("$CAPTURE" "${base_args[@]}" --case-label calibration $mode_args \
+    --output-root "$TMP_ROOT/cases" --dry-run)
+  jq -e 'has("scenario_notes") | not' <<<"$output" >/dev/null ||
+    fail "scenario_notes present without --scenario-notes-file (${mode_args:-v2})"
+done
+jq '.beyond_data |= del(.confirmed_by)' "$notes_file" >"$TMP_ROOT/notes-missing.json"
+expect_rejected scenario-notes-missing-field \
+  "${base_args[@]}" --scenario-notes-file "$TMP_ROOT/notes-missing.json"
+jq '. + {cause:"leak"}' "$notes_file" >"$TMP_ROOT/notes-extra.json"
+expect_rejected scenario-notes-unknown-key \
+  "${base_args[@]}" --scenario-notes-file "$TMP_ROOT/notes-extra.json"
+jq '.beyond_data.detail = ""' "$notes_file" >"$TMP_ROOT/notes-empty.json"
+expect_rejected scenario-notes-empty-text \
+  "${base_args[@]}" --scenario-notes-file "$TMP_ROOT/notes-empty.json"
+
 printf '[PASS] capture policy dry-run tests\n'

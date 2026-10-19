@@ -12,7 +12,7 @@ Usage:
     --scenario-title <title> --scenario-description <description> \
     --scenario-cause <cause> --scenario-injection-summary <summary> \
     --scenario-user-impact <impact> --scenario-distinguishing-evidence <evidence> \
-    --scenario-metadata-sha256 <sha256> \
+    --scenario-metadata-sha256 <sha256> [--scenario-notes-file <json>] \
     --t1 <YYYY-MM-DDTHH:MM:SSZ> --t2 <YYYY-MM-DDTHH:MM:SSZ> \
     [--case-label <calibration|evaluation|failed>] [--run-result <result.json>] \
     [--phases-json <file>] [--topology-bundle <dir>] \
@@ -107,6 +107,10 @@ scenario_injection_summary=''
 scenario_user_impact=''
 scenario_distinguishing_evidence=''
 scenario_metadata_sha256=''
+# 정답 칸에 넣지 못한 상세 원인 메모(정답지의 beyond_data, beyond_data_ko). 있으면 meta.json
+# 의 scenario_notes 로 싣는다. scenario_metadata 와 그 해시에는 들어가지 않으므로 채점과
+# 정답 판정 입력이 바뀌지 않는다(docs/spec-scenario-quality-charter.md 참고 메모 칸).
+scenario_notes_file=''
 t1_raw=''
 t2_raw=''
 output_root="${EVAL_CASE_ROOT:-/data/eval-cases}"
@@ -139,6 +143,7 @@ while (( $# > 0 )); do
     --scenario-user-impact) scenario_user_impact="${2:-}"; shift 2 ;;
     --scenario-distinguishing-evidence) scenario_distinguishing_evidence="${2:-}"; shift 2 ;;
     --scenario-metadata-sha256) scenario_metadata_sha256="${2:-}"; shift 2 ;;
+    --scenario-notes-file) scenario_notes_file="${2:-}"; shift 2 ;;
     --t1) t1_raw="${2:-}"; shift 2 ;;
     --t2) t2_raw="${2:-}"; shift 2 ;;
     --case-label) case_label="${2:-}"; shift 2 ;;
@@ -298,6 +303,22 @@ scenario_metadata=$(jq -cn \
 actual_scenario_metadata_sha256=$(printf '%s' "$scenario_metadata" | sha256sum | awk '{print $1}')
 [[ "$actual_scenario_metadata_sha256" == "$scenario_metadata_sha256" ]] ||
   die 'scenario metadata hash mismatch'
+
+scenario_notes=null
+if [[ -n "$scenario_notes_file" ]]; then
+  [[ -r "$scenario_notes_file" ]] || die '--scenario-notes-file is not readable'
+  scenario_notes=$(jq -c . "$scenario_notes_file") || die '--scenario-notes-file is not JSON'
+  jq -e '
+    def note: type == "object" and (keys == ["confirmed_by", "detail", "missing_data"]) and
+      all(.[]; type == "string" and length > 0);
+    type == "object" and length > 0 and
+    ((keys - ["beyond_data", "beyond_data_ko"]) | length == 0) and all(.[]; note)' \
+    <<<"$scenario_notes" >/dev/null ||
+    die '--scenario-notes-file must hold beyond_data and/or beyond_data_ko, each with detail, missing_data, confirmed_by'
+fi
+attach_scenario_notes() {
+  if [[ "$scenario_notes" == null ]]; then cat; else jq --argjson notes "$scenario_notes" '. + {scenario_notes: $notes}'; fi
+}
 
 evaluation_eligible=false
 run_script_sha256=''
@@ -615,7 +636,7 @@ if [[ "$dry_run" == true ]]; then
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
-        golden_anomaly_file:false, final_dir:$final_dir}'
+        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes
   else
     jq -n \
       --arg case_id "$case_id" \
@@ -652,7 +673,7 @@ if [[ "$dry_run" == true ]]; then
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
-        golden_anomaly_file:false, final_dir:$final_dir}'
+        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes
   fi
   exit 0
 fi
@@ -1266,6 +1287,13 @@ else
         (.run_catalog_sha256 | test("^[0-9a-f]{64}$"))
       else .evaluation_eligible == false end)' \
     "$staging_dir/meta.json" >/dev/null || die 'meta.json violates capture policy'
+fi
+
+if [[ "$scenario_notes" != null ]]; then
+  attach_scenario_notes <"$staging_dir/meta.json" >"$staging_dir/meta.json.notes"
+  mv -f "$staging_dir/meta.json.notes" "$staging_dir/meta.json"
+  jq -e --argjson notes "$scenario_notes" '.scenario_notes == $notes' "$staging_dir/meta.json" >/dev/null ||
+    die 'meta.json scenario_notes mismatch'
 fi
 
 # Group-readable promotion (spec §2.2, 2026-07-24): a case staged under a

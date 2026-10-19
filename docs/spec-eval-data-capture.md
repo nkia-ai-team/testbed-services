@@ -265,6 +265,7 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   `preflight`(창=buffer 10분), `topology_snapshot`, 모델 스냅샷 계보
   (`model_snapshot_at >= capture_end` 검증 포함).
 - 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.
+- 선택 `scenario_notes`(2026-10-19): 정답지에 참고 메모(`beyond_data`, `beyond_data_ko`)가 있을 때만 생긴다. 러너가 `--scenario-notes-file` 로 넘기고, 채점과 정답 판정 입력이 아니며 `scenario_metadata` 해시 밖이다(헌장 G7 참고 메모 칸). v2 에도 같다.
 
 **토폴로지 주기 스냅샷 번들 (2026-07-24 신설 — EventCluster 소비자 계약)**:
 EventCluster의 event-time replay 평가는 "사건 당시" 토폴로지가 필요하므로,

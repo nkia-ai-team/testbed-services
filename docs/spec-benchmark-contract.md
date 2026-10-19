@@ -73,6 +73,7 @@ summary: 케이스를 벤치마크로 성립시키기 위한 두 계약 — (A) 
 | `model_sha256`·`postgres_tables[]`·`topology_bundle` | **입력** — 복원 계약 |
 | `scenario_metadata`(title·description·cause·injection_summary·user_impact·distinguishing_evidence) | **정답** |
 | `scenario_id`(`F03-G`) · `case_id`(`case-f03-g-v3-…`) | **정답 누설** |
+| `scenario_notes`(있을 때만, 2026-10-19) | **정답 쪽 참고**. 채점 입력이 아니다(헌장 G7 참고 메모 칸) |
 
 마지막 줄이 특히 나쁘다. **디렉터리 이름 자체가 정답이다.**
 `case-f03-g-v3-3ec8892e`에서 `-g-`는 음성(흡수) 시나리오를 뜻한다. 파일을 하나도
