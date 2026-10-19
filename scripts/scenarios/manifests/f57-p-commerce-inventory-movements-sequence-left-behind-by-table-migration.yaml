@@ -3,7 +3,7 @@
   "id": "F57-P",
   "slug": "f57-p-commerce-inventory-movements-sequence-left-behind-by-table-migration",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
