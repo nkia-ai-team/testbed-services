@@ -74,7 +74,7 @@
             },
             {
               "check": "db-memory-headroom",
-              "_note": "food MySQL 은 1Gi 한도에 붙어 있고(2026-10-10 memory.current 1,073,078,272, anon 919,715,840, kernel 약 16MB, VmHWM 934MB) 하루 이틀 간격으로 OOMKill 재시작한다(재시작 44회, 30일 KCM Started 26회). 집계 세션 하나가 약 2.3MiB(109 performance_schema 실측)라 restaurant 풀 10개와 재시작이 끊고 떠난 집계를 합쳐 약 20개면 약 46MiB 가 더 든다. 러너가 memory.stat 의 anon 이 900MiB 이하이고 MySQL 컨테이너가 30분 넘게 떠 있을 때만 시작한다(memory.current 는 페이지 캐시 때문에 늘 한도에 붙어 있어 여유 조건으로 쓸 수 없다)"
+              "_note": "food MySQL 은 옛 1Gi 한도에 붙어 있었고(2026-10-10 memory.current 1,073,078,272, anon 919,715,840, kernel 약 16MB, VmHWM 934MB) 하루 이틀 간격으로 OOMKill 재시작했다(재시작 44회, 30일 KCM Started 26회). 2026-10-19 한도를 1.5Gi 로 올렸고 900MiB 문턱은 그대로 둔다(여유가 더 크다). 집계 세션 하나가 약 2.3MiB(109 performance_schema 실측)라 restaurant 풀 10개와 재시작이 끊고 떠난 집계를 합쳐 약 20개면 약 46MiB 가 더 든다. 러너가 memory.stat 의 anon 이 900MiB 이하이고 MySQL 컨테이너가 30분 넘게 떠 있을 때만 시작한다(memory.current 는 페이지 캐시 때문에 늘 한도에 붙어 있어 여유 조건으로 쓸 수 없다)"
             }
           ]
         },

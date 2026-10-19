@@ -15,7 +15,7 @@
 | nodeSelector / affinity | **전무** | 전 매니페스트 grep 무결과 | 스케줄러가 도메인 무관하게 흩뿌림 → 노드 blast radius가 도메인 경계를 넘음(§1) |
 | 앱 서비스 자원(Java) | requests **200m/512Mi**, limits **500m/1Gi** (전 도메인 균일) | 20-order:108-113 등 22개 동일 | CPU 500m 상한이 부팅·부하 시 throttle 천장 |
 | 노드 limits 총합 (overcommit) | tb-w1 **CPU 172% / MEM 116%**, w2 145%/94%, w3 137%/91% | `describe node` Allocated resources | limits 합이 allocatable 초과 → 실사용 급증 시 노드 메모리 고갈 여지 |
-| DB 자원 | postgres 200-500m/256-**512Mi**(작음), mysql 200-500m/512Mi-1Gi, oracle 500-2000m/2-4Gi | 10-postgres:65-70, food 10-mysql:40-44, banking 10-oracle:37-41 | postgres 메모리 여유 극소 |
+| DB 자원 | postgres 200-500m/256-**512Mi**(작음), mysql 200-500m/512Mi-1.5Gi(2026-10-19 1Gi 에서 올림), oracle 500-2000m/2-4Gi | 10-postgres:65-70, food 10-mysql:40-44, banking 10-oracle:37-41 | postgres 메모리 여유 극소 |
 | hostPath (전 앱 파드) | `/opt/polestar10/apm` **type: Directory** → `/opt/apm` RO 마운트 | 20-order:25-29,46-49; 22개 전부 동일 | `type: Directory`는 kubelet이 디렉토리 실재를 강제 → 없으면 FailedMount |
 | javaagent 의존 | `JAVA_TOOL_OPTIONS=-javaagent:/opt/apm/opentelemetry-javaagent.jar` | 20-order:64-65 (전 앱 동일) | jar 소실 시 JVM 부팅 실패(CrashLoop) |
 | imagePullPolicy | 전 앱 이미지 **Never** | 20-order:33 등 | 이미지 없는 노드로 재스케줄 시 ErrImageNeverPull |

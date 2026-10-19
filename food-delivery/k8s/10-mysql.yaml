@@ -47,7 +47,12 @@ spec:
               memory: 512Mi
             limits:
               cpu: 500m
-              memory: 1Gi
+              memory: 1536Mi
+            # 메모리 한도는 1Gi 였다(PostgreSQL 시절 512Mi 를 MySQL 전환 때 두 배로 한 값).
+            # 기본 설정 MySQL 8.0 은 기동 2시간 안에 약 850Mi 를 쓰고(performance_schema
+            # 약 230Mi, 버퍼 풀 128Mi, 나머지는 할당 잔여) 이후 하루 약 40Mi 씩 늘어 약 3일마다
+            # OOMKilled 로 재시작했다(2026-10-15 109, 2026-10-18 66). 녹화 창에 끼면 그 녹화를
+            # 버려야 해서 2026-10-19 1.5Gi 로 올렸다. tb-w3(8GB) 여유는 약 3GB 다.
       volumes:
         - name: init-scripts
           configMap:

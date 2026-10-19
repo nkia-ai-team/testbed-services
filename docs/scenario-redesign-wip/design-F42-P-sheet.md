@@ -86,7 +86,7 @@ food restaurant-service 의 새 릴리스 1.5.0 은 가게 화면의 인기 메�
    eq_ref(created_at 걸러냄) → Using temporary; Using filesort. 실행 4.05초(가게 21), 4.39초(같은 질의 2회째), 7.47초(가게 1, 메뉴 5개). 가게 1 한 번에
    `Innodb_buffer_pool_reads` +28,668 쪽, `Handler_read_key` +162,902, `Created_tmp_disk_tables` +0(109 SHOW GLOBAL STATUS 전후 차, 2026-10-10 07:3x UTC).
    표 크기: order_items 2,580,746행(138+158MB), orders 1,734,537행(114+250MB), 버퍼 풀 128MB.
-4. 포화: MySQL CPU 한도 500m, 메모리 1Gi(`food-delivery/k8s/10-mysql.yaml:45-50`, 프로브 없음). 집계 하나가 한가한 MySQL 을 수 초 차지하므로 처리 가능량은
+4. 포화: MySQL CPU 한도 500m, 메모리 1.5Gi(`food-delivery/k8s/10-mysql.yaml:48-50`, 2026-10-19 1Gi 에서 올림, 프로브 없음). 집계 하나가 한가한 MySQL 을 수 초 차지하므로 처리 가능량은
    초당 약 0.2~0.25건이다.
 5. 풀: restaurant Hikari maximum-pool-size 10, connection-timeout 3000ms(`food-delivery/restaurant-service/src/main/resources/application.yml:12-16`).
    가게 상세, 메뉴, 인기 메뉴, health 의 DB 확인이 모두 같은 풀을 쓴다.

@@ -15,7 +15,7 @@
 | 미들웨어 | 도메인 | kind / replicas | 이미지 | CPU/Mem limit | PVC(영속) | 핵심 튜닝 파라미터(실측) | 라이브 노드 |
 |---|---|---|---|---|---|---|---|
 | **PostgreSQL 16** | commerce | StatefulSet / **1** | postgres:16-alpine | **500m / 512Mi** | pgdata **5Gi** | `max_connections=100`(기본), `shared_buffers=128MB`(기본), `superuser_reserved=3`, `pg_stat_statements` preload | tb-w1 |
-| **MySQL 8.0** | food | StatefulSet / **1** | mysql:8.0 | 500m / **1Gi** | mysqldata 5Gi | `max_connections=151`(기본), `innodb_buffer_pool=128MB`(기본), charset+`log-error` 외 무튜닝 | tb-w3 |
+| **MySQL 8.0** | food | StatefulSet / **1** | mysql:8.0 | 500m / **1.5Gi**(2026-10-19 1Gi 에서 올림) | mysqldata 5Gi | `max_connections=151`(기본), `innodb_buffer_pool=128MB`(기본), charset+`log-error` 외 무튜닝 | tb-w3 |
 | **Oracle 23ai Free** | banking | StatefulSet / **1** | gvenzl/oracle-free:23-slim | **2000m / 4Gi** | oracledata **10Gi** | `sessions=322`,`processes=200`,`sga_target=1.5GB`,`pga=512MB`, 단일 PDB **FREEPDB1** | tb-w1 |
 | **Kafka 3.9 (KRaft)** | commerce/food/banking 각 1 | StatefulSet / **1** | apache/kafka:3.9.0 | 800m / 1536Mi | kafka-data 5Gi | broker+controller 겸임(SPOF), `num.partitions=3`, **모든 토픽 RF=1 / ISR=1**(라이브 확인), `min_isr=1`, auto-create=true | commerce:w2·food:w1·banking:w3 |
 | **Redis 7** | commerce(cart 전용) | **Deployment / 1** | redis:7-alpine | 300m / 256Mi | **없음(영속성 0)** | 설정 파일 없음 → `maxmemory=0`(무제한),`noeviction`, **RDB/AOF 없음(재시작=전멸)** | tb-w2 |
