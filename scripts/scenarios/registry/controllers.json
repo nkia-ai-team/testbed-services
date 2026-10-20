@@ -12549,7 +12549,7 @@
           "id": "transfer_5xx_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
-          "_note": "동반 부하(core-banking transfer-heavy-surge.js 8rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 기록만 한다: account 서킷이 열리는 구간에는 502 가 몰리고(로컬 실측 첫 2분 대부분 502), 그 밖에는 느린 200 이다",
+          "_note": "동반 부하(core-banking transfer-balance-surge.js 8rps, 거래 내역 단계 없음)의 이체(step transfer, 55%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 기록만 한다: account 서킷이 열리는 구간에는 502 가 몰리고(로컬 실측 첫 2분 대부분 502), 그 밖에는 느린 200 이다",
           "freshness": "30s"
         },
         {
@@ -12583,7 +12583,7 @@
             "observation": "account_p95",
             "op": "gte",
             "value": 500,
-            "_note": "새 api 가 이체마다 account 계좌 목록을 status=ACTIVE&page=0..48&size=20 으로 끝까지 다시 읽는다(활성 976개, 109 조회 2026-10-09). 동반 부하(8rps) 이체 약 3건/초면 목록 요청이 약 160건/초이고 실패하면 재시도(3회)가 더해진다. 운영 실측(실행 F47-R-run-3d446438, 동반 부하 20rps)에서 account 는 목록 페이지를 초당 약 155건 처리하는 동안 이미 JVM CPU 0.67~0.80 으로 한도 500m 에 붙어 p95 가 2.6~3.1초였으므로, 160건/초만으로 처리량을 넘는다. 로컬 실측(같은 jar, OTel 에이전트, account·api --cpus 0.5, Oracle Free 1,001계좌): 8건/초에서 account CPU 가 5분 내내 한도에 붙고 잔액 조회 p50 0.5~2초, account health 1~3초, 이체 502 몰림(서킷 열림). 같은 부하에 매니페스트 api 면 account 는 한도의 절반 아래이고 잔액 조회 10ms 안쪽이다"
+            "_note": "새 api 가 이체마다 account 계좌 목록을 status=ACTIVE&page=0..48&size=20 으로 끝까지 다시 읽는다(활성 976개, 109 조회 2026-10-09). 동반 부하(8rps) 이체 약 4.4건/초면 목록 요청이 약 215건/초이고 실패하면 재시도(3회)가 더해진다. 운영 실측(실행 F47-R-run-3d446438, 동반 부하 20rps)에서 account 는 목록 페이지를 초당 약 155건 처리하는 동안 이미 JVM CPU 0.67~0.80 으로 한도 500m 에 붙어 p95 가 2.6~3.1초였다. 다만 그 실측은 Oracle 포화와 섞인 값이고, 거래 내역 15% 믹스 8rps(이체 약 3.2건/초, 목록 약 157건/초) 실행 F47-R-run-8592be57 에서는 account p95 가 대부분 20~60ms 였다. 그래서 동반 부하를 거래 내역 없는 믹스(이체 55%)로 바꿔 Oracle 갈래를 걷어 내고 목록 요청을 215건/초로 늘렸다(첫 실행에서 account 단독 포화 확인). 로컬 실측(같은 jar, OTel 에이전트, account·api --cpus 0.5, Oracle Free 1,001계좌): 8건/초에서 account CPU 가 5분 내내 한도에 붙고 잔액 조회 p50 0.5~2초, account health 1~3초, 이체 502 몰림(서킷 열림). 같은 부하에 매니페스트 api 면 account 는 한도의 절반 아래이고 잔액 조회 10ms 안쪽이다"
           }
         ],
         "consecutive_ticks": 3,
@@ -19511,14 +19511,14 @@
           "id": "transfer_5xx_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
-          "_note": "동반 부하(core-banking transfer-heavy-surge.js 20rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 0. 새 api 가 요청마다 남기는 멈춘 스레드로 컨테이너 메모리(1GiB)가 차면 짧게 느려지다 OOM 으로 죽고, 걸려 있던 이체와 재기동(재시작 대기 약 0초, Ready 까지 26~29초) 동안의 이체가 모두 nginx 502 다. 그 사이(스레드가 다시 찰 때까지 약 8~11분)는 0 근처다. 기록: 멈춤이 길면 transfer-heavy-surge.js 의 VU(최대 400)가 바닥나 achieved_rps 가 내려갈 수 있다(첫 실행에서 최저값 확인)",
+          "_note": "동반 부하(core-banking transfer-balance-surge.js 20rps, 거래 내역 단계 없음)의 이체(step transfer, 55%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 0. 새 api 가 요청마다 남기는 멈춘 스레드로 컨테이너 메모리(1GiB)가 차면 짧게 느려지다 OOM 으로 죽고, 걸려 있던 이체와 재기동(재시작 대기 약 0초, Ready 까지 26~29초) 동안의 이체가 모두 nginx 502 다. 그 사이(스레드가 다시 찰 때까지 약 8~11분)는 0 근처다. 기록: 멈춤이 길면 transfer-balance-surge.js 의 VU(최대 400)가 바닥나 achieved_rps 가 내려갈 수 있다(첫 실행에서 최저값 확인)",
           "freshness": "30s"
         },
         {
           "id": "balance_read_nonok_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.read_step_status_rate",
-          "_note": "동반 부하의 잔액 조회(step get, 35%, nginx → account 직행) 비정상 비율. 기록만 한다. api 를 거치지 않아 고장 중에도 0 근처여야 한다(F41-R, F41-H 처럼 account 가 고장 나면 이 값이 오른다)",
+          "_note": "동반 부하의 잔액 조회(step get, 35%, nginx → account 직행) 비정상 비율. must_rule_out(account-path-failing)에 쓴다. api 를 거치지 않아 고장 중에도 0 근처여야 한다. 오르면 account 나 그 아래 DB 갈래다(F41-R, F41-H 처럼 account 가 고장 나거나, F63-R-run-81153e98 처럼 Oracle CPU 포화로 account Hikari 풀이 고갈되면 0.02~0.18 로 오른다)",
           "freshness": "30s"
         },
         {
@@ -19545,11 +19545,11 @@
             "observation": "transfer_5xx_rate",
             "op": "gte",
             "value": 0.5,
-            "_note": "새 api 버전이 이체 접수와 거래 내역 조회마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아, 요청 하나마다 멈춘 비데몬 스레드가 하나씩 남는다. 동반 부하에서 api 로 오는 요청이 초당 약 11건(이체 8, 거래 내역 3)이면 스레드가 초당 약 11개, 컨테이너 메모리가 스레드당 약 100~130KiB(스레드 스택 접근 페이지 + 커널 스택 16KiB) 늘어 평시 약 290MiB 에서 한도 1GiB 까지 약 8~11분이다. 한도에 닿으면 회수할 파일 페이지가 거의 없어(운영 api cgroup file 160KiB) 짧게 느려지다 커널이 컨테이너 안 java 를 OOM 으로 죽이고, 걸려 있던 이체와 재기동(첫 크래시는 kubelet 이 바로 재시작, 109 실측 기동에서 Ready 까지 26~29초) 동안의 이체가 nginx 502 다. 비율은 이체 완료 시각 기준 30초 창이라 0.5 이상인 구간은 엔드포인트 복귀 + 15초까지이고, 길이는 멈춤 중 걸린 요청이 한꺼번에 502 가 되는 길이에 따라 약 30~45초다. 새 컨테이너도 같은 버전이라 되풀이한다"
+            "_note": "새 api 버전이 이체 접수와 거래 내역 조회마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아, 요청 하나마다 멈춘 비데몬 스레드가 하나씩 남는다. 동반 부하에서 api 로 오는 요청이 초당 약 11건(이체 11, 동반 부하에는 거래 내역 단계가 없다)이면 스레드가 초당 약 11개, 컨테이너 메모리가 스레드당 약 100~130KiB(스레드 스택 접근 페이지 + 커널 스택 16KiB) 늘어 평시 약 290MiB 에서 한도 1GiB 까지 약 8~11분이다. 한도에 닿으면 회수할 파일 페이지가 거의 없어(운영 api cgroup file 160KiB) 짧게 느려지다 커널이 컨테이너 안 java 를 OOM 으로 죽이고, 걸려 있던 이체와 재기동(첫 크래시는 kubelet 이 바로 재시작, 109 실측 기동에서 Ready 까지 26~29초) 동안의 이체가 nginx 502 다. 비율은 이체 완료 시각 기준 30초 창이라 0.5 이상인 구간은 엔드포인트 복귀 + 15초까지이고, 길이는 멈춤 중 걸린 요청이 한꺼번에 502 가 되는 길이에 따라 약 30~45초다. 새 컨테이너도 같은 버전이라 되풀이한다. 운영 실측(F63-R-run-81153e98, api 요청률이 같은 20rps 동반 부하): 비데몬 스레드 초당 약 12.3개(4 → 5,883), 새 파드 Ready(09:46:26) 뒤 7분 55초에 첫 memcg OOM, OOM 앞 readiness, liveness 시간 초과 없음, OOM 보고의 kernel_stack 약 95MiB"
           }
         ],
         "consecutive_ticks": 1,
-        "_note": "consecutive_ticks 1(선례 F20-R). 러너는 틱을 끝낸 뒤 15초를 쉬어 실제 틱 간격이 15~25초(109 ticks.jsonl 평균 약 18초)이고, 이 관측은 갱신 30초라 2틱이 서려면 첫 참 틱과 약 38초 뒤의 참 틱이 모두 실패 구간 안에 들어야 한다(평가 시뮬레이션: 참 구간 43초면 33%, 30초면 0%). 1틱 근거: ① 비율 ≥0.5 인 구간은 [OOM 순간 − (걸린 요청이 한꺼번에 502 가 되는 길이 − 15초), 엔드포인트 복귀 + 15초] 라 엔드포인트 복귀까지 약 28~31초(109 KCM Started → 옛 파드 Killing 26~29초 + 재기동 1~2초)만으로도 L ≥ 28초이고, 최대 틱 간격 25초보다 길어 어느 위상이든 한 틱은 든다. ② 30초 창 하나가 동반 부하 이체 약 240건(8건/초 × 30초)의 집계라 표본 한 개짜리 잡음이 아니다. 평시 이 비율은 0 이다. ③ min_hold 9m 이 롤아웃 직후 과도 구간(새 파드 기동, 동반 부하 ramp)을 막는다. 주기: 롤아웃 뒤 새 파드 Ready 약 30초(109 KCM 2026-10-09 testbed-api Started 13:52:27 → 옛 파드 Killing 13:52:56, 다른 롤아웃 Started 14:07:41 → Ready 14:08:07), 동반 부하 ramp 2m 동안은 누수가 느리고, 그 뒤 초당 약 11개씩 쌓여 한도까지 약 8~9분(스레드 RSS 97~130KiB 면 OOM 이 롤아웃 뒤 약 9.7~12.8분), 짧은 멈춤 뒤 OOM, 재기동 약 30초가 한 주기다. kubelet 은 앞 크래시 뒤 10분(2 × 최대 대기 5분)을 넘겨야 재시작 대기를 초기화하므로, 주기가 10분보다 짧으면 두 번째 크래시는 10초 대기를 받는다(실패 구간이 늘어 판정엔 유리).  첫 실패 구간이 약 10~11분, 두 번째가 약 20~22분이라 min_hold 9m 이면 두 구간이 모두 판정 기회다. 첫 구간에서 판정되면 녹화 구간에는 되풀이가 한 번(누수 → OOM → 재시작 → 다시 상승)만 들어간다. (2026-10-11 로컬 실측: 같은 패치 jar, eclipse-temurin 17-jre, OTel 에이전트, 0.5 CPU, 1GiB, 하류 흉내 서버, 11건/초: 기동 직후 287MiB, 8분 20초에 스레드 5,544개 1,016MiB, 그 뒤 약 80초 만에 OOMKilled(137). 마지막 약 30초만 응답이 0.2초에서 최장 22.9초로 늘고, 죽기 전까지 오류는 없었다). timeout 28m 은 운영(aarch64, 내보내기 켬)에서 스레드당 메모리나 요청률이 달라 주기가 늘어도 두 번째 구간을 받는다"
+        "_note": "consecutive_ticks 1(선례 F20-R). 러너는 틱을 끝낸 뒤 15초를 쉬어 실제 틱 간격이 15~25초(109 ticks.jsonl 평균 약 18초)이고, 이 관측은 갱신 30초라 2틱이 서려면 첫 참 틱과 약 38초 뒤의 참 틱이 모두 실패 구간 안에 들어야 한다(평가 시뮬레이션: 참 구간 43초면 33%, 30초면 0%). 1틱 근거: ① 비율 ≥0.5 인 구간은 [OOM 순간 − (걸린 요청이 한꺼번에 502 가 되는 길이 − 15초), 엔드포인트 복귀 + 15초] 라 엔드포인트 복귀까지 약 28~31초(109 KCM Started → 옛 파드 Killing 26~29초 + 재기동 1~2초)만으로도 L ≥ 28초이고, 최대 틱 간격 25초보다 길어 어느 위상이든 한 틱은 든다. ② 30초 창 하나가 동반 부하 이체 약 330건(11건/초 × 30초)의 집계라 표본 한 개짜리 잡음이 아니다. 평시 이 비율은 0 이다. ③ min_hold 9m 이 롤아웃 직후 과도 구간(새 파드 기동, 동반 부하 ramp)을 막는다. 주기: 롤아웃 뒤 새 파드 Ready 약 30초(109 KCM 2026-10-09 testbed-api Started 13:52:27 → 옛 파드 Killing 13:52:56, 다른 롤아웃 Started 14:07:41 → Ready 14:08:07), 동반 부하 ramp 2m 동안은 누수가 느리고, 그 뒤 초당 약 11개씩 쌓여 한도까지 약 8~9분(스레드 RSS 97~130KiB 면 OOM 이 롤아웃 뒤 약 9.7~12.8분), 짧은 멈춤 뒤 OOM, 재기동 약 30초가 한 주기다. kubelet 은 앞 크래시 뒤 10분(2 × 최대 대기 5분)을 넘겨야 재시작 대기를 초기화하므로, 주기가 10분보다 짧으면 두 번째 크래시는 10초 대기를 받는다(실패 구간이 늘어 판정엔 유리).  첫 실패 구간이 약 10~11분, 두 번째가 약 20~22분이라 min_hold 9m 이면 두 구간이 모두 판정 기회다. 첫 구간에서 판정되면 녹화 구간에는 되풀이가 한 번(누수 → OOM → 재시작 → 다시 상승)만 들어간다. (2026-10-11 로컬 실측: 같은 패치 jar, eclipse-temurin 17-jre, OTel 에이전트, 0.5 CPU, 1GiB, 하류 흉내 서버, 11건/초: 기동 직후 287MiB, 8분 20초에 스레드 5,544개 1,016MiB, 그 뒤 약 80초 만에 OOMKilled(137). 마지막 약 30초만 응답이 0.2초에서 최장 22.9초로 늘고, 죽기 전까지 오류는 없었다). timeout 28m 은 운영(aarch64, 내보내기 켬)에서 스레드당 메모리나 요청률이 달라 주기가 늘어도 두 번째 구간을 받는다"
       },
       "must_rule_out": {
         "any": [
@@ -19573,6 +19573,13 @@
             "op": "eq",
             "value": false,
             "_note": "Oracle 파드가 빠지면 api 가 아니라 DB 쪽 장애다"
+          },
+          {
+            "id": "account-path-failing",
+            "observation": "balance_read_nonok_rate",
+            "op": "gte",
+            "value": 0.05,
+            "_note": "잔액 조회(nginx → account 직행)는 api 를 거치지 않으므로 이 값이 오르면 api 스레드 누수가 아니라 account 나 Oracle 갈래다. F63-R-run-81153e98 은 동반 부하 거래 내역 질의(byb2y2hv7p4ag)로 Oracle CPU 가 1.91~1.97 / 2 까지 차 account, transfer Hikari 가 고갈됐고 이 값이 09:46:31~09:53:35 동안 0.02~0.18 이었다(0.05 2틱이면 09:46:51~09:47:08 에 막혔다). 성공 판정이 OOM 구간이 아닌 DB 갈래 5xx 로 서는 것을 막는다. 문턱 0.05 는 선례(F37-R, F39-R, F17-H 의 0.2)보다 낮다. 이 시나리오는 잔액 조회가 고장 중에도 0 이어야 하고, 30초 창 하나가 잔액 조회 약 210건(7건/초 × 30초)이라 0.05 는 약 10건이다"
           }
         ],
         "consecutive_ticks": 2

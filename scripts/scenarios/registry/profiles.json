@@ -886,7 +886,8 @@
           "/opt/loadgen/food-delivery/delivery-status-surge.js",
           "/opt/loadgen/core-banking/statement-export.js",
           "/opt/loadgen/food-delivery/rider-settlement-export.js",
-          "/opt/loadgen/core-banking/settlement-arrival-poll.js"
+          "/opt/loadgen/core-banking/settlement-arrival-poll.js",
+          "/opt/loadgen/core-banking/transfer-balance-surge.js"
         ],
         "allowed_baseline_units": [
           "loadgen-commerce",
@@ -1674,7 +1675,7 @@
           "hold": "20m",
           "ramp_down": "15s",
           "entry_url": "http://192.168.122.77:30082",
-          "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
+          "script_path": "/opt/loadgen/core-banking/transfer-balance-surge.js",
           "scenario_tag": "scenario_id=F47-R",
           "seed": 4747,
           "baseline_unit": "loadgen-banking"
@@ -1960,7 +1961,7 @@
           "hold": "27m",
           "ramp_down": "15s",
           "entry_url": "http://192.168.122.77:30082",
-          "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
+          "script_path": "/opt/loadgen/core-banking/transfer-balance-surge.js",
           "scenario_tag": "scenario_id=F63-R",
           "seed": 6363,
           "baseline_unit": "loadgen-banking"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import shlex
 import subprocess
 import sys
 import unittest
@@ -203,6 +205,116 @@ class NorthSouthExecutorTests(unittest.TestCase):
         instance = executor.load_instance(plan)
         self.assertEqual(instance["profile_id"], "load.north_south")
         self.assertEqual(instance["parameters"]["scenario_tag"], "scenario_id=F01-H")
+
+    def test_every_allowlisted_script_ships_from_the_repo(self) -> None:
+        # deploy-live-promotions.sh 는 allowed_script_paths 에서 /opt/loadgen/<domain>/<file> 을
+        # 유도해 <domain>/loadgen/<file> 을 올린다. 허용 목록에만 있고 저장소에 없으면 배포가
+        # "load script missing from repo" 로 멈추므로 여기서 먼저 잡는다.
+        contract = json.loads((ROOT / "registry" / "profiles.json").read_text())[
+            "profiles"]["load.north_south"]["parameter_contract"]
+        for remote_path in contract["allowed_script_paths"]:
+            parts = Path(remote_path).parts
+            self.assertEqual(parts[:3], ("/", "opt", "loadgen"), remote_path)
+            self.assertTrue((REPO / parts[3] / "loadgen" / parts[4]).is_file(), remote_path)
+
+
+REPO = ROOT.parents[1]
+BANKING_HEAVY = "/opt/loadgen/core-banking/transfer-heavy-surge.js"
+BANKING_NO_HISTORY = "/opt/loadgen/core-banking/transfer-balance-surge.js"
+# 여정 함수 → api 를 거치는가. 잔액 조회와 계좌 목록은 nginx 가 account 로 바로 보낸다.
+BANKING_JOURNEY_VIA_API = {
+    "transferJourney": True,
+    "transactionHistoryJourney": True,
+    "balanceCheckJourney": False,
+    "accountListJourney": False,
+}
+
+
+def journey_weights(script: str) -> dict[str, float]:
+    """k6 default 함수의 누적 확률 분기(`if (r < x) { journey(); }`)를 여정별 비중으로 푼다."""
+    body = script[script.index("export default function"):]
+    weights: dict[str, float] = {}
+    previous = 0.0
+    for threshold, journey in re.findall(r"if \(r < ([0-9.]+)\) \{\s*(\w+)\(\);", body):
+        weights[journey] = round(float(threshold) - previous, 6)
+        previous = float(threshold)
+    tail = re.search(r"\} else \{\s*(\w+)\(\);", body)
+    assert tail is not None
+    weights[tail.group(1)] = round(1.0 - previous, 6)
+    return weights
+
+
+class BankingCompanionMixTests(unittest.TestCase):
+    """2026-10-20: F47-R, F63-R 동반 부하에서 거래 내역 단계를 뺐다.
+
+    transfer-heavy-surge.js 의 거래 내역(15%)이 transfer 건수 질의 byb2y2hv7p4ag 로 Oracle CPU 를
+    상한까지 채워(F47-R-run-3d446438, F63-R-run-81153e98) 러너가 설계 기전이 아니라 DB 갈래 피해로
+    판정했다. 거래 내역 몫을 이체로 옮긴 transfer-balance-surge.js 를 두 시나리오만 쓰고, 나머지
+    banking 시나리오의 동반 부하는 그대로여야 한다.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.profile = json.loads((ROOT / "registry" / "profiles.json").read_text())[
+            "profiles"]["load.north_south"]
+        cls.heavy = (REPO / "core-banking" / "loadgen" / "transfer-heavy-surge.js").read_text()
+        cls.no_history = (REPO / "core-banking" / "loadgen" / "transfer-balance-surge.js").read_text()
+
+    def test_default_transfer_heavy_mix_is_unchanged(self) -> None:
+        self.assertEqual(
+            journey_weights(self.heavy),
+            {"transferJourney": 0.40, "balanceCheckJourney": 0.35,
+             "transactionHistoryJourney": 0.15, "accountListJourney": 0.10},
+        )
+
+    def test_no_history_variant_drops_history_and_keeps_the_api_request_rate(self) -> None:
+        weights = journey_weights(self.no_history)
+        self.assertEqual(
+            weights,
+            {"transferJourney": 0.55, "balanceCheckJourney": 0.35, "accountListJourney": 0.10},
+        )
+        self.assertNotIn("/api/transfers?", self.no_history)
+        heavy = journey_weights(self.heavy)
+
+        def via_api(mix: dict[str, float]) -> float:
+            return round(sum(w for j, w in mix.items() if BANKING_JOURNEY_VIA_API[j]), 6)
+
+        def direct(mix: dict[str, float]) -> float:
+            return round(sum(w for j, w in mix.items() if not BANKING_JOURNEY_VIA_API[j]), 6)
+
+        # 같은 target_rps 면 api 요청률(F63-R 누수 속도)과 account 직행 몫이 그대로다.
+        self.assertEqual(via_api(weights), via_api(heavy))
+        self.assertEqual(direct(weights), direct(heavy))
+
+    def test_no_history_variant_tags_the_banking_observation_steps(self) -> None:
+        banking = self.profile["parameter_contract"]["domain_profiles"]["http://192.168.122.77:30082"]
+        for step in (banking["business_step"], banking["read_step"]):
+            self.assertIn(f"step: '{step}'", self.no_history)
+        # 여정, 엔드포인트, 시드 규약은 원본과 같아야 관측 매칭과 재현성이 그대로다.
+        for shared in (
+            "http.post(`${GATEWAY_URL}/api/transfers`",
+            "http.get(`${GATEWAY_URL}/api/accounts/${id}`",
+            "http.get(`${GATEWAY_URL}/api/accounts?status=ACTIVE&size=20`",
+            "mulberry32(SURGE_SEED + (__VU || 0) * 7919)",
+            "const ACTIVE_ACCOUNTS = ['ACC-1001', 'ACC-1002', 'ACC-1003', 'ACC-1004', 'ACC-1005', 'ACC-1006', 'ACC-1007'];",
+            "const MAX_VUS = Number(__ENV.MAX_VUS || 400);",
+        ):
+            self.assertIn(shared, self.heavy)
+            self.assertIn(shared, self.no_history)
+
+    def test_only_f47r_and_f63r_use_the_no_history_variant(self) -> None:
+        params = self.profile["scenario_parameters"]
+        self.assertIn(BANKING_NO_HISTORY, self.profile["parameter_contract"]["allowed_script_paths"])
+        self.assertIn(BANKING_HEAVY, self.profile["parameter_contract"]["allowed_script_paths"])
+        users = {sid for sid, p in params.items() if p["script_path"] == BANKING_NO_HISTORY}
+        self.assertEqual(users, {"F47-R", "F63-R"})
+        self.assertEqual(params["F21-P"]["script_path"], BANKING_HEAVY)
+        for scenario_id in sorted(users):
+            executor.validate_parameters(scenario_id, params[scenario_id], self.profile)
+            argv, _ = executor.build_invocation(
+                compiler.compile_plan(SLUG_BY_SCENARIO[scenario_id]), "preflight")
+            self.assertIn(shlex.quote(BANKING_NO_HISTORY), argv)
+            self.assertNotIn(shlex.quote(BANKING_HEAVY), argv)
 
 
 if __name__ == "__main__":

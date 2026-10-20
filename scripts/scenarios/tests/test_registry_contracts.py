@@ -1866,6 +1866,31 @@ class RegistryContractTests(unittest.TestCase):
                         "부하 관측은 domain을 한정해야 한다",
                     )
 
+    def test_f63r_rules_out_the_account_and_db_branch_by_balance_reads(self) -> None:
+        # 2026-10-20: F63-R-run-81153e98 은 동반 부하 거래 내역 질의로 Oracle CPU 가 차 account,
+        # transfer Hikari 가 고갈됐고, 러너 성공이 첫 OOM 보다 30초 앞서 DB 갈래 5xx 로 섰다. 그때
+        # 동반 부하 잔액 조회(nginx → account 직행, api 를 거치지 않음) 비정상 비율이 0.02~0.18 이었다.
+        # 이 값이 0.05 이상 2틱이면 api 스레드 누수가 아니라 account 나 DB 갈래로 배제한다.
+        controller = self.controllers["controllers"]["F63-R"]
+        observation = next(o for o in controller["observations"] if o["id"] == "balance_read_nonok_rate")
+        self.assertEqual(observation["adapter"], "loadgen_summary")
+        self.assertEqual(observation["query_id"], "loadgen.read_step_status_rate")
+        # domain 한정 없음 = 동반 부하(transfer-balance-surge.js)의 live 문서를 읽는다.
+        self.assertNotIn("domain", observation.get("parameters") or {})
+        rules = {rule["id"]: rule for rule in controller["must_rule_out"]["any"]}
+        guard = rules["account-path-failing"]
+        self.assertEqual(
+            (guard["observation"], guard["op"], guard["value"]),
+            ("balance_read_nonok_rate", "gte", 0.05),
+        )
+        self.assertEqual(controller["must_rule_out"]["consecutive_ticks"], 2)
+        # 기존 배제 셋은 그대로 남는다.
+        self.assertTrue({"load-not-delivered", "transfer-down", "oracle-down"} <= set(rules))
+        # F47-R 은 account 포화가 설계 기전이라 잔액 조회 지연과 실패가 정답 쪽 증상이다.
+        # 같은 가드를 걸면 설계 피해를 스스로 배제하므로 두지 않는다.
+        f47r_rules = self.controllers["controllers"]["F47-R"]["must_rule_out"]["any"]
+        self.assertNotIn("balance_read_nonok_rate", {rule["observation"] for rule in f47r_rules})
+
 
 if __name__ == "__main__":
     unittest.main()
