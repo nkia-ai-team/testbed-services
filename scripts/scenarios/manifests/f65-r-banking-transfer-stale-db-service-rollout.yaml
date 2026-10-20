@@ -3,7 +3,7 @@
   "id": "F65-R",
   "slug": "f65-r-banking-transfer-stale-db-service-rollout",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
