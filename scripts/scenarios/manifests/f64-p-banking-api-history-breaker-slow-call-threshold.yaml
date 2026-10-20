@@ -3,7 +3,7 @@
   "id": "F64-P",
   "slug": "f64-p-banking-api-history-breaker-slow-call-threshold",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
