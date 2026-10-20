@@ -75,7 +75,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-19: 79 → 80. F57-P 정식 승격(녹화 case-f57-p-v3-2b7db69d).
         # 2026-10-19: 80 → 81. F64-R 정식 승격(녹화 case-f64-r-v3-9014da8a).
         # 2026-10-20: 81 → 82. F65-R 정식 승격(녹화 case-f65-r-v3-b5383723).
-        self.assertEqual(stages.count("official"), 82)
+        # 2026-10-20: 82 → 83. F66-R 정식 승격(녹화 case-f66-r-v3-346c6170).
+        self.assertEqual(stages.count("official"), 83)
         # 2026-10-08: 후보 5종 중 F10-P, F15-R, F15-T2, F20-Q 를 폐기(정상 녹화 없음, 사용자 결정)해 F30-R 하나만 남았다.
         # 2026-10-08: 1 → 2. F32-R(food dispatch 배차 한도 설정 배포) 후보 추가.
         # 2026-10-08: 2 → 3. F33-R(food dispatches 인덱스 제거) 후보 추가.
@@ -205,7 +206,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-19: 38 → 37. F57-P 정식 승격(녹화 case-f57-p-v3-2b7db69d).
         # 2026-10-19: 37 → 36. F64-R 정식 승격(녹화 case-f64-r-v3-9014da8a).
         # 2026-10-20: 36 → 35. F65-R 정식 승격(녹화 case-f65-r-v3-b5383723).
-        self.assertEqual(stages.count("candidate"), 35)
+        # 2026-10-20: 35 → 34. F66-R 정식 승격(녹화 case-f66-r-v3-346c6170).
+        self.assertEqual(stages.count("candidate"), 34)
 
 
 class RecordingQueueTests(unittest.TestCase):

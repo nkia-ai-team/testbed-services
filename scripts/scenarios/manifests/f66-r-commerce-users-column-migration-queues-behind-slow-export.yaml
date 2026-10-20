@@ -3,7 +3,7 @@
   "id": "F66-R",
   "slug": "f66-r-commerce-users-column-migration-queues-behind-slow-export",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
