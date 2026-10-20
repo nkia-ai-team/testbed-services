@@ -3,7 +3,7 @@
   "id": "F54-P",
   "slug": "f54-p-food-mysql-app-account-hourly-write-cap-breaks-orders",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
