@@ -3,7 +3,7 @@
   "id": "F66-P",
   "slug": "f66-p-commerce-inventory-outbox-column-migration-queues-behind-event-export",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

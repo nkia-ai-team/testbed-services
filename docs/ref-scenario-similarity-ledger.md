@@ -88,7 +88,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | A 자원 부족, 한도 | 7 | 8% |
 | B 부품 멈춤 | 7 | 8% |
 | C 상대 서비스 오류, 지연 | 6 | 7% |
-| D DB 잠금 | 9 | 11% |
+| D DB 잠금 | 10 | 12% |
 | E 처리 용량 초과 | 4 | 5% |
 | F 느린 쿼리 | 3 | 4% |
 | G 설정 오배포 | 11 | 13% |
@@ -103,16 +103,16 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | P 운영 작업의 대상 착오 | 10 | 12% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 2 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 30, 은행 28, 음식배달 26. 후보 33종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 31, 은행 28, 음식배달 26. 후보 32종은 집계에서 뺀다(§4-1).
 
 해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 22개뿐이고(J 11, G 11. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R(G+A)은 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P 는 주 묶음 L 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P 열뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-A, B, L은 각 7개(8%), D는 9개(11%), P는 10개(12%), G, J는 각 11개(13%)로 20%에 가깝다. 서비스는 음식배달(26), 은행(28) 순으로 채운다.
+A, B, L은 각 7개(8%), D, P는 각 10개(12%), G, J는 각 11개(13%)로 20%에 가깝다. 서비스는 음식배달(26), 은행(28) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 84종):
+정답 위치별 정식 (2-1 정의, 정식 85종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
-| 주문 서비스 | 8 | 10% |
+| 주문 서비스 | 8 | 9% |
 | 외부 결제 의존 | 6 | 7% |
 | 은행 이체 서비스 | 7 | 8% |
 | DB 테이블(은행 계좌) | 4 | 5% |
@@ -137,6 +137,7 @@ A, B, L은 각 7개(8%), D는 9개(11%), P는 10개(12%), G, J는 각 11개(13%)
 | DB 테이블(인기 메뉴 집계) | 1 | 1% |
 | DB 테이블(인증 토큰) | 1 | 1% |
 | DB 테이블(재고 이동 이력) | 1 | 1% |
+| DB 테이블(재고 이벤트 outbox) | 1 | 1% |
 | DB 테이블(주문) | 1 | 1% |
 | DB 테이블(주문 이벤트 outbox) | 1 | 1% |
 | 가격 서비스 | 1 | 1% |
@@ -150,7 +151,7 @@ A, B, L은 각 7개(8%), D는 9개(11%), P는 10개(12%), G, J는 각 11개(13%)
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **12** | **14%** |
 
-결제 경로는 정식만으로 14%(14.3%, 12/84)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 14%(14.1%, 12/85)라 상한(20%) 바로 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -242,6 +243,7 @@ A, B, L은 각 7개(8%), D는 9개(11%), P는 10개(12%), G, J는 각 11개(13%)
 | F65-R | 정식 | 은행 | G | 은행 이체 서비스 | banking transfer-service 일상 롤아웃이 낡은 인프라 코드의 배포 정의를 다시 적용해 컨테이너 env 에 옛 Oracle 연결 서비스 이름 DB_SERVICE=XEPDB1 을 넣음(공용 ConfigMap 의 FREEPDB1 을 덮어씀). 정본 전략 maxSurge 0 이 하나뿐인 옛 파드를 먼저 내리고, 새 파드는 앱이 떠도 모든 연결이 리스너에서 ORA-12514 로 거절되어 health db DOWN, 기동 프로브 실패로 Ready 가 못 되고 300초마다 재시작. transfer 엔드포인트가 비어 banking 이체·거래 내역 502, commerce checkout 정산 502. Oracle, BANKING 계정, account, ledger 는 정상 |
 | F66-R | 정식 | 쇼핑몰 | D | DB 테이블(사용자) | 운영자가 commerce PostgreSQL user_schema.users 에 기본값 없는 null 허용 열(marketing_opt_in)을 더하는 마이그레이션(카탈로그만 바꾸지만 그 순간 ACCESS EXCLUSIVE 필요)을 돌렸는데, 몇 초 앞서 같은 표를 읽는 느린 내보내기 질의(users 와 auth_tokens 를 이은 COPY, 약 7분 활성)가 ACCESS SHARE 를 쥐고 있어 마이그레이션이 잠금 대기열에서 기다리고 그 뒤의 users 질의(단순 읽기 포함)가 모두 줄을 섬. 게이트웨이가 쓰기마다 부르는 user verify-token 의 users 읽기와 로그인이 끝나지 않아 user Hikari 풀(10)이 차고 뒤의 확인은 3초 뒤 500, 인가된 commerce 쓰기(장바구니, checkout, 로그인) 500, user NotReady 와 재시작(기동 시드 INSERT 도 줄에 섬). DB CPU 평시, 다른 표 정상. 내보내기가 끝나면 열이 더해지고 스스로 풀림(원본 Honeycomb 2024-08-06 teams 표 INSTANT 열 추가가 느린 SELECT 뒤 메타데이터 잠금 대기로 인증 포함 그 표 질의를 막아 API 75% 거절, PostgreSQL 기전 GoCardless) |
 | F64-P | 정식 | 은행 | G | 은행 API | banking api-service 설정 롤아웃(SPRING_APPLICATION_JSON)이 거래 내역 서킷브레이커(transferClient)에 느린 호출 차단(임계 100ms, 비율 50%)을 켰는데 임계가 거래 내역 정상 처리 시간(api 에서 본 transfer 호출 p5 약 240ms)보다 낮아, 200 으로 끝난 호출도 모두 느린 호출로 세어져 서킷이 5건마다 열리고 그 동안 거래 내역이 transfer 에 닿지 않고 api fallback 502(약 85%). 이체(accountClient 서킷), 잔액 조회, transfer, Oracle, commerce 정산은 정상 |
+| F66-P | 정식 | 쇼핑몰 | D | DB 테이블(재고 이벤트 outbox) | 재고 이벤트를 분석 저장소로 옮기는 느린 내보내기(COPY, 약 7분)가 commerce PostgreSQL inventory_schema.outbox_events 의 공유 잠금을 쥔 사이 운영자가 같은 표에 기본값 없는 null 허용 열(trace_id)을 더하는 마이그레이션(카탈로그만)을 돌려 ACCESS EXCLUSIVE 를 기다리고, 그 뒤의 outbox INSERT 가 모두 줄을 섬. 재고 예약 트랜잭션이 재고 행 FOR UPDATE 와 연결을 쥔 채 outbox 쓰기에서 멈춰 inventory 풀(10)이 15초 안에 차고 재고 조회까지 막혀 상품 상세, 목록(게이트웨이 product 서킷), checkout 이 약 7분 실패, inventory 재시작 고리. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06, F66-R 의 재고 이벤트 outbox 판(막힌 문장이 트랜잭션 끝 쓰기라 재고 행 잠금이 함께 붙들리는 세 단 사슬), F01-R 과 겉 증상 같음(H) |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -253,7 +255,6 @@ A, B, L은 각 7개(8%), D는 9개(11%), P는 10개(12%), G, J는 각 11개(13%)
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
 | F42-P | 후보 | 음식배달 | J+F | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.5.0(fault-images/f42-p 패치로 만든 별도 태그)으로 롤아웃. 인기 메뉴 순위를 실시간으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 요청마다 최근 7일 주문을 바로 셈(order_items JOIN orders JOIN menus, 가게 한 곳, 메뉴별 COUNT). 109 MySQL 이 한가할 때 4.05~7.47초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽. 인기 메뉴 초당 약 2.5건이면 food MySQL(CPU 0.5) 포화, restaurant Hikari 10개가 집계에 묶여 가게 상세, 메뉴, 인기 메뉴가 3초 대기 뒤 500, readiness 이탈과 재시작 가능, order 가 가게, 메뉴 조회 실패로 주문 502. 스키마, 인덱스, 캐시 표는 그대로(1146 없음), 긴 활성 세션이 restaurant 파드 IP 에서 옴. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화, F42-R, F33-H 와 같은 원본). 실행 중 MySQL 재시작은 uptime 으로 배제, 시작은 MySQL anon 여유가 있을 때만 |
 | F63-R | 후보 | 은행 | J+A | 은행 API | banking api-service 를 릴리스 core-banking-api:1.5.0(fault-images/f63-r 패치로 만든 별도 태그)으로 롤아웃. 이체 접수와 거래 내역 조회에 더한 처리 마감 시간(5초)이 요청마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아 요청마다 멈춘 비데몬 스레드가 하나씩 남음. 동반 부하(api 요청 약 11건/초)에서 스레드당 약 130KiB 씩 컨테이너 메모리가 차 약 8분에 한도 1GiB, 힙은 그대로. 짧게 멈춘 뒤 커널 memcg OOM 으로 java 종료, 같은 파드 바로 재시작과 기동(Ready 까지 26~29초) 동안 nginx → api 의 이체와 거래 내역 502, 약 10분마다 되풀이. 잔액 조회, commerce 정산, account, transfer, Oracle 은 정상. 원본 Intercom 2025-04-24(새 Inbox 카운터 구현이 요청마다 스레드 묶음을 만들고 치우지 않아 웹 서버 메모리 고갈, 느림과 오류 페이지, 정기 배포와 헬스 체크 실패에 따른 호스트 교체가 잠시 살림). F41-R(account 힙 누수 재시작), F41-H(account liveness 404 재시작)와 '릴리스 뒤 재시작 고리' 증상이 같고 대상과 차오르는 자원이 다른 짝, F47-R 과 같은 api 릴리스 계열이지만 하류가 멀쩡하고 api 자신이 죽음 |
-| F66-P | 후보 | 쇼핑몰 | D | DB 테이블(재고 이벤트 outbox) | 재고 이벤트를 분석 저장소로 옮기는 느린 내보내기(COPY, 약 7분)가 commerce PostgreSQL inventory_schema.outbox_events 의 공유 잠금을 쥔 사이 운영자가 같은 표에 기본값 없는 null 허용 열(trace_id)을 더하는 마이그레이션(카탈로그만)을 돌려 ACCESS EXCLUSIVE 를 기다리고, 그 뒤의 outbox INSERT 가 모두 줄을 섬. 재고 예약 트랜잭션이 재고 행 FOR UPDATE 와 연결을 쥔 채 outbox 쓰기에서 멈춰 inventory 풀(10)이 15초 안에 차고 재고 조회까지 막혀 상품 상세, 목록(게이트웨이 product 서킷), checkout 이 약 7분 실패, inventory 재시작 고리. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06, F66-R 의 재고 이벤트 outbox 판(막힌 문장이 트랜잭션 끝 쓰기라 재고 행 잠금이 함께 붙들리는 세 단 사슬), F01-R 과 겉 증상 같음(H) |
 | F60-H | 후보 | 음식배달 | D | DB 테이블(배차) | 배차 실적을 분석 저장소로 옮기는 느린 내보내기(SELECT ... FROM dispatches, 한 행씩 일정한 속도로 약 6분)가 food MySQL fooddelivery.dispatches 의 공유 메타데이터 잠금을 쥔 사이 운영자가 같은 표에 null 허용 열(cancel_reason)을 ALGORITHM=INSTANT 로 더하는 마이그레이션(데이터 사전만 바꾸지만 그 순간 배타 메타데이터 잠금 필요)을 돌려, 마이그레이션이 'Waiting for table metadata lock' 으로 기다리는 동안 그 뒤의 dispatches 질의(용량 COUNT, 배차 INSERT, 배달 읽기)가 모두 줄을 서고 dispatch 풀이 차서 NotReady, 재시작, 모든 새 음식 주문이 약 6분 동안 503(Honeycomb 2024-08-06 MySQL INSTANT 열 추가의 메타데이터 잠금 대기열 재구성, F60-R 과 같은 증상의 다른 원인) |
 | F54-P | 후보 | 음식배달 | G+A | DB 계정 | DB 자원 한도 정비가 food MySQL 애플리케이션 계정 'fooddelivery'@'%'(order, restaurant, dispatch, payment 가 함께 씀)에 시간당 쓰기 한도 MAX_UPDATES_PER_HOUR 500 을 걸었는데 계정의 평시 쓰기(분당 약 130~980 문장)보다 한참 낮음. MySQL 이 카운터를 로그인 때 붙여 기존 연결은 그대로이고, 풀이 연결을 바꾸는 대로(최대 10분) 새 연결들이 카운터 하나를 함께 써 몇 분 만에 다 쓰면 INSERT, UPDATE, DELETE 가 1226 'has exceeded the 'max_updates' resource', 읽기와 ping 은 정상. 주문 저장이 전량 500, dispatch 만료 배치와 outbox 도 실패, 파드는 모두 Ready. 원본 Google 2020-12-14(자동 쿼터 관리가 계정 DB 쿼터를 실제 사용량 아래로 줄여 쓰기 정지, F54-R 과 같은 원본). 겉 증상이 F38-R(인스턴스 read_only, 1290)과 같고 정답 위치(DB 계정 대 DB 인스턴스)와 오류 문구, 번지는 모양이 다름 |
 | F51-P | 후보 | 음식배달 | P | DB 테이블(배차) | 배달원 앱 오류로 '배달 완료'가 잘못 찍힌 몇 건을 되돌리려던 food 운영자의 재배차 정정 작업이 주문 id 목록 없이 기간 조건(최근 4시간)만으로 실행되어, fooddelivery.dispatches 에서 그 4시간에 끝난 배차 전부(평시 약 2,600~16,000 행)를 백업 표에 복사한 뒤 배정 중(ASSIGNED, 새 배정 시각)으로 되돌림. dispatch 가 배정 중 행 수로 세는 배달원 용량(2000)이 한 번에 차서 order 의 용량 확인이 available 0, 모든 새 주문 503 'courier pool exhausted (assigned=<수천~만여>, max=2000)'. 되살린 행은 15분 넘게 만료되지 않음. 설정, 롤아웃, 파드는 그대로. 원본 AWS S3 2017-02-28(플레이북 명령 입력 하나가 잘못 들어가 의도보다 큰 집합에 적용, F51-R 과 같은 원본), 보조 Atlassian 2022-04-05. 겉 증상이 F32-R(배차 한도 설정 배포)과 같고 정답 위치(DB 테이블(배차) 대 배달 서비스)와 로그의 max, assigned 값, 롤아웃 유무가 다름 |
@@ -497,3 +498,5 @@ A, B, L은 각 7개(8%), D는 9개(11%), P는 10개(12%), G, J는 각 11개(13%)
 - 2026-10-20: `case-f66-r-v3-346c6170` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
 - 2026-10-20: `F64-P` 정식 승격(케이스 `case-f64-p-v3-7b180ead`). 66 실행 F64-P-run-7b180ead(러너 tb-ops, 큐 cycle-1-0cb598b8, 첫 실행)이 검증에서 녹화 가능(주입: 고정 1단 approved-fixed-f64-p, 07:01:50 k8s.env 가 testbed-api 컨테이너 api-service env 에 `SPRING_APPLICATION_JSON`(transferClient slow-call-duration-threshold 100ms, slow-call-rate-threshold 50)을 더해 새 ReplicaSet 56b7f7f69f 로 롤아웃(07:01:52, 옛 파드 07:03:18 내려감), 옛 RS 와 컨테이너 스펙 차이는 그 env 한 줄뿐(banking RS 319건 중 SPRING_APPLICATION_JSON·resilience4j 0건), cleanup 원복 07:13:42. 피해: api ERROR 'Transfer service circuit open/exhausted: CircuitBreaker 'transferClient' is OPEN …' 5,309줄과 'is HALF_OPEN …' 524줄(07:03:26~07:13:41, 평시 0줄), 같은 구간 'Transfer service list call failed' 0줄과 transfer WARN/ERROR 0줄, 거래 내역 서버 스팬 502 182 대 200 60(표본), api_error_rate 46.7~69.2, 이체 POST 200 유지('Submitting transfer' 955줄과 account INFO 955줄), 잔액 조회·commerce 정산 정상, 러너 success 연속 7, recovery 07:14:57. must_rule_out 5개 신호 없음(롤아웃 전환 07:02:45~07:03:20 의 transfer 지연·Oracle 활동 일시 상승은 오류·시간 초과·재시작 없음), 겹친 실행 없음, 녹화 구간 수집 공백·testbed-mysql-0 재시작·OOM 없음). 데이터 메모: Oracle-corebanking 배경 hold(2d54e2ba, 4ddf8ee0, 멤버 capture 전, 05:19 drop), ledger 10분 배치 'MISMATCH' 와 그 인시던트, MySQL 배경 hold 는 평시 원시 데이터와 정답 근거를 오염시키지 않는다. 덤프 `incidents.csv` 12행 중 이번 장애 군집에서 나온 것은 893e8597 하나이고, 나머지 11행(ledger 7, tb-w2 I/O 68f85e08, 평시 'Insufficient balance' 업무 거절 군집이 장애 중 늦게 승격된 api 인시던트 68a9918d·906f07f0·e6b8e75f, 68a9918d 는 멤버가 capture 전이라 고아 행)은 배경 제품 산출물이다. 특히 api 인시던트 3건은 main_service 가 정답 대상 core-banking-api 와 같아 라벨로 쓰면 오해를 부른다. 결정 증거인 testbed-api-56b7f7f69f 스펙 2행은 덤프 `kcm_resources_history.csv` 에 들어 있다. 정답지·설계 시트 §7 의 "거래 내역 정상 처리 시간 약 240~250ms(p5 239.6ms)"는 오늘 평시 실측 p50 455~462ms, p5 약 442ms 와 달라 문구 보정 후보(문턱 100ms 와의 거리는 더 커져 기전은 그대로, 고치지 않음). 근거 `~/dev/testbed-ops/verifications/2026-10-20-0804-F64-P-run-7b180ead.md`. §4-1 → §4, §3 을 정식 84종으로 다시 셈(G 10→11 12%→13%, 은행 27→28, 정답 위치 은행 API 1→2 1%→2%, 결제 경로 12 14.5%(12/83)→14.3%(12/84) 표 14% 그대로, 분모 84 로 반올림이 바뀐 다른 비율 없음). 후보는 §4-1 실제 행 수 33종.
 - 2026-10-20: `case-f64-p-v3-7b180ead` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
+- 2026-10-20: `F66-P` 정식 승격(케이스 `case-f66-p-v3-a79bda26`). 66 실행 F66-P-run-a79bda26(러너 tb-ops, 큐 cycle-1-4f739eab, 첫 실행)이 검증에서 녹화 가능(주입: 고정 1단 approved-fixed-f66-p, 10:39:24 db.ddl 이 testbed-postgres-0 안에서 inventory_schema.outbox_events 내보내기 COPY(pid 11344, ClientWrite, queryTime 38.5→404.5초)를 띄우고 그 뒤 ALTER TABLE inventory_schema.outbox_events ADD COLUMN trace_id(pid 11363, Lock/relation outbox_events, blockingPid 11344)가 기다림, 효과 끝 10:46:30, cleanup 10:46:31 완료. 피해: inventory 파드 IP 10.244.3.66 의 JDBC 세션 10여 개가 blockingPid 11363 뒤에서 Lock/relation(relNames inventory, inventory_movements, outbox_events), 같은 상품 예약 3개는 Lock/transactionid(DPM 세션 스냅숏 7장 10:40:05~10:46:11, 다음 분에 사슬이 한꺼번에 사라짐, 2026-09-20 이후 relNames outbox_events 의 Lock 행은 오늘뿐), commerce-inventory Hikari 'Connection is not available … 30000ms' 101줄, commerce-product Servlet 오류 3,262줄, 게이트웨이 'Downstream unavailable for GET /api/products…'·'POST /api/orders/checkout'(셋 다 평시 0줄), testbed-inventory 롤아웃 없이 Unhealthy·Killing·재시작, 러너 checkout 5xx 1.0·2xx 0.0, success 연속 5, recovery 10:49:34. PostgreSQL Ready 유지, must_rule_out 5개 신호 없음, 겹친 실행 없음). 데이터 메모: 덤프 `incidents.csv` 4행 중 이번 장애에서 나온 것은 d92d8533(commerce-gateway)과 0c93c3c3(commerce-inventory) 둘이고, 나머지 2행(b9ec6f23, 621b23d2, core-banking-ledger 원장 불일치 배경, 러너가 10:39:17 에 닫음)과 `incident_rca.csv` 2행은 배경 제품 산출물이다. 평시 원시 데이터와 정답 근거를 오염시키지 않는다. DPM 에 cleanup 쪽으로 보이는 셋째 대기 세션(pid 11622, psql, 10:43:08~)이 더 있다. 상품 목록·카테고리 502 는 설계 예상(약 7분)과 달리 첫 서킷 열림 20초뿐이라 must_support ④ 문구 보정 후보(고치지 않음). 근거 `~/dev/testbed-ops/verifications/2026-10-20-1130-F66-P-run-a79bda26.md`. §4-1 → §4, §3 을 정식 85종으로 다시 셈(D 9→10 11%→12%, 쇼핑몰 30→31, 정답 위치 DB 테이블(재고 이벤트 outbox) 0→1 새 행 1%, 결제 경로 12 14.3%(12/84)→14.1%(12/85) 표 14% 그대로, 분모 85 로 반올림이 바뀐 비율 정답 위치 주문 서비스 10%→9%). 후보는 §4-1 실제 행 수 32종.
+- 2026-10-20: `case-f66-p-v3-a79bda26` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
