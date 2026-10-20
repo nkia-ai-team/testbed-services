@@ -3,7 +3,7 @@
   "id": "F60-H",
   "slug": "f60-h-food-dispatches-column-migration-queues-behind-slow-export",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
