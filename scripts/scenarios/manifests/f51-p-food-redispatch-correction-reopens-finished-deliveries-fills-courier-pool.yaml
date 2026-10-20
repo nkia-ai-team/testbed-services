@@ -3,7 +3,7 @@
   "id": "F51-P",
   "slug": "f51-p-food-redispatch-correction-reopens-finished-deliveries-fills-courier-pool",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
