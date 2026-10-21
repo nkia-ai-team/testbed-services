@@ -3,7 +3,7 @@
   "id": "F53-H",
   "slug": "f53-h-food-payments-column-migration-queues-behind-slow-export",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
