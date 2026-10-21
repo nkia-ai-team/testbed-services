@@ -3,7 +3,7 @@
   "id": "F39-H",
   "slug": "f39-h-banking-account-release-transfer-receipt-breaks-api",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
