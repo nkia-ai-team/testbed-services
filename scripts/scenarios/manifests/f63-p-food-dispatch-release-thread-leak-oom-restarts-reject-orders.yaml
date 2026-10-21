@@ -3,7 +3,7 @@
   "id": "F63-P",
   "slug": "f63-p-food-dispatch-release-thread-leak-oom-restarts-reject-orders",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
