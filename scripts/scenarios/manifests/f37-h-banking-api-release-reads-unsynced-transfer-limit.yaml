@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "banking namespace",
-    "matrix_location_transport": "K/kubectl banking testbed-api 컨테이너 image set(core-banking-api:latest→core-banking-api:1.6.0, 직전에 runner 가 109 docker 의 1.6.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=20, 이체 40%)",
+    "matrix_location_transport": "K/kubectl banking testbed-api 컨테이너 image set(core-banking-api:latest→core-banking-api:1.6.0, 직전에 runner 가 109 docker 의 1.6.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-balance-surge.js, target_rps=20, 이체 55%, 거래 내역 단계 없음)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",
@@ -147,7 +147,7 @@
             "id": "transfer_5xx_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.food_create_status_rate",
-            "_note": "동반 부하(core-banking transfer-heavy-surge.js 20rps)의 이체(step transfer, 40%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 0. 새 api 버전은 이체 접수 첫 단계에서 1회 이체 한도 api.policy.single-transfer-limit 을 요청마다 Environment.getRequiredProperty 로 읽는데, 그 값은 릴리스의 application-dev.yml 에만 있어 운영에서는 IllegalStateException 'Required key ... not found' 로 모든 이체가 500 이다(account 를 부르기 전)",
+            "_note": "동반 부하(core-banking transfer-balance-surge.js 20rps, 거래 내역 단계 없음)의 이체(step transfer, 55%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 0. 새 api 버전은 이체 접수 첫 단계에서 1회 이체 한도 api.policy.single-transfer-limit 을 요청마다 Environment.getRequiredProperty 로 읽는데, 그 값은 릴리스의 application-dev.yml 에만 있어 운영에서는 IllegalStateException 'Required key ... not found' 로 모든 이체가 500 이다(account 를 부르기 전)",
             "freshness": "30s"
           },
           {
@@ -185,7 +185,7 @@
             }
           ],
           "consecutive_ticks": 3,
-          "_note": "계속되는 고장이라 3틱 연속(실제 틱 간격 15~25초, 약 45~75초 폭)을 요구한다. min_hold 5m 이 롤아웃 직후 과도 구간(새 파드 기동 약 30초, 동반 부하 ramp 2m)을 막는다. 30초 창 하나가 동반 부하 이체 약 240건(8건/초 × 30초)의 집계다"
+          "_note": "계속되는 고장이라 3틱 연속(실제 틱 간격 15~25초, 약 45~75초 폭)을 요구한다. min_hold 5m 이 롤아웃 직후 과도 구간(새 파드 기동 약 30초, 동반 부하 ramp 2m)을 막는다. 30초 창 하나가 동반 부하 이체 약 330건(11건/초 × 30초)의 집계다"
         },
         "must_rule_out": {
           "any": [

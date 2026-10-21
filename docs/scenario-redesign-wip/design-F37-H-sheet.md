@@ -121,13 +121,14 @@ banking api-service 의 새 릴리스 1.6.0 은 이체 접수(`POST /api/transfe
 ## 9. 러너 판정 조건과 강도, 부하 계산
 
 - 주입: k8s.image release 모드 1단 고정(`approved-fixed-f37-h`). 강도 축이 없다: 설정이 없으면 이체마다 실패한다.
-- 동반 부하: load.north_south `core-banking transfer-heavy-surge.js` 20rps(이체 40% = 초당 8건), ramp 2m, hold 22m, entry 30082(F63-R 과 같은 스크립트와 세기). 부하 상한 180 의 11%.
-- 피해 계산(원칙 9): 실패가 시간 초과가 아니라 api 안의 즉시 예외라 서킷브레이커(accountClient 는 부르기 전)와 무관하게 이체의 100% 가 5xx 다. 30초 창 하나에 이체 약 240건.
+- 동반 부하: load.north_south `core-banking transfer-balance-surge.js` 20rps(이체 55% = 초당 약 11건, 잔액 35%, 계좌 목록 10%, 거래 내역 단계 없음), ramp 2m, hold 22m, entry 30082(F63-R 과 같은 스크립트와 세기. 2026-10-21 운영 보강 1회차에 transfer-heavy-surge.js 에서 바꿈). 부하 상한 180 의 11%.
+- 피해 계산(원칙 9): 실패가 시간 초과가 아니라 api 안의 즉시 예외라 서킷브레이커(accountClient 는 부르기 전)와 무관하게 이체의 100% 가 5xx 다. 30초 창 하나에 이체 약 330건.
 - success: transfer_5xx_rate ≥ 0.5, 3틱 연속. min_hold 5m(새 파드 기동 약 30초와 ramp 2m 를 넘김), settle 60s, timeout 20m, max_injection_duration 25m.
 - must_rule_out: achieved_rps < 5, transfer 파드 NotReady, Oracle 파드 NotReady(2틱). account 파드는 러너 관측 허용 목록(`live_probes.APPROVED_K8S_TARGETS`)에 없어 러너 조건으로 두지 않고 녹화로 감별한다(잔액 조회 비정상 비율을 기록).
 - abort: entry_status == 0(nginx 나 노드가 죽음). api 는 Ready 로 500 을 답하므로 0 이 나지 않는다.
 - recovery: target_health 200, api Ready, 기준선 이체 5xx < 0.05, 2틱, 10m.
 - cleanup: 이미지를 core-banking-api:latest 로 되돌리고 available 확인, 노드에서 1.6.0 참조 제거, 부하 종료. 고장 동안 쓴 데이터가 없다.
+- **2026-10-21 운영 보강 1회차: 동반 부하에서 거래 내역 단계를 뺐다**(profiles.json `scenario_parameters.F37-H.script_path` → `/opt/loadgen/core-banking/transfer-balance-surge.js`, target_rps 20 그대로, 정답지 injection_summary, controller 노트, 실행 행렬). 근거 `~/dev/testbed-ops/verifications/2026-10-21-1335-F37-H-run-cd6543d1.md` §3-1, §4: 주입(12:46:38 testbed-api 1.6.0 롤아웃), 피해(이체 5xx 1.0, success 연속 6), 원인 근거(api 'Required key' 2,408줄, 'Submitting transfer' 분당 0, api POST 클라이언트 스팬 0)는 강했으나, 같은 구간 동반 부하 transfer-heavy-surge.js 20rps 의 거래 내역 단계(15%)가 transfer 건수 질의 `byb2y2hv7p4ag` 를 평시 분당 28~36회에서 160~178회로 늘려 Oracle `cpu_time` 이 1.92~1.97(상한 2)에 붙었고, transfer Hikari 고갈 208줄, transfer readiness 실패 6건, 거래 내역 p50 7.3초와 502 16건, commerce 'Checkout payment failed ... 500' 10줄(평시 0)이 나 must_rule_out ④(transfer·Oracle 고장 아님)에 걸렸다. 롤아웃 전(옛 api 가 이체를 처리하던 12:47)에 이미 분당 111회였고 같은 스크립트 5rps 의 F39-H-run-255629f2 에서는 신호가 없어 주입이 아니라 동반 부하 몫이다. F47-R, F63-R 의 같은 원인을 고친 1ad6679 과 같은 방법으로 스크립트만 transfer-balance-surge.js(transfer-heavy-surge.js 에서 거래 내역 몫을 이체로 옮긴 파생본, 이체 55, 잔액 35, 목록 10)로 바꿨다. 이체는 api 안에서 account 를 부르기 전에 500 이 나므로 account, transfer, Oracle 로 가는 새 부하가 없고, api 이체 접수는 초당 약 8건에서 약 11건으로 는다. 주입(대상 testbed-api, 수단 k8s.image, 태그 core-banking-api:1.6.0, 고정 단 approved-fixed-f37-h), success, must_rule_out, must_support 는 그대로다. must_support ③ 의 '거래 내역 계속'은 상주 기준선 loadgen-banking 의 GET /api/transfers(평시 1시간 표본 270건)로 본다. 다음 실행에서 Oracle cpu_time 1 아래, `byb2y2hv7p4ag` 상주 기준선 수준, transfer Hikari 고갈과 readiness 실패 0건, commerce 결제 실패 0건, 기준선 거래 내역 정상을 함께 확인한다
 
 ## 10. 설계 원칙 §5 점검표
 

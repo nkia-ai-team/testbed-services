@@ -25,10 +25,10 @@
     {
       "scenario_id": "F37-H",
       "reason": "new",
-      "note": "새 시나리오 첫 검증",
+      "note": "새 시나리오 첫 검증. 2026-10-21 운영 보강 1회차: F37-H-run-cd6543d1 이 동반 부하 거래 내역 질의의 Oracle 포화로 must_rule_out ④ 에 걸려 동반 부하를 transfer-balance-surge.js 로 교체",
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-11",
-      "attempts": 0,
+      "attempts": 1,
       "status": "waiting"
     },
     {
