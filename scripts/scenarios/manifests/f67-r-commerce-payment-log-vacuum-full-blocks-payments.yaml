@@ -3,7 +3,7 @@
   "id": "F67-R",
   "slug": "f67-r-commerce-payment-log-vacuum-full-blocks-payments",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
