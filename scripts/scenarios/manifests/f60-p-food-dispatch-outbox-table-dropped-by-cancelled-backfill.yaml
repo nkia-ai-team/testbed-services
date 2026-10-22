@@ -3,7 +3,7 @@
   "id": "F60-P",
   "slug": "f60-p-food-dispatch-outbox-table-dropped-by-cancelled-backfill",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

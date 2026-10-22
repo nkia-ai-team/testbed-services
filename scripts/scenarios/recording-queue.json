@@ -23,15 +23,6 @@
       "hold_reason": "주입이 노드 전체 붕괴로 번짐(설계 시트 §9 의 '노드 붕괴 위험'이 실제로 일어남). F80-R-run-bad63a76 이 09:33:06Z host.job(oradata-backup, zstd -12 --long=31 두 흐름) 주입 뒤 +102s 에 이체 5xx 0.8~0.93 으로 피해는 났으나, +137s 에 tb-w2 NotReady·entry 502 로 abort(node-notready-total-collapse, 2틱), 노드 load 227·SSH 배너 교환 시간 초과로 cleanup 이 노드에 닿지 못해 'cleanup_failed after abort_condition' → 러너 큐 cycle-1-ef957c00 paused(DIRTY coordinator state). 작업은 RuntimeMaxSec 600s 로 09:43:15Z 스스로 끝났고 커널 OOM 이 java 1개를 죽임(09:42:26), banking 파드는 taint 축출 직전 회복. 운영 하네스 수동 cleanup(manual-cleanup-6a2f5cbe, 09:44:52Z) 성공: 유닛 inactive, /var/backups/oradata 삭제, banking 7파드 Ready, entry 200, DIRTY 해제, readiness ready. 덤프 없음. 같은 강도로 다시 돌리면 노드가 또 무너질 수 있어 resume 안 함. 사람 결정: 넘침 크기(preflight MemAvailable 문턱 1,536~3,584 MiB, level·long_window_log) 조정이나 기전 재검토, 노드가 응답을 잃은 동안 cleanup 이 닿지 못하는 점(실행기 host_job_executor.py) 처리. 결정 뒤 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 근거: tb-ops /root/rca-scenario-runner/runs/F80-R-run-bad63a76/{ticks.jsonl,decisions,cleanup,mutations}.json"
     },
     {
-      "scenario_id": "F60-P",
-      "reason": "new",
-      "note": "새 시나리오 첫 검증",
-      "requested_by": "testbed-scenario-create",
-      "requested_at": "2026-10-11",
-      "attempts": 0,
-      "status": "waiting"
-    },
-    {
       "scenario_id": "F35-P",
       "reason": "new",
       "note": "새 시나리오 첫 검증",
