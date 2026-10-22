@@ -2077,12 +2077,12 @@
           "baseline_unit": "loadgen-commerce"
         },
         "F68-R": {
-          "target_rps": 10,
+          "target_rps": 7,
           "ramp_up": "2m",
           "hold": "21m",
           "ramp_down": "15s",
           "entry_url": "http://192.168.122.77:30082",
-          "script_path": "/opt/loadgen/core-banking/transfer-heavy-surge.js",
+          "script_path": "/opt/loadgen/core-banking/transfer-balance-surge.js",
           "scenario_tag": "scenario_id=F68-R",
           "seed": 6868,
           "baseline_unit": "loadgen-banking"

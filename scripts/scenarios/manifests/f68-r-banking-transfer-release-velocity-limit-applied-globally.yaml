@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "banking namespace",
-    "matrix_location_transport": "K/kubectl banking testbed-transfer 컨테이너 image set(core-banking-transfer:latest→core-banking-transfer:2.4.0, 직전에 runner 가 109 docker 의 2.4.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=10, entry 30082, 이체 초당 약 4건)",
+    "matrix_location_transport": "K/kubectl banking testbed-transfer 컨테이너 image set(core-banking-transfer:latest→core-banking-transfer:2.4.0, 직전에 runner 가 109 docker 의 2.4.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-balance-surge.js, target_rps=7, entry 30082, 이체 55% 초당 약 3.9건, 거래 내역 단계 없음. 2026-10-22 운영 보강 1회차에 transfer-heavy-surge.js 10rps 에서 바꿈)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",
@@ -159,7 +159,7 @@
             "id": "transfer_5xx_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.food_create_status_rate",
-            "_note": "동반 부하(core-banking transfer-heavy-surge.js 10rps)의 이체(step transfer, 40%, 초당 약 4건, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 새 버전은 모든 출금 계좌의 이체가 한 한도(초당 2건)를 나눠 써 transfer 가 넘친 요청에 500 을 내고, account transferClient 서킷(10건 창 50%, 5초 열림)과 api accountClient 서킷이 그 실패율에서 대부분의 시간 열려 있어 api 가 곧바로 502 를 낸다. 서킷까지 넣은 로컬 전체 사슬 실측(api → account → transfer 2.4.0, 손님 이체 초당 4.35건, 정산 직접 0.45건, 6분)에서 이 비율은 0.90(30초 창 0.84~0.94)",
+            "_note": "동반 부하(core-banking transfer-balance-surge.js 7rps, 거래 내역 단계 없음)의 이체(step transfer, 55%, 초당 약 3.9건, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0. 새 버전은 모든 출금 계좌의 이체가 한 한도(초당 2건)를 나눠 써 transfer 가 넘친 요청에 500 을 내고, account transferClient 서킷(10건 창 50%, 5초 열림)과 api accountClient 서킷이 그 실패율에서 대부분의 시간 열려 있어 api 가 곧바로 502 를 낸다. 서킷까지 넣은 로컬 전체 사슬 실측(api → account → transfer 2.4.0, 손님 이체 초당 4.35건, 정산 직접 0.45건, 6분)에서 이 비율은 0.90(30초 창 0.84~0.94)",
             "freshness": "30s"
           },
           {
@@ -199,7 +199,7 @@
               "observation": "achieved_rps",
               "op": "lt",
               "value": 2.5,
-              "_note": "동반 부하 10rps 의 1/4. 거절은 밀리초 안에 끝나 여정이 길어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
+              "_note": "동반 부하 7rps 의 약 36%(10rps 때 정한 값 그대로). 거절은 밀리초 안에 끝나 여정이 길어지지 않는다. 부하가 실제로 끊겼을 때만 발화한다"
             },
             {
               "id": "transfer-crashloop-alternative",

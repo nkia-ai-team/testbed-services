@@ -25,10 +25,10 @@
     {
       "scenario_id": "F68-R",
       "reason": "new",
-      "note": "새 시나리오 첫 검증",
+      "note": "새 시나리오 첫 검증. 2026-10-22 운영 보강 1회차: F68-R-run-8b3f61c5 가 동반 부하 거래 내역 질의(byb2y2hv7p4ag)의 Oracle 부하로 must_rule_out ①(Oracle 평시)에 걸려 동반 부하를 transfer-balance-surge.js 7rps 로 교체",
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-12",
-      "attempts": 0,
+      "attempts": 1,
       "status": "waiting"
     },
     {

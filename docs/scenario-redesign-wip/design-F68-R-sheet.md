@@ -147,7 +147,7 @@ banking transfer-service 는 이체를 실제로 실행하는 서비스다. 부�
 ## 9. 러너 판정 조건과 강도, 부하 계산 (원칙 9)
 
 - 강도: 설계 강도 하나로 고정(approved-fixed-f68-r, release 2.4.0). 강도 사다리 없음. min_hold 12m, settle 60s, timeout 20m, max_injection_duration 25m.
-- 동반 부하: load.north_south, core-banking transfer-heavy-surge.js, target_rps 10, ramp 2m, hold 21m, entry 30082(banking nginx), seed 6868, 기준선 단위 loadgen-banking. 이체 40%(초당 약 4건, 손님 계좌 7개, 계좌당 0.6건 미만), 잔액 조회 35%(account 직행), 거래 내역 15%(초당 1.5건, transfer GET, Oracle 전수 COUNT 1회 약 0.21초 CPU 로 Oracle 약 0.3 CPU), 목록 10%. F51-R(5rps)의 두 배로, Oracle 이 먼저 차지 않는다.
+- 동반 부하: load.north_south, core-banking transfer-balance-surge.js, target_rps 7, ramp 2m, hold 21m, entry 30082(banking nginx), seed 6868, 기준선 단위 loadgen-banking. 이체 55%(초당 약 3.9건, 손님 계좌 7개, 계좌당 0.6건 미만), 잔액 조회 35%(account 직행), 목록 10%, 거래 내역 단계 없음(2026-10-22 운영 보강 1회차에 transfer-heavy-surge.js 10rps 에서 바꿈: 거래 내역 15% 의 Oracle 전수 COUNT 는 실측 실행당 CPU 0.48초(평시)~0.68초(부하)로 초당 1.5건이면 1.0~1.5 CPU 라 Oracle 이 먼저 찼다).
 - 계산: 합친 수요 = 동반 이체 4 + 기준선 손님 이체 약 0.35 + commerce 정산 약 0.45 = 초당 약 4.8건, 제한기 통과 초당 2건 → 서킷이 없다면 논리적 실패율 하한 1 - 2/4.8 = 58%(transfer 직접 실측 60%, 54%). 실제 사슬에는 서킷이 있다: 실패율 50% 이상에서 account transferClient 와 api accountClient 서킷이 열려(5초, 반열림 3건) 열린 동안 banking 이체는 transfer 에 닿지 않고 곧바로 502 다. 그래서 banking 동반 이체 5xx 는 0.90 으로 오르고(30초 창 0.84~0.94), transfer 로 오는 호출은 한도 아래로 줄어 재시도도 서킷도 없는 commerce 정산은 약 0.19 만 거절된다(§4 전체 사슬 실측).
 - success: 동반 부하 이체 5xx ≥ 0.6, 3틱 연속(실측 0.90 의 아래 여유). commerce checkout 5xx 는 30초 창 0~0.44 로 흔들려 판정에 넣지 않고 must_support(녹화의 commerce 'Checkout payment failed ... core-banking transfer call failed: 500')로 옮겼다.
 - must_rule_out: achieved_rps < 2.5, transfer 재시작 ≥ 2, Oracle NotReady (2틱).
@@ -155,6 +155,7 @@ banking transfer-service 는 이체를 실제로 실행하는 서비스다. 부�
 - recovery: target_health 200, transfer Ready, available 1, 기준선 banking 이체 5xx < 0.05 (2틱, 10분).
 - 롤아웃 공백: maxSurge 0 이라 약 1분 연결 거부(F17-H 꼴)지만 min_hold 12m 뒤 판정이라 공백만으로 판정되지 않는다.
 - 데이터 부작용: 거절된 이체는 트랜잭션 전에 끝나 transfers 행이 없고, commerce 결제는 되돌려진다. 고칠 데이터 없음. 거절된 commerce checkout 의 재고는 order 가 돌려준다.
+- **2026-10-22 운영 보강 1회차: 동반 부하에서 거래 내역 단계를 뺐다**(profiles.json `scenario_parameters.F68-R.script_path` → `/opt/loadgen/core-banking/transfer-balance-surge.js`, target_rps 10 → 7, 정답지 description, injection_summary, mechanism(영, 한), controller 노트, 실행 행렬). 근거 `~/dev/testbed-ops/verifications/2026-10-22-1632-F68-R-run-8b3f61c5.md` §3-1, §6: 주입(15:25:12 testbed-transfer 2.4.0 롤아웃), 피해(동반 이체 5xx 0.82~0.94), 원인 근거(RequestNotPermitted 352줄, 30일 0, 일곱 계좌와 정산 계좌에 고른 거절, Hikari, ORA, 재시작 0)는 섰으나, transfer-heavy-surge.js 10rps 의 거래 내역 단계(15%, 초당 약 1.5건)가 건수 질의 byb2y2hv7p4ag 를 분당 22~41회에서 117~140회로 늘려 Oracle CPU 0.29 → 최고 1.92/2, db_time 5.16, active_session 11, `resmgr:cpu quantum` 대기가 나 must_rule_out ①(F42-R 아님: Oracle CPU, 활성 세션, Top SQL 평시)과 must_support ⑤ 에 걸렸다(겹친 실행 없음). F37-H(f3f71c4), F47-R·F63-R(1ad6679) 과 같은 방법이다. 7rps 는 이체 55% 로 초당 약 3.9건이라 설계 계산의 손님 이체 초당 4건과 같은 수준이고(합친 수요와 제한기 통과 2건/초 계산, success 0.6, 서킷 사슬은 그대로), F37-H-run-a6cd30bd 는 같은 교체 뒤 Oracle CPU 0.25~0.42 였다. 주입, success, must_rule_out(achieved_rps < 2.5 는 7rps 의 약 36%), must_support 는 그대로다.
 
 ## 10. 설계 원칙 §5 점검표
 
@@ -168,7 +169,7 @@ banking transfer-service 는 이체를 실제로 실행하는 서비스다. 부�
 - [x] 정답지 세 칸이 원칙 6대로(근본 transfer 릴리스, 계기 비움, 부분 점수 증상 위치) — §5
 - [x] 감지, 피해 판정, RCA 증거를 따로 적었다(원칙 7) — §6
 - [x] 주입 도구가 데이터에 시나리오 id 를 남기지 않는다. 패치가 더한 문자열에 F68, fault, bug, chaos, scenario 없음(원칙 8)
-- [x] 부하 상한(180 중 10rps)과 서킷브레이커를 고려해 피해가 날 계산과 로컬 실측(서킷까지 넣은 전체 사슬)이 있다(원칙 9) — §4, §9
+- [x] 부하 상한(180 중 7rps, 2026-10-22 보강 전 10rps)과 서킷브레이커를 고려해 피해가 날 계산과 로컬 실측(서킷까지 넣은 전체 사슬)이 있다(원칙 9) — §4, §9
 
 ## 11. 첫 실행(곧 녹화 실행)에서 확인할 것
 
