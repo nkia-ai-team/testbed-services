@@ -3,7 +3,7 @@
   "id": "F69-R",
   "slug": "f69-r-food-payment-audit-export-locks-payment-tables",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
