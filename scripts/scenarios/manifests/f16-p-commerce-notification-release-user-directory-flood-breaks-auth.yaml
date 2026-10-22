@@ -3,7 +3,7 @@
   "id": "F16-P",
   "slug": "f16-p-commerce-notification-release-user-directory-flood-breaks-auth",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
