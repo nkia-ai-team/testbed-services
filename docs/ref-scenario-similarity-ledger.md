@@ -85,16 +85,16 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
-| A 자원 부족, 한도 | 8 | 8% |
+| A 자원 부족, 한도 | 9 | 9% |
 | B 부품 멈춤 | 7 | 7% |
 | C 상대 서비스 오류, 지연 | 6 | 6% |
-| D DB 잠금 | 16 | 16% |
+| D DB 잠금 | 16 | 15% |
 | E 처리 용량 초과 | 4 | 4% |
 | F 느린 쿼리 | 3 | 3% |
 | G 설정 오배포 | 12 | 12% |
 | H 데이터가 조용히 틀어짐 | 2 | 2% |
 | I 인증 의존 실패 | 2 | 2% |
-| J 결함 있는 새 버전 배포 | 14 | 14% |
+| J 결함 있는 새 버전 배포 | 14 | 13% |
 | K 네트워크 지연, 손실, 단절 | 2 | 2% |
 | L 데이터 형식 불일치 | 8 | 8% |
 | M DNS | 1 | 1% |
@@ -103,12 +103,12 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | P 운영 작업의 대상 착오 | 13 | 13% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 2 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 36, 은행 33, 음식배달 34. 후보 14종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 36, 은행 33, 음식배달 35. 후보 13종은 집계에서 뺀다(§4-1).
 
 해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 26개뿐이고(J 14, G 12. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P 열셋뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-B는 7개(7%), A, L은 각 8개(8%), G는 12개(12%), P는 13개(13%), J는 14개(14%), D는 16개(16%)로 20%에 가깝다. 서비스는 은행(33), 음식배달(34) 순으로 채운다.
+B는 7개(7%), L은 8개(8%), A는 9개(9%), G는 12개(12%), P는 13개(13%), J는 14개(13%), D는 16개(15%)로 20%에 가깝다. 서비스는 은행(33), 음식배달(35) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 103종):
+정답 위치별 정식 (2-1 정의, 정식 104종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -120,7 +120,7 @@ B는 7개(7%), A, L은 각 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | DB 테이블(배차) | 4 | 4% |
 | DB 계정 | 4 | 4% |
 | 결제 서비스 | 4 | 4% |
-| 배달 서비스 | 6 | 6% |
+| 배달 서비스 | 7 | 7% |
 | 노드, 디스크 | 6 | 6% |
 | DB 인스턴스 | 2 | 2% |
 | 은행 계좌 서비스 | 6 | 6% |
@@ -154,9 +154,9 @@ B는 7개(7%), A, L은 각 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | 장바구니 서비스 | 1 | 1% |
 | 캐시 | 1 | 1% |
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
-| **결제 경로 합계** | **14** | **14%** |
+| **결제 경로 합계** | **14** | **13%** |
 
-결제 경로는 정식만으로 14%(13.6%, 14/103. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 13%(13.5%, 14/104. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -267,6 +267,7 @@ B는 7개(7%), A, L은 각 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | F65-P | 정식 | 쇼핑몰 | O+I | 사용자 서비스 | commerce user-service 일상 롤아웃이 낡은 인프라 코드의 배포 정의를 다시 적용해 컨테이너 env DB_USER 를 Secret 참조 대신 자격 증명 회전 전 계정 이름 commerce_app 으로 둠. maxSurge 0 이 하나뿐인 옛 파드를 먼저 내리고, 새 컨테이너는 기동 스키마 초기화에서 PostgreSQL 이 'password authentication failed for user "commerce_app"' 으로 거절해 기동 중 죽기를 되풀이(CrashLoopBackOff). user 가 비어 게이트웨이 토큰 확인이 연결 거부로 실패(AuthGuard 자기 호출이라 user 서킷, 재시도, 401 폴백이 적용되지 않음)해 모든 쓰기 500 과 게이트웨이 SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for "http://testbed-user:8085/api/users/verify-token": Connection refused', 로그인 502, 조회 정상(E2B 2026-06-25 재구성, F65-R 의 자격 증명 판, F16-H 와 같은 증상 다른 원인) |
 | F70-R | 정식 | 은행 | A | 은행 이체 서비스 | 가맹 정산 대사 시스템이 banking 거래 내역 API 로 30일치 완료 이체를 page/size 없이 1분마다 받아 가려 함(API 계약상 허용, 평시 트래픽은 늘 페이지 사용). transfer 의 TransferController.list 가 Pageable.unpaged() 로 상한 없이 약 210만 행을 관리 엔티티로 512MiB 힙에 올려 전체 GC 연속과 OutOfMemoryError 로 멈추고, api 의 10초 시간 초과 재시도가 같은 조회를 세 번으로 늘림. readiness 로 빠지고 liveness 재시작, 다음 호출에 되풀이 → banking 이체 502, commerce checkout 502, 그동안 transfer 를 기다리며 연결을 쥔 account 풀이 말라 잔액 조회 일부도 실패. 배포·설정·DB 변경 없음, Oracle 정상. Cronofy 2025-04-15 재구성(고객 질의가 건드린 버그로 요청이 의도보다 몇 자릿수 큰 값을 돌려주려 해 서버가 메모리 부족으로 죽음) |
 | F71-R | 정식 | 쇼핑몰 | O | DB 계정 | commerce PostgreSQL 애플리케이션 역할 commerce(user, cart, pricing, shipping, product, order, payment, inventory 여덟 서비스가 함께 쓰는 네트워크 비밀번호 로그인)의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지남. 새 로그인만 'password authentication failed for user "commerce"' 로 거절되고 열린 연결은 유지되어, Hikari 풀이 max-lifetime 에 연결을 잃고 못 채움: 10분 풀(user, cart, pricing, shipping)이 먼저, Hikari 기본 30분 풀(product, order, payment, inventory)이 나중에 비어 readiness 에서 빠지고 liveness 재시작, 기동 실패로 재시작 반복. 게이트웨이 토큰 확인 실패로 쓰기 500·로그인 502, 이어 상품 조회 502(원본 GitHub 2025-03 월간 보고, 만료 임박 경보 문제로 내부 서비스 자격 증명 만료) |
+| F70-P | 정식 | 음식배달 | A | 배달 서비스 | 배달원 정산 시스템(바깥 파트너)이 food 배달 목록 API(dispatch NodePort)로 배달 완료 내역 전부를 page/size 없이 약 2분 반마다 받아 가려 함(API 계약상 허용, 평시 트래픽은 늘 page=0&size=20). dispatch 의 DispatchController.getDeliveries 가 Pageable.unpaged() 로 findByStatus 를 상한 없이 돌려 약 174만 행을 관리 엔티티로 기본 힙(-Xmx 없이 1GiB 의 25%, 약 247MiB, Serial GC)에 올려 약 10~15초 만에 연속 GC 로 멈추고 liveness 재시작, 다음 호출에 되풀이. order 의 배달원 용량 확인이 시간 초과·서킷 열림·연결 거부로 끝나 새 주문 전부 주문 저장 전 503. 배포·설정·DB 변경 없음, F70-R 과 같은 원본(Cronofy 2025-04-15)·결함 꼴의 음식배달 판 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -279,7 +280,6 @@ B는 7개(7%), A, L은 각 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | F42-P | 후보 | 음식배달 | J+F | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.5.0(fault-images/f42-p 패치로 만든 별도 태그)으로 롤아웃. 인기 메뉴 순위를 실시간으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 요청마다 최근 7일 주문을 바로 셈(order_items JOIN orders JOIN menus, 가게 한 곳, 메뉴별 COUNT). 109 MySQL 이 한가할 때 4.05~7.47초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽. 인기 메뉴 초당 약 2.5건이면 food MySQL(CPU 0.5) 포화, restaurant Hikari 10개가 집계에 묶여 가게 상세, 메뉴, 인기 메뉴가 3초 대기 뒤 500, readiness 이탈과 재시작 가능, order 가 가게, 메뉴 조회 실패로 주문 502. 스키마, 인덱스, 캐시 표는 그대로(1146 없음), 긴 활성 세션이 restaurant 파드 IP 에서 옴. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화, F42-R, F33-H 와 같은 원본). 실행 중 MySQL 재시작은 uptime 으로 배제, 시작은 MySQL anon 여유가 있을 때만 |
 | F63-R | 후보 | 은행 | J+A | 은행 API | banking api-service 를 릴리스 core-banking-api:1.5.0(fault-images/f63-r 패치로 만든 별도 태그)으로 롤아웃. 이체 접수와 거래 내역 조회에 더한 처리 마감 시간(5초)이 요청마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아 요청마다 멈춘 비데몬 스레드가 하나씩 남음. 동반 부하(api 요청 약 11건/초)에서 스레드당 약 130KiB 씩 컨테이너 메모리가 차 약 8분에 한도 1GiB, 힙은 그대로. 짧게 멈춘 뒤 커널 memcg OOM 으로 java 종료, 같은 파드 바로 재시작과 기동(Ready 까지 26~29초) 동안 nginx → api 의 이체와 거래 내역 502, 약 10분마다 되풀이. 잔액 조회, commerce 정산, account, transfer, Oracle 은 정상. 원본 Intercom 2025-04-24(새 Inbox 카운터 구현이 요청마다 스레드 묶음을 만들고 치우지 않아 웹 서버 메모리 고갈, 느림과 오류 페이지, 정기 배포와 헬스 체크 실패에 따른 호스트 교체가 잠시 살림). F41-R(account 힙 누수 재시작), F41-H(account liveness 404 재시작)와 '릴리스 뒤 재시작 고리' 증상이 같고 대상과 차오르는 자원이 다른 짝, F47-R 과 같은 api 릴리스 계열이지만 하류가 멀쩡하고 api 자신이 죽음 |
 | F72-R | 후보 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 Oracle 리스너 포트 1521 로 가는 새 연결을 노드 주소와 호스트, 관리망(10.244.1.1/32, 다른 노드 flannel 주소 셋, 192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)에서만 받도록 좁히면서 같은 노드의 banking 앱 파드(account, transfer, ledger, 10.244.1.x)를 빠뜨림. 열린 Hikari 세션은 수명(10분)까지 통하다가 다시 맺는 SYN 이 버려져 ORA-12170 TCP connect timeout, 풀이 비어 세 파드가 readiness 에서 빠지고 banking 잔액, 이체와 commerce 정산이 502. Oracle 은 Ready 이고 DPM 수집은 계속(Harness 2024-09-01 재구성) |
-| F70-P | 후보 | 음식배달 | A | 배달 서비스 | 배달원 정산 시스템(바깥 파트너)이 food 배달 목록 API(dispatch NodePort)로 배달 완료 내역 전부를 page/size 없이 약 2분 반마다 받아 가려 함(API 계약상 허용, 평시 트래픽은 늘 page=0&size=20). dispatch 의 DispatchController.getDeliveries 가 Pageable.unpaged() 로 findByStatus 를 상한 없이 돌려 약 174만 행을 관리 엔티티로 기본 힙(-Xmx 없이 1GiB 의 25%, 약 247MiB, Serial GC)에 올려 약 10~15초 만에 연속 GC 로 멈추고 liveness 재시작, 다음 호출에 되풀이. order 의 배달원 용량 확인이 시간 초과·서킷 열림·연결 거부로 끝나 새 주문 전부 주문 저장 전 503. 배포·설정·DB 변경 없음, F70-R 과 같은 원본(Cronofy 2025-04-15)·결함 꼴의 음식배달 판 |
 | F73-R | 후보 | 쇼핑몰 | D | DB 테이블(상품) | 카테고리별 매출을 분석 저장소로 옮기는 느린 내보내기(COPY ... FROM product_schema.products m JOIN order_schema.order_items i, 주문 품목 약 618만 행에 상품의 카테고리, 이름, 가격을 붙여 약 6분 활성)가 commerce PostgreSQL 의 작은 상품 표 product_schema.products(2,016행, 둘러보기와 checkout 마다 읽힘)의 ACCESS SHARE 를 쥔 사이 상품 팀이 같은 표에 null 허용 열(brand)을 더하는 마이그레이션(카탈로그만)을 돌려 ACCESS EXCLUSIVE 를 기다리고, 그 뒤의 products 문장이 단순 읽기까지 모두 줄을 섬. product-service 의 목록, 상세, 검색, 변형 조회와 checkout 재고 예약 앞 상품 조회가 연결을 쥔 채 멈춰 product 풀(기본 10)이 마르고 NotReady 와 재시작(기동 schema.sql 의 CREATE INDEX IF NOT EXISTS 도 같은 줄), 게이트웨이 product 서킷이 열려 상품 둘러보기 5xx, checkout 은 결제 전 502. 로그인, 장바구니는 정상. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06(요청마다 읽히는 작은 teams 표의 INSTANT 열 추가가 느린 SELECT 뒤에서 잠금을 기다려 그 표의 모든 질의를 막음). 같은 원인 F66-R(회원 표), F36-P(food 메뉴 표), 같은 증상 F23-P(상품 표 지우기) |
 | F74-R | 후보 | 은행 | F+E | 은행 이체 서비스 | 가맹점 입금 알림 제휴 연동이 banking 거래 내역 API 로 가맹점 계좌 8개의 '오늘 완료 입금이 있는가'를 확인하는 주기를 계좌당 60초에서 1초로 줄임(초당 8건, toAccount=…&status=COMPLETED&from=<오늘>&page=0&size=1, API 계약상 허용). 한 건만 필요한 확인마다 transfer 목록 API 가 Spring Data Page 의 건수 질의(sql_id byb2y2hv7p4ag, OR-null 술어라 BANKING.TRANSFERS 약 650만 행 전수, 실행당 약 10.3만 읽기, CPU 0.25~0.6초)를 함께 돌려 Oracle CPU 2개를 다 쓰고(resmgr:cpu quantum), transfer Hikari 15개가 그 뒤에 묶여 이체 쓰기 500, account 서킷, api 502, commerce checkout 502 가 몇 초 단위로 오르내림(api transferClient 서킷 주기). 배포·설정·DB·잠금 변경 없음, 기존 문장의 실행 수만 뜀. Fly.io 2026-04-23 재구성(제휴 제공사의 폴링 빈도 증가 × 존재 확인에 필요 이상 행을 훑는 질의 → DB CPU 포화, 간헐적 500). F42-R(릴리스의 새 전수 스캔 질의로 같은 Oracle 포화)과 같은 증상 다른 원인 |
 | F75-R | 후보 | 음식배달 | L+J | 배달 서비스 | food dispatch-service 만 릴리스 food-delivery-dispatch:1.10.0(fault-images/f75-r 패치로 만든 별도 태그)으로 롤아웃. order-service 2.6.0 과 짝으로 나가야 했던 이 버전이 배달원 용량 조회를 배차 자원에서 배달원 자원으로 옮겨 GET /api/deliveries/capacity 를 지우고 GET /api/couriers/capacity 를 새로 뒀는데, 짝 order 릴리스는 배포되지 않음. 바뀌지 않은 order 가 주문마다 옛 경로로 용량을 확인하면 새 dispatch 가 그 경로를 GET /api/deliveries/{id} 에 맞춰 'capacity' 를 Long 으로 못 바꿔 400(WARN MethodArgumentTypeMismatchException), order 가 'Failed to check dispatch capacity: 400' 뒤 재시도와 서킷 대체 응답으로 모든 새 주문을 약 0.65초 만에 503. 주문 행 저장 전이라 주문, 배차, 결제가 남지 않고 order 와 dispatch 는 Ready, 배달 조회는 정상. Stitch 2023-03-13 재구성(정기 배포에서 일부 내부 서비스만 배포되어 서비스 사이 인터페이스 버전이 어긋나 시간 초과와 400~403, 모든 서비스를 다시 배포해 맞춤). F49-H(order 릴리스 쪽이 계약을 깨 정답 order)와 같은 order↔dispatch 계약 깨짐과 503 이지만 롤아웃된 쪽이 반대라 정답이 다름 |
@@ -574,3 +574,8 @@ B는 7개(7%), A, L은 각 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 - 2026-10-23: `F71-R` 정식 승격(케이스 `case-f71-r-v3-1dcb2af1`). 66 실행 F71-R-run-1dcb2af1(러너 tb-ops, 큐 cycle-1-d001267d, 큐 항목 attempts 0, 첫 실행, 주기 재시작 없음)가 검증(`~/dev/testbed-ops/verifications/2026-10-23-1406-F71-R-run-1dcb2af1.md`)에서 녹화 가능(주입: 고정 단 approved-fixed-f71-r, testbed-postgres-0 역할 commerce password-valid-until-now, 동반 부하 없음, t1 12:51:00, t2 13:22:18(min_hold 31m). 피해: 쓰기 비정상 1.0(13:00:26~), 조회 비정상 1.0(13:18:12~), entry 500, 판정 success, abort 0. 원인 근거: 'FATAL: password authentication failed for user "commerce"' 가 여덟 서비스 로그와 PG 서버 로그(1,135줄, 12:51:06~)에 남음(평시 0건), VM 풀 지표가 10분 풀 넷(12:58~13:02)과 30분 풀 넷(13:04~13:22) 두 물결로 0, DPM current_session 63 → 6 계단 감소(수집 유지), KCM 여덟 파드 readiness·liveness 실패와 BackOff 두 물결, 롤아웃·새 ReplicaSet 없음, PostgreSQL Ready·restarts 0·잠금 없음). 겹친 실행 없음, cleanup 원복(rolvaliduntil infinity), 이미지 점검 종료 0. 104 eval 세트에 적재(파일 694개, tb-ops 와 같음). 집계: 정식 102 → 103, 주 묶음 O 2 → 3, 정답 위치 DB 계정 3 → 4, 쇼핑몰 35 → 36, 결제 경로 14/103(13.6%), 후보 15 → 14.
 - 2026-10-23: `case-f71-r-v3-1dcb2af1` 환경 결함 표시: 119 stream-anomaly 수집기 정지(이번 장애 구간 세션, 커넥션 계열 이상 이벤트 0건 — DPM current_session 62 → 6, 여덟 서비스 db.client.connections.usage 0 인데 산출 없음; jvm 은 11:46:43Z 뒤 산출 없음, sms·nms·db 도 장애 구간 산출 없음, dpm 만 산출; 'json: unsupported value: +Inf' 로 워커 재시작 반복). 판정은 원시 근거(로그, PG 서버 로그, VM 풀 지표, DPM 원지표, KCM) 기준이라 녹화는 유효하다.
 - 2026-10-23: `F71-R` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, 검사를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-23-1406-F71-R-run-1dcb2af1.md` 4절 "시나리오 쪽 메모"). ① 설계 시트 §7 과 정답지 mechanism 의 'PostgreSQL 서버 로그는 수집되지 않음'이 틀렸다: `lucida_sms_agent` 가 서버 로그를 수집해 'FATAL: password authentication failed for user "commerce"' 1,135줄(12:51:06~13:22:20, t1 6초 뒤 첫 흔적)이 119 에 있고 alarm-bridge 'PostgreSQL 서버 로그 이벤트 탐지' 291건 FIRING 도 났다. 다만 'User "commerce" has an expired password' DETAIL 줄은 0건이다. 문구를 '서버 로그의 FATAL 은 수집되나 expired password DETAIL 은 남지 않음'으로 바꾸는 안. ② must_support ① 의 '재시작한 컨테이너의 Application run failed 스택 안' 문구는 `body` 가 아니라 `log_attributes`(스택)에 있다: cart, pricing 은 본문 FATAL 줄이 없고 `log_attributes` 로만 각 20건 잡힌다. 근거 위치를 log_attributes 로 밝히는 안.
+- 2026-10-23: `F70-P` 정식 승격(케이스 `case-f70-p-v3-3ce5d49b`). 66 실행 F70-P-run-3ce5d49b(러너 tb-ops, 큐 cycle-1-3569dc90, 큐 항목 attempts 0, 첫 실행, 주기 재시작 없음)가 검증(`~/dev/testbed-ops/verifications/2026-10-23-2329-F70-P-run-3ce5d49b.md`)에서 녹화 가능(주입: 고정 단 approved-fixed-f70-p, load.north_south 로 rider-settlement-export.js 5rps 배달 추적 동반 부하와 무페이징 정산 VU 1, t1 22:34:35, t2 22:46:32. 녹화 구간 20:24:18~23:16:32, 평시 20:34:35~22:34:35, 장애 22:34:35~23:16:32. 피해: 기준선 주문 5xx 0.86~1.0(22:37:27~22:41:24, 22:42:58~22:43:51, 22:46:33~22:49:29), entry 503, 판정 success, abort 0. 원인 근거: dispatch Tenured Gen 이 정산 호출마다 30초 안에 한도 170.7MiB(22:37:00, 22:42:30, 22:45:00, 평시 최대 71.2), CPU 1.0, 'Java heap space'·OutOfMemoryError 로그, KCM Unhealthy 22건·Killing·같은 파드 Started(롤아웃·새 ReplicaSet 없음, restarts 2), order 'Read timed out' 24줄 다음 'Connection refused' 159줄(평시 0), MySQL·order 장애 신호 없음). 겹친 실행 없음(F72-R-run-e030c6b4 방화벽 제거 20:04:06 기준 식힘 끝 20:34:06, 29초 여유), cleanup 원복, 이미지 점검 종료 0. 104 eval 세트에 적재(파일 630개, tb-ops 와 같음). 집계: 정식 103 → 104, 주 묶음 A 8 → 9, 정답 위치 배달 서비스 6 → 7, 음식배달 34 → 35, 결제 경로 14/104(13.5%, 표 13%), 비율 재계산으로 D 16%→15%, J 14%→13%, 후보 14 → 13.
+- 2026-10-23: `case-f70-p-v3-3ce5d49b` 환경 결함 표시: 119 stream-anomaly 수집기 정지(21:52:38 이후 모든 경로 0건 — 마지막 산출 jvm 21:46:50, dpm 21:49:57, sms 21:52:29, nms 21:52:38, db 20:32:22). 그래서 장애 구간에 JVM·DPM 이상 이벤트가 없고(힙 고갈 시나리오인데 dispatch Tenured 한도·CPU 한도가 이벤트가 되지 않음), 장애 구간 이벤트는 log-anomaly 와 change-detect 뿐이다. 판정은 원시 근거(VM 힙 원지표, 로그, KCM, DPM 세션) 기준이라 녹화는 유효하다.
+- 2026-10-23: `F70-P` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, 검사를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-23-2329-F70-P-run-3ce5d49b.md` 2절 3단계와 3절). ① 설계 §11 확인 항목 미충족: DPM Top SQL 에 LIMIT 없는 배차 조회가 남지 않았다(세션 표본 sqlHash -857690484, 40~110초 executing 만 있음). 정답지 must_support ① 의 DPM 부분과 설계 §7 "장애 시 새 sql_id 가 약 174만 행 검사"는 이번 데이터로 확인되지 않는다. ② 두 번째 liveness 재시작(22:47:09)의 KCM Killing·Started 이벤트가 없고 Pulled 만 있다. ③ 재시작 주기가 설계의 약 2분 반이 아니라 8분 반이었고, 2차 호출(22:42:30)은 재시작 없이 회복했다. ④ 일부 실패 주문이 배정 단계까지 갔다('Failed to dispatch courier' 17줄). 정답지의 "실패 주문은 행을 남기지 않음"과 어긋나는 일부 사례다.
+- 2026-10-23: `case-f70-p-v3-3ce5d49b` 녹화 앞부분 메모: 덤프 앞 10분(20:24:18~20:34:35, 평시 2시간 밖)이 직전 F72-R 식힘 30분 안이다. F72-R 오류 로그는 0줄이고 core-banking-transfer 이벤트 3건(log-anomaly 20:24:29, stream-anomaly 20:25:33)이 있다. 평가에서 이 구간을 쓸 때 F72-R 회복 직후 잔향일 수 있음을 감안한다.
+- 2026-10-23: 검증 하네스 결함 후속 과제: verify `collect.py` 의 겹침 검사가 result.json 없는 dirty 실행(F72-R-run-0a81ae59, F72-R-run-e030c6b4)을 보지 못한다. 이번 F70-P 판정은 겹침을 직접 계산했다(겹침 없음, 29초 여유).

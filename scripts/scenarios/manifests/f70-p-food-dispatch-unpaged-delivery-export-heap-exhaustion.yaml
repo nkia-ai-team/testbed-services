@@ -3,7 +3,7 @@
   "id": "F70-P",
   "slug": "f70-p-food-dispatch-unpaged-delivery-export-heap-exhaustion",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

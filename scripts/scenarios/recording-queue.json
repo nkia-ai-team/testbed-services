@@ -33,15 +33,6 @@
       "hold_reason": "host.firewall cleanup 의 회복 확인 실패가 연속 2회. F72-R-run-0a81ae59(cleanup 17:02:36Z)와 F72-R-run-e030c6b4(cleanup 20:04:00Z) 모두 성공 조건 유지(success 29틱·1278s / 22틱·1268s) 뒤 cleanup.json reason 'host.firewall:recovery failed' → 'cleanup_failed after success' → DIRTY, 러너 큐 cycle-1-48b1e4e0 paused, 덤프 없음. 규칙 제거(ORACLE-LSNR-IN 체인과 FORWARD jump 삭제)는 성공했다. 실패한 것은 실행기 host_firewall_executor.py 의 recovery 단계로, 대기나 재시도 없이 한 번만 검사한다(state 파일 없음, 규칙 없음, testbed-oracle 과 testbed-transfer 가 각각 tb-w2 에서 Ready 1개). 주입 중 testbed-transfer 가 NotReady(2회째 19:53:23Z 부터, 마지막 틱 transfer_pod_ready=false, balance_read_nonok_rate_baseline=1.0, entry 502)였고 규칙 제거 직후(host.firewall cleanup 완료 20:04:06.66Z) 검사 때도 NotReady, 실제 Ready 전이는 20:04:07Z(약 1초 뒤). 그래서 러너 spec.recovery(target_health 200, oracle·transfer Ready, balance_read_nonok_rate_baseline < 0.05, 2틱 연속, timeout_sec 600)는 시작도 못 했다. 수동 cleanup(manual-cleanup-405e62aa, manual-cleanup-5ae7188f)은 두 번 다 바로 성공. 같은 설정으로 다시 돌리면 같은 실패가 난다. 사람 결정: 실행기 recovery 가 transfer Ready 를 기다리게 할지, 그 확인을 spec.recovery(600s)에 맡길지 러너·실행기 수정 검토. 결정 뒤 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 근거: tb-ops /root/rca-scenario-runner/runs/F72-R-run-{0a81ae59,e030c6b4}/{state,cleanup,mutations}.json·ticks.jsonl, 운영 기록 operator/log.md 2026-10-23 17:33Z·20:1xZ 줄"
     },
     {
-      "scenario_id": "F70-P",
-      "reason": "new",
-      "note": "새 시나리오 첫 검증",
-      "requested_by": "testbed-scenario-create",
-      "requested_at": "2026-10-12",
-      "attempts": 0,
-      "status": "waiting"
-    },
-    {
       "scenario_id": "F73-R",
       "reason": "new",
       "note": "새 시나리오 첫 검증",
