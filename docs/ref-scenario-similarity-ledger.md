@@ -81,14 +81,14 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 맞는 말이 없으면 이 표에 한 줄 더한다. **결제 경로**(외부 결제 의존 + 결제 서비스 + DB 테이블(결제))는 따로 합쳐서도 센다: 서로 다른 부품이라도 "결제 쪽이 범인"이라는 같은 지름길을 만든다.
 
-## 3. 집계 (2026-10-22, 정식만, 주 묶음 기준)
+## 3. 집계 (2026-10-23, 정식만, 주 묶음 기준)
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
 | A 자원 부족, 한도 | 7 | 7% |
 | B 부품 멈춤 | 7 | 7% |
 | C 상대 서비스 오류, 지연 | 6 | 6% |
-| D DB 잠금 | 15 | 15% |
+| D DB 잠금 | 16 | 16% |
 | E 처리 용량 초과 | 4 | 4% |
 | F 느린 쿼리 | 3 | 3% |
 | G 설정 오배포 | 12 | 12% |
@@ -103,12 +103,12 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | P 운영 작업의 대상 착오 | 13 | 13% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 2 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 34, 은행 32, 음식배달 33. 후보 18종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 34, 은행 32, 음식배달 34. 후보 17종은 집계에서 뺀다(§4-1).
 
 해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 26개뿐이고(J 14, G 12. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P 열셋뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14개(14%), D는 15개(15%)로 20%에 가깝다. 서비스는 은행(32), 음식배달(33) 순으로 채운다.
+A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14개(14%), D는 16개(16%)로 20%에 가깝다. 서비스는 은행(32), 음식배달(34) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 99종):
+정답 위치별 정식 (2-1 정의, 정식 100종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -132,6 +132,7 @@ A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | 은행 API | 3 | 3% |
 | DB 테이블(가게) | 1 | 1% |
 | DB 테이블(결제 로그) | 1 | 1% |
+| DB 테이블(메뉴) | 1 | 1% |
 | DB 테이블(배차 이력) | 1 | 1% |
 | DB 테이블(배차 이벤트 outbox) | 1 | 1% |
 | DB 테이블(사용자) | 1 | 1% |
@@ -155,7 +156,7 @@ A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **14** | **14%** |
 
-결제 경로는 정식만으로 14%(14.1%, 14/99. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 14%(14.0%, 14/100. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -262,6 +263,7 @@ A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | F16-P | 정식 | 쇼핑몰 | I+J | 알림 서비스 | commerce notification-service 를 릴리스 commerce-notification:1.3.0(fault-images/f16-p 패치로 만든 별도 태그)으로 롤아웃. 이메일이 없는 주문 이벤트의 수신자를 고객 이름으로 user-service 회원 목록에서 찾는데, 못 찾으면 새 백그라운드 스레드(CompletableFuture.runAsync, 겹침 방지 없음)에서 회원 목록을 짧은 페이지가 올 때까지 다시 읽는다. 회원 목록 API 는 페이지 인자가 없어 매번 3,020명 전체를 돌려줘 새로 고침마다 전체 목록 요청이 상한 100번이고, 이벤트의 고객 이름(user-N)은 회원 이름이 아니라 주문마다 새로 고침이 뜬다. 게이트웨이가 쓰기마다 토큰을 확인하는 user-service 가 CPU 한도(500m)와 Hikari(10) 대기에 묻혀 토큰 확인이 초 단위로 늦어지고 500, readiness 가 빠지면 연결 거부로 곧 500(게이트웨이가 확인을 자기 호출해 재시도·서킷 없이 인가된 쓰기 500, F33-P 와 같음) → 장바구니, 주문, checkout 쓰기 실패, 읽기 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스의 버그가 인가가 기대는 Tenant Service API 호출을 크게 늘려 과부하, API 5xx). 요청 경로 밖 비동기 소비자의 릴리스가 인가 서비스를 묻는 꼴 |
 | F68-R | 정식 | 은행 | J | 은행 이체 서비스 | banking transfer-service 를 릴리스 core-banking-transfer:2.4.0(fault-images/f68-r 패치로 만든 별도 태그)으로 롤아웃. 이상 거래 방지로 '한 출금 계좌에서 1초에 2건 넘는 이체는 거절' 을 TransferService.execute 에 더했는데 resilience4j @RateLimiter(name = "transferVelocity") 하나(초당 2건, 대기 0)로 걸어, 계좌마다가 아니라 모든 이체(banking 손님 이체, commerce 정산 이체, 매시 정산 배치)가 초당 2건 한 몫을 나눠 씀. 넘친 요청은 트랜잭션 전에 처리되지 않은 RequestNotPermitted 로 500(transfer SEVERE 'Servlet.service() ... RequestNotPermitted: RateLimiter 'transferVelocity' does not permit further calls'). 기준선(합쳐 초당 약 0.8건)에서는 순간 몰림만, banking 동반 부하(손님 계좌 7개 이체 초당 약 4건, 계좌당 0.6건 미만)로 합친 수요 초당 약 4.8건 가운데 2건만 통과 → account 재시도·서킷 끝에 api 이체 502, commerce payment 502 → checkout 502. transfer Ready, 빠름, Hikari·Oracle 평시, 잔액 조회·거래 내역 정상. 원본 GitHub 2026-04-09(속도 제한 로직의 버그가 한도를 모든 사용자에게 전역으로 걸었고 트래픽을 3~4배로 늘린 클라이언트 갱신이 공유 한도를 바닥냄) |
 | F69-R | 정식 | 음식배달 | D | 내부 배치 작업 | 재무 쪽 결제 감사 자료 내보내기 Job payment-audit-export(rca-testbed-food, 이미지 mysql:8.0, mysql-secret 의 앱 계정, CPU 한도 150m)가 mysqldump --no-tablespaces fooddelivery payments settlement_summary | xz -6 을 돌림. --single-transaction 없이 기본값 --lock-tables 라 LOCK TABLES ... READ LOCAL 을 덤프 내내(압축기 속도로 10분 넘게) 쥐어 payments 의 INSERT, UPDATE, DELETE 가 'Waiting for table metadata lock'(읽기는 통과), 결제마다 처음 하는 PENDING 결제 INSERT 가 payment Hikari(15)를 채우고 order 의 결제 호출이 시간 초과, 서킷 열림으로 모든 새 주문이 결제 단계에서 502, payment NotReady 와 재시작. Job 을 치우면 풀림. 원본 KnowBe4 2025-10-13(새 데이터 내보내기 작업의 질의가 공유 트랜잭션 표에 동시 갱신을 막는 공유 잠금). F53-H 와 같은 결제 표 대기 증상, 다른 원인(마이그레이션 없음, 정답은 작업) |
+| F36-P | 정식 | 음식배달 | D | DB 테이블(메뉴) | 메뉴별 판매 실적 내보내기 SELECT m.id, m.name, m.price, i.order_id, i.qty, i.unit_price FROM menus m JOIN order_items i ON i.menu_id = m.id(앱 계정, mysql --quick 로 한 행씩, 주문 품목 행 추정 약 258만, 약 360초 활성)가 food MySQL fooddelivery.menus(95행, 메뉴 보기와 주문마다 읽힘)의 공유 메타데이터 잠금을 쥔 사이 운영자가 ALTER TABLE menus ADD COLUMN allergen_note varchar(255) NULL, ALGORITHM=INSTANT 를 돌림. 마이그레이션이 'Waiting for table metadata lock' 으로 기다리고 그 뒤의 menus 읽기(restaurant 의 GET /api/restaurants/{id}/menu)와 menus 를 외래 키로 가리키는 order_items INSERT 가 모두 줄을 서서 restaurant Hikari(10)가 차고 가게 상세, 검색까지 500, restaurant NotReady 와 재시작, 메뉴 보기 실패로 주문이 메뉴 단계에서 멈추고 order 에 닿은 주문은 502. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06(MySQL teams 표 INSTANT 열 추가가 5분 넘는 느린 SELECT 뒤에서 메타데이터 잠금을 기다리며 인증을 포함한 그 작은 표의 모든 질의를 막아 API 요청 75% 거절). F36-R(가게 표 열 이름 변경 마이그레이션, 1054)과 일부만 비슷(P), F60-H·F53-H 와 같은 대기열 수단에 이어 읽는 표 인자만 더함 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -273,7 +275,6 @@ A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 | F47-R | 후보 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
 | F42-P | 후보 | 음식배달 | J+F | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.5.0(fault-images/f42-p 패치로 만든 별도 태그)으로 롤아웃. 인기 메뉴 순위를 실시간으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 요청마다 최근 7일 주문을 바로 셈(order_items JOIN orders JOIN menus, 가게 한 곳, 메뉴별 COUNT). 109 MySQL 이 한가할 때 4.05~7.47초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽. 인기 메뉴 초당 약 2.5건이면 food MySQL(CPU 0.5) 포화, restaurant Hikari 10개가 집계에 묶여 가게 상세, 메뉴, 인기 메뉴가 3초 대기 뒤 500, readiness 이탈과 재시작 가능, order 가 가게, 메뉴 조회 실패로 주문 502. 스키마, 인덱스, 캐시 표는 그대로(1146 없음), 긴 활성 세션이 restaurant 파드 IP 에서 옴. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화, F42-R, F33-H 와 같은 원본). 실행 중 MySQL 재시작은 uptime 으로 배제, 시작은 MySQL anon 여유가 있을 때만 |
 | F63-R | 후보 | 은행 | J+A | 은행 API | banking api-service 를 릴리스 core-banking-api:1.5.0(fault-images/f63-r 패치로 만든 별도 태그)으로 롤아웃. 이체 접수와 거래 내역 조회에 더한 처리 마감 시간(5초)이 요청마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아 요청마다 멈춘 비데몬 스레드가 하나씩 남음. 동반 부하(api 요청 약 11건/초)에서 스레드당 약 130KiB 씩 컨테이너 메모리가 차 약 8분에 한도 1GiB, 힙은 그대로. 짧게 멈춘 뒤 커널 memcg OOM 으로 java 종료, 같은 파드 바로 재시작과 기동(Ready 까지 26~29초) 동안 nginx → api 의 이체와 거래 내역 502, 약 10분마다 되풀이. 잔액 조회, commerce 정산, account, transfer, Oracle 은 정상. 원본 Intercom 2025-04-24(새 Inbox 카운터 구현이 요청마다 스레드 묶음을 만들고 치우지 않아 웹 서버 메모리 고갈, 느림과 오류 페이지, 정기 배포와 헬스 체크 실패에 따른 호스트 교체가 잠시 살림). F41-R(account 힙 누수 재시작), F41-H(account liveness 404 재시작)와 '릴리스 뒤 재시작 고리' 증상이 같고 대상과 차오르는 자원이 다른 짝, F47-R 과 같은 api 릴리스 계열이지만 하류가 멀쩡하고 api 자신이 죽음 |
-| F36-P | 후보 | 음식배달 | D | DB 테이블(메뉴) | 메뉴별 판매 실적 내보내기 SELECT m.id, m.name, m.price, i.order_id, i.qty, i.unit_price FROM menus m JOIN order_items i ON i.menu_id = m.id(앱 계정, mysql --quick 로 한 행씩, 주문 품목 행 추정 약 258만, 약 360초 활성)가 food MySQL fooddelivery.menus(95행, 메뉴 보기와 주문마다 읽힘)의 공유 메타데이터 잠금을 쥔 사이 운영자가 ALTER TABLE menus ADD COLUMN allergen_note varchar(255) NULL, ALGORITHM=INSTANT 를 돌림. 마이그레이션이 'Waiting for table metadata lock' 으로 기다리고 그 뒤의 menus 읽기(restaurant 의 GET /api/restaurants/{id}/menu)와 menus 를 외래 키로 가리키는 order_items INSERT 가 모두 줄을 서서 restaurant Hikari(10)가 차고 가게 상세, 검색까지 500, restaurant NotReady 와 재시작, 메뉴 보기 실패로 주문이 메뉴 단계에서 멈추고 order 에 닿은 주문은 502. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06(MySQL teams 표 INSTANT 열 추가가 5분 넘는 느린 SELECT 뒤에서 메타데이터 잠금을 기다리며 인증을 포함한 그 작은 표의 모든 질의를 막아 API 요청 75% 거절). F36-R(가게 표 열 이름 변경 마이그레이션, 1054)과 일부만 비슷(P), F60-H·F53-H 와 같은 대기열 수단에 이어 읽는 표 인자만 더함 |
 | F65-P | 후보 | 쇼핑몰 | O+I | 사용자 서비스 | commerce user-service 일상 롤아웃이 낡은 인프라 코드의 배포 정의를 다시 적용해 컨테이너 env DB_USER 를 Secret 참조 대신 자격 증명 회전 전 계정 이름 commerce_app 으로 둠. maxSurge 0 이 하나뿐인 옛 파드를 먼저 내리고, 새 컨테이너는 기동 스키마 초기화에서 PostgreSQL 이 'password authentication failed for user "commerce_app"' 으로 거절해 기동 중 죽기를 되풀이(CrashLoopBackOff). user 가 비어 게이트웨이 토큰 확인이 연결 거부로 실패(AuthGuard 자기 호출이라 user 서킷, 재시도, 401 폴백이 적용되지 않음)해 모든 쓰기 500 과 게이트웨이 SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for "http://testbed-user:8085/api/users/verify-token": Connection refused', 로그인 502, 조회 정상(E2B 2026-06-25 재구성, F65-R 의 자격 증명 판, F16-H 와 같은 증상 다른 원인) |
 | F70-R | 후보 | 은행 | A | 은행 이체 서비스 | 가맹 정산 대사 시스템이 banking 거래 내역 API 로 30일치 완료 이체를 page/size 없이 1분마다 받아 가려 함(API 계약상 허용, 평시 트래픽은 늘 페이지 사용). transfer 의 TransferController.list 가 Pageable.unpaged() 로 상한 없이 약 210만 행을 관리 엔티티로 512MiB 힙에 올려 전체 GC 연속과 OutOfMemoryError 로 멈추고, api 의 10초 시간 초과 재시도가 같은 조회를 세 번으로 늘림. readiness 로 빠지고 liveness 재시작, 다음 호출에 되풀이 → banking 이체 502, commerce checkout 502, 그동안 transfer 를 기다리며 연결을 쥔 account 풀이 말라 잔액 조회 일부도 실패. 배포·설정·DB 변경 없음, Oracle 정상. Cronofy 2025-04-15 재구성(고객 질의가 건드린 버그로 요청이 의도보다 몇 자릿수 큰 값을 돌려주려 해 서버가 메모리 부족으로 죽음) |
 | F71-R | 후보 | 쇼핑몰 | O | DB 계정 | commerce PostgreSQL 애플리케이션 역할 commerce(user, cart, pricing, shipping, product, order, payment, inventory 여덟 서비스가 함께 쓰는 네트워크 비밀번호 로그인)의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지남. 새 로그인만 'password authentication failed for user "commerce"' 로 거절되고 열린 연결은 유지되어, Hikari 풀이 max-lifetime 에 연결을 잃고 못 채움: 10분 풀(user, cart, pricing, shipping)이 먼저, Hikari 기본 30분 풀(product, order, payment, inventory)이 나중에 비어 readiness 에서 빠지고 liveness 재시작, 기동 실패로 재시작 반복. 게이트웨이 토큰 확인 실패로 쓰기 500·로그인 502, 이어 상품 조회 502(원본 GitHub 2025-03 월간 보고, 만료 임박 경보 문제로 내부 서비스 자격 증명 만료) |
@@ -559,3 +560,7 @@ A, B는 각 7개(7%), L은 8개(8%), G는 12개(12%), P는 13개(13%), J는 14�
 - 2026-10-22: `case-f69-r-v3-ca74a36b` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
 - 2026-10-22: `case-f69-r-v3-ca74a36b` 환경 결함 표시: 119 stream-anomaly 수집기 정지(이번 녹화 구간 sms, nms, jvm stream 이벤트 산출 없음, 'json: unsupported value: +Inf' bands flush 오류로 워커 재시작 반복). 판정은 원시 근거 기준이라 녹화는 유효하다.
 - 2026-10-22: `F69-R` 정답지 문구 보정 후속 과제(생성 하네스 몫, 운영 하네스는 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-22-2340-F69-R-run-ca74a36b.md` 6절). ① must_support ②, distinguishing_evidence: 긴 덤프 세션 상태가 66 실측(mysql 8.0.46, DPM 수집)에서 'Sending to client' 가 아니라 'executing'(transactionState ACTIVE, queryTime 분마다 약 61초 증가)이었다. ② must_support ③: cleanup 이 min_hold 4m 뒤 덤프를 끊는 실행(덤프 약 4분 11초)에서는 DPM Top SQL 에 mysqldump 문장이 남지 않았다. ③ must_support ④, user_impact: order 첫 실패 문장이 'Read timed out' 이 아니라 'Error while extracting response … application/octet-stream'(22:47:42~), 그 뒤 Whitelabel 500, Connection refused 였다.
+- 2026-10-23: `F36-P` 정식 승격(케이스 `case-f36-p-v3-9121d2b4`). 66 실행 F36-P-run-9121d2b4(러너 tb-ops, 큐 cycle-1-2f465b90, 큐 항목 attempts 0, 첫 실행, 주기 재시작 없음)가 검증(`~/dev/testbed-ops/verifications/2026-10-23-0305-F36-P-run-9121d2b4.md`)에서 녹화 가능(주입: 고정 1단 approved-fixed-f36-p, db.ddl, 02:12:24.668 적용, cleanup 02:18:39 끝. 피해: 메뉴 보기 실패율 1.0 이 02:13:02~02:19:57, 판정 success, abort 0. 원인 근거: DPM 세션에 앱 계정 내보내기 queryTime 31,981 → 336,891ms, root 와 restaurant 파드 세션 'Waiting for table metadata lock' 최대 22개, active_session 1 → 24, restaurant Hikari 풀 가득 240줄과 'DataSource health check failed' 27줄, 롤아웃 없는 restaurant 재시작 2회, 내보내기가 끝난 분에 대기 해소와 회복. must_rule_out 신호 없음). 겹친 실행 없음, cleanup 원복, 이미지 점검 종료 0. 104 eval 세트에 적재(파일 606개, tb-ops 와 같음). 집계: 정식 99 → 100, 주 묶음 D 15 → 16, 정답 위치 DB 테이블(메뉴) 0 → 1(새 줄), 음식배달 33 → 34, 결제 경로 14/100(14.0%), 후보 18 → 17.
+- 2026-10-23: `case-f36-p-v3-9121d2b4` 기준선 표시(사람 결정): 2026-10-23 06Z 전 케이스라 119 파생 기준선(trace 14일, forecast 4일)에 109 이력이 섞임.
+- 2026-10-23: `case-f36-p-v3-9121d2b4` 환경 결함 표시: 119 stream-anomaly 수집기 정지(이번 녹화 구간 sms, nms, jvm, db 산출 없음, dpm 도 01:43:58Z 뒤 산출 없음, 'json: unsupported value: +Inf' 로 워커 재시작 반복). 이 녹화본에는 장애 구간 DPM(MySQL) stream-anomaly 이벤트가 0건이다. 판정은 원시 근거 기준이라 녹화는 유효하다.
+- 2026-10-23: `F36-P` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, 검사를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-23-0305-F36-P-run-9121d2b4.md` 4절). ① 내보내기 세션 상태가 DPM 실측에서 정답지 must_support 1, distinguishing_evidence 의 'Sending to client' 가 아니라 'executing' 이었다(queryTime 이 분마다 늘어나는 모습은 같음). ② cleanup 이 시작된 02:14:22 에 그 대기 확인 질의로 보이는 root@localhost 세션 하나(tid 17257)가 MDL 대기열에 더 서서 root 대기 세션이 02:15 부터 2개였다('마이그레이션 세션 1개' 기대와 다름). ③ menus `total_row_versions` 가 0 → 2 가 됐다(INSTANT 열 추가와 삭제). preflight 상한이 60 이라 약 30회 실행 뒤 표 재구성이 필요하다.
