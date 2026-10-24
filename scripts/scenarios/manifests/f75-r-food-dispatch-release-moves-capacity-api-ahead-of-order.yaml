@@ -3,7 +3,7 @@
   "id": "F75-R",
   "slug": "f75-r-food-dispatch-release-moves-capacity-api-ahead-of-order",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

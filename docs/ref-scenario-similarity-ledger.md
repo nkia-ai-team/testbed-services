@@ -85,7 +85,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
-| A 자원 부족, 한도 | 9 | 9% |
+| A 자원 부족, 한도 | 9 | 8% |
 | B 부품 멈춤 | 7 | 7% |
 | C 상대 서비스 오류, 지연 | 6 | 6% |
 | D DB 잠금 | 17 | 16% |
@@ -96,31 +96,31 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | I 인증 의존 실패 | 2 | 2% |
 | J 결함 있는 새 버전 배포 | 14 | 13% |
 | K 네트워크 지연, 손실, 단절 | 2 | 2% |
-| L 데이터 형식 불일치 | 8 | 8% |
+| L 데이터 형식 불일치 | 9 | 8% |
 | M DNS | 1 | 1% |
 | N 재시도가 장애를 키움 | 0 | 0% |
 | O 자격 증명 만료, 회전 실수 | 3 | 3% |
 | P 운영 작업의 대상 착오 | 13 | 12% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 2 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 37, 은행 33, 음식배달 35. 후보 12종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 37, 은행 33, 음식배달 36. 후보 11종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 26개뿐이고(J 14, G 12. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P 열셋뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-B는 7개(7%), L은 8개(8%), A는 9개(9%), G는 12개(11%), P는 13개(12%), J는 14개(13%), D는 17개(16%)로 20%에 가깝다. 서비스는 은행(33), 음식배달(35) 순으로 채운다.
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 26개뿐이고(J 14, G 12. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H, F75-R 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P 열셋뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J는 14개(13%), D는 17개(16%)로 20%에 가깝다. 서비스는 은행(33), 음식배달(36) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 105종):
+정답 위치별 정식 (2-1 정의, 정식 106종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
 | 주문 서비스 | 8 | 8% |
 | 외부 결제 의존 | 6 | 6% |
-| 은행 이체 서비스 | 9 | 9% |
+| 은행 이체 서비스 | 9 | 8% |
 | DB 테이블(은행 계좌) | 5 | 5% |
 | DB 테이블(재고) | 3 | 3% |
 | DB 테이블(배차) | 4 | 4% |
 | DB 계정 | 4 | 4% |
 | 결제 서비스 | 4 | 4% |
-| 배달 서비스 | 7 | 7% |
+| 배달 서비스 | 8 | 8% |
 | 노드, 디스크 | 6 | 6% |
 | DB 인스턴스 | 2 | 2% |
 | 은행 계좌 서비스 | 6 | 6% |
@@ -156,7 +156,7 @@ B는 7개(7%), L은 8개(8%), A는 9개(9%), G는 12개(11%), P는 13개(12%), J
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **14** | **13%** |
 
-결제 경로는 정식만으로 13%(13.3%, 14/105. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 13%(13.2%, 14/106. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -269,6 +269,7 @@ B는 7개(7%), L은 8개(8%), A는 9개(9%), G는 12개(11%), P는 13개(12%), J
 | F71-R | 정식 | 쇼핑몰 | O | DB 계정 | commerce PostgreSQL 애플리케이션 역할 commerce(user, cart, pricing, shipping, product, order, payment, inventory 여덟 서비스가 함께 쓰는 네트워크 비밀번호 로그인)의 비밀번호 유효 기한(VALID UNTIL)이 갱신 없이 지남. 새 로그인만 'password authentication failed for user "commerce"' 로 거절되고 열린 연결은 유지되어, Hikari 풀이 max-lifetime 에 연결을 잃고 못 채움: 10분 풀(user, cart, pricing, shipping)이 먼저, Hikari 기본 30분 풀(product, order, payment, inventory)이 나중에 비어 readiness 에서 빠지고 liveness 재시작, 기동 실패로 재시작 반복. 게이트웨이 토큰 확인 실패로 쓰기 500·로그인 502, 이어 상품 조회 502(원본 GitHub 2025-03 월간 보고, 만료 임박 경보 문제로 내부 서비스 자격 증명 만료) |
 | F70-P | 정식 | 음식배달 | A | 배달 서비스 | 배달원 정산 시스템(바깥 파트너)이 food 배달 목록 API(dispatch NodePort)로 배달 완료 내역 전부를 page/size 없이 약 2분 반마다 받아 가려 함(API 계약상 허용, 평시 트래픽은 늘 page=0&size=20). dispatch 의 DispatchController.getDeliveries 가 Pageable.unpaged() 로 findByStatus 를 상한 없이 돌려 약 174만 행을 관리 엔티티로 기본 힙(-Xmx 없이 1GiB 의 25%, 약 247MiB, Serial GC)에 올려 약 10~15초 만에 연속 GC 로 멈추고 liveness 재시작, 다음 호출에 되풀이. order 의 배달원 용량 확인이 시간 초과·서킷 열림·연결 거부로 끝나 새 주문 전부 주문 저장 전 503. 배포·설정·DB 변경 없음, F70-R 과 같은 원본(Cronofy 2025-04-15)·결함 꼴의 음식배달 판 |
 | F73-R | 정식 | 쇼핑몰 | D | DB 테이블(상품) | 카테고리별 매출을 분석 저장소로 옮기는 느린 내보내기(COPY ... FROM product_schema.products m JOIN order_schema.order_items i, 주문 품목 약 618만 행에 상품의 카테고리, 이름, 가격을 붙여 약 6분 활성)가 commerce PostgreSQL 의 작은 상품 표 product_schema.products(2,016행, 둘러보기와 checkout 마다 읽힘)의 ACCESS SHARE 를 쥔 사이 상품 팀이 같은 표에 null 허용 열(brand)을 더하는 마이그레이션(카탈로그만)을 돌려 ACCESS EXCLUSIVE 를 기다리고, 그 뒤의 products 문장이 단순 읽기까지 모두 줄을 섬. product-service 의 목록, 상세, 검색, 변형 조회와 checkout 재고 예약 앞 상품 조회가 연결을 쥔 채 멈춰 product 풀(기본 10)이 마르고 NotReady 와 재시작(기동 schema.sql 의 CREATE INDEX IF NOT EXISTS 도 같은 줄), 게이트웨이 product 서킷이 열려 상품 둘러보기 5xx, checkout 은 결제 전 502. 로그인, 장바구니는 정상. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06(요청마다 읽히는 작은 teams 표의 INSTANT 열 추가가 느린 SELECT 뒤에서 잠금을 기다려 그 표의 모든 질의를 막음). 같은 원인 F66-R(회원 표), F36-P(food 메뉴 표), 같은 증상 F23-P(상품 표 지우기) |
+| F75-R | 정식 | 음식배달 | L+J | 배달 서비스 | food dispatch-service 만 릴리스 food-delivery-dispatch:1.10.0(fault-images/f75-r 패치로 만든 별도 태그)으로 롤아웃. order-service 2.6.0 과 짝으로 나가야 했던 이 버전이 배달원 용량 조회를 배차 자원에서 배달원 자원으로 옮겨 GET /api/deliveries/capacity 를 지우고 GET /api/couriers/capacity 를 새로 뒀는데, 짝 order 릴리스는 배포되지 않음. 바뀌지 않은 order 가 주문마다 옛 경로로 용량을 확인하면 새 dispatch 가 그 경로를 GET /api/deliveries/{id} 에 맞춰 'capacity' 를 Long 으로 못 바꿔 400(WARN MethodArgumentTypeMismatchException), order 가 'Failed to check dispatch capacity: 400' 뒤 재시도와 서킷 대체 응답으로 모든 새 주문을 약 0.65초 만에 503. 주문 행 저장 전이라 주문, 배차, 결제가 남지 않고 order 와 dispatch 는 Ready, 배달 조회는 정상. Stitch 2023-03-13 재구성(정기 배포에서 일부 내부 서비스만 배포되어 서비스 사이 인터페이스 버전이 어긋나 시간 초과와 400~403, 모든 서비스를 다시 배포해 맞춤). F49-H(order 릴리스 쪽이 계약을 깨 정답 order)와 같은 order↔dispatch 계약 깨짐과 503 이지만 롤아웃된 쪽이 반대라 정답이 다름 |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -282,7 +283,6 @@ B는 7개(7%), L은 8개(8%), A는 9개(9%), G는 12개(11%), P는 13개(12%), J
 | F63-R | 후보 | 은행 | J+A | 은행 API | banking api-service 를 릴리스 core-banking-api:1.5.0(fault-images/f63-r 패치로 만든 별도 태그)으로 롤아웃. 이체 접수와 거래 내역 조회에 더한 처리 마감 시간(5초)이 요청마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아 요청마다 멈춘 비데몬 스레드가 하나씩 남음. 동반 부하(api 요청 약 11건/초)에서 스레드당 약 130KiB 씩 컨테이너 메모리가 차 약 8분에 한도 1GiB, 힙은 그대로. 짧게 멈춘 뒤 커널 memcg OOM 으로 java 종료, 같은 파드 바로 재시작과 기동(Ready 까지 26~29초) 동안 nginx → api 의 이체와 거래 내역 502, 약 10분마다 되풀이. 잔액 조회, commerce 정산, account, transfer, Oracle 은 정상. 원본 Intercom 2025-04-24(새 Inbox 카운터 구현이 요청마다 스레드 묶음을 만들고 치우지 않아 웹 서버 메모리 고갈, 느림과 오류 페이지, 정기 배포와 헬스 체크 실패에 따른 호스트 교체가 잠시 살림). F41-R(account 힙 누수 재시작), F41-H(account liveness 404 재시작)와 '릴리스 뒤 재시작 고리' 증상이 같고 대상과 차오르는 자원이 다른 짝, F47-R 과 같은 api 릴리스 계열이지만 하류가 멀쩡하고 api 자신이 죽음 |
 | F72-R | 후보 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 Oracle 리스너 포트 1521 로 가는 새 연결을 노드 주소와 호스트, 관리망(10.244.1.1/32, 다른 노드 flannel 주소 셋, 192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)에서만 받도록 좁히면서 같은 노드의 banking 앱 파드(account, transfer, ledger, 10.244.1.x)를 빠뜨림. 열린 Hikari 세션은 수명(10분)까지 통하다가 다시 맺는 SYN 이 버려져 ORA-12170 TCP connect timeout, 풀이 비어 세 파드가 readiness 에서 빠지고 banking 잔액, 이체와 commerce 정산이 502. Oracle 은 Ready 이고 DPM 수집은 계속(Harness 2024-09-01 재구성) |
 | F74-R | 후보 | 은행 | F+E | 은행 이체 서비스 | 가맹점 입금 알림 제휴 연동이 banking 거래 내역 API 로 가맹점 계좌 8개의 '오늘 완료 입금이 있는가'를 확인하는 주기를 계좌당 60초에서 1초로 줄임(초당 8건, toAccount=…&status=COMPLETED&from=<오늘>&page=0&size=1, API 계약상 허용). 한 건만 필요한 확인마다 transfer 목록 API 가 Spring Data Page 의 건수 질의(sql_id byb2y2hv7p4ag, OR-null 술어라 BANKING.TRANSFERS 약 650만 행 전수, 실행당 약 10.3만 읽기, CPU 0.25~0.6초)를 함께 돌려 Oracle CPU 2개를 다 쓰고(resmgr:cpu quantum), transfer Hikari 15개가 그 뒤에 묶여 이체 쓰기 500, account 서킷, api 502, commerce checkout 502 가 몇 초 단위로 오르내림(api transferClient 서킷 주기). 배포·설정·DB·잠금 변경 없음, 기존 문장의 실행 수만 뜀. Fly.io 2026-04-23 재구성(제휴 제공사의 폴링 빈도 증가 × 존재 확인에 필요 이상 행을 훑는 질의 → DB CPU 포화, 간헐적 500). F42-R(릴리스의 새 전수 스캔 질의로 같은 Oracle 포화)과 같은 증상 다른 원인 |
-| F75-R | 후보 | 음식배달 | L+J | 배달 서비스 | food dispatch-service 만 릴리스 food-delivery-dispatch:1.10.0(fault-images/f75-r 패치로 만든 별도 태그)으로 롤아웃. order-service 2.6.0 과 짝으로 나가야 했던 이 버전이 배달원 용량 조회를 배차 자원에서 배달원 자원으로 옮겨 GET /api/deliveries/capacity 를 지우고 GET /api/couriers/capacity 를 새로 뒀는데, 짝 order 릴리스는 배포되지 않음. 바뀌지 않은 order 가 주문마다 옛 경로로 용량을 확인하면 새 dispatch 가 그 경로를 GET /api/deliveries/{id} 에 맞춰 'capacity' 를 Long 으로 못 바꿔 400(WARN MethodArgumentTypeMismatchException), order 가 'Failed to check dispatch capacity: 400' 뒤 재시도와 서킷 대체 응답으로 모든 새 주문을 약 0.65초 만에 503. 주문 행 저장 전이라 주문, 배차, 결제가 남지 않고 order 와 dispatch 는 Ready, 배달 조회는 정상. Stitch 2023-03-13 재구성(정기 배포에서 일부 내부 서비스만 배포되어 서비스 사이 인터페이스 버전이 어긋나 시간 초과와 400~403, 모든 서비스를 다시 배포해 맞춤). F49-H(order 릴리스 쪽이 계약을 깨 정답 order)와 같은 order↔dispatch 계약 깨짐과 503 이지만 롤아웃된 쪽이 반대라 정답이 다름 |
 | F76-R | 후보 | 쇼핑몰 | J | 상품 서비스 | commerce product-service 를 릴리스 commerce-product:1.4.0(fault-images/f76-r 패치로 만든 별도 태그)으로 롤아웃. 성인 인증 표시와 함량 필터를 위해 상품 목록, 상세 응답에 액상 상품의 니코틴 함량(mg)을 더했는데, 설명의 'N mg' 을 정규식으로 찾으며 Matcher.find() 결과를 보지 않고 group(1) 을 불러, 설명에 함량 표기가 없는 액상 상품(운영 카탈로그 액상 504개 중 대량 등록 500개, 개발 시드의 대표 액상 4개는 모두 'N mg' 이나 '무니코틴')을 응답에 담는 순간 IllegalStateException('No match found')으로 500. 카테고리 없는 목록 모든 쪽, category=2, 그런 상품이 걸리는 검색이 실패하고 다른 카테고리, 상세, reserve-stock, checkout 은 정상. 질의, DB, 설정 변경 없음. 원본 GitLab 2026-03-17 production#21573(기능 변경의 잘못된 호출이 애드온이 있는 네임스페이스의 프로젝트에서만 API 직렬화 중 NoMethodError, MR 생성과 프로젝트 API 500) |
 | F76-P | 후보 | 음식배달 | J | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.7.0(fault-images/f76-p 패치로 만든 별도 태그)으로 롤아웃. 앱 메뉴 화면의 '조리 약 N분' 을 위해 메뉴 응답에 카테고리별 예상 조리 시간을 더했는데, 표가 출시 카테고리(분식, 중식, 치킨) 셋뿐이고 Map.get 결과를 확인 없이 int 로 받아, 카테고리 4~8 인 운영 가게 11곳(19~23, 27~31, 35)의 메뉴를 담는 순간 NullPointerException 으로 500. 그 가게들의 메뉴 보기가 모두 실패(메뉴 단계 약 0.48)하고 가게 상세, 지역 검색, 인기 메뉴, 나머지 가게 메뉴와 주문은 정상. 원본 GitLab 2026-03-17 production#21573(F76-R 과 같은 원본의 food 판) |
 | F77-R | 후보 | 은행 | P+B | 은행 이체 서비스 | 원장 재처리 워커를 띄우려고 transfer-service 매니페스트를 복사해 이미지만 core-banking-ledger:latest 로 바꾸고 이름 testbed-transfer 를 그대로 둔 채 적용해, 새 워크로드 대신 살아 있는 transfer Deployment 의 이미지가 원장 이미지로 바뀜(이름 충돌). maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 원장 앱으로 떠 8083 에서 듣는데 transfer 프로브는 8082 라 기동 확인이 끝내 실패해 재시작을 되풀이, transfer 엔드포인트가 비어 banking 이체, 거래 내역, commerce checkout 정산이 Connection refused 끝에 502. 잔액 조회와 진짜 원장은 정상. 원본 Coinbase 2026-07-14(일상 설정 변경이 자원 이름 충돌로 Istio 인그레스 게이트웨이 자원을 바꿔 클러스터 진입 트래픽 정지) |
@@ -583,3 +583,7 @@ B는 7개(7%), L은 8개(8%), A는 9개(9%), G는 12개(11%), P는 13개(12%), J
 - 2026-10-24: `case-f73-r-v3-4ef2a131` 환경 결함 표시: 119 stream-anomaly 수집기 정지. 2026-10-23 21:52Z 정지 뒤 trainer_reset(23:52:08) 직후 23:52:29 부터 다시 돌다가 장애 구간에서 sms·nms·jvm·db 경로가 다시 멈췄다(마지막 nms 02:01:32, db 02:02:40, sms 02:04:26, jvm 02:06:03, 02:15 뒤 0건, VM `jvm.*.bands`·`db.*.bands` 시계열도 01:59 무렵 끊김). dpm 경로만 계속된다(02:53:37). 그래서 장애 중 product JVM 계열 이상 이벤트가 없다. 판정은 원시 근거(DPM 세션 스냅숏, 로그, KCM, Top SQL) 기준이라 녹화는 유효하다.
 - 2026-10-24: `F73-R` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, 검사, 러너를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-24-0257-F73-R-run-4ef2a131.md` 2절 3단계와 4절). ① 잠금 사슬에 낀 psql 세션 47689(IP 없음, DB 파드 안, 02:05:19 스냅숏부터 blocked/Lock/relation/products, blockingPid 47556, queryTime 으로 세면 02:04:31 시작이라 cleanup 요청 02:04:30.2 직후)의 출처를 러너 쪽에서 확인할 것. products 를 읽는 탐침이면 `SET lock_timeout` 을 붙이거나 cleanup 동안 부르지 않게 하면 녹화본 사슬이 설계와 같아진다(보강 제안일 뿐 이번엔 고치지 않음). ② 설계 시트·정답지의 "30일 commerce-product Hikari 0줄", "30일 testbed-product 이벤트 0건" 문구가 지금 사실과 다르다(83줄, 158건, 모두 다른 실행). 평가 근거는 평시 2시간 0 으로 성립한다.
 - 2026-10-24: `case-f73-r-v3-4ef2a131` 수집 메모: ① product 두 번째 재시작(kubectl lastState Error 02:09:38, startupProbe)의 KCM Killing/Started 이벤트가 없다(같은 시각 다른 네임스페이스 KCM 이벤트는 들어와 수집기 정지는 아님). ② trace-anomaly 일괄 시각이 :24 에서 :51 로 옮겨 장애 트레이스 이상은 02:51:53 에 나와 capture_end(02:39:56) 뒤다. 녹화본 장애 구간에는 trace-anomaly 이벤트가 0건이다.
+- 2026-10-24: `F75-R` 정식 승격(케이스 `case-f75-r-v3-2e645346`). 66 실행 F75-R-run-2e645346(러너 tb-ops, 큐 cycle-1-6247a756, 큐 항목 attempts 0, 첫 실행, 주기 재시작 없음)가 검증(`~/dev/testbed-ops/verifications/2026-10-24-0958-F75-R-run-2e645346.md`)에서 녹화 가능(주입: 고정 단 approved-fixed-f75-r, k8s.image release 모드로 testbed-dispatch 만 food-delivery-dispatch:1.10.0 으로 롤아웃, load.north_south 동반 부하 2rps, t1 08:51:10, t2 09:08:40. 녹화 구간 06:40:51~09:38:40, 평시 06:51:10~08:51:10, 장애 08:51:10~09:38:40. 계기: KCM ScalingReplicaSet 08:51:28, Pulled 'food-delivery-dispatch:1.10.0' 08:51:29, testbed-order 롤아웃·재시작 없음. 피해: 08:53:40~09:08:26 order 'Failed to check dispatch capacity: 400' ERROR 490줄과 dispatch 'MethodArgumentTypeMismatchException … "capacity"' WARN 490줄(둘 다 30일 0줄), 'Created order' 14분 55초 0줄, POST /api/orders 503 p50 0.61초, 판정 success 연속 21, abort 0, must_rule_out 신호 없음). 겹친 실행 없음(F74-R 식힘 끝 06:04:56 보다 녹화 시작이 35분 55초 뒤, 직접 계산), cleanup 원복(latest, tb-w3 에 1.10.0 없음), 이미지 점검 종료 0. 104 eval 세트에 적재(파일 642개, tb-ops 와 같음). 집계: 정식 105 → 106, 주 묶음 L 8 → 9, 정답 위치 배달 서비스 7 → 8, 음식배달 35 → 36, 결제 경로 14/106(13.2%, 표 13%), 비율 재계산으로 A 9%→8%, 은행 이체 서비스 9%→8%, 배달 서비스 7%→8%, 후보 12 → 11. 녹화 평시 안에 F74-R 여파 banking 인시던트(07:25, 07:47, 07:56)가 배경으로 들어 있다(food 멤버 없음).
+- 2026-10-24: `F75-R` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, controller, 검사, 러너를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-24-0958-F75-R-run-2e645346.md` 3-3, 3-5, 4절). ① 정답지 must_support 1번과 distinguishing_evidence 의 "그 전 testbed-dispatch 롤아웃은 전부 food-delivery-dispatch:latest(마지막 2026-10-11)"가 낡았다. 10-13~10-21 에 1.6.0, 1.7.0, 1.8.0, 1.9.0 롤아웃(F33-H, F43-P, F55-R, F63-P 실행분)이 있다. "1.10.0 은 처음이고 다른 릴리스 태그는 다른 날짜의 별개 롤아웃"으로 고치기를 권한다. ② controller entry_status 주석과 설계 시트 §4-2 의 "롤아웃 약 42초"가 지금 tb-w3 에서 2분 남짓이다(새 ReplicaSet 08:51:28 → 옛 ReplicaSet 축소 08:53:39 2분 11초, 기동 94.9초. latest 로 되돌릴 때도 2분 6초). 피해 시작은 t1 + 2.5분이다. ③ 설계 시트에 §11(첫 실행 확인 항목)이 없다. 보고서 §3-5 표를 §11 로 옮겨 두기를 권한다.
+- 2026-10-24: `case-f75-r-v3-2e645346` 환경 결함 표시: 119 stream-anomaly 수집기 정지. dpm 외 경로(sms, nms, jvm, db.client)가 05:16:26 에 멈췄다가 06:40:45 에 다시 돌고, 07:26:11 에 또 멈춰 09:14:30 에야 돌아왔다. 주입 구간 전체(08:51~09:08)에 이 경로들의 이상 이벤트가 없다(order 오류율, 응답시간 같은 APM 지표 이상 이벤트 없음. 원지표는 VM 에 그대로 들어옴). F73-R, F74-R 에서 본 정지와 같은 꼴이다. 판정은 원시 근거(KCM, 로그, 스팬, tick) 기준이라 녹화는 유효하다.
+- 2026-10-24: `case-f75-r-v3-2e645346` 제품 관찰 메모(판정에 쓰지 않음): dispatch 의 새 WARN 'Resolved [...MethodArgumentTypeMismatchException ... For input string: "capacity"]' 490줄(30일 0줄)과 'Dispatched courier' 15분 소멸에서 dispatch log-anomaly 가 0건이라 군집과 인시던트에 정답 대상 dispatch 멤버가 없다. 또 08:56:19 에 superseded 된 군집 ced9d216, 28ff512f 가 08:59 에 다시 promote 되어 한 장애가 인시던트 3건(b81374aa, 8d22b04b, 6927bce0)으로 갈라졌다(merged_into 비어 있음). 상세는 `~/dev/testbed-ops/product-findings.md`.
