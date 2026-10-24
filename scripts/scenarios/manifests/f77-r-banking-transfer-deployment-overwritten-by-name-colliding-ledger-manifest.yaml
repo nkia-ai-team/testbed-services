@@ -3,7 +3,7 @@
   "id": "F77-R",
   "slug": "f77-r-banking-transfer-deployment-overwritten-by-name-colliding-ledger-manifest",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

@@ -43,15 +43,6 @@
       "hold_reason": "강도로 해결 불가(강도 보강 에이전트 결과 RESULT: HOLD 강도로 해결 불가). F74-R-run-0ccd1388 에서 폴링 중 byb2y2hv7p4ag 실행 수는 그대로였지만 같은 sql_id 의 계획이 2603328921→847607780 으로(99nsgbv90qrn7 은 3932630749→326614049) 바뀌어 must_rule_out '계획도 같다'를 어겼다. 계획 교체는 폴링 바인드 모양(toAccount 채움, fromAccount null)에서 생긴 것으로 보인다. 폴링 시작 1~2분 뒤 실행 185회 만에 바뀌었으므로 강도와 비례하지 않는다. 남은 해법(SPM 계획 고정=DB 쓰기, 폴링 바인드 모양 변경=주입 수단 변경, recovery 에 Oracle 조건 추가=판정 조건 변경)은 모두 강도 보강 범위 밖이라 사람 결정 필요. 결정 뒤 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 덤프본은 tb-ops /data/eval-cases/_rejected/case-f74-r-v3-0ccd1388 로 옮김. 근거: 검증 보고서 testbed-ops/verifications/2026-10-24-0624-F74-R-run-0ccd1388.md, tb-ops /root/rca-scenario-runner/runs/F74-R-run-0ccd1388/"
     },
     {
-      "scenario_id": "F77-R",
-      "reason": "new",
-      "note": "새 시나리오 첫 검증",
-      "requested_by": "testbed-scenario-create",
-      "requested_at": "2026-10-12",
-      "attempts": 0,
-      "status": "waiting"
-    },
-    {
       "scenario_id": "F71-H",
       "reason": "new",
       "note": "새 시나리오 첫 검증",
