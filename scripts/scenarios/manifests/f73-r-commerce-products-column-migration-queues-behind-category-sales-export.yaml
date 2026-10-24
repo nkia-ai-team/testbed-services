@@ -3,7 +3,7 @@
   "id": "F73-R",
   "slug": "f73-r-commerce-products-column-migration-queues-behind-category-sales-export",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
