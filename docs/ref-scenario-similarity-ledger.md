@@ -86,7 +86,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
 | A 자원 부족, 한도 | 9 | 8% |
-| B 부품 멈춤 | 7 | 7% |
+| B 부품 멈춤 | 7 | 6% |
 | C 상대 서비스 오류, 지연 | 6 | 6% |
 | D DB 잠금 | 17 | 16% |
 | E 처리 용량 초과 | 4 | 4% |
@@ -94,7 +94,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | G 설정 오배포 | 12 | 11% |
 | H 데이터가 조용히 틀어짐 | 2 | 2% |
 | I 인증 의존 실패 | 2 | 2% |
-| J 결함 있는 새 버전 배포 | 15 | 14% |
+| J 결함 있는 새 버전 배포 | 16 | 15% |
 | K 네트워크 지연, 손실, 단절 | 2 | 2% |
 | L 데이터 형식 불일치 | 9 | 8% |
 | M DNS | 1 | 1% |
@@ -103,12 +103,12 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | P 운영 작업의 대상 착오 | 13 | 12% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 2 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 38, 은행 33, 음식배달 36. 후보 10종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 38, 은행 33, 음식배달 37. 후보 9종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 27개뿐이고(J 15, G 12. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H, F75-R 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P 열셋뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J는 15개(14%), D는 17개(16%)로 20%에 가깝다. 서비스는 은행(33), 음식배달(36) 순으로 채운다.
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 28개뿐이고(J 16, G 12. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H, F75-R 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P 열셋뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J는 16개(15%), D는 17개(16%)로 20%에 가깝다. 서비스는 은행(33), 음식배달(37) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 107종):
+정답 위치별 정식 (2-1 정의, 정식 108종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -128,7 +128,7 @@ B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J
 | DB 테이블(결제) | 3 | 3% |
 | DB 테이블(이체) | 2 | 2% |
 | 내부 배치 작업 | 3 | 3% |
-| 가게 서비스 | 2 | 2% |
+| 가게 서비스 | 3 | 3% |
 | 은행 API | 3 | 3% |
 | DB 테이블(가게) | 1 | 1% |
 | DB 테이블(결제 로그) | 1 | 1% |
@@ -156,7 +156,7 @@ B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **14** | **13%** |
 
-결제 경로는 정식만으로 13%(13.1%, 14/107. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 13%(13.0%, 14/108. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -271,6 +271,7 @@ B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J
 | F73-R | 정식 | 쇼핑몰 | D | DB 테이블(상품) | 카테고리별 매출을 분석 저장소로 옮기는 느린 내보내기(COPY ... FROM product_schema.products m JOIN order_schema.order_items i, 주문 품목 약 618만 행에 상품의 카테고리, 이름, 가격을 붙여 약 6분 활성)가 commerce PostgreSQL 의 작은 상품 표 product_schema.products(2,016행, 둘러보기와 checkout 마다 읽힘)의 ACCESS SHARE 를 쥔 사이 상품 팀이 같은 표에 null 허용 열(brand)을 더하는 마이그레이션(카탈로그만)을 돌려 ACCESS EXCLUSIVE 를 기다리고, 그 뒤의 products 문장이 단순 읽기까지 모두 줄을 섬. product-service 의 목록, 상세, 검색, 변형 조회와 checkout 재고 예약 앞 상품 조회가 연결을 쥔 채 멈춰 product 풀(기본 10)이 마르고 NotReady 와 재시작(기동 schema.sql 의 CREATE INDEX IF NOT EXISTS 도 같은 줄), 게이트웨이 product 서킷이 열려 상품 둘러보기 5xx, checkout 은 결제 전 502. 로그인, 장바구니는 정상. 내보내기가 끝나면 스스로 풀림. 원본 Honeycomb 2024-08-06(요청마다 읽히는 작은 teams 표의 INSTANT 열 추가가 느린 SELECT 뒤에서 잠금을 기다려 그 표의 모든 질의를 막음). 같은 원인 F66-R(회원 표), F36-P(food 메뉴 표), 같은 증상 F23-P(상품 표 지우기) |
 | F75-R | 정식 | 음식배달 | L+J | 배달 서비스 | food dispatch-service 만 릴리스 food-delivery-dispatch:1.10.0(fault-images/f75-r 패치로 만든 별도 태그)으로 롤아웃. order-service 2.6.0 과 짝으로 나가야 했던 이 버전이 배달원 용량 조회를 배차 자원에서 배달원 자원으로 옮겨 GET /api/deliveries/capacity 를 지우고 GET /api/couriers/capacity 를 새로 뒀는데, 짝 order 릴리스는 배포되지 않음. 바뀌지 않은 order 가 주문마다 옛 경로로 용량을 확인하면 새 dispatch 가 그 경로를 GET /api/deliveries/{id} 에 맞춰 'capacity' 를 Long 으로 못 바꿔 400(WARN MethodArgumentTypeMismatchException), order 가 'Failed to check dispatch capacity: 400' 뒤 재시도와 서킷 대체 응답으로 모든 새 주문을 약 0.65초 만에 503. 주문 행 저장 전이라 주문, 배차, 결제가 남지 않고 order 와 dispatch 는 Ready, 배달 조회는 정상. Stitch 2023-03-13 재구성(정기 배포에서 일부 내부 서비스만 배포되어 서비스 사이 인터페이스 버전이 어긋나 시간 초과와 400~403, 모든 서비스를 다시 배포해 맞춤). F49-H(order 릴리스 쪽이 계약을 깨 정답 order)와 같은 order↔dispatch 계약 깨짐과 503 이지만 롤아웃된 쪽이 반대라 정답이 다름 |
 | F76-R | 정식 | 쇼핑몰 | J | 상품 서비스 | commerce product-service 를 릴리스 commerce-product:1.4.0(fault-images/f76-r 패치로 만든 별도 태그)으로 롤아웃. 성인 인증 표시와 함량 필터를 위해 상품 목록, 상세 응답에 액상 상품의 니코틴 함량(mg)을 더했는데, 설명의 'N mg' 을 정규식으로 찾으며 Matcher.find() 결과를 보지 않고 group(1) 을 불러, 설명에 함량 표기가 없는 액상 상품(운영 카탈로그 액상 504개 중 대량 등록 500개, 개발 시드의 대표 액상 4개는 모두 'N mg' 이나 '무니코틴')을 응답에 담는 순간 IllegalStateException('No match found')으로 500. 카테고리 없는 목록 모든 쪽, category=2, 그런 상품이 걸리는 검색이 실패하고 다른 카테고리, 상세, reserve-stock, checkout 은 정상. 질의, DB, 설정 변경 없음. 원본 GitLab 2026-03-17 production#21573(기능 변경의 잘못된 호출이 애드온이 있는 네임스페이스의 프로젝트에서만 API 직렬화 중 NoMethodError, MR 생성과 프로젝트 API 500) |
+| F76-P | 정식 | 음식배달 | J | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.7.0(fault-images/f76-p 패치로 만든 별도 태그)으로 롤아웃. 앱 메뉴 화면의 '조리 약 N분' 을 위해 메뉴 응답에 카테고리별 예상 조리 시간을 더했는데, 표가 출시 카테고리(분식, 중식, 치킨) 셋뿐이고 Map.get 결과를 확인 없이 int 로 받아, 카테고리 4~8 인 운영 가게 11곳(19~23, 27~31, 35)의 메뉴를 담는 순간 NullPointerException 으로 500. 그 가게들의 메뉴 보기가 모두 실패(메뉴 단계 약 0.48)하고 가게 상세, 지역 검색, 인기 메뉴, 나머지 가게 메뉴와 주문은 정상. 원본 GitLab 2026-03-17 production#21573(F76-R 과 같은 원본의 food 판) |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -284,7 +285,6 @@ B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J
 | F63-R | 후보 | 은행 | J+A | 은행 API | banking api-service 를 릴리스 core-banking-api:1.5.0(fault-images/f63-r 패치로 만든 별도 태그)으로 롤아웃. 이체 접수와 거래 내역 조회에 더한 처리 마감 시간(5초)이 요청마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아 요청마다 멈춘 비데몬 스레드가 하나씩 남음. 동반 부하(api 요청 약 11건/초)에서 스레드당 약 130KiB 씩 컨테이너 메모리가 차 약 8분에 한도 1GiB, 힙은 그대로. 짧게 멈춘 뒤 커널 memcg OOM 으로 java 종료, 같은 파드 바로 재시작과 기동(Ready 까지 26~29초) 동안 nginx → api 의 이체와 거래 내역 502, 약 10분마다 되풀이. 잔액 조회, commerce 정산, account, transfer, Oracle 은 정상. 원본 Intercom 2025-04-24(새 Inbox 카운터 구현이 요청마다 스레드 묶음을 만들고 치우지 않아 웹 서버 메모리 고갈, 느림과 오류 페이지, 정기 배포와 헬스 체크 실패에 따른 호스트 교체가 잠시 살림). F41-R(account 힙 누수 재시작), F41-H(account liveness 404 재시작)와 '릴리스 뒤 재시작 고리' 증상이 같고 대상과 차오르는 자원이 다른 짝, F47-R 과 같은 api 릴리스 계열이지만 하류가 멀쩡하고 api 자신이 죽음 |
 | F72-R | 후보 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 Oracle 리스너 포트 1521 로 가는 새 연결을 노드 주소와 호스트, 관리망(10.244.1.1/32, 다른 노드 flannel 주소 셋, 192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)에서만 받도록 좁히면서 같은 노드의 banking 앱 파드(account, transfer, ledger, 10.244.1.x)를 빠뜨림. 열린 Hikari 세션은 수명(10분)까지 통하다가 다시 맺는 SYN 이 버려져 ORA-12170 TCP connect timeout, 풀이 비어 세 파드가 readiness 에서 빠지고 banking 잔액, 이체와 commerce 정산이 502. Oracle 은 Ready 이고 DPM 수집은 계속(Harness 2024-09-01 재구성) |
 | F74-R | 후보 | 은행 | F+E | 은행 이체 서비스 | 가맹점 입금 알림 제휴 연동이 banking 거래 내역 API 로 가맹점 계좌 8개의 '오늘 완료 입금이 있는가'를 확인하는 주기를 계좌당 60초에서 1초로 줄임(초당 8건, toAccount=…&status=COMPLETED&from=<오늘>&page=0&size=1, API 계약상 허용). 한 건만 필요한 확인마다 transfer 목록 API 가 Spring Data Page 의 건수 질의(sql_id byb2y2hv7p4ag, OR-null 술어라 BANKING.TRANSFERS 약 650만 행 전수, 실행당 약 10.3만 읽기, CPU 0.25~0.6초)를 함께 돌려 Oracle CPU 2개를 다 쓰고(resmgr:cpu quantum), transfer Hikari 15개가 그 뒤에 묶여 이체 쓰기 500, account 서킷, api 502, commerce checkout 502 가 몇 초 단위로 오르내림(api transferClient 서킷 주기). 배포·설정·DB·잠금 변경 없음, 기존 문장의 실행 수만 뜀. Fly.io 2026-04-23 재구성(제휴 제공사의 폴링 빈도 증가 × 존재 확인에 필요 이상 행을 훑는 질의 → DB CPU 포화, 간헐적 500). F42-R(릴리스의 새 전수 스캔 질의로 같은 Oracle 포화)과 같은 증상 다른 원인 |
-| F76-P | 후보 | 음식배달 | J | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.7.0(fault-images/f76-p 패치로 만든 별도 태그)으로 롤아웃. 앱 메뉴 화면의 '조리 약 N분' 을 위해 메뉴 응답에 카테고리별 예상 조리 시간을 더했는데, 표가 출시 카테고리(분식, 중식, 치킨) 셋뿐이고 Map.get 결과를 확인 없이 int 로 받아, 카테고리 4~8 인 운영 가게 11곳(19~23, 27~31, 35)의 메뉴를 담는 순간 NullPointerException 으로 500. 그 가게들의 메뉴 보기가 모두 실패(메뉴 단계 약 0.48)하고 가게 상세, 지역 검색, 인기 메뉴, 나머지 가게 메뉴와 주문은 정상. 원본 GitLab 2026-03-17 production#21573(F76-R 과 같은 원본의 food 판) |
 | F77-R | 후보 | 은행 | P+B | 은행 이체 서비스 | 원장 재처리 워커를 띄우려고 transfer-service 매니페스트를 복사해 이미지만 core-banking-ledger:latest 로 바꾸고 이름 testbed-transfer 를 그대로 둔 채 적용해, 새 워크로드 대신 살아 있는 transfer Deployment 의 이미지가 원장 이미지로 바뀜(이름 충돌). maxSurge 0 이라 옛 파드가 먼저 내려가고 새 파드는 원장 앱으로 떠 8083 에서 듣는데 transfer 프로브는 8082 라 기동 확인이 끝내 실패해 재시작을 되풀이, transfer 엔드포인트가 비어 banking 이체, 거래 내역, commerce checkout 정산이 Connection refused 끝에 502. 잔액 조회와 진짜 원장은 정상. 원본 Coinbase 2026-07-14(일상 설정 변경이 자원 이름 충돌로 Istio 인그레스 게이트웨이 자원을 바꿔 클러스터 진입 트래픽 정지) |
 | F71-H | 후보 | 쇼핑몰 | G | DB 인스턴스 | 운영자가 commerce PostgreSQL 의 호스트 기반 접근 파일 pg_hba.conf 에서 너무 넓던 네트워크 규칙 'host all all all scram-sha-256' 을 노드 주소(10.244.3.1, NodePort 로 오는 DPM 과 러너가 SNAT 되어 닿는 주소)와 호스트, 관리망(192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)만 받는 규칙으로 좁히고 다시 읽혀(pg_reload_conf), 같은 노드에서 ClusterIP 로 자기 파드 주소(10.244.3.0/24)를 가진 채 붙는 여덟 서비스(user, cart, pricing, shipping, product, order, payment, inventory)를 빠뜨림. 열린 Hikari 연결은 수명까지 쓰이고 새 로그인은 'FATAL: no pg_hba.conf entry for host "10.244.3.x", user "commerce"' 로 거절(서비스 로그와 DB 로그 양쪽), 풀이 10분과 30분 두 물결로 비어 readiness 이탈과 재시작 반복, 쓰기 500·로그인 502·상품 조회 502. PostgreSQL 과 DPM 수집은 정상(Harness 2024-09-01 재구성). 겉 증상이 F71-R(역할 비밀번호 기한 경과, 정답 DB 계정)과 같고 원인이 다르다(H) |
 | F79-R | 후보 | 음식배달 | J | 결제 서비스 | food payment-service 를 릴리스 food-delivery-payment:1.4.0(fault-images/f79-r 패치로 만든 별도 태그)으로 롤아웃. PG 공급자 확장을 위해 결제 경로를 설정(pg.api.pay-path)으로 빼고 외부 PG 결제 주소를 기본 주소 + 경로 문자열로 구분자 없이 잇는데, 끝 '/' 는 로컬 기본값에만 있어 운영 PG_API_URL(http://testbed-external-pg-mock:9090)에서 주소가 '...:9090pay' 가 된다. payment 는 요청을 만들기 전에 'Bad authority' 로 모든 결제를 502 'PG mock unavailable: Bad authority' 로 돌려주고(PG 수신 0, 'PG /pay failed' 로그 없음) order 가 배차 뒤 결제 단계에서 모든 새 주문을 502 로 롤백한다. 원본 rust-lang crates.io 2023-07-20(리팩터가 다운로드 주소를 CDN 접두어와 경로로 이으며 '/' 를 빠뜨림). 겉 증상은 외부 PG 고장(F19-S, F06-P)과 같고 정답이 payment 릴리스라 PG 클라이언트 스팬 소멸과 오류 문장으로 갈라야 한다 |
@@ -591,3 +591,8 @@ B는 7개(7%), L은 9개(8%), A는 9개(8%), G는 12개(11%), P는 13개(12%), J
 - 2026-10-24: `case-f76-r-v3-7b1b6306` 환경 결함 표시: 119 수집기 정지. stream-anomaly 의 jvm(마지막 11:42:46), sms(11:43:41), nms(11:40:04), db(11:39:53) 경로와 VM 의 jvm.* 원지표가 11:39~13:25 에 끊겨(jvm.* 계열 954 → 0 → 13:26 956), 녹화본 평시 뒷부분(약 49분)과 장애 구간 전체에 JVM 지표가 없다. dpm 경로만 계속 돌았다. F75-R(05:16~06:40, 07:26~09:14) 때도 되풀이된 환경 결함이다. 판정은 원시 근거(KCM, 로그, 스팬, tick) 기준이라 녹화는 유효하다.
 - 2026-10-24: `F76-R` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, controller, 검사, 러너를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-24-1330-F76-R-run-7b1b6306.md` 3-5, 6절). 설계 시트에 §11(첫 실행 확인 항목)이 없다. 이번 결과를 근거로 세 가지를 적어 두기를 권한다. ① 스택은 `log_attributes['exception.stacktrace']`에 있다. ② 롤아웃 전환 30~40초 동안 checkout 이 잠깐 5xx 를 낼 수 있다(2틱, 문턱 미달). ③ 새 파드 기동 때 init SQL 과 옛 파드, 새 파드 두 풀이 겹쳐 PostgreSQL-commerce stream-anomaly 와 `dpm.postgresql.session.session_utilization` 이 나온다.
 - 2026-10-24: `case-f76-r-v3-7b1b6306` 제품 관찰 메모(판정에 쓰지 않음): 인시던트 2건(c7fbcec9, 9ff66250)이 모두 PostgreSQL-commerce 를 지목했고 릴리스나 'No match found' 를 든 가설은 없다. 또 평시 묶음 e3d36f05(cart·gateway trace-anomaly, 10:17:43~11:17:43)가 장애 골든 시그널 때문에 12:32:40 에 promote 되어 인시던트 034367c9 가 됐다. 상세는 `~/dev/testbed-ops/product-findings.md`.
+- 2026-10-24: `F76-P` 정식 승격(케이스 `case-f76-p-v3-ec3be401`). 66 실행 F76-P-run-ec3be401(러너 tb-ops, 큐 cycle-1-ae705ca4, 큐 항목 attempts 0, 첫 실행, 주기 재시작 없음)가 검증(`~/dev/testbed-ops/verifications/2026-10-24-1701-F76-P-run-ec3be401.md`)에서 녹화 가능(주입: 고정 단 approved-fixed-f76-p, k8s.image release 모드로 testbed-restaurant 를 food-delivery-restaurant:1.7.0 으로 롤아웃, load.north_south 동반 부하, t1 16:03:03, t2 16:13:37. 녹화 구간 13:52:52~16:43:37, 평시 14:03:03~16:03:03, 장애 16:03:03~16:43:37. 계기: KCM ScalingReplicaSet 16:03:20, Pulled 'food-delivery-restaurant:1.7.0' 16:03:21(30일 처음), 옛 RS 축소 16:05:36. 피해: 16:05:40~16:13:25 restaurant SEVERE 'NullPointerException … Map.get(Object) is null' 735줄(스택 735/735 가 RestaurantService.toMenuResponse, 30일 0줄), 실패가 데이터를 따름(카테고리 4~8 가게 11곳 메뉴 500 76 / 200 0, 나머지 12곳 200 91 / 500 0, 상세·지역 검색·인기 메뉴 200), 동반 메뉴 non-ok 0.37~0.59(시트 예상 약 0.48), 판정 success 연속 9, abort 0, must_rule_out 신호 없음). 겹친 실행 없음(F76-R 다시 돌릴 조건 시각 15:08:17 보다 t1 이 54분 46초 뒤, 직접 계산), cleanup 원복(latest, tb-w3 에 1.7.0 없음), 이미지 점검 종료 0. 104 eval 세트에 적재(파일 628개, tb-ops 와 같음). 집계: 정식 107 → 108, 주 묶음 J 15 → 16(14% → 15%), 정답 위치 가게 서비스 2 → 3(2% → 3%), 음식배달 36 → 37, 결제 경로 14/108(13.0%, 표 13%), 비율 재계산으로 B 7%→6%, 후보 10 → 9.
+- 2026-10-24: `case-f76-p-v3-ec3be401` 환경 결함 표시: 119 수집기 정지. stream-anomaly 의 `.bands` 쓰기가 16:01~16:06 에 멈췄다(nms·sms 16:01~16:02, jvm·db 16:03, 16:06 부터 dpm 500 계열만 남고 capture_end 까지 재개 없음). 결함 파드 구간(16:05:36~16:13:25) 전체가 정지 구간에 들어, 녹화본 장애 구간에 sms·nms·jvm·db 이상 이벤트가 없다. 원지표(sms, nms, apm.agent, db.client)는 VM 에 그대로 들어왔다. 녹화 초입에도 큐 시작(cycle_reset 13:48:23) 13초 뒤 같은 정지가 있었고 13:53~14:08 에 재개했다. F75-R, F76-R 때와 되풀이된 환경 결함이다. 판정은 원시 근거(KCM, 로그, 스팬, tick) 기준이라 녹화는 유효하다.
+- 2026-10-24: `F76-P` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, controller, 검사, 러너를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-24-1701-F76-P-run-ec3be401.md` 3-4, 3-5, 6절). 설계 시트에 §11(첫 실행 확인 항목)이 없다. 이번 결과를 근거로 다음을 적어 두기를 권한다. ① 롤아웃 소요가 2분 15초다(Started 16:03:21 → 옛 파드 Killing 16:05:36, 시트 가정 약 40초~1분의 2배 이상). ② 첫 실패는 롤아웃 2분 19초 뒤다(시트의 "약 1분 뒤부터"보다 늦음). ③ 스택은 `body` 가 아니라 `log_attributes['exception.stacktrace']`에 있다. ④ 실패한 메뉴 요청의 트랜잭션 되돌림으로 MySQL rollback_count 가 5~10 → 110~126 으로 오른다. ⑤ 동반 부하로 MySQL tps 가 약 1.6배(465 → 761~810)가 되어 §8 "MySQL 부하와 질의가 그대로" 문구보다 넓다(질의 모양과 시간은 그대로).
+- 2026-10-24: `F76-P` 러너 신호 확인 필요(사람 몫, 검사 조건은 바꾸지 않음, 근거 같은 보고서 3-4, 3-5 17번): 롤아웃 중 16:03:40~16:05:30 에 restaurant_pod_ready 가 false 로 7틱 연속 나왔다. 옛 파드가 계속 200 으로 답했으니 대상 다운은 아니고 must_rule_out(restaurant NotReady 2틱) 연속도 0 으로 남았지만, 신호가 롤아웃 중인 Deployment 를 NotReady 로 읽는다. available 기준으로 볼지 사람이 확인한다.
+- 2026-10-24: `case-f76-p-v3-ec3be401` 제품 관찰 메모(판정에 쓰지 않음): restaurant APM `error_rate` 가 0 → 8.1~44.4% 로 올랐는데 이상 이벤트가 0건이다(stream-anomaly `.bands` 에 `apm.*` 계열 없음). 군집 3d981fc2 에 피해 전 동반 부하 경사(MySQL tps·commit·select·select_scan level_shift 16:04:11)가 섞였고, 판정 근거가 "오류율 0.0%로 평소(1.1%)보다 오히려 낮으며"라 읽으면서도 promote 해 인시던트 77565b6e('… MySQL 부하가 일시적으로 늘어났어요')가 됐다. 상세는 `~/dev/testbed-ops/product-findings.md`.

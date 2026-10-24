@@ -3,7 +3,7 @@
   "id": "F76-P",
   "slug": "f76-p-food-restaurant-release-cook-time-breaks-expansion-category-menus",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
