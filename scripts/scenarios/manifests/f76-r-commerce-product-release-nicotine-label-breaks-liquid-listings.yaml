@@ -3,7 +3,7 @@
   "id": "F76-R",
   "slug": "f76-r-commerce-product-release-nicotine-label-breaks-liquid-listings",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
