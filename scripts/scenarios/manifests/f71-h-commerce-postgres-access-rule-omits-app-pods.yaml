@@ -3,7 +3,7 @@
   "id": "F71-H",
   "slug": "f71-h-commerce-postgres-access-rule-omits-app-pods",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
