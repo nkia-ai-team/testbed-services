@@ -49,7 +49,8 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-09",
       "attempts": 1,
-      "status": "waiting"
+      "status": "hold",
+      "hold_reason": "환경 결함: Oracle byb2y2hv7p4ag 계획 847607780 고착(10-24 05:34~, 실행당 약 3초, Oracle CPU 1.5/2)이 녹화 전체에 깔려 must_rule_out 'DB 문제가 아님'에 걸림. 사람이 계획을 2603328921(약 0.5초)로 되돌린 뒤 보류 해제. 동반 부하 수정은 의도대로 동작 확인. 근거 ~/dev/testbed-ops/verifications/2026-10-25-0729-F47-R-run-2e93bf3c.md"
     },
     {
       "scenario_id": "F63-R",
