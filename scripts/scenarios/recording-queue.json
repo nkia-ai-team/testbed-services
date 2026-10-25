@@ -59,7 +59,8 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-11",
       "attempts": 0,
-      "status": "waiting"
+      "status": "hold",
+      "hold_reason": "환경 결함 선행: Oracle byb2y2hv7p4ag 계획 847607780 고착 해소 전에는 must_rule_out 'transfer 나 DB 문제가 아님'(transfer·Oracle 오류 없음)과 §11 확인 항목(Oracle cpu_time 1 아래, transfer Hikari 고갈 0건)에 걸림(F47-R 근거 ~/dev/testbed-ops/verifications/2026-10-25-0729-F47-R-run-2e93bf3c.md, 판단 근거 docs/scenario-redesign-wip/design-F63-R-sheet.md §8 must_rule_out·§9 Oracle 여유·§11 동반 부하 교체 뒤 확인 항목, 이체·거래 내역 피해 경로가 평시 transfer Hikari·Read timeout·api transferClient 서킷과 겹침). 사람이 계획을 되돌린 뒤 보류 해제"
     }
   ]
 }
