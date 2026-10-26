@@ -23,16 +23,6 @@
       "hold_reason": "주입이 노드 전체 붕괴로 번짐(설계 시트 §9 의 '노드 붕괴 위험'이 실제로 일어남). F80-R-run-bad63a76 이 09:33:06Z host.job(oradata-backup, zstd -12 --long=31 두 흐름) 주입 뒤 +102s 에 이체 5xx 0.8~0.93 으로 피해는 났으나, +137s 에 tb-w2 NotReady·entry 502 로 abort(node-notready-total-collapse, 2틱), 노드 load 227·SSH 배너 교환 시간 초과로 cleanup 이 노드에 닿지 못해 'cleanup_failed after abort_condition' → 러너 큐 cycle-1-ef957c00 paused(DIRTY coordinator state). 작업은 RuntimeMaxSec 600s 로 09:43:15Z 스스로 끝났고 커널 OOM 이 java 1개를 죽임(09:42:26), banking 파드는 taint 축출 직전 회복. 운영 하네스 수동 cleanup(manual-cleanup-6a2f5cbe, 09:44:52Z) 성공: 유닛 inactive, /var/backups/oradata 삭제, banking 7파드 Ready, entry 200, DIRTY 해제, readiness ready. 덤프 없음. 같은 강도로 다시 돌리면 노드가 또 무너질 수 있어 resume 안 함. 사람 결정: 넘침 크기(preflight MemAvailable 문턱 1,536~3,584 MiB, level·long_window_log) 조정이나 기전 재검토, 노드가 응답을 잃은 동안 cleanup 이 닿지 못하는 점(실행기 host_job_executor.py) 처리. 결정 뒤 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 근거: tb-ops /root/rca-scenario-runner/runs/F80-R-run-bad63a76/{ticks.jsonl,decisions,cleanup,mutations}.json"
     },
     {
-      "scenario_id": "F72-R",
-      "reason": "new",
-      "note": "새 시나리오 첫 검증",
-      "requested_by": "testbed-scenario-create",
-      "requested_at": "2026-10-12",
-      "attempts": 0,
-      "status": "hold",
-      "hold_reason": "host.firewall cleanup 의 회복 확인 실패가 연속 2회. F72-R-run-0a81ae59(cleanup 17:02:36Z)와 F72-R-run-e030c6b4(cleanup 20:04:00Z) 모두 성공 조건 유지(success 29틱·1278s / 22틱·1268s) 뒤 cleanup.json reason 'host.firewall:recovery failed' → 'cleanup_failed after success' → DIRTY, 러너 큐 cycle-1-48b1e4e0 paused, 덤프 없음. 규칙 제거(ORACLE-LSNR-IN 체인과 FORWARD jump 삭제)는 성공했다. 실패한 것은 실행기 host_firewall_executor.py 의 recovery 단계로, 대기나 재시도 없이 한 번만 검사한다(state 파일 없음, 규칙 없음, testbed-oracle 과 testbed-transfer 가 각각 tb-w2 에서 Ready 1개). 주입 중 testbed-transfer 가 NotReady(2회째 19:53:23Z 부터, 마지막 틱 transfer_pod_ready=false, balance_read_nonok_rate_baseline=1.0, entry 502)였고 규칙 제거 직후(host.firewall cleanup 완료 20:04:06.66Z) 검사 때도 NotReady, 실제 Ready 전이는 20:04:07Z(약 1초 뒤). 그래서 러너 spec.recovery(target_health 200, oracle·transfer Ready, balance_read_nonok_rate_baseline < 0.05, 2틱 연속, timeout_sec 600)는 시작도 못 했다. 수동 cleanup(manual-cleanup-405e62aa, manual-cleanup-5ae7188f)은 두 번 다 바로 성공. 같은 설정으로 다시 돌리면 같은 실패가 난다. 사람 결정: 실행기 recovery 가 transfer Ready 를 기다리게 할지, 그 확인을 spec.recovery(600s)에 맡길지 러너·실행기 수정 검토. 결정 뒤 이 항목을 waiting 으로 되돌린다(hold_reason 삭제). 근거: tb-ops /root/rca-scenario-runner/runs/F72-R-run-{0a81ae59,e030c6b4}/{state,cleanup,mutations}.json·ticks.jsonl, 운영 기록 operator/log.md 2026-10-23 17:33Z·20:1xZ 줄"
-    },
-    {
       "scenario_id": "F74-R",
       "reason": "new",
       "note": "새 시나리오 첫 검증",
@@ -49,8 +39,7 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-09",
       "attempts": 1,
-      "status": "hold",
-      "hold_reason": "환경 결함: Oracle byb2y2hv7p4ag 계획 847607780 고착(10-24 05:34~, 실행당 약 3초, Oracle CPU 1.5/2)이 녹화 전체에 깔려 must_rule_out 'DB 문제가 아님'에 걸림. 사람이 계획을 2603328921(약 0.5초)로 되돌린 뒤 보류 해제. 동반 부하 수정은 의도대로 동작 확인. 근거 ~/dev/testbed-ops/verifications/2026-10-25-0729-F47-R-run-2e93bf3c.md"
+      "status": "waiting"
     },
     {
       "scenario_id": "F63-R",
@@ -59,8 +48,16 @@
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-11",
       "attempts": 0,
-      "status": "hold",
-      "hold_reason": "환경 결함 선행: Oracle byb2y2hv7p4ag 계획 847607780 고착 해소 전에는 must_rule_out 'transfer 나 DB 문제가 아님'(transfer·Oracle 오류 없음)과 §11 확인 항목(Oracle cpu_time 1 아래, transfer Hikari 고갈 0건)에 걸림(F47-R 근거 ~/dev/testbed-ops/verifications/2026-10-25-0729-F47-R-run-2e93bf3c.md, 판단 근거 docs/scenario-redesign-wip/design-F63-R-sheet.md §8 must_rule_out·§9 Oracle 여유·§11 동반 부하 교체 뒤 확인 항목, 이체·거래 내역 피해 경로가 평시 transfer Hikari·Read timeout·api transferClient 서킷과 겹침). 사람이 계획을 되돌린 뒤 보류 해제"
+      "status": "waiting"
+    },
+    {
+      "scenario_id": "F72-R",
+      "reason": "new",
+      "note": "새 시나리오 첫 검증",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-10-12",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }
