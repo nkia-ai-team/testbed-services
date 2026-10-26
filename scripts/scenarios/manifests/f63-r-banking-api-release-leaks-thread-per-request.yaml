@@ -3,7 +3,7 @@
   "id": "F63-R",
   "slug": "f63-r-banking-api-release-leaks-thread-per-request",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
