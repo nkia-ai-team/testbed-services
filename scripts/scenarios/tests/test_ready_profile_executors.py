@@ -478,6 +478,12 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             host_firewall.validate("F72-R", params, {})
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             host_firewall.validate("F72-R", host_firewall.CONTRACTS["F44-P"], {})
+        # 규칙 제거 직후 호출자 파드는 풀이 다시 붙기 전까지 NotReady 다. recovery 가 한 번만 보면 효과가 이미
+        # 끝난 실행이 DIRTY 로 멈춘다(2026-10-23 F72-R 2회). 규칙 부재는 바로 보고, 파드 Ready 는 기한까지 기다린다.
+        recovery_case = stdin.decode().split("\n  recovery)")[1].split(";;")[0]
+        self.assertLess(recovery_case.index('if ours "$r"; then exit 1; fi'), recovery_case.index("until placed"))
+        self.assertIn("deadline=$((SECONDS + 300))", recovery_case)
+        self.assertIn("sleep 5", recovery_case)
 
     def test_k8s_quota_only_adds_one_namespace_quota_and_a_routine_restart(self) -> None:
         # F50-R: 주입은 네임스페이스 ResourceQuota 하나를 만들고 transfer 를 일상 재배포하는 것뿐이다.

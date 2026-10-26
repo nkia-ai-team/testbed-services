@@ -224,8 +224,19 @@ case "$action" in
     if has_chain "$r"; then ipt -F "$chain"; ipt -X "$chain"; fi
     r=$(rules); if ours "$r"; then exit 1; fi
     rm -f "$state" ;;
+  # The rule being gone is an immediate fact; the pods becoming Ready again is what recovery
+  # waits for. A caller that lost its connections goes NotReady under the rule and only
+  # returns once its pool reconnects after cleanup, so a one-shot check right after cleanup
+  # fails a run whose effect has already ended (a same-node caller came back about 1s late).
   recovery) [[ ! -e "$state" ]]; r=$(rules); if ours "$r"; then exit 1; fi
-    placed "$ns" "$protected" "$node"; placed "$caller_ns" "$caller" "$caller_node" ;;
+    deadline=$((SECONDS + 300))
+    until placed "$ns" "$protected" "$node" && placed "$caller_ns" "$caller" "$caller_node"; do
+      if (( SECONDS >= deadline )); then
+        echo "$protected or $caller not Ready on its node 300s after cleanup" >&2
+        exit 1
+      fi
+      sleep 5
+    done ;;
   *) exit 2 ;;
 esac
 '''
