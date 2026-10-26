@@ -3,7 +3,7 @@
   "id": "F47-R",
   "slug": "f47-r-banking-api-release-account-directory-request-flood",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"
