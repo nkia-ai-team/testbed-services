@@ -134,7 +134,7 @@ Oracle 은 멀쩡하고 감시는 계속 붙어 있다.
   banking 사용자 경로의 동시 연결 수요는 1 안팎(이체 POST 5ms, 잔액 1ms)이라 세션이 하나라도 남으면 버티고, 마지막 세션이 물러나는 순간 전면 실패가 된다. 최악 시각은 수명 10분 + readiness 30초 ≈ 10.5분.
   Hikari 의 수명 만료는 강제라 부하나 시간대와 무관하게 반드시 온다(F35-R 과 같은 시간 모양, F35-R 은 정식으로 녹화됨).
 - 입구 보호: banking 진입점(tb-cp NodePort 30082 → nginx → api)은 DB 를 쓰지 않아 502 로 답한다(entry_status 0 은 nginx 나 노드가 죽었을 때만). liveness 가 DB 를 보지 않아 재시작이 없다.
-- 부하: `load.north_south` core-banking surge.js 10rps(F35-R 과 같은 값, 상한 180 의 6%), ramp 2m, hold 27m.
+- 부하: `load.north_south` core-banking transfer-balance-surge.js 10rps(F35-R 과 같은 값, 상한 180 의 6%), ramp 2m, hold 27m. 이체 55%(30초에 약 165건), 잔액 조회 35%(약 105건, account 직행), 목록 10%, 거래 내역 단계 없음(2026-10-26 운영 보강 1회차에 surge.js 에서 바꿈: surge.js 의 거래 내역 25% 가 Oracle 을 먼저 채웠다).
 - 판정: success = 잔액 조회 실패율 ≥ 0.5 이고 이체 5xx 비율 ≥ 0.5 가 3틱. min_hold 21m, settle 60s, level timeout 27m, max_injection_duration 30m.
 - cleanup: 상태 파일이 없어도 규칙을 읽어 FORWARD 점프 삭제, 체인 비우고 삭제, `iptables -S` 로 둘 다 없음 확인 후 상태 파일 삭제. recovery: 규칙 없음, Oracle, transfer 파드 Ready, 기준선 잔액 조회 실패율 < 0.05(10분).
 - 안전: 규칙은 tb-w2 파드 대역의 1521 로 가는 **전달 트래픽의 새 연결**만 맞춘다. 정책(-P), INPUT, OUTPUT, 다른 체인은 건드리지 않아 호스트 망 SSH(복구 경로), kubelet, 다른 포트는 영향이 없다.
@@ -142,6 +142,7 @@ Oracle 은 멀쩡하고 감시는 계속 붙어 있다.
 - 실행기 변경: 계약(`CONTRACTS["F72-R"]`)과 설명 한 단락만 더했다. 같은 노드 호출자라 호출자 네임스페이스, 노드, 대역은 지켜지는 쪽 기본값을 쓴다(F44-R 동작 그대로).
   preflight 의 배치 확인은 Oracle 파드(app=testbed-oracle, tb-w2, 10.244.1.0/24 안)와 대표 호출자 transfer(같은 대역, 허용 목록 밖), Service testbed-oracle 의 targetPort 1521 이다(2026-10-12 kubectl 로 각 조건 확인).
   첫 실행 확인 항목: 주입 시각 tb-w2 sudo iptables 줄의 119 수집 여부(F44-P, F44-R 실행에서 대부분 잃음, 없어도 판정은 커널 줄로 한다). 커널 LOG 수집은 F44-P, F44-R 실행에서 확인됨.
+- **2026-10-26 운영 보강 1회차: 동반 부하에서 거래 내역 단계를 뺐다**(profiles.json `scenario_parameters.F72-R.script_path` `/opt/loadgen/core-banking/surge.js` → `/opt/loadgen/core-banking/transfer-balance-surge.js`, target_rps 10·ramp 2m·hold 27m 그대로, 정답지 description, injection_summary(영, 한)의 동반 부하 스크립트 이름, controller 노트, 실행 행렬). 근거 `~/dev/testbed-ops/verifications/2026-10-26-2143-F72-R-run-92d33300.md` §4-4 ③, §11: 주입(tb-w2 '[FW BLOCK] … DPT=1521' 129줄), 피해(세 파드 readiness 실패 85건, 잔액·이체 전면 실패), 원인 근거(ORA-12170 1,346줄, DPM idle_session 11→0)가 모두 남고 겹침도 없었으나, surge.js 의 거래 내역 단계(25%, 초당 2.5건)가 transfer 건수 질의 byb2y2hv7p4ag 실행을 분당 17회에서 139~167회로 늘려 20:19~20:27 에 Oracle cpu_time 1.51~1.79(상한 2), db_time 3.01, active_session 5 가 되어 must_rule_out 3 의 'Oracle 활성 세션과 CPU 가 오르지 않으며'를 어겼다(계획 2603328921 그대로, 10-23 두 실행도 cpu 1.95, 1.94). F47-R·F63-R(1ad6679, 272ccd2), F37-H(f3f71c4), F68-R(94386c5)과 같은 방법이다. 주입 수단, 강도(approved-fixed-f72-r), success, must_rule_out, must_support 는 그대로다. 재실행에서 확인할 것: Oracle cpu_time < 0.5, active ≤ 1, Hikari 첫 시간 초과가 total 2 이하에서 나는지.
 
 ## 10. 설계 원칙 §5 점검표
 

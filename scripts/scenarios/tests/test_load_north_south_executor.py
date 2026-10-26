@@ -311,7 +311,9 @@ class BankingCompanionMixTests(unittest.TestCase):
         # must_rule_out ④(transfer·Oracle 고장 아님)에 걸렸다. 이체는 api 안에서 500 이라 하류 부하가 없다.
         # 2026-10-22: F68-R 추가(운영 보강 1회차). F68-R-run-8b3f61c5 가 같은 거래 내역 질의로 Oracle CPU 를
         # 1.92/2 까지 올려 must_rule_out ①(F42-R 아님: Oracle 평시)에 걸렸다.
-        self.assertEqual(users, {"F37-H", "F47-R", "F63-R", "F68-R"})
+        # 2026-10-26: F72-R 추가(운영 보강 1회차). F72-R-run-92d33300 이 surge.js 거래 내역(25%)의 같은 질의로
+        # Oracle CPU 를 1.79/2 까지 올려 must_rule_out 3(Oracle 활성 세션과 CPU 평시)에 걸렸다.
+        self.assertEqual(users, {"F37-H", "F47-R", "F63-R", "F68-R", "F72-R"})
         self.assertEqual(params["F21-P"]["script_path"], BANKING_HEAVY)
         # F63-R 은 api 요청률(약 11건/초)이 그대로여야 해 20rps 를 유지한다. F47-R 은 보고서
         # 8592be57 §5 구체안 2 의 12rps(50% 기준 이체 6건/초)를 55% 변형에 맞춰 11rps 로 환산했다.
@@ -321,6 +323,8 @@ class BankingCompanionMixTests(unittest.TestCase):
         self.assertEqual(params["F37-H"]["target_rps"], 20)
         # F68-R 은 10rps(이체 40%, 초당 약 4건)를 55% 변형에 맞춰 7rps(이체 초당 약 3.9건)로 환산했다.
         self.assertEqual(params["F68-R"]["target_rps"], 7)
+        # F72-R 은 스크립트만 바꾸고 10rps 를 유지한다(방화벽이 DB 연결을 끊어 피해가 부하량과 무관하다).
+        self.assertEqual(params["F72-R"]["target_rps"], 10)
         for scenario_id in sorted(users):
             executor.validate_parameters(scenario_id, params[scenario_id], self.profile)
             argv, _ = executor.build_invocation(

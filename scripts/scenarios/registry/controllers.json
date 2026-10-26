@@ -25380,14 +25380,14 @@
           "id": "balance_read_nonok_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.read_step_status_rate",
-          "_note": "동반 부하(core-banking surge.js 10rps)의 잔액 조회(step get, 55%, nginx → account) 실패율. 30초 창에 약 165건. 평시 0. account 풀(평시 3세션)이 수명대로 비면 3초 대기 뒤 500, readiness 가 빠진 뒤에는 nginx 502",
+          "_note": "동반 부하(core-banking transfer-balance-surge.js 10rps, 거래 내역 단계 없음)의 잔액 조회(step get, 35%, nginx → account) 실패율. 30초 창에 약 105건. 평시 0. account 풀(평시 3세션)이 수명대로 비면 3초 대기 뒤 500, readiness 가 빠진 뒤에는 nginx 502",
           "freshness": "30s"
         },
         {
           "id": "transfer_5xx_rate",
           "adapter": "loadgen_summary",
           "query_id": "loadgen.food_create_status_rate",
-          "_note": "동반 부하의 이체(step transfer, 10%, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 이지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0",
+          "_note": "동반 부하의 이체(step transfer, 55%, 30초 창에 약 165건, nginx → api → account → transfer) 5xx 비율. 질의 이름은 food 이지만 선택자는 도메인 공통 business.5xx.rate 다. 평시 업무 거절은 400(잔액 부족)이라 5xx 는 0",
           "freshness": "30s"
         },
         {

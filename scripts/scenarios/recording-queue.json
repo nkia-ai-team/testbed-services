@@ -35,10 +35,10 @@
     {
       "scenario_id": "F72-R",
       "reason": "new",
-      "note": "새 시나리오 첫 검증",
+      "note": "새 시나리오 첫 검증. 2026-10-26 운영 보강 1회차: F72-R-run-92d33300 이 동반 부하 surge.js 거래 내역 질의(byb2y2hv7p4ag)의 Oracle 부하로 must_rule_out 3(Oracle 활성 세션과 CPU 평시)에 걸려 동반 부하를 transfer-balance-surge.js 10rps 로 교체",
       "requested_by": "testbed-scenario-create",
       "requested_at": "2026-10-12",
-      "attempts": 0,
+      "attempts": 1,
       "status": "waiting"
     }
   ]

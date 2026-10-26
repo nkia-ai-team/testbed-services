@@ -2115,7 +2115,7 @@
           "hold": "27m",
           "ramp_down": "15s",
           "entry_url": "http://192.168.122.77:30082",
-          "script_path": "/opt/loadgen/core-banking/surge.js",
+          "script_path": "/opt/loadgen/core-banking/transfer-balance-surge.js",
           "scenario_tag": "scenario_id=F72-R",
           "seed": 7272,
           "baseline_unit": "loadgen-banking"
