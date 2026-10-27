@@ -3,7 +3,7 @@
   "id": "F72-R",
   "slug": "f72-r-banking-node-firewall-omits-oracle-app-clients",
   "readiness": "ready",
-  "stage": "candidate",
+  "stage": "official",
   "authoritative_sources": {
     "catalog": "scripts/scenarios/catalog.json",
     "execution_matrix": "docs/spec-scenario-execution-matrix.md"

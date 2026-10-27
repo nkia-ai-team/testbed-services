@@ -81,7 +81,7 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 
 맞는 말이 없으면 이 표에 한 줄 더한다. **결제 경로**(외부 결제 의존 + 결제 서비스 + DB 테이블(결제))는 따로 합쳐서도 센다: 서로 다른 부품이라도 "결제 쪽이 범인"이라는 같은 지름길을 만든다.
 
-## 3. 집계 (2026-10-26, 정식만, 주 묶음 기준)
+## 3. 집계 (2026-10-27, 정식만, 주 묶음 기준)
 
 | 묶음 | 정식 | 정식 비율 |
 |---|---|---|
@@ -91,11 +91,11 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | D DB 잠금 | 17 | 15% |
 | E 처리 용량 초과 | 4 | 4% |
 | F 느린 쿼리 | 3 | 3% |
-| G 설정 오배포 | 13 | 12% |
+| G 설정 오배포 | 13 | 11% |
 | H 데이터가 조용히 틀어짐 | 2 | 2% |
 | I 인증 의존 실패 | 2 | 2% |
 | J 결함 있는 새 버전 배포 | 19 | 17% |
-| K 네트워크 지연, 손실, 단절 | 2 | 2% |
+| K 네트워크 지연, 손실, 단절 | 3 | 3% |
 | L 데이터 형식 불일치 | 9 | 8% |
 | M DNS | 1 | 1% |
 | N 재시도가 장애를 키움 | 0 | 0% |
@@ -103,12 +103,12 @@ summary: 정식 시나리오(정상 녹화 1개 이상)를 비슷한 장애끼�
 | P 운영 작업의 대상 착오 | 14 | 12% |
 | Q 데이터 이전 뒤 부속 상태 어긋남 | 2 | 2% |
 
-서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 39, 은행 36, 음식배달 38. 후보 4종은 집계에서 뺀다(§4-1).
+서비스별 정식 (문제가 시작된 서비스): 쇼핑몰 39, 은행 37, 음식배달 38. 후보 3종은 집계에서 뺀다(§4-1).
 
-해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 32개뿐이고(J 19, G 13. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 이체마다 account 계좌 목록을 다시 읽는 릴리스가 account 처리 용량을 넘긴 F47-R(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)와 요청마다 스레드를 남기는 api 릴리스가 같은 OOM 재시작을 일으킨 F63-R(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H, F75-R 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P 둘뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P, F77-R 열넷뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
-B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(12%), P는 14개(12%), D는 17개(15%), J는 19개(17%)로 20%에 가깝다. 서비스는 은행(36), 음식배달(38) 순으로 채운다.
+해석: 현실에서 가장 흔한 변경(J 새 버전 배포, G 설정 배포)이 정식 32개뿐이고(J 19, G 13. 결함의 꼴이 한도 값과 키 선택인 F55-R(J+G)과 새 코드가 개발 프로필에만 있는 설정 키를 읽는 F58-R, F36-H, F37-H(J+G)는 계기이자 결함이 새 버전 코드라 주 묶음 J 로, 연결 누수 릴리스가 풀을 바닥낸 F51-H(J+E)와 이체마다 account 계좌 목록을 다시 읽는 릴리스가 account 처리 용량을 넘긴 F47-R(J+E)와 헬스 하위 경로를 끈 릴리스가 liveness 재시작을 되풀이시킨 F41-H(J+B)와 조회마다 스레드를 남기는 릴리스가 컨테이너 OOM 재시작을 되풀이시킨 F63-P(J+A)와 요청마다 스레드를 남기는 api 릴리스가 같은 OOM 재시작을 일으킨 F63-R(J+A)도 주 묶음 J 로, 피해 모양이 한도에 걸린 정상 요청인 F54-R, F54-P(G+A)는 주 묶음 G 로, 계기가 설정 배포인 F30-R, F32-H 는 주 묶음 L, F37-R 은 주 묶음 M, F44-R, F44-P 와 운영자의 방화벽 규칙 변경이 같은 노드 앱 파드의 DB 재연결을 끊은 F72-R(K+G)는 주 묶음 K 로, 계기가 새 버전 배포인 F49-R, F49-H, F40-H, F49-P, F39-H, F75-R 는 주 묶음 L 로, 요청 경로 밖 소비자의 릴리스가 인가를 맡은 user-service 를 묻은 F16-P(I+J)는 주 묶음 I 로 센다) K 는 F44-R, F44-P, F72-R 셋뿐, P 는 F48-R, F48-P, F51-R, F52-R, F53-R, F53-P, F35-H, F32-P, F56-R, F23-P, F51-P, F60-P, F35-P, F77-R 열넷뿐이고, Q 는 F57-R, F57-P 둘뿐이며 N은 0이다(K, N은 §5에 막힌 시도가 있다).
+B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(11%), P는 14개(12%), D는 17개(15%), J는 19개(17%)로 20%에 가깝다. 서비스는 은행(37), 음식배달(38) 순으로 채운다.
 
-정답 위치별 정식 (2-1 정의, 정식 113종):
+정답 위치별 정식 (2-1 정의, 정식 114종):
 
 | 정답 위치 | 정식 | 비율 |
 |---|---|---|
@@ -121,7 +121,7 @@ B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(12%), P는 14개(12%), D
 | DB 계정 | 4 | 4% |
 | 결제 서비스 | 5 | 4% |
 | 배달 서비스 | 8 | 7% |
-| 노드, 디스크 | 6 | 5% |
+| 노드, 디스크 | 7 | 6% |
 | DB 인스턴스 | 3 | 3% |
 | 은행 계좌 서비스 | 6 | 5% |
 | 재고 서비스 | 2 | 2% |
@@ -156,7 +156,7 @@ B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(12%), P는 14개(12%), D
 | 쿠버네티스 리소스 할당량 | 1 | 1% |
 | **결제 경로 합계** | **15** | **13%** |
 
-결제 경로는 정식만으로 13%(13.3%, 15/113. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
+결제 경로는 정식만으로 13%(13.2%, 15/114. DB 테이블(결제 로그) F67-R 을 후보 추가 때처럼 보수적으로 넣어 셈)라 상한(20%) 아래다. 결제 쪽이 정답인 후보는 당분간 만들지 않는다.
 
 ## 4. 시나리오별 분류
 
@@ -277,6 +277,7 @@ B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(12%), P는 14개(12%), D
 | F79-R | 정식 | 음식배달 | J | 결제 서비스 | food payment-service 를 릴리스 food-delivery-payment:1.4.0(fault-images/f79-r 패치로 만든 별도 태그)으로 롤아웃. PG 공급자 확장을 위해 결제 경로를 설정(pg.api.pay-path)으로 빼고 외부 PG 결제 주소를 기본 주소 + 경로 문자열로 구분자 없이 잇는데, 끝 '/' 는 로컬 기본값에만 있어 운영 PG_API_URL(http://testbed-external-pg-mock:9090)에서 주소가 '...:9090pay' 가 된다. payment 는 요청을 만들기 전에 'Bad authority' 로 모든 결제를 502 'PG mock unavailable: Bad authority' 로 돌려주고(PG 수신 0, 'PG /pay failed' 로그 없음) order 가 배차 뒤 결제 단계에서 모든 새 주문을 502 로 롤백한다. 원본 rust-lang crates.io 2023-07-20(리팩터가 다운로드 주소를 CDN 접두어와 경로로 이으며 '/' 를 빠뜨림). 겉 증상은 외부 PG 고장(F19-S, F06-P)과 같고 정답이 payment 릴리스라 PG 클라이언트 스팬 소멸과 오류 문장으로 갈라야 한다 |
 | F47-R | 정식 | 은행 | J+E | 은행 API | banking api-service 를 릴리스 core-banking-api:1.4.0(fault-images/f47-r 패치로 만든 별도 태그)으로 롤아웃. 새로 더한 이체 전 활성 계좌 확인이 account 의 계좌 목록 API 를 짧은 페이지가 나올 때까지 읽어(status=ACTIVE, size=20, 활성 976개 → 49번) 활성 계좌 집합을 만들고, 이체마다 CompletableFuture.runAsync 로 뒤에서 다시 읽는다(수명, 겹침 방지 없음, CPU 1개 컨테이너라 작업마다 새 스레드). 동반 부하 이체 약 8건/초면 account 로 목록 요청 약 390건/초가 몰려 account(CPU 한도 500m)가 포화, 잔액 조회와 목록이 초 단위로 늦어지고 3초 풀 대기 500, readiness 실패로 잠깐씩 엔드포인트 이탈, api 의 account 서킷이 열려 이체 502 몰림. account 는 코드, 설정, 자원이 그대로이고 Oracle 은 여유, 거래 내역과 commerce 정산은 정상. 원본 Cloudflare 2025-09-12(대시보드 릴리스 버그가 Tenant Service API 호출을 크게 늘려 과부하) |
 | F63-R | 정식 | 은행 | J+A | 은행 API | banking api-service 를 릴리스 core-banking-api:1.5.0(fault-images/f63-r 패치로 만든 별도 태그)으로 롤아웃. 이체 접수와 거래 내역 조회에 더한 처리 마감 시간(5초)이 요청마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 하류 호출을 맡기고 닫지 않아 요청마다 멈춘 비데몬 스레드가 하나씩 남음. 동반 부하(api 요청 약 11건/초)에서 스레드당 약 130KiB 씩 컨테이너 메모리가 차 약 8분에 한도 1GiB, 힙은 그대로. 짧게 멈춘 뒤 커널 memcg OOM 으로 java 종료, 같은 파드 바로 재시작과 기동(Ready 까지 26~29초) 동안 nginx → api 의 이체와 거래 내역 502, 약 10분마다 되풀이. 잔액 조회, commerce 정산, account, transfer, Oracle 은 정상. 원본 Intercom 2025-04-24(새 Inbox 카운터 구현이 요청마다 스레드 묶음을 만들고 치우지 않아 웹 서버 메모리 고갈, 느림과 오류 페이지, 정기 배포와 헬스 체크 실패에 따른 호스트 교체가 잠시 살림). F41-R(account 힙 누수 재시작), F41-H(account liveness 404 재시작)와 '릴리스 뒤 재시작 고리' 증상이 같고 대상과 차오르는 자원이 다른 짝, F47-R 과 같은 api 릴리스 계열이지만 하류가 멀쩡하고 api 자신이 죽음 |
+| F72-R | 정식 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 Oracle 리스너 포트 1521 로 가는 새 연결을 노드 주소와 호스트, 관리망(10.244.1.1/32, 다른 노드 flannel 주소 셋, 192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)에서만 받도록 좁히면서 같은 노드의 banking 앱 파드(account, transfer, ledger, 10.244.1.x)를 빠뜨림. 열린 Hikari 세션은 수명(10분)까지 통하다가 다시 맺는 SYN 이 버려져 ORA-12170 TCP connect timeout, 풀이 비어 세 파드가 readiness 에서 빠지고 banking 잔액, 이체와 commerce 정산이 502. Oracle 은 Ready 이고 DPM 수집은 계속(Harness 2024-09-01 재구성) |
 
 ## 4-1. 후보 (검증, 녹화 대기, 집계 제외)
 
@@ -286,7 +287,6 @@ B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(12%), P는 14개(12%), D
 | id | 상태 | 서비스 | 묶음 | 정답 위치 | 한 줄 |
 |---|---|---|---|---|---|
 | F42-P | 후보 | 음식배달 | J+F | 가게 서비스 | food restaurant-service 를 릴리스 food-delivery-restaurant:1.5.0(fault-images/f42-p 패치로 만든 별도 태그)으로 롤아웃. 인기 메뉴 순위를 실시간으로 바꾸려고 GET /api/restaurants/{id}/popular-menu 가 1시간 배치가 채우는 캐시 표(menu_popularity_summary, 88행) 대신 요청마다 최근 7일 주문을 바로 셈(order_items JOIN orders JOIN menus, 가게 한 곳, 메뉴별 COUNT). 109 MySQL 이 한가할 때 4.05~7.47초, 한 번에 버퍼 풀 밖 읽기 약 2만 9천 쪽. 인기 메뉴 초당 약 2.5건이면 food MySQL(CPU 0.5) 포화, restaurant Hikari 10개가 집계에 묶여 가게 상세, 메뉴, 인기 메뉴가 3초 대기 뒤 500, readiness 이탈과 재시작 가능, order 가 가게, 메뉴 조회 실패로 주문 502. 스키마, 인덱스, 캐시 표는 그대로(1146 없음), 긴 활성 세션이 restaurant 파드 IP 에서 옴. 원본 GitHub 2025-01-09(배포가 들여온 질의가 주 DB 서버를 포화, F42-R, F33-H 와 같은 원본). 실행 중 MySQL 재시작은 uptime 으로 배제, 시작은 MySQL anon 여유가 있을 때만 |
-| F72-R | 후보 | 은행 | K+G | 노드, 디스크 | 운영자가 은행 워커 tb-w2 의 호스트 방화벽(iptables FORWARD)에서 Oracle 리스너 포트 1521 로 가는 새 연결을 노드 주소와 호스트, 관리망(10.244.1.1/32, 다른 노드 flannel 주소 셋, 192.168.122.0/24, 192.168.213.0/24, 192.168.230.0/24)에서만 받도록 좁히면서 같은 노드의 banking 앱 파드(account, transfer, ledger, 10.244.1.x)를 빠뜨림. 열린 Hikari 세션은 수명(10분)까지 통하다가 다시 맺는 SYN 이 버려져 ORA-12170 TCP connect timeout, 풀이 비어 세 파드가 readiness 에서 빠지고 banking 잔액, 이체와 commerce 정산이 502. Oracle 은 Ready 이고 DPM 수집은 계속(Harness 2024-09-01 재구성) |
 | F74-R | 후보 | 은행 | F+E | 은행 이체 서비스 | 가맹점 입금 알림 제휴 연동이 banking 거래 내역 API 로 가맹점 계좌 8개의 '오늘 완료 입금이 있는가'를 확인하는 주기를 계좌당 60초에서 1초로 줄임(초당 8건, toAccount=…&status=COMPLETED&from=<오늘>&page=0&size=1, API 계약상 허용). 한 건만 필요한 확인마다 transfer 목록 API 가 Spring Data Page 의 건수 질의(sql_id byb2y2hv7p4ag, OR-null 술어라 BANKING.TRANSFERS 약 650만 행 전수, 실행당 약 10.3만 읽기, CPU 0.25~0.6초)를 함께 돌려 Oracle CPU 2개를 다 쓰고(resmgr:cpu quantum), transfer Hikari 15개가 그 뒤에 묶여 이체 쓰기 500, account 서킷, api 502, commerce checkout 502 가 몇 초 단위로 오르내림(api transferClient 서킷 주기). 배포·설정·DB·잠금 변경 없음, 기존 문장의 실행 수만 뜀. Fly.io 2026-04-23 재구성(제휴 제공사의 폴링 빈도 증가 × 존재 확인에 필요 이상 행을 훑는 질의 → DB CPU 포화, 간헐적 500). F42-R(릴리스의 새 전수 스캔 질의로 같은 Oracle 포화)과 같은 증상 다른 원인 |
 | F80-R | 후보 | 은행 | A | 노드, 디스크 | banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업(systemd 일시 유닛 oradata-backup, 파드 밖)이 가장 큰 데이터 파일 users01.dbf(5.4 GiB)와 나머지 Oracle 볼륨(약 3.7 GiB, tar 하나)을 두 흐름으로 나란히 zstd -12 --long=31 압축. 흐름마다 장거리 창(2 GiB)이 차며 약 2.3 GiB, 둘이 약 4.6 GiB 로 tb-w2 여유(66 이전 뒤 2,257~2,904 MiB, 스왑 없음)를 넘음. 호스트 작업이라 한도도 축출도 없어 노드가 파드를 내줌: kubelet 이 요청량(2Gi)을 넘긴 유일한 파드 Oracle 을 축출하거나 커널 전역 OOM 이 KCM 노드 에이전트와 banking 자바 컨테이너를 죽임 → 이체 502, commerce 정산 실패. 배포, 설정 변경 없음. 원인 흔적은 호스트 데이터(SMS 메모리, 프로세스 목록의 zstd 둘과 tar, 백업 유닛 시작 syslog, 노드 SystemOOM 이나 노드 메모리 축출, 빠진 파드는 자기 한도 아래)에만 있음. 원본 GitHub 2026-09-20(일상 저장소 유지보수 작업이 아주 큰 저장소에서 서버 메모리를 거의 다 써 Git 작업 처리 불가) |
 
@@ -630,3 +630,8 @@ B는 7개(6%), L은 9개(8%), A는 9개(8%), G는 13개(12%), P는 14개(12%), D
 - 2026-10-26: `F63-R` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, controller, 검사, 러너를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-26-1743-F63-R-run-797189da.md` 3절 must_support 표, 4-1 §11 표, 5절). ① 정답지 must_support 2 와 설계 시트 `design-F63-R-sheet.md` §6·§7·§8 의 "힙 그대로"는 실측과 다르다. 두 실행 연달아 힙이 한도 안에서 올랐다(193~208MiB/247.5MiB). "힙은 한도 안에서 오를 수 있다, OOM 은 힙 밖"으로 고치기를 권한다. ② §11 의 "api 서버 스팬 5xx 가 그 구간에 몰리는지"는 원래 볼 수 없는 신호다(502 는 수집 밖 nginx 가 내고 죽은 api 는 스팬을 남기지 못함). "api 스팬·로그 공백과 재기동 직후 몰림"으로 바꾸기를 권한다. ③ §9 의 기동→Ready 26~29초(109 실측)는 66 동반 부하 중 약 90~102초였다. 장부 §4 행의 "Ready 까지 26~29초"도 같다. ④ §9·§11 의 byb2y2hv7p4ag "분당 50~68"은 낮 대역 값이고 밤 대역은 분당 10~35 다. ⑤ 하네스 보강(판정 영향 없음): 러너가 성공 틱을 ticks.jsonl 에 남기지 않는다(두 번째), 큐 `_sweep_lingering_incidents` 가 닫은 인시던트 목록과 첫 preflight 판정을 기록하지 않는다, 검증 collect.py 가 event_id 재사용 이벤트를 엉뚱한 과거 군집에 걸어 시험 대상 군집을 c22b18f5 하나만 보였다, 러너 docker logs 보존이 약 4시간이라 실행 사이 웹 실행 여부를 docker logs 만으로 볼 수 없다.
 - 2026-10-26: F72-R 운영 보강 1회차(후보 유지, §4-1 그대로). 실행 F72-R-run-92d33300 은 주입(tb-w2 커널 '[FW BLOCK] … DPT=1521' 129줄, 평시 0), 피해(세 파드 readiness 실패 85건, 잔액·이체 전면 실패), 원인 근거(account·transfer·ledger ORA-12170 1,346줄, DPM idle_session 11→0)가 모두 남았고 겹침도 없었으며 087ef96 host.firewall recovery 도 약 5.5초 만에 통과했으나, 동반 부하 surge.js 10rps 의 거래 내역 단계(25%, 초당 2.5건)가 건수 질의 byb2y2hv7p4ag 를 분당 17회에서 139~167회로 늘려 20:19~20:27 에 Oracle cpu_time 1.79/2, db_time 3.01, active_session 5 가 되어(plan 2603328921 그대로) must_rule_out 3 의 "Oracle 활성 세션과 CPU 가 오르지 않으며"를 어겼다(10-23 두 실행도 cpu 1.95, 1.94). F47-R·F63-R(1ad6679, 272ccd2), F37-H(f3f71c4), F68-R(94386c5)과 같은 방법으로 동반 부하 script_path 를 transfer-balance-surge.js(이체 55 / 잔액 35 / 목록 10, 거래 내역 없음)로 바꾸고 target_rps 10, ramp 2m, hold 27m 은 그대로 뒀다(방화벽 피해는 부하량과 무관, 30초당 잔액 약 105건, 이체 약 165건). 주입, 강도, success, must_rule_out, must_support 는 그대로. 덤프본 case-f72-r-v3-92d33300 은 tb-ops `_rejected/`. 근거 `~/dev/testbed-ops/verifications/2026-10-26-2143-F72-R-run-92d33300.md` §4-4 ③, §11.
 - 2026-10-26: `F72-R` 정답지 문구 보정 후속 과제(생성 하네스 몫, 운영 하네스는 고치지 않음). 정답지 must_support[4] 가 commerce 정산 실패를 "commerce-payment 의 'core-banking transfer call failed' 502"로 적었으나 66 실측은 commerce-order 가 `Checkout payment failed … Payment service error: 502`(54줄)와 paymentClient OPEN 으로 남기고 commerce-payment 자체 로그에는 실패 줄이 없다. 또 설계 시트 §9 첫 실행 확인 항목의 tb-w2 sudo iptables 줄 수집은 주입 6/11, 정리 2/3 이고 점프 규칙(`-I FORWARD`) 줄은 빠졌다(판정은 커널 줄로 섬). 고칠 곳: `scripts/scenarios/registry/scenario-metadata.json` F72-R must_support[4](와 같은 서술이 있으면 distinguishing_evidence 영, _ko), 설계 시트 `docs/scenario-redesign-wip/design-F72-R-sheet.md` §7·§9 의 commerce 근거 위치와 sudo 줄 수집 서술. 판정 조건은 그대로 둔다. 근거 위 검증 보고서 §3, §4 must_support ⑤, §11 데이터 메모.
+- 2026-10-27: `F72-R` 정식 승격(케이스 `case-f72-r-v3-bf50d2b7`). 66 실행 F72-R-run-bf50d2b7(러너 tb-ops, 큐 cycle-1-b4f070f0, 큐 항목 attempts 1, 보강 1회차 3c4ee63 뒤 첫 실행, 주기 재시작 없음)가 검증(`~/dev/testbed-ops/verifications/2026-10-27-0129-F72-R-run-bf50d2b7.md`)에서 녹화 가능으로 판정되어 104 eval 세트에 적재했다(파일 653개, tb-ops 와 같음). 앞 실행 이력: 10-23 0a81ae59·e030c6b4 는 host.firewall recovery 1회 검사로 DIRTY(087ef96 로 고침), 10-26 92d33300 은 동반 부하 거래 내역 질의가 Oracle CPU 를 올려 must_rule_out ③ 위반(보강 1회차). 이번에는 주입(tb-w2 커널 '[FW BLOCK] IN=cni0 OUT=cni0 … DST=10.244.1.31 DPT=1521 SYN' 125줄 전수, 평시 0), 피해(잔액·이체 5xx 1.0, 성공 28틱), 원인 근거(ORA-12170 807줄 account 193·ledger 371·transfer 243, Hikari 807줄 모두 total=0, DPM idle_session 12→0, 세 파드 readiness 실패 83건, 재시작·롤아웃 없음)가 남았고, must_rule_out 신호가 없다(Oracle cpu_time 최대 0.396, db_time 0.407, active 1, byb2y2hv7p4ag 분당 24~38 에 계획 2603328921·child 0 유지, 847607780 재발 없음). 087ef96 recovery 는 5초 재확인 1회로 통과, cleanup 뒤 tb-w2 잔여 규칙 없음, 이미지 점검 종료 0, 겹친 실행 없음(직접 계산, 92d33300 재실행 조건 23:09:19 ≤ t1 00:12:50). catalog stage official, 큐 항목 삭제, 장부 §4-1 → §4 와 §3 재집계(정식 114, K 2→3, 은행 36→37, 정답 위치 노드, 디스크 6→7, 114 로 다시 반올림해 G 11%, 결제 경로 15/114 13.2% 표 13%, 후보 3), stage 개수 핀(정식 114, 후보 3).
+- 2026-10-27: `case-f72-r-v3-bf50d2b7` 녹화본 사용 주의 표시: ① tb-w2 sudo iptables 줄은 UDP syslog 로 일부만 들어왔다(주입 3/11, 정리 1/3). 점프 규칙 `-I FORWARD` 줄은 92d33300 에 이어 또 빠졌고, 정리의 `-D FORWARD … --dport 1521 … -j ORACLE-LSNR-IN` 줄이 같은 규칙 내용을 담는다. 커널 차단 줄은 전수다. ② commerce 정산 실패는 commerce-payment 가 아니라 commerce-order 로그(`Checkout payment failed … Payment service error: 502 … core-banking transfer call failed: 500` 90줄)에 남는다. ③ Oracle instance level_shift(00:14:46 execution_count 855→3,873 등)는 동반 부하 10rps 몫이고 CPU·활성 세션은 평시대다. ④ 평시 창 byb2y2hv7p4ag 분당 약 30회는 상주 기준선 diurnal(KST 07~09시 2rps) 몫이다. ⑤ 인시던트 표에는 평시 창 23:30:43 에 92d33300 잔재 trace 군집 0d0b29b9 가 인시던트 a0b8a3aa 로 생긴 기록이 있고, b3cbf165·a0b8a3aa·9cc9947d 가 평시 창에 열려 있다가 preflight 직전 00:12:44 에 닫혔다(멤버는 92d33300 주입·식힘 때 것과 상주 원장 불일치, 원시 관측 데이터는 오염 없음). ⑥ 시작 점검 에이전트의 tb-w2 sudo 읽기(iptables -S, nft list ruleset, journalctl) 줄이 주기 시작 22:02:34 직후 22:02:35~46 에 119 syslog 로 들어왔다(평시 창 22:12:50 앞, 규칙 변경 아님).
+- 2026-10-27: `case-f72-r-v3-bf50d2b7` 환경 결함 표시: 119 stream-anomaly 수집기 정지. sms 22:03:18, db 22:05:46, jvm 22:24:17, nms 20:38:16 뒤로 0건이고 dpm 만 나왔다. VM 원시 지표는 1분마다 들어와 녹화 원시 지표에 빈칸은 없다. 근본 갈래(tb-w2)는 SMS 이벤트가 필요한 결함이 아니라 판정에 영향 없음(92d33300 과 같은 꼴).
+- 2026-10-27: `case-f72-r-v3-bf50d2b7` 제품 관찰 메모(판정에 쓰지 않음): ① 탐지 공백. DPM idle_session 12→0·current_session 93→80, KCM readiness 실패 83건, tb-w2 syslog FW BLOCK 125줄에 이상 이벤트 0건. ② 군집 분할. 한 장애가 은행 군집 13개(주 34caa175 28, c7377ee4 11, ledger 2멤버 군집 8개 등)와 쇼핑몰 전파 군집 89c6b8e2 로 갈라졌고, 주 군집에 동반 부하 몫 Oracle level_shift 8개가 섞였다. ③ 판정. 평시 창 배경 군집 5개(잔액 부족 400 넷, 원장 불일치 하나)가 t1 뒤 promote 됐고, 근거 원문 결론이 "아니오"인데 promote 된 군집이 9개다. ④ (참고) RCA 14건 중 tb-w2·방화벽을 말한 가설 0건, ORA-12170 을 인용한 8건은 모두 원인을 Oracle 에 뒀다(library.pins 4건, 동반 부하 유입 증가 1건 등). 근거 검증 보고서 §11.
+- 2026-10-27: `F72-R` 시나리오 메모 후속 과제(생성 하네스 몫, 운영 하네스는 정답지, 설계 시트, controller, 검사, 러너를 고치지 않음, 근거 `~/dev/testbed-ops/verifications/2026-10-27-0129-F72-R-run-bf50d2b7.md` §12). ① 정답지 must_support ⑤·cause·user_impact 의 "commerce-payment 의 'core-banking transfer call failed' 502"는 실제로 commerce-order 가 남긴다(10-26 후속 과제에 이미 있고 아직 남음, 이번에도 같음). ② must_support ③ "ORA-12170 이 Hikari ERROR … 의 원인으로 나온다": 119 로그에서 Hikari 줄 본문에는 ORA-12170 이 없고 같은 순간 별도 ERROR 줄('ORA-12170: Cannot connect …')과 WARN 'SQL Error: 12170' 으로 나뉘어 들어온다(서비스마다 줄 수가 같음). "같은 순간 별도 줄로 남는다"로 적는 편이 정확하다. ③ must_support ⑥ "세션이 max-lifetime 10분 안에 하나씩 사라져": 이번에는 account 세 세션이 거의 한꺼번에 물러났다(idle_session 00:16 8 → 00:17 2, 규칙 뒤 약 4분, 첫 시간 초과부터 total=0). 실행마다 세션 생성 시각 분포에 따라 계단 모양이 달라진다는 점을 문구에 담는 것이 좋다. ④ must_support ①·설계 시트 `design-F72-R-sheet.md` §7 의 sudo 줄 수집률 실측(F44-P 0/8, F44-R 3/8, 92d33300 주입 6/11·정리 2/3, bf50d2b7 주입 3/11·정리 1/3, `-I FORWARD` 두 번 연속 빠짐)을 시트에 더할 만하다("들어오면 보조" 문구는 맞음). ⑤ 시트 §9 보강 1회차 재실행 확인 항목(cpu < 0.5, active ≤ 1, Hikari total ≤ 2)은 이번에 모두 충족됐다. 결과를 시트에 남길 차례다.
