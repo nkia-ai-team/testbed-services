@@ -3809,7 +3809,33 @@
    "cause_ko": "외부 PG mock이 /pay에 8초 지연(payment read-timeout 10s 미만) → payment는 지연된 200 반환 → order createOrder가 @Transactional로 커넥션을 쥔 채 대기 → 커넥션 보유 시간 = Σ(하류 지연) → order Hikari(15) 고갈 → 신규 요청이 connection-timeout 3s 초과 → order 5xx",
    "injection_summary_ko": "mock.expectation executor가 food의 testbed-external-pg-mock에 path=/pay, mode=delay, delay_seconds≈8을 설정한다. 8초는 payment의 read-timeout 10초보다 **작게** 고른 값이다 — 넘기면 payment가 502를 내며 F19-S가 되어버린다. load.north_south가 food surge.js로 주문 생성 부하를 흘리고, cleanup은 expectation reset이다.",
    "user_impact_ko": "주문 생성(POST /api/orders)이 5xx·타임아웃으로 급증한다. 식당·메뉴 조회처럼 커넥션을 짧게 쓰는 읽기는 상대적으로 견디지만 order 전반의 지연이 오른다. 결제는 느릴 뿐 실패하지 않아 '결제는 되는데 주문이 안 되는' 혼란스러운 형태로 보인다.",
-   "distinguishing_evidence_ko": "결정 증거는 **5xx의 출처가 하류가 아니라 order 자신**이라는 것이다. payment와 PG는 지연된 200을 반환하고 502가 없으며, order의 오류는 커넥션 획득 실패(3초 타임아웃)에서 온다. Hikari active=max·pending>0이 order에서만 관측되고 dispatch·payment 파드는 정상 Ready다. F19-S와는 payment 502 비율과 pg 서킷 개방 유무로 갈리고 — 그쪽은 지연이 read-timeout을 넘겨 502가 난다 — F19-Q(배차 503)와는 상태코드로 갈린다."
+   "distinguishing_evidence_ko": "결정 증거는 **5xx의 출처가 하류가 아니라 order 자신**이라는 것이다. payment와 PG는 지연된 200을 반환하고 502가 없으며, order의 오류는 커넥션 획득 실패(3초 타임아웃)에서 온다. Hikari active=max·pending>0이 order에서만 관측되고 dispatch·payment 파드는 정상 Ready다. F19-S와는 payment 502 비율과 pg 서킷 개방 유무로 갈리고 — 그쪽은 지연이 read-timeout을 넘겨 502가 난다 — F19-Q(배차 503)와는 상태코드로 갈린다.",
+   "story_ko": {
+    "overview": "음식 배달의 외부 결제대행사 응답이 8초로 느려지면 결제는 끝내 성공하지만, 그 사이 주문 쪽 DB 연결과 배차 서비스가 버티지 못해 주문 생성이 대부분 실패한다.",
+    "injected_fault": "음식 배달의 외부 결제대행사(외부 PG mock)가 결제 요청에 8초 늦게 답하게 하고, 약 8분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "결제 서비스(Spring Boot, food-delivery-payment)의 외부 결제 호출이 오류 없이 8초씩 걸린다. 1분 안에 주문 서비스(Spring Boot, food-delivery-order)에서 DB 연결을 기다리다 실패하는 로그가 나온다."
+     },
+     {
+      "stage": "확산",
+      "text": "약 1분 뒤부터 배차 서비스(Spring Boot, food-delivery-dispatch)의 DB 연결이 다 차고 준비 안 됨 상태를 오간다. 주문이 배차 용량 확인에서 막혀 주문 생성의 약 90% 가 오류로 끝난다."
+     },
+     {
+      "stage": "회복",
+      "text": "지연을 거두자 오류가 멈춘다."
+     }
+    ],
+    "root_cause": "근본 원인은 외부 결제대행사의 응답 지연이다. 오류는 주문과 배차 서비스에 쌓이고, 결제 서비스는 느릴 뿐 성공하므로 무죄처럼 보인다.",
+    "design_notes": [
+     "주입: mock.expectation 이 testbed-external-pg-mock 의 /pay 에 delay 8초(status 200)를 건다. payment 의 read-timeout 10초보다 짧게 골라 502 가 나지 않게 한다",
+     "부하: load.north_south food surge.js 50rps, 램프업 2분, 진입점 30181",
+     "의도한 기전: order createOrder 는 하나의 @Transactional 안에서 restaurant, dispatch, payment 를 차례로 부르므로 결제 지연만큼 order Hikari(15) 연결을 쥔다. 새 요청은 connection-timeout 3초를 넘겨 order 5xx 가 된다",
+     "녹화(case-f19-p-v3-5a350c0a): payment POST /api/payments p50 8.1초에 오류 0, order Hikari 시간 초과는 첫 1분 31건뿐. dispatch Hikari(3000ms) 시간 초과 약 2,000건, readiness 실패 26회, order 'Failed to check dispatch capacity' 가 주문 실패의 대부분이다",
+     "대조: 같은 주입면에서 지연만 30초로 늘린 F19-S 는 결제가 502 로 실패한다"
+    ]
+   }
   },
   "F19-S": {
    "title": "food external PG delay (exceeding the timeout) — 502s and circuit opening cascade into orders",
@@ -3893,7 +3919,37 @@
    "cause_ko": "외부 PG mock이 /pay에 30초 지연(read-timeout 10s 초과) → PgApiClient.pay 타임아웃 → @Retry(pg) 재시도 증폭 → ServiceException(502) → 실패율 50%↑ → @CircuitBreaker(pg) open → payFallback이 즉시 502 → order paymentClient.processPayment가 502 수신 → 주문 실패",
    "injection_summary_ko": "mock.expectation executor가 food의 testbed-external-pg-mock에 path=/pay, mode=delay, delay_seconds=30을 설정한다(응답코드는 200이지만 도달하지 못한다). load.north_south가 food surge.js로 주문 생성 부하를 흘리고, cleanup은 expectation reset이다 — 서킷은 wait-duration 5초 뒤 half-open을 거쳐 자연 복구된다.",
    "user_impact_ko": "주문 생성의 결제 단계가 502로 실패해 주문이 거절된다. 초기에는 개별 결제가 10초를 기다린 뒤 실패하지만 서킷이 열린 뒤에는 즉시 반려되므로 사용자 체감이 '느린 실패'에서 '즉시 실패'로 바뀐다. 식당·메뉴 조회는 정상이다.",
-   "distinguishing_evidence_ko": "결정 증거는 payment가 **명시적으로 502를 낸다**는 것과 pg 서킷이 열린다는 두 신호의 결합이다. F19-P는 같은 주입면인데 payment가 지연된 200을 내고 order 풀 고갈로만 아프므로, payment 오류율 하나로 두 시나리오가 갈린다. F19-Q(배차 503)와는 상태코드로 구분된다. 순진한 RCA는 증상이 퍼진 order를 근본으로 지목하지만, 오류의 시작점은 payment의 외부 PG hop이다."
+   "distinguishing_evidence_ko": "결정 증거는 payment가 **명시적으로 502를 낸다**는 것과 pg 서킷이 열린다는 두 신호의 결합이다. F19-P는 같은 주입면인데 payment가 지연된 200을 내고 order 풀 고갈로만 아프므로, payment 오류율 하나로 두 시나리오가 갈린다. F19-Q(배차 503)와는 상태코드로 구분된다. 순진한 RCA는 증상이 퍼진 order를 근본으로 지목하지만, 오류의 시작점은 payment의 외부 PG hop이다.",
+   "story_ko": {
+    "overview": "음식 배달의 외부 결제대행사 응답이 30초로 늦어지면 결제가 시간 초과로 실패하고, 결제 차단기가 열린 뒤에는 주문이 즉시 거절되며, 배차 서비스까지 버티지 못해 주문 생성이 대부분 실패한다.",
+    "injected_fault": "음식 배달의 외부 결제대행사(외부 PG mock)가 결제 요청에 30초 늦게 답하게 하고, 약 8분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "첫 1분 동안 결제 서비스(Spring Boot, food-delivery-payment)가 외부 결제를 10초쯤 기다리다 실패하고, 주문 서비스(Spring Boot, food-delivery-order)에 결제 실패 오류가 쏟아진다."
+     },
+     {
+      "stage": "차단",
+      "text": "1분 뒤부터 결제 실패 로그는 분당 몇 건으로 줄고, 주문은 결제 단계에서 기다림 없이 거절된다."
+     },
+     {
+      "stage": "확산",
+      "text": "같은 무렵 배차 서비스(Spring Boot, food-delivery-dispatch)의 DB 연결이 다 차고 준비 안 됨 상태를 오가, 주문이 배차 용량 확인에서도 실패한다."
+     },
+     {
+      "stage": "회복",
+      "text": "지연을 거두자 오류가 멈춘다."
+     }
+    ],
+    "root_cause": "근본 원인은 외부 결제대행사의 응답 지연이다. 결제 서비스와 주문 서비스의 502 가 크게 보이지만 둘 다 살아 있는 피해자다.",
+    "design_notes": [
+     "주입: mock.expectation 이 testbed-external-pg-mock 의 /pay 에 delay 30초(status 200)를 건다. payment 의 read-timeout 10초를 확실히 넘기는 값이다",
+     "부하: load.north_south food surge.js 50rps, 램프업 2분, 진입점 30181",
+     "의도한 기전: PgApiClient.pay 타임아웃 → @Retry(pg) 재시도 → 502 → 실패율 50% 이상에서 @CircuitBreaker(pg) open → payFallback 이 즉시 502. order 는 이 502 를 받아 주문을 거절한다",
+     "녹화(case-f19-s-v3-5daa9c97): payment 'PG /pay failed' 첫 1분 29건 뒤 분당 1~6건, payment 서버 스팬 p50 10.3초. dispatch Hikari 시간 초과 약 2,200건, readiness 실패 26회(+61초부터), order 'Failed to check dispatch capacity' 213건이 결제 실패보다 많다",
+     "대조: 같은 주입면에서 8초 지연(타임아웃 미만)은 F19-P 다"
+    ]
+   }
   },
   "F16-H": {
    "title": "user-service readiness failure → gateway auth fail-close, writes-only 401 (reads normal)",
@@ -4325,7 +4381,28 @@
    "cause_ko": "GET /api/orders(page/size 없이) + GET /api/orders/stats/daily?days=90 반복 호출 → OrderController가 Pageable.unpaged()로 무제한 반환, search는 OR-null 술어로 풀스캔, aggregateDailyStats는 GROUP BY DATE(created_at)로 인덱스 무력화·filesort → 무제한 결과셋이 order JVM 힙(1Gi limit)에 적재 → GC 압박·메모리 상승 + MySQL slow query → order 지연",
    "injection_summary_ko": "load.north_south가 food loadgen의 slowquery.js를 켜 무제한 목록 조회(40%)와 일별 통계 조회(40%)를 반복하고, 대표 주문 생성 여정을 20%로 섞어 관측 태그 샘플을 유지한다. 주입은 부하뿐이며 코드·스키마·설정을 바꾸지 않는다. cleanup은 부하 종료뿐이다.",
    "user_impact_ko": "주문 목록·통계 조회가 크게 느려지고, order 컨테이너 메모리가 1Gi 한도까지 차오르며 GC 지연과 OOMKill 재시작 위험이 커진다. 결제·배차는 정상이라 주문 생성 자체는 계속 되지만 조회 화면이 멎는 형태로 사용자가 체감한다.",
-   "distinguishing_evidence_ko": "결정 증거는 'order 컨테이너 메모리가 한도를 향해 차오르며 지연이 오르는데 payment 502도 배차 503도 없다'는 조합이다. 잠식 자원이 커넥션 풀(F19-P)이나 배차 용량(F19-Q)이 아니라 JVM 힙임을 가리킨다. 단일 MySQL이라 F20-R 같은 교차 스키마 오염이 없어 증상이 order에 국한되는 것도 축이다. 순진한 RCA는 느린 order를 근본으로 보지만, 정답은 페이지네이션 부재와 함수 래핑 집계 쿼리라는 **코드 결함**이다."
+   "distinguishing_evidence_ko": "결정 증거는 'order 컨테이너 메모리가 한도를 향해 차오르며 지연이 오르는데 payment 502도 배차 503도 없다'는 조합이다. 잠식 자원이 커넥션 풀(F19-P)이나 배차 용량(F19-Q)이 아니라 JVM 힙임을 가리킨다. 단일 MySQL이라 F20-R 같은 교차 스키마 오염이 없어 증상이 order에 국한되는 것도 축이다. 순진한 RCA는 느린 order를 근본으로 보지만, 정답은 페이지네이션 부재와 함수 래핑 집계 쿼리라는 **코드 결함**이다.",
+   "story_ko": {
+    "overview": "음식 배달 주문 목록을 페이지 없이 통째로 받아 가는 조회가 반복되면, 주문 서비스의 메모리가 차오르고 주문 목록과 통계 화면이 멎는다.",
+    "injected_fault": "음식 배달 진입점으로 페이지 없이 전체 주문 목록과 90일 일별 통계를 요청하는 트래픽을 약 10분 동안 흘린다. 코드, 스키마, 설정은 바꾸지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "주문 서비스(Spring Boot, food-delivery-order)가 요청마다 주문 전체를 메모리에 올리고, 음식 배달 DB(MySQL, MySQL-fooddelivery)에 느린 질의가 늘어난다."
+     },
+     {
+      "stage": "확산",
+      "text": "주문 서비스의 컨테이너 메모리가 한도(1Gi)를 향해 오르고 주문 목록과 통계 응답이 크게 느려진다. 결제와 배차는 정상이라 주문 생성은 계속 된다."
+     }
+    ],
+    "root_cause": "근본 원인은 주문 서비스의 페이지 없는 목록 조회와 인덱스를 못 쓰는 통계 질의다. DB 가 느려 보이지만 결과를 쌓는 곳은 주문 서비스의 메모리다.",
+    "design_notes": [
+     "주입: load.north_south food slowquery.js 15rps, 램프업 2분, 유지 8분. 무제한 목록 40%, 일별 통계 40%, 주문 생성 20%",
+     "기전: page, size 가 없으면 OrderController 가 Pageable.unpaged() 로 전 행을 반환하고, 통계는 GROUP BY DATE(created_at) 로 인덱스를 못 쓰고 filesort 한다",
+     "관측 근거: container_memory_current_bytes 가 768Mi 이상으로 오르는 것이 힙이 잠식 자원이라는 직접 증거다",
+     "상태: parked(실행 집합 밖). 녹화 없음"
+    ]
+   }
   },
   "F25-H": {
    "title": "commerce PostgreSQL OOMKill — one shared DB dies and the whole domain blips",
@@ -4870,7 +4947,30 @@
    "cause_ko": "restaurant-service 응답 지연(read-timeout 5s 미만) → createOrder가 save 前 hop(getRestaurant)에서 대기하며 order Tomcat 스레드 점유(지연 커넥션 획득으로 Hikari 미보유) → 동시 createOrder≥200이면 Tomcat 기본 200 포화 → acceptor 큐 적체 → 무관 엔드포인트까지 스레드 굶주림 지연",
    "injection_summary_ko": "restaurant-service getRestaurant/getMenu 응답을 read-timeout 5s '미만'(목표 ~4s)으로 지연시켜(host.stress worker-w3 CPU 또는 db.workload restaurant MySQL) restaurant가 502가 아닌 느린 200을 내되 order createOrder가 Tomcat 스레드를 오래 점유하게 한다. 동시에 load.north_south로 food order-surge.js(entry 30181, create-heavy, target_rps≈55 — Little L=λ·4s로 200 스레드 목표)를 흘린다. 지연이 5s를 넘으면 retry/502(C4 regime)로 전이하므로 캘리브레이션 필수. cleanup은 stress/workload 해제(order 롤백 없음).",
    "user_impact_ko": "주문 생성(POST /api/orders)이 order Tomcat 스레드 포화로 지연·타임아웃 급증하고, 하류를 안 타는 주문 조회(GET /api/orders)까지 느려진다. restaurant는 느린 200으로만 보여(502 아님) 원인이 order로 오인되기 쉽다. Hikari는 비어 있어(pending≈0) DB 커넥션풀을 범인으로 지목하면 오진.",
-   "distinguishing_evidence_ko": "order의 지연은 DB 커넥션이 없어서(F19-P)가 아니라 Tomcat 스레드가 없어서 발생한다. 결정 증거 3종: (1) http.server.active_requests가 200에 닿음(F19-P는 ~15+에서 멈춤, Hikari가 먼저 참), (2) hikari pending≈0·active 낮음(F19-P는 pending>0·active≈15), (3) 무관 GET /api/orders 지연 전염(Hikari 고갈은 DB 만지는 엔드포인트에 국한, 스레드 고갈은 전 엔드포인트 전염). 지연 지점이 orderRepository.save(:128) 앞(restaurant)이냐 뒤(payment)냐가 P2(스레드)와 P1(Hikari)을 가르는 근본 분기."
+   "distinguishing_evidence_ko": "order의 지연은 DB 커넥션이 없어서(F19-P)가 아니라 Tomcat 스레드가 없어서 발생한다. 결정 증거 3종: (1) http.server.active_requests가 200에 닿음(F19-P는 ~15+에서 멈춤, Hikari가 먼저 참), (2) hikari pending≈0·active 낮음(F19-P는 pending>0·active≈15), (3) 무관 GET /api/orders 지연 전염(Hikari 고갈은 DB 만지는 엔드포인트에 국한, 스레드 고갈은 전 엔드포인트 전염). 지연 지점이 orderRepository.save(:128) 앞(restaurant)이냐 뒤(payment)냐가 P2(스레드)와 P1(Hikari)을 가르는 근본 분기.",
+   "story_ko": {
+    "overview": "음식 배달 가게 서비스가 몇 초씩 느려지면 주문 서비스의 요청 처리 스레드 200개가 모두 기다림에 묶여, 가게 서비스를 부르지 않는 주문 조회까지 느려진다.",
+    "injected_fault": "가게 서비스가 놓인 작업 노드(tb-w3)에 CPU 부하를 약 8분 걸어 가게 서비스 응답을 5초 아래로 느리게 하고, 주문을 많이 넣는 트래픽을 함께 흘린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "가게 서비스(Spring Boot, food-delivery-restaurant)가 오류 없이 느린 200 으로 답하고, 주문 생성이 그만큼 길어진다."
+     },
+     {
+      "stage": "확산",
+      "text": "동시 주문이 늘어 주문 서비스(Spring Boot, food-delivery-order)의 요청 처리 스레드 200개가 다 차고, 주문 생성이 지연되거나 시간 초과로 실패한다. 가게를 부르지 않는 주문 목록 조회도 느려지지만 DB 연결은 한가하다."
+     }
+    ],
+    "root_cause": "근본 원인은 주문 서비스의 스레드 풀 구조(기본 200개, 하류 지연 동안 스레드를 쥠)다. 가게 서비스의 지연은 방아쇠이고, DB 연결 풀은 비어 있어 범인이 아니다.",
+    "design_notes": [
+     "주입: host.stress cpu 모드, 192.168.122.14(tb-w3), cpu_workers 3, runtime 480초",
+     "부하: load.north_south food order-surge.js 70rps, 램프업 2분, 진입점 30181(정답지 산문의 55rps 와 다르다)",
+     "기전: server.tomcat 튜닝이 없어 기본 200 스레드. createOrder 는 orderRepository.save 전에 restaurant getRestaurant, getMenu, dispatch checkCapacity 를 부르고, Hibernate 지연 연결 획득 때문에 save 전에는 Hikari 연결을 잡지 않는다",
+     "조건: restaurant 지연이 read-timeout 5초를 넘으면 retry 와 502 로 넘어가 다른 결함 계열이 된다. 캘리브레이션 필요",
+     "관측 근거: order jvm_daemon_thread_count 180 이상, Hikari pending 0 근처, 무관한 GET /api/orders p95 급증",
+     "상태: parked(실행 집합 밖). 녹화 없음"
+    ]
+   }
   },
   "F21-P": {
    "title": "banking api-service Tomcat thread pool (200) saturation (transfer downstream latency, no DataSource)",
@@ -5080,7 +5180,31 @@
    "cause_ko": "restaurant NodePort(30181) 조회 부하 폭주 → restaurant Hikari 10·Tomcat 스레드 포화, restaurant p95 급등 → order getRestaurant/getMenu가 read-timeout 5s 초과 → @Retry(restaurant) 3회 증폭 → 실패율 50%↑ → @CircuitBreaker(restaurant) open → fallback 502 BAD_GATEWAY → createOrder가 DB 쓰기 이전 단계(:60/:73)에서 502 전파 → order 전량 502",
    "injection_summary_ko": "load.north_south executor로 restaurant NodePort(entry http://192.168.122.77:30181)에 food surge.js 조회 부하(target_rps≈70)를 흘려 restaurant Hikari 10·Tomcat 스레드를 자연 포화시킨다. order-create 트래픽은 baseline(loadgen-food)이 공급하며, 포화된 restaurant 탓에 baseline 주문이 502를 받는다. mock.expectation은 restaurant가 실 서비스라 부적용, PopularMenuBatch는 1h 스케줄이라 타이밍 제어 불가, CPU stress는 §2-A Class B 위장이라 배제 — load.north_south가 유일한 실재·계약준비완료(F02-P 선례) 수단. cleanup은 load ramp_down 후 정지(restaurant는 부하 제거만으로 회복, 상태 롤백 불필요).",
    "user_impact_ko": "주문 생성(POST /api/orders)이 restaurant 조회 실패로 502 BAD_GATEWAY 전량 실패한다. 실패가 DB 쓰기 이전(restaurant 검증 단계)에서 나므로 주문이 아예 생성되지 않는다. restaurant 자체는 조회 부하로 p95 급등·에러율 상승을 보이나 order가 증상의 수렴점이라 원인이 order로 오인되기 쉽다. downstream 없는 restaurant가 모든 주문의 단일 상류라는 점이 사각.",
-   "distinguishing_evidence_ko": "order의 502는 order 자신의 결함이 아니라 최상류 restaurant의 지연이 order측 retry 증폭·hard-dependency·CB open을 거쳐 fallback 502로 전파된 결과다. 결정 감별 두 축: (1) 어느 downstream이 아픈가 — F24-Q는 restaurant p95·error_rate 급등(payment 정상), F19-S는 payment 502·pg CB open(restaurant 정상)으로 같은 order 502를 가른다. (2) 하류가 명시적 5xx를 내는가 — F24-Q는 restaurant가 502를 내지만, F19-P는 하류가 502 없이(payment 200 지연) order Hikari pending만 오른다. F19-Q와는 상태코드(502 vs 503)로 갈린다. restaurant는 downstream 없는 '무해한 리프'로 보여 후보에서 배제되기 쉬우나 모든 주문의 단일 상류 SPOF다."
+   "distinguishing_evidence_ko": "order의 502는 order 자신의 결함이 아니라 최상류 restaurant의 지연이 order측 retry 증폭·hard-dependency·CB open을 거쳐 fallback 502로 전파된 결과다. 결정 감별 두 축: (1) 어느 downstream이 아픈가 — F24-Q는 restaurant p95·error_rate 급등(payment 정상), F19-S는 payment 502·pg CB open(restaurant 정상)으로 같은 order 502를 가른다. (2) 하류가 명시적 5xx를 내는가 — F24-Q는 restaurant가 502를 내지만, F19-P는 하류가 502 없이(payment 200 지연) order Hikari pending만 오른다. F19-Q와는 상태코드(502 vs 503)로 갈린다. restaurant는 downstream 없는 '무해한 리프'로 보여 후보에서 배제되기 쉬우나 모든 주문의 단일 상류 SPOF다.",
+   "story_ko": {
+    "overview": "음식 배달 가게 서비스에 조회 트래픽이 몰려 응답이 막히면, 모든 주문이 가게 확인 단계에서 재시도와 차단기를 거쳐 502 로 실패한다.",
+    "injected_fault": "음식 배달 가게 서비스 진입점에 가게 조회 트래픽을 초당 약 70건 몰아 넣는다. 다른 것은 바꾸지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "가게 서비스(Spring Boot, food-delivery-restaurant)의 DB 연결과 요청 스레드가 차서 응답이 5초를 넘기 시작한다."
+     },
+     {
+      "stage": "확산",
+      "text": "주문 서비스(Spring Boot, food-delivery-order)가 가게 확인을 세 번씩 재시도해 부하를 키우고, 실패율이 절반을 넘으면 가게 쪽 차단기를 연다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "주문 생성이 DB 에 쓰기 전 단계에서 모두 502 로 실패한다."
+     }
+    ],
+    "root_cause": "근본 원인은 모든 주문이 거치는 가게 서비스의 포화다. 502 는 주문 서비스에 모이지만 주문 서비스는 피해자다.",
+    "design_notes": [
+     "주입: load.north_south 로 restaurant NodePort 30181 에 food surge.js 조회 부하 약 70rps(설계값). 주문 생성 트래픽은 상주 기준선이 공급한다",
+     "기전: createOrder 는 getRestaurant, getMenu 로 restaurant 를 두 번 부른 뒤 DB 에 쓴다. restaurant Hikari 10, read-timeout 5초, @Retry(restaurant) 3회(실패 주문당 최대 6회 호출), 실패율 50% 이상에서 @CircuitBreaker(restaurant) 가 열려 fallback 이 502 를 던진다",
+     "상태: draft. 정답지에 injected_fault 가 없고 컨트롤러가 없다. 녹화 없음"
+    ]
+   }
   },
   "F01-G": {
    "title": "Short payment delay absorbed by retry and compensation",
@@ -5422,7 +5546,32 @@
    "cause_ko": "외부 PG mock이 /pay에 429를 반환 → payment PgApiClient가 4xx를 원 상태코드로 전파 → retry·CB는 ClientErrorException을 무시해 증폭·차단 없음 → payment가 429 응답 → order PaymentClient도 4xx를 전파 → 주문 생성 API가 429. 조회 경로는 PG를 타지 않아 무영향",
    "injection_summary_ko": "food 네임스페이스의 testbed-external-pg-mock에 /pay → status 429 기대값을 설치한다. 부하는 north-south 40rps로 food 진입점(30181)에 흘려 조회와 주문 생성을 함께 태운다. cleanup은 mock 스냅샷 복원이며 앱·DB 상태는 건드리지 않는다.",
    "user_impact_ko": "주문 생성이 429로 거절된다. 식당 목록·메뉴·배달 조회는 정상이라 사용자는 '앱은 되는데 주문만 안 되는' 상태를 겪는다. 5xx가 아니므로 에러율 기반 알람에는 잘 걸리지 않는다.",
-   "distinguishing_evidence_ko": "결정 증거는 **상태코드 자체**다. 주문 생성이 429로 거절되는데 5xx 비율은 낮고(가용성 장애 아님), 조회 경로는 정상이며(전면 장애 아님), 파드 Ready·DB 정상이다. F19-P/F19-S(같은 mock의 지연 주입)와 달리 지연이 아니라 즉시 거절이고, F01-H(commerce판 429)와는 도메인·경로가 다르다. 429가 애플리케이션이 만든 것이 아니라 **하류에서 온 것**임은 payment 트레이스에서 외부 PG 응답이 429인 것으로 확인된다 — 앱은 상태코드를 만들지 않고 옮겼을 뿐이다."
+   "distinguishing_evidence_ko": "결정 증거는 **상태코드 자체**다. 주문 생성이 429로 거절되는데 5xx 비율은 낮고(가용성 장애 아님), 조회 경로는 정상이며(전면 장애 아님), 파드 Ready·DB 정상이다. F19-P/F19-S(같은 mock의 지연 주입)와 달리 지연이 아니라 즉시 거절이고, F01-H(commerce판 429)와는 도메인·경로가 다르다. 429가 애플리케이션이 만든 것이 아니라 **하류에서 온 것**임은 payment 트레이스에서 외부 PG 응답이 429인 것으로 확인된다 — 앱은 상태코드를 만들지 않고 옮겼을 뿐이다.",
+   "story_ko": {
+    "overview": "음식 배달의 외부 결제대행사가 요청을 너무 많다며(429) 거절하면, 주문 생성만 429 로 막히고 가게 조회와 배달 추적은 멀쩡하다.",
+    "injected_fault": "음식 배달의 외부 결제대행사(외부 PG mock)가 모든 결제 요청에 429 로 답하게 하고, 약 8분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "3초 안에 결제 서비스(Spring Boot, food-delivery-payment)와 주문 서비스(Spring Boot, food-delivery-order)에 '429 Too Many Requests' 오류 로그가 같은 수로 쌓이기 시작한다."
+     },
+     {
+      "stage": "지속",
+      "text": "8분 내내 주문 생성만 분당 약 75건씩 429 로 거절된다. 5xx 가 아니어서 서버 스팬 오류율은 0 이고, 가게 조회와 배차는 평소와 같다."
+     },
+     {
+      "stage": "회복",
+      "text": "응답을 되돌리자 바로 오류가 멈춘다."
+     }
+    ],
+    "root_cause": "근본 원인은 외부 결제대행사의 요청 거절(429)이다. 결제와 주문 서비스에 오류가 찍히지만 둘 다 받은 거절을 그대로 전한 피해자다.",
+    "design_notes": [
+     "주입: mock.expectation 이 testbed-external-pg-mock 의 /pay 에 status 429 를 건다. cleanup 은 mock 스냅샷 복원",
+     "부하: load.north_south food surge.js 5rps, 램프업 2분, 진입점 30181",
+     "퍼지지 않는 이유: PgApiClient 는 4xx 를 ClientErrorException 으로 그대로 올리고, retry 와 circuit breaker 가 이 예외를 무시해 증폭도 차단도 없다. 조회 경로는 PG 를 타지 않는다",
+     "녹화: case-f06-p-v3-79c62cdb(그 밖에 100785c9, 24f2e956). payment 'PG /pay failed ... 429' 와 order 'Failed to process payment ... Too Many Requests' 가 각각 592건"
+    ]
+   }
   },
   "F10-H": {
    "title": "MySQL PVC backing-disk IO saturation — food orders slow down while holding connections",
@@ -5502,7 +5651,33 @@
    "cause_ko": "tb-w3의 local-path PVC 디렉토리(mysqldata-testbed-mysql-0)에 fio IO 부하 → 백킹 디바이스 busy 급등 → InnoDB 버퍼풀 미스와 redo 기록이 IO 대기에 묶임 → 주문 생성·조회 쿼리 시간 상승 → order의 Hikari 커넥션 보유 시간 증가 → 주문 경로 지연 (풀 대기는 동시성이 풀 크기를 넘을 때만 함께 나타나는 부수 신호다 — 2026-08-03 라이브에서 p95 5632ms 손상이 풀 대기 0으로 재현됐다)",
    "injection_summary_ko": "host.stress executor의 fio 모드로 tb-w3(192.168.122.14)의 PVC 경로에 고정 20000 IOPS(옛 사다리의 최상위 단, 캡처 재생용 pin)로 IO 부하를 주고 food 진입점 부하를 병행한다. cleanup은 fio 프로세스 종료와 생성 파일 삭제이며, MySQL 데이터는 건드리지 않는다.",
    "user_impact_ko": "주문 생성과 조회가 함께 느려진다. 파드는 죽지 않고 5xx도 즉시 튀지 않아 가용성 지표로는 정상으로 보이지만, 사용자에게는 앱 전체가 굼뜬 상태가 된다.",
-   "distinguishing_evidence_ko": "결정 증거는 **백킹 디바이스가 바쁘다**와 order 지연이 함께 오르는데 노드 CPU는 정상이라는 조합이다(Hikari 대기는 나타나면 보강 증거이지만 필요조건이 아니다 — 2026-08-03 라이브에서 대기 0으로도 손상이 성립했다). CPU가 아니므로 F21-Q(노드 CPU 경합)와 갈리고, 힙이 자라지 않으므로 F20-Q(무페이징 슬로우쿼리로 인한 힙 압박)와 갈린다 — F20-Q는 특정 쿼리가 방아쇠이고 컨테이너 메모리가 함께 오르지만, 이쪽은 특정 쿼리 없이 전 구간이 느리고 메모리는 평온하다. 인덱스가 사라진 것도 아니다(F02-P 배제)."
+   "distinguishing_evidence_ko": "결정 증거는 **백킹 디바이스가 바쁘다**와 order 지연이 함께 오르는데 노드 CPU는 정상이라는 조합이다(Hikari 대기는 나타나면 보강 증거이지만 필요조건이 아니다 — 2026-08-03 라이브에서 대기 0으로도 손상이 성립했다). CPU가 아니므로 F21-Q(노드 CPU 경합)와 갈리고, 힙이 자라지 않으므로 F20-Q(무페이징 슬로우쿼리로 인한 힙 압박)와 갈린다 — F20-Q는 특정 쿼리가 방아쇠이고 컨테이너 메모리가 함께 오르지만, 이쪽은 특정 쿼리 없이 전 구간이 느리고 메모리는 평온하다. 인덱스가 사라진 것도 아니다(F02-P 배제).",
+   "story_ko": {
+    "overview": "음식 배달 DB 가 쓰는 디스크를 다른 작업이 혹사시키면, DB 와 서비스는 멀쩡해 보이는데 주문과 배차가 느려지다가 배차 서비스의 DB 연결이 바닥나 주문이 실패한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 데이터가 놓인 작업 노드(tb-w3) 디스크에 약 4분 동안 강한 읽기 쓰기 부하를 건다. DB 데이터는 건드리지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "첫 1분은 오류 없이 DB 질의만 느려진다."
+     },
+     {
+      "stage": "확산",
+      "text": "약 1분 뒤 배차 서비스(Spring Boot, food-delivery-dispatch)의 DB 연결이 다 차서 연결 대기 오류가 쏟아지고, 상태 확인에 늦게 답한다. 주문 서비스(Spring Boot, food-delivery-order)는 배차 용량 확인에서 실패해 주문 생성의 약 70% 가 오류로 끝난다."
+     },
+     {
+      "stage": "회복",
+      "text": "디스크 부하를 거두자 오류가 멈춘다."
+     }
+    ],
+    "root_cause": "근본 원인은 DB 데이터가 놓인 노드 디스크의 포화다. 배차와 주문 서비스의 오류가 크게 보이지만, DB 프로세스, 노드 CPU, 메모리는 정상이고 서비스들은 느린 DB 의 피해자다.",
+    "design_notes": [
+     "주입: host.stress fio 모드, 192.168.122.14(tb-w3)의 local-path PVC 디렉터리(mysqldata-testbed-mysql-0)에 2048MiB, 고정 20000 IOPS, runtime 600초. 실제 유지는 min_hold 4분",
+     "부하: load.north_south food surge.js 30rps, 램프업 2분, 진입점 30181",
+     "의도한 기전: 백킹 디바이스 busy 급등 → InnoDB 읽기와 redo 기록이 IO 대기 → 주문 질의 시간 상승 → order Hikari 보유 시간 증가",
+     "녹화(case-f10-h-v3-4fe69be0): dispatch Hikari(3000ms) 시간 초과 약 550건, dispatch liveness 실패 16회, order 'Failed to check dispatch capacity' 84건과 'Failed to dispatch courier' 46건. 정답지는 '5xx 가 즉시 튀지 않는다'고 하지만 order 서버 스팬 오류율이 69% 였다",
+     "관측 근거(의도): host.disk_io_utilization 급등, 노드 CPU 와 메모리 정상"
+    ]
+   }
   },
   "F10-P": {
    "title": "Oracle PVC backing-disk IO saturation — transfers back up while holding the connection pool",
@@ -6283,6 +6458,32 @@
          }
        }
      ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 결제 서비스에 JSON 이름 규칙을 바꾸는 설정이 배포되자, 주문 서비스가 보내는 결제 요청에서 주문 번호가 사라져 결제 단계에 닿는 주문이 모두 400 으로 실패한다.",
+    "injected_fault": "결제 서비스(Spring Boot, food-delivery-payment)에 JSON 필드 이름을 snake_case 로 읽고 쓰게 하는 설정을 넣어 다시 배포하고, 약 7분 뒤 원래 설정으로 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 결제 파드가 뜨고 옛 파드가 내려가는 약 1분 동안 주문 성공률이 들쭉날쭉하다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 1분 반 뒤부터 결제 단계에 닿는 주문 생성이 모두 400 으로 실패한다. 주문 서비스(Spring Boot, food-delivery-order)에 결제 실패 오류가 주문마다 한 줄씩 쌓이고, 결제 서비스는 Ready 이며 DB 와 외부 결제대행사는 호출조차 받지 않는다."
+     },
+     {
+      "stage": "회복",
+      "text": "설정을 되돌리자 약 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 결제 서비스의 설정 배포(JSON 이름 규칙 변경)다. 오류 로그는 주문 서비스에 쌓이지만 주문 서비스는 바뀌지 않은 채 늘 보내던 요청을 보낸 피해자다.",
+    "design_notes": [
+     "주입: k8s.env 가 testbed-payment/payment-service env 에 SPRING_APPLICATION_JSON={\"spring\":{\"jackson\":{\"property-naming-strategy\":\"SNAKE_CASE\"}}} 한 줄을 더해 롤아웃한다. 원복도 롤아웃이다",
+     "부하: load.north_south food surge.js 2rps, 램프업 2분, 진입점 30181",
+     "기전: order PaymentClient 는 {orderId, amount, pgProvider} 를 camelCase 로 보내고, Jackson 은 모르는 키를 무시해 orderId=null 로 받는다. PaymentService 가 DB 와 PG 에 닿기 전에 400 'orderId required' 로 거절한다. order 는 4xx 를 ClientErrorException 으로 그대로 올려 retry 와 CB 가 반응하지 않는다",
+     "부수 피해: order 는 결제 전에 dispatch 를 부르므로 실패한 주문도 배달원을 잡는다(고아 배차 행)",
+     "녹화(case-f30-r-v3-0cd9193b): order_create_2xx_rate 0.0 이 18:01:56~18:06:24 17틱, 배차는 148건 모두 성공한 뒤 132건이 결제 단계 400 으로 끊겼다. 원본 사례는 Flagsmith 2026-03-03 이다"
+    ]
    }
   },
   "F32-R": {
@@ -6484,6 +6685,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 배차 서비스의 배차 동시 한도를 이미 배정된 수보다 낮게 바꾸는 설정이 배포되자, 새 주문이 전부 '배달원 없음' 503 으로 거절된다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)의 배차 동시 한도를 2000 에서 200 으로 낮추는 설정을 넣어 다시 배포하고, 약 7분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 배차 파드가 뜨는 약 1분 동안은 주문이 정상이다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 1분 뒤부터 주문 서비스(Spring Boot, food-delivery-order)가 주문을 만들기 전에 거절해 주문 생성이 503 으로 실패하고, 주문, 배차, 결제 완료 로그가 0 으로 떨어진다. 배차 서비스는 Ready 이고 오류가 없으며, 가게 조회와 배달 추적은 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "설정을 되돌리자 약 1분 안에 주문이 다시 들어온다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 서비스의 설정 배포(동시 한도 200)다. 503 은 주문 서비스가 내지만 주문 서비스는 배차가 알려 준 '남은 자리 0' 을 따른 피해자다.",
+    "design_notes": [
+     "주입: k8s.env 가 testbed-dispatch/dispatch-service env 에 DISPATCH_MAX_CAPACITY=200 한 줄을 더해 롤아웃한다(dispatch.max-capacity 기본 2000)",
+     "부하: load.north_south food surge.js 3rps, 램프업 2분, 진입점 30181",
+     "기전: 평시 배정 중 배차는 약 1,700건이다. GET /api/deliveries/capacity 가 200 으로 {currentAssigned 약 1700, maxCapacity 200, available 0} 을 돌려주고, order 는 INFO 'Order rejected: courier pool exhausted' 를 남기고 503 'No courier available (capacity full)' 를 낸다. 주문 행, 배차 요청, 결제는 일어나지 않는다",
+     "관측 근거: KCM 이 잡은 새 ReplicaSet 스펙에 DISPATCH_MAX_CAPACITY=200 이 있다",
+     "녹화(case-f32-r-v3-63b10537): 5xx 0.67~1.0, 2xx 0.0 이 00:22:00~00:26:33 17틱. 원본 사례는 Google 2020-12-14 다"
+    ]
    }
   },
   "F33-R": {
@@ -6580,6 +6807,32 @@
        "minimum_rows": 1000
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 배차 표의 인덱스 하나가 지워지자 주문마다 도는 배차 수 세기가 500만 행을 다 읽게 되어, DB 가 포화되고 배차 서비스의 DB 연결이 바닥나 주문이 503 으로 실패한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 배차 표에서 상태 조회용 인덱스 하나를 지우고, 약 8분 뒤 같은 인덱스를 다시 만든다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "인덱스를 지운 직후부터 DB 활성 세션이 1 에서 11 로 늘고 질의 응답이 느려진다."
+     },
+     {
+      "stage": "확산",
+      "text": "1분 안에 배차 서비스(Spring Boot, food-delivery-dispatch)의 DB 연결이 다 차 연결 대기 오류가 나고, 주문 서비스(Spring Boot, food-delivery-order)는 배차 용량 확인에 실패해 주문 생성의 약 70~90% 가 503 등으로 실패한다. 두 서비스는 상태 확인에 늦게 답하지만 재시작은 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "인덱스를 다시 만들자 약 1분 안에 주문이 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 표에서 지워진 인덱스다. 오류는 배차와 주문 서비스에 쌓이지만 두 서비스는 바뀐 것 없이 늘 하던 질의를 한 피해자이고, DB 도 죽지 않았다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 ALTER TABLE dispatches DROP INDEX idx_dispatches_status_assigned(status, assigned_at). 정리는 같은 이름과 열로 CREATE INDEX",
+     "부하: load.north_south food order-surge.js 2rps(주문 여정 75%), 램프업 2분, 진입점 30181",
+     "기전: DispatchRepository.countByStatus(\"ASSIGNED\") 가 주문마다 두 번(용량 확인, 배차 요청) 돈다. 인덱스가 없으면 약 501만 행 전수 스캔(호출당 수 초)이 되어 0.5 CPU MySQL 이 포화되고 dispatch Hikari 10 이 묶인다. order 는 재시도하고 dispatch 서킷브레이커를 열어 503 을 낸다",
+     "계기 흔적: DPM 인덱스 수 31 → 30 → 31",
+     "녹화(case-f33-r-v3-73fed92a): 5xx 0.68~0.88, 2xx 0.09~0.26. 만료 배치의 호출당 검사 행 수 약 1,100 → 약 175만. order liveness 실패 8회, dispatch readiness 실패 6회, Killing 0건"
     ]
    }
   },
@@ -6811,6 +7064,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 가게 표의 열 이름을 바꾸는 마이그레이션이 돌았는데 가게 서비스는 옛 이름을 그대로 읽어, 가게 조회와 검색이 모두 실패하고 모든 주문이 502 로 실패한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 가게 표에서 지역 열 이름을 region 에서 delivery_region 으로 바꾸고, 약 15분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "몇 초 안에 가게 서비스(Spring Boot, food-delivery-restaurant)의 가게 상세와 검색이 '없는 열' 오류로 500 을 내기 시작한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 30초 뒤부터 주문 서비스(Spring Boot, food-delivery-order)의 주문 생성이 모두 502 로 실패하고 주문 완료 로그가 끊긴다. 같은 가게 서비스의 메뉴와 인기 메뉴는 정상이고, 롤아웃, 재시작, DB 지연은 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "열 이름을 되돌리자 같은 순간 주문이 다시 들어온다."
+     }
+    ],
+    "root_cause": "근본 원인은 가게 표의 열 이름 변경이다. 502 는 주문 서비스에, 500 은 가게 서비스에 보이지만 둘 다 바뀌지 않은 코드로 늘 하던 일을 한 피해자다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 SET SESSION lock_wait_timeout=10; ALTER TABLE restaurants RENAME COLUMN region TO delivery_region, ALGORITHM=INSTANT. 메타데이터만 바뀐다",
+     "부하: load.north_south food order-surge.js 2rps(주문 여정 75%), 램프업 2분, 진입점 30181",
+     "실패 경로: Restaurant.region 이 열 region 에 매핑돼 findById 와 검색이 MySQL 1054 Unknown column 'r1_0.region' 으로 실패 → restaurant 500 → order createOrder 첫 단계(getRestaurant) 실패, 3회 재시도, restaurant 서킷브레이커 open → 주문 행을 쓰기 전에 502",
+     "퍼지지 않는 부분: 메뉴(id COUNT 후 menus 읽기)와 인기 메뉴는 region 을 고르지 않아 200 그대로다",
+     "녹화(case-f36-r-v3-776b522b): restaurant 'SQL Error: 1054' 와 'Unknown column' 각 3,952건(평시 7일 0건), 5xx 1.0 이 10:20:22~10:34:34. 장애 중 APM, 트레이스 이상 이벤트는 0건이었다"
+    ]
    }
   },
   "F37-R": {
@@ -7013,6 +7292,31 @@
        "app_account": "fooddelivery"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "운영자가 음식 배달 DB 전체를 읽기 전용으로 바꾸자, 모든 서비스의 쓰기가 거절되어 주문이 모두 500 으로 실패하고 조회만 정상이다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery) 인스턴스를 약 15분 동안 읽기 전용으로 바꾼다(SET GLOBAL read_only=ON).",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "2초 안에 주문(Spring Boot, food-delivery-order), 배차(Spring Boot, food-delivery-dispatch), 결제(Spring Boot, food-delivery-payment) 서비스에 '읽기 전용이라 실행할 수 없다' 오류가 동시에 나기 시작한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "15분 내내 주문 생성이 거의 모두 500 으로 실패하고 주문 완료 로그가 사라진다. 가게, 메뉴, 지난 주문 조회는 정상이고, 롤아웃, 재시작, 준비 안 됨 상태는 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "읽기 전용을 풀자 약 15초 뒤 주문이 다시 들어온다."
+     }
+    ],
+    "root_cause": "근본 원인은 DB 인스턴스의 읽기 전용 설정이다. 오류는 주문, 배차, 결제 서비스에 퍼져 보이지만 모두 쓰기를 거절당한 피해자이고, DB 자체는 살아서 읽기를 처리한다.",
+    "design_notes": [
+     "주입: db.instance_readonly 가 testbed-mysql-0 에서 root 로 SET SESSION lock_wait_timeout=10; SET GLOBAL read_only=ON. 영속하지 않고 정리는 read_only=OFF. 앱 계정 fooddelivery 에는 SUPER, CONNECTION_ADMIN 이 없어 우회하지 못한다",
+     "부하: load.north_south food order-surge.js 2rps, 램프업 2분, 진입점 30181",
+     "기전: createOrder 가 가게, 메뉴, 배차 용량을 읽은 뒤 INSERT INTO orders 에서 1290 '--read-only option' 을 받는다. GlobalExceptionHandler 가 이 예외를 매핑하지 않아 500 이 되고 트랜잭션이 롤백된다. dispatch 만료 배치도 30초마다 실패한다",
+     "녹화(case-f38-r-v3-54918c10): 1290 ERROR 3,084건(세 서비스 모두 17:14:27 시작, 평시 0건), DPM rollback_count 분당 약 4 → 약 220, DPM 구성 변경 param.read_only OFF→ON. 설계가 기대한 insert_count, update_count 의 0 근처 하락은 없었다(insert 약 35% 감소, update 그대로)"
     ]
    }
   },
@@ -7686,6 +7990,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 배차 서비스에 JSON 숫자를 문자열로 쓰게 하는 설정이 배포되자, 주문 서비스가 배차 용량 응답을 읽지 못해 새 주문을 전부 503 으로 거절한다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)에 JSON 숫자를 따옴표로 감싸 쓰게 하는 설정을 넣어 다시 배포하고, 약 7분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 배차 파드가 뜨는 약 40초 동안은 주문이 정상이다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "옛 파드가 내려간 직후부터 주문 서비스(Spring Boot, food-delivery-order)에 '배차 용량 확인 실패, 주문 거절' 경고가 쏟아지고, 주문 생성이 거의 모두 503 으로 실패해 주문과 결제 완료 로그가 0 으로 떨어진다. 배차 서비스는 Ready 이고 200 으로 답하며 오류가 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "설정을 되돌리자 약 1분 안에 주문이 다시 들어온다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 서비스의 설정 배포(숫자를 문자열로 쓰기)다. 거절은 주문 서비스가 하지만 바뀌지 않은 코드로 늘 하던 일을 한 피해자이고, 응답을 타입 없이 읽는 주문 쪽 코드는 피해를 키운 약점일 뿐이다.",
+    "design_notes": [
+     "주입: k8s.env 가 testbed-dispatch/dispatch-service env 에 SPRING_JACKSON_GENERATOR_WRITE_NUMBERS_AS_STRINGS=true 한 줄을 더해 롤아웃한다",
+     "부하: load.north_south food surge.js 3rps, 램프업 2분, 진입점 30181",
+     "기전: GET /api/deliveries/capacity 가 {\"available\":\"300\"} 처럼 문자열 숫자를 준다. order 는 Map 으로 읽어 int 로 캐스트하다 ClassCastException 을 받고 WARN 'Dispatch capacity check failed, rejecting order' 와 503 'Dispatch service unreachable' 를 낸다. 주문 행, 배차 요청, 결제는 일어나지 않는다",
+     "녹화(case-f32-h-v3-531094f2): 경고 550건(8일 평시 0건), 그중 캐스트 원문은 처음 33건뿐이고 뒤 517건은 'rejecting order: null' 이다. notify 'Received dispatch event' 가 주입 중 모두 따옴표 친 숫자였다(438건). 'Created order' 06:47~06:52 분당 0건",
+     "대조: 같은 503 이지만 'courier pool exhausted' 가 0건이라 한도 설정 사고(F32-R)와 갈린다"
+    ]
    }
   },
   "F33-P": {
@@ -8284,6 +8614,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 작업 노드의 방화벽 규칙을 좁히면서 주문 서비스의 파드 대역을 빠뜨리자, 주문 서비스가 가게 서비스에 새로 연결하지 못해 모든 주문이 502 로 실패하고 가게 서비스 자신은 멀쩡하다.",
+    "injected_fault": "작업 노드(tb-w3)의 방화벽에 가게 서비스 포트(8081)로 오는 새 연결을 노드와 진입 망에서만 받는 규칙을 넣고, 약 15분 뒤 지운다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "주문 서비스(Spring Boot, food-delivery-order)가 미리 열어 둔 연결로 버티는 동안은 주문이 된다. 약 20초 뒤 가게 확인에서 '연결 시간 초과' 오류가 나오기 시작한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 2분 뒤부터 주문 생성이 모두 502 로 실패하고 주문 완료 로그가 끊긴다. 가게 서비스(Spring Boot, food-delivery-restaurant)는 Ready 이고 손님의 가게, 메뉴 조회에는 계속 정상으로 답한다."
+     },
+     {
+      "stage": "회복",
+      "text": "규칙을 지우자 다음 새 연결부터 주문이 다시 들어온다."
+     }
+    ],
+    "root_cause": "근본 원인은 작업 노드(tb-w3)의 방화벽 변경이다. 502 는 주문 서비스에 쌓이고 가게 서비스가 의심받지만, 두 서비스 모두 바뀐 것 없는 피해자다.",
+    "design_notes": [
+     "주입: host.firewall 이 tb-w3 에서 sudo iptables 로 체인 RESTAURANT-API-IN 을 만든다. 허용은 10.244.2.1/32(kubelet 프로브), 10.244.0.0/24(진입 노드), 192.168.122.0/24, 192.168.213.0/24 이고 나머지는 LOG '[FW BLOCK] '(분당 6건) 뒤 DROP. FORWARD 맨 위에 -d 10.244.2.0/24 --dport 8081 --ctstate NEW 점프를 건다",
+     "부하: load.north_south food order-surge.js 2rps, 램프업 2분, 진입점 30181",
+     "경로: 손님 요청은 tb-cp NodePort 로 들어와 10.244.0.0 으로 SNAT 되어 허용되고, order(같은 노드 10.244.2.x)는 빠졌다. br_netfilter 로 브리지 트래픽도 FORWARD 를 지난다",
+     "기전: 기존 keep-alive 연결은 닫힐 때까지 통하고, 새 연결은 SYN 이 버려져 connect-timeout 3초 뒤 'Connect timed out'. 재시도 3회, restaurant 서킷브레이커 open, 주문 행을 쓰기 전에 502",
+     "녹화(case-f44-r-v3-f7f70c65): 커널 '[FW BLOCK] ... DPT=8081 SYN' 91줄, order 'Connect timed out' 318건(평시 0), restaurant 서버 스팬 560건 모두 정상"
+    ]
    }
   },
   "F44-P": {
@@ -8750,6 +9106,31 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 가게 서비스를 가게 상세 응답 구조가 바뀐 새 버전으로 배포하자, 가게 서비스는 정상으로 답하는데 주문 서비스가 그 응답을 읽지 못해 모든 새 주문이 502 로 실패한다.",
+    "injected_fault": "가게 서비스(Spring Boot, food-delivery-restaurant)를 가게 상세 응답의 상태 값을 글자에서 객체로 바꾼 버전 1.4.0 으로 배포하고, 약 15분 뒤 옛 버전으로 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 파드가 뜨고 옛 파드가 내려가는 약 40초 동안은 주문이 정상이다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "옛 파드가 내려간 직후부터 주문 서비스(Spring Boot, food-delivery-order)에 '가게 응답 해석 실패' 오류가 나고 주문 생성이 모두 502 로 실패한다. 가게 서비스는 Ready 이고 오류 없이 200 으로 답하며, 가게 둘러보기와 메뉴는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "옛 버전으로 되돌리자 약 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 가게 서비스 새 버전의 응답 구조 변경이다. 오류와 502 는 주문 서비스에 쌓이지만 주문 서비스는 바뀌지 않은 피해자다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-restaurant 이미지를 food-delivery-restaurant:latest 에서 :1.4.0 으로 롤아웃한다. 릴리스는 fault-images/f49-r/restaurant-service.patch(RestaurantDetailResponse, getRestaurantDetail, 컨트롤러 매핑)를 얹어 미리 빌드한다",
+     "부하: load.north_south food order-surge.js 2rps, 램프업 2분, 진입점 30181",
+     "기전: GET /api/restaurants/{id} 가 status 를 \"OPEN\" 대신 {\"code\":\"OPEN\",\"label\":\"...\"} 로 준다. order 는 status 가 String 인 공용 DTO RestaurantResponse 로 읽다 'Error while extracting response for type [com.fooddelivery.common.dto.RestaurantResponse]' 를 받고 'Failed to fetch restaurant' 로 502 를 낸다. 재시도와 서킷브레이커가 실패를 되풀이한다",
+     "녹화(case-f49-r-v3-1af8dad9): 해석 실패 ERROR 480건(30일 동안 처음), 5xx 1.0 이 22:38:11~22:51:35. order 오류율을 다루는 APM 이상 이벤트는 0건이었다"
+    ]
    }
   },
   "F33-H": {
@@ -8848,6 +9229,31 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 배차 서비스를 배달 목록마다 전체 건수를 세는 새 버전으로 배포하자, 배달 추적이 몰릴 때 DB 가 포화되고 배차 서비스의 DB 연결이 바닥나 새 주문이 503 으로 실패한다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)를 배달 목록에 전체 건수 헤더를 더한 버전 1.6.0 으로 배포하고, 약 16분 뒤 옛 버전으로 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 파드가 뜨는 약 1분 동안은 정상이다. 새 파드가 트래픽을 받자마자 음식 배달 DB(MySQL, MySQL-fooddelivery)의 처리량 지표가 튄다."
+     },
+     {
+      "stage": "확산",
+      "text": "약 1분 반 뒤부터 배차 서비스에 DB 연결 대기 초과 오류가 쏟아지고, 주문 서비스(Spring Boot, food-delivery-order)의 배차 용량 확인이 실패해 주문 생성의 대부분이 503 으로 거절된다. 배차 서비스는 상태 확인에 늦게 답하지만 재시작은 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "옛 버전으로 되돌리자 1분 안에 주문이 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 서비스 새 버전이 더한 전체 건수 세기다. 503 은 주문 서비스에, 포화는 DB 에 보이지만 둘 다 피해자이고 인덱스와 스키마는 그대로다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-dispatch 이미지를 food-delivery-dispatch:latest 에서 :1.6.0 으로 롤아웃한다. 릴리스는 fault-images/f33-h/dispatch-service.patch(목록 Slice → Page, X-Total-Count 헤더)를 얹어 미리 빌드한다",
+     "부하: load.north_south food delivery-tracking-surge.js 12rps, 램프업 2분, 진입점 30181",
+     "기전: 목록 요청마다 SELECT COUNT(d1_0.id) FROM dispatches WHERE status=? 가 끝난 배차 약 174만 항목을 훑는다(한가할 때 0.44~0.53초). CPU 0.5 MySQL 이 포화되고 dispatch Hikari 10 이 COUNT 에 묶여 용량 확인과 배차 요청이 연결 대기 초과(500), order 는 재시도와 서킷브레이커 끝에 503",
+     "녹화(case-f33-h-v3-f19ed3f1): COUNT digest 평균 rowExamined 1,625 → 142만, dispatch Hikari 대기 초과 ERROR 6,308건, order 용량 확인 실패 396건, index_count 31 유지. 평시 05:12:30~05:23 에 OTel 로그, 트레이스 수집 공백 약 10분이 있다"
+    ]
    }
   },
   "F49-H": {
@@ -8938,6 +9344,32 @@
        "fault_image": "food-delivery-order:2.3.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 주문 서비스를 시각 표기 방식을 바꾼 새 버전으로 배포하자, 배차 서비스는 배차를 기록하고 정상으로 답하는데 주문 서비스가 그 응답을 읽지 못해 모든 새 주문이 503 으로 실패한다.",
+    "injected_fault": "주문 서비스(Spring Boot, food-delivery-order)를 시각 표기를 'yyyy-MM-dd HH:mm:ss' 로 바꾸고 하류 호출에도 같은 규칙을 쓰는 버전 2.3.0 으로 배포하고, 약 16분 뒤 옛 버전으로 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 파드가 뜨고 옛 파드가 내려가는 약 1분 동안은 주문이 정상이다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 1분 반 뒤부터 주문 서비스에 '배차 응답 해석 실패' 오류가 나고 주문 생성이 거의 모두 503 으로 실패한다. 배차 서비스(Spring Boot, food-delivery-dispatch)는 오류 없이 200 으로 답하며, 실패한 주문마다 배차를 기록해 둔다."
+     },
+     {
+      "stage": "회복",
+      "text": "옛 버전으로 되돌리자 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 주문 서비스 새 버전의 시각 해석 규칙이다. 배차 서비스와 연결된 실패처럼 보이지만 배차 서비스는 바뀌지 않았고 정상으로 답한 쪽이다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-order 이미지를 food-delivery-order:latest 에서 :2.3.0 으로 롤아웃한다. 릴리스는 fault-images/f49-h/order-service.patch(JacksonTimeConfig, 공용 ObjectMapper 를 쓰는 RestClientConfig)를 얹어 미리 빌드한다",
+     "부하: load.north_south food order-surge.js 2rps, 램프업 2분, 진입점 30181",
+     "기전: dispatch 는 POST /api/deliveries/dispatch 에 ISO 꼴 assignedAt(2026-10-09T20:36:16.123456)으로 답한다. order 의 RestClient 가 새 패턴으로 읽다 'Error while extracting response for type [com.fooddelivery.common.dto.DispatchResponse]' 를 던지고, DispatchClient 가 'Failed to dispatch courier' 로 남기고 503 을 낸다",
+     "부수 피해: 서킷이 통과시킨 시도에는 dispatch 가 배차를 기록하므로 존재하지 않는 주문의 배차가 남는다",
+     "녹화(case-f49-h-v3-b873cb3e): 해석 실패 ERROR 675건(30일 동안 0건), 실패 주문 387개 전부에 dispatch 'Dispatched courier' 로그, order POST 503 196건(p95 932ms)"
     ]
    }
   },
@@ -9150,6 +9582,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달의 주문 이벤트 대기 표가 운영 도구 실수로 사라져, 모든 주문 생성이 마지막 단계에서 되돌려지고 둘러보기, 배달 추적, 결제는 정상이다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 주문 이벤트 대기 표(order_outbox_events) 이름을 보관용 이름으로 바꿔 앱이 찾을 수 없게 하고, 약 15분 뒤 되돌린다. 행은 지우지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "바로 주문 서비스(Spring Boot, food-delivery-order)에 '표가 없다' 오류가 나고 주문 생성이 500 으로 실패하기 시작한다."
+     },
+     {
+      "stage": "지속",
+      "text": "15분 내내 주문 생성이 거의 모두 실패하는데, 배차 서비스(Spring Boot, food-delivery-dispatch)와 결제 서비스(Spring Boot, food-delivery-payment)는 실패한 주문의 배차와 결제를 계속 기록한다. 가게 조회와 배달 추적은 정상이고 재시작이나 DB 지연은 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "표 이름을 되돌리자 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 사라진 주문 이벤트 대기 표다. 오류는 주문 서비스에 쌓이지만 주문 서비스는 바뀐 것 없이 늘 하던 쓰기를 한 피해자이고, MySQL 도 건강하다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 그림자 표 _vt_vrp_<uuid>_<시각>_ 를 만들고 인덱스 idx_order_outbox_aggregate(aggregate_id)를 더해 약 5만 6천 행을 옮긴 뒤, 원래 표를 보류 이름 _vt_hld_<uuid>_<기한>_ 으로 RENAME 한다(Vitess 표 수명주기 꼴)",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food)이 주문을 계속 만든다",
+     "기전: createOrder 는 같은 트랜잭션의 마지막에 outbox 행을 쓴다. 그 INSERT 가 MySQL 1146 'Table 'fooddelivery.order_outbox_events' doesn't exist' 로 실패해 주문이 롤백되지만, 그 전에 배차와 결제는 이미 끝나 있다(정산 대상 고아 행). OrderOutboxRelay 의 2초 폴링도 실패해 주문 이벤트가 발행되지 않는다",
+     "계기 흔적: DPM fooddelivery 표 수 16 → 17, 인덱스 수 31 → 34",
+     "녹화(case-f48-p-v3-3667031d): order 1146 로그 843건(평시 0건), 2xx 0.0, 5xx 0.78~1.0, KCM 무변화, order Hikari 대기 0"
+    ]
    }
   },
   "F51-R": {
@@ -9359,6 +9817,31 @@
        "fault_image": "food-delivery-dispatch:1.7.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 배차 서비스를 DB 연결을 빌리고 돌려주지 않는 새 버전으로 배포하자, 배차 약 10건 만에 DB 연결이 바닥나고 배차 서비스가 재시작을 되풀이하며 새 주문이 거의 모두 503 으로 거절된다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)를 같은 주문의 중복 배차를 확인하는 기능을 더한 버전 1.7.0 으로 배포하고, 약 16분 뒤 옛 버전으로 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 파드가 트래픽을 받고 1분 남짓 지나 주문 생성이 503 으로 실패하기 시작한다. 배차 서비스의 DB 연결 10개가 모두 사용 중으로 굳는다."
+     },
+     {
+      "stage": "반복",
+      "text": "배차 서비스가 상태 확인에 답하지 못해 쿠버네티스가 약 2분마다 재시작한다(7회). 재시작 직후 주문 약 10건만 통과하고 다시 막히며, 배달 추적도 함께 실패한다. 주문 서비스(Spring Boot, food-delivery-order)의 주문 생성은 대부분 503 이다."
+     },
+     {
+      "stage": "회복",
+      "text": "옛 버전으로 되돌리자 1분 안에 주문이 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 서비스 새 버전의 연결 누수다. 503 은 주문 서비스에 쌓이고 재시작은 배차 서비스에 보이지만, DB(MySQL, MySQL-fooddelivery)는 한가하고 다른 서비스는 피해자다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-dispatch 이미지를 food-delivery-dispatch:latest 에서 :1.7.0 으로 롤아웃한다. 릴리스는 fault-images/f43-p/dispatch-service.patch(DispatchService.rejectDuplicateAssignment)를 얹어 미리 빌드한다",
+     "부하: load.north_south food order-surge.js 2rps, 램프업 2분, 진입점 30181",
+     "기전: 배차 전에 DataSource 에서 연결을 직접 빌려 ASSIGNED 수를 세고, 연결은 중복을 찾아 409 를 주는 갈래에서만 닫는다. 보통 배차마다 연결이 Sleep 세션으로 남아 약 10건 뒤 Hikari 가 total=10, active=10, idle=0 으로 굳는다. 용량 COUNT, 배차 INSERT, 조회, 배치, outbox 릴레이, health DB 확인이 모두 연결 대기 시간 초과",
+     "녹화(case-f43-p-v3-e132f196): 'Connection is not available ... (total=10, active=10, idle=0' 471건, liveness 재시작 7회, MySQL active 세션 1~2 와 응답 시간 평탄, idle 세션 20 → 27~37. Hikari 대기 스레드는 0~17 로 정답지의 '0~3' 보다 컸다"
     ]
    }
   },
@@ -9705,6 +10188,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "개발자 PC 에서 돌린 마이그레이션이 운영 DB 를 가리켜 음식 배달 주문 표를 지우자, 모든 주문 생성과 주문 조회가 '표가 없음' 으로 실패하고 둘러보기와 배달 추적은 정상이다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)에서 주문 표(orders)를 앱이 보지 못하는 곳으로 옮겨 지운 것처럼 만들고, 약 15분 뒤 되돌린다. 행은 잃지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "약 30초 안에 주문 서비스(Spring Boot, food-delivery-order)의 주문 생성이 '표가 없다' 오류와 함께 500 으로 실패하기 시작한다."
+     },
+     {
+      "stage": "지속",
+      "text": "15분 내내 주문 생성과 주문 조회가 실패하고, 실패가 첫 쓰기에서 나므로 배차와 결제는 일어나지 않는다. 가게 조회와 배달 추적은 정상이고 재시작이나 DB 연결 대기는 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "표를 되돌리자 약 30초 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 사라진 주문 표다. 오류는 주문 서비스에 쌓이지만 주문 서비스는 바뀐 것 없는 피해자이고, MySQL 도 살아서 다른 질의를 처리한다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 RENAME TABLE fooddelivery.orders TO mysql.fooddelivery_orders. 진짜 DROP 대신 DPM 이 보고하지 않는 시스템 스키마로 옮겨, 앱과 DB 목록 지표에는 지우기로 보이고 행, 인덱스, 외래 키는 표를 따라간다",
+     "부하: load.north_south food order-surge.js 2rps, 진입점 30181",
+     "기전: createOrder 가 가게, 메뉴, 배달원 용량을 확인한 뒤 첫 쓰기인 주문 INSERT 에서 MySQL 1146 'Table 'fooddelivery.orders' doesn't exist' 로 실패하고 약 0.06초 뒤 500. GET /api/orders/{id} 와 orders 를 읽는 배치도 실패한다",
+     "규모: orders 약 173만 행(데이터 114MB, 인덱스 250MB), order_items 가 외래 키로 참조",
+     "녹화(case-f53-r-v3-d0f23131): 5xx 0.83~1.0, 2xx 0.0 이 17:00:01~17:14:21, KCM 무변화, 재시작 증감 0"
+    ]
    }
   },
   "F53-P": {
@@ -9797,6 +10306,33 @@
        "minimum_rows": 1000
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "개발자 PC 에서 돌린 마이그레이션이 운영 음식 배달 DB 의 결제 표를 지우자, 모든 주문이 배차까지 마친 뒤 결제 단계에서 실패해 아무도 주문하지 못한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 결제 표 payments 를 앱이 볼 수 없는 곳으로 옮겨 지운 것처럼 만들고, 약 15분 뒤 되돌린다. 행은 잃지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "1초 안에 결제 서비스(Spring Boot, food-delivery-payment)에 '결제 표가 없다'는 오류가 결제 요청마다 쌓이고, 주문 서비스(Spring Boot, food-delivery-order)의 주문 생성이 모두 502 로 바뀐다."
+     },
+     {
+      "stage": "지속",
+      "text": "15분 내내 주문은 저장되고 배달원 배차까지 되지만 결제에서 막혀 실패하고, 주문 서비스는 결제 쪽 차단기를 연다. 결제 처리 완료는 0건이고, 가게 둘러보기와 배달 추적은 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "표를 되돌리자 1분 안에 결제와 주문 생성이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 사라진 결제 표다. 오류는 결제 서비스와 주문 서비스에서 보이지만 두 서비스는 바뀐 것 없이 늘 하던 일을 한 피해자이고, MySQL 과 외부 결제대행사도 정상이다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 RENAME TABLE fooddelivery.payments TO mysql.fooddelivery_payments 를 실행한다. 진짜 DROP 대신 DPM 이 보고하지 않는 시스템 스키마로 옮겨 지운 것과 같게 보이게 한다. 정리는 이름을 되돌린다",
+     "부하: 동반 부하 없이 상주 기준선(loadgen-food)만으로 모든 주문이 결제에서 실패한다",
+     "실패 지점: payment 의 processPayment 가 외부 PG 를 부르기 전 첫 쓰기(결제 PENDING INSERT)에서 MySQL 1146(42S02)으로 실패해 POST /api/payments 500, order 는 재시도 뒤 결제 서킷을 열고 502 로 답하며 주문을 되돌린다",
+     "부작용: 배차된 배달원은 되돌려진 주문에 묶여 만료될 때까지 ASSIGNED 로 남는다. payment 보존 정리 배치도 6초마다 같은 오류로 실패한다",
+     "계기 흔적: DPM 의 fooddelivery 표 수 16 → 15, 인덱스 수 31 → 28, 행 수 약 173만 감소(녹화 case-f53-p-v3-b029727d)",
+     "원본 사례: Resend 2024-02-21, 로컬에서 돌린 마이그레이션이 운영을 가리켜 표를 지운 사고"
     ]
    }
   },
@@ -9896,6 +10432,34 @@
        "fault_image": "food-delivery-restaurant:1.5.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "가게 서비스의 새 릴리스가 인기 메뉴를 요청마다 주문 이력에서 직접 세게 바꾸자, 음식 배달 DB 가 포화되어 가게 화면과 새 주문이 대부분 실패한다.",
+    "injected_fault": "가게 서비스(Spring Boot, food-delivery-restaurant)를 인기 메뉴 집계 방식이 바뀐 새 릴리스로 롤아웃하고, 약 15분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "롤아웃 1분쯤 뒤부터 인기 메뉴 요청이 수 초씩 걸리고, 음식 배달 DB(MySQL, MySQL-fooddelivery)의 CPU 가 가득 찬다."
+     },
+     {
+      "stage": "확산",
+      "text": "가게 서비스의 DB 연결 10개가 모두 집계에 묶여 가게 상세와 메뉴도 500 이나 시간 초과로 실패하고, 가게 서비스가 준비 안 됨 상태가 되거나 재시작할 수 있다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "주문 서비스(Spring Boot, food-delivery-order)가 가게와 메뉴를 읽지 못해 새 주문 대부분이 502 로 실패하고, 배달 조회 같은 다른 음식 배달 호출도 느려진다. 릴리스를 되돌릴 때까지 이어진다."
+     }
+    ],
+    "root_cause": "근본 원인은 가게 서비스의 새 릴리스가 요청 경로에 넣은 무거운 집계 질의다. MySQL 포화와 주문 서비스의 502 가 크게 보이지만 그쪽은 피해자다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-restaurant 의 이미지를 food-delivery-restaurant:latest 에서 1.5.0 으로 바꾼다. 결함 이미지는 fault-images/f42-p 패치로 미리 빌드해 tb-w3 containerd 에 올리고, 정리는 이미지를 되돌린 뒤 지운다",
+     "부하: load.north_south popular-menu-surge.js 2rps(가게 상세, 메뉴, 인기 메뉴, 주문 없음)",
+     "결함: getPopularMenu 가 캐시 표 menu_popularity_summary(88행) 대신 rankRecentMenus 로 최근 7일 order_items 와 orders 를 조인해 센다. 가게 1 기준 키 읽기 약 16만 3천 번, 한가할 때도 4~7.5초",
+     "자원: food MySQL CPU 한도 500m, 버퍼 풀 128MB, order_items 약 258만 행, orders 약 173만 행. restaurant Hikari 풀 10, 연결 대기 3초",
+     "경로: 주문 생성 order → restaurant(가게, 메뉴 확인) → dispatch → payment. order 는 재시도와 서킷브레이커 끝에 502",
+     "원본 사례: GitHub 2025-01-09, 배포가 들여온 질의 하나가 주 DB 를 포화시킨 사고",
+     "녹화 없음: 2026-10-30 기준 녹화본과 검증 보고서가 없고 운영 큐에서 사람 지시로 보류 중이다"
     ]
    }
   },
@@ -10118,6 +10682,33 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "개발자 PC 에서 돌린 마이그레이션이 운영 음식 배달 DB 의 배차 표를 지우자, 주문이 배달원 확인 단계에서 모두 거절되어 아무도 주문하지 못한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 배차 표 dispatches 를 앱이 볼 수 없는 곳으로 옮겨 지운 것처럼 만들고, 약 15분 뒤 되돌린다. 행은 잃지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "주입 직후 배차 서비스(Spring Boot, food-delivery-dispatch)에 '배차 표가 없다'는 오류가 쌓이기 시작하고, 주문 서비스(Spring Boot, food-delivery-order)의 주문 생성이 503 으로 거절된다."
+     },
+     {
+      "stage": "지속",
+      "text": "15분 내내 새 주문이 하나도 만들어지지 않고 배달 추적도 실패한다. 가게와 메뉴 둘러보기, 기존 주문 조회, 결제는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "표를 되돌리자 1분 안에 주문 생성이 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 사라진 배차 표다. 주문 서비스의 503 이 크게 보이지만 주문 서비스와 배차 서비스는 바뀐 것 없이 늘 하던 일을 한 피해자이고, MySQL 도 정상이다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 RENAME TABLE fooddelivery.dispatches TO mysql.fooddelivery_dispatches 를 실행한다. DPM 이 보고하지 않는 시스템 스키마로 옮겨 지운 것과 같게 보이게 하고, 정리는 이름을 되돌린다",
+     "부하: load.north_south order-surge.js 2rps(진입 restaurant NodePort 30181)",
+     "실패 지점: order 의 createOrder 가 첫 쓰기 전에 부르는 배달원 용량 확인 GET /api/deliveries/capacity 가 MySQL 1146 으로 500, 재시도와 dispatch 서킷 끝에 POST /api/orders 503 'Dispatch service unavailable'. 실패한 시도에는 주문 행, 배차, 결제가 남지 않는다",
+     "부작용: dispatch 의 보존 정리와 만료 배치도 같은 오류로 실패한다",
+     "계기 흔적: DPM 의 fooddelivery 표 수 16 → 15, 인덱스 수 31 → 28, 행 수 약 173만 감소(녹화 case-f32-p-v3-58d43138)",
+     "원본 사례: Resend 2024-02-21, 로컬에서 돌린 마이그레이션이 운영을 가리켜 표를 지운 사고"
+    ]
    }
   },
   "F54-R": {
@@ -10332,6 +10923,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 결제 서비스의 새 릴리스가 결제 응답 형식을 바꾸자, 결제는 승인되는데 주문 서비스가 응답을 읽지 못해 모든 새 주문이 실패하고 승인된 결제만 남는다.",
+    "injected_fault": "결제 서비스(Spring Boot, food-delivery-payment)를 결제 번호를 숫자에서 문자열로 바꾼 새 릴리스로 롤아웃하고, 약 15분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 결제 파드가 뜨는 데 약 7분이 걸려 그동안은 옛 파드가 응답하고 주문이 정상이다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "옛 파드가 내려간 직후부터 약 10분 동안 주문 서비스(Spring Boot, food-delivery-order)에 '결제 응답을 해석하지 못했다'는 오류가 쌓이고 새 주문이 모두 502 로 실패한다. 결제 서비스 쪽에는 오류가 없고 결제는 APPROVED 로 저장된다."
+     },
+     {
+      "stage": "회복",
+      "text": "옛 버전으로 되돌린 파드가 응답을 넘겨받자 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 결제 응답 형식을 바꾼 결제 서비스 릴리스다. 오류 로그와 502 는 주문 서비스에서만 보이지만 주문 서비스는 바뀐 것 없는 피해자다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-payment 의 이미지를 food-delivery-payment:latest 에서 1.3.0 으로 바꾼다. fault-images/f49-p 패치(새 dto/PaymentView, PaymentController 응답 매핑)로 미리 빌드해 tb-w3 containerd 에 올린다",
+     "부하: 동반 부하 없음. 실패한 주문도 배차를 지나므로 부하를 더하면 ASSIGNED 배차가 쌓여 배달원 한도 2000 이 찬다. 상주 기준선만 쓴다",
+     "계약 깨짐: 응답 id 가 숫자에서 'pay_' + 8자리 문자열로 바뀌어 order 가 PaymentResponse 로 역직렬화하지 못한다. order 는 재시도(한 번 더 결제)와 payment 서킷 끝에 502 로 주문을 롤백한다",
+     "부작용: 주문 없는 승인 결제가 남는다(한 주문에 두 번인 경우도 있음). 녹화에서는 주문 81건 모두 같은 번호로 APPROVED 결제가 남았다",
+     "녹화: case-f49-p-v3-0a4fe786. 롤아웃 17:35:39, 1.3.0 파드 startup probe 실패로 기동 약 7분, 옛 파드 17:43:01 종료, 해석 실패 17:43:06~17:52:51"
+    ]
    }
   },
   "F55-R": {
@@ -10424,6 +11041,32 @@
        "fault_image": "food-delivery-dispatch:1.8.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "배차 서비스의 새 릴리스가 요청 주소별 호출 한도를 더했는데 모든 호출이 같은 주소에서 오는 바람에, 배차 서비스는 멀쩡한데도 거의 모든 새 음식 주문이 거절된다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)를 요청 주소별 호출 한도가 든 새 릴리스로 롤아웃하고, 약 20분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "롤아웃 약 2분 뒤 새 배차 파드가 트래픽을 받자마자 배차 서비스가 주문 서비스의 호출 대부분에 429(요청이 너무 많음)를 돌려준다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 18분 동안 주문 서비스(Spring Boot, food-delivery-order)에 '배달원 용량 확인 실패 429' 오류가 쌓이고 새 주문의 80~90% 이상이 503 으로 빠르게 실패한다. 배차 서비스는 준비 상태이고 응답도 빠르며, 가게 둘러보기와 메뉴는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "릴리스를 되돌리자 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 호출 한도를 잘못 건 배차 서비스 릴리스다. 503 과 오류 로그는 주문 서비스에 몰려 보이지만 주문 서비스는 피해자이고, DB 와 다른 서비스도 정상이다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-dispatch 의 이미지를 food-delivery-dispatch:latest 에서 1.8.0 으로 바꾼다. fault-images/f55-r 패치(config/ClientRateLimitFilter)로 미리 빌드해 tb-w3 containerd 에 올린다",
+     "부하: load.north_south order-surge.js 2rps(주문 초당 약 1.4건)",
+     "한도: 원격 주소별 순간 20회, 이후 3초에 1회. 호출자는 order 파드 주소 하나와 NodePort 진입의 노드 주소 하나뿐이라 사실상 모든 요청이 한도에 걸린다(모든 고객 통틀어 약 6초에 1건 통과)",
+     "경로: 주문 생성 order → dispatch 용량 확인(GET /api/deliveries/capacity) → 배차. order 는 429 를 재시도, 서킷 열림 끝에 503 으로 바꾼다. 거절된 주문은 주문 행과 배차를 남기지 않는다",
+     "녹화: case-f55-r-v3-ba950165. Pulled 21:08:16, 옛 파드 종료 21:10:22, 429 21:10:31~21:28:08, 동반 부하 주문 5xx 0.82~0.94"
     ]
    }
   },
@@ -10998,6 +11641,31 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "주문 서비스의 새 릴리스가 개발 환경에만 있는 최소 주문 금액 설정을 읽으려 하자, 운영에는 그 값이 없어 모든 새 음식 주문이 즉시 실패한다.",
+    "injected_fault": "주문 서비스(Spring Boot, food-delivery-order)를 최소 주문 금액 검사가 든 새 릴리스로 롤아웃하고, 약 15분 뒤 되돌린다. 운영 설정은 바꾸지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "롤아웃 약 2분 뒤 새 주문 파드가 트래픽을 받자 주문 서비스에 '필수 설정 키가 없다'는 오류가 주문마다 찍힌다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 15분 동안 새 주문이 배차, 결제를 부르기도 전에 모두 500 으로 곧바로 실패한다. 주문 서비스는 준비 상태이고, 주문 조회, 가게 둘러보기, 메뉴, 배달 조회는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "릴리스를 되돌리자 주문 생성이 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 운영에 없는 설정값을 요구하는 주문 서비스 릴리스다. 다른 서비스와 DB 는 바뀐 것도 고장 난 것도 없다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-order 의 이미지를 food-delivery-order:latest 에서 2.5.0 으로 바꾼다. fault-images/f58-r 패치로 미리 빌드해 tb-w3 containerd 에 올린다",
+     "부하: load.north_south order-surge.js 2rps(주문 생성 초당 약 1.4건)",
+     "결함: OrderService.createOrder 맨 앞에서 Environment.getRequiredProperty 로 order.policy.minimum-amount 를 읽는데 값은 릴리스의 application-dev.yml 에만 있다. 매 주문 IllegalStateException 'Required key ... not found' 로 500, 하류 호출 스팬이 없다",
+     "녹화: case-f58-r-v3-4568fd65. 롤아웃 22:32:50, 첫 SEVERE 22:34:58, 정리 22:47:35~22:50:22, 주문 생성 5xx 1.0. 같은 날 앞선 실행 F58-R-run-746f66dd 는 녹화에 쓰지 않았다"
+    ]
    }
   },
   "F59-R": {
@@ -11102,6 +11770,32 @@
        "active_deadline_seconds": 1800
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "내부 백필 작업이 배달 목록을 12개 병렬로 끝 페이지까지 읽자, 깊은 페이지 질의가 배차 서비스의 DB 연결과 음식 배달 DB 를 붙잡아 새 주문 대부분이 실패한다.",
+    "injected_fault": "음식 배달 네임스페이스에 배달 완료 목록을 병렬 12개로 처음부터 끝까지 읽는 백필 작업(쿠버네티스 Job)을 띄우고, 약 14분 뒤 지운다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "작업이 시작되고 10초 안에 배차 서비스(Spring Boot, food-delivery-dispatch)의 상태 확인과 DB 연결 대기가 실패하기 시작하고, 1분 뒤 배차 서비스 컨테이너가 한 번 재시작된다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 12분 동안 새 음식 주문의 90% 안팎이 503 으로 실패한다. 음식 배달 DB(MySQL, MySQL-fooddelivery)의 활성 세션이 평시 2 에서 21 까지 늘고 응답이 느려져, 주문 서비스(Spring Boot, food-delivery-order)도 잠깐 DB 연결 대기 오류를 낸다."
+     },
+     {
+      "stage": "회복",
+      "text": "작업을 지우자 1분 안에 주문 생성이 평시 수준으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 배달 목록을 깊은 페이지까지 읽는 백필 작업이다. 배차 서비스 재시작, MySQL 포화, 주문 503 은 모두 그 질의에 자원을 빼앗긴 피해다.",
+    "design_notes": [
+     "주입: k8s.job 이 rca-testbed-food 에 Job notify-delivery-backfill(이미지 food-delivery-notify:latest, tb-w3, backoffLimit 0, activeDeadlineSeconds 1800)을 만든다. 워커 12개가 GET /api/deliveries?status=DELIVERED&page=N&size=500 을 각자 290페이지씩 읽는다. 정리는 Job 을 foreground 로 지운다",
+     "부하: load.north_south order-surge.js 2rps",
+     "기전: LIMIT offset 질의가 깊은 페이지마다 끝난 배달 수십만 행을 건너 읽는다(Top SQL rowExamined 65만~148만). dispatch Hikari 연결이 백필 질의에 묶여 주문 경로의 배달원 용량 확인이 실패하고 order 가 재시도 끝에 503",
+     "경로: 주문 생성 order → dispatch 용량 확인 → 배차 → payment",
+     "녹화: case-f59-r-v3-cdc14d3d. Job 생성 01:59:40, dispatch liveness 실패로 재기동 02:00:53, 주문 5xx 0.89~1.0(02:00~02:11), 정리 02:13:52"
     ]
    }
   },
@@ -11328,6 +12022,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "가게 서비스의 새 릴리스가 개발 환경에만 있는 영업 일시 중지 설정을 읽으려 하자, 운영에는 그 값이 없어 가게 상세 화면이 모두 실패하고 새 음식 주문도 모두 실패한다.",
+    "injected_fault": "가게 서비스(Spring Boot, food-delivery-restaurant)를 지역 영업 일시 중지 검사가 든 새 릴리스로 롤아웃하고, 약 17분 뒤 되돌린다. 운영 설정은 바꾸지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "롤아웃 약 2분 뒤 새 가게 파드가 트래픽을 받자 가게 상세 요청마다 '필수 설정 키가 없다'는 오류가 나고 500 으로 실패한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "주문 서비스(Spring Boot, food-delivery-order)가 주문마다 가게 정보를 읽지 못해 약 15분 동안 새 주문이 모두 502 로 실패하고, 주문 완료 로그가 사라진다. 가게 서비스는 준비 상태 그대로다."
+     },
+     {
+      "stage": "회복",
+      "text": "릴리스를 되돌리자 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 운영에 없는 설정값을 요구하는 가게 서비스 릴리스다. 주문 서비스의 502 가 크게 보이지만 주문 서비스는 가게 정보를 받지 못한 피해자다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-restaurant 의 이미지를 food-delivery-restaurant:latest 에서 1.6.0 으로 바꾼다. fault-images/f36-h 패치로 미리 빌드해 tb-w3 containerd 에 올린다",
+     "부하: load.north_south order-surge.js 2rps(주문 생성 초당 약 1.5건과 가게 둘러보기)",
+     "결함: RestaurantService.getRestaurant 가 Environment.getRequiredProperty 로 restaurant.policy.paused-regions 를 읽는데 값은 릴리스의 application-dev.yml 에만 있다. SQL 오류 없이 IllegalStateException 'Required key ... not found' 로 500",
+     "경로: 주문 생성 order → restaurant 가게 상세 조회 → dispatch → payment. order 는 'Failed to fetch restaurant' 끝에 502",
+     "녹화: case-f36-h-v3-b671604f. 적용 15:18:25, 첫 SEVERE 15:20:46, 되돌림 15:36:01. 앞선 실행 F36-H-run-78a7238c 는 식힘 중 food MySQL 이 메모리 한도로 재시작해 녹화에서 뺐다"
+    ]
    }
   },
   "F41-H": {
@@ -11537,6 +12257,33 @@
        "maximum_sessions": 90
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "배차 이력 표에 외래 키를 더하는 마이그레이션이 표를 통째로 복사하는 방식으로 돌자, 복사하는 몇 분 동안 배차 쓰기가 모두 막혀 아무도 음식을 주문하지 못한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 배차 이력 표에 배차 표를 가리키는 외래 키를 방식 지정 없이 더하는 마이그레이션을 한 번 돌린다. 복사가 끝나면 스스로 멈춘다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "20초쯤 뒤 배차 서비스(Spring Boot, food-delivery-dispatch)의 배차 쓰기가 잠금을 기다리며 멈추고, 주문 서비스(Spring Boot, food-delivery-order)의 주문이 매달리다 503 으로 실패하기 시작한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 4분 동안 새 음식 주문이 모두 503 으로 거절되고, 배차 서비스와 주문 서비스에 오류가 쌓이며 MySQL 의 쓰기 지표가 출렁인다. 가게 둘러보기와 기존 주문 조회는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "복사가 끝나자 손대지 않아도 주문이 바로 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 이력 표를 통째로 복사하게 만든 마이그레이션이다. 503 은 주문 서비스에서, 오류는 배차 서비스에서 크게 보이지만 둘 다 잠금에 막힌 피해자다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 ALTER TABLE dispatch_events ADD CONSTRAINT fk_dispatch_events_dispatch FOREIGN KEY (dispatch_id) REFERENCES dispatches (id) 를 ALGORITHM, LOCK 지정 없이 백그라운드로 시작한다. 정리는 세션 종료를 기다린 뒤 외래 키를 INPLACE 로 지운다",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food)이 주문을 낸다",
+     "잠금 방식: foreign_key_checks=1 이면 외래 키 추가가 COPY 알고리즘이 되어 dispatch_events 를 복사하는 동안 쓰기 메타데이터 잠금을 막는다. 막힌 배차 쓰기가 dispatch Hikari 풀을 채워 용량 확인도 실패한다",
+     "경로: 주문 생성 order → dispatch 용량 확인 → 배차 쓰기(dispatches, dispatch_events). 실패한 주문은 주문 행과 결제를 남기지 않는다",
+     "녹화: case-f60-r-v3-22036218. 주입 22:12:11, 주문 5xx 22:12:31~22:16:54, 22:17:19 회복",
+     "원본 사례: 외래 키 추가가 표 복사로 돌아 24분 동안 요청 74.7% 가 실패한 장애"
     ]
    }
   },
@@ -12760,6 +13507,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "배차 표에 열을 더하는 마이그레이션이 같은 표를 오래 읽는 내보내기 뒤에서 잠금을 기다리자, 그 뒤의 배차 질의가 모두 줄을 서서 몇 분 동안 아무도 음식을 주문하지 못한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)에서 배차 표를 약 6분 동안 천천히 읽는 내보내기를 띄우고, 그 사이 같은 표에 열을 더하는 마이그레이션을 시작한다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "마이그레이션이 잠금을 기다리기 시작하고 30초 안에 배차 서비스(Spring Boot, food-delivery-dispatch)가 DB 연결을 얻지 못하고, 주문 서비스(Spring Boot, food-delivery-order)의 주문이 503 으로 거절된다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 6분 동안 새 음식 주문이 모두 503 이고, 배차 서비스는 상태 확인에 답하지 못해 컨테이너가 재시작된다. 가게 둘러보기와 기존 주문 조회는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "내보내기가 끝나면 잠금 줄이 풀리지만, 배차 서비스가 재시작 직후라 약 3분 더 걸려 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 긴 내보내기 뒤에서 잠금을 기다린 배차 표 마이그레이션이다. 배차 서비스의 재시작과 주문 서비스의 503 은 잠금 줄에 막힌 피해다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 안에서 앱 계정으로 SELECT ... FROM dispatches 를 mysql --quick 으로 띄워 N 행마다 1초 쉬며 약 360초 읽게 하고, 그 세션이 메타데이터 잠금을 쥔 뒤 root 로 ALTER TABLE dispatches ADD COLUMN cancel_reason varchar(64) NULL, ALGORITHM=INSTANT 를 띄운다. 정리는 내보내기가 끝나기를 기다린 뒤 열을 지운다",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food)이 주문을 낸다",
+     "잠금 방식: INSTANT ALTER 도 배타 메타데이터 잠금이 필요해 내보내기의 공유 잠금 뒤에서 'Waiting for table metadata lock' 으로 기다리고, 그 뒤의 dispatches 질의가 모두 그 뒤에 줄을 선다. lock_wait_timeout 3600",
+     "경로: 주문 생성 order → dispatch 용량 확인(dispatches 읽기). dispatch Hikari 대기 3000ms 실패, order 'Failed to check dispatch capacity' 끝에 503",
+     "녹화: case-f60-h-v3-1aece1d2. 주입 14:04:56, 주문 5xx 14:05:21~14:13:53, dispatch Killing 14:06:23 과 약 14:11, 주문 회복 14:14:10. DPM 세션의 내보내기 상태는 'Sending to client' 가 아니라 'executing' 으로 보인다"
+    ]
    }
   },
   "F54-P": {
@@ -12853,6 +13626,32 @@
        "limit": 500
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 DB 의 앱 계정에 시간당 쓰기 한도를 너무 낮게 걸자, 몇 분 뒤 한도가 다 차서 주문 저장이 모두 거절되고 조회와 파드는 멀쩡한데 음식 주문만 실패한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 앱 계정 fooddelivery 에 시간당 쓰기 500건 한도를 약 15분 동안 건다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "처음 약 8분은 아무 오류가 없다. 기존 DB 연결에는 한도가 붙지 않고 새로 열린 연결만 함께 쓰는 카운터를 소모한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 8분 뒤 한도가 다 차자 주문 서비스(Spring Boot, food-delivery-order)의 주문 저장이 '쓰기 한도 초과(1226)'로 거절되어, 한도를 풀 때까지 약 7분 동안 새 주문이 모두 500 으로 실패한다. 가게, 메뉴, 배달 조회와 모든 파드는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "한도를 풀자 곧바로 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 앱 계정 fooddelivery 에 걸린 너무 낮은 시간당 쓰기 한도다. 주문 서비스의 500 이 크게 보이지만 주문 서비스는 늘 하던 쓰기를 한 피해자이고, MySQL 인스턴스도 건강하다.",
+    "design_notes": [
+     "주입: db.account 가 testbed-mysql-0 의 mysql 클라이언트(root)로 ALTER USER 'fooddelivery'@'%' WITH MAX_UPDATES_PER_HOUR 500 을 실행하고, 정리는 한도를 0(없음)으로 되돌린다. 비밀번호, 권한, 연결은 건드리지 않고 DPM 계정 lucida_mon 도 그대로다",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food, 초당 1~6 반복, 주문 20%)이 트래픽이다",
+     "늦게 터지는 이유: 자원 한도는 새 연결에만 붙고 한도 있는 연결들이 시간당 카운터를 함께 쓴다. Hikari 풀이 연결을 새로 만들수록 한도 있는 연결이 늘고, 카운터가 다 차면 쓰기가 MySQL 1226 'has exceeded the max_updates_per_hour resource' 로 거절된다",
+     "부작용: 그동안 ETA 가 지난 배달이 끝나지 않고 outbox 이벤트가 발행되지 않는다. 한도를 풀면 따라잡는다",
+     "녹화: case-f54-p-v3-fb67a747. 적용 17:54:24, 첫 실패 18:02:04, 주문 5xx 0.83~1.0(18:02:20~18:09), 정리 18:09:28"
     ]
    }
   },
@@ -12949,6 +13748,29 @@
        "capacity": 2000
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "재배차 정정 작업이 주문 목록 없이 돌아 최근 4시간에 끝난 배차를 모두 '배정 중'으로 되돌리자, 배달원이 전부 바쁜 것처럼 보여 모든 새 음식 주문이 거절된다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)에서 최근 4시간에 배달 완료된 배차를 모두 배정 중 상태로 되돌리고, 약 9분 뒤 백업으로 원래 상태를 되살린다.",
+    "propagation": [
+     {
+      "stage": "전면 장애",
+      "text": "바로 다음 주문부터 주문 서비스(Spring Boot, food-delivery-order)가 '배달원 없음'을 받아 새 주문이 모두 503 으로 거절되고, 약 9분 동안 이어진다. 배차 서비스(Spring Boot, food-delivery-dispatch), 주문 서비스, MySQL 은 모두 건강하고 둘러보기, 주문 조회, 결제도 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "행을 되살리자 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 배차 표의 행을 잘못 되돌린 정정 작업이다. 503 은 주문 서비스에서 보이지만 주문 서비스와 배차 서비스는 바뀐 데이터대로 정직하게 센 피해자다.",
+    "design_notes": [
+     "주입: db.row_update 가 testbed-mysql-0 에서 백업 표 dispatches_redispatch_backup 을 만들고 UPDATE dispatches ... SET status='ASSIGNED', assigned_at=NOW() 로 최근 4시간 DELIVERED 배차(2,500 이상)를 되돌린다. 정리는 백업에서 상태와 배정 시각을 되살리고 백업 표를 지운다",
+     "부하: 동반 부하 없음. 동반 주문 부하는 주입 전에 배달원 풀을 스스로 채울 수 있어 상주 기준선(loadgen-food)만 쓴다",
+     "기전: dispatch 의 배달원 용량 확인이 ASSIGNED 행을 일하는 배달원으로 센다. 한도 2,000 이 한 번에 차서 order 가 503 'No courier available (capacity full)'. 주문 행, 배차, 결제는 남지 않는다",
+     "그대로 두면: 되살린 행의 ETA(15~34분)가 지나야 풀이 비고, 그때 배달 하나하나가 두 번째로 '배달 완료'된다",
+     "계기 흔적: 같은 분에 DPM 의 fooddelivery 표 수 +1(백업 표)과 행 수 급증",
+     "녹화: case-f51-p-v3-1c6b181c. 적용 21:59:09, 주문 5xx 0.8~1.0(21:59:44~22:08:24), 22:08:57 회복"
     ]
    }
   },
@@ -13160,6 +13982,36 @@
        "fault_image": "food-delivery-dispatch:1.9.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "배차 서비스의 새 릴리스가 배달 조회마다 닫지 않는 스레드를 남기자, 몇 분 만에 컨테이너 메모리가 가득 차 강제로 죽고, 그동안 새 음식 주문이 거절된다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)를 배달 조회에 처리 마감 시간을 거는 새 릴리스로 롤아웃하고, 메모리 문제로 죽은 직후 되돌린다.",
+    "propagation": [
+     {
+      "stage": "교체",
+      "text": "새 파드가 뜨는 데 약 2분 40초가 걸리고, 옛 파드와 바뀌는 순간 주문 일부가 잠깐 503 으로 실패한다."
+     },
+     {
+      "stage": "누적",
+      "text": "그 뒤 약 8분은 주문이 정상이지만, 배차 서비스의 스레드 수와 메모리가 배달 조회마다 계속 늘어난다."
+     },
+     {
+      "stage": "장애",
+      "text": "롤아웃 약 11분 반 뒤 배차 서비스 컨테이너가 메모리 한도 1GiB 를 채워 커널에 의해 죽고 같은 파드에서 다시 뜬다. 그사이 주문 서비스(Spring Boot, food-delivery-order)의 배달원 용량 확인이 실패해 새 주문이 503 으로 거절된다."
+     },
+     {
+      "stage": "회복",
+      "text": "릴리스를 되돌리자 약 3분 안에 주문이 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 스레드를 새게 만든 배차 서비스 릴리스다. 주문 서비스의 503 이 크게 보이지만 피해자이고, 노드 메모리와 MySQL 은 정상이다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-dispatch 의 이미지를 food-delivery-dispatch:latest 에서 1.9.0 으로 바꾸고 롤아웃을 기다리지 않는다. fault-images/f63-p 패치(DispatchController.withinDeadline)로 미리 빌드해 tb-w3 containerd 에 올린다",
+     "부하: load.north_south delivery-status-surge.js 10rps(배달 목록과 상세만, 주문 없음), dispatch NodePort 로 보낸다",
+     "결함: 조회마다 스레드 하나짜리 실행기를 만들고 닫지 않아 비데몬 스레드가 직선으로 쌓인다(녹화에서 5 → 5,465, 스레드당 약 113KiB). 컨테이너 메모리 한도 1GiB 에 닿으면 커널 memcg OOM",
+     "경로: 주문 생성 order → dispatch 용량 확인. dispatch 가 죽어 있는 동안 order 가 503",
+     "녹화: case-f63-p-v3-ddf34faa. 롤아웃 05:38:45, 교체 05:41:25, 첫 OOM 05:50:18, 그 직후 성공 판정으로 정리. OOM 은 한 주기만 관측됐다"
     ]
    }
   },
@@ -13498,6 +14350,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "결제 표에 열을 더하는 마이그레이션이 같은 표를 오래 읽는 내보내기 뒤에서 잠금을 기다리자, 결제 질의가 모두 줄을 서서 약 6분 동안 음식 주문이 결제 단계에서 실패한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)에서 결제 표를 약 6분 동안 천천히 읽는 내보내기를 띄우고, 그 사이 같은 표에 열을 더하는 마이그레이션을 시작한다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "마이그레이션이 잠금을 기다리기 시작하자 결제 서비스(Spring Boot, food-delivery-payment)의 결제 처리가 멈추고, 주문 서비스(Spring Boot, food-delivery-order)의 주문이 결제 단계에서 매달린다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 6분 동안 새 주문이 모두 배차까지 된 뒤 502 로 실패하고, 결제 서비스는 DB 연결이 다 차서 준비 안 됨 상태가 되었다가 재시작한다. 가게, 메뉴, 배차는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "내보내기가 끝난 그 분에 줄이 풀리고 결제와 주문이 바로 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 긴 내보내기 뒤에서 잠금을 기다린 결제 표 마이그레이션이다. 결제 서비스의 재시작과 주문 서비스의 502 는 잠금 줄에 막힌 피해다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 안에서 앱 계정으로 SELECT ... FROM payments 를 mysql --quick 으로 띄워 약 360초 동안 천천히 읽게 하고, 그 세션이 메타데이터 잠금을 쥔 뒤 root 로 ALTER TABLE payments ADD COLUMN pg_transaction_id varchar(64) NULL, ALGORITHM=INSTANT 를 띄운다. 정리는 내보내기가 끝나기를 기다린 뒤 열을 지운다",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food)이 주문을 낸다",
+     "잠금 방식: INSTANT ALTER 도 배타 메타데이터 잠금이 필요해 내보내기 뒤에서 'Waiting for table metadata lock' 으로 기다리고, 그 뒤의 payments 질의가 모두 줄을 선다. payment Hikari 풀(active=15)이 차 NotReady, 재시작",
+     "경로: 주문 생성 order → restaurant → dispatch → payment. 주문 저장과 배차 INSERT 는 평시대로 되고 결제에서 실패해 롤백, 502",
+     "녹화: case-f53-h-v3-d20267b1. 장애 19:28:34~19:34:47, 'Processed payment' 19:34:45 재개. DPM 내보내기 상태는 'executing', MySQL CPU 는 약 2배로 올랐다"
+    ]
    }
   },
   "F67-H": {
@@ -13721,6 +14599,33 @@
        "minimum_rows": 1000
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "취소된 인덱스 작업이 엉뚱하게 배차 이벤트 보관 표를 치우자, 배차가 모두 저장 직전에 되돌려져 둘러보기와 배달 추적은 멀쩡한데 새 음식 주문이 전부 실패한다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 배차 이벤트 보관 표(dispatch_outbox_events) 이름을 보관용 이름으로 바꿔 앱이 찾을 수 없게 하고, 약 15분 뒤 되돌린다. 행은 지우지 않는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "1초 뒤부터 배차 서비스(Spring Boot, food-delivery-dispatch)에 '표가 없다'는 오류가 배차마다 쌓이고, 1분 안에 주문 서비스(Spring Boot, food-delivery-order)의 새 주문이 503 으로 실패한다."
+     },
+     {
+      "stage": "지속",
+      "text": "약 15분 동안 새 주문이 거의 모두 503 이다. 파드 재시작, DB 연결 대기, MySQL 지연은 없고 가게 둘러보기, 배달 추적, 주문 조회는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "표 이름을 되돌리자 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 사라진 배차 이벤트 보관 표다. 503 은 주문 서비스에서, 오류는 배차 서비스에서 보이지만 둘 다 코드와 설정이 그대로인 피해자다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 에서 그림자 표 _vt_vrp_<uuid>_<시각>_ 를 만들고 인덱스 idx_dispatch_outbox_aggregate(aggregate_id)를 더해 약 11만 6천 행을 복사한 뒤, 원래 표를 보류 이름 _vt_hld_<uuid>_<기한>_ 으로 RENAME 한다(Vitess 표 수명주기 꼴). 정리는 이름을 되돌리고 그림자 표를 지운다",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food)이 주문을 만든다",
+     "기전: dispatch 는 outbox 기록 실패(MySQL 1146)를 'non-critical' WARN 으로 넘기지만 같은 트랜잭션이 rollback-only 가 되어 배차가 커밋에서 되돌려진다. order 는 503 을 받고, dispatch 서킷이 열린 동안에는 용량 확인부터 503",
+     "부작용: 표가 없는 동안 만료 배치도 되돌려져 도착 시각이 지난 배달이 '배정' 으로 남고, 표가 돌아오면 한꺼번에 완료된다. 배차 이벤트는 발행되지 않는다",
+     "계기 흔적: DPM 의 fooddelivery 표 수 16 → 17, 인덱스 수 31 → 34(그림자 표와 인덱스 셋)",
+     "녹화: case-f60-p-v3-04d37516. 적용 02:19:31, 첫 1146 02:19:32, 주문 5xx 0.8~1.0(02:20:17~02:34:45), 02:35:20 회복"
     ]
    }
   },
@@ -14196,6 +15101,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "결제 감사 자료를 내보내는 작업이 결제 표를 잠근 채 덤프를 뜨자, 결제 쓰기가 모두 막혀 새 음식 주문이 결제 단계에서 전부 실패한다.",
+    "injected_fault": "음식 배달 네임스페이스에 결제 표를 mysqldump 기본값으로 내보내는 작업(쿠버네티스 Job)을 띄우고, 약 4분 뒤 지운다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "작업 시작 30초 뒤 결제 서비스(Spring Boot, food-delivery-payment)의 결제 처리가 멈추고, 주문 서비스(Spring Boot, food-delivery-order)의 새 주문이 결제 단계에서 502 로 실패하기 시작한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "작업이 도는 내내 새 주문이 거의 모두 502 이고, 결제 서비스는 DB 연결이 다 차서 상태 확인에 답하지 못해 약 2분 뒤 재시작한다. 주문 저장과 배차, 가게 둘러보기는 평소대로다."
+     },
+     {
+      "stage": "회복",
+      "text": "작업을 지우자 그 분에 잠금이 풀리고 1분 안에 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 결제 표를 잠근 채 덤프를 뜬 내보내기 작업이다. 결제 서비스의 재시작과 주문 서비스의 502 는 잠금에 막힌 피해이고, MySQL 자체는 평시처럼 건강하다.",
+    "design_notes": [
+     "주입: k8s.job 이 rca-testbed-food 에 Job payment-audit-export(이미지 mysql:8.0, tb-w3, CPU 150m, 메모리 256Mi, activeDeadlineSeconds 1800)를 만든다. 스크립트는 mysqldump --no-tablespaces fooddelivery payments settlement_summary | xz -6 -T1 이고, 계정은 food 서비스들이 쓰는 mysql-secret 에서 받는다. 정리는 Job 을 foreground 로 지워 덤프 연결을 닫는다",
+     "부하: 동반 부하 없음. 상주 기준선(주문 초당 0.2~1.15건)만으로 약 1분 안에 payment 풀이 찬다",
+     "잠금 방식: mysqldump 기본값(--lock-tables)이 덤프 내내 표 읽기 잠금을 쥐어 payments INSERT 가 모두 기다린다. payment Hikari 대기 3000ms 실패, liveness 실패로 재시작",
+     "경로: 주문 생성 order → restaurant → dispatch → payment. 결제 전에 주문 저장과 배차 요청이 끝나 배차는 평시 속도로 남는다",
+     "녹화: case-f69-r-v3-ca74a36b. Job 생성 22:47:25, 주문 5xx 0.79~1.0(22:47:56~22:51:13), payment Killing 22:49:14, 정리 22:51:33~22:52:09, 22:53:01 회복"
+    ]
    }
   },
   "F36-P": {
@@ -14299,6 +15230,32 @@
        "maximum_sessions": 90
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "메뉴 표에 열을 더하는 마이그레이션이 메뉴를 오래 읽는 판매 실적 내보내기 뒤에서 잠금을 기다리자, 메뉴 읽기가 모두 줄을 서서 약 6분 동안 메뉴를 열 수도 주문을 낼 수도 없다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)에서 메뉴와 주문 품목을 이어 읽는 내보내기를 약 6분 동안 천천히 돌리고, 그 사이 메뉴 표에 열을 더하는 마이그레이션을 시작한다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "마이그레이션이 잠금을 기다리기 시작하자 가게 서비스(Spring Boot, food-delivery-restaurant)의 메뉴 읽기가 멈추고 메뉴 화면이 실패하기 시작한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 6분 동안 메뉴 보기가 모두 실패하고, 메뉴를 확인해야 하는 주문 서비스(Spring Boot, food-delivery-order)의 새 주문이 한 건도 만들어지지 않는다. 가게 서비스는 DB 연결이 다 차서 두 번 재시작하고, 배차와 배달 완료 알림은 평소처럼 이어진다."
+     },
+     {
+      "stage": "회복",
+      "text": "내보내기가 끝난 그 분에 줄이 풀리고 1분 안에 주문이 다시 들어온다."
+     }
+    ],
+    "root_cause": "근본 원인은 긴 내보내기 뒤에서 잠금을 기다린 메뉴 표 마이그레이션이다. 가게 서비스의 재시작과 주문 중단은 잠금 줄에 막힌 피해이고, 가게 서비스의 코드와 설정은 그대로다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 안에서 앱 계정으로 SELECT ... FROM menus m JOIN order_items i ON i.menu_id = m.id 를 mysql --quick 으로 약 360초 동안 천천히 읽게 하고, 그 세션이 menus 메타데이터 잠금을 쥔 뒤 root 로 ALTER TABLE menus ADD COLUMN allergen_note varchar(255) NULL, ALGORITHM=INSTANT 를 띄운다. 정리는 내보내기가 끝나기를 기다린 뒤 열을 지운다",
+     "부하: 동반 부하 없음. 상주 기준선(loadgen-food)이 메뉴를 보고 주문을 낸다",
+     "잠금 방식: INSTANT ALTER 의 배타 메타데이터 잠금이 내보내기 뒤에서 기다리고, 그 뒤의 menus 읽기가 모두 줄을 선다(DPM 세션 MDL 대기 11~22개, active_session 1 → 24). restaurant Hikari 풀이 차 연결 대기 약 3초 뒤 500",
+     "경로: 주문 생성 order → restaurant 메뉴 확인 → dispatch → payment",
+     "녹화: case-f36-p-v3-9121d2b4. 'Created order' 02:13~02:19 0건, restaurant 재시작 2회(롤아웃 없음), 02:19 대기 해소, 02:20 주문 재개"
     ]
    }
   },
@@ -15005,6 +15962,32 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "배달원 정산 시스템이 배달 완료 내역 전체를 한 번에 받아 가려 하자, 배차 서비스가 약 174만 행을 메모리에 올리다 멈추고 재시작을 되풀이해, 그때마다 새 음식 주문이 모두 실패한다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)의 배달 목록 API 를 페이지 없이 부르는 정산 호출을 약 1분 간격으로 되풀이하고, 약 12분 뒤 멈춘다. 배포나 설정 변경은 없다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "약 2분 뒤 첫 정산 호출이 들어가자 30초 안에 배차 서비스의 메모리가 한도까지 차서 응답이 멈추고, 주문 서비스(Spring Boot, food-delivery-order)의 새 주문이 503 으로 실패하기 시작한다."
+     },
+     {
+      "stage": "반복",
+      "text": "배차 서비스가 상태 확인에 실패해 재시작되고 잠깐 돌아오지만, 다음 정산 호출마다 다시 메모리가 차고 주문이 1~4분씩 모두 실패한다. 가게와 메뉴 둘러보기는 계속 된다."
+     },
+     {
+      "stage": "회복",
+      "text": "호출을 멈춘 뒤에도 멈춰 있던 배차 서비스가 한 번 더 재시작할 때까지 약 3분 실패가 이어지고, 그 뒤 주문이 정상이 된다."
+     }
+    ],
+    "root_cause": "근본 원인은 결과 크기에 상한이 없는 배차 서비스의 배달 목록 API 다. 정산 호출은 정당한 요청이고, 주문 서비스의 503 은 배차 서비스가 멈춘 데 따른 피해다.",
+    "design_notes": [
+     "주입: load.north_south 가 tb-runner 에서 rider-settlement-export.js 를 dispatch NodePort 30182 로 돌린다. VU 하나가 2분 경사 뒤 GET /api/deliveries?status=DELIVERED 를 page/size 없이(시간 제한 90초) 부르고 60초 쉬기를 13분 되풀이한다. 다른 시나리오는 배달 추적 여정 5rps(목록 75, 상세 25)다",
+     "결함: page/size 없는 요청을 unpaged 로 돌려 결과 전부를 메모리에 만든다. 기본 256MiB 힙의 Tenured Gen(한도 170.7MiB)이 30초 안에 차고 연속 GC 로 멈춘다('Java heap space'). liveness 실패로 같은 파드가 재시작한다",
+     "경로: 주문 생성 order → dispatch 용량 확인. order 는 'Read timed out' 다음 'Connection refused' 끝에 503. 실패한 주문은 주문 행과 배정을 남기지 않는다",
+     "녹화: case-f70-p-v3-3ce5d49b. t1 22:34:35, 주문 5xx 22:37:27~22:41:24, 22:42:58~22:43:51, 22:46:33~22:49:29. liveness 재시작 22:38:39, 22:47:09. 2차 호출은 재시작 없이 회복했다",
+     "관측 한계: DPM Top SQL 에는 LIMIT 없는 조회가 남지 않았다"
+    ]
    }
   },
   "F73-R": {
@@ -15345,6 +16328,31 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "주문 서비스와 짝으로 나가야 했던 배차 서비스 릴리스만 먼저 나가 배달원 용량 API 주소가 바뀌자, 바뀌지 않은 주문 서비스가 옛 주소를 불러 모든 새 음식 주문이 실패한다.",
+    "injected_fault": "배차 서비스(Spring Boot, food-delivery-dispatch)만 배달원 용량 API 주소를 옮긴 새 릴리스로 롤아웃하고, 약 17분 뒤 되돌린다. 주문 서비스는 그대로 둔다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "롤아웃 약 2분 뒤 새 배차 파드가 트래픽을 받자, 주문 서비스(Spring Boot, food-delivery-order)의 용량 확인이 '400 잘못된 요청'을 받고 새 주문이 503 으로 실패한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 15분 동안 새 주문이 한 건도 만들어지지 않는데, 배차 서비스는 준비 상태이고 빠르며 경고 로그만 남긴다. 가게 둘러보기, 메뉴, 주문 조회, 배달 조회는 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "배차 서비스를 되돌리자 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 짝 릴리스 없이 API 주소를 옮긴 배차 서비스 릴리스다. 오류 로그와 503 은 주문 서비스에 몰려 보이지만 주문 서비스는 바뀐 것 없는 피해자다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-dispatch 의 이미지를 food-delivery-dispatch:latest 에서 1.10.0 으로 바꾼다. fault-images/f75-r 패치(새 CourierController 의 GET /api/couriers/capacity, DispatchController 의 GET /api/deliveries/capacity 삭제)로 미리 빌드한다. 짝인 order-service 2.6.0 은 나가지 않는다",
+     "부하: load.north_south order-surge.js 2rps(주문 생성 초당 약 1.4건)",
+     "기전: 옛 주소 /api/deliveries/capacity 가 /api/deliveries/{id} 에 걸려 'capacity' 를 숫자로 바꾸지 못하고 400(MethodArgumentTypeMismatchException). order 는 'Failed to check dispatch capacity: 400' 끝에 503 'Dispatch service unavailable'. 주문 행, 배정, 결제가 남지 않는다",
+     "녹화: case-f75-r-v3-2e645346. Pulled 08:51:29, 오류 08:53:40~09:08:26 각 490줄, 'Created order' 14분 55초 동안 0"
+    ]
    }
   },
   "F76-R": {
@@ -15548,6 +16556,31 @@
        "fault_image": "food-delivery-restaurant:1.7.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "가게 서비스의 새 릴리스가 메뉴에 예상 조리 시간을 더했는데 조리 시간 표에 카테고리 셋만 있어, 나머지 카테고리 가게 11곳의 메뉴만 열리지 않는다.",
+    "injected_fault": "가게 서비스(Spring Boot, food-delivery-restaurant)를 메뉴 응답에 예상 조리 시간을 더한 새 릴리스로 롤아웃하고, 약 10분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "롤아웃 약 2분 뒤 새 가게 파드가 트래픽을 받자, 카테고리 4~8 가게의 메뉴 보기가 500 으로 실패하고 가게 서비스에 NullPointerException 오류가 쌓인다."
+     },
+     {
+      "stage": "지속",
+      "text": "약 8분 동안 그 가게 11곳의 메뉴만 실패한다. 나머지 12곳의 메뉴, 가게 상세, 검색, 인기 메뉴, 주문은 정상이고 느려지지도 않아 피해가 퍼지지 않는다."
+     },
+     {
+      "stage": "회복",
+      "text": "릴리스를 되돌리자 모든 가게의 메뉴가 다시 열린다."
+     }
+    ],
+    "root_cause": "근본 원인은 출시 카테고리만 담은 조리 시간 표를 확인 없이 읽는 가게 서비스 릴리스다. 가게와 메뉴 데이터, MySQL 은 바뀐 것도 고장 난 것도 없다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-restaurant 의 이미지를 food-delivery-restaurant:latest 에서 1.7.0 으로 바꾼다. fault-images/f76-p 패치(cookMinutes 를 더한 MenuItemResponse, COOK_MINUTES_BY_CATEGORY 표, toMenuResponse)로 미리 빌드해 tb-w3 containerd 에 올린다",
+     "부하: load.north_south food surge.js 3rps(45% 상세, 메뉴, 인기 메뉴 둘러보기, 30% 지역 검색, 10% 제한된 주문)",
+     "결함: 조리 시간 표가 분식, 중식, 치킨 세 카테고리뿐인데 Map.get 결과를 확인 없이 int 로 받아, 카테고리 4~8 메뉴를 담는 순간 NullPointerException 으로 500",
+     "녹화: case-f76-p-v3-ec3be401. Pulled 16:03:21, NPE 735줄(16:05:40~16:13:25, 모두 RestaurantService.toMenuResponse 경유). 메뉴 500 은 카테고리 4~8 가게 11곳에서만, 나머지 12곳은 0건"
     ]
    }
   },
@@ -15894,6 +16927,32 @@
        "fault_image": "food-delivery-payment:1.4.0"
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "음식 배달 결제 서비스의 새 릴리스가 외부 결제대행사 주소를 슬래시 없이 이어 붙이자, 결제 요청이 나가기도 전에 실패해 결제대행사는 멀쩡한데 모든 새 주문이 실패한다.",
+    "injected_fault": "결제 서비스(Spring Boot, food-delivery-payment)를 결제대행사 주소를 기본 주소와 경로를 이어 만드는 새 릴리스로 롤아웃하고, 약 15분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 결제 파드가 뜨는 데 2분 넘게 걸려, 롤아웃 약 2분 반 뒤부터 피해가 시작된다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 15분 동안 새 주문이 모두 배차까지 된 뒤 502 로 실패하고, 주문 서비스(Spring Boot, food-delivery-order)에 '결제대행사 주소가 잘못됐다(Bad authority)'는 오류와 결제 차단기 열림이 쌓인다. 결제 처리 완료는 0건이고 결제 서비스 자체에는 오류 로그가 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "되돌린 파드가 뜨는 2분 반 동안도 실패가 이어지다가, 옛 버전이 응답을 넘겨받자 주문이 다시 성공한다."
+     }
+    ],
+    "root_cause": "근본 원인은 주소를 잘못 이어 붙이는 결제 서비스 릴리스다. 오류는 주문 서비스에 몰려 보이지만 피해자이고, 외부 결제대행사(mock)는 정상이며 요청을 받지도 못한다.",
+    "design_notes": [
+     "주입: k8s.image release 모드가 testbed-payment 의 이미지를 food-delivery-payment:latest 에서 1.4.0 으로 바꾼다. fault-images/f79-r 패치(PgApiClient 가 pg.api.base-url + pg.api.pay-path 로 주소를 만들고, base-url 의 로컬 기본값만 '/' 로 끝남)로 미리 빌드한다",
+     "부하: 동반 부하 없음. 실패한 주문도 배차를 지나므로 부하를 더하면 ASSIGNED 배차가 쌓여 배달원 한도 2000 이 찬다. 상주 기준선만 쓴다",
+     "결함: 운영 base-url 이 '/' 로 끝나지 않아 'http://...:9090pay' 꼴 주소가 되어 요청 전에 'Bad authority' 로 실패한다. PG 클라이언트 스팬이 사라지고 'PG /pay failed' 도 없다",
+     "경로: 주문 생성 order → restaurant → dispatch → payment → 외부 PG mock. order 는 pg 서킷 열림 끝에 502 로 롤백",
+     "녹화: case-f79-r-v3-3ae8c5c1. 롤아웃 03:01:34, startup probe 실패 03:01:53~03:03:38, 피해 03:04:03~03:19:19, 되돌림 03:16:44 → 03:19:19"
     ]
    }
   },
