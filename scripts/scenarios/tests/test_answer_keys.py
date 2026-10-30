@@ -179,15 +179,16 @@ class AnswerKeyContractTests(unittest.TestCase):
 
     def test_story_ko_is_a_display_only_story(self) -> None:
         # 화면 이야기 칸(story_ko): 러너 시나리오 카드가 description 대신 보이는 사람용 글이다.
-        # 선택 칸이고 채점 칸이 아니며 capture 도 싣지 않는다. 카드가 다섯 제목(개요, 주입 장애,
+        # 채점 칸이 아니며 capture 도 싣지 않는다. 작성 규칙은 docs/spec-scenario-story.md.
+        # 2026-10-30 전 시나리오를 채운 뒤 필수 칸이 됐다: 새 시나리오가 빠뜨리면 카드가 옛
+        # description 으로 돌아가므로 여기서 막는다. 카드가 다섯 제목(개요, 주입 장애,
         # 전파 과정, 근본 원인, 설계 근거)으로 그리므로 모양을 고정하고, 다른 시나리오 ID 는
         # 대조가 필요한 설계 근거에만 둔다. 문서 규칙대로 가운뎃점과 줄표를 쓰지 않는다.
         keys = ["design_notes", "injected_fault", "overview", "propagation", "root_cause"]
         scenario_id_pattern = re.compile(r"\bF\d{2}-[A-Z]\w*")
         for scenario_id, entry in sorted(self.metadata.items()):
             story = entry.get("story_ko")
-            if story is None:
-                continue
+            self.assertIsNotNone(story, f"{scenario_id}: story_ko is required (docs/spec-scenario-story.md)")
             self.assertIsInstance(story, dict, scenario_id)
             self.assertEqual(sorted(story), keys, scenario_id)
             for field in ("overview", "injected_fault", "root_cause"):
