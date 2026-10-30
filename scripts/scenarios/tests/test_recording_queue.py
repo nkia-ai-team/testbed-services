@@ -269,7 +269,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-26: 6 → 5. F47-R 정식 승격(녹화 case-f47-r-v3-9d4f0378).
         # 2026-10-26: 5 → 4. F63-R 정식 승격(녹화 case-f63-r-v3-797189da).
         # 2026-10-27: 4 → 3. F72-R 정식 승격(녹화 case-f72-r-v3-bf50d2b7).
-        self.assertEqual(stages.count("candidate"), 3)
+        # 2026-10-30: 3 → 4. F69-P(commerce inventory-service 릴리스 1.3.0 의 재조정 배치가 재고 행을 공유 잠금으로 쥔 채 45일 원장 합계를 돌아 재고 예약과 checkout 이 주기적으로 막힘) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 4)
 
 
 class RecordingQueueTests(unittest.TestCase):

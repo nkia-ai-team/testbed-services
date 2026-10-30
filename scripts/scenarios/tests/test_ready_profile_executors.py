@@ -2320,6 +2320,38 @@ esac
         self.assertNotIn("catch (", added)
         self.assertNotIn("log.", added)
 
+    def test_k8s_image_release_mode_rolls_commerce_inventory_ledger_check(self) -> None:
+        # F69-P: 같은 release 스크립트로 commerce inventory 를 1.3.0 으로 롤아웃한다(tb-w1). inventory 의 다른 릴리스
+        # 태그는 없고, 어느 계약과도 태그가 겹치지 않아야 "노드에 릴리스 없음" preflight 를 지킨다. 패치는 inventory-service/src 안만 고친다.
+        plan = compiler.compile_plan("f69-p-commerce-inventory-release-ledger-check-holds-stock-locks")
+        argv, stdin = k8s_image.build_invocation(plan, "run")
+        self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-inventory", "inventory-service",
+                                    "commerce-inventory:latest", "commerce-inventory:1.3.0"])
+        self.assertNotIn("F69-P", argv)
+        self.assertEqual(stdin, k8s_image.RELEASE_SCRIPT)
+        tags = [c["fault_image"] for sid, c in k8s_image.CONTRACTS.items() if sid != "F69-P"]
+        self.assertNotIn(k8s_image.CONTRACTS["F69-P"]["fault_image"], tags)
+        image = json.loads((ROOT / "fault-images" / "f69-p" / "image.json").read_text())
+        self.assertEqual((image["base"], image["fault"]),
+                         (k8s_image.CONTRACTS["F69-P"]["baseline_image"], k8s_image.CONTRACTS["F69-P"]["fault_image"]))
+        patch = (ROOT / "fault-images" / "f69-p" / "inventory-service.patch").read_text()
+        for line in patch.splitlines():
+            if line.startswith(("+++ ", "--- ")) and not line.endswith("/dev/null"):
+                self.assertTrue(line[4:].startswith(("a/commerce/inventory-service/src/",
+                                                     "b/commerce/inventory-service/src/")), line)
+        added = "\n".join(line for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for word in ("F69", "f69", "fault", "bug", "chaos", "scenario"):
+            self.assertNotIn(word, added)
+        # 릴리스는 재조정 배치가 재고 행 전체를 공유 잠금으로 읽어 한 트랜잭션 끝까지 쥐고, 상품마다 45일 이동 이력을
+        # 합산한다. 예약(FOR UPDATE), 조회 API, health, 보충 로직은 그대로다.
+        self.assertIn("@Lock(LockModeType.PESSIMISTIC_READ)", added)
+        self.assertIn("List<Inventory> findAllForReconciliation();", added)
+        self.assertIn("List<Inventory> all = inventoryRepository.findAllForReconciliation();", added)
+        self.assertIn("ledger-window-days:45", added)
+        self.assertIn("SUM(m.quantity)", added)
+        self.assertNotIn("findByProductIdForUpdate", added)
+        self.assertNotIn("PESSIMISTIC_WRITE", added)
+
     def test_f79r_relies_on_production_pg_address_without_trailing_slash(self) -> None:
         # F79-R 의 고리는 운영 PG_API_URL 이 '/' 로 끝나지 않고, PgApiClient 가 RestClientException 만 'PG /pay failed' 로
         # 남기며 그 밖의 예외를 서킷 fallback 이 'PG mock unavailable: ' 502 로 바꾸고, processPayment 가 그 예외를 다시
@@ -2797,6 +2829,8 @@ esac
             "F79-R",
             # 2026-10-16: banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업(systemd 유닛 oradata-backup, tar | zstd -12 --long=31)이 2 GiB 장거리 창으로 노드 남은 메모리를 거의 다 써 kubelet 이 Oracle 을 축출하거나 커널이 banking 자바 컨테이너를 OOM 으로 죽임(배포·설정 변경 없음 → banking 이체 502, commerce checkout 502, GitHub 2026-09-20 재구성, 새 실행기 host.job). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-R",
+            # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F69-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}

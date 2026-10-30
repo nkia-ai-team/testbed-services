@@ -17235,6 +17235,134 @@
      "녹화: 실행 F80-R-run-bad63a76(10-17, 메모리 상한 없음)은 주입 약 102초에 이체 5xx 0.8 이 났지만 축출이나 OOM 이 아니라 노드가 헛돈 탓이었고, 곧 tb-w2 가 NotReady, SSH 불통이 되어 정리에 실패했다. 그 뒤 보류 중이라 검증 보고서와 녹화본이 없다"
     ]
    }
+  },
+  "F69-P": {
+   "title": "Release rollout of the commerce inventory-service to 1.3.0, whose stock reconciliation job now checks every product against a 45-day ledger window while holding share locks on all 16 stock rows; each run keeps the rows locked for about 45 seconds, so every stock reservation (and so every checkout) waits behind it once a minute",
+   "description": "A rollout of the commerce inventory-service Deployment (testbed-inventory) moves its container image from commerce-inventory:latest to the release commerce-inventory:1.3.0. The release replaces the reconciliation batch's last-ledger-row comparison with a period ledger check: for each product it reads the opening balance before a 45-day window and the sum of all movements inside the window, and compares it with the current stock. To keep a consistent snapshot it first reads all 16 inventory rows with a share lock (SELECT ... FOR SHARE) and keeps that lock for the whole check, inside the batch's single transaction. Each window sum reads about 230,000 inventory_movements rows (about 2.8 s per product on the 0.5-CPU commerce PostgreSQL), so every run holds the share locks for about 45 seconds, and the batch runs again 60 seconds after each run ends. During each lock window every stock reservation (SELECT ... FOR UPDATE on the product row) and stock release waits, the inventory Hikari pool (10) fills with waiting reservations, stock look-ups from product detail wait for a connection, and inventory can turn not-ready for a few tens of seconds. Checkouts that hit a window fail with 5xx at the gateway; outside the windows everything works. No schema, index, configuration or data change is made apart from the image.",
+   "cause": "Rollout of testbed-inventory (commerce) to the release commerce-inventory:1.3.0, whose reconciliation batch holds FOR SHARE locks on all inventory rows while summing 45 days of stock movements per product (about 45 s per run, every ~105 s); stock reservations queue behind those locks, the inventory connection pool fills, and checkouts and product details fail in recurring windows until inventory-service is rolled back.",
+   "injection_summary": "The k8s.image executor in its release mode rolls Deployment testbed-inventory (rca-testbed-commerce), container inventory-service, from commerce-inventory:latest to commerce-inventory:1.3.0. The release image is built ahead of time on tb-ops by scripts/scenarios/fault-images/build.sh f69-p from origin/main commerce plus fault-images/f69-p/inventory-service.patch (only inventory-service/src), loaded onto tb-w1 just before the rollout and removed by cleanup, which rolls the image back to commerce-inventory:latest. A companion load.north_south surge (surge.js, 3 rps, half of the journeys are checkouts) runs during the hold.",
+   "user_impact": "From the first batch run of the new inventory pod (right after it starts), about every 105 seconds checkouts fail for roughly half a minute: checkouts started in a lock window wait for stock reservations and end with 5xx at the gateway after 15 s, and product detail views that need a stock look-up fail or take about 10 s while the inventory pool is full. Product lists, search, carts and login keep working. Reservations whose callers already gave up still go through once the lock is released, so some stock is reserved for orders that were never created (it is replenished by the same batch). The pattern repeats until inventory-service is rolled back.",
+   "distinguishing_evidence": "Decisive evidence is a release of inventory-service followed by recurring lock waits on the inventory table whose blocker is inventory-service's own reconciliation batch: a KCM ScalingReplicaSet for testbed-inventory and the new pod's kubelet event 'Pulled: Container image \"commerce-inventory:1.3.0\" already present on machine'; DPM sessions in commerce PostgreSQL where sessions from the inventory pod IP wait on Lock (transactionid or tuple, relNames inventory) with blockingPid pointing at another session from the same inventory pod IP that runs the window sum over inventory_movements (sessionType blocking, tranTime growing to about 45 s), recurring each run; DPM Top SQL showing the new statement select coalesce(sum(...quantity),0) from inventory_schema.inventory_movements ... where product_id=$1 and created_at>=$2 with seconds per call; and inventory logs where 'Reconciliation batch started: productsChecked=16, ledgerWindowDays=45' is followed about 45 s later by 'Reconciliation batch finished: ... elapsedMs=4xxxx' (before the release the same batch finished within a fraction of a second), with the checkout and product-detail failures in product, order and gateway lining up with those windows. No external session holds the lock, no DDL runs, PostgreSQL stays ready, and product lists that do not touch inventory stay healthy.",
+   "domain": "commerce",
+   "class": "A",
+   "fault_pattern": "P3",
+   "observation_domains": [
+    "KCM",
+    "DPM",
+    "APM"
+   ],
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "commerce-inventory",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 commerce inventory-service 의 새 릴리스 commerce-inventory:1.3.0 이다. 이 버전은 재고 재조정 배치(ReconciliationBatch, 60초 fixedDelay, @Transactional 한 트랜잭션)의 대사를 '상품마다 마지막 원장 행의 resulting_stock 과 stock 비교'에서 '45일 기간 원장 대사(기간 시작 직전 잔액 + 기간 안 이동 이력 합계 = stock)'로 바꾸고, 대사 도중 예약이 stock 을 바꿔 거짓 불일치가 나지 않게 하려고 처음에 재고 행 16개를 PESSIMISTIC_READ(SELECT ... FOR SHARE)로 읽어 트랜잭션 끝까지 쥔다. 상품마다 45일 이동 이력 합계는 inventory_movements(약 1,000만 행, 1.3GB)에서 약 23만 행을 읽어 운영 PostgreSQL(CPU 한도 500m)에서 약 2.8초 걸리고(2026-10-30 읽기 전용 실측 2.70~2.86초), 16개 상품이면 한 번에 약 45초 동안 공유 잠금이 이어진다. 그동안 예약(InventoryService.reserve 의 findByProductIdForUpdate, SELECT ... FOR UPDATE)과 해제(release 의 UPDATE)는 공유 잠금과 충돌해 시간 제한 없이(lock_timeout 0) 기다린다. 기다리는 예약마다 inventory Hikari 연결(10개)과 Tomcat 스레드를 쥐어, 동반 부하(초당 예약 약 3건)에서 몇 초 안에 풀이 차고 재고 조회(GET /api/inventory/{productId})와 /actuator/health 의 DB 확인도 연결을 기다린다. product 의 inventory 호출(읽기 시간 제한 10초)과 order 의 product 호출(10초, 재시도 3회), 게이트웨이의 order 호출(15초)이 차례로 시간 초과해 잠금 구간에 시작한 checkout 이 5xx 로 끝나고, 재고 조회가 필요한 상품 상세도 실패한다. 배치가 커밋하면 쌓인 예약이 한꺼번에 처리되고 60초 뒤 다시 잠근다. 예약 요청은 정당했고 결함은 잠금을 쥔 채 긴 집계를 도는 배치 로직에 있다",
+    "code_anchor": [
+     "scripts/scenarios/fault-images/f69-p/inventory-service.patch:44-46 (릴리스 1.3.0 의 InventoryRepository.findAllForReconciliation: @Lock(PESSIMISTIC_READ), 재고 행 전체를 FOR SHARE 로 읽음)",
+     "scripts/scenarios/fault-images/f69-p/inventory-service.patch:21-24 (InventoryMovementRepository.findTopByProductIdAndCreatedAtBeforeOrderByCreatedAtDesc, sumQuantitySince: 기간 시작 직전 잔액과 기간 합계)",
+     "scripts/scenarios/fault-images/f69-p/inventory-service.patch:71 (inventory.reconciliation.ledger-window-days 기본값 45)",
+     "scripts/scenarios/fault-images/f69-p/inventory-service.patch:87-133 (ReconciliationBatch.run: 한 @Transactional 안에서 공유 잠금을 먼저 잡고 상품마다 기간 합계를 구한 뒤 보충과 함께 커밋, 끝 로그에 elapsedMs)",
+     "commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java:17-19 (findByProductIdForUpdate: 예약의 PESSIMISTIC_WRITE, 시간 제한 없음)",
+     "commerce/inventory-service/src/main/java/com/commerce/inventory/service/InventoryService.java:74-75 (reserve 가 재고 행을 FOR UPDATE 로 잠금)",
+     "commerce/product-service/src/main/java/com/commerce/product/client/InventoryClient.java:23-49 (getStock, reserve: 읽기 시간 제한 10초, 시간 초과는 처리하지 않아 500)"
+    ],
+    "infra_anchor": "rca-testbed-commerce Deployment testbed-inventory(commerce/k8s/22-inventory-service.yaml: replicas 1 :9, nodeSelector tb-w1 :19, image commerce-inventory:latest imagePullPolicy Never :27-28, readinessProbe /actuator/health 10초 주기 3초 시간 제한 3회 :75-81, livenessProbe 15초 주기 5회 :82-88), commerce PostgreSQL testbed-postgres-0(CPU 한도 500m, lock_timeout 0, statement_timeout 0), inventory_schema.inventory 16행, inventory_movements 약 1,000만 행(idx_inventory_movements_product (product_id, created_at DESC))"
+   },
+   "must_support": [
+    "testbed-inventory 롤아웃(KCM ScalingReplicaSet)과 새 파드의 kubelet 'Pulled' 이벤트가 이미지 commerce-inventory:1.3.0 을 담는다",
+    "commerce-inventory 로그에서 새 파드의 'Reconciliation batch started: productsChecked=16, ledgerWindowDays=45' 뒤 약 45초 만에 'Reconciliation batch finished: ... elapsedMs=' 가 나오고 그다음 시작이 약 60초 뒤다. 롤아웃 전 같은 배치는 시작과 끝이 1초 안이었다(2026-10-30 119 로그: 02:47:05.638 시작, 02:47:05.654 끝)",
+    "DPM 세션(dpm_session_local, engine postgresql)에 inventory 파드 IP 의 commerce 세션들이 waitType Lock(transactionid 또는 tuple), relNames inventory 로 sessionType blocked 이고, blockingPid 가 가리키는 세션도 같은 inventory 파드 IP 이며 sessionType blocking, tranTime 이 수십 초다. 이 묶음이 배치 시작마다 되풀이된다",
+    "DPM Top SQL(dpm_topsql_local)에 inventory_schema.inventory_movements 의 product_id, created_at 조건 합계 문장이 호출당 초 단위 실행 시간으로 새로 나타나고, inventory 표를 for share 로 읽는 문장이 나타난다",
+    "실패가 배치 잠금 구간과 맞물려 주기적으로 되풀이된다: commerce-product 의 inventory 호출 시간 초과(Read timed out)와 SEVERE 'Servlet.service() ... threw exception', 게이트웨이와 order 의 checkout 5xx, inventory 서버 스팬의 긴 예약 처리가 약 105초마다 몰려 나오고 그 사이에는 정상이다"
+   ],
+   "must_rule_out": [
+    "외부 세션이 재고 행을 잠근 경우(F01-R, F15-H 꼴)가 아님: 잠금을 쥔 세션의 클라이언트 IP 가 inventory 파드 자신이고 그 문장이 원장 기간 합계이며, 잠금이 한 번 길게 이어지지 않고 배치 로그의 시작, 끝에 맞춰 주기적으로 걸렸다 풀린다",
+    "재고 보충 정지(F23-R)가 아님: checkout 이 409(재고 부족)가 아니라 시간 초과 5xx 로 실패하고, 'Restocked productId=' 와 배치 끝 로그가 계속 나온다",
+    "공유 PostgreSQL 전체를 느리게 만든 질의 폭주(F20-R)가 아님: 재고를 거치지 않는 상품 목록, 장바구니, 로그인은 정상이고, 기다리는 세션이 CPU 가 아니라 Lock 대기이며 inventory 표에만 있다",
+    "PostgreSQL 다운이나 계정, 접근 규칙 문제(F25-H, F71-R, F71-H)가 아님: testbed-postgres-0 Ready, 인증 오류와 'Connection refused' 가 없고 다른 스키마 쓰기가 성공한다",
+    "inventory 의 CPU, 메모리 한도나 프로브 설정 변경(F09-P, F05-H 꼴)이 아님: 롤아웃이 바꾼 것은 이미지뿐이고 inventory 컨테이너 자원과 프로브가 그대로이며, 준비 안 됨은 풀이 찬 잠금 구간에만 잠깐 생긴다",
+    "product 나 order 릴리스(F76-R, F43-R 꼴)가 아님: testbed-product, testbed-order 의 ReplicaSet 과 이미지가 그대로이고 오류는 inventory 호출을 기다리는 경로에만 있다",
+    "재고 표 열 추가 마이그레이션 대기열(F66-R, F73-R 꼴)이 아님: ALTER 세션과 relation 수준 대기가 없고 대기가 행 잠금(transactionid, tuple)이다"
+   ],
+   "difficulty": "hard",
+   "related_scenarios": {
+    "contrast_with": [
+     "F01-R (같은 '재고 행 잠금 뒤 예약이 기다려 checkout 실패' 증상이지만 잠금 주인이 앱 밖 세션이고 정답이 표(DB 테이블(재고))다. F69-P 는 잠금 주인이 inventory 자신의 새 버전 배치이고 잠금이 배치 주기마다 걸렸다 풀린다)",
+     "F69-R (같은 '새로 배포된 작업이 잠금을 쥐고 무거운 질의를 도는 동안 같은 표의 쓰기가 끝나지 못함' 꼴의 food 판: 별도 Job 의 mysqldump 표 읽기 잠금이 결제 쓰기를 막고 정답이 작업이다. F69-P 는 서비스 릴리스 안 배치의 행 공유 잠금이고 정답이 inventory-service 다)",
+     "F23-R (같은 재조정 배치가 원인이지만 배치가 멈춰 보충이 끊기고 checkout 이 409 로 실패한다)",
+     "F20-R (같은 commerce PostgreSQL 의 무거운 질의지만 CPU 포화로 여러 스키마가 함께 느려지고 잠금 대기가 없다)",
+     "F42-R (같은 '릴리스가 무거운 질의를 더함' 꼴의 banking 판: 이체마다 도는 전수 질의가 Oracle 을 포화시킨다. F69-P 는 질의보다 그 질의를 도는 동안 쥔 잠금이 피해를 낸다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "service",
+    "accept": [
+     "commerce-inventory",
+     "testbed-inventory",
+     "inventory-service"
+    ],
+    "partial": [
+     "commerce-postgres:inventory_schema.inventory",
+     "commerce-postgres",
+     "commerce-product",
+     "commerce-order"
+    ]
+   },
+   "title_ko": "commerce inventory-service 를 릴리스 1.3.0 으로 롤아웃: 재고 재조정 배치가 대사를 45일 기간 원장 대사로 바꾸며 재고 행 16개를 공유 잠금으로 쥔 채 상품마다 45일 이동 이력을 합산해 한 번에 약 45초 잠그고, 그동안 모든 재고 예약이 기다려 checkout 이 약 105초마다 반 분가량 5xx",
+   "description_ko": "commerce inventory-service Deployment(testbed-inventory) 롤아웃이 컨테이너 이미지를 commerce-inventory:latest 에서 릴리스 commerce-inventory:1.3.0 으로 바꾼다. 이 릴리스는 재고 재조정 배치의 대사를 마지막 원장 행 비교에서 기간 원장 대사로 바꾼다: 상품마다 45일 기간 시작 직전 잔액과 기간 안 이동 이력 합계를 더해 현재 stock 과 비교한다. 기준 시점을 고정하려고 배치 트랜잭션 처음에 재고 행 16개를 공유 잠금(SELECT ... FOR SHARE)으로 읽고 대사가 끝날 때까지 쥔다. 상품 하나의 기간 합계는 이동 이력 약 23만 행을 읽어 CPU 0.5 의 commerce PostgreSQL 에서 약 2.8초 걸려, 한 번에 약 45초 동안 잠금이 이어지고 배치는 끝난 뒤 60초마다 다시 돈다. 잠금 구간마다 재고 예약(상품 행 SELECT ... FOR UPDATE)과 해제가 모두 기다리고, 기다리는 예약이 inventory Hikari 풀(10)을 채워 상품 상세의 재고 조회도 연결을 기다리며, inventory 가 몇십 초 준비 안 됨이 될 수 있다. 잠금 구간에 걸린 checkout 은 게이트웨이에서 5xx 로 끝나고, 구간 밖에서는 모두 정상이다. 이미지 말고는 스키마, 인덱스, 설정, 데이터를 바꾸지 않는다.",
+   "cause_ko": "testbed-inventory(commerce) 를 릴리스 commerce-inventory:1.3.0 으로 롤아웃. 새 재조정 배치가 재고 행 전체에 FOR SHARE 잠금을 쥔 채 상품마다 45일 이동 이력을 합산해(한 번에 약 45초, 약 105초마다) 재고 예약이 그 잠금 뒤에 줄을 서고 inventory 연결 풀이 차 checkout 과 상품 상세가 주기적으로 실패, inventory-service 를 되돌릴 때까지 이어진다.",
+   "injection_summary_ko": "k8s.image 실행기의 release 모드가 rca-testbed-commerce 의 Deployment testbed-inventory 컨테이너 inventory-service 이미지를 commerce-inventory:latest 에서 commerce-inventory:1.3.0 으로 롤아웃한다. 릴리스 이미지는 tb-ops 에서 scripts/scenarios/fault-images/build.sh f69-p 가 origin/main commerce 에 fault-images/f69-p/inventory-service.patch(inventory-service/src 만)를 얹어 미리 빌드하고, 롤아웃 직전 tb-w1 에 올렸다가 cleanup 이 이미지를 commerce-inventory:latest 로 되돌린 뒤 지운다. 유지 구간에 동반 load.north_south surge(surge.js 3rps, 여정의 절반이 checkout)를 함께 돌린다.",
+   "user_impact_ko": "새 inventory 파드가 뜨자마자 첫 배치가 돌고, 그 뒤 약 105초마다 반 분가량 checkout 이 실패한다: 잠금 구간에 시작한 checkout 은 재고 예약을 기다리다 15초 뒤 게이트웨이에서 5xx 로 끝나고, inventory 풀이 찬 동안 재고 조회가 필요한 상품 상세가 실패하거나 약 10초 걸린다. 상품 목록, 검색, 장바구니, 로그인은 정상이다. 호출한 쪽이 이미 포기한 예약도 잠금이 풀리면 처리되어, 만들어지지 않은 주문 몫의 재고가 빠진다(같은 배치의 보충이 채운다). inventory-service 를 되돌릴 때까지 되풀이된다.",
+   "distinguishing_evidence_ko": "결정 증거는 inventory-service 릴리스 뒤 inventory 표의 행 잠금 대기가 주기적으로 되풀이되고, 그 잠금 주인이 inventory 자신의 재조정 배치라는 것이다: testbed-inventory 의 KCM ScalingReplicaSet 과 새 파드의 kubelet 이벤트 'Pulled: Container image \"commerce-inventory:1.3.0\" already present on machine', commerce PostgreSQL DPM 세션에서 inventory 파드 IP 의 세션들이 Lock(transactionid 또는 tuple, relNames inventory)으로 기다리고 blockingPid 가 같은 inventory 파드 IP 의 세션(sessionType blocking, tranTime 이 약 45초까지 늘어남)을 가리키며 그 세션이 inventory_movements 기간 합계를 돌고 있다는 것(배치마다 되풀이), DPM Top SQL 에 inventory_schema.inventory_movements 의 product_id, created_at 조건 합계 문장이 호출당 초 단위로 새로 나타난다는 것, inventory 로그에서 'Reconciliation batch started: productsChecked=16, ledgerWindowDays=45' 약 45초 뒤에 'Reconciliation batch finished: ... elapsedMs=4xxxx' 가 나온다는 것(롤아웃 전 같은 배치는 1초 안에 끝났다)이고, product, order, 게이트웨이의 checkout, 상품 상세 실패가 그 구간에 맞물린다. 잠금을 쥔 외부 세션과 DDL 이 없고, PostgreSQL 은 Ready 이며, 재고를 거치지 않는 상품 목록은 정상이다.",
+   "injected_fault": {
+    "profile": "k8s.image",
+    "companions": [
+     "load.north_south"
+    ],
+    "levels": [
+     {
+      "id": "approved-fixed-f69-p",
+      "parameters": {
+       "mode": "release",
+       "namespace": "rca-testbed-commerce",
+       "deployment": "testbed-inventory",
+       "container": "inventory-service",
+       "baseline_image": "commerce-inventory:latest",
+       "fault_image": "commerce-inventory:1.3.0"
+      }
+     }
+    ]
+   },
+   "story_ko": {
+    "overview": "재고 서비스를 재고 대사 방식을 바꾼 새 버전으로 배포했는데, 대사하는 동안 재고 행을 잠근 채 긴 집계를 돌아 약 1분 45초마다 반 분가량 주문이 실패한다.",
+    "injected_fault": "재고 서비스(Spring Boot, commerce-inventory)를 재고 재조정 배치가 45일치 재고 이동 이력을 합산해 대사하는 릴리스 1.3.0 으로 배포하고, 약 10분 뒤 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "새 버전이 뜨자마자 첫 대사가 돌고, 약 45초 동안 재고 예약이 멈춰 그사이 시작한 주문이 15초를 기다리다 실패한다."
+     },
+     {
+      "stage": "확산",
+      "text": "기다리는 예약이 재고 서비스의 DB 연결 10개를 다 채워 재고 조회가 필요한 상품 상세도 실패하고, 재고 서비스가 잠깐 준비 안 됨 상태로 빠질 수 있다."
+     },
+     {
+      "stage": "지속",
+      "text": "대사가 끝나면 정상으로 돌아왔다가 약 1분 뒤 다시 잠기며, 되돌릴 때까지 약 1분 45초 주기로 되풀이된다. 상품 목록, 장바구니, 로그인은 내내 정상이다."
+     },
+     {
+      "stage": "회복",
+      "text": "원래 버전으로 되돌리자 대사가 1초 안에 끝나 주문이 곧 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 재고 서비스 새 버전의 재조정 배치가 재고 행을 잠근 채 긴 집계를 도는 것이다. 주문 서비스, 상품 서비스, 게이트웨이에 오류가 크게 보이지만 재고를 기다린 피해자이고, 커머스 DB(PostgreSQL, PostgreSQL-commerce)는 정상이다.",
+    "design_notes": [
+     "원본: KnowBe4 2025-10-13 (새로 배포한 데이터 처리 작업이 공유 인증 표에 무거운 질의를 돌리며 동시 갱신과 맞지 않는 공유 잠금을 만들어 로그인과 등록 갱신이 끝나지 못함, 작업이 죽고 다시 뜨며 잠금을 되풀이해 잡음)",
+     "주입: k8s.image release 모드가 testbed-inventory 의 inventory-service 이미지를 commerce-inventory:latest 에서 1.3.0 으로 롤아웃한다. 이미지는 fault-images/f69-p/inventory-service.patch(InventoryRepository.findAllForReconciliation, InventoryMovementRepository.sumQuantitySince, ReconciliationBatch.run)로 미리 빌드한다",
+     "잠금 방식: 배치 트랜잭션 처음에 재고 행 16개를 PESSIMISTIC_READ(FOR SHARE)로 읽어 커밋까지 쥔다. 예약의 FOR UPDATE 와 해제의 UPDATE 가 이 잠금과 충돌하고 lock_timeout 이 0 이라 끝없이 기다린다",
+     "강도: 상품당 45일 합계 약 2.8초(2026-10-30 운영 읽기 전용 실측 2.70~2.86초, 약 23만 행), 16개면 잠금 약 45초, 주기는 잠금 + 60초 ≈ 105초",
+     "부하: load.north_south surge.js 3rps(여정의 50% 가 checkout), 램프업 2분, 유지 16분",
+     "대조: 같은 재고 잠금 증상의 F01-R 은 잠금 주인이 앱 밖 세션이고, 같은 원본의 F69-R 은 food 의 별도 Job 덤프다"
+    ]
+   }
   }
  }
 }

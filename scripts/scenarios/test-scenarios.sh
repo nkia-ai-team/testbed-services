@@ -88,7 +88,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 139 → 140. F71-H(후보) 추가.
 # 2026-10-12: 140 → 141. F79-R(후보) 추가.
 # 2026-10-16: 141 → 142. F80-R(후보) 추가.
-[[ "$total" -eq 142 ]]
+# 2026-10-30: 142 → 143. F69-P(후보) 추가.
+[[ "$total" -eq 143 ]]
 # Internal consistency: ids, slugs and manifests track the catalog exactly, so
 # these are derived rather than pinned — a pinned copy is what went stale here
 # (the suite asserted 64 long after the catalog moved to 60, and failed silently
@@ -227,7 +228,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: ready 114→115. F71-H(commerce PostgreSQL 운영자가 pg_hba 모든 주소 규칙을 노드 주소와 관리망만 받도록 좁혀, 같은 노드 자기 파드 주소로 붙는 여덟 서비스의 새 로그인이 거절되고 풀이 수명대로 비어 readiness 이탈·재시작 반복, 쓰기 500·상품 조회 502)를 후보로 추가.
 # 2026-10-12: ready 115→116. F79-R(food payment-service 릴리스 1.4.0 이 외부 PG 결제 주소를 기본 주소와 경로를 구분자 없이 이어 만들어 운영 주소에서 'Bad authority' 로 모든 결제 502, 주문 전량 502, 후보) 추가.
 # 2026-10-16: ready 116→117. F80-R(banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업이 zstd 2 GiB 장거리 창으로 노드 남은 메모리를 거의 다 써 kubelet 이 Oracle 을 축출하거나 커널이 자바 컨테이너를 OOM 으로 죽여 이체와 commerce 정산 502, 후보) 추가.
-[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 117 ]]
+# 2026-10-30: ready 117→118. F69-P(commerce inventory-service 릴리스 1.3.0 의 재조정 배치가 재고 행을 공유 잠금으로 쥔 채 45일 원장 합계를 돌아 재고 예약과 checkout 이 주기적으로 막힘) 후보 추가.
+[[ "$(jq '[.scenarios[] | select(.readiness=="ready")] | length' "$catalog")" -eq 118 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="parked")] | length' "$catalog")" -eq 20 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="cut")] | length' "$catalog")" -eq 4 ]]
 [[ "$(jq '[.scenarios[] | select(.readiness=="blocked")] | length' "$catalog")" -eq 0 ]]
@@ -340,7 +342,8 @@ total="$(jq '.scenarios | length' "$catalog")"
 # 2026-10-12: 133 → 134. F71-H 가 설계 강도 1단 고정 evaluation(approved-fixed-f71-h)으로 들어왔다.
 # 2026-10-12: 134 → 135. F79-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f79-r)으로 들어왔다.
 # 2026-10-16: 135 → 136. F80-R 이 설계 강도 1단 고정 evaluation(approved-fixed-f80-r)으로 들어왔다.
-[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 136 ]]
+# 2026-10-30: 136 → 137. F69-P 가 설계 강도 1단 고정 evaluation(approved-fixed-f69-p)으로 들어왔다.
+[[ "$(jq '[.scenarios[] | select(.load_mode=="fixed")] | length' "$catalog")" -eq 137 ]]
 [[ "$(jq '[.scenarios[] | select(.load_mode=="no-load")] | length' "$catalog")" -eq 0 ]]
 # 2026-07-29: 알려진 profile 목록을 손으로 적어두던 것을 레지스트리에서 유도하도록
 # 바꿨다. 손으로 적힌 목록은 profile을 신설할 때마다 조용히 낡고, 그 결과가 0f40dd7의

@@ -1,0 +1,136 @@
+diff --git a/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryMovementRepository.java b/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryMovementRepository.java
+index 5f11dde..9da0053 100644
+--- a/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryMovementRepository.java
++++ b/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryMovementRepository.java
+@@ -4,7 +4,10 @@ import com.commerce.inventory.entity.InventoryMovement;
+ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ 
++import java.time.LocalDateTime;
+ import java.util.Optional;
+ 
+ public interface InventoryMovementRepository extends JpaRepository<InventoryMovement, Long> {
+@@ -12,4 +15,9 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
+     Optional<InventoryMovement> findTopByProductIdOrderByCreatedAtDesc(Long productId);
+ 
+     Page<InventoryMovement> findByProductIdOrderByCreatedAtDesc(Long productId, Pageable pageable);
++
++    Optional<InventoryMovement> findTopByProductIdAndCreatedAtBeforeOrderByCreatedAtDesc(Long productId, LocalDateTime before);
++
++    @Query("SELECT COALESCE(SUM(m.quantity), 0) FROM InventoryMovement m WHERE m.productId = :productId AND m.createdAt >= :from")
++    long sumQuantitySince(@Param("productId") Long productId, @Param("from") LocalDateTime from);
+ }
+diff --git a/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java b/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java
+index 0e6eb8d..989e7b7 100644
+--- a/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java
++++ b/commerce/inventory-service/src/main/java/com/commerce/inventory/repository/InventoryRepository.java
+@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Lock;
+ import org.springframework.data.jpa.repository.Query;
+ 
++import java.util.List;
+ import java.util.Optional;
+ 
+ public interface InventoryRepository extends JpaRepository<Inventory, Long> {
+@@ -19,4 +20,9 @@ public interface InventoryRepository extends JpaRepository<Inventory, Long> {
+     Optional<Inventory> findByProductIdForUpdate(Long productId);
+ 
+     Page<Inventory> findByStockLessThan(int threshold, Pageable pageable);
++
++    // 대사 기준 시점 고정용 — 대사가 끝날 때까지 다른 트랜잭션이 재고 값을 바꾸지 못하게 공유 잠금으로 읽는다.
++    @Lock(LockModeType.PESSIMISTIC_READ)
++    @Query("SELECT i FROM Inventory i ORDER BY i.productId")
++    List<Inventory> findAllForReconciliation();
+ }
+diff --git a/commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java b/commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java
+index 89d588d..3d0867d 100644
+--- a/commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java
++++ b/commerce/inventory-service/src/main/java/com/commerce/inventory/service/ReconciliationBatch.java
+@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
+ import org.springframework.stereotype.Component;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import java.time.LocalDateTime;
+ import java.util.List;
+ 
+ /**
+@@ -52,42 +53,54 @@ public class ReconciliationBatch {
+     private final InventoryMovementRepository inventoryMovementRepository;
+     private final int restockThreshold;
+     private final int restockTarget;
++    private final int ledgerWindowDays;
+ 
+     public ReconciliationBatch(InventoryRepository inventoryRepository,
+                                 InventoryMovementRepository inventoryMovementRepository,
+                                 @Value("${inventory.restock.threshold:20}") int restockThreshold,
+-                                @Value("${inventory.restock.target:60}") int restockTarget) {
++                                @Value("${inventory.restock.target:60}") int restockTarget,
++                                @Value("${inventory.reconciliation.ledger-window-days:45}") int ledgerWindowDays) {
+         this.inventoryRepository = inventoryRepository;
+         this.inventoryMovementRepository = inventoryMovementRepository;
+         this.restockThreshold = restockThreshold;
+         this.restockTarget = restockTarget;
++        this.ledgerWindowDays = ledgerWindowDays;
+     }
+ 
+     // 기본값은 코드에만 둔다 — 배포 매니페스트 env로 올리면 F23-R이 k8s.env로 잡아둔
+     // baseline 환경변수 배열이 달라져 승인된 계약이 깨진다. F23-R의 주입(SPRING_APPLICATION_JSON
+     // 으로 interval-ms를 늘려 배치를 멈춘다)은 코드 기본값을 그대로 덮으므로 계속 동작한다.
++    //
++    // 1.3.0: 마지막 원장 행 하나만 보던 대사를 기간 원장 대사로 바꾼다. 상품마다
++    // "기간 시작 직전 잔액 + 기간 안 순변동"이 현재 stock 과 같은지 본다(기간 기본값 45일은
++    // 판매처 정산 대사 주기). 마지막 행 비교는 중간 행이 빠지거나 틀려도 잡지 못했다. 대사 도중 예약이 stock 을 바꾸면 기준 시점이
++    // 어긋나 거짓 불일치가 나므로, 대사하는 동안 재고 행을 공유 잠금으로 고정한다.
+     @Scheduled(fixedDelayString = "${inventory.reconciliation.interval-ms:60000}")
+     @Transactional
+     public void run() {
+-        List<Inventory> all = inventoryRepository.findAll();
+-        log.info("Reconciliation batch started: productsChecked={}", all.size());
++        long startedAt = System.currentTimeMillis();
++        List<Inventory> all = inventoryRepository.findAllForReconciliation();
++        LocalDateTime windowStart = LocalDateTime.now().minusDays(ledgerWindowDays);
++        log.info("Reconciliation batch started: productsChecked={}, ledgerWindowDays={}", all.size(), ledgerWindowDays);
+ 
+         int mismatchCount = 0;
+         for (Inventory inventory : all) {
+-            var last = inventoryMovementRepository.findTopByProductIdOrderByCreatedAtDesc(inventory.getProductId());
+-            if (last.isEmpty()) {
+-                continue; // 아직 movement 이력이 없는 상품 — 대사 대상 아님
+-            }
+-            int ledgerStock = last.get().getResultingStock();
++            Long productId = inventory.getProductId();
++            int openingStock = inventoryMovementRepository
++                    .findTopByProductIdAndCreatedAtBeforeOrderByCreatedAtDesc(productId, windowStart)
++                    .map(InventoryMovement::getResultingStock)
++                    .orElse(0);
++            long netMovement = inventoryMovementRepository.sumQuantitySince(productId, windowStart);
++            long ledgerStock = openingStock + netMovement;
+             if (ledgerStock != inventory.getStock()) {
+                 mismatchCount++;
+-                log.warn("Inventory mismatch detected: productId={}, ledgerStock={}, actualStock={} — recording corrective ADJUST",
+-                        inventory.getProductId(), ledgerStock, inventory.getStock());
++                log.warn("Inventory ledger drift detected: productId={}, openingStock={}, netMovement={}, ledgerStock={}, actualStock={} — recording corrective ADJUST",
++                        productId, openingStock, netMovement, ledgerStock, inventory.getStock());
+ 
+                 InventoryMovement corrective = new InventoryMovement();
+-                corrective.setProductId(inventory.getProductId());
++                corrective.setProductId(productId);
+                 corrective.setMovementType("ADJUST");
+-                corrective.setQuantity(inventory.getStock() - ledgerStock);
++                corrective.setQuantity((int) (inventory.getStock() - ledgerStock));
+                 corrective.setResultingStock(inventory.getStock());
+                 inventoryMovementRepository.save(corrective);
+             }
+@@ -113,7 +126,7 @@ public class ReconciliationBatch {
+             log.info("Restocked productId={}: +{} -> {}", inventory.getProductId(), quantity, restockTarget);
+         }
+ 
+-        log.info("Reconciliation batch finished: productsChecked={}, mismatches={}, restocked={}",
+-                all.size(), mismatchCount, restockCount);
++        log.info("Reconciliation batch finished: productsChecked={}, mismatches={}, restocked={}, elapsedMs={}",
++                all.size(), mismatchCount, restockCount, System.currentTimeMillis() - startedAt);
+     }
+ }

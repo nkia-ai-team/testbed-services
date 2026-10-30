@@ -1793,6 +1793,19 @@
       "load_mode": "fixed",
       "injection_location": "worker-w2",
       "prerequisite": ""
+    },
+    {
+      "id": "F69-P",
+      "slug": "f69-p-commerce-inventory-release-ledger-check-holds-stock-locks",
+      "profiles": [
+        "k8s.image",
+        "load.north_south"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "commerce namespace",
+      "prerequisite": ""
     }
   ]
 }

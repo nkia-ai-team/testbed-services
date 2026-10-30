@@ -396,6 +396,20 @@ CONTRACTS = {
         "baseline_image": "food-delivery-payment:latest",
         "fault_image": "food-delivery-payment:1.4.0",
     },
+    # 2026-10-30. F69-P: commerce inventory-service 를 재고 재조정 배치의 대사를 '마지막 원장 행 비교'에서 '45일 기초 잔액
+    # + 기간 순변동' 기간 원장 대사로 바꾼 릴리스 1.3.0 으로 롤아웃한다. 새 대사는 기준 시점을 고정하려고 재고 행 16개를
+    # 공유 잠금(FOR SHARE)으로 읽은 채 상품마다 45일 이동 이력 합계(상품당 약 23만 행, 운영 실측 약 2.8초)를 구해 한 번에
+    # 약 45초 잠금을 쥐고, 그동안 예약(FOR UPDATE)과 해제(UPDATE)가 모두 기다린다. 배치는 끝난 뒤 60초마다 다시 돈다.
+    # 결함 이미지는 fault-images/f69-p 로 tb-ops docker 에만 빌드하고, 실행기가 tb-w1 에 올렸다가 cleanup 이 지운다.
+    # inventory 의 다른 릴리스 태그는 없다.
+    "F69-P": {
+        "mode": "release",
+        "namespace": "rca-testbed-commerce",
+        "deployment": "testbed-inventory",
+        "container": "inventory-service",
+        "baseline_image": "commerce-inventory:latest",
+        "fault_image": "commerce-inventory:1.3.0",
+    },
 }
 
 

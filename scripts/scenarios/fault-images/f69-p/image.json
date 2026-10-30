@@ -1,0 +1,7 @@
+{
+  "base": "commerce-inventory:latest",
+  "fault": "commerce-inventory:1.3.0",
+  "domain": "commerce",
+  "module": "inventory-service",
+  "node": "tb-w1"
+}

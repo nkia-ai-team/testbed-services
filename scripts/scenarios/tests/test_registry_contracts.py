@@ -130,7 +130,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 139 → 140. F71-H(후보) 추가. 기존 db.account 실행기에 PostgreSQL 접근 규칙 좁히기 모드를 더해 프로파일 수는 그대로.
         # 2026-10-12: 140 → 141. F79-R(후보) 추가. 기존 k8s.image release 모드를 food payment 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-16: 141 → 142. F80-R(후보) 추가. 프로파일 34 → 35(host.job 신설).
-        self.assertEqual(len(self.catalog["scenarios"]), 142)
+        # 2026-10-30: 142 → 143. F69-P(후보) 추가. 기존 k8s.image release 모드를 commerce inventory 에 한 번 더 써서 프로파일 수는 그대로.
+        self.assertEqual(len(self.catalog["scenarios"]), 143)
         self.assertEqual(len(self.profiles["profiles"]), 35)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
@@ -337,6 +338,8 @@ class RegistryContractTests(unittest.TestCase):
             "F79-R",
             # 2026-10-16: banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업(systemd 유닛 oradata-backup, tar | zstd -12 --long=31)이 2 GiB 장거리 창으로 노드 남은 메모리를 거의 다 써 kubelet 이 Oracle 을 축출하거나 커널이 banking 자바 컨테이너를 OOM 으로 죽임(배포·설정 변경 없음 → banking 이체 502, commerce checkout 502, GitHub 2026-09-20 재구성, 새 실행기 host.job). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-R",
+            # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F69-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -759,6 +762,8 @@ class RegistryContractTests(unittest.TestCase):
             "F79-R",
             # 2026-10-16: banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업(systemd 유닛 oradata-backup, tar | zstd -12 --long=31)이 2 GiB 장거리 창으로 노드 남은 메모리를 거의 다 써 kubelet 이 Oracle 을 축출하거나 커널이 banking 자바 컨테이너를 OOM 으로 죽임(배포·설정 변경 없음 → banking 이체 502, commerce checkout 502, GitHub 2026-09-20 재구성, 새 실행기 host.job). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-R",
+            # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F69-P",
             },
         )
         self.assertEqual(
@@ -965,6 +970,8 @@ class RegistryContractTests(unittest.TestCase):
             "F79-R",
             # 2026-10-16: banking 워커 tb-w2 의 Oracle 데이터 파일 일상 백업(systemd 유닛 oradata-backup, tar | zstd -12 --long=31)이 2 GiB 장거리 창으로 노드 남은 메모리를 거의 다 써 kubelet 이 Oracle 을 축출하거나 커널이 banking 자바 컨테이너를 OOM 으로 죽임(배포·설정 변경 없음 → banking 이체 502, commerce checkout 502, GitHub 2026-09-20 재구성, 새 실행기 host.job). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-R",
+            # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F69-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1181,8 +1188,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F71-H(후보, 고정 evaluation)이 끝에 붙어 F74-R 이 끝 5개에서 빠졌다.
         # 2026-10-12: F79-R(후보, 고정 evaluation)이 끝에 붙어 F75-R 이 끝 5개에서 빠졌다.
         # 2026-10-16: F80-R(후보, 고정 evaluation)이 끝에 붙어 F76-R 이 끝 5개에서 빠졌다.
+        # 2026-10-30: F69-P(후보, 고정 evaluation)이 끝에 붙어 F76-P 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F76-P", "F77-R", "F71-H", "F79-R", "F80-R"])
+                         ["F77-R", "F71-H", "F79-R", "F80-R", "F69-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
