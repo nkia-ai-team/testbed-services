@@ -740,19 +740,19 @@
    ],
    "root_cause": {
     "target_kind": "node",
-    "target_id": "tb-w3",
-    "mechanism": "결함 보유 대상은 워커 노드 tb-w3의 CPU다. 이웃 프로세스가 normal priority로 코어를 채우면 같은 노드의 컨테이너들은 CFS 상에서 실행 기회를 나눠 갖게 되고, 요청당 실제 계산 시간이 늘어난다. 컨테이너 CPU limit을 넘긴 것이 아니므로 throttling 지표는 특정 파드에 집중되지 않고, cgroup 관점에서는 아무도 '잘못'하지 않았다. 그래서 신호가 서비스가 아니라 노드에만 남는다. commerce 체크아웃은 5-hop이라 경로 위 여러 서비스가 같은 노드에 있으면 지연이 누적되고, order의 하류 타임아웃(10~15s)에는 미치지 못해 5xx로는 거의 표면화되지 않는다 — '조용한 열화'가 이 케이스의 관측 형상이며, 그래서 성공 조건도 실패율이 아니라 p95다.",
+    "target_id": "tb-w1",
+    "mechanism": "결함 보유 대상은 워커 노드 tb-w1 의 CPU다. 이웃 프로세스가 normal priority로 코어를 채우면 같은 노드의 컨테이너들은 CFS 상에서 실행 기회를 나눠 갖게 되고, 요청당 실제 계산 시간이 늘어난다. 컨테이너 CPU limit을 넘긴 것이 아니므로 throttling 지표는 특정 파드에 집중되지 않고, cgroup 관점에서는 아무도 '잘못'하지 않았다. 그래서 신호가 서비스가 아니라 노드에만 남는다. commerce 체크아웃은 5-hop이라 경로 위 여러 서비스가 같은 노드에 있으면 지연이 누적되고, order의 하류 타임아웃(10~15s)에는 미치지 못해 5xx로는 거의 표면화되지 않는다 — '조용한 열화'가 이 케이스의 관측 형상이며, 그래서 성공 조건도 실패율이 아니라 p95다.",
     "code_anchor": [
      "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:143-160 (checkout — cart→pricing→product/inventory 순차 호출. 경로 위 서비스가 같은 노드에 몰리면 지연이 누적된다)",
      "commerce/order-service/src/main/resources/application.yml:46-66 (services.* read-timeout 10~15s — 노드 지연이 이 벽에 닿지 못해 5xx가 아니라 지연으로만 나타나는 근거)"
     ],
-    "infra_anchor": "tb-w3(192.168.122.14)에서 yes busy-loop를 실행한다. nice를 올리지 않는 이유는 우선순위를 낮추면 커널이 앱에 CPU를 양보해 경합이 재현되지 않기 때문이다. 워커 수를 노드 코어 수에 맞춰 50/75/100% 사다리로 두고, 메모리는 건드리지 않아 eviction 경계(F05-P)와 분리한다. cleanup은 음수 PGID kill로 프로세스 그룹 전체를 확인 사살한다."
+    "infra_anchor": "tb-w1(192.168.122.184)에서 yes busy-loop를 실행한다. nice를 올리지 않는 이유는 우선순위를 낮추면 커널이 앱에 CPU를 양보해 경합이 재현되지 않기 때문이다. 워커 수를 노드 코어 수에 맞춰 50/75/100% 사다리로 두고, 메모리는 건드리지 않아 eviction 경계(F05-P)와 분리한다. cleanup은 음수 PGID kill로 프로세스 그룹 전체를 확인 사살한다."
    },
    "must_support": [
-    "tb-w3의 노드 CPU 사용률 포화(≥ 85%)",
+    "tb-w1 의 노드 CPU 사용률 포화(≥ 85%)",
     "같은 노드 cohort의 복수 서비스 p95 동반 상승(commerce-order·commerce-pricing 각 ≥ 300ms)",
     "호출 관계가 없는 서비스끼리도 함께 느려짐 — 원인이 의존 그래프가 아니라 배치에 있다는 증거",
-    "다른 노드에 배치된 서비스와 DB·외부 의존은 정상"
+    "다른 노드에 배치된 음식 배달, 은행 서비스와 외부 의존은 정상이다(커머스 PostgreSQL 은 같은 tb-w1 에 있다)"
    ],
    "must_rule_out": [
     "단일 파드의 CPU 한도 문제가 아님 — 특정 컨테이너의 throttling에 갇히지 않는다. 갇히면 F09-P·F12-H",
@@ -771,7 +771,7 @@
    "scoring": {
     "granularity": "node",
     "accept": [
-     "tb-w3"
+     "tb-w1"
     ],
     "partial": [
      "commerce-order",
@@ -844,8 +844,7 @@
      "부하: load.north_south 20rps",
      "대조: 메모리를 쓰는 노드 고갈(F05-P)과 표면을 가르려고 CPU 만 점유한다",
      "시험 실행(2026-08-04, 큐 live-44-e7152d6f, 사다리 끝까지 밟고 calibration_levels_exhausted): node_cpu_util 99.6~99.99, order p95 16~111ms(주입 전 93ms), pricing p95 1.6~6.9ms, achieved_rps 20 으로 성공 조건(order, pricing p95 각 300ms 이상)에 못 미쳤다(docs/scenario-redesign-wip/batch-44-live-findings-0804.md #6). 그 전 08-03 실행은 노드 CPU 관측 결함으로 abort 됐다(batch-44-live-findings-0803.md #4)",
-     "보류 사유: CPU requests 가 컨테이너 몫을 보장하고 부하가 20rps 로 낮아 노드를 다 태워도 서비스가 굶지 않는다. 2026-08-09 설계 결정 문서가 다음 배치에서도 노드 CPU 99.9% 에 pricing 12.8 을 확인하고 폐기 또는 장기 보류를 권고했다(design-decisions-0809.md §9). catalog 상태 parked(전제 runtime placement lock), 녹화 없음",
-     "정답지 불일치: 설명과 주입 요약은 tb-w1(192.168.122.184), root_cause.target_id 와 infra_anchor 는 tb-w3(192.168.122.14)이다. 이야기는 실제 주입 파라미터(192.168.122.184)를 따른다"
+     "보류 사유: CPU requests 가 컨테이너 몫을 보장하고 부하가 20rps 로 낮아 노드를 다 태워도 서비스가 굶지 않는다. 2026-08-09 설계 결정 문서가 다음 배치에서도 노드 CPU 99.9% 에 pricing 12.8 을 확인하고 폐기 또는 장기 보류를 권고했다(design-decisions-0809.md §9). catalog 상태 parked(전제 runtime placement lock), 녹화 없음"
     ]
    }
   },
@@ -3077,7 +3076,7 @@
    ],
    "root_cause": {
     "target_kind": "node",
-    "target_id": "tb-w2",
+    "target_id": "tb-w1",
     "mechanism": "결함 보유 대상은 워커 노드 tb-w1 의 가용 메모리다. 이름 없는 프로세스가 노드 메모리를 거의 다 쥐면 kubelet 이 파드를 축출하기 전에 커널 OOM killer 가 노드의 자바 프로세스를 먼저 죽이고(KCM SystemOOM), 노드는 잠시 NotReady 가 된다. 이 판단은 파드가 자기 한도를 지켰는지와 무관하다. 노드가 모자라면 한도를 지킨 파드도 죽는다. tb-w1 에는 커머스의 모든 서비스와 PostgreSQL, redis, kafka 가 함께 있어(nodeSelector 고정) 한 번의 OOM 과 NotReady 가 checkout 5-hop 의 여러 지점을 동시에 끊는다. 죽은 컨테이너가 같은 노드에서 다시 뜨고 노드가 Ready 로 돌아올 때까지가 사용자 피해 구간이다. 노드 단위 원인이므로 증상의 공통 원인을 서비스 의존 그래프에서는 찾을 수 없고 **배치(placement)** 에서만 찾을 수 있다 — 이것이 이 케이스가 요구하는 추론이다.",
     "code_anchor": [
      "commerce/k8s/23-payment-service.yaml:87-93 (resources requests/limits — 파드가 자기 한도를 지켜도 노드 부족이면 축출된다는 대조 근거)",
@@ -3085,11 +3084,11 @@
      "commerce/order-service/src/main/java/com/commerce/order/client/PaymentClient.java:48-53 (requestPaymentFallback — 502 BAD_GATEWAY)",
      "commerce/order-service/src/main/java/com/commerce/order/service/OrderService.java:191-199 (paymentClient.requestPayment 실패 → 재고 보상 후 502 'Payment failed')"
     ],
-    "infra_anchor": "tb-w2(192.168.122.11)에서 python 익명 메모리 hog를 실행한다. stress-ng를 쓰지 않는 이유는 노드에 별도 패키지를 설치하지 않기 위함이며, 전 페이지를 터치해야 실제 RSS가 잡히므로 단순 할당이 아니라 쓰기까지 수행한다. 주입 전 crictl로 동거 cohort를 재확인하는 것은 스케줄러가 파드를 옮겼을 경우 '아무도 아프지 않은' 무의미한 실행을 막기 위한 fail-closed 게이트다. cleanup은 음수 PGID kill로 프로세스 그룹 전체를 확인 사살한다."
+    "infra_anchor": "tb-w1(192.168.122.184)에서 python 익명 메모리 hog를 실행한다. stress-ng를 쓰지 않는 이유는 노드에 별도 패키지를 설치하지 않기 위함이며, 전 페이지를 터치해야 실제 RSS가 잡히므로 단순 할당이 아니라 쓰기까지 수행한다. 주입 전 crictl로 동거 cohort를 재확인하는 것은 스케줄러가 파드를 옮겼을 경우 '아무도 아프지 않은' 무의미한 실행을 막기 위한 fail-closed 게이트다. cleanup은 음수 PGID kill로 프로세스 그룹 전체를 확인 사살한다."
    },
    "must_support": [
-    "tb-w2의 노드 메모리 사용률 포화(≥ 92%)와 같은 시각의 kubelet eviction·파드 재배치 이벤트",
-    "무너진 서비스 목록이 tb-w2의 동거 파드 목록과 일치 — 도메인이 아니라 노드를 따르는 피해 경계",
+    "tb-w1 의 노드 메모리 사용률 포화(≥ 92%)와 같은 시각의 KCM SystemOOM(victim java), 이어지는 노드 NotReady 이벤트",
+    "무너진 서비스 목록이 tb-w1 의 동거 파드 목록과 일치 — 도메인이 아니라 노드를 따르는 피해 경계",
     "체크아웃 5xx 비율 상승(≥ 0.1)",
     "어떤 컨테이너도 자기 메모리 한도를 초과하지 않았고 JVM heap after-GC가 정상"
    ],
@@ -3110,7 +3109,7 @@
    "scoring": {
     "granularity": "node",
     "accept": [
-     "tb-w2"
+     "tb-w1"
     ],
     "partial": [
      "commerce-gateway",
