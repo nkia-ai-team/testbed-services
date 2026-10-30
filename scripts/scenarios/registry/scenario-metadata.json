@@ -95,7 +95,38 @@
    "cause_ko": "inventory_schema.inventory의 product_id=1 행을 트랜잭션이 장기 점유 → InventoryService.reserve의 SELECT … FOR UPDATE가 대기 → product read-timeout 10s 초과 → @Retry(productClient) 3회 증폭 → 실패율 50%↑에 @CircuitBreaker(productClient) open → reserveStockFallback이 502 BAD_GATEWAY → 해당 상품 체크아웃 실패. 병행하여 블록된 예약이 inventory 기본 풀(10) 커넥션을 소진하며 피해가 다른 상품으로 확대",
    "injection_summary_ko": "클러스터 내부 클라이언트가 inventory_schema.inventory의 product_id=1 행을 SELECT … FOR UPDATE로 잡고 커밋하지 않은 채 600초 대기한다(idle in transaction). 부하는 baseline loadgen이 공급한다. cleanup은 PID 기록 후 해당 파드 삭제로 연결을 끊어 롤백시킨다 — 신원이 실 앱과 같아져 이름 기반 pg_terminate_backend는 실 서비스를 죽일 수 있다.",
    "user_impact_ko": "잠긴 상품이 담긴 체크아웃이 502 BAD_GATEWAY로 실패한다. 초기 실패율은 장바구니 구성에 따라 부분적이나, 블록된 예약이 재고 서비스의 커넥션 풀을 소진하면서 다른 상품의 체크아웃까지 지연·실패로 번진다. 상품 조회 등 읽기 경로는 잠금과 무관해 정상이므로, 겉보기에는 '가끔 실패하는 결제'로 보인다.",
-   "distinguishing_evidence_ko": "같은 '체크아웃 실패'라도 어느 릴레이션이 막혔는지가 결정 증거다. F01-R은 inventory에서 차단 세션이 관측되고 결제는 깨끗하며, F06-H는 그 반대다. 두 번째 축은 피해의 시간 형상이다 — F01-R은 잠근 행이 전체 상품의 일부라 실패율이 낮게 시작해 커넥션 풀 고갈과 함께 넓어지는 반면, 테이블 전체를 잠그는 F06-H는 처음부터 결제 전량이 막힌다. 세 번째로 읽기 경로가 정상이라는 점이 캐시·조회 계열 원인을 배제한다."
+   "distinguishing_evidence_ko": "같은 '체크아웃 실패'라도 어느 릴레이션이 막혔는지가 결정 증거다. F01-R은 inventory에서 차단 세션이 관측되고 결제는 깨끗하며, F06-H는 그 반대다. 두 번째 축은 피해의 시간 형상이다 — F01-R은 잠근 행이 전체 상품의 일부라 실패율이 낮게 시작해 커넥션 풀 고갈과 함께 넓어지는 반면, 테이블 전체를 잠그는 F06-H는 처음부터 결제 전량이 막힌다. 세 번째로 읽기 경로가 정상이라는 점이 캐시·조회 계열 원인을 배제한다.",
+   "story_ko": {
+    "overview": "인기 상품 하나의 재고를 누가 오래 잠가 두면, 처음엔 그 상품이 든 주문만 멈추다가 1분도 안 돼 재고 서비스가 막혀 주문과 상품 조회까지 거의 다 실패한다.",
+    "injected_fault": "재고 DB(PostgreSQL, PostgreSQL-commerce)에서 상품 1번의 재고 줄을 잠그고 커밋하지 않은 채 약 8분 붙잡는다. 잠금은 쿠버네티스 안에 잠깐 띄운 DB 클라이언트 파드가 걸고, 접속 이름을 실제 앱과 똑같이 꾸민다. 같은 시간 손님 트래픽(부하 발생기)을 2분에 걸쳐 초당 35건까지 늘린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "상품 1번이 장바구니에 든 주문만 재고 확인에서 멈춘다. 손님은 인기 상품 16개 중에서 고르니 처음엔 일부 주문만 걸린다. 그런데 멈춘 주문마다 재고 서비스(Spring Boot, commerce-inventory)의 DB 연결을 하나씩 붙잡고, 앞단이 기다리다 포기해도 DB 쪽 대기는 취소되지 않아 연결이 돌아오지 않는다."
+     },
+     {
+      "stage": "확산",
+      "text": "1분 안에 재고 서비스의 DB 연결 10개가 다 찬다. 상품 1번과 상관없는 재고 확인도 연결을 기다리다 실패한다. 재고를 함께 읽는 상품 서비스(Spring Boot, commerce-product)도 느려져, API 게이트웨이(Spring Boot, commerce-gateway)가 상품 쪽 차단기를 열고 상품 목록 조회부터 실패한다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "재고 서비스와 주문 서비스(Spring Boot, commerce-order)가 상태 확인에 답하지 못해 쿠버네티스가 컨테이너를 다시 띄운다(재고는 약 1분 반, 주문은 약 4분 뒤). 게이트웨이가 주문 쪽 차단기도 열어 체크아웃이 거의 모두 실패한다. 결제 서비스(Spring Boot, commerce-payment)는 요청이 오지 않아 오류가 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "잠금을 풀자 1분 안에 연결이 돌아오고 게이트웨이 오류가 사라진다."
+     }
+    ],
+    "root_cause": "근본 원인은 재고 DB의 상품 1번 재고 줄 잠금이다. 게이트웨이, 주문, 상품 서비스에서 오류가 훨씬 많이 보이고 재고와 주문 컨테이너는 재시작까지 하지만, 모두 잠금 때문에 DB 연결을 얻지 못한 피해자다. DB 자체는 살아 있고 결제 쪽 테이블은 막히지 않는다.",
+    "design_notes": [
+     "경로: 체크아웃 gateway → order → cart → pricing → product → inventory → payment, 재고 차감 order → product → inventory, 상품 조회 gateway → product → inventory",
+     "잠금 방식: inventory 예약은 SELECT … FOR UPDATE(PESSIMISTIC_WRITE)로 줄을 잠근다. 주입 세션은 inventory_schema.inventory 의 product_id=1 줄을 잡고 idle in transaction 으로 기다린다(hold_seconds 600, 실제 유지 약 8분)",
+     "풀 크기: inventory-service 는 Hikari 설정이 없어 기본 풀 10이고 lock_timeout, statement_timeout 도 없다",
+     "증폭: order 의 product 호출은 read-timeout 10초, @Retry 3회, 실패율 50% 이상에서 @CircuitBreaker(productClient)가 열려 502 를 낸다",
+     "부하: load.north_south surge.js 35rps, 램프업 2분. 손님은 인기 상품 1~16번에서 고른다",
+     "관측 근거: DPM 세션의 blocking, blocked 행은 inventory 관계에만 있고 payments 관계는 0이다"
+    ]
+   }
   },
   "F01-H": {
    "title": "External payment gateway 429 — 4xx escalated to 502, all checkouts fail",
@@ -5643,6 +5674,37 @@
       }
      }
     ]
+   },
+   "story_ko": {
+    "overview": "은행 DB의 애플리케이션 계정이 잠기면, 이미 열린 DB 연결이 남아 있는 몇 분 동안은 멀쩡하다가 연결이 바닥나는 순간 은행 서비스가 모두 멈추고 커머스 결제까지 실패한다.",
+    "injected_fault": "은행 DB(Oracle, Oracle-corebanking)에서 은행 서비스들이 함께 쓰는 애플리케이션 계정 BANKING 을 잠근다. 비밀번호, 설정, 배포는 바꾸지 않고 열린 세션도 끊지 않는다. 같은 시간 은행 손님 트래픽(잔액 조회, 거래 내역, 계좌 목록, 이체)을 초당 10건 더 보낸다. 약 21분 뒤 잠금을 푼다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "첫 4분은 아무것도 깨지지 않는다. 이미 열린 DB 연결은 그대로 일하고 새 로그인만 거절된다. 연결은 정해진 수명(10분)이 다하면 하나씩 사라지는데 새로 만들지 못해, DB 의 유휴 세션 수가 11 에서 계단식으로 줄어든다."
+     },
+     {
+      "stage": "확산",
+      "text": "약 4분 뒤 이체 서비스(Spring Boot, core-banking-transfer)와 계좌 서비스(Spring Boot, core-banking-account)의 연결이 먼저 바닥난다. 요청은 연결을 3초 기다리다 '계정이 잠겼다(ORA-28000)'는 오류로 실패하고, 상태 확인이 실패해 쿠버네티스가 두 서비스를 트래픽에서 뺀다. 약 7분 뒤 원장 서비스(Spring Boot, core-banking-ledger)도 같은 일을 겪는다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "약 6분 반 뒤부터 잠금을 풀 때까지 약 15분 동안 잔액 조회와 이체가 모두 실패한다. 은행 진입 서비스(Spring Boot, core-banking-api)는 계좌 서비스 호출이 거절되자 차단기를 열고 502 를 낸다. 커머스 결제 서비스(Spring Boot, commerce-payment)가 하는 은행 정산 이체도 거절돼 커머스 체크아웃(commerce-order)까지 실패한다. 컨테이너 재시작은 없다."
+     },
+     {
+      "stage": "회복",
+      "text": "잠금을 풀자 약 1분 안에 연결이 다시 차고 세 서비스가 트래픽에 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 은행 DB 의 BANKING 계정 잠금이다. 오류는 은행 진입 서비스와 커머스 결제, 주문에서 더 크게 보이지만 그쪽은 피해자다. Oracle 인스턴스 자체는 살아 있어 모니터링 계정과 내부 세션은 그대로이고, 애플리케이션 세션만 사라진다.",
+    "design_notes": [
+     "경로: 이체 nginx → api → account → transfer → Oracle, 잔액 조회와 계좌 목록 nginx → account, 커머스 정산 commerce-payment → transfer",
+     "계정: account, transfer, ledger 가 모두 FREEPDB1 의 BANKING 하나로 접속한다(Secret oracle-secret 의 APP_USER). 주입은 ALTER USER BANKING ACCOUNT LOCK, 정리는 ACCOUNT UNLOCK 이다. DPM 은 LUCIDA_MON, 실행기는 sysdba 라 잠금 영향이 없다",
+     "풀: Hikari max-lifetime 600000ms(10분), 연결 대기 3초. 평시 유휴 세션 account 3, transfer 5, ledger 3",
+     "프로브: readiness 는 /actuator/health 의 DB 확인을 보고, liveness 는 livenessState 만 봐서 재시작이 없다",
+     "관측 근거: DPM dpm.oracle.session.idle_session 11 → 0(잠금 뒤 약 8분), 로그의 ORA-28000 은 평시 7일 0건",
+     "부하: load.north_south core-banking surge.js 10rps(잔액 55%, 거래 내역 25%, 계좌 목록 10%, 이체 10%)"
+    ]
    }
   },
   "F36-R": {
@@ -7277,6 +7339,33 @@
        "minimum_rows": 20
       }
      }
+    ]
+   },
+   "story_ko": {
+    "overview": "음식 배달의 인기 메뉴 집계 표가 운영 도구 실수로 사라져, 가게 화면의 인기 메뉴만 계속 실패하고 주문과 결제는 멀쩡하다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)에서 인기 메뉴 집계 표 menu_popularity_summary 에 인덱스를 더하는 작업을 흉내 내다가, 취소 정리 단계가 원래 표의 이름을 보관용 이름으로 바꿔 버린다. 행은 그대로 남지만 앱이 아는 이름의 표는 없어진다. 같은 시간 가게 화면을 둘러보는 손님(초당 5건, 주문은 하지 않음)을 더 보낸다. 약 15분 뒤 이름을 되돌린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "3초 안에 가게 서비스(Spring Boot, food-delivery-restaurant)가 인기 메뉴를 읽을 때마다 MySQL 이 '표가 없다'고 답하고, 인기 메뉴 요청이 모두 500 으로 실패한다."
+     },
+     {
+      "stage": "지속",
+      "text": "15분 내내 인기 메뉴 요청만 전부 실패한다. 같은 가게 서비스의 가게 상세, 메뉴, 목록은 정상이고, 주문(Spring Boot, food-delivery-order), 배차, 결제도 평소와 같다. DB 연결 대기, 응답 지연, 재시작은 없어 피해가 다른 곳으로 퍼지지 않는다."
+     },
+     {
+      "stage": "회복",
+      "text": "표 이름을 되돌리자 바로 인기 메뉴가 다시 나온다. 잃은 데이터는 없다."
+     }
+    ],
+    "root_cause": "근본 원인은 사라진 인기 메뉴 집계 표다. 오류 로그는 가게 서비스에 쌓이지만, 가게 서비스는 코드도 설정도 바뀌지 않은 채 늘 하던 질의를 했을 뿐인 피해자다. MySQL 도 살아 있고 빠르다.",
+    "design_notes": [
+     "실패 경로: GET /api/restaurants/{id}/popular-menu → findByRestaurantIdOrderByOrderCountDesc → MySQL ER_NO_SUCH_TABLE 1146(SQLState 42S02)",
+     "표 이름: 그림자 표 _vt_vrp_<uuid>_<시각>_ 를 만들고 원래 표를 보류 이름 _vt_hld_<uuid>_<기한>_ 으로 바꾼다(Vitess 표 수명주기 꼴). 원본 사례는 GitHub 2026-07-24 백필 취소 사고다",
+     "표 크기: 88행, 기본 키뿐, 외래 키 참조 없음. RENAME TABLE 은 메타데이터만 바꾼다",
+     "계기 흔적: DPM 의 fooddelivery 표 수 16 → 17, 인덱스 수 31 → 33 이 주입 다음 수집 분에 바뀌고, 되돌린 뒤 16, 31 로 돌아온다",
+     "건강 확인: restaurant health 는 SELECT 1 이라 Ready 가 유지된다",
+     "부하: load.north_south popular-menu-surge.js 5rps(가게 상세, 메뉴, 인기 메뉴, 주문 없음)"
     ]
    }
   },

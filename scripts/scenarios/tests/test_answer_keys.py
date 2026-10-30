@@ -177,6 +177,42 @@ class AnswerKeyContractTests(unittest.TestCase):
                     f"{scenario_id}.{key}: the note detail must not be copied into a scored field",
                 )
 
+    def test_story_ko_is_a_display_only_story(self) -> None:
+        # 화면 이야기 칸(story_ko): 러너 시나리오 카드가 description 대신 보이는 사람용 글이다.
+        # 선택 칸이고 채점 칸이 아니며 capture 도 싣지 않는다. 카드가 다섯 제목(개요, 주입 장애,
+        # 전파 과정, 근본 원인, 설계 근거)으로 그리므로 모양을 고정하고, 다른 시나리오 ID 는
+        # 대조가 필요한 설계 근거에만 둔다. 문서 규칙대로 가운뎃점과 줄표를 쓰지 않는다.
+        keys = ["design_notes", "injected_fault", "overview", "propagation", "root_cause"]
+        scenario_id_pattern = re.compile(r"\bF\d{2}-[A-Z]\w*")
+        for scenario_id, entry in sorted(self.metadata.items()):
+            story = entry.get("story_ko")
+            if story is None:
+                continue
+            self.assertIsInstance(story, dict, scenario_id)
+            self.assertEqual(sorted(story), keys, scenario_id)
+            for field in ("overview", "injected_fault", "root_cause"):
+                self.assertIsInstance(story[field], str, f"{scenario_id}.{field}")
+                self.assertTrue(story[field].strip(), f"{scenario_id}.{field}")
+            stages = story["propagation"]
+            self.assertIsInstance(stages, list, scenario_id)
+            self.assertTrue(1 <= len(stages) <= 5, f"{scenario_id}: propagation has {len(stages)} stages")
+            for stage in stages:
+                self.assertEqual(sorted(stage), ["stage", "text"], scenario_id)
+                self.assertTrue(stage["stage"].strip() and stage["text"].strip(), scenario_id)
+            notes = story["design_notes"]
+            self.assertIsInstance(notes, list, scenario_id)
+            self.assertTrue(all(isinstance(note, str) and note.strip() for note in notes), scenario_id)
+            story_text = [story["overview"], story["injected_fault"], story["root_cause"]]
+            story_text += [stage["stage"] + stage["text"] for stage in stages]
+            for text in story_text + notes:
+                self.assertNotIn("\u00b7", text, f"{scenario_id}: no middle dot in story_ko")
+                self.assertNotIn("\u2014", text, f"{scenario_id}: no em dash in story_ko")
+            for text in story_text:
+                self.assertIsNone(
+                    scenario_id_pattern.search(text),
+                    f"{scenario_id}: scenario ids belong in design_notes only: {text[:60]}",
+                )
+
     def test_code_anchors_still_name_a_symbol_that_lives_there(self) -> None:
         # Charter §3-1 fix 3 / G7 CI requirement. Line numbers rot as code moves;
         # the audit found three anchors that had drifted off the symbol they
