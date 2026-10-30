@@ -3645,7 +3645,8 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "banking-transfer"
+     "banking-transfer",
+     "core-banking-transfer"
     ],
     "partial": [
      "commerce-payment",
@@ -3774,7 +3775,8 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "banking-transfer"
+     "banking-transfer",
+     "core-banking-transfer"
     ],
     "partial": [
      "banking-ledger"
