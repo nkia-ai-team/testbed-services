@@ -1383,7 +1383,28 @@
    "cause_ko": "MySQL menu category lookup index removal",
    "injection_summary_ko": "인덱스 정의를 확인한 뒤 대상 인덱스를 제거하고 실측 기반(F02-R과 동일한 target_rps/hold) 진입 부하를 동시에 주입한다.",
    "user_impact_ko": "메뉴 목록·카테고리별 조회 응답이 느려지고 주문 화면 진입이 지연된다.",
-   "distinguishing_evidence_ko": "카테고리별 메뉴 조회 지연(APM p95)이 증가하는 동안 MySQL 호스트 CPU/IO와 에러율은 정상 범위를 유지한다."
+   "distinguishing_evidence_ko": "카테고리별 메뉴 조회 지연(APM p95)이 증가하는 동안 MySQL 호스트 CPU/IO와 에러율은 정상 범위를 유지한다.",
+   "story_ko": {
+    "overview": "음식 배달 메뉴 표의 카테고리 인덱스가 사라지면, 카테고리별 메뉴 조회가 표 전체를 훑어 메뉴 화면과 주문 진입이 느려지도록 설계했지만, 아직 그 조회를 쓰는 화면이 없어 보류된 시나리오다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 메뉴 표에서 카테고리 조회 인덱스를 지우고, 정리할 때 다시 만든다.",
+    "propagation": [
+     {
+      "stage": "의도",
+      "text": "카테고리별 메뉴 조회가 느려져 가게 서비스(Spring Boot, food-delivery-restaurant)의 응답 시간이 오르고, DB 의 CPU 와 오류율은 정상으로 남는다."
+     },
+     {
+      "stage": "현재",
+      "text": "가게 서비스에는 카테고리로 메뉴를 찾는 조회가 없어 인덱스를 지워도 화면에 보일 피해가 생기지 않는다. 그래서 실행 목록에서 빠져 있다."
+     }
+    ],
+    "root_cause": "의도한 근본 원인은 메뉴 표에서 사라진 카테고리 인덱스다. 느려지는 가게 서비스는 피해자로 설계됐다.",
+    "design_notes": [
+     "주입: db.ddl 이 testbed-mysql-0 의 fooddelivery.menus 에서 idx_menus_category(category_id)를 지우고 cleanup 에서 다시 만든다. 1000행 이상일 때만 실행한다",
+     "부하: load.north_south food-delivery surge.js 50rps, 램프업 2분, 유지 8분",
+     "보류 사유(catalog prerequisite): food 에 idx_menus_category 를 타는 조회 경로를 새로 만들고, 성공 조건을 5xx 비율로 바꿔야 한다. restaurant-service 코드에는 category_id 로 찾는 질의가 없다",
+     "상태: readiness parked, 컨트롤러 없음, 정답지에 domain, root_cause, injected_fault 칸이 없다"
+    ]
+   }
   },
   "F04-R": {
    "title": "shipping consumer outage — every order succeeds but no shipments are created",
@@ -5218,7 +5239,28 @@
    "cause_ko": "No incident; transient payment delay absorbed by resilience logic",
    "injection_summary_ko": "external-pg-mock에 짧고 제한된 지연 pulse를 적용한다.",
    "user_impact_ko": "최종 주문과 결제 상태 및 사용자 응답은 정상이어야 한다.",
-   "distinguishing_evidence_ko": "하류 지연 흔적은 있으나 중복 결제 없이 SLA 안에 정상화된다."
+   "distinguishing_evidence_ko": "하류 지연 흔적은 있으나 중복 결제 없이 SLA 안에 정상화된다.",
+   "story_ko": {
+    "overview": "외부 결제대행사 응답이 1초씩 늦어지면 커머스 체크아웃이 그만큼 느려지지만, 재시도와 보상 로직이 흡수해 실패하는 주문은 없다.",
+    "injected_fault": "커머스가 부르는 외부 결제대행사 모의 서버(mockserver)의 결제 응답을 약 2분 반 동안 1초씩 늦춘다.",
+    "propagation": [
+     {
+      "stage": "지연",
+      "text": "결제 서비스(Spring Boot, commerce-payment)와 주문 서비스(Spring Boot, commerce-order)의 응답이 1초 남짓 느려지고, API 게이트웨이(Spring Boot, commerce-gateway)의 느린 응답도 1초대로 오른다."
+     },
+     {
+      "stage": "흡수",
+      "text": "오류 응답과 실패한 주문은 생기지 않고, 지연을 풀면 바로 평소 속도로 돌아온다. 피해가 다른 서비스로 퍼지지 않는다."
+     }
+    ],
+    "root_cause": "느려진 원인은 외부 결제대행사의 응답 지연이고, 결제와 주문 서비스는 그 지연을 그대로 물려받았을 뿐 고장 나지 않았다. 사람을 불러야 할 장애가 아닌 음성 사례다.",
+    "design_notes": [
+     "주입: mock.expectation 이 external-pg-mock 의 /v1/payments 에 200 응답, delay_seconds 1 기대를 건다",
+     "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f01-g-b0072a18(calibration, 평가 제외). 결제 서버 스팬 p95 47ms → 1135ms, 주문 90ms → 1401ms, 게이트웨이 15ms → 1066ms, 커머스 서버 스팬 오류 0%",
+     "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28), 재편입은 헌장 개정이 먼저다"
+    ]
+   }
   },
   "F03-G": {
    "title": "High DB pool utilization absorbed without impact",
@@ -5232,7 +5274,28 @@
    "cause_ko": "No incident; bounded connection-pool utilization",
    "injection_summary_ko": "승인된 낮은 강도의 요청으로 풀 사용률만 상승시키고 고갈 임계점 아래에서 유지한다.",
    "user_impact_ko": "사용자 오류와 SLA 위반이 없어야 한다.",
-   "distinguishing_evidence_ko": "풀 사용률은 증가하지만 pending, timeout, 에러율, 사용자 p95는 정상 범위다."
+   "distinguishing_evidence_ko": "풀 사용률은 증가하지만 pending, timeout, 에러율, 사용자 p95는 정상 범위다.",
+   "story_ko": {
+    "overview": "커머스에 손님이 몰려 DB 연결 풀 사용률이 올라가도 한도 안에서 처리되어, 오류도 큰 지연도 없이 지나간다.",
+    "injected_fault": "결함은 넣지 않고, 커머스 손님 트래픽을 약 3분 동안 평소보다 크게 늘려 DB 연결 사용만 끌어올린다.",
+    "propagation": [
+     {
+      "stage": "부하",
+      "text": "게이트웨이(Spring Boot, commerce-gateway)로 들어오는 요청이 평소의 4배가량으로 늘고, 게이트웨이의 느린 응답이 15ms 에서 70ms 가까이로 오른다."
+     },
+     {
+      "stage": "흡수",
+      "text": "주문(Spring Boot, commerce-order)과 재고(Spring Boot, commerce-inventory) 응답 시간은 평소와 비슷하고 오류 응답은 없다. 장애로 번지지 않는다."
+     }
+    ],
+    "root_cause": "고장 난 곳은 없다. 연결 풀 사용률이 높아 보이는 것은 늘어난 손님 때문이고, 대기나 시간 초과로 이어지지 않은 음성 사례다.",
+    "design_notes": [
+     "주입: 결함 주입 없음. load.north_south commerce surge.js 35rps, 램프업 2분, 유지 8분",
+     "판정 기준(정답지): 풀 사용률은 오르지만 pending, timeout, 오류율, 사용자 p95 는 정상 범위다",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f03-g-v3-3ec8892e. 게이트웨이 서버 스팬 p95 15ms → 67ms, 주문 132ms → 123ms, 재고 7ms → 9ms, 커머스 서버 스팬 오류 0~0.1%",
+     "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28), 결함 주입 자체가 없다"
+    ]
+   }
   },
   "F05-G": {
    "title": "Bad image rollout while existing replicas keep serving",
@@ -5246,7 +5309,29 @@
    "cause_ko": "No incident; failed image rollout contained by existing replicas",
    "injection_summary_ko": "payment deployment에 검증된 invalid image를 적용하고 원본 image를 정확히 복구한다.",
    "user_impact_ko": "사용자 요청 성공률과 지연은 정상이어야 한다.",
-   "distinguishing_evidence_ko": "ImagePullBackOff 이벤트는 있지만 기존 ready replica 수와 사용자 경로는 유지된다."
+   "distinguishing_evidence_ko": "ImagePullBackOff 이벤트는 있지만 기존 ready replica 수와 사용자 경로는 유지된다.",
+   "story_ko": {
+    "overview": "결제 서비스를 존재하지 않는 이미지로 배포하려다 새 파드가 뜨지 못해도, 기존 파드가 계속 일해 손님은 아무것도 느끼지 못한다.",
+    "injected_fault": "커머스 결제 서비스 배포의 이미지를 없는 이미지 태그로 바꿨다가 약 2분 뒤 원래 이미지로 되돌린다.",
+    "propagation": [
+     {
+      "stage": "배포 실패",
+      "text": "새 결제 파드는 이미지를 받지 못해 뜨지 못한다. 기존 결제 파드(Spring Boot, commerce-payment)는 준비 상태를 유지한다."
+     },
+     {
+      "stage": "흡수",
+      "text": "결제와 체크아웃 요청은 기존 파드가 처리해 오류가 없고 응답 시간도 평소와 같다. 피해가 생기지 않는다."
+     }
+    ],
+    "root_cause": "근본 원인은 잘못된 이미지 태그로 시도한 결제 서비스 배포다. 기존 파드가 서비스를 지켜 사용자 피해가 없는 음성 사례다.",
+    "design_notes": [
+     "주입: k8s.lifecycle 이 rca-testbed-commerce 의 testbed-payment(payment-service) 이미지를 commerce-payment:latest 에서 commerce-payment:scenario-invalid-f05-g 로 바꾸고 원본으로 정확히 되돌린다",
+     "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
+     "흡수 이유: 기본 롤링 전략은 새 파드가 준비될 때까지 옛 파드를 내리지 않는다",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f05-g-v3-e777d4f7. 결제 서버 스팬 p95 53ms → 38ms, 커머스 서버 스팬 오류 0%. 이 덤프의 kcm_events_local 은 0행이라 ImagePullBackOff 이벤트는 확인하지 못했다",
+     "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28)"
+    ]
+   }
   },
   "F11-G": {
    "title": "Redis failure absorbed by DB fallback",
@@ -5260,7 +5345,33 @@
    "cause_ko": "No incident; Redis failure absorbed by database fallback",
    "injection_summary_ko": "Redis를 제한된 시간 중단하고 낮은 강도의 cart·checkout 트래픽을 유지한다.",
    "user_impact_ko": "cart와 checkout 결과 및 SLA가 정상이어야 한다.",
-   "distinguishing_evidence_ko": "cache 오류는 존재하지만 DB headroom, 최종 성공률, 사용자 지연이 정상이다."
+   "distinguishing_evidence_ko": "cache 오류는 존재하지만 DB headroom, 최종 성공률, 사용자 지연이 정상이다.",
+   "story_ko": {
+    "overview": "장바구니 캐시(Redis)가 멈추면 장바구니 서비스가 DB 로 돌아가 주문은 계속 성공하지만, 장바구니 응답이 느려지고 결제 뒤 장바구니 비우기가 일부 실패한다.",
+    "injected_fault": "커머스 장바구니 캐시(Redis, redis)를 약 2분 동안 내린다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "몇 초 안에 장바구니 서비스(Spring Boot, commerce-cart)에 '캐시 시간 초과', 'DB 로 대신 읽는다'는 경고가 쏟아진다."
+     },
+     {
+      "stage": "지속",
+      "text": "주문(Spring Boot, commerce-order)과 결제는 실패 없이 이어진다. 다만 장바구니와 게이트웨이(Spring Boot, commerce-gateway)의 느린 응답이 10ms 대에서 0.5초 남짓으로 오르고, 결제 뒤 장바구니 비우기 요청 일부가 500 으로 실패한다."
+     },
+     {
+      "stage": "회복",
+      "text": "캐시를 다시 올리면 경고가 멈춘다."
+     }
+    ],
+    "root_cause": "근본 원인은 멈춘 Redis 캐시다. 장바구니 서비스의 경고와 지연은 캐시를 잃고 DB 로 버틴 결과이고, 주문 자체는 흡수되어 성공한다.",
+    "design_notes": [
+     "주입: cache.control 이 rca-testbed-commerce 의 testbed-redis 를 replicas 1 → 0 으로 내리고 되돌린다. 영향 서비스는 testbed-cart 다",
+     "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
+     "흡수 경로: cart 는 Redis 실패 시 차단기를 열고 PostgreSQL(PostgreSQL-commerce)로 대신 읽는다",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f11-g-v3-997e1b90. cart 경고 3,218건(Redis command timed out, falling back to DB), cart 서버 스팬 오류 7.6%(대부분 DELETE /api/carts/{userId} 500), p95 9ms → 509ms, 주문 서버 스팬 오류 0%",
+     "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28), 성공 조건 3건이 구조적으로 늘 참이었다"
+    ]
+   }
   },
   "F04-H": {
    "title": "commerce order outbox relay stopped — orders return 200 while shipping and notifications silently stall",
