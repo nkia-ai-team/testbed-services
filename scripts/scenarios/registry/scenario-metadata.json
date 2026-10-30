@@ -1107,6 +1107,39 @@
    "injection_summary_ko": "inventory deployment의 CPU limit을 승인된 고정값 250m(baseline 500m)으로 낮추고 체크아웃 부하를 주입한다.",
    "user_impact_ko": "한도를 낮춘 재고 파드는 기동에만 2분 남짓 걸리고, 트래픽을 넘겨받은 약 3분 동안 재고 예약이 초 단위로 느려진다. 그 사이 주문 서비스가 DB 연결을 쥔 채 기다리다 풀이 바닥나고 liveness로 재시작되며, 게이트웨이가 order 차단기를 열어 체크아웃의 33~100%가 실패한다.",
    "distinguishing_evidence_ko": "inventory container throttling과 limit 변경(500m에서 250m, 한도 대비 사용률 약 100%)이 관측된다. 한도까지 찬 파드는 inventory뿐이고, 같은 노드 order의 연결 풀 고갈과 liveness 재시작은 재고 응답 지연의 결과다.",
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "testbed-inventory:inventory-service",
+    "trigger_target_id": "commerce-product",
+    "mechanism": "결함 보유 대상은 inventory 컨테이너의 CPU 한도 설정이다. cgroup CPU 한도는 주기마다 쓸 수 있는 시간을 배급하는 방식이라, 한도를 500m 에서 250m 로 낮추면 체크아웃 부하로 재고 예약이 몰리는 구간에서 inventory 가 배급량을 넘겨 남은 주기 동안 실행이 멈춘다(throttling). product 는 상품마다 inventory 의 재고 예약(/api/inventory/reserve)을 부르므로 그 지연이 체크아웃 응답에 그대로 얹히고, 길어지면 체크아웃이 실패한다. 다른 서비스의 CPU 한도는 그대로라 throttling 은 inventory 한 컨테이너에 모인다.",
+    "code_anchor": [
+     "commerce/k8s/22-inventory-service.yaml:93-95 (limits: baseline cpu 500m. 주입이 250m 로 낮춘다)",
+     "commerce/product-service/src/main/java/com/commerce/product/client/InventoryClient.java:38-42 (reserve: product 가 inventory 의 재고 예약을 동기로 부른다)"
+    ],
+    "infra_anchor": "k8s.patch executor 가 testbed-inventory 의 inventory-service 컨테이너 CPU limit 만 baseline 500m 에서 250m 로 교체한다. 한도 변경은 파드 재생성을 수반하므로 주입 직후 롤아웃이 있고, throttling 에 의한 지연은 새 파드가 부하를 받으면서 나타난다. 컨트롤러는 container_cpu_throttled_time 으로 실제 throttling 을, 게이트웨이 p95(500ms 이상)로 사용자 지연 피해를, pod_ready 로 대상이 엔드포인트에 남아 트래픽을 받는지를 확인한다."
+   },
+   "must_support": [
+    "inventory 컨테이너의 CPU throttled time 이 0 보다 크다: 지연의 출처가 스케줄링임을 보이는 직접 증거",
+    "inventory 컨테이너 CPU limit 이 baseline(500m)과 다르다(250m)",
+    "재고 예약을 거치는 체크아웃 지연이 오르고 게이트웨이 p95 가 500ms 이상이 된다",
+    "inventory 파드가 Ready 로 엔드포인트에 남아 트래픽을 계속 받는다"
+   ],
+   "must_rule_out": [
+    "노드 전역 경합이 아님: 노드 CPU 는 포화되지 않았고 한도에 걸린 컨테이너는 inventory 다. 노드면 F09-R",
+    "product 컨테이너 CPU 한도 문제가 아님: product 의 CPU limit 은 그대로고 throttling 은 inventory 에 모인다. product 면 F12-H",
+    "재고 행 잠금이 아님: inventory_schema.inventory 에 차단 세션이 없다. 잠금이면 F01-R",
+    "부하 폭주가 아님: 게이트웨이로 들어오는 요청 수는 동반 부하 수준이다. 폭주면 F07-H"
+   ],
+   "scoring": {
+    "granularity": "container",
+    "accept": [
+     "testbed-inventory:inventory-service"
+    ],
+    "partial": [
+     "commerce-inventory",
+     "commerce-product"
+    ]
+   },
    "story_ko": {
     "overview": "재고 서비스의 CPU 한도를 절반으로 줄이자 재고 확인이 느려지고, 그 대기가 주문 서비스의 DB 연결을 붙잡아 몇 분 만에 체크아웃이 거의 전부 막힌다.",
     "injected_fault": "재고 서비스(Spring Boot, commerce-inventory)의 CPU 한도를 500m 에서 250m 으로 낮춰 다시 배포하고, 약 5분 뒤 되돌린다.",
@@ -3039,6 +3072,39 @@
    "injection_summary_ko": "order deployment의 JAVA_TOOL_OPTIONS에 -Xmx/-Xms(고정 96 MiB; 옛 adaptive 사다리의 바닥 단, 캡처 재생용 pin)와 -XX:+AlwaysPreTouch를 얹어 재빌드 없이 heap을 좁힌다(k8s.env, rollout 동반). 사용자 경로 확인용 north-south 20rps companion을 병행하며, cleanup은 env 원복 후 rollout이다. restart_count==0을 유지하는 pre-OOM 대역만 사용한다.",
    "user_impact_ko": "order의 모든 endpoint가 주기적 GC pause 동안 느려져 checkout·조회 응답의 p95가 톱니처럼 상승한다.",
    "distinguishing_evidence_ko": "jvm.gc.pause/jvm.memory.used(after-GC) 주기성과 order p95 스파이크가 동기화되고, host/node CPU 포화(F09-R/F09-P)는 없다. F05-R(payment OOM loop)과 달리 restart_count는 0으로 유지되며 OOMKill 종료가 없다. F08-P(read-timeout 오설정)와 달리 order→payment span은 정상이고 heap after-GC used/limit이 원인 신호다.",
+   "root_cause": {
+    "target_kind": "container",
+    "target_id": "testbed-order:order-service",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 order 컨테이너의 JVM 힙 설정이다. JAVA_TOOL_OPTIONS 에 -Xmx96m -Xms96m 을 얹으면 컨테이너 메모리 한도(1Gi)는 그대로인데 JVM 이 쓸 수 있는 힙만 좁아진다. 살아 있는 객체가 줄어든 힙의 대부분을 차지하면 GC 가 돌아도 되찾는 공간이 거의 없어 GC 가 잦아지고, GC 뒤 사용량이 새 한도에 붙은 채로 stop-the-world 정지 시간만큼 order 의 모든 엔드포인트가 함께 느려진다. 힙을 넘기기 전까지는 OOM 이 나지 않으므로 컨테이너는 재시작 없이 살아 있다. 느려짐의 출처는 트래픽이나 하류가 아니라 order 자신의 메모리 여유다.",
+    "code_anchor": [
+     "commerce/k8s/20-order-service.yaml:66-67 (JAVA_TOOL_OPTIONS: baseline 은 OTel javaagent 만 붙이고 힙 상한을 정하지 않는다. 주입이 -Xmx96m -Xms96m 을 더한다)",
+     "commerce/k8s/20-order-service.yaml:113-115 (limits: 컨테이너 메모리 한도 1Gi 는 주입 중에도 그대로다)"
+    ],
+    "infra_anchor": "k8s.env executor 가 testbed-order 의 order-service 컨테이너 env 를 baseline, fault 스냅샷으로 교체한다. env 변경은 롤아웃을 수반하므로 주입 직후 새 파드가 뜨고, 힙 압박은 새 인스턴스가 부하를 받으면서 나타난다. 컨테이너 resources 는 건드리지 않는다. 컨트롤러는 Tenured 한도(jvm_tenured_limit_mib)로 주입 사실을, old gen after-GC 비율(0.7 이상)로 회수 불가를, restart_count 0 으로 OOM 에 넘어가지 않았음을 확인한다."
+   },
+   "must_support": [
+    "testbed-order 롤아웃(KCM ScalingReplicaSet) 뒤 새 order 인스턴스의 JVM 힙 한도(jvm.memory.limit)가 평시보다 줄어든다",
+    "GC 뒤 사용량(jvm.memory.used_after_last_gc)이 줄어든 힙 한도의 대부분(old gen after-GC 비율 0.7 이상)에 붙어 내려가지 않는다",
+    "order JVM 의 GC 정지(jvm.gc.duration)가 잦아지고, 그 주기와 commerce-order p95 스파이크가 맞물린다",
+    "commerce-order p95 상승이 새 인스턴스가 부하를 받는 시각과 맞고, order 가 부르는 하류(payment, inventory 등)의 응답과 오류는 정상이다",
+    "order 컨테이너 restart_count 0 유지(OOM 직전 대역), 파드 Ready 유지, 노드 CPU, 메모리 정상"
+   ],
+   "must_rule_out": [
+    "컨테이너 메모리 한도 OOM 이 아님: restart_count 가 0 이고 컨테이너 메모리 한도는 baseline(1Gi) 그대로다. 컨테이너 한도 OOM 이면 F05-R",
+    "노드 자원 경합이 아님: 노드 CPU, 메모리가 포화되지 않았다. 노드 CPU 면 F09-R, 노드 메모리면 F05-P",
+    "하류 설정 문제가 아님: order 에서 payment 로 가는 호출의 지연과 오류는 정상이다. read-timeout 오설정이면 F08-P",
+    "부하 폭주가 아님: 게이트웨이로 들어오는 요청 수는 동반 부하 수준이다. 폭주면 F07-H"
+   ],
+   "scoring": {
+    "granularity": "container",
+    "accept": [
+     "testbed-order:order-service"
+    ],
+    "partial": [
+     "commerce-order"
+    ]
+   },
    "story_ko": {
     "overview": "주문 서비스의 자바 메모리를 아주 작게 줄이자 가비지 정리가 잦아져 주문 응답이 조금 느려지지만, 오류나 재시작으로 번지지는 않는다.",
     "injected_fault": "주문 서비스(Spring Boot, commerce-order)의 자바 힙을 96MiB 로 고정해 다시 배포하고, 약 5분 뒤 되돌린다.",
@@ -3484,6 +3550,18 @@
    "injection_summary_ko": "tb-w1의 클러스터 내부 k6 Job이 testbed-order:8080의 리포트 엔드포인트를 승인된 고정 강도 60rps/days=240(옛 사다리의 최상위 단, 캡처 재생용 pin)으로 호출한다. 요청당 렌더 비용이 days에 제곱 비례하므로(findings #22 실측) 이 단은 rps가 아니라 요청 하나의 무게를 올린다. 주입은 '평범한 업무 파라미터로 리포트를 요청하는 것'뿐이며 지연 시간을 지정하지 않는다 — 느려지는 원인은 전적으로 앱 안의 직렬화된 O(n^2) 렌더러다. north-south 35rps companion이 체크아웃 사용자 영향을 표면화한다. cleanup은 k6 Job·ConfigMap 삭제이며 앱 상태는 남기지 않는다.",
    "user_impact_ko": "체크아웃과 주문 조회가 큐에서 대기하다 지연·타임아웃(5xx)된다. 리포트를 쓰지 않는 사용자까지 함께 느려지는 것이 특징이다 — 워커 풀이 공유 자원이기 때문이다. DB 계층은 정상이라 'DB는 멀쩡한데 앱이 안 받는' 상태로 보인다.",
    "distinguishing_evidence_ko": "order p95 급등과 checkout 5xx가 있는데 (1) DB 차단 세션 0·커넥션풀 정상 → F03-P(Hikari 축소)·F01-R/F06-H(락) 배제, (2) 하류(pricing·inventory·payment) p95 정상 → 의존 결함 배제, (3) 노드 CPU가 포화되지 않음 → F09-R(노드 CPU noisy neighbor) 배제. 렌더가 직렬화돼 있어 아무리 부하를 올려도 CPU는 코어 하나치 이상 쓰지 않는다는 점이 결정적이다 — 스레드는 RUNNABLE이 아니라 같은 모니터에서 BLOCKED로 쌓인다. 즉 '바쁜 것'이 아니라 '줄 서 있는 것'이다.",
+   "must_support": [
+    "order 의 리포트 렌더 요청(GET /api/orders/reports/render)이 클러스터 내부 Job 에서 들어오고, 그 응답 시간이 길다",
+    "commerce-order p95 급등과 체크아웃 5xx 상승: 리포트를 쓰지 않는 체크아웃까지 order 의 공유 워커 풀에서 기다리다 실패한다",
+    "order JVM 의 blocked 상태 스레드가 늘고(jvm.thread.count, jvm_thread_state=blocked) JVM CPU 는 코어 하나치를 넘지 않는다: 바쁜 것이 아니라 줄 서 있다",
+    "commerce PostgreSQL 차단 세션 0, order 커넥션 풀 정상, 하류(pricing, inventory, payment) p95 정상"
+   ],
+   "must_rule_out": [
+    "DB 커넥션 풀이나 잠금 문제가 아님: 차단 세션 0, 커넥션 풀 정상. 풀이면 F03-P, 잠금이면 F01-R, F06-H",
+    "하류 의존 결함이 아님: pricing, inventory, payment 의 p95 와 오류가 정상이다",
+    "노드 CPU 경합이 아님: 노드 CPU 가 포화되지 않는다. 노드면 F09-R",
+    "외부 속도 제한이 아님: 실패가 429 가 아니라 order 의 지연과 5xx 다. 외부 PG 429 면 F01-H"
+   ],
    "story_ko": {
     "overview": "주문 서비스의 무거운 리포트 요청이 한 줄로만 처리되며 일하는 스레드를 모두 붙잡자, 리포트와 상관없는 체크아웃까지 줄을 서다 거의 전부 실패한다.",
     "injected_fault": "커머스 쿠버네티스 안에서 주문 서비스(Spring Boot, commerce-order)의 매출 리포트(240일치)를 초당 60건씩 약 6분 동안 요청한다. 평범한 업무 요청이고 지연을 따로 넣지 않는다.",
