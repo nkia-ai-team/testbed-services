@@ -1394,24 +1394,25 @@
    "user_impact_ko": "메뉴 목록·카테고리별 조회 응답이 느려지고 주문 화면 진입이 지연된다.",
    "distinguishing_evidence_ko": "카테고리별 메뉴 조회 지연(APM p95)이 증가하는 동안 MySQL 호스트 CPU/IO와 에러율은 정상 범위를 유지한다.",
    "story_ko": {
-    "overview": "음식 배달 메뉴 표의 카테고리 인덱스가 사라지면, 카테고리별 메뉴 조회가 표 전체를 훑어 메뉴 화면과 주문 진입이 느려지도록 설계했지만, 아직 그 조회를 쓰는 화면이 없어 보류된 시나리오다.",
-    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 메뉴 표에서 카테고리 조회 인덱스를 지우고, 정리할 때 다시 만든다.",
+    "overview": "음식 배달 메뉴 표의 카테고리 인덱스를 지워 메뉴 조회와 주문 진입을 느리게 만들려는 시나리오지만, 코드 감사에서 그 인덱스를 쓰는 조회가 없어 지워도 피해가 생기지 않는 것으로 확인되어 보류됐다.",
+    "injected_fault": "음식 배달 DB(MySQL, MySQL-fooddelivery)의 메뉴 표에서 카테고리 조회 인덱스를 지워 최소 8분 동안 두고, 정리할 때 다시 만든다.",
     "propagation": [
      {
-      "stage": "의도",
-      "text": "카테고리별 메뉴 조회가 느려져 가게 서비스(Spring Boot, food-delivery-restaurant)의 응답 시간이 오르고, DB 의 CPU 와 오류율은 정상으로 남는다."
+      "stage": "초기",
+      "text": "인덱스가 사라져도 가게 서비스(Spring Boot, food-delivery-restaurant)는 가게 번호로 메뉴를 찾을 뿐 카테고리로 찾는 조회가 없어, 지워진 인덱스를 쓰는 요청이 없다."
      },
      {
-      "stage": "현재",
-      "text": "가게 서비스에는 카테고리로 메뉴를 찾는 조회가 없어 인덱스를 지워도 화면에 보일 피해가 생기지 않는다. 그래서 실행 목록에서 빠져 있다."
+      "stage": "지속",
+      "text": "그래서 응답 시간과 오류율에 보일 피해가 생길 경로가 없고, 실행 목록에서 빠져 녹화된 적이 없다."
      }
     ],
-    "root_cause": "의도한 근본 원인은 메뉴 표에서 사라진 카테고리 인덱스다. 느려지는 가게 서비스는 피해자로 설계됐다.",
+    "root_cause": "설계상 근본 원인은 메뉴 표에서 사라진 카테고리 인덱스이고, 느려질 가게 서비스는 피해자다. 다만 그 인덱스를 쓰는 조회가 없어 피해가 나타날 경로가 없다.",
     "design_notes": [
      "주입: db.ddl 이 testbed-mysql-0 의 fooddelivery.menus 에서 idx_menus_category(category_id)를 지우고 cleanup 에서 다시 만든다. 1000행 이상일 때만 실행한다",
      "부하: load.north_south food-delivery surge.js 50rps, 램프업 2분, 유지 8분",
-     "보류 사유(catalog prerequisite): food 에 idx_menus_category 를 타는 조회 경로를 새로 만들고, 성공 조건을 5xx 비율로 바꿔야 한다. restaurant-service 코드에는 category_id 로 찾는 질의가 없다",
-     "상태: readiness parked, 컨트롤러 없음, 정답지에 domain, root_cause, injected_fault 칸이 없다"
+     "설계 의도: 카테고리별 메뉴 조회가 표 전체를 훑어 가게 서비스 응답 시간(APM p95)이 오르는 동안 DB 의 CPU, IO, 오류율은 정상으로 남는 모습(정답지 distinguishing_evidence)",
+     "보류 사유(코드 감사, catalog.json prerequisite, docs/scenario-redesign-wip/parked-29-reaudit-0728.md F 절, golden4-audit-0727.md): food 전체에 idx_menus_category 를 타는 조회가 없다. restaurant-service MenuRepository 는 restaurant_id 조회와 인기 집계뿐이다. 회생하려면 그 조회 경로를 새로 만들고 성공 조건을 5xx 비율로 바꿔야 한다",
+     "상태: readiness parked. 컨트롤러는 controllers-parked.json 에 보관(min_hold 8분, timeout 13분, max_injection_duration 15분, 성공 조건은 진입 응답이 0이 아닌 것 하나). 정답지에 domain, root_cause, injected_fault 칸이 없다"
     ]
    }
   },
@@ -5253,7 +5254,7 @@
    "user_impact_ko": "최종 주문과 결제 상태 및 사용자 응답은 정상이어야 한다.",
    "distinguishing_evidence_ko": "하류 지연 흔적은 있으나 중복 결제 없이 SLA 안에 정상화된다.",
    "story_ko": {
-    "overview": "외부 결제대행사 응답이 1초씩 늦어지면 커머스 체크아웃이 그만큼 느려지지만, 재시도와 보상 로직이 흡수해 실패하는 주문은 없다.",
+    "overview": "외부 결제대행사 응답이 1초씩 늦어지면 커머스 체크아웃이 그만큼 느려지지만, 결제 호출의 시간 제한 안이라 재시도 없이 모두 성공해 실패하는 주문은 없다.",
     "injected_fault": "커머스가 부르는 외부 결제대행사 모의 서버(mockserver)의 결제 응답을 약 2분 반 동안 1초씩 늦춘다.",
     "propagation": [
      {
@@ -5269,6 +5270,7 @@
     "design_notes": [
      "주입: mock.expectation 이 external-pg-mock 의 /v1/payments 에 200 응답, delay_seconds 1 기대를 건다",
      "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
+     "흡수 이유: 결제 서비스의 외부 결제 호출 읽기 시간 제한은 10초(payment-service application.yml pg.api.read-timeout)라 1초 지연은 그대로 200 으로 끝난다. 녹화에서 결제 1건당 외부 호출은 1회뿐이고 재시도는 없었다",
      "녹화: 보관본 _archive-pre-campaign-0820/case-f01-g-b0072a18(calibration, 평가 제외). 결제 서버 스팬 p95 47ms → 1135ms, 주문 90ms → 1401ms, 게이트웨이 15ms → 1066ms, 커머스 서버 스팬 오류 0%",
      "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28), 재편입은 헌장 개정이 먼저다"
     ]
@@ -5288,8 +5290,8 @@
    "user_impact_ko": "사용자 오류와 SLA 위반이 없어야 한다.",
    "distinguishing_evidence_ko": "풀 사용률은 증가하지만 pending, timeout, 에러율, 사용자 p95는 정상 범위다.",
    "story_ko": {
-    "overview": "커머스에 손님이 몰려 DB 연결 풀 사용률이 올라가도 한도 안에서 처리되어, 오류도 큰 지연도 없이 지나간다.",
-    "injected_fault": "결함은 넣지 않고, 커머스 손님 트래픽을 약 3분 동안 평소보다 크게 늘려 DB 연결 사용만 끌어올린다.",
+    "overview": "커머스에 손님이 몰려 요청이 평소의 4배가량 늘어도 DB 연결 풀은 거의 차지 않고, 게이트웨이가 조금 느려질 뿐 장애 없이 지나간다.",
+    "injected_fault": "결함은 넣지 않고, DB 연결 사용을 끌어올리려고 커머스 손님 트래픽을 약 3분 동안 평소보다 크게 늘린다.",
     "propagation": [
      {
       "stage": "부하",
@@ -5297,14 +5299,14 @@
      },
      {
       "stage": "흡수",
-      "text": "주문(Spring Boot, commerce-order)과 재고(Spring Boot, commerce-inventory) 응답 시간은 평소와 비슷하고 오류 응답은 없다. 장애로 번지지 않는다."
+      "text": "주문(Spring Boot, commerce-order)과 재고(Spring Boot, commerce-inventory) 응답 시간은 평소와 비슷하고, 서비스마다 DB 연결은 많아야 2개만 쓰여 대기가 생기지 않는다. 서버 오류는 1건뿐이고 장애로 번지지 않는다."
      }
     ],
-    "root_cause": "고장 난 곳은 없다. 연결 풀 사용률이 높아 보이는 것은 늘어난 손님 때문이고, 대기나 시간 초과로 이어지지 않은 음성 사례다.",
+    "root_cause": "고장 난 곳은 없다. 게이트웨이가 조금 느려진 것은 늘어난 손님 때문이고, DB 연결 풀은 거의 차지 않아 대기나 시간 초과로 이어지지 않은 음성 사례다.",
     "design_notes": [
      "주입: 결함 주입 없음. load.north_south commerce surge.js 35rps, 램프업 2분, 유지 8분",
      "판정 기준(정답지): 풀 사용률은 오르지만 pending, timeout, 오류율, 사용자 p95 는 정상 범위다",
-     "녹화: 보관본 _archive-pre-campaign-0820/case-f03-g-v3-3ec8892e. 게이트웨이 서버 스팬 p95 15ms → 67ms, 주문 132ms → 123ms, 재고 7ms → 9ms, 커머스 서버 스팬 오류 0~0.1%",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f03-g-v3-3ec8892e. 게이트웨이 서버 스팬 p95 15ms → 67ms, 주문 132ms → 123ms, 재고 7ms → 9ms, 커머스 서버 스팬 오류 0~0.1%. DB 연결 풀(주문 한도 10)은 주입 중 주문 서비스 최대 2개 사용, 대기 0, 시간 초과 증가 0으로 정상 2시간의 최대 7개보다 낮았다(의도한 풀 사용률 상승이 녹화에 없다). 체크아웃 409(재고 확보 실패, 업무 거절)는 191건 중 45건으로 평소 7%보다 늘었다",
      "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28), 결함 주입 자체가 없다"
     ]
    }
@@ -5328,7 +5330,7 @@
     "propagation": [
      {
       "stage": "배포 실패",
-      "text": "새 결제 파드는 이미지를 받지 못해 뜨지 못한다. 기존 결제 파드(Spring Boot, commerce-payment)는 준비 상태를 유지한다."
+      "text": "새 결제 파드는 노드에 그 이미지가 없어 시작하지 못한다. 기존 결제 파드(Spring Boot, commerce-payment)는 준비 상태를 유지한다."
      },
      {
       "stage": "흡수",
@@ -5340,7 +5342,7 @@
      "주입: k8s.lifecycle 이 rca-testbed-commerce 의 testbed-payment(payment-service) 이미지를 commerce-payment:latest 에서 commerce-payment:scenario-invalid-f05-g 로 바꾸고 원본으로 정확히 되돌린다",
      "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
      "흡수 이유: 기본 롤링 전략은 새 파드가 준비될 때까지 옛 파드를 내리지 않는다",
-     "녹화: 보관본 _archive-pre-campaign-0820/case-f05-g-v3-e777d4f7. 결제 서버 스팬 p95 53ms → 38ms, 커머스 서버 스팬 오류 0%. 이 덤프의 kcm_events_local 은 0행이라 ImagePullBackOff 이벤트는 확인하지 못했다",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f05-g-v3-e777d4f7. 결제 서버 스팬 p95 53ms → 38ms, 커머스 서버 스팬 오류 0%. 이 덤프의 kcm_events_local 은 0행이다. 같은 시나리오의 앞선 보관본 case-f05-g-81eacae6 에는 이벤트가 있고, 이미지 받기 정책이 Never 라 ImagePullBackOff 가 아니라 ErrImageNeverPull(12회, 'not present with pull policy of Never')로 나온다",
      "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28)"
     ]
    }
@@ -5359,7 +5361,7 @@
    "user_impact_ko": "cart와 checkout 결과 및 SLA가 정상이어야 한다.",
    "distinguishing_evidence_ko": "cache 오류는 존재하지만 DB headroom, 최종 성공률, 사용자 지연이 정상이다.",
    "story_ko": {
-    "overview": "장바구니 캐시(Redis)가 멈추면 장바구니 서비스가 DB 로 돌아가 주문은 계속 성공하지만, 장바구니 응답이 느려지고 결제 뒤 장바구니 비우기가 일부 실패한다.",
+    "overview": "장바구니 캐시(Redis)가 멈추면 장바구니 서비스가 DB 로 돌아가 주문은 계속 성공하지만, 장바구니와 주문 응답이 느려지고 장바구니 비우기 요청 일부가 실패한다.",
     "injected_fault": "커머스 장바구니 캐시(Redis, redis)를 약 2분 동안 내린다.",
     "propagation": [
      {
@@ -5368,7 +5370,7 @@
      },
      {
       "stage": "지속",
-      "text": "주문(Spring Boot, commerce-order)과 결제는 실패 없이 이어진다. 다만 장바구니와 게이트웨이(Spring Boot, commerce-gateway)의 느린 응답이 10ms 대에서 0.5초 남짓으로 오르고, 결제 뒤 장바구니 비우기 요청 일부가 500 으로 실패한다."
+      "text": "주문(Spring Boot, commerce-order)과 결제는 실패 없이 이어진다. 다만 장바구니와 게이트웨이(Spring Boot, commerce-gateway)의 느린 응답이 10ms 안팎에서 0.5초 남짓으로, 주문은 0.1초 남짓에서 0.9초 가까이로 오르고, 장바구니 비우기 요청 일부가 500 으로 실패한다."
      },
      {
       "stage": "회복",
@@ -5380,7 +5382,7 @@
      "주입: cache.control 이 rca-testbed-commerce 의 testbed-redis 를 replicas 1 → 0 으로 내리고 되돌린다. 영향 서비스는 testbed-cart 다",
      "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
      "흡수 경로: cart 는 Redis 실패 시 차단기를 열고 PostgreSQL(PostgreSQL-commerce)로 대신 읽는다",
-     "녹화: 보관본 _archive-pre-campaign-0820/case-f11-g-v3-997e1b90. cart 경고 3,218건(Redis command timed out, falling back to DB), cart 서버 스팬 오류 7.6%(대부분 DELETE /api/carts/{userId} 500), p95 9ms → 509ms, 주문 서버 스팬 오류 0%",
+     "녹화: 보관본 _archive-pre-campaign-0820/case-f11-g-v3-997e1b90. cart 경고 3,218건(Redis command timed out, falling back to DB), cart 서버 스팬 오류 7.6%(DELETE /api/carts/{userId} 500 25건, 담기 500 1건), p95 9ms → 509ms, 게이트웨이 p95 15ms → 575ms, 주문 p95 90ms → 859ms, 주문 서버 스팬 오류 0%. 비우기 500 25건 중 17건은 손님이 체크아웃 전에 게이트웨이로 보낸 요청이고 8건은 주문 서비스의 체크아웃 뒤 비우기다. 게이트웨이가 손님에게 돌려준 500 은 18건이다",
      "상태: readiness cut. 음성 시나리오 폐지(헌장 §1) 유지 결정(2026-07-28), 성공 조건 3건이 구조적으로 늘 참이었다"
     ]
    }
