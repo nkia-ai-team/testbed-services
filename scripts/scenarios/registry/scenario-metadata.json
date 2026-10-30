@@ -16597,7 +16597,7 @@
       "text": "원래 버전으로 되돌리자 1분 안에 정상으로 돌아온다."
      }
     ],
-    "root_cause": "근본 원인은 상품 서비스 새 버전의 함량 읽기 결함이다. 오류는 상품 서비스 자신과 게이트웨이에 보이고, 커머스 DB(PostgreSQL, PostgreSQL-commerce)와 상품 데이터는 바뀐 것이 없다.",
+    "root_cause": "근본 원인은 상품 서비스 새 버전의 함량 읽기 결함이다. 오류는 상품 서비스 자신과 API 게이트웨이(Spring Boot, commerce-gateway)에 보이고, 커머스 DB(PostgreSQL, PostgreSQL-commerce)와 상품 데이터는 바뀐 것이 없다.",
     "design_notes": [
      "주입: k8s.image release 모드가 testbed-product 의 product-service 이미지를 commerce-product:latest 에서 1.4.0 으로 롤아웃한다. 이미지는 fault-images/f76-r/product-service.patch(CatalogProductResponse 의 nicotineMg, ProductService.nicotineMg)로 미리 빌드한다",
      "부하: load.north_south surge.js 3rps, 램프업 2분",
@@ -17353,7 +17353,7 @@
       "text": "원래 버전으로 되돌리자 대사가 1초 안에 끝나 주문이 곧 정상으로 돌아온다."
      }
     ],
-    "root_cause": "근본 원인은 재고 서비스 새 버전의 재조정 배치가 재고 행을 잠근 채 긴 집계를 도는 것이다. 주문 서비스, 상품 서비스, 게이트웨이에 오류가 크게 보이지만 재고를 기다린 피해자이고, 커머스 DB(PostgreSQL, PostgreSQL-commerce)는 정상이다.",
+    "root_cause": "근본 원인은 재고 서비스 새 버전의 재조정 배치가 재고 행을 잠근 채 긴 집계를 도는 것이다. 주문 서비스(Spring Boot, commerce-order), 상품 서비스(Spring Boot, commerce-product), API 게이트웨이(Spring Boot, commerce-gateway)에 오류가 크게 보이지만 재고를 기다린 피해자이고, 커머스 DB(PostgreSQL, PostgreSQL-commerce)는 정상이다.",
     "design_notes": [
      "원본: KnowBe4 2025-10-13 (새로 배포한 데이터 처리 작업이 공유 인증 표에 무거운 질의를 돌리며 동시 갱신과 맞지 않는 공유 잠금을 만들어 로그인과 등록 갱신이 끝나지 못함, 작업이 죽고 다시 뜨며 잠금을 되풀이해 잡음)",
      "주입: k8s.image release 모드가 testbed-inventory 의 inventory-service 이미지를 commerce-inventory:latest 에서 1.3.0 으로 롤아웃한다. 이미지는 fault-images/f69-p/inventory-service.patch(InventoryRepository.findAllForReconciliation, InventoryMovementRepository.sumQuantitySince, ReconciliationBatch.run)로 미리 빌드한다",
