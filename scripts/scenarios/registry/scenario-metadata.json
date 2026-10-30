@@ -2130,7 +2130,7 @@
    "distinguishing_evidence_ko": "결정 증거는 오류가 시작되는 hop이다. payment→외부 PG는 200으로 정상 종료되고, 그 다음 payment→banking transfer span이 10초 벽에서 끊긴다 — 즉 실패는 결제가 아니라 정산에서 난다. banking 쪽에서는 BANKING.accounts의 commerce-settlement 행을 기다리는 차단 세션이 관측된다. 배포 무죄는 두 겹이다 — notification은 Kafka 컨슈머만 갖고 있어 체크아웃 동기 경로에 등장하지 않으며(트레이스에 없다), 실패 개시가 롤아웃보다 15초 늦고 롤아웃 완료 후에도 지속된다. commerce PG의 차단 세션은 0이고 payment 파드는 재생성 없이 열화한다.",
    "story_ko": {
     "overview": "커머스 알림 서비스 배포 직후 은행 DB의 커머스 정산 계좌 줄이 잠겨, 배포가 범인처럼 보이지만 실제로는 잠금 때문에 체크아웃이 거의 전부 실패한다.",
-    "injected_fault": "커머스 알림 서비스(Spring Boot, commerce-notification)를 내용 변경 없이 다시 배포하고, 15초 뒤 은행 DB(Oracle, Oracle-corebanking)의 커머스 정산 계좌 줄을 잠가 약 5분 동안 놓지 않는다.",
+    "injected_fault": "커머스 알림 서비스(Spring Boot, commerce-notification)를 내용 변경 없이 다시 배포하고, 15초 뒤 은행 DB(Oracle, Oracle-corebanking)의 커머스 정산 계좌 줄을 잠가 약 4분 동안 놓지 않는다.",
     "propagation": [
      {
       "stage": "초기",
@@ -2151,7 +2151,7 @@
     ],
     "root_cause": "근본 원인은 은행 DB의 커머스 정산 계좌 줄 잠금이다. 같은 시각의 알림 서비스 배포는 체크아웃 경로 밖이라 무관하고, 커머스 주문, 결제(Spring Boot, commerce-payment)와 은행 진입, 계좌 서비스는 피해자다.",
     "design_notes": [
-     "주입: timeline.multi 가 t=0 에 testbed-notification 에 annotation 롤아웃(눈속임 변경), t=+15초에 testbed-oracle-0(FREEPDB1)의 BANKING.accounts id='commerce-settlement' 줄을 SELECT … FOR UPDATE 로 잡는다(hold_seconds 600, min_hold 4분, 녹화 실제 약 5분). 정리는 역순이다",
+     "주입: timeline.multi 가 t=0 에 testbed-notification 에 annotation 롤아웃(눈속임 변경), t=+15초에 testbed-oracle-0(FREEPDB1)의 BANKING.accounts id='commerce-settlement' 줄을 SELECT … FOR UPDATE 로 잡는다(hold_seconds 600, min_hold 4분, 녹화 실제 약 4분, +15초에 잡아 약 +240초에 풂). 정리는 역순이다",
      "부하: load.north_south commerce surge.js 35rps, 램프업 2분",
      "눈속임이 무죄인 이유: notification 은 Kafka 컨슈머 전용이라 체크아웃 동기 경로 밖이다. 재기동은 알림 지연만 만든다",
      "경로: 체크아웃 order → payment → 외부 PG 승인 → payment → core-banking-transfer 정산 이체(출금 계좌 commerce-settlement 고정)",
@@ -2281,12 +2281,12 @@
    "user_impact_ko": "체크아웃이 5xx로 실패한다. 실패 지점이 요청마다 달라 — 어떤 요청은 재고 예약에서, 어떤 요청은 결제 정산에서 끊긴다 — 로그만 보면 원인이 하나로 모이지 않는다. 한쪽 잠금만 풀어도 다른 쪽 때문에 실패가 계속된다.",
    "distinguishing_evidence_ko": "결정 증거는 두 개의 독립적인 차단 세션이 동시에 존재한다는 것이다 — commerce PG에서는 inventory 행을, banking Oracle에서는 commerce-settlement 계좌를 기다리는 세션이 각각 관측된다. 둘 사이에는 선후 인과가 없다: 한쪽 잠금이 다른 쪽을 유발하는 경로가 코드상 존재하지 않고, 시간적으로도 동시에 시작한다. 실패 span의 분포도 두 갈래로 갈린다(재고 단계 / 정산 단계). 공유 인프라 원인(노드·호스트·네트워크)은 정상이므로 단일 근본으로 환원되지 않는다.",
    "story_ko": {
-    "overview": "커머스 재고 DB와 은행 DB에서 같은 체크아웃 경로의 두 줄을 동시에 잠가, 주문이 재고 단계와 정산 단계 두 곳에서 각각 막힌다.",
+    "overview": "커머스 재고 DB와 은행 DB에서 같은 체크아웃 경로의 두 줄을 동시에 잠가, 체크아웃은 결제 정산에서 끊기고 재고 쪽 대기가 상품 조회와 주문까지 막아 오류가 한곳으로 모이지 않는다.",
     "injected_fault": "재고 DB(PostgreSQL, PostgreSQL-commerce)의 상품 1번 재고 줄과 은행 DB(Oracle, Oracle-corebanking)의 커머스 정산 계좌 줄을 동시에 잠가 약 4분 동안 놓지 않는다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "20초 안에 체크아웃이 실패하기 시작한다. 어떤 주문은 결제 정산에서, 어떤 주문은 재고 확인에서 끊겨 오류가 한곳으로 모이지 않는다."
+      "text": "20초 안에 체크아웃이 결제 정산 단계에서 실패하기 시작한다. 약 30초 뒤부터는 재고를 기다리는 상품 상세 조회와 주문의 재고 반환 호출도 시간 초과로 끊겨, 오류가 한곳으로 모이지 않는다."
      },
      {
       "stage": "확산",
@@ -3621,7 +3621,7 @@
    "distinguishing_evidence_ko": "결정 증거는 transfer 파드가 **NotReady인데 재시작 카운트는 오르지 않는다**는 조합이다. 죽은 것이 아니라 트래픽에서 떼어진 것이므로 크래시 루프(F05 계열)와 즉시 갈린다. 두 번째 축은 실패까지의 시간이다 — 엔드포인트가 비면 연결이 즉시 거절되므로 payment→banking span이 read-timeout 10초를 채우지 않고 곧바로 끝난다. 잠금 계열(F01-P)은 정확히 반대로 10초를 꽉 채운다. commerce payment는 파드 Ready에 자원·설정 모두 정상이라 무죄가 확정된다.",
    "story_ko": {
     "overview": "은행 이체 서비스의 준비 상태 확인을 일부러 실패시키면 파드는 살아 있는데 아무도 닿지 못해, 커머스 체크아웃과 은행 이체가 모두 실패하고 외부 카드 승인만 남는다.",
-    "injected_fault": "이체 서비스(Spring Boot, core-banking-transfer)의 준비 상태 확인 주소를 없는 주소로 바꿔 배포하고, 약 9분 뒤 되돌린다.",
+    "injected_fault": "이체 서비스(Spring Boot, core-banking-transfer)의 준비 상태 확인 주소를 없는 주소로 바꿔 배포하고, 약 8분 뒤 되돌린다.",
     "propagation": [
      {
       "stage": "초기",
@@ -3750,7 +3750,7 @@
      "부하: load.north_south core-banking surge.js 30rps, 램프업 2분",
      "경로: transfer 가 이체 커밋과 같은 트랜잭션에 outbox_events 를 쓰고 OutboxRelay 가 Kafka banking.transfers 로 내보낸다 → ledger 컨슈머가 원장에 반영",
      "감별: 생산자가 멈춘 것이라 컨슈머 lag 은 오르지 않고 0 으로 수렴한다. 소비자가 멈춘 경우와 lag 의 방향으로 갈린다",
-     "녹화: case-f18-p-v3-d2c566ad. banking.transfers publish 와 ledger process 스팬이 주입 구간 내내 0 이고, 재개 직후 2분에 약 100건이 몰린다",
+     "녹화: case-f18-p-v3-d2c566ad. banking.transfers publish 와 ledger process 스팬이 주입 구간 내내 0 이고, 재개 뒤 약 2분 동안 ledger 가 밀린 이체 약 2,000건('Ledger recorded' 로그 기준)을 몰아서 반영한다",
      "정답지 메모: infra_anchor 는 옛 설계(k8s.env 의 OUTBOX_RELAY_ENABLED 토글, 롤아웃 동반)를 그대로 적고 있다. 실제 주입은 app.control 이다"
     ]
    }
@@ -4306,29 +4306,26 @@
    "user_impact_ko": "이체(POST /api/transfers)가 통계 쿼리와 자원을 경합해 지연되고 성공률이 떨어진다. account·api가 502를 반환해 이체가 실패하며 통계 조회 자체도 느리다. 겉으로는 이체 경로 장애로 보이지만 방아쇠는 인덱스를 무력화한 통계 쿼리다.",
    "distinguishing_evidence_ko": "결정 증거는 '인덱스가 존재하는데도 통계 쿼리가 풀스캔'이라는 사실이다 — 인덱스가 드롭된 것이 아니라 함수 래핑으로 사용되지 못하는 것이므로, 스키마만 보면 아무 이상이 없다. 두 번째 축은 잠식 자원이다: transfer 자신의 커넥션 풀이 점유되고(pending>0) 증상이 banking 체인(transfer 지연 → account/api 502)에 국한된다. F20-R처럼 다른 스키마로 번지지 않고, F20-Q처럼 힙이 차오르지도 않는다. 순진한 RCA는 502를 뱉는 account·api를 범인으로 지목하지만 정답은 transfer의 통계 쿼리다.",
    "story_ko": {
-    "overview": "은행 일별 이체 통계를 반복 조회하면 인덱스가 있는데도 표 전체를 훑는 질의가 DB 연결을 붙잡아, 같은 연결을 쓰는 이체가 느려지고 실패한다.",
+    "overview": "은행 일별 이체 통계를 반복 조회해 인덱스를 못 타는 질의로 이체 서비스의 DB 연결을 붙잡으려는 시나리오지만, 지금 배선에서는 통계 조회가 은행 진입점에서 404 로 끝나 이체 서비스에 닿지 않아 보류됐다.",
     "injected_fault": "은행 진입점으로 일별 이체 통계 조회(최근 90일)를 대량으로 보내고 이체 요청을 조금 섞는다. 스키마와 설정은 바꾸지 않는다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "통계 조회가 몰리면서 이체 서비스(Spring Boot, core-banking-transfer)의 응답이 느려지고 은행 DB(Oracle, Oracle-corebanking)의 읽기량이 오른다."
+      "text": "통계 조회 요청은 진입점 nginx 를 거쳐 은행 진입 서비스(Spring Boot, core-banking-api)로 가지만, 진입 서비스에는 이 경로가 없어 바로 404 로 끝난다."
      },
      {
-      "stage": "확산",
-      "text": "통계 질의가 이체 서비스의 DB 연결을 오래 붙잡아 이체가 연결을 기다리다 느려진다. 지연이 계좌 서비스(Spring Boot, core-banking-account)의 대기 한도를 넘으면 계좌 서비스와 은행 진입 서비스(Spring Boot, core-banking-api)가 502 를 내고 재시도가 부하를 더한다."
-     },
-     {
-      "stage": "회복",
-      "text": "통계 조회를 멈추면 이체가 정상으로 돌아온다."
+      "stage": "지속",
+      "text": "통계 질의가 이체 서비스(Spring Boot, core-banking-transfer)와 은행 DB(Oracle, Oracle-corebanking)에 도착하지 않으므로, 설계가 노린 DB 연결 점유와 이체 지연이 생기지 않는다."
      }
     ],
-    "root_cause": "근본 원인은 인덱스를 타지 못하는 일별 통계 질의다. 이체가 실패해 이체 경로 장애처럼 보이지만 이체와 계좌 서비스는 연결을 빼앗긴 피해자다.",
+    "root_cause": "설계상 근본 원인은 인덱스를 타지 못하는 일별 통계 질의이고, 이체 서비스와 계좌 서비스(Spring Boot, core-banking-account)는 연결을 빼앗긴 피해자로 설계됐다. 지금 배선에서는 그 질의가 실행되지 않는다.",
     "design_notes": [
      "주입: load.north_south 가 core-banking slowquery.js 를 20rps(램프업 2분, 유지 8분)로 흘린다. GET /api/transfers/stats/daily?days=90 이 80%, 이체 여정이 20%다. 정리는 부하 종료뿐이다",
      "질의: 통계 API 가 trunc(created_at) 로 집계해 created_at 인덱스를 타지 못하고 transfers 를 풀스캔한다",
      "경합: 풀스캔이 transfer Hikari 연결을 스캔 시간만큼 점유하고, 같은 풀을 쓰는 이체 트랜잭션(FOR UPDATE)이 연결을 기다린다",
-     "경로: 이체 nginx → api → account → transfer → Oracle, 통계 nginx → transfer",
-     "상태: parked(실행 집합 밖). 녹화 없음, 의도만으로 썼다"
+     "경로: 이체 nginx → api → account → transfer → Oracle. 통계 API(GET /api/transfers/stats/daily)는 transfer 에만 있는데, 진입점 30082 의 nginx 는 /api/transfers 를 api 로 보내고 api 에는 이 경로가 없어 지금 배선으로는 404 로 끝난다",
+     "보류 사유: 2026-07-29 보류 재감사가 실측으로 「진입점 30082 에 /api/transfers/stats/daily 패스스루 부재 → 404」를 확인했고, 열려면 라우팅 신설이 필요하다(docs/scenario-redesign-wip/parked-reaudit-0729.md §4). nginx 설정(core-banking/k8s/02-configmaps.yaml)과 api-service TransferController 는 그 뒤로 바뀌지 않았다",
+     "상태: parked(실행 집합 밖), 녹화 없음"
     ]
    }
   },
@@ -4650,11 +4647,11 @@
     "propagation": [
      {
       "stage": "초기",
-      "text": "직행 경로의 동결 계좌 이체가 곧바로 200 완료로 성공한다. 같은 이체를 정상 경로로 보내면 은행 진입 서비스(Spring Boot, core-banking-api)가 '출금 계좌 동결' 400 으로 거절하고 그 거절이 오류 로그로 쏟아진다."
+      "text": "직행 경로의 동결 계좌 이체가 곧바로 200 완료로 성공한다. 같은 이체를 정상 경로로 보내면 계좌 서비스(Spring Boot, core-banking-account)가 동결, 해지 계좌라며 400 으로 거절하고, 은행 진입 서비스(Spring Boot, core-banking-api)에 그 거절이 오류 로그로 쏟아진다."
      },
      {
       "stage": "지속",
-      "text": "약 8분 내내 5xx 와 지연은 없고, 관제 화면에는 진입 서비스의 400 거절 로그만 많아 보이는 사이 동결 계좌의 잔액이 조용히 줄어든다. 원장 서비스(Spring Boot, core-banking-ledger)의 대사 배치가 주입이 끝난 뒤 불일치를 한 번 기록한다."
+      "text": "약 8분 내내 5xx 와 지연은 없고, 관제 화면에는 진입 서비스의 400 거절 로그만 많아 보이는 사이 동결 계좌의 잔액이 조용히 줄어든다."
      }
     ],
     "root_cause": "근본 원인은 계좌 상태를 검사하지 않는 이체 서비스와, 그 앞의 검증을 건너뛰게 열린 직행 경로다. 진입 서비스의 400 오류는 정상 경로가 제대로 거절한 결과일 뿐 장애가 아니다.",
@@ -4663,7 +4660,7 @@
      "경로: 정상 nginx → api → account(상태 검증) → transfer, 우회 commerce-payment 또는 외부 → transfer 직행",
      "결함: TransferService.execute 는 계좌 status(FROZEN, CLOSED)를 검사하지 않는다",
      "금액: 회차당 1~5 로 낮춰 ACC-9001 잔액 오염을 줄였다(원래 1000~5000)",
-     "녹화: case-f17-p-v3-e68c5992. api 의 'From account is FROZEN' 400 로그가 분당 약 2,400건, 모든 서버 스팬 오류율 0%, ledger 'Ledger reconciliation MISMATCH' 1건(+821초)"
+     "녹화: case-f17-p-v3-e68c5992. api 의 400 거절 로그('From account is FROZEN', 'To account is CLOSED')가 분당 약 2,400건, 모든 서버 스팬 오류율 0%, 직행으로 성사된 ACC-9001 출금 이체 81건. ledger 'Ledger reconciliation MISMATCH' 는 평시에도 10~30분마다 1건씩 나오는 배경이라(+821초 1건 포함) 이 장애의 흔적이 아니다"
     ]
    }
   },
@@ -5113,30 +5110,28 @@
    "user_impact_ko": "이체(POST /api/transfers)가 api Tomcat 스레드 포화로 지연·타임아웃 급증하고, 무관한 이체내역 조회(GET /api/transfers 프록시)까지 느려진다. transfer는 지연만 있고 5xx를 안 뱉으며(느린 200), api는 커넥션풀이 없어 풀 지표가 부재 → 풀 고갈(FS-6)이나 CB open(FS-2)으로 오인하면 오진.",
    "distinguishing_evidence_ko": "api의 지연은 커넥션풀 고갈(FS-6)이나 CB open(FS-2)이 아니라 Tomcat 스레드 고갈이다. 결정 증거: (1) http.server.active_requests가 200에 닿음, (2) api엔 Hikari query가 부재(풀이 없음) — 이 부재가 곧 FS-6 배제, (3) api 502 rate 낮음 + CB closed — FS-1(502 폭증)·FS-2(즉시 502) 배제, transfer는 느린 200. api-service가 테스트베드에서 유일하게 DataSource가 없는 서비스라, 스레드가 유일 유한 자원임이 구조적으로 자명하다. 주입 지연이 read-timeout(10s)을 넘으면 502→CB open으로 FS-2에 전이하는데, 이 전이 경계가 F21-P의 감별선이다.",
    "story_ko": {
-    "overview": "은행 이체 서비스가 느리게 성공하기만 해도, DB 없이 스레드만 가진 은행 진입 서비스의 스레드 200개가 응답을 기다리느라 다 차서 이체와 무관한 조회까지 느려진다.",
+    "overview": "은행 이체 서비스를 느리게 성공하게 만들어 DB 없는 은행 진입 서비스의 스레드 200개를 채우려는 시나리오지만, 시험 실행에서는 CPU 한도를 바꾸는 순간 이체 파드가 내려가 진입 서비스가 곧바로 실패해 보류됐다.",
     "injected_fault": "이체 서비스(Spring Boot, core-banking-transfer)의 CPU 한도를 단계적으로 줄여 느리게 만들고, 은행 이체 요청을 많이 보낸다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "이체 서비스의 응답이 느려지지만 오류 없이 성공한다."
-     },
-     {
-      "stage": "확산",
-      "text": "은행 진입 서비스(Spring Boot, core-banking-api)가 계좌 서비스(Spring Boot, core-banking-account)를 거친 이체 응답을 기다리며 스레드를 붙잡고, 동시 이체가 200건에 이르면 스레드가 다 찬다."
+      "text": "CPU 한도를 바꾸는 배포가 하나뿐인 이체 서비스(Spring Boot, core-banking-transfer) 파드를 먼저 내리고, 400m 한도 아래에서 새 파드는 기동이 크게 느려져 준비 상태로 돌아오지 못한다."
      },
      {
       "stage": "전면 장애",
-      "text": "진입 서비스로 들어오는 모든 요청이 스레드를 기다려 이체가 지연되거나 시간 초과되고, 이체와 무관한 이체 내역 조회까지 느려진다. 차단기는 열리지 않고 5xx 도 거의 없다."
+      "text": "은행 진입 서비스(Spring Boot, core-banking-api)는 스레드가 차기도 전에 첫 확인부터 오류율이 40% 에서 100% 로 올라 이체 진입이 502 로 실패하고, 바쁜 스레드는 87개에 그친다. 첫 단에서 약 3분 만에 감별 조건에 걸려 멈췄다."
      }
     ],
-    "root_cause": "근본 원인은 DB 연결 풀이 없고 스레드 수 기본값(200)만으로 버티는 은행 진입 서비스의 구조다. 느려진 이체 서비스는 방아쇠일 뿐이고, 진입 서비스에 연결 풀 지표가 없어 풀 고갈이나 차단기로 오인하기 쉽다.",
+    "root_cause": "설계상 근본 원인은 DB 연결 풀 없이 스레드 수 기본값(200)만으로 버티는 은행 진입 서비스의 구조이고, 느려진 이체 서비스는 방아쇠로 설계됐다. 시험 실행에서는 이체 파드가 아예 빠져 스레드 포화 대신 즉시 실패가 났다.",
     "design_notes": [
      "주입: k8s.patch 가 testbed-transfer 의 CPU limit 을 500m 에서 400m, 300m, 200m 사다리로 조인다. 200m 가 바닥인 이유는 requests.cpu 가 200m 라 API 서버가 limit<requests 를 거부하기 때문이다. 정리는 500m 복원과 부하 종료",
      "부하: load.north_south core-banking transfer-heavy-surge.js 30rps(램프업 2분, 유지 8분). 정답지 산문은 50rps 를 적었다",
      "구조: api-service 는 DataSourceAutoConfiguration 을 제외해 Hikari 풀이 0개이고 server.tomcat 튜닝이 없어 기본 200 스레드다",
      "경로: 이체 nginx → api(read-timeout 10초) → account(read-timeout 15초) → transfer. transfer 지연이 두 timeout 보다 짧아야 느린 200 으로 남아 차단기가 닫힌 채 스레드만 찬다(Little 법칙 λ=50, T≈3.8초면 190 스레드)",
      "부적격 이력: host.stress 노드 압박은 api 까지 굶겨 차단기가 먼저 열렸다(2026-07-31). db.lock 은 무한 대기로 502 가 된다",
-     "상태: parked(실행 집합 밖). 녹화 없음, 의도만으로 썼다"
+     "시험 실행(2026-08-06 run 5df51067, 지금과 같은 400m, 300m, 200m 사다리): 첫 단 400m 에서 189초 만에 must_rule_out(api-failing-not-queueing)으로 끝났다. api_error_rate 40 → 95 → 100%, transfer_throttled 842 → 59481, transfer_2xx_rate 0, entry_status 502, api_busy_threads 87(성공 임계 180)(docs/scenario-redesign-wip/batch-44-live-findings-0804.md §28)",
+     "보류 사유: testbed-transfer 는 replicas 1, maxSurge 0 이라 CPU limit 패치 롤아웃이 유일한 파드를 먼저 내린다. 이 레버로는 「느리지만 성공」 상태를 만들 수 없어 F21-Q 와 병합 재설계 대상으로 보류됐다(2026-08-06 c887e20)",
+     "상태: parked(실행 집합 밖), 녹화 없음"
     ]
    }
   },
@@ -5904,26 +5899,29 @@
    "user_impact_ko": "이체가 느려지고 2xx 비율이 떨어진다. 조회는 상대적으로 덜 아프다 — 병목이 커밋 경로에 있기 때문이다. 파드는 죽지 않는다.",
    "distinguishing_evidence_ko": "결정 증거는 **백킹 디바이스가 바쁘다**와 transfer Hikari 대기가 함께 오르는데 노드 CPU는 정상이라는 조합이다. 같은 노드·같은 풀을 겨냥하는 F20-P와 표면이 비슷해 보이지만 방아쇠가 다르다 — F20-P는 trunc() 풀스캔이라는 **특정 쿼리**가 CPU를 태우며 풀을 점유하고, 이쪽은 특정 쿼리 없이 디바이스가 포화돼 커밋이 밀린다. 따라서 F20-P는 노드/DB CPU가 오르고 이쪽은 오르지 않는다. F15-P와는 메모리 압박 유무로 갈린다.",
    "story_ko": {
-    "overview": "은행 DB 디스크에 입출력 부하가 몰리면 커밋이 느려져, 이체가 DB 연결을 쥔 채 밀리고 이체 서비스의 연결이 먼저 마른다.",
+    "overview": "은행 DB 디스크에 입출력 부하를 몰아 이체가 DB 연결을 쥔 채 밀리게 하려는 시나리오지만, 시험 실행에서는 디스크가 95% 까지 바빠져도 이체 서비스의 연결 대기가 생기지 않아 보류됐다.",
     "injected_fault": "은행 DB(Oracle, Oracle-corebanking)가 쓰는 디스크(작업 노드 tb-w2)에 단계적으로 큰 입출력 부하를 걸고, 은행 이체 요청을 함께 보낸다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "디스크가 바빠지면서 은행 DB의 커밋이 느려지고 이체 응답 시간이 늘어난다. 조회는 덜 느려진다."
+      "text": "단계가 오를수록 은행 DB 디스크 사용률이 37~95% 사이를 오르내리며 바빠진다."
      },
      {
-      "stage": "확산",
-      "text": "이체 서비스(Spring Boot, core-banking-transfer)의 DB 연결 15개가 먼저 다 차서 이체 성공률이 떨어진다. 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에도 오류가 번지지만 파드는 죽지 않는다."
+      "stage": "지속",
+      "text": "그래도 이체 서비스(Spring Boot, core-banking-transfer)의 DB 연결 대기는 모든 확인 시점에 0 이고, 이체 성공률은 80% 아래로 내려가지 않는다."
      }
     ],
-    "root_cause": "근본 원인은 은행 DB 디스크가 놓인 작업 노드 tb-w2 의 입출력 포화다. 이체 서비스의 연결 고갈과 앞단 오류는 피해이고, 앱과 DB 프로세스, 노드 CPU 와 메모리는 정상이다.",
+    "root_cause": "설계상 근본 원인은 은행 DB 디스크가 놓인 작업 노드 tb-w2 의 입출력 포화이고, 이체 서비스의 연결 고갈과 앞단 오류는 그 피해로 설계됐다. 시험 실행에서는 그 피해가 나타나지 않았다.",
     "design_notes": [
      "주입: host.stress fio 모드가 tb-w2(192.168.122.11)의 Oracle PVC 경로(local-path, oracledata-testbed-oracle-0)에 6000, 12000, 20000 IOPS 사다리로 쓴다(2048MiB, 600초). 정리는 fio 종료와 생성 파일 삭제, Oracle 데이터는 건드리지 않는다",
      "부하: load.north_south core-banking surge.js 20rps, 램프업 2분",
      "쓰기 경로에 집중되는 이유: Oracle 은 redo 기록이 커밋 경로에 직결돼 있다",
      "풀: transfer Hikari 풀 15. 이체는 accounts FOR UPDATE 뒤 커밋을 기다린다",
      "배치: Oracle 은 tb-w2 로 고정돼 commerce PG(tb-w1)와 장치를 공유하지 않는다",
-     "상태: parked(실행 집합 밖). 녹화 없음, 의도만으로 썼다"
+     "시험 실행(2026-08-08 재배치 live-41-97914a35, 무제한 조회 결함 수리 뒤의 두 실행, 지금과 같은 6000, 12000, 20000 IOPS 사다리): disk_io_util 37~95 인데 transfer_hikari_pending 이 전 틱 0, transfer_2xx_rate 가 0.8 아래로 내려가지 않아 실패로 끝났다(docs/scenario-redesign-wip/post-batch-repair-backlog-0807.md 「B 수리가 거짓 통과를 제거했다」, design-decisions-0809.md §6)",
+     "그 전의 통과 실행(2026-08-07 F10-P-run-188c3300 등)에서 본 연결 대기와 이체 실패는 같은 때 흐르던 무제한 이체 목록 조회 부하가 만든 것으로 판명됐다",
+     "피해가 없던 이유: accounts 표가 13블록(0.1MB)이라 버퍼 캐시에 상주해 이체의 FOR UPDATE 가 디스크를 거의 읽지 않는다(585,866 실행에 물리 읽기 17회). 요청당 DB 시간 약 2ms 로, 연결 대기가 생기려면 필요한 약 750ms 에 375배 모자라다",
+     "상태: parked(2026-10-08 정상 녹화 없는 후보로 보류), 녹화 없음"
     ]
    }
   },
@@ -6001,7 +5999,7 @@
    "user_impact_ko": "banking 이체와 조회가 함께 느려진다. 파드는 죽지 않고 축출도 없어 가용성 지표는 정상으로 보이지만, 그 노드에 있는 것은 앱이든 DB든 전부 굼떠진다.",
    "distinguishing_evidence_ko": "결정 증거는 **두 축이 동시에 오른다**는 것이다. 노드 CPU만 보면 F09-R처럼 보이고 메모리만 보면 F05-P처럼 보이지만, 그 둘은 각각 한 축만 건드리도록 격리돼 있으므로 동시 상승은 어느 쪽으로도 설명되지 않는다. 축출·OOM이 없다는 점이 F05-P와의 결정적 차이다(F05-P는 축출이 표면이다). 또한 같은 노드의 앱과 DB가 함께 나빠지므로 특정 서비스 결함으로도 읽히지 않는다 — 서비스 결함이면 그 서비스만 아프다. 디스크는 평온하므로 F10-P(같은 노드의 스토리지 포화)와도 갈린다.",
    "story_ko": {
-    "overview": "은행 노드 하나에 CPU 와 메모리 압박을 함께 걸어, 아무것도 죽지 않은 채 그 노드의 은행 서비스와 DB 가 함께 굼떠진다.",
+    "overview": "은행 노드 하나에 CPU 와 메모리 압박을 함께 걸지만, 아무것도 죽지 않고 은행 이체 응답만 몇 밀리초 느려질 뿐 오류는 나지 않는다.",
     "injected_fault": "은행 앱과 DB 가 함께 있는 작업 노드(tb-w2)에 CPU 와 메모리 부하를 동시에 약 4분 동안 건다. 메모리는 축출이 일어나지 않을 만큼만 쓴다.",
     "propagation": [
      {
@@ -6018,7 +6016,7 @@
      "주입: host.stress pressure 모드가 tb-w2(192.168.122.11)에 stress-ng CPU 워커 8개와 5000M VM 워커 1개를 띄운다(runtime 600초, min_hold 4분, 녹화 실제 약 4분). 메모리 5000MiB 는 tb-w2 가용 약 7.7G 와 eviction 무릎 아래다. 정리는 stress-ng 종료",
      "부하: load.north_south core-banking surge.js 20rps, 램프업 2분",
      "감별: 다른 노드 시나리오는 CPU 만, 메모리만 건드리도록 격리돼 있어 두 축을 함께 미는 것 자체가 감별선이다. 축출이 없다는 점이 메모리 고갈 축출형과 다르다",
-     "녹화: case-f15-p-v3-3843c3fe. 은행 서버 스팬 오류율 0%, account 이체 p95 21ms → 28ms, transfer 이체 p95 16ms → 20ms 정도로 피해가 약했다",
+     "녹화: case-f15-p-v3-3843c3fe. 은행 서버 스팬 오류율 0%, account 이체 p95 약 21ms → 30ms, transfer 이체 p95 약 16ms → 22ms(평시 구간 대 주입 구간) 정도로 피해가 약했다",
      "녹화 배경: 주입이 끝난 뒤 +680초에 food MySQL 파드가 다시 기동해 food 서비스에 연결 끊김 오류가 났다. 은행 노드 압박과의 관계는 확인하지 않았다"
     ]
    }
@@ -8367,11 +8365,11 @@
      },
      {
       "stage": "첫 실패",
-      "text": "약 7분 뒤 메모리가 가득 차 계좌 서비스가 메모리 부족 오류를 내고 상태 확인에 답하지 못해 재시작된다. 약 2~3분 동안 잔액 조회가 모두 실패하고, 은행 진입 서비스(Spring Boot, core-banking-api)는 계좌 서비스에 닿지 못해 이체도 502 로 실패한다."
+      "text": "약 7분 뒤 메모리가 가득 차 계좌 서비스가 요청과 상태 확인에 답하지 못하고 재시작된다. 약 2~3분 동안 잔액 조회가 모두 실패하고, 은행 진입 서비스(Spring Boot, core-banking-api)는 계좌 서비스에 닿지 못해 이체도 502 로 실패한다."
      },
      {
       "stage": "반복",
-      "text": "재시작 뒤 몇 분은 정상이었다가 주입 약 15분 뒤 같은 실패가 다시 온다. 거래 내역과 커머스 정산은 내내 정상이다."
+      "text": "재시작 뒤 몇 분은 정상이었다가 주입 약 15분 뒤 같은 실패가 다시 오고, 이번에는 메모리 부족(OutOfMemoryError) 오류 로그가 남는다. 거래 내역과 커머스 정산은 내내 정상이다."
      },
      {
       "stage": "회복",
@@ -8384,7 +8382,7 @@
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 램프업 2분",
      "실패 순서: Tenured 가 한도에 닿으면 전체 GC 로 느려지고, OutOfMemoryError 로 500, liveness 실패로 kubelet 이 재시작하는 동안 account 엔드포인트가 없어 502 가 된다",
      "경로: 잔액 조회 nginx → account, 이체 nginx → api → account → transfer, 거래 내역 nginx → api → transfer(account 를 거치지 않음), 커머스 정산 commerce-payment → transfer",
-     "녹화: case-f41-r-v3-f37b1984. 첫 실패 구간 +423~546초, 두 번째 +935초~. api 'CircuitBreaker accountClient is OPEN' 1,541건, 'testbed-account Connection refused' 125건. 정답지 계산 주기(약 11~13분)보다 짧은 약 8.5분 간격이었다"
+     "녹화: case-f41-r-v3-f37b1984. 첫 실패 구간 +423~546초, 두 번째 +935초~. api 'CircuitBreaker accountClient is OPEN' 1,541건, 'testbed-account Connection refused' 125건. 정답지 계산 주기(약 11~13분)보다 짧은 약 8.5분 간격이었다. OutOfMemoryError 로그는 두 번째 구간에만 6줄 있고 첫 구간에는 account 로그가 1분 동안 끊겼다"
     ]
    }
   },
@@ -8495,7 +8493,7 @@
      },
      {
       "stage": "지속",
-      "text": "되돌릴 때까지 같은 상태가 이어진다. 이체 서비스는 상태 확인을 통과하고 재시작하지 않는다."
+      "text": "되돌릴 때까지 같은 상태가 이어진다. 이체 서비스는 준비 확인에 가끔 늦게 답할 뿐 재시작하지 않는다."
      },
      {
       "stage": "회복",
@@ -8509,7 +8507,7 @@
      "롤아웃 공백: replicas 1, maxSurge 0 이라 새 파드가 뜰 때까지 이체 엔드포인트가 빈다",
      "질의 비용: 새 sql_id 9hx2j1yrcu00z 가 실행당 논리 읽기 약 10.2만, 이체 1건당 Oracle CPU 0.42초(경과 2.9초). Oracle CPU 2.0 상한, 새 transfer 세션에 resmgr:cpu quantum 대기",
      "경로: 이체 nginx → api → account → transfer → Oracle, 커머스 정산 commerce-payment → transfer, 잔액 조회 nginx → account → Oracle",
-     "녹화: case-f42-r-v3-26143861. 이체 5xx 0.67~0.81, 잔액 조회 실패 0.16~0.39, transfer Hikari 시간 초과 219건, 재시작 0"
+     "녹화: case-f42-r-v3-26143861. 이체 5xx 0.67~0.81, 잔액 조회 실패 0.16~0.39, transfer Hikari 시간 초과 219건, transfer readiness 시간 초과 8건, 재시작 0"
     ]
    }
   },
@@ -8875,7 +8873,7 @@
    },
    "story_ko": {
     "overview": "은행 노드의 방화벽 규칙을 좁히다 커머스 결제 서비스를 허용 목록에서 빠뜨려, 커머스 체크아웃만 모두 실패하고 은행 자신의 손님은 아무 문제를 느끼지 못한다.",
-    "injected_fault": "은행 작업 노드(tb-w2)의 방화벽에 이체 서비스 포트로 들어오는 새 연결을 은행 파드와 진입 망에서만 받는 규칙을 약 15분 동안 건다. 다른 노드(tb-w1)의 커머스 결제 서비스는 허용 목록에 없다.",
+    "injected_fault": "은행 작업 노드(tb-w2)의 방화벽에 이체 서비스(Spring Boot, core-banking-transfer) 포트로 들어오는 새 연결을 은행 파드와 진입 망에서만 받는 규칙을 약 15분 동안 건다. 다른 노드(tb-w1)의 커머스 결제 서비스(Spring Boot, commerce-payment)는 허용 목록에 없다.",
     "propagation": [
      {
       "stage": "초기",
@@ -8890,7 +8888,7 @@
       "text": "규칙을 지우자 1분 안에 체크아웃이 다시 성공한다."
      }
     ],
-    "root_cause": "근본 원인은 작업 노드 tb-w2 의 방화벽 규칙이다. 커머스 결제(Spring Boot, commerce-payment)와 주문의 오류는 피해이고, 이체 서비스(Spring Boot, core-banking-transfer)와 커머스 결제 서비스 자체는 건강하다.",
+    "root_cause": "근본 원인은 작업 노드 tb-w2 의 방화벽 규칙이다. 커머스 결제와 주문의 오류는 피해이고, 이체 서비스와 커머스 결제 서비스 자체는 건강하다.",
     "design_notes": [
      "주입: host.firewall 이 SSH(nkia@192.168.122.11)로 tb-w2 에 iptables 체인 TRANSFER-API-IN 을 만든다. 허용 출발지 10.244.1.0/24, 10.244.0.0/24, 192.168.122.0/24, 192.168.213.0/24 는 RETURN, 나머지는 '[FW BLOCK] ' LOG(6/min) 뒤 DROP. FORWARD 1번에 -d 10.244.1.0/24 tcp 8082 conntrack NEW 점프. 정리는 iptables -F, -X",
      "부하: load.north_south commerce surge.js 3rps, 램프업 2분",
@@ -8991,7 +8989,7 @@
     ]
    },
    "story_ko": {
-    "overview": "은행 진입 서비스를 이체마다 계좌 목록 전체를 다시 읽는 버전으로 배포하면, 계좌 서비스가 목록 요청에 묻혀 잔액 조회가 초 단위로 늦어지고 이체가 실패하기 시작한다.",
+    "overview": "은행 진입 서비스를 이체마다 계좌 목록 전체를 다시 읽는 버전으로 배포하면, 계좌 서비스가 목록 요청에 묻혀 잔액 조회와 이체가 느려지고 잠깐씩 실패가 몰린다.",
     "injected_fault": "은행 진입 서비스(Spring Boot, core-banking-api)를 이체 때마다 활성 계좌 확인용으로 계좌 목록 전체를 읽는 새 버전(1.4.0)으로 배포하고, 약 11분 뒤 되돌린다.",
     "propagation": [
      {
@@ -9000,11 +8998,11 @@
      },
      {
       "stage": "확산",
-      "text": "약 3분 뒤 계좌 서비스의 CPU 가 한도에 붙고 DB 연결이 바닥나, 잔액 조회 응답이 밀리초에서 1~2초로 늘어나고 일부가 실패한다. 진입 서비스가 계좌 쪽 차단기를 열어 이체가 502 로 실패하기 시작한다."
+      "text": "약 3분 뒤 계좌 서비스의 CPU 가 한도에 붙고 DB 연결이 바닥나, 잔액 조회 응답이 밀리초에서 최대 1~2초로 늘어난다. 이때 진입 서비스가 계좌 쪽 차단기를 잠깐 열어 이체 일부가 502 로 실패한다."
      },
      {
       "stage": "지속",
-      "text": "되돌릴 때까지 계좌 서비스는 바쁜 상태로 남고 이체 실패가 이어진다. 거래 내역과 커머스 정산은 계좌 서비스를 거치지 않아 정상이다."
+      "text": "되돌릴 때까지 계좌 서비스는 CPU 한도에 붙어 있고 잔액 조회와 이체는 느리지만 대부분 성공하며, 약 10분 뒤 연결 고갈과 차단기 열림이 한 번 더 몰린다. 거래 내역과 커머스 정산은 계좌 서비스를 거치지 않아 정상이다."
      },
      {
       "stage": "회복",
@@ -9017,7 +9015,7 @@
      "부하: load.north_south core-banking transfer-balance-surge.js 11rps, 램프업 2분",
      "경로: 이체 nginx → api(새로 account 목록 전 페이지 호출) → account → transfer, 잔액 조회 nginx → account, 거래 내역 nginx → api → transfer, 커머스 정산 commerce-payment → transfer",
      "자원: account CPU 한도 500m(KCM 사용량 498.8m 로 한도에 닿음), Hikari 연결 대기 3초 초과 343건, api 스레드 최대 493",
-     "녹화: case-f47-r-v3-9d4f0378. 'Loaded active account directory: pages=49 accounts=976' 3,336줄(평시 0), account 목록 SQL 초당 약 300회. 앞 실행을 오염시킨 Oracle 계획 고착은 재발하지 않았다"
+     "녹화: case-f47-r-v3-9d4f0378. 'Loaded active account directory: pages=49 accounts=976' 3,336줄(평시 0), account 목록 SQL 초당 약 300회. 동반 부하 이체 5xx 는 최대 0.196, 잔액 조회 실패율은 최대 0.009 로 실패는 짧은 묶음 두 번(약 3분, 약 10분 뒤)뿐이고 api 이체 표본 스팬은 대부분 200 이었다(502 는 5건). 앞 실행을 오염시킨 Oracle 계획 고착은 재발하지 않았다"
     ]
    }
   },
@@ -9604,12 +9602,12 @@
      },
      {
       "stage": "회복",
-      "text": "할당량을 지우자 이체 파드가 만들어지고 1분 안에 정상으로 돌아온다."
+      "text": "할당량을 지우고 30초 안에 새 파드가 생기지 않자 이체 서비스를 다시 배포했고, 새 파드가 떠 약 1분 반 뒤 정상으로 돌아온다."
      }
     ],
     "root_cause": "근본 원인은 은행 네임스페이스에 걸린 너무 작은 메모리 할당량이다. 재배포 자체와 앞단 서비스, 커머스 결제(Spring Boot, commerce-payment)의 오류는 피해다.",
     "design_notes": [
-     "주입: k8s.quota 가 rca-testbed-banking 에 ResourceQuota compute-resources(hard requests.memory=4Gi)를 만들고, status.used 가 생긴 뒤 Deployment testbed-transfer 에 kubectl rollout restart 를 한다. 정리는 할당량 삭제",
+     "주입: k8s.quota 가 rca-testbed-banking 에 ResourceQuota compute-resources(hard requests.memory=4Gi)를 만들고, status.used 가 생긴 뒤 Deployment testbed-transfer 에 kubectl rollout restart 를 한다. 정리는 할당량 삭제, 30초 안에 파드가 생기지 않으면 다시 배포(녹화에서는 다시 배포로 회복)",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 램프업 2분",
      "거절 기전: replicas 1, maxSurge 0 이라 옛 파드가 먼저 내려가고, 새 파드는 ReplicaSet 컨트롤러의 FailedCreate 'exceeded quota: compute-resources' 로 막힌다",
      "경로: 이체 nginx → api → account → transfer, 거래 내역 nginx → api → transfer, 커머스 정산 commerce-payment → transfer, 잔액 조회 nginx → account",
@@ -9829,7 +9827,7 @@
     "propagation": [
      {
       "stage": "초기",
-      "text": "5초 안에 은행 진입 서비스(Spring Boot, core-banking-api)에 계좌 서비스 연결 거부 오류가 나고, 약 30초 뒤 계좌 쪽 차단기가 열린다."
+      "text": "5초 안에 은행 진입 서비스(Spring Boot, core-banking-api)에 계좌 서비스 연결 거부 오류가 나고, 몇 초 뒤 계좌 쪽 차단기가 열린다."
      },
      {
       "stage": "지속",
@@ -10199,11 +10197,11 @@
     "propagation": [
      {
       "stage": "초기",
-      "text": "이미지를 지워도 떠 있던 서비스는 아무 일 없이 계속 돈다. 재배포가 옛 이체 파드(core-banking-transfer)를 내리자 새 파드가 '이미지가 없다(ErrImageNeverPull)'로 뜨지 못한다."
+      "text": "이미지를 지워도 떠 있던 서비스는 아무 일 없이 계속 돈다. 재배포가 옛 이체 서비스(Spring Boot, core-banking-transfer) 파드를 내리자 새 파드가 '이미지가 없다(ErrImageNeverPull)'로 뜨지 못한다."
      },
      {
       "stage": "전면 장애",
-      "text": "1초 안에 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에 연결 거부 오류가 쏟아지고, 15분 동안 이체, 거래 내역, 커머스 체크아웃 정산이 502 로 실패한다. 잔액 조회는 정상이다."
+      "text": "1초 안에 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에 연결 거부 오류가 쏟아지고, 15분 동안 이체, 거래 내역, 커머스 결제 서비스(Spring Boot, commerce-payment)의 체크아웃 정산이 502 로 실패한다. 잔액 조회는 정상이다."
      },
      {
       "stage": "회복",
@@ -10695,7 +10693,7 @@
      },
      {
       "stage": "전면 장애",
-      "text": "15분 동안 이체, 거래 내역, 커머스 체크아웃(commerce-order, commerce-payment) 정산이 모두 실패하고, 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)는 차단기를 연다. 잔액 조회, 계좌 목록, DB 와 파드는 정상이다."
+      "text": "15분 동안 이체, 거래 내역, 커머스 주문 서비스(Spring Boot, commerce-order)와 결제 서비스(Spring Boot, commerce-payment)의 체크아웃 정산이 모두 실패하고, 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)는 차단기를 연다. 잔액 조회, 계좌 목록, DB 와 파드는 정상이다."
      },
      {
       "stage": "회복",
@@ -10938,7 +10936,7 @@
     "propagation": [
      {
       "stage": "초기",
-      "text": "약 1분 뒤 이체 서비스(Spring Boot, core-banking-transfer)에 '호출 한도 초과(ORA-02395)' 오류가 나기 시작한다. 새로 열린 DB 연결부터 한도가 걸리기 때문이다."
+      "text": "약 1분 뒤 이체 서비스(Spring Boot, core-banking-transfer)에 '호출 한도 초과(ORA-02395)' 오류가 나기 시작한다."
      },
      {
       "stage": "확산",
@@ -11311,7 +11309,7 @@
      "경로: commerce checkout gateway → order → payment → (외부 PG 승인) → core-banking transfer 정산(commerce-settlement → commerce-merchant). transfer 가 400 으로 답하고 payment 가 502 로 바꾸며 order 의 결제 서킷브레이커가 열린다",
      "부하: load.north_south commerce surge.js 3rps, 진입점 30080",
      "관측 근거: commerce-order 'Account not found: commerce-merchant' 207줄(30일 동안 0줄), 정산 완료 로그가 주입 직전에 끊겼다가 정리 3초 뒤 다시 시작한다. 손님 이체(from=ACC-)는 끊기지 않는다(case-f56-r-v3-24b89933)",
-     "매시 commerce 정산 배치도 같은 이유로 실패해 결제를 다음 회차로 넘긴다"
+     "매시 정각 commerce 정산 배치도 주입 중에 돌면 같은 이유로 실패해 결제를 다음 회차로 넘긴다. 녹화의 주입 구간(00:31~00:47 UTC)에는 정각이 없어 배치가 돌지 않았다"
     ]
    }
   },
@@ -11408,7 +11406,7 @@
    },
    "story_ko": {
     "overview": "은행 계좌 서비스를 DB 연결을 돌려주지 않는 새 버전으로 바꿔, 잔액 조회 몇 건 만에 연결이 바닥나 잔액 조회, 계좌 목록, 이체가 모두 실패하고 거래 내역과 커머스 결제는 정상이다.",
-    "injected_fault": "은행 계좌 서비스(Spring Boot, core-banking-account)를 잔액 조회 때 빌린 DB 연결을 돌려주지 않는 새 버전으로 롤아웃하고, 약 20분 뒤 되돌린다.",
+    "injected_fault": "은행 계좌 서비스(Spring Boot, core-banking-account)를 잔액 조회 때 빌린 DB 연결을 돌려주지 않는 새 버전으로 롤아웃하고, 약 15분 뒤 되돌린다.",
     "propagation": [
      {
       "stage": "초기",
@@ -11416,11 +11414,11 @@
      },
      {
       "stage": "전면 장애",
-      "text": "새 파드가 뜬 지 약 1분 뒤 계좌 서비스의 DB 연결 10개가 모두 쓰인 채 굳어, 되돌릴 때까지 잔액 조회, 계좌 목록, 이체가 모두 실패하고 계좌 서비스는 재시작 없이 트래픽에서 빠진다. 은행 DB(Oracle, Oracle-corebanking)는 한가하고 거래 내역과 커머스 정산은 정상이다."
+      "text": "새 파드가 옛 파드를 대체하자 1분 안에 계좌 서비스의 DB 연결 10개가 모두 쓰인 채 굳어, 되돌릴 때까지 잔액 조회, 계좌 목록, 이체가 모두 실패하고 계좌 서비스는 재시작 없이 트래픽에서 빠진다. 은행 DB(Oracle, Oracle-corebanking)는 한가하고 거래 내역과 커머스 정산은 정상이다."
      },
      {
       "stage": "회복",
-      "text": "옛 버전으로 되돌리자 정상이 된다."
+      "text": "옛 버전으로 되돌리기 시작한 지 약 5분 뒤 정상이 된다. 되돌린 파드가 기동 중 한 번 다시 떠서 늦어졌다."
      }
     ],
     "root_cause": "근본 원인은 계좌 서비스 새 버전의 연결 반납 누락이다. 은행 진입 서비스의 502 는 피해이고, DB 는 바쁘지 않다.",
@@ -11543,7 +11541,7 @@
      },
      {
       "stage": "전면 장애",
-      "text": "쓰기가 열린 뒤 15분 동안 모든 이체가 '중복 키(ORA-00001)'로 실패하고, 은행 진입 서비스(Spring Boot, core-banking-api)와 커머스 체크아웃(commerce-order, commerce-payment)이 502 를 낸다. 거래 내역, 잔액 조회, DB 부하와 파드는 평시 그대로다."
+      "text": "쓰기가 열린 뒤 15분 동안 모든 이체가 '중복 키(ORA-00001)'로 실패하고, 은행 진입 서비스(Spring Boot, core-banking-api)와 커머스 주문 서비스(Spring Boot, commerce-order), 결제 서비스(Spring Boot, commerce-payment)가 502 를 낸다. 거래 내역, 잔액 조회, DB 부하와 파드는 평시 그대로다."
      },
      {
       "stage": "회복",
@@ -12039,7 +12037,7 @@
      },
      {
       "stage": "지속",
-      "text": "첫 1분 안에 이체 실패가 시작돼 10분 동안 70~100% 가 실패하고, 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)는 차단기를 열며 커머스 주문(commerce-order)도 정산에서 실패한다. 잔액 조회는 느려지지만 성공한다."
+      "text": "첫 1분 안에 이체 실패가 시작돼 10분 동안 70~100% 가 실패하고, 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)는 차단기를 열며 커머스 주문 서비스(Spring Boot, commerce-order)도 정산에서 실패한다. 이체 서비스는 두어 번 잠깐 준비 안 됨 상태가 되어 트래픽에서 빠지지만 재시작은 없고, 잔액 조회는 느려지지만 성공한다."
      },
      {
       "stage": "회복",
@@ -12282,7 +12280,7 @@
      "결함: 릴리스가 헬스 하위 끝점을 꺼 liveness 경로가 404 다. startup, readiness 경로는 살아 있어 롤아웃은 통과한다",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 진입점 30082",
      "경로: 잔액 조회 nginx → account, 이체 nginx → api → account → transfer. 거래 내역은 account 를 거치지 않는다",
-     "관측 근거: 같은 파드가 liveness 404 로 네 번 재시작, 실패 구간은 약 2.7분, 2.1분, 1.2분이었다(case-f41-h-v3-2c392569). KCM 에 Killing, BackOff 이벤트 행은 없었다"
+     "관측 근거: 같은 파드가 liveness 404 로 네 번 재시작했다. 실패 구간은 러너 기준 약 2.7분, 2.1분이고 세 번째는 성공 판정으로 측정이 끊겼다(로그로 본 세 구간은 약 2.7분, 2.3분, 2.4분으로 길어지지 않았다, case-f41-h-v3-2c392569). KCM 에 Killing, BackOff 이벤트 행은 없었다"
     ]
    }
   },
@@ -13066,7 +13064,7 @@
      },
      {
       "stage": "전면 장애",
-      "text": "약 15분 동안 은행 이체, 거래 내역, 커머스 체크아웃(commerce-order, commerce-payment) 정산이 실패하고, 이체 컨테이너는 두 번 재시작한다. 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에 연결 거부 오류가 쌓이지만 잔액 조회는 정상이다."
+      "text": "약 15분 동안 은행 이체, 거래 내역, 커머스 주문 서비스(Spring Boot, commerce-order)의 체크아웃 정산이 실패하고, 이체 컨테이너는 두 번 재시작한다. 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에 연결 거부 오류가 쌓이지만 잔액 조회는 정상이다."
      },
      {
       "stage": "회복",
@@ -13388,7 +13386,7 @@
      },
      {
       "stage": "지속",
-      "text": "약 8분 동안 거래 내역 요청 대부분이 0.6초 만에 502 로 실패하고, 차단기가 시험 삼아 통과시킨 몇 건만 성공한다. 이체 서비스(Spring Boot, core-banking-transfer)와 계좌 서비스, 은행 DB 에는 오류가 없고 이체, 잔액 조회, 커머스 정산은 정상이다."
+      "text": "설정을 되돌릴 때까지 약 10분 동안 거래 내역 요청 대부분이 0.6초 만에 502 로 실패하고, 차단기가 시험 삼아 통과시킨 몇 건만 성공한다. 이체 서비스(Spring Boot, core-banking-transfer)와 계좌 서비스(Spring Boot, core-banking-account), 은행 DB 에는 오류가 없고 이체, 잔액 조회, 커머스 정산은 정상이다."
      },
      {
       "stage": "회복",
@@ -13990,7 +13988,7 @@
     ]
    },
    "story_ko": {
-    "overview": "은행 계좌 서비스를 이체 응답 모양이 바뀐 새 버전으로 바꿔, 은행 진입 서비스가 응답을 읽지 못하고 이체마다 실패를 알리지만 돈은 실제로 옮겨진다.",
+    "overview": "은행 계좌 서비스를 이체 응답 모양이 바뀐 새 버전으로 바꿔, 은행 진입 서비스가 응답을 읽지 못하고 이체마다 실패를 알리지만 계좌 서비스에 닿은 이체는 돈이 실제로 옮겨진다.",
     "injected_fault": "은행 계좌 서비스(Spring Boot, core-banking-account)를 이체 접수 응답의 상태 칸을 문자열에서 객체로 바꾼 새 버전으로 롤아웃하고, 약 15분 뒤 되돌린다.",
     "propagation": [
      {
@@ -13999,7 +13997,7 @@
      },
      {
       "stage": "지속",
-      "text": "약 15분 동안 진입 서비스를 거치는 이체가 0.6초 만에 502 로 실패하고 진입 서비스가 차단기를 연다. 그런데 계좌 서비스와 이체 서비스(Spring Boot, core-banking-transfer)는 200 으로 답하고 이체 완료 로그도 이어져, 손님은 실패를 보는데 잔액은 바뀐다."
+      "text": "약 15분 동안 진입 서비스를 거치는 이체가 0.6초 만에 502 로 실패하고 진입 서비스가 차단기를 연다. 그런데 차단기를 지나 계좌 서비스에 닿은 이체는 계좌 서비스와 이체 서비스(Spring Boot, core-banking-transfer)가 200 으로 처리하고 이체 완료 로그도 이어져, 손님은 실패를 보는데 잔액은 바뀐다."
      },
      {
       "stage": "회복",
@@ -14009,10 +14007,10 @@
     "root_cause": "근본 원인은 계좌 서비스 새 버전이 바꾼 응답 모양이다. 오류는 진입 서비스에만 찍히지만 진입 서비스는 옛 모양을 기대한 피해자이고, 계좌 서비스 자신은 오류를 남기지 않는다.",
     "design_notes": [
      "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.6.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
-     "결함: TransferResponse 의 status 가 문자열에서 {code, label} 객체로 바뀌어 api 의 역직렬화가 실패한다('Error while extracting response for type [com.corebanking.common.dto.TransferResponse]')",
+     "결함: 이체 접수 응답의 status 가 문자열에서 {code, label} 객체로 바뀌어 api 가 String status 를 기대하는 TransferResponse 로 읽지 못한다('Error while extracting response for type [com.corebanking.common.dto.TransferResponse]')",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 진입점 30082",
      "경로: 이체 nginx → api → account → transfer. 서킷이 열리기 전에는 api 재시도로 같은 이체가 세 번까지 실행될 수 있다. 커머스 정산은 commerce-payment → transfer 로 account 를 거치지 않는다",
-     "관측 근거: api 해석 오류 479줄, 'circuit open/exhausted' 6,190줄, api POST /api/transfers 502 210건, 같은 시각 account, transfer 스팬 52건 모두 200, account ERROR 0줄(case-f39-h-v3-255629f2)"
+     "관측 근거: api 해석 오류 479줄, 'circuit open/exhausted' 6,190줄, api POST /api/transfers 502 210건, 같은 시각 account, transfer 스팬 52건 모두 200(api 이체 접수 약 4건 중 1건꼴만 account 에 닿았다), account ERROR 0줄(case-f39-h-v3-255629f2)"
     ]
    }
   },
@@ -14859,7 +14857,7 @@
     "propagation": [
      {
       "stage": "전면 장애",
-      "text": "지운 순간부터 계좌 서비스(Spring Boot, core-banking-account)와 이체 서비스(Spring Boot, core-banking-transfer)에 '표가 없다(ORA-00942)' 오류가 쏟아지고, 15분 동안 잔액 조회와 계좌 목록은 500, 이체와 커머스 체크아웃(commerce-order, commerce-payment) 정산은 502 로 실패한다. 거래 내역 조회, DB 와 파드는 정상이다."
+      "text": "지운 순간부터 계좌 서비스(Spring Boot, core-banking-account)와 이체 서비스(Spring Boot, core-banking-transfer)에 '표가 없다(ORA-00942)' 오류가 쏟아지고, 15분 동안 잔액 조회와 계좌 목록은 500, 이체와 커머스 주문 서비스(Spring Boot, commerce-order), 결제 서비스(Spring Boot, commerce-payment)의 체크아웃 정산은 502 로 실패한다. 거래 내역 조회, DB 와 파드는 정상이다."
      },
      {
       "stage": "회복",
@@ -15095,7 +15093,7 @@
    },
    "story_ko": {
     "overview": "은행 이체 서비스에 계좌당 속도 제한을 넣은 새 버전이 실수로 모든 계좌가 한 몫을 나눠 쓰게 만들어, 은행 이체 대부분과 커머스 결제 일부가 실패하고 서비스와 DB 는 한가하다.",
-    "injected_fault": "은행 이체 서비스(Spring Boot, core-banking-transfer)를 '출금 계좌당 초당 2건' 한도를 더한 새 버전으로 롤아웃하고, 약 15분 뒤 되돌린다.",
+    "injected_fault": "은행 이체 서비스(Spring Boot, core-banking-transfer)를 '출금 계좌당 초당 2건' 한도를 더한 새 버전으로 롤아웃하고, 약 12분 뒤 되돌린다.",
     "propagation": [
      {
       "stage": "초기",
@@ -15103,11 +15101,11 @@
      },
      {
       "stage": "지속",
-      "text": "새 파드가 뜬 뒤 약 9분 동안 이체 서비스가 '요청 허용 안 됨(RequestNotPermitted)' 500 을 내, 은행 손님 이체는 열에 여덟아홉이 502 로 끝나고 커머스 정산(commerce-payment, commerce-order)도 열에 한두 건이 실패한다. 이체 서비스는 준비 상태로 빠르게 답하고 은행 DB(Oracle, Oracle-corebanking)는 평시 그대로다."
+      "text": "새 파드가 뜬 뒤 약 9분 동안 이체 서비스가 '요청 허용 안 됨(RequestNotPermitted)' 500 을 내, 은행 손님 이체는 열에 여덟아홉이 502 로 끝나고 커머스 결제 서비스(Spring Boot, commerce-payment)를 거치는 체크아웃 정산도 열에 한두 건이 실패한다. 이체 서비스는 준비 상태로 빠르게 답하고 은행 DB(Oracle, Oracle-corebanking)는 평시 그대로다."
      },
      {
       "stage": "회복",
-      "text": "옛 버전으로 되돌리자 거절이 멈춘다."
+      "text": "옛 버전으로 되돌리는 동안 약 2분 반 다시 이체 파드가 없어 연결 거부와 이체 실패가 이어지고, 옛 버전이 뜨자 거절이 멈추고 이체가 돌아온다."
      }
     ],
     "root_cause": "근본 원인은 이체 서비스 새 버전의 속도 제한 결함이다. 계좌, 진입 서비스, 커머스의 오류는 피해이고 거절은 모든 계좌에 고르게 떨어진다.",
@@ -15115,7 +15113,7 @@
      "주입: k8s.image release 모드가 testbed-transfer 의 transfer-service 를 core-banking-transfer:latest 에서 2.4.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
      "결함: 계좌당 한도를 이름 하나의 resilience4j RateLimiter 'transferVelocity'(초당 2건)로 걸어 전 계좌와 commerce 정산이 한 몫을 나눠 쓴다. 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 이다",
      "부하: load.north_south core-banking transfer-balance-surge.js 7rps, 진입점 30082",
-     "공백: Deployment 전략 maxSurge 0 이라 옛 파드가 먼저 내려간다. 녹화에서는 새 파드 기동까지 약 3분 걸렸다(설계는 약 1분)",
+     "공백: Deployment 전략 maxSurge 0 이라 옛 파드가 먼저 내려간다. 녹화에서는 새 파드 기동까지 약 3분, 되돌릴 때 옛 버전 기동까지 약 2분 반 걸렸다(설계는 약 1분)",
      "경로: 이체 nginx → api → account → transfer, 커머스 정산 commerce-payment → transfer. account, api 서킷이 대부분의 시간 열린다",
      "관측 근거: transfer SEVERE 'RequestNotPermitted: RateLimiter 'transferVelocity'' 331줄(30일 동안 이 시나리오 실행 말고 0줄), 계좌별 실패율 0.59~0.70, commerce 정산 실패 약 13.5%, Hikari 고갈과 ORA 0(case-f68-r-v3-3f6561ef)"
     ]
@@ -15710,7 +15708,7 @@
      },
      {
       "stage": "1차 장애",
-      "text": "약 45초 뒤부터 4분 동안 이체 서비스가 답하지 않다가 트래픽에서 빠지고 쿠버네티스가 재시작한다. 그동안 은행 이체와 커머스 체크아웃(commerce-order, commerce-payment)이 502 로 실패하고, 계좌 서비스(Spring Boot, core-banking-account)의 연결이 묶여 잔액 조회도 일부 실패한다."
+      "text": "약 45초 뒤부터 4분 동안 이체 서비스가 답하지 않다가 트래픽에서 빠지고 쿠버네티스가 재시작한다. 그동안 은행 이체와 커머스 주문 서비스(Spring Boot, commerce-order)의 체크아웃이 502 로 실패하고, 계좌 서비스(Spring Boot, core-banking-account)의 연결이 묶여 잔액 조회도 일부 실패한다."
      },
      {
       "stage": "2차 장애",
@@ -15974,8 +15972,12 @@
       "text": "첫 4분은 이미 열린 DB 연결로 버텨 사용자 오류가 없다. 관제 화면에서는 은행 DB(Oracle, Oracle-corebanking)의 유휴 세션 수가 12 에서 계단식으로 줄고, 은행 서비스 로그에 연결 시간 초과(ORA-12170)가 나기 시작한다."
      },
      {
+      "stage": "확산",
+      "text": "약 4분 뒤 원장 서비스(Spring Boot, core-banking-ledger)와 계좌 서비스(Spring Boot, core-banking-account)의 DB 연결이 바닥나 재시작 없이 트래픽에서 빠지고, 약 4분 반 뒤부터 규칙을 지울 때까지 약 17분 동안 잔액 조회와 이체가 502 로 실패한다."
+     },
+     {
       "stage": "전면 장애",
-      "text": "약 4분 반 뒤 원장(core-banking-ledger), 계좌(core-banking-account), 이체(core-banking-transfer) 서비스(모두 Spring Boot)의 연결이 바닥나 재시작 없이 트래픽에서 빠진다. 규칙을 지울 때까지 약 17분 동안 잔액 조회, 이체, 커머스 체크아웃(commerce-order, commerce-payment) 정산이 502 로 실패한다."
+      "text": "약 8분 뒤 이체 서비스(Spring Boot, core-banking-transfer)도 빠지면서 커머스 주문 서비스(Spring Boot, commerce-order)의 체크아웃 정산까지 실패해 은행 경로 전체가 막힌다."
      },
      {
       "stage": "회복",
@@ -16337,29 +16339,30 @@
     ]
    },
    "story_ko": {
-    "overview": "제휴 연동이 은행 입금 확인을 초당 8번으로 늘리자, 한 건만 찾는 확인마다 표 전체를 세는 질의가 돌아 은행 DB CPU 가 바닥나고 은행 이체와 커머스 결제가 간헐적으로 실패한다.",
-    "injected_fault": "가맹점 입금 알림 제휴 연동처럼 은행 거래 내역 API 에 계좌 8개의 '오늘 입금 한 건' 확인을 초당 8건씩 약 15분 동안 보낸다. 은행 쪽은 아무것도 바꾸지 않는다.",
+    "overview": "제휴 연동이 은행 입금 확인을 초당 8번으로 늘려 한 건 확인마다 표 전체를 세는 질의로 은행 DB CPU 를 채우려는 시나리오지만, 검증 실행에서는 그 질의 실행 수가 늘지 않고 실행 계획이 바뀌어 확인을 멈춘 뒤에도 DB 포화가 남아 보류됐다.",
+    "injected_fault": "가맹점 입금 알림 제휴 연동처럼 은행 거래 내역 API 에 계좌 8개의 '오늘 입금 한 건' 확인을 초당 8건씩 보내고, 시작 약 4분 뒤 멈춘다(앞 2분은 부하를 올리는 구간). 은행 쪽은 아무것도 바꾸지 않는다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "확인이 시작되고 약 30초 뒤 은행 DB(Oracle, Oracle-corebanking)가 CPU 2개를 다 쓰고, 이체 서비스(Spring Boot, core-banking-transfer)의 DB 연결이 묶이기 시작한다."
+      "text": "부하를 올리는 2분이 지나 확인 호출이 시작되자 몇 초 만에 이체 서비스(Spring Boot, core-banking-transfer)의 DB 연결 15개가 다 차고, 은행 진입 서비스(Spring Boot, core-banking-api)가 거래 내역 차단기를 연다."
      },
      {
       "stage": "지속",
-      "text": "확인이 이어지는 동안 은행 이체와 커머스 체크아웃(commerce-order, commerce-payment)이 몇 초 단위로 500, 502 로 실패했다 성공했다 한다. 계좌 서비스(Spring Boot, core-banking-account)를 거치는 잔액 조회도 일부 느려지거나 실패한다."
+      "text": "확인이 이어진 약 2분 동안 은행 이체의 60~80% 와 커머스 주문 서비스(Spring Boot, commerce-order)의 체크아웃 일부가 실패하고, 은행 DB(Oracle, Oracle-corebanking) CPU 가 평시 0.4~0.7 에서 1.5 넘게 오른다."
      },
      {
-      "stage": "회복",
-      "text": "확인 호출이 멈추면 DB CPU 가 내려가고 실패가 그친다."
+      "stage": "정리 뒤",
+      "text": "확인 호출을 멈추자 이체는 1분 안에 돌아오지만, 은행 DB CPU 는 1.2~1.8 에서 내려오지 않고 거래 내역 조회는 느려지거나 실패하는 채로 남는다."
      }
     ],
-    "root_cause": "근본 원인은 한 건만 필요한 확인에도 표 전체를 세는 이체 서비스의 목록 API 다. 은행 DB 포화와 이체, 계좌, 커머스의 오류는 그 결과이고, 제휴 연동은 기존 API 를 자주 불렀을 뿐이다.",
+    "root_cause": "설계상 근본 원인은 한 건만 필요한 확인에도 표 전체를 세는 이체 서비스의 목록 API 이고, 은행 DB 포화와 이체, 커머스의 오류는 그 결과다. 검증 실행에서는 그 질의의 실행 계획이 바뀐 것이 확인을 멈춘 뒤의 포화까지 만들어 이 설계만으로 설명되지 않았다.",
     "design_notes": [
-     "주입: load.north_south 가 tb-runner 에서 settlement-arrival-poll.js 를 은행 진입점(30082)에 돌린다. 한 시나리오는 이체 50, 잔액 40, 계좌 목록 10 여정 5rps, 다른 시나리오는 2분 경사 뒤 13분 동안 GET /api/transfers?toAccount=<계좌>&status=COMPLETED&from=<오늘 0시>&page=0&size=1 을 초당 8건",
+     "주입: load.north_south 가 tb-runner 에서 settlement-arrival-poll.js 를 은행 진입점(30082)에 돌린다. 한 시나리오는 이체 50, 잔액 40, 계좌 목록 10 여정 5rps, 다른 시나리오는 2분 경사 뒤 13분 동안 GET /api/transfers?toAccount=<계좌>&status=COMPLETED&from=<오늘 0시>&page=0&size=1 을 초당 8건. k6 스크립트는 13분 유지로 짜였지만 러너는 min_hold 4분 뒤 성공이 이어지면 부하를 멈춘다",
      "왜 무거운가: 첫 쪽이 꽉 차면 Spring Data Page 가 건수 질의(sql_id byb2y2hv7p4ag)를 따로 돌린다. OR-null 술어라 인덱스를 못 타고 BANKING.TRANSFERS 약 650만 행을 매번 읽는다(실행당 약 10만 블록, CPU 0.25~0.56초)",
      "포화: Oracle Free 상한 cpu_count 2 를 넘어 세션이 resmgr:cpu quantum 을 기다리고 transfer Hikari 15개가 묶인다. api transferClient 서킷(창 10, 50%, 열림 5초)이 열리고 닫히며 실패가 오르내린다",
      "경로: 확인 nginx → api → transfer → Oracle, 이체 nginx → api → account → transfer, 커머스 정산 commerce-payment → transfer",
-     "녹화: 검증 실행 F74-R-run-0ccd1388(10-24)은 피해는 났지만 건수 질의 실행 계획이 바뀌어(847607780) 폴링이 멈춘 뒤에도 Oracle CPU 가 높게 남아 설계와 다른 장애로 보강 판정, 녹화본은 없다"
+     "시험 실행(2026-10-24, F74-R-run-0ccd1388, 지금 controller 와 같은 주입): 확인 호출 05:32:36 무렵 시작, 6초 뒤 transfer Hikari 'total=15, active=15' 고갈(330줄), 동반 이체 5xx 0.63~0.78, commerce-order 'Checkout payment failed' 54줄, transfer readiness 실패 4건(재시작 없음), Oracle cpu_time 0.68 → 1.55, db_time 9.68. byb2y2hv7p4ag 실행 수는 분당 47~69 에서 늘지 않았고 05:34:32 에 계획이 2603328921 에서 847607780 으로(목록 질의 99nsgbv90qrn7 도 326614049 로) 바뀌었다. 폴링이 멈춘 뒤에도 상주 거래 내역 조회만으로 cpu_time 1.2~1.8 이 06:20Z 넘어 이어졌다(~/dev/testbed-ops/verifications/2026-10-24-0624-F74-R-run-0ccd1388.md)",
+     "보류 사유: 계획 교체로 must_support 1(실행 수 급증), 5(몇 초 안 회복)와 must_rule_out 1(계획도 같다)이 어긋나 '시나리오 보강' 판정, 강도로 해결할 수 없어 보류. 바뀐 계획은 10-25 13:02Z 자동 통계 수집 뒤에야 풀렸고 v4 로 미뤘다(~/dev/testbed-ops/operator/log.md 397~401, 438). 덤프는 tb-ops _rejected 로 옮겨 녹화본이 없다"
     ]
    }
   },
@@ -16806,15 +16809,15 @@
    },
    "story_ko": {
     "overview": "원장 작업용 워크로드를 이체 서비스 매니페스트에서 복사하며 이름을 그대로 두는 바람에, 살아 있는 이체 서비스가 원장 앱으로 바뀌어 은행 이체와 커머스 결제가 모두 실패한다.",
-    "injected_fault": "은행 이체 서비스(Spring Boot, core-banking-transfer) 배포 정의에 이름은 그대로 두고 원장 앱 이미지를 쓴 매니페스트를 적용하고, 약 18분 뒤 되돌린다.",
+    "injected_fault": "은행 이체 서비스(Spring Boot, core-banking-transfer) 배포 정의에 이름은 그대로 두고 원장 앱 이미지를 쓴 매니페스트를 적용하고, 약 15분 뒤 되돌린다.",
     "propagation": [
      {
       "stage": "전면 장애",
-      "text": "적용 직후 옛 이체 파드가 내려가고, 새 파드는 원장 앱으로 떠 이체 서비스 포트에 답하지 못해 준비되지 않는다. 그동안 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에 연결 거부가 쌓이고 은행 이체, 거래 내역, 커머스 체크아웃(commerce-order, commerce-payment)이 502 로 실패하며, 잔액 조회는 정상이다."
+      "text": "적용 직후 옛 이체 파드가 내려가고, 새 파드는 원장 앱으로 떠 이체 서비스 포트에 답하지 못해 준비되지 않은 채 약 5분마다 재시작한다. 그동안 계좌 서비스(Spring Boot, core-banking-account)와 은행 진입 서비스(Spring Boot, core-banking-api)에 연결 거부가 쌓이고 은행 이체, 거래 내역, 커머스 주문 서비스(Spring Boot, commerce-order)의 체크아웃 정산이 502 로 실패하며, 잔액 조회는 정상이다."
      },
      {
       "stage": "회복",
-      "text": "매니페스트를 되돌리자 이체 서비스가 다시 뜬다."
+      "text": "매니페스트를 되돌리자 약 3분 뒤 이체 서비스가 다시 떠 이체가 완료된다."
      }
     ],
     "root_cause": "근본 원인은 이체 서비스를 덮어쓴 이름 충돌 매니페스트다. 이체 서비스 자체에는 오류 로그가 없고, 계좌, 진입 서비스, 커머스의 오류는 피해다.",
@@ -17198,29 +17201,29 @@
     ]
    },
    "story_ko": {
-    "overview": "은행 작업 노드에서 DB 데이터 파일 백업 압축이 노드 메모리를 다 써 버려, 노드가 은행 파드를 쫓아내거나 죽이고 은행 이체와 커머스 결제가 실패한다.",
-    "injected_fault": "작업 노드(tb-w2)에서 은행 DB(Oracle, Oracle-corebanking) 데이터 파일을 큰 압축 창으로 두 흐름 나란히 압축하는 백업 작업을 띄운다. 작업은 합계 약 4.6 GiB 를 쥐고 최대 10분 돈다.",
+    "overview": "은행 작업 노드에서 DB 데이터 파일 백업 압축이 노드 메모리를 거의 다 가져가, 같은 노드의 은행 DB 와 서비스가 느려지고 은행 이체와 커머스 결제가 실패한다.",
+    "injected_fault": "작업 노드(tb-w2)에서 은행 DB(Oracle, Oracle-corebanking) 데이터 파일을 큰 압축 창으로 두 흐름 나란히 압축하는 백업 작업을 최대 10분 돌린다. 작업은 노드 몫 768 MiB 만 남기고 그때 남은 메모리를 거의 다 쥔다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "백업이 입력을 2 GiB 넘게 읽으면서 작업 노드의 남은 메모리가 바닥난다."
+      "text": "백업이 압축 창을 채우며 1~2분 안에 작업 노드의 남은 메모리를 상한까지 가져간다."
      },
      {
       "stage": "장애",
-      "text": "노드가 은행 DB 파드를 쫓아내거나 커널이 은행 서비스 자바 프로세스와 쿠버네티스 노드 에이전트를 메모리 부족으로 죽인다. 그동안 은행 이체, 거래 내역, 커머스 체크아웃(commerce-order, commerce-payment) 정산이 502 로 실패하고, DB 가 쫓겨나면 잔액 조회도 실패한다."
+      "text": "같은 노드의 은행 DB 와 은행 서비스가 파일 캐시를 잃어 느려지고 시간 초과로 실패해, 은행 이체, 거래 내역, 커머스 주문 서비스(Spring Boot, commerce-order)의 체크아웃 정산이 502 로 실패한다. 노드는 준비 상태를 유지한다."
      },
      {
       "stage": "회복",
-      "text": "작업이 끝나면 파드가 다시 뜨는 대로 돌아온다(앱 약 2분, DB 는 인스턴스 복구가 더 걸린다)."
+      "text": "작업이 끝나거나 멈추면 메모리가 풀려 은행 서비스가 다시 답한다."
      }
     ],
-    "root_cause": "근본 원인은 작업 노드(tb-w2)에서 돈 백업 작업의 메모리 사용이다. 배포도 설정 변경도 없고, 은행 서비스와 DB, 커머스의 오류는 노드가 메모리를 되찾느라 생긴 피해다.",
+    "root_cause": "근본 원인은 작업 노드(tb-w2)에서 돈 백업 작업의 메모리 사용이다. 배포도 설정 변경도 없고, 은행 서비스와 DB, 커머스의 오류는 노드 메모리를 빼앗긴 피해다.",
     "design_notes": [
-     "주입: host.job 이 tb-w2 에서 sudo systemd-run --unit=oradata-backup 로 tar | zstd -12 --long=31 과 zstd -12 --long=31(users01.dbf 5.4 GiB) 두 흐름을 띄운다. 흐름마다 장거리 창이 약 2.3 GiB 를 쥔다",
-     "노드 여유: tb-w2 MemTotal 7,941 MiB, 여유 2.2~2.8 GiB. 호스트 작업에는 파드 한도가 없고 kubelet 이 축출할 수도 없다. 2026-10-17 부터 유닛에 MemoryHigh(시작 때 MemAvailable − 768 MiB), MemoryMax(+256 MiB)를 붙여 노드 몫 512 MiB 이상을 지킨다",
+     "주입: host.job 이 tb-w2 에서 sudo systemd-run --unit=oradata-backup 로 tar | zstd -12 --long=31 과 zstd -12 --long=31(users01.dbf 5.4 GiB) 두 흐름을 띄운다. 흐름마다 장거리 창이 약 2.3 GiB(합계 약 4.6 GiB)까지 크려 하지만 유닛 상한(MemoryHigh)에서 멈칫거리며 메모리를 쥔다",
+     "노드 여유: tb-w2 MemTotal 7,941 MiB, 여유 2.2~2.8 GiB. 호스트 작업에는 파드 한도가 없고 kubelet 이 축출할 수도 없다. 2026-10-17 부터 유닛에 MemoryHigh(시작 때 MemAvailable − 768 MiB), MemoryMax(+256 MiB)를 붙여 노드 몫 512 MiB 이상을 지킨다. 그래서 노드 축출이나 커널 전역 OOM 은 나지 않을 가능성이 크다(설계 시트 §11)",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 진입점 30082",
-     "관측 근거(설계): 노드 메모리, 프로세스 목록의 zstd 와 tar, 백업 유닛 시작, 노드 수준 축출이나 SystemOOM. 앱 추적에는 하류 실패만 남는다",
-     "녹화: 실행 F80-R-run-bad63a76(10-17, 메모리 상한 없음)이 tb-w2 를 NotReady 와 SSH 불통으로 만들어 정리에 실패했고, 그 뒤 보류 중이라 검증 보고서와 녹화본이 없다"
+     "관측 근거(설계): 노드 메모리, 프로세스 목록의 zstd 와 tar, 백업 유닛 시작. 앱 추적에는 하류 실패만 남는다. 정답지의 KCM SystemOOM, 노드 메모리 축출 증거는 상한을 단 뒤로는 나오지 않을 수 있어 첫 녹화 뒤 사람이 정한다",
+     "녹화: 실행 F80-R-run-bad63a76(10-17, 메모리 상한 없음)은 주입 약 102초에 이체 5xx 0.8 이 났지만 축출이나 OOM 이 아니라 노드가 헛돈 탓이었고, 곧 tb-w2 가 NotReady, SSH 불통이 되어 정리에 실패했다. 그 뒤 보류 중이라 검증 보고서와 녹화본이 없다"
     ]
    }
   }
