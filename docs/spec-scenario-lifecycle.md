@@ -2,7 +2,7 @@
 title: 시나리오 수명주기와 녹화 대기 큐
 status: Active
 owner: project
-last_reviewed: 2026-10-08
+last_reviewed: 2026-10-30
 tags:
   - scenario
   - harness
@@ -17,7 +17,7 @@ summary: 시나리오가 설계(draft)에서 후보(candidate)를 거쳐 정식(
 | 상태 | catalog 표시 | 뜻 | 러너 | 분류 장부 |
 |---|---|---|---|---|
 | 설계 | `readiness: draft` | 설계 중이거나 아직 실행할 수 없음 | 실행 목록에 없음 | §4-1 |
-| **후보** | `readiness: ready`, `stage: candidate` | 실행은 되지만 정상 녹화가 아직 없음 | 실행 가능, 웹에서는 "검증 대기"로 따로 보임 | §4-1 |
+| **후보** | `readiness: ready`, `stage: candidate` | 실행은 되지만 정상 녹화가 아직 없음 | 실행 가능, 웹에서는 "검증 대기" 칸에 "녹화 검증 안 됨"으로 보이고 실행 전에 확인을 받음 | §4-1 |
 | **정식** | `readiness: ready`, `stage: official` | **eval-cases 에 정상 녹화(`evaluation_eligible: true`)가 1개 이상 있음** | 웹의 정식 목록 | §4, 집계 대상 |
 | 폐기 | `readiness: parked` (`stage` 없음) | 검증을 통과하지 못해 뺀 것. 정의와 설계 시트는 참고 자료로 남김 | 실행 목록에서 빠짐 | §5 |
 
@@ -68,8 +68,9 @@ summary: 시나리오가 설계(draft)에서 후보(candidate)를 거쳐 정식(
 | `requested_by`, `requested_at` | 넣은 쪽과 날짜 |
 | `attempts` | 운영 하네스가 실제로 돌린 횟수 중 "시나리오 보강"으로 끝난 횟수. 겹침, 환경 문제로 다시 돈 것은 세지 않는다 |
 | `status` | `waiting`(차례 대기) 또는 `hold`(사람 확인 필요) |
-| `hold_reason` | `hold`일 때만, 무엇을 확인해야 하는지 |
+| `hold_reason` | `hold`일 때만, 무엇을 확인해야 하는지. **첫 문장은 러너 웹 카드에 사유 한 줄로 그대로 보이므로** 무엇이 문제인지를 첫 문장에 요약한다(괄호 밖 첫 마침표까지). 전문은 카드 상세 보기에 나온다 |
 
 - 순서는 배열 순서다. 운영 하네스는 앞에서부터 `waiting`인 첫 항목을 고른다.
 - 모든 후보는 큐에 있어야 한다(검사 `tests/test_recording_queue.py`). 큐에서 빠지는 길은 정식 승격과 폐기 둘뿐이다.
 - 실행 중인 항목의 진행 상태(실행 id, 시각)는 큐에 쓰지 않는다. 운영 하네스의 로컬 기록에 둔다.
+- 러너 웹(rca-scenario-runner `backend/app/recording_status.py`)은 이 파일과 manifest `stage` 만으로 카드의 녹화 상태를 정한다. `status: hold` 는 "보류(돌리지 말 것)", `stage: candidate` 는 "녹화 검증 안 됨", `stage: official` 은 "녹화 완료"다. 앞의 둘은 실행 전에 확인을 한 번 더 받는다(막지는 않는다). 러너는 계약 root(`/opt/lucida/scenario-contracts/recording-queue.json`)의 사본을 읽으므로, 큐만 바꾼 커밋은 `deploy-live-promotions.sh` 로 tb-ops 사본에 올려야 화면에 반영된다.
