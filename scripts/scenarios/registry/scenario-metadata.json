@@ -3894,7 +3894,9 @@
     ],
     "partial": [
      "food-order",
-     "food-payment"
+     "food-payment",
+     "food-delivery-order",
+     "food-delivery-payment"
     ]
    },
    "injected_fault": {
@@ -4004,7 +4006,9 @@
     ],
     "partial": [
      "food-payment",
-     "food-order"
+     "food-order",
+     "food-delivery-payment",
+     "food-delivery-order"
     ]
    },
    "injected_fault": {
@@ -6523,7 +6527,8 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "food-payment"
+     "food-payment",
+     "food-delivery-payment"
     ],
     "partial": [
      "food-order"
