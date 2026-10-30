@@ -52,4 +52,5 @@
 지어내지 않는다. 시각과 수치는 근거에 있는 것만 쓴다.
 
 - **새 시나리오(녹화 전)**: 설계 시트, 정답지 설명 칸과 root_cause, must_support, must_rule_out, controller, profiles.json 의 scenario_parameters, 실행기. propagation 은 설계가 예상하는 모습으로 쓰고 시각은 설계 시트 §9 계산 범위로 쓴다.
+- **녹화 없이 시험 실행만 있는 경우**(보류, 폐기 시나리오 등): 지금과 같은 주입(같은 수단, 같은 강도)으로 돌린 실행 기록이 설계와 다른 결과를 냈으면 overview 와 propagation 은 관측된 모습으로 쓴다. 설계 의도는 root_cause 와 design_notes 에 남기고, design_notes 에 "시험 실행: <실행 id, 관측 수치, 근거 경로>"와 "보류 사유: ..."를 둔다. 주입이 그 뒤에 바뀌었으면 그 기록은 쓰지 않는다.
 - **녹화 뒤**: 검증 보고서(가장 최근 "녹화 가능" 판정)와 녹화본. 관측된 모습이 설계와 다르면 propagation 과 overview 를 **관측된 모습으로** 고친다. 정답지 채점 칸은 고치지 않는다(바꿀지는 사람이 정한다).
