@@ -136,6 +136,159 @@ def with_failure_trace(stdin: bytes) -> bytes:
     return first + newline + FAILURE_TRACE + rest
 
 
+# Node self-recovery (deadline guard).
+#
+# 2026-10-17 F80-R-run-bad63a76: the job pushed tb-w2 into NotReady, cleanup could not reach the
+# node over ssh, and the runner stopped DIRTY with the job's output still on the node. Any change an
+# executor makes on a node outlives a runner that cannot reach it. So every executor that changes a
+# node arms, before the change, a timer on that node that undoes the change by itself:
+#
+# - The timer lives in PID 1 (a transient systemd timer), not in a process the injection can starve
+#   or the OOM killer can pick. It unloads once it has fired (RemainAfterElapse=no), so the next arm
+#   can take the same name; an undo that failed stays visible as a failed <job>-expire.service.
+# - It fires only after the runner itself would have ended the injection (max_injection_duration,
+#   counted from t1, is never later than the arm) plus a margin for cleanup to arrive. So it never
+#   cuts an injection the runner still holds.
+# - cleanup postpones it as soon as it reaches the node (for as long as one executor call may last)
+#   and cancels it once it has undone the change itself, so it fires only when cleanup never came or
+#   failed half way.
+# - The undo is idempotent: it checks before it changes, and a second run finds nothing to do.
+# - A transient timer does not survive a reboot. A reboot ends processes and iptables rules by itself;
+#   files survive it, so every file the change leaves is listed in a tmpfiles.d rule that removes it at
+#   the next boot (systemd-tmpfiles-setup runs --remove --boot), and the rule removes itself with them.
+# - Names are <job>-expire (units), <state root>/<job>.undo and <tmpfiles.d>/<job>.conf. They reach
+#   the node's journal, which is forwarded to 119, so they carry the executor's own neutral job name
+#   and never the scenario id.
+GUARD_MARGIN_SECONDS = 600
+# cleanup's postponement: one executor call is bounded at 900s (execute below).
+GUARD_CLEANUP_HOLD_SECONDS = 960
+# The runner's default when a plan states no max_injection_duration (rca-scenario-runner controller).
+DEFAULT_MAX_INJECTION_SECONDS = 1200
+_DURATION = re.compile(r"^(\d+)(s|m|h)?$")
+
+
+def duration_seconds(value: Any) -> int:
+    """Seconds from an integer or a compact ``10s|2m|1h`` duration (the runner's own syntax)."""
+    if isinstance(value, bool):
+        raise ExecutorError("duration must be seconds or a compact duration")
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str):
+        match = _DURATION.fullmatch(value.strip())
+        if match:
+            return int(match.group(1)) * {None: 1, "s": 1, "m": 60, "h": 3600}[match.group(2)]
+    raise ExecutorError("duration must be seconds or a compact duration")
+
+
+def guard_expiry_seconds(plan: dict[str, Any]) -> int:
+    """When an armed node undoes the change by itself, counted from the arm."""
+    runtime = plan.get("controller", {}).get("runtime", {})
+    limit = duration_seconds(runtime.get("max_injection_duration", DEFAULT_MAX_INJECTION_SECONDS))
+    if limit <= 0:
+        raise ExecutorError("max_injection_duration must be positive")
+    return limit + GUARD_MARGIN_SECONDS
+
+
+def guard_stdin_line(plan: dict[str, Any]) -> bytes:
+    """The deadline and the cleanup hold ride on stdin, never on a node's sudo command line."""
+    return f"expire_after={guard_expiry_seconds(plan)} guard_hold={GUARD_CLEANUP_HOLD_SECONDS}\n".encode()
+
+
+# Shell functions that run as root on the node. host.stress includes them in its own root script;
+# executors that drive the node one command at a time send GUARD_PROGRAM through node_guard (below).
+# guard_arm <job> <seconds> <description> <undo body> [<file removed at boot>...]
+# guard_postpone <job> <seconds> <description>   (only while an undo is armed)
+# guard_disarm <job>
+GUARD_FUNCTIONS = br'''guard_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
+guard_boot_dir="${OPSJOB_TMPFILES_DIR:-/etc/tmpfiles.d}"
+guard_ctl="${OPSJOB_SYSTEMCTL:-systemctl}"
+guard_run="${OPSJOB_SYSTEMD_RUN:-systemd-run}"
+guard_names() { g_unit="$1-expire"; g_undo="$guard_root/$1.undo"; g_boot="$guard_boot_dir/$1.conf"; g_mark="$guard_root/$1.expired"; }
+# An undo already running finishes before anything replaces or cancels its timer, so the timer's
+# undo and cleanup's own never run side by side.
+guard_settle() {
+  local _
+  for _ in $(seq 1 120); do
+    if ! "$guard_ctl" is-active --quiet "$g_unit.service"; then return 0; fi
+    sleep 1
+  done
+  echo "$g_unit.service still running after 120s" >&2
+  return 1
+}
+guard_stop() {
+  "$guard_ctl" stop "$g_unit.timer" >/dev/null 2>&1 || true
+  "$guard_ctl" reset-failed "$g_unit.timer" "$g_unit.service" >/dev/null 2>&1 || true
+}
+guard_start() {
+  "$guard_run" --quiet --unit="$g_unit" --description="$2" --on-active="$1" \
+    --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no /bin/bash "$g_undo"
+}
+guard_arm() {
+  local job=$1 secs=$2 desc=$3 body=$4 p
+  shift 4
+  guard_names "$job"
+  if [[ ! "$secs" =~ ^[1-9][0-9]*$ ]]; then echo "guard: bad deadline $secs" >&2; return 1; fi
+  for p in "$@"; do
+    if [[ "$p" != /* || "$p" == *[[:space:]]* ]]; then echo "guard: bad boot path $p" >&2; return 1; fi
+  done
+  guard_settle
+  guard_stop
+  mkdir -p "$guard_root" "$guard_boot_dir"
+  chmod 700 "$guard_root"
+  rm -f "$g_mark"
+  {
+    printf '%s\n' '#!/bin/bash' 'set -euo pipefail'
+    printf '%s\n' "$body"
+    printf 'date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ >%q\n' "$g_mark"
+    printf 'rm -f %q %q\n' "$g_boot" "$g_undo"
+  } >"$g_undo.tmp"
+  chmod 700 "$g_undo.tmp"
+  mv -T "$g_undo.tmp" "$g_undo"
+  for p in "$@" "$g_undo" "$g_boot"; do printf 'r %s\n' "$p"; done >"$g_boot.tmp"
+  mv -T "$g_boot.tmp" "$g_boot"
+  guard_start "$secs" "$desc"
+}
+guard_postpone() {
+  guard_names "$1"
+  guard_settle
+  if [[ ! -e "$g_undo" ]]; then return 0; fi
+  guard_stop
+  guard_start "$2" "$3"
+}
+guard_disarm() {
+  guard_names "$1"
+  guard_settle
+  if "$guard_ctl" is-failed --quiet "$g_unit.service" 2>/dev/null; then
+    echo "$g_unit.service failed; cleanup undoes the change itself" >&2
+  fi
+  guard_stop
+  if [[ -s "$g_mark" ]]; then echo "the node undid the change by itself at $(cat "$g_mark")" >&2; fi
+  rm -f "$g_undo" "$g_undo.tmp" "$g_boot" "$g_boot.tmp" "$g_mark"
+}
+'''
+
+GUARD_PROGRAM = b"set -euo pipefail\n" + GUARD_FUNCTIONS + br'''case "$1" in
+ arm) shift; guard_arm "$@" ;;
+ postpone) shift; guard_postpone "$@" ;;
+ disarm) shift; guard_disarm "$@" ;;
+ *) exit 2 ;;
+esac
+'''
+
+
+def node_guard_function(node_command: str) -> bytes:
+    """A bash function ``node_guard <arm|postpone|disarm> ...`` for scripts that reach the node
+    through ``<node_command> <remote command>``. The arguments travel on stdin as a `set --` line,
+    so the node's auth log records only ``bash -s``."""
+    return (
+        b"node_guard() {\n"
+        b"  { printf 'set --'; printf ' %q' \"$@\"; printf '\\n'; cat <<'OPSJOB_GUARD'\n"
+        + GUARD_PROGRAM
+        + b"OPSJOB_GUARD\n"
+        + b"  } | " + node_command.encode() + b" sudo -n bash -s\n}\n"
+    )
+
+
 def execute(argv: Sequence[str], stdin: bytes) -> int:
     return subprocess.run(argv, input=stdin, timeout=900, check=False).returncode
 

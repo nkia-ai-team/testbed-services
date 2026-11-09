@@ -45,7 +45,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
+from executor_common import (
+    ExecutorError, cli, guard_stdin_line, kubectl_bash_argv, node_guard_function, profile_instance,
+)
 
 PROFILE_ID = "host.firewall"
 
@@ -143,7 +145,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         # A caller on the same node (F44-R) shares the guarded namespace, node and pod network.
         p.get("omitted_caller_namespace", p["namespace"]), p.get("omitted_caller_node", p["node"]),
         p.get("omitted_caller_cidr", p["protected_cidr"]),
-    ]), SCRIPT
+    ]), guard_stdin_line(plan) + SCRIPT
 
 
 SCRIPT = br'''#!/usr/bin/env bash
@@ -157,11 +159,16 @@ k=(kubectl --kubeconfig=/root/tb-kubeconfig)
 node_sh() {
   ssh -i /root/.ssh/tb_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "nkia@$host" "$@"
 }
-# ssh joins its arguments into one remote command line, so each iptables argument is
+'''
+
+SCRIPT += node_guard_function("node_sh") + br'''# ssh joins its arguments into one remote command line, so each iptables argument is
 # shell-quoted here (the comment and the log prefix carry spaces and brackets). sudo then
 # logs the command with its arguments, one auth line per rule.
 ipt() { node_sh "sudo -n iptables $(printf '%q ' "$@")"; }
 jump=(FORWARD -d "$cidr" -p tcp --dport "$port" -m conntrack --ctstate NEW -m comment --comment "$comment" -j "$chain")
+# The node's own undo (executor_common, node self-recovery) is named after the chain. It removes the
+# same jump and the chain cleanup removes, as root on the node; iptables rules end with a reboot.
+gjob=$(tr '[:upper:]' '[:lower:]' <<<"$chain")
 # The rule set is read with one `iptables -S` (an innocuous auth line) and filtered here.
 # `r=$(rules)` stands alone so that a failed listing stops the script under set -e
 # instead of reading as "absent" (cleanup would otherwise drop its state on an ssh hiccup).
@@ -209,6 +216,10 @@ case "$action" in
   # The state file goes first, so a run that fails halfway is still cleaned up.
   run) check; r=$(rules); if ours "$r" || [[ -e "$state" ]]; then exit 1; fi
     mkdir -p "$state_root"; printf '%s\n' "$chain" >"$state.tmp"; mv -T "$state.tmp" "$state"
+    spec=$(printf '%q ' "${jump[@]:1}")
+    undo=$(printf 'while iptables -C FORWARD %s 2>/dev/null; do iptables -D FORWARD %s; done\nif iptables -S %q >/dev/null 2>&1; then iptables -F %q; iptables -X %q; fi' \
+      "$spec" "$spec" "$chain" "$chain" "$chain")
+    node_guard arm "$gjob" "$expire_after" "$chain rule expiry" "$undo"
     ipt -N "$chain"
     for src in ${allowed//,/ }; do ipt -A "$chain" -s "$src" -m comment --comment "$comment" -j RETURN; done
     ipt -A "$chain" -m limit --limit "$limit" -j LOG --log-prefix "$prefix"
@@ -218,11 +229,15 @@ case "$action" in
   # The rules are read even without the state file: a runner container recreated while the
   # rule was in place loses its state but the node keeps the rule, which would go on dropping
   # the caller's connections after the run. Nothing on the node and no state means no-op.
+  # cleanup holds the node's own undo off while it works and cancels it at the end; when the undo
+  # already fired there is no rule left and disarm says when it fired.
   cleanup) r=$(rules)
-    if ! ours "$r"; then rm -f "$state"; exit 0; fi
+    if ! ours "$r"; then node_guard disarm "$gjob"; rm -f "$state"; exit 0; fi
+    node_guard postpone "$gjob" "$guard_hold" "$chain rule expiry"
     while jumps "$r"; do ipt -D "${jump[@]}"; r=$(rules); done
     if has_chain "$r"; then ipt -F "$chain"; ipt -X "$chain"; fi
     r=$(rules); if ours "$r"; then exit 1; fi
+    node_guard disarm "$gjob"
     rm -f "$state" ;;
   # The rule being gone is an immediate fact; the pods becoming Ready again is what recovery
   # waits for. A caller that lost its connections goes NotReady under the rule and only

@@ -14,8 +14,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles"
 sys.path.insert(0, str(PROFILES))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from executor_common import ExecutorError  # noqa: E402  (sys.path 조작 뒤에야 import 가능)
+import node_guard_fakes  # noqa: E402
 
 
 def load(name: str):
@@ -873,7 +875,9 @@ esac
 
     def _host_job_stub(self, tmp: Path) -> dict[str, str]:
         """Fake ssh/kubectl around the real script. The node is two flag files (unit active,
-        output directory present); every remote command is unquoted and logged one argument per line."""
+        output directory present); every remote command is unquoted and logged one argument per line.
+        The node's own undo (`sudo -n bash -s`) runs for real against the fake systemd of
+        node_guard_fakes."""
         bindir = tmp / "bin"
         bindir.mkdir()
         node = tmp / "node"
@@ -895,6 +899,7 @@ fi
 eval "set -- $cmd"
 printf '%s\\n' "--- $1" "$@" >>{log}
 case "$cmd" in
+  "sudo -n bash -s") exec bash -s ;;
   true) : ;;
   *"systemctl is-active"*) [[ -e {node}/active ]] ;;
   "sh -c"*) echo /usr/bin/tar; echo /usr/bin/zstd; echo /usr/bin/systemd-run ;;
@@ -928,7 +933,7 @@ esac
             path = bindir / name
             path.write_text(body)
             path.chmod(0o755)
-        return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+        return dict(os.environ, **node_guard_fakes.install(tmp), PATH=f"{bindir}:{os.environ['PATH']}")
 
     @staticmethod
     def _host_job_calls(tmp: Path) -> list[list[str]]:
@@ -1035,6 +1040,295 @@ esac
                 self.assertIn(b"ssh to 192.168.122.11 failed during: systemctl is-active", result.stderr)
             self.assertNotIn(["sudo", "-n", "rmdir", "/var/backups/oradata"], self._host_job_calls(tmp)[before:])
             self.assertTrue((node / "outdir").exists())
+
+    # U8 node self-recovery (executor_common guard). 2026-10-17 F80-R-run-bad63a76: cleanup could not
+    # reach tb-w2 in NotReady and the runner stopped DIRTY with the job's output on the node. Every
+    # executor that changes a node now arms, before the change, a timer on the node that undoes it by
+    # itself; cleanup postpones it when it reaches the node and cancels it when done.
+
+    def test_host_job_arms_the_node_undo_before_the_job_and_cleanup_cancels_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._host_job_stub(tmp)
+            (tmp / "node" / "memavail").write_text("2764800\n")
+            result = self._host_job_run("run", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self._host_job_calls(tmp)
+            guard = calls.index(["sudo", "-n", "bash", "-s"])
+            job = next(i for i, c in enumerate(calls) if c[:3] == ["sudo", "-n", "systemd-run"])
+            self.assertLess(guard, job, "the undo is armed before the job starts")
+            # F80-R max_injection_duration 20m + 600s margin: never before the runner itself ends the run.
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup-expire"), [1800])
+            self.assertIn("|Oracle datafile backup expiry", node_guard_fakes.calls(env)[-1])
+            undo = (tmp / "state" / "oradata-backup.undo").read_text()
+            outputs = re.findall(r"/var/backups/oradata/(?:oradata-[0-9]{8}\.tar|users01-[0-9]{8}\.dbf)\.zst", undo)
+            self.assertEqual(len(outputs), 2)
+            self.assertIn("systemctl stop oradata-backup.service 2>/dev/null || true", undo)
+            self.assertIn("rmdir /var/backups/oradata 2>/dev/null || [[ ! -e /var/backups/oradata ]]", undo)
+            for forbidden in ("rm -rf", "rm -r ", "find ", "F80"):
+                self.assertNotIn(forbidden, undo)
+            # The outputs survive a reboot, so the next boot removes exactly them (files before the directory).
+            boot = (tmp / "tmpfiles.d" / "oradata-backup.conf").read_text().splitlines()
+            self.assertEqual(boot[:3], [f"r {outputs[0]}", f"r {outputs[1]}", "r /var/backups/oradata"])
+            # Nothing on the node's sudo line names the scenario or the guard's arguments.
+            self.assertNotIn(b"F80", (tmp / "log").read_bytes())
+            result = self._host_job_run("cleanup", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self._host_job_calls(tmp)[len(calls):]
+            guards = [i for i, c in enumerate(calls) if c == ["sudo", "-n", "bash", "-s"]]
+            stop = calls.index(["sudo", "-n", "systemctl", "stop", "oradata-backup.service"])
+            rmdir = calls.index(["sudo", "-n", "rmdir", "/var/backups/oradata"])
+            self.assertEqual(len(guards), 2)
+            self.assertLess(guards[0], stop, "postponed before cleanup touches the job")
+            self.assertGreater(guards[1], rmdir, "cancelled only after the job and its output are gone")
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup-expire"), [1800, 960])
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
+            self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
+            self.assertNotIn(b"by itself", result.stderr)
+
+    def _host_job_node_fakes(self, tmp: Path) -> dict[str, str]:
+        """What the node's own undo meets when it runs as root on tb-w2: systemctl stops the job
+        unit (the stub's 'active' flag), and the output directory is the stub's 'outdir' flag."""
+        node = tmp / "node"
+        fakebin = tmp / "undo-bin"
+        fakebin.mkdir()
+        scripts = {
+            "rm": f"""#!/usr/bin/env bash
+flags=(); real=()
+for a in "$@"; do case "$a" in -*) flags+=("$a");; /var/backups/oradata/*) echo "rm $a" >>{node}/undo-log;; *) real+=("$a");; esac; done
+(( ${{#real[@]}} == 0 )) || exec /bin/rm "${{flags[@]}}" "${{real[@]}}"
+""",
+            "rmdir": f"""#!/usr/bin/env bash
+if [[ "$1" == /var/backups/oradata ]]; then
+  echo "rmdir $1" >>{node}/undo-log
+  [[ -e {node}/outdir ]] || exit 1
+  /bin/rm -f {node}/outdir
+  exit 0
+fi
+exec /bin/rmdir "$@"
+""",
+            "stop-hook": f"""#!/usr/bin/env bash
+if [[ "$1" == oradata-backup.service ]]; then /bin/rm -f {node}/active; fi
+""",
+        }
+        for name, body in scripts.items():
+            (fakebin / name).write_text(body)
+            (fakebin / name).chmod(0o755)
+        guard_bin = Path(node_guard_fakes.install(tmp)["OPSJOB_SYSTEMCTL"]).parent
+        return {"PATH": f"{guard_bin}:{fakebin}:{os.environ['PATH']}", "FAKE_STOP_HOOK": str(fakebin / "stop-hook")}
+
+    def test_host_job_node_undoes_the_backup_by_itself_when_cleanup_never_reaches_it(self) -> None:
+        # The sandbox's /var/backups/oradata stands for the node's; the real host must not have one.
+        self.assertFalse(Path("/var/backups/oradata").exists())
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._host_job_stub(tmp)
+            node = tmp / "node"
+            (node / "memavail").write_text("2764800\n")
+            self.assertEqual(self._host_job_run("run", env).returncode, 0)
+            # The runner loses the node (F80-R-run-bad63a76): cleanup fails after its backoff and
+            # never reaches the node, so the timer is neither postponed nor cancelled.
+            (node / "down").write_text("1000\n")
+            self.assertNotEqual(self._host_job_run("cleanup", env).returncode, 0)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup-expire"), [1800])
+            self.assertEqual(node_guard_fakes.timers(env), ["oradata-backup-expire.timer"])
+            self.assertTrue((node / "active").exists())
+            undo = tmp / "state" / "oradata-backup.undo"
+            spare = tmp / "undo-copy"
+            spare.write_bytes(undo.read_bytes())
+            # The deadline passes: PID 1 runs the undo; the job stops and its outputs and directory go.
+            extra = self._host_job_node_fakes(tmp)
+            fired = node_guard_fakes.fire(env, "oradata-backup-expire", extra_env=extra)
+            self.assertEqual(fired.returncode, 0, fired.stderr)
+            self.assertFalse((node / "active").exists())
+            self.assertFalse((node / "outdir").exists())
+            log = (node / "undo-log").read_text().splitlines()
+            self.assertEqual([line.split()[0] for line in log], ["rm", "rm", "rmdir"])
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["oradata-backup.expired"])
+            self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
+            # Idempotent: run twice more, it changes nothing and does not fail.
+            for _ in range(2):
+                again = subprocess.run(["/bin/bash", str(spare)], env={**os.environ, **env, **extra},
+                                       capture_output=True, timeout=60)
+                self.assertEqual(again.returncode, 0, again.stderr)
+                self.assertFalse((node / "active").exists())
+                self.assertFalse((node / "outdir").exists())
+            # The node answers again: cleanup finds nothing left, says when the node undid it, and the
+            # node counts as recovered.
+            (node / "down").write_text("0\n")
+            late = self._host_job_run("cleanup", env)
+            self.assertEqual(late.returncode, 0, late.stderr)
+            self.assertIn(b"the node undid the change by itself at ", late.stderr)
+            self.assertNotIn(["sudo", "-n", "systemctl", "stop", "oradata-backup.service"],
+                             self._host_job_calls(tmp)[-12:])
+            self.assertEqual(self._host_job_run("recovery", env).returncode, 0)
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
+
+    def _host_firewall_stub(self, tmp: Path) -> dict[str, str]:
+        """tb-ops side of host.firewall with the node in a file: kubectl answers with the F44-R
+        placement, ssh runs the remote command here, and iptables keeps its rules as JSON."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        scripts = {
+            "ssh": f"""#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do [[ "$1" == -i || "$1" == -o ]] && shift; shift; done
+shift
+cmd="$*"
+printf '%s\\n' "$cmd" >>{tmp}/ssh-log
+eval "set -- $cmd"
+if [[ "$1" == sudo ]]; then shift; [[ "$1" == -n ]] && shift; fi
+exec "$@"
+""",
+            "sysctl": "#!/usr/bin/env bash\necho 1\n",
+            "iptables": f"""#!/usr/bin/env python3
+import json, os, sys
+path = "{tmp}/iptables.json"
+st = json.load(open(path)) if os.path.exists(path) else {{"chains": [], "rules": []}}
+a = sys.argv[1:]
+def save():
+    json.dump(st, open(path, "w"))
+def show(chain, spec):
+    return " ".join(["-A", chain] + [('"' + x + '"') if " " in x else x for x in spec])
+op = a[0]
+if op == "-S":
+    if len(a) > 1 and a[1] not in st["chains"]:
+        sys.exit(1)
+    if len(a) == 1:
+        print("-P FORWARD ACCEPT")
+    for c in st["chains"]:
+        if len(a) == 1 or c == a[1]:
+            print("-N " + c)
+    for c, spec in st["rules"]:
+        if len(a) == 1 or c == a[1]:
+            print(show(c, spec))
+elif op == "-N":
+    if a[1] in st["chains"]:
+        sys.exit(1)
+    st["chains"].append(a[1]); save()
+elif op == "-A":
+    st["rules"].append([a[1], a[2:]]); save()
+elif op == "-I":
+    st["rules"].insert(0, [a[1], a[3:]]); save()
+elif op == "-C":
+    sys.exit(0 if [a[1], a[2:]] in st["rules"] else 1)
+elif op == "-D":
+    if [a[1], a[2:]] not in st["rules"]:
+        sys.exit(1)
+    st["rules"].remove([a[1], a[2:]]); save()
+elif op == "-F":
+    if a[1] not in st["chains"]:
+        sys.exit(1)
+    st["rules"] = [r for r in st["rules"] if r[0] != a[1]]; save()
+elif op == "-X":
+    referenced = any(r[1][-2:] == ["-j", a[1]] for r in st["rules"])
+    if a[1] not in st["chains"] or referenced or any(r[0] == a[1] for r in st["rules"]):
+        sys.exit(1)
+    st["chains"].remove(a[1]); save()
+else:
+    sys.exit(9)
+""",
+            "kubectl": """#!/usr/bin/env python3
+import json, sys
+a = sys.argv[1:]
+ns = a[a.index("-n") + 1]
+pods = {
+    ("rca-testbed-food", "testbed-restaurant"): ("tb-w3", "10.244.2.10"),
+    ("rca-testbed-food", "testbed-order"): ("tb-w3", "10.244.2.20"),
+}
+if "pods" in a:
+    app = a[a.index("-l") + 1].split("=", 1)[1]
+    node, ip = pods[(ns, app)]
+    print(json.dumps({"items": [{"metadata": {}, "spec": {"nodeName": node},
+                                 "status": {"podIP": ip, "conditions": [{"type": "Ready", "status": "True"}]}}]}))
+elif "svc" in a:
+    print(json.dumps({"spec": {"ports": [{"targetPort": 8081}]}}))
+else:
+    sys.exit(9)
+""",
+        }
+        for name, body in scripts.items():
+            (bindir / name).write_text(body)
+            (bindir / name).chmod(0o755)
+        guard = node_guard_fakes.install(tmp)
+        return dict(os.environ, **guard, SCENARIO_PROFILE_STATE_ROOT=str(tmp / "runner-state"),
+                    PATH=f"{bindir}:{os.environ['PATH']}")
+
+    def _host_firewall_run(self, action: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+        plan = compiler.compile_plan("f44-r-food-node-firewall-allowlist-omits-order")
+        argv, stdin = host_firewall.build_invocation(plan, action)
+        return subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=120, check=False)
+
+    @staticmethod
+    def _iptables(tmp: Path) -> dict:
+        return json.loads((tmp / "iptables.json").read_text())
+
+    def test_host_firewall_arms_the_node_undo_before_the_rule_and_cleanup_cancels_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._host_firewall_stub(tmp)
+            result = self._host_firewall_run("run", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            remote = (tmp / "ssh-log").read_text().splitlines()
+            self.assertLess(remote.index("sudo -n bash -s"),
+                            next(i for i, c in enumerate(remote) if c.startswith("sudo -n iptables -N")))
+            self.assertEqual(self._iptables(tmp)["chains"], ["RESTAURANT-API-IN"])
+            # F44-R max_injection_duration 25m + 600s margin.
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "restaurant-api-in-expire"), [2100])
+            self.assertIn("|RESTAURANT-API-IN rule expiry", node_guard_fakes.calls(env)[-1])
+            # iptables rules end with a reboot; the next boot only removes the guard's own files.
+            boot = (tmp / "tmpfiles.d" / "restaurant-api-in.conf").read_text().splitlines()
+            self.assertEqual(boot, [f"r {tmp / 'state' / 'restaurant-api-in.undo'}",
+                                    f"r {tmp / 'tmpfiles.d' / 'restaurant-api-in.conf'}"])
+            mark = len(remote)
+            result = self._host_firewall_run("cleanup", env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            remote = (tmp / "ssh-log").read_text().splitlines()[mark:]
+            guards = [i for i, c in enumerate(remote) if c == "sudo -n bash -s"]
+            deletes = [i for i, c in enumerate(remote) if c.startswith("sudo -n iptables -D") or c.startswith("sudo -n iptables -X")]
+            self.assertEqual(len(guards), 2)
+            self.assertLess(guards[0], deletes[0])
+            self.assertGreater(guards[1], deletes[-1])
+            self.assertEqual(self._iptables(tmp), {"chains": [], "rules": []})
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "restaurant-api-in-expire"), [2100, 960])
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
+            self.assertEqual(self._host_firewall_run("recovery", env).returncode, 0)
+
+    def test_host_firewall_node_removes_the_rule_by_itself_when_cleanup_never_comes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._host_firewall_stub(tmp)
+            self.assertEqual(self._host_firewall_run("run", env).returncode, 0)
+            before = self._iptables(tmp)
+            self.assertEqual(len(before["rules"]), 7)
+            undo = tmp / "state" / "restaurant-api-in.undo"
+            spare = tmp / "undo-copy"
+            spare.write_bytes(undo.read_bytes())
+            # The undo removes exactly the jump and the chain the run added, as root on the node.
+            body = undo.read_text()
+            self.assertIn("while iptables -C FORWARD -d 10.244.2.0/24 -p tcp --dport 8081", body)
+            self.assertIn("iptables -F RESTAURANT-API-IN; iptables -X RESTAURANT-API-IN", body)
+            for forbidden in ("-P FORWARD", "INPUT", "OUTPUT", "-F FORWARD", "conntrack -F", "F44"):
+                self.assertNotIn(forbidden, body)
+            # Another FORWARD rule on the node is not the run's and stays.
+            st = self._iptables(tmp)
+            st["rules"].append(["FORWARD", ["-d", "10.244.9.0/24", "-j", "ACCEPT"]])
+            (tmp / "iptables.json").write_text(json.dumps(st))
+            fired = node_guard_fakes.fire(env, "restaurant-api-in-expire")
+            self.assertEqual(fired.returncode, 0, fired.stderr)
+            self.assertEqual(self._iptables(tmp), {"chains": [], "rules": [["FORWARD", ["-d", "10.244.9.0/24", "-j", "ACCEPT"]]]})
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["restaurant-api-in.expired"])
+            for _ in range(2):
+                again = subprocess.run(["/bin/bash", str(spare)], env=env, capture_output=True, timeout=60)
+                self.assertEqual(again.returncode, 0, again.stderr)
+                self.assertEqual(self._iptables(tmp)["chains"], [])
+                self.assertEqual(len(self._iptables(tmp)["rules"]), 1)
+            late = self._host_firewall_run("cleanup", env)
+            self.assertEqual(late.returncode, 0, late.stderr)
+            self.assertIn(b"the node undid the change by itself at ", late.stderr)
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
+            self.assertEqual(self._host_firewall_run("recovery", env).returncode, 0)
 
     def test_k8s_scale_only_lowers_one_deployment_replica_count_and_restores_it(self) -> None:
         # F51-R: 주입은 Deployment 하나의 replicas 를 1 에서 0 으로 줄이는 운영 명령뿐이다.
@@ -3119,6 +3413,181 @@ esac
             db_workload.validate(
                 "F02-H", params, {"parameter_contract": {"allowed_scenarios": ["F09-Z"]}}
             )
+
+
+class NodeGuardTests(unittest.TestCase):
+    """executor_common guard: the timer a node executor arms on the node so that the node undoes
+    the change by itself when cleanup never comes (U8, after F80-R-run-bad63a76)."""
+
+    common = sys.modules["executor_common"]
+
+    def _guard(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
+        import shlex
+
+        preamble = ("set -- " + " ".join(shlex.quote(a) for a in args) + "\n").encode()
+        return subprocess.run(["bash", "-s"], input=preamble + self.common.GUARD_PROGRAM,
+                              env={**os.environ, **env}, capture_output=True, timeout=60)
+
+    def test_arm_postpone_disarm_and_a_second_disarm(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            body = f"echo undone >>{tmp}/undone"
+            done = self._guard(env, "arm", "nightly", "1800", "nightly expiry", body, "/var/x/out.bin", "/var/x")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800])
+            self.assertIn("run nightly-expire 1800 AccuracySec=1s RemainAfterElapse=no|nightly expiry",
+                          node_guard_fakes.calls(env))
+            undo = tmp / "state" / "nightly.undo"
+            self.assertEqual(node_guard_fakes.command(env, "nightly-expire"), ["/bin/bash", str(undo)])
+            self.assertEqual(undo.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((tmp / "state").stat().st_mode & 0o777, 0o700)
+            lines = undo.read_text().splitlines()
+            self.assertEqual(lines[:3], ["#!/bin/bash", "set -euo pipefail", body])
+            conf = tmp / "tmpfiles.d" / "nightly.conf"
+            self.assertEqual(conf.read_text().splitlines(),
+                             ["r /var/x/out.bin", "r /var/x", f"r {undo}", f"r {conf}"])
+            # cleanup reached the node: held off for one executor call, the undo kept.
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960", "nightly expiry").returncode, 0)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800, 960])
+            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+            self.assertTrue(undo.exists())
+            # cleanup undid the change itself: no timer, no undo, no boot rule; nothing ran.
+            done = self._guard(env, "disarm", "nightly")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertEqual(list((tmp / "state").iterdir()), [])
+            self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
+            self.assertFalse((tmp / "undone").exists())
+            # A retried cleanup: postpone arms nothing without an undo, disarm is a no-op.
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960", "nightly expiry").returncode, 0)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800, 960])
+            self.assertEqual(self._guard(env, "disarm", "nightly").returncode, 0)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+
+    def test_the_timer_undoes_by_itself_once_and_cleanup_hears_of_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            body = f"echo undone >>{tmp}/undone"
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "nightly expiry", body).returncode, 0)
+            fired = node_guard_fakes.fire(env, "nightly-expire")
+            self.assertEqual(fired.returncode, 0, fired.stderr)
+            self.assertEqual((tmp / "undone").read_text(), "undone\n")
+            # The undo leaves only the time it ran; its own file and the boot rule are gone.
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["nightly.expired"])
+            self.assertRegex((tmp / "state" / "nightly.expired").read_text(), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n$")
+            self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
+            # A late cleanup postpones nothing (the undo is gone) and its disarm reports the expiry.
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960", "nightly expiry").returncode, 0)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            done = self._guard(env, "disarm", "nightly")
+            self.assertEqual(done.returncode, 0)
+            self.assertIn(b"the node undid the change by itself at ", done.stderr)
+            self.assertEqual(list((tmp / "state").iterdir()), [])
+
+    def test_rearm_replaces_a_stale_timer_and_waits_for_a_running_undo(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "nightly expiry", "true").returncode, 0)
+            # The stale timer of an earlier run is stopped first (PID 1 refuses a second unit of the name).
+            done = self._guard(env, "arm", "nightly", "2400", "nightly expiry", "true")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800, 2400])
+            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+            calls = node_guard_fakes.calls(env)
+            self.assertLess(calls.index("ctl stop nightly-expire.timer"),
+                            calls.index("run nightly-expire 2400 AccuracySec=1s RemainAfterElapse=no|nightly expiry"))
+            # An undo still running is waited for; one that never ends stops arm and disarm (they fail
+            # rather than run beside it).
+            (tmp / "systemd" / "nightly-expire.service.active").touch()
+            env_fast = dict(env, PATH=f"{tmp / 'fast'}:{os.environ['PATH']}")
+            (tmp / "fast").mkdir()
+            (tmp / "fast" / "sleep").write_text("#!/usr/bin/env bash\n:\n")
+            (tmp / "fast" / "sleep").chmod(0o755)
+            for args in (("disarm", "nightly"), ("arm", "nightly", "1800", "nightly expiry", "true")):
+                stuck = self._guard(env_fast, *args)
+                self.assertNotEqual(stuck.returncode, 0)
+                self.assertIn(b"still running after 120s", stuck.stderr)
+            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+
+    def test_a_failed_undo_keeps_the_boot_rule_and_reports_at_disarm(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "nightly expiry", "false", "/var/x/out.bin").returncode, 0)
+            fired = node_guard_fakes.fire(env, "nightly-expire")
+            self.assertNotEqual(fired.returncode, 0)
+            # Nothing claims an expiry that did not finish; a reboot or a person can still finish it.
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["nightly.undo"])
+            self.assertEqual([x.name for x in (tmp / "tmpfiles.d").iterdir()], ["nightly.conf"])
+            (tmp / "systemd" / "nightly-expire.service.failed").touch()
+            done = self._guard(env, "disarm", "nightly")
+            self.assertEqual(done.returncode, 0)
+            self.assertIn(b"nightly-expire.service failed; cleanup undoes the change itself", done.stderr)
+            self.assertNotIn(b"by itself at", done.stderr)
+            self.assertEqual(list((tmp / "state").iterdir()), [])
+            self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
+
+    def test_arm_refuses_a_bad_deadline_or_boot_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            for args in (("0", "true"), ("12m", "true"), ("1800", "true", "relative/path"), ("1800", "true", "/a b")):
+                with self.subTest(args=args):
+                    done = self._guard(env, "arm", "nightly", args[0], "nightly expiry", *args[1:])
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertNotEqual(self._guard(env, "fire", "nightly").returncode, 0)
+
+    def test_deadline_follows_the_runner_limit_plus_margin(self) -> None:
+        f80 = compiler.compile_plan("f80-r-banking-oradata-backup-zstd-exhausts-node-memory")
+        f72 = compiler.compile_plan("f72-r-banking-node-firewall-omits-oracle-app-clients")
+        self.assertEqual(self.common.guard_expiry_seconds(f80), 20 * 60 + 600)
+        self.assertEqual(self.common.guard_expiry_seconds(f72), 30 * 60 + 600)
+        # The runner's own default when a plan states no limit (rca-scenario-runner controller: 1200).
+        self.assertEqual(self.common.guard_expiry_seconds({"scenario": {"id": "X"}}), 1200 + 600)
+        self.assertEqual(self.common.guard_stdin_line(f80), b"expire_after=1800 guard_hold=960\n")
+        # The hold outlasts one executor call (execute() bounds it at 900s).
+        self.assertGreater(self.common.GUARD_CLEANUP_HOLD_SECONDS, 900)
+        for bad in ("10x", "-5m", True, 0):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ExecutorError):
+                    self.common.guard_expiry_seconds({"controller": {"runtime": {"max_injection_duration": bad}}})
+
+    def test_names_on_the_node_are_neutral(self) -> None:
+        # The guard's units, files and descriptions reach the node's journal (forwarded to 119).
+        for raw in self.common.GUARD_PROGRAM.decode().splitlines():
+            for word in ("lucida", "scenario", "testbed", "rca", "inject"):
+                self.assertNotIn(word, raw.lower())
+
+    # Every executor that reaches a cluster node and changes it over sudo must arm the guard, or be
+    # listed here with the reason it cannot. Two-sided, so a new node executor (for example the
+    # network injector) cannot land without one or the other.
+    NO_NODE_UNDO = {
+        # The change is the removal of images the node held. Undoing it on the node needs a copy of
+        # the images on the node (about 670 MB for F52-R), written at the injection; that would add a
+        # disk write and an export process to the recording, so it is a decision for a person. The
+        # node stays Ready, so the runner's cleanup can always reach it.
+        "host_image_executor.py",
+        # The change is the Deployment's image (cluster API); the node only gains one extra image.
+        "k8s_image_executor.py",
+    }
+
+    def test_every_node_executor_arms_the_guard_or_says_why_not(self) -> None:
+        reaching = set()
+        for path in sorted(PROFILES.glob("*.py")):
+            source = path.read_text()
+            # A cluster worker is reached as nkia@<node> with sudo; the runner VM (.206) is not a node.
+            if "nkia@" in source and "sudo" in source and "192.168.122.206" not in source:
+                reaching.add(path.name)
+        guarded = {name for name in reaching
+                   if 'node_guard arm "' in (PROFILES / name).read_text() or "guard_arm \"$job\"" in (PROFILES / name).read_text()}
+        self.assertEqual(guarded, {"host_firewall_executor.py", "host_job_executor.py", "host_stress_executor.py"})
+        self.assertEqual(reaching - guarded, self.NO_NODE_UNDO)
+
 
 
 if __name__ == "__main__":

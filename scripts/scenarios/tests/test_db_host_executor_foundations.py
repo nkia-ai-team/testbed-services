@@ -13,6 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles"
 sys.path.insert(0, str(PROFILES))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import node_guard_fakes  # noqa: E402  (sys.path 조작 뒤에야 import 가능)
 
 
 def load(name: str):
@@ -1061,6 +1064,20 @@ class HostStressRegistrationIsTwoSidedTests(unittest.TestCase):
         )
 
 
+def remote(sandbox: Path, *args: str):
+    """The worker side of host.stress in a sandbox: the state roots move into the sandbox and
+    systemd is the fake from node_guard_fakes (the guard arms a timer on every run). The second
+    stdin line is the one build_invocation sends (guard_stdin_line), with a plan's 20m limit."""
+    import os
+    import shlex
+    import subprocess
+
+    preamble = ("set -- " + " ".join(shlex.quote(a) for a in args) + "\n").encode()
+    env = dict(os.environ, **node_guard_fakes.install(sandbox), OPSJOB_LEGACY_ROOT=str(sandbox / "legacy"))
+    guard = b"expire_after=1800 guard_hold=960\n"
+    return subprocess.run(["bash", "-s"], input=preamble + guard + host.REMOTE, env=env, capture_output=True, timeout=120)
+
+
 class HostStressLeavesNoScenarioTraceTests(unittest.TestCase):
     """Nothing host.stress leaves on a worker may name the scenario (design principle 8).
 
@@ -1125,13 +1142,7 @@ class HostStressLeavesNoScenarioTraceTests(unittest.TestCase):
                 self.assertNotIn("$scenario", line)
 
     def _remote(self, sandbox: Path, *args: str) -> int:
-        import os
-        import shlex
-        import subprocess
-
-        preamble = ("set -- " + " ".join(shlex.quote(a) for a in args) + "\n").encode()
-        env = dict(os.environ, OPSJOB_STATE_ROOT=str(sandbox / "state"), OPSJOB_LEGACY_ROOT=str(sandbox / "legacy"))
-        return subprocess.run(["bash", "-s"], input=preamble + host.REMOTE, env=env, capture_output=True, timeout=120).returncode
+        return remote(sandbox, *args).returncode
 
     def test_cpu_job_lifecycle_and_cmdline_in_a_sandbox(self) -> None:
         import tempfile
@@ -1218,6 +1229,145 @@ class HostStressLeavesNoScenarioTraceTests(unittest.TestCase):
             finally:
                 bystander.kill()
                 bystander.wait(timeout=10)
+
+
+class HostStressNodeUndoTests(unittest.TestCase):
+    """U8 node self-recovery: every host.stress job arms, before it starts, a timer on the worker
+    that undoes it by itself; cleanup postpones and then cancels it (executor_common guard).
+
+    2026-10-17 F80-R-run-bad63a76: cleanup could not reach a node that the injection had pushed into
+    NotReady, and the runner stopped DIRTY with the change still on the node.
+    """
+
+    JOBS = {"fio": "iobench", "watermark": "bulkcopy", "pressure": "soak", "cpu": "burnin", "memhog": "memhold"}
+    STARTS = {"fio": "nohup fio", "watermark": "fallocate", "pressure": "nohup stress-ng", "cpu": "setsid bash", "memhog": "setsid bash"}
+
+    @staticmethod
+    def _branch(mode: str, action: str) -> str:
+        block = host.REMOTE.decode().split(f"\n {mode})", 1)[1].split("esac ;;", 1)[0]
+        return block.split(f"{action})", 1)[1].split(";;", 1)[0]
+
+    def test_every_job_arms_its_undo_before_it_starts_and_cleanup_cancels_it_last(self) -> None:
+        for mode, start in self.STARTS.items():
+            with self.subTest(mode=mode):
+                run_case = self._branch(mode, "run")
+                self.assertIn("arm ", run_case)
+                self.assertLess(run_case.index("arm "), run_case.index(start))
+                cleanup_case = self._branch(mode, "cleanup")
+                self.assertTrue(cleanup_case.strip().startswith('guard_postpone "$job" "$guard_hold"'), cleanup_case)
+                self.assertTrue(cleanup_case.strip().endswith('guard_disarm "$job"'), cleanup_case)
+        # The deadline comes from the plan through stdin, never through the sudo command line.
+        for sid, p in HostStressLeavesNoScenarioTraceTests.every_parameter_set():
+            argv, stdin = host.build_invocation(plan("host.stress", sid, p, {"transport": "ssh", "host": p["host"]}), "run")
+            self.assertEqual(argv[-3:], ["sudo", "bash", "-s"])
+            self.assertEqual(stdin.split(b"\n")[1], b"expire_after=1800 guard_hold=960")
+
+    def test_cpu_job_is_undone_by_the_worker_when_cleanup_never_comes(self) -> None:
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        import time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            (sandbox / "legacy").mkdir()
+            env = node_guard_fakes.install(sandbox)
+            cpu = ("cpu", "192.168.122.14", "1", "300")
+            state = sandbox / "state"
+            result = remote(sandbox, "run", *cpu)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pgid = int((state / "burnin.pgid").read_text())
+            try:
+                self.assertEqual(node_guard_fakes.timers(env), ["burnin-expire.timer"])
+                self.assertEqual(node_guard_fakes.armed_seconds(env, "burnin-expire"), [1800])
+                self.assertIn("AccuracySec=1s RemainAfterElapse=no|burnin expiry", node_guard_fakes.calls(env)[-1])
+                # The guard is armed before the burner starts: its undo exists when the group does.
+                undo = state / "burnin.undo"
+                self.assertEqual(node_guard_fakes.command(env, "burnin-expire"), ["/bin/bash", str(undo)])
+                # A reboot ends the burner by itself; what it leaves (pgid and log files) goes at the next boot.
+                self.assertEqual((sandbox / "tmpfiles.d" / "burnin.conf").read_text().splitlines(), [
+                    f"r {state / 'burnin.pgid'}", f"r {state / 'burnin.log'}",
+                    f"r {undo}", f"r {sandbox / 'tmpfiles.d' / 'burnin.conf'}",
+                ])
+                spare = sandbox / "undo-copy"
+                shutil.copy(undo, spare)
+                # cleanup never comes: the timer elapses and the worker undoes the job by itself.
+                fired = node_guard_fakes.fire(env, "burnin-expire")
+                self.assertEqual(fired.returncode, 0, fired.stderr)
+                time.sleep(0.5)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(pgid, 0)
+                self.assertEqual(sorted(x.name for x in state.iterdir()), ["burnin.expired"])
+                self.assertEqual(list((sandbox / "tmpfiles.d").iterdir()), [])
+                self.assertEqual(remote(sandbox, "recovery", *cpu).returncode, 0)
+                # The undo is idempotent: run again (twice) it finds nothing and changes nothing.
+                for _ in range(2):
+                    again = subprocess.run(["/bin/bash", str(spare)], env=dict(os.environ, **env), capture_output=True, timeout=60)
+                    self.assertEqual(again.returncode, 0, again.stderr)
+                    self.assertEqual(sorted(x.name for x in state.iterdir()), ["burnin.expired"])
+            finally:
+                try:
+                    os.killpg(pgid, 9)
+                except ProcessLookupError:
+                    pass
+            # cleanup comes late: nothing left to undo, it says when the worker did it and leaves nothing.
+            late = remote(sandbox, "cleanup", *cpu)
+            self.assertEqual(late.returncode, 0, late.stderr)
+            self.assertIn(b"the node undid the change by itself at ", late.stderr)
+            self.assertEqual(sorted(x.name for x in state.iterdir()), [])
+            self.assertEqual(node_guard_fakes.timers(env), [])
+
+    def test_cpu_job_cleanup_postpones_then_cancels_the_timer(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            (sandbox / "legacy").mkdir()
+            env = node_guard_fakes.install(sandbox)
+            cpu = ("cpu", "192.168.122.14", "1", "300")
+            self.assertEqual(remote(sandbox, "run", *cpu).returncode, 0)
+            done = remote(sandbox, "cleanup", *cpu)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            # Held off for the length of one executor call, then cancelled; nothing on the worker reports
+            # an expiry because none happened.
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "burnin-expire"), [1800, 960])
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertNotIn(b"by itself", done.stderr)
+            self.assertEqual(sorted(x.name for x in (sandbox / "state").iterdir()), [])
+            self.assertEqual(list((sandbox / "tmpfiles.d").iterdir()), [])
+            self.assertEqual(remote(sandbox, "recovery", *cpu).returncode, 0)
+
+    def test_pid_undo_leaves_a_process_that_took_over_the_number(self) -> None:
+        # A long wait or a reboot can hand the job's pid to another process: the undo checks the
+        # command name before it kills, then removes the job's files either way.
+        import os
+        import subprocess
+        import tempfile
+
+        source = host.REMOTE.decode()
+        undo_pid = "undo_pid() {" + source.split("undo_pid() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            pidfile, logfile = sandbox / "soak.pid", sandbox / "soak.log"
+            bystander = subprocess.Popen(["sleep", "60"])
+            try:
+                pidfile.write_text(f"{bystander.pid}\n")
+                logfile.write_text("x")
+                body = subprocess.run(
+                    ["bash", "-c", undo_pid + 'undo_pid "$1" stress-ng "$2"', "-", str(pidfile), str(logfile)],
+                    capture_output=True, text=True, timeout=30, check=True,
+                ).stdout
+                for _ in range(2):
+                    ran = subprocess.run(["bash", "-c", "set -euo pipefail\n" + body], capture_output=True, timeout=60)
+                    self.assertEqual(ran.returncode, 0, ran.stderr)
+                self.assertIsNone(bystander.poll())
+                self.assertFalse(pidfile.exists())
+                self.assertFalse(logfile.exists())
+            finally:
+                bystander.kill()
+                bystander.wait(timeout=10)
+        del os
 
 
 if __name__ == "__main__":

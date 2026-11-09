@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from executor_common import ExecutorError, cli, profile_instance
+from executor_common import GUARD_FUNCTIONS, ExecutorError, cli, guard_stdin_line, profile_instance
 
 PROFILE_ID = "host.stress"
 
@@ -292,7 +292,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     # health_path. Nothing here carries a metacharacter today (paths, numbers and
     # cohort names), but that is a property of the parameters, not of the transport.
     preamble = ("set -- " + " ".join(shlex.quote(arg) for arg in args) + "\n").encode()
-    return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s"], preamble + REMOTE
+    return ["/usr/bin/ssh", "-i", "/root/.ssh/tb_key", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", f"nkia@{p['host']}", "sudo", "bash", "-s"], preamble + guard_stdin_line(plan) + REMOTE
 
 
 REMOTE = br'''#!/usr/bin/env bash
@@ -313,6 +313,40 @@ case "$mode" in fio) job=iobench;; watermark) job=bulkcopy;; pressure) job=soak;
 pidfile="$state_root/$job.pid"; logfile="$state_root/$job.log"; artifact=""
 alive() { [[ -s "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
 stop() { if alive; then kill "$(cat "$pidfile")"; for _ in {1..30}; do alive || break; sleep 1; done; alive && kill -9 "$(cat "$pidfile")"; fi; rm -f "$pidfile"; }
+'''
+
+# The node's own undo (executor_common, node self-recovery). host.stress already runs as root on the
+# worker, so it carries the guard functions itself. The second stdin line sets the deadline.
+REMOTE += GUARD_FUNCTIONS + br'''# Each job arms its undo before it starts. A process is killed only while its pid or process group
+# is still this job's: a long wait or a reboot can hand the number to another process. Then the
+# job's files go; the same files are listed for removal at the next boot.
+undo_pid() {
+  local pidfile=$1 comm=$2
+  shift 2
+  printf 'pid=$(cat %q 2>/dev/null || true)\n' "$pidfile"
+  printf 'if [[ "$pid" =~ ^[0-9]+$ && "$(cat /proc/$pid/comm 2>/dev/null)" == %q* ]]; then\n' "$comm"
+  printf '  kill "$pid" 2>/dev/null || true\n'
+  printf '  for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done\n'
+  printf '  kill -9 "$pid" 2>/dev/null || true\n'
+  printf 'fi\n'
+  printf 'rm -f'; printf ' %q' "$pidfile" "$@"; printf '\n'
+}
+# The leader names its pgid file on its own command line. Without a leader the number cannot have
+# been handed on while the group still has members.
+undo_group() {
+  local pgidfile=$1
+  shift
+  printf 'pgid=$(cat %q 2>/dev/null || true)\n' "$pgidfile"
+  printf 'if [[ "$pgid" =~ ^[0-9]+$ ]] && kill -0 -"$pgid" 2>/dev/null; then\n'
+  printf '  if [[ ! -e /proc/$pgid ]] || tr "\\0" " " </proc/$pgid/cmdline | grep -Fq %q; then\n' "$pgidfile"
+  printf '    kill -TERM -"$pgid" 2>/dev/null || true\n'
+  printf '    for _ in $(seq 1 30); do kill -0 -"$pgid" 2>/dev/null || break; sleep 1; done\n'
+  printf '    kill -KILL -"$pgid" 2>/dev/null || true\n'
+  printf '  fi\n'
+  printf 'fi\n'
+  printf 'rm -f'; printf ' %q' "$pgidfile" "$pgidfile.tmp" "$@"; printf '\n'
+}
+arm() { guard_arm "$job" "$expire_after" "$job expiry" "$@"; }
 # Until 2026-10-16 the names were /var/lib/lucida/scenario-profile-state/<id>.{pid,pgid,log}
 # and <target>/.lucida-<id>-{fio,watermark}. A run cut short under that executor can
 # still have left a process or a file, and nothing else knows those names any more, so
@@ -348,17 +382,17 @@ case "$mode" in
  fio)
   target="$1"; size="$2"; runtime="$3"; rate="$4"; artifact="$target/.$job.dat"
   check() { command -v fio >/dev/null; [[ -d "$target" && ! -L "$target" ]]; [[ "$(df -P "$target" | awk 'NR==2{print $4}')" -gt $((size*1024+1048576)) ]]; }
-  case "$action" in preflight) legacy_clear; check; [[ ! -e "$artifact" ]] && ! alive;; run) legacy_clear; check; [[ ! -e "$artifact" ]] && ! alive; nohup fio --name="$job" --filename="$artifact" --size="${size}M" --rw=randwrite --bs=4k --iodepth=16 --direct=1 --time_based --runtime="$runtime" --rate_iops="$rate" --end_fsync=1 >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f -- "$artifact" "$logfile"; legacy_cleanup;; recovery) legacy_clear; ! alive; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
+  case "$action" in preflight) legacy_clear; check; [[ ! -e "$artifact" ]] && ! alive;; run) legacy_clear; check; [[ ! -e "$artifact" ]] && ! alive; arm "$(undo_pid "$pidfile" fio "$artifact" "$logfile")" "$pidfile" "$logfile" "$artifact"; nohup fio --name="$job" --filename="$artifact" --size="${size}M" --rw=randwrite --bs=4k --iodepth=16 --direct=1 --time_based --runtime="$runtime" --rate_iops="$rate" --end_fsync=1 >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) guard_postpone "$job" "$guard_hold" "$job expiry"; stop; rm -f -- "$artifact" "$logfile"; legacy_cleanup; guard_disarm "$job";; recovery) legacy_clear; ! alive; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
  watermark)
   target="$1"; watermark="$2"; reserve_mib="$3"; max_mib="$4"; artifact="$target/.$job.part"
   calculate() { read -r blocks used avail < <(df -Pk "$target" | awk 'NR==2{print $2,$3,$4}'); desired=$((blocks*watermark/100-used)); reserve_kib=$((reserve_mib*1024)); (( desired > avail-reserve_kib )) && desired=$((avail-reserve_kib)); (( desired > max_mib*1024 )) && desired=$((max_mib*1024)); (( desired > 0 )); }
-  case "$action" in preflight) legacy_clear; [[ -d "$target" && ! -L "$target" && ! -e "$artifact" ]]; calculate;; run) legacy_clear; [[ ! -e "$artifact" ]]; calculate; fallocate -l "${desired}K" "$artifact"; sync -f "$artifact";; cleanup) rm -f -- "$artifact"; legacy_cleanup; sync -f "$target";; recovery) legacy_clear; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
+  case "$action" in preflight) legacy_clear; [[ -d "$target" && ! -L "$target" && ! -e "$artifact" ]]; calculate;; run) legacy_clear; [[ ! -e "$artifact" ]]; calculate; arm "$(printf 'rm -f %q' "$artifact")" "$artifact"; fallocate -l "${desired}K" "$artifact"; sync -f "$artifact";; cleanup) guard_postpone "$job" "$guard_hold" "$job expiry"; rm -f -- "$artifact"; legacy_cleanup; sync -f "$target"; guard_disarm "$job";; recovery) legacy_clear; [[ ! -e "$artifact" ]];; *) exit 2;; esac ;;
  pressure)
   cpu="$1"; vm="$2"; bytes="$3"; runtime="$4"
   # --vm-keep is load-bearing, not a tuning knob: without it the vm stressor munmaps
   # and re-mmaps every iteration, so pages are never held resident and node memory
   # utilisation does not move at all. See the F15P_LEVELS note for run 8f317c57.
-  case "$action" in preflight) legacy_clear; command -v stress-ng >/dev/null; ! alive;; run) legacy_clear; ! alive; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --vm-keep --timeout "${runtime}s" --metrics-brief >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) stop; rm -f "$logfile"; legacy_cleanup;; recovery) legacy_clear; ! alive;; *) exit 2;; esac ;;
+  case "$action" in preflight) legacy_clear; command -v stress-ng >/dev/null; ! alive;; run) legacy_clear; ! alive; arm "$(undo_pid "$pidfile" stress-ng "$logfile")" "$pidfile" "$logfile"; nohup stress-ng --cpu "$cpu" --vm "$vm" --vm-bytes "$bytes" --vm-keep --timeout "${runtime}s" --metrics-brief >"$logfile" 2>&1 </dev/null & echo $! >"$pidfile";; cleanup) guard_postpone "$job" "$guard_hold" "$job expiry"; stop; rm -f "$logfile"; legacy_cleanup; guard_disarm "$job";; recovery) legacy_clear; ! alive;; *) exit 2;; esac ;;
  cpu)
   # stress-ng-free CPU noisy neighbor: N `yes` busy loops at normal priority (no nice),
   # confined to one session so cleanup can reap the whole group by negative PGID. The
@@ -369,11 +403,13 @@ case "$mode" in
   case "$action" in
    preflight) legacy_clear; command -v yes >/dev/null; command -v setsid >/dev/null; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
    run) legacy_clear; [[ ! -e "$pgidfile" ]]; ! grouplive
+     arm "$(undo_group "$pgidfile" "$logfile")" "$pgidfile" "$logfile"
      setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; for _ in $(seq 1 '"$cpu"'); do yes >/dev/null 2>&1 & done; sleep '"$runtime"'' >"$logfile" 2>&1 &
      for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
    cleanup)
+     guard_postpone "$job" "$guard_hold" "$job expiry"
      if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi
-     rm -f "$pgidfile" "$pgidfile.tmp" "$logfile"; legacy_cleanup ;;
+     rm -f "$pgidfile" "$pgidfile.tmp" "$logfile"; legacy_cleanup; guard_disarm "$job" ;;
    recovery) legacy_clear; ! grouplive; [[ ! -e "$pgidfile" ]] ;;
    *) exit 2 ;;
   esac ;;
@@ -406,6 +442,7 @@ print("\n".join(p["metadata"]["name"] for p in d.get("items",[])))' 2>/dev/null)
   case "$action" in
    preflight) legacy_clear; command -v python3 >/dev/null; command -v setsid >/dev/null; placement_ok; [[ ! -e "$pgidfile" ]]; ! grouplive ;;
    run) legacy_clear; [[ ! -e "$pgidfile" ]]; ! grouplive; placement_ok
+     arm "$(undo_group "$pgidfile" "$logfile")" "$pgidfile" "$logfile"
      setsid bash -c 'echo $$ >"'"$pgidfile"'.tmp"; mv -T "'"$pgidfile"'.tmp" "'"$pgidfile"'"; trap "kill 0" EXIT; python3 -c "import sys,time
 mib=int(sys.argv[1]); hold=int(sys.argv[2])
 buf=bytearray(mib*1024*1024)
@@ -414,8 +451,9 @@ for off in range(0, len(buf), 1024*1024):
 time.sleep(hold)" '"$mib"' '"$runtime"'' >"$logfile" 2>&1 &
      for _ in {1..15}; do [[ -s "$pgidfile" ]] && break; sleep 0.2; done; [[ -s "$pgidfile" ]] ;;
    cleanup)
+     guard_postpone "$job" "$guard_hold" "$job expiry"
      if grouplive; then kill -TERM -"$(cat "$pgidfile")" 2>/dev/null || true; for _ in {1..30}; do grouplive || break; sleep 1; done; grouplive && kill -KILL -"$(cat "$pgidfile")" 2>/dev/null || true; fi
-     rm -f "$pgidfile" "$pgidfile.tmp" "$logfile"; legacy_cleanup ;;
+     rm -f "$pgidfile" "$pgidfile.tmp" "$logfile"; legacy_cleanup; guard_disarm "$job" ;;
    recovery) legacy_clear; ! grouplive; [[ ! -e "$pgidfile" ]] ;;
    *) exit 2 ;;
   esac ;;

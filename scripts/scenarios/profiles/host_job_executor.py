@@ -36,7 +36,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
+from executor_common import (
+    ExecutorError, cli, guard_stdin_line, kubectl_bash_argv, node_guard_function, profile_instance,
+)
 
 PROFILE_ID = "host.job"
 
@@ -111,7 +113,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         str(p["min_available_mib"]), str(p["max_available_mib"]),
         str(p["memory_reserve_mib"]), str(p["memory_hard_margin_mib"]),
         ",".join(p["deployments"]), ",".join(p["statefulsets"]),
-    ]), SCRIPT
+    ]), guard_stdin_line(plan) + SCRIPT
 
 
 SCRIPT = br'''#!/usr/bin/env bash
@@ -155,7 +157,9 @@ wait_node() {
   echo "node $host unreachable over ssh after ${#ssh_backoff[@]} retries: $last" >&2
   return 1
 }
-# The node directory behind the Oracle volume, resolved every time: the PV was re-provisioned once
+'''
+
+SCRIPT += node_guard_function("node_sh") + br'''# The node directory behind the Oracle volume, resolved every time: the PV was re-provisioned once
 # (2c369013 -> 899a2f44) and a pinned path would then point at nothing.
 datadir() {
   local pv; pv=$("${k[@]}" -n "$ns" get pvc "$pvc" -o jsonpath='{.spec.volumeName}')
@@ -221,10 +225,17 @@ case "$action" in
     high_mib=$(( avail_mib - reserve_mib )); max_mib=$(( high_mib + margin_mib ))
     (( high_mib > 0 ))
     stamp=$(date -u +%Y%m%d); big=$(basename "$largest" .dbf)
+    out_tar="$outdir/oradata-$stamp.tar.zst"; out_big="$outdir/$big-$stamp.dbf.zst"
     # Two streams side by side: the largest datafile alone, the rest of the directory as one tar.
     inner=$(printf 'mkdir -p %q && cd %q && { tar -cf - --exclude=%q %q | zstd -q -%d --long=%d -T1 -o %q & zstd -q -%d --long=%d -T1 -o %q %q; wait; }' \
-      "$outdir" "$dir" "$largest" "$source" "$level" "$wlog" "$outdir/oradata-$stamp.tar.zst" \
-      "$level" "$wlog" "$outdir/$big-$stamp.dbf.zst" "$largest")
+      "$outdir" "$dir" "$largest" "$source" "$level" "$wlog" "$out_tar" \
+      "$level" "$wlog" "$out_big" "$largest")
+    # The node's own undo, armed before the job starts (executor_common, node self-recovery): if
+    # cleanup never reaches the node, the node stops the job and removes exactly the two outputs and
+    # the directory by itself. rmdir fails on anything else in the directory, and the undo with it.
+    undo=$(printf 'systemctl stop %q 2>/dev/null || true\nrm -f %q %q\nrmdir %q 2>/dev/null || [[ ! -e %q ]]' \
+      "$unit.service" "$out_tar" "$out_big" "$outdir" "$outdir")
+    node_guard arm "$unit" "$expire_after" "$desc expiry" "$undo" "$out_tar" "$out_big" "$outdir"
     node_q sudo -n systemd-run --unit="$unit" --description="$desc" --collect \
       --property=Nice="$nice" --property=IOSchedulingClass=idle --property=RuntimeMaxSec="$runtime" \
       --property=MemoryHigh="${high_mib}M" --property=MemoryMax="${max_mib}M" \
@@ -233,8 +244,12 @@ case "$action" in
     unit_active ;;
   # Stop the job, remove only what it wrote (preflight required the directory to be absent), then
   # wait for the banking workloads: pods the node evicted or the kernel killed come back on their own.
+  # Once cleanup reaches the node it holds the node's own undo off for as long as this call may
+  # last, and cancels it when the job and its output are gone (a timer that already fired leaves
+  # nothing here to do, and disarm says when it fired).
   cleanup)
     wait_node
+    node_guard postpone "$unit" "$guard_hold" "$desc expiry"
     if unit_active; then node_q sudo -n systemctl stop "$unit.service"; fi
     for _ in {1..30}; do unit_active || break; sleep 1; done
     unit_idle
@@ -242,6 +257,7 @@ case "$action" in
       node_q sudo -n find "$outdir" -maxdepth 1 -type f -name '*.zst' -delete
       node_q sudo -n rmdir "$outdir"
     fi
+    node_guard disarm "$unit"
     healthy "$cleanup_wait" ;;
   # Restored means: no job, no output, every banking workload ready, and the node has memory again.
   recovery) wait_node; unit_idle; out_absent; healthy 1s
