@@ -38,7 +38,7 @@
     "DPM 세션에서 inventory 관계를 기다리는 blocking 세션군 — 락 없는 대조군(F04-R)은 blocking 0행"
    ],
    "must_rule_out": [
-    "외부 rate-limit(429)이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다. 429가 주신호면 F01-H(게이트웨이 429 캐스케이드)",
+    "외부 rate-limit(429)이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다. 429가 주신호면 F01-H(게이트웨이 429 캐스케이드)",
     "결제 경로 자체의 장애가 아님 — payments 릴레이션의 blocked_session_count는 0. payments가 막히면 F06-H",
     "파드/노드 장애가 아님 — inventory, order 컨테이너 재시작은 DB 연결 대기로 /actuator/health가 늦어진 liveness 실패(결과)이고 노드 CPU는 정상. 파드가 죽으면 F05 계열",
     "재고 부족(409)이 아님 — 409는 정상 업무 거절이고 ClientErrorException으로 CB를 열지 않는다. 409 우세면 F23-R(리스톡 배치 정지)"
@@ -396,12 +396,12 @@
     "DB 지연이 아님 — pricing의 쿼리 시간은 정상이고 차단 세션이 없다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: checkout 5xx rate rises (>= 0.05): the quote-step failure reaches users; not an external rate limit: entry_status != 429 (if 429, F01-H); not an entry surge: achieved_rps stays at the approved level (if a surge, F07-H)",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: checkout 5xx rate rises (>= 0.05): the quote-step failure reaches users; not an external rate limit: entry_status != 429 (if 429, F01-H); not an entry surge: achieved_rps stays at the approved level (if a surge, F07-H)",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 체크아웃 5xx 비율 상승(≥ 0.05) — 견적 단계 실패가 사용자에게 도달; 외부 rate-limit이 아님 — entry_status ≠ 429. 429면 F01-H; 진입 폭주가 아님 — achieved_rps가 승인 수준을 유지한다. 폭주면 F07-H",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 체크아웃 5xx 비율 상승(≥ 0.05) — 견적 단계 실패가 사용자에게 도달; 외부 rate-limit이 아님 — entry_status ≠ 429. 429면 F01-H; 진입 폭주가 아님 — achieved_rps가 승인 수준을 유지한다. 폭주면 F07-H",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -776,12 +776,12 @@
     "DB·외부 의존 장애가 아님 — 차단 세션 0, 외부 PG 정상"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: not an entry surge: achieved_rps is within the approved band (if a surge, F07-H)",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: not an entry surge: achieved_rps is within the approved band (if a surge, F07-H)",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 진입 폭주가 아님 — achieved_rps가 승인 대역 안이다. 폭주면 F07-H",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 진입 폭주가 아님 — achieved_rps가 승인 대역 안이다. 폭주면 F07-H",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -1781,7 +1781,7 @@
     "체크아웃 5xx 비율 상승(게이트웨이 checkout 서버 스팬 commerce-gateway POST /api/orders/** 의 5xx 비율 0.05 이상, 표본 스팬)이 재기동 구간과 정렬"
    ],
    "must_rule_out": [
-    "probe 오설정이 아님 — liveness_matches_baseline = true, 종료 사유도 Error가 아니다. probe면 F05-H",
+    "probe 오설정이 아님 — KCM 자원 이력의 testbed-payment ReplicaSet livenessProbe 가 평시 /actuator/health 그대로이고, 종료 사유도 Error가 아니다. probe면 F05-H",
     "노드 메모리 압박이 아님 — 같은 노드의 다른 파드가 evict되지 않았다. 노드가 원인이면 F05-P"
    ],
    "beyond_data": {
@@ -1913,7 +1913,7 @@
    },
    "must_support": [
     "컨테이너 마지막 종료 사유 = Error, restart_count가 2회 이상 증가 — 자원이 아니라 판정이 죽였다는 직접 증거",
-    "Deployment의 livenessProbe가 baseline과 다름(liveness_matches_baseline = false)",
+    "새 testbed-payment ReplicaSet 스펙(KCM 자원 이력 kcm_resources_history)의 livenessProbe 경로가 평시 /actuator/health 와 다르다",
     "체크아웃 5xx 비율 상승(게이트웨이 checkout 서버 스팬 commerce-gateway POST /api/orders/** 의 5xx 비율 0.05 이상, 표본 스팬)이 재기동 주기와 위상이 맞는 간헐적 형상",
     "컨테이너·노드 메모리가 한도에 근접하지 않음"
    ],
@@ -2193,7 +2193,7 @@
    ],
    "must_rule_out": [
     "notification 배포가 원인이 아님 — notification은 Kafka 컨슈머 전용이라 체크아웃 트레이스에 등장하지 않고, 재기동 후 Ready·lag 회복. 이 배포는 distractor다",
-    "외부 결제대행사 장애가 아님 — 외부 PG는 200을 반환한다(서버 스팬에 429 가 없다). 외부가 원인이면 F01-H·F08-H",
+    "외부 결제대행사 장애가 아님 — 외부 PG는 200을 반환한다(외부 PG 호출 클라이언트 스팬 server.address testbed-external-pg-mock 이 모두 200). 외부가 원인이면 F01-H·F08-H",
     "commerce 내부 DB 잠금이 아님 — commerce PG의 차단 세션 0. commerce 잠금이면 F01-R·F06-H",
     "payment 파드 장애가 아님 — pod_ready 유지, 재생성 없이 열화한다. 파드가 죽으면 F05 계열"
    ],
@@ -2609,12 +2609,12 @@
     "DB 잠금이 아님 — payments·inventory 차단 세션 0. 잠금이면 F06-H·F01-R"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: checkout 5xx rate rises (>= 0.05); not an entry surge: achieved_rps is at the controlled level (60 rps band); 100 rps or more would be F07-H",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: checkout 5xx rate rises (>= 0.05); not an entry surge: achieved_rps is at the controlled level (60 rps band); 100 rps or more would be F07-H",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 체크아웃 5xx 비율 상승(≥ 0.05); 진입 폭주가 아님 — achieved_rps가 통제 수준(60rps 대역)이다. 100rps 이상이면 F07-H",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 체크아웃 5xx 비율 상승(≥ 0.05); 진입 폭주가 아님 — achieved_rps가 통제 수준(60rps 대역)이다. 100rps 이상이면 F07-H",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -3769,7 +3769,7 @@
    "must_rule_out": [
     "크래시 루프가 아님 — transfer restart_count가 2 이상으로 오르지 않는다. 오르면 F05 계열",
     "commerce payment 자체 결함이 아님 — payment 파드 Ready, 자원·설정 정상",
-    "외부 rate-limit이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다. 429면 F01-H",
+    "외부 rate-limit이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다. 429면 F01-H",
     "주입이 걸리지 않은 것이 아님 — transfer 파드가 실제로 NotReady여야 한다"
    ],
    "beyond_data": {
@@ -3901,7 +3901,7 @@
     "infra_anchor": "app.control executor가 banking Oracle의 BANKING.outbox_relay_control에서 service_id='transfer' 행의 enabled를 0으로 바꾸고, cleanup은 1로 되돌린다. Kafka나 컨슈머를 건드리지 않는 이유는 그렇게 하면 lag이 증가해 F04-R과 신호가 겹치기 때문이다 — '생산 중단'과 '소비 중단'을 lag의 방향으로 가르는 것이 이 시나리오의 설계다. 제어 행 UPDATE라 롤아웃도 재기동도 없고(녹화 KCM의 rca-testbed-banking 이벤트 0건) 동기 경로에는 영향이 없다."
    },
    "must_support": [
-    "transfer 'Recorded outbox event for transfer' 는 이어지는데 ledger 'Received transfer event' 가 거의 끊긴다(녹화 주입 구간 2,024 대 3): 기록된 outbox 이벤트가 발행되지 않는다",
+    "transfer 'Recorded outbox event for transfer' 는 이어지는데 ledger 'Received transfer event' 가 거의 끊긴다(녹화 주입 구간 2,024 대 6, 6건은 주입 첫 3초): 기록된 outbox 이벤트가 발행되지 않는다",
     "ledger 컨슈머 lag이 증가하지 않고 평탄·0으로 수렴 — 생산이 멈췄다는 방향 증거",
     "동기 이체 서버 스팬(core-banking-api POST /api/transfers, 표본)의 2xx 비율 0.95 이상이고 지연도 정상",
     "transfer 파드와 Kafka 브로커 모두 정상"
@@ -3910,7 +3910,7 @@
     "컨슈머 정지가 아님 — ledger lag이 증가하지 않는다. 증가하면 F04-R",
     "transfer 파드 장애가 아님 — pod_ready = true",
     "동기 경로 장애가 아님 — 이체 서버 스팬(core-banking-api POST /api/transfers, 표본)의 2xx 비율이 0.95 이상이다. 동기가 깨지면 다른 원인이다",
-    "외부 rate-limit이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다"
+    "외부 rate-limit이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다"
    ],
    "beyond_data": {
     "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: unpublished outbox rows (published_at IS NULL) grow monotonically (> 20)",
@@ -4034,7 +4034,7 @@
    "must_rule_out": [
     "payment 실패가 아님 — payment 오류율이 낮고 502가 없다. 502면 F19-S",
     "배차 용량 거절이 아님 — 503이 주신호가 아니다. 503이면 F19-Q",
-    "외부 rate-limit이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다",
+    "외부 rate-limit이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다",
     "파드 장애가 아님 — order·payment 파드 Ready 유지"
    ],
    "difficulty": "high",
@@ -4145,7 +4145,7 @@
    ],
    "must_rule_out": [
     "order 풀 고갈이 아님 — payment가 502를 내고 있다. 502 없이 order만 아프면 F19-P",
-    "외부 rate-limit이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다",
+    "외부 rate-limit이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다",
     "payment 파드 장애가 아님 — pod_ready = true",
     "배차 용량 거절이 아님 — 503이 아니라 502다. 503이면 F19-Q"
    ],
@@ -4259,7 +4259,7 @@
    "must_rule_out": [
     "읽기도 함께 깨진 것이 아님 — 게이트웨이 상품 조회 서버 스팬(GET /api/products/**)에 5xx 가 없다. 읽기까지 무너지면 게이트웨이·네트워크 계열(F07-H·F12-H)",
     "user-service가 살아 있는 채 느린 것이 아님 — available replicas가 0이어야 한다. 살아 있는데 느리면 지연 계열",
-    "외부 rate-limit(429)이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다. 429면 F01-H",
+    "외부 rate-limit(429)이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다. 429면 F01-H",
     "결제·재고 경로의 장애가 아님 — 실패가 401이고 하류 서비스에 도달조차 하지 않는다. 하류 5xx면 F01-R·F06-H"
    ],
    "beyond_data": {
@@ -4397,7 +4397,7 @@
    ],
    "must_rule_out": [
     "payment 자체 장애가 아님 — payment 오류율이 낮다(0.05 미만). 오르면 다른 원인이다",
-    "외부 rate-limit이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다",
+    "외부 rate-limit이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다",
     "인덱스 드롭이 아님 — 해당 인덱스는 애초에 존재하지 않는다",
     "커넥션 풀 고갈이 아님 — 증상이 타임아웃 5xx가 아니라 지연이다. 5xx면 F19-P 계열"
    ],
@@ -4511,12 +4511,12 @@
     "인덱스 드롭이 아님 — idx_transfers_created는 존재한다. 드롭이면 다른 시나리오다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: not an external rate limit: entry_status != 429; not row-lock contention alone: turning off the statistics load removes the latency under the same transfer load",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: not an external rate limit: entry_status != 429; not row-lock contention alone: turning off the statistics load removes the latency under the same transfer load",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; design-time comparison runs and local measurements"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 외부 rate-limit이 아님 — entry_status ≠ 429; 행 잠금 경합만이 아님 — 통계 부하를 끄면 같은 이체 부하에서 지연이 사라진다",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 외부 rate-limit이 아님 — entry_status ≠ 429; 행 잠금 경합만이 아님 — 통계 부하를 끄면 같은 이체 부하에서 지연이 사라진다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계 단계의 비교 실행과 로컬 실측"
    },
@@ -4626,12 +4626,12 @@
     "교차 스키마 오염이 아님 — 단일 MySQL이라 다른 서비스로 번지지 않는다. 번지면 F20-R"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: not an external rate limit: entry_status != 429",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: not an external rate limit: entry_status != 429",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 외부 rate-limit이 아님 — entry_status ≠ 429",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 외부 rate-limit이 아님 — entry_status ≠ 429",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -4867,7 +4867,8 @@
     "infra_anchor": "2026-07-28 승격(readiness: ready). 배선 4항 중 (1)30282 진입점 등록과 (2)frozen-bypass.js는 이미 완료돼 있었다 — 카탈로그 사유가 낡았다. (3)controller를 신설했고, (4)원장 역분개는 **금액 하향으로 대체**했다: load.north_south의 cleanup은 부하 종료만 하고 DB 쓰기 권한이 없으며, 위반의 증거는 금액이 아니라 성사되었다는 사실이므로 1~5로 낮추면 회차당 계좌 차감이 잔액의 0.3% 수준이 되어 오염이 사라진다. 원래 1000~5000은 ACC-9001 잔액(100,000)을 3배 초과해 8분 hold 중반부터 잔액부족 FAILED가 섞이는, 성공조건이 스스로 무너지는 구조이기도 했다. **남은 갭**: database.integrity_violation_count는 'since'를 실행 시작 시각으로 받아야 하는데 러너에 run-scoped 파라미터 바인딩이 없어 아직 쓸 수 없다. 결정적 증거는 경로 비대칭이고 그 두 신호는 배선돼 있으므로 승격은 성립한다."
    },
    "must_support": [
-    "api 경로(30082)는 api ERROR 'Account service call failed for order null: 400' 의 'From account is FROZEN', 'To account is CLOSED' 로 거절한다(평시 0건) — 경로 비대칭",
+    "transfer 로그 'Transfer COMPLETED: ref=... from=ACC-9001 to=ACC-1001' 와 'from=ACC-1001 to=ACC-9002' 가 주입 구간에만 나오고(평시 0건, 녹화 세 건 178~180건) ledger 'Ledger recorded' 도 같은 계좌로 176~177건 남는다. 같은 두 계좌 쌍을 api 경로로 보낸 이체는 api 'Submitting transfer: from=ACC-9001 to=ACC-1001', 'from=ACC-1001 to=ACC-9002' 뒤 'From account is FROZEN', 'To account is CLOSED' 로 거절된다: api 경로에서 막히는 계좌의 이체가 transfer 에 직접 들어오면 완료된다",
+    "api 경로(30082)는 api ERROR 'Account service call failed for order null: 400' 의 'From account is FROZEN', 'To account is CLOSED' 로 거절한다(이 두 거절 문구는 평시 0건, 같은 로그의 잔액 부족 거절은 평시에도 있다) — 경로 비대칭",
     "파드·DB 모두 정상이고 5xx도 없다 — 가용성 사건이 아니다"
    ],
    "must_rule_out": [
@@ -4876,12 +4877,12 @@
     "잔액부족 FAILED가 아님 — transfer 'Transfer FAILED (insufficient balance)' 와 account 'Transfer rejected: insufficient balance' 가 평시보다 늘지 않는다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the direct arm (30282) completes transfers for FROZEN or CLOSED parties with 200 COMPLETED; the control arm (30082) rejects the same payload with 400; the amounts are well below the balances; not overload: the injected load is within the contract",
+    "detail": "Original sentences moved out of the scored fields (must_support, must_rule_out). The direct-path completions and the api-path rejections are visible in logs and stay in the scored fields; the FROZEN and CLOSED account states, request bodies, balances and the load contract are not in monitoring data: the direct arm (30282) completes transfers for FROZEN or CLOSED parties with 200 COMPLETED; the control arm (30082) rejects the same payload with 400; the amounts are well below the balances; not overload: the injected load is within the contract",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics); HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; direct app-database queries during design and trial runs; runner load-generator response records and design-time code and data checks"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: direct arm(30282)이 FROZEN/CLOSED 당사자 이체를 200 COMPLETED로 성사시킨다; control arm(30082)은 같은 payload 를 400 으로 거절한다; 금액이 잔액에 비해 충분히 작다; 부하 과다가 아님 — 주입 부하가 계약 범위 안이다",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 원래 문장이다. 직행 경로의 완료와 api 경로의 거절은 로그로 보여 채점 칸에 남겼고, 계좌의 FROZEN, CLOSED 상태, 요청 본문, 잔액, 부하 계약은 관제 데이터에 없다: direct arm(30282)이 FROZEN/CLOSED 당사자 이체를 200 COMPLETED로 성사시킨다; control arm(30082)은 같은 payload 를 400 으로 거절한다; 금액이 잔액에 비해 충분히 작다; 부하 과다가 아님 — 주입 부하가 계약 범위 안이다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다); HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계와 시험 실행 때의 앱 DB 직접 조회; 러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
    },
@@ -5227,12 +5228,12 @@
     "외부 rate-limit/429 아님 — food 도메인은 429 없음(용량초과는 503)"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: entry_status != 429; the capacity response value is above 0 and the order-create 503 rate is low",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: entry_status != 429; the capacity response value is above 0 and the order-create 503 rate is low",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: entry_status ≠ 429; capacity 응답 값이 0 보다 크고 주문 생성 503 비율이 낮다",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: entry_status ≠ 429; capacity 응답 값이 0 보다 크고 주문 생성 503 비율이 낮다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -5491,12 +5492,12 @@
     "외부 rate-limit/429 아님 — food 도메인은 429 없음(용량초과는 503)"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: entry_status != 429; order-create 5xx rate jumps (order_create_5xx_rate >= 0.1); 502 and 503 cannot be split by this signal and are told apart by the restaurant and dispatch APM signals; the restaurant fallback 502 propagates; payment_502_rate < 0.05; order_create_503_rate is low",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: entry_status != 429; order-create 5xx rate jumps (order_create_5xx_rate >= 0.1); 502 and 503 cannot be split by this signal and are told apart by the restaurant and dispatch APM signals; the restaurant fallback 502 propagates; payment_502_rate < 0.05; order_create_503_rate is low",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: entry_status ≠ 429; order create 5xx 비율 급증 (order_create_5xx_rate ≥ 0.1) — 502/503 분리는 이 신호로 불가, restaurant/dispatch 각각의 APM 신호로 감별 — restaurant fallback 502 전파; payment_502_rate < 0.05; order_create_503_rate 낮음",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: entry_status ≠ 429; order create 5xx 비율 급증 (order_create_5xx_rate ≥ 0.1) — 502/503 분리는 이 신호로 불가, restaurant/dispatch 각각의 APM 신호로 감별 — restaurant fallback 502 전파; payment_502_rate < 0.05; order_create_503_rate 낮음",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -5727,7 +5728,7 @@
     "infra_anchor": "주입은 k8s.env가 testbed-order/order-service의 env를 baseline↔fault로 교체하고 rollout한다(차이는 OUTBOX_RELAY_ENABLED=false 한 항목뿐 — 앱 수정은 0줄이며 스위치는 이미 코드에 있었다). 결정 증거는 러너의 database.commerce_outbox_unpublished_count다. 같은 이름의 banking 관측(F18-P)은 testbed-oracle-0에 sqlplus로 들어가는 Oracle 전용이라 commerce에는 쓸 수 없어, order_schema.outbox_events를 PG로 세는 관측을 따로 신설했다(published_at IS NULL, idx_outbox_events_unpublished 부분인덱스 경로). 반증 축인 shipping 컨슈머 lag은 F04-R이 쓰던 commerce Kafka lag 계약을 그대로 재사용한다 — 같은 지표를 두 시나리오가 반대 방향으로 읽는다."
    },
    "must_support": [
-    "order 'Recorded outbox event for order ... status=PAID' 는 평시처럼 이어지는데 shipping 'Created shipment for orderId' 가 거의 끊긴다(녹화 주입 구간 5,589 대 475): 기록된 outbox 이벤트가 발행되지 않는다",
+    "order 'Recorded outbox event for order ... status=PAID' 는 계속 이어지는데 shipping 'Created shipment for orderId' 가 거의 끊긴다(녹화 주입 구간 5,589 대 475): 기록된 outbox 이벤트가 발행되지 않는다",
     "shipping 컨슈머 lag이 증가하지 않고 0으로 수렴 — 생산이 멈췄다는 방향 증거",
     "동기 주문 성공률·지연 정상, order 파드와 Kafka 브로커 정상",
     "order 의 outbox 기록('Recorded outbox event for order') 수 대비 shipping 'Created shipment' 수의 괴리"
@@ -6184,12 +6185,12 @@
     "복합 자원 고갈이 아님 — 메모리는 평온하다. 메모리가 함께 오르면 F15-P"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: not overload: the injected load is within the contract; the transfer 2xx rate drops",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: not overload: the injected load is within the contract; the transfer 2xx rate drops",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 부하 과다가 아님 — 주입한 부하가 계약 범위 안이다; 이체 2xx 비율 저하",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 부하 과다가 아님 — 주입한 부하가 계약 범위 안이다; 이체 2xx 비율 저하",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -6673,7 +6674,7 @@
     "relay 정지가 아님 — transfer 의 outbox 기록('Recorded outbox event for transfer')만큼 ledger 가 이벤트를 받는다('Received transfer event'). 쌓이면 F18-P",
     "동기 경로 장애가 아님 — 이체 서버 스팬(core-banking-api POST /api/transfers)에 5xx 가 없고 'Transfer COMPLETED' 가 평시처럼 이어진다",
     "ledger 파드 장애가 아님 — pod_ready = true",
-    "외부 rate-limit이 아님 — 게이트웨이와 각 서비스 서버 스팬에 429 가 없다"
+    "외부 rate-limit이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다"
    ],
    "beyond_data": {
     "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the synchronous transfer 2xx rate is 0.95 or more; the number of COMPLETED transfers in the window without a matching ledger row grows (> 20); unpublished outbox rows do not pile up",
@@ -7372,16 +7373,26 @@
     "KCM 에 testbed-account, testbed-transfer, testbed-ledger 의 'Readiness probe failed ... /actuator/health' 가 함께 나온다(account 는 KCM 이벤트 표의 최소 시각 2026-08-24 이후 0건). 재시작, Deployment 롤아웃, 새 ReplicaSet 은 없다",
     "api ERROR 'Account service call failed' 가 4xx 업무 거절(평시의 'Insufficient balance' 400)이 아니라 연결 거부나 5xx 로 급증하고(평시 7일 5분 창 2,051개 중 10개, 모두 다른 시나리오 실행 창), commerce-payment 의 'core-banking transfer call failed' 502 가 나오며(평시 5분 창 3개), account 잔액 조회 서버 스팬(GET /api/accounts/{id})이 5xx 로 끝나다가 풀이 빈 뒤 끊기고, api 이체 서버 스팬(core-banking-api POST /api/transfers, 표본)의 5xx 비율이 평시 0 에서 0.5 이상이 된다",
     "골든 시그널(인시던트 판정이 이 서비스를 입력으로 쓸지는 묶음 멤버 구성에 달려 있어 판정 근거로 단정하지 않는다): core-banking-api 의 서버 스팬(POST /api/transfers, GET /api/transfers)이 502 로 끝나 스팬 상태가 ERROR 가 되고, apm.agent.otel.java.error_rate{service_name=\"core-banking-api\"} 가 평시(7일 중앙과 99백분위 모두 0)에서 크게 오른다. 동반 부하로 api 표본 스팬이 분당 약 21개(평시 약 5개)라 전면 실패 구간 내내 값이 이어진다. 평시 2026-10-01 20:13 의 transfer 풀 고갈 때도 502 가 난 20:13~20:14 에 이 값이 100 이었다. commerce-payment 와 commerce-order 의 오류율도 정산 실패만큼 오른다",
-    "피해는 잠금 직후가 아니라 풀이 비는 순간부터 시작된다: 세션이 max-lifetime 10분 안에 하나씩 사라져 서비스마다 마지막 세션이 사라지면 전면 실패가 된다(그 전에도 남은 세션이 바빠 일부 요청이 3초 대기 끝에 실패할 수 있다). 동반 부하(10rps)는 그 전부터 흐르고 있어 실패 전후의 요청량이 같다"
+    "피해는 잠금 직후가 아니라 풀이 비는 순간부터 시작된다: 세션이 max-lifetime 10분 안에 하나씩 사라져 서비스마다 마지막 세션이 사라지면 전면 실패가 된다(그 전에도 남은 세션이 바빠 일부 요청이 3초 대기 끝에 실패할 수 있다)."
    ],
    "must_rule_out": [
     "Oracle 다운이나 재시작(F25-H 꼴)이 아님: testbed-oracle-0 Ready, KCM 에 재시작이 없고 백그라운드 세션과 DPM 수집(LUCIDA_MON)이 계속된다. 오류는 연결 거부(1521 Connection refused, ORA-12541)가 아니라 DB 가 로그인을 받아 거절한 ORA-28000 이다",
     "Oracle 행 잠금 경합(F01-P, F08-G, F15-G)이 아님: 차단 세션(dpm.oracle.session.blocked_session, blocking_session)이 없고, 요청이 잠금을 10초 기다리지 않으며, Hikari 시간 초과 예외에 ORA-28000 이 원인으로 붙어 연결을 새로 만들지 못한 풀임이 드러난다",
     "transfer readiness 프로브 오설정(F17-R)이 아님: 롤아웃과 프로브 정의 변경이 없고, transfer 만이 아니라 account, ledger 도 함께 NotReady 이며 프로브는 404 가 아니라 실제 health 확인에서 시간 초과로 실패한다. 로그에 ORA-28000 이 있다",
-    "부하 증가나 커넥션 풀 고갈이 아님: 동반 부하(10rps)는 풀이 비기 전부터 흐르고, 오류가 나도 Hikari 시간 초과 예외에 ORA-28000 이 원인으로 붙으며(부하로 바쁜 풀이면 원인 예외가 없다), Oracle 활성 세션이 오르지 않는다. 같은 banking 경로는 surge.js 30rps 동반 부하를 9분 동안 Hikari 시간 초과 없이 받았다(F18-P 녹화, 2026-08-22 07:15~07:24, 이체 1,590건, 오류는 400 잔액 부족뿐)",
+    "부하 증가나 커넥션 풀 고갈이 아님: 오류가 나도 Hikari 시간 초과 예외에 ORA-28000 이 원인으로 붙으며(부하로 바쁜 풀이면 원인 예외가 없다), Oracle 활성 세션이 오르지 않는다.",
     "네트워크 단절이 아님: ORA-28000 은 로그인 요청이 DB 에 도달해 거절됐다는 뜻이고, 같은 DB 에 대한 DPM 수집은 계속된다",
     "앱 배포나 설정 변경이 아님: rca-testbed-banking 에 롤아웃, 새 ReplicaSet, 재시작이 없다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the same banking path took the surge.js 30 rps companion load for 9 minutes without Hikari timeouts (F18-P recording, 2026-08-22 07:15 to 07:24, 1,590 transfers, only 400 insufficient-balance errors); the companion load (10 rps) flows from before, so the request volume is the same before and after the failure; the companion load (10 rps) flows from before the pool empties",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; design-time comparison runs and local measurements"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 같은 banking 경로는 surge.js 30rps 동반 부하를 9분 동안 Hikari 시간 초과 없이 받았다(F18-P 녹화, 2026-08-22 07:15~07:24, 이체 1,590건, 오류는 400 잔액 부족뿐); 동반 부하(10rps)는 그 전부터 흐르고 있어 실패 전후의 요청량이 같다; 동반 부하(10rps)는 풀이 비기 전부터 흐른다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계 단계의 비교 실행과 로컬 실측"
+   },
    "difficulty": "medium",
    "related_scenarios": {
     "contrast_with": [
@@ -8099,8 +8110,18 @@
     "pricing 다운이나 지연이 아님: 견적은 200 이고 지연이 평시이며 pricing 오류율이 0 근처다. pricing 이 죽었다면 order 가 견적 단계에서 502 를 받고 PG 와 은행까지 가지 않는다",
     "order 설정 배포(F08-P 꼴 read-timeout)나 order 결함이 아님: testbed-order 롤아웃과 env 변경이 없고, order 가 하류를 부르는 단계는 결제 직전까지 성공한다. 실패 문장이 시간 초과가 아니라 은행의 금액 거절을 가리킨다",
     "재고 고갈(F23-R 꼴 409)이 아님: 실패는 409 가 아니라 502 이고 재고 예약은 성공한 뒤 반환된다",
-    "부하 증가가 아님: 동반 부하 6rps 는 F08-P(20rps)보다 낮고, 실패는 시간 초과가 아니라 은행의 즉시 400 이며 같은 부하에서 상품 보기와 장바구니는 정상이다"
+    "부하 증가가 아님: 실패는 시간 초과가 아니라 은행의 즉시 400 이며 같은 부하에서 상품 보기와 장바구니는 정상이다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the companion load of 6 rps is below F08-P (20 rps)",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 동반 부하 6rps 는 F08-P(20rps)보다 낮다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "high",
    "related_scenarios": {
     "contrast_with": [
@@ -8685,18 +8706,18 @@
    "must_rule_out": [
     "메모리 한도나 힙 설정 축소가 아님(F05-R, F09-H): 새 ReplicaSet 의 resources, JAVA_TOOL_OPTIONS 는 그대로이고 jvm.memory.limit 도 평시와 같다. 바뀐 것은 이미지 태그 하나다",
     "컨테이너 메모리 한도 초과 OOMKill 이 아님: 재시작 사유는 liveness 실패(Killing)이고 힙 바깥 메모리는 1Gi 한도에 한참 못 미친다",
-    "부하 증가가 아님: 요청률은 동반 부하 5rps 와 기준선으로 평탄하고, 힙은 요청이 아니라 시간에 비례해 오르며 실패 구간 사이에도 계속 오른다",
+    "부하 증가가 아님: 힙은 요청이 아니라 시간에 비례해 오르며 실패 구간 사이에도 계속 오른다",
     "Oracle 이나 DB 계정 장애가 아님(F35-R, F01-P): Oracle 은 Ready, transfer 의 거래 내역과 commerce 정산이 계속 성공하고 account 에 ORA 오류가 없다",
     "transfer 장애가 아님(F17-R, F17-H): transfer 는 Ready 이고 실패는 account 를 거치는 경로에만 있다",
     "account 의 하류 주소 오설정이 아님(F39-R): 잔액 조회(account 단독 경로)도 실패하고 실패가 연속이 아니라 주기적이다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: in every failure window the companion balance-lookup (step get) failure rate rises to 0.5 or more",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: in every failure window the companion balance-lookup (step get) failure rate rises to 0.5 or more; the request rate is flat at the 5 rps companion load plus baseline",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 실패 구간마다 동반 부하 잔액 조회(step get) 실패율이 0.5 이상으로 오른다",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 실패 구간마다 동반 부하 잔액 조회(step get) 실패율이 0.5 이상으로 오른다; 요청률은 동반 부하 5rps 와 기준선으로 평탄하다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -8956,18 +8977,18 @@
     "PostgreSQL 장애가 아님(F25-H): PostgreSQL 파드는 Ready 이고 다른 commerce 서비스의 DB 작업은 성공한다",
     "Redis 장애가 아님(F11-R): cart 의 health 는 Redis 를 보지 않고, 실패 로그는 Redis 가 아니라 Hikari 연결 대기다",
     "인증 경로 장애가 아님(F16-H, F33-P): user 는 Ready 이고 로그인과 토큰 확인이 성공한다",
-    "부하 증가가 아님: 요청률은 동반 부하 3rps 와 기준선으로 평탄하고, 풀은 처리 중인 요청 수와 무관하게 가득 찬 채로 남는다(waiting 은 막힌 풀 앞 대기열이라 10 안팎일 수 있다)",
+    "부하 증가가 아님: 풀은 처리 중인 요청 수와 무관하게 가득 찬 채로 남는다(waiting 은 막힌 풀 앞 대기열이라 10 안팎일 수 있다)",
     "설정 변경이 아님: 새 ReplicaSet 의 resources, env, 프로브는 이전과 같고 바뀐 것은 이미지 태그 하나다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the order response body is 'Cart service unavailable'",
-    "missing_data": "HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
-    "confirmed_by": "runner load-generator response records and design-time code and data checks"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the order response body is 'Cart service unavailable'; the request rate is flat at the 3 rps companion load plus baseline",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; runner load-generator response records and design-time code and data checks"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: order 응답 본문이 'Cart service unavailable' 이다",
-    "missing_data": "HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
-    "confirmed_by": "러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: order 응답 본문이 'Cart service unavailable' 이다; 요청률은 동반 부하 3rps 와 기준선으로 평탄하다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -9090,18 +9111,18 @@
     "restaurant 오류나 지연이 아님(F36-R 꼴 SQL 오류 500, F24-Q 꼴 느린 응답): restaurant 에 오류 로그, 오류 스팬이 없고 p95 가 밀리초대다. order 의 오류는 응답을 받은 뒤가 아니라 연결이 맺어지지 않아 나는 'Connect timed out' 이다",
     "order 의 하류 주소 오설정이 아님(F39-R 꼴): order 롤아웃이나 env 변경이 없고 오류 문장의 주소가 평소 그대로 http://testbed-restaurant:8081 이다",
     "DNS 장애가 아님(F37-R 꼴): UnknownHostException 이 없고 이름은 해석된다. 실패는 그 주소로의 연결 단계다",
-    "DB, 용량 문제가 아님: MySQL 세션과 응답 시간이 평시이고 order 의 Hikari 대기가 없다(주문은 가게 확인 단계에서 DB 연결을 잡기 전에 끝난다). 동반 부하는 2rps 로 F36-R 과 같고, 부하로는 연결이 맺어지지 않는 일이 생기지 않는다",
+    "DB, 용량 문제가 아님: MySQL 세션과 응답 시간이 평시이고 order 의 Hikari 대기가 없다(주문은 가게 확인 단계에서 DB 연결을 잡기 전에 끝난다). 부하로는 연결이 맺어지지 않는 일이 생기지 않는다",
     "노드 자원 고갈이나 노드 다운이 아님(F10-H, F21-Q 꼴): tb-w3 의 CPU, 메모리, 디스크가 평시이고 같은 노드의 다른 통신(각 서비스→MySQL 3306, Kafka 9092, 진입 노드에서 오는 dispatch 배달 상태 조회 8082)은 정상이다. 막힌 것은 한 포트로 가는 새 연결뿐이다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the fallback 502 response body is 'Restaurant service unavailable'",
-    "missing_data": "HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
-    "confirmed_by": "runner load-generator response records and design-time code and data checks"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the fallback 502 response body is 'Restaurant service unavailable'; the companion load is 2 rps, the same as F36-R",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; runner load-generator response records and design-time code and data checks"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: fallback 502 응답 본문이 'Restaurant service unavailable' 이다",
-    "missing_data": "HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
-    "confirmed_by": "러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: fallback 502 응답 본문이 'Restaurant service unavailable' 이다; 동반 부하는 2rps 로 F36-R 과 같다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -9359,18 +9380,18 @@
     "account 자체 결함이 아님(F41-R): account 에는 롤아웃도 설정 변경도 없고, 늘어난 요청은 게이트웨이가 아니라 api 에서 온다(트레이스의 호출자, api 로그, 목록 문장 실행 수)",
     "DB 문제가 아님(F42-R, F01-P, F35-R): Oracle 은 여유가 있고(목록 질의는 1,001행 표의 페이지), 잠금 대기, ORA 오류, 로그온 실패가 없으며 transfer 와 commerce 정산이 정상이다",
     "하류 주소 오설정이 아님(F39-R): api 와 account 사이 연결은 맺어지고 요청이 처리되며, 실패는 연결 시간 초과가 아니라 과부하에서 온다",
-    "단순 트래픽 급증이 아님: 게이트웨이에서 account 로 오는 사용자 요청 수는 동반 부하 그대로이고, 폭증한 것은 api 가 만든 목록 요청이다.",
+    "단순 트래픽 급증이 아님: 폭증한 것은 api 가 만든 목록 요청이다.",
     "api 이름 해석 실패가 아님(F37-R): api 는 account 에 닿아 응답을 받는다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: with the manifest api under the same companion load, account stays below half of its limit",
-    "missing_data": "comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
-    "confirmed_by": "design-time comparison runs and local measurements"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: with the manifest api under the same companion load, account stays below half of its limit; customer requests from the gateway to account stay at the companion-load level",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; design-time comparison runs and local measurements"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 같은 동반 부하에 매니페스트 api 면 account 는 한도의 절반 아래다",
-    "missing_data": "이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
-    "confirmed_by": "설계 단계의 비교 실행과 로컬 실측"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 같은 동반 부하에 매니페스트 api 면 account 는 한도의 절반 아래다; 게이트웨이에서 account 로 오는 사용자 요청 수는 동반 부하 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계 단계의 비교 실행과 로컬 실측"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -10110,17 +10131,17 @@
     "MySQL 인스턴스 읽기 전용(F38-R 꼴)이 아님: 오류가 1290 '--read-only' 가 아니라 1146 이고, 실패한 문장이 주문 INSERT 가 아니라 outbox INSERT 다. 같은 DB 의 dispatch, payment 쓰기는 성공한다",
     "MySQL 다운이나 재시작(F25-H 꼴, OOM 재시작)이 아님: testbed-mysql-0 Ready, 'Communications link failure' 와 Hikari 연결 대기 실패가 없고 같은 DB 의 다른 질의가 정상이다",
     "하류(가게, 배차, 결제) 고장이 아님: 주문마다 restaurant, dispatch, payment 호출이 200 이고 order 의 실패는 그 뒤 outbox 기록에서 난다(F36-R, F44-R, F49-R, F32 계열, F30-R 과 다름)",
-    "부하 증가나 용량 부족이 아님: 동반 부하가 없고 주문 요청량은 기준선 그대로다. 실패는 시간 초과가 아니라 즉시 나는 SQL 오류이고 그 문장이 없는 표 이름을 가리킨다"
+    "부하 증가나 용량 부족이 아님: 실패는 시간 초과가 아니라 즉시 나는 SQL 오류이고 그 문장이 없는 표 이름을 가리킨다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the order-create response body is 'Failed to record outbox event'",
-    "missing_data": "HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
-    "confirmed_by": "runner load-generator response records and design-time code and data checks"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the order-create response body is 'Failed to record outbox event'; there is no companion load and order requests stay at the baseline",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; runner load-generator response records and design-time code and data checks"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 주문 생성 응답 본문이 'Failed to record outbox event' 다",
-    "missing_data": "HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
-    "confirmed_by": "러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 주문 생성 응답 본문이 'Failed to record outbox event' 다; 동반 부하가 없고 주문 요청량은 기준선 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -10754,8 +10775,18 @@
     "MySQL 인스턴스 읽기 전용(F38-R 꼴)이 아님: 오류가 1290 '--read-only' 가 아니라 1146 이고, 같은 DB 의 dispatch, payment 쓰기는 성공한다",
     "MySQL 다운이나 재시작(F25-H 꼴, OOM 재시작)이 아님: testbed-mysql-0 Ready, 'Communications link failure' 와 Hikari 연결 대기 실패가 없고 같은 DB 의 다른 질의가 정상이다",
     "하류(가게, 배차, 결제) 고장이 아님: 주문마다 restaurant 와 dispatch 용량 확인이 200 이고 order 의 실패는 그 뒤 자기 INSERT 에서 난다(F36-R, F44-R, F49-R, F32 계열, F30-R 과 다름)",
-    "부하 증가나 용량 부족이 아님: 주문 요청량은 기준선과 동반 부하 그대로이고, 실패는 시간 초과가 아니라 즉시 나는 SQL 오류이며 그 문장이 없는 표 이름을 가리킨다"
+    "부하 증가나 용량 부족이 아님: 실패는 시간 초과가 아니라 즉시 나는 SQL 오류이며 그 문장이 없는 표 이름을 가리킨다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: order requests stay at the baseline plus companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 주문 요청량은 기준선과 동반 부하 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "medium",
    "related_scenarios": {
     "contrast_with": [
@@ -10874,17 +10905,17 @@
     "주문 표가 사라진 것(F53-R 꼴)이 아님: order 의 주문 INSERT 는 성공해 'Created order' 와 배차가 남고, 오류가 가리키는 표가 payments 이며 order 가 아니라 payment 로그에 1146 이 난다. 인덱스 수는 27 이 아니라 28 이 된다",
     "MySQL 인스턴스 읽기 전용(F38-R 꼴)이 아님: 오류가 1290 '--read-only' 가 아니라 1146 이고, 같은 DB 의 order 주문 저장과 dispatch 배차 쓰기는 성공한다",
     "MySQL 다운이나 재시작(F25-H 꼴, OOM 재시작)이 아님: testbed-mysql-0 Ready, 'Communications link failure' 와 Hikari 연결 대기 실패가 없고 같은 DB 의 다른 질의가 정상이다",
-    "payment 파드 멈춤(연결 거부)이나 부하, 용량 부족이 아님: payment 는 Ready 로 수 ms 안에 500 을 돌려주고, 주문 요청량은 기준선 그대로이며 실패가 시간 초과가 아닌 즉시 나는 SQL 오류다"
+    "payment 파드 멈춤(연결 거부)이나 부하, 용량 부족이 아님: payment 는 Ready 로 수 ms 안에 500 을 돌려주고, 실패가 시간 초과가 아닌 즉시 나는 SQL 오류다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: there is no FAILED payment row",
-    "missing_data": "business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics)",
-    "confirmed_by": "direct app-database queries during design and trial runs"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: there is no FAILED payment row; order requests stay at the baseline",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; direct app-database queries during design and trial runs"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: FAILED 결제 행이 없다",
-    "missing_data": "앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다)",
-    "confirmed_by": "설계와 시험 실행 때의 앱 DB 직접 조회"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: FAILED 결제 행이 없다; 주문 요청량은 기준선 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계와 시험 실행 때의 앱 DB 직접 조회"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -11257,17 +11288,17 @@
     "주문 표가 지워진 것(F53-R 꼴)이 아님: order 자신의 SQL 오류가 없고 오류가 가리키는 표가 dispatches 이며 주문 조회는 200 이다",
     "MySQL 인스턴스 읽기 전용이나 다운, 재시작(F38-R, F25-H 꼴)이 아님: testbed-mysql-0 Ready, 1290 과 'Communications link failure' 가 없고 같은 DB 의 다른 표 읽기, 쓰기가 성공한다",
     "dispatch 파드 다운이나 연결 풀 고갈이 아님: dispatch 가 Ready 이고 'Connection is not available' 과 'Connection refused' 없이 500 을 즉시 돌려준다",
-    "부하 증가나 배달원 한도 소진이 아님: 주문 요청량은 기준선과 동반 부하 그대로이고, order 가 'Order rejected: courier pool exhausted' 가 아니라 용량 확인 실패로 거절하며 그 원인 문장이 없는 표 이름을 가리킨다"
+    "부하 증가나 배달원 한도 소진이 아님: order 가 'Order rejected: courier pool exhausted' 가 아니라 용량 확인 실패로 거절하며 그 원인 문장이 없는 표 이름을 가리킨다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the order-create response body is 'Dispatch service unavailable'",
-    "missing_data": "HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
-    "confirmed_by": "runner load-generator response records and design-time code and data checks"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the order-create response body is 'Dispatch service unavailable'; order requests stay at the baseline plus companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; runner load-generator response records and design-time code and data checks"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 주문 생성 응답 본문이 'Dispatch service unavailable' 이다",
-    "missing_data": "HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
-    "confirmed_by": "러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 주문 생성 응답 본문이 'Dispatch service unavailable' 이다; 주문 요청량은 기준선과 동반 부하 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -11380,7 +11411,7 @@
    "must_support": [
     "transfer 로그에 'ORA-02395: exceeded call limit on IO usage' 가 Hibernate ERROR 와 GET /api/transfers 의 Tomcat 'Servlet.service() ... threw exception' 으로 나온다. 보존된 core-banking 로그(2026-10-03~)에 ORA-02395 는 0건이다",
     "ledger 의 대사 배치가 'Ledger reconciliation batch started' 뒤 'finished' 없이 'Unexpected error occurred in scheduled task' 와 ORA-02395 로 끝난다(평시 7일 started 1,004회, finished 1,003회, 약 10분마다)",
-    "api ERROR 'Transfer service list call failed: 500' 과 'Transfer service circuit open/exhausted' 가 급증하고(평시 7일에는 다른 시나리오 실행 창 2026-10-09 06:55~14:08 에만 있음), core-banking-api 서버 스팬의 5xx 비율이 평시 0 에서 거래 내역 비중(동반 부하 중 약 70%)만큼 오른다",
+    "api ERROR 'Transfer service list call failed: 500' 과 'Transfer service circuit open/exhausted' 가 급증하고(평시 7일에는 다른 시나리오 실행 창 2026-10-09 06:55~14:08 에만 있음), core-banking-api 서버 스팬의 5xx 비율이 평시 0 에서 거래 내역 요청 비중만큼 오른다",
     "같은 시각 이체는 계속 완료된다: transfer 'Transfer COMPLETED'(from=ACC- 와 from=commerce-settlement 모두)와 commerce checkout 이 평시대로이고, api 이체 서버 스팬(core-banking-api POST /api/transfers)과 account 잔액 조회 서버 스팬(GET /api/accounts/{id})에 5xx 가 없다",
     "DPM top SQL 에서 거래 내역 건수 질의(sql_id byb2y2hv7p4ag)의 avgLogicalReads 가 7일 중앙 약 9.6만으로 다른 BANKING 질의(outbox 릴레이 약 1만, 나머지 수백 이하)보다 한 자리 이상 크다. 실패하는 것이 바로 이 질의와 ledger SUM 이다",
     "KCM 에 rca-testbed-banking 의 롤아웃, 새 ReplicaSet, 재시작, readiness 실패가 없고 Oracle 은 Ready 다. DPM idle_session 은 평시 범위다(풀이 비지 않는다)"
@@ -11393,6 +11424,16 @@
     "DNS, 네트워크(F37-R, F44-P)가 아님: api 는 transfer 에 닿아 500 을 받고, 같은 경로의 이체는 성공한다",
     "앱 배포나 설정 변경이 아님: rca-testbed-banking 에 롤아웃, 새 ReplicaSet, 재시작이 없다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the transaction-history share is about 70% of the companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 거래 내역 비중은 동반 부하 중 약 70% 다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -11625,9 +11666,19 @@
     "MySQL 포화나 느린 질의가 아님(F33-R, F33-H): MySQL active 세션, 응답 시간이 평시와 같고 거절된 요청은 DB 에 닿지 않는다",
     "배차 한도 설정이나 응답 형식 변경이 아님(F32-R, F32-H): dispatch env 와 설정은 그대로이고 'Courier pool exhausted' 거절이나 ClassCastException 이 없다. 바뀐 것은 이미지 태그다",
     "order 쪽 고장이 아님(F49-H): order 는 롤아웃이 없고 Ready 이며 실패 로그는 응답 해석이 아니라 dispatch 가 돌려준 429 다",
-    "부하 폭주가 아님: 요청률은 평시와 동반 부하 그대로이고 한도는 dispatch 새 버전이 처음 들여온 것이다(이전 기록에 429 가 없음)",
+    "부하 폭주가 아님: 한도는 dispatch 새 버전이 처음 들여온 것이다(이전 기록에 429 가 없음)",
     "가게 쪽이나 결제 쪽 고장이 아님(F49-R, F36-R, F44-R, F49-P): 실패는 용량 확인과 배차 단계에서 나고 가게 조회와 결제 호출 로그는 정상이다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the request rate stays at the usual level plus companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 요청률은 평시와 동반 부하 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "medium",
    "related_scenarios": {
     "contrast_with": [
@@ -12124,17 +12175,17 @@
     "재고 소진이나 재입고 배치 정지(F23-R 꼴)가 아님: reserve-stock 이 409 가 아니라 500 이고 상품 조회 자체가 실패해 inventory 를 부르지 않는다",
     "PostgreSQL 다운, 과부하, 잠금(F25-H, F33-P, F06-H 꼴)이 아님: testbed-postgres-0 Ready, 차단 세션과 'Connection is not available' 이 없고 같은 DB 의 다른 표 읽기, 쓰기가 성공한다",
     "다른 DB 의 표 지우기(F53-R, F53-P, F32-P, F35-H 꼴)가 아님: 오류가 가리키는 표가 commerce, 스캔 합이 줄어드는 DB 가 commerce PostgreSQL 의 product_schema.products 다",
-    "부하 증가가 아님: 요청량은 기준선과 동반 부하 그대로이고 실패가 즉시 나는 SQL 오류다"
+    "부하 증가가 아님: 실패가 즉시 나는 SQL 오류다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the checkout response body is 'Product service unavailable for product N'",
-    "missing_data": "HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
-    "confirmed_by": "runner load-generator response records and design-time code and data checks"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the checkout response body is 'Product service unavailable for product N'; requests stay at the baseline plus companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; HTTP request and response bodies and business data (the parts not left in logs, spans or events)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; runner load-generator response records and design-time code and data checks"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: checkout 응답 본문이 'Product service unavailable for product N' 이다",
-    "missing_data": "HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
-    "confirmed_by": "러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: checkout 응답 본문이 'Product service unavailable for product N' 이다; 요청량은 기준선과 동반 부하 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; HTTP 요청, 응답 본문과 업무 데이터(로그, 스팬, 이벤트에 남지 않는 부분)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 러너 부하기의 응답 기록과 설계 단계의 코드, 데이터 확인"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -12372,10 +12423,20 @@
     "dispatch 새 릴리스가 아님(F33-H): testbed-dispatch 롤아웃(ScalingReplicaSet)과 새 이미지 Pulled 가 없고, 목록 문장에 COUNT 가 붙지 않는다. 무거운 호출은 배달 앱(k6, page=0)이 아니라 작업 파드(curl, 깊은 page)에서 온다",
     "배차 한도 설정 오배포나 응답 형식 변경이 아님(F32-R, F32-H): 'courier pool exhausted' 거절이나 'cannot be cast' 가 아니라 dispatch 풀 대기 시간 초과와 500 이다",
     "DB 다운이나 DB 설정 변경이 아님(F25-H, F38-R): MySQL 은 Ready, 재시작 없음, 1290 같은 거절 오류 없음",
-    "진입 트래픽 폭주가 아님(F07-H 꼴): order, restaurant 진입 요청 수는 동반 부하만큼만 늘고, 늘어난 호출은 클러스터 안 작업 파드에서 dispatch 로 바로 들어간다",
+    "진입 트래픽 폭주가 아님(F07-H 꼴): 늘어난 호출은 클러스터 안 작업 파드에서 dispatch 로 바로 들어간다",
     "order 자체 결함이나 설정 배포가 아님: order 에는 롤아웃, 재시작, 설정 변경이 없고 실패는 dispatch 호출에서 난다",
     "dispatch 프로브 오설정이 원인이 아님(F05-H 꼴): 프로브 설정은 그대로이고, 재시작이 있다면 health 가 작업에 묶인 풀 연결을 기다리다 실패한 결과다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: order and restaurant entry requests grow only by the companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: order, restaurant 진입 요청 수는 동반 부하만큼만 는다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -12504,9 +12565,19 @@
     "DB 계정 한도나 잠금이 아님(F54-R, F35-R): ORA-02395, ORA-28000 이 없고 로그인과 다른 서비스의 풀은 정상이다",
     "transfer 프로브 설정이 원인이 아님(F17-R): 프로브 설정은 그대로이고, 준비 상태가 흔들린다면 health 가 작업에 묶인 풀 연결을 기다리다 실패한 결과다",
     "TRANSFERS 표나 identity 이상이 아님(F35-H, F57-R): ORA-00942, ORA-04043, ORA-00001 이 없고 표와 인덱스가 그대로다",
-    "진입 트래픽 폭주가 아님(F07-H 꼴): nginx, api 진입 요청 수는 동반 부하만큼만 늘고, 늘어난 내역 호출은 클러스터 안 작업 파드에서 transfer 로 바로 들어간다",
+    "진입 트래픽 폭주가 아님(F07-H 꼴): 늘어난 내역 호출은 클러스터 안 작업 파드에서 transfer 로 바로 들어간다",
     "api 릴리스의 하류 호출 폭주가 아님(F47-R): api 롤아웃이 없고, 늘어난 호출은 api 가 아니라 작업 파드에서 온다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: nginx and api entry requests grow only by the companion load",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: nginx, api 진입 요청 수는 동반 부하만큼만 는다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -12879,15 +12950,15 @@
     "배차 인덱스 제거나 백필 작업의 무거운 읽기(F33-R, F59-R 꼴)가 아님: dispatch 연결을 쥔 세션이 SELECT 실행이 아니라 메타데이터 잠금을 기다리는 쓰기이고, 그 앞에 DDL 세션 하나('copy to tmp table')가 있다. Top SQL 의 검사 행 수가 수백만으로 뛰지 않는다",
     "dispatch 새 버전이나 설정 배포(F33-H, F43-P, F55-R, F32-R, F32-H 꼴)가 아님: testbed-dispatch 롤아웃, 새 ReplicaSet, 이미지와 env 변경이 없다. 재시작은 liveness 실패로 같은 ReplicaSet 안에서 일어난다",
     "MySQL 인스턴스 다운, 읽기 전용, 재시작(F25-H, F38-R 꼴)이 아님: testbed-mysql-0 Ready, 1290 과 'Communications link failure' 가 없고 orders, payments 같은 다른 표 쓰기와 모든 읽기가 성공한다",
-    "부하 증가나 배달원 한도 소진이 아님: 주문 요청량은 기준선 그대로이고 'Order rejected: courier pool exhausted' 가 없다"
+    "부하 증가나 배달원 한도 소진이 아님: 'Order rejected: courier pool exhausted' 가 없다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the baseline order-create 5xx rate reaches 0.5 or more (the recording has a single sampled span, so the rate cannot be shown from monitoring data)",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the baseline order-create 5xx rate reaches 0.5 or more (the recording has a single sampled span, so the rate cannot be shown from monitoring data); order requests stay at the baseline",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 기준선 주문 생성 5xx 비율이 0.5 이상이 된다(녹화 표본 스팬이 1건뿐이라 관제 데이터로 비율을 세울 수 없다)",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 기준선 주문 생성 5xx 비율이 0.5 이상이 된다(녹화 표본 스팬이 1건뿐이라 관제 데이터로 비율을 세울 수 없다); 주문 요청량은 기준선 그대로다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -13268,10 +13339,20 @@
    "must_rule_out": [
     "order 자체 장애가 아님: order 파드 Ready, 재시작과 오류 로그가 없고 처리 시간이 평소와 같다. order 가 죽거나 막혔다면(2026-10-06 order 재기동 구간, F03-H 스레드풀 고갈) 게이트웨이 로그에 'I/O error' 나 'Read timed out' 이 먼저 쌓여 실패율로 서킷이 열린다",
     "결제, 외부 결제대행사, 은행 정산 장애가 아님: 그 경우 order 가 checkout 을 처리하다 실패해 order 쪽 오류 로그와 5xx 가 생기고 게이트웨이는 order 의 5xx 응답을 그대로 돌려준다(F01-H, F06-R, F08-P, F40-R). 이 시나리오에서 order 에 닿은 checkout 은 모두 200 이다",
-    "진입 폭주나 게이트웨이 과부하가 아님: 상품 목록, 장바구니, 로그인 라우트의 지연과 상태가 그대로이고 게이트웨이 재시작이나 CPU 포화가 없으며, 막힌 checkout 은 약 0.3초 만에 502 다. 동반 부하는 8rps 로 F08-P(20rps)보다 낮다",
+    "진입 폭주나 게이트웨이 과부하가 아님: 상품 목록, 장바구니, 로그인 라우트의 지연과 상태가 그대로이고 게이트웨이 재시작이나 CPU 포화가 없으며, 막힌 checkout 은 약 0.3초 만에 502 다.",
     "인증 실패가 아님: 실패 코드가 401 이 아니라 502 이고 user 서킷과 로그인은 정상이다(F16-H 는 user readiness 실패로 쓰기가 401)",
     "코드나 이미지 배포가 아님: 새 ReplicaSet 의 이미지(commerce-gateway:latest), 프로브, 자원이 옛 ReplicaSet 과 같고 env 한 줄만 다르다. 게이트웨이 시작과 health 는 정상이다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the companion load is 8 rps, below F08-P (20 rps)",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 동반 부하는 8rps 로 F08-P(20rps)보다 낮다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "high",
    "related_scenarios": {
     "contrast_with": [
@@ -13698,8 +13779,18 @@
     "user-service 프로브 오설정이나 user 자체 고장(F16-H)이 아님: user Deployment 롤아웃이 없고 프로브 스펙이 그대로이며, user 가 Unhealthy 가 되기 전에 DB 세션의 잠금 대기가 먼저 나타난다",
     "트랜잭션이 쥔 행이나 표 쓰기 잠금(F06-H, F01-R 꼴)이 아님: 앱 세션을 막는 세션이 잠금을 쥔 채 놀고 있는 세션이 아니라 그 자신도 잠금을 기다리는 세션이고(두 단 사슬), 쓰기가 아닌 단순 읽기(id 로 회원 조회)까지 막혀 있다. 사슬의 맨 앞은 활성으로 오래 도는 읽기 하나다",
     "PostgreSQL 다운이나 재시작(F25-H)이 아님: testbed-postgres-0 Ready, KCM 에 OOMKilled 나 Created 가 없고 다른 표의 질의는 평시대로 빠르다",
-    "게이트웨이 설정 오배포(user 주소, 시간 제한)나 부하 폭주가 아님: 게이트웨이 롤아웃이 없고 user 가 응답은 하되 DB 연결 대기 끝에 500 을 내며, 요청량은 상주 기준선 그대로다"
+    "게이트웨이 설정 오배포(user 주소, 시간 제한)나 부하 폭주가 아님: 게이트웨이 롤아웃이 없고 user 가 응답은 하되 DB 연결 대기 끝에 500 을 낸다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: requests stay at the resident baseline",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 요청량은 상주 기준선 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -14400,10 +14491,19 @@
     "배차 한도 설정 배포(F32-R 꼴)가 아님: testbed-dispatch 롤아웃이 없고 거절 로그의 max 가 2000 그대로다. assigned 가 부풀었다",
     "dispatch 직렬화 설정 배포(F32-H 꼴)가 아님: 롤아웃이 없고 order 가 용량 응답을 읽어 'courier pool exhausted' 로 거절한다",
     "배차 표 지우기, 인덱스 제거, 잠금 대기열(F32-P, F33-R, F60-H 꼴)이 아님: dispatch 에 SQL 오류와 시간 초과가 없고 용량 확인이 200 으로 빠르다",
-    "부하 급증이 아님: 주문 요청량과 앱의 배정 수가 기준선 그대로다",
     "배차 만료 배치 정지가 아님: 만료 배치가 30초마다 돌며 'delivered=' 를 남기고, assigned 는 서서히가 아니라 한 분에 뛴다",
     "MySQL 이나 dispatch 다운이 아님: 둘 다 Ready 이고 세션과 응답 시간이 평시다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: not a load spike: order requests and the app's assignment count stay at the baseline",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 부하 급증이 아님: 주문 요청량과 앱의 배정 수가 기준선 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -15133,11 +15233,21 @@
    ],
    "must_rule_out": [
     "결제 로그 표 다시 쓰기(F67-R)가 아님: 결제 서비스와 payment_logs 가 사슬에 없고, checkout 은 결제 전에 order 안에서 멈추며, 마르는 풀은 order 의 것이다. 사슬 맨 앞은 잠금을 쥔 채 도는 VACUUM FULL 이 아니라 order_items 를 읽는 긴 내보내기와 그 뒤에서 기다리는 DDL 이다",
-    "order 스레드 풀, 진입 트래픽 폭주(F03-H, F07-H)가 아님: 동반 부하는 10rps 그대로이고 order 의 막힌 요청은 모두 DB 잠금 대기에 서 있으며 order CPU 는 낮다",
+    "order 스레드 풀, 진입 트래픽 폭주(F03-H, F07-H)가 아님: order 의 막힌 요청은 모두 DB 잠금 대기에 서 있으며 order CPU 는 낮다",
     "order 배포, 설정, 프로브 오설정이 아님: testbed-order 롤아웃이 없고 프로브 스펙이 그대로이며, order 가 Unhealthy 가 되기 전에 DB 세션의 잠금 대기가 먼저 나타난다",
     "통계 질의 전수 스캔(F20-R)이 아님: DB CPU 는 내보내기 몫만큼 오를 뿐 포화되지 않고 Top SQL 호출당 블록이 평시이며 막힌 세션은 실행이 아니라 잠금 대기 중이다",
     "PostgreSQL 다운이나 재시작(F25-H)이 아님: testbed-postgres-0 Ready, KCM 에 OOMKilled 나 Created 가 없고 다른 표의 질의는 평시대로 빠르다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the companion load stays at 10 rps",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 동반 부하는 10rps 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -15267,17 +15377,17 @@
     "배차 표(dispatches)가 지워지거나(F32-P) 잠긴(F60-H) 것이 아님: dispatch 의 용량 확인(COUNT)과 배달 조회가 수 ms 에 200 이고, 실패하는 문장은 dispatch_outbox_events 를 부르는 것뿐이다",
     "배달원 용량 한도(F32-R 꼴)가 아님: order 의 503 이 'No courier available' 이 아니라 'Dispatch service failed: 500' 또는 'Dispatch service unavailable' 이다",
     "MySQL 인스턴스 읽기 전용(F38-R 꼴)이나 다운, 재시작(F25-H 꼴)이 아님: 오류가 1290 '--read-only' 나 'Communications link failure' 가 아니라 1146 이고, testbed-mysql-0 Ready, 같은 DB 의 다른 질의가 정상이다",
-    "부하 증가나 용량, 연결 풀 부족이 아님: 동반 부하가 없고 주문 요청량은 기준선 그대로다. 실패는 시간 초과가 아니라 즉시 나는 SQL 오류와 커밋 되돌림이고 그 문장이 없는 표 이름을 가리킨다"
+    "부하 증가나 용량, 연결 풀 부족이 아님: 실패는 시간 초과가 아니라 즉시 나는 SQL 오류와 커밋 되돌림이고 그 문장이 없는 표 이름을 가리킨다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the ASSIGNED count stays at its value at injection time",
-    "missing_data": "business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics)",
-    "confirmed_by": "direct app-database queries during design and trial runs"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the ASSIGNED count stays at its value at injection time; there is no companion load and order requests stay at the baseline",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; direct app-database queries during design and trial runs"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 배정 중 수(ASSIGNED)가 주입 때 값에 머문다",
-    "missing_data": "앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다)",
-    "confirmed_by": "설계와 시험 실행 때의 앱 DB 직접 조회"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 배정 중 수(ASSIGNED)가 주입 때 값에 머문다; 동반 부하가 없고 주문 요청량은 기준선 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계와 시험 실행 때의 앱 DB 직접 조회"
    },
    "difficulty": "hard",
    "related_scenarios": {
@@ -15519,9 +15629,19 @@
     "user-service 자체 고장이 아님(F16-H): user 에는 롤아웃도 프로브 변경도 없고, 빠지기 전에 CPU 한도와 풀 대기로 늦어지며, 늘어난 요청은 게이트웨이가 아니라 notification 에서 온다(트레이스의 호출자, notification 로그, 조건 없는 회원 조회)",
     "회원 표 잠금 대기열이 아님(F66-R): PostgreSQL 에 회원 표 DDL 이나 잠금 대기 세션이 없고, user 의 질의는 잠금이 아니라 CPU 와 풀에서 기다린다",
     "인증 토큰 표 문제가 아님(F33-P): auth_tokens 의 인덱스, 제약은 그대로이고 토큰 조회 문장은 평시 그대로다",
-    "단순 트래픽 급증이 아님(F07-H): 게이트웨이로 들어오는 요청 수는 동반 부하 그대로이고, 폭증한 것은 notification 이 user 로 보낸 회원 목록 요청이다",
+    "단순 트래픽 급증이 아님(F07-H): 폭증한 것은 notification 이 user 로 보낸 회원 목록 요청이다",
     "게이트웨이 설정 문제가 아님(F64-R): 게이트웨이 롤아웃, 설정 변경이 없고 읽기는 정상이며 쓰기 실패는 user 의 응답과 빠짐을 따라간다"
    ],
+   "beyond_data": {
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: requests entering the gateway stay at the companion-load level",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
+   },
+   "beyond_data_ko": {
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 게이트웨이로 들어오는 요청 수는 동반 부하 그대로다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
+   },
    "difficulty": "hard",
    "related_scenarios": {
     "contrast_with": [
@@ -16261,22 +16381,22 @@
     "core-banking-transfer 의 OTel JVM 지표(jvm.memory.used, jvm.memory.used_after_last_gc 의 tenured 풀)의 Tenured Gen 이 대사 호출 1분 안에 평시(최근 1시간 최대 97MiB, 6시간 GC 뒤 최대 58MiB)에서 풀 한도 341MiB(512MiB 힙)까지 오르고, 그 뒤 transfer SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Handler dispatch failed: java.lang.OutOfMemoryError: Java heap space] with root cause' 와 SEVERE 'Failed to complete processing of a request'(exception.type java.lang.OutOfMemoryError)가 남는다(로그 보존 안 transfer OOM 0건)",
     "KCM 에 testbed-transfer 파드의 Unhealthy(readiness /actuator/health, liveness /actuator/health/liveness 시간 초과)와 Killing 'failed liveness probe, will be restarted' 가 대사 호출 주기에 맞춰 되풀이되고, 같은 기간 testbed-transfer 의 ScalingReplicaSet 과 새 이미지 Pulled 는 없다",
     "transfer 가 멈춘 동안 account 'Transfer service call failed ... Read timed out'(이어서 Connection refused)과 'Transfer service circuit open/exhausted', api 의 이체 502, commerce payment 'core-banking transfer call failed' 와 checkout 502 가 생기고, api 이체 서버 스팬(core-banking-api POST /api/transfers, 표본)의 5xx 비율이 평시 0 에서 0.5 이상이 된다. 재기동 뒤 다음 대사 호출 전까지는 정상으로 돌아간다",
-    "transfer 가 멈춘 동안 account 는 읽기 전용 트랜잭션 안에서 transfer 를 불러(AccountService.validateAndForward) 멈춘 호출마다 Hikari 연결 하나를 최대 15초씩 쥐므로, 서킷이 열리기 전 풀 10개가 차서 account 'Connection is not available, request timed out after 3000ms' 와 Servlet.service CannotCreateTransactionException, 잔액 조회 일부 실패, account readiness 실패가 잠깐 따라올 수 있다(F42-R 녹화 26143861 선례: CannotCreateTransactionException 2,501건). 이 실패의 대상 URL 은 모두 testbed-transfer 이고 account, api 는 재시작되지 않으며, Oracle 파드는 Ready, ORA 오류가 없다"
+    "transfer 가 멈춘 동안 account 는 읽기 전용 트랜잭션 안에서 transfer 를 불러(AccountService.validateAndForward) 멈춘 호출마다 Hikari 연결 하나를 최대 15초씩 쥐므로, 서킷이 열리기 전 풀 10개가 차서 account 'Connection is not available, request timed out after 3000ms' 와 Servlet.service CannotCreateTransactionException, 잔액 조회 일부 실패, account readiness 실패가 잠깐 따라올 수 있다. 이 실패의 대상 URL 은 모두 testbed-transfer 이고 account, api 는 재시작되지 않으며, Oracle 파드는 Ready, ORA 오류가 없다"
    ],
    "must_rule_out": [
     "결함 있는 새 버전이나 메모리 누수 릴리스가 아님(F41-R, F63-R, F51-H 꼴): testbed-transfer 의 ReplicaSet 과 이미지(core-banking-transfer:latest)가 그대로이고 롤아웃 이벤트가 없다. 힙은 몇 분에 걸쳐 서서히 차지 않고 대사 호출 뒤 1분 안에 한도까지 뛰며, 재기동 뒤 호출이 없으면 평시 수준에 머문다",
     "설정 롤아웃이 아님(F65-R, F64-P 꼴): Deployment 스펙, env, ConfigMap 변화가 없고 transfer 는 기동 직후 정상으로 이체를 처리한다",
     "Oracle 이나 DB 잠금 장애가 아님(F35-R, F01-P, F57-R 꼴): ORA 오류가 없고 Oracle 은 Ready 다. 'enq: TX - row lock contention'(dpm.oracle.session.blocked_session 이 몇으로 오름)이 생길 수 있으나 기다리는 쪽과 잠금을 쥔 쪽이 모두 transfer 세션이고, 쥔 쪽은 'SQL*Net message from client'(멈춘 transfer JVM 이 트랜잭션을 연 채)이며 transfer 재기동과 함께 풀린다. transfer 의 Hikari 'Connection is not available' 은 transfer 스레드가 GC 로 멈춘 결과이고, account 의 같은 오류는 transfer 호출을 기다리며 연결을 쥔 결과라 transfer 가 재기동해 답하면 함께 풀린다(DB 쪽 원인이면 transfer 재기동과 무관하게 이어진다)",
-    "부하 폭주나 배치 작업 과부하가 아님(F07-H, F59-P 꼴): 입구 요청률은 평시 수준에 동반 부하 5rps 뿐이고, 무거운 호출은 1분에 한 건(재시도 포함 세 건)이다. 내부 Job 이 없다",
+    "부하 폭주나 배치 작업 과부하가 아님(F07-H, F59-P 꼴): 무거운 호출은 1분에 한 건(재시도 포함 세 건)이다. 내부 Job 이 없다",
     "account, api 장애가 아님: account 와 api 는 재시작이 없고(liveness 재시작은 transfer 만), account 의 풀 고갈과 readiness 실패는 transfer 가 멈춘 구간에만 생기며 그 실패의 대상 URL 이 모두 testbed-transfer 다."
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the api retries only triple the same query; a single call already overflows the transfer heap (local measurement); the balance-lookup failure rate of 0.16 to 0.39 in the F42-R run 26143861 precedent",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the api retries only triple the same query; a single call already overflows the transfer heap (local measurement); the balance-lookup failure rate of 0.16 to 0.39 in the F42-R run 26143861 precedent; the 2,501 CannotCreateTransactionException lines in the F42-R recording 26143861 precedent; the entry request rate is the usual level plus a 5 rps companion load",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; design-time comparison runs and local measurements"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: api 의 재시도는 같은 조회를 세 번으로 늘렸을 뿐 한 번으로도 transfer 힙이 넘친다(로컬 실측); F42-R 실행 26143861 선례의 잔액 조회 실패율 0.16~0.39",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: api 의 재시도는 같은 조회를 세 번으로 늘렸을 뿐 한 번으로도 transfer 힙이 넘친다(로컬 실측); F42-R 실행 26143861 선례의 잔액 조회 실패율 0.16~0.39; F42-R 녹화 26143861 선례의 CannotCreateTransactionException 2,501건; 입구 요청률은 평시 수준에 동반 부하 5rps 뿐이다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계 단계의 비교 실행과 로컬 실측"
    },
@@ -16395,7 +16515,7 @@
     "DPM dpm.postgresql.session.current_session 이 8일 중앙 62(최저 57)에서, idle_session 이 61(최저 45)에서 계단식으로 0 근처까지 내려가 cleanup 전까지 오르지 않는다. 인스턴스와 DPM 수집(lucida_mon)은 그대로다",
     "KCM 에 rca-testbed-commerce 여덟 파드의 'Readiness probe failed', 'Liveness probe failed' 와 BackOff(재시작 반복)가 10분 풀 넷 먼저, 30분 풀 넷 나중 순서로 나온다. 첫 실패 전 롤아웃과 새 ReplicaSet 은 없다",
     "게이트웨이 상품 조회 서버 스팬(GET /api/products/**, 표본)이 평시 0 이던 502 로 끝나기 시작하고(게이트웨이 WARN 'Downstream unavailable for GET /api/products ...', 응답 502), 그보다 먼저 쓰기 단계(장바구니와 checkout)가 500, 로그인이 502 가 된다",
-    "피해는 만료 직후가 아니라 풀이 비는 순간부터 시작된다: 연결이 max-lifetime 안에 하나씩 사라져 서비스마다 마지막 연결이 사라지면 그 서비스가 빠진다. 요청량은 그 전후가 같다(동반 부하 없음, 상주 기준선만)"
+    "피해는 만료 직후가 아니라 풀이 비는 순간부터 시작된다: 연결이 max-lifetime 안에 하나씩 사라져 서비스마다 마지막 연결이 사라지면 그 서비스가 빠진다. 게이트웨이 진입 서버 스팬 수는 그 전후로 크게 다르지 않다(녹화 분당 표본 평시 134, 주입 구간 109)"
    ],
    "must_rule_out": [
     "PostgreSQL 다운이나 재시작(F25-H 꼴)이 아님: testbed-postgres-0 Ready, KCM 에 재시작이 없고 DPM 수집(lucida_mon)이 계속된다. 오류는 연결 거부(5432 Connection refused)가 아니라 DB 가 로그인을 받아 거절한 'password authentication failed' 다",
@@ -16403,7 +16523,7 @@
     "user 배포의 계정 이름 오설정(F65-P)이 아님: rca-testbed-commerce 에 롤아웃과 새 ReplicaSet 이 없고, 거절된 역할이 지금 쓰는 commerce 이며, user 만이 아니라 같은 역할을 쓰는 여덟 서비스가 모두 빠진다",
     "user readiness 프로브 오설정(F16-H)이 아님: 프로브 정의가 그대로이고 실제 health 의 DB 확인이 실패하며, 다른 일곱 서비스도 빠진다",
     "네트워크 단절이나 노드 장애가 아님: 'password authentication failed' 는 로그인 요청이 DB 에 닿아 거절됐다는 뜻이고, 같은 DB 의 DPM 수집과 게이트웨이(같은 노드)는 계속 응답한다",
-    "부하 증가가 아님: 동반 부하가 없고 상주 기준선 요청량은 실패 전후가 같다"
+    "부하 증가가 아님: 게이트웨이 진입 서버 스팬 수가 실패 전후로 크게 다르지 않다(녹화 분당 표본 134, 109)"
    ],
    "beyond_data": {
     "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the baseline read-step (browse and search) non-OK rate rises from about 0 to 0.5 or more",
@@ -16532,7 +16652,7 @@
     "account, transfer, ledger 로그에 'ORA-12170: Cannot connect. TCP connect timeout of 3000ms for host testbed-oracle port 1521' ERROR 줄(바로 앞에 WARN 'SQL Error: 12170, SQLState: 08006')이 Hikari ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=0, ...)' 와 같은 순간 서비스마다 같은 수로 별도 줄로 나오고, WARN 'DataSource health check failed' 가 함께 나온다. 직전 7일(로그 보존 한계) 119 로그에 ORA-12170 과 'TCP connect timeout' 은 0건이다",
     "DPM dpm.oracle.session.idle_session 이 평시(11 안팎) 에서 규칙 뒤 10분 안에 계단식으로 0 까지 내려가 cleanup 전까지 오르지 않는다. testbed-oracle-0 은 Ready 이고 백그라운드 세션과 DPM 수집(collector-dpm 세션)은 그대로다",
     "KCM 에 testbed-account, testbed-transfer, testbed-ledger 의 'Readiness probe failed ... /actuator/health' 가 함께 나온다. 재시작, Deployment 롤아웃, 새 ReplicaSet 은 없다. 이어서 api ERROR 'Account service call failed' 가 연결 거부와 502 로, commerce-order ERROR 'Checkout payment failed, releasing reserved stock: ... core-banking transfer call failed' 가 나오고(commerce-payment 자신은 이 실패 줄을 남기지 않는다), account 잔액 조회 서버 스팬(GET /api/accounts/{id})이 풀이 빈 뒤 끊기고, api 이체 서버 스팬(core-banking-api POST /api/transfers, 표본)의 5xx 비율이 평시 0 에서 0.5 이상이 된다",
-    "피해는 규칙 직후가 아니라 풀이 비는 순간부터 시작된다: 세션이 max-lifetime 10분 안에 하나씩 또는 몇 개씩 한꺼번에 사라지고(맺어진 시각 분포에 따름), 서비스마다 마지막 세션이 사라지면 그 서비스가 전면 실패한다(서비스마다 그 시각이 몇 분씩 다를 수 있다). 동반 부하(10rps)는 그 전부터 흐르고 있어 실패 전후의 요청량이 같다"
+    "피해는 규칙 직후가 아니라 풀이 비는 순간부터 시작된다: 세션이 max-lifetime 10분 안에 하나씩 또는 몇 개씩 한꺼번에 사라지고(맺어진 시각 분포에 따름), 서비스마다 마지막 세션이 사라지면 그 서비스가 전면 실패한다(서비스마다 그 시각이 몇 분씩 다를 수 있다)."
    ],
    "must_rule_out": [
     "앱 계정 잠금이나 만료(F35-R, F71-R 꼴)가 아님: 오류가 DB 가 로그인을 받아 거절한 ORA-28000, ORA-28001 이 아니라 연결이 맺어지지 않은 ORA-12170 TCP connect timeout 이고, 같은 시각 tb-w2 에 iptables 규칙 변경과 DPT=1521 '[FW BLOCK]' 줄이 있다",
@@ -16543,14 +16663,14 @@
     "노드 자원 고갈이나 노드 다운이 아님(F15-P 꼴): tb-w2 의 CPU, 메모리, 디스크가 평시이고 nginx, api, Kafka, NodePort 진입은 정상이다. 막힌 것은 같은 노드 앱 파드 대역에서 1521 로 가는 새 연결뿐이다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: local measurement with HikariCP 5.1.0 + ojdbc11 23.5: against an unresponsive 1521 the cause is attached from the second getConnection",
-    "missing_data": "comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
-    "confirmed_by": "design-time comparison runs and local measurements"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: local measurement with HikariCP 5.1.0 + ojdbc11 23.5: against an unresponsive 1521 the cause is attached from the second getConnection; the companion load (10 rps) flows from before, so the request volume is the same before and after the failure",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; design-time comparison runs and local measurements"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: HikariCP 5.1.0 + ojdbc11 23.5 로컬 실측: 응답 없는 1521 에 대해 두 번째 getConnection 부터 이 원인이 붙는다",
-    "missing_data": "이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
-    "confirmed_by": "설계 단계의 비교 실행과 로컬 실측"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: HikariCP 5.1.0 + ojdbc11 23.5 로컬 실측: 응답 없는 1521 에 대해 두 번째 getConnection 부터 이 원인이 붙는다; 동반 부하(10rps)는 그 전부터 흐르고 있어 실패 전후의 요청량이 같다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계 단계의 비교 실행과 로컬 실측"
    },
    "difficulty": "hard",
    "related_scenarios": {
@@ -16687,18 +16807,18 @@
     "결함 있는 새 버전이나 누수 릴리스가 아님(F63-P, F43-P, F33-H 꼴): testbed-dispatch 의 ReplicaSet 과 이미지(food-delivery-dispatch:latest)가 그대로이고 롤아웃 이벤트가 없다. 힙은 몇 분에 걸쳐 서서히 차지 않고 정산 호출 직후 몇 초 안에 한도까지 뛰며, 재기동 뒤 호출이 없으면 평시 수준에 머문다",
     "설정 롤아웃이 아님(F32-R, F32-H 꼴): Deployment 스펙, env, ConfigMap 변화가 없고 dispatch 는 기동 직후 용량 확인과 배차를 정상으로 처리한다",
     "MySQL 이나 배차 표 장애가 아님(F33-R, F60-R, F60-H, F38-R 꼴): 인덱스, 스키마, 잠금, 읽기 전용 변화가 없고 MySQL 은 Ready 다. MySQL CPU 는 정산 조회가 행을 보내는 처음 약 10초만 한도에 닿고, 그 뒤 그 세션은 'executing' 으로 남아 queryTime 만 늘어난다(녹화 dispatch 파드 IP 세션 최대 약 110초). 배차 표를 읽는 다른 질의(용량 COUNT, 만료 배치)는 평소 계획 그대로다",
-    "백필 Job 이나 부하 폭주가 아님(F59-R, F07-H 꼴): 내부 Job 이나 새 파드가 없고, 입구 요청률은 평시에 배달 조회 5rps 를 더한 정도이며 무거운 호출은 약 2분 반에 한 건이다. F59-R 처럼 페이지를 깊게 넘기는 호출 수천 건이 아니라 page 없는 한 건이다",
+    "백필 Job 이나 부하 폭주가 아님(F59-R, F07-H 꼴): 내부 Job 이나 새 파드가 없고, 무거운 호출은 약 2분 반에 한 건이다. F59-R 처럼 페이지를 깊게 넘기는 호출 수천 건이 아니라 page 없는 한 건이다",
     "order 나 restaurant 장애가 아님: order, restaurant 는 재시작이 없고 가게, 메뉴 조회는 정상이다. order 의 실패는 모두 용량 확인 대상 testbed-dispatch 에서 생긴다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: failed orders mostly leave no order row and no dispatch (a few that pass the capacity check fail at the dispatch request)",
-    "missing_data": "business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics)",
-    "confirmed_by": "direct app-database queries during design and trial runs"
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: failed orders mostly leave no order row and no dispatch (a few that pass the capacity check fail at the dispatch request); the entry request rate is the usual level plus 5 rps of delivery lookups",
+    "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; business rows in the app databases (119 DPM collects only sessions, locks, Top SQL and database-level metrics)",
+    "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; direct app-database queries during design and trial runs"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 실패한 주문은 대개 주문 행과 배차를 남기지 않는다(용량 확인을 지난 일부는 배차 요청 단계에서 실패한다)",
-    "missing_data": "앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다)",
-    "confirmed_by": "설계와 시험 실행 때의 앱 DB 직접 조회"
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 실패한 주문은 대개 주문 행과 배차를 남기지 않는다(용량 확인을 지난 일부는 배차 요청 단계에서 실패한다); 입구 요청률은 평시에 배달 조회 5rps 를 더한 정도다",
+    "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 앱 DB 의 업무 행 내용(119 DPM 은 세션, 잠금, Top SQL, DB 수준 지표만 수집한다)",
+    "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계와 시험 실행 때의 앱 DB 직접 조회"
    },
    "difficulty": "medium",
    "related_scenarios": {
@@ -16939,7 +17059,7 @@
    "must_support": [
     "폴링이 시작되면 DPM Oracle Top SQL 의 기존 문장 byb2y2hv7p4ag(transfers 건수 질의, planHashValue 2603328921 그대로, 실행당 논리 읽기 약 10.3만)의 실행 수가 평시 초당 0.16~1.25 에서 분당 수백 회로 뛰고(서킷 열림 5초 구간에는 잠깐 줄어든다), 새 sql_id 는 나타나지 않는다",
     "VM dpm.oracle.instance.cpu_time 이 상한 2 에 붙고(조용한 시간 1시간 최대 0.14~0.65) db_time 이 뛰며, DPM 세션 스냅숏에 machine 이 testbed-transfer 파드인 sqlId byb2y2hv7p4ag 세션들이 'resmgr:cpu quantum' 과 On CPU 로 몰린다",
-    "표본 트레이스에 잡히면 api, transfer 의 GET /api/transfers url.query 가 'toAccount=<가맹점 계좌>&status=COMPLETED&from=<오늘 0시>&page=0&size=1' 이다(7일 표본 transfer 목록 스팬 18,038건이 모두 fromAccount=...&page=0&size=20, toAccount·size=1 0건). 입구의 다른 경로(이체, 잔액, 계좌 목록) 요청률은 평시 수준에 동반 부하만큼이다",
+    "표본 트레이스에 잡히면 api, transfer 의 GET /api/transfers url.query 가 'toAccount=<가맹점 계좌>&status=COMPLETED&from=<오늘 0시>&page=0&size=1' 이다(7일 표본 transfer 목록 스팬 18,038건이 모두 fromAccount=...&page=0&size=20, toAccount·size=1 0건).",
     "transfer ERROR 'HikariPool-1 - Connection is not available, request timed out after 3000ms (total=15, active=15 ...)' 가 쌓이고, account 'Transfer service call failed' 와 서킷 열림, api 'Transfer service list call failed' 와 'CircuitBreaker 'transferClient' is OPEN', api 이체 502, commerce payment 'core-banking transfer call failed' 와 checkout 502 가 생긴다",
     "testbed-transfer 의 ReplicaSet 과 이미지(core-banking-transfer:latest)가 그대로이고 KCM 에 ScalingReplicaSet, Pulled, Killing 이 없다(readiness Unhealthy 만 있을 수 있음). ORA 오류, enq: TX 대기, DDL, Job 파드가 없고, 폴링이 멈추면 몇 초 안에 Oracle CPU 와 이체가 평시로 돌아온다"
    ],
@@ -16948,15 +17068,15 @@
     "바깥 호출 한 건의 힙 고갈이 아님(F70-R 꼴): transfer OutOfMemoryError, JVM 힙 한도 도달, liveness 재시작(Killing)이 없다. transfer 는 멀쩡히 DB 를 기다릴 뿐이고 호출은 늘 page=0&size=1 이다",
     "내부 배치 작업 과부하가 아님(F59-P 꼴): Job 생성과 작업 파드가 없고, 목록 호출은 클러스터 안이 아니라 banking 입구(nginx → api)로 들어온다",
     "DB 잠금이나 계정, Oracle 자체 장애가 아님(F01-P, F08-G, F35-R, F54-R, F25-H 꼴): enq: TX 대기와 blockingSession, ORA-01017·ORA-28000·ORA-02395 같은 오류가 없고 Oracle 파드는 Ready 다. 대기 사건은 resmgr:cpu quantum(CPU)이다",
-    "account 릴리스 폭주나 진입 트래픽 폭주 일반이 아님(F47-R, F07-H 꼴): account 롤아웃이 없고, 늘어난 것은 거래 내역 목록 한 경로(size=1, toAccount)뿐이며 이체·잔액 요청률은 평시 수준에 동반 부하만큼이다"
+    "account 릴리스 폭주나 진입 트래픽 폭주 일반이 아님(F47-R, F07-H 꼴): account 롤아웃이 없고, 늘어난 것은 거래 내역 목록 한 경로(size=1, toAccount)뿐이다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the companion transfer (step transfer) 5xx rate swings between 0 and 0.3 or more within seconds",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: the companion transfer (step transfer) 5xx rate swings between 0 and 0.3 or more within seconds; the other entry paths (transfer, balance, account list) run at the usual level plus the companion load; transfer and balance request rates are the usual level plus the companion load",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.3 이상으로 몇 초 단위로 오르내린다",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 동반 부하 이체(step transfer) 5xx 비율이 평시 0 에서 0.3 이상으로 몇 초 단위로 오르내린다; 입구의 다른 경로(이체, 잔액, 계좌 목록) 요청률은 평시 수준에 동반 부하만큼이다; 이체, 잔액 요청률은 평시 수준에 동반 부하만큼이다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정"
    },
@@ -17588,7 +17708,7 @@
     "VM db.client.connections.usage 합계가 서비스마다 설정 크기(평시 7일 최저: cart 4, user 3, shipping 3, pricing 5, product, order, payment 10, inventory 9)에서 0 으로 떨어진다. user, cart, pricing, shipping 은 다시 읽힌 뒤 10분 안, product, order, payment, inventory 는 30분 안이다",
     "DPM dpm.postgresql.session.current_session 이 7일 중앙 62(최저 57)에서 계단식으로 0 근처까지 내려가 cleanup 전까지 오르지 않는다. 인스턴스와 DPM 수집(노드 주소 10.244.3.1 로 들어옴)은 그대로다",
     "KCM 에 rca-testbed-commerce 여덟 파드의 'Readiness probe failed', 'Liveness probe failed' 와 BackOff 가 10분 풀 넷 먼저, 30분 풀 넷 나중 순서로 나온다. 첫 실패 전 롤아웃과 새 ReplicaSet 은 없고 testbed-postgres-0 은 Ready 이며 재시작하지 않는다",
-    "게이트웨이 상품 조회 서버 스팬(GET /api/products/**, 표본)이 평시 0 이던 502 로 끝나기 시작하고(게이트웨이 WARN 'Downstream unavailable for GET /api/products ...', 응답 502), 그보다 먼저 쓰기 단계가 500, 로그인이 502 가 된다. 요청량은 그 전후가 같다(동반 부하 없음)"
+    "게이트웨이 상품 조회 서버 스팬(GET /api/products/**, 표본)이 평시 0 이던 502 로 끝나기 시작하고(게이트웨이 WARN 'Downstream unavailable for GET /api/products ...', 응답 502), 그보다 먼저 쓰기 단계가 500, 로그인이 502 가 된다. 게이트웨이 진입 서버 스팬 수는 그 전후로 크게 다르지 않다(녹화 분당 표본 평시 47, 주입 구간 60)"
    ],
    "must_rule_out": [
     "역할 비밀번호 기한 경과나 계정 잠금(F71-R, F35-R 꼴)이 아님: 오류가 'password authentication failed for user \"commerce\"' 나 ORA-28000 이 아니라 'no pg_hba.conf entry for host' 다. 비밀번호를 확인하기 전, 접속 주소에서 거절되었다",
@@ -17596,7 +17716,7 @@
     "PostgreSQL 다운이나 재시작(F25-H 꼴)이 아님: testbed-postgres-0 Ready, KCM 에 재시작이 없고 DPM 수집이 계속된다",
     "잠금 경합이나 느린 질의로 풀이 꽉 찬 것(F66-R, F67-H, F33-P 꼴)이 아님: Hikari 시간 초과가 total=0(빈 풀)이고 거절된 로그인이 원인으로 붙는다. 차단 세션과 활성 세션이 오르지 않는다",
     "서비스 배포나 연결 설정 오설정(F65-P, F39-R 꼴)이 아님: rca-testbed-commerce 에 롤아웃과 새 ReplicaSet 이 없고, 거절된 역할이 지금 쓰는 commerce 이며, 여덟 서비스가 모두 빠진다",
-    "부하 증가가 아님: 동반 부하가 없고 상주 기준선 요청량은 실패 전후가 같다"
+    "부하 증가가 아님: 게이트웨이 진입 서버 스팬 수가 실패 전후로 크게 다르지 않다(녹화 분당 표본 47, 60)"
    ],
    "beyond_data": {
     "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the baseline read-step (browse and search) non-OK rate rises from about 0 to 0.5 or more",
@@ -17840,15 +17960,15 @@
     "노드 CPU 압박이나 복합 압박이 아님(F15-P, F09-R): 백업은 Nice 10 의 압축 스레드 둘이라 노드 CPU 는 2코어 남짓만 더 쓰고, 마르는 것은 메모리다",
     "디스크 IO 포화가 아님(F10-P, F10-H): 백업이 데이터 파일을 읽지만 IO 우선순위가 idle 이고 디스크 대기 시간이 피해를 설명할 만큼 오르지 않는다",
     "배포나 설정 변경이 아님: 고장 전후로 banking 의 파드 템플릿, 이미지, env, 자원 설정, ConfigMap 이 그대로이고 바뀐 것은 노드의 프로세스와 메모리뿐이다",
-    "부하 증가가 아님: 동반 부하는 5rps 로 일정하고 기준선도 평시 그대로이며, 실패는 부하 곡선이 아니라 노드 메모리가 마른 시각에 맞춰 시작한다"
+    "부하 증가가 아님: 실패는 부하 곡선이 아니라 노드 메모리가 마른 시각에 맞춰 시작한다"
    ],
    "beyond_data": {
-    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the companion transfer 5xx rate rises from 0 to 0.5 or more; 2026-10-16 tb-w2 measurement: 8k synchronous write p99 about 20 ms even during a 12 GB sequential write",
+    "detail": "Evidence moved out of the scored fields (must_support, must_rule_out). This scenario has no recording yet, so whether the same facts remain in monitoring data (entry server spans and so on) has not been queried; load-generator rates can be restored from entry server spans after the first recording: the companion transfer 5xx rate rises from 0 to 0.5 or more; 2026-10-16 tb-w2 measurement: 8k synchronous write p99 about 20 ms even during a 12 GB sequential write; the companion load is a steady 5 rps and the baseline is as usual",
     "missing_data": "step results, achieved request rate and business-invariant verdicts computed by the load generator (runner k6); 119 only receives 10% sampled spans and service-level APM; comparison runs that are not in this recording (fault reverted, another version or another load) and local measurements",
     "confirmed_by": "runner load summary (loadgen summary) and controller verdicts; design-time comparison runs and local measurements"
    },
    "beyond_data_ko": {
-    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거로, 관제 데이터로는 확인되지 않는다: 동반 부하 이체 5xx 비율이 평시 0 에서 0.5 이상으로 오른다; 2026-10-16 tb-w2 실측: 12 GB 연속 쓰기 중에도 8k 동기 쓰기 p99 약 20ms",
+    "detail": "채점 칸(must_support, must_rule_out)에서 옮긴 근거다. 이 시나리오는 녹화가 없어 같은 사실이 관제 데이터(진입 서버 스팬 등)에 남는지 아직 조회하지 못했다. 부하기 비율은 첫 녹화 때 진입 서버 스팬으로 되살릴 수 있다: 동반 부하 이체 5xx 비율이 평시 0 에서 0.5 이상으로 오른다; 2026-10-16 tb-w2 실측: 12 GB 연속 쓰기 중에도 8k 동기 쓰기 p99 약 20ms; 동반 부하는 5rps 로 일정하고 기준선도 평시 그대로다",
     "missing_data": "부하 생성기(러너 k6)가 계산하는 단계별 결과, 달성 요청률, 업무 불변식 판정. 119 는 10% 표본 스팬과 서비스 단위 APM 만 받는다; 이 녹화 안에 없는 비교 실행(주입을 되돌리거나 다른 버전, 다른 부하로 돌린 경우)과 로컬 실측",
     "confirmed_by": "러너 부하 요약(loadgen summary)과 controller 판정; 설계 단계의 비교 실행과 로컬 실측"
    },

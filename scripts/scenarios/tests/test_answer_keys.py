@@ -187,7 +187,14 @@ class AnswerKeyContractTests(unittest.TestCase):
             r"loadgen|achieved_rps|business_ok|checkout_invariant|entry_status|published_at"
             r"|step (?:get|transfer)\b|mock_flap|order_duplicate_count|order_create_\w+_rate"
             r"|payment_502_rate|(?:동반 부하|기준선)[^.:]{0,30}(?:비율|실패율)"
+            # 러너 판정 키(…_matches_baseline)와, 요청량을 러너 부하 설정(기준선, 동반 부하)에
+            # 견주는 문장. 동반 부하는 진입량을 평시의 몇 배로 올리므로 관제 데이터로 가를 수 없다.
+            r"|matches_baseline|(?:요청량|요청률|요청 수)[^.:]{0,20}(?:기준선|동반 부하)"
+            r"|동반 부하[^.:]{0,12}(?:그대로|만큼)|기준선[^.:]{0,6}그대로"
         )
+        # 외부 PG 429 는 payment 의 클라이언트 스팬에만 남는다(PG mock 은 스팬을 내지 않는다).
+        # 서버 스팬에 429 가 없다는 문장은 외부 429 시나리오에서도 참이라 감별 근거가 못 된다.
+        server_429 = re.compile(r"서버 스팬[^.]{0,20}429")
         for scenario_id, entry in sorted(self.metadata.items()):
             for field in ("must_support", "must_rule_out"):
                 for index, text in enumerate(entry.get(field) or []):
@@ -197,6 +204,11 @@ class AnswerKeyContractTests(unittest.TestCase):
                         f"{scenario_id}.{field}[{index}] cites runner-only evidence: "
                         f"{match.group(0) if match else ''}",
                     )
+                    if field == "must_rule_out":
+                        self.assertIsNone(
+                            server_429.search(text),
+                            f"{scenario_id}.{field}[{index}] rules out an external 429 by server spans",
+                        )
 
     def test_story_ko_is_a_display_only_story(self) -> None:
         # 화면 이야기 칸(story_ko): 러너 시나리오 카드가 description 대신 보이는 사람용 글이다.
