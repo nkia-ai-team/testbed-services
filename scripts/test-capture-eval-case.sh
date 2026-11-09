@@ -364,4 +364,35 @@ jq '.beyond_data.detail = ""' "$notes_file" >"$TMP_ROOT/notes-empty.json"
 expect_rejected scenario-notes-empty-text \
   "${base_args[@]}" --scenario-notes-file "$TMP_ROOT/notes-empty.json"
 
+# Decoy deployments (testbed v4 U7): carried verbatim as meta.decoy_deployments,
+# outside scenario_metadata and its hash; every other meta key is unchanged; the
+# key is absent without the flag; a malformed record is rejected.
+decoys_file="$TMP_ROOT/decoys.json"
+jq -n '{schema_version:1, scenario_id:"F01-R", seed:42, policy_sha256:null,
+  cycle_start:"2026-07-15T00:00:00Z",
+  decoys:[{id:"d1", window:"normal", planned_at:"2026-07-15T00:20:00Z", kind:"restart",
+    namespace:"rca-testbed-commerce", deployment:"testbed-order", relation:"off_domain",
+    value:"x", status:"applied"}]}' >"$decoys_file"
+for mode_args in "" "--phases-json $phases_json"; do
+  # shellcheck disable=SC2086
+  with_decoys=$("$CAPTURE" "${base_args[@]}" --case-label calibration $mode_args \
+    --decoys-json "$decoys_file" --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+  # shellcheck disable=SC2086
+  without=$("$CAPTURE" "${base_args[@]}" --case-label calibration $mode_args \
+    --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+  jq -e --slurpfile decoys "$decoys_file" --argjson without "$without" '
+    .decoy_deployments == $decoys[0] and del(.decoy_deployments) == $without' \
+    <<<"$with_decoys" >/dev/null || fail "decoys not carried as decoy_deployments (${mode_args:-v2})"
+  jq -e 'has("decoy_deployments") | not' <<<"$without" >/dev/null ||
+    fail "decoy_deployments present without --decoys-json (${mode_args:-v2})"
+done
+jq '.decoys[0] |= del(.status)' "$decoys_file" >"$TMP_ROOT/decoys-missing.json"
+expect_rejected decoys-missing-field \
+  "${base_args[@]}" --decoys-json "$TMP_ROOT/decoys-missing.json"
+grep -q -- '--decoys-json must be' "$TMP_ROOT/err" || fail 'decoys-missing-field rejected for another reason'
+jq '.schema_version = 2' "$decoys_file" >"$TMP_ROOT/decoys-version.json"
+expect_rejected decoys-unknown-version \
+  "${base_args[@]}" --decoys-json "$TMP_ROOT/decoys-version.json"
+grep -q -- '--decoys-json must be' "$TMP_ROOT/err" || fail 'decoys-unknown-version rejected for another reason'
+
 printf '[PASS] capture policy dry-run tests\n'

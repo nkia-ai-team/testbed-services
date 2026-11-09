@@ -1979,3 +1979,84 @@ class CorrespondencePairTests(unittest.TestCase):
             "test-scenarios.sh의 핀이 카탈로그와 어긋난다(승격·강등·파킹 커밋과 핀 갱신은 "
             "같은 커밋에 있어야 한다):\n" + "\n".join(problems),
         )
+
+
+class DecoyDeploymentPolicyTests(unittest.TestCase):
+    """registry/decoy-deployments.json (testbed v4 U7): the runner's harmless
+    deployments may only touch what the manifests say is safe to touch."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.policy = json.loads((ROOT / "registry" / "decoy-deployments.json").read_text(encoding="utf-8"))
+        drift_spec = importlib.util.spec_from_file_location("image_drift_check", ROOT / "image-drift-check.py")
+        drift = importlib.util.module_from_spec(drift_spec)
+        drift_spec.loader.exec_module(drift)
+        repo = ROOT.parents[1]
+        cls.workloads = drift.load_manifests(repo)
+        cls.manifest_text = {}
+        for domain in drift.DOMAINS:
+            for path in sorted((repo / domain / "k8s").glob("*.yaml")):
+                for document in re.split(r"(?m)^---\s*$", path.read_text(encoding="utf-8")):
+                    name = re.search(r"(?m)^  name:\s*(\S+)", document)
+                    namespace = re.search(r"(?m)^  namespace:\s*(\S+)", document)
+                    if re.search(r"(?m)^kind:\s*Deployment\b", document) and name and namespace:
+                        cls.manifest_text[(namespace.group(1), name.group(1))] = document
+
+    def test_targets_are_app_deployments_with_their_manifest_identity(self) -> None:
+        for target in self.policy["targets"]:
+            key = (target["namespace"], target["deployment"])
+            with self.subTest(key=key):
+                containers = self.workloads.get(("Deployment", *key))
+                self.assertIsNotNone(containers, "not a Deployment in the manifests")
+                self.assertIn(target["container"], containers)
+                document = self.manifest_text[key]
+                self.assertRegex(
+                    document,
+                    rf'OTEL_SERVICE_NAME\s*\n\s*value:\s*"{re.escape(target["service_name"])}"',
+                )
+                self.assertIn(f'lucida.target_id={target["target_id"]}', document)
+                # Stores, caches, mocks and the entry nginx run public images and
+                # lose state or traffic on a restart; only the app images qualify.
+                image = containers[target["container"]]
+                self.assertNotIn("/", image)
+                self.assertFalse(image.startswith(("nginx", "redis", "postgres", "mysql")), image)
+
+    def test_every_app_deployment_is_a_candidate(self) -> None:
+        apps = {
+            (namespace, name)
+            for (kind, namespace, name), containers in self.workloads.items()
+            if kind == "Deployment"
+            and all("/" not in image and not image.startswith(("nginx", "redis")) for image in containers.values())
+        }
+        listed = {(t["namespace"], t["deployment"]) for t in self.policy["targets"]}
+        self.assertEqual(listed, apps)
+
+    def test_maxsurge_zero_deployments_get_no_rollout(self) -> None:
+        for target in self.policy["targets"]:
+            document = self.manifest_text[(target["namespace"], target["deployment"])]
+            surge_zero = re.search(r"maxSurge:\s*0\b", document) is not None
+            self.assertEqual(target["rollout_ok"], not surge_zero, target["deployment"])
+
+    def test_windows_keep_rollouts_out_of_the_buffer(self) -> None:
+        windows = self.policy["windows"]
+        self.assertLess(self.policy["rollout_timeout_sec"], windows["near_fault"]["end_before_buffer_sec"])
+        self.assertEqual(
+            windows["normal"]["end_before_buffer_sec"], windows["near_fault"]["start_before_buffer_sec"]
+        )
+        for window in windows.values():
+            self.assertIn("0", window["count_weights"])
+            self.assertGreater(window["count_weights"]["0"], 0)
+            self.assertGreater(max(int(count) for count in window["count_weights"]), 1)
+        self.assertEqual(
+            set(self.policy["kind_weights"]), {"restart", "config_rollout", "configmap", "annotation"}
+        )
+        self.assertEqual(set(self.policy["relation_weights"]), {"on_path", "same_domain", "off_domain"})
+
+    def test_domain_namespaces_and_configmap_exist(self) -> None:
+        namespaces = {namespace for (_, namespace, _) in self.workloads}
+        self.assertEqual(set(self.policy["domain_namespaces"].values()), namespaces)
+        repo = ROOT.parents[1]
+        for domain in ("commerce", "core-banking", "food-delivery"):
+            text = (repo / domain / "k8s" / "02-configmaps.yaml").read_text(encoding="utf-8")
+            self.assertRegex(text, rf"(?m)^  name:\s*{self.policy['configmap']['name']}\s*$")
+            self.assertNotIn(self.policy["configmap"]["key"], text)

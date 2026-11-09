@@ -268,6 +268,7 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   `preflight`(창=buffer 10분), `topology_snapshot`, 모델 스냅샷 계보
   (`model_snapshot_at >= capture_end` 검증 포함).
 - 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.
+- 선택 `decoy_deployments`(2026-11-09, v4): 러너가 그 주기의 평시 구간에 넣은 무해한 배포(미끼, 평시 배포)의 기록이다. 러너가 `--decoys-json` 으로 넘기고 그대로 싣는다: `{schema_version:1, scenario_id, seed, policy_sha256, cycle_start, decoys:[{id, window(normal|near_fault), planned_at, kind(restart|config_rollout|configmap|annotation), namespace, deployment, service_name, target_id, relation(on_path|same_domain|off_domain), configmap, value, status(applied|rolled_back|failed|skipped), started_at, finished_at, detail}]}`. 러너가 미끼를 켜고 돌린 주기는 0건이어도 키가 있고, 끈 러너의 녹화에는 키가 없다. 정책은 testbed-services `scripts/scenarios/registry/decoy-deployments.json`, 같은 seed 와 정책이면 같은 일정이 나온다. 채점 입력이 아니며 `scenario_metadata` 해시 밖이다. `relation` 은 정답지의 근본 대상, 계기, 채점 대상 이름으로 정한 값이다. 같은 주기의 `preflight` 에는 미끼가 설명하는 알람이 있었으면 `excused_alarms` 가 더해진다(그 알람은 `active_alarms` 값에서 빠진다).
 - 선택 `scenario_notes`(2026-10-19): 정답지에 참고 메모(`beyond_data`, `beyond_data_ko`)가 있을 때만 생긴다. 러너가 `--scenario-notes-file` 로 넘기고, 채점과 정답 판정 입력이 아니며 `scenario_metadata` 해시 밖이다(헌장 G7 참고 메모 칸). v2 에도 같다.
 
 **토폴로지 주기 스냅샷 번들 (2026-07-24 신설 — EventCluster 소비자 계약)**:

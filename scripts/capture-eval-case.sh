@@ -15,7 +15,7 @@ Usage:
     --scenario-metadata-sha256 <sha256> [--scenario-notes-file <json>] \
     --t1 <YYYY-MM-DDTHH:MM:SSZ> --t2 <YYYY-MM-DDTHH:MM:SSZ> \
     [--case-label <calibration|evaluation|failed>] [--run-result <result.json>] \
-    [--phases-json <file>] [--topology-bundle <dir>] \
+    [--phases-json <file>] [--topology-bundle <dir>] [--decoys-json <file>] \
     [--output-root <dir>] [--dry-run]
 
 Case labels:
@@ -43,6 +43,10 @@ Capture contract version:
                                case's topology/ (only manifest.json's case_id
                                is patched). Omitted: capture proceeds fail-open
                                with a warning; meta.topology_bundle is null.
+  --decoys-json <file>         Runner-recorded decoy deployments of the cycle
+                               (seed, plan, outcome; testbed v4). Carried
+                               verbatim as meta.decoy_deployments. Omitted: the
+                               key is absent (runner had decoys off).
 
 Required environment for a live capture:
   VM_URL             default: http://192.168.230.119:18428
@@ -129,6 +133,10 @@ phases_json=''
 # Periodic topology/service-tree bundle (spec §2.2, EventCluster contract,
 # v3-only). Runner-collected dir with graph/, service-tree/, manifest.json.
 topology_bundle=''
+# Decoy deployments the runner applied inside the cycle (testbed v4 U7): seed,
+# plan and outcome. Carried into meta.json as decoy_deployments, outside
+# scenario_metadata and its hash. Absent flag = absent key.
+decoys_json=''
 dry_run=false
 self_check=false
 
@@ -152,6 +160,7 @@ while (( $# > 0 )); do
     --normal-segment) normal_segment="${2:-}"; shift 2 ;;
     --phases-json) phases_json="${2:-}"; shift 2 ;;
     --topology-bundle) topology_bundle="${2:-}"; shift 2 ;;
+    --decoys-json) decoys_json="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --self-check) self_check=true; shift ;;
@@ -318,6 +327,21 @@ if [[ -n "$scenario_notes_file" ]]; then
 fi
 attach_scenario_notes() {
   if [[ "$scenario_notes" == null ]]; then cat; else jq --argjson notes "$scenario_notes" '. + {scenario_notes: $notes}'; fi
+}
+
+decoy_deployments=null
+if [[ -n "$decoys_json" ]]; then
+  [[ -r "$decoys_json" ]] || die '--decoys-json is not readable'
+  decoy_deployments=$(jq -c . "$decoys_json") || die '--decoys-json is not JSON'
+  jq -e 'type == "object" and .schema_version == 1 and (.decoys | type == "array") and
+    all(.decoys[]; type == "object" and (.id | type == "string") and
+      (.kind | type == "string") and (.namespace | type == "string") and
+      (.planned_at | type == "string") and (.status | type == "string"))' \
+    <<<"$decoy_deployments" >/dev/null ||
+    die '--decoys-json must be {schema_version:1, decoys:[{id, kind, namespace, planned_at, status, ...}]}'
+fi
+attach_decoy_deployments() {
+  if [[ "$decoy_deployments" == null ]]; then cat; else jq --argjson decoys "$decoy_deployments" '. + {decoy_deployments: $decoys}'; fi
 }
 
 evaluation_eligible=false
@@ -641,7 +665,7 @@ if [[ "$dry_run" == true ]]; then
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
-        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes
+        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments
   else
     jq -n \
       --arg case_id "$case_id" \
@@ -678,7 +702,7 @@ if [[ "$dry_run" == true ]]; then
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
-        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes
+        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments
   fi
   exit 0
 fi
@@ -1299,6 +1323,13 @@ if [[ "$scenario_notes" != null ]]; then
   mv -f "$staging_dir/meta.json.notes" "$staging_dir/meta.json"
   jq -e --argjson notes "$scenario_notes" '.scenario_notes == $notes' "$staging_dir/meta.json" >/dev/null ||
     die 'meta.json scenario_notes mismatch'
+fi
+
+if [[ "$decoy_deployments" != null ]]; then
+  attach_decoy_deployments <"$staging_dir/meta.json" >"$staging_dir/meta.json.decoys"
+  mv -f "$staging_dir/meta.json.decoys" "$staging_dir/meta.json"
+  jq -e --argjson decoys "$decoy_deployments" '.decoy_deployments == $decoys' "$staging_dir/meta.json" >/dev/null ||
+    die 'meta.json decoy_deployments mismatch'
 fi
 
 # Group-readable promotion (spec §2.2, 2026-07-24): a case staged under a

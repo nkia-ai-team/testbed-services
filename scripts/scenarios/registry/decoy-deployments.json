@@ -1,0 +1,243 @@
+{
+ "schema_version": 1,
+ "_note": "러너가 녹화 주기의 평시 구간에 넣는 무해한 배포(미끼, 평시 배포)의 정책. 근거: runbook-testbed-move-109-to-66.md §8-4. 러너(rca-scenario-runner app/decoys.py)가 주기 시작 때 이 파일과 시드로 일정을 정하고, 같은 시드와 같은 파일이면 같은 일정이 나온다. 대상은 앱 Deployment 만이다. DB, Kafka, Redis, mock, nginx 는 재시작이 피해를 내거나 상태를 잃어 넣지 않는다. rollout_ok=false 는 maxSurge 0 이라 재시작이 곧 중단인 대상으로, 롤아웃 없는 종류(configmap, annotation)만 받는다. 이미지는 바꾸지 않는다(이미지 점검은 Deployment 별 기대 이미지와 비교한다).",
+ "windows": {
+  "normal": {
+   "start_after_cycle_start_sec": 600,
+   "end_before_buffer_sec": 2700,
+   "count_weights": {
+    "0": 25,
+    "1": 45,
+    "2": 25,
+    "3": 5
+   }
+  },
+  "near_fault": {
+   "start_before_buffer_sec": 2700,
+   "end_before_buffer_sec": 720,
+   "count_weights": {
+    "0": 50,
+    "1": 40,
+    "2": 10
+   }
+  }
+ },
+ "min_normal_sec": 3600,
+ "min_gap_sec": 720,
+ "late_limit_sec": 600,
+ "rollout_timeout_sec": 420,
+ "alarm_excuse_grace_sec": 900,
+ "kind_weights": {
+  "restart": 45,
+  "config_rollout": 15,
+  "configmap": 25,
+  "annotation": 15
+ },
+ "relation_weights": {
+  "on_path": 35,
+  "same_domain": 30,
+  "off_domain": 35
+ },
+ "configmap": {
+  "name": "service-config",
+  "key": "CONFIG_REVISION"
+ },
+ "annotation_key": "kubernetes.io/change-cause",
+ "scenario_exclusions": {},
+ "domain_namespaces": {
+  "commerce": "rca-testbed-commerce",
+  "core-banking": "rca-testbed-banking",
+  "food-delivery": "rca-testbed-food"
+ },
+ "targets": [
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-order",
+   "container": "order-service",
+   "service_name": "commerce-order",
+   "target_id": "93df2d34-b054-4ecd-8f8e-bafa098dc6cd",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-product",
+   "container": "product-service",
+   "service_name": "commerce-product",
+   "target_id": "766ec1cd-e07e-4ee7-8fc7-55c5fb6e8379",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-inventory",
+   "container": "inventory-service",
+   "service_name": "commerce-inventory",
+   "target_id": "414db206-d121-43b1-886c-78b240d23a7a",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-payment",
+   "container": "payment-service",
+   "service_name": "commerce-payment",
+   "target_id": "c3a3587e-215e-4da8-a76c-729732394e40",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-notification",
+   "container": "notification-service",
+   "service_name": "commerce-notification",
+   "target_id": "ef0eaed0-045d-48e2-9e3a-280b4fe9b0cc",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-user",
+   "container": "user-service",
+   "service_name": "commerce-user",
+   "target_id": "252a3a37-77fd-495a-8e12-d79303753fda",
+   "rollout_ok": false,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-cart",
+   "container": "cart-service",
+   "service_name": "commerce-cart",
+   "target_id": "fc54857c-9bbb-4b47-abb4-7fa35971d994",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-pricing",
+   "container": "pricing-service",
+   "service_name": "commerce-pricing",
+   "target_id": "de1b55cf-5654-483e-82b1-e4ade182ba17",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-shipping",
+   "container": "shipping-service",
+   "service_name": "commerce-shipping",
+   "target_id": "452da2b8-a908-497f-a2a9-948b92d96dc4",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-commerce",
+   "deployment": "testbed-gateway",
+   "container": "api-gateway",
+   "service_name": "commerce-gateway",
+   "target_id": "e9f5f307-9ebd-4403-8461-164b989e5d62",
+   "rollout_ok": true,
+   "aliases": []
+  },
+  {
+   "namespace": "rca-testbed-banking",
+   "deployment": "testbed-api",
+   "container": "api-service",
+   "service_name": "core-banking-api",
+   "target_id": "b3d586c3-4443-4581-8f2e-be12f3504448",
+   "rollout_ok": true,
+   "aliases": [
+    "banking-api"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-banking",
+   "deployment": "testbed-account",
+   "container": "account-service",
+   "service_name": "core-banking-account",
+   "target_id": "c2efb1d9-00ec-4ca7-8fd9-80bd122c9d10",
+   "rollout_ok": true,
+   "aliases": [
+    "banking-account"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-banking",
+   "deployment": "testbed-transfer",
+   "container": "transfer-service",
+   "service_name": "core-banking-transfer",
+   "target_id": "f0ce5940-a7e2-44a2-843f-196de379d898",
+   "rollout_ok": false,
+   "aliases": [
+    "banking-transfer"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-banking",
+   "deployment": "testbed-ledger",
+   "container": "ledger-service",
+   "service_name": "core-banking-ledger",
+   "target_id": "b018e513-74d0-4d42-91c1-2a60755765ec",
+   "rollout_ok": true,
+   "aliases": [
+    "banking-ledger"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-food",
+   "deployment": "testbed-order",
+   "container": "order-service",
+   "service_name": "food-delivery-order",
+   "target_id": "fa8b5cc4-6c43-45bf-b388-a4b245fade2d",
+   "rollout_ok": true,
+   "aliases": [
+    "food-order"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-food",
+   "deployment": "testbed-restaurant",
+   "container": "restaurant-service",
+   "service_name": "food-delivery-restaurant",
+   "target_id": "18a0e363-d253-4712-be40-a9e9e117d1dc",
+   "rollout_ok": true,
+   "aliases": [
+    "food-restaurant"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-food",
+   "deployment": "testbed-dispatch",
+   "container": "dispatch-service",
+   "service_name": "food-delivery-dispatch",
+   "target_id": "1f1eb9b2-a368-4a70-a003-5fe70b1a983b",
+   "rollout_ok": true,
+   "aliases": [
+    "food-dispatch"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-food",
+   "deployment": "testbed-payment",
+   "container": "payment-service",
+   "service_name": "food-delivery-payment",
+   "target_id": "2e6120e3-37fa-4c44-a224-6ab13afdd9ee",
+   "rollout_ok": true,
+   "aliases": [
+    "food-payment"
+   ]
+  },
+  {
+   "namespace": "rca-testbed-food",
+   "deployment": "testbed-notify",
+   "container": "notify-service",
+   "service_name": "food-delivery-notify",
+   "target_id": "71bf7e79-5bbe-4a29-855d-26e1465ab1d6",
+   "rollout_ok": true,
+   "aliases": [
+    "food-notify"
+   ]
+  }
+ ]
+}

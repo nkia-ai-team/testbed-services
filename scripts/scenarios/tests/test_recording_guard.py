@@ -27,6 +27,24 @@ class RecordingGuardTests(unittest.TestCase):
         for phase in ("idle", "paused", "completed", "cycle_reset", "cycle_normal"):
             self.assertIsNone(guard.blocking_reason(_queue(phase)), phase)
 
+    def test_decoy_deployments_in_the_normal_phase_do_not_block(self) -> None:
+        """v4: 러너가 평시 구간에 넣는 미끼, 평시 배포는 녹화가 담는 사건이지 오염이 아니다."""
+        for status in ("planned", "rolling", "applied", "rolled_back", "skipped"):
+            raw = json.dumps({
+                "phase": "cycle_normal", "current_scenario_id": "X",
+                "cycle_decoy_seed": 7,
+                "cycle_decoys": [{"id": "d1", "kind": "restart", "status": status}],
+            })
+            self.assertIsNone(guard.blocking_reason(raw), status)
+
+    def test_recording_phases_still_block_with_decoys_recorded(self) -> None:
+        for phase in ("cycle_buffer", "running", "cycle_cooldown", "waiting_capture"):
+            raw = json.dumps({
+                "phase": phase, "current_scenario_id": "X",
+                "cycle_decoys": [{"id": "d1", "kind": "restart", "status": "applied"}],
+            })
+            self.assertIsNotNone(guard.blocking_reason(raw), phase)
+
     def test_unreadable_response_blocks(self) -> None:
         for raw in ("", "not json", "{}", "[]"):
             self.assertIsNotNone(guard.blocking_reason(raw), raw)
