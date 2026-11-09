@@ -335,6 +335,56 @@ class BankingCompanionMixTests(unittest.TestCase):
             self.assertNotIn(shlex.quote(BANKING_HEAVY), argv)
 
 
+BANKING_TRANSFER_SCRIPTS = ("surge.js", "transfer-heavy-surge.js", "transfer-balance-surge.js",
+                            "settlement-arrival-poll.js", "statement-export.js")
+# 66 읽기 조회(2026-11-09): ACC-5001~ACC-5987 가운데 FROZEN 인 계좌. 이체 풀에 들어가면 account 가 400 으로 거절한다.
+BANKING_FROZEN_BULK = {
+    "5067", "5128", "5146", "5190", "5277", "5300", "5321", "5367", "5411", "5414", "5500", "5508",
+    "5614", "5636", "5739", "5743", "5814", "5849", "5855", "5860", "5916", "5970", "5985",
+}
+
+
+def transfer_accounts(script: str) -> list[str]:
+    block = script[script.index("const TRANSFER_ACCOUNTS = ("):]
+    block = block[:block.index(").split(',')")]
+    return ["ACC-" + n for n in "".join(re.findall(r"'([0-9,]+)'", block)).split(",")]
+
+
+class BankingCompanionAccountPoolTests(unittest.TestCase):
+    """2026-11-09 (v4 E5): 은행 동반 부하의 이체가 활성 계좌 7개끼리만 오가서 잔액이 금세 바닥나고
+    'Insufficient balance' 400 이 잡음으로 늘었다(F47-R, F72-R 녹화). 이체 출금, 입금 계좌를 66 에서
+    ACTIVE 이고 잔액 2,000,000 이상인 대량 계좌 733개로 넓힌다. 잔액 조회와 거래 내역은 그대로라
+    조회 모양과 거래 내역 건수 질의(byb2y2hv7p4ag) 수가 바뀌지 않는다."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.scripts = {name: (REPO / "core-banking" / "loadgen" / name).read_text() for name in BANKING_TRANSFER_SCRIPTS}
+
+    def test_every_banking_companion_script_shares_one_wide_transfer_pool(self) -> None:
+        pools = {name: transfer_accounts(script) for name, script in self.scripts.items()}
+        reference = pools["surge.js"]
+        self.assertEqual(len(reference), 733)
+        self.assertEqual(len(set(reference)), 733)
+        self.assertTrue(all(re.fullmatch(r"ACC-5[0-9]{3}", a) and "ACC-5001" <= a <= "ACC-5987" for a in reference))
+        self.assertFalse({a[4:] for a in reference} & BANKING_FROZEN_BULK)
+        for name, pool in pools.items():
+            self.assertEqual(pool, reference, name)
+
+    def test_only_transfers_move_to_the_wide_pool(self) -> None:
+        for name, script in self.scripts.items():
+            transfer_fn = re.search(r"function (?:small)?[tT]ransferJourney\(\) \{(.*?)\n\}", script, re.S).group(1)
+            self.assertIn("const from = pick(TRANSFER_ACCOUNTS);", transfer_fn, name)
+            self.assertIn("let to = pick(TRANSFER_ACCOUNTS);", transfer_fn, name)
+            self.assertNotIn("ACTIVE_ACCOUNTS", transfer_fn, name)
+            self.assertEqual(script.count("pick(TRANSFER_ACCOUNTS)"), 3, name)
+            # 잔액 조회와 거래 내역은 계속 활성 계좌 7개다.
+            self.assertIn("const id = pick(ACTIVE_ACCOUNTS);", script, name)
+        self.assertIn("const MERCHANT_ACCOUNTS = ACTIVE_ACCOUNTS.concat(['commerce-merchant']);",
+                      self.scripts["settlement-arrival-poll.js"])
+        # 상주 기준선(script.js)은 이 변경 범위 밖이라 그대로 7개다.
+        baseline = (REPO / "core-banking" / "loadgen" / "script.js").read_text()
+        self.assertNotIn("TRANSFER_ACCOUNTS", baseline)
+
 if __name__ == "__main__":
     unittest.main()
 
