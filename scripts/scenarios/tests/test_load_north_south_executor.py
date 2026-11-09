@@ -421,10 +421,28 @@ class FoodLoadOrderLookupTests(unittest.TestCase):
             self.assertEqual(script.count("rememberOrder(orderRes);"), 1)
             self.assertIn("res.json('id')", script)
 
+    def test_delivery_detail_reads_ids_from_the_active_list_not_a_fixed_range(self) -> None:
+        # 2026-11-09: id 1~20000 은 30일 보존으로 지워져(66 배차 id 5,114,395~6,850,136) 상세가 전부 404 였다.
+        for script in (self.baseline, self.surge):
+            self.assertNotIn("DISPATCH_ID_MAX", script.replace("1~DISPATCH_ID_MAX", ""))
+            body = script[script.index("function deliveryTrackingJourney()"):]
+            body = body[:body.index("\n}\n")]
+            self.assertIn("const dispatchId = pick(trackedDeliveryIds);", body)
+            self.assertIn("if (trackedDeliveryIds.length === 0 || rand() < 0.1) {", body)
+            self.assertIn("'delivery detail 200': (r) => r.status === 200", body)
+            self.assertNotIn("404", body)
+            refresh = script[script.index("function refreshTrackedDeliveries()"):]
+            refresh = refresh[:refresh.index("\n}\n")]
+            self.assertIn("step: 'active-list'", refresh)
+            self.assertIn(".map((d) => d.id)", refresh)
+            # 새 단계 이름도 러너 관측 단계와 겹치지 않는다.
+            self.assertNotIn("active-list", {self.food["business_step"], self.food["read_step"]})
+
     def test_delivery_list_stays_a_first_page_slice_call(self) -> None:
         for script in (self.baseline, self.surge):
             calls = re.findall(r"/api/deliveries\?[^`]*", script)
-            self.assertEqual(calls, ["/api/deliveries?status=DELIVERED&page=0&size=20"])
+            self.assertEqual(sorted(calls), ["/api/deliveries?status=ASSIGNED&page=0&size=20",
+                                             "/api/deliveries?status=DELIVERED&page=0&size=20"])
         dispatch = (REPO / "food-delivery" / "dispatch-service" / "src" / "main" / "java" / "com" / "fooddelivery"
                     / "dispatch" / "repository" / "DispatchRepository.java").read_text()
         self.assertIn("Slice<Dispatch> findByStatus(String status, Pageable pageable);", dispatch)

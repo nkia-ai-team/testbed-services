@@ -75,7 +75,6 @@ function randomRestaurantId() {
 }
 const REGIONS = ['GANGNAM', 'HONGDAE', 'JAMSIL', 'YEOUIDO', 'MAPO', 'SONGPA', 'NOWON', 'GURO'];
 const CUSTOMER_ID_MAX = 2000;
-const DISPATCH_ID_MAX = 20000;
 const customerId = () => `cust-${randInt(1, CUSTOMER_ID_MAX)}`;
 
 function browsingJourney() {
@@ -186,12 +185,45 @@ function orderLookupJourney() {
 // LIMIT 조회 하나(334,351회, 평균 5.05ms, p99 6.3ms)이며 COUNT 목록 문장은 없다. 지금은 50rps 에서
 // 초당 3.75건 x 0.005초 = 동시 약 0.02개다. 10배 느려져도 0.2개라 부하 쪽에서 줄일 것이 없다.
 // 목록 조회를 다시 Page 로 바꾸거나 page 를 깊게 넘기면 이 계산이 깨진다(F59-R 이 일부러 그렇게 한다).
+// 상세용 진행 중 목록(status=ASSIGNED)은 상세 열 번에 한 번꼴과 VU 첫 상세 때만이라 50rps 에서 초당 약 0.4건,
+// 같은 21행 LIMIT 조회라 더해지는 동시 연결은 0.002개 수준이다.
+// 배달 상세가 읽을 배차 id(2026-11-09, v4 E4 추가). 예전에는 1~DISPATCH_ID_MAX(20000) 에서 골랐는데
+// 배차 표에 30일 보존이 생긴 뒤 66 의 id 는 5,114,395~6,850,136 이라 상세 조회가 전부 404 였다(로그는 안
+// 남아 눈에 띄지 않음). 이제 진행 중 배차 목록(status=ASSIGNED, 66 약 1,700행, 배정 30분 안쪽)에서 받은
+// id 를 VU 마다 기억해 그중 하나를 본다. 배차 행은 끝나도 30일 남으므로 기억한 id 는 계속 200 이다.
+// 목록은 VU 의 첫 상세 때와 그 뒤 상세 열 번에 한 번꼴로 다시 받는다(66 EXPLAIN: status 인덱스 ref,
+// LIMIT 21 행만 읽음, Slice 라 COUNT 없음).
+let trackedDeliveryIds = [];
+
+function refreshTrackedDeliveries() {
+    const res = http.get(`${DISPATCH_URL}/api/deliveries?status=ASSIGNED&page=0&size=20`,
+        { tags: { journey: 'surge-delivery', step: 'active-list' } });
+    check(res, { 'active delivery list 200': (r) => r.status === 200 });
+    if (res.status !== 200) {
+        return;
+    }
+    try {
+        const ids = (res.json() || []).map((d) => d.id).filter((id) => id);
+        if (ids.length > 0) {
+            trackedDeliveryIds = ids;
+        }
+    } catch (e) {
+        // 응답이 JSON 이 아니면 기억한 id 를 그대로 쓴다.
+    }
+}
+
 function deliveryTrackingJourney() {
     if (rand() < 0.5) {
-        const dispatchId = randInt(1, DISPATCH_ID_MAX);
+        if (trackedDeliveryIds.length === 0 || rand() < 0.1) {
+            refreshTrackedDeliveries();
+        }
+        if (trackedDeliveryIds.length === 0) {
+            return;
+        }
+        const dispatchId = pick(trackedDeliveryIds);
         const res = http.get(`${DISPATCH_URL}/api/deliveries/${dispatchId}`,
             { tags: { journey: 'surge-delivery', step: 'detail' } });
-        check(res, { 'delivery detail 200/404': (r) => r.status === 200 || r.status === 404 });
+        check(res, { 'delivery detail 200': (r) => r.status === 200 });
     } else {
         const res = http.get(`${DISPATCH_URL}/api/deliveries?status=DELIVERED&page=0&size=20`,
             { tags: { journey: 'surge-delivery', step: 'list' } });

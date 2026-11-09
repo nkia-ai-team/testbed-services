@@ -112,6 +112,7 @@ MySQL 8.0 단일 `fooddelivery` DB. 테이블 15개. 전체 DDL + 대량 시드:
 `loadgen/` — k6 기반, api-gateway 가 없어 각 서비스를 k8s Service DNS로 직접 호출한다.
 여정 가중: 매장/메뉴 브라우징 50% / 지역 검색 15% / 주문 생성 20% / 주문 조회 5% / 배달 상태 조회 10%
 (주문 조회는 2026-11-09 브라우징 몫에서 떼어 더했다. 마지막으로 만든 주문의 상세 또는 손님 주문 목록 앞 10건).
+배달 상세는 진행 중 배차 목록(`status=ASSIGNED`)에서 받은 id 를 VU 마다 기억해 본다(고정 id 범위는 30일 보존 뒤 전부 404 였다).
 `entrypoint.sh` 가 KST 시각 기준 diurnal 곡선으로 목표 RPS를 계산해 매시 새 k6 run 을 반복한다
 (기본 `PEAK_RPS=6` / `TROUGH_RPS=1`, commerce 대비 저율).
 
