@@ -477,7 +477,9 @@ def connect(**kw):
         self.assertNotRegex(script, r"(?m)^\s*exit\b")  # 진입 스크립트가 source 해도 안전
         image_default = ("NAMES.DIRECTORY_PATH = (EZCONNECT, TNSNAMES)\n"
                          "# See https://github.com/gvenzl/oci-oracle-xe/issues/43\nDISABLE_OOB=ON\nBREAK_POLL_SKIP=1000\n")
-        for before in (image_default, image_default + "SQLNET.EXPIRE_TIME = 10\n"):
+        # 리뷰 2회차 T-F: 소문자 표기의 기존 줄도 같은 파라미터라 하나로 합친다.
+        for before in (image_default, image_default + "SQLNET.EXPIRE_TIME = 10\n",
+                       image_default + "sqlnet.expire_time = 10\n", "  Sqlnet.Expire_Time=5\n" + image_default):
             with tempfile.TemporaryDirectory() as raw:
                 base = Path(raw)
                 conf = base / "oradata" / "dbconfig" / "FREE"
@@ -489,7 +491,7 @@ def connect(**kw):
                 for _ in range(2):
                     subprocess.run(["bash", str(runner)], env=env, check=True, capture_output=True)
                 after = (conf / "sqlnet.ora").read_text()
-                self.assertEqual(re.findall(r"(?m)^SQLNET\.EXPIRE_TIME.*$", after), ["SQLNET.EXPIRE_TIME = 1"])
+                self.assertEqual(re.findall(r"(?im)^\s*SQLNET\.EXPIRE_TIME.*$", after), ["SQLNET.EXPIRE_TIME = 1"])
                 for kept in ("NAMES.DIRECTORY_PATH = (EZCONNECT, TNSNAMES)", "DISABLE_OOB=ON", "BREAK_POLL_SKIP=1000"):
                     self.assertIn(kept, after)
         sts = next(d for d in docs if d["kind"] == "StatefulSet")

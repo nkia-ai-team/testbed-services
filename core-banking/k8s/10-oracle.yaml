@@ -134,11 +134,9 @@ data:
     EXPIRE_MINUTES=1
     sqlnet_file="${ORACLE_BASE}/oradata/dbconfig/${ORACLE_SID}/sqlnet.ora"
     if [ -f "${sqlnet_file}" ]; then
-      if grep -Eq '^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=' "${sqlnet_file}"; then
-        sed -i -E "s/^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=.*/SQLNET.EXPIRE_TIME = ${EXPIRE_MINUTES}/" "${sqlnet_file}"
-      else
-        printf 'SQLNET.EXPIRE_TIME = %s\n' "${EXPIRE_MINUTES}" >>"${sqlnet_file}"
-      fi
+      # 파라미터 이름은 대소문자를 가리지 않으므로 어떤 표기의 기존 줄이든 모두 지우고 한 줄만 남긴다.
+      sed -i -E '/^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=/Id' "${sqlnet_file}"
+      printf 'SQLNET.EXPIRE_TIME = %s\n' "${EXPIRE_MINUTES}" >>"${sqlnet_file}"
       echo "sqlnet.ora: SQLNET.EXPIRE_TIME = ${EXPIRE_MINUTES}"
     else
       echo "sqlnet.ora: ${sqlnet_file} not found, dead connection detection NOT set" >&2
