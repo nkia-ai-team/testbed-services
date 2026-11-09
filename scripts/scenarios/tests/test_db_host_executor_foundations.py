@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import copy
+import os
+import subprocess
+import tempfile
 import importlib.util
 import sys
 import re
@@ -1219,3 +1222,57 @@ class HostStressLeavesNoScenarioTraceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OraclePreflightReasonTests(unittest.TestCase):
+    """2026-10-22 F35-P: USERS had 267MB free against minimum_free_mb 1024 and the
+    run said only "profile preflight failed: no detail"."""
+
+    FAKE_KUBECTL = r'''#!/usr/bin/env bash
+sql=$(cat)
+case "$sql" in
+  *"name='recyclebin'"*) echo on ;;
+  *"rownum <="*) echo "$FAKE_MINIMUM" ;;
+  *dba_recyclebin*) echo 0 ;;
+  *listagg*) printf 'C:P:ID=PK_ACCOUNTS\nI:ID=PK_ACCOUNTS\n' ;;
+  *dba_free_space*) echo "$FAKE_FREE_MB" ;;
+  *"from dba_tables where owner"*) echo 1 ;;
+  *) echo "unexpected sql" >&2; exit 9 ;;
+esac
+'''
+
+    def preflight(self, free_mb: int, recyclebin: str = "on") -> subprocess.CompletedProcess:
+        common = sys.modules["executor_common"]
+        with tempfile.TemporaryDirectory() as tmp:
+            kubectl = Path(tmp) / "kubectl"
+            kubectl.write_text(self.FAKE_KUBECTL.replace("echo on ;;", f"echo {recyclebin} ;;"))
+            kubectl.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}",
+                   "FAKE_MINIMUM": "5", "FAKE_FREE_MB": str(free_mb)}
+            return subprocess.run(
+                ["bash", "-s", "--", "preflight", "rca-testbed-banking", "testbed-oracle-0",
+                 "FREEPDB1", "BANKING", "ACCOUNTS", "ID=PK_ACCOUNTS", "P:ID=PK_ACCOUNTS", "5", "1024"],
+                input=common.with_failure_trace(ddl.ORACLE_DROP_REMOTE),
+                capture_output=True, env=env, timeout=60,
+            )
+
+    def test_short_tablespace_is_named_with_both_numbers(self) -> None:
+        result = self.preflight(267)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            b"tablespace of BANKING.ACCOUNTS has 267MB free, preflight needs at least 1024MB",
+            result.stderr,
+        )
+
+    def test_enough_space_passes_quietly(self) -> None:
+        result = self.preflight(1786)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(result.stderr, b"")
+
+    def test_any_other_failed_check_names_its_source_line(self) -> None:
+        result = self.preflight(1786, recyclebin="off")
+        self.assertEqual(result.returncode, 1)
+        lines = ddl.ORACLE_DROP_REMOTE.decode().splitlines()
+        line_no = next(i for i, text in enumerate(lines, 1) if "name='recyclebin'" in text)
+        self.assertIn(f"failed at line {line_no}: ".encode(), result.stderr)
+        self.assertIn(b"recyclebin", result.stderr)

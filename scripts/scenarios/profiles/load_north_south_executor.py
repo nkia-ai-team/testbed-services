@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from executor_common import ExecutorError, bind_level_parameters
+from executor_common import ExecutorError, bind_level_parameters, with_failure_trace
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -301,6 +301,7 @@ def main() -> int:
     profile = profiles["profiles"]["load.north_south"]
     validate_parameters(plan["scenario"]["id"], instance["parameters"], profile)
     argv, stdin = build_invocation(selected_plan, "preflight" if args.action == "dry-run" else args.action)
+    stdin = with_failure_trace(stdin)
     output = {
         "schema_version": "1.0",
         "side_effects": False,

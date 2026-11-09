@@ -3123,3 +3123,88 @@ esac
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExecutorFailureTraceTests(unittest.TestCase):
+    """A failed precondition must say which one (2026-10-22 F35-P "no detail")."""
+
+    common = sys.modules["executor_common"]
+
+    def run_bash(self, body: bytes, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-s", "--", *args], input=self.common.with_failure_trace(body),
+            capture_output=True, timeout=30,
+        )
+
+    def test_a_silent_failing_check_reports_its_line_and_command(self) -> None:
+        body = (
+            b"#!/usr/bin/env bash\n"
+            b"set -euo pipefail\n"
+            b'need="$1"\n'
+            b"free() { echo 267; }\n"
+            b"check() {\n"
+            b'  [[ "$(free)" -ge "$need" ]]\n'
+            b"}\n"
+            b"check\n"
+            b"echo unreachable\n"
+        )
+        result = self.run_bash(body, "1024")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(
+            result.stderr.decode().strip(),
+            'failed at line 6: [[ "$(free)" -ge "$need" ]]',
+        )
+
+    def test_success_and_handled_failures_stay_silent(self) -> None:
+        body = (
+            b"#!/usr/bin/env bash\n"
+            b"set -euo pipefail\n"
+            b"probe() { false; }\n"
+            b"if probe; then echo yes; else echo no; fi\n"
+            b"x=$(false) || x=fallback\n"
+            b"grep -q nothing /dev/null || true\n"
+            b'echo "$x"\n'
+        )
+        result = self.run_bash(body)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"no\nfallback\n")
+        self.assertEqual(result.stderr, b"")
+
+    def test_value_of_a_variable_is_never_printed(self) -> None:
+        body = b'#!/usr/bin/env bash\nset -euo pipefail\nsecret="$1"\n[[ "$secret" == other ]]\n'
+        result = self.run_bash(body, "top-secret-value")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(b"top-secret-value", result.stderr)
+        self.assertIn(b'[[ "$secret" == other ]]', result.stderr)
+
+    def test_scripts_it_must_not_touch_are_left_byte_for_byte(self) -> None:
+        own_trap = b"#!/usr/bin/env bash\nset -euo pipefail\ntrap 'rollback' ERR\nfalse\n"
+        no_errexit = b"#!/usr/bin/env bash\nset -u\nfalse\necho on\n"
+        not_bash = b"#!/bin/sh\nset -e\nfalse\n"
+        python = b"#!/usr/bin/env python3\nraise SystemExit(1)\n"
+        for body in (own_trap, no_errexit, not_bash, python, b""):
+            self.assertEqual(self.common.with_failure_trace(body), body)
+
+    def test_every_bash_body_still_parses_with_the_trace(self) -> None:
+        bodies = 0
+        for path in sorted(PROFILES.glob("*_executor.py")):
+            module = load(path.stem)
+            for name, value in vars(module).items():
+                if not isinstance(value, bytes) or not value.startswith(b"#!"):
+                    continue
+                traced = self.common.with_failure_trace(value)
+                if traced == value:
+                    continue
+                # Only whole bodies: a prefix the builder completes later does
+                # not parse on its own, trace or not.
+                raw = subprocess.run(["bash", "-n"], input=value, capture_output=True, timeout=30)
+                if raw.returncode != 0:
+                    continue
+                bodies += 1
+                with self.subTest(executor=path.stem, body=name):
+                    checked = subprocess.run(
+                        ["bash", "-n"], input=traced, capture_output=True, timeout=30
+                    )
+                    self.assertEqual(checked.returncode, 0, checked.stderr.decode())
+        self.assertGreater(bodies, 30)

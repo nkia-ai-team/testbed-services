@@ -177,6 +177,35 @@ class ProfileControlTests(unittest.TestCase):
         )
         self.assertEqual([call[1] for call in calls], ["preflight", "run"])
 
+    def _apply_with_preflight(self, result) -> str:
+        def runner(argv: Sequence[str]):
+            return result if argv[1] == "preflight" else module.Result(0)
+
+        self.controller.runner = runner
+        raw = module.ProfileController._canonical(self.level_parameters[0])
+        with self.assertRaises(module.ControlError) as caught:
+            self.call(
+                "apply", "apply:preflight-reason", level_index=0,
+                level_id="healthy-high-120", parameters_json=raw,
+            )
+        return str(caught.exception)
+
+    def test_failed_preflight_carries_the_executor_stderr(self) -> None:
+        # 2026-10-22 F35-P: the refusal reached the run as "no detail".
+        message = self._apply_with_preflight(module.Result(
+            1, "", "tablespace of BANKING.ACCOUNTS has 267MB free, preflight needs at least 1024MB\n",
+        ))
+        self.assertEqual(
+            message,
+            "profile preflight failed: tablespace of BANKING.ACCOUNTS has 267MB free, "
+            "preflight needs at least 1024MB",
+        )
+
+    def test_silent_failed_preflight_says_so_with_its_exit_code(self) -> None:
+        message = self._apply_with_preflight(module.Result(3))
+        self.assertNotIn("no detail", message)
+        self.assertEqual(message, "profile preflight failed: executor exited 3 without any output")
+
     def test_arbitrary_level_and_noncanonical_parameters_are_rejected(self) -> None:
         with self.assertRaisesRegex(module.ControlError, "predeclared level"):
             self.call(

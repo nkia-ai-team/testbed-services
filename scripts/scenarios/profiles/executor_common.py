@@ -7,6 +7,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -98,6 +99,39 @@ def kubectl_bash_argv(arguments: Sequence[str]) -> list[str]:
     return ["/usr/bin/bash", "-s", "--", *arguments]
 
 
+# Remote bash bodies check their preconditions with bare `[[ ... ]]` under
+# `set -e`. A check that fails exits 1 having said nothing, and profile-control
+# could only report "no detail": 2026-10-22 F35-P lost a cycle to a full Oracle
+# tablespace that way, found only by hand. This line, placed right after the
+# shebang, makes the first failing command say which line and which command it
+# was. `set -E` carries the trap into functions, where most checks live; the
+# trap prints and does nothing else, so exit codes and control flow stay as
+# they were. LINENO is shifted back by this line so it matches the source.
+# BASH_COMMAND is the unexpanded source text, so no variable value is printed.
+FAILURE_TRACE = (
+    b"set -E; trap 'printf \"%s\\n\" \"failed at line $((LINENO-1)): "
+    b"${BASH_COMMAND:0:300}\" >&2' ERR\n"
+)
+_BASH_SHEBANG = re.compile(rb"^#!\s*(/usr/bin/env\s+bash|/(usr/)?bin/bash)\b")
+_ERREXIT = re.compile(rb"(?m)^\s*set\s+-[A-Za-z]*e")
+_OWN_ERR_TRAP = re.compile(rb"\btrap\b[^\n]*\bERR\b")
+
+
+def with_failure_trace(stdin: bytes) -> bytes:
+    """Add FAILURE_TRACE to a `set -e` bash body sent on stdin.
+
+    Left alone: anything that is not a bash script, a script without errexit
+    (a failing command there does not end it, so a trace would only be noise),
+    and a script that sets its own ERR trap (`set -E` would change where that
+    trap fires)."""
+    first, newline, rest = stdin.partition(b"\n")
+    if not newline or not _BASH_SHEBANG.match(first):
+        return stdin
+    if not _ERREXIT.search(rest) or _OWN_ERR_TRAP.search(rest):
+        return stdin
+    return first + newline + FAILURE_TRACE + rest
+
+
 def execute(argv: Sequence[str], stdin: bytes) -> int:
     return subprocess.run(argv, input=stdin, timeout=900, check=False).returncode
 
@@ -134,6 +168,7 @@ def main_for(profile_id: str, builder: Builder, validator: Validator) -> int:
     validator(plan["scenario"]["id"], instance["parameters"], profile)
     remote_action = "preflight" if args.action == "dry-run" else args.action
     argv, stdin = builder(selected_plan, remote_action)
+    stdin = with_failure_trace(stdin)
     output = {
         "schema_version": "1.0", "side_effects": False, "profile_id": profile_id,
         "action": args.action, "scenario_id": plan["scenario"]["id"],

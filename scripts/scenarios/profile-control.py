@@ -137,6 +137,21 @@ class ProfileController:
             raise ControlError("trusted profile executor hash drift")
         return instance, executor
 
+    @staticmethod
+    def _failure_detail(result: Result) -> str:
+        """What the executor said when it failed, stderr first.
+
+        The fallback used to be the bare words "no detail", which told the
+        operator nothing at all (2026-10-22 F35-P). Executors now trace their
+        first failing command, so an empty answer is itself unusual: say so with
+        the exit code, which still separates a refusal (3) from a failed check.
+        """
+        return (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"executor exited {result.returncode} without any output"
+        )
+
     def _verify_lease(
         self, *, run_id: str, token: int, scenario_id: str, allow_dirty: bool
     ) -> None:
@@ -277,8 +292,7 @@ class ProfileController:
             fcntl.flock(lease_lock.fileno(), fcntl.LOCK_UN)
             preflight = self.runner([str(executor), "preflight", *common])
             if action == "apply" and preflight.returncode:
-                detail = preflight.stderr.strip() or preflight.stdout.strip() or "no detail"
-                raise ControlError(f"profile preflight failed: {detail}")
+                raise ControlError(f"profile preflight failed: {self._failure_detail(preflight)}")
             # Re-acquire for the final fenced proof. Apply keeps this lock for
             # the complete mutation invocation, serializing watchdog claims.
             fcntl.flock(lease_lock.fileno(), fcntl.LOCK_EX)
@@ -297,7 +311,7 @@ class ProfileController:
                 fcntl.flock(lease_lock.fileno(), fcntl.LOCK_UN)
             now = self.clock()
             if completed.returncode:
-                detail = completed.stderr.strip() or completed.stdout.strip() or "no detail"
+                detail = self._failure_detail(completed)
                 if action == "apply":
                     raise ControlError(f"profile apply failed: {detail}")
                 response = {"succeeded": False, "effect_ended_at": None, "reason": detail}

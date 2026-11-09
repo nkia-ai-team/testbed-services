@@ -762,7 +762,8 @@ case "$action" in
  preflight)
   check
   # Enough free space that the database never reclaims the dropped table's space from the recycle bin during the window.
-  [[ "$(value "select nvl(floor(sum(bytes)/1048576),0) from dba_free_space where tablespace_name=(select tablespace_name from dba_tables where owner='$schema' and table_name='$table');")" -ge "$free_mb" ]]
+  free=$(value "select nvl(floor(sum(bytes)/1048576),0) from dba_free_space where tablespace_name=(select tablespace_name from dba_tables where owner='$schema' and table_name='$table');")
+  [[ "$free" =~ ^[0-9]+$ && "$free" -ge "$free_mb" ]] || { echo "tablespace of $schema.$table has ${free}MB free, preflight needs at least ${free_mb}MB (the dropped table must stay in the recycle bin for the whole window)" >&2; exit 1; }
   ;;
  run)
   check
