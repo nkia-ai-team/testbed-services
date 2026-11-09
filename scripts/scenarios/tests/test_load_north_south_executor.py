@@ -381,9 +381,28 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
             self.assertIn("const id = pick(ACTIVE_ACCOUNTS);", script, name)
         self.assertIn("const MERCHANT_ACCOUNTS = ACTIVE_ACCOUNTS.concat(['commerce-merchant']);",
                       self.scripts["settlement-arrival-poll.js"])
-        # 상주 기준선(script.js)은 이 변경 범위 밖이라 그대로 7개다.
+
+    def test_baseline_pairs_pool_to_seed_transfers_with_a_return(self) -> None:
+        # 2026-11-09(확인 필요 11): 상주 기준선은 풀 계좌 → 활성 계좌 7개로 보내고, 같은 VU 의 다음 이체가
+        # 같은 금액을 되돌린다. 7개 계좌는 입금(F74-R 폴링 전제)과 출금(거래 내역 첫 쪽)이 계속 쌓이고,
+        # 받은 만큼만 돌려주므로 잔액이 시작 아래로 내려가지 않는다.
         baseline = (REPO / "core-banking" / "loadgen" / "script.js").read_text()
-        self.assertNotIn("TRANSFER_ACCOUNTS", baseline)
+        self.assertEqual(transfer_accounts(baseline), transfer_accounts(self.scripts["surge.js"]))
+        body = baseline[baseline.index("function smallTransferJourney()"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("from = pick(TRANSFER_ACCOUNTS);", body)
+        self.assertIn("to = pick(ACTIVE_ACCOUNTS);", body)
+        self.assertIn("({ from, to, amount } = pendingReturn);", body)
+        self.assertIn("pendingReturn = { from: to, to: from, amount: amount };", body)
+        # 돈이 실제로 옮겨진 이체(COMPLETED)만 되돌린다.
+        self.assertIn("if (status === 'COMPLETED') {", body)
+        self.assertIn("if (!returning && res.status === 200) {", body)
+        # 여정 비중, 단계 이름, 조회 대상은 그대로다.
+        self.assertEqual(journey_weights(baseline), {
+            "balanceCheckJourney": 0.55, "transactionHistoryJourney": 0.25,
+            "accountListJourney": 0.10, "smallTransferJourney": 0.10})
+        self.assertIn("step: 'transfer'", body)
+        self.assertEqual(baseline.count("const id = pick(ACTIVE_ACCOUNTS);"), 2)
 
 
 class FoodLoadOrderLookupTests(unittest.TestCase):
