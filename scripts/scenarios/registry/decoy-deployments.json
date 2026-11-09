@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "_note": "러너가 녹화 주기의 평시 구간에 넣는 무해한 배포(미끼, 평시 배포)의 정책. 근거: runbook-testbed-move-109-to-66.md §8-4. 러너(rca-scenario-runner app/decoys.py)가 주기 시작 때 이 파일과 시드로 일정을 정하고, 같은 시드와 같은 파일이면 같은 일정이 나온다. 대상은 앱 Deployment 만이다. DB, Kafka, Redis, mock, nginx 는 재시작이 피해를 내거나 상태를 잃어 넣지 않는다. rollout_ok=false 는 maxSurge 0 이라 재시작이 곧 중단인 대상으로, 롤아웃 없는 종류(configmap, annotation)만 받는다. 이미지는 바꾸지 않는다(이미지 점검은 Deployment 별 기대 이미지와 비교한다).",
+ "_note": "러너가 녹화 주기의 평시 구간에 넣는 무해한 배포(미끼, 평시 배포)의 정책. 근거: runbook-testbed-move-109-to-66.md §8-4, 사용자 결정 2026-11-09(미끼는 장애 경로 밖 대상에만, 정답지가 바뀌지 않았다고 말하는 대상은 제외, KCM 변경 이력 수집(P4) 확인 전까지 종류는 재시작만). 러너(rca-scenario-runner app/decoys.py)가 주기 시작 때 이 파일, 정답지, 시드로 일정을 정하고 같은 시드와 같은 파일이면 같은 일정이 나온다. 경로 위 대상과 변경 없음 대상은 러너가 정답지에서 기계적으로 계산하며, scenario_exclusions 는 그 밖에 손으로 더할 때만 쓴다. 대상은 앱 Deployment 만이다. DB, Kafka, Redis, mock, nginx 는 재시작이 피해를 내거나 상태를 잃어 넣지 않는다. rollout_ok=false 는 maxSurge 0 이라 재시작이 곧 중단인 대상으로, 롤아웃 없는 종류(configmap, annotation)만 받는다(지금은 그 종류가 꺼져 있어 후보가 아니다). 이미지는 바꾸지 않는다.",
  "windows": {
   "normal": {
    "start_after_cycle_start_sec": 600,
@@ -28,15 +28,15 @@
  "rollout_timeout_sec": 420,
  "alarm_excuse_grace_sec": 900,
  "kind_weights": {
-  "restart": 45,
-  "config_rollout": 15,
-  "configmap": 25,
-  "annotation": 15
+  "restart": 100,
+  "config_rollout": 0,
+  "configmap": 0,
+  "annotation": 0
  },
  "relation_weights": {
-  "on_path": 35,
-  "same_domain": 30,
-  "off_domain": 35
+  "on_path": 0,
+  "same_domain": 50,
+  "off_domain": 50
  },
  "configmap": {
   "name": "service-config",
@@ -44,6 +44,7 @@
  },
  "annotation_key": "kubernetes.io/change-cause",
  "scenario_exclusions": {},
+ "path_scope": "mentioned",
  "domain_namespaces": {
   "commerce": "rca-testbed-commerce",
   "core-banking": "rca-testbed-banking",

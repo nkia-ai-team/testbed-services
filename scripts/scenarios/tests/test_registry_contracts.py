@@ -2052,6 +2052,17 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
         )
         self.assertEqual(set(self.policy["relation_weights"]), {"on_path", "same_domain", "off_domain"})
 
+    def test_user_decisions_2026_11_09(self) -> None:
+        """Decoys stay off the fault path, and until the product records
+        Deployment changes (plan P4) the only kind on is a restart rollout.
+        The other kinds stay in the policy as weights, switched off."""
+        self.assertEqual(self.policy["relation_weights"]["on_path"], 0)
+        enabled = {kind for kind, weight in self.policy["kind_weights"].items() if weight > 0}
+        self.assertEqual(enabled, {"restart"})
+        self.assertIn(self.policy["path_scope"], {"mentioned", "scored"})
+        # Exclusions come from the answer key at plan time, not a hand list.
+        self.assertEqual(self.policy["scenario_exclusions"], {})
+
     def test_domain_namespaces_and_configmap_exist(self) -> None:
         namespaces = {namespace for (_, namespace, _) in self.workloads}
         self.assertEqual(set(self.policy["domain_namespaces"].values()), namespaces)
