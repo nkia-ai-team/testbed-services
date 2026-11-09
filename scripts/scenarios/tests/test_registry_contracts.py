@@ -131,8 +131,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: 140 → 141. F79-R(후보) 추가. 기존 k8s.image release 모드를 food payment 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-10-16: 141 → 142. F80-R(후보) 추가. 프로파일 34 → 35(host.job 신설).
         # 2026-10-30: 142 → 143. F69-P(후보) 추가. 기존 k8s.image release 모드를 commerce inventory 에 한 번 더 써서 프로파일 수는 그대로.
+        # 2026-11-09: 시나리오 수는 그대로. 프로파일 35 → 36(db.cursor_reset 신설, F74-R 동반: 정리 뒤 건수 질의 커서 비우기와 계획 복귀 확인).
         self.assertEqual(len(self.catalog["scenarios"]), 143)
-        self.assertEqual(len(self.profiles["profiles"]), 35)
+        self.assertEqual(len(self.profiles["profiles"]), 36)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)

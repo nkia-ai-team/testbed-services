@@ -1697,7 +1697,8 @@
       "id": "F74-R",
       "slug": "f74-r-banking-transfer-arrival-poll-count-saturates-oracle",
       "profiles": [
-        "load.north_south"
+        "load.north_south",
+        "db.cursor_reset"
       ],
       "readiness": "ready",
       "stage": "candidate",

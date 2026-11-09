@@ -301,5 +301,26 @@ class ProfileControlTests(unittest.TestCase):
         # second_profile_invocation covers that side.
 
 
+    def test_cleanup_is_reported_failed_when_recovery_check_fails(self) -> None:
+        # A profile whose cleanup step succeeded but whose recovery check did not
+        # (F74-R db.cursor_reset: the purge ran, the statement came back on another
+        # plan) must not end the run clean. The reason is the recovery's stderr.
+        calls: list[list[str]] = []
+
+        def runner(argv: Sequence[str]):
+            calls.append(list(argv))
+            if argv[1] == "recovery":
+                return module.Result(1, stderr="sql_id byb2y2hv7p4ag came back on plan 847607780, expected 2603328921\n")
+            return module.Result(0)
+
+        self.controller.runner = runner
+        result = self.call("cleanup", "cleanup:plan-check")
+        self.assertEqual([call[1] for call in calls], ["preflight", "cleanup", "recovery"])
+        self.assertEqual(result, {
+            "succeeded": False, "effect_ended_at": None,
+            "reason": "sql_id byb2y2hv7p4ag came back on plan 847607780, expected 2603328921",
+        })
+
+
 if __name__ == "__main__":
     unittest.main()

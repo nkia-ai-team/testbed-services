@@ -43,6 +43,7 @@ host_stress = load("host_stress_executor")
 app_control = load("app_control_executor")
 db_workload = load("db_workload_executor")
 db_account = load("db_account_executor")
+db_cursor_reset = load("db_cursor_reset_executor")
 k8s_dns = load("k8s_dns_executor")
 k8s_quota = load("k8s_quota_executor")
 k8s_scale = load("k8s_scale_executor")
@@ -379,6 +380,139 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 db_account.validate("F71-H", {**params, **change}, {})
         with self.assertRaisesRegex(ExecutorError, "exactly match"):
             db_account.validate("F71-H", db_account.CONTRACTS["F71-R"], {})
+
+    F74R_SLUG = "f74-r-banking-transfer-arrival-poll-count-saturates-oracle"
+
+    def test_db_cursor_reset_is_a_read_only_companion_that_purges_one_statement_after_the_load(self) -> None:
+        # F74-R(runbook §8-11, 2026-11-09 사용자 결정): 폴링이 건수 질의 byb2y2hv7p4ag 에 다른 plan(847607780) 자식
+        # 커서를 남겨 은행 평시가 약 33시간 느렸다. 정리는 그 문장 하나의 커서를 비우는 것이고, SPM 이나 통계 재수집
+        # (표 통계 자체를 바꿈), 공유 풀 전체 비우기는 쓰지 않는다.
+        plan = compiler.compile_plan(self.F74R_SLUG)
+        self.assertEqual([i["profile_id"] for i in plan["profile_instances"]], ["load.north_south", "db.cursor_reset"])
+        self.assertEqual(plan["controller"]["binding"]["companion_refs"], ["db.cursor_reset"])
+        argv, stdin = db_cursor_reset.build_invocation(plan, "cleanup")
+        self.assertEqual(argv, ["/usr/bin/bash", "-s", "--", "cleanup", "rca-testbed-banking", "testbed-oracle-0",
+                                "FREEPDB1", "byb2y2hv7p4ag", "2603328921", "300"])
+        script = stdin.decode()
+        # 시나리오 id 는 kubectl 이쪽에 머문다(G6, 원칙 8).
+        self.assertNotIn("F74-R", argv)
+        self.assertNotIn("F74-R", script)
+        run_case = script.split("\n  run)")[1].split(";;")[0]
+        self.assertNotIn("purge", run_case)
+        cleanup_case = script.split("\n  cleanup)")[1].split(";;")[0]
+        self.assertIn("purge", cleanup_case)
+        self.assertIn("sys.dbms_shared_pool.purge(c.name, 'C')", script)
+        self.assertIn("select address||','||hash_value as name from v\\$sqlarea where sql_id=$q$sql_id$q", script)
+        recovery_case = script.split("\n  recovery)")[1].split(";;")[0]
+        self.assertNotIn("purge", recovery_case)
+        self.assertEqual(script.count("whenever sqlerror exit failure"), 3)
+        for forbidden in ("flush shared_pool", "dbms_spm", "gather_table_stats", "gather_schema_stats", "no_invalidate",
+                          "alter system", "kill session", "delete ", "update ", "insert "):
+            self.assertNotIn(forbidden, script.lower())
+        for change in ({"sql_id": "bzbd2xfdtjdxv"}, {"expected_plan_hash_value": 847607780},
+                       {"reparse_wait_seconds": 3600}, {"pdb": "FREE"}):
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                db_cursor_reset.validate("F74-R", {**db_cursor_reset.CONTRACTS["F74-R"], **change}, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified cursor reset contract"):
+            db_cursor_reset.validate("F42-R", db_cursor_reset.CONTRACTS["F74-R"], {})
+
+    def _cursor_stub(self, tmp: Path, children: list[tuple[int, int]], after_purge: list[tuple[int, int]] | None,
+                     ) -> dict[str, str]:
+        """Fake kubectl -> sqlplus around the real script. `children` is v$sql for the statement as
+        (plan_hash_value, executions) lines; a purge replaces it with `after_purge` (the steady load's
+        re-parse), or leaves it as it is when `after_purge` is None (a child the purge could not free)."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        rows = lambda items: "".join(f"{plan} {execs}\n" for plan, execs in items)
+        (tmp / "children").write_text(rows(children))
+        (tmp / "after_purge").write_text("keep" if after_purge is None else rows(after_purge))
+        fake = tmp / "fake_sqlplus.py"
+        fake.write_text(f"""import re, sys
+from pathlib import Path
+tmp = Path({str(tmp)!r})
+sql = sys.stdin.read()
+with (tmp / "calls").open("a") as log:
+    log.write(sql.replace("\\n", " ") + "\\n")
+if "dbms_shared_pool.purge" in sql:
+    after = (tmp / "after_purge").read_text()
+    if after != "keep":
+        (tmp / "children").write_text(after)
+elif "from dba_objects" in sql:
+    print("VALID")
+elif "from v$sql where sql_id=" in sql:
+    expected = int(re.search(r"plan_hash_value<>(\\d+)", sql).group(1))
+    rows = [tuple(map(int, line.split())) for line in (tmp / "children").read_text().splitlines() if line.strip()]
+    other = sorted({{p for p, e in rows if p != expected}})
+    print("|".join(map(str, [len(rows), sum(1 for p, e in rows if e > 0), len([r for r in rows if r[0] != expected]),
+                            sum(1 for p, e in rows if e > 0 and p != expected)])) + "|" + (",".join(map(str, other)) or "-"))
+else:
+    sys.exit(7)
+""")
+        kubectl = bindir / "kubectl"
+        kubectl.write_text(f"#!/usr/bin/env bash\nexec {sys.executable} {fake}\n")
+        kubectl.chmod(0o755)
+        return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+
+    def _cursor_run(self, action: str, env: dict[str, str], wait: str | None = None) -> subprocess.CompletedProcess:
+        argv, stdin = db_cursor_reset.build_invocation(compiler.compile_plan(self.F74R_SLUG), action)
+        if wait is not None:
+            argv[-1] = wait
+        return subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=120, check=False)
+
+    def test_db_cursor_reset_refuses_to_start_on_a_stuck_plan(self) -> None:
+        # 은행 녹화 전 계획 점검: 이미 다른 plan 으로 실행 중이면 주입 전에 멈춘다. 커서가 공유 풀에 없으면(밀려남)
+        # 고착의 증거가 아니라 통과한다.
+        with tempfile.TemporaryDirectory() as raw:
+            env = self._cursor_stub(Path(raw), [(2603328921, 215897)], None)
+            self.assertEqual(self._cursor_run("preflight", env).returncode, 0)
+            self.assertEqual(self._cursor_run("run", env).returncode, 0)
+            self.assertNotIn("purge", (Path(raw) / "calls").read_text())
+        with tempfile.TemporaryDirectory() as raw:
+            env = self._cursor_stub(Path(raw), [(2603328921, 900), (847607780, 40)], None)
+            for action in ("preflight", "run"):
+                result = self._cursor_run(action, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"runs on plan 847607780, expected 2603328921", result.stderr)
+        with tempfile.TemporaryDirectory() as raw:
+            env = self._cursor_stub(Path(raw), [], None)
+            self.assertEqual(self._cursor_run("preflight", env).returncode, 0)
+
+    def test_db_cursor_reset_cleanup_purges_and_recovery_proves_the_plan_came_back(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._cursor_stub(tmp, [(2603328921, 900), (847607780, 4000)], [(2603328921, 3)])
+            self.assertEqual(self._cursor_run("cleanup", env).returncode, 0)
+            self.assertEqual((tmp / "calls").read_text().count("dbms_shared_pool.purge"), 1)
+            self.assertEqual(self._cursor_run("recovery", env).returncode, 0)
+
+    def test_db_cursor_reset_recovery_fails_when_the_statement_comes_back_on_another_plan(self) -> None:
+        # 계획 복귀 확인 실패는 recovery 실패이고, profile-control 은 recovery 가 실패한 cleanup 을 실패로 보고한다
+        # (test_profile_control.test_cleanup_is_reported_failed_when_recovery_check_fails).
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._cursor_stub(tmp, [(847607780, 4000)], [(2603328921, 0), (847607780, 2)])
+            # 다시 파싱된 자식이 아직 실행 전이면 cleanup 은 남은 다른 plan 자식을 본다.
+            result = self._cursor_run("cleanup", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((tmp / "calls").read_text().count("dbms_shared_pool.purge"), 3)
+            result = self._cursor_run("recovery", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"came back on plan 847607780, expected 2603328921", result.stderr)
+
+    def test_db_cursor_reset_cleanup_fails_when_the_stuck_child_survives_the_purge(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._cursor_stub(tmp, [(847607780, 4000)], None)
+            result = self._cursor_run("cleanup", env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"attempt 3: sql_id byb2y2hv7p4ag still has a child on plan 847607780", result.stderr)
+
+    def test_db_cursor_reset_recovery_fails_when_the_statement_is_not_run_again_in_time(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            env = self._cursor_stub(Path(raw), [], None)
+            result = self._cursor_run("recovery", env, wait="0")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"was not executed again within 0s", result.stderr)
 
     def test_host_firewall_adds_one_allowlist_chain_for_new_connections_and_removes_it(self) -> None:
         # F44-R: 주입은 tb-w3 FORWARD 맨 위에 한 포트로 가는 새 연결(conntrack NEW)만 허용 목록 체인으로

@@ -25999,7 +25999,9 @@
       "profile": {
         "kind": "fixed",
         "primary_ref": "load.north_south",
-        "companion_refs": [],
+        "companion_refs": [
+          "db.cursor_reset"
+        ],
         "approved_profile_id": "load.north_south",
         "levels": [
           {
@@ -26189,7 +26191,7 @@
         ],
         "consecutive_ticks": 2,
         "timeout": "8m",
-        "_note": "cleanup 은 동반 부하(폴링 포함)를 끝낼 뿐 아무것도 되돌릴 것이 없다(바뀐 것이 없다). 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+        "_note": "cleanup 은 동반 부하(폴링 포함)를 끝내고, 이어서 동반 프로필 db.cursor_reset 이 건수 질의 byb2y2hv7p4ag 의 공유 커서를 비운 뒤 평시 부하가 다시 실행한 자식 커서가 plan 2603328921 인지 확인한다(아니면 그 프로필 cleanup 이 실패해 실행이 깨끗하게 끝나지 않는다). 폴링이 만든 다른 plan 자식 커서(847607780)가 정리 뒤에도 남아 은행 평시가 약 33시간 느려진 2026-10-24 실행의 재발을 막는다. 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
       },
       "cleanup": {
         "required": true,

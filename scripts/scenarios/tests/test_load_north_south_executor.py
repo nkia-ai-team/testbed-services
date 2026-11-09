@@ -81,6 +81,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.row_delete",
                 # 2026-10-11: F51-P — MySQL 표의 한 기간 행을 백업 표에 복사하고 상태를 되돌리기, 백업 값 되쓰기(역 문장).
                 "db.row_update",
+                # 2026-11-09: F74-R 동반 — 부하 정리 뒤 건수 질의 하나의 공유 커서 비우기(DBMS_SHARED_POOL.PURGE)와 계획 복귀 확인.
+                "db.cursor_reset",
             },
         )
 

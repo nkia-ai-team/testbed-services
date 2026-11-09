@@ -168,6 +168,34 @@
       },
       "scenario_levels": {}
     },
+    "db.cursor_reset": {
+      "executor": "profiles/db_cursor_reset_executor.py",
+      "location_strategy": "fixed",
+      "default_location": "tb-runner",
+      "allowed_locations": [
+        "tb-runner"
+      ],
+      "live_supported": true,
+      "default_queries": [
+        "http.entry_health"
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F74-R"
+        ]
+      },
+      "scenario_parameters": {
+        "F74-R": {
+          "engine": "oracle",
+          "namespace": "rca-testbed-banking",
+          "pod": "testbed-oracle-0",
+          "pdb": "FREEPDB1",
+          "sql_id": "byb2y2hv7p4ag",
+          "expected_plan_hash_value": 2603328921,
+          "reparse_wait_seconds": 300
+        }
+      }
+    },
     "db.instance_readonly": {
       "executor": "profiles/db_instance_readonly_executor.py",
       "location_strategy": "fixed",

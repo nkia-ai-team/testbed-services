@@ -44,6 +44,10 @@ PROFILE_PREFLIGHTS = {
     # And again: the inverse of a correction update is writing the backed-up
     # status and assignment time back onto the same ids from its backup table.
     "db.row_update": "db-inverse-ddl-ready",
+    # A companion that empties one statement's shared cursors after the run: the
+    # inverse tool (DBMS_SHARED_POOL) must be usable and the plan must not already
+    # be stuck before the run starts.
+    "db.cursor_reset": "db-inverse-ddl-ready",
     "db.workload": "db-session-tag-clean",
     "mock.expectation": "mock-restore-contract",
     "load.north_south": "baseline-loadgen-active",
