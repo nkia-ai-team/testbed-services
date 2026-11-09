@@ -64,6 +64,9 @@ reset_tree() {
     printf 'old\n' >"$f"; touch -d '10 days ago' "$f"
   done
   printf 'new\n' >"$db/trace/FREE_ora_2.trc"; touch -d '2 days ago' "$db/trace/FREE_ora_2.trc"
+  # Empty directories: one past the retention, one just created (an incident being written).
+  mkdir -p "$db/incident/incdir_old" "$db/incident/incdir_new"
+  touch -d '10 days ago' "$db/incident/incdir_old"
   printf 'listener\n' >"$lsnr/trace/listener.log"; touch -d '10 days ago' "$lsnr/trace/listener.log"
   printf 'xml\n' >"$lsnr/alert/log.xml"
 }
@@ -73,12 +76,27 @@ reset_tree
 out=$("$MAINT" purge)
 grep -q 'purge done (retention 168h): deleted=5 bytes=20 truncated=none' <<<"$out" || fail "purge result: $out"
 db="$DIAG_ROOT/rdbms/free/FREE"
-for gone in trace/FREE_ora_1.trc trace/FREE_ora_1.trm cdump/core_1 incident/incdir_7 hm/HMREPORT_1.hm; do
+for gone in trace/FREE_ora_1.trc trace/FREE_ora_1.trm cdump/core_1 incident/incdir_7/FREE_ora_1_i7.trc hm/HMREPORT_1.hm incident/incdir_old; do
   [[ ! -e "$db/$gone" ]] || fail "old $gone survived the purge"
 done
 for kept in trace/FREE_ora_2.trc trace/alert_FREE.log alert/log.xml metadata/ADR_CONTROL.ams; do
   [[ -f "$db/$kept" ]] || fail "purge removed $kept"
 done
+# A freshly created empty directory stays; so does one this run just emptied (fresh mtime).
+[[ -d "$db/incident/incdir_new" ]] || fail 'purge removed a just-created empty directory'
+[[ -d "$db/incident/incdir_7" ]] || fail 'purge removed a directory it emptied in the same run'
+
+# --- purge refuses a root that is not an ADR tree, before touching anything ---
+reset_tree; calls_before=$(wc -l <"$FAKE_LOG")
+rc=0; out=$(DIAG_ROOT="$TMP_ROOT" "$MAINT" purge) || rc=$?
+[[ $rc -ne 0 ]] || fail 'purge accepted a root that is not */diag'
+grep -q "purge refused: DIAG_ROOT $TMP_ROOT is not a \*/diag directory" <<<"$out" || fail "wrong-root message: $out"
+[[ $(wc -l <"$FAKE_LOG") -eq $calls_before ]] || fail 'purge reached the pod with a wrong root'
+[[ -f "$DIAG_ROOT/rdbms/free/FREE/trace/FREE_ora_1.trc" ]] || fail 'purge deleted files under a wrong root'
+# The script inside the pod refuses it too.
+remote=$(sed -n "/^PURGE_REMOTE=\$(cat <<'SH'$/,/^SH$/p" "$MAINT" | sed '1d;$d')
+rc=0; bash -c "$remote" _ "$TMP_ROOT" 10080 1048576 >/dev/null 2>&1 || rc=$?
+[[ $rc -ne 0 ]] || fail 'pod-side purge accepted a root that is not */diag'
 [[ -s "$DIAG_ROOT/tnslsnr/testbed-oracle-0/listener/trace/listener.log" ]] || fail 'listener.log under the cap was touched'
 grep -q 'exec -i testbed-oracle-0 -- bash -s --' "$FAKE_LOG" || fail 'purge did not run in the Oracle pod'
 

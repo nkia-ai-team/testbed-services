@@ -90,6 +90,7 @@ PY
 PURGE_REMOTE=$(cat <<'SH'
 set -euo pipefail
 root="$1"; minutes="$2"; listener_max_bytes="$3"
+case "$root" in */diag) ;; *) echo "refusing ADR root $root: not a */diag directory" >&2; exit 1 ;; esac
 [[ -d "$root" ]] || { echo "no ADR root $root" >&2; exit 1; }
 deleted=0; bytes=0
 for home in "$root"/*/*/*; do
@@ -103,7 +104,10 @@ for home in "$root"/*/*/*; do
       size=$(stat -c %s "$f")
       rm -f -- "$f" && deleted=$((deleted + 1)) && bytes=$((bytes + size))
     done < <(find "$home/$sub" -type f -mmin "+$minutes" -print0)
-    find "$home/$sub" -mindepth 1 -type d -empty -delete
+    # Same age rule for directories: an incident directory being written right now is
+    # empty for a moment and must not go. A directory emptied by this run has a fresh
+    # mtime and goes on a later run.
+    find "$home/$sub" -mindepth 1 -type d -empty -mmin "+$minutes" -delete
   done
 done
 truncated=""
@@ -120,6 +124,12 @@ SH
 
 purge() {
   local state result
+  # Deletion is confined to an ADR tree. A mistyped DIAG_ROOT must not become a find
+  # over some other directory.
+  case "$DIAG_ROOT" in
+    */diag) ;;
+    *) log "purge refused: DIAG_ROOT $DIAG_ROOT is not a */diag directory"; return 1 ;;
+  esac
   state=$(recording_state)
   if [[ "$state" != ok ]]; then
     log "purge skipped: $state"
