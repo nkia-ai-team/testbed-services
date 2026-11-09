@@ -156,9 +156,7 @@ def with_failure_trace(stdin: bytes) -> bytes:
 # - A transient timer does not survive a reboot. A reboot ends processes and iptables rules by itself;
 #   files survive it, so every file the change leaves is listed in a tmpfiles.d rule that removes it at
 #   the next boot (systemd-tmpfiles-setup runs --remove --boot), and the rule removes itself with them.
-# - Names are <job>-expire (units), <state root>/<job>.undo and <tmpfiles.d>/<job>.conf. They reach
-#   the node's journal, which is forwarded to 119, so they carry the executor's own neutral job name
-#   and never the scenario id.
+# - Nothing the node logs names the change: see the note above GUARD_FUNCTIONS.
 GUARD_MARGIN_SECONDS = 600
 # cleanup's postponement: one executor call is bounded at 900s (execute below).
 GUARD_CLEANUP_HOLD_SECONDS = 960
@@ -196,18 +194,35 @@ def guard_stdin_line(plan: dict[str, Any]) -> bytes:
 
 # Shell functions that run as root on the node. host.stress includes them in its own root script;
 # executors that drive the node one command at a time send GUARD_PROGRAM through node_guard (below).
-# guard_arm <job> <seconds> <description> <undo body> [<file removed at boot>...]
-# guard_postpone <job> <seconds> <description>   (only while an undo is armed)
+# guard_arm <job> <seconds> <undo body> [<file removed at boot>...]
+# guard_postpone <job> <seconds>   (only while an undo is armed and fewer seconds are left)
 # guard_disarm <job>
+#
+# What reaches the node's journal (forwarded to 119) is a tool trace no real incident leaves, so it
+# says nothing about the change (design principle 8): the units take the name systemd-run gives an
+# unnamed command (run-r<32 hex>, fresh each time) and an empty description, which systemd shows as
+# the unit name. A normal run adds one line at arm (Started run-r....timer.) and the stop lines at
+# disarm; postpone restarts the timer only when less than the hold is left, so a cleanup on time adds
+# nothing. The job name stays in files under the state root (0700) and is never logged; the boot rule
+# is named after the first unit.
 GUARD_FUNCTIONS = br'''guard_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
 guard_boot_dir="${OPSJOB_TMPFILES_DIR:-/etc/tmpfiles.d}"
 guard_ctl="${OPSJOB_SYSTEMCTL:-systemctl}"
 guard_run="${OPSJOB_SYSTEMD_RUN:-systemd-run}"
-guard_names() { g_unit="$1-expire"; g_undo="$guard_root/$1.undo"; g_boot="$guard_boot_dir/$1.conf"; g_mark="$guard_root/$1.expired"; }
+guard_uptime="${OPSJOB_UPTIME_FILE:-/proc/uptime}"
+# <job>.unit holds "<unit> <due, seconds of uptime> <boot rule>" while an undo is armed.
+guard_names() {
+  g_undo="$guard_root/$1.undo"; g_unitfile="$guard_root/$1.unit"; g_mark="$guard_root/$1.expired"
+  g_unit=""; g_due=0; g_boot=""
+  if [[ -s "$g_unitfile" ]]; then read -r g_unit g_due g_boot <"$g_unitfile" || true; fi
+}
+guard_now() { local up; read -r up _ <"$guard_uptime"; echo "${up%.*}"; }
+guard_newname() { printf 'run-r%s' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"; }
 # An undo already running finishes before anything replaces or cancels its timer, so the timer's
 # undo and cleanup's own never run side by side.
 guard_settle() {
   local _
+  if [[ -z "$g_unit" ]]; then return 0; fi
   for _ in $(seq 1 120); do
     if ! "$guard_ctl" is-active --quiet "$g_unit.service"; then return 0; fi
     sleep 1
@@ -216,54 +231,64 @@ guard_settle() {
   return 1
 }
 guard_stop() {
+  if [[ -z "$g_unit" ]]; then return 0; fi
   "$guard_ctl" stop "$g_unit.timer" >/dev/null 2>&1 || true
   "$guard_ctl" reset-failed "$g_unit.timer" "$g_unit.service" >/dev/null 2>&1 || true
 }
+# A fresh name each start: a stopped transient unit may still be on its way out of PID 1.
 guard_start() {
-  "$guard_run" --quiet --unit="$g_unit" --description="$2" --on-active="$1" \
+  g_unit=$(guard_newname)
+  g_due=$(( $(guard_now) + $1 ))
+  printf '%s %s %s\n' "$g_unit" "$g_due" "$g_boot" >"$g_unitfile.tmp"
+  mv -T "$g_unitfile.tmp" "$g_unitfile"
+  "$guard_run" --quiet --unit="$g_unit" --description= --on-active="$1" \
     --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no /bin/bash "$g_undo"
 }
 guard_arm() {
-  local job=$1 secs=$2 desc=$3 body=$4 p
-  shift 4
-  guard_names "$job"
+  local job=$1 secs=$2 body=$3 p
+  shift 3
   if [[ ! "$secs" =~ ^[1-9][0-9]*$ ]]; then echo "guard: bad deadline $secs" >&2; return 1; fi
   for p in "$@"; do
     if [[ "$p" != /* || "$p" == *[[:space:]]* ]]; then echo "guard: bad boot path $p" >&2; return 1; fi
   done
+  guard_names "$job"
   guard_settle
   guard_stop
+  if [[ -n "$g_boot" ]]; then rm -f "$g_boot"; fi
   mkdir -p "$guard_root" "$guard_boot_dir"
   chmod 700 "$guard_root"
   rm -f "$g_mark"
+  g_boot="$guard_boot_dir/$(guard_newname).conf"
   {
     printf '%s\n' '#!/bin/bash' 'set -euo pipefail'
     printf '%s\n' "$body"
     printf 'date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ >%q\n' "$g_mark"
-    printf 'rm -f %q %q\n' "$g_boot" "$g_undo"
+    printf 'rm -f %q %q %q\n' "$g_boot" "$g_unitfile" "$g_undo"
   } >"$g_undo.tmp"
   chmod 700 "$g_undo.tmp"
   mv -T "$g_undo.tmp" "$g_undo"
-  for p in "$@" "$g_undo" "$g_boot"; do printf 'r %s\n' "$p"; done >"$g_boot.tmp"
+  for p in "$@" "$g_undo" "$g_unitfile" "$g_boot"; do printf 'r %s\n' "$p"; done >"$g_boot.tmp"
   mv -T "$g_boot.tmp" "$g_boot"
-  guard_start "$secs" "$desc"
+  guard_start "$secs"
 }
 guard_postpone() {
   guard_names "$1"
   guard_settle
-  if [[ ! -e "$g_undo" ]]; then return 0; fi
+  if [[ ! -e "$g_undo" || -z "$g_unit" ]]; then return 0; fi
+  if (( g_due - $(guard_now) >= $2 )); then return 0; fi
   guard_stop
-  guard_start "$2" "$3"
+  guard_start "$2"
 }
 guard_disarm() {
   guard_names "$1"
   guard_settle
-  if "$guard_ctl" is-failed --quiet "$g_unit.service" 2>/dev/null; then
+  if [[ -n "$g_unit" ]] && "$guard_ctl" is-failed --quiet "$g_unit.service" 2>/dev/null; then
     echo "$g_unit.service failed; cleanup undoes the change itself" >&2
   fi
   guard_stop
   if [[ -s "$g_mark" ]]; then echo "the node undid the change by itself at $(cat "$g_mark")" >&2; fi
-  rm -f "$g_undo" "$g_undo.tmp" "$g_boot" "$g_boot.tmp" "$g_mark"
+  rm -f "$g_undo" "$g_undo.tmp" "$g_unitfile" "$g_unitfile.tmp" "$g_mark"
+  if [[ -n "$g_boot" ]]; then rm -f "$g_boot" "$g_boot.tmp"; fi
 }
 '''
 

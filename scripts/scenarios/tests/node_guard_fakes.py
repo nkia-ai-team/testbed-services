@@ -8,6 +8,7 @@ systemd-run was given, the way PID 1 would, and unloads the timer (RemainAfterEl
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -27,7 +28,7 @@ done
 # Like PID 1: a unit of the same name that is still loaded refuses a second one.
 if [[ -e "$d/$unit.timer" ]]; then echo "Unit $unit.timer was already loaded" >&2; exit 1; fi
 printf '%s\n' "$@" >"$d/$unit.timer"
-printf 'run %s %s %s|%s\n' "$unit" "$secs" "${props[*]}" "$desc" >>"$d/log"
+printf 'run %s %s %s|%s|%s\n' "$unit" "$secs" "${props[*]}" "$desc" "$*" >>"$d/log"
 '''
 
 SYSTEMCTL = r'''#!/usr/bin/env bash
@@ -82,23 +83,53 @@ def calls(env: dict[str, str]) -> list[str]:
     return (Path(env["FAKE_SYSTEMD"]) / "log").read_text().splitlines()
 
 
-def armed_seconds(env: dict[str, str], unit: str) -> list[int]:
-    """Every --on-active given to ``unit`` so far, in order."""
+def starts(env: dict[str, str], job: str) -> list[dict[str, str]]:
+    """Every systemd-run for ``job``'s undo, in order: unit, seconds, timer properties, description."""
     out = []
     for line in calls(env):
-        parts = line.split(" ", 3)
-        if parts[0] == "run" and parts[1] == unit:
-            out.append(int(parts[2]))
+        if not line.startswith("run "):
+            continue
+        _, unit, secs, rest = line.split(" ", 3)
+        props, desc, cmd = rest.split("|", 2)
+        if cmd.endswith(f"/{job}.undo"):
+            out.append({"unit": unit, "seconds": secs, "props": props, "description": desc, "command": cmd})
     return out
 
 
-def command(env: dict[str, str], unit: str) -> list[str]:
+def armed_seconds(env: dict[str, str], job: str) -> list[int]:
+    return [int(row["seconds"]) for row in starts(env, job)]
+
+
+def unit_record(env: dict[str, str], job: str) -> list[str]:
+    """``<unit> <due> <boot rule>`` from the node's state file, or [] when nothing is armed."""
+    path = Path(env["OPSJOB_STATE_ROOT"]) / f"{job}.unit"
+    return path.read_text().split() if path.exists() else []
+
+
+def command(env: dict[str, str], job: str) -> list[str]:
+    unit = unit_record(env, job)[0]
     return (Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer").read_text().splitlines()
 
 
-def fire(env: dict[str, str], unit: str, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def fire(env: dict[str, str], job: str, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """The timer elapses: PID 1 runs its command once and unloads the timer."""
-    argv = command(env, unit)
+    unit = unit_record(env, job)[0]
+    argv = (Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer").read_text().splitlines()
     os.unlink(Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer")
     run_env = {**os.environ, **env, **(extra_env or {})}
     return subprocess.run(argv, env=run_env, capture_output=True, timeout=120, check=False)
+
+
+NEUTRAL_UNIT = re.compile(r"^run-r[0-9a-f]{32}$")
+
+
+def journal_words(env: dict[str, str], job: str) -> list[str]:
+    """What the node's journal would show for ``job``'s timers that is not the generic form: a unit
+    name other than run-r<32 hex>, or any description. Empty when the trace says nothing."""
+    out = []
+    for row in starts(env, job):
+        if not NEUTRAL_UNIT.fullmatch(row["unit"]):
+            out.append(row["unit"])
+        if row["description"]:
+            out.append(row["description"])
+    return out

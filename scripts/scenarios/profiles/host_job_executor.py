@@ -235,7 +235,7 @@ case "$action" in
     # the directory by itself. rmdir fails on anything else in the directory, and the undo with it.
     undo=$(printf 'systemctl stop %q 2>/dev/null || true\nrm -f %q %q\nrmdir %q 2>/dev/null || [[ ! -e %q ]]' \
       "$unit.service" "$out_tar" "$out_big" "$outdir" "$outdir")
-    node_guard arm "$unit" "$expire_after" "$desc expiry" "$undo" "$out_tar" "$out_big" "$outdir"
+    node_guard arm "$unit" "$expire_after" "$undo" "$out_tar" "$out_big" "$outdir"
     node_q sudo -n systemd-run --unit="$unit" --description="$desc" --collect \
       --property=Nice="$nice" --property=IOSchedulingClass=idle --property=RuntimeMaxSec="$runtime" \
       --property=MemoryHigh="${high_mib}M" --property=MemoryMax="${max_mib}M" \
@@ -249,7 +249,7 @@ case "$action" in
   # nothing here to do, and disarm says when it fired).
   cleanup)
     wait_node
-    node_guard postpone "$unit" "$guard_hold" "$desc expiry"
+    node_guard postpone "$unit" "$guard_hold"
     if unit_active; then node_q sudo -n systemctl stop "$unit.service"; fi
     for _ in {1..30}; do unit_active || break; sleep 1; done
     unit_idle

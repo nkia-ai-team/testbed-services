@@ -219,7 +219,7 @@ case "$action" in
     spec=$(printf '%q ' "${jump[@]:1}")
     undo=$(printf 'while iptables -C FORWARD %s 2>/dev/null; do iptables -D FORWARD %s; done\nif iptables -S %q >/dev/null 2>&1; then iptables -F %q; iptables -X %q; fi' \
       "$spec" "$spec" "$chain" "$chain" "$chain")
-    node_guard arm "$gjob" "$expire_after" "$chain rule expiry" "$undo"
+    node_guard arm "$gjob" "$expire_after" "$undo"
     ipt -N "$chain"
     for src in ${allowed//,/ }; do ipt -A "$chain" -s "$src" -m comment --comment "$comment" -j RETURN; done
     ipt -A "$chain" -m limit --limit "$limit" -j LOG --log-prefix "$prefix"
@@ -233,7 +233,7 @@ case "$action" in
   # already fired there is no rule left and disarm says when it fired.
   cleanup) r=$(rules)
     if ! ours "$r"; then node_guard disarm "$gjob"; rm -f "$state"; exit 0; fi
-    node_guard postpone "$gjob" "$guard_hold" "$chain rule expiry"
+    node_guard postpone "$gjob" "$guard_hold"
     while jumps "$r"; do ipt -D "${jump[@]}"; r=$(rules); done
     if has_chain "$r"; then ipt -F "$chain"; ipt -X "$chain"; fi
     r=$(rules); if ours "$r"; then exit 1; fi

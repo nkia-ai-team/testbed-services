@@ -1058,8 +1058,8 @@ esac
             job = next(i for i, c in enumerate(calls) if c[:3] == ["sudo", "-n", "systemd-run"])
             self.assertLess(guard, job, "the undo is armed before the job starts")
             # F80-R max_injection_duration 20m + 600s margin: never before the runner itself ends the run.
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup-expire"), [1800])
-            self.assertIn("|Oracle datafile backup expiry", node_guard_fakes.calls(env)[-1])
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup"), [1800])
+            self.assertEqual(node_guard_fakes.journal_words(env, "oradata-backup"), [])
             undo = (tmp / "state" / "oradata-backup.undo").read_text()
             outputs = re.findall(r"/var/backups/oradata/(?:oradata-[0-9]{8}\.tar|users01-[0-9]{8}\.dbf)\.zst", undo)
             self.assertEqual(len(outputs), 2)
@@ -1068,7 +1068,7 @@ esac
             for forbidden in ("rm -rf", "rm -r ", "find ", "F80"):
                 self.assertNotIn(forbidden, undo)
             # The outputs survive a reboot, so the next boot removes exactly them (files before the directory).
-            boot = (tmp / "tmpfiles.d" / "oradata-backup.conf").read_text().splitlines()
+            boot = Path(node_guard_fakes.unit_record(env, "oradata-backup")[2]).read_text().splitlines()
             self.assertEqual(boot[:3], [f"r {outputs[0]}", f"r {outputs[1]}", "r /var/backups/oradata"])
             # Nothing on the node's sudo line names the scenario or the guard's arguments.
             self.assertNotIn(b"F80", (tmp / "log").read_bytes())
@@ -1081,7 +1081,8 @@ esac
             self.assertEqual(len(guards), 2)
             self.assertLess(guards[0], stop, "postponed before cleanup touches the job")
             self.assertGreater(guards[1], rmdir, "cancelled only after the job and its output are gone")
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup-expire"), [1800, 960])
+            # On time, the postponement restarts nothing (no extra journal lines); disarm cancels.
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup"), [1800])
             self.assertEqual(node_guard_fakes.timers(env), [])
             self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
             self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
@@ -1131,15 +1132,15 @@ if [[ "$1" == oradata-backup.service ]]; then /bin/rm -f {node}/active; fi
             # never reaches the node, so the timer is neither postponed nor cancelled.
             (node / "down").write_text("1000\n")
             self.assertNotEqual(self._host_job_run("cleanup", env).returncode, 0)
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup-expire"), [1800])
-            self.assertEqual(node_guard_fakes.timers(env), ["oradata-backup-expire.timer"])
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup"), [1800])
+            self.assertEqual(len(node_guard_fakes.timers(env)), 1)
             self.assertTrue((node / "active").exists())
             undo = tmp / "state" / "oradata-backup.undo"
             spare = tmp / "undo-copy"
             spare.write_bytes(undo.read_bytes())
             # The deadline passes: PID 1 runs the undo; the job stops and its outputs and directory go.
             extra = self._host_job_node_fakes(tmp)
-            fired = node_guard_fakes.fire(env, "oradata-backup-expire", extra_env=extra)
+            fired = node_guard_fakes.fire(env, "oradata-backup", extra_env=extra)
             self.assertEqual(fired.returncode, 0, fired.stderr)
             self.assertFalse((node / "active").exists())
             self.assertFalse((node / "outdir").exists())
@@ -1274,12 +1275,13 @@ else:
                             next(i for i, c in enumerate(remote) if c.startswith("sudo -n iptables -N")))
             self.assertEqual(self._iptables(tmp)["chains"], ["RESTAURANT-API-IN"])
             # F44-R max_injection_duration 25m + 600s margin.
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "restaurant-api-in-expire"), [2100])
-            self.assertIn("|RESTAURANT-API-IN rule expiry", node_guard_fakes.calls(env)[-1])
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "restaurant-api-in"), [2100])
+            self.assertEqual(node_guard_fakes.journal_words(env, "restaurant-api-in"), [])
             # iptables rules end with a reboot; the next boot only removes the guard's own files.
-            boot = (tmp / "tmpfiles.d" / "restaurant-api-in.conf").read_text().splitlines()
-            self.assertEqual(boot, [f"r {tmp / 'state' / 'restaurant-api-in.undo'}",
-                                    f"r {tmp / 'tmpfiles.d' / 'restaurant-api-in.conf'}"])
+            rule = Path(node_guard_fakes.unit_record(env, "restaurant-api-in")[2])
+            self.assertEqual(rule.read_text().splitlines(), [f"r {tmp / 'state' / 'restaurant-api-in.undo'}",
+                                                              f"r {tmp / 'state' / 'restaurant-api-in.unit'}",
+                                                              f"r {rule}"])
             mark = len(remote)
             result = self._host_firewall_run("cleanup", env)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1290,7 +1292,7 @@ else:
             self.assertLess(guards[0], deletes[0])
             self.assertGreater(guards[1], deletes[-1])
             self.assertEqual(self._iptables(tmp), {"chains": [], "rules": []})
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "restaurant-api-in-expire"), [2100, 960])
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "restaurant-api-in"), [2100])
             self.assertEqual(node_guard_fakes.timers(env), [])
             self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
             self.assertEqual(self._host_firewall_run("recovery", env).returncode, 0)
@@ -1315,7 +1317,7 @@ else:
             st = self._iptables(tmp)
             st["rules"].append(["FORWARD", ["-d", "10.244.9.0/24", "-j", "ACCEPT"]])
             (tmp / "iptables.json").write_text(json.dumps(st))
-            fired = node_guard_fakes.fire(env, "restaurant-api-in-expire")
+            fired = node_guard_fakes.fire(env, "restaurant-api-in")
             self.assertEqual(fired.returncode, 0, fired.stderr)
             self.assertEqual(self._iptables(tmp), {"chains": [], "rules": [["FORWARD", ["-d", "10.244.9.0/24", "-j", "ACCEPT"]]]})
             self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["restaurant-api-in.expired"])
@@ -3428,41 +3430,52 @@ class NodeGuardTests(unittest.TestCase):
         return subprocess.run(["bash", "-s"], input=preamble + self.common.GUARD_PROGRAM,
                               env={**os.environ, **env}, capture_output=True, timeout=60)
 
+    @staticmethod
+    def _state(tmp: Path) -> list[str]:
+        return sorted(x.name for x in (tmp / "state").iterdir())
+
     def test_arm_postpone_disarm_and_a_second_disarm(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = node_guard_fakes.install(tmp)
             body = f"echo undone >>{tmp}/undone"
-            done = self._guard(env, "arm", "nightly", "1800", "nightly expiry", body, "/var/x/out.bin", "/var/x")
+            done = self._guard(env, "arm", "nightly", "1800", body, "/var/x/out.bin", "/var/x")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800])
-            self.assertIn("run nightly-expire 1800 AccuracySec=1s RemainAfterElapse=no|nightly expiry",
-                          node_guard_fakes.calls(env))
+            self.assertEqual(len(node_guard_fakes.timers(env)), 1)
+            [start] = node_guard_fakes.starts(env, "nightly")
+            self.assertEqual((start["seconds"], start["props"]), ("1800", "AccuracySec=1s RemainAfterElapse=no"))
             undo = tmp / "state" / "nightly.undo"
-            self.assertEqual(node_guard_fakes.command(env, "nightly-expire"), ["/bin/bash", str(undo)])
+            self.assertEqual(node_guard_fakes.command(env, "nightly"), ["/bin/bash", str(undo)])
             self.assertEqual(undo.stat().st_mode & 0o777, 0o700)
             self.assertEqual((tmp / "state").stat().st_mode & 0o777, 0o700)
-            lines = undo.read_text().splitlines()
-            self.assertEqual(lines[:3], ["#!/bin/bash", "set -euo pipefail", body])
-            conf = tmp / "tmpfiles.d" / "nightly.conf"
-            self.assertEqual(conf.read_text().splitlines(),
-                             ["r /var/x/out.bin", "r /var/x", f"r {undo}", f"r {conf}"])
-            # cleanup reached the node: held off for one executor call, the undo kept.
-            self.assertEqual(self._guard(env, "postpone", "nightly", "960", "nightly expiry").returncode, 0)
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800, 960])
-            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+            self.assertEqual(undo.read_text().splitlines()[:3], ["#!/bin/bash", "set -euo pipefail", body])
+            unit, due, rule = node_guard_fakes.unit_record(env, "nightly")
+            self.assertEqual(unit, start["unit"])
+            rule = Path(rule)
+            self.assertEqual(rule.read_text().splitlines(),
+                             ["r /var/x/out.bin", "r /var/x", f"r {undo}", f"r {tmp / 'state' / 'nightly.unit'}", f"r {rule}"])
+            # cleanup on time: far from the deadline, postpone changes nothing (no journal line).
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960").returncode, 0)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly"), [1800])
+            # cleanup late: fewer seconds left than the hold, so the timer restarts under a fresh name.
+            (tmp / "state" / "nightly.unit").write_text(f"{unit} {int(due) - 1700} {rule}\n")
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960").returncode, 0)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly"), [1800, 960])
+            self.assertEqual(len(node_guard_fakes.timers(env)), 1)
+            later = node_guard_fakes.unit_record(env, "nightly")
+            self.assertNotEqual(later[0], unit)
+            self.assertEqual(later[2], str(rule))
             self.assertTrue(undo.exists())
             # cleanup undid the change itself: no timer, no undo, no boot rule; nothing ran.
             done = self._guard(env, "disarm", "nightly")
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(node_guard_fakes.timers(env), [])
-            self.assertEqual(list((tmp / "state").iterdir()), [])
+            self.assertEqual(self._state(tmp), [])
             self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
             self.assertFalse((tmp / "undone").exists())
             # A retried cleanup: postpone arms nothing without an undo, disarm is a no-op.
-            self.assertEqual(self._guard(env, "postpone", "nightly", "960", "nightly expiry").returncode, 0)
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800, 960])
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960").returncode, 0)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly"), [1800, 960])
             self.assertEqual(self._guard(env, "disarm", "nightly").returncode, 0)
             self.assertEqual(node_guard_fakes.timers(env), [])
 
@@ -3471,64 +3484,69 @@ class NodeGuardTests(unittest.TestCase):
             tmp = Path(raw)
             env = node_guard_fakes.install(tmp)
             body = f"echo undone >>{tmp}/undone"
-            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "nightly expiry", body).returncode, 0)
-            fired = node_guard_fakes.fire(env, "nightly-expire")
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", body).returncode, 0)
+            fired = node_guard_fakes.fire(env, "nightly")
             self.assertEqual(fired.returncode, 0, fired.stderr)
             self.assertEqual((tmp / "undone").read_text(), "undone\n")
-            # The undo leaves only the time it ran; its own file and the boot rule are gone.
-            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["nightly.expired"])
+            # The undo leaves only the time it ran; its own file, the unit record and the boot rule are gone.
+            self.assertEqual(self._state(tmp), ["nightly.expired"])
             self.assertRegex((tmp / "state" / "nightly.expired").read_text(), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n$")
             self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
             # A late cleanup postpones nothing (the undo is gone) and its disarm reports the expiry.
-            self.assertEqual(self._guard(env, "postpone", "nightly", "960", "nightly expiry").returncode, 0)
+            self.assertEqual(self._guard(env, "postpone", "nightly", "960").returncode, 0)
             self.assertEqual(node_guard_fakes.timers(env), [])
             done = self._guard(env, "disarm", "nightly")
             self.assertEqual(done.returncode, 0)
             self.assertIn(b"the node undid the change by itself at ", done.stderr)
-            self.assertEqual(list((tmp / "state").iterdir()), [])
+            self.assertEqual(self._state(tmp), [])
 
     def test_rearm_replaces_a_stale_timer_and_waits_for_a_running_undo(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = node_guard_fakes.install(tmp)
-            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "nightly expiry", "true").returncode, 0)
-            # The stale timer of an earlier run is stopped first (PID 1 refuses a second unit of the name).
-            done = self._guard(env, "arm", "nightly", "2400", "nightly expiry", "true")
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "true").returncode, 0)
+            stale, _, stale_rule = node_guard_fakes.unit_record(env, "nightly")
+            done = self._guard(env, "arm", "nightly", "2400", "true")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly-expire"), [1800, 2400])
-            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly"), [1800, 2400])
+            self.assertEqual(len(node_guard_fakes.timers(env)), 1)
+            # The stale timer is stopped and its boot rule dropped before the new one starts.
             calls = node_guard_fakes.calls(env)
-            self.assertLess(calls.index("ctl stop nightly-expire.timer"),
-                            calls.index("run nightly-expire 2400 AccuracySec=1s RemainAfterElapse=no|nightly expiry"))
+            fresh = node_guard_fakes.starts(env, "nightly")[1]["unit"]
+            self.assertLess(calls.index(f"ctl stop {stale}.timer"),
+                            next(i for i, c in enumerate(calls) if c.startswith(f"run {fresh} ")))
+            self.assertFalse(Path(stale_rule).exists())
+            self.assertEqual(len(list((tmp / "tmpfiles.d").iterdir())), 1)
             # An undo still running is waited for; one that never ends stops arm and disarm (they fail
             # rather than run beside it).
-            (tmp / "systemd" / "nightly-expire.service.active").touch()
+            (tmp / "systemd" / f"{fresh}.service.active").touch()
             env_fast = dict(env, PATH=f"{tmp / 'fast'}:{os.environ['PATH']}")
             (tmp / "fast").mkdir()
             (tmp / "fast" / "sleep").write_text("#!/usr/bin/env bash\n:\n")
             (tmp / "fast" / "sleep").chmod(0o755)
-            for args in (("disarm", "nightly"), ("arm", "nightly", "1800", "nightly expiry", "true")):
+            for args in (("disarm", "nightly"), ("arm", "nightly", "1800", "true")):
                 stuck = self._guard(env_fast, *args)
                 self.assertNotEqual(stuck.returncode, 0)
                 self.assertIn(b"still running after 120s", stuck.stderr)
-            self.assertEqual(node_guard_fakes.timers(env), ["nightly-expire.timer"])
+            self.assertEqual(node_guard_fakes.timers(env), [f"{fresh}.timer"])
 
     def test_a_failed_undo_keeps_the_boot_rule_and_reports_at_disarm(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = node_guard_fakes.install(tmp)
-            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "nightly expiry", "false", "/var/x/out.bin").returncode, 0)
-            fired = node_guard_fakes.fire(env, "nightly-expire")
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "false", "/var/x/out.bin").returncode, 0)
+            unit = node_guard_fakes.unit_record(env, "nightly")[0]
+            fired = node_guard_fakes.fire(env, "nightly")
             self.assertNotEqual(fired.returncode, 0)
             # Nothing claims an expiry that did not finish; a reboot or a person can still finish it.
-            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), ["nightly.undo"])
-            self.assertEqual([x.name for x in (tmp / "tmpfiles.d").iterdir()], ["nightly.conf"])
-            (tmp / "systemd" / "nightly-expire.service.failed").touch()
+            self.assertEqual(self._state(tmp), ["nightly.undo", "nightly.unit"])
+            self.assertEqual(len(list((tmp / "tmpfiles.d").iterdir())), 1)
+            (tmp / "systemd" / f"{unit}.service.failed").touch()
             done = self._guard(env, "disarm", "nightly")
             self.assertEqual(done.returncode, 0)
-            self.assertIn(b"nightly-expire.service failed; cleanup undoes the change itself", done.stderr)
+            self.assertIn(f"{unit}.service failed; cleanup undoes the change itself".encode(), done.stderr)
             self.assertNotIn(b"by itself at", done.stderr)
-            self.assertEqual(list((tmp / "state").iterdir()), [])
+            self.assertEqual(self._state(tmp), [])
             self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
 
     def test_arm_refuses_a_bad_deadline_or_boot_path(self) -> None:
@@ -3537,10 +3555,39 @@ class NodeGuardTests(unittest.TestCase):
             env = node_guard_fakes.install(tmp)
             for args in (("0", "true"), ("12m", "true"), ("1800", "true", "relative/path"), ("1800", "true", "/a b")):
                 with self.subTest(args=args):
-                    done = self._guard(env, "arm", "nightly", args[0], "nightly expiry", *args[1:])
+                    done = self._guard(env, "arm", "nightly", *args)
                     self.assertNotEqual(done.returncode, 0)
                     self.assertEqual(node_guard_fakes.timers(env), [])
             self.assertNotEqual(self._guard(env, "fire", "nightly").returncode, 0)
+
+    def test_the_journal_trace_names_nothing(self) -> None:
+        # Design principle 8: the expiry timer is a tool trace no real incident leaves, so what the
+        # node's journal (forwarded to 119) shows of it is only the generic systemd-run form.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            for job in ("oradata-backup", "restaurant-api-in", "burnin"):
+                self.assertEqual(self._guard(env, "arm", job, "1800", "true").returncode, 0)
+                (tmp / "state" / f"{job}.unit").write_text(
+                    " ".join([node_guard_fakes.unit_record(env, job)[0], "0", node_guard_fakes.unit_record(env, job)[2]]) + "\n")
+                self.assertEqual(self._guard(env, "postpone", job, "960").returncode, 0)
+                self.assertEqual(node_guard_fakes.armed_seconds(env, job), [1800, 960])
+                self.assertEqual(node_guard_fakes.journal_words(env, job), [])
+                rule = Path(node_guard_fakes.unit_record(env, job)[2]).name
+                self.assertRegex(rule, r"^run-r[0-9a-f]{32}\.conf$")
+            # The program itself passes an empty description and never a unit name of its own making.
+            program = self.common.GUARD_PROGRAM.decode()
+            self.assertIn("--description= ", program)
+            self.assertEqual(program.count("--unit="), 1)
+            self.assertIn('--unit="$g_unit"', program)
+            # Callers hand the guard no wording: arm takes the job, the deadline, the undo and paths only.
+            for name in ("host_job_executor.py", "host_firewall_executor.py", "host_stress_executor.py"):
+                source = (PROFILES / name).read_text()
+                self.assertNotIn("expiry", source)
+                calls = re.findall(r'(?:node_guard arm|guard_arm) [^\n]*', source)
+                self.assertTrue(calls, name)
+                for call in calls:
+                    self.assertRegex(call, r'^(?:node_guard arm "\$(?:unit|gjob)" "\$expire_after" "\$undo"|guard_arm "\$job" "\$expire_after" "\$@"; \})')
 
     def test_deadline_follows_the_runner_limit_plus_margin(self) -> None:
         f80 = compiler.compile_plan("f80-r-banking-oradata-backup-zstd-exhausts-node-memory")

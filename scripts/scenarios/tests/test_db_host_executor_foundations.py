@@ -1064,7 +1064,7 @@ class HostStressRegistrationIsTwoSidedTests(unittest.TestCase):
         )
 
 
-def remote(sandbox: Path, *args: str):
+def remote(sandbox: Path, *args: str, path: str | None = None):
     """The worker side of host.stress in a sandbox: the state roots move into the sandbox and
     systemd is the fake from node_guard_fakes (the guard arms a timer on every run). The second
     stdin line is the one build_invocation sends (guard_stdin_line), with a plan's 20m limit."""
@@ -1074,6 +1074,8 @@ def remote(sandbox: Path, *args: str):
 
     preamble = ("set -- " + " ".join(shlex.quote(a) for a in args) + "\n").encode()
     env = dict(os.environ, **node_guard_fakes.install(sandbox), OPSJOB_LEGACY_ROOT=str(sandbox / "legacy"))
+    if path:
+        env["PATH"] = f"{path}:{env['PATH']}"
     guard = b"expire_after=1800 guard_hold=960\n"
     return subprocess.run(["bash", "-s"], input=preamble + guard + host.REMOTE, env=env, capture_output=True, timeout=120)
 
@@ -1279,21 +1281,26 @@ class HostStressNodeUndoTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             pgid = int((state / "burnin.pgid").read_text())
             try:
-                self.assertEqual(node_guard_fakes.timers(env), ["burnin-expire.timer"])
-                self.assertEqual(node_guard_fakes.armed_seconds(env, "burnin-expire"), [1800])
-                self.assertIn("AccuracySec=1s RemainAfterElapse=no|burnin expiry", node_guard_fakes.calls(env)[-1])
+                self.assertEqual(len(node_guard_fakes.timers(env)), 1)
+                self.assertEqual(node_guard_fakes.armed_seconds(env, "burnin"), [1800])
+                # The node's journal sees a unit named like any unnamed systemd-run, with no description.
+                for start in node_guard_fakes.starts(env, "burnin"):
+                    self.assertRegex(start["unit"], r"^run-r[0-9a-f]{32}$")
+                    self.assertEqual(start["description"], "")
                 # The guard is armed before the burner starts: its undo exists when the group does.
                 undo = state / "burnin.undo"
-                self.assertEqual(node_guard_fakes.command(env, "burnin-expire"), ["/bin/bash", str(undo)])
+                self.assertEqual(node_guard_fakes.command(env, "burnin"), ["/bin/bash", str(undo)])
                 # A reboot ends the burner by itself; what it leaves (pgid and log files) goes at the next boot.
-                self.assertEqual((sandbox / "tmpfiles.d" / "burnin.conf").read_text().splitlines(), [
+                rule = Path(node_guard_fakes.unit_record(env, "burnin")[2])
+                self.assertEqual(rule.parent, sandbox / "tmpfiles.d")
+                self.assertEqual(rule.read_text().splitlines(), [
                     f"r {state / 'burnin.pgid'}", f"r {state / 'burnin.log'}",
-                    f"r {undo}", f"r {sandbox / 'tmpfiles.d' / 'burnin.conf'}",
+                    f"r {undo}", f"r {state / 'burnin.unit'}", f"r {rule}",
                 ])
                 spare = sandbox / "undo-copy"
                 shutil.copy(undo, spare)
                 # cleanup never comes: the timer elapses and the worker undoes the job by itself.
-                fired = node_guard_fakes.fire(env, "burnin-expire")
+                fired = node_guard_fakes.fire(env, "burnin")
                 self.assertEqual(fired.returncode, 0, fired.stderr)
                 time.sleep(0.5)
                 with self.assertRaises(ProcessLookupError):
@@ -1318,7 +1325,7 @@ class HostStressNodeUndoTests(unittest.TestCase):
             self.assertEqual(sorted(x.name for x in state.iterdir()), [])
             self.assertEqual(node_guard_fakes.timers(env), [])
 
-    def test_cpu_job_cleanup_postpones_then_cancels_the_timer(self) -> None:
+    def test_cpu_job_cleanup_cancels_the_timer_and_adds_no_restart_on_time(self) -> None:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1329,14 +1336,56 @@ class HostStressNodeUndoTests(unittest.TestCase):
             self.assertEqual(remote(sandbox, "run", *cpu).returncode, 0)
             done = remote(sandbox, "cleanup", *cpu)
             self.assertEqual(done.returncode, 0, done.stderr)
-            # Held off for the length of one executor call, then cancelled; nothing on the worker reports
-            # an expiry because none happened.
-            self.assertEqual(node_guard_fakes.armed_seconds(env, "burnin-expire"), [1800, 960])
+            # On time (far from the deadline) cleanup does not restart the timer, it only cancels it;
+            # nothing on the worker reports an expiry because none happened.
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "burnin"), [1800])
             self.assertEqual(node_guard_fakes.timers(env), [])
             self.assertNotIn(b"by itself", done.stderr)
             self.assertEqual(sorted(x.name for x in (sandbox / "state").iterdir()), [])
             self.assertEqual(list((sandbox / "tmpfiles.d").iterdir()), [])
             self.assertEqual(remote(sandbox, "recovery", *cpu).returncode, 0)
+
+    def test_run_alone_refuses_a_job_that_is_still_running(self) -> None:
+        # A negated command in the middle of a line never stopped the script under set -e, so fio and
+        # pressure runs called on their own started a second job beside a running one (preflight caught
+        # it only because there the negation is the last command). A live pid file now stops run
+        # before anything is armed or started.
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Path(tmp)
+            (sandbox / "legacy").mkdir()
+            (sandbox / "target").mkdir()
+            fake = sandbox / "fake-bin"
+            fake.mkdir()
+            for tool in ("fio", "stress-ng"):
+                (fake / tool).write_text("#!/usr/bin/env bash\nexit 0\n")
+                (fake / tool).chmod(0o755)
+            env = node_guard_fakes.install(sandbox)
+            (sandbox / "state").mkdir()
+            running = subprocess.Popen(["sleep", "60"])
+            try:
+                for job, args in (("soak", ("pressure", "192.168.122.11", "1", "1", "1M", "5")),
+                                  ("iobench", ("fio", "192.168.122.14", str(sandbox / "target"), "1", "5", "10"))):
+                    with self.subTest(job=job):
+                        pidfile = sandbox / "state" / f"{job}.pid"
+                        pidfile.write_text(f"{running.pid}\n")
+                        result = remote(sandbox, "run", *args, path=f"{fake}")
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(pidfile.read_text(), f"{running.pid}\n")
+                        self.assertEqual(node_guard_fakes.armed_seconds(env, job), [])
+                        self.assertFalse((sandbox / "target" / f".{job}.dat").exists())
+                        pidfile.unlink()
+                self.assertIsNone(running.poll())
+            finally:
+                running.kill()
+                running.wait(timeout=10)
+            # The refusal is the run's own, not a missing tool: with no job running the same run arms and starts.
+            result = remote(sandbox, "run", "pressure", "192.168.122.11", "1", "1", "1M", "5", path=f"{fake}")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "soak"), [1800])
+            self.assertEqual(remote(sandbox, "cleanup", "pressure", "192.168.122.11", "1", "1", "1M", "5").returncode, 0)
 
     def test_pid_undo_leaves_a_process_that_took_over_the_number(self) -> None:
         # A long wait or a reboot can hand the job's pid to another process: the undo checks the
