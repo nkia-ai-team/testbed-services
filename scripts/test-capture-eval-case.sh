@@ -171,6 +171,7 @@ jq -e '
   .capture_start_kst == "2026-07-15T07:50:00+09:00" and
   (.phases | type == "array" and length == 5) and
   (.phases[] | select(.phase == "trainer_reset") | .at_kst | length > 0) and
+  (.phases[] | select(.phase == "trainer_reset") | .golden_id == "golden-01" and .golden_sha256 == ("a"*64)) and
   (.phases[] | select(.phase == "injection") | .start == "2026-07-15T01:00:00Z" and .end == "2026-07-15T01:10:00Z") and
   .evaluation_eligible == false' \
   <<<"$output" >/dev/null || fail 'unexpected dry-run output for --phases-json (v3)'
@@ -197,8 +198,8 @@ jq '(.phases[] | select(.phase == "injection") | .end) = "2026-07-15T01:11:00Z"'
 expect_rejected phases-json-injection-end-mismatch \
   "${base_args[@]}" --case-label calibration --phases-json "$bad_injection_end"
 
-# golden_sha256 may be null (restore has not emitted a digest yet — known
-# TODO on the runner side); this must still be accepted, not rejected.
+# golden_sha256 may be null (a restore script or runner that predates the
+# digest); this must still be accepted, not rejected.
 null_golden_sha="$TMP_ROOT/phases-null-golden-sha.json"
 jq '(.phases[] | select(.phase == "trainer_reset") | .golden_sha256) = null' "$phases_json" \
   >"$null_golden_sha"
@@ -208,6 +209,14 @@ jq -e '
   .mode == "dry-run" and .schema_version == "2.0" and
   (.phases[] | select(.phase == "trainer_reset") | .golden_sha256 == null)' \
   <<<"$output" >/dev/null || fail 'phases-json with golden_sha256=null should be accepted'
+
+# A golden_sha256 that is a string but not a sha256 hex digest is rejected: the
+# recording meta must not carry something that cannot be checked against the dump.
+bad_golden_sha="$TMP_ROOT/phases-bad-golden-sha.json"
+jq '(.phases[] | select(.phase == "trainer_reset") | .golden_sha256) = "not-a-digest"' "$phases_json" \
+  >"$bad_golden_sha"
+expect_rejected phases-json-golden-sha256-not-hex \
+  "${base_args[@]}" --case-label calibration --phases-json "$bad_golden_sha"
 
 # Evaluation-label integrity guard (spec §2.2, 2026-07-25): a shortened normal
 # lead-in (< contract 2h) must downgrade evaluation -> calibration, not mint a

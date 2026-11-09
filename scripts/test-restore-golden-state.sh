@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Side-effect-free tests for restore-golden-state.sh. docker and curl are fakes on
+# PATH (RUNTIME=docker): docker answers inspect/stop/start and swallows the psql and
+# pg_restore sidecar runs; curl answers the observer health check. A temporary golden
+# root holds one golden (meta.json + data/golden-pg-state.dump).
+#
+# What is checked: the restore result JSON carries golden_sha256 = sha256 of the dump
+# that was restored (the runner threads it into phases.json trainer_reset, the capture
+# carries it into the recording meta), in both the real and the dry-run output, and a
+# dump that does not match meta.pg_ai_state.sha256 is still refused.
+
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+RESTORE="$SCRIPT_DIR/restore-golden-state.sh"
+TMP_ROOT=$(mktemp -d)
+trap 'rm -rf "$TMP_ROOT"' EXIT
+
+fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
+
+mkdir -p "$TMP_ROOT/bin"
+cat >"$TMP_ROOT/bin/docker" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_LOG"
+case "$1" in
+  inspect)
+    if [[ "${2:-}" == -f ]]; then printf 'true\n'; fi
+    exit 0 ;;
+  stop|start) exit 0 ;;
+  run) exit 0 ;;
+  *) exit 9 ;;
+esac
+SH
+cat >"$TMP_ROOT/bin/curl" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+cat >"$TMP_ROOT/bin/kubectl" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+chmod +x "$TMP_ROOT/bin/docker" "$TMP_ROOT/bin/curl" "$TMP_ROOT/bin/kubectl"
+
+export PATH="$TMP_ROOT/bin:$PATH" FAKE_LOG="$TMP_ROOT/docker.log"
+export RUNTIME=docker KUBECTL=false PG_PASSWORD=unused-test-value
+
+golden_root="$TMP_ROOT/goldens"
+golden="$golden_root/golden-0900"
+mkdir -p "$golden/data"
+printf 'fake pg custom dump bytes\n' >"$golden/data/golden-pg-state.dump"
+dump_sha=$(sha256sum "$golden/data/golden-pg-state.dump" | cut -d' ' -f1)
+jq -n --arg sha "$dump_sha" \
+  '{kind:"golden", tod_phase_kst:"09:00",
+    pg_ai_state:{sha256:$sha, tables:["detector_seen_signatures","coverage_signal_state"]}}' \
+  >"$golden/meta.json"
+
+# 1. Real restore: result JSON keeps its existing keys and adds golden_sha256.
+out=$("$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+  fail "restore failed: $(cat "$TMP_ROOT/err")"
+jq -e --arg sha "$dump_sha" --arg dir "$golden" '
+  .action == "restore-golden" and .status == "ok" and
+  .golden_dir == $dir and .golden_tod_kst == "09:00" and
+  .pg_tables_restored == 2 and
+  .golden_sha256 == $sha and (.golden_sha256 | test("^[0-9a-f]{64}$"))
+' <<<"$out" >/dev/null || fail "restore result must carry golden_sha256 of the restored dump: $out"
+grep -q '^run ' "$FAKE_LOG" || fail 'restore did not run the pg sidecar'
+
+# 2. Dry run reports the same digest without touching anything.
+: >"$FAKE_LOG"
+out=$("$RESTORE" --golden-dir "$golden" --dry-run 2>"$TMP_ROOT/err") ||
+  fail "dry-run failed: $(cat "$TMP_ROOT/err")"
+jq -e --arg sha "$dump_sha" '.mode == "dry-run" and .golden_sha256 == $sha' <<<"$out" >/dev/null ||
+  fail "dry-run result must carry golden_sha256: $out"
+! grep -qE '^(run|stop|start) ' "$FAKE_LOG" || fail 'dry-run must not stop, start or run anything'
+
+# 3. A dump that no longer matches meta is refused before anything is stopped.
+: >"$FAKE_LOG"
+printf 'tampered\n' >>"$golden/data/golden-pg-state.dump"
+if "$RESTORE" --golden-dir "$golden" --ready-timeout-sec 5 >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then
+  fail 'restore must refuse a dump whose sha256 differs from meta'
+fi
+grep -q 'golden dump sha256 mismatch' "$TMP_ROOT/err" || fail "unexpected refusal: $(cat "$TMP_ROOT/err")"
+! grep -qE '^(run|stop|start) ' "$FAKE_LOG" || fail 'a refused restore must not touch the stack'
+
+printf '[PASS] restore-golden-state.sh golden_sha256 tests\n'

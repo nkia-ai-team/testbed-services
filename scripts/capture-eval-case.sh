@@ -392,8 +392,12 @@ if [[ "$v3_mode" == true ]]; then
   # injection.start/.end must equal --t1/--t2 (runner/capture consistency).
   [[ -r "$phases_json" ]] || die "--phases-json is not readable: $phases_json"
   # The runner emits an envelope object {schema_version, run_id, scenario_id,
-  # phases: [...]}; golden_sha256 may be null until restore emits a digest
-  # (known TODO). Validate the envelope, then work off .phases below.
+  # phases: [...]}. trainer_reset.golden_sha256 is the sha256 of the golden dump
+  # restore-golden-state.sh restored (its result JSON golden_sha256, threaded by
+  # the runner). It is carried into meta.json phases[] verbatim. null is still
+  # accepted for a restore script or runner that predates the digest; a string
+  # must be a 64-char lowercase hex digest. Validate the envelope, then work off
+  # .phases below.
   jq -e '
     (type == "object") and (.phases | type == "array") and
     ([.phases[].phase] as $p |
@@ -404,7 +408,8 @@ if [[ "$v3_mode" == true ]]; then
       ($p | index("cooldown")) != null) and
     (.phases[] | select(.phase == "trainer_reset") |
       (.at | type == "string") and (.golden_id | type == "string") and
-      ((.golden_sha256 | type == "string") or .golden_sha256 == null)) and
+      (((.golden_sha256 | type == "string") and (.golden_sha256 | test("^[0-9a-f]{64}$"))) or
+        .golden_sha256 == null)) and
     (.phases[] | select(.phase != "trainer_reset") |
       (.start | type == "string") and (.end | type == "string"))
   ' "$phases_json" >/dev/null ||

@@ -257,6 +257,9 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   `{phase: trainer_reset, at, golden_id, golden_sha256}` /
   `{phase: normal|buffer|injection|cooldown, start, end}` (UTC 정본 + `*_kst`
   병기). `injection.start`=`t1`, `injection.end`=`t2`와 일치해야 한다.
+  `golden_sha256` 은 `restore-golden-state.sh` 가 복원한 골든 덤프의 sha256 이다
+  (복원 결과 JSON 의 `golden_sha256` 을 러너가 phases.json 으로 옮긴다, 2026-11-09).
+  64자 소문자 16진수이거나, 이 값을 내지 않던 복원 스크립트에서는 null 이다.
 - 신규 `clickhouse_tables[]`: `{table, file, rows, time_column,
   scope: slice|snap, time_min, time_max | null(0행)}`.
 - 유지: `t1`/`t2`/`capture_start`/`capture_end`(+`_kst`), `dump_*`,

@@ -266,6 +266,8 @@ dump="$golden_dir/data/golden-pg-state.dump"
 golden_kind=$(jq -r '.kind // empty' "$meta")
 [[ "$golden_kind" == golden ]] || die "not a golden (kind=$golden_kind): $meta"
 expected_sha=$(jq -r '.pg_ai_state.sha256 // empty' "$meta")
+# actual_sha 는 복원에 실제로 쓰는 덤프의 sha256 이다. 결과 JSON 의 golden_sha256 으로
+# 내보내 러너가 phases.json trainer_reset.golden_sha256 에, 캡처가 녹화 meta 에 싣는다.
 actual_sha=$(sha256sum "$dump" | cut -d' ' -f1)
 [[ -z "$expected_sha" || "$expected_sha" == "$actual_sha" ]] ||
   die "golden dump sha256 mismatch: meta=$expected_sha actual=$actual_sha"
@@ -372,8 +374,10 @@ if [[ "$dry_run" == true ]]; then
     --arg runtime "$RUNTIME" \
     --arg trainer_workload "$([[ "$RUNTIME" == k8s ]] && echo "$K8S_NAMESPACE/$TRAINER_WORKLOAD" || echo "$trainer_container")" \
     --arg observer_workload "$([[ "$RUNTIME" == k8s ]] && echo "$K8S_NAMESPACE/$OBSERVER_WORKLOAD" || echo "$observer_container")" \
+    --arg golden_sha256 "$actual_sha" \
     '{mode:"dry-run", action:"restore-golden",
       golden_dir:$golden_dir, golden_tod_kst:$tod, pg_tables:$n_tables,
+      golden_sha256:$golden_sha256,
       freeze_trainer:$freeze, observer_container:$observer, trainer_container:$trainer,
       runtime:$runtime, trainer_workload:$trainer_workload, observer_workload:$observer_workload,
       steps:["freeze trainer","pg_restore --clean AI-state","restart observer","await health"]}'
@@ -476,7 +480,9 @@ jq -n \
   --argjson frozen "$([[ "$no_freeze" == true ]] && echo false || echo true)" \
   --argjson n_tables "${#golden_tables[@]}" \
   --arg restored_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+  --arg golden_sha256 "$actual_sha" \
   '{action:"restore-golden", status:"ok", golden_dir:$golden_dir, golden_tod_kst:$tod,
+    golden_sha256:$golden_sha256,
     pg_tables_restored:$n_tables, trainer_frozen:$frozen, observer_container:$observer,
     trainer_container:$trainer, restored_at:$restored_at,
     note:"trainer stays frozen for evaluation; run with --thaw afterwards"}'
