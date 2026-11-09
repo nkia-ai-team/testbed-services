@@ -385,6 +385,52 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
         baseline = (REPO / "core-banking" / "loadgen" / "script.js").read_text()
         self.assertNotIn("TRANSFER_ACCOUNTS", baseline)
 
+
+class FoodLoadOrderLookupTests(unittest.TestCase):
+    """2026-11-09 (v4 E4): food 부하에 주문 읽기가 없어 order 관측이 POST 하나뿐이었다. 상주 기준선과
+    surge.js 에 주문 조회 5% 를 브라우징 몫에서 떼어 더한다. 관측 단계(create, menu)와 이름이 겹치면
+    러너 판정 값이 바뀌므로 새 단계 이름은 따로 둔다. 배차 목록 조회는 page=0 Slice 그대로여야
+    dispatch 풀 계산(surge.js 주석)이 맞는다."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        loadgen = REPO / "food-delivery" / "loadgen"
+        cls.baseline = (loadgen / "script.js").read_text()
+        cls.surge = (loadgen / "surge.js").read_text()
+        cls.food = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"][
+            "load.north_south"]["parameter_contract"]["domain_profiles"]["http://192.168.122.77:30181"]
+
+    def test_mixes_take_the_order_lookup_share_from_browsing_only(self) -> None:
+        self.assertEqual(journey_weights(self.baseline), {
+            "browsingJourney": 0.50, "searchJourney": 0.15, "orderJourney": 0.20,
+            "orderLookupJourney": 0.05, "deliveryTrackingJourney": 0.10})
+        self.assertEqual(journey_weights(self.surge), {
+            "browsingJourney": 0.40, "searchJourney": 0.30, "orderJourneyBounded": 0.10,
+            "orderLookupJourney": 0.05, "deliveryTrackingJourney": 0.15})
+
+    def test_order_lookup_reads_real_orders_without_touching_observed_steps(self) -> None:
+        for script in (self.baseline, self.surge):
+            body = script[script.index("function orderLookupJourney()"):]
+            body = body[:body.index("\n}\n")]
+            self.assertIn("`${ORDER_URL}/api/orders/${lastOrderId}`", body)
+            self.assertIn("`${ORDER_URL}/api/orders?customerId=${customerId()}&page=0&size=10`", body)
+            steps = set(re.findall(r"step: '([\w-]+)'", body))
+            self.assertEqual(steps, {"order-detail", "order-history"})
+            self.assertFalse(steps & {self.food["business_step"], self.food["read_step"]})
+            # 상세는 생성 응답의 id 만 본다(시드 id 는 보존 기간으로 지워져 404).
+            self.assertEqual(script.count("rememberOrder(orderRes);"), 1)
+            self.assertIn("res.json('id')", script)
+
+    def test_delivery_list_stays_a_first_page_slice_call(self) -> None:
+        for script in (self.baseline, self.surge):
+            calls = re.findall(r"/api/deliveries\?[^`]*", script)
+            self.assertEqual(calls, ["/api/deliveries?status=DELIVERED&page=0&size=20"])
+        dispatch = (REPO / "food-delivery" / "dispatch-service" / "src" / "main" / "java" / "com" / "fooddelivery"
+                    / "dispatch" / "repository" / "DispatchRepository.java").read_text()
+        self.assertIn("Slice<Dispatch> findByStatus(String status, Pageable pageable);", dispatch)
+        self.assertNotIn("Page<Dispatch>", dispatch)
+
+
 if __name__ == "__main__":
     unittest.main()
 

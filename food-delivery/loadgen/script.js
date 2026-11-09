@@ -5,7 +5,8 @@
 // 발생시킨다. food-delivery 에는 api-gateway 가 없어(§7 범위 밖) 각 서비스를 k8s Service
 // DNS로 직접 호출한다.
 //
-// 여정 가중(§8): 식당 브라우징 55% / 지역 검색 15% / 주문 생성 20% / 배달 상태 조회 10%.
+// 여정 가중(§8): 식당 브라우징 50% / 지역 검색 15% / 주문 생성 20% / 주문 조회 5% / 배달 상태 조회 10%
+// (2026-11-09 v4 E4 에서 주문 조회를 브라우징 몫에서 떼어 더함).
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
@@ -149,6 +150,44 @@ function orderJourney() {
     check(orderRes, {
         'order 200/400/503': (r) => r.status === 200 || r.status === 400 || r.status === 503,
     });
+    rememberOrder(orderRes);
+}
+
+// ------------------------------------------------------------
+// 주문 조회(2026-11-09, v4 E4) — 손님이 방금 넣은 주문의 상태를 보거나 내 주문 목록을 본다.
+// ------------------------------------------------------------
+// 이 부하에는 주문 읽기가 없어 order 의 관측이 POST 하나뿐이었다. 그러면 주문 쓰기가 깨진 장애에서
+// "order 자체는 읽기에 답한다"는 감별 근거가 데이터에 없다. 주문 생성과 별개 여정이라 생성이 실패하는
+// 동안에도 이어진다. 주문 상세는 이 VU 가 마지막으로 만든 주문(생성 응답의 id)을 본다: 시드 id 는
+// 30일 보존으로 지워져(66, 2026-11-09 orders 최소 id 5,120,480) 임의 id 는 404 다. 만든 주문이 아직
+// 없으면 목록을 본다. 목록은 customer_id 인덱스로 한 손님 주문(66 실측 약 262건) 앞 10건만 읽는다
+// (EXPLAIN ref idx_orders_customer, Slice 라 COUNT 없음).
+let lastOrderId = null;
+
+function rememberOrder(res) {
+    if (res.status !== 200) {
+        return;
+    }
+    try {
+        const id = res.json('id');
+        if (id) {
+            lastOrderId = id;
+        }
+    } catch (e) {
+        // 응답이 JSON 이 아니면 이전 값을 쓴다.
+    }
+}
+
+function orderLookupJourney() {
+    if (lastOrderId !== null && rand() < 0.5) {
+        const res = http.get(`${ORDER_URL}/api/orders/${lastOrderId}`,
+            { tags: { journey: 'order-lookup', step: 'order-detail' } });
+        check(res, { 'order detail 200': (r) => r.status === 200 });
+    } else {
+        const res = http.get(`${ORDER_URL}/api/orders?customerId=${customerId()}&page=0&size=10`,
+            { tags: { journey: 'order-lookup', step: 'order-history' } });
+        check(res, { 'order history 200': (r) => r.status === 200 });
+    }
 }
 
 // ------------------------------------------------------------
@@ -172,12 +211,15 @@ function deliveryTrackingJourney() {
 // ------------------------------------------------------------
 export default function () {
     const r = rand();
-    if (r < 0.55) {
+    // 2026-11-09(v4 E4): 주문 조회 5% 를 식당 브라우징에서 떼어 왔다(55 → 50). 다른 여정 몫은 그대로다.
+    if (r < 0.50) {
         browsingJourney();
-    } else if (r < 0.70) {
+    } else if (r < 0.65) {
         searchJourney();
-    } else if (r < 0.90) {
+    } else if (r < 0.85) {
         orderJourney();
+    } else if (r < 0.90) {
+        orderLookupJourney();
     } else {
         deliveryTrackingJourney();
     }

@@ -138,8 +138,54 @@ function orderJourneyBounded() {
     check(orderRes, {
         'order 200/400/503': (r) => r.status === 200 || r.status === 400 || r.status === 503,
     });
+    rememberOrder(orderRes);
 }
 
+// ------------------------------------------------------------
+// 주문 조회(2026-11-09, v4 E4) — 손님이 방금 넣은 주문의 상태를 보거나 내 주문 목록을 본다.
+// ------------------------------------------------------------
+// 이 부하에는 주문 읽기가 없어 order 의 관측이 POST 하나뿐이었다. 그러면 주문 쓰기가 깨진 장애에서
+// "order 자체는 읽기에 답한다"는 감별 근거가 데이터에 없다. 주문 생성과 별개 여정이라 생성이 실패하는
+// 동안에도 이어진다. 주문 상세는 이 VU 가 마지막으로 만든 주문(생성 응답의 id)을 본다: 시드 id 는
+// 30일 보존으로 지워져(66, 2026-11-09 orders 최소 id 5,120,480) 임의 id 는 404 다. 만든 주문이 아직
+// 없으면 목록을 본다. 목록은 customer_id 인덱스로 한 손님 주문(66 실측 약 262건) 앞 10건만 읽는다
+// (EXPLAIN ref idx_orders_customer, Slice 라 COUNT 없음).
+let lastOrderId = null;
+
+function rememberOrder(res) {
+    if (res.status !== 200) {
+        return;
+    }
+    try {
+        const id = res.json('id');
+        if (id) {
+            lastOrderId = id;
+        }
+    } catch (e) {
+        // 응답이 JSON 이 아니면 이전 값을 쓴다.
+    }
+}
+
+function orderLookupJourney() {
+    if (lastOrderId !== null && rand() < 0.5) {
+        const res = http.get(`${ORDER_URL}/api/orders/${lastOrderId}`,
+            { tags: { journey: 'surge-order-lookup', step: 'order-detail' } });
+        check(res, { 'order detail 200': (r) => r.status === 200 });
+    } else {
+        const res = http.get(`${ORDER_URL}/api/orders?customerId=${customerId()}&page=0&size=10`,
+            { tags: { journey: 'surge-order-lookup', step: 'order-history' } });
+        check(res, { 'order history 200': (r) => r.status === 200 });
+    }
+}
+
+// 배차 목록 조회와 dispatch 연결 풀(최대 10, 대기 3초) 계산(2026-11-09, v4 E4).
+// F19-P, F19-S, F10-H 녹화(2026-08-22~23)에서 이 목록 조회가 dispatch 풀을 채운 것은 목록이 Page 라
+// 쪽마다 COUNT(약 174만 행의 끝난 배차를 다 셈)가 붙었기 때문이다: 50rps x 추적 15% x 목록 50%
+// = 초당 3.75건 x COUNT 약 2.4초 = 동시 약 9개로 풀 10개에 거의 찼다. 27a3d0a(10-08)가 목록을 Slice 로
+// 바꿔 COUNT 를 없앴고, 66 MySQL 다이제스트(2026-11-09)에서 목록 문장은 status 인덱스로 21행만 읽는
+// LIMIT 조회 하나(334,351회, 평균 5.05ms, p99 6.3ms)이며 COUNT 목록 문장은 없다. 지금은 50rps 에서
+// 초당 3.75건 x 0.005초 = 동시 약 0.02개다. 10배 느려져도 0.2개라 부하 쪽에서 줄일 것이 없다.
+// 목록 조회를 다시 Page 로 바꾸거나 page 를 깊게 넘기면 이 계산이 깨진다(F59-R 이 일부러 그렇게 한다).
 function deliveryTrackingJourney() {
     if (rand() < 0.5) {
         const dispatchId = randInt(1, DISPATCH_ID_MAX);
@@ -153,17 +199,20 @@ function deliveryTrackingJourney() {
     }
 }
 
-// 여정 가중(누적 확률) — browsing 45 / 검색 30 / 주문(bounded) 10 / 추적 15.
-// baseline(55/15/20/10)과 달리 browsing·검색을 폭주 중심으로 올리고 주문
+// 여정 가중(누적 확률) — browsing 40 / 검색 30 / 주문(bounded) 10 / 주문 조회 5 / 추적 15.
+// baseline(50/15/20/5/10)과 달리 browsing·검색을 폭주 중심으로 올리고 주문
 // 비중은 낮춰 원인을 browsing/검색 쪽에 둔다(§8.1-2 근거, 위 헤더 주석).
+// 2026-11-09(v4 E4): 주문 조회 5% 를 browsing 에서 떼어 왔다(45 → 40), baseline 과 같은 여정이다.
 export default function () {
     const r = rand();
-    if (r < 0.45) {
+    if (r < 0.40) {
         browsingJourney();
-    } else if (r < 0.75) {
+    } else if (r < 0.70) {
         searchJourney();
-    } else if (r < 0.85) {
+    } else if (r < 0.80) {
         orderJourneyBounded();
+    } else if (r < 0.85) {
+        orderLookupJourney();
     } else {
         deliveryTrackingJourney();
     }
