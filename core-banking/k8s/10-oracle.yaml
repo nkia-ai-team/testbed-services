@@ -1,43 +1,6 @@
 # Oracle 23ai Free(gvenzl/oracle-free:23-slim). 기동이 무거워(수분 소요) startupProbe 여유 확보.
 # init/seed 스크립트는 build-and-deploy.sh Phase 2.5 가 db/init.sql, db/seed-all.sql 로부터
 # oracle-init-scripts ConfigMap 을 생성해 마운트한다(파일↔ConfigMap drift 방지, commerce 패턴과 동일).
-#
-# oracle-startdb-scripts: 기동할 때마다 도는 스크립트(gvenzl 이미지의 /container-entrypoint-startdb.d).
-# 서버 sqlnet.ora 에 SQLNET.EXPIRE_TIME = 1 을 넣는다(dead connection detection). 클라이언트가
-# FIN 없이 사라지면(호스트 정지, 망 단절) 서버가 1분 간격 탐침으로 알아채고 그 세션을 정리해
-# 트랜잭션을 롤백한다. 이 설정이 없으면 그런 세션이 쥔 행 잠금은 누가 죽일 때까지 남는다
-# (2026-11-10 Oracle Free 실측은 결과 문서 C3-6.md). 살아 있는 연결에는 탐침만 오간다. 실제로
-# 죽은 상대를 정리할 때만 alert log 에 TNS-12535 가 남는다.
-# 테스트베드 쪽 이유: Oracle 잠금 주입(scripts/scenarios/profiles/oracle_lock_session.py)은 러너
-# 컨테이너의 네트워크 세션이라, 러너가 사라져도 잠금이 정해진 시간 안에 풀려야 한다(U8).
-# 실행기 사전검사가 이 마운트와 값을 확인하고 없으면 주입을 거절한다.
-# sqlnet.ora 를 마운트로 덮으면 안 된다: 이미지 진입 스크립트가 첫 기동에 그 파일을
-# oradata/dbconfig 로 옮기고(mv), 이후 기동마다 지우고(rm) 심볼릭 링크를 다시 건다. 덮어쓴
-# 마운트는 "Device or resource busy" 로 기동을 멈춘다(11-10 실측). 그래서 진짜 파일
-# (oradata/dbconfig/<SID>/sqlnet.ora, PVC 위)을 기동 스크립트가 고친다. 서버 프로세스는 접속할
-# 때 sqlnet.ora 를 읽으므로 고친 뒤 새 연결부터 효과가 있다.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: oracle-startdb-scripts
-  namespace: rca-testbed-banking
-data:
-  10-sqlnet-expire-time.sh: |
-    #!/bin/bash
-    # 실행 파일로 돈다(defaultMode 0555). 진입 스크립트가 source 하는 경우를 생각해 exit 를 쓰지 않는다.
-    EXPIRE_MINUTES=1
-    sqlnet_file="${ORACLE_BASE}/oradata/dbconfig/${ORACLE_SID}/sqlnet.ora"
-    if [ -f "${sqlnet_file}" ]; then
-      if grep -Eq '^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=' "${sqlnet_file}"; then
-        sed -i -E "s/^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=.*/SQLNET.EXPIRE_TIME = ${EXPIRE_MINUTES}/" "${sqlnet_file}"
-      else
-        printf 'SQLNET.EXPIRE_TIME = %s\n' "${EXPIRE_MINUTES}" >>"${sqlnet_file}"
-      fi
-      echo "sqlnet.ora: SQLNET.EXPIRE_TIME = ${EXPIRE_MINUTES}"
-    else
-      echo "sqlnet.ora: ${sqlnet_file} not found, dead connection detection NOT set" >&2
-    fi
----
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -75,10 +38,8 @@ spec:
             - name: oracledata
               mountPath: /opt/oracle/diag
               subPath: diag
-            - name: init-scripts
-              mountPath: /container-entrypoint-initdb.d
-            - name: startdb-scripts
-              mountPath: /container-entrypoint-startdb.d
+            - {name: init-scripts, mountPath: /container-entrypoint-initdb.d}
+            - {name: startdb-scripts, mountPath: /container-entrypoint-startdb.d}
           resources:
             requests:
               cpu: 500m
@@ -105,13 +66,9 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 5
       volumes:
-        - name: init-scripts
-          configMap:
-            name: oracle-init-scripts
+        - {name: init-scripts, configMap: {name: oracle-init-scripts}}
         - name: startdb-scripts
-          configMap:
-            name: oracle-startdb-scripts
-            defaultMode: 0555
+          configMap: {name: oracle-startdb-scripts, defaultMode: 0555}
   volumeClaimTemplates:
     - metadata:
         name: oracledata
@@ -147,3 +104,42 @@ spec:
     - port: 1521
       targetPort: 1521
       nodePort: 30308
+---
+# 위 StatefulSet 의 init-scripts, startdb-scripts 마운트와 볼륨을 한 줄 흐름 표기로 적은 까닭: 정답지
+# (registry/scenario-metadata.json)가 이 파일의 줄 번호(5-7, 22-23, 43-49, 82-106)를 근거로 가리킨다.
+# 줄을 늘리면 그 근거가 어긋나므로 기존 줄 수를 그대로 두고 새 항목을 같은 자리에 넣었다.
+# oracle-startdb-scripts: 기동할 때마다 도는 스크립트(gvenzl 이미지의 /container-entrypoint-startdb.d).
+# 서버 sqlnet.ora 에 SQLNET.EXPIRE_TIME = 1 을 넣는다(dead connection detection). 클라이언트가
+# FIN 없이 사라지면(호스트 정지, 망 단절) 서버가 1분 간격 탐침으로 알아채고 그 세션을 정리해
+# 트랜잭션을 롤백한다. 이 설정이 없으면 그런 세션이 쥔 행 잠금은 누가 죽일 때까지 남는다
+# (2026-11-10 Oracle Free 실측은 결과 문서 C3-6.md). 살아 있는 연결에는 탐침만 오간다. 실제로
+# 죽은 상대를 정리할 때만 alert log 에 TNS-12535 가 남는다.
+# 테스트베드 쪽 이유: Oracle 잠금 주입(scripts/scenarios/profiles/oracle_lock_session.py)은 러너
+# 컨테이너의 네트워크 세션이라, 러너가 사라져도 잠금이 정해진 시간 안에 풀려야 한다(U8).
+# 실행기 사전검사가 이 마운트와 값을 확인하고 없으면 주입을 거절한다.
+# sqlnet.ora 를 마운트로 덮으면 안 된다: 이미지 진입 스크립트가 첫 기동에 그 파일을
+# oradata/dbconfig 로 옮기고(mv), 이후 기동마다 지우고(rm) 심볼릭 링크를 다시 건다. 덮어쓴
+# 마운트는 "Device or resource busy" 로 기동을 멈춘다(11-10 실측). 그래서 진짜 파일
+# (oradata/dbconfig/<SID>/sqlnet.ora, PVC 위)을 기동 스크립트가 고친다. 서버 프로세스는 접속할
+# 때 sqlnet.ora 를 읽으므로 고친 뒤 새 연결부터 효과가 있다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-startdb-scripts
+  namespace: rca-testbed-banking
+data:
+  10-sqlnet-expire-time.sh: |
+    #!/bin/bash
+    # 실행 파일로 돈다(defaultMode 0555). 진입 스크립트가 source 하는 경우를 생각해 exit 를 쓰지 않는다.
+    EXPIRE_MINUTES=1
+    sqlnet_file="${ORACLE_BASE}/oradata/dbconfig/${ORACLE_SID}/sqlnet.ora"
+    if [ -f "${sqlnet_file}" ]; then
+      if grep -Eq '^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=' "${sqlnet_file}"; then
+        sed -i -E "s/^[[:space:]]*SQLNET\.EXPIRE_TIME[[:space:]]*=.*/SQLNET.EXPIRE_TIME = ${EXPIRE_MINUTES}/" "${sqlnet_file}"
+      else
+        printf 'SQLNET.EXPIRE_TIME = %s\n' "${EXPIRE_MINUTES}" >>"${sqlnet_file}"
+      fi
+      echo "sqlnet.ora: SQLNET.EXPIRE_TIME = ${EXPIRE_MINUTES}"
+    else
+      echo "sqlnet.ora: ${sqlnet_file} not found, dead connection detection NOT set" >&2
+    fi
