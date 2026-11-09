@@ -177,6 +177,27 @@ class AnswerKeyContractTests(unittest.TestCase):
                     f"{scenario_id}.{key}: the note detail must not be copied into a scored field",
                 )
 
+    def test_scored_evidence_does_not_cite_runner_only_values(self) -> None:
+        # 원칙 5: 채점 칸(must_support, must_rule_out)의 근거는 관제(119)가 수집한 데이터여야
+        # 한다. 부하 생성기가 계산한 값(단계별 비율, 달성 요청률, 업무 불변식), 러너 진입 탐침,
+        # mock 상태, outbox 미발행 행 같은 앱 DB 업무 행은 관제가 보지 못한다. 그런 근거는
+        # 관제 데이터로 같은 사실을 보이는 증거로 바꾸거나 beyond_data 로 옮긴다(2026-11-09 D1).
+        # 여기서는 러너 질의 키와 부하기 단계 비율처럼 기계로 가릴 수 있는 표기만 막는다.
+        runner_only = re.compile(
+            r"loadgen|achieved_rps|business_ok|checkout_invariant|entry_status|published_at"
+            r"|step (?:get|transfer)\b|mock_flap|order_duplicate_count|order_create_\w+_rate"
+            r"|payment_502_rate|(?:동반 부하|기준선)[^.:]{0,30}(?:비율|실패율)"
+        )
+        for scenario_id, entry in sorted(self.metadata.items()):
+            for field in ("must_support", "must_rule_out"):
+                for index, text in enumerate(entry.get(field) or []):
+                    match = runner_only.search(text)
+                    self.assertIsNone(
+                        match,
+                        f"{scenario_id}.{field}[{index}] cites runner-only evidence: "
+                        f"{match.group(0) if match else ''}",
+                    )
+
     def test_story_ko_is_a_display_only_story(self) -> None:
         # 화면 이야기 칸(story_ko): 러너 시나리오 카드가 description 대신 보이는 사람용 글이다.
         # 채점 칸이 아니며 capture 도 싣지 않는다. 작성 규칙은 docs/spec-scenario-story.md.
