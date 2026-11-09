@@ -75,8 +75,12 @@ class MultiInjectionContractTests(unittest.TestCase):
         # The old path exec'd into the Oracle pod as SYS and killed sessions by tag.
         self.assertIn('conn.client_identifier = _env("LOCK_TAG")', text)
         release = text[text.index("oracle() {"):text.index("pg() {")].split("release)")[1].split(";;")[0]
-        self.assertIn('ora_hold_stop "$run_dir" || return 1', release)
-        self.assertIn("ora_released || return 1", release)
+        # local stop first and unconditionally, then the server-side check (review C6 #2)
+        self.assertLess(release.index('ora_hold_stop "$run_dir" || rc=1'), release.index('ora_prepare'))
+        self.assertIn("ora_released || rc=1", release)
+        self.assertIn('return "$rc"', release)
+        check = text[text.index("oracle() {"):text.index("pg() {")].split("check)")[1].split(";;")[0]
+        self.assertIn('ora_dcd_ok "$ns" "$pod"', check)
         self.assertNotIn("alter system kill session", text)
         self.assertNotIn("sqlplus", text)
         # pg lock: 클러스터 내 클라이언트 파드 + 앱 신원 사칭 + idle-in-transaction 유지.

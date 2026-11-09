@@ -259,23 +259,49 @@ esac
 #
 # 정리는 잠금 세션 프로세스 종료(SIGTERM 이면 롤백, 안 되면 SIGKILL 로 소켓을 닫아
 # 서버가 롤백)이고, 서버 쪽 확인은 그 행을 FOR UPDATE WAIT 로 잡아 보는 것이다.
-# 세션 이름으로 다른 세션을 죽이지 않는다.
+# 세션 이름으로 다른 세션을 죽이지 않는다. 정리는 kube API, DB 가 필요 없는 로컬 정지를
+# 먼저 하고 그다음 확인한다(API 가 죽어도 잠금 세션은 멈춘다, 실패는 보고한다).
+#
+# 러너가 FIN 없이 사라지면(tb-ops 정지, 망 단절) 이 호스트는 아무것도 못 한다. 그때는
+# Oracle 서버의 dead connection detection(SQLNET.EXPIRE_TIME. 10-oracle.yaml 의
+# oracle-startdb-scripts 가 기동마다 건다)이 약 2분 안에 세션을 정리해 롤백한다(U8).
+# 사전검사가 DB 파드에 그 설정이 걸려 있는지 확인하고 없으면 주입하지 않는다(ora_dcd_ok).
 _ORACLE_HEAD = br"""#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; keycol="$7"; key="$8"; tag="$9"; hold="${10}"
 run_dir="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}/db-lock-oracle-${scenario}"
 """
 _ORACLE_BODY = br"""
-# Nothing was started: cleanup has nothing to stop and needs no database round trip.
-[[ "$action" == cleanup && ! -d "$run_dir" ]] && exit 0
-ora_prepare "$ns" "$pod"
-ora_target "$schema" "$table" "$keycol" "$key"
 case "$action" in
-  # ora_released before starting = no session (ours or a leftover) holds the row now.
-  preflight) ora_row_ok; ! ora_alive "$run_dir"; ora_released ;;
-  run) ora_row_ok; ! ora_alive "$run_dir"; ora_released; ora_hold_start "$run_dir" "$tag" "$hold" ;;
-  cleanup) ora_hold_stop "$run_dir"; ora_released; rm -rf -- "$run_dir" ;;
-  recovery) ! ora_alive "$run_dir"; ora_row_ok; ora_released ;;
+  preflight|run)
+    ora_idle "$run_dir"
+    ora_prepare "$ns" "$pod"
+    ora_dcd_ok "$ns" "$pod"
+    ora_target "$schema" "$table" "$keycol" "$key"
+    ora_row_ok
+    # Released before starting = no session (ours or a leftover) holds the row now.
+    ora_released
+    if [[ "$action" == run ]]; then ora_hold_start "$run_dir" "$tag" "$hold"; fi
+    ;;
+  cleanup)
+    # Local first: the holder on this host is stopped whatever the API or the database
+    # says. Only then the server-side check, and any failure is reported.
+    stop_rc=0
+    ora_hold_stop "$run_dir" || stop_rc=1
+    if [[ "$stop_rc" == 0 && ! -d "$run_dir" ]]; then exit 0; fi
+    ora_prepare "$ns" "$pod"
+    ora_target "$schema" "$table" "$keycol" "$key"
+    ora_released
+    [[ "$stop_rc" == 0 ]]
+    rm -rf -- "$run_dir"
+    ;;
+  recovery)
+    ora_idle "$run_dir"
+    ora_prepare "$ns" "$pod"
+    ora_target "$schema" "$table" "$keycol" "$key"
+    ora_row_ok
+    ora_released
+    ;;
   *) exit 2 ;;
 esac
 """

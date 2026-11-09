@@ -180,16 +180,29 @@ oracle() {  # $1=verb $2=step_index
   table=$(field "$i" table); keycol=$(field "$i" key_column); key=$(field "$i" key_value)
   tag=$(field "$i" client_identifier); hold=$(field "$i" hold_seconds)
   local run_dir="$state_dir/oracle-$i"
-  ora_prepare "$ns" "$pod"
-  ora_target "$schema" "$table" "$keycol" "$key"
   case "$verb" in
-    check)  ora_row_ok; ! ora_alive "$run_dir"; ora_released ;;
-    apply)  ora_hold_start "$run_dir" "$tag" "$hold" ;;
-    release)  # death-confirm: session process gone, then the row is lockable server-side
-      ora_hold_stop "$run_dir" || return 1
-      ora_released || return 1
-      rm -rf -- "$run_dir" ;;
-    recover)  ! ora_alive "$run_dir"; ora_row_ok; ora_released ;;
+    check)
+      ora_idle "$run_dir"; ora_prepare "$ns" "$pod"; ora_dcd_ok "$ns" "$pod"
+      ora_target "$schema" "$table" "$keycol" "$key"; ora_row_ok; ora_released ;;
+    apply)
+      ora_prepare "$ns" "$pod"; ora_target "$schema" "$table" "$keycol" "$key"
+      ora_hold_start "$run_dir" "$tag" "$hold" ;;
+    release)  # errexit is off here (dispatch release ... || rc=1), so every step is checked.
+      # Local first: stop this host's session whatever the API or the database says,
+      # then confirm server-side that the row is lockable again.
+      local rc=0
+      ora_hold_stop "$run_dir" || rc=1
+      if ora_prepare "$ns" "$pod"; then
+        ora_target "$schema" "$table" "$keycol" "$key"
+        ora_released || rc=1
+      else
+        rc=1
+      fi
+      if [[ "$rc" == 0 ]]; then rm -rf -- "$run_dir"; fi
+      return "$rc" ;;
+    recover)
+      ora_idle "$run_dir"; ora_prepare "$ns" "$pod"
+      ora_target "$schema" "$table" "$keycol" "$key"; ora_row_ok; ora_released ;;
   esac
 }
 

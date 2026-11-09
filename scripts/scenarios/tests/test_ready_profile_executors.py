@@ -258,10 +258,21 @@ def connect(**kw):
         secret = {"APP_USER": "banking", "APP_USER_PASSWORD": "pw-from-secret"}
         import base64
         kubectl = bindir / "kubectl"
+        remote = load("oracle_lock_remote")
+        # 실행 중인 DB 파드와 기동 스크립트 ConfigMap 은 매니페스트(10-oracle.yaml)에서 그대로 가져온다.
+        import yaml
+        docs = list(yaml.safe_load_all((ROOT.parents[1] / "core-banking/k8s/10-oracle.yaml").read_text(encoding="utf-8")))
+        sts = next(d for d in docs if d["kind"] == "StatefulSet")
+        cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == remote.STARTDB_CONFIGMAP)
+        (tmp / "pod.json").write_text(json.dumps({"spec": sts["spec"]["template"]["spec"]}))
+        (tmp / "cm.json").write_text(json.dumps(cm))
         kubectl.write_text("#!/usr/bin/env bash\n"
                            f"printf '%s\\n' \"$*\" >>{tmp}/kubectl\n"
+                           f"[[ -e {tmp}/kubectl-down ]] && {{ echo 'The connection to the server was refused' >&2; exit 1; }}\n"
                            "case \"$*\" in\n"
                            "  *hostIP*) printf 192.168.122.11 ;;\n"
+                           f"  *'get pod testbed-oracle-0 -o json') cat {tmp}/pod.json ;;\n"
+                           f"  *'get configmap oracle-startdb-scripts -o json') cat {tmp}/cm.json ;;\n"
                            "  *nodePort*) printf 30308 ;;\n"
                            f"  *APP_USER_PASSWORD*) printf {base64.b64encode(secret['APP_USER_PASSWORD'].encode()).decode()} ;;\n"
                            f"  *APP_USER*) printf {base64.b64encode(secret['APP_USER'].encode()).decode()} ;;\n"
@@ -353,6 +364,132 @@ def connect(**kw):
             finally:
                 other.kill()
                 other.wait()
+
+    def test_oracle_lock_cleanup_stops_the_local_session_even_when_the_api_is_down(self) -> None:
+        # 리뷰 C6 2번: kube API 가 실패해도 이 호스트의 잠금 세션은 반드시 멈추고 실패를 보고한다.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._oracle_lock_stub(tmp)
+            (tmp / "state").mkdir()
+            run = self._oracle_lock_run("run", env)
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+            holder = int((tmp / "lock").read_text())
+            (tmp / "kubectl-down").touch()
+            cleanup = self._oracle_lock_run("cleanup", env)
+            self.assertNotEqual(cleanup.returncode, 0)
+            with self.assertRaises(OSError):
+                os.kill(holder, 0)
+            self.assertFalse((tmp / "lock").exists())
+            # 상태는 남아 API 가 돌아오면 다시 정리, 확인한다.
+            (tmp / "kubectl-down").unlink()
+            self.assertEqual(self._oracle_lock_run("cleanup", env).returncode, 0)
+            self.assertEqual(self._oracle_lock_run("recovery", env).returncode, 0)
+
+    def test_oracle_lock_cleanup_finds_a_session_whose_pid_file_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._oracle_lock_stub(tmp)
+            (tmp / "state").mkdir()
+            self.assertEqual(self._oracle_lock_run("run", env).returncode, 0)
+            holder = int((tmp / "lock").read_text())
+            (tmp / "state" / "db-lock-oracle-F01-P" / "pid").unlink()
+            self.assertNotEqual(self._oracle_lock_run("preflight", env).returncode, 0)
+            self.assertEqual(self._oracle_lock_run("cleanup", env).returncode, 0)
+            with self.assertRaises(OSError):
+                os.kill(holder, 0)
+
+    def test_oracle_lock_refuses_without_server_dead_connection_detection(self) -> None:
+        # 리뷰 C6 1번(U8): 러너가 FIN 없이 사라지면 서버만이 잠금을 풀 수 있다. DB 파드가
+        # SQLNET.EXPIRE_TIME 이 든 sqlnet.ora 를 마운트하지 않았으면 주입하지 않는다.
+        remote = load("oracle_lock_remote")
+        key = remote.STARTDB_SCRIPT_KEY
+
+        def mounts(pod):
+            return pod["spec"]["containers"][0]["volumeMounts"]
+
+        def startdb(pod):
+            return next(m for m in mounts(pod) if m["mountPath"] == remote.STARTDB_PATH)
+
+        cases = {
+            "not mounted": lambda pod, cm: pod["spec"]["containers"][0].update(
+                volumeMounts=[m for m in mounts(pod) if m["mountPath"] != remote.STARTDB_PATH]),
+            "other path": lambda pod, cm: startdb(pod).update(mountPath="/container-entrypoint-initdb.d/x"),
+            "other configmap": lambda pod, cm: [v["configMap"].update(name="oracle-init-scripts")
+                                                for v in pod["spec"]["volumes"] if v["name"] == startdb(pod)["name"]],
+            "no script": lambda pod, cm: cm["data"].pop(key),
+            "too slow": lambda pod, cm: cm["data"].update({key: cm["data"][key].replace("EXPIRE_MINUTES=1", "EXPIRE_MINUTES=10")}),
+            "value not used": lambda pod, cm: cm["data"].update({key: "EXPIRE_MINUTES=1\n"}),
+        }
+        for name, spoil in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                env = self._oracle_lock_stub(tmp)
+                (tmp / "state").mkdir()
+                pod, cm = json.loads((tmp / "pod.json").read_text()), json.loads((tmp / "cm.json").read_text())
+                spoil(pod, cm)
+                (tmp / "pod.json").write_text(json.dumps(pod))
+                (tmp / "cm.json").write_text(json.dumps(cm))
+                for action in ("preflight", "run"):
+                    result = self._oracle_lock_run(action, env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(b"dead connection detection is not in effect", result.stderr)
+                self.assertFalse((tmp / "lock").exists())
+        self.assertEqual(remote.SQLNET_EXPIRE_MAX_MINUTES, 2)
+
+    def test_oracle_lock_hold_never_outlasts_the_injection_the_runner_allows(self) -> None:
+        # U8: 러너가 죽어도 러너 컨테이너가 살아 있으면 잠금 세션은 hold 가 끝날 때 스스로 롤백한다.
+        # 그 시각이 러너가 주입을 끝냈을 시각(max_injection_duration)보다 늦으면 안 된다.
+        # (러너 컨테이너까지 사라지면 서버 dead connection detection 이 푼다. 아래 매니페스트 시험.)
+        controllers = json.loads((ROOT / "registry/controllers.json").read_text())["controllers"]
+        multi = load("timeline_multi_injection_executor")
+
+        def seconds(value: str) -> int:
+            number, unit = re.fullmatch(r"(\d+)([smh]?)", value).groups()
+            return int(number) * {"": 1, "s": 1, "m": 60, "h": 3600}[unit]
+
+        holds = {sid: [c["hold_seconds"]] for sid, c in db_lock.CONTRACTS.items() if c.get("engine") == "oracle"}
+        for sid, contract in multi.CONTRACTS.items():
+            holds[sid] = [step["hold_seconds"] for step in contract["steps"] if step["kind"] == "oracle_lock"]
+        self.assertEqual(set(holds), {"F01-P", "F08-G", "F15-G"})
+        for sid, values in holds.items():
+            limit = seconds(controllers[sid]["max_injection_duration"])
+            for hold in values:
+                self.assertLessEqual(hold, limit, sid)
+
+    def test_banking_oracle_manifest_turns_on_dead_connection_detection(self) -> None:
+        # 기동 스크립트가 진짜 sqlnet.ora(oradata/dbconfig/<SID>, PVC 위)에 EXPIRE_TIME 을 한 줄만
+        # 넣는지 실제로 돌려 본다: 처음, 다시 기동(같은 줄 유지), 다른 값이 있던 경우. sqlnet.ora 를
+        # 마운트로 덮으면 이미지 진입 스크립트의 mv, rm 이 기동을 멈추므로 덮는 마운트가 없어야 한다.
+        import yaml
+        remote = load("oracle_lock_remote")
+        docs = list(yaml.safe_load_all((ROOT.parents[1] / "core-banking/k8s/10-oracle.yaml").read_text(encoding="utf-8")))
+        cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == remote.STARTDB_CONFIGMAP)
+        script = cm["data"][remote.STARTDB_SCRIPT_KEY]
+        self.assertNotRegex(script, r"(?m)^\s*exit\b")  # 진입 스크립트가 source 해도 안전
+        image_default = ("NAMES.DIRECTORY_PATH = (EZCONNECT, TNSNAMES)\n"
+                         "# See https://github.com/gvenzl/oci-oracle-xe/issues/43\nDISABLE_OOB=ON\nBREAK_POLL_SKIP=1000\n")
+        for before in (image_default, image_default + "SQLNET.EXPIRE_TIME = 10\n"):
+            with tempfile.TemporaryDirectory() as raw:
+                base = Path(raw)
+                conf = base / "oradata" / "dbconfig" / "FREE"
+                conf.mkdir(parents=True)
+                (conf / "sqlnet.ora").write_text(before)
+                runner = base / "10-sqlnet-expire-time.sh"
+                runner.write_text(script)
+                env = dict(os.environ, ORACLE_BASE=str(base), ORACLE_SID="FREE")
+                for _ in range(2):
+                    subprocess.run(["bash", str(runner)], env=env, check=True, capture_output=True)
+                after = (conf / "sqlnet.ora").read_text()
+                self.assertEqual(re.findall(r"(?m)^SQLNET\.EXPIRE_TIME.*$", after), ["SQLNET.EXPIRE_TIME = 1"])
+                for kept in ("NAMES.DIRECTORY_PATH = (EZCONNECT, TNSNAMES)", "DISABLE_OOB=ON", "BREAK_POLL_SKIP=1000"):
+                    self.assertIn(kept, after)
+        sts = next(d for d in docs if d["kind"] == "StatefulSet")
+        spec = sts["spec"]["template"]["spec"]
+        volume = next(v for v in spec["volumes"] if (v.get("configMap") or {}).get("name") == remote.STARTDB_CONFIGMAP)
+        self.assertEqual(volume["configMap"].get("defaultMode"), 0o555)
+        mounts = spec["containers"][0]["volumeMounts"]
+        self.assertIn({"name": volume["name"], "mountPath": remote.STARTDB_PATH}, mounts)
+        self.assertFalse([m for m in mounts if m["mountPath"].endswith("/network/admin/sqlnet.ora")])
 
     def test_oracle_lock_client_refuses_identifiers_that_are_not_plain_names(self) -> None:
         # 식별자는 따옴표 없이 SQL 에 들어가므로 이름 모양만 받는다. 키 값은 바인드 변수다.
