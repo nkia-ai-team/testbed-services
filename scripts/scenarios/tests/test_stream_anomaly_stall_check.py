@@ -89,6 +89,19 @@ class StreamAnomalyStallCheckTest(unittest.TestCase):
         self.assertIn("덮지 못함", row["reason"])
         self.assertEqual(check.classify(META, [], None)["verdict"], check.AMBIGUOUS)
 
+    def test_sparse_events_with_live_sms_bands_are_not_stopped(self):
+        # nms 경로는 녹화 내내 없고 sms 는 드물게 내다가 장애 구간에 몰아 낸 녹화: sms 밴드가 이어지면 정지가 아니다.
+        events = (
+            _every("sms.server.cpu.usage", 0, 40, 5)
+            + _every("sms.server.cpu.usage", 131, 144)
+            + _every("dpm.mysql.sql.select_count", 0, 170, 10)
+        )
+        live_sms = check.classify(META, events, FULL_RANGE, {"sms": 2, "nms": 170})
+        self.assertEqual(live_sms["verdict"], check.AMBIGUOUS)
+        self.assertIn("sms 밴드가 이어져", live_sms["reason"])
+        both_cut = check.classify(META, events, FULL_RANGE, {"sms": 95, "nms": 170})
+        self.assertEqual(both_cut["verdict"], check.STOPPED)
+
     def test_events_outside_capture_are_ignored(self):
         outside = [(CS - dt.timedelta(minutes=5), "sms.server.cpu.usage"), (CE + dt.timedelta(minutes=5), "nms.x")]
         row = check.classify(META, outside + _every("dpm.mysql.x", 0, 170, 10), FULL_RANGE)
