@@ -64,7 +64,10 @@ scripts/scenarios/bin/f07-h-north-south-surge.sh
 - `check`: PDB 에서 Oracle 관리 계정이 아닌 계정의 세그먼트 합(사용자 데이터)을 재서
   `STATE_DIR/last.json` 에 남기고, 10.5 GiB(`CAPACITY_ALERT_BYTES`)를 넘으면
   `STATE_DIR/ALERT` 를 쓰고 종료 코드 3 을 낸다. 기준은 사용자 데이터이고 데이터파일 합은
-  참고로만 적는다(사용자 결정 2026-11-09).
+  참고로만 적는다(사용자 결정 2026-11-09). 같은 점검이 은행 부하 이체 계좌 풀
+  (`core-banking/loadgen/transfer-accounts.txt`, tb-ops 에는 `POOL_FILE` 로 설치)의 가장 낮은 잔액을
+  하한 500,000(`POOL_BALANCE_FLOOR`) 과 견주고, 풀 계좌가 없어지거나 ACTIVE 가 아니어도 사유 한 줄을
+  ALERT 에 쓴다.
 
 ```bash
 scripts/test-oracle-maintenance.sh

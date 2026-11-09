@@ -21,10 +21,13 @@ while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done
 shift
 if [[ "$1" == sqlplus ]]; then
   sql=$(cat)
+  printf '%s\n' "$sql" >"$FAKE_LOG.sql"
   grep -q "oracle_maintained = 'N'" <<<"$sql" || exit 9
   grep -q "whenever sqlerror exit failure" <<<"$sql" || exit 9
+  grep -q "from banking.accounts where id in ('ACC-5002','ACC-5003'," <<<"$sql" || exit 9
+  [[ $(grep -o "'ACC-5" <<<"$sql" | wc -l) -eq 733 ]] || exit 9
   [[ -n "${FAKE_SQL_FAIL:-}" ]] && exit 1
-  printf '\n%s\n\n' "$FAKE_CAPACITY"
+  printf '\nCAP|%s\nPOOL|%s\n\n' "$FAKE_CAPACITY" "$FAKE_POOL"
   exit 0
 fi
 [[ "$1 $2" == "bash -s" ]] || exit 9
@@ -46,6 +49,8 @@ chmod +x "$TMP_ROOT/bin/kubectl" "$TMP_ROOT/bin/curl"
 export PATH="$TMP_ROOT/bin:$PATH" FAKE_LOG="$TMP_ROOT/kubectl.log"
 export STATE_DIR="$TMP_ROOT/state" RUNNER_URL="http://runner.invalid:8091"
 export FAKE_ACTIVE=false FAKE_PHASE=completed FAKE_CAPACITY='6602620928|9017688064'
+export FAKE_POOL='733|2004992.47|ACC-5310|0|0'
+export POOL_FILE="$SCRIPT_DIR/../core-banking/loadgen/transfer-accounts.txt"
 
 # A small ADR tree: one database home and one listener home.
 reset_tree() {
@@ -106,8 +111,10 @@ done
 
 # --- check: user data against the 10.5 GiB line, alert file raised and cleared ---
 out=$("$MAINT" check)
-grep -q 'check ok: user data 6602620928 bytes, threshold 11274289152 (datafiles 9017688064)' <<<"$out" || fail "check: $out"
-jq -e '.user_data_bytes == 6602620928 and .datafile_bytes == 9017688064 and .alert_bytes == 11274289152' \
+grep -q 'check ok: user data 6602620928 bytes, threshold 11274289152 (datafiles 9017688064); transfer pool 733 accounts, lowest ACC-5310 2004992.47, floor 500000' <<<"$out" || fail "check: $out"
+jq -e '.user_data_bytes == 6602620928 and .datafile_bytes == 9017688064 and .alert_bytes == 11274289152
+       and .pool_expected == 733 and .pool_found == 733 and .pool_min_balance == 2004992.47
+       and .pool_min_account == "ACC-5310" and .pool_below_floor == 0 and .pool_floor == 500000' \
   "$STATE_DIR/last.json" >/dev/null || fail 'last.json content'
 [[ ! -e "$STATE_DIR/ALERT" ]] || fail 'ALERT present below the threshold'
 # The datafile sum alone above the line is not an alert (user decision: user data).
@@ -117,6 +124,32 @@ rc=0; FAKE_CAPACITY='11274289153|12000000000' "$MAINT" check >/dev/null || rc=$?
 grep -q 'banking Oracle user data 11274289153 bytes > 11274289152' "$STATE_DIR/ALERT" || fail 'ALERT content'
 "$MAINT" check >/dev/null || fail 'check back under the threshold failed'
 [[ ! -e "$STATE_DIR/ALERT" ]] || fail 'ALERT not cleared after recovery'
+# --- check: the transfer pool's lowest balance against the 500,000 floor ---
+rc=0; FAKE_POOL='733|432100.5|ACC-5421|2|0' "$MAINT" check >/dev/null || rc=$?
+[[ $rc -eq 3 ]] || fail "pool below the floor exited $rc, want 3"
+[[ $(wc -l <"$STATE_DIR/ALERT") -eq 1 ]] || fail 'pool ALERT is not one line'
+grep -q 'transfer pool: 2 accounts below 500000, lowest ACC-5421 432100.5' "$STATE_DIR/ALERT" || fail 'pool ALERT reason'
+"$MAINT" check >/dev/null || fail 'clean check after the pool alert failed'
+grep -q 'count(case when balance < 500000 then 1 end)' "$FAKE_LOG.sql" || fail 'default floor not in the query'
+POOL_BALANCE_FLOOR=400000 "$MAINT" check >/dev/null || fail 'check with a configured floor failed'
+grep -q 'count(case when balance < 400000 then 1 end)' "$FAKE_LOG.sql" || fail 'configured floor not in the query'
+[[ ! -e "$STATE_DIR/ALERT" ]] || fail 'ALERT not cleared once the pool is above the floor'
+# A pool account that vanished or is no longer ACTIVE is a reason of its own.
+rc=0; FAKE_POOL='732|2004992.47|ACC-5310|0|1' "$MAINT" check >/dev/null || rc=$?
+[[ $rc -eq 3 ]] || fail "pool account missing exited $rc, want 3"
+grep -q 'transfer pool: 732 of 733 accounts found, 1 not ACTIVE' "$STATE_DIR/ALERT" || fail 'pool membership reason'
+# Two reasons at once give two lines.
+rc=0; FAKE_CAPACITY='11274289153|12000000000' FAKE_POOL='733|10|ACC-5002|1|0' "$MAINT" check >/dev/null || rc=$?
+[[ $rc -eq 3 && $(wc -l <"$STATE_DIR/ALERT") -eq 2 ]] || fail 'two reasons did not give two ALERT lines'
+"$MAINT" check >/dev/null || fail 'clean check after two reasons failed'
+[[ ! -e "$STATE_DIR/ALERT" ]] || fail 'ALERT not cleared after two reasons'
+# Without the pool file the check refuses instead of passing silently.
+rc=0; POOL_FILE="$TMP_ROOT/missing.txt" "$MAINT" check >/dev/null || rc=$?
+[[ $rc -eq 1 ]] || fail "missing pool file exited $rc, want 1"
+printf 'ACC-5002\nACC-5003); drop table x; --\n' >"$TMP_ROOT/bad-pool.txt"
+rc=0; POOL_FILE="$TMP_ROOT/bad-pool.txt" "$MAINT" check >/dev/null || rc=$?
+[[ $rc -eq 1 ]] || fail "malformed pool file exited $rc, want 1"
+
 rc=0; FAKE_CAPACITY='ORA-01017|x' "$MAINT" check >/dev/null || rc=$?
 [[ $rc -eq 1 ]] || fail "unreadable answer exited $rc, want 1"
 rc=0; FAKE_SQL_FAIL=1 "$MAINT" check >/dev/null || rc=$?

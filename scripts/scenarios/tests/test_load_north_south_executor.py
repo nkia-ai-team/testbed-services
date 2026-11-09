@@ -382,6 +382,12 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
         self.assertIn("const MERCHANT_ACCOUNTS = ACTIVE_ACCOUNTS.concat(['commerce-merchant']);",
                       self.scripts["settlement-arrival-poll.js"])
 
+    def test_pool_file_watched_by_the_balance_check_matches_the_scripts(self) -> None:
+        # scripts/oracle-maintenance.sh check 가 이 파일의 계좌 잔액 하한을 본다(확인 필요 12).
+        listed = [line for line in (REPO / "core-banking" / "loadgen" / "transfer-accounts.txt").read_text().splitlines()
+                  if line and not line.startswith("#")]
+        self.assertEqual(listed, transfer_accounts(self.scripts["surge.js"]))
+
     def test_baseline_pairs_pool_to_seed_transfers_with_a_return(self) -> None:
         # 2026-11-09(확인 필요 11): 상주 기준선은 풀 계좌 → 활성 계좌 7개로 보내고, 같은 VU 의 다음 이체가
         # 같은 금액을 되돌린다. 7개 계좌는 입금(F74-R 폴링 전제)과 출금(거래 내역 첫 쪽)이 계속 쌓이고,

@@ -17,13 +17,17 @@
 # purge never runs during a recording: the runner must report no active run and a
 # queue phase outside the recording cycle (idle, paused, completed). If the runner
 # cannot be asked, it skips. A skipped purge is retried by the next timer tick.
-# check is a single read-only query and runs regardless of recording.
+# check is read-only (two queries) and runs regardless of recording. It also watches the
+# bank load's transfer pool: its lowest balance against a floor, and that every pool
+# account still exists and is ACTIVE.
 #
 # Install (tb-ops root crontab; the script and its log path are the only state):
 #   23 * * * * /opt/testbed/oracle-maintenance.sh purge >> /var/log/oracle-maintenance.log 2>&1
 #   7 */6 * * * /opt/testbed/oracle-maintenance.sh check >> /var/log/oracle-maintenance.log 2>&1
-# A check above the threshold exits 3 and leaves $STATE_DIR/ALERT; the next check
-# below it removes the file.
+#   install -m 644 core-banking/loadgen/transfer-accounts.txt /opt/testbed/banking-transfer-accounts.txt
+# A check with any reason (user data above the threshold, a pool account below the floor
+# or missing or not ACTIVE) exits 3 and writes one line per reason to $STATE_DIR/ALERT;
+# the next clean check removes the file.
 set -Eeuo pipefail
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/root/tb-kubeconfig}"
@@ -41,6 +45,13 @@ LISTENER_LOG_MAX_MB="${LISTENER_LOG_MAX_MB:-256}"
 # 10.5 GiB of user data: 1.5 GiB of room below the 12GB cap.
 CAPACITY_ALERT_BYTES="${CAPACITY_ALERT_BYTES:-11274289152}"
 STATE_DIR="${STATE_DIR:-/var/lib/lucida/oracle-capacity}"
+# The bank load's transfer pool (core-banking/loadgen/transfer-accounts.txt), installed
+# beside this script. Floor 500,000: ten largest transfers (50,000) of room before the
+# first 'Insufficient balance', several days of the pool's normal drift (a heaviest
+# companion run moves one account by about 210,000 at one standard deviation; the
+# baseline returns what it sends).
+POOL_FILE="${POOL_FILE:-/opt/testbed/banking-transfer-accounts.txt}"
+POOL_BALANCE_FLOOR="${POOL_BALANCE_FLOOR:-500000}"
 # Queue phases outside a recording cycle. Everything else (cycle_reset, cycle_normal,
 # cycle_buffer, running, cycle_cooldown, waiting_capture, waiting_clean_window) is
 # part of some recording's window or the clean window before the next one.
@@ -122,41 +133,80 @@ purge() {
   log "purge done (retention ${RETENTION_HOURS}h): $result"
 }
 
-# One line: user data bytes | datafile bytes (context only). sqlplus -s exits 0 on
-# ORA errors, so `whenever sqlerror` makes them a failure and the line is validated.
-CAPACITY_SQL=$(cat <<SQL
+# Two lines. CAP|user data bytes|datafile bytes (context only), and for the transfer
+# pool POOL|accounts found|lowest balance|account with it|accounts below the floor|
+# accounts not ACTIVE. sqlplus -s exits 0 on ORA errors, so `whenever sqlerror` makes
+# them a failure and both lines are validated.
+capacity_sql() {
+  local in_list=$1
+  cat <<SQL
 whenever sqlerror exit failure
-set pages 0 feedback off heading off lines 200
+set pages 0 feedback off heading off lines 400
 alter session set container=$ORACLE_PDB;
-select (select nvl(sum(s.bytes),0) from dba_segments s join dba_users u on u.username = s.owner where u.oracle_maintained = 'N')||'|'||(select nvl(sum(bytes),0) from dba_data_files) from dual;
+select 'CAP|'||(select nvl(sum(s.bytes),0) from dba_segments s join dba_users u on u.username = s.owner where u.oracle_maintained = 'N')||'|'||(select nvl(sum(bytes),0) from dba_data_files) from dual;
+select 'POOL|'||count(*)||'|'||nvl(min(balance),0)||'|'||nvl(min(id) keep (dense_rank first order by balance),'-')||'|'||count(case when balance < $POOL_BALANCE_FLOOR then 1 end)||'|'||count(case when status <> 'ACTIVE' then 1 end) from banking.accounts where id in ($in_list);
 exit;
 SQL
-)
+}
+
+# The transfer pool (core-banking/loadgen/transfer-accounts.txt) as a quoted IN list.
+# Ids are checked against the pool's shape before they reach SQL.
+pool_in_list() {
+  local ids
+  [[ -r "$POOL_FILE" ]] || return 1
+  ids=$(grep -v '^#' "$POOL_FILE" | grep -v '^[[:space:]]*$') || return 1
+  grep -qvE '^ACC-[0-9]{4}$' <<<"$ids" && return 1
+  # Twenty ids a line: SQL*Plus refuses very long input lines, a statement may span many.
+  awk '{ printf "%s'"'"'%s'"'"'", (NR == 1 ? "" : (NR % 20 == 1 ? ",\n" : ",")), $0 } END { print "" }' <<<"$ids"
+}
 
 check() {
-  local line user_bytes datafile_bytes now
-  if ! line=$(k exec -i "$ORACLE_POD" -- sqlplus -s / as sysdba <<<"$CAPACITY_SQL" | tr -d '[:space:]'); then
+  local in_list pool_expected out cap pool user_bytes datafile_bytes now
+  local pool_found pool_min pool_min_id pool_below pool_inactive
+  if ! in_list=$(pool_in_list); then
+    log "check failed: transfer pool file missing or malformed ($POOL_FILE)"
+    return 1
+  fi
+  pool_expected=$(grep -o "'ACC-" <<<"$in_list" | wc -l)
+  if ! out=$(k exec -i "$ORACLE_POD" -- sqlplus -s / as sysdba <<<"$(capacity_sql "$in_list")"); then
     log "check failed: query did not run"
     return 1
   fi
-  if [[ ! "$line" =~ ^[0-9]+\|[0-9]+$ ]]; then
-    log "check failed: unreadable answer '$line'"
+  cap=$(tr -d ' \t\r' <<<"$out" | grep '^CAP|' || true)
+  pool=$(tr -d ' \t\r' <<<"$out" | grep '^POOL|' || true)
+  if [[ ! "$cap" =~ ^CAP\|[0-9]+\|[0-9]+$ || ! "$pool" =~ ^POOL\|[0-9]+\|[0-9.]+\|[A-Za-z0-9-]+\|[0-9]+\|[0-9]+$ ]]; then
+    log "check failed: unreadable answer '$(tr '\n' ' ' <<<"$out")'"
     return 1
   fi
-  IFS='|' read -r user_bytes datafile_bytes <<<"$line"
+  IFS='|' read -r _ user_bytes datafile_bytes <<<"$cap"
+  IFS='|' read -r _ pool_found pool_min pool_min_id pool_below pool_inactive <<<"$pool"
   now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   mkdir -p "$STATE_DIR"
-  printf '{"measured_at":"%s","user_data_bytes":%s,"datafile_bytes":%s,"alert_bytes":%s}\n' \
-    "$now" "$user_bytes" "$datafile_bytes" "$CAPACITY_ALERT_BYTES" >"$STATE_DIR/last.json.tmp"
+  printf '{"measured_at":"%s","user_data_bytes":%s,"datafile_bytes":%s,"alert_bytes":%s,"pool_expected":%s,"pool_found":%s,"pool_min_balance":%s,"pool_min_account":"%s","pool_below_floor":%s,"pool_not_active":%s,"pool_floor":%s}\n' \
+    "$now" "$user_bytes" "$datafile_bytes" "$CAPACITY_ALERT_BYTES" "$pool_expected" "$pool_found" \
+    "$pool_min" "$pool_min_id" "$pool_below" "$pool_inactive" "$POOL_BALANCE_FLOOR" >"$STATE_DIR/last.json.tmp"
   mv -f "$STATE_DIR/last.json.tmp" "$STATE_DIR/last.json"
+
+  local reasons=()
   if (( user_bytes > CAPACITY_ALERT_BYTES )); then
-    printf '%s banking Oracle user data %s bytes > %s (12GB cap: writes fail with ORA-12954)\n' \
-      "$now" "$user_bytes" "$CAPACITY_ALERT_BYTES" >"$STATE_DIR/ALERT"
-    log "ALERT user data ${user_bytes} bytes above ${CAPACITY_ALERT_BYTES} (datafiles ${datafile_bytes})"
+    reasons+=("banking Oracle user data $user_bytes bytes > $CAPACITY_ALERT_BYTES (12GB cap: writes fail with ORA-12954)")
+  fi
+  if (( pool_below > 0 )); then
+    reasons+=("transfer pool: $pool_below accounts below $POOL_BALANCE_FLOOR, lowest $pool_min_id $pool_min (transfers up to 50000 start failing with 'Insufficient balance' 400)")
+  fi
+  if (( pool_found != pool_expected || pool_inactive > 0 )); then
+    reasons+=("transfer pool: $pool_found of $pool_expected accounts found, $pool_inactive not ACTIVE (transfers to or from them are refused)")
+  fi
+  if (( ${#reasons[@]} > 0 )); then
+    local reason
+    : >"$STATE_DIR/ALERT.tmp"
+    for reason in "${reasons[@]}"; do printf '%s %s\n' "$now" "$reason" >>"$STATE_DIR/ALERT.tmp"; done
+    mv -f "$STATE_DIR/ALERT.tmp" "$STATE_DIR/ALERT"
+    log "ALERT ${#reasons[@]}: $(paste -sd';' "$STATE_DIR/ALERT")"
     return 3
   fi
   rm -f "$STATE_DIR/ALERT"
-  log "check ok: user data ${user_bytes} bytes, threshold ${CAPACITY_ALERT_BYTES} (datafiles ${datafile_bytes})"
+  log "check ok: user data ${user_bytes} bytes, threshold ${CAPACITY_ALERT_BYTES} (datafiles ${datafile_bytes}); transfer pool ${pool_found} accounts, lowest ${pool_min_id} ${pool_min}, floor ${POOL_BALANCE_FLOOR}"
 }
 
 case "${1:-}" in
