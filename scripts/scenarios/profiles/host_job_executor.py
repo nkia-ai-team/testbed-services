@@ -37,7 +37,7 @@ from __future__ import annotations
 from typing import Any
 
 from executor_common import (
-    ExecutorError, cli, guard_stdin_line, kubectl_bash_argv, node_guard_function, profile_instance,
+    ExecutorError, cli, kubectl_bash_argv, node_guard_function, profile_instance, with_guard_values,
 )
 
 PROFILE_ID = "host.job"
@@ -113,7 +113,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         str(p["min_available_mib"]), str(p["max_available_mib"]),
         str(p["memory_reserve_mib"]), str(p["memory_hard_margin_mib"]),
         ",".join(p["deployments"]), ",".join(p["statefulsets"]),
-    ]), guard_stdin_line(plan) + SCRIPT
+    ]), with_guard_values(SCRIPT, plan)
 
 
 SCRIPT = br'''#!/usr/bin/env bash

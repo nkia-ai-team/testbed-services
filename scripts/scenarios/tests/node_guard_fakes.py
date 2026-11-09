@@ -118,7 +118,8 @@ def launches(env: dict[str, str], job: str) -> bool:
     root = Path(env["OPSJOB_STATE_ROOT"])
     return (argv[:2] == ["/bin/bash", "-c"] and argv[3:] == [
         "guard", str(root / f"{job}.undo"), str(root / f"{job}.unit"),
-        str(Path(env["OPSJOB_LOCK_DIR"]) / f"{job}.lock"), unit_record(env, job)[0]])
+        str(Path(env["OPSJOB_LOCK_DIR"]) / f"{job}.lock"), unit_record(env, job)[0],
+        env.get("OPSJOB_LAUNCH_WAIT", "600")])
 
 
 def fire(env: dict[str, str], job: str, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:

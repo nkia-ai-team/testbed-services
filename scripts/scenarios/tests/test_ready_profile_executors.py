@@ -3520,7 +3520,7 @@ class NodeGuardTests(unittest.TestCase):
             # Whoever holds the job's lock (an undo under way, another guard call) is waited for; one
             # that never lets go stops arm and disarm, which fail rather than run beside it.
             (tmp / "locks").mkdir(exist_ok=True)
-            holder = subprocess.Popen(["flock", str(tmp / "locks" / "nightly.lock"), "sleep", "30"])
+            holder = subprocess.Popen(["flock", "-o", str(tmp / "locks" / "nightly.lock"), "sleep", "30"])  # -o: only flock holds it
             try:
                 time_limit = dict(env, OPSJOB_LOCK_WAIT="1")
                 for _ in range(50):
@@ -3656,6 +3656,61 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
             self.assertEqual((tmp / "undone").read_text(), "undone\n")
             self.assertEqual(node_guard_fakes.armed_seconds(env, "soak"), [1800])
             self.assertEqual(self._state(tmp), ["soak.expired"])
+
+    def test_lock_and_state_directories_are_closed_to_others(self) -> None:
+        # Both hold file names that carry the job's name (oradata-backup, the chain), so only root reads them.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            (tmp / "locks").mkdir(mode=0o755)
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "true").returncode, 0)
+            self.assertEqual((tmp / "locks").stat().st_mode & 0o777, 0o700)
+            self.assertEqual((tmp / "state").stat().st_mode & 0o777, 0o700)
+            (tmp / "locks").chmod(0o755)
+            self.assertEqual(self._guard(env, "disarm", "nightly").returncode, 0)
+            self.assertEqual((tmp / "locks").stat().st_mode & 0o777, 0o700)
+
+    def test_an_undo_that_cannot_get_the_lock_fails_loudly_instead_of_waiting_forever(self) -> None:
+        # 2026-11-09 review: a leaked lock left launchers waiting in `flock 9` for good. Now the undo
+        # gives up after the launch wait, fails (the unit fails, the next guard call reports it) and
+        # leaves its files for cleanup or the next boot; the message names no job.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = dict(node_guard_fakes.install(tmp), OPSJOB_LAUNCH_WAIT="1")
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", f"echo undone >>{tmp}/undone").returncode, 0)
+            self.assertTrue(node_guard_fakes.launches(env, "nightly"))
+            holder = subprocess.Popen(["flock", "-o", str(tmp / "locks" / "nightly.lock"), "sleep", "30"])  # -o: only flock holds it
+            try:
+                for _ in range(50):
+                    if subprocess.run(["flock", "-n", str(tmp / "locks" / "nightly.lock"), "true"]).returncode:
+                        break
+                    import time as _t
+                    _t.sleep(0.1)
+                fired = node_guard_fakes.fire(env, "nightly")
+            finally:
+                holder.kill()
+                holder.wait(timeout=10)
+            self.assertEqual(fired.returncode, 1)
+            self.assertEqual(fired.stderr, b"lock busy after 1s\n")
+            self.assertFalse((tmp / "undone").exists())
+            self.assertEqual(self._state(tmp), ["nightly.undo", "nightly.unit"])
+
+    def test_guarded_bodies_keep_the_failure_trace_and_their_line_numbers(self) -> None:
+        # The deadline rides on the `set -euo pipefail` line: the shebang stays first, so the
+        # executor's failure trace (with_failure_trace) still applies, and no line is added, so the
+        # line it reports is the source line.
+        for slug, module in (("f80-r-banking-oradata-backup-zstd-exhausts-node-memory", host_job),
+                             ("f44-r-food-node-firewall-allowlist-omits-order", host_firewall)):
+            with self.subTest(executor=module.PROFILE_ID):
+                plan = compiler.compile_plan(slug)
+                _, stdin = module.build_invocation(plan, "run")
+                self.assertTrue(stdin.startswith(b"#!/usr/bin/env bash\n"))
+                self.assertEqual(stdin.count(b"\n"), module.SCRIPT.count(b"\n"))
+                expiry = self.common.guard_expiry_seconds(plan)
+                self.assertEqual(stdin.split(b"\n")[1], f"set -euo pipefail; expire_after={expiry} guard_hold=960".encode())
+                self.assertNotEqual(self.common.with_failure_trace(stdin), stdin)
+        with self.assertRaises(ExecutorError):
+            self.common.with_guard_values(b"set -euo pipefail\n", {})
 
     def test_arm_refuses_a_bad_deadline_or_boot_path(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

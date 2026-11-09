@@ -192,6 +192,19 @@ def guard_stdin_line(plan: dict[str, Any]) -> bytes:
     return f"expire_after={guard_expiry_seconds(plan)} guard_hold={GUARD_CLEANUP_HOLD_SECONDS}\n".encode()
 
 
+def with_guard_values(script: bytes, plan: dict[str, Any]) -> bytes:
+    """A bash body with the deadline and the cleanup hold set on its `set -euo pipefail` line.
+
+    The shebang stays first and no line is added, so with_failure_trace still applies and the
+    line numbers it reports still match the source (a line put in front of the shebang turned the
+    trace off for host.job and host.firewall)."""
+    marker = b"\nset -euo pipefail\n"
+    if not script.startswith(b"#!") or marker not in script:
+        raise ExecutorError("guarded body must start with a shebang and set -euo pipefail")
+    values = guard_stdin_line(plan).rstrip(b"\n")
+    return script.replace(marker, b"\nset -euo pipefail; " + values + b"\n", 1)
+
+
 # Shell functions that run as root on the node. host.stress includes them in its own root script;
 # executors that drive the node one command at a time send GUARD_PROGRAM through node_guard (below).
 # guard_arm <job> <seconds> <undo body> [<file removed at boot>...]
@@ -206,7 +219,7 @@ def guard_stdin_line(plan: dict[str, Any]) -> bytes:
 # comes late (from max_injection_duration - 360s after the arm). The job name stays in files under
 # the state root (0700) and is never logged; the boot rule is named after the first unit.
 #
-# One lock per job (flock, /run/opsjobs/<job>.lock) orders arm, postpone, disarm and the undo the
+# One lock per job (flock, /run/opsjobs/<job>.lock, the directory 0700 like the state root) orders arm, postpone, disarm and the undo the
 # timer starts. Stopping a timer does not stop the undo it has just started, so the undo, once it
 # holds the lock, runs only while <job>.unit still names its own unit: a postpone or a disarm that
 # got there first leaves it nothing to do, and no timer is left behind without its undo (2026-11-09
@@ -216,11 +229,16 @@ GUARD_FUNCTIONS = br'''guard_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
 guard_boot_dir="${OPSJOB_TMPFILES_DIR:-/etc/tmpfiles.d}"
 guard_lock_dir="${OPSJOB_LOCK_DIR:-/run/opsjobs}"
 guard_lock_wait="${OPSJOB_LOCK_WAIT:-300}"
+# How long the timer's undo waits for the job's lock. What can hold it is one guard call (seconds) or
+# one undo (systemctl stop up to its 90s default, a kill wait of 30s), so 600s means the lock leaked:
+# the undo then fails, loudly but in generic words (the unit fails and the next guard call says so),
+# instead of waiting forever. It stays below the 960s hold, so a cleanup that comes hears of it.
+guard_launch_wait="${OPSJOB_LAUNCH_WAIT:-600}"
 guard_ctl="${OPSJOB_SYSTEMCTL:-systemctl}"
 guard_run="${OPSJOB_SYSTEMD_RUN:-systemd-run}"
 guard_uptime="${OPSJOB_UPTIME_FILE:-/proc/uptime}"
 # What the timer runs: take the job's lock, then undo only if this unit is still the armed one.
-guard_launch='exec 9>>"$3"; flock 9; u=""; if [[ -f "$2" ]]; then read -r u _ <"$2" || true; fi; if [[ "$u" != "$4" || ! -f "$1" ]]; then exit 0; fi; exec /bin/bash "$1"'
+guard_launch='exec 9>>"$3"; if ! flock -w "$5" 9; then echo "lock busy after $5s" >&2; exit 1; fi; u=""; if [[ -f "$2" ]]; then read -r u _ <"$2" || true; fi; if [[ "$u" != "$4" || ! -f "$1" ]]; then exit 0; fi; exec /bin/bash "$1"'
 # <job>.unit holds "<unit> <due, seconds of uptime> <boot rule>" while an undo is armed.
 guard_names() {
   g_undo="$guard_root/$1.undo"; g_unitfile="$guard_root/$1.unit"; g_mark="$guard_root/$1.expired"
@@ -236,6 +254,7 @@ guard_locked() {
   local job=$1
   shift
   mkdir -p "$guard_lock_dir"
+  chmod 700 "$guard_lock_dir"
   {
     if ! flock -w "$guard_lock_wait" 9; then echo "guard: $job is busy after ${guard_lock_wait}s" >&2; return 1; fi
     "$@"
@@ -258,7 +277,7 @@ guard_start() {
   mv -T "$g_unitfile.tmp" "$g_unitfile"
   "$guard_run" --quiet --unit="$g_unit" --description= --on-active="$1" \
     --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no \
-    /bin/bash -c "$guard_launch" guard "$g_undo" "$g_unitfile" "$g_lock" "$g_unit" </dev/null
+    /bin/bash -c "$guard_launch" guard "$g_undo" "$g_unitfile" "$g_lock" "$g_unit" "$guard_launch_wait" </dev/null
 }
 guard_arm_now() {
   local job=$1 secs=$2 body=$3 p

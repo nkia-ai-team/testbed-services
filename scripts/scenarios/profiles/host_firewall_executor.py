@@ -46,7 +46,7 @@ from __future__ import annotations
 from typing import Any
 
 from executor_common import (
-    ExecutorError, cli, guard_stdin_line, kubectl_bash_argv, node_guard_function, profile_instance,
+    ExecutorError, cli, kubectl_bash_argv, node_guard_function, profile_instance, with_guard_values,
 )
 
 PROFILE_ID = "host.firewall"
@@ -145,7 +145,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         # A caller on the same node (F44-R) shares the guarded namespace, node and pod network.
         p.get("omitted_caller_namespace", p["namespace"]), p.get("omitted_caller_node", p["node"]),
         p.get("omitted_caller_cidr", p["protected_cidr"]),
-    ]), guard_stdin_line(plan) + SCRIPT
+    ]), with_guard_values(SCRIPT, plan)
 
 
 SCRIPT = br'''#!/usr/bin/env bash
