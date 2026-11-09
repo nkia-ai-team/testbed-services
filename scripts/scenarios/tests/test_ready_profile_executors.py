@@ -4093,6 +4093,9 @@ class NetworkLinkExecutorTests(unittest.TestCase):
             # The rule's port to the other node's pods waits 300 ms; KCM's port, another port and the
             # node's own KCM pod do not.
             self.assertGreaterEqual(box.connect_ms(8082), 290)
+            # Traffic masqueraded to the node's overlay address (NodePort entries) stays subject to the
+            # rules; only its DNS lookups pass.
+            self.assertGreaterEqual(box.connect_ms(8082, src=netns_sandbox.NODE_IP), 290)
             self.assertLess(box.connect_ms(4222), 100)
             self.assertLess(box.connect_ms(9000), 100)
             self.assertLess(box.connect_ms(8082, src=netns_sandbox.KCM_POD_IP), 100)
@@ -4168,6 +4171,39 @@ class NetworkLinkExecutorTests(unittest.TestCase):
             self.assertEqual(self._act(box, env, "run", params).returncode, 0)
             self.assertGreaterEqual(box.connect_ms(9000, sport=9100), 290)
             self.assertLess(box.connect_ms(4222, sport=9100), 100)
+            self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
+
+    def test_name_lookups_of_host_network_agents_pass_a_dns_rule(self) -> None:
+        # N1 review 2026-11-10: the kcm-monitoring node agent runs on the host network with
+        # ClusterFirstWithHostNet, so its lookups of the headless master service leave the node from
+        # the node's overlay address (kube-proxy masquerade), not from a pod. A DNS rule delayed them.
+        params = dict(self.PARAMS, rules=[{"dst": "10.244.1.0/24", "protocol": "tcp", "dport": 53}])
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.listen(53)
+            done = self._act(box, env, "run", params)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertLess(box.connect_ms(53, src=netns_sandbox.NODE_IP), 100)
+            self.assertLess(box.connect_ms(53, src=netns_sandbox.KCM_POD_IP), 100)
+            # An application pod's lookup is the change itself.
+            self.assertGreaterEqual(box.connect_ms(53, src=netns_sandbox.APP_POD_IP), 290)
+            self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
+
+    def test_replies_to_monitoring_agents_on_other_nodes_pass_a_reply_rule(self) -> None:
+        # N1 review 2026-11-10: a rule on a source port (a DNS answer on the CoreDNS node) also
+        # delayed the answers to KCM agents on the other nodes, both pods and host-network agents.
+        params = dict(self.PARAMS, rules=[{"dst": "10.244.1.0/24", "protocol": "tcp", "sport": 53}])
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.listen(53, on_node=True)
+            done = self._act(box, env, "run", params)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertLess(box.connect_from_peer_ms(53, netns_sandbox.PEER_KCM_IP), 100)
+            self.assertLess(box.connect_from_peer_ms(53, netns_sandbox.PEER_NODE_IP), 100)
+            # Answers to an application pod on that node are the change itself.
+            self.assertGreaterEqual(box.connect_from_peer_ms(53, netns_sandbox.PEER_IP), 290)
             self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
 
     def test_a_qdisc_that_is_not_ours_is_neither_replaced_nor_removed(self) -> None:

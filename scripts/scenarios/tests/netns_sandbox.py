@@ -18,9 +18,12 @@ import subprocess
 import time
 from pathlib import Path
 
-NODE_IP = "10.244.3.0"          # the node's overlay address (flannel.1)
+NODE_IP = "10.244.3.0"          # the node's overlay address (flannel.1): host-network pods leave from it
 KCM_POD_IP = "10.244.3.49"      # a KCM pod on the node
+APP_POD_IP = "10.244.3.69"      # an application pod on the node
 PEER_IP = "10.244.1.56"         # a pod on another node
+PEER_KCM_IP = "10.244.1.22"     # a KCM pod on the other node
+PEER_NODE_IP = "10.244.1.0"     # the other node's overlay address (its host-network pods)
 
 SSH = r'''#!/usr/bin/env bash
 if [[ -e "$SANDBOX/down" ]]; then echo "ssh: connect to host: No route to host" >&2; exit 255; fi
@@ -56,6 +59,7 @@ elif "pods" in a:
     extra = [int(p) for p in os.environ.get("FAKE_KCM_PORTS", "").split(",") if p]
     print(json.dumps({"items": [
         pod("kcm-128", "kcm-node-agent-a", "tb-w1", "10.244.3.49", [18081]),
+        pod("kcm-128", "kcm-node-agent-c", "tb-w2", "10.244.1.22", [18081]),
         pod("kcm-128", "kcm-master-agent-a", "tb-w3", "10.244.2.27", [4222, 18081] + extra),
         pod("kcm-monitoring", "kcm-node-agent-b", "tb-w1", "192.168.122.184", [18080], host=True),
         pod("rca-testbed-commerce", "testbed-payment-a", "tb-w1", "10.244.3.69", [8080]),
@@ -105,11 +109,13 @@ class Sandbox:
             "ip link set flannel.1 txqueuelen 0 up",
             f"ip addr add {NODE_IP}/32 dev flannel.1",
             f"ip addr add {KCM_POD_IP}/32 dev lo",
+            f"ip addr add {APP_POD_IP}/32 dev lo",
             "ip route add 10.244.1.0/24 dev flannel.1",
             "ip route add 10.244.0.0/24 dev flannel.1",
         ]
         peer = [
             "ip link set lo up", "ip link set eth9 up", f"ip addr add {PEER_IP}/24 dev eth9",
+            f"ip addr add {PEER_KCM_IP}/32 dev lo", f"ip addr add {PEER_NODE_IP}/32 dev lo",
             "ip route add 10.244.3.0/24 dev eth9",
         ]
         self.in_node(["bash", "-ec", "; ".join(node)], check=True)
@@ -149,8 +155,10 @@ class Sandbox:
         kwargs.setdefault("timeout", 60)
         return subprocess.run(self._enter(self.peer.pid) + argv, **kwargs)
 
-    def listen(self, *ports: int) -> None:
-        proc = subprocess.Popen(self._enter(self.peer.pid) + ["python3", "-c", LISTENER, PEER_IP, *map(str, ports)],
+    def listen(self, *ports: int, on_node: bool = False) -> None:
+        """TCP listeners on the peer pod, or (on_node) on every address of the node."""
+        where, ip = (self.node, "0.0.0.0") if on_node else (self.peer, PEER_IP)
+        proc = subprocess.Popen(self._enter(where.pid) + ["python3", "-c", LISTENER, ip, *map(str, ports)],
                                 stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
         self.procs.append(proc)
         assert proc.stdout is not None
@@ -160,6 +168,11 @@ class Sandbox:
     def connect_ms(self, port: int, src: str = "-", sport: int = 0) -> float:
         """Milliseconds a TCP connect from the node to the peer pod takes (the SYN leaves through flannel.1)."""
         done = self.in_node(["python3", "-c", CONNECT, src, str(sport), PEER_IP, str(port)], check=True)
+        return float(done.stdout)
+
+    def connect_from_peer_ms(self, port: int, src: str) -> float:
+        """Milliseconds a TCP connect from the other node to the node takes (the SYN-ACK leaves through flannel.1)."""
+        done = self.in_peer(["python3", "-c", CONNECT, src, "0", NODE_IP, str(port)], check=True)
         return float(done.stdout)
 
     def root_qdisc(self) -> str:

@@ -14,8 +14,15 @@ the node's traffic never meets the change, because it does not use the overlay d
 - What does ride the overlay and is monitoring: the KCM node agents talk to their master agents on
   tb-w3 (NATS 4222, agent port 18080/18081), and DPM reaches the databases through a NodePort that may
   forward to another node. So rule ports never include those ports or any port a KCM container
-  declares, packets to or from the protected ports pass ahead of the rules, and packets from this
-  node's KCM pods pass too.
+  declares, packets to or from the protected ports pass ahead of the rules, and so do packets from
+  this node's KCM pods and packets to any KCM pod in the cluster.
+- Name lookups: the kcm-monitoring node agent runs on the host network (ClusterFirstWithHostNet) and
+  looks up its headless master service through CoreDNS on tb-cp. kube-proxy masquerades those
+  lookups to the node's own overlay address, so they look like no pod. Lookups leaving from this
+  node's overlay address and answers going to another node's overlay address pass too (DNS port
+  only: NodePort traffic is masqueraded to the same addresses and stays subject to the rules).
+  Payload names cannot be matched (flower does not see them, and u32 announces itself in the kernel
+  log), so the exclusion is by address and port.
 - A rule port stays below the node's ephemeral range, so a rule never matches the reply of some other
   connection that happened to pick that port.
 
@@ -187,10 +194,13 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
 
 
 # Runs as root (run, cleanup) or as the login user (check, state) on the node. Line 1 of its stdin is
-# `set -- <action> <device> <job> <protected ports> <protected sources> <delay> <jitter> <loss> <rules>`,
+# `set -- <action> <device> <job> <protected ports> <protected sources> <delay> <jitter> <loss> <rules>
+# <protected destinations> <other nodes' overlay addresses>` (lists comma separated, "-" when empty),
 # line 2 the guard's deadline and hold.
 NODE_PROGRAM = b"set -euo pipefail\n" + GUARD_FUNCTIONS + br'''act="$1"; dev="$2"; job="$3"; ports="$4"; sources="$5"; delay="$6"; jitter="$7"; loss="$8"; rules="$9"
+monitors="${10:--}"; peers="${11:--}"
 root_handle=1a7e
+dns_port=53
 band_handle=1a7f
 # Modules are global, so a sandbox may point at its own list.
 module_dir="${LINK_MODULE_DIR:-/sys/module}"
@@ -228,7 +238,7 @@ check() {
   done
 }
 apply() {
-  local b proto port src rule side dst probe key
+  local b proto port src rule side dst probe key own
   local -a spec=() protos=()
   tc qdisc add dev "$dev" root handle "$root_handle": prio bands 4 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
   # The overlay device has no transmit queue length, so a default band would hold one packet.
@@ -255,11 +265,29 @@ apply() {
       tc filter add dev "$dev" parent "$root_handle": protocol ip pref 3 flower src_ip "$src" classid "$root_handle:2"
     done
   fi
+  if [[ "$monitors" != - ]]; then
+    for dst in ${monitors//,/ }; do
+      tc filter add dev "$dev" parent "$root_handle": protocol ip pref 4 flower dst_ip "$dst" classid "$root_handle:2"
+    done
+  fi
+  # Host-network agents' name lookups and the answers to them (see the module docstring). The node's
+  # overlay address is read here, never taken from the contract.
+  own=$(ip -4 -o addr show dev "$dev" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+  for proto in "${protos[@]}"; do
+    if [[ -n "$own" ]]; then
+      tc filter add dev "$dev" parent "$root_handle": protocol ip pref 5 flower ip_proto "$proto" src_ip "$own" dst_port "$dns_port" classid "$root_handle:2"
+    fi
+    if [[ "$peers" != - ]]; then
+      for dst in ${peers//,/ }; do
+        tc filter add dev "$dev" parent "$root_handle": protocol ip pref 6 flower ip_proto "$proto" dst_ip "$dst" src_port "$dns_port" classid "$root_handle:2"
+      done
+    fi
+  done
   for rule in ${rules//,/ }; do
     IFS=: read -r proto side port dst probe <<<"$rule"
     key=dst_port
     if [[ "$side" == sport ]]; then key=src_port; fi
-    tc filter add dev "$dev" parent "$root_handle": protocol ip pref 4 flower ip_proto "$proto" dst_ip "$dst" "$key" "$port" classid "$root_handle:4"
+    tc filter add dev "$dev" parent "$root_handle": protocol ip pref 10 flower ip_proto "$proto" dst_ip "$dst" "$key" "$port" classid "$root_handle:4"
   done
 }
 remove() { if [[ "$(link_state)" == ours ]]; then tc qdisc del dev "$dev" root; fi; }
@@ -296,9 +324,9 @@ node_sh() {
 # One node call: the whole program and its arguments ride on ssh's stdin (a pipe of its own, so ssh
 # never reads the rest of this script), and the node logs only `bash -s`.
 node_link() {
-  local as=$1 act=$2 sources=${3:--}
+  local as=$1 act=$2
   {
-    printf 'set --'; printf ' %q' "$act" "$dev" "$job" "$ports" "$sources" "$delay" "$jitter" "$loss" "$rules"; printf '\n'
+    printf 'set --'; printf ' %q' "$act" "$dev" "$job" "$ports" "$sources" "$delay" "$jitter" "$loss" "$rules" "$monitors" "$peers"; printf '\n'
     printf 'expire_after=%q guard_hold=%q\n' "$expire_after" "$guard_hold"
     cat <<'NODE_LINK'
 '''
@@ -316,7 +344,7 @@ inside() { (( ${1#*/} >= ${2#*/} )) && in_cidr "${1%/*}" "$2"; }
 # The cluster as it is now, not as the contract remembers it: the node is Ready at this address,
 # every rule leads into another node's pod network, no rule port is one a KCM container declares,
 # and the KCM pods on this node (their traffic rides the same device) are passed through untouched.
-sources=-
+sources=-; monitors=-; peers=-
 cluster_check() {
   command -v kubectl >/dev/null; command -v jq >/dev/null; command -v ssh >/dev/null
   local nodes pods others kcm_ports rule port dst c found p
@@ -341,13 +369,21 @@ cluster_check() {
   sources=$(jq -r --arg n "$node" '[.items[] | select(.metadata.namespace | startswith("kcm-"))
       | select(.spec.nodeName == $n and .spec.hostNetwork != true) | .status.podIP // empty] | join(",")' <<<"$pods")
   if [[ -z "$sources" ]]; then sources=-; fi
+  # Answers to KCM pods anywhere in the cluster, and DNS answers to the other nodes' host-network pods
+  # (flannel gives each node the network address of its podCIDR on the overlay device).
+  monitors=$(jq -r '[.items[] | select(.metadata.namespace | startswith("kcm-"))
+      | select(.spec.hostNetwork != true) | .status.podIP // empty] | unique | join(",")' <<<"$pods")
+  if [[ -z "$monitors" ]]; then monitors=-; fi
+  peers=$(jq -r --arg n "$node" '[.items[] | select(.metadata.name != $n) | .spec.podCIDR // empty
+      | split("/")[0]] | join(",")' <<<"$nodes")
+  if [[ -z "$peers" ]]; then peers=-; fi
 }
 case "$action" in
   preflight) cluster_check; node_link user check; [[ ! -e "$state" ]] ;;
   # The state file goes first, so a run that fails half way is still cleaned up.
   run) cluster_check; if [[ -e "$state" ]]; then exit 1; fi
     mkdir -p "$state_root"; printf '%s\n' "$job" >"$state.tmp"; mv -T "$state.tmp" "$state"
-    node_link root run "$sources" ;;
+    node_link root run ;;
   # Asks the node even without the state file: a runner container recreated during a run loses its
   # state but the node keeps the qdisc. Nothing on the node and no state means no-op.
   cleanup) node_link root cleanup
