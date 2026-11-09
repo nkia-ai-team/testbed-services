@@ -47,15 +47,13 @@ public class LedgerService {
 
     /**
      * 원장 대사(reconciliation) 배치용: 전체 잔액 합(DEBIT - CREDIT)이 0인지 검증한다.
-     * 복식부기가 정상이면 항상 0 이어야 한다.
+     * 복식부기가 정상이면 항상 0 이어야 한다. 두 합계는 반드시 한 SQL 문장에서 함께 구한다
+     * (LedgerEntryRepository.IMBALANCE_SQL 주석). 문장을 나누면 Oracle 에서 거짓 불일치가 난다.
      */
     @Transactional(readOnly = true)
     public BigDecimal sumImbalance() {
-        BigDecimal debit = ledgerEntryRepository.sumAmountByDirection("DEBIT");
-        BigDecimal credit = ledgerEntryRepository.sumAmountByDirection("CREDIT");
-        debit = debit != null ? debit : BigDecimal.ZERO;
-        credit = credit != null ? credit : BigDecimal.ZERO;
-        return debit.subtract(credit);
+        BigDecimal imbalance = ledgerEntryRepository.sumImbalance();
+        return imbalance != null ? imbalance : BigDecimal.ZERO;
     }
 
     /**

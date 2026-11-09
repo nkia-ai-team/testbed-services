@@ -40,6 +40,13 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 대사 SQL 문장(LedgerEntryRepository.IMBALANCE_SQL)을 실제 SQL 엔진에서 돌려 보는 시험용.
+             버전은 spring-boot-starter-parent 가 정한다. 실행 이미지에는 들어가지 않는다. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

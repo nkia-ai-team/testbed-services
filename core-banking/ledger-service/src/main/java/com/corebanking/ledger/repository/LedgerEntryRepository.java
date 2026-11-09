@@ -16,8 +16,19 @@ import java.util.List;
 public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, Long> {
     List<LedgerEntry> findByTransferRef(String transferRef);
 
-    @Query("select sum(e.amount) from LedgerEntry e where e.direction = :direction")
-    BigDecimal sumAmountByDirection(@Param("direction") String direction);
+    /**
+     * 대사용 불균형(출금 합 - 입금 합)을 한 SQL 문장으로 구한다. Oracle 은 문장 하나가
+     * 한 읽기 시점(statement-level read consistency)을 보므로, 두 합계가 같은 순간의 원장을
+     * 센다. 합계를 문장 두 개로 따로 구하면 그 사이에 커밋된 이체가 뒤 문장에만 잡혀
+     * 장부가 맞는데도 불균형이 0 이 아니게 나온다(readOnly 트랜잭션이어도 Oracle 은
+     * 문장마다 읽기 시점이 다르다). 문장을 둘로 나누지 않는다.
+     */
+    String IMBALANCE_SQL = "SELECT COALESCE(SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE 0 END), 0)"
+            + " - COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE 0 END), 0)"
+            + " FROM ledger_entries";
+
+    @Query(value = IMBALANCE_SQL, nativeQuery = true)
+    BigDecimal sumImbalance();
 
     @Query("select e from LedgerEntry e where "
             + "(:accountId is null or e.accountId = :accountId) and "

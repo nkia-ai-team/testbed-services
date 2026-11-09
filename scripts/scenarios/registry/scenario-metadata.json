@@ -10964,7 +10964,7 @@
      "core-banking/api-service/src/main/resources/application.yml:30-54 (transferClient 서킷 10회 중 50%, 5초 열림, 재시도 3회 200ms 지수)",
      "core-banking/transfer-service/src/main/resources/application.yml:7-17 (username, hikari — DB_USER 기본 banking, minimum-idle 5, idle-timeout 60000, max-lifetime 600000)",
      "core-banking/ledger-service/src/main/java/com/corebanking/ledger/batch/ReconciliationBatch.java:26-34 (reconcile — 예외를 잡지 않아 스케줄러가 ERROR 로 남긴다)",
-     "core-banking/ledger-service/src/main/java/com/corebanking/ledger/repository/LedgerEntryRepository.java:19-20 (sumAmountByDirection — ledger_entries 전수 SUM)",
+     "core-banking/ledger-service/src/main/java/com/corebanking/ledger/repository/LedgerEntryRepository.java:26-31 (IMBALANCE_SQL, sumImbalance — ledger_entries 전수 SUM, 출금 합과 입금 합을 한 문장에서)",
      "core-banking/k8s/22-transfer-service.yaml:48-57 (DB_USER, APP_USER — transfer 가 BANKING 계정으로 접속)",
      "core-banking/k8s/02-configmaps.yaml:38-39 (location /api/transfers — 거래 내역은 nginx 가 api 로 넘긴다)"
     ],
