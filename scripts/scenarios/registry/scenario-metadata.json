@@ -10179,7 +10179,7 @@
     ],
     "root_cause": "근본 원인은 이체 서비스 새 버전의 금액 검사 결함이다. 오류는 커머스 주문과 결제에서 더 크게 보이지만 그쪽은 늘 보내던 금액을 보낸 피해자다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-transfer 의 transfer-service 이미지를 core-banking-transfer:latest 에서 2.3.0 으로 바꾼다. 결함 이미지는 109 에서 fault-images/f40-h 패치로 미리 빌드해 tb-w2 containerd 에 주입 직전에 올린다",
+     "주입: k8s.image release 모드가 testbed-transfer 의 transfer-service 이미지를 core-banking-transfer:latest 에서 2.3.0 으로 바꾼다. 결함 이미지는 tb-ops 에서 fault-images/f40-h 패치로 미리 빌드해 tb-w2 containerd 에 주입 직전에 올린다",
      "결함: 새 KrwAmountPolicy.isWholeWon 이 값이 아니라 BigDecimal 표기 자릿수(amount.scale() <= 0)로 판정한다. 은행 호출자는 23807 꼴 정수, commerce 정산은 27000.00 꼴이라 정산만 걸린다",
      "부하: load.north_south commerce surge.js 6rps(여정의 약 절반이 checkout), 진입점 30080",
      "경로: commerce checkout gateway → order → payment → (외부 PG 승인) → core-banking transfer 정산(commerce-settlement → commerce-merchant). payment 가 400 을 502 'core-banking transfer call failed' 로 바꾸고 order 의 payment 서킷브레이커가 몇 초 안에 열린다",
@@ -10314,7 +10314,7 @@
     ],
     "root_cause": "근본 원인은 작업 노드(tb-w2)에서 쓰고 있던 이미지를 지운 정리 작업이다. 이체 서비스, 계좌, 진입 서비스, 커머스 결제의 오류는 모두 그 결과이고 앱 코드와 설정은 바뀌지 않았다.",
     "design_notes": [
-     "주입: host.image 가 ssh 로 tb-w2 에서 core-banking-{api,account,transfer,ledger}:latest 를 이미지마다 sudo ctr -n k8s.io images rm 으로 지우고 testbed-transfer 에 kubectl rollout restart 를 낸다. 정리는 109 docker 의 같은 이미지 ID 를 ctr images import 로 되돌린다",
+     "주입: host.image 가 ssh 로 tb-w2 에서 core-banking-{api,account,transfer,ledger}:latest 를 이미지마다 sudo ctr -n k8s.io images rm 으로 지우고 testbed-transfer 에 kubectl rollout restart 를 낸다. 정리는 tb-ops docker 의 같은 이미지 ID 를 ctr images import 로 되돌린다",
      "정리 규칙: 은행 앱 이미지는 imagePullPolicy Never, ctr import 로 적재되어 레지스트리 다이제스트가 없어 '지난 빌드'로 오인된다(nginx, Kafka, Oracle 은 다이제스트 있음)",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps(이체 40%, 잔액 35%, 거래 내역 15%, 계좌 목록 10%), 진입점 30082",
      "경로: 이체 nginx → api → account → transfer, 거래 내역 api → transfer, 커머스 정산 commerce-payment → transfer. 엔드포인트가 빈 Service 로의 연결은 kube-proxy 가 거절한다",
@@ -11527,7 +11527,7 @@
     ],
     "root_cause": "근본 원인은 계좌 서비스 새 버전의 연결 반납 누락이다. 은행 진입 서비스의 502 는 피해이고, DB 는 바쁘지 않다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.4.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
+     "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.4.0 으로 바꾼다(tb-ops 에서 미리 빌드한 결함 이미지)",
      "결함: 잔액 조회에 마지막 이체 시각을 더하면서 Hikari 연결을 빌리고 돌려주지 않는다. 약 10건 만에 풀이 total=10, active=10, idle=0 으로 굳는다",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 진입점 30082",
      "경로: 잔액 조회와 계좌 목록 nginx → account → Oracle, 이체 nginx → api → account → transfer, 거래 내역 api → transfer(account 를 거치지 않음)",
@@ -12380,7 +12380,7 @@
     ],
     "root_cause": "근본 원인은 계좌 서비스 새 버전의 헬스 확인 경로 누락이다. 컨테이너는 멀쩡한데 쿠버네티스가 죽인 것이고, 은행 진입 서비스의 502 는 피해다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.5.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
+     "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.5.0 으로 바꾼다(tb-ops 에서 미리 빌드한 결함 이미지)",
      "결함: 릴리스가 헬스 하위 끝점을 꺼 liveness 경로가 404 다. startup, readiness 경로는 살아 있어 롤아웃은 통과한다",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 진입점 30082",
      "경로: 잔액 조회 nginx → account, 이체 nginx → api → account → transfer. 거래 내역은 account 를 거치지 않는다",
@@ -12752,7 +12752,7 @@
     ],
     "root_cause": "근본 원인은 진입 서비스 새 버전의 스레드 누수다. 은행 DB(Oracle, Oracle-corebanking)와 다른 은행 서비스는 바쁘지 않고 진입 서비스가 죽은 동안 요청을 못 받았을 뿐이다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-api 의 api-service 를 core-banking-api:latest 에서 1.5.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
+     "주입: k8s.image release 모드가 testbed-api 의 api-service 를 core-banking-api:latest 에서 1.5.0 으로 바꾼다(tb-ops 에서 미리 빌드한 결함 이미지)",
      "결함: 이체 접수와 거래 내역 조회마다 처리 마감 시간을 걸려고 스레드 하나짜리 풀을 만들고 닫지 않는다. 비데몬 waiting 스레드가 30초마다 약 330~370개 늘고 kernel_stack 메모리가 쌓인다",
      "부하: load.north_south core-banking transfer-balance-surge.js 20rps, 진입점 30082",
      "메모리: api 컨테이너 한도 1048576kB, tb-w2 커널이 memcg OOM 으로 java 를 죽인다('pool-…-threa invoked oom-killer')",
@@ -14110,7 +14110,7 @@
     ],
     "root_cause": "근본 원인은 계좌 서비스 새 버전이 바꾼 응답 모양이다. 오류는 진입 서비스에만 찍히지만 진입 서비스는 옛 모양을 기대한 피해자이고, 계좌 서비스 자신은 오류를 남기지 않는다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.6.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
+     "주입: k8s.image release 모드가 testbed-account 의 account-service 를 core-banking-account:latest 에서 1.6.0 으로 바꾼다(tb-ops 에서 미리 빌드한 결함 이미지)",
      "결함: 이체 접수 응답의 status 가 문자열에서 {code, label} 객체로 바뀌어 api 가 String status 를 기대하는 TransferResponse 로 읽지 못한다('Error while extracting response for type [com.corebanking.common.dto.TransferResponse]')",
      "부하: load.north_south core-banking transfer-heavy-surge.js 5rps, 진입점 30082",
      "경로: 이체 nginx → api → account → transfer. 서킷이 열리기 전에는 api 재시도로 같은 이체가 세 번까지 실행될 수 있다. 커머스 정산은 commerce-payment → transfer 로 account 를 거치지 않는다",
@@ -14471,7 +14471,7 @@
     ],
     "root_cause": "근본 원인은 진입 서비스 새 버전이 운영에 없는 설정값에 기대는 결함이다. 돈은 움직이지 않았고 계좌, 이체 서비스와 은행 DB 는 아무 일이 없다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-api 의 api-service 를 core-banking-api:latest 에서 1.6.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
+     "주입: k8s.image release 모드가 testbed-api 의 api-service 를 core-banking-api:latest 에서 1.6.0 으로 바꾼다(tb-ops 에서 미리 빌드한 결함 이미지)",
      "결함: 새 1회 이체 한도 확인이 'api.policy.single-transfer-limit' 을 읽는데 이 키는 개발 프로필에만 있다. 이체 요청마다 SEVERE 'Required key … not found' 로 500 이다",
      "부하: load.north_south core-banking transfer-balance-surge.js 20rps(거래 내역 단계 없음), 진입점 30082",
      "경로: 이체 nginx → api → account → transfer 에서 api 단계에서 끝난다. 잔액 조회 nginx → account, 커머스 정산 commerce-payment → transfer 는 api 를 거치지 않는다",
@@ -15214,7 +15214,7 @@
     ],
     "root_cause": "근본 원인은 이체 서비스 새 버전의 속도 제한 결함이다. 계좌, 진입 서비스, 커머스의 오류는 피해이고 거절은 모든 계좌에 고르게 떨어진다.",
     "design_notes": [
-     "주입: k8s.image release 모드가 testbed-transfer 의 transfer-service 를 core-banking-transfer:latest 에서 2.4.0 으로 바꾼다(109 에서 미리 빌드한 결함 이미지)",
+     "주입: k8s.image release 모드가 testbed-transfer 의 transfer-service 를 core-banking-transfer:latest 에서 2.4.0 으로 바꾼다(tb-ops 에서 미리 빌드한 결함 이미지)",
      "결함: 계좌당 한도를 이름 하나의 resilience4j RateLimiter 'transferVelocity'(초당 2건)로 걸어 전 계좌와 commerce 정산이 한 몫을 나눠 쓴다. 넘친 요청은 처리되지 않은 RequestNotPermitted 로 500 이다",
      "부하: load.north_south core-banking transfer-balance-surge.js 7rps, 진입점 30082",
      "공백: Deployment 전략 maxSurge 0 이라 옛 파드가 먼저 내려간다. 녹화에서는 새 파드 기동까지 약 3분, 되돌릴 때 옛 버전 기동까지 약 2분 반 걸렸다(설계는 약 1분)",

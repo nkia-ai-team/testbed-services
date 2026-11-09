@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "banking namespace",
-    "matrix_location_transport": "K/kubectl banking testbed-api 컨테이너 image set(core-banking-api:latest→core-banking-api:1.6.0, 직전에 runner 가 109 docker 의 1.6.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-balance-surge.js, target_rps=20, 이체 55%, 거래 내역 단계 없음)",
+    "matrix_location_transport": "K/kubectl banking testbed-api 컨테이너 image set(core-banking-api:latest→core-banking-api:1.6.0, 직전에 runner 가 tb-ops docker 의 1.6.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-balance-surge.js, target_rps=20, 이체 55%, 거래 내역 단계 없음)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",

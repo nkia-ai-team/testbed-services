@@ -161,3 +161,19 @@ food restaurant-service 의 새 릴리스 1.7.0 은 "메뉴마다 조리 시간�
 | 8 | GitLab 2026-03-17 / banking transfer 정산 계좌 / 릴리스가 입금 후 잔액을 int 로 바꿔 6,800억 원대 commerce 정산 계좌에서 ArithmeticException | 버림: 카탈로그 §1. 같은 서비스, 같은 피해 경로(commerce 정산 이체만 실패)가 F40-H 에 있다 |
 | 9 | Zendesk 2023-02-14(내부 경로 설정 배포의 짧은 요청 시간 제한, 재시도로 중복 이벤트) / food order → dispatch / 시간 제한 축소 + 재시도 중복 배차(묶음 N 0) | 버림: 카탈로그 §1, 원칙 9. 같은 꼴이 rejected(F08-P 꼴)에 있고 dispatch 응답이 ms 단위라 시간 제한을 지어내야 하며 용량 도달 시간이 흔들린다 |
 | 10 | Intercom 2024-11-05(새 서버 이미지의 캐싱 resolver 가 사설 DNS 를 못 풀어 백그라운드 워커만 실패) / banking ledger, food notify 소비자 | 버림: 원칙 7. 우리 백그라운드 워커가 모두 비동기 소비자라 사용자 증상이 없다(rejected 253행 벽) |
+
+## 11. 첫 실행(곧 녹화 실행)에서 확인할 것
+
+첫 실행 F76-P-run-ec3be401(2026-10-24, 66 tb-ops 러너, 정식 승격 `case-f76-p-v3-ec3be401`)이 끝난 뒤 채운 절이다. 항목은 §4, §6, §7, §8, §9 에서 뽑았고, 괄호 안은 그 실행의 결과다(시각 UTC, 근거 장부 §6 2026-10-24 줄과 검증 보고서 `~/dev/testbed-ops/verifications/2026-10-24-1701-F76-P-run-ec3be401.md` 3-4, 3-5절). 다음 실행도 같은 항목을 본다.
+
+- 계기: KCM 에 testbed-restaurant ScalingReplicaSet 과 새 파드 Pulled 'food-delivery-restaurant:1.7.0' 이 남는지. (16:03:20, 16:03:21, 30일 처음)
+- 롤아웃 소요와 첫 실패 시각: 새 파드 Started 에서 옛 파드 Killing 까지, 그리고 첫 SEVERE 까지 걸린 시간. §1 과 §9 가 가정한 약 40초~1분보다 길 수 있다. (롤아웃 2분 15초, startup probe 실패 22건, 첫 SEVERE 는 Pulled 뒤 2분 19초, latest 로 되돌릴 때도 2분 5초)
+- 롤아웃 중 러너 신호: 옛 파드가 계속 답하는 동안 `restaurant_pod_ready` 가 false 로 읽힐 수 있다. must_rule_out(restaurant NotReady 2틱)이 이것으로 서지 않았는지 본다. (16:03:40~16:05:30 에 7틱 false, must_rule_out 연속 0. 이 신호를 available 기준으로 볼지는 장부 2026-10-24 줄의 사람 확인 몫)
+- 근본 로그: restaurant 의 SEVERE NullPointerException('Map.get(Object)' 이 null)이 들어오고 스택이 toMenuResponse 를 지나는지. 스택은 `body` 가 아니라 `log_attributes['exception.stacktrace']` 에 있다. (735줄, 735줄 모두 toMenuResponse, 30일 0줄)
+- 실패가 데이터를 따르는지: 카테고리 4~8 가게 11곳(19~23, 27~31, 35)의 메뉴는 매번 500, 나머지 12곳은 200, 상세와 지역 검색과 인기 메뉴는 200. (11곳 500 76 / 200 0, 12곳 200 91 / 500 0, 상세 148, 지역 검색 65, 인기 메뉴 37 모두 200)
+- 주문: 주문 생성 5xx 가 없고 order 의 restaurant 서킷이 열리지 않는지. 메뉴가 안 열리는 가게 손님이 주문까지 가지 못해 주문 수는 줄 수 있다. (주문 5xx 0, 서킷 로그 0, 표본 주문 약 3.2/분 → 약 1.8/분)
+- MySQL: 질의 모양과 시간이 그대로인지. 실패한 메뉴 요청의 트랜잭션 되돌림으로 rollback_count 가 오르고, 동반 부하로 tps 가 늘 수 있다. 둘 다 원인 신호가 아니다. (rollback_count 5~10 → 110~126, tps 465 → 761~810)
+- 판정: 동반 부하 메뉴 단계 non-ok 비율이 예상 약 0.48 로 문턱 0.25 를 3틱 넘는지, 동반 부하가 약 3rps 인지. (0.37~0.59, 성공 연속 9, achieved_rps 3.03)
+- 감지: restaurant 오류율과 SEVERE 급증이 lucida 이상 탐지와 인시던트가 되는지. 판정에는 쓰지 않는다. (log-anomaly 2건, 인시던트 77565b6e, APM 오류율과 서버 스팬 500 은 이벤트 0)
+- cleanup 과 recovery: 이미지가 `food-delivery-restaurant:latest` 로 돌아오고 tb-w3 노드 이미지 목록에 1.7.0 이 없으며, 기준선 메뉴 실패가 0.1 아래로 내려오는지. (16:13:57 에 0.0, 16:14:15 recovery 확인)
+- 식별자: 이미지 태그, KCM, 로그에 시나리오 식별자가 남지 않는지. (태그는 1.7.0 뿐, 로그는 우연한 일치뿐)

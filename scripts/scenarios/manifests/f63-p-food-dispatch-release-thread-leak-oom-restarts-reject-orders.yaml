@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "food namespace",
-    "matrix_location_transport": "K/kubectl food testbed-dispatch 컨테이너 image set(food-delivery-dispatch:latest→food-delivery-dispatch:1.9.0, 직전에 runner 가 109 docker 의 1.9.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery delivery-status-surge.js, target_rps=10, entry 30181, 배달 목록 75% 상세 25%, 주문 없음)",
+    "matrix_location_transport": "K/kubectl food testbed-dispatch 컨테이너 image set(food-delivery-dispatch:latest→food-delivery-dispatch:1.9.0, 직전에 runner 가 tb-ops docker 의 1.9.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery delivery-status-surge.js, target_rps=10, entry 30181, 배달 목록 75% 상세 25%, 주문 없음)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",
@@ -166,7 +166,7 @@
               "observation": "order_create_5xx_rate_baseline",
               "op": "gte",
               "value": 0.5,
-              "_note": "새 dispatch 버전이 배달 목록, 상세 조회마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 조회를 맡기고 닫지 않아 요청 하나마다 멈춘 비데몬 스레드가 남는다. 동반 부하 10rps 와 기준선 배달 추적(초당 0.05~0.3건)으로 스레드가 초당 약 10개 쌓이고, 스레드마다 스택 접근 페이지와 커널 스택 16KiB 가 컨테이너 메모리로 잡혀(로컬 x86_64 실측 평균 약 125KiB, 스레드 약 6,000개에서 OOM. F63-R 운영 aarch64 smaps 평균 약 97KiB) 기동 직후 약 350MiB 에서 한도 1GiB 까지 스레드 약 5,500~7,100 개다. 한도에 닿으면 짧게 느려지다 커널 memcg OOM 이 java 를 죽이고, 같은 파드가 다시 떠 Ready 가 될 때까지 약 41~45초 order 의 용량 확인이 연결 거부로 끝나 기준선 주문이 503 이다"
+              "_note": "새 dispatch 버전이 배달 목록, 상세 조회마다 스레드 하나짜리 풀(Executors.newFixedThreadPool(1))을 만들어 조회를 맡기고 닫지 않아 요청 하나마다 멈춘 비데몬 스레드가 남는다. 동반 부하 10rps 와 기준선 배달 추적(초당 0.05~0.3건)으로 스레드가 초당 약 10개 쌓이고, 스레드마다 스택 접근 페이지와 커널 스택 16KiB 가 컨테이너 메모리로 잡혀(로컬 x86_64 실측 평균 약 125KiB, 스레드 약 6,000개에서 OOM. F63-R 109(aarch64) 운영 smaps 평균 약 97KiB) 기동 직후 약 350MiB 에서 한도 1GiB 까지 스레드 약 5,500~7,100 개다. 한도에 닿으면 짧게 느려지다 커널 memcg OOM 이 java 를 죽이고, 같은 파드가 다시 떠 Ready 가 될 때까지 약 41~45초 order 의 용량 확인이 연결 거부로 끝나 기준선 주문이 503 이다"
             }
           ],
           "consecutive_ticks": 1,

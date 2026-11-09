@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "commerce namespace",
-    "matrix_location_transport": "K/kubectl commerce testbed-notification 컨테이너 image set(commerce-notification:latest→commerce-notification:1.3.0, 직전에 runner 가 109 docker 의 1.3.0 을 docker save → ssh tb-w1 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(commerce surge.js, target_rps=3, 여정 50% checkout(로그인, 비우기, 담기, checkout))",
+    "matrix_location_transport": "K/kubectl commerce testbed-notification 컨테이너 image set(commerce-notification:latest→commerce-notification:1.3.0, 직전에 runner 가 tb-ops docker 의 1.3.0 을 docker save → ssh tb-w1 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(commerce surge.js, target_rps=3, 여정 50% checkout(로그인, 비우기, 담기, checkout))",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",

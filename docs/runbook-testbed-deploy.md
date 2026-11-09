@@ -22,11 +22,11 @@ summary: 109 KVM 클러스터에 3도메인 테스트베드를 배포·검증하
 | 빌드·오케스트레이션 호스트 | `192.168.200.109` (root, 워크스테이션 ssh 키 등록됨) | ARM64 GB10, docker 있음, ansible 없음 |
 | kubeconfig | `109:/root/tb-kubeconfig` | kubeadm v1.31 클러스터(tb-cp + tb-w1/w2/w3) |
 | VM ssh | `ssh -i /root/.ssh/tb_key nkia@192.168.122.<NAT-ip>` (NOPASSWD sudo) | 인벤토리 `109:/root/tb-inventory.txt` |
-| 워커 NAT IP | w1=`.184`(commerce) w2=`.11`(food) w3=`.14`(banking) | 노드 라벨 `domain=` 적용됨 |
+| 워커 NAT IP | w1=`.184`(commerce) w2=`.11`(banking) w3=`.14`(food) | 배치는 매니페스트의 `kubernetes.io/hostname` nodeSelector(2026-07-28 `26a0a04`). 노드 `domain` 라벨은 배치에 쓰이지 않는다 |
 | OTLP 수집 경로 | manifest 가 downward API 로 **노드 로컬** `http://$(status.hostIP):4317` 구성 — 각 VM의 OTel 에이전트(lucida-otel-supervisor, OpAMP 관리)가 수신 | **VM에 OTel 에이전트 설치 필수**(미설치 시 앱은 정상, 텔레메트리만 유실). AP collector 직접 전송(`230.104:4317`)은 에이전트 설치 전 임시 우회였음. ※ 6565는 구 Polestar10(범위 밖) |
 | `POLESTAR_ORG_ID` | `69731678b56620b247fb279a` | lucida ClickHouse `otel_traces_local`의 실사용 organizationId (변경 시 재확인: §5 쿼리) |
 | deploy env 파일 | `109:/root/deploy-env.sh` | 위 값 + IMPORT_SSH_NODES/KEY export 모음 |
-| `IMPORT_SSH_NODES` | `"nkia@192.168.122.184 nkia@192.168.122.11 nkia@192.168.122.14"` | manifest에 nodeSelector가 없어 **3개 워커 전부**에 이미지 필요 (§6 미결) |
+| `IMPORT_SSH_NODES` | `"nkia@192.168.122.184 nkia@192.168.122.11 nkia@192.168.122.14"` | 2026-07-13 109 실배포 값(3개 워커 전부). 지금은 파드가 도메인 워커 하나에 고정되므로(§6) 그 워커만 적어도 된다 |
 | `IMPORT_SSH_KEY` | `/root/.ssh/tb_key` | |
 
 ## 2. 신규 VM/클러스터 전제조건 (한 번만, 재생성 시 반복)
@@ -123,9 +123,9 @@ docker exec lucida-clickhouse clickhouse-client -q "
 
 ## 6. 미결
 
-- **nodeSelector 미적용**: 설계는 "워커=도메인 전용"(노드 라벨 존재)이나 manifest에
-  nodeSelector가 없어 pod가 아무 워커에나 뜬다. 그래서 현재는 이미지를 3워커 전부에
-  임포트한다. manifest에 `nodeSelector: {domain: <domain>}` 추가 시 도메인별 장애
-  격리(VM 단위 CPU throttle 등)가 성립하고 임포트도 해당 워커 1대로 줄일 수 있다.
+- **nodeSelector(해결, 2026-07-28 `26a0a04`)**: manifest 가 `nodeSelector: kubernetes.io/hostname`
+  으로 도메인 파드를 워커 하나에 고정한다(commerce tb-w1, core-banking tb-w2, food-delivery tb-w3).
+  노드 `domain` 라벨은 배치에 쓰이지 않는다. 이미지는 그 도메인 워커에만 있으면 된다(66 이전 때
+  도메인 노드에만 넣었다, `runbook-testbed-move-109-to-66.md` 2단계).
 - DB StatefulSet이 local-path PV를 쓰므로 pod가 노드를 옮기면 데이터가 새로 시작된다
   (테스트베드 성격상 허용, 단 장기 캡처 중 재스케줄은 주의).

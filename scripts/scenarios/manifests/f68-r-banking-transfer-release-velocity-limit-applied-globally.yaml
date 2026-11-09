@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "banking namespace",
-    "matrix_location_transport": "K/kubectl banking testbed-transfer 컨테이너 image set(core-banking-transfer:latest→core-banking-transfer:2.4.0, 직전에 runner 가 109 docker 의 2.4.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-balance-surge.js, target_rps=7, entry 30082, 이체 55% 초당 약 3.9건, 거래 내역 단계 없음. 2026-10-22 운영 보강 1회차에 transfer-heavy-surge.js 10rps 에서 바꿈)",
+    "matrix_location_transport": "K/kubectl banking testbed-transfer 컨테이너 image set(core-banking-transfer:latest→core-banking-transfer:2.4.0, 직전에 runner 가 tb-ops docker 의 2.4.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-balance-surge.js, target_rps=7, entry 30082, 이체 55% 초당 약 3.9건, 거래 내역 단계 없음. 2026-10-22 운영 보강 1회차에 transfer-heavy-surge.js 10rps 에서 바꿈)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",

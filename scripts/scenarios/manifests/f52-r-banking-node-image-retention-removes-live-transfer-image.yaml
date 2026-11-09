@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "worker-w2",
-    "matrix_location_transport": "W/ssh host.image(worker-w2, 러너가 kubectl 로 testbed-transfer 의 전략, nodeSelector, 이미지를 확인하고 ssh nkia@192.168.122.11 로 sudo -n crictl inspecti 와 ctr images ls 로 넷의 이미지 ID 와 다이제스트 부재, 109 docker 와 같은 ID 를 확인한 뒤 이미지마다 sudo -n ctr -n k8s.io images rm <이름> <sha256:ID>) + K/kubectl banking testbed-transfer rollout restart + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=5, entry 30082)",
+    "matrix_location_transport": "W/ssh host.image(worker-w2, 러너가 kubectl 로 testbed-transfer 의 전략, nodeSelector, 이미지를 확인하고 ssh nkia@192.168.122.11 로 sudo -n crictl inspecti 와 ctr images ls 로 넷의 이미지 ID 와 다이제스트 부재, tb-ops docker 와 같은 ID 를 확인한 뒤 이미지마다 sudo -n ctr -n k8s.io images rm <이름> <sha256:ID>) + K/kubectl banking testbed-transfer rollout restart + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=5, entry 30082)",
     "transport": "ssh",
     "profile_refs": [
       "injector-profiles/host.image",
@@ -129,7 +129,7 @@
               "namespace": "rca-testbed-banking",
               "resource": "testbed-transfer"
             },
-            "_note": "transfer 파드. 노드 이미지 정리 뒤 일상 재배포(rollout restart)가 옛 파드를 먼저 내리고(maxSurge 0) 새 파드는 노드에 core-banking-transfer:latest 가 없어 컨테이너가 생기지 않으므로(ErrImageNeverPull) 고장 중 false 다. 성공 조건에는 쓰지 않는다. cleanup 이 109 docker 의 같은 이미지를 노드에 되돌려 넣으면 kubelet 이 다시 시도해(1분 안에 안 뜨면 다시 배포) true 가 된다(회복 조건)",
+            "_note": "transfer 파드. 노드 이미지 정리 뒤 일상 재배포(rollout restart)가 옛 파드를 먼저 내리고(maxSurge 0) 새 파드는 노드에 core-banking-transfer:latest 가 없어 컨테이너가 생기지 않으므로(ErrImageNeverPull) 고장 중 false 다. 성공 조건에는 쓰지 않는다. cleanup 이 tb-ops docker 의 같은 이미지를 노드에 되돌려 넣으면 kubelet 이 다시 시도해(1분 안에 안 뜨면 다시 배포) true 가 된다(회복 조건)",
             "freshness": "30s"
           },
           {
@@ -266,7 +266,7 @@
           ],
           "consecutive_ticks": 2,
           "timeout": "10m",
-          "_note": "cleanup 이 109 docker 의 같은 이미지(이미지 ID 비교)를 tb-w2 containerd 에 다시 넣고 kubelet 이 대기 중인 새 파드를 다시 시도하게 둔다(1분 안에 Ready 가 아니면 다시 배포). 새 파드가 Ready 가 되고(JVM 기동 약 45초) 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
+          "_note": "cleanup 이 tb-ops docker 의 같은 이미지(이미지 ID 비교)를 tb-w2 containerd 에 다시 넣고 kubelet 이 대기 중인 새 파드를 다시 시도하게 둔다(1분 안에 Ready 가 아니면 다시 배포). 새 파드가 Ready 가 되고(JVM 기동 약 45초) 기준선 이체가 30초 창 두 번 연속 5xx 없이 끝나야 회복이다. target_health 는 compile-plan 이 요구하는 형식 조건이라 판정력이 없다"
         },
         "cleanup": {
           "required": true,

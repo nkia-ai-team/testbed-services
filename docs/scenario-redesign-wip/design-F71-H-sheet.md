@@ -186,3 +186,21 @@ F71-H 는 엔진(PostgreSQL), 적용 지점(DB 자신의 접근 설정), 실패 
 | 9 | DEBUG 로그 켜진 채 디스크 가득(A) | GitLab 2024-04 production#17848 | 버림(원칙 1): 컨테이너 로그는 kubelet 이 회전시켜 노드 디스크가 차지 않고, 앱이 파일로 쓰는 로그가 없음 |
 | 10 | 롤백한 옛 버전이 새 버전이 쓴 상태값을 못 읽음(J) | 공식 사후 보고 없음(웹 검색 1회, 개인 글뿐) | 버림(원칙 1) |
 | 11 | 비밀번호 해시 비용 상향 릴리스로 로그인 CPU 포화(J+A) | 공식 사후 보고 없음(웹 검색 1회) | 버림(원칙 1) |
+
+## 12. 첫 실행(곧 녹화 실행)에서 확인할 것
+
+§11 이 후보 목록이라 첫 실행 확인 항목은 이 절에 둔다(F39-H, F64-P 시트와 같은 배치). 첫 실행 F71-H-run-402fa1c3(2026-10-25, 66 tb-ops 러너, 정식 승격 `case-f71-h-v3-402fa1c3`)이 끝난 뒤 채웠다. 항목은 §4, §7, §9 에서 뽑았고, 괄호 안은 그 실행의 결과다(시각 UTC, 근거 장부 §6 2026-10-25 줄과 검증 보고서 `~/dev/testbed-ops/verifications/2026-10-25-0021-F71-H-run-402fa1c3.md` 3절 설계 시트 확인 항목 표). 다음 실행도 같은 항목을 본다.
+
+- 접속 주소: 거절된 host 가 지금 서비스 파드 주소와 하나씩 맞는지. 파드가 다시 떴으면 설계 때(§4-1) 주소와 다르다. (FATAL host 8개가 여덟 서비스 파드 주소와 1:1)
+- 실행기: run 이 128행만 네 규칙으로 바꾸고 cleanup 이 제자리에 되돌려 파일 크기 5743 바이트, 소유자 uid 70, 권한 0600, 117~126행 규칙이 그대로인지. (모두 맞음)
+- DB 로그: 'no pg_hba.conf entry for host "10.244.3.x", user "commerce"' 가 DB 자신의 로그(polestar_sms)로 들어오고, LOG 줄 'received SIGHUP' 은 들어오지 않는지. (FATAL 1,527줄, 평시 0줄, SIGHUP 0)
+- 서비스 로그와 풀: 여덟 서비스가 각자 자기 파드 주소로 거절 문구를 남기고, Hikari 'Connection is not available … (total=0 …)' 이 평시 0 에서 장애 때 여러 건으로 바뀌는지. (서비스마다 1개 주소, total=0 145건)
+- 풀 지표 두 물결: 10분 풀 넷이 먼저, 30분 풀 넷이 나중에 0 이 되는지. 30분 풀은 §9 계산(30분 안)보다 일찍 빌 수 있다. (cart, pricing, shipping 23:22, user 23:23, inventory, payment, product 23:32, order 23:34 로 t1 + 19~21분, product 조회 실패는 t1 + 18분 06초부터)
+- DPM 세션: current_session 이 0 근처까지가 아니라 DPM 과 노드 주소 접속분만 남는지. (62 → 6)
+- KCM: Unhealthy 와 BackOff 가 두 물결로 남고 롤아웃, ReplicaSet, testbed-postgres 이벤트는 없는지. (두 물결, 그 밖 이벤트 0)
+- F71-R 과 갈리는 관측: 러너의 commerce DB 조회(NodePort, 노드 주소)와 DPM 이 고장 중에도 되는지. (DPM 연속, pod_ready 연속 true)
+- 판정 시각: 계산 약 31.75분, min_hold 31m 직후에 성공이 서는지. (31분 03초, 그때 조회 실패는 이미 13분째)
+- 회복: cleanup 뒤 recovery 까지 걸린 시간. §9 계산 약 7.5분보다 길 수 있고 recovery 15m 안이어야 한다. (cleanup 23:44:24 → recovery 23:54:22 로 약 10분)
+- 배제와 중단: 진입점 429, commerce PostgreSQL NotReady, 진입점 연결 불가가 한 번도 없는지. (셋 다 없음, 진입점은 200, 400, 500, 502 뿐)
+- 요청량 불변(정답지 must_support 여섯째): 트레이스(10% 표본) 기반 골든 시그널로만 보이므로 약한 근거로 다룬다. (첫 실행에서도 약함)
+- 식별자: 로그에 시나리오 식별자가 없고 dpm_topsql 에 'pg_hba', 'pg_reload_conf' 흔적이 없는지(pg_stat_statements 기록 끔). (모두 0)

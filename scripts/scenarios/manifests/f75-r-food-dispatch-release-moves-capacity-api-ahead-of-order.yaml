@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "food namespace",
-    "matrix_location_transport": "K/kubectl food testbed-dispatch 컨테이너 image set(food-delivery-dispatch:latest→food-delivery-dispatch:1.10.0, 직전에 runner 가 109 docker 의 1.10.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery order-surge.js, target_rps=2, entry 30181)",
+    "matrix_location_transport": "K/kubectl food testbed-dispatch 컨테이너 image set(food-delivery-dispatch:latest→food-delivery-dispatch:1.10.0, 직전에 runner 가 tb-ops docker 의 1.10.0 을 docker save → ssh tb-w3 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(food-delivery order-surge.js, target_rps=2, entry 30181)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",

@@ -154,20 +154,22 @@ spec:
 
 현재 배포 대상은 호스트 `192.168.200.66`(x86 Xeon / Proxmox VE 9.2) 위
 VM들로 구성된 **kubeadm 단일 클러스터**다(2026-10 109 GB10 에서 이전). 게스트는 내부 NAT
-브리지 `vmbr1`(`192.168.122.0/24`). 러너, 팬아웃, 빌드 docker 는 VM `tb-ops`(192.168.122.20). 도메인 워크로드는 worker 노드에 `domain` 라벨로
-배치된다.
+브리지 `vmbr1`(`192.168.122.0/24`). 러너, 팬아웃, 빌드 docker 는 VM `tb-ops`(192.168.122.20). 도메인 워크로드는 매니페스트의
+`nodeSelector: kubernetes.io/hostname` 으로 도메인마다 worker 하나에 고정된다(commerce tb-w1,
+core-banking tb-w2, food-delivery tb-w3). 노드의 `domain` 라벨은 배치에 쓰이지 않는다(표시용, 2026-11-09 조회 때
+tb-w2 와 tb-w3 의 라벨 값은 배치와 뒤바뀌어 있었다).
 
 | VM | IP | 사양 | 역할 |
 |----|----|------|------|
 | tb-cp | 192.168.122.77 | 2vCPU/4GB | kubeadm control-plane |
-| tb-w1 | 192.168.122.184 | 4vCPU/12GB | worker · `domain=commerce` |
-| tb-w2 | 192.168.122.11 | 4vCPU/12GB | worker · `domain=food-delivery` |
-| tb-w3 | 192.168.122.14 | 4vCPU/12GB | worker · `domain=core-banking` |
+| tb-w1 | 192.168.122.184 | 4vCPU/12GB | worker, commerce 배치 |
+| tb-w2 | 192.168.122.11 | 4vCPU/12GB | worker, core-banking 배치 |
+| tb-w3 | 192.168.122.14 | 4vCPU/12GB | worker, food-delivery 배치 |
 | tb-runner | 192.168.122.206 | 2vCPU/4GB | 조종석(부하/장애 주입/mock, 클러스터 외부) |
 
-앱 이미지는 arm64로 빌드한다(`eclipse-temurin` 멀티아치). 각 worker는 SMS
-호스트 풀 + KCM 노드 역할도 겸한다. 관측 평면(lucida-next)은 109 밖 별도 AP
-서버다.
+앱 이미지는 tb-ops 에서 x86_64(amd64)로 빌드한다(`eclipse-temurin` 멀티아치). 각 worker는 SMS
+호스트 풀 + KCM 노드 역할도 겸한다. 관측 평면(lucida-next)은 66 밖 별도 AP
+서버(119)다.
 
 ---
 

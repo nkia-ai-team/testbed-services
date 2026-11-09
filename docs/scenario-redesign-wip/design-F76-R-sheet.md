@@ -161,3 +161,19 @@ commerce product-service 의 새 릴리스 1.4.0 은 "액상 상품에 니코틴
 | 10 | LaunchDarkly 2021-09-30(개인 속성을 선언한 환경에서만 난 결함) / commerce product | 원본 교체: 원본이 브라우저 화면 오류라 서버 5xx 가 아니어서(rejected 93행 벽) 같은 꼴의 서버 쪽 공식 사례 GitLab 2026-03-17 로 바꿨다 |
 | 11 | (공식 사례 없음) PostgreSQL synchronous_standby_names 잘못 설정으로 쓰기 커밋 멈춤, max_locks_per_transaction 공유 잠금표 고갈, idle_in_transaction_session_timeout 축소 / commerce PostgreSQL | 버림: 원칙 1(웹 검색 각 1~2회, 메일링 리스트와 블로그뿐) |
 | 12 | Coinbase 2020-05-09(인스턴스 단위 DNS 질의 속도 제한) / 파드 DNS | 버림: 원칙 3. 질의 한도가 걸릴 곳이 kube-system CoreDNS 라 119 미수집이고 JVM DNS 캐시로 질의가 적다 |
+
+## 11. 첫 실행(곧 녹화 실행)에서 확인할 것
+
+첫 실행 F76-R-run-7b1b6306(2026-10-24, 66 tb-ops 러너, 정식 승격 `case-f76-r-v3-7b1b6306`)이 끝난 뒤 채운 절이다. 항목은 §4, §7, §9 에서 뽑았고, 괄호 안은 그 실행의 결과다(시각 UTC, 근거 장부 §6 2026-10-24 줄과 검증 보고서 `~/dev/testbed-ops/verifications/2026-10-24-1330-F76-R-run-7b1b6306.md` 3-5절). 다음 실행도 같은 항목을 본다.
+
+- 계기: KCM 에 testbed-product ScalingReplicaSet 과 새 파드 Pulled 'commerce-product:1.4.0' 이 남는지. (12:28:28, 12:28:29 그대로)
+- 새 파드 기동과 첫 실패 시각: 프로브가 모두 `/actuator/health` 라 새 파드가 Ready 가 되어 옛 파드를 대신하는지, 첫 SEVERE 가 롤아웃 뒤 언제인지. §1 의 "약 1분" 보다 새 JVM 기동 시간만큼 늦을 수 있다. (startup probe 실패 18건 뒤 약 95초에 Ready, 첫 SEVERE 12:30:09 로 t1 + 1분 59초)
+- 근본 로그: product 의 SEVERE 'IllegalStateException: No match found' 가 `severity_text = SEVERE` 로 들어오고 스택이 nicotineMg 에서 toResponse 로 이어지는지. 스택은 `body` 가 아니라 `log_attributes['exception.stacktrace']` 에 있고 `body` 에는 첫 줄만 있다. (1,850줄, 30일 0줄)
+- 실패가 데이터를 따르는지: 카테고리 없는 목록은 모두, category=2 는 상품 있는 쪽만, category=1,3,4 는 실패 없음. 검색은 'Nova' 만 실패, 상세 1~16 은 200, 대량 등록 상품 상세는 평시처럼 404. (목록 138/138, category=2 13/24, category=1,3,4 0/83, 'Nova' 4/4, 상세 500 0)
+- 다른 경로: reserve-stock 과 checkout 이 정상인지. 롤아웃 전환 30~40초 동안 checkout 이 잠깐 5xx 를 낼 수 있다(2틱, must_rule_out 문턱 미달). (reserve-stock 표본 142 모두 200, checkout 일시 5xx 12:30:00~12:30:40 뒤 0)
+- 게이트웨이: 500 을 그대로 넘기고 product 서킷이 열리지 않는지. (게이트웨이 500 177, product 500 178, 서킷 로그 0)
+- DB: 목록 질의 모양과 DPM Top SQL 시간이 그대로이고 오류와 잠금 대기가 없는지. 새 파드 기동 때 init SQL 과 옛 파드, 새 파드 두 풀이 겹쳐 PostgreSQL-commerce stream-anomaly 와 `dpm.postgresql.session.session_utilization` 상승이 나올 수 있다. 실제 릴리스에서도 나는 기동 흔적이고 원인이 아니다. (목록 0.097 → 0.086ms, 오류와 잠금 0, session_utilization 62 → 72%)
+- 판정: 기준선 목록 단계 non-ok 비율이 예상 약 0.56 으로 문턱 0.3 을 3틱 넘는지, 동반 부하가 약 3rps 인지. (0.51~0.65, 성공 연속 11, achieved_rps 3.02~3.06)
+- 감지: product 로그 급증과 서버 스팬 오류율이 lucida 이상 탐지로 잡히는지. 판정에는 쓰지 않는다. (product log-anomaly 4건, 스팬 쪽은 장애 구간 안 이벤트 0)
+- cleanup 과 recovery: 이미지가 `commerce-product:latest` 로 돌아오고 1.4.0 ReplicaSet 이 replicas 0, tb-w1 containerd 에 1.4.0 의 이름과 ID 참조가 없으며, 기준선 목록 실패가 0.1 아래로 내려오는지. (12:38:57 recovery 확인, containerd 삭제는 러너 기록으로만 확인)
+- 식별자: KCM, 로그, 이미지 태그에 시나리오 식별자가 남지 않는지. (KCM 0건, 로그는 UUID 안의 우연한 일치뿐)

@@ -151,3 +151,18 @@ food payment-service 의 새 릴리스 1.4.0 은 PG 공급자를 코드 변경 �
 - [x] 감지, 피해 판정, RCA 증거가 각각 적혀 있다 (§6)
 - [x] 주입 도구가 데이터에 시나리오 id 를 남기지 않는다: 패치 문자열과 argv 에 id 없음(테스트) (§7)
 - [x] 부하 상한과 서킷브레이커를 고려해 피해가 실제로 날 계산이 있다: 즉시 예외라 결제 단계 주문 100% 실패, 동반 부하 없이 기준선으로 판정 (§9)
+
+## 11. 첫 실행(곧 녹화 실행)에서 확인할 것
+
+첫 실행 F79-R-run-3ae8c5c1(2026-10-25, 66 tb-ops 러너, 정식 승격 `case-f79-r-v3-3ae8c5c1`)이 끝난 뒤 채운 절이다. 항목은 §4, §6, §7, §9 에서 뽑았고, 괄호 안은 그 실행의 결과다(시각 UTC, 근거 장부 §6 2026-10-25 줄과 검증 보고서 `~/dev/testbed-ops/verifications/2026-10-25-0401-F79-R-run-3ae8c5c1.md` 1, 2, 3절). 다음 실행도 같은 항목을 본다.
+
+- 계기: KCM 에 testbed-payment ScalingReplicaSet 과 새 파드 Pulled 'food-delivery-payment:1.4.0' 이 남는지. (03:01:47, 03:01:48)
+- 새 파드 기동과 첫 피해 시각: 첫 'Bad authority' 가 롤아웃 뒤 언제인지. §1 의 "약 1분" 보다 새 파드 기동 시간만큼 늦을 수 있고, 되돌림 동안에도 결함 파드가 답해 피해가 이어진다. (startup probe 실패 구간 2분 15초, 첫 'Bad authority' t1 + 2분 33초, 되돌림 2분 35초, 결함 파드 단독 응답 15분 16초)
+- 근본 로그: order 의 ERROR 'Failed to process payment … PG mock unavailable: Bad authority', 서킷이 열린 뒤 'CircuitBreaker 'pg' is OPEN', 'Order fan-out payment failed … 502' 가 들어오는지. 같은 동안 payment 의 'Processed payment' 와 'PG /pay failed' 는 0줄이어야 한다. (126줄, 256줄, 893줄, 보존 창 안 이전 기록 0건, payment 두 문구 0줄)
+- 스팬: payment 서버 스팬 POST /api/payments 가 502 이고 payment 에서 PG 로 가는 클라이언트 스팬이 사라지는지. 평시 PG 클라이언트 스팬 양은 실행 전에 다시 잰다(정답지 must_support 의 "시간당 약 75건" 과 첫 실행 평시 실측이 다르다). (표본 21건 모두 502, p50 10ms → 319ms, PG 클라이언트 스팬 0, 평시 시간당 약 190~290건)
+- DB: 결제 행이 남지 않고(롤백) MySQL 질의 모양이 그대로인지. 결제 트랜잭션 되돌림으로 rollback_count 가 오를 수 있다. (rollback_count level_shift 이벤트 03:04:23)
+- 판정: 기준선 주문 생성 5xx 비율 0.8 이상과 2xx 비율 0.2 미만이 3틱 이어지는지. (5xx 0.89~1.0, 성공 연속 21)
+- 배제: 러너 must_rule_out 은 min_hold 뒤에만 판정하므로, min_hold 와 성공이 같은 틱이면 payment, order, MySQL NotReady 배제가 사실상 돌지 않는다. 그때는 녹화 데이터로 따로 확인한다. (첫 실행이 그랬고 119 근거로 여섯 항목 신호 없음을 확인)
+- 감지: order 오류율과 order ERROR 급증이 lucida 이상 탐지로 잡히는지. 판정에는 쓰지 않는다. (order log-anomaly 와 MySQL rollback_count 이벤트만, payment 대상 이벤트 0)
+- cleanup 과 recovery: 이미지가 `food-delivery-payment:latest` 로 돌아오고 1.4.0 은 replicas 0 ReplicaSet 이력뿐이며 tb-w3 노드 이미지 목록에 1.4.0 이 없는지, 기준선 주문 생성 2xx 가 0.7 이상으로 돌아오는지. (Deployment 별 이미지 8객체 매니페스트와 같음, 이미지 점검 종료 0)
+- 식별자: 이미지 태그, 패치 문자열, KCM, 로그에 시나리오 식별자가 남지 않는지.

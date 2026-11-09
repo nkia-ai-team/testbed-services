@@ -10,7 +10,7 @@
   },
   "injection": {
     "location": "banking namespace",
-    "matrix_location_transport": "K/kubectl banking testbed-account 컨테이너 image set(core-banking-account:latest→core-banking-account:1.3.0, 직전에 runner 가 109 docker 의 1.3.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=5, 하루 주기 1~4 iter/s 기준선 위 잔액 조회 표본 확보)",
+    "matrix_location_transport": "K/kubectl banking testbed-account 컨테이너 image set(core-banking-account:latest→core-banking-account:1.3.0, 직전에 runner 가 tb-ops docker 의 1.3.0 을 docker save → ssh tb-w2 ctr import, cleanup 이 되돌린 뒤 노드에서 이름과 ID 참조 모두 ctr images rm) + R/ssh load.north_south companion(core-banking transfer-heavy-surge.js, target_rps=5, 하루 주기 1~4 iter/s 기준선 위 잔액 조회 표본 확보)",
     "transport": "kubectl",
     "profile_refs": [
       "injector-profiles/k8s.image",
@@ -174,7 +174,7 @@
             }
           ],
           "consecutive_ticks": 3,
-          "_note": "min_hold 14m: 롤아웃 뒤 새 파드 기동 약 1분, 힙이 차 전체 GC 가 잇따르기까지 약 6분, 전체 GC 연속(지연) 약 3분, OutOfMemoryError 로 Tomcat 요청 처리가 멈춘 뒤 liveness 실패와 재기동 약 2~3분이 한 주기(약 11~13분)다(2026-10-09 로컬 실측: 같은 jar, JDK 21 x86_64(운영은 JDK 17 aarch64), 0.5 CPU, 1GiB, Serial GC 에서 기동 6분 뒤 전체 GC 연속, 8분 뒤 OOM 으로 acceptor 스레드가 죽어 요청이 응답 없이 걸림). 실패 구간 사이에는 잔액 조회가 정상이라 성공 판정은 실패 구간 안에서만 선다. 14분이 지나면 두 번째 실패 구간(약 21~24분)이 판정되어 녹화 구간에 실패 구간 두 번이 들어간다. timeout 28m 은 주기가 14분까지 길어져도 두 번째 구간을 받는다"
+          "_note": "min_hold 14m: 롤아웃 뒤 새 파드 기동 약 1분, 힙이 차 전체 GC 가 잇따르기까지 약 6분, 전체 GC 연속(지연) 약 3분, OutOfMemoryError 로 Tomcat 요청 처리가 멈춘 뒤 liveness 실패와 재기동 약 2~3분이 한 주기(약 11~13분)다(2026-10-09 로컬 실측: 같은 jar, JDK 21 x86_64(운영 66 은 JDK 17 x86_64), 0.5 CPU, 1GiB, Serial GC 에서 기동 6분 뒤 전체 GC 연속, 8분 뒤 OOM 으로 acceptor 스레드가 죽어 요청이 응답 없이 걸림). 실패 구간 사이에는 잔액 조회가 정상이라 성공 판정은 실패 구간 안에서만 선다. 14분이 지나면 두 번째 실패 구간(약 21~24분)이 판정되어 녹화 구간에 실패 구간 두 번이 들어간다. timeout 28m 은 주기가 14분까지 길어져도 두 번째 구간을 받는다"
         },
         "must_rule_out": {
           "any": [
