@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.table_readonly"
@@ -57,10 +58,13 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return argv, ORACLE_REMOTE
 
 
-ORACLE_REMOTE = br'''#!/usr/bin/env bash
+ORACLE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: the session is an operator's (SYSTEM through the listener, from the runner), not
+# SYSDBA inside the database pod. Nothing runs in the pod.
+db_target "$ns" "$pod"
+odb_env dba
 
 # ALL_TABLES.READ_ONLY is the authority. Never trust the DDL's exit status alone,
 # because a no-op ALTER also succeeds.
@@ -69,11 +73,11 @@ state() {
   # alter and `tr -d [:space:]` folds it into the value, so expect() compares
   # "Sessionaltered.NO" against "NO" and never matches (verified 2026-08-03).
   printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nselect read_only from all_tables where owner='"'"'%s'"'"' and table_name='"'"'%s'"'"';\nexit;\n' \
-    "$schema" "$table" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'
+    "$schema" "$table" | odb dba | tr -d '[:space:]'
 }
 flip() {
   printf 'alter session set container=FREEPDB1;\nalter table %s.%s %s;\nexit;\n' \
-    "$schema" "$table" "$1" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba >/dev/null
+    "$schema" "$table" "$1" | odb dba >/dev/null
 }
 expect() { [[ "$(state)" == "$1" ]]; }
 
@@ -100,7 +104,7 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import re
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -471,40 +473,43 @@ class RegistryContractTests(unittest.TestCase):
                 )
 
     def test_every_pg_lock_executor_reads_the_pid_from_real_psql_output(self) -> None:
-        """pid 추출은 실행기마다 따로 구현돼 있고, 같은 결함이 네 번 반복됐다.
+        """pid 추출은 실행기마다 따로 구현돼 있었고, 같은 결함이 네 번 반복됐다.
 
         psql 은 결과보다 `BEGIN` 명령 태그를 먼저 찍으므로 첫 줄은 절대 pid 가 아니다.
         db_lock_executor(2026-07-31) → timeline_multi_injection(08-03) →
         timeline_lock_mock·timeline_dual_fault(08-03) 순으로 같은 자리를 네 번 고쳤다.
-        파일마다 가드를 두는 대신 **pid 를 뽑는 모든 실행기**를 한 번에 검사한다.
+        v4 C6b 부터 네 실행기가 잠금 세션 하나(pg_lock_remote.SESSION_SCRIPT)를 함께 쓰므로, 실행기마다
+        제 pid 추출을 두지 않는지와 그 세션이 실제 psql 출력에서 pid 를 뽑는지를 검사한다.
 
-        입력은 2026-07-31 에 파드에서 실측한 로그 그대로다.
+        입력은 2026-07-31 에 파드에서 실측한 로그(BEGIN 태그 포함)와 지금 세션이 받는 -q 출력 둘이다.
         """
-        observed_pod_log = "BEGIN\n35250\n1\n"
-        checked = []
+        import tempfile
+
+        users = []
         for path in sorted((ROOT / "profiles").glob("*.py")):
             source = path.read_text(encoding="utf-8")
-            if "did not report a backend pid" not in source:
-                continue
-            pipelines = [
-                line.split('logs "$pod" 2>/dev/null |', 1)[1].rstrip(')"').strip()
-                for line in source.splitlines()
-                if 'logs "$pod" 2>/dev/null |' in line and 'pid="$(' in line
-            ]
-            self.assertTrue(pipelines, f"{path.name}: pid 추출 파이프라인을 찾지 못했다")
-            for pipeline in pipelines:
-                extracted = subprocess.run(
-                    ["sh", "-c", f"cat | {pipeline}"],
-                    input=observed_pod_log,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-                self.assertEqual(
-                    extracted, "35250", f"{path.name}: 실제 psql 출력에서 pid 를 못 뽑는다"
-                )
-            checked.append(path.name)
-        self.assertGreaterEqual(len(checked), 4, f"검사된 실행기가 너무 적다: {checked}")
+            self.assertNotIn("did not report a backend pid", source, f"{path.name}: 제 pid 추출이 남아 있다")
+            if "pgl_apply" in source and path.name != "pg_lock_remote.py":
+                self.assertIn("pg_lock_remote.bash_functions()", source, path.name)
+                users.append(path.name)
+        self.assertEqual(users, ["db_lock_executor.py", "timeline_dual_fault_executor.py",
+                                 "timeline_lock_mock_executor.py", "timeline_multi_injection_executor.py"])
+        spec = importlib.util.spec_from_file_location("pg_lock_remote", ROOT / "profiles" / "pg_lock_remote.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader
+        spec.loader.exec_module(module)
+        for observed in ("BEGIN\n35250\n1\nlocked\n", "35250\n1\nlocked\n", "35250\nlocked\n"):
+            with self.subTest(observed=observed), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                psql = tmp / "psql"
+                psql.write_text(f"#!/usr/bin/env bash\nprintf %s {shlex.quote(observed)}\nexec cat >/dev/null\n")
+                psql.chmod(0o755)
+                session = tmp / "session.sh"
+                session.write_text(module.SESSION_SCRIPT)
+                env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "LOCK_SQL": "SELECT 1;",
+                       "HOLD": "0", "READY_FILE": str(tmp / "ready")}
+                subprocess.run(["bash", str(session)], env=env, capture_output=True, timeout=30, check=True)
+                self.assertEqual((tmp / "ready").read_text().strip(), "35250")
 
     def test_executor_side_tables_cover_every_allowlisted_scenario(self) -> None:
         """실행기가 들고 있는 표도 레지스트리 목록과 같아야 한다.

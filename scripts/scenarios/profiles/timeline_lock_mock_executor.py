@@ -3,9 +3,10 @@
 
 Both compose the same pair of already-proven sub-injections:
 
-  [0] commerce PostgreSQL inventory table lock (EXCLUSIVE) — held by a short-lived
-      in-cluster client pod that impersonates the real application session identity
-      (G6/L1: the scenario must not sign itself into the capture).
+  [0] commerce PostgreSQL inventory table lock (EXCLUSIVE) — held by the runner
+      container's network session under the real application session identity
+      (G6/L1: the scenario must not sign itself into the capture; v4 C6b replaced the
+      in-cluster client pod, see pg_lock_remote.py).
 
       Table scope, not the F01-R/F15-T1 single-row scope, and the reason is
       reachability rather than blast-radius appetite. This timeline spends its k6
@@ -36,6 +37,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
+import pg_lock_remote
 from executor_common import (
     ExecutorError,
     approved_parameter_sets,
@@ -77,8 +80,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     # Commerce lock arm — identical contract to F15-T1 (timeline_dual_fault_executor).
     if params["commerce_namespace"] != "rca-testbed-commerce":
         raise ExecutorError("commerce lock namespace is not allowlisted")
-    if params["pg_access"] != "in-cluster-pod":
-        raise ExecutorError("postgresql lock injection must originate inside the cluster")
+    if params["pg_access"] != "runner-network":
+        raise ExecutorError("postgresql lock injection must be a network session from the runner")
     if params["pg_db_pod"] != "testbed-postgres-0" or params["pg_service"] != "testbed-postgres":
         raise ExecutorError("PostgreSQL lock target is outside the approved contract")
     if params["pg_schema"] != "inventory_schema" or params["pg_table"] != "inventory":
@@ -119,7 +122,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
 # Cleanup is the strict reverse — the mock's original expectations are restored
 # first, the lock session is terminated second. A failure on either side fails the
 # whole scenario so the run is marked DIRTY rather than silently half-cleaned.
-SCRIPT = br'''#!/usr/bin/env bash
+SCRIPT = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"
 pg_ns="$3"; db_pod="$4"; svc="$5"; secret="$6"; image="$7"; schema="$8"; table="$9"; scope="${10}"; mode="${11}"
@@ -128,88 +131,27 @@ food_ns="${14}"; mock_resource="${15}"; mock_path="${16}"; mock_status="${17}"; 
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
 state_dir="$state_root/${scenario_id}-lockmock"
 expectations="$state_dir/mock-expectations.json"
-pg_state="$state_dir/pg-client.pod"
 arm_pid="$state_dir/food-arm.pid"
 arm_log="$state_dir/food-arm.log"
-kc=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$pg_ns")
 kf=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$food_ns")
-sel="lucida.io/db-client=session"
 port=19189; pf_pid=""
 stop_pf() { [[ -z "$pf_pid" ]] || { kill "$pf_pid" 2>/dev/null || true; wait "$pf_pid" 2>/dev/null || true; }; pf_pid=""; }
 trap stop_pf EXIT
 
-# --- [0] PostgreSQL inventory lock, held by an in-cluster client pod (G6/L2) ---
-# Identity impersonates the real app; the lock is held by an open transaction
-# (idle in transaction), not by a server-side sleep; the source IP is a pod IP.
+# --- [0] PostgreSQL inventory lock, held from the runner (G6/L2, v4 C6b) ---
+# Identity impersonates the real app; the lock is held by an open transaction (idle in
+# transaction), not by a server-side sleep. The session is the runner container's psql through
+# the listener (pg_lock_remote.py); no client pod, no exec into the database pod.
 [[ "$scope" == table ]] || { echo "commerce arm is table scope only" >&2; exit 2; }
 case "$mode" in EXCLUSIVE) : ;; *) echo "unsupported lock mode: $mode" >&2; exit 2 ;; esac
-lock_sql="LOCK TABLE ${schema}.${table} IN ${mode} MODE;"
-p_admin() { "${kc[@]}" exec "$db_pod" -- sh -lc "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"$1\""; }
-p_tableok() { p_admin "SELECT to_regclass('${schema}.${table}') IS NOT NULL;" | tr -d '[:space:]' | grep -qx t; }
-p_clients() { "${kc[@]}" get pods -l "$sel" -o name 2>/dev/null | tr -d '\r'; }
+pg_dir="$state_dir/pg-lock"
 pg() {
+  db_target "$pg_ns" "$db_pod"
   case "$1" in
-    check) p_tableok; [[ -z "$(p_clients)" ]] ;;
-    run)
-      local token pod pid
-      token="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; pod="commerce-db-client-${token}"
-      "${kc[@]}" apply -f - >/dev/null <<YAML
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${pod}
-  namespace: ${pg_ns}
-  labels:
-    lucida.io/db-client: session
-spec:
-  restartPolicy: Never
-  terminationGracePeriodSeconds: 1
-  containers:
-    - name: client
-      image: ${image}
-      envFrom:
-        - secretRef:
-            name: ${secret}
-      env:
-        - name: PGHOST
-          value: "${svc}"
-        - name: PGAPPNAME
-          value: "${identity}"
-        - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ${secret}
-              key: POSTGRES_PASSWORD
-        - name: HOLD
-          value: "${hold}"
-        - name: SQL_PRE
-          value: "BEGIN; SELECT pg_backend_pid(); ${lock_sql}"
-        - name: SQL_POST
-          value: "ROLLBACK;"
-      command: ["sh", "-c"]
-      args:
-        - '{ printf "%s\n" "\$SQL_PRE"; sleep "\$HOLD"; printf "%s\n" "\$SQL_POST"; } | psql -X -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"'
-YAML
-      "${kc[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
-      pid=""
-      for _ in $(seq 1 30); do
-        # psql prints the BEGIN command tag before any result, so line 1 is never
-        # the pid. Take the first all-digits line. Same fix as db_lock_executor
-        # (2026-07-31) and timeline_multi_injection_executor (2026-08-03).
-        pid="$("${kc[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
-        [[ "$pid" =~ ^[0-9]+$ ]] && break
-        pid=""; sleep 1
-      done
-      [[ -n "$pid" ]] || { "${kc[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; echo "lock session did not report a backend pid" >&2; exit 1; }
-      p_admin "SELECT count(*) FROM pg_stat_activity WHERE pid=${pid} AND state='idle in transaction';" | tr -d '[:space:]' | grep -qx 1
-      printf '%s %s\n' "$pod" "$pid" >"$pg_state" ;;
-    cleanup)
-      if [[ -s "$pg_state" ]]; then local pod pid; read -r pod pid <"$pg_state" || true
-        [[ -n "${pod:-}" ]] && "${kc[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; fi
-      local q; for q in $(p_clients); do "${kc[@]}" delete "$q" --now --ignore-not-found >/dev/null; done
-      rm -f -- "$pg_state"
-      [[ -z "$(p_clients)" ]] ;;
-    recovery) [[ -z "$(p_clients)" ]]; p_tableok ;;
+    check) pgl_check "$pg_dir" "$schema" "$table" table "" "" ;;
+    run) pgl_apply "$pg_dir" "$schema" "$table" table "$mode" "" "" "$hold" "$identity" ;;
+    cleanup) pgl_release "$pg_dir" ;;
+    recovery) pgl_recover "$pg_dir" "$schema" "$table" table "" "" ;;
     *) exit 2 ;;
   esac
 }
@@ -285,7 +227,7 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''', pg_lock_remote.bash_functions())
 
 
 if __name__ == "__main__":

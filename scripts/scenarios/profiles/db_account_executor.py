@@ -79,6 +79,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.account"
@@ -191,10 +192,13 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return argv, ORACLE_REMOTE
 
 
-ORACLE_REMOTE = br'''#!/usr/bin/env bash
+# v4 C6b: every statement below is an operator's session (SYSTEM through the listener, from the
+# runner container), not SYSDBA inside the database pod. Nothing runs in the pod.
+ORACLE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; pdb="$4"; account="$5"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
+odb_env dba
 
 # DBA_USERS.ACCOUNT_STATUS is the authority. Never trust the ALTER's exit status
 # alone: locking an already locked account also succeeds.
@@ -202,11 +206,11 @@ state() {
   # feedback off first, or "Session altered." folds into the value (see
   # db_table_readonly_executor).
   printf 'set pages 0 feedback off heading off\nalter session set container=%s;\nselect account_status from dba_users where username='"'"'%s'"'"';\nexit;\n' \
-    "$pdb" "$account" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'
+    "$pdb" "$account" | odb dba | tr -d '[:space:]'
 }
 flip() {
   printf 'alter session set container=%s;\nalter user %s account %s;\nexit;\n' \
-    "$pdb" "$account" "$1" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba >/dev/null
+    "$pdb" "$account" "$1" | odb dba >/dev/null
 }
 expect() { [[ "$(state)" == "$1" ]]; }
 
@@ -231,14 +235,15 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
-ORACLE_PROFILE_REMOTE = br'''#!/usr/bin/env bash
+ORACLE_PROFILE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; pdb="$4"; account="$5"
 profile="$6"; resource="$7"; limit="$8"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
+odb_env dba
 q="'"
 
 # One line, three facts: the account's profile, the limit the named profile sets
@@ -249,11 +254,11 @@ state() {
   printf '%s\n' 'set pages 0 feedback off heading off' \
     "alter session set container=$pdb;" \
     "select u.profile||'|'||nvl((select p.limit from dba_profiles p where p.profile=$q$profile$q and p.resource_name=$q$resource$q),'NONE')||'|'||(select upper(value) from v\$parameter where name='resource_limit') from dba_users u where u.username=$q$account$q;" \
-    'exit;' | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'
+    'exit;' | odb dba | tr -d '[:space:]'
 }
 sql() {
   printf '%s\n' "alter session set container=$pdb;" "$@" 'exit;' \
-    | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba >/dev/null
+    | odb dba >/dev/null
 }
 expect() { [[ "$(state)" == "$1" ]]; }
 
@@ -283,19 +288,21 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
-MYSQL_LIMIT_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_LIMIT_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; account="$4"; host="$5"; resource="$6"; limit="$7"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
+mdb_env root
 case "$resource" in
   MAX_UPDATES_PER_HOUR) ;;
   *) exit 2 ;;
 esac
-# The first MySQL error line goes to stderr so a failed change is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+# root through the listener from the runner (v4 C6b); the first MySQL error line goes to stderr so a
+# failed change is readable in the runner log.
+mysql() { mdb "" "$1"; }
 
 # mysql.user is the authority: the account's four resource limits in one line
 # (updates|questions|connections per hour|user connections). Empty when the
@@ -328,9 +335,13 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
+# Still inside the database pod (v4 C6b, 확인 필요): the role whose password expires is the only
+# superuser the image creates, and the role every network login uses. Over the network the cleanup
+# could no longer log in to renew it, so it stays on the pod's local socket (trust, no password
+# check) until a separate administrator role exists.
 POSTGRES_EXPIRY_REMOTE = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; account="$4"
@@ -386,15 +397,21 @@ esac
 '''
 
 
-POSTGRES_HBA_REMOTE = br'''#!/usr/bin/env bash
+# v4 C6b: an operator's psql session from the runner container through the listener, not psql
+# inside the database pod. The runner arrives from an allowed source (the node address NodePort
+# clients are SNATed to), so it keeps logging in after the narrowing; preflight and run check that.
+# The file is read and written with the server's own functions (pg_read_binary_file, lo_export: the
+# server process rewrites it in place, keeping its owner and mode) and the reload is confirmed by the
+# configuration load time of a new session, so nothing runs in the pod.
+POSTGRES_HBA_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; account="$4"; allowed="$5"; omitted="$6"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
+pdb_env
 
-# SQL travels in the environment over the pod's local socket (trust: the local rules
-# are never edited, so the narrowed file never locks this executor out). pg_stat_statements
-# does not record these sessions. The first psql error line goes to stderr for the runner log.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+# Untracked by pg_stat_statements, so nothing here reaches Top SQL. The first psql error line goes to
+# stderr for the runner log.
+sql() { pdb "$1" "-c pg_stat_statements.track=none"; }
 
 # The narrowed rules, one per allowed source, and the same sources as the
 # (address, netmask) pairs pg_hba_file_rules reports.
@@ -422,59 +439,63 @@ expect() { [[ "$(state)" == "$1" ]]; }
 bites() {
   [[ "$(sql "SELECT count(*) FILTER (WHERE client_addr <<= '$omitted'::inet AND NOT client_addr <<= ANY (ARRAY[$nets]::inet[])) > 0 AND count(*) FILTER (WHERE NOT client_addr <<= '$omitted'::inet AND NOT client_addr <<= ANY (ARRAY[$nets]::inet[])) = 0 FROM pg_stat_activity WHERE usename = '$account' AND client_addr IS NOT NULL" | tr -d '[:space:]')" == t ]]
 }
-
-# A network login with the role's own password from the pod's address, which sits in the
-# omitted network like the services: ok or refused. The password stays inside the pod.
-netlogin() {
-  "${k[@]}" exec "$pod" -- sh -lc 'ip=$(hostname -i | awk "{print \$1}"); case "$ip" in ""|127.*|::1) echo noip; exit 0 ;; esac; if PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=5 psql -X -At -h "$ip" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select 1" >/dev/null 2>&1; then echo ok; else echo refused; fi' | tr -d '[:space:]'
+# This session's own source must stay allowed, or the cleanup could not log in after the narrowing.
+self_allowed() {
+  [[ "$(sql "SELECT inet_client_addr() <<= ANY (ARRAY[$nets]::inet[])" | tr -d '[:space:]')" == t ]] \
+    || { echo "the runner's database session does not come from an allowed source" >&2; return 1; }
 }
-# The pod's own address must sit in the omitted network, or netlogin would not stand
-# for the services.
+# The database pod's own address must sit in the omitted network (the services' pods share its node
+# network), read from the API instead of the pod.
 ip_int() { local a b c d; IFS=. read -r a b c d <<<"$1"; echo $(( (a << 24) | (b << 16) | (c << 8) | d )); }
 in_cidr() {
   local ip=$1 net=${2%/*} bits=${2#*/} m
   m=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
   (( ($(ip_int "$ip") & m) == ($(ip_int "$net") & m) ))
 }
-inside() { local ip; ip=$("${k[@]}" exec "$pod" -- sh -c 'hostname -i' | awk '{print $1}'); [[ "$ip" =~ ^[0-9.]+$ ]] && in_cidr "$ip" "$omitted"; }
+inside() { local ip; ip=$(dbo_k get pod "$pod" -o 'jsonpath={.status.podIP}'); [[ "$ip" =~ ^[0-9.]+$ ]] && in_cidr "$ip" "$omitted"; }
 
-# Rewrite the file in place (cat into it keeps its owner and mode): narrow puts the rules
-# where the catch-all line was; restore puts the catch-all back where the first narrowed
-# rule is and drops the rest. Nothing else in the file moves.
+# Rewrite the file in place: narrow puts the rules where the catch-all line was; restore puts the
+# catch-all back where the first narrowed rule is and drops the rest. Nothing else in the file moves.
+# The bytes travel base64-encoded; lo_export opens the existing file for writing and truncates it, so
+# it keeps its owner and mode.
 edit() {
-  local hba; hba=$(sql "SHOW hba_file")
-  "${k[@]}" exec "$pod" -- env HBA="$hba" MODE="$1" RULES="$rules" sh -c '
-    t=$(mktemp)
-    if [ "$MODE" = narrow ]; then
-      awk '"'"'/^[[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+all[[:space:]]+scram-sha-256[[:space:]]*$/ { printf "%s", ENVIRON["RULES"]; next } { print }'"'"' "$HBA" >"$t"
-    else
-      awk '"'"'BEGIN { c = split(ENVIRON["RULES"], r, "\n"); for (i = 1; i <= c; i++) if (r[i] != "") ours[r[i]] = 1 }
-           ($0 in ours) { if (!done) { print "host all all all scram-sha-256"; done = 1 } next } { print }'"'"' "$HBA" >"$t"
-    fi
-    rc=$?; [ "$rc" -eq 0 ] && { cat "$t" >"$HBA"; rc=$?; }; rm -f "$t"; exit "$rc"'
+  local cur new
+  cur=$(sql "SELECT encode(pg_read_binary_file(current_setting('hba_file')), 'base64')" | tr -d '\n')
+  [[ -n "$cur" ]] || { echo "could not read the host-based access file" >&2; return 1; }
+  if [[ "$1" == narrow ]]; then
+    new=$(base64 -d <<<"$cur" | RULES="$rules" awk '/^[[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+all[[:space:]]+scram-sha-256[[:space:]]*$/ { printf "%s", ENVIRON["RULES"]; next } { print }' | base64 -w0)
+  else
+    new=$(base64 -d <<<"$cur" | RULES="$rules" awk 'BEGIN { c = split(ENVIRON["RULES"], r, "\n"); for (i = 1; i <= c; i++) if (r[i] != "") ours[r[i]] = 1 }
+         ($0 in ours) { if (!done) { print "host all all all scram-sha-256"; done = 1 } next } { print }' | base64 -w0)
+  fi
+  [[ -n "$new" ]]
+  sql "DO \$\$ DECLARE o oid; BEGIN o := lo_from_bytea(0, decode('$new', 'base64')); PERFORM lo_export(o, current_setting('hba_file')); PERFORM lo_unlink(o); END \$\$" >/dev/null
 }
 reload() { [[ "$(sql "SELECT pg_reload_conf()" | tr -d '[:space:]')" == t ]]; }
-# The reload is a signal: wait until a new login sees the new rules.
-until_login() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do [[ "$(netlogin)" == "$1" ]] && return 0; sleep 1; done; return 1; }
+loaded_at() { sql "SELECT pg_conf_load_time()"; }
+# The reload is a signal: wait until a new session sees a configuration loaded after it.
+until_reloaded() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do [[ "$(sql "SELECT pg_conf_load_time() > '$1'::timestamptz")" == t ]] && return 0; sleep 1; done; echo "configuration was not reloaded" >&2; return 1; }
 
 case "$action" in
   preflight)
-    # One catch-all rule, none of the narrowed rules, a clean file, the services' kind of
-    # login works, and the role's sessions sit in the omitted network -- or the run would
-    # "succeed" against a file an earlier, uncleaned run left narrowed.
+    # One catch-all rule, none of the narrowed rules, a clean file, the role's sessions sit in the
+    # omitted network, and this session stays allowed -- or the run would "succeed" against a file an
+    # earlier, uncleaned run left narrowed, or lock out its own cleanup.
     expect "1|0|0"
     inside
     bites
-    [[ "$(netlogin)" == ok ]]
+    self_allowed
     ;;
   run)
     expect "1|0|0"
     inside
     bites
+    self_allowed
+    before=$(loaded_at)
     edit narrow
     expect "0|$n|0"
     reload
-    until_login refused
+    until_reloaded "$before"
     ;;
   cleanup)
     # Idempotent: nothing to do when the catch-all is back and no narrowed rule is left.
@@ -483,16 +504,16 @@ case "$action" in
       edit restore
     fi
     expect "1|0|0"
+    before=$(loaded_at)
     reload
-    until_login ok
+    until_reloaded "$before"
     ;;
   recovery)
     expect "1|0|0"
-    [[ "$(netlogin)" == ok ]]
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

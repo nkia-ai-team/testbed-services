@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.row_delete"
@@ -77,22 +78,23 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return argv, ORACLE_REMOTE
 
 
-ORACLE_REMOTE = br'''#!/usr/bin/env bash
+ORACLE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; keycol="$6"; archive="$7"; keys_csv="$8"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
+odb_env dba
 for ident in "$schema" "$table" "$keycol" "$archive"; do [[ "$ident" =~ ^[A-Z][A-Z0-9_]{0,29}$ ]] || exit 2; done
 [[ "$keys_csv" =~ ^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$ ]] || exit 2
 IFS=, read -r -a keys <<<"$keys_csv"
 want="${#keys[@]}"
 inlist="$(printf "'%s'," "${keys[@]}")"; inlist="${inlist%,}"
 
-# One sqlplus per call, SYSDBA inside the pod like the other Oracle executors.
-# "whenever sqlerror" makes a refused statement fail the action and roll back.
+# One operator session per call (SYSTEM through the listener from the runner, v4 C6b; it used to be
+# SYSDBA inside the pod). "whenever sqlerror" makes a refused statement fail the action and roll back.
 sqlrun() {
   { printf 'set pages 0 feedback off heading off\nwhenever sqlerror exit failure rollback\nalter session set container=FREEPDB1;\n'
     printf '%s\n' "$1"
-    printf 'exit;\n'; } | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba
+    printf 'exit;\n'; } | odb dba
 }
 num() { sqlrun "$1" | tr -d '[:space:]'; }
 # Checks ask only how many of the listed ids exist; Top SQL may keep them.
@@ -137,7 +139,7 @@ commit;" >/dev/null
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

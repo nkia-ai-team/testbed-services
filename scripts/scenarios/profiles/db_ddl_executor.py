@@ -95,7 +95,7 @@ another engine: a plain ADD CONSTRAINT ... FOREIGN KEY with no ALGORITHM or LOCK
 foreign_key_checks on, MySQL cannot add a foreign key in place and silently copies the whole table
 instead; for the length of the copy every write to the child table and to the referenced parent table
 waits for the metadata lock ("Waiting for table metadata lock") while reads go on.  Run starts the
-migration in the background inside the database pod (it outlives run, which holds the runner's
+migration in the background (a client session on the runner since v4 C6b; it outlives run, which holds the runner's
 coordinator lock) and returns once the server shows its session.  The copy ends on its own; cleanup
 waits for it up to `drain_seconds`, stops it if it is still running (the server drops the half-built
 copy), then drops the foreign key, which is metadata only.  Rows, indexes and the parent are untouched.
@@ -122,7 +122,7 @@ that takes them at a fixed pace, so the statement stays active for about `export
 lock on the table that long.  The ALTER cannot get its lock and waits, and because a waiting ACCESS EXCLUSIVE
 request conflicts with every other lock, every later statement on the table, reads included, queues behind it.
 Nothing fails at once: the queued sessions wait with no timeout (the role keeps lock_timeout and statement_timeout at
-0, as the original had no database-side timeouts).  Run starts the export in the background inside the database pod,
+0, as the original had no database-side timeouts).  Run starts the export in the background (a client on the runner),
 waits until it holds its lock, starts the migration in the background and returns once the server shows the
 migration waiting behind the export.  The export ends on its own; the migration then takes its lock, adds the column
 and the queue drains.  Cleanup waits for that up to `drain_seconds` (ending the export if it is still running and
@@ -144,9 +144,9 @@ and takes it at a fixed pace, so the statement stays active for about `export_se
 lock that long.  The ALTER waits ("Waiting for table metadata lock") with the server's lock_wait_timeout (one year by
 default), and because a pending exclusive request outranks new shared requests, every later statement on the table,
 plain reads included, waits behind it.  Run checks that the table can still take an instant change (InnoDB allows 64
-row versions per table; each run adds one and its cleanup one more), starts the export in the background inside the
-database pod as the application account, waits until it holds its lock, starts the migration in the background as
-root and returns once the server shows the migration waiting while the export runs.  The export ends on its own; the
+row versions per table; each run adds one and its cleanup one more), starts the export in the background as the
+application account (a client on the runner since v4 C6b), waits until it holds its lock, starts the migration in the
+background as root and returns once the server shows the migration waiting while the export runs.  The export ends on its own; the
 migration then takes its lock, adds the column and the queue drains.  Cleanup waits for that up to `drain_seconds`
 (ending the export and the migration with KILL QUERY if either is still there), then drops the column, also instantly.
 Rows, indexes and other tables are untouched.
@@ -164,7 +164,7 @@ connection, and the two rewrites share the database's CPU and disk, so each last
 that no maintenance session is open, that the role and database keep lock_timeout and statement_timeout at 0 (as the
 original had no database-side timeouts), that open sessions leave room under max_connections and that the data volume
 has room for a second copy of the tables and their indexes; it then starts one statement per table in the background
-inside the database pod, each as an operator's psql session (the client's default application name), and returns once
+on the runner, each as an operator's psql session (the client's default application name), and returns once
 the server shows every session holding its table's ACCESS EXCLUSIVE lock.  The rewrites end on their own and the queues
 drain.  Cleanup waits for that up to `drain_seconds` and cancels what is still running (a cancelled VACUUM FULL keeps
 the old copy); nothing else needs undoing, because a rewrite keeps every row, index and constraint.  The probes run
@@ -190,6 +190,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
 
 PROFILE_ID = "db.ddl"
@@ -590,11 +591,13 @@ case "$action" in
 esac
 '''
 
-MYSQL_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; db="$5"; table="$6"; index="$7"; column="$8"; minimum="$9"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
-mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>/dev/null'; }
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
+mysql() { mdb "$db" "$1" 2>/dev/null; }
 # A multi-column index prints as one line (index:col1,col2); a single column prints as before.
 definition() { mysql "SELECT CONCAT(INDEX_NAME,':',GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX)) FROM information_schema.statistics WHERE table_schema='$db' AND table_name='$table' AND index_name='$index' GROUP BY INDEX_NAME;"; }
 # Read at most $minimum rows: a full COUNT of a multi-million-row table would itself be a heavy query in the recording window.
@@ -606,14 +609,16 @@ case "$action" in
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-MYSQL_RENAME_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_RENAME_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; renamed="$7"; minimum="$8"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 # The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed rename is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "$db" "$1"; }
 # Column presence is read from information_schema only (no table access, no metadata lock on the table).
 has_column() { mysql "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$db' AND table_name='$table' AND column_name='$1';"; }
 # lock_wait_timeout bounds the metadata-lock wait behind in-flight transactions (server default is a year).
@@ -627,14 +632,16 @@ case "$action" in
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-MYSQL_HOLD_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_HOLD_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; index="$6"; column="$7"; minimum="$8"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 # The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "$db" "$1"; }
 # Table presence is read from information_schema only (no metadata lock on the table).
 present() { mysql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$db' AND table_name='$1';"; }
 # The backfill tool's own tables: shadow copies (_vt_vrp_) and held tables (_vt_hld_).
@@ -670,14 +677,16 @@ case "$action" in
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-MYSQL_DROP_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_DROP_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; hold="$6"; minimum="$7"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 # The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "$db" "$1"; }
 # The dropped table waits in the system schema under <database>_<table>; presence is read from information_schema only.
 held="${db}_${table}"
 present() { mysql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$1' AND table_name='$2';"; }
@@ -703,19 +712,21 @@ case "$action" in
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-ORACLE_DROP_REMOTE = br'''#!/usr/bin/env bash
+ORACLE_DROP_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; pdb="$4"; schema="$5"; table="$6"; index_map="$7"; constraint_map="$8"; minimum="$9"; free_mb="${10}"
 trigger_map="${11:-}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+odb_env dba
 # Run one SQL script; every error is fatal and its first ORA- line goes to stderr for the runner log.
 # feedback off comes first: while it is on, sqlplus echoes "Session altered." into the output.
 sql() {
   local out
   out=$(printf 'set pages 0 lines 400 feedback off heading off trimspool on\nwhenever sqlerror exit failure\nalter session set container=%s;\n%s\nexit;\n' "$pdb" "$1" \
-    | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba) || { grep -m1 'ORA-' <<<"$out" >&2 || true; return 1; }
+    | odb dba) || { grep -m1 'ORA-' <<<"$out" >&2 || true; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 value() { sql "$1" | tr -d '[:space:]'; }
@@ -785,17 +796,19 @@ flashback table $schema.$table to before drop;" >/dev/null
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-ORACLE_IDENTITY_REMOTE = br'''#!/usr/bin/env bash
+ORACLE_IDENTITY_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; pdb="$4"; schema="$5"; table="$6"; column="$7"; pk="$8"; rewind="$9"; hold="${10}"; minimum="${11}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+odb_env dba
 # Run one SQL script; every error is fatal and its first ORA- line goes to stderr for the runner log.
 sql() {
   local out
   out=$(printf 'set pages 0 lines 400 feedback off heading off trimspool on\nwhenever sqlerror exit failure\nalter session set container=%s;\n%s\nexit;\n' "$pdb" "$1" \
-    | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba) || { grep -m1 'ORA-' <<<"$out" >&2 || true; return 1; }
+    | odb dba) || { grep -m1 'ORA-' <<<"$out" >&2 || true; return 1; }
   printf '%s\n' "$out" | sed '/^[[:space:]]*$/d'
 }
 value() { sql "$1" | tr -d '[:space:]'; }
@@ -883,17 +896,19 @@ alter table $schema.$table read write;"; then
  recovery) original ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-PG_SWAP_REMOTE = br'''#!/usr/bin/env bash
+PG_SWAP_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"
 constraint="$7"; index="$8"; rebuild="$9"; timeout="${10}"; minimum="${11}"
-k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
-# SQL travels in the environment; the first psql error line goes to stderr for the runner log.
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+pdb_env
+# psql runs on the runner and reaches the listener (v4 C6b); the first psql error line goes to stderr for the runner log.
 # PGOPTIONS carries a per-session setting (the migration's statement_timeout) without a multi-statement
 # string, because CREATE INDEX CONCURRENTLY refuses to run inside the implicit transaction of one.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="${2:-}" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+sql() { pdb "$1" "${2:-}"; }
 rel="$schema.$table"
 # Every index on the table except the primary key, one line each: name|valid|definition.
 indexes() { sql "SELECT c.relname || '|' || i.indisvalid || '|' || pg_get_indexdef(i.indexrelid) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = '$rel'::regclass AND NOT i.indisprimary ORDER BY c.relname;"; }
@@ -937,16 +952,19 @@ case "$action" in
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
 
-PG_DROP_REMOTE = br'''#!/usr/bin/env bash
+PG_DROP_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; hold="$6"; minimum="$7"
-k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
-# SQL travels in the environment; the first psql line on stderr (error or notice) goes to stderr for the runner log.
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+pdb_env
+# psql runs on the runner and reaches the listener (v4 C6b); the first psql line on stderr (error or notice) goes to
+# stderr for the runner log.
 # PGOPTIONS carries per-session settings: every step runs with pg_stat_statements tracking off, so nothing it runs reaches Top SQL.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="${2:-}" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+sql() { pdb "$1" "${2:-}"; }
 quiet="-c pg_stat_statements.track=none"
 # Presence is read from the catalog only (no lock on the table).
 present() { sql "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$1' AND c.relname = '$2' AND c.relkind = 'r';" "$quiet"; }
@@ -981,17 +999,20 @@ case "$action" in
  recovery) check ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
 
-PG_SEQUENCE_REMOTE = br'''#!/usr/bin/env bash
+PG_SEQUENCE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"; sequence="$7"; pk="$8"; rewind="$9"; hold="${10}"; minimum="${11}"
-k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
-# SQL travels in the environment; the first psql line on stderr (error or notice) goes to stderr for the runner log.
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+pdb_env
+# psql runs on the runner and reaches the listener (v4 C6b); the first psql line on stderr (error or notice) goes to
+# stderr for the runner log.
 # PGOPTIONS carries per-session settings: every step runs with pg_stat_statements tracking off, so nothing it runs
 # reaches Top SQL, and writable, so it is not caught by the database's read-only default during the switch.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="${2:-}" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+sql() { pdb "$1" "${2:-}"; }
 quiet="-c pg_stat_statements.track=none -c default_transaction_read_only=off"
 # Run holds the runner's coordinator lock while it runs, and the runner's lease is 30 s: the read-only hold is
 # `hold` seconds, the table lock is waited for at most 2 s, and run makes about fifteen short calls besides
@@ -1077,18 +1098,22 @@ END \$\$;" "$cutover" >/dev/null; then
  recovery) original ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
-MYSQL_FK_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_FK_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; fk="$7"; parent="$8"; parent_column="$9"
 drain="${10}"; minimum="${11}"; max_sessions="${12}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 # The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "$db" "$1"; }
 # The migration as written: no ALGORITHM or LOCK clause, so with foreign_key_checks on the server copies the table.
 statement="ALTER TABLE $table ADD CONSTRAINT $fk FOREIGN KEY ($column) REFERENCES $parent ($parent_column)"
-log=/tmp/schema-migration.log
+# The migration's client runs on the runner in the background (v4 C6b; it used to run inside the pod).
+run_dir="$(dbo_run_dir "db-ddl-fk-$db-$table")"
+log="$run_dir/schema-migration.log"
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
 foreign_keys() { number "$(mysql "SELECT COUNT(*) FROM information_schema.referential_constraints WHERE constraint_schema='$db' AND table_name='$table';")"; }
@@ -1106,9 +1131,10 @@ check() {
   # Sessions that give up waiting stay on the server until the copy ends: keep room under max_connections.
   sessions=$(number "$(mysql "SELECT COUNT(*) FROM information_schema.processlist;")")
   [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
-  # The copy needs about the table's size again on the data volume; ask for twice that.
+  # The copy needs about the table's size again on the data volume; ask for twice that. The free space is the
+  # node filesystem's from the kubelet (the data volume is a local-path PV on it), not df inside the pod.
   need=$(number "$(mysql "SELECT CEIL((data_length + index_length) / 1024) * 2 FROM information_schema.tables WHERE table_schema='$db' AND table_name='$table';")")
-  free=$(number "$("${k[@]}" exec "$pod" -- df -Pk /var/lib/mysql | awk 'NR==2 {print $4}')")
+  free=$(number "$(node_fs KB | awk '{print $3}')")
   [[ "$free" -ge "$need" ]] || { echo "only ${free}K free on the data volume, the copy needs ${need}K" >&2; return 1; }
 }
 # A child row whose parent is gone fails the copy part way (1452) and ends the lock early.
@@ -1117,12 +1143,12 @@ case "$action" in
  preflight) check; [[ "$(orphans)" == 0 ]] ;;
  run)
   check
-  "${k[@]}" exec "$pod" -- env DB="$db" SQL="$statement" LOG="$log" sh -c 'nohup mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" >"$LOG" 2>&1 </dev/null &'
+  mdb_spawn root "$db" "$statement" "$log"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -z "$(migration)" ]] || exit 0
     sleep 1
   done
-  echo "migration did not start: $("${k[@]}" exec "$pod" -- sh -c "grep -v 'Using a password' $log | head -n 1")" >&2
+  echo "migration did not start: $(head -n 1 "$log" 2>/dev/null)" >&2
   exit 4
   ;;
  cleanup)
@@ -1141,23 +1167,25 @@ case "$action" in
     # Dropping a foreign key is metadata only; lock_wait_timeout bounds the brief metadata lock.
     mysql "SET SESSION lock_wait_timeout=10; ALTER TABLE $table DROP FOREIGN KEY $fk, ALGORITHM=INPLACE, LOCK=NONE;" >/dev/null
   fi
-  "${k[@]}" exec "$pod" -- rm -f "$log"
+  rm -rf -- "$run_dir"
   original
   ;;
  recovery) rows; original ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
 
-PG_QUEUE_REMOTE = br'''#!/usr/bin/env bash
+PG_QUEUE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"; ctype="$7"; join="$8"; join_column="$9"
 export_seconds="${10}"; drain="${11}"; minimum="${12}"; max_sessions="${13}"; export_columns="${14:-}"
-k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+pdb_env
 # Probes travel in the environment and run untracked by pg_stat_statements, so none of them reaches Top SQL;
 # the first psql line on stderr goes to stderr for the runner log.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+sql() { pdb "$1" "-c pg_stat_statements.track=none"; }
 rel="$schema.$table"
 # The two statements as the export job and the migration send them; their sessions are found by this exact text.
 # With export columns the export copies the table's own rows out (an event table read into the warehouse) and is paced
@@ -1168,23 +1196,23 @@ rel="$schema.$table"
 if [[ -n "$export_columns" && -n "$join" ]]; then
   export_sql="COPY (SELECT $export_columns FROM $rel m JOIN $join i ON i.$join_column = m.id) TO STDOUT"
   paced="$join"
-  export_sh=/tmp/sales-export.sh
-  export_log=/tmp/sales-export.log
+  export_log=sales-export.log
 elif [[ -n "$export_columns" ]]; then
   export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"
   paced="$rel"
-  export_sh=/tmp/event-export.sh
-  export_log=/tmp/event-export.log
+  export_log=event-export.log
 else
   export_sql="COPY (SELECT u.id, u.email, u.name, t.created_at, t.expires_at FROM $rel u JOIN $schema.$join t ON t.$join_column = u.id) TO STDOUT"
   paced="$schema.$join"
-  export_sh=/tmp/user-export.sh
-  export_log=/tmp/user-export.log
+  export_log=user-export.log
 fi
+# Both clients run on the runner in the background (v4 C6b; they used to run inside the pod).
+run_dir="$(dbo_run_dir "db-ddl-queue-$schema-$table")"
+export_log="$run_dir/$export_log"
 migration_sql="ALTER TABLE $rel ADD COLUMN $column $ctype"
 # Both connect the way the application's own tools do (the driver's default application name).
 identity="PostgreSQL JDBC Driver"
-migration_log=/tmp/schema-migration.log
+migration_log="$run_dir/schema-migration.log"
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
 # A session by its exact statement text, never the probe's own.
@@ -1222,28 +1250,24 @@ case "$action" in
   est=$(number "$(sql "SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = '$paced'::regclass;")")
   (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
   rate=$(( est / export_seconds + 1 ))
-  "${k[@]}" exec -i "$pod" -- sh -c "cat >$export_sh" <<'EOS'
-psql -X -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$EXPORT_SQL" | awk -v r="$RATE" 'NR % r == 0 { system("sleep 1") }'
-EOS
-  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background inside the
-  # database pod and outlive run; run only waits to see each one in place, at most ten one-second looks each.
-  "${k[@]}" exec "$pod" -- env EXPORT_SQL="$export_sql" RATE="$rate" PGAPPNAME="$identity" SH="$export_sh" LOG="$export_log" \
-    sh -c 'nohup sh "$SH" >"$LOG" 2>&1 </dev/null &'
+  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background on the runner
+  # (their own client sessions through the listener) and outlive run; run only waits to see each one in place, at
+  # most ten one-second looks each. The rows travel to the runner, where the paced reader drops them.
+  pdb_spawn_paced "$export_sql" "$rate" "$export_log" "$identity"
   held=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     held=$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.query = '$export_sql' AND l.relation = '$rel'::regclass AND l.granted;")
     [[ "$held" == 1 ]] && break
     sleep 1
   done
-  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $("${k[@]}" exec "$pod" -- head -n 1 "$export_log")" >&2; exit 4; }
-  "${k[@]}" exec "$pod" -- env MIGRATION_SQL="$migration_sql" PGAPPNAME="$identity" LOG="$migration_log" \
-    sh -c 'nohup psql -X -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$MIGRATION_SQL" >"$LOG" 2>&1 </dev/null &'
+  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $(head -n 1 "$export_log" 2>/dev/null)" >&2; exit 4; }
+  pdb_spawn "$migration_sql" "$migration_log" "$identity"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ "$(sql "SELECT count(*) FROM pg_stat_activity m WHERE m.query = '$migration_sql' AND m.wait_event_type = 'Lock' AND (SELECT e.pid FROM pg_stat_activity e WHERE e.query = '$export_sql' LIMIT 1) = ANY (pg_blocking_pids(m.pid));")" == 1 ]] && exit 0
     sleep 1
   done
   cancel_migration; stop_export
-  echo "migration did not queue behind the export: $("${k[@]}" exec "$pod" -- head -n 1 "$migration_log")" >&2
+  echo "migration did not queue behind the export: $(head -n 1 "$migration_log" 2>/dev/null)" >&2
   exit 4
   ;;
  cleanup)
@@ -1261,22 +1285,24 @@ EOS
     [[ "$(has_column)" == 0 ]] && break
     sql "SET lock_timeout = '5s'; ALTER TABLE $rel DROP COLUMN IF EXISTS $column;" >/dev/null || sleep 2
   done
-  "${k[@]}" exec "$pod" -- rm -f "$export_sh" "$export_log" "$migration_log"
+  rm -rf -- "$run_dir"
   original
   ;;
  recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
 
-MYSQL_QUEUE_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_QUEUE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; ctype="$7"; export_columns="$8"
 export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"; join="${13:-}"; join_column="${14:-}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 # Probes run as root; the first MySQL error line goes to stderr so a failed step is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env DB="$db" SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "$db" "$1"; }
 # The two statements as the export job and the migration send them; their sessions are found by this exact text.
 export_sql="SELECT $export_columns FROM $table"
 paced="$table"
@@ -1287,9 +1313,10 @@ if [[ -n "$join" ]]; then
   paced="$join"
 fi
 migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INSTANT"
-export_sh=/tmp/table-export.sh
-export_log=/tmp/table-export.log
-migration_log=/tmp/schema-migration.log
+# Both clients run on the runner in the background (v4 C6b; they used to run inside the pod).
+run_dir="$(dbo_run_dir "db-ddl-queue-$db-$table")"
+export_log="$run_dir/table-export.log"
+migration_log="$run_dir/schema-migration.log"
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
 # A session by its exact statement text, never the probe's own.
@@ -1309,6 +1336,10 @@ check() {
   # export early; the server keeps neither (lock_wait_timeout is a year, max_execution_time 0), as the original had none.
   [[ "$(number "$(mysql "SELECT @@global.lock_wait_timeout;")")" -ge 3600 ]]
   [[ "$(mysql "SELECT @@global.max_execution_time;")" == 0 ]]
+  # The export's client is on the runner now (v4 C6b). If the runner vanished without closing the connection, the
+  # server ends the export when it cannot send for net_write_timeout seconds, and with it the shared lock the queue
+  # waits behind; keep that bound short (MySQL's default is 60 s).
+  [[ "$(number "$(mysql "SELECT @@global.net_write_timeout;")")" -le 120 ]] || { echo "net_write_timeout is above 120 s" >&2; return 1; }
   # Without metadata lock instrumentation the queue could not be seen or confirmed.
   [[ "$(mysql "SELECT enabled FROM performance_schema.setup_instruments WHERE name = 'wait/lock/metadata/sql/mdl';")" == YES ]]
   [[ "$(waiting)" == 0 ]]
@@ -1330,13 +1361,11 @@ case "$action" in
   est=$(number "$(mysql "SELECT table_rows FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$paced';")")
   (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
   rate=$(( est / export_seconds + 1 ))
-  "${k[@]}" exec -i "$pod" -- sh -c "cat >$export_sh" <<'EOS'
-mysql --quick -N -B -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$DB" -e "$EXPORT_SQL" | awk -v r="$RATE" 'NR % r == 0 { system("sleep 1") }'
-EOS
-  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background inside the
-  # database pod and outlive run; run only waits to see each one in place, at most ten one-second looks each.
-  "${k[@]}" exec "$pod" -- env DB="$db" EXPORT_SQL="$export_sql" RATE="$rate" SH="$export_sh" LOG="$export_log" \
-    sh -c 'nohup sh "$SH" >"$LOG" 2>&1 </dev/null &'
+  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background on the runner
+  # (their own client sessions through the listener; the export as the application account, the migration as root)
+  # and outlive run; run only waits to see each one in place, at most ten one-second looks each. The rows travel to
+  # the runner, where the paced reader drops them.
+  mdb_spawn_paced app "$db" "$export_sql" "$rate" "$export_log"
   held=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     id=$(id_of "$export_sql")
@@ -1346,15 +1375,14 @@ EOS
     fi
     sleep 1
   done
-  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $("${k[@]}" exec "$pod" -- sh -c "grep -v 'Using a password' $export_log | head -n 1")" >&2; exit 4; }
-  "${k[@]}" exec "$pod" -- env DB="$db" SQL="$migration_sql" LOG="$migration_log" \
-    sh -c 'nohup mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$DB" -e "$SQL" >"$LOG" 2>&1 </dev/null &'
+  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $(head -n 1 "$export_log" 2>/dev/null)" >&2; exit 4; }
+  mdb_spawn root "$db" "$migration_sql" "$migration_log"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ "$(mysql "SELECT COUNT(*) FROM information_schema.processlist m WHERE m.info = '$migration_sql' AND m.state = 'Waiting for table metadata lock' AND EXISTS (SELECT 1 FROM information_schema.processlist e WHERE e.info = '$export_sql');")" == 1 ]] && exit 0
     sleep 1
   done
   cancel_migration; stop_export
-  echo "migration did not queue behind the export: $("${k[@]}" exec "$pod" -- sh -c "grep -v 'Using a password' $migration_log | head -n 1")" >&2
+  echo "migration did not queue behind the export: $(head -n 1 "$migration_log" 2>/dev/null)" >&2
   exit 4
   ;;
  cleanup)
@@ -1372,27 +1400,31 @@ EOS
     [[ "$(has_column)" == 0 ]] && break
     mysql "SET SESSION lock_wait_timeout = 5; ALTER TABLE $table DROP COLUMN $column, ALGORITHM=INSTANT;" >/dev/null || sleep 2
   done
-  "${k[@]}" exec "$pod" -- rm -f "$export_sh" "$export_log" "$migration_log"
+  rm -rf -- "$run_dir"
   original
   ;;
  recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
 
-PG_VACUUM_REMOTE = br'''#!/usr/bin/env bash
+PG_VACUUM_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; tables="$4"; drain="$5"; minimum="$6"; max_sessions="$7"; min_free_mb="$8"
-k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+pdb_env
 # Probes travel in the environment and run untracked by pg_stat_statements, so none of them reaches Top SQL;
 # the first psql line on stderr goes to stderr for the runner log.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+sql() { pdb "$1" "-c pg_stat_statements.track=none"; }
 read -r -a rels <<<"$tables"
 (( ${#rels[@]} > 0 ))
 # The statement as the operator sends it, one session per table; each session is found by this exact text.
 statement() { printf 'VACUUM (FULL) %s' "$1"; }
-log_of() { printf '/tmp/table-maintenance-%s.log' "${1//./-}"; }
+# The maintenance clients run on the runner in the background (v4 C6b; they used to run inside the pod).
+run_dir="$(dbo_run_dir "db-ddl-maintenance-$ns")"
+log_of() { printf '%s/table-maintenance-%s.log' "$run_dir" "${1//./-}"; }
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
 # A session by its exact statement text, never the probe's own.
@@ -1414,11 +1446,11 @@ check() {
   sessions=$(number "$(sql "SELECT count(*) FROM pg_stat_activity;")")
   [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
   # Each rewrite writes a second copy of its table and indexes before it drops the first, and the WAL it writes
-  # stays bounded by max_wal_size (1 GB here) until the next checkpoint.
+  # stays bounded by max_wal_size (1 GB here) until the next checkpoint. Size, use and room are the node
+  # filesystem's from the kubelet (the data volume is a local-path PV on it), not df inside the pod.
   need=0
   for rel in "${rels[@]}"; do need=$(( need + $(number "$(sql "SELECT (pg_total_relation_size('$rel') / 1048576)::bigint;")") )); done
-  dir=$(sql "SHOW data_directory;")
-  read -r size used avail < <("${k[@]}" exec "$pod" -- df -Pm "$dir" | tail -n 1 | awk '{ print $2, $3, $4 }')
+  read -r size used avail < <(node_fs MB)
   size=$(number "$size"); used=$(number "$used"); avail=$(number "$avail")
   (( avail >= min_free_mb && avail >= need + 1024 && (used + need + 1024) * 100 < size * 80 )) || {
     echo "data volume has ${avail} MB free of ${size} MB for ${need} MB of tables" >&2; return 1; }
@@ -1428,12 +1460,11 @@ case "$action" in
  preflight) check ;;
  run)
   check
-  # Run holds the runner's coordinator lock (30 s lease): the statements start together in the background inside the
-  # database pod, each as an operator's psql session, and outlive run; run only waits to see every one hold its
-  # table, at most ten one-second looks.
+  # Run holds the runner's coordinator lock (30 s lease): the statements start together in the background on the
+  # runner, each as an operator's psql session through the listener, and outlive run; run only waits to see every one
+  # hold its table, at most ten one-second looks.
   for rel in "${rels[@]}"; do
-    "${k[@]}" exec "$pod" -- env MAINTENANCE_SQL="$(statement "$rel")" PGAPPNAME=psql LOG="$(log_of "$rel")" \
-      sh -c 'nohup psql -X -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$MAINTENANCE_SQL" >"$LOG" 2>&1 </dev/null &'
+    pdb_spawn "$(statement "$rel")" "$(log_of "$rel")" psql
   done
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     held=0
@@ -1444,7 +1475,7 @@ case "$action" in
     sleep 1
   done
   cancel_all
-  for rel in "${rels[@]}"; do echo "$rel: $("${k[@]}" exec "$pod" -- head -n 1 "$(log_of "$rel")")" >&2; done
+  for rel in "${rels[@]}"; do echo "$rel: $(head -n 1 "$(log_of "$rel")" 2>/dev/null)" >&2; done
   echo "maintenance did not take every table" >&2
   exit 4
   ;;
@@ -1456,13 +1487,13 @@ case "$action" in
   cancel_all
   for _ in $(seq 1 30); do original && break; sleep 1; done
   original || { echo "maintenance session still open" >&2; exit 3; }
-  for rel in "${rels[@]}"; do "${k[@]}" exec "$pod" -- rm -f "$(log_of "$rel")"; done
+  rm -rf -- "$run_dir"
   rows
   ;;
  recovery) rows; original; quiet ;;
  *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

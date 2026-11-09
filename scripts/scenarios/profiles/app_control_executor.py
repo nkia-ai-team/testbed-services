@@ -11,8 +11,9 @@ F18-P(릴레이 정지)·F21-P(응답 지연)의 주입 표면. 세 가지를 �
   · 호출자 파라미터형 제어 — 접근 로그가 정답을 자백한다(같은 계보).
 
 DB 행(outbox_relay_control·response_delay_control)이면 셋 다 없다: 앱은 어차피
-2초마다 DB 를 폴링하므로 컨트롤 조회는 평시 노이즈와 구별되지 않고, UPDATE 는 DB
-파드 안에서 sysdba 로 이뤄져 앱 트레이스·접근 로그 어디에도 남지 않는다.
+2초마다 DB 를 폴링하므로 컨트롤 조회는 평시 노이즈와 구별되지 않고, UPDATE 는 운영자
+세션(러너 컨테이너에서 리스너로 붙은 DBA 계정, v4 C6b. 예전에는 DB 파드 안 sysdba)이라
+앱 트레이스·접근 로그 어디에도 남지 않고 DB 노드에 프로세스도 남지 않는다.
 
 제어 행은 두 종류다. 플래그형(F18-P)은 enabled 를 1<->0 으로 넘기고, 값형(F21
 계열, 0804 #27·#28 병합 재설계)은 delay_ms 에 "얼마나 느리게"를 쓴다. 값형은
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
 
 PROFILE_ID = "app.control"
@@ -115,27 +117,24 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     ]), SCRIPT
 
 
-SCRIPT = br'''#!/usr/bin/env bash
+SCRIPT = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; sid="$7"
 col="$8"; injected="$9"; clean="${10}"; engine="${11}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
 case "$engine" in
   # `set feedback off` must precede everything else: sqlplus echoes command tags
   # while feedback is on and tr folds them into the value (F01-P, 2026-08-03).
   oracle)
-    sql() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\n%s\nexit;\n' "$schema" "$1" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba; }
+    odb_env dba
+    sql() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\n%s\nexit;\n' "$schema" "$1" | odb dba; }
     now="systimestamp" ;;
-  # The root password lives in the pod's own env (mysql-secret) and must stay
-  # unexpanded here, so the remote command is single-quoted -- a local name inside
-  # the remote text would arrive empty and the UPDATE would silently address
-  # nothing (F01-P, 4398722). MYSQL_PWD instead of -p keeps the password off the
-  # remote argv, and the statement rides on stdin (like sqlplus above) so the SQL
-  # never appears in the pod's argv either: KCM collects process command lines,
-  # and an injection that names its own table there has confessed. Piping stdin
-  # is also what keeps `exec -i` from eating this script's own remaining lines.
+  # root through the listener from the runner (v4 C6b). The password comes from
+  # mysql-secret into the client's environment only, and nothing runs in the pod,
+  # so neither the SQL nor the password reaches a process command line KCM collects.
   mysql)
-    sql() { printf '%s\n' "$1" | "${k[@]}" exec -i "$pod" -- env DB="$schema" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B "$DB"'; }
+    mdb_env root
+    sql() { mdb "$schema" "$1"; }
     now="now()" ;;
   *) exit 2 ;;
 esac
@@ -154,7 +153,7 @@ case "$action" in
   recovery) value_is "$clean" ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

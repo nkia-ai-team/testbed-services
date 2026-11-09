@@ -4,6 +4,7 @@ import copy
 import os
 import subprocess
 import tempfile
+import time
 import importlib.util
 import sys
 import re
@@ -16,6 +17,7 @@ sys.path.insert(0, str(PROFILES))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import node_guard_fakes  # noqa: E402  (sys.path 조작 뒤에야 import 가능)
+import db_operator_fakes  # noqa: E402
 
 
 def load(name: str):
@@ -30,6 +32,9 @@ host = load("host_stress_executor")
 ddl = load("db_ddl_executor")
 lock = load("db_lock_executor")
 workload = load("db_workload_executor")
+# v4 C6b: the bodies carry the shared operator-session functions; checks on what a body itself does
+# look at its own text only.
+own_body = load("db_operator_remote").without_library
 
 
 def plan(profile: str, scenario: str, params: dict, location: dict | None = None) -> dict:
@@ -42,7 +47,7 @@ class DbHostFoundations(unittest.TestCase):
         ddl.validate("F02-P", p, {})
         argv, body = ddl.build_invocation(plan("db.ddl", "F02-P", p), "run")
         self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertIn("information_schema.statistics", script)
         self.assertIn("ALTER TABLE $table DROP INDEX $index", script)
         self.assertIn("CREATE INDEX $index ON $table($column)", script)
@@ -55,16 +60,18 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
         self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "restaurants", "region", "delivery_region", "20"])
         self.assertNotIn("F36-R", argv)
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F36-R", script)
         self.assertIn("information_schema.columns", script)
         self.assertIn("SET SESSION lock_wait_timeout=10; ALTER TABLE $table RENAME COLUMN $1 TO $2, ALGORITHM=INSTANT;", script)
         self.assertIn('rename "$column" "$renamed"', script)
         self.assertIn('rename "$renamed" "$column"', script)
         self.assertNotIn("DROP", script)
-        # 메타데이터 잠금 대기 실패(1205) 같은 MySQL 오류 첫 줄을 러너 로그에 남긴다.
-        self.assertIn('grep -v "Using a password" "$e" | head -n 1 >&2', script)
+        # 메타데이터 잠금 대기 실패(1205) 같은 MySQL 오류 첫 줄을 러너 로그에 남긴다(v4 C6b: 운영자 세션 클라이언트가
+        # 첫 오류 줄을 stderr 로 낸다, OperatorClientTests). DB 파드에 exec 하지 않는다.
+        self.assertIn('mysql() { mdb "$db" "$1"; }', script)
         self.assertNotIn("2>/dev/null", script)
+        self.assertNotIn(" exec ", script)
         # 인덱스 계약(F33-R)은 여전히 인덱스 스크립트로 간다.
         _, index_body = ddl.build_invocation(plan("db.ddl", "F33-R", ddl.CONTRACTS["F33-R"]), "run")
         self.assertIn("DROP INDEX", index_body.decode())
@@ -82,7 +89,7 @@ class DbHostFoundations(unittest.TestCase):
             "auth_tokens_token_key", "idx_auth_tokens_token", "idx_auth_tokens_token_new", "2s", "100000",
         ])
         self.assertNotIn("F33-P", argv)
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F33-P", script)
         # CIC 는 여러 문장 문자열(암묵 트랜잭션) 안에서 돌 수 없어 statement_timeout 을 PGOPTIONS 로 건다.
         self.assertIn('"CREATE UNIQUE INDEX CONCURRENTLY $rebuild ON $rel ($column);" "-c statement_timeout=$timeout"', script)
@@ -108,7 +115,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
                                     "menu_popularity_summary", "idx_menu_popularity_restaurant", "restaurant_id", "20"])
         self.assertNotIn("F48-R", argv)
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F48-R", script)
         self.assertIn("CREATE TABLE $shadow LIKE $table; ALTER TABLE $shadow ADD INDEX $index ($column); INSERT INTO $shadow SELECT * FROM $table;", script)
         self.assertIn("RENAME TABLE $table TO $held;", script)
@@ -121,7 +128,8 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn('mysql "DROP TABLE $shadow;"', script)
         self.assertIn("held table left beside", script)
         self.assertNotIn("DELETE", script)
-        self.assertIn('grep -v "Using a password" "$e" | head -n 1 >&2', script)
+        self.assertIn('mysql() { mdb "$db" "$1"; }', script)
+        self.assertNotIn(" exec ", script)
         # 열 이름 바꾸기(F36-R)와 인덱스 계약(F33-R)은 각자의 스크립트로 간다.
         _, rename_body = ddl.build_invocation(plan("db.ddl", "F36-R", ddl.CONTRACTS["F36-R"]), "run")
         self.assertIn("RENAME COLUMN", rename_body.decode())
@@ -170,7 +178,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery",
                                     "orders", "mysql", "1000"])
         self.assertNotIn("F53-R", argv)
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F53-R", script)
         self.assertIn('held="${db}_${table}"', script)
         self.assertIn('move "$db.$table" "$hold.$held"', script)
@@ -233,7 +241,7 @@ class DbHostFoundations(unittest.TestCase):
                                      "BANKING", "TRANSFERS"])
         self.assertEqual(argv[9:], [p["indexes"], p["constraints"], "1000", "2048"])
         self.assertNotIn("F35-H", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F35-H", script)
         self.assertIn("drop table $schema.$table;", script)
         # PURGE 가 있으면 휴지통을 거치지 않아 되돌릴 수 없다.
@@ -269,7 +277,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[9:], [p["indexes"], p["constraints"], "1000", "1024", p["triggers"]])
         self.assertEqual(p["triggers"], "UPDATE:BEFORE_EACH_ROW:ENABLED=TRG_ACCOUNTS_UPDATED_AT")
         self.assertNotIn("F35-P", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F35-P", script)
         self.assertIn("alter trigger $schema.", script)
         self.assertIn("from dba_triggers t where t.table_owner='$schema' and t.table_name='$table'", script)
@@ -293,7 +301,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "product_schema",
                                     "products", "public", "1000"])
         self.assertNotIn("F23-P", argv)
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F23-P", script)
         self.assertIn('quiet="-c pg_stat_statements.track=none"', script)
         run = script[script.index(" run)"):script.index(" cleanup)")]
@@ -340,7 +348,7 @@ class DbHostFoundations(unittest.TestCase):
                                      "BANKING", "TRANSFERS"])
         self.assertEqual(argv[9:], ["ID", "SYS_C008748", "60000", "6", "1000"])
         self.assertNotIn("F57-R", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F57-R", script)
         self.assertIn("whenever sqlerror exit failure", script)
         self.assertIn("ddl_lock_timeout = $wait", script)
@@ -407,7 +415,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[3:], ["run", "rca-testbed-food", "testbed-mysql-0", "fooddelivery", "dispatch_events",
                                     "dispatch_id", "fk_dispatch_events_dispatch", "dispatches", "id", "300", "1000", "90"])
         self.assertNotIn("F60-R", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F60-R", script)
         # 마이그레이션은 쓴 그대로: 방식 지정이 없어야 서버가 복사를 고른다. 방식 지정은 되돌리기(외래 키 지우기)에만 있다.
         self.assertIn('statement="ALTER TABLE $table ADD CONSTRAINT $fk FOREIGN KEY ($column) REFERENCES $parent ($parent_column)"', script)
@@ -415,17 +423,19 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("DROP FOREIGN KEY $fk, ALGORITHM=INPLACE, LOCK=NONE", script)
         self.assertIn("@@global.foreign_key_checks", script)
         run = script[script.index(" run)"):script.index(" cleanup)")]
-        # run 은 러너 coordinator lock 을 쥔 채 돈다: 마이그레이션은 DB 파드 안에서 백그라운드로 띄우고, 세션이 보이는지 1초씩
-        # 많아야 10번 본 뒤 돌아온다. 복사를 기다리지 않는다.
-        self.assertIn("nohup mysql", run)
-        self.assertIn("</dev/null &", run)
+        # run 은 러너 coordinator lock 을 쥔 채 돈다: 마이그레이션은 러너에서 백그라운드 클라이언트 세션으로 띄우고(v4 C6b,
+        # 예전에는 DB 파드 안), 세션이 보이는지 1초씩 많아야 10번 본 뒤 돌아온다. 복사를 기다리지 않는다.
+        self.assertIn('mdb_spawn root "$db" "$statement" "$log"', run)
+        self.assertNotIn(" exec ", script)
+        # 데이터 볼륨 여유는 파드 안 df 가 아니라 kubelet 요약 API 의 노드 파일시스템이다.
+        self.assertIn("free=$(number \"$(node_fs KB | awk '{print $3}')\")", script)
         self.assertIn("for _ in 1 2 3 4 5 6 7 8 9 10; do", run)
         self.assertEqual(run.count("sleep"), 1)
         # 마이그레이션 세션은 문장으로 찾고 찾는 질의 자기 세션은 뺀다.
         self.assertIn("id <> CONNECTION_ID()", script)
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
         # cleanup 은 복사가 스스로 끝나기를 drain 까지 기다리고, 남았으면 멈춘 뒤 외래 키를 지운다.
-        order = ["end=$((SECONDS + drain))", "KILL QUERY", "DROP FOREIGN KEY", "rm -f"]
+        order = ["end=$((SECONDS + drain))", "KILL QUERY", "DROP FOREIGN KEY", "rm -rf"]
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("lock_wait_timeout=10", cleanup)
@@ -457,7 +467,7 @@ class DbHostFoundations(unittest.TestCase):
                                     "inventory_movements", "id", "inventory_movements_id_seq",
                                     "inventory_movements_pkey", "100000", "6", "1000"])
         self.assertNotIn("F57-P", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F57-P", script)
         # 실행기 세션은 기록되지 않고(track=none), 전환 중 DB 기본값(읽기 전용)에 걸리지 않게 쓰기 가능으로 연다.
         self.assertIn('quiet="-c pg_stat_statements.track=none -c default_transaction_read_only=off"', script)
@@ -539,7 +549,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(argv[3:], ["run", "rca-testbed-commerce", "testbed-postgres-0", "user_schema", "users",
                                     "marketing_opt_in", "boolean", "auth_tokens", "user_id", "420", "300", "10", "70"])
         self.assertNotIn("F66-R", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F66-R", script)
         # 두 문장은 원본 꼴 그대로: 기본값 없는 열 추가(카탈로그만), 같은 표를 읽는 내보내기. 세션은 이 문장으로 찾는다.
         self.assertIn('migration_sql="ALTER TABLE $rel ADD COLUMN $column $ctype"', script)
@@ -552,21 +562,23 @@ class DbHostFoundations(unittest.TestCase):
         self.assertNotIn("NOT NULL", migration_line.upper())
         self.assertIn("pid <> pg_backend_pid() AND query = '$1'", script)
         # 탐침은 Top SQL 에 남지 않고, 두 세션은 드라이버 기본 이름으로 붙는다(시나리오 id 없음).
-        self.assertIn('PGOPTIONS="-c pg_stat_statements.track=none"', script)
+        self.assertIn('sql() { pdb "$1" "-c pg_stat_statements.track=none"; }', script)
         self.assertIn('identity="PostgreSQL JDBC Driver"', script)
+        self.assertNotIn(" exec ", script)
         # 마이그레이션이 포기하지 않고 줄을 서려면 시간 제한이 없어야 하고, 대기 세션이 쌓여도 연결 한도 아래여야 한다.
         self.assertIn('[[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]', script)
         self.assertIn('[[ "$sessions" -le "$max_sessions" ]]', script)
         run = script[script.index(" run)"):script.index(" cleanup)")]
         # 순서: 확인 → 행 추정으로 속도 → 내보내기를 백그라운드로 → 그 잠금 확인 → 마이그레이션을 백그라운드로 →
         # 내보내기 뒤에서 기다리는지 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 둘 다 기다리지 않는다.
-        order = ["  check\n", "reltuples", "rate=$(( est / export_seconds + 1 ))", "nohup sh \"$SH\"",
-                 "l.granted", "nohup psql", "pg_blocking_pids(m.pid)"]
+        # v4 C6b: 두 세션은 러너의 백그라운드 클라이언트다. 내보내기는 받는 쪽이 천천히 받는 꼴 그대로(pdb_spawn_paced).
+        order = ["  check\n", "reltuples", "rate=$(( est / export_seconds + 1 ))",
+                 'pdb_spawn_paced "$export_sql" "$rate" "$export_log" "$identity"',
+                 "l.granted", 'pdb_spawn "$migration_sql" "$migration_log" "$identity"', "pg_blocking_pids(m.pid)"]
         positions = [run.index(x) for x in order]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 2)
         self.assertEqual(run.count("sleep 1\n"), 2)
-        self.assertIn("NR % r == 0 { system(\"sleep 1\") }", run)
         self.assertNotIn("pg_sleep", script)
         # 어느 쪽이 자리를 잡지 못하면 띄운 것을 거두고 멈춘다.
         self.assertIn("|| { stop_export;", run)
@@ -574,7 +586,7 @@ class DbHostFoundations(unittest.TestCase):
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
         # cleanup 은 내보내기가 스스로 끝나기를 drain 까지 기다리고, 남았으면 끝내고 마이그레이션을 취소한 뒤 열을 지운다.
         order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration", "DROP COLUMN IF EXISTS $column",
-                 "rm -f"]
+                 "rm -rf"]
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("SET lock_timeout = '5s'", cleanup)
@@ -611,7 +623,7 @@ class DbHostFoundations(unittest.TestCase):
                                     "id, aggregate_type, aggregate_id, event_type, topic, payload, created_at, "
                                     "published_at"])
         self.assertNotIn("F66-P", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F66-P", script)
         _, f66r_body = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
         self.assertEqual(body, f66r_body, "both run the same remote script; only the arguments differ")
@@ -619,7 +631,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(len(f66r_argv), 3 + 13, "F66-R keeps its thirteen arguments and its joined export")
         # 열 목록이 있으면 표 자기 행을 내보내고 그 표의 행 추정으로 속도를 정한다. 없으면 F66-R 의 회원 ⋈ 토큰이다.
         self.assertIn('export_columns="${14:-}"', script)
-        branch = script[script.index('if [[ -n "$export_columns" ]]; then'):script.index("fi\nmigration_sql=")]
+        branch = script[script.index('if [[ -n "$export_columns" ]]; then'):script.index("\nfi\n", script.index('if [[ -n "$export_columns" ]]; then'))]
         self.assertIn('export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"', branch)
         self.assertIn('paced="$rel"', branch)
         self.assertIn('paced="$schema.$join"', branch)
@@ -631,9 +643,9 @@ class DbHostFoundations(unittest.TestCase):
         # 더하는 열은 기본값도 NOT NULL 도 없어 카탈로그만 바꾼다.
         self.assertNotIn("DEFAULT", p["add_column_type"].upper())
         self.assertNotIn("NOT NULL", p["add_column_type"].upper())
-        # 파드 안 파일 이름에 시나리오 id 가 없다.
-        self.assertIn("export_sh=/tmp/event-export.sh", branch)
-        self.assertIn("export_log=/tmp/event-export.log", branch)
+        # 로그 파일 이름에 시나리오 id 가 없다(v4 C6b: 러너의 상태 디렉터리, 파드가 아니다).
+        self.assertIn("export_log=event-export.log", branch)
+        self.assertIn('run_dir="$(dbo_run_dir "db-ddl-queue-$schema-$table")"', script)
         # 24시간 보존 약 7만 2천 행: 내보내기 시작 조건(행 추정 >= 100 x 420)과 preflight 최소 행.
         self.assertLessEqual(100 * p["export_seconds"], 72000)
         self.assertGreaterEqual(p["minimum_rows"], 10000)
@@ -659,7 +671,7 @@ class DbHostFoundations(unittest.TestCase):
                                     "id, order_id, courier_id, eta_minutes, status, assigned_at",
                                     "360", "300", "100000", "90"])
         self.assertNotIn("F60-H", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F60-H", script)
         self.assertEqual(body, ddl.MYSQL_QUEUE_REMOTE)
         _, f66r_body = ddl.build_invocation(plan("db.ddl", "F66-R", ddl.CONTRACTS["F66-R"]), "run")
@@ -685,22 +697,25 @@ class DbHostFoundations(unittest.TestCase):
         run = script[script.index(" run)"):script.index(" cleanup)")]
         # 순서: 확인 → 행 추정으로 속도 → 내보내기를 백그라운드로(앱 계정, 한 행씩) → 그 잠금 확인 → 마이그레이션을
         # 백그라운드로(root) → 메타데이터 잠금 대기 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 기다리지 않는다.
-        order = ["  check\n", "table_rows", "rate=$(( est / export_seconds + 1 ))", "nohup sh \"$SH\"",
-                 "lock_status = 'GRANTED'", "nohup mysql -uroot", "'Waiting for table metadata lock'"]
+        # v4 C6b: 두 세션은 러너의 백그라운드 클라이언트다(내보내기는 앱 계정으로 한 행씩, 마이그레이션은 root).
+        order = ["  check\n", "table_rows", "rate=$(( est / export_seconds + 1 ))",
+                 'mdb_spawn_paced app "$db" "$export_sql" "$rate" "$export_log"',
+                 "lock_status = 'GRANTED'", 'mdb_spawn root "$db" "$migration_sql" "$migration_log"',
+                 "'Waiting for table metadata lock'"]
         positions = [run.index(x) for x in order]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 2)
-        self.assertIn('mysql --quick -N -B -u"$MYSQL_USER"', run)
-        self.assertIn("NR % r == 0 { system(\"sleep 1\") }", run)
+        # 러너가 FIN 없이 사라져도 서버가 쓰기를 못 하면 net_write_timeout 뒤 내보내기를 끝내 공유 잠금이 풀린다.
+        self.assertIn("@@global.net_write_timeout", script)
         # 인위 지연(SLEEP())이 아니라 받는 쪽이 천천히 받아 문장이 활성으로 남는다.
         self.assertNotIn("SLEEP(", script)
         self.assertIn("|| { stop_export;", run)
         self.assertIn("cancel_migration; stop_export", run)
-        # 파드 안 파일 이름에 시나리오 id 가 없다.
-        self.assertIn("export_sh=/tmp/table-export.sh", script)
+        # 로그 파일 이름에 시나리오 id 가 없다(러너의 상태 디렉터리).
+        self.assertIn('run_dir="$(dbo_run_dir "db-ddl-queue-$db-$table")"', script)
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
         order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration",
-                 "DROP COLUMN $column, ALGORITHM=INSTANT", "rm -f"]
+                 "DROP COLUMN $column, ALGORITHM=INSTANT", "rm -rf"]
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("SET SESSION lock_wait_timeout = 5", cleanup)
@@ -765,7 +780,7 @@ class DbHostFoundations(unittest.TestCase):
         for other in ("F60-H", "F53-H"):
             other_argv, _ = ddl.build_invocation(plan("db.ddl", other, ddl.CONTRACTS[other]), "run")
             self.assertEqual(len(other_argv[3:]), 12)
-        script = body.decode()
+        script = own_body(body.decode())
         # 이어 읽으면 내보내기는 큰 표의 판매 줄에 작은 표의 이름과 가격을 붙인 질의이고 속도는 큰 표의 행 추정으로 맞춘다.
         self.assertIn('export_sql="SELECT $export_columns FROM $table m JOIN $join i ON i.$join_column = m.id"', script)
         self.assertIn("table_name = '$paced'", script)
@@ -839,7 +854,7 @@ class DbHostFoundations(unittest.TestCase):
         for other in ("F66-P", "F67-H"):
             other_argv, _ = ddl.build_invocation(plan("db.ddl", other, ddl.CONTRACTS[other]), "run")
             self.assertEqual(other_argv[3 + 7:3 + 9], ["", ""])
-        script = body.decode()
+        script = own_body(body.decode())
         # 열 목록과 이어 읽는 표가 모두 있으면 내보내기는 큰 표의 줄에 작은 표의 열을 붙인 질의이고 속도는 큰 표의 행 추정으로
         # 맞춘다. 열 목록만 있으면 F66-P 의 자기 행 내보내기, 열 목록이 없으면 F66-R 의 회원과 토큰 내보내기 그대로다.
         self.assertIn('if [[ -n "$export_columns" && -n "$join" ]]; then\n'
@@ -879,26 +894,30 @@ class DbHostFoundations(unittest.TestCase):
                                     "payment_schema.payment_logs shipping_schema.shipment_events", "720", "1000000",
                                     "70", "8000"])
         self.assertNotIn("F67-R", " ".join(argv))
-        script = body.decode()
+        script = own_body(body.decode())
         self.assertNotIn("F67-R", script)
         # 문장은 원본 꼴 그대로(VACUUM FULL), 표마다 세션 하나. 세션은 이 문장으로 찾고 운영자의 psql 이름으로 붙는다.
         self.assertIn("statement() { printf 'VACUUM (FULL) %s' \"$1\"; }", script)
-        self.assertIn("PGAPPNAME=psql", script)
+        # v4 C6b: 운영자의 psql 세션은 러너에서 리스너로 붙는다(예전에는 DB 파드 안). 파드에 exec 하지 않는다.
+        self.assertIn('pdb_spawn "$(statement "$rel")" "$(log_of "$rel")" psql', script)
         self.assertIn("pid <> pg_backend_pid() AND query = '$(statement \"$1\")'", script)
-        self.assertIn('PGOPTIONS="-c pg_stat_statements.track=none"', script)
+        self.assertIn('sql() { pdb "$1" "-c pg_stat_statements.track=none"; }', script)
+        self.assertNotIn(" exec ", script)
+        # 데이터 볼륨의 크기, 사용, 여유는 kubelet 요약 API 의 노드 파일시스템이다(파드 안 df 가 아니다).
+        self.assertIn("read -r size used avail < <(node_fs MB)", script)
         # 쓰기가 포기하지 않고 줄을 서려면 시간 제한이 없어야 하고, 대기 세션과 디스크 사본에 자리가 있어야 한다.
         self.assertIn('[[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]', script)
         self.assertIn('[[ "$sessions" -le "$max_sessions" ]]', script)
         self.assertIn("(used + need + 1024) * 100 < size * 80", script)
         run = script[script.index(" run)"):script.index(" cleanup)")]
         # 순서: 확인 → 표마다 백그라운드 세션 → 모든 세션이 자기 표의 AccessExclusiveLock 을 쥔 것 확인. 못 쥐면 거두고 멈춤.
-        order = ["  check\n", "nohup psql", "l.mode = 'AccessExclusiveLock' AND l.granted", "cancel_all"]
+        order = ["  check\n", "pdb_spawn", "l.mode = 'AccessExclusiveLock' AND l.granted", "cancel_all"]
         positions = [run.index(x) for x in order]
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 1)
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
         # cleanup 은 다시 쓰기가 스스로 끝나기를 drain 까지 기다리고, 남았으면 취소(옛 사본 유지)한 뒤 로그만 지운다.
-        order = ["end=$((SECONDS + drain))", "cancel_all", "rm -f"]
+        order = ["end=$((SECONDS + drain))", "cancel_all", "rm -rf"]
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("rows")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn(" recovery) rows; original; quiet ;;", script)
@@ -936,11 +955,11 @@ class DbHostFoundations(unittest.TestCase):
                 # 스크립트는 row/table scope를 공유하므로 잠금 형태는 계약으로 고정한다.
                 self.assertEqual(p["lock_scope"], "table")
                 self.assertEqual(p["lock_mode"], "EXCLUSIVE")
-                self.assertIn("LOCK TABLE ${schema}.${table} IN ${mode} MODE", text)
-                self.assertIn("PGAPPNAME", text)
-                # 정리는 파드 삭제로 한다 — 신원이 실 앱과 같아 이름 기반 종료는 금지
-                # (품질 기준서 G6 / 부록 A).
-                self.assertIn("delete pod", text)
+                self.assertIn("printf 'LOCK TABLE %s.%s IN %s MODE;' \"$1\" \"$2\" \"$4\"", text)
+                self.assertIn('PGAPPNAME="$identity"', text)
+                # 정리는 잠금 세션 프로세스를 끝내는 것이다 — 신원이 실 앱과 같아 이름 기반 종료는 금지
+                # (품질 기준서 G6 / 부록 A). v4 C6b 전에는 클러스터 안 클라이언트 파드를 지웠다.
+                self.assertIn("pgl_release", text)
                 self.assertNotIn("pg_terminate_backend", text)
                 self.assertNotIn("pg_sleep", text)
 
@@ -1429,7 +1448,8 @@ class OraclePreflightReasonTests(unittest.TestCase):
     """2026-10-22 F35-P: USERS had 267MB free against minimum_free_mb 1024 and the
     run said only "profile preflight failed: no detail"."""
 
-    FAKE_KUBECTL = r'''#!/usr/bin/env bash
+    # v4 C6b: the body asks through the operator client (db_operator_fakes), no longer kubectl exec sqlplus.
+    FAKE_ORACLE = r'''#!/usr/bin/env bash
 sql=$(cat)
 case "$sql" in
   *"name='recyclebin'"*) echo on ;;
@@ -1445,10 +1465,10 @@ esac
     def preflight(self, free_mb: int, recyclebin: str = "on") -> subprocess.CompletedProcess:
         common = sys.modules["executor_common"]
         with tempfile.TemporaryDirectory() as tmp:
-            kubectl = Path(tmp) / "kubectl"
-            kubectl.write_text(self.FAKE_KUBECTL.replace("echo on ;;", f"echo {recyclebin} ;;"))
-            kubectl.chmod(0o755)
-            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}",
+            fake = Path(tmp) / "fake_oracle.sh"
+            fake.write_text(self.FAKE_ORACLE.replace("echo on ;;", f"echo {recyclebin} ;;"))
+            fake.chmod(0o755)
+            env = {**db_operator_fakes.install(Path(tmp), oracle=f"import os, sys\nos.execv({str(fake)!r}, [{str(fake)!r}])\n"),
                    "FAKE_MINIMUM": "5", "FAKE_FREE_MB": str(free_mb)}
             return subprocess.run(
                 ["bash", "-s", "--", "preflight", "rca-testbed-banking", "testbed-oracle-0",
@@ -1477,3 +1497,209 @@ esac
         line_no = next(i for i, text in enumerate(lines, 1) if "name='recyclebin'" in text)
         self.assertIn(f"failed at line {line_no}: ".encode(), result.stderr)
         self.assertIn(b"recyclebin", result.stderr)
+
+
+class OperatorClientTests(unittest.TestCase):
+    """profiles/db_operator_session.py (v4 C6b): the client that replaced sqlplus and mysql inside the pod.
+
+    The bodies feed it the SQL*Plus scripts they always fed sqlplus; it must split and run them the way
+    SQL*Plus does and print what `set pages 0 heading off feedback off` printed. Real Oracle Free 23,
+    MySQL 8.0 and PostgreSQL 16 runs on 104 are in the C6b report."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = load("db_operator_session")
+
+    def _fake_oracle(self, tmp: Path, failing: str = "nope") -> dict[str, str]:
+        (tmp / "oracledb.py").write_text(f"""
+import json
+from pathlib import Path
+LOG = Path({str(tmp / "ora.log")!r})
+class DatabaseError(Exception): pass
+class Cursor:
+    def __init__(self): self.description = None; self.rows = []
+    def execute(self, sql):
+        LOG.open("a").write(json.dumps({{"sql": sql}}) + "\\n")
+        if {failing!r} in sql: raise DatabaseError("ORA-00942: table or view does not exist\\nHelp: x")
+        if sql.lower().startswith("select"):
+            self.description = [("a",), ("b",)]; self.rows = [(1, None), (2.0, "x y"), (1.5, "z")]
+        else:
+            self.description = None; self.rows = []
+    def fetchall(self): return self.rows
+class Conn:
+    def __init__(self, **kw): LOG.open("a").write(json.dumps({{"connect": {{k: v for k, v in kw.items() if k != "password"}}}}) + "\\n")
+    def cursor(self): return Cursor()
+    def commit(self): LOG.open("a").write('{{"tx": "commit"}}\\n')
+    def rollback(self): LOG.open("a").write('{{"tx": "rollback"}}\\n')
+    def close(self): pass
+    module = None
+def connect(**kw): return Conn(**kw)
+""")
+        return {**os.environ, "PYTHONPATH": str(tmp), "ODB_USER": "SYSTEM", "ODB_PASSWORD": "pw-x",
+                "ODB_DSN": "h:1/FREEPDB1", "CLIENT_PROGRAM": "SQLcl", "CLIENT_MACHINE": "ops-bastion",
+                "CLIENT_OSUSER": "dba", "CLIENT_DRIVER": "jdbcthin : 23.7.0.25.1"}
+
+    def _oracle(self, tmp: Path, script: str, **kw) -> tuple[subprocess.CompletedProcess, list[dict]]:
+        import json as _json
+        env = self._fake_oracle(tmp, **kw)
+        result = subprocess.run([sys.executable, str(PROFILES / "db_operator_session.py"), "oracle"],
+                                input=script.encode(), env=env, capture_output=True, timeout=30)
+        log = [_json.loads(line) for line in (tmp / "ora.log").read_text().splitlines()]
+        return result, log
+
+    def test_statements_split_the_way_sqlplus_splits_them(self) -> None:
+        script = ("set pages 0 lines 400 feedback off heading off trimspool on\nwhenever sqlerror exit failure\n"
+                  "alter session set container=FREEPDB1;\nselect a\n  from b;\n"
+                  "begin\n  for c in (select 1 from dual) loop null; end loop;\nend;\n/\n"
+                  "-- a comment\nupdate t set x = 1;\ncommit;\nexit;\n")
+        items = list(self.client.oracle_statements(script))
+        self.assertEqual(items, [
+            ("cmd", "set pages 0 lines 400 feedback off heading off trimspool on"),
+            ("cmd", "whenever sqlerror exit failure"),
+            ("sql", "alter session set container=FREEPDB1"),
+            ("sql", "select a\n  from b"),
+            ("sql", "begin\n  for c in (select 1 from dual) loop null; end loop;\nend;"),
+            ("sql", "update t set x = 1"),
+            ("sql", "commit"),
+            ("cmd", "exit"),
+        ])
+
+    def test_output_identity_and_transactions_follow_sqlplus(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            result, log = self._oracle(Path(raw), "set pages 0 feedback off heading off\n"
+                                       "alter session set container=FREEPDB1;\nselect a, b from t;\nexit;\n")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # One line per row, columns joined by one space, NULL empty, an integral float as an integer.
+            self.assertEqual(result.stdout.decode(), "1 \n2 x y\n1.5 z\n")
+            connect = log[0]["connect"]
+            self.assertEqual((connect["user"], connect["dsn"], connect["program"], connect["machine"],
+                              connect["osuser"], connect["driver_name"]),
+                             ("SYSTEM", "h:1/FREEPDB1", "SQLcl", "ops-bastion", "dba", "jdbcthin : 23.7.0.25.1"))
+            self.assertNotIn("password", connect)
+            # The container switch is not sent: the listener service already names the PDB.
+            self.assertEqual([e["sql"] for e in log if "sql" in e], ["select a, b from t"])
+            self.assertEqual(log[-1], {"tx": "commit"})
+
+    def test_errors_continue_or_stop_as_whenever_sqlerror_says(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            result, log = self._oracle(Path(raw), "select * from nope;\nselect 7 from dual;\n")
+            # No WHENEVER: SQL*Plus prints the error and goes on, exit 0.
+            self.assertEqual(result.returncode, 0)
+            self.assertIn(b"ORA-00942", result.stdout)
+            self.assertNotIn(b"Help:", result.stdout)
+            self.assertEqual(len([e for e in log if "sql" in e]), 2)
+        with tempfile.TemporaryDirectory() as raw:
+            result, log = self._oracle(Path(raw), "whenever sqlerror exit failure rollback\n"
+                                       "update a set x=1;\nselect * from nope;\nselect 8 from dual;\n")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(b"ORA-00942", result.stdout)
+            self.assertIn(b"ORA-00942", result.stderr)
+            self.assertEqual([e["sql"] for e in log if "sql" in e], ["update a set x=1", "select * from nope"])
+            self.assertEqual(log[-1], {"tx": "rollback"})
+
+    def _fake_mysql(self, tmp: Path) -> dict[str, str]:
+        (tmp / "pymysql").mkdir()
+        (tmp / "pymysql" / "__init__.py").write_text(f"""
+import json
+from pathlib import Path
+LOG = Path({str(tmp / "my.log")!r})
+class MySQLError(Exception): pass
+class Cursor:
+    def __init__(self): self.description = None; self.sets = []; self.i = 0; self.rows = []
+    def execute(self, sql):
+        LOG.open("a").write(json.dumps({{"sql": sql}}) + "\\n")
+        if "nope" in sql: raise MySQLError(1146, "Table 'fooddelivery.nope' doesn't exist")
+        self.sets = [[(1, None, "a\\tb")], [("root@%",)]]; self._load()
+    def _load(self):
+        self.rows = self.sets[self.i]; self.description = [("x",)]
+    def __iter__(self): return iter(self.rows)
+    def nextset(self):
+        self.i += 1
+        if self.i >= len(self.sets): return None
+        self._load(); return True
+class Conn:
+    def __init__(self, **kw): self.kw = kw; self._connect_attrs = {{"_client_name": "pymysql"}}
+    def connect(self): LOG.open("a").write(json.dumps({{"attrs": self._connect_attrs, "user": self.kw["user"], "db": self.kw["database"]}}) + "\\n")
+    def cursor(self, kind=None): return Cursor()
+    def close(self): pass
+def connect(**kw): return Conn(**kw)
+""")
+        (tmp / "pymysql" / "cursors.py").write_text("class Cursor: pass\nclass SSCursor: pass\n")
+        (tmp / "pymysql" / "constants.py").write_text("class CLIENT:\n    MULTI_STATEMENTS = 65536\n")
+        (tmp / "pymysql" / "connections.py").write_text("import socket\n")
+        return {**os.environ, "PYTHONPATH": str(tmp), "MDB_HOST": "h", "MDB_PORT": "1", "MDB_USER": "root",
+                "MDB_PASSWORD": "pw-x", "DB": "fooddelivery"}
+
+    def test_mysql_prints_like_mysql_batch_mode_and_names_the_tool(self) -> None:
+        import json as _json
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._fake_mysql(tmp)
+            ok = subprocess.run([sys.executable, str(PROFILES / "db_operator_session.py"), "mysql"],
+                                env={**env, "SQL": "SELECT 1, NULL, 'a\tb'; SELECT CURRENT_USER();"},
+                                capture_output=True, timeout=30)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertEqual(ok.stdout.decode(), "1\tNULL\ta\\tb\nroot@%\n")
+            bad = subprocess.run([sys.executable, str(PROFILES / "db_operator_session.py"), "mysql"],
+                                 env={**env, "SQL": "SELECT * FROM nope;"}, capture_output=True, timeout=30)
+            self.assertEqual(bad.returncode, 1)
+            self.assertEqual(bad.stderr.decode().strip(), "ERROR 1146: Table 'fooddelivery.nope' doesn't exist")
+            first = _json.loads((tmp / "my.log").read_text().splitlines()[0])
+            self.assertEqual(first["attrs"]["program_name"], "mysql")
+            self.assertEqual(first["attrs"]["_client_name"], "libmysql")
+            self.assertEqual((first["user"], first["db"]), ("root", "fooddelivery"))
+
+    def test_paced_connections_fix_a_small_window_before_connecting(self) -> None:
+        import socket
+        import threading
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        threading.Thread(target=lambda: server.accept()[0].close(), daemon=True).start()
+        sock = self.client._small_buffer_connection(server.getsockname(), timeout=5)
+        try:
+            # Linux doubles the value it is given; autotuning is off once it is set.
+            self.assertLessEqual(sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF), 2 * self.client.PACED_RCVBUF)
+            self.assertLessEqual(self.client.PACED_RCVBUF, 16384)
+        finally:
+            sock.close()
+            server.close()
+
+    def test_pg_relay_carries_one_connection_both_ways(self) -> None:
+        import socket
+        import threading
+        upstream = socket.socket()
+        upstream.bind(("127.0.0.1", 0))
+        upstream.listen(1)
+
+        def echo() -> None:
+            conn, _ = upstream.accept()
+            data = conn.recv(100)
+            conn.sendall(data.upper() * 3000)
+            conn.close()
+
+        threading.Thread(target=echo, daemon=True).start()
+        with tempfile.TemporaryDirectory() as raw:
+            env = {**os.environ, "PG_UPSTREAM_HOST": "127.0.0.1", "PG_UPSTREAM_PORT": str(upstream.getsockname()[1])}
+            relay = subprocess.Popen([sys.executable, str(PROFILES / "db_operator_session.py"), "pg-relay", raw, "5432"],
+                                     env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            path = Path(raw) / ".s.PGSQL.5432"
+            for _ in range(50):
+                if path.exists():
+                    break
+                time.sleep(0.1)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(str(path))
+            client.sendall(b"hello")
+            received = b""
+            while True:
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                received += chunk
+            client.close()
+            self.assertEqual(received, b"HELLO" * 3000)
+            self.assertEqual(relay.wait(timeout=10), 0)
+            self.assertFalse(path.exists(), "the socket is removed once its one connection is taken")
+        upstream.close()

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
 
 PROFILE_ID = "db.config_row"
@@ -66,19 +67,24 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     ]), SCRIPT
 
 
-SCRIPT = br'''#!/usr/bin/env bash
+SCRIPT = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; db_pod="$3"; table="$4"; row_id="$5"; name="$6"; desc="$7"; pct="$8"; deploy="$9"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
+# v4 C6b: the SQL is an operator session through the listener from the runner container; nothing runs in
+# the database pod (kubectl still restarts the application deployment below).
+db_target "$ns" "$db_pod"
+pdb_env
 # How long cleanup waits for Ready after restoring. Measured on 66: app pods become Ready in
 # 55-145s at idle. The startupProbe allows 5s x 60 = 300s (at 5s x 30 = 150s, loaded startups
 # restarted and took about 5 minutes). 420s covers the full 300s with margin. Waits in run are
 # left alone (they set the scenario strength and the judging time).
 cleanup_wait=420s
 [[ "$row_id" =~ ^[0-9]+$ && "$pct" =~ ^[0-9]+\.[0-9]{2}$ && "$table" =~ ^[a-z_]+\.[a-z_]+$ ]] || exit 2
-# SQL travels in the environment, not on the psql command line. The first psql
-# error line goes to stderr so a refused statement is readable in the runner log.
-sql() { "${k[@]}" exec "$db_pod" -- env SQL="$1" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+# psql runs on the runner and reaches the listener (v4 C6b); nothing runs in the database pod, so no
+# process there carries the statement. The first psql error line goes to stderr so a refused statement is
+# readable in the runner log.
+sql() { pdb "$1"; }
 q() { printf "'%s'" "${1//\'/\'\'}"; }
 # Every check asks only whether row $row_id exists. DPM Top SQL can keep the
 # executor's own statements, and a check that named discount_percent or
@@ -125,7 +131,7 @@ case "$action" in
   recovery) [[ "$(row_count)" == 0 ]]; healthy 1s ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

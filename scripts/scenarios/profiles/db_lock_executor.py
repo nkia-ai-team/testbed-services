@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 import oracle_lock_remote
+import pg_lock_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.lock"
@@ -34,18 +36,23 @@ PROFILE_ID = "db.lock"
 APP_IDENTITY = "PostgreSQL JDBC Driver"
 
 # 신원이 앱과 같아지므로 세션 이름으로는 우리 것을 골라낼 수 없다. 정리는
-# **전용 클라이언트 파드를 지우는 것**으로 한다(파드가 사라지면 연결이 끊겨
-# 트랜잭션이 롤백된다). pg_terminate_backend를 이름으로 쏘던 기존 방식은
-# 실 서비스 세션을 죽일 수 있어 금지한다.
+# **잠금 세션 프로세스를 끝내는 것**으로 한다(연결이 끊기면 트랜잭션이 롤백된다).
+# pg_terminate_backend를 이름으로 쏘던 기존 방식은 실 서비스 세션을 죽일 수 있어 금지한다.
+# 2026-07-28 부터 11-10 까지는 클러스터 안 전용 클라이언트 파드가 세션을 쥐었고 정리는 그 파드를
+# 지우는 것이었다. 그 파드가 KCM 이벤트, kubelet/containerd syslog, 명령줄에 흔적을 남겨(2026-08-23
+# F01-R 녹화) v4 C6b 에서 러너 컨테이너의 네트워크 세션으로 바꿨다(pg_lock_remote.py).
+# 옛 파드의 라벨은 남아 있는 옛 실행을 정리하는 데만 쓴다.
 CLIENT_LABEL_KEY = "lucida.io/db-client"
 CLIENT_LABEL_VALUE = "session"
+# 세션이 어디서 붙는지(계약의 access). 러너 컨테이너에서 리스너(NodePort)로.
+PG_ACCESS = "runner-network"
 
 CONTRACTS: dict[str, dict[str, Any]] = {
     # hold 600->900 (2026-08-06, 0804 #9): min_hold 8m 뒤 성공 창이 2분뿐이라
     # 요동치는 payment_error_rate로 3연속을 다시 만들 시간이 없었다.
     "F01-P": {"engine": "oracle", "namespace": "rca-testbed-banking", "pod": "testbed-oracle-0", "schema": "BANKING", "table": "accounts", "key_column": "id", "key_value": "commerce-settlement", "client_identifier": "dba-maintenance", "hold_seconds": 900},
     "F01-R": {
-        "engine": "postgresql", "access": "in-cluster-pod",
+        "engine": "postgresql", "access": PG_ACCESS,
         "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
         "service": "testbed-postgres", "secret": "postgres-secret", "image": "postgres:16-alpine",
         "schema": "inventory_schema", "table": "inventory",
@@ -57,7 +64,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
     # MODE로 잡아 INSERT(ROW EXCLUSIVE)를 블록하되 평문 SELECT/actuator health
     # (SELECT 1·ACCESS SHARE)는 통과시켜 pod readiness 자기-abort를 피한다.
     "F06-H": {
-        "engine": "postgresql", "access": "in-cluster-pod",
+        "engine": "postgresql", "access": PG_ACCESS,
         "namespace": "rca-testbed-commerce", "db_pod": "testbed-postgres-0",
         "service": "testbed-postgres", "secret": "postgres-secret", "image": "postgres:16-alpine",
         "schema": "payment_schema", "table": "payments",
@@ -85,8 +92,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         identity = params.get("client_identity", "")
         if identity != APP_IDENTITY:
             raise ExecutorError("client identity must impersonate the real application session")
-        if params.get("access") != "in-cluster-pod":
-            raise ExecutorError("postgresql lock injection must originate inside the cluster")
+        if params.get("access") != PG_ACCESS:
+            raise ExecutorError("postgresql lock injection must be a network session from the runner")
         scope = params.get("lock_scope")
         if scope == "row":
             if not params.get("key_column") or not params.get("key_value"):
@@ -104,8 +111,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     if p.get("engine") == "oracle":
         return ["/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"], p["namespace"], p["pod"], p["schema"], p["table"], p["key_column"], p["key_value"], p["client_identifier"], str(p["hold_seconds"])], ORACLE_CLIENT
     if p.get("engine") == "postgresql":
-        if p.get("access") != "in-cluster-pod":
-            raise ExecutorError("postgresql lock injection must originate inside the cluster")
+        if p.get("access") != PG_ACCESS:
+            raise ExecutorError("postgresql lock injection must be a network session from the runner")
         argv = [
             "/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"],
             p["namespace"], p["db_pod"], p["service"], p["secret"], p["image"],
@@ -113,131 +120,44 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
             p.get("key_column", ""), p.get("key_value", ""),
             str(p["hold_seconds"]), p["client_identity"],
         ]
-        return argv, POSTGRES_CLIENT_POD
+        return argv, POSTGRES_CLIENT
     raise ExecutorError("db.lock requires an explicit engine")
 
 
-# 클러스터 내부에 단명 클라이언트 파드를 띄워 락을 잡는다. 파드가 받는 IP는
-# 실제 애플리케이션 파드와 같은 대역(10.244.x.y)이라 출처로 구별되지 않는다.
-#
-# 락 유지 = 서버측 pg_sleep이 아니라 **클라이언트가 트랜잭션을 열어둔 채 대기**.
-# 서버에는 state='idle in transaction', wait_event='ClientRead'로 남는다.
-#
-# SQL 본문은 env로 전달한다. 노드의 프로세스 수집기가 cmdline을 캡처하므로
-# 명령줄에 시나리오 특이 문자열을 남기지 않기 위함이다.
-POSTGRES_CLIENT_POD = br'''#!/usr/bin/env bash
+# PostgreSQL 잠금(v4 C6b, 2026-11-10). 러너 컨테이너의 psql 이 리스너(NodePort)로 붙어, 계약의
+# client_identity(실 앱의 application_name)로 트랜잭션을 연 채 쉰다. 서버에는 idle in transaction,
+# ClientRead 로 남는다(서버측 pg_sleep 이 아니다). 클러스터에는 파드도 exec 도 생기지 않는다.
+# 정리는 이 호스트의 세션 프로세스를 먼저 멈추고(kube API, DB 가 필요 없다) 그다음 서버에서 그
+# 세션(backend pid 와 시작 시각으로 고른다, 이름이 아니다)이 사라졌는지 확인한다. 함수는
+# pg_lock_remote.py, 접속은 db_operator_remote.py. 계약의 service, image 는 더 쓰지 않는다.
+_POSTGRES_HEAD = br"""#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; db_pod="$4"; svc="$5"; secret="$6"; image="$7"
 schema="$8"; table="$9"; scope="${10}"; mode="${11}"; keycol="${12}"; keyval="${13}"
 hold="${14}"; identity="${15}"
-
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
-sel="lucida.io/db-client=session"
-state="/tmp/db-lock-${scenario}.state"
-
-case "$scope" in
-  row)   [[ -n "$keycol" && -n "$keyval" ]] || { echo "row scope needs key" >&2; exit 2; }
-         lock_sql="SELECT ${keycol} FROM ${schema}.${table} WHERE ${keycol}='${keyval}' FOR UPDATE;" ;;
-  table) case "$mode" in EXCLUSIVE|"ACCESS EXCLUSIVE"|"SHARE ROW EXCLUSIVE") : ;;
-           *) echo "unsupported lock mode: $mode" >&2; exit 2 ;; esac
-         lock_sql="LOCK TABLE ${schema}.${table} IN ${mode} MODE;" ;;
-  *) echo "unsupported lock scope: $scope" >&2; exit 2 ;;
-esac
-
-admin() { "${k[@]}" exec "$db_pod" -- sh -lc "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"$1\""; }
-table_ok() { admin "SELECT to_regclass('${schema}.${table}') IS NOT NULL;" | tr -d '[:space:]' | grep -qx t; }
-client_pods() { "${k[@]}" get pods -l "$sel" -o name 2>/dev/null | tr -d '\r'; }
-no_clients() { [[ -z "$(client_pods)" ]]; }
-
-create_pod() {
-  local pod token
-  token="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-  pod="commerce-db-client-${token}"
-  "${k[@]}" apply -f - >/dev/null <<YAML
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${pod}
-  namespace: ${ns}
-  labels:
-    lucida.io/db-client: session
-spec:
-  restartPolicy: Never
-  terminationGracePeriodSeconds: 1
-  containers:
-    - name: client
-      image: ${image}
-      envFrom:
-        - secretRef:
-            name: ${secret}
-      env:
-        - name: PGHOST
-          value: "${svc}"
-        - name: PGAPPNAME
-          value: "${identity}"
-        - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ${secret}
-              key: POSTGRES_PASSWORD
-        - name: HOLD
-          value: "${hold}"
-        - name: SQL_PRE
-          value: "BEGIN; SELECT pg_backend_pid(); ${lock_sql}"
-        - name: SQL_POST
-          value: "ROLLBACK;"
-      command: ["sh", "-c"]
-      args:
-        - '{ printf "%s\n" "\$SQL_PRE"; sleep "\$HOLD"; printf "%s\n" "\$SQL_POST"; } | psql -X -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"'
-YAML
-  printf '%s' "$pod"
-}
-
+run_dir="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}/db-lock-postgres-${scenario}"
+"""
+_POSTGRES_BODY = br"""
+db_target "$ns" "$db_pod"
 case "$action" in
   preflight)
-    table_ok
-    no_clients
-    [[ ! -s "$state" ]]
+    pgl_check "$run_dir" "$schema" "$table" "$scope" "$keycol" "$keyval"
     ;;
   run)
-    table_ok; no_clients
-    pod="$(create_pod)"
-    "${k[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
-    # Backend pid is kept in runner-local state only; it never reaches capture output.
-    # It is NOT on the first log line: psql prints the BEGIN command tag before any
-    # result, so the session logs "BEGIN", then the pid, then the locked key. Reading
-    # line 1 therefore never matched and every PostgreSQL db.lock injection died with
-    # "did not report a backend pid" (F01-R, 2026-07-31). Take the first all-digits
-    # line instead: SQL_PRE always issues pg_backend_pid() before the lock query, so
-    # that line is the pid whether or not psql prints tags.
-    backend_pid=""
-    for _ in $(seq 1 30); do
-      backend_pid="$("${k[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
-      [[ "$backend_pid" =~ ^[0-9]+$ ]] && break
-      backend_pid=""; sleep 1
-    done
-    [[ -n "$backend_pid" ]] || { "${k[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; echo "lock session did not report a backend pid" >&2; exit 1; }
-    # Confirm the lock is actually held, keyed by pid (not by session name).
-    admin "SELECT count(*) FROM pg_stat_activity WHERE pid=${backend_pid} AND state='idle in transaction';" \
-      | tr -d '[:space:]' | grep -qx 1
-    printf '%s %s\n' "$pod" "$backend_pid" >"$state"
+    pgl_check "$run_dir" "$schema" "$table" "$scope" "$keycol" "$keyval"
+    pgl_apply "$run_dir" "$schema" "$table" "$scope" "$mode" "$keycol" "$keyval" "$hold" "$identity"
     ;;
   cleanup)
-    if [[ -s "$state" ]]; then
-      read -r pod backend_pid <"$state" || true
-      [[ -n "${pod:-}" ]] && "${k[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null
-    fi
-    # Reclaim any client left behind by label, in case the state file was lost.
-    for p in $(client_pods); do "${k[@]}" delete "$p" --now --ignore-not-found >/dev/null; done
-    rm -f -- "$state"
+    pgl_release "$run_dir"
     ;;
   recovery)
-    no_clients
-    table_ok
+    pgl_recover "$run_dir" "$schema" "$table" "$scope" "$keycol" "$keyval"
     ;;
   *) exit 2 ;;
 esac
-'''
+"""
+POSTGRES_CLIENT = (_POSTGRES_HEAD + db_operator_remote.bash_functions() + pg_lock_remote.bash_functions()
+                   + _POSTGRES_BODY)
 
 # Oracle 잠금(v4 C6, 2026-11-09). 옛 방식은 DB 파드에 exec 해 `sqlplus / as sysdba` 로
 # 잠그고 `host sleep` 으로 버텼다. 119 녹화(2026-09-01 F01-P)에 세 흔적이 남았다:

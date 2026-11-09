@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.cursor_reset"
@@ -93,14 +94,17 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return argv, ORACLE_CURSOR_REMOTE
 
 
-ORACLE_CURSOR_REMOTE = br'''#!/usr/bin/env bash
+ORACLE_CURSOR_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; pdb="$4"; sql_id="$5"; expected="$6"; wait_s="$7"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
+odb_env dba
 q="'"
 [[ "$sql_id" =~ ^[a-z0-9]{13}$ && "$expected" =~ ^[0-9]+$ && "$wait_s" =~ ^[0-9]+$ ]] || exit 2
 
-sqlplus_in() { "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba; }
+# A DBA's session (SYSTEM through the listener from the runner, v4 C6b), not SYSDBA inside the pod.
+# SYSTEM reads v$sql and runs DBMS_SHARED_POOL.PURGE in the PDB (Oracle Free 23, 2026-11-10).
+sqlplus_in() { odb dba; }
 
 # v$sql is the authority. One line: children | executed children | children on
 # another plan | executed children on another plan | the other plans. sqlplus -s
@@ -189,7 +193,7 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

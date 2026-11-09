@@ -10,9 +10,10 @@ each carry their own tagged, idempotent, death-confirmed lifecycle:
                      a runner-side network session as the app schema account
                      (``oracle_lock_session.py``; no exec into the Oracle pod;
                      death confirmed by the row becoming lockable again)
-* ``pg_lock``      — PostgreSQL ``SELECT ... FOR UPDATE`` held by a short-lived
-                     in-cluster client pod that impersonates the real app's
-                     session identity (death confirmed by pod absence)
+* ``pg_lock``      — PostgreSQL ``SELECT ... FOR UPDATE`` held by a runner-side
+                     network session under the real app's session identity
+                     (``pg_lock_remote.py``; no client pod; death confirmed by
+                     the session's backend being gone on the server)
 
 Sub-injections apply in declared order (with per-step ``offset_seconds``) and
 clean up in strict reverse order. Each lock's cleanup terminates the *server*
@@ -28,7 +29,9 @@ import base64
 import json
 from typing import Any
 
+import db_operator_remote
 import oracle_lock_remote
+import pg_lock_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "timeline.multi"
@@ -68,7 +71,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                 "name": "commerce-inventory-lock",
                 "kind": "pg_lock",
                 "offset_seconds": 0,
-                "access": "in-cluster-pod",
+                "access": "runner-network",
                 "namespace": "rca-testbed-commerce",
                 "db_pod": "testbed-postgres-0",
                 "service": "testbed-postgres",
@@ -124,7 +127,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
             raise ExecutorError("sub-injection offset is outside the approved bounds")
         if step["kind"] in ("oracle_lock", "pg_lock") and int(step["hold_seconds"]) <= 0:
             raise ExecutorError("lock hold must be positive")
-        if step["kind"] == "pg_lock" and step.get("access") != "in-cluster-pod":
+        if step["kind"] == "pg_lock" and step.get("access") != "runner-network":
             raise ExecutorError("postgresql lock injection must originate inside the cluster")
     if not any(s["kind"] in ("oracle_lock", "pg_lock") for s in steps):
         raise ExecutorError("a multi-injection must contain at least one tagged DB lock root")
@@ -165,7 +168,7 @@ cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-multi"
 kube=(kubectl --kubeconfig=/root/tb-kubeconfig)
 
-""" + oracle_lock_remote.bash_functions() + br"""
+""" + oracle_lock_remote.bash_functions() + db_operator_remote.bash_functions() + pg_lock_remote.bash_functions() + br"""
 # ---- oracle_lock primitive (runner-side network session; oracle_lock_session.py) ----
 # v4 C6: the lock session connects from the runner container through the listener
 # as the app schema account and idles with its transaction open. Nothing runs in the
@@ -206,90 +209,25 @@ oracle() {  # $1=verb $2=step_index
   esac
 }
 
-# ---- pg_lock primitive (in-cluster client pod; app identity impersonation) ----
-# Same recipe as the db.lock executor; see the Korean note above ORCHESTRATOR.
+# ---- pg_lock primitive (runner-side network session; pg_lock_remote.py) ----
+# v4 C6b: the lock session is the runner container's psql through the listener, under the real
+# app's application_name, idling with its transaction open. No client pod, no exec into the
+# database pod (the old way left KCM pod events and node process records; see pg_lock_remote.py).
+# Release stops this host's session first, then confirms on the server that its backend is gone.
+# Same functions as db.lock.
 pg() {  # $1=verb $2=step_index
   local verb="$1" i="$2"
-  local ns db_pod svc secret image schema table keycol keyval identity hold
-  ns=$(field "$i" namespace); db_pod=$(field "$i" db_pod); svc=$(field "$i" service)
-  secret=$(field "$i" secret); image=$(field "$i" image); schema=$(field "$i" schema)
+  local ns db_pod schema table keycol keyval identity hold
+  ns=$(field "$i" namespace); db_pod=$(field "$i" db_pod); schema=$(field "$i" schema)
   table=$(field "$i" table); keycol=$(field "$i" key_column); keyval=$(field "$i" key_value)
   identity=$(field "$i" client_identity); hold=$(field "$i" hold_seconds)
-  local k=("${kube[@]}" -n "$ns")
-  local sel="lucida.io/db-client=session"
-  local saved="$state_dir/pg-$i.pod"
-  p_admin() { "${k[@]}" exec "$db_pod" -- sh -lc "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"$1\""; }
-  p_rowok() { p_admin "SELECT count(*) FROM ${schema}.${table} WHERE ${keycol}='${keyval}';" | tr -d '[:space:]' | grep -qx 1; }
-  p_clients() { "${k[@]}" get pods -l "$sel" -o name 2>/dev/null | tr -d '\r'; }
+  local run_dir="$state_dir/pg-$i"
+  db_target "$ns" "$db_pod"
   case "$verb" in
-    check)  p_rowok; [[ -z "$(p_clients)" ]] ;;
-    apply)
-      local token pod pid
-      token="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; pod="commerce-db-client-${token}"
-      "${k[@]}" apply -f - >/dev/null <<YAML
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${pod}
-  namespace: ${ns}
-  labels:
-    lucida.io/db-client: session
-spec:
-  restartPolicy: Never
-  terminationGracePeriodSeconds: 1
-  containers:
-    - name: client
-      image: ${image}
-      envFrom:
-        - secretRef:
-            name: ${secret}
-      env:
-        - name: PGHOST
-          value: "${svc}"
-        - name: PGAPPNAME
-          value: "${identity}"
-        - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ${secret}
-              key: POSTGRES_PASSWORD
-        - name: HOLD
-          value: "${hold}"
-        - name: SQL_PRE
-          value: "BEGIN; SELECT pg_backend_pid(); SELECT ${keycol} FROM ${schema}.${table} WHERE ${keycol}='${keyval}' FOR UPDATE;"
-        - name: SQL_POST
-          value: "ROLLBACK;"
-      command: ["sh", "-c"]
-      args:
-        - '{ printf "%s\n" "\$SQL_PRE"; sleep "\$HOLD"; printf "%s\n" "\$SQL_POST"; } | psql -X -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"'
-YAML
-      "${k[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
-      # The pid is NOT on the first log line: psql prints the BEGIN command tag
-      # before any result, so the session logs "BEGIN", then the pid, then the
-      # locked key. Take the first all-digits line instead - SQL_PRE always issues
-      # pg_backend_pid() before the lock query, so that line is the pid whether or
-      # not psql prints tags. Same defect and same fix as db_lock_executor
-      # (2026-07-31); it was never carried across to this executor, so F15-G still
-      # died with "did not report a backend pid" and wedged the queue (2026-08-03).
-      pid=""
-      for _ in $(seq 1 30); do
-        pid="$("${k[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
-        [[ "$pid" =~ ^[0-9]+$ ]] && break
-        pid=""; sleep 1
-      done
-      [[ -n "$pid" ]] || { "${k[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; echo "lock session did not report a backend pid" >&2; exit 1; }
-      p_admin "SELECT count(*) FROM pg_stat_activity WHERE pid=${pid} AND state='idle in transaction';" | tr -d '[:space:]' | grep -qx 1
-      printf '%s %s\n' "$pod" "$pid" >"$saved" ;;
-    release)
-      # Never kill by session name: the identity now equals the real app's.
-      # Deleting the client pod drops the connection and rolls the txn back.
-      if [[ -s "$saved" ]]; then local pod pid; read -r pod pid <"$saved" || true
-        [[ -n "${pod:-}" ]] && "${k[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; fi
-      local p; for p in $(p_clients); do "${k[@]}" delete "$p" --now --ignore-not-found >/dev/null; done
-      rm -f -- "$saved"
-      for _ in $(seq 1 20); do [[ -z "$(p_clients)" ]] && return 0; sleep 1; done
-      return 1 ;;
-    recover)  [[ -z "$(p_clients)" ]]; p_rowok ;;
+    check)   pgl_check "$run_dir" "$schema" "$table" row "$keycol" "$keyval" ;;
+    apply)   pgl_apply "$run_dir" "$schema" "$table" row "" "$keycol" "$keyval" "$hold" "$identity" ;;
+    release) pgl_release "$run_dir" ;;  # errexit is off here; pgl_release returns its result.
+    recover) pgl_recover "$run_dir" "$schema" "$table" row "$keycol" "$keyval" ;;
   esac
 }
 

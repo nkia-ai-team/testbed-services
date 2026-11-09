@@ -2,9 +2,9 @@
 """Exact-simultaneous (offset 0) two-root orchestrator foundation for F15-T1.
 
 One orchestration script owns both sub-injections and their reverse-order
-cleanup (R6-1): a commerce inventory PostgreSQL row lock (held by a short-lived
-in-cluster client pod that impersonates the real application session identity,
-mirroring F01-R after the 2026-07-28 leak fix) and a food-delivery payment OOMKill
+cleanup (R6-1): a commerce inventory PostgreSQL row lock (held by the runner
+container's network session under the real application session identity, the
+same functions as F01-R; v4 C6b replaced the 2026-07-28 in-cluster client pod) and a food-delivery payment OOMKill
 loop (kubectl memory-limit reduction, mirroring the F05-R adaptive ladder plus
 restart-budget stop-loss). The two roots differ in cause and topology, so the
 expected incident judgement is anti-merge: two separate incidents, not one.
@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import db_operator_remote
+import pg_lock_remote
 from executor_common import (
     ExecutorError,
     approved_parameter_sets,
@@ -103,8 +105,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("F15-T1 is an exact-simultaneous (offset 0) timeline")
     if params["commerce_namespace"] != "rca-testbed-commerce":
         raise ExecutorError("commerce lock namespace is not allowlisted")
-    if params["pg_access"] != "in-cluster-pod":
-        raise ExecutorError("postgresql lock injection must originate inside the cluster")
+    if params["pg_access"] != "runner-network":
+        raise ExecutorError("postgresql lock injection must be a network session from the runner")
     if params["pg_db_pod"] != "testbed-postgres-0" or params["pg_service"] != "testbed-postgres":
         raise ExecutorError("PostgreSQL lock target is outside the approved contract")
     if params["pg_schema"] != "inventory_schema" or params["pg_table"] != "inventory":
@@ -149,7 +151,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
 # Both are started at offset 0 (exact simultaneous). Cleanup is the strict
 # reverse: food memory restored first, PostgreSQL lock terminated second. A
 # failure on either side fails the whole scenario and blocks the next one.
-SCRIPT = br'''#!/usr/bin/env bash
+SCRIPT = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario_id="$2"
 pg_ns="$3"; db_pod="$4"; svc="$5"; secret="$6"; image="$7"; schema="$8"; table="$9"; keycol="${10}"; keyval="${11}"
@@ -163,80 +165,20 @@ state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-stat
 cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-dual"
 food_state="$state_dir/food-resources.json"
-pg_state="$state_dir/pg-client.pod"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$food_ns")
-kc=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$pg_ns")
-sel="lucida.io/db-client=session"
 
-# --- PostgreSQL inventory lock, held by an in-cluster client pod (G6/L2) -----
-# Identity impersonates the real app; the lock is held by an open transaction
-# (idle in transaction), not by a server-side sleep; the source IP is a pod IP.
-p_admin() { "${kc[@]}" exec "$db_pod" -- sh -lc "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"$1\""; }
-p_rowok() { p_admin "SELECT count(*) FROM ${schema}.${table} WHERE ${keycol}='${keyval}';" | tr -d '[:space:]' | grep -qx 1; }
-p_clients() { "${kc[@]}" get pods -l "$sel" -o name 2>/dev/null | tr -d '\r'; }
+# --- PostgreSQL inventory lock, held from the runner (G6/L2, v4 C6b) ---------
+# Identity impersonates the real app; the lock is held by an open transaction (idle in
+# transaction), not by a server-side sleep. The session is the runner container's psql through
+# the listener (pg_lock_remote.py); no client pod, no exec into the database pod.
+pg_dir="$state_dir/pg-lock"
 pg() {
+  db_target "$pg_ns" "$db_pod"
   case "$1" in
-    check) p_rowok; [[ -z "$(p_clients)" ]] ;;
-    run)
-      local token pod pid
-      token="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; pod="commerce-db-client-${token}"
-      "${kc[@]}" apply -f - >/dev/null <<YAML
-apiVersion: v1
-kind: Pod
-metadata:
-  name: ${pod}
-  namespace: ${pg_ns}
-  labels:
-    lucida.io/db-client: session
-spec:
-  restartPolicy: Never
-  terminationGracePeriodSeconds: 1
-  containers:
-    - name: client
-      image: ${image}
-      envFrom:
-        - secretRef:
-            name: ${secret}
-      env:
-        - name: PGHOST
-          value: "${svc}"
-        - name: PGAPPNAME
-          value: "${identity}"
-        - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ${secret}
-              key: POSTGRES_PASSWORD
-        - name: HOLD
-          value: "${hold}"
-        - name: SQL_PRE
-          value: "BEGIN; SELECT pg_backend_pid(); SELECT ${keycol} FROM ${schema}.${table} WHERE ${keycol}='${keyval}' FOR UPDATE;"
-        - name: SQL_POST
-          value: "ROLLBACK;"
-      command: ["sh", "-c"]
-      args:
-        - '{ printf "%s\n" "\$SQL_PRE"; sleep "\$HOLD"; printf "%s\n" "\$SQL_POST"; } | psql -X -At -U "\$POSTGRES_USER" -d "\$POSTGRES_DB"'
-YAML
-      "${kc[@]}" wait --for=jsonpath='{.status.phase}'=Running "pod/$pod" --timeout=90s >/dev/null
-      pid=""
-      for _ in $(seq 1 30); do
-        # psql prints the BEGIN command tag before any result, so line 1 is never
-        # the pid. Take the first all-digits line. Same fix as db_lock_executor
-        # (2026-07-31) and timeline_multi_injection_executor (2026-08-03).
-        pid="$("${kc[@]}" logs "$pod" 2>/dev/null | tr -d '\r' | sed -n '/^[0-9][0-9]*$/{p;q;}')"
-        [[ "$pid" =~ ^[0-9]+$ ]] && break
-        pid=""; sleep 1
-      done
-      [[ -n "$pid" ]] || { "${kc[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; echo "lock session did not report a backend pid" >&2; exit 1; }
-      p_admin "SELECT count(*) FROM pg_stat_activity WHERE pid=${pid} AND state='idle in transaction';" | tr -d '[:space:]' | grep -qx 1
-      printf '%s %s\n' "$pod" "$pid" >"$pg_state" ;;
-    cleanup)
-      if [[ -s "$pg_state" ]]; then local pod pid; read -r pod pid <"$pg_state" || true
-        [[ -n "${pod:-}" ]] && "${kc[@]}" delete pod "$pod" --now --ignore-not-found >/dev/null; fi
-      local q; for q in $(p_clients); do "${kc[@]}" delete "$q" --now --ignore-not-found >/dev/null; done
-      rm -f -- "$pg_state"
-      [[ -z "$(p_clients)" ]] ;;
-    recovery) [[ -z "$(p_clients)" ]]; p_rowok ;;
+    check) pgl_check "$pg_dir" "$schema" "$table" row "$keycol" "$keyval" ;;
+    run) pgl_apply "$pg_dir" "$schema" "$table" row "" "$keycol" "$keyval" "$hold" "$identity" ;;
+    cleanup) pgl_release "$pg_dir" ;;
+    recovery) pgl_recover "$pg_dir" "$schema" "$table" row "$keycol" "$keyval" ;;
     *) exit 2 ;;
   esac
 }
@@ -258,7 +200,7 @@ case "$action" in
   run)
     [[ ! -e "$state_dir" ]]; mkdir -p "$state_dir"; umask 077
     printf '%s' "$(food_current)" >"$food_state"
-    # offset 0: both roots start together. PG lock first (in-cluster client pod),
+    # offset 0: both roots start together. PG lock first (runner network session),
     # food OOM immediately after with no intervening wait.
     [[ "$offset" -eq 0 ]] || sleep "$offset"
     pg run
@@ -282,7 +224,7 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''', pg_lock_remote.bash_functions())
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.row_update"
@@ -94,16 +95,18 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return argv, MYSQL_REMOTE
 
 
-MYSQL_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; backup="$6"
 from="$7"; to="$8"; hours="$9"; minimum="${10}"; capacity="${11}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: root through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 for ident in "$db" "$table" "$backup"; do [[ "$ident" =~ ^[a-z][a-z0-9_]{0,63}$ ]] || exit 2; done
 for s in "$from" "$to"; do [[ "$s" =~ ^[A-Z]{1,16}$ ]] || exit 2; done
 for n in "$hours" "$minimum" "$capacity"; do [[ "$n" =~ ^[1-9][0-9]*$ ]] || exit 2; done
 # The first MySQL error line goes to stderr so a failed step is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "" "$1"; }
 num() { mysql "$1" | tr -d '[:space:]'; }
 
 # Checks only count rows; none of them names the scenario.
@@ -152,7 +155,7 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import db_operator_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.instance_readonly"
@@ -61,12 +62,14 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     return argv, MYSQL_REMOTE
 
 
-MYSQL_REMOTE = br'''#!/usr/bin/env bash
+MYSQL_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; app="$4"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+# v4 C6b: root through the listener from the runner container; nothing runs in the pod.
+db_target "$ns" "$pod"
+mdb_env root
 # The first MySQL error line goes to stderr so a failed flip is readable in the runner log.
-mysql() { "${k[@]}" exec "$pod" -- env SQL="$1" sh -lc 'e=$(mktemp); mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "$SQL" 2>"$e"; rc=$?; grep -v "Using a password" "$e" | head -n 1 >&2; rm -f "$e"; exit $rc'; }
+mysql() { mdb "" "$1"; }
 
 # @@global.read_only and @@global.super_read_only are the authority ("00" writable,
 # "10" read-only for ordinary accounts). Never trust the SET's exit status alone:
@@ -105,7 +108,7 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
 if __name__ == "__main__":

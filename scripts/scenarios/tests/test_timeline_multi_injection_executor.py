@@ -23,6 +23,7 @@ def load(name: str):
 
 
 multi = load("timeline_multi_injection_executor")
+own_body = load("db_operator_remote").without_library
 
 
 def plan(scenario: str, params: dict) -> dict:
@@ -67,7 +68,9 @@ class MultiInjectionContractTests(unittest.TestCase):
 
     def test_orchestrator_is_tagged_reverse_and_death_confirmed(self) -> None:
         _, body = multi.build_invocation(plan("F15-G", multi.CONTRACTS["F15-G"]), "run")
-        text = body.decode()
+        # The shared operator-session and pg lock functions are checked where they live; this looks at the
+        # orchestrator's own text and the oracle functions it embeds.
+        text = own_body(body.decode())
         # reverse-order cleanup
         self.assertIn("for ((i=step_count-1; i>=0; i--)); do dispatch release", text)
         # oracle: runner-side session tagged through the driver; death confirmed by the
@@ -83,13 +86,18 @@ class MultiInjectionContractTests(unittest.TestCase):
         self.assertIn('ora_dcd_ok "$ns" "$pod"', check)
         self.assertNotIn("alter system kill session", text)
         self.assertNotIn("sqlplus", text)
-        # pg lock: 클러스터 내 클라이언트 파드 + 앱 신원 사칭 + idle-in-transaction 유지.
-        # 이름으로 세션을 죽이지 않는다(실 서비스를 죽일 수 있다) — 파드 삭제로 정리한다.
-        self.assertIn("PGAPPNAME", text)
+        # pg lock: 러너의 네트워크 세션 + 앱 신원 사칭 + idle-in-transaction 유지(v4 C6b, pg_lock_remote).
+        # 이름으로 세션을 죽이지 않는다(실 서비스를 죽일 수 있다) — 이 호스트의 세션을 끝내고 그 backend 가
+        # 사라졌는지 확인한다. 클러스터 안 클라이언트 파드는 더 띄우지 않는다.
+        pg = text[text.index("pg() {"):text.index("rollout() {")]
+        self.assertIn('pgl_apply "$run_dir" "$schema" "$table" row "" "$keycol" "$keyval" "$hold" "$identity"', pg)
+        self.assertIn('pgl_release "$run_dir"', pg)
+        for trace in ("kind: Pod", " exec ", "kubectl", "pg_terminate_backend", "pg_sleep"):
+            self.assertNotIn(trace, pg)
         self.assertNotIn("pg_terminate_backend", text)
         self.assertNotIn("pg_sleep", text)
-        self.assertIn("idle in transaction", text)
-        self.assertIn("lucida.io/db-client: session", text)
+        self.assertNotIn("lucida.io/db-client: session", text)
+        self.assertIn("pg_lock_remote.bash_functions()", (PROFILES / "timeline_multi_injection_executor.py").read_text())
         self.assertIn("FREEPDB1", text)
         self.assertIn("FOR UPDATE", text.upper())
 
@@ -117,29 +125,14 @@ class MultiInjectionContractTests(unittest.TestCase):
         with self.assertRaises(multi.ExecutorError):
             multi.validate("F99-X", params, allowlisted)
 
-    def test_backend_pid_is_read_from_real_psql_output(self) -> None:
-        """pg_lock 스텝이 실제 psql 로그 모양에서 pid를 뽑아낼 수 있어야 한다.
-
-        psql은 결과보다 `BEGIN` 명령 태그를 먼저 찍는다. 첫 줄만 보던 구현은
-        pid를 영영 못 찾고 "did not report a backend pid"로 죽는다. db.lock
-        실행기는 2026-07-31에 고쳤지만 이 실행기에는 옮겨지지 않아, F15-G가
-        같은 자리에서 죽고 전역 DIRTY로 큐를 세웠다(2026-08-03).
-        아래 입력은 그날 파드에서 실측한 로그 그대로다.
-        """
-        script = multi.ORCHESTRATOR.decode()
-        pipeline = next(
-            line.split('logs "$pod" 2>/dev/null |', 1)[1].rstrip(')"').strip()
-            for line in script.splitlines()
-            if 'pid="$(' in line and "logs" in line
-        )
-        extracted = subprocess.run(
-            ["sh", "-c", f"cat | {pipeline}"],
-            input="BEGIN\n35250\n1\n",
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        self.assertEqual(extracted, "35250")
+    def test_backend_pid_is_read_from_the_shared_lock_session(self) -> None:
+        """pg_lock 스텝은 db.lock 과 같은 잠금 세션(pg_lock_remote)을 쓴다. pid 추출이 실행기마다 따로 있다가
+        같은 결함을 네 번 고친 일(2026-07-31, 08-03)이 다시 생기지 않게, 이 실행기에는 제 추출이 없어야 한다.
+        세션이 실제 psql 출력에서 pid 를 뽑는 것은 test_registry_contracts 와 test_f06h_db_table_lock 이 본다."""
+        script = own_body(multi.ORCHESTRATOR.decode())
+        self.assertNotIn('logs "$pod"', script)
+        self.assertNotIn("backend pid", script)
+        self.assertIn("pgl_apply", script)
 
 
 if __name__ == "__main__":
