@@ -201,6 +201,7 @@ NODE_PROGRAM = b"set -euo pipefail\n" + GUARD_FUNCTIONS + br'''act="$1"; dev="$2
 monitors="${10:--}"; peers="${11:--}"
 root_handle=1a7e
 dns_port=53
+own=""
 band_handle=1a7f
 # Modules are global, so a sandbox may point at its own list.
 module_dir="${LINK_MODULE_DIR:-/sys/module}"
@@ -227,6 +228,10 @@ check() {
   if ! link_up; then echo "no $dev on this node" >&2; exit 1; fi
   # sch_netem prints its version to the kernel log when it loads (the node forwards it to 119).
   if [[ ! -d "$module_dir/sch_netem" ]]; then echo "sch_netem is not loaded; load it outside a recording window" >&2; exit 1; fi
+  # The node's overlay address is what host-network pods' lookups leave from; without it their
+  # pass-through could not be built, so refuse before anything is armed or changed.
+  own=$(ip -4 -o addr show dev "$dev" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+  if [[ -z "$own" ]]; then echo "no IPv4 address on $dev" >&2; exit 1; fi
   local lo rule proto side port dst probe route
   read -r lo _ </proc/sys/net/ipv4/ip_local_port_range
   for rule in ${rules//,/ }; do
@@ -238,7 +243,7 @@ check() {
   done
 }
 apply() {
-  local b proto port src rule side dst probe key own
+  local b proto port src rule side dst probe key
   local -a spec=() protos=()
   tc qdisc add dev "$dev" root handle "$root_handle": prio bands 4 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1
   # The overlay device has no transmit queue length, so a default band would hold one packet.
@@ -271,12 +276,9 @@ apply() {
     done
   fi
   # Host-network agents' name lookups and the answers to them (see the module docstring). The node's
-  # overlay address is read here, never taken from the contract.
-  own=$(ip -4 -o addr show dev "$dev" | awk '{print $4}' | cut -d/ -f1 | head -n1)
+  # overlay address comes from check (read on the node, never from the contract).
   for proto in "${protos[@]}"; do
-    if [[ -n "$own" ]]; then
-      tc filter add dev "$dev" parent "$root_handle": protocol ip pref 5 flower ip_proto "$proto" src_ip "$own" dst_port "$dns_port" classid "$root_handle:2"
-    fi
+    tc filter add dev "$dev" parent "$root_handle": protocol ip pref 5 flower ip_proto "$proto" src_ip "$own" dst_port "$dns_port" classid "$root_handle:2"
     if [[ "$peers" != - ]]; then
       for dst in ${peers//,/ }; do
         tc filter add dev "$dev" parent "$root_handle": protocol ip pref 6 flower ip_proto "$proto" dst_ip "$dst" src_port "$dns_port" classid "$root_handle:2"

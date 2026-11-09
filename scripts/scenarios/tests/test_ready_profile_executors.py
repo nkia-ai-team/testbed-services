@@ -4206,6 +4206,21 @@ class NetworkLinkExecutorTests(unittest.TestCase):
             self.assertGreaterEqual(box.connect_from_peer_ms(53, netns_sandbox.PEER_IP), 290)
             self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
 
+    def test_a_node_without_its_overlay_address_is_refused_before_anything_is_armed(self) -> None:
+        # N1 re-review 2026-11-10: without the address the host-network lookups' pass-through would
+        # silently drop out, so the run refuses instead (fail closed).
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.in_node(["ip", "addr", "del", f"{netns_sandbox.NODE_IP}/32", "dev", "flannel.1"], check=True)
+            for action in ("preflight", "run"):
+                done = self._act(box, env, action)
+                self.assertNotEqual(done.returncode, 0, action)
+                self.assertIn(b"no IPv4 address on flannel.1", done.stderr)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertTrue(box.root_qdisc().startswith("qdisc noqueue 0: root"))
+            self.assertEqual(self._act(box, env, "cleanup").returncode, 0)
+
     def test_a_qdisc_that_is_not_ours_is_neither_replaced_nor_removed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
