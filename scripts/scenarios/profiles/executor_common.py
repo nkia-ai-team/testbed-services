@@ -105,8 +105,12 @@ def kubectl_bash_argv(arguments: Sequence[str]) -> list[str]:
 # tablespace that way, found only by hand. This line, placed right after the
 # shebang, makes the first failing command say which line and which command it
 # was. `set -E` carries the trap into functions, where most checks live; the
-# trap prints and does nothing else, so exit codes and control flow stay as
-# they were. LINENO is shifted back by this line so it matches the source.
+# trap prints and does nothing else, so exit codes and branches stay as they
+# were. One thing does change: inside a command substitution a non-fatal
+# failure also prints, so a value captured with `$(... 2>&1)` can carry the
+# trace line. No body captures stderr that way outside an && or || list,
+# where the trap does not fire. LINENO is shifted back by this line so it
+# matches the source.
 # BASH_COMMAND is the unexpanded source text, so no variable value is printed.
 FAILURE_TRACE = (
     b"set -E; trap 'printf \"%s\\n\" \"failed at line $((LINENO-1)): "
