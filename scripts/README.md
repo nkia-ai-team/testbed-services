@@ -51,3 +51,21 @@ scripts/test-capture-eval-case.sh
 scripts/scenarios/test-scenarios.sh
 scripts/scenarios/bin/f07-h-north-south-surge.sh
 ```
+
+## 은행 Oracle 관리 (ADR 정리, 12GB 상한 감시)
+
+`oracle-maintenance.sh`는 tb-ops root crontab 에서 돈다(설치 줄은 파일 머리 주석).
+
+- `purge`: `testbed-oracle-0` 의 ADR 홈에서 trace, cdump, incident, hm 아래 보존 기한
+  (`RETENTION_HOURS`, 기본 168시간)이 지난 파일을 지운다. alert 로그와 metadata 는 두고,
+  리스너가 계속 덧붙이는 두 파일(listener.log, log.xml)은 `LISTENER_LOG_MAX_MB`(기본 256)를
+  넘을 때만 비운다. 러너 API 가 실행 없음, 대기열 단계 idle, paused, completed 를 답할 때만
+  돈다. 러너에 물을 수 없으면 건너뛴다(녹화 중 정리 금지).
+- `check`: PDB 에서 Oracle 관리 계정이 아닌 계정의 세그먼트 합(사용자 데이터)을 재서
+  `STATE_DIR/last.json` 에 남기고, 10.5 GiB(`CAPACITY_ALERT_BYTES`)를 넘으면
+  `STATE_DIR/ALERT` 를 쓰고 종료 코드 3 을 낸다. 기준은 사용자 데이터이고 데이터파일 합은
+  참고로만 적는다(사용자 결정 2026-11-09).
+
+```bash
+scripts/test-oracle-maintenance.sh
+```
