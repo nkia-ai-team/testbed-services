@@ -6,9 +6,10 @@ rollout+mock pattern), this profile composes N heterogeneous sub-injections that
 each carry their own tagged, idempotent, death-confirmed lifecycle:
 
 * ``rollout``      — annotation-driven Deployment restart (topology distractor)
-* ``oracle_lock``  — tagged Oracle ``SELECT ... FOR UPDATE`` on FREEPDB1 via
-                     ``kubectl exec`` into the Oracle pod (v$session client
-                     identifier tag; death confirmed by v$session absence)
+* ``oracle_lock``  — tagged Oracle ``SELECT ... FOR UPDATE`` on FREEPDB1 held by
+                     a runner-side network session as the app schema account
+                     (``oracle_lock_session.py``; no exec into the Oracle pod;
+                     death confirmed by the row becoming lockable again)
 * ``pg_lock``      — PostgreSQL ``SELECT ... FOR UPDATE`` held by a short-lived
                      in-cluster client pod that impersonates the real app's
                      session identity (death confirmed by pod absence)
@@ -27,6 +28,7 @@ import base64
 import json
 from typing import Any
 
+import oracle_lock_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "timeline.multi"
@@ -163,42 +165,31 @@ cleanup_wait=420s
 state_dir="$state_root/${scenario_id}-multi"
 kube=(kubectl --kubeconfig=/root/tb-kubeconfig)
 
-# ---- oracle_lock primitive (kubectl exec into Oracle pod; FREEPDB1) ----------
+""" + oracle_lock_remote.bash_functions() + br"""
+# ---- oracle_lock primitive (runner-side network session; oracle_lock_session.py) ----
+# v4 C6: the lock session connects from the runner container through the listener
+# as the app schema account and idles with its transaction open. Nothing runs in the
+# Oracle pod (the old way logged in there as SYS and slept in a child process,
+# which 119 recorded; see oracle_lock_remote.py). Release ends the session process
+# (rollback); the server-side check is that the row can be locked again. Same
+# functions as db.lock.
 oracle() {  # $1=verb $2=step_index
   local verb="$1" i="$2"
   local ns pod schema table keycol key tag hold
   ns=$(field "$i" namespace); pod=$(field "$i" pod); schema=$(field "$i" schema)
   table=$(field "$i" table); keycol=$(field "$i" key_column); key=$(field "$i" key_value)
   tag=$(field "$i" client_identifier); hold=$(field "$i" hold_seconds)
-  local k=("${kube[@]}" -n "$ns")
-  local pidf="/tmp/${tag}.pid"
-  # feedback off must precede the alter, or sqlplus prefixes "Session altered." to
-  # the value and the exact comparisons below never match (verified 2026-08-03).
-  o_rowok() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nselect count(*) from %s.%s where %s=%s;\nexit;\n' \
-      "$schema" "$table" "$keycol" "'$key'" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
-  o_sessions() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nselect count(*) from v$session where client_identifier=%s;\nexit;\n' \
-      "'$tag'" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]'; }
-  o_kill() { printf "alter session set container=FREEPDB1;\nset pages 0 feedback off heading off\nbegin for s in (select sid,serial# from v\$session where client_identifier='%s') loop execute immediate 'alter system kill session '''||s.sid||','||s.serial#||''' immediate'; end loop; end;\n/\nexit;\n" \
-      "$tag" | ${k[@]} exec -i "$pod" -- sqlplus -s / as sysdba >/dev/null 2>&1 || true; }
+  local run_dir="$state_dir/oracle-$i"
+  ora_prepare "$ns" "$pod"
+  ora_target "$schema" "$table" "$keycol" "$key"
   case "$verb" in
-    check)  o_rowok; [[ "$(o_sessions)" == 0 ]] ;;
-    apply)  ${k[@]} exec "$pod" -- sh -lc 'cat > /tmp/'"$tag"'.sql <<SQL
-alter session set container=FREEPDB1;
-alter session set current_schema='"$schema"';
-begin dbms_session.set_identifier('"'"''"$tag"''"'"'); end;
-/
-select '"$keycol"' from '"$table"' where '"$keycol"'='"'"''"$key"''"'"' for update;
-host sleep '"$hold"';
-rollback;
-exit;
-SQL
-nohup sqlplus -s / as sysdba @/tmp/'"$tag"'.sql >/tmp/'"$tag"'.log 2>&1 </dev/null & echo $! >'"$pidf"'' ;;
-    release)  # death-confirm: kill server session, verify v$session tag gone
-      o_kill
-      ${k[@]} exec "$pod" -- sh -lc 'test -s '"$pidf"' && kill "$(cat '"$pidf"')" 2>/dev/null; rm -f '"$pidf"' /tmp/'"$tag"'.sql /tmp/'"$tag"'.log' 2>/dev/null || true
-      for _ in $(seq 1 20); do [[ "$(o_sessions)" == 0 ]] && return 0; sleep 1; done
-      return 1 ;;
-    recover)  [[ "$(o_sessions)" == 0 ]]; o_rowok ;;
+    check)  ora_row_ok; ! ora_alive "$run_dir"; ora_released ;;
+    apply)  ora_hold_start "$run_dir" "$tag" "$hold" ;;
+    release)  # death-confirm: session process gone, then the row is lockable server-side
+      ora_hold_stop "$run_dir" || return 1
+      ora_released || return 1
+      rm -rf -- "$run_dir" ;;
+    recover)  ! ora_alive "$run_dir"; ora_row_ok; ora_released ;;
   esac
 }
 

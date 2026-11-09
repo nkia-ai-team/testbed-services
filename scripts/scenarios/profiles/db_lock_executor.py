@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import oracle_lock_remote
 from executor_common import ExecutorError, cli, profile_instance
 
 PROFILE_ID = "db.lock"
@@ -79,7 +80,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
 
     # G6/L1: 세션 신원에 시나리오를 인코딩하면 정답이 캡처 데이터에 그대로 노출된다.
     # 과거 계약(`rca-<scenario>-<surface>-lock`)은 금지되며, 신원은 실제 앱과
-    # 동일해야 한다. Oracle 경로는 별도 신원 체계라 아직 대상이 아니다(TODO 참조).
+    # 동일해야 한다. Oracle 경로는 운영 도구 신원을 쓴다(아래 ORACLE_CLIENT 주석).
     if params.get("engine") == "postgresql":
         identity = params.get("client_identity", "")
         if identity != APP_IDENTITY:
@@ -101,7 +102,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     instance = profile_instance(plan, PROFILE_ID)
     p = instance["parameters"]
     if p.get("engine") == "oracle":
-        return ["/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"], p["namespace"], p["pod"], p["schema"], p["table"], p["key_column"], p["key_value"], p["client_identifier"], str(p["hold_seconds"])], ORACLE_REMOTE
+        return ["/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"], p["namespace"], p["pod"], p["schema"], p["table"], p["key_column"], p["key_value"], p["client_identifier"], str(p["hold_seconds"])], ORACLE_CLIENT
     if p.get("engine") == "postgresql":
         if p.get("access") != "in-cluster-pod":
             raise ExecutorError("postgresql lock injection must originate inside the cluster")
@@ -238,57 +239,47 @@ case "$action" in
 esac
 '''
 
-ORACLE_REMOTE = br'''#!/usr/bin/env bash
-set -euo pipefail
-action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; keycol="$7"; key="$8"; tag="$9"; hold="${10}"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns"); state="/tmp/${tag}.pid"
-alive() { "${k[@]}" exec "$pod" -- env STATE="$state" sh -lc 'test -s "$STATE" && kill -0 "$(cat "$STATE")" 2>/dev/null'; }
-stop() { "${k[@]}" exec "$pod" -- env STATE="$state" TAG="$tag" sh -lc 'if test -s "$STATE"; then kill "$(cat "$STATE")" 2>/dev/null || true; rm -f "$STATE" "/tmp/$TAG.sql" "/tmp/$TAG.log"; fi'; }
-# `set feedback off` must precede the alters: sqlplus echoes "Session altered." for
-# each one while feedback is still on, and `tr -d [:space:]` then folds that into the
-# value, so the exact match below sees "Sessionaltered.Sessionaltered.1" and never
-# matches. This blocked BOTH preflight and recovery for the Oracle lock, so the run
-# could not clean itself and the global DIRTY it left stalled the whole queue (F01-P,
-# 2026-08-03).
-check_row() { printf 'set pages 0 feedback off heading off\nalter session set container=FREEPDB1;\nalter session set current_schema=%s;\nselect count(*) from %s where %s='"'"'%s'"'"';\nexit;\n' "$schema" "$table" "$keycol" "$key" | "${k[@]}" exec -i "$pod" -- sqlplus -s / as sysdba | tr -d '[:space:]' | grep -qx 1; }
-# Values reach the pod through `env`, never by hoping a local name survives the
-# hop. It did not: the remote heredoc expanded $tag/$schema/... to empty (they are
-# this script's variables, not the pod's) and the file name kept a literal $tag.
-# The pod held /tmp/$tag.sql containing set_identifier('') and a log saying
-# SP2-0310 unable to open file. NO LOCK WAS EVER TAKEN, and preflight, cleanup
-# and recovery all reported success anyway, because they look at /tmp/${tag}.pid
-# built here while the run wrote /tmp/$tag.pid there. The only thing that ever
-# caught it was the injected-lock-absent discriminator
-# (F01-P, 2026-08-04; same disease as the PostgreSQL lock, 2026-07-31).
-# Quote values, never identifiers: selecting from a quoted table name reads the
-# string, not the table.
-case "$action" in preflight) check_row; ! alive;; run) check_row; ! alive; "${k[@]}" exec "$pod" -- env TAG="$tag" SCHEMA="$schema" TBL="$table" KEYCOL="$keycol" KEY="$key" HOLD="$hold" sh -lc 'cat > "/tmp/$TAG.sql" <<EOF
-alter session set container=FREEPDB1;
-alter session set current_schema=$SCHEMA;
-begin dbms_session.set_identifier('"'"'$TAG'"'"'); end;
-/
-select $KEYCOL from $TBL where $KEYCOL='"'"'$KEY'"'"' for update;
-host sleep $HOLD
-rollback;
-exit;
-EOF
-nohup sqlplus -s / as sysdba @"/tmp/$TAG.sql" >"/tmp/$TAG.log" 2>&1 </dev/null & echo $! >"/tmp/$TAG.pid"' ;; cleanup) stop;; recovery) ! alive; check_row;; *) exit 2;; esac
-'''
+# Oracle 잠금(v4 C6, 2026-11-09). 옛 방식은 DB 파드에 exec 해 `sqlplus / as sysdba` 로
+# 잠그고 `host sleep` 으로 버텼다. 119 녹화(2026-09-01 F01-P)에 세 흔적이 남았다:
+#   · dpm_session 차단 세션이 schema=SYS, program=sqlplus@testbed-oracle-0,
+#     machine=testbed-oracle-0 (DB 서버가 자기 행을 SYS 로 잠그는 모양은 현실에 없다)
+#   · process_meta 에 `sqlplus -s / as sysdba @/tmp/dba-maintenance.sql`
+#   · process_meta 에 DB 파드 컨테이너의 `sleep 900`
+# 이제 잠금 세션은 러너 컨테이너에서 리스너(NodePort)로 앱 스키마 계정으로 붙고, 운영
+# 도구 모양의 신원으로 트랜잭션을 연 채 논다(oracle_lock_session.py, oracle_lock_remote.py).
+# DB 파드와 노드에는 프로세스도 파일도 남지 않는다. 피해 쪽 기전(행 잠금, 서버 세션
+# INACTIVE `SQL*Net message from client`, 대기자 `enq: TX - row lock contention`)은 같다.
+#
 # L1 해소(2026-07-28): client_identifier가 시나리오 ID를 인코딩하던 것을
 #   `dba-maintenance` 상수로 통일했다(F01-P·F08-G·F15-G 공통). 케이스마다 다르면
 #   태그 하나가 정답을 지목하지만(L1), 전 케이스 균일하면 변별정보가 0이라
 #   공개 가능한 환경 서명(L4)이 된다 — 기준서 G6의 판정 규칙 그대로다.
-#   값 선택 근거: 실 앱은 set_identifier를 호출하지 않으므로 무엇을 넣어도
-#   앱과 같아지지는 않는다. 그렇다면 특정 서비스를 지목하지 않는 운영 주체
-#   이름이 안전하다 — `banking-interest-batch` 같은 값은 무고한 서비스를
-#   가리키는 **틀린 단서**가 된다.
+#   러너의 감별 관측(database.oracle_tagged_session_count)이 이 값을 세므로 잠금
+#   세션에만 그대로 붙인다. 119 dpm_session 에는 이 칸이 실리지 않는다.
 #
-# TODO(G6/L2 — Oracle): 남은 두 축은 그대로다.
-#   · `host sleep`으로 유지 → 대기 이벤트가 인위적(L2)
-#   · DB 파드 내부 실행이라 출처가 앱과 다름(L2)
-#   PostgreSQL과 동일하게 (1) 실 앱 신원 사칭 (2) idle-in-transaction 유지
-#   (3) 클러스터 내 클라이언트 파드로 전환해야 한다. Oracle 실 앱 세션의
-#   program/module 값을 캡처에서 실측한 뒤 착수할 것.
+# 정리는 잠금 세션 프로세스 종료(SIGTERM 이면 롤백, 안 되면 SIGKILL 로 소켓을 닫아
+# 서버가 롤백)이고, 서버 쪽 확인은 그 행을 FOR UPDATE WAIT 로 잡아 보는 것이다.
+# 세션 이름으로 다른 세션을 죽이지 않는다.
+_ORACLE_HEAD = br"""#!/usr/bin/env bash
+set -euo pipefail
+action="$1"; scenario="$2"; ns="$3"; pod="$4"; schema="$5"; table="$6"; keycol="$7"; key="$8"; tag="$9"; hold="${10}"
+run_dir="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}/db-lock-oracle-${scenario}"
+"""
+_ORACLE_BODY = br"""
+# Nothing was started: cleanup has nothing to stop and needs no database round trip.
+[[ "$action" == cleanup && ! -d "$run_dir" ]] && exit 0
+ora_prepare "$ns" "$pod"
+ora_target "$schema" "$table" "$keycol" "$key"
+case "$action" in
+  # ora_released before starting = no session (ours or a leftover) holds the row now.
+  preflight) ora_row_ok; ! ora_alive "$run_dir"; ora_released ;;
+  run) ora_row_ok; ! ora_alive "$run_dir"; ora_released; ora_hold_start "$run_dir" "$tag" "$hold" ;;
+  cleanup) ora_hold_stop "$run_dir"; ora_released; rm -rf -- "$run_dir" ;;
+  recovery) ! ora_alive "$run_dir"; ora_row_ok; ora_released ;;
+  *) exit 2 ;;
+esac
+"""
+ORACLE_CLIENT = _ORACLE_HEAD + oracle_lock_remote.bash_functions() + _ORACLE_BODY
 
 
 if __name__ == "__main__":

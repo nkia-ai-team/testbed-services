@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import os
 import sys
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -169,35 +170,201 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertNotIn("pg_sleep", script)
         self.assertNotIn("pkill", script)
 
-    def test_oracle_lock_carries_its_values_into_the_pod(self) -> None:
-        """F01-P 2026-08-04: 잠금이 한 번도 걸린 적이 없었다.
+    def test_oracle_lock_runs_from_the_runner_and_leaves_no_injector_trace(self) -> None:
+        """v4 C6: Oracle 잠금은 DB 파드 밖에서, 운영 도구 모양의 네트워크 세션으로 잡는다.
 
-        원격 heredoc이 `$tag`·`$schema`를 이 스크립트의 변수로 알고 빈 문자열로
-        폈다. 파드에는 `set_identifier('')`가 든 `/tmp/$tag.sql`과
-        `SP2-0310 unable to open file` 로그만 남았는데, preflight·cleanup·recovery는
-        전부 성공을 보고했다 — 그것들은 로컬에서 만든 `/tmp/${tag}.pid`를 보고
-        주입은 `/tmp/$tag.pid`에 썼기 때문이다. 감별자 하나만이 이걸 잡았다.
+        옛 방식(DB 파드 exec, `sqlplus / as sysdba`, `host sleep`)은 119 녹화에 SYS 차단
+        세션(machine=testbed-oracle-0)과 DB 노드의 sqlplus, sleep 프로세스를 남겼다
+        (2026-09-01 F01-P). F08-G, F15-G 의 oracle_lock 단계도 같은 함수를 쓴다.
         """
-        plan = compiler.compile_plan("f01-p-oracle-lock-cross-domain")
-        script = db_lock.build_invocation(plan, "run")[1].decode()
-        run_case = script.split("run)")[1].split(";;")[0]
-        # 값은 env로 건너간다. 로컬 이름을 원격에서 쓸 수는 없다.
-        for pair in ('TAG="$tag"', 'SCHEMA="$schema"', 'TBL="$table"',
-                     'KEYCOL="$keycol"', 'KEY="$key"', 'HOLD="$hold"'):
-            self.assertIn(pair, run_case)
-        # sh -lc 뒤가 파드에서 도는 텍스트다. 거기엔 로컬 소문자 이름이 없어야 한다.
-        remote = run_case.split("sh -lc", 1)[1]
-        for local_only in ("$tag", "$schema", "$table", "$keycol", "$key", "$hold"):
-            self.assertNotIn(local_only, remote)
-        self.assertIn("/tmp/$TAG.sql", remote)
-        self.assertIn("/tmp/$TAG.pid", remote)
-        # 식별자는 따옴표를 두르지 않는다 — 두르면 문자열을 select 하게 된다.
-        self.assertIn("current_schema=$SCHEMA", remote)
-        self.assertIn("select $KEYCOL from $TBL where $KEYCOL=", remote)
-        # 값은 반대로 반드시 따옴표 안에 있어야 한다(셸 이스케이프를 거친 형태).
-        quote = "'\"'\"'"
-        self.assertIn(f"set_identifier({quote}$TAG{quote})", remote)
-        self.assertIn(f"{quote}$KEY{quote}", remote)
+        oracle_bodies = {
+            "F01-P": db_lock.build_invocation(compiler.compile_plan("f01-p-oracle-lock-cross-domain"), "run")[1].decode(),
+        }
+        multi = load("timeline_multi_injection_executor")
+        oracle_bodies["timeline.multi"] = multi.ORCHESTRATOR.decode()
+        for name, script in oracle_bodies.items():
+            with self.subTest(name):
+                oracle_part = script[script.index("# ---- Oracle row-lock client"):]
+                oracle_part = oracle_part.split("# ---- pg_lock primitive")[0]
+                for trace in ("exec ", "sqlplus", "as sysdba", "host sleep", "dbms_session", "/tmp/dba-maintenance",
+                              "alter system kill"):
+                    self.assertNotIn(trace, oracle_part)
+                # 값은 env 로만 건너가고 키 값은 바인드 변수다(옛 heredoc 이 값을 비운 사고, 2026-08-04).
+                self.assertIn('LOCK_TAG="$tag" LOCK_HOLD="$hold" READY_FILE="$dir/ready"', oracle_part)
+                self.assertIn('export LOCK_SCHEMA="$1" LOCK_TABLE="$2" LOCK_KEYCOL="$3" LOCK_KEY="$4"', oracle_part)
+                self.assertIn("where {keycol} = :k for update wait", oracle_part)
+                self.assertIn("export CLIENT_PROGRAM=SQLcl", oracle_part)
+                # 앱 계정은 Secret 에서 읽는다. 비밀번호 원문이 스크립트에 없다.
+                self.assertIn("ORA_SECRET=oracle-secret", oracle_part)
+                self.assertNotIn("banking1234", script)
+        # 신원 상수는 시나리오를 가리키지 않는다(기준서 G6).
+        remote = load("oracle_lock_remote")
+        for value in (remote.CLIENT_PROGRAM, remote.CLIENT_MACHINE, remote.CLIENT_OSUSER):
+            self.assertNotRegex(value, r"(?i)rca|F\d\d|scenario|lock|test")
+            # python-oracledb 가 받는 문자만(공백, 괄호는 DPY-3029 로 접속 전에 거절된다, 11-09 실측).
+            self.assertRegex(value, r"^[A-Za-z0-9._@-]+$")
+
+    def _oracle_lock_stub(self, tmp: Path) -> dict[str, str]:
+        """Fake kubectl and a fake `oracledb` around the real executor body. The fake
+        database keeps one row lock in `tmp/lock` (owner pid) and logs every connect."""
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        pylib = tmp / "pylib"
+        pylib.mkdir()
+        (pylib / "oracledb.py").write_text(f"""import json, os
+from pathlib import Path
+TMP = Path({str(tmp)!r})
+LOCK = TMP / "lock"
+class _Err:
+    def __init__(self, code): self.code = code
+class DatabaseError(Exception): pass
+def _holder():
+    try: pid = int(LOCK.read_text())
+    except (FileNotFoundError, ValueError): return None
+    try: os.kill(pid, 0)
+    except OSError: return None
+    return pid
+class Cursor:
+    def __init__(self, conn): self.conn = conn; self.rows = []
+    def execute(self, sql, **binds):
+        # Oracle 23ai drops the connection ("Bad TTC Packet") when action is set to "".
+        if self.conn.action == "": raise DatabaseError(_Err(4011))
+        self.conn.log("sql", sql=sql, binds=binds, client_identifier=self.conn.client_identifier)
+        if binds.get("k") != "commerce-settlement": raise DatabaseError(_Err(942))
+        if "count(*)" in sql: self.rows = [(1,)]; return
+        holder = _holder()
+        if holder not in (None, os.getpid()): raise DatabaseError(_Err(30006))
+        LOCK.write_text(str(os.getpid())); self.conn.locked = True; self.rows = [("commerce-settlement",)]
+    def fetchone(self): return self.rows[0]
+    def fetchall(self): return list(self.rows)
+class Connection:
+    def __init__(self, **kw):
+        self.kw = kw; self.client_identifier = None; self.module = None; self.action = None; self.locked = False
+        self.log("connect", **{{k: v for k, v in kw.items() if k != "password"}})
+    def log(self, kind, **data):
+        with (TMP / "calls").open("a") as f: f.write(json.dumps({{"kind": kind, "pid": os.getpid(), **data}}) + "\\n")
+    def cursor(self): return Cursor(self)
+    def rollback(self):
+        if self.locked and _holder() == os.getpid(): LOCK.unlink()
+        self.locked = False; self.log("rollback")
+    def close(self): self.rollback(); self.log("close")
+def connect(**kw):
+    # python-oracledb thin refuses these before connecting (DPY-3029).
+    for field in ("program", "machine", "osuser", "terminal"):
+        if any(ch in kw.get(field, "") for ch in " ()="):
+            raise DatabaseError(_Err(3029))
+    return Connection(**kw)
+""")
+        secret = {"APP_USER": "banking", "APP_USER_PASSWORD": "pw-from-secret"}
+        import base64
+        kubectl = bindir / "kubectl"
+        kubectl.write_text("#!/usr/bin/env bash\n"
+                           f"printf '%s\\n' \"$*\" >>{tmp}/kubectl\n"
+                           "case \"$*\" in\n"
+                           "  *hostIP*) printf 192.168.122.11 ;;\n"
+                           "  *nodePort*) printf 30308 ;;\n"
+                           f"  *APP_USER_PASSWORD*) printf {base64.b64encode(secret['APP_USER_PASSWORD'].encode()).decode()} ;;\n"
+                           f"  *APP_USER*) printf {base64.b64encode(secret['APP_USER'].encode()).decode()} ;;\n"
+                           "  *) exit 9 ;;\n"
+                           "esac\n")
+        kubectl.chmod(0o755)
+        python = bindir / "python-with-oracledb"
+        python.write_text(f"#!/usr/bin/env bash\nPYTHONPATH={pylib} exec {sys.executable} \"$@\"\n")
+        python.chmod(0o755)
+        return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", ORACLE_LOCK_PYTHON=str(python),
+                    SCENARIO_PROFILE_STATE_ROOT=str(tmp / "state"))
+
+    def _oracle_lock_run(self, action: str, env: dict[str, str], hold: str | None = None) -> subprocess.CompletedProcess:
+        argv, stdin = db_lock.build_invocation(compiler.compile_plan("f01-p-oracle-lock-cross-domain"), action)
+        if hold is not None:
+            argv[-1] = hold
+        return subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=120, check=False)
+
+    def test_oracle_lock_holds_the_row_as_an_operator_session_and_releases_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._oracle_lock_stub(tmp)
+            (tmp / "state").mkdir()
+            self.assertEqual(self._oracle_lock_run("preflight", env).returncode, 0)
+            run = self._oracle_lock_run("run", env)
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+            holder = int((tmp / "lock").read_text())
+            calls = [json.loads(line) for line in (tmp / "calls").read_text().splitlines()]
+            hold_connect = next(c for c in calls if c["kind"] == "connect" and c["pid"] == holder)
+            self.assertEqual(hold_connect["dsn"], "192.168.122.11:30308/FREEPDB1")
+            self.assertEqual(hold_connect["user"], "banking")
+            self.assertEqual((hold_connect["program"], hold_connect["machine"], hold_connect["osuser"]),
+                             ("SQLcl", "ops-bastion", "dba"))
+            lock_sql = next(c for c in calls if c["kind"] == "sql" and c["pid"] == holder)
+            self.assertEqual(lock_sql["sql"], "select id from accounts where id = :k for update wait 60"
+                             .replace("accounts", "BANKING.accounts"))
+            self.assertEqual(lock_sql["client_identifier"], "dba-maintenance")
+            # 짧은 확인 세션에는 태그를 붙이지 않는다(러너의 태그 세션 수 관측이 잠금 세션만 센다).
+            self.assertTrue(all(c["client_identifier"] is None for c in calls if c["kind"] == "sql" and c["pid"] != holder))
+            # 잠금 중에는 같은 실행이 다시 시작되지 않는다.
+            self.assertNotEqual(self._oracle_lock_run("preflight", env).returncode, 0)
+            # kubectl 은 조회만 한다. DB 파드에 exec 하지 않는다.
+            for line in (tmp / "kubectl").read_text().splitlines():
+                self.assertTrue(line.split()[4] == "get", line)
+            cleanup = self._oracle_lock_run("cleanup", env)
+            self.assertEqual(cleanup.returncode, 0, cleanup.stderr.decode())
+            self.assertFalse((tmp / "lock").exists())
+            with self.assertRaises(OSError):
+                os.kill(holder, 0)
+            self.assertEqual(self._oracle_lock_run("recovery", env).returncode, 0)
+            self.assertEqual(self._oracle_lock_run("cleanup", env).returncode, 0)
+            self.assertNotIn("pw-from-secret", (tmp / "calls").read_text())
+
+    def test_oracle_lock_releases_by_itself_when_the_hold_ends(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._oracle_lock_stub(tmp)
+            (tmp / "state").mkdir()
+            run = self._oracle_lock_run("run", env, hold="2")
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+            holder = int((tmp / "lock").read_text())
+            deadline = time.monotonic() + 15
+            while (tmp / "lock").exists() and time.monotonic() < deadline:
+                time.sleep(0.2)
+            self.assertFalse((tmp / "lock").exists())
+            kinds = [json.loads(line)["kind"] for line in (tmp / "calls").read_text().splitlines()
+                     if json.loads(line)["pid"] == holder]
+            # 보유 시간이 끝나면 잠금 세션이 스스로 롤백하고 닫는다.
+            self.assertEqual(kinds[-1], "close")
+            self.assertIn("rollback", kinds)
+            self.assertEqual(self._oracle_lock_run("cleanup", env).returncode, 0)
+
+    def test_oracle_lock_cleanup_fails_while_another_session_still_holds_the_row(self) -> None:
+        # 해제 확인은 서버 쪽이다: 우리 프로세스가 죽었어도 행을 잡을 수 없으면 실패한다.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = self._oracle_lock_stub(tmp)
+            (tmp / "state").mkdir()
+            run = self._oracle_lock_run("run", env)
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+            other = subprocess.Popen(["sleep", "60"])
+            try:
+                self._oracle_lock_run("cleanup", env)  # stops our holder first
+                (tmp / "state" / "db-lock-oracle-F01-P").mkdir(exist_ok=True)
+                (tmp / "lock").write_text(str(other.pid))
+                result = self._oracle_lock_run("cleanup", env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotEqual(self._oracle_lock_run("recovery", env).returncode, 0)
+            finally:
+                other.kill()
+                other.wait()
+
+    def test_oracle_lock_client_refuses_identifiers_that_are_not_plain_names(self) -> None:
+        # 식별자는 따옴표 없이 SQL 에 들어가므로 이름 모양만 받는다. 키 값은 바인드 변수다.
+        client = load("oracle_lock_session")
+        for bad in ("accounts; drop table x", "\"accounts\"", "", "1accounts", "acc ounts"):
+            with self.subTest(bad=bad), unittest.mock.patch.dict(
+                os.environ, {"LOCK_SCHEMA": "BANKING", "LOCK_TABLE": bad, "LOCK_KEYCOL": "id"}, clear=False
+            ):
+                with self.assertRaises(SystemExit):
+                    client._target()
+        with unittest.mock.patch.dict(os.environ, {"LOCK_SCHEMA": "BANKING", "LOCK_TABLE": "accounts", "LOCK_KEYCOL": "id"}):
+            self.assertEqual(client._target(), ("BANKING.accounts", "id"))
 
     def test_db_account_locks_only_the_app_account_and_unlocks_it(self) -> None:
         # F35-R: 주입은 계정 상태 한 칸(ACCOUNT_STATUS)만 뒤집는다. 세션을 끊거나

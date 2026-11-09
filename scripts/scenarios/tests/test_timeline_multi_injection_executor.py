@@ -70,10 +70,15 @@ class MultiInjectionContractTests(unittest.TestCase):
         text = body.decode()
         # reverse-order cleanup
         self.assertIn("for ((i=step_count-1; i>=0; i--)); do dispatch release", text)
-        # oracle tag via v$session client_identifier + server-side kill (death confirm)
-        self.assertIn("dbms_session.set_identifier", text)
-        self.assertIn("client_identifier=", text)
-        self.assertIn("alter system kill session", text)
+        # oracle: runner-side session tagged through the driver; death confirmed by the
+        # holder process ending and the row becoming lockable server-side (v4 C6).
+        # The old path exec'd into the Oracle pod as SYS and killed sessions by tag.
+        self.assertIn('conn.client_identifier = _env("LOCK_TAG")', text)
+        release = text[text.index("oracle() {"):text.index("pg() {")].split("release)")[1].split(";;")[0]
+        self.assertIn('ora_hold_stop "$run_dir" || return 1', release)
+        self.assertIn("ora_released || return 1", release)
+        self.assertNotIn("alter system kill session", text)
+        self.assertNotIn("sqlplus", text)
         # pg lock: 클러스터 내 클라이언트 파드 + 앱 신원 사칭 + idle-in-transaction 유지.
         # 이름으로 세션을 죽이지 않는다(실 서비스를 죽일 수 있다) — 파드 삭제로 정리한다.
         self.assertIn("PGAPPNAME", text)

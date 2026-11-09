@@ -925,8 +925,10 @@ class DbHostFoundations(unittest.TestCase):
             text = body.decode()
             if sid == "F01-P":
                 # Oracle account row-lock (settlement row exists, single-key contention).
+                # v4 C6: the tag is set on the runner-side session through the driver
+                # (conn.client_identifier), no longer by a PL/SQL call inside the DB pod.
                 self.assertIn("FOR UPDATE", text.upper())
-                self.assertIn("dbms_session.set_identifier", text)
+                self.assertIn("conn.client_identifier = _env(\"LOCK_TAG\")", text)
                 self.assertIn("FREEPDB1", text)
             else:
                 # F06-H payment writes are fresh INSERTs, so a row-lock cannot block them;
