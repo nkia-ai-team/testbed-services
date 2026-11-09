@@ -70,6 +70,7 @@ def _connect():
         program=_env("CLIENT_PROGRAM"),
         machine=_env("CLIENT_MACHINE"),
         osuser=_env("CLIENT_OSUSER"),
+        driver_name=_env("CLIENT_DRIVER"),
         terminal="unknown",
         # NodePort 경유 유휴 연결이 중간 장비에서 끊기지 않게 TCP keepalive 를 켠다.
         expire_time=1,

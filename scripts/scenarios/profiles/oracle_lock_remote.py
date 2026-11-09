@@ -56,6 +56,9 @@ SQLNET_EXPIRE_MAX_MINUTES = 2
 CLIENT_PROGRAM = "SQLcl"
 CLIENT_MACHINE = "ops-bastion"
 CLIENT_OSUSER = "dba"
+# v$session_connect_info.client_driver. 기본값은 "python-oracledb thn : 2.5.1" 이라 도구 모양과
+# 어긋난다(리뷰 C6 5번). SQLcl 은 JDBC thin 이므로 그 모양을 쓴다. 11-10 실측: 이 값이 그대로 보인다.
+CLIENT_DRIVER = "jdbcthin : 23.7.0.25.1"
 
 
 def client_source() -> str:
@@ -85,6 +88,7 @@ def bash_functions() -> bytes:
             f"export CLIENT_PROGRAM={q(CLIENT_PROGRAM)}",
             f"export CLIENT_MACHINE={q(CLIENT_MACHINE)}",
             f"export CLIENT_OSUSER={q(CLIENT_OSUSER)}",
+            f"export CLIENT_DRIVER={q(CLIENT_DRIVER)}",
             f"ORA_SRC=$(cat <<'{HEREDOC_END}'",
         ]
     )

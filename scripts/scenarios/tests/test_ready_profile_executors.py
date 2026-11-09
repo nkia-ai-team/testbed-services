@@ -199,6 +199,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 self.assertNotIn("banking1234", script)
         # 신원 상수는 시나리오를 가리키지 않는다(기준서 G6).
         remote = load("oracle_lock_remote")
+        self.assertNotRegex(remote.CLIENT_DRIVER, r"(?i)python|oracledb|rca|F\d\d")
         for value in (remote.CLIENT_PROGRAM, remote.CLIENT_MACHINE, remote.CLIENT_OSUSER):
             self.assertNotRegex(value, r"(?i)rca|F\d\d|scenario|lock|test")
             # python-oracledb 가 받는 문자만(공백, 괄호는 DPY-3029 로 접속 전에 거절된다, 11-09 실측).
@@ -285,6 +286,16 @@ def connect(**kw):
         return dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", ORACLE_LOCK_PYTHON=str(python),
                     SCENARIO_PROFILE_STATE_ROOT=str(tmp / "state"))
 
+    @staticmethod
+    def _process_ended(pid: int) -> bool:
+        """Gone or a zombie. The holder outlives the executor's shell, so whoever adopts it reaps it
+        when it likes; kill(pid, 0) still succeeds on a zombie (seen 1 in 10 runs on 104)."""
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except FileNotFoundError:
+            return True
+        return stat.rsplit(")", 1)[1].split()[0] == "Z"
+
     def _oracle_lock_run(self, action: str, env: dict[str, str], hold: str | None = None) -> subprocess.CompletedProcess:
         argv, stdin = db_lock.build_invocation(compiler.compile_plan("f01-p-oracle-lock-cross-domain"), action)
         if hold is not None:
@@ -304,8 +315,9 @@ def connect(**kw):
             hold_connect = next(c for c in calls if c["kind"] == "connect" and c["pid"] == holder)
             self.assertEqual(hold_connect["dsn"], "192.168.122.11:30308/FREEPDB1")
             self.assertEqual(hold_connect["user"], "banking")
-            self.assertEqual((hold_connect["program"], hold_connect["machine"], hold_connect["osuser"]),
-                             ("SQLcl", "ops-bastion", "dba"))
+            self.assertEqual((hold_connect["program"], hold_connect["machine"], hold_connect["osuser"],
+                              hold_connect["driver_name"]),
+                             ("SQLcl", "ops-bastion", "dba", "jdbcthin : 23.7.0.25.1"))
             lock_sql = next(c for c in calls if c["kind"] == "sql" and c["pid"] == holder)
             self.assertEqual(lock_sql["sql"], "select id from accounts where id = :k for update wait 60"
                              .replace("accounts", "BANKING.accounts"))
@@ -320,8 +332,7 @@ def connect(**kw):
             cleanup = self._oracle_lock_run("cleanup", env)
             self.assertEqual(cleanup.returncode, 0, cleanup.stderr.decode())
             self.assertFalse((tmp / "lock").exists())
-            with self.assertRaises(OSError):
-                os.kill(holder, 0)
+            self.assertTrue(self._process_ended(holder))
             self.assertEqual(self._oracle_lock_run("recovery", env).returncode, 0)
             self.assertEqual(self._oracle_lock_run("cleanup", env).returncode, 0)
             self.assertNotIn("pw-from-secret", (tmp / "calls").read_text())
@@ -377,8 +388,7 @@ def connect(**kw):
             (tmp / "kubectl-down").touch()
             cleanup = self._oracle_lock_run("cleanup", env)
             self.assertNotEqual(cleanup.returncode, 0)
-            with self.assertRaises(OSError):
-                os.kill(holder, 0)
+            self.assertTrue(self._process_ended(holder))
             self.assertFalse((tmp / "lock").exists())
             # 상태는 남아 API 가 돌아오면 다시 정리, 확인한다.
             (tmp / "kubectl-down").unlink()
@@ -395,8 +405,7 @@ def connect(**kw):
             (tmp / "state" / "db-lock-oracle-F01-P" / "pid").unlink()
             self.assertNotEqual(self._oracle_lock_run("preflight", env).returncode, 0)
             self.assertEqual(self._oracle_lock_run("cleanup", env).returncode, 0)
-            with self.assertRaises(OSError):
-                os.kill(holder, 0)
+            self.assertTrue(self._process_ended(holder))
 
     def test_oracle_lock_refuses_without_server_dead_connection_detection(self) -> None:
         # 리뷰 C6 1번(U8): 러너가 FIN 없이 사라지면 서버만이 잠금을 풀 수 있다. DB 파드가
