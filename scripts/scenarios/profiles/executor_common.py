@@ -201,39 +201,54 @@ def guard_stdin_line(plan: dict[str, Any]) -> bytes:
 # What reaches the node's journal (forwarded to 119) is a tool trace no real incident leaves, so it
 # says nothing about the change (design principle 8): the units take the name systemd-run gives an
 # unnamed command (run-r<32 hex>, fresh each time) and an empty description, which systemd shows as
-# the unit name. A normal run adds one line at arm (Started run-r....timer.) and the stop lines at
-# disarm; postpone restarts the timer only when less than the hold is left, so a cleanup on time adds
-# nothing. The job name stays in files under the state root (0700) and is never logged; the boot rule
-# is named after the first unit.
+# the unit name. An undo that has nothing to do exits 0 without a word. postpone restarts the timer
+# only when less than the hold is left, so it adds a stop and a start line only for a cleanup that
+# comes late (from max_injection_duration - 360s after the arm). The job name stays in files under
+# the state root (0700) and is never logged; the boot rule is named after the first unit.
+#
+# One lock per job (flock, /run/opsjobs/<job>.lock) orders arm, postpone, disarm and the undo the
+# timer starts. Stopping a timer does not stop the undo it has just started, so the undo, once it
+# holds the lock, runs only while <job>.unit still names its own unit: a postpone or a disarm that
+# got there first leaves it nothing to do, and no timer is left behind without its undo (2026-11-09
+# review: a timer that fired between the check and the stop of a postpone was orphaned and failed 960s
+# later, logging the state path).
 GUARD_FUNCTIONS = br'''guard_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
 guard_boot_dir="${OPSJOB_TMPFILES_DIR:-/etc/tmpfiles.d}"
+guard_lock_dir="${OPSJOB_LOCK_DIR:-/run/opsjobs}"
+guard_lock_wait="${OPSJOB_LOCK_WAIT:-300}"
 guard_ctl="${OPSJOB_SYSTEMCTL:-systemctl}"
 guard_run="${OPSJOB_SYSTEMD_RUN:-systemd-run}"
 guard_uptime="${OPSJOB_UPTIME_FILE:-/proc/uptime}"
+# What the timer runs: take the job's lock, then undo only if this unit is still the armed one.
+guard_launch='exec 9>>"$3"; flock 9; u=""; if [[ -f "$2" ]]; then read -r u _ <"$2" || true; fi; if [[ "$u" != "$4" || ! -f "$1" ]]; then exit 0; fi; exec /bin/bash "$1"'
 # <job>.unit holds "<unit> <due, seconds of uptime> <boot rule>" while an undo is armed.
 guard_names() {
   g_undo="$guard_root/$1.undo"; g_unitfile="$guard_root/$1.unit"; g_mark="$guard_root/$1.expired"
+  g_lock="$guard_lock_dir/$1.lock"
   g_unit=""; g_due=0; g_boot=""
   if [[ -s "$g_unitfile" ]]; then read -r g_unit g_due g_boot <"$g_unitfile" || true; fi
 }
 guard_now() { local up; read -r up _ <"$guard_uptime"; echo "${up%.*}"; }
 guard_newname() { printf 'run-r%s' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"; }
-# An undo already running finishes before anything replaces or cancels its timer, so the timer's
-# undo and cleanup's own never run side by side.
-guard_settle() {
-  local _
-  if [[ -z "$g_unit" ]]; then return 0; fi
-  for _ in $(seq 1 120); do
-    if ! "$guard_ctl" is-active --quiet "$g_unit.service"; then return 0; fi
-    sleep 1
-  done
-  echo "$g_unit.service still running after 120s" >&2
-  return 1
+# Runs "$@" holding the job's lock (fd 9 is closed again when it returns, so nothing started inside
+# keeps it).
+guard_locked() {
+  local job=$1
+  shift
+  mkdir -p "$guard_lock_dir"
+  {
+    if ! flock -w "$guard_lock_wait" 9; then echo "guard: $job is busy after ${guard_lock_wait}s" >&2; return 1; fi
+    "$@"
+  } 9>>"$guard_lock_dir/$job.lock"
 }
+# A failed undo is said here, before reset-failed clears it, whichever call gets there first.
 guard_stop() {
   if [[ -z "$g_unit" ]]; then return 0; fi
-  "$guard_ctl" stop "$g_unit.timer" >/dev/null 2>&1 || true
-  "$guard_ctl" reset-failed "$g_unit.timer" "$g_unit.service" >/dev/null 2>&1 || true
+  if "$guard_ctl" is-failed --quiet "$g_unit.service" </dev/null 2>/dev/null; then
+    echo "$g_unit.service failed; cleanup undoes the change itself" >&2
+  fi
+  "$guard_ctl" stop "$g_unit.timer" </dev/null >/dev/null 2>&1 || true
+  "$guard_ctl" reset-failed "$g_unit.timer" "$g_unit.service" </dev/null >/dev/null 2>&1 || true
 }
 # A fresh name each start: a stopped transient unit may still be on its way out of PID 1.
 guard_start() {
@@ -242,17 +257,13 @@ guard_start() {
   printf '%s %s %s\n' "$g_unit" "$g_due" "$g_boot" >"$g_unitfile.tmp"
   mv -T "$g_unitfile.tmp" "$g_unitfile"
   "$guard_run" --quiet --unit="$g_unit" --description= --on-active="$1" \
-    --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no /bin/bash "$g_undo"
+    --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no \
+    /bin/bash -c "$guard_launch" guard "$g_undo" "$g_unitfile" "$g_lock" "$g_unit" </dev/null
 }
-guard_arm() {
+guard_arm_now() {
   local job=$1 secs=$2 body=$3 p
   shift 3
-  if [[ ! "$secs" =~ ^[1-9][0-9]*$ ]]; then echo "guard: bad deadline $secs" >&2; return 1; fi
-  for p in "$@"; do
-    if [[ "$p" != /* || "$p" == *[[:space:]]* ]]; then echo "guard: bad boot path $p" >&2; return 1; fi
-  done
   guard_names "$job"
-  guard_settle
   guard_stop
   if [[ -n "$g_boot" ]]; then rm -f "$g_boot"; fi
   mkdir -p "$guard_root" "$guard_boot_dir"
@@ -267,29 +278,35 @@ guard_arm() {
   } >"$g_undo.tmp"
   chmod 700 "$g_undo.tmp"
   mv -T "$g_undo.tmp" "$g_undo"
-  for p in "$@" "$g_undo" "$g_unitfile" "$g_boot"; do printf 'r %s\n' "$p"; done >"$g_boot.tmp"
+  # r! runs only at boot (systemd-tmpfiles --boot), never on a manual --remove while the job runs.
+  for p in "$@" "$g_undo" "$g_unitfile" "$g_boot"; do printf 'r! %s\n' "$p"; done >"$g_boot.tmp"
   mv -T "$g_boot.tmp" "$g_boot"
   guard_start "$secs"
 }
-guard_postpone() {
+guard_arm() {
+  local p
+  if [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then echo "guard: bad deadline $2" >&2; return 1; fi
+  for p in "${@:4}"; do
+    if [[ "$p" != /* || "$p" == *[[:space:]]* ]]; then echo "guard: bad boot path $p" >&2; return 1; fi
+  done
+  guard_locked "$1" guard_arm_now "$@"
+}
+guard_postpone_now() {
   guard_names "$1"
-  guard_settle
   if [[ ! -e "$g_undo" || -z "$g_unit" ]]; then return 0; fi
   if (( g_due - $(guard_now) >= $2 )); then return 0; fi
   guard_stop
   guard_start "$2"
 }
-guard_disarm() {
+guard_postpone() { guard_locked "$1" guard_postpone_now "$@"; }
+guard_disarm_now() {
   guard_names "$1"
-  guard_settle
-  if [[ -n "$g_unit" ]] && "$guard_ctl" is-failed --quiet "$g_unit.service" 2>/dev/null; then
-    echo "$g_unit.service failed; cleanup undoes the change itself" >&2
-  fi
   guard_stop
   if [[ -s "$g_mark" ]]; then echo "the node undid the change by itself at $(cat "$g_mark")" >&2; fi
   rm -f "$g_undo" "$g_undo.tmp" "$g_unitfile" "$g_unitfile.tmp" "$g_mark"
   if [[ -n "$g_boot" ]]; then rm -f "$g_boot" "$g_boot.tmp"; fi
 }
+guard_disarm() { guard_locked "$1" guard_disarm_now "$@"; }
 '''
 
 GUARD_PROGRAM = b"set -euo pipefail\n" + GUARD_FUNCTIONS + br'''case "$1" in

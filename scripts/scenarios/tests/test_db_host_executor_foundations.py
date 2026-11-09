@@ -1289,13 +1289,13 @@ class HostStressNodeUndoTests(unittest.TestCase):
                     self.assertEqual(start["description"], "")
                 # The guard is armed before the burner starts: its undo exists when the group does.
                 undo = state / "burnin.undo"
-                self.assertEqual(node_guard_fakes.command(env, "burnin"), ["/bin/bash", str(undo)])
+                self.assertTrue(node_guard_fakes.launches(env, "burnin"))
                 # A reboot ends the burner by itself; what it leaves (pgid and log files) goes at the next boot.
                 rule = Path(node_guard_fakes.unit_record(env, "burnin")[2])
                 self.assertEqual(rule.parent, sandbox / "tmpfiles.d")
                 self.assertEqual(rule.read_text().splitlines(), [
-                    f"r {state / 'burnin.pgid'}", f"r {state / 'burnin.log'}",
-                    f"r {undo}", f"r {state / 'burnin.unit'}", f"r {rule}",
+                    f"r! {state / 'burnin.pgid'}", f"r! {state / 'burnin.log'}",
+                    f"r! {undo}", f"r! {state / 'burnin.unit'}", f"r! {rule}",
                 ])
                 spare = sandbox / "undo-copy"
                 shutil.copy(undo, spare)

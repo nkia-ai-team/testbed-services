@@ -1069,7 +1069,7 @@ esac
                 self.assertNotIn(forbidden, undo)
             # The outputs survive a reboot, so the next boot removes exactly them (files before the directory).
             boot = Path(node_guard_fakes.unit_record(env, "oradata-backup")[2]).read_text().splitlines()
-            self.assertEqual(boot[:3], [f"r {outputs[0]}", f"r {outputs[1]}", "r /var/backups/oradata"])
+            self.assertEqual(boot[:3], [f"r! {outputs[0]}", f"r! {outputs[1]}", "r! /var/backups/oradata"])
             # Nothing on the node's sudo line names the scenario or the guard's arguments.
             self.assertNotIn(b"F80", (tmp / "log").read_bytes())
             result = self._host_job_run("cleanup", env)
@@ -1279,9 +1279,9 @@ else:
             self.assertEqual(node_guard_fakes.journal_words(env, "restaurant-api-in"), [])
             # iptables rules end with a reboot; the next boot only removes the guard's own files.
             rule = Path(node_guard_fakes.unit_record(env, "restaurant-api-in")[2])
-            self.assertEqual(rule.read_text().splitlines(), [f"r {tmp / 'state' / 'restaurant-api-in.undo'}",
-                                                              f"r {tmp / 'state' / 'restaurant-api-in.unit'}",
-                                                              f"r {rule}"])
+            self.assertEqual(rule.read_text().splitlines(), [f"r! {tmp / 'state' / 'restaurant-api-in.undo'}",
+                                                              f"r! {tmp / 'state' / 'restaurant-api-in.unit'}",
+                                                              f"r! {rule}"])
             mark = len(remote)
             result = self._host_firewall_run("cleanup", env)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -3445,7 +3445,7 @@ class NodeGuardTests(unittest.TestCase):
             [start] = node_guard_fakes.starts(env, "nightly")
             self.assertEqual((start["seconds"], start["props"]), ("1800", "AccuracySec=1s RemainAfterElapse=no"))
             undo = tmp / "state" / "nightly.undo"
-            self.assertEqual(node_guard_fakes.command(env, "nightly"), ["/bin/bash", str(undo)])
+            self.assertTrue(node_guard_fakes.launches(env, "nightly"))
             self.assertEqual(undo.stat().st_mode & 0o777, 0o700)
             self.assertEqual((tmp / "state").stat().st_mode & 0o777, 0o700)
             self.assertEqual(undo.read_text().splitlines()[:3], ["#!/bin/bash", "set -euo pipefail", body])
@@ -3453,7 +3453,7 @@ class NodeGuardTests(unittest.TestCase):
             self.assertEqual(unit, start["unit"])
             rule = Path(rule)
             self.assertEqual(rule.read_text().splitlines(),
-                             ["r /var/x/out.bin", "r /var/x", f"r {undo}", f"r {tmp / 'state' / 'nightly.unit'}", f"r {rule}"])
+                             ["r! /var/x/out.bin", "r! /var/x", f"r! {undo}", f"r! {tmp / 'state' / 'nightly.unit'}", f"r! {rule}"])
             # cleanup on time: far from the deadline, postpone changes nothing (no journal line).
             self.assertEqual(self._guard(env, "postpone", "nightly", "960").returncode, 0)
             self.assertEqual(node_guard_fakes.armed_seconds(env, "nightly"), [1800])
@@ -3517,37 +3517,145 @@ class NodeGuardTests(unittest.TestCase):
                             next(i for i, c in enumerate(calls) if c.startswith(f"run {fresh} ")))
             self.assertFalse(Path(stale_rule).exists())
             self.assertEqual(len(list((tmp / "tmpfiles.d").iterdir())), 1)
-            # An undo still running is waited for; one that never ends stops arm and disarm (they fail
-            # rather than run beside it).
-            (tmp / "systemd" / f"{fresh}.service.active").touch()
-            env_fast = dict(env, PATH=f"{tmp / 'fast'}:{os.environ['PATH']}")
-            (tmp / "fast").mkdir()
-            (tmp / "fast" / "sleep").write_text("#!/usr/bin/env bash\n:\n")
-            (tmp / "fast" / "sleep").chmod(0o755)
-            for args in (("disarm", "nightly"), ("arm", "nightly", "1800", "true")):
-                stuck = self._guard(env_fast, *args)
-                self.assertNotEqual(stuck.returncode, 0)
-                self.assertIn(b"still running after 120s", stuck.stderr)
-            self.assertEqual(node_guard_fakes.timers(env), [f"{fresh}.timer"])
+            # Whoever holds the job's lock (an undo under way, another guard call) is waited for; one
+            # that never lets go stops arm and disarm, which fail rather than run beside it.
+            (tmp / "locks").mkdir(exist_ok=True)
+            holder = subprocess.Popen(["flock", str(tmp / "locks" / "nightly.lock"), "sleep", "30"])
+            try:
+                time_limit = dict(env, OPSJOB_LOCK_WAIT="1")
+                for _ in range(50):
+                    if subprocess.run(["flock", "-n", str(tmp / "locks" / "nightly.lock"), "true"]).returncode:
+                        break
+                    import time as _t
+                    _t.sleep(0.1)
+                for args in (("disarm", "nightly"), ("arm", "nightly", "1800", "true"), ("postpone", "nightly", "960")):
+                    stuck = self._guard(time_limit, *args)
+                    self.assertNotEqual(stuck.returncode, 0)
+                    self.assertIn(b"guard: nightly is busy after 1s", stuck.stderr)
+                self.assertEqual(node_guard_fakes.timers(env), [f"{fresh}.timer"])
+            finally:
+                holder.kill()
+                holder.wait(timeout=10)
 
-    def test_a_failed_undo_keeps_the_boot_rule_and_reports_at_disarm(self) -> None:
+    def test_a_failed_undo_keeps_the_boot_rule_and_late_cleanup_reports_it(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = node_guard_fakes.install(tmp)
             self.assertEqual(self._guard(env, "arm", "nightly", "1800", "false", "/var/x/out.bin").returncode, 0)
-            unit = node_guard_fakes.unit_record(env, "nightly")[0]
+            unit, due, rule = node_guard_fakes.unit_record(env, "nightly")
             fired = node_guard_fakes.fire(env, "nightly")
             self.assertNotEqual(fired.returncode, 0)
             # Nothing claims an expiry that did not finish; a reboot or a person can still finish it.
             self.assertEqual(self._state(tmp), ["nightly.undo", "nightly.unit"])
             self.assertEqual(len(list((tmp / "tmpfiles.d").iterdir())), 1)
             (tmp / "systemd" / f"{unit}.service.failed").touch()
+            # The real cleanup order: a late postpone (the deadline has passed) gets there first and says
+            # it, before its reset-failed clears the state; disarm then has nothing more to say.
+            (tmp / "state" / "nightly.unit").write_text(f"{unit} {int(due) - 1800} {rule}\n")
+            late = self._guard(env, "postpone", "nightly", "960")
+            self.assertEqual(late.returncode, 0)
+            self.assertIn(f"{unit}.service failed; cleanup undoes the change itself".encode(), late.stderr)
+            self.assertFalse((tmp / "systemd" / f"{unit}.service.failed").exists())
             done = self._guard(env, "disarm", "nightly")
             self.assertEqual(done.returncode, 0)
-            self.assertIn(f"{unit}.service failed; cleanup undoes the change itself".encode(), done.stderr)
             self.assertNotIn(b"by itself at", done.stderr)
             self.assertEqual(self._state(tmp), [])
             self.assertEqual(list((tmp / "tmpfiles.d").iterdir()), [])
+
+    def _fires_during_stop(self, tmp: Path, env: dict[str, str]) -> tuple[dict[str, str], Path]:
+        """systemctl as PID 1 does it when the deadline passes just as a guard call stops the timer:
+        the timer has already started its service, which stopping the timer does not stop. The old
+        timer's command runs in the background, its rc and output kept for the test."""
+        wrap = tmp / "ctl-wrap"
+        out = tmp / "fired"
+        wrap.write_text(f"""#!/usr/bin/env bash
+if [[ "$1" == stop && "$2" == *.timer && ! -e {out}.rc ]]; then
+  mapfile -t argv <"$FAKE_SYSTEMD/$2"
+  # PID 1 starts the service, so it shares no descriptor (the guard's lock) with this caller.
+  ( exec 9>&-; "${{argv[@]}}" >{out}.out 2>{out}.err; echo $? >{out}.rc.tmp; mv {out}.rc.tmp {out}.rc ) &
+  sleep 0.3
+fi
+exec {env['OPSJOB_SYSTEMCTL']} "$@"
+""")
+        wrap.chmod(0o755)
+        return dict(env, OPSJOB_SYSTEMCTL=str(wrap)), out
+
+    @staticmethod
+    def _wait_rc(out: Path) -> int:
+        import time as _t
+        for _ in range(200):
+            if (out.parent / f"{out.name}.rc").exists():
+                return int((out.parent / f"{out.name}.rc").read_text())
+            _t.sleep(0.05)
+        raise AssertionError("the fired undo never finished")
+
+    def test_a_timer_that_fires_while_postpone_stops_it_leaves_no_orphan(self) -> None:
+        # 2026-11-09 review, reproduced: the timer fired between postpone's check and its stop. postpone
+        # then armed a new timer, the old undo removed the new record on its way out, disarm could not
+        # see the new timer, and 960s later it failed with "/bin/bash: .../soak.undo: No such file or
+        # directory" in the node's journal (forwarded to 119).
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            body = f"echo undone >>{tmp}/undone"
+            self.assertEqual(self._guard(env, "arm", "soak", "1800", body).returncode, 0)
+            unit, due, rule = node_guard_fakes.unit_record(env, "soak")
+            (tmp / "state" / "soak.unit").write_text(f"{unit} {int(due) - 1700} {rule}\n")
+            racing, out = self._fires_during_stop(tmp, env)
+            late = self._guard(racing, "postpone", "soak", "960")
+            self.assertEqual(late.returncode, 0, late.stderr)
+            # The old undo waited for the lock, saw it was no longer the armed unit and left quietly.
+            self.assertEqual(self._wait_rc(out), 0)
+            self.assertEqual((tmp / "fired.err").read_text(), "")
+            self.assertFalse((tmp / "undone").exists())
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "soak"), [1800, 960])
+            fresh = node_guard_fakes.unit_record(env, "soak")[0]
+            self.assertEqual(node_guard_fakes.timers(env), [f"{fresh}.timer"])
+            # cleanup finishes: disarm sees the new timer and stops it; nothing is left to fire.
+            self.assertEqual(self._guard(env, "disarm", "soak").returncode, 0)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertEqual(self._state(tmp), [])
+
+    def test_a_timer_that_fires_while_disarm_stops_it_does_nothing_and_says_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            body = f"echo undone >>{tmp}/undone"
+            self.assertEqual(self._guard(env, "arm", "soak", "1800", body).returncode, 0)
+            racing, out = self._fires_during_stop(tmp, env)
+            done = self._guard(racing, "disarm", "soak")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(self._wait_rc(out), 0)
+            self.assertEqual((tmp / "fired.err").read_text(), "")
+            self.assertFalse((tmp / "undone").exists())
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertEqual(self._state(tmp), [])
+
+    def test_an_undo_that_wins_the_lock_runs_once_and_postpone_then_does_nothing(self) -> None:
+        # The other order: the timer's undo takes the lock first. It does the job, and the postpone
+        # behind it finds no undo left and arms nothing.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            body = f"echo undone >>{tmp}/undone; sleep 1"
+            self.assertEqual(self._guard(env, "arm", "soak", "1800", body).returncode, 0)
+            unit, due, rule = node_guard_fakes.unit_record(env, "soak")
+            (tmp / "state" / "soak.unit").write_text(f"{unit} {int(due) - 1700} {rule}\n")
+            argv = node_guard_fakes.command(env, "soak")
+            undo = subprocess.Popen(argv, env={**os.environ, **env}, stderr=subprocess.PIPE)
+            import time as _t
+            for _ in range(50):
+                if (tmp / "undone").exists():
+                    break
+                _t.sleep(0.05)
+            late = self._guard(env, "postpone", "soak", "960")
+            self.assertEqual(undo.wait(timeout=30), 0)
+            self.assertEqual(undo.stderr.read(), b"")
+            undo.stderr.close()
+            self.assertEqual(late.returncode, 0, late.stderr)
+            self.assertEqual((tmp / "undone").read_text(), "undone\n")
+            self.assertEqual(node_guard_fakes.armed_seconds(env, "soak"), [1800])
+            self.assertEqual(self._state(tmp), ["soak.expired"])
 
     def test_arm_refuses_a_bad_deadline_or_boot_path(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -3610,32 +3718,75 @@ class NodeGuardTests(unittest.TestCase):
             for word in ("lucida", "scenario", "testbed", "rca", "inject"):
                 self.assertNotIn(word, raw.lower())
 
-    # Every executor that reaches a cluster node and changes it over sudo must arm the guard, or be
-    # listed here with the reason it cannot. Two-sided, so a new node executor (for example the
-    # network injector) cannot land without one or the other.
+    # Every profile whose plan runs it on a cluster node must arm the guard, or be listed here with the
+    # reason it cannot. The node set comes from the compiled plans (location.node or a node address),
+    # not from strings in the executor, so a new node executor (for example the network injector,
+    # once its location resolves) cannot land without one or the other.
+    CLUSTER_NODES = {"192.168.122.77", "192.168.122.184", "192.168.122.11", "192.168.122.14"}
     NO_NODE_UNDO = {
         # The change is the removal of images the node held. Undoing it on the node needs a copy of
         # the images on the node (about 670 MB for F52-R), written at the injection; that would add a
-        # disk write and an export process to the recording, so it is a decision for a person. The
+        # disk write and an export process to the recording (decided 2026-11-09: left as it is). The
         # node stays Ready, so the runner's cleanup can always reach it.
-        "host_image_executor.py",
+        "host.image",
+    }
+    # Runs from tb-ops through the cluster API and reaches a node only on the side.
+    NODE_SIDE_ONLY = {
         # The change is the Deployment's image (cluster API); the node only gains one extra image.
-        "k8s_image_executor.py",
+        "k8s.image",
     }
 
+    @staticmethod
+    def _executor_source(profile: dict) -> Path:
+        path = ROOT / profile["executor"]
+        if path.suffix == ".sh":
+            match = re.search(r'([a-z_]+_executor\.py)', path.read_text())
+            if match:
+                return PROFILES / match.group(1)
+        return path
+
+    @staticmethod
+    def _arms(stdin: bytes) -> bool:
+        code = [line for line in stdin.decode().splitlines() if not line.lstrip().startswith("#")]
+        defined = any(line.startswith("guard_arm_now()") for line in code)
+        called = any(re.search(r'(node_guard arm "|(^|[\s;])arm "\$\()', line) for line in code)
+        return defined and called
+
     def test_every_node_executor_arms_the_guard_or_says_why_not(self) -> None:
-        reaching = set()
-        for path in sorted(PROFILES.glob("*.py")):
-            source = path.read_text()
-            # A cluster worker is reached as nkia@<node> with sudo; the runner VM (.206) is not a node.
-            if "nkia@" in source and "sudo" in source and "192.168.122.206" not in source:
-                reaching.add(path.name)
-        guarded = {name for name in reaching
-                   if 'node_guard arm "' in (PROFILES / name).read_text() or "guard_arm \"$job\"" in (PROFILES / name).read_text()}
-        self.assertEqual(guarded, {"host_firewall_executor.py", "host_job_executor.py", "host_stress_executor.py"})
-        self.assertEqual(reaching - guarded, self.NO_NODE_UNDO)
+        registry = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
+        catalog = json.loads((ROOT / "catalog.json").read_text())["scenarios"]
+        rows = catalog.values() if isinstance(catalog, dict) else catalog
+        on_node: dict[str, dict] = {}
+        for row in rows:
+            plan = compiler.compile_plan(row["slug"])
+            for instance in plan["profile_instances"]:
+                location = instance.get("location", {})
+                if location.get("transport") != "ssh":
+                    continue
+                if location.get("host") is None:
+                    # An unresolved place cannot be live; once it resolves to a node it is checked below.
+                    self.assertFalse(registry[instance["profile_id"]]["live_supported"], instance["profile_id"])
+                elif location.get("node") or location["host"] in self.CLUSTER_NODES:
+                    on_node.setdefault(instance["profile_id"], plan)
+        self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress"})
+        guarded = set()
+        for profile_id, plan in on_node.items():
+            path = self._executor_source(registry[profile_id])
+            module = load(path.stem)
+            _, stdin = module.build_invocation(plan, "run")
+            if self._arms(stdin):
+                guarded.add(profile_id)
+        self.assertEqual(set(on_node) - guarded, self.NO_NODE_UNDO)
+        # Executors that reach a node over ssh without a node location must be named, too.
+        side = {pid for pid, profile in registry.items()
+                if pid not in on_node and "nkia@" in self._executor_source(profile).read_text()}
+        self.assertEqual(side, self.NODE_SIDE_ONLY)
 
-
+    def test_the_arm_check_is_not_fooled_by_comments(self) -> None:
+        guard = self.common.GUARD_FUNCTIONS
+        self.assertTrue(self._arms(guard + b'node_guard arm "$unit" "$expire_after" "$undo"\n'))
+        self.assertFalse(self._arms(guard + b'# node_guard arm "$unit"\n'))
+        self.assertFalse(self._arms(b'node_guard arm "$unit" "$expire_after" "$undo"\n'))
 
 if __name__ == "__main__":
     unittest.main()

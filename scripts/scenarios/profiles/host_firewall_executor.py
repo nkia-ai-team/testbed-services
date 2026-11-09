@@ -229,11 +229,12 @@ case "$action" in
   # The rules are read even without the state file: a runner container recreated while the
   # rule was in place loses its state but the node keeps the rule, which would go on dropping
   # the caller's connections after the run. Nothing on the node and no state means no-op.
-  # cleanup holds the node's own undo off while it works and cancels it at the end; when the undo
-  # already fired there is no rule left and disarm says when it fired.
-  cleanup) r=$(rules)
+  # cleanup holds the node's own undo off before it reads the rules (an undo firing between the read
+  # and the deletes would leave a stale list) and cancels it at the end; when the undo already fired
+  # there is no rule left and disarm says when it fired.
+  cleanup) node_guard postpone "$gjob" "$guard_hold"
+    r=$(rules)
     if ! ours "$r"; then node_guard disarm "$gjob"; rm -f "$state"; exit 0; fi
-    node_guard postpone "$gjob" "$guard_hold"
     while jumps "$r"; do ipt -D "${jump[@]}"; r=$(rules); done
     if has_chain "$r"; then ipt -F "$chain"; ipt -X "$chain"; fi
     r=$(rules); if ours "$r"; then exit 1; fi

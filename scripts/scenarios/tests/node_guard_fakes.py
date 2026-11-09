@@ -72,6 +72,7 @@ def install(root: Path) -> dict[str, str]:
         "OPSJOB_SYSTEMCTL": str(bindir / "systemctl"),
         "OPSJOB_STATE_ROOT": str(root / "state"),
         "OPSJOB_TMPFILES_DIR": str(root / "tmpfiles.d"),
+        "OPSJOB_LOCK_DIR": str(root / "locks"),
     }
 
 
@@ -91,7 +92,7 @@ def starts(env: dict[str, str], job: str) -> list[dict[str, str]]:
             continue
         _, unit, secs, rest = line.split(" ", 3)
         props, desc, cmd = rest.split("|", 2)
-        if cmd.endswith(f"/{job}.undo"):
+        if f"/{job}.undo " in cmd + " ":
             out.append({"unit": unit, "seconds": secs, "props": props, "description": desc, "command": cmd})
     return out
 
@@ -111,9 +112,21 @@ def command(env: dict[str, str], job: str) -> list[str]:
     return (Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer").read_text().splitlines()
 
 
+def launches(env: dict[str, str], job: str) -> bool:
+    """The timer runs the guard's launcher for this job's undo, checking its own unit name."""
+    argv = command(env, job)
+    root = Path(env["OPSJOB_STATE_ROOT"])
+    return (argv[:2] == ["/bin/bash", "-c"] and argv[3:] == [
+        "guard", str(root / f"{job}.undo"), str(root / f"{job}.unit"),
+        str(Path(env["OPSJOB_LOCK_DIR"]) / f"{job}.lock"), unit_record(env, job)[0]])
+
+
 def fire(env: dict[str, str], job: str, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """The timer elapses: PID 1 runs its command once and unloads the timer."""
-    unit = unit_record(env, job)[0]
+    return fire_unit(env, unit_record(env, job)[0], extra_env=extra_env)
+
+
+def fire_unit(env: dict[str, str], unit: str, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     argv = (Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer").read_text().splitlines()
     os.unlink(Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer")
     run_env = {**os.environ, **env, **(extra_env or {})}
