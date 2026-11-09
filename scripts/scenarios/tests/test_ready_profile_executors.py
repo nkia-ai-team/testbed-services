@@ -1535,6 +1535,29 @@ else:
         with self.assertRaisesRegex(ExecutorError, "no verified DNS policy contract"):
             k8s_dns.validate("F35-R", k8s_dns.CONTRACTS["F37-R"], {})
 
+    def test_service_calls_resolve_names_not_ip_literals(self) -> None:
+        # C3 (spec-scenario-design §9.3 G15): 이름 해석을 거치지 않는 호출에는 DNS 장애를
+        # 걸 수 없다. commerce payment 의 PG 기본값이 109 호스트 IP 리터럴로 남아 있었다.
+        # 앱의 base-url 기본값과 configmap 의 *_URL 값 모두 이름이어야 한다. OTel 수집 주소는
+        # 클러스터 밖 tb-ops 라 대상이 아니다(앱 호출 경로가 아님).
+        repo = ROOT.parents[1]
+        ip_url = re.compile(r"https?://\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?")
+        checked = 0
+        for domain in ("commerce", "core-banking", "food-delivery"):
+            for yml in sorted((repo / domain).glob("*-service/src/main/resources/application*.yml")):
+                for line in yml.read_text(encoding="utf-8").splitlines():
+                    if "base-url" in line or "_URL:" in line:
+                        checked += 1
+                        self.assertIsNone(ip_url.search(line), f"{yml.relative_to(repo)}: {line.strip()}")
+            configmap = (repo / domain / "k8s" / "02-configmaps.yaml").read_text(encoding="utf-8")
+            for line in configmap.splitlines():
+                if re.match(r"\s+[A-Z_]+_URL:", line):
+                    checked += 1
+                    self.assertIsNone(ip_url.search(line), f"{domain} configmap: {line.strip()}")
+        self.assertGreater(checked, 20, "sweep found almost nothing to check")
+        payment = (repo / "commerce/payment-service/src/main/resources/application.yml").read_text(encoding="utf-8")
+        self.assertIn("${PG_API_URL:http://testbed-external-pg-mock:9090}", payment)
+
     def test_db_instance_readonly_flips_only_the_global_flag_and_restores_it(self) -> None:
         # F38-R: 주입은 MySQL 전역 변수 read_only 한 칸만 켠다. 계정, 세션, 테이블을 건드리거나
         # SET PERSIST 로 남기면 "운영 세션이 인스턴스를 읽기 전용으로 바꿔 모든 쓰기가 거절된다"는

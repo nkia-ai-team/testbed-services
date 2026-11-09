@@ -39,7 +39,9 @@ topics:
 
 pg:
   api:
-    base-url: ${PG_API_URL:http://192.168.200.109:8090}
+    # 기본값도 이름이다. 옛 기본값은 109 호스트 mock 의 IP 리터럴이라, env 가 빠지면 DNS 를
+    # 거치지 않는 호출이 됐다(spec-scenario-design §9.3 G15). 정본은 configmap PG_API_URL.
+    base-url: ${PG_API_URL:http://testbed-external-pg-mock:9090}
     connect-timeout: 3s
     read-timeout: 10s
 

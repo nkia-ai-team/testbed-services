@@ -353,7 +353,7 @@ G19·G20·L4·L5·L6 (+G7 조건부). 코드 실증 근거가 있는 것:
 | G6 | rolling update 기본값이 ImagePullBackOff여도 구 pod 유지 → 무중단 | "실패 rollout 무영향" 음성으로 전환하거나 강제 교체 전략 명시 |
 | G7 | 주입 트랜잭션끼리만 deadlock이면 victim은 주입 세션뿐, 사용자 정상 | 온라인 요청이 접근하는 hot row를 한쪽 트랜잭션에 포함 |
 | G10/G11 | outbox 패턴이 Kafka 장애를 흡수 — 주문은 DB 커밋으로 성공, 체감 없음 | 배송/알림 SLA probe 추가로 가시화하거나 "흡수된 장애" 음성으로 |
-| G15 | **PG 연결이 DNS 아닌 IP 리터럴**(payment application.yml 실측) — DNS 주입 무효 | 외부 호출을 전용 DNS 이름으로 전환 후 그 이름만 NXDOMAIN |
+| G15 | **PG 연결이 DNS 아닌 IP 리터럴**(payment application.yml 실측) — DNS 주입 무효 | 외부 호출을 전용 DNS 이름으로 전환 후 그 이름만 NXDOMAIN (2026-11-09 C3 확인: configmap `PG_API_URL` 은 2026-07-13 mock 이관 때부터 Service 이름 `testbed-external-pg-mock` 이었고, 남아 있던 application.yml 기본값의 IP 리터럴도 이름으로 바꿨다. 그 이름만 해석 실패로 만드는 주입기는 아직 없다) |
 | G16 | mock이 HTTP — TLS handshake 자체가 없음 | TLS mock 경로 구축 전 보류 유지 |
 | G19 | .57 합성 trap과 iptables 차단은 무관한 두 주입 — 가짜 상관 | 서비스 트래픽이 실제 지나는 인터페이스를 내리고 동일 인터페이스 trap 수집 |
 | L4 | **cart는 원래 miss 시 DB 직행**(CartService.java 실측) — novel_path 불성립. fallback이 장애 흡수 | "Redis outage fallback overload"로 재정의, DB 용량 초과 유발 |
