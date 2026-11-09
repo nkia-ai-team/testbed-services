@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec "$(dirname "$0")/profile-executor.sh" --profile network.fault "$@"
+exec python3 "$(dirname "$0")/network_fault_executor.py" "$@"

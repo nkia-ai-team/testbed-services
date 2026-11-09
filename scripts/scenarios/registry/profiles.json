@@ -5524,7 +5524,11 @@
       "allowed_locations": [
         "external-57",
         "cross-domain-edge",
-        "probe-edge"
+        "probe-edge",
+        "control-plane",
+        "worker-w1",
+        "worker-w2",
+        "worker-w3"
       ],
       "live_supported": false,
       "default_queries": [

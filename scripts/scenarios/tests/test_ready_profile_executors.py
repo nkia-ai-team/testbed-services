@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from executor_common import ExecutorError  # noqa: E402  (sys.path 조작 뒤에야 import 가능)
 import node_guard_fakes  # noqa: E402
+import netns_sandbox  # noqa: E402
 
 
 def load(name: str):
@@ -58,6 +59,7 @@ db_instance_readonly = load("db_instance_readonly_executor")
 db_config_row = load("db_config_row_executor")
 db_row_delete = load("db_row_delete_executor")
 db_row_update = load("db_row_update_executor")
+network_fault = load("network_fault_executor")
 
 
 class ReadyProfileExecutorTests(unittest.TestCase):
@@ -3790,6 +3792,16 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         # The change is the Deployment's image (cluster API); the node only gains one extra image.
         "k8s.image",
     }
+    # Node executors that no catalog scenario uses yet, with a sample contract in their own shape.
+    UNUSED_NODE_EXECUTORS = {
+        # N1: delay and loss on a node's pod overlay device; scenarios come with N4.
+        "network.fault": ("N1-GUARD", {
+            "host": "192.168.122.184", "node": "tb-w1", "device": "flannel.1",
+            "delay_ms": 100, "jitter_ms": 0, "loss_percent": 0,
+            "rules": [{"dst": "10.244.1.0/24", "protocol": "tcp", "dport": 8082}],
+        }),
+    }
+    LOCATIONS = json.loads((ROOT / "registry" / "locations.json").read_text())["locations"]
 
     @staticmethod
     def _executor_source(profile: dict) -> Path:
@@ -3824,11 +3836,29 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                 elif location.get("node") or location["host"] in self.CLUSTER_NODES:
                     on_node.setdefault(instance["profile_id"], plan)
         self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress"})
+        # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
+        # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
+        node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
+        unused: dict[str, tuple[str, dict]] = {}
+        for profile_id, (scenario_id, params) in self.UNUSED_NODE_EXECUTORS.items():
+            self.assertNotIn(profile_id, on_node, f"{profile_id} has a scenario now; drop its sample contract")
+            self.assertTrue(node_locations & set(registry[profile_id]["allowed_locations"]), profile_id)
+            on_node[profile_id] = {
+                "scenario": {"id": scenario_id}, "controller": {"runtime": {}},
+                "profile_instances": [{"profile_id": profile_id, "parameters": params, "location": {
+                    "transport": "ssh", "host": params["host"], "node": params["node"], "resolved": True}}],
+            }
+            unused[profile_id] = (scenario_id, params)
         guarded = set()
         for profile_id, plan in on_node.items():
             path = self._executor_source(registry[profile_id])
             module = load(path.stem)
-            _, stdin = module.build_invocation(plan, "run")
+            if profile_id in unused:
+                scenario_id, params = unused[profile_id]
+                with unittest.mock.patch.dict(module.CONTRACTS, {scenario_id: params}):
+                    _, stdin = module.build_invocation(plan, "run")
+            else:
+                _, stdin = module.build_invocation(plan, "run")
             if self._arms(stdin):
                 guarded.add(profile_id)
         self.assertEqual(set(on_node) - guarded, self.NO_NODE_UNDO)
@@ -3930,3 +3960,276 @@ class ExecutorFailureTraceTests(unittest.TestCase):
                     )
                     self.assertEqual(checked.returncode, 0, checked.stderr.decode())
         self.assertGreater(bodies, 30)
+
+
+class NetworkLinkExecutorTests(unittest.TestCase):
+    """network.fault: delay and loss on one node's pod overlay device (N1). The node side runs against
+    a real kernel in user and network namespaces (netns_sandbox); ssh and kubectl are fakes."""
+
+    SCENARIO = "N1-SANDBOX"
+    JOB = "link-flannel-1"
+    # tb-w1 to banking transfer on tb-w2, the commerce settlement call that crosses nodes on 66.
+    PARAMS = {
+        "host": "192.168.122.184", "node": "tb-w1", "device": "flannel.1",
+        "delay_ms": 300, "jitter_ms": 0, "loss_percent": 0,
+        "rules": [{"dst": "10.244.1.0/24", "protocol": "tcp", "dport": 8082}],
+    }
+
+    def _plan(self, params: dict, scenario: str | None = None) -> dict:
+        return {
+            "scenario": {"id": scenario or self.SCENARIO},
+            "controller": {"runtime": {"max_injection_duration": "20m"}},
+            "profile_instances": [{
+                "profile_id": "network.fault", "parameters": params,
+                "location": {"transport": "ssh", "host": params["host"], "node": params["node"], "resolved": True},
+            }],
+        }
+
+    def _sandbox(self, tmp: Path, **extra: str) -> tuple[netns_sandbox.Sandbox, dict[str, str]]:
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        box = netns_sandbox.Sandbox(tmp, bindir)
+        self.addCleanup(box.close)
+        env = dict(os.environ, **node_guard_fakes.install(tmp), SANDBOX=str(tmp),
+                   SCENARIO_PROFILE_STATE_ROOT=str(tmp / "runner-state"),
+                   PATH=f"{bindir}:{os.environ['PATH']}", **extra)
+        return box, env
+
+    def _act(self, box: netns_sandbox.Sandbox, env: dict[str, str], action: str,
+             params: dict | None = None) -> subprocess.CompletedProcess:
+        params = params or self.PARAMS
+        with unittest.mock.patch.dict(network_fault.CONTRACTS, {self.SCENARIO: params}):
+            argv, stdin = network_fault.build_invocation(self._plan(params), action)
+        return box.in_node(argv, input=sys.modules["executor_common"].with_failure_trace(stdin), env=env)
+
+    def _fire(self, box: netns_sandbox.Sandbox, env: dict[str, str]) -> subprocess.CompletedProcess:
+        """The timer elapses on the node: PID 1 runs its command once (in the node's namespace)."""
+        unit = node_guard_fakes.unit_record(env, self.JOB)[0]
+        timer = Path(env["FAKE_SYSTEMD"]) / f"{unit}.timer"
+        argv = timer.read_text().splitlines()
+        timer.unlink()
+        return box.in_node(argv, env=env)
+
+    def test_contract_bounds_keep_the_change_on_the_overlay_and_off_monitoring_ports(self) -> None:
+        check = network_fault.check_parameters
+        self.assertEqual(check(self.PARAMS), ["tcp:dport:8082:10.244.1.0/24:10.244.1.1"])
+        sport = dict(self.PARAMS, rules=[{"dst": "10.244.3.0/24", "protocol": "udp", "sport": 53}],
+                     host="192.168.122.77", node="tb-cp", delay_ms=0, loss_percent=2.5)
+        self.assertEqual(check(sport), ["udp:sport:53:10.244.3.0/24:10.244.3.1"])
+
+        def refused(pattern: str, **change) -> None:
+            with self.subTest(change=change):
+                with self.assertRaisesRegex(ExecutorError, pattern):
+                    check(dict(self.PARAMS, **change))
+
+        rule = self.PARAMS["rules"][0]
+        refused("overlay device", device="eth0")
+        refused("overlay device", device="ens19")
+        refused("same cluster node", host="192.168.122.11")
+        refused("same cluster node", node="tb-runner", host="192.168.122.206")
+        # Observation and management destinations never sit inside the pod network.
+        for dst in ("192.168.122.20/32", "192.168.230.119/32", "192.168.200.66/32", "10.244.0.0/16", "10.96.0.10/32"):
+            refused("pod network", rules=[dict(rule, dst=dst)])
+        refused("exact IPv4", rules=[dict(rule, dst="10.244.1.5/24")])
+        for port in network_fault.PROTECTED_PORTS:
+            refused("monitoring or management", rules=[dict(rule, dport=port)])
+        refused("between 1 and 32767", rules=[dict(rule, dport=40000)])
+        refused("exactly one of dport or sport", rules=[dict(rule, sport=8082)])
+        refused("exactly one of dport or sport", rules=[{"dst": "10.244.1.0/24", "protocol": "tcp"}])
+        refused("tcp or udp", rules=[dict(rule, protocol="icmp")])
+        refused("must not repeat", rules=[rule, rule])
+        refused("1 to 8", rules=[])
+        refused("delay or loss", delay_ms=0)
+        refused("jitter_ms", jitter_ms=301)
+        refused("delay_ms", delay_ms=True)
+        refused("loss_percent", loss_percent=101)
+        refused("loss_percent", loss_percent=0.125)
+        with self.assertRaisesRegex(ExecutorError, "parameters must be exactly"):
+            check(dict(self.PARAMS, iface="flannel.1"))
+
+    def test_no_scenario_runs_without_an_exact_contract(self) -> None:
+        with self.assertRaisesRegex(ExecutorError, "no verified network link contract"):
+            network_fault.validate(self.SCENARIO, self.PARAMS, {})
+        with self.assertRaisesRegex(ExecutorError, "no verified network link contract"):
+            network_fault.build_invocation(self._plan(self.PARAMS), "run")
+        with unittest.mock.patch.dict(network_fault.CONTRACTS, {self.SCENARIO: self.PARAMS}):
+            network_fault.validate(self.SCENARIO, self.PARAMS, {})
+            with self.assertRaisesRegex(ExecutorError, "exactly match"):
+                network_fault.validate(self.SCENARIO, dict(self.PARAMS, delay_ms=200), {})
+            with self.assertRaisesRegex(ExecutorError, "not enabled"):
+                network_fault.validate(self.SCENARIO, self.PARAMS, {"parameter_contract": {"allowed_scenarios": []}})
+            moved = self._plan(self.PARAMS)
+            moved["profile_instances"][0]["location"]["host"] = "192.168.122.11"
+            with self.assertRaisesRegex(ExecutorError, "contract's node"):
+                network_fault.build_invocation(moved, "run")
+        # The registry keeps the profile plan-only until a scenario brings its contract.
+        self.assertFalse(json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]["network.fault"]["live_supported"])
+
+    def test_nothing_on_the_node_command_line_or_in_the_node_program_names_the_change(self) -> None:
+        with unittest.mock.patch.dict(network_fault.CONTRACTS, {self.SCENARIO: self.PARAMS}):
+            argv, stdin = network_fault.build_invocation(self._plan(self.PARAMS), "run")
+        self.assertEqual(argv[:3], ["/usr/bin/bash", "-s", "--"])
+        self.assertNotIn(self.SCENARIO, " ".join(argv))
+        self.assertNotIn(self.SCENARIO.encode(), stdin)
+        # cls_u32 prints "u32 classifier" when it loads; flower loads silently.
+        self.assertNotIn(b" u32 ", stdin)
+        self.assertIn(b"flower", stdin)
+        # sch_netem prints its version when it loads, so the node refuses unless it is loaded already.
+        self.assertIn(b'"$module_dir/sch_netem"', stdin)
+        self.assertNotIn(b"modprobe", stdin)
+
+    def test_only_the_contract_traffic_is_delayed_and_cleanup_restores_the_device(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.listen(8082, 4222, 9000)
+            self.assertTrue(box.root_qdisc().startswith("qdisc noqueue 0: root"))
+            done = self._act(box, env, "preflight")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            done = self._act(box, env, "run")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue(box.root_qdisc().startswith("qdisc prio 1a7e: root"))
+            # The rule's port to the other node's pods waits 300 ms; KCM's port, another port and the
+            # node's own KCM pod do not.
+            self.assertGreaterEqual(box.connect_ms(8082), 290)
+            self.assertLess(box.connect_ms(4222), 100)
+            self.assertLess(box.connect_ms(9000), 100)
+            self.assertLess(box.connect_ms(8082, src=netns_sandbox.KCM_POD_IP), 100)
+            # Armed before the change: 20m + 600s, a neutral unit, and a boot rule with only the guard's
+            # own files (a qdisc ends with a reboot).
+            self.assertEqual(node_guard_fakes.armed_seconds(env, self.JOB), [1800])
+            self.assertEqual(node_guard_fakes.journal_words(env, self.JOB), [])
+            rule = Path(node_guard_fakes.unit_record(env, self.JOB)[2])
+            self.assertEqual(rule.read_text().splitlines(), [f"r! {tmp / 'state' / (self.JOB + '.undo')}",
+                                                              f"r! {tmp / 'state' / (self.JOB + '.unit')}",
+                                                              f"r! {rule}"])
+            done = self._act(box, env, "cleanup")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn(b"by itself", done.stderr)
+            self.assertTrue(box.root_qdisc().startswith("qdisc noqueue 0: root"))
+            self.assertLess(box.connect_ms(8082), 100)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
+            self.assertEqual(list((tmp / "runner-state").iterdir()), [])
+            self.assertEqual(self._act(box, env, "recovery").returncode, 0)
+            # A second cleanup has nothing to do.
+            again = self._act(box, env, "cleanup")
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual(node_guard_fakes.armed_seconds(env, self.JOB), [1800])
+            # The node saw only `bash -s` command lines: no tc, no device, no port, no number.
+            self.assertEqual(sorted(set((tmp / "ssh-log").read_text().splitlines())), ["bash -s", "sudo -n bash -s"])
+
+    def test_the_node_removes_the_delay_by_itself_when_cleanup_never_comes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.listen(8082)
+            self.assertEqual(self._act(box, env, "run").returncode, 0)
+            undo = tmp / "state" / f"{self.JOB}.undo"
+            spare = tmp / "undo-copy"
+            spare.write_bytes(undo.read_bytes())
+            body = undo.read_text()
+            self.assertIn("tc qdisc del dev flannel.1 root", body)
+            for forbidden in ("eth0", "ens19", "8082", "netem", "filter", self.SCENARIO):
+                self.assertNotIn(forbidden, body)
+            # The runner loses the node: cleanup fails and the delay stays.
+            (tmp / "down").touch()
+            failed = self._act(box, env, "cleanup")
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertTrue(box.root_qdisc().startswith("qdisc prio 1a7e: root"))
+            self.assertGreaterEqual(box.connect_ms(8082), 290)
+            # The deadline passes: the node deletes its own root qdisc and leaves only the time.
+            fired = self._fire(box, env)
+            self.assertEqual(fired.returncode, 0, fired.stderr)
+            self.assertTrue(box.root_qdisc().startswith("qdisc noqueue 0: root"))
+            self.assertLess(box.connect_ms(8082), 100)
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [f"{self.JOB}.expired"])
+            for _ in range(2):
+                rerun = box.in_node(["/bin/bash", str(spare)], env=env)
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                self.assertTrue(box.root_qdisc().startswith("qdisc noqueue 0: root"))
+            # The node comes back: the late cleanup finds nothing and says when the node undid it.
+            (tmp / "down").unlink()
+            late = self._act(box, env, "cleanup")
+            self.assertEqual(late.returncode, 0, late.stderr)
+            self.assertIn(b"the node undid the change by itself at ", late.stderr)
+            self.assertEqual(sorted(x.name for x in (tmp / "state").iterdir()), [])
+            self.assertEqual(self._act(box, env, "recovery").returncode, 0)
+
+    def test_monitoring_ports_pass_even_where_a_rule_would_match(self) -> None:
+        # A rule on a source port also matches any connection that happens to leave from that port.
+        # Packets to or from a protected port (here KCM's 4222) pass ahead of every rule.
+        params = dict(self.PARAMS, rules=[{"dst": "10.244.1.0/24", "protocol": "tcp", "sport": 9100}])
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.listen(4222, 9000)
+            self.assertEqual(self._act(box, env, "run", params).returncode, 0)
+            self.assertGreaterEqual(box.connect_ms(9000, sport=9100), 290)
+            self.assertLess(box.connect_ms(4222, sport=9100), 100)
+            self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
+
+    def test_a_qdisc_that_is_not_ours_is_neither_replaced_nor_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            box.in_node(["tc", "qdisc", "add", "dev", "flannel.1", "root", "handle", "1:", "prio"], check=True)
+            for action in ("preflight", "run"):
+                done = self._act(box, env, action)
+                self.assertNotEqual(done.returncode, 0, action)
+                self.assertIn(b"root qdisc is foreign", done.stderr)
+            self.assertEqual(node_guard_fakes.timers(env), [])
+            done = self._act(box, env, "cleanup")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue(box.root_qdisc().startswith("qdisc prio 1: root"))
+            self.assertNotEqual(self._act(box, env, "recovery").returncode, 0)
+
+    def test_the_run_refuses_before_arming_when_the_place_is_not_as_the_contract_says(self) -> None:
+        own_pods = dict(self.PARAMS, rules=[{"dst": "10.244.3.0/24", "protocol": "tcp", "dport": 8082}])
+        unrouted = dict(self.PARAMS, rules=[{"dst": "10.244.2.0/24", "protocol": "tcp", "dport": 8082}])
+        cases = [
+            ("sch_netem is not loaded", self.PARAMS, {"LINK_MODULE_DIR": "EMPTY"}),
+            ("monitoring agent port", self.PARAMS, {"FAKE_KCM_PORTS": "8082"}),
+            ("not a Ready node", self.PARAMS, {"FAKE_NODE_READY": "False"}),
+            ("not inside another node's pod network", own_pods, {}),
+            ("does not leave through flannel.1", unrouted, {}),
+        ]
+        for message, params, extra in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                if extra.get("LINK_MODULE_DIR") == "EMPTY":
+                    (tmp / "modules").mkdir()
+                    extra = {"LINK_MODULE_DIR": str(tmp / "modules")}
+                box, env = self._sandbox(tmp, **extra)
+                done = self._act(box, env, "run", params)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message.encode(), done.stderr)
+                self.assertEqual(node_guard_fakes.timers(env), [])
+                self.assertTrue(box.root_qdisc().startswith("qdisc noqueue 0: root"))
+                # A run that failed on the node left its state file; cleanup clears it without touching the node.
+                self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
+                self.assertFalse(any((tmp / "runner-state").glob("*")))
+
+    def test_loss_is_a_queue_drop_that_no_interface_counter_shows(self) -> None:
+        # What 119 can see (design principle 4): the agents read interface drop and error counters,
+        # and netem's losses are not among them. Only the queue's own statistics count them.
+        params = dict(self.PARAMS, delay_ms=0, loss_percent=50,
+                      rules=[{"dst": "10.244.1.0/24", "protocol": "udp", "dport": 9999}])
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            box, env = self._sandbox(tmp)
+            self.assertEqual(self._act(box, env, "run", params).returncode, 0)
+            send = ("import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+                    f"for _ in range(2000): s.sendto(b'x' * 100, ('{netns_sandbox.PEER_IP}', 9999))\n")
+            box.in_node(["python3", "-c", send], check=True)
+            stats = box.in_node(["tc", "-s", "qdisc", "show", "dev", "flannel.1"], check=True).stdout.decode()
+            dropped = int(re.search(r"qdisc netem 1a7f:.*?\(dropped (\d+),", stats, re.S).group(1))
+            self.assertGreater(dropped, 500)
+            line = next(x for x in box.in_node(["cat", "/proc/net/dev"], check=True).stdout.decode().splitlines()
+                        if x.strip().startswith("flannel.1:"))
+            fields = [int(x) for x in line.split(":", 1)[1].split()]
+            # rx errs, rx drop, tx errs, tx drop
+            self.assertEqual((fields[2], fields[3], fields[10], fields[11]), (0, 0, 0, 0))
+            self.assertLess(fields[9], 1600)
+            self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
