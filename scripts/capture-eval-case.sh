@@ -860,20 +860,32 @@ ch_query() {
 
 # ch_post <url settings> <query> <output|->: 13개 밖 표(v4 자동 발견)용. 설정을 호출마다
 # 받아 실행 시간 상한을 건다. 13개 표의 ch_export, ch_query 는 그대로 둔다.
+# 실패하면 CH 가 돌려준 오류 본문(앞 500자)과 HTTP 코드를 표준 오류로 낸다. 형식 오류인지 시간,
+# 메모리 초과인지를 부르는 쪽이 가려야 하기 때문이다(--fail 은 본문을 버린다).
 ch_post() {
-  local settings=$1 query=$2 output=$3 credential
+  local settings=$1 query=$2 output=$3 credential code body
   local url="${CH_URL%/}/?${settings}"
+  body=$output
+  [[ "$output" != - ]] || body=$(mktemp "${TMPDIR:-/tmp}/.ch-post.XXXXXX")
   if [[ -n "$CH_USER" ]]; then
     credential="${CH_USER}:${CH_PASSWORD}"
     credential=${credential//\\/\\\\}
     credential=${credential//\"/\\\"}
     credential=${credential//$'\n'/\\n}
     credential=${credential//$'\r'/\\r}
-    printf 'user = "%s"\n' "$credential" |
-      curl --config - --fail --silent --show-error --data-binary "$query" "$url" --output "$output"
-    return
+    code=$(printf 'user = "%s"\n' "$credential" |
+      curl --config - --silent --show-error --data-binary "$query" "$url" \
+        --output "$body" --write-out '%{http_code}') || code=000
+  else
+    code=$(curl --silent --show-error --data-binary "$query" "$url" \
+      --output "$body" --write-out '%{http_code}') || code=000
   fi
-  curl --fail --silent --show-error --data-binary "$query" "$url" --output "$output"
+  if [[ "$code" != 200 ]]; then
+    { head -c 500 "$body" 2>/dev/null; printf ' (HTTP %s)\n' "$code"; } >&2
+    rm -f "$body"
+    return 1
+  fi
+  if [[ "$output" == - ]]; then cat "$body"; rm -f "$body"; fi
 }
 
 ch_start="parseDateTime64BestEffort('$capture_start')"
@@ -993,8 +1005,11 @@ if [[ "$v3_mode" == true ]]; then
     if ! ch_post "$ch_discovered_settings" "SELECT $d_select FROM $d_from FORMAT $d_format" \
          "$staging_dir/$d_file" 2>"$ch_err_file"; then
       rm -f "$staging_dir/$d_file"
-      if [[ "$d_format" == Parquet ]]; then
-        # Parquet 이 받지 못하는 열 형식이 새로 생긴 경우. Native 는 CH 의 모든 형식을 담는다.
+      # Parquet 이 받지 못하는 열 형식이 새로 생긴 경우만 Native 로 다시 낸다(Native 는 CH 의 모든 형식을
+      # 담는다). 시간, 메모리 초과는 다시 해도 같으니 바로 실패로 적는다(한 표가 상한을 두 번 쓰지 않게).
+      if [[ "$d_format" == Parquet ]] &&
+         ! grep -qE 'TIMEOUT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|TOO_MANY_ROWS|TOO_MANY_BYTES' "$ch_err_file" &&
+         grep -qE 'UNKNOWN_TYPE|NOT_IMPLEMENTED|ILLEGAL_COLUMN|ILLEGAL_TYPE_OF_ARGUMENT|Parquet' "$ch_err_file"; then
         d_file="${d_file%.parquet}.native"; d_format=Native
         ch_post "$ch_discovered_settings" "SELECT $d_select FROM $d_from FORMAT Native" \
           "$staging_dir/$d_file" 2>"$ch_err_file" || { d_error=$(head -c 500 "$ch_err_file"); rm -f "$staging_dir/$d_file"; }
@@ -1025,7 +1040,7 @@ if [[ "$v3_mode" == true ]]; then
     entry_json=$(jq -c --arg file "$d_file" --arg format "$d_format" --argjson rows "$d_rows" \
       --argjson time_min "$d_min" --argjson time_max "$d_max" --arg error "$d_error" '
       {table, file:(if $error == "" then $file else null end), rows:$rows, time_column, scope, time_min:$time_min, time_max:$time_max,
-       database, format:$format, time_type, engine, mv_target_of, mv_source_of, discovered:true}
+       database, format:$format, time_type, slice_basis, engine, mv_target_of, mv_source_of, discovered:true}
       + (if $error == "" then {} else {error:$error} end)' <<<"$ch_d")
     clickhouse_tables_json=$(jq -c --argjson e "$entry_json" '. + [$e]' <<<"$clickhouse_tables_json")
     ch_discovered_count=$(( ch_discovered_count + 1 ))
@@ -1122,6 +1137,7 @@ pg_scope=(python3 "$pg_scope_tool" --catalog "$pg_catalog_dir")
 postgres_scope_json=$("${pg_scope[@]}" --emit plan-summary | jq -c '. + {plan_file:"data/catalog/postgres-scope-plan.json"}')
 jq -r '.over_cap[] | "[WARN] PostgreSQL table over snap cap, schema only: \(.table) (\(.bytes) bytes)"' <<<"$postgres_scope_json" >&2
 jq -r '.conflicts[] | "[WARN] PostgreSQL scope conflict: \(.table): \(.problem)"' <<<"$postgres_scope_json" >&2
+jq -r '.absent_slice[] | "[WARN] PostgreSQL slice table in pg-scope.json is absent at source, not captured: \(.)"' <<<"$postgres_scope_json" >&2
 jq -r 'select(.over_budget) | "[WARN] PostgreSQL whole-table dump \(.snap_bytes) bytes exceeds budget \(.snap_budget_bytes) (largest: \(.largest_snap[0].table)); pg_dump may hit PG_DUMP_TIMEOUT_SEC"' <<<"$postgres_scope_json" >&2
 pg_slice_list=$("${pg_scope[@]}" --emit slice-tables)
 pg_scope_excl=$("${pg_scope[@]}" --emit exclude-args | tr '\n' ' ')

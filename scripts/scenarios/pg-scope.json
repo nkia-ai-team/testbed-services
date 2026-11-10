@@ -27,12 +27,23 @@
     "incidents": {
       "time_column": "created_at",
       "self_reference": "superseded_by",
-      "_note": "superseded_by 는 창 밖(대개 미래)을 가리킬 수 있어 재귀 폐포로 함께 싣는다"
+      "_note": "superseded_by 는 창 밖(대개 미래)을 가리킬 수 있어 재귀 폐포로 함께 싣는다",
+      "lineage": [
+        {"table": "incident_event_cluster_successors", "from": "predecessor_incident_id", "to": "successor_incident_id"}
+      ],
+      "_lineage_note": "develop-ai DDL 367 이 superseded_by 를 지우고 대체 관계를 계보 표로 옮겼다. 카탈로그로 읽는 v4 캡처는 이 간선으로 창 끝 뒤 대체 인시던트를 재귀로 더해 v3 재귀의 뜻을 지킨다(2026-11-10 R1 수정 1회차, 지휘 세션 결정). 열이 남은 옛 원천에서는 두 길을 함께 탄다"
     },
     "event_clusters": {
       "time_column": "created_at",
       "self_reference": "merged_into",
-      "_note": "merged_into 동일"
+      "_note": "merged_into 동일",
+      "lineage": [
+        {"table": "event_cluster_successors", "from": "predecessor_cluster_id", "to": "successor_cluster_id"}
+      ],
+      "lineage_seed": [
+        {"table": "incident_event_cluster_successors", "column": "successor_cluster_id", "via": "predecessor_incident_id", "root": "incidents"}
+      ],
+      "_lineage_note": "재분할로 생긴 대체 군집(event_cluster_successors)을 같은 방식으로 더한다. 인시던트 계보 간선이 가리키는 대체 군집도 씨앗에 넣어야 그 간선 행이 복원 때 FK 를 지킨다"
     }
   },
 
@@ -83,12 +94,21 @@
     "trainer_trace_window_threshold": "탐지 모델 임계값 이력. 장애 전에 만든 활성 임계값이 재생에 필요",
     "trainer_stream_threshold": "탐지 모델 임계값",
     "collector_sms_process_snapshot": "수집 대상 프로세스 목록(인벤토리)",
-    "trainer_forecast_conformal": "예측 보정값. 골든 복원 표라 녹화 주기마다 비워져 평소엔 100MB 아래이고, 녹화가 오래 쉬면 그만큼 커진다"
+    "trainer_forecast_conformal": "예측 보정값. 골든 복원 표라 녹화 주기마다 비워져 평소엔 100MB 아래이고, 녹화가 오래 쉬면 그만큼 커진다",
+    "alert_active": "지금 울리는 알람의 상태. 창 전에 시작해 창 안에서 계속 울리는 알람도 담아야 한다(v3 와 같이 통째로)",
+    "alarm_ack_state": "알람별 현재 확인 상태. 상태 표라 시각이나 부모로 자르지 않는다",
+    "incident_snapshot_queue": "인시던트 스냅샷 대기열. 캡처 시점의 대기 상태가 입력이다",
+    "incident_judge_retries": "격상 판정 재시도 대기열. 캡처 시점의 대기 상태가 입력이다",
+    "kedb_wiki_case": "KEDB 지식 사례. 지식 표라 부모 인시던트 창으로 자르지 않는다"
   },
   "_snap_tables_note": [
     "크지만 일부러 통째로 담는 표와 그 이유. auto.snap_max_bytes 를 넘어도 덤프한다.",
     "2026-11-10 R1: 녹화 전 점검(testbed-operate 의 pg-scope-guard.py)의 SNAP_OK 를 이리로 옮겼다.",
-    "캡처와 점검이 같은 목록을 읽어야 점검이 통과시킨 표를 캡처가 빼는 일이 없다."
+    "캡처와 점검이 같은 목록을 읽어야 점검이 통과시킨 표를 캡처가 빼는 일이 없다.",
+    "2026-11-10 R1 수정 1회차(지휘 세션 결정): alert_active, alarm_ack_state, incident_snapshot_queue,",
+    "incident_judge_retries, kedb_wiki_case 는 slice 표를 외래 키로 가리키지만 상태, 대기열, 지식 표라 v3 처럼 통째로 둔다",
+    "(spec-eval-data-capture §5.1: 상태 표를 시각이나 소속으로 자르면 창 이전부터 있던 상태가 사라진다). 이 표들은",
+    "부모가 창으로 잘려 복원 때 해당 FK 제약 생성이 실패한다(v3 와 같음). 계획의 snap_fk_to_slice 에 적힌다."
   ],
 
   "auto": {

@@ -347,12 +347,23 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   `mv_target_of`, `mv_source_of`, `discovered:true`(실패하면 `error`, 파일은 null)를 더한다.
   규칙 정본은 `scripts/scenarios/ch-scope-plan.py`, 설정은 `ch-scope.json`:
   - 분할 키 안의 시각 열(없으면 정렬 키 첫 열이 시각 열일 때)로 창을 자른다(`scope:"slice"`). 날짜 분할
-    필터가 되므로 표 전체를 훑지 않는다. `Date` 열은 날짜 단위로 비교한다.
+    필터가 되므로 표 전체를 훑지 않는다. `Date` 열은 날짜 단위로 비교한다. 항목의 `slice_basis` 가 어느
+    규칙으로 잘랐는지 적는다.
+  - 정렬 키가 같은 행을 병합 때 합치는 엔진(Replacing, Aggregating, Summing, Collapsing 계열)에서 분할 키의
+    시각 열이 정렬 키에 없으면, 그 열은 사건 시각이 아니라 마지막으로 쓴 시각이다(사전 표: 하루 한 행을
+    묶음마다 다시 쓴다. `apm_sql_texts_local`, `apm_resources_local` 이 이 모양이다). 그 열로 자르면 창 안
+    span 이 가리키는 사전 행이 빠지므로(v3 `process_meta` 와 같은 함정) 정렬 키 안의 시각 열(날짜 열)로
+    창의 날짜 범위를 자르고(`slice_basis:"sorting_key_time"`), 그 열이 분할 열에서 계산된 열이면 같은 날짜
+    조건을 분할 열에도 걸어 부분을 건너뛴다. 정렬 키에 시각 열이 없으면 통째로.
   - 그런 열이 없는 표는 기준 표나 상태 표로 보고 통째로 담는다(`scope:"snap"`, 상한 `whole_max_bytes`).
-  - `AggregateFunction` 열이 있는 표는 Parquet 이 받지 못해 Native(`.native`)로 낸다. Parquet 이 실패한
-    표도 Native 로 한 번 더 시도한다. UUID 열은 문자열로 바꾼다.
-  - 저장소가 없는 엔진(View, MaterializedView, Null), TO 없는 구체화 뷰의 내부 표(`.inner*`),
-    `schema_migrations`, 상한을 넘는 기준 표는 담지 않고 `meta.clickhouse_excluded[]` 에 이유를 남긴다.
+    부분을 건너뛸 수 없는 창 조건도 표 전체를 읽으므로 같은 상한을 건다.
+  - `AggregateFunction` 열이 있는 표는 Parquet 이 받지 못해 Native(`.native`)로 낸다. Parquet 이 형식 오류로
+    실패한 표만 Native 로 한 번 더 시도한다(시간, 메모리 초과는 바로 실패로 적는다). UUID 열은 문자열로 바꾼다.
+  - 13개 밖 표의 내보내기와 통계 질의는 모두 v3 와 같은 `max_threads=2` 와 행 묶음 상한에 실행 시간 상한
+    (`max_execution_time`)을 더해 나간다.
+  - 저장소가 없거나 바깥 원천을 읽는 엔진(View, MaterializedView, Null, Distributed, S3 등), TO 없는 구체화
+    뷰의 내부 표(`.inner*`), `schema_migrations`, 상한을 넘는 기준 표는 담지 않고 `meta.clickhouse_excluded[]`
+    에 이유를 남긴다. MergeTree 가 아니어도 자기 저장소를 쓰는 엔진(Memory, Log 계열, Set, Join)은 통째로.
   - `lucida` 밖 DB(`lucida_selfsystem`)의 표는 `data/clickhouse/<db>/` 아래에 둔다.
   - 구체화 뷰의 대상 표(`mv_target_of` 가 있는 표)는 원본 표를 다시 넣으면 뷰가 다시 만든다. 재생 때
     둘 다 넣으면 두 번 쌓이므로 소비자가 고른다.
@@ -360,14 +371,25 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   `pg-scope.json` 에 없는 표도 가른다(`pg-scope-export.py plan_scope`). 표마다의 결정은
   `data/catalog/postgres-scope-plan.json`, 요약은 `meta.postgres_scope`. 자동으로 구간만 담는 표는
   `postgres_tables[]` 와 `restore.sql` 에 FK 순서대로 붙는다.
-  - `fk_closure`: slice 표를 외래 키로 가리키는 표는 그 부모가 남긴 행에 묶인 행만 담는다.
+  - `fk_closure`: slice 표를 외래 키로 가리키는 사건 기록 표는 그 부모가 남긴 행에 묶인 행만 담는다.
+    상태, 대기열, 지식 표(`alert_active`, `alarm_ack_state`, `incident_snapshot_queue`,
+    `incident_judge_retries`, `kedb_wiki_case`)는 `snap_tables` 에 이유와 함께 적어 v3 처럼 통째로 둔다.
+    부모가 창으로 잘려 복원 때 그 FK 제약은 생기지 않는다(v3 와 같음, 계획의 `snap_fk_to_slice`).
   - `history`: 이름이 `_history` 로 끝나는 표는 사건 시각 열로 자른다. 시각 열만 보고 자르지 않는
     이유는 §5.1(상태, 인벤토리 표도 같은 이름의 열을 가진다).
   - 그 밖은 통째로. 설정에 없고 `auto.snap_max_bytes` 를 넘는 표는 스키마만 담고(`over_cap`), 통째 덤프
     합이 `auto.snap_budget_bytes` 를 넘으면 캡처가 경고한다. 녹화 전 점검(testbed-operate
     `pg-scope-guard.py`)이 같은 계획기로 둘 다 미리 막는다.
-  - 뿌리의 자기참조 열이 원천에 없으면 재귀 없이 자른다(develop-ai DDL 367 이 `incidents.superseded_by`
-    를 지웠다. 대체 관계는 `incident_event_cluster_successors` 로 옮겨 갔고 `fk_closure` 가 담는다).
+  - 뿌리의 대체 관계: v3 는 `superseded_by`, `merged_into` 재귀로 창 끝 뒤 대체 행을 함께 실었다.
+    develop-ai DDL 367 이 `incidents.superseded_by` 를 지우고 대체 관계를 계보 표로 옮겼으므로, 원천에 계보 표
+    (`incident_event_cluster_successors`, `event_cluster_successors`)가 있으면 그 간선으로 같은 재귀를 한다.
+    인시던트 계보 간선이 가리키는 대체 군집도 군집 씨앗에 넣어 간선 행이 복원 때 FK 를 지킨다. 원천에 없는
+    자기참조 열은 그 단계만 뺀다.
+  - `pg-scope.json` 이 구간으로 자르라고 한 표가 원천에 없으면 캡처는 경고하고 그 표 없이 끝난다(v3 는
+    질의 오류로 죽었다). 녹화 전 점검이 막는다. drop 표가 없는 것은 녹화가 달라지지 않아 알리지 않는다.
+  - 이 PG 규칙은 주기 모드(v3, v4)만이 아니라 비주기 캡처(v2, `--phases-json` 없음)에도 같이 적용된다.
+    PG 덤프와 구간 추출은 두 모드가 같은 코드라서다. v2 meta 에는 `postgres_scope` 칸이 없지만 `restore.sql`
+    과 `data/catalog/` 는 같이 생긴다. CH 자동 발견과 제품 버전 칸은 주기 모드에만 있다.
 - **VictoriaMetrics**: 종전대로 구간 안 모든 시계열(`{__name__!=""}`). `meta.victoriametrics_export` 에 시계열
   수와 크기를 적는다.
 - **meta.json 에 더한 칸**: `product_version`, `product_branch`, `product_version_source`(query API

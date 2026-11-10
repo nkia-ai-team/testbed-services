@@ -416,6 +416,8 @@ printf '%s\n' \
   $'public\tevent_clusters\tr\t81920\t10\t10\t0' \
   $'public\tincident_members\tr\t40960\t10\t10\t0' \
   $'public\talert_history\tr\t40960\t10\t10\t0' \
+  $'public\talert_active\tr\t40960\t10\t10\t0' \
+  $'public\tincident_event_cluster_successors\tr\t40960\t10\t10\t0' \
   $'public\ttargets\tr\t40960\t10\t10\t0' \
   $'public\tincident_snapshots\tr\t40960\t10\t10\t0' \
   $'public\ttarget_config_history\tp\t40960\t0\t\\N\t\\N' \
@@ -433,11 +435,19 @@ printf '%s\n' \
   $'incident_snapshots\tincident_id\tuuid' $'incident_snapshots\tcaptured_at\ttimestamp with time zone' \
   $'target_config_history\tchanged_at\ttimestamp with time zone' \
   $'target_config_latest\tchanged_at\ttimestamp with time zone' \
-  $'big_unknown_table\tpayload\tbytea' >"$fix/pg/columns.tsv"
+  $'big_unknown_table\tpayload\tbytea' \
+  $'alert_active\talert_history_id\tbigint' \
+  $'incident_event_cluster_successors\tpredecessor_incident_id\tuuid' \
+  $'incident_event_cluster_successors\tsuccessor_incident_id\tuuid' \
+  $'incident_event_cluster_successors\tsuccessor_cluster_id\tuuid' >"$fix/pg/columns.tsv"
 printf '%s\n' \
   $'incident_members\tincident_id\tincidents\tid' \
   $'incident_snapshots\tincident_id\tincidents\tid' \
-  $'incident_snapshots\ttarget_id\ttargets\tid' >"$fix/pg/fks.tsv"
+  $'incident_snapshots\ttarget_id\ttargets\tid' \
+  $'alert_active\talert_history_id\talert_history\tid' \
+  $'incident_event_cluster_successors\tpredecessor_incident_id\tincidents\tid' \
+  $'incident_event_cluster_successors\tsuccessor_incident_id\tincidents\tid' \
+  $'incident_event_cluster_successors\tsuccessor_cluster_id\tevent_clusters\tid' >"$fix/pg/fks.tsv"
 
 # 원천 CH system 표. v3 13개 + 13개 밖 표.
 ch_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
@@ -459,6 +469,9 @@ ch_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   ch_row lucida huge_state_table ReplacingMergeTree '' key 10 104857600
   ch_row lucida fails_parquet_local MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
   ch_row lucida fails_always_local MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
+  ch_row lucida fails_timeout_local MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
+  ch_row lucida apm_sql_texts_local ReplacingMergeTree 'toYYYYMMDD(timestamp)' 'service_name, timestamp_date, sql_dictionary_ref' 10 1000
+  ch_row lucida events_by_hash_local MergeTree 'modulo(cityHash64(id), 16)' 'ts, id' 10 1000
   ch_row lucida mv_traces_to_live_5s MaterializedView '' '' '\N' '\N'
   ch_row lucida otel_traces_ingest 'Null' '' '' '\N' '\N'
   ch_row lucida '.inner_id.63da7c0d' AggregatingMergeTree 'toYYYYMM(minute)' minute 10 1000
@@ -467,7 +480,8 @@ ch_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
 } >"$fix/ch/tables.tsv"
 {
   for t in otel_traces_local lucida_logs_local dpm_session_local dpm_topsql_local kcm_events_local \
-           host_connections syslog_local kcm_pod_logs_local fails_parquet_local fails_always_local; do
+           host_connections syslog_local kcm_pod_logs_local fails_parquet_local fails_always_local \
+           fails_timeout_local; do
     printf 'lucida\t%s\ttimestamp\tDateTime64(9)\n' "$t"
   done
   printf 'lucida\tlucida_events_local\tevent_id\tUUID\n'
@@ -479,6 +493,9 @@ ch_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   printf 'lucida\thuge_state_table\tvalue\tDateTime\n'
   printf 'lucida_selfsystem\totel_traces_local\ttimestamp\tDateTime64(9)\n'
   printf 'lucida_selfsystem\totel_traces_local\ttrace_uuid\tNullable(UUID)\n'
+  printf 'lucida\tapm_sql_texts_local\ttimestamp\tDateTime64(9)\t\t\n'
+  printf 'lucida\tapm_sql_texts_local\ttimestamp_date\tDate\tMATERIALIZED\ttoDate(timestamp)\n'
+  printf 'lucida\tevents_by_hash_local\tts\tDateTime\n'
 } >"$fix/ch/columns.tsv"
 printf '%s\n' \
   $'lucida\tmv_traces_to_live_5s\tlucida.agg_service_live_5s\t' \
@@ -491,12 +508,15 @@ args = sys.argv[1:]
 out, data, url, jar = None, None, None, None
 i = 0
 stdin_used = False
+writeout = None
 while i < len(args):
     a = args[i]
     if a == "--output":
         out = args[i + 1]; i += 2; continue
     if a == "--cookie-jar":
         jar = args[i + 1]; i += 2; continue
+    if a == "--write-out":
+        writeout = args[i + 1]; i += 2; continue
     if a in ("--data-binary", "--data-urlencode", "-H", "--cookie", "--max-time", "-X"):
         if a == "--data-binary":
             data = args[i + 1]
@@ -540,8 +560,12 @@ elif "fake-ch" in url:
         emit(open(f"{fix}/ch/mviews.tsv").read())
     elif "FROM system.parts" in q:
         emit("otel_traces_local\nkcm_pod_logs_local\n")
+    elif "fails_timeout_local" in q and "FORMAT Parquet" in q:
+        emit("Code: 159. DB::Exception: Timeout exceeded: elapsed 600 seconds: While executing ParquetBlockOutputFormat. (TIMEOUT_EXCEEDED)\n")
+        sys.stdout.write("500"); sys.exit(0)
     elif "fails_always_local" in q or ("fails_parquet_local" in q and "FORMAT Parquet" in q):
-        sys.stderr.write("curl: (22) The requested URL returned error: 500\n"); sys.exit(22)
+        emit("Code: 50. DB::Exception: Internal type of column is not supported for conversion into Parquet data format. (UNKNOWN_TYPE)\n")
+        sys.stdout.write("500"); sys.exit(0)
     elif "FORMAT Parquet" in q:
         emit(b"PAR1fake")
     elif "FORMAT Native" in q:
@@ -552,6 +576,8 @@ elif "fake-ch" in url:
         sys.stderr.write("fake curl: unknown ch query\n"); sys.exit(2)
 else:
     sys.stderr.write(f"fake curl: unknown url {url}\n"); sys.exit(2)
+if writeout:
+    sys.stdout.write("200")
 PYEOF
 cat >"$fakebin/docker" <<'PYEOF'
 #!/usr/bin/env python3
@@ -635,8 +661,9 @@ done
 jq -e '
   (.clickhouse_tables[13:] | all(.discovered == true)) and
   (.clickhouse_tables[13:] | map(.database + "." + .table) | sort) ==
-    ["lucida.agg_event_occurrence_1d","lucida.agg_service_live_5s","lucida.fails_always_local",
-     "lucida.fails_parquet_local","lucida.kcm_pod_logs_local","lucida.wpm_text_local",
+    ["lucida.agg_event_occurrence_1d","lucida.agg_service_live_5s","lucida.apm_sql_texts_local",
+     "lucida.events_by_hash_local","lucida.fails_always_local",
+     "lucida.fails_parquet_local","lucida.fails_timeout_local","lucida.kcm_pod_logs_local","lucida.wpm_text_local",
      "lucida_selfsystem.otel_traces_local"] and
   (.clickhouse_tables[] | select(.table == "kcm_pod_logs_local") |
      .file == "data/clickhouse/kcm_pod_logs_local.parquet" and .scope == "slice" and
@@ -650,7 +677,12 @@ jq -e '
      .file == "data/clickhouse/lucida_selfsystem/otel_traces_local.parquet") and
   (.clickhouse_tables[] | select(.table == "fails_parquet_local") |
      .format == "Native" and .file == "data/clickhouse/fails_parquet_local.native" and (has("error") | not)) and
-  (.clickhouse_tables[] | select(.table == "fails_always_local") | (.error | length > 0) and .rows == null and .file == null)' \
+  (.clickhouse_tables[] | select(.table == "fails_always_local") | (.error | test("UNKNOWN_TYPE")) and .rows == null and .file == null) and
+  (.clickhouse_tables[] | select(.table == "fails_timeout_local") |
+     (.error | test("TIMEOUT_EXCEEDED")) and .format == "Parquet" and .file == null) and
+  (.clickhouse_tables[] | select(.table == "apm_sql_texts_local") |
+     .scope == "slice" and .time_column == "timestamp_date" and .slice_basis == "sorting_key_time") and
+  (.clickhouse_tables[] | select(.table == "events_by_hash_local") | .slice_basis == "sorting_key_first")' \
   "$meta" >/dev/null || fail 'discovered ClickHouse tables not appended as expected'
 [[ -s "$live_root/cases/case-live-v4/data/clickhouse/lucida_selfsystem/otel_traces_local.parquet" ]] ||
   fail 'selfsystem table file missing'
@@ -676,13 +708,46 @@ grep -F 'agg_event_occurrence_1d' "$FAKE_LOG" | grep -F 'FORMAT Parquet' |
 grep -F 'lucida_selfsystem' "$FAKE_LOG" | grep -F 'FORMAT Parquet' | grep -qF 'toString(`trace_uuid`) AS `trace_uuid`' ||
   fail 'UUID columns of discovered tables are not exported as strings'
 if grep -F 'FROM `lucida`.`huge_state_table`' "$FAKE_LOG" >/dev/null; then fail 'over-cap table was exported'; fi
+# 13개 밖 표에 나간 모든 질의(내보내기, 통계)가 실행 설정(max_threads=2, 실행 시간 상한)을 달고, slice 표는
+# 창 조건을, snap 표는 조건 없이 나갔는지 meta 의 표 목록과 대조한다. 시간 초과 표는 Native 로 다시 내지 않는다.
+python3 - "$FAKE_LOG" "$meta" <<'PYCHK' || fail 'a discovered ClickHouse query lacks max_threads=2, the execution cap or the window'
+import json, sys
+log, meta = sys.argv[1], json.load(open(sys.argv[2]))
+lines = [l.split("\t", 1) for l in open(log) if l.startswith("CURL http://fake-ch")]
+start, end = "'2026-07-14T22:50:00Z'", "'2026-07-15T01:40:00Z'"
+bad, seen = [], 0
+for e in meta["clickhouse_tables"][13:]:
+    src = f"FROM `{e['database']}`.`{e['table']}`"
+    qs = [(u, q) for u, q in lines if src in q]
+    if len(qs) < (1 if e.get("error") else 2):
+        bad.append(f"{e['table']}: {len(qs)} queries")
+    for u, q in qs:
+        seen += 1
+        if "max_threads=2" not in u or "max_execution_time=600" not in u:
+            bad.append(f"{e['table']}: settings {u}")
+        if e["scope"] == "slice":
+            if f"`{e['time_column']}` >=" not in q or start not in q or end not in q:
+                bad.append(f"{e['table']}: no window {q[:160]}")
+        elif " WHERE " in q:
+            bad.append(f"{e['table']}: snap with WHERE")
+    if e["table"] == "fails_timeout_local" and any("FORMAT Native" in q for _, q in qs):
+        bad.append("timeout retried as Native")
+    if e["table"] == "apm_sql_texts_local" and not all("toDate(`timestamp`) >=" in q for _, q in qs):
+        bad.append("dictionary table lacks the partition day filter")
+print("\n".join(bad), file=sys.stderr)
+sys.exit(1 if bad or seen < 15 else 0)
+PYCHK
 
 # (e) PG 계획: 외래 키 자식, 이력 표, 상한 넘는 표, 없는 자기참조 열, 명시 snap.
 jq -e '
-  (.postgres_scope.auto_slices == [{table:"incident_snapshots",rule:"fk_closure"},
+  (.postgres_scope.auto_slices == [{table:"incident_event_cluster_successors",rule:"fk_closure"},
+                                   {table:"incident_snapshots",rule:"fk_closure"},
                                    {table:"target_config_history",rule:"history"}]) and
   (.postgres_scope.over_cap == [{table:"big_unknown_table",bytes:314572800}]) and
   (.postgres_scope.missing_columns == ["incidents.superseded_by"]) and
+  (.postgres_scope.lineage == ["incident_event_cluster_successors"]) and
+  (.postgres_scope.snap_fk_to_slice == [{table:"alert_active",parents:["alert_history"]}]) and
+  (.postgres_scope.absent_slice | index("coverage_events") != null) and
   (.postgres_scope.plan_file == "data/catalog/postgres-scope-plan.json") and
   (.postgres_scope.over_budget == true and .postgres_scope.largest_snap[0].table == "trainer_trace_window_threshold") and
   ([.postgres_tables[].table] | index("incident_snapshots") != null and index("target_config_history") != null) and
@@ -701,6 +766,12 @@ done
 if grep -qF -- 'public.trainer_trace_window_threshold' <<<"$dump_line"; then fail 'explicit snap table excluded from pg_dump'; fi
 export_sql=$(sed -n '/^PSQLFILE .export.sql$/,/^ENDPSQL$/p' "$FAKE_LOG")
 grep -qF 'merged_into' <<<"$export_sql" || fail 'event_clusters recursion lost'
+grep -qF 'SELECT l."successor_incident_id" AS id FROM public."incident_event_cluster_successors" l' <<<"$export_sql" ||
+  fail 'incidents lineage recursion missing'
+grep -q 'slice table in pg-scope.json is absent at source, not captured: coverage_events' "$live_root/case-live-v4.err" ||
+  fail 'no warning for a configured slice table absent at source'
+if grep -q 'absent at source, not captured: kedb_pending' "$live_root/case-live-v4.err"; then fail 'warned about an absent drop table'; fi
+if grep -qF -- 'public.alert_active' <<<"$dump_line"; then fail 'state table alert_active excluded from pg_dump'; fi
 if grep -qF 'superseded_by' <<<"$export_sql"; then fail 'export SQL still reads incidents.superseded_by'; fi
 grep -q 'whole-table dump .* exceeds budget' "$live_root/case-live-v4.err" || fail 'no warning for snap budget'
 grep -qF "\\copy incident_snapshots FROM 'incident_snapshots.csv'" "$live_root/cases/case-live-v4/data/postgres/restore.sql" ||

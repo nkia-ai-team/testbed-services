@@ -179,13 +179,95 @@ class PgPlanTest(unittest.TestCase):
         plan = pg.plan_scope(PG_CFG, cat)
         self.assertTrue(any(c["table"] == "alert_history" and "started_at" in c["problem"] for c in plan["conflicts"]))
 
-    def test_explicit_snap_pointing_at_a_slice_table_is_a_conflict_but_drop_is_not(self):
-        cfg = copy.deepcopy(PG_CFG)
-        cfg["snap_tables"]["pinned_child"] = "시험"
-        plan = pg.plan_scope(cfg, pg_catalog({"pinned_child": 4096},
-                                             fks=[("pinned_child", "incident_id", "incidents", "id"),
-                                                  ("kedb_pending", "incident_id", "incidents", "id")]))
-        self.assertEqual([c["table"] for c in plan["conflicts"]], ["pinned_child"])
+    def test_snap_tables_pointing_at_a_slice_table_are_kept_whole_and_listed(self):
+        # 상태, 대기열, 지식 표는 사람이 snap_tables 에 이유와 함께 적어 통째로 둔다(R1 수정 1회차).
+        state = ["alert_active", "alarm_ack_state", "incident_snapshot_queue", "incident_judge_retries", "kedb_wiki_case"]
+        for t in state:
+            self.assertIn(t, PG_CFG["snap_tables"])
+        fks = [("alert_active", "alert_history_id", "alert_history", "id"),
+               ("alarm_ack_state", "alert_history_id", "alert_history", "id"),
+               ("incident_snapshot_queue", "incident_id", "incidents", "id"),
+               ("incident_judge_retries", "cluster_id", "event_clusters", "id"),
+               ("kedb_wiki_case", "incident_id", "incidents", "id"),
+               ("kedb_pending", "incident_id", "incidents", "id"),
+               ("alarm_ack_log", "alert_history_id", "alert_history", "id")]
+        plan = self.plan({"alarm_ack_log": 4096}, fks=fks)
+        for t in state:
+            self.assertEqual((plan["tables"][t]["scope"], plan["tables"][t]["rule"]), ("snap", "config"), t)
+            self.assertNotIn(t, pg.emit_exclude_args(PG_CFG, plan))
+        self.assertEqual(sorted(x["table"] for x in plan["snap_fk_to_slice"]), sorted(state))
+        self.assertEqual(plan["conflicts"], [])
+        # 사건 기록 표는 그대로 부모에 묶여 잘린다.
+        self.assertEqual(plan["tables"]["alarm_ack_log"]["rule"], "fk_closure")
+
+    def test_explicit_snap_pointing_at_a_slice_table_without_reason_is_a_conflict_but_drop_is_not(self):
+        # 설정 밖 표는 fk_closure 가 가져가므로 충돌은 이유 없이 snap 이 된 경우(public 밖 스키마)에서 생긴다.
+        cat = pg_catalog({"security.pinned": 4096})
+        cat["fks"]["security.pinned"] = [{"columns": ["incident_id"], "parent": "incidents", "parent_columns": ["id"]}]
+        cat["fks"]["kedb_pending"] = [{"columns": ["incident_id"], "parent": "incidents", "parent_columns": ["id"]}]
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertEqual([c["table"] for c in plan["conflicts"]], ["security.pinned"])
+
+    def test_lineage_keeps_successors_created_after_the_window(self):
+        lineage = {"incident_event_cluster_successors": 4096, "event_cluster_successors": 4096}
+        cols = {"incident_event_cluster_successors": [("predecessor_incident_id", "uuid"), ("successor_incident_id", "uuid"),
+                                                      ("successor_cluster_id", "uuid")],
+                "event_cluster_successors": [("predecessor_cluster_id", "uuid"), ("successor_cluster_id", "uuid")]}
+        fks = [("incident_event_cluster_successors", "predecessor_incident_id", "incidents", "id"),
+               ("incident_event_cluster_successors", "successor_incident_id", "incidents", "id"),
+               ("incident_event_cluster_successors", "successor_cluster_id", "event_clusters", "id"),
+               ("event_cluster_successors", "predecessor_cluster_id", "event_clusters", "id"),
+               ("event_cluster_successors", "successor_cluster_id", "event_clusters", "id")]
+        cat = pg_catalog(lineage, columns=cols, fks=fks)
+        cat["columns"]["incidents"] = ["id", "created_at"]  # superseded_by 가 지워진 판
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertEqual(plan["lineage"], ["event_cluster_successors", "incident_event_cluster_successors"])
+        q = dict(pg.ordered_slices(PG_CFG, plan))
+        inc = q["incidents"]
+        self.assertIn("WITH RECURSIVE", inc)
+        self.assertNotIn("superseded_by", inc)
+        self.assertIn('SELECT l."successor_incident_id" AS id FROM public."incident_event_cluster_successors" l '
+                      'WHERE l."predecessor_incident_id" = k.id', inc)
+        # 자식 표도 같은 _keep 을 쓴다(대체 인시던트의 멤버, 타임라인도 실린다).
+        self.assertIn("incident_event_cluster_successors", q["incident_members"])
+        ec = q["event_clusters"]
+        self.assertIn('l."successor_cluster_id" AS id FROM public."event_cluster_successors"', ec)
+        self.assertIn("merged_into", ec)
+        # 인시던트 계보 간선의 대체 군집도 씨앗에 든다.
+        self.assertIn('SELECT l."successor_cluster_id" FROM public."incident_event_cluster_successors" l', ec)
+        self.assertEqual(plan["tables"]["incident_event_cluster_successors"]["rule"], "fk_closure")
+
+    def test_lineage_table_with_missing_column_is_not_used_and_is_reported(self):
+        cat = pg_catalog({"event_cluster_successors": 4096},
+                         columns={"event_cluster_successors": [("predecessor_cluster_id", "uuid")]})
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertNotIn("event_cluster_successors", plan["lineage"])
+        self.assertIn("event_cluster_successors.successor_cluster_id", plan["missing_columns"])
+        self.assertEqual(dict(pg.ordered_slices(PG_CFG, plan))["event_clusters"],
+                         dict(pg.ordered_slices(PG_CFG))["event_clusters"])
+
+    def test_configured_slice_table_absent_at_source_is_reported_but_drop_is_not(self):
+        cat = pg_catalog({})
+        del cat["tables"]["alert_history"]
+        del cat["tables"]["kedb_pending"]
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertEqual(plan["absent_slice"], ["alert_history"])
+        self.assertIn("kedb_pending", plan["absent"])
+        self.assertEqual(pg.plan_summary(plan, PG_CFG)["absent_slice"], ["alert_history"])
+
+    def test_auto_child_with_self_reference_is_a_conflict(self):
+        plan = self.plan({"rca_notes": 4096},
+                         fks=[("rca_notes", "incident_id", "incidents", "id"), ("rca_notes", "parent_id", "rca_notes", "id")])
+        self.assertNotEqual(plan["tables"]["rca_notes"]["rule"], "fk_closure")
+        self.assertIn("rca_notes", [c["table"] for c in plan["conflicts"]])
+
+    def test_other_schema_over_cap_is_excluded_by_its_own_name(self):
+        cap = PG_CFG["auto"]["snap_max_bytes"]
+        plan = self.plan({"security.big": cap + 1})
+        self.assertEqual(plan["tables"]["security.big"]["scope"], "drop")
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertIn("--exclude-table-data=security.big", args)
+        self.assertFalse(any("public.security" in a for a in args))
 
     def test_other_schemas_are_kept_whole(self):
         plan = self.plan({"security.audit_marks": 4096})
@@ -254,7 +336,58 @@ class ChPlanTest(unittest.TestCase):
     def test_sorting_key_first_time_column_also_cuts(self):
         plan = self.plan([("lucida", "events_by_hash", "MergeTree", "modulo(cityHash64(id), 16)", "ts, id", 1, 10)],
                          [("lucida", "events_by_hash", "ts", "DateTime")])
-        self.assertEqual(self.by_name(plan)["lucida.events_by_hash"]["time_column"], "ts")
+        e = self.by_name(plan)["lucida.events_by_hash"]
+        self.assertEqual((e["time_column"], e["slice_basis"]), ("ts", "sorting_key_first"))
+        self.assertEqual(e["where"], f" WHERE `ts` >= parseDateTime64BestEffort('{self.WS}')"
+                                     f" AND `ts` <= parseDateTime64BestEffort('{self.WE}')")
+
+    def test_dictionary_table_is_cut_by_its_day_key_not_by_the_last_write_time(self):
+        # 겹쳐 쓰는 엔진에서 분할 시각 열이 정렬 키에 없으면 그 열은 마지막으로 쓴 시각이다(사전 표).
+        rows = [("lucida", "apm_sql_texts_local", "ReplacingMergeTree", "toYYYYMMDD(timestamp)",
+                 "service_namespace, service_name, timestamp_date, sql_dictionary_ref", 1, 1000)]
+        cols = [("lucida", "apm_sql_texts_local", "timestamp", "DateTime64(9, 'UTC')", "", ""),
+                ("lucida", "apm_sql_texts_local", "timestamp_date", "Date", "MATERIALIZED", "toDate(timestamp)")]
+        e = self.by_name(self.plan(rows, cols))["lucida.apm_sql_texts_local"]
+        self.assertEqual((e["scope"], e["time_column"], e["time_type"], e["slice_basis"]),
+                         ("slice", "timestamp_date", "Date", "sorting_key_time"))
+        self.assertIn(f"`timestamp_date` >= toDate(parseDateTime64BestEffort('{self.WS}'))", e["where"])
+        self.assertIn(f"`timestamp_date` <= toDate(parseDateTime64BestEffort('{self.WE}'))", e["where"])
+        # 날짜 열이 분할 열에서 계산되므로 같은 조건을 분할 열에도 걸어 부분을 건너뛴다.
+        self.assertIn(f"toDate(`timestamp`) >= toDate(parseDateTime64BestEffort('{self.WS}'))", e["where"])
+        self.assertNotIn("`timestamp` >= parseDateTime64BestEffort", e["where"])
+
+    def test_dictionary_day_key_not_derived_from_the_partition_cannot_prune_so_the_cap_applies(self):
+        cap = CH_CFG["whole_max_bytes"]
+        rows = [("lucida", "dict_small", "ReplacingMergeTree", "toYYYYMMDD(ts)", "k, d", 1, cap),
+                ("lucida", "dict_big", "ReplacingMergeTree", "toYYYYMMDD(ts)", "k, d", 1, cap + 1)]
+        cols = [(t, n, c, ty, "", "") for t, n in (("lucida", "dict_small"), ("lucida", "dict_big"))
+                for c, ty in (("ts", "DateTime"), ("d", "Date"))]
+        plan = self.plan(rows, cols)
+        e = self.by_name(plan)
+        self.assertEqual(e["lucida.dict_small"]["time_column"], "d")
+        self.assertNotIn("toDate(`ts`)", e["lucida.dict_small"]["where"])
+        self.assertEqual([x["table"] for x in plan["excluded"]], ["dict_big"])
+
+    def test_merging_table_without_a_time_key_is_kept_whole(self):
+        rows = [("lucida", "last_seen", "ReplacingMergeTree", "toYYYYMMDD(seen_at)", "target_id", 1, 1000)]
+        cols = [("lucida", "last_seen", "seen_at", "DateTime")]
+        e = self.by_name(self.plan(rows, cols))["lucida.last_seen"]
+        self.assertEqual((e["scope"], e["where"]), ("snap", ""))
+
+    def test_aggregates_with_bucket_time_in_the_key_stay_partition_cut(self):
+        rows = [("lucida", "agg_x", "AggregatingMergeTree", "toYYYYMM(minute)", "svc, minute", 1, 1000)]
+        cols = [("lucida", "agg_x", "minute", "DateTime")]
+        e = self.by_name(self.plan(rows, cols))["lucida.agg_x"]
+        self.assertEqual((e["time_column"], e["slice_basis"]), ("minute", "partition_time"))
+
+    def test_local_storage_engines_are_kept_whole_and_remote_engines_are_left_out(self):
+        plan = self.plan([("lucida", "mem", "Memory", "", "", 1, 100),
+                          ("lucida", "s3_src", "S3", "", "", "\\N", "\\N")],
+                         [("lucida", "mem", "at", "DateTime")])
+        e = self.by_name(plan)
+        self.assertEqual((e["lucida.mem"]["scope"], e["lucida.mem"]["where"]), ("snap", ""))
+        self.assertEqual([x["table"] for x in plan["excluded"]], ["s3_src"])
+        self.assertIn("바깥 원천", plan["excluded"][0]["reason"])
 
     def test_state_table_with_time_value_outside_the_keys_is_kept_whole(self):
         plan = self.plan([("lucida", "agg_watermark", "ReplacingMergeTree", "", "key", 10, 2000)],

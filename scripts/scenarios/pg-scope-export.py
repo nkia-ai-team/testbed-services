@@ -67,24 +67,54 @@ def explicit_slice_tables(cfg: dict) -> list[str]:
             + list(cfg["slice_by_time"]) + list(cfg.get("slice_by_epoch_ms", {})))
 
 
-def root_cte(table: str, spec: dict, missing: set[str] | None = None) -> str:
-    """창 안의 뿌리 + 자기참조 폐포.
+def root_cte(table: str, spec: dict, ctx: dict | None = None, roots: dict | None = None) -> str:
+    """창 안의 뿌리 + 대체 관계 폐포.
 
     superseded_by·merged_into 는 창 밖(대개 미래)을 가리킬 수 있어, 그대로 두면
     복원 때 FK 가 깨진다. 재귀로 참조 대상을 함께 싣는다.
 
-    원천에 자기참조 열이 없으면(missing 에 "표.열", 카탈로그로 안다) 재귀 없이 창 안의
-    뿌리만 고른다. develop-ai DDL 367 이 incidents.superseded_by 를 지웠다(대체 관계는
-    계보 표 incident_event_cluster_successors 로 옮겨 갔고, 그 표는 fk_closure 가 담는다).
+    ctx(plan 의 카탈로그 정보)가 있으면 v4 경로다(2026-11-10 R1 수정 1회차):
+    - 원천에 자기참조 열이 없으면(ctx["missing"] 에 "표.열") 그 단계를 뺀다. develop-ai DDL 367 이
+      incidents.superseded_by 를 지웠다.
+    - 대체 관계가 옮겨 간 계보 표(spec["lineage"]: 표, from, to 열)가 원천에 있으면 그 간선으로 창 끝 뒤
+      대체 행을 재귀로 더한다. v3 의 superseded_by 재귀와 같은 뜻을 지킨다(창 안 인시던트를 대체한
+      인시던트가 창 끝 뒤에 생겨도 싣는다).
+    - spec["lineage_seed"](표, column, via, root)는 다른 뿌리가 남긴 행의 계보 간선이 가리키는 이 표의
+      행을 씨앗에 더한다. 인시던트 계보 간선의 대체 군집이 그것이다(간선 행이 복원 때 FK 를 지키도록).
+    ctx 가 없으면 종전과 같은 글자를 낸다.
     """
     tc, sr = spec["time_column"], spec["self_reference"]
-    if missing and f"{table}.{sr}" in missing:
-        return (
-            f'WITH _keep AS (\n'
-            f'  SELECT id FROM public."{table}"\n'
-            f'   WHERE "{tc}" >= :\'win_start\'::timestamptz AND "{tc}" <= :\'win_end\'::timestamptz\n'
-            f')'
-        )
+    seed = (f'  SELECT id FROM public."{table}"\n'
+            f'   WHERE "{tc}" >= :\'win_start\'::timestamptz AND "{tc}" <= :\'win_end\'::timestamptz')
+    if ctx is not None:
+        usable = ctx["lineage"]
+        steps = []
+        if f"{table}.{sr}" not in ctx["missing"]:
+            steps.append(f'SELECT p."{sr}" AS id FROM public."{table}" p WHERE p.id = k.id AND p."{sr}" IS NOT NULL')
+        for lin in spec.get("lineage", []):
+            if lin["table"] in usable:
+                steps.append(f'SELECT l."{lin["to"]}" AS id FROM public."{lin["table"]}" l '
+                             f'WHERE l."{lin["from"]}" = k.id AND l."{lin["to"]}" IS NOT NULL')
+        seeds = [seed]
+        for ls in spec.get("lineage_seed", []):
+            if ls["table"] in usable and roots and ls["root"] in roots:
+                other = f'(\n{root_cte(ls["root"], roots[ls["root"]], ctx, None)}\nSELECT id FROM _keep)'
+                seeds.append(f'  SELECT l."{ls["column"]}" FROM public."{ls["table"]}" l\n'
+                             f'   WHERE l."{ls["via"]}" IN {other} AND l."{ls["column"]}" IS NOT NULL')
+        seed_sql = "\n  UNION\n".join(seeds)
+        if not steps:
+            return f'WITH _keep AS (\n{seed_sql}\n)'
+        if len(steps) == 1 and len(seeds) == 1 and steps[0].startswith('SELECT p.'):
+            pass  # 자기참조 하나뿐: 아래 종전 모양 그대로
+        else:
+            union = "\n    UNION ALL\n    ".join(steps)
+            return (
+                f'WITH RECURSIVE _seed AS (\n{seed_sql}\n), _keep AS (\n'
+                f'  SELECT id FROM _seed\n'
+                f'  UNION\n'
+                f'  SELECT n.id FROM _keep k CROSS JOIN LATERAL (\n    {union}\n  ) n\n'
+                f')'
+            )
     return (
         f'WITH RECURSIVE _seed AS (\n'
         f'  SELECT id FROM public."{table}"\n'
@@ -128,20 +158,21 @@ def ordered_slices(cfg: dict, plan: dict | None = None) -> list[tuple[str, str]]
     plan 이 있으면 원천에 없는 표(absent)를 빼고, 자동 발견된 slice 표를 뒤에 붙인다.
     """
     absent = set(plan["absent"]) if plan else set()
-    missing = set(plan["missing_columns"]) if plan else set()
+    ctx = {"missing": set(plan["missing_columns"]), "lineage": set(plan["lineage"])} if plan else None
+    roots = cfg["slice_roots"]
     items: list[tuple[str, str]] = []
 
     for t, spec in cfg["slice_roots"].items():
         if t in absent:
             continue
-        items.append((t, f'{root_cte(t, spec, missing)}\nSELECT t.* FROM public."{t}" t '
+        items.append((t, f'{root_cte(t, spec, ctx, roots)}\nSELECT t.* FROM public."{t}" t '
                          f'WHERE t.id IN (SELECT id FROM _keep)'))
 
     for t, spec in cfg["slice_children"].items():
         root = spec["root"]
         if t in absent or root in absent:
             continue
-        items.append((t, f'{root_cte(root, cfg["slice_roots"][root], missing)}\n'
+        items.append((t, f'{root_cte(root, cfg["slice_roots"][root], ctx, roots)}\n'
                          f'SELECT c.* FROM public."{t}" c '
                          f'WHERE c."{spec["column"]}" IN (SELECT id FROM _keep)'))
 
@@ -151,7 +182,7 @@ def ordered_slices(cfg: dict, plan: dict | None = None) -> list[tuple[str, str]]
         if t in absent or parent in absent or proot in absent:
             continue
         pcol = cfg["slice_children"][parent]["column"]
-        items.append((t, f'{root_cte(proot, cfg["slice_roots"][proot], missing)}\n'
+        items.append((t, f'{root_cte(proot, cfg["slice_roots"][proot], ctx, roots)}\n'
                          f'SELECT g.* FROM public."{t}" g WHERE g."{col}" IN ('
                          f'SELECT p."{pkey}" FROM public."{parent}" p '
                          f'WHERE p."{pcol}" IN (SELECT id FROM _keep))'))
@@ -310,6 +341,19 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
     missing_columns = sorted(
         f"{t}.{spec['self_reference']}" for t, spec in cfg["slice_roots"].items()
         if t in tables and spec.get("self_reference") not in catalog["columns"].get(t, []))
+    # 뿌리의 계보 표: 원천에 표와 열이 다 있을 때만 재귀에 쓴다. 표는 있는데 열이 없으면 알린다.
+    lineage: set[str] = set()
+    for spec in cfg["slice_roots"].values():
+        for lin in spec.get("lineage", []) + spec.get("lineage_seed", []):
+            need = [lin[k] for k in ("from", "to", "column", "via") if k in lin]
+            if lin["table"] not in tables:
+                continue
+            gone = [c for c in need if c not in catalog["columns"].get(lin["table"], [])]
+            if gone:
+                missing_columns += [f"{lin['table']}.{c}" for c in gone]
+            else:
+                lineage.add(lin["table"])
+    missing_columns = sorted(set(missing_columns))
 
     out: dict[str, dict] = {}
     for t, info in tables.items():
@@ -336,6 +380,12 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
                 continue
             refs = [fk for fk in fks.get(t, []) if fk["parent"] in slice_set and fk["parent"] != t]
             if not refs:
+                continue
+            if any(fk["parent"] == t for fk in fks.get(t, [])):
+                # 창 안 행이 창 밖 같은 표 행을 가리키면 \copy 때 FK 가 깨진다. 자동으로 정하지 않는다.
+                conflicts.append({"table": t, "problem": "자기참조 외래 키가 있는 표가 slice 표를 가리킨다",
+                                  "parents": sorted({fk["parent"] for fk in refs})})
+                conflicted.add(t)
                 continue
             if any(len(fk["columns"]) != 1 for fk in refs):
                 conflicts.append({"table": t, "problem": "여러 열 외래 키로 slice 표를 가리킨다",
@@ -400,11 +450,17 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
             e.update(scope="snap", rule="default")
 
     # 통째로 담는 표가 slice 표를 외래 키로 가리키면 복원 때 제약 생성이 깨진다(비우는 drop 표는
-    # 행이 없어 괜찮다). 설정을 사람이 고칠 일이라 자동으로 바꾸지 않고 알린다.
+    # 행이 없어 괜찮다). 설정을 사람이 고칠 일이라 자동으로 바꾸지 않고 알린다. snap_tables 에 이유와 함께
+    # 적힌 표는 사람이 이미 정한 것이라(상태, 대기열, 지식 표는 자르지 않는다) 알림 목록에만 남긴다.
+    snap_fk_to_slice: list[dict] = []
     for t, e in out.items():
         if e["scope"] == "snap":
             refs = sorted({fk["parent"] for fk in fks.get(t, []) if fk["parent"] in slice_set})
-            if refs:
+            if not refs:
+                continue
+            if t in snap_ok:
+                snap_fk_to_slice.append({"table": t, "parents": refs})
+            else:
                 conflicts.append({"table": t, "problem": f"{e['scope']} 표가 slice 표를 외래 키로 가리킨다",
                                   "parents": refs})
 
@@ -413,7 +469,12 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         "auto_slices": auto_order,
         "over_cap": sorted(over_cap),
         "absent": absent,
+        # 설정이 구간으로 자르라고 한 표가 원천에 없음: 이름이 바뀐 것이면 녹화가 조용히 그 표 없이 끝난다.
+        # drop 표는 비우는 표라 없어도 녹화가 달라지지 않으므로 뺀다.
+        "absent_slice": sorted(set(absent) & set(explicit_slice)),
         "missing_columns": missing_columns,
+        "lineage": sorted(lineage),
+        "snap_fk_to_slice": snap_fk_to_slice,
         "conflicts": conflicts,
     }
 
@@ -440,16 +501,21 @@ def plan_summary(plan: dict, cfg: dict | None = None) -> dict:
         "auto_slices": [{"table": t, "rule": plan["tables"][t]["rule"]} for t in plan["auto_slices"]],
         "over_cap": [{"table": t, "bytes": plan["tables"][t]["bytes"]} for t in plan["over_cap"]],
         "absent": plan["absent"],
+        "absent_slice": plan["absent_slice"],
         "missing_columns": plan["missing_columns"],
+        "lineage": plan["lineage"],
+        "snap_fk_to_slice": plan["snap_fk_to_slice"],
         "conflicts": plan["conflicts"],
     }
 
 
 def _exclude_flag(plan: dict | None, t: str) -> str:
     # 분할 표는 부모만 빼면 잎 분할의 데이터가 그대로 실린다(pg_dump 16 부터 -and-children).
+    # public 밖 스키마 표의 키는 이미 "스키마.표" 다.
+    name = t if "." in t else f"public.{t}"
     if plan and plan["tables"].get(t, {}).get("relkind") == "p":
-        return f"--exclude-table-data-and-children=public.{t}"
-    return f"--exclude-table-data=public.{t}"
+        return f"--exclude-table-data-and-children={name}"
+    return f"--exclude-table-data={name}"
 
 
 def emit_exclude_args(cfg: dict, plan: dict | None = None) -> str:
