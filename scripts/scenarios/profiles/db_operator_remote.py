@@ -251,7 +251,7 @@ pdb_spawn() {
   pdb_env || return 1
   PGAPPNAME="$3" PGOPTIONS="$PDB_KEEPALIVE" SQL="$1" \
     setsid nohup bash -c 'psql -X -q -c "$SQL"' </dev/null >"$2" 2>&1 &
-  printf '%s\n' "$!" >"$2.pgid"
+  dbo_pgid_record "$!" "$2.pgid"
 }
 
 # mdb_pod_spawn ROLE DB SQL LOG [paced]: one mysql client inside the database pod, the process an operator runs on
@@ -292,7 +292,7 @@ mdb_pod_spawn() {
       setsid nohup bash -c 'printf "%s\n" "$DBO_OPTFILE" | "$DBO_PY" -c "$DBO_SRC" pod-exec -- "$@" >/dev/null' \
       _ "${cmd[@]}" </dev/null >"$4" 2>&1 &
   fi
-  printf '%s\n' "$!" >"$4.pgid"
+  dbo_pgid_record "$!" "$4.pgid"
 }
 # mdb_pod_pace LOG ID ROWS SECONDS: once the export's first rows have been sampled and the stream path between the
 # pod and the runner is full (the server's Bytes_sent for processlist ID stops moving), read the rest at the byte
@@ -320,41 +320,63 @@ mdb_pod_drain() {
   local g i
   [[ -d "$1.pace" ]] || return 0
   printf 'max\n' >"$1.pace/rate"
-  read -r g <"$1.pgid" 2>/dev/null || return 0
-  [[ "$g" =~ ^[0-9]+$ ]] || return 0
+  # Only the group this runner recorded (a runner that restarted has none of it; see dbo_pgid_ours).
+  g="$(dbo_pgid_ours "$1.pgid")"
+  [[ -n "$g" ]] || return 0
   for ((i = 0; i < 60; i++)); do dbo_group_alive "$g" || return 0; sleep 1; done
   echo "the export client's stream did not end" >&2
   return 1
 }
 # dbo_group_alive PGID: a process of that group that has not ended (the runner's PID 1 does not reap, so ended
-# children stay as zombies and `kill -0 -PGID` would still succeed).
+# children stay as zombies and `kill -0 -PGID` would still succeed). A process that ends between the listing and the
+# read is skipped quietly (the redirection's own error goes to /dev/null too).
 dbo_group_alive() {
   local proc stat rest
   for proc in /proc/[0-9]*; do
-    read -r stat <"$proc/stat" 2>/dev/null || continue
+    { read -r stat <"$proc/stat"; } 2>/dev/null || continue
     rest="${stat##*) }"
     read -r -a f <<<"$rest"
     [[ "${f[2]}" == "$1" && "${f[0]}" != Z ]] && return 0
   done
   return 1
 }
-# dbo_reap DIR: end the runner-side process groups recorded under DIR (*.pgid). The server side has already been
-# dealt with by the caller; this only stops readers and kubectl streams that would otherwise wait on a dead
-# connection (C6b review: they outlived the cleanup after a cut).
+# dbo_stat_start STAT: the start time (clock ticks after boot, field 22) from one /proc/PID/stat line.
+dbo_stat_start() { local f; read -r -a f <<<"${1##*) }"; printf '%s' "${f[19]:-}"; }
+dbo_boot_id() { local b=""; { read -r b </proc/sys/kernel/random/boot_id; } 2>/dev/null || true; printf '%s' "$b"; }
+# dbo_pgid_record PID FILE: the process group a background client leads (setsid makes it the leader), with the
+# leader's start time and the boot id. The run directory outlives a runner container (it is a host volume), and a new
+# container counts pids from 1 again, so the number alone could name an unrelated group there (C6b review 4).
+dbo_pgid_record() {
+  local stat=""
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || true
+  printf '%s %s %s\n' "$1" "$(dbo_stat_start "$stat")" "$(dbo_boot_id)" >"$2"
+}
+# dbo_pgid_ours FILE: the recorded group id when its leader is still the same process (same start time, same boot,
+# a zombie counts), else nothing: gone, written before this format, or the number now belongs to another process.
+dbo_pgid_ours() {
+  local g start boot stat=""
+  { read -r g start boot <"$1"; } 2>/dev/null || return 0
+  [[ "$g" =~ ^[0-9]+$ && "${start:-}" =~ ^[0-9]+$ && -n "${boot:-}" ]] || return 0
+  { read -r stat <"/proc/$g/stat"; } 2>/dev/null || return 0
+  [[ "$(dbo_stat_start "$stat")" == "$start" && "$(dbo_boot_id)" == "$boot" ]] || return 0
+  printf '%s' "$g"
+}
+# dbo_reap DIR: end the runner-side process groups recorded under DIR (*.pgid) that are still this runner's (see
+# dbo_pgid_ours). The server side has already been dealt with by the caller; this only stops readers and kubectl
+# streams that would otherwise wait on a dead connection (C6b review: they outlived the cleanup after a cut). It never
+# fails the body: after a runner restart the recorded groups are simply gone (C6b review 4).
 dbo_reap() {
-  local f g
+  local f g groups=()
   for f in "$1"/*.pgid; do
     [[ -e "$f" ]] || continue
-    read -r g <"$f" || continue
-    [[ "$g" =~ ^[0-9]+$ ]] || continue
-    kill -TERM -- "-$g" 2>/dev/null || true
+    g="$(dbo_pgid_ours "$f")"
+    [[ -z "$g" ]] || groups+=("$g")
   done
+  (( ${#groups[@]} > 0 )) || return 0
+  # A group may end between the two signals; a failed kill is not an error here (set -e would stop the body).
+  for g in "${groups[@]}"; do kill -TERM -- "-$g" 2>/dev/null || true; done
   sleep 1
-  for f in "$1"/*.pgid; do
-    [[ -e "$f" ]] || continue
-    read -r g <"$f" || continue
-    [[ "$g" =~ ^[0-9]+$ ]] && kill -KILL -- "-$g" 2>/dev/null
-  done
+  for g in "${groups[@]}"; do kill -KILL -- "-$g" 2>/dev/null || true; done
   return 0
 }
 
@@ -405,23 +427,25 @@ mdb_pod_alone() {
 # mdb_pod_reap ACCOUNT...: end the mysql clients this executor starts in the database pod (argv0 mysql, the option file
 # on stdin, `-u<ACCOUNT>`) that a lost runner left blocked there. One exec of bash with builtins only (the image has no
 # ps or kill program): it reads /proc/[0-9]*/cmdline and sends TERM, never to pid 1 (the server). Prints the pids it
-# ended. Only on the failure paths (mdb_pod_clear), never in a normal run.
+# ended. Only on the failure path (mdb_pod_clear in cleanup, when a client is still there after the kubelet's refresh),
+# never in a normal run.
 mdb_pod_reap() {
   local a
   for a in "$@"; do
     dbo_k exec "$DBO_POD" -- bash -c '
       for d in /proc/[0-9]*; do
         p=${d#/proc/}; [[ $p == 1 ]] && continue
-        mapfile -d "" -t a <"$d/cmdline" 2>/dev/null || continue
+        { mapfile -d "" -t a <"$d/cmdline"; } 2>/dev/null || continue
         [[ ${a[0]##*/} == mysql && " ${a[*]} " == *" --defaults-extra-file=/dev/stdin "* && " ${a[*]} " == *" -u$1 "* ]] || continue
         kill -TERM "$p" 2>/dev/null && echo "$p"
       done; true' _ "$a" || return 1
   done
 }
 # mdb_pod_clear ACCOUNT...: the server alone in its pod, ending a lost client of ACCOUNT first if one is there (cleanup
-# and recovery; preflight only looks, with mdb_pod_alone).
+# only; preflight and recovery only look, with mdb_pod_alone). The first look waits out the kubelet's refresh (the
+# count drops about 10 to 16 s after a client ends, C6b review 4): four looks, 15 s, so a normal cleanup never execs.
 mdb_pod_clear() {
-  mdb_pod_alone 1 2>/dev/null && return 0
+  mdb_pod_alone 4 2>/dev/null && return 0
   local ended
   ended="$(mdb_pod_reap "$@")" || return 1
   [[ -z "$ended" ]] || echo "ended a mysql client left in $DBO_POD (pid $(echo $ended))" >&2

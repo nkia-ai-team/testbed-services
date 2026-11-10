@@ -442,9 +442,9 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("lock_wait_timeout=10", cleanup)
         # preflight 만 고아 이력을 센다(전체 조인이라 run 에서는 다시 하지 않는다).
         self.assertIn(" preflight) check; [[ \"$(orphans)\" == 0 ]]; mdb_pod_alone ;;", script)
-        # A client a lost runner left in the database pod stops preflight (look only); cleanup and recovery end it with
-        # the failure paths' one exec (mdb_pod_clear, C6b review 3).
-        self.assertIn(" recovery) mdb_pod_clear root; rows; original ;;", script)
+        # A client a lost runner left in the database pod stops preflight and recovery (look only); cleanup ends it with
+        # the failure path's one exec (mdb_pod_clear, C6b review 3, 4).
+        self.assertIn(" recovery) rows; original; mdb_pod_alone ;;", script)
         self.assertRegex(cleanup, r"\n  original\n  mdb_pod_clear root\n  ;;")
         self.assertNotIn("orphans", run)
         # 행, 인덱스, 부모 표는 손대지 않는다.
@@ -738,11 +738,12 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("SET SESSION lock_wait_timeout = 5", cleanup)
         self.assertRegex(cleanup, r"\n  original\n  mdb_pod_clear \"\$app_user\" root\n  ;;")
         # 러너가 사라지면 파드 안 내보내기 클라이언트가 막힌 채 남는다. preflight(check)는 그것을 보고 멈추기만 하고
-        # (mdb_pod_alone), cleanup 과 recovery 가 exec 한 번으로 끝낸다(mdb_pod_clear, C6b 리뷰 3회차 상 1). 기동기는 없다.
+        # (mdb_pod_alone), cleanup 이 exec 한 번으로 끝낸다(mdb_pod_clear, C6b 리뷰 3회차 상 1, 4회차 하 3). 기동기는 없다.
         self.assertNotIn("deadline", script)
         self.assertNotIn("mysqlsh", script)
         self.assertIn('app_user="$MDB_APP_USER"', script)
-        self.assertIn(' recovery) mdb_pod_clear "$app_user" root; rows; original; [[ "$(waiting)" == 0 ]] ;;', script)
+        # recovery 는 계약대로 읽기 전용 확인이다(C6b 리뷰 4회차 하 3): 남은 클라이언트를 보기만 한다.
+        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]]; mdb_pod_alone ;;', script)
         check = script[script.index("check() {"):script.index("\n}\n", script.index("check() {"))]
         self.assertIn("mdb_pod_alone", check)
         self.assertNotIn("mdb_pod_clear", check)

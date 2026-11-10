@@ -315,19 +315,23 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                     self.assertIn("mdb_pod_pace", run)
                 for helper in ("awk", "sleep \"$", "nohup", "sh -c", "kubectl", "mysqlsh", "deadline"):
                     self.assertNotIn(helper, run)
-                # A client a lost runner left in the pod stops preflight (look only); cleanup and recovery end it
-                # (mdb_pod_clear, the one exec of the failure paths) (C6b review 3).
+                # A client a lost runner left in the pod stops preflight and recovery (look only); cleanup ends it
+                # (mdb_pod_clear, the one exec of the failure path) (C6b review 3, 4).
                 pre = own_body(db_ddl.build_invocation(plan, "preflight")[1].decode())
                 check = pre[pre.index("check() {"):pre.index("\n}\n", pre.index("check() {"))] if "check() {" in pre else ""
                 preflight = pre[pre.index(" preflight)"):]
                 preflight = preflight[:preflight.index(";;")]
                 self.assertTrue("mdb_pod_alone" in preflight or ("check" in preflight and "mdb_pod_alone" in check))
                 self.assertNotIn("mdb_pod_clear", preflight + check)
-                for action in ("cleanup", "recovery"):
-                    body = own_body(db_ddl.build_invocation(plan, action)[1].decode())
-                    case = body[body.index(f" {action})"):]
-                    case = case[:case.index(";;")]
-                    self.assertIn("mdb_pod_clear", case, action)
+                body = own_body(db_ddl.build_invocation(plan, "cleanup")[1].decode())
+                case = body[body.index(" cleanup)"):]
+                self.assertIn("mdb_pod_clear", case[:case.index(";;")])
+                # recovery is read-only verification (the executor contract; C6b review 4 하 3): it looks, never execs.
+                body = own_body(db_ddl.build_invocation(plan, "recovery")[1].decode())
+                case = body[body.index(" recovery)"):]
+                case = case[:case.index(";;")]
+                self.assertIn("mdb_pod_alone", case)
+                self.assertNotIn("mdb_pod_clear", case)
                 self.assertNotIn("mdb_pod_reap", own)
 
     def test_mysql_client_in_the_pod_is_exec_ed_alone_with_its_password_on_stdin(self) -> None:
@@ -435,91 +439,133 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for program in ("ps ", "pgrep", "pkill", "grep", "awk", "sed", "cat ", "/bin/kill", "xargs"):
             self.assertNotIn(program, inner)
 
-    def test_lost_mysql_client_is_ended_by_cleanup_and_recovery_not_preflight(self) -> None:
-        # mdb_pod_clear: one quick look; if the server is not alone, end the lost clients (one exec), then wait for the
-        # count to come back to 1. preflight never calls it.
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            (tmp / "count").write_text("2")
-            env = db_operator_fakes.install(tmp, kubectl_cases=(
-                f"  *'get --raw /api/v1/nodes/tb-w2/proxy/stats/summary'*) printf '{{\"pods\":[{{\"podRef\":"
-                f"{{\"namespace\":\"rca-testbed-food\",\"name\":\"testbed-mysql-0\"}},\"process_stats\":"
-                f"{{\"process_count\":%s}}}}]}}' \"$(cat {tmp}/count)\" ;;\n"
-                f"  *' exec testbed-mysql-0 -- bash -c '*) [[ $(cat {tmp}/count) == 1 ]] || {{ echo 1 >{tmp}/count; echo 4242; }} ;;"))
-            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
-                      + b'db_target rca-testbed-food testbed-mysql-0\nsleep() { :; }\nmdb_pod_clear fooddelivery root\n')
-            done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
-            self.assertEqual(done.returncode, 0, done.stderr.decode())
-            self.assertIn(b"ended a mysql client left in testbed-mysql-0 (pid 4242)", done.stderr)
-            execs = [line for line in db_operator_fakes.kubectl_calls(tmp) if " exec " in line]
-            self.assertEqual(len(execs), 2)  # one per account
-            # Alone already: no exec at all.
-            calls = len(db_operator_fakes.kubectl_calls(tmp))
-            again = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
-            self.assertEqual(again.returncode, 0, again.stderr.decode())
-            self.assertFalse(any(" exec " in line for line in db_operator_fakes.kubectl_calls(tmp)[calls:]))
+    def test_lost_mysql_client_is_ended_by_cleanup_only_after_the_kubelet_refresh(self) -> None:
+        # mdb_pod_clear (cleanup only): the kubelet's count drops 10 to 16 s after a client ends (C6b review 4 상 1), so
+        # the first look waits four looks (15 s) before deciding; a client that just ended in a normal run is never
+        # exec'd for. Only a client still counted after that is ended (one exec per account).
+        def run(counts: list[int]) -> tuple[subprocess.CompletedProcess, list[str]]:
+            with tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                (tmp / "counts").write_text("\n".join(str(c) for c in counts) + "\n")
+                env = db_operator_fakes.install(tmp, kubectl_cases=(
+                    # Each summary read takes the next count; the last one stays.
+                    f"  *'get --raw /api/v1/nodes/tb-w2/proxy/stats/summary'*) c=$(head -n 1 {tmp}/counts); "
+                    f"[[ $(wc -l <{tmp}/counts) -gt 1 ]] && sed -i 1d {tmp}/counts; "
+                    f"printf '{{\"pods\":[{{\"podRef\":{{\"namespace\":\"rca-testbed-food\",\"name\":\"testbed-mysql-0\"}},"
+                    f"\"process_stats\":{{\"process_count\":%s}}}}]}}' \"$c\" ;;\n"
+                    f"  *' exec testbed-mysql-0 -- bash -c '*) [[ $(head -n 1 {tmp}/counts) == 1 ]] || "
+                    f"{{ echo 1 >{tmp}/counts; echo 4242; }} ;;"))
+                script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                          + b'db_target rca-testbed-food testbed-mysql-0\nsleep() { :; }\nmdb_pod_clear fooddelivery root\n')
+                done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+                return done, [line for line in db_operator_fakes.kubectl_calls(tmp) if " exec " in line]
 
-    def test_leftover_client_in_the_mysql_pod_stops_preflight_until_it_is_gone(self) -> None:
-        # mdb_pod_alone reads the pod's process count from the kubelet summary of its node (no exec): mysqld alone is 1,
-        # a client an earlier run lost makes it 2 until its deadline ends it.
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            (tmp / "count").write_text("2")
-            env = db_operator_fakes.install(tmp, kubectl_cases=(
-                f"  *'get --raw /api/v1/nodes/tb-w2/proxy/stats/summary'*) printf '{{\"pods\":[{{\"podRef\":"
-                f"{{\"namespace\":\"rca-testbed-food\",\"name\":\"testbed-mysql-0\"}},\"process_stats\":"
-                f"{{\"process_count\":%s}}}}]}}' \"$(cat {tmp}/count)\" ;;"))
-            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
-                      + b'db_target rca-testbed-food testbed-mysql-0\nsleep() { :; }\nmdb_pod_alone\n')
-            left = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
-            self.assertNotEqual(left.returncode, 0)
-            self.assertIn(b"1 process(es) besides the database server in testbed-mysql-0", left.stderr)
-            (tmp / "count").write_text("1")
-            alone = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
-            self.assertEqual(alone.returncode, 0, alone.stderr.decode())
-            db_operator_fakes.assert_reads_only(self, tmp)
+        # The kubelet still counts a client that just ended for three looks: no exec.
+        done, execs = run([2, 2, 2, 1])
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        self.assertEqual(execs, [])
+        # Alone from the start: no exec.
+        done, execs = run([1])
+        self.assertEqual((done.returncode, execs), (0, []))
+        # Still there after the refresh: ended, one exec per account.
+        done, execs = run([2])
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        self.assertIn(b"ended a mysql client left in testbed-mysql-0 (pid 4242)", done.stderr)
+        self.assertEqual(len(execs), 2)
+        clear = db_operator_remote.bash_functions().decode()
+        clear = clear[clear.index("mdb_pod_clear() {"):clear.index("\n}\n", clear.index("mdb_pod_clear() {"))]
+        self.assertIn("mdb_pod_alone 4 2>/dev/null && return 0", clear)
 
-    def test_postgres_export_runs_as_a_batch_job_on_its_domain_node(self) -> None:
-        # C6b review 2 상 1: the answer keys of F66-R, F66-P, F67-H, F73-R tell an export job or a data job, so the export
-        # is a Job in the database's namespace (a pod address), on the node the domain runs on, ending itself at its
-        # deadline (U8) and deleted after its TTL. A privileged init container shrinks only that pod's TCP receive
-        # buffer, so the reader's pace holds the server back.
+    # C6b review 4 상 2: the run directory outlives a runner container (host volume) and a new container counts pids
+    # from 1 again. A recorded process group that is gone, or whose number now belongs to another process, must neither
+    # fail cleanup under set -e nor be signalled. One case per body that keeps clients on the runner.
+    STALE_GROUP_BODIES = (
+        ("F60-H", "db-ddl-queue-fooddelivery-dispatches", "table-export.log"),
+        ("F60-R", "db-ddl-fk-fooddelivery-dispatch_events", "schema-migration.log"),
+        ("F66-R", "db-ddl-queue-user_schema-users", "schema-migration.log"),
+        ("F67-R", "db-ddl-maintenance-rca-testbed-commerce", "table-maintenance-x.log"),
+    )
+
+    def test_cleanup_ignores_process_groups_a_restarted_runner_no_longer_has(self) -> None:
+        mysql = """import os, re
+sql = os.environ["SQL"]
+if re.search(r"COUNT\\(\\*\\) >= ", sql): print(1)
+elif "COUNT(*)" in sql: print(0)
+"""
+        psql = """import sys
+args = sys.argv[1:]; sql = args[args.index("-c") + 1] if "-c" in args else ""
+if "count(*) >=" in sql: print("t")
+elif "count(*)" in sql: print(0)
+"""
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        for scenario_id, run_name, log in self.STALE_GROUP_BODIES:
+            with self.subTest(scenario_id), tempfile.TemporaryDirectory() as raw:
+                tmp = Path(raw)
+                env = db_operator_fakes.install(tmp, mysql=mysql, psql=psql)
+                # An unrelated live group (its own session, so its pid is its group id) whose number the old file names.
+                bystander = subprocess.Popen(["sleep", "120"], start_new_session=True)
+                try:
+                    run_dir = tmp / "state" / run_name
+                    (run_dir / f"{log}.pace").mkdir(parents=True)
+                    # Written before the start-time format, a bare number.
+                    (run_dir / "old.log.pgid").write_text(f"{bystander.pid}\n")
+                    # This format, the number reused by another process (another start time).
+                    (run_dir / f"{log}.pgid").write_text(f"{bystander.pid} 1 {boot}\n")
+                    # A group that no longer exists at all.
+                    (run_dir / "gone.log.pgid").write_text("4194000 7 " + boot + "\n")
+                    plan = {"scenario": {"id": scenario_id}, "profile_instances": [
+                        {"profile_id": db_ddl.PROFILE_ID, "parameters": dict(db_ddl.CONTRACTS[scenario_id]),
+                         "location": {}}]}
+                    argv, stdin = db_ddl.build_invocation(plan, "cleanup")
+                    self.assertEqual(argv[:2], ["/usr/bin/bash", "-s"])
+                    done = subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=180)
+                    self.assertEqual(done.returncode, 0, done.stderr.decode())
+                    self.assertFalse(run_dir.exists())
+                    self.assertIsNone(bystander.poll(), "an unrelated process group was signalled")
+                finally:
+                    bystander.kill()
+                    bystander.wait()
+
+    def test_recorded_process_group_is_ours_only_while_its_leader_is_the_same_process(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = db_operator_fakes.install(tmp)
-            sql = "COPY (SELECT id, topic FROM inventory_schema.outbox_events) TO STDOUT"
             script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
-                      + pg_lock_remote.bash_functions()
-                      + b'db_target rca-testbed-commerce testbed-postgres-0\n'
-                      + b'n="$(pdb_export_name)"; [[ "$n" =~ ^commerce-data-export-[0-9a-f]{8}$ ]] || exit 7\n'
-                      + f'pdb_export_job "$n" "{sql}" 172 780 "PostgreSQL JDBC Driver"\n'.encode())
-            done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+                      + b'mkdir -p "$1/run"\n'
+                      + b'setsid nohup sleep 120 </dev/null >/dev/null 2>&1 &\n'
+                      + b'dbo_pgid_record "$!" "$1/run/c.log.pgid"\n'
+                      + b'echo "ours=$(dbo_pgid_ours "$1/run/c.log.pgid")"\n'
+                      + b'read -r g start boot <"$1/run/c.log.pgid"; echo "recorded=$g"\n'
+                      + b'echo "$g $((start + 1)) $boot" >"$1/run/d.log.pgid"; echo "other=$(dbo_pgid_ours "$1/run/d.log.pgid")"\n'
+                      + b'echo "$g" >"$1/run/e.log.pgid"; echo "bare=$(dbo_pgid_ours "$1/run/e.log.pgid")"\n'
+                      + b'rm "$1/run/d.log.pgid" "$1/run/e.log.pgid"\n'
+                      + b'dbo_reap "$1/run"\n'
+                      + b'for _ in $(seq 1 20); do dbo_group_alive "$g" || break; sleep 0.1; done\n'
+                      + b'dbo_group_alive "$g" && echo alive || echo ended\n')
+            done = subprocess.run(["bash", "-s", "--", str(tmp)], input=script, env=env, capture_output=True, timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr.decode())
-            job = json.loads((tmp / "applied.yaml").read_text())
-            self.assertEqual((job["apiVersion"], job["kind"]), ("batch/v1", "Job"))
-            self.assertEqual(job["metadata"]["labels"], {"app.kubernetes.io/component": "data-export"})
-            self.assertEqual((job["spec"]["backoffLimit"], job["spec"]["activeDeadlineSeconds"],
-                              job["spec"]["ttlSecondsAfterFinished"]), (0, 780, 300))
-            pod = job["spec"]["template"]["spec"]
-            self.assertEqual(job["spec"]["template"]["metadata"]["labels"], job["metadata"]["labels"])
-            # The fake database pod has no nodeSelector, so its node by hostname.
-            self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w9"})
-            self.assertEqual(pod["initContainers"], [{
-                "name": "init", "image": "postgres:16-alpine",
-                "command": ["sysctl", "-w", "net.ipv4.tcp_rmem=4096 8192 8192"],
-                "securityContext": {"privileged": True}}])
-            (container,) = pod["containers"]
-            self.assertEqual(container["command"],
-                             ["sh", "-c", 'psql -X -q -c "$SQL" | awk -v r="$RATE" "$PACE"'])
-            values = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
-            self.assertEqual(values["PGHOST"], "testbed-postgres")
-            self.assertEqual(values["PGAPPNAME"], "PostgreSQL JDBC Driver")
-            self.assertEqual((values["SQL"], values["RATE"]), (sql, "172"))
-            self.assertEqual(values["PACE"], 'NR % r == 0 { system("sleep 1") }')
-            self.assertEqual(values["PGPASSWORD"], {"secretKeyRef": {"name": "postgres-secret", "key": "POSTGRES_PASSWORD"}})
-            db_operator_fakes.assert_no_password(self, (tmp / "applied.yaml").read_text(), done.stderr)
-            for word in ("runner", "scenario", "rca", "F66", "lucida"):
-                self.assertNotIn(word, json.dumps(pod["containers"]) + job["metadata"]["labels"]["app.kubernetes.io/component"])
+            out = dict(line.split("=", 1) for line in done.stdout.decode().splitlines() if "=" in line)
+            self.assertEqual(out["ours"], out["recorded"])
+            self.assertEqual(out["other"], "")
+            self.assertEqual(out["bare"], "")
+            self.assertIn("ended", done.stdout.decode())
+            self.assertEqual(done.stderr, b"")
+
+    def test_proc_scans_stay_quiet_while_processes_come_and_go(self) -> None:
+        # C6b review 4 하 4: a process that ends between the /proc listing and the read must not print the
+        # redirection's own error (the redirection is inside braces whose stderr goes to /dev/null).
+        script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                  + b'( for _ in $(seq 1 400); do /bin/true & done; wait ) &\n'
+                  + b'for _ in $(seq 1 30); do dbo_group_alive 4194001 || true; done\nwait\n')
+        with tempfile.TemporaryDirectory() as raw:
+            env = db_operator_fakes.install(Path(raw))
+            done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=120)
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(done.stderr, b"")
+        library = db_operator_remote.bash_functions().decode()
+        for line in library.splitlines():
+            if "/proc/" in line and "<" in line and "2>/dev/null" in line:
+                self.assertRegex(line, r"\{ [^}]*<[^}]*; \} 2>/dev/null", line)
 
     def _operator_run(self, module, scenario_id: str, action: str, env: dict[str, str],
                       slug: str | None = None) -> subprocess.CompletedProcess:

@@ -1175,7 +1175,7 @@ case "$action" in
   original
   mdb_pod_clear root
   ;;
- recovery) mdb_pod_clear root; rows; original ;;
+ recovery) rows; original; mdb_pod_alone ;;
  *) exit 2 ;;
 esac
 ''')
@@ -1313,7 +1313,7 @@ export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"; join=
 # inside the database pod (below).
 db_target "$ns" "$pod"
 mdb_env root
-# The export's account, whose client in the pod a lost runner could leave behind (mdb_pod_clear).
+# The export's account, whose client in the pod a lost runner could leave behind (cleanup ends it, mdb_pod_clear).
 mdb_env app
 app_user="$MDB_APP_USER"
 # Probes run as root; the first MySQL error line goes to stderr so a failed step is readable in the runner log.
@@ -1430,7 +1430,7 @@ case "$action" in
   original
   mdb_pod_clear "$app_user" root
   ;;
- recovery) mdb_pod_clear "$app_user" root; rows; original; [[ "$(waiting)" == 0 ]] ;;
+ recovery) rows; original; [[ "$(waiting)" == 0 ]]; mdb_pod_alone ;;
  *) exit 2 ;;
 esac
 ''')
