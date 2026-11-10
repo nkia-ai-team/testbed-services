@@ -59,6 +59,10 @@ def pg_catalog(tables, columns=None, fks=None, *, configured=True):
             need.setdefault(t, []).append(c)
         for t, sp in PG_CFG["slice_by_validity"].items():
             need.setdefault(t, []).extend(sp["key"] + [sp["version"], sp["valid_from"], sp["active"]])
+        for sp in PG_CFG["slice_roots"].values():
+            for ls in sp.get("lineage_seed", []):
+                if ls["table"] in need:  # 설정 표인 씨앗 표(incident_cluster_links)는 열을 다 갖는다
+                    need[ls["table"]].extend([ls["column"], ls["via"]])
         for t, cs in need.items():
             cols.setdefault(t, [(c, "timestamp with time zone" if c.endswith("_at") else "uuid") for c in cs])
     col_lines = [f"{t}\t{c}\t{ty}" for t, cs in cols.items() for c, ty in cs]
@@ -71,7 +75,8 @@ class PgPlanTest(unittest.TestCase):
         return pg.plan_scope(cfg or PG_CFG, pg_catalog(*a, **k))
 
     def test_without_unknown_tables_the_v3_output_is_unchanged(self):
-        plan = self.plan({})
+        # 계보, 씨앗 표가 없는 옛 원천 모양이면 v3 와 같은 글자를 낸다(씨앗 열이 없어 씨앗을 쓰지 않음).
+        plan = self.plan({}, columns={"incident_cluster_links": [("incident_id", "uuid")]})
         self.assertEqual(pg.ordered_slices(PG_CFG, plan), pg.ordered_slices(PG_CFG))
         self.assertEqual(pg.emit_exclude_args(PG_CFG, plan), pg.emit_exclude_args(PG_CFG))
         self.assertEqual(pg.emit_restore_sql(PG_CFG, plan), pg.emit_restore_sql(PG_CFG))
@@ -234,7 +239,8 @@ class PgPlanTest(unittest.TestCase):
         cat = pg_catalog(lineage, columns=cols, fks=fks)
         cat["columns"]["incidents"] = ["id", "created_at"]  # superseded_by 가 지워진 판
         plan = pg.plan_scope(PG_CFG, cat)
-        self.assertEqual(plan["lineage"], ["event_cluster_successors", "incident_event_cluster_successors"])
+        self.assertEqual(plan["lineage"], ["event_cluster_successors", "incident_cluster_links",
+                                           "incident_event_cluster_successors"])
         q = dict(pg.ordered_slices(PG_CFG, plan))
         inc = q["incidents"]
         self.assertIn("WITH RECURSIVE", inc)
@@ -250,9 +256,23 @@ class PgPlanTest(unittest.TestCase):
         self.assertIn('SELECT l."successor_cluster_id" FROM public."incident_event_cluster_successors" l', ec)
         self.assertEqual(plan["tables"]["incident_event_cluster_successors"]["rule"], "fk_closure")
 
+    def test_clusters_linked_to_kept_incidents_are_seeded(self):
+        # 확인 필요 11: 창 안 인시던트가 창 전 군집에 링크되면 그 군집이 없어 restore.sql 이 FK 위반으로 멈췄다.
+        cat = pg_catalog({}, columns={"incident_cluster_links": [("incident_id", "uuid"), ("cluster_id", "uuid")]})
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertIn("incident_cluster_links", plan["lineage"])
+        q = dict(pg.ordered_slices(PG_CFG, plan))
+        self.assertIn('SELECT l."cluster_id" FROM public."incident_cluster_links" l\n'
+                      '   WHERE l."incident_id" IN (', q["event_clusters"])
+        # 군집 자식 표도 같은 씨앗을 쓴다(링크된 군집의 멤버 등도 실린다).
+        self.assertIn('public."incident_cluster_links"', q["event_cluster_members"])
+        # 인시던트 자식인 링크 표 자체의 고르는 방식은 그대로다.
+        self.assertNotIn('l."cluster_id"', q["incident_cluster_links"].split("SELECT c.*")[1])
+
     def test_lineage_table_with_missing_column_is_not_used_and_is_reported(self):
         cat = pg_catalog({"event_cluster_successors": 4096},
-                         columns={"event_cluster_successors": [("predecessor_cluster_id", "uuid")]})
+                         columns={"event_cluster_successors": [("predecessor_cluster_id", "uuid")],
+                                  "incident_cluster_links": [("incident_id", "uuid")]})
         plan = pg.plan_scope(PG_CFG, cat)
         self.assertNotIn("event_cluster_successors", plan["lineage"])
         self.assertIn("event_cluster_successors.successor_cluster_id", plan["missing_columns"])

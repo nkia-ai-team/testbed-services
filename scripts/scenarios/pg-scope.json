@@ -41,9 +41,11 @@
         {"table": "event_cluster_successors", "from": "predecessor_cluster_id", "to": "successor_cluster_id"}
       ],
       "lineage_seed": [
-        {"table": "incident_event_cluster_successors", "column": "successor_cluster_id", "via": "predecessor_incident_id", "root": "incidents"}
+        {"table": "incident_event_cluster_successors", "column": "successor_cluster_id", "via": "predecessor_incident_id", "root": "incidents"},
+        {"table": "incident_cluster_links", "column": "cluster_id", "via": "incident_id", "root": "incidents"}
       ],
-      "_lineage_note": "재분할로 생긴 대체 군집(event_cluster_successors)을 같은 방식으로 더한다. 인시던트 계보 간선이 가리키는 대체 군집도 씨앗에 넣어야 그 간선 행이 복원 때 FK 를 지킨다"
+      "_lineage_note": "재분할로 생긴 대체 군집(event_cluster_successors)을 같은 방식으로 더한다. 인시던트 계보 간선이 가리키는 대체 군집도 씨앗에 넣어야 그 간선 행이 복원 때 FK 를 지킨다",
+      "_links_note": "2026-11-10 R1 수정 1회차(지휘 세션 결정, 확인 필요 11): 창 안 인시던트가 창 전에 만든 군집에 링크되면 그 군집이 created_at 창에 없어 restore.sql 의 \\copy incident_cluster_links 가 FK 위반으로 멈추고, 파일 안의 ON_ERROR_STOP 때문에 뒤의 표(군집 자식, alert_history 등)가 하나도 실리지 않았다(v3 case-f72-r-v3-bf50d2b7 을 PG 16, 17 에 복원해 확인). 창 안 인시던트가 쓰는 군집을 씨앗에 더해 함께 싣는다. 이미 녹화된 v3 녹화본은 건드리지 않는다"
     }
   },
 
