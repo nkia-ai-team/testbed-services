@@ -70,7 +70,12 @@ scripts/scenarios/bin/f07-h-north-south-surge.sh
   참고로만 적는다(사용자 결정 2026-11-09). 같은 점검이 은행 부하 이체 계좌 풀
   (`core-banking/loadgen/transfer-accounts.txt`, tb-ops 에는 `POOL_FILE` 로 설치)의 가장 낮은 잔액을
   하한 500,000(`POOL_BALANCE_FLOOR`) 과 견주고, 풀 계좌가 없어지거나 ACTIVE 가 아니어도 사유 한 줄을
-  ALERT 에 쓴다.
+  ALERT 에 쓴다. 활성 7개 계좌(ACC-1001~1007, 두 기준선이 짝 이체로 쓰고 F74-R 이 폴링)도 같은 방식으로
+  하한 150,000(`SEED_BALANCE_FLOOR`) 과 견준다.
+- `seed-plan`, `seed-restore`, `seed-undo 저널`: 7개 계좌를 init.sql 시작 잔액으로 되돌리는 이체 계획을
+  보이고(읽기 전용), 녹화 밖에서만 그 이체를 transfer API 로 하며(원장 DEBIT, CREDIT 짝이 남아 대사 0
+  유지, 끝에 대사 문장으로 확인), 저널로 되돌린다. 7개 합이 시작 합보다 적으면 `SEED_FUND_ACCOUNT` 를
+  줘야 한다.
 
 ```bash
 scripts/test-oracle-maintenance.sh
