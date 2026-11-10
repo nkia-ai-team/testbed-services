@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -22,6 +23,7 @@ def _load(name: str, file: str):
 
 
 pg = _load("pg_scope_export", "pg-scope-export.py")
+tsc = _load("threshold_slice_check", "threshold-slice-check.py")
 ch = _load("ch_scope_plan", "ch-scope-plan.py")
 PG_CFG = pg.load(ROOT / "pg-scope.json")
 CH_CFG = ch.load(ROOT / "ch-scope.json")
@@ -55,6 +57,8 @@ def pg_catalog(tables, columns=None, fks=None, *, configured=True):
             need.setdefault(s["parent"], []).append(s["parent_key"])
         for t, c in list(PG_CFG["slice_by_time"].items()) + list(PG_CFG["slice_by_epoch_ms"].items()):
             need.setdefault(t, []).append(c)
+        for t, sp in PG_CFG["slice_by_validity"].items():
+            need.setdefault(t, []).extend(sp["key"] + [sp["version"], sp["valid_from"], sp["active"]])
         for t, cs in need.items():
             cols.setdefault(t, [(c, "timestamp with time zone" if c.endswith("_at") else "uuid") for c in cs])
     col_lines = [f"{t}\t{c}\t{ty}" for t, cs in cols.items() for c, ty in cs]
@@ -133,27 +137,27 @@ class PgPlanTest(unittest.TestCase):
     def test_unknown_big_reference_table_keeps_schema_only_but_explicit_snap_is_kept_whole(self):
         cap = PG_CFG["auto"]["snap_max_bytes"]
         plan = self.plan({"big_unknown": cap + 1, "small_unknown": cap,
-                          "trainer_trace_window_threshold": cap * 10})
+                          "collector_sms_process_snapshot": cap * 10})
         self.assertEqual(plan["tables"]["big_unknown"]["scope"], "drop")
         self.assertEqual(plan["tables"]["big_unknown"]["rule"], "over_cap")
         self.assertEqual(plan["over_cap"], ["big_unknown"])
         self.assertEqual(plan["tables"]["small_unknown"]["scope"], "snap")
-        self.assertEqual(plan["tables"]["trainer_trace_window_threshold"]["rule"], "config")
+        self.assertEqual(plan["tables"]["collector_sms_process_snapshot"]["rule"], "config")
         args = pg.emit_exclude_args(PG_CFG, plan)
         self.assertIn("--exclude-table-data=public.big_unknown", args)
-        self.assertNotIn("trainer_trace_window_threshold", args)
+        self.assertNotIn("collector_sms_process_snapshot", args)
         self.assertNotIn("small_unknown", args)
 
     def test_whole_dump_budget_counts_only_whole_tables(self):
         budget = PG_CFG["auto"]["snap_budget_bytes"]
-        under = self.plan({"trainer_trace_window_threshold": budget - 10**6, "incident_snapshots": budget},
+        under = self.plan({"collector_sms_process_snapshot": budget - 10**6, "incident_snapshots": budget},
                           fks=[("incident_snapshots", "incident_id", "incidents", "id")])
         load = pg.snap_load(PG_CFG, under)
         self.assertFalse(load["over_budget"])
-        over = self.plan({"trainer_trace_window_threshold": budget + 1})
+        over = self.plan({"collector_sms_process_snapshot": budget + 1})
         load = pg.plan_summary(over, PG_CFG)
         self.assertTrue(load["over_budget"])
-        self.assertEqual(load["largest_snap"][0], {"table": "trainer_trace_window_threshold", "bytes": budget + 1})
+        self.assertEqual(load["largest_snap"][0], {"table": "collector_sms_process_snapshot", "bytes": budget + 1})
 
     def test_missing_self_reference_column_drops_the_recursion_only_for_that_root(self):
         cat = pg_catalog({})
@@ -288,6 +292,76 @@ class PgPlanTest(unittest.TestCase):
             self.assertIn(f"\\o /out/catalog/postgres/{name}.tsv", sql)
         for q in pg.CATALOG_QUERIES.values():
             self.assertNotRegex(q, r"FROM public\.")
+
+
+class ThresholdValiditySliceTest(unittest.TestCase):
+    """trainer_trace_window_threshold 를 판 단위로 자른다(사용자 결정 Q10). 생성된 질의를 sqlite 에서 실제로 돌린다."""
+    WS, WE = "2026-11-10T00:00:00Z", "2026-11-10T03:00:00Z"
+    COLS = ["rule_id", "agent_id", "service", "unit", "unit_key", "window_minutes", "threshold",
+            "valid_from", "version", "active"]
+
+    def rows(self):
+        def gen(agent, version, at, active, services):
+            return [{"rule_id": f"{agent}:v{version}:{i}", "agent_id": agent, "service": svc, "unit": "op",
+                     "unit_key": "", "window_minutes": 60, "threshold": 1.0 + version,
+                     "valid_from": tsc._ts(at), "version": version, "active": int(active)}
+                    for i, svc in enumerate(services)]
+        return (gen("a", 1, "2026-11-09T10:00:00Z", False, ["s1", "s2", "s3"])
+                + gen("a", 2, "2026-11-09T22:00:00Z", False, ["s1", "s2"])      # 창 시작 때 유효(s3 은 빠진 판)
+                + gen("a", 3, "2026-11-10T01:00:00Z", False, ["s1", "s2"])      # 창 안에서 만든 판
+                + gen("a", 4, "2026-11-10T06:00:00Z", True, ["s1"])             # 캡처 때 활성
+                + gen("b", 1, "2026-11-08T00:00:00Z", True, ["s9"])             # 창 시작 때 유효이자 활성
+                + gen("b", 0, "2026-11-01T00:00:00Z", False, ["s9"])
+                + gen("c", 1, "2026-11-10T05:00:00Z", True, ["s7"]))            # 창 시작 뒤에만 있는 키
+
+    def run_slice(self, rows):
+        spec = PG_CFG["slice_by_validity"]["trainer_trace_window_threshold"]
+        q = pg.validity_slice_query("trainer_trace_window_threshold", spec)
+        q = (q.replace("::timestamptz", "")
+              .replace(":'win_start'", f"'{tsc._ts(self.WS)}'").replace(":'win_end'", f"'{tsc._ts(self.WE)}'"))
+        db = sqlite3.connect(":memory:")
+        db.execute("ATTACH ':memory:' AS public")
+        db.execute(f"CREATE TABLE public.trainer_trace_window_threshold ({', '.join(self.COLS)})")
+        db.executemany(f"INSERT INTO public.trainer_trace_window_threshold VALUES ({', '.join('?' * len(self.COLS))})",
+                       [[r[c] for c in self.COLS] for r in rows])
+        cur = db.execute(q)
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+    def test_the_table_is_sliced_by_validity_and_no_longer_dumped_whole(self):
+        self.assertNotIn("trainer_trace_window_threshold", PG_CFG["snap_tables"])
+        self.assertIn("--exclude-table-data=public.trainer_trace_window_threshold", pg.emit_exclude_args(PG_CFG))
+        self.assertIn("trainer_trace_window_threshold", [t for t, _ in pg.ordered_slices(PG_CFG)])
+
+    def test_versions_valid_at_window_start_are_the_same_in_the_slice_and_the_source(self):
+        spec = PG_CFG["slice_by_validity"]["trainer_trace_window_threshold"]
+        src = self.rows()
+        got = self.run_slice(src)
+        self.assertEqual(tsc.valid_at_start(got, spec, self.WS), tsc.valid_at_start(src, spec, self.WS))
+        self.assertEqual(tsc.keys_of(got, spec), tsc.keys_of(src, spec))
+        self.assertEqual(len(tsc.keys_of(got, spec)), 3)
+        versions = sorted({(r["agent_id"], r["version"]) for r in got})
+        # a: 창 시작 때 판 2, 창 안 판 3, 활성 판 4. 옛 판 1 은 빠진다. b: 1(창 시작 때이자 활성), 0 은 빠진다. c: 활성 1.
+        self.assertEqual(versions, [("a", 2), ("a", 3), ("a", 4), ("b", 1), ("c", 1)])
+
+    def test_the_check_script_agrees_with_the_slice_and_catches_a_time_only_slice(self):
+        spec = PG_CFG["slice_by_validity"]["trainer_trace_window_threshold"]
+        src = self.rows()
+        source_gens, source_keys = tsc.valid_at_start(src, spec, self.WS), len(tsc.keys_of(src, spec))
+        self.assertEqual(tsc.compare(self.run_slice(src), spec, self.WS, source_gens, source_keys), [])
+        ws, we = tsc._ts(self.WS), tsc._ts(self.WE)
+        time_only = [r for r in src if ws <= r["valid_from"] <= we]
+        problems = tsc.compare(time_only, spec, self.WS, source_gens, source_keys)
+        self.assertTrue(any("창 시작 때 판" in p for p in problems))
+        self.assertTrue(any("키 수" in p for p in problems))
+
+    def test_source_query_output_is_parsed(self):
+        spec = PG_CFG["slice_by_validity"]["trainer_trace_window_threshold"]
+        sql = tsc.source_sql(spec, self.WS)
+        self.assertIn("max(version)", sql)
+        self.assertTrue(sql.startswith("WITH "))  # q119-pg.sh 는 SELECT, WITH 로 시작하는 질의만 받는다
+        gens, keys = tsc.parse_source("kind\tagent_id\tversion\tcount\tmd5\ngen\ta\t2\t2\tabc\nkeys\t3\t\t\t\n", spec)
+        self.assertEqual((gens, keys), ({("a",): {"version": 2, "rows": 2, "ids_md5": "abc"}}, 3))
 
 
 def ch_catalog(tables, columns, mviews=()):

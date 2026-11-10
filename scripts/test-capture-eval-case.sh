@@ -423,7 +423,8 @@ printf '%s\n' \
   $'public\ttarget_config_history\tp\t40960\t0\t\\N\t\\N' \
   $'public\ttarget_config_latest\tr\t40960\t10\t10\t0' \
   $'public\tbig_unknown_table\tr\t314572800\t10\t10\t0' \
-  $'public\ttrainer_trace_window_threshold\tr\t3382902784\t16\t16\t29' \
+  $'public\ttrainer_trace_window_threshold\tr\t2983190528\t3400571\t3400571\t0' \
+  $'public\tcollector_sms_process_snapshot\tr\t2500000000\t10\t10\t0' \
   $'public\tautomation_dist_artifacts\tr\t2600755200\t20\t20\t0' \
   $'security\taudit_marks\tr\t24576\t0\t0\t0' >"$fix/pg/tables.tsv"
 printf '%s\n' \
@@ -436,6 +437,10 @@ printf '%s\n' \
   $'target_config_history\tchanged_at\ttimestamp with time zone' \
   $'target_config_latest\tchanged_at\ttimestamp with time zone' \
   $'big_unknown_table\tpayload\tbytea' \
+  $'trainer_trace_window_threshold\tagent_id\ttext' \
+  $'trainer_trace_window_threshold\tversion\tinteger' \
+  $'trainer_trace_window_threshold\tvalid_from\ttimestamp with time zone' \
+  $'trainer_trace_window_threshold\tactive\tboolean' \
   $'alert_active\talert_history_id\tbigint' \
   $'incident_event_cluster_successors\tpredecessor_incident_id\tuuid' \
   $'incident_event_cluster_successors\tsuccessor_incident_id\tuuid' \
@@ -749,11 +754,14 @@ jq -e '
   (.postgres_scope.snap_fk_to_slice == [{table:"alert_active",parents:["alert_history"]}]) and
   (.postgres_scope.absent_slice | index("coverage_events") != null) and
   (.postgres_scope.plan_file == "data/catalog/postgres-scope-plan.json") and
-  (.postgres_scope.over_budget == true and .postgres_scope.largest_snap[0].table == "trainer_trace_window_threshold") and
+  (.postgres_scope.over_budget == true and .postgres_scope.largest_snap[0].table == "collector_sms_process_snapshot") and
+  ([.postgres_scope.largest_snap[].table] | index("trainer_trace_window_threshold") == null) and
+  ([.postgres_tables[].table] | index("trainer_trace_window_threshold") != null) and
   ([.postgres_tables[].table] | index("incident_snapshots") != null and index("target_config_history") != null) and
   ([.postgres_tables[].table] | index("incidents") < index("incident_snapshots"))' \
   "$meta" >/dev/null || fail 'postgres scope plan not reflected in meta'
-jq -e '.tables.trainer_trace_window_threshold.scope == "snap" and .tables.trainer_trace_window_threshold.rule == "config" and
+jq -e '.tables.trainer_trace_window_threshold.scope == "slice" and .tables.trainer_trace_window_threshold.rule == "config" and
+  .tables.collector_sms_process_snapshot.scope == "snap" and .tables.collector_sms_process_snapshot.rule == "config" and
   .tables.target_config_latest.scope == "snap" and .tables.target_config_latest.rule == "default" and
   .tables.big_unknown_table.scope == "drop" and .tables["security.audit_marks"].scope == "snap"' \
   "$live_root/cases/case-live-v4/data/catalog/postgres-scope-plan.json" >/dev/null || fail 'scope-plan.json decisions unexpected'
@@ -763,8 +771,12 @@ for want in --exclude-table-data=public.incident_snapshots \
             --exclude-table-data=public.big_unknown_table --exclude-table-data=public.incidents; do
   grep -qF -- "$want" <<<"$dump_line" || fail "pg_dump lacks $want"
 done
-if grep -qF -- 'public.trainer_trace_window_threshold' <<<"$dump_line"; then fail 'explicit snap table excluded from pg_dump'; fi
+if grep -qF -- 'public.collector_sms_process_snapshot' <<<"$dump_line"; then fail 'explicit snap table excluded from pg_dump'; fi
+grep -qF -- '--exclude-table-data=public.trainer_trace_window_threshold' <<<"$dump_line" ||
+  fail 'trainer_trace_window_threshold still dumped whole'
 export_sql=$(sed -n '/^PSQLFILE .export.sql$/,/^ENDPSQL$/p' "$FAKE_LOG")
+grep -qF 'SELECT "agent_id", max("version") FROM public."trainer_trace_window_threshold"' <<<"$export_sql" ||
+  fail 'threshold validity slice missing from export SQL'
 grep -qF 'merged_into' <<<"$export_sql" || fail 'event_clusters recursion lost'
 grep -qF 'SELECT l."successor_incident_id" AS id FROM public."incident_event_cluster_successors" l' <<<"$export_sql" ||
   fail 'incidents lineage recursion missing'

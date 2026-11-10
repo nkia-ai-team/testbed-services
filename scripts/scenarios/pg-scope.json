@@ -88,10 +88,24 @@
   "slice_by_epoch_ms": {
     "db_sql_plan": "captured_at_ms"
   },
+  "slice_by_validity": {
+    "trainer_trace_window_threshold": {
+      "key": ["agent_id"], "version": "version", "valid_from": "valid_from", "active": "active"
+    }
+  },
+  "_validity_note": [
+    "2026-11-10 R1 수정 1회차, 사용자 결정(v4 questions Q10 (가)). trainer_trace_window_threshold 는 패치 뒤 340만 행,",
+    "표 본체 2.98GB 로 커져 통째로 담으면 pg_dump 예산(auto.snap_budget_bytes)을 넘는다. 담는 행: 키마다 창 시작 때",
+    "유효했던 판(valid_from 이 창 시작 이전인 판 중 최신), 창 안에서 만든 판, 캡처 때 active 인 판.",
+    "키는 agent_id 다. 제품(lucida-next query store ai_trainer_trace.go)은 에이전트마다 판 번호(version)를 하나 올려",
+    "그 판의 행 전체를 한 트랜잭션에 넣고(valid_from 은 같은 now()), 판 전체를 한꺼번에 active 로 바꾼다. 관측기",
+    "(traceanomaly runner trainer_load.go)는 agent_id 의 active 판 행 전체를 읽는다. 판 안의 행 키는",
+    "(agent_id, window_minutes, service, unit, unit_key)지만 판을 고르는 단위는 agent_id 다.",
+    "대조: scripts/scenarios/threshold-slice-check.py(창 시작 때 판과 에이전트 수를 녹화본 CSV 와 원천에서 각각 뽑아 비교)."
+  ],
   "_epoch_note": "captured_at_ms 는 timestamptz 가 아니라 bigint(epoch ms) 라 시간컬럼 자동탐지에 안 걸린다. DPM 실행계획은 DB 계열 시나리오(F06-H 등)의 근거라 버리지 않고 창으로 자른다. 92MB.",
 
   "snap_tables": {
-    "trainer_trace_window_threshold": "탐지 모델 임계값 이력. 장애 전에 만든 활성 임계값이 재생에 필요",
     "trainer_stream_threshold": "탐지 모델 임계값",
     "collector_sms_process_snapshot": "수집 대상 프로세스 목록(인벤토리)",
     "trainer_forecast_conformal": "예측 보정값. 골든 복원 표라 녹화 주기마다 비워져 평소엔 100MB 아래이고, 녹화가 오래 쉬면 그만큼 커진다",
@@ -137,8 +151,8 @@
     "snap_budget_bytes(2GB): 통째로 덤프하는 표 전체의 합. 넘으면 캡처는 경고하고 녹화 전 점검은 막는다. 근거:",
     "2026-10-08 F30-R 은 군집 표 5개(약 5.6GB)가 통째로 실려 pg_dump 가 900초 제한을 세 번 넘겼다. 실측 처리량은",
     "아직 없어 보수적으로 잡았고, 첫 v4 캡처의 pg_dump 시간으로 고친다.",
-    "2026-11-10 119 실측: snap 합 약 3.4GB 이고 그중 trainer_trace_window_threshold 가 2.98GB(340만 행, 패치 뒤 급증)라",
-    "이 값으로는 점검이 막는다. 이 표의 범위(활성 행과 창 안 행만 담는 안 등)는 사람이 정할 일이다."
+    "2026-11-10 119 실측: snap 합 약 3.4GB 이고 그중 trainer_trace_window_threshold 가 2.98GB(340만 행, 패치 뒤 급증)였다.",
+    "사용자 결정(Q10)으로 이 표는 slice_by_validity 로 판 단위로 자르고 예산은 2GB 그대로 둔다."
   ],
 
   "_snap_rationale": {

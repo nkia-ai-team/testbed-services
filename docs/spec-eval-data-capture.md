@@ -377,6 +377,10 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     부모가 창으로 잘려 복원 때 그 FK 제약은 생기지 않는다(v3 와 같음, 계획의 `snap_fk_to_slice`).
   - `history`: 이름이 `_history` 로 끝나는 표는 사건 시각 열로 자른다. 시각 열만 보고 자르지 않는
     이유는 §5.1(상태, 인벤토리 표도 같은 이름의 열을 가진다).
+  - 판(version)이 쌓이는 모델 상태 표(`slice_by_validity`, 지금은 `trainer_trace_window_threshold`)는 키마다 창
+    시작 때 유효했던 판(`valid_from` 이 창 시작 이전인 판 중 최신), 창 안에서 만든 판, 캡처 때 활성인 판을 담는다
+    (사용자 결정 2026-11-10). 키는 판을 고르는 단위(`agent_id`)다. 제품이 판 전체를 한꺼번에 넣고 활성으로 바꾸기
+    때문이다. 녹화본 대조는 `scripts/scenarios/threshold-slice-check.py`.
   - 그 밖은 통째로. 설정에 없고 `auto.snap_max_bytes` 를 넘는 표는 스키마만 담고(`over_cap`), 통째 덤프
     합이 `auto.snap_budget_bytes` 를 넘으면 캡처가 경고한다. 녹화 전 점검(testbed-operate
     `pg-scope-guard.py`)이 같은 계획기로 둘 다 미리 막는다.

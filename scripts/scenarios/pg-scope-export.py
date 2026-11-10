@@ -53,6 +53,7 @@ def scoped_tables(cfg: dict) -> list[str]:
     out += list(cfg["slice_grandchildren"])
     out += list(cfg["slice_by_time"])
     out += list(cfg.get("slice_by_epoch_ms", {}))
+    out += list(cfg.get("slice_by_validity", {}))
     out += list(cfg["drop_data"])
     seen, uniq = set(), []
     for t in out:
@@ -64,7 +65,8 @@ def scoped_tables(cfg: dict) -> list[str]:
 
 def explicit_slice_tables(cfg: dict) -> list[str]:
     return (list(cfg["slice_roots"]) + list(cfg["slice_children"]) + list(cfg["slice_grandchildren"])
-            + list(cfg["slice_by_time"]) + list(cfg.get("slice_by_epoch_ms", {})))
+            + list(cfg["slice_by_time"]) + list(cfg.get("slice_by_epoch_ms", {}))
+            + list(cfg.get("slice_by_validity", {})))
 
 
 def root_cte(table: str, spec: dict, ctx: dict | None = None, roots: dict | None = None) -> str:
@@ -134,6 +136,31 @@ def time_slice_query(table: str, col: str) -> str:
             f'AND t."{col}" <= :\'win_end\'::timestamptz')
 
 
+def validity_slice_query(table: str, spec: dict) -> str:
+    """판이 쌓이는 모델 상태 표를 창으로 자른다(2026-11-10 R1 수정 1회차, 사용자 결정 Q10).
+
+    spec: key(판을 고르는 단위 열 목록), version(판 번호), valid_from(판이 유효해진 시각), active(지금 판).
+    담는 행은 셋의 합이다.
+    1. 키마다 창 시작 때 유효했던 판: valid_from 이 창 시작 이전인 판 중 판 번호가 가장 큰 것의 모든 행.
+       재생이 창 시작부터 쓰는 임계값이다.
+    2. 창 안에서 만든 판(valid_from 이 창 안).
+    3. 캡처 때 활성인 판(active).
+    판 단위로 고르는 이유: 제품은 한 판의 행을 한 트랜잭션에 넣고 판 전체를 한꺼번에 활성으로 바꾼다
+    (lucida-next query store ai_trainer_trace.go). 행 단위 키로 최신을 고르면 새 판에서 빠진 항목의 옛
+    임계값이 되살아난다.
+    """
+    keys = ", ".join(f'"{k}"' for k in spec["key"])
+    v, vf, act = spec["version"], spec["valid_from"], spec["active"]
+    return (
+        f'SELECT t.* FROM public."{table}" t\n'
+        f'WHERE t."{act}"\n'
+        f'   OR (t."{vf}" >= :\'win_start\'::timestamptz AND t."{vf}" <= :\'win_end\'::timestamptz)\n'
+        f'   OR ({", ".join(f"t.{chr(34)}{k}{chr(34)}" for k in spec["key"])}, t."{v}") IN (\n'
+        f'        SELECT {keys}, max("{v}") FROM public."{table}"\n'
+        f'         WHERE "{vf}" <= :\'win_start\'::timestamptz GROUP BY {keys})'
+    )
+
+
 def fk_child_query(table: str, fks: list[dict], kept: dict[str, str]) -> str:
     """부모(slice 표)가 남긴 행을 가리키는 행만. 자동 발견된 자식 표용.
 
@@ -199,6 +226,12 @@ def ordered_slices(cfg: dict, plan: dict | None = None) -> list[tuple[str, str]]
         items.append((t, f'SELECT t.* FROM public."{t}" t '
                          f'WHERE t."{col}" >= (extract(epoch FROM :\'win_start\'::timestamptz) * 1000)::bigint '
                          f'AND t."{col}" <= (extract(epoch FROM :\'win_end\'::timestamptz) * 1000)::bigint'))
+
+    # 판(version)이 쌓이는 모델 상태 표: 창 시작 때 키마다 유효했던 판, 창 안에서 만든 판, 캡처 때 활성인 판.
+    for t, spec in cfg.get("slice_by_validity", {}).items():
+        if t in absent:
+            continue
+        items.append((t, validity_slice_query(t, spec)))
 
     if plan:
         kept = dict(items)
@@ -435,6 +468,8 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         wanted += [(t, spec["column"]), (spec["parent"], spec["parent_key"])]
     for t, col in list(cfg["slice_by_time"].items()) + list(cfg.get("slice_by_epoch_ms", {}).items()):
         wanted.append((t, col))
+    for t, spec in cfg.get("slice_by_validity", {}).items():
+        wanted += [(t, c) for c in spec["key"] + [spec["version"], spec["valid_from"], spec["active"]]]
     for t, col in wanted:
         if t in tables and col not in cols.get(t, []):
             conflicts.append({"table": t, "problem": f"설정이 부르는 열 {col} 이 원천에 없다", "parents": []})
