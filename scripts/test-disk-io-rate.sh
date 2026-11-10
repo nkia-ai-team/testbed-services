@@ -45,114 +45,126 @@ W='--write-mbps 40 --write-iops 800'
 make_raw "$TMP_ROOT/a.raw" "100:500,101:500,102:500,103:500" 1800 2400
 out=$(python3 "$TOOL" report "$TMP_ROOT/a.raw")
 grep -q '^one-second samples: 3597 (1.0 h), dropped intervals: 2$' <<<"$out" || fail "gap and reset must be dropped: $out"
-grep -q 'read bursts above 20.0 MiB/s or 200 IOPS: 6, median 4 s' <<<"$out" || fail "bursts: $out"
+grep -q 'read bursts above 20.0 MiB/s or 200 IOPS (for reading only): 6, median 4 s' <<<"$out" || fail "bursts: $out"
 grep -Eq '^read_bps +0\.0 +0\.0 +500\.0 +500\.0 +1000\.0MiB/s' <<<"$out" || fail "read percentiles and smallest limit in MiB/s: $out"
 grep -Eq '^write_iops +30\.0 +30\.0 +30\.0 +30\.0 +60\.0 IOPS' <<<"$out" || fail "write iops: $out"
 echo "[PASS] report: one-second percentiles in MiB/s, smallest limit, bursts; gaps and resets dropped"
 
-# A gap inside a burst splits it: what lies on both sides of a gap is not one burst.
-make_raw "$TMP_ROOT/g.raw" "100:500,101:500,102:500,103:500" 1302
-out=$(python3 "$TOOL" report "$TMP_ROOT/g.raw")
-grep -q 'read bursts above 20.0 MiB/s or 200 IOPS: 7,' <<<"$out" || fail "a gap must end a burst: $out"
-echo "[PASS] report: a dropped interval ends a burst"
-
-# B: 12-second bursts at 400 MiB/s and a limit well above them: no burst gets longer, PASS.
-make_raw "$TMP_ROOT/b.raw" "$(seq -s, 100 111 | sed 's/\([0-9]*\)/\1:400/g')"
-out=$(python3 "$TOOL" report "$TMP_ROOT/b.raw" --read-mbps 900 --read-iops 2400 $W) || fail "a limit above the bursts must pass: $out"
-grep -q 'bursts at the read limit: worst 1.00x (12 s now -> 12.0 s)' <<<"$out" || fail "$out"
-echo "[PASS] report: a 12-second burst under a high limit passes (time at the limit is never below now)"
-
-# Boundary of p99.9 < limit/2 (p99.9 is 400 MiB/s here): 800 fails, 801 passes.
-if out=$(python3 "$TOOL" report "$TMP_ROOT/b.raw" --read-mbps 800 --read-iops 2400 $W); then fail "limit = 2 x p99.9 must fail: $out"; fi
-grep -Eq '^read_bps .* 800 +NO$' <<<"$out" || fail "$out"
-out=$(python3 "$TOOL" report "$TMP_ROOT/b.raw" --read-mbps 801 --read-iops 2400 $W) || fail "limit just above 2 x p99.9 must pass: $out"
-echo "[PASS] report: p99.9 must be strictly below half the limit"
-
-# C: rare 3-second spikes at 3000 MiB/s (one hour has one: 0.08% of seconds, under p99.9) on top of
-# 100 MiB/s bursts. A 300 MiB/s limit keeps p99.9 under half of it but turns 3 s into 30 s: FAIL on
-# the burst rule alone.
-python3 - "$TMP_ROOT/c.raw" <<'PY'
-import sys
-MIB = 1024 * 1024
-rio = rsec = wio = wsec = 0
-t = 1794290000.0
-with open(sys.argv[1], "w") as out:
-    for s in range(3600):
-        rate = 3000 if s in (1500, 1501, 1502) else (100 if s % 600 in range(100, 110) else None)
-        rio += 1000 if rate else 10
-        rsec += int((rate * MIB) if rate else 40 * 1024) // 512
-        wio += 30
-        wsec += 200 * 1024 // 512
-        out.write(f"{t:.6f} {rio} 0 {rsec} 0 {wio} 0 {wsec} 0 0 0 0\n")
-        t += 1.0
-PY
-if out=$(python3 "$TOOL" report "$TMP_ROOT/c.raw" --read-mbps 300 --read-iops 2400 $W); then fail "a limit that stretches a burst tenfold must fail: $out"; fi
-grep -Eq '^read_bps .* 300 +yes$' <<<"$out" || fail "the p99.9 rule should pass here: $out"
-grep -q 'bursts at the read limit: worst 10.00x (3 s now -> 30.0 s).*over 2.0x: 1; NO' <<<"$out" || fail "$out"
-grep -q '^FAIL$' <<<"$out" || fail "$out"
-echo "[PASS] report: a limit that passes p99.9 but stretches a burst beyond 2x fails"
-
-# Rare events on a quiet hour, given as "absolute second:MiB/s:read IOPS,...".
-make_abs() {  # make_abs <file> <events>
+# Rare events on a quiet span, given as "start:length:MiB/s:read IOPS;..." (absolute seconds) or
+# "R:every:start:length:MiB/s:read IOPS[:count];..." (recurring). Same form as the review's gen2.py.
+make_ev() {  # make_ev <file> <seconds> <events>
   python3 - "$@" <<'PY'
 import sys
-path, spec = sys.argv[1], sys.argv[2]
-events = {}
-for item in filter(None, spec.split(",")):
-    second, mib, iops = item.split(":")
-    events[int(second)] = (float(mib), int(iops))
+out, total, spec = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 MIB = 1024 * 1024
+ev = {}
+for item in filter(None, spec.split(";")):
+    p = item.split(":")
+    if p[0] == "R":
+        every, start, ln, mib, iops = int(p[1]), int(p[2]), int(p[3]), float(p[4]), int(p[5])
+        count = int(p[6]) if len(p) > 6 else total // every
+        for k in range(count):
+            for d in range(ln):
+                ev[k * every + start + d] = (mib, iops)
+    else:
+        start, ln, mib, iops = int(p[0]), int(p[1]), float(p[2]), int(p[3])
+        for d in range(ln):
+            ev[start + d] = (mib, iops)
 rio = rsec = wio = wsec = 0
 t = 1794290000.0
-with open(path, "w") as out:
-    for s in range(3600):
-        mib, iops = events.get(s, (40 / 1024, 10))
+with open(out, "w") as f:
+    for s in range(total):
+        mib, iops = ev.get(s, (40 / 1024, 10))
         rio += iops
         rsec += int(mib * MIB) // 512
         wio += 30
         wsec += 200 * 1024 // 512
-        out.write(f"{t:.6f} {rio} 0 {rsec} 0 {wio} 0 {wsec} 0 0 0 0\n")
+        f.write(f"{t:.6f} {rio} 0 {rsec} 0 {wio} 0 {wsec} 0 0 0 0\n")
         t += 1.0
 PY
 }
-events() { local from=$1 to=$2 mib=$3 iops=$4 s out=""; for s in $(seq "$from" "$to"); do out+="$s:$mib:$iops,"; done; printf '%s' "$out"; }
+verdict() { grep -E '^read queue at the limits' <<<"$1"; }
 
-# D: a rare 3-second spike at 3000 MiB/s inside 97 seconds of 25 MiB/s shoulders. The shoulders are
-# not slowed by a 300 MiB/s limit and must not dilute the spike's tenfold stretch.
-make_abs "$TMP_ROOT/d.raw" "$(events 1000 1048 25 100)$(events 1049 1051 3000 1000)$(events 1052 1099 25 100)"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/d.raw" --read-mbps 300 --read-iops 5000 $W); then fail "shoulders must not hide a tenfold stretch: $out"; fi
-grep -q 'read bursts above 20.0 MiB/s or 200 IOPS: 1, median 100 s' <<<"$out" || fail "one burst of 100 s expected: $out"
-grep -q 'bursts at the read limit: worst 10.00x (3 s now -> 30.0 s)' <<<"$out" || fail "$out"
-echo "[PASS] report: shoulders of a burst do not dilute the stretch of its spike"
+# Normal reconciliation (review 3's r1): 24 h, every 600 s 15 s at 400 MiB/s and 1000 IOPS. Rule 2
+# asks 801 MiB/s and 2001 IOPS; there no second reads more than a limit, so rule 1 is 1.00x and the
+# smallest limits meeting both rules are those same numbers.
+make_ev "$TMP_ROOT/r1.raw" 86400 "R:600:100:15:400:1000"
+out=$(python3 "$TOOL" report "$TMP_ROOT/r1.raw" --read-mbps 801 --read-iops 2001 $W) || fail "normal reconciliation must pass: $out"
+[[ "$(verdict "$out")" == "read queue at the limits: no second reads more than a limit, 1.00x; yes" ]] || fail "$out"
+grep -q 'smallest read MiB/s limit meeting both rules (other read limit open): 801$' <<<"$out" || fail "$out"
+grep -q 'smallest read IOPS limit meeting both rules (other read limit open): 2001$' <<<"$out" || fail "$out"
+if out=$(python3 "$TOOL" report "$TMP_ROOT/r1.raw" --read-mbps 800 --read-iops 2001 $W); then fail "800 must fail rule 2: $out"; fi
+grep -Eq '^read_bps .* 800 +NO$' <<<"$out" || fail "$out"
+echo "[PASS] queue: an even reconciliation is never slowed; p99.9 must be strictly below half the limit"
 
-# E: the byte limit is generous but a 300 IOPS limit slows a rare 3-second burst of 1000 reads/s
-# about 3.3 times.
-make_abs "$TMP_ROOT/e.raw" "$(events 1500 1502 100 1000)"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/e.raw" --read-mbps 2000 --read-iops 300 $W); then fail "an IOPS limit that stretches a burst must fail: $out"; fi
-grep -Eq '^read_iops .* 300 +yes$' <<<"$out" || fail "the p99.9 rule should pass for IOPS here: $out"
-grep -q 'bursts at the read limit: worst 3.33x (3 s now -> 10.0 s)' <<<"$out" || fail "$out"
-out=$(python3 "$TOOL" report "$TMP_ROOT/e.raw" --read-mbps 2000 --read-iops 500 $W) || fail "500 IOPS stretches it 2x and must pass: $out"
-echo "[PASS] report: the IOPS limit counts in the time a burst takes"
+# A gap inside a burst splits it (bursts line); the queue too starts again after a gap.
+make_raw "$TMP_ROOT/g.raw" "100:500,101:500,102:500,103:500" 1302
+out=$(python3 "$TOOL" report "$TMP_ROOT/g.raw")
+grep -q 'read bursts above 20.0 MiB/s or 200 IOPS (for reading only): 7,' <<<"$out" || fail "a gap must end a burst: $out"
+echo "[PASS] report: a dropped interval ends a burst"
 
-# F: the burst rule is 2x. A rare 3-second spike at 900 MiB/s under a 300 MiB/s limit takes 3x: FAIL.
-make_abs "$TMP_ROOT/f.raw" "$(events 2000 2002 900 1000)"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/f.raw" --read-mbps 300 --read-iops 5000 $W); then fail "a threefold stretch must fail: $out"; fi
-grep -q 'worst 3.00x (3 s now -> 9.0 s).*over 2.0x: 1; NO' <<<"$out" || fail "$out"
-echo "[PASS] report: a threefold stretch of a rare burst fails"
+# The three holes found in reviews 3 and 4. Each must FAIL under a 300 MiB/s (or 300 IOPS) limit.
+# Shoulders: 97 s of 25 MiB/s around a 3-second 3000 MiB/s spike (review 3 r2).
+make_ev "$TMP_ROOT/sh.raw" 3600 "1000:49:25:100;1049:3:3000:1000;1052:48:25:100"
+if out=$(python3 "$TOOL" report "$TMP_ROOT/sh.raw" --read-mbps 300 $W); then fail "shoulders must not hide a spike: $out"; fi
+grep -q 'worst 10.83x (3 s over the limits now -> 32.5 s until the queue empties), over 2.0x: 1; NO' <<<"$out" || fail "$out"
+# Inside: two such spikes joined by 94 s of light reads, one burst (review 4 B1d), and the same with
+# 300 IOPS in the joining seconds (B1f).
+for join in "25:100" "15:300"; do
+  make_ev "$TMP_ROOT/in.raw" 3600 "1000:3:3000:1000;1003:94:$join;1097:3:3000:1000"
+  if out=$(python3 "$TOOL" report "$TMP_ROOT/in.raw" --read-mbps 300 $W); then fail "light reads between spikes must not hide them ($join): $out"; fi
+  grep -Eq 'read queue at the limits: 2 episodes, worst ([0-9.]+)x .*over 2.0x: 2; NO' <<<"$out" || fail "$join: $out"
+done
+# IOPS: a 3-second burst of 1000 reads/s in small blocks (8 MiB/s, under the 20 MiB/s burst line;
+# review 4 K1) under a 300 IOPS limit, with a generous byte limit and with the IOPS limit alone.
+make_ev "$TMP_ROOT/k1.raw" 3600 "1500:3:8:1000"
+for limits in "--read-mbps 2000 --read-iops 300" "--read-iops 300"; do
+  if out=$(python3 "$TOOL" report "$TMP_ROOT/k1.raw" $limits $W); then fail "an IOPS-only burst must fail ($limits): $out"; fi
+  grep -q 'worst 3.42x (3 s over the limits now -> 10.3 s until the queue empties)' <<<"$out" || fail "$limits: $out"
+done
+grep -q 'smallest read IOPS limit meeting both rules (other read limit open): 505$' <<<"$out" || fail "$out"
+out=$(python3 "$TOOL" report "$TMP_ROOT/k1.raw" --read-iops 505 $W) || fail "505 IOPS must pass: $out"
+echo "[PASS] queue: shoulders, light reads between spikes and small-block IOPS bursts all fail at 300"
 
-# G: the rule is on p99.9, not p99. Data A has its bursts in 0.67% of seconds: p99 is the quiet
-# background, p99.9 is 500 MiB/s. A 600 MiB/s limit keeps every burst second under it (1.00x) but
-# p99.9 is above half of it: FAIL.
+# Adding light reads never turns a FAIL into a PASS: the same spikes alone and with the join.
+make_ev "$TMP_ROOT/alone.raw" 3600 "1000:3:3000:1000;1097:3:3000:1000"
+a=$({ python3 "$TOOL" report "$TMP_ROOT/alone.raw" --read-mbps 300 $W || true; } | sed -n 's/.*worst \([0-9.]*\)x.*/\1/p')
+make_ev "$TMP_ROOT/in.raw" 3600 "1000:3:3000:1000;1003:94:25:100;1097:3:3000:1000"
+b=$({ python3 "$TOOL" report "$TMP_ROOT/in.raw" --read-mbps 300 $W || true; } | sed -n 's/.*worst \([0-9.]*\)x.*/\1/p')
+[[ -n "$a" && -n "$b" ]] && python3 -c "import sys; sys.exit(0 if float('$b') >= float('$a') else 1)" || fail "light reads lowered the ratio: $a -> $b"
+echo "[PASS] queue: light reads only lengthen the queue ($a x alone, $b x with them)"
+
+# Ratio 2: a 3-second spike at 900 MiB/s under 300 takes 9 s (3.00x): FAIL. A single second at
+# 3000 MiB/s needs at least 1500 (half its rate).
+make_ev "$TMP_ROOT/f.raw" 3600 "2000:3:900:1000"
+if out=$(python3 "$TOOL" report "$TMP_ROOT/f.raw" --read-mbps 300 $W); then fail "a threefold stretch must fail: $out"; fi
+grep -q 'worst 3.00x (3 s over the limits now -> 9.0 s until the queue empties), over 2.0x: 1; NO' <<<"$out" || fail "$out"
+make_ev "$TMP_ROOT/b4.raw" 3600 "2000:1:3000:1000"
+grep -q 'smallest read MiB/s limit meeting both rules (other read limit open): 1501$' <<<"$(python3 "$TOOL" report "$TMP_ROOT/b4.raw")" \
+  || fail "one second at 3000 MiB/s needs a limit above half of it"
+echo "[PASS] queue: twice as long is the most a heavy run may take"
+
+# A light second between two heavy ones still waits in the queue (review 3's H): 3000, 100, 3000.
+make_ev "$TMP_ROOT/h.raw" 3600 "2500:1:3000:1000;2501:1:100:1000;2502:1:3000:1000"
+if out=$(python3 "$TOOL" report "$TMP_ROOT/h.raw" --read-mbps 300 $W); then fail "$out"; fi
+grep -q 'worst 10.17x (2 s over the limits now -> 20.3 s until the queue empties)' <<<"$out" || fail "$out"
+echo "[PASS] queue: the light second between two heavy ones is not counted as work"
+
+# The smallest limit follows rare peaks inside a reconciliation, not only p99.9 (review 4 B2): 24 h
+# of reconciliations at 400 MiB/s, 40 of them starting with one second at 2000 MiB/s. Rule 2 alone
+# says 801; what is queued at 2000 drains while the reconciliation still reads 400, so it takes 1200.
+make_ev "$TMP_ROOT/b2.raw" 86400 "R:600:100:12:400:1000;R:600:100:1:2000:1000:40"
+out=$(python3 "$TOOL" report "$TMP_ROOT/b2.raw")
+grep -Eq '^read_bps .* 800\.0MiB/s' <<<"$out" || fail "rule 2 alone: $out"
+grep -q 'smallest read MiB/s limit meeting both rules (other read limit open): 1200$' <<<"$out" || fail "$out"
+if python3 "$TOOL" report "$TMP_ROOT/b2.raw" --read-mbps 1199 $W >/dev/null; then fail "1199 must fail"; fi
+python3 "$TOOL" report "$TMP_ROOT/b2.raw" --read-mbps 1200 $W >/dev/null || fail "1200 must pass"
+echo "[PASS] report: the smallest limit meeting both rules is printed and follows rare peaks"
+
+# The limit rule reads p99.9, not p99 (data A: bursts in 0.67% of seconds).
 if out=$(python3 "$TOOL" report "$TMP_ROOT/a.raw" --read-mbps 600 --read-iops 5000 $W); then fail "p99.9 above half the limit must fail: $out"; fi
 grep -Eq '^read_bps +0\.0 +0\.0 +500\.0 .* 600 +NO$' <<<"$out" || fail "$out"
-grep -q 'worst 1.00x' <<<"$out" || fail "$out"
 echo "[PASS] report: the limit rule reads p99.9 (p99 below half the limit is not enough)"
-
-# H: a second under the limit between two slowed seconds still takes a full second.
-make_abs "$TMP_ROOT/h.raw" "2500:3000:1000,2501:100:1000,2502:3000:1000"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/h.raw" --read-mbps 300 --read-iops 5000 $W); then fail "$out"; fi
-grep -q 'worst 7.00x (3 s now -> 21.0 s)' <<<"$out" || fail "a second inside the slowed part needs at least one second: $out"
-echo "[PASS] report: every second inside the slowed part of a burst takes at least one second"
 
 # collect: one ssh to the host, the loop reads the volume's block statistics, lines are appended.
 mkdir -p "$TMP_ROOT/bin"

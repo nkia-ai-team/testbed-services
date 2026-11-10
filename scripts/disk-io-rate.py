@@ -15,20 +15,25 @@ polls it). One ssh session runs the sampling loop on the host; this side only st
   disk-io-rate.py report sdb-24h.raw --read-mbps 160 --write-mbps 40 --read-iops 1600 --write-iops 800
 
 report prints, for read and write bytes (MiB/s, the unit Proxmox mbps_rd and mbps_wr take) and
-operations per second: p50, p99, p99.9 and max, the smallest limit that keeps p99.9 below half of it,
-and the read bursts (consecutive seconds above --burst-mbps or --burst-iops; a dropped interval ends a
-burst): how long each takes now and how long the same reads would take at the read limits (every
-second needs at least one second, a second above a limit needs bytes / byte limit or operations /
-IOPS limit, whichever is larger). The ratio is taken over the part of the burst from the first to
-the last second above a limit, so seconds around it that the limits do not slow cannot dilute it.
-With limits given it says PASS only when every p99.9 is below half its limit and no burst takes
-more than --burst-ratio (default 2) times as long as now.
+operations per second: p50, p99, p99.9 and max, and the limit that rule 2 alone asks for. Rule 2:
+p99.9 below half the limit. Rule 1 (reads): replay the reads through a queue that serves the read
+limits each second (bytes and operations; what does not fit waits for the next second). Every
+stretch where the queue is not empty starts at a second that read more than a limit and ends when
+the queue is empty again; it may take at most --burst-ratio (default 2) times the number of seconds
+in it that read more than a limit. Light seconds around or between heavy ones are never counted as
+work, so they can only lengthen the queue, not lower the ratio. report also prints the smallest read
+byte limit and the smallest read IOPS limit that meet both rules (each with the other open): rule 1
+looks at the rarest heavy seconds too, so this can be well above what rule 2 alone asks for.
+With limits given it says PASS only when both rules hold.
 
-What the two rules do in practice: the ledger reconciliation reads in a burst every 600 seconds,
-144 times a day, so its seconds are well above the top 0.1% and the p99.9 rule already puts every
-one of them under half the limit; those bursts are never slowed. The burst rule only bites on rare
-bursts (start-up, a nightly job) that lie inside the top 0.1% of seconds: it lets them take at most
---burst-ratio times as long.
+What the rules do in practice: the ledger reconciliation reads in a burst every 600 seconds, 144
+times a day. Its seconds outside the top 0.1% of the day (about 86 seconds) are under half the limit
+once rule 2 holds, so a reconciliation at an even rate is not slowed. Rule 1 bites on what lies in
+that top 0.1%: rare heavy seconds (start-up, a nightly job, a spike inside one reconciliation). For a
+single such second it means limit >= half its rate; a longer run of them asks for more.
+
+The read bursts line (consecutive seconds above --burst-mbps or --burst-iops) is for reading the data
+only; the verdict comes from the queue.
 
 IOPS here are counted by the host block layer under the volume; QEMU's throttle counts guest
 requests. Compare the two once (procedure E7-4) before reading the IOPS rows as qm iops values.
@@ -128,22 +133,82 @@ def bursts(reads: list[tuple[float, float] | None], bytes_threshold: float,
     return runs
 
 
-def stretch(run: list[tuple[float, float]], bytes_limit: float | None,
-            iops_limit: float | None) -> tuple[float, int]:
-    """(time at the limits / time now, seconds now) for the part of a burst the limits slow down.
+def episodes(intervals: list[dict[str, float] | None], bytes_limit: float | None,
+             iops_limit: float | None) -> list[tuple[int, float]]:
+    """Read queue under the limits, one second at a time: each second's reads (bytes and operations)
+    join the queue, and the second serves up to the limit. An episode starts at a second whose reads
+    do not all fit, and ends when the queue is empty again (the later of the two queues, at the
+    fraction of the second where it empties). A dropped interval (gap, counter reset) ends the
+    record there: what is still queued is drained as if nothing more arrived.
 
-    A second needs max(1, bytes / byte limit, operations / IOPS limit) seconds under the limits.
-    The ratio is taken from the first to the last second above a limit: seconds around it that stay
-    under the limits (the shoulders of a burst) are not slowed and must not dilute the ratio.
-    A burst with no second above a limit is not slowed at all (1.0)."""
-    def need(second: tuple[float, float]) -> float:
-        b, ops = second
-        return max(1.0, b / bytes_limit if bytes_limit else 0.0, ops / iops_limit if iops_limit else 0.0)
-    over = [k for k, second in enumerate(run) if need(second) > 1.0]
-    if not over:
-        return 1.0, len(run)
-    span = run[over[0]:over[-1] + 1]
-    return sum(need(second) for second in span) / len(span), len(span)
+    Returns (overloaded seconds, seconds at the limits) per episode. Overloaded seconds are the
+    seconds that read more than a limit: the work the limit actually slows, taking one second each
+    now. Seconds under the limits are never counted as work, so light reads around or between heavy
+    seconds only add to the queue and can never lower the ratio."""
+    found: list[tuple[int, float]] = []
+    queued_bytes = queued_ops = 0.0
+    start: int | None = None
+    overloaded = 0
+
+    def service(b: float, ops: float) -> float:
+        return max(b / bytes_limit if bytes_limit else 0.0, ops / iops_limit if iops_limit else 0.0)
+
+    for k, interval in enumerate(intervals + [None]):
+        if interval is None:
+            if start is not None:
+                found.append((overloaded, k - start + service(queued_bytes, queued_ops)))
+            queued_bytes = queued_ops = 0.0
+            start = None
+            continue
+        b, ops = interval["read_bps"], interval["read_iops"]
+        waiting_bytes, waiting_ops = queued_bytes + b, queued_ops + ops
+        need = service(waiting_bytes, waiting_ops)
+        if start is None:
+            if need <= 1.0:
+                continue
+            start, overloaded = k, 0
+        if (bytes_limit and b > bytes_limit) or (iops_limit and ops > iops_limit):
+            overloaded += 1
+        if need <= 1.0:
+            found.append((overloaded, k - start + need))
+            queued_bytes = queued_ops = 0.0
+            start = None
+        else:
+            queued_bytes = max(0.0, waiting_bytes - bytes_limit) if bytes_limit else 0.0
+            queued_ops = max(0.0, waiting_ops - iops_limit) if iops_limit else 0.0
+    return found
+
+
+def worst_episode(intervals: list[dict[str, float] | None], bytes_limit: float | None,
+                  iops_limit: float | None) -> tuple[float, int, float, int]:
+    """(worst ratio, its overloaded seconds, its seconds at the limits, number of episodes)."""
+    found = episodes(intervals, bytes_limit, iops_limit)
+    if not found:
+        return 1.0, 0, 0.0, 0
+    over, took = max(found, key=lambda e: e[1] / e[0])
+    return took / over, over, took, len(found)
+
+
+def smallest_read_limit(intervals: list[dict[str, float] | None], values: list[float], ratio: float,
+                        kind: str, unit: float) -> int:
+    """Smallest whole read limit (MiB/s or IOPS) that keeps p99.9 under half of it and lets no episode
+    take more than ratio times its overloaded seconds, the other read limit left open. The burst rule
+    only gets easier as the limit rises, so a binary search finds it."""
+    def passes(limit: int) -> bool:
+        given = limit * unit
+        args = (given, None) if kind == "bytes" else (None, given)
+        return worst_episode(intervals, *args)[0] <= ratio
+    low = int(2 * percentile(values, 0.999) / unit) + 1          # first whole limit that passes rule 2
+    high = max(low, int(max(values) / unit) + 1)                 # nothing above it: no episode at all
+    if passes(low):
+        return low
+    while high - low > 1:
+        middle = (low + high) // 2
+        if passes(middle):
+            high = middle
+        else:
+            low = middle
+    return high
 
 
 def report(args: argparse.Namespace) -> int:
@@ -162,7 +227,7 @@ def report(args: argparse.Namespace) -> int:
     }
     print(f"one-second samples: {count} ({count / 3600:.1f} h), dropped intervals: {len(intervals) - count}")
     print("rates in MiB/s (the unit of qm mbps_rd, mbps_wr) and IOPS")
-    print("series      p50        p99        p99.9      max        smallest limit (p99.9 < limit/2)  limit given  ok")
+    print("series      p50        p99        p99.9      max        rule 2 only (p99.9 < limit/2)     limit given  ok")
     ok = True
     for name, values in series.items():
         unit = MIB if name.endswith("bps") else 1
@@ -182,20 +247,26 @@ def report(args: argparse.Namespace) -> int:
     if runs:
         lengths = sorted(len(r) for r in runs)
         sizes = sorted(sum(b for b, _ in r) for r in runs)
-        print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS: {len(runs)}, "
-              f"median {lengths[len(lengths) // 2]} s and {sizes[len(sizes) // 2] / MIB / 1024:.2f} GiB, "
+        print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS (for reading only): "
+              f"{len(runs)}, median {lengths[len(lengths) // 2]} s and {sizes[len(sizes) // 2] / MIB / 1024:.2f} GiB, "
               f"longest {lengths[-1]} s")
-        if limits["read_bps"] or limits["read_iops"]:
-            ratios = sorted(stretch(r, limits["read_bps"], limits["read_iops"]) for r in runs)
-            worst, worst_len = ratios[-1]
-            over = sum(1 for ratio, _ in ratios if ratio > args.burst_ratio)
-            passed = over == 0
-            ok &= passed
-            print(f"bursts at the read limit: worst {worst:.2f}x ({worst_len} s now -> {worst * worst_len:.1f} s), "
-                  f"median {ratios[len(ratios) // 2][0]:.2f}x, over {args.burst_ratio}x: {over}; "
-                  f"{'yes' if passed else 'NO'}")
     else:
-        print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS: none")
+        print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS (for reading only): none")
+    for kind, name, unit, label in (("bytes", "read_bps", MIB, "MiB/s"), ("iops", "read_iops", 1, "IOPS")):
+        print(f"smallest read {label} limit meeting both rules (other read limit open): "
+              f"{smallest_read_limit(intervals, series[name], args.burst_ratio, kind, unit)}")
+    if limits["read_bps"] or limits["read_iops"]:
+        worst, over, took, count_episodes = worst_episode(intervals, limits["read_bps"], limits["read_iops"])
+        found = episodes(intervals, limits["read_bps"], limits["read_iops"])
+        beyond = sum(1 for o, t in found if t / o > args.burst_ratio)
+        passed = beyond == 0
+        ok &= passed
+        if count_episodes:
+            print(f"read queue at the limits: {count_episodes} episodes, worst {worst:.2f}x "
+                  f"({over} s over the limits now -> {took:.1f} s until the queue empties), "
+                  f"over {args.burst_ratio}x: {beyond}; {'yes' if passed else 'NO'}")
+        else:
+            print("read queue at the limits: no second reads more than a limit, 1.00x; yes")
     if any(limits.values()):
         print("PASS" if ok else "FAIL")
         return 0 if ok else 1
