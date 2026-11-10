@@ -33,7 +33,9 @@
 #   install -m 644 core-banking/loadgen/transfer-accounts.txt /opt/testbed/banking-transfer-accounts.txt
 # A check with any reason (user data above the threshold, a pool account below the floor
 # or missing or not ACTIVE) exits 3 and writes one line per reason to $STATE_DIR/ALERT;
-# the next clean check removes the file.
+# the next clean check removes the file. The scenario runner mounts $STATE_DIR read-only and
+# its readiness (oracle_maintenance_check) is false while ALERT exists or last.json is older
+# than 7 hours, so no recording starts or continues past an unread ALERT.
 set -Eeuo pipefail
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/root/tb-kubeconfig}"
