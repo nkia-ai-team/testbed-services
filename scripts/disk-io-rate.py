@@ -16,8 +16,9 @@ polls it). One ssh session runs the sampling loop on the host; this side only st
 
 report prints, for read and write bytes (MiB/s, the unit Proxmox mbps_rd and mbps_wr take) and
 operations per second: p50, p99, p99.9 and max, and the limit that rule 2 alone asks for. Rule 2:
-p99.9 below half the limit. Rule 1 (reads): replay the reads through a queue that serves the read
-limits each second (bytes and operations; what does not fit waits for the next second, in order).
+p99.9 below half the limit. Rule 1 (reads): replay the reads through one line of requests the way
+QEMU's throttle serves them (a request leaves when both the byte and the operation budget allow it;
+what does not fit waits for the next second, in order).
 The reads that arrived in any second must all be done within --max-wait (default 2) seconds of that
 second's start; today they are done within the second. Two seconds is the meaning of "an even
 reconciliation is not slowed much": it may at most take one second longer per second of reading.
@@ -139,31 +140,31 @@ def bursts(reads: list[tuple[float, float] | None], bytes_threshold: float,
 def finish_times(intervals: list[dict[str, float] | None], bytes_limit: float | None,
                  iops_limit: float | None) -> list[float]:
     """For every second, how long after its start the reads that arrived in it are done under the
-    read limits. The limits serve each second up to their amount; what does not fit waits, in order,
-    for the next second. Bytes and operations are two queues and a second is done when both are
-    (the later one). Without limits every second's reads are done within that second (1 s or less).
+    read limits, the way QEMU's throttle serves them: one queue of requests in arrival order, and a
+    request leaves only when both the byte budget and the operation budget allow it. A second's reads
+    therefore need max(bytes / byte limit, operations / IOPS limit) seconds of the line, they start
+    when everything before them has left, and what is left at the end of a second waits for the
+    next. Without limits every second's reads are done within that second (1 s or less).
 
-    A dropped interval (gap, counter reset) starts the queues again: what was waiting is taken to
-    have drained during the gap, which lasted at least five seconds.
+    One line, not two queues: when the heavy side changes from one second to the next (multi-block
+    reads, then single-block reads) the second waits for the first in full. A second of 600 MiB then a
+    second of 200 small reads under 300 MiB/s and 100 IOPS: the second one is done 3 s after it starts
+    (two separate queues would say 2 s).
 
-    QEMU's throttle is one queue of requests that wait for bytes and operations together. When the
-    heavy side changes from one second to the next (multi-block reads, then single-block reads) one
-    queue takes longer than two: a second of 600 MiB then a second of 200 small reads under 300 MiB/s
-    and 100 IOPS take 3 s here and 4 s in one queue. Choosing a limit with a margin covers this."""
+    A dropped interval (gap, counter reset) starts the line again: what was waiting is taken to have
+    left during the gap, which lasted at least five seconds."""
     times: list[float] = []
-    queued_bytes = queued_ops = 0.0
+    waiting = 0.0   # seconds of work in the line at the start of the second
     for interval in intervals:
         if interval is None:
-            queued_bytes = queued_ops = 0.0
+            waiting = 0.0
             continue
-        b, ops = interval["read_bps"], interval["read_iops"]
-        done = max(
-            (queued_bytes + b) / bytes_limit if bytes_limit else 0.0,
-            (queued_ops + ops) / iops_limit if iops_limit else 0.0,
+        work = max(
+            interval["read_bps"] / bytes_limit if bytes_limit else 0.0,
+            interval["read_iops"] / iops_limit if iops_limit else 0.0,
         )
-        times.append(round(done, 3))   # milliseconds: the background trickle must not tip a boundary
-        queued_bytes = max(0.0, queued_bytes + b - bytes_limit) if bytes_limit else 0.0
-        queued_ops = max(0.0, queued_ops + ops - iops_limit) if iops_limit else 0.0
+        times.append(round(waiting + work, 3))   # milliseconds: the background trickle must not tip a boundary
+        waiting = max(0.0, waiting + work - 1.0)
     return times
 
 

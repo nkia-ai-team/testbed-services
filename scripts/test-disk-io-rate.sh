@@ -186,6 +186,26 @@ out=$(python3 "$TOOL" report "$TMP_ROOT/b4.raw" --read-mbps 1499 $W || true)
 grep -q 'finish 2.001 s after it starts (at most 2 s), seconds later than that: 1; NO' <<<"$out" || fail "$out"
 echo "[PASS] queue: 1500 for one second at 3000 MiB/s, 2250 for three; printed time and verdict agree"
 
+# One line of requests, as QEMU's throttle serves them: a second of 600 MiB in large reads, then a
+# second of 200 small reads, under 300 MiB/s and 100 IOPS. Each budget alone lets both seconds
+# through in 2 s; together the small reads wait behind the large ones and are done at 3 s, and the
+# next second (10 background reads) waits too: 2.1 s (FAIL, two seconds late).
+make_ev "$TMP_ROOT/mix.raw" 3600 "1000:1:600:10;1001:1:1:200"
+passes "$TMP_ROOT/mix.raw" --read-mbps 300 || fail "the byte budget alone lets both through"
+passes "$TMP_ROOT/mix.raw" --read-iops 100 || fail "the IOPS budget alone lets both through"
+out=$(python3 "$TOOL" report "$TMP_ROOT/mix.raw" --read-mbps 300 --read-iops 100 $W || true)
+grep -q 'finish 3.000 s after it starts (at most 2 s), seconds later than that: 2; NO' <<<"$out" \
+  || fail "with both budgets tight the small reads wait for the large ones: $out"
+# Still monotone with both limits raised together.
+seen_pass=0
+for pair in "300 100" "350 110" "400 134" "450 150" "600 200" "900 300"; do
+  set -- $pair
+  if passes "$TMP_ROOT/mix.raw" --read-mbps "$1" --read-iops "$2"; then seen_pass=1
+  elif (( seen_pass )); then fail "mix: $pair fails after a lower pair passed"; fi
+done
+(( seen_pass )) || fail "mix: high limits must pass"
+echo "[PASS] queue: one line for bytes and operations together, monotone in both limits"
+
 # A light second between two heavy ones still waits behind them (review 3's H): 3000, 100, 3000.
 make_ev "$TMP_ROOT/h.raw" 3600 "2500:1:3000:1000;2501:1:100:1000;2502:1:3000:1000"
 out=$(python3 "$TOOL" report "$TMP_ROOT/h.raw" --read-mbps 300 $W || true)
