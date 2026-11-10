@@ -68,10 +68,6 @@ POSTGRES_PORT = 5432
 POSTGRES_SECRET = "postgres-secret"
 # The Service the applications use inside the cluster (client pods connect through it, pg_lock_remote).
 POSTGRES_CLUSTER_SERVICE = "testbed-postgres"
-# MySQL Shell as the launcher of the paced export client (mdb_pod_spawn): no option files (the image's [client] socket
-# would make it connect), no log file and no credential store (nothing written in the database container), Python.
-# --no-defaults must come first.
-MYSQLSH_LAUNCH = ("--no-defaults", "--log-file=/dev/null", "--credential-store-helper=<disabled>", "--py")
 
 # 오래 사는 PostgreSQL 세션에만 거는 서버 쪽 끊김 감지(세션 시작 옵션이라 문장이 아니다).
 # 쉬는 연결은 keepalive 60초 + 10초 x 6 이면 끊고, 보낸 데이터가 120초 동안 확인되지 않으면 끊는다.
@@ -108,7 +104,6 @@ def bash_functions() -> bytes:
             f"DBO_PG_SERVICE={q(POSTGRES_SERVICE)} DBO_PG_PORT={POSTGRES_PORT} DBO_PG_SECRET={q(POSTGRES_SECRET)}",
             f"DBO_PG_CLUSTER_SERVICE={q(POSTGRES_CLUSTER_SERVICE)}",
             f"PDB_KEEPALIVE={q(PG_KEEPALIVE)}",
-            "MYSQLSH_LAUNCH=(" + " ".join(q(a) for a in MYSQLSH_LAUNCH) + ")",
             f"ORA_ENTRY_NODE_JQ={q(oracle_lock_remote.ENTRY_NODE_JQ)}",
             f"export CLIENT_PROGRAM={q(oracle_lock_remote.CLIENT_PROGRAM)}",
             f"export CLIENT_MACHINE={q(oracle_lock_remote.CLIENT_MACHINE)}",
@@ -259,31 +254,22 @@ pdb_spawn() {
   printf '%s\n' "$!" >"$2.pgid"
 }
 
-# mdb_pod_spawn ROLE DB SQL LOG [DEADLINE]: one mysql client inside the database pod, the process an operator runs on
+# mdb_pod_spawn ROLE DB SQL LOG [paced]: one mysql client inside the database pod, the process an operator runs on
 # the database host (v4 C6b 수정 1회차, user decision Q8, for the answer keys that tell root@localhost and
-# fooddelivery@localhost sessions). No shell in the pod: the pod shows that one client process, over the local socket
-# (user@localhost). The password reaches it on stdin as an option file (never on a command line). The runner side
-# runs in its own process group, recorded in LOG.pgid for dbo_reap.
-#   Without DEADLINE (a migration): `kubectl exec -i mysql ...`; its output is a line or two, so it ends with its
+# fooddelivery@localhost sessions). The exec starts `mysql` itself, no launcher and no shell: from its first moment
+# the pod shows that one client process, over the local socket (user@localhost). The password reaches it on stdin as
+# an option file (never on a command line). The runner side runs in its own process group, recorded in LOG.pgid for
+# dbo_reap.
+#   Without PACED (a migration): `kubectl exec -i mysql ...`; its output is a line or two, so it ends with its
 #   statement.
-#   With DEADLINE (an export, seconds): the rows come back to the runner through the client's pod-exec, which reads
-#   only as fast as it is told (kubectl exec would take the whole stream into memory at once). The stream path between
-#   the pod and the runner still holds about 30 MB (k3s 1.31, 1.33), so mdb_pod_pace sets a byte rate that makes the
-#   server finish when the export should; until then the reader waits.
-#   If the runner side vanishes, containerd keeps the exec's output pipe open and nobody reads it: the client would
-#   stay blocked writing it for good (C6b review 2, containerd 1.7 and 2.1). So the client ends itself DEADLINE seconds
-#   after it starts: mysqlsh (the MySQL Shell in the image) arms SIGALRM and replaces itself with the mysql client
-#   (execvp, same process), and the pending alarm survives the exec. No second process, no shell, no sleep: for a
-#   second or two the pod shows mysqlsh, then only mysql (MYSQLSH_ALARM_EXEC).
-# mdb_alarm_exec SECONDS ARGV...: the MySQL Shell Python that arms SIGALRM for SECONDS and execs ARGV in its place.
-# The disposition is set to default and the signal unblocked first, since both survive the exec. The argument list is
-# written as JSON, which Python reads as the same list of strings.
-mdb_alarm_exec() {
-  local s="$1" a list='[]'; shift
-  for a in "$@"; do list="$(jq -c --arg a "$a" '. + [$a]' <<<"$list")" || return 1; done
-  printf 'import os, signal; signal.signal(signal.SIGALRM, signal.SIG_DFL); signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGALRM]); signal.alarm(%s); a = %s; os.execvp(a[0], a)' \
-    "$s" "$list"
-}
+#   With PACED (an export): the rows come back to the runner through the client's pod-exec, which reads only as fast
+#   as it is told (kubectl exec would take the whole stream into memory at once). The stream path between the pod and
+#   the runner still holds about 30 MB (k3s 1.31, 1.33), so mdb_pod_pace sets a byte rate that makes the server
+#   finish when the export should; until then the reader waits.
+#   If the runner side vanishes, containerd keeps the exec's output pipe open and nobody reads it, so the client stays
+#   blocked writing it (C6b review 2, containerd 1.7 and 2.1; the server ends its statement after net_write_timeout).
+#   That is closed by cleanup and recovery, not by a launcher in the pod (C6b review 3): mdb_pod_alone sees the
+#   client in the pod's process count and stops preflight, and mdb_pod_clear ends it with one exec (mdb_pod_reap).
 mdb_pod_spawn() {
   mdb_env "$1" || return 1
   local u="MDB_${1^^}_USER" p="MDB_${1^^}_PASSWORD" cmd quoted pw kconf
@@ -291,10 +277,6 @@ mdb_pod_spawn() {
   cmd=(mysql --defaults-extra-file=/dev/stdin "-u${!u}")
   [[ -z "${5:-}" ]] || cmd+=(--quick -N -B)
   cmd+=("$2" -e "$3")
-  if [[ -n "${5:-}" ]]; then
-    [[ "$5" =~ ^[1-9][0-9]*$ ]] || { echo "deadline is not a number of seconds: '$5'" >&2; return 1; }
-    cmd=(mysqlsh "${MYSQLSH_LAUNCH[@]}" -e "$(mdb_alarm_exec "$5" "${cmd[@]}")")
-  fi
   pw="${!p//\\/\\\\}"; pw="${pw//\"/\\\"}"
   if [[ -z "${5:-}" ]]; then
     quoted="$(printf '%q ' "${cmd[@]}")"
@@ -406,19 +388,44 @@ dbo_pod_processes() {
     | jq -r --arg ns "$DBO_NS" --arg pod "$DBO_POD" \
       '[.pods[]? | select(.podRef.namespace == $ns and .podRef.name == $pod) | .process_stats.process_count // empty] | .[0] // empty'
 }
-# mdb_pod_alone: the MySQL server is the only process in its pod, so no client of an earlier run is left there (one
-# the runner lost, before its deadline ended it). The kubelet refreshes the count every 10 to 15 s, so a client that
-# just ended is given about 45 s to drop out of it.
+# mdb_pod_alone [TRIES]: the MySQL server is the only process in its pod, so no client of an earlier run is left there
+# (one the runner lost). The kubelet refreshes the count every 10 to 15 s, so a client that just ended is given about
+# 45 s (TRIES looks, five seconds apart; default 10) to drop out of it.
 mdb_pod_alone() {
-  local n="" i
-  for ((i = 0; i < 10; i++)); do
+  local n="" i tries="${1:-10}"
+  for ((i = 0; i < tries; i++)); do
+    (( i == 0 )) || sleep 5
     n="$(dbo_pod_processes)" || return 1
     [[ "$n" =~ ^[0-9]+$ ]] || { echo "the kubelet summary has no process count for $DBO_POD" >&2; return 1; }
     (( n == 1 )) && return 0
-    sleep 5
   done
   echo "$((n - 1)) process(es) besides the database server in $DBO_POD" >&2
   return 1
+}
+# mdb_pod_reap ACCOUNT...: end the mysql clients this executor starts in the database pod (argv0 mysql, the option file
+# on stdin, `-u<ACCOUNT>`) that a lost runner left blocked there. One exec of bash with builtins only (the image has no
+# ps or kill program): it reads /proc/[0-9]*/cmdline and sends TERM, never to pid 1 (the server). Prints the pids it
+# ended. Only on the failure paths (mdb_pod_clear), never in a normal run.
+mdb_pod_reap() {
+  local a
+  for a in "$@"; do
+    dbo_k exec "$DBO_POD" -- bash -c '
+      for d in /proc/[0-9]*; do
+        p=${d#/proc/}; [[ $p == 1 ]] && continue
+        mapfile -d "" -t a <"$d/cmdline" 2>/dev/null || continue
+        [[ ${a[0]##*/} == mysql && " ${a[*]} " == *" --defaults-extra-file=/dev/stdin "* && " ${a[*]} " == *" -u$1 "* ]] || continue
+        kill -TERM "$p" 2>/dev/null && echo "$p"
+      done; true' _ "$a" || return 1
+  done
+}
+# mdb_pod_clear ACCOUNT...: the server alone in its pod, ending a lost client of ACCOUNT first if one is there (cleanup
+# and recovery; preflight only looks, with mdb_pod_alone).
+mdb_pod_clear() {
+  mdb_pod_alone 1 2>/dev/null && return 0
+  local ended
+  ended="$(mdb_pod_reap "$@")" || return 1
+  [[ -z "$ended" ]] || echo "ended a mysql client left in $DBO_POD (pid $(echo $ended))" >&2
+  mdb_pod_alone
 }
 '''
 

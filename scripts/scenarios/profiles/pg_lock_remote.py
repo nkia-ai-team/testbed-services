@@ -122,7 +122,7 @@ pdb_export_job() {
      spec: {backoffLimit: 0, activeDeadlineSeconds: $deadline, ttlSecondsAfterFinished: 300,
       template: {metadata: {labels: {($lk): $lv}},
        spec: {restartPolicy: "Never", terminationGracePeriodSeconds: 5, nodeSelector: $sel,
-        initContainers: [{name: "net-tuning", image: $image, command: ["sysctl", "-w", ("net.ipv4.tcp_rmem=" + $rmem)],
+        initContainers: [{name: "init", image: $image, command: ["sysctl", "-w", ("net.ipv4.tcp_rmem=" + $rmem)],
                           securityContext: {privileged: true}}],
         containers: [{name: "export", image: $image,
          command: ["sh", "-c", "psql -X -q -c \"$SQL\" | awk -v r=\"$RATE\" \"$PACE\""],

@@ -11,9 +11,11 @@
   inject_tag   rca-F\\d\\d-...            주입이 남긴 DB 세션 program/application_name
                                         (실측: dpm_session_local.body 의
                                          "program":"rca-F01-R-inventory-lock")
-  inject_path  scenario-profile-state 등  주입 기구 경로
+  inject_path  scenario-profile-state 등  주입 기구 경로와 도구 명령줄
                                         (실측: process_meta.cmdline 에
-                                         /var/lib/lucida/scenario-profile-state/F09-R.pgid)
+                                         /var/lib/lucida/scenario-profile-state/F09-R.pgid,
+                                         v4 C6b 리뷰: signal.alarm, os.execvp, mysqlsh ... --py,
+                                         tcp_rmem=)
 
 오탐 주의 — `rca-testbed-*` 는 k8s 네임스페이스(정상 인프라 명명)다. `rca-` 단독
 패턴을 쓰면 전 케이스가 거짓 불합격한다. 반드시 `rca-F\\d\\d-` 로 좁힌다.
@@ -40,13 +42,16 @@ csv.field_size_limit(sys.maxsize)
 PATTERNS: dict[str, re.Pattern[str]] = {
     "scenario_id": re.compile(r"\bF\d{2}-[A-Z]\d?\b"),
     "inject_tag": re.compile(r"\brca-F\d{2}-[A-Za-z0-9_-]+"),
+    # v4 C6b 리뷰 3회차 하 2: 주입 도구의 명령줄(파드 안 기동기의 알람과 exec, 셸 이름, 수신 버퍼 sysctl)도
+    # process_meta 에 찍히면 주입 기구다.
     "inject_path": re.compile(
         r"scenario-profile-state|scenario-runs|run-scenario\.sh|/opt/loadgen"
+        r"|signal\.alarm|os\.execvp|\bmysqlsh\b.*--py|tcp_rmem="
     ),
 }
 
 # 이 문자 중 하나도 없으면 어떤 패턴도 못 맞는다 — 값당 정규식 3회를 아낀다.
-_PREFILTER = ("F", "rca-", "scenario")
+_PREFILTER = ("F", "rca-", "scenario", "alarm", "execvp", "mysqlsh", "tcp_rmem")
 
 
 def _hit(value: str, found, cols, samples, col: str) -> None:

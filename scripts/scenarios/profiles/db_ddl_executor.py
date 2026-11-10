@@ -1173,9 +1173,9 @@ case "$action" in
   dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
-  mdb_pod_alone
+  mdb_pod_clear root
   ;;
- recovery) rows; original; mdb_pod_alone ;;
+ recovery) mdb_pod_clear root; rows; original ;;
  *) exit 2 ;;
 esac
 ''')
@@ -1313,6 +1313,9 @@ export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"; join=
 # inside the database pod (below).
 db_target "$ns" "$pod"
 mdb_env root
+# The export's account, whose client in the pod a lost runner could leave behind (mdb_pod_clear).
+mdb_env app
+app_user="$MDB_APP_USER"
 # Probes run as root; the first MySQL error line goes to stderr so a failed step is readable in the runner log.
 mysql() { mdb "$db" "$1"; }
 # The two statements as the export job and the migration send them; their sessions are found by this exact text.
@@ -1331,9 +1334,6 @@ migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INST
 run_dir="$(dbo_run_dir "db-ddl-queue-$db-$table")"
 export_log="$run_dir/table-export.log"
 migration_log="$run_dir/schema-migration.log"
-# The export client ends itself when the export, the drain bound and two minutes have passed, even if the runner side
-# that reads its rows is gone (mdb_pod_spawn DEADLINE; C6b review 2).
-deadline=$(( export_seconds + drain + 120 ))
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
 # A session by its exact statement text, never the probe's own.
@@ -1360,7 +1360,7 @@ check() {
   # Without metadata lock instrumentation the queue could not be seen or confirmed.
   [[ "$(mysql "SELECT enabled FROM performance_schema.setup_instruments WHERE name = 'wait/lock/metadata/sql/mdl';")" == YES ]]
   [[ "$(waiting)" == 0 ]]
-  # No client of an earlier run is left in the database pod (one the runner lost lives until its deadline).
+  # No client of an earlier run is left in the database pod (one a lost runner left blocked; recovery ends it).
   mdb_pod_alone
   # InnoDB keeps at most 64 row versions per table for instant changes; a run and its cleanup use two.
   versions=$(number "$(mysql "SELECT total_row_versions FROM information_schema.innodb_tables WHERE name = '$db/$table';")")
@@ -1372,7 +1372,8 @@ check() {
 }
 # Ending the export: the server statement first, then the reader on the runner, so the client in the pod reads the
 # rest of its stream and exits (it stays blocked otherwise; see mdb_pod_drain).
-stop_export() { local id; id=$(id_of "$export_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; mdb_pod_drain "$export_log"; }
+# If the stream does not end (the reader on the runner is gone), the client in the pod is ended directly (mdb_pod_clear).
+stop_export() { local id; id=$(id_of "$export_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; mdb_pod_drain "$export_log" || mdb_pod_clear "$app_user" root; }
 cancel_migration() { local id; id=$(id_of "$migration_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; }
 case "$action" in
  preflight) check ;;
@@ -1387,7 +1388,7 @@ case "$action" in
   # waits to see each one in place, at most ten one-second looks each. The rows come back to the runner, where the
   # paced reader takes them at the export's pace and drops them.
   started=$SECONDS
-  mdb_pod_spawn app "$db" "$export_sql" "$export_log" "$deadline"
+  mdb_pod_spawn app "$db" "$export_sql" "$export_log" paced
   held=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     id=$(id_of "$export_sql")
@@ -1427,9 +1428,9 @@ case "$action" in
   dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
-  mdb_pod_alone
+  mdb_pod_clear "$app_user" root
   ;;
- recovery) rows; original; [[ "$(waiting)" == 0 ]]; mdb_pod_alone ;;
+ recovery) mdb_pod_clear "$app_user" root; rows; original; [[ "$(waiting)" == 0 ]] ;;
  *) exit 2 ;;
 esac
 ''')

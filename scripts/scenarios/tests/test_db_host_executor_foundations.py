@@ -442,10 +442,10 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("lock_wait_timeout=10", cleanup)
         # preflight 만 고아 이력을 센다(전체 조인이라 run 에서는 다시 하지 않는다).
         self.assertIn(" preflight) check; [[ \"$(orphans)\" == 0 ]]; mdb_pod_alone ;;", script)
-        # A client an earlier run left in the database pod stops preflight and recovery; cleanup waits it out
-        # (C6b review 2).
-        self.assertIn(" recovery) rows; original; mdb_pod_alone ;;", script)
-        self.assertRegex(cleanup, r"\n  original\n  mdb_pod_alone\n  ;;")
+        # A client a lost runner left in the database pod stops preflight (look only); cleanup and recovery end it with
+        # the failure paths' one exec (mdb_pod_clear, C6b review 3).
+        self.assertIn(" recovery) mdb_pod_clear root; rows; original ;;", script)
+        self.assertRegex(cleanup, r"\n  original\n  mdb_pod_clear root\n  ;;")
         self.assertNotIn("orphans", run)
         # 행, 인덱스, 부모 표는 손대지 않는다.
         for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "rename "):
@@ -712,7 +712,7 @@ class DbHostFoundations(unittest.TestCase):
         # 백그라운드로(root) → 메타데이터 잠금 대기 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 기다리지 않는다.
         # v4 C6b(사용자 결정 Q8): 두 세션은 DB 파드 안의 mysql 클라이언트다(정답지의 fooddelivery@localhost,
         # root@localhost). 내보내기 행은 러너가 정한 바이트 속도로만 읽혀 서버가 export_seconds 동안 보낸다(mdb_pod_pace).
-        order = ["  check\n", "table_rows", 'mdb_pod_spawn app "$db" "$export_sql" "$export_log" "$deadline"',
+        order = ["  check\n", "table_rows", 'mdb_pod_spawn app "$db" "$export_sql" "$export_log" paced',
                  "lock_status = 'GRANTED'", 'mdb_pod_pace "$export_log" "$id" "$est"',
                  'mdb_pod_spawn root "$db" "$migration_sql" "$migration_log"',
                  "'Waiting for table metadata lock'"]
@@ -731,17 +731,21 @@ class DbHostFoundations(unittest.TestCase):
         order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration",
                  "DROP COLUMN $column, ALGORITHM=INSTANT", "dbo_reap", "rm -rf"]
         # 내보내기를 끝낼 때 서버 문장을 먼저, 그다음 러너의 읽기를 풀어 파드 안 클라이언트가 끝나게 한다.
-        self.assertIn('mysql "KILL QUERY $id;" >/dev/null; mdb_pod_drain "$export_log"; }', script)
+        # 리더가 사라져 흐름이 끝나지 않으면 파드 안 클라이언트를 정리 경로의 exec 한 번으로 끝낸다(mdb_pod_clear).
+        self.assertIn('mysql "KILL QUERY $id;" >/dev/null; mdb_pod_drain "$export_log" || mdb_pod_clear "$app_user" root; }', script)
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("SET SESSION lock_wait_timeout = 5", cleanup)
-        self.assertRegex(cleanup, r"\n  original\n  mdb_pod_alone\n  ;;")
-        # 러너가 사라져도 파드 안 내보내기 클라이언트는 기한(내보내기 + drain + 2분)에 스스로 끝나고(mdb_pod_spawn
-        # DEADLINE), 그 전에는 preflight(check)와 recovery 가 그 클라이언트를 감지해 멈춘다(C6b 리뷰 2회차 상 2).
-        self.assertIn("deadline=$(( export_seconds + drain + 120 ))", script)
-        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]]; mdb_pod_alone ;;', script)
+        self.assertRegex(cleanup, r"\n  original\n  mdb_pod_clear \"\$app_user\" root\n  ;;")
+        # 러너가 사라지면 파드 안 내보내기 클라이언트가 막힌 채 남는다. preflight(check)는 그것을 보고 멈추기만 하고
+        # (mdb_pod_alone), cleanup 과 recovery 가 exec 한 번으로 끝낸다(mdb_pod_clear, C6b 리뷰 3회차 상 1). 기동기는 없다.
+        self.assertNotIn("deadline", script)
+        self.assertNotIn("mysqlsh", script)
+        self.assertIn('app_user="$MDB_APP_USER"', script)
+        self.assertIn(' recovery) mdb_pod_clear "$app_user" root; rows; original; [[ "$(waiting)" == 0 ]] ;;', script)
         check = script[script.index("check() {"):script.index("\n}\n", script.index("check() {"))]
         self.assertIn("mdb_pod_alone", check)
+        self.assertNotIn("mdb_pod_clear", check)
         # 세션은 문장으로 찾은 id 로만 끝낸다. 행, 인덱스, 다른 표, 권한은 손대지 않는다.
         self.assertIn("KILL QUERY $id;", script)
         for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "revoke", "grant ",

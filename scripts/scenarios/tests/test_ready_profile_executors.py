@@ -270,8 +270,16 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertIn("cmd=(mysql --defaults-extra-file=/dev/stdin", spawn)
         local = functions[functions.index("pdb_pod() {"):functions.index("\n}\n", functions.index("pdb_pod() {"))]
         execs = [line for line in functions.splitlines() if "dbo_k exec" in line and not line.lstrip().startswith("#")]
-        self.assertEqual(execs, ['    | dbo_k exec -i "$DBO_POD" -- psql -X -q -At -v ON_ERROR_STOP=1 -U "$u" -d "$d" 2>"$e"; rc=$?'])
+        self.assertEqual(execs, ['    | dbo_k exec -i "$DBO_POD" -- psql -X -q -At -v ON_ERROR_STOP=1 -U "$u" -d "$d" 2>"$e"; rc=$?',
+                                 """    dbo_k exec "$DBO_POD" -- bash -c '"""])
         self.assertIn(execs[0], local)
+        # The second is the failure paths' one exec (C6b review 3): only mdb_pod_reap, only through mdb_pod_clear, and
+        # no body calls it from preflight or run.
+        reap = functions[functions.index("mdb_pod_reap() {"):functions.index("\n}\n", functions.index("mdb_pod_reap() {"))]
+        self.assertIn(execs[1], reap)
+        self.assertEqual(sum("mdb_pod_reap " in line for line in functions.splitlines()
+                             if not line.lstrip().startswith("#")), 1)
+        self.assertIn('ended="$(mdb_pod_reap "$@")"', functions)
         # Only these two account changes use it.
         users = []
         for name, module in self.C6B_EXECUTORS.items():
@@ -303,18 +311,24 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                     self.assertEqual(spawns, ["root"])
                 else:
                     self.assertEqual(spawns, ["app", "root"])
-                    # The export client ends itself after the export, the drain bound and two minutes (C6b review 2).
-                    self.assertIn('"$export_log" "$deadline"', run)
-                    self.assertIn('deadline=$(( export_seconds + drain + 120 ))', own)
+                    self.assertIn('"$export_log" paced', run)
                     self.assertIn("mdb_pod_pace", run)
-                for helper in ("awk", "sleep \"$", "nohup", "sh -c", "kubectl"):
+                for helper in ("awk", "sleep \"$", "nohup", "sh -c", "kubectl", "mysqlsh", "deadline"):
                     self.assertNotIn(helper, run)
-                # A client an earlier run left in the pod stops preflight and recovery, and cleanup waits it out.
-                for action in ("preflight", "cleanup", "recovery"):
+                # A client a lost runner left in the pod stops preflight (look only); cleanup and recovery end it
+                # (mdb_pod_clear, the one exec of the failure paths) (C6b review 3).
+                pre = own_body(db_ddl.build_invocation(plan, "preflight")[1].decode())
+                check = pre[pre.index("check() {"):pre.index("\n}\n", pre.index("check() {"))] if "check() {" in pre else ""
+                preflight = pre[pre.index(" preflight)"):]
+                preflight = preflight[:preflight.index(";;")]
+                self.assertTrue("mdb_pod_alone" in preflight or ("check" in preflight and "mdb_pod_alone" in check))
+                self.assertNotIn("mdb_pod_clear", preflight + check)
+                for action in ("cleanup", "recovery"):
                     body = own_body(db_ddl.build_invocation(plan, action)[1].decode())
                     case = body[body.index(f" {action})"):]
                     case = case[:case.index(";;")]
-                    self.assertTrue("mdb_pod_alone" in case or ("check" in case and "mdb_pod_alone" in body), (action, case))
+                    self.assertIn("mdb_pod_clear", case, action)
+                self.assertNotIn("mdb_pod_reap", own)
 
     def test_mysql_client_in_the_pod_is_exec_ed_alone_with_its_password_on_stdin(self) -> None:
         # The migration path: `kubectl exec -i POD -- mysql ...` with the option file on stdin. The fake records the
@@ -340,15 +354,15 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 db_operator_fakes.assert_no_password(self, text)
 
 
-    def test_mysql_export_client_in_the_pod_ends_itself_at_its_deadline(self) -> None:
-        # C6b review 2 상 2: when the runner side that reads the export stops, containerd keeps the exec's output pipe
-        # open and the client in the pod blocks writing it for good (seen on containerd 1.7.23 and 2.1.4). The paced
-        # export is therefore started as `mysqlsh ... --py -e <code>` that arms SIGALRM and execs mysql in its place:
-        # one process, which the pending alarm ends at the deadline.
+    def test_mysql_clients_in_the_pod_are_mysql_from_their_first_moment(self) -> None:
+        # C6b review 3 상 1, criterion ①: the command the pod starts is `mysql` itself for the export (pod-exec) and the
+        # migration (kubectl exec), never a launcher (mysqlsh), a shell or anything else, so no process table sample
+        # can catch anything but the client.
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = db_operator_fakes.install(tmp, kubectl_cases=(
-                "  *' config view --raw --minify -o json'*) printf '{}' ;;"))
+                "  *' config view --raw --minify -o json'*) printf '{}' ;;\n"
+                f"  *' exec -i testbed-mysql-0 -- '*) printf '%s\\0' \"$@\" >{tmp}/exec.argv; cat >/dev/null ;;"))
             recorder = tmp / "bin" / "python-recorder"
             recorder.write_text("#!/usr/bin/env bash\n"
                                 'if [[ "$1" == -c && "$2" == "import "* ]]; then exit 0; fi\n'
@@ -356,37 +370,94 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             recorder.chmod(0o755)
             env["DB_OPERATOR_PYTHON"] = str(recorder)
             script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
-                      + b'db_target rca-testbed-food testbed-mysql-0\nmdb_env app\n'
-                      + b'mdb_pod_spawn app fooddelivery "SELECT id, eta FROM dispatches" "$1/e.log" 780\n'
-                      + b'for _ in $(seq 1 50); do [[ -e "$2/pod-exec.stdin" ]] && break; sleep 0.1; done; sleep 0.3\n'
-                      + b'printf "%s" "$(mdb_alarm_exec 2 sh -c "while :; do echo row; done")" >"$2/code.py"\n')
+                      + b'db_target rca-testbed-food testbed-mysql-0\n'
+                      + b'mdb_pod_spawn app fooddelivery "SELECT id, eta FROM dispatches" "$1/e.log" paced\n'
+                      + b'mdb_pod_spawn root fooddelivery "ALTER TABLE dispatches ADD COLUMN c int" "$1/m.log"\n'
+                      + b'for _ in $(seq 1 50); do [[ -e "$2/pod-exec.stdin" && -s "$2/exec.argv" ]] && break; sleep 0.1; done\n'
+                      + b'sleep 0.3\n')
             done = subprocess.run(["bash", "-s", "--", str(tmp / "run"), str(tmp)], input=script, env=env,
                                   capture_output=True, timeout=60)
             self.assertEqual(done.returncode, 0, done.stderr.decode())
-            argv = (tmp / "pod-exec.argv").read_text().split("\0")[:-1]
-            command = argv[argv.index("--") + 1:]
-            self.assertEqual(command[:6], ["mysqlsh", "--no-defaults", "--log-file=/dev/null",
-                                           "--credential-store-helper=<disabled>", "--py", "-e"])
-            code = command[6]
-            self.assertIn("signal.alarm(780)", code)
-            self.assertIn('a = ["mysql","--defaults-extra-file=/dev/stdin","-ufooddelivery","--quick","-N","-B",'
-                          '"fooddelivery","-e","SELECT id, eta FROM dispatches"]; os.execvp(a[0], a)', code)
-            self.assertEqual(len(command), 7)
+            exported = (tmp / "pod-exec.argv").read_text().split("\0")[:-1]
+            migrated = (tmp / "exec.argv").read_text().split("\0")[:-1]
+            commands = {"export": exported[exported.index("--") + 1:], "migration": migrated[migrated.index("--") + 1:]}
+            self.assertEqual(commands["export"], ["mysql", "--defaults-extra-file=/dev/stdin", "-ufooddelivery", "--quick",
+                                                  "-N", "-B", "fooddelivery", "-e", "SELECT id, eta FROM dispatches"])
+            self.assertEqual(commands["migration"], ["mysql", "--defaults-extra-file=/dev/stdin", "-uroot", "fooddelivery",
+                                                     "-e", "ALTER TABLE dispatches ADD COLUMN c int"])
+            for name, command in commands.items():
+                self.assertEqual(command[0], "mysql", name)
+                for word in ("mysqlsh", "sh", "bash", "python", "alarm", "execvp"):
+                    self.assertFalse(any(word == item or f"{word}(" in item for item in command), (name, word))
             self.assertEqual((tmp / "pod-exec.stdin").read_text(), '[client]\npassword="pw-food-from-secret"\n')
-            db_operator_fakes.assert_no_password(self, (tmp / "pod-exec.argv").read_text())
-            # The same code, run by a Python (mysqlsh's own is CPython too) against a writer whose output nobody
-            # reads: the process is the exec'd command (same pid, no second process) and SIGALRM ends it on time.
-            started = time.monotonic()
-            proc = subprocess.Popen([sys.executable, "-c", (tmp / "code.py").read_text()],
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            db_operator_fakes.assert_no_password(self, (tmp / "pod-exec.argv").read_text(), (tmp / "exec.argv").read_text())
+        library = db_operator_remote.bash_functions().decode()
+        self.assertNotIn("mysqlsh", library)
+        self.assertNotIn("signal.alarm", library)
+
+    def test_lost_mysql_client_is_ended_by_one_exec_of_bash_builtins(self) -> None:
+        # mdb_pod_reap, criterion ④'s one exec: bash with builtins only reads /proc/[0-9]*/cmdline and TERMs the
+        # processes whose argv0 is mysql with the option file on stdin and `-u<account>`. Run here against this host's
+        # /proc (the fake kubectl runs the exec's command locally) with stand-ins whose argv0 is mysql: only the one
+        # for the account is ended. The account name is unique to this run so nothing else on the host matches.
+        account = f"reaptest{os.getpid()}"
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                "  *' exec testbed-mysql-0 -- bash -c '*) for ((i = 1; i <= $#; i++)); do [[ ${!i} == -- ]] && break; done; "
+                "shift \"$i\"; exec \"$@\" ;;"))
+            stand_in = "import time; time.sleep(120)"
+            def start(*args: str) -> subprocess.Popen:
+                return subprocess.Popen(["mysql", "-c", stand_in, *args], executable=sys.executable)
+            target = start("--defaults-extra-file=/dev/stdin", f"-u{account}", "fooddelivery", "-e", "SELECT 1")
+            other_account = start("--defaults-extra-file=/dev/stdin", f"-u{account}x", "fooddelivery")
+            not_ours = start(f"-u{account}", "fooddelivery")
             try:
                 time.sleep(0.5)
-                self.assertTrue(Path(f"/proc/{proc.pid}/cmdline").read_bytes().startswith(b"sh\0-c\0"))
-                self.assertEqual(proc.wait(timeout=20), -signal.SIGALRM)
+                script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                          + b'db_target rca-testbed-food testbed-mysql-0\nmdb_pod_reap "$1"\n')
+                done = subprocess.run(["bash", "-s", "--", account], input=script, env=env, capture_output=True,
+                                      timeout=60)
+                self.assertEqual(done.returncode, 0, done.stderr.decode())
+                self.assertEqual(done.stdout.decode().split(), [str(target.pid)])
+                self.assertEqual(target.wait(timeout=10), -signal.SIGTERM)
+                self.assertIsNone(other_account.poll())
+                self.assertIsNone(not_ours.poll())
             finally:
-                proc.kill()
-                proc.stdout.close()
-            self.assertGreaterEqual(time.monotonic() - started, 1.9)
+                for proc in (target, other_account, not_ours):
+                    proc.kill()
+                    proc.wait()
+        reap = db_operator_remote.bash_functions().decode()
+        reap = reap[reap.index("mdb_pod_reap() {"):reap.index("\n}\n", reap.index("mdb_pod_reap() {"))]
+        self.assertIn('[[ $p == 1 ]] && continue', reap)
+        # Builtins only: no program but bash itself is started in the pod.
+        inner = reap[reap.index("bash -c '") + 9:reap.index("' _ ")]
+        for program in ("ps ", "pgrep", "pkill", "grep", "awk", "sed", "cat ", "/bin/kill", "xargs"):
+            self.assertNotIn(program, inner)
+
+    def test_lost_mysql_client_is_ended_by_cleanup_and_recovery_not_preflight(self) -> None:
+        # mdb_pod_clear: one quick look; if the server is not alone, end the lost clients (one exec), then wait for the
+        # count to come back to 1. preflight never calls it.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            (tmp / "count").write_text("2")
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                f"  *'get --raw /api/v1/nodes/tb-w2/proxy/stats/summary'*) printf '{{\"pods\":[{{\"podRef\":"
+                f"{{\"namespace\":\"rca-testbed-food\",\"name\":\"testbed-mysql-0\"}},\"process_stats\":"
+                f"{{\"process_count\":%s}}}}]}}' \"$(cat {tmp}/count)\" ;;\n"
+                f"  *' exec testbed-mysql-0 -- bash -c '*) [[ $(cat {tmp}/count) == 1 ]] || {{ echo 1 >{tmp}/count; echo 4242; }} ;;"))
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + b'db_target rca-testbed-food testbed-mysql-0\nsleep() { :; }\nmdb_pod_clear fooddelivery root\n')
+            done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr.decode())
+            self.assertIn(b"ended a mysql client left in testbed-mysql-0 (pid 4242)", done.stderr)
+            execs = [line for line in db_operator_fakes.kubectl_calls(tmp) if " exec " in line]
+            self.assertEqual(len(execs), 2)  # one per account
+            # Alone already: no exec at all.
+            calls = len(db_operator_fakes.kubectl_calls(tmp))
+            again = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertEqual(again.returncode, 0, again.stderr.decode())
+            self.assertFalse(any(" exec " in line for line in db_operator_fakes.kubectl_calls(tmp)[calls:]))
 
     def test_leftover_client_in_the_mysql_pod_stops_preflight_until_it_is_gone(self) -> None:
         # mdb_pod_alone reads the pod's process count from the kubelet summary of its node (no exec): mysqld alone is 1,
@@ -434,7 +505,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             # The fake database pod has no nodeSelector, so its node by hostname.
             self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w9"})
             self.assertEqual(pod["initContainers"], [{
-                "name": "net-tuning", "image": "postgres:16-alpine",
+                "name": "init", "image": "postgres:16-alpine",
                 "command": ["sysctl", "-w", "net.ipv4.tcp_rmem=4096 8192 8192"],
                 "securityContext": {"privileged": True}}])
             (container,) = pod["containers"]
