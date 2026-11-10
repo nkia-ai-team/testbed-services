@@ -24,7 +24,9 @@ second's start; today they are done within the second. Two seconds is the meanin
 reconciliation is not slowed much": it may at most take one second longer per second of reading.
 The rule only gets easier as a limit rises and only harder as reads are added, so light seconds
 around or between heavy ones cannot hide them, and report can binary-search the smallest read byte
-limit and the smallest read IOPS limit that meet both rules (each with the other open).
+limit and the smallest read IOPS limit that meet both rules (each with the other open). The two
+together can still be too low when both budgets are tight in the same stretch; report checks the
+pair and says so, and the remedy is to raise both by the same factor.
 Examples: one second at 3000 MiB/s needs a limit of at least 1500 (half its rate); three such
 seconds in a row need 2250, because the first two seconds' backlog is still queued when the third
 arrives. A run of heavy seconds therefore asks for more than a single one, which keeps the normal
@@ -38,6 +40,21 @@ that top 0.1%: rare heavy seconds (start-up, a nightly job, a spike inside one r
 
 The read bursts line (consecutive seconds above --burst-mbps or --burst-iops) is for reading the data
 only; the verdict comes from the queue.
+
+How the replay differs from QEMU's throttle (util/throttle.c leaky buckets), and in which direction:
+- Burst allowance: without *_max QEMU lets about a tenth of a second's budget leave without waiting
+  (avg/10). The replay has none, so it is about 0.1 s stricter, and once a limit is set a one-second
+  sample can read up to about 1.1 times the limit (a little more across a sample boundary).
+- Order inside a second: the replay gives a second max(bytes share, operations share) of the line.
+  QEMU's two buckets do not save idle budget, so when large reads come first and small reads after
+  them inside one second, the operation budget idles while bytes are awaited and is lost. The real
+  time then lies between the max and the sum of the two shares: the replay is optimistic only when
+  both limits are tight in the same second, by at most that second's smaller share. One-second
+  statistics cannot tell the order inside a second, so this stays a documented margin.
+- Open loop: the replay puts today's reads in the line at the times they came. Oracle waits for a
+  read before issuing the next, so one heavy job ends at the same time, but light reads in between
+  wait only for what is queued in QEMU (bounded by the guest's outstanding requests), less than in
+  the replay: the replay is stricter. Samples 1 to 5 s apart count as one second each.
 
 IOPS here are counted by the host block layer under the volume; QEMU's throttle counts guest
 requests. Compare the two once (procedure E7-4) before reading the IOPS rows as qm iops values.
@@ -179,7 +196,9 @@ def smallest_read_limit(intervals: list[dict[str, float] | None], values: list[f
         args = (given, None) if kind == "bytes" else (None, given)
         return max(finish_times(intervals, *args), default=0.0) <= wait
     low = int(2 * percentile(values, 0.999) / unit) + 1          # first whole limit that passes rule 2
-    high = max(low, int(max(values) / unit) + 1)                 # every second fits: nothing ever waits
+    # At max / min(wait, 1) every second's work fits in the second and within `wait`: nothing carries
+    # over and every second passes, so the search has a passing upper end for any wait > 0.
+    high = max(low, math.ceil(max(values) / unit / min(wait, 1.0)) + 1)
     if passes(low):
         return low
     while high - low > 1:
@@ -232,9 +251,16 @@ def report(args: argparse.Namespace) -> int:
               f"longest {lengths[-1]} s")
     else:
         print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS (for reading only): none")
+    smallest = {}
     for kind, name, unit, label in (("bytes", "read_bps", MIB, "MiB/s"), ("iops", "read_iops", 1, "IOPS")):
-        print(f"smallest read {label} limit meeting both rules (other read limit open): "
-              f"{smallest_read_limit(intervals, series[name], args.max_wait, kind, unit)}")
+        smallest[kind] = smallest_read_limit(intervals, series[name], args.max_wait, kind, unit)
+        print(f"smallest read {label} limit meeting both rules (other read limit open): {smallest[kind]}")
+    # Each was found with the other limit open. In one line both budgets can be tight in the same
+    # stretch, so the pair together can still be too low: then raise both by the same factor.
+    together = max(finish_times(intervals, smallest["bytes"] * MIB, smallest["iops"]), default=0.0)
+    print(f"both smallest read limits together ({smallest['bytes']} MiB/s, {smallest['iops']} IOPS): "
+          f"slowest second's reads finish {together:.3f} s; {'yes' if together <= args.max_wait else 'NO'}"
+          f"{'' if together <= args.max_wait else ' (raise both by the same factor and check again)'}")
     if limits["read_bps"] or limits["read_iops"]:
         times = finish_times(intervals, limits["read_bps"], limits["read_iops"])
         worst = max(times, default=0.0)
@@ -268,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--max-wait", type=float, default=2.0,
                    help="seconds within which every second's reads must be done under the read limits")
     args = parser.parse_args(argv)
+    if args.command == "report" and not args.max_wait > 0:
+        parser.error("--max-wait must be above 0 seconds")
     return collect(args) if args.command == "collect" else report(args)
 
 

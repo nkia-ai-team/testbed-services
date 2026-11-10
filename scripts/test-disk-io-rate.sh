@@ -206,6 +206,21 @@ done
 (( seen_pass )) || fail "mix: high limits must pass"
 echo "[PASS] queue: one line for bytes and operations together, monotone in both limits"
 
+# The two smallest limits are found each with the other open; report checks them together (S2).
+grep -q "both smallest read limits together (300 MiB/s, 100 IOPS): slowest second's reads finish 3.000 s; NO (raise both by the same factor and check again)" \
+  <<<"$(python3 "$TOOL" report "$TMP_ROOT/mix.raw")" || fail "mix: the pair together must be reported as too low"
+grep -q "both smallest read limits together (801 MiB/s, 2001 IOPS): slowest second's reads finish 0.500 s; yes$" \
+  <<<"$(python3 "$TOOL" report "$TMP_ROOT/r1.raw")" || fail "r1: the pair together passes"
+echo "[PASS] report: the two smallest limits are also judged together"
+
+# --max-wait below one second: the search must still find the boundary (S3); zero or less is refused.
+make_ev "$TMP_ROOT/one.raw" 3600 "1000:1:400:1000"
+[[ "$(python3 "$TOOL" report "$TMP_ROOT/one.raw" --max-wait 0.5 | sed -n 's|^smallest read MiB/s limit meeting both rules (other read limit open): ||p')" == 800 ]] \
+  || fail "400 MiB in one second within 0.5 s needs 800"
+python3 "$TOOL" report "$TMP_ROOT/one.raw" --max-wait 0.5 --read-mbps 799 $W >/dev/null && fail "799 must fail at 0.5 s"
+python3 "$TOOL" report "$TMP_ROOT/one.raw" --max-wait 0 >/dev/null 2>&1 && fail "--max-wait 0 must be refused"
+echo "[PASS] report: --max-wait under one second keeps the search right, zero is refused"
+
 # A light second between two heavy ones still waits behind them (review 3's H): 3000, 100, 3000.
 make_ev "$TMP_ROOT/h.raw" 3600 "2500:1:3000:1000;2501:1:100:1000;2502:1:3000:1000"
 out=$(python3 "$TOOL" report "$TMP_ROOT/h.raw" --read-mbps 300 $W || true)
