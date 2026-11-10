@@ -16,11 +16,19 @@ polls it). One ssh session runs the sampling loop on the host; this side only st
 
 report prints, for read and write bytes (MiB/s, the unit Proxmox mbps_rd and mbps_wr take) and
 operations per second: p50, p99, p99.9 and max, the smallest limit that keeps p99.9 below half of it,
-and the read bursts (consecutive seconds above --burst-mbps; a dropped interval ends a burst): how
-long each takes now and how long the same reads would take at the read limit (every second needs at
-least one second, a second above the limit needs bytes / limit). With limits given it says PASS only
-when every p99.9 is below half its limit and no burst takes more than --burst-ratio (default 2)
-times as long as now.
+and the read bursts (consecutive seconds above --burst-mbps or --burst-iops; a dropped interval ends a
+burst): how long each takes now and how long the same reads would take at the read limits (every
+second needs at least one second, a second above a limit needs bytes / byte limit or operations /
+IOPS limit, whichever is larger). The ratio is taken over the part of the burst from the first to
+the last second above a limit, so seconds around it that the limits do not slow cannot dilute it.
+With limits given it says PASS only when every p99.9 is below half its limit and no burst takes
+more than --burst-ratio (default 2) times as long as now.
+
+What the two rules do in practice: the ledger reconciliation reads in a burst every 600 seconds,
+144 times a day, so its seconds are well above the top 0.1% and the p99.9 rule already puts every
+one of them under half the limit; those bursts are never slowed. The burst rule only bites on rare
+bursts (start-up, a nightly job) that lie inside the top 0.1% of seconds: it lets them take at most
+--burst-ratio times as long.
 
 IOPS here are counted by the host block layer under the volume; QEMU's throttle counts guest
 requests. Compare the two once (procedure E7-4) before reading the IOPS rows as qm iops values.
@@ -104,13 +112,15 @@ def percentile(values: list[float], q: float) -> float:
     return ordered[index]
 
 
-def bursts(read_bps: list[float | None], threshold: float) -> list[list[float]]:
-    """Per-second read bytes of each run of consecutive seconds above threshold. A dropped interval
-    (None) ends a run: what lies on both sides of a gap is not known to be one burst."""
-    runs: list[list[float]] = []
-    current: list[float] = []
-    for value in read_bps + [None]:
-        if value is not None and value > threshold:
+def bursts(reads: list[tuple[float, float] | None], bytes_threshold: float,
+           iops_threshold: float) -> list[list[tuple[float, float]]]:
+    """(read bytes, read operations) per second of each run of consecutive seconds above either
+    threshold. A dropped interval (None) ends a run: what lies on both sides of a gap is not known
+    to be one burst."""
+    runs: list[list[tuple[float, float]]] = []
+    current: list[tuple[float, float]] = []
+    for value in reads + [None]:
+        if value is not None and (value[0] > bytes_threshold or value[1] > iops_threshold):
             current.append(value)
         elif current:
             runs.append(current)
@@ -118,10 +128,22 @@ def bursts(read_bps: list[float | None], threshold: float) -> list[list[float]]:
     return runs
 
 
-def seconds_at_limit(run: list[float], limit: float) -> float:
-    """How long the same reads take under a byte-rate limit: each second needs at least one second,
-    and a second that read more than the limit needs bytes / limit seconds."""
-    return sum(max(1.0, value / limit) for value in run)
+def stretch(run: list[tuple[float, float]], bytes_limit: float | None,
+            iops_limit: float | None) -> tuple[float, int]:
+    """(time at the limits / time now, seconds now) for the part of a burst the limits slow down.
+
+    A second needs max(1, bytes / byte limit, operations / IOPS limit) seconds under the limits.
+    The ratio is taken from the first to the last second above a limit: seconds around it that stay
+    under the limits (the shoulders of a burst) are not slowed and must not dilute the ratio.
+    A burst with no second above a limit is not slowed at all (1.0)."""
+    def need(second: tuple[float, float]) -> float:
+        b, ops = second
+        return max(1.0, b / bytes_limit if bytes_limit else 0.0, ops / iops_limit if iops_limit else 0.0)
+    over = [k for k, second in enumerate(run) if need(second) > 1.0]
+    if not over:
+        return 1.0, len(run)
+    span = run[over[0]:over[-1] + 1]
+    return sum(need(second) for second in span) / len(span), len(span)
 
 
 def report(args: argparse.Namespace) -> int:
@@ -155,14 +177,16 @@ def report(args: argparse.Namespace) -> int:
         shown = " ".join(f"{v / unit:10.1f}" for v in row)
         print(f"{name:10s} {shown}  {2 * p999 / unit:10.1f}{'MiB/s' if unit > 1 else ' IOPS':6s}              "
               f"{'' if not given else f'{given / unit:.0f}':>11s}  {verdict}")
-    runs = bursts([None if i is None else i["read_bps"] for i in intervals], args.burst_mbps * MIB)
+    runs = bursts([None if i is None else (i["read_bps"], i["read_iops"]) for i in intervals],
+                  args.burst_mbps * MIB, args.burst_iops)
     if runs:
         lengths = sorted(len(r) for r in runs)
-        sizes = sorted(sum(r) for r in runs)
-        print(f"read bursts above {args.burst_mbps} MiB/s: {len(runs)}, median {lengths[len(lengths) // 2]} s and "
-              f"{sizes[len(sizes) // 2] / MIB / 1024:.2f} GiB, longest {lengths[-1]} s")
-        if limits["read_bps"]:
-            ratios = sorted((seconds_at_limit(r, limits["read_bps"]) / len(r), len(r)) for r in runs)
+        sizes = sorted(sum(b for b, _ in r) for r in runs)
+        print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS: {len(runs)}, "
+              f"median {lengths[len(lengths) // 2]} s and {sizes[len(sizes) // 2] / MIB / 1024:.2f} GiB, "
+              f"longest {lengths[-1]} s")
+        if limits["read_bps"] or limits["read_iops"]:
+            ratios = sorted(stretch(r, limits["read_bps"], limits["read_iops"]) for r in runs)
             worst, worst_len = ratios[-1]
             over = sum(1 for ratio, _ in ratios if ratio > args.burst_ratio)
             passed = over == 0
@@ -171,7 +195,7 @@ def report(args: argparse.Namespace) -> int:
                   f"median {ratios[len(ratios) // 2][0]:.2f}x, over {args.burst_ratio}x: {over}; "
                   f"{'yes' if passed else 'NO'}")
     else:
-        print(f"read bursts above {args.burst_mbps} MiB/s: none")
+        print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS: none")
     if any(limits.values()):
         print("PASS" if ok else "FAIL")
         return 0 if ok else 1
@@ -193,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--read-iops", type=float)
     r.add_argument("--write-iops", type=float)
     r.add_argument("--burst-mbps", type=float, default=20.0, help="MiB/s above which a second belongs to a burst")
+    r.add_argument("--burst-iops", type=float, default=200.0, help="read IOPS above which a second belongs to a burst")
     r.add_argument("--burst-ratio", type=float, default=2.0,
                    help="largest allowed (burst time at the limit) / (burst time now), per burst")
     args = parser.parse_args(argv)

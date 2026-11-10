@@ -84,13 +84,17 @@ same_tree() {
 fstab_uuid() { awk -v t="$PV_DIR" '$2 == t && $1 ~ /^UUID=/ {print substr($1, 6)}' "$FSTAB"; }
 
 # Does the disk hold exactly the original copy? Read-only look, nothing written to either side.
-disk_equals_orig() {
+# 0 = same, 1 = differs, 2 = could not look (no read-only mount, or the comparison itself failed).
+# It runs inside $(...), where errexit is off, so every failure is turned into 2 by hand.
+disk_vs_orig() {
   local dev=$1 diff rc=0
-  mkdir -p "$STAGING"
-  mount -o ro "$dev" "$STAGING"
+  mkdir -p "$STAGING" || return 2
+  mount -o ro "$dev" "$STAGING" || return 2
   diff=$(tree_diff "$ORIG_DIR" "$STAGING") || rc=$?
-  umount "$STAGING"
-  (( rc == 0 )) && [[ -z "$diff" ]]
+  umount "$STAGING" || return 2
+  (( rc == 0 )) || return 2
+  [[ -z "$diff" ]] || return 1
+  return 0
 }
 
 # Where the volume stands when it is not mounted but an original copy exists.
@@ -103,6 +107,8 @@ disk_equals_orig() {
 #                cutover the current data is on that disk, the original copy is old.
 #   disk-ahead   that disk is attached and holds something else than the original copy: data written
 #                after the cutover. Mount it; going back would lose that data.
+#   disk-unreadable that disk is attached but could not be compared (read-only mount refused, for example
+#                a damaged file system or the device still mounted read-write elsewhere): do not guess.
 #   manual       the volume path has content of its own: someone or something wrote there.
 volume_state() {
   if mountpoint -q "$PV_DIR"; then echo mounted; return; fi
@@ -112,7 +118,8 @@ volume_state() {
   if [[ -z "$uuid" ]]; then echo interrupted; return; fi
   dev=$(blkid -U "$uuid" 2>/dev/null || true)
   if [[ -z "$dev" ]]; then echo disk-missing; return; fi
-  if disk_equals_orig "$dev"; then echo interrupted; else echo disk-ahead; fi
+  local rc=0; disk_vs_orig "$dev" || rc=$?
+  case "$rc" in 0) echo interrupted ;; 1) echo disk-ahead ;; *) echo disk-unreadable ;; esac
 }
 
 check() {
@@ -124,6 +131,7 @@ check() {
     interrupted) say "INTERRUPTED cutover: $PV_DIR is empty or missing and not mounted, the data is in $ORIG_DIR; Oracle must not start. Run rollback" ;;
     disk-missing) say "DISK NOT ATTACHED: fstab names UUID=$(fstab_uuid) for $PV_DIR but no such disk; the data since the cutover is on that disk. Attach it and mount $PV_DIR; do not roll back" ;;
     disk-ahead) say "NOT MOUNTED: the disk for $PV_DIR holds data written after the cutover. Mount it (mount $PV_DIR); do not roll back" ;;
+    disk-unreadable) say "COULD NOT READ the disk named in fstab (UUID=$(fstab_uuid)) for $PV_DIR: inspect by hand; do not start Oracle, do not roll back" ;;
     manual) say "not a mount point but $PV_DIR has content while $ORIG_DIR exists: inspect by hand" ;;
     *) say "not a mount point (data on the node's root file system)" ;;
   esac

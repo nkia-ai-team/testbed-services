@@ -24,6 +24,7 @@ export ORIG_DIR="$PV_DIR.orig" FSTAB="$TMP_ROOT/fstab" STAGING="$TMP_ROOT/stagin
 REAL_RSYNC=$(command -v rsync)
 cat >"$TMP_ROOT/bin/rsync" <<SH
 #!/usr/bin/env bash
+case " \$* " in *" -aHAXn "*) [[ -n "\${FAKE_DRYRUN_FAIL:-}" ]] && exit 23 ;; esac   # fails with no output
 "$REAL_RSYNC" "\$@" || exit \$?
 case " \$* " in *" -aHAXn "*) exit 0 ;; esac
 if [[ -n "\${FAKE_CORRUPT:-}" && ! -e "\$FAKE_LOG.corrupted" ]]; then
@@ -33,7 +34,7 @@ SH
 cat >"$TMP_ROOT/bin/mount" <<'SH'
 #!/usr/bin/env bash
 printf 'mount %s\n' "$*" >>"$FAKE_LOG"
-[[ "$1" == -o && "$2" == ro ]] && shift 2
+if [[ "$1" == -o && "$2" == ro ]]; then [[ -n "${FAKE_RO_FAIL:-}" ]] && exit 32; shift 2; fi
 if [[ $# -eq 1 ]]; then [[ -n "${FAKE_MOUNT_FAIL:-}" ]] && exit 32
   target=$1; src=$(awk -v t="$1" '$2 == t {print $1}' "$FSTAB")
   [[ "$src" == UUID=fake-uuid ]] || exit 32; src=$FAKE_DEV
@@ -103,7 +104,7 @@ reset() {
   rm -rf "$TMP_ROOT/lp" "$FAKE_DISK" "$FAKE_DISK.label" "$STAGING" "$TMP_ROOT/by-id-link"; : >"$FAKE_TABLE"; : >"$FAKE_LOG"
   rm -f "$FAKE_LOG.corrupted"
   printf 'LABEL=cloudimg-rootfs / ext4 discard 0 1\n' >"$FSTAB"
-  unset FAKE_PMON FAKE_FSROOTS FAKE_EXTRA_TARGETS FAKE_SIGNATURE FAKE_PARTITIONED FAKE_SIZE FAKE_TYPE FAKE_CORRUPT FAKE_MOUNT_FAIL
+  unset FAKE_PMON FAKE_FSROOTS FAKE_EXTRA_TARGETS FAKE_SIGNATURE FAKE_PARTITIONED FAKE_SIZE FAKE_TYPE FAKE_CORRUPT FAKE_MOUNT_FAIL FAKE_RO_FAIL FAKE_DRYRUN_FAIL
   mkdir -p "$PV_DIR/FREE/FREEPDB1" "$PV_DIR/diag/rdbms" "$PV_DIR/dbconfig/FREE" "$FAKE_DISK"
   chmod 0777 "$PV_DIR"
   head -c 300000 /dev/urandom >"$PV_DIR/FREE/FREEPDB1/users01.dbf"
@@ -240,3 +241,35 @@ expect_fail "cutover over a stopped one" bash "$TOOL" cutover "$DEV"
 bash "$TOOL" rollback >/dev/null || fail "rollback must undo a cutover stopped before mkdir"
 [[ "$(tree_sum "$PV_DIR")" == "$before" && ! -e "$ORIG_DIR" ]] || fail "rollback did not bring the original back"
 echo "[PASS] a cutover stopped before the mount point existed is reported and undone"
+
+# A disk that cannot be compared (read-only mount refused, or the comparison fails without output) is
+# neither an interrupted cutover nor newer data: check says so, rollback refuses, nothing changes.
+# The look at the disk is read-only.
+interrupted_with_disk() {  # the cutover stopped after fstab named the disk, the disk holds the original copy
+  reset; bash "$TOOL" prepare "$DEV" >/dev/null; before=$(tree_sum "$PV_DIR")
+  FAKE_MOUNT_FAIL=1 expect_fail "disk that does not mount" bash "$TOOL" cutover "$DEV"
+  : >"$FAKE_LOG"
+}
+interrupted_with_disk
+report=$(bash "$TOOL" check)
+[[ "$report" == *"INTERRUPTED cutover"* ]] || fail "precondition: $report"
+mounts=$(grep '^mount ' "$FAKE_LOG")
+[[ -n "$mounts" ]] && ! grep -v "^mount -o ro $DEV " <<<"$mounts" | grep -q . || fail "check may mount the disk read-only only: $mounts"
+for knob in FAKE_RO_FAIL FAKE_DRYRUN_FAIL; do
+  interrupted_with_disk
+  report=$(env "$knob=1" bash "$TOOL" check)
+  [[ "$report" == *"COULD NOT READ"* && "$report" != *INTERRUPTED* && "$report" != *"written after"* ]] \
+    || fail "$knob: an unreadable disk must be reported as such: $report"
+  env "$knob=1" bash "$TOOL" rollback >/dev/null 2>&1 && fail "$knob: rollback must refuse an unreadable disk"
+  [[ -d "$ORIG_DIR" && -d "$PV_DIR" && -z "$(ls -A "$PV_DIR")" && ! -s "$FAKE_TABLE" ]] || fail "$knob: a refused rollback changed the state"
+  [[ $(grep -c " $PV_DIR " "$FSTAB") -eq 1 ]] || fail "$knob: a refused rollback touched fstab"
+done
+echo "[PASS] the disk is only looked at read-only, and a disk that cannot be compared is not rolled back"
+
+# Content of its own at the volume path next to an original copy: hands off.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null
+mv -T "$PV_DIR" "$ORIG_DIR"; mkdir "$PV_DIR"; printf 'new database?\n' >"$PV_DIR/stray"
+[[ "$(bash "$TOOL" check)" == *"inspect by hand"* ]] || fail "check must hand a non-empty volume path to a person"
+expect_fail "rollback over content of its own" bash "$TOOL" rollback
+[[ -f "$PV_DIR/stray" && -d "$ORIG_DIR" ]] || fail "a refused rollback changed the directories"
+echo "[PASS] a volume path with its own content next to an original copy is left to a person"

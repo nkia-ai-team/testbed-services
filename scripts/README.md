@@ -91,6 +91,12 @@ scripts/test-oracle-maintenance.sh
   표시를 해서 디스크가 안 붙은 채로는 Oracle 이 빈 디렉터리에 새 DB 를 만들지 못하고 실패한다.
   fstab 은 nofail 이라 디스크가 없어도 부팅은 막히지 않는다.
 - `rollback [--to-cutover]`: 지금 데이터를 원래 디렉터리로 되가져와(기본) 되돌린다. 디스크의 데이터는 남는다.
+  이름 바꾸기 뒤에 멈춘 전환(볼륨 경로가 없거나 비었고, fstab 이 디스크를 아직 안 적었거나 그 디스크가
+  `.orig` 와 같음)도 되돌린다. 거절하는 상태: fstab 이 적은 디스크가 없음(전환 뒤 데이터가 그 디스크에
+  있음, 붙이고 마운트), 그 디스크에 `.orig` 와 다른 데이터(마운트), 그 디스크를 읽을 수 없음, 볼륨 경로에
+  자기 내용이 있음(손으로 확인).
+- `check`: 위 상태를 따로 알린다. 볼륨 경로가 마운트 안 됐고 `.orig` 가 있을 때만 fstab 의 디스크를 읽기
+  전용으로 잠깐 붙여 `.orig` 와 비교한다(13G 체크섬이라 몇 분 걸린다).
 - 데이터를 지우는 동작은 없다. `.orig` 와 디스크를 지우는 것은 사람 결정이다.
 
 ```bash
@@ -99,11 +105,14 @@ scripts/test-oracle-data-disk.sh
 
 `disk-io-rate.py` 는 104 에서 돈다. `collect` 는 ssh 하나로 Proxmox 호스트에서 그 디스크 LV 의 블록 통계
 (`/sys/block/dm-N/stat`)를 1초마다 읽어 원시 줄을 쌓는다(게스트 안 프로세스 없음, VM 모니터 소켓 안 씀).
-`report` 는 읽기, 쓰기 bps 와 IOPS 의 p50, p99, p99.9, 최대, "p99.9 가 한도 절반 아래" 가 되는 가장 작은
-한도, 읽기 몰림(연속 초)의 지금 소요와 한도에서의 소요를 내고, 한도를 주면 PASS 또는 FAIL 을 낸다.
+`report` 는 읽기, 쓰기 바이트율(MiB/s, qm `mbps_rd`, `mbps_wr` 에 같은 숫자)과 IOPS 의 p50, p99, p99.9, 최대,
+"p99.9 가 한도 절반 아래" 가 되는 가장 작은 한도, 읽기 몰림의 지금 소요와 한도(바이트, IOPS)에서의 소요를 낸다.
+한도를 주면 두 기준(p99.9 < 한도/2, 몰림의 느려지는 구간이 2배 이하)으로 PASS 또는 FAIL. IOPS 는 호스트
+블록 층 수라 qm `iops_rd`, `iops_wr` 로 옮길 때 QEMU 수와 한 번 비교한 비율로 나눈다.
 
 ```bash
-scripts/disk-io-rate.py collect --host root@192.168.200.66 --volume vmdata/vm-103-disk-1 --seconds 86400 --out sdb.raw
+# <vg>/<lv> 는 qm config <vmid> --current 에 나온 그 디스크의 볼륨 이름(짐작 금지)
+scripts/disk-io-rate.py collect --host root@192.168.200.66 --volume <vg>/<lv> --seconds 86400 --out sdb.raw
 scripts/disk-io-rate.py report sdb.raw --read-mbps <값> --write-mbps <값> --read-iops <값> --write-iops <값>
 scripts/test-disk-io-rate.sh
 ```
