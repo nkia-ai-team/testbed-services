@@ -33,6 +33,7 @@ SH
 cat >"$TMP_ROOT/bin/mount" <<'SH'
 #!/usr/bin/env bash
 printf 'mount %s\n' "$*" >>"$FAKE_LOG"
+[[ "$1" == -o && "$2" == ro ]] && shift 2
 if [[ $# -eq 1 ]]; then [[ -n "${FAKE_MOUNT_FAIL:-}" ]] && exit 32
   target=$1; src=$(awk -v t="$1" '$2 == t {print $1}' "$FSTAB")
   [[ "$src" == UUID=fake-uuid ]] || exit 32; src=$FAKE_DEV
@@ -67,6 +68,8 @@ cat >"$TMP_ROOT/bin/blkid" <<'SH'
 args=" $* "
 labelled() { [[ -f "$FAKE_DISK.label" ]]; }
 if [[ "$args" == *" -L "* ]]; then labelled && echo "$FAKE_DEV"; exit 0; fi
+if [[ "$args" == *" -U fake-uuid "* ]]; then labelled && echo "$FAKE_DEV"; exit 0; fi
+if [[ "$args" == *" -U "* ]]; then exit 2; fi
 if [[ "$args" == *" -s LABEL "* ]]; then labelled && cat "$FAKE_DISK.label"; exit 0; fi
 if [[ "$args" == *" -s UUID "* ]]; then labelled && echo fake-uuid; exit 0; fi
 if [[ "$args" == *" -s TYPE "* ]]; then { labelled && echo ext4; } || printf '%s' "${FAKE_SIGNATURE:-}"; exit 0; fi
@@ -207,3 +210,33 @@ FAKE_CORRUPT="$ORIG_DIR/FREE/FREEPDB1/users01.dbf" expect_fail "differing rollba
 [[ -L "$PV_DIR" ]] || fail "a differing rollback copy still unmounted the disk"
 grep -q " $PV_DIR " "$FSTAB" || fail "a differing rollback copy removed the fstab line"
 echo "[PASS] rollback refuses a copy back that differs and stays on the disk"
+
+# (a) After a finished cutover and writes, the node boots without the disk: not an interrupted cutover.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null; bash "$TOOL" cutover "$DEV" >/dev/null
+printf 'after\n' >"$PV_DIR/FREE/new.log"
+umount "$PV_DIR"; mv "$FAKE_DISK.label" "$TMP_ROOT/label.away"   # disk gone: blkid finds no such UUID
+report=$(bash "$TOOL" check)
+[[ "$report" != *INTERRUPTED* && "$report" == *"DISK NOT ATTACHED"* ]] || fail "check must not call a missing disk an interrupted cutover: $report"
+expect_fail "rollback without the disk" bash "$TOOL" rollback
+expect_fail "rollback --to-cutover without the disk" bash "$TOOL" rollback --to-cutover
+[[ -d "$PV_DIR" && -z "$(ls -A "$PV_DIR")" && -d "$ORIG_DIR" ]] || fail "a refused rollback changed the directories"
+[[ $(grep -c " $PV_DIR " "$FSTAB") -eq 1 ]] || fail "a refused rollback touched fstab"
+echo "[PASS] a missing disk after a finished cutover is reported and rollback refuses"
+
+# (b) Same, but the disk is attached and holds data written after the cutover: refuse, say mount.
+mv "$TMP_ROOT/label.away" "$FAKE_DISK.label"
+[[ "$(bash "$TOOL" check)" == *"holds data written after the cutover"* ]] || fail "check must tell to mount the disk"
+expect_fail "rollback over newer data on the disk" bash "$TOOL" rollback
+[[ -d "$PV_DIR" && -z "$(ls -A "$PV_DIR")" && -d "$ORIG_DIR" && ! -s "$FAKE_TABLE" ]] || fail "a refused rollback changed the state"
+[[ $(grep -c " $PV_DIR " "$FSTAB") -eq 1 ]] || fail "a refused rollback touched fstab"
+mount "$PV_DIR"; [[ -f "$PV_DIR/FREE/new.log" ]] || fail "mounting the disk must bring the newer data back"
+echo "[PASS] a disk with newer data than the original copy is not rolled back; mounting it restores the volume"
+
+# The cutover stopped between the rename and mkdir: the volume path is missing, fstab untouched.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null; before=$(tree_sum "$PV_DIR")
+mv -T "$PV_DIR" "$ORIG_DIR"
+[[ "$(bash "$TOOL" check)" == *"INTERRUPTED cutover"* ]] || fail "check must report a missing volume path with an original copy"
+expect_fail "cutover over a stopped one" bash "$TOOL" cutover "$DEV"
+bash "$TOOL" rollback >/dev/null || fail "rollback must undo a cutover stopped before mkdir"
+[[ "$(tree_sum "$PV_DIR")" == "$before" && ! -e "$ORIG_DIR" ]] || fail "rollback did not bring the original back"
+echo "[PASS] a cutover stopped before the mount point existed is reported and undone"
