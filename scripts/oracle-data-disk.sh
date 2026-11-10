@@ -63,10 +63,35 @@ oracle_stopped() {
 
 fstab_line() { printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "$1" "$PV_DIR"; }
 
+# fstab is replaced, never edited in place: a node that stops halfway keeps the old or the new file.
+fstab_rewrite() {  # fstab_rewrite add <uuid> | fstab_rewrite drop
+  local tmp; tmp=$(mktemp "$FSTAB.XXXXXX")
+  grep -vF " $PV_DIR " "$FSTAB" >"$tmp" || true
+  [[ "$1" == add ]] && fstab_line "$2" >>"$tmp"
+  chmod --reference="$FSTAB" "$tmp"
+  sync "$tmp"
+  mv -f "$tmp" "$FSTAB"
+  sync "$(dirname "$FSTAB")"
+}
+
+# Same content, ownership and modes on both sides: a checksum pass that would change nothing.
+same_tree() {
+  local diff; diff=$(rsync -aHAXn --checksum --numeric-ids --delete --exclude=/lost+found --itemize-changes "$1"/ "$2"/)
+  [[ -z "$diff" ]] || die "copy differs from its source: $diff"
+}
+
+# A cutover that stopped after the rename (the disk did not mount, or the node stopped): the volume
+# path is an empty directory, the data is in the original copy and fstab may already name the disk.
+interrupted() { ! mountpoint -q "$PV_DIR" && [[ -d "$ORIG_DIR" && -d "$PV_DIR" && -z "$(ls -A "$PV_DIR")" ]]; }
+
 check() {
   say "volume directory: $PV_DIR"
   if mountpoint -q "$PV_DIR"; then
     say "mounted from $(findmnt -n -o SOURCE --target "$PV_DIR") ($(df -h --output=size,used,avail,pcent "$PV_DIR" | tail -1 | xargs))"
+  elif interrupted; then
+    say "INTERRUPTED cutover: $PV_DIR is empty and not mounted, the data is in $ORIG_DIR; Oracle must not start. Run rollback"
+  elif [[ -d "$ORIG_DIR" ]]; then
+    say "not a mount point but $PV_DIR is not empty while $ORIG_DIR exists: inspect by hand"
   else
     say "not a mount point (data on the node's root file system)"
   fi
@@ -89,56 +114,72 @@ prepare() {
 }
 
 cutover() {
-  local dev uuid owner mode
+  local dev uuid
   dev=$(readlink -f "${1:?device}")
   ours "$dev" || die "$dev is not the prepared $LABEL disk"
   if mountpoint -q "$PV_DIR"; then
     [[ "$(findmnt -n -o SOURCE --target "$PV_DIR")" == "$dev" ]] || die "$PV_DIR is mounted from something else"
     say "already cut over"; return 0
   fi
+  interrupted && die "an earlier cutover stopped after the rename; run rollback first"
   [[ -d "$PV_DIR" ]] || die "$PV_DIR does not exist"
   [[ ! -e "$ORIG_DIR" ]] || die "$ORIG_DIR already exists"
   oracle_stopped
   uuid=$(blkid -o value -s UUID "$dev")
-  owner=$(stat -c '%u:%g' "$PV_DIR"); mode=$(stat -c '%a' "$PV_DIR")
   mkdir -p "$STAGING"
   mount "$dev" "$STAGING"
   trap 'mountpoint -q "$STAGING" && umount "$STAGING"' EXIT
   rsync -aHAX --sparse --numeric-ids "$PV_DIR"/ "$STAGING"/
-  # The copy must be identical before anything is swapped: a checksum pass that would change nothing.
-  local diff; diff=$(rsync -aHAXn --checksum --numeric-ids --delete --exclude=/lost+found --itemize-changes "$PV_DIR"/ "$STAGING"/)
-  [[ -z "$diff" ]] || die "copy differs from the original: $diff"
-  chown "$owner" "$STAGING"; chmod "$mode" "$STAGING"
-  umount "$STAGING"; trap - EXIT
+  # rsync -a with trailing slashes gives the disk's root directory the volume directory's owner and
+  # mode (root 0777); the check below compares the root directory too. Nothing is swapped unless the
+  # copy is identical.
+  same_tree "$PV_DIR" "$STAGING"
+  umount "$STAGING"; trap - EXIT   # unmounting writes the copy out
+  # From here on a failure leaves the interrupted state that check reports and rollback undoes.
+  trap 'say "cutover stopped after the rename: run rollback before starting Oracle"' ERR
   mv -T "$PV_DIR" "$ORIG_DIR"
   mkdir "$PV_DIR"
   chattr +i "$PV_DIR"
-  grep -F " $PV_DIR " "$FSTAB" >/dev/null || fstab_line "$uuid" >>"$FSTAB"
+  sync "$(dirname "$PV_DIR")"
+  fstab_rewrite add "$uuid"
   systemctl daemon-reload
   mount "$PV_DIR"
-  [[ "$(findmnt -n -o SOURCE --target "$PV_DIR")" == "$dev" ]] || die "$PV_DIR did not mount from $dev"
+  [[ "$(findmnt -n -o SOURCE --target "$PV_DIR")" == "$dev" ]] || die "$PV_DIR did not mount from $dev; run rollback"
+  trap - ERR
   say "cut over: $PV_DIR now on $dev, original kept at $ORIG_DIR"
+}
+
+# Put the original directory back at the volume path (the mount point is already gone).
+restore_dir() {
+  fstab_rewrite drop
+  systemctl daemon-reload
+  chattr -i "$PV_DIR"
+  rmdir "$PV_DIR"
+  mv -T "$ORIG_DIR" "$PV_DIR"
+  sync "$(dirname "$PV_DIR")"
 }
 
 rollback() {
   local mode=${1:-current} dev
   [[ "$mode" == current || "$mode" == --to-cutover ]] || die "unknown rollback mode $mode"
   [[ -d "$ORIG_DIR" ]] || die "no original copy at $ORIG_DIR"
-  mountpoint -q "$PV_DIR" || die "$PV_DIR is not mounted; nothing to roll back"
   oracle_stopped
+  if interrupted; then
+    # The disk never took over, so the original copy is the current data whatever the mode.
+    restore_dir
+    say "rolled back an interrupted cutover: $PV_DIR is the original directory again"
+    return 0
+  fi
+  mountpoint -q "$PV_DIR" || die "$PV_DIR is not mounted and not empty; nothing safe to do automatically"
   dev=$(findmnt -n -o SOURCE --target "$PV_DIR")
   if [[ "$mode" == current ]]; then
     # Bring the data written since the cutover back; the disk keeps its copy as well.
     rsync -aHAX --sparse --numeric-ids --delete --exclude=/lost+found "$PV_DIR"/ "$ORIG_DIR"/
+    sync "$ORIG_DIR"
+    same_tree "$PV_DIR" "$ORIG_DIR"
   fi
   umount "$PV_DIR"
-  local tmp; tmp=$(mktemp "$FSTAB.XXXXXX")
-  grep -vF " $PV_DIR " "$FSTAB" >"$tmp" || true
-  cat "$tmp" >"$FSTAB"; rm -f "$tmp"
-  systemctl daemon-reload
-  chattr -i "$PV_DIR"
-  rmdir "$PV_DIR"
-  mv -T "$ORIG_DIR" "$PV_DIR"
+  restore_dir
   say "rolled back ($mode): $PV_DIR is on the root file system again; $dev still holds its copy"
 }
 

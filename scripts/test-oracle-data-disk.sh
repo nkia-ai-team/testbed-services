@@ -19,10 +19,22 @@ export FAKE_DEV="$DEV" FAKE_DISK="$TMP_ROOT/disk" FAKE_TABLE="$TMP_ROOT/mounts" 
 export PV_DIR="$TMP_ROOT/lp/pvc-x_rca-testbed-banking_oracledata-testbed-oracle-0"
 export ORIG_DIR="$PV_DIR.orig" FSTAB="$TMP_ROOT/fstab" STAGING="$TMP_ROOT/staging"
 
+# rsync is real; FAKE_CORRUPT names a file to change right after the first copying (not dry-run)
+# call, standing for a copy that went wrong.
+REAL_RSYNC=$(command -v rsync)
+cat >"$TMP_ROOT/bin/rsync" <<SH
+#!/usr/bin/env bash
+"$REAL_RSYNC" "\$@" || exit \$?
+case " \$* " in *" -aHAXn "*) exit 0 ;; esac
+if [[ -n "\${FAKE_CORRUPT:-}" && ! -e "\$FAKE_LOG.corrupted" ]]; then
+  printf 'x' >>"\$FAKE_CORRUPT"; : >"\$FAKE_LOG.corrupted"
+fi
+SH
 cat >"$TMP_ROOT/bin/mount" <<'SH'
 #!/usr/bin/env bash
 printf 'mount %s\n' "$*" >>"$FAKE_LOG"
-if [[ $# -eq 1 ]]; then target=$1; src=$(awk -v t="$1" '$2 == t {print $1}' "$FSTAB")
+if [[ $# -eq 1 ]]; then [[ -n "${FAKE_MOUNT_FAIL:-}" ]] && exit 32
+  target=$1; src=$(awk -v t="$1" '$2 == t {print $1}' "$FSTAB")
   [[ "$src" == UUID=fake-uuid ]] || exit 32; src=$FAKE_DEV
 else src=$1; target=$2; fi
 [[ "$src" == "$FAKE_DEV" ]] || exit 32
@@ -86,8 +98,9 @@ export PATH="$TMP_ROOT/bin:$PATH"
 
 reset() {
   rm -rf "$TMP_ROOT/lp" "$FAKE_DISK" "$FAKE_DISK.label" "$STAGING" "$TMP_ROOT/by-id-link"; : >"$FAKE_TABLE"; : >"$FAKE_LOG"
+  rm -f "$FAKE_LOG.corrupted"
   printf 'LABEL=cloudimg-rootfs / ext4 discard 0 1\n' >"$FSTAB"
-  unset FAKE_PMON FAKE_FSROOTS FAKE_EXTRA_TARGETS FAKE_SIGNATURE FAKE_PARTITIONED FAKE_SIZE FAKE_TYPE
+  unset FAKE_PMON FAKE_FSROOTS FAKE_EXTRA_TARGETS FAKE_SIGNATURE FAKE_PARTITIONED FAKE_SIZE FAKE_TYPE FAKE_CORRUPT FAKE_MOUNT_FAIL
   mkdir -p "$PV_DIR/FREE/FREEPDB1" "$PV_DIR/diag/rdbms" "$PV_DIR/dbconfig/FREE" "$FAKE_DISK"
   chmod 0777 "$PV_DIR"
   head -c 300000 /dev/urandom >"$PV_DIR/FREE/FREEPDB1/users01.dbf"
@@ -127,6 +140,7 @@ bash "$TOOL" cutover "$TMP_ROOT/by-id-link" >/dev/null
 [[ "$(tree_sum "$FAKE_DISK")" == "$before" ]] || fail "the disk does not hold an identical copy"
 [[ "$(tree_sum "$ORIG_DIR")" == "$before" ]] || fail "the original copy changed"
 [[ -L "$PV_DIR" && "$(readlink "$PV_DIR")" == "$FAKE_DISK" ]] || fail "the volume path is not mounted from the disk"
+[[ "$(stat -c %a "$FAKE_DISK")" == 777 ]] || fail "the disk's root directory did not get the volume directory's mode"
 [[ $(du -k "$FAKE_DISK/FREE/temp01.dbf" | cut -f1) -lt 1024 ]] || fail "the sparse temp file was filled in"
 grep -q "^chattr +i $PV_DIR\$" "$FAKE_LOG" || fail "the empty mount point is not made immutable"
 grep -q '^systemctl daemon-reload' "$FAKE_LOG" || fail "systemd was not told about the new fstab line"
@@ -146,7 +160,9 @@ expect_fail "unknown rollback mode" bash "$TOOL" rollback --sideways
 
 # rollback (default): data written after the cutover comes back, the disk keeps its copy.
 printf 'after\n' >"$PV_DIR/FREE/new.log"
+rm "$PV_DIR/diag/rdbms/alert.log"   # removed after the cutover: must be gone from the restored copy too
 bash "$TOOL" rollback >/dev/null
+[[ ! -e "$PV_DIR/diag/rdbms/alert.log" ]] || fail "rollback kept a file deleted after the cutover"
 [[ -d "$PV_DIR" && ! -L "$PV_DIR" && ! -e "$ORIG_DIR" ]] || fail "rollback did not restore the directory"
 [[ "$(cat "$PV_DIR/FREE/new.log")" == after ]] || fail "rollback lost data written after the cutover"
 [[ -f "$FAKE_DISK/FREE/new.log" ]] || fail "rollback emptied the disk"
@@ -162,3 +178,32 @@ printf 'after\n' >"$PV_DIR/FREE/new.log"
 bash "$TOOL" rollback --to-cutover >/dev/null
 [[ "$(tree_sum "$PV_DIR")" == "$before" ]] || fail "--to-cutover did not return the cutover copy"
 echo "[PASS] rollback --to-cutover returns the copy taken at cutover"
+
+# A copy that differs from the original stops the cutover before anything is renamed.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null; before=$(tree_sum "$PV_DIR"); cp "$FSTAB" "$TMP_ROOT/fstab.before"
+FAKE_CORRUPT="$FAKE_DISK/FREE/FREEPDB1/users01.dbf" expect_fail "differing copy" bash "$TOOL" cutover "$DEV"
+[[ -d "$PV_DIR" && ! -L "$PV_DIR" && ! -e "$ORIG_DIR" ]] || fail "a differing copy still renamed the original"
+[[ "$(tree_sum "$PV_DIR")" == "$before" ]] || fail "a differing copy changed the original"
+cmp -s "$FSTAB" "$TMP_ROOT/fstab.before" || fail "a differing copy touched fstab"
+[[ ! -s "$FAKE_TABLE" ]] || fail "a differing copy left something mounted: $(cat "$FAKE_TABLE")"
+echo "[PASS] cutover refuses a copy that differs and leaves everything as it was"
+
+# The disk does not mount after the rename: check says so, cutover will not run again, rollback undoes it.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null; before=$(tree_sum "$PV_DIR")
+FAKE_MOUNT_FAIL=1 expect_fail "disk that does not mount" bash "$TOOL" cutover "$DEV"
+[[ -d "$ORIG_DIR" && -d "$PV_DIR" && ! -L "$PV_DIR" && -z "$(ls -A "$PV_DIR")" ]] || fail "not the interrupted state"
+[[ "$(bash "$TOOL" check)" == *"INTERRUPTED cutover"* ]] || fail "check does not report the interrupted cutover"
+expect_fail "cutover over an interrupted one" bash "$TOOL" cutover "$DEV"
+FAKE_PMON=1 expect_fail "rollback of an interrupted cutover with Oracle running" bash "$TOOL" rollback
+bash "$TOOL" rollback >/dev/null || fail "rollback could not undo the interrupted cutover"
+[[ "$(tree_sum "$PV_DIR")" == "$before" && ! -e "$ORIG_DIR" ]] || fail "rollback did not bring the original back"
+! grep -q " $PV_DIR " "$FSTAB" || fail "rollback of the interrupted cutover left the fstab line"
+grep -q "^chattr -i $PV_DIR\$" "$FAKE_LOG" || fail "rollback did not lift the immutable flag"
+echo "[PASS] an interrupted cutover is reported by check and undone by rollback"
+
+# A rollback copy that differs stops before the disk is unmounted.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null; bash "$TOOL" cutover "$DEV" >/dev/null
+FAKE_CORRUPT="$ORIG_DIR/FREE/FREEPDB1/users01.dbf" expect_fail "differing rollback copy" bash "$TOOL" rollback
+[[ -L "$PV_DIR" ]] || fail "a differing rollback copy still unmounted the disk"
+grep -q " $PV_DIR " "$FSTAB" || fail "a differing rollback copy removed the fstab line"
+echo "[PASS] rollback refuses a copy back that differs and stays on the disk"
