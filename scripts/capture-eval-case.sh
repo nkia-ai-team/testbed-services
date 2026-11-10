@@ -31,6 +31,10 @@ Capture contract version:
                                window [normal.start, t2+30m], phases[]/
                                clickhouse_tables[] (12-table CH catalog), no
                                assembled/. Mutually exclusive with --normal-segment.
+                               v4 (spec §2.3): every other CH/PG table is
+                               discovered from the source catalog and appended;
+                               meta adds product_version, postgres_scope,
+                               clickhouse_excluded, victoriametrics_export.
                                phases JSON is the phases[] array the runner
                                produced: trainer_reset{at,golden_id,golden_sha256}
                                and normal|buffer|injection|cooldown{start,end}.
@@ -240,6 +244,15 @@ if [[ "$self_check" == true ]]; then
   if [[ -x "$sc_assemble" ]]; then
     sc_run "assemble clickhouse-local roundtrip" env EVAL_CASE_ROOT="$output_root" "$sc_assemble" --self-check
   fi
+  # v4 자동 발견 도구(2026-11-10 R1): 캡처 도중이 아니라 큐 시작 전에 없음을 알린다.
+  sc_scope_base="$(dirname "$(realpath "$0")")"
+  for sc_pair in pg-scope-export.py:PG_SCOPE_TOOL ch-scope-plan.py:CH_SCOPE_TOOL; do
+    sc_tool="${sc_pair%%:*}"
+    sc_override_var="${sc_pair#*:}"
+    sc_override="${!sc_override_var:-}"
+    sc_run "scope tool present ($sc_tool)" bash -c \
+      "test -f '$sc_override' || test -f '$sc_scope_base/scenarios/$sc_tool' || test -f '$sc_scope_base/scenario-contracts/$sc_tool'"
+  done
   sc_run "output root writable ($output_root)" bash -c "mkdir -p '$output_root' && touch '$output_root/.self-check' && rm -f '$output_root/.self-check'"
   if [[ -n "${ARCHIVE_SSH_TARGET:-}" ]]; then
     sc_run "archive ssh (${ARCHIVE_SSH_TARGET})" \
@@ -793,6 +806,11 @@ curl --fail --silent --show-error --get "${VM_URL%/}/api/v1/export" \
   --data-urlencode "start=$capture_start" \
   --data-urlencode "end=$capture_end" \
   --output "$staging_dir/data/victoriametrics.export"
+# 지표는 구간 안 모든 시계열을 담는다(이름 조건 {__name__!=""}). v4 meta 에 시계열 수와 크기를 남긴다.
+victoriametrics_export_json=$(jq -cn \
+  --argjson series "$(wc -l < "$staging_dir/data/victoriametrics.export")" \
+  --argjson bytes "$(stat -c %s "$staging_dir/data/victoriametrics.export")" \
+  '{file:"data/victoriametrics.export", match:"{__name__!=\"\"}", series:$series, bytes:$bytes}')
 
 # ClickHouse Parquet exports buffer a full row group in memory. The default
 # 1M-row row group made the production window's otel_traces (~567k wide trace
@@ -840,9 +858,29 @@ ch_query() {
   curl --fail --silent --show-error --data-binary "$query" "${CH_URL%/}/"
 }
 
+# ch_post <url settings> <query> <output|->: 13개 밖 표(v4 자동 발견)용. 설정을 호출마다
+# 받아 실행 시간 상한을 건다. 13개 표의 ch_export, ch_query 는 그대로 둔다.
+ch_post() {
+  local settings=$1 query=$2 output=$3 credential
+  local url="${CH_URL%/}/?${settings}"
+  if [[ -n "$CH_USER" ]]; then
+    credential="${CH_USER}:${CH_PASSWORD}"
+    credential=${credential//\\/\\\\}
+    credential=${credential//\"/\\\"}
+    credential=${credential//$'\n'/\\n}
+    credential=${credential//$'\r'/\\r}
+    printf 'user = "%s"\n' "$credential" |
+      curl --config - --fail --silent --show-error --data-binary "$query" "$url" --output "$output"
+    return
+  fi
+  curl --fail --silent --show-error --data-binary "$query" "$url" --output "$output"
+}
+
 ch_start="parseDateTime64BestEffort('$capture_start')"
 ch_end="parseDateTime64BestEffort('$capture_end')"
 clickhouse_tables_json='[]'
+clickhouse_excluded_json='[]'
+ch_discovered_count=0
 if [[ "$v3_mode" == true ]]; then
   # ClickHouse capture — v3 12-table catalog (spec §2.2). Every table is scoped
   # to the capture window; none is exported whole. Each entry records
@@ -909,9 +947,96 @@ if [[ "$v3_mode" == true ]]; then
     clickhouse_tables_json=$(jq -c --argjson e "$entry_json" '. + [$e]' <<<"$clickhouse_tables_json")
   done
 
+  # ------------------------------------------------------------
+  # v4 자동 발견 (2026-11-10 R1, spec §2.3). 위 13개는 이름, 파일 자리, 형식, meta 항목을 그대로
+  # 두고, 원천 CH 의 system 표에서 그 밖의 표를 모두 찾아 clickhouse_tables[] 뒤에 붙인다.
+  # 무엇을 어떻게 자를지는 scenarios/ch-scope-plan.py 가 정한다(분할 키 시각 열로 창 자르기,
+  # 그런 열이 없으면 기준 표로 보고 상한 안에서 통째로, 저장소 없는 엔진과 설정의 제외는 빼고
+  # 이유를 clickhouse_excluded[] 에). 표 하나가 실패해도 녹화 전체를 잃지 않게 그 표만 meta 에
+  # error 로 적고 이어 간다.
+  # ------------------------------------------------------------
+  ch_scope_tool="${CH_SCOPE_TOOL:-}"
+  if [[ -z "$ch_scope_tool" ]]; then
+    ch_scope_base="$(dirname "$(realpath "$0")")"
+    for candidate in "$ch_scope_base/scenarios/ch-scope-plan.py" \
+                     "$ch_scope_base/scenario-contracts/ch-scope-plan.py"; do
+      [[ -f "$candidate" ]] && { ch_scope_tool="$candidate"; break; }
+    done
+  fi
+  [[ -n "$ch_scope_tool" && -f "$ch_scope_tool" ]] ||
+    die "ch-scope-plan.py 없음 (scenarios, scenario-contracts 아래; CH_SCOPE_TOOL 로 직접 지정 가능)"
+  ch_catalog_dir="$staging_dir/data/catalog/clickhouse"
+  mkdir -p "$ch_catalog_dir"
+  ch_catalog_queries=$(python3 "$ch_scope_tool" --emit catalog-sql)
+  for ch_cat in tables columns mviews; do
+    ch_query "$(jq -r --arg k "$ch_cat" '.[$k]' <<<"$ch_catalog_queries") FORMAT TSV" \
+      > "$ch_catalog_dir/$ch_cat.tsv"
+  done
+  ch_skip_args=()
+  for entry in "${ch_v3_tables[@]}"; do ch_skip_args+=(--skip "lucida.${entry%%:*}"); done
+  ch_plan_json=$(python3 "$ch_scope_tool" --catalog "$ch_catalog_dir" "${ch_skip_args[@]}" \
+    --window-start "$capture_start" --window-end "$capture_end")
+  ch_discovered_settings="${CH_EXPORT_SETTINGS}&max_execution_time=$(jq -r '.max_execution_time // 600' <<<"$ch_plan_json")"
+  clickhouse_excluded_json=$(jq -c '.excluded' <<<"$ch_plan_json")
+  ch_discovered_count=0
+  ch_err_file=$(mktemp "${TMPDIR:-/tmp}/.ch-export-err.XXXXXX")
+  while IFS= read -r ch_d; do
+    d_name=$(jq -r '.database + "." + .table' <<<"$ch_d")
+    d_file=$(jq -r '.file' <<<"$ch_d")
+    d_format=$(jq -r '.format' <<<"$ch_d")
+    d_from="$(jq -r '.source' <<<"$ch_d")$(jq -r '.where' <<<"$ch_d")"
+    d_select=$(jq -r '.select' <<<"$ch_d")
+    d_time=$(jq -r '.time_column // empty' <<<"$ch_d")
+    d_error=''
+    mkdir -p "$(dirname "$staging_dir/$d_file")"
+    log "exporting ClickHouse table=$d_name (discovered)"
+    if ! ch_post "$ch_discovered_settings" "SELECT $d_select FROM $d_from FORMAT $d_format" \
+         "$staging_dir/$d_file" 2>"$ch_err_file"; then
+      rm -f "$staging_dir/$d_file"
+      if [[ "$d_format" == Parquet ]]; then
+        # Parquet 이 받지 못하는 열 형식이 새로 생긴 경우. Native 는 CH 의 모든 형식을 담는다.
+        d_file="${d_file%.parquet}.native"; d_format=Native
+        ch_post "$ch_discovered_settings" "SELECT $d_select FROM $d_from FORMAT Native" \
+          "$staging_dir/$d_file" 2>"$ch_err_file" || { d_error=$(head -c 500 "$ch_err_file"); rm -f "$staging_dir/$d_file"; }
+      else
+        d_error=$(head -c 500 "$ch_err_file")
+      fi
+    fi
+    d_rows=null; d_min=null; d_max=null
+    if [[ -z "$d_error" ]]; then
+      if [[ -n "$d_time" ]]; then
+        d_stats=$(ch_post "$ch_discovered_settings" "SELECT count(), toString(min(\`$d_time\`)), toString(max(\`$d_time\`)) FROM $d_from FORMAT TSV" - 2>"$ch_err_file") ||
+          d_error="stats: $(head -c 500 "$ch_err_file")"
+      else
+        d_stats=$(ch_post "$ch_discovered_settings" "SELECT count(), '', '' FROM $d_from FORMAT TSV" - 2>"$ch_err_file") ||
+          d_error="stats: $(head -c 500 "$ch_err_file")"
+      fi
+      if [[ -z "$d_error" ]]; then
+        d_rows=$(cut -f1 <<<"$d_stats")
+        if [[ -n "$d_time" && "$d_rows" != 0 ]]; then
+          d_min=$(jq -Rc . <<<"$(cut -f2 <<<"$d_stats")"); d_max=$(jq -Rc . <<<"$(cut -f3 <<<"$d_stats")")
+        fi
+      fi
+    fi
+    if [[ -n "$d_error" ]]; then
+      printf '[WARN] discovered ClickHouse table %s not captured: %s\n' "$d_name" "$d_error" >&2
+      rm -f "$staging_dir/$d_file"
+    fi
+    entry_json=$(jq -c --arg file "$d_file" --arg format "$d_format" --argjson rows "$d_rows" \
+      --argjson time_min "$d_min" --argjson time_max "$d_max" --arg error "$d_error" '
+      {table, file:(if $error == "" then $file else null end), rows:$rows, time_column, scope, time_min:$time_min, time_max:$time_max,
+       database, format:$format, time_type, engine, mv_target_of, mv_source_of, discovered:true}
+      + (if $error == "" then {} else {error:$error} end)' <<<"$ch_d")
+    clickhouse_tables_json=$(jq -c --argjson e "$entry_json" '. + [$e]' <<<"$clickhouse_tables_json")
+    ch_discovered_count=$(( ch_discovered_count + 1 ))
+  done < <(jq -c '.tables[]' <<<"$ch_plan_json")
+  rm -f "$ch_err_file"
+
   # Drift warning (spec §2.2): any base table outside the 12-table list that
   # currently holds data is a schema-drift signal, not a capture failure.
-  known_tables=$(printf '%s\n' "${ch_v3_tables[@]}" | cut -d: -f1)
+  # v4: 자동 발견한 표와 제외한 표는 알고 있는 표다. 남는 것은 계획 뒤에 생긴 표뿐이다.
+  known_tables=$( { printf '%s\n' "${ch_v3_tables[@]}" | cut -d: -f1;
+                    jq -r '(.tables[], .excluded[]) | select(.database == "lucida") | .table' <<<"$ch_plan_json"; } )
   # Join against system.tables so MV backing tables (.inner_id.*) and
   # AggregatingMergeTree MV targets do not raise false drift warnings — both
   # hold physical parts (2026-07-24 실측: .inner_id.* 16M행) and are rebuilt
@@ -971,16 +1096,43 @@ fi
   die "pg-scope-export.py 없음 (시도: $pg_scope_base/{scenarios,scenario-contracts}; PG_SCOPE_TOOL 로 직접 지정 가능)"
 log "pg-scope tool: $pg_scope_tool"
 mkdir -p "$staging_dir/data/postgres"
-pg_scope_excl=$(python3 "$pg_scope_tool" --emit exclude-args | tr '\n' ' ')
-python3 "$pg_scope_tool" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
-python3 "$pg_scope_tool" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
+PG_DUMP_TIMEOUT_SEC="${PG_DUMP_TIMEOUT_SEC:-900}"
+
+# v4 자동 발견 (2026-11-10 R1, spec §2.3): 원천의 카탈로그(표, 크기, 열, 외래 키. 표 데이터는
+# 읽지 않는다)를 먼저 떠서 pg-scope.json 에 없는 표도 규칙으로 가른다(pg-scope-export.py
+# plan_scope). 표마다의 결정은 data/catalog/postgres-scope-plan.json, 요약은 meta.postgres_scope.
+# 카탈로그 원문은 data/catalog/ 아래에 둔다(data/postgres, data/clickhouse 의 기존 파일 모양을 건드리지 않게).
+log 'reading PostgreSQL catalog for scope plan'
+mkdir -p "$staging_dir/data/catalog/postgres"
+python3 "$pg_scope_tool" --emit catalog-sql --out-dir /out/catalog/postgres > "$staging_dir/data/postgres/.catalog.sql"
+PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  --env PGPASSWORD \
+  --volume "$pg_dump_data_dir:/out" \
+  "$PG_DUMP_IMAGE" \
+  psql --host "$PG_HOST" --port "$PG_PORT" --username "$PG_USER" --dbname "$PG_DATABASE" \
+  --set ON_ERROR_STOP=1 --file /out/postgres/.catalog.sql
+rm -f "$staging_dir/data/postgres/.catalog.sql"
+pg_catalog_dir="$staging_dir/data/catalog/postgres"
+for pg_cat in tables columns fks; do
+  [[ -s "$pg_catalog_dir/$pg_cat.tsv" ]] || die "PostgreSQL catalog is empty: $pg_cat"
+done
+pg_scope=(python3 "$pg_scope_tool" --catalog "$pg_catalog_dir")
+"${pg_scope[@]}" --emit plan-json > "$staging_dir/data/catalog/postgres-scope-plan.json"
+postgres_scope_json=$("${pg_scope[@]}" --emit plan-summary | jq -c '. + {plan_file:"data/catalog/postgres-scope-plan.json"}')
+jq -r '.over_cap[] | "[WARN] PostgreSQL table over snap cap, schema only: \(.table) (\(.bytes) bytes)"' <<<"$postgres_scope_json" >&2
+jq -r '.conflicts[] | "[WARN] PostgreSQL scope conflict: \(.table): \(.problem)"' <<<"$postgres_scope_json" >&2
+jq -r 'select(.over_budget) | "[WARN] PostgreSQL whole-table dump \(.snap_bytes) bytes exceeds budget \(.snap_budget_bytes) (largest: \(.largest_snap[0].table)); pg_dump may hit PG_DUMP_TIMEOUT_SEC"' <<<"$postgres_scope_json" >&2
+pg_slice_list=$("${pg_scope[@]}" --emit slice-tables)
+pg_scope_excl=$("${pg_scope[@]}" --emit exclude-args | tr '\n' ' ')
+"${pg_scope[@]}" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
+"${pg_scope[@]}" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
 # TCP keepalives + a hard timeout on the cross-network (109->119 AP bridge)
 # pg_dump. Without keepalives an idle COPY period lets the bridge/NAT reap the
 # connection and pg_dump blocks forever in poll() (2026-07-25 production run:
 # F01-H pg_dump hung 55m at 2.48GB, PG backend already gone). keepalives keep
 # the socket alive; `timeout` bounds any residual hang so the capture fails and
 # the scheduler retries instead of stalling the queue indefinitely.
-PG_DUMP_TIMEOUT_SEC="${PG_DUMP_TIMEOUT_SEC:-900}"
 PGPASSWORD="$PG_PASSWORD" timeout --kill-after=30 "$PG_DUMP_TIMEOUT_SEC" docker run --rm \
   --user "$(id -u):$(id -g)" \
   --env PGPASSWORD \
@@ -1016,7 +1168,7 @@ while IFS= read -r pg_t; do
   postgres_tables_json=$(jq -c \
     --arg table "$pg_t" --arg file "data/postgres/${pg_t}.csv" --argjson rows "$pg_rows" \
     '. + [{table:$table, file:$file, rows:$rows, scope:"slice"}]' <<<"$postgres_tables_json")
-done < <(python3 "$pg_scope_tool" --emit slice-tables)
+done <<<"$pg_slice_list"
 
 # ------------------------------------------------------------
 # Topology snapshot (spec §4, 2026-07-20): the query API's cross-domain graph
@@ -1062,6 +1214,38 @@ snapshot_topology() {
       {name:"asset-tree.service.unified", url:$tree, file:"data/topology/asset-tree-service-unified.json"}]')
 }
 snapshot_topology
+
+# ------------------------------------------------------------
+# 제품 버전 (v4, 2026-11-10 R1): 녹화가 어느 제품 판에서 나왔는지 meta.product_version 에 남긴다.
+# 판 구분(scenario-stats.py generation)이 이 칸을 읽는다. 원천은 query API 의 GET
+# /api/v1/product/version({version, branch}, 로그인만 요구). 그 API 가 없는 옛 판이거나 실패하면
+# null 로 두고 경고한다(녹화를 버리지 않는다). PRODUCT_VERSION 환경변수가 있으면 그 값을 쓴다.
+# ------------------------------------------------------------
+product_version=null
+product_branch=null
+product_version_source=null
+fetch_product_version() {
+  local cookie_jar body
+  cookie_jar=$(mktemp "${TMPDIR:-/tmp}/.pv-cookie.XXXXXX")
+  printf '{"username":"%s","password":"%s"}' "$QUERY_API_USER" "$QUERY_API_PASSWORD" |
+    curl --fail --silent --show-error --cookie-jar "$cookie_jar" \
+      -H 'Content-Type: application/json' --data-binary @- \
+      "${QUERY_API_URL%/}/api/v1/login" >/dev/null || { rm -f "$cookie_jar"; return 1; }
+  body=$(curl --fail --silent --show-error --cookie "$cookie_jar" \
+    "${QUERY_API_URL%/}/api/v1/product/version") || { rm -f "$cookie_jar"; return 1; }
+  rm -f "$cookie_jar"
+  jq -e '(.version | type == "string" and length > 0)' <<<"$body" >/dev/null || return 1
+  product_version=$(jq -c '.version' <<<"$body")
+  product_branch=$(jq -c 'if (.branch | type == "string" and length > 0) then .branch else null end' <<<"$body")
+  product_version_source='"query-api:/api/v1/product/version"'
+}
+if [[ -n "${PRODUCT_VERSION:-}" ]]; then
+  product_version=$(jq -Rc . <<<"$PRODUCT_VERSION")
+  [[ -z "${PRODUCT_BRANCH:-}" ]] || product_branch=$(jq -Rc . <<<"$PRODUCT_BRANCH")
+  product_version_source='"env:PRODUCT_VERSION"'
+elif ! fetch_product_version; then
+  printf '[WARN] product version unavailable from %s; meta.product_version is null\n' "$QUERY_API_URL" >&2
+fi
 
 # ------------------------------------------------------------
 # Topology periodic bundle re-home (spec §2.2, v3-only): byte-identical copy
@@ -1181,6 +1365,12 @@ if [[ "$v3_mode" == true ]]; then
     --argjson topology_snapshot "$topology_snapshot" \
     --argjson topology_bundle "$topology_bundle_meta" \
     --argjson evaluation_eligible "$evaluation_eligible" \
+    --argjson product_version "$product_version" \
+    --argjson product_branch "$product_branch" \
+    --argjson product_version_source "$product_version_source" \
+    --argjson clickhouse_excluded "$clickhouse_excluded_json" \
+    --argjson postgres_scope "$postgres_scope_json" \
+    --argjson victoriametrics_export "$victoriametrics_export_json" \
     '{schema_version:$schema_version, timeline:"continuous",
       case_id:$case_id, scenario_id:$scenario_id,
       scenario_metadata:$scenario_metadata,
@@ -1200,15 +1390,21 @@ if [[ "$v3_mode" == true ]]; then
       postgres_tables:$postgres_tables,
       preflight:$preflight, topology_snapshot:$topology_snapshot,
       topology_bundle:$topology_bundle,
-      golden_anomaly_file:false}' > "$staging_dir/meta.json"
+      golden_anomaly_file:false,
+      product_version:$product_version, product_branch:$product_branch,
+      product_version_source:$product_version_source,
+      clickhouse_excluded:$clickhouse_excluded, postgres_scope:$postgres_scope,
+      victoriametrics_export:$victoriametrics_export}' > "$staging_dir/meta.json"
 
   jq -e \
     --arg schema_version '2.0' \
     --arg capture_end "$capture_end" \
     --arg case_label "$case_label" \
     --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
-    --argjson pg_slice_count "$(python3 "$pg_scope_tool" --emit slice-tables | wc -l)" \
+    --argjson pg_slice_count "$(grep -c . <<<"$pg_slice_list")" \
     --argjson ch_table_count "${ch_v3_table_count:?ch_v3_tables catalog missing}" \
+    --argjson ch_discovered_count "$ch_discovered_count" \
+    --argjson ch_v3_names "$(printf '%s\n' "${ch_v3_tables[@]}" | cut -d: -f1 | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     '.schema_version == $schema_version and .timeline == "continuous" and
      .time_basis == "UTC" and .capture_end == $capture_end and
      .scenario_metadata_sha256 == $scenario_metadata_sha256 and
@@ -1221,7 +1417,9 @@ if [[ "$v3_mode" == true ]]; then
      .model_snapshot_at >= $capture_end and .case_label == $case_label and
      .golden_anomaly_file == false and
      (.phases | type == "array" and length == 5) and
-     (.clickhouse_tables | type == "array" and length == $ch_table_count) and
+     (.clickhouse_tables | type == "array" and length == ($ch_table_count + $ch_discovered_count)) and
+     (.clickhouse_tables[:$ch_table_count] | map(.table) == $ch_v3_names) and
+     (.clickhouse_tables[$ch_table_count:] | all(.discovered == true)) and
      (.postgres_tables | type == "array" and length == $pg_slice_count) and
      (.postgres_tables | all(.scope == "slice" and (.rows | type == "number"))) and
      (.topology_bundle == null or

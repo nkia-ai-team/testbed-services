@@ -36,6 +36,9 @@ scripts/test-capture-eval-case.sh
 - PostgreSQL 전체 custom-format dump
 - stream-anomaly global v1 `model.json`과 SHA-256 스냅샷
 - `meta.json` 생성 후 staging 디렉터리를 최종 케이스 경로로 원자적 승격
+- v4(연속 사이클): 원천 카탈로그에서 나머지 CH, PG 표를 찾아 더 담고 meta 에 제품 버전을
+  적는다. 규칙은 `docs/spec-eval-data-capture.md` §2.3, 계획기는 `scenarios/ch-scope-plan.py`,
+  `scenarios/pg-scope-export.py`
 
 라이브 실행에는 `PG_PASSWORD`가 필수다. 그 외 접속값과 모델 컨테이너는
 `--help`에 나온 환경변수로 바꿀 수 있다. 기존 케이스 경로가 있으면 덮어쓰지 않고

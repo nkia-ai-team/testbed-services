@@ -335,6 +335,45 @@ AI 계층 온전 전제(리셋+2h 학습)로 탐지 이벤트 타임라인을 �
 대상 버전(에이전트·모델)이 바뀌면 **Phase B만** 케이스 라이브러리에 다시
 돌린다. 라이브 테스트베드를 재현할 필요 없이 전체 회귀 평가가 끝난다.
 
+### 2.3 v4 녹화: 구간 안 모든 표 (2026-11-10, 테스트베드 v4 R1)
+
+v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만든 표는 녹화에 들어가지 않았고
+쓰는 쪽은 그 사실을 몰랐다. v4 는 §2.2 계약을 그대로 두고 **더하기만** 한다.
+
+- **폴더 이름** `case-<시나리오>-v4-<run 끝 8자>`(러너 `_schedule_capture`). 이미 녹화된 `-v3-` 폴더는 그대로다.
+- **ClickHouse**: v3 13개 표는 이름, 순서, 파일 자리, 형식, `clickhouse_tables[]` 항목이 그대로다. 캡처가
+  원천의 `system.tables`, `system.columns`, 구체화 뷰 관계를 떠서(`data/catalog/clickhouse/`) 13개 밖의 표를
+  모두 `clickhouse_tables[]` 뒤에 붙인다. 붙는 항목은 v3 항목에 `database`, `format`, `time_type`, `engine`,
+  `mv_target_of`, `mv_source_of`, `discovered:true`(실패하면 `error`, 파일은 null)를 더한다.
+  규칙 정본은 `scripts/scenarios/ch-scope-plan.py`, 설정은 `ch-scope.json`:
+  - 분할 키 안의 시각 열(없으면 정렬 키 첫 열이 시각 열일 때)로 창을 자른다(`scope:"slice"`). 날짜 분할
+    필터가 되므로 표 전체를 훑지 않는다. `Date` 열은 날짜 단위로 비교한다.
+  - 그런 열이 없는 표는 기준 표나 상태 표로 보고 통째로 담는다(`scope:"snap"`, 상한 `whole_max_bytes`).
+  - `AggregateFunction` 열이 있는 표는 Parquet 이 받지 못해 Native(`.native`)로 낸다. Parquet 이 실패한
+    표도 Native 로 한 번 더 시도한다. UUID 열은 문자열로 바꾼다.
+  - 저장소가 없는 엔진(View, MaterializedView, Null), TO 없는 구체화 뷰의 내부 표(`.inner*`),
+    `schema_migrations`, 상한을 넘는 기준 표는 담지 않고 `meta.clickhouse_excluded[]` 에 이유를 남긴다.
+  - `lucida` 밖 DB(`lucida_selfsystem`)의 표는 `data/clickhouse/<db>/` 아래에 둔다.
+  - 구체화 뷰의 대상 표(`mv_target_of` 가 있는 표)는 원본 표를 다시 넣으면 뷰가 다시 만든다. 재생 때
+    둘 다 넣으면 두 번 쌓이므로 소비자가 고른다.
+- **PostgreSQL**: 캡처가 카탈로그(표, 크기, 열, 외래 키)를 먼저 떠서(`data/catalog/postgres/`)
+  `pg-scope.json` 에 없는 표도 가른다(`pg-scope-export.py plan_scope`). 표마다의 결정은
+  `data/catalog/postgres-scope-plan.json`, 요약은 `meta.postgres_scope`. 자동으로 구간만 담는 표는
+  `postgres_tables[]` 와 `restore.sql` 에 FK 순서대로 붙는다.
+  - `fk_closure`: slice 표를 외래 키로 가리키는 표는 그 부모가 남긴 행에 묶인 행만 담는다.
+  - `history`: 이름이 `_history` 로 끝나는 표는 사건 시각 열로 자른다. 시각 열만 보고 자르지 않는
+    이유는 §5.1(상태, 인벤토리 표도 같은 이름의 열을 가진다).
+  - 그 밖은 통째로. 설정에 없고 `auto.snap_max_bytes` 를 넘는 표는 스키마만 담고(`over_cap`), 통째 덤프
+    합이 `auto.snap_budget_bytes` 를 넘으면 캡처가 경고한다. 녹화 전 점검(testbed-operate
+    `pg-scope-guard.py`)이 같은 계획기로 둘 다 미리 막는다.
+  - 뿌리의 자기참조 열이 원천에 없으면 재귀 없이 자른다(develop-ai DDL 367 이 `incidents.superseded_by`
+    를 지웠다. 대체 관계는 `incident_event_cluster_successors` 로 옮겨 갔고 `fk_closure` 가 담는다).
+- **VictoriaMetrics**: 종전대로 구간 안 모든 시계열(`{__name__!=""}`). `meta.victoriametrics_export` 에 시계열
+  수와 크기를 적는다.
+- **meta.json 에 더한 칸**: `product_version`, `product_branch`, `product_version_source`(query API
+  `GET /api/v1/product/version`, 없으면 null 과 경고, `PRODUCT_VERSION` 환경변수가 앞선다),
+  `clickhouse_excluded`, `postgres_scope`, `victoriametrics_export`.
+
 ## 3. 파이프라인 저장 위치 (코드 기준)
 
 `../lucida-next/backend` 확인 결과(2026-07-14 재검증), 파이프라인 각 단계의

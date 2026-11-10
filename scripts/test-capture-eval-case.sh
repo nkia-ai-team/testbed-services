@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Side-effect-free policy tests for capture-eval-case.sh. Only --dry-run is used.
+# Side-effect-free policy tests for capture-eval-case.sh. Mostly --dry-run; the v4
+# discovery section at the end runs the live path against fake curl and docker on
+# PATH (nothing leaves the machine).
 
 set -Eeuo pipefail
 
@@ -394,5 +396,329 @@ jq '.schema_version = 2' "$decoys_file" >"$TMP_ROOT/decoys-version.json"
 expect_rejected decoys-unknown-version \
   "${base_args[@]}" --decoys-json "$TMP_ROOT/decoys-version.json"
 grep -q -- '--decoys-json must be' "$TMP_ROOT/err" || fail 'decoys-unknown-version rejected for another reason'
+
+# ------------------------------------------------------------
+# v4 자동 발견 (2026-11-10 R1, spec §2.3). 라이브 경로를 가짜 curl, docker 로 돌린다.
+# 확인하는 것: v3 13개 CH 표의 이름, 파일 자리, 형식, meta 항목 불변(실제 v3 녹화본
+# case-f72-r-v3-bf50d2b7 의 meta 와 같은 모양), 13개 밖 표 자동 발견과 뒤에 붙이기, 제외 목록,
+# 크기 상한, PG 카탈로그 계획(fk_closure, history, over_cap, 없는 자기참조 열), 제품 버전 칸.
+# ------------------------------------------------------------
+live_root="$TMP_ROOT/live"
+fakebin="$live_root/bin"
+fix="$live_root/fixtures"
+mkdir -p "$fakebin" "$fix/pg" "$fix/ch" "$live_root/cases"
+export FAKE_LOG="$live_root/fake.log"
+: >"$FAKE_LOG"
+
+# 원천 PG 카탈로그. incidents 에 superseded_by 가 없다(develop-ai DDL 367).
+printf '%s\n' \
+  $'public\tincidents\tr\t81920\t10\t10\t0' \
+  $'public\tevent_clusters\tr\t81920\t10\t10\t0' \
+  $'public\tincident_members\tr\t40960\t10\t10\t0' \
+  $'public\talert_history\tr\t40960\t10\t10\t0' \
+  $'public\ttargets\tr\t40960\t10\t10\t0' \
+  $'public\tincident_snapshots\tr\t40960\t10\t10\t0' \
+  $'public\ttarget_config_history\tp\t40960\t0\t\\N\t\\N' \
+  $'public\ttarget_config_latest\tr\t40960\t10\t10\t0' \
+  $'public\tbig_unknown_table\tr\t314572800\t10\t10\t0' \
+  $'public\ttrainer_trace_window_threshold\tr\t3382902784\t16\t16\t29' \
+  $'public\tautomation_dist_artifacts\tr\t2600755200\t20\t20\t0' \
+  $'security\taudit_marks\tr\t24576\t0\t0\t0' >"$fix/pg/tables.tsv"
+printf '%s\n' \
+  $'incidents\tid\tuuid' $'incidents\tcreated_at\ttimestamp with time zone' \
+  $'event_clusters\tid\tuuid' $'event_clusters\tcreated_at\ttimestamp with time zone' $'event_clusters\tmerged_into\tuuid' \
+  $'incident_members\tincident_id\tuuid' \
+  $'alert_history\tid\tbigint' $'alert_history\tstarted_at\ttimestamp with time zone' \
+  $'targets\tid\tuuid' $'targets\tcreated_at\ttimestamp with time zone' \
+  $'incident_snapshots\tincident_id\tuuid' $'incident_snapshots\tcaptured_at\ttimestamp with time zone' \
+  $'target_config_history\tchanged_at\ttimestamp with time zone' \
+  $'target_config_latest\tchanged_at\ttimestamp with time zone' \
+  $'big_unknown_table\tpayload\tbytea' >"$fix/pg/columns.tsv"
+printf '%s\n' \
+  $'incident_members\tincident_id\tincidents\tid' \
+  $'incident_snapshots\tincident_id\tincidents\tid' \
+  $'incident_snapshots\ttarget_id\ttargets\tid' >"$fix/pg/fks.tsv"
+
+# 원천 CH system 표. v3 13개 + 13개 밖 표.
+ch_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
+{
+  for t in otel_traces_local lucida_logs_local dpm_session_local dpm_topsql_local kcm_events_local \
+           host_connections syslog_local; do
+    ch_row lucida "$t" MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
+  done
+  ch_row lucida lucida_events_local ReplacingMergeTree 'modulo(cityHash64(event_id), 16)' occurred_at 10 1000
+  ch_row lucida event_cluster_projection_local ReplacingMergeTree 'modulo(cityHash64(event_id), 16)' assigned_at 10 1000
+  ch_row lucida process_snapshot MergeTree 'toDate(ts)' ts 10 1000
+  ch_row lucida process_meta ReplacingMergeTree '' 'target_id, proc_key' 10 1000
+  ch_row lucida trace_error_chains_local ReplacingMergeTree 'toYYYYMMDD(window_start)' window_start 10 1000
+  ch_row lucida trace_path_signatures_local ReplacingMergeTree 'toYYYYMMDD(window_start)' window_start 10 1000
+  ch_row lucida kcm_pod_logs_local MergeTree 'toYYYYMMDD(timestamp)' 'cluster, timestamp' 10 1000
+  ch_row lucida agg_service_live_5s AggregatingMergeTree 'toStartOfHour(minute)' 'service, minute' 10 1000
+  ch_row lucida agg_event_occurrence_1d MergeTree day day 0 0
+  ch_row lucida wpm_text_local ReplacingMergeTree xtype 'xtype, hash' 0 1000
+  ch_row lucida huge_state_table ReplacingMergeTree '' key 10 104857600
+  ch_row lucida fails_parquet_local MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
+  ch_row lucida fails_always_local MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
+  ch_row lucida mv_traces_to_live_5s MaterializedView '' '' '\N' '\N'
+  ch_row lucida otel_traces_ingest 'Null' '' '' '\N' '\N'
+  ch_row lucida '.inner_id.63da7c0d' AggregatingMergeTree 'toYYYYMM(minute)' minute 10 1000
+  ch_row lucida schema_migrations ReplacingMergeTree '' version 10 1000
+  ch_row lucida_selfsystem otel_traces_local MergeTree 'toYYYYMMDD(timestamp)' timestamp 10 1000
+} >"$fix/ch/tables.tsv"
+{
+  for t in otel_traces_local lucida_logs_local dpm_session_local dpm_topsql_local kcm_events_local \
+           host_connections syslog_local kcm_pod_logs_local fails_parquet_local fails_always_local; do
+    printf 'lucida\t%s\ttimestamp\tDateTime64(9)\n' "$t"
+  done
+  printf 'lucida\tlucida_events_local\tevent_id\tUUID\n'
+  printf 'lucida\tlucida_events_local\toccurred_at\tDateTime64(3)\n'
+  printf 'lucida\tagg_service_live_5s\tminute\tDateTime\n'
+  printf 'lucida\tagg_service_live_5s\tlatency\tAggregateFunction(quantilesTDigest(0.5, 0.95, 0.99), Float64)\n'
+  printf 'lucida\tagg_event_occurrence_1d\tday\tDate\n'
+  printf 'lucida\twpm_text_local\treceived_at\tDateTime\n'
+  printf 'lucida\thuge_state_table\tvalue\tDateTime\n'
+  printf 'lucida_selfsystem\totel_traces_local\ttimestamp\tDateTime64(9)\n'
+  printf 'lucida_selfsystem\totel_traces_local\ttrace_uuid\tNullable(UUID)\n'
+} >"$fix/ch/columns.tsv"
+printf '%s\n' \
+  $'lucida\tmv_traces_to_live_5s\tlucida.agg_service_live_5s\t' \
+  $'lucida\totel_traces_ingest\t\tlucida.mv_traces_to_live_5s' >"$fix/ch/mviews.tsv"
+
+cat >"$fakebin/curl" <<'PYEOF'
+#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+out, data, url, jar = None, None, None, None
+i = 0
+stdin_used = False
+while i < len(args):
+    a = args[i]
+    if a == "--output":
+        out = args[i + 1]; i += 2; continue
+    if a == "--cookie-jar":
+        jar = args[i + 1]; i += 2; continue
+    if a in ("--data-binary", "--data-urlencode", "-H", "--cookie", "--max-time", "-X"):
+        if a == "--data-binary":
+            data = args[i + 1]
+        i += 2; continue
+    if a == "--config":
+        sys.stdin.read(); stdin_used = True; i += 2; continue
+    if a.startswith("http"):
+        url = a
+    i += 1
+if data == "@-":
+    data = sys.stdin.read()
+log = open(os.environ["FAKE_LOG"], "a")
+log.write(f"CURL {url}\t{(data or '').replace(chr(10), ' ')}\n")
+fix = os.environ["FAKE_FIX"]
+def emit(body):
+    if out and out != "-":
+        open(out, "wb").write(body if isinstance(body, bytes) else body.encode())
+    else:
+        sys.stdout.write(body if isinstance(body, str) else body.decode())
+if jar:
+    open(jar, "w").write("cookie")
+if "fake-vm" in url:
+    emit("".join('{"metric":{"__name__":"m%d"},"values":[1],"timestamps":[1]}\n' % n for n in range(3)))
+elif url.endswith("/api/v1/login"):
+    emit("{}")
+elif url.endswith("/api/v1/product/version"):
+    if os.environ.get("FAKE_PV_FAIL"):
+        sys.stderr.write("curl: (22) The requested URL returned error: 404\n"); sys.exit(22)
+    emit('{"version":"2026.11.09-01","branch":"develop-ai"}')
+elif "/api/v1/topology/graph" in url:
+    emit('{"nodes":[],"edges":[]}')
+elif "/api/v1/asset-tree/service/unified" in url:
+    emit('{"tree":[]}')
+elif "fake-ch" in url:
+    q = data or ""
+    if "FROM system.tables" in q and "partition_key" in q:
+        emit(open(f"{fix}/ch/tables.tsv").read())
+    elif "FROM system.columns" in q:
+        emit(open(f"{fix}/ch/columns.tsv").read())
+    elif "create_table_query" in q:
+        emit(open(f"{fix}/ch/mviews.tsv").read())
+    elif "FROM system.parts" in q:
+        emit("otel_traces_local\nkcm_pod_logs_local\n")
+    elif "fails_always_local" in q or ("fails_parquet_local" in q and "FORMAT Parquet" in q):
+        sys.stderr.write("curl: (22) The requested URL returned error: 500\n"); sys.exit(22)
+    elif "FORMAT Parquet" in q:
+        emit(b"PAR1fake")
+    elif "FORMAT Native" in q:
+        emit(b"NATIVEfake")
+    elif "FORMAT TSV" in q:
+        emit("5\t2026-07-15 01:00:00\t2026-07-15 01:05:00\n")
+    else:
+        sys.stderr.write("fake curl: unknown ch query\n"); sys.exit(2)
+else:
+    sys.stderr.write(f"fake curl: unknown url {url}\n"); sys.exit(2)
+PYEOF
+cat >"$fakebin/docker" <<'PYEOF'
+#!/usr/bin/env python3
+import os, re, sys
+args = sys.argv[1:]
+log = open(os.environ["FAKE_LOG"], "a")
+log.write("DOCKER " + " ".join(args) + "\n")
+host = None
+for i, a in enumerate(args):
+    if a == "--volume":
+        host = args[i + 1].rsplit(":/out", 1)[0]
+def real(p):
+    return p.replace("/out", host, 1)
+fix = os.environ["FAKE_FIX"]
+if "pg_dump" in args:
+    f = args[args.index("--file") + 1]
+    open(real(f), "wb").write(b"PGDMPfake")
+    sys.exit(0)
+if "psql" in args:
+    sqlf = real(args[args.index("--file") + 1])
+    sql = open(sqlf).read()
+    log.write("PSQLFILE " + os.path.basename(sqlf) + "\n" + sql + "\nENDPSQL\n")
+    for target in re.findall(r"^\\o (\S+)$", sql, re.M):
+        name = os.path.basename(target)
+        if name.endswith(".tsv"):
+            data = open(f"{fix}/pg/{name}").read()
+        else:
+            data = "id\n1\n2\n"
+        open(real(target), "w").write(data)
+    sys.exit(0)
+sys.stderr.write("fake docker: unexpected call\n"); sys.exit(2)
+PYEOF
+chmod +x "$fakebin/curl" "$fakebin/docker"
+printf '{"model":"fake"}\n' >"$live_root/model.json"
+
+run_live() {
+  local case_id=$1; shift
+  env PATH="$fakebin:$PATH" FAKE_FIX="$fix" FAKE_LOG="$FAKE_LOG" "$@" \
+    VM_URL=http://fake-vm CH_URL=http://fake-ch CH_USER=lucida CH_PASSWORD=pw \
+    PG_PASSWORD=pw PG_DUMP_IMAGE=fake-pg QUERY_API_URL=http://fake-api QUERY_API_PASSWORD=pw \
+    MODEL_SOURCE="$live_root/model.json" \
+    "$CAPTURE" "${base_args[@]/case-policy-test/$case_id}" --case-label calibration \
+    --phases-json "$phases_json" --output-root "$live_root/cases" \
+    >"$live_root/$case_id.out" 2>"$live_root/$case_id.err"
+}
+run_live case-live-v4 || { cat "$live_root/case-live-v4.err" >&2; fail 'live capture with fakes failed'; }
+meta="$live_root/cases/case-live-v4/meta.json"
+[[ -r "$meta" ]] || fail 'live capture produced no meta.json'
+
+# (a) v3 13개: 이름, 순서, 파일 자리, 시각 열, scope, 항목 이름이 실제 v3 녹화본(case-f72-r-v3-bf50d2b7)과 같다.
+v3_tables='[["otel_traces_local","data/clickhouse/otel_traces_local.parquet","timestamp","slice"],
+["lucida_logs_local","data/clickhouse/lucida_logs_local.parquet","timestamp","slice"],
+["lucida_events_local","data/clickhouse/lucida_events_local.parquet","occurred_at","slice"],
+["dpm_session_local","data/clickhouse/dpm_session_local.parquet","timestamp","slice"],
+["dpm_topsql_local","data/clickhouse/dpm_topsql_local.parquet","timestamp","slice"],
+["kcm_events_local","data/clickhouse/kcm_events_local.parquet","timestamp","slice"],
+["process_snapshot","data/clickhouse/process_snapshot.parquet","ts","slice"],
+["trace_error_chains_local","data/clickhouse/trace_error_chains_local.parquet","window_start","slice"],
+["trace_path_signatures_local","data/clickhouse/trace_path_signatures_local.parquet","window_start","slice"],
+["syslog_local","data/clickhouse/syslog_local.parquet","received_at","slice"],
+["host_connections","data/clickhouse/host_connections.parquet","timestamp","slice"],
+["process_meta","data/clickhouse/process_meta.parquet","seen_at","snap"],
+["event_cluster_projection_local","data/clickhouse/event_cluster_projection_local.parquet","assigned_at","slice"]]'
+v3_meta_keys='["capture_end","capture_end_kst","capture_start","capture_start_kst","case_id","case_label",
+"clickhouse_tables","dump_completed_at","dump_completed_at_kst","dump_started_at","dump_started_at_kst",
+"evaluation_eligible","golden_anomaly_file","model_sha256","model_snapshot_at","model_snapshot_at_kst",
+"model_snapshot_lag_sec","model_source_path","phases","postgres_tables","preflight","run_catalog_sha256",
+"run_plan_sha256","run_script_sha256","scenario_id","scenario_metadata","scenario_metadata_sha256",
+"schema_version","t1","t1_kst","t2","t2_kst","time_basis","timeline","topology_bundle","topology_snapshot"]'
+jq -e --argjson v3 "$v3_tables" '
+  (.clickhouse_tables[:13] | map([.table, .file, .time_column, .scope])) == $v3 and
+  (.clickhouse_tables[:13] | all(keys == ["file","rows","scope","table","time_column","time_max","time_min"]))' \
+  "$meta" >/dev/null || fail 'v3 13 ClickHouse entries changed (name, order, file, time column, scope or keys)'
+jq -e --argjson keys "$v3_meta_keys" '(keys - $keys) as $added | ($keys - keys) == [] and .schema_version == "2.0"' \
+  "$meta" >/dev/null || fail 'a v3 meta key disappeared'
+for f in $(jq -r --argjson v3 "$v3_tables" '$v3[][1]' <<<'{}'); do
+  [[ -s "$live_root/cases/case-live-v4/$f" ]] || fail "v3 file missing: $f"
+done
+
+# (b) 13개 밖 표가 뒤에 붙는다(자동 발견). 시계열은 분할 키 시각 열로 자르고, 그런 열이 없는 표는 통째로.
+jq -e '
+  (.clickhouse_tables[13:] | all(.discovered == true)) and
+  (.clickhouse_tables[13:] | map(.database + "." + .table) | sort) ==
+    ["lucida.agg_event_occurrence_1d","lucida.agg_service_live_5s","lucida.fails_always_local",
+     "lucida.fails_parquet_local","lucida.kcm_pod_logs_local","lucida.wpm_text_local",
+     "lucida_selfsystem.otel_traces_local"] and
+  (.clickhouse_tables[] | select(.table == "kcm_pod_logs_local") |
+     .file == "data/clickhouse/kcm_pod_logs_local.parquet" and .scope == "slice" and
+     .time_column == "timestamp" and .rows == 5 and .time_min == "2026-07-15 01:00:00") and
+  (.clickhouse_tables[] | select(.table == "agg_service_live_5s") |
+     .format == "Native" and .file == "data/clickhouse/agg_service_live_5s.native" and
+     .mv_target_of == ["lucida.mv_traces_to_live_5s"]) and
+  (.clickhouse_tables[] | select(.table == "agg_event_occurrence_1d") | .time_type == "Date" and .scope == "slice") and
+  (.clickhouse_tables[] | select(.table == "wpm_text_local") | .scope == "snap" and .time_column == null) and
+  (.clickhouse_tables[] | select(.database == "lucida_selfsystem") |
+     .file == "data/clickhouse/lucida_selfsystem/otel_traces_local.parquet") and
+  (.clickhouse_tables[] | select(.table == "fails_parquet_local") |
+     .format == "Native" and .file == "data/clickhouse/fails_parquet_local.native" and (has("error") | not)) and
+  (.clickhouse_tables[] | select(.table == "fails_always_local") | (.error | length > 0) and .rows == null and .file == null)' \
+  "$meta" >/dev/null || fail 'discovered ClickHouse tables not appended as expected'
+[[ -s "$live_root/cases/case-live-v4/data/clickhouse/lucida_selfsystem/otel_traces_local.parquet" ]] ||
+  fail 'selfsystem table file missing'
+[[ ! -e "$live_root/cases/case-live-v4/data/clickhouse/fails_always_local.native" ]] ||
+  fail 'failed table left a partial file'
+[[ -s "$live_root/cases/case-live-v4/data/catalog/clickhouse/tables.tsv" && -s "$live_root/cases/case-live-v4/data/catalog/postgres/fks.tsv" ]] ||
+  fail 'source catalogs not kept under data/catalog/'
+extra_pg=$(cd "$live_root/cases/case-live-v4/data/postgres" && ls -A | grep -vE '\.csv$|^restore\.sql$' || true)
+[[ -z "$extra_pg" ]] || fail "data/postgres holds files other than CSV and restore.sql: $extra_pg"
+
+# (c) 제외 목록: 저장소 없는 엔진, 내부 저장소, 설정 제외, 크기 상한 넘는 기준 표.
+jq -e '(.clickhouse_excluded | map(.table) | sort) ==
+  [".inner_id.63da7c0d","huge_state_table","mv_traces_to_live_5s","otel_traces_ingest","schema_migrations"]' \
+  "$meta" >/dev/null || fail 'clickhouse_excluded is not the expected list'
+
+# (d) 13개 밖 표 질의는 모두 창 조건(분할 키 시각 열)과 실행 시간 상한을 단다. 통째 표만 창 조건이 없다.
+grep -F 'kcm_pod_logs_local' "$FAKE_LOG" | grep -F 'FORMAT Parquet' |
+  grep -F "\`timestamp\` >= parseDateTime64BestEffort('2026-07-14T22:50:00Z')" | grep -qF 'max_execution_time=600' ||
+  fail 'discovered slice export lacks the window filter or the execution cap'
+grep -F 'agg_event_occurrence_1d' "$FAKE_LOG" | grep -F 'FORMAT Parquet' |
+  grep -qF "\`day\` >= toDate(parseDateTime64BestEffort('2026-07-14T22:50:00Z'))" ||
+  fail 'Date-partitioned table is not filtered by day'
+grep -F 'lucida_selfsystem' "$FAKE_LOG" | grep -F 'FORMAT Parquet' | grep -qF 'toString(`trace_uuid`) AS `trace_uuid`' ||
+  fail 'UUID columns of discovered tables are not exported as strings'
+if grep -F 'FROM `lucida`.`huge_state_table`' "$FAKE_LOG" >/dev/null; then fail 'over-cap table was exported'; fi
+
+# (e) PG 계획: 외래 키 자식, 이력 표, 상한 넘는 표, 없는 자기참조 열, 명시 snap.
+jq -e '
+  (.postgres_scope.auto_slices == [{table:"incident_snapshots",rule:"fk_closure"},
+                                   {table:"target_config_history",rule:"history"}]) and
+  (.postgres_scope.over_cap == [{table:"big_unknown_table",bytes:314572800}]) and
+  (.postgres_scope.missing_columns == ["incidents.superseded_by"]) and
+  (.postgres_scope.plan_file == "data/catalog/postgres-scope-plan.json") and
+  (.postgres_scope.over_budget == true and .postgres_scope.largest_snap[0].table == "trainer_trace_window_threshold") and
+  ([.postgres_tables[].table] | index("incident_snapshots") != null and index("target_config_history") != null) and
+  ([.postgres_tables[].table] | index("incidents") < index("incident_snapshots"))' \
+  "$meta" >/dev/null || fail 'postgres scope plan not reflected in meta'
+jq -e '.tables.trainer_trace_window_threshold.scope == "snap" and .tables.trainer_trace_window_threshold.rule == "config" and
+  .tables.target_config_latest.scope == "snap" and .tables.target_config_latest.rule == "default" and
+  .tables.big_unknown_table.scope == "drop" and .tables["security.audit_marks"].scope == "snap"' \
+  "$live_root/cases/case-live-v4/data/catalog/postgres-scope-plan.json" >/dev/null || fail 'scope-plan.json decisions unexpected'
+dump_line=$(grep '^DOCKER .*pg_dump' "$FAKE_LOG")
+for want in --exclude-table-data=public.incident_snapshots \
+            --exclude-table-data-and-children=public.target_config_history \
+            --exclude-table-data=public.big_unknown_table --exclude-table-data=public.incidents; do
+  grep -qF -- "$want" <<<"$dump_line" || fail "pg_dump lacks $want"
+done
+if grep -qF -- 'public.trainer_trace_window_threshold' <<<"$dump_line"; then fail 'explicit snap table excluded from pg_dump'; fi
+export_sql=$(sed -n '/^PSQLFILE .export.sql$/,/^ENDPSQL$/p' "$FAKE_LOG")
+grep -qF 'merged_into' <<<"$export_sql" || fail 'event_clusters recursion lost'
+if grep -qF 'superseded_by' <<<"$export_sql"; then fail 'export SQL still reads incidents.superseded_by'; fi
+grep -q 'whole-table dump .* exceeds budget' "$live_root/case-live-v4.err" || fail 'no warning for snap budget'
+grep -qF "\\copy incident_snapshots FROM 'incident_snapshots.csv'" "$live_root/cases/case-live-v4/data/postgres/restore.sql" ||
+  fail 'restore.sql lacks the discovered child table'
+
+# (f) 제품 버전 칸과 지표 내보내기 요약.
+jq -e '.product_version == "2026.11.09-01" and .product_branch == "develop-ai" and
+  .product_version_source == "query-api:/api/v1/product/version" and
+  .victoriametrics_export.series == 3 and .victoriametrics_export.file == "data/victoriametrics.export"' \
+  "$meta" >/dev/null || fail 'product version or victoriametrics_export missing'
+
+# (g) 제품 버전 API 가 없으면 null 로 두고 녹화는 끝낸다. 환경변수가 있으면 그 값을 쓴다.
+run_live case-live-v4-nopv FAKE_PV_FAIL=1 || fail 'capture failed when product version API is missing'
+jq -e '.product_version == null and .product_branch == null' "$live_root/cases/case-live-v4-nopv/meta.json" >/dev/null ||
+  fail 'product_version not null when API missing'
+grep -q 'product version unavailable' "$live_root/case-live-v4-nopv.err" || fail 'no warning for missing product version'
+run_live case-live-v4-envpv FAKE_PV_FAIL=1 PRODUCT_VERSION=manual-1 || fail 'capture failed with PRODUCT_VERSION'
+jq -e '.product_version == "manual-1" and .product_version_source == "env:PRODUCT_VERSION"' \
+  "$live_root/cases/case-live-v4-envpv/meta.json" >/dev/null || fail 'PRODUCT_VERSION env not used'
 
 printf '[PASS] capture policy dry-run tests\n'

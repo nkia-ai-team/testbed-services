@@ -79,6 +79,48 @@
   },
   "_epoch_note": "captured_at_ms 는 timestamptz 가 아니라 bigint(epoch ms) 라 시간컬럼 자동탐지에 안 걸린다. DPM 실행계획은 DB 계열 시나리오(F06-H 등)의 근거라 버리지 않고 창으로 자른다. 92MB.",
 
+  "snap_tables": {
+    "trainer_trace_window_threshold": "탐지 모델 임계값 이력. 장애 전에 만든 활성 임계값이 재생에 필요",
+    "trainer_stream_threshold": "탐지 모델 임계값",
+    "collector_sms_process_snapshot": "수집 대상 프로세스 목록(인벤토리)",
+    "trainer_forecast_conformal": "예측 보정값. 골든 복원 표라 녹화 주기마다 비워져 평소엔 100MB 아래이고, 녹화가 오래 쉬면 그만큼 커진다"
+  },
+  "_snap_tables_note": [
+    "크지만 일부러 통째로 담는 표와 그 이유. auto.snap_max_bytes 를 넘어도 덤프한다.",
+    "2026-11-10 R1: 녹화 전 점검(testbed-operate 의 pg-scope-guard.py)의 SNAP_OK 를 이리로 옮겼다.",
+    "캡처와 점검이 같은 목록을 읽어야 점검이 통과시킨 표를 캡처가 빼는 일이 없다."
+  ],
+
+  "auto": {
+    "history_suffixes": ["_history"],
+    "history_time_columns": [
+      "occurred_at", "changed_at", "captured_at", "detected_at", "observed_at", "recorded_at",
+      "deployed_at", "executed_at", "sent_at", "started_at", "start_time", "created_at"
+    ],
+    "snap_max_bytes": 268435456,
+    "snap_budget_bytes": 2147483648
+  },
+  "_auto_why": [
+    "2026-11-10 R1(v4 녹화). 설정에 없는 표가 생겨도 녹화가 사람 손 없이 맞게 담도록 캡처가 원천 PG 카탈로그를",
+    "떠서 분류한다(pg-scope-export.py plan_scope). 패치된 119(develop-ai-2026.11.09-01) 실측: public 표 877개 중",
+    "설정에 없는 표 803개(4.1GB). 그중 slice 표를 외래 키로 가리키는 표가 12개(event_cluster_successors 4.9MB,",
+    "incident_snapshots 2.0MB, incident_judge_retries 2.3MB 등)로, 종전 규칙(기본 snap)이면 다른 날 인시던트와",
+    "군집에 딸린 행이 통째로 실리고 복원 때 FK 제약 생성이 깨진다. 이 표들은 fk_closure 로 부모가 남긴 행만 싣는다.",
+    "이름이 _history 로 끝나는 이력 표(target_config_history 등)는 사건 시각 열로 창을 자른다(history).",
+    "시각 열만 보고 자르지 않는 이유: target_config_latest(changed_at), kcm_availability_signal_latest(observed_at),",
+    "collector_sms_*_inv(collected_at) 처럼 상태와 인벤토리 표도 같은 이름의 열을 가진다. history_time_columns 는",
+    "앞에 있을수록 우선이다. created_at 은 이력 표에서만 마지막 후보로 쓴다.",
+    "snap_max_bytes(256MB): 설정에 없고 이 크기를 넘는 기준 표는 데이터를 빼고 스키마만 담는다(over_cap). 크기는",
+    "pg_table_size(표 본체와 TOAST, 인덱스 제외)다. 119 실측 설정 밖 기준 표 중 가장 큰 것은 mib_browser_oid_nodes 와",
+    "log_drain_templates(각 50MB 안팎)라 지금은 걸리는 표가 없다. 넘는 표가 생기면 녹화 전 점검이 막고, 사람이",
+    "slice, drop, snap_tables 중 하나로 정한다.",
+    "snap_budget_bytes(2GB): 통째로 덤프하는 표 전체의 합. 넘으면 캡처는 경고하고 녹화 전 점검은 막는다. 근거:",
+    "2026-10-08 F30-R 은 군집 표 5개(약 5.6GB)가 통째로 실려 pg_dump 가 900초 제한을 세 번 넘겼다. 실측 처리량은",
+    "아직 없어 보수적으로 잡았고, 첫 v4 캡처의 pg_dump 시간으로 고친다.",
+    "2026-11-10 119 실측: snap 합 약 3.4GB 이고 그중 trainer_trace_window_threshold 가 2.98GB(340만 행, 패치 뒤 급증)라",
+    "이 값으로는 점검이 막는다. 이 표의 범위(활성 행과 창 안 행만 담는 안 등)는 사람이 정할 일이다."
+  ],
+
   "_snap_rationale": {
     "targets / metric_definitions / resource_types / mib_* / collector_sms_*_inv / collection_*_policies / nms_*": "인벤토리·정의. 무엇이 존재하는가이지 무엇이 일어났는가가 아니다",
     "trainer_thresholds / trainer_stream_threshold / trainer_*_profiles / trainer_masking_rules / trainer_forecast_*": "현재 유효한 모델 상태. 창으로 자르면 창 이전에 학습된 임계가 사라져 AI 계층의 거동이 바뀐다(trainer_thresholds 2277행 중 창 안 24행뿐)",
