@@ -264,7 +264,8 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   scope: slice|snap, time_min, time_max | null(0행)}`.
 - 유지: `t1`/`t2`/`capture_start`/`capture_end`(+`_kst`), `dump_*`,
   `scenario_metadata` 6필드 + `scenario_metadata_sha256`(정본 운반, 불일치 시
-  승격 거부), `case_label`, `evaluation_eligible`(v2와 동일 결속 규칙),
+  승격 거부. 6칸 문구 방침과 녹화 뒤 정답지를 고쳤을 때 사본의 취급은
+  [작성 규칙 §1.2](spec-scenario-authoring.md)), `case_label`, `evaluation_eligible`(v2와 동일 결속 규칙),
   `preflight`(창=buffer 10분), `topology_snapshot`, 모델 스냅샷 계보
   (`model_snapshot_at >= capture_end` 검증 포함).
 - 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.

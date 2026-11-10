@@ -210,6 +210,48 @@ class AnswerKeyContractTests(unittest.TestCase):
                             f"{scenario_id}.{field}[{index}] rules out an external 429 by server spans",
                         )
 
+    def test_rollout_timing_names_the_rolled_out_service(self) -> None:
+        # 대상 이름 규약(docs/spec-scenario-authoring.md §1.3, 2026-11-10 D4): 실패 시각을 롤아웃에
+        # 견주는 문장은 어느 서비스의 롤아웃인지 관측 서버 서비스 이름으로 적고, 공통 문구 하나만
+        # 쓴다. v4 녹화에는 경로 밖 미끼 배포(재시작 롤아웃)가 같은 창에 들어가므로 이름 없는
+        # "롤아웃 시각" 은 어느 롤아웃인지 가리지 못한다. 이름 없이 쓰면 미끼 계산도 그 문장을
+        # 네임스페이스 전체가 바뀌지 않았다는 말로 읽는다. 해시 대상 6칸과 그 _ko 짝, root_cause
+        # 는 이 규약 밖이다(바꾸면 녹화 대조가 갈리거나 정답이 바뀐다. 남은 곳은 목록으로만 둔다).
+        policy = _load("registry/decoy-deployments.json")
+        services = {target["service_name"] for target in policy["targets"]}
+        locked = {"title", "description", "cause", "injection_summary", "user_impact",
+                  "distinguishing_evidence", "root_cause", "scoring", "injected_fault"}
+        locked |= {f"{field}_ko" for field in list(locked)}
+        anchor = re.compile(r"(?:롤아웃|재배포)(?: 시각|에서 옛 파드)")
+        clause = "롤아웃에서 옛 파드가 내려간 뒤 시작해 되돌림과 함께 끝난다"
+        loose = re.compile(r"(?:롤아웃|재배포) 시각에 (?:맞춰|시작)")
+
+        def texts(value, path):
+            if isinstance(value, str):
+                yield path, value
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    yield from texts(item, f"{path}.{key}")
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    yield from texts(item, f"{path}[{index}]")
+
+        problems: list[str] = []
+        for scenario_id, entry in sorted(self.metadata.items()):
+            for key, value in entry.items():
+                if key in locked:
+                    continue
+                for path, text in texts(value, f"{scenario_id}.{key}"):
+                    for match in anchor.finditer(text):
+                        before = text[: match.start()].rstrip().split()
+                        if not before or before[-1] not in services:
+                            problems.append(f"{path}: 롤아웃 앞에 서비스 이름이 없다: {text[:80]}")
+                        if match.group(0).endswith("옛 파드") and clause not in text:
+                            problems.append(f"{path}: 공통 문구와 다르다: {text[:80]}")
+                    if loose.search(text):
+                        problems.append(f"{path}: 공통 문구 대신 옛 표현: {text[:80]}")
+        self.assertFalse(problems, "\n".join(problems))
+
     def test_story_ko_is_a_display_only_story(self) -> None:
         # 화면 이야기 칸(story_ko): 러너 시나리오 카드가 description 대신 보이는 사람용 글이다.
         # 채점 칸이 아니며 capture 도 싣지 않는다. 작성 규칙은 docs/spec-scenario-story.md.
