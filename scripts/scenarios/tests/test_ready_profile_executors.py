@@ -303,8 +303,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         # The three words left out above, in the narrow forms that only a database change or a secret takes, so the
         # shared functions' own process and pod cleanup (bash kill, kubectl delete) and their password variables do not
         # meet them (C6b test re-audit, Q14 option (나)).
-        for name, pattern in self.SHARED_FORBIDDEN_FORMS.items():
-            self.assertIsNone(re.search(pattern, code), name)
+        self.assertEqual(self._shared_forbidden_hits(code), [])
 
     # Narrow forbidden forms for the shared function sets (lower-cased, lines that run).
     SHARED_FORBIDDEN_FORMS = {
@@ -316,6 +315,52 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             r"\b(?:pgpassword|mysql_pwd|mdb_password|odb_password)=(?![\"']?\$)['\"]?[^\s'\"]"),
         "password on a mysql command line": r"(?<![\w-])-p['\"]?[a-z0-9!@#^&*]",
     }
+
+    @classmethod
+    def _shared_code(cls) -> str:
+        shared = (db_operator_remote.bash_functions() + pg_lock_remote.bash_functions()).decode().lower()
+        return "\n".join(line for line in shared.splitlines() if not line.lstrip().startswith("#"))
+
+    @classmethod
+    def _shared_forbidden_hits(cls, code: str) -> list[str]:
+        return [name for name, pattern in cls.SHARED_FORBIDDEN_FORMS.items() if re.search(pattern, code)]
+
+    def test_each_narrow_form_put_into_the_shared_functions_fails_the_check(self) -> None:
+        # Q14 (나) ①: one line of each form added to the shared function sets as they are is caught by its form.
+        code = self._shared_code()
+        self.assertEqual(self._shared_forbidden_hits(code), [])
+        mutants = {
+            "sql delete": 'dbo_m() { mdb "" "DELETE FROM banking.transfers"; }',
+            "sql kill": 'dbo_m() { mdb "" "KILL QUERY $id"; }',
+            "password clause": "dbo_m() { odb dba <<<\"ALTER USER app IDENTIFIED BY x\"; }",
+            "password literal": "dbo_m() { \"$dbo_py\" -c \"f(password='hunter2')\"; }",
+            "password literal in a client's environment": "dbo_m() { PGPASSWORD=hunter2 psql -c 1; }",
+            "password on a mysql command line": "dbo_m() { mysql -uroot -phunter2 -e 1; }",
+        }
+        self.assertEqual(set(mutants), set(self.SHARED_FORBIDDEN_FORMS))
+        for name, line in mutants.items():
+            with self.subTest(name):
+                self.assertIn(name, self._shared_forbidden_hits(code + "\n" + line.lower()))
+        for line in ("dbo_m() { mdb \"\" \"alter system kill session '1,2'\"; }", 'dbo_m() { mdb "" "kill 12"; }'):
+            self.assertIn("sql kill", self._shared_forbidden_hits(code + "\n" + line))
+
+    def test_the_shared_functions_own_kill_password_and_delete_pass_the_check(self) -> None:
+        # Q14 (나) ②: the lines of the shared functions that use kill (bash's, for the runner's process groups and the
+        # lost client), password (the drivers' argument, variable and Secret key names) and kubectl delete (client
+        # pods, export Jobs) are there and pass every narrow form.
+        code = self._shared_code()
+        for word, at_least in (("kill", 5), ("password", 10), ("delete", 2)):
+            lines = [line for line in code.splitlines() if word in line]
+            self.assertGreaterEqual(len(lines), at_least, word)
+            for line in lines:
+                self.assertEqual(self._shared_forbidden_hits(line), [], line)
+        # The kinds named above are among them.
+        self.assertTrue(any(re.search(r"\bkill -term\b", line) for line in code.splitlines()))
+        self.assertTrue(any(re.search(r"\bkill -kill\b", line) for line in code.splitlines()))
+        self.assertTrue(any("password=_env(" in line for line in code.splitlines()))
+        self.assertTrue(any('pgpassword="$(dbo_secret' in line for line in code.splitlines()))
+        self.assertTrue(any("dbo_k delete pod" in line for line in code.splitlines()))
+        self.assertTrue(any('dbo_k delete "$j"' in line for line in code.splitlines()))
 
     def test_shared_forbidden_forms_catch_what_they_name_and_spare_the_cleanup(self) -> None:
         caught = {
