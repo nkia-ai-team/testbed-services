@@ -156,15 +156,17 @@ spec:
 VM들로 구성된 **kubeadm 단일 클러스터**다(2026-10 109 GB10 에서 이전). 게스트는 내부 NAT
 브리지 `vmbr1`(`192.168.122.0/24`). 러너, 팬아웃, 빌드 docker 는 VM `tb-ops`(192.168.122.20). 도메인 워크로드는 매니페스트의
 `nodeSelector: kubernetes.io/hostname` 으로 도메인마다 worker 하나에 고정된다(commerce tb-w1,
-core-banking tb-w2, food-delivery tb-w3). 노드의 `domain` 라벨은 배치에 쓰이지 않는다(표시용). 값은 배치와 같다
+core-banking tb-w2, food-delivery tb-w3). 예외는 commerce 와 core-banking 의 진입 nginx 둘로, DB 노드가
+아닌 control-plane(tb-cp)에 둔다(v4 E8, 매니페스트 `30-nginx.yaml` 주석). food-delivery 는 nginx 가 없다.
+노드의 `domain` 라벨은 배치에 쓰이지 않는다(표시용). 값은 도메인 worker 와 같다
 (tb-w1 commerce, tb-w2 core-banking, tb-w3 food-delivery. 2026-11-10 에 뒤바뀌어 있던 tb-w2, tb-w3 값을 고쳤다).
 
 | VM | IP | 사양 | 역할 |
 |----|----|------|------|
-| tb-cp | 192.168.122.77 | 2vCPU/4GB | kubeadm control-plane |
-| tb-w1 | 192.168.122.184 | 4vCPU/12GB | worker, commerce 배치 |
-| tb-w2 | 192.168.122.11 | 4vCPU/12GB | worker, core-banking 배치 |
-| tb-w3 | 192.168.122.14 | 4vCPU/12GB | worker, food-delivery 배치 |
+| tb-cp | 192.168.122.77 | 2vCPU/4GB | kubeadm control-plane, commerce, core-banking 진입 nginx |
+| tb-w1 | 192.168.122.184 | 4vCPU/8GB | worker, commerce 배치 |
+| tb-w2 | 192.168.122.11 | 4vCPU/8GB | worker, core-banking 배치 |
+| tb-w3 | 192.168.122.14 | 4vCPU/8GB | worker, food-delivery 배치 |
 | tb-runner | 192.168.122.206 | 2vCPU/4GB | 조종석(부하/장애 주입/mock, 클러스터 외부) |
 
 앱 이미지는 tb-ops 에서 x86_64(amd64)로 빌드한다(`eclipse-temurin` 멀티아치). 각 worker는 SMS

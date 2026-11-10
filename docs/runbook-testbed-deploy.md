@@ -22,7 +22,7 @@ summary: 109 KVM 클러스터에 3도메인 테스트베드를 배포·검증하
 | 빌드·오케스트레이션 호스트 | `192.168.200.109` (root, 워크스테이션 ssh 키 등록됨) | ARM64 GB10, docker 있음, ansible 없음 |
 | kubeconfig | `109:/root/tb-kubeconfig` | kubeadm v1.31 클러스터(tb-cp + tb-w1/w2/w3) |
 | VM ssh | `ssh -i /root/.ssh/tb_key nkia@192.168.122.<NAT-ip>` (NOPASSWD sudo) | 인벤토리 `109:/root/tb-inventory.txt` |
-| 워커 NAT IP | w1=`.184`(commerce) w2=`.11`(banking) w3=`.14`(food) | 배치는 매니페스트의 `kubernetes.io/hostname` nodeSelector(2026-07-28 `26a0a04`). 노드 `domain` 라벨은 배치에 쓰이지 않는다 |
+| 워커 NAT IP | w1=`.184`(commerce) w2=`.11`(banking) w3=`.14`(food) | 배치는 매니페스트의 `kubernetes.io/hostname` nodeSelector(2026-07-28 `26a0a04`). commerce, banking 진입 nginx 는 tb-cp(v4 E8). 노드 `domain` 라벨은 배치에 쓰이지 않는다 |
 | OTLP 수집 경로 | manifest 가 downward API 로 **노드 로컬** `http://$(status.hostIP):4317` 구성 — 각 VM의 OTel 에이전트(lucida-otel-supervisor, OpAMP 관리)가 수신 | **VM에 OTel 에이전트 설치 필수**(미설치 시 앱은 정상, 텔레메트리만 유실). AP collector 직접 전송(`230.104:4317`)은 에이전트 설치 전 임시 우회였음. ※ 6565는 구 Polestar10(범위 밖) |
 | `POLESTAR_ORG_ID` | `69731678b56620b247fb279a` | lucida ClickHouse `otel_traces_local`의 실사용 organizationId (변경 시 재확인: §5 쿼리) |
 | deploy env 파일 | `109:/root/deploy-env.sh` | 위 값 + IMPORT_SSH_NODES/KEY export 모음 |
@@ -126,6 +126,7 @@ docker exec lucida-clickhouse clickhouse-client -q "
 - **nodeSelector(해결, 2026-07-28 `26a0a04`)**: manifest 가 `nodeSelector: kubernetes.io/hostname`
   으로 도메인 파드를 워커 하나에 고정한다(commerce tb-w1, core-banking tb-w2, food-delivery tb-w3).
   노드 `domain` 라벨은 배치에 쓰이지 않는다. 이미지는 그 도메인 워커에만 있으면 된다(66 이전 때
-  도메인 노드에만 넣었다, `runbook-testbed-move-109-to-66.md` 2단계).
+  도메인 노드에만 넣었다, `runbook-testbed-move-109-to-66.md` 2단계). 예외: commerce, core-banking 의
+  진입 nginx 는 tb-cp 에 두고 다이제스트로 고정한 이미지를 쓴다(v4 E8). tb-cp 에 그 이미지가 있어야 한다.
 - DB StatefulSet이 local-path PV를 쓰므로 pod가 노드를 옮기면 데이터가 새로 시작된다
   (테스트베드 성격상 허용, 단 장기 캡처 중 재스케줄은 주의).

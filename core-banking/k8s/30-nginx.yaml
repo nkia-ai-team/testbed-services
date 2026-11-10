@@ -15,11 +15,20 @@ spec:
       labels:
         app: testbed-nginx
     spec:
+      # 진입 nginx 는 DB 노드가 아닌 제어 노드에 둔다(testbed v4 E8). banking Oracle 이 도는 tb-w2 에 노드 메모리
+      # 압박이나 정지를 넣으면 요청이 작은 nginx 가 커널 OOM 과 축출 순서 앞쪽이라 먼저 죽어 진입이
+      # 연결 불가(0)가 되고 원인이 흐려졌다(runbook §8-7, create-runs 10-16 F81-R). 러너의 노드 주입
+      # 대상은 워커뿐이라 제어 노드의 진입은 주입을 받지 않고, 하류가 죽으면 502 로 답한다.
       nodeSelector:
-        kubernetes.io/hostname: tb-w2
+        kubernetes.io/hostname: tb-cp
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: nginx
-          image: nginx:alpine
+          # 노드를 옮겨도 판이 바뀌지 않게 옮기기 전 tb-w2 에서 돌던 이미지(nginx 1.31.2)를 다이제스트로 고정한다.
+          image: nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
           ports:
             - containerPort: 80
           volumeMounts:

@@ -2071,3 +2071,67 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
             text = (repo / domain / "k8s" / "02-configmaps.yaml").read_text(encoding="utf-8")
             self.assertRegex(text, rf"(?m)^  name:\s*{self.policy['configmap']['name']}\s*$")
             self.assertNotIn(self.policy["configmap"]["key"], text)
+
+
+class EntryPlacementTests(unittest.TestCase):
+    """Domain manifests (testbed v4 E8): the entry nginx of commerce and banking
+    stays off its database node, so a node fault on that worker reaches the
+    entry as 502s instead of killing it first (runbook §8-7)."""
+
+    ENTRY = {
+        "commerce": ("rca-testbed-commerce", "testbed-nginx", "testbed-postgres"),
+        "core-banking": ("rca-testbed-banking", "testbed-nginx", "testbed-oracle"),
+    }
+    CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import yaml
+
+        cls.workloads = {}
+        repo = ROOT.parents[1]
+        for domain in ("commerce", "core-banking", "food-delivery"):
+            for path in sorted((repo / domain / "k8s").glob("*.yaml")):
+                for document in yaml.safe_load_all(path.read_text(encoding="utf-8")):
+                    if document and document.get("kind") in ("Deployment", "StatefulSet"):
+                        key = (domain, document["metadata"]["namespace"], document["metadata"]["name"])
+                        cls.workloads[key] = document["spec"]["template"]["spec"]
+
+    def _node(self, pod_spec: dict) -> str | None:
+        return (pod_spec.get("nodeSelector") or {}).get("kubernetes.io/hostname")
+
+    def _tolerates_control_plane(self, pod_spec: dict) -> bool:
+        return any(
+            item.get("key") == self.CONTROL_PLANE_TAINT and item.get("effect") in (None, "NoSchedule")
+            for item in pod_spec.get("tolerations") or []
+        )
+
+    def test_entry_nginx_runs_on_the_control_plane_not_on_its_database_node(self) -> None:
+        for domain, (namespace, entry, database) in self.ENTRY.items():
+            with self.subTest(domain=domain):
+                entry_spec = self.workloads[(domain, namespace, entry)]
+                database_node = self._node(self.workloads[(domain, namespace, database)])
+                self.assertEqual(self._node(entry_spec), "tb-cp")
+                self.assertTrue(self._tolerates_control_plane(entry_spec))
+                self.assertIsNotNone(database_node)
+                self.assertNotEqual(self._node(entry_spec), database_node)
+
+    def test_only_the_entry_nginx_is_placed_on_the_control_plane(self) -> None:
+        # The control plane has 2 vCPU next to the API server, etcd and CoreDNS;
+        # nothing else of the testbed may drift onto it.
+        allowed = {(domain, namespace, entry) for domain, (namespace, entry, _) in self.ENTRY.items()}
+        for key, pod_spec in self.workloads.items():
+            if key in allowed:
+                continue
+            with self.subTest(workload=key):
+                self.assertNotEqual(self._node(pod_spec), "tb-cp")
+                self.assertFalse(self._tolerates_control_plane(pod_spec))
+
+    def test_entry_nginx_image_is_pinned_by_digest(self) -> None:
+        # Moving the pod pulls the image on a new node; a bare tag would pick up
+        # whatever nginx:alpine is that day and change the entry's version.
+        for domain, (namespace, entry, _) in self.ENTRY.items():
+            with self.subTest(domain=domain):
+                images = [c["image"] for c in self.workloads[(domain, namespace, entry)]["containers"]]
+                self.assertEqual(len(images), 1)
+                self.assertRegex(images[0], r"^nginx:alpine@sha256:[0-9a-f]{64}$")
