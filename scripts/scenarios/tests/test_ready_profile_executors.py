@@ -280,6 +280,14 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertEqual(sum("mdb_pod_reap " in line for line in functions.splitlines()
                              if not line.lstrip().startswith("#")), 1)
         self.assertIn('ended="$(mdb_pod_reap "$@")"', functions)
+        # The forbidden-word checks above look at each body's own text; the shared function sets themselves are checked
+        # here, so nothing SQL-level the bodies must not do can arrive through them (C6b test audit 다4).
+        shared = (db_operator_remote.bash_functions() + pg_lock_remote.bash_functions()).decode().lower()
+        for word in ("kill session", "identified by", "drop user", "account lock", "alter profile", "revoke", "grant ",
+                     "set global", "max_queries_per_hour", "lucida_mon", "pg_terminate_backend", "pg_cancel_backend",
+                     "pg_sleep", "pkill", "valid until", "nologin", "alter system", "alter role", "pg_ctl",
+                     "postgresql.conf"):
+            self.assertNotIn(word, shared, word)
         # Only these two account changes use it.
         users = []
         for name, module in self.C6B_EXECUTORS.items():
@@ -357,6 +365,48 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             for text in ((tmp / "exec.argv").read_text(), (tmp / "kubectl.log").read_text()):
                 db_operator_fakes.assert_no_password(self, text)
 
+
+    def test_background_clients_return_at_once_and_record_their_group(self) -> None:
+        # C6b test audit 다5: run holds the runner's coordinator lock (30 s lease), so the migration, export and VACUUM
+        # sessions start in the background and run returns without waiting for them. Here each client blocks for
+        # 30 s; mdb_pod_spawn and pdb_spawn must come back within a few seconds and leave its group recorded.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp, psql="import time\ntime.sleep(30)\n", kubectl_cases=(
+                "  *' exec -i testbed-mysql-0 -- '*) cat >/dev/null; sleep 30 ;;"))
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + b'db_target rca-testbed-food testbed-mysql-0\n'
+                      + b'mdb_pod_spawn root fooddelivery "ALTER TABLE t ADD COLUMN c int" "$1/m.log"\n'
+                      + b'db_target rca-testbed-commerce testbed-postgres-0\n'
+                      + b'pdb_spawn "VACUUM (FULL) a.b" "$1/v.log" psql\n'
+                      + b'echo spawned\n')
+            started = time.monotonic()
+            done = subprocess.run(["bash", "-s", "--", str(tmp / "run")], input=script, env=env, capture_output=True,
+                                  timeout=25)
+            took = time.monotonic() - started
+            try:
+                self.assertEqual(done.returncode, 0, done.stderr.decode())
+                self.assertIn(b"spawned", done.stdout)
+                self.assertLess(took, 8.0)
+                boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+                for log in ("m.log", "v.log"):
+                    pgid, start, recorded_boot = (tmp / "run" / f"{log}.pgid").read_text().split()
+                    self.assertEqual(recorded_boot, boot)
+                    self.assertTrue(start.isdigit())
+                    # The client is still running in its own group.
+                    self.assertTrue(any(Path(f"/proc/{d.name}/stat").exists() and
+                                        Path(f"/proc/{d.name}/stat").read_text().rsplit(")", 1)[1].split()[2] == pgid
+                                        for d in Path("/proc").iterdir() if d.name.isdigit()), log)
+            finally:
+                subprocess.run(["bash", "-s", "--", str(tmp / "run")], env=env, capture_output=True, timeout=30,
+                               input=b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                               + b'dbo_reap "$1"\n')
+        library = db_operator_remote.bash_functions().decode()
+        for fn in ("mdb_pod_spawn() {", "pdb_spawn() {"):
+            body = library[library.index(fn):library.index("\n}\n", library.index(fn))]
+            self.assertIn("setsid nohup", body)
+            self.assertRegex(body, r"2>&1 &\n")
+            self.assertRegex(body, r'dbo_pgid_record "\$!"')
 
     def test_mysql_clients_in_the_pod_are_mysql_from_their_first_moment(self) -> None:
         # C6b review 3 상 1, criterion ①: the command the pod starts is `mysql` itself for the export (pod-exec) and the

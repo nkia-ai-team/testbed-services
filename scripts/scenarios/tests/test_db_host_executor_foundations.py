@@ -34,7 +34,8 @@ lock = load("db_lock_executor")
 workload = load("db_workload_executor")
 # v4 C6b: the bodies carry the shared operator-session functions; checks on what a body itself does
 # look at its own text only.
-own_body = load("db_operator_remote").without_library
+db_operator_remote = load("db_operator_remote")
+own_body = db_operator_remote.without_library
 
 
 def plan(profile: str, scenario: str, params: dict, location: dict | None = None) -> dict:
@@ -72,6 +73,19 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn('mysql() { mdb "$db" "$1"; }', script)
         self.assertNotIn("2>/dev/null", script)
         self.assertNotIn(" exec ", script)
+        # 그 사이의 mdb_run 도 클라이언트의 stderr 를 버리지 않는다(C6b 시험 감사 다3): 본문, mdb, mdb_run, 클라이언트로
+        # 이어지는 길 전체를 가짜 MySQL 의 오류 한 줄로 확인한다.
+        lib = db_operator_remote.bash_functions().decode()
+        mdb_run = lib[lib.index("mdb_run() {"):lib.index("\n}\n", lib.index("mdb_run() {"))]
+        self.assertNotIn("2>", mdb_run)
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp, mysql=(
+                "import sys\nprint('ERROR 1205 (HY000): Lock wait timeout exceeded; try restarting transaction',"
+                " file=sys.stderr)\nsys.exit(1)\n"))
+            failed = subprocess.run(argv, input=body, env=env, capture_output=True, timeout=60)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn(b"ERROR 1205 (HY000): Lock wait timeout exceeded", failed.stderr)
         # 인덱스 계약(F33-R)은 여전히 인덱스 스크립트로 간다.
         _, index_body = ddl.build_invocation(plan("db.ddl", "F33-R", ddl.CONTRACTS["F33-R"]), "run")
         self.assertIn("DROP INDEX", index_body.decode())
@@ -1690,6 +1704,65 @@ def connect(**kw): return Conn(**kw)
         finally:
             sock.close()
             server.close()
+
+    def _pace(self, tmp: Path, rate: str, sample: int = 100):
+        (tmp / "rate").write_text(rate)
+        pace = self.client._Pace(str(tmp), sample)
+        pace.took(b"x" * 99 + b"\n")  # the sample: 100 bytes, one row
+        self.assertEqual((tmp / "sample").read_text(), "100 1\n")
+        return pace
+
+    def _waits(self, pace, seconds: float) -> bool:
+        """True while wait() is still blocked after SECONDS."""
+        import threading
+        done = threading.Event()
+        thread = threading.Thread(target=lambda: (pace.wait(), done.set()), daemon=True)
+        thread.start()
+        return not done.wait(seconds)
+
+    def test_pace_holds_the_reader_at_the_rate_it_is_told(self) -> None:
+        # C6b test audit 다6: the MySQL export queue (F60-H, F53-H, F36-P) stays on the server for export_seconds only
+        # because pod-exec reads its stream at the rate _Pace allows, steered through files (mdb_pod_pace).
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            # "0": after the sample the reader waits for a plan, and "max" releases it at once.
+            pace = self._pace(tmp, "0")
+            self.assertTrue(self._waits(pace, 1.2))
+            (tmp / "rate").write_text("max")
+            time.sleep(1.0)
+            self.assertFalse(self._waits(pace, 0.1))
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            # A number is bytes a second: 3000 bytes at 2000 B/s take 1.5 s.
+            pace = self._pace(tmp, "2000")
+            pace.wait()
+            started = time.monotonic()
+            pace.took(b"y" * 3000)
+            pace.wait()
+            self.assertGreaterEqual(time.monotonic() - started, 1.4)
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            # A plan "ROWS HELD DEADLINE": the rate is what is left on the server over the time left. 11 rows of the
+            # 100 bytes seen, 0 held, 10 s left: (1100 - 100) / 10 = 100 B/s.
+            pace = self._pace(tmp, "0")
+            (tmp / "plan").write_text(f"11 0 {time.time() + 10}")
+            pace.checked = 0.0
+            pace._refresh()
+            self.assertAlmostEqual(pace.rate, 100.0, delta=2.0)
+            # A deadline that has passed lets everything through.
+            (tmp / "plan").write_text(f"11 0 {time.time() - 1}")
+            pace.checked = 0.0
+            pace._refresh()
+            self.assertEqual(pace.rate, float("inf"))
+        # Without a pace directory nothing is held (the migration and other pod-execs).
+        free = self.client._Pace("", 100)
+        free.took(b"z" * 10_000)
+        self.assertFalse(self._waits(free, 0.1))
+        # And the paced export does get one: mdb_pod_spawn hands pod-exec its LOG.pace directory, rate "0" at first.
+        lib = db_operator_remote.bash_functions().decode()
+        spawn = lib[lib.index("mdb_pod_spawn() {"):lib.index("\n}\n", lib.index("mdb_pod_spawn() {"))]
+        self.assertIn('mkdir -p -- "$4.pace" && printf \'0\\n\' >"$4.pace/rate"', spawn)
+        self.assertIn('KEXEC_PACE_DIR="$4.pace"', spawn)
 
     def test_pg_relay_carries_one_connection_both_ways(self) -> None:
         import socket
