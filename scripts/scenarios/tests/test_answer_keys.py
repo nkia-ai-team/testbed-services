@@ -212,18 +212,21 @@ class AnswerKeyContractTests(unittest.TestCase):
 
     def test_rollout_timing_names_the_rolled_out_service(self) -> None:
         # 대상 이름 규약(docs/spec-scenario-authoring.md §1.3, 2026-11-10 D4): 실패 시각을 롤아웃에
-        # 견주는 문장은 어느 서비스의 롤아웃인지 관측 서버 서비스 이름으로 적고, 공통 문구 하나만
+        # 견주는 문장은 어느 서비스의 롤아웃인지 관측 서버 서비스 이름으로 적고, 공통 시작 절을
         # 쓴다. v4 녹화에는 경로 밖 미끼 배포(재시작 롤아웃)가 같은 창에 들어가므로 이름 없는
         # "롤아웃 시각" 은 어느 롤아웃인지 가리지 못한다. 이름 없이 쓰면 미끼 계산도 그 문장을
         # 네임스페이스 전체가 바뀌지 않았다는 말로 읽는다. 해시 대상 6칸과 그 _ko 짝, root_cause
-        # 는 이 규약 밖이다(바꾸면 녹화 대조가 갈리거나 정답이 바뀐다. 남은 곳은 목록으로만 둔다).
+        # 는 이 규약 밖이다(바꾸면 녹화 대조가 갈리거나 정답이 바뀐다. 남은 곳은 장부 §6 의
+        # 2026-11-10 알려진 위반 목록에 있다).
         policy = _load("registry/decoy-deployments.json")
         services = {target["service_name"] for target in policy["targets"]}
         locked = {"title", "description", "cause", "injection_summary", "user_impact",
                   "distinguishing_evidence", "root_cause", "scoring", "injected_fault"}
         locked |= {f"{field}_ko" for field in list(locked)}
         anchor = re.compile(r"(?:롤아웃|재배포)(?: 시각|에서 옛 파드)")
-        clause = "롤아웃에서 옛 파드가 내려간 뒤 시작해 되돌림과 함께 끝난다"
+        # 시작 절은 공통이고, 끝 절은 주입이 실제로 만든 회복 모양대로 쓴다(되돌림, 할당량
+        # 삭제, 노드 이미지 재반입 등). 끝 절이 없는 문장만 막는다.
+        clause = re.compile(r"롤아웃에서 옛 파드가 내려간 뒤 시작해 [^,]*끝난다")
         loose = re.compile(r"(?:롤아웃|재배포) 시각에 (?:맞춰|시작)")
 
         def texts(value, path):
@@ -246,8 +249,8 @@ class AnswerKeyContractTests(unittest.TestCase):
                         before = text[: match.start()].rstrip().split()
                         if not before or before[-1] not in services:
                             problems.append(f"{path}: 롤아웃 앞에 서비스 이름이 없다: {text[:80]}")
-                        if match.group(0).endswith("옛 파드") and clause not in text:
-                            problems.append(f"{path}: 공통 문구와 다르다: {text[:80]}")
+                        if match.group(0).endswith("옛 파드") and not clause.search(text):
+                            problems.append(f"{path}: 공통 시작 절이나 끝 절이 없다: {text[:80]}")
                     if loose.search(text):
                         problems.append(f"{path}: 공통 문구 대신 옛 표현: {text[:80]}")
         self.assertFalse(problems, "\n".join(problems))
