@@ -288,9 +288,19 @@ drained_bank
 rc=0; out=$(FAKE_PHASE=cycle_normal "$MAINT" seed-restore) || rc=$?
 [[ $rc -eq 1 ]] && grep -q 'seed-restore refused: queue phase cycle_normal' <<<"$out" || fail "restore during recording: $out"
 [[ ! -e "$FAKE_BANK.calls" ]] || fail 'restore during recording moved money'
-rc=0; out=$(FAKE_PHASE=completed "$MAINT" seed-restore) || rc=$?
-[[ $rc -eq 1 ]] && grep -q 'seed-restore refused: queue phase completed' <<<"$out" || fail "restore right after a completed queue: $out"
-[[ ! -e "$FAKE_BANK.calls" ]] || fail 'restore in phase completed moved money'
+# A recording or a run in progress refuses: every queue phase of a cycle, and an active run.
+for phase in cycle_reset cycle_normal cycle_buffer running cycle_cooldown waiting_capture waiting_clean_window; do
+  rc=0; out=$(FAKE_PHASE=$phase "$MAINT" seed-restore) || rc=$?
+  [[ $rc -eq 1 ]] && grep -q "seed-restore refused: queue phase $phase" <<<"$out" || fail "restore in phase $phase: $out"
+done
+rc=0; out=$(FAKE_PHASE=completed FAKE_ACTIVE=true "$MAINT" seed-restore) || rc=$?
+[[ $rc -eq 1 ]] && grep -q 'seed-restore refused: run active' <<<"$out" || fail "restore with an active run: $out"
+[[ ! -e "$FAKE_BANK.calls" ]] || fail 'a refused restore moved money'
+# The queue's usual resting phase (completed, 66) allows the restore the ALERT asks for, run
+# exactly as the procedure writes it: six transfers and a reconciled ledger.
+out=$(FAKE_PHASE=completed "$MAINT" seed-restore) || fail "restore in phase completed: $out"
+grep -q 'restore done: 6 transfers (orderId seed-restore-[0-9TZ]*, journal .*), ledger imbalance 0' <<<"$out" || fail "completed restore log: $out"
+drained_bank
 FAKE_PHASE=idle "$MAINT" seed-plan >/dev/null || fail 'seed-plan in idle'
 rc=0; out=$(FAKE_IMBALANCE=-36000 "$MAINT" seed-restore) || rc=$?
 [[ $rc -eq 1 ]] && grep -q 'ledger imbalance -36000' <<<"$out" || fail "imbalance not caught: $out"

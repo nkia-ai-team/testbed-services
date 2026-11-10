@@ -298,6 +298,10 @@ function crossDomainJourney() {
         returnDueAt = sentWhileClosing
             ? Date.now() + Math.floor(closeRand() * Math.max(0, Math.min(60000, runEnd() - Date.now() - 30000)))
             : 0;
+    } else if (closing()) {
+        // 마감 뒤 보내기가 돈을 옮기지 못했다(은행 장애 등): 짝이 생기지 않았으니 번갈기를 되돌려 다음
+        // 이체 차례도 보내기로 둔다. 안 그러면 장애 동안 차례당 이체가 0.5건으로 줄어 주입 구간 요청이 준다.
+        skipThisTurn = false;
     }
 }
 

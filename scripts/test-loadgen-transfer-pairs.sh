@@ -42,15 +42,18 @@ for load in '"commerce":{"rate":5,"vus":20},"banking":{"rate":3,"vus":10}' \
   jq -e "$shape_ok" <<<"$out" >/dev/null || fail "pairs at {$load}: $(jq -c '{stats, lostAtRestart, shape}' <<<"$out")"
 done
 
-# A bank outage over an hour's last ten minutes must not turn the returns VUs still owe into a
-# retry storm: no minute of the outage sees more transfer requests than an ordinary minute plus
-# one per VU. Refused connections and 503 are the answers a return is retried on; 502 is not.
+# A bank outage over an hour's last ten minutes must leave the transfer request count of the
+# outage as it was: no retry storm (no minute above an ordinary minute plus one per VU) and no
+# shortfall (the ten minutes together at least 85% of ten ordinary minutes; a failed send while
+# closing must not count as a paired turn). Refused connections and 503 are the answers a return
+# is retried on; 502 is not.
 for kind in 503 '"refused"' 502; do
   out=$(run "$COMMERCE" "$BANKING" "{\"hours\":4,\"commerce\":{\"rate\":10,\"vus\":20},\"banking\":{\"rate\":4,\"vus\":10},\"fault\":{\"hour\":2,\"from\":50,\"to\":60,\"kind\":$kind}}")
-  jq -e '.stats.scriptErrors == 0
-         and .shape.commerce.faultHourMaxPerMinute <= .shape.commerce.profileHeadMean + .load.commerce.vus
-         and .shape.banking.faultHourMaxPerMinute <= .shape.banking.profileHeadMean + .load.banking.vus' <<<"$out" >/dev/null \
-    || fail "retry storm with $kind: $(jq -c '{c: .shape.commerce.faultHourPerMinute, b: .shape.banking.faultHourPerMinute}' <<<"$out")"
+  jq -e 'def fault_ok($k): .shape[$k] as $s
+           | $s.faultHourMaxPerMinute <= $s.profileHeadMean + .load[$k].vus
+             and ($s.faultHourPerMinute | add) >= $s.profileHeadMean * (.fault.to - .fault.from) * 0.85;
+         .stats.scriptErrors == 0 and fault_ok("commerce") and fault_ok("banking")' <<<"$out" >/dev/null \
+    || fail "outage request count with $kind: $(jq -c '{c: .shape.commerce.faultHourPerMinute, cmean: .shape.commerce.profileHeadMean, b: .shape.banking.faultHourPerMinute, bmean: .shape.banking.profileHeadMean}' <<<"$out")"
 done
 
 # The unpaired scripts drain the seven (the defect this test exists for).

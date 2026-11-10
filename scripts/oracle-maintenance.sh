@@ -35,7 +35,9 @@
 # or missing or not ACTIVE) exits 3 and writes one line per reason to $STATE_DIR/ALERT;
 # the next clean check removes the file. The scenario runner mounts $STATE_DIR read-only and
 # its readiness (oracle_maintenance_check) is false while ALERT exists or last.json is older
-# than 7 hours, so no recording starts or continues past an unread ALERT.
+# than 13 hours (the check cron period twice plus an hour: a failed check keeps the old
+# last.json), so no queue starts or resumes past an unread ALERT. The runner reads the cron
+# period as 6 hours; change both together.
 set -Eeuo pipefail
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/root/tb-kubeconfig}"
@@ -78,10 +80,13 @@ TRANSFER_URL="${TRANSFER_URL:-http://192.168.122.77:30282}"
 # cycle_buffer, running, cycle_cooldown, waiting_capture, waiting_clean_window) is
 # part of some recording's window or the clean window before the next one.
 PURGE_ALLOWED_PHASES="${PURGE_ALLOWED_PHASES:-idle paused completed}"
-# seed-restore and seed-undo move up to millions in one transfer. Only while the operating loop is
-# stopped (paused) or never started (idle): right after "completed" the next cycle may begin and
-# put those transfers just before a recording window.
-SEED_ALLOWED_PHASES="${SEED_ALLOWED_PHASES:-paused idle}"
+# seed-restore and seed-undo move up to millions in one transfer, so only outside a recording:
+# the runner reports no active run and the queue rests (completed, its usual phase between the
+# operating loop's starts, paused or idle). No runner API leaves completed without starting a
+# queue, so completed must be allowed or the restore an ALERT asks for could never run. Keeping
+# the transfers out of the next recording's normal window is the procedure's job (testbed lock,
+# operator/PAUSE, 2h30m before the next recording).
+SEED_ALLOWED_PHASES="${SEED_ALLOWED_PHASES:-completed paused idle}"
 
 log() { printf '[oracle-maintenance] %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 
