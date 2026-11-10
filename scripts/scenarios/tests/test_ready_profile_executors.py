@@ -300,6 +300,45 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                      "postgresql.conf", "drop table", "drop index", "truncate", "insert ", "update ", "rename ",
                      "delete from", "alter table"):
             self.assertNotIn(word, code, word)
+        # The three words left out above, in the narrow forms that only a database change or a secret takes, so the
+        # shared functions' own process and pod cleanup (bash kill, kubectl delete) and their password variables do not
+        # meet them (C6b test re-audit, Q14 option (나)).
+        for name, pattern in self.SHARED_FORBIDDEN_FORMS.items():
+            self.assertIsNone(re.search(pattern, code), name)
+
+    # Narrow forbidden forms for the shared function sets (lower-cased, lines that run).
+    SHARED_FORBIDDEN_FORMS = {
+        "sql delete": r"\bdelete\s+from\b",
+        "sql kill": r"\bkill\s+(?:query|connection|session)\b|\bkill\s+\d|\balter\s+system\s+(?:kill|disconnect)\s+session\b",
+        "password clause": r"\bidentified\s+(?:by|with)\b",
+        "password literal": r"password\s*[=:]\s*['\"](?![$%'\"])",
+        "password literal in a client's environment": (
+            r"\b(?:pgpassword|mysql_pwd|mdb_password|odb_password)=(?![\"']?\$)['\"]?[^\s'\"]"),
+        "password on a mysql command line": r"(?<![\w-])-p['\"]?[a-z0-9!@#^&*]",
+    }
+
+    def test_shared_forbidden_forms_catch_what_they_name_and_spare_the_cleanup(self) -> None:
+        caught = {
+            "sql delete": ['x="DELETE FROM banking.transfers WHERE id = 1"', "DELETE\tFROM t"],
+            "sql kill": ["x=\"ALTER SYSTEM KILL SESSION '12,34'\"", 'x="KILL QUERY 12"', 'x="KILL 12"',
+                         'x="KILL CONNECTION $id"', "alter system disconnect session '1,2' immediate"],
+            "password clause": ['x="ALTER USER app IDENTIFIED BY secret"', "create user a identified with caching_sha2_password"],
+            "password literal": ["password='hunter2'", 'conn(password = "hunter2")'],
+            "password literal in a client's environment": ["PGPASSWORD=hunter2 psql -c 1", 'MYSQL_PWD="hunter2" mysql',
+                                                           "odb_password=hunter2 python"],
+            "password on a mysql command line": ["mysql -uroot -phunter2 -e 1", "mysql -u root -p'hunter2'"],
+        }
+        spared = ['kill -TERM -- "-$g" 2>/dev/null || true', 'kill "$attach" 2>/dev/null', "kill -0 \"$attach\"",
+                  'kill -TERM $pids', 'dbo_k delete pod "$p" --now', 'dbo_k delete "$j" --cascade=foreground',
+                  'password=_env("ODB_PASSWORD"),', 'ODB_PASSWORD="$(dbo_secret "$DBO_ORACLE_SECRET" key)"',
+                  'MDB_PASSWORD="${!p}"', 'PGPASSWORD="$(dbo_secret s POSTGRES_PASSWORD)"',
+                  "printf '[client]\\npassword=\"%s\"' \"$pw\"", 'mkdir -p -- "$dir"', "SELECT 1 FOR UPDATE"]
+        for name, samples in caught.items():
+            for sample in samples:
+                self.assertIsNotNone(re.search(self.SHARED_FORBIDDEN_FORMS[name], sample.lower()), (name, sample))
+        for sample in spared:
+            for name, pattern in self.SHARED_FORBIDDEN_FORMS.items():
+                self.assertIsNone(re.search(pattern, sample.lower()), (name, sample))
         # Only these two account changes use it.
         users = []
         for name, module in self.C6B_EXECUTORS.items():
