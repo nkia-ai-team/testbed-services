@@ -478,8 +478,8 @@ class RegistryContractTests(unittest.TestCase):
         psql 은 결과보다 `BEGIN` 명령 태그를 먼저 찍으므로 첫 줄은 절대 pid 가 아니다.
         db_lock_executor(2026-07-31) → timeline_multi_injection(08-03) →
         timeline_lock_mock·timeline_dual_fault(08-03) 순으로 같은 자리를 네 번 고쳤다.
-        v4 C6b 부터 네 실행기가 잠금 세션 하나(pg_lock_remote.SESSION_SCRIPT)를 함께 쓰므로, 실행기마다
-        제 pid 추출을 두지 않는지와 그 세션이 실제 psql 출력에서 pid 를 뽑는지를 검사한다.
+        v4 C6b 부터 네 실행기가 잠금 함수 하나(pg_lock_remote.pgl_apply)를 함께 쓰므로, 실행기마다
+        제 pid 추출을 두지 않는지와 그 함수가 실제 psql 출력에서 pid 를 뽑는지를 검사한다.
 
         입력은 2026-07-31 에 파드에서 실측한 로그(BEGIN 태그 포함)와 지금 세션이 받는 -q 출력 둘이다.
         """
@@ -494,22 +494,15 @@ class RegistryContractTests(unittest.TestCase):
                 users.append(path.name)
         self.assertEqual(users, ["db_lock_executor.py", "timeline_dual_fault_executor.py",
                                  "timeline_lock_mock_executor.py", "timeline_multi_injection_executor.py"])
-        spec = importlib.util.spec_from_file_location("pg_lock_remote", ROOT / "profiles" / "pg_lock_remote.py")
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader
-        spec.loader.exec_module(module)
+        # The shared lock reads the pid as the first all-digits line of what the pod's psql printed (pgl_apply);
+        # the same extraction against the observed outputs.
+        source = (ROOT / "profiles" / "pg_lock_remote.py").read_text(encoding="utf-8")
+        self.assertIn("bpid=\"$(grep -m1 -xE '[0-9]+' \"$dir/out\")\"", source)
         for observed in ("BEGIN\n35250\n1\nlocked\n", "35250\n1\nlocked\n", "35250\nlocked\n"):
-            with self.subTest(observed=observed), tempfile.TemporaryDirectory() as raw:
-                tmp = Path(raw)
-                psql = tmp / "psql"
-                psql.write_text(f"#!/usr/bin/env bash\nprintf %s {shlex.quote(observed)}\nexec cat >/dev/null\n")
-                psql.chmod(0o755)
-                session = tmp / "session.sh"
-                session.write_text(module.SESSION_SCRIPT)
-                env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "LOCK_SQL": "SELECT 1;",
-                       "HOLD": "0", "READY_FILE": str(tmp / "ready")}
-                subprocess.run(["bash", str(session)], env=env, capture_output=True, timeout=30, check=True)
-                self.assertEqual((tmp / "ready").read_text().strip(), "35250")
+            with self.subTest(observed=observed):
+                extracted = subprocess.run(["grep", "-m1", "-xE", "[0-9]+"], input=observed, capture_output=True,
+                                           text=True, check=True).stdout.strip()
+                self.assertEqual(extracted, "35250")
 
     def test_executor_side_tables_cover_every_allowlisted_scenario(self) -> None:
         """실행기가 들고 있는 표도 레지스트리 목록과 같아야 한다.

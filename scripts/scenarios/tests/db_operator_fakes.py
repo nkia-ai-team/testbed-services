@@ -20,6 +20,7 @@ The client itself (script parsing, output) has its own tests with fake drivers
 from __future__ import annotations
 
 import base64
+import json
 import os
 import sys
 from pathlib import Path
@@ -39,6 +40,18 @@ SECRET_VALUES = {
 }
 PASSWORDS = tuple(v for k, v in SECRET_VALUES.items() if "PASSWORD" in k)
 
+def _node(name: str, address: str, control_plane: bool = False) -> dict:
+    labels = {"node-role.kubernetes.io/control-plane": ""} if control_plane else {}
+    return {"metadata": {"name": name, "labels": labels},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}],
+                       "addresses": [{"type": "InternalIP", "address": address}]}}
+
+
+# 66 (z4-66-survey). The database pods in these fakes sit on tb-w2, so network sessions enter through tb-w1.
+NODES = [_node("tb-cp", "192.168.122.77", control_plane=True), _node("tb-w1", "192.168.122.184"),
+         _node("tb-w2", "192.168.122.11"), _node("tb-w3", "192.168.122.14")]
+ENTRY_ADDRESS = "192.168.122.184"
+
 NODE_FS = {"capacityBytes": 100 * 1024**3, "usedBytes": 20 * 1024**3, "availableBytes": 80 * 1024**3}
 
 
@@ -48,20 +61,28 @@ def _kubectl(tmp: Path, extra_cases: str) -> str:
         for key, value in SECRET_VALUES.items()
     )
     summary = '{"node":{"fs":' + str(NODE_FS).replace("'", '"') + "}}"
+    nodes = json.dumps({"items": NODES})
     pod_json = ('{"spec":{"nodeName":"tb-w9","volumes":[{"name":"data",'
                 '"persistentVolumeClaim":{"claimName":"data-0"}}]}}')
     return f"""#!/usr/bin/env bash
 printf '%s\\n' "$*" >>{tmp}/kubectl.log
 [[ -e {tmp}/kubectl-down ]] && {{ echo 'The connection to the server was refused' >&2; exit 1; }}
 case "$*" in
-  *" exec "*) echo "fake kubectl: exec refused" >&2; exit 97 ;;
 {extra_cases}
+  *" exec "*) echo "fake kubectl: exec refused" >&2; exit 97 ;;
+  *"jsonpath={{.spec.nodeName}}"*) printf tb-w2 ;;
+  *"get nodes -o json"*) printf '%s' '{nodes}' ;;
   *hostIP*) printf 192.168.122.11 ;;
   *podIP*) printf 10.244.3.9 ;;
   *"get svc "*nodePort*) printf 30999 ;;
 {secret_cases}
-  *"get pods -l lucida.io/db-client=session"*) [[ -e {tmp}/legacy-pod ]] && cat {tmp}/legacy-pod ;;
-  *"delete pod/"*) rm -f {tmp}/legacy-pod ;;
+  *"get pods -l lucida.io/db-client=session -o name"*) mkdir -p {tmp}/pods; for f in {tmp}/pods/*; do [[ -e "$f" ]] && echo "pod/${{f##*/}}"; done ;;
+  *" apply -f -"*) mkdir -p {tmp}/pods; y=$(cat); printf '%s\n' "$y" >>{tmp}/applied.yaml
+                   n=$(sed -n 's/^  name: //p' <<<"$y" | head -n 1); : >"{tmp}/pods/$n" ;;
+  *" wait --for="*) ;;
+  *" attach -i -q "*) exec {sys.executable} {tmp}/fake_psql.py ;;
+  *" delete pod "*|*" delete pod/"*) n="${{*##*pod }}"; n="${{n##*pod/}}"; n="${{n%% *}}"; rm -f "{tmp}/pods/$n" ;;
+  *"jsonpath={{.spec.containers[0].image}}"*) printf postgres:16-alpine ;;
   *"stats/summary"*) printf '%s' '{summary}' ;;
   *"get pvc data-0"*) printf pv-data-0 ;;
   *"get pv pv-data-0 -o json"*) printf '%s' '{{"spec":{{"hostPath":{{"path":"/opt/local-path-provisioner/x"}}}}}}' ;;

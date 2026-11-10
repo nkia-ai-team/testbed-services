@@ -124,7 +124,7 @@
                     "name": "commerce-inventory-lock",
                     "kind": "pg_lock",
                     "offset_seconds": 0,
-                    "access": "runner-network",
+                    "access": "in-cluster-pod",
                     "namespace": "rca-testbed-commerce",
                     "db_pod": "testbed-postgres-0",
                     "service": "testbed-postgres",

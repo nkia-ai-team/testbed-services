@@ -72,7 +72,7 @@
       "id": "approved-fixed-f01-r",
       "parameters": {
        "engine": "postgresql",
-       "access": "runner-network",
+       "access": "in-cluster-pod",
        "namespace": "rca-testbed-commerce",
        "db_pod": "testbed-postgres-0",
        "service": "testbed-postgres",
@@ -2377,7 +2377,7 @@
          "name": "commerce-inventory-lock",
          "kind": "pg_lock",
          "offset_seconds": 0,
-         "access": "runner-network",
+         "access": "in-cluster-pod",
          "namespace": "rca-testbed-commerce",
          "db_pod": "testbed-postgres-0",
          "service": "testbed-postgres",
@@ -2518,7 +2518,7 @@
       "id": "approved-fixed-f06-h",
       "parameters": {
        "engine": "postgresql",
-       "access": "runner-network",
+       "access": "in-cluster-pod",
        "namespace": "rca-testbed-commerce",
        "db_pod": "testbed-postgres-0",
        "service": "testbed-postgres",
@@ -3449,7 +3449,7 @@
       "id": "approved-fixed-f15-t1",
       "parameters": {
        "commerce_namespace": "rca-testbed-commerce",
-       "pg_access": "runner-network",
+       "pg_access": "in-cluster-pod",
        "pg_db_pod": "testbed-postgres-0",
        "pg_service": "testbed-postgres",
        "pg_secret": "postgres-secret",
@@ -6468,7 +6468,7 @@
       "id": "approved-fixed-f15-h",
       "parameters": {
        "commerce_namespace": "rca-testbed-commerce",
-       "pg_access": "runner-network",
+       "pg_access": "in-cluster-pod",
        "pg_db_pod": "testbed-postgres-0",
        "pg_service": "testbed-postgres",
        "pg_secret": "postgres-secret",
@@ -6597,7 +6597,7 @@
       "id": "approved-fixed-f15-t2",
       "parameters": {
        "commerce_namespace": "rca-testbed-commerce",
-       "pg_access": "runner-network",
+       "pg_access": "in-cluster-pod",
        "pg_db_pod": "testbed-postgres-0",
        "pg_service": "testbed-postgres",
        "pg_secret": "postgres-secret",

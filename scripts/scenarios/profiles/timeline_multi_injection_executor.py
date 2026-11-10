@@ -10,10 +10,10 @@ each carry their own tagged, idempotent, death-confirmed lifecycle:
                      a runner-side network session as the app schema account
                      (``oracle_lock_session.py``; no exec into the Oracle pod;
                      death confirmed by the row becoming lockable again)
-* ``pg_lock``      — PostgreSQL ``SELECT ... FOR UPDATE`` held by a runner-side
-                     network session under the real app's session identity
-                     (``pg_lock_remote.py``; no client pod; death confirmed by
-                     the session's backend being gone on the server)
+* ``pg_lock``      — PostgreSQL ``SELECT ... FOR UPDATE`` held by a short-lived
+                     in-cluster client pod (one psql, driven over attach) under the
+                     real app's session identity (``pg_lock_remote.py``; death
+                     confirmed by the session's backend being gone on the server)
 
 Sub-injections apply in declared order (with per-step ``offset_seconds``) and
 clean up in strict reverse order. Each lock's cleanup terminates the *server*
@@ -71,7 +71,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                 "name": "commerce-inventory-lock",
                 "kind": "pg_lock",
                 "offset_seconds": 0,
-                "access": "runner-network",
+                "access": "in-cluster-pod",
                 "namespace": "rca-testbed-commerce",
                 "db_pod": "testbed-postgres-0",
                 "service": "testbed-postgres",
@@ -127,7 +127,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
             raise ExecutorError("sub-injection offset is outside the approved bounds")
         if step["kind"] in ("oracle_lock", "pg_lock") and int(step["hold_seconds"]) <= 0:
             raise ExecutorError("lock hold must be positive")
-        if step["kind"] == "pg_lock" and step.get("access") != "runner-network":
+        if step["kind"] == "pg_lock" and step.get("access") != "in-cluster-pod":
             raise ExecutorError("postgresql lock injection must originate inside the cluster")
     if not any(s["kind"] in ("oracle_lock", "pg_lock") for s in steps):
         raise ExecutorError("a multi-injection must contain at least one tagged DB lock root")
@@ -209,16 +209,17 @@ oracle() {  # $1=verb $2=step_index
   esac
 }
 
-# ---- pg_lock primitive (runner-side network session; pg_lock_remote.py) ----
-# v4 C6b: the lock session is the runner container's psql through the listener, under the real
-# app's application_name, idling with its transaction open. No client pod, no exec into the
-# database pod (the old way left KCM pod events and node process records; see pg_lock_remote.py).
-# Release stops this host's session first, then confirms on the server that its backend is gone.
-# Same functions as db.lock.
+# ---- pg_lock primitive (in-cluster client pod, one psql driven over attach; pg_lock_remote.py) ----
+# The lock session is a client pod's psql under the real app's application_name, idling with its
+# transaction open (pod address, like the app's own sessions). v4 C6b: the pod runs psql alone (no
+# sh, no sleep, no SQL in its spec); the runner sends the statements over attach and counts the hold.
+# Release stops the runner's driver, deletes the pod, then confirms on the server that its backend
+# is gone. Same functions as db.lock.
 pg() {  # $1=verb $2=step_index
   local verb="$1" i="$2"
   local ns db_pod schema table keycol keyval identity hold
   ns=$(field "$i" namespace); db_pod=$(field "$i" db_pod); schema=$(field "$i" schema)
+  PGL_IMAGE=$(field "$i" image); PGL_SERVICE=$(field "$i" service); PGL_SECRET=$(field "$i" secret)
   table=$(field "$i" table); keycol=$(field "$i" key_column); keyval=$(field "$i" key_value)
   identity=$(field "$i" client_identity); hold=$(field "$i" hold_seconds)
   local run_dir="$state_dir/pg-$i"

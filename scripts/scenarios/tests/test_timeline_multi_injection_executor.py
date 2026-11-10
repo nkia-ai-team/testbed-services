@@ -86,17 +86,17 @@ class MultiInjectionContractTests(unittest.TestCase):
         self.assertIn('ora_dcd_ok "$ns" "$pod"', check)
         self.assertNotIn("alter system kill session", text)
         self.assertNotIn("sqlplus", text)
-        # pg lock: 러너의 네트워크 세션 + 앱 신원 사칭 + idle-in-transaction 유지(v4 C6b, pg_lock_remote).
-        # 이름으로 세션을 죽이지 않는다(실 서비스를 죽일 수 있다) — 이 호스트의 세션을 끝내고 그 backend 가
-        # 사라졌는지 확인한다. 클러스터 안 클라이언트 파드는 더 띄우지 않는다.
+        # pg lock: 클러스터 내 클라이언트 파드(psql 하나, attach 로 구동) + 앱 신원 사칭 + idle-in-transaction 유지.
+        # 이름으로 세션을 죽이지 않는다(실 서비스를 죽일 수 있다) — 파드 삭제로 정리한다(pg_lock_remote).
         pg = text[text.index("pg() {"):text.index("rollout() {")]
         self.assertIn('pgl_apply "$run_dir" "$schema" "$table" row "" "$keycol" "$keyval" "$hold" "$identity"', pg)
         self.assertIn('pgl_release "$run_dir"', pg)
-        for trace in ("kind: Pod", " exec ", "kubectl", "pg_terminate_backend", "pg_sleep"):
-            self.assertNotIn(trace, pg)
+        self.assertIn('PGL_IMAGE=$(field "$i" image)', pg)
         self.assertNotIn("pg_terminate_backend", text)
         self.assertNotIn("pg_sleep", text)
-        self.assertNotIn("lucida.io/db-client: session", text)
+        full = body.decode()
+        self.assertIn("lucida.io/db-client: session", full)
+        self.assertIn('command: ["psql", ${args}]', full)
         self.assertIn("pg_lock_remote.bash_functions()", (PROFILES / "timeline_multi_injection_executor.py").read_text())
         self.assertIn("FREEPDB1", text)
         self.assertIn("FOR UPDATE", text.upper())

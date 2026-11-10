@@ -157,23 +157,23 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                         )
         self.assertGreater(checked, 60, "fixed sweep found almost nothing to check")
 
-    def test_db_lock_holds_the_pg_lock_from_the_runner_and_reclaims_its_session(self) -> None:
-        # 품질 기준서 G6 / 부록 A: 주입 세션은 실 앱 세션과 구별되지 않아야 하므로 신원을 사칭한다.
-        # v4 C6b: 세션은 러너 컨테이너의 psql 이 리스너로 붙어 쥔다. 클러스터 안 클라이언트 파드(KCM 이벤트,
-        # kubelet/containerd syslog, 명령줄 흔적)는 띄우지 않고, 정리는 그 세션 프로세스를 끝내는 것이다.
+    def test_db_lock_injects_inside_the_cluster_and_reclaims_its_client(self) -> None:
+        # 품질 기준서 G6 / 부록 A: 주입 세션은 실 앱 세션과 구별되지 않아야 하므로
+        # (1) 클러스터 안에서 접속하고 (2) 신원을 사칭하며 (3) 정리는 파드 삭제로 한다.
+        # v4 C6b: 파드 안 프로세스는 psql 하나(러너가 attach 로 문장을 보냄), DB 파드 exec 는 없다.
         plan = compiler.compile_plan("f01-r-pg-lock-checkout")
         argv, stdin = db_lock.build_invocation(plan, "cleanup")
         self.assertEqual(argv[0], "/usr/bin/bash")
         self.assertIn(db_lock.APP_IDENTITY, argv)
         self.assertNotIn("nkia@192.168.122.206", argv)
         script = stdin.decode()
-        own = own_body(script)
-        for trace in ("kind: Pod", "kubectl", " exec ", "pg_terminate_backend", "pg_sleep", "pkill", "F01-R"):
-            self.assertNotIn(trace, own)
-        for verb in ("pgl_check", "pgl_apply", "pgl_release", "pgl_recover"):
-            self.assertIn(verb, own)
-        self.assertNotIn("kind: Pod", script)
-        self.assertIn("lucida.io/db-client=session", script)  # only to reclaim a pod an older run left
+        self.assertIn("kind: Pod", script)
+        self.assertIn("dbo_k delete pod", script)
+        self.assertIn("lucida.io/db-client: session", script)
+        self.assertIn('command: ["psql", ${args}]', script)
+        for trace in ("pg_terminate_backend", "pg_sleep", "pkill", "SQL_PRE", 'sleep "\\$HOLD"', "sh -c"):
+            self.assertNotIn(trace, own_body(script))
+            self.assertNotIn(trace, script[script.index("pgl_pod() {"):script.index("pgl_name() {")])
 
     def test_oracle_lock_runs_from_the_runner_and_leaves_no_injector_trace(self) -> None:
         """v4 C6: Oracle 잠금은 DB 파드 밖에서, 운영 도구 모양의 네트워크 세션으로 잡는다.
@@ -211,9 +211,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             # python-oracledb 가 받는 문자만(공백, 괄호는 DPY-3029 로 접속 전에 거절된다, 11-09 실측).
             self.assertRegex(value, r"^[A-Za-z0-9._@-]+$")
 
-    # v4 C6b: the executors that changed the databases from inside the pod. F71-R is the one exception left
-    # (its expiry locks out the only administrator role over the network; result document, 확인 필요), and
-    # F02-R still runs psql from tb-runner (a network session already).
+    # v4 C6b: the executors that changed the databases from inside the pod. F02-R still runs psql from tb-runner
+    # (a network session already).
     C6B_EXECUTORS = {
         "db_account_executor": db_account, "db_ddl_executor": db_ddl, "db_row_delete_executor": db_row_delete,
         "db_table_readonly_executor": None, "db_cursor_reset_executor": db_cursor_reset,
@@ -221,7 +220,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         "db_config_row_executor": db_config_row, "db_instance_readonly_executor": db_instance_readonly,
         "db_row_update_executor": db_row_update,
     }
-    C6B_EXCEPTIONS = {("db_account_executor", "F71-R"), ("db_ddl_executor", "F02-R")}
+    C6B_EXCEPTIONS = {("db_ddl_executor", "F02-R")}
 
     def test_database_executors_neither_exec_into_the_pod_nor_name_the_scenario(self) -> None:
         """No body the DB executors send runs anything in the database pod or starts a client pod: no kubectl
@@ -254,11 +253,82 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                         self.assertIn(marker, script)
                         checked += 1
         self.assertGreater(checked, 140)
-        # The shared library itself reads from the API only.
+        # The shared bash functions read from the API, except two execs, each starting one client alone in the
+        # database pod (user decision Q8): the mysql client that the answer keys tell as root@localhost or
+        # fooddelivery@localhost (mdb_pod_spawn), and psql on the local socket for the two changes that lock the
+        # network out of the only administrator role (pdb_pod: F71-R's expiry, F71-H's narrowed host rule).
         library = db_operator_remote.bash_functions().decode()
-        for line in library.splitlines():
-            if "kubectl" in line and not line.lstrip().startswith("#"):
-                self.assertNotRegex(line, r"\b(exec|apply|delete|patch|create)\b", line)
+        functions = library[library.index("\nDB_OPERATOR_SESSION_PY\n"):]
+        writes = [line for line in functions.splitlines()
+                  if "kubectl" in line and not line.lstrip().startswith("#")
+                  and re.search(r"\b(exec|apply|delete|patch|create|attach|run)\b", line)]
+        self.assertEqual(len(writes), 1, writes)
+        self.assertIn('exec -i \\"\\$POD\\" -- $DBO_EXEC', writes[0])
+        spawn = functions[functions.index("mdb_pod_spawn() {"):functions.index("\n}\n", functions.index("mdb_pod_spawn() {"))]
+        self.assertIn("cmd=(mysql --defaults-extra-file=/dev/stdin", spawn)
+        local = functions[functions.index("pdb_pod() {"):functions.index("\n}\n", functions.index("pdb_pod() {"))]
+        execs = [line for line in functions.splitlines() if "dbo_k exec" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(execs, ['    | dbo_k exec -i "$DBO_POD" -- psql -X -q -At -v ON_ERROR_STOP=1 -U "$u" -d "$d" 2>"$e"; rc=$?'])
+        self.assertIn(execs[0], local)
+        # Only these two account changes use it.
+        users = []
+        for name, module in self.C6B_EXECUTORS.items():
+            module = module or load(name)
+            for scenario_id, params in module.CONTRACTS.items():
+                if (name, scenario_id) in self.C6B_EXCEPTIONS:
+                    continue
+                plan = {"scenario": {"id": scenario_id},
+                        "profile_instances": [{"profile_id": module.PROFILE_ID, "parameters": dict(params),
+                                               "location": {}}]}
+                if "pdb_pod " in own_body(module.build_invocation(plan, "run")[1].decode()):
+                    users.append(scenario_id)
+        self.assertEqual(sorted(users), ["F71-H", "F71-R"])
+
+    # The four whose answer keys need the sessions to come from inside the database host (root@localhost,
+    # fooddelivery@localhost): their export and migration are mysql clients in the database pod, nothing else
+    # (user decision Q8: the node's process snapshot shows the client alone, no shell, awk, sleep or runner name).
+    POD_CLIENT_SCENARIOS = ("F60-R", "F60-H", "F53-H", "F36-P")
+
+    def test_localhost_scenarios_start_one_mysql_client_in_the_database_pod(self) -> None:
+        for scenario_id in self.POD_CLIENT_SCENARIOS:
+            with self.subTest(scenario_id):
+                plan = {"scenario": {"id": scenario_id}, "profile_instances": [
+                    {"profile_id": db_ddl.PROFILE_ID, "parameters": dict(db_ddl.CONTRACTS[scenario_id]), "location": {}}]}
+                own = own_body(db_ddl.build_invocation(plan, "run")[1].decode())
+                run = own[own.index(" run)"):own.index(" cleanup)")]
+                spawns = re.findall(r"mdb_pod_spawn (\w+) ", run)
+                if scenario_id == "F60-R":
+                    self.assertEqual(spawns, ["root"])
+                else:
+                    self.assertEqual(spawns, ["app", "root"])
+                    self.assertIn('"$export_log" paced', run)
+                    self.assertIn("mdb_pod_pace", run)
+                for helper in ("awk", "sleep \"$", "nohup", "sh -c", "kubectl"):
+                    self.assertNotIn(helper, run)
+
+    def test_mysql_client_in_the_pod_is_exec_ed_alone_with_its_password_on_stdin(self) -> None:
+        # The migration path: `kubectl exec -i POD -- mysql ...` with the option file on stdin. The fake records the
+        # command the pod would start and what it read on stdin.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                f"  *' exec -i testbed-mysql-0 -- '*) printf '%s\\n' \"$@\" >{tmp}/exec.argv; cat >{tmp}/exec.stdin ;;"))
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + b'db_target rca-testbed-food testbed-mysql-0\nmdb_env root\n'
+                      + b'mdb_pod_spawn root fooddelivery "ALTER TABLE t ADD COLUMN c int" "$1/m.log"\n'
+                      + b'for _ in $(seq 1 50); do [[ -s "$2/exec.stdin" ]] && break; sleep 0.1; done\n')
+            done = subprocess.run(["bash", "-s", "--", str(tmp / "run"), str(tmp)], input=script, env=env,
+                                  capture_output=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr.decode())
+            argv = (tmp / "exec.argv").read_text().split("\n")
+            command = argv[argv.index("--") + 1:-1]
+            self.assertEqual(command, ["mysql", "--defaults-extra-file=/dev/stdin", "-uroot", "fooddelivery", "-e",
+                                       "ALTER TABLE t ADD COLUMN c int"])
+            self.assertEqual((tmp / "exec.stdin").read_text(),
+                             '[client]\npassword="pw-root-from-secret"\n')
+            for text in ((tmp / "exec.argv").read_text(), (tmp / "kubectl.log").read_text()):
+                db_operator_fakes.assert_no_password(self, text)
+
 
     def _operator_run(self, module, scenario_id: str, action: str, env: dict[str, str],
                       slug: str | None = None) -> subprocess.CompletedProcess:
@@ -298,7 +368,7 @@ else: sys.exit(7)
             calls = (tmp / "client.log").read_text().splitlines()
             self.assertTrue(calls)
             for line in calls:
-                self.assertTrue(line.startswith("oracle SYSTEM 192.168.122.11:30999/FREEPDB1 "), line)
+                self.assertTrue(line.startswith("oracle SYSTEM 192.168.122.184:30999/FREEPDB1 "), line)
             db_operator_fakes.assert_reads_only(self, tmp)
             db_operator_fakes.assert_no_password(self, (tmp / "client.log").read_text(),
                                                  (tmp / "kubectl.log").read_text(), run.stderr)
@@ -324,13 +394,15 @@ else: sys.exit(7)
             self.assertEqual(self._operator_run(db_account, "F54-P", "cleanup", env, slug).returncode, 0)
             self.assertEqual((tmp / "cap").read_text(), "0")
             for line in (tmp / "client.log").read_text().splitlines():
-                self.assertTrue(line.startswith("mysql root 192.168.122.11:30999 "), line)
+                self.assertTrue(line.startswith("mysql root 192.168.122.184:30999 "), line)
             db_operator_fakes.assert_reads_only(self, tmp)
             db_operator_fakes.assert_no_password(self, (tmp / "client.log").read_text(), run.stderr)
 
-    def test_postgres_host_rule_is_rewritten_by_the_server_from_a_network_session(self) -> None:
+    def test_postgres_host_rule_is_rewritten_by_the_server_through_psql_alone_in_the_pod(self) -> None:
         # F71-H against a fake PostgreSQL: the file travels base64 through pg_read_binary_file and lo_export, the
         # narrowed and restored contents are exact, and the reload is confirmed by a later configuration load time.
+        # Every statement goes through `kubectl exec -i POD -- psql ...` with the statement on stdin (pdb_pod): the
+        # pod starts psql alone, as the local socket's administrator, with no password anywhere.
         original = ("# TYPE DATABASE USER ADDRESS METHOD\nlocal all all trust\n"
                     "host all all 127.0.0.1/32 trust\nhost all all all scram-sha-256\n")
         with tempfile.TemporaryDirectory() as raw:
@@ -340,7 +412,10 @@ else: sys.exit(7)
             fake = f"""import base64, os, re, sys
 from pathlib import Path
 hba = Path({str(tmp / "hba")!r}); loaded = Path({str(tmp / "loaded")!r})
-args = sys.argv[1:]; sql = args[args.index("-c") + 1]
+args = sys.argv[1:]
+stdin = sys.stdin.read().split("\\n", 1)
+assert stdin[0] == "SET pg_stat_statements.track = none;", stdin[0]
+sql = stdin[1].rstrip("\\n")
 lines = [l.split() for l in hba.read_text().splitlines() if l.strip() and not l.startswith("#")]
 nets = {{"10.244.3.1/32", "192.168.122.0/24", "192.168.213.0/24", "192.168.230.0/24"}}
 if "FROM pg_hba_file_rules" in sql:
@@ -357,14 +432,18 @@ elif sql == "SELECT pg_conf_load_time()":
     print(loaded.read_text())
 elif "pg_conf_load_time() >" in sql:
     print("t" if int(loaded.read_text()) > int(re.search(r"'(\\d+)'", sql).group(1)) else "f")
-elif "inet_client_addr()" in sql or "FROM pg_stat_activity WHERE usename" in sql:
+elif "FROM pg_stat_activity WHERE usename" in sql:
     print("t")
 else:
     print("unexpected " + sql, file=sys.stderr); sys.exit(3)
 """
-            env = db_operator_fakes.install(tmp, psql=fake)
+            (tmp / "pod_psql.py").write_text(fake)
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                f"  *' exec -i testbed-postgres-0 -- psql '*) printf '%s\\n' \"$*\" >>{tmp}/exec.argv; "
+                f"exec {sys.executable} {tmp}/pod_psql.py ;;"))
             slug = "f71-h-commerce-postgres-access-rule-omits-app-pods"
-            self.assertEqual(self._operator_run(db_account, "F71-H", "preflight", env, slug).returncode, 0)
+            preflight = self._operator_run(db_account, "F71-H", "preflight", env, slug)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr.decode())
             run = self._operator_run(db_account, "F71-H", "run", env, slug)
             self.assertEqual(run.returncode, 0, run.stderr.decode())
             narrowed = (tmp / "hba").read_text()
@@ -376,7 +455,77 @@ else:
             self.assertEqual(cleanup.returncode, 0, cleanup.stderr.decode())
             self.assertEqual((tmp / "hba").read_text(), original)
             self.assertEqual(self._operator_run(db_account, "F71-H", "recovery", env, slug).returncode, 0)
-            db_operator_fakes.assert_reads_only(self, tmp)
+            # Every exec started the same psql, with the Secret's user and database names and nothing else.
+            execs = (tmp / "exec.argv").read_text().splitlines()
+            self.assertGreater(len(execs), 10)
+            for line in execs:
+                self.assertTrue(line.endswith(" exec -i testbed-postgres-0 -- psql -X -q -At -v ON_ERROR_STOP=1 "
+                                              "-U commerce -d commerce"), line)
+            others = [line for line in db_operator_fakes.kubectl_calls(tmp) if " exec " not in line]
+            self.assertTrue(others)
+            for line in others:
+                self.assertIn(" get ", line)
+            db_operator_fakes.assert_no_password(self, (tmp / "kubectl.log").read_text(),
+                                                 (tmp / "exec.argv").read_text())
+
+    def test_postgres_password_expiry_is_set_in_the_pod_and_checked_from_the_network(self) -> None:
+        # F71-R against a fake PostgreSQL: the expiry and the renewal go through psql alone in the pod (pdb_pod, the
+        # local socket the expiry cannot lock out); the login check is the runner's network session through the
+        # entry node, refused only for the expired password. No password on any command line.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            (tmp / "until").write_text("NONE")
+            pod = f"""import re, sys
+from pathlib import Path
+until = Path({str(tmp / "until")!r})
+head, sql = sys.stdin.read().split("\\n", 1)
+assert head == "SET pg_stat_statements.track = none;", head
+sql = sql.rstrip("\\n")
+if "FROM pg_roles r WHERE r.rolname = 'commerce'" in sql:
+    print(until.read_text() + "|true|scram-sha-256")
+elif "to_char(clock_timestamp()" in sql:
+    print("2026-11-10 01:02:03.000004+00")
+elif sql == 'ALTER ROLE "commerce" VALID UNTIL ' + chr(39) + 'infinity' + chr(39):
+    until.write_text("NONE")
+elif sql == 'ALTER ROLE "commerce" VALID UNTIL ' + chr(39) + '2026-11-10 01:02:03.000004+00' + chr(39):
+    until.write_text("EXPIRED")
+else:
+    print("unexpected " + sql, file=sys.stderr); sys.exit(3)
+"""
+            net = f"""import os, sys
+from pathlib import Path
+with open({str(tmp / "net.log")!r}, "a") as log:
+    log.write(" ".join([os.environ["PGHOST"], os.environ["PGPORT"], os.environ["PGUSER"]] + sys.argv[1:]) + "\\n")
+assert os.environ["PGPASSWORD"] == "pw-pg-from-secret"
+if Path({str(tmp / "until")!r}).read_text() == "EXPIRED":
+    print('psql: error: FATAL:  password authentication failed for user "commerce"', file=sys.stderr); sys.exit(2)
+print(1)
+"""
+            (tmp / "pod_psql.py").write_text(pod)
+            env = db_operator_fakes.install(tmp, psql=net, kubectl_cases=(
+                f"  *' exec -i testbed-postgres-0 -- psql '*) printf '%s\\n' \"$*\" >>{tmp}/exec.argv; "
+                f"exec {sys.executable} {tmp}/pod_psql.py ;;"))
+            slug = "f71-r-commerce-postgres-app-account-password-expiry"
+            for action, until in (("preflight", "NONE"), ("run", "EXPIRED"), ("cleanup", "NONE"), ("recovery", "NONE")):
+                done = self._operator_run(db_account, "F71-R", action, env, slug)
+                self.assertEqual(done.returncode, 0, (action, done.stderr.decode()))
+                self.assertEqual((tmp / "until").read_text(), until, action)
+            for line in (tmp / "exec.argv").read_text().splitlines():
+                self.assertTrue(line.endswith(" exec -i testbed-postgres-0 -- psql -X -q -At -v ON_ERROR_STOP=1 "
+                                              "-U commerce -d commerce"), line)
+            logins = (tmp / "net.log").read_text().splitlines()
+            self.assertEqual(len(logins), 3)  # preflight ok, run refused, cleanup ok
+            for line in logins:
+                self.assertTrue(line.startswith("192.168.122.184 "), line)
+            db_operator_fakes.assert_no_password(self, (tmp / "kubectl.log").read_text(),
+                                                 (tmp / "exec.argv").read_text(), "\n".join(logins))
+            # A network failure that is not a refused password is not read as the expiry having bitten.
+            (tmp / "until").write_text("NONE")
+            broken = dict(env, PGCONNECT_TIMEOUT="1")
+            (tmp / "bin" / "psql").write_text("#!/usr/bin/env bash\necho 'psql: error: connection timed out' >&2; exit 2\n")
+            done = self._operator_run(db_account, "F71-R", "preflight", broken, slug)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("network login failed otherwise", done.stderr.decode())
 
     def test_node_filesystem_is_read_only_for_node_local_volumes(self) -> None:
         # The free-space checks (F60-R, F67-R) read the kubelet's node filesystem instead of df in the pod. That is
@@ -464,7 +613,8 @@ def connect(**kw):
                            f"printf '%s\\n' \"$*\" >>{tmp}/kubectl\n"
                            f"[[ -e {tmp}/kubectl-down ]] && {{ echo 'The connection to the server was refused' >&2; exit 1; }}\n"
                            "case \"$*\" in\n"
-                           "  *hostIP*) printf 192.168.122.11 ;;\n"
+                           "  *'jsonpath={.spec.nodeName}'*) printf tb-w2 ;;\n"
+                           f"  *'get nodes -o json'*) printf '%s' '{json.dumps({'items': db_operator_fakes.NODES})}' ;;\n"
                            f"  *'get pod testbed-oracle-0 -o json') cat {tmp}/pod.json ;;\n"
                            f"  *'get configmap oracle-startdb-scripts -o json') cat {tmp}/cm.json ;;\n"
                            "  *nodePort*) printf 30308 ;;\n"
@@ -506,7 +656,8 @@ def connect(**kw):
             holder = int((tmp / "lock").read_text())
             calls = [json.loads(line) for line in (tmp / "calls").read_text().splitlines()]
             hold_connect = next(c for c in calls if c["kind"] == "connect" and c["pid"] == holder)
-            self.assertEqual(hold_connect["dsn"], "192.168.122.11:30308/FREEPDB1")
+            # Through tb-w1, a worker that runs neither the Oracle pod nor the control plane (user decision Q8).
+            self.assertEqual(hold_connect["dsn"], "192.168.122.184:30308/FREEPDB1")
             self.assertEqual(hold_connect["user"], "banking")
             self.assertEqual((hold_connect["program"], hold_connect["machine"], hold_connect["osuser"],
                               hold_connect["driver_name"]),
@@ -521,7 +672,7 @@ def connect(**kw):
             self.assertNotEqual(self._oracle_lock_run("preflight", env).returncode, 0)
             # kubectl 은 조회만 한다. DB 파드에 exec 하지 않는다.
             for line in (tmp / "kubectl").read_text().splitlines():
-                self.assertTrue(line.split()[4] == "get", line)
+                self.assertEqual(next(w for w in line.split() if w in ("get", "exec", "apply", "delete", "patch")), "get", line)
             cleanup = self._oracle_lock_run("cleanup", env)
             self.assertEqual(cleanup.returncode, 0, cleanup.stderr.decode())
             self.assertFalse((tmp / "lock").exists())
@@ -811,7 +962,8 @@ def connect(**kw):
         # F71-R: 주입은 commerce 애플리케이션 역할 하나의 비밀번호 기한(VALID UNTIL)을 지금으로 두는 것뿐이다.
         # 비밀번호를 바꾸거나 역할을 잠그거나(NOLOGIN) 세션을 끊으면 "열린 연결은 그대로, 새 비밀번호 로그인만 거절"이라는
         # 지문이 F65-P(없는 역할 이름), F35-R(계정 잠금), F25-H(DB 다운) 같은 다른 장애가 된다. 실행기는 파드 local 소켓(trust)으로
-        # 들어가 만료에 막히지 않고, DPM 역할 lucida_mon 은 대상이 아니다.
+        # 들어가 만료에 막히지 않고(파드 안에는 psql 하나, pdb_pod), 로그인 확인은 러너의 네트워크 세션이다. DPM 역할 lucida_mon 은
+        # 대상이 아니다.
         plan = compiler.compile_plan("f71-r-commerce-postgres-app-account-password-expiry")
         argv, stdin = db_account.build_invocation(plan, "run")
         self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
@@ -820,8 +972,15 @@ def connect(**kw):
         self.assertEqual(stdin, db_account.POSTGRES_EXPIRY_REMOTE)
         script = stdin.decode()
         self.assertNotIn("F71-R", script)
-        self.assertIn("pg_stat_statements.track=none", script)
-        self.assertIn('-U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL"', script)
+        own = own_body(script)
+        self.assertIn('sql() { pdb_pod "$1"; }', own)
+        self.assertIn("SET pg_stat_statements.track = none;", script)
+        self.assertNotIn(" exec ", own)
+        self.assertNotIn("kubectl", own)
+        self.assertIn('if err="$(pdb "SELECT 1" 2>&1 >/dev/null)"; then echo ok', own)
+        # Only a refused password reads as refused; no route or a timeout stops the action instead.
+        self.assertIn('elif [[ "$err" == *"password authentication failed"* ]]; then echo refused', own)
+        script = own
         run_case = script.split("  run)")[1].split(";;")[0]
         order = ['expect "NONE|true|scram-sha-256"', "VALID UNTIL '$now'", 'expect "EXPIRED|true|scram-sha-256"',
                  '[[ "$(netlogin)" == refused ]]']
@@ -851,8 +1010,8 @@ def connect(**kw):
     def test_db_account_postgres_host_rule_narrows_the_catch_all_and_restores_it(self) -> None:
         # F71-H: 주입은 pg_hba 의 모든 주소 네트워크 규칙 한 줄을 노드 주소와 관리망 규칙으로 바꾸고 설정을 다시 읽히는 것뿐이다.
         # 역할의 비밀번호, 기한, 로그인 가능 여부를 건드리거나 세션을 끊으면 F71-R(기한 경과), F35-R(잠금), F25-H(DB 다운)의
-        # 지문이 된다. local 규칙은 그대로라 실행기는 파드 local 소켓(trust)으로 계속 들어가고, NodePort 로 노드 주소에 닿는 DPM 은
-        # 허용 목록 안이다. 빠지는 것은 같은 노드 서비스 파드 대역뿐이다.
+        # 지문이 된다. local 규칙은 그대로라 실행기는 파드 local 소켓(trust)으로 계속 들어가고(파드 안에는 psql 하나, pdb_pod),
+        # NodePort 로 노드 주소에 닿는 DPM 은 허용 목록 안이다. 빠지는 것은 같은 노드 서비스 파드 대역뿐이다.
         plan = compiler.compile_plan("f71-h-commerce-postgres-access-rule-omits-app-pods")
         argv, stdin = db_account.build_invocation(plan, "run")
         self.assertEqual(argv[:4], ["/usr/bin/bash", "-s", "--", "run"])
@@ -864,22 +1023,25 @@ def connect(**kw):
         script = stdin.decode()
         self.assertNotIn("F71-H", script)
         own = own_body(script)
-        self.assertIn("pg_stat_statements.track=none", own)
+        self.assertIn('sql() { pdb_pod "$1"; }', own)
         self.assertIn("FROM pg_hba_file_rules", own)
-        # v4 C6b: the file is rewritten by the server's own functions from an operator's network session,
-        # not by a shell in the pod; the reload is confirmed by a new session's configuration load time.
+        # v4 C6b: the file is rewritten by the server's own functions through psql alone in the pod, not by a
+        # shell there; the reload is confirmed by a new session's configuration load time. No network session,
+        # so no check of the runner's own source (it must not be the DB monitor's allowed address).
         self.assertIn("pg_read_binary_file(current_setting('hba_file'))", own)
         self.assertIn("lo_export(o, current_setting('hba_file'))", own)
         self.assertNotIn(" exec ", own)
         self.assertNotIn("kubectl", own)
         run_case = own.split("  run)")[1].split(";;")[0]
-        order = ['expect "1|0|0"', "inside", "bites", "self_allowed", "edit narrow", 'expect "0|$n|0"', "reload",
+        order = ['expect "1|0|0"', "inside", "bites", "edit narrow", 'expect "0|$n|0"', "reload",
                  'until_reloaded "$before"']
         positions = [run_case.index(x) for x in order]
         self.assertEqual(positions, sorted(positions))
         preflight_case = own.split("  preflight)")[1].split(";;")[0]
-        self.assertIn("self_allowed", preflight_case)
+        self.assertIn("bites", preflight_case)
         self.assertNotIn("edit", preflight_case)
+        self.assertNotIn("self_allowed", own)
+        self.assertNotIn("pdb ", own)
         cleanup_case = own.split("  cleanup)")[1].split(";;")[0]
         self.assertIn("edit restore", cleanup_case)
         self.assertIn('until_reloaded "$before"', cleanup_case)

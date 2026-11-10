@@ -3,10 +3,10 @@
 
 Both compose the same pair of already-proven sub-injections:
 
-  [0] commerce PostgreSQL inventory table lock (EXCLUSIVE) — held by the runner
-      container's network session under the real application session identity
-      (G6/L1: the scenario must not sign itself into the capture; v4 C6b replaced the
-      in-cluster client pod, see pg_lock_remote.py).
+  [0] commerce PostgreSQL inventory table lock (EXCLUSIVE) — held by a short-lived
+      in-cluster client pod that impersonates the real application session identity
+      (G6/L1: the scenario must not sign itself into the capture; one psql since v4 C6b,
+      see pg_lock_remote.py).
 
       Table scope, not the F01-R/F15-T1 single-row scope, and the reason is
       reachability rather than blast-radius appetite. This timeline spends its k6
@@ -80,8 +80,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     # Commerce lock arm — identical contract to F15-T1 (timeline_dual_fault_executor).
     if params["commerce_namespace"] != "rca-testbed-commerce":
         raise ExecutorError("commerce lock namespace is not allowlisted")
-    if params["pg_access"] != "runner-network":
-        raise ExecutorError("postgresql lock injection must be a network session from the runner")
+    if params["pg_access"] != "in-cluster-pod":
+        raise ExecutorError("postgresql lock injection must originate inside the cluster")
     if params["pg_db_pod"] != "testbed-postgres-0" or params["pg_service"] != "testbed-postgres":
         raise ExecutorError("PostgreSQL lock target is outside the approved contract")
     if params["pg_schema"] != "inventory_schema" or params["pg_table"] != "inventory":
@@ -138,15 +138,16 @@ port=19189; pf_pid=""
 stop_pf() { [[ -z "$pf_pid" ]] || { kill "$pf_pid" 2>/dev/null || true; wait "$pf_pid" 2>/dev/null || true; }; pf_pid=""; }
 trap stop_pf EXIT
 
-# --- [0] PostgreSQL inventory lock, held from the runner (G6/L2, v4 C6b) ---
+# --- [0] PostgreSQL inventory lock, held by an in-cluster client pod (G6/L2) ---
 # Identity impersonates the real app; the lock is held by an open transaction (idle in
-# transaction), not by a server-side sleep. The session is the runner container's psql through
-# the listener (pg_lock_remote.py); no client pod, no exec into the database pod.
+# transaction), not by a server-side sleep; the source IP is a pod IP. v4 C6b: the pod runs psql
+# alone, driven over attach (pg_lock_remote.py); no exec into the database pod.
 [[ "$scope" == table ]] || { echo "commerce arm is table scope only" >&2; exit 2; }
 case "$mode" in EXCLUSIVE) : ;; *) echo "unsupported lock mode: $mode" >&2; exit 2 ;; esac
 pg_dir="$state_dir/pg-lock"
 pg() {
   db_target "$pg_ns" "$db_pod"
+  PGL_IMAGE="$image" PGL_SERVICE="$svc" PGL_SECRET="$secret"
   case "$1" in
     check) pgl_check "$pg_dir" "$schema" "$table" table "" "" ;;
     run) pgl_apply "$pg_dir" "$schema" "$table" table "$mode" "" "" "$hold" "$identity" ;;

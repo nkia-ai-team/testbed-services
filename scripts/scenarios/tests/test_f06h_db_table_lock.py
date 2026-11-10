@@ -7,14 +7,12 @@
 
     신원  : application_name에 시나리오를 인코딩하지 않고 실 앱과 동일해야 한다(L1)
     유지  : pg_sleep이 아니라 idle in transaction으로 잡아야 한다(L2)
-    출처  : 러너 컨테이너에서 리스너(NodePort)로 붙는다(v4 C6b). 2026-07-28 부터는 클러스터 안
-            단명 클라이언트 파드였는데, 그 파드가 KCM 이벤트, kubelet/containerd syslog, 명령줄에
-            흔적을 남겼다(2026-08-23 F01-R 녹화). 서버가 보는 주소는 NodePort 로 들어온 연결의
-            노드 주소다(결과 문서 확인 필요).
+    출처  : 클러스터 내부 파드에서 접속해야 한다(L2 — 외부 접속은 NAT 주소로 튄다. v4 C6b 사용자 결정 Q8 로 다시
+            확인: 러너에서 NodePort 로 붙으면 DPM 관제 세션과 같은 주소가 된다)
 
-정리는 세션 이름이 아니라 **이 호스트의 잠금 세션 프로세스를 끝내는 것**으로 하고, 서버에서는
-그 세션의 backend pid 와 시작 시각으로 사라졌는지 본다. 이름 기반 pg_terminate_backend는 실
-서비스 세션을 죽일 수 있어 금지한다.
+정리는 세션 이름이 아니라 **전용 클라이언트 파드 삭제**로 한다. 이름 기반
+pg_terminate_backend는 실 서비스 세션을 죽일 수 있어 금지한다. v4 C6b: 파드 안 프로세스는 psql
+하나이고(옛 sh, sleep 600, SQL 이 든 명령줄 없음) 러너가 attach 로 문장을 보내며 보유 시간을 센다.
 """
 from __future__ import annotations
 
@@ -124,55 +122,58 @@ class PostgresLockContractTests(unittest.TestCase):
         script = db_lock.POSTGRES_CLIENT.decode()
         # 서버측 수면은 waitEvent=PgSleep이라는 유일값을 남긴다 — 금지.
         self.assertNotIn("pg_sleep", script)
-        # 클라이언트가 트랜잭션을 열어둔 채 대기해야 idle in transaction이 된다.
-        session = pg_lock_remote.SESSION_SCRIPT
-        self.assertIn("'BEGIN;' 'SELECT pg_backend_pid();' \"$LOCK_SQL\"", session)
-        self.assertIn("end=$((SECONDS + HOLD))", session)
-        self.assertIn("'ROLLBACK;'", session)
+        # 클라이언트가 트랜잭션을 열어둔 채 대기해야 idle in transaction이 된다. 보유 시간은 러너의 구동기가 센다.
+        self.assertIn("pgl_send \"$dir\" 'BEGIN;' 'SELECT pg_backend_pid();' \"$sql\" '\\echo locked'", script)
+        self.assertIn("end=$((SECONDS + DEADLINE))", pg_lock_remote.DRIVER_SCRIPT)
+        self.assertIn("'ROLLBACK;' '\\q'", pg_lock_remote.DRIVER_SCRIPT)
         self.assertIn("state = 'idle in transaction'", script)
         # 잠금을 얻었다는 표시는 psql 의 \\echo 라 서버로 가지 않는다(세션의 마지막 질의는 잠금 문장 그대로).
-        self.assertIn("'\\echo locked'", session)
         self.assertNotIn("SELECT 'locked'", script)
 
-    def test_injection_is_a_network_session_from_the_runner(self) -> None:
+    def test_injection_originates_inside_the_cluster(self) -> None:
         script = db_lock.POSTGRES_CLIENT.decode()
-        own = own_body(script)
-        # 클러스터 안 클라이언트 파드도, DB 파드 exec 도, tb-runner ssh 경로도 없다.
-        for trace in ("kind: Pod", " exec ", "/usr/bin/ssh", "kubectl"):
-            self.assertNotIn(trace, own)
-        self.assertNotIn("kind: Pod", script)
-        self.assertIn("pdb_env", script)
+        self.assertIn("kind: Pod", script)
+        # 클러스터 밖 tb-runner ssh 경로가 되살아나면 출처 IP가 NAT로 튄다.
+        self.assertNotIn("/usr/bin/ssh", script)
+        # 파드 안 프로세스는 psql 하나다. 정의에 SQL, sleep, 셸이 없다.
+        pod = script[script.index("pgl_pod() {"):script.index("pgl_name() {")]
+        self.assertIn('command: ["psql", ${args}]', pod)
+        self.assertIn("stdinOnce: true", pod)
+        self.assertIn("activeDeadlineSeconds:", pod)
+        for trace in ("sh -c", "sleep", "SQL_PRE", "SQL_POST", "HOLD"):
+            self.assertNotIn(trace, pod)
+        # DB 파드에는 exec 하지 않는다(확인 조회는 운영자 세션).
+        self.assertNotIn(" exec ", own_body(script))
         for scenario_id in ("F01-R", "F06-H"):
             argv, _ = db_lock.build_invocation(self._plan(scenario_id), "run")
             self.assertEqual(argv[0], "/usr/bin/bash")
-            self.assertEqual(db_lock.CONTRACTS[scenario_id]["access"], db_lock.PG_ACCESS)
 
     def test_external_access_mode_is_refused(self) -> None:
-        for access in ("tb-runner", "in-cluster-pod"):
+        for access in ("tb-runner", "runner-network"):
             params = dict(db_lock.CONTRACTS["F01-R"])
             params["access"] = access
             profile = {
                 "parameter_contract": {"allowed_scenarios": ["F0X-T"]},
                 "scenario_parameters": {"F0X-T": params},
             }
-            with self.assertRaisesRegex(db_lock.ExecutorError, "network session from the runner"):
+            with self.assertRaisesRegex(db_lock.ExecutorError, "inside the cluster"):
                 db_lock.validate("F0X-T", params, profile)
 
     # --- 정리 안전성 -------------------------------------------------------
 
-    def test_cleanup_ends_its_own_session_not_sessions_by_name(self) -> None:
+    def test_cleanup_deletes_the_client_pod_not_sessions_by_name(self) -> None:
         script = db_lock.POSTGRES_CLIENT.decode()
         # 신원이 앱과 같아졌으므로 이름 기반 종료는 실 서비스를 죽일 수 있다.
         self.assertNotIn("pg_terminate_backend", script)
         self.assertNotIn("pkill", script)
+        self.assertIn("dbo_k delete pod", script)
+        self.assertIn("lucida.io/db-client=session", script)
         release = script[script.index("pgl_release() {"):]
         release = release[:release.index("\n}\n")]
-        # 로컬 정지(API, DB 불필요)가 먼저, 그다음 서버에서 그 backend(pid 와 시작 시각)가 사라졌는지.
-        self.assertLess(release.index("pgl_hold_stop"), release.index("pdb_env"))
-        self.assertLess(release.index("pdb_env"), release.index("pgl_released"))
+        # 러너의 구동기(롤백), 파드 삭제, 서버에서 그 backend(pid 와 시작 시각)가 사라졌는지 순서.
+        self.assertLess(release.index("pgl_stop"), release.index("pgl_delete_pods"))
+        self.assertLess(release.index("pgl_delete_pods"), release.index("pgl_released"))
         self.assertIn("backend_start = '$bstart'::timestamptz", script)
-        # 옛 클라이언트 파드는 이 코드 전의 실행이 남긴 것만 라벨로 거둔다.
-        self.assertIn("lucida.io/db-client=session", script)
 
     # --- SQL 주입 표면 -----------------------------------------------------
 
@@ -220,8 +221,8 @@ class PostgresLockContractTests(unittest.TestCase):
 
     def test_backend_pid_is_read_from_the_session_and_the_lock_is_held_and_released(self) -> None:
         """psql 은 -q 라 BEGIN 태그를 찍지 않고, 첫 숫자 줄이 pid, 행 잠금이면 그다음이 키다(2026-07-31 F01-R
-        "did not report a backend pid" 의 재발 방지). 세션은 계약의 앱 신원과 서버 쪽 끊김 감지 옵션으로 붙고,
-        정리는 그 세션만 끝낸다."""
+        "did not report a backend pid" 의 재발 방지). 클라이언트 파드는 계약의 이미지, 서비스, 비밀과 앱 신원으로
+        만들어지고, 정리는 그 파드를 지운다."""
         for scenario_id in ("F01-R", "F06-H"):
             with self.subTest(scenario_id), tempfile.TemporaryDirectory() as raw:
                 tmp = Path(raw)
@@ -233,14 +234,14 @@ class PostgresLockContractTests(unittest.TestCase):
                 self.assertEqual(len(sessions), 1)
                 state = tmp / "state" / f"db-lock-postgres-{scenario_id}"
                 self.assertEqual((state / "backend").read_text().split()[0], sessions[0])
-                calls = [json.loads(line) for line in (tmp / "psql.log").read_text().splitlines()]
-                session_call = next(c for c in calls if "-c" not in c["argv"])
-                self.assertEqual(session_call["app"], db_lock.APP_IDENTITY)
-                self.assertEqual(session_call["host"], "192.168.122.11")
-                hold = db_lock.CONTRACTS[scenario_id]["hold_seconds"]
-                for option in ("tcp_keepalives_idle=60", "tcp_keepalives_count=6",
-                               f"idle_in_transaction_session_timeout={(hold + 120) * 1000}", "lock_timeout=60s"):
-                    self.assertIn(option, session_call["options"])
+                pod = (tmp / "applied.yaml").read_text()
+                contract = db_lock.CONTRACTS[scenario_id]
+                for line in (f"image: {contract['image']}", 'value: "PostgreSQL JDBC Driver"',
+                             f'value: "{contract["service"]}"', f"name: {contract['secret']}, key: POSTGRES_PASSWORD",
+                             'command: ["psql", "-X", "-q", "-At"]',
+                             f"activeDeadlineSeconds: {contract['hold_seconds'] + pg_lock_remote.DEADLINE_MARGIN_SECONDS}"):
+                    self.assertIn(line, pod)
+                self.assertNotIn("SELECT", pod)
                 expected = ("SELECT product_id FROM inventory_schema.inventory WHERE product_id='1' FOR UPDATE;"
                             if scenario_id == "F01-R" else "LOCK TABLE payment_schema.payments IN EXCLUSIVE MODE;")
                 self.assertEqual((tmp / "pg-lock-statement").read_text(), expected)
@@ -249,13 +250,15 @@ class PostgresLockContractTests(unittest.TestCase):
                 cleanup = self._run(scenario_id, "cleanup", env)
                 self.assertEqual(cleanup.returncode, 0, cleanup.stderr.decode())
                 self.assertEqual(db_operator_fakes.pg_sessions(tmp), [])
+                self.assertEqual(list((tmp / "pods").iterdir()), [])
                 self.assertFalse(state.exists())
                 self.assertEqual(self._run(scenario_id, "recovery", env).returncode, 0)
                 self.assertEqual(self._run(scenario_id, "cleanup", env).returncode, 0)
-                db_operator_fakes.assert_reads_only(self, tmp)
-                db_operator_fakes.assert_no_password(self, (tmp / "psql.log").read_text(), run.stderr, cleanup.stderr)
+                calls = (tmp / "kubectl.log").read_text()
+                self.assertNotIn("testbed-postgres-0 --", calls)  # never an exec into the database pod
+                db_operator_fakes.assert_no_password(self, calls, run.stderr, cleanup.stderr)
 
-    def test_cleanup_stops_the_local_session_even_when_the_api_is_down(self) -> None:
+    def test_cleanup_stops_the_driver_even_when_the_api_is_down(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = self._env(tmp)
@@ -263,14 +266,15 @@ class PostgresLockContractTests(unittest.TestCase):
             (tmp / "kubectl-down").write_text("")
             cleanup = self._run("F01-R", "cleanup", env)
             self.assertNotEqual(cleanup.returncode, 0)
+            # The driver rolled back and quit psql whatever the API said.
             self.assertEqual(db_operator_fakes.pg_sessions(tmp), [])
             self.assertTrue((tmp / "state" / "db-lock-postgres-F01-R" / "backend").exists(),
-                            "the record stays until the server side is confirmed")
+                            "the record stays until the pod is gone and the server side is confirmed")
             (tmp / "kubectl-down").unlink()
             self.assertEqual(self._run("F01-R", "cleanup", env).returncode, 0)
             self.assertEqual(self._run("F01-R", "recovery", env).returncode, 0)
 
-    def test_a_lock_that_cannot_be_taken_fails_the_run_and_leaves_no_session(self) -> None:
+    def test_a_lock_that_cannot_be_taken_fails_the_run_and_leaves_no_pod(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)
             env = self._env(tmp)
@@ -278,18 +282,8 @@ class PostgresLockContractTests(unittest.TestCase):
             run = self._run("F01-R", "run", env)
             self.assertNotEqual(run.returncode, 0)
             self.assertIn(b"did not report the lock", run.stderr)
-            time.sleep(0.5)
             self.assertEqual(db_operator_fakes.pg_sessions(tmp), [])
-
-    def test_refuses_when_the_server_does_not_take_per_session_keepalive(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            tmp = Path(raw)
-            env = self._env(tmp)
-            server = (tmp / "fake_psql.py").read_text().replace('print("60" if', 'print("0" if')
-            (tmp / "fake_psql.py").write_text(server)
-            result = self._run("F06-H", "preflight", env)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(b"does not apply per-session TCP keepalive", result.stderr)
+            self.assertEqual(list((tmp / "pods").iterdir()), [])
 
 
 if __name__ == "__main__":

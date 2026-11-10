@@ -423,9 +423,10 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("DROP FOREIGN KEY $fk, ALGORITHM=INPLACE, LOCK=NONE", script)
         self.assertIn("@@global.foreign_key_checks", script)
         run = script[script.index(" run)"):script.index(" cleanup)")]
-        # run 은 러너 coordinator lock 을 쥔 채 돈다: 마이그레이션은 러너에서 백그라운드 클라이언트 세션으로 띄우고(v4 C6b,
-        # 예전에는 DB 파드 안), 세션이 보이는지 1초씩 많아야 10번 본 뒤 돌아온다. 복사를 기다리지 않는다.
-        self.assertIn('mdb_spawn root "$db" "$statement" "$log"', run)
+        # run 은 러너 coordinator lock 을 쥔 채 돈다: 마이그레이션은 DB 파드 안의 mysql 클라이언트 하나로 띄우고(정답지의
+        # root@localhost, v4 C6b 사용자 결정 Q8. 셸, nohup 없이 exec 가 mysql 을 바로 띄운다), 세션이 보이는지 1초씩 많아야
+        # 10번 본 뒤 돌아온다. 복사를 기다리지 않는다.
+        self.assertIn('mdb_pod_spawn root "$db" "$statement" "$log"', run)
         self.assertNotIn(" exec ", script)
         # 데이터 볼륨 여유는 파드 안 df 가 아니라 kubelet 요약 API 의 노드 파일시스템이다.
         self.assertIn("free=$(number \"$(node_fs KB | awk '{print $3}')\")", script)
@@ -435,7 +436,7 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn("id <> CONNECTION_ID()", script)
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
         # cleanup 은 복사가 스스로 끝나기를 drain 까지 기다리고, 남았으면 멈춘 뒤 외래 키를 지운다.
-        order = ["end=$((SECONDS + drain))", "KILL QUERY", "DROP FOREIGN KEY", "rm -rf"]
+        order = ["end=$((SECONDS + drain))", "KILL QUERY", "DROP FOREIGN KEY", "dbo_reap", "rm -rf"]
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("lock_wait_timeout=10", cleanup)
@@ -697,10 +698,11 @@ class DbHostFoundations(unittest.TestCase):
         run = script[script.index(" run)"):script.index(" cleanup)")]
         # 순서: 확인 → 행 추정으로 속도 → 내보내기를 백그라운드로(앱 계정, 한 행씩) → 그 잠금 확인 → 마이그레이션을
         # 백그라운드로(root) → 메타데이터 잠금 대기 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 기다리지 않는다.
-        # v4 C6b: 두 세션은 러너의 백그라운드 클라이언트다(내보내기는 앱 계정으로 한 행씩, 마이그레이션은 root).
-        order = ["  check\n", "table_rows", "rate=$(( est / export_seconds + 1 ))",
-                 'mdb_spawn_paced app "$db" "$export_sql" "$rate" "$export_log"',
-                 "lock_status = 'GRANTED'", 'mdb_spawn root "$db" "$migration_sql" "$migration_log"',
+        # v4 C6b(사용자 결정 Q8): 두 세션은 DB 파드 안의 mysql 클라이언트다(정답지의 fooddelivery@localhost,
+        # root@localhost). 내보내기 행은 러너가 정한 바이트 속도로만 읽혀 서버가 export_seconds 동안 보낸다(mdb_pod_pace).
+        order = ["  check\n", "table_rows", 'mdb_pod_spawn app "$db" "$export_sql" "$export_log" paced',
+                 "lock_status = 'GRANTED'", 'mdb_pod_pace "$export_log" "$id" "$est"',
+                 'mdb_pod_spawn root "$db" "$migration_sql" "$migration_log"',
                  "'Waiting for table metadata lock'"]
         positions = [run.index(x) for x in order]
         self.assertEqual(positions, sorted(positions))
@@ -715,7 +717,9 @@ class DbHostFoundations(unittest.TestCase):
         self.assertIn('run_dir="$(dbo_run_dir "db-ddl-queue-$db-$table")"', script)
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
         order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration",
-                 "DROP COLUMN $column, ALGORITHM=INSTANT", "rm -rf"]
+                 "DROP COLUMN $column, ALGORITHM=INSTANT", "dbo_reap", "rm -rf"]
+        # 내보내기를 끝낼 때 서버 문장을 먼저, 그다음 러너의 읽기를 풀어 파드 안 클라이언트가 끝나게 한다.
+        self.assertIn('mysql "KILL QUERY $id;" >/dev/null; mdb_pod_drain "$export_log"; }', script)
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("SET SESSION lock_wait_timeout = 5", cleanup)
@@ -956,10 +960,10 @@ class DbHostFoundations(unittest.TestCase):
                 self.assertEqual(p["lock_scope"], "table")
                 self.assertEqual(p["lock_mode"], "EXCLUSIVE")
                 self.assertIn("printf 'LOCK TABLE %s.%s IN %s MODE;' \"$1\" \"$2\" \"$4\"", text)
-                self.assertIn('PGAPPNAME="$identity"', text)
-                # 정리는 잠금 세션 프로세스를 끝내는 것이다 — 신원이 실 앱과 같아 이름 기반 종료는 금지
-                # (품질 기준서 G6 / 부록 A). v4 C6b 전에는 클러스터 안 클라이언트 파드를 지웠다.
-                self.assertIn("pgl_release", text)
+                self.assertIn('name: PGAPPNAME\n          value: "${identity}"', text)
+                # 정리는 파드 삭제로 한다 — 신원이 실 앱과 같아 이름 기반 종료는 금지
+                # (품질 기준서 G6 / 부록 A).
+                self.assertIn("dbo_k delete pod", text)
                 self.assertNotIn("pg_terminate_backend", text)
                 self.assertNotIn("pg_sleep", text)
 

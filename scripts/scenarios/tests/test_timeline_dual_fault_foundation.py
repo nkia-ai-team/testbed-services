@@ -38,7 +38,7 @@ def plan(profile_id: str, scenario_id: str, params: dict, location: dict) -> dic
 def canonical_params(memory: str = "576Mi") -> dict:
     return {
         "commerce_namespace": "rca-testbed-commerce",
-        "pg_access": "runner-network",
+        "pg_access": "in-cluster-pod",
         "pg_db_pod": "testbed-postgres-0",
         "pg_service": "testbed-postgres",
         "pg_secret": "postgres-secret",
@@ -124,15 +124,14 @@ class TimelineDualFaultFoundationTests(unittest.TestCase):
         with self.assertRaisesRegex(dual.ExecutorError, "measured F05-R ladder"):
             dual.validate("F15-T1", params, {"scenario_parameters": {"F15-T1": params}})
 
-    def test_pg_lock_is_a_network_session_from_the_runner(self) -> None:
+    def test_pg_lock_must_originate_inside_the_cluster(self) -> None:
         # Injecting from tb-runner leaves that host's NAT address in the capture,
-        # which points at the answer (charter G6/L2, appendix A-1). The in-cluster
-        # client pod that replaced it left KCM pod events and node process records,
-        # so v4 C6b holds the lock from the runner container through the listener.
-        for access in ("tb-runner-nodeport", "in-cluster-pod"):
+        # which points at the answer (charter G6/L2, appendix A-1). From the runner
+        # container it would be the DPM collector's address (v4 C6b, user decision Q8).
+        for access in ("tb-runner-nodeport", "runner-network"):
             params = canonical_params()
             params["pg_access"] = access
-            with self.assertRaisesRegex(dual.ExecutorError, "network session from the runner"):
+            with self.assertRaisesRegex(dual.ExecutorError, "inside the cluster"):
                 dual.validate("F15-T1", params, {"scenario_parameters": {"F15-T1": params}})
 
     def test_session_identity_must_impersonate_the_application(self) -> None:

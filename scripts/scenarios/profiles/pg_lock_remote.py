@@ -1,86 +1,81 @@
-"""Bash side of the PostgreSQL lock injection held from the runner container (v4 C6b).
+"""Bash side of the PostgreSQL sessions that tell an application or batch story (v4 C6b).
 
 db.lock (F01-R, F06-H)와 timeline 실행기 셋(timeline.multi 의 pg_lock 단계 F15-G,
-timeline_dual_fault F15-T1, timeline_lock_mock F15-H, F15-T2)이 같은 잠금을 건다. 이 모듈이
-함수 묶음 하나를 만들고 넷이 끼워 쓴다(Oracle 쪽 ``oracle_lock_remote`` 와 같은 구성).
+timeline_dual_fault F15-T1, timeline_lock_mock F15-H, F15-T2)의 잠금, 그리고 db.ddl 의 내보내기
+대기열(F66-R, F66-P, F67-H, F73-R)의 내보내기와 마이그레이션이 이 함수 묶음을 쓴다.
 
-옛 방식은 commerce 네임스페이스에 단명 클라이언트 파드(postgres:16-alpine)를 띄워 그 안의
-psql 이 잠금을 쥐었다. 2026-08-23 F01-R 녹화에 남은 흔적: KCM 이벤트(파드 생성, 배정),
-kubelet 과 containerd syslog, ``SQL_PRE`` 가 든 명령줄, ``sleep 600`` 프로세스. 앞의 정리도
-DB 파드에 exec 해 psql 로 확인했다.
+세션의 출처(사용자 결정 Q8, 2026-11-10): 정답지가 앱이나 배치 세션으로 그리는 PostgreSQL 세션은
+클러스터 안 파드에서 붙는다(파드 대역 주소, 앱 세션과 같은 대역). 러너 컨테이너에서 NodePort 로
+붙으면 DB 가 보는 주소가 DPM 관제 세션(10.244.3.1)이나 러너 부하와 같아진다(C6b 리뷰 2절).
 
-이제 잠금 세션은 러너 컨테이너의 psql 이 리스너(NodePort)로 붙어 쥔다. 세션 신원은 계약의
-``client_identity`` (실 앱과 같은 application_name)이고, 잠금 유지는 클라이언트가 트랜잭션을
-연 채 쉬는 것(서버에는 idle in transaction, ClientRead)이다. 클러스터에는 파드도 exec 도 생기지
-않는다. 바뀌는 칸은 하나다: 서버가 보는 client_addr 이 앱 파드 주소가 아니라 NodePort 로
-들어온 연결이 받는 노드 주소다(DPM 과 러너 관측 세션과 같은 주소, 결과 문서 확인 필요).
+클라이언트 파드(2026-07-28 의 F01-R 방식)를 다음처럼 줄였다.
 
-러너가 FIN 없이 사라지면(tb-ops 정지, 망 단절) 서버 쪽 끊김 감지가 세션을 끝내 롤백한다.
-세션 시작 옵션으로 그 세션에만 건다(서버 설정 변경 없음): TCP keepalive 60초 + 10초 x 6,
-그리고 보유 시간 + 120초의 idle_in_transaction_session_timeout. 사전검사는 서버가 이 옵션을
-받아들이는지(세션의 tcp_keepalives_idle 이 60 인지) 확인한다.
+* 파드 안 프로세스는 psql 하나다. 옛 파드는 ``sh -c '{ printf "$SQL_PRE"; sleep HOLD; ... } | psql'``
+  이라 노드 프로세스 표본에 sh, sleep 600 과 SQL 이 든 명령줄이 남았다. 이제 psql 은 stdin 을 기다리고
+  러너가 ``kubectl attach`` 로 문장을 보낸다. 파드 정의에는 SQL 이 없다(잠금 파드). 보유 시간도
+  러너가 센다.
+* 내보내기는 같은 파드에 ``kubectl exec`` 한 psql 하나다(출력이 exec 흐름으로 러너에 와서 러너의
+  읽기 속도에 맞춰진다. 파드 로그로 가지 않는다). 그 파드의 주 psql 이 마이그레이션 세션이다.
+* 러너가 사라지면: attach 가 끊겨 stdin 이 닫히고(stdinOnce) psql 이 끝나 롤백한다. 끊김을 늦게
+  알아채도 파드의 activeDeadlineSeconds(보유 + 여유)가 파드를 끝낸다.
+
+정리는 러너의 attach 구동기를 먼저 멈추고(ROLLBACK, \\q), 파드를 이름과 라벨로 지운 뒤, 서버에서 그
+세션(backend pid 와 시작 시각)이 사라졌는지 운영자 세션(db_operator_remote 의 pdb)으로 확인한다.
+이름으로 세션을 죽이지 않는다(신원이 실 앱과 같다).
 """
 from __future__ import annotations
 
-HEREDOC_END = "PG_LOCK_SESSION_SH"
-START_MARKER = "# ---- PostgreSQL lock session from the runner (pg_lock_remote.py) ----"
-END_MARKER = "# ---- end of PostgreSQL lock session ----"
-LEGACY_CLIENT_SELECTOR = "lucida.io/db-client=session"
-# 잠금을 얻으려고 기다리는 상한(초). 앱 트랜잭션이 행을 잠깐 쥐고 있어도 기다렸다 잡는다.
+HEREDOC_END = "PG_POD_DRIVER_SH"
+START_MARKER = "# ---- PostgreSQL client pod sessions (pg_lock_remote.py) ----"
+END_MARKER = "# ---- end of PostgreSQL client pod sessions ----"
+CLIENT_SELECTOR = "lucida.io/db-client=session"
+CLIENT_CONTAINER = "client"
+# 잠금을 얻었다는 표시를 기다리는 상한(초). 넘으면 파드를 지워 연결을 끊는다(서버가 대기를 취소한다).
 ACQUIRE_TIMEOUT_SECONDS = 60
-# 보유 시간이 끝나도 롤백하지 못한(러너가 사라진) 세션을 서버가 끝내는 여유(초).
-IDLE_TIMEOUT_MARGIN_SECONDS = 120
+# 러너가 사라졌을 때 파드가 스스로 끝나기까지 보유 시간 위로 더 두는 여유(초).
+DEADLINE_MARGIN_SECONDS = 60
 
-# The session itself: a local bash that drives one psql through a coprocess. It runs on the
-# runner (never in a pod), in its own process group (setsid), so pgl_hold_stop can end the
-# psql child even if the script is killed.
-SESSION_SCRIPT = r'''#!/usr/bin/env bash
-# PostgreSQL lock session (pg_lock_remote.py): open a transaction, take LOCK_SQL, report the
-# backend pid in READY_FILE, idle for HOLD seconds, roll back. SIGTERM rolls back at once.
-# The server sees what the old in-cluster client sent: BEGIN, SELECT pg_backend_pid(), the lock
-# statement (which stays as the session's last query). "locked" is psql's own \echo, never sent.
+# The driver runs on the runner (never in a pod), in its own process group (setsid). It holds
+# `kubectl attach -i` to the pod's psql: lines written to DIR/in go to psql's stdin, psql's output is
+# appended to DIR/out. After DEADLINE seconds, or on SIGTERM, it sends ROLLBACK and \q and ends.
+DRIVER_SCRIPT = r'''#!/usr/bin/env bash
 set -u
 stop=0
 trap 'stop=1' TERM INT
-coproc PSQL { exec psql -X -q -At -v ON_ERROR_STOP=1 2>&1; }
-to="${PSQL[1]}"; from="${PSQL[0]}"; psql_pid="$PSQL_PID"
-printf '%s\n' 'BEGIN;' 'SELECT pg_backend_pid();' "$LOCK_SQL" '\echo locked' >&"$to"
-backend=""; line=""
-while IFS= read -r -t 120 line <&"$from"; do
-  # The first all-digits line is the pid; a row lock then prints its key, which is not.
-  if [[ -z "$backend" && "$line" =~ ^[0-9]+$ ]]; then backend="$line"; continue; fi
-  [[ "$line" == locked ]] && break
-  [[ -n "$backend" ]] || printf '%s\n' "$line" >&2
+dir="$DRIVER_DIR"
+rm -f -- "$dir/to"; mkfifo -m 600 "$dir/to"
+kubectl --kubeconfig "$DRIVER_KUBECONFIG" -n "$DRIVER_NS" attach -i -q "$DRIVER_POD" -c "$DRIVER_CONTAINER" \
+  <"$dir/to" >>"$dir/out" 2>>"$dir/attach.err" &
+attach=$!
+exec 5>"$dir/to"
+exec 4<>"$dir/in"
+end=$((SECONDS + DEADLINE))
+while (( !stop && SECONDS < end )) && kill -0 "$attach" 2>/dev/null; do
+  if IFS= read -r -t 1 line <&4; then printf '%s\n' "$line" >&5 2>/dev/null || break; fi
 done
-if [[ "$line" != locked || -z "$backend" ]]; then
-  echo "lock was not taken" >&2
-  kill "$psql_pid" 2>/dev/null
-  exit 1
-fi
-printf '%s\n' "$backend" >"$READY_FILE"
-end=$((SECONDS + HOLD))
-while (( !stop && SECONDS < end )); do sleep 1 & wait $!; done
-printf '%s\n' 'ROLLBACK;' '\q' >&"$to"
-for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$psql_pid" 2>/dev/null || exit 0; sleep 1; done
-kill "$psql_pid" 2>/dev/null
+printf '%s\n' 'ROLLBACK;' '\q' >&5 2>/dev/null
+exec 5>&-
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$attach" 2>/dev/null || exit 0; sleep 1; done
+kill "$attach" 2>/dev/null
 exit 0
 '''
 
 
 def bash_functions() -> bytes:
-    """pgl_* functions. Needs db_operator_remote's functions (db_target, pdb_env, pdb) first."""
-    if any(line.strip() == HEREDOC_END for line in SESSION_SCRIPT.splitlines()):
-        raise ValueError("session script collides with the heredoc terminator")
+    """pgl_* functions. Needs db_operator_remote's functions (db_target, dbo_k, pdb_env, pdb) first."""
+    if any(line.strip() == HEREDOC_END for line in DRIVER_SCRIPT.splitlines()):
+        raise ValueError("driver script collides with the heredoc terminator")
     header = "\n".join(
         [
             START_MARKER,
-            f"PGL_LEGACY_SELECTOR='{LEGACY_CLIENT_SELECTOR}'",
+            f"PGL_SELECTOR='{CLIENT_SELECTOR}'",
+            f"PGL_CONTAINER='{CLIENT_CONTAINER}'",
             f"PGL_ACQUIRE_TIMEOUT={ACQUIRE_TIMEOUT_SECONDS}",
-            f"PGL_IDLE_MARGIN={IDLE_TIMEOUT_MARGIN_SECONDS}",
-            f"PGL_SESSION_SRC=$(cat <<'{HEREDOC_END}'",
+            f"PGL_DEADLINE_MARGIN={DEADLINE_MARGIN_SECONDS}",
+            f"PGL_DRIVER_SRC=$(cat <<'{HEREDOC_END}'",
         ]
     )
-    return (header + "\n" + SESSION_SCRIPT + HEREDOC_END + "\n)\n" + _FUNCTIONS + END_MARKER + "\n").encode()
+    return (header + "\n" + DRIVER_SCRIPT + HEREDOC_END + "\n)\n" + _FUNCTIONS + END_MARKER + "\n").encode()
 
 
 _FUNCTIONS = r'''
@@ -95,6 +90,7 @@ pgl_lock_sql() {
     *) echo "unsupported lock scope: $3" >&2; return 2 ;;
   esac
 }
+# Probes are an operator's session (db_operator_remote) and are not recorded by pg_stat_statements.
 pgl_q() { pdb "$1" "-c pg_stat_statements.track=none"; }
 # pgl_target_ok SCHEMA TABLE SCOPE KEYCOL KEYVAL: the table exists (and the row, for row scope).
 pgl_target_ok() {
@@ -102,73 +98,100 @@ pgl_target_ok() {
   [[ "$3" != row ]] && return 0
   [[ "$(pgl_q "SELECT count(*) FROM $1.$2 WHERE $4='$5';")" == 1 ]] || { echo "lock target row is missing" >&2; return 1; }
 }
-# pgl_keepalive_ok: the server applies the per-session dead-peer settings this injection relies on.
-pgl_keepalive_ok() {
-  [[ "$(pdb "SHOW tcp_keepalives_idle;" "-c pg_stat_statements.track=none $PDB_KEEPALIVE")" == 60 ]] \
-    || { echo "server does not apply per-session TCP keepalive; refusing a lock that could outlive the runner" >&2; return 1; }
-}
-# The client pods of the old method (label selector), from a run that predates this code.
-pgl_legacy() { dbo_k get pods -l "$PGL_LEGACY_SELECTOR" -o name 2>/dev/null | tr -d '\r'; }
-pgl_legacy_none() { [[ -z "$(pgl_legacy)" ]] || { echo "an old in-cluster lock client pod is still there" >&2; return 1; }; }
-# pgl_pids DIR: pids of this host's lock session for DIR, found by its command line.
+# Client pods of this kind in the namespace (ours, or one an older run left).
+pgl_pods() { dbo_k get pods -l "$PGL_SELECTOR" -o name 2>/dev/null | tr -d '\r'; }
+pgl_no_pods() { [[ -z "$(pgl_pods)" ]] || { echo "a database client pod is still there: $(pgl_pods | tr '\n' ' ')" >&2; return 1; }; }
+# pgl_pids DIR: pids of this host's attach driver for DIR, found by its command line.
 pgl_pids() {
   local dir="$1" proc args=()
   for proc in /proc/[0-9]*; do
     mapfile -d '' -t args 2>/dev/null <"$proc/cmdline" || continue
-    [[ "${args[*]}" == *"$dir/pg_lock_session.sh"* ]] && printf '%s\n' "${proc##*/}"
+    [[ "${args[*]}" == *"$dir/pg_pod_driver.sh"* ]] && printf '%s\n' "${proc##*/}"
   done
   return 0
 }
 pgl_alive() { [[ -n "$(pgl_pids "$1")" ]]; }
-pgl_idle() { if pgl_alive "$1"; then echo "a PostgreSQL lock session from $1 is still running" >&2; return 1; fi; }
-# pgl_hold_start DIR LOCK_SQL HOLD IDENTITY: start the session and wait until it holds the lock.
-pgl_hold_start() {
-  local dir="$1" lock_sql="$2" hold="$3" identity="$4" pid
-  pdb_env || return 1
+pgl_idle() { if pgl_alive "$1"; then echo "a PostgreSQL client session from $1 is still running" >&2; return 1; fi; }
+
+# pgl_pod DIR NAME IDENTITY DEADLINE [ARG...]: create a client pod running psql (and ARG, if any) as its only
+# process, as the image's postgres role through the in-cluster Service, and wait until it runs. Without ARG psql
+# waits for statements on stdin (stdinOnce: closing the attach ends it). PGL_IMAGE, PGL_SERVICE, PGL_SECRET (a
+# lock contract's image, service, secret) override the defaults: the database pod's own image, the application
+# Service, postgres-secret.
+pgl_pod() {
+  local dir="$1" name="$2" identity="$3" deadline="$4"; shift 4
+  local image="${PGL_IMAGE:-}" service="${PGL_SERVICE:-$DBO_PG_CLUSTER_SERVICE}" secret="${PGL_SECRET:-$DBO_PG_SECRET}"
+  local args="" a
+  [[ -n "$image" ]] || image="$(dbo_k get pod "$DBO_POD" -o 'jsonpath={.spec.containers[0].image}')" || return 1
+  [[ -n "$image" ]] || { echo "database pod image is unknown" >&2; return 1; }
+  for a in -X -q -At "$@"; do args+="${args:+, }$(jq -cn --arg v "$a" '$v')"; done
   mkdir -p -- "$dir"
-  printf '%s' "$PGL_SESSION_SRC" >"$dir/pg_lock_session.sh"
-  rm -f -- "$dir/ready" "$dir/backend"
-  PGAPPNAME="$identity" \
-    PGOPTIONS="$PDB_KEEPALIVE -c lock_timeout=${PGL_ACQUIRE_TIMEOUT}s -c idle_in_transaction_session_timeout=$(( (hold + PGL_IDLE_MARGIN) * 1000 ))" \
-    LOCK_SQL="$lock_sql" HOLD="$hold" READY_FILE="$dir/ready" \
-    setsid nohup bash "$dir/pg_lock_session.sh" >"$dir/log" 2>&1 </dev/null &
-  pid="$!"
-  for _ in $(seq 1 $((PGL_ACQUIRE_TIMEOUT + 30))); do
-    [[ -s "$dir/ready" ]] && break
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 1
-  done
-  if [[ ! -s "$dir/ready" ]]; then
-    echo "PostgreSQL lock session did not report the lock: $(tail -c 400 "$dir/log" 2>/dev/null | tr '\n' ' ')" >&2
-    pgl_hold_stop "$dir" || true
-    return 1
-  fi
-  # Confirm on the server, keyed by backend pid (never by session name, which is the app's), and
-  # record the backend's start so a later check cannot mistake a reused pid for it.
-  local bpid bstart
-  read -r bpid <"$dir/ready"
-  [[ "$bpid" =~ ^[0-9]+$ ]] || { echo "unreadable backend pid" >&2; pgl_hold_stop "$dir" || true; return 1; }
-  bstart="$(pgl_q "SELECT backend_start FROM pg_stat_activity WHERE pid = $bpid AND state = 'idle in transaction';")"
-  [[ -n "$bstart" ]] || { echo "the lock session is not idle in transaction on the server" >&2; pgl_hold_stop "$dir" || true; return 1; }
-  printf '%s %s\n' "$bpid" "$bstart" >"$dir/backend"
+  printf '%s\n' "$name" >>"$dir/pods"
+  dbo_k apply -f - >/dev/null <<YAML || return 1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${name}
+  namespace: ${DBO_NS}
+  labels:
+    lucida.io/db-client: session
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  activeDeadlineSeconds: $(( deadline + PGL_DEADLINE_MARGIN ))
+  containers:
+    - name: ${PGL_CONTAINER}
+      image: ${image}
+      command: ["psql", ${args}]
+      stdin: true
+      stdinOnce: true
+      env:
+        - name: PGHOST
+          value: "${service}"
+        - name: PGAPPNAME
+          value: "${identity}"
+        - name: PGUSER
+          valueFrom: {secretKeyRef: {name: ${secret}, key: POSTGRES_USER}}
+        - name: PGDATABASE
+          valueFrom: {secretKeyRef: {name: ${secret}, key: POSTGRES_DB}}
+        - name: PGPASSWORD
+          valueFrom: {secretKeyRef: {name: ${secret}, key: POSTGRES_PASSWORD}}
+YAML
+  dbo_k wait --for=jsonpath='{.status.phase}'=Running "pod/$name" --timeout=90s >/dev/null \
+    || { echo "client pod $name did not start" >&2; return 1; }
 }
-# pgl_hold_stop DIR: stop this host's session. No API or database call, so every path calls it
-# first. SIGTERM rolls back; after 15 s the whole process group (psql included) is killed and the
-# server rolls back when the socket closes.
-pgl_hold_stop() {
+pgl_name() { printf '%s-db-client-%s' "${DBO_NS##*-}" "$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; }
+# pgl_drive DIR POD DEADLINE: start the attach driver for the pod's psql.
+pgl_drive() {
+  local dir="$1"
+  : >"$dir/out"; rm -f -- "$dir/in"; mkfifo -m 600 "$dir/in"
+  printf '%s' "$PGL_DRIVER_SRC" >"$dir/pg_pod_driver.sh"
+  DRIVER_DIR="$dir" DRIVER_NS="$DBO_NS" DRIVER_POD="$2" DRIVER_CONTAINER="$PGL_CONTAINER" \
+    DRIVER_KUBECONFIG="$DBO_KUBECONFIG" DEADLINE="$3" \
+    setsid nohup bash "$dir/pg_pod_driver.sh" >>"$dir/driver.log" 2>&1 </dev/null &
+}
+# pgl_send DIR LINE...: statements (or psql backslash commands) to the driven psql.
+pgl_send() { local dir="$1"; shift; printf '%s\n' "$@" >"$dir/in"; }
+# pgl_wait_line DIR TEXT SECONDS: wait until psql printed the line TEXT.
+pgl_wait_line() {
+  local i
+  for ((i = 0; i < $3 * 2; i++)); do grep -qx -- "$2" "$1/out" 2>/dev/null && return 0; pgl_alive "$1" || break; sleep 0.5; done
+  return 1
+}
+# pgl_stop DIR: stop this host's driver (it rolls back and quits psql). No database call; the pods are deleted
+# by pgl_release. After 15 s the whole process group goes.
+pgl_stop() {
   local dir="$1" pids p groups=""
   pids="$(pgl_pids "$dir")"
   [[ -z "$pids" ]] && return 0
-  for p in $pids; do
-    groups+=" $(awk '{print $5}' "/proc/$p/stat" 2>/dev/null)"
-  done
+  for p in $pids; do groups+=" $(awk '{print $5}' "/proc/$p/stat" 2>/dev/null)"; done
   kill -TERM $pids 2>/dev/null || true
   for _ in $(seq 1 15); do pgl_alive "$dir" || return 0; sleep 1; done
   for p in $groups; do [[ "$p" =~ ^[0-9]+$ ]] && kill -KILL -- "-$p" 2>/dev/null; done
   sleep 1
-  if pgl_alive "$dir"; then echo "PostgreSQL lock session in $dir did not stop" >&2; return 1; fi
+  if pgl_alive "$dir"; then echo "PostgreSQL client driver in $dir did not stop" >&2; return 1; fi
 }
-# pgl_released DIR: the backend the session reported is gone on the server (its locks with it).
+# pgl_released DIR: the backend the lock session reported is gone on the server (its locks with it).
 pgl_released() {
   local bpid bstart
   [[ -s "$1/backend" ]] || return 0
@@ -177,28 +200,59 @@ pgl_released() {
   [[ "$(pgl_q "SELECT count(*) FROM pg_stat_activity WHERE pid = $bpid AND backend_start = '$bstart'::timestamptz;")" == 0 ]] \
     || { echo "PostgreSQL lock session backend $bpid is still on the server" >&2; return 1; }
 }
-
-# High-level verbs shared by the executors. DIR is the runner-local state for one lock.
-# pgl_check DIR SCHEMA TABLE SCOPE KEYCOL KEYVAL
-pgl_check() { pgl_idle "$1" && [[ ! -s "$1/backend" ]] && pgl_legacy_none && pgl_target_ok "$2" "$3" "$4" "$5" "$6" && pgl_keepalive_ok; }
-# pgl_apply DIR SCHEMA TABLE SCOPE MODE KEYCOL KEYVAL HOLD IDENTITY
-pgl_apply() {
-  local sql
-  sql="$(pgl_lock_sql "$2" "$3" "$4" "$5" "$6" "$7")" || return 1
-  pgl_hold_start "$1" "$sql" "$8" "$9"
-}
-# pgl_release DIR: local stop first, then the server-side check; old client pods (from a run that
-# predates this code) are deleted by label as the old cleanup did. The record stays until released.
-pgl_release() {
+# pgl_delete_pods DIR: our pods by name, then any client pod of this kind by label.
+pgl_delete_pods() {
   local rc=0 p
-  pgl_hold_stop "$1" || rc=1
+  if [[ -s "$1/pods" ]]; then
+    while IFS= read -r p; do [[ -n "$p" ]] && { dbo_k delete pod "$p" --now --ignore-not-found >/dev/null || rc=1; }; done <"$1/pods"
+  fi
+  for p in $(pgl_pods); do dbo_k delete "$p" --now --ignore-not-found >/dev/null || rc=1; done
+  for _ in $(seq 1 30); do [[ -z "$(pgl_pods)" ]] && return "$rc"; sleep 1; done
+  pgl_no_pods
+}
+
+# ---- the row or table lock (db.lock, timeline steps) ----
+# pgl_check DIR SCHEMA TABLE SCOPE KEYCOL KEYVAL
+pgl_check() { pgl_idle "$1" && [[ ! -s "$1/backend" ]] && pgl_no_pods && pgl_target_ok "$2" "$3" "$4" "$5" "$6"; }
+# pgl_apply DIR SCHEMA TABLE SCOPE MODE KEYCOL KEYVAL HOLD IDENTITY: a client pod's psql opens a transaction,
+# takes the lock and idles; the driver rolls it back after HOLD seconds.
+pgl_apply() {
+  local dir="$1" sql name bpid bstart
+  sql="$(pgl_lock_sql "$2" "$3" "$4" "$5" "$6" "$7")" || return 1
+  pdb_env || return 1
+  name="$(pgl_name)"
+  pgl_pod "$dir" "$name" "$9" "$8" || { pgl_delete_pods "$dir" || true; return 1; }
+  pgl_drive "$dir" "$name" "$8"
+  # The server sees BEGIN, SELECT pg_backend_pid(), the lock statement (the session's last query, as the old
+  # client sent); "locked" is psql's own \echo, never sent.
+  pgl_send "$dir" 'BEGIN;' 'SELECT pg_backend_pid();' "$sql" '\echo locked'
+  if ! pgl_wait_line "$dir" locked $((PGL_ACQUIRE_TIMEOUT + 30)); then
+    echo "PostgreSQL lock session did not report the lock: $(tail -c 400 "$dir/out" 2>/dev/null | tr '\n' ' ')" >&2
+    pgl_stop "$dir" || true; pgl_delete_pods "$dir" || true
+    return 1
+  fi
+  # The first all-digits line is the pid; a row lock then prints its key, which is not. Confirm on the server by
+  # that pid (never by session name, which is the app's) and record its start so a reused pid cannot pass.
+  bpid="$(grep -m1 -xE '[0-9]+' "$dir/out")"
+  bstart="$(pgl_q "SELECT backend_start FROM pg_stat_activity WHERE pid = ${bpid:-0} AND state = 'idle in transaction';")"
+  if [[ -z "$bstart" ]]; then
+    echo "the lock session is not idle in transaction on the server" >&2
+    pgl_stop "$dir" || true; pgl_delete_pods "$dir" || true
+    return 1
+  fi
+  printf '%s %s\n' "$bpid" "$bstart" >"$dir/backend"
+}
+# pgl_release DIR: driver first (no API or database), then the pods, then the server-side check. The record
+# stays until all three pass.
+pgl_release() {
+  local rc=0
+  pgl_stop "$1" || rc=1
+  pgl_delete_pods "$1" || rc=1
   pdb_env || return 1
   pgl_released "$1" || rc=1
-  for p in $(pgl_legacy); do dbo_k delete "$p" --now --ignore-not-found >/dev/null || rc=1; done
-  pgl_legacy_none || rc=1
   if [[ "$rc" == 0 ]]; then rm -rf -- "$1"; fi
   return "$rc"
 }
 # pgl_recover DIR SCHEMA TABLE SCOPE KEYCOL KEYVAL
-pgl_recover() { pgl_idle "$1" && pgl_released "$1" && pgl_legacy_none && pgl_target_ok "$2" "$3" "$4" "$5" "$6"; }
+pgl_recover() { pgl_idle "$1" && pgl_released "$1" && pgl_no_pods && pgl_target_ok "$2" "$3" "$4" "$5" "$6"; }
 '''

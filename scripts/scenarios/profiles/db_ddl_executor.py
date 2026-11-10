@@ -1104,14 +1104,16 @@ MYSQL_FK_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; fk="$7"; parent="$8"; parent_column="$9"
 drain="${10}"; minimum="${11}"; max_sessions="${12}"
-# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+# v4 C6b: the probes are an operator session through the listener from the runner container. The migration itself
+# is root's mysql client inside the database pod (root@localhost, as the answer key tells it; user decision Q8), the
+# only process started there.
 db_target "$ns" "$pod"
 mdb_env root
 # The first MySQL error line (e.g. ERROR 1205 lock wait timeout) goes to stderr so a failed step is readable in the runner log.
 mysql() { mdb "$db" "$1"; }
 # The migration as written: no ALGORITHM or LOCK clause, so with foreign_key_checks on the server copies the table.
 statement="ALTER TABLE $table ADD CONSTRAINT $fk FOREIGN KEY ($column) REFERENCES $parent ($parent_column)"
-# The migration's client runs on the runner in the background (v4 C6b; it used to run inside the pod).
+# The runner side of the migration (its client stream and log) lives here, never in the pod.
 run_dir="$(dbo_run_dir "db-ddl-fk-$db-$table")"
 log="$run_dir/schema-migration.log"
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
@@ -1143,7 +1145,7 @@ case "$action" in
  preflight) check; [[ "$(orphans)" == 0 ]] ;;
  run)
   check
-  mdb_spawn root "$db" "$statement" "$log"
+  mdb_pod_spawn root "$db" "$statement" "$log"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -z "$(migration)" ]] || exit 0
     sleep 1
@@ -1167,6 +1169,7 @@ case "$action" in
     # Dropping a foreign key is metadata only; lock_wait_timeout bounds the brief metadata lock.
     mysql "SET SESSION lock_wait_timeout=10; ALTER TABLE $table DROP FOREIGN KEY $fk, ALGORITHM=INPLACE, LOCK=NONE;" >/dev/null
   fi
+  dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
   ;;
@@ -1285,6 +1288,8 @@ case "$action" in
     [[ "$(has_column)" == 0 ]] && break
     sql "SET lock_timeout = '5s'; ALTER TABLE $rel DROP COLUMN IF EXISTS $column;" >/dev/null || sleep 2
   done
+  # Readers and streams on the runner that a cut connection would leave waiting (C6b review).
+  dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
   ;;
@@ -1313,7 +1318,9 @@ if [[ -n "$join" ]]; then
   paced="$join"
 fi
 migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INSTANT"
-# Both clients run on the runner in the background (v4 C6b; they used to run inside the pod).
+# The export and the migration are mysql clients inside the database pod (fooddelivery@localhost and root@localhost,
+# as the answer keys tell it; user decision Q8), each the only process its exec starts there. Their runner side
+# (kubectl exec streams, the paced reader, logs) lives here.
 run_dir="$(dbo_run_dir "db-ddl-queue-$db-$table")"
 export_log="$run_dir/table-export.log"
 migration_log="$run_dir/schema-migration.log"
@@ -1336,9 +1343,9 @@ check() {
   # export early; the server keeps neither (lock_wait_timeout is a year, max_execution_time 0), as the original had none.
   [[ "$(number "$(mysql "SELECT @@global.lock_wait_timeout;")")" -ge 3600 ]]
   [[ "$(mysql "SELECT @@global.max_execution_time;")" == 0 ]]
-  # The export's client is on the runner now (v4 C6b). If the runner vanished without closing the connection, the
-  # server ends the export when it cannot send for net_write_timeout seconds, and with it the shared lock the queue
-  # waits behind; keep that bound short (MySQL's default is 60 s).
+  # The export's rows are read by the runner through the exec stream (v4 C6b). If the runner vanished, the client in
+  # the pod stops reading and the server ends the export when it cannot send for net_write_timeout seconds, and with
+  # it the shared lock the queue waits behind; keep that bound short (MySQL's default is 60 s).
   [[ "$(number "$(mysql "SELECT @@global.net_write_timeout;")")" -le 120 ]] || { echo "net_write_timeout is above 120 s" >&2; return 1; }
   # Without metadata lock instrumentation the queue could not be seen or confirmed.
   [[ "$(mysql "SELECT enabled FROM performance_schema.setup_instruments WHERE name = 'wait/lock/metadata/sql/mdl';")" == YES ]]
@@ -1351,21 +1358,24 @@ check() {
   sessions=$(number "$(mysql "SELECT COUNT(*) FROM information_schema.processlist;")")
   [[ "$sessions" -le "$max_sessions" ]] || { echo "$sessions sessions open, more than $max_sessions" >&2; return 1; }
 }
-stop_export() { local id; id=$(id_of "$export_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; }
+# Ending the export: the server statement first, then the reader on the runner, so the client in the pod reads the
+# rest of its stream and exits (it stays blocked otherwise; see mdb_pod_drain).
+stop_export() { local id; id=$(id_of "$export_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; mdb_pod_drain "$export_log"; }
 cancel_migration() { local id; id=$(id_of "$migration_sql"); [[ -z "$id" ]] || mysql "KILL QUERY $id;" >/dev/null; }
 case "$action" in
  preflight) check ;;
  run)
   check
-  # Pace the export so it stays active for about export_seconds: the reader pauses a second every `rate` rows.
+  # The export should stay on the server for about export_seconds; the row estimate sets its pace (mdb_pod_pace).
   est=$(number "$(mysql "SELECT table_rows FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$paced';")")
   (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
   rate=$(( est / export_seconds + 1 ))
-  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background on the runner
-  # (their own client sessions through the listener; the export as the application account, the migration as root)
-  # and outlive run; run only waits to see each one in place, at most ten one-second looks each. The rows travel to
-  # the runner, where the paced reader drops them.
-  mdb_spawn_paced app "$db" "$export_sql" "$rate" "$export_log"
+  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background as mysql clients
+  # inside the database pod (the export as the application account, the migration as root) and outlive run; run only
+  # waits to see each one in place, at most ten one-second looks each. The rows come back to the runner, where the
+  # paced reader takes them at the export's pace and drops them.
+  started=$SECONDS
+  mdb_pod_spawn app "$db" "$export_sql" "$export_log" paced
   held=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     id=$(id_of "$export_sql")
@@ -1376,7 +1386,9 @@ case "$action" in
     sleep 1
   done
   [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $(head -n 1 "$export_log" 2>/dev/null)" >&2; exit 4; }
-  mdb_spawn root "$db" "$migration_sql" "$migration_log"
+  # Keep the export on the server for about export_seconds (the old in-pod reader's pace, see mdb_pod_pace).
+  mdb_pod_pace "$export_log" "$id" "$est" $(( export_seconds - (SECONDS - started) )) || { stop_export; exit 4; }
+  mdb_pod_spawn root "$db" "$migration_sql" "$migration_log"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ "$(mysql "SELECT COUNT(*) FROM information_schema.processlist m WHERE m.info = '$migration_sql' AND m.state = 'Waiting for table metadata lock' AND EXISTS (SELECT 1 FROM information_schema.processlist e WHERE e.info = '$export_sql');")" == 1 ]] && exit 0
     sleep 1
@@ -1400,6 +1412,7 @@ case "$action" in
     [[ "$(has_column)" == 0 ]] && break
     mysql "SET SESSION lock_wait_timeout = 5; ALTER TABLE $table DROP COLUMN $column, ALGORITHM=INSTANT;" >/dev/null || sleep 2
   done
+  dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
   ;;
@@ -1487,6 +1500,8 @@ case "$action" in
   cancel_all
   for _ in $(seq 1 30); do original && break; sleep 1; done
   original || { echo "maintenance session still open" >&2; exit 3; }
+  # Readers and streams on the runner that a cut connection would leave waiting (C6b review).
+  dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   rows
   ;;

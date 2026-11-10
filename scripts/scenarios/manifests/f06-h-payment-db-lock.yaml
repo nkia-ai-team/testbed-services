@@ -80,7 +80,7 @@
               "id": "approved-fixed-f06-h",
               "parameters": {
                 "engine": "postgresql",
-                "access": "runner-network",
+                "access": "in-cluster-pod",
                 "namespace": "rca-testbed-commerce",
                 "db_pod": "testbed-postgres-0",
                 "service": "testbed-postgres",

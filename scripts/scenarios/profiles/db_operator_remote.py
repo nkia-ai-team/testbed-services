@@ -66,6 +66,8 @@ MYSQL_ROLES = {
 POSTGRES_SERVICE = "testbed-postgres-external"
 POSTGRES_PORT = 5432
 POSTGRES_SECRET = "postgres-secret"
+# The Service the applications use inside the cluster (client pods connect through it, pg_lock_remote).
+POSTGRES_CLUSTER_SERVICE = "testbed-postgres"
 
 # 오래 사는 PostgreSQL 세션에만 거는 서버 쪽 끊김 감지(세션 시작 옵션이라 문장이 아니다).
 # 쉬는 연결은 keepalive 60초 + 10초 x 6 이면 끊고, 보낸 데이터가 120초 동안 확인되지 않으면 끊는다.
@@ -100,7 +102,9 @@ def bash_functions() -> bytes:
             f"DBO_ORACLE_SECRET={q(ORACLE_SECRET)}",
             f"DBO_MYSQL_SERVICE={q(MYSQL_SERVICE)} DBO_MYSQL_PORT={MYSQL_PORT} DBO_MYSQL_SECRET={q(MYSQL_SECRET)}",
             f"DBO_PG_SERVICE={q(POSTGRES_SERVICE)} DBO_PG_PORT={POSTGRES_PORT} DBO_PG_SECRET={q(POSTGRES_SECRET)}",
+            f"DBO_PG_CLUSTER_SERVICE={q(POSTGRES_CLUSTER_SERVICE)}",
             f"PDB_KEEPALIVE={q(PG_KEEPALIVE)}",
+            f"ORA_ENTRY_NODE_JQ={q(oracle_lock_remote.ENTRY_NODE_JQ)}",
             f"export CLIENT_PROGRAM={q(oracle_lock_remote.CLIENT_PROGRAM)}",
             f"export CLIENT_MACHINE={q(oracle_lock_remote.CLIENT_MACHINE)}",
             f"export CLIENT_OSUSER={q(oracle_lock_remote.CLIENT_OSUSER)}",
@@ -121,12 +125,22 @@ dbo_endpoint() {
   local port
   [[ -n "${DBO_NS:-}" && -n "${DBO_POD:-}" ]] || { echo "db_target was not called" >&2; return 1; }
   if [[ -z "${DBO_HOST:-}" ]]; then
-    DBO_HOST="$(dbo_k get pod "$DBO_POD" -o 'jsonpath={.status.hostIP}')" || return 1
-    [[ "$DBO_HOST" =~ ^[0-9.]+$ ]] || { echo "database pod $DBO_POD has no node address" >&2; DBO_HOST=""; return 1; }
+    # Through a worker that does not run the database pod and is not the control plane (ENTRY_NODE_JQ), so the
+    # database sees neither the DPM collector's address nor the runner load's.
+    DBO_HOST="$(ora_entry_node "$DBO_NS" "$DBO_POD")" || { DBO_HOST=""; return 1; }
   fi
   port="$(dbo_k get svc "$1" -o "jsonpath={.spec.ports[?(@.port==$2)].nodePort}")" || return 1
   [[ "$port" =~ ^[0-9]+$ ]] || { echo "service $1 has no node port for $2" >&2; return 1; }
   printf '%s %s' "$DBO_HOST" "$port"
+}
+# ora_entry_node NS DB_POD: the InternalIP of the node network sessions enter through (same function as in
+# oracle_lock_remote; defined here too so a body that carries only these functions has it).
+ora_entry_node() {
+  local db_node
+  db_node="$(kubectl --kubeconfig "$DBO_KUBECONFIG" -n "$1" get pod "$2" -o 'jsonpath={.spec.nodeName}')" || return 1
+  [[ -n "$db_node" ]] || { echo "database pod $2 has no node" >&2; return 1; }
+  kubectl --kubeconfig "$DBO_KUBECONFIG" get nodes -o json | jq -r --arg db "$db_node" "$ORA_ENTRY_NODE_JQ" \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || { echo "no worker node without $db_node to enter through" >&2; return 1; }
 }
 # dbo_secret SECRET KEY: one decoded value. A key spelled "=name" is that literal name.
 dbo_secret() {
@@ -213,6 +227,21 @@ pdb() {
   head -n 1 "$e" >&2; rm -f -- "$e"
   return "$rc"
 }
+# pdb_pod SQL: the statement through psql inside the database pod over its local socket (trust, not a password
+# login), the one administrator path an expired password or a narrowed host rule cannot lock out (the image's
+# only administrator role is the role the services log in with). The exec starts psql alone, as a database
+# administrator on the host would; the statement and the setting that keeps it out of pg_stat_statements travel
+# on its stdin, and the user and database names are the Secret's. The first error line goes to stderr.
+pdb_pod() {
+  local u d e rc
+  u="$(dbo_secret "$DBO_PG_SECRET" POSTGRES_USER)" || return 1
+  d="$(dbo_secret "$DBO_PG_SECRET" POSTGRES_DB)" || return 1
+  e="$(mktemp)"
+  printf 'SET pg_stat_statements.track = none;\n%s\n' "$1" \
+    | dbo_k exec -i "$DBO_POD" -- psql -X -q -At -v ON_ERROR_STOP=1 -U "$u" -d "$d" 2>"$e"; rc=$?
+  head -n 1 "$e" >&2; rm -f -- "$e"
+  return "$rc"
+}
 
 # Background sessions: a statement that must outlive the body (run holds the runner's coordinator lock
 # under a 30 s lease) runs in a client process of its own on the runner, in a new session (setsid) so a
@@ -222,24 +251,6 @@ pdb() {
 # spawn functions create it; the body's cleanup removes it.
 dbo_run_dir() { printf '%s' "${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}/$1"; }
 DBO_PACE='NR % r == 0 { system("sleep 1") }'
-# mdb_spawn ROLE DB SQL LOG: one MySQL statement in the background.
-mdb_spawn() {
-  mkdir -p -- "$(dirname -- "${@: -1}")" || return 1
-  mdb_env "$1" || return 1
-  local u="MDB_${1^^}_USER" p="MDB_${1^^}_PASSWORD"
-  MDB_HOST="$MDB_HOST" MDB_PORT="$MDB_PORT" MDB_USER="${!u}" MDB_PASSWORD="${!p}" DB="$2" SQL="$3" \
-    setsid nohup "$dbo_py" -c "$DBO_SRC" mysql </dev/null >"$4" 2>&1 &
-}
-# mdb_spawn_paced ROLE DB SQL RATE LOG: an export read row by row as it arrives (mysql --quick) by a
-# reader that pauses a second every RATE rows, in the background.
-mdb_spawn_paced() {
-  mkdir -p -- "$(dirname -- "${@: -1}")" || return 1
-  mdb_env "$1" || return 1
-  local u="MDB_${1^^}_USER" p="MDB_${1^^}_PASSWORD"
-  MDB_HOST="$MDB_HOST" MDB_PORT="$MDB_PORT" MDB_USER="${!u}" MDB_PASSWORD="${!p}" DB="$2" SQL="$3" RATE="$4" \
-    DBO_PY="$dbo_py" DBO_SRC="$DBO_SRC" DBO_PACE="$DBO_PACE" \
-    setsid nohup bash -c '"$DBO_PY" -c "$DBO_SRC" mysql-stream | awk -v r="$RATE" "$DBO_PACE"' </dev/null >"$5" 2>&1 &
-}
 # pdb_spawn SQL LOG APPNAME: one PostgreSQL statement in the background, with server-side dead-peer
 # detection on its connection (PDB_KEEPALIVE) so it cannot outlive a runner that vanished.
 pdb_spawn() {
@@ -247,6 +258,7 @@ pdb_spawn() {
   pdb_env || return 1
   PGAPPNAME="$3" PGOPTIONS="$PDB_KEEPALIVE" SQL="$1" \
     setsid nohup bash -c 'psql -X -q -c "$SQL"' </dev/null >"$2" 2>&1 &
+  printf '%s\n' "$!" >"$2.pgid"
 }
 # pdb_spawn_paced SQL RATE LOG APPNAME: an export (COPY ... TO STDOUT) taken by a reader that pauses a
 # second every RATE rows, in the background. psql reaches the server through the client's relay (pg-relay:
@@ -263,6 +275,106 @@ pdb_spawn_paced() {
       for _ in $(seq 1 50); do [[ -S "$RELAY_DIR/.s.PGSQL.$PGPORT" ]] && break; sleep 0.1; done
       PGHOST="$RELAY_DIR" psql -X -q -c "$SQL" | awk -v r="$RATE" "$DBO_PACE"
       wait' </dev/null >"$3" 2>&1 &
+  printf '%s\n' "$!" >"$3.pgid"
+}
+
+# mdb_pod_spawn ROLE DB SQL LOG [RATE]: one mysql client inside the database pod, the process an operator runs on
+# the database host (v4 C6b 수정 1회차, user decision Q8, for the answer keys that tell root@localhost and
+# fooddelivery@localhost sessions). The exec starts `mysql` itself, no shell: the pod shows that
+# one process, over the local socket (user@localhost). The password reaches it on stdin as an option file (never on
+# a command line). The runner side runs in its own process group, recorded in LOG.pgid for dbo_reap.
+#   Without PACED (a migration): `kubectl exec -i`; its output is a line or two.
+#   With PACED (an export): the rows come back to the runner through the client's pod-exec, which reads only as
+#   fast as it is told (kubectl exec would take the whole stream into memory at once). The stream path between
+#   the pod and the runner still holds about 34 MB (k3s 1.31), so mdb_pod_pace sets a byte rate that makes the
+#   server finish when the export should; until then the reader waits. The old pacing was an `| awk` inside the
+#   pod; nothing but the client runs there now.
+mdb_pod_spawn() {
+  mdb_env "$1" || return 1
+  local u="MDB_${1^^}_USER" p="MDB_${1^^}_PASSWORD" cmd quoted pw kconf
+  mkdir -p -- "$(dirname -- "$4")" || return 1
+  cmd=(mysql --defaults-extra-file=/dev/stdin "-u${!u}")
+  [[ -z "${5:-}" ]] || cmd+=(--quick -N -B)
+  cmd+=("$2" -e "$3")
+  pw="${!p//\\/\\\\}"; pw="${pw//\"/\\\"}"
+  if [[ -z "${5:-}" ]]; then
+    quoted="$(printf '%q ' "${cmd[@]}")"
+    DBO_OPTFILE="$(printf '[client]\npassword="%s"' "$pw")" DBO_EXEC="$quoted" \
+      KCFG="$DBO_KUBECONFIG" NS="$DBO_NS" POD="$DBO_POD" \
+      setsid nohup bash -c 'printf "%s\n" "$DBO_OPTFILE" | eval "kubectl --kubeconfig \"\$KCFG\" -n \"\$NS\" exec -i \"\$POD\" -- $DBO_EXEC"' \
+      </dev/null >"$4" 2>&1 &
+  else
+    mkdir -p -- "$4.pace" && printf '0\n' >"$4.pace/rate" || return 1
+    kconf="$(kubectl --kubeconfig "$DBO_KUBECONFIG" config view --raw --minify -o json)" || return 1
+    DBO_OPTFILE="$(printf '[client]\npassword="%s"' "$pw")" KEXEC_CONFIG="$kconf" KEXEC_NS="$DBO_NS" KEXEC_POD="$DBO_POD" \
+      KEXEC_PACE_DIR="$4.pace" DBO_PY="$dbo_py" DBO_SRC="$DBO_SRC" \
+      setsid nohup bash -c 'printf "%s\n" "$DBO_OPTFILE" | "$DBO_PY" -c "$DBO_SRC" pod-exec -- "$@" >/dev/null' \
+      _ "${cmd[@]}" </dev/null >"$4" 2>&1 &
+  fi
+  printf '%s\n' "$!" >"$4.pgid"
+}
+# mdb_pod_pace LOG ID ROWS SECONDS: once the export's first rows have been sampled and the stream path between the
+# pod and the runner is full (the server's Bytes_sent for processlist ID stops moving), read the rest at the byte
+# rate that ends the server's work in SECONDS: about ROWS rows of the sampled size, less what the path holds.
+mdb_pod_pace() {
+  local dir="$1.pace" i sb=0 sr=0 b prev="" total remaining
+  for ((i = 0; i < 40; i++)); do [[ -s "$dir/sample" ]] && break; sleep 0.5; done
+  read -r sb sr <"$dir/sample" 2>/dev/null || true
+  [[ "$sb" =~ ^[0-9]+$ && "$sr" =~ ^[1-9][0-9]*$ ]] || { echo "the export sent no sample of its rows" >&2; return 1; }
+  for ((i = 0; i < 20; i++)); do
+    b="$(mdb "" "SELECT s.variable_value FROM performance_schema.status_by_thread s JOIN performance_schema.threads t ON t.thread_id = s.thread_id WHERE t.processlist_id = $2 AND s.variable_name = 'Bytes_sent';")"
+    [[ "$b" =~ ^[0-9]+$ ]] || { echo "the export's bytes sent are unreadable" >&2; return 1; }
+    [[ "$b" == "$prev" ]] && break
+    prev="$b"; sleep 1
+  done
+  total=$(( $3 * sb / sr )); remaining=$(( total - b ))
+  (( remaining > 0 )) || { echo "the export (about $total bytes) fits in what the stream path holds ($b bytes)" >&2; return 1; }
+  # The reader keeps the rate on plan itself (rows, bytes held in the path, deadline), see _Pace.
+  printf '%s %s %s\n' "$3" "$(( b - sb ))" "$(( $(date +%s) + ($4 > 0 ? $4 : 1) ))" >"$dir/plan.tmp" && mv -f -- "$dir/plan.tmp" "$dir/plan"
+}
+# mdb_pod_drain LOG: let an export started by mdb_pod_spawn take the rest of its stream at full speed and wait for
+# it to end, so the client in the pod can finish (an exec process whose stream closes stays blocked on its output,
+# k3s 1.31 / containerd 1.7).
+mdb_pod_drain() {
+  local g i
+  [[ -d "$1.pace" ]] || return 0
+  printf 'max\n' >"$1.pace/rate"
+  read -r g <"$1.pgid" 2>/dev/null || return 0
+  [[ "$g" =~ ^[0-9]+$ ]] || return 0
+  for ((i = 0; i < 60; i++)); do dbo_group_alive "$g" || return 0; sleep 1; done
+  echo "the export client's stream did not end" >&2
+  return 1
+}
+# dbo_group_alive PGID: a process of that group that has not ended (the runner's PID 1 does not reap, so ended
+# children stay as zombies and `kill -0 -PGID` would still succeed).
+dbo_group_alive() {
+  local proc stat rest
+  for proc in /proc/[0-9]*; do
+    read -r stat <"$proc/stat" 2>/dev/null || continue
+    rest="${stat##*) }"
+    read -r -a f <<<"$rest"
+    [[ "${f[2]}" == "$1" && "${f[0]}" != Z ]] && return 0
+  done
+  return 1
+}
+# dbo_reap DIR: end the runner-side process groups recorded under DIR (*.pgid). The server side has already been
+# dealt with by the caller; this only stops readers and kubectl streams that would otherwise wait on a dead
+# connection (C6b review: they outlived the cleanup after a cut).
+dbo_reap() {
+  local f g
+  for f in "$1"/*.pgid; do
+    [[ -e "$f" ]] || continue
+    read -r g <"$f" || continue
+    [[ "$g" =~ ^[0-9]+$ ]] || continue
+    kill -TERM -- "-$g" 2>/dev/null || true
+  done
+  sleep 1
+  for f in "$1"/*.pgid; do
+    [[ -e "$f" ]] || continue
+    read -r g <"$f" || continue
+    [[ "$g" =~ ^[0-9]+$ ]] && kill -KILL -- "-$g" 2>/dev/null
+  done
+  return 0
 }
 
 # node_fs [unit]: "<size> <used> <available>" of the filesystem that holds the database pod's

@@ -336,6 +336,244 @@ def pg_relay(listen_dir: str, port: str) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- pod exec with backpressure
+
+def _ws_frame(opcode: int, payload: bytes) -> bytes:
+    """One masked client frame (RFC 6455)."""
+    head = bytes([0x80 | opcode])
+    n = len(payload)
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + n.to_bytes(2, "big")
+    else:
+        head += bytes([0x80 | 127]) + n.to_bytes(8, "big")
+    mask = os.urandom(4)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
+def _read_exact(stream, n: int) -> bytes:
+    data = stream.read(n)
+    if data is None or len(data) < n:
+        raise EOFError("connection closed")
+    return data
+
+
+class _Pace:
+    """Byte pacing of a pod-exec stream, steered through files in a directory (see pod_exec).
+
+    `rate`: "0" waits, "max" takes everything, a number is bytes a second. `plan`: "ROWS HELD DEADLINE" makes the
+    rate follow the plan instead: the server should have sent about ROWS rows of the average size seen so far by
+    DEADLINE (epoch seconds), and HELD bytes of them sit in the stream path between it and us, so the rate is what
+    is left on the server over the time left. Recomputed every half second, so rows that grow longer (larger ids
+    further into the table) do not make the export run long.
+    """
+
+    def __init__(self, directory: str, sample: int) -> None:
+        import time
+
+        self.time = time
+        self.dir = directory
+        self.sample_limit = sample
+        self.bytes = 0
+        self.rows = 0
+        self.sampled = not directory
+        self.rate = None if directory else float("inf")
+        self.paced_since = 0.0
+        self.paced_bytes = 0
+        self.checked = 0.0
+
+    def _read(self, name: str) -> str:
+        try:
+            with open(os.path.join(self.dir, name), encoding="ascii") as handle:
+                return handle.read().strip()
+        except OSError:
+            return ""
+
+    def _set(self, value: float) -> None:
+        if value != self.rate:
+            self.rate, self.paced_since, self.paced_bytes = value, self.time.monotonic(), 0
+
+    def _refresh(self) -> None:
+        now = self.time.monotonic()
+        if now - self.checked < 0.5:
+            return
+        self.checked = now
+        text = self._read("rate")
+        if text == "max":
+            self._set(float("inf"))
+            return
+        plan = self._read("plan").split()
+        if len(plan) == 3 and self.rows:
+            rows, held, deadline = int(plan[0]), int(plan[1]), float(plan[2])
+            left = deadline - self.time.time()
+            if left <= 0:
+                self._set(float("inf"))
+                return
+            remaining = rows * (self.bytes / self.rows) - held - self.bytes
+            # Re-anchor at every refresh: the rate applies from now on.
+            self.rate, self.paced_since, self.paced_bytes = max(remaining / left, 1.0), now, 0
+            return
+        self._set(float(text) if text else 0.0)
+
+    def wait(self) -> None:
+        if self.rate == float("inf") or not self.sampled:
+            return
+        while True:
+            self._refresh()
+            if self.rate == float("inf"):
+                return
+            if self.rate and self.rate > 0:
+                delay = self.paced_since + self.paced_bytes / self.rate - self.time.monotonic()
+                if delay <= 0:
+                    return
+                self.time.sleep(min(delay, 0.5))
+            else:
+                self.time.sleep(0.5)
+
+    def took(self, body: bytes) -> None:
+        self.bytes += len(body)
+        self.rows += body.count(b"\n")
+        self.paced_bytes += len(body)
+        if not self.sampled and self.bytes >= self.sample_limit:
+            self.sampled = True
+            tmp = os.path.join(self.dir, "sample.tmp")
+            with open(tmp, "w", encoding="ascii") as handle:
+                handle.write(f"{self.bytes} {self.rows}\n")
+            os.replace(tmp, os.path.join(self.dir, "sample"))
+
+
+def pod_exec(command: list[str]) -> int:
+    """Run COMMAND in a pod through the API's exec endpoint (WebSocket, v5.channel.k8s.io) and copy its stdout to
+    ours as fast as we can write it, no faster.
+
+    `kubectl exec` reads the whole stream into memory whatever its reader does (2026-11-10 k3s 1.31 test: a 19 MB
+    result was in kubectl's memory within a second and the statement had ended on the server), so a paced reader
+    behind it paces nothing. Here the socket keeps a small fixed window and is read only when the previous chunk has
+    been written, so a slow reader holds the client in the pod, and the server behind it, as the reader inside the
+    pod did before. Our stdin (an option file, for instance) is sent and then closed, so the command sees its EOF.
+
+    The stream path between the pod and us (containerd, kubelet, API server sockets) still holds about 34 MB
+    before the command blocks (k3s 1.31, 2026-11-10; the old pipe inside the pod held 229 KB). So a paced export
+    is paced in bytes, steered from outside through KEXEC_PACE_DIR (_Pace): the first KEXEC_SAMPLE_BYTES (256 KB)
+    are read at once and their size and row count written to `sample`; then the reader waits until the caller,
+    knowing how much the path holds, writes a plan that makes the server finish when the export should.
+
+    The cluster address and credentials come from KEXEC_CONFIG (`kubectl config view --raw --minify -o json`), the
+    target from KEXEC_NS, KEXEC_POD and KEXEC_CONTAINER (optional). Exit status: the command's.
+    """
+    import base64
+    import json
+    import ssl
+    import tempfile
+    import urllib.parse
+
+    config = json.loads(_env("KEXEC_CONFIG"))
+    cluster = config["clusters"][0]["cluster"]
+    user = config["users"][0].get("user", {})
+    url = urllib.parse.urlsplit(cluster["server"])
+    host, port = url.hostname, url.port or 443
+    context = ssl.create_default_context()
+    if cluster.get("certificate-authority-data"):
+        context.load_verify_locations(cadata=base64.b64decode(cluster["certificate-authority-data"]).decode())
+    if cluster.get("insecure-skip-tls-verify"):
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    headers = []
+    if user.get("client-certificate-data") and user.get("client-key-data"):
+        with tempfile.TemporaryDirectory() as tmp:
+            cert, key = os.path.join(tmp, "c"), os.path.join(tmp, "k")
+            for path, field in ((cert, "client-certificate-data"), (key, "client-key-data")):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(base64.b64decode(user[field]))
+            context.load_cert_chain(cert, key)
+    if user.get("token"):
+        headers.append(f"Authorization: Bearer {user['token']}")
+    send_stdin = not sys.stdin.isatty() and os.environ.get("KEXEC_STDIN", "1") == "1"
+    query = [("command", c) for c in command] + [("stdout", "true"), ("stderr", "true")]
+    if send_stdin:
+        query.append(("stdin", "true"))
+    if os.environ.get("KEXEC_CONTAINER"):
+        query.append(("container", os.environ["KEXEC_CONTAINER"]))
+    path = (f"{url.path.rstrip('/')}/api/v1/namespaces/{urllib.parse.quote(_env('KEXEC_NS'))}"
+            f"/pods/{urllib.parse.quote(_env('KEXEC_POD'))}/exec?{urllib.parse.urlencode(query)}")
+    raw = _small_buffer_connection((host, port), timeout=15)
+    # Plain http only for a test server; the cluster API is https.
+    sock = raw if url.scheme == "http" else context.wrap_socket(raw, server_hostname=host)
+    key_b64 = base64.b64encode(os.urandom(16)).decode()
+    request = "\r\n".join([f"GET {path} HTTP/1.1", f"Host: {url.netloc}", "Upgrade: websocket",
+                            "Connection: Upgrade", f"Sec-WebSocket-Key: {key_b64}", "Sec-WebSocket-Version: 13",
+                            "Sec-WebSocket-Protocol: v5.channel.k8s.io", *headers, "", ""])
+    sock.sendall(request.encode())
+    response = b""
+    while b"\r\n\r\n" not in response:
+        chunk = sock.recv(1)
+        if not chunk:
+            raise SystemExit("pod exec: connection closed during the handshake")
+        response += chunk
+    status_line = response.split(b"\r\n", 1)[0]
+    if b" 101 " not in status_line or b"v5.channel.k8s.io" not in response:
+        raise SystemExit(f"pod exec: the API did not open a v5 exec stream ({status_line.decode(errors='replace')})")
+    sock.settimeout(None)
+    if send_stdin:
+        data = sys.stdin.buffer.read()
+        if data:
+            sock.sendall(_ws_frame(0x2, b"\x00" + data))
+        sock.sendall(_ws_frame(0x2, b"\xff\x00"))  # v5: close stdin
+    out, err = sys.stdout.buffer, sys.stderr.buffer
+    rc = 0
+    pace = _Pace(os.environ.get("KEXEC_PACE_DIR", ""), int(os.environ.get("KEXEC_SAMPLE_BYTES", "262144")))
+    reader = sock.makefile("rb", buffering=16384)
+    try:
+        while True:
+            pace.wait()
+            b0, b1 = _read_exact(reader, 2)
+            opcode, n = b0 & 0x0F, b1 & 0x7F
+            if n == 126:
+                n = int.from_bytes(_read_exact(reader, 2), "big")
+            elif n == 127:
+                n = int.from_bytes(_read_exact(reader, 8), "big")
+            payload = _read_exact(reader, n) if n else b""
+            if opcode == 0x8:
+                break
+            if opcode == 0x9:
+                sock.sendall(_ws_frame(0xA, payload))
+                continue
+            if opcode not in (0x1, 0x2) or not payload:
+                continue
+            channel, body = payload[0], payload[1:]
+            if channel == 1 and body:
+                pace.took(body)
+            if channel == 1 and body and out is not None:
+                try:
+                    out.write(body)
+                    out.flush()
+                except BrokenPipeError:
+                    # The reader is gone (cleanup ended the pacing). Keep taking the rest without writing it: the
+                    # command in the pod must be able to finish, because closing the stream does not end it (k3s
+                    # 1.31 / containerd 1.7: an exec process whose stream closed stays blocked on its output).
+                    out = None
+            elif channel == 2 and body:
+                err.write(body)
+                err.flush()
+            elif channel == 3 and body:
+                status = json.loads(body)
+                if status.get("status") != "Success":
+                    rc = 1
+                    for cause in (status.get("details") or {}).get("causes") or []:
+                        if cause.get("reason") == "ExitCode" and str(cause.get("message", "")).isdigit():
+                            rc = int(cause["message"])
+    except EOFError:
+        pass
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return rc
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         raise SystemExit("usage: db_operator_session.py oracle|mysql|mysql-stream|pg-relay DIR PORT")
@@ -346,6 +584,8 @@ def main(argv: list[str]) -> int:
         return run_mysql(_env("SQL"), os.environ.get("DB", ""), verb == "mysql-stream")
     if verb == "pg-relay" and len(argv) == 4:
         return pg_relay(argv[2], argv[3])
+    if verb == "pod-exec" and len(argv) > 3 and argv[2] == "--":
+        return pod_exec(argv[3:])
     raise SystemExit(f"unknown verb: {verb}")
 
 

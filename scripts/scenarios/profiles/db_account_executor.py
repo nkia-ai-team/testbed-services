@@ -63,7 +63,7 @@ tightened and "did not account for" the address one client really comes from, an
 client kept working on its persistent connections until it had to reconnect.  Here the
 rule is the commerce PostgreSQL host-based access file: the catch-all network rule
 (`host all all all scram-sha-256`, any address) is replaced by the node address that
-NodePort clients are SNATed to (10.244.3.1: the DB monitor, the runner) and the host and
+NodePort clients on that node are SNATed to (10.244.3.1: the DB monitor) and the host and
 management networks, and the configuration is reloaded.  The commerce services connect
 from their own pod addresses on the same node (10.244.3.0/24) and match no rule any more.
 PostgreSQL reads the file only when a connection starts, so -- like the expiry above --
@@ -338,20 +338,17 @@ esac
 ''')
 
 
-# Still inside the database pod (v4 C6b, 확인 필요): the role whose password expires is the only
-# superuser the image creates, and the role every network login uses. Over the network the cleanup
-# could no longer log in to renew it, so it stays on the pod's local socket (trust, no password
-# check) until a separate administrator role exists.
-POSTGRES_EXPIRY_REMOTE = br'''#!/usr/bin/env bash
+# v4 C6b, user decision Q8: the role whose password expires is the only administrator role the image creates
+# and the role every network login uses, so over the network the cleanup could no longer log in to renew it.
+# The statements go through psql inside the database pod over its local socket (trust, no password check),
+# psql alone in the pod (pdb_pod); the login check is the runner's own network session.
+POSTGRES_EXPIRY_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; account="$4"
-k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
+db_target "$ns" "$pod"
 
-# SQL travels in the environment over the pod's local socket (trust, not a password
-# login, so the expiry never locks this executor out). pg_stat_statements does not
-# record these sessions, so nothing here reaches Top SQL. The first psql error line
-# goes to stderr for the runner log.
-sql() { "${k[@]}" exec "$pod" -- env SQL="$1" PGOPTIONS="-c pg_stat_statements.track=none" sh -lc 'e=$(mktemp); psql -X -At -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$SQL" 2>"$e"; rc=$?; head -n 1 "$e" >&2; rm -f "$e"; exit $rc'; }
+# pg_stat_statements does not record these sessions (pdb_pod), so nothing here reaches Top SQL.
+sql() { pdb_pod "$1"; }
 
 # pg_roles and pg_hba_file_rules are the authority, never the exit status of the
 # ALTER (setting the same date again also succeeds): whether the role's password
@@ -362,10 +359,14 @@ state() {
 }
 expect() { [[ "$(state)" == "$1" ]]; }
 
-# A network login with the role's own password, the way the services log in: ok
-# or refused. The password stays inside the pod.
+# A network login with the role's own password, the way the services log in: ok or refused. It is the runner's
+# session through the listener (the password stays in the client's environment).
+# Anything but a refused password (no route, timeout) is neither and stops the action.
 netlogin() {
-  "${k[@]}" exec "$pod" -- sh -lc 'ip=$(hostname -i | awk "{print \$1}"); case "$ip" in ""|127.*|::1) echo noip; exit 0 ;; esac; if PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=5 psql -X -At -h "$ip" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select 1" >/dev/null 2>&1; then echo ok; else echo refused; fi' | tr -d '[:space:]'
+  local err
+  if err="$(pdb "SELECT 1" 2>&1 >/dev/null)"; then echo ok
+  elif [[ "$err" == *"password authentication failed"* ]]; then echo refused
+  else echo "network login failed otherwise: $err" >&2; echo error; fi
 }
 
 case "$action" in
@@ -394,24 +395,24 @@ case "$action" in
     ;;
   *) exit 2 ;;
 esac
-'''
+''')
 
 
-# v4 C6b: an operator's psql session from the runner container through the listener, not psql
-# inside the database pod. The runner arrives from an allowed source (the node address NodePort
-# clients are SNATed to), so it keeps logging in after the narrowing; preflight and run check that.
-# The file is read and written with the server's own functions (pg_read_binary_file, lo_export: the
-# server process rewrites it in place, keeping its owner and mode) and the reload is confirmed by the
-# configuration load time of a new session, so nothing runs in the pod.
+# v4 C6b, user decision Q8: psql inside the database pod over its local socket (pdb_pod), psql alone in the
+# pod. A network session would have to come from an allowed source to restore the file after the narrowing,
+# and the allowed node address is the DB monitor's own (the runner must not share it), so the local socket
+# (which the narrowing leaves as it is) is the administrator's way in. The file is read and written with the
+# server's own functions (pg_read_binary_file, lo_export: the server process rewrites it in place, keeping its
+# owner and mode) and the reload is confirmed by the configuration load time of a new session; nothing but
+# psql runs in the pod.
 POSTGRES_HBA_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; account="$4"; allowed="$5"; omitted="$6"
 db_target "$ns" "$pod"
-pdb_env
 
-# Untracked by pg_stat_statements, so nothing here reaches Top SQL. The first psql error line goes to
-# stderr for the runner log.
-sql() { pdb "$1" "-c pg_stat_statements.track=none"; }
+# Untracked by pg_stat_statements (pdb_pod), so nothing here reaches Top SQL. The first psql error line goes
+# to stderr for the runner log.
+sql() { pdb_pod "$1"; }
 
 # The narrowed rules, one per allowed source, and the same sources as the
 # (address, netmask) pairs pg_hba_file_rules reports.
@@ -438,11 +439,6 @@ expect() { [[ "$(state)" == "$1" ]]; }
 # elsewhere that the narrowed file would also refuse (0).
 bites() {
   [[ "$(sql "SELECT count(*) FILTER (WHERE client_addr <<= '$omitted'::inet AND NOT client_addr <<= ANY (ARRAY[$nets]::inet[])) > 0 AND count(*) FILTER (WHERE NOT client_addr <<= '$omitted'::inet AND NOT client_addr <<= ANY (ARRAY[$nets]::inet[])) = 0 FROM pg_stat_activity WHERE usename = '$account' AND client_addr IS NOT NULL" | tr -d '[:space:]')" == t ]]
-}
-# This session's own source must stay allowed, or the cleanup could not log in after the narrowing.
-self_allowed() {
-  [[ "$(sql "SELECT inet_client_addr() <<= ANY (ARRAY[$nets]::inet[])" | tr -d '[:space:]')" == t ]] \
-    || { echo "the runner's database session does not come from an allowed source" >&2; return 1; }
 }
 # The database pod's own address must sit in the omitted network (the services' pods share its node
 # network), read from the API instead of the pod.
@@ -479,18 +475,15 @@ until_reloaded() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do [[ "$(sql "SELECT 
 case "$action" in
   preflight)
     # One catch-all rule, none of the narrowed rules, a clean file, the role's sessions sit in the
-    # omitted network, and this session stays allowed -- or the run would "succeed" against a file an
-    # earlier, uncleaned run left narrowed, or lock out its own cleanup.
+    # omitted network -- or the run would "succeed" against a file an earlier, uncleaned run left narrowed.
     expect "1|0|0"
     inside
     bites
-    self_allowed
     ;;
   run)
     expect "1|0|0"
     inside
     bites
-    self_allowed
     before=$(loaded_at)
     edit narrow
     expect "0|$n|0"

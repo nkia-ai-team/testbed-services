@@ -2,9 +2,9 @@
 """Exact-simultaneous (offset 0) two-root orchestrator foundation for F15-T1.
 
 One orchestration script owns both sub-injections and their reverse-order
-cleanup (R6-1): a commerce inventory PostgreSQL row lock (held by the runner
-container's network session under the real application session identity, the
-same functions as F01-R; v4 C6b replaced the 2026-07-28 in-cluster client pod) and a food-delivery payment OOMKill
+cleanup (R6-1): a commerce inventory PostgreSQL row lock (held by a short-lived
+in-cluster client pod that impersonates the real application session identity,
+mirroring F01-R after the 2026-07-28 leak fix; one psql since v4 C6b) and a food-delivery payment OOMKill
 loop (kubectl memory-limit reduction, mirroring the F05-R adaptive ladder plus
 restart-budget stop-loss). The two roots differ in cause and topology, so the
 expected incident judgement is anti-merge: two separate incidents, not one.
@@ -105,8 +105,8 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("F15-T1 is an exact-simultaneous (offset 0) timeline")
     if params["commerce_namespace"] != "rca-testbed-commerce":
         raise ExecutorError("commerce lock namespace is not allowlisted")
-    if params["pg_access"] != "runner-network":
-        raise ExecutorError("postgresql lock injection must be a network session from the runner")
+    if params["pg_access"] != "in-cluster-pod":
+        raise ExecutorError("postgresql lock injection must originate inside the cluster")
     if params["pg_db_pod"] != "testbed-postgres-0" or params["pg_service"] != "testbed-postgres":
         raise ExecutorError("PostgreSQL lock target is outside the approved contract")
     if params["pg_schema"] != "inventory_schema" or params["pg_table"] != "inventory":
@@ -167,13 +167,14 @@ state_dir="$state_root/${scenario_id}-dual"
 food_state="$state_dir/food-resources.json"
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$food_ns")
 
-# --- PostgreSQL inventory lock, held from the runner (G6/L2, v4 C6b) ---------
+# --- PostgreSQL inventory lock, held by an in-cluster client pod (G6/L2) -----
 # Identity impersonates the real app; the lock is held by an open transaction (idle in
-# transaction), not by a server-side sleep. The session is the runner container's psql through
-# the listener (pg_lock_remote.py); no client pod, no exec into the database pod.
+# transaction), not by a server-side sleep; the source IP is a pod IP. v4 C6b: the pod runs psql
+# alone, driven over attach (pg_lock_remote.py); no exec into the database pod.
 pg_dir="$state_dir/pg-lock"
 pg() {
   db_target "$pg_ns" "$db_pod"
+  PGL_IMAGE="$image" PGL_SERVICE="$svc" PGL_SECRET="$secret"
   case "$1" in
     check) pgl_check "$pg_dir" "$schema" "$table" row "$keycol" "$keyval" ;;
     run) pgl_apply "$pg_dir" "$schema" "$table" row "" "$keycol" "$keyval" "$hold" "$identity" ;;
@@ -200,7 +201,7 @@ case "$action" in
   run)
     [[ ! -e "$state_dir" ]]; mkdir -p "$state_dir"; umask 077
     printf '%s' "$(food_current)" >"$food_state"
-    # offset 0: both roots start together. PG lock first (runner network session),
+    # offset 0: both roots start together. PG lock first (in-cluster client pod),
     # food OOM immediately after with no intervening wait.
     [[ "$offset" -eq 0 ]] || sleep "$offset"
     pg run

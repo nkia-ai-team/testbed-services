@@ -61,6 +61,20 @@ CLIENT_OSUSER = "dba"
 CLIENT_DRIVER = "jdbcthin : 23.7.0.25.1"
 
 
+# 네트워크 세션이 들어갈 노드(v4 C6b 수정 1회차, 사용자 결정 Q8): 준비된 워커 가운데 DB 파드의 노드도 컨트롤
+# 플레인도 아닌 첫 노드(이름순)의 InternalIP. NodePort(externalTrafficPolicy Cluster)로 다른 노드에 들어온 연결은
+# 그 노드의 flannel.1 주소(10.244.N.0)로 SNAT 된다. DB 파드 노드로 들어오면 cni0 주소(10.244.N.1)가 되어 DPM 관제
+# 세션과 같고(66 녹화 f72-r, f63-r 의 lucida_mon 10.244.3.1), 컨트롤 플레인으로 들어오면 러너 부하와 같은
+# 10.244.0.0 이 된다(z4-66-survey). 셋 다 피한다.
+ENTRY_NODE_JQ = (
+    '[.items[] | select(.metadata.name != $db)'
+    ' | select((.metadata.labels // {}) | has("node-role.kubernetes.io/control-plane") | not)'
+    ' | select((.spec.unschedulable // false) | not)'
+    ' | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))]'
+    ' | sort_by(.metadata.name) | .[0].status.addresses[]? | select(.type == "InternalIP") | .address'
+)
+
+
 def client_source() -> str:
     source = CLIENT_SOURCE_PATH.read_text(encoding="utf-8")
     if any(line.strip() == HEREDOC_END for line in source.splitlines()):
@@ -85,6 +99,7 @@ def bash_functions() -> bytes:
             f"ORA_STARTDB_PATH={q(STARTDB_PATH)}",
             f"ORA_STARTDB_SCRIPT_KEY={q(STARTDB_SCRIPT_KEY)}",
             f"ORA_SQLNET_EXPIRE_MAX={SQLNET_EXPIRE_MAX_MINUTES}",
+            f"ORA_ENTRY_NODE_JQ={q(ENTRY_NODE_JQ)}",
             f"export CLIENT_PROGRAM={q(CLIENT_PROGRAM)}",
             f"export CLIENT_MACHINE={q(CLIENT_MACHINE)}",
             f"export CLIENT_OSUSER={q(CLIENT_OSUSER)}",
@@ -96,12 +111,22 @@ def bash_functions() -> bytes:
 
 
 _FUNCTIONS = r'''
+# ora_entry_node NS DB_POD: 세션이 들어갈 노드의 주소(ENTRY_NODE_JQ, v4 C6b 수정 1회차). DB 파드가 없는
+# 일반 워커의 NodePort 로 붙어야 DB 가 보는 출발 주소가 그 노드의 overlay 주소가 되어, DPM 관제 세션(DB 파드
+# 노드의 cni0 주소)과도 러너 부하(컨트롤 플레인 노드를 거친 주소)와도 갈린다.
+ora_entry_node() {
+  local db_node
+  db_node="$(kubectl --kubeconfig /root/tb-kubeconfig -n "$1" get pod "$2" -o 'jsonpath={.spec.nodeName}')" || return 1
+  [[ -n "$db_node" ]] || { echo "database pod $2 has no node" >&2; return 1; }
+  kubectl --kubeconfig /root/tb-kubeconfig get nodes -o json | jq -r --arg db "$db_node" "$ORA_ENTRY_NODE_JQ" \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || { echo "no worker node without $db_node to enter through" >&2; return 1; }
+}
 # ora_prepare NS DB_POD: 리스너 주소와 앱 계정을 읽어 env 로 내보낸다. DB 파드는 조회만 한다.
 ora_prepare() {
   local ns="$1" db_pod="$2" host port
   local k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
   "$ora_py" -c 'import oracledb' 2>/dev/null || { echo "runner image lacks python-oracledb" >&2; return 1; }
-  host="$("${k[@]}" get pod "$db_pod" -o 'jsonpath={.status.hostIP}')" || return 1
+  host="$(ora_entry_node "$ns" "$db_pod")" || return 1
   port="$("${k[@]}" get svc "$ORA_NODEPORT_SERVICE" -o "jsonpath={.spec.ports[?(@.port==$ORA_LISTENER_PORT)].nodePort}")" || return 1
   [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] || { echo "oracle listener endpoint not found" >&2; return 1; }
   ORA_USER="$("${k[@]}" get secret "$ORA_SECRET" -o "jsonpath={.data.$ORA_SECRET_USER_KEY}" | base64 -d)" || return 1

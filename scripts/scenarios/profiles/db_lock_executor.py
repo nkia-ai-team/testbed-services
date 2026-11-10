@@ -36,16 +36,17 @@ PROFILE_ID = "db.lock"
 APP_IDENTITY = "PostgreSQL JDBC Driver"
 
 # 신원이 앱과 같아지므로 세션 이름으로는 우리 것을 골라낼 수 없다. 정리는
-# **잠금 세션 프로세스를 끝내는 것**으로 한다(연결이 끊기면 트랜잭션이 롤백된다).
-# pg_terminate_backend를 이름으로 쏘던 기존 방식은 실 서비스 세션을 죽일 수 있어 금지한다.
-# 2026-07-28 부터 11-10 까지는 클러스터 안 전용 클라이언트 파드가 세션을 쥐었고 정리는 그 파드를
-# 지우는 것이었다. 그 파드가 KCM 이벤트, kubelet/containerd syslog, 명령줄에 흔적을 남겨(2026-08-23
-# F01-R 녹화) v4 C6b 에서 러너 컨테이너의 네트워크 세션으로 바꿨다(pg_lock_remote.py).
-# 옛 파드의 라벨은 남아 있는 옛 실행을 정리하는 데만 쓴다.
+# **전용 클라이언트 파드를 지우는 것**으로 한다(파드가 사라지면 연결이 끊겨
+# 트랜잭션이 롤백된다). pg_terminate_backend를 이름으로 쏘던 기존 방식은
+# 실 서비스 세션을 죽일 수 있어 금지한다.
+# v4 C6b(2026-11-10): 정답지가 앱 세션 이야기라 파드 대역 주소에서 붙는 클라이언트 파드를 유지한다(사용자
+# 결정 Q8. 러너에서 NodePort 로 붙으면 출발 주소가 DPM 관제 세션과 같아진다). 다만 파드 안 프로세스는
+# psql 하나로 줄였다(옛 파드의 sh, sleep 600, SQL 이 든 명령줄 없음). 러너가 attach 로 문장을 보내고 보유
+# 시간을 센다. DB 파드 exec 로 하던 확인은 운영자 세션으로 한다(pg_lock_remote.py, db_operator_remote.py).
 CLIENT_LABEL_KEY = "lucida.io/db-client"
 CLIENT_LABEL_VALUE = "session"
-# 세션이 어디서 붙는지(계약의 access). 러너 컨테이너에서 리스너(NodePort)로.
-PG_ACCESS = "runner-network"
+# 세션이 어디서 붙는지(계약의 access): 클러스터 안 클라이언트 파드.
+PG_ACCESS = "in-cluster-pod"
 
 CONTRACTS: dict[str, dict[str, Any]] = {
     # hold 600->900 (2026-08-06, 0804 #9): min_hold 8m 뒤 성공 창이 2분뿐이라
@@ -93,7 +94,7 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         if identity != APP_IDENTITY:
             raise ExecutorError("client identity must impersonate the real application session")
         if params.get("access") != PG_ACCESS:
-            raise ExecutorError("postgresql lock injection must be a network session from the runner")
+            raise ExecutorError("postgresql lock injection must originate inside the cluster")
         scope = params.get("lock_scope")
         if scope == "row":
             if not params.get("key_column") or not params.get("key_value"):
@@ -112,7 +113,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
         return ["/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"], p["namespace"], p["pod"], p["schema"], p["table"], p["key_column"], p["key_value"], p["client_identifier"], str(p["hold_seconds"])], ORACLE_CLIENT
     if p.get("engine") == "postgresql":
         if p.get("access") != PG_ACCESS:
-            raise ExecutorError("postgresql lock injection must be a network session from the runner")
+            raise ExecutorError("postgresql lock injection must originate inside the cluster")
         argv = [
             "/usr/bin/bash", "-s", "--", action, plan["scenario"]["id"],
             p["namespace"], p["db_pod"], p["service"], p["secret"], p["image"],
@@ -124,12 +125,13 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     raise ExecutorError("db.lock requires an explicit engine")
 
 
-# PostgreSQL 잠금(v4 C6b, 2026-11-10). 러너 컨테이너의 psql 이 리스너(NodePort)로 붙어, 계약의
+# PostgreSQL 잠금(v4 C6b, 2026-11-10). 클러스터 안 클라이언트 파드의 psql 하나가 계약의
 # client_identity(실 앱의 application_name)로 트랜잭션을 연 채 쉰다. 서버에는 idle in transaction,
-# ClientRead 로 남는다(서버측 pg_sleep 이 아니다). 클러스터에는 파드도 exec 도 생기지 않는다.
-# 정리는 이 호스트의 세션 프로세스를 먼저 멈추고(kube API, DB 가 필요 없다) 그다음 서버에서 그
-# 세션(backend pid 와 시작 시각으로 고른다, 이름이 아니다)이 사라졌는지 확인한다. 함수는
-# pg_lock_remote.py, 접속은 db_operator_remote.py. 계약의 service, image 는 더 쓰지 않는다.
+# ClientRead 로 남는다(서버측 pg_sleep 이 아니다). 러너가 attach 로 BEGIN, pg_backend_pid, 잠금 문장을 보내고
+# 보유 시간이 끝나면 ROLLBACK 한다. 정리는 러너의 attach 구동기를 먼저 멈추고 파드를 지운 뒤 서버에서 그
+# 세션(backend pid 와 시작 시각으로 고른다, 이름이 아니다)이 사라졌는지 확인한다. 함수는 pg_lock_remote.py,
+# 확인 조회는 db_operator_remote.py 의 운영자 세션. 계약의 service 는 클라이언트 파드가 붙는 ClusterIP 와 같고
+# image 는 DB 파드 자신의 이미지를 쓴다(계약 값과 같음).
 _POSTGRES_HEAD = br"""#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; scenario="$2"; ns="$3"; db_pod="$4"; svc="$5"; secret="$6"; image="$7"
@@ -139,6 +141,7 @@ run_dir="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}/
 """
 _POSTGRES_BODY = br"""
 db_target "$ns" "$db_pod"
+PGL_IMAGE="$image" PGL_SERVICE="$svc" PGL_SECRET="$secret"
 case "$action" in
   preflight)
     pgl_check "$run_dir" "$schema" "$table" "$scope" "$keycol" "$keyval"
