@@ -28,6 +28,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [테스트베드 대폭 확장 + 지속 부하 (commerce 플래그십)](spec-testbed-expansion.md):
   production-like 확장 템플릿(복원성·Kafka·배치·스키마)과 상주 부하 생성기 설계.
   flagship-first(commerce)로 확정, 3도메인 구현 완료. (확정)
+- [SMS, NMS 전용 전통 3계층 테스트베드 설계](spec-testbed-vm-3tier.md):
+  APM 과 쿠버네티스 없이 VM 위 systemd 로 도는 웹, WAS, DB 와 가상 라우터로 이루어진
+  네 번째 테스트베드의 망, WireGuard 터널, 119 등록, 러너 연동, 단계별 완료 조건. (GT0 확정 2026-11-10)
 - [테스트베드 배포 runbook](runbook-testbed-deploy.md):
   109 kubeadm 클러스터 배포·검증 실측 절차 — 환경 실값(OTLP/org id), 신규 VM
   전제조건(StorageClass·OTel jar), 트러블슈팅. (Active)
