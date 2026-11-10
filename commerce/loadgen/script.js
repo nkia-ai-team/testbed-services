@@ -252,10 +252,14 @@ function transferCompleted(res) {
     }
 }
 
-// 되돌리기가 서버 쪽 실패(5xx, 연결 실패)면 짝을 남겨 다음 이체가 다시 시도한다. 4xx 나 FAILED 는
-// 버린다(받은 돈이 다른 흐름으로 빠졌다는 뜻이라 다시 해도 같다).
+// 되돌리기 결과(2026-11-10 E5b 수정 1회차). 돈이 옮겨진 이체(COMPLETED)만 되돌릴 짝을 남긴다. 되돌리기는
+// 요청이 처리되지 않은 것이 확실한 실패(503, 연결 거부)일 때만 짝을 남겨 다음 이체 차례에 다시 한다.
+// 500, 502, 504, 시간 초과는 버린다: api 경로는 하류가 늦으면 502 를 준 뒤 transfer 가 커밋할 수
+// 있어 다시 하면 두 번 되돌려질 수 있다. 버린 짝은 7개 계좌 잔액을 그만큼 남기고, Oracle 점검
+// (oracle-maintenance.sh check) 의 7개 계좌 하한이 쌓인 어긋남을 잡는다.
 function retryLater(res) {
-    return res.status === 0 || res.status >= 500;
+    return res.status === 503
+        || (res.status === 0 && String(res.error || '').indexOf('connection refused') >= 0);
 }
 
 function crossDomainJourney() {
@@ -287,28 +291,77 @@ function crossDomainJourney() {
         }
     } else if (transferCompleted(res)) {
         pendingReturn = { from: to, to: from, amount };
+        returnForced = false;
+        sentWhileClosing = closing();
+        // 마감 뒤 보낸 짝은 끝 30초 전까지 남은 시간 안에서 최대 1분 뒤 아무 때나 되돌린다. 바로 다음
+        // 반복에 되돌리면 두 건이 같은 분에 몰려 분당 이체 수가 평소보다 크게 흔들린다.
+        returnDueAt = sentWhileClosing
+            ? Date.now() + Math.floor(closeRand() * Math.max(0, Math.min(60000, runEnd() - Date.now() - 30000)))
+            : 0;
     }
 }
 
-// k6 는 한 시간마다 새로 뜬다(entrypoint.sh). 끝나기 3분 전부터는 되돌릴 짝이 남은 VU 가 여정
-// 대신 되돌리기를 먼저 해서, 재시작 때 짝이 버려져 잔액이 흩어지지 않게 한다.
+// 재시작 전 짝 마치기(2026-11-10 E5b 수정 1회차). k6 는 한 시간마다 새로 뜬다(entrypoint.sh).
+// 쥔 짝은 재시작 때 버려지므로 VU 마다 정한 마감 시각(끝 3~20분 전, VU 시드로 고르게 흩음)부터는
+// 짝을 끝 전에 마친다. 이체 수와 시간 모양은 그대로 둔다:
+//   1) 마감 때 이미 쥔 짝은 다음 반복에서 한 번 앞당겨 되돌리고, 그 몫으로 다음 이체 차례 하나를
+//      다른 여정으로 돌린다(owedSkips).
+//   2) 마감 뒤 이체 차례는 번갈아, 짝을 보내고 1분 안에 되돌리거나(이체 2건) 다른 여정으로
+//      돌린다(0건). 두 차례에 이체 2건이라 종전(차례마다 1건)과 같다. 번갈기 시작은 VU 마다 고르게 정한다.
+// 앞당기기는 짝마다 한 번뿐이다. 그 시도가 실패해 짝이 남으면 보통 이체 차례에만 다시 하므로, 은행
+// 장애 중에도 이체 요청이 늘지 않는다.
 const RUN_DURATION_MS = 60 * 60 * 1000;
-const RETURN_FLUSH_MS = 3 * 60 * 1000;
+const closeRand = mulberry32(BASE_SEED + (__VU || 0) * 7919 + 104729);
+const CLOSE_BEFORE_END_MS = Math.floor((3 + closeRand() * 17) * 60 * 1000);
+let returnForced = false;
+let sentWhileClosing = false;
+let returnDueAt = 0;
+let owedSkips = 0;
+// 마감 뒤 이체 차례를 번갈아 거르는 순서. 시작을 VU 마다 고르게 정해 한 시간 합이 한쪽으로 치우치지 않게 한다.
+let skipThisTurn = closeRand() < 0.5;
+// 끝 10초 안에는 새 짝을 보내지 않는다: 되돌릴 반복이 남지 않아 짝이 버려지기 쉽다(VU 반복 간격은
+// 가장 느린 밤에도 10초 안쪽).
+const LAST_SEND_MS = 10 * 1000;
 
-function nearRunEnd() {
-    return exec.scenario.startTime + RUN_DURATION_MS - Date.now() < RETURN_FLUSH_MS;
+function runEnd() {
+    return exec.scenario.startTime + RUN_DURATION_MS;
+}
+
+function closing() {
+    return Date.now() >= runEnd() - CLOSE_BEFORE_END_MS;
 }
 
 // ------------------------------------------------------------
 // 여정 선택 (누적 확률 — §8 여정 가중 그대로)
 // ------------------------------------------------------------
 export default function () {
-    if (pendingReturn !== null && nearRunEnd()) {
+    if (pendingReturn !== null && !returnForced && closing() && Date.now() >= returnDueAt) {
+        returnForced = true;
+        if (!sentWhileClosing) {
+            owedSkips += 1;
+        }
         crossDomainJourney();
         sleep(randInt(0, 1));
         return;
     }
-    const r = rand();
+    let r = rand();
+    if (r >= 0.98 && pendingReturn !== null && sentWhileClosing && skipThisTurn && closing()) {
+        // 마감 뒤 보낸 짝을 앞당기기 전에 이체 차례가 왔다: 이 차례가 되돌리기이자 거를 차례다.
+        skipThisTurn = false;
+    } else if (r >= 0.98 && pendingReturn === null && closing()) {
+        // 마감 뒤 이체 차례: 빚진 차례를 갚거나, 번갈아 짝 보내기와 다른 여정(비중은 이체를 뺀 나머지 그대로)을 한다.
+        if (owedSkips > 0) {
+            owedSkips -= 1;
+            r = rand() * 0.98;
+        } else {
+            if (skipThisTurn || runEnd() - Date.now() < LAST_SEND_MS) {
+                r = rand() * 0.98;
+            }
+            if (runEnd() - Date.now() >= LAST_SEND_MS) {
+                skipThisTurn = !skipThisTurn;
+            }
+        }
+    }
     if (r < 0.65) {
         browsingJourney();
     } else if (r < 0.80) {

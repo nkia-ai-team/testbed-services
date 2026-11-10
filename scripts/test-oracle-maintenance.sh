@@ -31,6 +31,7 @@ if [[ "$1" == sqlplus ]]; then
     exit 0
   fi
   if grep -q "FROM banking.ledger_entries" <<<"$sql"; then
+    [[ -n "${FAKE_IMBALANCE_EMPTY:-}" ]] && exit 0
     printf '\n%s\n' "${FAKE_IMBALANCE:-0}"
     exit 0
   fi
@@ -255,6 +256,8 @@ BANK
 }
 bank_of() { awk -F'|' -v id="$1" '$1 == id { print $2 }' "$FAKE_BANK"; }
 
+# seed-restore and seed-undo run only while the operating loop is paused or idle (not completed).
+export FAKE_PHASE=paused
 drained_bank
 plan=$("$MAINT" seed-plan)
 jq -e '.shortfall == "0" and .missing == [] and .inactive == [] and (.transfers | length) == 6
@@ -285,8 +288,20 @@ drained_bank
 rc=0; out=$(FAKE_PHASE=cycle_normal "$MAINT" seed-restore) || rc=$?
 [[ $rc -eq 1 ]] && grep -q 'seed-restore refused: queue phase cycle_normal' <<<"$out" || fail "restore during recording: $out"
 [[ ! -e "$FAKE_BANK.calls" ]] || fail 'restore during recording moved money'
+rc=0; out=$(FAKE_PHASE=completed "$MAINT" seed-restore) || rc=$?
+[[ $rc -eq 1 ]] && grep -q 'seed-restore refused: queue phase completed' <<<"$out" || fail "restore right after a completed queue: $out"
+[[ ! -e "$FAKE_BANK.calls" ]] || fail 'restore in phase completed moved money'
+FAKE_PHASE=idle "$MAINT" seed-plan >/dev/null || fail 'seed-plan in idle'
 rc=0; out=$(FAKE_IMBALANCE=-36000 "$MAINT" seed-restore) || rc=$?
 [[ $rc -eq 1 ]] && grep -q 'ledger imbalance -36000' <<<"$out" || fail "imbalance not caught: $out"
+# An empty answer from the reconciliation query is not a zero.
+drained_bank
+rc=0; out=$(FAKE_IMBALANCE_EMPTY=1 "$MAINT" seed-restore) || rc=$?
+[[ $rc -eq 1 ]] && grep -q 'restore: ledger imbalance  after 6 transfers' <<<"$out" || fail "empty imbalance accepted: $out"
+for zero in 0 -0 0.00 .00; do
+  drained_bank
+  out=$(FAKE_IMBALANCE=$zero "$MAINT" seed-restore 2>&1) && grep -q "ledger imbalance 0" <<<"$out" || fail "zero form $zero rejected: $out"
+done
 drained_bank
 rc=0; out=$(FAKE_TRANSFER_FAIL_AT=3 "$MAINT" seed-restore) || rc=$?
 [[ $rc -eq 1 ]] && grep -q 'restore stopped: transfer ACC-1003 -> ACC-1004 .* after 2 done' <<<"$out" || fail "failed transfer: $out"

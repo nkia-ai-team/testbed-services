@@ -76,6 +76,10 @@ TRANSFER_URL="${TRANSFER_URL:-http://192.168.122.77:30282}"
 # cycle_buffer, running, cycle_cooldown, waiting_capture, waiting_clean_window) is
 # part of some recording's window or the clean window before the next one.
 PURGE_ALLOWED_PHASES="${PURGE_ALLOWED_PHASES:-idle paused completed}"
+# seed-restore and seed-undo move up to millions in one transfer. Only while the operating loop is
+# stopped (paused) or never started (idle): right after "completed" the next cycle may begin and
+# put those transfers just before a recording window.
+SEED_ALLOWED_PHASES="${SEED_ALLOWED_PHASES:-paused idle}"
 
 log() { printf '[oracle-maintenance] %s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 
@@ -83,10 +87,11 @@ k() { kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$ORACLE_NAMESPACE" "$@"; }
 
 # Prints "ok" when a purge may run, otherwise the reason to skip.
 recording_state() {
+  local allowed=${1:-$PURGE_ALLOWED_PHASES}
   local active queue
   active=$(curl -fsS -m 10 "$RUNNER_URL/api/active" 2>/dev/null) || { echo "runner unreachable ($RUNNER_URL/api/active)"; return; }
   queue=$(curl -fsS -m 10 "$RUNNER_URL/api/live-queue" 2>/dev/null) || { echo "runner unreachable ($RUNNER_URL/api/live-queue)"; return; }
-  ACTIVE="$active" QUEUE="$queue" ALLOWED="$PURGE_ALLOWED_PHASES" python3 - <<'PY'
+  ACTIVE="$active" QUEUE="$queue" ALLOWED="$allowed" python3 - <<'PY'
 import json, os
 try:
     active = json.loads(os.environ["ACTIVE"])
@@ -340,7 +345,7 @@ print(a.get("transferId", ""))'
 
 seed_guard() {
   local state
-  state=$(recording_state)
+  state=$(recording_state "$SEED_ALLOWED_PHASES")
   if [[ "$state" != ok ]]; then
     log "$1 refused: $state"
     return 1
@@ -361,7 +366,7 @@ seed_move() {
     n=$((n + 1))
   done <<<"$lines"
   imbalance=$(ledger_imbalance) || { log "$label: ledger check did not run"; return 1; }
-  if [[ ! "$imbalance" =~ ^-?0*(\.0+)?$ ]]; then
+  if [[ ! "$imbalance" =~ ^-?0+(\.0+)?$|^-?\.0+$ ]]; then
     log "$label: ledger imbalance $imbalance after $n transfers"
     return 1
   fi

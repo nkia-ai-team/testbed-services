@@ -386,7 +386,7 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
         # 2026-11-10(v4 E5b): commerce 기준선의 cross-domain 이체가 7개 계좌끼리 아무렇게나 오가 계좌가
         # 바닥났다(66 ACC-1007 11만, 잔액 부족 FAILED 하루 314건). 계좌, 금액 분포, 비중은 그대로 두고
         # 같은 금액을 되돌리는 짝으로 만든다. 돈의 흐름은 scripts/test-loadgen-transfer-pairs.sh 가 실제
-        # 스크립트를 모의 은행에 돌려 확인한다.
+        # 스크립트를 반복 단위로 모의 은행에 돌려 확인한다(요청 모양, 재시도 폭주 포함).
         commerce = (REPO / "commerce" / "loadgen" / "script.js").read_text()
         baseline = (REPO / "core-banking" / "loadgen" / "script.js").read_text()
         self.assertIn("const BANK_ACCOUNTS = ['ACC-1001', 'ACC-1002', 'ACC-1003', 'ACC-1004', 'ACC-1005', 'ACC-1006', 'ACC-1007'];",
@@ -401,12 +401,18 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
         self.assertIn("pendingReturn = { from: to, to: from, amount };", body)
         for script in (commerce, baseline):
             self.assertIn("import exec from 'k6/execution';", script)
-            self.assertIn("return res.status === 0 || res.status >= 500;", script)
-            self.assertIn("exec.scenario.startTime + RUN_DURATION_MS - Date.now() < RETURN_FLUSH_MS", script)
+            # 2026-11-10 수정 1회차: 되돌리기는 처리 안 된 것이 확실한 실패(503, 연결 거부)에서만 다시 한다.
+            self.assertIn("return res.status === 503\n", script)
+            self.assertNotIn("res.status >= 500", script)
             self.assertIn("const RUN_DURATION_MS = 60 * 60 * 1000;", script)
             self.assertIn("duration: '1h',", script)
+            # 마감 시각은 VU 마다 끝 3~20분 전으로 흩고, 앞당기기는 짝마다 한 번(returnForced)이다.
+            self.assertIn("const CLOSE_BEFORE_END_MS = Math.floor((3 + closeRand() * 17) * 60 * 1000);", script)
             default = script[script.index("export default function () {"):]
-            self.assertTrue(default.split("\n")[1].strip().startswith("if (pendingReturn !== null && nearRunEnd()) {"))
+            self.assertTrue(default.split("\n")[1].strip().startswith(
+                "if (pendingReturn !== null && !returnForced && closing() && Date.now() >= returnDueAt) {"))
+            self.assertIn("returnForced = true;", default)
+            self.assertNotIn("nearRunEnd", script)
 
     def test_pool_file_watched_by_the_balance_check_matches_the_scripts(self) -> None:
         # scripts/oracle-maintenance.sh check 가 이 파일의 계좌 잔액 하한을 본다(확인 필요 12).
