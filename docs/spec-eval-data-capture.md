@@ -381,6 +381,9 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     시작 때 유효했던 판(`valid_from` 이 창 시작 이전인 판 중 최신), 창 안에서 만든 판, 캡처 때 활성인 판을 담는다
     (사용자 결정 2026-11-10). 키는 판을 고르는 단위(`agent_id`)다. 제품이 판 전체를 한꺼번에 넣고 활성으로 바꾸기
     때문이다. 녹화본 대조는 `scripts/scenarios/threshold-slice-check.py`.
+    재생 때 주의: 복원한 표의 `active` 는 캡처 때 값이다(창 끝 뒤에 만든 판이 active 일 수 있다). 관측기는
+    `agent_id` 의 `active` 판을 읽으므로 그대로 쓰면 캡처 때 판으로 돈다. 창 시작 때의 임계값으로 재생하려면
+    `agent_id` 마다 `valid_from` 이 창 시작 이전인 판 중 판 번호가 가장 큰 판을 골라 쓴다(그 판은 녹화에 반드시 있다).
   - 그 밖은 통째로. 설정에 없고 `auto.snap_max_bytes` 를 넘는 표는 스키마만 담고(`over_cap`), 통째 덤프
     합이 `auto.snap_budget_bytes` 를 넘으면 캡처가 경고한다. 녹화 전 점검(testbed-operate
     `pg-scope-guard.py`)이 같은 계획기로 둘 다 미리 막는다.
@@ -397,6 +400,9 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   - 이 PG 규칙은 주기 모드(v3, v4)만이 아니라 비주기 캡처(v2, `--phases-json` 없음)에도 같이 적용된다.
     PG 덤프와 구간 추출은 두 모드가 같은 코드라서다. v2 meta 에는 `postgres_scope` 칸이 없지만 `restore.sql`
     과 `data/catalog/` 는 같이 생긴다. CH 자동 발견과 제품 버전 칸은 주기 모드에만 있다.
+  - 설정 결정 두 표(`trainer_trace_window_threshold` 판 단위 slice, `ai_trainer_stream_rows` drop)는 카탈로그 없이
+    불러도 적용된다. 그래서 카탈로그 없는 출력이 v3 판(57ad631)과 다른 곳은 이 두 표뿐이다(exclude-args 2줄, export-sql
+    1표, restore-sql 1줄, slice-tables 1줄). 비주기(v2) 캡처에도 같다.
 - **PG 도구 이미지**: 캡처(`capture-eval-case.sh`), 골든 덤프(`capture-golden-state.sh`), 골든 복원
   (`restore-golden-state.sh`)의 `PG_DUMP_IMAGE` 기본값은 `postgres:17-alpine` 이다(119 PG 17.11). pg_dump 는
   자기보다 새 메이저 서버를 거절하고 pg_restore 는 자기보다 새 pg_dump 가 만든 덤프를 읽지 못하므로, 세 스크립트

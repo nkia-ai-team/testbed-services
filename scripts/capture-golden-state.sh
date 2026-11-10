@@ -329,7 +329,7 @@ jq -n \
   --arg window_start "$window_start" --arg window_end "$window_end" \
   --arg window_start_kst "$window_start_kst" --arg window_end_kst "$window_end_kst" \
   --argjson window_minutes "$window_minutes" \
-  --arg label "$label" \
+  --arg label_text "$label" \
   --arg dump_sha "$dump_sha" \
   --argjson ai_state_tables "$(printf '%s\n' "${AI_STATE_TABLES[@]}" | jq -R . | jq -s .)" \
   --argjson row_counts "$row_counts_json" \
@@ -339,7 +339,7 @@ jq -n \
     window_minutes:$window_minutes,
     window_start:$window_start, window_end:$window_end,
     window_start_kst:$window_start_kst, window_end_kst:$window_end_kst,
-    label:(if $label == "" then null else $label end),
+    label:(if $label_text == "" then null else $label_text end),
     pg_ai_state:{dump:"data/golden-pg-state.dump", sha256:$dump_sha,
                  tables:$ai_state_tables, row_counts:$row_counts},
     stores:["postgres.ai-state.dump","victoriametrics.export","clickhouse/*.parquet"],

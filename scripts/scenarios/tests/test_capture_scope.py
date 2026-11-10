@@ -341,7 +341,10 @@ class ThresholdValiditySliceTest(unittest.TestCase):
                 + gen("a", 4, "2026-11-10T06:00:00Z", True, ["s1"])             # 캡처 때 활성
                 + gen("b", 1, "2026-11-08T00:00:00Z", True, ["s9"])             # 창 시작 때 유효이자 활성
                 + gen("b", 0, "2026-11-01T00:00:00Z", False, ["s9"])
-                + gen("c", 1, "2026-11-10T05:00:00Z", True, ["s7"]))            # 창 시작 뒤에만 있는 키
+                + gen("c", 1, "2026-11-10T05:00:00Z", True, ["s7"])             # 창 시작 뒤에만 있는 키
+                + gen("d", 1, "2026-11-09T20:00:00Z", False, ["s5"])
+                + gen("d", 2, self.WS, False, ["s5"])                            # 경계: valid_from = 창 시작
+                + gen("d", 3, "2026-11-10T07:00:00Z", True, ["s5"]))
 
     def run_slice(self, rows):
         spec = PG_CFG["slice_by_validity"]["trainer_trace_window_threshold"]
@@ -368,10 +371,12 @@ class ThresholdValiditySliceTest(unittest.TestCase):
         got = self.run_slice(src)
         self.assertEqual(tsc.valid_at_start(got, spec, self.WS), tsc.valid_at_start(src, spec, self.WS))
         self.assertEqual(tsc.keys_of(got, spec), tsc.keys_of(src, spec))
-        self.assertEqual(len(tsc.keys_of(got, spec)), 3)
+        self.assertEqual(len(tsc.keys_of(got, spec)), 4)
         versions = sorted({(r["agent_id"], r["version"]) for r in got})
         # a: 창 시작 때 판 2, 창 안 판 3, 활성 판 4. 옛 판 1 은 빠진다. b: 1(창 시작 때이자 활성), 0 은 빠진다. c: 활성 1.
-        self.assertEqual(versions, [("a", 2), ("a", 3), ("a", 4), ("b", 1), ("c", 1)])
+        # d: valid_from 이 창 시작과 같은 판 2 가 창 시작 때 판이다(경계 포함). 그 전 판 1 은 빠진다.
+        self.assertEqual(versions, [("a", 2), ("a", 3), ("a", 4), ("b", 1), ("c", 1), ("d", 2), ("d", 3)])
+        self.assertEqual(tsc.valid_at_start(src, spec, self.WS)[("d",)]["version"], 2)
 
     def test_the_check_script_agrees_with_the_slice_and_catches_a_time_only_slice(self):
         spec = PG_CFG["slice_by_validity"]["trainer_trace_window_threshold"]
