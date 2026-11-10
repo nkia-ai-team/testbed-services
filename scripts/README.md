@@ -81,7 +81,8 @@ scripts/test-oracle-maintenance.sh
 `oracle-data-disk.sh`는 tb-w2 에서 root 로 돈다(v4 E7, runbook §8-3). Oracle 볼륨(local-path 디렉터리)을
 노드 루트 파일 시스템에서 전용 가상 디스크로 옮겨, 그 디스크가 가득 차거나 IO 가 포화돼도 노드
 전체 DiskPressure 가 나지 않게 한다(kubelet 은 루트와 이미지 저장소 파일 시스템만 본다).
-디스크 IO 한도는 하이퍼바이저(Proxmox 디스크 throttle)가 늘 걸고 있다. 노드 안에는 한도 설정이 없다.
+디스크 IO 한도는 노드 안이 아니라 하이퍼바이저(Proxmox 디스크 throttle)에 건다. 값은 전환 뒤 한도 없이
+`disk-io-rate.py` 로 초 단위 실측을 하고 정한다(1분 평균은 10분마다 도는 원장 대사의 순간 읽기를 감춘다).
 
 - 새 디스크를 PV 가 가리키는 같은 경로에 마운트한다. PV, PVC, StatefulSet 은 바뀌지 않는다.
 - `prepare <장치>`: 파티션, 서명이 없는 빈 디스크(20~64 GiB)에만 ext4(라벨 oradata, 예약 블록 0)를 만든다.
@@ -94,4 +95,15 @@ scripts/test-oracle-maintenance.sh
 
 ```bash
 scripts/test-oracle-data-disk.sh
+```
+
+`disk-io-rate.py` 는 104 에서 돈다. `collect` 는 ssh 하나로 Proxmox 호스트에서 그 디스크 LV 의 블록 통계
+(`/sys/block/dm-N/stat`)를 1초마다 읽어 원시 줄을 쌓는다(게스트 안 프로세스 없음, VM 모니터 소켓 안 씀).
+`report` 는 읽기, 쓰기 bps 와 IOPS 의 p50, p99, p99.9, 최대, "p99.9 가 한도 절반 아래" 가 되는 가장 작은
+한도, 읽기 몰림(연속 초)의 지금 소요와 한도에서의 소요를 내고, 한도를 주면 PASS 또는 FAIL 을 낸다.
+
+```bash
+scripts/disk-io-rate.py collect --host root@192.168.200.66 --volume vmdata/vm-103-disk-1 --seconds 86400 --out sdb.raw
+scripts/disk-io-rate.py report sdb.raw --read-mbps <값> --write-mbps <값> --read-iops <값> --write-iops <값>
+scripts/test-disk-io-rate.sh
 ```
