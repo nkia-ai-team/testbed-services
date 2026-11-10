@@ -3,6 +3,7 @@
 // + 소액 이체(banking 은 낮은 빈도가 현실적이라 write 비중을 commerce 보다 낮게 잡음).
 import http from 'k6/http';
 import { sleep, check } from 'k6';
+import exec from 'k6/execution';
 
 const TARGET_RPS = Number(__ENV.TARGET_RPS || 2);
 const BASE_SEED = Number(__ENV.LOADGEN_SEED || 42);
@@ -134,9 +135,27 @@ function accountListJourney() {
 // 받은 만큼만 돌려주므로 이 부하로는 활성 계좌 7개가 시작 잔액 아래로 내려가지 않고(잔액 부족 0), 풀 계좌는
 // 한 번에 많아야 금액 하나(50,000)만 비어 있다. 7개 계좌는 이체 절반의 받는 쪽, 절반의 보내는
 // 쪽이라 입금(F74-R 폴링 전제: 오늘 완료 입금 1건 이상)과 출금 내역(거래 내역 첫 쪽 20건이
-// 차서 건수 질의가 도는 조건)이 계속 쌓인다. 짝은 VU 안에서만 이어져 k6 가 매시 새로 뜰 때
-// 남은 되돌리기(많아야 VU 수만큼)는 버려진다.
+// 차서 건수 질의가 도는 조건)이 계속 쌓인다. 짝은 VU 안에서만 이어지므로 k6 가 매시 새로 뜨기
+// 전에 남은 되돌리기를 먼저 한다(아래 nearRunEnd).
 let pendingReturn = null;
+
+// 되돌리기 결과(2026-11-10, v4 E5b). 돈이 옮겨진 이체(COMPLETED)만 되돌릴 짝을 남기고, 되돌리기가
+// 서버 쪽 실패(5xx, 연결 실패)면 짝을 남겨 이 VU 의 다음 이체가 다시 시도한다. 4xx 나 FAILED 는 짝을
+// 버린다(받은 돈이 다른 흐름으로 빠졌다는 뜻이라 다시 해도 같다).
+function transferCompleted(res) {
+  if (res.status !== 200) {
+    return false;
+  }
+  try {
+    return res.json('status') === 'COMPLETED';
+  } catch (e) {
+    return false;
+  }
+}
+
+function retryLater(res) {
+  return res.status === 0 || res.status >= 500;
+}
 
 function smallTransferJourney() {
   let from;
@@ -145,7 +164,6 @@ function smallTransferJourney() {
   const returning = pendingReturn !== null;
   if (returning) {
     ({ from, to, amount } = pendingReturn);
-    pendingReturn = null;
   } else {
     from = pick(TRANSFER_ACCOUNTS);
     to = pick(ACTIVE_ACCOUNTS);
@@ -162,21 +180,31 @@ function smallTransferJourney() {
     tags: { journey: 'transfer', step: 'transfer' },
   });
   check(res, { 'transfer status ok': (r) => r.status === 200 });
-  if (!returning && res.status === 200) {
-    let status = null;
-    try {
-      status = res.json('status');
-    } catch (e) {
-      status = null;
+  if (returning) {
+    if (!retryLater(res)) {
+      pendingReturn = null;
     }
+  } else if (transferCompleted(res)) {
     // 돈이 실제로 옮겨진 이체만 되돌린다(잔액 부족이면 200 이어도 status 가 FAILED).
-    if (status === 'COMPLETED') {
-      pendingReturn = { from: to, to: from, amount: amount };
-    }
+    pendingReturn = { from: to, to: from, amount: amount };
   }
 }
 
+// k6 는 한 시간마다 새로 뜬다(entrypoint.sh). 끝나기 3분 전부터는 되돌릴 짝이 남은 VU 가 여정
+// 대신 되돌리기를 먼저 해서, 재시작 때 짝이 버려져 잔액이 한쪽으로 새지 않게 한다.
+const RUN_DURATION_MS = 60 * 60 * 1000;
+const RETURN_FLUSH_MS = 3 * 60 * 1000;
+
+function nearRunEnd() {
+  return exec.scenario.startTime + RUN_DURATION_MS - Date.now() < RETURN_FLUSH_MS;
+}
+
 export default function () {
+  if (pendingReturn !== null && nearRunEnd()) {
+    smallTransferJourney();
+    sleep(randInt(0, 1));
+    return;
+  }
   const r = rand();
   // read 80%+ : 잔액조회 55% / 거래내역 조회 25% / 계좌목록 10%, write 10%: 소액 이체.
   if (r < 0.55) {

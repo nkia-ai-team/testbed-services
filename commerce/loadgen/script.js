@@ -12,6 +12,7 @@
 // 여정 가중(§8): 브라우징 65% / 검색 15% / 장바구니 10% / 체크아웃 8% / cross-domain 이체 2%.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
+import exec from 'k6/execution';
 
 // ------------------------------------------------------------
 // 설정 (entrypoint.sh가 --env로 주입)
@@ -232,13 +233,46 @@ function checkoutJourney() {
 // ------------------------------------------------------------
 // 여정 5: cross-domain 이체 — 2% (게이트웨이를 거치지 않고 core-banking을 직접 호출)
 // ------------------------------------------------------------
-function crossDomainJourney() {
-    const from = pick(BANK_ACCOUNTS);
-    let to = pick(BANK_ACCOUNTS);
-    while (to === from) {
-        to = pick(BANK_ACCOUNTS);
+// 짝 이체(2026-11-10, v4 E5b). 활성 계좌 7개끼리 아무렇게나 이체하면(66 하루 약 1만 건, 평균 약
+// 2.56만) 계좌마다 잔액이 하루 표준편차 약 157만씩 무작위로 흩어지고, 바닥에 닿은 계좌는 출금이
+// 막혀(잔액 부족) 돈이 몇 계좌에 몰린다(11-10 66: ACC-1003 2,190만, ACC-1007 11만, 잔액 부족 FAILED
+// 하루 314건). 이제 두 번이 한 짝이다: 보내기는 7개 중 둘 사이(금액 1,000~50,000), 이 VU 의 다음
+// 이체가 같은 금액을 되돌린다. 계좌, 금액 분포, 요청 수는 그대로이고 계좌마다 잔액은 시작값에서
+// 진행 중인 짝 몫만큼만 움직인다.
+let pendingReturn = null;
+
+function transferCompleted(res) {
+    if (res.status !== 200) {
+        return false;
     }
-    const amount = randInt(1000, 50000);
+    try {
+        return res.json('status') === 'COMPLETED';
+    } catch (e) {
+        return false;
+    }
+}
+
+// 되돌리기가 서버 쪽 실패(5xx, 연결 실패)면 짝을 남겨 다음 이체가 다시 시도한다. 4xx 나 FAILED 는
+// 버린다(받은 돈이 다른 흐름으로 빠졌다는 뜻이라 다시 해도 같다).
+function retryLater(res) {
+    return res.status === 0 || res.status >= 500;
+}
+
+function crossDomainJourney() {
+    let from;
+    let to;
+    let amount;
+    const returning = pendingReturn !== null;
+    if (returning) {
+        ({ from, to, amount } = pendingReturn);
+    } else {
+        from = pick(BANK_ACCOUNTS);
+        to = pick(BANK_ACCOUNTS);
+        while (to === from) {
+            to = pick(BANK_ACCOUNTS);
+        }
+        amount = randInt(1000, 50000);
+    }
     const orderId = `loadgen-${Date.now()}-${randInt(1000, 9999)}`;
 
     const res = http.post(
@@ -247,12 +281,33 @@ function crossDomainJourney() {
         { headers: { 'Content-Type': 'application/json' }, tags: { journey: 'cross-domain', step: 'transfer' } }
     );
     check(res, { 'transfer 200': (r) => r.status === 200 });
+    if (returning) {
+        if (!retryLater(res)) {
+            pendingReturn = null;
+        }
+    } else if (transferCompleted(res)) {
+        pendingReturn = { from: to, to: from, amount };
+    }
+}
+
+// k6 는 한 시간마다 새로 뜬다(entrypoint.sh). 끝나기 3분 전부터는 되돌릴 짝이 남은 VU 가 여정
+// 대신 되돌리기를 먼저 해서, 재시작 때 짝이 버려져 잔액이 흩어지지 않게 한다.
+const RUN_DURATION_MS = 60 * 60 * 1000;
+const RETURN_FLUSH_MS = 3 * 60 * 1000;
+
+function nearRunEnd() {
+    return exec.scenario.startTime + RUN_DURATION_MS - Date.now() < RETURN_FLUSH_MS;
 }
 
 // ------------------------------------------------------------
 // 여정 선택 (누적 확률 — §8 여정 가중 그대로)
 // ------------------------------------------------------------
 export default function () {
+    if (pendingReturn !== null && nearRunEnd()) {
+        crossDomainJourney();
+        sleep(randInt(0, 1));
+        return;
+    }
     const r = rand();
     if (r < 0.65) {
         browsingJourney();

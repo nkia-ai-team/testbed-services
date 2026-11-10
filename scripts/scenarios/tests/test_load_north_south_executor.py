@@ -382,6 +382,32 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
         self.assertIn("const MERCHANT_ACCOUNTS = ACTIVE_ACCOUNTS.concat(['commerce-merchant']);",
                       self.scripts["settlement-arrival-poll.js"])
 
+    def test_commerce_cross_domain_transfers_pair_within_the_seven_and_flush_before_restart(self) -> None:
+        # 2026-11-10(v4 E5b): commerce 기준선의 cross-domain 이체가 7개 계좌끼리 아무렇게나 오가 계좌가
+        # 바닥났다(66 ACC-1007 11만, 잔액 부족 FAILED 하루 314건). 계좌, 금액 분포, 비중은 그대로 두고
+        # 같은 금액을 되돌리는 짝으로 만든다. 돈의 흐름은 scripts/test-loadgen-transfer-pairs.sh 가 실제
+        # 스크립트를 모의 은행에 돌려 확인한다.
+        commerce = (REPO / "commerce" / "loadgen" / "script.js").read_text()
+        baseline = (REPO / "core-banking" / "loadgen" / "script.js").read_text()
+        self.assertIn("const BANK_ACCOUNTS = ['ACC-1001', 'ACC-1002', 'ACC-1003', 'ACC-1004', 'ACC-1005', 'ACC-1006', 'ACC-1007'];",
+                      commerce)
+        self.assertEqual(journey_weights(commerce), {
+            "browsingJourney": 0.65, "searchJourney": 0.15, "cartJourney": 0.10,
+            "checkoutJourney": 0.08, "crossDomainJourney": 0.02})
+        body = commerce[commerce.index("function crossDomainJourney()"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("from = pick(BANK_ACCOUNTS);", body)
+        self.assertIn("amount = randInt(1000, 50000);", body)
+        self.assertIn("pendingReturn = { from: to, to: from, amount };", body)
+        for script in (commerce, baseline):
+            self.assertIn("import exec from 'k6/execution';", script)
+            self.assertIn("return res.status === 0 || res.status >= 500;", script)
+            self.assertIn("exec.scenario.startTime + RUN_DURATION_MS - Date.now() < RETURN_FLUSH_MS", script)
+            self.assertIn("const RUN_DURATION_MS = 60 * 60 * 1000;", script)
+            self.assertIn("duration: '1h',", script)
+            default = script[script.index("export default function () {"):]
+            self.assertTrue(default.split("\n")[1].strip().startswith("if (pendingReturn !== null && nearRunEnd()) {"))
+
     def test_pool_file_watched_by_the_balance_check_matches_the_scripts(self) -> None:
         # scripts/oracle-maintenance.sh check 가 이 파일의 계좌 잔액 하한을 본다(확인 필요 12).
         listed = [line for line in (REPO / "core-banking" / "loadgen" / "transfer-accounts.txt").read_text().splitlines()
@@ -400,9 +426,8 @@ class BankingCompanionAccountPoolTests(unittest.TestCase):
         self.assertIn("to = pick(ACTIVE_ACCOUNTS);", body)
         self.assertIn("({ from, to, amount } = pendingReturn);", body)
         self.assertIn("pendingReturn = { from: to, to: from, amount: amount };", body)
-        # 돈이 실제로 옮겨진 이체(COMPLETED)만 되돌린다.
-        self.assertIn("if (status === 'COMPLETED') {", body)
-        self.assertIn("if (!returning && res.status === 200) {", body)
+        # 돈이 실제로 옮겨진 이체(COMPLETED)만 되돌린다(2026-11-10 E5b: 판정을 transferCompleted 로 뺐다).
+        self.assertIn("} else if (transferCompleted(res)) {", body)
         # 여정 비중, 단계 이름, 조회 대상은 그대로다.
         self.assertEqual(journey_weights(baseline), {
             "balanceCheckJourney": 0.55, "transactionHistoryJourney": 0.25,
