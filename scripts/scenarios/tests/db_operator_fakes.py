@@ -47,10 +47,14 @@ def _node(name: str, address: str, control_plane: bool = False) -> dict:
                        "addresses": [{"type": "InternalIP", "address": address}]}}
 
 
-# 66 (z4-66-survey). The database pods in these fakes sit on tb-w2, so network sessions enter through tb-w1.
+# 66 (z4-66-survey). The database pods in these fakes sit on tb-w2; commerce pods run on tb-w1 and banking pods on
+# tb-w2 (the coupled domains, oracle_lock_remote.ENTRY_COUPLED_NAMESPACES). So banking sessions enter through tb-w3
+# (tb-w1 runs commerce) and the others through tb-w1.
 NODES = [_node("tb-cp", "192.168.122.77", control_plane=True), _node("tb-w1", "192.168.122.184"),
          _node("tb-w2", "192.168.122.11"), _node("tb-w3", "192.168.122.14")]
 ENTRY_ADDRESS = "192.168.122.184"
+BANKING_ENTRY_ADDRESS = "192.168.122.14"
+DOMAIN_NODES = {"rca-testbed-commerce": "tb-w1", "rca-testbed-banking": "tb-w2"}
 
 NODE_FS = {"capacityBytes": 100 * 1024**3, "usedBytes": 20 * 1024**3, "availableBytes": 80 * 1024**3}
 
@@ -60,8 +64,12 @@ def _kubectl(tmp: Path, extra_cases: str) -> str:
         f"  *'jsonpath={{.data.{key}}}'*) printf {base64.b64encode(value.encode()).decode()} ;;"
         for key, value in SECRET_VALUES.items()
     )
-    summary = '{"node":{"fs":' + str(NODE_FS).replace("'", '"') + "}}"
+    summary = ('{"node":{"fs":' + str(NODE_FS).replace("'", '"') + '},"pods":[{"podRef":{"namespace":"rca-testbed-food",'
+               '"name":"testbed-mysql-0"},"process_stats":{"process_count":1}}]}')
     nodes = json.dumps({"items": NODES})
+    domain_cases = "\n".join(
+        f"  *'-n {ns} get pods -o jsonpath={{range .items[*]}}{{.spec.nodeName}}'*) printf '%s\\n%s\\n' {node} {node} ;;"
+        for ns, node in DOMAIN_NODES.items())
     pod_json = ('{"spec":{"nodeName":"tb-w9","volumes":[{"name":"data",'
                 '"persistentVolumeClaim":{"claimName":"data-0"}}]}}')
     return f"""#!/usr/bin/env bash
@@ -71,6 +79,7 @@ case "$*" in
 {extra_cases}
   *" exec "*) echo "fake kubectl: exec refused" >&2; exit 97 ;;
   *"jsonpath={{.spec.nodeName}}"*) printf tb-w2 ;;
+{domain_cases}
   *"get nodes -o json"*) printf '%s' '{nodes}' ;;
   *hostIP*) printf 192.168.122.11 ;;
   *podIP*) printf 10.244.3.9 ;;
@@ -78,7 +87,8 @@ case "$*" in
 {secret_cases}
   *"get pods -l lucida.io/db-client=session -o name"*) mkdir -p {tmp}/pods; for f in {tmp}/pods/*; do [[ -e "$f" ]] && echo "pod/${{f##*/}}"; done ;;
   *" apply -f -"*) mkdir -p {tmp}/pods; y=$(cat); printf '%s\n' "$y" >>{tmp}/applied.yaml
-                   n=$(sed -n 's/^  name: //p' <<<"$y" | head -n 1); : >"{tmp}/pods/$n" ;;
+                   n=$(sed -n 's/^  name: //p' <<<"$y" | head -n 1)
+                   [[ -n "$n" ]] || n=$(jq -r '.metadata.name' <<<"$y"); : >"{tmp}/pods/$n" ;;
   *" wait --for="*) ;;
   *" attach -i -q "*) exec {sys.executable} {tmp}/fake_psql.py ;;
   *" delete pod "*|*" delete pod/"*) n="${{*##*pod }}"; n="${{n##*pod/}}"; n="${{n%% *}}"; rm -f "{tmp}/pods/$n" ;;

@@ -1,8 +1,9 @@
 """Bash side of the PostgreSQL sessions that tell an application or batch story (v4 C6b).
 
 db.lock (F01-R, F06-H)와 timeline 실행기 셋(timeline.multi 의 pg_lock 단계 F15-G,
-timeline_dual_fault F15-T1, timeline_lock_mock F15-H, F15-T2)의 잠금, 그리고 db.ddl 의 내보내기
-대기열(F66-R, F66-P, F67-H, F73-R)의 내보내기와 마이그레이션이 이 함수 묶음을 쓴다.
+timeline_dual_fault F15-T1, timeline_lock_mock F15-H, F15-T2)의 잠금이 이 함수 묶음을 쓴다. db.ddl 내보내기
+대기열(F66-R, F66-P, F67-H, F73-R)의 내보내기는 배치 Job(db_operator_remote 의 pdb_export_job)이고 마이그레이션은
+운영자 네트워크 세션(pdb_spawn)이다(수정 2회차).
 
 세션의 출처(사용자 결정 Q8, 2026-11-10): 정답지가 앱이나 배치 세션으로 그리는 PostgreSQL 세션은
 클러스터 안 파드에서 붙는다(파드 대역 주소, 앱 세션과 같은 대역). 러너 컨테이너에서 NodePort 로
@@ -14,8 +15,8 @@ timeline_dual_fault F15-T1, timeline_lock_mock F15-H, F15-T2)의 잠금, 그리�
   이라 노드 프로세스 표본에 sh, sleep 600 과 SQL 이 든 명령줄이 남았다. 이제 psql 은 stdin 을 기다리고
   러너가 ``kubectl attach`` 로 문장을 보낸다. 파드 정의에는 SQL 이 없다(잠금 파드). 보유 시간도
   러너가 센다.
-* 내보내기는 같은 파드에 ``kubectl exec`` 한 psql 하나다(출력이 exec 흐름으로 러너에 와서 러너의
-  읽기 속도에 맞춰진다. 파드 로그로 가지 않는다). 그 파드의 주 psql 이 마이그레이션 세션이다.
+* 파드는 DB 파드의 nodeSelector 로 도메인 노드에 둔다(리뷰 2회차 하). 다른 노드면 앱 이름 세션이 다른
+  도메인 파드 대역에서 온다.
 * 러너가 사라지면: attach 가 끊겨 stdin 이 닫히고(stdinOnce) psql 이 끝나 롤백한다. 끊김을 늦게
   알아채도 파드의 activeDeadlineSeconds(보유 + 여유)가 파드를 끝낸다.
 
@@ -24,6 +25,8 @@ timeline_dual_fault F15-T1, timeline_lock_mock F15-H, F15-T2)의 잠금, 그리�
 이름으로 세션을 죽이지 않는다(신원이 실 앱과 같다).
 """
 from __future__ import annotations
+
+import shlex
 
 HEREDOC_END = "PG_POD_DRIVER_SH"
 START_MARKER = "# ---- PostgreSQL client pod sessions (pg_lock_remote.py) ----"
@@ -34,6 +37,14 @@ CLIENT_CONTAINER = "client"
 ACQUIRE_TIMEOUT_SECONDS = 60
 # 러너가 사라졌을 때 파드가 스스로 끝나기까지 보유 시간 위로 더 두는 여유(초).
 DEADLINE_MARGIN_SECONDS = 60
+# The label the batch export Jobs carry (pdb_export_job), the way such jobs are labelled; nothing names the runner.
+PG_EXPORT_LABEL = "app.kubernetes.io/component=data-export"
+# The export pod's TCP receive buffer (min, default, max), set in the pod's own network namespace by a privileged init
+# container. Without it the kernel grows the buffer to megabytes and the server finishes early: 104 k3s, 11 MB at 40 s
+# nominal ended after 22 s without it and after 39 s with it (C6b 수정 2회차).
+PG_EXPORT_RMEM = "4096 8192 8192"
+# The export pod's reader: a second's pause every r rows (the old in-pod pacing).
+PG_EXPORT_PACE = 'NR % r == 0 { system("sleep 1") }'
 
 # The driver runs on the runner (never in a pod), in its own process group (setsid). It holds
 # `kubectl attach -i` to the pod's psql: lines written to DIR/in go to psql's stdin, psql's output is
@@ -72,6 +83,9 @@ def bash_functions() -> bytes:
             f"PGL_CONTAINER='{CLIENT_CONTAINER}'",
             f"PGL_ACQUIRE_TIMEOUT={ACQUIRE_TIMEOUT_SECONDS}",
             f"PGL_DEADLINE_MARGIN={DEADLINE_MARGIN_SECONDS}",
+            f"PDB_EXPORT_LABEL={shlex.quote(PG_EXPORT_LABEL)}",
+            f"PDB_EXPORT_RMEM={shlex.quote(PG_EXPORT_RMEM)}",
+            f"PDB_EXPORT_PACE={shlex.quote(PG_EXPORT_PACE)}",
             f"PGL_DRIVER_SRC=$(cat <<'{HEREDOC_END}'",
         ]
     )
@@ -79,6 +93,58 @@ def bash_functions() -> bytes:
 
 
 _FUNCTIONS = r'''
+# dbo_node_selector: the database pod's nodeSelector as JSON (its domain's pods share it), or its node by hostname.
+dbo_node_selector() {
+  dbo_k get pod "$DBO_POD" -o json | jq -ce \
+    'if (.spec.nodeSelector // {}) != {} then .spec.nodeSelector elif .spec.nodeName then {"kubernetes.io/hostname": .spec.nodeName} else empty end' \
+    || { echo "database pod $DBO_POD has no node to place a client next to" >&2; return 1; }
+}
+# pdb_export_job NAME SQL RATE DEADLINE APPNAME: the export as a batch Job in the database's namespace (v4 C6b 수정 2회차,
+# the answer keys tell an export job or a data job): one pod on the node its domain runs on (dbo_node_selector), so
+# the database sees a pod address like the services' and no export bytes cross another node. The pod runs psql and a
+# reader that takes the rows at a fixed pace (a second's pause every RATE rows), the old in-pod pacing. A privileged
+# init container first shrinks the pod's TCP receive buffer (PDB_EXPORT_RMEM, its own network namespace only), so the
+# reader's pace holds the server back (104 k3s: 11 MB at 40 s nominal and 195 MB at 60 s ended on time; without the
+# init container the 11 MB ended after 22 s). The Job ends itself: activeDeadlineSeconds DEADLINE, then the pod's psql closes
+# its session; finished Jobs are deleted after ttlSecondsAfterFinished. The password reaches psql from the Secret.
+pdb_export_job() {
+  local image sel
+  image="$(dbo_k get pod "$DBO_POD" -o 'jsonpath={.spec.containers[0].image}')" || return 1
+  [[ -n "$image" ]] || { echo "database pod image is unknown" >&2; return 1; }
+  sel="$(dbo_node_selector)" || return 1
+  [[ "$3" =~ ^[1-9][0-9]*$ && "$4" =~ ^[1-9][0-9]*$ ]] || { echo "export rate and deadline must be numbers" >&2; return 1; }
+  jq -n --arg name "$1" --arg sql "$2" --arg rate "$3" --argjson deadline "$4" --arg app "$5" --arg image "$image" \
+    --argjson sel "$sel" --arg selector "$PDB_EXPORT_LABEL" --arg host "$DBO_PG_CLUSTER_SERVICE" --arg secret "$DBO_PG_SECRET" \
+    --arg pace "$PDB_EXPORT_PACE" --arg rmem "$PDB_EXPORT_RMEM" '
+    ($selector | split("=")) as [$lk, $lv] |
+    def key($k): {name: $k, valueFrom: {secretKeyRef: {name: $secret, key: $k}}};
+    {apiVersion: "batch/v1", kind: "Job", metadata: {name: $name, labels: {($lk): $lv}},
+     spec: {backoffLimit: 0, activeDeadlineSeconds: $deadline, ttlSecondsAfterFinished: 300,
+      template: {metadata: {labels: {($lk): $lv}},
+       spec: {restartPolicy: "Never", terminationGracePeriodSeconds: 5, nodeSelector: $sel,
+        initContainers: [{name: "net-tuning", image: $image, command: ["sysctl", "-w", ("net.ipv4.tcp_rmem=" + $rmem)],
+                          securityContext: {privileged: true}}],
+        containers: [{name: "export", image: $image,
+         command: ["sh", "-c", "psql -X -q -c \"$SQL\" | awk -v r=\"$RATE\" \"$PACE\""],
+         env: [{name: "PGHOST", value: $host}, {name: "PGAPPNAME", value: $app},
+               {name: "SQL", value: $sql}, {name: "RATE", value: $rate}, {name: "PACE", value: $pace},
+               (key("POSTGRES_USER") | .name = "PGUSER"), (key("POSTGRES_DB") | .name = "PGDATABASE"),
+               (key("POSTGRES_PASSWORD") | .name = "PGPASSWORD")]}]}}}}' \
+    | dbo_k apply -f - >/dev/null
+}
+pdb_export_name() { printf '%s-data-export-%s' "${DBO_NS##*-}" "$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"; }
+pdb_export_left() { { dbo_k get jobs -l "$PDB_EXPORT_LABEL" -o name; dbo_k get pods -l "$PDB_EXPORT_LABEL" -o name; } 2>/dev/null | tr -d '\r'; }
+# pdb_export_gone: no export Job or pod is left (one an earlier run lost waits for its deadline and TTL).
+pdb_export_gone() { [[ -z "$(pdb_export_left)" ]] || { echo "an export job is still there: $(pdb_export_left | tr '\n' ' ')" >&2; return 1; }; }
+# pdb_delete_exports: delete every export Job (and its pod) and wait until they are gone.
+pdb_delete_exports() {
+  local j
+  for j in $(dbo_k get jobs -l "$PDB_EXPORT_LABEL" -o name 2>/dev/null); do
+    dbo_k delete "$j" --cascade=foreground --ignore-not-found --wait=false >/dev/null || return 1
+  done
+  for _ in $(seq 1 60); do [[ -z "$(pdb_export_left)" ]] && return 0; sleep 1; done
+  pdb_export_gone
+}
 # pgl_lock_sql SCHEMA TABLE SCOPE MODE KEYCOL KEYVAL: the statement that takes the lock.
 pgl_lock_sql() {
   case "$3" in
@@ -121,9 +187,12 @@ pgl_idle() { if pgl_alive "$1"; then echo "a PostgreSQL client session from $1 i
 pgl_pod() {
   local dir="$1" name="$2" identity="$3" deadline="$4"; shift 4
   local image="${PGL_IMAGE:-}" service="${PGL_SERVICE:-$DBO_PG_CLUSTER_SERVICE}" secret="${PGL_SECRET:-$DBO_PG_SECRET}"
-  local args="" a
+  local args="" a sel
   [[ -n "$image" ]] || image="$(dbo_k get pod "$DBO_POD" -o 'jsonpath={.spec.containers[0].image}')" || return 1
   [[ -n "$image" ]] || { echo "database pod image is unknown" >&2; return 1; }
+  # On the node the domain's pods run on (C6b review 2): elsewhere the application's name would come from another
+  # domain's pod range.
+  sel="$(dbo_node_selector)" || return 1
   for a in -X -q -At "$@"; do args+="${args:+, }$(jq -cn --arg v "$a" '$v')"; done
   mkdir -p -- "$dir"
   printf '%s\n' "$name" >>"$dir/pods"
@@ -138,6 +207,7 @@ metadata:
 spec:
   restartPolicy: Never
   terminationGracePeriodSeconds: 1
+  nodeSelector: ${sel}
   activeDeadlineSeconds: $(( deadline + PGL_DEADLINE_MARGIN ))
   containers:
     - name: ${PGL_CONTAINER}

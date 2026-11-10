@@ -61,18 +61,48 @@ CLIENT_OSUSER = "dba"
 CLIENT_DRIVER = "jdbcthin : 23.7.0.25.1"
 
 
-# 네트워크 세션이 들어갈 노드(v4 C6b 수정 1회차, 사용자 결정 Q8): 준비된 워커 가운데 DB 파드의 노드도 컨트롤
-# 플레인도 아닌 첫 노드(이름순)의 InternalIP. NodePort(externalTrafficPolicy Cluster)로 다른 노드에 들어온 연결은
-# 그 노드의 flannel.1 주소(10.244.N.0)로 SNAT 된다. DB 파드 노드로 들어오면 cni0 주소(10.244.N.1)가 되어 DPM 관제
-# 세션과 같고(66 녹화 f72-r, f63-r 의 lucida_mon 10.244.3.1), 컨트롤 플레인으로 들어오면 러너 부하와 같은
-# 10.244.0.0 이 된다(z4-66-survey). 셋 다 피한다.
+# 네트워크 세션이 들어갈 노드(v4 C6b 수정 1회차, 사용자 결정 Q8, 수정 2회차): 준비된 워커 가운데 DB 파드의 노드도
+# 컨트롤 플레인도 아니고, DB 도메인과 서로 부르는 도메인(ENTRY_COUPLED_NAMESPACES)의 파드가 도는 노드도 아닌 첫
+# 노드(이름순)의 InternalIP. NodePort(externalTrafficPolicy Cluster)로 다른 노드에 들어온 연결은 그 노드의 flannel.1
+# 주소(10.244.N.0)로 SNAT 된다. DB 파드 노드로 들어오면 cni0 주소(10.244.N.1)가 되어 DPM 관제 세션과 같고(66 녹화
+# f72-r, f63-r 의 lucida_mon 10.244.3.1), 컨트롤 플레인으로 들어오면 러너 부하와 감별 관측(러너 자신의 세션)과 같은
+# 10.244.0.0 이 된다(z4-66-survey). 서로 부르는 도메인의 노드로 들어오면 잠금 보유자나 내보내기 바이트가 증상
+# 도메인 쪽에서 온 것처럼 읽힌다(리뷰 2회차 중 2, 중 3). 넷 다 피한다. 66: banking Oracle(tb-w2)과 commerce
+# PostgreSQL(tb-w1)은 tb-w3, food MySQL(tb-w3)은 tb-w1.
 ENTRY_NODE_JQ = (
-    '[.items[] | select(.metadata.name != $db)'
+    '[.items[] | select(.metadata.name != $db) | select(.metadata.name as $n | $avoid | index($n) | not)'
     ' | select((.metadata.labels // {}) | has("node-role.kubernetes.io/control-plane") | not)'
     ' | select((.spec.unschedulable // false) | not)'
     ' | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))]'
     ' | sort_by(.metadata.name) | .[0].status.addresses[]? | select(.type == "InternalIP") | .address'
 )
+# DB 네임스페이스 -> 그 DB 의 장애가 증상으로 번지거나 그 DB 와 망을 나누는 도메인. commerce 결제가 banking 이체를
+# 부른다(z4-66-survey 노드를 건너는 경로 ③).
+ENTRY_COUPLED_NAMESPACES = {
+    "rca-testbed-banking": ("rca-testbed-commerce",),
+    "rca-testbed-commerce": ("rca-testbed-banking",),
+}
+
+
+def entry_node_function(kubeconfig: str) -> str:
+    """Bash ora_entry_node NS DB_POD with the given kubeconfig expression (one source for both function sets)."""
+    cases = "\n".join(f"    {ns}) coupled=({' '.join(others)}) ;;" for ns, others in ENTRY_COUPLED_NAMESPACES.items())
+    return (
+        "ora_entry_node() {\n"
+        "  local db_node c out coupled=() avoid=()\n"
+        f"  db_node=\"$(kubectl --kubeconfig {kubeconfig} -n \"$1\" get pod \"$2\" -o 'jsonpath={{.spec.nodeName}}')\" || return 1\n"
+        "  [[ -n \"$db_node\" ]] || { echo \"database pod $2 has no node\" >&2; return 1; }\n"
+        "  case \"$1\" in\n" + cases + "\n    *) ;;\n  esac\n"
+        "  for c in \"${coupled[@]}\"; do\n"
+        f"    out=\"$(kubectl --kubeconfig {kubeconfig} -n \"$c\" get pods "
+        "-o 'jsonpath={range .items[*]}{.spec.nodeName}{\"\\n\"}{end}')\" || return 1\n"
+        "    mapfile -t -O \"${#avoid[@]}\" avoid <<<\"$out\"\n"
+        "  done\n"
+        f"  kubectl --kubeconfig {kubeconfig} get nodes -o json \\\n"
+        "    | jq -r --arg db \"$db_node\" --argjson avoid \"$(printf '%s\\n' \"${avoid[@]}\" | jq -Rsc 'split(\"\\n\") | map(select(length > 0))')\" \"$ORA_ENTRY_NODE_JQ\" \\\n"
+        "    | grep -E '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$' || { echo \"no worker node to enter through besides $db_node and the coupled domains\" >&2; return 1; }\n"
+        "}\n"
+    )
 
 
 def client_source() -> str:
@@ -107,21 +137,15 @@ def bash_functions() -> bytes:
             f"ORA_SRC=$(cat <<'{HEREDOC_END}'",
         ]
     )
-    return (header + "\n" + client_source() + HEREDOC_END + "\n)\n" + _FUNCTIONS).encode()
+    functions = _FUNCTIONS.replace("@@ENTRY_NODE@@", entry_node_function("/root/tb-kubeconfig"))
+    return (header + "\n" + client_source() + HEREDOC_END + "\n)\n" + functions).encode()
 
 
 _FUNCTIONS = r'''
 # ora_entry_node NS DB_POD: 세션이 들어갈 노드의 주소(ENTRY_NODE_JQ, v4 C6b 수정 1회차). DB 파드가 없는
 # 일반 워커의 NodePort 로 붙어야 DB 가 보는 출발 주소가 그 노드의 overlay 주소가 되어, DPM 관제 세션(DB 파드
 # 노드의 cni0 주소)과도 러너 부하(컨트롤 플레인 노드를 거친 주소)와도 갈린다.
-ora_entry_node() {
-  local db_node
-  db_node="$(kubectl --kubeconfig /root/tb-kubeconfig -n "$1" get pod "$2" -o 'jsonpath={.spec.nodeName}')" || return 1
-  [[ -n "$db_node" ]] || { echo "database pod $2 has no node" >&2; return 1; }
-  kubectl --kubeconfig /root/tb-kubeconfig get nodes -o json | jq -r --arg db "$db_node" "$ORA_ENTRY_NODE_JQ" \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || { echo "no worker node without $db_node to enter through" >&2; return 1; }
-}
-# ora_prepare NS DB_POD: 리스너 주소와 앱 계정을 읽어 env 로 내보낸다. DB 파드는 조회만 한다.
+@@ENTRY_NODE@@# ora_prepare NS DB_POD: 리스너 주소와 앱 계정을 읽어 env 로 내보낸다. DB 파드는 조회만 한다.
 ora_prepare() {
   local ns="$1" db_pod="$2" host port
   local k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")

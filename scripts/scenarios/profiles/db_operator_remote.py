@@ -68,6 +68,10 @@ POSTGRES_PORT = 5432
 POSTGRES_SECRET = "postgres-secret"
 # The Service the applications use inside the cluster (client pods connect through it, pg_lock_remote).
 POSTGRES_CLUSTER_SERVICE = "testbed-postgres"
+# MySQL Shell as the launcher of the paced export client (mdb_pod_spawn): no option files (the image's [client] socket
+# would make it connect), no log file and no credential store (nothing written in the database container), Python.
+# --no-defaults must come first.
+MYSQLSH_LAUNCH = ("--no-defaults", "--log-file=/dev/null", "--credential-store-helper=<disabled>", "--py")
 
 # 오래 사는 PostgreSQL 세션에만 거는 서버 쪽 끊김 감지(세션 시작 옵션이라 문장이 아니다).
 # 쉬는 연결은 keepalive 60초 + 10초 x 6 이면 끊고, 보낸 데이터가 120초 동안 확인되지 않으면 끊는다.
@@ -104,6 +108,7 @@ def bash_functions() -> bytes:
             f"DBO_PG_SERVICE={q(POSTGRES_SERVICE)} DBO_PG_PORT={POSTGRES_PORT} DBO_PG_SECRET={q(POSTGRES_SECRET)}",
             f"DBO_PG_CLUSTER_SERVICE={q(POSTGRES_CLUSTER_SERVICE)}",
             f"PDB_KEEPALIVE={q(PG_KEEPALIVE)}",
+            "MYSQLSH_LAUNCH=(" + " ".join(q(a) for a in MYSQLSH_LAUNCH) + ")",
             f"ORA_ENTRY_NODE_JQ={q(oracle_lock_remote.ENTRY_NODE_JQ)}",
             f"export CLIENT_PROGRAM={q(oracle_lock_remote.CLIENT_PROGRAM)}",
             f"export CLIENT_MACHINE={q(oracle_lock_remote.CLIENT_MACHINE)}",
@@ -113,7 +118,8 @@ def bash_functions() -> bytes:
         ]
     )
     roles = _role_table("dbo_oracle_role", ORACLE_ROLES) + _role_table("dbo_mysql_role", MYSQL_ROLES)
-    return (header + "\n" + client_source() + HEREDOC_END + "\n)\n" + roles + _FUNCTIONS + END_MARKER + "\n").encode()
+    functions = _FUNCTIONS.replace("@@ENTRY_NODE@@", oracle_lock_remote.entry_node_function('"$DBO_KUBECONFIG"'))
+    return (header + "\n" + client_source() + HEREDOC_END + "\n)\n" + roles + functions + END_MARKER + "\n").encode()
 
 
 _FUNCTIONS = r'''
@@ -125,8 +131,8 @@ dbo_endpoint() {
   local port
   [[ -n "${DBO_NS:-}" && -n "${DBO_POD:-}" ]] || { echo "db_target was not called" >&2; return 1; }
   if [[ -z "${DBO_HOST:-}" ]]; then
-    # Through a worker that does not run the database pod and is not the control plane (ENTRY_NODE_JQ), so the
-    # database sees neither the DPM collector's address nor the runner load's.
+    # Through a worker that runs neither the database pod nor the control plane nor a coupled domain (ENTRY_NODE_JQ),
+    # so the database sees neither the DPM collector's address nor the runner's (load and probes).
     DBO_HOST="$(ora_entry_node "$DBO_NS" "$DBO_POD")" || { DBO_HOST=""; return 1; }
   fi
   port="$(dbo_k get svc "$1" -o "jsonpath={.spec.ports[?(@.port==$2)].nodePort}")" || return 1
@@ -135,14 +141,7 @@ dbo_endpoint() {
 }
 # ora_entry_node NS DB_POD: the InternalIP of the node network sessions enter through (same function as in
 # oracle_lock_remote; defined here too so a body that carries only these functions has it).
-ora_entry_node() {
-  local db_node
-  db_node="$(kubectl --kubeconfig "$DBO_KUBECONFIG" -n "$1" get pod "$2" -o 'jsonpath={.spec.nodeName}')" || return 1
-  [[ -n "$db_node" ]] || { echo "database pod $2 has no node" >&2; return 1; }
-  kubectl --kubeconfig "$DBO_KUBECONFIG" get nodes -o json | jq -r --arg db "$db_node" "$ORA_ENTRY_NODE_JQ" \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || { echo "no worker node without $db_node to enter through" >&2; return 1; }
-}
-# dbo_secret SECRET KEY: one decoded value. A key spelled "=name" is that literal name.
+@@ENTRY_NODE@@# dbo_secret SECRET KEY: one decoded value. A key spelled "=name" is that literal name.
 dbo_secret() {
   if [[ "$2" == =* ]]; then printf '%s' "${2#=}"; return 0; fi
   local v
@@ -250,7 +249,6 @@ pdb_pod() {
 # dbo_run_dir NAME: the directory for one body's background logs, on the runner (never in the pod). The
 # spawn functions create it; the body's cleanup removes it.
 dbo_run_dir() { printf '%s' "${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}/$1"; }
-DBO_PACE='NR % r == 0 { system("sleep 1") }'
 # pdb_spawn SQL LOG APPNAME: one PostgreSQL statement in the background, with server-side dead-peer
 # detection on its connection (PDB_KEEPALIVE) so it cannot outlive a runner that vanished.
 pdb_spawn() {
@@ -260,35 +258,32 @@ pdb_spawn() {
     setsid nohup bash -c 'psql -X -q -c "$SQL"' </dev/null >"$2" 2>&1 &
   printf '%s\n' "$!" >"$2.pgid"
 }
-# pdb_spawn_paced SQL RATE LOG APPNAME: an export (COPY ... TO STDOUT) taken by a reader that pauses a
-# second every RATE rows, in the background. psql reaches the server through the client's relay (pg-relay:
-# a Unix socket in the log's directory, then TCP with a small receive buffer), so the server keeps waiting
-# on the reader as it did with psql inside the pod; see PACED_RCVBUF in db_operator_session.py.
-pdb_spawn_paced() {
-  local dir; dir="$(dirname -- "$3")"
-  mkdir -p -- "$dir" || return 1
-  pdb_env || return 1
-  PG_UPSTREAM_HOST="$PGHOST" PG_UPSTREAM_PORT="$PGPORT" RELAY_DIR="$dir" DBO_PY="$dbo_py" DBO_SRC="$DBO_SRC" \
-    PGAPPNAME="$4" PGOPTIONS="$PDB_KEEPALIVE" SQL="$1" RATE="$2" DBO_PACE="$DBO_PACE" \
-    setsid nohup bash -c '
-      "$DBO_PY" -c "$DBO_SRC" pg-relay "$RELAY_DIR" "$PGPORT" &
-      for _ in $(seq 1 50); do [[ -S "$RELAY_DIR/.s.PGSQL.$PGPORT" ]] && break; sleep 0.1; done
-      PGHOST="$RELAY_DIR" psql -X -q -c "$SQL" | awk -v r="$RATE" "$DBO_PACE"
-      wait' </dev/null >"$3" 2>&1 &
-  printf '%s\n' "$!" >"$3.pgid"
-}
 
-# mdb_pod_spawn ROLE DB SQL LOG [RATE]: one mysql client inside the database pod, the process an operator runs on
+# mdb_pod_spawn ROLE DB SQL LOG [DEADLINE]: one mysql client inside the database pod, the process an operator runs on
 # the database host (v4 C6b 수정 1회차, user decision Q8, for the answer keys that tell root@localhost and
-# fooddelivery@localhost sessions). The exec starts `mysql` itself, no shell: the pod shows that
-# one process, over the local socket (user@localhost). The password reaches it on stdin as an option file (never on
-# a command line). The runner side runs in its own process group, recorded in LOG.pgid for dbo_reap.
-#   Without PACED (a migration): `kubectl exec -i`; its output is a line or two.
-#   With PACED (an export): the rows come back to the runner through the client's pod-exec, which reads only as
-#   fast as it is told (kubectl exec would take the whole stream into memory at once). The stream path between
-#   the pod and the runner still holds about 34 MB (k3s 1.31), so mdb_pod_pace sets a byte rate that makes the
-#   server finish when the export should; until then the reader waits. The old pacing was an `| awk` inside the
-#   pod; nothing but the client runs there now.
+# fooddelivery@localhost sessions). No shell in the pod: the pod shows that one client process, over the local socket
+# (user@localhost). The password reaches it on stdin as an option file (never on a command line). The runner side
+# runs in its own process group, recorded in LOG.pgid for dbo_reap.
+#   Without DEADLINE (a migration): `kubectl exec -i mysql ...`; its output is a line or two, so it ends with its
+#   statement.
+#   With DEADLINE (an export, seconds): the rows come back to the runner through the client's pod-exec, which reads
+#   only as fast as it is told (kubectl exec would take the whole stream into memory at once). The stream path between
+#   the pod and the runner still holds about 30 MB (k3s 1.31, 1.33), so mdb_pod_pace sets a byte rate that makes the
+#   server finish when the export should; until then the reader waits.
+#   If the runner side vanishes, containerd keeps the exec's output pipe open and nobody reads it: the client would
+#   stay blocked writing it for good (C6b review 2, containerd 1.7 and 2.1). So the client ends itself DEADLINE seconds
+#   after it starts: mysqlsh (the MySQL Shell in the image) arms SIGALRM and replaces itself with the mysql client
+#   (execvp, same process), and the pending alarm survives the exec. No second process, no shell, no sleep: for a
+#   second or two the pod shows mysqlsh, then only mysql (MYSQLSH_ALARM_EXEC).
+# mdb_alarm_exec SECONDS ARGV...: the MySQL Shell Python that arms SIGALRM for SECONDS and execs ARGV in its place.
+# The disposition is set to default and the signal unblocked first, since both survive the exec. The argument list is
+# written as JSON, which Python reads as the same list of strings.
+mdb_alarm_exec() {
+  local s="$1" a list='[]'; shift
+  for a in "$@"; do list="$(jq -c --arg a "$a" '. + [$a]' <<<"$list")" || return 1; done
+  printf 'import os, signal; signal.signal(signal.SIGALRM, signal.SIG_DFL); signal.pthread_sigmask(signal.SIG_UNBLOCK, [signal.SIGALRM]); signal.alarm(%s); a = %s; os.execvp(a[0], a)' \
+    "$s" "$list"
+}
 mdb_pod_spawn() {
   mdb_env "$1" || return 1
   local u="MDB_${1^^}_USER" p="MDB_${1^^}_PASSWORD" cmd quoted pw kconf
@@ -296,6 +291,10 @@ mdb_pod_spawn() {
   cmd=(mysql --defaults-extra-file=/dev/stdin "-u${!u}")
   [[ -z "${5:-}" ]] || cmd+=(--quick -N -B)
   cmd+=("$2" -e "$3")
+  if [[ -n "${5:-}" ]]; then
+    [[ "$5" =~ ^[1-9][0-9]*$ ]] || { echo "deadline is not a number of seconds: '$5'" >&2; return 1; }
+    cmd=(mysqlsh "${MYSQLSH_LAUNCH[@]}" -e "$(mdb_alarm_exec "$5" "${cmd[@]}")")
+  fi
   pw="${!p//\\/\\\\}"; pw="${pw//\"/\\\"}"
   if [[ -z "${5:-}" ]]; then
     quoted="$(printf '%q ' "${cmd[@]}")"
@@ -397,6 +396,29 @@ node_fs() {
   summary="$(kubectl --kubeconfig "$DBO_KUBECONFIG" get --raw "/api/v1/nodes/$node/proxy/stats/summary")" || return 1
   jq -r --arg unit "$unit" '.node.fs | (if $unit == "KB" then 1024 else 1048576 end) as $d
     | [(.capacityBytes / $d | floor), (.usedBytes / $d | floor), (.availableBytes / $d | floor)] | map(tostring) | join(" ")' <<<"$summary"
+}
+# dbo_pod_processes: the process count of the database pod, from the kubelet summary API of its node (no exec).
+dbo_pod_processes() {
+  local node
+  node="$(dbo_k get pod "$DBO_POD" -o 'jsonpath={.spec.nodeName}')" || return 1
+  [[ -n "$node" ]] || { echo "database pod $DBO_POD has no node" >&2; return 1; }
+  kubectl --kubeconfig "$DBO_KUBECONFIG" get --raw "/api/v1/nodes/$node/proxy/stats/summary" \
+    | jq -r --arg ns "$DBO_NS" --arg pod "$DBO_POD" \
+      '[.pods[]? | select(.podRef.namespace == $ns and .podRef.name == $pod) | .process_stats.process_count // empty] | .[0] // empty'
+}
+# mdb_pod_alone: the MySQL server is the only process in its pod, so no client of an earlier run is left there (one
+# the runner lost, before its deadline ended it). The kubelet refreshes the count every 10 to 15 s, so a client that
+# just ended is given about 45 s to drop out of it.
+mdb_pod_alone() {
+  local n="" i
+  for ((i = 0; i < 10; i++)); do
+    n="$(dbo_pod_processes)" || return 1
+    [[ "$n" =~ ^[0-9]+$ ]] || { echo "the kubelet summary has no process count for $DBO_POD" >&2; return 1; }
+    (( n == 1 )) && return 0
+    sleep 5
+  done
+  echo "$((n - 1)) process(es) besides the database server in $DBO_POD" >&2
+  return 1
 }
 '''
 

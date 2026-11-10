@@ -239,7 +239,10 @@ class PostgresLockContractTests(unittest.TestCase):
                 for line in (f"image: {contract['image']}", 'value: "PostgreSQL JDBC Driver"',
                              f'value: "{contract["service"]}"', f"name: {contract['secret']}, key: POSTGRES_PASSWORD",
                              'command: ["psql", "-X", "-q", "-At"]',
-                             f"activeDeadlineSeconds: {contract['hold_seconds'] + pg_lock_remote.DEADLINE_MARGIN_SECONDS}"):
+                             f"activeDeadlineSeconds: {contract['hold_seconds'] + pg_lock_remote.DEADLINE_MARGIN_SECONDS}",
+                             # On the database pod's node, where the domain's services run (C6b review 2); the fake
+                             # database pod has no nodeSelector, so its node by hostname.
+                             'nodeSelector: {"kubernetes.io/hostname":"tb-w9"}'):
                     self.assertIn(line, pod)
                 self.assertNotIn("SELECT", pod)
                 expected = ("SELECT product_id FROM inventory_schema.inventory WHERE product_id='1' FOR UPDATE;"

@@ -441,7 +441,11 @@ class DbHostFoundations(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn("lock_wait_timeout=10", cleanup)
         # preflight 만 고아 이력을 센다(전체 조인이라 run 에서는 다시 하지 않는다).
-        self.assertIn(" preflight) check; [[ \"$(orphans)\" == 0 ]] ;;", script)
+        self.assertIn(" preflight) check; [[ \"$(orphans)\" == 0 ]]; mdb_pod_alone ;;", script)
+        # A client an earlier run left in the database pod stops preflight and recovery; cleanup waits it out
+        # (C6b review 2).
+        self.assertIn(" recovery) rows; original; mdb_pod_alone ;;", script)
+        self.assertRegex(cleanup, r"\n  original\n  mdb_pod_alone\n  ;;")
         self.assertNotIn("orphans", run)
         # 행, 인덱스, 부모 표는 손대지 않는다.
         for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "rename "):
@@ -572,27 +576,35 @@ class DbHostFoundations(unittest.TestCase):
         run = script[script.index(" run)"):script.index(" cleanup)")]
         # 순서: 확인 → 행 추정으로 속도 → 내보내기를 백그라운드로 → 그 잠금 확인 → 마이그레이션을 백그라운드로 →
         # 내보내기 뒤에서 기다리는지 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 둘 다 기다리지 않는다.
-        # v4 C6b: 두 세션은 러너의 백그라운드 클라이언트다. 내보내기는 받는 쪽이 천천히 받는 꼴 그대로(pdb_spawn_paced).
-        order = ["  check\n", "reltuples", "rate=$(( est / export_seconds + 1 ))",
-                 'pdb_spawn_paced "$export_sql" "$rate" "$export_log" "$identity"',
+        # v4 C6b 수정 2회차: 내보내기는 정답지의 배치 작업 그대로 DB 네임스페이스의 Job(도메인 노드, 파드 주소)이고, 마이그레이션은
+        # 운영자 세션이다(러너의 백그라운드 클라이언트). Job 은 내보내기, drain, 1분 뒤 스스로 끝난다(U8).
+        order = ["  check\n", "reltuples", "rate=$(( est / export_seconds + 1 ))", 'job="$(pdb_export_name)"',
+                 'pdb_export_job "$job" "$export_sql" "$rate" "$deadline" "$identity"',
                  "l.granted", 'pdb_spawn "$migration_sql" "$migration_log" "$identity"', "pg_blocking_pids(m.pid)"]
         positions = [run.index(x) for x in order]
         self.assertEqual(positions, sorted(positions))
-        self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 2)
+        self.assertIn("deadline=$(( export_seconds + drain + 60 ))", script)
+        self.assertEqual(run.count("for _ in $(seq 1 60); do"), 1)
+        self.assertEqual(run.count("for _ in 1 2 3 4 5 6 7 8 9 10; do"), 1)
         self.assertEqual(run.count("sleep 1\n"), 2)
+        self.assertNotIn("pdb_spawn_paced", script)
         self.assertNotIn("pg_sleep", script)
         # 어느 쪽이 자리를 잡지 못하면 띄운 것을 거두고 멈춘다.
         self.assertIn("|| { stop_export;", run)
-        self.assertIn("cancel_migration; stop_export", run)
+        self.assertIn("cancel_migration; stop_export; pdb_delete_exports", run)
         cleanup = script[script.index(" cleanup)"):script.index(" recovery)")]
-        # cleanup 은 내보내기가 스스로 끝나기를 drain 까지 기다리고, 남았으면 끝내고 마이그레이션을 취소한 뒤 열을 지운다.
+        # cleanup 은 내보내기가 스스로 끝나기를 drain 까지 기다리고, 남았으면 끝내고 마이그레이션을 취소한 뒤 열을 지우고
+        # 내보내기 Job 을 지운다.
         order = ["end=$((SECONDS + drain))", "stop_export", "cancel_migration", "DROP COLUMN IF EXISTS $column",
-                 "rm -rf"]
+                 "pdb_delete_exports", "dbo_reap", "rm -rf"]
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("SET lock_timeout = '5s'", cleanup)
         self.assertRegex(cleanup, r"\n  original\n  ;;")
-        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;', script)
+        # 앞 회차가 잃어버린 내보내기 Job 이 남아 있으면 preflight(check)와 recovery 가 멈춘다.
+        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]]; pdb_export_gone ;;', script)
+        check = script[script.index("check() {"):script.index("\n}\n", script.index("check() {"))]
+        self.assertIn("pdb_export_gone", check)
         # 세션은 문장으로 찾은 pid 로만 끝내거나 취소한다. 행, 인덱스, 다른 표, 권한은 손대지 않는다.
         self.assertIn("pg_terminate_backend($pid)", script)
         self.assertIn("pg_cancel_backend($pid)", script)
@@ -644,8 +656,8 @@ class DbHostFoundations(unittest.TestCase):
         # 더하는 열은 기본값도 NOT NULL 도 없어 카탈로그만 바꾼다.
         self.assertNotIn("DEFAULT", p["add_column_type"].upper())
         self.assertNotIn("NOT NULL", p["add_column_type"].upper())
-        # 로그 파일 이름에 시나리오 id 가 없다(v4 C6b: 러너의 상태 디렉터리, 파드가 아니다).
-        self.assertIn("export_log=event-export.log", branch)
+        # 실행 폴더 이름에 시나리오 id 가 없다(v4 C6b: 러너의 상태 디렉터리, 파드가 아니다). 내보내기 Job 이름도
+        # 도메인과 무작위 꼬리뿐이다(pdb_export_name).
         self.assertIn('run_dir="$(dbo_run_dir "db-ddl-queue-$schema-$table")"', script)
         # 24시간 보존 약 7만 2천 행: 내보내기 시작 조건(행 추정 >= 100 x 420)과 preflight 최소 행.
         self.assertLessEqual(100 * p["export_seconds"], 72000)
@@ -700,7 +712,7 @@ class DbHostFoundations(unittest.TestCase):
         # 백그라운드로(root) → 메타데이터 잠금 대기 확인. run 은 러너 coordinator lock(30초 lease)을 쥔 채 돌므로 기다리지 않는다.
         # v4 C6b(사용자 결정 Q8): 두 세션은 DB 파드 안의 mysql 클라이언트다(정답지의 fooddelivery@localhost,
         # root@localhost). 내보내기 행은 러너가 정한 바이트 속도로만 읽혀 서버가 export_seconds 동안 보낸다(mdb_pod_pace).
-        order = ["  check\n", "table_rows", 'mdb_pod_spawn app "$db" "$export_sql" "$export_log" paced',
+        order = ["  check\n", "table_rows", 'mdb_pod_spawn app "$db" "$export_sql" "$export_log" "$deadline"',
                  "lock_status = 'GRANTED'", 'mdb_pod_pace "$export_log" "$id" "$est"',
                  'mdb_pod_spawn root "$db" "$migration_sql" "$migration_log"',
                  "'Waiting for table metadata lock'"]
@@ -723,8 +735,13 @@ class DbHostFoundations(unittest.TestCase):
         positions = [cleanup.index(x) for x in order] + [cleanup.rindex("original")]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("SET SESSION lock_wait_timeout = 5", cleanup)
-        self.assertRegex(cleanup, r"\n  original\n  ;;")
-        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;', script)
+        self.assertRegex(cleanup, r"\n  original\n  mdb_pod_alone\n  ;;")
+        # 러너가 사라져도 파드 안 내보내기 클라이언트는 기한(내보내기 + drain + 2분)에 스스로 끝나고(mdb_pod_spawn
+        # DEADLINE), 그 전에는 preflight(check)와 recovery 가 그 클라이언트를 감지해 멈춘다(C6b 리뷰 2회차 상 2).
+        self.assertIn("deadline=$(( export_seconds + drain + 120 ))", script)
+        self.assertIn(' recovery) rows; original; [[ "$(waiting)" == 0 ]]; mdb_pod_alone ;;', script)
+        check = script[script.index("check() {"):script.index("\n}\n", script.index("check() {"))]
+        self.assertIn("mdb_pod_alone", check)
         # 세션은 문장으로 찾은 id 로만 끝낸다. 행, 인덱스, 다른 표, 권한은 손대지 않는다.
         self.assertIn("KILL QUERY $id;", script)
         for word in ("drop table", "drop index", "delete ", "truncate", "insert ", "update ", "revoke", "grant ",

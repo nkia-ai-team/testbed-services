@@ -191,6 +191,7 @@ import shlex
 from typing import Any
 
 import db_operator_remote
+import pg_lock_remote
 from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
 
 PROFILE_ID = "db.ddl"
@@ -1142,7 +1143,7 @@ check() {
 # A child row whose parent is gone fails the copy part way (1452) and ends the lock early.
 orphans() { number "$(mysql "SELECT COUNT(*) FROM $table c LEFT JOIN $parent p ON p.$parent_column = c.$column WHERE p.$parent_column IS NULL;")"; }
 case "$action" in
- preflight) check; [[ "$(orphans)" == 0 ]] ;;
+ preflight) check; [[ "$(orphans)" == 0 ]]; mdb_pod_alone ;;
  run)
   check
   mdb_pod_spawn root "$db" "$statement" "$log"
@@ -1172,8 +1173,9 @@ case "$action" in
   dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
+  mdb_pod_alone
   ;;
- recovery) rows; original ;;
+ recovery) rows; original; mdb_pod_alone ;;
  *) exit 2 ;;
 esac
 ''')
@@ -1183,7 +1185,9 @@ PG_QUEUE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; schema="$4"; table="$5"; column="$6"; ctype="$7"; join="$8"; join_column="$9"
 export_seconds="${10}"; drain="${11}"; minimum="${12}"; max_sessions="${13}"; export_columns="${14:-}"
-# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+# v4 C6b (second revision): the probes and the migration are operator sessions through the listener (a worker that runs neither
+# the database nor a coupled domain); the export is the batch job the answer keys tell, a Job in the database's
+# namespace on its domain's node (pdb_export_job), so the database sees a pod address. Nothing runs in the database pod.
 db_target "$ns" "$pod"
 pdb_env
 # Probes travel in the environment and run untracked by pg_stat_statements, so none of them reaches Top SQL;
@@ -1199,19 +1203,17 @@ rel="$schema.$table"
 if [[ -n "$export_columns" && -n "$join" ]]; then
   export_sql="COPY (SELECT $export_columns FROM $rel m JOIN $join i ON i.$join_column = m.id) TO STDOUT"
   paced="$join"
-  export_log=sales-export.log
 elif [[ -n "$export_columns" ]]; then
   export_sql="COPY (SELECT $export_columns FROM $rel) TO STDOUT"
   paced="$rel"
-  export_log=event-export.log
 else
   export_sql="COPY (SELECT u.id, u.email, u.name, t.created_at, t.expires_at FROM $rel u JOIN $schema.$join t ON t.$join_column = u.id) TO STDOUT"
   paced="$schema.$join"
-  export_log=user-export.log
 fi
-# Both clients run on the runner in the background (v4 C6b; they used to run inside the pod).
+# The migration's client runs on the runner in the background; the export runs in its own Job.
 run_dir="$(dbo_run_dir "db-ddl-queue-$schema-$table")"
-export_log="$run_dir/$export_log"
+# The export Job ends itself when the export, the drain bound and a minute have passed (U8), even without the runner.
+deadline=$(( export_seconds + drain + 60 ))
 migration_sql="ALTER TABLE $rel ADD COLUMN $column $ctype"
 # Both connect the way the application's own tools do (the driver's default application name).
 identity="PostgreSQL JDBC Driver"
@@ -1238,6 +1240,8 @@ check() {
   # With a lock or statement timeout on the role or database the migration would give up instead of queueing.
   [[ "$(sql "SHOW lock_timeout;")" == 0 && "$(sql "SHOW statement_timeout;")" == 0 ]]
   [[ "$(waiting)" == 0 ]]
+  # No export Job an earlier run lost is still there (it ends at its deadline and is deleted after its TTL).
+  pdb_export_gone
   # Sessions queued behind the migration stay on the server until it goes through, even after their pod restarts:
   # keep room under max_connections.
   sessions=$(number "$(sql "SELECT count(*) FROM pg_stat_activity;")")
@@ -1253,23 +1257,24 @@ case "$action" in
   est=$(number "$(sql "SELECT greatest(reltuples, 0)::bigint FROM pg_class WHERE oid = '$paced'::regclass;")")
   (( est >= 100 * export_seconds )) || { echo "only about $est rows to export" >&2; exit 4; }
   rate=$(( est / export_seconds + 1 ))
-  # Run holds the runner's coordinator lock (30 s lease): both statements start in the background on the runner
-  # (their own client sessions through the listener) and outlive run; run only waits to see each one in place, at
-  # most ten one-second looks each. The rows travel to the runner, where the paced reader drops them.
-  pdb_spawn_paced "$export_sql" "$rate" "$export_log" "$identity"
+  # Run holds the runner's coordinator lock (30 s lease): the export starts as a Job and the migration in the background
+  # on the runner (an operator session through the listener); both outlive run. Run only waits to see each one in place:
+  # the export's pod start and lock (at most sixty one-second looks), then the migration's queueing (ten).
+  job="$(pdb_export_name)"
+  pdb_export_job "$job" "$export_sql" "$rate" "$deadline" "$identity"
   held=""
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in $(seq 1 60); do
     held=$(sql "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE a.query = '$export_sql' AND l.relation = '$rel'::regclass AND l.granted;")
     [[ "$held" == 1 ]] && break
     sleep 1
   done
-  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $(head -n 1 "$export_log" 2>/dev/null)" >&2; exit 4; }
+  [[ "$held" == 1 ]] || { stop_export; echo "export did not start: $(dbo_k logs "job/$job" --tail=1 2>/dev/null)" >&2; pdb_delete_exports; exit 4; }
   pdb_spawn "$migration_sql" "$migration_log" "$identity"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ "$(sql "SELECT count(*) FROM pg_stat_activity m WHERE m.query = '$migration_sql' AND m.wait_event_type = 'Lock' AND (SELECT e.pid FROM pg_stat_activity e WHERE e.query = '$export_sql' LIMIT 1) = ANY (pg_blocking_pids(m.pid));")" == 1 ]] && exit 0
     sleep 1
   done
-  cancel_migration; stop_export
+  cancel_migration; stop_export; pdb_delete_exports
   echo "migration did not queue behind the export: $(head -n 1 "$migration_log" 2>/dev/null)" >&2
   exit 4
   ;;
@@ -1288,22 +1293,24 @@ case "$action" in
     [[ "$(has_column)" == 0 ]] && break
     sql "SET lock_timeout = '5s'; ALTER TABLE $rel DROP COLUMN IF EXISTS $column;" >/dev/null || sleep 2
   done
-  # Readers and streams on the runner that a cut connection would leave waiting (C6b review).
+  # The export Job and its pod, and the migration's client on the runner (C6b review).
+  pdb_delete_exports
   dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
   ;;
- recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
+ recovery) rows; original; [[ "$(waiting)" == 0 ]]; pdb_export_gone ;;
  *) exit 2 ;;
 esac
-''')
+''', pg_lock_remote.bash_functions())
 
 
 MYSQL_QUEUE_REMOTE = db_operator_remote.with_sessions(br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; ns="$2"; pod="$3"; db="$4"; table="$5"; column="$6"; ctype="$7"; export_columns="$8"
 export_seconds="$9"; drain="${10}"; minimum="${11}"; max_sessions="${12}"; join="${13:-}"; join_column="${14:-}"
-# v4 C6b: an operator session through the listener from the runner container; nothing runs in the pod.
+# v4 C6b: the probes are an operator session through the listener; the export and the migration are mysql clients
+# inside the database pod (below).
 db_target "$ns" "$pod"
 mdb_env root
 # Probes run as root; the first MySQL error line goes to stderr so a failed step is readable in the runner log.
@@ -1324,6 +1331,9 @@ migration_sql="ALTER TABLE $table ADD COLUMN $column $ctype NULL, ALGORITHM=INST
 run_dir="$(dbo_run_dir "db-ddl-queue-$db-$table")"
 export_log="$run_dir/table-export.log"
 migration_log="$run_dir/schema-migration.log"
+# The export client ends itself when the export, the drain bound and two minutes have passed, even if the runner side
+# that reads its rows is gone (mdb_pod_spawn DEADLINE; C6b review 2).
+deadline=$(( export_seconds + drain + 120 ))
 # An empty or garbled answer must not read as zero: numbers are checked and anything else stops the action.
 number() { [[ "$1" =~ ^[0-9]+$ ]] || { echo "not a number: '$1'" >&2; return 5; }; printf '%s' "$1"; }
 # A session by its exact statement text, never the probe's own.
@@ -1350,6 +1360,8 @@ check() {
   # Without metadata lock instrumentation the queue could not be seen or confirmed.
   [[ "$(mysql "SELECT enabled FROM performance_schema.setup_instruments WHERE name = 'wait/lock/metadata/sql/mdl';")" == YES ]]
   [[ "$(waiting)" == 0 ]]
+  # No client of an earlier run is left in the database pod (one the runner lost lives until its deadline).
+  mdb_pod_alone
   # InnoDB keeps at most 64 row versions per table for instant changes; a run and its cleanup use two.
   versions=$(number "$(mysql "SELECT total_row_versions FROM information_schema.innodb_tables WHERE name = '$db/$table';")")
   [[ "$versions" -le 60 ]] || { echo "$versions instant row versions on the table, no room for an instant change" >&2; return 1; }
@@ -1375,7 +1387,7 @@ case "$action" in
   # waits to see each one in place, at most ten one-second looks each. The rows come back to the runner, where the
   # paced reader takes them at the export's pace and drops them.
   started=$SECONDS
-  mdb_pod_spawn app "$db" "$export_sql" "$export_log" paced
+  mdb_pod_spawn app "$db" "$export_sql" "$export_log" "$deadline"
   held=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     id=$(id_of "$export_sql")
@@ -1415,8 +1427,9 @@ case "$action" in
   dbo_reap "$run_dir"
   rm -rf -- "$run_dir"
   original
+  mdb_pod_alone
   ;;
- recovery) rows; original; [[ "$(waiting)" == 0 ]] ;;
+ recovery) rows; original; [[ "$(waiting)" == 0 ]]; mdb_pod_alone ;;
  *) exit 2 ;;
 esac
 ''')

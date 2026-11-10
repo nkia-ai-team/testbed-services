@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import signal
 import subprocess
 import tempfile
 import os
@@ -63,6 +64,7 @@ db_row_delete = load("db_row_delete_executor")
 db_row_update = load("db_row_update_executor")
 network_fault = load("network_fault_executor")
 db_operator_remote = load("db_operator_remote")
+pg_lock_remote = load("pg_lock_remote")
 own_body = db_operator_remote.without_library
 
 
@@ -301,10 +303,18 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                     self.assertEqual(spawns, ["root"])
                 else:
                     self.assertEqual(spawns, ["app", "root"])
-                    self.assertIn('"$export_log" paced', run)
+                    # The export client ends itself after the export, the drain bound and two minutes (C6b review 2).
+                    self.assertIn('"$export_log" "$deadline"', run)
+                    self.assertIn('deadline=$(( export_seconds + drain + 120 ))', own)
                     self.assertIn("mdb_pod_pace", run)
                 for helper in ("awk", "sleep \"$", "nohup", "sh -c", "kubectl"):
                     self.assertNotIn(helper, run)
+                # A client an earlier run left in the pod stops preflight and recovery, and cleanup waits it out.
+                for action in ("preflight", "cleanup", "recovery"):
+                    body = own_body(db_ddl.build_invocation(plan, action)[1].decode())
+                    case = body[body.index(f" {action})"):]
+                    case = case[:case.index(";;")]
+                    self.assertTrue("mdb_pod_alone" in case or ("check" in case and "mdb_pod_alone" in body), (action, case))
 
     def test_mysql_client_in_the_pod_is_exec_ed_alone_with_its_password_on_stdin(self) -> None:
         # The migration path: `kubectl exec -i POD -- mysql ...` with the option file on stdin. The fake records the
@@ -329,6 +339,116 @@ class ReadyProfileExecutorTests(unittest.TestCase):
             for text in ((tmp / "exec.argv").read_text(), (tmp / "kubectl.log").read_text()):
                 db_operator_fakes.assert_no_password(self, text)
 
+
+    def test_mysql_export_client_in_the_pod_ends_itself_at_its_deadline(self) -> None:
+        # C6b review 2 상 2: when the runner side that reads the export stops, containerd keeps the exec's output pipe
+        # open and the client in the pod blocks writing it for good (seen on containerd 1.7.23 and 2.1.4). The paced
+        # export is therefore started as `mysqlsh ... --py -e <code>` that arms SIGALRM and execs mysql in its place:
+        # one process, which the pending alarm ends at the deadline.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                "  *' config view --raw --minify -o json'*) printf '{}' ;;"))
+            recorder = tmp / "bin" / "python-recorder"
+            recorder.write_text("#!/usr/bin/env bash\n"
+                                'if [[ "$1" == -c && "$2" == "import "* ]]; then exit 0; fi\n'
+                                f'printf "%s\\0" "${{@:3}}" >{tmp}/pod-exec.argv; cat >{tmp}/pod-exec.stdin\n')
+            recorder.chmod(0o755)
+            env["DB_OPERATOR_PYTHON"] = str(recorder)
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + b'db_target rca-testbed-food testbed-mysql-0\nmdb_env app\n'
+                      + b'mdb_pod_spawn app fooddelivery "SELECT id, eta FROM dispatches" "$1/e.log" 780\n'
+                      + b'for _ in $(seq 1 50); do [[ -e "$2/pod-exec.stdin" ]] && break; sleep 0.1; done; sleep 0.3\n'
+                      + b'printf "%s" "$(mdb_alarm_exec 2 sh -c "while :; do echo row; done")" >"$2/code.py"\n')
+            done = subprocess.run(["bash", "-s", "--", str(tmp / "run"), str(tmp)], input=script, env=env,
+                                  capture_output=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr.decode())
+            argv = (tmp / "pod-exec.argv").read_text().split("\0")[:-1]
+            command = argv[argv.index("--") + 1:]
+            self.assertEqual(command[:6], ["mysqlsh", "--no-defaults", "--log-file=/dev/null",
+                                           "--credential-store-helper=<disabled>", "--py", "-e"])
+            code = command[6]
+            self.assertIn("signal.alarm(780)", code)
+            self.assertIn('a = ["mysql","--defaults-extra-file=/dev/stdin","-ufooddelivery","--quick","-N","-B",'
+                          '"fooddelivery","-e","SELECT id, eta FROM dispatches"]; os.execvp(a[0], a)', code)
+            self.assertEqual(len(command), 7)
+            self.assertEqual((tmp / "pod-exec.stdin").read_text(), '[client]\npassword="pw-food-from-secret"\n')
+            db_operator_fakes.assert_no_password(self, (tmp / "pod-exec.argv").read_text())
+            # The same code, run by a Python (mysqlsh's own is CPython too) against a writer whose output nobody
+            # reads: the process is the exec'd command (same pid, no second process) and SIGALRM ends it on time.
+            started = time.monotonic()
+            proc = subprocess.Popen([sys.executable, "-c", (tmp / "code.py").read_text()],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            try:
+                time.sleep(0.5)
+                self.assertTrue(Path(f"/proc/{proc.pid}/cmdline").read_bytes().startswith(b"sh\0-c\0"))
+                self.assertEqual(proc.wait(timeout=20), -signal.SIGALRM)
+            finally:
+                proc.kill()
+                proc.stdout.close()
+            self.assertGreaterEqual(time.monotonic() - started, 1.9)
+
+    def test_leftover_client_in_the_mysql_pod_stops_preflight_until_it_is_gone(self) -> None:
+        # mdb_pod_alone reads the pod's process count from the kubelet summary of its node (no exec): mysqld alone is 1,
+        # a client an earlier run lost makes it 2 until its deadline ends it.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            (tmp / "count").write_text("2")
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                f"  *'get --raw /api/v1/nodes/tb-w2/proxy/stats/summary'*) printf '{{\"pods\":[{{\"podRef\":"
+                f"{{\"namespace\":\"rca-testbed-food\",\"name\":\"testbed-mysql-0\"}},\"process_stats\":"
+                f"{{\"process_count\":%s}}}}]}}' \"$(cat {tmp}/count)\" ;;"))
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + b'db_target rca-testbed-food testbed-mysql-0\nsleep() { :; }\nmdb_pod_alone\n')
+            left = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertNotEqual(left.returncode, 0)
+            self.assertIn(b"1 process(es) besides the database server in testbed-mysql-0", left.stderr)
+            (tmp / "count").write_text("1")
+            alone = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertEqual(alone.returncode, 0, alone.stderr.decode())
+            db_operator_fakes.assert_reads_only(self, tmp)
+
+    def test_postgres_export_runs_as_a_batch_job_on_its_domain_node(self) -> None:
+        # C6b review 2 상 1: the answer keys of F66-R, F66-P, F67-H, F73-R tell an export job or a data job, so the export
+        # is a Job in the database's namespace (a pod address), on the node the domain runs on, ending itself at its
+        # deadline (U8) and deleted after its TTL. A privileged init container shrinks only that pod's TCP receive
+        # buffer, so the reader's pace holds the server back.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp)
+            sql = "COPY (SELECT id, topic FROM inventory_schema.outbox_events) TO STDOUT"
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + pg_lock_remote.bash_functions()
+                      + b'db_target rca-testbed-commerce testbed-postgres-0\n'
+                      + b'n="$(pdb_export_name)"; [[ "$n" =~ ^commerce-data-export-[0-9a-f]{8}$ ]] || exit 7\n'
+                      + f'pdb_export_job "$n" "{sql}" 172 780 "PostgreSQL JDBC Driver"\n'.encode())
+            done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr.decode())
+            job = json.loads((tmp / "applied.yaml").read_text())
+            self.assertEqual((job["apiVersion"], job["kind"]), ("batch/v1", "Job"))
+            self.assertEqual(job["metadata"]["labels"], {"app.kubernetes.io/component": "data-export"})
+            self.assertEqual((job["spec"]["backoffLimit"], job["spec"]["activeDeadlineSeconds"],
+                              job["spec"]["ttlSecondsAfterFinished"]), (0, 780, 300))
+            pod = job["spec"]["template"]["spec"]
+            self.assertEqual(job["spec"]["template"]["metadata"]["labels"], job["metadata"]["labels"])
+            # The fake database pod has no nodeSelector, so its node by hostname.
+            self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w9"})
+            self.assertEqual(pod["initContainers"], [{
+                "name": "net-tuning", "image": "postgres:16-alpine",
+                "command": ["sysctl", "-w", "net.ipv4.tcp_rmem=4096 8192 8192"],
+                "securityContext": {"privileged": True}}])
+            (container,) = pod["containers"]
+            self.assertEqual(container["command"],
+                             ["sh", "-c", 'psql -X -q -c "$SQL" | awk -v r="$RATE" "$PACE"'])
+            values = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+            self.assertEqual(values["PGHOST"], "testbed-postgres")
+            self.assertEqual(values["PGAPPNAME"], "PostgreSQL JDBC Driver")
+            self.assertEqual((values["SQL"], values["RATE"]), (sql, "172"))
+            self.assertEqual(values["PACE"], 'NR % r == 0 { system("sleep 1") }')
+            self.assertEqual(values["PGPASSWORD"], {"secretKeyRef": {"name": "postgres-secret", "key": "POSTGRES_PASSWORD"}})
+            db_operator_fakes.assert_no_password(self, (tmp / "applied.yaml").read_text(), done.stderr)
+            for word in ("runner", "scenario", "rca", "F66", "lucida"):
+                self.assertNotIn(word, json.dumps(pod["containers"]) + job["metadata"]["labels"]["app.kubernetes.io/component"])
 
     def _operator_run(self, module, scenario_id: str, action: str, env: dict[str, str],
                       slug: str | None = None) -> subprocess.CompletedProcess:
@@ -368,7 +488,8 @@ else: sys.exit(7)
             calls = (tmp / "client.log").read_text().splitlines()
             self.assertTrue(calls)
             for line in calls:
-                self.assertTrue(line.startswith("oracle SYSTEM 192.168.122.184:30999/FREEPDB1 "), line)
+                # Banking's database: through tb-w3, not tb-w1 where commerce runs (C6b review 2 중 2).
+                self.assertTrue(line.startswith("oracle SYSTEM 192.168.122.14:30999/FREEPDB1 "), line)
             db_operator_fakes.assert_reads_only(self, tmp)
             db_operator_fakes.assert_no_password(self, (tmp / "client.log").read_text(),
                                                  (tmp / "kubectl.log").read_text(), run.stderr)
@@ -614,6 +735,8 @@ def connect(**kw):
                            f"[[ -e {tmp}/kubectl-down ]] && {{ echo 'The connection to the server was refused' >&2; exit 1; }}\n"
                            "case \"$*\" in\n"
                            "  *'jsonpath={.spec.nodeName}'*) printf tb-w2 ;;\n"
+                           # The commerce pods (the domain the lock's symptoms show in) run on tb-w1.
+                           "  *'-n rca-testbed-commerce get pods -o jsonpath={range .items[*]}{.spec.nodeName}'*) printf 'tb-w1\\ntb-w1\\n' ;;\n"
                            f"  *'get nodes -o json'*) printf '%s' '{json.dumps({'items': db_operator_fakes.NODES})}' ;;\n"
                            f"  *'get pod testbed-oracle-0 -o json') cat {tmp}/pod.json ;;\n"
                            f"  *'get configmap oracle-startdb-scripts -o json') cat {tmp}/cm.json ;;\n"
@@ -656,8 +779,9 @@ def connect(**kw):
             holder = int((tmp / "lock").read_text())
             calls = [json.loads(line) for line in (tmp / "calls").read_text().splitlines()]
             hold_connect = next(c for c in calls if c["kind"] == "connect" and c["pid"] == holder)
-            # Through tb-w1, a worker that runs neither the Oracle pod nor the control plane (user decision Q8).
-            self.assertEqual(hold_connect["dsn"], "192.168.122.184:30308/FREEPDB1")
+            # Through tb-w3, a worker that runs neither the Oracle pod (tb-w2) nor the control plane nor the commerce
+            # pods (tb-w1) whose payments the lock stops (user decision Q8, C6b review 2 중 2).
+            self.assertEqual(hold_connect["dsn"], "192.168.122.14:30308/FREEPDB1")
             self.assertEqual(hold_connect["user"], "banking")
             self.assertEqual((hold_connect["program"], hold_connect["machine"], hold_connect["osuser"],
                               hold_connect["driver_name"]),
