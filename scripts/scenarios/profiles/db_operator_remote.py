@@ -443,9 +443,10 @@ mdb_pod_reap() {
 }
 # mdb_pod_clear ACCOUNT...: the server alone in its pod, ending a lost client of ACCOUNT first if one is there (cleanup
 # only; preflight and recovery only look, with mdb_pod_alone). The first look waits out the kubelet's refresh (the
-# count drops about 10 to 16 s after a client ends, C6b review 4): four looks, 15 s, so a normal cleanup never execs.
+# count dropped 10 to 19.87 s after a client ended in the C6b review 4, 5 measurements): six looks, 25 s, so a normal
+# cleanup never execs.
 mdb_pod_clear() {
-  mdb_pod_alone 4 2>/dev/null && return 0
+  mdb_pod_alone 6 2>/dev/null && return 0
   local ended
   ended="$(mdb_pod_reap "$@")" || return 1
   [[ -z "$ended" ]] || echo "ended a mysql client left in $DBO_POD (pid $(echo $ended))" >&2

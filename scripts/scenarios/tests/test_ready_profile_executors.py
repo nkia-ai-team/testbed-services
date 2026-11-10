@@ -439,10 +439,73 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         for program in ("ps ", "pgrep", "pkill", "grep", "awk", "sed", "cat ", "/bin/kill", "xargs"):
             self.assertNotIn(program, inner)
 
+    def test_postgres_export_runs_as_a_batch_job_on_its_domain_node(self) -> None:
+        # C6b review 2 상 1: the answer keys of F66-R, F66-P, F67-H, F73-R tell an export job or a data job, so the export
+        # is a Job in the database's namespace (a pod address), on the node the domain runs on, ending itself at its
+        # deadline (U8) and deleted after its TTL. A privileged init container shrinks only that pod's TCP receive
+        # buffer, so the reader's pace holds the server back.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = db_operator_fakes.install(tmp)
+            sql = "COPY (SELECT id, topic FROM inventory_schema.outbox_events) TO STDOUT"
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + pg_lock_remote.bash_functions()
+                      + b'db_target rca-testbed-commerce testbed-postgres-0\n'
+                      + b'n="$(pdb_export_name)"; [[ "$n" =~ ^commerce-data-export-[0-9a-f]{8}$ ]] || exit 7\n'
+                      + f'pdb_export_job "$n" "{sql}" 172 780 "PostgreSQL JDBC Driver"\n'.encode())
+            done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr.decode())
+            job = json.loads((tmp / "applied.yaml").read_text())
+            self.assertEqual((job["apiVersion"], job["kind"]), ("batch/v1", "Job"))
+            self.assertEqual(job["metadata"]["labels"], {"app.kubernetes.io/component": "data-export"})
+            self.assertEqual((job["spec"]["backoffLimit"], job["spec"]["activeDeadlineSeconds"],
+                              job["spec"]["ttlSecondsAfterFinished"]), (0, 780, 300))
+            pod = job["spec"]["template"]["spec"]
+            self.assertEqual(job["spec"]["template"]["metadata"]["labels"], job["metadata"]["labels"])
+            # The fake database pod has no nodeSelector, so its node by hostname.
+            self.assertEqual(pod["nodeSelector"], {"kubernetes.io/hostname": "tb-w9"})
+            self.assertEqual(pod["initContainers"], [{
+                "name": "init", "image": "postgres:16-alpine",
+                "command": ["sysctl", "-w", "net.ipv4.tcp_rmem=4096 8192 8192"],
+                "securityContext": {"privileged": True}}])
+            (container,) = pod["containers"]
+            self.assertEqual(container["command"],
+                             ["sh", "-c", 'psql -X -q -c "$SQL" | awk -v r="$RATE" "$PACE"'])
+            values = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+            self.assertEqual(values["PGHOST"], "testbed-postgres")
+            self.assertEqual(values["PGAPPNAME"], "PostgreSQL JDBC Driver")
+            self.assertEqual((values["SQL"], values["RATE"]), (sql, "172"))
+            self.assertEqual(values["PACE"], 'NR % r == 0 { system("sleep 1") }')
+            self.assertEqual(values["PGPASSWORD"], {"secretKeyRef": {"name": "postgres-secret", "key": "POSTGRES_PASSWORD"}})
+            db_operator_fakes.assert_no_password(self, (tmp / "applied.yaml").read_text(), done.stderr)
+            for word in ("runner", "scenario", "rca", "F66", "lucida"):
+                self.assertNotIn(word, json.dumps(pod["containers"]) + job["metadata"]["labels"]["app.kubernetes.io/component"])
+
+    def test_leftover_client_in_the_mysql_pod_stops_preflight_until_it_is_gone(self) -> None:
+        # mdb_pod_alone reads the pod's process count from the kubelet summary of its node (no exec): mysqld alone is 1,
+        # a client an earlier run lost makes it 2 until its deadline ends it.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            (tmp / "count").write_text("2")
+            env = db_operator_fakes.install(tmp, kubectl_cases=(
+                f"  *'get --raw /api/v1/nodes/tb-w2/proxy/stats/summary'*) printf '{{\"pods\":[{{\"podRef\":"
+                f"{{\"namespace\":\"rca-testbed-food\",\"name\":\"testbed-mysql-0\"}},\"process_stats\":"
+                f"{{\"process_count\":%s}}}}]}}' \"$(cat {tmp}/count)\" ;;"))
+            script = (b"#!/usr/bin/env bash\nset -euo pipefail\n" + db_operator_remote.bash_functions()
+                      + b'db_target rca-testbed-food testbed-mysql-0\nsleep() { :; }\nmdb_pod_alone\n')
+            left = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertNotEqual(left.returncode, 0)
+            self.assertIn(b"1 process(es) besides the database server in testbed-mysql-0", left.stderr)
+            (tmp / "count").write_text("1")
+            alone = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
+            self.assertEqual(alone.returncode, 0, alone.stderr.decode())
+            db_operator_fakes.assert_reads_only(self, tmp)
+
     def test_lost_mysql_client_is_ended_by_cleanup_only_after_the_kubelet_refresh(self) -> None:
-        # mdb_pod_clear (cleanup only): the kubelet's count drops 10 to 16 s after a client ends (C6b review 4 상 1), so
-        # the first look waits four looks (15 s) before deciding; a client that just ended in a normal run is never
-        # exec'd for. Only a client still counted after that is ended (one exec per account).
+        # mdb_pod_clear (cleanup only): the kubelet's count drops up to about 20 s after a client ends (C6b review 4 상 1,
+        # review 5: 19.87 s measured), so the first look waits six looks (25 s) before deciding; a client that just
+        # ended in a normal run is never exec'd for. Only a client still counted after that is ended (one exec per
+        # account).
         def run(counts: list[int]) -> tuple[subprocess.CompletedProcess, list[str]]:
             with tempfile.TemporaryDirectory() as raw:
                 tmp = Path(raw)
@@ -460,8 +523,8 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                 done = subprocess.run(["bash", "-s"], input=script, env=env, capture_output=True, timeout=60)
                 return done, [line for line in db_operator_fakes.kubectl_calls(tmp) if " exec " in line]
 
-        # The kubelet still counts a client that just ended for three looks: no exec.
-        done, execs = run([2, 2, 2, 1])
+        # The kubelet still counts a client that just ended for five looks (20 s): no exec.
+        done, execs = run([2, 2, 2, 2, 2, 1])
         self.assertEqual(done.returncode, 0, done.stderr.decode())
         self.assertEqual(execs, [])
         # Alone from the start: no exec.
@@ -474,7 +537,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         self.assertEqual(len(execs), 2)
         clear = db_operator_remote.bash_functions().decode()
         clear = clear[clear.index("mdb_pod_clear() {"):clear.index("\n}\n", clear.index("mdb_pod_clear() {"))]
-        self.assertIn("mdb_pod_alone 4 2>/dev/null && return 0", clear)
+        self.assertIn("mdb_pod_alone 6 2>/dev/null && return 0", clear)
 
     # C6b review 4 상 2: the run directory outlives a runner container (host volume) and a new container counts pids
     # from 1 again. A recorded process group that is gone, or whose number now belongs to another process, must neither
