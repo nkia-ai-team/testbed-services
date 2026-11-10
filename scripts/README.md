@@ -75,3 +75,23 @@ scripts/scenarios/bin/f07-h-north-south-surge.sh
 ```bash
 scripts/test-oracle-maintenance.sh
 ```
+
+## 은행 Oracle 데이터 전용 디스크
+
+`oracle-data-disk.sh`는 tb-w2 에서 root 로 돈다(v4 E7, runbook §8-3). Oracle 볼륨(local-path 디렉터리)을
+노드 루트 파일 시스템에서 전용 가상 디스크로 옮겨, 그 디스크가 가득 차거나 IO 가 포화돼도 노드
+전체 DiskPressure 가 나지 않게 한다(kubelet 은 루트와 이미지 저장소 파일 시스템만 본다).
+디스크 IO 한도는 하이퍼바이저(Proxmox 디스크 throttle)가 늘 걸고 있다. 노드 안에는 한도 설정이 없다.
+
+- 새 디스크를 PV 가 가리키는 같은 경로에 마운트한다. PV, PVC, StatefulSet 은 바뀌지 않는다.
+- `prepare <장치>`: 파티션, 서명이 없는 빈 디스크(20~64 GiB)에만 ext4(라벨 oradata, 예약 블록 0)를 만든다.
+- `cutover <장치>`: Oracle 이 멈춘 상태(pmon 없음, subPath 마운트 없음)에서만 복사하고, 체크섬으로
+  같음을 확인한 뒤 원래 디렉터리를 `<경로>.orig` 로 이름만 바꿔 남긴다. 빈 마운트 지점은 변경 불가
+  표시를 해서 디스크가 안 붙은 채로는 Oracle 이 빈 디렉터리에 새 DB 를 만들지 못하고 실패한다.
+  fstab 은 nofail 이라 디스크가 없어도 부팅은 막히지 않는다.
+- `rollback [--to-cutover]`: 지금 데이터를 원래 디렉터리로 되가져와(기본) 되돌린다. 디스크의 데이터는 남는다.
+- 데이터를 지우는 동작은 없다. `.orig` 와 디스크를 지우는 것은 사람 결정이다.
+
+```bash
+scripts/test-oracle-data-disk.sh
+```
