@@ -2085,7 +2085,8 @@
     "partial": [
      "banking-transfer",
      "commerce-payment",
-     "banking-oracle"
+     "banking-oracle",
+     "core-banking-transfer"
     ]
    },
    "injected_fault": {
@@ -2214,7 +2215,8 @@
     "partial": [
      "banking-transfer",
      "commerce-payment",
-     "banking-oracle"
+     "banking-oracle",
+     "core-banking-transfer"
     ]
    },
    "injected_fault": {
@@ -2357,7 +2359,8 @@
     "partial": [
      "banking-transfer",
      "commerce-inventory",
-     "commerce-payment"
+     "commerce-payment",
+     "core-banking-transfer"
     ]
    },
    "injected_fault": {
@@ -3428,12 +3431,14 @@
     "granularity": "database-relation",
     "accept": [
      "commerce-postgres:inventory_schema.inventory",
-     "food-payment"
+     "food-payment",
+     "food-delivery-payment"
     ],
     "partial": [
      "commerce-inventory",
      "commerce-postgres",
-     "food-order"
+     "food-order",
+     "food-delivery-order"
     ]
    },
    "injected_fault": {
@@ -3937,7 +3942,8 @@
      "core-banking-transfer"
     ],
     "partial": [
-     "banking-ledger"
+     "banking-ledger",
+     "core-banking-ledger"
     ]
    },
    "injected_fault": {
@@ -4531,11 +4537,14 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "banking-transfer"
+     "banking-transfer",
+     "core-banking-transfer"
     ],
     "partial": [
      "banking-account",
-     "banking-api"
+     "banking-api",
+     "core-banking-account",
+     "core-banking-api"
     ]
    },
    "injected_fault": {
@@ -4646,7 +4655,8 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "food-order"
+     "food-order",
+     "food-delivery-order"
     ],
     "partial": [
      "food-mysql"
@@ -5516,10 +5526,12 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "food-restaurant"
+     "food-restaurant",
+     "food-delivery-restaurant"
     ],
     "partial": [
-     "food-order"
+     "food-order",
+     "food-delivery-order"
     ]
    },
    "title_ko": "food restaurant 최상류 차단 → order 전량 502 (retry 증폭 fan-in)",
@@ -6436,12 +6448,14 @@
     "granularity": "database-relation",
     "accept": [
      "commerce-postgres:inventory_schema.inventory",
-     "food-payment"
+     "food-payment",
+     "food-delivery-payment"
     ],
     "partial": [
      "commerce-inventory",
      "commerce-postgres",
-     "food-order"
+     "food-order",
+     "food-delivery-order"
     ]
    },
    "injected_fault": {
@@ -6563,12 +6577,14 @@
     "granularity": "database-relation",
     "accept": [
      "commerce-postgres:inventory_schema.inventory",
-     "food-payment"
+     "food-payment",
+     "food-delivery-payment"
     ],
     "partial": [
      "commerce-inventory",
      "commerce-postgres",
-     "food-order"
+     "food-order",
+     "food-delivery-order"
     ]
    },
    "injected_fault": {
@@ -6811,7 +6827,8 @@
      "food-delivery-payment"
     ],
     "partial": [
-     "food-order"
+     "food-order",
+     "food-delivery-order"
     ]
    },
    "title_ko": "설정 배포로 food payment 의 JSON 명명 규칙이 snake_case 로 바뀜: camelCase 로 보내는 order 의 모든 결제 요청에서 orderId 가 사라진다",
@@ -7413,7 +7430,11 @@
      "banking-transfer",
      "banking-ledger",
      "banking-api",
-     "commerce-payment"
+     "commerce-payment",
+     "core-banking-account",
+     "core-banking-transfer",
+     "core-banking-ledger",
+     "core-banking-api"
     ]
    },
    "title_ko": "자격 증명 회전 단계가 banking Oracle 애플리케이션 계정 BANKING 을 잠갔는데 account, transfer, ledger 가 그 계정으로 계속 접속함: 풀의 세션이 수명을 다하며 다시 접속하지 못해(ORA-28000) readiness 에서 빠지고, banking 조회와 이체, commerce 정산이 502 로 실패한다",
@@ -11452,7 +11473,10 @@
      "banking-oracle",
      "banking-transfer",
      "banking-api",
-     "banking-ledger"
+     "banking-ledger",
+     "core-banking-transfer",
+     "core-banking-api",
+     "core-banking-ledger"
     ]
    },
    "title_ko": "DB 자원 한도 정비가 banking Oracle 애플리케이션 계정 BANKING 에 호출당 논리 읽기 한도(30000)를 둔 새 프로필을 붙였는데, 한도가 거래 내역 페이지의 건수 질의(호출당 약 5만~20만 블록)보다 낮음: transfer 풀의 세션이 새로 열리면서 거래 내역 요청마다 ORA-02395 로 끊겨 api 에서 502 가 되고, 잔액 조회, 이체, commerce 정산은 정상이다",
@@ -15529,7 +15553,8 @@
      "core-banking-account",
      "banking-oracle",
      "banking-transfer",
-     "commerce-payment"
+     "commerce-payment",
+     "core-banking-transfer"
     ]
    },
    "title_ko": "개발자 PC 에서 돌린 마이그레이션이 운영 banking Oracle 을 가리켜 살아 있는 계좌 표를 지움: 모든 잔액 조회, 계좌 목록, banking 이체, commerce 정산이 '표가 없음' 으로 실패하고 거래 내역, DB 와 파드는 정상이다",
@@ -16692,7 +16717,11 @@
      "banking-transfer",
      "banking-ledger",
      "banking-api",
-     "commerce-payment"
+     "commerce-payment",
+     "core-banking-account",
+     "core-banking-transfer",
+     "core-banking-ledger",
+     "core-banking-api"
     ]
    },
    "title_ko": "은행 워커 tb-w2 의 방화벽 규칙을 좁히면서 Oracle 리스너(1521)로의 새 연결을 노드 주소와 호스트, 관리망에서만 받게 하고 같은 노드의 banking 앱 파드를 빠뜨림: account, transfer, ledger 가 열어 둔 풀 세션은 수명까지 통하다가 다시 맺지 못해(ORA-12170 TCP 연결 시간 초과) readiness 에서 빠지고, banking 조회와 이체, commerce 정산이 502 로 실패하는데 Oracle 자신은 멀쩡하다",

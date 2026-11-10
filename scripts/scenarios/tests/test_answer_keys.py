@@ -148,6 +148,38 @@ class AnswerKeyContractTests(unittest.TestCase):
                 f"{scenario_id}: the root cause cannot also be partial credit",
             )
 
+    def test_scored_app_names_carry_the_observed_service_name(self) -> None:
+        # 채점 이름 칸(accept, partial)에 앱 서비스를 앱 별칭이나 Deployment, 컨테이너 이름으로만
+        # 두면, 관측 서버 서비스 이름(미끼 정책 targets 의 service_name, otel service_name)으로
+        # 짚은 답이 문자열 비교에서 빠진다. 같은 목록에 그 서비스 이름이 함께 있어야 한다. 컨테이너 입도의 accept 는 컨테이너
+        # 이름이 정답이라 서비스 이름을 더하면 범위가 넓어지므로 보지 않는다. parked 와 draft 도
+        # 되살릴 수 있어 함께 본다.
+        policy = _load("registry/decoy-deployments.json")
+        domain_namespaces = policy["domain_namespaces"]
+        missing = []
+        for scenario_id, entry in sorted(self.metadata.items()):
+            scoring = entry.get("scoring")
+            if not isinstance(scoring, dict):
+                continue
+            namespace = domain_namespaces.get(entry.get("domain"))
+            for kind in ("accept", "partial"):
+                if scoring["granularity"] == "container" and kind == "accept":
+                    continue
+                names = scoring.get(kind, [])
+                for target in policy["targets"]:
+                    aliases = {*target["aliases"], target["target_id"]}
+                    local = {
+                        target["deployment"],
+                        target["container"],
+                        f"{target['deployment']}:{target['container']}",
+                        f"deployment/{target['deployment']}",
+                        f"{target['namespace']}/deployment/{target['deployment']}",
+                    }
+                    named = any(n in aliases or (n in local and target["namespace"] == namespace) for n in names)
+                    if named and target["service_name"] not in names:
+                        missing.append(f"{scenario_id} {kind}: {target['service_name']}")
+        self.assertEqual(missing, [], "observed service name missing from a scored name list")
+
     def test_beyond_data_notes_stay_out_of_the_scored_answer(self) -> None:
         # 참고 메모 칸(beyond_data, beyond_data_ko): 수집 데이터로는 가를 수 없어 정답 칸에
         # 넣지 못한 상세 원인을 연구원이 볼 수 있게 남긴다. 선택 칸이고, capture 가 meta.json
