@@ -156,8 +156,8 @@ spec:
 VM들로 구성된 **kubeadm 단일 클러스터**다(2026-10 109 GB10 에서 이전). 게스트는 내부 NAT
 브리지 `vmbr1`(`192.168.122.0/24`). 러너, 팬아웃, 빌드 docker 는 VM `tb-ops`(192.168.122.20). 도메인 워크로드는 매니페스트의
 `nodeSelector: kubernetes.io/hostname` 으로 도메인마다 worker 하나에 고정된다(commerce tb-w1,
-core-banking tb-w2, food-delivery tb-w3). 노드의 `domain` 라벨은 배치에 쓰이지 않는다(표시용, 2026-11-09 조회 때
-tb-w2 와 tb-w3 의 라벨 값은 배치와 뒤바뀌어 있었다).
+core-banking tb-w2, food-delivery tb-w3). 노드의 `domain` 라벨은 배치에 쓰이지 않는다(표시용). 값은 배치와 같다
+(tb-w1 commerce, tb-w2 core-banking, tb-w3 food-delivery. 2026-11-10 에 뒤바뀌어 있던 tb-w2, tb-w3 값을 고쳤다).
 
 | VM | IP | 사양 | 역할 |
 |----|----|------|------|
