@@ -288,6 +288,18 @@ class ReadyProfileExecutorTests(unittest.TestCase):
                      "pg_sleep", "pkill", "valid until", "nologin", "alter system", "alter role", "pg_ctl",
                      "postgresql.conf"):
             self.assertNotIn(word, shared, word)
+        # And the row and DDL level words of the old per-body checks (F35-R, F54-R, F54-P, F71-H and the db.ddl bodies),
+        # on the lines that run (C6b test re-audit). Left out, because the shared functions use them for their own
+        # plumbing: "kill" (bash's kill for the runner's process groups and the lost client), "password" (the drivers'
+        # argument and variable names), "delete " (kubectl delete of the client pods and export Jobs).
+        code = "\n".join(line for line in shared.splitlines() if not line.lstrip().startswith("#"))
+        for word in ("kill session", "identified by", "drop user", "account lock", "alter profile default",
+                     "$profile cascade", "identified", "revoke", "grant ", "drop ", "password expire",
+                     "max_queries_per_hour", "set global", "lucida_mon", "valid until", "nologin", "password '",
+                     "pg_terminate_backend", "pg_cancel_backend", "alter system", "alter role", "pg_ctl",
+                     "postgresql.conf", "drop table", "drop index", "truncate", "insert ", "update ", "rename ",
+                     "delete from", "alter table"):
+            self.assertNotIn(word, code, word)
         # Only these two account changes use it.
         users = []
         for name, module in self.C6B_EXECUTORS.items():
