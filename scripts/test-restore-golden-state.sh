@@ -27,7 +27,12 @@ case "$1" in
     if [[ "${2:-}" == -f ]]; then printf 'true\n'; fi
     exit 0 ;;
   stop|start) exit 0 ;;
-  run) exit 0 ;;
+  run)
+    case "$*" in
+      *--version*) [[ "$*" == *fake-pg16* ]] && echo 'pg_dump (PostgreSQL) 16.15' || echo 'pg_dump (PostgreSQL) 17.11' ;;
+      *'SHOW server_version_num'*) echo "${FAKE_PG_SERVER_NUM:-170011}" ;;
+    esac
+    exit 0 ;;
   *) exit 9 ;;
 esac
 SH
@@ -81,5 +86,19 @@ if "$RESTORE" --golden-dir "$golden" --ready-timeout-sec 5 >"$TMP_ROOT/out" 2>"$
 fi
 grep -q 'golden dump sha256 mismatch' "$TMP_ROOT/err" || fail "unexpected refusal: $(cat "$TMP_ROOT/err")"
 ! grep -qE '^(run|stop|start) ' "$FAKE_LOG" || fail 'a refused restore must not touch the stack'
+
+# 4. PG 도구 이미지의 메이저가 서버보다 낮으면 아무것도 멈추기 전에 거절한다(119 PG 17, 도구 16).
+#    기본 이미지는 postgres:17-alpine 이다.
+printf 'fake pg custom dump bytes\n' >"$golden/data/golden-pg-state.dump"
+grep -q 'PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"' "$RESTORE" || fail 'default PG tool image is not 17'
+: >"$FAKE_LOG"
+if PG_DUMP_IMAGE=fake-pg16 "$RESTORE" --golden-dir "$golden" --ready-timeout-sec 5 >"$TMP_ROOT/out" 2>"$TMP_ROOT/err"; then
+  fail 'restore must refuse a PG 16 tool against a PG 17 server'
+fi
+grep -q 'PG 도구 16 은 서버 17 보다 오래돼' "$TMP_ROOT/err" || fail "unexpected refusal: $(cat "$TMP_ROOT/err")"
+! grep -qE '^(stop|start) ' "$FAKE_LOG" || fail 'a refused restore must not stop or start anything'
+! grep -q 'pg_restore' "$FAKE_LOG" || fail 'pg_restore ran despite the major mismatch'
+PG_DUMP_IMAGE=fake-pg16 FAKE_PG_SERVER_NUM=160015 "$RESTORE" --golden-dir "$golden" --ready-timeout-sec 5 \
+  >/dev/null 2>"$TMP_ROOT/err" || fail "restore refused a PG 16 tool against a PG 16 server: $(cat "$TMP_ROOT/err")"
 
 printf '[PASS] restore-golden-state.sh golden_sha256 tests\n'

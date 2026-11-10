@@ -148,6 +148,15 @@ class PgPlanTest(unittest.TestCase):
         self.assertNotIn("collector_sms_process_snapshot", args)
         self.assertNotIn("small_unknown", args)
 
+    def test_trainer_work_table_is_dropped_by_config_not_over_cap(self):
+        # 지휘 세션 결정: 학습 작업용 표라 크기가 오르내려도 녹화 전 점검이 막지 않게 drop 으로 명시.
+        cap = PG_CFG["auto"]["snap_max_bytes"]
+        plan = self.plan({"ai_trainer_stream_rows": cap + 50 * 2**20})
+        e = plan["tables"]["ai_trainer_stream_rows"]
+        self.assertEqual((e["scope"], e["rule"]), ("drop", "config"))
+        self.assertEqual(plan["over_cap"], [])
+        self.assertIn("--exclude-table-data=public.ai_trainer_stream_rows", pg.emit_exclude_args(PG_CFG, plan))
+
     def test_whole_dump_budget_counts_only_whole_tables(self):
         budget = PG_CFG["auto"]["snap_budget_bytes"]
         under = self.plan({"collector_sms_process_snapshot": budget - 10**6, "incident_snapshots": budget},

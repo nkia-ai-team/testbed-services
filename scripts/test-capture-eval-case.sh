@@ -597,6 +597,13 @@ for i, a in enumerate(args):
 def real(p):
     return p.replace("/out", host, 1)
 fix = os.environ["FAKE_FIX"]
+image = next((a for a in args if a.startswith("fake-pg")), "")
+if "--version" in args:
+    print(f"pg_dump (PostgreSQL) {16 if image == 'fake-pg16' else 17}.11")
+    sys.exit(0)
+if "SHOW server_version_num" in args:
+    print(os.environ.get("FAKE_PG_SERVER_NUM", "170011"))
+    sys.exit(0)
 if "pg_dump" in args:
     f = args[args.index("--file") + 1]
     open(real(f), "wb").write(b"PGDMPfake")
@@ -620,10 +627,10 @@ printf '{"model":"fake"}\n' >"$live_root/model.json"
 
 run_live() {
   local case_id=$1; shift
-  env PATH="$fakebin:$PATH" FAKE_FIX="$fix" FAKE_LOG="$FAKE_LOG" "$@" \
+  env PATH="$fakebin:$PATH" FAKE_FIX="$fix" FAKE_LOG="$FAKE_LOG" \
     VM_URL=http://fake-vm CH_URL=http://fake-ch CH_USER=lucida CH_PASSWORD=pw \
     PG_PASSWORD=pw PG_DUMP_IMAGE=fake-pg QUERY_API_URL=http://fake-api QUERY_API_PASSWORD=pw \
-    MODEL_SOURCE="$live_root/model.json" \
+    MODEL_SOURCE="$live_root/model.json" "$@" \
     "$CAPTURE" "${base_args[@]/case-policy-test/$case_id}" --case-label calibration \
     --phases-json "$phases_json" --output-root "$live_root/cases" \
     >"$live_root/$case_id.out" 2>"$live_root/$case_id.err"
@@ -803,5 +810,16 @@ grep -q 'product version unavailable' "$live_root/case-live-v4-nopv.err" || fail
 run_live case-live-v4-envpv FAKE_PV_FAIL=1 PRODUCT_VERSION=manual-1 || fail 'capture failed with PRODUCT_VERSION'
 jq -e '.product_version == "manual-1" and .product_version_source == "env:PRODUCT_VERSION"' \
   "$live_root/cases/case-live-v4-envpv/meta.json" >/dev/null || fail 'PRODUCT_VERSION env not used'
+
+# (h) PG 도구 이미지의 메이저가 서버보다 낮으면(pg_dump 16 → 서버 17) 덤프 전에 멈춘다. 같거나 높으면 진행.
+# 기본 이미지는 postgres:17-alpine 이다(119 PG 17.11).
+grep -q 'PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"' "$CAPTURE" || fail 'default PG tool image is not 17'
+: >"$FAKE_LOG"
+if run_live case-live-v4-pg16 PG_DUMP_IMAGE=fake-pg16; then fail 'capture ran pg_dump 16 against a PG 17 server'; fi
+grep -q 'PG 도구 16 은 서버 17 보다 오래돼' "$live_root/case-live-v4-pg16.err" || fail 'no clear message for PG tool major mismatch'
+if grep -q 'pg_dump -Fc' "$FAKE_LOG"; then fail 'pg_dump ran despite the major mismatch'; fi
+[[ ! -e "$live_root/cases/case-live-v4-pg16" ]] || fail 'a case was published despite the major mismatch'
+run_live case-live-v4-pg16-on-16 PG_DUMP_IMAGE=fake-pg16 FAKE_PG_SERVER_NUM=160015 ||
+  fail 'capture refused a PG 16 tool against a PG 16 server'
 
 printf '[PASS] capture policy dry-run tests\n'

@@ -15,7 +15,7 @@
 # The trainer stays frozen for the evaluation; thaw it afterwards with --thaw.
 #
 # Run this ON the AI-stack host (119): it uses the local docker daemon to
-# freeze/restart containers and a postgres:16 sidecar for pg_restore.
+# freeze/restart containers and a postgres:17 sidecar for pg_restore (서버 메이저 이상, 복원 전에 확인).
 
 set -Eeuo pipefail
 
@@ -36,7 +36,7 @@ Environment (same conventions as capture-golden-state.sh):
   PG_HOST 192.168.230.119  PG_PORT 15432  PG_USER lucida  PG_PASSWORD (required)
     RUNTIME=k8s 이고 PG_HOST 를 안 주면 pg-rw ClusterIP 로 자동 해석한다
     (PG_SERVICE 로 서비스명 변경 가능). 위 기본값은 docker 평면 전용이다.
-  PG_DATABASE lucida        PG_DUMP_IMAGE postgres:16-alpine
+  PG_DATABASE lucida        PG_DUMP_IMAGE postgres:17-alpine
   OBSERVER_HEALTH_URL http://192.168.230.119:18087/api/v1/health
   OBSERVER_CONTAINER  default: lucida-ai-observer
   TRAINER_CONTAINER   default: lucida-ai-trainer
@@ -307,7 +307,7 @@ PG_PORT="${PG_PORT:-15432}"
 PG_USER="${PG_USER:-lucida}"
 PG_PASSWORD="${PG_PASSWORD:-}"
 PG_DATABASE="${PG_DATABASE:-lucida}"
-PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16-alpine}"
+PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"
 OBSERVER_HEALTH_URL="${OBSERVER_HEALTH_URL:-http://192.168.230.119:18087/api/v1/health}"
 [[ -n "$PG_PASSWORD" ]] || die 'PG_PASSWORD is required'
 
@@ -351,11 +351,34 @@ pg_net_args=()
 [[ "${PG_SIDECAR_NET:-$([[ "$RUNTIME" == k8s ]] && echo host || echo '')}" == host ]] &&
   pg_net_args=(--network host)
 
+
+# pg_dump 는 자기보다 새 메이저 서버를 "server version mismatch" 로 거절한다(2026-11-10 실측: 16 클라이언트 →
+# 17 서버 거절, 17 클라이언트 → 16, 17 서버 성공). pg_restore 도 자기보다 새 pg_dump 가 만든 덤프를 읽지 못한다.
+# 119 PG 가 17 로 올라간 뒤 16 도구로 붙던 일을 덤프 전에 막는다. 인자는 docker run 에 더할 인자(네트워크 등).
+pg_tool_major_check() {
+  local client server
+  client=$(docker run --rm "$@" "$PG_DUMP_IMAGE" pg_dump --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  server=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "$@" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+    psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SHOW server_version_num' 2>/dev/null |
+    tr -d '[:space:]')
+  if [[ ! "$client" =~ ^[0-9]+$ || ! "$server" =~ ^[0-9]+$ ]]; then
+    printf 'PG 도구, 서버 메이저를 읽지 못했다(PG_DUMP_IMAGE=%s client=%s server_version_num=%s)\n' \
+      "$PG_DUMP_IMAGE" "${client:-?}" "${server:-?}"
+    return 1
+  fi
+  if (( client < server / 10000 )); then
+    printf 'PG_DUMP_IMAGE=%s 의 PG 도구 %s 은 서버 %s 보다 오래돼 덤프, 복원을 못 한다. postgres:%s-alpine 이상으로\n' \
+      "$PG_DUMP_IMAGE" "$client" "$(( server / 10000 ))" "$(( server / 10000 ))"
+    return 1
+  fi
+}
+
 # 권한 사전 검사 — 아무것도 멈추기 전에 한다.
 # 2026-08-14: 권한 부족이 "observer 정지" 다음에 터져서 observer 가 내려간 채로 남았다
 # (복원은 step 3 에서 되살리는데 거기까지 못 갔다). 검사를 앞으로 당기면 실패해도
 # 환경이 그대로다. dry-run 은 어차피 아무것도 안 만지므로 건너뛴다.
 if [[ "$dry_run" != true ]]; then
+  pg_major_msg=$(pg_tool_major_check "${pg_net_args[@]}") || die "$pg_major_msg Nothing was stopped."
   PGPASSWORD="$PG_ADMIN_PASSWORD" docker run --rm "${pg_net_args[@]}" --env PGPASSWORD \
     "$PG_DUMP_IMAGE" psql -v ON_ERROR_STOP=1 --host "$PG_HOST" --port "$PG_PORT" \
     --username "$PG_ADMIN_USER" --dbname "$PG_DATABASE" \

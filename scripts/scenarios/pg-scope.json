@@ -175,7 +175,8 @@
     "user_settings", "user_password_history", "user_memory_profiles",
     "notification_channels", "system_mail_settings",
     "licenses", "license_events", "license_install_identity",
-    "collector_sms_agent_keys", "collector_sms_enrollment_tokens", "kcm_agent_identity"
+    "collector_sms_agent_keys", "collector_sms_enrollment_tokens", "kcm_agent_identity",
+    "ai_trainer_stream_rows"
   ],
   "_drop_rationale": [
     "평가 입력이 아니면서 공개 위험만 있는 것들 — 사내 LLM 대화·업로드 문서·세션 토큰 평문·",
@@ -183,7 +184,10 @@
     "automation_dist_artifacts 는 20행짜리인데 **2,480MB 로 덤프의 80%** 다(에이전트 배포",
     "번들 바이너리). 평가에 안 쓰이고 제품 IP 이므로 뺀다. manual_assets(576행 68MB)도 매뉴얼",
     "이미지라 같은 이유. 둘 다 참조하는 FK 는 없다(2026-08-13 확인).",
-    "users 는 46개 표가 FK 로 참조하므로 비우지 못한다 → _users_note 참조."
+    "users 는 46개 표가 FK 로 참조하므로 비우지 못한다 → _users_note 참조.",
+    "ai_trainer_stream_rows(2026-11-10 R1 수정 1회차, 지휘 세션 결정): 트레이너 학습 작업이 채웠다 비우는 작업용 표라",
+    "관측 입력이 아니고, 크기가 학습 주기에 따라 0.2MB 에서 300MB 넘게 오르내린다(119 실측). 설정 밖 큰 기준 표를",
+    "스키마만 담는 auto.snap_max_bytes 규칙과 취지, 결과가 같고, 학습 중일 때만 녹화 전 점검이 막히는 일을 없앤다."
   ],
 
   "_users_note": [

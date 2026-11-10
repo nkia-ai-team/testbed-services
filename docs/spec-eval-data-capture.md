@@ -394,6 +394,12 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   - 이 PG 규칙은 주기 모드(v3, v4)만이 아니라 비주기 캡처(v2, `--phases-json` 없음)에도 같이 적용된다.
     PG 덤프와 구간 추출은 두 모드가 같은 코드라서다. v2 meta 에는 `postgres_scope` 칸이 없지만 `restore.sql`
     과 `data/catalog/` 는 같이 생긴다. CH 자동 발견과 제품 버전 칸은 주기 모드에만 있다.
+- **PG 도구 이미지**: 캡처(`capture-eval-case.sh`), 골든 덤프(`capture-golden-state.sh`), 골든 복원
+  (`restore-golden-state.sh`)의 `PG_DUMP_IMAGE` 기본값은 `postgres:17-alpine` 이다(119 PG 17.11). pg_dump 는
+  자기보다 새 메이저 서버를 거절하고 pg_restore 는 자기보다 새 pg_dump 가 만든 덤프를 읽지 못하므로, 세 스크립트
+  모두 덤프, 복원 전에 도구 메이저가 서버 메이저 이상인지 확인해 아니면 멈춘다(캡처 self-check 도 같은 항목).
+  v4 녹화본의 `postgres.dump` 는 pg_dump 17 형식이라 복원 쪽 PG 도 17 이상이어야 한다. 17 은 v3 녹화(pg_dump 16)도
+  읽는다.
 - **VictoriaMetrics**: 종전대로 구간 안 모든 시계열(`{__name__!=""}`). `meta.victoriametrics_export` 에 시계열
   수와 크기를 적는다.
 - **meta.json 에 더한 칸**: `product_version`, `product_branch`, `product_version_source`(query API

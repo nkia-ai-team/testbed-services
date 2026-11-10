@@ -87,6 +87,27 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+# pg_dump 는 자기보다 새 메이저 서버를 "server version mismatch" 로 거절한다(2026-11-10 실측: 16 클라이언트 →
+# 17 서버 거절, 17 클라이언트 → 16, 17 서버 성공). pg_restore 도 자기보다 새 pg_dump 가 만든 덤프를 읽지 못한다.
+# 119 PG 가 17 로 올라간 뒤 16 도구로 붙던 일을 덤프 전에 막는다. 인자는 docker run 에 더할 인자(네트워크 등).
+pg_tool_major_check() {
+  local client server
+  client=$(docker run --rm "$@" "$PG_DUMP_IMAGE" pg_dump --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  server=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "$@" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+    psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SHOW server_version_num' 2>/dev/null |
+    tr -d '[:space:]')
+  if [[ ! "$client" =~ ^[0-9]+$ || ! "$server" =~ ^[0-9]+$ ]]; then
+    printf 'PG 도구, 서버 메이저를 읽지 못했다(PG_DUMP_IMAGE=%s client=%s server_version_num=%s)\n' \
+      "$PG_DUMP_IMAGE" "${client:-?}" "${server:-?}"
+    return 1
+  fi
+  if (( client < server / 10000 )); then
+    printf 'PG_DUMP_IMAGE=%s 의 PG 도구 %s 은 서버 %s 보다 오래돼 덤프, 복원을 못 한다. postgres:%s-alpine 이상으로\n' \
+      "$PG_DUMP_IMAGE" "$client" "$(( server / 10000 ))" "$(( server / 10000 ))"
+    return 1
+  fi
+}
+
 iso_utc_from_epoch() {
   date -u -d "@$1" +'%Y-%m-%dT%H:%M:%SZ'
 }
@@ -195,7 +216,7 @@ if [[ "$self_check" == true ]]; then
   PG_USER="${PG_USER:-lucida}"
   PG_PASSWORD="${PG_PASSWORD:-}"
   PG_DATABASE="${PG_DATABASE:-lucida}"
-  PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16-alpine}"
+  PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"
   QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:18080}"
   QUERY_API_USER="${QUERY_API_USER:-manager}"
   QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
@@ -238,6 +259,8 @@ if [[ "$self_check" == true ]]; then
     sc_run "postgres auth ($PG_HOST:$PG_PORT/$PG_DATABASE)" \
       docker run --rm --env PGPASSWORD="$PG_PASSWORD" "$PG_DUMP_IMAGE" \
       psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SELECT 1'
+    sc_pg_major() { local m; m=$(pg_tool_major_check) || { printf '%s\n' "$m" >&2; return 1; }; }
+    sc_run "postgres tool major >= server major ($PG_DUMP_IMAGE)" sc_pg_major
   fi
   sc_assemble="${ASSEMBLE_SCRIPT:-$(dirname "$(realpath "$0")")/assemble-eval-case.sh}"
   sc_run "assemble script executable ($sc_assemble)" test -x "$sc_assemble"
@@ -733,7 +756,7 @@ PG_PORT="${PG_PORT:-15432}"
 PG_USER="${PG_USER:-lucida}"
 PG_PASSWORD="${PG_PASSWORD:-}"
 PG_DATABASE="${PG_DATABASE:-lucida}"
-PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16-alpine}"
+PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"
 CAPTURE_HOST_OUTPUT_ROOT="${CAPTURE_HOST_OUTPUT_ROOT:-}"
 MODEL_SOURCE="${MODEL_SOURCE:-/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json}"
 MODEL_CONTAINER="${MODEL_CONTAINER:-lucida-ai-observer}"
@@ -1117,6 +1140,7 @@ PG_DUMP_TIMEOUT_SEC="${PG_DUMP_TIMEOUT_SEC:-900}"
 # 읽지 않는다)를 먼저 떠서 pg-scope.json 에 없는 표도 규칙으로 가른다(pg-scope-export.py
 # plan_scope). 표마다의 결정은 data/catalog/postgres-scope-plan.json, 요약은 meta.postgres_scope.
 # 카탈로그 원문은 data/catalog/ 아래에 둔다(data/postgres, data/clickhouse 의 기존 파일 모양을 건드리지 않게).
+pg_major_msg=$(pg_tool_major_check) || die "$pg_major_msg"
 log 'reading PostgreSQL catalog for scope plan'
 mkdir -p "$staging_dir/data/catalog/postgres"
 python3 "$pg_scope_tool" --emit catalog-sql --out-dir /out/catalog/postgres > "$staging_dir/data/postgres/.catalog.sql"

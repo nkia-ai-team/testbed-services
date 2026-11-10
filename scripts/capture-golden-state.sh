@@ -42,7 +42,7 @@ Required environment for a live capture (same conventions as capture-eval-case.s
   PG_USER        default: lucida
   PG_PASSWORD    required
   PG_DATABASE    default: lucida
-  PG_DUMP_IMAGE  default: postgres:16-alpine
+  PG_DUMP_IMAGE  default: postgres:17-alpine (서버 메이저 이상이어야 한다. 덤프 전에 확인)
 Freshness gate:
   OBSERVER_HEALTH_URL   default: http://192.168.230.119:18087/api/v1/health
   FRESHNESS_MAX_LAG_SEC default: 600
@@ -149,7 +149,7 @@ PG_PORT="${PG_PORT:-15432}"
 PG_USER="${PG_USER:-lucida}"
 PG_PASSWORD="${PG_PASSWORD:-}"
 PG_DATABASE="${PG_DATABASE:-lucida}"
-PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16-alpine}"
+PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"
 OBSERVER_HEALTH_URL="${OBSERVER_HEALTH_URL:-http://192.168.230.119:18087/api/v1/health}"
 FRESHNESS_MAX_LAG_SEC="${FRESHNESS_MAX_LAG_SEC:-600}"
 CAPTURE_HOST_OUTPUT_ROOT="${CAPTURE_HOST_OUTPUT_ROOT:-}"
@@ -255,6 +255,29 @@ ch_export lucida_events_local \
 
 # --- AI learned state: PostgreSQL selective dump (trainer/observer/coverage) ---
 log "dumping PostgreSQL AI-state (${#AI_STATE_TABLES[@]} tables)"
+
+# pg_dump 는 자기보다 새 메이저 서버를 "server version mismatch" 로 거절한다(2026-11-10 실측: 16 클라이언트 →
+# 17 서버 거절, 17 클라이언트 → 16, 17 서버 성공). pg_restore 도 자기보다 새 pg_dump 가 만든 덤프를 읽지 못한다.
+# 119 PG 가 17 로 올라간 뒤 16 도구로 붙던 일을 덤프 전에 막는다. 인자는 docker run 에 더할 인자(네트워크 등).
+pg_tool_major_check() {
+  local client server
+  client=$(docker run --rm "$@" "$PG_DUMP_IMAGE" pg_dump --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  server=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "$@" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+    psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SHOW server_version_num' 2>/dev/null |
+    tr -d '[:space:]')
+  if [[ ! "$client" =~ ^[0-9]+$ || ! "$server" =~ ^[0-9]+$ ]]; then
+    printf 'PG 도구, 서버 메이저를 읽지 못했다(PG_DUMP_IMAGE=%s client=%s server_version_num=%s)\n' \
+      "$PG_DUMP_IMAGE" "${client:-?}" "${server:-?}"
+    return 1
+  fi
+  if (( client < server / 10000 )); then
+    printf 'PG_DUMP_IMAGE=%s 의 PG 도구 %s 은 서버 %s 보다 오래돼 덤프, 복원을 못 한다. postgres:%s-alpine 이상으로\n' \
+      "$PG_DUMP_IMAGE" "$client" "$(( server / 10000 ))" "$(( server / 10000 ))"
+    return 1
+  fi
+}
+pg_major_msg=$(pg_tool_major_check) || die "$pg_major_msg"
+
 pg_dump_data_dir="$staging_dir/data"
 if [[ -n "$CAPTURE_HOST_OUTPUT_ROOT" ]]; then
   pg_dump_data_dir="${CAPTURE_HOST_OUTPUT_ROOT%/}/${staging_dir##*/}/data"
