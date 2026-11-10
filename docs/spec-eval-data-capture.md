@@ -363,7 +363,8 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     (`max_execution_time`)을 더해 나간다.
   - 저장소가 없거나 바깥 원천을 읽는 엔진(View, MaterializedView, Null, Distributed, S3 등), TO 없는 구체화
     뷰의 내부 표(`.inner*`), `schema_migrations`, 상한을 넘는 기준 표는 담지 않고 `meta.clickhouse_excluded[]`
-    에 이유를 남긴다. MergeTree 가 아니어도 자기 저장소를 쓰는 엔진(Memory, Log 계열, Set, Join)은 통째로.
+    에 이유를 남긴다. MergeTree 가 아니어도 자기 저장소를 쓰는 엔진(Memory, Log 계열, Join, EmbeddedRocksDB)은 통째로. Set 은
+    SELECT 로 읽을 수 없어(NOT_IMPLEMENTED) 이유를 붙여 뺀다.
   - `lucida` 밖 DB(`lucida_selfsystem`)의 표는 `data/clickhouse/<db>/` 아래에 둔다.
   - 구체화 뷰의 대상 표(`mv_target_of` 가 있는 표)는 원본 표를 다시 넣으면 뷰가 다시 만든다. 재생 때
     둘 다 넣으면 두 번 쌓이므로 소비자가 고른다.

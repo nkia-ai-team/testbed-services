@@ -43,7 +43,9 @@ case "$*" in
   *--version*)
     [[ "$*" == *fake-pg16* ]] && echo 'pg_dump (PostgreSQL) 16.15' || echo 'pg_dump (PostgreSQL) 17.11'
     exit 0 ;;
-  *'SHOW server_version_num'*) echo "${FAKE_PG_SERVER_NUM:-170011}"; exit 0 ;;
+  *'SHOW server_version_num'*)
+    [[ -n "${FAKE_PG_HANG:-}" ]] && exec sleep 60   # 주소가 막혀 접속이 걸린 경우
+    echo "${FAKE_PG_SERVER_NUM:-170011}"; exit 0 ;;
   *pg_stat_user_tables*) exit 0 ;;
   *'pg_dump -Fc'*)
     host=''
@@ -85,7 +87,20 @@ grep -q 'PG 도구 16 은 서버 17 보다 오래돼' "$TMP_ROOT/err" || fail "u
 FAKE_PG_SERVER_NUM=160015 PG_DUMP_IMAGE=fake-pg16 "$GOLDEN" --skip-freshness --output-root "$TMP_ROOT/g3" \
   >/dev/null 2>"$TMP_ROOT/err" || fail "refused a PG 16 tool against a PG 16 server: $(cat "$TMP_ROOT/err")"
 
-# 4. The copied check is the same function in all three scripts.
+# 4. The server version query runs under a time limit and a connect timeout, like the other PG
+#    steps: a hung connection fails the capture within the limit instead of stalling it.
+: >"$FAKE_LOG"
+start=$(date +%s)
+if FAKE_PG_HANG=1 PG_TOOL_CHECK_TIMEOUT_SEC=2 PG_DUMP_IMAGE=fake-pg17 "$GOLDEN" --skip-freshness \
+     --output-root "$TMP_ROOT/g4" >/dev/null 2>"$TMP_ROOT/err"; then
+  fail 'golden capture went on with a hung PG connection'
+fi
+(( $(date +%s) - start < 20 )) || fail 'the PG tool check did not stop within its time limit'
+grep -q 'PG 도구, 서버 메이저를 읽지 못했다' "$TMP_ROOT/err" || fail "unexpected failure: $(cat "$TMP_ROOT/err")"
+grep -q 'PGCONNECT_TIMEOUT=10.*SHOW server_version_num' "$FAKE_LOG" || fail 'the server version psql has no connect timeout'
+! grep -q 'pg_dump -Fc' "$FAKE_LOG" || fail 'pg_dump ran after a failed PG tool check'
+
+# 5. The copied check is the same function in all three scripts.
 extract() { sed -n '/^pg_tool_major_check() {$/,/^}$/p' "$1"; }
 ref=$(extract "$SCRIPT_DIR/capture-eval-case.sh")
 [[ -n "$ref" ]] || fail 'pg_tool_major_check not found in capture-eval-case.sh'

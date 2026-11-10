@@ -488,6 +488,14 @@ class ChPlanTest(unittest.TestCase):
         e = self.by_name(self.plan(rows, cols))["lucida.agg_x"]
         self.assertEqual((e["time_column"], e["slice_basis"]), ("minute", "partition_time"))
 
+    def test_set_engine_cannot_be_read_and_is_excluded_but_join_is_kept(self):
+        plan = self.plan([("lucida", "allow_set", "Set", "", "", 3, 100),
+                          ("lucida", "dict_join", "Join", "", "", 3, 100)],
+                         [("lucida", "dict_join", "k", "UInt8")])
+        self.assertEqual([(x["table"], x["engine"]) for x in plan["excluded"]], [("allow_set", "Set")])
+        self.assertIn("SELECT 로 읽을 수 없는", plan["excluded"][0]["reason"])
+        self.assertEqual(self.by_name(plan)["lucida.dict_join"]["scope"], "snap")
+
     def test_local_storage_engines_are_kept_whole_and_remote_engines_are_left_out(self):
         plan = self.plan([("lucida", "mem", "Memory", "", "", 1, 100),
                           ("lucida", "s3_src", "S3", "", "", "\\N", "\\N")],

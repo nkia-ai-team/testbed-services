@@ -357,8 +357,12 @@ pg_net_args=()
 # 119 PG 가 17 로 올라간 뒤 16 도구로 붙던 일을 덤프 전에 막는다. 인자는 docker run 에 더할 인자(네트워크 등).
 pg_tool_major_check() {
   local client server
-  client=$(docker run --rm "$@" "$PG_DUMP_IMAGE" pg_dump --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
-  server=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "$@" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+  # 다른 PG 단계처럼 시간 상한 안에서 돈다. 주소가 막혀도 TCP 재시도만큼 멈추지 않게 접속 상한도 건다.
+  local limit="${PG_TOOL_CHECK_TIMEOUT_SEC:-60}"
+  client=$(timeout --kill-after=10 "$limit" docker run --rm "$@" "$PG_DUMP_IMAGE" pg_dump --version 2>/dev/null |
+    grep -oE '[0-9]+' | head -1)
+  server=$(PGPASSWORD="$PG_PASSWORD" timeout --kill-after=10 "$limit" docker run --rm "$@" --env PGPASSWORD \
+    --env PGCONNECT_TIMEOUT="${PG_TOOL_CHECK_CONNECT_TIMEOUT_SEC:-10}" "$PG_DUMP_IMAGE" \
     psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SHOW server_version_num' 2>/dev/null |
     tr -d '[:space:]')
   if [[ ! "$client" =~ ^[0-9]+$ || ! "$server" =~ ^[0-9]+$ ]]; then

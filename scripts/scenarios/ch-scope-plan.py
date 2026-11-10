@@ -41,7 +41,10 @@ TIME_TYPE = re.compile(r"^(?:Nullable\()?(DateTime64|DateTime|Date32|Date)\b")
 # 정렬 키가 같은 행을 병합 때 하나로 합치는 엔진. 이런 표의 시각 열은 정렬 키에 있을 때만 사건 시각이다.
 MERGING = re.compile(r"(Replacing|Aggregating|Summing|Collapsing|VersionedCollapsing|Graphite|Coalescing)MergeTree$")
 # MergeTree 가 아니면서 데이터를 자기 저장소에 두는 엔진. 시각 조건으로 부분을 건너뛸 수 없어 통째로(상한 안).
-LOCAL_STORAGE = {"Memory", "Log", "TinyLog", "StripeLog", "Set", "Join", "EmbeddedRocksDB"}
+LOCAL_STORAGE = {"Memory", "Log", "TinyLog", "StripeLog", "Join", "EmbeddedRocksDB"}
+# 자기 저장소가 있어도 SELECT 로 읽을 수 없는 엔진. CH 26.3.17.56 실측: Set 은 "Method read is not supported by
+# storage Set (NOT_IMPLEMENTED)". Join 은 ANY, ALL, SEMI, ANTI 와 LEFT, INNER 조합 모두 SELECT 로 읽혀 통째로 담는다.
+NO_DIRECT_READ = {"Set": "SELECT 로 읽을 수 없는 엔진(Set). IN 조건용 집합이라 행으로 내보낼 수 없다"}
 
 
 def catalog_queries(databases: list[str]) -> dict[str, str]:
@@ -145,6 +148,8 @@ def plan_tables(cfg: dict, catalog: dict, skip: set[str], window_start: str, win
                 if name.startswith(pre):
                     reason = why
         merge_tree = t["engine"].endswith("MergeTree")
+        if reason is None and t["engine"] in NO_DIRECT_READ:
+            reason = NO_DIRECT_READ[t["engine"]]
         if reason is None and not merge_tree and t["engine"] not in LOCAL_STORAGE:
             reason = f"자기 저장소가 없거나 바깥 원천을 읽는 엔진({t['engine']})"
         if reason:
