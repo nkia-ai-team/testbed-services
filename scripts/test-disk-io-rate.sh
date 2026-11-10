@@ -84,82 +84,123 @@ with open(out, "w") as f:
 PY
 }
 verdict() { grep -E '^read queue at the limits' <<<"$1"; }
+slowest() { sed -n 's/.*the slowest second.s reads finish \([0-9.]*\) s.*/\1/p' <<<"$1"; }
+passes() { python3 "$TOOL" report "$@" $W >/dev/null; }   # passes <raw> <limits...>
+smallest() { python3 "$TOOL" report "$1" | sed -n "s|^smallest read $2 limit meeting both rules (other read limit open): ||p"; }
 
 # Normal reconciliation (review 3's r1): 24 h, every 600 s 15 s at 400 MiB/s and 1000 IOPS. Rule 2
-# asks 801 MiB/s and 2001 IOPS; there no second reads more than a limit, so rule 1 is 1.00x and the
-# smallest limits meeting both rules are those same numbers.
+# asks 801 MiB/s and 2001 IOPS; there every second's reads fit in the second, and the smallest
+# limits meeting both rules are those same numbers.
 make_ev "$TMP_ROOT/r1.raw" 86400 "R:600:100:15:400:1000"
 out=$(python3 "$TOOL" report "$TMP_ROOT/r1.raw" --read-mbps 801 --read-iops 2001 $W) || fail "normal reconciliation must pass: $out"
-[[ "$(verdict "$out")" == "read queue at the limits: no second reads more than a limit, 1.00x; yes" ]] || fail "$out"
-grep -q 'smallest read MiB/s limit meeting both rules (other read limit open): 801$' <<<"$out" || fail "$out"
-grep -q 'smallest read IOPS limit meeting both rules (other read limit open): 2001$' <<<"$out" || fail "$out"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/r1.raw" --read-mbps 800 --read-iops 2001 $W); then fail "800 must fail rule 2: $out"; fi
-grep -Eq '^read_bps .* 800 +NO$' <<<"$out" || fail "$out"
-echo "[PASS] queue: an even reconciliation is never slowed; p99.9 must be strictly below half the limit"
+[[ "$(slowest "$out")" == 0.500 ]] || fail "1000 reads under 2001 IOPS are done in half a second: $out"
+[[ "$(smallest "$TMP_ROOT/r1.raw" MiB/s)" == 801 && "$(smallest "$TMP_ROOT/r1.raw" IOPS)" == 2001 ]] || fail "smallest limits for r1"
+passes "$TMP_ROOT/r1.raw" --read-mbps 800 --read-iops 2001 && fail "800 must fail rule 2"
+echo "[PASS] queue: an even reconciliation is not slowed; p99.9 must be strictly below half the limit"
 
-# A gap inside a burst splits it (bursts line); the queue too starts again after a gap.
+# A gap inside a burst splits it (bursts line).
 make_raw "$TMP_ROOT/g.raw" "100:500,101:500,102:500,103:500" 1302
 out=$(python3 "$TOOL" report "$TMP_ROOT/g.raw")
 grep -q 'read bursts above 20.0 MiB/s or 200 IOPS (for reading only): 7,' <<<"$out" || fail "a gap must end a burst: $out"
 echo "[PASS] report: a dropped interval ends a burst"
 
-# The three holes found in reviews 3 and 4. Each must FAIL under a 300 MiB/s (or 300 IOPS) limit.
-# Shoulders: 97 s of 25 MiB/s around a 3-second 3000 MiB/s spike (review 3 r2).
-make_ev "$TMP_ROOT/sh.raw" 3600 "1000:49:25:100;1049:3:3000:1000;1052:48:25:100"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/sh.raw" --read-mbps 300 $W); then fail "shoulders must not hide a spike: $out"; fi
-grep -q 'worst 10.83x (3 s over the limits now -> 32.5 s until the queue empties), over 2.0x: 1; NO' <<<"$out" || fail "$out"
-# Inside: two such spikes joined by 94 s of light reads, one burst (review 4 B1d), and the same with
-# 300 IOPS in the joining seconds (B1f).
-for join in "25:100" "15:300"; do
+# A gap also starts the queue again (it lasted at least five seconds): two seconds of 500 MiB under
+# 300 MiB/s, one after the other, leave 200 MiB queued and the second one ends at 2.333 s (FAIL).
+# With a gap between them each is done at 1.667 s (PASS).
+make_ev "$TMP_ROOT/nogap.raw" 3600 "1000:2:500:100"
+passes "$TMP_ROOT/nogap.raw" --read-mbps 300 && fail "back-to-back seconds must carry the queue"
+[[ "$(slowest "$(python3 "$TOOL" report "$TMP_ROOT/nogap.raw" --read-mbps 300 || true)")" == 2.333 ]] || fail "carried queue"
+python3 - "$TMP_ROOT/nogap.raw" "$TMP_ROOT/gap.raw" <<'PY'
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+out = []
+for k, line in enumerate(lines):
+    t, rest = line.split(" ", 1)
+    shift = 30 if k > 1000 else 0
+    out.append(f"{float(t) + shift:.6f} {rest}")
+    if k == 1000:   # after the first heavy second: a row 30 s later with the same counters (a dropped interval)
+        out.append(f"{float(t) + 30:.6f} {rest}")
+open(sys.argv[2], "w").write("\n".join(out) + "\n")
+PY
+out=$(python3 "$TOOL" report "$TMP_ROOT/gap.raw" --read-mbps 300 $W) || fail "a gap must start the queue again: $out"
+[[ "$(slowest "$out")" == 1.667 ]] || fail "$out"
+echo "[PASS] queue: back-to-back seconds carry the queue, a dropped interval starts it again"
+
+# The three holes found in reviews 3 and 4 all FAIL under 300 MiB/s (or 300 IOPS).
+make_ev "$TMP_ROOT/sh.raw" 3600 "1000:49:25:100;1049:3:3000:1000;1052:48:25:100"     # shoulders (r2)
+passes "$TMP_ROOT/sh.raw" --read-mbps 300 && fail "shoulders must not hide a spike"
+for join in "25:100" "15:300"; do                                                    # inside (B1d, B1f)
   make_ev "$TMP_ROOT/in.raw" 3600 "1000:3:3000:1000;1003:94:$join;1097:3:3000:1000"
-  if out=$(python3 "$TOOL" report "$TMP_ROOT/in.raw" --read-mbps 300 $W); then fail "light reads between spikes must not hide them ($join): $out"; fi
-  grep -Eq 'read queue at the limits: 2 episodes, worst ([0-9.]+)x .*over 2.0x: 2; NO' <<<"$out" || fail "$join: $out"
+  passes "$TMP_ROOT/in.raw" --read-mbps 300 && fail "light reads between spikes must not hide them ($join)"
 done
-# IOPS: a 3-second burst of 1000 reads/s in small blocks (8 MiB/s, under the 20 MiB/s burst line;
-# review 4 K1) under a 300 IOPS limit, with a generous byte limit and with the IOPS limit alone.
-make_ev "$TMP_ROOT/k1.raw" 3600 "1500:3:8:1000"
-for limits in "--read-mbps 2000 --read-iops 300" "--read-iops 300"; do
-  if out=$(python3 "$TOOL" report "$TMP_ROOT/k1.raw" $limits $W); then fail "an IOPS-only burst must fail ($limits): $out"; fi
-  grep -q 'worst 3.42x (3 s over the limits now -> 10.3 s until the queue empties)' <<<"$out" || fail "$limits: $out"
-done
-grep -q 'smallest read IOPS limit meeting both rules (other read limit open): 505$' <<<"$out" || fail "$out"
-out=$(python3 "$TOOL" report "$TMP_ROOT/k1.raw" --read-iops 505 $W) || fail "505 IOPS must pass: $out"
+make_ev "$TMP_ROOT/k1.raw" 3600 "1500:3:8:1000"                                      # small-block IOPS (K1)
+passes "$TMP_ROOT/k1.raw" --read-mbps 2000 --read-iops 300 && fail "an IOPS-only burst must fail with both limits"
+passes "$TMP_ROOT/k1.raw" --read-iops 300 && fail "an IOPS-only burst must fail with the IOPS limit alone"
+[[ "$(smallest "$TMP_ROOT/k1.raw" IOPS)" == 750 ]] || fail "three seconds of 1000 reads need 750 IOPS"
+passes "$TMP_ROOT/k1.raw" --read-iops 750 || fail "750 IOPS must pass"
+passes "$TMP_ROOT/k1.raw" --read-iops 749 && fail "749 IOPS must fail"
 echo "[PASS] queue: shoulders, light reads between spikes and small-block IOPS bursts all fail at 300"
 
-# Adding light reads never turns a FAIL into a PASS: the same spikes alone and with the join.
+# Adding reads never makes a second finish earlier: the spikes alone, with light reads between them,
+# and (review 5's 2% case) one spike followed by 20 s just under or just over the limit.
 make_ev "$TMP_ROOT/alone.raw" 3600 "1000:3:3000:1000;1097:3:3000:1000"
-a=$({ python3 "$TOOL" report "$TMP_ROOT/alone.raw" --read-mbps 300 $W || true; } | sed -n 's/.*worst \([0-9.]*\)x.*/\1/p')
 make_ev "$TMP_ROOT/in.raw" 3600 "1000:3:3000:1000;1003:94:25:100;1097:3:3000:1000"
-b=$({ python3 "$TOOL" report "$TMP_ROOT/in.raw" --read-mbps 300 $W || true; } | sed -n 's/.*worst \([0-9.]*\)x.*/\1/p')
-[[ -n "$a" && -n "$b" ]] && python3 -c "import sys; sys.exit(0 if float('$b') >= float('$a') else 1)" || fail "light reads lowered the ratio: $a -> $b"
-echo "[PASS] queue: light reads only lengthen the queue ($a x alone, $b x with them)"
+a=$(slowest "$(python3 "$TOOL" report "$TMP_ROOT/alone.raw" --read-mbps 300 $W || true)")
+b=$(slowest "$(python3 "$TOOL" report "$TMP_ROOT/in.raw" --read-mbps 300 $W || true)")
+[[ -n "$a" && -n "$b" ]] && python3 -c "import sys; sys.exit(0 if float('$b') >= float('$a') else 1)" || fail "light reads made a second finish earlier: $a -> $b"
+for after in "" ";1001:20:297:100" ";1001:20:303:100"; do
+  make_ev "$TMP_ROOT/x2.raw" 3600 "1000:1:3000:1000$after"
+  passes "$TMP_ROOT/x2.raw" --read-mbps 300 && fail "a spike stays a FAIL whatever follows it ($after)"
+done
+echo "[PASS] queue: added reads never help ($a s alone, $b s with light reads between)"
 
-# Ratio 2: a 3-second spike at 900 MiB/s under 300 takes 9 s (3.00x): FAIL. A single second at
-# 3000 MiB/s needs at least 1500 (half its rate).
-make_ev "$TMP_ROOT/f.raw" 3600 "2000:3:900:1000"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/f.raw" --read-mbps 300 $W); then fail "a threefold stretch must fail: $out"; fi
-grep -q 'worst 3.00x (3 s over the limits now -> 9.0 s until the queue empties), over 2.0x: 1; NO' <<<"$out" || fail "$out"
+# Monotone in the limit (review 5 x1, x3): once a limit passes, every higher one passes, and the
+# smallest limit report prints is that boundary.
+make_ev "$TMP_ROOT/x3.raw" 86400 "30000:1:360:1000;30001:60:285:1000"
+make_ev "$TMP_ROOT/x1.raw" 86400 "30000:1:3000:1000;30001:60:400:1000"
+for f in x3 x1; do
+  m=$(smallest "$TMP_ROOT/$f.raw" MiB/s)
+  passes "$TMP_ROOT/$f.raw" --read-mbps "$m" || fail "$f: the printed smallest limit $m must pass"
+  passes "$TMP_ROOT/$f.raw" --read-mbps "$((m - 1))" && fail "$f: $((m - 1)) must fail"
+  seen_pass=0
+  for L in 144 250 281 282 284 285 300 320 361 399 400 1000 1499 1500 1700 3000; do
+    if passes "$TMP_ROOT/$f.raw" --read-mbps "$L"; then seen_pass=1
+    elif (( seen_pass )); then fail "$f: $L fails after a lower limit passed"; fi
+    if (( L >= m )); then (( seen_pass )) || fail "$f: $L >= smallest $m must pass"; fi
+  done
+done
+[[ "$(smallest "$TMP_ROOT/x3.raw" MiB/s)" == 282 && "$(smallest "$TMP_ROOT/x1.raw" MiB/s)" == 1500 ]] || fail "x3 282, x1 1500"
+echo "[PASS] queue: the rule is monotone in the limit and report's smallest limit is the boundary (x3 282, x1 1500)"
+
+# Examples in the documentation: one second at 3000 MiB/s needs 1500, three in a row need 2250.
 make_ev "$TMP_ROOT/b4.raw" 3600 "2000:1:3000:1000"
-grep -q 'smallest read MiB/s limit meeting both rules (other read limit open): 1501$' <<<"$(python3 "$TOOL" report "$TMP_ROOT/b4.raw")" \
-  || fail "one second at 3000 MiB/s needs a limit above half of it"
-echo "[PASS] queue: twice as long is the most a heavy run may take"
+make_ev "$TMP_ROOT/r2b.raw" 3600 "2000:3:3000:1000"
+[[ "$(smallest "$TMP_ROOT/b4.raw" MiB/s)" == 1500 && "$(smallest "$TMP_ROOT/r2b.raw" MiB/s)" == 2250 ]] || fail "1500 and 2250"
+# The printed time and the verdict agree at the boundary (the background trickle does not tip it).
+# The second also carries the 40 KiB/s background: 3000.04 MiB under 1500 is 2.00003 s, read in
+# milliseconds as 2.000 (review 5 R4).
+make_ev "$TMP_ROOT/b4t.raw" 3600 "2000:1:3000.0390625:1000"
+out=$(python3 "$TOOL" report "$TMP_ROOT/b4t.raw" --read-mbps 1500 $W) || fail "$out"
+grep -q 'finish 2.000 s after it starts (at most 2 s), seconds later than that: 0; yes' <<<"$out" || fail "$out"
+out=$(python3 "$TOOL" report "$TMP_ROOT/b4.raw" --read-mbps 1499 $W || true)
+grep -q 'finish 2.001 s after it starts (at most 2 s), seconds later than that: 1; NO' <<<"$out" || fail "$out"
+echo "[PASS] queue: 1500 for one second at 3000 MiB/s, 2250 for three; printed time and verdict agree"
 
-# A light second between two heavy ones still waits in the queue (review 3's H): 3000, 100, 3000.
+# A light second between two heavy ones still waits behind them (review 3's H): 3000, 100, 3000.
 make_ev "$TMP_ROOT/h.raw" 3600 "2500:1:3000:1000;2501:1:100:1000;2502:1:3000:1000"
-if out=$(python3 "$TOOL" report "$TMP_ROOT/h.raw" --read-mbps 300 $W); then fail "$out"; fi
-grep -q 'worst 10.17x (2 s over the limits now -> 20.3 s until the queue empties)' <<<"$out" || fail "$out"
-echo "[PASS] queue: the light second between two heavy ones is not counted as work"
+out=$(python3 "$TOOL" report "$TMP_ROOT/h.raw" --read-mbps 300 $W || true)
+[[ "$(slowest "$out")" == 18.333 ]] || fail "the third second waits for 5200 MiB at 300 MiB/s: $out"
+echo "[PASS] queue: a light second between heavy ones keeps the backlog"
 
-# The smallest limit follows rare peaks inside a reconciliation, not only p99.9 (review 4 B2): 24 h
-# of reconciliations at 400 MiB/s, 40 of them starting with one second at 2000 MiB/s. Rule 2 alone
-# says 801; what is queued at 2000 drains while the reconciliation still reads 400, so it takes 1200.
+# Rare peaks inside a reconciliation (review 4 B2): 40 of the 144 daily reconciliations start with one
+# second at 2000 MiB/s. Rule 2 alone says 801; the peak needs 1000.
 make_ev "$TMP_ROOT/b2.raw" 86400 "R:600:100:12:400:1000;R:600:100:1:2000:1000:40"
 out=$(python3 "$TOOL" report "$TMP_ROOT/b2.raw")
 grep -Eq '^read_bps .* 800\.0MiB/s' <<<"$out" || fail "rule 2 alone: $out"
-grep -q 'smallest read MiB/s limit meeting both rules (other read limit open): 1200$' <<<"$out" || fail "$out"
-if python3 "$TOOL" report "$TMP_ROOT/b2.raw" --read-mbps 1199 $W >/dev/null; then fail "1199 must fail"; fi
-python3 "$TOOL" report "$TMP_ROOT/b2.raw" --read-mbps 1200 $W >/dev/null || fail "1200 must pass"
-echo "[PASS] report: the smallest limit meeting both rules is printed and follows rare peaks"
+[[ "$(smallest "$TMP_ROOT/b2.raw" MiB/s)" == 1000 ]] || fail "$out"
+passes "$TMP_ROOT/b2.raw" --read-mbps 999 && fail "999 must fail"
+passes "$TMP_ROOT/b2.raw" --read-mbps 1000 || fail "1000 must pass"
+echo "[PASS] report: the smallest limit meeting both rules follows rare peaks (1000, rule 2 alone 801)"
 
 # The limit rule reads p99.9, not p99 (data A: bursts in 0.67% of seconds).
 if out=$(python3 "$TOOL" report "$TMP_ROOT/a.raw" --read-mbps 600 --read-iops 5000 $W); then fail "p99.9 above half the limit must fail: $out"; fi

@@ -17,20 +17,23 @@ polls it). One ssh session runs the sampling loop on the host; this side only st
 report prints, for read and write bytes (MiB/s, the unit Proxmox mbps_rd and mbps_wr take) and
 operations per second: p50, p99, p99.9 and max, and the limit that rule 2 alone asks for. Rule 2:
 p99.9 below half the limit. Rule 1 (reads): replay the reads through a queue that serves the read
-limits each second (bytes and operations; what does not fit waits for the next second). Every
-stretch where the queue is not empty starts at a second that read more than a limit and ends when
-the queue is empty again; it may take at most --burst-ratio (default 2) times the number of seconds
-in it that read more than a limit. Light seconds around or between heavy ones are never counted as
-work, so they can only lengthen the queue, not lower the ratio. report also prints the smallest read
-byte limit and the smallest read IOPS limit that meet both rules (each with the other open): rule 1
-looks at the rarest heavy seconds too, so this can be well above what rule 2 alone asks for.
+limits each second (bytes and operations; what does not fit waits for the next second, in order).
+The reads that arrived in any second must all be done within --max-wait (default 2) seconds of that
+second's start; today they are done within the second. Two seconds is the meaning of "an even
+reconciliation is not slowed much": it may at most take one second longer per second of reading.
+The rule only gets easier as a limit rises and only harder as reads are added, so light seconds
+around or between heavy ones cannot hide them, and report can binary-search the smallest read byte
+limit and the smallest read IOPS limit that meet both rules (each with the other open).
+Examples: one second at 3000 MiB/s needs a limit of at least 1500 (half its rate); three such
+seconds in a row need 2250, because the first two seconds' backlog is still queued when the third
+arrives. A run of heavy seconds therefore asks for more than a single one, which keeps the normal
+shape of the disk rather than letting a long heavy job take twice as long.
 With limits given it says PASS only when both rules hold.
 
 What the rules do in practice: the ledger reconciliation reads in a burst every 600 seconds, 144
 times a day. Its seconds outside the top 0.1% of the day (about 86 seconds) are under half the limit
 once rule 2 holds, so a reconciliation at an even rate is not slowed. Rule 1 bites on what lies in
-that top 0.1%: rare heavy seconds (start-up, a nightly job, a spike inside one reconciliation). For a
-single such second it means limit >= half its rate; a longer run of them asks for more.
+that top 0.1%: rare heavy seconds (start-up, a nightly job, a spike inside one reconciliation).
 
 The read bursts line (consecutive seconds above --burst-mbps or --burst-iops) is for reading the data
 only; the verdict comes from the queue.
@@ -133,73 +136,49 @@ def bursts(reads: list[tuple[float, float] | None], bytes_threshold: float,
     return runs
 
 
-def episodes(intervals: list[dict[str, float] | None], bytes_limit: float | None,
-             iops_limit: float | None) -> list[tuple[int, float]]:
-    """Read queue under the limits, one second at a time: each second's reads (bytes and operations)
-    join the queue, and the second serves up to the limit. An episode starts at a second whose reads
-    do not all fit, and ends when the queue is empty again (the later of the two queues, at the
-    fraction of the second where it empties). A dropped interval (gap, counter reset) ends the
-    record there: what is still queued is drained as if nothing more arrived.
+def finish_times(intervals: list[dict[str, float] | None], bytes_limit: float | None,
+                 iops_limit: float | None) -> list[float]:
+    """For every second, how long after its start the reads that arrived in it are done under the
+    read limits. The limits serve each second up to their amount; what does not fit waits, in order,
+    for the next second. Bytes and operations are two queues and a second is done when both are
+    (the later one). Without limits every second's reads are done within that second (1 s or less).
 
-    Returns (overloaded seconds, seconds at the limits) per episode. Overloaded seconds are the
-    seconds that read more than a limit: the work the limit actually slows, taking one second each
-    now. Seconds under the limits are never counted as work, so light reads around or between heavy
-    seconds only add to the queue and can never lower the ratio."""
-    found: list[tuple[int, float]] = []
+    A dropped interval (gap, counter reset) starts the queues again: what was waiting is taken to
+    have drained during the gap, which lasted at least five seconds.
+
+    QEMU's throttle is one queue of requests that wait for bytes and operations together. When the
+    heavy side changes from one second to the next (multi-block reads, then single-block reads) one
+    queue takes longer than two: a second of 600 MiB then a second of 200 small reads under 300 MiB/s
+    and 100 IOPS take 3 s here and 4 s in one queue. Choosing a limit with a margin covers this."""
+    times: list[float] = []
     queued_bytes = queued_ops = 0.0
-    start: int | None = None
-    overloaded = 0
-
-    def service(b: float, ops: float) -> float:
-        return max(b / bytes_limit if bytes_limit else 0.0, ops / iops_limit if iops_limit else 0.0)
-
-    for k, interval in enumerate(intervals + [None]):
+    for interval in intervals:
         if interval is None:
-            if start is not None:
-                found.append((overloaded, k - start + service(queued_bytes, queued_ops)))
             queued_bytes = queued_ops = 0.0
-            start = None
             continue
         b, ops = interval["read_bps"], interval["read_iops"]
-        waiting_bytes, waiting_ops = queued_bytes + b, queued_ops + ops
-        need = service(waiting_bytes, waiting_ops)
-        if start is None:
-            if need <= 1.0:
-                continue
-            start, overloaded = k, 0
-        if (bytes_limit and b > bytes_limit) or (iops_limit and ops > iops_limit):
-            overloaded += 1
-        if need <= 1.0:
-            found.append((overloaded, k - start + need))
-            queued_bytes = queued_ops = 0.0
-            start = None
-        else:
-            queued_bytes = max(0.0, waiting_bytes - bytes_limit) if bytes_limit else 0.0
-            queued_ops = max(0.0, waiting_ops - iops_limit) if iops_limit else 0.0
-    return found
+        done = max(
+            (queued_bytes + b) / bytes_limit if bytes_limit else 0.0,
+            (queued_ops + ops) / iops_limit if iops_limit else 0.0,
+        )
+        times.append(round(done, 3))   # milliseconds: the background trickle must not tip a boundary
+        queued_bytes = max(0.0, queued_bytes + b - bytes_limit) if bytes_limit else 0.0
+        queued_ops = max(0.0, queued_ops + ops - iops_limit) if iops_limit else 0.0
+    return times
 
 
-def worst_episode(intervals: list[dict[str, float] | None], bytes_limit: float | None,
-                  iops_limit: float | None) -> tuple[float, int, float, int]:
-    """(worst ratio, its overloaded seconds, its seconds at the limits, number of episodes)."""
-    found = episodes(intervals, bytes_limit, iops_limit)
-    if not found:
-        return 1.0, 0, 0.0, 0
-    over, took = max(found, key=lambda e: e[1] / e[0])
-    return took / over, over, took, len(found)
-
-
-def smallest_read_limit(intervals: list[dict[str, float] | None], values: list[float], ratio: float,
+def smallest_read_limit(intervals: list[dict[str, float] | None], values: list[float], wait: float,
                         kind: str, unit: float) -> int:
-    """Smallest whole read limit (MiB/s or IOPS) that keeps p99.9 under half of it and lets no episode
-    take more than ratio times its overloaded seconds, the other read limit left open. The burst rule
-    only gets easier as the limit rises, so a binary search finds it."""
+    """Smallest whole read limit (MiB/s or IOPS) that keeps p99.9 under half of it and lets every
+    second's reads finish within `wait` seconds, the other read limit left open. A higher limit never
+    makes a second finish later, so the rule only gets easier as the limit rises and a binary search
+    finds the boundary."""
     def passes(limit: int) -> bool:
         given = limit * unit
         args = (given, None) if kind == "bytes" else (None, given)
-        return worst_episode(intervals, *args)[0] <= ratio
+        return max(finish_times(intervals, *args), default=0.0) <= wait
     low = int(2 * percentile(values, 0.999) / unit) + 1          # first whole limit that passes rule 2
-    high = max(low, int(max(values) / unit) + 1)                 # nothing above it: no episode at all
+    high = max(low, int(max(values) / unit) + 1)                 # every second fits: nothing ever waits
     if passes(low):
         return low
     while high - low > 1:
@@ -254,19 +233,15 @@ def report(args: argparse.Namespace) -> int:
         print(f"read bursts above {args.burst_mbps} MiB/s or {args.burst_iops:.0f} IOPS (for reading only): none")
     for kind, name, unit, label in (("bytes", "read_bps", MIB, "MiB/s"), ("iops", "read_iops", 1, "IOPS")):
         print(f"smallest read {label} limit meeting both rules (other read limit open): "
-              f"{smallest_read_limit(intervals, series[name], args.burst_ratio, kind, unit)}")
+              f"{smallest_read_limit(intervals, series[name], args.max_wait, kind, unit)}")
     if limits["read_bps"] or limits["read_iops"]:
-        worst, over, took, count_episodes = worst_episode(intervals, limits["read_bps"], limits["read_iops"])
-        found = episodes(intervals, limits["read_bps"], limits["read_iops"])
-        beyond = sum(1 for o, t in found if t / o > args.burst_ratio)
-        passed = beyond == 0
+        times = finish_times(intervals, limits["read_bps"], limits["read_iops"])
+        worst = max(times, default=0.0)
+        late = sum(1 for t in times if t > args.max_wait)
+        passed = late == 0
         ok &= passed
-        if count_episodes:
-            print(f"read queue at the limits: {count_episodes} episodes, worst {worst:.2f}x "
-                  f"({over} s over the limits now -> {took:.1f} s until the queue empties), "
-                  f"over {args.burst_ratio}x: {beyond}; {'yes' if passed else 'NO'}")
-        else:
-            print("read queue at the limits: no second reads more than a limit, 1.00x; yes")
+        print(f"read queue at the limits: the slowest second's reads finish {worst:.3f} s after it starts "
+              f"(at most {args.max_wait:g} s), seconds later than that: {late}; {'yes' if passed else 'NO'}")
     if any(limits.values()):
         print("PASS" if ok else "FAIL")
         return 0 if ok else 1
@@ -289,8 +264,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--write-iops", type=float)
     r.add_argument("--burst-mbps", type=float, default=20.0, help="MiB/s above which a second belongs to a burst")
     r.add_argument("--burst-iops", type=float, default=200.0, help="read IOPS above which a second belongs to a burst")
-    r.add_argument("--burst-ratio", type=float, default=2.0,
-                   help="largest allowed (burst time at the limit) / (burst time now), per burst")
+    r.add_argument("--max-wait", type=float, default=2.0,
+                   help="seconds within which every second's reads must be done under the read limits")
     args = parser.parse_args(argv)
     return collect(args) if args.command == "collect" else report(args)
 
