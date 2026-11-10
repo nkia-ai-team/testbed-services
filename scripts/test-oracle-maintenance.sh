@@ -208,6 +208,9 @@ rc=0; FAKE_SEED='7|110157.69|ACC-1007|2|0' "$MAINT" check >/dev/null || rc=$?
 [[ $rc -eq 3 ]] || fail "seed below the floor exited $rc, want 3"
 [[ $(wc -l <"$STATE_DIR/ALERT") -eq 1 ]] || fail 'seed ALERT is not one line'
 grep -q 'seed accounts: 2 below 150000, lowest ACC-1007 110157.69' "$STATE_DIR/ALERT" || fail 'seed ALERT reason'
+# The restore the ALERT points to carries its conditions (E5b review 3 L1).
+grep -q 'restore with oracle-maintenance.sh seed-restore under the testbed lock and operator/PAUSE, then run check; no recording for 2h30m after the restore' \
+  "$STATE_DIR/ALERT" || fail 'seed ALERT lacks the restore conditions'
 rc=0; FAKE_SEED='6|450000|ACC-1006|0|1' "$MAINT" check >/dev/null || rc=$?
 [[ $rc -eq 3 ]] && grep -q 'seed accounts: 6 of 7 found, 1 not ACTIVE' "$STATE_DIR/ALERT" || fail 'seed membership reason'
 "$MAINT" check >/dev/null || fail 'clean check after the seed alert failed'
@@ -325,6 +328,24 @@ for kv in ACC-1001=5000000.00 ACC-1002=3200000.00 ACC-1003=1500000.00 ACC-1004=8
   [[ "$(bank_of "${kv%%=*}")" == "${kv#*=}" ]] || fail "after funded restore ${kv%%=*} is $(bank_of "${kv%%=*}")"
 done
 grep -q '"fromAccount":"commerce-settlement"' "$FAKE_BANK.posts" || fail 'fund account not used'
+
+# --- one definition of the check period: crontab line and last.json follow CHECK_PERIOD_HOURS ---
+lines=$("$MAINT" crontab)
+[[ "$lines" == "23 * * * * /opt/testbed/oracle-maintenance.sh purge >> /var/log/oracle-maintenance.log 2>&1
+7 */6 * * * /opt/testbed/oracle-maintenance.sh check >> /var/log/oracle-maintenance.log 2>&1" ]] || fail "default crontab lines: $lines"
+"$MAINT" check >/dev/null || fail 'check for the period field'
+jq -e '.check_period_hours == 6' "$STATE_DIR/last.json" >/dev/null || fail 'last.json lacks check_period_hours 6'
+CHECK_PERIOD_HOURS=12 "$MAINT" crontab | grep -qx '7 \*/12 \* \* \* /opt/testbed/oracle-maintenance.sh check >> /var/log/oracle-maintenance.log 2>&1' \
+  || fail 'crontab line does not follow CHECK_PERIOD_HOURS'
+CHECK_PERIOD_HOURS=12 "$MAINT" check >/dev/null || fail 'check with a 12h period'
+jq -e '.check_period_hours == 12' "$STATE_DIR/last.json" >/dev/null || fail 'last.json does not follow CHECK_PERIOD_HOURS'
+CHECK_PERIOD_HOURS=24 "$MAINT" crontab | grep -q '^7 0 \* \* \* ' || fail 'daily crontab line'
+for bad in 0 5 25 x; do
+  rc=0; CHECK_PERIOD_HOURS=$bad "$MAINT" crontab >/dev/null 2>&1 || rc=$?
+  [[ $rc -eq 2 ]] || fail "CHECK_PERIOD_HOURS=$bad accepted"
+done
+# The installed crontab on 66 (AP-env.md §6) is the default output.
+grep -q '^#   /opt/testbed/oracle-maintenance.sh crontab ' "$MAINT" || fail 'install note does not use the crontab subcommand'
 
 rc=0; "$MAINT" >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 2 ]] || fail "no subcommand exited $rc, want 2"

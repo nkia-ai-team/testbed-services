@@ -27,17 +27,18 @@
 # bank load's transfer pool: its lowest balance against a floor, and that every pool
 # account still exists and is ACTIVE.
 #
-# Install (tb-ops root crontab; the script and its log path are the only state):
-#   23 * * * * /opt/testbed/oracle-maintenance.sh purge >> /var/log/oracle-maintenance.log 2>&1
-#   7 */6 * * * /opt/testbed/oracle-maintenance.sh check >> /var/log/oracle-maintenance.log 2>&1
+# Install (tb-ops root crontab; the script and its log path are the only state). The crontab
+# lines come from this script, so the check period has one definition (CHECK_PERIOD_HOURS):
+#   /opt/testbed/oracle-maintenance.sh crontab    # prints the two lines, add them with crontab -e
 #   install -m 644 core-banking/loadgen/transfer-accounts.txt /opt/testbed/banking-transfer-accounts.txt
 # A check with any reason (user data above the threshold, a pool account below the floor
 # or missing or not ACTIVE) exits 3 and writes one line per reason to $STATE_DIR/ALERT;
 # the next clean check removes the file. The scenario runner mounts $STATE_DIR read-only and
 # its readiness (oracle_maintenance_check) is false while ALERT exists or last.json is older
-# than 13 hours (the check cron period twice plus an hour: a failed check keeps the old
-# last.json), so no queue starts or resumes past an unread ALERT. The runner reads the cron
-# period as 6 hours; change both together.
+# than the check period twice plus an hour (13 hours at the default 6: a failed check keeps the
+# old last.json, so one failure is tolerated and two in a row block). check writes its period
+# into last.json (check_period_hours) and the runner derives the limit from it, so the crontab
+# line and the runner's limit both follow CHECK_PERIOD_HOURS.
 set -Eeuo pipefail
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/root/tb-kubeconfig}"
@@ -55,6 +56,11 @@ LISTENER_LOG_MAX_MB="${LISTENER_LOG_MAX_MB:-256}"
 # 10.5 GiB of user data: 1.5 GiB of room below the 12GB cap.
 CAPACITY_ALERT_BYTES="${CAPACITY_ALERT_BYTES:-11274289152}"
 STATE_DIR="${STATE_DIR:-/var/lib/lucida/oracle-capacity}"
+# How often cron runs check. The crontab subcommand prints the line from it and check records it
+# in last.json for the runner's staleness limit. Must divide 24.
+CHECK_PERIOD_HOURS="${CHECK_PERIOD_HOURS:-6}"
+INSTALL_PATH="${INSTALL_PATH:-/opt/testbed/oracle-maintenance.sh}"
+MAINT_LOG="${MAINT_LOG:-/var/log/oracle-maintenance.log}"
 # The bank load's transfer pool (core-banking/loadgen/transfer-accounts.txt), installed
 # beside this script. Floor 500,000: ten largest transfers (50,000) of room before the
 # first 'Insufficient balance', several days of the pool's normal drift (a heaviest
@@ -235,11 +241,11 @@ check() {
   IFS='|' read -r _ seed_found seed_min seed_min_id seed_below seed_inactive <<<"$seed"
   now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   mkdir -p "$STATE_DIR"
-  printf '{"measured_at":"%s","user_data_bytes":%s,"datafile_bytes":%s,"alert_bytes":%s,"pool_expected":%s,"pool_found":%s,"pool_min_balance":%s,"pool_min_account":"%s","pool_below_floor":%s,"pool_not_active":%s,"pool_floor":%s,"seed_expected":%s,"seed_found":%s,"seed_min_balance":%s,"seed_min_account":"%s","seed_below_floor":%s,"seed_not_active":%s,"seed_floor":%s}\n' \
+  printf '{"measured_at":"%s","user_data_bytes":%s,"datafile_bytes":%s,"alert_bytes":%s,"pool_expected":%s,"pool_found":%s,"pool_min_balance":%s,"pool_min_account":"%s","pool_below_floor":%s,"pool_not_active":%s,"pool_floor":%s,"seed_expected":%s,"seed_found":%s,"seed_min_balance":%s,"seed_min_account":"%s","seed_below_floor":%s,"seed_not_active":%s,"seed_floor":%s,"check_period_hours":%s}\n' \
     "$now" "$user_bytes" "$datafile_bytes" "$CAPACITY_ALERT_BYTES" "$pool_expected" "$pool_found" \
     "$pool_min" "$pool_min_id" "$pool_below" "$pool_inactive" "$POOL_BALANCE_FLOOR" \
     "$seed_expected" "$seed_found" "$seed_min" "$seed_min_id" "$seed_below" "$seed_inactive" \
-    "$SEED_BALANCE_FLOOR" >"$STATE_DIR/last.json.tmp"
+    "$SEED_BALANCE_FLOOR" "$CHECK_PERIOD_HOURS" >"$STATE_DIR/last.json.tmp"
   mv -f "$STATE_DIR/last.json.tmp" "$STATE_DIR/last.json"
 
   local reasons=()
@@ -253,7 +259,7 @@ check() {
     reasons+=("transfer pool: $pool_found of $pool_expected accounts found, $pool_inactive not ACTIVE (transfers to or from them are refused)")
   fi
   if (( seed_below > 0 )); then
-    reasons+=("seed accounts: $seed_below below $SEED_BALANCE_FLOOR, lowest $seed_min_id $seed_min (baseline transfers from them start failing; restore with oracle-maintenance.sh seed-restore)")
+    reasons+=("seed accounts: $seed_below below $SEED_BALANCE_FLOOR, lowest $seed_min_id $seed_min (baseline transfers from them start failing; restore with oracle-maintenance.sh seed-restore under the testbed lock and operator/PAUSE, then run check; no recording for 2h30m after the restore)")
   fi
   if (( seed_found != seed_expected || seed_inactive > 0 )); then
     reasons+=("seed accounts: $seed_found of $seed_expected found, $seed_inactive not ACTIVE")
@@ -408,11 +414,28 @@ seed_undo() {
   seed_move undo "$undo_journal" "$lines"
 }
 
+check_period_valid() {
+  [[ "$CHECK_PERIOD_HOURS" =~ ^[0-9]+$ ]] && (( CHECK_PERIOD_HOURS >= 1 && CHECK_PERIOD_HOURS <= 24 && 24 % CHECK_PERIOD_HOURS == 0 ))
+}
+
+crontab_lines() {
+  local every
+  every=$([[ "$CHECK_PERIOD_HOURS" == 24 ]] && echo 0 || echo "*/$CHECK_PERIOD_HOURS")
+  printf '23 * * * * %s purge >> %s 2>&1\n' "$INSTALL_PATH" "$MAINT_LOG"
+  printf '7 %s * * * %s check >> %s 2>&1\n' "$every" "$INSTALL_PATH" "$MAINT_LOG"
+}
+
+if ! check_period_valid; then
+  echo "CHECK_PERIOD_HOURS must divide 24 (1~24): '$CHECK_PERIOD_HOURS'" >&2
+  exit 2
+fi
+
 case "${1:-}" in
+  crontab) crontab_lines ;;
   purge) purge ;;
   check) check ;;
   seed-plan) seed_plan_json ;;
   seed-restore) seed_restore ;;
   seed-undo) seed_undo "${2:-}" ;;
-  *) echo "usage: $0 purge|check|seed-plan|seed-restore|seed-undo JOURNAL" >&2; exit 2 ;;
+  *) echo "usage: $0 purge|check|crontab|seed-plan|seed-restore|seed-undo JOURNAL" >&2; exit 2 ;;
 esac

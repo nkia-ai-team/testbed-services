@@ -57,7 +57,7 @@ scripts/scenarios/bin/f07-h-north-south-surge.sh
 
 ## 은행 Oracle 관리 (ADR 정리, 12GB 상한 감시)
 
-`oracle-maintenance.sh`는 tb-ops root crontab 에서 돈다(설치 줄은 파일 머리 주석).
+`oracle-maintenance.sh`는 tb-ops root crontab 에서 돈다. 크론 줄은 `oracle-maintenance.sh crontab` 이 `CHECK_PERIOD_HOURS`(기본 6)로 찍고, check 가 같은 값을 last.json 의 `check_period_hours` 로 남겨 러너가 오래됨 한도(주기 x 2 + 1시간)를 그 값으로 정한다.
 
 - `purge`: `testbed-oracle-0` 의 ADR 홈에서 trace, cdump, incident, hm 아래 보존 기한
   (`RETENTION_HOURS`, 기본 168시간)이 지난 파일을 지운다. alert 로그와 metadata 는 두고,
