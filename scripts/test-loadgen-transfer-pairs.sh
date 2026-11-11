@@ -104,15 +104,18 @@ for load in '"rate":10,"vus":20' '"rate":2,"vus":20'; do
 done
 
 # A refused cart write must show in the monitor: with every token refused (expired), the cart
-# writes answer 401 and the monitor counts them by check name, nearly all of them (the run's last
-# window is not published).
+# writes of both journeys (cart add, remove; checkout clear-cart, add-to-cart) answer 401 and the
+# monitor counts them by check name, nearly all of them (the run's last window is not published).
 out=$(run "$COMMERCE" "$BANKING" "{\"hours\":1,\"commerce\":{\"rate\":5,\"vus\":20},\"gateway\":\"expired\",\"k6json\":\"$work/k6.json\"}")
 sum=$(monitor_sum "$work/k6.json")
 jq -e --argjson sum "$sum" '
   def counted($name): ($sum.failed[$name] // 0) >= 0.97 * .checks[$name].fail
                       and ($sum.failed[$name] // 0) <= .checks[$name].fail;
-  .checks["cart add 200"].fail > 0 and .checks["cart remove 200"].fail > 0
-  and counted("cart add 200") and counted("cart remove 200")' <<<"$out" >/dev/null \
+  def all_cart_writes: ["cart add 200", "cart remove 200", "checkout clear-cart 200", "checkout add-to-cart 200"];
+  all(all_cart_writes[]; . as $name | $sum.failed | has($name))
+  and all(all_cart_writes[] as $name | .checks[$name].fail > 0 and counted($name); .)
+  and .checks["checkout clear-cart 200"].fail == ([.requests | to_entries[] | select(.key | startswith("checkout clear-cart ")) | .value] | add)
+  and .checks["checkout add-to-cart 200"].fail == ([.requests | to_entries[] | select(.key | startswith("checkout add-to-cart ")) | .value] | add)' <<<"$out" >/dev/null \
   || fail "monitor did not count refused cart writes: run $(jq -c .checks <<<"$out"), monitor $sum"
 
 # Against the cart journey without tokens: that one shows the 401s and the monitor counts them, and

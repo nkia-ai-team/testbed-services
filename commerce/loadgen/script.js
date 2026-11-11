@@ -214,19 +214,22 @@ function checkoutJourney() {
     // 이번 여정 물량(1~2개)만 담는다. 데모 유저 20명을 전 여정이 공유하므로, 비우지 않으면
     // cart가 무한 팽창해 재고를 한 번에 소진 → checkout이 영구 실패하는 자립성 버그(§8)가
     // 재발한다(2026-07-14 실측: user 4 카트 982개, flagship 재고 14/16종 소진).
-    http.del(`${GATEWAY_URL}/api/carts/${userId}`, null, {
+    // 두 쓰기에도 check 를 단다(2026-11-11 v4 E5c): 상주 감시가 checkout, list 밖 단계는 check 로만 센다.
+    const clearRes = http.del(`${GATEWAY_URL}/api/carts/${userId}`, null, {
         headers: authHeaders(token), tags: { journey: 'checkout', step: 'clear-cart' },
     });
+    check(clearRes, { 'checkout clear-cart 200': (r) => r.status === 200 });
 
     // 체크아웃 전 장바구니에 최소 1개는 있어야 하므로(비어있으면 400) 아이템을 추가해둔다.
     const itemCount = randInt(1, 2);
     for (let i = 0; i < itemCount; i++) {
         const productId = pick(FLAGSHIP_PRODUCT_IDS);
-        http.post(
+        const addRes = http.post(
             `${GATEWAY_URL}/api/carts/${userId}/items`,
             JSON.stringify({ productId, quantity: randInt(1, 2) }),
             { headers: authHeaders(token), tags: { journey: 'checkout', step: 'add-to-cart' } }
         );
+        check(addRes, { 'checkout add-to-cart 200': (r) => r.status === 200 });
     }
 
     const checkoutRes = http.post(
