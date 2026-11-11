@@ -7,7 +7,7 @@
 // config: hours, commerce {rate, vus}, banking {rate, vus}, fault {hour, from, to, kind}
 //   (kind: refused = status 0 connection refused, or an HTTP status such as 503, 502),
 //   gateway: true models the commerce gateway (see below), "expired" also refuses every token,
-//   k6json: path for commerce k6 samples.
+//   "login-down" answers every login 500, k6json: path for commerce k6 samples.
 //
 // The driver is iteration level, like constant-arrival-rate: each simulated second gives `rate`
 // iterations of the script's default() to the VUs in turn (k6 hands iterations to VUs through a
@@ -21,7 +21,9 @@
 // gateway: true (cart write auth, v4 E5c) adds the commerce gateway's AuthGuard: login answers a
 // token, a write (POST, PUT, DELETE, PATCH) to the gateway other than login and register without an
 // Authorization header answers 401 (with gateway: "expired", a write with a token too: an expired
-// token), and check() runs the script's predicates. The output then has
+// token; with "login-down", every login answers 500), and check() runs the script's predicates.
+// A token names the user it was handed to; `tokenOwnerMismatch` counts cart writes whose token
+// belongs to another user than the cart path's. The output then has
 // `requests` (commerce counts by journey, step, method, status and whether a token was sent),
 // `perMinute` (commerce counts by step and minute of the run), `cartUsers` (user ids of cart writes
 // in order) and `checks` (pass and fail by check name). With k6json the commerce iterations,
@@ -39,8 +41,9 @@ const LOAD = {
     banking: { rate: 3, vus: 10, ...(config.banking || {}) },
 };
 const FAULT = config.fault || null;
-const GATEWAY = config.gateway === true || config.gateway === 'expired';
+const GATEWAY = config.gateway === true || config.gateway === 'expired' || config.gateway === 'login-down';
 const TOKENS_EXPIRED = config.gateway === 'expired';
+const LOGIN_DOWN = config.gateway === 'login-down';
 const SEED = {
     'ACC-1001': 5000000, 'ACC-1002': 3200000, 'ACC-1003': 1500000, 'ACC-1004': 800000,
     'ACC-1005': 12000000, 'ACC-1006': 450000, 'ACC-1007': 2750000,
@@ -114,6 +117,7 @@ const cartUsers = [];
 const checks = {};
 const k6lines = [];
 const issued = new Set();
+let tokenOwnerMismatch = 0;
 function stampIso() {
     return new Date(simNow).toISOString();
 }
@@ -137,6 +141,8 @@ function gateway(method, url, body, params) {
         r = { status: 401, body: '{"message":"Missing Authorization token"}' };
     } else if (method !== 'GET' && path !== '/api/users/login' && path !== '/api/users/register' && TOKENS_EXPIRED) {
         r = { status: 401, body: '{"message":"Invalid or expired token"}' };
+    } else if (path === '/api/users/login' && LOGIN_DOWN) {
+        r = { status: 500, body: '{"message":"Internal Server Error"}' };
     } else if (path === '/api/users/login') {
         const { email } = JSON.parse(body);
         issued.add(`tok-${email}`);
@@ -152,6 +158,12 @@ function gateway(method, url, body, params) {
     perMinute[step][minute] = (perMinute[step][minute] || 0) + 1;
     if (tags.journey === 'cart' && (tags.step === 'add' || tags.step === 'remove')) {
         cartUsers.push(Number(path.split('/')[3]));
+    }
+    if (token && path.startsWith('/api/carts/')) {
+        const owner = `tok-user${String(Number(path.split('/')[3])).padStart(2, '0')}@example.com`;
+        if (headers.Authorization.slice('Bearer '.length) !== owner) {
+            tokenOwnerMismatch += 1;
+        }
     }
     k6point('http_reqs', 1, { journey: tags.journey || '', step: tags.step || '', method, status: String(r.status) });
     return response(r);
@@ -313,7 +325,7 @@ if (config.k6json) {
 }
 console.log(JSON.stringify({
     hours: HOURS, load: LOAD, fault: FAULT, stats, lostAtRestart, shape,
-    ...(GATEWAY ? { requests, perMinute, cartUsers, checks } : {}),
+    ...(GATEWAY ? { requests, perMinute, cartUsers, checks, tokenOwnerMismatch } : {}),
     maxDriftFromSeedAtEnd: drift,
     minSevenBalanceAtHourEnds: minBalance,
     endBalances: Object.fromEntries(SEVEN.map((id) => [id, balance.get(id)])),

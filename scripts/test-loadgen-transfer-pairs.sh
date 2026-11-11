@@ -96,8 +96,9 @@ for load in '"rate":10,"vus":20' '"rate":2,"vus":20'; do
     and n("^cart (add|remove) ") == n("^cart get ")
     and n("^cart (add|remove) ") > 0
     and n(" login POST ") <= .hours * .load.commerce.vus * 20
+    and .tokenOwnerMismatch == 0
     and ([.checks[] | .fail] | add) == 0' <<<"$out" >/dev/null \
-    || fail "cart writes at {$load}: $(jq -c '{stats, requests, checks}' <<<"$out")"
+    || fail "cart writes at {$load}: $(jq -c '{stats, tokenOwnerMismatch, requests, checks}' <<<"$out")"
   sum=$(monitor_sum "$work/k6.json")
   jq -e '.windows > 200 and .uncounted == 0 and .failed == {}' <<<"$sum" >/dev/null \
     || fail "monitor at {$load} with tokens: $sum"
@@ -105,8 +106,10 @@ done
 
 # A refused cart write must show in the monitor: with every token refused (expired), the cart
 # writes of both journeys (cart add, remove; checkout clear-cart, add-to-cart) answer 401 and the
-# monitor counts them by check name, nearly all of them (the run's last window is not published).
-out=$(run "$COMMERCE" "$BANKING" "{\"hours\":1,\"commerce\":{\"rate\":5,\"vus\":20},\"gateway\":\"expired\",\"k6json\":\"$work/k6.json\"}")
+# monitor counts them by check name (the monitor-windows buckets do not overlap, so never more
+# than the run's failures). Two rates, because the sample clock grid differs by rate.
+for rate in 3 5; do
+out=$(run "$COMMERCE" "$BANKING" "{\"hours\":1,\"commerce\":{\"rate\":$rate,\"vus\":20},\"gateway\":\"expired\",\"k6json\":\"$work/k6.json\"}")
 sum=$(monitor_sum "$work/k6.json")
 jq -e --argjson sum "$sum" '
   def counted($name): ($sum.failed[$name] // 0) >= 0.97 * .checks[$name].fail
@@ -116,7 +119,22 @@ jq -e --argjson sum "$sum" '
   and all(all_cart_writes[] as $name | .checks[$name].fail > 0 and counted($name); .)
   and .checks["checkout clear-cart 200"].fail == ([.requests | to_entries[] | select(.key | startswith("checkout clear-cart ")) | .value] | add)
   and .checks["checkout add-to-cart 200"].fail == ([.requests | to_entries[] | select(.key | startswith("checkout add-to-cart ")) | .value] | add)' <<<"$out" >/dev/null \
-  || fail "monitor did not count refused cart writes: run $(jq -c .checks <<<"$out"), monitor $sum"
+  || fail "monitor did not count refused cart writes at $rate/s: run $(jq -c .checks <<<"$out"), monitor $sum"
+done
+
+# Login down (every login answers 500): a cart journey still reads the cart, then sends no write,
+# as the checkout journey does. No cart write at all, no write without a token, and the cart reads
+# keep the journey share (10% of iterations, within 5%).
+out=$(run "$COMMERCE" "$BANKING" '{"hours":1,"commerce":{"rate":5,"vus":20},"gateway":"login-down"}')
+jq -e '
+  def n($re): [.requests | to_entries[] | select(.key | test($re)) | .value] | add // 0;
+  .stats.scriptErrors == 0
+  and n(" login POST 500 ") > 0
+  and n("^cart (add|remove) ") == 0
+  and n("^[^ ]+ [^ ]+ (POST|PUT|DELETE|PATCH) [0-9]+ none$") == n(" login POST ")
+  and (n("^cart get ") - .hours * 3600 * .load.commerce.rate * 0.10 | fabs)
+      <= 0.05 * .hours * 3600 * .load.commerce.rate * 0.10' <<<"$out" >/dev/null \
+  || fail "cart journey with login down: $(jq -c '{stats, requests}' <<<"$out")"
 
 # Against the cart journey without tokens: that one shows the 401s and the monitor counts them, and
 # the scripts under test send the same requests (every step but login, minute by minute) to the same
