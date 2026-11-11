@@ -94,7 +94,8 @@ function userEmail(userId) {
 // VU 내에서 재사용하는 토큰 캐시("토큰 캐시 재사용") — userId -> {token, expiresAtMs}.
 const tokenCache = {};
 
-function login(userId) {
+// journey 는 로그인 요청의 journey 태그다(이 토큰이 필요한 여정). 캐시는 여정과 무관하게 VU 안에서 함께 쓴다.
+function login(userId, journey = 'checkout') {
     const cached = tokenCache[userId];
     if (cached && cached.expiresAtMs > Date.now() + 60000) {
         return cached.token;
@@ -102,7 +103,7 @@ function login(userId) {
     const res = http.post(
         `${GATEWAY_URL}/api/users/login`,
         JSON.stringify({ email: userEmail(userId), password: SEED_PASSWORD }),
-        { headers: { 'Content-Type': 'application/json' }, tags: { journey: 'checkout', step: 'login' } }
+        { headers: { 'Content-Type': 'application/json' }, tags: { journey, step: 'login' } }
     );
     const ok = check(res, { 'login 200': (r) => r.status === 200 });
     if (!ok) {
@@ -172,18 +173,28 @@ function cartJourney() {
     const getRes = http.get(`${GATEWAY_URL}/api/carts/${userId}`, { tags: { journey: 'cart', step: 'get' } });
     check(getRes, { 'cart get 200': (r) => r.status === 200 });
 
-    if (rand() < 0.6) {
-        const productId = pick(FLAGSHIP_PRODUCT_IDS);
+    // 장바구니 쓰기(담기, 빼기)는 게이트웨이 AuthGuard 가 토큰을 요구한다(2026-07-13 부터, 없으면 401
+    // "Missing Authorization token"). 체크아웃 여정과 같은 VU 토큰 캐시를 쓰므로, 이 VU 가 이 사용자로
+    // 이미 로그인했으면 로그인 요청이 늘지 않는다. 고르는 순서(담기냐 빼기냐, 상품, 수량)는 종전과 같아
+    // 난수열과 쓰기 요청 수, 사용자 분포가 바뀌지 않는다. 로그인이 실패하면 체크아웃 여정처럼 쓰기를
+    // 보내지 않는다(로그인 실패는 check 에 이미 남는다).
+    const adding = rand() < 0.6;
+    const productId = pick(FLAGSHIP_PRODUCT_IDS);
+    const quantity = adding ? randInt(1, 2) : 0;
+    const token = login(userId, 'cart');
+    if (!token) {
+        return;
+    }
+    if (adding) {
         const addRes = http.post(
             `${GATEWAY_URL}/api/carts/${userId}/items`,
-            JSON.stringify({ productId, quantity: randInt(1, 2) }),
-            { headers: { 'Content-Type': 'application/json' }, tags: { journey: 'cart', step: 'add' } }
+            JSON.stringify({ productId, quantity }),
+            { headers: authHeaders(token), tags: { journey: 'cart', step: 'add' } }
         );
         check(addRes, { 'cart add 200': (r) => r.status === 200 });
     } else {
-        const productId = pick(FLAGSHIP_PRODUCT_IDS);
         const delRes = http.del(`${GATEWAY_URL}/api/carts/${userId}/items/${productId}`, null, {
-            tags: { journey: 'cart', step: 'remove' },
+            headers: authHeaders(token), tags: { journey: 'cart', step: 'remove' },
         });
         check(delRes, { 'cart remove 200': (r) => r.status === 200 });
     }

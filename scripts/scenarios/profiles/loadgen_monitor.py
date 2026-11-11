@@ -45,12 +45,15 @@ class LiveDocumentBuilder:
         self.iterations: collections.deque = collections.deque()
         self.checkout_results: collections.deque = collections.deque()
         self.read_results: collections.deque = collections.deque()
+        # (시각, check 이름, 통과 여부). business, read 두 단계 밖의 여정도 스크립트가 check() 로 적은
+        # 기대(상태 코드)를 어기면 보이게 한다(아래 build 의 check 필드 설명).
+        self.check_results: collections.deque = collections.deque()
         self.entry_status: int | None = None
         self.last_stamp: datetime.datetime | None = None
 
     def consume(self, line: str) -> bool:
         """k6 json 한 줄을 흡수한다. 창 안에 반영됐으면 True."""
-        if '"iterations"' not in line and '"http_reqs"' not in line:
+        if '"iterations"' not in line and '"http_reqs"' not in line and '"checks"' not in line:
             return False
         try:
             point = json.loads(line)
@@ -72,6 +75,8 @@ class LiveDocumentBuilder:
             elif metric == "http_reqs" and self.read_step and tags.get("step") == self.read_step:
                 raw = tags.get("status")
                 self.read_results.append((stamp, int(raw) if raw and str(raw).isdigit() else 0))
+            elif metric == "checks" and tags.get("check"):
+                self.check_results.append((stamp, str(tags["check"]), data.get("value") == 1))
             else:
                 return False
             self.last_stamp = stamp
@@ -89,6 +94,8 @@ class LiveDocumentBuilder:
             self.checkout_results.popleft()
         while self.read_results and self.read_results[0][0] < cutoff:
             self.read_results.popleft()
+        while self.check_results and self.check_results[0][0] < cutoff:
+            self.check_results.popleft()
         span = (
             max(1.0, min(WINDOW_SEC, (self.iterations[-1] - self.iterations[0]).total_seconds()))
             if len(self.iterations) > 1
@@ -179,6 +186,22 @@ class LiveDocumentBuilder:
                     sum(status >= 400 or status == 0 for _, status in self.read_results)
                     / read_count
                 )
+        # check 필드(2026-11-11 v4 E5c). business, read 는 러너 관측 계약(profiles.json
+        # domain_profiles)에 묶인 두 단계뿐이라, 다른 여정의 비정상은 문서 어디에도 안 잡혔다.
+        # commerce 장바구니 쓰기가 토큰 없이 나가 늘 401 을 받던 것(평시 분당 약 58건)이 그렇게
+        # 넉 달 숨어 있었다. 스크립트의 check() 는 단계마다 기대 상태를 이미 적고 있으므로(상품
+        # 상세의 404 처럼 정상인 4xx 는 통과로 적혀 있다) 그 통과 여부를 그대로 센다. 새 단계도
+        # check 만 달면 따로 등록하지 않아도 잡힌다. business, read 필드와 그 의미는 바꾸지 않는다.
+        # 분모가 0 인 창은 위 비율들처럼 비율과 이름별 수를 싣지 않는다.
+        check_count = len(self.check_results)
+        document["check_count"] = check_count
+        if check_count:
+            failed: dict[str, int] = {}
+            for _, name, passed in self.check_results:
+                if not passed:
+                    failed[name] = failed.get(name, 0) + 1
+            document["check_failed_rate"] = sum(failed.values()) / check_count
+            document["check_failed"] = dict(sorted(failed.items()))
         document.update(self.identity)
         return document
 

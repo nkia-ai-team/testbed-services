@@ -78,6 +78,24 @@
 30초 창, `business_step`/`read_step` 태그 기준 상태코드 분해, `achieved_rps` 산출 모두
 기존 로직 그대로다. 이 변경은 **누가 언제 문서를 쓰는가**만 바꾼다.
 
+### 3.3a 두 단계 밖의 비정상은 check 로 센다 (2026-11-11 v4 E5c)
+
+`business_step`, `read_step` 은 러너 관측 계약(`profiles.json` `domain_profiles`)에 묶인
+두 단계뿐이라 다른 여정의 비정상은 문서 어디에도 안 잡혔다. commerce 장바구니 쓰기가 토큰
+없이 나가 평시 분당 약 58건 401 을 받던 것이 그렇게 숨어 있었다. 그래서 monitor 는 k6
+`checks` 표본도 같은 30초 창에서 센다. 스크립트의 `check()` 가 단계마다 기대 상태를 이미
+적고 있으므로(상품 상세 404 처럼 정상인 4xx 는 통과로 적혀 있다) 새 단계도 check 만 달면
+등록 없이 잡힌다.
+
+| 필드 | 뜻 |
+|---|---|
+| `check_count` | 창 안 check 표본 수(늘 실린다) |
+| `check_failed_rate` | 실패 표본 비율. `check_count` 가 0 이면 싣지 않는다 |
+| `check_failed` | 실패한 check 이름별 수. `check_count` 가 0 이면 싣지 않는다 |
+
+`business_*`, `read_*` 필드와 그 의미, 러너 `LOADGEN_FIELDS` 는 바꾸지 않는다. 어느 단계의
+기대가 어긋났는지는 `check_failed` 의 이름이 알려 준다.
+
 ### 3.4 core-banking baseline에 step 태그를 추가한다
 
 commerce·food-delivery baseline은 이미 `tags: { journey, step }`을 단다.

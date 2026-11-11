@@ -146,6 +146,86 @@ class LoadgenMonitorTests(unittest.TestCase):
             round(document["business_5xx_rate"] * document["checkout_count"]), 4
         )
 
+    @staticmethod
+    def _check(stamp: datetime.datetime, name: str, passed: bool) -> str:
+        """k6 --out json 의 checks 표본 꼴 그대로(값 1/0, 태그 check, group, scenario)."""
+        return json.dumps(
+            {
+                "type": "Point",
+                "metric": "checks",
+                "data": {
+                    "time": stamp.isoformat().replace("+00:00", "Z"),
+                    "value": 1 if passed else 0,
+                    "tags": {"check": name, "group": "", "scenario": "baseline"},
+                },
+            }
+        )
+
+    def test_failed_checks_outside_the_business_and_read_steps_are_counted_by_name(self) -> None:
+        """business, read 두 단계 밖의 비정상도 센다(2026-11-11 v4 E5c).
+
+        commerce 장바구니 쓰기가 토큰 없이 나가 평시 분당 약 58건 401 을 받았지만 business_step
+        (checkout), read_step(list) 만 세는 문서에는 안 보였다. 스크립트 check() 의 통과 여부를
+        이름별로 세고, business, read 필드는 check 표본이 있든 없든 같아야 한다.
+        """
+        plain = self._feed(
+            monitor.LiveDocumentBuilder({"domain": "commerce", "unit": "u"}, "checkout", "list")
+        )
+        builder = monitor.LiveDocumentBuilder({"domain": "commerce", "unit": "u"}, "checkout", "list")
+        base = datetime.datetime(2026, 7, 29, 3, 0, tzinfo=datetime.timezone.utc)
+        for index in range(20):
+            stamp = base + datetime.timedelta(seconds=index * 0.5)
+            builder.consume(_point("iterations", stamp))
+            status = "500" if index % 5 == 0 else "200"
+            builder.consume(_point("http_reqs", stamp, step="checkout", status=status))
+            builder.consume(_point("http_reqs", stamp, step="list", status="200"))
+            builder.consume(self._check(stamp, "browse detail 200/404", True))
+            if index % 4 == 0:
+                builder.consume(_point("http_reqs", stamp, step="add", status="401"))
+                builder.consume(self._check(stamp, "cart add 200", False))
+            if index == 7:
+                builder.consume(_point("http_reqs", stamp, step="remove", status="401"))
+                builder.consume(self._check(stamp, "cart remove 200", False))
+        document = builder.build()
+        assert document is not None
+
+        self.assertEqual(document["check_count"], 26)
+        self.assertEqual(document["check_failed"], {"cart add 200": 5, "cart remove 200": 1})
+        self.assertAlmostEqual(document["check_failed_rate"], 6 / 26)
+        check_fields = {"check_count", "check_failed", "check_failed_rate"}
+        self.assertEqual(
+            {k: v for k, v in document.items() if k not in check_fields},
+            {k: v for k, v in plain.items() if k not in check_fields},
+        )
+
+    def test_passing_checks_publish_an_empty_failure_map_and_no_checks_publish_none(self) -> None:
+        builder = monitor.LiveDocumentBuilder({"domain": "commerce", "unit": "u"}, "checkout", "list")
+        base = datetime.datetime(2026, 8, 7, 3, 0, tzinfo=datetime.timezone.utc)
+        for index in range(6):
+            stamp = base + datetime.timedelta(seconds=index)
+            builder.consume(_point("iterations", stamp))
+        document = builder.build()
+        assert document is not None
+        # 분모가 0 인 창: 수는 싣고, 비율과 이름별 수는 싣지 않는다(0 이 "실패 없음"으로 읽히지 않게).
+        self.assertEqual(document["check_count"], 0)
+        self.assertNotIn("check_failed_rate", document)
+        self.assertNotIn("check_failed", document)
+
+        builder.consume(self._check(base + datetime.timedelta(seconds=7), "cart add 200", True))
+        document = builder.build()
+        assert document is not None
+        self.assertEqual(document["check_count"], 1)
+        self.assertEqual(document["check_failed_rate"], 0.0)
+        self.assertEqual(document["check_failed"], {})
+
+        # 30초 창 밖으로 밀린 실패는 세지 않는다.
+        builder.consume(self._check(base + datetime.timedelta(seconds=8), "cart add 200", False))
+        builder.consume(self._check(base + datetime.timedelta(seconds=40), "cart add 200", True))
+        document = builder.build()
+        assert document is not None
+        self.assertEqual(document["check_count"], 1)
+        self.assertEqual(document["check_failed"], {})
+
     def test_identity_is_mutually_exclusive_and_domain_requires_a_unit(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
