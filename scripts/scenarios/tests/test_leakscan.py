@@ -180,6 +180,32 @@ class LeakscanScenarioIdForms(unittest.TestCase):
                 self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
 
 
+class LeakscanLoadHostPath(unittest.TestCase):
+    def test_the_load_host_path_alone_passes_and_what_it_carries_is_still_caught(self) -> None:
+        """/opt/loadgen is where the load generator host keeps its scripts, as a real load host might, and its
+        resident k6 prints it into every recording's syslog. It is not an injection trace by itself (v4 LEAK
+        3rd round); a scenario id or tool tag riding on such a line is still caught by the other patterns."""
+        ordinary = [
+            "script: /opt/loadgen/core-banking/script.js",
+            "output: json (/tmp/k6-commerce-samples.fifo)",
+            "python3 /opt/loadgen/loadgen_monitor.py --source /tmp/k6-commerce-samples.fifo --mode stream",
+        ]
+        with tempfile.TemporaryDirectory() as raw:
+            done = _scan(_case(Path(raw), ordinary))
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        carried = {
+            "/opt/loadgen/commerce/surge.js --tag scenario_id=F07-H": "scenario_id",
+            "output: json (/tmp/rca-scenario-f07-h-samples.json)": "inject_tag",
+            "script: /opt/loadgen/scenario-f03-h/script.js": "inject_name",
+            "/opt/loadgen/run-scenario.sh": "inject_path",
+        }
+        for value, pattern in carried.items():
+            with self.subTest(value), tempfile.TemporaryDirectory() as raw:
+                done = _scan(_case(Path(raw), ordinary + [value]))
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn(f'"{pattern}"', done.stdout)
+
+
 class LeakscanCaptureMeta(unittest.TestCase):
     def test_topology_bundle_manifest_is_capture_meta_and_its_snapshots_are_still_scanned(self) -> None:
         """topology/manifest.json carries the case_id and run_id (`F01-H-run-...`) and is never loaded into

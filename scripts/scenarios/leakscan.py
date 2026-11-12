@@ -59,8 +59,13 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "inject_name": re.compile(r"(?i)(?<![a-z0-9])scenario-(?!profile-state|runs(?![a-z0-9]))[a-z0-9]+"),
     # v4 C6b 리뷰 3회차 하 2: 주입 도구의 명령줄(파드 안 기동기의 알람과 exec, 셸 이름, 수신 버퍼 sysctl)도
     # process_meta 에 찍히면 주입 기구다.
+    # `/opt/loadgen` 은 보지 않는다(2026-11-12 v4 LEAK 3회차, 지휘 세션 결정). 부하 발생 호스트(tb-runner)가
+    # 자기 부하 스크립트를 두는 경로로 현실의 부하 호스트에도 있을 법하고, 시나리오, 러너, 테스트베드를
+    # 가리키지 않는다. 그 호스트의 평시 k6 줄(`script: /opt/loadgen/<도메인>/script.js`)이 모든 녹화의
+    # syslog 에 있어 이 경로를 잡으면 게이트가 늘 불합격이었다(v3 데이터 125건 가운데 111건이 이것 하나로).
+    # 그 줄에 시나리오 id 나 도구 꼬리표가 붙으면 다른 패턴이 그대로 잡는다.
     "inject_path": re.compile(
-        r"scenario-profile-state|scenario-runs|run-scenario\.sh|/opt/loadgen"
+        r"scenario-profile-state|scenario-runs|run-scenario\.sh"
         r"|signal\.alarm|os\.execvp|\bmysqlsh\b.*--py|tcp_rmem="
     ),
 }
@@ -71,7 +76,7 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 # `rca-` 와 `alarm` 을 홀로 두지 않는다: 네임스페이스 rca-testbed-* 와 알람 데이터가 거의 모든 행에 있어
 # 거름이 아무것도 거르지 못한다(2026-11-12 실측: otel_traces 46MB 에 162초).
 _LOOSE = (
-    r"f\d\d-[a-z]|rca-(?:f\d|scenario)|rca\.lucida|scenario|signal\.alarm|execvp|mysqlsh|tcp_rmem|/opt/loadgen"
+    r"f\d\d-[a-z]|rca-(?:f\d|scenario)|rca\.lucida|scenario|signal\.alarm|execvp|mysqlsh|tcp_rmem"
 )
 _LOOSE_RE = re.compile(_LOOSE, re.IGNORECASE)
 # 같은 식을 소문자 글에 대소문자 구분으로 돌리면 큰 글에서 약 18배 빠르다(VM export 40MB: 3.8초 → 0.2초).
