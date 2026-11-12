@@ -2186,7 +2186,8 @@ esac
             # F80-R max_injection_duration 20m + 600s margin: never before the runner itself ends the run.
             self.assertEqual(node_guard_fakes.armed_seconds(env, "oradata-backup"), [1800])
             self.assertEqual(node_guard_fakes.journal_words(env, "oradata-backup"), [])
-            undo = (tmp / "state" / "oradata-backup.undo").read_text()
+            undo = node_guard_fakes.fixed_names((tmp / "state" / "oradata-backup.undo").read_text(), tmp)
+            self.assertEqual(undo.splitlines()[-2:], node_guard_fakes.undo_tail("oradata-backup"))
             outputs = re.findall(r"/var/backups/oradata/(?:oradata-[0-9]{8}\.tar|users01-[0-9]{8}\.dbf)\.zst", undo)
             self.assertEqual(len(outputs), 2)
             self.assertIn("systemctl stop oradata-backup.service 2>/dev/null || true", undo)
@@ -2434,7 +2435,8 @@ else:
             spare = tmp / "undo-copy"
             spare.write_bytes(undo.read_bytes())
             # The undo removes exactly the jump and the chain the run added, as root on the node.
-            body = undo.read_text()
+            body = node_guard_fakes.fixed_names(undo.read_text(), tmp)
+            self.assertEqual(body.splitlines()[-2:], node_guard_fakes.undo_tail("restaurant-api-in"))
             self.assertIn("while iptables -C FORWARD -d 10.244.2.0/24 -p tcp --dport 8081", body)
             self.assertIn("iptables -F RESTAURANT-API-IN; iptables -X RESTAURANT-API-IN", body)
             for forbidden in ("-P FORWARD", "INPUT", "OUTPUT", "-F FORWARD", "conntrack -F", "F44"):
@@ -4962,6 +4964,27 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                     self.assertEqual(node_guard_fakes.timers(env), [])
             self.assertNotEqual(self._guard(env, "fire", "nightly").returncode, 0)
 
+    def test_fixed_names_hide_only_the_random_parts_of_an_undo(self) -> None:
+        # 2026-11-12: a boot rule name run-r...45080829... failed a check that the undo names no port
+        # 8082. Only the sandbox root and whole run-r<32 hex> names become fixed words; the same number
+        # or word written anywhere else stays, so an undo that does name it still fails the check.
+        root = Path("/tmp/eth0-8082")
+        name = "run-r" + "45080829" * 4
+        text = f"rm -f {root}/tmpfiles.d/{name}.conf {root}/state/j.unit\ntc filter add dev eth0 dport 8082\n"
+        self.assertEqual(node_guard_fakes.fixed_names(text, root),
+                         "rm -f {root}/tmpfiles.d/run-r{name}.conf {root}/state/j.unit\n"
+                         "tc filter add dev eth0 dport 8082\n")
+        # A name that is not exactly 32 hex digits is not a guard name and stays as written.
+        for odd in ("run-r" + "8082" * 7, "run-r" + "8082" * 9, "run-r" + "8082" * 7 + "8g82"):
+            self.assertEqual(node_guard_fakes.fixed_names(odd, root), odd)
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = node_guard_fakes.install(tmp)
+            self.assertEqual(self._guard(env, "arm", "nightly", "1800", "true").returncode, 0)
+            undo = node_guard_fakes.fixed_names((tmp / "state" / "nightly.undo").read_text(), tmp)
+            self.assertEqual(undo.splitlines(), ["#!/bin/bash", "set -euo pipefail", "true",
+                                                 *node_guard_fakes.undo_tail("nightly")])
+
     def test_the_journal_trace_names_nothing(self) -> None:
         # Design principle 8: the expiry timer is a tool trace no real incident leaves, so what the
         # node's journal (forwarded to 119) shows of it is only the generic systemd-run form.
@@ -5369,7 +5392,10 @@ class NetworkLinkExecutorTests(unittest.TestCase):
             undo = tmp / "state" / f"{self.JOB}.undo"
             spare = tmp / "undo-copy"
             spare.write_bytes(undo.read_bytes())
-            body = undo.read_text()
+            # The run's random names (sandbox directory, boot rule) are fixed words here, so the absent
+            # words below are absent from what the node program wrote, not by luck of the draw.
+            body = node_guard_fakes.fixed_names(undo.read_text(), tmp)
+            self.assertEqual(body.splitlines()[-2:], node_guard_fakes.undo_tail(self.JOB))
             self.assertIn("tc qdisc del dev flannel.1 root", body)
             for forbidden in ("eth0", "ens19", "8082", "netem", "filter", self.SCENARIO):
                 self.assertNotIn(forbidden, body)

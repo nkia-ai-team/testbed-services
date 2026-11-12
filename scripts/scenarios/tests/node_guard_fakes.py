@@ -135,6 +135,22 @@ def fire_unit(env: dict[str, str], unit: str, *, extra_env: dict[str, str] | Non
 
 
 NEUTRAL_UNIT = re.compile(r"^run-r[0-9a-f]{32}$")
+GUARD_NAME = re.compile(r"run-r[0-9a-f]{32}(?![0-9a-f])")
+
+
+def fixed_names(text: str, root: Path) -> str:
+    """``text`` with the parts a run draws at random written as fixed words: the sandbox ``root`` (a
+    fresh temporary directory under TMPDIR) as {root}, every unit or boot rule name run-r<32 hex> as
+    run-r{name}. A check that a word is absent from an undo then means the same on every run: 32 random
+    hex digits hold a given 4 digit number about once in 2,300 runs (2026-11-12: "8082", a port the
+    undo must not name, in run-r...45080829...), and TMPDIR or the directory name can hold any word."""
+    return GUARD_NAME.sub("run-r{name}", text.replace(str(root), "{root}"))
+
+
+def undo_tail(job: str) -> list[str]:
+    """The last two lines the guard writes into every undo of ``job``, in ``fixed_names`` form."""
+    return [f"date -u +%Y-%m-%dT%H:%M:%SZ >{{root}}/state/{job}.expired",
+            f"rm -f {{root}}/tmpfiles.d/run-r{{name}}.conf {{root}}/state/{job}.unit {{root}}/state/{job}.undo"]
 
 
 def journal_words(env: dict[str, str], job: str) -> list[str]:
