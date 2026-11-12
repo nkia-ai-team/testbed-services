@@ -95,7 +95,7 @@ class MultiInjectionContractTests(unittest.TestCase):
         self.assertNotIn("pg_terminate_backend", text)
         self.assertNotIn("pg_sleep", text)
         full = body.decode()
-        self.assertIn("lucida.io/db-client: session", full)
+        self.assertIn("app.kubernetes.io/component: db-client", full)
         self.assertIn('command: ["psql", ${args}]', full)
         self.assertIn("pg_lock_remote.bash_functions()", (PROFILES / "timeline_multi_injection_executor.py").read_text())
         self.assertIn("FREEPDB1", text)

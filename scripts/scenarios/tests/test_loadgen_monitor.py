@@ -286,5 +286,46 @@ class BaselinePublisherWiringTests(unittest.TestCase):
                     )
 
 
+
+class BaselinePublisherNamesTest(unittest.TestCase):
+    """tb-runner forwards the resident units' output to 119 syslog (recorded), and k6 prints its --out target
+    there ("output: json (...)"). So the publisher's files and log lines name a load host's plain k6 files,
+    not the testbed or the runner (design principle 8; until 2026-11-12 /tmp/rca-baseline-<domain>-* and a
+    "baseline 관측" log line). The runner reads /tmp/k6-<domain>-live.json (rca-scenario-runner live_probes)."""
+
+    def test_publisher_files_and_log_line_name_nothing(self) -> None:
+        import subprocess
+        import tempfile
+
+        helper = HERE.parents[2] / "scripts" / "loadgen" / "baseline-publish.sh"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            monitor = root / "monitor.py"
+            monitor.write_text("import sys, time\ntime.sleep(30)\n")
+            script = (
+                f". {helper}\n"
+                "baseline_publisher_start commerce loadgen-commerce checkout list\n"
+                'printf "OUT=%s\\n" "$BASELINE_K6_OUT"\n'
+                'ls "$BASELINE_STATE_DIR"\n'
+                "baseline_publisher_stop\n"
+                'ls "$BASELINE_STATE_DIR"\n'
+            )
+            done = subprocess.run(
+                ["sh", "-c", script], capture_output=True, text=True, timeout=60,
+                env={"PATH": "/usr/bin:/bin", "BASELINE_STATE_DIR": str(root), "BASELINE_MONITOR": str(monitor)},
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            lines = done.stdout.splitlines()
+            self.assertIn(f"OUT=json={root}/k6-commerce-samples.fifo", lines)
+            self.assertIn("k6-commerce-samples.fifo", lines)
+            self.assertEqual(lines.count("monitor.py"), 2)  # the fifo is gone after stop
+            for line in lines + done.stderr.splitlines():
+                self.assertNotRegex(line, r"rca-|scenario|baseline")
+        source = helper.read_text(encoding="utf-8")
+        code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+        self.assertNotRegex(code, r"rca-|scenario-")
+        self.assertIn('baseline_live="${BASELINE_STATE_DIR}/k6-${baseline_domain}-live.json"', code)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,7 +31,11 @@ import shlex
 HEREDOC_END = "PG_POD_DRIVER_SH"
 START_MARKER = "# ---- PostgreSQL client pod sessions (pg_lock_remote.py) ----"
 END_MARKER = "# ---- end of PostgreSQL client pod sessions ----"
-CLIENT_SELECTOR = "lucida.io/db-client=session"
+# The client pod is recorded as it is (KCM resource specs and events, kubelet syslog), so it carries the
+# well-known component label an operator's ad-hoc client would, not a label that names the tool (design
+# principle 8; until 2026-11-12 `lucida.io/db-client=session`). Cleanup finds the pods by this label and by
+# the names kept in the runner-side state directory.
+CLIENT_SELECTOR = "app.kubernetes.io/component=db-client"
 CLIENT_CONTAINER = "client"
 # 잠금을 얻었다는 표시를 기다리는 상한(초). 넘으면 파드를 지워 연결을 끊는다(서버가 대기를 취소한다).
 ACQUIRE_TIMEOUT_SECONDS = 60
@@ -203,7 +207,7 @@ metadata:
   name: ${name}
   namespace: ${DBO_NS}
   labels:
-    lucida.io/db-client: session
+    app.kubernetes.io/component: db-client
 spec:
   restartPolicy: Never
   terminationGracePeriodSeconds: 1

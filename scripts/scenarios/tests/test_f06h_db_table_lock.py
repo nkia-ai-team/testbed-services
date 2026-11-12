@@ -167,7 +167,7 @@ class PostgresLockContractTests(unittest.TestCase):
         self.assertNotIn("pg_terminate_backend", script)
         self.assertNotIn("pkill", script)
         self.assertIn("dbo_k delete pod", script)
-        self.assertIn("lucida.io/db-client=session", script)
+        self.assertIn("app.kubernetes.io/component=db-client", script)
         release = script[script.index("pgl_release() {"):]
         release = release[:release.index("\n}\n")]
         # 러너의 구동기(롤백), 파드 삭제, 서버에서 그 backend(pid 와 시작 시각)가 사라졌는지 순서.

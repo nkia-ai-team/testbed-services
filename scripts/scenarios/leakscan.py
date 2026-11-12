@@ -27,6 +27,9 @@
 오탐 주의 — `rca-testbed-*` 는 k8s 네임스페이스(정상 인프라 명명)다. `rca-` 단독
 패턴을 쓰면 전 케이스가 거짓 불합격한다. 반드시 `rca-F\\d\\d-` 로 좁힌다.
 
+보지 않는 파일: 정답 파일(golden.json, scenario.md, causality-audit.json, meta.json, answer/)과 캡처 메타
+topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품에 넣지 않는다).
+
 사용:
   python3 leakscan.py <case_dir>                 # 케이스 전체(parquet + csv + 텍스트)
   python3 leakscan.py --own F01-R <case_dir>     # 자기 시나리오를 표시
@@ -203,6 +206,12 @@ def main() -> int:
     # 새 레이아웃이면 input/ 만, 옛 레이아웃이면 정답 파일을 빼고 본다.
     scope = root / "input" if (root / "input").is_dir() else root
     skip = {"golden.json", "scenario.md", "causality-audit.json", "meta.json"}
+    # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
+    # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,
+    # data/postgres(.dump, csv), data/victoriametrics.export 만 제품에 넣고 topology/ 는 읽지 않는다
+    # (2026-11-12 v4 LEAK 2회차 확인). 제품 입력이 아닌 캡처 메타라 보지 않는다. 같은 폴더의 graph/,
+    # service-tree/ 스냅샷은 제품 API 응답이라 계속 본다.
+    skip_paths = {("topology", "manifest.json")}
 
     found = {k: collections.Counter() for k in PATTERNS}
     cols: dict[str, set[str]] = collections.defaultdict(set)
@@ -211,6 +220,8 @@ def main() -> int:
 
     for path in sorted(scope.rglob("*")):
         if not path.is_file() or path.name in skip or "answer" in path.parts:
+            continue
+        if (path.parent.name, path.name) in skip_paths:
             continue
         try:
             if path.suffix == ".parquet":

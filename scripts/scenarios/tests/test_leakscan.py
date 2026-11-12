@@ -6,6 +6,7 @@ gone; this keeps such a command line from coming back unnoticed.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -177,6 +178,26 @@ class LeakscanScenarioIdForms(unittest.TestCase):
             with self.subTest(value), tempfile.TemporaryDirectory() as raw:
                 done = _scan(_case(Path(raw), [value]))
                 self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+
+
+class LeakscanCaptureMeta(unittest.TestCase):
+    def test_topology_bundle_manifest_is_capture_meta_and_its_snapshots_are_still_scanned(self) -> None:
+        """topology/manifest.json carries the case_id and run_id (`F01-H-run-...`) and is never loaded into
+        the product by the evaluation restore; the topology snapshots next to it are product responses."""
+        manifest = json.dumps({"case_id": "case-f01-h-v3-48ec8e62", "run_id": "F01-H-run-48ec8e62"})
+        for layout in ("input", ""):
+            with self.subTest(layout=layout or "old"), tempfile.TemporaryDirectory() as raw:
+                base = Path(raw) / layout if layout else Path(raw)
+                (base / "topology" / "graph").mkdir(parents=True)
+                (base / "topology" / "manifest.json").write_text(manifest)
+                (base / "topology" / "graph" / "2026-08-25T04-22-13Z.json").write_text('{"nodes": []}')
+                self.assertEqual(_scan(Path(raw)).returncode, 0, _scan(Path(raw)).stdout)
+                (base / "topology" / "graph" / "2026-08-25T04-22-13Z.json").write_text(manifest)
+                self.assertEqual(_scan(Path(raw)).returncode, 1)
+                (base / "topology" / "graph" / "2026-08-25T04-22-13Z.json").write_text('{"nodes": []}')
+                (base / "data").mkdir()
+                (base / "data" / "manifest.json").write_text(manifest)  # only the topology bundle's list is skipped
+                self.assertEqual(_scan(Path(raw)).returncode, 1)
 
 
 class LeakscanTextFiles(unittest.TestCase):

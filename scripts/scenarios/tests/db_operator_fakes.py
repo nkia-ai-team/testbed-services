@@ -85,7 +85,7 @@ case "$*" in
   *podIP*) printf 10.244.3.9 ;;
   *"get svc "*nodePort*) printf 30999 ;;
 {secret_cases}
-  *"get pods -l lucida.io/db-client=session -o name"*) mkdir -p {tmp}/pods; for f in {tmp}/pods/*; do [[ -e "$f" ]] && echo "pod/${{f##*/}}"; done ;;
+  *"get pods -l app.kubernetes.io/component=db-client -o name"*) mkdir -p {tmp}/pods; for f in {tmp}/pods/*; do [[ -e "$f" ]] && echo "pod/${{f##*/}}"; done ;;
   *" apply -f -"*) mkdir -p {tmp}/pods; y=$(cat); printf '%s\n' "$y" >>{tmp}/applied.yaml
                    n=$(sed -n 's/^  name: //p' <<<"$y" | head -n 1)
                    [[ -n "$n" ]] || n=$(jq -r '.metadata.name' <<<"$y"); : >"{tmp}/pods/$n" ;;

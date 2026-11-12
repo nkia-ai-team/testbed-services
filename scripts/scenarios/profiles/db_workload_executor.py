@@ -193,7 +193,9 @@ schema="$8"; table="$9"; identity="${10}"; period="${11}"; runtime="${12}"; stmt
 scan_sql="SET default_transaction_read_only = on; SET statement_timeout = '${stmt_timeout}s'; SELECT count(*) FROM ${schema}.${table};"
 
 k=(kubectl --kubeconfig /root/tb-kubeconfig -n "$ns")
-sel="lucida.io/db-workload=scan"
+# The scan pod is recorded as it is, so it carries the well-known component label a reporting job would,
+# not one that names the tool (design principle 8; until 2026-11-12 `lucida.io/db-workload=scan`).
+sel="app.kubernetes.io/component=db-report"
 state="/tmp/db-workload-${scenario}.state"
 
 admin() { "${k[@]}" exec "$db_pod" -- sh -lc "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"$1\""; }
@@ -212,7 +214,7 @@ metadata:
   name: ${pod}
   namespace: ${ns}
   labels:
-    lucida.io/db-workload: scan
+    app.kubernetes.io/component: db-report
 spec:
   restartPolicy: Never
   terminationGracePeriodSeconds: 1

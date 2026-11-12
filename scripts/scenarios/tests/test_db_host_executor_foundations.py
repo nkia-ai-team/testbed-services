@@ -1028,6 +1028,46 @@ class DbHostFoundations(unittest.TestCase):
         # 유한성: 파드가 스스로 끝나는 상한(RUNTIME)을 갖는다.
         self.assertIn("RUNTIME", text)
 
+    def test_scan_pod_wears_a_common_label_and_a_fresh_cleanup_finds_it_by_that_label(self) -> None:
+        """The scan pod is recorded as applied (KCM spec, events, kubelet syslog), so its label is the
+        well-known component label, not one naming the tool (design principle 8; until 2026-11-12
+        `lucida.io/db-workload=scan`). The pod name is kept in a runner-side /tmp state file, which a
+        recreated runner container no longer has, so cleanup also finds the pod by that label: a
+        cleanup with no state file deletes it and recovery then passes."""
+        scenario_id = "F02-H"
+        p = workload.CONTRACTS[scenario_id]
+        _, body = workload.build_invocation(plan("db.workload", scenario_id, p), "run")
+        text = body.decode()
+        self.assertIn("    app.kubernetes.io/component: db-report\n", text)
+        self.assertIn('sel="app.kubernetes.io/component=db-report"', text)
+        for line in text.splitlines():
+            if not line.lstrip().startswith("#"):
+                self.assertNotRegex(line, r"lucida\.io|rca-scenario|scenario-[a-z0-9]")
+        state = Path(f"/tmp/db-workload-{scenario_id}.state")
+        self.assertFalse(state.exists(), "a real db.workload state file is on this host")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "bin").mkdir(); (root / "pods").mkdir()
+            (root / "pods" / "commerce-db-report-1a2b3c4d").touch()
+            kubectl = root / "bin" / "kubectl"
+            kubectl.write_text(
+                "#!/usr/bin/env bash\n"
+                f'printf "%s\\n" "$*" >>{root}/calls\n'
+                'case "$*" in\n'
+                f'  *"get pods -l app.kubernetes.io/component=db-report -o name"*) for f in {root}/pods/*; do [[ -e "$f" ]] && echo "pod/${{f##*/}}"; done ;;\n'
+                f'  *" delete pod/"*) a="$*"; n="${{a##*delete pod/}}"; rm -f "{root}/pods/${{n%% *}}" ;;\n'
+                '  *) echo "unexpected kubectl $*" >&2; exit 9 ;;\n'
+                "esac\n"
+            )
+            kubectl.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}"}
+            for action in ("cleanup", "recovery"):
+                argv, stdin = workload.build_invocation(plan("db.workload", scenario_id, p), action)
+                done = subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=60)
+                self.assertEqual(done.returncode, 0, (action, done.stderr.decode(), (root / "calls").read_text(), sorted(x.name for x in (root / "pods").iterdir())))
+            self.assertEqual(list((root / "pods").iterdir()), [])
+            self.assertFalse(state.exists())
+
     def test_storage_contracts_use_measured_pvc_workers_and_exact_cleanup(self) -> None:
         # 2026-07-28 nodeSelector 도입 후 실측 배치. 각 도메인 DB가 자기 워커의 장치를
         # 단독으로 쓴다 — commerce PG=tb-w1(.184), banking Oracle=tb-w2(.11),

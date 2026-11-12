@@ -31,6 +31,9 @@ INJECTION_TRACE = re.compile(
 TOOL_TAG = re.compile(
     r"(?i)(?<![a-z0-9])rca-scenario(?![a-z0-9-])|(?<![a-z0-9])rca\.lucida\.ai/|(?<![a-z0-9])rca-(f\d{2}|\$\{?scenario)"
     r"|(?<![a-z0-9-])scenario-(?!profile-state)[a-z0-9]|exec -a "
+    # 2026-11-12 LEAK 2회차: 도구 이름을 단 라벨(옛 lucida.io/db-client, lucida.io/db-workload)과 러너 감별
+    # SQL 의 설정 이름 접두(옛 lucida.).
+    r"|(?<![a-z0-9])lucida\.io/|current_setting\('lucida\."
 )
 
 
@@ -605,8 +608,12 @@ class RegistryContractTests(unittest.TestCase):
             for name, value in vars(module).items():
                 if contract_name.match(name):
                     walk(f"{path.name}:{name}", value)
-                if isinstance(value, bytes):
-                    body = value.decode("utf-8", errors="replace")
+                if name.startswith("__"):
+                    continue
+                if isinstance(value, str) and not contract_name.match(name) and TOOL_TAG.search(value):
+                    trace_hits.append((f"{path.name}:{name}", value[:120]))
+                if isinstance(value, bytes) or (isinstance(value, str) and "\n" in value):
+                    body = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
                     for raw in body.splitlines():
                         line = raw.strip()
                         if not line or line.startswith("#"):

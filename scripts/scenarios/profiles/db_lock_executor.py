@@ -43,8 +43,8 @@ APP_IDENTITY = "PostgreSQL JDBC Driver"
 # 결정 Q8. 러너에서 NodePort 로 붙으면 출발 주소가 DPM 관제 세션과 같아진다). 다만 파드 안 프로세스는
 # psql 하나로 줄였다(옛 파드의 sh, sleep 600, SQL 이 든 명령줄 없음). 러너가 attach 로 문장을 보내고 보유
 # 시간을 센다. DB 파드 exec 로 하던 확인은 운영자 세션으로 한다(pg_lock_remote.py, db_operator_remote.py).
-CLIENT_LABEL_KEY = "lucida.io/db-client"
-CLIENT_LABEL_VALUE = "session"
+CLIENT_LABEL_KEY = "app.kubernetes.io/component"
+CLIENT_LABEL_VALUE = "db-client"
 # 세션이 어디서 붙는지(계약의 access): 클러스터 안 클라이언트 파드.
 PG_ACCESS = "in-cluster-pod"
 

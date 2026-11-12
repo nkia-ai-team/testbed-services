@@ -3,7 +3,7 @@
 # baseline 라이브 문서 발행 헬퍼 (POSIX sh)
 # ============================================================
 # 상주 loadgen 유닛이 k6 샘플을 FIFO로 흘리고, loadgen_monitor.py가 이를 파싱해
-# 도메인 문서 /tmp/rca-baseline-<domain>-live.json 을 계속 갱신하게 한다.
+# 도메인 문서 /tmp/k6-<domain>-live.json 을 계속 갱신하게 한다.
 # 설계 정본 = docs/spec-scenario-observation-plane.md
 #
 # 세 도메인 entrypoint가 이 파일을 source 한다 — 같은 20줄을 세 번 복사하지 않는다.
@@ -25,21 +25,25 @@ baseline_publisher_start() {
     baseline_read_step=${4:-}
     BASELINE_K6_OUT=""
 
-    baseline_fifo="${BASELINE_STATE_DIR}/rca-baseline-${baseline_domain}-samples.fifo"
-    baseline_live="${BASELINE_STATE_DIR}/rca-baseline-${baseline_domain}-live.json"
+    # k6 prints its --out target and this helper logs to the unit's output, which tb-runner forwards to
+    # 119 syslog (recorded). So the names are a load host's plain k6 files, not ones naming the testbed
+    # or the runner (design principle 8; until 2026-11-12 /tmp/rca-baseline-<domain>-*). /opt/loadgen is
+    # kept: a load generator host keeping its scripts there is ordinary.
+    baseline_fifo="${BASELINE_STATE_DIR}/k6-${baseline_domain}-samples.fifo"
+    baseline_live="${BASELINE_STATE_DIR}/k6-${baseline_domain}-live.json"
 
     if ! command -v python3 >/dev/null 2>&1; then
-        echo "[loadgen] WARN python3 없음 — baseline 관측 문서를 발행하지 않는다" >&2
+        echo "[loadgen] WARN python3 missing, metrics stream disabled" >&2
         return 0
     fi
     if [ ! -r "$BASELINE_MONITOR" ]; then
-        echo "[loadgen] WARN monitor 없음 ($BASELINE_MONITOR) — baseline 관측 문서를 발행하지 않는다" >&2
+        echo "[loadgen] WARN $BASELINE_MONITOR missing, metrics stream disabled" >&2
         return 0
     fi
 
     rm -f "$baseline_fifo"
     if ! mkfifo -m 600 "$baseline_fifo" 2>/dev/null; then
-        echo "[loadgen] WARN FIFO 생성 실패 ($baseline_fifo) — 관측 문서를 발행하지 않는다" >&2
+        echo "[loadgen] WARN cannot create $baseline_fifo, metrics stream disabled" >&2
         return 0
     fi
 
@@ -58,7 +62,7 @@ baseline_publisher_start() {
     trap 'baseline_publisher_stop' EXIT INT TERM
 
     BASELINE_K6_OUT="json=${baseline_fifo}"
-    echo "[loadgen] baseline 관측 발행 시작: domain=${baseline_domain} live=${baseline_live} pid=${BASELINE_PUBLISHER_PID}"
+    echo "[loadgen] metrics stream started: domain=${baseline_domain} pid=${BASELINE_PUBLISHER_PID}"
 }
 
 baseline_publisher_stop() {

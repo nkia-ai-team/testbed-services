@@ -172,7 +172,7 @@ class ReadyProfileExecutorTests(unittest.TestCase):
         script = stdin.decode()
         self.assertIn("kind: Pod", script)
         self.assertIn("dbo_k delete pod", script)
-        self.assertIn("lucida.io/db-client: session", script)
+        self.assertIn("app.kubernetes.io/component: db-client", script)
         self.assertIn('command: ["psql", ${args}]', script)
         for trace in ("pg_terminate_backend", "pg_sleep", "pkill", "SQL_PRE", 'sleep "\\$HOLD"', "sh -c"):
             self.assertNotIn(trace, own_body(script))

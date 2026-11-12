@@ -40,9 +40,9 @@
 각 baseline 유닛이 k6 샘플을 FIFO로 흘리고, 상주 monitor가 이를 파싱해 도메인 문서를 쓴다.
 
 ```
-/tmp/rca-baseline-commerce-live.json
-/tmp/rca-baseline-food-delivery-live.json
-/tmp/rca-baseline-core-banking-live.json
+/tmp/k6-commerce-live.json
+/tmp/k6-food-delivery-live.json
+/tmp/k6-core-banking-live.json
 ```
 
 문서 스키마는 시나리오 문서와 **동일**하다. 신원 필드만 다르다.
@@ -128,4 +128,4 @@ loadgen.checkout_5xx_rate {domain: "commerce"}     → baseline 도메인 문서
   **적용에는 유닛 재시작이 필요하다**(`systemctl restart loadgen-*`).
 - 유닛은 tb-runner에서 k6를 컨테이너 없이 직접 실행한다
   (`ExecStart=/bin/sh /opt/loadgen/<domain>/entrypoint.sh`, `User=nkia`).
-  따라서 `/tmp/rca-baseline-*-live.json`은 러너의 기존 `ssh nkia@tb-runner cat` 경로로 그대로 읽힌다.
+  따라서 `/tmp/k6-*-live.json`은 러너의 기존 `ssh nkia@tb-runner cat` 경로로 그대로 읽힌다.
