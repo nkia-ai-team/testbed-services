@@ -14,6 +14,13 @@
 #   OLD_COMMERCE, OLD_BANKING  optional: scripts that must show the drain this test exists for
 #   OLD_COMMERCE also: a cart journey without tokens must show the 401s, and the scripts under test
 #   must send the same requests as it apart from logins
+#
+# And the commerce scenario load scripts surge.js and capacity-probe.js (v4 E5d): their cart journey
+# adds to the cart with the token their checkout journey caches per VU and user, like the baseline.
+#
+#   SURGE, CAPACITY_PROBE           scripts under test (default: the repository's)
+#   OLD_SURGE, OLD_CAPACITY_PROBE   optional: the same scripts with a cart add without a token, which
+#                                   must show the 401s and otherwise send the same requests
 
 set -Eeuo pipefail
 
@@ -157,5 +164,74 @@ if [[ -n "${OLD_COMMERCE:-}" ]]; then
       "[INFO] {\($load)} logins over 2 hours: without tokens \(logins($old)), with tokens \(logins($new))"'
   done
 fi
+
+# ---- cart writes of the scenario load scripts surge.js and capacity-probe.js (v4 E5d) ----
+SURGE=${SURGE:-$REPO/commerce/loadgen/surge.js}
+CAPACITY_PROBE=${CAPACITY_PROBE:-$REPO/commerce/loadgen/capacity-probe.js}
+# One hour at a constant rate with 100 VUs (surge.js preallocates 100), the scripts pointed at the
+# modelled gateway. $1 the exported function an iteration runs, $2 iterations a second, $3 gateway,
+# $4 the script, $5 optional extra config members.
+surge_run() {
+  run "$4" "$BANKING" "{\"hours\":1,\"commerce\":{\"rate\":$2,\"vus\":100},\"gateway\":$3,\"commerceEnv\":{\"GATEWAY_URL\":\"http://testbed-gateway:8089\"},\"commerceEntry\":\"$1\"${5:+,$5}}"
+}
+for spec in "surge.js|$SURGE|default|${OLD_SURGE:-}" "capacity-probe.js|$CAPACITY_PROBE|mix|${OLD_CAPACITY_PROBE:-}"; do
+  IFS='|' read -r name script entry old_script <<<"$spec"
+
+  # The lowest companion rate on file (3) and a common one (35): no 401 anywhere, the only writes
+  # without a token are logins, one cart add per cart journey and each with a token, the token is
+  # the cart user's own (the cache is per user), logins at most once a VU and user.
+  for rate in 3 35; do
+    out=$(surge_run "$entry" "$rate" true "$script")
+    jq -e '
+      def n($re): [.requests | to_entries[] | select(.key | test($re)) | .value] | add // 0;
+      .stats.scriptErrors == 0
+      and n(" 401 ") == 0
+      and n("^surge-cart add [A-Z]+ [0-9]+ none$") == 0
+      and n("^[^ ]+ [^ ]+ (POST|PUT|DELETE|PATCH) [0-9]+ none$") == n(" login POST ")
+      and n("^surge-cart add ") == n("^surge-cart get ")
+      and n("^surge-cart add ") > 0
+      and n(" login POST ") <= .hours * .load.commerce.vus * 20
+      and .tokenOwnerMismatch == 0' <<<"$out" >/dev/null \
+      || fail "$name cart add at $rate/s: $(jq -c '{stats, tokenOwnerMismatch, requests}' <<<"$out")"
+  done
+
+  # Login down (every login answers 500): the cart journey still reads the cart, then sends no add,
+  # as the checkout journey does. No cart add at all, no write without a token but the logins, and
+  # the cart reads keep the journey share (15% of iterations, within 5%).
+  out=$(surge_run "$entry" 5 '"login-down"' "$script")
+  jq -e '
+    def n($re): [.requests | to_entries[] | select(.key | test($re)) | .value] | add // 0;
+    .stats.scriptErrors == 0
+    and n(" login POST 500 ") > 0
+    and n("^surge-cart add ") == 0
+    and n("^[^ ]+ [^ ]+ (POST|PUT|DELETE|PATCH) [0-9]+ none$") == n(" login POST ")
+    and (n("^surge-cart get ") - .hours * 3600 * .load.commerce.rate * 0.15 | fabs)
+        <= 0.05 * .hours * 3600 * .load.commerce.rate * 0.15' <<<"$out" >/dev/null \
+    || fail "$name cart journey with login down: $(jq -c '{stats, requests}' <<<"$out")"
+
+  # Against the same script with the cart add without a token: that one shows the 401s, and the
+  # script under test sends the same requests (every step but login, minute by minute) to the same
+  # users, and the same cart adds (product and quantity) in the same order.
+  if [[ -n "$old_script" ]]; then
+    for rate in 3 35; do
+      # Files, not --argjson: the cart writes of an hour are larger than one argument may be.
+      surge_run "$entry" "$rate" true "$old_script" '"cartWrites":true' > "$work/surge-old.json"
+      surge_run "$entry" "$rate" true "$script" '"cartWrites":true' > "$work/surge-new.json"
+      jq -e '[.requests | to_entries[] | select(.key | test("^surge-cart add POST 401 none$")) | .value] | add // 0 > 0' \
+        "$work/surge-old.json" >/dev/null || fail "old $name at $rate/s did not show the 401s: $(jq -c .requests "$work/surge-old.json")"
+      jq -e -n --slurpfile o "$work/surge-old.json" --slurpfile w "$work/surge-new.json" '
+        def steps($r): $r.perMinute | with_entries(select(.key | endswith("/login") | not));
+        $o[0] as $old | $w[0] as $new
+        | steps($old) == steps($new) and $old.cartUsers == $new.cartUsers and ($new.cartUsers | length) > 0
+          and $old.cartWrites == $new.cartWrites and ($new.cartWrites | length) == ($new.cartUsers | length)' >/dev/null \
+        || fail "$name cart add with tokens changed the request shape at $rate/s"
+      jq -n --slurpfile o "$work/surge-old.json" --slurpfile w "$work/surge-new.json" --arg name "$name" --arg rate "$rate" -r '
+        def logins($r; $m): [$r.perMinute | to_entries[] | select(.key | endswith("/login")) | .value
+                              | to_entries[] | select((.key | tonumber) < $m) | .value] | add // 0;
+        $o[0] as $old | $w[0] as $new |
+        "[INFO] \($name) at \($rate)/s, 100 VUs: logins in the first 15 minutes without tokens \(logins($old; 15)), with tokens \(logins($new; 15))"'
+    done
+  fi
+done
 
 printf '[PASS] loadgen transfer pair simulation\n'

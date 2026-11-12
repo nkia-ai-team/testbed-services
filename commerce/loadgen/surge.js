@@ -64,7 +64,9 @@ const COUPON_CODES = [null, null, null, 'SAVE10', 'WELCOME5000'];
 const userEmail = (id) => `user${String(id).padStart(2, '0')}@example.com`;
 const tokenCache = {};
 
-function login(userId) {
+// journey 는 로그인 요청의 journey 태그다(이 토큰이 필요한 여정). 캐시는 여정과 무관하게 VU 안에서
+// 사용자별로 함께 쓴다(기준선 script.js 의 login 과 같음).
+function login(userId, journey = 'surge-checkout') {
     const cached = tokenCache[userId];
     if (cached && cached.expiresAtMs > Date.now() + 60000) {
         return cached.token;
@@ -72,7 +74,7 @@ function login(userId) {
     const res = http.post(
         `${GATEWAY_URL}/api/users/login`,
         JSON.stringify({ email: userEmail(userId), password: SEED_PASSWORD }),
-        { headers: { 'Content-Type': 'application/json' }, tags: { journey: 'surge-checkout', step: 'login' } }
+        { headers: { 'Content-Type': 'application/json' }, tags: { journey, step: 'login' } }
     );
     if (!check(res, { 'login 200': (r) => r.status === 200 })) {
         return null;
@@ -100,10 +102,21 @@ function cart() {
     const userId = randInt(1, DEMO_USER_COUNT);
     const res = http.get(`${GATEWAY_URL}/api/carts/${userId}`, { tags: { journey: 'surge-cart', step: 'get' } });
     check(res, { 'cart 200': (r) => r.status === 200 });
+    // 장바구니 담기는 게이트웨이 AuthGuard 가 토큰을 요구한다(2026-07-13 부터, 없으면 401 "Missing
+    // Authorization token"). 기준선 script.js 의 cartJourney 처럼 체크아웃 여정과 같은 VU 토큰 캐시를
+    // 쓰므로, 이 VU 가 이 사용자로 이미 로그인했으면 로그인 요청이 늘지 않는다. 상품과 수량을 로그인
+    // 전에 종전과 같은 순서로 골라 난수열, 담기 요청 수, 사용자 분포가 바뀌지 않는다. 로그인이 실패하면
+    // 체크아웃 여정처럼 담기를 보내지 않는다(로그인 실패는 check 에 이미 남는다). (2026-11-12 v4 E5d)
+    const productId = pick(FLAGSHIP_PRODUCT_IDS);
+    const quantity = randInt(1, 2);
+    const token = login(userId, 'surge-cart');
+    if (!token) {
+        return;
+    }
     http.post(
         `${GATEWAY_URL}/api/carts/${userId}/items`,
-        JSON.stringify({ productId: pick(FLAGSHIP_PRODUCT_IDS), quantity: randInt(1, 2) }),
-        { headers: { 'Content-Type': 'application/json' }, tags: { journey: 'surge-cart', step: 'add' } }
+        JSON.stringify({ productId, quantity }),
+        { headers: authHeaders(token), tags: { journey: 'surge-cart', step: 'add' } }
     );
 }
 

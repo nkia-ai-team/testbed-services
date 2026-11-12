@@ -7,7 +7,9 @@
 // config: hours, commerce {rate, vus}, banking {rate, vus}, fault {hour, from, to, kind}
 //   (kind: refused = status 0 connection refused, or an HTTP status such as 503, 502),
 //   gateway: true models the commerce gateway (see below), "expired" also refuses every token,
-//   "login-down" answers every login 500, k6json: path for commerce k6 samples.
+//   "login-down" answers every login 500, k6json: path for commerce k6 samples,
+//   commerceEnv: extra __ENV for the commerce script only (e.g. GATEWAY_URL), commerceEntry: the
+//   exported function an iteration of the commerce script runs (default "default").
 //
 // The driver is iteration level, like constant-arrival-rate: each simulated second gives `rate`
 // iterations of the script's default() to the VUs in turn (k6 hands iterations to VUs through a
@@ -26,8 +28,11 @@
 // belongs to another user than the cart path's. The output then has
 // `requests` (commerce counts by journey, step, method, status and whether a token was sent),
 // `perMinute` (commerce counts by step and minute of the run), `cartUsers` (user ids of cart writes
-// in order) and `checks` (pass and fail by check name). With k6json the commerce iterations,
-// http_reqs and checks are also written as k6 --out json lines, for loadgen_monitor.py.
+// in order: the baseline's cart journey and the surge-cart journey of the scenario load scripts
+// surge.js and capacity-probe.js, v4 E5d) and `checks` (pass and fail by check name), and with
+// cartWrites: true also `cartWrites` (method, path and body of those writes in order). With k6json
+// the commerce iterations, http_reqs and checks are also written as k6 --out json lines, for
+// loadgen_monitor.py.
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,6 +49,8 @@ const FAULT = config.fault || null;
 const GATEWAY = config.gateway === true || config.gateway === 'expired' || config.gateway === 'login-down';
 const TOKENS_EXPIRED = config.gateway === 'expired';
 const LOGIN_DOWN = config.gateway === 'login-down';
+const COMMERCE_ENV = config.commerceEnv || {};
+const COMMERCE_ENTRY = config.commerceEntry || 'default';
 const SEED = {
     'ACC-1001': 5000000, 'ACC-1002': 3200000, 'ACC-1003': 1500000, 'ACC-1004': 800000,
     'ACC-1005': 12000000, 'ACC-1006': 450000, 'ACC-1007': 2750000,
@@ -114,6 +121,7 @@ const COMMERCE_GATEWAY = 'http://testbed-gateway:8089';
 const requests = {};
 const perMinute = {};
 const cartUsers = [];
+const cartWrites = [];
 const checks = {};
 const k6lines = [];
 const issued = new Set();
@@ -156,8 +164,9 @@ function gateway(method, url, body, params) {
     const step = `${tags.journey || '-'}/${tags.step || '-'}`;
     perMinute[step] = perMinute[step] || {};
     perMinute[step][minute] = (perMinute[step][minute] || 0) + 1;
-    if (tags.journey === 'cart' && (tags.step === 'add' || tags.step === 'remove')) {
+    if (/(^|-)cart$/.test(tags.journey || '') && (tags.step === 'add' || tags.step === 'remove')) {
         cartUsers.push(Number(path.split('/')[3]));
+        cartWrites.push(`${method} ${path} ${body || ''}`);
     }
     if (token && path.startsWith('/api/carts/')) {
         const owner = `tok-user${String(Number(path.split('/')[3])).padStart(2, '0')}@example.com`;
@@ -203,7 +212,8 @@ writeFileSync(join(dir, 'http.mjs'), 'const sim = () => globalThis.__k6sim;\n'
     + 'export default { post: (u, b, p) => sim().post(u, b, p), get: (u, p) => sim().other(\'GET\', u, null, p),'
     + ' del: (u, b, p) => sim().other(\'DELETE\', u, b, p), put: (u, b, p) => sim().other(\'PUT\', u, b, p),'
     + ' patch: (u, b, p) => sim().other(\'PATCH\', u, b, p), request: () => sim().other(\'GET\', \'\'),'
-    + ' batch: (r) => r.map(() => sim().other(\'GET\', \'\')) };\n');
+    + ' batch: (r) => r.map(() => sim().other(\'GET\', \'\')),'
+    + ' setResponseCallback: () => {}, expectedStatuses: () => null };\n');
 writeFileSync(join(dir, 'k6.mjs'), 'export function check(r, p) { return globalThis.__k6sim.check(r, p); }\nexport function sleep() {}\nexport function group(n, f) { return f(); }\n');
 writeFileSync(join(dir, 'execution.mjs'), 'export default { get scenario() { return globalThis.__k6sim.scenario; }, vu: {} };\n');
 
@@ -234,7 +244,7 @@ for (let hour = 0; hour < HOURS; hour += 1) {
         vus[kind] = [];
         // A different seed every hour so hours are independent samples (k6 itself reuses one seed,
         // but its hourly rate changes with the diurnal curve).
-        globalThis.__ENV = { LOADGEN_SEED: String(42 + hour) };
+        globalThis.__ENV = { LOADGEN_SEED: String(42 + hour), ...(kind === 'commerce' ? COMMERCE_ENV : {}) };
         for (let v = 1; v <= LOAD[kind].vus; v += 1) {
             globalThis.__VU = v;
             vus[kind].push(await import(pathToFileURL(modules[kind]).href + `?h=${hour}&v=${v}`));
@@ -251,7 +261,7 @@ for (let hour = 0; hour < HOURS; hour += 1) {
                 next[kind] = (next[kind] + 1) % vus[kind].length;
                 k6point('iterations', 1, { scenario: 'baseline' });
                 try {
-                    vu.default();
+                    vu[kind === 'commerce' ? COMMERCE_ENTRY : 'default']();
                 } catch (e) {
                     stats.scriptErrors += 1;
                     if (config.debugErrors) {
@@ -325,7 +335,7 @@ if (config.k6json) {
 }
 console.log(JSON.stringify({
     hours: HOURS, load: LOAD, fault: FAULT, stats, lostAtRestart, shape,
-    ...(GATEWAY ? { requests, perMinute, cartUsers, checks, tokenOwnerMismatch } : {}),
+    ...(GATEWAY ? { requests, perMinute, cartUsers, checks, tokenOwnerMismatch, ...(config.cartWrites ? { cartWrites } : {}) } : {}),
     maxDriftFromSeedAtEnd: drift,
     minSevenBalanceAtHourEnds: minBalance,
     endBalances: Object.fromEntries(SEVEN.map((id) => [id, balance.get(id)])),
