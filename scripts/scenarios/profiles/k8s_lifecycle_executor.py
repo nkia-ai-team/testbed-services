@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import json
+from pathlib import Path
+
 from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_instance
 
 PROFILE_ID = "k8s.lifecycle"
+FAULT_IMAGES = Path(__file__).resolve().parents[1] / "fault-images"
+
+
+def built_release_tags() -> set[str]:
+    """Every tag the fault-image builder can put on a node (fault-images/*/image.json)."""
+    return {json.loads(path.read_text(encoding="utf-8"))["fault"] for path in FAULT_IMAGES.glob("*/image.json")}
 
 
 def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) -> None:
@@ -14,8 +23,15 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
         raise ExecutorError("scenario is not allowlisted")
     if params != profile["scenario_parameters"][scenario_id]:
         raise ExecutorError("parameters do not match the approved scenario profile")
-    if not params["invalid_image"].endswith(":scenario-invalid-f05-g"):
-        raise ExecutorError("invalid image is not scenario-scoped")
+    # The rollout must reference an image no node has, the way a release tag that never reached the
+    # nodes does. The tag is an ordinary version (it is recorded in the pod spec and the
+    # ErrImageNeverPull event, so it may not name the scenario, design principle 8); what keeps it
+    # absent is that it is neither the baseline nor any tag the fault-image builder produces.
+    invalid, baseline = params["invalid_image"], params["baseline_image"]
+    if invalid.rpartition(":")[0] != baseline.rpartition(":")[0] or invalid == baseline:
+        raise ExecutorError("invalid image must be another tag of the baseline repository")
+    if invalid in built_release_tags():
+        raise ExecutorError("invalid image is a tag the fault-image builder produces")
 
 
 def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], bytes]:

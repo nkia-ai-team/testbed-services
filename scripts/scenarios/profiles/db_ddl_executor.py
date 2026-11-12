@@ -203,7 +203,9 @@ CONTRACTS: dict[str, dict[str, Any]] = {
         "db_port": 30432,
         "db_name": "commerce",
         "db_user": "commerce",
-        "application_name": "rca-F02-R-index-ddl",
+        # The database records every session's application_name (DPM sessions, pg_stat_activity), so
+        # it is the name a DBA's own client sends, not one that names the scenario (design principle 8).
+        "application_name": "pgAdmin 4 - DB:commerce",
         "schema": "product_schema",
         "table": "products",
         "index": "idx_products_name",

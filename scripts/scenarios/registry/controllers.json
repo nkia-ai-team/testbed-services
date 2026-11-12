@@ -1195,7 +1195,7 @@
             "parameters": {
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-payment",
-              "annotation_key": "rca.lucida.ai/f08-h-rollout",
+              "annotation_key": "kubectl.kubernetes.io/restartedAt",
               "mock_resource": "deployment/testbed-external-pg-mock",
               "mock_path": "/v1/payments",
               "mock_status": 429,
@@ -2837,7 +2837,7 @@
                   "offset_seconds": 0,
                   "namespace": "rca-testbed-commerce",
                   "deployment": "testbed-notification",
-                  "annotation_key": "rca.lucida.ai/f08-g-distractor"
+                  "annotation_key": "kubectl.kubernetes.io/restartedAt"
                 },
                 {
                   "name": "banking-oracle-lock",
@@ -5784,8 +5784,8 @@
             "id": "approved-fixed-f03-h",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f03-h-order-thread-pool",
-              "configmap": "scenario-f03-h-order-thread-pool",
+              "job": "order-report-export",
+              "configmap": "order-report-export",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",

@@ -166,7 +166,7 @@ mock_check() { command -v curl >/dev/null; "${kf[@]}" rollout status "$mock_reso
 # The food arm, separated from `run` so it can be deferred without blocking apply.
 arm_food() {
   start_pf; reset_mock
-  curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' -d "{\"id\":\"rca-$scenario_id\",\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$mock_path\"},\"httpResponse\":{\"statusCode\":$mock_status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
+  curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' -d "{\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$mock_path\"},\"httpResponse\":{\"statusCode\":$mock_status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
   stop_pf
 }
 
@@ -224,7 +224,9 @@ case "$action" in
   recovery)
     [[ ! -e "$state_dir" ]]
     pg recovery
-    start_pf; ! retrieve | grep -q "\"id\"[[:space:]]*:[[:space:]]*\"rca-$scenario_id\""
+    # MockServer assigns the expectation id (the mock's log may be recorded, design principle 8), so a
+    # left-over arm is found by what it answers: no baseline expectation answers RATE_LIMITED.
+    start_pf; ! retrieve | grep -q 'RATE_LIMITED'
     ;;
   *) exit 2 ;;
 esac

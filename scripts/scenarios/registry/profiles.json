@@ -2273,8 +2273,8 @@
       "scenario_parameters": {
         "F07-P": {
           "namespace": "rca-testbed-commerce",
-          "job": "scenario-f07-p-pricing-bulkhead",
-          "configmap": "scenario-f07-p-pricing-bulkhead",
+          "job": "price-cache-warmup",
+          "configmap": "price-cache-warmup",
           "node_name": "tb-w1",
           "image": "grafana/k6:latest",
           "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -2285,8 +2285,8 @@
         },
         "F03-H": {
           "namespace": "rca-testbed-commerce",
-          "job": "scenario-f03-h-order-thread-pool",
-          "configmap": "scenario-f03-h-order-thread-pool",
+          "job": "order-report-export",
+          "configmap": "order-report-export",
           "node_name": "tb-w1",
           "image": "grafana/k6:latest",
           "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",
@@ -2302,8 +2302,8 @@
             "level_id": "probe-20rps",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f07-p-pricing-bulkhead",
-              "configmap": "scenario-f07-p-pricing-bulkhead",
+              "job": "price-cache-warmup",
+              "configmap": "price-cache-warmup",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -2317,8 +2317,8 @@
             "level_id": "contention-35rps",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f07-p-pricing-bulkhead",
-              "configmap": "scenario-f07-p-pricing-bulkhead",
+              "job": "price-cache-warmup",
+              "configmap": "price-cache-warmup",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -2332,8 +2332,8 @@
             "level_id": "saturation-50rps",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f07-p-pricing-bulkhead",
-              "configmap": "scenario-f07-p-pricing-bulkhead",
+              "job": "price-cache-warmup",
+              "configmap": "price-cache-warmup",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -4891,7 +4891,7 @@
           "deployment": "testbed-payment",
           "container": "payment-service",
           "baseline_image": "commerce-payment:latest",
-          "invalid_image": "commerce-payment:scenario-invalid-f05-g"
+          "invalid_image": "commerce-payment:1.4.2"
         }
       }
     },
@@ -5601,7 +5601,7 @@
         "F08-H": {
           "namespace": "rca-testbed-commerce",
           "deployment": "testbed-payment",
-          "annotation_key": "rca.lucida.ai/f08-h-rollout",
+          "annotation_key": "kubectl.kubernetes.io/restartedAt",
           "mock_resource": "deployment/testbed-external-pg-mock",
           "mock_path": "/v1/payments",
           "mock_status": 429,
@@ -5721,7 +5721,7 @@
               "offset_seconds": 0,
               "namespace": "rca-testbed-commerce",
               "deployment": "testbed-notification",
-              "annotation_key": "rca.lucida.ai/f08-g-distractor"
+              "annotation_key": "kubectl.kubernetes.io/restartedAt"
             },
             {
               "name": "banking-oracle-lock",

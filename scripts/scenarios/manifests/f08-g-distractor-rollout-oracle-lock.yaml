@@ -132,7 +132,7 @@
                     "offset_seconds": 0,
                     "namespace": "rca-testbed-commerce",
                     "deployment": "testbed-notification",
-                    "annotation_key": "rca.lucida.ai/f08-g-distractor"
+                    "annotation_key": "kubectl.kubernetes.io/restartedAt"
                   },
                   {
                     "name": "banking-oracle-lock",

@@ -1039,8 +1039,8 @@
             "id": "probe-20rps",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f07-p-pricing-bulkhead",
-              "configmap": "scenario-f07-p-pricing-bulkhead",
+              "job": "price-cache-warmup",
+              "configmap": "price-cache-warmup",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -1057,8 +1057,8 @@
             "id": "contention-35rps",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f07-p-pricing-bulkhead",
-              "configmap": "scenario-f07-p-pricing-bulkhead",
+              "job": "price-cache-warmup",
+              "configmap": "price-cache-warmup",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -1075,8 +1075,8 @@
             "id": "saturation-50rps",
             "parameters": {
               "namespace": "rca-testbed-commerce",
-              "job": "scenario-f07-p-pricing-bulkhead",
-              "configmap": "scenario-f07-p-pricing-bulkhead",
+              "job": "price-cache-warmup",
+              "configmap": "price-cache-warmup",
               "node_name": "tb-w1",
               "image": "grafana/k6:latest",
               "target_url": "http://testbed-pricing:8087/api/pricing/quote",

@@ -100,10 +100,12 @@ write_state() {
   mv -T "$flap_state.tmp" "$flap_state"
 }
 hold() { local end=$(( $(date +%s) + $1 )); while (( $(date +%s) < end )); do write_state; sleep 5; done; write_state; }
+# Each episode starts from a reset, so the fault expectation needs no id of ours: MockServer assigns one,
+# and the mock's log, which may be recorded, names nothing (design principle 8).
 for ((episode=1; episode<=episodes; episode++)); do
   reset
   curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' \
-    -d "{\"id\":\"rca-F15-R-episode-$episode\",\"priority\":1000,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$path\"},\"httpResponse\":{\"statusCode\":$status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
+    -d "{\"priority\":1000,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$path\"},\"httpResponse\":{\"statusCode\":$status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
   episode_now=$episode; fault_active=true; write_state
   hold "$fault_hold"; restore
   fault_active=false; write_state

@@ -113,25 +113,48 @@ with open(temporary, "w", encoding="utf-8") as stream:
 os.replace(temporary, path)
 PY
 }
+# What the payment service receives and logs, and what the mock's own log prints, is recorded, so the
+# injected expectation names neither the scenario nor the testbed (design principle 8): MockServer
+# assigns the expectation id itself, and a slow answer is the mock's normal answer for the path
+# (taken from the snapshot just saved) delayed, so it differs from a healthy one only in time.
+delayed_baseline() {
+  SNAPSHOT="$state" MOCK_PATH="$path" DELAY="$delay" python3 - <<'PY'
+import json, os
+with open(os.environ["SNAPSHOT"], encoding="utf-8") as stream:
+    active = json.load(stream) or []
+for item in active:
+    request, response = item.get("httpRequest") or {}, item.get("httpResponse")
+    if request.get("method") == "POST" and request.get("path") == os.environ["MOCK_PATH"] \
+            and isinstance(response, dict) and response.get("statusCode") == 200:
+        break
+else:
+    raise SystemExit("no healthy baseline expectation for the path")
+response = dict(response, delay={"timeUnit": "SECONDS", "value": int(os.environ["DELAY"])})
+print(json.dumps(response, separators=(",", ":"), sort_keys=True))
+PY
+}
 inject() {
   local response
   if [[ "$mode" == status ]]; then
     response="{\"statusCode\":$status,\"headers\":{\"content-type\":[\"application/json\"]},\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}"
   else
-    response="{\"statusCode\":200,\"delay\":{\"timeUnit\":\"SECONDS\",\"value\":$delay},\"headers\":{\"content-type\":[\"application/json\"]},\"body\":\"{\\\"status\\\":\\\"APPROVED\\\",\\\"transaction_id\\\":\\\"scenario-delay\\\"}\"}"
+    response="$(delayed_baseline)"
   fi
   reset
   curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' \
-    -d "{\"id\":\"rca-$scenario_id\",\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$path\"},\"httpResponse\":$response}" >/dev/null
+    -d "{\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$path\"},\"httpResponse\":$response}" >/dev/null
 }
 write_worker() {
   cat >"$worker" <<'PY'
 #!/usr/bin/env python3
-import datetime, json, os, signal, subprocess, sys, time, urllib.request
+import datetime, json, os, signal, subprocess, sys, time, urllib.request, uuid
 
 scenario_id, namespace, resource, path, status, remaining, ttl, interval, maximum, port, output = sys.argv[1:]
 status, remaining, ttl, interval, maximum, port = map(int, (status, remaining, ttl, interval, maximum, port))
-expectation_id = f"rca-{scenario_id}-transient"
+# The mock logs every expectation it receives with its id, and that log may be recorded: a random id
+# per worker, like the ones MockServer assigns itself, names nothing (design principle 8). The worker
+# keeps it in memory to find its own pulse; cleanup restores the snapshot and needs no id.
+expectation_id = str(uuid.uuid4())
 stopping = False
 
 def stop(*_args):

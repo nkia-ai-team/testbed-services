@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -3961,6 +3962,43 @@ else:
         self.assertIn("/root/tb-kubeconfig", script)
         plan = compiler.compile_plan("f06-r-commerce-external-hang")
         self.assertEqual(next(x for x in plan["profile_instances"] if x["profile_id"] == "mock.expectation")["parameters"]["delay_seconds"], 30)
+
+    def test_mock_slow_answer_is_the_baseline_answer_delayed_and_names_nothing(self) -> None:
+        """The payment service logs the gateway's transaction id and the mock logs every expectation it
+        receives, both recorded (design principle 8). Until 2026-11-12 the slow answer carried
+        transaction_id "scenario-delay" and every injected expectation the id "rca-<scenario id>". Now
+        MockServer assigns the id and the slow answer is the mock's own healthy answer for the path,
+        taken from the snapshot, with the delay added; with no healthy answer to copy, run fails."""
+        import json as jsonlib
+
+        script = mock.SCRIPT.decode()
+        self.assertNotIn('\\"id\\"', script.split("write_worker() {")[0])
+        self.assertNotIn("scenario-delay", script)
+        start = script.index("delayed_baseline() {")
+        function = script[start:script.index("\ninject() {", start)]
+        baseline = {"statusCode": 200, "headers": {"content-type": ["application/json"]},
+                    "body": "{\"status\":\"APPROVED\",\"transaction_id\":\"mock-tx-0001\"}"}
+        snapshots = {
+            "healthy": [
+                {"httpRequest": {"method": "POST", "path": "/v1/payments"}, "httpResponse": {"statusCode": 200, "body": "other"}},
+                {"httpRequest": {"method": "POST", "path": "/pay"}, "httpResponse": {"statusCode": 429, "body": "left over"}},
+                {"id": "6f1e2a90-0000-4c3b-9d5e-0a1b2c3d4e5f", "httpRequest": {"method": "POST", "path": "/pay"}, "httpResponse": baseline},
+            ],
+            "no_healthy": [{"httpRequest": {"method": "POST", "path": "/pay"}, "httpResponse": {"statusCode": 429}}],
+        }
+        for name, snapshot in snapshots.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as raw:
+                state = Path(raw) / "snapshot.json"
+                state.write_text(jsonlib.dumps(snapshot))
+                done = subprocess.run(
+                    ["bash", "-c", f'set -euo pipefail\nstate={shlex.quote(str(state))}; path=/pay; delay=8\n{function}\ndelayed_baseline'],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if name == "no_healthy":
+                    self.assertNotEqual(done.returncode, 0)
+                    continue
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(jsonlib.loads(done.stdout), {**baseline, "delay": {"timeUnit": "SECONDS", "value": 8}})
 
     def test_kubernetes_patch_has_fixed_target_and_original_value_snapshot(self) -> None:
         script = self.assert_contract(k8s_patch, "f09-p-inventory-cpu-throttle", "k8s.patch")

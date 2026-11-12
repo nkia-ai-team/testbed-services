@@ -18,6 +18,22 @@ compile_plan_module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(compile_plan_module)
 
 
+# 원칙 8: 관제 데이터로 남는 주입 값에 시나리오 id 와 그것을 드러내는 꼴이 없어야 한다. id 는 대소문자를
+# 가리지 않는다(`scenario-f03-h-...`). id 가 없어도 주입 도구를 드러내는 꼴(`scenario-` 이름, 실행기
+# 라벨 키 `rca-scenario`, 주석 키 접두 `rca.lucida.ai/`, 세션 이름 `rca-F01-R-...`)도 같다.
+# `scenario-profile-state` 는 러너 호스트의 상태 폴더라 여기서 보지 않는다(leakscan 의 inject_path 가 녹화에서 본다).
+INJECTION_TRACE = re.compile(
+    r"(?i)(?<![a-z0-9])f\d{2}-[a-z][a-z0-9]*(?![a-z0-9])"
+    r"|(?<![a-z0-9])rca-scenario(?![a-z0-9])|(?<![a-z0-9])rca\.lucida\.ai/|(?<![a-z0-9])rca-f\d{2}-"
+    r"|(?<![a-z0-9-])scenario-(?!profile-state)[a-z0-9]"
+)
+# 실행기 본문에 문자열로 들어가면 안 되는 도구 꼬리표(시나리오 변수를 거친 것도 포함).
+TOOL_TAG = re.compile(
+    r"(?i)(?<![a-z0-9])rca-scenario(?![a-z0-9-])|(?<![a-z0-9])rca\.lucida\.ai/|(?<![a-z0-9])rca-(f\d{2}|\$\{?scenario)"
+    r"|(?<![a-z0-9-])scenario-(?!profile-state)[a-z0-9]|exec -a "
+)
+
+
 class RegistryContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -477,24 +493,17 @@ class RegistryContractTests(unittest.TestCase):
 
         k8s.probe 의 실패 경로가 `/actuator/health/f16-h-fail` 꼴이었고, 그 경로가 녹화의
         kcm_resources_history(새 ReplicaSet 스펙)에 그대로 남았다(v3 F05-H, F16-H, F17-R 녹화,
-        2026-11-12 확인). 현실 장애에는 없는 흔적이다. 대소문자를 가리지 않고 `f16-h` 꼴을 찾는다.
+        2026-11-12 확인). 현실 장애에는 없는 흔적이다. 대소문자를 가리지 않고 `f16-h` 꼴을 찾고,
+        id 가 없어도 주입 도구를 드러내는 꼴(`scenario-` 이름, `rca-scenario` 라벨, `rca.lucida.ai/`
+        주석 키)도 찾는다.
 
-        세 출처(주입 수단 계약 scenario_parameters, 진행 대본 level parameters, 정답지
-        injected_fault)를 모두 본다. `scenario_tag` 는 러너 호스트의 k6 실행 태그라 관제
-        데이터에 닿지 않아 뺀다. KNOWN 은 이 시험을 둘 때 이미 있던 값이다(고칠 때 여기서 지운다).
-        새로 생기면 실패한다.
+        네 출처(주입 수단 계약 scenario_parameters 와 scenario_levels, 진행 대본 level parameters,
+        보류 대본, 정답지 injected_fault)를 모두 본다. `scenario_tag` 는 러너 호스트의 k6 실행
+        태그라 관제 데이터에 닿지 않아 뺀다. 이 시험을 둘 때 있던 7값(F03-H, F07-P Job 과
+        ConfigMap, F05-G 이미지, F08-H, F08-G 주석 키)은 2026-11-12 v4 LEAK 에서 모두 고쳤다.
+        예외 목록은 없다.
         """
-        scenario_id = re.compile(r"(?i)(?<![a-z0-9])f\d{2}-[a-z][a-z0-9]*(?![a-z0-9])")
         exempt_keys = {"scenario_tag"}
-        known = {
-            ("F03-H", "configmap", "scenario-f03-h-order-thread-pool"),
-            ("F03-H", "job", "scenario-f03-h-order-thread-pool"),
-            ("F05-G", "invalid_image", "commerce-payment:scenario-invalid-f05-g"),
-            ("F07-P", "configmap", "scenario-f07-p-pricing-bulkhead"),
-            ("F07-P", "job", "scenario-f07-p-pricing-bulkhead"),
-            ("F08-G", "annotation_key", "rca.lucida.ai/f08-g-distractor"),
-            ("F08-H", "annotation_key", "rca.lucida.ai/f08-h-rollout"),
-        }
         found: set[tuple[str, str, str]] = set()
 
         def walk(owner: str, node, key: str = "") -> None:
@@ -502,28 +511,122 @@ class RegistryContractTests(unittest.TestCase):
                 for child_key, value in node.items():
                     if child_key in exempt_keys:
                         continue
-                    if scenario_id.search(child_key):
+                    if INJECTION_TRACE.search(child_key):
                         found.add((owner, "<key>", child_key))
                     walk(owner, value, child_key)
             elif isinstance(node, list):
                 for value in node:
                     walk(owner, value, key)
-            elif isinstance(node, str) and scenario_id.search(node):
+            elif isinstance(node, str) and INJECTION_TRACE.search(node):
                 found.add((owner, key, node))
 
         for profile in self.profiles["profiles"].values():
             for owner, parameters in (profile.get("scenario_parameters") or {}).items():
                 walk(owner, parameters)
-        for owner, controller in self.controllers["controllers"].items():
-            for level in controller["profile"].get("levels", []):
-                walk(owner, level.get("parameters") or {})
+            for owner, levels in (profile.get("scenario_levels") or {}).items():
+                for level in levels:
+                    walk(owner, level.get("parameters") or {})
+        parked = json.loads((ROOT / "registry" / "controllers-parked.json").read_text(encoding="utf-8"))
+        for controllers in (self.controllers["controllers"], parked.get("controllers", parked)):
+            for owner, controller in controllers.items():
+                if not isinstance(controller, dict):
+                    continue
+                for level in controller.get("profile", {}).get("levels", []):
+                    walk(owner, level.get("parameters") or {})
         metadata = json.loads((ROOT / "registry" / "scenario-metadata.json").read_text(encoding="utf-8"))
         for owner, entry in metadata["scenarios"].items():
             for level in (entry.get("injected_fault") or {}).get("levels", []):
                 walk(owner, level.get("parameters") or {})
 
-        self.assertEqual(sorted(found - known), [], "injection parameters carry a scenario id")
-        self.assertEqual(sorted(known - found), [], "a known violation was fixed: drop it from KNOWN")
+        self.assertEqual(sorted(found), [], "injection parameters carry a scenario id or an injection-tool name")
+
+    def test_executor_contracts_and_bodies_carry_no_scenario_id(self) -> None:
+        """실행기 코드가 직접 넣는 이름, 라벨, 주석, 세션 이름, mock id 도 같은 규칙이다(원칙 8).
+
+        2026-11-12 v4 LEAK 전에는 레지스트리 밖, 실행기 코드에 흔적이 있었다: load.east_west 와
+        app.release 가 붙이던 라벨 `rca-scenario: $scenario_id`, app.release 의 Deployment 이름
+        `scenario-pricing-fault-<id>`, mock 계열의 expectation id `rca-$scenario_id`, db.ddl 의
+        application_name `rca-F02-R-index-ddl`, network.fault 외부 흐름의 프로세스 이름
+        `rca-<id>-external-nping` 과 iptables 주석. 레지스트리만 보는 위 시험은 이것을 못 봤다.
+
+        두 가지를 본다.
+        1. 실행기 모듈의 계약 상수(CONTRACTS, *_LEVELS, CONTRACT, APPROVED_*) 값. 시나리오 id 그
+           자체인 키와 값(계약 표의 열쇠)은 된다.
+        2. 실행기가 보내는 bash 본문에서 시나리오 변수를 쓰는 줄. 러너 호스트에만 머무는 쓰임
+           (상태 파일, 러너 쪽 로그, 포트 번호, 분기, 러너 쪽 작업자 인자, 관제하지 않는 tb-runner
+           의 k6)을 줄에서 지운 뒤에도 시나리오 변수가 남으면 실패한다. 새 쓰임이 관제 데이터로 가는지 사람이 보게
+           하려는 것이다. 본문 어디에도 도구 꼬리표 문자열이 있으면 안 된다.
+        """
+        import importlib.util as importer
+        import sys
+
+        profiles_dir = ROOT / "profiles"
+        sys.path.insert(0, str(profiles_dir))
+        exact_id = re.compile(r"F\d{2}-[A-Z]\d?")
+        contract_name = re.compile(r"^(CONTRACTS?|[A-Z0-9_]*_LEVELS|APPROVED_[A-Z_]+|[A-Z0-9_]*_CONTRACTS?)$")
+        uses_scenario = re.compile(r"\$\{?(scenario_id|scenario)\b")
+        runner_side = [
+            # 상태 파일과 상태 폴더: 러너 호스트(66 tb-ops 러너 컨테이너) 또는 db.ddl 의 tb-runner 파일.
+            re.compile(r'^(state|state_dir|pulse_state|flap_state|worker|worker_pid|run_dir)="(\$state_root|\$\{SCENARIO_PROFILE_STATE_ROOT:-[^}]*\}|/tmp)/[^"]*\$\{(scenario_id|scenario)\}[^"]*"$'),
+            # 러너 쪽 port-forward, 작업자 로그.
+            re.compile(r'>\s*"?/tmp/"?\$?\{?"?\$?\{?scenario_id\}?"?-[a-z-]+\.log"?\s+2>&1'),
+            # mock 계열 러너 쪽 port-forward 포트 번호.
+            re.compile(r"^port=\$\(\(19100 \+ 10#\$\{scenario_id:1:2\}\)\)$"),
+            # 분기.
+            re.compile(r'^\[\[ "\$scenario_id" != F\d{2}-[A-Z]\d? \]\] && return 0$'),
+            # 러너 호스트에서 도는 작업자의 인자와 그 작업자가 쓰는 러너 쪽 상태.
+            re.compile(r'^nohup python3 "\$worker" "\$scenario_id" '),
+            re.compile(r'^"\$1" "\$2" "\$\(date -u \+%Y-%m-%dT%H:%M:%SZ\)" "\$scenario_id" "\$3" "\$4" >"\$flap_state\.tmp"$'),
+            # load.north_south: tb-runner 의 k6 와 감시기(프로세스 수집 대상이 아니고, 출력은 /tmp 파일).
+            re.compile(r'^safe_id="\$\{scenario_id//\[\^A-Za-z0-9_-\]/_\}"$'),
+            re.compile(r'^--mode tail --scenario-id "\$scenario_id" \\$'),
+        ]
+        constant_hits: list[tuple[str, str]] = []
+        line_hits: list[tuple[str, str]] = []
+        trace_hits: list[tuple[str, str]] = []
+
+        def walk(owner: str, node) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(key, str) and not exact_id.fullmatch(key) and INJECTION_TRACE.search(key):
+                        constant_hits.append((owner, key))
+                    walk(owner, value)
+            elif isinstance(node, (list, tuple, set, frozenset)):
+                for value in node:
+                    walk(owner, value)
+            elif isinstance(node, str) and not exact_id.fullmatch(node) and INJECTION_TRACE.search(node):
+                constant_hits.append((owner, node))
+
+        for path in sorted(profiles_dir.glob("*.py")):
+            spec = importer.spec_from_file_location(f"leakcheck_{path.stem}", path)
+            assert spec and spec.loader
+            module = importer.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            for name, value in vars(module).items():
+                if contract_name.match(name):
+                    walk(f"{path.name}:{name}", value)
+                if isinstance(value, bytes):
+                    body = value.decode("utf-8", errors="replace")
+                    for raw in body.splitlines():
+                        line = raw.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if TOOL_TAG.search(line):
+                            trace_hits.append((f"{path.name}:{name}", line))
+                        rest = line
+                        for rule in runner_side:
+                            rest = rule.sub(" ", rest)
+                        if uses_scenario.search(rest):
+                            line_hits.append((f"{path.name}:{name}", line))
+        for path in sorted(profiles_dir.glob("*.sh")):
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if line and not line.startswith("#") and TOOL_TAG.search(line):
+                    trace_hits.append((path.name, line))
+
+        self.assertEqual(sorted(set(constant_hits)), [], "executor contracts carry a scenario id or a tool name")
+        self.assertEqual(sorted(set(trace_hits)), [], "executor bodies send an injection-tool tag")
+        self.assertEqual(sorted(set(line_hits)), [], "the scenario id reaches something other than runner-side state")
 
     def test_every_pg_lock_executor_reads_the_pid_from_real_psql_output(self) -> None:
         """pid 추출은 실행기마다 따로 구현돼 있었고, 같은 결함이 네 번 반복됐다.

@@ -48,7 +48,7 @@ CONTRACTS: dict[str, dict[str, Any]] = {
                 "offset_seconds": 0,
                 "namespace": "rca-testbed-commerce",
                 "deployment": "testbed-notification",
-                "annotation_key": "rca.lucida.ai/f08-g-distractor",
+                "annotation_key": "kubectl.kubernetes.io/restartedAt",
             },
             {
                 "name": "banking-oracle-lock",
@@ -233,15 +233,19 @@ pg() {  # $1=verb $2=step_index
 }
 
 # ---- rollout primitive (annotation restart of a topology distractor) ---------
+# The key is kubectl's own restart stamp (kubectl.kubernetes.io/restartedAt) with its RFC 3339 value,
+# so the distractor reads as an operator's `kubectl rollout restart` and names neither the scenario nor
+# the testbed (design principle 8). A jsonpath key with dots would be split into nested fields, so the
+# current value is read from JSON.
 rollout() {  # $1=verb $2=step_index
   local verb="$1" i="$2"
   local ns deploy ann; ns=$(field "$i" namespace); deploy=$(field "$i" deployment); ann=$(field "$i" annotation_key)
   local k=("${kube[@]}" -n "$ns"); local saved="$state_dir/rollout-$i.annotation"
   case "$verb" in
     check)  "${k[@]}" auth can-i patch deployments | grep -qx yes; "${k[@]}" rollout status deploy/"$deploy" --timeout=1s >/dev/null ;;
-    apply)  local cur; cur=$("${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.metadata.annotations['$ann']}")
+    apply)  local cur; cur=$("${k[@]}" get deploy "$deploy" -o json | python3 -c 'import json, sys; print(((json.load(sys.stdin)["spec"]["template"]["metadata"].get("annotations") or {}).get(sys.argv[1], "")))' "$ann")
       [[ -n "$cur" ]] && printf '%s' "$cur" >"$saved" || printf '__ABSENT__' >"$saved"
-      "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$ann\":\"$(date -u +%Y%m%dT%H%M%SZ)\"}}}}}" >/dev/null ;;
+      "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$ann\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}}}}" >/dev/null ;;
     release)  local orig; orig=$(cat "$saved" 2>/dev/null || echo __ABSENT__)
       if [[ "$orig" == __ABSENT__ ]]; then
         "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$ann\":null}}}}}" >/dev/null

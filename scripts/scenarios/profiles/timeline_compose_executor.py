@@ -43,7 +43,10 @@ trap stop_pf EXIT
 start_pf() { "${k[@]}" port-forward "$mock_resource" "$port:1080" >"/tmp/${scenario_id}-timeline-pf.log" 2>&1 & pf_pid=$!; for _ in {1..20}; do curl -fsS --max-time 1 "http://127.0.0.1:$port/liveness/probe" >/dev/null 2>&1 && return; sleep .25; done; return 1; }
 retrieve() { curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/retrieve?type=ACTIVE_EXPECTATIONS" -H 'Content-Type: application/json' -d '{}'; }
 reset_mock() { curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/reset" >/dev/null; }
-annotation_value() { "${k[@]}" get deploy "$deploy" -o "jsonpath={.spec.template.metadata.annotations['$annotation']}"; }
+# The key is kubectl's own restart stamp (kubectl.kubernetes.io/restartedAt): the rollout reads as an
+# operator's `kubectl rollout restart` and names neither the scenario nor the testbed (design
+# principle 8). A jsonpath key with dots would be split into nested fields, so it is read from JSON.
+annotation_value() { "${k[@]}" get deploy "$deploy" -o json | python3 -c 'import json, sys; print(((json.load(sys.stdin)["spec"]["template"]["metadata"].get("annotations") or {}).get(sys.argv[1], "")))' "$annotation"; }
 restore_rollout() {
   original=$(cat "$annotation_state")
   if [[ "$original" == __ABSENT__ ]]; then
@@ -59,9 +62,9 @@ case "$action" in
   run)
     check; mkdir -p "$state_dir"; current=$(annotation_value); [[ -n "$current" ]] && printf '%s' "$current" >"$annotation_state" || printf '__ABSENT__' >"$annotation_state"
     start_pf; retrieve >"$expectations.tmp"; mv -T "$expectations.tmp" "$expectations"; stop_pf; pf_pid=""
-    stamp=$(date -u +%Y%m%dT%H%M%SZ); "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$annotation\":\"$stamp\"}}}}}" >/dev/null
+    stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ); "${k[@]}" patch deploy "$deploy" --type=merge -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"$annotation\":\"$stamp\"}}}}}" >/dev/null
     sleep "$offset"; start_pf; reset_mock
-    curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' -d "{\"id\":\"rca-$scenario_id\",\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$mock_path\"},\"httpResponse\":{\"statusCode\":$mock_status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
+    curl -fsS --max-time 5 -X PUT "http://127.0.0.1:$port/mockserver/expectation" -H 'Content-Type: application/json' -d "{\"priority\":100,\"httpRequest\":{\"method\":\"POST\",\"path\":\"$mock_path\"},\"httpResponse\":{\"statusCode\":$mock_status,\"body\":\"{\\\"status\\\":\\\"RATE_LIMITED\\\"}\"}}" >/dev/null
     ;;
   cleanup)
     [[ -e "$state_dir" ]] || exit 0

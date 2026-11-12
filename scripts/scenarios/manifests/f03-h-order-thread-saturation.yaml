@@ -80,8 +80,8 @@
               "id": "approved-fixed-f03-h",
               "parameters": {
                 "namespace": "rca-testbed-commerce",
-                "job": "scenario-f03-h-order-thread-pool",
-                "configmap": "scenario-f03-h-order-thread-pool",
+                "job": "order-report-export",
+                "configmap": "order-report-export",
                 "node_name": "tb-w1",
                 "image": "grafana/k6:latest",
                 "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",

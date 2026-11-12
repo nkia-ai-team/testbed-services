@@ -13,9 +13,12 @@ CONTRACTS = {
         "namespace": "rca-testbed-commerce",
         "service": "testbed-pricing",
         "baseline_selector": {"app": "testbed-pricing"},
-        "fault_selector": {"app": f"scenario-pricing-fault-{scenario_id.lower()}"},
-        "fault_deployment": f"scenario-pricing-fault-{scenario_id.lower()}",
-        "fault_configmap": f"scenario-pricing-fault-{scenario_id.lower()}",
+        # Recorded as they are (KCM resource specs, events, kubelet syslog), so the names read like an
+        # operator's canary of the same service and carry neither the scenario nor a label of ours
+        # (design principle 8). Cleanup finds them by these contract names and the runner-side state file.
+        "fault_selector": {"app": "testbed-pricing-canary"},
+        "fault_deployment": "testbed-pricing-canary",
+        "fault_configmap": "testbed-pricing-canary",
         "node_name": "tb-w3",
         "image": "nginx:alpine",
         "wrong_unit_price": "1.00",
@@ -78,23 +81,23 @@ data:
         default_type application/json;
         return 200 '{"items":[{"productId":1,"quantity":1,"unitPrice":$wrong_price,"subtotal":$wrong_price}],"subtotal":$wrong_price,"promotionDiscount":0,"couponDiscount":0,"total":$wrong_price,"appliedPromotion":null,"appliedCoupon":null}';
       }
-      location / { default_type application/json; return 503 '{"error":"scenario pricing release only serves quote"}'; }
+      location / { default_type application/json; return 503 '{"error":"service unavailable"}'; }
     }
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: $deployment
-  labels: {app: $fault_app, rca-scenario: $scenario_id}
+  labels: {app: $fault_app}
 spec:
   replicas: 1
   selector: {matchLabels: {app: $fault_app}}
   template:
-    metadata: {labels: {app: $fault_app, rca-scenario: $scenario_id}}
+    metadata: {labels: {app: $fault_app}}
     spec:
       nodeName: $node
       containers:
-      - name: pricing-fault
+      - name: pricing-service
         image: $image
         imagePullPolicy: Never
         ports: [{containerPort: 8087}]

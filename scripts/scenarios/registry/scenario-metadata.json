@@ -432,8 +432,8 @@
       "id": "probe-20rps",
       "parameters": {
        "namespace": "rca-testbed-commerce",
-       "job": "scenario-f07-p-pricing-bulkhead",
-       "configmap": "scenario-f07-p-pricing-bulkhead",
+       "job": "price-cache-warmup",
+       "configmap": "price-cache-warmup",
        "node_name": "tb-w1",
        "image": "grafana/k6:latest",
        "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -447,8 +447,8 @@
       "id": "contention-35rps",
       "parameters": {
        "namespace": "rca-testbed-commerce",
-       "job": "scenario-f07-p-pricing-bulkhead",
-       "configmap": "scenario-f07-p-pricing-bulkhead",
+       "job": "price-cache-warmup",
+       "configmap": "price-cache-warmup",
        "node_name": "tb-w1",
        "image": "grafana/k6:latest",
        "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -462,8 +462,8 @@
       "id": "saturation-50rps",
       "parameters": {
        "namespace": "rca-testbed-commerce",
-       "job": "scenario-f07-p-pricing-bulkhead",
-       "configmap": "scenario-f07-p-pricing-bulkhead",
+       "job": "price-cache-warmup",
+       "configmap": "price-cache-warmup",
        "node_name": "tb-w1",
        "image": "grafana/k6:latest",
        "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -996,7 +996,7 @@
    "title": "External payment gateway 429 starting 15 seconds after an innocent deployment — all checkouts 502",
    "description": "commerce payment is structured so that payment-service synchronously calls POST /v1/payments on the external PG (`testbed-external-pg-mock`). This scenario first triggers a rollout of the testbed-payment Deployment that changes only an annotation (image, env, and config identical), and 15 seconds later makes the external PG return 429 for every payment request. Because the deployment and the failure are adjacent in time, the change looks like the culprit, but the actual cause is an external dependency outside the process. 429 is a 4xx yet reaches users as a 5xx — because PgApiClient catches the exception from the RestClient default error handler and escalates it to a 502 BAD_GATEWAY (payment-service has no resilience4j configuration at all), and the upstream order service counts that 502 as a downstream failure, drives its retries and circuit breaker, and ends the checkout with a 502. In other words, the partial signal of an external 'rate limit' is amplified into a total failure as it passes through the code path.",
    "cause": "External PG returns 429 on POST /v1/payments → retrieve() in PgApiClient.requestPayment throws → catch(RestClientException) → ServiceException(502) → order PaymentClient counts it as 5xx → @Retry(paymentClient) 2 attempts → failure rate above 50% opens @CircuitBreaker(paymentClient) → requestPaymentFallback returns 502 → OrderService.checkout compensates inventory and returns 502 'Payment failed'. The concurrent testbed-payment rollout changed only an annotation and is harmless.",
-   "injection_summary": "The timeline.compose executor composes two stages. t=0: it stamps the `rca.lucida.ai/f08-h-rollout` annotation on the testbed-payment Deployment to trigger a rollout (replicas 1, default strategy, so the new pod comes up first while the old pod keeps serving — no user impact). t=+15s: it overwrites the mockserver expectation to pin POST /v1/payments to 429. Cleanup is in reverse order — the mock expectation snapshot is restored first, the rollout annotation reverted after.",
+   "injection_summary": "The timeline.compose executor composes two stages. t=0: it stamps the `kubectl.kubernetes.io/restartedAt` annotation on the testbed-payment Deployment to trigger a rollout (replicas 1, default strategy, so the new pod comes up first while the old pod keeps serving — no user impact). t=+15s: it overwrites the mockserver expectation to pin POST /v1/payments to 429. Cleanup is in reverse order — the mock expectation snapshot is restored first, the rollout annotation reverted after.",
    "user_impact": "Checkout fails with 502 BAD_GATEWAY. Since the external PG rejects every payment request, the impact is total rather than partial, and pre-payment steps such as cart, price lookup, and product lookup remain healthy, so it looks like 'only the final payment button is broken'. payment-service's processPayment fails inside @Transactional and rolls back, so no payment rows or settlement transfers remain — the point that separates it from F08-P, where money leaves and no order exists.",
    "distinguishing_evidence": "The decisive evidence is that the error originates outside the process. The payment→external PG outbound span ends with 429, and everything inside it (payment DB, commerce PG locks, host resources) is clean. The deployment's innocence is confirmed two ways — (1) the pod template diff is a single annotation, image and env are unchanged, and pod_ready holds; (2) failures start 15 seconds offset from the rollout time and continue after the rollout completes. It splits from F06-R (external hang) by responding immediately rather than with delay — failed payment calls finish in tens of ms instead of sitting at the 10s read-timeout.",
    "domain": "commerce",
@@ -1078,7 +1078,7 @@
       "parameters": {
        "namespace": "rca-testbed-commerce",
        "deployment": "testbed-payment",
-       "annotation_key": "rca.lucida.ai/f08-h-rollout",
+       "annotation_key": "kubectl.kubernetes.io/restartedAt",
        "mock_resource": "deployment/testbed-external-pg-mock",
        "mock_path": "/v1/payments",
        "mock_status": 429,
@@ -1090,7 +1090,7 @@
    "title_ko": "무죄인 배포 직후 15초 뒤 시작된 외부 결제대행사 429 — 체크아웃 전량 502",
    "description_ko": "commerce 결제는 payment-service가 외부 PG(`testbed-external-pg-mock`)에 POST /v1/payments를 동기로 부르는 구조다. 이 시나리오는 먼저 testbed-payment Deployment에 annotation만 바꾸는 롤아웃(이미지·env·설정 동일)을 걸고, 15초 뒤 외부 PG가 모든 결제 요청에 429를 반환하도록 만든다. 배포와 장애가 시간상 붙어 있어 변경이 범인처럼 보이지만 실제 원인은 프로세스 밖 외부 의존이다. 429는 4xx지만 사용자에게는 5xx로 도달한다 — PgApiClient가 RestClient 기본 에러 핸들러의 예외를 잡아 502 BAD_GATEWAY로 승격하기 때문이며(payment-service에는 resilience4j 설정이 아예 없다), 상류 order는 그 502를 하류 장애로 집계해 재시도·서킷브레이커를 태우고 체크아웃을 502로 끝낸다. 즉 외부의 '속도 제한'이라는 부분적 신호가 코드 경로를 지나며 전량 실패로 증폭된다.",
    "cause_ko": "외부 PG가 POST /v1/payments에 429 반환 → PgApiClient.requestPayment의 retrieve()가 예외 → catch(RestClientException) → ServiceException(502) → order PaymentClient가 5xx로 집계 → @Retry(paymentClient) 2회 → 실패율 50%↑에 @CircuitBreaker(paymentClient) open → requestPaymentFallback이 502 → OrderService.checkout이 재고 보상 후 502 'Payment failed' 반환. 동시에 진행된 testbed-payment 롤아웃은 annotation 변경뿐이라 무해하다.",
-   "injection_summary_ko": "timeline.compose executor가 두 단계를 합성한다. t=0: testbed-payment Deployment에 `rca.lucida.ai/f08-h-rollout` annotation을 찍어 롤아웃을 유발한다(replicas 1, 기본 전략이라 새 파드가 먼저 뜨고 헌 파드가 서비스를 유지하므로 사용자 영향 없음). t=+15s: mockserver expectation을 덮어써 POST /v1/payments를 429로 고정한다. cleanup은 역순 — mock expectation 스냅샷 복원이 먼저, 롤아웃 annotation 원복이 나중이다.",
+   "injection_summary_ko": "timeline.compose executor가 두 단계를 합성한다. t=0: testbed-payment Deployment에 `kubectl.kubernetes.io/restartedAt` annotation을 찍어 롤아웃을 유발한다(replicas 1, 기본 전략이라 새 파드가 먼저 뜨고 헌 파드가 서비스를 유지하므로 사용자 영향 없음). t=+15s: mockserver expectation을 덮어써 POST /v1/payments를 429로 고정한다. cleanup은 역순 — mock expectation 스냅샷 복원이 먼저, 롤아웃 annotation 원복이 나중이다.",
    "user_impact_ko": "체크아웃이 502 BAD_GATEWAY로 실패한다. 외부 PG가 모든 결제 요청을 거절하므로 피해는 부분이 아니라 전량이고, 장바구니·가격조회·상품조회 등 결제 이전 단계는 정상이라 '마지막 결제 버튼만 안 되는' 형태로 보인다. payment-service의 processPayment는 @Transactional 안에서 실패해 롤백되므로 결제 행·정산 이체는 남지 않는다 — 돈이 나가고 주문이 없는 F08-P와 갈리는 지점이다.",
    "distinguishing_evidence_ko": "결정 증거는 오류의 시작점이 프로세스 밖이라는 것이다. payment→외부 PG 아웃바운드 span이 429로 끝나고, 그 안쪽(payment DB·commerce PG 잠금·호스트 자원)은 전부 깨끗하다. 배포 무죄는 두 가지로 확정된다 — (1) 파드 템플릿 변경분이 annotation 하나뿐이고 이미지·env가 그대로이며 pod_ready가 유지된다, (2) 실패 시작이 롤아웃 시각과 15초 어긋나고 롤아웃 완료 후에도 계속된다. F06-R(외부 hang)과는 지연이 아니라 즉시 응답이라는 점에서 갈린다 — 실패한 결제 호출의 소요시간이 read-timeout 10s에 붙지 않고 수십 ms에 끝난다.",
    "story_ko": {
@@ -1112,7 +1112,7 @@
     ],
     "root_cause": "근본 원인은 외부 결제대행사의 429 거절이다. 직전의 결제 서비스 재배포는 시간만 겹친 무해한 변경이고, 주문과 결제 서비스의 오류는 외부 거절을 받은 피해자의 것이다.",
     "design_notes": [
-     "주입: timeline.compose 가 t=0 에 testbed-payment pod template 에 annotation rca.lucida.ai/f08-h-rollout 을 찍어 롤아웃을 일으키고(이미지, env, 리소스 동일), t=+15s 에 mock expectation 으로 POST /v1/payments 를 429 로 고정한다. cleanup 은 mock 복원이 먼저, annotation 원복이 나중",
+     "주입: timeline.compose 가 t=0 에 testbed-payment pod template 에 annotation kubectl.kubernetes.io/restartedAt 을 찍어 롤아웃을 일으키고(이미지, env, 리소스 동일), t=+15s 에 mock expectation 으로 POST /v1/payments 를 429 로 고정한다. cleanup 은 mock 복원이 먼저, annotation 원복이 나중",
      "부하: load.north_south surge.js 35rps, 램프업 2분",
      "무해한 롤아웃: replicas 1, 기본 전략이라 새 파드가 먼저 뜬다. maxSurge 0 을 쓰면 롤아웃이 진짜 순단을 만들어 두 번째 원인이 된다",
      "증폭 경로: PgApiClient 가 429 를 ServiceException(502)로 승격 → order @Retry(paymentClient) 2회 → @CircuitBreaker(paymentClient) open → 502. payment 에는 resilience4j 설정이 없다",
@@ -2235,7 +2235,7 @@
          "offset_seconds": 0,
          "namespace": "rca-testbed-commerce",
          "deployment": "testbed-notification",
-         "annotation_key": "rca.lucida.ai/f08-g-distractor"
+         "annotation_key": "kubectl.kubernetes.io/restartedAt"
         },
         {
          "name": "banking-oracle-lock",
@@ -3675,8 +3675,8 @@
       "id": "approved-fixed-f03-h",
       "parameters": {
        "namespace": "rca-testbed-commerce",
-       "job": "scenario-f03-h-order-thread-pool",
-       "configmap": "scenario-f03-h-order-thread-pool",
+       "job": "order-report-export",
+       "configmap": "order-report-export",
        "node_name": "tb-w1",
        "image": "grafana/k6:latest",
        "target_url": "http://testbed-order:8080/api/orders/reports/render?days=240",
@@ -5650,13 +5650,13 @@
    "cause": "No incident; failed image rollout contained by existing replicas",
    "injection_summary": "Apply a verified invalid image to the payment deployment, then restore the original image exactly.",
    "user_impact": "User request success rate and latency should remain normal.",
-   "distinguishing_evidence": "The new payment pod cannot start and KCM records ErrImageNeverPull events ('Container image \"commerce-payment:scenario-invalid-f05-g\" is not present with pull policy of Never'; the app images use imagePullPolicy Never, so there is no ImagePullBackOff), but the existing ready replica count and the user path are preserved.",
+   "distinguishing_evidence": "The new payment pod cannot start and KCM records ErrImageNeverPull events ('Container image \"commerce-payment:1.4.2\" is not present with pull policy of Never'; the app images use imagePullPolicy Never, so there is no ImagePullBackOff), but the existing ready replica count and the user path are preserved.",
    "title_ko": "기존 replica가 서비스를 유지하는 잘못된 이미지 rollout",
    "description_ko": "존재하지 않는 이미지로 rollout을 시도하지만 기존 ready replica가 계속 서비스를 제공하는 음성 시나리오다.",
    "cause_ko": "No incident; failed image rollout contained by existing replicas",
    "injection_summary_ko": "payment deployment에 검증된 invalid image를 적용하고 원본 image를 정확히 복구한다.",
    "user_impact_ko": "사용자 요청 성공률과 지연은 정상이어야 한다.",
-   "distinguishing_evidence_ko": "새 결제 파드가 시작하지 못해 KCM 에 ErrImageNeverPull 이벤트('Container image \"commerce-payment:scenario-invalid-f05-g\" is not present with pull policy of Never')가 남지만 기존 ready replica 수와 사용자 경로는 유지된다. 앱 이미지의 받기 정책이 Never 라 ImagePullBackOff 는 나지 않는다.",
+   "distinguishing_evidence_ko": "새 결제 파드가 시작하지 못해 KCM 에 ErrImageNeverPull 이벤트('Container image \"commerce-payment:1.4.2\" is not present with pull policy of Never')가 남지만 기존 ready replica 수와 사용자 경로는 유지된다. 앱 이미지의 받기 정책이 Never 라 ImagePullBackOff 는 나지 않는다.",
    "story_ko": {
     "overview": "결제 서비스를 존재하지 않는 이미지로 배포하려다 새 파드가 뜨지 못해도, 기존 파드가 계속 일해 손님은 아무것도 느끼지 못한다.",
     "injected_fault": "커머스 결제 서비스 배포의 이미지를 없는 이미지 태그로 바꿨다가 약 2분 뒤 원래 이미지로 되돌린다.",
@@ -5672,7 +5672,7 @@
     ],
     "root_cause": "근본 원인은 잘못된 이미지 태그로 시도한 결제 서비스 배포다. 기존 파드가 서비스를 지켜 사용자 피해가 없는 음성 사례다.",
     "design_notes": [
-     "주입: k8s.lifecycle 이 rca-testbed-commerce 의 testbed-payment(payment-service) 이미지를 commerce-payment:latest 에서 commerce-payment:scenario-invalid-f05-g 로 바꾸고 원본으로 정확히 되돌린다",
+     "주입: k8s.lifecycle 이 rca-testbed-commerce 의 testbed-payment(payment-service) 이미지를 commerce-payment:latest 에서 commerce-payment:1.4.2 로 바꾸고 원본으로 정확히 되돌린다",
      "부하: load.north_south commerce surge.js 20rps, 램프업 2분, 유지 8분",
      "흡수 이유: 기본 롤링 전략은 새 파드가 준비될 때까지 옛 파드를 내리지 않는다",
      "녹화: 보관본 _archive-pre-campaign-0820/case-f05-g-v3-e777d4f7. 결제 서버 스팬 p95 53ms → 38ms, 커머스 서버 스팬 오류 0%. 이 덤프의 kcm_events_local 은 0행이다. 같은 시나리오의 앞선 보관본 case-f05-g-81eacae6 에는 이벤트가 있고, 이미지 받기 정책이 Never 라 ImagePullBackOff 가 아니라 ErrImageNeverPull(12회, 'not present with pull policy of Never')로 나온다",

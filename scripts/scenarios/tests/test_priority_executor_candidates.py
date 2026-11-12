@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import os
+import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -101,6 +105,69 @@ class PriorityExecutorCandidateTests(unittest.TestCase):
             east_west.validate("F14-H", {}, {})
         with self.assertRaisesRegex(east_west.ExecutorError, "exactly match"):
             east_west.validate("F03-H", east_west.F07P_LEVELS[20], {})
+
+    def test_east_west_job_names_nothing_and_a_restarted_runner_still_cleans_it(self) -> None:
+        """The Job and ConfigMap are recorded as applied (KCM specs and events, kubelet syslog, pod logs),
+        so they carry no scenario id and no label of ours (design principle 8). Until 2026-11-12 they were
+        named `scenario-f03-h-order-thread-pool` and labelled `rca-scenario: F03-H`. Cleanup and recovery
+        find them by the contract names and the runner-side state file, never by a label: a cleanup run
+        by a fresh process (the runner restarted mid-run) removes what an earlier process applied."""
+        id_form = re.compile(r"(?i)(?<![a-z0-9])f\d{2}-[a-z]\d?(?![a-z0-9])|rca-scenario|scenario-|rca\.lucida")
+        fake_kubectl = r'''#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_K8S/calls"
+args=("$@"); rest=()
+for a in "${args[@]}"; do case "$a" in --kubeconfig=*|-n) ;; *) rest+=("$a") ;; esac; done
+set -- "${rest[@]}"; [[ "$1" == rca-testbed-commerce ]] && shift
+case "$1 $2" in
+  "auth can-i") echo yes ;;
+  "rollout status") : ;;
+  "get endpoints") echo 10.42.0.9 ;;
+  "get node") echo True ;;
+  "get job"|"get configmap") [[ -e "$FAKE_K8S/$2-$3" ]] ;;
+  "delete job"|"delete configmap") rm -f "$FAKE_K8S/$2-$3" ;;
+  "apply -f")
+    doc=$(cat); printf '%s\n' "$doc" >>"$FAKE_K8S/applied"
+    printf '%s\n' "$doc" | awk '/^kind:/{k=tolower($2)} /^metadata: \{name: /{n=$3; sub(/[},].*/,"",n); print k"-"n}' \
+      | while read -r obj; do : >"$FAKE_K8S/$obj"; done ;;
+  *) echo "unexpected kubectl $*" >&2; exit 9 ;;
+esac
+'''
+        for scenario_id, levels in (("F03-H", east_west.F03H_LEVELS), ("F07-P", east_west.F07P_LEVELS)):
+            params = max(levels.values(), key=lambda p: p["target_rps"])
+            with self.subTest(scenario=scenario_id), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                (root / "bin").mkdir(); (root / "k8s").mkdir(); (root / "state").mkdir()
+                kubectl = root / "bin" / "kubectl"
+                kubectl.write_text(fake_kubectl); kubectl.chmod(0o755)
+                env = {**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                       "FAKE_K8S": str(root / "k8s"), "SCENARIO_PROFILE_STATE_ROOT": str(root / "state")}
+
+                def call(action: str) -> subprocess.CompletedProcess:
+                    argv, stdin = east_west.build_invocation(plan(
+                        "load.east_west", scenario_id, params,
+                        {"transport": "kubectl", "namespace": "rca-testbed-commerce"},
+                    ), action)
+                    return subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=60)
+
+                for action in ("preflight", "run"):
+                    done = call(action)
+                    self.assertEqual(done.returncode, 0, (action, done.stderr.decode()))
+                applied = (root / "k8s" / "applied").read_text()
+                self.assertEqual(sorted(p.name for p in (root / "k8s").iterdir() if p.name not in {"calls", "applied"}),
+                                 sorted([f"job-{params['job']}", f"configmap-{params['configmap']}"]))
+                self.assertIsNone(id_form.search(applied), applied)
+                self.assertNotIn("labels:", applied)
+                self.assertIsNone(id_form.search(params["job"] + params["configmap"]))
+                # A fresh process, as after a runner restart: only the state file and the contract are known.
+                done = call("cleanup")
+                self.assertEqual(done.returncode, 0, done.stderr.decode())
+                self.assertEqual(sorted(p.name for p in (root / "k8s").iterdir()), ["applied", "calls"])
+                self.assertEqual(list((root / "state").iterdir()), [])
+                self.assertEqual(call("recovery").returncode, 0)
+                calls = (root / "k8s" / "calls").read_text()
+                self.assertNotRegex(calls, r"(^|\s)(-l|--selector)(\s|=)")
+                self.assertIsNone(id_form.search(calls.replace(scenario_id, "")), calls)
 
     def test_external_f12g_flow_is_bounded_and_password_is_not_embedded(self) -> None:
         external.validate("F12-G", external.CONTRACT, {})

@@ -45,8 +45,13 @@ set -euo pipefail
 action="$1"; scenario_id="$2"; host="$3"; interface="$4"; target="$5"; port="$6"; rate="$7"; duration="$8"
 gateway="$9"; forward_host="${10}"; forward_key="${11}"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
-state="$state_root/${scenario_id}-external-flow"; tag="rca-${scenario_id}-external-nping"
-route_prefix="192.168.122.0/24"; rule_tag="rca-${scenario_id}-external-flow"
+state="$state_root/${scenario_id}-external-flow"
+# The origin host is monitored (process names and command lines go to 119) and the forward host logs
+# its own commands, so nothing sent there names the scenario or the testbed (design principle 8). The
+# flow is found by its own nping command line, which only this executor runs, and the rule by its
+# exact match; the pid lives in the runner-side state file.
+route_prefix="192.168.122.0/24"; rule_tag="ext-route-allow"
+flow="nping --tcp -p $port --rate $rate --interface $interface $target"
 ssh_cmd=(sshpass -e ssh -o BatchMode=no -o StrictHostKeyChecking=yes -o ConnectTimeout=8 "root@$host")
 forward_ssh=(ssh -i "$forward_key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=8 "root@$forward_host")
 remote_check="test \"\$(hostname)\" = dev-svr-200-57 && test \"\$(cat /sys/class/net/$interface/operstate)\" = up && command -v nping >/dev/null && command -v timeout >/dev/null"
@@ -65,7 +70,7 @@ rollback_partial() {
   [[ -d "$state" ]] || return 0
   if [[ -e "$state/pid" ]]; then
     pid="$(cat "$state/pid")"
-    "${ssh_cmd[@]}" "if test -r /proc/$pid/cmdline && tr '\\0' ' ' </proc/$pid/cmdline | grep -Fq '$tag'; then kill -TERM $pid; fi" || true
+    "${ssh_cmd[@]}" "if test -r /proc/$pid/cmdline && tr '\\0' ' ' </proc/$pid/cmdline | grep -Fq '$flow'; then kill -TERM $pid; fi" || true
   fi
   if [[ -e "$state/rule-added" ]]; then remove_rule; fi
   if [[ -e "$state/route-added" ]]; then remove_route; fi
@@ -87,7 +92,7 @@ case "$action" in
     "${ssh_cmd[@]}" "$remote_check"; route_absent; rule_absent
     "${ssh_cmd[@]}" "ip route add '$route_prefix' via '$gateway' dev '$interface' proto static"; : >"$state/route-added"
     insert=("${rule[@]}"); insert[0]="iptables -I FORWARD 1"; "${forward_ssh[@]}" "${insert[@]}"; : >"$state/rule-added"
-    pid="$("${ssh_cmd[@]}" "nohup bash -c 'exec -a $tag timeout ${duration}s nping --tcp -p $port --rate $rate --interface $interface $target' >/tmp/$tag.log 2>&1 & echo \$!")"
+    pid="$("${ssh_cmd[@]}" "nohup timeout ${duration}s nping --tcp -p $port --rate $rate --interface $interface $target >/dev/null 2>&1 & echo \$!")"
     [[ "$pid" =~ ^[0-9]+$ ]]; printf '%s\n' "$pid" >"$state/pid"; trap - ERR
     ;;
   cleanup)
@@ -97,7 +102,7 @@ case "$action" in
   recovery)
     [[ ! -e "$state" && -n "${SSHPASS:-}" && -r "$forward_key" ]]; "${ssh_cmd[@]}" "$remote_check"
     route_absent; rule_absent
-    ! "${ssh_cmd[@]}" "pgrep -f '^$tag '" >/dev/null 2>&1
+    ! "${ssh_cmd[@]}" "pgrep -f '^(timeout [0-9]+s )?$flow'" >/dev/null 2>&1
     ;;
   *) exit 2 ;;
 esac

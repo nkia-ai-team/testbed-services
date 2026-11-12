@@ -15,8 +15,8 @@ PROFILE_ID = "load.east_west"
 F07P_LEVELS = {
     rps: {
         "namespace": "rca-testbed-commerce",
-        "job": "scenario-f07-p-pricing-bulkhead",
-        "configmap": "scenario-f07-p-pricing-bulkhead",
+        "job": "price-cache-warmup",
+        "configmap": "price-cache-warmup",
         "node_name": "tb-w1",
         "image": "grafana/k6:latest",
         "target_url": "http://testbed-pricing:8087/api/pricing/quote",
@@ -47,8 +47,8 @@ F07P_LEVELS = {
 F03H_LEVELS = {
     rps: {
         "namespace": "rca-testbed-commerce",
-        "job": "scenario-f03-h-order-thread-pool",
-        "configmap": "scenario-f03-h-order-thread-pool",
+        "job": "order-report-export",
+        "configmap": "order-report-export",
         "node_name": "tb-w1",
         "image": "grafana/k6:latest",
         "target_url": f"http://testbed-order:8080/api/orders/reports/render?days={days}",
@@ -97,6 +97,10 @@ set -euo pipefail
 action="$1"; scenario_id="$2"; ns="$3"; job="$4"; configmap="$5"; node="$6"; image="$7"; target="$8"; rps="$9"; duration="${10}"; pre_vus="${11}"; max_vus="${12}"; target_deploy="${13}"; method="${14}"
 state_root="${SCENARIO_PROFILE_STATE_ROOT:-/var/lib/lucida/scenario-profile-state}"
 state="$state_root/${scenario_id}-east-west-job"
+# Everything applied below is recorded (KCM resource specs and events, kubelet syslog, pod logs), so
+# nothing there names the scenario or the testbed (design principle 8): the Job and ConfigMap names are
+# plain contract values and carry no label of ours. Cleanup finds them by those names and by the
+# state file above, which lives on the runner host only, so a restarted runner finds them the same way.
 k=(kubectl --kubeconfig=/root/tb-kubeconfig -n "$ns")
 absent() { ! "${k[@]}" get job "$job" >/dev/null 2>&1 && ! "${k[@]}" get configmap "$configmap" >/dev/null 2>&1; }
 pricing_ready() { "${k[@]}" rollout status deploy/"$target_deploy" --timeout=180s >/dev/null; "${k[@]}" get endpoints "$target_deploy" -o jsonpath='{.subsets[0].addresses[0].ip}' | grep -q .; }
@@ -115,22 +119,21 @@ apiVersion: v1
 kind: ConfigMap
 metadata: {name: $configmap}
 data:
-  scenario.js: |
+  load.js: |
     import http from 'k6/http';
     import { Counter } from 'k6/metrics';
-    const rejected = new Counter('pricing_bulkhead_rejected');
+    const rejected = new Counter('rejected_responses');
     export const options = { scenarios: { quote: { executor: 'constant-arrival-rate', rate: $rps, timeUnit: '1s', duration: '${duration}s', preAllocatedVUs: $pre_vus, maxVUs: $max_vus } }, thresholds: {} };
     const body = JSON.stringify({items: Array.from({length:16}, (_, i) => ({productId:i+1, quantity:1})), couponCode:null});
-    export default function () { const params = {headers:{'Content-Type':'application/json'}, tags:{scenario_id:'$scenario_id', step:'east-west'}}; const response = '$method' === 'GET' ? http.get('$target', params) : http.post('$target', body, params); if (response.status >= 429) rejected.add(1); }
+    export default function () { const params = {headers:{'Content-Type':'application/json'}}; const response = '$method' === 'GET' ? http.get('$target', params) : http.post('$target', body, params); if (response.status >= 429) rejected.add(1); }
 ---
 apiVersion: batch/v1
 kind: Job
-metadata: {name: $job, labels: {rca-scenario: $scenario_id}}
+metadata: {name: $job}
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600
   template:
-    metadata: {labels: {rca-scenario: $scenario_id}}
     spec:
       restartPolicy: Never
       nodeName: $node
@@ -138,7 +141,7 @@ spec:
       - name: k6
         image: $image
         imagePullPolicy: Never
-        args: ['run', '--out', 'json=/tmp/east-west.json', '/scripts/scenario.js']
+        args: ['run', '--out', 'json=/tmp/results.json', '/scripts/load.js']
         resources:
           requests: {cpu: 100m, memory: 64Mi}
           limits: {cpu: '1', memory: 256Mi}

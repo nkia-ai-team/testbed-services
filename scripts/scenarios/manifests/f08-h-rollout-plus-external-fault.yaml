@@ -81,7 +81,7 @@
               "parameters": {
                 "namespace": "rca-testbed-commerce",
                 "deployment": "testbed-payment",
-                "annotation_key": "rca.lucida.ai/f08-h-rollout",
+                "annotation_key": "kubectl.kubernetes.io/restartedAt",
                 "mock_resource": "deployment/testbed-external-pg-mock",
                 "mock_path": "/v1/payments",
                 "mock_status": 429,
