@@ -267,8 +267,10 @@ def injection_targets(scenario_id: str, metadata: dict[str, Any],
                       known: set[str], entry_service: str | None) -> tuple[set[str], str | None]:
     """정답지에서 주입 대상 서비스 집합과 도메인을 얻는다.
 
-    `root_cause.target_id`가 결함의 위치, `trigger_target_id`가 피해가 드러나는 곳,
-    `scoring.accept/partial`이 채점상 정답으로 인정되는 자원이다. 셋을 합치면
+    `root_cause.target_id`가 결함의 위치, `trigger_target_id`가 결함을 드러나게 한
+    사건이 난 곳(근본과 같으면 비운다, 설계 원칙 6. 피해가 드러나는 증상 서비스는
+    이 칸이 아니라 partial 에 둔다), `scoring.accept/partial`이 채점상 정답과 부분
+    점수로 인정되는 자원이다. 셋을 합치면
     "이 시나리오가 건드린다고 주장하는 것"이 된다 — 그 스팬이 실패 트레이스에
     하나도 없으면 주장과 실측이 어긋난 것이다.
 

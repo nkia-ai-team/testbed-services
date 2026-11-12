@@ -546,6 +546,122 @@ class AnswerKeyContractTests(unittest.TestCase):
                         problems.append(f"{scenario_id}.{path}: {sentence[:120]}")
         self.assertEqual(problems, [], "answer key claims a 401 the self-invoked token check never returns")
 
+    # ------------------------------------------------------------------ 계기 칸(원칙 6)
+    # 설계 원칙 6: root_cause.trigger_target_id 는 결함을 드러나게 한 사건이 난 곳이고 근본과 같으면
+    # 비운다. 피해가 드러나는 증상 서비스는 이 칸이 아니라 scoring.partial 에 둔다. 2026-11-12 까지
+    # 34건 중 31건이 증상 서비스나 두 번째 근본을 이 칸에 적고 있었다(v4 TRIG). 아래 셋은 기계로
+    # 가를 수 있는 몫만 본다. 사건이 정말 계기인지(정당한 작업이 숨은 결함을 드러냈는지)는 사람이 본다.
+
+    def _place_names(self, name: str, namespaces: set[str]) -> set[tuple[str, str]]:
+        """한 이름이 가리키는 곳들. 앱은 미끼 정책 targets 의 네임스페이스/Deployment 로 모은다.
+        Deployment, 컨테이너 이름은 두 도메인이 함께 쓰므로 주어진 네임스페이스 안에서만 앱으로 읽는다."""
+        policy = _load("registry/decoy-deployments.json")
+        places: set[tuple[str, str]] = {("name", name.lower())}
+        base, _, rest = name.partition(":")
+        for target in policy["targets"]:
+            key = f"{target['namespace']}/{target['deployment']}"
+            if name in {target["service_name"], target["target_id"], *target["aliases"]}:
+                places.add(("app", key))
+            local = {
+                target["deployment"],
+                target["container"],
+                f"{target['deployment']}:{target['container']}",
+                f"deployment/{target['deployment']}",
+            }
+            if target["namespace"] in namespaces and (name in local or base in local):
+                places.add(("app", key))
+        if rest and "." in rest:
+            places.add(("table", rest.rsplit(".", 1)[1].lower()))
+        if "/job/" in name:
+            places.add(("job", name.rsplit("/", 1)[1]))
+        return places
+
+    def _injection_places(self, scenario_id: str, entry: dict) -> set[tuple[str, str]]:
+        """injected_fault 매개변수가 손댄 곳들(Deployment, 노드, 표, Job)."""
+        locations = _load("registry/locations.json")["locations"]
+        host_node = {row["host"]: row["node"] for row in locations.values() if row.get("node") and row.get("host")}
+        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
+        values: list[tuple[str, str]] = []
+
+        def walk(key: str, node) -> None:
+            if isinstance(node, dict):
+                for child_key, child in node.items():
+                    walk(child_key, child)
+            elif isinstance(node, list):
+                for child in node:
+                    walk(key, child)
+            elif isinstance(node, str):
+                values.append((key, node))
+
+        for level in (entry.get("injected_fault") or {}).get("levels") or []:
+            walk("", level.get("parameters"))
+        namespaces = {value for key, value in values if key.endswith("namespace")}
+        namespaces.add(domain_namespaces.get(entry.get("domain"), ""))
+        places: set[tuple[str, str]] = set()
+        for key, value in values:
+            if value in host_node:
+                places.add(("name", host_node[value].lower()))
+            if key.endswith("table"):
+                places.add(("table", value.lower()))
+            if key.endswith("job"):
+                places.add(("job", value))
+            if key.endswith(("deployment", "container", "resource", "node", "host")):
+                places |= self._place_names(value, namespaces)
+        return places
+
+    def _triggers(self):
+        for scenario_id, entry in sorted(self.metadata.items()):
+            root_cause = entry.get("root_cause")
+            if isinstance(root_cause, dict) and "trigger_target_id" in root_cause:
+                yield scenario_id, entry, root_cause["trigger_target_id"]
+
+    def test_trigger_is_empty_or_a_place_other_than_the_root(self) -> None:
+        # 근본과 같은 곳을 계기에 적지 않고 비운다. 빈 문자열은 null 과 같은 뜻을 두 꼴로 적는 것이라
+        # 받지 않는다. parked, draft 도 되살릴 수 있어 함께 본다.
+        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
+        problems = []
+        for scenario_id, entry, trigger in self._triggers():
+            if trigger is None:
+                continue
+            if not isinstance(trigger, str) or not trigger.strip() or " " in trigger:
+                problems.append(f"{scenario_id}: trigger must be null or one identifier, got {trigger!r}")
+                continue
+            target = entry["root_cause"]["target_id"]
+            namespaces = {domain_namespaces.get(entry.get("domain"), "")}
+            same = self._place_names(trigger, namespaces) & self._place_names(target, namespaces)
+            if same:
+                problems.append(f"{scenario_id}: trigger {trigger} is the root {target} ({sorted(same)})")
+        self.assertEqual(problems, [], "trigger_target_id names the root cause; leave it null")
+
+    def test_trigger_is_where_the_injection_acted(self) -> None:
+        # 계기는 주입이 실제로 손댄 곳(Deployment, 노드, 표, Job) 가운데 하나여야 한다. 증상 서비스는
+        # 주입이 손대지 않은 곳이라 여기서 걸린다(2026-11-12 까지의 commerce-order, commerce-payment 꼴).
+        # 정답지에 주입이 없으면 계기를 확인할 수 없어 비워 둔다.
+        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
+        problems = []
+        for scenario_id, entry, trigger in self._triggers():
+            if trigger is None:
+                continue
+            injected = self._injection_places(scenario_id, entry)
+            names = self._place_names(trigger, {domain_namespaces.get(entry.get("domain"), "")})
+            if not (names & injected):
+                problems.append(f"{scenario_id}: trigger {trigger} is not a place the injection acted on")
+        self.assertEqual(problems, [], "trigger_target_id must name where the injection acted")
+
+    def test_a_trigger_only_answer_earns_partial_not_full_credit(self) -> None:
+        # 원칙 6 의 partial 정의(증상 서비스, 계기만 본 답). 계기를 accept 에 두면 그것은 계기가 아니라
+        # 또 하나의 근본이다(두 장애를 겹친 시나리오의 두 번째 근본은 accept 에 두고 계기는 비운다).
+        problems = []
+        for scenario_id, entry, trigger in self._triggers():
+            if trigger is None:
+                continue
+            scoring = entry.get("scoring") or {}
+            if trigger not in (scoring.get("partial") or []):
+                problems.append(f"{scenario_id}: trigger {trigger} missing from partial")
+            if trigger in (scoring.get("accept") or []):
+                problems.append(f"{scenario_id}: trigger {trigger} is accepted as a root")
+        self.assertEqual(problems, [], "a trigger-only answer is partial credit")
+
 
 if __name__ == "__main__":
     unittest.main()
