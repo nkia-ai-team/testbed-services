@@ -74,6 +74,7 @@ printf 'kubectl %s\n' "$*" >>"$FAKE_LOG"
 case "$*" in
   version*) exit 0 ;;
   *'get deployment/ai-trainer'*) exit 0 ;;
+  *"get svc ${FAKE_EMPTY_SVC:-none} "*) exit 0 ;;   # 서비스는 있는데 ClusterIP 가 비어 옴
   *'get svc victoriametrics '*) printf '10.43.0.1' ;;
   *'get svc clickhouse '*) printf '10.43.0.2' ;;
   *'get svc ai-observer '*) printf '10.43.0.3' ;;
@@ -174,14 +175,34 @@ done
 ! jq -e '.pg_ai_state.tables | index("trainer_trace_window_threshold") != null' "$meta" >/dev/null ||
   fail 'trainer_trace_window_threshold must stay out of the golden'
 
-# 8. k8s 에서도 준 값은 그대로 쓴다(주소, PG 자격). 그때 PG 시크릿은 읽지 않는다.
-: >"$FAKE_LOG"
-FAKE_K8S=1 VM_URL=http://vm.explicit:1 PG_HOST=pg.explicit PG_PORT=6543 PG_USER=given PG_PASSWORD=given-pw \
-  PG_DUMP_IMAGE=fake-pg17 "$GOLDEN" --skip-freshness --output-root "$TMP_ROOT/g8" >/dev/null 2>"$TMP_ROOT/err" ||
+# 8. k8s 에서도 준 값은 그대로 쓴다(주소 넷, PG 자격, CH 비밀번호). freshness gate 도 켠 채로 본다.
+#    준 값이 있으면 그 시크릿은 읽지 않는다.
+: >"$FAKE_LOG"; : >"$FAKE_LOG.config"
+FAKE_K8S=1 VM_URL=http://vm.explicit:1 CH_URL=http://ch.explicit:2 OBSERVER_HEALTH_URL=http://ob.explicit:3/health \
+  CH_PASSWORD=given-ch PG_HOST=pg.explicit PG_PORT=6543 PG_USER=given PG_PASSWORD=given-pw \
+  PG_DUMP_IMAGE=fake-pg17 "$GOLDEN" --output-root "$TMP_ROOT/g8" >/dev/null 2>"$TMP_ROOT/err" ||
   fail "k8s capture with explicit values failed: $(cat "$TMP_ROOT/err")"
+grep -q 'curl .*http://vm.explicit:1/api/v1/query' "$FAKE_LOG" || fail 'explicit VM_URL was overridden in the freshness gate'
 grep -q 'curl .*http://vm.explicit:1/api/v1/export' "$FAKE_LOG" || fail 'explicit VM_URL was overridden'
+grep -q 'curl .*http://ch.explicit:2/' "$FAKE_LOG" || fail 'explicit CH_URL was overridden'
+grep -q 'curl .*http://ob.explicit:3/health' "$FAKE_LOG" || fail 'explicit OBSERVER_HEALTH_URL was overridden'
+! grep -q 'curl .*http://10\.43\.' "$FAKE_LOG" || fail 'a ClusterIP was used although every address was given'
+grep -q 'user = "lucida:given-ch"' "$FAKE_LOG.config" || fail 'explicit CH_PASSWORD was overridden'
+! grep -q 'lucida:fake-ch-secret' "$FAKE_LOG.config" || fail 'the CH secret was used although CH_PASSWORD was given'
 grep -q 'pg_dump -Fc --host pg.explicit --port 6543 --username given' "$FAKE_LOG" || fail 'explicit PG settings were overridden'
 ! grep -q 'get secret pg-superuser' "$FAKE_LOG" || fail 'the PG secret was read although PG_PASSWORD was given'
+! grep -q 'get secret polestar-secret' "$FAKE_LOG" || fail 'the CH secret was read although CH_PASSWORD was given'
+! grep -q 'get svc' "$FAKE_LOG" || fail 'a service was resolved although every address was given'
+
+# 8b. 서비스 ClusterIP 를 못 읽으면(빈 값) 내보내기와 덤프 전에 죽는다(http://:8428 로 가지 않는다).
+: >"$FAKE_LOG"
+if FAKE_K8S=1 FAKE_EMPTY_SVC=victoriametrics PG_DUMP_IMAGE=fake-pg17 "$GOLDEN" --skip-freshness \
+     --output-root "$TMP_ROOT/g8b" >/dev/null 2>"$TMP_ROOT/err"; then
+  fail 'k8s capture went on with an empty ClusterIP'
+fi
+grep -q 'cannot resolve service ClusterIP: polestar/victoriametrics' "$TMP_ROOT/err" || fail "unexpected failure: $(cat "$TMP_ROOT/err")"
+! grep -q -e 'api/v1/export' -e 'pg_dump -Fc' "$FAKE_LOG" || fail 'export or pg_dump ran with an empty ClusterIP'
+[[ -z "$(find "$TMP_ROOT/g8b" -mindepth 1 -maxdepth 1 ! -name '.*' 2>/dev/null)" ]] || fail 'a golden was published with an empty ClusterIP'
 
 # 9. RUNTIME=k8s 인데 kubectl 이 안 되면 아무것도 만들지 않고 죽는다(호스트 포트로 조용히 떨어지지 않는다).
 : >"$FAKE_LOG"
@@ -206,4 +227,4 @@ fi
 grep -q 'k8s secret polestar/pg-superuser is not readable' "$TMP_ROOT/err" || fail "unexpected failure: $(cat "$TMP_ROOT/err")"
 ! grep -q 'pg_dump -Fc' "$FAKE_LOG" || fail 'pg_dump ran without PG credentials'
 
-printf '[PASS] capture-golden-state.sh PG tool major and runtime tests\n\'
+printf '[PASS] capture-golden-state.sh PG tool major and runtime tests\n'
