@@ -244,9 +244,11 @@ def apm_services() -> set[str]:
 # 정답지는 짧은 이름(`food-order`)을 쓰고 APM은 긴 이름(`food-delivery-order`)을 쓴다.
 # 둘을 잇되, 최종 판단은 반드시 실제 APM 집합 안에 있는지로 한다.
 # 접두는 그 이름이 속한 도메인을 말한다. 시나리오 도메인 접두로 바꾸면 도메인을 넘는
-# 이름이 엉뚱한 서비스가 된다(2026-11-12 v4 TRIG: commerce 시나리오 F15-H 의 `food-payment`
-# 가 `commerce-payment` 로, core-banking 시나리오 F01-P 의 `commerce-payment` 가 버려짐).
-# 그래서 긴 접두를 먼저 보고, 각 접두는 자기 도메인의 APM 접두로만 바꾼다.
+# 이름이 엉뚱한 서비스가 된다(2026-11-12 v4 TRIG: commerce 시나리오 F15-H, F15-T1, F15-T2 의
+# `food-payment`, `food-order` 가 `commerce-payment`, `commerce-order` 로 읽혔다).
+# 짧은 접두 둘(`food-`, `banking-`)만 자기 도메인의 APM 접두로 바꾼다. `food-delivery-` 를
+# 먼저 보는 것은 그 이름이 `food-` 로 한 번 더 바뀌지 않게 하려는 것이고, 이미 APM 꼴인 이름은
+# 위 known 확인에서 끝난다.
 _NAME_PREFIX_APM = (
     ("food-delivery-", "food-delivery-"),
     ("core-banking-", "core-banking-"),
@@ -254,16 +256,33 @@ _NAME_PREFIX_APM = (
     ("food-", "food-delivery-"),
     ("banking-", "core-banking-"),
 )
+# 제품 대상 이름 꼴 `<네임스페이스>/<Deployment>`(외부 mock 등)는 그 네임스페이스의 그 대상
+# 하나다. 앱 Deployment(`testbed-<이름>`)면 그 도메인의 APM 이름으로 읽고, 아니면 APM 스팬이
+# 없는 대상이라 None 이다(`<네임스페이스>/job/<이름>` 같은 종류 꼴도 None).
+_NAMESPACE_APM = {
+    "rca-testbed-commerce": "commerce-",
+    "rca-testbed-food": "food-delivery-",
+    "rca-testbed-banking": "core-banking-",
+}
 
 
 def to_apm_service(name: str, domain: str | None, known: set[str]) -> str | None:
     """정답지 이름을 APM service_name으로 정규화한다. 모르면 None(=관측 불가).
 
-    `domain` 은 쓰지 않는다(호출 계약을 지키려고 남김). 이름의 도메인은 이름의 접두가 정한다.
+    `domain` 은 쓰지 않는다(호출 계약을 지키려고 남김). 이름의 도메인은 이름의 접두나
+    네임스페이스가 정한다.
     """
     base = name.split(":", 1)[0]          # commerce-postgres:schema.table → commerce-postgres
     if base in known:
         return base
+    namespace, slash, rest = base.partition("/")
+    if slash:
+        prefix = _NAMESPACE_APM.get(namespace)
+        rest = rest.removeprefix("deployment/")
+        if prefix is None or "/" in rest or not rest.startswith("testbed-"):
+            return None
+        candidate = prefix + rest.removeprefix("testbed-")
+        return candidate if candidate in known else None
     for short, apm in _NAME_PREFIX_APM:
         if base.startswith(short):
             candidate = apm + base[len(short):]

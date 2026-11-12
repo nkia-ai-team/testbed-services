@@ -72,9 +72,26 @@ class NameNormalisationTests(unittest.TestCase):
         self.assertEqual(audit.to_apm_service("food-order", "commerce", KNOWN), "food-delivery-order")
         self.assertEqual(audit.to_apm_service("banking-transfer", "commerce", KNOWN), "core-banking-transfer")
         self.assertEqual(audit.to_apm_service("banking-ledger", "food-delivery", KNOWN), "core-banking-ledger")
-        self.assertEqual(audit.to_apm_service("commerce-order", "core-banking", KNOWN), "commerce-order")
+        self.assertEqual(audit.to_apm_service("food-order", "core-banking", KNOWN), "food-delivery-order")
         # 다른 도메인에 없는 서비스는 시나리오 도메인의 같은 꼬리로 바꿔 짓지 않는다.
         self.assertIsNone(audit.to_apm_service("food-transfer", "core-banking", KNOWN))
+
+    def test_a_product_target_name_is_read_as_that_one_object(self) -> None:
+        # 제품 대상 이름 꼴 `<네임스페이스>/<Deployment>` 는 그 네임스페이스의 그 대상 하나다.
+        # 앱 Deployment 면 그 도메인의 APM 이름, mock, Job, 할당량처럼 APM 스팬이 없는 대상이면 None.
+        self.assertEqual(audit.to_apm_service("rca-testbed-food/testbed-payment", "commerce", KNOWN),
+                         "food-delivery-payment")
+        self.assertEqual(audit.to_apm_service("rca-testbed-commerce/testbed-payment", "food-delivery", KNOWN),
+                         "commerce-payment")
+        self.assertEqual(audit.to_apm_service("rca-testbed-banking/deployment/testbed-ledger", "commerce", KNOWN),
+                         "core-banking-ledger")
+        for name in ("rca-testbed-food/testbed-external-pg-mock",
+                     "rca-testbed-commerce/testbed-external-pg-mock",
+                     "rca-testbed-banking/job/ledger-statement-backfill",
+                     "rca-testbed-banking/compute-resources",
+                     "rca-testbed-food/testbed-dispatch",      # APM 집합(KNOWN)에 없는 앱
+                     "other-namespace/testbed-order"):
+            self.assertIsNone(audit.to_apm_service(name, "commerce", KNOWN), name)
 
     def test_two_root_scenarios_do_not_borrow_the_scenario_domain(self) -> None:
         # F15-H 꼴: commerce 시나리오의 두 번째 근본과 증상이 food 이름이다.

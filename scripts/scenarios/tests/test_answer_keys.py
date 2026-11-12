@@ -12,6 +12,7 @@ same injection.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -554,10 +555,15 @@ class AnswerKeyContractTests(unittest.TestCase):
 
     def _place_names(self, name: str, namespaces: set[str]) -> set[tuple[str, str]]:
         """한 이름이 가리키는 곳들. 앱은 미끼 정책 targets 의 네임스페이스/Deployment 로 모은다.
-        Deployment, 컨테이너 이름은 두 도메인이 함께 쓰므로 주어진 네임스페이스 안에서만 앱으로 읽는다."""
+        Deployment, 컨테이너 이름은 두 도메인이 함께 쓰므로 주어진 네임스페이스 안에서만 앱으로 읽는다.
+        제품 대상 이름 꼴 `<네임스페이스>/<Deployment>` 는 그 네임스페이스의 그 대상 하나다."""
         policy = _load("registry/decoy-deployments.json")
         places: set[tuple[str, str]] = {("name", name.lower())}
         base, _, rest = name.partition(":")
+        scoped_ns, slash, scoped = base.partition("/")
+        if slash and scoped_ns in policy["domain_namespaces"].values():
+            namespaces = {scoped_ns}
+            base = scoped.removeprefix("deployment/")
         for target in policy["targets"]:
             key = f"{target['namespace']}/{target['deployment']}"
             if name in {target["service_name"], target["target_id"], *target["aliases"]}:
@@ -577,28 +583,28 @@ class AnswerKeyContractTests(unittest.TestCase):
         return places
 
     def _injection_places(self, scenario_id: str, entry: dict) -> set[tuple[str, str]]:
-        """injected_fault 매개변수가 손댄 곳들(Deployment, 노드, 표, Job)."""
+        """injected_fault 매개변수가 손댄 곳들(Deployment, 노드, 표, Job).
+
+        Deployment, 컨테이너 이름은 같은 딕셔너리 안의 짝 네임스페이스로만 앱으로 읽는다:
+        `<접두>_deployment` 는 `<접두>_namespace`(접두를 뒤에서부터 줄여 찾음), 없으면 그 딕셔너리의
+        `namespace`, 그것도 없으면 바깥 딕셔너리의 것, 끝으로 시나리오 도메인 네임스페이스. 두
+        도메인을 겹친 시나리오(F15 계열)에서 한쪽 Deployment 이름이 다른 도메인의 같은 이름 앱을
+        "주입이 손댄 곳" 으로 만들지 않게 하려는 것이다(2026-11-12 rv-trig 중 1)."""
         locations = _load("registry/locations.json")["locations"]
         host_node = {row["host"]: row["node"] for row in locations.values() if row.get("node") and row.get("host")}
-        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
-        values: list[tuple[str, str]] = []
-
-        def walk(key: str, node) -> None:
-            if isinstance(node, dict):
-                for child_key, child in node.items():
-                    walk(child_key, child)
-            elif isinstance(node, list):
-                for child in node:
-                    walk(key, child)
-            elif isinstance(node, str):
-                values.append((key, node))
-
-        for level in (entry.get("injected_fault") or {}).get("levels") or []:
-            walk("", level.get("parameters"))
-        namespaces = {value for key, value in values if key.endswith("namespace")}
-        namespaces.add(domain_namespaces.get(entry.get("domain"), ""))
+        home = _load("registry/decoy-deployments.json")["domain_namespaces"].get(entry.get("domain"), "")
         places: set[tuple[str, str]] = set()
-        for key, value in values:
+
+        def namespace_for(key: str, node: dict, inherited: str) -> str:
+            parts = key.split("_")
+            for size in range(len(parts) - 1, 0, -1):
+                paired = node.get("_".join(parts[:size]) + "_namespace")
+                if isinstance(paired, str):
+                    return paired
+            own = node.get("namespace")
+            return own if isinstance(own, str) else inherited
+
+        def visit(key: str, value: str, namespace: str) -> None:
             if value in host_node:
                 places.add(("name", host_node[value].lower()))
             if key.endswith("table"):
@@ -606,60 +612,104 @@ class AnswerKeyContractTests(unittest.TestCase):
             if key.endswith("job"):
                 places.add(("job", value))
             if key.endswith(("deployment", "container", "resource", "node", "host")):
-                places |= self._place_names(value, namespaces)
+                places.update(self._place_names(value, {namespace}))
+
+        def walk(node, inherited: str) -> None:
+            if isinstance(node, dict):
+                own = node.get("namespace")
+                here = own if isinstance(own, str) else inherited
+                for key, child in node.items():
+                    if isinstance(child, str):
+                        visit(key, child, namespace_for(key, node, here))
+                    elif isinstance(child, list) and all(isinstance(item, str) for item in child):
+                        for item in child:
+                            visit(key, item, namespace_for(key, node, here))
+                    else:
+                        walk(child, here)
+            elif isinstance(node, list):
+                for child in node:
+                    walk(child, inherited)
+
+        for level in (entry.get("injected_fault") or {}).get("levels") or []:
+            walk(level.get("parameters"), home)
         return places
 
-    def _triggers(self):
-        for scenario_id, entry in sorted(self.metadata.items()):
-            root_cause = entry.get("root_cause")
-            if isinstance(root_cause, dict) and "trigger_target_id" in root_cause:
-                yield scenario_id, entry, root_cause["trigger_target_id"]
+    def _home(self, entry: dict) -> set[str]:
+        return {_load("registry/decoy-deployments.json")["domain_namespaces"].get(entry.get("domain"), "")}
+
+    def _trigger_problems(self, scenario_id: str, entry: dict) -> list[str]:
+        """계기 칸 규칙 셋(근본과 다름, 주입이 손댄 곳, 부분 점수)의 위반."""
+        root_cause = entry.get("root_cause")
+        if not isinstance(root_cause, dict) or root_cause.get("trigger_target_id") is None:
+            return []
+        trigger = root_cause["trigger_target_id"]
+        if not isinstance(trigger, str) or not trigger.strip() or " " in trigger:
+            return [f"{scenario_id}: trigger must be null or one identifier, got {trigger!r}"]
+        problems = []
+        home = self._home(entry)
+        names = self._place_names(trigger, home)
+        same = names & self._place_names(root_cause["target_id"], home)
+        if same:
+            problems.append(f"{scenario_id}: trigger {trigger} is the root ({sorted(same)})")
+        if not names & self._injection_places(scenario_id, entry):
+            problems.append(f"{scenario_id}: trigger {trigger} is not a place the injection acted on")
+        scoring = entry.get("scoring") or {}
+        if trigger not in (scoring.get("partial") or []):
+            problems.append(f"{scenario_id}: trigger {trigger} missing from partial")
+        if trigger in (scoring.get("accept") or []):
+            problems.append(f"{scenario_id}: trigger {trigger} is accepted as a root")
+        return problems
+
+    def _accept_problems(self, scenario_id: str, entry: dict) -> list[str]:
+        """accept 의 앱이 근본도 아니고 주입이 손댄 곳도 아니면 위반."""
+        root_cause = entry.get("root_cause")
+        scoring = entry.get("scoring")
+        if not isinstance(root_cause, dict) or not isinstance(scoring, dict):
+            return []
+        home = self._home(entry)
+        root = self._place_names(root_cause["target_id"], home)
+        injected = self._injection_places(scenario_id, entry)
+        problems = []
+        for name in scoring.get("accept") or []:
+            places = self._place_names(name, home)
+            if not any(kind == "app" for kind, _ in places) or places & root:
+                continue
+            if not places & injected:
+                problems.append(f"{scenario_id}: accepted {name} is neither the root nor injected")
+        return problems
 
     def test_trigger_is_empty_or_a_place_other_than_the_root(self) -> None:
         # 근본과 같은 곳을 계기에 적지 않고 비운다. 빈 문자열은 null 과 같은 뜻을 두 꼴로 적는 것이라
         # 받지 않는다. parked, draft 도 되살릴 수 있어 함께 본다.
-        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
-        problems = []
-        for scenario_id, entry, trigger in self._triggers():
-            if trigger is None:
-                continue
-            if not isinstance(trigger, str) or not trigger.strip() or " " in trigger:
-                problems.append(f"{scenario_id}: trigger must be null or one identifier, got {trigger!r}")
-                continue
-            target = entry["root_cause"]["target_id"]
-            namespaces = {domain_namespaces.get(entry.get("domain"), "")}
-            same = self._place_names(trigger, namespaces) & self._place_names(target, namespaces)
-            if same:
-                problems.append(f"{scenario_id}: trigger {trigger} is the root {target} ({sorted(same)})")
+        problems = [
+            problem
+            for scenario_id, entry in sorted(self.metadata.items())
+            for problem in self._trigger_problems(scenario_id, entry)
+            if "is the root" in problem or "must be null" in problem
+        ]
         self.assertEqual(problems, [], "trigger_target_id names the root cause; leave it null")
 
     def test_trigger_is_where_the_injection_acted(self) -> None:
         # 계기는 주입이 실제로 손댄 곳(Deployment, 노드, 표, Job) 가운데 하나여야 한다. 증상 서비스는
         # 주입이 손대지 않은 곳이라 여기서 걸린다(2026-11-12 까지의 commerce-order, commerce-payment 꼴).
         # 정답지에 주입이 없으면 계기를 확인할 수 없어 비워 둔다.
-        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
-        problems = []
-        for scenario_id, entry, trigger in self._triggers():
-            if trigger is None:
-                continue
-            injected = self._injection_places(scenario_id, entry)
-            names = self._place_names(trigger, {domain_namespaces.get(entry.get("domain"), "")})
-            if not (names & injected):
-                problems.append(f"{scenario_id}: trigger {trigger} is not a place the injection acted on")
+        problems = [
+            problem
+            for scenario_id, entry in sorted(self.metadata.items())
+            for problem in self._trigger_problems(scenario_id, entry)
+            if "not a place" in problem
+        ]
         self.assertEqual(problems, [], "trigger_target_id must name where the injection acted")
 
     def test_a_trigger_only_answer_earns_partial_not_full_credit(self) -> None:
         # 원칙 6 의 partial 정의(증상 서비스, 계기만 본 답). 계기를 accept 에 두면 그것은 계기가 아니라
         # 또 하나의 근본이다(두 장애를 겹친 시나리오의 두 번째 근본은 accept 에 두고 계기는 비운다).
-        problems = []
-        for scenario_id, entry, trigger in self._triggers():
-            if trigger is None:
-                continue
-            scoring = entry.get("scoring") or {}
-            if trigger not in (scoring.get("partial") or []):
-                problems.append(f"{scenario_id}: trigger {trigger} missing from partial")
-            if trigger in (scoring.get("accept") or []):
-                problems.append(f"{scenario_id}: trigger {trigger} is accepted as a root")
+        problems = [
+            problem
+            for scenario_id, entry in sorted(self.metadata.items())
+            for problem in self._trigger_problems(scenario_id, entry)
+            if "partial" in problem or "accepted as a root" in problem
+        ]
         self.assertEqual(problems, [], "a trigger-only answer is partial credit")
 
     def test_an_accepted_app_is_the_root_or_where_the_injection_acted(self) -> None:
@@ -667,32 +717,50 @@ class AnswerKeyContractTests(unittest.TestCase):
         # 아니면 증상이나 통로로 본다(2026-11-12 까지 F15-H, F15-T2 의 food payment: 외부 PG 의 429 를
         # 그대로 전파한 통로였다, v4 TRIG). 두 장애를 겹친 시나리오의 두 번째 근본은 주입이 손댄 곳이라
         # 통과한다(F15-T1 food payment 메모리 한도). 앱이 아닌 대상(DB 표, 노드, mock)은 보지 않는다.
-        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
-        problems = []
-        for scenario_id, entry in sorted(self.metadata.items()):
-            root_cause = entry.get("root_cause")
-            scoring = entry.get("scoring")
-            if not isinstance(root_cause, dict) or not isinstance(scoring, dict):
-                continue
-            namespaces = {domain_namespaces.get(entry.get("domain"), "")}
-            root = self._place_names(root_cause["target_id"], namespaces)
-            injected = self._injection_places(scenario_id, entry)
-            for name in scoring.get("accept") or []:
-                places = self._place_names(name, namespaces)
-                if not any(kind == "app" for kind, _ in places) or places & root:
-                    continue
-                if not places & injected:
-                    problems.append(f"{scenario_id}: accepted {name} is neither the root nor injected")
+        problems = [
+            problem
+            for scenario_id, entry in sorted(self.metadata.items())
+            for problem in self._accept_problems(scenario_id, entry)
+        ]
         self.assertEqual(problems, [], "an accepted app that the fault only passed through belongs in partial")
 
-    def test_food_pg_mock_is_scored_by_its_one_observed_name(self) -> None:
-        # 채점 이름은 관제 데이터가 그 대상을 부르는 이름이다. 두 외부 PG mock 은 APM 피호출 주소
-        # (server.address)와 Deployment 이름이 모두 testbed-external-pg-mock 이라 그 이름만으로는
-        # 가를 수 없고, 119 대상 이름(targets.name)이 rca-testbed-food/testbed-external-pg-mock 과
-        # rca-testbed-commerce/testbed-external-pg-mock 으로 가른다(2026-11-12 v4 TRIG 실측).
-        # food mock 은 그 이름 하나로 적고, 관제 데이터에 없는 옛 이름은 쓰지 않는다.
-        food_mock = "rca-testbed-food/testbed-external-pg-mock"
-        retired = {"food-external-pg-mock", "food-external-pg"}
+    def test_two_domain_scenarios_do_not_lend_a_deployment_name_across_domains(self) -> None:
+        # rv-trig 중 1 의 변이 V1, V3: F15-T1 의 주입은 food 의 testbed-payment 를 손댄다. commerce 의
+        # 같은 이름 앱(commerce-payment)은 손대지 않았으므로 accept 나 계기에 두면 걸려야 한다.
+        entry = copy.deepcopy(self.metadata["F15-T1"])
+        self.assertEqual(self._accept_problems("F15-T1", entry), [])
+        self.assertIn(("app", "rca-testbed-food/testbed-payment"), self._injection_places("F15-T1", entry))
+        self.assertNotIn(("app", "rca-testbed-commerce/testbed-payment"), self._injection_places("F15-T1", entry))
+
+        v1 = copy.deepcopy(entry)
+        v1["scoring"]["accept"].append("commerce-payment")
+        self.assertEqual(
+            self._accept_problems("F15-T1", v1),
+            ["F15-T1: accepted commerce-payment is neither the root nor injected"],
+        )
+
+        v3 = copy.deepcopy(entry)
+        v3["root_cause"]["trigger_target_id"] = "commerce-payment"
+        v3["scoring"]["partial"].append("commerce-payment")
+        self.assertIn(
+            "F15-T1: trigger commerce-payment is not a place the injection acted on",
+            self._trigger_problems("F15-T1", v3),
+        )
+        # 같은 자리에 food 쪽 이름을 두면 주입이 손댄 곳이라 그 규칙은 지나간다(근본과 accept 규칙만 남음).
+        food = copy.deepcopy(entry)
+        food["root_cause"]["trigger_target_id"] = "rca-testbed-food/testbed-payment"
+        food["scoring"]["partial"].append("rca-testbed-food/testbed-payment")
+        self.assertFalse(
+            [p for p in self._trigger_problems("F15-T1", food) if "not a place" in p],
+        )
+
+    def test_external_pg_mocks_are_scored_by_their_product_target_names(self) -> None:
+        # 채점 이름은 제품 대상 이름(119 targets.name)이 정본이다. 두 외부 PG mock 은 APM 피호출 주소
+        # (server.address)와 Deployment 이름이 모두 testbed-external-pg-mock 이라 그 이름으로는 가를 수
+        # 없고, 대상 이름이 rca-testbed-commerce/testbed-external-pg-mock 과
+        # rca-testbed-food/testbed-external-pg-mock 으로 가른다(2026-11-12 v4 TRIG 실측). 두 mock 모두
+        # 대상 이름으로만 적고, 공용 짧은 이름과 관제 데이터에 없는 옛 이름은 어느 도메인에서도 쓰지 않는다.
+        retired = {"testbed-external-pg-mock", "food-external-pg-mock", "food-external-pg", "external-pg"}
         problems = []
         for scenario_id, entry in sorted(self.metadata.items()):
             root_cause = entry.get("root_cause") or {}
@@ -701,11 +769,13 @@ class AnswerKeyContractTests(unittest.TestCase):
             names += list(scoring.get("accept") or []) + list(scoring.get("partial") or [])
             for name in names:
                 if name in retired:
-                    problems.append(f"{scenario_id}: retired name {name}")
-                if entry.get("domain") == "food-delivery" and name == "testbed-external-pg-mock":
-                    problems.append(f"{scenario_id}: {name} also names the commerce mock; use {food_mock}")
-        self.assertEqual(problems, [], "food external PG mock must carry its observed target name")
-
+                    problems.append(f"{scenario_id}: {name} is not a product target name")
+                if isinstance(name, str) and name.endswith("external-pg-mock") and name not in {
+                    "rca-testbed-commerce/testbed-external-pg-mock",
+                    "rca-testbed-food/testbed-external-pg-mock",
+                }:
+                    problems.append(f"{scenario_id}: {name} is not one of the two mock target names")
+        self.assertEqual(problems, [], "external PG mocks must carry their product target names")
 
 if __name__ == "__main__":
     unittest.main()

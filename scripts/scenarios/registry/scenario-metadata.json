@@ -144,7 +144,7 @@
    ],
    "root_cause": {
     "target_kind": "service",
-    "target_id": "testbed-external-pg-mock",
+    "target_id": "rca-testbed-commerce/testbed-external-pg-mock",
     "trigger_target_id": null,
     "mechanism": "근본은 외부 결제대행사(테스트베드에서는 payment-service가 PG_API_URL로 바라보는 testbed-external-pg-mock)의 속도 제한이고, 전량 장애가 되는 이유는 commerce-payment의 P4 결함이다. PgApiClient.requestPayment는 RestClient.retrieve()를 기본 에러 핸들러로 쓰므로 429에 예외가 나고, catch(RestClientException)가 이를 502 BAD_GATEWAY로 바꾼다 — 4xx의 의미(재시도 가능한 감속)가 5xx(게이트웨이 고장)로 승격되면서 상류의 판단 근거가 사라진다. payment-service에는 resilience4j 설정이 없어 이 hop에 서킷브레이커도 백오프 재시도도 없다. order의 PaymentClient는 4xx만 ClientErrorException으로 분리해 CB 집계에서 제외하는데, 이미 502로 바뀐 뒤라 그 분기에 걸리지 않는다. 결과적으로 @Retry 2회와 @CircuitBreaker(실패율 50%)가 그대로 열리고 체크아웃은 502로 수렴한다. 429는 즉시 반환되므로 커넥션 점유가 없고, 따라서 풀 고갈 같은 2차 확산도 없다 — 피해가 빠르고 균일하며 자원 지표가 조용한 것이 이 케이스의 형상이다.",
     "code_anchor": [
@@ -183,7 +183,7 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "testbed-external-pg-mock"
+     "rca-testbed-commerce/testbed-external-pg-mock"
     ],
     "partial": [
      "commerce-payment",
@@ -257,7 +257,7 @@
    ],
    "root_cause": {
     "target_kind": "service",
-    "target_id": "testbed-external-pg-mock",
+    "target_id": "rca-testbed-commerce/testbed-external-pg-mock",
     "trigger_target_id": null,
     "mechanism": "근본은 외부 PG의 응답 hang이고, 그것이 payment의 DB 연결 점유로 이어지는 이유는 두 가지 코드 구조다. 첫째 P4 — pgRestClient에는 timeout만 있고 서킷브레이커·백오프가 없어 매 요청이 10초를 온전히 소모한다. 둘째 P1 — PaymentService.processPayment가 @Transactional 안에서 paymentRepository.save()로 커넥션을 잡은 뒤 외부를 호출하므로, 외부 대기 시간이 그대로 DB 커넥션 점유 시간이 된다. payment-service는 Hikari 기본 풀 10이라 동시 결제가 10건을 넘으면 풀이 마를 수 있으나, 이 부하에서는 order의 paymentClient 차단기가 먼저 열려 결제 호출이 체크아웃의 3% 남짓으로 줄므로 풀 고갈과 readiness 실패는 일어나지 않는다. 상류에서는 order의 @Retry(2회)가 10초짜리 실패를 두 번 반복해 order의 payment read-timeout 15초를 넘기므로, 체크아웃 응답시간이 15초 근처에서 잘리고 502가 된다.",
     "code_anchor": [
@@ -300,7 +300,7 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "testbed-external-pg-mock"
+     "rca-testbed-commerce/testbed-external-pg-mock"
     ],
     "partial": [
      "commerce-payment",
@@ -1008,7 +1008,7 @@
    ],
    "root_cause": {
     "target_kind": "service",
-    "target_id": "testbed-external-pg-mock",
+    "target_id": "rca-testbed-commerce/testbed-external-pg-mock",
     "trigger_target_id": null,
     "mechanism": "근본은 외부 결제대행사(테스트베드에서는 payment-service가 PG_API_URL로 바라보는 클러스터 내 testbed-external-pg-mock)의 속도 제한이고, 그것이 전량 장애가 되는 이유는 commerce-payment의 P4 결함이다. PgApiClient.requestPayment는 RestClient.retrieve()를 기본 에러 핸들러로 쓰므로 429에 예외가 나고, 이를 catch(RestClientException)로 받아 502 BAD_GATEWAY로 바꾼다 — 외부의 '나중에 다시 오라'가 '게이트웨이 고장'으로 번역된다. payment-service에는 resilience4j 설정이 없어 이 hop에 서킷브레이커도 백오프 재시도도 없다(pgRestClient는 timeout만 갖는다). 상류 order의 PaymentClient는 4xx만 ClientErrorException으로 분리하고 5xx는 실패로 집계하므로, 승격된 502가 @Retry 2회와 @CircuitBreaker(paymentClient, 실패율 50%)를 그대로 태워 fallback 502로 수렴한다. 한편 같은 시각의 testbed-payment 롤아웃은 annotation만 바꾸는 no-op이며, replicas 1에서 기본 롤링 전략은 maxSurge를 올리고 maxUnavailable을 내려(새 파드 먼저) 무중단이다 — 이 시나리오가 distractor로 성립하는 근거다.",
     "code_anchor": [
@@ -1060,7 +1060,7 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "testbed-external-pg-mock"
+     "rca-testbed-commerce/testbed-external-pg-mock"
     ],
     "partial": [
      "commerce-payment",
@@ -3536,7 +3536,7 @@
    ],
    "root_cause": {
     "target_kind": "service",
-    "target_id": "testbed-external-pg-mock",
+    "target_id": "rca-testbed-commerce/testbed-external-pg-mock",
     "trigger_target_id": null,
     "mechanism": "메커니즘 자체는 F01-H와 같다 — 외부 PG의 429를 PgApiClient가 502로 승격하고, order의 재시도·서킷브레이커를 거쳐 체크아웃이 502로 끝난다. 이 시나리오가 추가하는 축은 **시간 구조**다. fault_hold 동안 실패가 지속되다 expectation이 원복되면 서킷은 wait-duration 5초 뒤 half-open을 거쳐 닫히고, 실패율이 0으로 복귀한다. recovery_gap 720초는 서킷 회복(수초)·부하 안정화·관측 집계 주기(수십 초)보다 훨씬 길게 잡은 값으로, 두 episode가 관측상 확실히 분리되도록 설계한 것이다. 따라서 두 번째 실패는 첫 번째의 잔여가 아니며, 인시던트 병합 로직이 '같은 원인이면 하나'로 묶으면 오답이 된다 — 사건의 동일성은 원인만이 아니라 시간 연속성으로도 결정된다.",
     "code_anchor": [
@@ -3577,7 +3577,7 @@
    "scoring": {
     "granularity": "service",
     "accept": [
-     "testbed-external-pg-mock"
+     "rca-testbed-commerce/testbed-external-pg-mock"
     ],
     "partial": [
      "commerce-payment",
