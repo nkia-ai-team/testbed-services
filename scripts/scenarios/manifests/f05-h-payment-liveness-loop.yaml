@@ -97,7 +97,7 @@
                 "fault": {
                   "failureThreshold": 5,
                   "httpGet": {
-                    "path": "/actuator/health/f05-h-fail",
+                    "path": "/health",
                     "port": 8083,
                     "scheme": "HTTP"
                   },

@@ -28,7 +28,7 @@ F05_H_PARAMETERS = {
     "fault": {
         "failureThreshold": 5,
         "httpGet": {
-            "path": "/actuator/health/f05-h-fail",
+            "path": "/health",
             "port": 8083,
             "scheme": "HTTP",
         },
@@ -52,7 +52,7 @@ F17_R_PARAMETERS = {
     "fault": {
         "failureThreshold": 3,
         "httpGet": {
-            "path": "/actuator/health/f17-r-fail",
+            "path": "/actuator/readiness",
             "port": 8082,
             "scheme": "HTTP",
         },
@@ -76,7 +76,7 @@ F16_H_PARAMETERS = {
     "fault": {
         "failureThreshold": 3,
         "httpGet": {
-            "path": "/actuator/health/f16-h-fail",
+            "path": "/healthz",
             "port": 8085,
             "scheme": "HTTP",
         },

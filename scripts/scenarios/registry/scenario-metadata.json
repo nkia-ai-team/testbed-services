@@ -1886,7 +1886,7 @@
   "F05-H": {
    "title": "payment liveness probe misconfiguration — a restart loop that kills a healthy container about every 2 min 20 s",
    "description": "Change the payment container's livenessProbe path to a nonexistent endpoint. The application is healthy, but the kubelet counts the 404 responses as failures and kills the container about failureThreshold 5 × periodSeconds 15 = ~75 seconds after each boot, so with JVM startup the restart cycle is about 2 min 20 s. Restarting requires JVM boot and warmup, so payment cycles through 'alive → dead → booting', and during those gaps the payment step of checkout fails intermittently. The axes separating this from the OOM family (F05-R) are that the termination reason is `Error` (killed by signal) and there is no memory pressure.",
-   "cause": "livenessProbe httpGet.path changed to /actuator/health/f05-h-fail (404) → kubelet judges 5 consecutive failures → container forcibly terminated (reason=Error) → restart → payment requests fail during boot → order PaymentClient counts them as 5xx → @CircuitBreaker(paymentClient) open → checkout 502. This cycle repeats until the probe is restored",
+   "cause": "livenessProbe httpGet.path changed to /health (404) → kubelet judges 5 consecutive failures → container forcibly terminated (reason=Error) → restart → payment requests fail during boot → order PaymentClient counts them as 5xx → @CircuitBreaker(paymentClient) open → checkout 502. This cycle repeats until the probe is restored",
    "injection_summary": "The k8s.probe executor swaps out the entire livenessProbe block of testbed-payment/payment-service (both baseline and fault snapshots are specified in the contract, and the only difference is httpGet.path). A north-south companion supplies checkout load, and cleanup is exact restoration of the baseline probe block.",
    "user_impact": "The payment step of checkout fails periodically. The damage is not total but **intermittent**, waving in phase with the restart cycle (about 2 min 20 s) — the pattern of failures surging and disappearing distinguishes it from continuous failures (F01-H, F06-H). Paths other than payment (products, cart, pricing) are normal.",
    "distinguishing_evidence": "The decisive evidence is why the container dies. The last termination reason is `Error` and restart_count climbs in steps, yet container memory usage never approaches its limit and node memory is normal — that is, the verdict killed it, not a resource. The second axis is change history: the Deployment's livenessProbe differs from baseline while resources remain at baseline. Third, the failures are in phase with the restart cycle (not continuous).",
@@ -1899,8 +1899,8 @@
    "root_cause": {
     "target_kind": "config",
     "target_id": "testbed-payment:payment-service",
-    "trigger_target_id": "commerce-order",
-    "mechanism": "결함은 payment 컨테이너의 livenessProbe 설정에 있다. 원래 probe는 /actuator/health를 periodSeconds 15·timeoutSeconds 3·failureThreshold 5로 검사한다. 경로를 없는 하위 경로로 바꾸면 Spring Boot actuator는 404를 반환하고 kubelet은 이를 실패로 센다 — 애플리케이션이 실제로 건강한지와 무관하게 5회(약 75초) 뒤 컨테이너가 SIGTERM으로 종료되고 재기동된다. readinessProbe는 건드리지 않으므로 파드는 부팅 후 정상적으로 트래픽을 받다가 다시 죽는다. replicas가 1이라 재기동 구간에는 결제를 처리할 인스턴스가 없고, 그 구간의 요청은 order의 PaymentClient에서 연결 실패로 집계돼 @Retry 2회 뒤 서킷브레이커를 열고 체크아웃 502가 된다. 서킷이 열려 있는 5초 동안은 payment가 이미 복구돼도 실패가 이어지므로 피해 구간이 재기동 구간보다 조금 길다.",
+    "trigger_target_id": null,
+    "mechanism": "결함은 payment 컨테이너의 livenessProbe 설정에 있다. 원래 probe는 /actuator/health를 periodSeconds 15·timeoutSeconds 3·failureThreshold 5로 검사한다. 경로를 앱에 없는 경로(/health, actuator 기준 경로 /actuator 가 빠진 옛 경로)로 바꾸면 Spring Boot는 404를 반환하고 kubelet은 이를 실패로 센다 — 애플리케이션이 실제로 건강한지와 무관하게 5회(약 75초) 뒤 컨테이너가 SIGTERM으로 종료되고 재기동된다. readinessProbe는 건드리지 않으므로 파드는 부팅 후 정상적으로 트래픽을 받다가 다시 죽는다. replicas가 1이라 재기동 구간에는 결제를 처리할 인스턴스가 없고, 그 구간의 요청은 order의 PaymentClient에서 연결 실패로 집계돼 @Retry 2회 뒤 서킷브레이커를 열고 체크아웃 502가 된다. 서킷이 열려 있는 5초 동안은 payment가 이미 복구돼도 실패가 이어지므로 피해 구간이 재기동 구간보다 조금 길다.",
     "code_anchor": [
      "commerce/k8s/23-payment-service.yaml:80-86 (livenessProbe — /actuator/health, periodSeconds 15·timeoutSeconds 3·failureThreshold 5. 주입이 이 블록의 path만 바꾼다)",
      "commerce/k8s/23-payment-service.yaml:73-79 (readinessProbe — 동일 경로지만 주입 대상이 아니다. 그래서 파드는 부팅 후 정상적으로 트래픽을 받는다)",
@@ -1977,7 +1977,7 @@
        "fault": {
         "failureThreshold": 5,
         "httpGet": {
-         "path": "/actuator/health/f05-h-fail",
+         "path": "/health",
          "port": 8083,
          "scheme": "HTTP"
         },
@@ -1991,7 +1991,7 @@
    },
    "title_ko": "payment liveness probe 오설정 — 살아 있는 컨테이너를 약 2분 20초마다 죽이는 재시작 루프",
    "description_ko": "payment 컨테이너의 livenessProbe 경로를 존재하지 않는 엔드포인트로 바꾼다. 애플리케이션은 정상인데 kubelet이 응답 404를 실패로 세고, 기동 뒤 failureThreshold 5 × periodSeconds 15 = 약 75초 만에 컨테이너를 죽이므로, JVM 기동 시간을 더한 재시작 주기는 약 2분 20초다. 재기동에는 JVM 부팅과 워밍업이 필요하므로 payment는 '살아 있음 → 죽음 → 부팅 중'을 반복하며, 그 사이 체크아웃의 결제 단계가 간헐적으로 실패한다. 종료 사유가 `Error`(신호에 의한 종료)이고 메모리 압박이 없다는 점이 OOM 계열(F05-R)과 갈리는 축이다.",
-   "cause_ko": "livenessProbe httpGet.path를 /actuator/health/f05-h-fail(404)로 변경 → kubelet이 5회 연속 실패로 판정 → 컨테이너 강제 종료(reason=Error) → 재기동 → 부팅 중 결제 요청 실패 → order PaymentClient가 5xx로 집계 → @CircuitBreaker(paymentClient) open → 체크아웃 502. probe가 원복될 때까지 이 주기가 반복된다",
+   "cause_ko": "livenessProbe httpGet.path를 /health(404)로 변경 → kubelet이 5회 연속 실패로 판정 → 컨테이너 강제 종료(reason=Error) → 재기동 → 부팅 중 결제 요청 실패 → order PaymentClient가 5xx로 집계 → @CircuitBreaker(paymentClient) open → 체크아웃 502. probe가 원복될 때까지 이 주기가 반복된다",
    "injection_summary_ko": "k8s.probe executor가 testbed-payment/payment-service의 livenessProbe 블록을 통째로 교체한다 (baseline/fault 두 스냅샷이 계약에 명시돼 있고 차이는 httpGet.path 하나뿐이다). north-south companion이 체크아웃 부하를 공급하며, cleanup은 baseline probe 블록의 정확한 복원이다.",
    "user_impact_ko": "체크아웃의 결제 단계가 주기적으로 실패한다. 피해는 전량이 아니라 **간헐적**이며 약 2분 20초인 재기동 주기에 맞춰 파도친다 — 실패가 몰렸다 사라졌다 하는 형상이 지속적 실패(F01-H·F06-H)와 구분된다. 결제 이외의 경로(상품·장바구니·가격)는 정상이다.",
    "distinguishing_evidence_ko": "결정 증거는 죽는 이유다. 마지막 종료 사유가 `Error`이고 restart_count가 계단식으로 오르는데, 컨테이너 메모리 사용량은 한도에 근접하지 않고 노드 메모리도 정상이다 — 즉 자원이 아니라 판정이 죽였다. 두 번째 축은 변경 이력이다: Deployment의 livenessProbe가 baseline과 다르고 resources는 baseline 그대로다. 세 번째로 실패가 재기동 주기와 위상이 맞는다(연속이 아니다).",
@@ -2014,7 +2014,7 @@
     ],
     "root_cause": "근본 원인은 결제 서비스의 잘못된 생존 확인 설정이다. 결제 애플리케이션 자체는 정상이고, 주문 서비스의 체크아웃 오류는 재시작의 피해다.",
     "design_notes": [
-     "주입: k8s.probe 가 testbed-payment 의 livenessProbe 블록을 통째로 바꿔 httpGet.path 를 /actuator/health/f05-h-fail(404)로 둔다. cleanup 은 스냅샷 블록 복원",
+     "주입: k8s.probe 가 testbed-payment 의 livenessProbe 블록을 통째로 바꿔 httpGet.path 를 /health 로 둔다(actuator 기준 경로 /actuator 가 빠진 옛 경로, 앱에 없어 404). cleanup 은 스냅샷 블록 복원",
      "부하: load.north_south surge.js 20rps, 램프업 2분",
      "주기: failureThreshold 5 × periodSeconds 15 = 약 75초에 JVM 부팅 시간이 더해진다. 종료 사유는 OOM 이 아니라 'failed liveness probe, will be restarted' 다",
      "증폭: 부팅 중 결제 요청 실패 → order PaymentClient 5xx → @CircuitBreaker(paymentClient) open → 체크아웃 502",
@@ -3737,7 +3737,7 @@
    "title": "banking transfer readiness failure — a successful card payment vanishes through rollback",
    "description": "Fail core-banking transfer-service's readinessProbe so it is removed from the Service endpoints. The old pod is replaced at once by the rollout, and the new pod stays alive without restarts but never becomes Ready, so nothing can reach it. commerce payment **succeeds** the external PG payment and immediately afterward fails to connect on the settlement transfer call, and because all of processPayment is @Transactional, the just-saved payment row and logs are all rolled back. The result is a consistency violation — the approval remains at the PG while the payment does not exist in the commerce DB. The identity of this case is the shape of 'failure by response code, yet success remains in the outside world'.",
    "cause": "testbed-transfer readinessProbe path changed to a 404 → the maxSurge 0 rollout removes the old pod at once and the new pod stays NotReady → Service endpoints 0 → commerce payment's BankingTransferClient fails to connect → ServiceException(502) → full rollback of processPayment's @Transactional (including the PG-approved portion) → order PaymentClient counts it as 5xx → checkout 502",
-   "injection_summary": "The k8s.probe executor patches the readinessProbe httpGet path of rca-testbed-banking/testbed-transfer to /actuator/health/f17-r-fail (404). This Deployment explicitly sets a rollout strategy of maxUnavailable 1, maxSurge 0, so upon patching the old pod goes down immediately and the new pod remains unable to pass readiness — this is required for the endpoints to actually empty and the outage to occur. commerce north-south 35rps drives the checkout journey, and cleanup is restoring the probe path.",
+   "injection_summary": "The k8s.probe executor patches the readinessProbe httpGet path of rca-testbed-banking/testbed-transfer to /actuator/readiness (404). This Deployment explicitly sets a rollout strategy of maxUnavailable 1, maxSurge 0, so upon patching the old pod goes down immediately and the new pod remains unable to pass readiness — this is required for the endpoints to actually empty and the outage to occur. commerce north-south 35rps drives the checkout journey, and cleanup is restoring the probe path.",
    "user_impact": "Checkout fails with 502. The more important damage is to data — even though the external PG issued an approval response, the commerce payments row disappears through rollback, leaving a trail of 'the payment happened but there is no record'. Read paths (lookups) are normal, so to users it appears that only payments are broken.",
    "distinguishing_evidence": "The decisive evidence is the combination that the transfer pod is **NotReady while the restart count does not rise**. It was detached from traffic rather than killed, immediately separating it from crash loops (the F05 family). The second axis is time-to-failure — with the endpoints empty, connections are refused instantly, so the payment→banking span ends immediately without filling the 10-second read-timeout. The lock family (F01-P) fills the full 10 seconds at first and turns into refusals only once its pool-starved pod fails readiness, with no rollout and with Oracle blocked sessions. commerce payment's pods are Ready with resources and configuration all at baseline, confirming its innocence.",
    "domain": "core-banking",
@@ -3749,7 +3749,7 @@
    "root_cause": {
     "target_kind": "config",
     "target_id": "testbed-transfer:transfer-service",
-    "trigger_target_id": "commerce-payment",
+    "trigger_target_id": null,
     "mechanism": "결함은 banking transfer-service의 readinessProbe 설정이다. 프로브 정의를 바꾸면 파드 템플릿이 바뀌어 롤아웃이 돈다. replicas 1, maxUnavailable 1, maxSurge 0이라 옛 파드가 패치 직후(녹화 약 2초) 먼저 내려가고, 새 파드는 기동 뒤 readiness가 404로 계속 실패해 한 번도 Ready가 되지 않으므로 Service 엔드포인트는 패치 직후부터 비어 있다. 컨테이너는 살아 있으므로 재시작 카운트는 오르지 않는다 — 이것이 이 시나리오의 지문이다. replicas가 1이고 rollout 전략이 maxUnavailable 1·maxSurge 0으로 명시돼 있어 엔드포인트는 완전히 빈다(기본 전략이면 새 파드가 먼저 떠서 헌 파드가 계속 서비스하므로 장애가 나지 않는다 — 이 명시가 시나리오의 전제 조건이다). commerce 쪽에서는 payment의 processPayment가 @Transactional 안에서 (1) 결제 행 저장, (2) 외부 PG 승인, (3) banking 이체를 순서대로 수행하는데, (3)에서 연결이 거절되면 BankingTransferClient가 서킷브레이커 없이 ServiceException(502)을 던지고 트랜잭션 전체가 롤백된다. (2)의 외부 승인은 롤백 대상이 아니므로 되돌아가지 않는다 — **로컬 트랜잭션이 외부 부수효과를 감싸지 못하는 구조적 결함**이 여기서 드러난다.",
     "code_anchor": [
      "commerce/payment-service/src/main/java/com/commerce/payment/client/BankingTransferClient.java:25-29 (SETTLEMENT_ACCOUNT·MERCHANT_ACCOUNT — 모든 commerce 결제가 공유하는 고정 계좌)",
@@ -3833,7 +3833,7 @@
        "fault": {
         "failureThreshold": 3,
         "httpGet": {
-         "path": "/actuator/health/f17-r-fail",
+         "path": "/actuator/readiness",
          "port": 8082,
          "scheme": "HTTP"
         },
@@ -3848,7 +3848,7 @@
    "title_ko": "banking transfer readiness 실패 — 성공한 카드결제가 롤백으로 사라진다",
    "description_ko": "core-banking transfer-service의 readinessProbe를 실패시켜 Service 엔드포인트에서 제거한다. 옛 파드는 롤아웃으로 곧바로 내려가고, 새 파드는 살아 있고 재시작도 없지만 Ready가 되지 못해 아무도 도달할 수 없다. commerce payment는 외부 PG 결제를 **성공**시킨 직후 정산 이체 호출에서 연결에 실패하고, processPayment 전체가 @Transactional이므로 방금 저장한 결제 행과 로그까지 전부 롤백된다. 결과는 정합성 파괴다 — PG에는 승인이 남았는데 commerce DB에는 그 결제가 존재하지 않는다. '응답 코드로는 실패인데 외부 세계에는 성공이 남는' 형태가 이 케이스의 정체성이다.",
    "cause_ko": "testbed-transfer readinessProbe 경로를 404로 변경 → maxSurge 0 롤아웃으로 옛 파드가 즉시 내려가고 새 파드는 readiness 실패로 NotReady → Service 엔드포인트 0 → commerce payment의 BankingTransferClient가 연결 실패 → ServiceException(502) → processPayment의 @Transactional 전체 롤백(PG 승인분 포함) → order PaymentClient가 5xx로 집계 → 체크아웃 502",
-   "injection_summary_ko": "k8s.probe executor가 rca-testbed-banking/testbed-transfer의 readinessProbe httpGet 경로를 /actuator/health/f17-r-fail(404)로 패치한다. 이 Deployment는 rollout 전략이 maxUnavailable 1·maxSurge 0으로 명시돼 있어 패치 즉시 헌 파드가 내려가고 새 파드가 readiness를 통과하지 못한 채 남는다 — 그래야 엔드포인트가 실제로 비고 장애가 발생한다. commerce north-south 35rps로 체크아웃 여정을 흘리며, cleanup은 probe 경로 복원이다.",
+   "injection_summary_ko": "k8s.probe executor가 rca-testbed-banking/testbed-transfer의 readinessProbe httpGet 경로를 /actuator/readiness(404)로 패치한다. 이 Deployment는 rollout 전략이 maxUnavailable 1·maxSurge 0으로 명시돼 있어 패치 즉시 헌 파드가 내려가고 새 파드가 readiness를 통과하지 못한 채 남는다 — 그래야 엔드포인트가 실제로 비고 장애가 발생한다. commerce north-south 35rps로 체크아웃 여정을 흘리며, cleanup은 probe 경로 복원이다.",
    "user_impact_ko": "체크아웃이 502로 실패한다. 더 중요한 피해는 데이터다 — 외부 PG가 승인 응답을 냈는데도 commerce의 payments 행이 롤백으로 사라져 '결제는 됐는데 기록이 없는' 흔적이 남는다. 읽기 경로(조회)는 정상이라 사용자 눈에는 결제만 안 되는 것으로 보인다.",
    "distinguishing_evidence_ko": "결정 증거는 transfer 파드가 **NotReady인데 재시작 카운트는 오르지 않는다**는 조합이다. 죽은 것이 아니라 트래픽에서 떼어진 것이므로 크래시 루프(F05 계열)와 즉시 갈린다. 두 번째 축은 실패까지의 시간이다 — 엔드포인트가 비면 연결이 즉시 거절되므로 payment→banking span이 read-timeout 10초를 채우지 않고 곧바로 끝난다. 잠금 계열(F01-P)은 처음엔 10초를 꽉 채우다가 풀이 묶인 같은 파드가 readiness에 실패한 뒤에야 연결 거부로 바뀌며, 롤아웃이 없고 Oracle 차단 세션이 함께 보인다. commerce payment는 파드 Ready에 자원·설정 모두 정상이라 무죄가 확정된다.",
    "story_ko": {
@@ -3870,7 +3870,7 @@
     ],
     "root_cause": "근본 원인은 이체 서비스 배포의 잘못된 준비 상태 확인 설정이다. 오류는 커머스 주문과 결제(Spring Boot, commerce-payment), 은행 진입 서비스에서 크게 보이지만 이체 서비스에 닿지 못한 피해자이고, 결제는 외부 PG 승인 뒤 정산에서 끊겨 승인 기록만 남는다.",
     "design_notes": [
-     "주입: k8s.probe 가 rca-testbed-banking/testbed-transfer 의 readinessProbe httpGet 경로를 /actuator/health/f17-r-fail(404)로 패치한다. liveness 는 그대로라 재시작이 없다. 정리는 경로 복원이다",
+     "주입: k8s.probe 가 rca-testbed-banking/testbed-transfer 의 readinessProbe httpGet 경로를 /actuator/readiness 로 패치한다(readiness 그룹 경로 /actuator/health/readiness 를 잘못 적은 것, 앱에 없어 404). liveness 는 그대로라 재시작이 없다. 정리는 경로 복원이다",
      "롤아웃: 이 Deployment 는 maxUnavailable 1, maxSurge 0 이라 패치 즉시 옛 파드가 내려가고 Service 엔드포인트가 빈다(녹화 case-f17-r-v3-ab7228ad, Killing +2초, Unhealthy 31건)",
      "부하: load.north_south commerce surge.js 35rps, 램프업 2분",
      "경로: 체크아웃 order → payment → 외부 PG 승인 → payment → core-banking-transfer 정산 이체, 은행 이체 nginx → api → account → transfer",
@@ -4246,7 +4246,7 @@
    "root_cause": {
     "target_kind": "service",
     "target_id": "commerce-user",
-    "trigger_target_id": "commerce-gateway",
+    "trigger_target_id": null,
     "mechanism": "AuthGuard.verifyIfWrite 는 쓰기 메서드(POST/PUT/DELETE/PATCH)에만 토큰을 확인하고 register, login 은 면제한다. 토큰 확인은 같은 객체의 verifyToken 을 직접 부르는 자기 호출(AuthGuard.java:44)이라, verifyToken 에 붙은 @CircuitBreaker(user), @Retry(user) 와 401 을 던지는 폴백 verifyTokenFallback 이 스프링 프록시를 거치지 않아 적용되지 않는다. readinessProbe 가 실패해 user-service 엔드포인트가 비면 verify-token 호출이 연결 거부(ResourceAccessException)로 바로 실패하고, 게이트웨이 GlobalExceptionHandler 는 ServiceException 만 다루므로 Spring 기본 처리로 500 이 되며 Tomcat SEVERE 'Servlet.service() ... threw exception' 이 남는다. 로그인은 토큰 확인을 면제받아 ProxyService.forwardToUser(@CircuitBreaker(user)+@Retry(user))로 가므로 재시도 3회 뒤 user 서킷이 열리고, 폴백 unavailable 이 WARN 'Downstream unavailable for POST /api/users/login: ...' 을 남기고 502 를 낸다. 읽기 경로는 토큰 확인을 타지 않으므로 무영향이다. 결함 보유 대상은 user-service 의 배포 설정(readinessProbe)이고, 토큰 확인의 자기 호출은 증상 코드가 401 이 아니라 500 이 되는 이유(피해 설명)다. 이 시나리오가 성립하려면 롤아웃 의미론이 전제된다: replicas 1 에서 k8s 는 maxUnavailable 을 25%→0 으로 내림하고 maxSurge 를 →1 로 올림하므로, 기본 설정에서는 새 파드가 Ready 가 되지 못한 채 헌 파드가 계속 서비스해 장애가 아예 발생하지 않는다(2026-07-28 실측). testbed-user 에 maxUnavailable:1/maxSurge:0 을 명시해 헌 파드가 먼저 내려가도록 했다.",
     "code_anchor": [
      "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:31-48 (verifyIfWrite: 쓰기 메서드에만 토큰 확인, register/login 면제, 44행에서 같은 객체의 verifyToken 을 직접 부르는 자기 호출)",
@@ -4328,7 +4328,7 @@
        "fault": {
         "failureThreshold": 3,
         "httpGet": {
-         "path": "/actuator/health/f16-h-fail",
+         "path": "/healthz",
          "port": 8085,
          "scheme": "HTTP"
         },
@@ -4365,10 +4365,10 @@
     ],
     "root_cause": "근본 원인은 회원 서비스의 준비 확인 실패로 토큰 검증기가 사라진 것이다. 로그인의 502 와 쓰기의 500 은 게이트웨이나 하류 서비스의 잘못이 아니라 검증기가 없어서 난 결과다. 게이트웨이의 토큰 확인은 검증기가 없으면 401 로 닫도록 적혀 있지만, 같은 객체 안에서 불러 그 규칙이 돌지 않아 500 으로 보인다.",
     "design_notes": [
-     "주입: k8s.probe 가 testbed-user 의 readinessProbe 를 /actuator/health/f16-h-fail 로 바꾼다. maxUnavailable 1, maxSurge 0 이라 헌 파드가 먼저 종료된다. cleanup 은 원본 probe 복원 후 롤아웃 완료 대기",
+     "주입: k8s.probe 가 testbed-user 의 readinessProbe 경로를 /healthz 로 바꾼다(다른 스택의 관례 경로를 옮겨 적은 오설정, 앱에 없어 404). maxUnavailable 1, maxSurge 0 이라 헌 파드가 먼저 종료된다. cleanup 은 원본 probe 복원 후 롤아웃 완료 대기",
      "부하: load.north_south surge.js 35rps",
      "경로: 게이트웨이 AuthGuard.verifyIfWrite 는 쓰기(POST/PUT/DELETE/PATCH)에서만 verifyToken 으로 user-service 를 부르는데, 같은 객체 안의 자기 호출이라 @Retry(user), @CircuitBreaker(user), 401 폴백이 적용되지 않고 연결 거부가 500 이 된다. 로그인은 ProxyService.forwardToUser 의 user 서킷과 재시도를 타 502 가 된다. GET 은 토큰 확인을 거치지 않는다",
-     "v3 녹화(case-f16-h-v3-2f0555c7, case-f16-h-v3-f069f7c9): 주입 중 POST /api/users/** 502(로그인), 토큰을 단 POST /api/orders/**, POST, DELETE /api/carts/** 500(게이트웨이 SEVERE verify-token Connection refused 24줄, 95줄), GET /api/products/**, /api/carts/** 200. 같은 구간의 POST, DELETE /api/carts/** 401 은 그때 부하가 토큰 없이 보낸 장바구니 쓰기 몫이고, 2026-11 부하 수정으로 장바구니 쓰기에 토큰을 붙인 뒤에는 생기지 않는다"
+     "v3 녹화 case-f16-h-v3-2f0555c7: 주입 중 POST /api/users/** 502(로그인, 표본 324), 토큰을 단 POST /api/orders/** 500(표본 1), 게이트웨이 SEVERE verify-token Connection refused 24줄, GET /api/products/**, /api/carts/** 200. v3 녹화 case-f16-h-v3-f069f7c9: 로그인 502(표본 294), 토큰을 단 POST /api/carts/** 500(표본 5), DELETE /api/carts/** 500(표본 5), POST /api/orders/** 500(표본 3), SEVERE verify-token Connection refused 90줄(Connect timed out 5줄 따로), GET 200. 두 녹화 모두 같은 구간의 POST, DELETE /api/carts/** 401 은 그때 부하가 토큰 없이 보낸 장바구니 쓰기 몫이고, 2026-11 부하 수정으로 장바구니 쓰기에 토큰을 붙인 뒤에는 생기지 않는다. 두 녹화의 probe 실패 경로는 2026-11-12 바꾸기 전 값이다"
     ]
    }
   },

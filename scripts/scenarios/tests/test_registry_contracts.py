@@ -472,6 +472,59 @@ class RegistryContractTests(unittest.TestCase):
                     f"{profile_id}: tag_pattern 이 받아주는데 allowed_scenarios 에 없다",
                 )
 
+    def test_injection_parameters_carry_no_scenario_id(self) -> None:
+        """주입 매개변수 값에 시나리오 id 가 들어가면 관제 데이터에 정답 꼬리표가 남는다(원칙 8).
+
+        k8s.probe 의 실패 경로가 `/actuator/health/f16-h-fail` 꼴이었고, 그 경로가 녹화의
+        kcm_resources_history(새 ReplicaSet 스펙)에 그대로 남았다(v3 F05-H, F16-H, F17-R 녹화,
+        2026-11-12 확인). 현실 장애에는 없는 흔적이다. 대소문자를 가리지 않고 `f16-h` 꼴을 찾는다.
+
+        세 출처(주입 수단 계약 scenario_parameters, 진행 대본 level parameters, 정답지
+        injected_fault)를 모두 본다. `scenario_tag` 는 러너 호스트의 k6 실행 태그라 관제
+        데이터에 닿지 않아 뺀다. KNOWN 은 이 시험을 둘 때 이미 있던 값이다(고칠 때 여기서 지운다).
+        새로 생기면 실패한다.
+        """
+        scenario_id = re.compile(r"(?i)(?<![a-z0-9])f\d{2}-[a-z][a-z0-9]*(?![a-z0-9])")
+        exempt_keys = {"scenario_tag"}
+        known = {
+            ("F03-H", "configmap", "scenario-f03-h-order-thread-pool"),
+            ("F03-H", "job", "scenario-f03-h-order-thread-pool"),
+            ("F05-G", "invalid_image", "commerce-payment:scenario-invalid-f05-g"),
+            ("F07-P", "configmap", "scenario-f07-p-pricing-bulkhead"),
+            ("F07-P", "job", "scenario-f07-p-pricing-bulkhead"),
+            ("F08-G", "annotation_key", "rca.lucida.ai/f08-g-distractor"),
+            ("F08-H", "annotation_key", "rca.lucida.ai/f08-h-rollout"),
+        }
+        found: set[tuple[str, str, str]] = set()
+
+        def walk(owner: str, node, key: str = "") -> None:
+            if isinstance(node, dict):
+                for child_key, value in node.items():
+                    if child_key in exempt_keys:
+                        continue
+                    if scenario_id.search(child_key):
+                        found.add((owner, "<key>", child_key))
+                    walk(owner, value, child_key)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(owner, value, key)
+            elif isinstance(node, str) and scenario_id.search(node):
+                found.add((owner, key, node))
+
+        for profile in self.profiles["profiles"].values():
+            for owner, parameters in (profile.get("scenario_parameters") or {}).items():
+                walk(owner, parameters)
+        for owner, controller in self.controllers["controllers"].items():
+            for level in controller["profile"].get("levels", []):
+                walk(owner, level.get("parameters") or {})
+        metadata = json.loads((ROOT / "registry" / "scenario-metadata.json").read_text(encoding="utf-8"))
+        for owner, entry in metadata["scenarios"].items():
+            for level in (entry.get("injected_fault") or {}).get("levels", []):
+                walk(owner, level.get("parameters") or {})
+
+        self.assertEqual(sorted(found - known), [], "injection parameters carry a scenario id")
+        self.assertEqual(sorted(known - found), [], "a known violation was fixed: drop it from KNOWN")
+
     def test_every_pg_lock_executor_reads_the_pid_from_real_psql_output(self) -> None:
         """pid 추출은 실행기마다 따로 구현돼 있었고, 같은 결함이 네 번 반복됐다.
 
@@ -1098,7 +1151,7 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(parameters["baseline"]["httpGet"], {
             "path": "/actuator/health", "port": 8083, "scheme": "HTTP",
         })
-        self.assertEqual(parameters["fault"]["httpGet"]["path"], "/actuator/health/f05-h-fail")
+        self.assertEqual(parameters["fault"]["httpGet"]["path"], "/health")
         h_success = {item["observation"]: item for item in f05h["success"]["all"]}
         self.assertEqual(h_success["termination_reason"]["value"], "Error")
         self.assertEqual(h_success["restart_count"]["value"], 2)

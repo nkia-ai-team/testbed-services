@@ -97,7 +97,7 @@
                 "fault": {
                   "failureThreshold": 3,
                   "httpGet": {
-                    "path": "/actuator/health/f16-h-fail",
+                    "path": "/healthz",
                     "port": 8085,
                     "scheme": "HTTP"
                   },

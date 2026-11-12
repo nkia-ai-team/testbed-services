@@ -97,7 +97,7 @@
                 "fault": {
                   "failureThreshold": 3,
                   "httpGet": {
-                    "path": "/actuator/health/f17-r-fail",
+                    "path": "/actuator/readiness",
                     "port": 8082,
                     "scheme": "HTTP"
                   },

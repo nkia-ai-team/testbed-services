@@ -97,6 +97,17 @@ class GenericKubernetesExecutorTests(unittest.TestCase):
         self.assertIn('arg p "$probe"', script)
         self.assertIn('patch "$original"', script)
 
+    def test_probe_executor_table_matches_the_registry_contract(self) -> None:
+        # 실행기 안 승인 매개변수와 profiles.json scenario_parameters 는 같은 값이어야 한다(G2).
+        # 한쪽만 바꾸면(실패 경로 교체 등) 실행기가 승인값 불일치로 주입과 정리를 거부한다.
+        import json
+
+        registry = json.loads((ROOT / "registry" / "profiles.json").read_text(encoding="utf-8"))
+        contract = registry["profiles"][probe.PROFILE_ID]["scenario_parameters"]
+        self.assertEqual(probe.APPROVED_PARAMETERS, contract)
+        for scenario_id, params in contract.items():
+            probe.validate(scenario_id, params, {})
+
     def test_env_executor_whitelists_target_and_changed_key(self) -> None:
         hikari = {
             "namespace": "rca-testbed-commerce", "deployment": "testbed-payment", "container": "payment-service",

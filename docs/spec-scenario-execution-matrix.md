@@ -44,7 +44,7 @@ cleanup이 확인된 경우, `partial`은 스크립트·강도 또는 접근 경
 | F04-H | outbox relay stop | K/kubectl k8s.env(OUTBOX_RELAY_ENABLED=false) + R/ssh load.north_south | order DB outbox 미발행 적체(database.commerce_outbox_unpublished_count) + shipping lag 평탄 | K env 원복·rollout, relay 복원 시 backlog drain | ready — 제어는 앱의 @ConditionalOnProperty, 관측은 commerce PG용 신설 |
 | F04-P | ledger rate limit | K/kubectl fault config/build | banking transfers→ledger | K 처리율 복원·lag drain | blocked — rate-control 표면 없음 |
 | F05-R | memory limit + load | K/kubectl payment limit patch + R/ssh | checkout→payment pod | K 원 spec rollback, R load 종료 | ready — adaptive ladder가 안전 강도 탐색, restart 예산 3회 stop-loss(07-18) |
-| F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | ready — fault probe(/actuator/health/f05-h-fail) 고정, restart 예산 4회(07-18) |
+| F05-H | liveness misconfig | K/kubectl probe patch | payment restart→checkout | K 원 probe rollback | ready — fault probe(/health) 고정, restart 예산 4회(07-18) |
 | F05-P | node memory pressure | 대상 worker/ssh | 해당 worker의 commerce·food pods | 같은 worker process 종료 | partial — 배치 지도 확보(07-20, F09-R 참조). eviction 안전 강도 실측만 잔여 |
 | F05-G | invalid image rollout | K/kubectl → `rca-testbed-commerce/testbed-payment` | 새 replica만 실패, 기존 replica 유지 | K에서 snapshot한 원 image 복원 | ready — target/image 정본과 ImagePullBackOff 관측 고정 (음성, v3 재캡처 복원 07-24) |
 | F06-R | external hang | K/kubectl → commerce MockServer API | payment outbound timeout | 같은 MockServer 기본 200 | ready — path·restore 계약 확인됨 |
