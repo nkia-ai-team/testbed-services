@@ -100,9 +100,9 @@ commerce 의 모든 사용자 요청은 nginx → api-gateway(BFF) 를 지나 �
   - order 자체 장애가 아님: order 파드 Ready, 재시작 없음, 오류 로그 없음, 처리 시간 평소와 같음. order 가 죽거나 막혔다면(2026-10-06 구간, F03-H 스레드풀 고갈) 게이트웨이 로그에 I/O error 나 Read timed out 이 먼저 나와 실패율로 서킷이 열린다.
   - payment, 외부 결제, 은행 정산 장애가 아님: 그 경우 order 가 checkout 을 처리하다 실패해 order 오류 로그(결제 실패, 502)가 나고 게이트웨이는 order 의 5xx 응답을 그대로 돌려준다(F01-H, F06-R, F08-P, F40-R). 이 시나리오에서는 order 에 닿은 호출이 모두 200 이다.
   - 진입 폭주나 게이트웨이 과부하가 아님: 상품 목록, 장바구니 라우트 지연이 그대로이고 게이트웨이 재시작, CPU 포화가 없다. 동반 부하는 F08-P(20rps)보다 낮은 8rps 다.
-  - 인증 실패가 아님: 실패 코드가 401 이 아니라 502 이고 user 서킷과 로그인은 정상(F16-H 와 다름).
+  - user 쪽 인증 경로 장애가 아님: 열린 서킷이 order 이고 user 서킷과 로그인은 정상이며 testbed-user 에 롤아웃이나 Readiness 실패가 없다(F16-H 는 로그인 502, 토큰을 단 쓰기 500).
   - 코드나 이미지 배포가 아님: 새 ReplicaSet 의 이미지(commerce-gateway:latest), 프로브, 자원이 옛 ReplicaSet 과 같고 env 한 줄만 다르다.
-- contrast_with: F08-P(같은 checkout 경로의 설정 배포지만 바뀐 것이 order 의 payment read-timeout 이라 요청이 하류에 닿은 뒤 시간 초과로 끊기고 order 가 5xx 를 낸다), F03-H(order 스레드풀 고갈로 게이트웨이 order 서킷이 하류 실패 때문에 열린다), F16-H(게이트웨이를 지나는 쓰기가 실패하지만 원인은 user 하류의 readiness, 401), F39-R(호출하는 쪽 설정 배포가 정상 하류 호출을 스스로 끊는 같은 계열, 은행 account 의 하류 주소).
+- contrast_with: F08-P(같은 checkout 경로의 설정 배포지만 바뀐 것이 order 의 payment read-timeout 이라 요청이 하류에 닿은 뒤 시간 초과로 끊기고 order 가 5xx 를 낸다), F03-H(order 스레드풀 고갈로 게이트웨이 order 서킷이 하류 실패 때문에 열린다), F16-H(게이트웨이를 지나는 쓰기가 실패하지만 원인은 user 의 readiness 실패, 로그인 502 와 토큰을 단 쓰기 500), F39-R(호출하는 쪽 설정 배포가 정상 하류 호출을 스스로 끊는 같은 계열, 은행 account 의 하류 주소).
 
 ## 9. 러너 판정 조건과 강도, 부하 계산 (원칙 9)
 

@@ -516,6 +516,36 @@ class AnswerKeyContractTests(unittest.TestCase):
         walk("", self.metadata.get(scenario_id) or {})
         return out
 
+    def test_answer_keys_do_not_claim_the_unreachable_token_fallback_401(self) -> None:
+        # 게이트웨이 AuthGuard.verifyIfWrite 는 verifyToken 을 같은 객체 안에서 직접 부른다(자기 호출).
+        # 그래서 verifyToken 에 붙은 user 서킷, 재시도, 401 폴백이 적용되지 않고, user 를 쓸 수 없으면
+        # 토큰을 단 쓰기는 401 이 아니라 500 이다. 정답지가 "user 를 못 쓰면 쓰기가 401(fail-close)"
+        # 이라고 적으면 녹화에 없는 증거를 정답으로 삼는다(원칙 3). v3 녹화 두 건의 주입 중 401 은 토큰
+        # 없이 보낸 쓰기 몫이었고 토큰을 단 쓰기는 500 이었다(2026-11-12 Q18). 코드가 바뀌어 자기 호출이
+        # 사라지면 앞 단언이 실패해 정답지를 다시 보게 한다.
+        guard = (REPO / "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java").read_text(
+            encoding="utf-8"
+        )
+        body = re.search(r"public void verifyIfWrite\(.*?\n    }\n", guard, re.S)
+        self.assertIsNotNone(body, "AuthGuard.verifyIfWrite not found")
+        self.assertRegex(body.group(0), r"=\s*verifyToken\(token\)", "verifyIfWrite no longer self-invokes verifyToken")
+
+        context = re.compile(
+            r"user-service|user 서킷|user circuit|verify-token|verifyToken|토큰 확인|token check|"
+            r"fail-close|fail closed|AuthGuard|검증기|verifier|쓰기[^.]{0,30}401|\bwrites?\b[^.]{0,30}401",
+            re.I,
+        )
+        # 폴백이 돌지 않는다는 설명이나 401 과 대조하는 문장은 주장이 아니다. "토큰 없는 여정" 처럼
+        # 다른 것을 꾸미는 부정(없는)은 주장을 덮지 않게 뺀다.
+        negation = re.compile(r"아니|않|없이|없어|\bnot\b|\bno\b|n't|\bnever\b|bypass|instead of 401|rather than 401", re.I)
+        problems = []
+        for scenario_id in sorted(self.metadata):
+            for path, text in self._prose_fields(scenario_id):
+                for sentence in re.split(r"(?<=[.。])\s+|\n|; ", text):
+                    if "401" in sentence and context.search(sentence) and not negation.search(sentence):
+                        problems.append(f"{scenario_id}.{path}: {sentence[:120]}")
+        self.assertEqual(problems, [], "answer key claims a 401 the self-invoked token check never returns")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3792,7 +3792,7 @@
     "contrast_with": [
      "F01-P (같은 banking hop 실패지만 원인이 Oracle 잠금이다. 처음엔 10초를 꽉 채우고, 롤아웃 없이 같은 파드가 health 시간 초과로 엔드포인트에서 빠진다)",
      "F05-H (같은 probe 계열이지만 liveness라 컨테이너가 재시작한다 — restart_count로 갈린다)",
-     "F16-H (같은 readiness 제거 계열이지만 대상이 user-service라 피해가 인증 401로 나타난다)"
+     "F16-H (같은 readiness 제거 계열이지만 대상이 user-service라 피해가 게이트웨이의 로그인 502 와 토큰을 단 쓰기 500 으로 나타나고 읽기는 정상이다)"
     ]
    },
    "scoring": {
@@ -4230,12 +4230,12 @@
    }
   },
   "F16-H": {
-   "title": "user-service readiness failure → gateway auth fail-close, writes-only 401 (reads normal)",
-   "description": "api-gateway validates tokens against user-service only for write requests (POST/PUT/DELETE/PATCH), and when validation is impossible it closes with 401 rather than letting them through (fail-close). So when user-service disappears, reads are fine but writes alone fail with 401. Because the symptom status code is 4xx, it reads as a 'token/permission problem', but the actual root cause is user-service availability. The mismatch between symptom layer and cause layer is this case's identity.",
-   "cause": "testbed-user's readinessProbe replaced with a failing path → pods drop out of the endpoints, making user-service unreachable → AuthGuard.verifyToken fails → after @Retry(user) 3 attempts, @CircuitBreaker(user) opens → verifyTokenFallback fail-closes with 401 UNAUTHORIZED → all write requests 401. GET never passes through AuthGuard and stays normal",
+   "title": "user-service readiness failure → gateway cannot reach the token verifier: login 502, token-bearing writes 500, reads normal",
+   "description": "api-gateway checks the token of every write request (POST/PUT/DELETE/PATCH, except register and login) by calling user-service verify-token, and forwards login itself straight to user-service. When user-service drops out of its endpoints, both paths break, but in different ways. Login goes through the gateway's user circuit breaker and retry, so it ends in 502 and the gateway logs that circuit 'user' is OPEN. The token check is called from inside the same AuthGuard object, so the circuit breaker, the retry and the 401 fallback written on it never apply: the connection-refused error to verify-token escapes as a plain 500. Reads never call user-service and stay 200. The failures show up on the gateway's login, cart, order and checkout routes, but the root cause is user-service availability, and KCM shows why it is gone: a testbed-user rollout whose new pod keeps failing its readiness probe.",
+   "cause": "testbed-user's readinessProbe replaced with a failing path → the rollout (maxUnavailable 1, maxSurge 0) removes the old pod first and the new pod never becomes Ready, so the user-service endpoints are empty → gateway login forwarding (ProxyService.forwardToUser, @CircuitBreaker(user)+@Retry(user)) gets 'Connection refused', the user circuit opens and login returns 502 → the token check AuthGuard.verifyToken is self-invoked from verifyIfWrite, so its circuit breaker, retry and 401 fallback do not apply; the ResourceAccessException is not handled by the gateway's exception handler and every token-bearing write returns 500 → GET never passes through the token check and stays normal",
    "injection_summary": "The testbed-user Deployment's readinessProbe is patched to a failing httpGet path. With maxUnavailable:1/maxSurge:0, the old pod terminates first and the new pod never becomes Ready, so the service endpoints empty out. Load is supplied by a north-south 35 rps companion plus the baseline loadgen, with read/write phases aggregated separately. Cleanup restores the original probe and waits for rollout completion.",
-   "user_impact": "Token-checked write requests (add to cart, order, checkout) are rejected with 401, and login, which goes straight to user-service, fails with 502 because the gateway's user circuit breaker is open. Reads like product browsing and search are normal, so the site appears alive, and users perceive it as an authentication error 'as if they were logged out'. In reality the token is valid; only the verifier is gone.",
-   "distinguishing_evidence": "The decisive evidence is the read/write asymmetry. The combination of 401 on token-checked writes, 502 on login (which goes straight to user) and normal reads arises only from the structure where the gateway places an auth guard on the write path alone and that guard fail-closes. The 401 status code invites misreading as an auth/token problem, but the token is valid and the verifying service is absent — an availability root cause behind a 4xx symptom. The second axis is the user Deployment's available replicas being 0, which confirms absence, not latency. Requests never even reach downstream domain services (inventory, payment), so their clean metrics also help narrow the root cause.",
+   "user_impact": "Login fails with 502 after about 0.6 seconds (three attempts, then the open user circuit), so users who are not logged in yet cannot log in. Users who already hold a valid token get 500 when they add to cart, empty the cart or check out, because the gateway cannot reach the verifier. Product browsing, search and cart views keep working, so the site looks alive while nobody can buy. The token itself is valid; only the verifier is gone. (The gateway's token check is written to fail closed with 401 when the verifier is unavailable, but it is called inside the same object so that rule never runs. This code defect is why the writes show 500 instead of 401; it widens the confusion but is not the root cause.)",
+   "distinguishing_evidence": "The decisive evidence is on the user-service side, not on the gateway. KCM records a testbed-user rollout (ScalingReplicaSet: the old ReplicaSet to 0 and the new one to 1 in the same second), and the new pod stays Running without restarts while it repeats 'Readiness probe failed: HTTP probe failed with statuscode: 404' every 10 seconds; the new ReplicaSet's readinessProbe path in kcm_resources_history differs from the old /actuator/health. In the same minutes every gateway call to testbed-user fails at connect: WARN 'Downstream unavailable for POST /api/users/login: ... CircuitBreaker 'user' is OPEN and does not permit further calls' and '... I/O error on POST request for \"http://testbed-user:8085/api/users/login\": Connection refused', and SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused'. None of these lines appear in the normal period. The status pattern follows from that: login 502, token-bearing writes 500, reads 200. The failed writes end at the gateway's token check and never reach order, cart, payment or inventory, which log no errors; testbed-gateway has no rollout, and the circuit that opened is user, not the route of the failing writes.",
    "domain": "commerce",
    "class": "A",
    "fault_pattern": "P2",
@@ -4247,26 +4247,31 @@
     "target_kind": "service",
     "target_id": "commerce-user",
     "trigger_target_id": "commerce-gateway",
-    "mechanism": "AuthGuard.verifyIfWrite는 WRITE_METHODS(POST/PUT/DELETE/PATCH)에만 적용되고 register·login은 면제한다. 검증 호출 verifyToken은 @CircuitBreaker(user)+@Retry(user)로 감싸여 있고, 폴백 verifyTokenFallback은 값을 통과시키지 않고 401 UNAUTHORIZED를 던진다 — 검증 불가 토큰을 통과시키지 않겠다는 의도적 fail-close다. readinessProbe가 실패하면 파드가 서비스 엔드포인트에서 제거되어 게이트웨이의 user 호출이 전부 실패하고, 결과적으로 쓰기 경로만 401이 된다. 읽기 경로는 가드 자체를 타지 않으므로 무영향이다. 이 시나리오가 성립하려면 롤아웃 의미론이 전제된다 — replicas 1에서 k8s는 maxUnavailable을 25%→0으로 내림하고 maxSurge를 →1로 올림하므로, 기본 설정에서는 새 파드가 Ready가 되지 못한 채 헌 파드가 계속 서비스해 장애가 아예 발생하지 않는다(2026-07-28 실측). testbed-user에 maxUnavailable:1/maxSurge:0을 명시해 헌 파드가 먼저 내려가도록 했다.",
+    "mechanism": "AuthGuard.verifyIfWrite 는 쓰기 메서드(POST/PUT/DELETE/PATCH)에만 토큰을 확인하고 register, login 은 면제한다. 토큰 확인은 같은 객체의 verifyToken 을 직접 부르는 자기 호출(AuthGuard.java:44)이라, verifyToken 에 붙은 @CircuitBreaker(user), @Retry(user) 와 401 을 던지는 폴백 verifyTokenFallback 이 스프링 프록시를 거치지 않아 적용되지 않는다. readinessProbe 가 실패해 user-service 엔드포인트가 비면 verify-token 호출이 연결 거부(ResourceAccessException)로 바로 실패하고, 게이트웨이 GlobalExceptionHandler 는 ServiceException 만 다루므로 Spring 기본 처리로 500 이 되며 Tomcat SEVERE 'Servlet.service() ... threw exception' 이 남는다. 로그인은 토큰 확인을 면제받아 ProxyService.forwardToUser(@CircuitBreaker(user)+@Retry(user))로 가므로 재시도 3회 뒤 user 서킷이 열리고, 폴백 unavailable 이 WARN 'Downstream unavailable for POST /api/users/login: ...' 을 남기고 502 를 낸다. 읽기 경로는 토큰 확인을 타지 않으므로 무영향이다. 결함 보유 대상은 user-service 의 배포 설정(readinessProbe)이고, 토큰 확인의 자기 호출은 증상 코드가 401 이 아니라 500 이 되는 이유(피해 설명)다. 이 시나리오가 성립하려면 롤아웃 의미론이 전제된다: replicas 1 에서 k8s 는 maxUnavailable 을 25%→0 으로 내림하고 maxSurge 를 →1 로 올림하므로, 기본 설정에서는 새 파드가 Ready 가 되지 못한 채 헌 파드가 계속 서비스해 장애가 아예 발생하지 않는다(2026-07-28 실측). testbed-user 에 maxUnavailable:1/maxSurge:0 을 명시해 헌 파드가 먼저 내려가도록 했다.",
     "code_anchor": [
-     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:31-48 (verifyIfWrite — 쓰기 메서드에만 토큰 검증, register/login 면제)",
-     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:51-58 (verifyToken — @CircuitBreaker(user)+@Retry(user))",
-     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:60-63 (verifyTokenFallback — 401 UNAUTHORIZED fail-close)",
-     "commerce/api-gateway/src/main/resources/application.yml:18-21 (services.user connect 3s / read 10s), :51-57 (CB user window10/min5/50%/open5s), :102-106 (retry user max-attempts 3·200ms·exp×2)",
-     "commerce/k8s/25-user-service.yaml:9-22 (replicas 1 + strategy maxUnavailable 1 / maxSurge 0 — readiness 결함이 실제 장애가 되기 위한 전제)"
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:31-48 (verifyIfWrite: 쓰기 메서드에만 토큰 확인, register/login 면제, 44행에서 같은 객체의 verifyToken 을 직접 부르는 자기 호출)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:50-58 (verifyToken: @CircuitBreaker(user)+@Retry(user) 와 fail-close 주석이 붙어 있지만 자기 호출이라 스프링 프록시를 거치지 않아 적용되지 않는다)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/AuthGuard.java:60-63 (verifyTokenFallback: 401 을 던지는 폴백이지만 위 이유로 불리지 않는다)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/config/GlobalExceptionHandler.java:12-20 (handleServiceException: ServiceException 만 다뤄 토큰 확인의 ResourceAccessException 은 Spring 기본 500 과 Tomcat SEVERE 'Servlet.service()' 로 끝난다)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:57-61 (forwardToUser: @CircuitBreaker(user)+@Retry(user). 로그인이 이 서킷과 재시도를 탄다)",
+     "commerce/api-gateway/src/main/java/com/commerce/gateway/service/ProxyService.java:102-106 (unavailable: WARN 'Downstream unavailable for {} {}: {}' 뒤 BAD_GATEWAY 502)",
+     "commerce/api-gateway/src/main/resources/application.yml:18-21 (services.user connect 3s / read 10s), :51-57 (CB user window10/min5/50%/open5s), :102-106 (retry user max-attempts 3, 200ms, exp×2)",
+     "commerce/k8s/25-user-service.yaml:9-24 (replicas 1 + strategy maxUnavailable 1 / maxSurge 0: readiness 결함이 실제 장애가 되기 위한 전제)"
     ],
     "infra_anchor": "k8s.probe executor가 testbed-user Deployment의 readinessProbe httpGet.path를 실패 경로로 교체한다. cleanup은 스냅샷한 원본 probe로 복원한다."
    },
    "must_support": [
-    "게이트웨이 쓰기 서버 스팬(commerce-gateway POST, DELETE /api/carts/**, POST /api/orders/**)의 401 비율이 평시 약 0.25(토큰 없는 여정)에서 0.8 이상으로 급증(표본 스팬) — 401 fail-close의 직접 결과",
-    "user Deployment의 available replicas 0 — 검증기가 실제로 사라졌다는 증거",
-    "게이트웨이 에러율 상승 (apm_service_error_rate, commerce-gateway): 로그인이 user 차단기 열림으로 502 를 내서 오른다(토큰을 확인하는 쓰기의 401 도 게이트웨이에서 끝나지만 스팬 오류로 세지 않는다)"
+    "commerce-user 의 Deployment testbed-user 롤아웃 KCM 이벤트(ScalingReplicaSet 으로 옛 ReplicaSet 0, 새 ReplicaSet 1 이 같은 초) 뒤 새 파드가 재시작 없이 Running 인 채 'Readiness probe failed: HTTP probe failed with statuscode: 404' 를 10초마다 되풀이한다. 새 ReplicaSet 스펙(PG kcm_resources_history.yaml)의 readinessProbe httpGet.path 가 옛 ReplicaSet 의 /actuator/health 와 다르다. KCM 지표가 수집되는 녹화에서는 testbed-user available_replicas 가 0 이다",
+     "commerce-gateway WARN 'Downstream unavailable for POST /api/users/login: io.github.resilience4j.circuitbreaker.CallNotPermittedException: CircuitBreaker 'user' is OPEN and does not permit further calls'(그리고 'is HALF_OPEN', 'I/O error on POST request for \"http://testbed-user:8085/api/users/login\": Connection refused')가 주입 직후 급증하고(v3 녹화 두 건 각각 약 8,800줄, 평소 구간 0줄), 게이트웨이 로그인 서버 스팬 POST /api/users/** 가 약 0.6초 만에 502 로 끝난다",
+     "commerce-gateway SEVERE 'Servlet.service() for servlet [dispatcherServlet] in context with path [] threw exception [Request processing failed: org.springframework.web.client.ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused] with root cause' 가 같은 구간에 나타나고(평소 구간 0줄), 토큰을 단 쓰기의 게이트웨이 서버 스팬(POST /api/orders/**, POST, DELETE /api/carts/**)이 500 으로 끝나며 그 트레이스의 verify-token 클라이언트 스팬은 java.net.ConnectException 이다",
+     "게이트웨이 에러율 상승 (apm_service_error_rate, commerce-gateway): 평시 0 에서 주입 중 오른다(v3 녹화 약 13~55%). 로그인 502 와 토큰을 단 쓰기 500 이 모두 스팬 오류로 세어진다"
    ],
    "must_rule_out": [
-    "읽기도 함께 깨진 것이 아님 — 게이트웨이 상품 조회 서버 스팬(GET /api/products/**)에 5xx 가 없다. 읽기까지 무너지면 게이트웨이·네트워크 계열(F07-H·F12-H)",
-    "user-service가 살아 있는 채 느린 것이 아님 — available replicas가 0이어야 한다. 살아 있는데 느리면 지연 계열",
-    "외부 rate-limit(429)이 아님 — 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다. 429면 F01-H",
-    "결제·재고 경로의 장애가 아님 — 실패가 401이고 하류 서비스에 도달조차 하지 않는다. 하류 5xx면 F01-R·F06-H"
+    "읽기도 함께 깨진 것이 아님: 게이트웨이 읽기 서버 스팬(GET /api/products/**, GET /api/carts/**)에 5xx 가 없다. 읽기까지 무너지면 게이트웨이, 네트워크 계열(F07-H, F12-H)",
+     "user-service 가 살아 있는 채 느린 것이 아님: 게이트웨이의 testbed-user 호출이 시간 초과가 아니라 대부분 'Connection refused' 로 바로 실패하고, 새 파드는 'Readiness probe failed ... 404' 를 되풀이한다. KCM 지표가 있으면 testbed-user available_replicas 가 0 이다. 살아 있는데 느리면 지연 계열",
+     "외부 rate-limit(429)이 아님: 외부 PG 호출 클라이언트 스팬(server.address testbed-external-pg-mock)에 429 가 없다. 429면 F01-H",
+     "결제, 재고 경로의 장애가 아님: 실패한 쓰기는 게이트웨이의 토큰 확인에서 끝나 하류에 닿지 않는다. 500 서버 스팬의 트레이스에는 verify-token 클라이언트 스팬(ConnectException)만 있고 order, cart 로 가는 호출이 없으며, order, cart, payment, inventory 에 오류 로그가 없다. 하류 5xx면 F01-R, F06-H",
+     "게이트웨이 설정이나 게이트웨이 서킷 자체의 문제가 아님: testbed-gateway 롤아웃이 없고, 열린 서킷이 'user' 이며 그 앞에 testbed-user 로 가는 'Connection refused' 가 있다. 체크아웃 실패 코드는 502 가 아니라 500 이고, 로그인이 502 다"
    ],
    "beyond_data": {
     "detail": "Evidence moved out of the scored fields (must_support, must_rule_out); monitoring data cannot confirm it: the write-step non-OK response rate jumps (loadgen.write_step_status_rate >= 0.3); the read-step non-OK rate stays low (loadgen.read_step_status_rate < 0.1)",
@@ -4281,10 +4286,10 @@
    "difficulty": "high",
    "related_scenarios": {
     "contrast_with": [
-     "F17-R (banking transfer readiness 실패: 동일한 주입 수단이나 교차도메인 결제 경로가 502로 깨진다 — F16-H는 인증 fail-close라 401)",
-     "F01-H (게이트웨이 429 캐스케이드: 같은 게이트웨이 계층 4xx이나 상태코드와 근본이 다르다)",
-     "F07-H (남북 트래픽 폭주: 게이트웨이가 아픈 점은 같으나 읽기·쓰기가 함께 느려진다)",
-     "F05-H (payment liveness 루프: 파드 부재라는 점은 같으나 증상이 5xx이고 재시작이 관측된다)"
+     "F17-R (banking transfer readiness 실패: 동일한 주입 수단이나 교차도메인 결제 경로가 502로 깨진다. F16-H는 user 가 빠져 로그인 502, 토큰을 단 쓰기 500 이다)",
+     "F01-H (게이트웨이 429 캐스케이드: 같은 게이트웨이 계층 실패이나 상태코드(429)와 근본이 다르다)",
+     "F07-H (남북 트래픽 폭주: 게이트웨이가 아픈 점은 같으나 읽기와 쓰기가 함께 느려진다)",
+     "F05-H (payment liveness 루프: 파드 부재라는 점은 같으나 대상이 payment 이고 재시작이 관측된다. F16-H 는 컨테이너가 Running 으로 남고 재시작이 없다)"
     ]
    },
    "scoring": {
@@ -4335,35 +4340,35 @@
      }
     ]
    },
-   "title_ko": "user-service readiness 실패 → 게이트웨이 인증 fail-close, 쓰기만 401 (읽기 정상)",
-   "description_ko": "api-gateway는 쓰기 요청(POST/PUT/DELETE/PATCH)에 대해서만 user-service로 토큰을 검증하고, 검증이 불가능하면 통과시키지 않고 401로 닫는다(fail-close). 따라서 user-service가 사라지면 조회는 멀쩡한데 쓰기만 401로 실패한다. 증상 상태코드가 4xx라 '토큰·권한 문제'로 읽히지만 실제 근본은 user-service의 가용성이다. 증상 계층과 원인 계층이 어긋나는 것이 이 케이스의 정체성이다.",
-   "cause_ko": "testbed-user의 readinessProbe를 실패하는 경로로 교체 → 파드가 엔드포인트에서 빠져 user-service 도달 불가 → AuthGuard.verifyToken 실패 → @Retry(user) 3회 후 @CircuitBreaker(user) open → verifyTokenFallback이 401 UNAUTHORIZED로 fail-close → 쓰기 요청 전량 401. GET은 AuthGuard를 아예 거치지 않아 정상",
+   "title_ko": "user-service readiness 실패 → 게이트웨이가 토큰 검증기에 닿지 못해 로그인 502, 토큰을 단 쓰기 500 (읽기 정상)",
+   "description_ko": "api-gateway 는 쓰기 요청(POST/PUT/DELETE/PATCH, 회원가입과 로그인 제외)마다 user-service verify-token 을 불러 토큰을 확인하고, 로그인 자체는 user-service 로 그대로 넘긴다. user-service 가 엔드포인트에서 빠지면 두 경로가 함께 깨지지만 모양이 다르다. 로그인은 게이트웨이의 user 서킷브레이커와 재시도를 타므로 502 로 끝나고 게이트웨이에 'CircuitBreaker 'user' is OPEN' 이 남는다. 토큰 확인은 같은 AuthGuard 객체 안에서 부르는 자기 호출이라 거기 붙은 서킷브레이커, 재시도, 401 폴백이 적용되지 않고, verify-token 연결 거부가 그대로 500 이 된다. 읽기는 user-service 를 부르지 않아 200 그대로다. 실패는 게이트웨이의 로그인, 장바구니, 주문, 체크아웃 라우트에 보이지만 근본은 user-service 의 가용성이고, KCM 이 그 이유를 보여 준다: 새 파드가 준비 확인에 계속 실패하는 testbed-user 롤아웃이다.",
+   "cause_ko": "testbed-user 의 readinessProbe 를 실패하는 경로로 교체 → 롤아웃(maxUnavailable 1, maxSurge 0)이 헌 파드를 먼저 내리고 새 파드는 Ready 가 되지 못해 user-service 엔드포인트가 빈다 → 게이트웨이의 로그인 전달(ProxyService.forwardToUser, @CircuitBreaker(user)+@Retry(user))이 'Connection refused' 를 받고 user 서킷이 열려 로그인이 502 → 토큰 확인 AuthGuard.verifyToken 은 verifyIfWrite 안의 자기 호출이라 서킷브레이커, 재시도, 401 폴백이 적용되지 않고, ResourceAccessException 을 게이트웨이 예외 처리기가 다루지 않아 토큰을 단 쓰기가 모두 500 → GET 은 토큰 확인을 거치지 않아 정상",
    "injection_summary_ko": "testbed-user Deployment의 readinessProbe를 실패하는 httpGet 경로로 패치한다. maxUnavailable:1/maxSurge:0이므로 헌 파드가 먼저 종료되고 새 파드는 Ready가 되지 못해 서비스 엔드포인트가 비게 된다. 부하는 north-south 35rps 동반 부하와 baseline loadgen이 공급하며 읽기/쓰기 단계가 분리 집계된다. cleanup은 원본 probe 복원 후 롤아웃 완료 대기.",
-   "user_impact_ko": "토큰을 확인하는 쓰기 요청(장바구니 담기, 주문, 체크아웃)은 401로 거부되고, user-service 로 바로 가는 로그인도 게이트웨이 user 차단기가 열려 502로 실패한다. 상품 조회·검색 등 읽기는 정상이라 사이트가 살아 있는 것처럼 보이고, 사용자에게는 '로그인이 풀린 것 같은' 인증 오류로 인식된다. 실제로는 토큰이 유효하며 검증기가 없을 뿐이다.",
-   "distinguishing_evidence_ko": "결정 증거는 읽기와 쓰기의 비대칭이다. 토큰을 확인하는 쓰기는 401, user 로 바로 가는 로그인은 502 이고 읽기는 정상인 조합은 게이트웨이가 쓰기 경로에만 인증 가드를 두고 그 가드가 fail-close라는 구조에서만 나온다. 상태코드가 401이라 인증·토큰 문제로 오인하기 쉬우나, 토큰은 유효하며 검증 대상 서비스가 부재한 것이다 — 즉 4xx 증상 뒤에 가용성 근본이 있다. 두 번째 축은 user Deployment의 available replicas 0이며, 이는 지연이 아니라 부재임을 확정한다. 하류 도메인 서비스(재고·결제)에는 요청이 도달조차 하지 않으므로 그쪽 지표가 깨끗하다는 점도 함께 근본을 좁힌다.",
+   "user_impact_ko": "로그인은 약 0.6초(재시도 3회, 그 뒤 열린 user 서킷) 만에 502 로 실패해 아직 로그인하지 않은 사용자는 로그인할 수 없다. 유효한 토큰을 이미 가진 사용자의 장바구니 담기, 비우기, 체크아웃은 게이트웨이가 검증기에 닿지 못해 500 으로 실패한다. 상품 조회, 검색, 장바구니 조회는 정상이라 사이트는 살아 있어 보이지만 아무도 살 수 없다. 토큰은 유효하며 검증기가 없을 뿐이다. (게이트웨이의 토큰 확인은 검증기를 쓸 수 없으면 401 로 닫도록 적혀 있지만 같은 객체 안에서 불러 그 규칙이 돌지 않는다. 쓰기가 401 이 아니라 500 으로 보이는 것은 이 코드 결함 때문이며, 혼란을 키우지만 근본 원인은 아니다.)",
+   "distinguishing_evidence_ko": "결정 증거는 게이트웨이가 아니라 user-service 쪽에 있다. KCM 에 testbed-user 롤아웃(ScalingReplicaSet: 옛 ReplicaSet 0, 새 ReplicaSet 1, 같은 초)이 남고, 새 파드는 재시작 없이 Running 인 채 'Readiness probe failed: HTTP probe failed with statuscode: 404' 를 10초마다 되풀이한다. kcm_resources_history 의 새 ReplicaSet readinessProbe 경로는 옛 /actuator/health 와 다르다. 같은 시각 게이트웨이의 testbed-user 호출이 모두 연결 단계에서 실패한다: WARN 'Downstream unavailable for POST /api/users/login: ... CircuitBreaker 'user' is OPEN and does not permit further calls' 와 '... I/O error on POST request for \"http://testbed-user:8085/api/users/login\": Connection refused', SEVERE 'Servlet.service() ... ResourceAccessException: I/O error on POST request for \"http://testbed-user:8085/api/users/verify-token\": Connection refused'. 이 줄들은 평소 구간에 없다. 상태 코드 모양은 여기서 나온다: 로그인 502, 토큰을 단 쓰기 500, 읽기 200. 실패한 쓰기는 게이트웨이의 토큰 확인에서 끝나 order, cart, payment, inventory 에 닿지 않고 그쪽에는 오류 로그가 없다. testbed-gateway 롤아웃은 없고, 열린 서킷은 실패한 쓰기의 라우트가 아니라 user 다.",
    "story_ko": {
-    "overview": "회원 서비스가 준비 확인에 실패해 트래픽에서 빠지자, 게이트웨이가 토큰을 검증하지 못해 장바구니 담기 같은 쓰기만 '인증 실패(401)'로 막고 상품 조회는 멀쩡하다.",
+    "overview": "회원 서비스가 준비 확인에 실패해 트래픽에서 빠지자, 게이트웨이가 회원 서비스에 닿지 못해 로그인은 502, 토큰을 단 장바구니 담기와 결제 같은 쓰기는 500 으로 실패하고 상품 조회는 멀쩡하다.",
     "injected_fault": "회원 서비스(Spring Boot, commerce-user)의 준비 확인(readiness) 경로를 실패하는 주소로 바꿔 다시 배포하고, 약 4분 뒤 되돌린다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "헌 회원 파드가 먼저 내려가고 새 파드는 준비 확인에 실패해, 수 초 만에 회원 서비스에 닿을 곳이 없어진다. API 게이트웨이(Spring Boot, commerce-gateway)에서 로그인이 502 로 실패하기 시작한다."
+      "text": "헌 회원 파드가 먼저 내려가고 새 파드는 준비 확인에 실패해, 수 초 만에 회원 서비스에 닿을 곳이 없어진다. API 게이트웨이(Spring Boot, commerce-gateway)에서 로그인이 연결 거부 끝에 회원 경로 차단기를 열고 502 로 실패하기 시작한다."
      },
      {
       "stage": "지속",
-      "text": "주입 내내 장바구니 담기, 비우기 같은 쓰기 요청은 401 로 거절되고, 상품 조회와 장바구니 조회는 200 으로 정상이다. 사용자에게는 '로그인이 풀린 것 같은' 오류로 보인다."
+      "text": "주입 내내 토큰을 단 장바구니 담기, 비우기, 결제 요청은 게이트웨이의 토큰 확인이 연결 거부로 끝나 500 이 되고, 상품 조회와 장바구니 조회는 200 으로 정상이다. 주문, 장바구니, 결제 서비스에는 실패한 요청이 닿지 않는다."
      },
      {
       "stage": "회복",
       "text": "준비 확인을 되돌린 파드가 뜨자 쓰기가 다시 통과한다."
      }
     ],
-    "root_cause": "근본 원인은 회원 서비스의 준비 확인 실패로 토큰 검증기가 사라진 것이다. 401 은 토큰이나 권한 문제가 아니고, 게이트웨이는 검증할 수 없을 때 닫도록 설계된 대로 동작한 것이다.",
+    "root_cause": "근본 원인은 회원 서비스의 준비 확인 실패로 토큰 검증기가 사라진 것이다. 로그인의 502 와 쓰기의 500 은 게이트웨이나 하류 서비스의 잘못이 아니라 검증기가 없어서 난 결과다. 게이트웨이의 토큰 확인은 검증기가 없으면 401 로 닫도록 적혀 있지만, 같은 객체 안에서 불러 그 규칙이 돌지 않아 500 으로 보인다.",
     "design_notes": [
      "주입: k8s.probe 가 testbed-user 의 readinessProbe 를 /actuator/health/f16-h-fail 로 바꾼다. maxUnavailable 1, maxSurge 0 이라 헌 파드가 먼저 종료된다. cleanup 은 원본 probe 복원 후 롤아웃 완료 대기",
      "부하: load.north_south surge.js 35rps",
-     "경로: 게이트웨이 AuthGuard.verifyToken 은 쓰기(POST/PUT/DELETE/PATCH)에서만 user-service 를 부른다 → @Retry(user) 3회 → @CircuitBreaker(user) open → verifyTokenFallback 401(fail-close). GET 은 AuthGuard 를 거치지 않는다",
-     "녹화: case-f16-h-v3-2f0555c7, case-f16-h-v3-f069f7c9. 주입 중 POST /api/users/** 502(로그인), POST, DELETE /api/carts/** 401, GET /api/products/**, /api/carts/** 200"
+     "경로: 게이트웨이 AuthGuard.verifyIfWrite 는 쓰기(POST/PUT/DELETE/PATCH)에서만 verifyToken 으로 user-service 를 부르는데, 같은 객체 안의 자기 호출이라 @Retry(user), @CircuitBreaker(user), 401 폴백이 적용되지 않고 연결 거부가 500 이 된다. 로그인은 ProxyService.forwardToUser 의 user 서킷과 재시도를 타 502 가 된다. GET 은 토큰 확인을 거치지 않는다",
+     "v3 녹화(case-f16-h-v3-2f0555c7, case-f16-h-v3-f069f7c9): 주입 중 POST /api/users/** 502(로그인), 토큰을 단 POST /api/orders/**, POST, DELETE /api/carts/** 500(게이트웨이 SEVERE verify-token Connection refused 24줄, 95줄), GET /api/products/**, /api/carts/** 200. 같은 구간의 POST, DELETE /api/carts/** 401 은 그때 부하가 토큰 없이 보낸 장바구니 쓰기 몫이고, 2026-11 부하 수정으로 장바구니 쓰기에 토큰을 붙인 뒤에는 생기지 않는다"
     ]
    }
   },
@@ -13364,7 +13369,7 @@
     "order 자체 장애가 아님: order 파드 Ready, 재시작과 오류 로그가 없고 처리 시간이 평소와 같다. order 가 죽거나 막혔다면(2026-10-06 order 재기동 구간, F03-H 스레드풀 고갈) 게이트웨이 로그에 'I/O error' 나 'Read timed out' 이 먼저 쌓여 실패율로 서킷이 열린다",
     "결제, 외부 결제대행사, 은행 정산 장애가 아님: 그 경우 order 가 checkout 을 처리하다 실패해 order 쪽 오류 로그와 5xx 가 생기고 게이트웨이는 order 의 5xx 응답을 그대로 돌려준다(F01-H, F06-R, F08-P, F40-R). 이 시나리오에서 order 에 닿은 checkout 은 모두 200 이다",
     "진입 폭주나 게이트웨이 과부하가 아님: 상품 목록, 장바구니, 로그인 라우트의 지연과 상태가 그대로이고 게이트웨이 재시작이나 CPU 포화가 없으며, 막힌 checkout 은 약 0.3초 만에 502 다.",
-    "인증 실패가 아님: 실패 코드가 401 이 아니라 502 이고 user 서킷과 로그인은 정상이다(F16-H 는 user readiness 실패로 쓰기가 401)",
+    "user 쪽 인증 경로 장애가 아님: 열린 서킷이 'order' 이고 user 서킷과 로그인(POST /api/users/**)은 정상이며, testbed-user 에 롤아웃이나 Readiness 실패가 없다(F16-H 는 user readiness 실패로 로그인이 502, 토큰을 단 쓰기가 500)",
     "코드나 이미지 배포가 아님: 새 ReplicaSet 의 이미지(commerce-gateway:latest), 프로브, 자원이 옛 ReplicaSet 과 같고 env 한 줄만 다르다. 게이트웨이 시작과 health 는 정상이다"
    ],
    "beyond_data": {
@@ -13382,7 +13387,7 @@
     "contrast_with": [
      "F08-P (같은 checkout 경로의 설정 배포지만 바뀐 것이 order 의 payment read-timeout 20ms 라 요청이 하류에 닿은 뒤 시간 초과로 끊기고 order 가 5xx 를 낸다. F64-R 은 order 가 멀쩡하고 게이트웨이 서킷이 order 에 보내지도 않는다)",
      "F03-H (order 스레드풀 고갈로 checkout 이 실패하고 게이트웨이 order 서킷이 열리지만, 하류 시간 초과라는 실제 실패 때문에 열린다. F64-R 은 하류 실패 없이 느린 호출 임계 때문에 열린다)",
-     "F16-H (게이트웨이를 지나는 쓰기가 실패하지만 원인은 user 하류의 readiness 이고 게이트웨이 인증 fail-close 로 401 이다)",
+     "F16-H (게이트웨이를 지나는 쓰기가 실패하지만 원인은 user 의 readiness 실패다. 로그인은 user 서킷이 열려 502, 토큰을 단 쓰기는 토큰 확인이 연결 거부로 끝나 500 이다)",
      "F39-R (호출하는 쪽 설정 배포가 정상 하류 호출을 스스로 끊는 같은 계열, banking account 의 하류 주소를 다른 호스트로 바꿈)"
     ]
    },
