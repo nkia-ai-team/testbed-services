@@ -15,8 +15,8 @@
                                         (실측: dpm_session_local.body 의
                                          "program":"rca-F01-R-inventory-lock"),
                rca-scenario, rca.lucida.ai/  실행기가 붙인 라벨 키와 주석 키
-               rca-baseline-, lucida.io/db-client|workload, current_setting('lucida.
-                                        평시 부하 파일, 클라이언트 파드 라벨, 러너 감별 SQL(v4 LEAK 4회차)
+               rca-baseline-, lucida.io/db-client|workload, current_setting('lucida.<러너 옛 설정 6개>'
+                                        평시 부하 파일, 클라이언트 파드 라벨, 러너 감별 SQL(v4 LEAK 4, 5회차)
   inject_name  scenario-...               주입 자원 이름에 붙은 꼬리표(Job, ConfigMap, 이미지 태그,
                                         mock 응답 값). scenario-profile-state, scenario-runs 는
                                         inject_path 가 센다
@@ -58,9 +58,11 @@ PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?i)(?<![a-z0-9])rca-F\d{2}-[A-Za-z0-9_-]+|(?<![a-z0-9])rca-scenario(?![a-z0-9])"
         r"|(?<![a-z0-9])rca\.lucida\.ai/"
         # v4 LEAK 2회차에 코드에서 뺀 도구 흔적: 평시 부하 파일 rca-baseline-*, 클라이언트 파드 라벨
-        # lucida.io/db-client, lucida.io/db-workload, 러너 감별 SQL 의 current_setting('lucida.*').
-        # lucida 단독은 제품 이름이라 잡지 않는다.
-        r"|(?<![a-z0-9])rca-baseline-|(?<![a-z0-9])lucida\.io/db-(?:client|workload)|current_setting\('lucida\."
+        # lucida.io/db-client, lucida.io/db-workload, 러너 감별 SQL 이 쓰던 설정 이름 여섯 개.
+        # lucida 단독과 current_setting('lucida.* 전체는 잡지 않는다: 제품 자신의 SQL 도
+        # current_setting('lucida.asset_actor', true), 'lucida.collect_core_protocol' 같은 설정을 쓴다(5회차).
+        r"|(?<![a-z0-9])rca-baseline-|(?<![a-z0-9])lucida\.io/db-(?:client|workload)"
+        r"|current_setting\('lucida\.(?:scenario_tag|lock_relation|index_schema|index_table|index_name|payment_t1)'"
     ),
     "inject_name": re.compile(r"(?i)(?<![a-z0-9])scenario-(?!profile-state|runs(?![a-z0-9]))[a-z0-9]+"),
     # v4 C6b 리뷰 3회차 하 2: 주입 도구의 명령줄(파드 안 기동기의 알람과 exec, 셸 이름, 수신 버퍼 sysctl)도

@@ -81,6 +81,7 @@ ID_FORMS = {
     "client_pod_label": ("inject_tag", '{"lucida.io/db-client": "session"}'),
     "scan_pod_label": ("inject_tag", "lucida.io/db-workload=scan"),
     "probe_setting": ("inject_tag", "SELECT ... to_regclass(current_setting('lucida.lock_relation'))"),
+    "probe_setting_tag": ("inject_tag", "WHERE application_name = current_setting('lucida.scenario_tag')"),
 }
 # What a normal recording is full of and must stay clean under the wider, case-blind patterns.
 ORDINARY = [
@@ -100,6 +101,8 @@ ORDINARY = [
     "app.kubernetes.io/component: db-report",
     "SELECT ... to_regclass(current_setting('app.lock_relation'))",
     "FROM lucida.otel_traces_local",
+    # The product's own SQL reads settings under lucida. too (lucida-next v2_core_protocol.go, assets_schema.sql).
+    "ERROR: SELECT 1 WHERE current_setting('lucida.collect_core_protocol',true)='2'",
     "lucida-collector lucida.io/managed-by",
 ]
 
