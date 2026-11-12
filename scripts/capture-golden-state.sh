@@ -49,6 +49,23 @@ Freshness gate:
 Container/host path mapping (when this script runs inside a container and the
 pg_dump sidecar needs the host path of the staging dir):
   CAPTURE_HOST_OUTPUT_ROOT   default: '' (unset = same path)
+Runtime (2026-11-12, v4 E11). 119 는 2026-08-13 부터 k3s 다. 위 주소 기본값은 compose 평면의
+호스트 포트라 119 자신에서는 닿지 않는다(평가용 LB 는 104, 66, 109 만 받는다).
+  RUNTIME  auto (default) | docker | k8s
+    auto 는 kubectl 이 되고 trainer Deployment 가 있으면 k8s, 아니면 docker(위 기본값).
+    k8s 에서는 따로 주지 않은 값만 클러스터에서 채운다(준 값은 언제나 그대로 쓴다):
+      VM_URL  <victoriametrics ClusterIP>:8428     CH_URL <clickhouse ClusterIP>:8123
+      OBSERVER_HEALTH_URL <ai-observer ClusterIP>:8087/api/v1/health
+      PG_HOST <pg-rw ClusterIP>, PG_PORT 5432
+      PG_USER, PG_PASSWORD  PG_PASSWORD 를 안 주면 시크릿 pg-superuser 의 username, password
+      CH_PASSWORD           안 주면 시크릿 polestar-secret 의 CLICKHOUSE_PASSWORD
+    PG 사이드카는 ClusterIP 에 닿도록 --network host 로 돈다(restore-golden-state.sh 와 같다).
+    K8S_NAMESPACE polestar, TRAINER_WORKLOAD deployment/ai-trainer,
+    VM_SERVICE victoriametrics, CH_SERVICE clickhouse, OBSERVER_SERVICE ai-observer,
+    PG_SERVICE pg-rw, PG_SUPERUSER_SECRET pg-superuser, CH_SECRET polestar-secret,
+    KUBECTL 비우면 'kubectl' 다음 'sudo -n kubectl'.
+    /opt/lucida/golden.env 의 비밀번호는 compose 시절 값이라 k8s 에서는 맞지 않는다(2026-11-12 실측
+    PG, CH 모두 인증 실패). k8s 캡처는 그 파일을 읽지 않고 돌린다.
 EOF
 }
 
@@ -86,6 +103,19 @@ AI_STATE_TABLES=(
   ai_model_bindings
   ai_model_versions
   ai_model_evaluations
+  # 2026-11-12(v4 E11): 119 develop-ai 판의 세대 기록과 그 세대에 묶인 산출물.
+  # stream 은 trainer_stream_generations 의 활성 세대 한 행이 periodic, threshold,
+  # distribution, drift 네 표의 그 세대 행 수를 정하고, observer 는 넷이 그 수와 맞을 때만
+  # 적재한다(trainer_load.go). 세대 기록 없이 네 표만 되돌리면 활성 세대 행이 0 이라 적재를
+  # 거절하고, 세대 기록만 되돌리고 drift 를 두면 다음 세대 번호(MAX+1)가 남은 drift 행과
+  # 겹친다. 그래서 세대 기록과 drift 를 함께 담는다. log 도 같은 꼴(trainer_log_generations).
+  # seed_verdicts, prompts 는 log trainer 산출물이다. trainer_trace_window_threshold 는
+  # 15분마다 24시간 원천으로 새 판을 만들고 3GB 넘는 옛 판을 쌓아 두는 표라 담지 않는다.
+  trainer_stream_generations
+  trainer_stream_drift
+  trainer_log_generations
+  trainer_seed_verdicts
+  trainer_prompts
 )
 
 window_minutes=120
@@ -139,6 +169,96 @@ fi
 
 require_command curl
 require_command docker
+
+# ------------------------------------------------------------
+# 런타임 (2026-11-12, v4 E11). restore-golden-state.sh 의 k8s 대응(2026-08-13)과 같은 길이다.
+# 아래 기본값(119 호스트 포트)은 compose 평면의 것이라 k8s 인 119 자신에서는 닿지 않는다
+# (2026-11-12 실측: 119 에서 18428, 18123, 15432, 18087 모두 접속 불가, ClusterIP 는 모두 응답).
+# k8s 에서는 주지 않은 주소와 비밀번호만 클러스터에서 채운다. 준 값은 언제나 그대로 쓴다.
+# ------------------------------------------------------------
+RUNTIME="${RUNTIME:-auto}"
+K8S_NAMESPACE="${K8S_NAMESPACE:-polestar}"
+TRAINER_WORKLOAD="${TRAINER_WORKLOAD:-deployment/ai-trainer}"
+KUBECTL="${KUBECTL:-}"
+
+detect_kubectl() {
+  [[ -n "$KUBECTL" ]] && { printf '%s' "$KUBECTL"; return; }
+  if command -v kubectl >/dev/null 2>&1 && kubectl version >/dev/null 2>&1; then
+    printf 'kubectl'; return
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n kubectl version >/dev/null 2>&1; then
+    printf 'sudo -n kubectl'; return
+  fi
+  printf ''
+}
+KUBECTL="$(detect_kubectl)"
+
+if [[ "$RUNTIME" == auto ]]; then
+  # 캡처는 워크로드를 멈추지 않으므로 docker 컨테이너 유무는 보지 않는다. k8s 가 아니면
+  # 예전 평면(호스트 포트 기본값)으로 간다.
+  if [[ -n "$KUBECTL" ]] && $KUBECTL -n "$K8S_NAMESPACE" get "$TRAINER_WORKLOAD" >/dev/null 2>&1; then
+    RUNTIME=k8s
+  else
+    RUNTIME=docker
+  fi
+fi
+case "$RUNTIME" in
+  docker) ;;
+  k8s) [[ -n "$KUBECTL" ]] || die "RUNTIME=k8s but no usable kubectl (tried 'kubectl' and 'sudo -n kubectl')" ;;
+  *) die "unknown RUNTIME: $RUNTIME (docker|k8s|auto)" ;;
+esac
+log "runtime=$RUNTIME${KUBECTL:+ kubectl='$KUBECTL'} namespace=$K8S_NAMESPACE"
+
+pg_net_args=()
+if [[ "$RUNTIME" == k8s ]]; then
+  k8s_svc_ip() {
+    local ip
+    ip=$($KUBECTL -n "$K8S_NAMESPACE" get svc "$1" -o jsonpath='{.spec.clusterIP}' 2>/dev/null) || ip=''
+    [[ -n "$ip" && "$ip" != None ]] || die "cannot resolve service ClusterIP: $K8S_NAMESPACE/$1"
+    printf '%s' "$ip"
+  }
+  k8s_secret_value() {  # 값은 변수로만 옮긴다. 화면, 로그에 내지 않는다.
+    # 못 읽으면 빈 값이다(pipefail 로 대입이 실패해 set -e 가 말없이 끝내지 않게). 빈 값은 호출부가 죽인다.
+    $KUBECTL -n "$K8S_NAMESPACE" get secret "$1" -o "jsonpath={.data.$2}" 2>/dev/null | base64 -d 2>/dev/null || true
+  }
+  if [[ -z "${VM_URL:-}" ]]; then
+    VM_URL="http://$(k8s_svc_ip "${VM_SERVICE:-victoriametrics}"):8428"
+    log "resolved VictoriaMetrics -> $VM_URL"
+  fi
+  if [[ -z "${CH_URL:-}" ]]; then
+    CH_URL="http://$(k8s_svc_ip "${CH_SERVICE:-clickhouse}"):8123"
+    log "resolved ClickHouse -> $CH_URL"
+  fi
+  if [[ -z "${OBSERVER_HEALTH_URL:-}" ]]; then
+    OBSERVER_HEALTH_URL="http://$(k8s_svc_ip "${OBSERVER_SERVICE:-ai-observer}"):8087/api/v1/health"
+    log "resolved observer health -> $OBSERVER_HEALTH_URL"
+  fi
+  if [[ -z "${PG_HOST:-}" ]]; then
+    PG_HOST="$(k8s_svc_ip "${PG_SERVICE:-pg-rw}")"
+    PG_PORT="${PG_PORT:-5432}"
+    log "resolved PG -> $PG_HOST:$PG_PORT"
+  fi
+  if [[ -z "${PG_PASSWORD:-}" ]]; then
+    PG_SUPERUSER_SECRET="${PG_SUPERUSER_SECRET:-pg-superuser}"
+    _pg_u=$(k8s_secret_value "$PG_SUPERUSER_SECRET" username)
+    _pg_p=$(k8s_secret_value "$PG_SUPERUSER_SECRET" password)
+    [[ -n "$_pg_u" && -n "$_pg_p" ]] ||
+      die "PG_PASSWORD not given and k8s secret $K8S_NAMESPACE/$PG_SUPERUSER_SECRET is not readable"
+    PG_USER="$_pg_u"
+    PG_PASSWORD="$_pg_p"
+    unset _pg_u _pg_p
+    log "resolved PG credentials from k8s secret $PG_SUPERUSER_SECRET (user=$PG_USER)"
+  fi
+  if [[ -z "${CH_PASSWORD:-}" ]]; then
+    CH_SECRET="${CH_SECRET:-polestar-secret}"
+    CH_PASSWORD=$(k8s_secret_value "$CH_SECRET" CLICKHOUSE_PASSWORD)
+    [[ -n "$CH_PASSWORD" ]] ||
+      die "CH_PASSWORD not given and k8s secret $K8S_NAMESPACE/$CH_SECRET has no CLICKHOUSE_PASSWORD"
+    log "resolved ClickHouse password from k8s secret $CH_SECRET"
+  fi
+  # ClusterIP 는 노드의 호스트 라우팅으로만 닿는다. 기본 bridge 의 사이드카는 못 붙는다.
+  pg_net_args=(--network host)
+fi
 
 VM_URL="${VM_URL:-http://192.168.230.119:18428}"
 CH_URL="${CH_URL:-http://192.168.230.119:18123}"
@@ -212,7 +332,7 @@ freshness_gate() {
     die "freshness gate failed: ClickHouse newest trace lag ${lag}s > ${FRESHNESS_MAX_LAG_SEC}s"
 
   log 'freshness gate: PostgreSQL auth'
-  PGPASSWORD="$PG_PASSWORD" docker run --rm --env PGPASSWORD "$PG_DUMP_IMAGE" \
+  PGPASSWORD="$PG_PASSWORD" docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
     psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc 'SELECT 1' >/dev/null ||
     die 'freshness gate failed: PostgreSQL auth/connect'
 
@@ -280,7 +400,7 @@ pg_tool_major_check() {
     return 1
   fi
 }
-pg_major_msg=$(pg_tool_major_check) || die "$pg_major_msg"
+pg_major_msg=$(pg_tool_major_check "${pg_net_args[@]}") || die "$pg_major_msg"
 
 pg_dump_data_dir="$staging_dir/data"
 if [[ -n "$CAPTURE_HOST_OUTPUT_ROOT" ]]; then
@@ -290,7 +410,7 @@ pg_dump_table_args=()
 for t in "${AI_STATE_TABLES[@]}"; do
   pg_dump_table_args+=(--table "public.$t")
 done
-PGPASSWORD="$PG_PASSWORD" docker run --rm \
+PGPASSWORD="$PG_PASSWORD" docker run --rm "${pg_net_args[@]}" \
   --user "$(id -u):$(id -g)" \
   --env PGPASSWORD \
   --volume "$pg_dump_data_dir:/out" \
@@ -319,7 +439,7 @@ for t in "${AI_STATE_TABLES[@]}"; do
   if $first; then counts_sql+="'$t'"; first=false; else counts_sql+=",'$t'"; fi
 done
 counts_sql+=") ORDER BY relname"
-if counts_tsv=$(PGPASSWORD="$PG_PASSWORD" docker run --rm --env PGPASSWORD "$PG_DUMP_IMAGE" \
+if counts_tsv=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
     psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -F $'\t' -tAc "$counts_sql" 2>/dev/null); then
   row_counts_json=$(printf '%s\n' "$counts_tsv" | jq -R -s 'split("\n") | map(select(length>0) | split("\t")) | map({(.[0]): (.[1]|tonumber)}) | add // {}')
 fi

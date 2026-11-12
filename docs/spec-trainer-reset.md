@@ -72,6 +72,13 @@ summary: 매 시나리오 주입 전에 AI 학습 계층(trainer/observer)을 "�
 - **PG trainer/observer 상태 테이블**(§4에 실측 목록·행수). trainer_* 학습
   산출물 + `ai_model_state_snapshots`·`detector_seen_signatures`·
   `log_drain_templates`·`ai_coverages`/`coverage_*` + 모델 레지스트리/바인딩.
+- **2026-11-12 보강(v4 E11)**: 정본 목록은 `scripts/capture-golden-state.sh` 의 `AI_STATE_TABLES`
+  (23개에서 28개). 119 develop-ai 판은 stream, log 산출물을 세대 단위로 묶어 활성 세대 기록
+  (`trainer_stream_generations`, `trainer_log_generations`)의 행 수와 산출물 표의 그 세대 행 수가
+  맞을 때만 적재한다. 그래서 세대 기록과 stream 세대에 묶인 `trainer_stream_drift`, log trainer
+  산출물(`trainer_seed_verdicts`, `trainer_prompts`)을 더했다. `trainer_trace_window_threshold`
+  (trace 60분 임계)는 15분마다 24시간 원천으로 새 판을 만들고 옛 판을 쌓아 3GB 를 넘어 담지 않는다.
+  캡처는 k8s 평면에서 ClusterIP 와 클러스터 시크릿으로 붙는다(스크립트 usage).
 - **볼륨 4종**: `lucida_ai-model-store`·`lucida_clickhouse-data`·
   `lucida_vm-data`·`lucida_redpanda-data`.
 - **Kafka(redpanda) consumer offset** — 재생 시 소비 위치 정합.
