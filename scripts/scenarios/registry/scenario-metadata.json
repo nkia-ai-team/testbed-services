@@ -6457,7 +6457,8 @@
     "accept": [
      "commerce-postgres:inventory_schema.inventory",
      "food-payment",
-     "food-delivery-payment"
+     "food-delivery-payment",
+     "food-external-pg-mock"
     ],
     "partial": [
      "commerce-inventory",
@@ -6586,7 +6587,8 @@
     "accept": [
      "commerce-postgres:inventory_schema.inventory",
      "food-payment",
-     "food-delivery-payment"
+     "food-delivery-payment",
+     "food-external-pg-mock"
     ],
     "partial": [
      "commerce-inventory",

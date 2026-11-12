@@ -281,7 +281,7 @@ L3은 단순 누설을 넘어 **틀린 단서 제공**이다. 소비자가 이�
   "root_cause": {
     "target_kind": "service",            // service | container | node | database | middleware | config
     "target_id": "commerce-payment",     // ★ 단일 식별자. 문장 금지
-    "trigger_target_id": "external-pg",  // ★ 트리거가 다르면 분리 기재
+    "trigger_target_id": "external-pg",  // ★ 결함을 드러나게 한 사건이 난 곳(원칙 6). 근본과 같으면 null, 증상 서비스는 넣지 않는다
     "mechanism": "...",                  // 서술은 여기에만
     "code_anchor": [
       "commerce/payment-service/.../PgApiClient.java:31-40 (PgApiClient.pay — CB 부재)"
@@ -294,7 +294,7 @@ L3은 단순 누설을 넘어 **틀린 단서 제공**이다. 소비자가 이�
   "scoring": {
     "granularity": "service",            // ★ 채점 입도
     "accept": ["commerce-payment"],      // ★ 정답으로 인정하는 답
-    "partial": ["commerce-order"]        // ★ 부분점수 대상(증상 서비스 등)
+    "partial": ["commerce-order", "external-pg"]  // ★ 부분점수 대상(증상 서비스, 계기만 본 답)
   }
 }
 ```
@@ -504,7 +504,7 @@ F08-H:F01-H, F08-G:F01-P는 **같은 주입에 무죄인 배포 하나를 더한
 
 ### A-4. `domain` 필드의 뜻 (2026-07-28)
 
-크로스도메인 시나리오에서 값이 갈렸다 — F08-G는 `commerce`(증상), F01-P는 `core-banking`(근본). **정답지 필드이므로 근본이 속한 도메인으로 통일한다.** 증상 도메인은 `root_cause.trigger_target_id`와 `user_impact`가 이미 말한다. 카탈로그의 실행 도메인(부하·네임스페이스)과는 다른 개념이며 서로 달라도 정상이다.
+크로스도메인 시나리오에서 값이 갈렸다 — F08-G는 `commerce`(증상), F01-P는 `core-banking`(근본). **정답지 필드이므로 근본이 속한 도메인으로 통일한다.** 증상 도메인은 `user_impact`와 `scoring.partial`(증상 서비스)이 말한다. `root_cause.trigger_target_id`는 증상 쪽이 아니라 결함을 드러나게 한 사건이 난 곳이다(설계 원칙 6, 근본과 같으면 비운다). 카탈로그의 실행 도메인(부하·네임스페이스)과는 다른 개념이며 서로 달라도 정상이다.
 
 ### A-5. 문서와 실측이 어긋날 때 — 3분류 (2026-07-30)
 
