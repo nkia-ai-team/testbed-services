@@ -662,6 +662,50 @@ class AnswerKeyContractTests(unittest.TestCase):
                 problems.append(f"{scenario_id}: trigger {trigger} is accepted as a root")
         self.assertEqual(problems, [], "a trigger-only answer is partial credit")
 
+    def test_an_accepted_app_is_the_root_or_where_the_injection_acted(self) -> None:
+        # 원칙 6: 증상 서비스는 partial 이다. accept 에 둔 앱 서비스가 근본도 아니고 주입이 손댄 곳도
+        # 아니면 증상이나 통로로 본다(2026-11-12 까지 F15-H, F15-T2 의 food payment: 외부 PG 의 429 를
+        # 그대로 전파한 통로였다, v4 TRIG). 두 장애를 겹친 시나리오의 두 번째 근본은 주입이 손댄 곳이라
+        # 통과한다(F15-T1 food payment 메모리 한도). 앱이 아닌 대상(DB 표, 노드, mock)은 보지 않는다.
+        domain_namespaces = _load("registry/decoy-deployments.json")["domain_namespaces"]
+        problems = []
+        for scenario_id, entry in sorted(self.metadata.items()):
+            root_cause = entry.get("root_cause")
+            scoring = entry.get("scoring")
+            if not isinstance(root_cause, dict) or not isinstance(scoring, dict):
+                continue
+            namespaces = {domain_namespaces.get(entry.get("domain"), "")}
+            root = self._place_names(root_cause["target_id"], namespaces)
+            injected = self._injection_places(scenario_id, entry)
+            for name in scoring.get("accept") or []:
+                places = self._place_names(name, namespaces)
+                if not any(kind == "app" for kind, _ in places) or places & root:
+                    continue
+                if not places & injected:
+                    problems.append(f"{scenario_id}: accepted {name} is neither the root nor injected")
+        self.assertEqual(problems, [], "an accepted app that the fault only passed through belongs in partial")
+
+    def test_food_pg_mock_is_scored_by_its_one_observed_name(self) -> None:
+        # 채점 이름은 관제 데이터가 그 대상을 부르는 이름이다. 두 외부 PG mock 은 APM 피호출 주소
+        # (server.address)와 Deployment 이름이 모두 testbed-external-pg-mock 이라 그 이름만으로는
+        # 가를 수 없고, 119 대상 이름(targets.name)이 rca-testbed-food/testbed-external-pg-mock 과
+        # rca-testbed-commerce/testbed-external-pg-mock 으로 가른다(2026-11-12 v4 TRIG 실측).
+        # food mock 은 그 이름 하나로 적고, 관제 데이터에 없는 옛 이름은 쓰지 않는다.
+        food_mock = "rca-testbed-food/testbed-external-pg-mock"
+        retired = {"food-external-pg-mock", "food-external-pg"}
+        problems = []
+        for scenario_id, entry in sorted(self.metadata.items()):
+            root_cause = entry.get("root_cause") or {}
+            scoring = entry.get("scoring") or {}
+            names = [root_cause.get("target_id"), root_cause.get("trigger_target_id")]
+            names += list(scoring.get("accept") or []) + list(scoring.get("partial") or [])
+            for name in names:
+                if name in retired:
+                    problems.append(f"{scenario_id}: retired name {name}")
+                if entry.get("domain") == "food-delivery" and name == "testbed-external-pg-mock":
+                    problems.append(f"{scenario_id}: {name} also names the commerce mock; use {food_mock}")
+        self.assertEqual(problems, [], "food external PG mock must carry its observed target name")
+
 
 if __name__ == "__main__":
     unittest.main()

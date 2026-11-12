@@ -65,6 +65,37 @@ class NameNormalisationTests(unittest.TestCase):
         # mock 은 otel 에이전트가 없다. 억지로 매핑하면 없는 근거를 만들어낸다.
         self.assertIsNone(audit.to_apm_service("testbed-external-pg-mock", "food-delivery", KNOWN))
 
+    def test_a_name_keeps_its_own_domain_in_a_cross_domain_scenario(self) -> None:
+        # 2026-11-12 v4 TRIG: 접두를 시나리오 도메인 접두로 바꾸면 commerce 시나리오 F15-H 의
+        # food-payment 가 commerce-payment 로 읽혔다. 이름의 도메인은 이름의 접두가 정한다.
+        self.assertEqual(audit.to_apm_service("food-payment", "commerce", KNOWN), "food-delivery-payment")
+        self.assertEqual(audit.to_apm_service("food-order", "commerce", KNOWN), "food-delivery-order")
+        self.assertEqual(audit.to_apm_service("banking-transfer", "commerce", KNOWN), "core-banking-transfer")
+        self.assertEqual(audit.to_apm_service("banking-ledger", "food-delivery", KNOWN), "core-banking-ledger")
+        self.assertEqual(audit.to_apm_service("commerce-order", "core-banking", KNOWN), "commerce-order")
+        # 다른 도메인에 없는 서비스는 시나리오 도메인의 같은 꼬리로 바꿔 짓지 않는다.
+        self.assertIsNone(audit.to_apm_service("food-transfer", "core-banking", KNOWN))
+
+    def test_two_root_scenarios_do_not_borrow_the_scenario_domain(self) -> None:
+        # F15-H 꼴: commerce 시나리오의 두 번째 근본과 증상이 food 이름이다.
+        metadata = {"F15-H": {"domain": "commerce",
+                              "root_cause": {"target_id": "commerce-postgres:inventory_schema.inventory"},
+                              "scoring": {"accept": ["commerce-postgres:inventory_schema.inventory"],
+                                          "partial": ["food-payment", "food-order"]}}}
+        targets, _ = audit.injection_targets("F15-H", metadata, KNOWN, "commerce-order")
+        self.assertEqual(targets, {"food-delivery-payment", "food-delivery-order"})
+
+    def test_registry_two_root_scenarios_name_no_commerce_service_they_do_not_name(self) -> None:
+        # 실제 정답지: F15-H, F15-T1, F15-T2 는 commerce order, payment 를 어느 칸에도 적지 않는다.
+        registry = ROOT / "registry"
+        metadata = json.loads((registry / "scenario-metadata.json").read_text(encoding="utf-8"))["scenarios"]
+        policy = json.loads((registry / "decoy-deployments.json").read_text(encoding="utf-8"))
+        known = {target["service_name"] for target in policy["targets"]}
+        for scenario_id in ("F15-H", "F15-T1", "F15-T2"):
+            targets, _ = audit.injection_targets(scenario_id, metadata, known, None)
+            self.assertFalse(targets & {"commerce-order", "commerce-payment"}, (scenario_id, sorted(targets)))
+            self.assertIn("food-delivery-payment", targets, scenario_id)
+
 
 class EntryServiceTests(unittest.TestCase):
     def test_signal_wins_over_domain_for_cross_domain_scenarios(self) -> None:

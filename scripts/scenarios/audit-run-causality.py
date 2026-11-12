@@ -243,22 +243,30 @@ def apm_services() -> set[str]:
 
 # 정답지는 짧은 이름(`food-order`)을 쓰고 APM은 긴 이름(`food-delivery-order`)을 쓴다.
 # 둘을 잇되, 최종 판단은 반드시 실제 APM 집합 안에 있는지로 한다.
-_NAME_PREFIXES = ("food-delivery-", "core-banking-", "commerce-", "food-", "banking-")
-DOMAIN_APM_PREFIX = {"commerce": "commerce-", "food-delivery": "food-delivery-",
-                     "core-banking": "core-banking-"}
+# 접두는 그 이름이 속한 도메인을 말한다. 시나리오 도메인 접두로 바꾸면 도메인을 넘는
+# 이름이 엉뚱한 서비스가 된다(2026-11-12 v4 TRIG: commerce 시나리오 F15-H 의 `food-payment`
+# 가 `commerce-payment` 로, core-banking 시나리오 F01-P 의 `commerce-payment` 가 버려짐).
+# 그래서 긴 접두를 먼저 보고, 각 접두는 자기 도메인의 APM 접두로만 바꾼다.
+_NAME_PREFIX_APM = (
+    ("food-delivery-", "food-delivery-"),
+    ("core-banking-", "core-banking-"),
+    ("commerce-", "commerce-"),
+    ("food-", "food-delivery-"),
+    ("banking-", "core-banking-"),
+)
 
 
 def to_apm_service(name: str, domain: str | None, known: set[str]) -> str | None:
-    """정답지 이름을 APM service_name으로 정규화한다. 모르면 None(=관측 불가)."""
+    """정답지 이름을 APM service_name으로 정규화한다. 모르면 None(=관측 불가).
+
+    `domain` 은 쓰지 않는다(호출 계약을 지키려고 남김). 이름의 도메인은 이름의 접두가 정한다.
+    """
     base = name.split(":", 1)[0]          # commerce-postgres:schema.table → commerce-postgres
     if base in known:
         return base
-    prefix = DOMAIN_APM_PREFIX.get(domain or "")
-    if not prefix:
-        return None
-    for p in _NAME_PREFIXES:
-        if base.startswith(p):
-            candidate = prefix + base[len(p):]
+    for short, apm in _NAME_PREFIX_APM:
+        if base.startswith(short):
+            candidate = apm + base[len(short):]
             return candidate if candidate in known else None
     return None
 
