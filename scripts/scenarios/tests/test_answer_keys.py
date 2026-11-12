@@ -28,6 +28,39 @@ def _load(name: str) -> dict:
     return json.loads((ROOT / name).read_text(encoding="utf-8"))
 
 
+# 정답지 채점 칸과 계기 칸의 `<네임스페이스>/<이름>` 꼴 가운데 앱이 아닌 대상. 지금 정답지에 있는
+# 것만 둔다(시험이 쓰이지 않는 항목을 막는다). 새 꼴을 쓰려면 여기 먼저 더한다(2026-11-12 v4 TRIG).
+NON_APP_SCOPED_NAMES = frozenset({
+    "rca-testbed-commerce/testbed-external-pg-mock",
+    "rca-testbed-food/testbed-external-pg-mock",
+    "rca-testbed-banking/compute-resources",
+    "rca-testbed-banking/job/ledger-statement-backfill",
+    "rca-testbed-food/job/notify-delivery-backfill",
+    "rca-testbed-food/job/payment-audit-export",
+})
+
+
+def read_scoped_name(policy: dict, name: str) -> tuple[str, str] | None:
+    """`<네임스페이스>/<이름>` 꼴 이름을 러너 decoys `_scoped_names`, audit `to_apm_service` 와 같은
+    규칙으로 읽는다. 첫 마디(`deployment/` 를 뗀 뒤 `/` 앞)가 그 네임스페이스 정책 Deployment 와 같거나
+    그 이름에 `-` 가 이어지면(파드, 레플리카셋, 파드 안 컨테이너) 그 앱(가장 긴 Deployment)이다.
+    아니면 목록에 있는 앱 아닌 대상이거나 모르는 이름이다. 이 꼴이 아니면 None."""
+    base = name.split(":", 1)[0]
+    namespace, slash, rest = base.partition("/")
+    if not slash or namespace not in policy["domain_namespaces"].values():
+        return None
+    head = rest.removeprefix("deployment/").split("/", 1)[0]
+    owners = [
+        target for target in policy["targets"]
+        if target["namespace"] == namespace
+        and (head == target["deployment"] or head.startswith(target["deployment"] + "-"))
+    ]
+    if owners:
+        owner = max(owners, key=lambda target: len(target["deployment"]))
+        return ("app", f"{owner['namespace']}/{owner['deployment']}")
+    return ("non_app", name) if name in NON_APP_SCOPED_NAMES else ("unknown", name)
+
+
 class AnswerKeyContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -176,7 +209,13 @@ class AnswerKeyContractTests(unittest.TestCase):
                         f"deployment/{target['deployment']}",
                         f"{target['namespace']}/deployment/{target['deployment']}",
                     }
-                    named = any(n in aliases or (n in local and target["namespace"] == namespace) for n in names)
+                    key = f"{target['namespace']}/{target['deployment']}"
+                    named = any(
+                        n in aliases
+                        or (n in local and target["namespace"] == namespace)
+                        or read_scoped_name(policy, n) == ("app", key)
+                        for n in names
+                    )
                     if named and target["service_name"] not in names:
                         missing.append(f"{scenario_id} {kind}: {target['service_name']}")
         self.assertEqual(missing, [], "observed service name missing from a scored name list")
@@ -556,14 +595,16 @@ class AnswerKeyContractTests(unittest.TestCase):
     def _place_names(self, name: str, namespaces: set[str]) -> set[tuple[str, str]]:
         """한 이름이 가리키는 곳들. 앱은 미끼 정책 targets 의 네임스페이스/Deployment 로 모은다.
         Deployment, 컨테이너 이름은 두 도메인이 함께 쓰므로 주어진 네임스페이스 안에서만 앱으로 읽는다.
-        제품 대상 이름 꼴 `<네임스페이스>/<Deployment>` 는 그 네임스페이스의 그 대상 하나다."""
+        `<네임스페이스>/<이름>` 꼴은 `read_scoped_name` 으로 읽는다(그 네임스페이스의 그 대상 하나)."""
         policy = _load("registry/decoy-deployments.json")
         places: set[tuple[str, str]] = {("name", name.lower())}
         base, _, rest = name.partition(":")
-        scoped_ns, slash, scoped = base.partition("/")
-        if slash and scoped_ns in policy["domain_namespaces"].values():
-            namespaces = {scoped_ns}
-            base = scoped.removeprefix("deployment/")
+        scoped = read_scoped_name(policy, name)
+        if scoped is not None:
+            # 러너, audit 과 같은 읽기: 파드, 레플리카셋, 컨테이너 꼴도 그 앱이다.
+            if scoped[0] == "app":
+                places.add(scoped)
+            namespaces = set()
         for target in policy["targets"]:
             key = f"{target['namespace']}/{target['deployment']}"
             if name in {target["service_name"], target["target_id"], *target["aliases"]}:
@@ -854,6 +895,57 @@ class AnswerKeyContractTests(unittest.TestCase):
         self.assertEqual(self._mock_name_problems("F79-R", f79), [])
         f79["scoring"]["partial"] = [commerce if name == food else name for name in f79["scoring"]["partial"]]
         self.assertEqual(self._mock_name_problems("F79-R", f79), [f"F79-R: {commerce} is not the mock the injection acted on"])
+
+    def test_namespaced_names_resolve_to_an_app_or_a_listed_non_app_object(self) -> None:
+        # `<네임스페이스>/<이름>` 꼴은 러너 미끼 제외와 audit 이 그 대상 하나로 읽는다. 앱(파드,
+        # 레플리카셋, 컨테이너 꼴 포함)으로 풀리지 않고 앱 아닌 대상 목록에도 없는 이름은 러너가 아무
+        # 앱도 빼지 않는 이름이라 작성 시점에 막는다(v4 TRIG 6회차, R5-a 결정).
+        policy = _load("registry/decoy-deployments.json")
+        problems, used = [], set()
+        for scenario_id, entry in sorted(self.metadata.items()):
+            root_cause = entry.get("root_cause") or {}
+            scoring = entry.get("scoring") or {}
+            names = [root_cause.get("target_id"), root_cause.get("trigger_target_id")]
+            names += list(scoring.get("accept") or []) + list(scoring.get("partial") or [])
+            for name in names:
+                if not isinstance(name, str):
+                    continue
+                scoped = read_scoped_name(policy, name)
+                if scoped is None:
+                    continue
+                if scoped[0] == "unknown":
+                    problems.append(f"{scenario_id}: {name} is neither an app nor a listed non-app object")
+                elif scoped[0] == "non_app":
+                    used.add(name)
+        self.assertEqual(problems, [], "add a namespaced non-app name to NON_APP_SCOPED_NAMES first")
+        self.assertEqual(sorted(NON_APP_SCOPED_NAMES - used), [], "NON_APP_SCOPED_NAMES lists only names in use")
+
+    def test_scoped_name_reading_matches_the_runner_and_audit(self) -> None:
+        # 러너 손 시험과 audit 시험이 쓰는 이름 꼴을 같은 기대값으로 읽는다.
+        policy = _load("registry/decoy-deployments.json")
+        payment = ("app", "rca-testbed-food/testbed-payment")
+        for name in (
+            "rca-testbed-food/testbed-payment",
+            "rca-testbed-food/deployment/testbed-payment",
+            "rca-testbed-food/testbed-payment-78b789d675",
+            "rca-testbed-food/testbed-payment-78b789d675-22rrw",
+            "rca-testbed-food/testbed-payment-78b789d675-22rrw/payment-service",
+        ):
+            self.assertEqual(read_scoped_name(policy, name), payment, name)
+        self.assertEqual(read_scoped_name(policy, "rca-testbed-food/testbed-mysql-0"),
+                         ("unknown", "rca-testbed-food/testbed-mysql-0"))
+        self.assertEqual(read_scoped_name(policy, "rca-testbed-food/testbed-external-pg-mock"),
+                         ("non_app", "rca-testbed-food/testbed-external-pg-mock"))
+        self.assertIsNone(read_scoped_name(policy, "food-delivery-payment"))
+        self.assertIsNone(read_scoped_name(policy, "resourcequota/compute-resources"))
+        # 주입하지 않은 앱의 파드 이름은 accept 규칙에, 서비스 이름 없는 대상 이름은 서비스 이름
+        # 규칙에 걸린다(rv-trig 5회차 하 1 의 R5a-3, R5a-4).
+        entry = copy.deepcopy(self.metadata["F36-P"])
+        entry["scoring"]["accept"].append("rca-testbed-food/testbed-payment-78b789d675-22rrw")
+        self.assertEqual(
+            self._accept_problems("F36-P", entry),
+            ["F36-P: accepted rca-testbed-food/testbed-payment-78b789d675-22rrw is neither the root nor injected"],
+        )
 
 if __name__ == "__main__":
     unittest.main()
