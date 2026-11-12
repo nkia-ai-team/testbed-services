@@ -76,6 +76,11 @@ ID_FORMS = {
     "mock_reply": ("inject_name", "PG response: APPROVED, txId: scenario-delay"),
     "session_tag_lower": ("inject_tag", "rca-f02-r-index-ddl"),
     "process_name": ("inject_tag", "rca-F12-G-external-nping --tcp -p 39999"),
+    # Tool traces taken out of the code in the 2nd round (v4 LEAK review, middle 2).
+    "baseline_fifo": ("inject_tag", "output: json (/tmp/rca-baseline-commerce-samples.fifo)"),
+    "client_pod_label": ("inject_tag", '{"lucida.io/db-client": "session"}'),
+    "scan_pod_label": ("inject_tag", "lucida.io/db-workload=scan"),
+    "probe_setting": ("inject_tag", "SELECT ... to_regclass(current_setting('lucida.lock_relation'))"),
 }
 # What a normal recording is full of and must stay clean under the wider, case-blind patterns.
 ORDINARY = [
@@ -89,6 +94,13 @@ ORDINARY = [
     "buf12-a overflow f12-ab f123-a xf12-a",
     "pgAdmin 4 - DB:commerce",
     "/scripts/load.js",
+    # The values that replaced them, and the product's own name, stay clean.
+    "output: json (/tmp/k6-commerce-samples.fifo)",
+    "app.kubernetes.io/component=db-client",
+    "app.kubernetes.io/component: db-report",
+    "SELECT ... to_regclass(current_setting('app.lock_relation'))",
+    "FROM lucida.otel_traces_local",
+    "lucida-collector lucida.io/managed-by",
 ]
 
 
@@ -224,6 +236,26 @@ class LeakscanCaptureMeta(unittest.TestCase):
                 (base / "data").mkdir()
                 (base / "data" / "manifest.json").write_text(manifest)  # only the topology bundle's list is skipped
                 self.assertEqual(_scan(Path(raw)).returncode, 1)
+
+
+class LeakscanEmptyCase(unittest.TestCase):
+    def test_a_case_with_nothing_to_read_is_not_clean(self) -> None:
+        """Six v3 folders left empty by the 10-31 dump failure used to pass as clean (v4 LEAK review, low 2)."""
+        for layout in ("empty", "input_empty", "only_skipped"):
+            with self.subTest(layout), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                if layout == "input_empty":
+                    (root / "input").mkdir()
+                if layout == "only_skipped":
+                    (root / "meta.json").write_text('{"scenario_id": "F01-H"}')
+                    (root / "topology").mkdir()
+                    (root / "topology" / "manifest.json").write_text('{"run_id": "F01-H-run-1"}')
+                    (root / "notes.md").write_text("F01-H")
+                done = _scan(root)
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("읽은 파일이 없다", done.stderr)
+        with tempfile.TemporaryDirectory() as raw:
+            self.assertEqual(_scan(_case(Path(raw), ["mysqld"])).returncode, 0)
 
 
 class LeakscanTextFiles(unittest.TestCase):

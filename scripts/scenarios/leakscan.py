@@ -15,6 +15,8 @@
                                         (실측: dpm_session_local.body 의
                                          "program":"rca-F01-R-inventory-lock"),
                rca-scenario, rca.lucida.ai/  실행기가 붙인 라벨 키와 주석 키
+               rca-baseline-, lucida.io/db-client|workload, current_setting('lucida.
+                                        평시 부하 파일, 클라이언트 파드 라벨, 러너 감별 SQL(v4 LEAK 4회차)
   inject_name  scenario-...               주입 자원 이름에 붙은 꼬리표(Job, ConfigMap, 이미지 태그,
                                         mock 응답 값). scenario-profile-state, scenario-runs 는
                                         inject_path 가 센다
@@ -33,7 +35,7 @@ topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품
 사용:
   python3 leakscan.py <case_dir>                 # 케이스 전체(parquet + csv + 텍스트)
   python3 leakscan.py --own F01-R <case_dir>     # 자기 시나리오를 표시
-  echo $?                                        # 0 = 합격, 1 = 누설
+  echo $?                                        # 0 = 합격, 1 = 누설, 2 = 읽기 실패 또는 읽은 파일 없음
 """
 from __future__ import annotations
 
@@ -55,6 +57,10 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "inject_tag": re.compile(
         r"(?i)(?<![a-z0-9])rca-F\d{2}-[A-Za-z0-9_-]+|(?<![a-z0-9])rca-scenario(?![a-z0-9])"
         r"|(?<![a-z0-9])rca\.lucida\.ai/"
+        # v4 LEAK 2회차에 코드에서 뺀 도구 흔적: 평시 부하 파일 rca-baseline-*, 클라이언트 파드 라벨
+        # lucida.io/db-client, lucida.io/db-workload, 러너 감별 SQL 의 current_setting('lucida.*').
+        # lucida 단독은 제품 이름이라 잡지 않는다.
+        r"|(?<![a-z0-9])rca-baseline-|(?<![a-z0-9])lucida\.io/db-(?:client|workload)|current_setting\('lucida\."
     ),
     "inject_name": re.compile(r"(?i)(?<![a-z0-9])scenario-(?!profile-state|runs(?![a-z0-9]))[a-z0-9]+"),
     # v4 C6b 리뷰 3회차 하 2: 주입 도구의 명령줄(파드 안 기동기의 알람과 exec, 셸 이름, 수신 버퍼 sysctl)도
@@ -76,7 +82,8 @@ PATTERNS: dict[str, re.Pattern[str]] = {
 # `rca-` 와 `alarm` 을 홀로 두지 않는다: 네임스페이스 rca-testbed-* 와 알람 데이터가 거의 모든 행에 있어
 # 거름이 아무것도 거르지 못한다(2026-11-12 실측: otel_traces 46MB 에 162초).
 _LOOSE = (
-    r"f\d\d-[a-z]|rca-(?:f\d|scenario)|rca\.lucida|scenario|signal\.alarm|execvp|mysqlsh|tcp_rmem"
+    r"f\d\d-[a-z]|rca-(?:f\d|scenario|baseline)|rca\.lucida|lucida\.io/db-|current_setting\('lucida\."
+    r"|scenario|signal\.alarm|execvp|mysqlsh|tcp_rmem"
 )
 _LOOSE_RE = re.compile(_LOOSE, re.IGNORECASE)
 # 같은 식을 소문자 글에 대소문자 구분으로 돌리면 큰 글에서 약 18배 빠르다(VM export 40MB: 3.8초 → 0.2초).
@@ -242,6 +249,10 @@ def main() -> int:
             print(f"[ERROR] {path}: {exc}", file=sys.stderr)
             return 2
 
+    # 읽은 파일이 없으면 합격이 아니다(빈 녹화 폴더, 잘못된 경로). 2026-11-12 전에는 clean, rc 0 이었다.
+    if scanned == 0:
+        print(f"[ERROR] {root}: 읽은 파일이 없다(parquet, csv, json, jsonl, export, sql, txt)", file=sys.stderr)
+        return 2
     total = sum(sum(c.values()) for c in found.values())
     if args.json:
         print(

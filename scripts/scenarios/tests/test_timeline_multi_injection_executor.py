@@ -12,6 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILES = ROOT / "profiles"
 sys.path.insert(0, str(PROFILES))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import rollout_fakes  # noqa: E402
 
 
 def load(name: str):
@@ -100,6 +103,40 @@ class MultiInjectionContractTests(unittest.TestCase):
         self.assertIn("pg_lock_remote.bash_functions()", (PROFILES / "timeline_multi_injection_executor.py").read_text())
         self.assertIn("FREEPDB1", text)
         self.assertIn("FOR UPDATE", text.upper())
+
+    def test_distractor_restart_stamp_keeps_and_restores_what_the_template_had(self) -> None:
+        """The F08-G distractor stamps kubectl's restart key (kubectl.kubernetes.io/restartedAt), shared with the
+        runner's decoys and real restarts. apply saves a value already there and release puts it back; with
+        none, release removes the key. A jsonpath read of the dotted key is always empty (v4 LEAK review, B)."""
+        import tempfile
+
+        key = "kubectl.kubernetes.io/restartedAt"
+        argv, _ = multi.build_invocation(plan("F08-G", multi.CONTRACTS["F08-G"]), "run")
+        spec_b64 = argv[-1]
+        script = multi.ORCHESTRATOR.decode()
+        field = next(line for line in script.splitlines() if line.startswith("field() {"))
+        start = script.index("rollout() {")
+        rollout = script[start:script.index("\n}\n", start) + 3]
+        for name, before in (("decoy-left-a-stamp", {key: "2026-11-01T00:00:00Z"}), ("no-stamp", None)):
+            with self.subTest(name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                env = rollout_fakes.install(root, {"testbed-notification": before})
+                for verb in ("apply", "release"):  # separate processes, as after a runner restart
+                    harness = (
+                        "set -euo pipefail\n"
+                        f"spec_b64={spec_b64}\n{field}\n"
+                        f"state_dir={raw}/state/F08-G-multi; mkdir -p \"$state_dir\"\n"
+                        "cleanup_wait=1s; kube=(kubectl --kubeconfig=/dev/null)\n"
+                        f"{rollout}\nrollout {verb} 0\n"
+                    )
+                    done = subprocess.run(["bash", "-c", harness], env=env, capture_output=True, timeout=60)
+                    self.assertEqual(done.returncode, 0, (verb, done.stderr.decode()))
+                    if verb == "apply":
+                        during = rollout_fakes.annotations(root, "testbed-notification")
+                        self.assertRegex(during[key], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+                        saved = (root / "state" / "F08-G-multi" / "rollout-0.annotation").read_text()
+                        self.assertEqual(saved, (before or {}).get(key, "__ABSENT__"))
+                self.assertEqual(rollout_fakes.annotations(root, "testbed-notification"), before or {})
 
     def test_validate_rejects_tampered_parameters(self) -> None:
         bad = copy.deepcopy(multi.CONTRACTS["F08-G"])

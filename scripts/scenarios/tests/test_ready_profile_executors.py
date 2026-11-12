@@ -23,6 +23,7 @@ from executor_common import ExecutorError  # noqa: E402  (sys.path 조작 뒤에
 import node_guard_fakes  # noqa: E402
 import netns_sandbox  # noqa: E402
 import db_operator_fakes  # noqa: E402
+import rollout_fakes  # noqa: E402
 
 
 def load(name: str):
@@ -44,6 +45,7 @@ mock = load("mock_expectation_executor")
 k8s_patch = load("k8s_patch_executor")
 cache = load("cache_control_executor")
 timeline = load("timeline_compose_executor")
+lock_mock = load("timeline_lock_mock_executor")
 db_ddl = load("db_ddl_executor")
 kafka_control = load("kafka_control_executor")
 host_stress = load("host_stress_executor")
@@ -4146,6 +4148,56 @@ else:
         cleanup = script[script.index("cleanup)"):script.index("recovery)")]
         self.assertLess(cleanup.index("reset_mock"), cleanup.index("restore_rollout"))
         self.assertIn("Reverse sub-injection order is mandatory", cleanup)
+
+    def test_compose_restart_stamp_keeps_and_restores_what_the_template_had(self) -> None:
+        """F08-H stamps kubectl's own restart key (kubectl.kubernetes.io/restartedAt), which the runner's decoys
+        and real operators also set. So run must save a value already on the template and cleanup must put that
+        value back, not delete it; with none, cleanup removes the key. The key has dots, which a jsonpath
+        `annotations['...']` read splits into nested fields and always reads as empty (v4 LEAK review, A)."""
+        key = "kubectl.kubernetes.io/restartedAt"
+        plan = compiler.compile_plan("f08-h-rollout-plus-external-fault")
+        stamp = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        for name, before in (("decoy-left-a-stamp", {key: "2026-11-01T00:00:00Z", "other": "x"}), ("no-stamp", None)):
+            with self.subTest(name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                env = rollout_fakes.install(root, {"testbed-payment": before})
+                for action in ("run", "cleanup"):  # separate processes, as after a runner restart
+                    argv, stdin = timeline.build_invocation(plan, action)
+                    done = subprocess.run(argv, input=stdin, env=env, capture_output=True, timeout=60)
+                    self.assertEqual(done.returncode, 0, (action, done.stderr.decode()))
+                    if action == "run":
+                        during = rollout_fakes.annotations(root, "testbed-payment")
+                        self.assertRegex(during[key], stamp)
+                        self.assertNotEqual(during[key], (before or {}).get(key))
+                        saved = (root / "state" / "F08-H-timeline" / "annotation").read_text()
+                        self.assertEqual(saved, (before or {}).get(key, "__ABSENT__"))
+                self.assertEqual(rollout_fakes.annotations(root, "testbed-payment"), before or {})
+                expectations = (root / "expectations.log").read_text()
+                self.assertNotIn('"id"', expectations)
+
+    def test_lock_mock_recovery_fails_while_a_rate_limited_arm_is_left(self) -> None:
+        """MockServer assigns the injected expectation's id, so recovery finds a left-over arm by its answer
+        (RATE_LIMITED), which no baseline expectation gives (v4 LEAK review, C)."""
+        script = lock_mock.SCRIPT.decode()
+        start = script.index("\n  recovery)")
+        branch = script[start + len("\n  recovery)"):script.index(";;", start)]
+        left = [{"httpRequest": {"method": "POST", "path": "/pay"},
+                 "httpResponse": {"statusCode": 429, "body": "{\"status\":\"RATE_LIMITED\"}"}}]
+        baseline = [{"httpRequest": {"method": "POST", "path": "/pay"},
+                     "httpResponse": {"statusCode": 200, "body": "{\"status\":\"APPROVED\",\"transaction_id\":\"mock-tx-0001\"}"}}]
+        for active, expected in ((left, 1), (baseline, 0), (baseline + left, 1)):
+            with self.subTest(active=len(active), expected=expected), tempfile.TemporaryDirectory() as raw:
+                path = Path(raw) / "active.json"
+                path.write_text(json.dumps(active))
+                harness = (
+                    "set -euo pipefail\n"
+                    f"state_dir={shlex.quote(raw)}/absent\n"
+                    "pg() { :; }; start_pf() { :; }\n"
+                    f"retrieve() {{ cat {shlex.quote(str(path))}; }}\n"
+                    + branch + "\n"
+                )
+                done = subprocess.run(["bash", "-c", harness], capture_output=True, timeout=30)
+                self.assertEqual(done.returncode, expected, done.stderr.decode())
 
     def test_app_control_flips_the_flag_without_touching_the_deployment(self) -> None:
         # F18-P 재설계(0804 #13 집행): 재기동 없는 DB 플래그 토글. 롤아웃을 유발하는

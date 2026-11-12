@@ -21,6 +21,7 @@ def load(name: str):
 resource = load("k8s_resource_executor")
 probe = load("k8s_probe_executor")
 env = load("k8s_env_executor")
+lifecycle = load("k8s_lifecycle_executor")
 
 
 def plan(profile_id: str, scenario_id: str, parameters: dict) -> dict:
@@ -31,6 +32,46 @@ def plan(profile_id: str, scenario_id: str, parameters: dict) -> dict:
 
 
 class GenericKubernetesExecutorTests(unittest.TestCase):
+    def test_lifecycle_invalid_image_is_another_never_built_tag_of_the_same_repository(self) -> None:
+        """F05-G's failing image is recorded in the pod spec and the ErrImageNeverPull event, so it is a plain
+        version tag, not one naming the scenario (until 2026-11-12 `:scenario-invalid-f05-g`). What keeps it
+        absent from every node is the rule tested here: another tag of the baseline repository that the
+        fault-image builder never produces (v4 LEAK review, J)."""
+        import copy
+        import json as jsonlib
+        from unittest import mock
+
+        profile = jsonlib.loads((ROOT / "registry" / "profiles.json").read_text(encoding="utf-8"))["profiles"]["k8s.lifecycle"]
+        approved = profile["scenario_parameters"]["F05-G"]
+        lifecycle.validate("F05-G", approved, profile)
+        builder_tags = lifecycle.built_release_tags()
+        self.assertIn("commerce-cart:1.2.0", builder_tags)  # read from fault-images/*/image.json
+        self.assertNotIn(approved["invalid_image"], builder_tags)
+
+        def tampered(invalid: str) -> tuple[dict, dict]:
+            params = copy.deepcopy(approved)
+            params["invalid_image"] = invalid
+            changed = copy.deepcopy(profile)
+            changed["scenario_parameters"]["F05-G"] = params
+            return params, changed
+
+        for invalid, reason in (
+            ("commerce-cart:1.2.0", "another tag of the baseline repository"),   # another repository
+            (approved["baseline_image"], "another tag of the baseline repository"),  # the baseline itself
+        ):
+            with self.subTest(invalid):
+                params, changed = tampered(invalid)
+                with self.assertRaisesRegex(lifecycle.ExecutorError, reason):
+                    lifecycle.validate("F05-G", params, changed)
+        # A tag the builder produces for the payment repository would be on the nodes: refused.
+        with mock.patch.object(lifecycle, "built_release_tags", return_value=builder_tags | {approved["invalid_image"]}):
+            with self.assertRaisesRegex(lifecycle.ExecutorError, "fault-image builder"):
+                lifecycle.validate("F05-G", approved, profile)
+        # The registry contract still binds the exact value.
+        params, _ = tampered("commerce-payment:9.9.9")
+        with self.assertRaisesRegex(lifecycle.ExecutorError, "approved scenario profile"):
+            lifecycle.validate("F05-G", params, profile)
+
     def test_resource_executor_supports_only_named_payment_memory_and_inventory_cpu(self) -> None:
         payment = resource.F05_R_LEVELS[1]
         inventory = {
