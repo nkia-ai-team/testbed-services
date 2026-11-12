@@ -85,6 +85,15 @@ class NameNormalisationTests(unittest.TestCase):
                          "commerce-payment")
         self.assertEqual(audit.to_apm_service("rca-testbed-banking/deployment/testbed-ledger", "commerce", KNOWN),
                          "core-banking-ledger")
+        # 그 앱의 파드, 레플리카셋, 파드 안 컨테이너도 같은 앱이다.
+        self.assertEqual(audit.to_apm_service("rca-testbed-food/testbed-payment-78b789d675-22rrw", "commerce", KNOWN),
+                         "food-delivery-payment")
+        self.assertEqual(audit.to_apm_service("rca-testbed-food/testbed-payment-78b789d675", "commerce", KNOWN),
+                         "food-delivery-payment")
+        self.assertEqual(
+            audit.to_apm_service("rca-testbed-banking/testbed-transfer-5d9c7b8f4-x2k7p/transfer-service", "commerce",
+                                 KNOWN),
+            "core-banking-transfer")
         for name in ("rca-testbed-food/testbed-external-pg-mock",
                      "rca-testbed-commerce/testbed-external-pg-mock",
                      "rca-testbed-banking/job/ledger-statement-backfill",

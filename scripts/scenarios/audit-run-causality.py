@@ -256,9 +256,10 @@ _NAME_PREFIX_APM = (
     ("food-", "food-delivery-"),
     ("banking-", "core-banking-"),
 )
-# 제품 대상 이름 꼴 `<네임스페이스>/<Deployment>`(외부 mock 등)는 그 네임스페이스의 그 대상
-# 하나다. 앱 Deployment(`testbed-<이름>`)면 그 도메인의 APM 이름으로 읽고, 아니면 APM 스팬이
-# 없는 대상이라 None 이다(`<네임스페이스>/job/<이름>` 같은 종류 꼴도 None).
+# 제품 대상 이름 꼴 `<네임스페이스>/<대상>`(외부 mock 등)는 그 네임스페이스의 그 대상 하나다.
+# 대상이 앱 Deployment(`testbed-<이름>`)이거나 그 아래 파드, 레플리카셋(`testbed-<이름>-<해시>`),
+# 파드 안 컨테이너(`<파드>/<컨테이너>`)면 그 도메인의 APM 이름으로 읽고, 아니면 APM 스팬이
+# 없는 대상이라 None 이다(mock, `<네임스페이스>/job/<이름>` 같은 종류 꼴도 None).
 _NAMESPACE_APM = {
     "rca-testbed-commerce": "commerce-",
     "rca-testbed-food": "food-delivery-",
@@ -278,11 +279,15 @@ def to_apm_service(name: str, domain: str | None, known: set[str]) -> str | None
     namespace, slash, rest = base.partition("/")
     if slash:
         prefix = _NAMESPACE_APM.get(namespace)
-        rest = rest.removeprefix("deployment/")
-        if prefix is None or "/" in rest or not rest.startswith("testbed-"):
+        if prefix is None:
             return None
-        candidate = prefix + rest.removeprefix("testbed-")
-        return candidate if candidate in known else None
+        obj = rest.removeprefix("deployment/").split("/", 1)[0]
+        matches = [
+            service for service in known
+            if service.startswith(prefix)
+            and (obj == "testbed-" + service[len(prefix):] or obj.startswith("testbed-" + service[len(prefix):] + "-"))
+        ]
+        return max(matches, key=len) if matches else None
     for short, apm in _NAME_PREFIX_APM:
         if base.startswith(short):
             candidate = apm + base[len(short):]

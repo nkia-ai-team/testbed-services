@@ -754,28 +754,106 @@ class AnswerKeyContractTests(unittest.TestCase):
             [p for p in self._trigger_problems("F15-T1", food) if "not a place" in p],
         )
 
-    def test_external_pg_mocks_are_scored_by_their_product_target_names(self) -> None:
-        # 채점 이름은 제품 대상 이름(119 targets.name)이 정본이다. 두 외부 PG mock 은 APM 피호출 주소
-        # (server.address)와 Deployment 이름이 모두 testbed-external-pg-mock 이라 그 이름으로는 가를 수
-        # 없고, 대상 이름이 rca-testbed-commerce/testbed-external-pg-mock 과
-        # rca-testbed-food/testbed-external-pg-mock 으로 가른다(2026-11-12 v4 TRIG 실측). 두 mock 모두
-        # 대상 이름으로만 적고, 공용 짧은 이름과 관제 데이터에 없는 옛 이름은 어느 도메인에서도 쓰지 않는다.
+    def _injected_mock_namespaces(self, entry: dict) -> set[str]:
+        """주입이 손댄 외부 PG mock 의 네임스페이스. mock.expectation 은 시나리오 도메인의 mock 을
+        고르고(실행 위치 commerce-mock, food-mock), timeline 은 `<접두>_mock_resource` 를 같은
+        딕셔너리의 짝 네임스페이스로 읽는다."""
+        injected = entry.get("injected_fault") or {}
+        found: set[str] = set()
+        if injected.get("profile") == "mock.expectation":
+            found |= self._home(entry)
+
+        def walk(node, inherited: str) -> None:
+            if isinstance(node, dict):
+                own = node.get("namespace")
+                here = own if isinstance(own, str) else inherited
+                for key, child in node.items():
+                    if isinstance(child, str) and key.endswith("mock_resource") and "external-pg-mock" in child:
+                        prefix = key[: -len("mock_resource")].rstrip("_")
+                        paired = node.get(f"{prefix}_namespace") if prefix else None
+                        found.add(paired if isinstance(paired, str) else here)
+                    elif not isinstance(child, str):
+                        walk(child, here)
+            elif isinstance(node, list):
+                for child in node:
+                    walk(child, inherited)
+
+        for level in injected.get("levels") or []:
+            walk(level.get("parameters"), next(iter(self._home(entry))))
+        return found
+
+    def _mock_name_problems(self, scenario_id: str, entry: dict) -> list[str]:
+        """외부 PG mock 채점 이름의 위반: 제품 대상 이름 꼴이 아니거나, 주입한 mock 과 네임스페이스가
+        다르다. 근본과 accept 의 mock 은 주입한 mock 이어야 하고, 계기와 partial 의 mock 은 주입한
+        mock(주입이 mock 이 아니면 시나리오 도메인의 mock)이어야 한다."""
+        mocks = {
+            "rca-testbed-commerce/testbed-external-pg-mock": "rca-testbed-commerce",
+            "rca-testbed-food/testbed-external-pg-mock": "rca-testbed-food",
+        }
         retired = {"testbed-external-pg-mock", "food-external-pg-mock", "food-external-pg", "external-pg"}
+        root_cause = entry.get("root_cause") or {}
+        scoring = entry.get("scoring") or {}
+        injected = self._injected_mock_namespaces(entry)
+        claimed = [root_cause.get("target_id"), *(scoring.get("accept") or [])]
+        nearby = [root_cause.get("trigger_target_id"), *(scoring.get("partial") or [])]
         problems = []
-        for scenario_id, entry in sorted(self.metadata.items()):
-            root_cause = entry.get("root_cause") or {}
-            scoring = entry.get("scoring") or {}
-            names = [root_cause.get("target_id"), root_cause.get("trigger_target_id")]
-            names += list(scoring.get("accept") or []) + list(scoring.get("partial") or [])
+        for role, names in (("root", claimed), ("near", nearby)):
             for name in names:
-                if name in retired:
-                    problems.append(f"{scenario_id}: {name} is not a product target name")
-                if isinstance(name, str) and name.endswith("external-pg-mock") and name not in {
-                    "rca-testbed-commerce/testbed-external-pg-mock",
-                    "rca-testbed-food/testbed-external-pg-mock",
-                }:
-                    problems.append(f"{scenario_id}: {name} is not one of the two mock target names")
-        self.assertEqual(problems, [], "external PG mocks must carry their product target names")
+                if not isinstance(name, str):
+                    continue
+                if name in retired or (name.endswith("external-pg-mock") and name not in mocks):
+                    problems.append(f"{scenario_id}: {name} is not a mock product target name")
+                    continue
+                if name not in mocks:
+                    continue
+                allowed = injected if role == "root" else (injected or self._home(entry))
+                if mocks[name] not in allowed:
+                    problems.append(f"{scenario_id}: {name} is not the mock the injection acted on")
+        return problems
+
+    def test_external_pg_mocks_are_scored_by_the_injected_mocks_target_name(self) -> None:
+        # 두 외부 PG mock 은 Deployment 이름과 APM 피호출 주소가 모두 testbed-external-pg-mock 이라
+        # 지름길 측정의 canon 도 다른 도메인 시나리오에서는 가르지 못한다. 그래서 두 mock 만은 제품
+        # 대상 이름(119 targets.name)으로 적는다(작성 규약 §1.3). 짧은 이름과 관제 데이터에 없는 옛
+        # 이름은 어느 도메인에서도 쓰지 않고, 이름의 네임스페이스는 주입한 mock 과 같아야 한다.
+        problems = [
+            problem
+            for scenario_id, entry in sorted(self.metadata.items())
+            for problem in self._mock_name_problems(scenario_id, entry)
+        ]
+        self.assertEqual(problems, [], "external PG mocks must carry the injected mock's target name")
+
+    def test_a_mock_name_from_the_other_domain_is_caught(self) -> None:
+        # rv-trig 4회차 하: commerce mock 을 주입한 F01-H 에 food mock 이름을 적거나, food mock 을 주입한
+        # commerce 도메인 시나리오 F15-H, F15-T2 에 commerce mock 이름이나 짧은 이름을 적으면 걸려야 한다.
+        food = "rca-testbed-food/testbed-external-pg-mock"
+        commerce = "rca-testbed-commerce/testbed-external-pg-mock"
+        self.assertEqual(self._injected_mock_namespaces(self.metadata["F01-H"]), {"rca-testbed-commerce"})
+        self.assertEqual(self._injected_mock_namespaces(self.metadata["F15-H"]), {"rca-testbed-food"})
+        self.assertEqual(self._injected_mock_namespaces(self.metadata["F08-H"]), {"rca-testbed-commerce"})
+
+        f01 = copy.deepcopy(self.metadata["F01-H"])
+        f01["root_cause"]["target_id"] = food
+        f01["scoring"]["accept"] = [food]
+        self.assertEqual(
+            self._mock_name_problems("F01-H", f01),
+            [f"F01-H: {food} is not the mock the injection acted on"] * 2,
+        )
+        for scenario_id in ("F15-H", "F15-T2"):
+            for wrong, message in (
+                (commerce, "is not the mock the injection acted on"),
+                ("testbed-external-pg-mock", "is not a mock product target name"),
+            ):
+                entry = copy.deepcopy(self.metadata[scenario_id])
+                entry["scoring"]["accept"] = [wrong if name == food else name for name in entry["scoring"]["accept"]]
+                self.assertEqual(
+                    self._mock_name_problems(scenario_id, entry), [f"{scenario_id}: {wrong} {message}"], wrong
+                )
+        # 주입이 mock 이 아닌 F79-R 의 partial 은 시나리오 도메인(food)의 mock 이면 된다.
+        f79 = copy.deepcopy(self.metadata["F79-R"])
+        self.assertEqual(self._mock_name_problems("F79-R", f79), [])
+        f79["scoring"]["partial"] = [commerce if name == food else name for name in f79["scoring"]["partial"]]
+        self.assertEqual(self._mock_name_problems("F79-R", f79), [f"F79-R: {commerce} is not the mock the injection acted on"])
 
 if __name__ == "__main__":
     unittest.main()
