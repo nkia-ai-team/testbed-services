@@ -227,7 +227,10 @@ jq '(.phases[] | select(.phase == "trainer_reset")) += {
       golden_stream_generation: 1985,
       golden_stream_boot_load_until: "2026-07-20T16:24:00Z",
       golden_stream_valid: true,
+      golden_stream_periodic_count: 0,
+      observer_band_strategy: {value:"auto_single", source:"code_default", coverage_overrides:0, sources:null},
       seasonal_window: {status:"ok", days:21, overlap:true,
+        judgement:{relevant:false, reason:"주기 프로필 0, auto_single"},
         overlap_cells:[{cell:97, kst:"목 10시"}], injection_cells:[{cell:97, kst:"목 10시", runs:["r1"]}]}}' \
   "$phases_json" >"$g2_phases"
 output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$g2_phases" \
@@ -238,6 +241,9 @@ jq -e '
     .golden_stream_boot_load_until == "2026-07-20T16:24:00Z" and
     .golden_stream_boot_load_until_kst == "2026-07-21T01:24:00+09:00" and
     .golden_stream_valid == true and
+    .golden_stream_periodic_count == 0 and
+    .observer_band_strategy == {value:"auto_single", source:"code_default", coverage_overrides:0, sources:null} and
+    .seasonal_window.judgement == {relevant:false, reason:"주기 프로필 0, auto_single"} and
     .seasonal_window.overlap == true and
     .seasonal_window.overlap_cells == [{cell:97, kst:"목 10시"}] and
     .seasonal_window.injection_cells[0].runs == ["r1"])' \
@@ -250,7 +256,8 @@ jq -e '(.phases[] | select(.phase == "trainer_reset") | has("golden_stream_boot_
 # Nulls (restore result without the stream fields) are accepted.
 g2_nulls="$TMP_ROOT/phases-g2meta-nulls.json"
 jq '(.phases[] | select(.phase == "trainer_reset")) += {golden_stream_generation:null,
-      golden_stream_boot_load_until:null, golden_stream_valid:null, seasonal_window:null}' \
+      golden_stream_boot_load_until:null, golden_stream_valid:null, seasonal_window:null,
+      golden_stream_periodic_count:null, observer_band_strategy:null}' \
   "$phases_json" >"$g2_nulls"
 "$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$g2_nulls" \
   --output-root "$TMP_ROOT/cases" --dry-run >/dev/null || fail 'G2META nulls must be accepted'
@@ -258,7 +265,8 @@ g2_bad_index=0
 for bad in '.golden_stream_generation = "1985"' '.golden_stream_generation = -1' \
            '.golden_stream_generation = 1.5' '.golden_stream_boot_load_until = "2026-07-20 16:24"' \
            '.golden_stream_boot_load_until = "2026-07-21T01:24:00+09:00"' '.golden_stream_valid = "yes"' \
-           '.seasonal_window = []'; do
+           '.seasonal_window = []' '.golden_stream_periodic_count = -1' '.golden_stream_periodic_count = 0.5' \
+           '.golden_stream_periodic_count = "0"' '.observer_band_strategy = "auto_single"'; do
   g2_bad_index=$((g2_bad_index + 1))
   jq "(.phases[] | select(.phase == \"trainer_reset\")) |= ($bad)" "$g2_phases" >"$TMP_ROOT/phases-g2bad.json"
   expect_rejected "phases-json-g2meta-bad-$g2_bad_index" \

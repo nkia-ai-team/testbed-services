@@ -29,13 +29,20 @@ case "$1" in
     if [[ "${2:-}" == -f ]]; then printf 'true\n'; fi
     exit 0 ;;
   stop|start) exit 0 ;;
+  exec)
+    [[ -n "${FAKE_ARTIFACT_FILE:-}" && "$*" == *"/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json"* ]] || exit 1
+    cat "$FAKE_ARTIFACT_FILE" ;;
   run)
     case "$*" in
       *--version*) [[ "$*" == *fake-pg16* ]] && echo 'pg_dump (PostgreSQL) 16.15' || echo 'pg_dump (PostgreSQL) 17.11' ;;
       *'SHOW server_version_num'*) echo "${FAKE_PG_SERVER_NUM:-170011}" ;;
       *trainer_stream_generations*)
         [[ "${FAKE_STREAM_FAIL:-}" == 1 ]] && exit 2
-        printf '%s\n' "${FAKE_STREAM_ROW-1985|1795105440999}" ;;
+        printf '%s\n' "${FAKE_STREAM_ROW-1985|0|1795105440999}" ;;
+      *json_build_object*)
+        [[ "${FAKE_BAND_FAIL:-}" == 1 ]] && exit 2
+        default_band='{"detection_policy":null,"model_binding":false,"artifact_uri":null,"artifact_checksum":null,"coverage_overrides":0}'
+        printf '%s\n' "${FAKE_BAND_ROW-$default_band}" ;;
     esac
     exit 0 ;;
   *) exit 9 ;;
@@ -78,20 +85,38 @@ grep -q '^run ' "$FAKE_LOG" || fail 'restore did not run the pg sidecar'
 # 1b. G2META (Q19 B): the result names the restored golden's active stream generation
 #     and the earliest valid_until of its artifacts (ms floored to the second), read
 #     after the data restore and before the observer starts.
-jq -e '.golden_stream_generation == 1985 and .golden_stream_boot_load_until == "2026-11-19T16:24:00Z"' \
-  <<<"$out" >/dev/null || fail "restore result must carry the golden stream generation and deadline: $out"
+jq -e '.golden_stream_generation == 1985 and .golden_stream_boot_load_until == "2026-11-19T16:24:00Z" and
+       .golden_stream_periodic_count == 0 and
+       .observer_band_sources == {detection_policy:null, model_binding:false, artifact_uri:null,
+                                  artifact_checksum:null, coverage_overrides:0, artifact_read:false,
+                                  artifact_checksum_ok:null, artifact_band_strategy:null}' \
+  <<<"$out" >/dev/null || fail "restore result must carry the golden stream generation, deadline and band sources: $out"
+band_line=$(grep -n 'json_build_object' "$FAKE_LOG" | head -1 | cut -d: -f1)
+[[ -n "$band_line" ]] || fail 'band strategy sources were not read'
 query_line=$(grep -n 'trainer_stream_generations' "$FAKE_LOG" | head -1 | cut -d: -f1)
 restore_line=$(grep -n 'pg_restore --data-only' "$FAKE_LOG" | head -1 | cut -d: -f1)
 start_line=$(grep -n '^start ' "$FAKE_LOG" | head -1 | cut -d: -f1)
 [[ -n "$query_line" && -n "$restore_line" && -n "$start_line" ]] || fail "missing sidecar or start lines: $(cat "$FAKE_LOG")"
-(( restore_line < query_line && query_line < start_line )) ||
-  fail "stream generation must be read after pg_restore and before the observer starts: $(cat "$FAKE_LOG")"
+(( restore_line < query_line && query_line < start_line && restore_line < band_line && band_line < start_line )) ||
+  fail "stream generation and band sources must be read after pg_restore and before the observer starts: $(cat "$FAKE_LOG")"
 grep 'trainer_stream_generations' "$FAKE_LOG" | grep -q 'm.active' ||
   fail 'stream generation read must pick the active generation'
-grep -q 'min(t.valid_until_ms) FROM public.trainer_stream_threshold' "$FAKE_LOG" &&
-  grep -q 'min(d.valid_until_ms) FROM public.trainer_stream_distribution_profile' "$FAKE_LOG" ||
-  fail 'deadline must be the earliest valid_until of both the threshold and distribution rows'
-for row_case in 'none:' 'fail:' 'nodeadline:1985|' 'garbage:1985|abc'; do
+# valid_until_ms 0 = never expires (observer trainer_load.go): only positive values set the deadline,
+# across all three tables the observer checks at boot (G2META 2회차, 리뷰 하 1).
+for tbl in 't.valid_until_ms) FILTER (WHERE t.valid_until_ms > 0) FROM public.trainer_stream_threshold' \
+           'd.valid_until_ms) FILTER (WHERE d.valid_until_ms > 0) FROM public.trainer_stream_distribution_profile' \
+           'p.valid_until_ms) FILTER (WHERE p.valid_until_ms > 0) FROM public.trainer_stream_periodic_profile'; do
+  grep -qF "min($tbl" "$FAKE_LOG" || fail "deadline must take min(valid_until_ms > 0) of: $tbl"
+done
+# Band sources follow the observer's precedence inputs for the stream-anomaly agent.
+for frag in "FROM public.ai_detection_policies p" "WHERE p.agent_id = 'stream-anomaly' ORDER BY p.is_builtin DESC, p.created_at, p.id" \
+            "b.agent_id = 'stream-anomaly' AND b.enabled = true AND b.rollout_status = 'active'" \
+            "OR (b.scope = 'target' AND b.target_id IS NULL) OR b.scope = 'global')" \
+            "JOIN public.ai_model_registry r ON r.id = v.model_id" \
+            "WHERE c.agent_id = 'stream-anomaly' AND c.enabled AND (c.params->>'band_strategy') IS NOT NULL"; do
+  grep -qF "$frag" "$FAKE_LOG" || fail "band source read is missing: $frag"
+done
+for row_case in 'none:' 'fail:' 'nodeadline:1985|3|' 'noperiodic:1985||1795105440999' 'garbage:1985|abc' 'oldform:1985|1795105440999'; do
   label=${row_case%%:*} row=${row_case#*:}
   : >"$FAKE_LOG"
   if [[ "$label" == fail ]]; then
@@ -102,12 +127,68 @@ for row_case in 'none:' 'fail:' 'nodeadline:1985|' 'garbage:1985|abc'; do
       fail "restore must not fail on stream row '$row': $(cat "$TMP_ROOT/err")"
   fi
   case "$label" in
-    nodeadline) want='.golden_stream_generation == 1985 and .golden_stream_boot_load_until == null' ;;
+    nodeadline) want='.golden_stream_generation == 1985 and .golden_stream_periodic_count == 3 and .golden_stream_boot_load_until == null' ;;
+    noperiodic) want='.golden_stream_generation == 1985 and .golden_stream_periodic_count == null and .golden_stream_boot_load_until == "2026-11-19T16:24:00Z"' ;;
     *) want='.golden_stream_generation == null and .golden_stream_boot_load_until == null' ;;
   esac
   jq -e ".status == \"ok\" and .golden_sha256 == \"$dump_sha\" and $want" <<<"$out" >/dev/null ||
     fail "stream row case $label: $out"
   grep -q '^start ' "$FAKE_LOG" || fail "stream row case $label must still start the observer"
+done
+for band_case in 'fail:' 'empty:' 'notjson:x|y' 'noncount:{"model_binding":"false","coverage_overrides":0}' \
+                 'policy:{"detection_policy":"legacy_envelope","model_binding":false,"artifact_uri":null,"artifact_checksum":null,"coverage_overrides":2}'; do
+  label=${band_case%%:*} row=${band_case#*:}
+  : >"$FAKE_LOG"
+  if [[ "$label" == fail ]]; then
+    out=$(FAKE_BAND_FAIL=1 "$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+      fail "restore must not fail when the band read fails: $(cat "$TMP_ROOT/err")"
+  else
+    out=$(FAKE_BAND_ROW="$row" "$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+      fail "restore must not fail on band row '$row': $(cat "$TMP_ROOT/err")"
+  fi
+  case "$label" in
+    policy) want='.observer_band_sources.detection_policy == "legacy_envelope" and .observer_band_sources.coverage_overrides == 2' ;;
+    *) want='.observer_band_sources == null' ;;
+  esac
+  jq -e ".status == \"ok\" and .golden_stream_generation == 1985 and $want" <<<"$out" >/dev/null ||
+    fail "band row case $label: $out"
+done
+
+# 4b. The boot-loaded model artifact is read through the running observer after it is
+#     healthy, checked against the version checksum like the observer does, and its
+#     params.BandStrategy recorded. Unreadable or unsafe paths leave artifact_read false.
+printf '%s' '{"params":{"BandStrategy":"legacy_envelope","SeasonalBuckets":true},"note":"x"}' >"$TMP_ROOT/artifact.json"
+art_sha=$(sha256sum "$TMP_ROOT/artifact.json" | cut -d' ' -f1)
+bound_row() { printf '{"detection_policy":null,"model_binding":true,"artifact_uri":"%s","artifact_checksum":%s,"coverage_overrides":0}' "$1" "$2"; }
+for art_case in "match:stream-anomaly/global/v1/model.json:\"$art_sha\":1" \
+                "mismatch:stream-anomaly/global/v1/model.json:\"$(printf 'b%.0s' {1..64})\":1" \
+                "nochecksum:stream-anomaly/global/v1/model.json:null:1" \
+                "unreadable:stream-anomaly/global/v1/model.json:\"$art_sha\":0" \
+                "traversal:../../etc/passwd:\"$art_sha\":1"; do
+  IFS=: read -r label uri sum readable <<<"$art_case"
+  : >"$FAKE_LOG"
+  artifact_env=''
+  [[ "$readable" == 1 ]] && artifact_env="$TMP_ROOT/artifact.json"
+  out=$(FAKE_BAND_ROW="$(bound_row "$uri" "$sum")" FAKE_ARTIFACT_FILE="$artifact_env" \
+        "$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+    fail "restore must not fail on artifact case $label: $(cat "$TMP_ROOT/err")"
+  case "$label" in
+    match|nochecksum) want='.artifact_read == true and .artifact_checksum_ok == true and .artifact_band_strategy == "legacy_envelope"' ;;
+    mismatch) want='.artifact_read == true and .artifact_checksum_ok == false and .artifact_band_strategy == "legacy_envelope"' ;;
+    *) want='.artifact_read == false and .artifact_checksum_ok == null and .artifact_band_strategy == null' ;;
+  esac
+  jq -e ".status == \"ok\" and (.observer_band_sources | .model_binding == true and $want)" <<<"$out" >/dev/null ||
+    fail "artifact case $label: $out"
+  if [[ "$label" == traversal ]]; then
+    ! grep -q '^exec ' "$FAKE_LOG" || fail 'an unsafe artifact path must not be read'
+  else
+    exec_line=$(grep -n '^exec ' "$FAKE_LOG" | head -1 | cut -d: -f1)
+    healthy_after=$(grep -n '^start ' "$FAKE_LOG" | head -1 | cut -d: -f1)
+    [[ -n "$exec_line" && "$exec_line" -gt "$healthy_after" ]] ||
+      fail "artifact must be read from the started observer: $(cat "$FAKE_LOG")"
+    grep -q '^exec lucida-ai-observer cat /var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json$' "$FAKE_LOG" ||
+      fail "artifact read path: $(grep '^exec ' "$FAKE_LOG")"
+  fi
 done
 
 # 2. Dry run reports the same digest without touching anything.

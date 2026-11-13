@@ -462,10 +462,11 @@ if [[ "$v3_mode" == true ]]; then
   # accepted for a restore script or runner that predates the digest; a string
   # must be a 64-char lowercase hex digest. G2META (Q19 A, B) adds, all optional
   # and null for an older runner: golden_stream_generation, golden_stream_boot_load_until
-  # (UTC, +_kst), golden_stream_valid (restore before that deadline) and
-  # seasonal_window (the restore's 21-day stream bucket window: injection and
-  # outage cells, this injection's cells, overlap). Validate the envelope, then
-  # work off .phases below.
+  # (UTC, +_kst), golden_stream_valid (restore before that deadline),
+  # golden_stream_periodic_count and observer_band_strategy (what the observer's
+  # weekly baseline rests on) and seasonal_window (the restore's 21-day stream
+  # bucket window: injection and outage cells, this injection's cells, overlap,
+  # judgement). Validate the envelope, then work off .phases below.
   jq -e '
     (type == "object") and (.phases | type == "array") and
     ([.phases[].phase] as $p |
@@ -485,6 +486,10 @@ if [[ "$v3_mode" == true ]]; then
         ((.golden_stream_boot_load_until | type == "string") and
          (.golden_stream_boot_load_until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")))) and
       (.golden_stream_valid == null or (.golden_stream_valid | type == "boolean")) and
+      (.golden_stream_periodic_count == null or
+        ((.golden_stream_periodic_count | type == "number") and .golden_stream_periodic_count >= 0 and
+         (.golden_stream_periodic_count | floor) == .golden_stream_periodic_count)) and
+      (.observer_band_strategy == null or (.observer_band_strategy | type == "object")) and
       (.seasonal_window == null or (.seasonal_window | type == "object"))) and
     (.phases[] | select(.phase != "trainer_reset") |
       (.start | type == "string") and (.end | type == "string"))

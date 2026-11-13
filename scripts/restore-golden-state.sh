@@ -483,36 +483,82 @@ PGPASSWORD="$PG_ADMIN_PASSWORD" docker run --rm "${pg_net_args[@]}" \
 log 'PostgreSQL AI-state restored (data-only, FK-safe)'
 
 # ------------------------------------------------------------
-# 2b. Golden stream generation and its boot-load deadline (v4 G2META, Q19 B).
+# 2b. Golden stream generation and its boot-load deadline (v4 G2META, Q19 B), and
+#     what the observer's weekly baseline will rest on (Q19 덧붙임 2).
 #     The observer boot-loads the active stream generation only while every
-#     threshold and distribution row of it is unexpired (valid_until_ms, trainer
-#     학습 끝 + 7일). Read it now, before the observer boots and while the trainer
-#     is frozen (same admin role as the restore above), so the result says which generation came back and until when the
-#     observer accepts it. The runner compares it with restored_at and records
-#     golden_stream_valid in the recording meta. Recording only: an older golden
-#     without the generation tables, or any read failure, leaves both null.
+#     periodic, threshold and distribution row of it is unexpired; valid_until_ms
+#     0 means "never expires" (trainer_load.go), so only positive values set the
+#     deadline. Read now, before the observer boots and while the trainer is
+#     frozen (same admin role as the restore above). The runner compares the
+#     deadline with restored_at (golden_stream_valid).
+#     periodic_count: the generation's weekly (hour-of-week) profiles. With the
+#     auto_single band strategy they are the observer's only weekly baseline, so
+#     0 means the 168 weekly buckets play no part in judgement.
+#     Band strategy sources the observer reads at boot (runner/main.go,
+#     runtime.go effectiveParams, model.go bootLoadModel): the stream-anomaly
+#     detection policy params override the boot-loaded model artifact's params,
+#     which override the code default; an artifact whose sha256 differs from the
+#     version checksum is refused (params kept). Coverage params can override
+#     single series.
+#     Recording only: an older golden without these tables, or any read failure,
+#     leaves the fields null and the restore goes on.
 # ------------------------------------------------------------
-golden_stream_sql="SELECT m.generation, least(
-  (SELECT min(t.valid_until_ms) FROM public.trainer_stream_threshold t
+golden_stream_sql="SELECT m.generation, m.periodic_count, least(
+  (SELECT min(t.valid_until_ms) FILTER (WHERE t.valid_until_ms > 0) FROM public.trainer_stream_threshold t
     WHERE t.agent_id = m.agent_id AND t.version = m.generation),
-  (SELECT min(d.valid_until_ms) FROM public.trainer_stream_distribution_profile d
-    WHERE d.agent_id = m.agent_id AND d.version = m.generation))
+  (SELECT min(d.valid_until_ms) FILTER (WHERE d.valid_until_ms > 0) FROM public.trainer_stream_distribution_profile d
+    WHERE d.agent_id = m.agent_id AND d.version = m.generation),
+  (SELECT min(p.valid_until_ms) FILTER (WHERE p.valid_until_ms > 0) FROM public.trainer_stream_periodic_profile p
+    WHERE p.agent_id = m.agent_id AND p.version = m.generation))
 FROM public.trainer_stream_generations m WHERE m.active ORDER BY m.generation DESC LIMIT 1"
+# The model binding is the one the observer boot-loads (store ActiveBindingForAgent with
+# no target and no metric); its artifact is read from the observer after it boots (4b).
+band_sql="WITH boot_binding AS (
+  SELECT v.artifact_uri, v.artifact_checksum FROM public.ai_model_bindings b
+    JOIN public.ai_model_versions v ON v.id = b.model_version_id
+    JOIN public.ai_model_registry r ON r.id = v.model_id
+   WHERE b.agent_id = 'stream-anomaly' AND b.enabled = true AND b.rollout_status = 'active'
+     AND ((b.scope = 'metric' AND b.target_id IS NULL AND b.metric_name IS NULL)
+       OR (b.scope = 'target' AND b.target_id IS NULL) OR b.scope = 'global')
+   ORDER BY CASE b.scope WHEN 'metric' THEN 0 WHEN 'target' THEN 1 ELSE 2 END, b.priority ASC, b.bound_at DESC
+   LIMIT 1)
+SELECT json_build_object(
+  'detection_policy', (SELECT p.params->>'band_strategy' FROM public.ai_detection_policies p
+    WHERE p.agent_id = 'stream-anomaly' ORDER BY p.is_builtin DESC, p.created_at, p.id LIMIT 1),
+  'model_binding', (SELECT count(*) FROM boot_binding) > 0,
+  'artifact_uri', (SELECT artifact_uri FROM boot_binding),
+  'artifact_checksum', (SELECT artifact_checksum FROM boot_binding),
+  'coverage_overrides', (SELECT count(*) FROM public.ai_coverages c
+    WHERE c.agent_id = 'stream-anomaly' AND c.enabled AND (c.params->>'band_strategy') IS NOT NULL))"
+pg_read_one() {  # one row of an admin read, empty on any failure
+  PGPASSWORD="$PG_ADMIN_PASSWORD" timeout --kill-after=10 "${PG_TOOL_CHECK_TIMEOUT_SEC:-60}" \
+    docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+    psql -v ON_ERROR_STOP=1 -tA -F '|' --host "$PG_HOST" --port "$PG_PORT" --username "$PG_ADMIN_USER" \
+    --dbname "$PG_DATABASE" -c "$1" 2>/dev/null | head -1
+}
 golden_stream_generation=null
+golden_stream_periodic_count=null
 golden_stream_boot_load_until=null
-golden_stream_row=$(PGPASSWORD="$PG_ADMIN_PASSWORD" timeout --kill-after=10 "${PG_TOOL_CHECK_TIMEOUT_SEC:-60}" \
-  docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
-  psql -v ON_ERROR_STOP=1 -tA -F '|' --host "$PG_HOST" --port "$PG_PORT" --username "$PG_ADMIN_USER" \
-  --dbname "$PG_DATABASE" -c "$golden_stream_sql" 2>/dev/null | head -1) || golden_stream_row=''
-if [[ "$golden_stream_row" =~ ^([0-9]+)\|([0-9]+)$ ]]; then
+golden_stream_row=$(pg_read_one "$golden_stream_sql") || golden_stream_row=''
+if [[ "$golden_stream_row" =~ ^([0-9]+)\|([0-9]*)\|([0-9]*)$ ]]; then
   golden_stream_generation=${BASH_REMATCH[1]}
-  golden_stream_boot_load_until="\"$(date -u -d "@$(( BASH_REMATCH[2] / 1000 ))" +'%Y-%m-%dT%H:%M:%SZ')\""
-  log "golden stream generation $golden_stream_generation boot-loads until ${golden_stream_boot_load_until//\"/}"
-elif [[ "$golden_stream_row" =~ ^([0-9]+)\|$ ]]; then
-  golden_stream_generation=${BASH_REMATCH[1]}
-  log "golden stream generation $golden_stream_generation has no expiring artifact rows"
+  [[ -n "${BASH_REMATCH[2]}" ]] && golden_stream_periodic_count=${BASH_REMATCH[2]}
+  if [[ -n "${BASH_REMATCH[3]}" ]]; then
+    golden_stream_boot_load_until="\"$(date -u -d "@$(( BASH_REMATCH[3] / 1000 ))" +'%Y-%m-%dT%H:%M:%SZ')\""
+  fi
+  log "golden stream generation $golden_stream_generation periodic $golden_stream_periodic_count boot-loads until ${golden_stream_boot_load_until//\"/}"
 else
   log 'WARN: golden stream generation not readable, golden_stream_* left null'
+fi
+observer_band_sources=null
+band_row=$(pg_read_one "$band_sql") || band_row=''
+# jq -e passes on empty input, so an empty row is refused first.
+if [[ -n "$band_row" ]] && jq -e 'type == "object" and (.model_binding | type == "boolean")
+          and (.coverage_overrides | type == "number")' <<<"$band_row" >/dev/null 2>&1; then
+  observer_band_sources=$(jq -c . <<<"$band_row")
+  log "observer band strategy sources: $observer_band_sources"
+else
+  log 'WARN: observer band strategy sources not readable, observer_band_sources left null'
 fi
 
 # ------------------------------------------------------------
@@ -534,6 +580,38 @@ until curl --fail --silent --show-error --max-time 5 --output /dev/null "$OBSERV
 done
 log 'observer healthy'
 
+# ------------------------------------------------------------
+# 4b. The boot-loaded model artifact (Q19 덧붙임 2). Read it the way the observer
+#     does (file store, sha256 against the version checksum) through the running
+#     observer, which mounts the store. Recording only, never fails the restore.
+# ------------------------------------------------------------
+if [[ "$observer_band_sources" != null ]]; then
+  artifact_uri=$(jq -r '.artifact_uri // empty' <<<"$observer_band_sources")
+  artifact_fields='{"artifact_read":false,"artifact_checksum_ok":null,"artifact_band_strategy":null}'
+  if [[ "$artifact_uri" =~ ^[A-Za-z0-9._/-]+$ && "$artifact_uri" != *..* ]]; then
+    artifact_path="${MODEL_STORE_ROOT:-/var/lib/lucida/ai-models}/$artifact_uri"
+    if [[ "$RUNTIME" == k8s ]]; then
+      artifact_cmd=("$KUBECTL" -n "$K8S_NAMESPACE" exec "$OBSERVER_WORKLOAD" -- cat "$artifact_path")
+    else
+      artifact_cmd=(docker exec "$observer_container" cat "$artifact_path")
+    fi
+    artifact_file=$(mktemp)
+    if timeout --kill-after=10 60 "${artifact_cmd[@]}" >"$artifact_file" 2>/dev/null &&
+       jq -e 'type == "object"' "$artifact_file" >/dev/null 2>&1; then
+      artifact_sha=$(sha256sum "$artifact_file" | cut -d' ' -f1)
+      artifact_fields=$(jq -c --arg sha "$artifact_sha" --argjson src "$observer_band_sources" '
+        {artifact_read: true,
+         artifact_checksum_ok: (($src.artifact_checksum // "") == "" or $src.artifact_checksum == $sha),
+         artifact_band_strategy: (.params.BandStrategy // null)}' "$artifact_file")
+    else
+      log "WARN: model artifact not readable from the observer: $artifact_uri"
+    fi
+    rm -f "$artifact_file"
+  fi
+  observer_band_sources=$(jq -c --argjson a "$artifact_fields" '. + $a' <<<"$observer_band_sources")
+  log "observer band strategy sources with artifact: $observer_band_sources"
+fi
+
 jq -n \
   --arg golden_dir "$golden_dir" --arg tod "$golden_tod" \
   --arg observer "$observer_container" --arg trainer "$trainer_container" \
@@ -543,10 +621,14 @@ jq -n \
   --arg golden_sha256 "$actual_sha" \
   --argjson golden_stream_generation "$golden_stream_generation" \
   --argjson golden_stream_boot_load_until "$golden_stream_boot_load_until" \
+  --argjson golden_stream_periodic_count "$golden_stream_periodic_count" \
+  --argjson observer_band_sources "$observer_band_sources" \
   '{action:"restore-golden", status:"ok", golden_dir:$golden_dir, golden_tod_kst:$tod,
     golden_sha256:$golden_sha256,
     golden_stream_generation:$golden_stream_generation,
     golden_stream_boot_load_until:$golden_stream_boot_load_until,
+    golden_stream_periodic_count:$golden_stream_periodic_count,
+    observer_band_sources:$observer_band_sources,
     pg_tables_restored:$n_tables, trainer_frozen:$frozen, observer_container:$observer,
     trainer_container:$trainer, restored_at:$restored_at,
     note:"trainer stays frozen for evaluation; run with --thaw afterwards"}'
