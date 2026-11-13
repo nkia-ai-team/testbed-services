@@ -599,10 +599,21 @@ if [[ "$observer_band_sources" != null ]]; then
     if timeout --kill-after=10 60 "${artifact_cmd[@]}" >"$artifact_file" 2>/dev/null &&
        jq -e 'type == "object"' "$artifact_file" >/dev/null 2>&1; then
       artifact_sha=$(sha256sum "$artifact_file" | cut -d' ' -f1)
+      # A params that is not an object (missing or null counts as {}, as the observer
+      # merges over its defaults), or a BandStrategy that is not a string, is recorded
+      # as unread (unknown) rather than parsed; any jq failure does the same,
+      # so this read never ends the restore (set -e) with the trainer still frozen.
       artifact_fields=$(jq -c --arg sha "$artifact_sha" --argjson src "$observer_band_sources" '
-        {artifact_read: true,
-         artifact_checksum_ok: (($src.artifact_checksum // "") == "" or $src.artifact_checksum == $sha),
-         artifact_band_strategy: (.params.BandStrategy // null)}' "$artifact_file")
+        (.params // {}) as $p |
+        if ($p | type) == "object" and ([$p.BandStrategy | type] | inside(["string", "null"]))
+        then {artifact_read: true,
+              artifact_checksum_ok: (($src.artifact_checksum // "") == "" or $src.artifact_checksum == $sha),
+              artifact_band_strategy: $p.BandStrategy}
+        else {artifact_read: false, artifact_checksum_ok: null, artifact_band_strategy: null} end' \
+        "$artifact_file" 2>/dev/null) ||
+        artifact_fields='{"artifact_read":false,"artifact_checksum_ok":null,"artifact_band_strategy":null}'
+      [[ -n "$artifact_fields" ]] ||
+        artifact_fields='{"artifact_read":false,"artifact_checksum_ok":null,"artifact_band_strategy":null}'
     else
       log "WARN: model artifact not readable from the observer: $artifact_uri"
     fi

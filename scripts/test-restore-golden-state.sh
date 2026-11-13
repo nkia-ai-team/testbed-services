@@ -191,6 +191,30 @@ for art_case in "match:stream-anomaly/global/v1/model.json:\"$art_sha\":1" \
   fi
 done
 
+# An artifact whose shape the observer would refuse (params not an object, BandStrategy not a
+# string) is recorded as unread; it must never end the restore, which by then has started
+# the observer and left the trainer frozen (G2META 3회차, 재리뷰 하 1). A missing params is
+# the observer's defaults (it merges over them): read, strategy null.
+for shape_case in 'pstring:{"params":"x"}:0' 'pnumber:{"params":5}:0' 'bnumber:{"params":{"BandStrategy":3}}:0' \
+                  'pnull:{"params":null}:1' 'pmissing:{"note":"x"}:1'; do
+  label=${shape_case%%:*} rest=${shape_case#*:} readable=${shape_case##*:}
+  body=${rest%:*}
+  printf '%s' "$body" >"$TMP_ROOT/odd.json"
+  odd_sha=$(sha256sum "$TMP_ROOT/odd.json" | cut -d' ' -f1)
+  : >"$FAKE_LOG"
+  out=$(FAKE_BAND_ROW="$(bound_row stream-anomaly/global/v1/model.json "\"$odd_sha\"")" FAKE_ARTIFACT_FILE="$TMP_ROOT/odd.json" \
+        "$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+    fail "restore must not end on artifact shape $label: $(tail -3 "$TMP_ROOT/err")"
+  if [[ "$readable" == 1 ]]; then
+    want='.artifact_read == true and .artifact_checksum_ok == true and .artifact_band_strategy == null'
+  else
+    want='.artifact_read == false and .artifact_checksum_ok == null and .artifact_band_strategy == null'
+  fi
+  jq -e ".status == \"ok\" and .trainer_frozen == true and (.observer_band_sources | $want)" <<<"$out" >/dev/null ||
+    fail "artifact shape $label: $out"
+  grep -q 'golden restore complete' "$TMP_ROOT/err" || fail "artifact shape $label did not finish the restore"
+done
+
 # 2. Dry run reports the same digest without touching anything.
 : >"$FAKE_LOG"
 out=$("$RESTORE" --golden-dir "$golden" --dry-run 2>"$TMP_ROOT/err") ||
