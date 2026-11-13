@@ -418,6 +418,12 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   - 그 밖은 통째로. 설정에 없고 `auto.snap_max_bytes` 를 넘는 표는 스키마만 담고(`over_cap`), 통째 덤프
     합이 `auto.snap_budget_bytes` 를 넘으면 캡처가 경고한다. 녹화 전 점검(testbed-operate
     `pg-scope-guard.py`)이 같은 계획기로 둘 다 미리 막는다.
+  - 덤프에서 빼는 것(2026-11-13): 스키마는 `capture_schemas` 에 이유와 함께 적힌 것만 담는다. 캡처 사용자에게
+    USAGE 가 없는 스키마와 SELECT 가 없는 표는 통째로(`--exclude-schema`, `--exclude-table`) 빼고, SELECT 가 없는
+    시퀀스는 정의는 담고 현재값만 뺀다. pg_dump 는 담는 표를 잠그고 담는 시퀀스의 현재값을 읽어 하나라도 권한이
+    없으면 덤프 전체가 실패한다. 빼는 것은 `meta.postgres_scope.excluded`(이름, 종류, 이유, 사람 확인 여부)에 남고,
+    녹화 전 점검은 `excluded_schemas`, `excluded_relations` 에 이유가 없는 것과 빠지는 것에 기대는 객체를 막는다.
+    복원한 PG 에는 뺀 스키마와 표가 없고, 현재값을 뺀 시퀀스는 시작값부터 센다.
   - 뿌리의 대체 관계: v3 는 `superseded_by`, `merged_into` 재귀로 창 끝 뒤 대체 행을 함께 실었다.
     develop-ai DDL 367 이 `incidents.superseded_by` 를 지우고 대체 관계를 계보 표로 옮겼으므로, 원천에 계보 표
     (`incident_event_cluster_successors`, `event_cluster_successors`)가 있으면 그 간선으로 같은 재귀를 한다.

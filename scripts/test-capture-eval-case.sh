@@ -481,7 +481,18 @@ printf '%s\n' \
   $'public\ttrainer_trace_window_threshold\tr\t2983190528\t3400571\t3400571\t0' \
   $'public\tcollector_sms_process_snapshot\tr\t2500000000\t10\t10\t0' \
   $'public\tautomation_dist_artifacts\tr\t2600755200\t20\t20\t0' \
-  $'security\taudit_marks\tr\t24576\t0\t0\t0' >"$fix/pg/tables.tsv"
+  $'polestar_notification\taudit_marks\tr\t24576\t0\t0\t0' \
+  $'public\tsoftware_execution_runs\tr\t24576\t1\t1\t0' \
+  $'public\tlocked_by_owner\tr\t24576\t1\t1\t0' \
+  $'security\tpassword_rotation_ledger\tr\t8192\t1\t1\t0' >"$fix/pg/tables.tsv"
+# 캡처 사용자 권한(2026-11-13 CAPFIX, 119 모양): security 는 USAGE 없음, public 의 표 하나와 시퀀스 둘은 SELECT 없음,
+# public 표의 트리거가 polestar_notification 함수를 부른다(담는 스키마라 막히지 않는다).
+printf '%s\n' $'nspname\thas_schema_privilege' $'polestar_notification\tt' $'public\tt' $'security\tf' >"$fix/pg/schemas.tsv"
+printf '%s\n' $'nspname\trelname\trelkind' \
+  $'public\tlocked_by_owner\tr' $'public\tlocked_seq\tS' $'public\tinputs_seq_seq\tS' \
+  $'security\tpassword_rotation_ledger\tr' $'security\tpassword_rotation_ledger_id_seq\tS' >"$fix/pg/denied.tsv"
+printf '%s\n' $'dep_schema\tdep_rel\tref_schema\tref_rel' \
+  $'public\tsoftware_execution_runs\tpolestar_notification\t' $'public\tincident_members\tpublic\tincidents' >"$fix/pg/deps.tsv"
 printf '%s\n' \
   $'incidents\tid\tuuid' $'incidents\tcreated_at\ttimestamp with time zone' \
   $'event_clusters\tid\tuuid' $'event_clusters\tcreated_at\ttimestamp with time zone' $'event_clusters\tmerged_into\tuuid' \
@@ -660,6 +671,22 @@ if "SHOW server_version_num" in args:
     print(os.environ.get("FAKE_PG_SERVER_NUM", "170011"))
     sys.exit(0)
 if "pg_dump" in args:
+    # 실제 pg_dump 17 처럼 권한을 따진다(2026-11-13 CAPFIX, PG 17 실측): USAGE 없는 스키마는 --exclude-schema 가,
+    # SELECT 없는 표는 --exclude-table 이(데이터만 빼도 잠금에서 죽는다), SELECT 없는 시퀀스는 현재값을 빼는
+    # --exclude-table-data 가 있어야 덤프가 된다.
+    if os.path.exists(f"{fix}/pg/schemas.tsv"):
+        for line in open(f"{fix}/pg/schemas.tsv").read().splitlines():
+            sch, _, usage = line.partition("\t")
+            if usage == "f" and f"--exclude-schema={sch}" not in args:
+                sys.stderr.write(f"pg_dump: error: query failed: ERROR:  permission denied for schema {sch}\n"); sys.exit(1)
+        for line in open(f"{fix}/pg/denied.tsv").read().splitlines():
+            sch, rel, kind = (line.split("\t") + ["", ""])[:3]
+            if kind not in ("r", "S") or f"--exclude-schema={sch}" in args:
+                continue
+            ok = [f"--exclude-table={sch}.{rel}"] + ([f"--exclude-table-data={sch}.{rel}"] if kind == "S" else [])
+            if not any(o in args for o in ok):
+                what = "sequence" if kind == "S" else "table"
+                sys.stderr.write(f"pg_dump: error: query failed: ERROR:  permission denied for {what} {rel}\n"); sys.exit(1)
     f = args[args.index("--file") + 1]
     open(real(f), "wb").write(b"PGDMPfake")
     sys.exit(0)
@@ -825,7 +852,8 @@ jq -e '
 jq -e '.tables.trainer_trace_window_threshold.scope == "slice" and .tables.trainer_trace_window_threshold.rule == "config" and
   .tables.collector_sms_process_snapshot.scope == "snap" and .tables.collector_sms_process_snapshot.rule == "config" and
   .tables.target_config_latest.scope == "snap" and .tables.target_config_latest.rule == "default" and
-  .tables.big_unknown_table.scope == "drop" and .tables["security.audit_marks"].scope == "snap"' \
+  .tables.big_unknown_table.scope == "drop" and .tables["polestar_notification.audit_marks"].scope == "snap" and
+  .tables["security.password_rotation_ledger"].scope == "excluded" and .tables.locked_by_owner.scope == "excluded"' \
   "$live_root/cases/case-live-v4/data/catalog/postgres-scope-plan.json" >/dev/null || fail 'scope-plan.json decisions unexpected'
 dump_line=$(grep '^DOCKER .*pg_dump' "$FAKE_LOG")
 for want in --exclude-table-data=public.incident_snapshots \
@@ -846,6 +874,27 @@ grep -q 'slice table in pg-scope.json is absent at source, not captured: coverag
   fail 'no warning for a configured slice table absent at source'
 if grep -q 'absent at source, not captured: kedb_pending' "$live_root/case-live-v4.err"; then fail 'warned about an absent drop table'; fi
 if grep -qF -- 'public.alert_active' <<<"$dump_line"; then fail 'state table alert_active excluded from pg_dump'; fi
+# 캡처 사용자가 못 읽는 것(2026-11-13 CAPFIX): 가짜 pg_dump 가 통과했고(위 run_live), 빼는 것은 meta 에 이름과 이유로 남는다.
+for want in --exclude-schema=security --exclude-table=public.locked_by_owner \
+            --exclude-table-data=public.locked_seq --exclude-table-data=public.inputs_seq_seq; do
+  grep -qF -- "$want" <<<"$dump_line" || fail "pg_dump lacks $want"
+done
+if grep -qF -- 'polestar_notification' <<<"$dump_line"; then fail 'listed schema polestar_notification left out of pg_dump'; fi
+if grep -qF -- '--exclude-table-data=public.locked_by_owner' <<<"$dump_line"; then fail 'unreadable table only had its data excluded'; fi
+jq -e '.postgres_scope.excluded == [
+    {object:"security",kind:"schema",reason:"no_usage",acknowledged:true,
+     note:"비밀번호 회전 기록(password_rotation_ledger). 소유 postgres, 캡처 사용자에게 USAGE 가 없고 녹화 대상이 아니다(2026-11-13 G2 F49-H 캡처가 이 스키마의 권한 오류로 실패)"},
+    {object:"inputs_seq_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null},
+    {object:"locked_by_owner",kind:"table",relkind:"r",reason:"no_select",acknowledged:false,note:null},
+    {object:"locked_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null}] and
+  (.postgres_scope.by_scope.excluded == 2) and
+  ([.postgres_tables[].table] | index("locked_by_owner") == null)' \
+  "$meta" >/dev/null || fail 'excluded schema and relations not recorded in meta.postgres_scope.excluded'
+grep -q 'PostgreSQL schema security left out of the dump: no_usage' "$live_root/case-live-v4.err" ||
+  fail 'no warning for the excluded schema'
+grep -q 'PostgreSQL table locked_by_owner left out of the dump: no_select (not acknowledged in pg-scope.json)' \
+  "$live_root/case-live-v4.err" || fail 'no unacknowledged warning for the unreadable table'
+[[ -s "$live_root/cases/case-live-v4/data/catalog/postgres/schemas.tsv" ]] || fail 'schemas catalog not kept'
 if grep -qF 'superseded_by' <<<"$export_sql"; then fail 'export SQL still reads incidents.superseded_by'; fi
 grep -q 'whole-table dump .* exceeds budget' "$live_root/case-live-v4.err" || fail 'no warning for snap budget'
 grep -qF "\\copy incident_snapshots FROM 'incident_snapshots.csv'" "$live_root/cases/case-live-v4/data/postgres/restore.sql" ||

@@ -33,8 +33,12 @@ V3_CH = ["otel_traces_local", "lucida_logs_local", "lucida_events_local", "dpm_s
          "event_cluster_projection_local"]
 
 
-def pg_catalog(tables, columns=None, fks=None, *, configured=True):
-    """tables: {name: bytes} 또는 {name: (bytes, relkind)}. configured=True 면 설정의 표가 모두 원천에 있다."""
+def pg_catalog(tables, columns=None, fks=None, *, configured=True, schemas=None, denied=None, deps=None):
+    """tables: {name: bytes} 또는 {name: (bytes, relkind)}. configured=True 면 설정의 표가 모두 원천에 있다.
+
+    schemas: {스키마: USAGE 여부}, denied: {"스키마.이름" 또는 public 이름: relkind}, deps: [(dep 스키마, dep 표,
+    ref 스키마, ref 표)]. 셋 다 없으면 권한 질의가 없던 옛 카탈로그 모양이다(2026-11-13 CAPFIX).
+    """
     rows = []
     names = dict(tables)
     if configured:
@@ -67,7 +71,15 @@ def pg_catalog(tables, columns=None, fks=None, *, configured=True):
             cols.setdefault(t, [(c, "timestamp with time zone" if c.endswith("_at") else "uuid") for c in cs])
     col_lines = [f"{t}\t{c}\t{ty}" for t, cs in cols.items() for c, ty in cs]
     fk_lines = [f"{c}\t{cc}\t{p}\t{pc}" for c, cc, p, pc in (fks or [])]
-    return pg.parse_catalog({"tables": "\n".join(rows), "columns": "\n".join(col_lines), "fks": "\n".join(fk_lines)})
+    texts = {"tables": "\n".join(rows), "columns": "\n".join(col_lines), "fks": "\n".join(fk_lines)}
+    if schemas is not None:
+        texts["schemas"] = "\n".join(f"{k}\t{'t' if v else 'f'}" for k, v in schemas.items())
+    if denied is not None:
+        texts["denied"] = "\n".join(f"{(k.rpartition('.')[0] or 'public')}\t{k.rpartition('.')[2]}\t{v}"
+                                    for k, v in denied.items())
+    if deps is not None:
+        texts["deps"] = "\n".join("\t".join(d) for d in deps)
+    return pg.parse_catalog(texts)
 
 
 class PgPlanTest(unittest.TestCase):
@@ -220,11 +232,12 @@ class PgPlanTest(unittest.TestCase):
 
     def test_explicit_snap_pointing_at_a_slice_table_without_reason_is_a_conflict_but_drop_is_not(self):
         # 설정 밖 표는 fk_closure 가 가져가므로 충돌은 이유 없이 snap 이 된 경우(public 밖 스키마)에서 생긴다.
-        cat = pg_catalog({"security.pinned": 4096})
-        cat["fks"]["security.pinned"] = [{"columns": ["incident_id"], "parent": "incidents", "parent_columns": ["id"]}]
+        # 2026-11-13 CAPFIX: 담는 public 밖 스키마는 capture_schemas 에 적힌 것뿐이라 그 스키마로 본다.
+        cat = pg_catalog({"polestar_notification.pinned": 4096})
+        cat["fks"]["polestar_notification.pinned"] = [{"columns": ["incident_id"], "parent": "incidents", "parent_columns": ["id"]}]
         cat["fks"]["kedb_pending"] = [{"columns": ["incident_id"], "parent": "incidents", "parent_columns": ["id"]}]
         plan = pg.plan_scope(PG_CFG, cat)
-        self.assertEqual([c["table"] for c in plan["conflicts"]], ["security.pinned"])
+        self.assertEqual([c["table"] for c in plan["conflicts"]], ["polestar_notification.pinned"])
 
     def test_lineage_keeps_successors_created_after_the_window(self):
         lineage = {"incident_event_cluster_successors": 4096, "event_cluster_successors": 4096}
@@ -295,16 +308,18 @@ class PgPlanTest(unittest.TestCase):
         self.assertIn("rca_notes", [c["table"] for c in plan["conflicts"]])
 
     def test_other_schema_over_cap_is_excluded_by_its_own_name(self):
+        # 2026-11-13 CAPFIX: 담는 스키마는 capture_schemas 에 적힌 것뿐이라 그 목록의 public 밖 스키마로 본다.
         cap = PG_CFG["auto"]["snap_max_bytes"]
-        plan = self.plan({"security.big": cap + 1})
-        self.assertEqual(plan["tables"]["security.big"]["scope"], "drop")
+        plan = self.plan({"polestar_notification.big": cap + 1})
+        self.assertEqual(plan["tables"]["polestar_notification.big"]["scope"], "drop")
         args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
-        self.assertIn("--exclude-table-data=security.big", args)
-        self.assertFalse(any("public.security" in a for a in args))
+        self.assertIn("--exclude-table-data=polestar_notification.big", args)
+        self.assertFalse(any("public.polestar_notification" in a for a in args))
 
     def test_other_schemas_are_kept_whole(self):
-        plan = self.plan({"security.audit_marks": 4096})
-        self.assertEqual(plan["tables"]["security.audit_marks"]["scope"], "snap")
+        plan = self.plan({"polestar_notification.audit_marks": 4096})
+        self.assertEqual(plan["tables"]["polestar_notification.audit_marks"]["scope"], "snap")
+        self.assertEqual(plan["excluded"], [])
 
     def test_catalog_header_lines_are_ignored(self):
         cat = pg.parse_catalog({
@@ -317,10 +332,205 @@ class PgPlanTest(unittest.TestCase):
 
     def test_catalog_sql_reads_only_the_catalog(self):
         sql = pg.emit_catalog_sql("/out/catalog/postgres")
-        for name in ("tables", "columns", "fks"):
+        for name in ("tables", "columns", "fks", "schemas", "denied", "deps"):
             self.assertIn(f"\\o /out/catalog/postgres/{name}.tsv", sql)
         for q in pg.CATALOG_QUERIES.values():
             self.assertNotRegex(q, r"FROM public\.")
+
+
+class PgAccessTest(unittest.TestCase):
+    """캡처 사용자가 못 읽는 것과 담지 않기로 한 스키마(2026-11-13 CAPFIX, G2 F49-H 의 schema security 실패).
+
+    가짜 pg_dump 로 캡처 전체를 돌리는 시험은 scripts/test-capture-eval-case.sh 에 있다.
+    """
+    # 119 실측 모양(2026-11-13): security 는 USAGE 없음, public 표 4개와 시퀀스 2개는 SELECT 없음,
+    # public 표의 트리거가 polestar_notification 함수를 부른다.
+    SCHEMAS_119 = {"polestar_notification": True, "public": True, "security": False}
+    DENIED_119 = {"collect_control_position_changes": "r", "omp_confine_pending": "r",
+                  "automation_notification_cancellation_progress": "r",
+                  "automation_notification_cancellation_install": "r",
+                  "collect_desired_inputs_input_seq_seq": "S", "automation_notification_cancellations_id_seq": "S",
+                  "security.password_rotation_ledger": "r", "security.password_rotation_ledger_id_seq": "S"}
+    DEPS_119 = [("public", "software_execution_runs", "polestar_notification", ""),
+                ("public", "automation_notification_cancellation_progress", "public", "automation_notification_cancellations")]
+    TABLES_119 = {"security.password_rotation_ledger": 8192, "collect_control_position_changes": 24576,
+                  "omp_confine_pending": 0, "automation_notification_cancellation_progress": 8192,
+                  "automation_notification_cancellation_install": 16384, "software_execution_runs": 8192,
+                  "automation_notification_cancellations": 8192, "collect_desired_inputs": 8192}
+
+    def plan(self, tables, cfg=None, **k):
+        return pg.plan_scope(cfg or PG_CFG, pg_catalog(tables, **k))
+
+    def plan_119(self, cfg=None):
+        return self.plan(self.TABLES_119, cfg, schemas=self.SCHEMAS_119, denied=self.DENIED_119, deps=self.DEPS_119)
+
+    def test_119_shape_dumps_without_touching_unreadable_objects(self):
+        plan = self.plan_119()
+        self.assertEqual(plan["conflicts"], [])
+        self.assertEqual(plan["excluded_schemas"], ["security"])
+        self.assertTrue(all(e["acknowledged"] for e in plan["excluded"]), plan["excluded"])
+        self.assertEqual([(e["object"], e["kind"], e["reason"]) for e in plan["excluded"]], [
+            ("security", "schema", "no_usage"),
+            ("automation_notification_cancellation_install", "table", "no_select"),
+            ("automation_notification_cancellation_progress", "table", "no_select"),
+            ("automation_notification_cancellations_id_seq", "sequence_data", "no_select"),
+            ("collect_control_position_changes", "table", "no_select"),
+            ("collect_desired_inputs_input_seq_seq", "sequence_data", "no_select"),
+            ("omp_confine_pending", "table", "no_select")])
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertEqual(args[len(args) - 7:], [
+            "--exclude-schema=security",
+            "--exclude-table=public.automation_notification_cancellation_install",
+            "--exclude-table=public.automation_notification_cancellation_progress",
+            "--exclude-table-data=public.automation_notification_cancellations_id_seq",
+            "--exclude-table=public.collect_control_position_changes",
+            "--exclude-table-data=public.collect_desired_inputs_input_seq_seq",
+            "--exclude-table=public.omp_confine_pending"])
+        # 앞부분(설정과 자동 발견의 데이터 빼기)은 권한 질의와 스키마 목록이 없던 판과 같다.
+        before = copy.deepcopy(PG_CFG)
+        del before["capture_schemas"]
+        old_plan = self.plan(self.TABLES_119, before)
+        self.assertEqual(old_plan["excluded"], [])
+        old = pg.emit_exclude_args(before, old_plan).splitlines()
+        self.assertEqual(args[:len(args) - 7], old)
+        self.assertNotIn("--exclude-table-data=security.password_rotation_ledger", args)
+        self.assertNotIn("--exclude-table-data=public.collect_control_position_changes", args)
+        self.assertEqual(plan["tables"]["security.password_rotation_ledger"]["scope"], "excluded")
+        self.assertEqual(plan["tables"]["collect_control_position_changes"]["rule"], "no_select")
+        self.assertEqual(plan["tables"]["automation_notification_cancellations"]["scope"], "snap")
+        self.assertEqual(pg.ordered_slices(PG_CFG, plan), pg.ordered_slices(before, old_plan))
+        s = pg.plan_summary(plan, PG_CFG)
+        self.assertEqual(s["by_scope"]["excluded"], 5)
+        self.assertEqual(s["excluded"], plan["excluded"])
+
+    def test_unreadable_schema_is_dropped_whole_even_if_not_acknowledged(self):
+        cfg = copy.deepcopy(PG_CFG)
+        cfg["excluded_schemas"] = {}
+        plan = self.plan({"vault.keys": 4096}, cfg, schemas={"public": True, "vault": False})
+        self.assertEqual(plan["excluded"], [{"object": "vault", "kind": "schema", "reason": "no_usage",
+                                             "acknowledged": False, "note": None}])
+        self.assertEqual(plan["tables"]["vault.keys"], {"table": "vault.keys", "bytes": 4096, "relkind": "r",
+                                                        "scope": "excluded", "rule": "schema"})
+        args = pg.emit_exclude_args(cfg, plan).splitlines()
+        self.assertIn("--exclude-schema=vault", args)
+        self.assertFalse(any("vault.keys" in a for a in args))  # 스키마째 빼므로 표 인자는 필요 없다
+
+    def test_readable_schema_not_in_the_capture_list_is_left_out(self):
+        # 인증, 비밀 계열 스키마가 새로 생겨 캡처 사용자가 읽을 수 있어도 사람이 담기로 정하기 전에는 싣지 않는다.
+        plan = self.plan({"auth_tokens.sessions": 4096}, schemas={"public": True, "auth_tokens": True})
+        self.assertEqual([(e["object"], e["reason"], e["acknowledged"]) for e in plan["excluded"]],
+                         [("auth_tokens", "not_listed", False)])
+        self.assertEqual(plan["tables"]["auth_tokens.sessions"]["scope"], "excluded")
+        self.assertIn("--exclude-schema=auth_tokens", pg.emit_exclude_args(PG_CFG, plan).splitlines())
+
+    def test_without_a_capture_list_every_readable_schema_is_kept(self):
+        cfg = copy.deepcopy(PG_CFG)
+        del cfg["capture_schemas"]
+        plan = self.plan({"audit.marks": 4096}, cfg, schemas={"public": True, "audit": True, "vault": False})
+        self.assertEqual([e["object"] for e in plan["excluded"]], ["vault"])
+        self.assertEqual(plan["tables"]["audit.marks"]["scope"], "snap")
+
+    def test_listed_schema_without_usage_is_a_conflict(self):
+        plan = self.plan({}, schemas={"public": True, "polestar_notification": False})
+        self.assertIn("polestar_notification", [c["table"] for c in plan["conflicts"]])
+
+    def test_unreadable_table_is_excluded_whole_and_partitioned_with_its_children(self):
+        plan = self.plan({"locked": 4096, "locked_parted": (4096, "p")}, schemas={"public": True},
+                         denied={"locked": "r", "locked_parted": "p", "locked_leaf_202611": "r"})
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertIn("--exclude-table=public.locked", args)
+        self.assertIn("--exclude-table-and-children=public.locked_parted", args)
+        self.assertIn("--exclude-table=public.locked_leaf_202611", args)  # 읽을 수 있는 부모 밑의 못 읽는 잎
+        self.assertNotIn("--exclude-table-data=public.locked", args)
+        self.assertEqual(plan["tables"]["locked"]["scope"], "excluded")
+
+    def test_unreadable_sequence_keeps_its_definition_and_drops_only_its_value(self):
+        plan = self.plan({"owner_tab": 4096}, schemas={"public": True}, denied={"owner_tab_id_seq": "S"})
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertIn("--exclude-table-data=public.owner_tab_id_seq", args)
+        self.assertNotIn("--exclude-table=public.owner_tab_id_seq", args)
+        self.assertEqual(plan["tables"]["owner_tab"]["scope"], "snap")
+
+    def test_configured_slice_table_that_cannot_be_read_is_a_conflict_and_not_exported(self):
+        plan = self.plan({}, schemas={"public": True}, denied={"alert_history": "r"})
+        self.assertIn("alert_history", [c["table"] for c in plan["conflicts"]])
+        self.assertNotIn("alert_history", [t for t, _ in pg.ordered_slices(PG_CFG, plan)])
+        self.assertNotIn("\\copy alert_history ", pg.emit_restore_sql(PG_CFG, plan))
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertIn("--exclude-table=public.alert_history", args)
+        self.assertNotIn("--exclude-table-data=public.alert_history", args)
+
+    def test_kept_objects_that_depend_on_a_dropped_schema_or_table_are_conflicts(self):
+        plan = self.plan({"runs": 4096, "locked": 4096, "locked_child": 4096, "view_owner": 4096},
+                         schemas={"public": True, "polestar_notification": True, "vault": False},
+                         denied={"locked": "r", "locked_child": "r"},
+                         deps=[("public", "runs", "vault", ""),               # 트리거가 빠지는 스키마의 함수를 부름
+                               ("public", "view_owner", "public", "locked"),  # 담는 표가 빠지는 표를 가리킴
+                               ("public", "locked_child", "public", "locked"),  # 빠지는 표끼리는 괜찮다
+                               ("vault", "", "public", "runs"),               # 빠지는 쪽이 담는 표에 기댐: 괜찮다
+                               ("public", "runs", "polestar_notification", "")])  # 담는 스키마: 괜찮다
+        self.assertEqual(sorted((c["table"], c["problem"]) for c in plan["conflicts"]), [
+            ("runs", "녹화에서 빠지는 스키마 vault 에 기대어 복원 때 생성이 깨진다"),
+            ("view_owner", "녹화에서 빠지는 표 locked 에 기대어 복원 때 생성이 깨진다")])
+
+    def test_old_catalog_without_access_queries_plans_as_before(self):
+        plan = self.plan({"vault.keys": 4096, "polestar_notification.f": 4096}, cfg=None)
+        self.assertEqual(plan["tables"]["polestar_notification.f"]["scope"], "snap")
+        # 권한을 모르면 읽을 수 있다고 보지만, 목록 밖 스키마는 그래도 담지 않는다.
+        self.assertEqual([(e["object"], e["reason"]) for e in plan["excluded"]], [("vault", "not_listed")])
+
+    def test_access_catalog_header_lines_and_unknown_kinds_are_ignored(self):
+        cat = pg.parse_catalog({
+            "tables": "public\tt1\tr\t10\t1\t1\t0",
+            "schemas": "nspname\thas_schema_privilege\npublic\tt\nsecurity\tf",
+            "denied": "nspname\trelname\trelkind\npublic\tv1\tv\npublic\ts1\tS\nsecurity\tl\tr",
+            "deps": "dep_schema\tdep_rel\tref_schema\tref_rel\npublic\tt1\tsecurity\t\nrelname\tstring_agg\trelname\tstring_agg"})
+        self.assertEqual(cat["schemas"], {"public": True, "security": False})
+        self.assertEqual(cat["denied"], {"s1": "S", "security.l": "r"})
+        self.assertEqual(cat["deps"], [{"schema": "public", "relation": "t1", "ref_schema": "security", "ref_relation": ""}])
+
+    def test_privileges_are_judged_for_the_given_role(self):
+        mine = pg.catalog_queries()
+        theirs = pg.catalog_queries("lucida")
+        self.assertIn("has_schema_privilege(current_user, n.oid, 'USAGE')", mine["schemas"])
+        self.assertIn("has_schema_privilege('lucida', n.oid, 'USAGE')", theirs["schemas"])
+        self.assertIn("has_table_privilege('lucida', c.oid, 'SELECT')", theirs["denied"])
+        self.assertEqual(mine, pg.CATALOG_QUERIES)
+        self.assertEqual({k: mine[k] for k in ("tables", "columns", "fks")},
+                         {k: theirs[k] for k in ("tables", "columns", "fks")})
+        with self.assertRaises(ValueError):
+            pg.catalog_queries("x'); DROP TABLE t; --")
+
+    def test_names_that_need_quoting_are_quoted_for_pg_dump(self):
+        plan = self.plan({}, schemas={"public": True, "Vault": False}, denied={"Mixed": "r"})
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertIn('--exclude-schema="Vault"', args)
+        self.assertIn('--exclude-table=public."Mixed"', args)
+
+    def test_capture_warns_on_stderr_for_each_left_out_object(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "tables.tsv").write_text("public\tt1\tr\t10\t1\t1\t0\nsecurity\tl\tr\t10\t1\t1\t0\n")
+            (Path(d) / "columns.tsv").write_text("")
+            (Path(d) / "fks.tsv").write_text("")
+            (Path(d) / "schemas.tsv").write_text("public\tt\nsecurity\tf\n")
+            (Path(d) / "denied.tsv").write_text("public\tlocked\tr\nsecurity\tl\tr\n")
+            (Path(d) / "deps.tsv").write_text("")
+            r = subprocess.run(["python3", str(ROOT / "pg-scope-export.py"), "--catalog", d, "--emit", "plan-summary"],
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(r.stderr.splitlines(), [
+            "[WARN] PostgreSQL schema security left out of the dump: no_usage",
+            "[WARN] PostgreSQL table locked left out of the dump: no_select (not acknowledged in pg-scope.json)"])
+        self.assertEqual([e["object"] for e in json.loads(r.stdout)["excluded"]], ["security", "locked"])
+
+    def test_config_reasons_are_written_for_every_acknowledged_object(self):
+        for k in ("capture_schemas", "excluded_schemas", "excluded_relations"):
+            self.assertTrue(PG_CFG[k], k)
+            for name, why in PG_CFG[k].items():
+                self.assertTrue(isinstance(why, str) and len(why) > 10, (k, name))
+        self.assertIn("public", PG_CFG["capture_schemas"])
+        self.assertFalse(set(PG_CFG["capture_schemas"]) & set(PG_CFG["excluded_schemas"]))
 
 
 class ThresholdValiditySliceTest(unittest.TestCase):

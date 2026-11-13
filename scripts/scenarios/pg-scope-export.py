@@ -184,7 +184,7 @@ def ordered_slices(cfg: dict, plan: dict | None = None) -> list[tuple[str, str]]
     plan(plan_scope 의 결과)이 없으면 설정에 적힌 표만, 종전과 같은 순서와 글자로 낸다.
     plan 이 있으면 원천에 없는 표(absent)를 빼고, 자동 발견된 slice 표를 뒤에 붙인다.
     """
-    absent = set(plan["absent"]) if plan else set()
+    absent = (set(plan["absent"]) | {t for t, e in plan["tables"].items() if e["scope"] == "excluded"}) if plan else set()
     ctx = {"missing": set(plan["missing_columns"]), "lineage": set(plan["lineage"])} if plan else None
     roots = cfg["slice_roots"]
     items: list[tuple[str, str]] = []
@@ -252,7 +252,7 @@ def ordered_slices(cfg: dict, plan: dict | None = None) -> list[tuple[str, str]]
 # 추정치). 크기는 덤프가 실제로 읽는 표 본체와 TOAST 이고 인덱스는 뺀다(pg_dump 는 인덱스를 정의로만
 # 담는다). 119 실측 ai_trainer_stream_rows: 전체 147MB 가 인덱스이고 표 본체는 0.2MB.
 # 분할 표는 부모 한 줄로 세고 크기는 잎 분할의 합이다.
-CATALOG_QUERIES = {
+_BASE_QUERIES = {
     "tables": (
         "SELECT n.nspname, c.relname, c.relkind::text,\n"
         "  CASE WHEN c.relkind = 'p' THEN (SELECT coalesce(sum(pg_table_size(pt.relid)), 0)\n"
@@ -287,6 +287,67 @@ CATALOG_QUERIES = {
         "ORDER BY 1, 3, 2"
     ),
 }
+
+# 2026-11-13 CAPFIX: 캡처 사용자가 읽지 못하는 것과 그것에 기대는 것. pg_dump 는 담는 표마다 ACCESS SHARE 잠금을
+# 걸고(표 SELECT 와 스키마 USAGE 가 필요하다. 데이터만 빼는 --exclude-table-data 로는 잠금이 남는다), 담는 시퀀스의
+# 현재값을 SELECT 로 읽는다. 하나라도 막히면 덤프 전체가 실패한다(G2 F49-H, 119 의 schema security).
+# 뷰와 구체화 뷰는 잠그지도 읽지도 않아 권한이 없어도 덤프된다(PG 17 실측). 권한은 역할을 받아 판정한다:
+# 캡처는 자기 자신(current_user), 녹화 전 점검은 superuser 로 붙으므로 캡처 사용자 이름을 넘긴다.
+_ACCESS_QUERIES = {
+    "schemas": (
+        "SELECT n.nspname, has_schema_privilege({role}, n.oid, 'USAGE')\n"
+        "FROM pg_namespace n\n"
+        "WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'\n"
+        "ORDER BY 1"
+    ),
+    "denied": (
+        "SELECT n.nspname, c.relname, c.relkind::text\n"
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n"
+        "WHERE c.relkind IN ('r', 'p', 'S') AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'\n"
+        "  AND NOT has_table_privilege({role}, c.oid, 'SELECT')\n"
+        "ORDER BY 1, 2"
+    ),
+    # 담는 객체가 빼는 스키마나 표에 기대면(트리거가 부르는 함수, 외래 키가 가리키는 표, 뷰가 읽는 표) 덤프는
+    # 되지만 복원 때 그 객체 생성이 깨진다. 객체가 속한 표(dep_rel)를 함께 내 빼는 표에 딸린 것은 거른다.
+    "deps": (
+        "SELECT DISTINCT dn.nspname AS dep_schema, coalesce(dc.relname, '') AS dep_rel,\n"
+        "  rn.nspname AS ref_schema, CASE WHEN rc.relkind IN ('r', 'p') THEN rc.relname ELSE '' END AS ref_rel\n"
+        "FROM (\n"
+        "  SELECT d.classid, d.objid, d.objsubid, d.refclassid, d.refobjid, d.refobjsubid,\n"
+        "    CASE d.classid WHEN 'pg_class'::regclass THEN d.objid\n"
+        "      WHEN 'pg_constraint'::regclass THEN (SELECT x.conrelid FROM pg_constraint x WHERE x.oid = d.objid)\n"
+        "      WHEN 'pg_trigger'::regclass THEN (SELECT x.tgrelid FROM pg_trigger x WHERE x.oid = d.objid)\n"
+        "      WHEN 'pg_rewrite'::regclass THEN (SELECT x.ev_class FROM pg_rewrite x WHERE x.oid = d.objid)\n"
+        "      WHEN 'pg_attrdef'::regclass THEN (SELECT x.adrelid FROM pg_attrdef x WHERE x.oid = d.objid)\n"
+        "      WHEN 'pg_policy'::regclass THEN (SELECT x.polrelid FROM pg_policy x WHERE x.oid = d.objid) END AS dep_relid\n"
+        "  FROM pg_depend d WHERE d.deptype = 'n'\n"
+        ") d\n"
+        "LEFT JOIN pg_class dc ON dc.oid = d.dep_relid\n"
+        "LEFT JOIN pg_class rc ON d.refclassid = 'pg_class'::regclass AND rc.oid = d.refobjid\n"
+        "JOIN pg_namespace dn ON dn.nspname = coalesce((SELECT n.nspname FROM pg_namespace n WHERE n.oid = dc.relnamespace),\n"
+        "                                              (pg_identify_object(d.classid, d.objid, d.objsubid)).schema)\n"
+        "JOIN pg_namespace rn ON rn.nspname = coalesce((SELECT n.nspname FROM pg_namespace n WHERE n.oid = rc.relnamespace),\n"
+        "                                              (pg_identify_object(d.refclassid, d.refobjid, d.refobjsubid)).schema)\n"
+        "WHERE dn.nspname <> 'information_schema' AND dn.nspname !~ '^pg_'\n"
+        "  AND rn.nspname <> 'information_schema' AND rn.nspname !~ '^pg_'\n"
+        "  AND (dn.nspname <> rn.nspname OR (rc.relkind IN ('r', 'p') AND d.dep_relid IS DISTINCT FROM rc.oid))\n"
+        "ORDER BY 1, 2, 3, 4"
+    ),
+}
+
+
+def catalog_queries(role: str | None = None) -> dict[str, str]:
+    """카탈로그 질의 전부. role 이 없으면 접속한 사용자(current_user)의 권한으로 판정한다."""
+    if role is None:
+        lit = "current_user"
+    elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", role):
+        lit = f"'{role}'"
+    else:
+        raise ValueError(f"역할 이름이 이상하다: {role!r}")
+    return {**_BASE_QUERIES, **{k: q.format(role=lit) for k, q in _ACCESS_QUERIES.items()}}
+
+
+CATALOG_QUERIES = catalog_queries()
 
 
 def _num(v: str) -> int | None:
@@ -330,12 +391,72 @@ def parse_catalog(texts: dict[str, str]) -> dict:
             continue
         fks.setdefault(p[0], []).append(
             {"columns": p[1].split(","), "parent": p[2], "parent_columns": p[3].split(",")})
-    return {"tables": tables, "columns": columns, "timecols": timecols, "fks": fks}
+    # 권한(2026-11-13 CAPFIX). 옛 카탈로그(이 질의가 없던 판)는 표가 있는 스키마를 "모름"(None)으로 두고 읽을 수
+    # 있다고 본다. 그래야 옛 카탈로그의 계획이 종전과 같다.
+    schemas: dict[str, bool | None] = {}
+    for p in rows("schemas", 2):
+        if p[1] in ("t", "f"):  # 머리줄은 거른다
+            schemas[p[0]] = p[1] == "t"
+    for info in tables.values():
+        schemas.setdefault(info["schema"], None)
+    denied: dict[str, str] = {}
+    for p in rows("denied", 3):
+        if p[2] in ("r", "p", "S"):
+            denied[p[1] if p[0] == "public" else f"{p[0]}.{p[1]}"] = p[2]
+    deps: list[dict] = []
+    for p in rows("deps", 4):
+        if p[0] in schemas and p[2] in schemas:  # 머리줄과 모르는 스키마는 거른다
+            deps.append({"schema": p[0], "relation": p[1], "ref_schema": p[2], "ref_relation": p[3]})
+    return {"tables": tables, "columns": columns, "timecols": timecols, "fks": fks,
+            "schemas": schemas, "denied": denied, "deps": deps}
 
 
 def load_catalog(d: Path) -> dict:
     return parse_catalog({k: (d / f"{k}.tsv").read_text() if (d / f"{k}.tsv").exists() else ""
                           for k in CATALOG_QUERIES})
+
+
+def _rel_key(schema: str, name: str) -> str:
+    return name if schema == "public" else f"{schema}.{name}"
+
+
+def plan_access(cfg: dict, catalog: dict) -> tuple[list[dict], set[str], set[str]]:
+    """덤프에서 통째로 빼는 스키마와 표, 데이터만 빼는 시퀀스(2026-11-13 CAPFIX).
+
+    1. 스키마는 cfg["capture_schemas"] 에 이유와 함께 적힌 것만 담는다(not_listed). 비밀번호 회전 기록 같은
+       인증, 비밀 계열 스키마가 새로 생겨도 사람이 담기로 정하기 전에는 녹화에 실리지 않는다. 목록이 없는 옛
+       설정이면 모든 스키마가 대상이다.
+    2. 캡처 사용자에게 USAGE 가 없는 스키마는 목록에 있어도 뺀다(no_usage). 목록에 있는데 못 읽으면 conflicts 에도 둔다.
+    3. 담는 스키마 안에서 캡처 사용자가 SELECT 하지 못하는 표(분할 잎 포함)는 통째로 뺀다(no_select). 데이터만
+       빼면 pg_dump 가 정의를 덤프하려고 거는 잠금에서 같은 권한 오류로 죽는다.
+    4. SELECT 하지 못하는 시퀀스는 정의는 담고 현재값만 뺀다(no_select). 표의 기본값과 identity 가 그 시퀀스를
+       부르므로 정의를 빼면 복원이 깨진다. 복원된 시퀀스는 시작값에서 다시 센다.
+    빼는 것마다 cfg["excluded_schemas"], cfg["excluded_relations"] 에 이유가 적혀 있으면 acknowledged=True 다.
+    녹화 전 점검은 acknowledged 가 아닌 것을 막는다. 캡처는 막지 않고 빼고 meta 에 남긴다.
+    """
+    listed = cfg.get("capture_schemas")
+    ack_s, ack_r = cfg.get("excluded_schemas", {}), cfg.get("excluded_relations", {})
+    excluded: list[dict] = []
+    gone_schemas: set[str] = set()
+    for sch, usage in sorted(catalog.get("schemas", {}).items()):
+        if usage is False:
+            reason = "no_usage"
+        elif listed is not None and sch not in listed:
+            reason = "not_listed"
+        else:
+            continue
+        gone_schemas.add(sch)
+        excluded.append({"object": sch, "kind": "schema", "reason": reason,
+                         "acknowledged": sch in ack_s, "note": ack_s.get(sch)})
+    gone_tables: set[str] = set()
+    for key, kind in sorted(catalog.get("denied", {}).items()):
+        if (key.rpartition(".")[0] or "public") in gone_schemas:
+            continue
+        if kind != "S":
+            gone_tables.add(key)
+        excluded.append({"object": key, "kind": "sequence_data" if kind == "S" else "table", "relkind": kind,
+                         "reason": "no_select", "acknowledged": key in ack_r, "note": ack_r.get(key)})
+    return excluded, gone_schemas, gone_tables
 
 
 def plan_scope(cfg: dict, catalog: dict) -> dict:
@@ -388,10 +509,16 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
                 lineage.add(lin["table"])
     missing_columns = sorted(set(missing_columns))
 
+    excluded, gone_schemas, gone_tables = plan_access(cfg, catalog)
+
     out: dict[str, dict] = {}
     for t, info in tables.items():
         base = {"table": t, "bytes": info["bytes"], "relkind": info["relkind"]}
-        if t in explicit_slice:
+        if info["schema"] in gone_schemas:
+            out[t] = {**base, "scope": "excluded", "rule": "schema"}
+        elif t in gone_tables:
+            out[t] = {**base, "scope": "excluded", "rule": "no_select"}
+        elif t in explicit_slice:
             out[t] = {**base, "scope": "slice", "rule": "config"}
         elif t in drop:
             out[t] = {**base, "scope": "drop", "rule": "config"}
@@ -404,6 +531,29 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
     auto_order: list[str] = []
     conflicts: list[dict] = []
     conflicted: set[str] = set()
+
+    # 빼는 것 때문에 녹화가 달라지거나 복원이 깨지는 경우(2026-11-13 CAPFIX). 사람이 설정을 고칠 일이다.
+    for e in excluded:
+        if e["kind"] == "schema" and e["reason"] == "no_usage" and e["object"] in cfg.get("capture_schemas", {}):
+            conflicts.append({"table": e["object"], "problem": "capture_schemas 에 있는 스키마를 캡처 사용자가 읽지 못한다",
+                              "parents": []})
+    for t, e in sorted(out.items()):
+        if e["scope"] == "excluded" and (t in explicit_slice or t in snap_ok):
+            conflicts.append({"table": t, "problem": "설정이 담으라고 한 표를 캡처 사용자가 읽지 못해 녹화에서 빠진다",
+                              "parents": []})
+    for d in catalog.get("deps", []):
+        dep = _rel_key(d["schema"], d["relation"]) if d["relation"] else None
+        if d["schema"] in gone_schemas or dep in gone_tables:
+            continue
+        ref = _rel_key(d["ref_schema"], d["ref_relation"]) if d["ref_relation"] else None
+        if d["ref_schema"] in gone_schemas:
+            gone = f"스키마 {d['ref_schema']}"
+        elif ref in gone_tables:
+            gone = f"표 {ref}"
+        else:
+            continue
+        conflicts.append({"table": dep or f"스키마 {d['schema']}",
+                          "problem": f"녹화에서 빠지는 {gone} 에 기대어 복원 때 생성이 깨진다", "parents": []})
 
     def closure_pass() -> bool:
         changed = False
@@ -511,6 +661,9 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         "lineage": sorted(lineage),
         "snap_fk_to_slice": snap_fk_to_slice,
         "conflicts": conflicts,
+        # 덤프에서 빼는 스키마, 표, 시퀀스 현재값과 이유(2026-11-13 CAPFIX). meta.postgres_scope.excluded 로 간다.
+        "excluded": excluded,
+        "excluded_schemas": sorted(gone_schemas),
     }
 
 
@@ -541,12 +694,23 @@ def plan_summary(plan: dict, cfg: dict | None = None) -> dict:
         "lineage": plan["lineage"],
         "snap_fk_to_slice": plan["snap_fk_to_slice"],
         "conflicts": plan["conflicts"],
+        "excluded": plan.get("excluded", []),
     }
+
+
+def _pattern(name: str) -> str:
+    """pg_dump 패턴의 이름 한 토막. 소문자 밑줄 이름은 그대로, 그 밖은 큰따옴표로(패턴은 따옴표 밖을 소문자로 읽는다)."""
+    return name if re.fullmatch(r"[a-z_][a-z0-9_]*", name) else '"' + name.replace('"', '""') + '"'
+
+
+def _qualified(t: str) -> str:
+    # public 밖 스키마 표의 키는 이미 "스키마.표" 다.
+    schema, _, name = t.rpartition(".")
+    return f"{_pattern(schema or 'public')}.{_pattern(name)}"
 
 
 def _exclude_flag(plan: dict | None, t: str) -> str:
     # 분할 표는 부모만 빼면 잎 분할의 데이터가 그대로 실린다(pg_dump 16 부터 -and-children).
-    # public 밖 스키마 표의 키는 이미 "스키마.표" 다.
     name = t if "." in t else f"public.{t}"
     if plan and plan["tables"].get(t, {}).get("relkind") == "p":
         return f"--exclude-table-data-and-children={name}"
@@ -554,10 +718,22 @@ def _exclude_flag(plan: dict | None, t: str) -> str:
 
 
 def emit_exclude_args(cfg: dict, plan: dict | None = None) -> str:
-    names = scoped_tables(cfg)
+    gone = {t for t, e in plan["tables"].items() if e["scope"] == "excluded"} if plan else set()
+    names = [t for t in scoped_tables(cfg) if t not in gone]
     if plan:
         names += [t for t in plan["auto_slices"] + plan["over_cap"] if t not in names]
-    return "\n".join(_exclude_flag(plan, t) for t in names)
+    lines = [_exclude_flag(plan, t) for t in names]
+    # 캡처 사용자가 못 읽거나 담지 않기로 한 것(2026-11-13 CAPFIX). 스키마와 표는 통째로(잠금도 걸지 않게),
+    # 시퀀스는 현재값만 뺀다.
+    for e in (plan or {}).get("excluded", []):
+        if e["kind"] == "schema":
+            lines.append(f"--exclude-schema={_pattern(e['object'])}")
+        elif e["kind"] == "table":
+            flag = "--exclude-table-and-children" if e.get("relkind") == "p" else "--exclude-table"
+            lines.append(f"{flag}={_qualified(e['object'])}")
+        else:
+            lines.append(f"--exclude-table-data={_qualified(e['object'])}")
+    return "\n".join(lines)
 
 
 def emit_export_sql(cfg: dict, out_dir: str, plan: dict | None = None) -> str:
@@ -629,6 +805,11 @@ def main() -> int:
     if args.emit in ("plan-json", "plan-summary"):
         if plan is None:
             sys.exit("--emit plan-json, plan-summary 는 --catalog 가 필요하다")
+        if args.emit == "plan-summary":
+            # 캡처 로그에 남긴다(캡처는 이 요약을 한 번 부르고 stderr 는 capture-error.log 로 간다).
+            for e in plan["excluded"]:
+                print(f"[WARN] PostgreSQL {e['kind']} {e['object']} left out of the dump: {e['reason']}"
+                      + ("" if e["acknowledged"] else " (not acknowledged in pg-scope.json)"), file=sys.stderr)
         print(json.dumps(plan if args.emit == "plan-json" else plan_summary(plan, cfg),
                          ensure_ascii=False, indent=1, sort_keys=True))
     elif args.emit == "exclude-args":

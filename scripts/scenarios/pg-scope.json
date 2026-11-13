@@ -23,6 +23,34 @@
 
   "default_scope": "snap",
 
+  "capture_schemas": {
+    "public": "제품 표 전부. 표마다의 범위는 아래 slice, drop, snap 규칙이 정한다",
+    "polestar_notification": "함수만 있다(2026-11-13 119 실측 함수 6개, 표 0개). public 표 software_execution_runs 의 트리거 4개가 이 스키마 함수를 부르므로 빠지면 복원 때 그 트리거 생성이 깨진다"
+  },
+  "excluded_schemas": {
+    "security": "비밀번호 회전 기록(password_rotation_ledger). 소유 postgres, 캡처 사용자에게 USAGE 가 없고 녹화 대상이 아니다(2026-11-13 G2 F49-H 캡처가 이 스키마의 권한 오류로 실패)"
+  },
+  "excluded_relations": {
+    "collect_control_position_changes": "소유 nova_migrator, 캡처 사용자에게 권한 없음(2026-11-13 119 실측). 권한을 주지 않는 한 담을 수 없다",
+    "omp_confine_pending": "소유 nova_migrator, 캡처 사용자에게 권한 없음(2026-11-13 119 실측). 권한을 주지 않는 한 담을 수 없다",
+    "automation_notification_cancellation_progress": "소유 nova_migrator, 캡처 사용자에게 권한 없음(2026-11-13 119 실측). 권한을 주지 않는 한 담을 수 없다",
+    "automation_notification_cancellation_install": "소유 nova_migrator, 캡처 사용자에게 권한 없음(2026-11-13 119 실측). 권한을 주지 않는 한 담을 수 없다",
+    "collect_desired_inputs_input_seq_seq": "시퀀스. 캡처 사용자에게 USAGE 만 있고 SELECT 가 없다(2026-11-13 119 실측). 정의는 담고 현재값만 뺀다",
+    "automation_notification_cancellations_id_seq": "시퀀스. 캡처 사용자에게 권한 없음(2026-11-13 119 실측). 정의는 담고 현재값만 뺀다"
+  },
+  "_access_note": [
+    "2026-11-13 CAPFIX. G2 첫 v4 녹화 F49-H 의 pg_dump 가 permission denied for schema security 로 실패했다.",
+    "pg_dump 는 담는 표마다 잠금을 걸고(표 SELECT 와 스키마 USAGE 가 필요, --exclude-table-data 로는 잠금이 남는다)",
+    "담는 시퀀스의 현재값을 SELECT 로 읽어 하나라도 막히면 덤프 전체가 실패한다. 119 에는 security 말고도 캡처",
+    "사용자가 못 읽는 public 표 4개와 시퀀스 2개가 있어 스키마 하나만 빼면 다음 객체에서 다시 실패한다(PG 17 실측).",
+    "규칙(pg-scope-export.py plan_access): 스키마는 capture_schemas 에 이유와 함께 적힌 것만 담는다. 인증, 비밀 계열",
+    "스키마가 새로 생겨도 사람이 담기로 정하기 전에는 녹화에 실리지 않는다. 캡처 사용자가 USAGE 없는 스키마,",
+    "SELECT 없는 표는 통째로 빼고, SELECT 없는 시퀀스는 현재값만 뺀다(정의를 빼면 기본값과 identity 가 깨진다).",
+    "빼는 것은 캡처가 meta.postgres_scope.excluded 에 이름과 이유를 남기고, 녹화 전 점검(pg-scope-guard)은",
+    "excluded_schemas, excluded_relations 에 이유가 적히지 않은 것과 빠지는 것에 기대는 객체(conflicts)를 막는다.",
+    "권한을 캡처 사용자에게 주는 길은 쓰지 않는다(인증, 권한 변경은 사용자 확인 대상)."
+  ],
+
   "slice_roots": {
     "incidents": {
       "time_column": "created_at",
