@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "_note": "관측 정지 기록. 러너(rca-scenario-runner app/seasonal_window.py)가 골든 복원마다 observer 의 21일 버킷 창 안에 든 정지 앞뒤 칸을 계산해 녹화 meta trainer_reset.seasonal_window 에 적는다(v4 G2META, Q19 덧붙임 답 A). 칸 목록이 아니라 정지 구간과 출처를 적는다. start 는 관측이 나빠지기 시작한 시각, end 는 수집이 다시 정상으로 들어온 시각(UTC). 칸은 start 부터 1시간, end 부터 1시간이다. 새 정지가 생기면 출처(상황판 줄, 로그)를 붙여 한 건 더한다. 지우지 않는다.",
+  "outages": [
+    {
+      "id": "119-2026-10-30-soft-lockup",
+      "target": "119 관측 서버(lucida-svc)",
+      "start": "2026-10-30T16:33:00Z",
+      "end": "2026-11-09T08:12:00Z",
+      "source": "testbed-ops v4 board.md 11-09 17:15 줄: 지난 부팅 journal 마지막 기록 10-31 02:03 KST(10-30T17:03Z), 멈추기 30분 전부터 apiserver 시간 초과(start = 17:03Z - 30분), 11-09 16:55 KST virsh reset, 17:12 KST 파드 전부 Ready 와 syslog 유입 확인(end). 같은 파일 13행: 10-30 16:59Z soft lockup"
+    }
+  ]
+}

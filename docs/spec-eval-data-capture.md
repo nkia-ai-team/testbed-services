@@ -260,6 +260,23 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
   `golden_sha256` 은 `restore-golden-state.sh` 가 복원한 골든 덤프의 sha256 이다
   (복원 결과 JSON 의 `golden_sha256` 을 러너가 phases.json 으로 옮긴다, 2026-11-09).
   64자 소문자 16진수이거나, 이 값을 내지 않던 복원 스크립트에서는 null 이다.
+  trainer_reset 에는 2026-11-13(v4 G2META) 부터 아래 넷이 더 실린다. 앞선 러너, 복원
+  스크립트의 녹화에는 없거나 null 이다. 채점 제외 표시가 아니라 연구원이 가를 수 있게 남기는
+  기록이다.
+  - `golden_stream_generation`, `golden_stream_boot_load_until`(+`_kst`): 복원이 데이터를
+    되돌린 직후 observer 가 뜨기 전에 읽은 골든의 활성 stream 세대와, 그 세대 threshold,
+    distribution 행 `valid_until_ms` 의 가장 이른 값(observer 가 이 시각 뒤 부팅이면 그 세대를
+    거절한다).
+  - `golden_stream_valid`: 복원 시각이 그 마감보다 앞이면 true, 뒤면 false, 모르면 null.
+    false 여도 주입 시각(복원 + 2시간 10분)에는 trainer 새 세대로 돈다(출발 경로만 다르다).
+  - `seasonal_window`: observer 가 부팅 때 168칸 stream 버킷(UTC 요일 x 시각, 일요일 0)을
+    다시 채우는 VM 이력 창(복원 시각 앞 `STREAM_ANOMALY_SEASONAL_BACKFILL_DAYS`, 기본 21일) 안에
+    든 칸. `injection_cells`(러너 실행 기록의 주입 구간, 칸마다 실행 id),
+    `outage_cells`(`scripts/scenarios/registry/observation-outages.json` 정지 기록의 앞뒤
+    각 1시간, 칸마다 기록 id), `this_injection_cells`(이번 [t1, t2]), `overlap_cells`,
+    `overlap`, 센 실행과 정지(`runs_counted`, `outages_counted`), 출처(`sources`), 한계
+    문장(`limits`). 계산은 러너 `app/seasonal_window.py`. 계산이 실패하면
+    `{status: "error", error}` 만 남고 녹화는 그대로 간다.
 - 신규 `clickhouse_tables[]`: `{table, file, rows, time_column,
   scope: slice|snap, time_min, time_max | null(0행)}`.
 - 유지: `t1`/`t2`/`capture_start`/`capture_end`(+`_kst`), `dump_*`,

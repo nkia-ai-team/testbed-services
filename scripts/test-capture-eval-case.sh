@@ -220,6 +220,53 @@ jq '(.phases[] | select(.phase == "trainer_reset") | .golden_sha256) = "not-a-di
 expect_rejected phases-json-golden-sha256-not-hex \
   "${base_args[@]}" --case-label calibration --phases-json "$bad_golden_sha"
 
+# G2META (Q19 A, B): golden stream validity and the 21-day seasonal window ride in
+# trainer_reset verbatim; golden_stream_boot_load_until gains a _kst companion.
+g2_phases="$TMP_ROOT/phases-g2meta.json"
+jq '(.phases[] | select(.phase == "trainer_reset")) += {
+      golden_stream_generation: 1985,
+      golden_stream_boot_load_until: "2026-07-20T16:24:00Z",
+      golden_stream_valid: true,
+      seasonal_window: {status:"ok", days:21, overlap:true,
+        overlap_cells:[{cell:97, kst:"목 10시"}], injection_cells:[{cell:97, kst:"목 10시", runs:["r1"]}]}}' \
+  "$phases_json" >"$g2_phases"
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$g2_phases" \
+  --output-root "$TMP_ROOT/cases" --dry-run)
+jq -e '
+  (.phases[] | select(.phase == "trainer_reset") |
+    .golden_stream_generation == 1985 and
+    .golden_stream_boot_load_until == "2026-07-20T16:24:00Z" and
+    .golden_stream_boot_load_until_kst == "2026-07-21T01:24:00+09:00" and
+    .golden_stream_valid == true and
+    .seasonal_window.overlap == true and
+    .seasonal_window.overlap_cells == [{cell:97, kst:"목 10시"}] and
+    .seasonal_window.injection_cells[0].runs == ["r1"])' \
+  <<<"$output" >/dev/null || fail "G2META trainer_reset fields must reach the meta verbatim: $output"
+# An older runner without them: nothing added, still accepted.
+jq -e '(.phases[] | select(.phase == "trainer_reset") | has("golden_stream_boot_load_until_kst") | not)' \
+  <(  "$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+        --output-root "$TMP_ROOT/cases" --dry-run) >/dev/null ||
+  fail 'a runner without G2META fields must not get a _kst companion'
+# Nulls (restore result without the stream fields) are accepted.
+g2_nulls="$TMP_ROOT/phases-g2meta-nulls.json"
+jq '(.phases[] | select(.phase == "trainer_reset")) += {golden_stream_generation:null,
+      golden_stream_boot_load_until:null, golden_stream_valid:null, seasonal_window:null}' \
+  "$phases_json" >"$g2_nulls"
+"$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$g2_nulls" \
+  --output-root "$TMP_ROOT/cases" --dry-run >/dev/null || fail 'G2META nulls must be accepted'
+g2_bad_index=0
+for bad in '.golden_stream_generation = "1985"' '.golden_stream_generation = -1' \
+           '.golden_stream_generation = 1.5' '.golden_stream_boot_load_until = "2026-07-20 16:24"' \
+           '.golden_stream_boot_load_until = "2026-07-21T01:24:00+09:00"' '.golden_stream_valid = "yes"' \
+           '.seasonal_window = []'; do
+  g2_bad_index=$((g2_bad_index + 1))
+  jq "(.phases[] | select(.phase == \"trainer_reset\")) |= ($bad)" "$g2_phases" >"$TMP_ROOT/phases-g2bad.json"
+  expect_rejected "phases-json-g2meta-bad-$g2_bad_index" \
+    "${base_args[@]}" --case-label calibration --phases-json "$TMP_ROOT/phases-g2bad.json"
+  grep -q 'phases-json is missing required phases' "$TMP_ROOT/err" ||
+    fail "G2META bad case $bad rejected for another reason: $(cat "$TMP_ROOT/err")"
+done
+
 # Evaluation-label integrity guard (spec §2.2, 2026-07-25): a shortened normal
 # lead-in (< contract 2h) must downgrade evaluation -> calibration, not mint a
 # scoring-grade case. The 2026-07-24 overnight incident regression guard.

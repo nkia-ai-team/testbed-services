@@ -4,7 +4,9 @@
 # pg_restore sidecar runs; curl answers the observer health check. A temporary golden
 # root holds one golden (meta.json + data/golden-pg-state.dump).
 #
-# What is checked: the restore result JSON carries golden_sha256 = sha256 of the dump
+# What is checked: the restore result JSON carries golden_stream_generation and
+# golden_stream_boot_load_until read after the data restore (null when unreadable,
+# never failing the restore), and golden_sha256 = sha256 of the dump
 # that was restored (the runner threads it into phases.json trainer_reset, the capture
 # carries it into the recording meta), in both the real and the dry-run output, and a
 # dump that does not match meta.pg_ai_state.sha256 is still refused.
@@ -31,6 +33,9 @@ case "$1" in
     case "$*" in
       *--version*) [[ "$*" == *fake-pg16* ]] && echo 'pg_dump (PostgreSQL) 16.15' || echo 'pg_dump (PostgreSQL) 17.11' ;;
       *'SHOW server_version_num'*) echo "${FAKE_PG_SERVER_NUM:-170011}" ;;
+      *trainer_stream_generations*)
+        [[ "${FAKE_STREAM_FAIL:-}" == 1 ]] && exit 2
+        printf '%s\n' "${FAKE_STREAM_ROW-1985|1795105440999}" ;;
     esac
     exit 0 ;;
   *) exit 9 ;;
@@ -69,6 +74,41 @@ jq -e --arg sha "$dump_sha" --arg dir "$golden" '
   .golden_sha256 == $sha and (.golden_sha256 | test("^[0-9a-f]{64}$"))
 ' <<<"$out" >/dev/null || fail "restore result must carry golden_sha256 of the restored dump: $out"
 grep -q '^run ' "$FAKE_LOG" || fail 'restore did not run the pg sidecar'
+
+# 1b. G2META (Q19 B): the result names the restored golden's active stream generation
+#     and the earliest valid_until of its artifacts (ms floored to the second), read
+#     after the data restore and before the observer starts.
+jq -e '.golden_stream_generation == 1985 and .golden_stream_boot_load_until == "2026-11-19T16:24:00Z"' \
+  <<<"$out" >/dev/null || fail "restore result must carry the golden stream generation and deadline: $out"
+query_line=$(grep -n 'trainer_stream_generations' "$FAKE_LOG" | head -1 | cut -d: -f1)
+restore_line=$(grep -n 'pg_restore --data-only' "$FAKE_LOG" | head -1 | cut -d: -f1)
+start_line=$(grep -n '^start ' "$FAKE_LOG" | head -1 | cut -d: -f1)
+[[ -n "$query_line" && -n "$restore_line" && -n "$start_line" ]] || fail "missing sidecar or start lines: $(cat "$FAKE_LOG")"
+(( restore_line < query_line && query_line < start_line )) ||
+  fail "stream generation must be read after pg_restore and before the observer starts: $(cat "$FAKE_LOG")"
+grep 'trainer_stream_generations' "$FAKE_LOG" | grep -q 'm.active' ||
+  fail 'stream generation read must pick the active generation'
+grep -q 'min(t.valid_until_ms) FROM public.trainer_stream_threshold' "$FAKE_LOG" &&
+  grep -q 'min(d.valid_until_ms) FROM public.trainer_stream_distribution_profile' "$FAKE_LOG" ||
+  fail 'deadline must be the earliest valid_until of both the threshold and distribution rows'
+for row_case in 'none:' 'fail:' 'nodeadline:1985|' 'garbage:1985|abc'; do
+  label=${row_case%%:*} row=${row_case#*:}
+  : >"$FAKE_LOG"
+  if [[ "$label" == fail ]]; then
+    out=$(FAKE_STREAM_FAIL=1 "$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+      fail "restore must not fail when the stream read fails: $(cat "$TMP_ROOT/err")"
+  else
+    out=$(FAKE_STREAM_ROW="$row" "$RESTORE" --golden-root "$golden_root" --for-time now --ready-timeout-sec 5 2>"$TMP_ROOT/err") ||
+      fail "restore must not fail on stream row '$row': $(cat "$TMP_ROOT/err")"
+  fi
+  case "$label" in
+    nodeadline) want='.golden_stream_generation == 1985 and .golden_stream_boot_load_until == null' ;;
+    *) want='.golden_stream_generation == null and .golden_stream_boot_load_until == null' ;;
+  esac
+  jq -e ".status == \"ok\" and .golden_sha256 == \"$dump_sha\" and $want" <<<"$out" >/dev/null ||
+    fail "stream row case $label: $out"
+  grep -q '^start ' "$FAKE_LOG" || fail "stream row case $label must still start the observer"
+done
 
 # 2. Dry run reports the same digest without touching anything.
 : >"$FAKE_LOG"

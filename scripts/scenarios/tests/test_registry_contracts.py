@@ -2234,6 +2234,41 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
             self.assertNotIn(self.policy["configmap"]["key"], text)
 
 
+class ObservationOutageLedgerTests(unittest.TestCase):
+    """registry/observation-outages.json (testbed v4 G2META, Q19 A): the runner reads
+    this ledger every golden restore and records the outage edge cells that fall in
+    the observer's 21-day bucket window. Every record is a span with its source; the
+    runner refuses the whole file on one bad record, so keep every record parseable."""
+
+    UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ledger = json.loads((ROOT / "registry" / "observation-outages.json").read_text(encoding="utf-8"))
+
+    def test_every_record_is_a_sourced_utc_span(self) -> None:
+        self.assertEqual(self.ledger["schema_version"], 1)
+        records = self.ledger["outages"]
+        self.assertIsInstance(records, list)
+        self.assertEqual(len({r["id"] for r in records}), len(records))
+        for record in records:
+            with self.subTest(id=record.get("id")):
+                self.assertTrue(isinstance(record["id"], str) and record["id"])
+                self.assertRegex(record["start"], self.UTC)
+                self.assertRegex(record["end"], self.UTC)
+                self.assertLess(record["start"], record["end"])
+                self.assertTrue(record["source"].strip())
+                self.assertTrue(record["target"].strip())
+                self.assertIsNone(INJECTION_TRACE.search(json.dumps(record, ensure_ascii=False)))
+
+    def test_the_119_soft_lockup_is_on_record(self) -> None:
+        """119 stopped from the 10-30T17:03Z journal end (degrading 30 minutes before)
+        until every pod was Ready again at 11-09 17:12 KST (board.md 11-09 17:15)."""
+        record = next(r for r in self.ledger["outages"] if r["id"] == "119-2026-10-30-soft-lockup")
+        self.assertEqual((record["start"], record["end"]), ("2026-10-30T16:33:00Z", "2026-11-09T08:12:00Z"))
+        self.assertIn("board.md", record["source"])
+
+
 class EntryPlacementTests(unittest.TestCase):
     """Domain manifests (testbed v4 E8): the entry nginx of commerce and banking
     stays off its database node, so a node fault on that worker reaches the

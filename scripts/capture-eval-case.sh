@@ -460,8 +460,12 @@ if [[ "$v3_mode" == true ]]; then
   # restore-golden-state.sh restored (its result JSON golden_sha256, threaded by
   # the runner). It is carried into meta.json phases[] verbatim. null is still
   # accepted for a restore script or runner that predates the digest; a string
-  # must be a 64-char lowercase hex digest. Validate the envelope, then work off
-  # .phases below.
+  # must be a 64-char lowercase hex digest. G2META (Q19 A, B) adds, all optional
+  # and null for an older runner: golden_stream_generation, golden_stream_boot_load_until
+  # (UTC, +_kst), golden_stream_valid (restore before that deadline) and
+  # seasonal_window (the restore's 21-day stream bucket window: injection and
+  # outage cells, this injection's cells, overlap). Validate the envelope, then
+  # work off .phases below.
   jq -e '
     (type == "object") and (.phases | type == "array") and
     ([.phases[].phase] as $p |
@@ -473,7 +477,15 @@ if [[ "$v3_mode" == true ]]; then
     (.phases[] | select(.phase == "trainer_reset") |
       (.at | type == "string") and (.golden_id | type == "string") and
       (((.golden_sha256 | type == "string") and (.golden_sha256 | test("^[0-9a-f]{64}$"))) or
-        .golden_sha256 == null)) and
+        .golden_sha256 == null) and
+      (.golden_stream_generation == null or
+        ((.golden_stream_generation | type == "number") and .golden_stream_generation >= 0 and
+         (.golden_stream_generation | floor) == .golden_stream_generation)) and
+      (.golden_stream_boot_load_until == null or
+        ((.golden_stream_boot_load_until | type == "string") and
+         (.golden_stream_boot_load_until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")))) and
+      (.golden_stream_valid == null or (.golden_stream_valid | type == "boolean")) and
+      (.seasonal_window == null or (.seasonal_window | type == "object"))) and
     (.phases[] | select(.phase != "trainer_reset") |
       (.start | type == "string") and (.end | type == "string"))
   ' "$phases_json" >/dev/null ||
@@ -501,6 +513,12 @@ if [[ "$v3_mode" == true ]]; then
     if [[ "$phase_name" == trainer_reset ]]; then
       at_epoch=$(parse_utc_epoch "$(jq -r '.at' <<<"$phase_obj")" 'phases-json trainer_reset.at')
       enriched=$(jq -c --arg at_kst "$(kst_from_epoch "$at_epoch")" '. + {at_kst:$at_kst}' <<<"$phase_obj")
+      until_raw=$(jq -r '.golden_stream_boot_load_until // empty' <<<"$phase_obj")
+      if [[ -n "$until_raw" ]]; then
+        until_epoch=$(parse_utc_epoch "$until_raw" 'phases-json trainer_reset.golden_stream_boot_load_until')
+        enriched=$(jq -c --arg kst "$(kst_from_epoch "$until_epoch")" \
+          '. + {golden_stream_boot_load_until_kst:$kst}' <<<"$enriched")
+      fi
     else
       start_epoch=$(parse_utc_epoch "$(jq -r '.start' <<<"$phase_obj")" "phases-json $phase_name.start")
       end_epoch=$(parse_utc_epoch "$(jq -r '.end' <<<"$phase_obj")" "phases-json $phase_name.end")

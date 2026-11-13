@@ -483,6 +483,39 @@ PGPASSWORD="$PG_ADMIN_PASSWORD" docker run --rm "${pg_net_args[@]}" \
 log 'PostgreSQL AI-state restored (data-only, FK-safe)'
 
 # ------------------------------------------------------------
+# 2b. Golden stream generation and its boot-load deadline (v4 G2META, Q19 B).
+#     The observer boot-loads the active stream generation only while every
+#     threshold and distribution row of it is unexpired (valid_until_ms, trainer
+#     학습 끝 + 7일). Read it now, before the observer boots and while the trainer
+#     is frozen (same admin role as the restore above), so the result says which generation came back and until when the
+#     observer accepts it. The runner compares it with restored_at and records
+#     golden_stream_valid in the recording meta. Recording only: an older golden
+#     without the generation tables, or any read failure, leaves both null.
+# ------------------------------------------------------------
+golden_stream_sql="SELECT m.generation, least(
+  (SELECT min(t.valid_until_ms) FROM public.trainer_stream_threshold t
+    WHERE t.agent_id = m.agent_id AND t.version = m.generation),
+  (SELECT min(d.valid_until_ms) FROM public.trainer_stream_distribution_profile d
+    WHERE d.agent_id = m.agent_id AND d.version = m.generation))
+FROM public.trainer_stream_generations m WHERE m.active ORDER BY m.generation DESC LIMIT 1"
+golden_stream_generation=null
+golden_stream_boot_load_until=null
+golden_stream_row=$(PGPASSWORD="$PG_ADMIN_PASSWORD" timeout --kill-after=10 "${PG_TOOL_CHECK_TIMEOUT_SEC:-60}" \
+  docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+  psql -v ON_ERROR_STOP=1 -tA -F '|' --host "$PG_HOST" --port "$PG_PORT" --username "$PG_ADMIN_USER" \
+  --dbname "$PG_DATABASE" -c "$golden_stream_sql" 2>/dev/null | head -1) || golden_stream_row=''
+if [[ "$golden_stream_row" =~ ^([0-9]+)\|([0-9]+)$ ]]; then
+  golden_stream_generation=${BASH_REMATCH[1]}
+  golden_stream_boot_load_until="\"$(date -u -d "@$(( BASH_REMATCH[2] / 1000 ))" +'%Y-%m-%dT%H:%M:%SZ')\""
+  log "golden stream generation $golden_stream_generation boot-loads until ${golden_stream_boot_load_until//\"/}"
+elif [[ "$golden_stream_row" =~ ^([0-9]+)\|$ ]]; then
+  golden_stream_generation=${BASH_REMATCH[1]}
+  log "golden stream generation $golden_stream_generation has no expiring artifact rows"
+else
+  log 'WARN: golden stream generation not readable, golden_stream_* left null'
+fi
+
+# ------------------------------------------------------------
 # 3. Start the observer back up (stopped in step 1b) so it reloads the golden
 #    models from the freshly-restored tables.
 # ------------------------------------------------------------
@@ -508,8 +541,12 @@ jq -n \
   --argjson n_tables "${#golden_tables[@]}" \
   --arg restored_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   --arg golden_sha256 "$actual_sha" \
+  --argjson golden_stream_generation "$golden_stream_generation" \
+  --argjson golden_stream_boot_load_until "$golden_stream_boot_load_until" \
   '{action:"restore-golden", status:"ok", golden_dir:$golden_dir, golden_tod_kst:$tod,
     golden_sha256:$golden_sha256,
+    golden_stream_generation:$golden_stream_generation,
+    golden_stream_boot_load_until:$golden_stream_boot_load_until,
     pg_tables_restored:$n_tables, trainer_frozen:$frozen, observer_container:$observer,
     trainer_container:$trainer, restored_at:$restored_at,
     note:"trainer stays frozen for evaluation; run with --thaw afterwards"}'
