@@ -221,7 +221,7 @@ if [[ "$self_check" == true ]]; then
   PG_PASSWORD="${PG_PASSWORD:-}"
   PG_DATABASE="${PG_DATABASE:-lucida}"
   PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"
-  QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:18080}"
+  QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:13080}"
   QUERY_API_USER="${QUERY_API_USER:-manager}"
   QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
 
@@ -787,8 +787,9 @@ PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:17-alpine}"
 CAPTURE_HOST_OUTPUT_ROOT="${CAPTURE_HOST_OUTPUT_ROOT:-}"
 MODEL_SOURCE="${MODEL_SOURCE:-/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json}"
 MODEL_CONTAINER="${MODEL_CONTAINER:-lucida-ai-observer}"
-# Topology snapshot (spec §4, 2026-07-20) — query API on 119:18080, cookie login.
-QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:18080}"
+# Topology snapshot (spec §4, 2026-07-20): query API, cookie login. 119 is k3s since
+# v4: the web gateway 13080 serves /api/v1/login (the v3 compose port 18080 is gone).
+QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:13080}"
 QUERY_API_USER="${QUERY_API_USER:-manager}"
 QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
 

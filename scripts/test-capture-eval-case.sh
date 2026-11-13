@@ -877,4 +877,10 @@ if grep -q 'pg_dump -Fc' "$FAKE_LOG"; then fail 'pg_dump ran despite the major m
 run_live case-live-v4-pg16-on-16 PG_DUMP_IMAGE=fake-pg16 FAKE_PG_SERVER_NUM=160015 ||
   fail 'capture refused a PG 16 tool against a PG 16 server'
 
+# (i) query API 기본 주소는 k3s 119 의 웹 게이트웨이 13080 이다(v3 compose 18080 은 닫힘, v4 K3SEP).
+# self-check 와 본 캡처 두 곳 모두.
+[[ "$(grep -c 'QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:13080}"' "$CAPTURE")" == 2 ]] ||
+  fail 'QUERY_API_URL default is not the 119 web gateway in both places'
+if grep -q '192.168.230.119:18080' "$CAPTURE"; then fail 'capture still defaults to the closed 119:18080'; fi
+
 printf '[PASS] capture policy dry-run tests\n'
