@@ -30,7 +30,7 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
   flagship-first(commerce)로 확정, 3도메인 구현 완료. (확정)
 - [SMS, NMS 전용 전통 3계층 테스트베드 설계](spec-testbed-vm-3tier.md):
   APM 과 쿠버네티스 없이 VM 위 systemd 로 도는 웹, WAS, DB 와 가상 라우터로 이루어진
-  네 번째 테스트베드의 망, WireGuard 터널, 119 등록, 러너 연동, 단계별 완료 조건. (GT0 확정 2026-11-10)
+  네 번째 테스트베드의 망, WireGuard 터널, 119 등록(SMS 와 NMS 만), 러너 연동, 흔적 표의 틀, 단계별 완료 조건. (GT0 확정 2026-11-10, 관제 범위 2026-11-16 고침)
 - [SMS 에이전트만 쓰는 고객사 테스트베드 설계](spec-testbed-sms-only.md):
   SMS 에이전트만 119 에 등록한 다섯째 테스트베드(S)의 T 코드 재사용과 쌍 비교 조건, 119 가 닿는 길과
   ICMP 제안, 119 부담 숫자, 러너 연동, 단계별 완료 조건. (Draft, GT0-S 사용자 승인 전)
