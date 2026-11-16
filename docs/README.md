@@ -31,6 +31,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [SMS, NMS 전용 전통 3계층 테스트베드 설계](spec-testbed-vm-3tier.md):
   APM 과 쿠버네티스 없이 VM 위 systemd 로 도는 웹, WAS, DB 와 가상 라우터로 이루어진
   네 번째 테스트베드의 망, WireGuard 터널, 119 등록, 러너 연동, 단계별 완료 조건. (GT0 확정 2026-11-10)
+- [SMS 에이전트만 쓰는 고객사 테스트베드 설계](spec-testbed-sms-only.md):
+  SMS 에이전트만 119 에 등록한 다섯째 테스트베드(S)의 T 코드 재사용과 쌍 비교 조건, 119 가 닿는 길과
+  ICMP 제안, 119 부담 숫자, 러너 연동, 단계별 완료 조건. (Draft, GT0-S 사용자 승인 전)
 - [테스트베드 배포 runbook](runbook-testbed-deploy.md):
   109 kubeadm 클러스터 배포·검증 실측 절차 — 환경 실값(OTLP/org id), 신규 VM
   전제조건(StorageClass·OTel jar), 트러블슈팅. (Active)
