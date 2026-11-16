@@ -229,9 +229,10 @@ def plan_tables(cfg: dict, catalog: dict, skip: set[str], window_start: str, win
 # ClickHouse 가 계산하게 한다: 시각 열은 모두 창 시작, 다른 열은 열 기본값(식이 다른 열을 부르면 타입 기본값)인
 # 한 행을 만들어 지우는 TTL 항마다 만료 시각을 구하고 창 시작과의 차이(초)를 TTL 로 본다. 창 시작의 행이 가장
 # 먼저 지워지므로 이 값이 그 표에서 창이 버티는 시간이다. WHERE 가 붙은 항도 조건과 상관없이 센다(조건에 맞는
-# 행만 지워져도 녹화가 달라진다). 지우지 않는 항(TO DISK, TO VOLUME, RECOMPRESS, GROUP BY)은 뺀다.
+# 행만 지워져도 녹화가 달라진다). GROUP BY(롤업)도 행을 바꾸므로 센다. 지우지 않는 항(TO DISK, TO VOLUME, RECOMPRESS)은 뺀다.
 # 표 데이터는 읽지 않는다(FROM 이 리터럴 한 행).
-TTL_NOT_DELETE = re.compile(r"\b(TO\s+DISK|TO\s+VOLUME|RECOMPRESS|GROUP\s+BY|SET)\b", re.I)
+# 행을 지우지 않는 항. GROUP BY(롤업)는 행을 바꾸므로 지우는 항과 같이 센다(6회차, 재리뷰 하 4).
+TTL_NOT_DELETE = re.compile(r"\b(TO\s+DISK|TO\s+VOLUME|RECOMPRESS)\b", re.I)
 
 
 def ttl_query(databases: list[str]) -> str:
@@ -311,8 +312,8 @@ def ttl_delete_terms(engine_full: str) -> list[str] | None:
         if not term:
             return None
         padded = " " + term + " "
-        cut = _top_keyword(padded, "WHERE")
-        expr = term if cut < 0 else padded[:cut].strip()
+        cuts = [c for c in (_top_keyword(padded, "WHERE"), _top_keyword(padded, "GROUP")) if c >= 0]
+        expr = term if not cuts else padded[:min(cuts)].strip()
         if TTL_NOT_DELETE.search(expr):
             continue
         expr = re.sub(r"\s+DELETE\s*$", "", expr, flags=re.I).strip()

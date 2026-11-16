@@ -407,6 +407,7 @@ class PgAccessTest(unittest.TestCase):
         # 앞부분(설정과 자동 발견의 데이터 빼기)은 권한 질의와 스키마 목록이 없던 판과 같다.
         before = copy.deepcopy(PG_CFG)
         del before["capture_schemas"]
+        del before["secret_detect"]  # 권한 질의, 스키마 목록, 비밀 계열 검출이 모두 없던 판을 흉내 낸다
         old_plan = self.plan(self.TABLES_119, before)
         self.assertEqual(old_plan["excluded"], [])
         old = pg.emit_exclude_args(before, old_plan).splitlines()
@@ -616,7 +617,9 @@ class PgSecretTest(unittest.TestCase):
         "user_password_history users workload_connection_profiles workload_db_connection_profiles "
         "workload_notification_destinations wpm_profile_credentials "
         # 3회차: 사용자가 든 낱말(seal, token, key)로 꼴을 넓혀 더 걸린 표
-        "alarm_severity_levels automation_host_inventory_runs software_omp_executions peer_link_peers").split()
+        "alarm_severity_levels automation_host_inventory_runs software_omp_executions peer_link_peers "
+        # 6회차: 배열 타입을 열 꼴에 넣어 더 걸린 표
+        "kcm_resources").split()
 
     def plan(self, tables, cfg=None, **k):
         return pg.plan_scope(cfg or PG_CFG, pg_catalog(tables, **k))
@@ -652,6 +655,20 @@ class PgSecretTest(unittest.TestCase):
         e = next(x for x in plan["excluded"] if x["object"] == "tenant_api_key_rotation")
         self.assertEqual((e["reason"], e["note"]),
                          ("secret_detected", "비밀 계열, 사용자 결정 11-16, 목록에 없음. 이름이나 열 꼴: 표 이름"))
+
+    def test_tables_in_other_captured_schemas_are_checked_too(self):
+        # 6회차(재리뷰 하 1): public 밖 담는 스키마의 표도 이름과 열 꼴로 본다.
+        plan = self.plan({"polestar_notification.queue_tokens": 4096, "polestar_notification.runs": 4096},
+                         columns={"polestar_notification.runs": [("note", "text"), ("smtp_password", "text")]})
+        got = sorted(e["object"] for e in plan["excluded"] if e["reason"] == "secret_detected")
+        self.assertEqual(got, ["polestar_notification.queue_tokens", "polestar_notification.runs"])
+
+    def test_domain_types_are_judged_by_their_base_type(self):
+        cat = pg_catalog({"t9": 4096})
+        cat = pg.parse_catalog({"tables": "public\tt9\tr\t10\t1\t1\t0",
+                                "columns": "t9\tapi_secret\tsecret_text\tf\t\tf\tf\t\ttext\n"
+                                           "t9\tsecret_flag\tflag_dom\tf\t\tf\tf\t\tboolean"})
+        self.assertEqual(pg.secret_candidates(PG_CFG, cat), {"t9": ["열 api_secret:text"]})
 
     def test_seal_and_token_table_names_are_caught_by_name(self):
         # 3회차: 사용자가 든 낱말 seal, token 은 표 이름에서도 잡는다(열이 비밀 꼴이 아니어도).
@@ -696,7 +713,7 @@ class PgSecretTest(unittest.TestCase):
     def test_every_secret_candidate_on_119_has_a_decision(self):
         decided = set(PG_CFG["secret_tables"]) | set(PG_CFG["secret_reviewed_keep"]) | set(PG_CFG["drop_data"])
         self.assertEqual(sorted(set(self.CANDIDATES_119) - decided), [])
-        self.assertEqual(len(self.CANDIDATES_119), 61)
+        self.assertEqual(len(self.CANDIDATES_119), 62)
         for k in ("secret_tables", "secret_reviewed_keep"):
             for name, why in PG_CFG[k].items():
                 self.assertTrue(isinstance(why, str) and len(why) > 15, (k, name))
@@ -713,9 +730,13 @@ class PgSecretTest(unittest.TestCase):
                      ("private_encrypted", "text"), ("config_encrypted", "jsonb"), ("sql_ciphertext", "text"),
                      ("secrets", "bytea"), ("aes_key_encrypted", "text"), ("code_hash", "bytea"),
                      ("token", "text"), ("refresh_token", "text"), ("seal_material", "bytea"), ("signing_key", "text"),
-                     ("access_key", "character varying(64)"), ("run_token", "text")):
+                     ("access_key", "character varying(64)"), ("run_token", "text"),
+                     # 6회차(재리뷰 하 2): 낱말 더함, 배열 타입
+                     ("snmp_community", "text"), ("passwd", "text"), ("db_pwd", "character varying(64)"),
+                     ("priv_key", "text"), ("privkey", "bytea"), ("ssh_key", "text"), ("tls_key", "text"),
+                     ("recovery_codes", "text[]"), ("credentials", "jsonb"), ("secret_refs", "text[]")):
             self.assertTrue(col.search(c) and ty.search(t), (c, t))
-        for c, t in (("password_digit_count", "integer"), ("secret_refs", "text[]"), ("method_otp", "boolean"),
+        for c, t in (("password_digit_count", "integer"), ("secret_count", "integer[]"), ("method_otp", "boolean"),
                      ("content_hash", "text"), ("resource_key", "text"), ("idempotency_key", "text"),
                      ("execution_token", "uuid"), ("sealed_at", "timestamp with time zone"), ("partition_key", "text"),
                      ("token_count", "integer")):
@@ -770,10 +791,10 @@ class PgMaskTest(unittest.TestCase):
         plan = pg.plan_scope(PG_CFG, cat)
         restore = pg.emit_restore_sql(PG_CFG, plan)
         self.assertIn("CREATE TABLE IF NOT EXISTS _capture_restore_report", restore)
-        self.assertIn("RAISE WARNING 'CAPFIX_FK_READD_SUMMARY failed=% attempted=% added=% existing=% child_missing=% %'",
-                      restore)
+        self.assertIn("RAISE WARNING 'CAPFIX_FK_READD_SUMMARY failed=% attempted=% added=% existing=% child_missing=% "
+                      "checked=% %'", restore)
         for item in ("fk_readd_attempted", "fk_readd_added", "fk_readd_existing", "fk_readd_child_missing",
-                     "fk_readd_failed", "fk_readd_first_error"):
+                     "fk_check_checked", "fk_readd_failed", "fk_readd_first_error"):
             self.assertIn(f"('{item}', ", restore)
         self.assertIn("\n  INSERT INTO _capture_restore_report (item, value, detail) VALUES\n", restore)
         self.assertIn("  ON CONFLICT (item) DO UPDATE SET value = EXCLUDED.value, detail = EXCLUDED.detail", restore)
@@ -790,6 +811,64 @@ class PgMaskTest(unittest.TestCase):
         self.assertEqual(pg.plan_summary(plan0, PG_CFG)["fk_readd_count"], 0)
         # 가린 표가 없으면 종전 글자 그대로(블록 없음).
         self.assertNotIn("CAPFIX_FK_READD_SUMMARY", pg.emit_restore_sql(PG_CFG, pg.plan_scope(PG_CFG, pg_catalog({}))))
+
+    # 6회차(재리뷰 중 1): 가린 표끼리 FK 가 있으면 부모를 먼저 싣는다(replica 없는 runbook 경로에서도 멈추지 않게).
+    MASKED_PAIR_CFG = None
+
+    def masked_pair(self, extra_fks=()):
+        cfg = copy.deepcopy(PG_CFG)
+        cfg["secret_columns"] = {"aaa_child": {"secret_note": "r"}, "zzz_parent": {"secret_note": "r"}}
+        cfg["secret_reviewed_keep"] = {**cfg["secret_reviewed_keep"], "aaa_child": "시험", "zzz_parent": "시험"}
+        cols = {t: [col("id", "integer", True), col("parent_id", "integer"), col("secret_note", "text")]
+                for t in ("aaa_child", "zzz_parent")}
+        fks = [("aaa_child", "parent_id", "zzz_parent", "id", "aaa_child_parent_fk",
+                "FOREIGN KEY (parent_id) REFERENCES zzz_parent(id)")] + list(extra_fks)
+        cat = pg_catalog({"aaa_child": 4096, "zzz_parent": 4096}, columns=cols, fks=fks)
+        return cfg, cat, pg.plan_scope(cfg, cat)
+
+    def test_masked_tables_load_parents_first_even_against_name_order(self):
+        cfg, cat, plan = self.masked_pair()
+        self.assertEqual(plan["masked_tables"], ["aaa_child", "zzz_parent"])
+        self.assertEqual(plan["load_order"][:2], ["zzz_parent", "aaa_child"])
+        copies = [l.split()[1] for l in pg.emit_restore_sql(cfg, plan).splitlines() if l.startswith("\\copy ")]
+        self.assertEqual(copies[:2], ["zzz_parent", "aaa_child"])
+        exports = [l[3:] for l in pg.emit_export_sql(cfg, "/out/postgres", plan, cat).splitlines() if l.startswith("-- ")
+                   and not l.startswith("-- pg-scope")]
+        self.assertEqual(exports[:2], ["zzz_parent", "aaa_child"])
+        self.assertEqual(plan["fk_deferred"], [])
+        self.assertIn({"table": "aaa_child", "name": "aaa_child_parent_fk", "parent": "zzz_parent"}, plan["fk_check"])
+        self.assertNotIn("aaa_child", [r["table"] for r in plan["fk_readd"]])  # 이미 달려 있어 다시 달 대상이 아니다
+        restore = pg.emit_restore_sql(cfg, plan)
+        self.assertIn("    ('aaa_child', 'aaa_child_parent_fk')\n  ) v(child, conname) LOOP", restore)
+        self.assertIn("        EXECUTE format('ALTER TABLE %s VALIDATE CONSTRAINT %I', fkc.conrelid::regclass, r.conname);",
+                      restore)
+        self.assertIn("        q := format('SELECT count(*) FROM %s ch WHERE %s AND NOT EXISTS (SELECT 1 FROM %s p WHERE %s)',",
+                      restore)
+        self.assertIn("        IF n_orph > 0 THEN RAISE EXCEPTION '고아 행 %', n_orph; END IF;", restore)
+        self.assertEqual(pg.plan_summary(plan, cfg)["fk_check_count"], len(plan["fk_check"]))
+        # 구간 표 순서는 그대로다.
+        self.assertEqual([t for t in plan["load_order"] if t not in plan["masked_tables"]],
+                         [t for t, _ in pg.ordered_slices(cfg, plan)])
+
+    def test_masked_cycle_defers_one_fk_and_re_adds_it(self):
+        cfg, cat, plan = self.masked_pair(extra_fks=[("zzz_parent", "parent_id", "aaa_child", "id", "zzz_back_fk",
+                                                      "FOREIGN KEY (parent_id) REFERENCES aaa_child(id)")])
+        self.assertEqual([(d["table"], d["name"]) for d in plan["fk_deferred"]], [("aaa_child", "aaa_child_parent_fk")])
+        lo = plan["load_order"]
+        self.assertLess(lo.index("aaa_child"), lo.index("zzz_parent"))  # 뗀 FK 덕에 남은 FK(zzz->aaa) 순서를 지킨다
+        restore = pg.emit_restore_sql(cfg, plan)
+        drop = "ALTER TABLE IF EXISTS aaa_child DROP CONSTRAINT IF EXISTS aaa_child_parent_fk;"
+        self.assertLess(restore.index(drop), restore.index("\\copy aaa_child"))
+        self.assertIn("('aaa_child', 'aaa_child_parent_fk', 'FOREIGN KEY (parent_id) REFERENCES zzz_parent(id)')", restore)
+        self.assertNotIn(("aaa_child", "aaa_child_parent_fk"), [(c["table"], c["name"]) for c in plan["fk_check"]])
+        self.assertIn(("zzz_parent", "zzz_back_fk"), [(c["table"], c["name"]) for c in plan["fk_check"]])
+        self.assertEqual(pg.plan_summary(plan, cfg)["fk_deferred"],
+                         [{"table": "aaa_child", "name": "aaa_child_parent_fk", "parent": "zzz_parent"}])
+
+    def test_load_plan_keeps_slice_order_and_waits_for_masked_parents(self):
+        fks = {"s2": [{"parent": "m1", "name": "s2_m1"}], "m1": [{"parent": "s1", "name": "m1_s1"}]}
+        order, deferred = pg.load_plan(["m1"], ["s1", "s2", "s3"], fks)
+        self.assertEqual((order, deferred), (["s1", "m1", "s2", "s3"], []))
 
     def test_mask_values_follow_nullability_default_and_constraints(self):
         cfg = copy.deepcopy(PG_CFG)
@@ -871,13 +950,14 @@ class PgMaskTest(unittest.TestCase):
                     "peer_link_peers.api_key_env", "workload_notification_destinations.secret_encrypted",
                     "users.password_hash", "collect_workers.enroll_token_hash", "collect_workers.credential_hash",
                     "information_provisions.sql_ciphertext", "automation_workers.enroll_token_hash",
-                    "automation_agents.enroll_token_hash"]
+                    "automation_agents.enroll_token_hash", "kcm_resources.secret_refs"]
         listed = {f"{t}.{c}" for t, cs in PG_CFG["secret_columns"].items() for c in cs}
         self.assertEqual(sorted(set(hits_119) - listed - set(PG_CFG["secret_columns_keep"])), [])
         self.assertFalse(listed & set(PG_CFG["secret_columns_keep"]))
         self.assertEqual(PG_CFG["secret_columns"]["information_provisions"]["sql_ciphertext"]["value"], "'masked'")
         for t in PG_CFG["secret_columns"]:
             self.assertIn(t, PG_CFG["secret_reviewed_keep"])  # 표째 담는 인벤토리 표의 열이다
+        self.assertIn("notification_socket_test_inbox", PG_CFG["secret_tables"])  # 6회차 지휘 세션 결정
 
     def test_masked_tables_emit_lists_only_whole_masked_tables(self):
         import subprocess
@@ -1163,6 +1243,11 @@ class ChRetentionTest(unittest.TestCase):
                 ["(toDateTime(toDate(timestamp) + 1, 'UTC') + toIntervalDay(7))"],
             "MergeTree ORDER BY k TTL bucket_ts + toIntervalDay(multiIf(tier = \\'5m\\', 30, 3650)) SETTINGS x = 1":
                 ["bucket_ts + toIntervalDay(multiIf(tier = '5m', 30, 3650))"],
+            # 6회차(재리뷰 하 4): GROUP BY 롤업은 행을 바꾸므로 지우는 항처럼 센다.
+            "MergeTree ORDER BY (k, ts) TTL ts + toIntervalDay(1) GROUP BY k SET v = max(v) SETTINGS a = 1":
+                ["ts + toIntervalDay(1)"],
+            "MergeTree ORDER BY (k, ts) TTL ts + toIntervalDay(2) WHERE x = 1 GROUP BY k SET v = sum(v)":
+                ["ts + toIntervalDay(2)"],
             "MergeTree ORDER BY k SETTINGS index_granularity = 8192": [],
             "Memory": [],
             "MergeTree ORDER BY k TTL a + toIntervalDay(1), , b SETTINGS x = 1": None,

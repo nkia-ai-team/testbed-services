@@ -435,7 +435,9 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   - 비밀 계열 표(2026-11-16 사용자 결정, v4 녹화부터): public 안의 인증, 키, 자격증명, 봉인 키 계열 표는 행을 담지
     않고 스키마만 남긴다(복원하면 빈 표). 목록은 `pg-scope.json` `secret_tables` 한 곳이고 표마다 근거(그 표의 비밀
     열 이름과 타입)를 적는다. `secret_detect` 꼴(표 이름, 또는 문자열, bytea, json 타입 열의 이름. key, secret, otp,
-    credential, seal, password, token 낱말을 비밀을 담는 모양으로 좁힌 것. 값은 보지 않는다)에
+    credential, seal, password, token 낱말을 비밀을 담는 모양으로 좁힌 것에 passwd, pwd, community, priv key, ssh, tls
+    key, recovery code, credentials 를 더함. 타입은 값을 담는 문자열, bytea, json 과 그 배열, 도메인이면 바탕 타입. 담는
+    모든 스키마의 표를 본다. 값은 보지 않는다)에
     걸리는 표는 `secret_tables`(비움), `secret_reviewed_keep`(검토해 담음, 이유와 함께), `drop_data` 가운데 한 곳에 있어야
     하고, 어디에도 없으면 캡처가 비우고(`secret_detected`) 녹화 전 점검이 막는다. 뺀 표는
     `meta.postgres_scope.excluded`(kind `table_data`, reason `secret` 또는 `secret_detected`, note
@@ -450,7 +452,11 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     자리표시('masked', UNIQUE 면 'masked-<행 번호>', bytea, json 은 그 타입의 고정값), 형식 CHECK 가 있으면 설정의 value.
     통째로 담던 표는 pg_dump 에서 데이터를 빼고(scope `masked`, 표 정의는 남음) 원천 PG 의 서버측 COPY 가 가린 SELECT 로
     `data/postgres/<표>.csv` 를 낸다. 원문 비밀 값은 원천 밖(캡처 호스트, 녹화본)으로 나오지 않는다. 구간 표는 구간 질의를
-    감싸 같은 가림을 건다. `restore.sql` 은 가린 통째 표를 먼저 싣고, pg_restore 때 그 표가 비어 있어 생기지 못한 외래 키
+    감싸 같은 가림을 건다. `restore.sql` 과 내보내기는 가린 표와 구간 표를 FK 위상 순서(가린 표가 낀 FK 는 부모 먼저, 구간
+    표끼리는 종전 순서)로 싣는다. 가린 표가 낀 FK 가 순환이면 하나를 적재 앞에서 떼고(`fk_deferred`) 뒤에서 다시 단다.
+    replica 없이 `psql -f restore.sql` 로 실어도 멈추지 않는다. 적재한 표끼리의 FK 가운데 가린 표가 낀 것은 적재 뒤
+    검사한다(NOT VALID 면 VALIDATE, 아니면 고아 행 수, 실패는 요약의 failed 에, 수는 `fk_check_count`).
+    pg_restore 때 그 표가 비어 있어 생기지 못한 외래 키
     (그 표를 가리키는 것)를 행을 실은 뒤 다시 단다(이미 있으면 건너뜀, 실패해도 복원은 계속). 끝에 WARNING 한 줄
     `CAPFIX_FK_READD_SUMMARY`(실패 수, 시도, 새로 단 것, 이미 있던 것, 자식 표 없음, 실패한 표.제약, 첫 오류, 실패 0 이면
     failed=0)를 내고 같은 수를 복원 DB 의 `_capture_restore_report`(item, value, detail)에 남긴다. 시도 수는

@@ -269,16 +269,21 @@ _BASE_QUERIES = {
     ),
     # 4회차(2026-11-16): 뒤 다섯 열은 비밀 열 가림값을 정하는 데 쓴다(NOT NULL, 기본값 식, 그 열을 부르는 CHECK,
     # 그 열이 든 UNIQUE 색인, 생성 열). 앞 세 열은 종전과 같다.
+    # 6회차(재리뷰 하 1): public 밖 스키마의 표도 같은 키("스키마.표")로 열을 낸다(비밀 열 꼴 검출, 가리기).
+    # 하 2: 마지막 열은 도메인 타입이면 그 바탕 타입(열 타입 판정에 쓴다).
     "columns": (
-        "SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod),\n"
+        "SELECT CASE WHEN n.nspname = 'public' THEN c.relname ELSE n.nspname || '.' || c.relname END,\n"
+        "  a.attname, format_type(a.atttypid, a.atttypmod),\n"
         "  a.attnotnull, coalesce(pg_get_expr(d.adbin, d.adrelid), ''),\n"
         "  EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c' AND a.attnum = ANY(k.conkey)),\n"
         "  EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisunique AND a.attnum = ANY(i.indkey)),\n"
-        "  a.attgenerated::text\n"
+        "  a.attgenerated::text,\n"
+        "  CASE WHEN ty.typtype = 'd' THEN format_type(ty.typbasetype, ty.typtypmod) ELSE '' END\n"
         "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n"
         "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped\n"
+        "JOIN pg_type ty ON ty.oid = a.atttypid\n"
         "LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum\n"
-        "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition\n"
+        "WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_' AND c.relkind IN ('r', 'p') AND NOT c.relispartition\n"
         "ORDER BY 1, a.attnum"
     ),
     "fks": (
@@ -410,12 +415,14 @@ def parse_catalog(texts: dict[str, str]) -> dict:
         if p[0] not in tables:
             continue
         columns.setdefault(p[0], []).append(p[1])
-        coltypes.setdefault(p[0], []).append((p[1], p[2]))
+        # 열 꼴 판정에는 도메인이면 바탕 타입을 쓴다(9열 카탈로그, 6회차).
+        coltypes.setdefault(p[0], []).append((p[1], _unescape(p[8]) if len(p) > 8 and p[8] else p[2]))
         # 옛 3열 카탈로그는 NULL 허용, 기본값, 제약, 생성 열이 없는 것으로 읽는다.
         colinfo.setdefault(p[0], []).append({
             "name": p[1], "type": _unescape(p[2]), "notnull": len(p) > 3 and p[3] == "t",
             "default": _unescape(p[4]) if len(p) > 4 else "", "check": len(p) > 5 and p[5] == "t",
-            "unique": len(p) > 6 and p[6] == "t", "generated": len(p) > 7 and p[7] not in ("", "\\N")})
+            "unique": len(p) > 6 and p[6] == "t", "generated": len(p) > 7 and p[7] not in ("", "\\N"),
+            "base_type": _unescape(p[8]) if len(p) > 8 and p[8] else _unescape(p[2])})
         if p[2].startswith(("timestamp", "date")):
             timecols.setdefault(p[0], []).append(p[1])
     fks: dict[str, list[dict]] = {}
@@ -533,9 +540,8 @@ def secret_candidates(cfg: dict, catalog: dict) -> dict[str, list[str]]:
     types = catalog.get("coltypes", {})
     out: dict[str, list[str]] = {}
     for t, info in catalog["tables"].items():
-        if info["schema"] != "public":
-            continue
-        why = ["표 이름"] if name_re.search(t) else []
+        # 6회차(재리뷰 하 1): 담는 모든 스키마(capture_schemas)의 표를 본다. 빠지는 스키마의 표는 plan_scope 가 거른다.
+        why = ["표 이름"] if name_re.search(info["name"]) else []
         why += [f"열 {c}:{ty}" for c, ty in types.get(t, []) if col_re.search(c) and type_re.search(ty)]
         if why:
             out[t] = why
@@ -590,7 +596,7 @@ def plan_masks(cfg: dict, catalog: dict, kept: list[str]) -> dict[str, list[dict
         conf = listed.get(t, {})
         for col in catalog.get("colinfo", {}).get(t, []):
             name = col["name"]
-            hit = col_re is not None and col_re.search(name) and type_re.search(col["type"])
+            hit = col_re is not None and col_re.search(name) and type_re.search(col.get("base_type") or col["type"])
             if name not in conf and not (hit and f"{t}.{name}" not in keep):
                 continue
             if col["generated"]:
@@ -605,6 +611,57 @@ def plan_masks(cfg: dict, catalog: dict, kept: list[str]) -> dict[str, list[dict
                                                        else f"{SECRET_NOTE}, 목록에 없음. 열 꼴에 걸림"),
                 "block": block})
     return out
+
+
+def load_plan(masked: list[str], slices: list[str], fks: dict) -> tuple[list[str], list[dict]]:
+    """restore.sql 의 적재 순서와 떼었다 다시 달 순환 FK.
+
+    가린 표(이름순)와 구간 표(종전 순서)를 함께 싣되, 가린 표가 낀 FK(자식이나 부모가 가린 표, 자기참조 제외)는 부모를
+    먼저 싣는다. 구간 표끼리는 종전 순서를 그대로 지킨다(앞 구간 표를 암묵 부모로 둔다). 더 진행할 수 없으면(순환)
+    남은 표 가운데 종전 순서로 가장 앞선 표가 기다리는 가린 표 FK 를 떼어 deferred 로 돌린다.
+    """
+    base = list(masked) + [t for t in slices if t not in masked]
+    rank = {t: i for i, t in enumerate(base)}
+    mset = set(masked)
+    edges: dict[str, list[dict]] = {t: [] for t in base}
+    for c in base:
+        for fk in fks.get(c, []):
+            p = fk["parent"]
+            if p == c or p not in rank or not (c in mset or p in mset):
+                continue
+            edges[c].append(fk)
+    prev_slice = {}
+    last = None
+    for t in base:
+        if t in mset:
+            continue
+        if last is not None:
+            prev_slice[t] = last
+        last = t
+    order: list[str] = []
+    placed: set[str] = set()
+    deferred: list[dict] = []
+    dropped: set[tuple[str, str]] = set()
+    while len(order) < len(base):
+        ready = [t for t in base if t not in placed
+                 and all(fk["parent"] in placed or (t, fk.get("name")) in dropped for fk in edges[t])
+                 and (t not in prev_slice or prev_slice[t] in placed)]
+        if ready:
+            t = min(ready, key=rank.get)
+            order.append(t)
+            placed.add(t)
+            continue
+        stuck = min((t for t in base if t not in placed), key=rank.get)
+        # 종전 순서로 가장 앞선 남은 표가 기다리는 가린 표 FK 를 뗀다. 그 표가 앞 구간 표만 기다리면, 그 사슬을 따라
+        # 가린 표 FK 를 기다리는 표를 찾는다.
+        while not any(fk["parent"] not in placed and (stuck, fk.get("name")) not in dropped for fk in edges[stuck]):
+            stuck = prev_slice[stuck]
+        for fk in edges[stuck]:
+            if fk["parent"] not in placed and (stuck, fk.get("name")) not in dropped:
+                dropped.add((stuck, fk.get("name")))
+                deferred.append({"table": stuck, "name": fk.get("name"), "def": fk.get("def"), "parent": fk["parent"],
+                                 "deferred": True})
+    return order, deferred
 
 
 def masked_select(catalog: dict, t: str, masks: list[dict], source: str) -> str:
@@ -832,12 +889,27 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
                 conflicts.append({"table": t, "problem": f"비밀 열 {m['column']}: {m['block']}. pg-scope.json "
                                   "secret_columns 에 value 로 가림값을 정하라", "parents": []})
     masked_tables = sorted(t for t, e in out.items() if e["scope"] == "masked")
-    # 가린 표를 FK 로 가리키는 표의 제약은 pg_restore 때 부모가 비어 있어 생기지 않는다. restore.sql 이 가린 행을 실은
-    # 뒤 다시 단다(정의는 원천 카탈로그에서).
-    fk_readd = sorted(({"table": c, "name": fk["name"], "def": fk["def"], "parent": fk["parent"]}
+    # 6회차(재리뷰 중 1): 가린 표는 restore.sql 이 싣는다. replica 없이 싣는 runbook 경로에서도 FK 를 지키도록 가린 표와
+    # 구간 표를 함께 FK 위상 순서로 싣는다(load_plan). 순환이면 그 FK 를 적재 앞에서 떼고 뒤에서 다시 단다(deferred).
+    masked_set = set(masked_tables)
+    slice_names = [t for t, _ in ordered_slices(cfg, {"tables": out, "absent": absent, "missing_columns": missing_columns,
+                                                       "lineage": sorted(lineage), "auto_slices": auto_order})]
+    load_order, deferred = load_plan(masked_tables, slice_names, fks)
+    loaded = set(load_order)
+    deferred_keys = {(d["table"], d["name"]) for d in deferred}
+    # 가린 표를 FK 로 가리키는 통째 표의 제약은 pg_restore 때 부모가 비어 있어 생기지 않는다. restore.sql 이 가린 행을
+    # 실은 뒤 다시 단다(정의는 원천 카탈로그에서). 떼었던 순환 FK 도 여기서 다시 단다.
+    fk_readd = sorted([{"table": c, "name": fk["name"], "def": fk["def"], "parent": fk["parent"]}
                        for c, lst in fks.items() for fk in lst
-                       if fk["parent"] in masked_tables and fk.get("def") and out.get(c, {}).get("scope")
-                       in ("snap", "slice", "masked")), key=lambda x: (x["table"], x["name"]))
+                       if fk["parent"] in masked_set and fk.get("def") and out.get(c, {}).get("scope") == "snap"]
+                      + deferred, key=lambda x: (x["table"], x["name"]))
+    # 적재하는 표끼리의 FK 가운데 가린 표가 낀 것은 pg_restore 때 두 표가 비어 있어 이미 달려 있다. 평가 복원은 replica 로
+    # 실어 검사 없이 들어가므로 적재 뒤 검사한다(NOT VALID 면 VALIDATE, 아니면 고아 행 수).
+    fk_check = sorted(({"table": c, "name": fk["name"], "parent": fk["parent"]}
+                       for c, lst in fks.items() for fk in lst
+                       if fk.get("name") and c in loaded and fk["parent"] in loaded and fk["parent"] != c
+                       and (c in masked_set or fk["parent"] in masked_set) and (c, fk["name"]) not in deferred_keys),
+                      key=lambda x: (x["table"], x["name"]))
 
     # 비밀 계열로 비우는 표를 외래 키로 가리키는 표. slice 표면 복원의 구간 CSV 적재(\\copy)가 그 FK 에 걸려
     # 멈추므로 충돌. 통째로 담는 표면 pg_restore 가 그 FK 제약만 만들지 못하고 넘어간다(평가 restore.sh 는
@@ -889,7 +961,10 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         "fk_to_secret": fk_to_secret,
         "masks": masks,
         "masked_tables": masked_tables,
+        "load_order": load_order,
+        "fk_deferred": deferred,
         "fk_readd": fk_readd,
+        "fk_check": fk_check,
     }
 
 
@@ -925,6 +1000,9 @@ def plan_summary(plan: dict, cfg: dict | None = None) -> dict:
         "fk_to_secret": plan.get("fk_to_secret", []),
         # 복원 때 다시 달 외래 키 수(5회차). 복원 뒤 _capture_restore_report 의 fk_readd_attempted 와 같아야 한다.
         "fk_readd_count": len(plan.get("fk_readd", [])),
+        # 적재 뒤 검사할 가린 표가 낀 FK 수(6회차). 복원 뒤 _capture_restore_report 의 fk_check_checked 와 같아야 한다.
+        "fk_check_count": len(plan.get("fk_check", [])),
+        "fk_deferred": [{k: d[k] for k in ("table", "name", "parent")} for d in plan.get("fk_deferred", [])],
         # 값만 가린 비밀 열(4회차): 표, 열, 방식(null, default, placeholder, placeholder_unique, config), 이유.
         "masked_columns": [{k: m[k] for k in ("table", "column", "method", "acknowledged", "note")}
                            for t in sorted(plan.get("masks", {})) for m in plan["masks"][t]],
@@ -976,16 +1054,23 @@ def emit_exclude_args(cfg: dict, plan: dict | None = None) -> str:
 
 
 def ordered_exports(cfg: dict, plan: dict | None = None, catalog: dict | None = None) -> list[tuple[str, str, str]]:
-    """(표, 질의, scope). 가린 통째 표가 먼저(부모 쪽), 그다음 slice 순서 그대로. 가린 열이 있으면 질의를 감싼다."""
+    """(표, 질의, scope). 가린 표가 없으면 slice 순서 그대로, 있으면 load_order. 가린 열이 있으면 질의를 감싼다."""
     items: list[tuple[str, str, str]] = []
     masks = (plan or {}).get("masks", {})
     for t in (plan or {}).get("masked_tables", []):
-        items.append((t, masked_select(catalog, t, masks[t], f'public."{t}"'), "masked"))
+        sch, _, name = t.rpartition(".")
+        src = f'public."{name}"' if not sch else '"' + sch.replace('"', '""') + '"."' + name.replace('"', '""') + '"'
+        items.append((t, masked_select(catalog, t, masks[t], src), "masked"))
+    slices = []
     for t, q in ordered_slices(cfg, plan):
         if t in masks:
             q = masked_select(catalog, t, masks[t], f"(\n{q}\n)")
-        items.append((t, q, "slice"))
-    return items
+        slices.append((t, q, "slice"))
+    if not (plan or {}).get("masked_tables"):
+        return items + slices
+    # 가린 표가 있으면 restore.sql 과 같은 FK 위상 순서(load_order)로 낸다.
+    by = {t: (t, q, k) for t, q, k in items + slices}
+    return [by[t] for t in plan["load_order"] if t in by]
 
 
 def emit_export_sql(cfg: dict, out_dir: str, plan: dict | None = None, catalog: dict | None = None) -> str:
@@ -1029,28 +1114,41 @@ def emit_restore_sql(cfg: dict, plan: dict | None = None) -> str:
         "\\set ON_ERROR_STOP on",
         "",
     ]
-    for t in (plan or {}).get("masked_tables", []) + [t for t, _ in ordered_slices(cfg, plan)]:
-        # 표 이름은 전부 소문자 무인용부호라 \copy 의 자체 파서로도 안전하다. 가린 통째 표가 먼저(부모 쪽).
+
+    def lit(v: str) -> str:
+        return "'" + v.replace("'", "''") + "'"
+
+    masked = (plan or {}).get("masked_tables")
+    deferred = (plan or {}).get("fk_deferred", [])
+    for d in deferred:
+        # 가린 표가 낀 순환 FK(6회차): 적재 앞에서 떼고 아래에서 다시 단다. replica 없이 실어도 멈추지 않게.
+        lines.append(f"ALTER TABLE IF EXISTS {d['table']} DROP CONSTRAINT IF EXISTS {d['name']};")
+    order = (plan or {}).get("load_order") if masked else None
+    for t in order if order is not None else [t for t, _ in ordered_slices(cfg, plan)]:
+        # 표 이름은 전부 소문자 무인용부호라 \copy 의 자체 파서로도 안전하다. 가린 표가 있으면 FK 위상 순서(부모 먼저).
         lines.append(f"\\copy {t} FROM '{t}.csv' WITH (FORMAT csv, HEADER true)")
-    readd = (plan or {}).get("fk_readd", [])
-    if (plan or {}).get("masked_tables"):
-        # 가린 표(부모)는 pg_restore 때 비어 있어 그 표를 가리키는 FK 제약이 생기지 못했다. 행을 실은 뒤 다시 단다.
-        # 이미 있으면 건너뛰고, 고아 행 등으로 실패해도 복원은 멈추지 않는다. 다만 조용히 넘기지 않는다(5회차):
-        # 끝에 WARNING 한 줄 요약(시도, 새로 단 것, 이미 있던 것, 자식 표 없음, 실패 수와 실패한 표.제약, 첫 오류)을
-        # 내고, 같은 수를 복원된 DB 의 작은 표 _capture_restore_report 에 남겨 복원 뒤에도 확인할 수 있게 한다.
-        # 시도 수는 meta.postgres_scope.fk_readd_count 와 같아야 한다.
-        def lit(v: str) -> str:
-            return "'" + v.replace("'", "''") + "'"
-        values = ",\n    ".join(f"({lit(r['table'])}, {lit(r['name'])}, {lit(r['def'])})" for r in readd)
-        source = (f"(VALUES\n    {values}\n  ) v(child, conname, def)" if readd
-                  else "(SELECT NULL::text, NULL::text, NULL::text WHERE false) v(child, conname, def)")
+    if masked:
+        readd = plan.get("fk_readd", [])
+        check = plan.get("fk_check", [])
+        # 가린 표(부모)는 pg_restore 때 비어 있어 그 표를 가리키는 통째 표의 FK 제약이 생기지 못했다. 행을 실은 뒤 다시
+        # 단다(떼었던 순환 FK 도). 이미 있으면 건너뛰고, 고아 행 등으로 실패해도 복원은 멈추지 않는다. 다만 조용히 넘기지
+        # 않는다(5회차): 끝에 WARNING 한 줄 요약을 내고 같은 수를 복원 DB 의 _capture_restore_report 에 남긴다.
+        # 적재한 표끼리의 FK 가운데 가린 표가 낀 것(6회차)은 이미 달려 있지만 replica 적재면 검사 없이 들어왔으므로 여기서
+        # 검사한다(NOT VALID 면 VALIDATE, 아니면 고아 행 수). 그 실패도 failed 에 센다.
+        # 시도 수는 meta.postgres_scope.fk_readd_count, 검사 수는 fk_check_count 와 같아야 한다.
+        rv = ",\n    ".join(f"({lit(r['table'])}, {lit(r['name'])}, {lit(r['def'])})" for r in readd)
+        rsrc = (f"(VALUES\n    {rv}\n  ) v(child, conname, def)" if readd
+                else "(SELECT NULL::text, NULL::text, NULL::text WHERE false) v(child, conname, def)")
+        cv = ",\n    ".join(f"({lit(r['table'])}, {lit(r['name'])})" for r in check)
+        csrc = (f"(VALUES\n    {cv}\n  ) v(child, conname)" if check
+                else "(SELECT NULL::text, NULL::text WHERE false) v(child, conname)")
         lines += [
-            "-- 가린 표를 가리키는 외래 키를 다시 단다(CAPFIX 4회차), 결과를 요약하고 남긴다(5회차).",
+            "-- 가린 표를 가리키는 외래 키를 다시 달고(4회차), 가린 표가 낀 FK 를 검사하고(6회차), 결과를 요약해 남긴다(5회차).",
             "CREATE TABLE IF NOT EXISTS _capture_restore_report (item text PRIMARY KEY, value bigint NOT NULL, detail text,",
             "  recorded_at timestamptz NOT NULL DEFAULT now());",
-            "DO $capfix$ DECLARE r record; n_try int := 0; n_add int := 0; n_had int := 0; n_gone int := 0;",
-            "  failed text[] := '{}'; first_err text; BEGIN",
-            f"  FOR r IN SELECT * FROM {source} LOOP",
+            "DO $capfix$ DECLARE r record; fkc record; n_try int := 0; n_add int := 0; n_had int := 0; n_gone int := 0;",
+            "  n_chk int := 0; n_orph bigint; q text; failed text[] := '{}'; first_err text; BEGIN",
+            f"  FOR r IN SELECT * FROM {rsrc} LOOP",
             "    n_try := n_try + 1;",
             "    IF to_regclass(r.child) IS NULL THEN n_gone := n_gone + 1; CONTINUE; END IF;",
             "    IF EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = to_regclass(r.child) AND c.conname = r.conname) THEN",
@@ -1064,14 +1162,43 @@ def emit_restore_sql(cfg: dict, plan: dict | None = None) -> str:
             "      first_err := coalesce(first_err, r.child || '.' || r.conname || ': ' || SQLERRM);",
             "    END;",
             "  END LOOP;",
+            f"  FOR r IN SELECT * FROM {csrc} LOOP",
+            "    n_chk := n_chk + 1;",
+            "    SELECT k.oid, k.convalidated, k.conrelid, k.confrelid,",
+            "      (SELECT string_agg(format('p.%I = ch.%I', pa.attname, ca.attname), ' AND ')",
+            "         FROM unnest(k.conkey, k.confkey) AS u(ck, pk)",
+            "         JOIN pg_attribute ca ON ca.attrelid = k.conrelid AND ca.attnum = u.ck",
+            "         JOIN pg_attribute pa ON pa.attrelid = k.confrelid AND pa.attnum = u.pk) AS on_join,",
+            "      (SELECT string_agg(format('ch.%I IS NOT NULL', ca.attname), ' AND ')",
+            "         FROM unnest(k.conkey) AS u(ck) JOIN pg_attribute ca ON ca.attrelid = k.conrelid AND ca.attnum = u.ck) AS not_null",
+            "      INTO fkc FROM pg_constraint k WHERE k.conrelid = to_regclass(r.child) AND k.conname = r.conname AND k.contype = 'f';",
+            "    IF NOT FOUND THEN",
+            "      failed := failed || (r.child || '.' || r.conname);",
+            "      first_err := coalesce(first_err, r.child || '.' || r.conname || ': 제약이 없다');",
+            "      CONTINUE;",
+            "    END IF;",
+            "    BEGIN",
+            "      IF NOT fkc.convalidated THEN",
+            "        EXECUTE format('ALTER TABLE %s VALIDATE CONSTRAINT %I', fkc.conrelid::regclass, r.conname);",
+            "      ELSE",
+            "        q := format('SELECT count(*) FROM %s ch WHERE %s AND NOT EXISTS (SELECT 1 FROM %s p WHERE %s)',",
+            "                    fkc.conrelid::regclass, fkc.not_null, fkc.confrelid::regclass, fkc.on_join);",
+            "        EXECUTE q INTO n_orph;",
+            "        IF n_orph > 0 THEN RAISE EXCEPTION '고아 행 %', n_orph; END IF;",
+            "      END IF;",
+            "    EXCEPTION WHEN others THEN",
+            "      failed := failed || (r.child || '.' || r.conname);",
+            "      first_err := coalesce(first_err, r.child || '.' || r.conname || ': ' || SQLERRM);",
+            "    END;",
+            "  END LOOP;",
             "  INSERT INTO _capture_restore_report (item, value, detail) VALUES",
             "    ('fk_readd_attempted', n_try, NULL), ('fk_readd_added', n_add, NULL), ('fk_readd_existing', n_had, NULL),",
-            "    ('fk_readd_child_missing', n_gone, NULL),",
+            "    ('fk_readd_child_missing', n_gone, NULL), ('fk_check_checked', n_chk, NULL),",
             "    ('fk_readd_failed', coalesce(array_length(failed, 1), 0), nullif(array_to_string(failed, ', '), '')),",
             "    ('fk_readd_first_error', coalesce(array_length(failed, 1), 0), first_err)",
             "  ON CONFLICT (item) DO UPDATE SET value = EXCLUDED.value, detail = EXCLUDED.detail, recorded_at = now();",
-            "  RAISE WARNING 'CAPFIX_FK_READD_SUMMARY failed=% attempted=% added=% existing=% child_missing=% %',",
-            "    coalesce(array_length(failed, 1), 0), n_try, n_add, n_had, n_gone,",
+            "  RAISE WARNING 'CAPFIX_FK_READD_SUMMARY failed=% attempted=% added=% existing=% child_missing=% checked=% %',",
+            "    coalesce(array_length(failed, 1), 0), n_try, n_add, n_had, n_gone, n_chk,",
             "    CASE WHEN array_length(failed, 1) > 0",
             "      THEN 'failed_fks=' || array_to_string(failed, ', ') || ' first_error=' || first_err ELSE '' END;",
             "END $capfix$;",

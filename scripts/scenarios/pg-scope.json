@@ -199,8 +199,8 @@
 
   "secret_detect": {
     "table_name": "secret|credential|password|(^|_)otp(_|$)|seal_key|api_key|enrollment_token|join_token|_keys$|two_factor|seal|token",
-    "column_name": "(^|_)(password|passphrase)(_|$)|secret|_encrypted$|^encrypted_|ciphertext|(^|_)private(_|$)|(token|key|code|credential|secret|password)_hash$|(^|_)public_key$|aes_key|(^|_)otp(_|$)|seal|(^|_)token(_|$)|(^|_)(api|access|refresh|private|signing|secret)_?key(_|$)",
-    "column_type": "^(text|character varying|character|bytea|jsonb|json)(\\(|$)"
+    "column_name": "(^|_)(password|passphrase)(_|$)|secret|_encrypted$|^encrypted_|ciphertext|(^|_)private(_|$)|(token|key|code|credential|secret|password)_hash$|(^|_)public_key$|aes_key|(^|_)otp(_|$)|seal|(^|_)token(_|$)|(^|_)(api|access|refresh|private|signing|secret)_?key(_|$)|passwd|(^|_)pwd(_|$)|community|priv_?key|(ssh|tls)_key|recovery_codes?|(^|_)credentials$",
+    "column_type": "^(text|character varying|character|bytea|jsonb|json)(\\([^)]*\\))?(\\[\\])?$"
   },
 
   "secret_tables": {
@@ -229,6 +229,7 @@
     "nms_discovery_profiles": "NMS 탐색 프로파일 자격증명(credentials_encrypted). nms_discovery_runs 가 FK 로 가리킨다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "nms_worker_result_keys": "NMS 워커 결과 키(public_key, private_encrypted). nms_worker_plans 가 FK 로 가리킨다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "notification_channels": "알림 채널(SMS, 메일 비밀번호와 secret 암호문 열). drop_data 에서 옮김. 알람 정책 표들이 FK 로 가리켜 복원 때 그 FK 제약은 생기지 않는다(종전과 같음) (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "notification_socket_test_inbox": "SMS SOCKET 점검 수신함(게이트웨이가 받은 원문: headers jsonb, body, body_hex). 원문에 게이트웨이 인증이 실릴 수 있어 보수적으로 비운다(지휘 세션 결정 11-16, 재리뷰 확인 필요 1). 이 표를 가리키는 FK 없음, 평가 스킬과 러너 코드가 읽지 않음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "system_mail_settings": "메일 서버 비밀번호(password_encrypted). drop_data 에서 옮김 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "system_map_tile_settings": "지도 타일 API 키(api_key_encrypted) (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "system_sms_settings": "SMS 게이트웨이 비밀번호(password_encrypted) (2026-11-16 119 카탈로그, 값은 보지 않음)",
@@ -279,8 +280,9 @@
   "secret_columns_keep": {
     "alarm_severity_levels.color_token": "색 토큰 이름이라 비밀이 아니다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "automation_host_inventory_runs.run_token": "실행 식별자 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "software_omp_executions.run_token": "실행 식별자 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "peer_link_peers.api_key_env": "키를 담은 환경변수의 이름이고 키 값이 아니다. NOT NULL, 형식 CHECK 가 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    "kcm_resources.secret_refs": "참조하는 Secret 의 이름 목록(값 아님) (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "peer_link_peers.api_key_env": "키를 담은 환경변수의 이름이고 키 값이 아니다. NOT NULL, 형식 CHECK 가 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "software_omp_executions.run_token": "실행 식별자 (2026-11-16 119 카탈로그, 값은 보지 않음)"
   },
 
   "_secret_columns_note": [
@@ -314,6 +316,7 @@
     "collectors": "수집기 인벤토리(수집과 알람 표 다수가 FK 로 가리킴). config_encrypted, opamp_token_hash 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "dpm_custom_sql_variable_keys": "사용자 SQL 변수와 리소스 키(식별자). 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "information_provisions": "정보 제공 정의. sql_ciphertext 열. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "kcm_resources": "KCM 리소스 인벤토리. secret_refs(text[])는 리소스가 참조하는 Secret 의 이름 목록이고 값이 아니다(제품 수집기는 Secret 매니페스트를 보내지 않음). 6회차에 배열 타입을 열 꼴에 넣어 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "network_script_config_versions": "네트워크 장비 설정 백업(설정 변경 근거가 될 수 있음). content_encrypted 열. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "omp_effect_audit_keys": "감사 중복 막음 키(식별자). 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "omp_target_endpoint_keys": "대상과 엔드포인트 식별자 연결. 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
