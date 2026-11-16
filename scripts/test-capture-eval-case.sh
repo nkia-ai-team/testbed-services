@@ -917,6 +917,8 @@ restore_sql="$live_root/cases/case-live-v4/data/postgres/restore.sql"
   fail 'masked table is not loaded first'
 grep -qF "('asset_tree_groups', 'asset_tree_groups_owner_fk', 'FOREIGN KEY (owner_id) REFERENCES users(id)')" "$restore_sql" ||
   fail 'restore.sql does not re-add the FK to the masked table'
+grep -qF "RAISE WARNING 'CAPFIX_FK_READD_SUMMARY" "$restore_sql" || fail 'restore.sql does not summarise the FK re-add'
+jq -e '.postgres_scope.fk_readd_count == 1' "$meta" >/dev/null || fail 'meta lacks fk_readd_count'
 jq -e '([.postgres_tables[] | select(.table == "users")] == [{table:"users",file:"data/postgres/users.csv",rows:2,scope:"masked"}]) and
   (.postgres_scope.masked_columns == [{table:"users",column:"password_hash",method:"null",acknowledged:true,
      note:"비밀 계열, 사용자 결정 11-16: 계정 비밀번호 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"}]) and

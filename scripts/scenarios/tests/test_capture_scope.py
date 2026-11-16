@@ -761,6 +761,36 @@ class PgMaskTest(unittest.TestCase):
                          [{k: m[0][k] for k in ("table", "column", "method", "acknowledged", "note")}])
         self.assertNotIn("users", [t for t, _ in pg.ordered_slices(PG_CFG, plan)])
 
+    def test_fk_readd_is_summarised_and_recorded_even_when_nothing_fails(self):
+        # 5회차: 실패해도 복원은 멈추지 않되 조용히 넘기지 않는다. 요약 WARNING 한 줄과 복원 DB 의 보고 표.
+        cat = pg_catalog({"users": 4096, "asset_tree_groups": 4096},
+                         columns={"users": self.USERS},
+                         fks=[("asset_tree_groups", "owner_id", "users", "id", "atg_owner_fk",
+                               "FOREIGN KEY (owner_id) REFERENCES users(id)")])
+        plan = pg.plan_scope(PG_CFG, cat)
+        restore = pg.emit_restore_sql(PG_CFG, plan)
+        self.assertIn("CREATE TABLE IF NOT EXISTS _capture_restore_report", restore)
+        self.assertIn("RAISE WARNING 'CAPFIX_FK_READD_SUMMARY failed=% attempted=% added=% existing=% child_missing=% %'",
+                      restore)
+        for item in ("fk_readd_attempted", "fk_readd_added", "fk_readd_existing", "fk_readd_child_missing",
+                     "fk_readd_failed", "fk_readd_first_error"):
+            self.assertIn(f"('{item}', ", restore)
+        self.assertIn("\n  INSERT INTO _capture_restore_report (item, value, detail) VALUES\n", restore)
+        self.assertIn("  ON CONFLICT (item) DO UPDATE SET value = EXCLUDED.value, detail = EXCLUDED.detail", restore)
+        self.assertIn("failed := failed || (r.child || '.' || r.conname);", restore)
+        # 이 SQL 이 실제로 도는지는 로컬 PG 17 로 확인했다(CAPFIX.md 12절: 성공 failed=0, 고아 행 하나로 failed=1).
+        self.assertIn("first_err := coalesce(first_err, r.child || '.' || r.conname || ': ' || SQLERRM);", restore)
+        self.assertNotIn("RAISE NOTICE 'CAPFIX_FK_READD_FAILED", restore)
+        self.assertEqual(pg.plan_summary(plan, PG_CFG)["fk_readd_count"], 1)
+        # 가린 표는 있는데 다시 달 FK 가 없어도 요약은 낸다(0).
+        plan0 = pg.plan_scope(PG_CFG, pg_catalog({"users": 4096}, columns={"users": self.USERS}))
+        r0 = pg.emit_restore_sql(PG_CFG, plan0)
+        self.assertIn("FROM (SELECT NULL::text, NULL::text, NULL::text WHERE false) v(child, conname, def)", r0)
+        self.assertIn("CAPFIX_FK_READD_SUMMARY", r0)
+        self.assertEqual(pg.plan_summary(plan0, PG_CFG)["fk_readd_count"], 0)
+        # 가린 표가 없으면 종전 글자 그대로(블록 없음).
+        self.assertNotIn("CAPFIX_FK_READD_SUMMARY", pg.emit_restore_sql(PG_CFG, pg.plan_scope(PG_CFG, pg_catalog({}))))
+
     def test_mask_values_follow_nullability_default_and_constraints(self):
         cfg = copy.deepcopy(PG_CFG)
         cfg["secret_reviewed_keep"] = {**cfg["secret_reviewed_keep"], "t1": "시험"}

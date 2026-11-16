@@ -451,7 +451,10 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     통째로 담던 표는 pg_dump 에서 데이터를 빼고(scope `masked`, 표 정의는 남음) 원천 PG 의 서버측 COPY 가 가린 SELECT 로
     `data/postgres/<표>.csv` 를 낸다. 원문 비밀 값은 원천 밖(캡처 호스트, 녹화본)으로 나오지 않는다. 구간 표는 구간 질의를
     감싸 같은 가림을 건다. `restore.sql` 은 가린 통째 표를 먼저 싣고, pg_restore 때 그 표가 비어 있어 생기지 못한 외래 키
-    (그 표를 가리키는 것)를 행을 실은 뒤 다시 단다(이미 있으면 건너뜀, 실패하면 알리고 계속). 가린 열은
+    (그 표를 가리키는 것)를 행을 실은 뒤 다시 단다(이미 있으면 건너뜀, 실패해도 복원은 계속). 끝에 WARNING 한 줄
+    `CAPFIX_FK_READD_SUMMARY`(실패 수, 시도, 새로 단 것, 이미 있던 것, 자식 표 없음, 실패한 표.제약, 첫 오류, 실패 0 이면
+    failed=0)를 내고 같은 수를 복원 DB 의 `_capture_restore_report`(item, value, detail)에 남긴다. 시도 수는
+    `meta.postgres_scope.fk_readd_count` 와 같아야 한다. 가린 열은
     `meta.postgres_scope.masked_columns`(표, 열, 방식, 확인 여부, 이유)에, 가린 표는 `meta.postgres_tables` 에 scope
     `masked` 로 남는다. 열 꼴에 걸리는데 두 목록 어디에도 없는 열은 캡처가 가리고(확인 안 됨) 녹화 전 점검이 막는다.
   - 뿌리의 대체 관계: v3 는 `superseded_by`, `merged_into` 재귀로 창 끝 뒤 대체 행을 함께 실었다.

@@ -923,6 +923,8 @@ def plan_summary(plan: dict, cfg: dict | None = None) -> dict:
         "conflicts": plan["conflicts"],
         "excluded": plan.get("excluded", []),
         "fk_to_secret": plan.get("fk_to_secret", []),
+        # 복원 때 다시 달 외래 키 수(5회차). 복원 뒤 _capture_restore_report 의 fk_readd_attempted 와 같아야 한다.
+        "fk_readd_count": len(plan.get("fk_readd", [])),
         # 값만 가린 비밀 열(4회차): 표, 열, 방식(null, default, placeholder, placeholder_unique, config), 이유.
         "masked_columns": [{k: m[k] for k in ("table", "column", "method", "acknowledged", "note")}
                            for t in sorted(plan.get("masks", {})) for m in plan["masks"][t]],
@@ -1031,25 +1033,47 @@ def emit_restore_sql(cfg: dict, plan: dict | None = None) -> str:
         # 표 이름은 전부 소문자 무인용부호라 \copy 의 자체 파서로도 안전하다. 가린 통째 표가 먼저(부모 쪽).
         lines.append(f"\\copy {t} FROM '{t}.csv' WITH (FORMAT csv, HEADER true)")
     readd = (plan or {}).get("fk_readd", [])
-    if readd:
+    if (plan or {}).get("masked_tables"):
         # 가린 표(부모)는 pg_restore 때 비어 있어 그 표를 가리키는 FK 제약이 생기지 못했다. 행을 실은 뒤 다시 단다.
-        # 이미 있으면 건너뛰고, 고아 행 등으로 실패하면 알리고 넘어간다(복원을 멈추지 않는다).
+        # 이미 있으면 건너뛰고, 고아 행 등으로 실패해도 복원은 멈추지 않는다. 다만 조용히 넘기지 않는다(5회차):
+        # 끝에 WARNING 한 줄 요약(시도, 새로 단 것, 이미 있던 것, 자식 표 없음, 실패 수와 실패한 표.제약, 첫 오류)을
+        # 내고, 같은 수를 복원된 DB 의 작은 표 _capture_restore_report 에 남겨 복원 뒤에도 확인할 수 있게 한다.
+        # 시도 수는 meta.postgres_scope.fk_readd_count 와 같아야 한다.
         def lit(v: str) -> str:
             return "'" + v.replace("'", "''") + "'"
-        rows = ",\n    ".join(f"({lit(r['table'])}, {lit(r['name'])}, {lit(r['def'])})" for r in readd)
+        values = ",\n    ".join(f"({lit(r['table'])}, {lit(r['name'])}, {lit(r['def'])})" for r in readd)
+        source = (f"(VALUES\n    {values}\n  ) v(child, conname, def)" if readd
+                  else "(SELECT NULL::text, NULL::text, NULL::text WHERE false) v(child, conname, def)")
         lines += [
-            "-- 가린 표를 가리키는 외래 키를 다시 단다(CAPFIX 4회차).",
-            "DO $capfix$ DECLARE r record; BEGIN",
-            "  FOR r IN SELECT * FROM (VALUES",
-            f"    {rows}",
-            "  ) v(child, conname, def) LOOP",
-            "    CONTINUE WHEN to_regclass(r.child) IS NULL;",
-            "    CONTINUE WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = to_regclass(r.child) AND c.conname = r.conname);",
+            "-- 가린 표를 가리키는 외래 키를 다시 단다(CAPFIX 4회차), 결과를 요약하고 남긴다(5회차).",
+            "CREATE TABLE IF NOT EXISTS _capture_restore_report (item text PRIMARY KEY, value bigint NOT NULL, detail text,",
+            "  recorded_at timestamptz NOT NULL DEFAULT now());",
+            "DO $capfix$ DECLARE r record; n_try int := 0; n_add int := 0; n_had int := 0; n_gone int := 0;",
+            "  failed text[] := '{}'; first_err text; BEGIN",
+            f"  FOR r IN SELECT * FROM {source} LOOP",
+            "    n_try := n_try + 1;",
+            "    IF to_regclass(r.child) IS NULL THEN n_gone := n_gone + 1; CONTINUE; END IF;",
+            "    IF EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = to_regclass(r.child) AND c.conname = r.conname) THEN",
+            "      n_had := n_had + 1; CONTINUE;",
+            "    END IF;",
             "    BEGIN",
             "      EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I %s', r.child, r.conname, r.def);",
-            "    EXCEPTION WHEN others THEN RAISE NOTICE 'CAPFIX_FK_READD_FAILED % % %', r.child, r.conname, SQLERRM;",
+            "      n_add := n_add + 1;",
+            "    EXCEPTION WHEN others THEN",
+            "      failed := failed || (r.child || '.' || r.conname);",
+            "      first_err := coalesce(first_err, r.child || '.' || r.conname || ': ' || SQLERRM);",
             "    END;",
             "  END LOOP;",
+            "  INSERT INTO _capture_restore_report (item, value, detail) VALUES",
+            "    ('fk_readd_attempted', n_try, NULL), ('fk_readd_added', n_add, NULL), ('fk_readd_existing', n_had, NULL),",
+            "    ('fk_readd_child_missing', n_gone, NULL),",
+            "    ('fk_readd_failed', coalesce(array_length(failed, 1), 0), nullif(array_to_string(failed, ', '), '')),",
+            "    ('fk_readd_first_error', coalesce(array_length(failed, 1), 0), first_err)",
+            "  ON CONFLICT (item) DO UPDATE SET value = EXCLUDED.value, detail = EXCLUDED.detail, recorded_at = now();",
+            "  RAISE WARNING 'CAPFIX_FK_READD_SUMMARY failed=% attempted=% added=% existing=% child_missing=% %',",
+            "    coalesce(array_length(failed, 1), 0), n_try, n_add, n_had, n_gone,",
+            "    CASE WHEN array_length(failed, 1) > 0",
+            "      THEN 'failed_fks=' || array_to_string(failed, ', ') || ' first_error=' || first_err ELSE '' END;",
             "END $capfix$;",
         ]
     lines.append("")
