@@ -43,18 +43,19 @@ summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 �
 | `civil-petition/deploy/router/ifdiscards.py` | 라우터 ifOutDiscards 도우미(GT0 결정 4) |
 | `civil-petition/deploy/tools/` | 평시 판정(`stability_check.py`, `host-facts.sh`), 규모 축 판정(`scale_verdict.py`, `cpu-sample.sh`), 라우터 큐 버림 실기 점검 |
 
-## 3. 비밀값 파일 (적용 전, 사람이나 적용 에이전트가 만든다)
+## 3. 비밀값 파일 (적용 단계에서 적용 에이전트가 만든다)
 
-값은 화면에 내지 않는다. 파일은 0600 이고 `~/.config/testbed/` 아래에만 둔다. 인벤토리는 경로만 적는다.
+지금은 하나도 없다. 값은 화면에 내지 않는다(아래 명령은 값을 출력하지 않는다). 모든 파일은 `~/.config/testbed/` 아래 0600, 디렉터리는 0700. 인벤토리는 경로만 적는다. 개인 키는 만든 호스트 밖으로 복사하지 않는다.
 
-| 파일 | 만드는 법(값을 출력하지 않는 꼴) | 쓰는 곳 |
-|---|---|---|
-| `t4-executor.pub` | 러너가 VM 에 쓸 키 쌍을 tb-ops 에 만들고 공개 키만 이 경로로 복사 | 실행기 계정 `authorized_keys` |
-| `t4-operator.pub` | 적용하는 쪽(104 나 tb-ops) 운영자 키의 공개 키 | cloud-init 사용자(운영자 계정), 66 에 복사해 `plan.py --sshkeys` 로 |
-| `t4-petition-db` | `umask 077; tr -dc A-Za-z0-9 </dev/urandom \| head -c 24 > ~/.config/testbed/t4-petition-db` | DB 앱 계정, Tomcat JNDI. 영문, 숫자 16자 이상이어야 설치가 받는다 |
-| `t4-snmp-community` | 같은 꼴로 20자 | 라우터 snmpd 와 trap, 119 NMS 등록(T3) |
+| 파일(경로) | 권한 | 만드는 명령 | 쓰는 곳 |
+|---|---|---|---|
+| tb-ops `/root/.ssh/t4-executor`(개인 키) → 적용 호스트 `~/.config/testbed/t4-executor.pub`(공개 키) | 개인 0600, 공개 0600 | tb-ops: `ssh-keygen -q -t ed25519 -N '' -C opsjob -f /root/.ssh/t4-executor`, 공개 키만 `install -m 0600` 으로 복사 | 실행기 계정 `authorized_keys`(러너가 쓰는 키) |
+| `~/.config/testbed/t4-operator.pub` | 0600 | 적용 호스트의 운영자 개인 키(예: 104 `~/.ssh/id_ed25519`)의 공개 키를 `install -m 0600 ~/.ssh/id_ed25519.pub ~/.config/testbed/t4-operator.pub` | cloud-init 사용자(운영자 계정), 66 에 복사해 `plan.py --sshkeys` |
+| `~/.config/testbed/t4-petition-db` | 0600 | `(umask 077; tr -dc A-Za-z0-9 </dev/urandom \| head -c 24 > ~/.config/testbed/t4-petition-db)` | DB 앱 계정, Tomcat JNDI. 영문, 숫자 16자 이상이어야 설치가 받는다 |
+| `~/.config/testbed/t4-snmp-community` | 0600 | `(umask 077; tr -dc A-Za-z0-9 </dev/urandom \| head -c 20 > ~/.config/testbed/t4-snmp-community)` | 라우터 snmpd 와 trap, 119 NMS 등록(T3) |
 
-S 는 `s5-*` 로 같은 꼴(SNMP 없음).
+확인은 값이 아니라 크기와 권한만 본다: `stat -c '%a %s %n' ~/.config/testbed/t4-*`.
+S 는 `s5-executor`, `s5-operator.pub`, `s5-petition-db` 를 같은 꼴로 만든다(SNMP 없음).
 
 ## 4. 66 망 (잠금, 녹화 정지 창)
 
