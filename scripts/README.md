@@ -133,3 +133,15 @@ scripts/disk-io-rate.py collect --host root@192.168.200.66 --volume <vg>/<lv> --
 scripts/disk-io-rate.py report sdb.raw --read-mbps <값> --write-mbps <값> --read-iops <값> --write-iops <값>
 scripts/test-disk-io-rate.sh
 ```
+
+## 119 와 66 사이 WireGuard 터널 (v4 T0)
+
+`vm-tunnel/` 은 SMS, NMS 전용 테스트베드(T)와 SMS 전용 테스트베드(S)가 같이 쓰는 터널 도구다.
+`tb-wg.sh` 는 각 호스트(119, 66)에 `/usr/local/sbin/tb-wg` 로 설치되어 키 생성, 설정 작성, 규칙,
+점검, 되돌리기를 하고, `t0-apply.sh` 는 제어 호스트에서 두 호스트를 ssh 로 다룬다(probe, apply,
+verify, add-net, rollback). 키는 각 호스트의 `/etc/wireguard/wg0.key` 에만 있다. 절차와 적용 조건은
+`docs/runbook-testbed-tunnel.md`.
+
+```bash
+scripts/test-vm-tunnel.sh
+```

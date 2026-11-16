@@ -1,0 +1,510 @@
+#!/usr/bin/env bash
+# Side-effect-free tests for vm-tunnel/tb-wg.sh and vm-tunnel/t0-apply.sh. Every host tool the two
+# scripts call (iptables, ip, wg, systemctl, dpkg-query, apt-get, modinfo, ping, crictl, nsenter,
+# tcpdump) is a fake on the front of PATH that keeps its state in files under a temporary tree, so
+# nothing touches the network stack of the machine running the tests. The fake systemctl plays
+# wg-quick: it creates the link, adds the routes of AllowedIPs and runs the PostUp and PreDown
+# lines of the written wg0.conf, so the real hook code runs against the fake iptables.
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TOOL="$SCRIPT_DIR/vm-tunnel/tb-wg.sh"
+ORCH="$SCRIPT_DIR/vm-tunnel/t0-apply.sh"
+TMP_ROOT=$(mktemp -d)
+trap 'rm -rf "$TMP_ROOT"' EXIT
+fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
+ok() { printf '[ok] %s\n' "$*"; }
+command -v python3 >/dev/null || fail "python3 is needed for the fake key derivation"
+
+SHIM="$TMP_ROOT/bin"
+mkdir -p "$SHIM"
+
+cat >"$SHIM/iptables" <<'SH'
+#!/usr/bin/env bash
+table=filter; args=()
+while (( $# )); do case "$1" in -w) shift ;; -t) table=$2; shift 2 ;; *) args+=("$1"); shift ;; esac; done
+set -- "${args[@]}"
+d=$FAKE/ipt/$table; mkdir -p "$d"
+printf 'iptables -t %s %s\n' "$table" "$*" >>"$FAKE/calls"
+op=$1; chain=${2:-}; shift 2 2>/dev/null || shift $#
+spec="$*"
+builtin_chain() { case "$1" in INPUT|FORWARD|OUTPUT|PREROUTING|POSTROUTING) return 0 ;; esac; return 1; }
+case "$op" in
+  -N) [[ -e "$d/$chain" ]] && exit 1; : >"$d/$chain" ;;
+  -F) [[ -e "$d/$chain" ]] || exit 1; : >"$d/$chain" ;;
+  -X) [[ -e "$d/$chain" ]] || exit 1; [[ -s "$d/$chain" ]] && exit 1; rm "$d/$chain" ;;
+  -C) [[ -e "$d/$chain" ]] || exit 2; grep -qxF -- "$spec" "$d/$chain" ;;
+  -A) [[ -e "$d/$chain" ]] || exit 1; printf '%s\n' "$spec" >>"$d/$chain" ;;
+  -I) [[ -e "$d/$chain" ]] || exit 1
+      pos=1; if [[ "${1:-}" =~ ^[0-9]+$ ]]; then pos=$1; shift; spec="$*"; fi
+      awk -v p="$pos" -v s="$spec" 'NR == p {print s} {print} END {if (NR < p) print s}' "$d/$chain" >"$d/$chain.n"
+      mv "$d/$chain.n" "$d/$chain" ;;
+  -D) [[ -e "$d/$chain" ]] || exit 1; grep -qxF -- "$spec" "$d/$chain" || exit 1
+      awk -v s="$spec" '!done && $0 == s {done = 1; next} {print}' "$d/$chain" >"$d/$chain.n"; mv "$d/$chain.n" "$d/$chain" ;;
+  -S) [[ -e "$d/$chain" ]] || exit 1
+      if builtin_chain "$chain"; then echo "-P $chain ACCEPT"; else echo "-N $chain"; fi
+      sed "s/^/-A $chain /" "$d/$chain" ;;
+  *) exit 3 ;;
+esac
+SH
+
+cat >"$SHIM/ip" <<'SH'
+#!/usr/bin/env bash
+printf 'ip %s\n' "$*" >>"$FAKE/calls"
+[[ "${1:-}" == -4 ]] && shift
+touch "$FAKE/routes"
+case "$1 $2" in
+  "link show") [[ -e "$FAKE/link-$3" ]] ;;
+  "link del") rm -f "$FAKE/link-$3"; grep -v " dev $3 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes" ;;
+  "rule show") printf '0:\tfrom all lookup local\n32766:\tfrom all lookup main\n32767:\tfrom all lookup default\n' ;;
+  "route show")
+    if [[ "${3:-}" == dev ]]; then awk -v d="$4" '$0 ~ (" dev " d " ") {sub(" dev " d, ""); print}' "$FAKE/routes"
+    else cat "$FAKE/routes"; fi ;;
+  "route replace") grep -v "^$3 dev $5 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes"; echo "$3 dev $5 scope link " >>"$FAKE/routes" ;;
+  "route del") grep -v "^$3 dev $5 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes" ;;
+  "route get") echo "$3 via 192.0.2.1 dev eth9 src 192.0.2.10 uid 0" ;;
+  *) exit 3 ;;
+esac
+SH
+
+# Keys: 32 bytes from a fixed seed per host, base64 like the real tool prints.
+cat >"$SHIM/wg" <<'SH'
+#!/usr/bin/env bash
+printf 'wg %s\n' "$*" >>"$FAKE/calls"
+case "$1" in
+  genkey) python3 -c 'import base64,hashlib,sys; print(base64.b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).decode())' "priv-$FAKE_TAG" ;;
+  pubkey) python3 -c 'import base64,hashlib,sys; print(base64.b64encode(hashlib.sha256(("pub" + sys.stdin.read().strip()).encode()).digest()).decode())' ;;
+  show) [[ -e "$FAKE/link-$2" ]] || exit 1
+        case "${FAKE_HS:-now}" in now) t=$(date +%s) ;; old) t=$(( $(date +%s) - 1000 )) ;; *) t=0 ;; esac
+        printf 'peerkey\t%s\n' "$t" ;;
+  set) printf '%s\n' "$*" >>"$FAKE/wg-set" ;;
+  *) exit 3 ;;
+esac
+SH
+
+# wg-quick played by systemctl: link, routes of AllowedIPs, PostUp; PreDown, routes, link.
+cat >"$SHIM/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"$FAKE/calls"
+printf '%s %s\n' "$(<"$FAKE/../tag")" "$*" >>"${FAKE_ORDER:-/dev/null}"
+quiet=0; args=()
+for a in "$@"; do [[ "$a" == --quiet ]] && quiet=1 || args+=("$a"); done
+set -- "${args[@]}"
+conf() { echo "$TB_WG_ROOT/etc/wireguard/wg0.conf"; }
+hooks() { sed -n "s/^$1 = //p" "$(conf)" | sed 's/%i/wg0/g'; }
+case "$1 ${2:-}" in
+  "enable --now")
+    [[ -n "${FAKE_START_FAIL:-}" ]] && exit 1
+    : >"$FAKE/link-wg0"; : >"$FAKE/enabled"; : >"$FAKE/active"
+    addr=$(sed -n 's/^Address = //p' "$(conf)")
+    echo "10.250.0.0/30 dev wg0 proto kernel scope link src ${addr%/*} " >>"$FAKE/routes"
+    for n in $(sed -n 's/^AllowedIPs = //p' "$(conf)" | tr -d ,); do echo "$n dev wg0 scope link " >>"$FAKE/routes"; done
+    while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PostUp)
+    [[ -n "${FAKE_STRAY:-}" ]] && iptables -A FORWARD -s 198.51.100.0/24 -j ACCEPT
+    [[ -n "${FAKE_VANISH:-}" ]] && iptables -D FORWARD -j KUBE-ROUTER-FORWARD
+    exit 0 ;;
+  "disable --now")
+    if [[ -e "$FAKE/active" ]]; then while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PreDown); fi
+    rm -f "$FAKE/link-wg0" "$FAKE/enabled" "$FAKE/active"
+    grep -v " dev wg0 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes"; exit 0 ;;
+  "is-enabled "*) if [[ -e "$FAKE/enabled" ]]; then (( quiet )) || echo enabled; exit 0; fi; (( quiet )) || echo disabled; exit 1 ;;
+  "is-active "*) [[ -e "$FAKE/active" ]] ;;
+  *) exit 3 ;;
+esac
+SH
+
+cat >"$SHIM/dpkg-query" <<'SH'
+#!/usr/bin/env bash
+[[ -e "$FAKE/pkg" ]] || exit 1
+printf 'install ok installed'
+SH
+cat >"$SHIM/apt-get" <<'SH'
+#!/usr/bin/env bash
+printf 'apt-get %s\n' "$*" >>"$FAKE/calls"
+case " $* " in *" install "*) : >"$FAKE/pkg" ;; *" remove "*) rm -f "$FAKE/pkg" ;; esac
+SH
+cat >"$SHIM/modinfo" <<'SH'
+#!/usr/bin/env bash
+[[ -n "${FAKE_NO_MODULE:-}" ]] && exit 1
+echo /lib/modules/x/kernel/drivers/net/wireguard/wireguard.ko
+SH
+# ping: the last argument is the target. FAKE_PING_LOSS lists targets that answer nothing,
+# FAKE_PING_SLOW lists targets that answer at 40 ms; the rest answer at 3.7 ms (office path) or
+# 4.5 ms (anything else).
+cat >"$SHIM/ping" <<'SH'
+#!/usr/bin/env bash
+t=${!#}
+printf 'ping %s\n' "$t" >>"$FAKE/calls"
+case " ${FAKE_PING_LOSS:-} " in *" $t "*) printf '10 packets transmitted, 0 received, 100%% packet loss, time 1800ms\n'; exit 1 ;; esac
+avg=4.5; max=6.1
+case " ${FAKE_PING_SLOW:-} " in *" $t "*) avg=40.2; max=44.0 ;; esac
+[[ "$t" == "${FAKE_LAN:-}" ]] && { avg=3.7; max=3.9; }
+printf '10 packets transmitted, 10 received, 0%% packet loss, time 1800ms\nrtt min/avg/max/mdev = 3.1/%s/%s/0.2 ms\n' "$avg" "$max"
+SH
+cat >"$SHIM/crictl" <<'SH'
+#!/usr/bin/env bash
+[[ -n "${FAKE_NO_POD:-}" ]] && exit 0
+case "$1" in ps) echo c0ffee ;; inspect) echo 4242 ;; *) exit 3 ;; esac
+SH
+# nsenter -t PID -n <cmd>: runs <cmd> here, except the TCP probe, answered from FAKE_TCP.
+cat >"$SHIM/nsenter" <<'SH'
+#!/usr/bin/env bash
+printf 'nsenter %s\n' "$*" >>"$FAKE/calls"
+shift 3
+case "$*" in
+  *"/dev/tcp/"*) case "${FAKE_TCP:-refused}" in
+      refused) echo "bash: connect: Connection refused" >&2; exit 1 ;;
+      connected) exit 0 ;;
+      *) exit 124 ;;
+    esac ;;
+esac
+exec "$@"
+SH
+cat >"$SHIM/tcpdump" <<'SH'
+#!/usr/bin/env bash
+printf 'tcpdump %s\n' "$*" >>"$FAKE/calls"
+for p in ${FAKE_ARRIVE:-}; do
+  printf '11:00:00.000001 IP 192.0.2.66.40001 > 192.0.2.119.%s: UDP, length 11\n' "$p"
+  printf '11:00:00.200001 IP 192.0.2.66.40002 > 192.0.2.119.%s: UDP, length 11\n' "$p"
+done
+SH
+chmod +x "$SHIM"/*
+
+# One fake host: a root tree for the tool and a state directory for the fakes.
+new_host() {  # new_host <dir> <tag>
+  local h=$1
+  mkdir -p "$h/root" "$h/fake/ipt/filter" "$h/fake/ipt/nat" "$h/fake/ipt/mangle" "$h/ct"
+  printf -- '-j KUBE-ROUTER-INPUT\n' >"$h/fake/ipt/filter/INPUT"
+  printf -- '-j KUBE-ROUTER-FORWARD\n-s 10.42.0.0/16 -j ACCEPT\n' >"$h/fake/ipt/filter/FORWARD"
+  : >"$h/fake/ipt/filter/OUTPUT"
+  : >"$h/fake/ipt/nat/PREROUTING"
+  printf -- '-s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE\n' >"$h/fake/ipt/nat/POSTROUTING"
+  : >"$h/fake/ipt/mangle/FORWARD"
+  printf 'default via 192.0.2.1 dev eth9 proto static \n192.0.2.0/24 dev eth9 proto kernel scope link src 192.0.2.10 \n' >"$h/fake/routes"
+  echo 8010 >"$h/ct/nf_conntrack_count"; echo 262144 >"$h/ct/nf_conntrack_max"
+  echo "$2" >"$h/tag"
+}
+# run_on <hostdir> <tool args...>: the tool as it runs on that host.
+run_on() {
+  local h=$1; shift
+  env PATH="$SHIM:$PATH" TB_WG_ROOT="$h/root" FAKE="$h/fake" FAKE_TAG="$(<"$h/tag")" \
+    TB_WG_CONNTRACK_DIR="$h/ct" TB_WG_ENV="$SCRIPT_DIR/vm-tunnel/tunnel.env" bash "$TOOL" "$@"
+}
+install_self() {  # what t0-apply.sh push does: the tool where the conf hooks expect it
+  mkdir -p "$1/root/usr/local/sbin"
+  cp "$TOOL" "$1/root/usr/local/sbin/tb-wg"; chmod 755 "$1/root/usr/local/sbin/tb-wg"
+}
+ipt_dump() { (cd "$1/fake/ipt" && for f in */*; do printf '%s: ' "$f"; tr '\n' '|' <"$f"; echo; done); }
+pub_of() { python3 -c 'import base64,hashlib,sys; p=base64.b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).decode(); print(base64.b64encode(hashlib.sha256(("pub"+p).encode()).digest()).decode())' "priv-$1"; }
+priv_of() { python3 -c 'import base64,hashlib,sys; print(base64.b64encode(hashlib.sha256(sys.argv[1].encode()).digest()).decode())' "priv-$1"; }
+
+# Brings a pair up by hand, the way t0-apply.sh does it.
+pair_up() {  # pair_up <h119> <h66> <port>
+  local a=$1 b=$2 port=$3
+  install_self "$a"; install_self "$b"
+  run_on "$a" keygen >/dev/null; run_on "$b" keygen >/dev/null
+  run_on "$a" render 119 --port "$port" <<<"$(run_on "$b" pubkey)" >/dev/null
+  run_on "$b" render 66 --port "$port" <<<"$(run_on "$a" pubkey)" >/dev/null
+  sysctl_on "$a" enable --now wg-quick@wg0
+  sysctl_on "$b" enable --now wg-quick@wg0
+}
+# systemctl as wg-quick would see it on that host (the hooks run the installed tool).
+sysctl_on() {
+  local h=$1; shift
+  (export PATH="$SHIM:$PATH" TB_WG_ROOT="$h/root" FAKE="$h/fake" FAKE_TAG="$(<"$h/tag")" \
+     TB_WG_ENV="$SCRIPT_DIR/vm-tunnel/tunnel.env" TB_WG_CONNTRACK_DIR="$h/ct"; systemctl "$@")
+}
+
+# ---- 1. keygen: private key stays in a 0600 file, nothing printed, second run keeps the key -----
+H=$TMP_ROOT/t1; new_host "$H" k1
+out=$(run_on "$H" keygen)
+[[ "$out" == "tb-wg: key ready" ]] || fail "keygen printed more than its status: $out"
+[[ "$(stat -c %a "$H/root/etc/wireguard/wg0.key")" == 600 ]] || fail "private key mode is not 600"
+[[ "$(stat -c %a "$H/root/etc/wireguard")" == 700 ]] || fail "/etc/wireguard mode is not 700"
+[[ "$(<"$H/root/etc/wireguard/wg0.key")" == "$(priv_of k1)" ]] || fail "key file does not hold the generated key"
+echo "keep-me" >"$H/root/etc/wireguard/wg0.key"
+run_on "$H" keygen >/dev/null
+[[ "$(<"$H/root/etc/wireguard/wg0.key")" == keep-me ]] || fail "keygen replaced an existing key"
+ok "keygen"
+
+# ---- 2. render: conf without key material, right shape per role, bad peer key refused ----------
+A=$TMP_ROOT/t2a; B=$TMP_ROOT/t2b; new_host "$A" a2; new_host "$B" b2
+run_on "$A" keygen >/dev/null; run_on "$B" keygen >/dev/null
+if run_on "$A" render 119 --port 4500 <<<"not-a-key" 2>/dev/null; then fail "render accepted a malformed peer key"; fi
+if run_on "$A" render 119 <<<"$(run_on "$B" pubkey)" 2>/dev/null; then fail "render ran without --port"; fi
+if run_on "$A" render 7 --port 1 <<<"$(run_on "$B" pubkey)" 2>/dev/null; then fail "render accepted role 7"; fi
+run_on "$A" render 119 --port 4500 <<<"$(run_on "$B" pubkey)" >/dev/null
+run_on "$B" render 66 --port 4500 <<<"$(run_on "$A" pubkey)" >/dev/null
+CA=$A/root/etc/wireguard/wg0.conf; CB=$B/root/etc/wireguard/wg0.conf
+for c in "$CA" "$CB"; do
+  [[ "$(stat -c %a "$c")" == 600 ]] || fail "$c mode is not 600"
+  grep -q '^PrivateKey' "$c" && fail "$c has a PrivateKey line"
+  grep -qF "$(priv_of a2)" "$c" && fail "$c holds the 119 private key"
+  grep -qF "$(priv_of b2)" "$c" && fail "$c holds the 66 private key"
+  grep -qx "PostUp = wg set %i private-key $(dirname "$c")/wg0.key" "$c" || fail "$c does not load the key in PostUp"
+  grep -qx "MTU = 1420" "$c" || fail "$c MTU"
+done
+grep -qx "Address = 10.250.0.1/30" "$CA" || fail "119 address"
+grep -qx "ListenPort = 4500" "$CA" || fail "119 listen port"
+grep -q '^Endpoint' "$CA" && fail "119 must not dial 66"
+grep -qx "AllowedIPs = 10.250.0.2/32, 192.168.123.0/24, 192.168.124.0/24, 192.168.125.0/24, 192.168.126.0/24" "$CA" || fail "119 AllowedIPs: $(grep AllowedIPs "$CA")"
+grep -qx "PublicKey = $(pub_of b2)" "$CA" || fail "119 peer key is not the 66 public key"
+grep -qx "Address = 10.250.0.2/30" "$CB" || fail "66 address"
+grep -q '^ListenPort' "$CB" && fail "66 must not listen on a fixed port"
+grep -qx "Endpoint = 192.168.230.119:4500" "$CB" || fail "66 endpoint"
+grep -qx "PersistentKeepalive = 25" "$CB" || fail "66 keepalive"
+grep -qx "AllowedIPs = 10.250.0.1/32" "$CB" || fail "66 AllowedIPs: $(grep AllowedIPs "$CB")"
+grep -qx "PublicKey = $(pub_of a2)" "$CB" || fail "66 peer key is not the 119 public key"
+ok "render"
+
+# ---- 3. up and down on 119: guard chain, jumps once, MSS, everything gone after down ----------
+A=$TMP_ROOT/t3a; B=$TMP_ROOT/t3b; new_host "$A" a3; new_host "$B" b3
+before=$(ipt_dump "$A")
+pair_up "$A" "$B" 51820
+chain=$(<"$A/fake/ipt/filter/TBWG-IN")
+expected=$'-m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+-p icmp --icmp-type echo-request -d 10.250.0.1 -j RETURN
+-p tcp -m conntrack --ctstate NEW --ctorigdst 10.250.0.1 --ctorigdstport 18090 -j RETURN
+-p tcp -m conntrack --ctstate NEW --ctorigdst 10.250.0.1 --ctorigdstport 514 -j RETURN
+-p udp -m conntrack --ctstate NEW --ctorigdst 10.250.0.1 --ctorigdstport 514 -j RETURN
+-p udp -m conntrack --ctstate NEW --ctorigdst 10.250.0.1 --ctorigdstport 162 -j RETURN
+-j DROP'
+[[ "$chain" == "$expected" ]] || fail "TBWG-IN differs:"$'\n'"$chain"
+[[ "$(head -1 "$A/fake/ipt/filter/INPUT")" == "-i wg0 -j TBWG-IN" ]] || fail "INPUT jump not first"
+[[ "$(head -1 "$A/fake/ipt/filter/FORWARD")" == "-i wg0 -j TBWG-IN" ]] || fail "FORWARD jump not first"
+grep -qxF -- "-j KUBE-ROUTER-FORWARD" "$A/fake/ipt/filter/FORWARD" || fail "existing FORWARD rule lost"
+grep -qxF -- "-o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu" "$A/fake/ipt/mangle/FORWARD" || fail "119 MSS clamp"
+run_on "$A" hook-up >/dev/null   # a second PostUp (restart) must not stack rules
+[[ "$(grep -c 'TBWG-IN' "$A/fake/ipt/filter/INPUT")" == 1 ]] || fail "INPUT jump stacked"
+[[ "$(grep -c 'TBWG-IN' "$A/fake/ipt/filter/FORWARD")" == 1 ]] || fail "FORWARD jump stacked"
+[[ "$(grep -c TCPMSS "$A/fake/ipt/mangle/FORWARD")" == 1 ]] || fail "MSS stacked"
+[[ "$(<"$A/fake/ipt/filter/TBWG-IN")" == "$expected" ]] || fail "TBWG-IN changed on a second hook-up"
+for n in 192.168.123.0/24 192.168.124.0/24 192.168.125.0/24 192.168.126.0/24; do
+  grep -q "^$n dev wg0 " "$A/fake/routes" || fail "119 route $n"
+done
+grep -q "^192.168.122.0/24 dev wg0" "$A/fake/routes" && fail "122 routed into the tunnel"
+sysctl_on "$A" disable --now wg-quick@wg0
+[[ "$(ipt_dump "$A")" == "$before" ]] || fail "119 rules after down differ from before:"$'\n'"$(ipt_dump "$A")"
+grep -q " dev wg0 " "$A/fake/routes" && fail "wg0 routes left after down"
+ok "119 up and down"
+
+# ---- 4. up and down on 66: FORWARD pairs per network and DROP last, nothing else touched -------
+A=$TMP_ROOT/t4a; B=$TMP_ROOT/t4b; new_host "$A" a4; new_host "$B" b4
+before=$(ipt_dump "$B")
+nat_before=$(<"$B/fake/ipt/nat/POSTROUTING")
+pair_up "$A" "$B" 51820
+chain=$(<"$B/fake/ipt/filter/TBWG-FWD")
+expected=""
+for n in 192.168.123.0/24 192.168.124.0/24 192.168.125.0/24 192.168.126.0/24; do
+  expected+="-i wg0 -s 10.250.0.1/32 -d $n -j RETURN"$'\n'"-o wg0 -s $n -d 10.250.0.1/32 -j RETURN"$'\n'
+done
+expected+="-j DROP"
+[[ "$chain" == "$expected" ]] || fail "TBWG-FWD differs:"$'\n'"$chain"
+head -2 "$B/fake/ipt/filter/FORWARD" | grep -qxF -- "-i wg0 -j TBWG-FWD" || fail "66 FORWARD -i jump"
+head -2 "$B/fake/ipt/filter/FORWARD" | grep -qxF -- "-o wg0 -j TBWG-FWD" || fail "66 FORWARD -o jump"
+grep -qxF -- "-o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu" "$B/fake/ipt/mangle/FORWARD" || fail "66 MSS clamp"
+[[ "$(<"$B/fake/ipt/nat/POSTROUTING")" == "$nat_before" ]] || fail "66 nat rules changed"
+[[ -e "$B/fake/ipt/filter/TBWG-IN" ]] && fail "66 got the 119 chain"
+[[ -e "$A/fake/ipt/filter/TBWG-FWD" ]] && fail "119 got the 66 chain"
+grep -q " dev wg0 " <(grep -v "^10.250.0" "$B/fake/routes") && fail "66 routes testbed networks into the tunnel"
+run_on "$B" hook-up >/dev/null
+[[ "$(<"$B/fake/ipt/filter/TBWG-FWD")" == "$expected" ]] || fail "TBWG-FWD changed on a second hook-up"
+[[ "$(grep -c 'TBWG-FWD' "$B/fake/ipt/filter/FORWARD")" == 2 ]] || fail "66 jumps stacked"
+sysctl_on "$B" disable --now wg-quick@wg0
+[[ "$(ipt_dump "$B")" == "$before" ]] || fail "66 rules after down differ from before"
+ok "66 up and down"
+
+# ---- 5. add-net and del-net: S network slot, refused networks, live on both ends --------------
+A=$TMP_ROOT/t5a; B=$TMP_ROOT/t5b; new_host "$A" a5; new_host "$B" b5
+pair_up "$A" "$B" 51820
+for bad in 192.168.122.0/24 192.168.127.0/24 192.168.133.0/24 192.168.230.0/24 192.168.124.0/22 \
+           192.168.131.5/24 10.42.0.0/24 192.168.031.0/24 192.168.300.0/24 0.0.0.0/0 ""; do
+  if run_on "$A" add-net "$bad" 2>/dev/null; then fail "add-net accepted '$bad'"; fi
+done
+grep -q "192.168.122" "$A/root/etc/wireguard/wg0.nets" && fail "refused network written"
+run_on "$A" add-net 192.168.131.0/24 >/dev/null
+run_on "$B" add-net 192.168.131.0/24 >/dev/null
+grep -qx "192.168.131.0/24" "$A/root/etc/wireguard/wg0.nets" || fail "119 nets file"
+grep -qx "AllowedIPs = 10.250.0.2/32, 192.168.123.0/24, 192.168.124.0/24, 192.168.125.0/24, 192.168.126.0/24, 192.168.131.0/24" \
+  "$A/root/etc/wireguard/wg0.conf" || fail "119 conf AllowedIPs after add-net"
+grep -qx "AllowedIPs = 10.250.0.1/32" "$B/root/etc/wireguard/wg0.conf" || fail "66 AllowedIPs must not change"
+tail -1 "$A/fake/wg-set" | grep -qx "set wg0 peer $(pub_of b5) allowed-ips 10.250.0.2/32,192.168.123.0/24,192.168.124.0/24,192.168.125.0/24,192.168.126.0/24,192.168.131.0/24" \
+  || fail "119 live allowed-ips: $(tail -1 "$A/fake/wg-set")"
+grep -q "^192.168.131.0/24 dev wg0 " "$A/fake/routes" || fail "119 live route for 131"
+grep -qxF -- "-i wg0 -s 10.250.0.1/32 -d 192.168.131.0/24 -j RETURN" "$B/fake/ipt/filter/TBWG-FWD" || fail "66 live rule for 131"
+[[ "$(tail -1 "$B/fake/ipt/filter/TBWG-FWD")" == "-j DROP" ]] || fail "66 DROP not last after add-net"
+[[ "$(grep -c 'TBWG-FWD' "$B/fake/ipt/filter/FORWARD")" == 2 ]] || fail "66 jumps stacked by add-net"
+n_before=$(wc -l <"$A/root/etc/wireguard/wg0.nets")
+run_on "$A" add-net 192.168.131.0/24 >/dev/null
+[[ "$(wc -l <"$A/root/etc/wireguard/wg0.nets")" == "$n_before" ]] || fail "add-net twice added twice"
+run_on "$A" del-net 192.168.131.0/24 >/dev/null
+run_on "$B" del-net 192.168.131.0/24 >/dev/null
+grep -q 192.168.131 "$A/root/etc/wireguard/wg0.conf" && fail "119 conf still has 131"
+grep -q "^192.168.131.0/24 dev wg0" "$A/fake/routes" && fail "119 route for 131 left"
+grep -q 192.168.131 "$B/fake/ipt/filter/TBWG-FWD" && fail "66 rule for 131 left"
+for n in 192.168.124.0/24 192.168.125.0/24 192.168.126.0/24; do run_on "$A" del-net "$n" >/dev/null; done
+if run_on "$A" del-net 192.168.123.0/24 2>/dev/null; then fail "del-net left the tunnel with no network"; fi
+ok "add-net and del-net"
+
+# ---- 6. check: passes when healthy, fails on each broken part --------------------------------
+A=$TMP_ROOT/t6a; B=$TMP_ROOT/t6b; new_host "$A" a6; new_host "$B" b6
+pair_up "$A" "$B" 51820
+out=$(FAKE_LAN=192.168.200.66 run_on "$A" check --target 192.168.123.254) || fail "119 check failed when healthy:"$'\n'"$out"
+grep -q '^\[FAIL\]' <<<"$out" && fail "119 healthy check printed a FAIL"
+for want in "latest handshake" "ping 10.250.0.2 through wg0: loss 0%" "route 192.168.126.0/24 dev wg0" \
+            "TBWG-IN guards INPUT and FORWARD" "TCP MSS clamped" "conntrack 8010 of 262144" \
+            "ping 192.168.123.254 from this host" "ping 10.250.0.2 from the collector-nms pod" \
+            "tcp 10.250.0.2:9 from the collector-nms pod: refused" "tcp 192.168.123.254:9 from the collector-nms pod: refused" \
+            "wg-quick@wg0 enabled"; do
+  grep -qF "[PASS] $want" <<<"$out" || fail "119 check has no PASS for '$want':"$'\n'"$out"
+done
+out=$(FAKE_LAN=192.168.230.119 run_on "$B" check) || fail "66 check failed when healthy:"$'\n'"$out"
+grep -qF "[PASS] TBWG-FWD lets 192.168.124.0/24 and 10.250.0.1 through" <<<"$out" || fail "66 check pairs"
+grep -qF "[PASS] TBWG-FWD guards FORWARD both ways, last rule DROP" <<<"$out" || fail "66 check jumps"
+grep -q 'collector-nms' <<<"$out" && fail "66 check looked for a pod"
+export -f run_on
+export SHIM TOOL SCRIPT_DIR
+cf() {  # cf <host> <expected FAIL text> [VAR=value...]: check must fail and say so
+  local h=$1 msg=$2 o rc; shift 2
+  o=$(env FAKE_LAN=192.168.200.66 "$@" bash -c 'run_on "$0" check --target 192.168.123.254' "$h" 2>&1) && rc=0 || rc=$?
+  (( rc != 0 )) || fail "check passed with: $msg"
+  grep -qF "[FAIL] $msg" <<<"$o" || fail "check did not report '$msg':"$'\n'"$o"
+}
+cf "$A" "latest handshake" FAKE_HS=old
+cf "$A" "no handshake yet" FAKE_HS=never
+cf "$A" "ping 10.250.0.2 through wg0: loss 100%" FAKE_PING_LOSS=10.250.0.2
+cf "$A" "ping 10.250.0.2 through wg0: avg 40.2ms" FAKE_PING_SLOW=10.250.0.2
+cf "$A" "ping 192.168.123.254 from this host: loss 100%" FAKE_PING_LOSS=192.168.123.254
+cf "$A" "tcp 10.250.0.2:9 from the collector-nms pod: no answer" FAKE_TCP=timeout
+cf "$A" "no running collector-nms container" FAKE_NO_POD=1
+echo 250000 >"$A/ct/nf_conntrack_count"
+cf "$A" "conntrack 250000 of 262144"
+echo 8010 >"$A/ct/nf_conntrack_count"
+cp "$A/fake/ipt/filter/TBWG-IN" "$TMP_ROOT/keep"; sed -i '$d' "$A/fake/ipt/filter/TBWG-IN"   # DROP gone
+cf "$A" "TBWG-IN jumps or final DROP missing"
+cp "$TMP_ROOT/keep" "$A/fake/ipt/filter/TBWG-IN"
+grep -v "192.168.125.0/24" "$A/fake/routes" >"$TMP_ROOT/r"; cp "$A/fake/routes" "$TMP_ROOT/keep"; cp "$TMP_ROOT/r" "$A/fake/routes"
+cf "$A" "route 192.168.125.0/24 dev wg0 missing"
+cp "$TMP_ROOT/keep" "$A/fake/routes"
+: >"$A/fake/ipt/mangle/FORWARD"
+cf "$A" "TCP MSS clamp missing"
+grep -v "192.168.124.0/24" "$B/fake/ipt/filter/TBWG-FWD" >"$TMP_ROOT/f"; cp "$TMP_ROOT/f" "$B/fake/ipt/filter/TBWG-FWD"
+o=$(FAKE_LAN=192.168.230.119 run_on "$B" check 2>&1) && fail "66 check passed with a network pair missing"
+grep -qF "[FAIL] TBWG-FWD has no rule pair for 192.168.124.0/24" <<<"$o" || fail "66 check did not name the missing pair"
+rm -f "$A/fake/enabled"
+cf "$A" "wg-quick@wg0 not enabled"
+ok "check"
+
+# ---- 7. install-tools and remove: package only on 119, purge removes only what we installed ---
+A=$TMP_ROOT/t7a; B=$TMP_ROOT/t7b; new_host "$A" a7; new_host "$B" b7
+: >"$B/fake/pkg"                                 # 66 had wireguard-tools already
+run_on "$A" install-tools 119 >/dev/null
+grep -q "apt-get install -y --no-install-recommends wireguard-tools" "$A/fake/calls" || fail "119 did not install the package"
+[[ -e "$A/root/var/lib/tb-wg/installed-wireguard-tools" ]] || fail "119 install not marked"
+run_on "$B" install-tools 66 >/dev/null
+grep -q apt-get "$B/fake/calls" 2>/dev/null && fail "66 ran apt-get"
+[[ -e "$B/root/var/lib/tb-wg/installed-wireguard-tools" ]] && fail "66 marked a package it did not install"
+B2=$TMP_ROOT/t7c; new_host "$B2" c7
+if run_on "$B2" install-tools 66 2>/dev/null; then fail "66 without the package installed it"; fi
+if FAKE_NO_MODULE=1 run_on "$A" install-tools 119 2>/dev/null; then fail "install-tools passed without the kernel module"; fi
+pair_up "$A" "$B" 51820
+run_on "$A" remove >/dev/null
+[[ -e "$A/fake/link-wg0" || -e "$A/fake/enabled" ]] && fail "remove left 119 up or enabled"
+[[ -s "$A/root/etc/wireguard/wg0.key" ]] || fail "remove without --purge deleted the key"
+[[ -e "$A/fake/ipt/filter/TBWG-IN" ]] && fail "remove left TBWG-IN"
+run_on "$A" remove --purge >/dev/null
+for f in wg0.conf wg0.key wg0.pub wg0.peer wg0.nets tb-wg.role; do [[ -e "$A/root/etc/wireguard/$f" ]] && fail "purge left $f"; done
+grep -q "apt-get remove -y wireguard-tools" "$A/fake/calls" || fail "119 purge did not remove the package it installed"
+[[ -e "$A/root/usr/local/sbin/tb-wg" ]] && fail "purge left the tool"
+run_on "$B" remove --purge >/dev/null
+grep -q apt-get "$B/fake/calls" && fail "66 purge removed a package it did not install"
+[[ -e "$B/fake/pkg" ]] || fail "66 package gone"
+ok "install-tools and remove"
+
+# ---- 8. orchestrator: probe picks a port, apply brings both up, keys never in its output -------
+A=$TMP_ROOT/t8a; B=$TMP_ROOT/t8b; new_host "$A" a8; new_host "$B" b8; : >"$B/fake/pkg"
+# A fake ssh: the remote command runs here with that host root mapped into the absolute paths.
+cat >"$SHIM/fake-ssh" <<'SH'
+#!/usr/bin/env bash
+h=$1; shift
+cmd="$*"
+root=$h/root
+cmd=${cmd//\/usr\/local\/sbin/$root\/usr\/local\/sbin}
+cmd=${cmd//\/etc\/wireguard/$root\/etc\/wireguard}
+export TB_WG_ROOT=$root FAKE=$h/fake FAKE_TAG=$(<"$h/tag") TB_WG_CONNTRACK_DIR=$h/ct FAKE_LAN=$(<"$h/lan")
+exec bash -c "$cmd"
+SH
+chmod +x "$SHIM/fake-ssh"
+echo 192.168.200.66 >"$A/lan"; echo 127.0.0.1 >"$B/lan"
+orch() {  # the hosts are $A and $B at call time
+  env PATH="$SHIM:$PATH" TB_SSH_119="fake-ssh $A" TB_SSH_66="fake-ssh $B" WG_HOST_119=127.0.0.1 \
+    TB_WG_RUN_DIR="$TMP_ROOT/runs-${A##*/}" TB_WG_PROBE_SECS=1 TB_WG_PROBE_LEAD=0 TB_WG_HANDSHAKE_WAIT=5 \
+    FAKE_ORDER="$TMP_ROOT/order-${A##*/}" bash "$ORCH" "$@"
+}
+out=$(FAKE_ARRIVE="1194 4500" orch probe 2>&1) || fail "probe failed: $out"
+[[ "$out" == $'4500\n1194' ]] || fail "probe should list arrived ports in candidate order, got: $out"
+[[ -e "$A/root/usr/local/sbin/tb-wg" || -e "$B/root/usr/local/sbin/tb-wg" ]] && fail "probe installed the tool"
+[[ -d "$A/root/etc/wireguard" || -d "$B/root/etc/wireguard" ]] && fail "probe wrote to /etc/wireguard"
+grep -q -- "-p -n -l" "$A/fake/calls" || fail "udp-listen must run tcpdump without promiscuous mode"
+ncalls() { { cat "$A/fake/calls" "$B/fake/calls" 2>/dev/null || true; } | wc -l; }
+calls_before=$(ncalls)
+if out=$(FAKE_ARRIVE=51820 orch apply 2>&1); then fail "apply ran without --yes"; fi
+grep -q "pass --yes" <<<"$out" || fail "apply without --yes did not ask for it: $out"
+[[ "$(ncalls)" == "$calls_before" ]] || fail "apply without --yes reached a host"
+if out=$(FAKE_ARRIVE="" orch apply --yes 2>&1); then fail "apply went on with no passing port"; fi
+grep -q "decision 8" <<<"$out" || fail "no-port message does not point at decision 8: $out"
+[[ -e "$A/fake/link-wg0" ]] && fail "apply started the tunnel with no passing port"
+out=$(FAKE_ARRIVE="4500 51821" orch apply --yes 2>&1) || fail "apply failed:"$'\n'"$out"
+grep -q "using 51821" <<<"$out" || fail "apply did not take the first arrived candidate: $out"
+grep -qx "ListenPort = 51821" "$A/root/etc/wireguard/wg0.conf" || fail "119 port"
+grep -qx "Endpoint = 127.0.0.1:51821" "$B/root/etc/wireguard/wg0.conf" || fail "66 endpoint port"
+for k in "$(priv_of a8)" "$(priv_of b8)" "$(pub_of a8)" "$(pub_of b8)"; do
+  grep -qF "$k" <<<"$out" && fail "a key appeared in the apply output"
+  grep -rqF "$k" "$TMP_ROOT/runs-t8a" && fail "a key was written to the run directory"
+done
+grep -q "\[PASS\] 119: only wg0 and TBWG lines added" <<<"$out" || fail "apply did not compare 119"
+grep -q "\[PASS\] 66: only wg0 and TBWG lines added" <<<"$out" || fail "apply did not compare 66"
+grep -q "Recording may start after" <<<"$out" || fail "apply did not state the 2h30 rule time"
+[[ "$(stat -c %a "$A/root/etc/wireguard/tb-wg.env")" == 600 ]] || fail "env file mode"
+[[ -e "$A/root/var/lib/tb-wg/installed-wireguard-tools" ]] || fail "119 package not marked"
+out=$(orch verify --target 192.168.123.254 2>&1) || fail "verify failed:"$'\n'"$out"
+grep -qF "[PASS] ping 192.168.123.254 from the collector-nms pod" <<<"$out" || fail "verify did not pass the target to 119"
+out=$(orch add-net 192.168.131.0/24 2>&1) || fail "orchestrated add-net failed: $out"
+grep -q 192.168.131.0/24 "$A/root/etc/wireguard/wg0.nets" && grep -q 192.168.131.0/24 "$B/root/etc/wireguard/wg0.nets" || fail "add-net did not reach both ends"
+if orch rollback >/dev/null 2>&1; then fail "rollback ran without --yes"; fi
+out=$(orch rollback --yes 2>&1) || fail "rollback failed:"$'\n'"$out"
+grep -q "\[PASS\] 119 has no wg0 route or TBWG rule left" <<<"$out" || fail "rollback 119"
+grep -q "\[PASS\] 66 has no wg0 route or TBWG rule left" <<<"$out" || fail "rollback 66"
+grep -q "\[PASS\] 119 matches the snapshot taken before apply" <<<"$out" || fail "rollback did not compare with the apply snapshot"
+[[ "$(grep 'disable --now' "$TMP_ROOT/order-t8a" | awk '{print $1}' | paste -sd' ')" == "b8 a8" ]] \
+  || fail "rollback must stop 66 (the side that dials) before 119: $(cat "$TMP_ROOT/order-t8a")"
+[[ "$(grep 'enable --now' "$TMP_ROOT/order-t8a" | awk '{print $1}' | paste -sd' ')" == "a8 b8" ]] \
+  || fail "apply must start 119 (the side that listens) before 66"
+ok "orchestrator probe, apply, verify, add-net, rollback"
+
+# ---- 9. apply rolls back by itself when a check or the comparison fails ----------------------
+for case in stray vanish nohs; do
+  A=$TMP_ROOT/t9a-$case; B=$TMP_ROOT/t9b-$case; new_host "$A" a9; new_host "$B" b9; : >"$B/fake/pkg"
+  echo 192.168.200.66 >"$A/lan"; echo 127.0.0.1 >"$B/lan"
+  if [[ "$case" == stray ]]; then
+    out=$(FAKE_STRAY=1 FAKE_ARRIVE=51820 orch apply --yes 2>&1) && fail "apply succeeded although a stray rule appeared"
+    want="lines added that are not about wg0 or TBWG chains"
+  elif [[ "$case" == vanish ]]; then
+    out=$(FAKE_VANISH=1 FAKE_ARRIVE=51820 orch apply --yes 2>&1) && fail "apply succeeded although an existing rule disappeared"
+    want="119: lines gone from routes and top level chains"
+    grep -qF "filter -A FORWARD -j KUBE-ROUTER-FORWARD" <<<"$out" || fail "apply did not show the line that disappeared"
+  else
+    out=$(FAKE_HS=never FAKE_ARRIVE=51820 orch apply --yes 2>&1) && fail "apply succeeded without a handshake"
+    want="no handshake within"
+  fi
+  grep -qF "$want" <<<"$out" || fail "apply did not say why ($case):"$'\n'"$out"
+  grep -q "rolling back" <<<"$out" || fail "apply did not roll back ($case)"
+  [[ -e "$A/fake/link-wg0" || -e "$B/fake/link-wg0" || -e "$A/fake/enabled" || -e "$B/fake/enabled" ]] && fail "tunnel left up after a failed apply ($case)"
+  [[ -e "$A/fake/ipt/filter/TBWG-IN" || -e "$B/fake/ipt/filter/TBWG-FWD" ]] && fail "chains left after a failed apply ($case)"
+  if [[ "$case" == nohs ]]; then
+    grep -q "routes and top level chains are back to what they were" <<<"$out" || fail "rollback was not compared with the before snapshot"
+  fi
+done
+ok "apply rolls back on failure"
+
+echo "test-vm-tunnel: all passed"

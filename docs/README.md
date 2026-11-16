@@ -43,6 +43,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [테스트베드 이전 작업 계획 (109 → 66)](runbook-testbed-move-109-to-66.md):
   ARM 109 에서 x86 Proxmox 66 으로 옮기는 단계별 계획. 119 로 가던 데이터 종류
   15가지 기준표를 전환 조건으로 삼는다. (Planned)
+- [119 와 66 사이 WireGuard 터널 적용 runbook (T0)](runbook-testbed-tunnel.md):
+  T 와 S 테스트베드가 같이 쓰는 터널을 `scripts/vm-tunnel/` 도구로 올리고 확인하고 내리는 절차,
+  읽기 확인 결과, 119 k3s 와 수집 영향, 되돌리기, S 망 추가. (Planned, 적용 전)
 - [NMS 수집 소스 셋업 runbook](runbook-nms-source-setup.md):
   외부 서버 .57에 snmpd·trap·softflowd 셋업해 119 NMS 수신 경로 활성화 —
   G19·G20 전제 작업. (Planned — 서버 담당자 승인 대기)
