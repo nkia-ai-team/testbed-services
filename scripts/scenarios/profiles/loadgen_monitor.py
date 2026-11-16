@@ -23,12 +23,15 @@ import argparse
 import collections
 import datetime
 import json
+import math
 import os
 import sys
 import time
 
 WINDOW_SEC = 30.0
 PUBLISH_INTERVAL_SEC = 1.0
+# 창 기록(--window-log)의 고정 창 길이. 평시 안정 판정(설계 spec-testbed-vm-3tier.md Q3 의 "5분 창")과 같다.
+WINDOW_LOG_SEC = 300
 
 
 class LiveDocumentBuilder:
@@ -38,10 +41,24 @@ class LiveDocumentBuilder:
     쓰는가*만 바꾸고 지표 정의는 건드리지 않는다.
     """
 
-    def __init__(self, identity: dict[str, str], business_step: str, read_step: str = "") -> None:
+    def __init__(
+        self,
+        identity: dict[str, str],
+        business_step: str,
+        read_step: str = "",
+        http_summary: bool = False,
+        window_log: "WindowLog | None" = None,
+    ) -> None:
         self.identity = identity
         self.business_step = business_step
         self.read_step = read_step
+        # 전체 요청 요약(--http-summary, 2026-11-16 v4 T2). 켜야만 도는 선택 기능이라 끈 도메인의 문서와
+        # 동작은 그대로다. 켜면 단계와 무관하게 모든 요청의 5xx, 응답 없음(시간 초과와 연결 실패), p95 를
+        # 같은 30초 창으로 싣는다(SMS, NMS 전용 테스트베드 설계 §5 요약 파일, §6-3 사용자 비정상 비율).
+        self.http_summary = http_summary
+        self.window_log = window_log
+        self.http_results: collections.deque = collections.deque()
+        self.http_durations: collections.deque = collections.deque()
         self.iterations: collections.deque = collections.deque()
         self.checkout_results: collections.deque = collections.deque()
         self.read_results: collections.deque = collections.deque()
@@ -53,7 +70,12 @@ class LiveDocumentBuilder:
 
     def consume(self, line: str) -> bool:
         """k6 json 한 줄을 흡수한다. 창 안에 반영됐으면 True."""
-        if '"iterations"' not in line and '"http_reqs"' not in line and '"checks"' not in line:
+        if (
+            '"iterations"' not in line
+            and '"http_reqs"' not in line
+            and '"checks"' not in line
+            and not ((self.http_summary or self.window_log is not None) and '"http_req_duration"' in line)
+        ):
             return False
         try:
             point = json.loads(line)
@@ -66,7 +88,28 @@ class LiveDocumentBuilder:
             stamp = datetime.datetime.fromisoformat(observed.replace("Z", "+00:00"))
             metric = point.get("metric")
             tags = data.get("tags", {})
+            if self.http_summary or self.window_log is not None:
+                if metric == "http_req_duration":
+                    value = float(data.get("value"))
+                    if self.http_summary:
+                        self.http_durations.append((stamp, value))
+                    if self.window_log is not None:
+                        self.window_log.add_duration(stamp, value)
+                    self.last_stamp = stamp
+                    return True
+                if metric == "http_reqs":
+                    raw = tags.get("status")
+                    status = int(raw) if raw and str(raw).isdigit() else 0
+                    error_code = str(tags.get("error_code") or "")
+                    if self.http_summary:
+                        self.http_results.append((stamp, status, error_code))
+                    if self.window_log is not None:
+                        self.window_log.add_request(stamp, status, error_code)
+                    self.last_stamp = stamp
+                    # 아래 단계별 집계는 그대로 이어서 한다(같은 줄이 사업, 조회 단계에도 들어간다).
             if metric == "iterations":
+                if self.window_log is not None:
+                    self.window_log.add_iteration(stamp)
                 self.iterations.append(stamp)
             elif metric == "http_reqs" and tags.get("step") == self.business_step:
                 raw = tags.get("status")
@@ -77,6 +120,8 @@ class LiveDocumentBuilder:
                 self.read_results.append((stamp, int(raw) if raw and str(raw).isdigit() else 0))
             elif metric == "checks" and tags.get("check"):
                 self.check_results.append((stamp, str(tags["check"]), data.get("value") == 1))
+            elif metric == "http_reqs" and (self.http_summary or self.window_log is not None):
+                pass  # 단계 밖 요청: 위 전체 요약에만 들어갔다
             else:
                 return False
             self.last_stamp = stamp
@@ -96,6 +141,10 @@ class LiveDocumentBuilder:
             self.read_results.popleft()
         while self.check_results and self.check_results[0][0] < cutoff:
             self.check_results.popleft()
+        while self.http_results and self.http_results[0][0] < cutoff:
+            self.http_results.popleft()
+        while self.http_durations and self.http_durations[0][0] < cutoff:
+            self.http_durations.popleft()
         span = (
             max(1.0, min(WINDOW_SEC, (self.iterations[-1] - self.iterations[0]).total_seconds()))
             if len(self.iterations) > 1
@@ -202,8 +251,105 @@ class LiveDocumentBuilder:
                     failed[name] = failed.get(name, 0) + 1
             document["check_failed_rate"] = sum(failed.values()) / check_count
             document["check_failed"] = dict(sorted(failed.items()))
+        if self.http_summary:
+            # 분모가 0 인 창은 위 비율들처럼 비율과 p95 를 싣지 않고 분모만 싣는다.
+            http_count = len(self.http_results)
+            document["http_count"] = http_count
+            if http_count:
+                server_errors = sum(status >= 500 for _, status, _ in self.http_results)
+                no_response = sum(status == 0 for _, status, _ in self.http_results)
+                timeouts = sum(code == K6_REQUEST_TIMEOUT for _, _, code in self.http_results)
+                document["http_5xx_rate"] = server_errors / http_count
+                document["http_timeout_rate"] = timeouts / http_count
+                document["http_failed_rate"] = no_response / http_count
+                document["http_abnormal_rate"] = (server_errors + no_response) / http_count
+            if self.http_durations:
+                document["http_p95_ms"] = percentile([value for _, value in self.http_durations], 0.95)
         document.update(self.identity)
         return document
+
+
+# k6 가 응답 시간 초과에 다는 error_code 태그 값(k6 문서의 오류 코드 표, 1050 request timeout).
+K6_REQUEST_TIMEOUT = "1050"
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    """가장 가까운 순위 방식 백분위(표본 n 에서 ceil(fraction*n) 번째)."""
+    ordered = sorted(values)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+class WindowLog:
+    """고정 5분 창마다 한 줄씩 요청 수, 5xx, 응답 없음, 시간 초과, p95 를 JSON 줄로 덧붙인다.
+
+    평시 24시간 안정(Q3: 전체 비율과 "5분 창의 99%") 판정의 입력이다. 라이브 문서는 30초 창 하나만
+    덮어쓰므로 지난 창을 되짚을 수 없다. 창 경계는 UTC 기원 기준 300초 배수로 고정해 다시 돌려도
+    같은 창 이름이 나온다. 창이 바뀔 때 지난 창을 쓴다. 부하가 멈춘 창은 줄이 없고, 판정기는 그것을
+    빠진 창으로 센다. 지난 창에 속하는 늦은 점은 지금 창에 넣는다(k6 json 출력은 거의 시각순이다).
+    """
+
+    def __init__(self, path: str, window_sec: int = WINDOW_LOG_SEC) -> None:
+        self.path = path
+        self.window_sec = window_sec
+        self.current: int | None = None
+        self._reset()
+
+    def _reset(self) -> None:
+        self.requests = 0
+        self.server_errors = 0
+        self.no_response = 0
+        self.timeouts = 0
+        self.iterations = 0
+        self.durations: list[float] = []
+
+    def _bucket(self, stamp: datetime.datetime) -> int:
+        epoch = int(stamp.timestamp())
+        return epoch - epoch % self.window_sec
+
+    def _advance(self, stamp: datetime.datetime) -> None:
+        bucket = self._bucket(stamp)
+        if self.current is None:
+            self.current = bucket
+        elif bucket > self.current:
+            self.flush()
+            self.current = bucket
+
+    def add_request(self, stamp: datetime.datetime, status: int, error_code: str) -> None:
+        self._advance(stamp)
+        self.requests += 1
+        self.server_errors += status >= 500
+        self.no_response += status == 0
+        self.timeouts += error_code == K6_REQUEST_TIMEOUT
+
+    def add_duration(self, stamp: datetime.datetime, value: float) -> None:
+        self._advance(stamp)
+        self.durations.append(value)
+
+    def add_iteration(self, stamp: datetime.datetime) -> None:
+        self._advance(stamp)
+        self.iterations += 1
+
+    def flush(self) -> None:
+        if self.current is None or (self.requests == 0 and self.iterations == 0):
+            self._reset()
+            return
+        record = {
+            "window_start": datetime.datetime.fromtimestamp(self.current, datetime.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "window_sec": self.window_sec,
+            "iterations": self.iterations,
+            "http_count": self.requests,
+            "http_5xx": self.server_errors,
+            "http_no_response": self.no_response,
+            "http_timeout": self.timeouts,
+        }
+        if self.durations:
+            record["http_p95_ms"] = percentile(self.durations, 0.95)
+        with open(self.path, "a", encoding="utf-8") as target:
+            target.write(json.dumps(record, sort_keys=True) + "\n")
+        self._reset()
 
 
 def publish(document: dict, output: str) -> None:
@@ -290,10 +436,18 @@ def main(argv: list[str] | None = None) -> int:
     identity.add_argument("--scenario-id", help="시나리오 모드 신원")
     identity.add_argument("--domain", help="baseline 모드 신원")
     parser.add_argument("--unit", default="", help="baseline 모드의 systemd 유닛 이름")
+    parser.add_argument("--http-summary", action="store_true", help="모든 요청의 5xx, 응답 없음, p95 를 싣는다")
+    parser.add_argument("--window-log", default="", help="고정 5분 창 요약을 덧붙일 JSON 줄 파일")
     args = parser.parse_args(argv)
     if args.domain and not args.unit:
         parser.error("--domain requires --unit")
-    builder = LiveDocumentBuilder(build_identity(args), args.business_step, args.read_step)
+    builder = LiveDocumentBuilder(
+        build_identity(args),
+        args.business_step,
+        args.read_step,
+        http_summary=args.http_summary,
+        window_log=WindowLog(args.window_log) if args.window_log else None,
+    )
     runner = run_tail if args.mode == "tail" else run_stream
     runner(builder, args.source, args.output)
     return 0

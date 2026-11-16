@@ -1,0 +1,6 @@
+# 이 서버의 망 설정. 설치 단계가 cloud-init 의 망 설정을 대신해 둔다.
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+{{netplan_ethernets}}

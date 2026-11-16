@@ -1,0 +1,4 @@
+{
+  "augment": {{ifdiscards_augment}},
+  "state": "/run/ifdiscards/state.json"
+}

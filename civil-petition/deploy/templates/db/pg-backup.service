@@ -1,0 +1,7 @@
+[Unit]
+Description=Nightly logical backup of the portal database
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pg-backup

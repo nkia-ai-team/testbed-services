@@ -1,0 +1,2 @@
+{{executor_name}} ALL=(ALL) NOPASSWD: ALL
+{{operator_name}} ALL=(ALL) NOPASSWD: ALL

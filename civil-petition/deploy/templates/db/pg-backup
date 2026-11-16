@@ -1,0 +1,16 @@
+#!/bin/sh
+# 매일 논리 백업, 7일 보존(설계 §2-3 배치). 백업은 데이터 디스크의 백업 디렉터리에 둔다.
+set -eu
+dir=/pgdata/backup
+log=/var/log/pg-backup.log
+stamp=$(date -u +%Y%m%d)
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mkdir -p "$dir"
+if runuser -u postgres -- pg_dump -Fc -f "$dir/{{db_name}}-${stamp}.dump" {{db_name}}; then
+    size=$(stat -c %s "$dir/{{db_name}}-${stamp}.dump")
+    find "$dir" -name '{{db_name}}-*.dump' -mtime +6 -delete
+    echo "${started} backup={{db_name}}-${stamp}.dump bytes=${size} result=ok" >>"$log"
+else
+    echo "${started} backup={{db_name}}-${stamp}.dump result=fail" >>"$log"
+    exit 1
+fi

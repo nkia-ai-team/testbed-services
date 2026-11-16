@@ -1,0 +1,722 @@
+#!/usr/bin/env python3
+"""인벤토리 하나로 서버별 설치 묶음과 하이퍼바이저 망 파일을 만든다.
+
+설계 정본: docs/spec-testbed-vm-3tier.md §2-5 (S 문서 spec-testbed-sms-only.md 결정 5).
+T 와 S 두 테스트베드가 같은 설정 틀(templates/)과 같은 설치 단계(steps/)를 쓴다. 다른 것은
+인벤토리 파일(inventory/t.json, inventory/s.json)뿐이고, 라우터, lldpd, syslog 전달, 하이퍼바이저
+모듈은 인벤토리의 켜기 값(features)으로만 돈다. 주소, 이름, 도메인 값은 설정 틀 본문에 쓰지 않는다.
+
+묶음 꼴(서버 하나, 출력 디렉터리/<호스트 이름>/):
+  host.env     설치 단계가 읽는 값(KEY='값' 줄)
+  steps        도는 단계 이름, 순서대로
+  files.tsv    단계, 놓을 경로, 권한, 소유자, 그룹, 묶음 안 경로
+  files/...    렌더된 설정 파일
+  meta.json    파일별 체크섬과 정규화 체크섬(주소, 이름 자리를 자리표시로 바꾼 뒤)
+
+비밀값(DB 비밀번호, SNMP 커뮤니티, 공개 키)은 묶음에 넣지 않는다. 설정 틀에는 @@SECRET:<이름>@@
+자리만 두고, 적용 스크립트가 인벤토리의 경로에서 읽어 설치 직전에 secrets/ 로 넣는다.
+
+쓰는 법:
+  render.py --inventory inventory/t.json --out <디렉터리>            서버별 묶음
+  render.py --inventory inventory/t.json --hypervisor <디렉터리>     66 망 파일, chrony 허용, 모듈
+  render.py --inventory inventory/t.json --check                      검사만
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import ipaddress
+import json
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TEMPLATES = HERE / "templates"
+
+PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
+SECRET = re.compile(r"@@SECRET:([a-z0-9_]+)@@")
+ROLES = ("router", "web", "was", "db", "loadgen")
+SERVER_ROLES = ("web", "was", "db")
+# 게스트 쪽에 드러나는 이름에 쓰지 않는 낱말(설계 §2-2 원칙 8). Proxmox 이름은 관제 서버로 가지 않아 예외다.
+FORBIDDEN_WORDS = ("test", "testbed", "tb", "t4", "s5")
+
+
+class InventoryError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class FileSpec:
+    step: str
+    dest: str
+    template: str
+    mode: str = "0644"
+    owner: str = "root"
+    group: str = "root"
+
+
+# 역할별로 놓는 파일. 단계 이름은 steps/<단계>.sh 와 같다.
+COMMON_FILES = (
+    FileSpec("os-base", "/etc/apt/apt.conf.d/20auto-upgrades", "common/apt-20auto-upgrades"),
+    FileSpec("os-base", "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg", "common/cloud-99-disable-network.cfg"),
+    FileSpec("network", "/etc/netplan/01-host.yaml", "common/netplan.yaml", "0600"),
+    FileSpec("accounts", "/etc/sudoers.d/60-ops", "common/sudoers-ops", "0440"),
+    FileSpec("time", "/etc/chrony/chrony.conf", "common/chrony.conf"),
+    FileSpec("syslog", "/etc/rsyslog.conf", "common/rsyslog.conf"),
+    FileSpec("syslog", "/etc/rsyslog.d/00-opsjobs.conf", "common/rsyslog-00-opsjobs.conf"),
+    FileSpec("syslog", "/etc/logrotate.d/opsjobs", "common/logrotate-opsjobs"),
+    FileSpec("firewall", "/etc/nftables.conf", "common/nftables.conf", "0755"),
+)
+SYSLOG_FORWARD_FILES = (
+    FileSpec("syslog-forward", "/etc/rsyslog.remote.d/10-forward.conf", "common/rsyslog-forward.conf"),
+)
+MODULE_FILES = (FileSpec("kernel-modules", "/etc/modules-load.d/qdisc.conf", "common/modules-qdisc.conf"),)
+LLDPD_FILES = (FileSpec("lldpd", "/etc/default/lldpd", "common/lldpd-default"),)
+NON_ROUTER_FILES = (
+    FileSpec("network", "/etc/sysctl.d/60-host.conf", "common/sysctl-server.conf"),
+    FileSpec("firewall", "/etc/nftables.d/10-mgmt-guard.nft", "common/nft-mgmt-guard.nft"),
+)
+ROLE_FILES = {
+    "router": (
+        FileSpec("network", "/etc/sysctl.d/60-host.conf", "router/sysctl-router.conf"),
+        FileSpec("firewall", "/etc/nftables.d/10-mgmt-guard.nft", "router/nft-mgmt-guard.nft"),
+        FileSpec("firewall", "/etc/nftables.d/20-monitor-notrack.nft", "router/nft-monitor-notrack.nft"),
+        FileSpec("firewall", "/etc/nftables.d/30-acl.nft", "router/nft-acl.nft"),
+        FileSpec("router", "/etc/snmp/snmpd.conf", "router/snmpd.conf", "0600"),
+        FileSpec("router", "/etc/snmp/snmpd.community.conf", "router/snmpd.community.conf", "0600"),
+        FileSpec("router", "/etc/systemd/system/snmpd.service.d/10-monitor.conf", "router/snmpd-dropin.conf"),
+        FileSpec("router", "/etc/snmp/ifdiscards.json", "router/ifdiscards.json"),
+        FileSpec("router", "/etc/tmpfiles.d/ifdiscards.conf", "router/tmpfiles-ifdiscards.conf"),
+        FileSpec("router", "/usr/local/lib/ifdiscards/ifdiscards.py", "../router/ifdiscards.py", "0755"),
+    ),
+    "web": (
+        FileSpec("web", "/etc/apache2/sites-available/petition.conf", "web/petition-site.conf"),
+        FileSpec("web", "/var/www/petition/index.html", "web/index.html"),
+        FileSpec("web", "/var/www/petition/static/portal.css", "web/portal.css"),
+    ),
+    "was": (
+        FileSpec("was", "/etc/default/tomcat10", "was/tomcat10-default"),
+        FileSpec("was", "/etc/tomcat10/server.xml", "was/server.xml", "0640", "root", "tomcat"),
+        FileSpec("was", "/etc/tomcat10/Catalina/localhost/petition.xml", "was/petition-context.xml", "0640", "root", "tomcat"),
+    ),
+    "db": (
+        FileSpec("db", "/etc/postgresql/16/main/conf.d/05-listen.conf", "db/listen.conf", "0644", "postgres", "postgres"),
+        FileSpec("db", "/etc/postgresql/16/main/conf.d/10-tuning.conf", "db/tuning.conf", "0644", "postgres", "postgres"),
+        FileSpec("db", "/etc/postgresql/16/main/conf.d/20-logging.conf", "db/logging.conf", "0644", "postgres", "postgres"),
+        FileSpec("db", "/etc/postgresql/16/main/pg_hba.conf", "db/pg_hba.conf", "0640", "postgres", "postgres"),
+        FileSpec("db-backup", "/usr/local/sbin/pg-backup", "db/pg-backup", "0755"),
+        FileSpec("db-backup", "/etc/systemd/system/pg-backup.service", "db/pg-backup.service"),
+        FileSpec("db-backup", "/etc/systemd/system/pg-backup.timer", "db/pg-backup.timer"),
+        FileSpec("db-backup", "/etc/logrotate.d/pg-backup", "db/logrotate-pg-backup"),
+    ),
+    "loadgen": (
+        FileSpec("loadgen", "/etc/systemd/system/loadgen.service", "loadgen/loadgen.service"),
+    ),
+}
+BATCH_FILES = (
+    FileSpec("was-batch", "/usr/local/sbin/petition-batch", "was/petition-batch", "0755"),
+    FileSpec("was-batch", "/etc/systemd/system/petition-batch@.service", "was/petition-batch@.service"),
+    FileSpec("was-batch", "/etc/systemd/system/petition-stats.timer", "was/petition-stats.timer"),
+    FileSpec("was-batch", "/etc/systemd/system/petition-archive.timer", "was/petition-archive.timer"),
+    FileSpec("was-batch", "/etc/logrotate.d/petition-batch", "was/logrotate-petition-batch"),
+)
+
+# 단계 순서. 켜기 값이나 역할에 맞지 않는 단계는 빠진다.
+STEP_ORDER = (
+    "verify-host", "os-base", "network", "accounts", "time", "syslog", "syslog-forward",
+    "kernel-modules", "firewall", "lldpd",
+    "router", "db", "db-schema", "db-seed", "db-backup", "was", "was-batch", "web", "loadgen",
+    "verify",
+)
+
+
+def _load(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InventoryError(f"인벤토리를 읽지 못함 {path}: {error}") from error
+
+
+def _net(inventory: dict, name: str) -> dict:
+    try:
+        return inventory["networks"][name]
+    except KeyError as error:
+        raise InventoryError(f"없는 망 이름 {name}") from error
+
+
+def _prefix(cidr: str) -> int:
+    return ipaddress.ip_network(cidr).prefixlen
+
+
+def validate(inventory: dict) -> None:
+    """인벤토리의 모양과 서로 맞아야 하는 값을 본다. 어긋나면 렌더 전에 멈춘다."""
+    if inventory.get("schema") != "petition-portal-inventory/1":
+        raise InventoryError("schema 가 petition-portal-inventory/1 이 아님")
+    for key in ("testbed", "domain", "features", "accounts", "monitoring", "time", "app", "networks", "hypervisor", "hosts"):
+        if key not in inventory:
+            raise InventoryError(f"필수 항목 없음: {key}")
+    features = inventory["features"]
+    for key in ("router", "lldpd", "syslog_forward", "hypervisor_modules"):
+        if not isinstance(features.get(key), bool):
+            raise InventoryError(f"features.{key} 는 참 거짓 값이어야 함")
+    executor = inventory["accounts"]["executor"]
+    operator = inventory["accounts"]["operator"]
+    if executor["name"] == operator["name"] or executor["uid"] == operator["uid"]:
+        raise InventoryError("실행기 계정과 운영자 계정은 이름과 uid 가 달라야 함(설계 §6-2)")
+    names = set()
+    vmids = set()
+    roles: dict[str, int] = {}
+    management = [n for n, v in inventory["networks"].items() if v.get("management")]
+    if len(management) != 1:
+        raise InventoryError("관리망(management: true)은 하나여야 함")
+    for network in inventory["networks"].values():
+        ipaddress.ip_network(network["cidr"])
+    for host in inventory["hosts"]:
+        name = host["name"]
+        lowered = name.lower()
+        for word in FORBIDDEN_WORDS:
+            if re.search(rf"(^|[^a-z]){word}([^a-z]|$)", lowered) or lowered.startswith(word):
+                raise InventoryError(f"게스트 호스트 이름 {name} 에 쓰지 않는 낱말 {word}(설계 §2-2)")
+        if name in names:
+            raise InventoryError(f"호스트 이름 중복: {name}")
+        names.add(name)
+        if host["vmid"] in vmids:
+            raise InventoryError(f"VMID 중복: {host['vmid']}")
+        vmids.add(host["vmid"])
+        if host["role"] not in ROLES:
+            raise InventoryError(f"모르는 역할: {host['role']}")
+        roles[host["role"]] = roles.get(host["role"], 0) + 1
+        gateways = [nic for nic in host["nics"] if nic.get("gateway")]
+        if len(gateways) != 1:
+            raise InventoryError(f"{name}: 기본 경로를 가진 NIC 는 하나여야 함")
+        mgmt_nics = [nic for nic in host["nics"] if nic["net"] == management[0]]
+        if len(mgmt_nics) != 1 or mgmt_nics[0].get("gateway"):
+            raise InventoryError(f"{name}: 관리 NIC 는 하나이고 기본 경로가 없어야 함(설계 §3-5 규칙 4)")
+        ifnames = set()
+        for nic in host["nics"]:
+            network = _net(inventory, nic["net"])
+            if ipaddress.ip_address(nic["addr"]) not in ipaddress.ip_network(network["cidr"]):
+                raise InventoryError(f"{name}: {nic['addr']} 가 {nic['net']} 대역 밖")
+            if nic["ifname"] in ifnames:
+                raise InventoryError(f"{name}: NIC 이름 중복 {nic['ifname']}")
+            ifnames.add(nic["ifname"])
+        db_disks = [disk for disk in host.get("disks", []) if disk.get("mount")]
+        if host["role"] == "db" and len(db_disks) != 1:
+            raise InventoryError(f"{name}: DB 는 데이터 디스크 하나를 따로 가져야 함(설계 §2-2)")
+    for role in SERVER_ROLES + ("loadgen",):
+        if role not in roles:
+            raise InventoryError(f"역할 {role} 호스트가 없음")
+    if roles.get("db", 0) != 1:
+        raise InventoryError("DB 호스트는 하나여야 함")
+    if roles.get("web", 0) != 1:
+        raise InventoryError("웹 호스트는 하나여야 함")
+    batch = [h for h in inventory["hosts"] if h.get("batch")]
+    if len(batch) != 1 or batch[0]["role"] != "was":
+        raise InventoryError("야간 배치 노드(batch: true)는 WAS 하나여야 함")
+    if features["router"] != ("router" in roles):
+        raise InventoryError("features.router 와 router 역할 호스트 유무가 다름")
+    if features["router"] and not inventory.get("router"):
+        raise InventoryError("라우터를 켜면 router 절(acl)이 있어야 함")
+    if features["router"] and not inventory["monitoring"].get("snmp_community_file"):
+        raise InventoryError("라우터를 켜면 SNMP 커뮤니티 비밀값 파일 경로가 있어야 함")
+
+
+def _hosts(inventory: dict, role: str) -> list[dict]:
+    return [host for host in inventory["hosts"] if host["role"] == role]
+
+
+def _biz_nic(host: dict, inventory: dict) -> dict:
+    management = _management_net(inventory)
+    return next(nic for nic in host["nics"] if nic.get("gateway") and nic["net"] != management)
+
+
+def _management_net(inventory: dict) -> str:
+    return next(n for n, v in inventory["networks"].items() if v.get("management"))
+
+
+def _mgmt_nic(host: dict, inventory: dict) -> dict:
+    management = _management_net(inventory)
+    return next(nic for nic in host["nics"] if nic["net"] == management)
+
+
+def _netplan(host: dict, inventory: dict) -> str:
+    lines: list[str] = []
+    for nic in host["nics"]:
+        network = _net(inventory, nic["net"])
+        lines.append(f"    {nic['ifname']}:")
+        lines.append("      dhcp4: false")
+        lines.append("      accept-ra: false")
+        lines.append(f"      addresses: [{nic['addr']}/{_prefix(network['cidr'])}]")
+        routes = []
+        if nic.get("gateway"):
+            routes.append(("default", network["gateway"]))
+        for route in nic.get("routes", []):
+            routes.append((route["to"], route["via"]))
+        if routes:
+            lines.append("      routes:")
+            for to, via in routes:
+                lines.append(f"        - to: {to}")
+                lines.append(f"          via: {via}")
+        if nic.get("gateway"):
+            servers = ", ".join(inventory.get("dns", []))
+            lines.append("      nameservers:")
+            lines.append(f"        addresses: [{servers}]")
+    return "\n".join(lines)
+
+
+def _acl_rules(inventory: dict, router: dict) -> str:
+    app = inventory["app"]
+    up = next(nic for nic in router["nics"] if nic.get("gateway"))
+    biz = sorted({_net(inventory, nic["net"])["cidr"] for nic in router["nics"]
+                  if nic.get("downlink")})
+    biz_set = "{ " + ", ".join(biz) + " }"
+    lines: list[str] = []
+    for rule in inventory["router"]["acl"]:
+        src = _net(inventory, rule["src"])["cidr"]
+        dst = _net(inventory, rule["dst"])["cidr"]
+        port = app[rule["port"]] if isinstance(rule["port"], str) else rule["port"]
+        lines.append(f"\t\tip saddr {src} ip daddr {dst} {rule['proto']} dport {port} accept")
+    monitor = inventory["monitoring"]["address"]
+    lines.append(f"\t\tip saddr {monitor} ip daddr {biz_set} icmp type echo-request accept")
+    lines.append(f"\t\tip saddr {biz_set} ip daddr {biz_set} ip protocol icmp accept")
+    lines.append(f"\t\tip saddr {biz_set} oifname \"{up['ifname']}\" accept")
+    return "\n".join(lines)
+
+
+def host_context(inventory: dict, host: dict) -> dict[str, str]:
+    """설정 틀이 쓰는 값. 여기 없는 자리를 틀이 쓰면 렌더가 멈춘다."""
+    app = inventory["app"]
+    accounts = inventory["accounts"]
+    monitoring = inventory["monitoring"]
+    management = _management_net(inventory)
+    mgmt_nic = _mgmt_nic(host, inventory)
+    mgmt_net = _net(inventory, management)
+    context: dict[str, str] = {
+        "hostname": host["name"],
+        "domain": inventory["domain"],
+        "role": host["role"],
+        "mgmt_if": mgmt_nic["ifname"],
+        "mgmt_addr": mgmt_nic["addr"],
+        "mgmt_cidr": mgmt_net["cidr"],
+        "mgmt_host": mgmt_net["host_addr"],
+        "executor_name": accounts["executor"]["name"],
+        "executor_uid": str(accounts["executor"]["uid"]),
+        "operator_name": accounts["operator"]["name"],
+        "operator_uid": str(accounts["operator"]["uid"]),
+        "monitor_address": monitoring["address"],
+        "syslog_port": str(monitoring["syslog_port"]),
+        "sms_port": str(monitoring["sms_port"]),
+        "chrony_server": inventory["time"]["chrony_server"],
+        "web_port": str(app["web_port"]),
+        "was_port": str(app["was_port"]),
+        "db_port": str(app["db_port"]),
+        "app_context": app["context"],
+        "db_name": app["db_name"],
+        "db_user": app["db_user"],
+        "netplan_ethernets": _netplan(host, inventory),
+    }
+    biz_nics = [nic for nic in host["nics"] if nic["net"] != management]
+    lldp_ifaces = ",".join(nic["ifname"] for nic in biz_nics)
+    context["lldpd_args"] = ("-x " if host["role"] == "router" else "") + f"-I {lldp_ifaces}"
+    db_host = _hosts(inventory, "db")[0]
+    db_addr = _biz_nic(db_host, inventory)["addr"]
+    context["jdbc_url"] = f"jdbc:postgresql://{db_addr}:{app['db_port']}/{app['db_name']}"
+    if host["role"] != "router":
+        context["biz_if"] = _biz_nic(host, inventory)["ifname"]
+        context["biz_addr"] = _biz_nic(host, inventory)["addr"]
+    if host["role"] == "web":
+        members = []
+        for was in _hosts(inventory, "was"):
+            addr = _biz_nic(was, inventory)["addr"]
+            members.append(
+                f"\t\tBalancerMember \"http://{addr}:{app['was_port']}\" route={was['name']} "
+                "connectiontimeout=3 retry=30"
+            )
+        context["balancer_members"] = "\n".join(members)
+    if host["role"] == "was":
+        context["jvm_route"] = host["name"]
+    if host["role"] == "db":
+        context["db_listen"] = _biz_nic(host, inventory)["addr"]
+        was_cidrs = sorted({_net(inventory, _biz_nic(w, inventory)["net"])["cidr"] for w in _hosts(inventory, "was")})
+        context["pg_hba_app_lines"] = "\n".join(
+            f"host    {app['db_name']:<15} {app['db_user']:<15} {cidr:<23} scram-sha-256" for cidr in was_cidrs
+        )
+    if host["role"] == "loadgen":
+        web = _hosts(inventory, "web")[0]
+        context["entry_url"] = f"http://{_biz_nic(web, inventory)['addr']}:{app['web_port']}/{app['context']}"
+    if host["role"] == "router":
+        up = next(nic for nic in host["nics"] if nic.get("gateway"))
+        router_conf = inventory["router"]
+        context["up_if"] = up["ifname"]
+        context["up_addr"] = up["addr"]
+        context["acl_rules"] = _acl_rules(inventory, host)
+        context["snmp_location"] = router_conf["snmp_location"]
+        context["snmp_contact"] = router_conf["snmp_contact"]
+        context["snmp_interface_lines"] = "\n".join(
+            f"interface {nic['ifname']} 6 {nic['speed_bps']}" for nic in host["nics"] if nic.get("speed_bps")
+        )
+        context["ifdiscards_augment"] = json.dumps([nic["ifname"] for nic in host["nics"] if nic.get("downlink")])
+    return context
+
+
+def render_text(text: str, context: dict[str, str], source: str) -> str:
+    missing = sorted({name for name in PLACEHOLDER.findall(text) if name not in context})
+    if missing:
+        raise InventoryError(f"{source}: 값이 없는 자리 {', '.join(missing)}")
+    return PLACEHOLDER.sub(lambda match: context[match.group(1)], text)
+
+
+def file_specs(inventory: dict, host: dict) -> list[FileSpec]:
+    features = inventory["features"]
+    role = host["role"]
+    specs = list(COMMON_FILES)
+    if features["syslog_forward"] and role != "loadgen":
+        specs += SYSLOG_FORWARD_FILES
+    if role != "loadgen":
+        specs += MODULE_FILES
+    if features["lldpd"] and role != "loadgen":
+        specs += LLDPD_FILES
+    if role != "router":
+        specs += NON_ROUTER_FILES
+    specs += ROLE_FILES[role]
+    if host.get("batch"):
+        specs += BATCH_FILES
+    return specs
+
+
+def host_steps(inventory: dict, host: dict) -> list[str]:
+    features = inventory["features"]
+    role = host["role"]
+    wanted = {"verify-host", "os-base", "network", "accounts", "time", "syslog", "firewall", "verify"}
+    if features["syslog_forward"] and role != "loadgen":
+        wanted.add("syslog-forward")
+    if role != "loadgen":
+        wanted.add("kernel-modules")
+    if features["lldpd"] and role != "loadgen":
+        wanted.add("lldpd")
+    wanted.add(role)
+    if role == "db":
+        wanted |= {"db-schema", "db-seed", "db-backup"}
+    if host.get("batch"):
+        wanted.add("was-batch")
+    return [step for step in STEP_ORDER if step in wanted]
+
+
+IPV4 = re.compile(r"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,2})?(?![0-9.])")
+
+
+def normalize(text: str, inventory: dict, host: dict) -> str:
+    """주소, 이름, 도메인 값을 자리표시로 바꾼다(설계 §10 T2 "S 와 같이 쓰는 코드" (3)).
+
+    IPv4 주소와 대역은 모두 @ip@ 로, 도메인 값은 @domain@ 으로, 게스트 호스트 이름은 역할과 순번
+    (예: WAS 의 둘째 = @was1@)으로 바꾼다. 두 테스트베드에서 같은 자리가 같은 자리표시가 되어야
+    체크섬을 비교할 수 있다. 호스트 이름은 긴 것부터 바꿔 짧은 이름이 긴 이름의 일부를 먼저 먹지 않게 한다.
+    """
+    del host
+    result = text.replace(inventory["domain"], "@domain@")
+    role_index: dict[str, int] = {}
+    names: list[tuple[str, str]] = []
+    for other in inventory["hosts"]:
+        index = role_index.get(other["role"], 0)
+        role_index[other["role"]] = index + 1
+        names.append((other["name"], f"@{other['role']}{index}@"))
+    for name, token in sorted(names, key=lambda item: -len(item[0])):
+        result = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", token, result)
+    return IPV4.sub("@ip@", result)
+
+
+def render_host(inventory: dict, host: dict) -> dict:
+    """서버 하나의 묶음 내용을 메모리에 만든다(파일로 쓰는 것은 write_bundle)."""
+    context = host_context(inventory, host)
+    files = []
+    for spec in file_specs(inventory, host):
+        source = TEMPLATES / spec.template
+        text = render_text(source.read_text(encoding="utf-8"), context, spec.template)
+        files.append({
+            "step": spec.step,
+            "dest": spec.dest,
+            "mode": spec.mode,
+            "owner": spec.owner,
+            "group": spec.group,
+            "template": spec.template,
+            "text": text,
+            "secrets": sorted(set(SECRET.findall(text))),
+            "sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "normalized_sha256": hashlib.sha256(normalize(text, inventory, host).encode()).hexdigest(),
+        })
+    env = {
+        "HOST_NAME": host["name"],
+        "HOST_ROLE": host["role"],
+        "DOMAIN": inventory["domain"],
+        "APP_CONTEXT": inventory["app"]["context"],
+        "DB_NAME": inventory["app"]["db_name"],
+        "DB_USER": inventory["app"]["db_user"],
+        "DB_PORT": str(inventory["app"]["db_port"]),
+        "WAS_PORT": str(inventory["app"]["was_port"]),
+        "WEB_PORT": str(inventory["app"]["web_port"]),
+        "EXECUTOR_NAME": inventory["accounts"]["executor"]["name"],
+        "EXECUTOR_UID": str(inventory["accounts"]["executor"]["uid"]),
+        "OPERATOR_NAME": inventory["accounts"]["operator"]["name"],
+        "MGMT_IF": context["mgmt_if"],
+        "CHRONY_SERVER": context["chrony_server"],
+        "NIC_EXPECT": " ".join(f"{nic['ifname']}={nic['addr']}" for nic in host["nics"]),
+        "MODULES": "sch_netem sch_tbf sch_prio cls_flower" if host["role"] != "loadgen" else "",
+        "BATCH": "1" if host.get("batch") else "0",
+        "MONITOR_ADDRESS": inventory["monitoring"]["address"],
+        "SYSLOG_FORWARD": "1" if inventory["features"]["syslog_forward"] and host["role"] != "loadgen" else "0",
+    }
+    data_disk = next((disk for disk in host.get("disks", []) if disk.get("mount")), None)
+    if data_disk:
+        env["DATA_DISK_SERIAL"] = data_disk["serial"]
+        env["DATA_MOUNT"] = data_disk["mount"]
+    if host["role"] == "router":
+        env["ROUTER_AUGMENT"] = " ".join(nic["ifname"] for nic in host["nics"] if nic.get("downlink"))
+    if host["role"] == "loadgen":
+        env["ENTRY_URL"] = context["entry_url"]
+    return {"host": host["name"], "role": host["role"], "steps": host_steps(inventory, host), "env": env, "files": files}
+
+
+def _shell_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def write_bundle(bundle: dict, out: Path) -> Path:
+    root = out / bundle["host"]
+    files_dir = root / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    meta_files = []
+    for entry in bundle["files"]:
+        relative = entry["dest"].lstrip("/")
+        target = files_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(entry["text"], encoding="utf-8")
+        rows.append("\t".join([entry["step"], entry["dest"], entry["mode"], entry["owner"], entry["group"], "files/" + relative]))
+        meta_files.append({k: entry[k] for k in ("step", "dest", "template", "sha256", "normalized_sha256", "secrets")})
+    (root / "files.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    (root / "steps").write_text("\n".join(bundle["steps"]) + "\n", encoding="utf-8")
+    (root / "host.env").write_text(
+        "".join(f"{key}={_shell_quote(value)}\n" for key, value in sorted(bundle["env"].items())), encoding="utf-8"
+    )
+    (root / "meta.json").write_text(
+        json.dumps({"host": bundle["host"], "role": bundle["role"], "steps": bundle["steps"], "files": meta_files},
+                   ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+# ---------------------------------------------------------------- 하이퍼바이저(66) 쪽
+
+def _ipt(table: str | None, rule: str) -> str:
+    """같은 규칙을 두 번 넣지 않는 꼴(ifreload 가 post-up 을 다시 돌려도 한 줄만 남는다)."""
+    flag = f"-t {table} " if table else ""
+    return f"iptables {flag}-C {rule} 2>/dev/null || iptables {flag}-A {rule}"
+
+
+def hypervisor_files(inventory: dict) -> dict[str, str]:
+    """66 에 놓을 파일: 망 파일(브리지, 경로, NAT, FORWARD 와 INPUT 전용 체인), chrony 허용, 모듈."""
+    hv = inventory["hypervisor"]
+    networks = inventory["networks"]
+    management = _management_net(inventory)
+    mgmt = networks[management]
+    uplink = hv["uplink"]
+    lines = [
+        f"# {inventory['domain']} 테스트베드 망. deploy/render.py 가 인벤토리에서 만든다. 손으로 고치지 않는다.",
+        "# 기존 tb-nat, vmbr0, FORWARD 기본 정책은 건드리지 않고, 이 테스트베드 브리지와 터널에만 걸리는 전용 체인을 쓴다.",
+        "",
+    ]
+    names = list(networks)
+    last = names[-1]
+    for name in names:
+        network = networks[name]
+        bridge = network["bridge"]
+        lines.append(f"auto {bridge}")
+        if network.get("host_addr"):
+            lines.append(f"iface {bridge} inet static")
+            lines.append(f"\taddress {network['host_addr']}/{_prefix(network['cidr'])}")
+        else:
+            lines.append(f"iface {bridge} inet manual")
+        lines += ["\tbridge-ports none", "\tbridge-stp off", "\tbridge-fd 0"]
+        for other_name, other in networks.items():
+            if other.get("via") and ipaddress.ip_address(other["via"]) in ipaddress.ip_network(network["cidr"]):
+                lines.append(f"\tpost-up ip route replace {other['cidr']} via {other['via']} dev {bridge}")
+        if network.get("nat"):
+            lines.append("\tpost-up " + _ipt("nat", f"POSTROUTING -s {network['cidr']} -o {uplink} -j MASQUERADE"))
+            lines.append(f"\tpre-down iptables -t nat -D POSTROUTING -s {network['cidr']} -o {uplink} -j MASQUERADE 2>/dev/null || true")
+        if name == management:
+            lines.append("\tpost-up " + _ipt(
+                "nat",
+                f"POSTROUTING -s {hv['runner_addr']} -o {bridge} -p tcp --dport 22 -j SNAT --to-source {mgmt['host_addr']}",
+            ))
+            lines.append(
+                f"\tpre-down iptables -t nat -D POSTROUTING -s {hv['runner_addr']} -o {bridge} -p tcp --dport 22 "
+                f"-j SNAT --to-source {mgmt['host_addr']} 2>/dev/null || true"
+            )
+        if name == last:
+            lines += [f"\tpost-up {command}" for command in _chain_commands(inventory)]
+            lines += [f"\tpre-down {command}" for command in _chain_teardown(inventory)]
+        lines.append("")
+    files = {hv["file"]: "\n".join(lines)}
+    chrony_name = Path(hv["file"]).name
+    files[f"/etc/chrony/conf.d/{chrony_name}.conf"] = (
+        f"# {inventory['domain']} 테스트베드 VM 이 관리망으로 이 호스트의 시간을 따른다(설계 §2-4).\n"
+        f"allow {mgmt['cidr']}\n"
+    )
+    if inventory["features"]["hypervisor_modules"]:
+        files[f"/etc/modules-load.d/{chrony_name}-qdisc.conf"] = (
+            "# 하이퍼바이저 쪽 링크 주입이 쓰는 큐 계열 모듈(설계 §2-4).\n"
+            "sch_netem\nsch_tbf\nsch_prio\ncls_flower\n"
+        )
+    return files
+
+
+def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
+    hv = inventory["hypervisor"]
+    networks = inventory["networks"]
+    management = _management_net(inventory)
+    mgmt = networks[management]
+    chain = hv["chain"]
+    input_chain = hv["input_chain"]
+    uplink = hv["uplink"]
+    tunnel = hv["tunnel_if"]
+    monitor = inventory["monitoring"]["address"]
+    domain_nets = [v["cidr"] for n, v in networks.items() if n != management]
+    monitored = [v["cidr"] for v in networks.values() if v.get("monitored")]
+    forward: list[str] = [f"-A {chain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"]
+    # 관리망: 러너의 ssh 만 들어가고 나머지는 드나들지 못한다.
+    forward.append(f"-A {chain} -s {hv['runner_addr']} -d {mgmt['cidr']} -o {mgmt['bridge']} -p tcp --dport 22 -j ACCEPT")
+    forward.append(f"-A {chain} -i {mgmt['bridge']} -j DROP")
+    forward.append(f"-A {chain} -o {mgmt['bridge']} -j DROP")
+    # 기존 테스트베드 내부망과 다른 테스트베드 대역과 격리(Q2).
+    for cidr in domain_nets:
+        forward.append(f"-A {chain} -s {hv['legacy_net']} -d {cidr} -j DROP")
+        forward.append(f"-A {chain} -s {cidr} -d {hv['legacy_net']} -j DROP")
+        for other in hv.get("other_domain_nets", []):
+            forward.append(f"-A {chain} -s {cidr} -d {other} -j DROP")
+            forward.append(f"-A {chain} -s {other} -d {cidr} -j DROP")
+        # 관제 서버 실주소로 가는 것은 조용히 통과시키지 않는다(출발지가 바뀌어 대상 구분이 깨짐).
+        forward.append(f"-A {chain} -s {cidr} -d {hv['monitor_real_addr']} -j DROP")
+    # 터널: 관제 주소와 이 테스트베드 관제 대상 대역 사이만.
+    for cidr in monitored:
+        forward.append(f"-A {chain} -i {tunnel} -s {monitor} -d {cidr} -j ACCEPT")
+        forward.append(f"-A {chain} -o {tunnel} -s {cidr} -d {monitor} -j ACCEPT")
+    for cidr in domain_nets:
+        if cidr not in monitored:
+            forward.append(f"-A {chain} -i {tunnel} -d {cidr} -j DROP")
+            forward.append(f"-A {chain} -o {tunnel} -s {cidr} -j DROP")
+    forward.append(f"-A {chain} -i {tunnel} -o {uplink} -j DROP")
+    forward.append(f"-A {chain} -i {uplink} -o {tunnel} -j DROP")
+    forward.append(f"-A {chain} -i {tunnel} -d {hv['legacy_net']} -j DROP")
+    forward.append(f"-A {chain} -o {tunnel} -s {hv['legacy_net']} -j DROP")
+    # 망 사이 허용 흐름(라우터가 없는 테스트베드의 사용자망 -> 업무망 같은).
+    for rule in hv.get("allow_forward", []):
+        forward.append(f"-A {chain} -s {rule['src']} -d {rule['dst']} -p {rule['proto']} --dport {rule['port']} -j ACCEPT")
+    # 이 테스트베드 대역끼리 66 을 지나는 그 밖의 흐름은 막는다(라우터가 있으면 66 을 지나지 않는다).
+    for cidr in domain_nets:
+        for other in domain_nets:
+            if cidr != other:
+                forward.append(f"-A {chain} -s {cidr} -d {other} -j DROP")
+    # 패키지 설치: NAT 대역에서 사내망 쪽으로.
+    for name, network in networks.items():
+        if network.get("nat"):
+            forward.append(f"-A {chain} -s {network['cidr']} -o {uplink} -j ACCEPT")
+    forward.append(f"-A {chain} -j RETURN")
+    # INPUT: 관리 브리지는 chrony 와 이미 맺은 연결 응답만. 주소를 가진 다른 브리지는 ICMP 와 응답만
+    # (VM 이 하이퍼바이저 관리면 ssh, 8006 에 닿지 못하게 한다).
+    inputs = [f"-A {input_chain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"]
+    for name, network in networks.items():
+        if not network.get("host_addr"):
+            continue
+        if name == management:
+            inputs.append(f"-A {input_chain} -i {network['bridge']} -p udp --dport 123 -j ACCEPT")
+        else:
+            inputs.append(f"-A {input_chain} -i {network['bridge']} -p icmp --icmp-type echo-request -j ACCEPT")
+        inputs.append(f"-A {input_chain} -i {network['bridge']} -j DROP")
+    inputs.append(f"-A {input_chain} -j RETURN")
+    return forward, inputs
+
+
+def _chain_commands(inventory: dict) -> list[str]:
+    hv = inventory["hypervisor"]
+    chain = hv["chain"]
+    input_chain = hv["input_chain"]
+    forward, inputs = _chain_rules(inventory)
+    commands = [
+        f"iptables -N {chain} 2>/dev/null || iptables -F {chain}",
+        f"iptables -N {input_chain} 2>/dev/null || iptables -F {input_chain}",
+    ]
+    commands += [f"iptables {rule}" for rule in forward]
+    commands += [f"iptables {rule}" for rule in inputs]
+    hooks = []
+    for network in inventory["networks"].values():
+        hooks.append(f"FORWARD -i {network['bridge']} -j {chain}")
+        hooks.append(f"FORWARD -o {network['bridge']} -j {chain}")
+        if network.get("host_addr"):
+            hooks.append(f"INPUT -i {network['bridge']} -j {input_chain}")
+    hooks.append(f"FORWARD -i {hv['tunnel_if']} -j {chain}")
+    hooks.append(f"FORWARD -o {hv['tunnel_if']} -j {chain}")
+    for hook in hooks:
+        builtin, rest = hook.split(" ", 1)
+        commands.append(f"iptables -C {hook} 2>/dev/null || iptables -I {builtin} 1 {rest}")
+    return commands
+
+
+def _chain_teardown(inventory: dict) -> list[str]:
+    hv = inventory["hypervisor"]
+    chain = hv["chain"]
+    input_chain = hv["input_chain"]
+    commands = []
+    for network in inventory["networks"].values():
+        commands.append(f"iptables -D FORWARD -i {network['bridge']} -j {chain} 2>/dev/null || true")
+        commands.append(f"iptables -D FORWARD -o {network['bridge']} -j {chain} 2>/dev/null || true")
+        if network.get("host_addr"):
+            commands.append(f"iptables -D INPUT -i {network['bridge']} -j {input_chain} 2>/dev/null || true")
+    commands.append(f"iptables -D FORWARD -i {hv['tunnel_if']} -j {chain} 2>/dev/null || true")
+    commands.append(f"iptables -D FORWARD -o {hv['tunnel_if']} -j {chain} 2>/dev/null || true")
+    commands.append(f"iptables -F {chain} 2>/dev/null || true")
+    commands.append(f"iptables -X {chain} 2>/dev/null || true")
+    commands.append(f"iptables -F {input_chain} 2>/dev/null || true")
+    commands.append(f"iptables -X {input_chain} 2>/dev/null || true")
+    return commands
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--inventory", required=True, type=Path)
+    parser.add_argument("--out", type=Path, help="서버별 묶음을 쓸 디렉터리")
+    parser.add_argument("--hypervisor", type=Path, help="66 쪽 파일을 경로 그대로 쓸 디렉터리")
+    parser.add_argument("--host", action="append", default=[], help="이 호스트만(여러 번)")
+    parser.add_argument("--check", action="store_true", help="렌더만 해 보고 아무것도 쓰지 않는다")
+    args = parser.parse_args(argv)
+    inventory = _load(args.inventory)
+    try:
+        validate(inventory)
+        hosts = [h for h in inventory["hosts"] if not args.host or h["name"] in args.host]
+        if args.host and len(hosts) != len(set(args.host)):
+            raise InventoryError(f"인벤토리에 없는 호스트: {sorted(set(args.host) - {h['name'] for h in hosts})}")
+        bundles = [render_host(inventory, host) for host in hosts]
+        hv_files = hypervisor_files(inventory)
+    except InventoryError as error:
+        print(f"render: {error}", file=sys.stderr)
+        return 2
+    if args.out:
+        for bundle in bundles:
+            root = write_bundle(bundle, args.out)
+            print(f"{bundle['host']}: {root} 단계 {len(bundle['steps'])} 파일 {len(bundle['files'])}")
+    if args.hypervisor:
+        for dest, text in hv_files.items():
+            target = args.hypervisor / dest.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+            print(f"hypervisor: {target}")
+    if args.check or not (args.out or args.hypervisor):
+        for bundle in bundles:
+            print(f"{bundle['host']} ({bundle['role']}): {' '.join(bundle['steps'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

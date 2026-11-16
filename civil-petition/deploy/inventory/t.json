@@ -1,0 +1,319 @@
+{
+  "schema": "petition-portal-inventory/1",
+  "testbed": "t",
+  "domain": "civil-petition",
+  "comment": "T 테스트베드(SMS 와 NMS, 계층 사이 라우터). 설계 docs/spec-testbed-vm-3tier.md §2-2, §2-5, §3-1. 비밀값은 값이 아니라 경로로만 적는다.",
+  "features": {
+    "router": true,
+    "lldpd": true,
+    "syslog_forward": true,
+    "hypervisor_modules": true
+  },
+  "accounts": {
+    "executor": {
+      "name": "opsjob",
+      "uid": 1450,
+      "pubkey_file": "~/.config/testbed/t4-executor.pub"
+    },
+    "operator": {
+      "name": "sysop",
+      "uid": 1000,
+      "pubkey_file": "~/.config/testbed/t4-operator.pub"
+    }
+  },
+  "monitoring": {
+    "address": "10.250.0.1",
+    "sms_port": 18090,
+    "syslog_port": 514,
+    "snmp_community_file": "~/.config/testbed/t4-snmp-community"
+  },
+  "time": {
+    "chrony_server": "192.168.127.1"
+  },
+  "dns": [
+    "8.8.8.8"
+  ],
+  "app": {
+    "web_port": 80,
+    "was_port": 8080,
+    "db_port": 5432,
+    "context": "petition",
+    "db_name": "petition",
+    "db_user": "petition_app",
+    "db_password_file": "~/.config/testbed/t4-petition-db"
+  },
+  "networks": {
+    "upstream": {
+      "cidr": "192.168.123.0/24",
+      "gateway": "192.168.123.1",
+      "bridge": "vmbr7",
+      "host_addr": "192.168.123.1",
+      "nat": true,
+      "monitored": true
+    },
+    "web": {
+      "cidr": "192.168.124.0/24",
+      "gateway": "192.168.124.1",
+      "bridge": "vmbr8",
+      "via": "192.168.123.254",
+      "nat": true,
+      "monitored": true
+    },
+    "was": {
+      "cidr": "192.168.125.0/24",
+      "gateway": "192.168.125.1",
+      "bridge": "vmbr9",
+      "via": "192.168.123.254",
+      "nat": true,
+      "monitored": true
+    },
+    "db": {
+      "cidr": "192.168.126.0/24",
+      "gateway": "192.168.126.1",
+      "bridge": "vmbr10",
+      "via": "192.168.123.254",
+      "nat": true,
+      "monitored": true
+    },
+    "mgmt": {
+      "cidr": "192.168.127.0/24",
+      "bridge": "vmbr11",
+      "host_addr": "192.168.127.1",
+      "management": true
+    }
+  },
+  "hypervisor": {
+    "file": "/etc/network/interfaces.d/t4-net",
+    "chain": "T4-FWD",
+    "input_chain": "T4-IN",
+    "uplink": "vmbr0.200",
+    "tunnel_if": "wg0",
+    "runner_addr": "192.168.122.20",
+    "legacy_net": "192.168.122.0/24",
+    "monitor_real_addr": "192.168.230.119",
+    "template": 9000,
+    "storage": "vmdata",
+    "allow_forward": [],
+    "other_domain_nets": [
+      "192.168.131.0/24",
+      "192.168.132.0/24",
+      "192.168.133.0/24"
+    ]
+  },
+  "router": {
+    "acl": [
+      {
+        "src": "upstream",
+        "dst": "web",
+        "proto": "tcp",
+        "port": "web_port"
+      },
+      {
+        "src": "web",
+        "dst": "was",
+        "proto": "tcp",
+        "port": "was_port"
+      },
+      {
+        "src": "was",
+        "dst": "db",
+        "proto": "tcp",
+        "port": "db_port"
+      }
+    ],
+    "snmp_location": "machine room rack 3",
+    "snmp_contact": "network operations"
+  },
+  "hosts": [
+    {
+      "name": "rt-core01",
+      "role": "router",
+      "vmid": 201,
+      "pve_name": "t4-rt",
+      "vcpu": 2,
+      "memory_mb": 2048,
+      "disks": [
+        {
+          "size_gb": 16
+        }
+      ],
+      "nics": [
+        {
+          "net": "upstream",
+          "addr": "192.168.123.254",
+          "ifname": "ens18",
+          "gateway": true,
+          "speed_bps": 1000000000
+        },
+        {
+          "net": "web",
+          "addr": "192.168.124.1",
+          "ifname": "ens19",
+          "speed_bps": 1000000000,
+          "downlink": true
+        },
+        {
+          "net": "was",
+          "addr": "192.168.125.1",
+          "ifname": "ens20",
+          "speed_bps": 1000000000,
+          "downlink": true
+        },
+        {
+          "net": "db",
+          "addr": "192.168.126.1",
+          "ifname": "ens21",
+          "speed_bps": 1000000000,
+          "downlink": true
+        },
+        {
+          "net": "mgmt",
+          "addr": "192.168.127.2",
+          "ifname": "ens22"
+        }
+      ]
+    },
+    {
+      "name": "web01",
+      "role": "web",
+      "vmid": 202,
+      "pve_name": "t4-web",
+      "vcpu": 2,
+      "memory_mb": 2048,
+      "disks": [
+        {
+          "size_gb": 20
+        }
+      ],
+      "nics": [
+        {
+          "net": "web",
+          "addr": "192.168.124.11",
+          "ifname": "ens18",
+          "gateway": true
+        },
+        {
+          "net": "mgmt",
+          "addr": "192.168.127.21",
+          "ifname": "ens19"
+        }
+      ]
+    },
+    {
+      "name": "was01",
+      "role": "was",
+      "vmid": 203,
+      "pve_name": "t4-was1",
+      "vcpu": 2,
+      "memory_mb": 4096,
+      "disks": [
+        {
+          "size_gb": 30
+        }
+      ],
+      "nics": [
+        {
+          "net": "was",
+          "addr": "192.168.125.11",
+          "ifname": "ens18",
+          "gateway": true
+        },
+        {
+          "net": "mgmt",
+          "addr": "192.168.127.31",
+          "ifname": "ens19"
+        }
+      ]
+    },
+    {
+      "name": "was02",
+      "role": "was",
+      "batch": true,
+      "vmid": 204,
+      "pve_name": "t4-was2",
+      "vcpu": 2,
+      "memory_mb": 4096,
+      "disks": [
+        {
+          "size_gb": 30
+        }
+      ],
+      "nics": [
+        {
+          "net": "was",
+          "addr": "192.168.125.12",
+          "ifname": "ens18",
+          "gateway": true
+        },
+        {
+          "net": "mgmt",
+          "addr": "192.168.127.32",
+          "ifname": "ens19"
+        }
+      ]
+    },
+    {
+      "name": "db01",
+      "role": "db",
+      "vmid": 205,
+      "pve_name": "t4-db",
+      "vcpu": 4,
+      "memory_mb": 8192,
+      "disks": [
+        {
+          "size_gb": 40
+        },
+        {
+          "size_gb": 100,
+          "serial": "pgdata",
+          "mount": "/pgdata"
+        }
+      ],
+      "nics": [
+        {
+          "net": "db",
+          "addr": "192.168.126.11",
+          "ifname": "ens18",
+          "gateway": true
+        },
+        {
+          "net": "mgmt",
+          "addr": "192.168.127.41",
+          "ifname": "ens19"
+        }
+      ]
+    },
+    {
+      "name": "loadgen",
+      "role": "loadgen",
+      "vmid": 206,
+      "pve_name": "t4-load",
+      "vcpu": 2,
+      "memory_mb": 2048,
+      "disks": [
+        {
+          "size_gb": 20
+        }
+      ],
+      "nics": [
+        {
+          "net": "upstream",
+          "addr": "192.168.123.10",
+          "ifname": "ens18",
+          "gateway": true,
+          "routes": [
+            {
+              "to": "192.168.124.0/24",
+              "via": "192.168.123.254"
+            }
+          ]
+        },
+        {
+          "net": "mgmt",
+          "addr": "192.168.127.10",
+          "ifname": "ens19"
+        }
+      ]
+    }
+  ]
+}

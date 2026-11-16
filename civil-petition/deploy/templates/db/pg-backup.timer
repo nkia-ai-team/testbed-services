@@ -1,0 +1,8 @@
+[Unit]
+Description=Nightly logical backup of the portal database
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

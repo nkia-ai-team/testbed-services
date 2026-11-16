@@ -1,0 +1,9 @@
+[Unit]
+Description=Petition portal monthly statistics refresh
+
+[Timer]
+OnCalendar=*-*-* 01:10:00 Asia/Seoul
+Unit=petition-batch@stats.service
+
+[Install]
+WantedBy=timers.target

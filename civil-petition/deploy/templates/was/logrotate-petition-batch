@@ -1,0 +1,9 @@
+/var/log/petition-batch.log
+{
+	rotate 30
+	daily
+	missingok
+	notifempty
+	compress
+	delaycompress
+}

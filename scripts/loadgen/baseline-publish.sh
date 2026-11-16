@@ -14,6 +14,9 @@
 
 BASELINE_MONITOR="${BASELINE_MONITOR:-/opt/loadgen/loadgen_monitor.py}"
 BASELINE_STATE_DIR="${BASELINE_STATE_DIR:-/tmp}"
+# 모니터에 더 넘길 선택 인자(공백으로 가른 낱말). 비어 있으면(기본) 종전 세 도메인과 같은 호출이다.
+# 전통 3계층 도메인(civil-petition)이 --http-summary 와 --window-log 를 켠다(2026-11-16 v4 T2).
+BASELINE_MONITOR_ARGS="${BASELINE_MONITOR_ARGS:-}"
 
 # 발행을 시작하고, k6에 붙일 --out 인자를 BASELINE_K6_OUT 에 설정한다.
 # 실패하면 BASELINE_K6_OUT 은 빈 문자열로 남아 k6가 FIFO 없이 정상 기동한다.
@@ -47,6 +50,7 @@ baseline_publisher_start() {
         return 0
     fi
 
+    # shellcheck disable=SC2086 # BASELINE_MONITOR_ARGS 는 낱말로 갈라져야 한다
     python3 "$BASELINE_MONITOR" \
         --source "$baseline_fifo" \
         --output "$baseline_live" \
@@ -54,7 +58,8 @@ baseline_publisher_start() {
         --read-step "$baseline_read_step" \
         --mode stream \
         --domain "$baseline_domain" \
-        --unit "$baseline_unit" &
+        --unit "$baseline_unit" \
+        $BASELINE_MONITOR_ARGS &
     BASELINE_PUBLISHER_PID=$!
 
     # 유닛이 멈추면 문서를 남기지 않는다 — 남으면 정지된 baseline을 살아 있는 것으로

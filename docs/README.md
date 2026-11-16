@@ -34,6 +34,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [SMS 에이전트만 쓰는 고객사 테스트베드 설계](spec-testbed-sms-only.md):
   SMS 에이전트만 119 에 등록한 다섯째 테스트베드(S)의 T 코드 재사용과 쌍 비교 조건, 119 가 닿는 길과
   ICMP 제안, 119 부담 숫자, 러너 연동, 단계별 완료 조건. (GT0-S 확정 2026-11-16)
+- [전통 3계층 테스트베드 적용 runbook](runbook-civil-petition-apply.md):
+  T, S 테스트베드를 같은 코드(civil-petition)로 66 에 짓는 순서. 66 망 파일, VM 생성, 서버별 설치, 부하,
+  T2 완료 조건 점검, 평시 24시간과 규모 축 판정, SMS 에이전트 설치 자리, 되돌리기. (Planned, 적용 전)
 - [테스트베드 배포 runbook](runbook-testbed-deploy.md):
   109 kubeadm 클러스터 배포·검증 실측 절차 — 환경 실값(OTLP/org id), 신규 VM
   전제조건(StorageClass·OTel jar), 트러블슈팅. (Active)

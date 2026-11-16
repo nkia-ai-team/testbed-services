@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 민원 포털 앱의 JNDI 데이터소스(Tomcat JDBC 풀). 비밀번호는 설치 때 비밀값 파일에서 채운다. -->
+<Context>
+  <Resource name="jdbc/petitionDS" auth="Container" type="javax.sql.DataSource"
+            factory="org.apache.tomcat.jdbc.pool.DataSourceFactory"
+            driverClassName="org.postgresql.Driver"
+            url="{{jdbc_url}}"
+            username="{{db_user}}" password="@@SECRET:db_password@@"
+            initialSize="5" minIdle="5" maxIdle="20" maxActive="40" maxWait="10000"
+            testOnBorrow="true" validationQuery="SELECT 1" validationInterval="30000"
+            timeBetweenEvictionRunsMillis="30000" minEvictableIdleTimeMillis="60000"
+            jmxEnabled="false" />
+</Context>

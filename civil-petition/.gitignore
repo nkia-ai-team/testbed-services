@@ -1,0 +1,27 @@
+# Build
+target/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Maven
+.mvn/repository/
+
+# OMC
+.omc/
+
+# Env
+.env
+*.log

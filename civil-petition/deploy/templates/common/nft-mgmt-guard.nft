@@ -1,0 +1,10 @@
+# 관리 NIC 로는 하이퍼바이저 관리 주소의 ssh 와 이미 맺은 연결의 응답만 받는다(설계 §3-5 규칙 4).
+# 관리 NIC 에는 기본 경로가 없고 연결된 대역 하나만 있다(netplan).
+table inet mgmtguard {
+	chain input {
+		type filter hook input priority -10; policy accept;
+		iifname "{{mgmt_if}}" ct state established,related accept
+		iifname "{{mgmt_if}}" ip saddr {{mgmt_host}} tcp dport 22 accept
+		iifname "{{mgmt_if}}" drop
+	}
+}

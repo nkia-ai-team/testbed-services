@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.civilpetition</groupId>
+    <artifactId>civil-petition</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>Civil Petition Portal</name>
+    <description>공공기관 민원 접수, 처리 포털 (전통 3계층 테스트베드, Tomcat WAR, PostgreSQL)</description>
+
+    <modules>
+        <module>petition-web</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- 같은 커밋에서 다시 빌드해도 같은 체크섬의 WAR 가 나오게 한다(T 와 S 쌍 조건 1, S 문서 §2-4). -->
+        <project.build.outputTimestamp>2026-11-16T00:00:00Z</project.build.outputTimestamp>
+    </properties>
+</project>

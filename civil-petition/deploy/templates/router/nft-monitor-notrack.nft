@@ -1,0 +1,16 @@
+# 라우터 자신이 관제 서버와 주고받는 흐름(SNMP, trap, syslog, ICMP)은 conntrack 에서 뺀다(설계 §3-3).
+# conntrack 표가 가득 차도 원인 흔적(커널 줄, SNMP 응답)이 관제 서버에 닿게 하기 위해서다.
+# 라우터를 지나 서버로 가는 관제 흐름은 conntrack 을 그대로 거친다(인밴드 관제의 현실).
+table inet monraw {
+	chain prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		iifname "{{up_if}}" ip saddr {{monitor_address}} ip daddr {{up_addr}} udp dport 161 notrack
+		iifname "{{up_if}}" ip saddr {{monitor_address}} ip daddr {{up_addr}} icmp type echo-request notrack
+	}
+	chain output {
+		type filter hook output priority raw; policy accept;
+		ip saddr {{up_addr}} ip daddr {{monitor_address}} udp sport 161 notrack
+		ip daddr {{monitor_address}} udp dport { 162, {{syslog_port}} } notrack
+		ip saddr {{up_addr}} ip daddr {{monitor_address}} icmp type echo-reply notrack
+	}
+}

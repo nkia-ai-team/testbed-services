@@ -1,0 +1,18 @@
+# 계층 사이 상태 기반 ACL(설계 §0-1 계층 사이). 허용 흐름만 지나간다.
+table inet fwacl {
+	chain forward {
+		type filter hook forward priority 0; policy drop;
+		ct state established,related accept
+		ct state invalid drop
+{{acl_rules}}
+	}
+	chain input {
+		type filter hook input priority 0; policy drop;
+		iifname "lo" accept
+		ct state established,related accept
+		ct state untracked ip saddr {{monitor_address}} accept
+		ip saddr {{monitor_address}} udp dport 161 accept
+		ip protocol icmp accept
+		iifname "{{mgmt_if}}" accept
+	}
+}

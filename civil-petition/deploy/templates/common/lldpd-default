@@ -1,0 +1,2 @@
+# lldpd 실행 인자(설계 §4 LLDP). 업무 NIC 에서만 이웃 정보를 주고받는다.
+DAEMON_ARGS="{{lldpd_args}}"

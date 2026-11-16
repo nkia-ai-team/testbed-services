@@ -1,0 +1,14 @@
+#!/bin/sh
+# 야간 배치를 앱의 관리 경로로 부른다(설계 §2-3 배치). 결과는 배치 로그 파일과 journal 에 남는다.
+set -eu
+job="$1"
+log=/var/log/petition-batch.log
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+if out=$(curl -fsS -m 3600 -X POST "http://127.0.0.1:{{was_port}}/{{app_context}}/admin/batch/${job}" 2>&1); then
+    echo "${started} job=${job} result=ok ${out}" >>"$log"
+    echo "job=${job} result=ok ${out}"
+else
+    echo "${started} job=${job} result=fail ${out}" >>"$log"
+    echo "job=${job} result=fail ${out}" >&2
+    exit 1
+fi

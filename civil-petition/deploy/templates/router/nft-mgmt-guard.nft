@@ -1,0 +1,22 @@
+# 보호 표. 실행기가 바꾸지 않는다(설계 §3-5 규칙 4).
+# - 관리 NIC 로 들고 나는 포워딩은 모두 거절한다(업무망 -> 라우터 -> 관리망 길을 막는다).
+# - 관리 NIC 로는 하이퍼바이저 관리 주소의 ssh 와 이미 맺은 연결의 응답만 받는다.
+# - 관리 대역을 목적지로 관리 NIC 가 아닌 곳으로 들어온 패킷은 거절한다.
+# drop 은 다른 표의 accept 와 무관하게 끝이다.
+table inet mgmtguard {
+	chain prerouting {
+		type filter hook prerouting priority -300; policy accept;
+		iifname != "{{mgmt_if}}" ip daddr {{mgmt_cidr}} drop
+	}
+	chain input {
+		type filter hook input priority -10; policy accept;
+		iifname "{{mgmt_if}}" ct state established,related accept
+		iifname "{{mgmt_if}}" ip saddr {{mgmt_host}} tcp dport 22 accept
+		iifname "{{mgmt_if}}" counter drop
+	}
+	chain forward {
+		type filter hook forward priority -10; policy accept;
+		iifname "{{mgmt_if}}" counter drop
+		oifname "{{mgmt_if}}" counter drop
+	}
+}

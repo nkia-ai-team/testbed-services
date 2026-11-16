@@ -1,0 +1,27 @@
+[Unit]
+Description=k6 load driver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=k6
+Group=k6
+StateDirectory=k6
+Environment=ENTRY_URL={{entry_url}}
+Environment=DOMAIN={{domain}}
+Environment=SCRIPT_PATH=/opt/loadgen/{{domain}}/script.js
+Environment=PEAK_RPS=30
+Environment=TROUGH_RPS=5
+Environment=LOADGEN_SEED=42
+Environment=PRE_ALLOCATED_VUS=40
+Environment=MAX_VUS=150
+Environment=BASELINE_MONITOR=/opt/loadgen/loadgen_monitor.py
+Environment=BASELINE_PUBLISH=/opt/loadgen/baseline-publish.sh
+Environment="BASELINE_MONITOR_ARGS=--http-summary --window-log /var/lib/k6/k6-{{domain}}-windows.jsonl"
+ExecStart=/bin/sh /opt/loadgen/{{domain}}/entrypoint.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

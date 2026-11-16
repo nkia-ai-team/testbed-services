@@ -1,0 +1,5 @@
+# Tomcat 실행 환경(설계 §2-3 WAS). 힙 1.5GB, GC 로그는 파일로만 쓴다.
+TOMCAT_USER=tomcat
+TOMCAT_GROUP=tomcat
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+JAVA_OPTS="-Djava.awt.headless=true -Dfile.encoding=UTF-8 -Xms1536m -Xmx1536m -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -Xlog:gc*:file=/var/log/tomcat10/gc.log:time,uptime,level,tags:filecount=5,filesize=20m"
