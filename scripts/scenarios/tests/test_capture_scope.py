@@ -70,8 +70,16 @@ def pg_catalog(tables, columns=None, fks=None, *, configured=True, schemas=None,
                     need[ls["table"]].extend([ls["column"], ls["via"]])
         for t, cs in need.items():
             cols.setdefault(t, [(c, "timestamp with time zone" if c.endswith("_at") else "uuid") for c in cs])
-    col_lines = [f"{t}\t{c}\t{ty}" for t, cs in cols.items() for c, ty in cs]
-    fk_lines = [f"{c}\t{cc}\t{p}\t{pc}" for c, cc, p, pc in (fks or [])]
+    # 열 항목은 (이름, 타입) 또는 (이름, 타입, notnull, 기본값, check, unique, generated)(4회차 8열 카탈로그).
+    col_lines = []
+    for t, cs in cols.items():
+        for c in cs:
+            if len(c) == 2:
+                col_lines.append(f"{t}\t{c[0]}\t{c[1]}")
+            else:
+                n, ty, nn, df, ck, uq, gen = c
+                col_lines.append("\t".join([t, n, ty, "t" if nn else "f", df, "t" if ck else "f", "t" if uq else "f", gen]))
+    fk_lines = ["\t".join(f) for f in (fks or [])]  # (자식, 열, 부모, 부모 열[, 제약 이름, 정의])
     texts = {"tables": "\n".join(rows), "columns": "\n".join(col_lines), "fks": "\n".join(fk_lines)}
     if schemas is not None:
         texts["schemas"] = "\n".join(f"{k}\t{'t' if v else 'f'}" for k, v in schemas.items())
@@ -656,7 +664,8 @@ class PgSecretTest(unittest.TestCase):
         plan = self.plan({"users": 4096, "chat_sessions": 4096},
                          columns={"users": [("password_hash", "character varying(255)")],
                                   "chat_sessions": [("secret_note", "text")]})
-        self.assertEqual(plan["tables"]["users"]["scope"], "snap")
+        # 4회차: 표째 비우지는 않고(행은 담음) 비밀 열 값만 가린다(PgMaskTest).
+        self.assertEqual(plan["tables"]["users"]["scope"], "masked")
         self.assertEqual((plan["tables"]["chat_sessions"]["scope"], plan["tables"]["chat_sessions"]["rule"]),
                          ("drop", "config"))
         self.assertEqual([e for e in plan["excluded"] if e["kind"] == "table_data"], [])
@@ -711,6 +720,148 @@ class PgSecretTest(unittest.TestCase):
                      ("execution_token", "uuid"), ("sealed_at", "timestamp with time zone"), ("partition_key", "text"),
                      ("token_count", "integer")):
             self.assertFalse(col.search(c) and ty.search(t), (c, t))
+
+
+def col(name, ty, notnull=False, default="", check=False, unique=False, generated=""):
+    return (name, ty, notnull, default, check, unique, generated)
+
+
+class PgMaskTest(unittest.TestCase):
+    """행을 담는 표의 비밀 열은 값만 가린다(2026-11-16 지휘 세션 결정, CAPFIX 4회차)."""
+
+    def plan(self, tables, cfg=None, **k):
+        return pg.plan_scope(cfg or PG_CFG, pg_catalog(tables, **k))
+
+    USERS = [col("id", "uuid", True), col("username", "character varying(64)", True),
+             col("password_hash", "character varying(255)"), col("must_change_password", "boolean", True, "false")]
+
+    def test_listed_nullable_column_is_nulled_and_the_table_goes_through_copy(self):
+        cat = pg_catalog({"users": 4096, "asset_tree_groups": 4096},
+                         columns={"users": self.USERS, "asset_tree_groups": [col("id", "uuid", True), col("owner_id", "uuid")]},
+                         fks=[("asset_tree_groups", "owner_id", "users", "id", "asset_tree_groups_owner_fk",
+                               "FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL")])
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertEqual((plan["tables"]["users"]["scope"], plan["tables"]["users"]["rule"]), ("masked", "default+masked"))
+        self.assertEqual(plan["masked_tables"], ["users"])
+        m = plan["masks"]["users"]
+        self.assertEqual([(x["column"], x["method"], x["acknowledged"]) for x in m], [("password_hash", "null", True)])
+        self.assertTrue(m[0]["note"].startswith("비밀 계열, 사용자 결정 11-16: 계정 비밀번호 해시"))
+        self.assertIn("--exclude-table-data=public.users", pg.emit_exclude_args(PG_CFG, plan).splitlines())
+        sql = pg.emit_export_sql(PG_CFG, "/out/postgres", plan, cat)
+        self.assertIn('COPY (SELECT _m."id", _m."username", CAST(NULL AS character varying(255)) AS "password_hash", '
+                      '_m."must_change_password" FROM public."users" _m) TO STDOUT WITH (FORMAT csv, HEADER true);', sql)
+        self.assertNotIn('_m."password_hash"', sql)
+        restore = pg.emit_restore_sql(PG_CFG, plan)
+        copies = [l for l in restore.splitlines() if l.startswith("\\copy ")]
+        self.assertEqual(copies[0], "\\copy users FROM 'users.csv' WITH (FORMAT csv, HEADER true)")
+        self.assertIn("('asset_tree_groups', 'asset_tree_groups_owner_fk', "
+                      "'FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL')", restore)
+        self.assertLess(restore.index("\\copy users"), restore.index("DO $capfix$"))
+        self.assertEqual(pg.plan_summary(plan, PG_CFG)["masked_columns"],
+                         [{k: m[0][k] for k in ("table", "column", "method", "acknowledged", "note")}])
+        self.assertNotIn("users", [t for t, _ in pg.ordered_slices(PG_CFG, plan)])
+
+    def test_mask_values_follow_nullability_default_and_constraints(self):
+        cfg = copy.deepcopy(PG_CFG)
+        cfg["secret_reviewed_keep"] = {**cfg["secret_reviewed_keep"], "t1": "시험"}
+        cfg["secret_columns"] = {"t1": {"a_secret": "r", "b_secret": "r", "c_secret": "r", "d_secret": "r",
+                                        "e_secret": "r", "f_secret": "r", "g_secret": {"reason": "r", "value": "'x0'"},
+                                        "h_secret": "r"}}
+        cols = [col("id", "integer", True), col("a_secret", "text"), col("b_secret", "text", True, "''::text"),
+                col("c_secret", "text", True), col("d_secret", "character varying(80)", True, unique=True),
+                col("e_secret", "integer", True), col("f_secret", "text", True, check=True),
+                col("g_secret", "text", True, check=True), col("h_secret", "bytea", True)]
+        plan = self.plan({"t1": 4096}, cfg, columns={"t1": cols})
+        got = {m["column"]: (m["method"], m["expr"]) for m in plan["masks"]["t1"]}
+        self.assertEqual(got, {
+            "a_secret": ("null", "CAST(NULL AS text)"),
+            "b_secret": ("default", "CAST((''::text) AS text)"),
+            "c_secret": ("placeholder", "CAST('masked' AS text)"),
+            "d_secret": ("placeholder_unique", "CAST('masked-' || row_number() OVER () AS character varying(80))"),
+            "e_secret": ("placeholder", "CAST(NULL AS integer)"),
+            "f_secret": ("placeholder", "CAST('masked' AS text)"),
+            "g_secret": ("config", "CAST('x0' AS text)"),
+            "h_secret": ("placeholder", "'\\x6d61736b6564'::bytea")})
+        problems = sorted(c["problem"].split(":")[0] for c in plan["conflicts"] if c["table"] == "t1")
+        self.assertEqual(problems, ["비밀 열 e_secret", "비밀 열 f_secret"])
+
+    def test_unlisted_column_shape_is_masked_unacknowledged_and_keep_list_is_respected(self):
+        cfg = copy.deepcopy(PG_CFG)
+        cfg["secret_columns_keep"] = {**cfg["secret_columns_keep"], "t2.idp_secret_ref": "식별자"}
+        cfg["secret_reviewed_keep"] = {**cfg["secret_reviewed_keep"], "t2": "담기로 한 표에 나중에 생긴 비밀 열"}
+        plan = self.plan({"t2": 4096}, cfg, columns={"t2": [col("id", "integer", True), col("refresh_token", "text"),
+                                                              col("idp_secret_ref", "text")]})
+        m = plan["masks"]["t2"]
+        self.assertEqual([(x["column"], x["acknowledged"]) for x in m], [("refresh_token", False)])
+        self.assertEqual(m[0]["note"], "비밀 계열, 사용자 결정 11-16, 목록에 없음. 열 꼴에 걸림")
+
+    def test_slice_table_secret_column_is_masked_inside_the_window_query(self):
+        cfg = copy.deepcopy(PG_CFG)
+        cfg["secret_columns"] = {"alert_history": {"webhook_secret": "r"}}
+        cfg["secret_reviewed_keep"] = {**cfg["secret_reviewed_keep"], "alert_history": "시험"}
+        cat = pg_catalog({}, columns={"alert_history": [col("id", "bigint", True), col("started_at", "timestamp with time zone", True),
+                                                        col("webhook_secret", "text")]})
+        plan = pg.plan_scope(cfg, cat)
+        self.assertEqual(plan["tables"]["alert_history"]["scope"], "slice")
+        self.assertEqual(plan["masked_tables"], [])
+        sql = pg.emit_export_sql(cfg, "/out/postgres", plan, cat)
+        block = sql.split("-- alert_history\n", 1)[1].split("\\o\n", 1)[0]
+        self.assertIn('COPY (SELECT _m."id", _m."started_at", CAST(NULL AS text) AS "webhook_secret" FROM (\nSELECT t.* '
+                      'FROM public."alert_history" t WHERE t."started_at"', block)
+        self.assertIn("alert_history", pg.emit_restore_sql(cfg, plan))
+
+    def test_a_new_table_with_a_secret_column_is_emptied_not_masked(self):
+        # 담음 목록에 없는 표는 2회차 규칙대로 표째 비운다(사람이 담기로 정하기 전).
+        plan = self.plan({"t3": 4096}, columns={"t3": [col("id", "integer", True), col("api_secret", "text")]})
+        self.assertEqual(plan["tables"]["t3"]["rule"], "secret_detected")
+        self.assertNotIn("t3", plan["masks"])
+
+    def test_generated_columns_are_left_to_the_restore(self):
+        plan_cat = pg_catalog({"users": 4096}, columns={"users": self.USERS + [col("search", "tsvector", generated="s")]})
+        plan = pg.plan_scope(PG_CFG, plan_cat)
+        sql = pg.emit_export_sql(PG_CFG, "/out/postgres", plan, plan_cat)
+        self.assertNotIn('"search"', sql)
+
+    def test_fk_readd_skips_children_that_are_emptied_or_not_captured(self):
+        cat = pg_catalog({"users": 4096, "api_keys": 4096, "plain": 4096},
+                         columns={"users": self.USERS},
+                         fks=[("api_keys", "user_id", "users", "id", "api_keys_user_fk", "FOREIGN KEY (user_id) REFERENCES users(id)"),
+                              ("plain", "user_id", "users", "id", "plain_user_fk", "FOREIGN KEY (user_id) REFERENCES users(id)")])
+        plan = pg.plan_scope(PG_CFG, cat)
+        self.assertEqual([r["table"] for r in plan["fk_readd"]], ["plain"])
+
+    def test_old_three_column_catalog_reads_as_nullable(self):
+        plan = self.plan({"users": 4096}, columns={"users": [("id", "uuid"), ("password_hash", "character varying(255)")]})
+        self.assertEqual([(m["column"], m["method"]) for m in plan["masks"]["users"]], [("password_hash", "null")])
+
+    def test_every_secret_column_shape_on_119_has_a_decision(self):
+        hits_119 = ["alarm_severity_levels.color_token", "automation_host_inventory_runs.run_token",
+                    "alarm_linkages.secret_encrypted", "collectors.config_encrypted", "collectors.opamp_token_hash",
+                    "network_script_config_versions.content_encrypted", "software_omp_executions.run_token",
+                    "peer_link_peers.api_key_env", "workload_notification_destinations.secret_encrypted",
+                    "users.password_hash", "collect_workers.enroll_token_hash", "collect_workers.credential_hash",
+                    "information_provisions.sql_ciphertext", "automation_workers.enroll_token_hash",
+                    "automation_agents.enroll_token_hash"]
+        listed = {f"{t}.{c}" for t, cs in PG_CFG["secret_columns"].items() for c in cs}
+        self.assertEqual(sorted(set(hits_119) - listed - set(PG_CFG["secret_columns_keep"])), [])
+        self.assertFalse(listed & set(PG_CFG["secret_columns_keep"]))
+        self.assertEqual(PG_CFG["secret_columns"]["information_provisions"]["sql_ciphertext"]["value"], "'masked'")
+        for t in PG_CFG["secret_columns"]:
+            self.assertIn(t, PG_CFG["secret_reviewed_keep"])  # 표째 담는 인벤토리 표의 열이다
+
+    def test_masked_tables_emit_lists_only_whole_masked_tables(self):
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "tables.tsv").write_text("public\tusers\tr\t10\t1\t1\t0\n")
+            (Path(d) / "columns.tsv").write_text("users\tid\tuuid\tt\t\tf\tt\t\nusers\tpassword_hash\tcharacter varying(255)\tf\t\tf\tf\t\n")
+            (Path(d) / "fks.tsv").write_text("")
+            r = subprocess.run(["python3", str(ROOT / "pg-scope-export.py"), "--catalog", d, "--emit", "masked-tables"],
+                               capture_output=True, text=True, check=True)
+            e = subprocess.run(["python3", str(ROOT / "pg-scope-export.py"), "--catalog", d, "--emit", "export-sql"],
+                               capture_output=True, text=True, check=True)
+        self.assertEqual(r.stdout.split(), ["users"])
+        self.assertIn('CAST(NULL AS character varying(255)) AS "password_hash"', e.stdout)
 
 
 class ThresholdValiditySliceTest(unittest.TestCase):

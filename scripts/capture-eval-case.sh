@@ -1223,6 +1223,8 @@ jq -r '.conflicts[] | "[WARN] PostgreSQL scope conflict: \(.table): \(.problem)"
 jq -r '.absent_slice[] | "[WARN] PostgreSQL slice table in pg-scope.json is absent at source, not captured: \(.)"' <<<"$postgres_scope_json" >&2
 jq -r 'select(.over_budget) | "[WARN] PostgreSQL whole-table dump \(.snap_bytes) bytes exceeds budget \(.snap_budget_bytes) (largest: \(.largest_snap[0].table)); pg_dump may hit PG_DUMP_TIMEOUT_SEC"' <<<"$postgres_scope_json" >&2
 pg_slice_list=$("${pg_scope[@]}" --emit slice-tables)
+# 비밀 열을 값만 가려 서버측 COPY 로 내는 통째 표(2026-11-16 CAPFIX 4회차). 원문 비밀 값은 원천 밖으로 나오지 않는다.
+pg_masked_list=$("${pg_scope[@]}" --emit masked-tables)
 pg_scope_excl=$("${pg_scope[@]}" --emit exclude-args | tr '\n' ' ')
 "${pg_scope[@]}" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
 "${pg_scope[@]}" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
@@ -1260,14 +1262,15 @@ rm -f "$staging_dir/data/postgres/.export.sql"
 # meta.postgres_tables[] — 파일을 열지 않고 meta 만으로 "데이터가 들었는가"를
 # 판정할 수 있어야 한다(clickhouse_tables[] 와 같은 계약, spec §2.2).
 postgres_tables_json='[]'
-while IFS= read -r pg_t; do
+while IFS=: read -r pg_scope_kind pg_t; do
+  [[ -n "$pg_t" ]] || continue
   pg_csv="$staging_dir/data/postgres/${pg_t}.csv"
-  [[ -f "$pg_csv" ]] || die "pg slice 누락: $pg_t"
+  [[ -f "$pg_csv" ]] || die "pg $pg_scope_kind 누락: $pg_t"
   pg_rows=$(( $(wc -l < "$pg_csv") - 1 ))
   postgres_tables_json=$(jq -c \
-    --arg table "$pg_t" --arg file "data/postgres/${pg_t}.csv" --argjson rows "$pg_rows" \
-    '. + [{table:$table, file:$file, rows:$rows, scope:"slice"}]' <<<"$postgres_tables_json")
-done <<<"$pg_slice_list"
+    --arg table "$pg_t" --arg file "data/postgres/${pg_t}.csv" --argjson rows "$pg_rows" --arg scope "$pg_scope_kind" \
+    '. + [{table:$table, file:$file, rows:$rows, scope:$scope}]' <<<"$postgres_tables_json")
+done < <(sed 's/^/slice:/' <<<"$pg_slice_list"; [[ -z "$pg_masked_list" ]] || sed 's/^/masked:/' <<<"$pg_masked_list")
 
 # ------------------------------------------------------------
 # Topology snapshot (spec §4, 2026-07-20): the query API's cross-domain graph
@@ -1501,6 +1504,7 @@ if [[ "$v3_mode" == true ]]; then
     --arg case_label "$case_label" \
     --arg scenario_metadata_sha256 "$scenario_metadata_sha256" \
     --argjson pg_slice_count "$(grep -c . <<<"$pg_slice_list")" \
+    --argjson pg_masked_count "$(grep -c . <<<"$pg_masked_list" || true)" \
     --argjson ch_table_count "${ch_v3_table_count:?ch_v3_tables catalog missing}" \
     --argjson ch_discovered_count "$ch_discovered_count" \
     --argjson ch_v3_names "$(printf '%s\n' "${ch_v3_tables[@]}" | cut -d: -f1 | jq -Rsc 'split("\n") | map(select(length > 0))')" \
@@ -1519,8 +1523,8 @@ if [[ "$v3_mode" == true ]]; then
      (.clickhouse_tables | type == "array" and length == ($ch_table_count + $ch_discovered_count)) and
      (.clickhouse_tables[:$ch_table_count] | map(.table) == $ch_v3_names) and
      (.clickhouse_tables[$ch_table_count:] | all(.discovered == true)) and
-     (.postgres_tables | type == "array" and length == $pg_slice_count) and
-     (.postgres_tables | all(.scope == "slice" and (.rows | type == "number"))) and
+     (.postgres_tables | type == "array" and length == ($pg_slice_count + $pg_masked_count)) and
+     (.postgres_tables | all((.scope == "slice" or .scope == "masked") and (.rows | type == "number"))) and
      (.topology_bundle == null or
        (.topology_bundle.path == "topology/" and
         (.topology_bundle.snapshot_count | type == "number") and

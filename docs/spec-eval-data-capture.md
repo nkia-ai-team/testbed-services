@@ -442,7 +442,18 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     "비밀 계열, 사용자 결정 11-16: <근거>")에 남는다. 비우는 표를
     외래 키로 가리키는 통째 표는 그 행이 비운 행을 가리키면 복원 때 그 FK 제약이 생기지 않고(평가 복원은 계속,
     `fk_to_secret` 에 목록), 구간 표가 가리키면 구간 CSV 적재가 깨지므로 conflicts 로 막는다. 인벤토리 표에 비밀 열이
-    섞인 경우(users, collectors 등)는 표째 비우지 않았다(`secret_reviewed_keep`). v3 녹화본은 손대지 않는다.
+    섞인 경우(users, collectors 등)는 표째 비우지 않고(`secret_reviewed_keep`) 그 비밀 열 값만 가린다(아래). v3 녹화본은
+    손대지 않는다.
+  - 비밀 열 가리기(2026-11-16 지휘 세션 결정, 사용자 결정의 취지 "녹화에 비밀값을 싣지 않는다"): 행을 담는 표의 비밀 열은
+    값만 가린다. 목록은 `pg-scope.json` `secret_columns`(표, 열, 이유, 필요하면 value) 한 곳이고, 열 꼴에 걸리지만 비밀이
+    아닌 열은 `secret_columns_keep` 에 이유와 함께 둔다. 가림값은 NULL 허용이면 NULL, 아니면 열 기본값, 없으면 고정
+    자리표시('masked', UNIQUE 면 'masked-<행 번호>', bytea, json 은 그 타입의 고정값), 형식 CHECK 가 있으면 설정의 value.
+    통째로 담던 표는 pg_dump 에서 데이터를 빼고(scope `masked`, 표 정의는 남음) 원천 PG 의 서버측 COPY 가 가린 SELECT 로
+    `data/postgres/<표>.csv` 를 낸다. 원문 비밀 값은 원천 밖(캡처 호스트, 녹화본)으로 나오지 않는다. 구간 표는 구간 질의를
+    감싸 같은 가림을 건다. `restore.sql` 은 가린 통째 표를 먼저 싣고, pg_restore 때 그 표가 비어 있어 생기지 못한 외래 키
+    (그 표를 가리키는 것)를 행을 실은 뒤 다시 단다(이미 있으면 건너뜀, 실패하면 알리고 계속). 가린 열은
+    `meta.postgres_scope.masked_columns`(표, 열, 방식, 확인 여부, 이유)에, 가린 표는 `meta.postgres_tables` 에 scope
+    `masked` 로 남는다. 열 꼴에 걸리는데 두 목록 어디에도 없는 열은 캡처가 가리고(확인 안 됨) 녹화 전 점검이 막는다.
   - 뿌리의 대체 관계: v3 는 `superseded_by`, `merged_into` 재귀로 창 끝 뒤 대체 행을 함께 실었다.
     develop-ai DDL 367 이 `incidents.superseded_by` 를 지우고 대체 관계를 계보 표로 옮겼으므로, 원천에 계보 표
     (`incident_event_cluster_successors`, `event_cluster_successors`)가 있으면 그 간선으로 같은 재귀를 한다.

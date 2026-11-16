@@ -267,10 +267,17 @@ _BASE_QUERIES = {
         "  AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'\n"
         "ORDER BY 1, 2"
     ),
+    # 4회차(2026-11-16): 뒤 다섯 열은 비밀 열 가림값을 정하는 데 쓴다(NOT NULL, 기본값 식, 그 열을 부르는 CHECK,
+    # 그 열이 든 UNIQUE 색인, 생성 열). 앞 세 열은 종전과 같다.
     "columns": (
-        "SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod)\n"
+        "SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod),\n"
+        "  a.attnotnull, coalesce(pg_get_expr(d.adbin, d.adrelid), ''),\n"
+        "  EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c' AND a.attnum = ANY(k.conkey)),\n"
+        "  EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisunique AND a.attnum = ANY(i.indkey)),\n"
+        "  a.attgenerated::text\n"
         "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n"
         "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped\n"
+        "LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum\n"
         "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition\n"
         "ORDER BY 1, a.attnum"
     ),
@@ -280,7 +287,8 @@ _BASE_QUERIES = {
         "     JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum),\n"
         "  pl.relname,\n"
         "  (SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM unnest(con.confkey) WITH ORDINALITY k(attnum, ord)\n"
-        "     JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum)\n"
+        "     JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum),\n"
+        "  con.conname, pg_get_constraintdef(con.oid)\n"
         "FROM pg_constraint con\n"
         "JOIN pg_class cl ON cl.oid = con.conrelid JOIN pg_namespace n ON n.oid = cl.relnamespace\n"
         "JOIN pg_class pl ON pl.oid = con.confrelid JOIN pg_namespace pn ON pn.oid = pl.relnamespace\n"
@@ -366,6 +374,11 @@ def _num(v: str) -> int | None:
     return None if v in ("", "\\N", None) else int(float(v))
 
 
+def _unescape(v: str) -> str:
+    """COPY TO STDOUT 텍스트 형식의 역슬래시 이스케이프를 푼다."""
+    return re.sub(r"\\(.)", lambda m: {"t": "\t", "n": "\n", "r": "\r"}.get(m.group(1), m.group(1)), v or "")
+
+
 def parse_catalog(texts: dict[str, str]) -> dict:
     """카탈로그 질의 결과(탭 구분, 머리줄이 있어도 되고 없어도 된다)를 구조로."""
     def rows(name, width):
@@ -392,11 +405,17 @@ def parse_catalog(texts: dict[str, str]) -> dict:
     columns: dict[str, list[str]] = {}
     timecols: dict[str, list[str]] = {}
     coltypes: dict[str, list[tuple[str, str]]] = {}
+    colinfo: dict[str, list[dict]] = {}
     for p in rows("columns", 3):
         if p[0] not in tables:
             continue
         columns.setdefault(p[0], []).append(p[1])
         coltypes.setdefault(p[0], []).append((p[1], p[2]))
+        # 옛 3열 카탈로그는 NULL 허용, 기본값, 제약, 생성 열이 없는 것으로 읽는다.
+        colinfo.setdefault(p[0], []).append({
+            "name": p[1], "type": _unescape(p[2]), "notnull": len(p) > 3 and p[3] == "t",
+            "default": _unescape(p[4]) if len(p) > 4 else "", "check": len(p) > 5 and p[5] == "t",
+            "unique": len(p) > 6 and p[6] == "t", "generated": len(p) > 7 and p[7] not in ("", "\\N")})
         if p[2].startswith(("timestamp", "date")):
             timecols.setdefault(p[0], []).append(p[1])
     fks: dict[str, list[dict]] = {}
@@ -404,7 +423,8 @@ def parse_catalog(texts: dict[str, str]) -> dict:
         if p[0] not in tables:
             continue
         fks.setdefault(p[0], []).append(
-            {"columns": p[1].split(","), "parent": p[2], "parent_columns": p[3].split(",")})
+            {"columns": p[1].split(","), "parent": p[2], "parent_columns": p[3].split(","),
+             "name": p[4] if len(p) > 5 else None, "def": _unescape(p[5]) if len(p) > 5 else None})
     # 권한(2026-11-13 CAPFIX). 옛 카탈로그(이 질의가 없던 판)는 표가 있는 스키마를 "모름"(None)으로 두고 읽을 수
     # 있다고 본다. 그래야 옛 카탈로그의 계획이 종전과 같다.
     schemas: dict[str, bool | None] = {}
@@ -428,7 +448,7 @@ def parse_catalog(texts: dict[str, str]) -> dict:
     for p in rows("deps", 4):
         if p[0] in schemas and p[2] in schemas:  # 머리줄과 모르는 스키마는 거른다
             deps.append({"schema": p[0], "relation": p[1], "ref_schema": p[2], "ref_relation": p[3]})
-    return {"tables": tables, "columns": columns, "coltypes": coltypes, "timecols": timecols, "fks": fks,
+    return {"tables": tables, "columns": columns, "coltypes": coltypes, "colinfo": colinfo, "timecols": timecols, "fks": fks,
             "schemas": schemas, "denied": denied, "denied_reason": denied_reason, "denied_root": denied_root,
             "deps": deps}
 
@@ -520,6 +540,83 @@ def secret_candidates(cfg: dict, catalog: dict) -> dict[str, list[str]]:
         if why:
             out[t] = why
     return out
+
+
+TEXTY = re.compile(r"^(text|character varying|character|varchar|char)\b", re.I)
+
+
+def _mask_value(col: dict, configured: str | None) -> tuple[str, str, str | None]:
+    """(방식, SQL 식, 막을 이유). 막을 이유는 자동으로 정한 값이 제약을 지킨다고 장담할 수 없을 때."""
+    ty = col["type"]
+    if configured is not None:
+        return "config", f"CAST({configured} AS {ty})", None
+    if not col["notnull"]:
+        return "null", f"CAST(NULL AS {ty})", None
+    if col["default"]:
+        return "default", f"CAST(({col['default']}) AS {ty})", None
+    if col["unique"]:
+        if TEXTY.match(ty):
+            return "placeholder_unique", f"CAST('masked-' || row_number() OVER () AS {ty})", None
+        return "placeholder_unique", f"CAST(NULL AS {ty})", "NOT NULL 이고 UNIQUE 인 문자열 밖 열이라 자동 가림값이 없다"
+    if TEXTY.match(ty):
+        value = f"CAST('masked' AS {ty})"
+    elif ty.lower() == "bytea":
+        value = "'\\x6d61736b6564'::bytea"
+    elif ty.lower() in ("json", "jsonb"):
+        value = f"CAST('{{}}' AS {ty})"
+    else:
+        return "placeholder", f"CAST(NULL AS {ty})", "NOT NULL 인데 문자열, bytea, json 이 아니라 자동 가림값이 없다"
+    return "placeholder", value, ("그 열을 부르는 CHECK 제약이 있어 자동 가림값이 지킨다고 장담할 수 없다"
+                                  if col["check"] else None)
+
+
+def plan_masks(cfg: dict, catalog: dict, kept: list[str]) -> dict[str, list[dict]]:
+    """행을 담는 표(kept)의 비밀 열을 값만 가린다(2026-11-16 지휘 세션 결정, 사용자 결정 11-16 의 취지).
+
+    열 꼴에 걸린 열이 있는 표는 secret_reviewed_keep 에 있어야 행이 담긴다(없으면 표째 비운다, plan_scope). 그래서
+    여기 오는 표는 사람이 담기로 한 표이고, 그 표에 나중에 생긴 비밀 열도 가린다.
+    가리는 열: cfg["secret_columns"][표] 에 적힌 열(이유, 원하면 value), 그리고 secret_detect 의 열 꼴에 걸리는데
+    secret_columns_keep("표.열", 비밀이 아닌 이유)에 없는 열(확인 안 됨, 녹화 전 점검이 막는다). 가림값은 NULL 허용이면
+    NULL, 아니면 열 기본값, 없으면 고정 자리표시(문자열 'masked', UNIQUE 면 'masked-<행 번호>', bytea, json 은 그에 맞는
+    값). 자동 값이 제약을 지킨다고 장담할 수 없으면 conflict 로 올리고 설정의 value 로 정하게 한다.
+    """
+    det = cfg.get("secret_detect")
+    listed = cfg.get("secret_columns", {})
+    keep = cfg.get("secret_columns_keep", {})
+    col_re = re.compile(det["column_name"], re.I) if det else None
+    type_re = re.compile(det["column_type"], re.I) if det else None
+    out: dict[str, list[dict]] = {}
+    for t in kept:
+        conf = listed.get(t, {})
+        for col in catalog.get("colinfo", {}).get(t, []):
+            name = col["name"]
+            hit = col_re is not None and col_re.search(name) and type_re.search(col["type"])
+            if name not in conf and not (hit and f"{t}.{name}" not in keep):
+                continue
+            if col["generated"]:
+                continue  # 생성 열은 COPY 로 내지 않는다(복원 때 다시 계산된다)
+            spec = conf.get(name)
+            reason = spec.get("reason") if isinstance(spec, dict) else spec
+            value = spec.get("value") if isinstance(spec, dict) else None
+            method, expr, block = _mask_value(col, value)
+            out.setdefault(t, []).append({
+                "table": t, "column": name, "type": col["type"], "method": method, "expr": expr,
+                "acknowledged": name in conf, "note": (f"{SECRET_NOTE}: {reason}" if reason
+                                                       else f"{SECRET_NOTE}, 목록에 없음. 열 꼴에 걸림"),
+                "block": block})
+    return out
+
+
+def masked_select(catalog: dict, t: str, masks: list[dict], source: str) -> str:
+    """source(표 이름이나 괄호 친 부질의)의 열을 표 순서대로 내되 가린 열은 가림값으로. 생성 열은 뺀다."""
+    by = {m["column"]: m["expr"] for m in masks}
+    cols = []
+    for col in catalog["colinfo"][t]:
+        if col["generated"]:
+            continue
+        q = '"' + col["name"].replace('"', '""') + '"'
+        cols.append(f"{by[col['name']]} AS {q}" if col["name"] in by else f"_m.{q}")
+    return f"SELECT {', '.join(cols)} FROM {source} _m"
 
 
 def plan_scope(cfg: dict, catalog: dict) -> dict:
@@ -723,12 +820,31 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
     # 통째로 담는 표가 slice 표를 외래 키로 가리키면 복원 때 제약 생성이 깨진다(비우는 drop 표는
     # 행이 없어 괜찮다). 설정을 사람이 고칠 일이라 자동으로 바꾸지 않고 알린다. snap_tables 에 이유와 함께
     # 적힌 표는 사람이 이미 정한 것이라(상태, 대기열, 지식 표는 자르지 않는다) 알림 목록에만 남긴다.
+    # 비밀 열 가리기(4회차): 행을 담는 표(snap, slice)의 비밀 열 값만 가린다. 통째로 담던 표는 pg_dump 에서 데이터를
+    # 빼고 가린 SELECT 를 서버측 COPY 로 CSV 에 낸다(scope masked). 원문 비밀 값은 원천 PG 밖으로 나오지 않는다.
+    # slice 표는 구간 질의를 감싸 같은 가림을 건다.
+    masks = plan_masks(cfg, catalog, sorted(t for t, e in out.items() if e["scope"] in ("snap", "slice")))
+    for t in masks:
+        if out[t]["scope"] == "snap":
+            out[t].update(scope="masked", rule=f"{out[t]['rule']}+masked")
+        for m in masks[t]:
+            if m["block"]:
+                conflicts.append({"table": t, "problem": f"비밀 열 {m['column']}: {m['block']}. pg-scope.json "
+                                  "secret_columns 에 value 로 가림값을 정하라", "parents": []})
+    masked_tables = sorted(t for t, e in out.items() if e["scope"] == "masked")
+    # 가린 표를 FK 로 가리키는 표의 제약은 pg_restore 때 부모가 비어 있어 생기지 않는다. restore.sql 이 가린 행을 실은
+    # 뒤 다시 단다(정의는 원천 카탈로그에서).
+    fk_readd = sorted(({"table": c, "name": fk["name"], "def": fk["def"], "parent": fk["parent"]}
+                       for c, lst in fks.items() for fk in lst
+                       if fk["parent"] in masked_tables and fk.get("def") and out.get(c, {}).get("scope")
+                       in ("snap", "slice", "masked")), key=lambda x: (x["table"], x["name"]))
+
     # 비밀 계열로 비우는 표를 외래 키로 가리키는 표. slice 표면 복원의 구간 CSV 적재(\\copy)가 그 FK 에 걸려
     # 멈추므로 충돌. 통째로 담는 표면 pg_restore 가 그 FK 제약만 만들지 못하고 넘어간다(평가 restore.sh 는
     # pg_restore 오류로 멈추지 않는다, snap_fk_to_slice 와 같은 처지). 알림 목록에 둔다.
     fk_to_secret: list[dict] = []
     for t, e in sorted(out.items()):
-        if e["scope"] not in ("snap", "slice"):
+        if e["scope"] not in ("snap", "slice", "masked"):
             continue
         refs = sorted({fk["parent"] for fk in fks.get(t, []) if fk["parent"] in secret_rule and fk["parent"] != t})
         if not refs:
@@ -744,7 +860,7 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
 
     snap_fk_to_slice: list[dict] = []
     for t, e in out.items():
-        if e["scope"] == "snap":
+        if e["scope"] in ("snap", "masked"):
             refs = sorted({fk["parent"] for fk in fks.get(t, []) if fk["parent"] in slice_set})
             if not refs:
                 continue
@@ -771,12 +887,16 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         "excluded_schemas": sorted(gone_schemas),
         "secret_tables": sorted(secret_rule),
         "fk_to_secret": fk_to_secret,
+        "masks": masks,
+        "masked_tables": masked_tables,
+        "fk_readd": fk_readd,
     }
 
 
 def snap_load(cfg: dict, plan: dict) -> dict:
     """통째로 덤프하는 표의 크기 합과 예산. 예산을 넘으면 pg_dump 가 제한 시간 안에 끝나지 않을 수 있다."""
-    snaps = sorted(((e["bytes"] or 0, t) for t, e in plan["tables"].items() if e["scope"] == "snap"), reverse=True)
+    snaps = sorted(((e["bytes"] or 0, t) for t, e in plan["tables"].items() if e["scope"] in ("snap", "masked")),
+                   reverse=True)
     total = sum(b for b, _ in snaps)
     budget = cfg.get("auto", {}).get("snap_budget_bytes")
     return {"snap_bytes": total, "snap_budget_bytes": budget,
@@ -803,6 +923,9 @@ def plan_summary(plan: dict, cfg: dict | None = None) -> dict:
         "conflicts": plan["conflicts"],
         "excluded": plan.get("excluded", []),
         "fk_to_secret": plan.get("fk_to_secret", []),
+        # 값만 가린 비밀 열(4회차): 표, 열, 방식(null, default, placeholder, placeholder_unique, config), 이유.
+        "masked_columns": [{k: m[k] for k in ("table", "column", "method", "acknowledged", "note")}
+                           for t in sorted(plan.get("masks", {})) for m in plan["masks"][t]],
     }
 
 
@@ -829,7 +952,7 @@ def emit_exclude_args(cfg: dict, plan: dict | None = None) -> str:
     gone = {t for t, e in plan["tables"].items() if e["scope"] == "excluded"} if plan else set()
     names = [t for t in scoped_tables(cfg) if t not in gone]
     if plan:
-        names += [t for t in plan["auto_slices"] + plan["over_cap"] if t not in names]
+        names += [t for t in plan["auto_slices"] + plan["over_cap"] + plan.get("masked_tables", []) if t not in names]
     lines = [_exclude_flag(plan, t) for t in names]
     # 캡처 사용자가 못 읽거나 담지 않기로 한 것(2026-11-13 CAPFIX). 스키마와 표는 통째로(잠금도 걸지 않게),
     # 시퀀스는 현재값만 뺀다.
@@ -850,7 +973,20 @@ def emit_exclude_args(cfg: dict, plan: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-def emit_export_sql(cfg: dict, out_dir: str, plan: dict | None = None) -> str:
+def ordered_exports(cfg: dict, plan: dict | None = None, catalog: dict | None = None) -> list[tuple[str, str, str]]:
+    """(표, 질의, scope). 가린 통째 표가 먼저(부모 쪽), 그다음 slice 순서 그대로. 가린 열이 있으면 질의를 감싼다."""
+    items: list[tuple[str, str, str]] = []
+    masks = (plan or {}).get("masks", {})
+    for t in (plan or {}).get("masked_tables", []):
+        items.append((t, masked_select(catalog, t, masks[t], f'public."{t}"'), "masked"))
+    for t, q in ordered_slices(cfg, plan):
+        if t in masks:
+            q = masked_select(catalog, t, masks[t], f"(\n{q}\n)")
+        items.append((t, q, "slice"))
+    return items
+
+
+def emit_export_sql(cfg: dict, out_dir: str, plan: dict | None = None, catalog: dict | None = None) -> str:
     """서버측 COPY ... TO STDOUT + \\o 로 낸다.
 
     \\copy 를 쓰지 않는 이유(2026-08-13 실측): \\copy 는 psql 자체 파서를 타는
@@ -865,7 +1001,7 @@ def emit_export_sql(cfg: dict, out_dir: str, plan: dict | None = None) -> str:
         "\\pset footer off",
         "",
     ]
-    for t, q in ordered_slices(cfg, plan):
+    for t, q, _ in ordered_exports(cfg, plan, catalog):
         lines.append(f"-- {t}")
         lines.append(f"\\o {d}/{t}.csv")
         lines.append(f"COPY ({q}) TO STDOUT WITH (FORMAT csv, HEADER true);")
@@ -891,9 +1027,31 @@ def emit_restore_sql(cfg: dict, plan: dict | None = None) -> str:
         "\\set ON_ERROR_STOP on",
         "",
     ]
-    for t, _ in ordered_slices(cfg, plan):
-        # 표 이름은 전부 소문자 무인용부호라 \copy 의 자체 파서로도 안전하다.
+    for t in (plan or {}).get("masked_tables", []) + [t for t, _ in ordered_slices(cfg, plan)]:
+        # 표 이름은 전부 소문자 무인용부호라 \copy 의 자체 파서로도 안전하다. 가린 통째 표가 먼저(부모 쪽).
         lines.append(f"\\copy {t} FROM '{t}.csv' WITH (FORMAT csv, HEADER true)")
+    readd = (plan or {}).get("fk_readd", [])
+    if readd:
+        # 가린 표(부모)는 pg_restore 때 비어 있어 그 표를 가리키는 FK 제약이 생기지 못했다. 행을 실은 뒤 다시 단다.
+        # 이미 있으면 건너뛰고, 고아 행 등으로 실패하면 알리고 넘어간다(복원을 멈추지 않는다).
+        def lit(v: str) -> str:
+            return "'" + v.replace("'", "''") + "'"
+        rows = ",\n    ".join(f"({lit(r['table'])}, {lit(r['name'])}, {lit(r['def'])})" for r in readd)
+        lines += [
+            "-- 가린 표를 가리키는 외래 키를 다시 단다(CAPFIX 4회차).",
+            "DO $capfix$ DECLARE r record; BEGIN",
+            "  FOR r IN SELECT * FROM (VALUES",
+            f"    {rows}",
+            "  ) v(child, conname, def) LOOP",
+            "    CONTINUE WHEN to_regclass(r.child) IS NULL;",
+            "    CONTINUE WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = to_regclass(r.child) AND c.conname = r.conname);",
+            "    BEGIN",
+            "      EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I %s', r.child, r.conname, r.def);",
+            "    EXCEPTION WHEN others THEN RAISE NOTICE 'CAPFIX_FK_READD_FAILED % % %', r.child, r.conname, SQLERRM;",
+            "    END;",
+            "  END LOOP;",
+            "END $capfix$;",
+        ]
     lines.append("")
     return "\n".join(lines)
 
@@ -902,7 +1060,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--emit", required=True,
-                    choices=["exclude-args", "export-sql", "restore-sql", "slice-tables",
+                    choices=["exclude-args", "export-sql", "restore-sql", "slice-tables", "masked-tables",
                              "catalog-sql", "plan-json", "plan-summary"])
     ap.add_argument("--out-dir", default="/out/postgres",
                     help="export-sql, catalog-sql 이 파일을 쓸 경로(psql 이 보는 경로)")
@@ -915,12 +1073,18 @@ def main() -> int:
         print(emit_catalog_sql(args.out_dir))
         return 0
     cfg = load(args.config)
-    plan = plan_scope(cfg, load_catalog(args.catalog)) if args.catalog else None
+    catalog = load_catalog(args.catalog) if args.catalog else None
+    plan = plan_scope(cfg, catalog) if catalog else None
     if args.emit in ("plan-json", "plan-summary"):
         if plan is None:
             sys.exit("--emit plan-json, plan-summary 는 --catalog 가 필요하다")
         if args.emit == "plan-summary":
             # 캡처 로그에 남긴다(캡처는 이 요약을 한 번 부르고 stderr 는 capture-error.log 로 간다).
+            for t in sorted(plan["masks"]):
+                for m in plan["masks"][t]:
+                    if not m["acknowledged"]:
+                        print(f"[WARN] PostgreSQL column {t}.{m['column']} masked ({m['method']}) "
+                              "(not acknowledged in pg-scope.json)", file=sys.stderr)
             for e in plan["excluded"]:
                 print(f"[WARN] PostgreSQL {e['kind']} {e['object']} left out of the dump: {e['reason']}"
                       + ("" if e["acknowledged"] else " (not acknowledged in pg-scope.json)"), file=sys.stderr)
@@ -929,9 +1093,11 @@ def main() -> int:
     elif args.emit == "exclude-args":
         print(emit_exclude_args(cfg, plan))
     elif args.emit == "export-sql":
-        print(emit_export_sql(cfg, args.out_dir, plan))
+        print(emit_export_sql(cfg, args.out_dir, plan, catalog))
     elif args.emit == "restore-sql":
         print(emit_restore_sql(cfg, plan))
+    elif args.emit == "masked-tables":
+        print("\n".join((plan or {}).get("masked_tables", [])))
     else:
         print("\n".join(t for t, _ in ordered_slices(cfg, plan)))
     return 0

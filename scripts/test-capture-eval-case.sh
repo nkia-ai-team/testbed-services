@@ -486,7 +486,8 @@ printf '%s\n' \
   $'public\tlocked_by_owner\tr\t24576\t1\t1\t0' \
   $'security\tpassword_rotation_ledger\tr\t8192\t1\t1\t0' \
   $'public\tapi_keys\tr\t8192\t1\t1\t0' \
-  $'public\tvault_tokens_v2\tr\t8192\t1\t1\t0' >"$fix/pg/tables.tsv"
+  $'public\tvault_tokens_v2\tr\t8192\t1\t1\t0' \
+  $'public\tusers\tr\t8192\t3\t3\t0' $'public\tasset_tree_groups\tr\t8192\t1\t1\t0' >"$fix/pg/tables.tsv"
 # 캡처 사용자 권한(2026-11-13 CAPFIX, 119 모양): security 는 USAGE 없음, public 의 표 하나와 시퀀스 둘은 SELECT 없음,
 # public 표의 트리거가 polestar_notification 함수를 부른다(담는 스키마라 막히지 않는다).
 printf '%s\n' $'nspname\thas_schema_privilege' $'polestar_notification\tt' $'public\tt' $'security\tf' >"$fix/pg/schemas.tsv"
@@ -513,7 +514,9 @@ printf '%s\n' \
   $'incident_event_cluster_successors\tpredecessor_incident_id\tuuid' \
   $'incident_event_cluster_successors\tsuccessor_incident_id\tuuid' \
   $'incident_event_cluster_successors\tsuccessor_cluster_id\tuuid' \
-  $'api_keys\tkey_hash\tbytea' $'vault_tokens_v2\ttoken_hash\ttext' >"$fix/pg/columns.tsv"
+  $'api_keys\tkey_hash\tbytea' $'vault_tokens_v2\ttoken_hash\ttext' \
+  $'users\tid\tuuid\tt\t\tf\tt\t' $'users\tpassword_hash\tcharacter varying(255)\tf\t\tf\tf\t' \
+  $'asset_tree_groups\tid\tuuid\tt\t\tf\tt\t' $'asset_tree_groups\towner_id\tuuid\tf\t\tf\tf\t' >"$fix/pg/columns.tsv"
 printf '%s\n' \
   $'incident_members\tincident_id\tincidents\tid' \
   $'incident_snapshots\tincident_id\tincidents\tid' \
@@ -521,7 +524,8 @@ printf '%s\n' \
   $'alert_active\talert_history_id\talert_history\tid' \
   $'incident_event_cluster_successors\tpredecessor_incident_id\tincidents\tid' \
   $'incident_event_cluster_successors\tsuccessor_incident_id\tincidents\tid' \
-  $'incident_event_cluster_successors\tsuccessor_cluster_id\tevent_clusters\tid' >"$fix/pg/fks.tsv"
+  $'incident_event_cluster_successors\tsuccessor_cluster_id\tevent_clusters\tid' \
+  $'asset_tree_groups\towner_id\tusers\tid\tasset_tree_groups_owner_fk\tFOREIGN KEY (owner_id) REFERENCES users(id)' >"$fix/pg/fks.tsv"
 
 # 원천 CH system 표. v3 13개 + 13개 밖 표.
 ch_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
@@ -902,6 +906,21 @@ grep -q 'PostgreSQL schema security left out of the dump: no_usage' "$live_root/
 grep -q 'PostgreSQL table locked_by_owner left out of the dump: no_select (not acknowledged in pg-scope.json)' \
   "$live_root/case-live-v4.err" || fail 'no unacknowledged warning for the unreadable table'
 [[ -s "$live_root/cases/case-live-v4/data/catalog/postgres/schemas.tsv" ]] || fail 'schemas catalog not kept'
+# 비밀 열 가리기(2026-11-16 CAPFIX 4회차): users 는 행을 담되 password_hash 값만 NULL. pg_dump 에서 데이터를 빼고
+# 원천의 서버측 COPY 가 가린 SELECT 로 CSV 를 낸다. restore.sql 이 그것을 먼저 싣고 users 를 가리키는 FK 를 다시 단다.
+grep -qF -- '--exclude-table-data=public.users' <<<"$dump_line" || fail 'masked table data still in pg_dump'
+grep -qF 'COPY (SELECT _m."id", CAST(NULL AS character varying(255)) AS "password_hash" FROM public."users" _m) TO STDOUT' <<<"$export_sql" ||
+  fail 'masked SELECT for users missing from export SQL'
+if grep -qF '_m."password_hash"' <<<"$export_sql"; then fail 'export SQL reads the raw secret column'; fi
+restore_sql="$live_root/cases/case-live-v4/data/postgres/restore.sql"
+[[ "$(grep -m1 '^\\copy ' "$restore_sql")" == "\\copy users FROM 'users.csv' WITH (FORMAT csv, HEADER true)" ]] ||
+  fail 'masked table is not loaded first'
+grep -qF "('asset_tree_groups', 'asset_tree_groups_owner_fk', 'FOREIGN KEY (owner_id) REFERENCES users(id)')" "$restore_sql" ||
+  fail 'restore.sql does not re-add the FK to the masked table'
+jq -e '([.postgres_tables[] | select(.table == "users")] == [{table:"users",file:"data/postgres/users.csv",rows:2,scope:"masked"}]) and
+  (.postgres_scope.masked_columns == [{table:"users",column:"password_hash",method:"null",acknowledged:true,
+     note:"비밀 계열, 사용자 결정 11-16: 계정 비밀번호 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"}]) and
+  (.postgres_scope.by_scope.masked == 1)' "$meta" >/dev/null || fail 'masked table or columns not recorded in meta'
 # 비밀 계열(2026-11-16 사용자 결정): 목록의 표와 꼴로 걸린 새 표 모두 행만 빼고 표 정의는 남긴다.
 for want in --exclude-table-data=public.api_keys --exclude-table-data=public.vault_tokens_v2; do
   grep -qF -- "$want" <<<"$dump_line" || fail "pg_dump lacks $want"

@@ -241,12 +241,65 @@
     "wpm_profile_credentials": "WPM 프로파일 자격증명(token_hash) (2026-11-16 119 카탈로그, 값은 보지 않음)"
   },
 
+  "secret_columns": {
+    "alarm_linkages": {
+      "secret_encrypted": "연동 비밀 암호문 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "automation_agents": {
+      "enroll_token_hash": "에이전트 등록 토큰 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "automation_workers": {
+      "enroll_token_hash": "워커 등록 토큰 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "collect_workers": {
+      "credential_hash": "워커 자격증명 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+      "enroll_token_hash": "워커 등록 토큰 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "collectors": {
+      "config_encrypted": "수집기 설정 암호문(접속 자격 포함). NULL 허용이라 NULL(기본값 '{}' 는 쓰지 않음) (2026-11-16 119 카탈로그, 값은 보지 않음)",
+      "opamp_token_hash": "OpAMP 토큰 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "information_provisions": {
+      "sql_ciphertext": {
+        "reason": "정보 제공 SQL 암호문. NOT NULL 이고 CHECK (length(sql_ciphertext) > 0) 라 'masked' 로 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+        "value": "'masked'"
+      }
+    },
+    "network_script_config_versions": {
+      "content_encrypted": "장비 설정 백업 암호문 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "users": {
+      "password_hash": "계정 비밀번호 해시 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    },
+    "workload_notification_destinations": {
+      "secret_encrypted": "알림 대상 비밀 암호문 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    }
+  },
+
+  "secret_columns_keep": {
+    "alarm_severity_levels.color_token": "색 토큰 이름이라 비밀이 아니다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "automation_host_inventory_runs.run_token": "실행 식별자 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "software_omp_executions.run_token": "실행 식별자 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "peer_link_peers.api_key_env": "키를 담은 환경변수의 이름이고 키 값이 아니다. NOT NULL, 형식 CHECK 가 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+  },
+
+  "_secret_columns_note": [
+    "2026-11-16 지휘 세션 결정(CAPFIX 4회차, 사용자 결정 11-16 의 취지 \"녹화에 비밀값을 싣지 않는다\"). 행을 담는 표의",
+    "비밀 열은 값만 가린다(행과 다른 열은 그대로). 가림값: NULL 허용이면 NULL, 아니면 열 기본값, 없으면 고정 자리표시",
+    "('masked', UNIQUE 면 'masked-<행 번호>'). 형식 제약이 있으면 value 로 그 형식에 맞는 값을 정한다.",
+    "가린 표는 pg_dump 에서 데이터를 빼고(표 정의는 남음), 원천 PG 가 가린 SELECT 를 서버측 COPY 로 CSV 에 낸다. 원문 비밀",
+    "값은 원천 밖(캡처 호스트, 녹화본)으로 나오지 않는다. restore.sql 이 그 CSV 를 싣고, pg_restore 때 비어 있던 그 표를",
+    "가리키는 외래 키를 다시 단다. 가린 열은 meta.postgres_scope.masked_columns 에 표, 열, 방식, 이유로.",
+    "열 꼴(secret_detect)에 걸리는데 secret_columns, secret_columns_keep 어디에도 없는 열은 캡처가 가리고(확인 안 됨)",
+    "녹화 전 점검이 막는다."
+  ],
+
   "secret_reviewed_keep": {
-    "alarm_linkages": "알람 연동 정의(전달, 범위 표가 FK 로 가리킴). secret_encrypted 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "alarm_linkages": "알람 연동 정의(전달, 범위 표가 FK 로 가리킴). secret_encrypted 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "alarm_severity_levels": "알람 등급 표시 정의. color_token 은 색 토큰 이름이라 비밀이 아니다(3회차에 넓힌 token 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "automation_agents": "자동화 에이전트 인벤토리(hosts, 실행 대상이 FK 로 가리킴). enroll_token_hash 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "automation_agents": "자동화 에이전트 인벤토리(hosts, 실행 대상이 FK 로 가리킴). enroll_token_hash 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "automation_host_inventory_runs": "자동화 인벤토리 수집 실행 기록. run_token 은 실행 식별자다(token 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "automation_workers": "자동화 워커 인벤토리(여러 표가 FK 로 가리킴). enroll_token_hash 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "automation_workers": "자동화 워커 인벤토리(여러 표가 FK 로 가리킴). enroll_token_hash 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_auth_blocks": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_auth_failures": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_holdings": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
@@ -257,17 +310,17 @@
     "collect_credential_rotation_states": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_rotations": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_safety_revisions": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "collect_workers": "수집 워커 인벤토리(수집 배정 표 다수가 FK 로 가리킴). enroll_token_hash, credential_hash 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "collectors": "수집기 인벤토리(수집과 알람 표 다수가 FK 로 가리킴). config_encrypted, opamp_token_hash 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "collect_workers": "수집 워커 인벤토리(수집 배정 표 다수가 FK 로 가리킴). enroll_token_hash, credential_hash 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "collectors": "수집기 인벤토리(수집과 알람 표 다수가 FK 로 가리킴). config_encrypted, opamp_token_hash 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "dpm_custom_sql_variable_keys": "사용자 SQL 변수와 리소스 키(식별자). 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "information_provisions": "정보 제공 정의. sql_ciphertext 열 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "network_script_config_versions": "네트워크 장비 설정 백업(설정 변경 근거가 될 수 있음). content_encrypted 열 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "information_provisions": "정보 제공 정의. sql_ciphertext 열. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "network_script_config_versions": "네트워크 장비 설정 백업(설정 변경 근거가 될 수 있음). content_encrypted 열. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "omp_effect_audit_keys": "감사 중복 막음 키(식별자). 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "omp_target_endpoint_keys": "대상과 엔드포인트 식별자 연결. 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "peer_link_peers": "피어 연동 정의. api_key_env 는 키를 담은 환경변수의 이름이고 키 값이 아니다(api_key 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "software_omp_executions": "소프트웨어 실행 기록. run_token 은 실행 식별자다(token 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "users": "계정 인벤토리. password_hash 열이 있지만 46개 표가 FK 로 가리켜 비울 수 없다(_users_note). 열 단위 가리기는 따로 정할 일 (2026-11-16 119 카탈로그, 값은 보지 않음)",
-    "workload_notification_destinations": "작업 알림 대상(workload_alert_deliveries 가 FK 로 가리킴). secret_encrypted 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)"
+    "users": "계정 인벤토리. password_hash 열이 있지만 46개 표가 FK 로 가리켜 비울 수 없다(_users_note). 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "workload_notification_destinations": "작업 알림 대상(workload_alert_deliveries 가 FK 로 가리킴). secret_encrypted 열이 섞여 있다. 비밀 열은 secret_columns 로 값만 가린다 (2026-11-16 119 카탈로그, 값은 보지 않음)"
   },
 
   "_secret_note": [
@@ -281,7 +334,7 @@
     "후보는 secret_tables(비움), secret_reviewed_keep(검토해 담음), drop_data(다른 이유로 비움) 가운데 한 곳에 있어야 한다.",
     "어디에도 없는 후보는 캡처가 비우고(secret_detected, 확인 안 됨) 녹화 전 점검이 막는다.",
     "secret_reviewed_keep 의 인벤토리 표(users, collectors 등)는 비밀 열이 섞여 있지만 다른 표가 FK 로 가리키고 RCA 가",
-    "쓰는 자산이라 표째 비우지 않았다. 그 열들을 가리는 것은 따로 정할 일이다. v3 녹화본은 손대지 않는다(덧붙이기만)."
+    "쓰는 자산이라 표째 비우지 않고, 그 비밀 열만 secret_columns 로 값을 가린다(4회차). v3 녹화본은 손대지 않는다(덧붙이기만)."
   ],
 
   "drop_data": [
