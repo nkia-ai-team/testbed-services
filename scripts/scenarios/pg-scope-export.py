@@ -46,7 +46,7 @@ def load(path: Path) -> dict:
 
 
 def scoped_tables(cfg: dict) -> list[str]:
-    """pg_dump 에서 데이터를 빼야 하는 표 — slice(여기서 따로 낸다) + drop(아예 안 낸다)."""
+    """pg_dump 에서 데이터를 빼야 하는 표: slice(여기서 따로 낸다), drop(아예 안 낸다), 비밀 계열."""
     out: list[str] = []
     out += list(cfg["slice_roots"])
     out += list(cfg["slice_children"])
@@ -55,6 +55,8 @@ def scoped_tables(cfg: dict) -> list[str]:
     out += list(cfg.get("slice_by_epoch_ms", {}))
     out += list(cfg.get("slice_by_validity", {}))
     out += list(cfg["drop_data"])
+    # 비밀 계열(2026-11-16): 카탈로그 없이 불러도(종전 경로) 행을 담지 않는다.
+    out += list(cfg.get("secret_tables", {}))
     seen, uniq = set(), []
     for t in out:
         if t not in seen:
@@ -389,10 +391,12 @@ def parse_catalog(texts: dict[str, str]) -> dict:
         }
     columns: dict[str, list[str]] = {}
     timecols: dict[str, list[str]] = {}
+    coltypes: dict[str, list[tuple[str, str]]] = {}
     for p in rows("columns", 3):
         if p[0] not in tables:
             continue
         columns.setdefault(p[0], []).append(p[1])
+        coltypes.setdefault(p[0], []).append((p[1], p[2]))
         if p[2].startswith(("timestamp", "date")):
             timecols.setdefault(p[0], []).append(p[1])
     fks: dict[str, list[dict]] = {}
@@ -424,7 +428,7 @@ def parse_catalog(texts: dict[str, str]) -> dict:
     for p in rows("deps", 4):
         if p[0] in schemas and p[2] in schemas:  # 머리줄과 모르는 스키마는 거른다
             deps.append({"schema": p[0], "relation": p[1], "ref_schema": p[2], "ref_relation": p[3]})
-    return {"tables": tables, "columns": columns, "timecols": timecols, "fks": fks,
+    return {"tables": tables, "columns": columns, "coltypes": coltypes, "timecols": timecols, "fks": fks,
             "schemas": schemas, "denied": denied, "denied_reason": denied_reason, "denied_root": denied_root,
             "deps": deps}
 
@@ -443,8 +447,8 @@ def plan_access(cfg: dict, catalog: dict) -> tuple[list[dict], set[str], set[str
 
     1. 스키마는 cfg["capture_schemas"] 에 이유와 함께 적힌 것만 담는다(not_listed). 비밀번호 회전 기록 같은
        인증, 비밀 계열 스키마가 새로 생겨도 사람이 담기로 정하기 전에는 녹화에 실리지 않는다. 스키마 단위의
-       막음이다: 담는 스키마 안의 비밀 계열 표는 이 규칙으로 빠지지 않는다. 목록이 없는 옛 설정이면 모든 스키마가
-       대상이다.
+       막음이다: 담는 스키마 안의 비밀 계열 표는 이 규칙이 아니라 plan_scope 의 secret_tables, secret_detect 가
+       행을 비운다. 목록이 없는 옛 설정이면 모든 스키마가 대상이다.
     2. 캡처 사용자에게 USAGE 가 없는 스키마는 목록에 있어도 뺀다(no_usage). 목록에 있는데 못 읽으면 conflicts 에도 둔다.
     3. 담는 스키마 안에서 캡처 사용자가 SELECT 하지 못하는 표(분할 잎 포함)는 통째로 뺀다(no_select). 데이터만
        빼면 pg_dump 가 정의를 덤프하려고 거는 잠금에서 같은 권한 오류로 죽는다.
@@ -489,6 +493,30 @@ def plan_access(cfg: dict, catalog: dict) -> tuple[list[dict], set[str], set[str
                 entry.update(acknowledged=True, note=ack_r[root])
         excluded.append(entry)
     return excluded, gone_schemas, gone_tables
+
+
+def secret_candidates(cfg: dict, catalog: dict) -> dict[str, list[str]]:
+    """이름이나 열 꼴이 비밀 계열인 public 표와 그 근거(2026-11-16 사용자 결정, CAPFIX 2회차).
+
+    cfg["secret_detect"]: table_name(표 이름 정규식), column_name(열 이름 정규식), column_type(그 열의 타입 정규식.
+    문자열, bytea, json 처럼 값을 담는 타입만 본다: password_digit_count 같은 정책 숫자 열을 거르려고). 값은 보지 않는다.
+    """
+    det = cfg.get("secret_detect")
+    if not det:
+        return {}
+    name_re = re.compile(det["table_name"], re.I)
+    col_re = re.compile(det["column_name"], re.I)
+    type_re = re.compile(det["column_type"], re.I)
+    types = catalog.get("coltypes", {})
+    out: dict[str, list[str]] = {}
+    for t, info in catalog["tables"].items():
+        if info["schema"] != "public":
+            continue
+        why = ["표 이름"] if name_re.search(t) else []
+        why += [f"열 {c}:{ty}" for c, ty in types.get(t, []) if col_re.search(c) and type_re.search(ty)]
+        if why:
+            out[t] = why
+    return out
 
 
 def plan_scope(cfg: dict, catalog: dict) -> dict:
@@ -543,6 +571,25 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
 
     excluded, gone_schemas, gone_tables = plan_access(cfg, catalog)
 
+    # 비밀 계열 표(2026-11-16 사용자 결정): 행을 담지 않고 스키마만(drop). secret_tables 에 이유와 함께 적힌 표와,
+    # 이름이나 열 꼴이 비밀 계열인데 secret_reviewed_keep(검토해 담기로 한 표)에 없는 표. 뒤의 것은 사람이 정하기
+    # 전이라도 녹화에 값이 실리지 않게 비우고(닫힌 쪽), 녹화 전 점검이 막는다.
+    secret_cfg = cfg.get("secret_tables", {})
+    keep_cfg = cfg.get("secret_reviewed_keep", {})
+    detected = secret_candidates(cfg, catalog)
+    secret_rule: dict[str, str] = {}
+    for t in tables:
+        if tables[t]["schema"] in gone_schemas or t in gone_tables:
+            continue
+        if t in secret_cfg:
+            secret_rule[t] = "secret"
+        elif t in detected and t not in keep_cfg and t not in drop:
+            secret_rule[t] = "secret_detected"
+    for t in sorted(secret_rule):
+        why = secret_cfg.get(t) or ("이름이나 열 꼴: " + ", ".join(detected[t]))
+        excluded.append({"object": t, "kind": "table_data", "relkind": tables[t]["relkind"], "reason": secret_rule[t],
+                         "acknowledged": secret_rule[t] == "secret", "note": why})
+
     out: dict[str, dict] = {}
     for t, info in tables.items():
         base = {"table": t, "bytes": info["bytes"], "relkind": info["relkind"]}
@@ -550,6 +597,8 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
             out[t] = {**base, "scope": "excluded", "rule": "schema"}
         elif t in gone_tables:
             out[t] = {**base, "scope": "excluded", "rule": "no_select"}
+        elif t in secret_rule:
+            out[t] = {**base, "scope": "drop", "rule": secret_rule[t]}
         elif t in explicit_slice:
             out[t] = {**base, "scope": "slice", "rule": "config"}
         elif t in drop:
@@ -669,6 +718,25 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
     # 통째로 담는 표가 slice 표를 외래 키로 가리키면 복원 때 제약 생성이 깨진다(비우는 drop 표는
     # 행이 없어 괜찮다). 설정을 사람이 고칠 일이라 자동으로 바꾸지 않고 알린다. snap_tables 에 이유와 함께
     # 적힌 표는 사람이 이미 정한 것이라(상태, 대기열, 지식 표는 자르지 않는다) 알림 목록에만 남긴다.
+    # 비밀 계열로 비우는 표를 외래 키로 가리키는 표. slice 표면 복원의 구간 CSV 적재(\\copy)가 그 FK 에 걸려
+    # 멈추므로 충돌. 통째로 담는 표면 pg_restore 가 그 FK 제약만 만들지 못하고 넘어간다(평가 restore.sh 는
+    # pg_restore 오류로 멈추지 않는다, snap_fk_to_slice 와 같은 처지). 알림 목록에 둔다.
+    fk_to_secret: list[dict] = []
+    for t, e in sorted(out.items()):
+        if e["scope"] not in ("snap", "slice"):
+            continue
+        refs = sorted({fk["parent"] for fk in fks.get(t, []) if fk["parent"] in secret_rule and fk["parent"] != t})
+        if not refs:
+            continue
+        if e["scope"] == "slice":
+            conflicts.append({"table": t, "problem": "slice 표가 비우는 비밀 계열 표를 외래 키로 가리킨다",
+                              "parents": refs})
+        else:
+            fk_to_secret.append({"table": t, "parents": refs})
+    for t in secret_rule:
+        if t in explicit_slice or t in snap_ok:
+            conflicts.append({"table": t, "problem": "설정이 담으라고 한 표가 비밀 계열이라 비운다", "parents": []})
+
     snap_fk_to_slice: list[dict] = []
     for t, e in out.items():
         if e["scope"] == "snap":
@@ -696,6 +764,8 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         # 덤프에서 빼는 스키마, 표, 시퀀스 현재값과 이유(2026-11-13 CAPFIX). meta.postgres_scope.excluded 로 간다.
         "excluded": excluded,
         "excluded_schemas": sorted(gone_schemas),
+        "secret_tables": sorted(secret_rule),
+        "fk_to_secret": fk_to_secret,
     }
 
 
@@ -727,6 +797,7 @@ def plan_summary(plan: dict, cfg: dict | None = None) -> dict:
         "snap_fk_to_slice": plan["snap_fk_to_slice"],
         "conflicts": plan["conflicts"],
         "excluded": plan.get("excluded", []),
+        "fk_to_secret": plan.get("fk_to_secret", []),
     }
 
 
@@ -763,6 +834,12 @@ def emit_exclude_args(cfg: dict, plan: dict | None = None) -> str:
         elif e["kind"] == "table":
             flag = "--exclude-table-and-children" if e.get("relkind") == "p" else "--exclude-table"
             lines.append(f"{flag}={_qualified(e['object'])}")
+        elif e["kind"] == "table_data":
+            # 비밀 계열: 스키마는 남기고 행만 뺀다(복원하면 빈 표). 분할 표는 잎 데이터까지.
+            flag = "--exclude-table-data-and-children" if e.get("relkind") == "p" else "--exclude-table-data"
+            line = f"{flag}={_qualified(e['object'])}"
+            if line not in lines:
+                lines.append(line)
         else:
             lines.append(f"--exclude-table-data={_qualified(e['object'])}")
     return "\n".join(lines)

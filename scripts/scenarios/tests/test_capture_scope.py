@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import sqlite3
 import unittest
 from pathlib import Path
@@ -585,6 +586,116 @@ class PgAccessTest(unittest.TestCase):
                 self.assertTrue(isinstance(why, str) and len(why) > 10, (k, name))
         self.assertIn("public", PG_CFG["capture_schemas"])
         self.assertFalse(set(PG_CFG["capture_schemas"]) & set(PG_CFG["excluded_schemas"]))
+
+
+class PgSecretTest(unittest.TestCase):
+    """public 안 비밀 계열 표는 행을 담지 않고 스키마만(2026-11-16 사용자 결정, CAPFIX 2회차)."""
+    # 119 카탈로그(2026-11-16)에서 secret_detect 꼴에 걸린 표 57개. 값은 보지 않았다.
+    CANDIDATES_119 = (
+        "alarm_linkages api_keys automation_agent_worker_credentials automation_agents automation_workers "
+        "collect_credential_auth_blocks collect_credential_auth_failures collect_credential_holdings "
+        "collect_credential_issuances collect_credential_participants collect_credential_reports "
+        "collect_credential_rotation_changes collect_credential_rotation_states collect_credential_rotations "
+        "collect_credential_safety_revisions collect_installer_worker_approvals collect_worker_join_tokens "
+        "collect_worker_removals collect_worker_seal_keys collect_workers collector_sms_agent_keys "
+        "collector_sms_enrollment_tokens collectors credential_least_privilege_checks credential_profile_targets "
+        "credential_profiles credential_roles de_destinations dpm_agent_enrollment_tokens dpm_agent_keys "
+        "dpm_custom_sql_variable_keys dpm_zone_probe_credentials external_systems information_provisions "
+        "inspection_credential_target_map inspection_credentials kcm_agent_identity kcm_enrollment_codes "
+        "migration_sources network_script_config_versions nms_discovery_profiles nms_worker_result_keys "
+        "notification_channels omp_effect_audit_keys omp_target_endpoint_keys system_mail_settings "
+        "system_map_tile_settings system_sms_settings two_factor_challenges user_invitations user_otp_secrets "
+        "user_password_history users workload_connection_profiles workload_db_connection_profiles "
+        "workload_notification_destinations wpm_profile_credentials").split()
+
+    def plan(self, tables, cfg=None, **k):
+        return pg.plan_scope(cfg or PG_CFG, pg_catalog(tables, **k))
+
+    def test_listed_secret_table_keeps_its_schema_and_drops_its_rows(self):
+        plan = self.plan({"api_keys": 4096, "user_otp_secrets": (4096, "p")},
+                         columns={"api_keys": [("key_hash", "bytea")]})
+        self.assertEqual((plan["tables"]["api_keys"]["scope"], plan["tables"]["api_keys"]["rule"]), ("drop", "secret"))
+        got = {e["object"]: e for e in plan["excluded"]}
+        self.assertEqual({k: got["api_keys"][k] for k in ("kind", "reason", "acknowledged")},
+                         {"kind": "table_data", "reason": "secret", "acknowledged": True})
+        self.assertIn("key_hash", got["api_keys"]["note"])
+        args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
+        self.assertIn("--exclude-table-data=public.api_keys", args)
+        self.assertIn("--exclude-table-data-and-children=public.user_otp_secrets", args)
+        self.assertNotIn("--exclude-table=public.api_keys", args)  # 표 정의는 남는다
+        self.assertEqual(len(args), len(set(args)))
+        self.assertEqual(pg.plan_summary(plan, PG_CFG)["excluded"], plan["excluded"])
+
+    def test_unlisted_table_with_a_secret_column_is_emptied_and_unacknowledged(self):
+        plan = self.plan({"vault_tokens_v2": 4096, "plain": 4096},
+                         columns={"vault_tokens_v2": [("token_hash", "text")], "plain": [("note", "text")]})
+        e = next(x for x in plan["excluded"] if x["object"] == "vault_tokens_v2")
+        self.assertEqual((e["reason"], e["acknowledged"]), ("secret_detected", False))
+        self.assertEqual(e["note"], "이름이나 열 꼴: 열 token_hash:text")
+        self.assertEqual(plan["tables"]["vault_tokens_v2"]["rule"], "secret_detected")
+        self.assertEqual(plan["tables"]["plain"]["scope"], "snap")
+        self.assertIn("--exclude-table-data=public.vault_tokens_v2", pg.emit_exclude_args(PG_CFG, plan).splitlines())
+
+    def test_unlisted_table_with_a_secret_name_is_emptied(self):
+        plan = self.plan({"tenant_api_key_rotation": 4096})
+        e = next(x for x in plan["excluded"] if x["object"] == "tenant_api_key_rotation")
+        self.assertEqual((e["reason"], e["note"]), ("secret_detected", "이름이나 열 꼴: 표 이름"))
+
+    def test_reviewed_keep_and_other_drop_tables_are_not_flagged(self):
+        plan = self.plan({"users": 4096, "chat_sessions": 4096},
+                         columns={"users": [("password_hash", "character varying(255)")],
+                                  "chat_sessions": [("secret_note", "text")]})
+        self.assertEqual(plan["tables"]["users"]["scope"], "snap")
+        self.assertEqual((plan["tables"]["chat_sessions"]["scope"], plan["tables"]["chat_sessions"]["rule"]),
+                         ("drop", "config"))
+        self.assertEqual([e for e in plan["excluded"] if e["kind"] == "table_data"], [])
+
+    def test_columns_that_do_not_hold_values_are_not_secret(self):
+        plan = self.plan({"system_security_settings": 4096, "kcm_resources": 4096, "network_x": 4096},
+                         columns={"system_security_settings": [("password_digit_count", "integer"),
+                                                               ("password_expire_days", "integer")],
+                                  "kcm_resources": [("secret_refs", "text[]")],
+                                  "network_x": [("secret_masked", "boolean"), ("token_count", "integer")]})
+        self.assertEqual([e for e in plan["excluded"] if e["kind"] == "table_data"], [])
+
+    def test_fk_to_an_emptied_secret_table(self):
+        plan = self.plan({"inspection_credentials": 4096, "inspection_jobs": 4096},
+                         fks=[("inspection_jobs", "credential_id", "inspection_credentials", "id"),
+                              ("alert_history", "credential_id", "inspection_credentials", "id")])
+        self.assertIn({"table": "inspection_jobs", "parents": ["inspection_credentials"]}, plan["fk_to_secret"])
+        self.assertIn(("alert_history", "slice 표가 비우는 비밀 계열 표를 외래 키로 가리킨다"),
+                      [(c["table"], c["problem"]) for c in plan["conflicts"]])
+
+    def test_without_a_catalog_listed_secret_tables_are_still_emptied(self):
+        args = pg.emit_exclude_args(PG_CFG).splitlines()
+        for t in PG_CFG["secret_tables"]:
+            self.assertIn(f"--exclude-table-data=public.{t}", args)
+        for t in PG_CFG["drop_data"]:
+            self.assertIn(f"--exclude-table-data=public.{t}", args)
+
+    def test_every_secret_candidate_on_119_has_a_decision(self):
+        decided = set(PG_CFG["secret_tables"]) | set(PG_CFG["secret_reviewed_keep"]) | set(PG_CFG["drop_data"])
+        self.assertEqual(sorted(set(self.CANDIDATES_119) - decided), [])
+        self.assertEqual(len(self.CANDIDATES_119), 57)
+        for k in ("secret_tables", "secret_reviewed_keep"):
+            for name, why in PG_CFG[k].items():
+                self.assertTrue(isinstance(why, str) and len(why) > 15, (k, name))
+        self.assertFalse(set(PG_CFG["secret_tables"]) & set(PG_CFG["secret_reviewed_keep"]))
+        self.assertFalse(set(PG_CFG["secret_tables"]) & set(PG_CFG["drop_data"]))
+        for t in ("api_keys", "user_otp_secrets", "credential_profiles", "collect_worker_seal_keys", "dpm_agent_keys"):
+            self.assertIn(t, PG_CFG["secret_tables"])  # 사용자 결정에 든 예
+
+    def test_secret_detect_patterns_catch_the_119_column_shapes(self):
+        det = PG_CFG["secret_detect"]
+        col, ty = re.compile(det["column_name"], re.I), re.compile(det["column_type"], re.I)
+        for c, t in (("key_hash", "bytea"), ("credential_hash", "character(64)"), ("auth_encrypted", "text"),
+                     ("secret_encrypted", "text"), ("password_hash", "character varying(255)"), ("public_key", "bytea"),
+                     ("private_encrypted", "text"), ("config_encrypted", "jsonb"), ("sql_ciphertext", "text"),
+                     ("secrets", "bytea"), ("aes_key_encrypted", "text"), ("code_hash", "bytea")):
+            self.assertTrue(col.search(c) and ty.search(t), (c, t))
+        for c, t in (("password_digit_count", "integer"), ("secret_refs", "text[]"), ("method_otp", "boolean"),
+                     ("content_hash", "text"), ("resource_key", "text"), ("idempotency_key", "text")):
+            self.assertFalse(col.search(c) and ty.search(t), (c, t))
 
 
 class ThresholdValiditySliceTest(unittest.TestCase):

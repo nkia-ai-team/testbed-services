@@ -484,7 +484,9 @@ printf '%s\n' \
   $'polestar_notification\taudit_marks\tr\t24576\t0\t0\t0' \
   $'public\tsoftware_execution_runs\tr\t24576\t1\t1\t0' \
   $'public\tlocked_by_owner\tr\t24576\t1\t1\t0' \
-  $'security\tpassword_rotation_ledger\tr\t8192\t1\t1\t0' >"$fix/pg/tables.tsv"
+  $'security\tpassword_rotation_ledger\tr\t8192\t1\t1\t0' \
+  $'public\tapi_keys\tr\t8192\t1\t1\t0' \
+  $'public\tvault_tokens_v2\tr\t8192\t1\t1\t0' >"$fix/pg/tables.tsv"
 # 캡처 사용자 권한(2026-11-13 CAPFIX, 119 모양): security 는 USAGE 없음, public 의 표 하나와 시퀀스 둘은 SELECT 없음,
 # public 표의 트리거가 polestar_notification 함수를 부른다(담는 스키마라 막히지 않는다).
 printf '%s\n' $'nspname\thas_schema_privilege' $'polestar_notification\tt' $'public\tt' $'security\tf' >"$fix/pg/schemas.tsv"
@@ -510,7 +512,8 @@ printf '%s\n' \
   $'alert_active\talert_history_id\tbigint' \
   $'incident_event_cluster_successors\tpredecessor_incident_id\tuuid' \
   $'incident_event_cluster_successors\tsuccessor_incident_id\tuuid' \
-  $'incident_event_cluster_successors\tsuccessor_cluster_id\tuuid' >"$fix/pg/columns.tsv"
+  $'incident_event_cluster_successors\tsuccessor_cluster_id\tuuid' \
+  $'api_keys\tkey_hash\tbytea' $'vault_tokens_v2\ttoken_hash\ttext' >"$fix/pg/columns.tsv"
 printf '%s\n' \
   $'incident_members\tincident_id\tincidents\tid' \
   $'incident_snapshots\tincident_id\tincidents\tid' \
@@ -886,8 +889,12 @@ jq -e '.postgres_scope.excluded == [
      note:"비밀번호 회전 기록(password_rotation_ledger). 소유 postgres, 캡처 사용자에게 USAGE 가 없고 녹화 대상이 아니다(2026-11-13 G2 F49-H 캡처가 이 스키마의 권한 오류로 실패)"},
     {object:"inputs_seq_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null},
     {object:"locked_by_owner",kind:"table",relkind:"r",reason:"no_select",acknowledged:false,note:null},
-    {object:"locked_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null}] and
-  (.postgres_scope.by_scope.excluded == 2) and
+    {object:"locked_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null},
+    {object:"api_keys",kind:"table_data",relkind:"r",reason:"secret",acknowledged:true,
+     note:"외부 연계 API 키(key_hash) (2026-11-16 119 카탈로그, 값은 보지 않음)"},
+    {object:"vault_tokens_v2",kind:"table_data",relkind:"r",reason:"secret_detected",acknowledged:false,
+     note:"이름이나 열 꼴: 열 token_hash:text"}] and
+  (.postgres_scope.by_scope.excluded == 2) and (.postgres_scope.by_scope.drop >= 3) and
   ([.postgres_tables[].table] | index("locked_by_owner") == null)' \
   "$meta" >/dev/null || fail 'excluded schema and relations not recorded in meta.postgres_scope.excluded'
 grep -q 'PostgreSQL schema security left out of the dump: no_usage' "$live_root/case-live-v4.err" ||
@@ -895,6 +902,13 @@ grep -q 'PostgreSQL schema security left out of the dump: no_usage' "$live_root/
 grep -q 'PostgreSQL table locked_by_owner left out of the dump: no_select (not acknowledged in pg-scope.json)' \
   "$live_root/case-live-v4.err" || fail 'no unacknowledged warning for the unreadable table'
 [[ -s "$live_root/cases/case-live-v4/data/catalog/postgres/schemas.tsv" ]] || fail 'schemas catalog not kept'
+# 비밀 계열(2026-11-16 사용자 결정): 목록의 표와 꼴로 걸린 새 표 모두 행만 빼고 표 정의는 남긴다.
+for want in --exclude-table-data=public.api_keys --exclude-table-data=public.vault_tokens_v2; do
+  grep -qF -- "$want" <<<"$dump_line" || fail "pg_dump lacks $want"
+done
+if grep -qE -- '--exclude-table=public\.(api_keys|vault_tokens_v2)( |$)' <<<"$dump_line"; then fail 'secret table definition left out of pg_dump'; fi
+grep -q 'PostgreSQL table_data vault_tokens_v2 left out of the dump: secret_detected (not acknowledged in pg-scope.json)' \
+  "$live_root/case-live-v4.err" || fail 'no unacknowledged warning for the detected secret table'
 if grep -qF 'superseded_by' <<<"$export_sql"; then fail 'export SQL still reads incidents.superseded_by'; fi
 grep -q 'whole-table dump .* exceeds budget' "$live_root/case-live-v4.err" || fail 'no warning for snap budget'
 grep -qF "\\copy incident_snapshots FROM 'incident_snapshots.csv'" "$live_root/cases/case-live-v4/data/postgres/restore.sql" ||
