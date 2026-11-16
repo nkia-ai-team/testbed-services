@@ -401,9 +401,13 @@ class HypervisorRenderTests(unittest.TestCase):
         for cidr in ("192.168.123.0/24", "192.168.124.0/24", "192.168.125.0/24", "192.168.126.0/24"):
             self.assertIn(f"-A {chain} -s 192.168.122.0/24 -d {cidr} -j DROP", forward)
             self.assertIn(f"-A {chain} -s {cidr} -d 192.168.230.119 -j DROP", forward)
-            self.assertIn(f"-A {chain} -i wg0 -s 10.250.0.1 -d {cidr} -j ACCEPT", forward)
             self.assertIn(f"-A {chain} -s {cidr} -o vmbr0.200 -j ACCEPT", forward)
-        self.assertNotIn(f"-A {chain} -i wg0 -s 10.250.0.1 -d 192.168.127.0/24 -j ACCEPT", forward)
+            # 터널이 내려가 있어도 관제 주소로 가는 보고는 사내망 NAT 로 나가지 않는다(T0 리뷰 지적 14).
+            leak = forward.index(f"-A {chain} -s {cidr} -d 10.250.0.0/30 -o vmbr0.200 -j DROP")
+            self.assertLess(leak, forward.index(f"-A {chain} -s {cidr} -o vmbr0.200 -j ACCEPT"))
+        # wg0 의 허용과 거절은 T0 의 터널 스크립트 몫이라 이 파일에 wg0 가 없다.
+        self.assertFalse(any("wg0" in rule for rule in forward))
+        self.assertNotIn("wg0", self.net)
         drop_real = forward.index(f"-A {chain} -s 192.168.124.0/24 -d 192.168.230.119 -j DROP")
         allow_uplink = forward.index(f"-A {chain} -s 192.168.124.0/24 -o vmbr0.200 -j ACCEPT")
         self.assertLess(drop_real, allow_uplink)
@@ -418,7 +422,7 @@ class HypervisorRenderTests(unittest.TestCase):
                 self.assertIn(" -C ", line)
                 self.assertIn(" || ", line)
         hooks = re.findall(r"post-up iptables -C (FORWARD|INPUT) .* \|\| iptables -I \1 1 ", self.net)
-        self.assertEqual(len(hooks), 5 * 2 + 2 + 2)
+        self.assertEqual(len(hooks), 5 * 2 + 2)
 
     def test_chrony_allow_and_modules_on_the_hypervisor(self) -> None:
         self.assertEqual(self.files["/etc/chrony/conf.d/t4-net.conf"].splitlines()[-1], "allow 192.168.127.0/24")

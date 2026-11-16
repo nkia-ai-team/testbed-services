@@ -58,7 +58,7 @@ S 는 `s5-*` 로 같은 꼴(SNMP 없음).
 
 ## 4. 66 망 (잠금, 녹화 정지 창)
 
-전제: T0 의 WireGuard 적용(66 `wg0`, 119 `wg0`)이 이 파일과 따로 있다. 이 파일은 `wg0` 를 만들지 않고, `wg0` 와 이 테스트베드 대역 사이의 FORWARD 규칙만 둔다(MSS 클램프와 터널 자체는 T0 몫).
+전제: T0 의 WireGuard 적용(66 `wg0`, 119 `wg0`)이 이 파일과 따로 있다. `wg0` 인터페이스, `wg0` 의 FORWARD 허용과 거절(체인 TBWG-FWD), MSS 클램프는 T0 의 터널 스크립트가 터널과 함께 걸고 지운다(testbed-services `docs/runbook-testbed-tunnel.md` §3). 이 파일에는 `wg0` 가 나오지 않는다. 대신 터널이 내려가 있을 때 VM 의 관제 주소 행 보고가 사내망 NAT 로 새지 않게 `-d 10.250.0.0/30 -o vmbr0.200 DROP` 을 대역마다 둔다. 66 의 업무망 경로 3개는 T0 가 만들지 않으므로 이 파일이 둔다.
 
 ```
 python3 civil-petition/deploy/render.py --inventory civil-petition/deploy/inventory/t.json --hypervisor /tmp/t4-hv
@@ -72,7 +72,7 @@ python3 civil-petition/deploy/render.py --inventory civil-petition/deploy/invent
 
 1. 사전 확인: `ip -br link | grep -E 'vmbr(7|8|9|10|11)'` 빈 출력, `iptables -t nat -S | wc -l` 기록, `grep -q '^confdir /etc/chrony/conf.d' /etc/chrony/chrony.conf || echo` (없으면 conf.d 를 읽지 않으니 `include` 줄 하나를 더한다).
 2. `ifreload -a`, `systemctl restart chrony`, `modprobe` 넷.
-3. 확인(설계 §10 T2 "기존 테스트베드 영향 없음"): `iptables -t nat -S` 에 기존 2개(122 MASQUERADE, 8091 DNAT) 그대로, 늘어난 것은 MASQUERADE 4 와 SNAT 1. `iptables -S FORWARD` 정책 ACCEPT 그대로, 앞쪽에 T4-FWD 로 가는 줄 12개. tb-ops 에서 `curl -s -o /dev/null -w '%{http_code}' http://192.168.200.66:8091/` 와 사내망 핑, 기존 VM 6대의 바깥 통신.
+3. 확인(설계 §10 T2 "기존 테스트베드 영향 없음"): `iptables -t nat -S` 에 기존 2개(122 MASQUERADE, 8091 DNAT) 그대로, 늘어난 것은 MASQUERADE 4 와 SNAT 1. `iptables -S FORWARD` 정책 ACCEPT 그대로, 앞쪽에 T4-FWD 로 가는 줄 10개(브리지 5개의 들고 남). tb-ops 에서 `curl -s -o /dev/null -w '%{http_code}' http://192.168.200.66:8091/` 와 사내망 핑, 기존 VM 6대의 바깥 통신.
 4. 되돌리기: `rm` 세 파일, `ifreload -a`, `iptables -F T4-FWD; iptables -X T4-FWD` 류는 파일의 pre-down 이 한다.
 
 S: `--inventory .../s.json`, 파일 `s5-net`(브리지 vmbr12~14, MASQUERADE 2, SNAT 1, 사용자망 → 웹 80 허용).

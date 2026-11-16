@@ -70,7 +70,6 @@
     "chain": "S5-FWD",
     "input_chain": "S5-IN",
     "uplink": "vmbr0.200",
-    "tunnel_if": "wg0",
     "runner_addr": "192.168.122.20",
     "legacy_net": "192.168.122.0/24",
     "other_domain_nets": [
@@ -90,7 +89,8 @@
         "proto": "tcp",
         "port": 80
       }
-    ]
+    ],
+    "tunnel_cidr": "10.250.0.0/30"
   },
   "router": null,
   "hosts": [

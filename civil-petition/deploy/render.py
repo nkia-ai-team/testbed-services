@@ -517,7 +517,10 @@ def _ipt(table: str | None, rule: str) -> str:
 
 
 def hypervisor_files(inventory: dict) -> dict[str, str]:
-    """66 에 놓을 파일: 망 파일(브리지, 경로, NAT, FORWARD 와 INPUT 전용 체인), chrony 허용, 모듈."""
+    """66 에 놓을 파일: 망 파일(브리지, 경로, NAT, FORWARD 와 INPUT 전용 체인), chrony 허용, 모듈.
+
+    wg0 인터페이스와 wg0 의 FORWARD 규칙, MSS 클램프는 T0 의 터널 스크립트가 터널과 함께 걸고 지운다.
+    """
     hv = inventory["hypervisor"]
     networks = inventory["networks"]
     management = _management_net(inventory)
@@ -581,10 +584,8 @@ def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
     chain = hv["chain"]
     input_chain = hv["input_chain"]
     uplink = hv["uplink"]
-    tunnel = hv["tunnel_if"]
-    monitor = inventory["monitoring"]["address"]
+    tunnel_cidr = hv["tunnel_cidr"]
     domain_nets = [v["cidr"] for n, v in networks.items() if n != management]
-    monitored = [v["cidr"] for v in networks.values() if v.get("monitored")]
     forward: list[str] = [f"-A {chain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"]
     # 관리망: 러너의 ssh 만 들어가고 나머지는 드나들지 못한다.
     forward.append(f"-A {chain} -s {hv['runner_addr']} -d {mgmt['cidr']} -o {mgmt['bridge']} -p tcp --dport 22 -j ACCEPT")
@@ -599,18 +600,10 @@ def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
             forward.append(f"-A {chain} -s {other} -d {cidr} -j DROP")
         # 관제 서버 실주소로 가는 것은 조용히 통과시키지 않는다(출발지가 바뀌어 대상 구분이 깨짐).
         forward.append(f"-A {chain} -s {cidr} -d {hv['monitor_real_addr']} -j DROP")
-    # 터널: 관제 주소와 이 테스트베드 관제 대상 대역 사이만.
-    for cidr in monitored:
-        forward.append(f"-A {chain} -i {tunnel} -s {monitor} -d {cidr} -j ACCEPT")
-        forward.append(f"-A {chain} -o {tunnel} -s {cidr} -d {monitor} -j ACCEPT")
+    # 터널(wg0) 쪽 허용과 거절은 T0 의 터널 스크립트(TBWG-FWD, wg0 PostUp/PreDown)가 쥔다. 여기서는 터널이
+    # 내려가 있을 때 관제 주소로 가는 보고가 기본 경로(사내망 NAT)로 새지 않게만 막는다(T0 리뷰 지적 14).
     for cidr in domain_nets:
-        if cidr not in monitored:
-            forward.append(f"-A {chain} -i {tunnel} -d {cidr} -j DROP")
-            forward.append(f"-A {chain} -o {tunnel} -s {cidr} -j DROP")
-    forward.append(f"-A {chain} -i {tunnel} -o {uplink} -j DROP")
-    forward.append(f"-A {chain} -i {uplink} -o {tunnel} -j DROP")
-    forward.append(f"-A {chain} -i {tunnel} -d {hv['legacy_net']} -j DROP")
-    forward.append(f"-A {chain} -o {tunnel} -s {hv['legacy_net']} -j DROP")
+        forward.append(f"-A {chain} -s {cidr} -d {tunnel_cidr} -o {uplink} -j DROP")
     # 망 사이 허용 흐름(라우터가 없는 테스트베드의 사용자망 -> 업무망 같은).
     for rule in hv.get("allow_forward", []):
         forward.append(f"-A {chain} -s {rule['src']} -d {rule['dst']} -p {rule['proto']} --dport {rule['port']} -j ACCEPT")
@@ -656,8 +649,6 @@ def _chain_commands(inventory: dict) -> list[str]:
         hooks.append(f"FORWARD -o {network['bridge']} -j {chain}")
         if network.get("host_addr"):
             hooks.append(f"INPUT -i {network['bridge']} -j {input_chain}")
-    hooks.append(f"FORWARD -i {hv['tunnel_if']} -j {chain}")
-    hooks.append(f"FORWARD -o {hv['tunnel_if']} -j {chain}")
     for hook in hooks:
         builtin, rest = hook.split(" ", 1)
         commands.append(f"iptables -C {hook} 2>/dev/null || iptables -I {builtin} 1 {rest}")
@@ -674,8 +665,6 @@ def _chain_teardown(inventory: dict) -> list[str]:
         commands.append(f"iptables -D FORWARD -o {network['bridge']} -j {chain} 2>/dev/null || true")
         if network.get("host_addr"):
             commands.append(f"iptables -D INPUT -i {network['bridge']} -j {input_chain} 2>/dev/null || true")
-    commands.append(f"iptables -D FORWARD -i {hv['tunnel_if']} -j {chain} 2>/dev/null || true")
-    commands.append(f"iptables -D FORWARD -o {hv['tunnel_if']} -j {chain} 2>/dev/null || true")
     commands.append(f"iptables -F {chain} 2>/dev/null || true")
     commands.append(f"iptables -X {chain} 2>/dev/null || true")
     commands.append(f"iptables -F {input_chain} 2>/dev/null || true")
