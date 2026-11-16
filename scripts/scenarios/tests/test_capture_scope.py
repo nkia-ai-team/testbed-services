@@ -75,8 +75,17 @@ def pg_catalog(tables, columns=None, fks=None, *, configured=True, schemas=None,
     if schemas is not None:
         texts["schemas"] = "\n".join(f"{k}\t{'t' if v else 'f'}" for k, v in schemas.items())
     if denied is not None:
-        texts["denied"] = "\n".join(f"{(k.rpartition('.')[0] or 'public')}\t{k.rpartition('.')[2]}\t{v}"
-                                    for k, v in denied.items())
+        # 값은 relkind 하나(옛 3열) 또는 (relkind, 이유, 뿌리 부모 키)(6열).
+        lines = []
+        for k, v in denied.items():
+            sch, name = (k.rpartition('.')[0] or 'public'), k.rpartition('.')[2]
+            if isinstance(v, tuple):
+                kind, why, root = v
+                rs, rn = ((root.rpartition('.')[0] or 'public'), root.rpartition('.')[2]) if root else ("", "")
+                lines.append(f"{sch}\t{name}\t{kind}\t{why}\t{rs}\t{rn}")
+            else:
+                lines.append(f"{sch}\t{name}\t{v}")
+        texts["denied"] = "\n".join(lines)
     if deps is not None:
         texts["deps"] = "\n".join("\t".join(d) for d in deps)
     return pg.parse_catalog(texts)
@@ -507,6 +516,51 @@ class PgAccessTest(unittest.TestCase):
         self.assertIn('--exclude-schema="Vault"', args)
         self.assertIn('--exclude-table=public."Mixed"', args)
 
+    def test_row_security_table_is_excluded_whole_even_though_it_can_be_selected(self):
+        # 2회차(리뷰 하): RLS 표는 SELECT 가 있어도 pg_dump 가 "query would be affected by row-level security
+        # policy" 로 전체를 멈춘다(PG 17 실측, 2026-11-16).
+        plan = self.plan({"rls_t": 4096}, schemas={"public": True}, denied={"rls_t": ("r", "row_security", "")})
+        self.assertEqual([(e["object"], e["kind"], e["reason"]) for e in plan["excluded"]],
+                         [("rls_t", "table", "row_security")])
+        self.assertEqual(plan["tables"]["rls_t"]["scope"], "excluded")
+        self.assertIn("--exclude-table=public.rls_t", pg.emit_exclude_args(PG_CFG, plan).splitlines())
+
+    def test_unreadable_leaf_is_acknowledged_through_its_partition_root(self):
+        cfg = copy.deepcopy(PG_CFG)
+        cfg["excluded_relations"] = {**cfg["excluded_relations"], "parted": "잎마다 권한이 빠지는 이유"}
+        denied = {"parted_202611": ("r", "no_select", "parted"), "other_202611": ("r", "no_select", "other")}
+        plan = self.plan({"parted": (4096, "p"), "other": (4096, "p")}, cfg, schemas={"public": True}, denied=denied)
+        got = {e["object"]: e for e in plan["excluded"]}
+        self.assertEqual((got["parted_202611"]["partition_root"], got["parted_202611"]["acknowledged"],
+                          got["parted_202611"]["note"]), ("parted", True, "잎마다 권한이 빠지는 이유"))
+        self.assertEqual((got["other_202611"]["partition_root"], got["other_202611"]["acknowledged"]), ("other", False))
+        args = pg.emit_exclude_args(cfg, plan).splitlines()
+        self.assertIn("--exclude-table=public.parted_202611", args)
+        self.assertEqual(plan["tables"]["parted"]["scope"], "snap")  # 읽을 수 있는 부모는 담는다
+
+    def test_six_column_denied_rows_parse_and_three_column_rows_mean_no_select(self):
+        cat = pg.parse_catalog({
+            "tables": "public\tt1\tr\t10\t1\t1\t0",
+            "denied": "public\told\tr\npublic\trls\tr\trow_security\t\t\n"
+                      "audit\tleaf_1\tr\tno_select\taudit\tparted\npublic\tleaf_2\tr\tno_select\tpublic\tp2"})
+        self.assertEqual(cat["denied"], {"old": "r", "rls": "r", "audit.leaf_1": "r", "leaf_2": "r"})
+        self.assertEqual(cat["denied_reason"], {"old": "no_select", "rls": "row_security",
+                                                "audit.leaf_1": "no_select", "leaf_2": "no_select"})
+        self.assertEqual(cat["denied_root"], {"audit.leaf_1": "audit.parted", "leaf_2": "p2"})
+
+    def test_denied_query_names_row_security_and_the_partition_root(self):
+        q = pg.catalog_queries("lucida")["denied"]
+        for want in ("relrowsecurity", "relforcerowsecurity", "rolbypassrls", "pg_has_role('lucida', c.relowner",
+                     "pg_partition_root(c.oid)", "'row_security'"):
+            self.assertIn(want, q)
+        # 질의의 뜻은 로컬 PG 17 에서 확인했다(CAPFIX.md 2회차: RLS 표 rls_t 는 row_security, 소유한 RLS 표는 빠지지
+        # 않음, 못 읽는 잎 parted_b 는 뿌리 parted). 여기서는 그 조건 줄이 그대로인지를 본다.
+        self.assertIn("  AND (NOT has_table_privilege('lucida', c.oid, 'SELECT')\n"
+                      "       OR (c.relkind IN ('r', 'p') AND c.relrowsecurity\n"
+                      "           AND NOT coalesce((SELECT a.rolsuper OR a.rolbypassrls FROM pg_roles a WHERE "
+                      "a.rolname = 'lucida'), false)\n"
+                      "           AND (c.relforcerowsecurity OR NOT pg_has_role('lucida', c.relowner, 'USAGE'))))\n", q)
+
     def test_capture_warns_on_stderr_for_each_left_out_object(self):
         import subprocess
         import tempfile
@@ -779,6 +833,165 @@ class ChPlanTest(unittest.TestCase):
             self.assertRegex(q, r"FROM system\.(tables|columns)\b")
         self.assertEqual(json.loads(json.dumps(CH_CFG["databases"])), ["lucida", "lucida_selfsystem"])
 
+
+
+class ChRetentionTest(unittest.TestCase):
+    """캡처만 재시도하기 전 보존 기간(TTL) 계산(2026-11-16 CAPFIX 2회차, 리뷰 상 1).
+
+    TTL 식은 119 의 실제 모양(2026-11-16 system.tables engine_full)을 그대로 쓴다. 이 식들을 실제
+    ClickHouse 26.3 에 돌린 값은 CAPFIX.md 2회차 절(119 읽기)에 있고, 여기서는 나누기, 질의 모양, 판단을 본다.
+    """
+    WS, WE = "2026-11-13T06:42:51Z", "2026-11-13T09:40:45Z"
+
+    def test_delete_terms_follow_the_shapes_on_119(self):
+        cases = {
+            "MergeTree PARTITION BY toDate(ts) ORDER BY ts TTL toDateTime(timestamp) + toIntervalDay(3) "
+            "SETTINGS ttl_only_drop_parts = 1, index_granularity = 8192": ["toDateTime(timestamp) + toIntervalDay(3)"],
+            "ReplacingMergeTree ORDER BY k TTL toDate(bucket_ts) + toIntervalDay(30) WHERE bitAnd(store_mask, 4) != 0, "
+            "toDate(bucket_ts) + toIntervalDay(2) WHERE bitAnd(store_mask, 4) = 0 SETTINGS ttl_only_drop_parts = 1":
+                ["toDate(bucket_ts) + toIntervalDay(30)", "toDate(bucket_ts) + toIntervalDay(2)"],
+            # TSV 로 온 작은따옴표, 따옴표 안 쉼표, 지우지 않는 항
+            "MergeTree ORDER BY k TTL (toDateTime(toDate(timestamp) + 1, \\'UTC\\') + toIntervalDay(7)) WHERE "
+            "event_source IN (\\'a, b\\'), timestamp + toIntervalDay(90) TO VOLUME \\'cold\\' SETTINGS x = 1":
+                ["(toDateTime(toDate(timestamp) + 1, 'UTC') + toIntervalDay(7))"],
+            "MergeTree ORDER BY k TTL bucket_ts + toIntervalDay(multiIf(tier = \\'5m\\', 30, 3650)) SETTINGS x = 1":
+                ["bucket_ts + toIntervalDay(multiIf(tier = '5m', 30, 3650))"],
+            "MergeTree ORDER BY k SETTINGS index_granularity = 8192": [],
+            "Memory": [],
+            "MergeTree ORDER BY k TTL a + toIntervalDay(1), , b SETTINGS x = 1": None,
+        }
+        for engine_full, want in cases.items():
+            self.assertEqual(ch.ttl_delete_terms(ch._tsv_unescape(engine_full)), want, engine_full)
+
+    def test_probe_puts_the_window_start_in_every_time_column_and_defaults_elsewhere(self):
+        cat = ch_catalog([("lucida", "t", "MergeTree", "toYYYYMMDD(timestamp)", "timestamp", 1, 1)],
+                         [("lucida", "t", "timestamp", "DateTime64(9, \\'UTC\\')", "", ""),
+                          ("lucida", "t", "retention_days", "UInt16", "DEFAULT", "90"),
+                          ("lucida", "t", "derived", "UInt16", "DEFAULT", "retention_days * 2"),
+                          ("lucida", "t", "unused", "String", "", "")])
+        sql = ch.retention_probe(cat, "lucida.t", ["toDateTime(timestamp) + toIntervalDay(retention_days)",
+                                                   "timestamp + toIntervalDay(derived)"], self.WS)
+        ws = "parseDateTime64BestEffort('2026-11-13T06:42:51Z', 3, 'UTC')"
+        self.assertEqual(sql, (
+            "SELECT arrayMin([dateDiff('second', " + ws + ", toDateTime64(toDateTime(timestamp) + "
+            "toIntervalDay(retention_days), 3, 'UTC')), dateDiff('second', " + ws + ", toDateTime64(timestamp + "
+            "toIntervalDay(derived), 3, 'UTC'))]) FROM (SELECT CAST(" + ws + " AS DateTime64(9, 'UTC')) AS `timestamp`, "
+            "CAST((90) AS UInt16) AS `retention_days`, defaultValueOfTypeName('UInt16') AS `derived`)"))
+        self.assertNotIn("unused", sql)
+        self.assertNotRegex(sql, r"FROM `?lucida`?\.")  # 표 데이터를 읽지 않는다
+
+    def fake(self, ttl, probe_out=None, extra_tables=()):
+        tables = [("lucida", t, "MergeTree", "toYYYYMMDD(timestamp)", "timestamp", 1, 1) for t in V3_CH]
+        tables += list(extra_tables)
+        names = [r[1] if r[0] == "lucida" else f"{r[0]}.{r[1]}" for r in tables]
+        calls = []
+
+        def query(sql):
+            calls.append(sql)
+            if "partition_key" in sql:
+                return "\n".join("\t".join(map(str, r)) for r in tables) + "\n"
+            if "FROM system.columns" in sql:
+                return "\n".join(f"{r[0]}\t{r[1]}\ttimestamp\tDateTime" for r in tables) + "\n"
+            if "engine_full" in sql:
+                return "\n".join(f"{r[0]}\t{r[1]}\t{ttl.get(f'{r[0]}.{r[1]}', 'MergeTree ORDER BY timestamp')}"
+                                 for r in tables) + "\n"
+            if "create_table_query" in sql:
+                return ""
+            if sql.startswith("SELECT arrayMin"):
+                for key, out in (probe_out or {}).items():
+                    if f"toIntervalDay({key})" in sql:
+                        if isinstance(out, Exception):
+                            raise out
+                        return f"{out}\n"
+                raise AssertionError(sql)
+            raise AssertionError(sql)
+        return query, calls, names
+
+    def test_shortest_ttl_across_fixed_and_discovered_tables_and_selfsystem(self):
+        ttl = {"lucida.otel_traces_local": "MergeTree ORDER BY t TTL toDateTime(timestamp) + toIntervalDay(3) SETTINGS a = 1",
+               "lucida_selfsystem.otel_traces_local": "MergeTree ORDER BY t TTL toDateTime(timestamp) + toIntervalDay(1)",
+               "lucida.big_unknown": "MergeTree ORDER BY t TTL timestamp + toIntervalDay(5)"}
+        query, calls, _ = self.fake(ttl, {"3": 259200, "1": 86400, "5": 432000},
+                                    [("lucida_selfsystem", "otel_traces_local", "MergeTree", "toYYYYMMDD(timestamp)",
+                                      "timestamp", 1, 1)])
+        r = ch.retention_check(CH_CFG, query, {f"lucida.{t}" for t in V3_CH}, self.WS, self.WE)
+        self.assertEqual(r["shortest"], {"table": "lucida_selfsystem.otel_traces_local", "ttl_seconds": 86400})
+        self.assertEqual(r["unreadable"], [])
+        got = {t["table"]: t["ttl_seconds"] for t in r["tables"]}
+        self.assertEqual(got["lucida.otel_traces_local"], 259200)
+        self.assertIsNone(got["lucida.syslog_local"])  # TTL 없는 표
+        self.assertEqual(len(got), len(V3_CH) + 1)  # v3 고정 표는 계획이 건너뛰어도 센다
+        self.assertNotIn("lucida.big_unknown", got)  # 원천에 없는 설정 이름은 묻지 않는다
+
+    def test_tables_the_capture_leaves_out_are_not_counted(self):
+        ttl = {"lucida.schema_migrations": "MergeTree ORDER BY t TTL timestamp + toIntervalDay(1)"}
+        query, _, _ = self.fake(ttl, {}, [("lucida", "schema_migrations", "MergeTree", "toYYYYMMDD(timestamp)",
+                                           "timestamp", 1, 1)])
+        r = ch.retention_check(CH_CFG, query, {f"lucida.{t}" for t in V3_CH}, self.WS, self.WE)
+        self.assertIsNone(r["shortest"])
+        self.assertNotIn("lucida.schema_migrations", [t["table"] for t in r["tables"]])
+
+    def test_tables_whose_ttl_cannot_be_computed_are_reported_not_skipped(self):
+        ttl = {"lucida.otel_traces_local": "MergeTree ORDER BY t TTL toDateTime(timestamp) + toIntervalDay(3)",
+               "lucida.syslog_local": "MergeTree ORDER BY t TTL a + toIntervalDay(9), , b",
+               "lucida.process_meta": "MergeTree ORDER BY t TTL toDateTime(timestamp) + toIntervalDay(7)"}
+        query, _, _ = self.fake(ttl, {"3": 259200, "7": RuntimeError("Code: 62. Syntax error")})
+        v3 = {f"lucida.{t}" for t in V3_CH} | {"lucida.gone_table"}
+        r = ch.retention_check(CH_CFG, query, v3, self.WS, self.WE)
+        self.assertEqual(sorted((u["table"], u["error"][:12]) for u in r["unreadable"]), [
+            ("lucida.gone_table", "원천에 표가 없다"), ("lucida.process_meta", "TTL 계산 실패: C"),
+            ("lucida.syslog_local", "TTL 절을 나누지 못")])
+        self.assertEqual(r["shortest"], {"table": "lucida.otel_traces_local", "ttl_seconds": 259200})
+
+    def test_v3_keys_are_read_from_the_capture_script(self):
+        keys = ch.v3_keys_from_capture_script(ROOT.parent / "capture-eval-case.sh")
+        self.assertEqual(keys, {f"lucida.{t}" for t in V3_CH})
+
+    def test_capture_script_retention_mode_queries_clickhouse_with_header_credentials(self):
+        import http.server
+        import os
+        import subprocess
+        import threading
+
+        ttl = {"lucida.otel_traces_local": "MergeTree ORDER BY t TTL toDateTime(timestamp) + toIntervalDay(3)"}
+        query, _, _ = self.fake(ttl, {"3": 259200})
+        seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+                seen.append((self.headers.get("X-ClickHouse-User"), self.headers.get("X-ClickHouse-Key"), self.path))
+                try:
+                    out, code = query(body.replace(" FORMAT TSV", "")).encode(), 200
+                except Exception as error:  # noqa: BLE001
+                    out, code = str(error).encode(), 500
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            env = {**os.environ, "CH_URL": f"http://127.0.0.1:{server.server_port}", "CH_USER": "lucida",
+                   "CH_PASSWORD": "pw-not-in-argv"}
+            script = ROOT.parent / "capture-eval-case.sh"
+            r = subprocess.run(["bash", str(script), "--retention-check", "--window-start", self.WS,
+                                "--window-end", self.WE], capture_output=True, text=True, env=env, timeout=60)
+            bad = subprocess.run(["bash", str(script), "--retention-check", "--window-start", self.WS],
+                                 capture_output=True, text=True, env=env, timeout=60)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        doc = json.loads(r.stdout)
+        self.assertEqual(doc["shortest"], {"table": "lucida.otel_traces_local", "ttl_seconds": 259200})
+        self.assertEqual((doc["window_start"], doc["window_end"]), (self.WS, self.WE))
+        self.assertTrue(seen and all(u == "lucida" and k == "pw-not-in-argv" and p == "/" for u, k, p in seen))
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("--window-end", bad.stderr)
 
 if __name__ == "__main__":
     unittest.main()

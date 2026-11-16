@@ -349,6 +349,12 @@ AI 계층 온전 전제(리셋+2h 학습)로 탐지 이벤트 타임라인을 �
    | cooldown 중 | 쿨다운만 이어서 완료 → 캡처 진행 | 데이터는 이미 저장소에 있음 |
    | 캡처 실패 | 캡처만 재시도(창 불변) | 저장소 TTL 내 데이터 잔존 |
 
+   캡처만 재시도(2026-11-16): 러너 resume 은 캡처를 기다리다 멈춘 경우에만 그 run 의 캡처를 같은 창으로 다시
+   한다. 그 전에 `capture-eval-case.sh --retention-check` 가 캡처가 그 창으로 담을 ClickHouse 표(v3 고정 표,
+   발견 표, 모든 데이터베이스)의 TTL 을 원천에서 계산하고, 창 시작이 가장 짧은 TTL 에서 여유를 뺀 값보다
+   오래됐거나 어느 표의 TTL 이라도 읽지 못하면 재시도를 거절하고 사이클을 처음부터 다시 돈다. 거절과 허용
+   모두 가장 짧은 TTL 의 표와 값, 창 나이를 큐 reason 에 남긴다.
+
 2. **supervisor 감시 루프(AI)**: [AI Scenario Supervisor](spec-scenario-supervisor.md)
    계약대로 주기 감시 — pause 감지 → 진단 분류(동 스펙 §5 권한 경계 준수) →
    자율 수리 → 위 정책표의 안전 지점부터 재개. 사이클 진행(현재 구간·경과·
@@ -418,9 +424,11 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
   - 그 밖은 통째로. 설정에 없고 `auto.snap_max_bytes` 를 넘는 표는 스키마만 담고(`over_cap`), 통째 덤프
     합이 `auto.snap_budget_bytes` 를 넘으면 캡처가 경고한다. 녹화 전 점검(testbed-operate
     `pg-scope-guard.py`)이 같은 계획기로 둘 다 미리 막는다.
-  - 덤프에서 빼는 것(2026-11-13): 스키마는 `capture_schemas` 에 이유와 함께 적힌 것만 담는다. 캡처 사용자에게
-    USAGE 가 없는 스키마와 SELECT 가 없는 표는 통째로(`--exclude-schema`, `--exclude-table`) 빼고, SELECT 가 없는
-    시퀀스는 정의는 담고 현재값만 뺀다. pg_dump 는 담는 표를 잠그고 담는 시퀀스의 현재값을 읽어 하나라도 권한이
+  - 덤프에서 빼는 것(2026-11-13): 스키마는 `capture_schemas` 에 이유와 함께 적힌 것만 담는다(스키마 단위다.
+    담는 스키마 안의 비밀 계열 표는 이 규칙으로 빠지지 않고 종전처럼 snap 이다). 캡처 사용자에게 USAGE 가 없는
+    스키마, SELECT 가 없는 표, 행 수준 보안이 걸리는 표는 통째로(`--exclude-schema`, `--exclude-table`) 빼고,
+    SELECT 가 없는 시퀀스는 정의는 담고 현재값만 뺀다. 못 읽는 분할 잎은 잎째 빠지며(부모의 그 구간이 빔) 확인은
+    뿌리 부모 이름으로 받는다. pg_dump 는 담는 표를 잠그고 담는 시퀀스의 현재값을 읽어 하나라도 권한이
     없으면 덤프 전체가 실패한다. 빼는 것은 `meta.postgres_scope.excluded`(이름, 종류, 이유, 사람 확인 여부)에 남고,
     녹화 전 점검은 `excluded_schemas`, `excluded_relations` 에 이유가 없는 것과 빠지는 것에 기대는 객체를 막는다.
     복원한 PG 에는 뺀 스키마와 표가 없고, 현재값을 뺀 시퀀스는 시작값부터 센다.

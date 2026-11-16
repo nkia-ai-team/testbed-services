@@ -300,11 +300,21 @@ _ACCESS_QUERIES = {
         "WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'\n"
         "ORDER BY 1"
     ),
+    # 2회차(리뷰 하): 행 수준 보안(RLS)이 켜진 표는 SELECT 가 있어도 pg_dump 가 "query would be affected by
+    # row-level security policy" 로 덤프 전체를 멈춘다. 캡처 사용자가 superuser, BYPASSRLS 가 아니고 표 소유
+    # 권한도 없으면(소유자라도 FORCE 면) 같은 자리로 뺀다(reason row_security). 분할 잎이면 뿌리 부모를 함께 낸다.
     "denied": (
-        "SELECT n.nspname, c.relname, c.relkind::text\n"
+        "SELECT n.nspname, c.relname, c.relkind::text,\n"
+        "  CASE WHEN NOT has_table_privilege({role}, c.oid, 'SELECT') THEN 'no_select' ELSE 'row_security' END,\n"
+        "  coalesce(rn.nspname, ''), coalesce(r.relname, '')\n"
         "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n"
+        "LEFT JOIN pg_class r ON c.relispartition AND r.oid = pg_partition_root(c.oid)\n"
+        "LEFT JOIN pg_namespace rn ON rn.oid = r.relnamespace\n"
         "WHERE c.relkind IN ('r', 'p', 'S') AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'\n"
-        "  AND NOT has_table_privilege({role}, c.oid, 'SELECT')\n"
+        "  AND (NOT has_table_privilege({role}, c.oid, 'SELECT')\n"
+        "       OR (c.relkind IN ('r', 'p') AND c.relrowsecurity\n"
+        "           AND NOT coalesce((SELECT a.rolsuper OR a.rolbypassrls FROM pg_roles a WHERE a.rolname = {role}), false)\n"
+        "           AND (c.relforcerowsecurity OR NOT pg_has_role({role}, c.relowner, 'USAGE'))))\n"
         "ORDER BY 1, 2"
     ),
     # 담는 객체가 빼는 스키마나 표에 기대면(트리거가 부르는 함수, 외래 키가 가리키는 표, 뷰가 읽는 표) 덤프는
@@ -400,15 +410,23 @@ def parse_catalog(texts: dict[str, str]) -> dict:
     for info in tables.values():
         schemas.setdefault(info["schema"], None)
     denied: dict[str, str] = {}
+    denied_reason: dict[str, str] = {}
+    denied_root: dict[str, str] = {}
     for p in rows("denied", 3):
         if p[2] in ("r", "p", "S"):
-            denied[p[1] if p[0] == "public" else f"{p[0]}.{p[1]}"] = p[2]
+            key = p[1] if p[0] == "public" else f"{p[0]}.{p[1]}"
+            denied[key] = p[2]
+            # 3열짜리 옛 카탈로그는 SELECT 없음뿐이었다.
+            denied_reason[key] = p[3] if len(p) > 3 and p[3] in ("no_select", "row_security") else "no_select"
+            if len(p) > 5 and p[5]:
+                denied_root[key] = p[5] if p[4] == "public" else f"{p[4]}.{p[5]}"
     deps: list[dict] = []
     for p in rows("deps", 4):
         if p[0] in schemas and p[2] in schemas:  # 머리줄과 모르는 스키마는 거른다
             deps.append({"schema": p[0], "relation": p[1], "ref_schema": p[2], "ref_relation": p[3]})
     return {"tables": tables, "columns": columns, "timecols": timecols, "fks": fks,
-            "schemas": schemas, "denied": denied, "deps": deps}
+            "schemas": schemas, "denied": denied, "denied_reason": denied_reason, "denied_root": denied_root,
+            "deps": deps}
 
 
 def load_catalog(d: Path) -> dict:
@@ -424,13 +442,18 @@ def plan_access(cfg: dict, catalog: dict) -> tuple[list[dict], set[str], set[str
     """덤프에서 통째로 빼는 스키마와 표, 데이터만 빼는 시퀀스(2026-11-13 CAPFIX).
 
     1. 스키마는 cfg["capture_schemas"] 에 이유와 함께 적힌 것만 담는다(not_listed). 비밀번호 회전 기록 같은
-       인증, 비밀 계열 스키마가 새로 생겨도 사람이 담기로 정하기 전에는 녹화에 실리지 않는다. 목록이 없는 옛
-       설정이면 모든 스키마가 대상이다.
+       인증, 비밀 계열 스키마가 새로 생겨도 사람이 담기로 정하기 전에는 녹화에 실리지 않는다. 스키마 단위의
+       막음이다: 담는 스키마 안의 비밀 계열 표는 이 규칙으로 빠지지 않는다. 목록이 없는 옛 설정이면 모든 스키마가
+       대상이다.
     2. 캡처 사용자에게 USAGE 가 없는 스키마는 목록에 있어도 뺀다(no_usage). 목록에 있는데 못 읽으면 conflicts 에도 둔다.
     3. 담는 스키마 안에서 캡처 사용자가 SELECT 하지 못하는 표(분할 잎 포함)는 통째로 뺀다(no_select). 데이터만
        빼면 pg_dump 가 정의를 덤프하려고 거는 잠금에서 같은 권한 오류로 죽는다.
     4. SELECT 하지 못하는 시퀀스는 정의는 담고 현재값만 뺀다(no_select). 표의 기본값과 identity 가 그 시퀀스를
        부르므로 정의를 빼면 복원이 깨진다. 복원된 시퀀스는 시작값에서 다시 센다.
+    5. 행 수준 보안이 캡처 사용자에게 걸리는 표는 SELECT 가 있어도 통째로 뺀다(row_security). pg_dump 가 그 표
+       하나로 전체를 멈추기 때문이다.
+    6. 못 읽는 분할 잎은 잎째 빼고 partition_root 에 뿌리 부모를 적는다. 확인은 잎 이름이나 뿌리 부모 이름 어느
+       쪽에 적혀도 된다.
     빼는 것마다 cfg["excluded_schemas"], cfg["excluded_relations"] 에 이유가 적혀 있으면 acknowledged=True 다.
     녹화 전 점검은 acknowledged 가 아닌 것을 막는다. 캡처는 막지 않고 빼고 meta 에 남긴다.
     """
@@ -449,13 +472,22 @@ def plan_access(cfg: dict, catalog: dict) -> tuple[list[dict], set[str], set[str
         excluded.append({"object": sch, "kind": "schema", "reason": reason,
                          "acknowledged": sch in ack_s, "note": ack_s.get(sch)})
     gone_tables: set[str] = set()
+    reasons, roots = catalog.get("denied_reason", {}), catalog.get("denied_root", {})
     for key, kind in sorted(catalog.get("denied", {}).items()):
         if (key.rpartition(".")[0] or "public") in gone_schemas:
             continue
         if kind != "S":
             gone_tables.add(key)
-        excluded.append({"object": key, "kind": "sequence_data" if kind == "S" else "table", "relkind": kind,
-                         "reason": "no_select", "acknowledged": key in ack_r, "note": ack_r.get(key)})
+        entry = {"object": key, "kind": "sequence_data" if kind == "S" else "table", "relkind": kind,
+                 "reason": reasons.get(key, "no_select"), "acknowledged": key in ack_r, "note": ack_r.get(key)}
+        root = roots.get(key)
+        if root is not None and root != key:
+            # 2회차(리뷰 하): 못 읽는 분할 잎은 잎째 빠져 그 구간 데이터가 부모에서 사라진다. 날마다 새 잎이 생기는
+            # 표면 잎마다 확인을 받을 수 없으므로 뿌리 부모 이름 하나로 확인을 받는다(이유도 거기에).
+            entry["partition_root"] = root
+            if not entry["acknowledged"] and root in ack_r:
+                entry.update(acknowledged=True, note=ack_r[root])
+        excluded.append(entry)
     return excluded, gone_schemas, gone_tables
 
 

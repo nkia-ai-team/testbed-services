@@ -218,10 +218,201 @@ def plan_tables(cfg: dict, catalog: dict, skip: set[str], window_start: str, win
     return {"tables": planned, "excluded": excluded, "max_execution_time": cfg.get("max_execution_time")}
 
 
+# ---------------------------------------------------------------- 보존 기간 (2026-11-16 CAPFIX 2회차)
+#
+# 러너가 캡처만 다시 할 때(주입은 끝났고 캡처만 실패) 그 캡처가 담을 표의 보존 기간(TTL)을 원천에서 읽는다.
+# 창 시작이 가장 짧은 TTL 에 여유를 뺀 값보다 오래됐으면 창 앞쪽 행이 이미 지워졌을 수 있어 재시도를 거절한다
+# (캡처는 행 수와 최소, 최대 시각을 적기만 해서 빠진 행이 오류 없이 지나간다, CAPFIX 리뷰 상 1).
+#
+# TTL 식은 표마다 모양이 다르다(119, 2026-11-16 실측): 시각 열 + toIntervalDay(3), toStartOfMonth(열) + 일수,
+# 행마다 다른 열(retention_days, retention_hours, multiIf(tier ...)), WHERE 가 붙은 여러 항. 식을 글자로 풀지 않고
+# ClickHouse 가 계산하게 한다: 시각 열은 모두 창 시작, 다른 열은 열 기본값(식이 다른 열을 부르면 타입 기본값)인
+# 한 행을 만들어 지우는 TTL 항마다 만료 시각을 구하고 창 시작과의 차이(초)를 TTL 로 본다. 창 시작의 행이 가장
+# 먼저 지워지므로 이 값이 그 표에서 창이 버티는 시간이다. WHERE 가 붙은 항도 조건과 상관없이 센다(조건에 맞는
+# 행만 지워져도 녹화가 달라진다). 지우지 않는 항(TO DISK, TO VOLUME, RECOMPRESS, GROUP BY)은 뺀다.
+# 표 데이터는 읽지 않는다(FROM 이 리터럴 한 행).
+TTL_NOT_DELETE = re.compile(r"\b(TO\s+DISK|TO\s+VOLUME|RECOMPRESS|GROUP\s+BY|SET)\b", re.I)
+
+
+def ttl_query(databases: list[str]) -> str:
+    dbs = ", ".join("'" + d.replace("'", "") + "'" for d in databases)
+    return (f"SELECT database, name, engine_full FROM system.tables WHERE database IN ({dbs}) AND NOT is_temporary "
+            "ORDER BY database, name")
+
+
+def _tsv_unescape(v: str) -> str:
+    return re.sub(r"\\(.)", lambda m: {"t": "\t", "n": "\n", "r": "\r", "0": "\0"}.get(m.group(1), m.group(1)), v)
+
+
+def _split_top(text: str, sep: str = ",") -> list[str]:
+    """괄호와 작은따옴표 밖의 sep 로 나눈다."""
+    out, depth, quote, cur, i = [], 0, False, [], 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            cur.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                cur.append(text[i + 1])
+                i += 1
+            elif ch == "'":
+                quote = False
+        elif ch == "'":
+            quote = True
+            cur.append(ch)
+        elif ch == "(":
+            depth += 1
+            cur.append(ch)
+        elif ch == ")":
+            depth -= 1
+            cur.append(ch)
+        elif ch == sep and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return out
+
+
+def _top_keyword(text: str, word: str) -> int:
+    """괄호와 따옴표 밖에서 처음 나오는 낱말 word(공백으로 둘러싸인)의 위치. 없으면 -1."""
+    depth, quote = 0, False
+    pat = re.compile(rf"\s{word}\s", re.I)
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == "'" and text[i - 1] != "\\":
+                quote = False
+            continue
+        if ch == "'":
+            quote = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and pat.match(text, i):
+            return i
+    return -1
+
+
+def ttl_delete_terms(engine_full: str) -> list[str] | None:
+    """engine_full 의 표 TTL 절에서 행을 지우는 항의 식. TTL 이 없으면 [], 절을 못 찾아 낼 모양이면 None."""
+    text = engine_full or ""
+    start = _top_keyword(text, "TTL")
+    if start < 0:
+        return []
+    body = text[start:].strip()[3:]
+    end = _top_keyword(body, "SETTINGS")
+    if end >= 0:
+        body = body[:end]
+    terms = []
+    for raw in _split_top(body):
+        term = raw.strip()
+        if not term:
+            return None
+        padded = " " + term + " "
+        cut = _top_keyword(padded, "WHERE")
+        expr = term if cut < 0 else padded[:cut].strip()
+        if TTL_NOT_DELETE.search(expr):
+            continue
+        expr = re.sub(r"\s+DELETE\s*$", "", expr, flags=re.I).strip()
+        if not expr:
+            return None
+        terms.append(expr)
+    return terms
+
+
+def retention_probe(catalog: dict, key: str, terms: list[str], window_start: str) -> str:
+    """terms 의 만료 시각과 창 시작의 차(초) 가운데 가장 작은 값을 내는 질의. 표 데이터는 읽지 않는다."""
+    cols = dict(catalog["columns"].get(key, []))
+    derived = catalog.get("derived", {}).get(key, {})
+    ws = f"parseDateTime64BestEffort('{window_start}', 3, 'UTC')"
+    used = [c for c in cols if any(c in _idents(t) for t in terms)]
+    values = []
+    for c in used:
+        ty = _tsv_unescape(cols[c])  # 열 타입도 TSV 로 와서 시간대 인자의 작은따옴표가 이스케이프돼 있다
+        default = _tsv_unescape(derived.get(c, ""))
+        if TIME_TYPE.match(ty):
+            value = f"CAST({ws} AS {ty})"
+        elif default and not (set(_idents(default)) & set(cols)):
+            value = f"CAST(({default}) AS {ty})"
+        else:
+            value = f"defaultValueOfTypeName('{ty}')"
+        values.append(f"{value} AS {_quote(c)}")
+    diffs = ", ".join(f"dateDiff('second', {ws}, toDateTime64({t}, 3, 'UTC'))" for t in terms)
+    row = ", ".join(values) if values else "1 AS _one"
+    return f"SELECT arrayMin([{diffs}]) FROM (SELECT {row})"
+
+
+def retention_check(cfg: dict, query, v3_keys: set[str], window_start: str, window_end: str) -> dict:
+    """캡처가 담을 표(v3 고정 표와 발견 표)마다 TTL 을 원천에서 계산한다. query(sql) -> str(TSV) 는 원천 CH 질의.
+
+    읽지 못한 표는 unreadable 에 이유와 함께 둔다. 부르는 쪽(러너)은 하나라도 있으면 닫힌 쪽(거절)으로 간다.
+    """
+    texts = {k: query(q + " FORMAT TSV") for k, q in catalog_queries(cfg["databases"]).items()}
+    catalog = parse_catalog(texts)
+    engines = {}
+    for p in _rows(query(ttl_query(cfg["databases"]) + " FORMAT TSV"), 3):
+        engines[f"{p[0]}.{p[1]}"] = _tsv_unescape(p[2])
+    plan = plan_tables(cfg, catalog, v3_keys, window_start, window_end)
+    keys = sorted(v3_keys | {f"{e['database']}.{e['table']}" for e in plan["tables"]})
+    tables, unreadable = [], []
+    for key in keys:
+        if key not in catalog["tables"]:
+            unreadable.append({"table": key, "error": "원천에 표가 없다"})
+            continue
+        terms = ttl_delete_terms(engines.get(key, ""))
+        if terms is None:
+            unreadable.append({"table": key, "error": "TTL 절을 나누지 못했다"})
+            continue
+        if not terms:
+            tables.append({"table": key, "ttl_seconds": None})
+            continue
+        try:
+            out = query(retention_probe(catalog, key, terms, window_start) + " FORMAT TSV").strip()
+            seconds = int(out)
+        except Exception as error:  # noqa: BLE001  표 하나를 못 읽어도 나머지는 계속 보고, 이 표는 읽지 못함으로
+            unreadable.append({"table": key, "error": f"TTL 계산 실패: {str(error)[:300]}"})
+            continue
+        tables.append({"table": key, "ttl_seconds": seconds, "terms": len(terms)})
+    bounded = [t for t in tables if t["ttl_seconds"] is not None]
+    shortest = min(bounded, key=lambda t: (t["ttl_seconds"], t["table"])) if bounded else None
+    return {"window_start": window_start, "window_end": window_end, "tables": tables, "unreadable": unreadable,
+            "shortest": {"table": shortest["table"], "ttl_seconds": shortest["ttl_seconds"]} if shortest else None}
+
+
+def v3_keys_from_capture_script(path: Path) -> set[str]:
+    """capture-eval-case.sh 의 ch_v3_tables 목록(녹화 전 점검과 같은 읽기). 목록은 그 스크립트 한 곳에만 둔다."""
+    block = re.search(r"ch_v3_tables=\((.*?)\n  \)", path.read_text(), re.S)
+    if block is None:
+        raise RuntimeError(f"ch_v3_tables 목록을 찾지 못했다: {path}")
+    names = re.findall(r"'([a-z0-9_]+):", block.group(1))
+    if len(names) < 12:
+        raise RuntimeError(f"ch_v3_tables 목록이 짧다({len(names)}): {path}")
+    return {f"lucida.{n}" for n in names}
+
+
+def http_query(url: str, user: str, password: str, timeout: float = 60):
+    import urllib.request
+
+    def run(sql: str) -> str:
+        req = urllib.request.Request(url.rstrip("/") + "/", data=sql.encode(), method="POST")
+        if user:
+            req.add_header("X-ClickHouse-User", user)
+            req.add_header("X-ClickHouse-Key", password)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode()
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(error.read().decode(errors="replace")[:300].strip()) from None
+    return run
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    ap.add_argument("--emit", choices=["catalog-sql", "plan"], default="plan")
+    ap.add_argument("--emit", choices=["catalog-sql", "plan", "retention-check"], default="plan")
+    ap.add_argument("--capture-script", type=Path, help="retention-check: v3 고정 표 목록을 읽을 capture-eval-case.sh")
     ap.add_argument("--catalog", type=Path, help="catalog-sql 결과 디렉터리(tables.tsv, columns.tsv, mviews.tsv)")
     ap.add_argument("--skip", action="append", default=[], help="db.table. 따로 담는 표(v3 13개)")
     ap.add_argument("--window-start")
@@ -230,6 +421,16 @@ def main() -> int:
     cfg = load(a.config)
     if a.emit == "catalog-sql":
         print(json.dumps(catalog_queries(cfg["databases"]), ensure_ascii=False))
+        return 0
+    if a.emit == "retention-check":
+        # 원천 CH 는 환경변수(CH_URL, CH_USER, CH_PASSWORD)로. 캡처 스크립트와 같은 이름, 같은 기본값.
+        import os
+        if not (a.capture_script and a.window_start and a.window_end):
+            sys.exit("--capture-script, --window-start, --window-end 가 필요하다")
+        query = http_query(os.environ.get("CH_URL", "http://192.168.230.119:18123"),
+                           os.environ.get("CH_USER", "lucida"), os.environ.get("CH_PASSWORD", ""))
+        print(json.dumps(retention_check(cfg, query, v3_keys_from_capture_script(a.capture_script),
+                                         a.window_start, a.window_end), ensure_ascii=False, indent=1))
         return 0
     if not (a.catalog and a.window_start and a.window_end):
         sys.exit("--catalog, --window-start, --window-end 가 필요하다")

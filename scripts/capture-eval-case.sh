@@ -17,6 +17,11 @@ Usage:
     [--case-label <calibration|evaluation|failed>] [--run-result <result.json>] \
     [--phases-json <file>] [--topology-bundle <dir>] [--decoys-json <file>] \
     [--output-root <dir>] [--dry-run]
+  capture-eval-case.sh --self-check
+  capture-eval-case.sh --retention-check --window-start <UTC> --window-end <UTC>
+                               JSON of the retention (TTL seconds from the window
+                               start) of every ClickHouse table this capture would
+                               take for that window; no table data is read.
 
 Case labels:
   calibration       tuning/reproducibility capture; not used for scoring (default)
@@ -168,6 +173,9 @@ topology_bundle=''
 decoys_json=''
 dry_run=false
 self_check=false
+retention_check=false
+retention_window_start=''
+retention_window_end=''
 
 while (( $# > 0 )); do
   case "$1" in
@@ -193,6 +201,9 @@ while (( $# > 0 )); do
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --self-check) self_check=true; shift ;;
+    --retention-check) retention_check=true; shift ;;
+    --window-start) retention_window_start="${2:-}"; shift 2 ;;
+    --window-end) retention_window_end="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -287,6 +298,26 @@ if [[ "$self_check" == true ]]; then
   fi
   (( sc_status == 0 )) && log 'self-check passed: capture chain is fully provisioned'
   exit "$sc_status"
+fi
+
+# --retention-check --window-start <UTC> --window-end <UTC> (2026-11-16 CAPFIX 2회차): 이 캡처가 그 창으로 담을
+# ClickHouse 표(v3 고정 표와 발견 표, 모든 데이터베이스)의 보존 기간(TTL)을 원천에서 계산해 JSON 으로 낸다.
+# 러너가 캡처만 다시 하기 전에 창 앞쪽 행이 이미 지워졌을 수 있는지 판단한다. 표 데이터는 읽지 않는다.
+# 표를 고르는 규칙은 캡처와 같은 ch-scope-plan.py 이고, v3 고정 표 목록은 이 파일의 ch_v3_tables 를 읽는다.
+if [[ "$retention_check" == true ]]; then
+  [[ -n "$retention_window_start" && -n "$retention_window_end" ]] ||
+    die '--retention-check needs --window-start and --window-end'
+  rc_tool="${CH_SCOPE_TOOL:-}"
+  if [[ -z "$rc_tool" ]]; then
+    for candidate in "$(dirname "$(realpath "$0")")/scenarios/ch-scope-plan.py" \
+                     "$(dirname "$(realpath "$0")")/scenario-contracts/ch-scope-plan.py"; do
+      [[ -f "$candidate" ]] && { rc_tool="$candidate"; break; }
+    done
+  fi
+  [[ -n "$rc_tool" && -f "$rc_tool" ]] || die 'ch-scope-plan.py 없음 (CH_SCOPE_TOOL 로 직접 지정 가능)'
+  CH_URL="${CH_URL:-http://192.168.230.119:18123}" CH_USER="${CH_USER:-lucida}" CH_PASSWORD="${CH_PASSWORD:-}" \
+    exec python3 "$rc_tool" --emit retention-check --capture-script "$(realpath "$0")" \
+      --window-start "$retention_window_start" --window-end "$retention_window_end"
 fi
 
 [[ -n "$case_id" ]] || die '--case-id is required'
