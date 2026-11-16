@@ -12,7 +12,8 @@
     설계 Q3 의 문구는 "5xx와 시간 초과" 이고, 연결 실패도 사용자 비정상(§6-3)이라 함께 센다(더 엄격한 쪽).
   - 5분 창의 99% 이상에서 그 창의 비정상 비율 0.5% 이하. 기록이 없는 창(부하가 멈춘 창)은 못 지킨 창으로 센다.
   - 피크(KST 15~17시) 창들의 p95 최댓값 800ms 이하.
-  - 서버별 예정 없는 서비스 재시작 0(NRestarts 변화 0), 커널 OOM 0, chrony 오프셋 50ms 이하(사실이 주어질 때).
+  - 서버별 예정 없는 서비스 재시작 0(NRestarts 변화 0, 그리고 사람이 다시 띄운 것까지 잡으려고 InvocationID 같음),
+    커널 OOM 0, chrony 오프셋 50ms 이하(사실이 주어질 때).
 
 판정 이름: PASS_Q3_24H 또는 FAIL_Q3_24H. 창 수가 24시간에 못 미치면 INCOMPLETE_Q3_24H.
 """
@@ -99,6 +100,11 @@ def judge(windows: dict[int, dict], end: datetime.datetime, hours: int = 24, hos
         for unit, delta in restarts.items():
             if delta != 0:
                 reasons.append(f"{host} {unit} 재시작 {delta}")
+        inv_before = facts.get("invocations_before", {})
+        inv_after = facts.get("invocations_after", {})
+        for unit in sorted(set(inv_before) | set(inv_after)):
+            if inv_before.get(unit) != inv_after.get(unit) and not restarts.get(unit):
+                reasons.append(f"{host} {unit} 다시 시작됨(InvocationID 바뀜)")
         if oom:
             reasons.append(f"{host} 커널 OOM {oom}")
         if facts.get("rebooted"):
@@ -141,6 +147,8 @@ def merge_facts(before_path: Path, after_path: Path) -> dict:
         merged[host] = {
             "nrestarts_before": start.get("nrestarts", {}),
             "nrestarts_after": end.get("nrestarts", {}),
+            "invocations_before": start.get("invocations", {}),
+            "invocations_after": end.get("invocations", {}),
             "oom_kills": end.get("oom_kills", 0),
             "chrony_offset_ms": end.get("chrony_offset_ms"),
             "rebooted": bool(start and end and start.get("boot") != end.get("boot")) or not (start and end),

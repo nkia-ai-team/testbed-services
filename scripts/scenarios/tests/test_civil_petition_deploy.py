@@ -42,6 +42,7 @@ ifdiscards = _load("ifdiscards", DEPLOY / "router" / "ifdiscards.py")
 stability = _load("stability_check", DEPLOY / "tools" / "stability_check.py")
 scale = _load("scale_verdict", DEPLOY / "tools" / "scale_verdict.py")
 monitor = _load("loadgen_monitor_cp", REPO / "scripts" / "scenarios" / "profiles" / "loadgen_monitor.py")
+hvcheck = _load("hv_iptables_check", DEPLOY / "tools" / "hv_iptables_check.py")
 
 
 def inventory(path: Path = T_INV) -> dict:
@@ -93,6 +94,16 @@ class InventoryValidationTests(unittest.TestCase):
         inv["hosts"] = [h for h in inv["hosts"] if h["role"] != "router"]
         with self.assertRaises(render.InventoryError):
             render.validate(inv)
+
+    def test_rejects_an_app_context_other_than_the_war_name(self) -> None:
+        inv = inventory()
+        inv["app"]["context"] = "portal"
+        with self.assertRaises(render.InventoryError):
+            render.validate(inv)
+
+    def test_kernel_modules_load_before_forwarding_starts(self) -> None:
+        steps = bundles(T_INV)["web01"]["steps"]
+        self.assertLess(steps.index("kernel-modules"), steps.index("syslog-forward"))
 
     def test_rejects_an_address_outside_its_network(self) -> None:
         inv = inventory()
@@ -429,8 +440,134 @@ class HypervisorRenderTests(unittest.TestCase):
         self.assertIn("sch_netem", self.files["/etc/modules-load.d/t4-net-qdisc.conf"])
         s_files = render.hypervisor_files(inventory(S_INV))
         self.assertFalse(any(path.startswith("/etc/modules-load.d/") for path in s_files))
-        s_net = s_files["/etc/network/interfaces.d/s5-net"]
-        self.assertIn("-s 192.168.132.10 -d 192.168.131.11 -p tcp --dport 80 -j ACCEPT", s_net)
+        s_rules = s_files["/etc/network/s5-net.rules"]
+        self.assertIn("-s 192.168.132.10 -d 192.168.131.11 -p tcp --dport 80 -j ACCEPT", s_rules)
+        self.assertIn("ifup vmbr12 vmbr13 vmbr14", render.hypervisor_commands(inventory(S_INV), "up"))
+
+
+IPTABLES_SCRIPT = r'''
+import json, re, subprocess, sys
+net_file, rules_tmp, rules_path = sys.argv[1], sys.argv[2], sys.argv[3]
+stanzas, current = {}, None
+for line in open(net_file, encoding="utf-8"):
+    m = re.match(r"auto (\S+)", line)
+    if m:
+        current = m.group(1)
+        stanzas[current] = {"up": [], "down": []}
+        continue
+    m = re.match(r"\t(post-up|pre-down) (.*)", line)
+    if m and current:
+        stanzas[current]["up" if m.group(1) == "post-up" else "down"].append(m.group(2).replace(rules_path, rules_tmp))
+def run(cmd):
+    if cmd.startswith("ip route"):
+        return  # 브리지가 없는 네임스페이스라 경로는 건너뛴다(iptables 만 본다)
+    subprocess.run(["sh", "-c", cmd], check=True)
+def up(name):
+    for c in stanzas[name]["up"]: run(c)
+def down(name):
+    for c in stanzas[name]["down"]: run(c)
+def save():
+    return subprocess.run(["iptables-save"], capture_output=True, text=True, check=True).stdout
+def legacy():
+    # 66 의 기존 tb-nat 과 같은 꼴(확인 없는 -A).
+    subprocess.run("iptables -t nat -A POSTROUTING -s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE", shell=True, check=True)
+legacy()
+subprocess.run("iptables -t nat -A PREROUTING -d 192.168.200.66/32 -i vmbr0.200 -p tcp --dport 8091 -j DNAT --to-destination 192.168.122.20:8091", shell=True, check=True)
+out = {"order": list(stanzas), "before": save()}
+for name in stanzas: up(name)
+for name in stanzas: up(name)          # 같은 post-up 이 다시 돌아도 한 벌
+out["up"] = save()
+mgmt = list(stanzas)[-1]
+down(mgmt)
+out["mgmt_down"] = save()
+up(mgmt)
+out["mgmt_up_again"] = save()
+subprocess.run(["iptables-restore", "--noflush", rules_tmp], check=True)   # 규칙 다시 넣기
+out["reloaded"] = save()
+legacy()                                 # ifreload -a 가 tb-nat 을 다시 돌린 꼴
+out["legacy_twice"] = save()
+subprocess.run("iptables -t nat -D POSTROUTING -s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE", shell=True, check=True)
+for name in reversed(list(stanzas)): down(name)
+out["down"] = save()
+print(json.dumps(out))
+'''
+
+
+class HypervisorIptablesKernelTests(unittest.TestCase):
+    """렌더한 66 망 파일의 post-up, pre-down 을 사용자 네임스페이스의 진짜 iptables 로 돌린다(리뷰 지적 1, 2)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.inv = inventory(T_INV)
+        files = render.hypervisor_files(cls.inv)
+        with tempfile.TemporaryDirectory() as raw:
+            net = Path(raw) / "net"
+            rules = Path(raw) / "rules"
+            net.write_text(files[cls.inv["hypervisor"]["file"]])
+            rules.write_text(files[render.rules_path(cls.inv)])
+            done = subprocess.run(["unshare", "-rn", sys.executable, "-c", IPTABLES_SCRIPT, str(net), str(rules),
+                                   render.rules_path(cls.inv)], capture_output=True, text=True, timeout=120)
+        assert done.returncode == 0, done.stderr
+        cls.out = json.loads(done.stdout.strip().splitlines()[-1])
+
+    def test_up_adds_only_this_testbed_and_runs_twice_without_duplicates(self) -> None:
+        self.assertEqual(hvcheck.check(self.inv, "up", self.out["before"], self.out["up"]), [])
+
+    def test_down_returns_exactly_to_the_starting_rules(self) -> None:
+        self.assertEqual(hvcheck.check(self.inv, "down", self.out["before"], self.out["down"]), [])
+        self.assertNotIn("T4-", self.out["down"])
+
+    def test_the_check_catches_a_policy_change(self) -> None:
+        changed = self.out["up"].replace(":FORWARD ACCEPT", ":FORWARD DROP")
+        self.assertTrue(hvcheck.check(self.inv, "up", self.out["before"] + "\n*filter\n:FORWARD ACCEPT [0:0]\nCOMMIT\n", changed))
+
+    def test_the_check_catches_a_legacy_rule_added_twice(self) -> None:
+        problems = hvcheck.check(self.inv, "up", self.out["before"], self.out["legacy_twice"])
+        self.assertTrue(any("192.168.122.0/24" in p for p in problems), problems)
+
+    def test_taking_down_the_management_bridge_alone_keeps_business_isolation(self) -> None:
+        state = self.out["mgmt_down"]
+        chain = self.inv["hypervisor"]["chain"]
+        for bridge in ("vmbr7", "vmbr8", "vmbr9", "vmbr10"):
+            self.assertIn(f"-A FORWARD -i {bridge} -j {chain}", state)
+            self.assertIn(f"-A FORWARD -o {bridge} -j {chain}", state)
+        self.assertNotIn(f"-A FORWARD -i vmbr11 -j {chain}", state)
+        self.assertIn(f"-A {chain} -s 192.168.122.0/24 -d 192.168.124.0/24 -j DROP", state)
+        self.assertIn(f"-A {chain} -s 192.168.124.0/24 -d 192.168.230.119/32 -j DROP", state)
+        self.assertEqual(hvcheck.check(self.inv, "up", self.out["before"], self.out["mgmt_up_again"]), [])
+
+    def test_reloading_the_rules_file_replaces_the_chains_in_place(self) -> None:
+        self.assertEqual(hvcheck.lines_of(self.out["reloaded"]), hvcheck.lines_of(self.out["up"]))
+
+
+class HypervisorApplyCommandTests(unittest.TestCase):
+    def test_bring_up_and_down_only_this_testbeds_bridges(self) -> None:
+        inv = inventory(T_INV)
+        self.assertEqual(render.hypervisor_commands(inv, "up"), ["ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11"])
+        self.assertEqual(render.hypervisor_commands(inv, "down"), ["ifdown vmbr11 vmbr10 vmbr9 vmbr8 vmbr7"])
+        destroy = "\n".join(plan.destroy(inv))
+        self.assertIn("ifdown vmbr11 vmbr10 vmbr9 vmbr8 vmbr7", destroy)
+        runbook = (REPO / "docs" / "runbook-civil-petition-apply.md").read_text()
+        for text in (runbook, destroy, (REPO / "docs" / "spec-testbed-vm-3tier.md").read_text()):
+            for line in text.splitlines():
+                if "ifreload -a" in line:
+                    self.assertRegex(line, r"쓰지 않는다|다시 돌려", line)
+        self.assertIn("hv_iptables_check.py --inventory .../t.json --mode up", runbook)
+        self.assertIn("--mode down", runbook)
+
+    def test_every_bridge_creates_the_chains_when_missing_and_owns_only_its_hooks(self) -> None:
+        inv = inventory(T_INV)
+        net = render.hypervisor_files(inv)[inv["hypervisor"]["file"]]
+        stanzas = re.split(r"^auto ", net, flags=re.M)[1:]
+        self.assertEqual(len(stanzas), 5)
+        for stanza in stanzas:
+            bridge = stanza.split()[0]
+            self.assertIn(f"iptables-restore --noflush {render.rules_path(inv)}", stanza)
+            hooks = re.findall(r"-j (T4-FWD|T4-IN)$", stanza, re.M)
+            self.assertTrue(hooks)
+            for line in stanza.splitlines():
+                if " -I FORWARD 1 " in line or " -D FORWARD " in line:
+                    self.assertRegex(line, rf"-[io] {bridge} ")
 
 
 class ProvisionPlanTests(unittest.TestCase):
@@ -708,9 +845,18 @@ class LoadgenMonitorExtensionTests(unittest.TestCase):
         self.assertEqual(lines[0]["http_p95_ms"], 9.0)
 
     def test_cli_parses_the_new_flags(self) -> None:
-        source = (REPO / "scripts" / "scenarios" / "profiles" / "loadgen_monitor.py").read_text()
-        self.assertIn('"--http-summary"', source)
-        self.assertIn('"--window-log"', source)
+        with tempfile.TemporaryDirectory() as raw:
+            path = str(Path(raw) / "w.jsonl")
+            args, builder = monitor.parse(["--source", "/x", "--output", "/y", "--business-step", "submit",
+                                           "--domain", "d", "--unit", "loadgen", "--http-summary", "--window-log", path])
+            self.assertTrue(builder.http_summary)
+            self.assertIsInstance(builder.window_log, monitor.WindowLog)
+            self.assertEqual(builder.window_log.path, path)
+            _, plain = monitor.parse(["--source", "/x", "--output", "/y", "--business-step", "submit",
+                                      "--domain", "d", "--unit", "loadgen"])
+            self.assertFalse(plain.http_summary)
+            self.assertIsNone(plain.window_log)
+            self.assertEqual(args.mode, "tail")
 
     def test_publisher_forwards_extra_monitor_arguments_only_when_set(self) -> None:
         helper = REPO / "scripts" / "loadgen" / "baseline-publish.sh"
@@ -743,6 +889,11 @@ class LoadgenScriptTests(unittest.TestCase):
         bounds = [int(n) for n in re.findall(r"^\s*\[(\d+), \w+\],$", script, re.M)]
         weights = [b - a for a, b in zip([0] + bounds, bounds)]
         self.assertEqual(weights, [8, 30, 25, 15, 10, 7, 5])
+
+    def test_requests_carry_a_browser_user_agent_not_the_tool_name(self) -> None:
+        script = (DOMAIN / "loadgen" / "script.js").read_text()
+        agent = re.search(r"userAgent: '([^']+)'", script).group(1)
+        self.assertNotRegex(agent.lower(), r"k6|grafana|load")
 
     def test_diurnal_table_matches_the_existing_domains(self) -> None:
         pattern = re.compile(r"diurnal_pct\(\) \{.*?\n\}", re.S)
@@ -811,6 +962,14 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
         self.assertEqual(result["hosts"]["was01"]["restarts"], {"tomcat10.service": 0})
         self.assertTrue(any(r.startswith("db01 창 안에서 재부팅") for r in result["reasons"]))
+
+    def test_a_manual_restart_without_nrestarts_still_fails(self) -> None:
+        facts = {"web01": {"nrestarts_before": {"apache2.service": 0}, "nrestarts_after": {"apache2.service": 0},
+                           "invocations_before": {"apache2.service": "aa"}, "invocations_after": {"apache2.service": "bb"},
+                           "oom_kills": 0, "chrony_offset_ms": 0.1}}
+        result = stability.judge(self._windows(), self.END, host_facts=facts)
+        self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+        self.assertIn("web01 apache2.service 다시 시작됨(InvocationID 바뀜)", result["reasons"])
 
     def test_short_record_is_incomplete(self) -> None:
         windows = self._windows()
@@ -898,6 +1057,45 @@ class StepScriptTests(unittest.TestCase):
         selftest = (DEPLOY / "tools" / "router-discards-selftest.sh").read_text()
         self.assertIn("trap cleanup EXIT", selftest)
         self.assertNotIn("logger", selftest)
+
+    def test_secrets_are_wiped_after_a_partial_or_failing_run(self) -> None:
+        for steps, expect_ok in (("good", True), ("bad", False)):
+            with self.subTest(steps=steps), tempfile.TemporaryDirectory() as raw:
+                bundle = Path(raw)
+                (bundle / "steps.d").mkdir()
+                (bundle / "steps.d" / "lib.sh").write_text((DEPLOY / "steps" / "lib.sh").read_text())
+                (bundle / "steps.d" / "good.sh").write_text("test -r \"$BUNDLE/secrets/db_password\"\necho fine\n")
+                (bundle / "steps.d" / "bad.sh").write_text("false\n")
+                (bundle / "host.env").write_text("HOST_NAME='x'\n")
+                (bundle / "steps").write_text("good\nbad\nverify\n")
+                (bundle / "files.tsv").write_text("")
+                (bundle / "secrets").mkdir()
+                (bundle / "secrets" / "db_password").write_text("Abc123def456ghi7\n")
+                source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+                source = source.replace("LOG=/var/log/petition-deploy.log", f"LOG={bundle}/log")
+                (bundle / "install.sh").write_text(source)
+                done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle), steps],
+                                      capture_output=True, text=True)
+                self.assertEqual(done.returncode == 0, expect_ok, done.stderr)
+                self.assertFalse((bundle / "secrets").exists())
+
+    def test_router_steps_never_put_the_community_on_a_command_line(self) -> None:
+        for path in (DEPLOY / "steps" / "router.sh", DEPLOY / "tools" / "router-discards-selftest.sh"):
+            source = path.read_text()
+            with self.subTest(path=path.name):
+                self.assertNotRegex(source, r"snmp\w*\s[^\n]*-c\s")
+                self.assertIn("SNMPCONFPATH", source)
+                self.assertIn("umask 077", source)
+
+    def test_apply_accepts_new_host_keys_into_its_own_known_hosts(self) -> None:
+        source = (DEPLOY / "apply.sh").read_text()
+        self.assertIn("StrictHostKeyChecking=accept-new", source)
+        self.assertIn('UserKnownHostsFile=$known_hosts', source)
+
+    def test_syslog_check_line_is_skipped_once_forwarding_is_on(self) -> None:
+        source = (DEPLOY / "steps" / "syslog.sh").read_text()
+        guard = source.index("rsyslog.remote.d/*.conf")
+        self.assertLess(guard, source.index("logger -t"))
 
     def test_install_host_reports_a_failing_step(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

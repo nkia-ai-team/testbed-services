@@ -425,7 +425,8 @@ def build_identity(args: argparse.Namespace) -> dict[str, str]:
     return {"domain": args.domain, "unit": args.unit}
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse(argv: list[str] | None = None) -> tuple[argparse.Namespace, LiveDocumentBuilder]:
+    """인자를 읽어 문서 빌더까지 만든다(main 과 시험이 같이 쓴다)."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, help="k6 json 샘플 경로(파일 또는 FIFO)")
     parser.add_argument("--output", required=True, help="라이브 문서를 쓸 경로")
@@ -448,6 +449,11 @@ def main(argv: list[str] | None = None) -> int:
         http_summary=args.http_summary,
         window_log=WindowLog(args.window_log) if args.window_log else None,
     )
+    return args, builder
+
+
+def main(argv: list[str] | None = None) -> int:
+    args, builder = parse(argv)
     runner = run_tail if args.mode == "tail" else run_stream
     runner(builder, args.source, args.output)
     return 0

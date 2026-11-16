@@ -31,6 +31,8 @@ export const options = {
     },
     // 배경 부하라 개별 요청 실패로 실행을 실패시키지 않는다.
     thresholds: {},
+    // 접근 로그에 부하 도구 이름(k6 기본 User-Agent)이 남지 않게 흔한 브라우저 값을 쓴다(리뷰 지적 8).
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
     summaryTrendStats: ['avg', 'p(50)', 'p(95)', 'p(99)', 'max'],
 };
 

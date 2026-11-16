@@ -50,7 +50,10 @@ expand() { local p="$1"; echo "${p/#\~/$HOME}"; }
 
 operator=$(field accounts.operator.name)
 executor=$(field accounts.executor.name)
-ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15 -J "$jump")
+# 새 VM 첫 접속은 키를 받아 두고(accept-new), 이 테스트베드 전용 known_hosts 에 둔다. VM 을 다시 만들면
+# runbook §5 대로 ssh-keygen -R 로 옛 키를 지운다.
+known_hosts="$HOME/.ssh/known_hosts_$(field domain)"
+ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$known_hosts" -J "$jump")
 
 if [[ $start_load == 1 ]]; then
     load=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(next(h["name"] for h in d["hosts"] if h["role"]=="loadgen"))' "$inventory")

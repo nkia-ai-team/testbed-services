@@ -64,19 +64,30 @@ S 는 `s5-executor`, `s5-operator.pub`, `s5-petition-db` 를 같은 꼴로 만�
 ```
 python3 civil-petition/deploy/render.py --inventory civil-petition/deploy/inventory/t.json --hypervisor /tmp/t4-hv
 # /tmp/t4-hv/etc/network/interfaces.d/t4-net        브리지 5개(vmbr7~11), 업무망 경로 3개, MASQUERADE 4, 러너 SNAT 1,
-#                                                   FORWARD 전용 체인 T4-FWD, 관리 브리지 INPUT 전용 체인 T4-IN
+#                                                   브리지마다 자기 훅(FORWARD 들고 남, 주소 있는 브리지는 INPUT)
+# /tmp/t4-hv/etc/network/t4-net.rules               전용 체인 T4-FWD, T4-IN 의 선언과 규칙 전부(iptables-restore 꼴)
 # /tmp/t4-hv/etc/chrony/conf.d/t4-net.conf          allow 192.168.127.0/24 (VM 이 66 시간을 따른다)
 # /tmp/t4-hv/etc/modules-load.d/t4-net-qdisc.conf   sch_netem, sch_tbf, sch_prio, cls_flower
+python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-commands up     # ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11
+python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-commands down   # ifdown vmbr11 vmbr10 vmbr9 vmbr8 vmbr7
 ```
 
-66 에서(파일 셋을 같은 경로로 놓은 뒤):
+**`ifreload -a` 를 쓰지 않는다.** 66 의 ifupdown2 는 reload 때 모든 auto 인터페이스의 post-up 을 다시 돌려, 확인 없는 `iptables -A` 로 된 기존 `tb-nat` 의 122 MASQUERADE 와 8091 DNAT 를 한 벌씩 더 만든다(리뷰 rv-t2 지적 1, 66 ifupdown2 3.3.0 소스). 이 테스트베드 브리지 이름만 `ifup`, `ifdown` 으로 다룬다.
 
-1. 사전 확인: `ip -br link | grep -E 'vmbr(7|8|9|10|11)'` 빈 출력, `iptables -t nat -S | wc -l` 기록, `grep -q '^confdir /etc/chrony/conf.d' /etc/chrony/chrony.conf || echo` (없으면 conf.d 를 읽지 않으니 `include` 줄 하나를 더한다).
-2. `ifreload -a`, `systemctl restart chrony`, `modprobe` 넷.
-3. 확인(설계 §10 T2 "기존 테스트베드 영향 없음"): `iptables -t nat -S` 에 기존 2개(122 MASQUERADE, 8091 DNAT) 그대로, 늘어난 것은 MASQUERADE 4 와 SNAT 1. `iptables -S FORWARD` 정책 ACCEPT 그대로, 앞쪽에 T4-FWD 로 가는 줄 10개(브리지 5개의 들고 남). tb-ops 에서 `curl -s -o /dev/null -w '%{http_code}' http://192.168.200.66:8091/` 와 사내망 핑, 기존 VM 6대의 바깥 통신.
-4. 되돌리기: `rm` 세 파일, `ifreload -a`, `iptables -F T4-FWD; iptables -X T4-FWD` 류는 파일의 pre-down 이 한다.
+체인은 어느 브리지가 먼저 올라오든 없을 때만 규칙 파일로 한 번에 만들고, 브리지마다 자기 훅만 걸고 지운다. 체인은 훅이 하나도 남지 않을 때만 비우고 지운다. 그래서 관리 브리지 하나만 내렸다 올려도 업무 브리지의 격리(122 와 123~126 사이, 119 실주소, 10.250 누수)는 그대로다. 규칙을 고쳐 다시 넣을 때는 `iptables-restore --noflush /etc/network/t4-net.rules` 한 번(두 체인을 통째로 바꾸고 훅은 그대로).
 
-S: `--inventory .../s.json`, 파일 `s5-net`(브리지 vmbr12~14, MASQUERADE 2, SNAT 1, 사용자망 → 웹 80 허용).
+66 에서(파일 넷을 같은 경로로 놓은 뒤):
+
+1. 사전 확인: `ip -br link | grep -E 'vmbr(7|8|9|10|11)'` 빈 출력, `iptables-save > /root/t4-net.before`(적용 전 기준), chrony 의 `confdir /etc/chrony/conf.d` 있음(11-16 리뷰 조회로 있음).
+2. `ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11`, `systemctl restart chrony`, `modprobe` 넷.
+3. 확인(설계 §10 T2 "기존 테스트베드 영향 없음"):
+   - `iptables-save > /root/t4-net.after` 뒤 `python3 civil-petition/deploy/tools/hv_iptables_check.py --inventory .../t.json --mode up --before t4-net.before --after t4-net.after` 가 `PASS up`(지워진 줄 0, 늘어난 줄은 전용 체인과 MASQUERADE 4, SNAT 1 뿐, 같은 줄 두 벌 0).
+   - `iptables -t nat -S | grep -c 192.168.122.0/24` 가 1.
+   - `iptables -S FORWARD` 정책 ACCEPT 그대로, 앞쪽에 T4-FWD 로 가는 줄 10개(브리지 5개의 들고 남).
+   - tb-ops 에서 `curl -s -o /dev/null -w '%{http_code}' http://192.168.200.66:8091/`, 사내망 핑, 기존 VM 6대의 바깥 통신.
+4. 되돌리기(VM 을 지운 뒤): **파일을 지우기 전에** `ifdown vmbr11 vmbr10 vmbr9 vmbr8 vmbr7`(pre-down 이 훅, NAT, 경로를 지우고 마지막 훅이 빠질 때 체인도 지운다). 그 다음 `rm` 파일 넷, `systemctl restart chrony`. 끝으로 `iptables-save > /root/t4-net.rollback` 와 `hv_iptables_check.py --mode down --before t4-net.before --after t4-net.rollback` 가 `PASS down`.
+
+S: `--inventory .../s.json`, 파일 `s5-net`, `s5-net.rules`(브리지 vmbr12~14, MASQUERADE 2, SNAT 1, 사용자망 → 웹 80 허용), `ifup vmbr12 vmbr13 vmbr14`.
 
 ## 5. VM 생성
 
@@ -89,6 +100,8 @@ python3 civil-petition/deploy/provision/plan.py --inventory .../t.json --phase c
 `create` 는 Proxmox 이름을 **게스트 호스트 이름**(rt-core01, web01 ...)으로 복제한다. cloud-init 이 Proxmox 이름을 게스트 호스트 이름으로 쓰기 때문에 처음부터 t4-* 로 만들면 게스트에 그 이름이 남는다(원칙 8). Proxmox 이름은 설치가 cloud-init 을 끈 뒤 `--phase rename` 으로 t4-* 로 바꾼다. 출력은 사람이 읽고 66 에 넘긴다(`plan.py` 는 66 에 접속하지 않는다).
 
 확인: `qm list` 에 201~206 Running, 크기는 설계 §2-2 와 같다(vCPU 14, 메모리 22GB, 디스크 256GB). 각 VM 관리 주소로 66 에서 `ssh sysop@192.168.127.x hostname`.
+
+첫 접속 호스트 키: `apply.sh` 는 이 테스트베드 전용 `~/.ssh/known_hosts_<도메인 값>` 에 `StrictHostKeyChecking=accept-new` 로 받아 둔다. VM 을 지우고 다시 만들었으면 먼저 `ssh-keygen -f ~/.ssh/known_hosts_civil-petition -R 192.168.127.x` 로 옛 키를 지운다. 적용 때 `ssh sysop@... id -u` 가 1000 인지 본다(운영자 uid 가정).
 
 ## 6. 서버 설치 (순서가 중요하다)
 
@@ -185,12 +198,12 @@ sudo systemctl start loadgen.service
 | `log_temp_files`, `log_autovacuum_min_duration` | 기본(-1, 10분) | 바꾸는 고객이 적다 |
 | `lc_messages` | C | 기본 |
 
-값은 이 파일 한 곳에만 있고 시나리오마다 바꾸지 않는다. 검토 세션(Q20-3)의 답이 다르면 이 파일만 고치고 `--steps "db verify"` 로 다시 놓는다(PostgreSQL 재시작 한 번). 설치 단계는 앱 계정 비밀번호 문장만 그 세션에서 `log_statement` 를 꺼 서버 로그에 남지 않게 한다.
+값은 이 파일 한 곳에만 있고 시나리오마다 바꾸지 않는다. 검토 세션(Q20-3)의 답이 다르면 이 파일만 고치고 `--steps "db verify"` 로 다시 놓는다(PostgreSQL 재시작 한 번). 단계를 골라 돌려도 설치가 끝나면 VM 의 묶음 `secrets/` 는 지워진다. 설치 단계는 앱 계정 비밀번호 문장만 그 세션에서 `log_statement` 를 꺼 서버 로그에 남지 않게 한다.
 
 ## 10. 되돌리기 (사람 승인)
 
 - VM: `plan.py --phase destroy` 출력을 사람이 읽고 66 에서 직접 실행한다. VMID 와 이름이 인벤토리와 맞을 때만 지운다.
-- 66 망: §4 의 4.
+- 66 망: §4 의 4(ifdown 을 파일 지우기 전에, 끝에 `--mode down` 확인).
 - 되돌릴 수 없는 단계는 없다. 119 등록 해제는 T3 의 몫이고 과거 데이터를 지우는지 먼저 확인한다(설계 §9).
 
 ## 11. SMS 에이전트 설치 자리 (T3 몫, T2 에서 하지 않는다)
@@ -198,7 +211,7 @@ sudo systemctl start loadgen.service
 | 서버 | 설치 | 인자 | 로그 감시 파일(일반 패턴, 시나리오별로 바꾸지 않음) |
 |---|---|---|---|
 | web01 | 기존 작업 노드와 같은 `lucida-agent` amd64(119 collector-sms 이미지 안 바이너리), systemd 유닛 | 보고 받는 주소 `10.250.0.1:18090`, `LUCIDA_HOST=192.168.124.11`(업무 주소) | `/var/log/apache2/access.log`, `error.log`, `/var/log/syslog`, `/var/log/auth.log` |
-| was01, was02 | 같음 | `LUCIDA_HOST=192.168.125.11`, `.12` | `/var/log/tomcat10/catalina.out`, `petition.log`, `localhost_access_log.*.txt`, `/var/log/syslog`, `/var/log/auth.log` |
+| was01, was02 | 같음 | `LUCIDA_HOST=192.168.125.11`, `.12` | `/var/log/tomcat10/catalina.out`, `petition.log`, `localhost.*.log`(앱이 처리하지 못한 예외는 Tomcat JULI 기본으로 여기에만 간다), `localhost_access_log.*.txt`, `/var/log/syslog`, `/var/log/auth.log` |
 | db01 | 같음 | `LUCIDA_HOST=192.168.126.11` | `/var/log/postgresql/postgresql-16-main.log`, `/var/log/syslog`, `/var/log/auth.log` |
 | rt-core01, loadgen | 설치하지 않음 | | |
 

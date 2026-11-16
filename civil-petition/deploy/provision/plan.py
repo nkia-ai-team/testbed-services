@@ -112,7 +112,9 @@ def destroy(inventory: dict) -> list[str]:
             f"else echo \"VMID {vmid} 이름이 $name 이라 건너뜀\" >&2; fi"
         )
     hv = inventory["hypervisor"]
-    lines.append(f"# 66 망 파일 되돌리기: rm {hv['file']} && ifreload -a (설계 §9)")
+    down = " ".join(network["bridge"] for network in reversed(list(inventory["networks"].values())))
+    lines.append(f"# 66 망 되돌리기(VM 을 지운 뒤): 파일을 지우기 전에 ifdown {down}, 그 다음 rm {hv['file']} "
+                 f"{render.rules_path(inventory)}. ifreload -a 는 쓰지 않는다(runbook §4)")
     return lines
 
 

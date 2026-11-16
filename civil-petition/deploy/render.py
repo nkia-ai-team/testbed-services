@@ -41,6 +41,7 @@ ROLES = ("router", "web", "was", "db", "loadgen")
 SERVER_ROLES = ("web", "was", "db")
 # 게스트 쪽에 드러나는 이름에 쓰지 않는 낱말(설계 §2-2 원칙 8). Proxmox 이름은 관제 서버로 가지 않아 예외다.
 FORBIDDEN_WORDS = ("test", "testbed", "tb", "t4", "s5")
+WAR_CONTEXT = "petition"
 
 
 class InventoryError(ValueError):
@@ -125,8 +126,9 @@ BATCH_FILES = (
 
 # 단계 순서. 켜기 값이나 역할에 맞지 않는 단계는 빠진다.
 STEP_ORDER = (
-    "verify-host", "os-base", "network", "accounts", "time", "syslog", "syslog-forward",
-    "kernel-modules", "firewall", "lldpd",
+    # 모듈 적재(커널이 netem 판 줄을 찍는다)는 원격 전달을 켜기 전에 한다(리뷰 지적 6).
+    "verify-host", "os-base", "network", "accounts", "time", "syslog", "kernel-modules", "syslog-forward",
+    "firewall", "lldpd",
     "router", "db", "db-schema", "db-seed", "db-backup", "was", "was-batch", "web", "loadgen",
     "verify",
 )
@@ -157,6 +159,9 @@ def validate(inventory: dict) -> None:
     for key in ("testbed", "domain", "features", "accounts", "monitoring", "time", "app", "networks", "hypervisor", "hosts"):
         if key not in inventory:
             raise InventoryError(f"필수 항목 없음: {key}")
+    if inventory["app"].get("context") != WAR_CONTEXT:
+        # WAR 파일, Tomcat 문맥 파일, 배포 디렉터리 이름이 이 값으로 고정이다(steps/was.sh). T 와 S 가 같은 값을 쓴다.
+        raise InventoryError(f"app.context 는 {WAR_CONTEXT} 이어야 함(WAR 와 Tomcat 문맥 이름이 고정)")
     features = inventory["features"]
     for key in ("router", "lldpd", "syslog_forward", "hypervisor_modules"):
         if not isinstance(features.get(key), bool):
@@ -511,7 +516,7 @@ def write_bundle(bundle: dict, out: Path) -> Path:
 # ---------------------------------------------------------------- 하이퍼바이저(66) 쪽
 
 def _ipt(table: str | None, rule: str) -> str:
-    """같은 규칙을 두 번 넣지 않는 꼴(ifreload 가 post-up 을 다시 돌려도 한 줄만 남는다)."""
+    """같은 규칙을 두 번 넣지 않는 꼴(post-up 이 다시 돌아도 한 줄만 남는다)."""
     flag = f"-t {table} " if table else ""
     return f"iptables {flag}-C {rule} 2>/dev/null || iptables {flag}-A {rule}"
 
@@ -528,12 +533,13 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
     uplink = hv["uplink"]
     lines = [
         f"# {inventory['domain']} 테스트베드 망. deploy/render.py 가 인벤토리에서 만든다. 손으로 고치지 않는다.",
-        "# 기존 tb-nat, vmbr0, FORWARD 기본 정책은 건드리지 않고, 이 테스트베드 브리지와 터널에만 걸리는 전용 체인을 쓴다.",
+        "# 기존 tb-nat, vmbr0, FORWARD 기본 정책은 건드리지 않고, 이 테스트베드 브리지에만 걸리는 전용 체인을 쓴다.",
+        "# 체인 내용은 규칙 파일 하나(iptables-restore 꼴)에 있고, 어느 브리지가 먼저 올라오든 없을 때만 한 번에 만든다.",
+        "# 브리지마다 자기 훅만 걸고 지우며, 체인은 훅이 하나도 남지 않았을 때만 지운다.",
+        "# 적용과 되돌리기는 ifup, ifdown 에 이 파일의 브리지 이름만 준다(ifreload -a 는 기존 tb-nat 의 post-up 을 다시 돌린다).",
         "",
     ]
-    names = list(networks)
-    last = names[-1]
-    for name in names:
+    for name in networks:
         network = networks[name]
         bridge = network["bridge"]
         lines.append(f"auto {bridge}")
@@ -558,11 +564,10 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
                 f"\tpre-down iptables -t nat -D POSTROUTING -s {hv['runner_addr']} -o {bridge} -p tcp --dport 22 "
                 f"-j SNAT --to-source {mgmt['host_addr']} 2>/dev/null || true"
             )
-        if name == last:
-            lines += [f"\tpost-up {command}" for command in _chain_commands(inventory)]
-            lines += [f"\tpre-down {command}" for command in _chain_teardown(inventory)]
+        lines += [f"\tpost-up {command}" for command in _bridge_up_commands(inventory, network)]
+        lines += [f"\tpre-down {command}" for command in _bridge_down_commands(inventory, network)]
         lines.append("")
-    files = {hv["file"]: "\n".join(lines)}
+    files = {hv["file"]: "\n".join(lines), rules_path(inventory): rules_text(inventory)}
     chrony_name = Path(hv["file"]).name
     files[f"/etc/chrony/conf.d/{chrony_name}.conf"] = (
         f"# {inventory['domain']} 테스트베드 VM 이 관리망으로 이 호스트의 시간을 따른다(설계 §2-4).\n"
@@ -632,44 +637,70 @@ def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
     return forward, inputs
 
 
-def _chain_commands(inventory: dict) -> list[str]:
+def rules_path(inventory: dict) -> str:
+    """전용 체인 규칙 파일 경로. interfaces.d 밖(ifupdown 이 읽지 않는 곳)에 둔다."""
+    return f"/etc/network/{Path(inventory['hypervisor']['file']).name}.rules"
+
+
+def rules_text(inventory: dict) -> str:
+    """두 전용 체인의 선언과 규칙 전부(iptables-restore --noflush 로 한 번에 넣는다)."""
     hv = inventory["hypervisor"]
-    chain = hv["chain"]
-    input_chain = hv["input_chain"]
     forward, inputs = _chain_rules(inventory)
-    commands = [
-        f"iptables -N {chain} 2>/dev/null || iptables -F {chain}",
-        f"iptables -N {input_chain} 2>/dev/null || iptables -F {input_chain}",
+    lines = [
+        f"# {inventory['domain']} 테스트베드 전용 체인. deploy/render.py 가 만든다. 손으로 고치지 않는다.",
+        "# 브리지가 올라올 때 체인이 없으면 이 파일로 만든다. 내용을 바꿔 다시 넣을 때는",
+        f"# iptables-restore --noflush {rules_path(inventory)} 한 번으로 두 체인을 통째로 바꾼다(빈 체인 구간 없음).",
+        "*filter",
+        f":{hv['chain']} - [0:0]",
+        f":{hv['input_chain']} - [0:0]",
     ]
-    commands += [f"iptables {rule}" for rule in forward]
-    commands += [f"iptables {rule}" for rule in inputs]
-    hooks = []
-    for network in inventory["networks"].values():
-        hooks.append(f"FORWARD -i {network['bridge']} -j {chain}")
-        hooks.append(f"FORWARD -o {network['bridge']} -j {chain}")
-        if network.get("host_addr"):
-            hooks.append(f"INPUT -i {network['bridge']} -j {input_chain}")
-    for hook in hooks:
+    lines += forward + inputs
+    lines.append("COMMIT")
+    return "\n".join(lines) + "\n"
+
+
+def _bridge_hooks(inventory: dict, network: dict) -> list[str]:
+    hv = inventory["hypervisor"]
+    hooks = [f"FORWARD -i {network['bridge']} -j {hv['chain']}", f"FORWARD -o {network['bridge']} -j {hv['chain']}"]
+    if network.get("host_addr"):
+        hooks.append(f"INPUT -i {network['bridge']} -j {hv['input_chain']}")
+    return hooks
+
+
+def _bridge_up_commands(inventory: dict, network: dict) -> list[str]:
+    """브리지 하나가 올라올 때: 체인이 없으면 규칙 파일로 만들고, 자기 훅만 맨 앞에 건다."""
+    hv = inventory["hypervisor"]
+    chain, input_chain = hv["chain"], hv["input_chain"]
+    commands = [
+        f"{{ iptables -n -L {chain} >/dev/null 2>&1 && iptables -n -L {input_chain} >/dev/null 2>&1; }} "
+        f"|| iptables-restore --noflush {rules_path(inventory)}"
+    ]
+    for hook in _bridge_hooks(inventory, network):
         builtin, rest = hook.split(" ", 1)
         commands.append(f"iptables -C {hook} 2>/dev/null || iptables -I {builtin} 1 {rest}")
     return commands
 
 
-def _chain_teardown(inventory: dict) -> list[str]:
+def _bridge_down_commands(inventory: dict, network: dict) -> list[str]:
+    """브리지 하나가 내려갈 때: 자기 훅만 지우고, 체인은 어떤 훅도 남지 않았을 때만 비우고 지운다."""
     hv = inventory["hypervisor"]
-    chain = hv["chain"]
-    input_chain = hv["input_chain"]
-    commands = []
-    for network in inventory["networks"].values():
-        commands.append(f"iptables -D FORWARD -i {network['bridge']} -j {chain} 2>/dev/null || true")
-        commands.append(f"iptables -D FORWARD -o {network['bridge']} -j {chain} 2>/dev/null || true")
-        if network.get("host_addr"):
-            commands.append(f"iptables -D INPUT -i {network['bridge']} -j {input_chain} 2>/dev/null || true")
-    commands.append(f"iptables -F {chain} 2>/dev/null || true")
-    commands.append(f"iptables -X {chain} 2>/dev/null || true")
-    commands.append(f"iptables -F {input_chain} 2>/dev/null || true")
-    commands.append(f"iptables -X {input_chain} 2>/dev/null || true")
+    commands = [f"iptables -D {hook} 2>/dev/null || true" for hook in _bridge_hooks(inventory, network)]
+    for chain in (hv["chain"], hv["input_chain"]):
+        commands.append(
+            f"iptables -S | grep -q -- '-j {chain}$' "
+            f"|| {{ iptables -F {chain} 2>/dev/null; iptables -X {chain} 2>/dev/null; true; }}"
+        )
     return commands
+
+
+def hypervisor_commands(inventory: dict, direction: str) -> list[str]:
+    """66 에서 이 테스트베드 브리지만 올리고 내리는 명령(ifreload -a 를 쓰지 않는다)."""
+    bridges = [network["bridge"] for network in inventory["networks"].values()]
+    if direction == "up":
+        return [f"ifup {' '.join(bridges)}"]
+    if direction == "down":
+        return [f"ifdown {' '.join(reversed(bridges))}"]
+    raise InventoryError(f"모르는 방향 {direction}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -677,6 +708,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inventory", required=True, type=Path)
     parser.add_argument("--out", type=Path, help="서버별 묶음을 쓸 디렉터리")
     parser.add_argument("--hypervisor", type=Path, help="66 쪽 파일을 경로 그대로 쓸 디렉터리")
+    parser.add_argument("--hypervisor-commands", choices=["up", "down"], help="66 에서 브리지를 올리고 내리는 명령만 찍는다")
     parser.add_argument("--host", action="append", default=[], help="이 호스트만(여러 번)")
     parser.add_argument("--check", action="store_true", help="렌더만 해 보고 아무것도 쓰지 않는다")
     args = parser.parse_args(argv)
@@ -691,6 +723,9 @@ def main(argv: list[str] | None = None) -> int:
     except InventoryError as error:
         print(f"render: {error}", file=sys.stderr)
         return 2
+    if args.hypervisor_commands:
+        print("\n".join(hypervisor_commands(inventory, args.hypervisor_commands)))
+        return 0
     if args.out:
         for bundle in bundles:
             root = write_bundle(bundle, args.out)

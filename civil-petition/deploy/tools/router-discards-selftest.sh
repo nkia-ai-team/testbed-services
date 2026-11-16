@@ -8,13 +8,17 @@ dev="$1"
 peer="$2"
 oid_base=.1.3.6.1.2.1.2.2.1.19
 index=$(cat "/sys/class/net/$dev/ifindex")
-community=$(awk '$1=="rocommunity" && $3=="127.0.0.1"{print $2; exit}' /etc/snmp/snmpd.community.conf)
-[[ -n "$community" ]] || { echo "FAIL 로컬 커뮤니티 줄 없음"; exit 1; }
-cleanup() { tc qdisc del dev "$dev" root 2>/dev/null || true; }
+# 커뮤니티는 명령 인자가 아니라 0600 임시 snmp.conf 로 넘긴다(ps 에 보이지 않게).
+snmpconf=$(mktemp -d)
+( umask 077; awk '$1=="rocommunity" && $3=="127.0.0.1"{print "defVersion 2c"; print "defCommunity " $2; exit}' \
+    /etc/snmp/snmpd.community.conf > "$snmpconf/snmp.conf" )
+grep -q defCommunity "$snmpconf/snmp.conf" || { rm -rf "$snmpconf"; echo "FAIL 로컬 커뮤니티 줄 없음"; exit 1; }
+export SNMPCONFPATH="$snmpconf"
+cleanup() { tc qdisc del dev "$dev" root 2>/dev/null || true; rm -rf "$snmpconf"; }
 trap cleanup EXIT
 [[ "$(tc -j qdisc show dev "$dev" | python3 -c 'import json,sys; q=json.load(sys.stdin); print(any(x.get("root") and x["kind"] in ("tbf","prio","netem","htb") for x in q))')" == False ]] \
     || { echo "FAIL $dev root 에 이미 주입 qdisc 가 있음"; exit 1; }
-get() { sleep 1.5; snmpget -v2c -c "$community" -Oqv 127.0.0.1 "$oid_base.$index"; }
+get() { sleep 1.5; snmpget -Oqv 127.0.0.1 "$oid_base.$index"; }
 drops() { tc -s -j qdisc show dev "$dev" | python3 -c "import json,sys; print({q['kind']: q['drops'] for q in json.load(sys.stdin)}.get('$1', 0))"; }
 verdict=0
 before=$(get)
@@ -38,10 +42,9 @@ if [[ "$lost" -gt 0 && "$net" -eq "$kept" ]]; then echo "PASS netem loss=$lost n
 tc qdisc del dev "$dev" root
 # (4) 도우미를 죽여도 snmpd 는 응답한다(다음 요청 때 다시 띄운다).
 pkill -f /usr/local/lib/ifdiscards/ifdiscards.py || true
-if snmpget -v2c -c "$community" -t 3 -r 1 -Oqv 127.0.0.1 .1.3.6.1.2.1.1.3.0 >/dev/null && again=$(get) && [[ "$again" -ge "$net" ]]; then
+if snmpget -t 3 -r 1 -Oqv 127.0.0.1 .1.3.6.1.2.1.1.3.0 >/dev/null && again=$(get) && [[ "$again" -ge "$net" ]]; then
     echo "PASS helper restart counter=$again"
 else
     echo "FAIL snmpd stopped answering after helper kill"; verdict=1
 fi
-unset community
 exit "$verdict"
