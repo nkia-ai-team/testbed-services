@@ -76,9 +76,23 @@ python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-comm
 
 체인은 어느 브리지가 먼저 올라오든 없을 때만 규칙 파일로 한 번에 만들고, 브리지마다 자기 훅만 걸고 지운다. 체인은 훅이 하나도 남지 않을 때만 비우고 지운다. 그래서 관리 브리지 하나만 내렸다 올려도 업무 브리지의 격리(122 와 123~126 사이, 119 실주소, 10.250 누수)는 그대로다. 규칙을 고쳐 다시 넣을 때는 `iptables-restore --noflush /etc/network/t4-net.rules` 한 번(두 체인을 통째로 바꾸고 훅은 그대로).
 
+**T0 와 같은 정비 창에서 적용할 때의 순서와 기준 시점.** 검사기(`hv_iptables_check.py`)는 기준과 확인 사이에 끼어든 다른 iptables 변경을 "이 테스트베드 몫이 아님" 으로 센다(T0 의 wg0, TBWG 줄이 들어 있으면 그 사실을 따로 알린다). 그래서 둘을 겹치지 않게 차례로 한다.
+
+| 차례 | 할 일 | 기준과 확인 |
+|---|---|---|
+| 1 | T0 터널 적용(T0 runbook) | T0 의 검사(T0 몫) |
+| 2 | T2 기준 뜨기 | **T0 적용이 끝난 뒤** `iptables-save > /root/t4-net.before` |
+| 3 | T2 적용(아래 1~3) | 직후 `t4-net.after`, `--mode up` |
+| 되돌리기 1 | T2 되돌리기(아래 4) | 직후 `t4-net.rollback`, `--mode down`(기준은 2 의 before) |
+| 되돌리기 2 | T0 되돌리기 | T0 의 검사 |
+
+T2 만 적용하는 창이면 2 를 적용 직전에 뜬다. 되돌리기는 늘 T2 가 먼저다(T0 를 먼저 되돌리면 T2 의 down 확인이 T0 줄 차이로 실패한다).
+
+브리지는 격리 없이 올라오지 않는다: 규칙 파일이 없거나 `iptables-restore` 나 훅 걸기가 실패하면 post-up 이 그 브리지를 내리고 실패로 끝난다(재부팅 뒤 규칙 파일을 잃은 경우 포함). 그때는 `/etc/network/t4-net.rules` 를 다시 렌더해 놓고 그 브리지를 `ifup` 한다.
+
 66 에서(파일 넷을 같은 경로로 놓은 뒤):
 
-1. 사전 확인: `ip -br link | grep -E 'vmbr(7|8|9|10|11)'` 빈 출력, `iptables-save > /root/t4-net.before`(적용 전 기준), chrony 의 `confdir /etc/chrony/conf.d` 있음(11-16 리뷰 조회로 있음).
+1. 사전 확인: `ip -br link | grep -E 'vmbr(7|8|9|10|11)'` 빈 출력, `iptables-save > /root/t4-net.before`(적용 전 기준, T0 와 같은 창이면 T0 적용 뒤), chrony 의 `confdir /etc/chrony/conf.d` 있음(11-16 리뷰 조회로 있음).
 2. `ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11`, `systemctl restart chrony`, `modprobe` 넷.
 3. 확인(설계 §10 T2 "기존 테스트베드 영향 없음"):
    - `iptables-save > /root/t4-net.after` 뒤 `python3 civil-petition/deploy/tools/hv_iptables_check.py --inventory .../t.json --mode up --before t4-net.before --after t4-net.after` 가 `PASS up`(지워진 줄 0, 늘어난 줄은 전용 체인과 MASQUERADE 4, SNAT 1 뿐, 같은 줄 두 벌 0).

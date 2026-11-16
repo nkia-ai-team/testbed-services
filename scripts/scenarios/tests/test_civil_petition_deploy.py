@@ -471,6 +471,9 @@ def save():
 def legacy():
     # 66 의 기존 tb-nat 과 같은 꼴(확인 없는 -A).
     subprocess.run("iptables -t nat -A POSTROUTING -s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE", shell=True, check=True)
+for name in stanzas:
+    subprocess.run(["ip", "link", "add", name, "type", "dummy"], check=True)
+    subprocess.run(["ip", "link", "set", name, "up"], check=True)
 legacy()
 subprocess.run("iptables -t nat -A PREROUTING -d 192.168.200.66/32 -i vmbr0.200 -p tcp --dport 8091 -j DNAT --to-destination 192.168.122.20:8091", shell=True, check=True)
 out = {"order": list(stanzas), "before": save()}
@@ -489,6 +492,15 @@ out["legacy_twice"] = save()
 subprocess.run("iptables -t nat -D POSTROUTING -s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE", shell=True, check=True)
 for name in reversed(list(stanzas)): down(name)
 out["down"] = save()
+# 규칙 파일이 없으면 브리지는 격리 없이 올라오지 않고 내려간다(fail closed).
+import os
+os.rename(rules_tmp, rules_tmp + ".gone")
+first = list(stanzas)[1]
+subprocess.run(["ip", "link", "set", first, "up"], check=True)
+failed = [subprocess.run(["sh", "-c", c], capture_output=True, text=True).returncode
+          for c in stanzas[first]["up"] if not c.startswith("ip route") and "-t nat" not in c]
+link = subprocess.run(["ip", "-j", "link", "show", first], capture_output=True, text=True, check=True).stdout
+out["missing_rules"] = {"failed": failed, "link": json.loads(link)[0]["flags"], "save": save()}
 print(json.dumps(out))
 '''
 
@@ -536,6 +548,19 @@ class HypervisorIptablesKernelTests(unittest.TestCase):
         self.assertIn(f"-A {chain} -s 192.168.124.0/24 -d 192.168.230.119/32 -j DROP", state)
         self.assertEqual(hvcheck.check(self.inv, "up", self.out["before"], self.out["mgmt_up_again"]), [])
 
+    def test_a_missing_rules_file_takes_the_bridge_down_instead_of_running_open(self) -> None:
+        result = self.out["missing_rules"]
+        self.assertTrue(all(code != 0 for code in result["failed"]), result["failed"])
+        self.assertNotIn("UP", result["link"])
+        self.assertNotIn("T4-", result["save"])
+
+    def test_the_check_points_at_tunnel_lines_taken_into_the_baseline(self) -> None:
+        with_tunnel = self.out["up"] + "*mangle\n:TBWG-FWD - [0:0]\n-A FORWARD -i wg0 -j TBWG-FWD\nCOMMIT\n"
+        problems = hvcheck.check(self.inv, "up", self.out["before"], with_tunnel)
+        self.assertTrue(any("T0 터널 줄" in p for p in problems), problems)
+        rolled = self.out["down"] + "*mangle\n:TBWG-FWD - [0:0]\nCOMMIT\n"
+        self.assertTrue(any("T2 를 먼저 되돌리고" in p for p in hvcheck.check(self.inv, "down", self.out["before"], rolled)))
+
     def test_reloading_the_rules_file_replaces_the_chains_in_place(self) -> None:
         self.assertEqual(hvcheck.lines_of(self.out["reloaded"]), hvcheck.lines_of(self.out["up"]))
 
@@ -563,8 +588,13 @@ class HypervisorApplyCommandTests(unittest.TestCase):
         for stanza in stanzas:
             bridge = stanza.split()[0]
             self.assertIn(f"iptables-restore --noflush {render.rules_path(inv)}", stanza)
-            hooks = re.findall(r"-j (T4-FWD|T4-IN)$", stanza, re.M)
+            hooks = re.findall(r"-I (?:FORWARD|INPUT) 1 -[io] \S+ -j (T4-FWD|T4-IN) ", stanza)
             self.assertTrue(hooks)
+            # 체인과 훅이 경로, NAT 보다 먼저 서고, 실패하면 브리지를 내린다(fail closed).
+            post = [line for line in stanza.splitlines() if line.startswith("\tpost-up ")]
+            self.assertIn("iptables-restore", post[0])
+            for line in post[:len(hooks) + 1]:
+                self.assertIn(f"ip link set dev {bridge} down", line)
             for line in stanza.splitlines():
                 if " -I FORWARD 1 " in line or " -D FORWARD " in line:
                     self.assertRegex(line, rf"-[io] {bridge} ")

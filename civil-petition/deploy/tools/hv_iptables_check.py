@@ -90,6 +90,8 @@ def check(inventory: dict, mode: str, before_text: str, after_text: str) -> list
             problems.append(f"되돌린 뒤 없어진 줄 {n}: [{table}] {line}")
         for (table, line), n in sorted(added.items()):
             problems.append(f"되돌린 뒤 남은 줄 {n}: [{table}] {line}")
+        if any(re.search(r"wg0|TBWG", p) for p in problems):
+            problems.append("T0 터널 줄이 차이에 들어 있다: T2 를 먼저 되돌리고 T0 를 되돌린다(runbook §4 적용 순서)")
         return problems
     for (table, line), n in sorted(removed.items()):
         problems.append(f"적용으로 없어진 줄 {n}: [{table}] {line}")
@@ -100,6 +102,9 @@ def check(inventory: dict, mode: str, before_text: str, after_text: str) -> list
             problems.append(f"이 테스트베드 몫이 아니거나 두 벌인 줄 {n}: [{table}] {line}")
             continue
         kinds[kind] += 1
+    if any(re.search(r"wg0|TBWG", p) for p in problems):
+        problems.append("T0 터널 줄이 차이에 들어 있다: 기준(before)을 T0 적용 뒤에 다시 뜨거나, T2 를 먼저 되돌린 뒤 T0 를 "
+                        "되돌린다(runbook §4 적용 순서)")
     nat_count = sum(1 for v in inventory["networks"].values() if v.get("nat"))
     if kinds["masquerade"] != nat_count:
         problems.append(f"MASQUERADE {kinds['masquerade']} != {nat_count}")

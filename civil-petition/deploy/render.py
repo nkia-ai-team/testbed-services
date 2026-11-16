@@ -549,6 +549,7 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
         else:
             lines.append(f"iface {bridge} inet manual")
         lines += ["\tbridge-ports none", "\tbridge-stp off", "\tbridge-fd 0"]
+        lines += [f"\tpost-up {command}" for command in _bridge_up_commands(inventory, network)]
         for other_name, other in networks.items():
             if other.get("via") and ipaddress.ip_address(other["via"]) in ipaddress.ip_network(network["cidr"]):
                 lines.append(f"\tpost-up ip route replace {other['cidr']} via {other['via']} dev {bridge}")
@@ -564,7 +565,6 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
                 f"\tpre-down iptables -t nat -D POSTROUTING -s {hv['runner_addr']} -o {bridge} -p tcp --dport 22 "
                 f"-j SNAT --to-source {mgmt['host_addr']} 2>/dev/null || true"
             )
-        lines += [f"\tpost-up {command}" for command in _bridge_up_commands(inventory, network)]
         lines += [f"\tpre-down {command}" for command in _bridge_down_commands(inventory, network)]
         lines.append("")
     files = {hv["file"]: "\n".join(lines), rules_path(inventory): rules_text(inventory)}
@@ -668,16 +668,22 @@ def _bridge_hooks(inventory: dict, network: dict) -> list[str]:
 
 
 def _bridge_up_commands(inventory: dict, network: dict) -> list[str]:
-    """브리지 하나가 올라올 때: 체인이 없으면 규칙 파일로 만들고, 자기 훅만 맨 앞에 건다."""
+    """브리지 하나가 올라올 때: 체인이 없으면 규칙 파일로 만들고, 자기 훅만 맨 앞에 건다.
+
+    격리 없이 올라오지 않게(fail closed) 규칙 파일이 없거나 적용에 실패하거나 훅을 못 걸면 그 브리지를
+    내리고 post-up 을 실패로 끝낸다(재리뷰 낮음 12). 이 명령들은 경로, NAT 보다 앞에 둔다.
+    """
     hv = inventory["hypervisor"]
     chain, input_chain = hv["chain"], hv["input_chain"]
+    bridge = network["bridge"]
+    closed = f"{{ ip link set dev {bridge} down; echo '{bridge}: 전용 체인을 걸지 못해 내림' >&2; false; }}"
     commands = [
         f"{{ iptables -n -L {chain} >/dev/null 2>&1 && iptables -n -L {input_chain} >/dev/null 2>&1; }} "
-        f"|| iptables-restore --noflush {rules_path(inventory)}"
+        f"|| {{ test -r {rules_path(inventory)} && iptables-restore --noflush {rules_path(inventory)}; }} || {closed}"
     ]
     for hook in _bridge_hooks(inventory, network):
         builtin, rest = hook.split(" ", 1)
-        commands.append(f"iptables -C {hook} 2>/dev/null || iptables -I {builtin} 1 {rest}")
+        commands.append(f"iptables -C {hook} 2>/dev/null || iptables -I {builtin} 1 {rest} || {closed}")
     return commands
 
 
