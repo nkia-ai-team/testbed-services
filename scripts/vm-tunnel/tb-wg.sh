@@ -14,8 +14,10 @@
 #   tb-wg hook-up | hook-down          firewall rules of this end (wg-quick PostUp, PreDown)
 #   tb-wg add-net <cidr> | del-net <cidr>
 #                                      route one more /24 through the tunnel (S at ST2), live
-#   tb-wg check [--target IP]...       handshake, ping, routes, rules, conntrack; rc 1 on FAIL
+#   tb-wg check [--target IP[:PORT]]...
+#                                      handshake, ping, routes, guards, conntrack; rc 1 on FAIL
 #   tb-wg handshake-age                seconds since the latest handshake, or "never"
+#   tb-wg pod-check                    (119, read only) can check enter the collector pod
 #   tb-wg snapshot                     top level routes and rules, to compare before and after
 #   tb-wg remove [--purge]             stop and disable; --purge also deletes files and the
 #                                      package if this tool installed it
@@ -23,8 +25,8 @@
 #   tb-wg udp-send <ports..>           (66) small probe datagrams to 119
 #
 # The private key is set by "wg set ... private-key <file>" in PostUp, so wg0.conf holds no
-# key. Rules live in chains of their own and the jumps match wg0 only: nothing else on the host
-# changes (k3s chains on 119, the tb-nat rules on 66, default policies on both).
+# key. Rules live in chains of their own in the mangle table and the jumps match wg0 only: nothing
+# else on the host changes (k3s chains on 119, the tb-nat rules on 66, default policies on both).
 set -euo pipefail
 
 ROOT=${TB_WG_ROOT:-}
@@ -49,8 +51,8 @@ ROLE_FILE=$WG_DIR/tb-wg.role
 STATE_DIR=$ROOT/var/lib/tb-wg
 PKG_MARK=$STATE_DIR/installed-wireguard-tools
 UNIT=wg-quick@$WG_IF
-CHAIN_IN=TBWG-IN      # 119: what the tunnel may open on 119
-CHAIN_FWD=TBWG-FWD    # 66: which networks may cross between wg0 and the testbed
+CHAIN_IN=TBWG-IN      # 119, mangle: what the tunnel may open on 119
+CHAIN_FWD=TBWG-FWD    # 66, mangle: which networks may cross between wg0 and the testbed
 CONNTRACK_DIR=${TB_WG_CONNTRACK_DIR:-/proc/sys/net/netfilter}
 
 die() { printf 'tb-wg: %s\n' "$*" >&2; exit 1; }
@@ -102,7 +104,6 @@ allowed_ips() {  # what this end accepts from the peer
 }
 
 ipt() { iptables -w "$@"; }
-# Insert the jump at the top once; kube-router may later move its own jump above it, which is fine.
 jump_add() {
   local table=$1 chain=$2; shift 2
   ipt -t "$table" -C "$chain" "$@" 2>/dev/null || ipt -t "$table" -I "$chain" 1 "$@"
@@ -111,56 +112,72 @@ jump_del() {
   local table=$1 chain=$2; shift 2
   while ipt -t "$table" -C "$chain" "$@" 2>/dev/null; do ipt -t "$table" -D "$chain" "$@"; done
 }
-chain_reset() { ipt -t "$1" -N "$2" 2>/dev/null || ipt -t "$1" -F "$2"; }
 chain_drop() {
   if ipt -t "$1" -S "$2" >/dev/null 2>&1; then ipt -t "$1" -F "$2"; ipt -t "$1" -X "$2"; fi
 }
 MSS=(-o "$WG_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu)
 
+# The guards sit in the mangle table, which k3s, kube-proxy, kube-router, flannel and docker leave
+# alone on both hosts. In the filter table kube-proxy prepends its own jumps whenever it starts
+# after wg-quick (every boot), and KUBE-FORWARD accepts NodePort traffic before a guard placed
+# there is reached. A DROP in mangle is final. 119: PREROUTING sees every packet from wg0 before
+# DNAT, so the ports are the ones dialled on 10.250.0.1. 66: FORWARD both ways.
+GUARD_TABLE=mangle
+guard_chain() { if [[ "$1" == 119 ]]; then printf '%s' "$CHAIN_IN"; else printf '%s' "$CHAIN_FWD"; fi; }
+guard_hooks() {  # one "<hook chain> <match words>" per line
+  if [[ "$1" == 119 ]]; then printf 'PREROUTING -i %s\n' "$WG_IF"
+  else printf 'FORWARD -i %s\nFORWARD -o %s\n' "$WG_IF" "$WG_IF"; fi
+}
+guard_fill() {  # guard_fill <role> <chain>
+  local role=$1 c=$2 p n
+  if [[ "$role" == 119 ]]; then
+    ipt -t "$GUARD_TABLE" -A "$c" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    ipt -t "$GUARD_TABLE" -A "$c" -p icmp --icmp-type echo-request -d "$WG_ADDR_119" -j RETURN
+    for p in $WG_IN_TCP_119; do ipt -t "$GUARD_TABLE" -A "$c" -p tcp -d "$WG_ADDR_119" --dport "$p" -j RETURN; done
+    for p in $WG_IN_UDP_119; do ipt -t "$GUARD_TABLE" -A "$c" -p udp -d "$WG_ADDR_119" --dport "$p" -j RETURN; done
+  else
+    while read -r n; do
+      valid_net "$n" || die "network $n in $NETS is not allowed"
+      ipt -t "$GUARD_TABLE" -A "$c" -i "$WG_IF" -s "$WG_ADDR_119/32" -d "$n" -j RETURN
+      ipt -t "$GUARD_TABLE" -A "$c" -o "$WG_IF" -s "$n" -d "$WG_ADDR_119/32" -j RETURN
+    done < <(nets)
+  fi
+  ipt -t "$GUARD_TABLE" -A "$c" -j DROP
+}
+# A new chain is filled first, its jumps go in above the old ones, then the old chain goes and the
+# new one takes its name (jumps follow a renamed chain). No packet ever sees a half filled guard.
+guard_install() {
+  local role=$1 chain new hook m
+  chain=$(guard_chain "$role"); new=$chain-NEW
+  while read -r hook m; do jump_del "$GUARD_TABLE" "$hook" $m -j "$new"; done < <(guard_hooks "$role")
+  chain_drop "$GUARD_TABLE" "$new"
+  ipt -t "$GUARD_TABLE" -N "$new"
+  guard_fill "$role" "$new"
+  while read -r hook m; do jump_add "$GUARD_TABLE" "$hook" $m -j "$new"; done < <(guard_hooks "$role")
+  while read -r hook m; do jump_del "$GUARD_TABLE" "$hook" $m -j "$chain"; done < <(guard_hooks "$role")
+  chain_drop "$GUARD_TABLE" "$chain"
+  ipt -t "$GUARD_TABLE" -E "$new" "$chain"
+}
+guard_remove() {
+  local role=$1 chain c hook m
+  chain=$(guard_chain "$role")
+  for c in "$chain" "$chain-NEW"; do
+    while read -r hook m; do jump_del "$GUARD_TABLE" "$hook" $m -j "$c"; done < <(guard_hooks "$role")
+    chain_drop "$GUARD_TABLE" "$c"
+  done
+}
+
 hook_up() {
   local role
   role=$(role_saved)
-  if [[ "$role" == 119 ]]; then
-    chain_reset filter "$CHAIN_IN"
-    ipt -A "$CHAIN_IN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-    ipt -A "$CHAIN_IN" -p icmp --icmp-type echo-request -d "$WG_ADDR_119" -j RETURN
-    local p
-    for p in $WG_IN_TCP_119; do
-      ipt -A "$CHAIN_IN" -p tcp -m conntrack --ctstate NEW --ctorigdst "$WG_ADDR_119" --ctorigdstport "$p" -j RETURN
-    done
-    for p in $WG_IN_UDP_119; do
-      ipt -A "$CHAIN_IN" -p udp -m conntrack --ctstate NEW --ctorigdst "$WG_ADDR_119" --ctorigdstport "$p" -j RETURN
-    done
-    ipt -A "$CHAIN_IN" -j DROP
-    jump_add filter INPUT -i "$WG_IF" -j "$CHAIN_IN"
-    jump_add filter FORWARD -i "$WG_IF" -j "$CHAIN_IN"
-  else
-    chain_reset filter "$CHAIN_FWD"
-    local n
-    while read -r n; do
-      valid_net "$n" || die "network $n in $NETS is not allowed"
-      ipt -A "$CHAIN_FWD" -i "$WG_IF" -s "$WG_ADDR_119/32" -d "$n" -j RETURN
-      ipt -A "$CHAIN_FWD" -o "$WG_IF" -s "$n" -d "$WG_ADDR_119/32" -j RETURN
-    done < <(nets)
-    ipt -A "$CHAIN_FWD" -j DROP
-    jump_add filter FORWARD -o "$WG_IF" -j "$CHAIN_FWD"
-    jump_add filter FORWARD -i "$WG_IF" -j "$CHAIN_FWD"
-  fi
+  guard_install "$role"
   ipt -t mangle -C FORWARD "${MSS[@]}" 2>/dev/null || ipt -t mangle -A FORWARD "${MSS[@]}"
 }
 
 hook_down() {
   local role
   role=$(role_saved)
-  if [[ "$role" == 119 ]]; then
-    jump_del filter INPUT -i "$WG_IF" -j "$CHAIN_IN"
-    jump_del filter FORWARD -i "$WG_IF" -j "$CHAIN_IN"
-    chain_drop filter "$CHAIN_IN"
-  else
-    jump_del filter FORWARD -o "$WG_IF" -j "$CHAIN_FWD"
-    jump_del filter FORWARD -i "$WG_IF" -j "$CHAIN_FWD"
-    chain_drop filter "$CHAIN_FWD"
-  fi
+  guard_remove "$role"
   while ipt -t mangle -C FORWARD "${MSS[@]}" 2>/dev/null; do ipt -t mangle -D FORWARD "${MSS[@]}"; done
 }
 
@@ -173,7 +190,9 @@ install_tools() {
   modinfo -F filename wireguard >/dev/null 2>&1 || die "kernel has no wireguard module"
   if pkg_installed; then say "wireguard-tools already installed"; return 0; fi
   [[ "$role" == 119 ]] || die "wireguard-tools missing on 66; it was there on 11-09, look before installing"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wireguard-tools
+  # 119 has services and a kernel waiting for a restart (needrestart): the apt hook must not
+  # restart them (docker would, for one, re-order the filter table).
+  NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wireguard-tools
   pkg_installed || die "wireguard-tools did not install"
   mkdir -p "$STATE_DIR"
   : >"$PKG_MARK"
@@ -303,12 +322,34 @@ ping_stats() {
 le() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 <= b + 0) }'; }
 plus() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", a + b }'; }
 
+# crictl needs the k3s config file; k3s writes it under its data dir, which 119 moved with
+# --data-dir. Order: WG_CRICTL_CONFIG, the --data-dir of the running k3s unit, data-dir in
+# /etc/rancher/k3s/config.yaml, the k3s default.
+crictl_config() {
+  if [[ -n "${WG_CRICTL_CONFIG:-}" ]]; then printf '%s' "$WG_CRICTL_CONFIG"; return 0; fi
+  local dd
+  dd=$(systemctl show -p ExecStart --value k3s 2>/dev/null | tr ' ;' '\n\n' \
+    | awk 'p {print; exit} /^--data-dir=/ {sub(/^--data-dir=/, ""); print; exit} $0 == "--data-dir" {p = 1}' || true)
+  if [[ -z "$dd" && -r "$ROOT/etc/rancher/k3s/config.yaml" ]]; then
+    dd=$(sed -n "s/^data-dir:[[:space:]]*[\"']\{0,1\}\([^\"' ]*\).*/\1/p" "$ROOT/etc/rancher/k3s/config.yaml" | head -1)
+  fi
+  printf '%s/agent/etc/crictl.yaml' "${dd:-$ROOT/var/lib/rancher/k3s}"
+}
 # Pid of a container of the named pod, to enter its network namespace (119 only).
 pod_pid() {
-  local id
-  id=$(crictl ps --name "$WG_POD_NAME" --state running -q 2>/dev/null | head -1)
+  local cfg id
+  cfg=$(crictl_config)
+  id=$(crictl --config "$cfg" ps --name "$WG_POD_NAME" --state running -q 2>/dev/null | head -1 || true)
   [[ -n "$id" ]] || return 1
-  crictl inspect --output go-template --template '{{.info.pid}}' "$id" 2>/dev/null
+  crictl --config "$cfg" inspect --output go-template --template '{{.info.pid}}' "$id" 2>/dev/null
+}
+# Read only, for probe: can check find the pod before anything is changed?
+pod_check() {
+  local pid cfg
+  cfg=$(crictl_config)
+  if pid=$(pod_pid) && [[ "$pid" =~ ^[0-9]+$ ]]; then pass "found the $WG_POD_NAME container with $cfg"; return 0; fi
+  flunk "no running $WG_POD_NAME container through $cfg"
+  return 1
 }
 # TCP reach from inside a namespace: connected or refused both prove the path; a timeout does not.
 tcp_reach() {
@@ -317,6 +358,24 @@ tcp_reach() {
   if (( rc == 0 )); then printf 'connected'; return 0; fi
   if [[ "$out" == *"refused"* ]]; then printf 'refused'; return 0; fi
   printf 'no answer (rc %s)' "$rc"; return 1
+}
+
+# The guard works only where nothing above it can accept the packet: its jumps must be the first
+# rules of their hook chains, and the chain must end in DROP.
+guard_check() {
+  local role=$1 chain hook m want got first
+  chain=$(guard_chain "$role")
+  local ok=1 hooks=""
+  while read -r hook m; do
+    hooks+="${hooks:+, }$hook $m"
+    want="-A $hook $m -j $chain"
+    first=$(ipt -t "$GUARD_TABLE" -S "$hook" 2>/dev/null | grep '^-A ' | head -"$(guard_hooks "$role" | grep -c "^$hook ")" || true)
+    grep -qxF -- "$want" <<<"$first" || { ok=0; flunk "$chain: '$want' is not at the top of $GUARD_TABLE $hook (got: $(paste -sd'|' <<<"$first"))"; }
+  done < <(guard_hooks "$role")
+  got=$(ipt -t "$GUARD_TABLE" -S "$chain" 2>/dev/null | tail -1 || true)
+  [[ "$got" == "-A $chain -j DROP" ]] || { ok=0; flunk "$chain does not end in DROP (last: ${got:-no chain})"; }
+  (( ok )) && pass "$chain first in $GUARD_TABLE ($hooks), last rule DROP"
+  return 0
 }
 
 handshake_age() {
@@ -329,7 +388,9 @@ check() {
   local targets=() role
   while (( $# )); do
     case "$1" in
-      --target) [[ -n "${2:-}" ]] || die "check: --target needs an address"; targets+=("$2"); shift 2 ;;
+      --target)
+        [[ "${2:-}" =~ ^[0-9.]+(:[0-9]+)?$ ]] || die "check: --target needs IP or IP:TCPPORT"
+        targets+=("$2"); shift 2 ;;
       *) die "check: unknown argument $1" ;;
     esac
   done
@@ -351,18 +412,23 @@ check() {
     flunk "no handshake yet"
   fi
 
-  local base_loss base_avg base_max loss avg max
-  read -r base_loss base_avg base_max < <(ping_stats ping -n -q -c 10 -i 0.2 -W 2 "$lan")
-  read -r loss avg max < <(ping_stats ping -n -q -c 10 -i 0.2 -W 2 "$peer")
-  if [[ "$loss" == 0 && "$avg" != - ]]; then
-    if [[ "$base_avg" != - ]] && le "$avg" "$(plus "$base_avg" "$WG_RTT_EXTRA_MS")" && le "$max" "$WG_RTT_MAX_MS"; then
-      pass "ping $peer through $WG_IF: loss 0%, avg ${avg}ms, max ${max}ms (office path avg ${base_avg}ms + ${WG_RTT_EXTRA_MS}ms, max ${WG_RTT_MAX_MS}ms)"
+  # Three rounds, office path and tunnel back to back: a one-off wobble must not fail the check
+  # (apply rolls back on a failed check). Loss in any round fails.
+  local base_loss base_avg base_max loss avg max round over=0 lost=0 detail=""
+  for round in 1 2 3; do
+    read -r base_loss base_avg base_max < <(ping_stats ping -n -q -c 10 -i 0.2 -W 2 "$lan")
+    read -r loss avg max < <(ping_stats ping -n -q -c 10 -i 0.2 -W 2 "$peer")
+    if [[ "$loss" != 0 || "$avg" == - ]]; then lost=1; detail="loss ${loss}%"; break; fi
+    detail="avg ${avg}ms, max ${max}ms against office path avg ${base_avg}ms + ${WG_RTT_EXTRA_MS}ms, max ${WG_RTT_MAX_MS}ms"
+    if [[ "$base_avg" == - ]] || ! le "$avg" "$(plus "$base_avg" "$WG_RTT_EXTRA_MS")" || ! le "$max" "$WG_RTT_MAX_MS"; then
+      over=$((over + 1))
     else
-      flunk "ping $peer through $WG_IF: avg ${avg}ms, max ${max}ms against office path avg ${base_avg}ms + ${WG_RTT_EXTRA_MS}ms, max ${WG_RTT_MAX_MS}ms"
+      break
     fi
-  else
-    flunk "ping $peer through $WG_IF: loss ${loss}%"
-  fi
+  done
+  if (( lost )); then flunk "ping $peer through $WG_IF: $detail"
+  elif (( over == 3 )); then flunk "ping $peer through $WG_IF: $detail, 3 rounds out of 3"
+  else pass "ping $peer through $WG_IF: loss 0%, $detail (over in $over of the rounds taken)"; fi
 
   local n
   if [[ "$role" == 119 ]]; then
@@ -371,30 +437,17 @@ check() {
     while read -r n; do
       if grep -qE "^${n//./\\.}( |\$)" <<<"$routes"; then pass "route $n dev $WG_IF"; else flunk "route $n dev $WG_IF missing"; fi
     done < <(nets)
-    if ipt -C INPUT -i "$WG_IF" -j "$CHAIN_IN" 2>/dev/null && ipt -C FORWARD -i "$WG_IF" -j "$CHAIN_IN" 2>/dev/null \
-      && ipt -S "$CHAIN_IN" 2>/dev/null | tail -1 | grep -qx -- "-A $CHAIN_IN -j DROP"; then
-      pass "$CHAIN_IN guards INPUT and FORWARD from $WG_IF, last rule DROP"
-    else
-      flunk "$CHAIN_IN jumps or final DROP missing"
-    fi
   else
-    local rules
-    rules=$(ipt -S "$CHAIN_FWD" 2>/dev/null || true)
     while read -r n; do
-      if ipt -C "$CHAIN_FWD" -i "$WG_IF" -s "$WG_ADDR_119/32" -d "$n" -j RETURN 2>/dev/null \
-        && ipt -C "$CHAIN_FWD" -o "$WG_IF" -s "$n" -d "$WG_ADDR_119/32" -j RETURN 2>/dev/null; then
+      if ipt -t "$GUARD_TABLE" -C "$CHAIN_FWD" -i "$WG_IF" -s "$WG_ADDR_119/32" -d "$n" -j RETURN 2>/dev/null \
+        && ipt -t "$GUARD_TABLE" -C "$CHAIN_FWD" -o "$WG_IF" -s "$n" -d "$WG_ADDR_119/32" -j RETURN 2>/dev/null; then
         pass "$CHAIN_FWD lets $n and $WG_ADDR_119 through"
       else
         flunk "$CHAIN_FWD has no rule pair for $n"
       fi
     done < <(nets)
-    if ipt -C FORWARD -i "$WG_IF" -j "$CHAIN_FWD" 2>/dev/null && ipt -C FORWARD -o "$WG_IF" -j "$CHAIN_FWD" 2>/dev/null \
-      && tail -1 <<<"$rules" | grep -qx -- "-A $CHAIN_FWD -j DROP"; then
-      pass "$CHAIN_FWD guards FORWARD both ways, last rule DROP"
-    else
-      flunk "$CHAIN_FWD jumps or final DROP missing"
-    fi
   fi
+  guard_check "$role"
   if ipt -t mangle -C FORWARD "${MSS[@]}" 2>/dev/null; then pass "TCP MSS clamped on $WG_IF"; else flunk "TCP MSS clamp missing"; fi
 
   local count max_ct
@@ -406,24 +459,29 @@ check() {
     flunk "conntrack $count of $max_ct (limit ${WG_CONNTRACK_MAX_RATIO}%)"
   fi
 
-  local t
+  # Targets are IP or IP:PORT. The TCP probe needs a port the target answers (a refusal counts),
+  # so it runs only when one is given; the tunnel peer itself is probed on WG_POD_TCP_PORT.
+  local t ip port
   for t in "${targets[@]}"; do
-    read -r loss avg max < <(ping_stats ping -n -q -c 5 -i 0.2 -W 2 "$t")
-    if [[ "$loss" == 0 ]]; then pass "ping $t from this host: loss 0%, avg ${avg}ms"; else flunk "ping $t from this host: loss ${loss}%"; fi
+    ip=${t%%:*}
+    read -r loss avg max < <(ping_stats ping -n -q -c 5 -i 0.2 -W 2 "$ip")
+    if [[ "$loss" == 0 ]]; then pass "ping $ip from this host: loss 0%, avg ${avg}ms"; else flunk "ping $ip from this host: loss ${loss}%"; fi
   done
 
   if [[ "$role" == 119 ]]; then
     local pid r
     if pid=$(pod_pid) && [[ "$pid" =~ ^[0-9]+$ ]]; then
-      for t in "$peer" "${targets[@]}"; do
-        read -r loss avg max < <(ping_stats nsenter -t "$pid" -n ping -n -q -c 5 -i 0.2 -W 2 "$t")
-        if [[ "$loss" == 0 ]]; then pass "ping $t from the $WG_POD_NAME pod: loss 0%, avg ${avg}ms"
-        else flunk "ping $t from the $WG_POD_NAME pod: loss ${loss}%"; fi
-        if r=$(tcp_reach "$pid" "$t" "$WG_POD_TCP_PORT"); then pass "tcp $t:$WG_POD_TCP_PORT from the $WG_POD_NAME pod: $r"
-        else flunk "tcp $t:$WG_POD_TCP_PORT from the $WG_POD_NAME pod: $r"; fi
+      for t in "$peer:$WG_POD_TCP_PORT" "${targets[@]}"; do
+        ip=${t%%:*}; port=""; [[ "$t" == *:* ]] && port=${t##*:}
+        read -r loss avg max < <(ping_stats nsenter -t "$pid" -n ping -n -q -c 5 -i 0.2 -W 2 "$ip")
+        if [[ "$loss" == 0 ]]; then pass "ping $ip from the $WG_POD_NAME pod: loss 0%, avg ${avg}ms"
+        else flunk "ping $ip from the $WG_POD_NAME pod: loss ${loss}%"; fi
+        [[ -n "$port" ]] || continue
+        if r=$(tcp_reach "$pid" "$ip" "$port"); then pass "tcp $ip:$port from the $WG_POD_NAME pod: $r"
+        else flunk "tcp $ip:$port from the $WG_POD_NAME pod: $r"; fi
       done
     else
-      flunk "no running $WG_POD_NAME container to test the collector side"
+      flunk "no running $WG_POD_NAME container through $(crictl_config), so the collector side was not tested"
     fi
   fi
   (( FAILS == 0 )) || { say "$FAILS check(s) failed"; return 1; }
@@ -438,8 +496,10 @@ snapshot() {
   local c
   for c in INPUT FORWARD; do ipt -S "$c" | sed 's/^/filter /'; done
   for c in PREROUTING POSTROUTING; do ipt -t nat -S "$c" | sed 's/^/nat /'; done
-  ipt -t mangle -S FORWARD | sed 's/^/mangle /'
-  for c in "$CHAIN_IN" "$CHAIN_FWD"; do ipt -S "$c" 2>/dev/null | sed 's/^/filter /' || true; done
+  for c in PREROUTING FORWARD; do ipt -t mangle -S "$c" | sed 's/^/mangle /'; done
+  for c in "$CHAIN_IN" "$CHAIN_FWD" "$CHAIN_IN-NEW" "$CHAIN_FWD-NEW"; do
+    ipt -t "$GUARD_TABLE" -S "$c" 2>/dev/null | sed "s/^/$GUARD_TABLE /" || true
+  done
 }
 
 remove() {
@@ -453,9 +513,10 @@ remove() {
   if (( purge )); then
     rm -f "$CONF" "$KEY" "$PUB" "$PEER" "$NETS" "$ROLE_FILE"
     if [[ -e "$PKG_MARK" ]]; then
-      DEBIAN_FRONTEND=noninteractive apt-get remove -y wireguard-tools
+      NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get remove -y wireguard-tools
       rm -f "$PKG_MARK"
     fi
+    rmdir "$STATE_DIR" 2>/dev/null || true
     rm -f "$WG_DIR/tb-wg.env" "$SELF"
     say "removed the tunnel, its files and the tool"
   else
@@ -500,9 +561,10 @@ case "$cmd" in
   del-net) del_net "$@" ;;
   check) check "$@" ;;
   handshake-age) handshake_age ;;
+  pod-check) pod_check ;;
   snapshot) snapshot ;;
   remove) remove "$@" ;;
   udp-listen) udp_listen "$@" ;;
   udp-send) udp_send "$@" ;;
-  *) sed -n '9,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '9,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

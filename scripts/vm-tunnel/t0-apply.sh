@@ -4,15 +4,20 @@
 #
 #   t0-apply.sh probe [port...]                which UDP ports from 66 reach 119 (nothing written)
 #   t0-apply.sh apply --yes [--port P] [--no-rollback]
-#   t0-apply.sh verify [--target IP]...        both ends; targets are pinged from 119 and its pod
+#   t0-apply.sh verify [--target IP[:PORT]]... both ends; targets are pinged from 119 and its pod,
+#                                              and with a PORT also reached over TCP from the pod
 #   t0-apply.sh add-net <cidr>                 one more /24 through the tunnel (S at ST2)
 #   t0-apply.sh rollback --yes [--purge]       66 first, then 119
+#
+# apply, add-net and rollback must run under the testbed lock: TB_LOCK_FILE names it and the
+# caller holds it (flock "$TB_LOCK_FILE" t0-apply.sh ...).
 #
 # Connections: TB_SSH_119 and TB_SSH_66 are the command words that open a root shell on each host.
 # Without them the password files TB_PASS_119 and TB_PASS_66 (default ~/.config/testbed/ssh-<ip>)
 # are given to sshpass. Keys never pass through this host's output: the public keys travel in
 # shell variables from one host's stdout to the other host's stdin, the private keys never leave
-# their host.
+# their host. Never put "sshpass -p <password>" in TB_SSH_*: the value would sit in the process
+# list and the shell history; use -f with a file, or keys.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -105,27 +110,72 @@ wait_handshake() {
   return 1
 }
 
-do_rollback() {  # 66 (the initiator) first, so 119 stops seeing handshakes before it goes down
-  local purge=${1:-}
-  on 66 "test -x $BIN && $BIN remove $purge || true" | tee -a "$RUN/apply.log"
-  on 119 "test -x $BIN && $BIN remove $purge || true" | tee -a "$RUN/apply.log"
+# 66 (the side that dials) first, so 119 stops seeing handshakes before it goes down. Each host
+# is tried even when the other cannot be reached.
+do_rollback() {
+  local purge=${1:-} rc=0 h
+  for h in 66 119; do
+    if on "$h" "test ! -x $BIN || $BIN remove $purge" 2>&1 | tee -a "$RUN/apply.log"; then :
+    else log "[FAIL] could not take $h down (ssh or remove failed): run '$BIN remove' there by hand"; rc=1; fi
+  done
+  return "$rc"
+}
+
+# The testbed lock must be held by the caller (flock "$TB_LOCK_FILE" t0-apply.sh ...): a second
+# open of the file then cannot take it.
+need_lock() {
+  [[ -n "${TB_LOCK_FILE:-}" ]] || die "set TB_LOCK_FILE to the testbed lock and run under it: flock \"\$TB_LOCK_FILE\" $0 $*"
+  [[ -e "$TB_LOCK_FILE" ]] || die "no lock file $TB_LOCK_FILE"
+  if flock -n "$TB_LOCK_FILE" true; then die "$TB_LOCK_FILE is not held: run under flock"; fi
+}
+
+# Once the hosts are touched, any way out of apply other than success rolls back: a failed check,
+# a failed comparison, and also an ssh or snapshot that dies under set -e.
+APPLY_STATE=idle
+ROLLBACK_ON_FAIL=1
+apply_exit() {
+  local rc=$?
+  [[ "$APPLY_STATE" == touched ]] || return 0
+  trap - EXIT
+  set +e
+  # An exit from inside "cmd >file" would leave our output in that file: back to the terminal.
+  exec 1>&7 2>&8
+  if (( ROLLBACK_ON_FAIL )); then
+    log "[FAIL] rolling back (files kept, the package stays)"
+    do_rollback
+    snap 119 >"$RUN/rolledback-119.txt"
+    snap 66 >"$RUN/rolledback-66.txt"
+    if cmp -s "$RUN/before-119.txt" "$RUN/rolledback-119.txt" && cmp -s "$RUN/before-66.txt" "$RUN/rolledback-66.txt"; then
+      log "routes and top level chains are back to what they were"
+    else
+      log "[FAIL] after rollback the routes or chains differ from before: compare $RUN/before-*.txt and rolledback-*.txt"
+    fi
+  else
+    log "[FAIL] left as it is (--no-rollback)"
+  fi
+  log "last change to 119 and 66: $(kst)"
+  (( rc != 0 )) || rc=1
+  exit "$rc"
 }
 
 apply() {
-  local yes=0 port="" rollback=1
+  local yes=0 port=""
   while (( $# )); do
     case "$1" in
       --yes) yes=1; shift ;;
       --port) port=${2:-}; shift 2 ;;
-      --no-rollback) rollback=0; shift ;;
+      --no-rollback) ROLLBACK_ON_FAIL=0; shift ;;
       *) die "apply: unknown argument $1" ;;
     esac
   done
   (( yes )) || die "apply changes 119 and 66: pass --yes after reading docs/runbook-testbed-tunnel.md"
+  need_lock apply
   new_run apply
   log "run directory $RUN"
   snap 119 >"$RUN/before-119.txt"
   snap 66 >"$RUN/before-66.txt"
+  on_stdin_tool 119 pod-check | tee -a "$RUN/apply.log" \
+    || die "check could not find the collector pod on 119 (crictl config); nothing changed yet"
 
   if [[ -z "$port" ]]; then
     local passing
@@ -138,6 +188,9 @@ apply() {
   [[ "$port" =~ ^[0-9]+$ ]] || die "apply: bad port $port"
   printf '%s\n' "$port" >"$RUN/port"
 
+  exec 7>&1 8>&2
+  APPLY_STATE=touched
+  trap apply_exit EXIT
   push_tool 119
   push_tool 66
   on 119 "$BIN install-tools 119" | tee -a "$RUN/apply.log"
@@ -151,43 +204,27 @@ apply() {
   on 66 "$BIN render 66 --port $port" <<<"$pub119" | tee -a "$RUN/apply.log"
   unset pub119 pub66
 
-  local ok=1
   log "starting wg-quick@${WG_IF} on 119, then on 66"
-  on 119 "systemctl enable --now wg-quick@$WG_IF" 2>&1 | tee -a "$RUN/apply.log" || ok=0
-  (( ok )) && { on 66 "systemctl enable --now wg-quick@$WG_IF" 2>&1 | tee -a "$RUN/apply.log" || ok=0; }
-  (( ok )) && { wait_handshake || ok=0; }
-  if (( ok )); then
-    on 119 "$BIN check" | tee "$RUN/check-119.txt" | tee -a "$RUN/apply.log" || ok=0
-    on 66 "$BIN check" | tee "$RUN/check-66.txt" | tee -a "$RUN/apply.log" || ok=0
-  fi
+  on 119 "systemctl enable --now wg-quick@$WG_IF" 2>&1 | tee -a "$RUN/apply.log"
+  on 66 "systemctl enable --now wg-quick@$WG_IF" 2>&1 | tee -a "$RUN/apply.log"
+  wait_handshake || return 1
+  local ok=1
+  on 119 "$BIN check" | tee "$RUN/check-119.txt" | tee -a "$RUN/apply.log" || ok=0
+  on 66 "$BIN check" | tee "$RUN/check-66.txt" | tee -a "$RUN/apply.log" || ok=0
   snap 119 >"$RUN/after-119.txt"
   snap 66 >"$RUN/after-66.txt"
-  if (( ok )); then
-    compare 119 "$RUN/before-119.txt" "$RUN/after-119.txt" || ok=0
-    compare 66 "$RUN/before-66.txt" "$RUN/after-66.txt" || ok=0
-  fi
-  if (( ok )); then
-    log "[DONE] tunnel up on port $port. Last change to 119 and 66: $(kst). Recording may start after $(TZ=Asia/Seoul date -d '+150 min' '+%F %T KST')."
-    return 0
-  fi
-  if (( rollback )); then
-    log "[FAIL] rolling back (files kept, the package stays)"
-    do_rollback
-    snap 119 >"$RUN/rolledback-119.txt"
-    snap 66 >"$RUN/rolledback-66.txt"
-    cmp -s "$RUN/before-119.txt" "$RUN/rolledback-119.txt" && cmp -s "$RUN/before-66.txt" "$RUN/rolledback-66.txt" \
-      && log "routes and top level chains are back to what they were" \
-      || log "[FAIL] after rollback the routes or chains differ from before: compare $RUN/before-*.txt and rolledback-*.txt"
-  fi
-  log "last change to 119 and 66: $(kst)"
-  return 1
+  compare 119 "$RUN/before-119.txt" "$RUN/after-119.txt" || ok=0
+  compare 66 "$RUN/before-66.txt" "$RUN/after-66.txt" || ok=0
+  (( ok )) || return 1
+  APPLY_STATE=done
+  log "[DONE] tunnel up on port $port. Last change to 119 and 66: $(kst). Recording may start after $(TZ=Asia/Seoul date -d '+150 min' '+%F %T KST')."
 }
 
 verify() {
   local args=()
   while (( $# )); do
     case "$1" in
-      --target) [[ -n "${2:-}" ]] || die "verify: --target needs an address"; args+=(--target "$2"); shift 2 ;;
+      --target) [[ "${2:-}" =~ ^[0-9.]+(:[0-9]+)?$ ]] || die "verify: --target needs IP or IP:TCPPORT"; args+=(--target "$2"); shift 2 ;;
       *) die "verify: unknown argument $1" ;;
     esac
   done
@@ -201,6 +238,7 @@ verify() {
 add_net() {
   local net=${1:-}
   [[ -n "$net" ]] || die "add-net <cidr>"
+  need_lock add-net
   new_run add-net
   on 119 "$BIN add-net $net" | tee -a "$RUN/apply.log"
   on 66 "$BIN add-net $net" | tee -a "$RUN/apply.log"
@@ -217,11 +255,11 @@ rollback() {
     esac
   done
   (( yes )) || die "rollback changes 119 and 66: pass --yes"
+  need_lock rollback
   new_run rollback
-  do_rollback "$purge"
-  snap 119 >"$RUN/after-119.txt"
-  snap 66 >"$RUN/after-66.txt"
   local ok=0 h
+  do_rollback "$purge" || ok=1
+  for h in 119 66; do snap "$h" >"$RUN/after-$h.txt" || { log "[FAIL] could not read $h after rollback"; ok=1; }; done
   for h in 119 66; do
     if grep -qE "wg0|TBWG-" "$RUN/after-$h.txt"; then log "[FAIL] $h still has wg0 or TBWG lines"; ok=1
     else log "[PASS] $h has no wg0 route or TBWG rule left"; fi
@@ -239,10 +277,10 @@ rollback() {
 
 cmd=${1:-}; shift || true
 case "$cmd" in
-  probe) mkdir -p "$RUN_ROOT"; probe "$@" ;;
+  probe) mkdir -p "$RUN_ROOT"; on_stdin_tool 119 pod-check >&2 || true; probe "$@" ;;
   apply) apply "$@" ;;
   verify) verify "$@" ;;
   add-net) add_net "$@" ;;
   rollback) rollback "$@" ;;
-  *) sed -n '5,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '5,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
