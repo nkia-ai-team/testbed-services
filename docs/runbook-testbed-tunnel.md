@@ -72,14 +72,15 @@ summary: SMS, NMS 전용 테스트베드(T)와 SMS 전용 테스트베드(S)가 
 |---|---|---|
 | 119 | mangle `TBWG-IN`: 맺은 연결의 응답, 10.250.0.1 로 오는 echo-request, 10.250.0.1 의 tcp 18090, 514 와 udp 514, 162 만 RETURN, 나머지 DROP. mangle PREROUTING 맨 앞의 `-i wg0` 점프 하나 | 테스트베드 VM 이 119 의 NodePort, 다른 hostPort(평가용 PG, CH, VM LB 포함), 호스트 서비스(ssh, etcd, API, kubelet)에 닿지 않게 한다. PREROUTING 은 DNAT 전이라 터널 주소로 걸어 온 포트 그대로 판정한다. filter 표에 두면 kube-proxy 가 기동할 때마다 자기 점프를 맨 앞에 넣고 `KUBE-FORWARD` 가 NodePort 흐름을 먼저 ACCEPT 해 거르기를 건너뛴다(재부팅 때 wg-quick 이 k3s 보다 먼저 끝나므로 늘 그렇게 된다). mangle 은 k3s, kube-proxy, kube-router, flannel, docker 가 손대지 않고, 거기서 DROP 하면 그대로 끝난다 |
 | 119 | mangle FORWARD `-o wg0` SYN 의 MSS 를 경로 MTU 로 | 파드 MTU 1450 이 터널 1420 보다 크다(설계 §3-4) |
-| 66 | mangle `TBWG-FWD`: 대역마다 10.250.0.1 과 그 대역 사이 양방향만 RETURN, 나머지 DROP. mangle FORWARD 맨 앞에 `-i wg0`, `-o wg0` 점프 | 설계 §3-4 의 "wg0 과 다른 망(122, 127, vmbr0.200) 사이 거절" 을 터널과 같이 걸고 같이 지운다. T2 의 `t4-net`(S 의 `s5-net`)은 filter 표에서 브리지 쪽만 맡고 wg0 규칙과 MSS 를 두지 않는다(2회차 T2 와 맞춘 경계, 설계 문서에 적음). mangle 에 두므로 `t4-net` 의 체인이 filter FORWARD 맨 앞에 와도 이 거르기를 건너뛰지 못한다 |
+| 66 | mangle `TBWG-FWD`: 맨 앞 두 줄이 wg0 과 상향(사내망 쪽 인터페이스, `WG_UPLINK_66`, 비면 119 로 가는 경로의 dev, 지금 vmbr0.200) 사이 DROP, 그다음 대역마다 10.250.0.1 과 그 대역 사이 양방향만 RETURN, 나머지 DROP. mangle FORWARD 맨 앞에 `-i wg0`, `-o wg0` 점프 | 설계 §3-4 의 "wg0 과 다른 망(122, 127, vmbr0.200) 사이 거절" 을 터널과 같이 걸고 같이 지운다. 상향 짝 DROP 은 T2 의 브리지가 내려가 있을 때 119 의 폴링(목적지 123~126)이 66 기본 경로로 사내망에 나가는 것과, 사내망 쪽에서 테스트베드 출발지를 속여 119 로 들어오는 것을 막는다. **소유: wg0 규칙과 MSS 는 `tb-wg` 만 다룬다.** `t4-net`(S 의 `s5-net`)은 filter 표에서 브리지 쪽만 맡고 wg0 규칙과 MSS 를 두지 않으며 ACCEPT 를 wg0 새 흐름에 맞게 쓰지 않는다(설계 문서에 적음). mangle 에 두므로 `t4-net` 의 체인이 filter FORWARD 맨 앞에 와도 이 거르기를 건너뛰지 못한다 |
 | 66 | mangle FORWARD MSS 같은 규칙 | 같은 이유 |
 
 `wg-quick` 이 AllowedIPs 대역마다 경로를 만든다. 119 는 10.250.0.2/32 와 터널 대역, 66 은 10.250.0.1/32 뿐이라
 66 에는 테스트베드 대역 경로가 새로 생기지 않는다(그 경로는 T2 의 `t4-net` 이 라우터로 둔다). netplan, systemd-networkd,
 `/etc/network/interfaces` 는 건드리지 않는다.
 
-거르기 체인을 고칠 때(재기동, add-net)는 새 체인(`-NEW`)을 다 채운 뒤 그 점프를 넣고, 옛 점프와 옛 체인을 지운 다음
+거르기는 wg-quick 의 PreUp 에서 걸고(규칙은 wg0 을 이름으로 맞추므로 링크 전에 걸 수 있다) PostDown 에서 지운다.
+그래서 wg0 이 있는데 거르기가 없는 순간이 없다. 키를 넣는 줄만 PostUp 이다. 거르기 체인을 고칠 때(재기동, add-net)는 새 체인(`-NEW`)을 다 채운 뒤 그 점프를 넣고, 옛 점프와 옛 체인을 지운 다음
 새 체인 이름을 바꾼다. 비거나 반쯤 찬 거르기를 지나는 패킷이 없다.
 
 66 의 PVE 방화벽(`pve-firewall` disabled, `proxmox-firewall` active 이나 규칙 없음)을 나중에 켜면 PVEFW 체인이
@@ -132,7 +133,7 @@ flock "$TB_LOCK_FILE" ./t0-apply.sh apply --yes          # 1~7
 | 핸드셰이크 | 마지막 핸드셰이크 150초 이내 |
 | 터널 핑 | 상대 터널 주소 10회 손실 0, 평균이 같은 순간의 사내망 경로 평균 + 2ms 이하, 최대 20ms 이하. 사내망과 터널을 번갈아 세 번까지 재고 세 번 모두 넘을 때만 FAIL(한 번 흔들림으로 되돌리지 않게). 손실은 한 번이라도 FAIL |
 | 경로(119) | 대역마다 `dev wg0` 경로 |
-| 거르기 | 점프가 mangle 의 그 훅(119 PREROUTING, 66 FORWARD)에서 맨 앞 규칙이고(위에 다른 규칙이 오면 FAIL), 체인 마지막 줄이 DROP, MSS 있음 |
+| 거르기 | 점프가 mangle 의 그 훅(119 PREROUTING, 66 FORWARD)에서 맨 앞 규칙이고(위에 다른 규칙이 오면 FAIL), 체인 마지막 줄이 DROP, 66 은 상향 짝 DROP 이 RETURN 들보다 앞, MSS 있음 |
 | conntrack | 사용 80% 이하 |
 | 수집기 쪽(119) | `collector-nms` 컨테이너의 망 이름공간에서 상대 터널 주소로 핑 손실 0 과 TCP 9 번 포트 연결이 맺히거나 거절됨(거절도 길이 양쪽으로 열렸다는 뜻. 66 에 듣는 서비스가 없어 로그 줄이 생기지 않는다). `--target IP` 는 핑만, `--target IP:PORT` 는 그 포트로 TCP 도 본다. 대상이 그 포트에 응답(연결이나 거절)해야 PASS 다 |
 
@@ -201,4 +202,4 @@ PreDown 을 실제로 돌려 규칙 코드가 가짜 iptables 위에서 돈다. 
 멱등, 거르기가 mangle 맨 앞이고 k3s 가 filter 에 점프를 쌓아도 그대로임, add-net 이 새 체인을 채운 뒤 바꿈, crictl 이
 설정 없이는 실패하는 가짜로 설정 경로 찾기, check 의 각 실패(세 번 재는 RTT 포함), `NEEDRESTART_SUSPEND=1`, 패키지를
 설치한 쪽만 지움, 잠금 확인, probe 포트 고르기, 실패 때 스스로 되돌림(66 ssh 가 끊겨도 119 를 되돌림, 스냅숏이 죽어도
-되돌림), 되돌리는 순서(66 먼저)를 본다.
+되돌림), 되돌리는 순서(66 먼저), 66 FORWARD 판정(브리지가 없을 때 wg0 에서 상향으로 나가는 폴링과 상향에서 속인 출발지 DROP, 122, 127 DROP, 정상 폴링과 응답 ACCEPT), 거르기가 링크보다 먼저 서고 나중에 지워짐을 본다.

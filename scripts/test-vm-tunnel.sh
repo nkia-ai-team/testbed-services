@@ -98,6 +98,8 @@ hooks() { sed -n "s/^$1 = //p" "$(conf)" | sed 's/%i/wg0/g'; }
 case "$1 ${2:-}" in
   "enable --now")
     [[ -n "${FAKE_START_FAIL:-}" ]] && exit 1
+    while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PreUp)
+    echo "systemctl: link created" >>"$FAKE/calls"
     : >"$FAKE/link-wg0"; : >"$FAKE/enabled"; : >"$FAKE/active"
     addr=$(sed -n 's/^Address = //p' "$(conf)")
     echo "10.250.0.0/30 dev wg0 proto kernel scope link src ${addr%/*} " >>"$FAKE/routes"
@@ -108,8 +110,12 @@ case "$1 ${2:-}" in
     exit 0 ;;
   "disable --now")
     if [[ -e "$FAKE/active" ]]; then while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PreDown); fi
+    was_active=0; [[ -e "$FAKE/active" ]] && was_active=1
     rm -f "$FAKE/link-wg0" "$FAKE/enabled" "$FAKE/active"
-    grep -v " dev wg0 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes"; exit 0 ;;
+    echo "systemctl: link removed" >>"$FAKE/calls"
+    grep -v " dev wg0 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes"
+    if (( was_active )); then while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PostDown); fi
+    exit 0 ;;
   "is-enabled "*) if [[ -e "$FAKE/enabled" ]]; then (( quiet )) || echo enabled; exit 0; fi; (( quiet )) || echo disabled; exit 1 ;;
   "is-active "*) [[ -e "$FAKE/active" ]] ;;
   "show -p") [[ -n "${FAKE_K3S_DATADIR:-}" ]] && \
@@ -256,6 +262,9 @@ for c in "$CA" "$CB"; do
   grep -qF "$(priv_of a2)" "$c" && fail "$c holds the 119 private key"
   grep -qF "$(priv_of b2)" "$c" && fail "$c holds the 66 private key"
   grep -qx "PostUp = wg set %i private-key $(dirname "$c")/wg0.key" "$c" || fail "$c does not load the key in PostUp"
+  grep -qx "PreUp = $(dirname "$(dirname "$(dirname "$c")")")/usr/local/sbin/tb-wg hook-up" "$c" || fail "$c guard is not PreUp"
+  grep -qx "PostDown = $(dirname "$(dirname "$(dirname "$c")")")/usr/local/sbin/tb-wg hook-down" "$c" || fail "$c guard is not PostDown"
+  grep -qE "^(PostUp|PreDown) = .*hook-" "$c" && fail "$c still hooks the guard to PostUp or PreDown"
   grep -qx "MTU = 1420" "$c" || fail "$c MTU"
 done
 grep -qx "Address = 10.250.0.1/30" "$CA" || fail "119 address"
@@ -289,6 +298,9 @@ expected=$'-m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 [[ -e "$A/fake/ipt/filter/TBWG-IN" ]] && fail "the 119 guard must not live in the filter table (kube-proxy prepends there)"
 [[ "$(cat "$A/fake/ipt/filter/INPUT" "$A/fake/ipt/filter/FORWARD")" == "$filter_before" ]] || fail "119 filter INPUT or FORWARD changed"
 grep -qxF -- "-o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu" "$A/fake/ipt/mangle/FORWARD" || fail "119 MSS clamp"
+up_at=$(grep -n "^systemctl: link created" "$A/fake/calls" | head -1 | cut -d: -f1)
+guard_at=$(grep -n -- "-E TBWG-IN-NEW TBWG-IN$" "$A/fake/calls" | head -1 | cut -d: -f1)
+[[ -n "$up_at" && -n "$guard_at" ]] && (( guard_at < up_at )) || fail "119 guard was not in place before wg0 came up"
 # k3s restarts: kube-proxy and kube-router prepend their jumps to filter; the guard does not move.
 (export FAKE="$A/fake" PATH="$SHIM:$PATH"; iptables -I FORWARD 1 -j KUBE-FORWARD; iptables -I INPUT 1 -j KUBE-FIREWALL)
 out=$(FAKE_LAN=192.168.200.66 run_on "$A" check) || fail "119 check failed after k3s prepended its jumps:"$'\n'"$out"
@@ -314,12 +326,53 @@ before=$(ipt_dump "$B")
 nat_before=$(<"$B/fake/ipt/nat/POSTROUTING")
 pair_up "$A" "$B" 51820
 chain=$(<"$B/fake/ipt/mangle/TBWG-FWD")
-expected=""
+expected="-i wg0 -o eth9 -j DROP"$'\n'"-i eth9 -o wg0 -j DROP"$'\n'
 for n in 192.168.123.0/24 192.168.124.0/24 192.168.125.0/24 192.168.126.0/24; do
   expected+="-i wg0 -s 10.250.0.1/32 -d $n -j RETURN"$'\n'"-o wg0 -s $n -d 10.250.0.1/32 -j RETURN"$'\n'
 done
 expected+="-j DROP"
 [[ "$chain" == "$expected" ]] || fail "TBWG-FWD differs:"$'\n'"$chain"
+# The guard is in before the link and out after it (PreUp, PostDown): never wg0 without it.
+up_at=$(grep -n "^systemctl: link created" "$B/fake/calls" | head -1 | cut -d: -f1)
+guard_at=$(grep -n -- "-E TBWG-FWD-NEW TBWG-FWD$" "$B/fake/calls" | head -1 | cut -d: -f1)
+[[ -n "$up_at" && -n "$guard_at" ]] && (( guard_at < up_at )) || fail "66 guard was not in place before wg0 came up"
+# Verdicts of the 66 FORWARD path (mangle then the ACCEPT policy) for packets that matter.
+verdict() {  # verdict <hostdir> <in> <out> <src> <dst> -> ACCEPT or DROP
+  python3 - "$1/fake/ipt/mangle" "$2" "$3" "$4" "$5" <<'PY'
+import ipaddress, sys
+d, iif, oif, src, dst = sys.argv[1:6]
+def rules(c):
+    return [l.split() for l in open(f"{d}/{c}").read().splitlines() if l.strip()]
+def match(r):
+    i = 0
+    while i < len(r) and r[i] != "-j":
+        k, v = r[i], r[i + 1]
+        if k == "-i" and v != iif: return False
+        if k == "-o" and v != oif: return False
+        if k == "-s" and ipaddress.ip_address(src) not in ipaddress.ip_network(v): return False
+        if k == "-d" and ipaddress.ip_address(dst) not in ipaddress.ip_network(v): return False
+        if k == "-p": return False      # only plain address rules decide these packets
+        i += 2
+    return True
+def walk(c):
+    for r in rules(c):
+        if not match(r): continue
+        t = r[r.index("-j") + 1]
+        if t in ("DROP", "ACCEPT"): return t
+        if t == "RETURN": return None
+        v = walk(t)
+        if v: return v
+    return None
+print(walk("FORWARD") or "ACCEPT")
+PY
+}
+v() { local want=$1; shift; [[ "$(verdict "$B" "$@")" == "$want" ]] || fail "66 FORWARD $* should be $want"; }
+v ACCEPT wg0 vmbr8 10.250.0.1 192.168.124.11    # poll into the web network through the router uplink bridge
+v ACCEPT vmbr8 wg0 192.168.124.11 10.250.0.1    # its answer
+v DROP wg0 eth9 10.250.0.1 192.168.124.11       # T2 taken back: no bridge, the poll would leave by the default route
+v DROP eth9 wg0 192.168.124.11 10.250.0.1       # a forged testbed source from the office side
+v DROP wg0 vmbr1 10.250.0.1 192.168.122.20      # the old testbed
+v DROP wg0 vmbr8 10.250.0.1 192.168.127.21      # the management network
 head -2 "$B/fake/ipt/mangle/FORWARD" | grep -qxF -- "-i wg0 -j TBWG-FWD" || fail "66 FORWARD -i jump"
 head -2 "$B/fake/ipt/mangle/FORWARD" | grep -qxF -- "-o wg0 -j TBWG-FWD" || fail "66 FORWARD -o jump"
 [[ "$(sed -n 3p "$B/fake/ipt/mangle/FORWARD")" == "-o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu" ]] || fail "66 MSS clamp after the guard"
@@ -332,7 +385,11 @@ grep -q " dev wg0 " <(grep -v "^10.250.0" "$B/fake/routes") && fail "66 routes t
 run_on "$B" hook-up >/dev/null
 [[ "$(<"$B/fake/ipt/mangle/TBWG-FWD")" == "$expected" ]] || fail "TBWG-FWD changed on a second hook-up"
 [[ "$(grep -c 'TBWG-FWD' "$B/fake/ipt/mangle/FORWARD")" == 2 ]] || fail "66 jumps stacked"
+mark=$(wc -l <"$B/fake/calls")
 sysctl_on "$B" disable --now wg-quick@wg0
+down_at=$(tail -n +"$((mark + 1))" "$B/fake/calls" | grep -n "^systemctl: link removed" | head -1 | cut -d: -f1)
+gone_at=$(tail -n +"$((mark + 1))" "$B/fake/calls" | grep -n -- "-X TBWG-FWD$" | head -1 | cut -d: -f1)
+[[ -n "$down_at" && -n "$gone_at" ]] && (( down_at < gone_at )) || fail "66 guard left before wg0 was gone"
 [[ "$(ipt_dump "$B")" == "$before" ]] || fail "66 rules after down differ from before"
 ok "66 up and down"
 
@@ -398,6 +455,7 @@ if run_on "$A" check --target 192.168.123.254:x >/dev/null 2>&1; then fail "chec
 out=$(FAKE_LAN=192.168.230.119 run_on "$B" check) || fail "66 check failed when healthy:"$'\n'"$out"
 grep -qF "[PASS] TBWG-FWD lets 192.168.124.0/24 and 10.250.0.1 through" <<<"$out" || fail "66 check pairs"
 grep -qF "[PASS] TBWG-FWD first in mangle (FORWARD -i wg0, FORWARD -o wg0), last rule DROP" <<<"$out" || fail "66 check jumps:"$'\n'"$out"
+grep -qF "[PASS] TBWG-FWD drops wg0 to and from the uplink eth9 first" <<<"$out" || fail "66 check uplink pair:"$'\n'"$out"
 grep -q 'collector-nms' <<<"$out" && fail "66 check looked for a pod"
 export -f run_on
 export SHIM TOOL SCRIPT_DIR
@@ -440,6 +498,15 @@ cf "$A" "route 192.168.125.0/24 dev wg0 missing"
 cp "$TMP_ROOT/keep" "$A/fake/routes"
 : >"$A/fake/ipt/mangle/FORWARD"
 cf "$A" "TCP MSS clamp missing"
+cp "$B/fake/ipt/mangle/TBWG-FWD" "$TMP_ROOT/keepf"; sed -i '1,2d' "$B/fake/ipt/mangle/TBWG-FWD"
+o=$(FAKE_LAN=192.168.230.119 run_on "$B" check 2>&1) && fail "66 check passed without the uplink pair"
+grep -qF "[FAIL] TBWG-FWD does not drop wg0 to and from the uplink eth9 before its RETURN rules" <<<"$o" || fail "66 check did not name the uplink pair:"$'\n'"$o"
+{ sed -n '3,$p' "$TMP_ROOT/keepf" | sed '$d'; sed -n '1,2p' "$TMP_ROOT/keepf"; echo "-j DROP"; } >"$B/fake/ipt/mangle/TBWG-FWD"
+o=$(FAKE_LAN=192.168.230.119 run_on "$B" check 2>&1) && fail "66 check passed with the uplink pair after the RETURN rules"
+grep -qF "[FAIL] TBWG-FWD does not drop wg0 to and from the uplink eth9 before its RETURN rules" <<<"$o" || fail "66 check did not see the uplink pair order"
+cp "$TMP_ROOT/keepf" "$B/fake/ipt/mangle/TBWG-FWD"
+o=$(FAKE_LAN=192.168.230.119 WG_UPLINK_66=vmbr9 run_on "$B" check 2>&1) && fail "66 check passed with another uplink named"
+grep -qF "[FAIL] TBWG-FWD does not drop wg0 to and from the uplink vmbr9" <<<"$o" || fail "WG_UPLINK_66 was not used"
 grep -v "192.168.124.0/24" "$B/fake/ipt/mangle/TBWG-FWD" >"$TMP_ROOT/f"; cp "$TMP_ROOT/f" "$B/fake/ipt/mangle/TBWG-FWD"
 o=$(FAKE_LAN=192.168.230.119 run_on "$B" check 2>&1) && fail "66 check passed with a network pair missing"
 grep -qF "[FAIL] TBWG-FWD has no rule pair for 192.168.124.0/24" <<<"$o" || fail "66 check did not name the missing pair"

@@ -11,7 +11,7 @@
 #   tb-wg keygen                       private key in /etc/wireguard/wg0.key (0600), never printed
 #   tb-wg pubkey                       the public key, for the orchestrator to pass to the peer
 #   tb-wg render <119|66> --port P     reads the peer public key on stdin, writes wg0.conf (0600)
-#   tb-wg hook-up | hook-down          firewall rules of this end (wg-quick PostUp, PreDown)
+#   tb-wg hook-up | hook-down          firewall rules of this end (wg-quick PreUp, PostDown)
 #   tb-wg add-net <cidr> | del-net <cidr>
 #                                      route one more /24 through the tunnel (S at ST2), live
 #   tb-wg check [--target IP[:PORT]]...
@@ -39,7 +39,7 @@ ENV_FILE=${TB_WG_ENV:-$WG_DIR/tb-wg.env}
 : "${WG_KEEPALIVE:=25}" "${WG_NETS_DEFAULT:=}" "${WG_DENY_NETS:=}"
 : "${WG_IN_TCP_119:=18090 514}" "${WG_IN_UDP_119:=514 162}" "${WG_HANDSHAKE_MAX:=150}"
 : "${WG_RTT_EXTRA_MS:=2}" "${WG_RTT_MAX_MS:=20}" "${WG_CONNTRACK_MAX_RATIO:=80}"
-: "${WG_POD_NAME:=collector-nms}" "${WG_POD_TCP_PORT:=9}"
+: "${WG_POD_NAME:=collector-nms}" "${WG_POD_TCP_PORT:=9}" "${WG_UPLINK_66:=}"
 
 SELF=$ROOT/usr/local/sbin/tb-wg
 CONF=$WG_DIR/$WG_IF.conf
@@ -128,14 +128,26 @@ guard_hooks() {  # one "<hook chain> <match words>" per line
   if [[ "$1" == 119 ]]; then printf 'PREROUTING -i %s\n' "$WG_IF"
   else printf 'FORWARD -i %s\nFORWARD -o %s\n' "$WG_IF" "$WG_IF"; fi
 }
+# 66 only: the interface toward the office network (the route to 119).
+uplink_66() {
+  if [[ -n "$WG_UPLINK_66" ]]; then printf '%s' "$WG_UPLINK_66"; return 0; fi
+  local dev
+  dev=$(ip -4 route get "$WG_HOST_119" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+  [[ -n "$dev" && "$dev" != "$WG_IF" ]] || die "cannot tell the uplink toward $WG_HOST_119 (set WG_UPLINK_66)"
+  printf '%s' "$dev"
+}
 guard_fill() {  # guard_fill <role> <chain>
-  local role=$1 c=$2 p n
+  local role=$1 c=$2 p n up
   if [[ "$role" == 119 ]]; then
     ipt -t "$GUARD_TABLE" -A "$c" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     ipt -t "$GUARD_TABLE" -A "$c" -p icmp --icmp-type echo-request -d "$WG_ADDR_119" -j RETURN
     for p in $WG_IN_TCP_119; do ipt -t "$GUARD_TABLE" -A "$c" -p tcp -d "$WG_ADDR_119" --dport "$p" -j RETURN; done
     for p in $WG_IN_UDP_119; do ipt -t "$GUARD_TABLE" -A "$c" -p udp -d "$WG_ADDR_119" --dport "$p" -j RETURN; done
   else
+    # Never between wg0 and the office network, whatever the addresses: first, before any RETURN.
+    up=$(uplink_66)
+    ipt -t "$GUARD_TABLE" -A "$c" -i "$WG_IF" -o "$up" -j DROP
+    ipt -t "$GUARD_TABLE" -A "$c" -i "$up" -o "$WG_IF" -j DROP
     while read -r n; do
       valid_net "$n" || die "network $n in $NETS is not allowed"
       ipt -t "$GUARD_TABLE" -A "$c" -i "$WG_IF" -s "$WG_ADDR_119/32" -d "$n" -j RETURN
@@ -223,9 +235,11 @@ conf_write() {
     printf 'Address = %s/%s\n' "$(my_addr "$role")" "$WG_PREFIX"
     [[ "$role" == 119 ]] && printf 'ListenPort = %s\n' "$port"
     printf 'MTU = %s\n' "$WG_MTU"
+    # The guard goes in before the link exists (rules match wg0 by name) and leaves after it is
+    # gone, so there is no moment with wg0 up and no guard.
+    printf 'PreUp = %s hook-up\n' "$SELF"
     printf 'PostUp = wg set %%i private-key %s\n' "$KEY"
-    printf 'PostUp = %s hook-up\n' "$SELF"
-    printf 'PreDown = %s hook-down\n' "$SELF"
+    printf 'PostDown = %s hook-down\n' "$SELF"
     printf '\n[Peer]\n'
     printf 'PublicKey = %s\n' "$peer"
     if [[ "$role" == 66 ]]; then
@@ -446,6 +460,16 @@ check() {
         flunk "$CHAIN_FWD has no rule pair for $n"
       fi
     done < <(nets)
+    local up head2
+    up=$(uplink_66)
+    head2=$(ipt -t "$GUARD_TABLE" -S "$CHAIN_FWD" 2>/dev/null | grep '^-A ' | head -2 || true)
+    if ipt -t "$GUARD_TABLE" -C "$CHAIN_FWD" -i "$WG_IF" -o "$up" -j DROP 2>/dev/null \
+      && ipt -t "$GUARD_TABLE" -C "$CHAIN_FWD" -i "$up" -o "$WG_IF" -j DROP 2>/dev/null \
+      && ! grep -q RETURN <<<"$head2" && [[ "$(grep -c DROP <<<"$head2")" == 2 ]]; then
+      pass "$CHAIN_FWD drops $WG_IF to and from the uplink $up first"
+    else
+      flunk "$CHAIN_FWD does not drop $WG_IF to and from the uplink $up before its RETURN rules"
+    fi
   fi
   guard_check "$role"
   if ipt -t mangle -C FORWARD "${MSS[@]}" 2>/dev/null; then pass "TCP MSS clamped on $WG_IF"; else flunk "TCP MSS clamp missing"; fi
