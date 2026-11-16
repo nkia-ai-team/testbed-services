@@ -18,6 +18,7 @@
 #                                      handshake, ping, routes, guards, conntrack; rc 1 on FAIL
 #   tb-wg handshake-age                seconds since the latest handshake, or "never"
 #   tb-wg pod-check                    (119, read only) can check enter the collector pod
+#   tb-wg pin-uplink                   (66) write the uplink name of the moment into tb-wg.env
 #   tb-wg snapshot                     top level routes and rules, to compare before and after
 #   tb-wg remove [--purge]             stop and disable; --purge also deletes files and the
 #                                      package if this tool installed it
@@ -128,13 +129,30 @@ guard_hooks() {  # one "<hook chain> <match words>" per line
   if [[ "$1" == 119 ]]; then printf 'PREROUTING -i %s\n' "$WG_IF"
   else printf 'FORWARD -i %s\nFORWARD -o %s\n' "$WG_IF" "$WG_IF"; fi
 }
-# 66 only: the interface toward the office network (the route to 119).
+# 66 only: the interface toward the office network. apply pins it into tb-wg.env (pin-uplink),
+# so a boot does not depend on the route being there when wg-quick starts; check compares the
+# pinned name with the route of the moment.
+uplink_route() {
+  local dev
+  dev=$(ip -4 route get "$WG_HOST_119" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1 || true)
+  [[ -n "$dev" && "$dev" != "$WG_IF" ]] || return 1
+  printf '%s' "$dev"
+}
 uplink_66() {
   if [[ -n "$WG_UPLINK_66" ]]; then printf '%s' "$WG_UPLINK_66"; return 0; fi
-  local dev
-  dev=$(ip -4 route get "$WG_HOST_119" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
-  [[ -n "$dev" && "$dev" != "$WG_IF" ]] || die "cannot tell the uplink toward $WG_HOST_119 (set WG_UPLINK_66)"
-  printf '%s' "$dev"
+  uplink_route || die "cannot tell the uplink toward $WG_HOST_119 (set WG_UPLINK_66)"
+}
+pin_uplink() {
+  local env=$WG_DIR/tb-wg.env dev
+  [[ -w "$env" ]] || die "pin-uplink: no $env (t0-apply.sh pushes it first)"
+  dev=$(uplink_route) || die "pin-uplink: no route toward $WG_HOST_119"
+  if grep -q '^WG_UPLINK_66=' "$env"; then
+    sed "s|^WG_UPLINK_66=.*|WG_UPLINK_66=\${WG_UPLINK_66:-$dev}|" "$env" >"$env.tmp"
+  else
+    { cat "$env"; printf 'WG_UPLINK_66=${WG_UPLINK_66:-%s}\n' "$dev"; } >"$env.tmp"
+  fi
+  chmod 600 "$env.tmp"; mv "$env.tmp" "$env"
+  say "uplink pinned: $dev"
 }
 guard_fill() {  # guard_fill <role> <chain>
   local role=$1 c=$2 p n up
@@ -460,8 +478,11 @@ check() {
         flunk "$CHAIN_FWD has no rule pair for $n"
       fi
     done < <(nets)
-    local up head2
+    local up head2 route_dev
     up=$(uplink_66)
+    if ! route_dev=$(uplink_route); then flunk "no route toward $WG_HOST_119 to compare the uplink $up with"
+    elif [[ "$route_dev" != "$up" ]]; then flunk "uplink $up is pinned but the route toward $WG_HOST_119 now leaves by $route_dev"
+    else pass "uplink $up matches the route toward $WG_HOST_119"; fi
     head2=$(ipt -t "$GUARD_TABLE" -S "$CHAIN_FWD" 2>/dev/null | grep '^-A ' | head -2 || true)
     if ipt -t "$GUARD_TABLE" -C "$CHAIN_FWD" -i "$WG_IF" -o "$up" -j DROP 2>/dev/null \
       && ipt -t "$GUARD_TABLE" -C "$CHAIN_FWD" -i "$up" -o "$WG_IF" -j DROP 2>/dev/null \
@@ -586,9 +607,10 @@ case "$cmd" in
   check) check "$@" ;;
   handshake-age) handshake_age ;;
   pod-check) pod_check ;;
+  pin-uplink) pin_uplink ;;
   snapshot) snapshot ;;
   remove) remove "$@" ;;
   udp-listen) udp_listen "$@" ;;
   udp-send) udp_send "$@" ;;
-  *) sed -n '9,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '9,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

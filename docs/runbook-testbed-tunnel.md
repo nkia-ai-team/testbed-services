@@ -80,7 +80,9 @@ summary: SMS, NMS 전용 테스트베드(T)와 SMS 전용 테스트베드(S)가 
 `/etc/network/interfaces` 는 건드리지 않는다.
 
 거르기는 wg-quick 의 PreUp 에서 걸고(규칙은 wg0 을 이름으로 맞추므로 링크 전에 걸 수 있다) PostDown 에서 지운다.
-그래서 wg0 이 있는데 거르기가 없는 순간이 없다. 키를 넣는 줄만 PostUp 이다. 거르기 체인을 고칠 때(재기동, add-net)는 새 체인(`-NEW`)을 다 채운 뒤 그 점프를 넣고, 옛 점프와 옛 체인을 지운 다음
+그래서 wg0 이 있는데 거르기가 없는 순간이 없다. PreUp 뒤 단계(링크, 키)에서 wg-quick 이 실패하면 wg-quick 은
+링크만 지우고 PostDown 을 돌지 않아 거르기가 남는다. 남은 규칙은 모두 `-i wg0`, `-o wg0` 에만 맞으므로 wg0 이 없는 동안
+아무 패킷에도 걸리지 않고, apply 의 되돌림(`remove` 가 hook-down)이나 다음 시작(새 체인으로 갈아 끼움)이 지운다. 키를 넣는 줄만 PostUp 이다. 거르기 체인을 고칠 때(재기동, add-net)는 새 체인(`-NEW`)을 다 채운 뒤 그 점프를 넣고, 옛 점프와 옛 체인을 지운 다음
 새 체인 이름을 바꾼다. 비거나 반쯤 찬 거르기를 지나는 패킷이 없다.
 
 66 의 PVE 방화벽(`pve-firewall` disabled, `proxmox-firewall` active 이나 규칙 없음)을 나중에 켜면 PVEFW 체인이
@@ -116,7 +118,9 @@ flock "$TB_LOCK_FILE" ./t0-apply.sh apply --yes          # 1~7
 2. 포트: `--port` 가 없으면 probe. 119 에서 `tcpdump -p`(무차별 모드 없음)를 20초 걸고 66 에서 후보 포트마다
    작은 UDP 3개를 보낸다. 도착한 것 가운데 후보 순서로 첫 포트를 쓴다. **하나도 안 오면 멈춘다**(결정 8: 제품 원격
    수집 워커 안으로 가고 S 는 결정 1 의 (나)로 내려간다. 사람 판단).
-3. 도구와 `tunnel.env` 를 두 호스트에 설치. 119 에 `wireguard-tools` 설치(설치했다는 표시를 남겨 purge 때만 지움).
+3. 도구와 `tunnel.env` 를 두 호스트에 설치하고, 66 에서는 그 순간의 상향 이름(119 로 가는 경로의 dev, 지금 vmbr0.200)을
+   호스트의 `/etc/wireguard/tb-wg.env` 에 고정한다(`pin-uplink`). 부팅 때 경로가 아직 없어도 거르기가 선다. 저장소의
+   `tunnel.env` 는 바뀌지 않는다. 119 에 `wireguard-tools` 설치(설치했다는 표시를 남겨 purge 때만 지움).
    66 은 이미 있어 설치하지 않는다(없으면 멈춤).
 4. 각 호스트에서 키 생성, 공개 키를 상대에게 넘겨 `wg0.conf` 작성.
 5. 119 먼저(듣는 쪽), 그다음 66 에서 `systemctl enable --now wg-quick@wg0`. 66 의 핸드셰이크를 90초까지 기다린다.
@@ -133,7 +137,7 @@ flock "$TB_LOCK_FILE" ./t0-apply.sh apply --yes          # 1~7
 | 핸드셰이크 | 마지막 핸드셰이크 150초 이내 |
 | 터널 핑 | 상대 터널 주소 10회 손실 0, 평균이 같은 순간의 사내망 경로 평균 + 2ms 이하, 최대 20ms 이하. 사내망과 터널을 번갈아 세 번까지 재고 세 번 모두 넘을 때만 FAIL(한 번 흔들림으로 되돌리지 않게). 손실은 한 번이라도 FAIL |
 | 경로(119) | 대역마다 `dev wg0` 경로 |
-| 거르기 | 점프가 mangle 의 그 훅(119 PREROUTING, 66 FORWARD)에서 맨 앞 규칙이고(위에 다른 규칙이 오면 FAIL), 체인 마지막 줄이 DROP, 66 은 상향 짝 DROP 이 RETURN 들보다 앞, MSS 있음 |
+| 거르기 | 점프가 mangle 의 그 훅(119 PREROUTING, 66 FORWARD)에서 맨 앞 규칙이고(위에 다른 규칙이 오면 FAIL), 체인 마지막 줄이 DROP, 66 은 상향 짝 DROP 이 RETURN 들보다 앞이고 고정된 상향 이름이 지금 119 로 가는 경로의 dev 와 같음(다르면 FAIL: 사내망 쪽 인터페이스가 바뀐 것이니 `t0-apply.sh apply` 를 다시 하거나 `WG_UPLINK_66` 을 고친다), MSS 있음 |
 | conntrack | 사용 80% 이하 |
 | 수집기 쪽(119) | `collector-nms` 컨테이너의 망 이름공간에서 상대 터널 주소로 핑 손실 0 과 TCP 9 번 포트 연결이 맺히거나 거절됨(거절도 길이 양쪽으로 열렸다는 뜻. 66 에 듣는 서비스가 없어 로그 줄이 생기지 않는다). `--target IP` 는 핑만, `--target IP:PORT` 는 그 포트로 TCP 도 본다. 대상이 그 포트에 응답(연결이나 거절)해야 PASS 다 |
 

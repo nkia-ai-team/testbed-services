@@ -65,7 +65,8 @@ case "$1 $2" in
     else cat "$FAKE/routes"; fi ;;
   "route replace") grep -v "^$3 dev $5 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes"; echo "$3 dev $5 scope link " >>"$FAKE/routes" ;;
   "route del") grep -v "^$3 dev $5 " "$FAKE/routes" >"$FAKE/routes.n" || true; mv "$FAKE/routes.n" "$FAKE/routes" ;;
-  "route get") echo "$3 via 192.0.2.1 dev eth9 src 192.0.2.10 uid 0" ;;
+  "route get") [[ -n "${FAKE_NO_ROUTE:-}" ]] && exit 2
+               echo "$3 via 192.0.2.1 dev ${FAKE_ROUTE_DEV:-eth9} src 192.0.2.10 uid 0" ;;
   *) exit 3 ;;
 esac
 SH
@@ -98,9 +99,15 @@ hooks() { sed -n "s/^$1 = //p" "$(conf)" | sed 's/%i/wg0/g'; }
 case "$1 ${2:-}" in
   "enable --now")
     [[ -n "${FAKE_START_FAIL:-}" ]] && exit 1
-    while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PreUp)
+    while read -r h; do [[ -n "$h" ]] && bash -c "$h"; done < <(hooks PreUp) || exit 1
     echo "systemctl: link created" >>"$FAKE/calls"
-    : >"$FAKE/link-wg0"; : >"$FAKE/enabled"; : >"$FAKE/active"
+    : >"$FAKE/link-wg0"; : >"$FAKE/enabled"
+    # Like wg-quick when a step after PreUp fails: its trap deletes the link, PostDown never runs,
+    # the unit is enabled but not active.
+    if [[ -n "${FAKE_FAIL_AFTER_PREUP:-}" ]]; then
+      rm -f "$FAKE/link-wg0"; echo "systemctl: start failed after PreUp" >>"$FAKE/calls"; exit 1
+    fi
+    : >"$FAKE/active"
     addr=$(sed -n 's/^Address = //p' "$(conf)")
     echo "10.250.0.0/30 dev wg0 proto kernel scope link src ${addr%/*} " >>"$FAKE/routes"
     for n in $(sed -n 's/^AllowedIPs = //p' "$(conf)" | tr -d ,); do echo "$n dev wg0 scope link " >>"$FAKE/routes"; done
@@ -616,6 +623,14 @@ out=$(orch verify --target 192.168.123.254 2>&1) || fail "verify failed:"$'\n'"$
 grep -qF "[PASS] ping 192.168.123.254 from the collector-nms pod" <<<"$out" || fail "verify did not pass the target to 119"
 out=$(orch verify --target 192.168.123.254:22 2>&1) || fail "verify with a port failed:"$'\n'"$out"
 grep -qF "[PASS] tcp 192.168.123.254:22 from the collector-nms pod" <<<"$out" || fail "verify did not pass the target port"
+grep -qF "[PASS] uplink eth9 matches the route toward 127.0.0.1" <<<"$out" || fail "66 check did not compare the pinned uplink:"$'\n'"$out"
+out=$(FAKE_ROUTE_DEV=eth7 orch verify 2>&1) && fail "verify passed with the route moved to another interface"
+grep -qF "[FAIL] uplink eth9 is pinned but the route toward 127.0.0.1 now leaves by eth7" <<<"$out" || fail "moved route not reported:"$'\n'"$out"
+FAKE_NO_ROUTE=1 PATH="$SHIM:$PATH" fake-ssh "$B" "systemctl disable --now wg-quick@wg0 && systemctl enable --now wg-quick@wg0" >/dev/null 2>&1 \
+  || fail "66 could not restart its tunnel without the route although the uplink is pinned"
+[[ "$(head -1 "$B/fake/ipt/mangle/TBWG-FWD")" == "-i wg0 -o eth9 -j DROP" ]] || fail "66 guard after a boot without the route"
+B2=$TMP_ROOT/t8c; new_host "$B2" c8
+if run_on "$B2" pin-uplink >/dev/null 2>&1; then fail "pin-uplink wrote without a host env file"; fi
 out=$(orch add-net 192.168.131.0/24 2>&1) || fail "orchestrated add-net failed: $out"
 grep -q 192.168.131.0/24 "$A/root/etc/wireguard/wg0.nets" && grep -q 192.168.131.0/24 "$B/root/etc/wireguard/wg0.nets" || fail "add-net did not reach both ends"
 if orch rollback >/dev/null 2>&1; then fail "rollback ran without --yes"; fi
@@ -627,6 +642,10 @@ grep -q "\[PASS\] 119 matches the snapshot taken before apply" <<<"$out" || fail
   || fail "rollback must stop 66 (the side that dials) before 119: $(cat "$TMP_ROOT/order-t8a")"
 [[ "$(grep 'enable --now' "$TMP_ROOT/order-t8a" | awk '{print $1}' | paste -sd' ')" == "a8 b8" ]] \
   || fail "apply must start 119 (the side that listens) before 66"
+# The uplink is pinned on 66 at apply: a boot without the route still builds the guard, and check
+# fails when the route later leaves by another interface.
+grep -qx 'WG_UPLINK_66=${WG_UPLINK_66:-eth9}' "$B/root/etc/wireguard/tb-wg.env" || fail "66 uplink not pinned: $(grep UPLINK "$B/root/etc/wireguard/tb-wg.env")"
+grep -q '^WG_UPLINK_66=' "$SCRIPT_DIR/vm-tunnel/tunnel.env" && ! grep -q 'eth9' "$SCRIPT_DIR/vm-tunnel/tunnel.env" || fail "pin-uplink touched the repository copy"
 ok "orchestrator probe, apply, verify, add-net, rollback"
 
 # ---- 9. apply rolls back by itself when a check or the comparison fails ----------------------
@@ -672,5 +691,26 @@ for case in stray vanish nohs nopod sshdown snapfail; do
   fi
 done
 ok "apply rolls back on failure"
+
+# ---- 10. wg-quick fails after PreUp: the guard stays but matches only wg0, and goes away -------
+A=$TMP_ROOT/t10a; B=$TMP_ROOT/t10b; new_host "$A" a10; new_host "$B" b10; : >"$B/fake/pkg"
+echo 192.168.200.66 >"$A/lan"; echo 127.0.0.1 >"$B/lan"
+out=$(FAKE_FAIL_AFTER_PREUP=1 FAKE_ARRIVE=51820 orch apply --yes --no-rollback 2>&1) && fail "apply succeeded although wg-quick failed"
+grep -q "left as it is (--no-rollback)" <<<"$out" || fail "apply --no-rollback did not say so:"$'\n'"$out"
+[[ -e "$A/fake/link-wg0" ]] && fail "the failed start left wg0"
+[[ "$(<"$A/fake/ipt/mangle/PREROUTING")" == "-i wg0 -j TBWG-IN" ]] || fail "leftover 119 jump is not the wg0-only one"
+grep -h TBWG "$A"/fake/ipt/mangle/{PREROUTING,FORWARD} | grep -v -- "-i wg0 -j TBWG-IN" && fail "a leftover TBWG jump matches more than wg0"
+grep -h TCPMSS "$A/fake/ipt/mangle/FORWARD" | grep -qv -- "-o wg0 " && fail "leftover MSS matches more than wg0"
+PATH="$SHIM:$PATH" fake-ssh "$A" "systemctl enable --now wg-quick@wg0" >/dev/null 2>&1 || fail "the next start failed after a failed one"
+[[ "$(grep -c TBWG-IN "$A/fake/ipt/mangle/PREROUTING")" == 1 && "$(grep -c TCPMSS "$A/fake/ipt/mangle/FORWARD")" == 1 ]] \
+  || fail "the next start stacked rules on the leftovers"
+[[ -e "$A/fake/ipt/mangle/TBWG-IN-NEW" ]] && fail "the next start left its build chain"
+A=$TMP_ROOT/t10c; B=$TMP_ROOT/t10d; new_host "$A" a10c; new_host "$B" b10d; : >"$B/fake/pkg"
+echo 192.168.200.66 >"$A/lan"; echo 127.0.0.1 >"$B/lan"
+out=$(FAKE_FAIL_AFTER_PREUP=1 FAKE_ARRIVE=51820 orch apply --yes 2>&1) && fail "apply succeeded although wg-quick failed"
+grep -q "rolling back" <<<"$out" || fail "apply did not roll back a start that failed after PreUp"
+grep -l "TBWG\|wg0" "$A"/fake/ipt/mangle/* "$B"/fake/ipt/mangle/* && fail "rollback left the PreUp guard behind"
+grep -q "routes and top level chains are back to what they were" <<<"$out" || fail "rollback after a failed start not back to before"
+ok "a start that fails after PreUp"
 
 echo "test-vm-tunnel: all passed"

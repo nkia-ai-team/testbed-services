@@ -195,6 +195,7 @@ apply() {
   push_tool 66
   on 119 "$BIN install-tools 119" | tee -a "$RUN/apply.log"
   on 66 "$BIN install-tools 66" | tee -a "$RUN/apply.log"
+  on 66 "$BIN pin-uplink" | tee -a "$RUN/apply.log"
   on 119 "$BIN keygen" >/dev/null
   on 66 "$BIN keygen" >/dev/null
   local pub119 pub66
