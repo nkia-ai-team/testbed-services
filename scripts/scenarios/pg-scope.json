@@ -198,8 +198,8 @@
   },
 
   "secret_detect": {
-    "table_name": "secret|credential|password|(^|_)otp(_|$)|seal_key|api_key|enrollment_token|join_token|_keys$|two_factor",
-    "column_name": "(^|_)(password|passphrase)(_|$)|secret|_encrypted$|^encrypted_|ciphertext|(^|_)private(_|$)|(token|key|code|credential|secret|password)_hash$|(^|_)public_key$|aes_key|(^|_)otp(_|$)",
+    "table_name": "secret|credential|password|(^|_)otp(_|$)|seal_key|api_key|enrollment_token|join_token|_keys$|two_factor|seal|token",
+    "column_name": "(^|_)(password|passphrase)(_|$)|secret|_encrypted$|^encrypted_|ciphertext|(^|_)private(_|$)|(token|key|code|credential|secret|password)_hash$|(^|_)public_key$|aes_key|(^|_)otp(_|$)|seal|(^|_)token(_|$)|(^|_)(api|access|refresh|private|signing|secret)_?key(_|$)",
     "column_type": "^(text|character varying|character|bytea|jsonb|json)(\\(|$)"
   },
 
@@ -243,7 +243,9 @@
 
   "secret_reviewed_keep": {
     "alarm_linkages": "알람 연동 정의(전달, 범위 표가 FK 로 가리킴). secret_encrypted 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "alarm_severity_levels": "알람 등급 표시 정의. color_token 은 색 토큰 이름이라 비밀이 아니다(3회차에 넓힌 token 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "automation_agents": "자동화 에이전트 인벤토리(hosts, 실행 대상이 FK 로 가리킴). enroll_token_hash 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "automation_host_inventory_runs": "자동화 인벤토리 수집 실행 기록. run_token 은 실행 식별자다(token 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "automation_workers": "자동화 워커 인벤토리(여러 표가 FK 로 가리킴). enroll_token_hash 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_auth_blocks": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "collect_credential_auth_failures": "자격증명 배포, 회전 진행 기록. 이름만 걸리고 비밀 값 열 없음 (2026-11-16 119 카탈로그, 값은 보지 않음)",
@@ -262,6 +264,8 @@
     "network_script_config_versions": "네트워크 장비 설정 백업(설정 변경 근거가 될 수 있음). content_encrypted 열 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "omp_effect_audit_keys": "감사 중복 막음 키(식별자). 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "omp_target_endpoint_keys": "대상과 엔드포인트 식별자 연결. 이름만 걸림 (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "peer_link_peers": "피어 연동 정의. api_key_env 는 키를 담은 환경변수의 이름이고 키 값이 아니다(api_key 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
+    "software_omp_executions": "소프트웨어 실행 기록. run_token 은 실행 식별자다(token 꼴에 걸림) (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "users": "계정 인벤토리. password_hash 열이 있지만 46개 표가 FK 로 가리켜 비울 수 없다(_users_note). 열 단위 가리기는 따로 정할 일 (2026-11-16 119 카탈로그, 값은 보지 않음)",
     "workload_notification_destinations": "작업 알림 대상(workload_alert_deliveries 가 FK 로 가리킴). secret_encrypted 열이 섞여 있다 (2026-11-16 119 카탈로그, 값은 보지 않음)"
   },
@@ -271,6 +275,9 @@
     "스키마만 남긴다(복원하면 빈 표). 뺀 표는 meta.postgres_scope.excluded 에 kind table_data, reason secret 으로 남는다.",
     "비밀 계열의 목록은 secret_tables 한 곳이다(종전 drop_data 에 있던 비밀 계열 7개도 이리로 옮겼다. 비우는 동작은 같다).",
     "secret_detect 는 표 이름 또는 값을 담는 타입(문자열, bytea, json)의 열 이름 꼴로 후보를 찾는다(값은 보지 않는다).",
+    "꼴은 사용자가 든 낱말(key, secret, otp, credential, seal, password, token)을 따르되, key 와 token 은 식별자 열(idempotency_key,",
+    "resource_key, execution_token 등 수백 개)과 겹쳐 비밀을 담는 모양(키, 토큰, 코드의 해시, api, access, refresh, private, signing,",
+    "secret 키, 그냥 token 열, 공개 키)으로 좁혔다. meta 의 note 는 \"비밀 계열, 사용자 결정 11-16: <근거>\" 이다.",
     "후보는 secret_tables(비움), secret_reviewed_keep(검토해 담음), drop_data(다른 이유로 비움) 가운데 한 곳에 있어야 한다.",
     "어디에도 없는 후보는 캡처가 비우고(secret_detected, 확인 안 됨) 녹화 전 점검이 막는다.",
     "secret_reviewed_keep 의 인벤토리 표(users, collectors 등)는 비밀 열이 섞여 있지만 다른 표가 FK 로 가리키고 RCA 가",

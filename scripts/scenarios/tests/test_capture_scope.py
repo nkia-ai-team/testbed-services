@@ -606,7 +606,9 @@ class PgSecretTest(unittest.TestCase):
         "notification_channels omp_effect_audit_keys omp_target_endpoint_keys system_mail_settings "
         "system_map_tile_settings system_sms_settings two_factor_challenges user_invitations user_otp_secrets "
         "user_password_history users workload_connection_profiles workload_db_connection_profiles "
-        "workload_notification_destinations wpm_profile_credentials").split()
+        "workload_notification_destinations wpm_profile_credentials "
+        # 3회차: 사용자가 든 낱말(seal, token, key)로 꼴을 넓혀 더 걸린 표
+        "alarm_severity_levels automation_host_inventory_runs software_omp_executions peer_link_peers").split()
 
     def plan(self, tables, cfg=None, **k):
         return pg.plan_scope(cfg or PG_CFG, pg_catalog(tables, **k))
@@ -618,6 +620,7 @@ class PgSecretTest(unittest.TestCase):
         got = {e["object"]: e for e in plan["excluded"]}
         self.assertEqual({k: got["api_keys"][k] for k in ("kind", "reason", "acknowledged")},
                          {"kind": "table_data", "reason": "secret", "acknowledged": True})
+        self.assertEqual(got["api_keys"]["note"], "비밀 계열, 사용자 결정 11-16: " + PG_CFG["secret_tables"]["api_keys"])
         self.assertIn("key_hash", got["api_keys"]["note"])
         args = pg.emit_exclude_args(PG_CFG, plan).splitlines()
         self.assertIn("--exclude-table-data=public.api_keys", args)
@@ -627,19 +630,27 @@ class PgSecretTest(unittest.TestCase):
         self.assertEqual(pg.plan_summary(plan, PG_CFG)["excluded"], plan["excluded"])
 
     def test_unlisted_table_with_a_secret_column_is_emptied_and_unacknowledged(self):
-        plan = self.plan({"vault_tokens_v2": 4096, "plain": 4096},
-                         columns={"vault_tokens_v2": [("token_hash", "text")], "plain": [("note", "text")]})
-        e = next(x for x in plan["excluded"] if x["object"] == "vault_tokens_v2")
+        plan = self.plan({"vault_material_v2": 4096, "plain": 4096},
+                         columns={"vault_material_v2": [("token_hash", "text")], "plain": [("note", "text")]})
+        e = next(x for x in plan["excluded"] if x["object"] == "vault_material_v2")
         self.assertEqual((e["reason"], e["acknowledged"]), ("secret_detected", False))
-        self.assertEqual(e["note"], "이름이나 열 꼴: 열 token_hash:text")
-        self.assertEqual(plan["tables"]["vault_tokens_v2"]["rule"], "secret_detected")
+        self.assertEqual(e["note"], "비밀 계열, 사용자 결정 11-16, 목록에 없음. 이름이나 열 꼴: 열 token_hash:text")
+        self.assertEqual(plan["tables"]["vault_material_v2"]["rule"], "secret_detected")
         self.assertEqual(plan["tables"]["plain"]["scope"], "snap")
-        self.assertIn("--exclude-table-data=public.vault_tokens_v2", pg.emit_exclude_args(PG_CFG, plan).splitlines())
+        self.assertIn("--exclude-table-data=public.vault_material_v2", pg.emit_exclude_args(PG_CFG, plan).splitlines())
 
     def test_unlisted_table_with_a_secret_name_is_emptied(self):
         plan = self.plan({"tenant_api_key_rotation": 4096})
         e = next(x for x in plan["excluded"] if x["object"] == "tenant_api_key_rotation")
-        self.assertEqual((e["reason"], e["note"]), ("secret_detected", "이름이나 열 꼴: 표 이름"))
+        self.assertEqual((e["reason"], e["note"]),
+                         ("secret_detected", "비밀 계열, 사용자 결정 11-16, 목록에 없음. 이름이나 열 꼴: 표 이름"))
+
+    def test_seal_and_token_table_names_are_caught_by_name(self):
+        # 3회차: 사용자가 든 낱말 seal, token 은 표 이름에서도 잡는다(열이 비밀 꼴이 아니어도).
+        plan = self.plan({"worker_seal_material": 4096, "tenant_tokens": 4096, "plain_runs": 4096})
+        got = {e["object"]: e["note"] for e in plan["excluded"] if e["reason"] == "secret_detected"}
+        self.assertEqual(sorted(got), ["tenant_tokens", "worker_seal_material"])
+        self.assertTrue(all(v.endswith("이름이나 열 꼴: 표 이름") for v in got.values()))
 
     def test_reviewed_keep_and_other_drop_tables_are_not_flagged(self):
         plan = self.plan({"users": 4096, "chat_sessions": 4096},
@@ -676,7 +687,7 @@ class PgSecretTest(unittest.TestCase):
     def test_every_secret_candidate_on_119_has_a_decision(self):
         decided = set(PG_CFG["secret_tables"]) | set(PG_CFG["secret_reviewed_keep"]) | set(PG_CFG["drop_data"])
         self.assertEqual(sorted(set(self.CANDIDATES_119) - decided), [])
-        self.assertEqual(len(self.CANDIDATES_119), 57)
+        self.assertEqual(len(self.CANDIDATES_119), 61)
         for k in ("secret_tables", "secret_reviewed_keep"):
             for name, why in PG_CFG[k].items():
                 self.assertTrue(isinstance(why, str) and len(why) > 15, (k, name))
@@ -691,10 +702,14 @@ class PgSecretTest(unittest.TestCase):
         for c, t in (("key_hash", "bytea"), ("credential_hash", "character(64)"), ("auth_encrypted", "text"),
                      ("secret_encrypted", "text"), ("password_hash", "character varying(255)"), ("public_key", "bytea"),
                      ("private_encrypted", "text"), ("config_encrypted", "jsonb"), ("sql_ciphertext", "text"),
-                     ("secrets", "bytea"), ("aes_key_encrypted", "text"), ("code_hash", "bytea")):
+                     ("secrets", "bytea"), ("aes_key_encrypted", "text"), ("code_hash", "bytea"),
+                     ("token", "text"), ("refresh_token", "text"), ("seal_material", "bytea"), ("signing_key", "text"),
+                     ("access_key", "character varying(64)"), ("run_token", "text")):
             self.assertTrue(col.search(c) and ty.search(t), (c, t))
         for c, t in (("password_digit_count", "integer"), ("secret_refs", "text[]"), ("method_otp", "boolean"),
-                     ("content_hash", "text"), ("resource_key", "text"), ("idempotency_key", "text")):
+                     ("content_hash", "text"), ("resource_key", "text"), ("idempotency_key", "text"),
+                     ("execution_token", "uuid"), ("sealed_at", "timestamp with time zone"), ("partition_key", "text"),
+                     ("token_count", "integer")):
             self.assertFalse(col.search(c) and ty.search(t), (c, t))
 
 

@@ -891,9 +891,9 @@ jq -e '.postgres_scope.excluded == [
     {object:"locked_by_owner",kind:"table",relkind:"r",reason:"no_select",acknowledged:false,note:null},
     {object:"locked_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null},
     {object:"api_keys",kind:"table_data",relkind:"r",reason:"secret",acknowledged:true,
-     note:"외부 연계 API 키(key_hash) (2026-11-16 119 카탈로그, 값은 보지 않음)"},
+     note:"비밀 계열, 사용자 결정 11-16: 외부 연계 API 키(key_hash) (2026-11-16 119 카탈로그, 값은 보지 않음)"},
     {object:"vault_tokens_v2",kind:"table_data",relkind:"r",reason:"secret_detected",acknowledged:false,
-     note:"이름이나 열 꼴: 열 token_hash:text"}] and
+     note:"비밀 계열, 사용자 결정 11-16, 목록에 없음. 이름이나 열 꼴: 표 이름, 열 token_hash:text"}] and
   (.postgres_scope.by_scope.excluded == 2) and (.postgres_scope.by_scope.drop >= 3) and
   ([.postgres_tables[].table] | index("locked_by_owner") == null)' \
   "$meta" >/dev/null || fail 'excluded schema and relations not recorded in meta.postgres_scope.excluded'

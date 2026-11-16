@@ -434,10 +434,12 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     복원한 PG 에는 뺀 스키마와 표가 없고, 현재값을 뺀 시퀀스는 시작값부터 센다.
   - 비밀 계열 표(2026-11-16 사용자 결정, v4 녹화부터): public 안의 인증, 키, 자격증명, 봉인 키 계열 표는 행을 담지
     않고 스키마만 남긴다(복원하면 빈 표). 목록은 `pg-scope.json` `secret_tables` 한 곳이고 표마다 근거(그 표의 비밀
-    열 이름과 타입)를 적는다. `secret_detect` 꼴(표 이름, 또는 문자열, bytea, json 타입 열의 이름. 값은 보지 않는다)에
+    열 이름과 타입)를 적는다. `secret_detect` 꼴(표 이름, 또는 문자열, bytea, json 타입 열의 이름. key, secret, otp,
+    credential, seal, password, token 낱말을 비밀을 담는 모양으로 좁힌 것. 값은 보지 않는다)에
     걸리는 표는 `secret_tables`(비움), `secret_reviewed_keep`(검토해 담음, 이유와 함께), `drop_data` 가운데 한 곳에 있어야
     하고, 어디에도 없으면 캡처가 비우고(`secret_detected`) 녹화 전 점검이 막는다. 뺀 표는
-    `meta.postgres_scope.excluded`(kind `table_data`, reason `secret` 또는 `secret_detected`)에 남는다. 비우는 표를
+    `meta.postgres_scope.excluded`(kind `table_data`, reason `secret` 또는 `secret_detected`, note
+    "비밀 계열, 사용자 결정 11-16: <근거>")에 남는다. 비우는 표를
     외래 키로 가리키는 통째 표는 그 행이 비운 행을 가리키면 복원 때 그 FK 제약이 생기지 않고(평가 복원은 계속,
     `fk_to_secret` 에 목록), 구간 표가 가리키면 구간 CSV 적재가 깨지므로 conflicts 로 막는다. 인벤토리 표에 비밀 열이
     섞인 경우(users, collectors 등)는 표째 비우지 않았다(`secret_reviewed_keep`). v3 녹화본은 손대지 않는다.

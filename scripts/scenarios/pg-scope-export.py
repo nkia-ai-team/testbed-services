@@ -495,6 +495,9 @@ def plan_access(cfg: dict, catalog: dict) -> tuple[list[dict], set[str], set[str
     return excluded, gone_schemas, gone_tables
 
 
+SECRET_NOTE = "비밀 계열, 사용자 결정 11-16"
+
+
 def secret_candidates(cfg: dict, catalog: dict) -> dict[str, list[str]]:
     """이름이나 열 꼴이 비밀 계열인 public 표와 그 근거(2026-11-16 사용자 결정, CAPFIX 2회차).
 
@@ -586,7 +589,9 @@ def plan_scope(cfg: dict, catalog: dict) -> dict:
         elif t in detected and t not in keep_cfg and t not in drop:
             secret_rule[t] = "secret_detected"
     for t in sorted(secret_rule):
-        why = secret_cfg.get(t) or ("이름이나 열 꼴: " + ", ".join(detected[t]))
+        # meta 의 note: 사람이 읽는 이유(사용자 결정 11-16). 목록의 표는 설정의 근거, 꼴로만 걸린 표는 걸린 꼴.
+        why = (f"{SECRET_NOTE}: {secret_cfg[t]}" if t in secret_cfg
+               else f"{SECRET_NOTE}, 목록에 없음. 이름이나 열 꼴: " + ", ".join(detected[t]))
         excluded.append({"object": t, "kind": "table_data", "relkind": tables[t]["relkind"], "reason": secret_rule[t],
                          "acknowledged": secret_rule[t] == "secret", "note": why})
 
