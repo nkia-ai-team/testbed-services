@@ -61,7 +61,8 @@ case "$HOST_ROLE" in
         check postgresql-active systemctl is-active postgresql@16-main
         check data-on-data-disk sh -c "runuser -u postgres -- psql -Atqc 'show data_directory' | grep -q '^$DATA_MOUNT/'"
         check no-dpm-traces no_dpm_traces
-        check backup-timer systemctl is-enabled pg-backup.timer ;;
+        check backup-timer systemctl is-enabled pg-backup.timer
+        check table-stats-timer systemctl is-enabled pg-table-stats.timer ;;
     loadgen) check loadgen-enabled systemctl is-enabled loadgen.service ;;
 esac
 [[ "$failures" == 0 ]] || fail "점검 실패 $failures 건"

@@ -1405,11 +1405,13 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
         self.assertIn("대표 질의(search) p95 표본 부족(처음 0창, 끝 0창, 구간마다 22창 이상)", result["reasons"])
 
-    def test_the_recording_preflight_read_is_light_and_leaves_no_wait_or_error_lines(self) -> None:
-        # 리뷰 rv-t2c M2: 녹화마다 한 번 읽는 보관 상태는 표를 훑거나 민원 표를 잠그지 않고, 잠금 대기 줄과 오류 줄을
-        # 남기지 않는다. 출력 꼴은 러너가 읽는 db-facts.sh 와 같다(rows.petition, last_archive_ok).
-        source = (DEPLOY / "tools" / "archive-state.sh").read_text()
+    def test_the_table_stats_read_is_light_periodic_and_leaves_no_wait_or_error_lines(self) -> None:
+        # 리뷰 rv-t2c M2 와 지휘 세션 D: 보관 상태 읽기는 표를 훑거나 민원 표를 잠그지 않고, 잠금 대기 줄과 오류 줄을
+        # 남기지 않으며, 주입과 무관한 30분 고정 주기 타이머로 평시부터 늘 돈다. 출력 꼴은 러너가 읽는 꼴(db-facts.sh 와 같음).
+        db = bundles(T_INV)["db01"]
+        source = file_of(db, "/usr/local/sbin/pg-table-stats")
         sql = source[source.index("<<'SQL'"):source.index("\nSQL\n")]
+        self.assertIn("-d petition <<'SQL'", source)
         self.assertNotIn("count(*)", sql)
         self.assertIn("SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'petition'", sql)
         self.assertIn("result = 'ok'", sql)
@@ -1426,8 +1428,30 @@ class StabilityCheckTests(unittest.TestCase):
         # 읽은 뒤 log_min_messages 를 되돌려 종료 줄이 평소대로 남는다.
         self.assertLess(sql.index("SELECT json_build_object"), sql.index("RESET log_min_messages;"))
         self.assertIn("runuser -u postgres -- psql", source)
-        for key in ("'rows'", "'petition'", "'last_archive_ok'", '"db":%s', '"at":"%s"'):
-            self.assertIn(key, source)
+        # 30분 고정 주기(매시 05, 35분), 주입과 무관. 설치가 켜고 한 번 돌려 첫 파일을 만든다.
+        timer = file_of(db, "/etc/systemd/system/pg-table-stats.timer")
+        self.assertIn("OnCalendar=*-*-* *:05,35:00", timer)
+        self.assertNotRegex(timer + file_of(db, "/etc/systemd/system/pg-table-stats.service"), r"(?i)test|tb|t4|scenario")
+        step = (DEPLOY / "steps" / "db-backup.sh").read_text()
+        self.assertIn("systemctl enable --now pg-backup.timer pg-table-stats.timer", step)
+        self.assertIn("systemctl start pg-table-stats.service", step)
+        self.assertIn("check table-stats-timer systemctl is-enabled pg-table-stats.timer",
+                      (DEPLOY / "steps" / "verify.sh").read_text())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "runuser").write_text('#!/bin/sh\ncat >/dev/null\nprintf \'{"rows" : {"petition" : 2080000}, "rows_source" : '
+                                          '"n_live_tup", "last_archive_ok" : "2026-11-17T17:24:00Z"}\\n\'\n')
+            (root / "runuser").chmod(0o755)
+            script = root / "pg-table-stats"
+            script.write_text(source.replace("/var/lib/pg-table-stats", str(root / "out")))
+            done = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=30,
+                                  env={"PATH": f"{root}:/usr/bin:/bin"})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            line = json.loads((root / "out" / "last.json").read_text())
+            self.assertEqual(sorted(line), ["at", "db", "host"])
+            self.assertEqual(line["db"]["rows"]["petition"], 2080000)
+            self.assertEqual(line["db"]["last_archive_ok"], "2026-11-17T17:24:00Z")
+            self.assertEqual([p.name for p in (root / "out").iterdir()], ["last.json"])   # 임시 파일이 남지 않는다
 
     def test_db_facts_files_are_read_from_the_tool_output_shape(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1576,8 +1600,7 @@ class StepScriptTests(unittest.TestCase):
         self.assertIn("pg_createcluster --locale C.UTF-8 16 main", source)
 
     def test_tools_parse(self) -> None:
-        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh", "archive-sql-check.sh",
-                     "archive-state.sh"):
+        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh", "archive-sql-check.sh"):
             with self.subTest(tool=name):
                 done = subprocess.run(["bash", "-n", str(DEPLOY / "tools" / name)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 0, done.stderr)

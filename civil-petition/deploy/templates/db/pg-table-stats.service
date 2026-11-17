@@ -1,0 +1,7 @@
+[Unit]
+Description=PostgreSQL table statistics snapshot
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pg-table-stats

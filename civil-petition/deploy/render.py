@@ -111,6 +111,9 @@ ROLE_FILES = {
         FileSpec("db-backup", "/etc/systemd/system/pg-backup.service", "db/pg-backup.service"),
         FileSpec("db-backup", "/etc/systemd/system/pg-backup.timer", "db/pg-backup.timer"),
         FileSpec("db-backup", "/etc/logrotate.d/pg-backup", "db/logrotate-pg-backup"),
+        FileSpec("db-backup", "/usr/local/sbin/pg-table-stats", "db/pg-table-stats", "0755"),
+        FileSpec("db-backup", "/etc/systemd/system/pg-table-stats.service", "db/pg-table-stats.service"),
+        FileSpec("db-backup", "/etc/systemd/system/pg-table-stats.timer", "db/pg-table-stats.timer"),
     ),
     "loadgen": (
         FileSpec("loadgen", "/etc/systemd/system/loadgen.service", "loadgen/loadgen.service"),
