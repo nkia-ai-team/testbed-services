@@ -1159,14 +1159,34 @@ class StabilityCheckTests(unittest.TestCase):
                 self.assertEqual(shifted["verdict"], "FAIL_Q3_24H")
                 self.assertTrue(any(r.startswith("대표 질의(search) p95 변화") for r in shifted["reasons"]), shifted["reasons"])
 
-    def test_representative_query_needs_the_same_hours_one_day_earlier(self) -> None:
-        windows = self._windows()
+    def test_a_record_younger_than_twenty_six_hours_is_incomplete_not_failed_or_shortened(self) -> None:
+        # 리뷰 L8: 앞 2시간 창이 하나도 없거나(24시간 기록) 일부만 있으면(25시간 기록) 짧은 구간으로 견주지 않는다.
         start = int(self.END.timestamp()) - 24 * 3600
-        for t in range(start - 2 * 3600, start, 300):
+        for hours_before in (0, 1):
+            with self.subTest(record_hours=24 + hours_before):
+                windows = self._windows()
+                for t in range(start - 2 * 3600, start - hours_before * 3600, 300):
+                    windows.pop(t)
+                result = stability.judge(windows, self.END, db_facts=self._db())
+                self.assertEqual(result["verdict"], "INCOMPLETE_Q3_24H")
+                self.assertTrue(result["reasons"][0].startswith("창 기록이 대표 질의 처음 구간"), result["reasons"])
+        # 25시간 기록에 1시간 앞 값을 바꿔도 PASS 로 빠져나가지 않는다.
+        windows = self._windows()
+        for t in range(start - 2 * 3600, start - 3600, 300):
             windows.pop(t)
-        result = stability.judge(windows, self.END, db_facts=self._db())
-        self.assertEqual(result["verdict"], "FAIL_Q3_24H")
-        self.assertIn("대표 질의(search) p95 표본 없음(처음 0창, 끝 24창)", result["reasons"])
+        self.assertNotEqual(stability.judge(windows, self.END, db_facts=self._db())["verdict"], "PASS_Q3_24H")
+
+    def test_representative_query_needs_twenty_two_windows_in_each_span(self) -> None:
+        start = int(self.END.timestamp()) - 24 * 3600
+        for dropped, verdict in ((2, "PASS_Q3_24H"), (3, "FAIL_Q3_24H")):
+            with self.subTest(dropped=dropped):
+                windows = self._windows()
+                for t in range(start - 3600, start - 3600 + 300 * dropped, 300):
+                    windows[t].pop("step_p95_ms")
+                result = stability.judge(windows, self.END, db_facts=self._db())
+                self.assertEqual(result["verdict"], verdict, result["reasons"])
+                if verdict.startswith("FAIL"):
+                    self.assertEqual(result["reasons"], ["대표 질의(search) p95 표본 부족(처음 21창, 끝 24창, 구간마다 22창 이상)"])
 
     def test_representative_query_without_samples_fails(self) -> None:
         windows = self._windows()
@@ -1174,7 +1194,7 @@ class StabilityCheckTests(unittest.TestCase):
             record.pop("step_p95_ms")
         result = stability.judge(windows, self.END, db_facts=self._db())
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
-        self.assertIn("대표 질의(search) p95 표본 없음(처음 0창, 끝 0창)", result["reasons"])
+        self.assertIn("대표 질의(search) p95 표본 부족(처음 0창, 끝 0창, 구간마다 22창 이상)", result["reasons"])
 
     def test_db_facts_files_are_read_from_the_tool_output_shape(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1189,7 +1209,8 @@ class StabilityCheckTests(unittest.TestCase):
         source = (DEPLOY / "tools" / "db-facts.sh").read_text()
         # 점검 읽기는 느린 문장 기준에 걸려도 서버 로그에 남지 않는다. 출력 열쇠는 판정기가 읽는 이름과 같다.
         self.assertIn("SET log_min_duration_statement = -1;", source)
-        for key in ("'rows'", "'petition'", "'petition_history'", "'archive_runs'", "'finished_at'", "'result'", '"db":%s'):
+        for key in ("'rows'", "'petition'", "'petition_history'", "'archive_runs'", "'finished_at'", "'result'", '"db":%s',
+                    "'last_archive_ok'", "result = 'ok'"):
             self.assertIn(key, source)
 
     def test_total_rate_over_point_one_percent_fails(self) -> None:

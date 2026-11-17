@@ -22,8 +22,10 @@
     거름) 다른 둘은 사용자별, 부서별 열린 민원으로 좁혀 읽으므로, 표 크기와 내용 변화가 시간에 가장 먼저
     드러나는 질의이기 때문이다. 부하기는 시간별 일주기로 돌므로 처음과 끝은 정확히 24시간 떨어진 같은 시계 구간이다:
     처음은 판정 구간 시작 바로 앞 2시간 [S-2h, S), 끝은 판정 구간 마지막 2시간 [E-2h, E)(E = S + 24h).
-    그 안 5분 창들의 search p95 중앙값을 견준다. 창 기록은 상시라 처음 구간도 있어야 하고, 어느 쪽이든 표본이
-    없으면 실패다(판정 끝 시각을 부하 시작에서 26시간 넘게 잡는다). 목록과 담당자 함의 같은 값은 참고로 싣는다.
+    그 안 5분 창들의 search p95 중앙값을 견준다. 목록과 담당자 함의 같은 값은 참고로 싣는다.
+    창 기록이 처음 구간 시작([E-24h-2h])보다 늦게 시작했으면(부하 시작 뒤 26시간이 안 됨) 짧은 구간으로 견주지
+    않고 INCOMPLETE 다. 기록이 처음 구간을 덮는데 어느 구간이든 search 표본이 있는 창이 22개(2시간 24창의 약 90%)
+    보다 적으면 부하가 멈춘 것이라 실패다.
 
 판정 이름: PASS_Q3_24H 또는 FAIL_Q3_24H. 창 수가 24시간에 못 미치면 INCOMPLETE_Q3_24H.
 """
@@ -48,6 +50,7 @@ REFERENCE_STEPS = ("my-list", "inbox")
 QUERY_SPAN_SEC = 2 * 3600
 DAY_SEC = 24 * 3600
 QUERY_P95_CHANGE_MAX = 0.10
+QUERY_SPAN_MIN_WINDOWS = 22
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
@@ -114,8 +117,9 @@ def judge_steady_state(windows: dict[int, dict], start_epoch: int, end_epoch: in
     query = step_p95_change(windows, start_epoch, end_epoch, QUERY_STEP)
     summary["query"] = query
     summary["reference_queries"] = [step_p95_change(windows, start_epoch, end_epoch, step) for step in REFERENCE_STEPS]
-    if "change" not in query:
-        reasons.append(f"대표 질의({QUERY_STEP}) p95 표본 없음(처음 {query['start_windows']}창, 끝 {query['end_windows']}창)")
+    if min(query["start_windows"], query["end_windows"]) < QUERY_SPAN_MIN_WINDOWS:
+        reasons.append(f"대표 질의({QUERY_STEP}) p95 표본 부족(처음 {query['start_windows']}창, 끝 {query['end_windows']}창, "
+                       f"구간마다 {QUERY_SPAN_MIN_WINDOWS}창 이상)")
     elif query["change"] is None or abs(query["change"]) > QUERY_P95_CHANGE_MAX:
         reasons.append(f"대표 질의({QUERY_STEP}) p95 변화 {query['change']} 가 ±{QUERY_P95_CHANGE_MAX} 밖"
                        f"({query['start_p95_ms']}ms -> {query['end_p95_ms']}ms)")
@@ -186,9 +190,13 @@ def judge(windows: dict[int, dict], end: datetime.datetime, hours: int = 24, hos
     steady, steady_reasons = judge_steady_state(windows, start_epoch, end_epoch, db_facts)
     reasons.extend(steady_reasons)
     first = min(windows) if windows else None
+    query_start = end_epoch - DAY_SEC - QUERY_SPAN_SEC
     if first is None or first > start_epoch:
         verdict = "INCOMPLETE_Q3_24H"
         reasons.insert(0, "창 기록이 판정 구간 시작보다 늦게 시작함")
+    elif first > query_start:
+        verdict = "INCOMPLETE_Q3_24H"
+        reasons.insert(0, "창 기록이 대표 질의 처음 구간(판정 구간 앞 2시간) 시작보다 늦게 시작함(부하 시작 뒤 26시간 전)")
     else:
         verdict = "PASS_Q3_24H" if not reasons else "FAIL_Q3_24H"
     return {
