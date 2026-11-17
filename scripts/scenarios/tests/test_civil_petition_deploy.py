@@ -11,6 +11,8 @@ import datetime
 import importlib.util
 import io
 import json
+import math
+import random
 import re
 import subprocess
 import sys
@@ -1057,6 +1059,83 @@ class ArchiveBatchSettingsTests(unittest.TestCase):
             with self.subTest(factor=factor):
                 if int(factor) * 2_000_000 > 2**31 - 1:
                     self.assertEqual(cast, "::bigint")
+
+
+class LookupReceiptTests(unittest.TestCase):
+    """부하기 접수번호 조회(설계 §5, 검토 세션 Q22 답 (가)): 원표 범위 안 최근 쪽, 없는 번호 고정 1%.
+
+    k6 스크립트를 104 에서 돌릴 수 없으므로 같은 규칙을 파이썬으로 옮겨, 보관 배치가 오래된 번호를 옮겨 가는
+    여러 날을 모의한다. 규칙과 상수가 스크립트와 같은지는 첫 시험이 글자로 묶는다.
+    """
+
+    SCRIPT = DOMAIN / "loadgen" / "script.js"
+
+    def _constants(self) -> dict[str, float]:
+        text = self.SCRIPT.read_text()
+        return {name: float(value) for name, value in
+                re.findall(r"^const (LOOKUP_[A-Z_]+) = ([0-9.]+);", text, re.M)}
+
+    def test_the_script_rule_and_constants_are_the_ones_modelled_here(self) -> None:
+        text = self.SCRIPT.read_text()
+        self.assertEqual(self._constants(), {"LOOKUP_NOT_FOUND_RATE": 0.01, "LOOKUP_RECENT_MEAN": 200000,
+                                             "LOOKUP_LIVE_SPAN": 1500000, "LOOKUP_MISSING_BASE": 90000000})
+        for line in ("if (rand() < LOOKUP_NOT_FOUND_RATE) return LOOKUP_MISSING_BASE + randInt(0, 9999999);",
+                     "while (distance >= LOOKUP_LIVE_SPAN) distance = Math.floor(-Math.log(1 - rand()) * LOOKUP_RECENT_MEAN);",
+                     "return Math.max(1, newest - distance);",
+                     "const newest = Math.max((data && data.newest) || SEED_PETITIONS, ownNewest);",
+                     "const receipt = `CP${pad(pickReceiptNumber(newest), 8)}`;"):
+            self.assertIn(line, text)
+        # 없는 번호대도 앱의 접수번호 꼴(CP + 8자리)이라 400 이 아니라 404 로 간다.
+        self.assertEqual(len(str(int(self._constants()["LOOKUP_MISSING_BASE"]) + 9999999)), 8)
+        # 거리 상한은 보존 건수 상한보다 작다(원표 밖을 고르지 않게).
+        keep = int(re.search(r"^petition\.archive\.keep-rows=(\d+)$",
+                             (DOMAIN / "petition-web" / "src" / "main" / "resources" / "application.properties").read_text(), re.M).group(1))
+        self.assertLess(self._constants()["LOOKUP_LIVE_SPAN"], keep)
+
+    @staticmethod
+    def _pick(rng, newest: int, c: dict[str, float]) -> int:
+        if rng.random() < c["LOOKUP_NOT_FOUND_RATE"]:
+            return int(c["LOOKUP_MISSING_BASE"]) + rng.randint(0, 9999999)
+        distance = int(c["LOOKUP_LIVE_SPAN"])
+        while distance >= c["LOOKUP_LIVE_SPAN"]:
+            distance = math.floor(-math.log(1 - rng.random()) * c["LOOKUP_RECENT_MEAN"])
+        return max(1, newest - distance)
+
+    def _simulate(self, days: int, pick) -> list[float]:
+        """하루 404 비율. 신청은 부하기 하루 표대로, 보관은 02:20 KST 에 상한(200만)을 넘은 가장 오래된 번호를 옮긴다.
+        조회는 그 시각의 setup 값(실행 시작의 가장 최근 번호, 한 시간까지 묵음)을 쓴다(자기 신청 번호는 쓰지 않아 보수적)."""
+        entry = (DOMAIN / "loadgen" / "entrypoint.sh").read_text()
+        pct = [int(v) for v in re.findall(r"\d+\) echo (\d+) ;;", entry)]
+        hourly_submits = [(5 + (25 * p + 50) // 100) * 3600 * 8 // 100 for p in pct]
+        keep = 2_000_000
+        rng = random.Random(42)
+        newest, lowest_live = 2_000_000, 1
+        rates = []
+        for _ in range(days):
+            misses = total = 0
+            for hour in range(24):
+                if hour == 2:
+                    lowest_live = max(lowest_live, newest - keep + 1)
+                setup_newest = newest
+                for _ in range(400):
+                    receipt = pick(rng, setup_newest)
+                    misses += not (lowest_live <= receipt <= newest)
+                    total += 1
+                newest += hourly_submits[hour]
+            rates.append(misses / total)
+        return rates
+
+    def test_not_found_lookups_stay_near_one_percent_while_the_archive_moves_through_the_seed(self) -> None:
+        c = self._constants()
+        rates = self._simulate(40, lambda rng, newest: self._pick(rng, newest, c))
+        for day, rate in enumerate(rates):
+            with self.subTest(day=day):
+                self.assertAlmostEqual(rate, 0.01, delta=0.0035)
+        self.assertLess(max(rates) - min(rates), 0.006)
+        # 대조: 옛 규칙(시드 번호 뒤 3/4 에서 고르기)은 보관이 시드를 지나며 404 가 0 에서 100% 까지 오른다.
+        old = self._simulate(40, lambda rng, newest: rng.randint(500_000, 2_000_000))
+        self.assertLess(old[0], 0.001)
+        self.assertGreater(old[-1], 0.99)
 
 
 class StabilityCheckTests(unittest.TestCase):
