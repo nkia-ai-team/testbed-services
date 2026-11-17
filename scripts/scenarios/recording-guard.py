@@ -14,9 +14,15 @@
    "scenario catalog hash mismatch" 로 실패하고 주기 하나를 잃는다(2026-10-10 F40-R). 그래서
    waiting_capture 와 waiting_clean_window(같은 실행의 덤프 재시도가 남을 수 있다)도 막는다.
 
-통과는 idle, paused, completed 뿐이다. 이 셋은 러너가 스스로 다음 단계로 넘어가지 않는다(시작,
-재개, 웹 실행이라는 사람이나 하네스의 요청이 있어야 한다). 모르는 phase, 러너 HTTP 무응답,
-읽을 수 없는 응답은 모두 막는다(fail closed). 배포는 다음 기회에 처음부터 다시 나가면 된다.
+   덤프가 실패해 멈춘 큐(paused)도 같다. 재개하면 러너가 주입 없이 "캡처만 다시" 하고, 그 캡처가
+   같은 해시를 다시 비교한다(러너 live_queue.py _capture_retry_check). 그래서 paused 라도 덤프 대기에서
+   멈춘 것(paused_from_phase 가 덤프 대기 단계, 그 필드가 없던 옛 러너 기록은 reason 이
+   "capture failed:" 나 "capture retry failed:" 로 시작)이면 "덤프 대기(일시 정지)" 로 막는다.
+
+통과는 idle, completed, 그리고 덤프 대기에서 멈춘 것이 아닌 paused 뿐이다. 이들은 러너가 스스로
+다음 단계로 넘어가지 않는다(시작, 재개, 웹 실행이라는 사람이나 하네스의 요청이 있어야 한다).
+모르는 phase, 러너 HTTP 무응답, 읽을 수 없는 응답은 모두 막는다(fail closed). 배포는 다음 기회에
+처음부터 다시 나가면 된다.
 
 검사와 원격 쓰기 사이에 큐가 시작되는 틈을 줄이려고, deploy-live-promotions.sh 는 원격 명령
 (ssh, rsync)마다 바로 앞에서 이 스크립트를 다시 부른다.
@@ -44,8 +50,22 @@ RECORDING_WINDOW_PHASES = frozenset(
 )
 # 녹화 창은 끝났지만 덤프가 카탈로그 해시를 다시 비교하는 단계.
 CAPTURE_PHASES = frozenset({"waiting_capture", "waiting_clean_window"})
-# 러너가 스스로 녹화 창으로 넘어가지 않는 단계. 이 밖은 모두 막는다.
+# 러너가 스스로 녹화 창으로 넘어가지 않는 단계. 이 밖은 모두 막는다(paused 는 아래 덤프 대기 확인을 거친다).
 SAFE_PHASES = frozenset({"idle", "paused", "completed"})
+# paused_from_phase 가 없던 옛 러너가 덤프 실패로 멈출 때 쓰는 reason 머리(러너 _capture_retry_check 와 같음).
+CAPTURE_PAUSE_REASON_PREFIXES = ("capture failed:", "capture retry failed:")
+
+
+def _paused_waiting_for_capture(queue: dict) -> bool:
+    """덤프 대기에서 멈춘 paused 인가. 재개하면 캡처만 다시 하므로 카탈로그 해시를 지켜야 한다."""
+    origin = queue.get("paused_from_phase")
+    if origin is not None:
+        if not isinstance(origin, str):
+            return True  # 읽을 수 없으면 막는다
+        # 덤프 대기에서 멈춤이면 막는다. 러너가 모르는 값(모르는 phase 와 같은 이유로)도 막는다.
+        return origin in CAPTURE_PHASES or origin not in SAFE_PHASES | RECORDING_WINDOW_PHASES
+    reason = queue.get("reason")
+    return isinstance(reason, str) and reason.startswith(CAPTURE_PAUSE_REASON_PREFIXES)
 
 
 def blocking_reason(queue_raw: str, active_raw: str) -> str | None:
@@ -55,6 +75,8 @@ def blocking_reason(queue_raw: str, active_raw: str) -> str | None:
         phase = queue["phase"]
     except (ValueError, TypeError, KeyError):
         return "live-queue 응답을 읽을 수 없다"
+    if not isinstance(phase, str):
+        return "live-queue 응답을 읽을 수 없다(phase 가 문자열이 아님)"
     try:
         active = json.loads(active_raw)
         is_active = active["is_active"]
@@ -70,6 +92,9 @@ def blocking_reason(queue_raw: str, active_raw: str) -> str | None:
         return f"덤프 대기({where})"
     if phase not in SAFE_PHASES:
         return f"모르는 phase({where})"
+    if phase == "paused" and _paused_waiting_for_capture(queue):
+        return (f"덤프 대기(일시 정지, paused_from_phase={queue.get('paused_from_phase')}, "
+                f"reason={queue.get('reason')}, {where})")
     if is_active and active.get("mode") == "run":
         return f"러너가 실행 {active.get('run_id')} 을 돌리는 중(큐 밖 웹 실행 포함, {where})"
     return None
@@ -94,7 +119,10 @@ def check(api: str, timeout: float = HTTP_TIMEOUT_SEC) -> str | None:
 def main(argv: list[str]) -> int:
     stage = argv[1] if len(argv) > 1 else "원격 쓰기"
     api = os.environ.get("TESTBED_RUNNER_API") or DEFAULT_RUNNER_API
-    reason = check(api)
+    try:
+        reason = check(api)
+    except Exception as exc:  # noqa: BLE001 - 판정이 죽어도 배포 실패(1)가 아니라 보류(3)로 낸다
+        reason = f"판정 중 예외({type(exc).__name__})"
     if reason is None:
         return 0
     print(

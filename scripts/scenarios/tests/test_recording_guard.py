@@ -50,7 +50,7 @@ class _FakeRunner:
 
     def __init__(self, phase_at=lambda n: "idle", log: Path | None = None,
                  status: int = 200, body: str | None = None, delay: float = 0.0,
-                 active: str = IDLE_ACTIVE) -> None:
+                 active: str = IDLE_ACTIVE, queue_extra: dict | None = None) -> None:
         self.phase_at = phase_at
         self.log = log
         self.queue_reads = 0
@@ -65,7 +65,8 @@ class _FakeRunner:
                     time.sleep(delay)
                 if self.path == "/api/live-queue":
                     runner.queue_reads += 1
-                    payload = _queue(runner.phase_at(runner.queue_reads), queue_id="q1")
+                    payload = _queue(runner.phase_at(runner.queue_reads), queue_id="q1",
+                                     **(queue_extra or {}))
                     phase = json.loads(payload)["phase"]
                     runner._log(f"GET /api/live-queue {runner.queue_reads} {phase}")
                 elif self.path == "/api/active":
@@ -163,10 +164,40 @@ class RecordingGuardDecisionTests(unittest.TestCase):
             raw = _queue(phase, cycle_decoys=[{"id": "d1", "kind": "restart", "status": "applied"}])
             self.assertIsNotNone(guard.blocking_reason(raw, IDLE_ACTIVE), phase)
 
+    def test_paused_waiting_for_capture_blocks(self) -> None:
+        # 리뷰 M2: 덤프 실패로 멈춘 큐는 재개하면 캡처만 다시 하고 카탈로그 해시를 다시 비교한다.
+        for origin in CAPTURE:
+            reason = guard.blocking_reason(_queue("paused", paused_from_phase=origin), IDLE_ACTIVE)
+            self.assertIsNotNone(reason, origin)
+            self.assertIn("덤프 대기(일시 정지", reason)
+        # paused_from_phase 가 없던 옛 러너 기록: reason 머리로 가른다.
+        for head in ("capture failed: run-1: boom", "capture retry failed: run-1: boom"):
+            for raw in (_queue("paused", reason=head), _queue("paused", reason=head, paused_from_phase=None)):
+                reason = guard.blocking_reason(raw, IDLE_ACTIVE)
+                self.assertIsNotNone(reason, raw)
+                self.assertIn("덤프 대기(일시 정지", reason)
+        # 읽을 수 없거나 러너가 모르는 paused_from_phase 도 막는다.
+        for origin in (["waiting_capture"], 3, "cycle_something_new"):
+            self.assertIsNotNone(
+                guard.blocking_reason(_queue("paused", paused_from_phase=origin), IDLE_ACTIVE), origin)
+
+    def test_other_paused_passes(self) -> None:
+        for origin in (None, *RECORDING_WINDOW, "idle", "completed"):
+            raw = _queue("paused", paused_from_phase=origin, reason="DIRTY coordinator state blocks the live queue")
+            self.assertIsNone(guard.blocking_reason(raw, IDLE_ACTIVE), origin)
+        # paused_from_phase 가 있으면 reason 머리를 보지 않는다(러너 _capture_retry_check 와 같음).
+        raw = _queue("paused", paused_from_phase="cycle_normal", reason="capture failed: run-1: boom")
+        self.assertIsNone(guard.blocking_reason(raw, IDLE_ACTIVE))
+        for reason in (None, "", "operator stop", "preflight failed: capture failed: x"):
+            self.assertIsNone(guard.blocking_reason(_queue("paused", reason=reason), IDLE_ACTIVE), reason)
+
     def test_unreadable_response_blocks(self) -> None:
         for raw in ("", "not json", "{}", "[]", "null"):
             self.assertIsNotNone(guard.blocking_reason(raw, IDLE_ACTIVE), raw)
             self.assertIsNotNone(guard.blocking_reason(_queue("idle"), raw), raw)
+        # 리뷰 L2: phase 가 목록이나 객체여도 예외(종료 코드 1)가 아니라 보류다.
+        for raw in ('{"phase": ["idle"]}', '{"phase": {}}', '{"phase": null}', '{"phase": 1}'):
+            self.assertIsNotNone(guard.blocking_reason(raw, IDLE_ACTIVE), raw)
 
 
 class RecordingGuardHttpTests(unittest.TestCase):
@@ -220,6 +251,27 @@ class RecordingGuardHttpTests(unittest.TestCase):
         )
         self.assertEqual(done.returncode, 3)
         self.assertIn("응답 없음", done.stderr)
+
+    def test_cli_holds_with_3_on_odd_bodies(self) -> None:
+        for body in ('{"phase": ["idle"]}', '{"phase": {}}'):
+            with _FakeRunner(body=body) as runner:
+                done = subprocess.run(
+                    [sys.executable, str(GUARD_PATH)],
+                    env={**os.environ, "TESTBED_RUNNER_API": runner.api},
+                    capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+                )
+            self.assertEqual(done.returncode, 3, (body, done.stderr))
+            self.assertNotIn("Traceback", done.stderr)
+        # 덤프 대기에서 멈춘 paused 는 CLI 도 3.
+        with _FakeRunner(phase_at=lambda n: "paused",
+                         queue_extra={"paused_from_phase": "waiting_capture"}) as runner:
+            done = subprocess.run(
+                [sys.executable, str(GUARD_PATH), "단계Y"],
+                env={**os.environ, "TESTBED_RUNNER_API": runner.api},
+                capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+            )
+        self.assertEqual(done.returncode, 3, done.stderr)
+        self.assertIn("덤프 대기(일시 정지", done.stderr)
 
     def test_guard_makes_no_ssh(self) -> None:
         source = GUARD_PATH.read_text(encoding="utf-8")
@@ -327,20 +379,55 @@ class DeployScriptReGuardTests(unittest.TestCase):
         self.assertFalse(any("curl" in lines[i] for i in remote_at))
         self.assertIn('"ready": true', done.stdout)
 
+    # 원격 명령 종류와 그 앞 판정의 단계 이름(배포 스크립트 recording_guard 인자).
+    REMOTE_KINDS = (
+        ("docker image inspect", "결함 이미지 확인"),
+        ("cat > /tmp/loadgen-publish.tgz", "부하 스크립트 올리기"),
+        ("md5sum", "부하 스크립트 대조"),
+        ("bash -s", "러너 ClickHouse 자격 확인"),
+        ("--exclude registry/controllers.json", "시나리오 rsync"),
+        ("registry/controllers.json root@", "controllers.json rsync"),
+    )
+
+    @classmethod
+    def _kind(cls, line: str) -> str:
+        for needle, stage in cls.REMOTE_KINDS:
+            if needle in line:
+                return stage
+        raise AssertionError(f"모르는 원격 명령: {line}")
+
     def test_window_opening_mid_deploy_stops_before_the_next_remote_command(self) -> None:
+        # 판정 순번 k 를 몇 곳으로 고르지 않고, 첫 실행 기록에서 원격 명령 종류마다 첫 판정과 마지막
+        # 판정을 모두 고른다. 판정 결과를 버리는 꼴(|| true 등)이 어느 구간에 있어도 잡힌다(리뷰 M1).
         log = self._log("count.log")
         with _FakeRunner(log=log) as runner:
             self.assertEqual(self._run(runner.api, log).returncode, 0)
             guards = runner.queue_reads - 1  # 끝의 러너 HTTP 확인 한 번을 뺀다
-        for k, phase in ((1, "cycle_reset"), (2, "cycle_normal"), (guards // 2, "cycle_reset"),
-                         (guards - 1, "cycle_normal"), (guards, "cycle_reset")):
-            with self.subTest(k=k, phase=phase):
+        remote = [l for l in log.read_text(encoding="utf-8").splitlines() if l.startswith("REMOTE ")]
+        self.assertEqual(len(remote), guards)  # 판정 하나에 원격 명령 하나
+        kinds = [self._kind(l) for l in remote]
+        self.assertEqual(list(dict.fromkeys(kinds)), [stage for _, stage in self.REMOTE_KINDS])
+        picks: dict[int, str] = {}
+        for k, kind in enumerate(kinds, start=1):
+            if k == 1 or kinds[k - 2] != kind:
+                picks[k] = kind
+            if k == len(kinds) or kinds[k] != kind:
+                picks[k] = kind
+        for _, stage in self.REMOTE_KINDS:
+            want = min(kinds.count(stage), 2)  # 여러 번이면 첫과 마지막, 한 번이면 그 하나
+            self.assertEqual(list(picks.values()).count(stage), want, stage)
+        self.assertGreater(kinds.count("결함 이미지 확인"), 1)
+        self.assertGreater(kinds.count("부하 스크립트 대조"), 1)
+        phases = ("cycle_reset", "cycle_normal")
+        for n, (k, kind) in enumerate(sorted(picks.items())):
+            phase = phases[n % 2]
+            with self.subTest(k=k, kind=kind, phase=phase):
                 log = self._log(f"switch-{k}.log")
-                with _FakeRunner(phase_at=lambda n, k=k, p=phase: "idle" if n < k else p,
+                with _FakeRunner(phase_at=lambda i, k=k, p=phase: "idle" if i < k else p,
                                  log=log) as runner:
                     done = self._run(runner.api, log)
                 self.assertEqual(done.returncode, 3, done.stderr[-2000:])
-                self.assertIn("배포 보류", done.stderr)
+                self.assertIn(f"배포 보류({kind}", done.stderr)
                 self.assertIn(phase, done.stderr)
                 lines = log.read_text(encoding="utf-8").splitlines()
                 opened = next(i for i, line in enumerate(lines)
@@ -419,6 +506,13 @@ class DeployScriptLayoutTests(unittest.TestCase):
         code = "\n".join(l for l in local.splitlines() if not l.lstrip().startswith("#"))
         self.assertNotIn("ssh ", code)
         self.assertNotIn("rsync ", code)
+
+    def test_final_runner_check_has_a_time_limit(self) -> None:
+        # 리뷰 L3: 러너가 연결만 받고 답하지 않아도 배포가 끝나야 한다.
+        script = DEPLOY_PATH.read_text(encoding="utf-8")
+        final = [l for l in script.splitlines() if l.startswith("curl ")]
+        self.assertEqual(len(final), 1)
+        self.assertEqual(final[0].count("curl -fsS --max-time "), 2, final[0])
 
     def test_deploy_script_reads_guard_without_ssh(self) -> None:
         script = DEPLOY_PATH.read_text(encoding="utf-8")

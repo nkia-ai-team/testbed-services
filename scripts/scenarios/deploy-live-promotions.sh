@@ -216,4 +216,4 @@ rsync -az "$scenario_root/registry/controllers.json" \
   "$remote:$remote_root/registry/controllers.json"
 
 # 확인은 러너 HTTP 로 바로 읽는다(ssh 없음).
-curl -fsS "$runner_api/api/live-queue/readiness" && echo && curl -fsS "$runner_api/api/live-queue"
+curl -fsS --max-time 15 "$runner_api/api/live-queue/readiness" && echo && curl -fsS --max-time 15 "$runner_api/api/live-queue"
