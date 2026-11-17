@@ -142,7 +142,9 @@ while IFS='|' read -r remote_path local_path; do
   [[ -n "$remote_path" ]] || continue
   local_sum=$(md5sum "$local_path" | cut -d' ' -f1)
   recording_guard "부하 스크립트 대조 $remote_path"
-  remote_sum=$(ssh "$remote" "ssh -i ~/.ssh/tb_key nkia@192.168.122.206 'md5sum $remote_path'" | cut -d' ' -f1)
+  # -n 필수: 이 고리는 표준 입력(verify_pairs)에서 줄을 읽는다. -n 없는 ssh 는 표준 입력을 끝까지 읽어
+  # 원격으로 넘기므로 남은 줄을 먹고, 고리가 첫 파일 하나만 대조하고 끝난다(v4 RGUARD 2회차 재현).
+  remote_sum=$(ssh -n "$remote" "ssh -i ~/.ssh/tb_key nkia@192.168.122.206 'md5sum $remote_path'" | cut -d' ' -f1)
   [[ "$local_sum" == "$remote_sum" ]] \
     || { echo "load script mismatch on tb-runner: $remote_path" >&2; exit 1; }
 done <<<"$verify_pairs"

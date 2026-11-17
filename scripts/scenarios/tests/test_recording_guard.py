@@ -229,11 +229,12 @@ class RecordingGuardHttpTests(unittest.TestCase):
 
 FAKE_SSH = textwrap.dedent("""\
     #!/usr/bin/env bash
-    # 원격 명령을 기록만 한다. 데이터가 넘어오는 명령만 표준 입력을 읽는다.
+    # 원격 명령을 기록한다. 진짜 ssh 처럼 -n 이 없으면 표준 입력을 끝까지 읽는다(원격으로 넘기는 몫,
+    # man ssh: -n prevents reading from stdin). while read 고리 안에서 -n 없이 부르면 고리의 남은 줄을 먹는다.
     printf 'REMOTE ssh %s\\n' "$*" >> "$FAKE_LOG"
-    case "$*" in
-      *"bash -s"*|*"cat >"*) cat > /dev/null ;;
-    esac
+    read_stdin=1
+    for a in "$@"; do case "$a" in -n) read_stdin=0 ;; -*) ;; *) break ;; esac; done
+    if (( read_stdin )); then cat > /dev/null; fi
     case "$*" in
       *"docker image inspect"*)
         if [[ -n "${FAKE_MISSING_IMAGE:-}" && "$*" == *"$FAKE_MISSING_IMAGE"* ]]; then exit 1; fi
@@ -245,6 +246,7 @@ FAKE_SSH = textwrap.dedent("""\
           /opt/loadgen/baseline-publish.sh) local_file=$FAKE_REPO/scripts/loadgen/baseline-publish.sh ;;
           *) rest=${p#/opt/loadgen/}; local_file=$FAKE_REPO/${rest%%/*}/loadgen/${rest#*/} ;;
         esac
+        if [[ "$p" == "${FAKE_MD5_WRONG:-}" ]]; then echo 00000000000000000000000000000000; exit 0; fi
         md5sum "$local_file" | cut -d' ' -f1 ;;
     esac
     exit 0
@@ -356,6 +358,38 @@ class DeployScriptReGuardTests(unittest.TestCase):
         remote = [l for l in log.read_text(encoding="utf-8").splitlines() if l.startswith("REMOTE ")]
         self.assertEqual(len(remote), 1)
         self.assertIn("docker image inspect", remote[0])
+
+    @staticmethod
+    def _verify_paths() -> list[str]:
+        """배포 스크립트가 대조하는 원격 경로, 스크립트와 같은 순서."""
+        profiles = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
+        paths = sorted({p for profile in profiles.values()
+                        for p in profile.get("parameter_contract", {}).get("allowed_script_paths", [])})
+        paths += [f"/opt/loadgen/{d}/entrypoint.sh" for d in ("commerce", "core-banking", "food-delivery")]
+        return paths + ["/opt/loadgen/loadgen_monitor.py", "/opt/loadgen/baseline-publish.sh"]
+
+    def test_load_script_verify_checks_every_file(self) -> None:
+        # ssh 가 -n 없이 while read 고리의 표준 입력을 먹으면 첫 파일만 대조하고 고리가 끝난다.
+        paths = self._verify_paths()
+        self.assertGreater(len(paths), 3)
+        log = self._log("verify-all.log")
+        with _FakeRunner(log=log) as runner:
+            done = self._run(runner.api, log)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        checked = [l.rsplit("md5sum ", 1)[1].rstrip("'") for l in log.read_text(encoding="utf-8").splitlines()
+                   if l.startswith("REMOTE ssh") and "md5sum" in l]
+        self.assertEqual(checked, paths)
+
+    def test_load_script_verify_catches_a_later_mismatch(self) -> None:
+        paths = self._verify_paths()
+        for wrong in (paths[1], paths[-1]):
+            with self.subTest(wrong=wrong):
+                log = self._log("verify-wrong.log")
+                with _FakeRunner(log=log) as runner:
+                    done = self._run(runner.api, log, FAKE_MD5_WRONG=wrong)
+                self.assertEqual(done.returncode, 1, done.stderr[-2000:])
+                self.assertIn(f"load script mismatch on tb-runner: {wrong}", done.stderr)
+                self.assertNotIn("REMOTE rsync", log.read_text(encoding="utf-8"))
 
     def test_unreachable_runner_makes_no_remote_command(self) -> None:
         log = self._log("dead.log")
