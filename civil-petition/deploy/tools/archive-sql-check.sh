@@ -6,7 +6,7 @@
 #   - 가장 오래된 2,500 건만 옮김, 처리 이력이 함께 옮겨지고 원표에 0, 답변과 첨부는 cascade 로 0,
 #     남은 행이 옮긴 행보다 새것, 묶음 시간과 계획(처리 이력 색인을 타는지), count(*) 시간
 #   - advisory lock: 한 세션이 잡고 있으면 다른 세션의 pg_try_advisory_lock 이 false
-#   - 시드가 정상 상태 꼴인가(설계 §2-3): 행 수, 열린 건 1%, 그 가운데 처리 중 2~4%, 미래 시각 없음, 민원당 처리 이력
+#   - 시드가 정상 상태 꼴인가(설계 §2-3): 행 수, 열린 건 0.15%, 그 가운데 처리 중 10~15%, 미래 시각 없음, 민원당 처리 이력
 #     2.1~2.4, (규모 50만 이상) 접수 시각 폭(규모 / 하루 신청 121,824 일)과 KST 16시와 4시 신청 수 비 5~7,
 #     그리고 기간 조건 읽기가 보는 행 수(참고 줄)
 #   - 녹화 preflight 의 행 수 추정치 n_live_tup 이 count(*) 와 1% 안(VACUUM ANALYZE 뒤, 보관 이동 뒤)
@@ -53,9 +53,9 @@ SELECT 'CHECK seed_rows', count(*) = $scale FROM petition;
 SELECT 'CHECK seed_span_days', d BETWEEN e * 0.97 - 1.0 / 24 AND e * 1.03 + 1.0 / 24
   FROM (SELECT extract(epoch FROM max(created_at) - min(created_at)) / 86400 AS d, $scale / 121824.0 AS e FROM petition) x
   WHERE $scale >= 500000;
-SELECT 'CHECK seed_open_one_percent', count(*) FILTER (WHERE status <> 'COMPLETED') = $scale / 100 FROM petition;
+SELECT 'CHECK seed_open_share', count(*) FILTER (WHERE status <> 'COMPLETED') = $scale * 15 / 10000 FROM petition;
 SELECT 'CHECK seed_in_progress_share', (count(*) FILTER (WHERE status = 'IN_PROGRESS'))::float8
-       / nullif(count(*) FILTER (WHERE status <> 'COMPLETED'), 0) BETWEEN 0.02 AND 0.04 FROM petition;
+       / nullif(count(*) FILTER (WHERE status <> 'COMPLETED'), 0) BETWEEN 0.10 AND 0.15 FROM petition;
 SELECT 'CHECK seed_no_future_times', max(greatest(created_at, updated_at)) <= now() FROM petition;
 SELECT 'CHECK seed_history_per_petition', (SELECT count(*) FROM petition_history)::float8 / $scale BETWEEN 2.1 AND 2.4;
 SELECT 'CHECK seed_kst_peak_over_trough', r BETWEEN 5 AND 7

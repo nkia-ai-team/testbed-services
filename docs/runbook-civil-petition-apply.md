@@ -204,7 +204,7 @@ sudo systemctl start loadgen.service
 
 **보관 배치.** was02 의 `petition-archive.timer`(02:20 KST)가 앱의 보관 배치를 부른다. 설정 기본값은 WAR 의 `application.properties`(`petition.archive.keep-rows=2000000`, `chunk-rows=1000`, `pause-ms=1000`, `window=02:00-05:00`, `zone=Asia/Seoul`)이고 Tomcat 환경변수(`PETITION_ARCHIVE_KEEP_ROWS` 등)로 덮는다. 결과는 `batch_run` 표와 `/var/log/petition-batch.log` 줄의 `result=` 에 앱이 답한 값 그대로 남는다: `ok`(상한까지 옮김, 넘은 것이 없으면 0 건), `skipped`(창 밖 호출, 행 수도 세지 않음), `partial`(옮기는 중 창이 닫힘, 남은 몫은 다음 밤), `busy`(다른 보관 배치가 PostgreSQL advisory lock 을 쥐고 있어 아무것도 안 함). 앱이 답하지 못하면 `result=fail` 이고 유닛이 실패한다. 평시 24시간 판정은 `ok` 만 센다.
 
-**보관 SQL 확인(수동, docker 필요).** Java 시험은 문장을 실행하지 않으므로 보관 문장의 뜻과 계획을 바꿨다면 저장소 뿌리에서 `flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/archive-sql-check.sh [규모]` 를 돌린다(기본 200만, 시드 약 5분, 문법만 볼 때 20000). 일회 `postgres:16` 컨테이너에서 시드의 정상 상태 꼴(행 수, 열린 건 1%, 처리 중 비율, 미래 시각 없음, 이력 비, 규모 50만 이상이면 접수 시각 폭과 KST 시간 비), 행 수 추정치 `n_live_tup` 오차, 가장 오래된 순서, 처리 이력 이동, 답변과 첨부 cascade, 처리 이력 색인을 타는 계획, 묶음과 `count(*)` 시간, advisory lock 을 보고 `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `checks=16 failed=0`(규모 50만 미만은 14)이면 통과다. 끝에 컨테이너를 지운다.
+**보관 SQL 확인(수동, docker 필요).** Java 시험은 문장을 실행하지 않으므로 보관 문장의 뜻과 계획을 바꿨다면 저장소 뿌리에서 `flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/archive-sql-check.sh [규모]` 를 돌린다(기본 200만, 시드 약 5분, 문법만 볼 때 20000). 일회 `postgres:16` 컨테이너에서 시드의 정상 상태 꼴(행 수, 열린 건 0.15%, 처리 중 비율, 미래 시각 없음, 이력 비, 규모 50만 이상이면 접수 시각 폭과 KST 시간 비), 행 수 추정치 `n_live_tup` 오차, 가장 오래된 순서, 처리 이력 이동, 답변과 첨부 cascade, 처리 이력 색인을 타는 계획, 묶음과 `count(*)` 시간, advisory lock 을 보고 `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `checks=16 failed=0`(규모 50만 미만은 14)이면 통과다. 끝에 컨테이너를 지운다.
 
 끝에 `plan.py --phase snapshot` 으로 재해 복구용 스냅숏 하나(설계 §8, 녹화마다 되돌리지 않는다).
 
@@ -250,3 +250,4 @@ sudo systemctl start loadgen.service
 - 2026-11-17 KST, v4 T2C 3회차(재리뷰 L8, L10): §8 26시간 전 판정은 INCOMPLETE, 구간마다 표본 창 22개, `db-facts.sh` 가 `last_archive_ok`(마지막 보관 ok 시각)도 낸다(설계 §6-4 의 기록용).
 - 2026-11-17 KST, v4 T2C 5회차: 시드 크기 서술(처리 이력 약 450만, 정상 상태 꼴), 보관 SQL 확인 도구의 통과 기준.
 - 2026-11-17 KST, v4 T2C 5회차(D): db01 에 표 통계 사본 타이머 `pg-table-stats.timer`(30분, 설치 단계 `db-backup`, `verify` 의 `table-stats-timer`), 결과 `/var/lib/pg-table-stats/last.json`.
+- 2026-11-17 KST, v4 T2C 7회차(Q23): 부하기 담당자 처리 11%, 통계 화면 6%, 시드의 열린 건 0.15%(처리 중 12.5%), `archive-sql-check.sh` 의 시드 기준을 그에 맞춤.

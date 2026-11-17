@@ -3,7 +3,8 @@
 // ============================================================
 // 진입은 웹 앞단 하나(ENTRY_URL = http://<웹>/<앱 경로>). 바깥 사용자처럼 라우터 상향으로 들어온다.
 // 여정 비중(§2-3): 민원 신청 8 / 접수번호 조회 30 / 내 민원 목록 25 / 공개 민원 검색 15 /
-// 담당자 처리 10 / 통계 화면 7 / 로그인 5. 쓰기는 신청과 처리 18%.
+// 담당자 처리 11 / 통계 화면 6 / 로그인 5. 쓰기 여정은 신청과 처리 19%. 담당자 처리 11 은 처리 능력을 수요
+// (신청 8 x 민원당 처리 1.25 번 = 10)의 약 110% 로 둔 값이다(검토 세션 Q23 답 (가)). 그 1 은 통계 화면에서 옮겼다.
 // 여정마다 step 태그를 단다. 모니터는 submit(사업 단계)과 lookup(조회 단계)을 따로 센다.
 // 모든 요청에 check() 를 달아 기대 상태를 적는다(모니터의 check 필드가 단계 밖 비정상도 센다).
 // http_5xx, http_no_response 카운터는 규모 축 판정(scale_verdict.py)이 --summary-export 에서 읽는다.
@@ -196,7 +197,8 @@ function staffProcess() {
     const items = inbox.json();
     if (!items.length) return;
     const target = pick(items);
-    // 열린 민원 하나를 처리한다. 접수 상태면 25% 는 처리 중으로, 나머지는 바로 답변 완료(신청 8% 와 처리 10% 가 균형).
+    // 열린 민원 하나를 처리한다. 접수 상태면 25% 는 처리 중으로, 나머지는 바로 답변 완료. 민원당 처리가 평균 1.25 번
+    // 들어 처리 수요는 여정의 10%, 처리 여정 11% 는 그 약 110% 다(Q23 답 (가)). 열린 건이 없으면 함 조회만 하고 끝난다.
     const action = target.status === 'RECEIVED' && rand() < 0.25 ? 'ACCEPT' : 'ANSWER';
     const res = http.post(`${ENTRY_URL}/api/staff/petitions/${target.petition_id}/process`,
         JSON.stringify({ action, note: '현장 확인 후 조치하였습니다.' }), jsonParams('process', staffJar));
@@ -227,7 +229,7 @@ const JOURNEYS = [
     [38, lookup],
     [63, myList],
     [78, publicSearch],
-    [88, staffProcess],
+    [89, staffProcess],
     [95, stats],
     [100, relogin],
 ];

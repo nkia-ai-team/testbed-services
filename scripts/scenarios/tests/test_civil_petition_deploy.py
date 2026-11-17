@@ -979,7 +979,8 @@ class LoadgenScriptTests(unittest.TestCase):
         script = (DOMAIN / "loadgen" / "script.js").read_text()
         bounds = [int(n) for n in re.findall(r"^\s*\[(\d+), \w+\],$", script, re.M)]
         weights = [b - a for a, b in zip([0] + bounds, bounds)]
-        self.assertEqual(weights, [8, 30, 25, 15, 10, 7, 5])
+        # 담당자 처리 11 은 처리 수요(신청 8 x 1.25 = 10)의 약 110%(검토 세션 Q23 답 (가)), 1 은 통계 화면에서 옮김.
+        self.assertEqual(weights, [8, 30, 25, 15, 11, 6, 5])
 
     def test_requests_carry_a_browser_user_agent_not_the_tool_name(self) -> None:
         script = (DOMAIN / "loadgen" / "script.js").read_text()
@@ -1173,12 +1174,12 @@ class SeedSteadyStateTests(unittest.TestCase):
 
     def test_seed_status_rule_is_the_simulated_steady_state(self) -> None:
         text = self.SEED.read_text()
-        self.assertIn("CASE WHEN :scale - i >= :scale / 100 THEN 'COMPLETED'", text)   # 가장 최근 1% 만 열림
-        self.assertIn("WHEN i % 100 < 3 THEN 'IN_PROGRESS'", text)                     # 열린 건의 3%
-        delays = [int(v) for v in re.search(r"\(ARRAY\[(8, 22[0-9,\s]+)\]\)", text).group(1).split(",")]
+        self.assertIn("CASE WHEN :scale - i >= :scale * 15 / 10000 THEN 'COMPLETED'", text)   # 가장 최근 0.15% 만 열림
+        self.assertIn("WHEN i % 8 = 0 THEN 'IN_PROGRESS'", text)                                # 열린 건의 12.5%
+        delays = [int(v) for v in re.search(r"\(ARRAY\[(0, 1, [0-9,\s]+)\]\)", text).group(1).split(",")]
         self.assertEqual(len(delays), 20)
         self.assertEqual(delays, sorted(delays))
-        self.assertTrue(180 <= (delays[9] + delays[10]) / 2 <= 260)   # 모의 중앙값 214분 근처
+        self.assertTrue(10 <= (delays[9] + delays[10]) / 2 <= 25)   # 모의 중앙값 17분 근처
         self.assertIn("least(c + done_after, now())", text)            # 완료 시각이 미래가 아니다
 
     def test_period_reads_see_the_same_order_of_rows_on_every_operating_day(self) -> None:
@@ -1226,20 +1227,34 @@ class SeedSteadyStateTests(unittest.TestCase):
                     self.assertEqual(len(str(int(base))), len(str(int(value))), (name, base, value))
                     self.assertLess(abs(value / base - 1), 0.1, (name, base, value))
 
-    def test_open_backlog_from_the_seed_stays_in_the_same_order_of_magnitude(self) -> None:
-        # 부하기 여정(신청 8%, 처리 10%, 부서의 가장 오래된 열린 10건 가운데 하나, 접수면 25% 처리 중)을 부서 30곳으로
-        # 줄여(부서당 비율은 같음) 시드의 열린 건(부서당 2만/300)에서 40일 돌린다. 처리 여정 10% 는 열린 건마다 평균
-        # 1.25 번 필요한 처리와 같아(이용률 약 1) 적체는 정상 상태 없이 제곱근 꼴로 천천히 는다. 같은 자릿수를 단언한다.
+    @staticmethod
+    def _journey_shares() -> dict[str, int]:
+        script = (DOMAIN / "loadgen" / "script.js").read_text()
+        pairs = re.findall(r"^\s*\[(\d+), (\w+)\],$", script, re.M)
+        bounds = [int(n) for n, _ in pairs]
+        return {name: b - a for (_, name), a, b in zip(pairs, [0] + bounds, bounds)}
+
+    def test_open_backlog_settles_near_a_fixed_level_in_every_department(self) -> None:
+        # 검토 세션 Q23 답 (가): 처리 능력을 수요의 약 110% 로. 부하기 여정(신청, 담당자 처리, 부서의 가장 오래된 열린
+        # 10건 가운데 하나, 접수면 25% 처리 중)을 부서 30곳으로 줄여(부서당 비율은 부서 300 과 같음) 시드의 열린 건
+        # (부서당 3,000/300 = 10, 그 12.5% 처리 중)에서 180일 돌린다.
+        # 추세 판정: 8~180일의 일별 평균(시간마다 잰 열린 건 수의 하루 평균, 부서 300 으로 환산)에 최소제곱 직선을 맞춰
+        # 기울기 x 기간(172일)이 평균의 15% 보다 작고, 마지막 30일 평균과 8~37일 평균의 비가 0.85~1.15 안이면 기어가는
+        # 추세가 없다고 본다. 부서별: 어느 부서도 마지막 30일 평균이 전체 부서 평균의 3배를 넘지 않는다.
+        shares = self._journey_shares()
+        self.assertEqual(shares["submit"], 8)
+        demand = shares["submit"] * 1.25
+        self.assertAlmostEqual(shares["staffProcess"] / demand, 1.1, delta=0.005)
         hourly = self._seed_hourly()
         depts, total_depts = 30, 300
-        rng = random.Random(7)
-        open_ = [collections.deque([["P" if k % 34 == 0 else "R"] for k in range(20000 // total_depts)]) for _ in range(depts)]
-        totals = {}
-        for day in range(40):
+        rng = random.Random(11)
+        open_ = [collections.deque([["P" if k % 8 == 0 else "R"] for k in range(10)]) for _ in range(depts)]
+        daily, per_dept_late = [], [0.0] * depts
+        for day in range(180):
+            hourly_totals = []
             for hour in range(24):
-                submits = hourly[hour] * depts // total_depts
-                processes = hourly[hour] * 10 // 8 * depts // total_depts
-                events = [0] * submits + [1] * processes
+                iterations = hourly[hour] * 100 // shares["submit"] * depts // total_depts
+                events = [0] * (iterations * shares["submit"] // 100) + [1] * (iterations * shares["staffProcess"] // 100)
                 rng.shuffle(events)
                 for event in events:
                     queue = open_[rng.randrange(depts)]
@@ -1251,11 +1266,26 @@ class SeedSteadyStateTests(unittest.TestCase):
                             queue[j][0] = "P"
                         else:
                             del queue[j]
-            if day + 1 in (1, 16, 40):
-                totals[day + 1] = sum(len(q) for q in open_) * total_depts // depts
-        for day, total in totals.items():
-            with self.subTest(day=day, open_total=total):
-                self.assertEqual(len(str(total)), len(str(20000)))
+                hourly_totals.append(sum(len(q) for q in open_) * total_depts / depts)
+                if day >= 150:
+                    for d, q in enumerate(open_):
+                        per_dept_late[d] += len(q) / (30 * 24)
+            daily.append(sum(hourly_totals) / 24)
+        settled = daily[7:]
+        mean = sum(settled) / len(settled)
+        xs = list(range(len(settled)))
+        x_mean = sum(xs) / len(xs)
+        slope = sum((x - x_mean) * (y - mean) for x, y in zip(xs, settled)) / sum((x - x_mean) ** 2 for x in xs)
+        self.assertLess(abs(slope * (len(settled) - 1)), 0.15 * mean, (slope, mean))
+        early, late = sum(daily[7:37]) / 30, sum(daily[150:]) / 30
+        self.assertTrue(0.85 <= late / early <= 1.15, (early, late))
+        for day, value in enumerate(daily[1:], start=2):
+            with self.subTest(day=day):
+                self.assertEqual(len(str(int(value))), len(str(3000)), value)
+        dept_mean = sum(per_dept_late) / depts
+        self.assertLess(max(per_dept_late), 3 * dept_mean, (max(per_dept_late), dept_mean))
+        # 시드의 열린 건 수(3,000)가 이 정상 상태 수준의 같은 자릿수이고 20% 안이다.
+        self.assertLess(abs(mean / 3000 - 1), 0.2, mean)
 
     def test_relogin_rotates_one_identity_with_one_login_request(self) -> None:
         script = (DOMAIN / "loadgen" / "script.js").read_text()

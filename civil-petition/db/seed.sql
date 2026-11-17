@@ -39,10 +39,11 @@ FROM (SELECT u, CASE WHEN u <= 49700 THEN 'citizen' || lpad(u::text, 5, '0')
 --   접수 시각: 부하기의 시간별 신청 수(loadgen/entrypoint.sh 하루 표의 시간별 목표 요청률 x 3600 x 신청 8%, KST 시각)
 --     그대로 바로 앞 시간부터 거꾸로 채운다. 200만이면 약 16.4일(보존 건수 상한 / 하루 신청 121,824)이다.
 --     번호가 작을수록 오래됐다(i 가 클수록 최근, 접수 시각과 번호 순서가 같다).
---   처리 상태: 부하기 여정(신청 8%, 담당자 처리 10%, 처리는 그 부서 열린 건 가운데 가장 오래된 10건에서 하나,
---     접수 상태면 25% 처리 중, 나머지 답변 완료)을 모의한 정상 상태 꼴이다. 열린 건은 가장 최근 1%(200만이면 2만,
---     모의 7~16일째 1.9만~2.8만), 열린 건 가운데 3% 가 처리 중(모의 약 600), 나머지는 완료다. 완료 시각은 접수에서
---     모의의 처리 지연 분포(20칸, 중앙값 약 3.6시간)만큼 뒤다. 완료 건의 25% 는 처리 중을 거쳤다(모의 0.25).
+--   처리 상태: 부하기 여정(신청 8%, 담당자 처리 11%, 처리는 그 부서 열린 건 가운데 가장 오래된 10건에서 하나,
+--     접수 상태면 25% 처리 중, 나머지 답변 완료)을 모의한 정상 상태 꼴이다(처리 능력이 수요의 약 110%, 검토 세션
+--     Q23 답). 모의(부서 300, 180일)에서 열린 건은 이틀째부터 하루 평균 약 2,800~3,040 에 머문다. 그래서 열린 건은
+--     가장 최근 0.15%(200만이면 3,000), 그 가운데 12.5% 가 처리 중(모의 약 370 / 3,000), 나머지는 완료다. 완료 시각은
+--     접수에서 모의의 처리 지연 분포(20칸, 중앙값 약 17분)만큼 뒤다. 완료 건의 25% 는 처리 중을 거쳤다(모의 0.25).
 INSERT INTO petition (petition_id, receipt_no, user_id, dept_id, category, title, body, status, is_public, created_at, updated_at)
 SELECT i,
        'CP' || lpad(i::text, 8, '0'),
@@ -65,10 +66,10 @@ SELECT i,
            WHEN 'IN_PROGRESS' THEN c + (now() - c) / 2
            ELSE c END
 FROM (SELECT i, c,
-             CASE WHEN :scale - i >= :scale / 100 THEN 'COMPLETED'
-                  WHEN i % 100 < 3 THEN 'IN_PROGRESS'
+             CASE WHEN :scale - i >= :scale * 15 / 10000 THEN 'COMPLETED'
+                  WHEN i % 8 = 0 THEN 'IN_PROGRESS'
                   ELSE 'RECEIVED' END AS status,
-             (ARRAY[8, 22, 37, 55, 75, 98, 123, 150, 180, 214, 250, 290, 335, 390, 450, 520, 600, 700, 820, 1000])
+             (ARRAY[0, 1, 2, 3, 4, 6, 8, 10, 12, 15, 19, 23, 28, 34, 40, 49, 60, 76, 103, 181])
                  [1 + (i * 37) % 20] * interval '1 minute' AS done_after
       FROM (SELECT (:scale - (h.before + j) + 1)::int AS i,
                    h.hour_start + interval '1 hour' - ((j - 0.5) / h.cnt)::float8 * interval '1 hour' AS c
