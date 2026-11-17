@@ -6,7 +6,9 @@ scenario_root="$repo_root/scripts/scenarios"
 # 러너 호스트 = 66 tb-ops(192.168.122.20). 104 ~/.ssh/config 에 Host tb-ops (ProxyJump root@192.168.200.66) 별칭이 있어야 한다.
 remote=${SCENARIO_REMOTE:-root@tb-ops}
 remote_root=${SCENARIO_REMOTE_ROOT:-/root/testbed-services/scripts/scenarios}
-runner_url=${SCENARIO_RUNNER_URL:-http://localhost:8091}
+# 러너 HTTP. 104 에서 ssh 없이 바로 닿는 66 호스트의 포워딩(8091 -> tb-ops). 다른 러너 호스트로
+# 배포하면(SCENARIO_REMOTE) 이것도 함께 바꾼다. 운영 스킬 recording-window.sh 와 같은 변수다.
+runner_api=${TESTBED_RUNNER_API:-http://192.168.200.66:8091}
 runner_repo=${RCA_SCENARIO_RUNNER_REPO:-"$repo_root/../rca-scenario-runner"}
 
 cd "$repo_root"
@@ -26,11 +28,16 @@ python3 scripts/scenarios/generate-manifests.py --check
     'import json;from pathlib import Path;from app.manifests import load_manifests;root=Path("../../testbed-services/scripts/scenarios");expected=len(json.loads((root/"catalog.json").read_text())["scenarios"]);manifests=load_manifests(root/"manifests");assert len({item.id for item in manifests.values()}) == expected, f"manifests {len(manifests)} != catalog {expected}"'
 )
 
-# 녹화 구간(주입 직전부터 덤프 끝까지)에는 러너 호스트(66 tb-ops)에 아무것도 쓰지 않는다. 덤프는 실행 끝에
-# 적은 카탈로그 해시를 라이브 카탈로그와 다시 비교하므로, 그 사이 배포는 녹화 하나를
-# 잃게 한다(2026-10-10 F40-R). 위 검사가 몇 분 걸리므로 원격 쓰기 직전에 본다.
-ssh "$remote" "curl -sS '$runner_url/api/live-queue'" \
-  | python3 "$scenario_root/recording-guard.py"
+# ===== 원격 단계: 여기서부터 66 쪽(66 호스트, tb-ops, tb-runner)에 ssh 와 rsync 를 한다 =====
+# 녹화 창(평시 시작 ~ 식힘 끝)과 덤프 대기 동안에는 66 쪽에 ssh 하지 않는다. 접속 줄이 녹화 syslog 에
+# 담기고(v4 Q26 답 2), 덤프는 실행 끝에 적은 카탈로그 해시를 라이브 카탈로그와 다시 비교하므로
+# 그 사이 배포는 녹화 하나를 잃게 한다(2026-10-10 F40-R). 판정은 러너 HTTP 로만 읽는다(ssh 없음).
+# 위 검사가 몇 분 걸리고 아래 단계도 몇 분 걸리므로(결함 이미지 빌드 등), 한 번 보고 끝내지 않고
+# 원격 명령마다 바로 앞에서 다시 본다. 보류면 종료 코드 3 으로 그 자리에서 멈춘다. 앞 단계만 나간
+# 배포는 다음 실행이 처음부터 다시 덮는다(이미지는 있으면 건너뛰고, 나머지는 같은 내용을 다시 쓴다).
+recording_guard() {
+  TESTBED_RUNNER_API="$runner_api" python3 "$scenario_root/recording-guard.py" "$1"
+}
 
 # 결함 버전 이미지가 러너 호스트 docker 에 없으면 만든다. 배포가 녹화 때문에 미뤄지면 그 반복의
 # build.sh 도 함께 빠져, 나중 배포에서 시나리오만 나가고 preflight 가 이미지 없음으로
@@ -38,7 +45,10 @@ ssh "$remote" "curl -sS '$runner_url/api/live-queue'" \
 for image_json in "$scenario_root"/fault-images/*/image.json; do
   [[ -f "$image_json" ]] || continue
   fault_tag=$(jq -r .fault "$image_json")
+  recording_guard "결함 이미지 확인 $fault_tag"
   if ! ssh "$remote" docker image inspect "$fault_tag" > /dev/null 2>&1; then
+    # 빌드는 몇 분 걸린다. 빌드 안의 ssh 는 이 확인 하나에 기댄다(build.sh 는 단독으로도 쓴다).
+    recording_guard "결함 이미지 빌드 $fault_tag"
     BUILD_HOST="$remote" bash "$scenario_root/fault-images/build.sh" "$(basename "$(dirname "$image_json")")"
   fi
 done
@@ -92,6 +102,7 @@ done
 
 # The baseline script.js files are deliberately not shipped here — they belong to
 # the resident loadgen-* units and replacing one would need a unit restart.
+recording_guard "부하 스크립트 올리기"
 tar czf - -C "$repo_root" $(echo "$loadgen_repo_files" | tr '\n' ' ') \
   | ssh "$remote" "cat > /tmp/loadgen-publish.tgz && \
       scp -q -i ~/.ssh/tb_key /tmp/loadgen-publish.tgz nkia@192.168.122.206:/tmp/ && \
@@ -130,6 +141,7 @@ verify_pairs+="/opt/loadgen/baseline-publish.sh|$repo_root/scripts/loadgen/basel
 while IFS='|' read -r remote_path local_path; do
   [[ -n "$remote_path" ]] || continue
   local_sum=$(md5sum "$local_path" | cut -d' ' -f1)
+  recording_guard "부하 스크립트 대조 $remote_path"
   remote_sum=$(ssh "$remote" "ssh -i ~/.ssh/tb_key nkia@192.168.122.206 'md5sum $remote_path'" | cut -d' ' -f1)
   [[ "$local_sum" == "$remote_sum" ]] \
     || { echo "load script mismatch on tb-runner: $remote_path" >&2; exit 1; }
@@ -157,6 +169,7 @@ done
 # clickhouse observation returns quality=error, and an unusable signal in
 # must_rule_out blocks success for the 13 scenarios that read it — a whole batch
 # would fail for a reason no tick record explains. Fail here instead, loudly.
+recording_guard "러너 ClickHouse 자격 확인"
 ssh "$remote" bash -s << 'PREFLIGHT'
 set -Eeuo pipefail
 container=$(docker ps --format '{{.Names}}' | grep -E 'rca-scenario-runner|scenario-runner' | head -1)
@@ -193,10 +206,12 @@ PROBE
 PREFLIGHT
 
 # Publish implementations and manifests before the registry exposes new live IDs.
+recording_guard "시나리오 rsync"
 rsync -az --exclude registry/controllers.json \
   "$scenario_root/" "$remote:$remote_root/"
+recording_guard "controllers.json rsync"
 rsync -az "$scenario_root/registry/controllers.json" \
   "$remote:$remote_root/registry/controllers.json"
 
-ssh "$remote" \
-  "curl -fsS '$runner_url/api/live-queue/readiness' && echo && curl -fsS '$runner_url/api/live-queue'"
+# 확인은 러너 HTTP 로 바로 읽는다(ssh 없음).
+curl -fsS "$runner_api/api/live-queue/readiness" && echo && curl -fsS "$runner_api/api/live-queue"

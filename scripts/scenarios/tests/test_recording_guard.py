@@ -1,66 +1,395 @@
-"""녹화 구간 배포 보류 (scripts/scenarios/recording-guard.py)."""
+"""녹화 창과 덤프 대기 배포 보류 (scripts/scenarios/recording-guard.py, deploy-live-promotions.sh)."""
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import textwrap
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-_spec = importlib.util.spec_from_file_location("recording_guard", ROOT / "recording-guard.py")
+REPO = ROOT.parents[1]
+GUARD_PATH = ROOT / "recording-guard.py"
+DEPLOY_PATH = ROOT / "deploy-live-promotions.sh"
+_spec = importlib.util.spec_from_file_location("recording_guard", GUARD_PATH)
 guard = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guard)
 
+# 러너 QueuePhase(rca-scenario-runner backend/app/live_queue.py) 전부.
+RUNNER_PHASES = (
+    "idle", "running", "waiting_capture", "waiting_clean_window", "paused", "completed",
+    "cycle_reset", "cycle_normal", "cycle_buffer", "cycle_cooldown",
+)
+# 운영 스킬 testbed-operate recording-window.sh 의 녹화 창(창 안) 단계.
+RECORDING_WINDOW = ("cycle_reset", "cycle_normal", "cycle_buffer", "running", "cycle_cooldown")
+CAPTURE = ("waiting_capture", "waiting_clean_window")
+SAFE = ("idle", "paused", "completed")
 
-def _queue(phase: str) -> str:
-    return json.dumps({"phase": phase, "current_scenario_id": "X"})
+IDLE_ACTIVE = json.dumps({"is_active": False, "scenario_id": None, "run_id": None, "mode": None})
 
 
-class RecordingGuardTests(unittest.TestCase):
+def _queue(phase: str, **extra: object) -> str:
+    return json.dumps({"phase": phase, "current_scenario_id": "X", **extra})
+
+
+def _active(mode: str | None, run_id: str = "r1") -> str:
+    return json.dumps({"is_active": mode is not None, "run_id": run_id, "mode": mode})
+
+
+class _FakeRunner:
+    """러너 HTTP 흉내. live-queue 를 몇 번째로 읽느냐에 따라 phase 를 바꿀 수 있다."""
+
+    def __init__(self, phase_at=lambda n: "idle", log: Path | None = None,
+                 status: int = 200, body: str | None = None, delay: float = 0.0,
+                 active: str = IDLE_ACTIVE) -> None:
+        self.phase_at = phase_at
+        self.log = log
+        self.queue_reads = 0
+        runner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: object) -> None:  # 시험 출력 조용히
+                pass
+
+            def do_GET(self) -> None:  # noqa: N802
+                if delay:
+                    time.sleep(delay)
+                if self.path == "/api/live-queue":
+                    runner.queue_reads += 1
+                    payload = _queue(runner.phase_at(runner.queue_reads), queue_id="q1")
+                    phase = json.loads(payload)["phase"]
+                    runner._log(f"GET /api/live-queue {runner.queue_reads} {phase}")
+                elif self.path == "/api/active":
+                    payload = active
+                    runner._log("GET /api/active")
+                elif self.path == "/api/live-queue/readiness":
+                    payload = json.dumps({"ready": True})
+                    runner._log("GET /api/live-queue/readiness")
+                else:
+                    self.send_error(404)
+                    return
+                data = (body if body is not None else payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.api = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def _log(self, line: str) -> None:
+        if self.log is not None:
+            with self.log.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+
+    def __enter__(self) -> "_FakeRunner":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _closed_port_api() -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
+class RecordingGuardDecisionTests(unittest.TestCase):
+    def test_phase_sets_cover_every_runner_phase_once(self) -> None:
+        sets = (guard.RECORDING_WINDOW_PHASES, guard.CAPTURE_PHASES, guard.SAFE_PHASES)
+        self.assertEqual(sorted(p for s in sets for p in s), sorted(RUNNER_PHASES))
+        self.assertEqual(guard.RECORDING_WINDOW_PHASES, frozenset(RECORDING_WINDOW))
+
+    def test_recording_window_phases_block(self) -> None:
+        # v4 Q26 답 2: 녹화 창(평시 시작 ~ 식힘 끝) 동안 66 쪽 ssh 금지. cycle_reset, cycle_normal 도 창이다.
+        for phase in RECORDING_WINDOW:
+            reason = guard.blocking_reason(_queue(phase), IDLE_ACTIVE)
+            self.assertIsNotNone(reason, phase)
+            self.assertIn("녹화 창", reason)
+            self.assertIn(phase, reason)
+
     def test_blocks_from_injection_until_capture_finishes(self) -> None:
         # 2026-10-10: 덤프 대기 중 배포가 카탈로그 해시를 바꿔 덤프가 실패했다.
         for phase in ("cycle_buffer", "running", "cycle_cooldown", "waiting_capture", "waiting_clean_window"):
-            self.assertIsNotNone(guard.blocking_reason(_queue(phase)), phase)
+            self.assertIsNotNone(guard.blocking_reason(_queue(phase), IDLE_ACTIVE), phase)
+        for phase in CAPTURE:
+            self.assertIn("덤프 대기", guard.blocking_reason(_queue(phase), IDLE_ACTIVE))
 
     def test_allows_outside_recording(self) -> None:
-        for phase in ("idle", "paused", "completed", "cycle_reset", "cycle_normal"):
-            self.assertIsNone(guard.blocking_reason(_queue(phase)), phase)
+        for phase in SAFE:
+            self.assertIsNone(guard.blocking_reason(_queue(phase), IDLE_ACTIVE), phase)
 
-    def test_decoy_deployments_in_the_normal_phase_do_not_block(self) -> None:
-        """v4: 러너가 평시 구간에 넣는 미끼, 평시 배포는 녹화가 담는 사건이지 오염이 아니다."""
-        for status in ("planned", "rolling", "applied", "rolled_back", "skipped"):
-            raw = json.dumps({
-                "phase": "cycle_normal", "current_scenario_id": "X",
-                "cycle_decoy_seed": 7,
-                "cycle_decoys": [{"id": "d1", "kind": "restart", "status": status}],
-            })
-            self.assertIsNone(guard.blocking_reason(raw), status)
+    def test_unknown_phase_blocks(self) -> None:
+        reason = guard.blocking_reason(_queue("cycle_something_new"), IDLE_ACTIVE)
+        self.assertIsNotNone(reason)
+        self.assertIn("모르는 phase", reason)
+
+    def test_manual_run_outside_queue_blocks(self) -> None:
+        # 큐 밖 웹 실행: 큐는 idle 이어도 러너가 실행 중이면 녹화 창이다(recording-window.sh 와 같음).
+        for phase in SAFE:
+            reason = guard.blocking_reason(_queue(phase), _active("run", "run-9"))
+            self.assertIsNotNone(reason, phase)
+            self.assertIn("run-9", reason)
+        # 정리(cleanup)는 녹화가 아니다.
+        self.assertIsNone(guard.blocking_reason(_queue("idle"), _active("cleanup")))
+
+    def test_decoy_records_do_not_change_the_decision(self) -> None:
+        """v4 미끼, 평시 배포 기록은 판정에 쓰지 않는다. phase 만으로 같은 답이 나온다."""
+        for phase in RUNNER_PHASES:
+            plain = guard.blocking_reason(_queue(phase), IDLE_ACTIVE)
+            for status in ("planned", "rolling", "applied", "rolled_back", "skipped"):
+                raw = _queue(phase, cycle_decoy_seed=7,
+                             cycle_decoys=[{"id": "d1", "kind": "restart", "status": status}])
+                self.assertEqual(guard.blocking_reason(raw, IDLE_ACTIVE) is None, plain is None,
+                                 (phase, status))
 
     def test_recording_phases_still_block_with_decoys_recorded(self) -> None:
-        for phase in ("cycle_buffer", "running", "cycle_cooldown", "waiting_capture"):
-            raw = json.dumps({
-                "phase": phase, "current_scenario_id": "X",
-                "cycle_decoys": [{"id": "d1", "kind": "restart", "status": "applied"}],
-            })
-            self.assertIsNotNone(guard.blocking_reason(raw), phase)
+        for phase in ("cycle_normal", "cycle_buffer", "running", "cycle_cooldown", "waiting_capture"):
+            raw = _queue(phase, cycle_decoys=[{"id": "d1", "kind": "restart", "status": "applied"}])
+            self.assertIsNotNone(guard.blocking_reason(raw, IDLE_ACTIVE), phase)
 
     def test_unreadable_response_blocks(self) -> None:
-        for raw in ("", "not json", "{}", "[]"):
-            self.assertIsNotNone(guard.blocking_reason(raw), raw)
+        for raw in ("", "not json", "{}", "[]", "null"):
+            self.assertIsNotNone(guard.blocking_reason(raw, IDLE_ACTIVE), raw)
+            self.assertIsNotNone(guard.blocking_reason(_queue("idle"), raw), raw)
 
+
+class RecordingGuardHttpTests(unittest.TestCase):
+    def test_reads_runner_http(self) -> None:
+        for phase in RUNNER_PHASES:
+            with _FakeRunner(phase_at=lambda n, p=phase: p) as runner:
+                reason = guard.check(runner.api)
+            self.assertEqual(reason is None, phase in SAFE, phase)
+
+    def test_manual_run_over_http_blocks(self) -> None:
+        with _FakeRunner(active=_active("run")) as runner:
+            self.assertIsNotNone(guard.check(runner.api))
+
+    def test_unreachable_runner_blocks(self) -> None:
+        reason = guard.check(_closed_port_api(), timeout=2)
+        self.assertIsNotNone(reason)
+        self.assertIn("응답 없음", reason)
+
+    def test_http_error_blocks(self) -> None:
+        with _FakeRunner(status=500) as runner:
+            self.assertIn("응답 없음", guard.check(runner.api, timeout=5))
+
+    def test_garbage_body_blocks(self) -> None:
+        with _FakeRunner(body="<html>proxy error</html>") as runner:
+            self.assertIsNotNone(guard.check(runner.api, timeout=5))
+
+    def test_slow_runner_blocks(self) -> None:
+        with _FakeRunner(delay=2.0) as runner:
+            self.assertIn("응답 없음", guard.check(runner.api, timeout=0.5))
+
+    def test_cli_exit_codes_and_message(self) -> None:
+        cases = (("idle", 0), ("completed", 0), ("cycle_reset", 3), ("cycle_normal", 3),
+                 ("waiting_capture", 3))
+        for phase, want in cases:
+            with _FakeRunner(phase_at=lambda n, p=phase: p) as runner:
+                done = subprocess.run(
+                    [sys.executable, str(GUARD_PATH), "단계X"],
+                    env={**os.environ, "TESTBED_RUNNER_API": runner.api},
+                    capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+                )
+            self.assertEqual(done.returncode, want, (phase, done.stderr))
+            if want:
+                self.assertIn("배포 보류(단계X 앞)", done.stderr)
+                self.assertIn(phase, done.stderr)
+            else:
+                self.assertEqual(done.stderr, "")
+        done = subprocess.run(
+            [sys.executable, str(GUARD_PATH)],
+            env={**os.environ, "TESTBED_RUNNER_API": _closed_port_api()},
+            capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("응답 없음", done.stderr)
+
+    def test_guard_makes_no_ssh(self) -> None:
+        source = GUARD_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("subprocess", source)
+        self.assertNotIn("ssh ", source.split('"""', 2)[2])
+
+
+FAKE_SSH = textwrap.dedent("""\
+    #!/usr/bin/env bash
+    # 원격 명령을 기록만 한다. 데이터가 넘어오는 명령만 표준 입력을 읽는다.
+    printf 'REMOTE ssh %s\\n' "$*" >> "$FAKE_LOG"
+    case "$*" in
+      *"bash -s"*|*"cat >"*) cat > /dev/null ;;
+    esac
+    case "$*" in
+      *"docker image inspect"*)
+        if [[ -n "${FAKE_MISSING_IMAGE:-}" && "$*" == *"$FAKE_MISSING_IMAGE"* ]]; then exit 1; fi
+        exit 0 ;;
+      *md5sum*)
+        all="$*"; p=${all##*md5sum }; p=${p%%\\'*}
+        case "$p" in
+          /opt/loadgen/loadgen_monitor.py) local_file=$FAKE_REPO/scripts/scenarios/profiles/loadgen_monitor.py ;;
+          /opt/loadgen/baseline-publish.sh) local_file=$FAKE_REPO/scripts/loadgen/baseline-publish.sh ;;
+          *) rest=${p#/opt/loadgen/}; local_file=$FAKE_REPO/${rest%%/*}/loadgen/${rest#*/} ;;
+        esac
+        md5sum "$local_file" | cut -d' ' -f1 ;;
+    esac
+    exit 0
+    """)
+FAKE_RSYNC = textwrap.dedent("""\
+    #!/usr/bin/env bash
+    printf 'REMOTE rsync %s\\n' "$*" >> "$FAKE_LOG"
+    """)
+
+
+class DeployScriptReGuardTests(unittest.TestCase):
+    """deploy-live-promotions.sh 원격 단계를 가짜 ssh, rsync, 러너 HTTP 로 돌린다.
+
+    앞의 로컬 검사(unittest, 러너 pytest)는 이 시험 자신을 다시 부르므로 빼고, 머리(변수)와
+    "원격 단계" 표시 뒤만 돌린다.
+    """
+
+    MARKER = "# ===== 원격 단계"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        source = DEPLOY_PATH.read_text(encoding="utf-8")
+        head = source[: source.index('cd "$repo_root"')]
+        repo_line = 'repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)'
+        assert repo_line in head
+        head = head.replace(repo_line, f"repo_root={REPO}")
+        cls.remote_part = head + source[source.index(cls.MARKER):]
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.bin = Path(cls.tmp.name) / "bin"
+        cls.bin.mkdir()
+        for name, body in (("ssh", FAKE_SSH), ("rsync", FAKE_RSYNC)):
+            path = cls.bin / name
+            path.write_text(body, encoding="utf-8")
+            path.chmod(0o755)
+        cls.script = Path(cls.tmp.name) / "remote-part.sh"
+        cls.script.write_text(cls.remote_part, encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def _run(self, api: str, log: Path, **env: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(self.script)],
+            env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
+                 "TESTBED_RUNNER_API": api, "FAKE_LOG": str(log), "FAKE_REPO": str(REPO),
+                 "SCENARIO_REMOTE": "root@fake-runner", **env},
+            capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, cwd=REPO,
+        )
+
+    def _log(self, name: str) -> Path:
+        path = Path(self.tmp.name) / name
+        path.write_text("", encoding="utf-8")
+        return path
+
+    def test_every_remote_command_is_right_after_a_fresh_guard(self) -> None:
+        log = self._log("all-idle.log")
+        with _FakeRunner(log=log) as runner:
+            done = self._run(runner.api, log)
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        lines = log.read_text(encoding="utf-8").splitlines()
+        remote_at = [i for i, line in enumerate(lines) if line.startswith("REMOTE ")]
+        self.assertGreater(len(remote_at), 10)
+        guard_reads = [l for l in lines if l.startswith("GET /api/live-queue ")]
+        self.assertEqual(len(guard_reads) - 1, len(remote_at))  # 끝의 러너 HTTP 확인 한 번을 뺀다
+        # 이미지 확인, 부하 스크립트 올리기, 대조, ClickHouse 확인, rsync 두 번이 모두 나간다.
+        joined = "\n".join(lines)
+        for needle in ("docker image inspect", "cat > /tmp/loadgen-publish.tgz", "md5sum",
+                       "bash -s", "REMOTE rsync -az --exclude registry/controllers.json",
+                       "registry/controllers.json root@fake-runner:"):
+            self.assertIn(needle, joined)
+        for i in remote_at:
+            self.assertGreaterEqual(i, 2, lines[i])
+            self.assertTrue(lines[i - 2].startswith("GET /api/live-queue "), (lines[i - 2], lines[i]))
+            self.assertEqual(lines[i - 1], "GET /api/active", lines[i])
+        # 끝 확인은 ssh 가 아니라 러너 HTTP 로 읽는다.
+        self.assertEqual(lines[-2], "GET /api/live-queue/readiness")
+        self.assertFalse(any("curl" in lines[i] for i in remote_at))
+        self.assertIn('"ready": true', done.stdout)
+
+    def test_window_opening_mid_deploy_stops_before_the_next_remote_command(self) -> None:
+        log = self._log("count.log")
+        with _FakeRunner(log=log) as runner:
+            self.assertEqual(self._run(runner.api, log).returncode, 0)
+            guards = runner.queue_reads - 1  # 끝의 러너 HTTP 확인 한 번을 뺀다
+        for k, phase in ((1, "cycle_reset"), (2, "cycle_normal"), (guards // 2, "cycle_reset"),
+                         (guards - 1, "cycle_normal"), (guards, "cycle_reset")):
+            with self.subTest(k=k, phase=phase):
+                log = self._log(f"switch-{k}.log")
+                with _FakeRunner(phase_at=lambda n, k=k, p=phase: "idle" if n < k else p,
+                                 log=log) as runner:
+                    done = self._run(runner.api, log)
+                self.assertEqual(done.returncode, 3, done.stderr[-2000:])
+                self.assertIn("배포 보류", done.stderr)
+                self.assertIn(phase, done.stderr)
+                lines = log.read_text(encoding="utf-8").splitlines()
+                opened = next(i for i, line in enumerate(lines)
+                              if line.startswith(f"GET /api/live-queue {k} "))
+                self.assertEqual([l for l in lines[opened:] if l.startswith("REMOTE ")], [])
+                self.assertEqual(sum(l.startswith("REMOTE ") for l in lines[:opened]), k - 1)
+
+    def test_window_opening_before_a_fault_image_build_stops_the_build(self) -> None:
+        image = json.loads(sorted((ROOT / "fault-images").glob("*/image.json"))[0].read_text())
+        log = self._log("build.log")
+        with _FakeRunner(phase_at=lambda n: "idle" if n < 2 else "cycle_reset", log=log) as runner:
+            done = self._run(runner.api, log, FAKE_MISSING_IMAGE=image["fault"])
+        self.assertEqual(done.returncode, 3, done.stderr[-2000:])
+        self.assertIn("결함 이미지 빌드", done.stderr)
+        remote = [l for l in log.read_text(encoding="utf-8").splitlines() if l.startswith("REMOTE ")]
+        self.assertEqual(len(remote), 1)
+        self.assertIn("docker image inspect", remote[0])
+
+    def test_unreachable_runner_makes_no_remote_command(self) -> None:
+        log = self._log("dead.log")
+        done = self._run(_closed_port_api(), log)
+        self.assertEqual(done.returncode, 3, done.stderr[-2000:])
+        self.assertIn("응답 없음", done.stderr)
+        self.assertNotIn("REMOTE ", log.read_text(encoding="utf-8"))
+
+
+class DeployScriptLayoutTests(unittest.TestCase):
     def test_deploy_script_runs_guard_before_first_remote_write(self) -> None:
-        script = (ROOT / "deploy-live-promotions.sh").read_text(encoding="utf-8")
+        script = DEPLOY_PATH.read_text(encoding="utf-8")
         guard_at = script.index("recording-guard.py")
         self.assertLess(guard_at, script.index("tar czf"))
         self.assertLess(guard_at, script.index("rsync -az"))
 
     def test_deploy_script_builds_missing_fault_images_after_guard(self) -> None:
         # 2026-10-11: 녹화로 미룬 배포에서 build.sh 가 빠져 F63-R 이미지가 없었다.
-        script = (ROOT / "deploy-live-promotions.sh").read_text(encoding="utf-8")
+        script = DEPLOY_PATH.read_text(encoding="utf-8")
         build_at = script.index("fault-images/build.sh")
         self.assertLess(script.index("recording-guard.py"), build_at)
         self.assertLess(build_at, script.index("rsync -az"))
+
+    def test_deploy_script_has_no_ssh_before_the_remote_marker(self) -> None:
+        script = DEPLOY_PATH.read_text(encoding="utf-8")
+        local = script[: script.index(DeployScriptReGuardTests.MARKER)]
+        code = "\n".join(l for l in local.splitlines() if not l.lstrip().startswith("#"))
+        self.assertNotIn("ssh ", code)
+        self.assertNotIn("rsync ", code)
+
+    def test_deploy_script_reads_guard_without_ssh(self) -> None:
+        script = DEPLOY_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("curl -sS '$runner_url/api/live-queue'", script)
+        self.assertNotIn("| python3 \"$scenario_root/recording-guard.py\"", script)
 
 
 if __name__ == "__main__":
