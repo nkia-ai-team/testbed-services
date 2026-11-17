@@ -32,7 +32,7 @@ summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 �
 | 경로 | 내용 |
 |---|---|
 | `civil-petition/petition-web/` | WAR 소스(Spring Boot 3.4, 독립 Tomcat 10.1 배포, JNDI 데이터소스). `mvn -B package` 로 `petition-web/target/petition.war` |
-| `civil-petition/db/schema.sql`, `seed.sql` | 스키마와 결정적 시드(민원 200만, 처리 이력 약 600만, 사용자 5만, 부서 300) |
+| `civil-petition/db/schema.sql`, `seed.sql` | 스키마와 결정적 시드(민원 200만, 처리 이력 약 450만, 사용자 5만, 부서 300. 곧 정상 상태 꼴, 설계 §2-3) |
 | `civil-petition/loadgen/` | k6 스크립트와 진입 스크립트(하루 모양은 기존 도메인과 같은 표) |
 | `civil-petition/deploy/inventory/` | 테스트베드별 값(주소, 이름, 도메인 값, 켜기 값, 비밀값 파일 경로) |
 | `civil-petition/deploy/render.py` | 인벤토리 → 서버별 묶음, 66 망 파일 |
@@ -204,7 +204,7 @@ sudo systemctl start loadgen.service
 
 **보관 배치.** was02 의 `petition-archive.timer`(02:20 KST)가 앱의 보관 배치를 부른다. 설정 기본값은 WAR 의 `application.properties`(`petition.archive.keep-rows=2000000`, `chunk-rows=1000`, `pause-ms=1000`, `window=02:00-05:00`, `zone=Asia/Seoul`)이고 Tomcat 환경변수(`PETITION_ARCHIVE_KEEP_ROWS` 등)로 덮는다. 결과는 `batch_run` 표와 `/var/log/petition-batch.log` 줄의 `result=` 에 앱이 답한 값 그대로 남는다: `ok`(상한까지 옮김, 넘은 것이 없으면 0 건), `skipped`(창 밖 호출, 행 수도 세지 않음), `partial`(옮기는 중 창이 닫힘, 남은 몫은 다음 밤), `busy`(다른 보관 배치가 PostgreSQL advisory lock 을 쥐고 있어 아무것도 안 함). 앱이 답하지 못하면 `result=fail` 이고 유닛이 실패한다. 평시 24시간 판정은 `ok` 만 센다.
 
-**보관 SQL 확인(수동, docker 필요).** Java 시험은 문장을 실행하지 않으므로 보관 문장의 뜻과 계획을 바꿨다면 저장소 뿌리에서 `flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/archive-sql-check.sh [규모]` 를 돌린다(기본 200만, 시드 약 5분, 문법만 볼 때 20000). 일회 `postgres:16` 컨테이너에서 가장 오래된 순서, 처리 이력 이동, 답변과 첨부 cascade, 처리 이력 색인을 타는 계획, 묶음과 `count(*)` 시간, advisory lock 을 보고 `CHECK ...|t` 일곱 줄과 `checks=7 failed=0` 이면 통과다. 끝에 컨테이너를 지운다.
+**보관 SQL 확인(수동, docker 필요).** Java 시험은 문장을 실행하지 않으므로 보관 문장의 뜻과 계획을 바꿨다면 저장소 뿌리에서 `flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/archive-sql-check.sh [규모]` 를 돌린다(기본 200만, 시드 약 5분, 문법만 볼 때 20000). 일회 `postgres:16` 컨테이너에서 시드의 정상 상태 꼴(행 수, 열린 건 1%, 처리 중 비율, 미래 시각 없음, 이력 비, 규모 50만 이상이면 접수 시각 폭과 KST 시간 비), 행 수 추정치 `n_live_tup` 오차, 가장 오래된 순서, 처리 이력 이동, 답변과 첨부 cascade, 처리 이력 색인을 타는 계획, 묶음과 `count(*)` 시간, advisory lock 을 보고 `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `checks=16 failed=0`(규모 50만 미만은 14)이면 통과다. 끝에 컨테이너를 지운다.
 
 끝에 `plan.py --phase snapshot` 으로 재해 복구용 스냅숏 하나(설계 §8, 녹화마다 되돌리지 않는다).
 
@@ -248,3 +248,4 @@ sudo systemctl start loadgen.service
 - 2026-11-17 KST, v4 T2C(ag-t2c): 검토 세션 Q20-3, Q21 답 반영. §9 서버 로그 값마다 출처와 이유(값은 그대로), §8 평시 24시간에 DB 사실(`db-facts.sh`)과 정상 상태 기준(주 표 행 수, 보관 배치, 대표 질의 p95), 보관 배치 설정과 디스크 문단, §11 서버 ICMP 는 수집 정책 기본값대로 켬.
 - 2026-11-17 KST, v4 T2C 2회차(리뷰 rv-t2c): §8 대표 질의 구간을 24시간 떨어진 같은 시계 구간으로, `--end` 를 db-after 시각으로, 배치 로그 `result=` 가 앱 결과(ok, skipped, partial, busy)를 따름, 보관 SQL 확인 도구 실행법, §9 문구(출처 없는 서술 뺌, GitLab 은 목록).
 - 2026-11-17 KST, v4 T2C 3회차(재리뷰 L8, L10): §8 26시간 전 판정은 INCOMPLETE, 구간마다 표본 창 22개, `db-facts.sh` 가 `last_archive_ok`(마지막 보관 ok 시각)도 낸다(설계 §6-4 의 기록용).
+- 2026-11-17 KST, v4 T2C 5회차: 시드 크기 서술(처리 이력 약 450만, 정상 상태 꼴), 보관 SQL 확인 도구의 통과 기준.

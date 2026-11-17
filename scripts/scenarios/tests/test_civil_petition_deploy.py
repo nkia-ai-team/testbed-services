@@ -6,6 +6,7 @@ VM 과 66, 119 에는 닿지 않는다. 렌더는 메모리와 임시 디렉터�
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import datetime
 import importlib.util
@@ -1136,6 +1137,135 @@ class LookupReceiptTests(unittest.TestCase):
         old = self._simulate(40, lambda rng, newest: rng.randint(500_000, 2_000_000))
         self.assertLess(old[0], 0.001)
         self.assertGreater(old[-1], 0.99)
+
+
+class SeedSteadyStateTests(unittest.TestCase):
+    """시드가 곧 정상 상태(설계 §2-3, 검토 세션 Q21 답 ①, Q22 답의 시험 조건, 지휘 세션 11-17 결정).
+
+    접수 시각은 부하기 시간별 신청 수 그대로 바로 앞 시간부터 거꾸로, 처리 상태는 부하기 여정이 만드는 정상 상태 꼴.
+    실제 200만 시드의 분포는 수동 도구 archive-sql-check.sh 가 컨테이너에서 확인한다(T2C 결과에 수치).
+    """
+
+    SEED = DOMAIN / "db" / "seed.sql"
+
+    @staticmethod
+    def _loadgen_hourly_submits() -> list[int]:
+        entry = (DOMAIN / "loadgen" / "entrypoint.sh").read_text()
+        pct = [int(v) for v in re.findall(r"\d+\) echo (\d+) ;;", entry)]
+        script = (DOMAIN / "loadgen" / "script.js").read_text()
+        bounds = [int(n) for n in re.findall(r"^\s*\[(\d+), \w+\],$", script, re.M)]
+        submit_share = bounds[0]   # 첫 여정(신청)의 비중
+        return [(5 + ((30 - 5) * p + 50) // 100) * 3600 * submit_share // 100 for p in pct]
+
+    def _seed_hourly(self) -> list[int]:
+        text = self.SEED.read_text()
+        block = re.search(r"\(ARRAY\[([0-9,\s]+)\]\)\s*\[1 \+ extract\(hour FROM", text).group(1)
+        return [int(v) for v in block.split(",")]
+
+    def test_seed_submissions_per_kst_hour_are_the_load_generators(self) -> None:
+        self.assertEqual(self._seed_hourly(), self._loadgen_hourly_submits())
+        self.assertEqual(sum(self._seed_hourly()), 121824)
+        text = self.SEED.read_text()
+        # 바로 앞 시간부터 거꾸로, 시각은 KST 로 읽는다. 옛 730일 펼치기는 없다.
+        self.assertIn("date_trunc('hour', now()) - (n + 1) * interval '1 hour'", text)
+        self.assertIn("AT TIME ZONE 'Asia/Seoul'", text)
+        self.assertNotIn("730 days", text)
+
+    def test_seed_status_rule_is_the_simulated_steady_state(self) -> None:
+        text = self.SEED.read_text()
+        self.assertIn("CASE WHEN :scale - i >= :scale / 100 THEN 'COMPLETED'", text)   # 가장 최근 1% 만 열림
+        self.assertIn("WHEN i % 100 < 3 THEN 'IN_PROGRESS'", text)                     # 열린 건의 3%
+        delays = [int(v) for v in re.search(r"\(ARRAY\[(8, 22[0-9,\s]+)\]\)", text).group(1).split(",")]
+        self.assertEqual(len(delays), 20)
+        self.assertEqual(delays, sorted(delays))
+        self.assertTrue(180 <= (delays[9] + delays[10]) / 2 <= 260)   # 모의 중앙값 214분 근처
+        self.assertIn("least(c + done_after, now())", text)            # 완료 시각이 미래가 아니다
+
+    def test_period_reads_see_the_same_order_of_rows_on_every_operating_day(self) -> None:
+        # Q22 답의 시험 조건: 운영 일수를 늘려도 기간 조건 읽기가 보는 행 수가 같은 자릿수.
+        # 원표 = 시드(시간별 신청 수로 바로 앞부터 거꾸로 200만) + 부하기 쓰기 - 02:20 보관(상한 200만 넘은 가장 오래된 것).
+        hourly = self._seed_hourly()
+        keep = 2_000_000
+        rows: collections.deque = collections.deque()   # (나이 시간, 행 수) 가장 오래된 것이 왼쪽
+        remaining, back = keep, 0
+        seed_hours = []
+        while remaining > 0:
+            back += 1
+            take = min(hourly[(24 - back) % 24], remaining)   # 운영 시작 = KST 0시, back 시간 전 그 KST 시각
+            seed_hours.append(take)
+            remaining -= take
+        clock = 0   # 운영 시작 뒤 시간
+        table = [(-(i + 1), n) for i, n in enumerate(seed_hours)][::-1]
+
+        def reads(now: int) -> tuple[int, int, float]:
+            last7 = sum(n for t, n in table if now - t <= 7 * 24)
+            last30 = sum(n for t, n in table if now - t <= 30 * 24)
+            return int(last7 * 0.6), int(last30 * 0.6), sum(n for t, n in table if now - t <= 90 * 24) / 49700
+
+        seen = {0: reads(0)}
+        for day in range(40):
+            for hour in range(24):
+                if hour == 2:
+                    excess = sum(n for _, n in table) - keep
+                    while excess > 0:
+                        t, n = table[0]
+                        if n <= excess:
+                            table.pop(0)
+                            excess -= n
+                        else:
+                            table[0] = (t, n - excess)
+                            excess = 0
+                table.append((clock, hourly[hour]))
+                clock += 1
+            if day + 1 in (1, 4, 16, 40):
+                seen[day + 1] = reads(clock)
+        first = seen[0]
+        for day, values in seen.items():
+            with self.subTest(day=day):
+                for name, base, value in zip(("public_7d", "public_30d", "per_user_90d"), first, values):
+                    self.assertEqual(len(str(int(base))), len(str(int(value))), (name, base, value))
+                    self.assertLess(abs(value / base - 1), 0.1, (name, base, value))
+
+    def test_open_backlog_from_the_seed_stays_in_the_same_order_of_magnitude(self) -> None:
+        # 부하기 여정(신청 8%, 처리 10%, 부서의 가장 오래된 열린 10건 가운데 하나, 접수면 25% 처리 중)을 부서 30곳으로
+        # 줄여(부서당 비율은 같음) 시드의 열린 건(부서당 2만/300)에서 40일 돌린다. 처리 여정 10% 는 열린 건마다 평균
+        # 1.25 번 필요한 처리와 같아(이용률 약 1) 적체는 정상 상태 없이 제곱근 꼴로 천천히 는다. 같은 자릿수를 단언한다.
+        hourly = self._seed_hourly()
+        depts, total_depts = 30, 300
+        rng = random.Random(7)
+        open_ = [collections.deque([["P" if k % 34 == 0 else "R"] for k in range(20000 // total_depts)]) for _ in range(depts)]
+        totals = {}
+        for day in range(40):
+            for hour in range(24):
+                submits = hourly[hour] * depts // total_depts
+                processes = hourly[hour] * 10 // 8 * depts // total_depts
+                events = [0] * submits + [1] * processes
+                rng.shuffle(events)
+                for event in events:
+                    queue = open_[rng.randrange(depts)]
+                    if event == 0:
+                        queue.append(["R"])
+                    elif queue:
+                        j = rng.randrange(min(10, len(queue)))
+                        if queue[j][0] == "R" and rng.random() < 0.25:
+                            queue[j][0] = "P"
+                        else:
+                            del queue[j]
+            if day + 1 in (1, 16, 40):
+                totals[day + 1] = sum(len(q) for q in open_) * total_depts // depts
+        for day, total in totals.items():
+            with self.subTest(day=day, open_total=total):
+                self.assertEqual(len(str(total)), len(str(20000)))
+
+    def test_relogin_rotates_one_identity_with_one_login_request(self) -> None:
+        script = (DOMAIN / "loadgen" / "script.js").read_text()
+        body = re.search(r"function relogin\(\) \{(.*?)\n\}", script, re.S).group(1)
+        self.assertIn("citizenId = randInt(1, CITIZENS);", body)
+        self.assertIn("staffIndex = randInt(1, STAFF);", body)
+        self.assertEqual(body.count("login("), 2)          # 두 갈래에 하나씩, 한 번에는 하나
+        self.assertIn("if (rand() < 0.5) {", body)
+        self.assertRegex(script, r"(?m)^let citizenId = randInt\(1, CITIZENS\);$")
+        self.assertRegex(script, r"(?m)^let staffIndex = randInt\(1, STAFF\);$")
 
 
 class StabilityCheckTests(unittest.TestCase):

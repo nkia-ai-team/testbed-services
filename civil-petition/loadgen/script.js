@@ -110,8 +110,10 @@ export function setup() {
 // VU 마다 시민 하나, 담당자 하나의 세션을 따로 둔다(쿠키 단지 둘).
 const citizenJar = new http.CookieJar();
 const staffJar = new http.CookieJar();
-const citizenId = randInt(1, CITIZENS);
-const staffIndex = randInt(1, STAFF);
+// 로그인 여정(5%)마다 시민 또는 담당자 가운데 하나를 다른 사람으로 바꾼다(설계 §5). 가상 사용자 수(40~150)만큼의
+// 사람만 쓰면 신청이 그 몇십 명에게 몰리고 그 몇십 부서만 처리되어, 나머지 부서의 열린 건이 끝없이 쌓인다.
+let citizenId = randInt(1, CITIZENS);
+let staffIndex = randInt(1, STAFF);
 let citizenLoggedIn = false;
 let staffLoggedIn = false;
 
@@ -209,7 +211,14 @@ function stats() {
 }
 
 function relogin() {
-    citizenLoggedIn = login(citizenJar, `citizen${pad(citizenId, 5)}`, 'login');
+    // 요청 수는 그대로 로그인 하나다. 반은 다른 시민으로, 반은 다른 담당자(다른 부서)로 다시 로그인한다.
+    if (rand() < 0.5) {
+        citizenId = randInt(1, CITIZENS);
+        citizenLoggedIn = login(citizenJar, `citizen${pad(citizenId, 5)}`, 'login');
+    } else {
+        staffIndex = randInt(1, STAFF);
+        staffLoggedIn = login(staffJar, `staff${pad(staffIndex, 3)}`, 'login');
+    }
 }
 
 // 누적 비중표(합 100).

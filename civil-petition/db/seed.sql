@@ -1,4 +1,4 @@
--- 시드(설계 §2-3 데이터 크기: 민원 200만, 처리 이력 약 600만, 사용자 5만, 부서 300).
+-- 시드(설계 §2-3 데이터 크기: 민원 200만, 처리 이력 약 450만, 사용자 5만, 부서 300).
 -- 같은 파일과 같은 식으로 만들므로 T 와 S 의 행 내용이 같다(시각만 설치한 날 기준으로 움직인다).
 -- 난수 대신 행 번호의 산술로 값을 고른다(다시 돌려도 같은 값).
 -- psql -v app_user=<앱 계정> 으로 돌린다. 담당자 계정의 비밀번호는 합성 시드 값(Passw0rd!)이고 기존 도메인 시드와 같은 관례다.
@@ -35,7 +35,14 @@ FROM (SELECT u, CASE WHEN u <= 49700 THEN 'citizen' || lpad(u::text, 5, '0')
       FROM generate_series(1, 50000) AS u) AS s;
 
 -- 큰 수를 곱하는 두 식은 bigint 로 센다(정수로 세면 i 가 약 2만을 넘을 때 넘쳐 200만 시드가 실패한다).
--- 민원: 지난 730일에 고르게, 낮 시간에 몰리게 퍼뜨린다. 번호가 작을수록 오래됐다.
+-- 민원: 시드가 곧 정상 상태가 되게 만든다(설계 §2-3, 검토 세션 Q21 답 ①, Q22 답의 시험 조건).
+--   접수 시각: 부하기의 시간별 신청 수(loadgen/entrypoint.sh 하루 표의 시간별 목표 요청률 x 3600 x 신청 8%, KST 시각)
+--     그대로 바로 앞 시간부터 거꾸로 채운다. 200만이면 약 16.4일(보존 건수 상한 / 하루 신청 121,824)이다.
+--     번호가 작을수록 오래됐다(i 가 클수록 최근, 접수 시각과 번호 순서가 같다).
+--   처리 상태: 부하기 여정(신청 8%, 담당자 처리 10%, 처리는 그 부서 열린 건 가운데 가장 오래된 10건에서 하나,
+--     접수 상태면 25% 처리 중, 나머지 답변 완료)을 모의한 정상 상태 꼴이다. 열린 건은 가장 최근 1%(200만이면 2만,
+--     모의 7~16일째 1.9만~2.8만), 열린 건 가운데 3% 가 처리 중(모의 약 600), 나머지는 완료다. 완료 시각은 접수에서
+--     모의의 처리 지연 분포(20칸, 중앙값 약 3.6시간)만큼 뒤다. 완료 건의 25% 는 처리 중을 거쳤다(모의 0.25).
 INSERT INTO petition (petition_id, receipt_no, user_id, dept_id, category, title, body, status, is_public, created_at, updated_at)
 SELECT i,
        'CP' || lpad(i::text, 8, '0'),
@@ -50,36 +57,51 @@ SELECT i,
            || ' (' || (ARRAY['중앙동', '북부동', '남부동', '동부동', '서부동', '신도심', '구도심', '산업단지',
                              '대학가', '역세권'])[1 + (i * 17) % 10] || ')',
        '안녕하십니까. ' || repeat('현장 확인 후 조치하여 주시기 바랍니다. 주민 불편이 계속되고 있습니다. ', 2 + i % 9),
-       CASE WHEN c < now() - interval '30 days' THEN
-                CASE WHEN i % 40 = 0 THEN 'IN_PROGRESS' ELSE 'COMPLETED' END
-            ELSE (ARRAY['RECEIVED', 'IN_PROGRESS', 'COMPLETED'])[1 + i % 3] END,
+       status,
        i % 10 < 6,
        c,
-       c + ((i % 9) + 1) * interval '1 day'
-FROM (SELECT i,
-             now() - interval '730 days'
-                 + (i::double precision / :scale) * interval '729 days'
-                 + ((ARRAY[0, 0, 1, 2, 4, 6, 8, 9, 9, 9, 8, 7, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1])[1 + (i * 13) % 24]) * interval '1 hour'
-                 + ((i * 7) % 60) * interval '1 minute' AS c
-      FROM generate_series(1, :scale) AS i) AS s;
+       CASE status
+           WHEN 'COMPLETED' THEN least(c + done_after, now())
+           WHEN 'IN_PROGRESS' THEN c + (now() - c) / 2
+           ELSE c END
+FROM (SELECT i, c,
+             CASE WHEN :scale - i >= :scale / 100 THEN 'COMPLETED'
+                  WHEN i % 100 < 3 THEN 'IN_PROGRESS'
+                  ELSE 'RECEIVED' END AS status,
+             (ARRAY[8, 22, 37, 55, 75, 98, 123, 150, 180, 214, 250, 290, 335, 390, 450, 520, 600, 700, 820, 1000])
+                 [1 + (i * 37) % 20] * interval '1 minute' AS done_after
+      FROM (SELECT (:scale - (h.before + j) + 1)::int AS i,
+                   h.hour_start + interval '1 hour' - ((j - 0.5) / h.cnt)::float8 * interval '1 hour' AS c
+            FROM (SELECT hour_start, cnt, sum(cnt) OVER (ORDER BY n) - cnt AS before
+                  FROM (SELECT n, date_trunc('hour', now()) - (n + 1) * interval '1 hour' AS hour_start,
+                               (ARRAY[3168, 2592, 2016, 1728, 1440, 1728, 2016, 2592, 3168, 4032, 5184, 6048,
+                                      6912, 7488, 8064, 8640, 8640, 8640, 8064, 7488, 6912, 6048, 5184, 4032])
+                                   [1 + extract(hour FROM (date_trunc('hour', now()) - (n + 1) * interval '1 hour')
+                                                AT TIME ZONE 'Asia/Seoul')::int] AS cnt
+                        FROM generate_series(0, 24 * 730) AS n) AS hours) AS h
+            CROSS JOIN LATERAL generate_series(1, least(h.cnt, :scale - h.before)::int) AS j
+            WHERE h.before < :scale) AS placed) AS s;
 
--- 처리 이력: 접수 1, 처리 중 1, 완료 1(상태까지), 완료 건 가운데 일부는 보완 요청 1.
+-- 처리 이력: 앱이 쓰는 꼴 그대로. 신청(신청인), 처리 중으로(담당자, 처리 중 건과 완료 건의 25%), 답변 완료(담당자).
 INSERT INTO petition_history (petition_id, from_status, to_status, actor_id, note, created_at)
 SELECT p.petition_id,
-       (ARRAY[NULL, 'RECEIVED', 'IN_PROGRESS', 'IN_PROGRESS'])[step],
-       (ARRAY['RECEIVED', 'IN_PROGRESS', 'IN_PROGRESS', 'COMPLETED'])[step],
+       CASE step WHEN 1 THEN NULL WHEN 2 THEN 'RECEIVED'
+                 ELSE CASE WHEN p.status = 'COMPLETED' AND p.petition_id % 4 = 1 THEN 'IN_PROGRESS' ELSE 'RECEIVED' END END,
+       (ARRAY['RECEIVED', 'IN_PROGRESS', 'COMPLETED'])[step],
        CASE WHEN step = 1 THEN p.user_id ELSE 49700 + p.dept_id END,
-       (ARRAY['submitted', 'accepted', 'supplement requested', 'answered'])[step],
-       p.created_at + (step - 1) * interval '1 day'
+       CASE WHEN step = 1 THEN 'submitted' ELSE '현장 확인 후 조치하였습니다.' END,
+       CASE step WHEN 1 THEN p.created_at
+                 WHEN 2 THEN CASE WHEN p.status = 'COMPLETED' THEN p.created_at + (p.updated_at - p.created_at) / 2
+                                  ELSE p.updated_at END
+                 ELSE p.updated_at END
 FROM petition p
-JOIN LATERAL generate_series(1, 4) AS step ON
+JOIN LATERAL generate_series(1, 3) AS step ON
      step = 1
-  OR (step = 2 AND p.status IN ('IN_PROGRESS', 'COMPLETED'))
-  OR (step = 3 AND p.status = 'COMPLETED' AND p.petition_id % 20 = 0)
-  OR (step = 4 AND p.status = 'COMPLETED');
+  OR (step = 2 AND (p.status = 'IN_PROGRESS' OR (p.status = 'COMPLETED' AND p.petition_id % 4 = 1)))
+  OR (step = 3 AND p.status = 'COMPLETED');
 
 INSERT INTO petition_answer (petition_id, staff_id, body, answered_at)
-SELECT petition_id, 49700 + dept_id, '민원 내용을 확인하여 조치를 완료하였습니다. 불편을 드려 죄송합니다.', updated_at
+SELECT petition_id, 49700 + dept_id, '현장 확인 후 조치하였습니다.', updated_at
 FROM petition WHERE status = 'COMPLETED';
 
 INSERT INTO petition_attachment (petition_id, file_name, size_bytes, created_at)

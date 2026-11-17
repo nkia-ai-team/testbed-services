@@ -1,4 +1,4 @@
-# 시드(민원 200만, 처리 이력 600만, 사용자 5만, 부서 300). 비어 있을 때만 넣는다.
+# 시드(민원 200만, 처리 이력 약 450만, 사용자 5만, 부서 300). 비어 있을 때만 넣는다.
 verify_artifact seed.sql
 count=$(runuser -u postgres -- psql -Atq -d "$DB_NAME" -c "select count(*) from petition")
 if [[ "$count" == 0 ]]; then
