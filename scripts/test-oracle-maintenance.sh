@@ -90,6 +90,7 @@ export FAKE_POOL='733|2004992.47|ACC-5310|0|0'
 export FAKE_SEED='7|450000|ACC-1006|0|0'
 export POOL_FILE="$SCRIPT_DIR/../core-banking/loadgen/transfer-accounts.txt"
 export TRANSFER_URL="http://transfer.invalid:30282" FAKE_BANK="$TMP_ROOT/bank"
+export PURGE_RETRY_SEC=0
 
 # A small ADR tree: one database home and one listener home.
 reset_tree() {
@@ -158,9 +159,27 @@ reset_tree
 rc=0; out=$("$MAINT" purge 2>&1) || rc=$?
 [[ $rc -ne 0 ]] || fail 'a purge that could not reach the container must fail'
 grep -q 'purge failed in testbed-oracle-0' <<<"$out" || fail "failure log: $out"
-grep -q 'purge failed: in testbed-oracle-0: error: Internal error occurred: unable to upgrade connection: container not found ("oracle")' "$STATE_DIR/PURGE_FAILED" \
-  || fail "marker must carry kubectl's reason: $(cat "$STATE_DIR/PURGE_FAILED")"
+grep -q 'purge failed: in testbed-oracle-0: error: Internal error occurred: unable to upgrade connection: container not found ("oracle") (2 attempts 0s apart)' "$STATE_DIR/PURGE_FAILED" \
+  || fail "marker must carry kubectl's reason and the attempts: $(cat "$STATE_DIR/PURGE_FAILED")"
+grep -q 'purge failed in testbed-oracle-0 (attempt 1)' <<<"$out" && grep -q 'purge failed in testbed-oracle-0 (attempt 2)' <<<"$out" \
+  || fail "a failed exec must be tried twice: $out"
 [[ ! -e "$STATE_DIR/PURGE_FAILED.tmp" ]] || fail 'the marker is written whole and renamed'
+# One failed exec followed by a good one (an API hiccup) leaves no marker (review rv-orafix M2).
+rm -f "$STATE_DIR/PURGE_FAILED"
+cat >"$TMP_ROOT/bin/kubectl" <<SH
+#!/usr/bin/env bash
+if [[ ! -e "$TMP_ROOT/flaked" ]]; then : >"$TMP_ROOT/flaked"; echo 'error: etcdserver: request timed out' >&2; exit 1; fi
+exec "$TMP_ROOT/kubectl.real" "\$@"
+SH
+chmod +x "$TMP_ROOT/bin/kubectl"
+reset_tree
+out=$("$MAINT" purge 2>&1) || fail "a purge whose retry got through must succeed: $out"
+grep -q 'purge failed in testbed-oracle-0 (attempt 1): error: etcdserver: request timed out' <<<"$out" || fail "first attempt log: $out"
+grep -q 'purge done' <<<"$out" || fail "the retry must finish the purge: $out"
+[[ ! -e "$STATE_DIR/PURGE_FAILED" ]] || fail 'one failed attempt must not write the marker'
+cp "$TMP_ROOT/bin/kubectl-down" "$TMP_ROOT/bin/kubectl"
+reset_tree; "$MAINT" purge >/dev/null 2>&1 || true
+[[ -f "$STATE_DIR/PURGE_FAILED" ]] || fail 'precondition: marker after two failed attempts'
 # A purge skipped for a recording keeps the marker: nothing was learned about the pod.
 FAKE_ACTIVE=true "$MAINT" purge | grep -q 'purge skipped' || fail 'expected a skip'
 [[ -f "$STATE_DIR/PURGE_FAILED" ]] || fail 'a skipped purge removed PURGE_FAILED'

@@ -41,8 +41,11 @@
 # line and the runner's limit both follow CHECK_PERIOD_HOURS.
 #
 # A purge that fails (the pod or its container cannot be reached, the ADR root is wrong) writes
-# $STATE_DIR/PURGE_FAILED (one line: time and reason) at once, and the runner's readiness is false
-# while the file exists. The next purge that gets through removes it; a skipped purge leaves it as it
+# $STATE_DIR/PURGE_FAILED (one line: time, reason, attempts), and the runner's readiness is false
+# while the file exists (the cycle queue also reads it right before each injection). A failed exec is
+# tried once more after PURGE_RETRY_SEC (default 45) before the marker is written, so one API hiccup
+# does not stop a queue (review rv-orafix M2: the check tolerates one failure through its staleness
+# limit; the purge tolerates one inside the run, so a marker means two failures 45 seconds apart). The next purge that gets through removes it; a skipped purge leaves it as it
 # is. Why (testbed v4 ORAFIX, Q25 answer 2): 11-16 the bank Oracle stayed down 30 hours. Every hourly
 # purge from 11:23 KST failed with 'container not found', but only the log held that; readiness went
 # false at 22:07 KST, when the last good check passed the 13-hour limit.
@@ -67,6 +70,8 @@ STATE_DIR="${STATE_DIR:-/var/lib/lucida/oracle-capacity}"
 # in last.json for the runner's staleness limit. Must divide 24.
 CHECK_PERIOD_HOURS="${CHECK_PERIOD_HOURS:-6}"
 INSTALL_PATH="${INSTALL_PATH:-/opt/testbed/oracle-maintenance.sh}"
+# Wait before the one retry of a purge whose exec into the pod failed.
+PURGE_RETRY_SEC="${PURGE_RETRY_SEC:-45}"
 MAINT_LOG="${MAINT_LOG:-/var/log/oracle-maintenance.log}"
 # The bank load's transfer pool (core-banking/loadgen/transfer-accounts.txt), installed
 # beside this script. Floor 500,000: ten largest transfers (50,000) of room before the
@@ -192,15 +197,24 @@ purge() {
     return 0
   fi
   errfile=$(mktemp)
-  if ! result=$(k exec -i "$ORACLE_POD" -- bash -s -- "$DIAG_ROOT" "$((RETENTION_HOURS * 60))" \
-    "$((LISTENER_LOG_MAX_MB * 1024 * 1024))" <<<"$PURGE_REMOTE" 2>"$errfile"); then
-    local why; why=$(grep -v '^[[:space:]]*$' "$errfile" | tail -1 | cut -c1-300 || true)
-    cat "$errfile" >&2; rm -f "$errfile"
-    log "purge failed in $ORACLE_POD"
-    purge_failed "in $ORACLE_POD: ${why:-no error output}"
+  local attempt why="" ok=0
+  for attempt in 1 2; do
+    if result=$(k exec -i "$ORACLE_POD" -- bash -s -- "$DIAG_ROOT" "$((RETENTION_HOURS * 60))" \
+      "$((LISTENER_LOG_MAX_MB * 1024 * 1024))" <<<"$PURGE_REMOTE" 2>"$errfile"); then
+      ok=1
+      break
+    fi
+    why=$(grep -v '^[[:space:]]*$' "$errfile" | tail -1 | cut -c1-300 || true)
+    cat "$errfile" >&2
+    log "purge failed in $ORACLE_POD (attempt $attempt): ${why:-no error output}"
+    (( attempt == 2 )) || sleep "$PURGE_RETRY_SEC"
+  done
+  (( ! ok )) || cat "$errfile" >&2
+  rm -f "$errfile"
+  if (( ! ok )); then
+    purge_failed "in $ORACLE_POD: ${why:-no error output} (2 attempts ${PURGE_RETRY_SEC}s apart)"
     return 1
   fi
-  cat "$errfile" >&2; rm -f "$errfile"
   rm -f "$STATE_DIR/PURGE_FAILED"
   log "purge done (retention ${RETENTION_HOURS}h): $result"
 }

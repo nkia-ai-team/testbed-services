@@ -36,7 +36,7 @@ cat >"$TMP_ROOT/bin/mount" <<'SH'
 printf 'mount %s\n' "$*" >>"$FAKE_LOG"
 if [[ "$1" == -o && "$2" == ro ]]; then [[ -n "${FAKE_RO_FAIL:-}" ]] && exit 32; shift 2; fi
 if [[ $# -eq 1 ]]; then [[ -n "${FAKE_MOUNT_FAIL:-}" ]] && exit 32
-  target=$1; src=$(awk -v t="$1" '$2 == t {print $1}' "$FSTAB")
+  target=$1; src=$(awk -v t="$1" '$1 !~ /^#/ && $2 == t {print $1}' "$FSTAB")   # mount skips comment lines
   [[ "$src" == UUID=fake-uuid ]] || exit 32; src=$FAKE_DEV
 else src=$1; target=$2; fi
 [[ "$src" == "$FAKE_DEV" ]] || exit 32
@@ -279,7 +279,7 @@ echo "[PASS] a volume path with its own content next to an original copy is left
 # fstab-notrim (testbed v4 ORAFIX): a node cut over before the option existed gets it added to the
 # volume's line, every other field and line kept, no remount; --check only reads.
 reset; bash "$TOOL" prepare "$DEV" >/dev/null; bash "$TOOL" cutover "$DEV" >/dev/null
-printf 'UUID=other /data xfs defaults,discard 0 2\n' >>"$FSTAB"
+printf 'UUID=other /data xfs defaults,discard 0 2\n#UUID=old %s ext4 defaults 0 2\n' "$PV_DIR" >>"$FSTAB"   # a commented-out old line is not the volume's line (review L4)
 sed -i "s|^UUID=fake-uuid $PV_DIR ext4 defaults,nofail,X-fstrim.notrim 0 2\$|UUID=fake-uuid\t$PV_DIR  ext4 defaults,nofail,noatime 0 2|" "$FSTAB"
 grep -q $'^UUID=fake-uuid\t' "$FSTAB" || fail "precondition: the old-style line"
 rc=0; bash "$TOOL" fstab-notrim --check >"$TMP_ROOT/out" || rc=$?
@@ -291,7 +291,8 @@ cp "$FSTAB" "$TMP_ROOT/fstab.before"; : >"$FAKE_LOG"
 grep -qx "UUID=fake-uuid $PV_DIR ext4 defaults,nofail,noatime,X-fstrim.notrim 0 2" "$FSTAB" || fail "fstab-notrim line: $(cat "$FSTAB")"
 others() { awk -v t="$PV_DIR" '$2 != t' "$1"; }
 diff <(others "$TMP_ROOT/fstab.before") <(others "$FSTAB") >/dev/null || fail "fstab-notrim touched other lines"
-[[ $(grep -c " $PV_DIR " "$FSTAB") -eq 1 ]] || fail "fstab-notrim must leave exactly one line"
+grep -qx "#UUID=old $PV_DIR ext4 defaults 0 2" "$FSTAB" || fail "fstab-notrim touched the commented-out line"
+[[ $(grep -v '^#' "$FSTAB" | grep -c " $PV_DIR ") -eq 1 ]] || fail "fstab-notrim must leave exactly one line"
 grep -q '^systemctl daemon-reload' "$FAKE_LOG" || fail "fstab-notrim must tell systemd about the changed line"
 ! grep -q '^mount \|^umount ' "$FAKE_LOG" || fail "fstab-notrim must not remount: $(cat "$FAKE_LOG")"
 [[ -L "$PV_DIR" ]] || fail "fstab-notrim changed the mount"

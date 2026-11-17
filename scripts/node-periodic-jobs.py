@@ -26,10 +26,11 @@ Run on the node as root (the user crontabs need it). Standard library only, so i
       < node-periodic-jobs.py
   python3 node-periodic-jobs.py [--window-start ISO --window-end ISO] [--json]
 
-A job is "outside" the window when none of its runs falls in [start, end]. For a calendar timer the
-run may come up to RandomizedDelaySec + AccuracySec after the nominal time; a nominal time inside
-the window counts as inside even if the delay could push it out, and the report shows the delay so
-a reader can judge the edge. Monotonic timers (OnBootSec, OnUnitActiveSec) have no wall-clock
+A job is "outside" the window when none of its runs falls in [start, end]. A calendar timer's run
+may come up to RandomizedDelaySec + AccuracySec after its nominal time: it is "inside" only when a
+nominal run at or after start still starts by end with the whole delay, and "edge" when its only runs
+are named in [start - delay, start) or within the delay before end (the run may or may not have fallen
+inside; the journal of that timer says which). Edge counts with outside in the summary line. Monotonic timers (OnBootSec, OnUnitActiveSec) have no wall-clock
 schedule: the report shows their interval and last trigger, and marks them "interval" instead of
 guessing.
 """
@@ -363,8 +364,12 @@ def classify(jobs: list[dict[str, Any]], start: datetime | None, end: datetime |
             job["window"] = "interval"
         elif job.get("error"):
             job["window"] = "unknown"
+        elif job.get("runs_in_window"):
+            job["window"] = "inside"
         else:
-            job["window"] = "inside" if job.get("runs_in_window") else "outside"
+            # "edge": only runs whose delay (RandomizedDelaySec + AccuracySec) may put them on either side
+            # of a window boundary (review rv-orafix L6). Treat as outside unless the logs show the run.
+            job["window"] = "edge" if job.get("runs_at_edge") else "outside"
 
 
 def collect(start: datetime | None, end: datetime | None, *, runner: Runner = run,
@@ -376,14 +381,24 @@ def collect(start: datetime | None, end: datetime | None, *, runner: Runner = ru
     timers, timer_error = read_timers(runner)
     for timer in timers:
         runs: list[datetime] = []
+        delay = timedelta(seconds=timer["randomized_delay_sec"] + timer["accuracy_sec"])
         for spec in timer["calendar"]:
             if start is None or end is None:
                 break
-            found, error = calendar_runs(spec, start, end, runner)
+            # From start - delay: a run named before the window may start inside it.
+            found, error = calendar_runs(spec, start - delay, end, runner)
             if error:
                 timer["error"] = error
             runs += found
-        timer["runs_in_window"] = [fmt(r) for r in sorted(set(runs))]
+        runs = sorted(set(runs))
+        if start is not None and end is not None:
+            # Sure inside: named at start or later and finished starting by end even with the full delay.
+            sure = [r for r in runs if start <= r and r + delay <= end]
+            maybe = [r for r in runs if r not in sure]
+            timer["runs_in_window"] = [fmt(r) for r in sure]
+            timer["runs_at_edge"] = [fmt(r) for r in maybe]
+        else:
+            timer["runs_in_window"] = []
     cron = read_cron(reader, lister)
     for job in cron:
         if "error" in job:
@@ -443,6 +458,8 @@ def render(report: dict[str, Any]) -> str:
         schedule = "; ".join(t["calendar"] + t["monotonic"]) or "-"
         delay = f"+{int(t['randomized_delay_sec'] + t['accuracy_sec'])}s"
         runs = ", ".join(t.get("runs_in_window") or []) or "-"
+        if t.get("runs_at_edge"):
+            runs += " (edge: " + ", ".join(t["runs_at_edge"]) + ")"
         lines.append(f"timer | {t['unit']} -> {t['triggers']} ({t['exec'] or '-'}) | {schedule} | {delay} | "
                      f"{t['last'] or '-'} | {t['next'] or '-'} | {t['window'] or '-'} | {runs}")
     for c in report["cron"]:
@@ -459,10 +476,10 @@ def render(report: dict[str, Any]) -> str:
             "TRIMMED by fstrim" if f["trimmed"] else "not trimmed (device gives no discard)")
         lines.append(f"fstrim | {f['target']} ({f['source']}, {f['fstype']}) | {state} | "
                      f"discard granularity {f['discard_granularity']} | - | - | - | -")
-    outside = [t["unit"] for t in report["timers"] if t["window"] == "outside"]
+    outside = [t["unit"] for t in report["timers"] if t["window"] in ("outside", "edge")]
     outside += [f"{c['source']}" for c in report["cron"] if c.get("window") == "outside"]
     if window["start"]:
-        lines.append(f"# outside the window ({len(outside)}): {', '.join(outside) or 'none'}")
+        lines.append(f"# outside the window or only at its edge ({len(outside)}): {', '.join(outside) or 'none'}")
     return "\n".join(lines)
 
 

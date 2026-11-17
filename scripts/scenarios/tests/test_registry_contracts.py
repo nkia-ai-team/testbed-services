@@ -2401,7 +2401,8 @@ class BankingOracleSelfRecoveryTests(unittest.TestCase):
     def _run(self, base: Path, script: Path, proc: Path, shm: Path, tool: Path, *args: str):
         marker = base / "entrypoint.ran"
         env = {**os.environ, "IPC_CLEAN_PROC_ROOT": str(proc), "IPC_CLEAN_SHM_DIR": str(shm),
-               "IPC_CLEAN_SYSRESV": str(tool), "ORACLE_SID": "FREE"}
+               "IPC_CLEAN_SYSRESV": str(tool), "ORACLE_SID": "FREE", "IPC_CLEAN_ATTACH_WAIT": "0",
+               **getattr(self, "extra_env", {})}
         if not args:
             args = ("bash", "-c", f'echo "$$ $*" >{marker}', "entry", "one", "two")
         process = subprocess.Popen(["bash", str(script), *args], env=env, stdout=subprocess.PIPE,
@@ -2455,6 +2456,56 @@ class BankingOracleSelfRecoveryTests(unittest.TestCase):
                 self.assertEqual((proc / "sysvipc" / "shm").read_text(), before)
                 self.assertTrue((shm / "ora_793455d4_x.dat").exists(), out)
                 self.assertEqual(ran, [str(process.pid), "one", "two"], out)
+
+    def test_a_brief_attach_is_waited_out_and_semaphores_alone_are_cleaned(self) -> None:
+        """Review rv-orafix L2: the startup probe's sqlplus may be attached to the dead SGA for a moment;
+        the table is read again a few times before giving up. L3: a dead instance that left only its
+        semaphore set goes the same way."""
+        import tempfile
+
+        me = os.getuid()
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(
+                base, segments=[(1, 1, me)], semaphores=[(3, me)], shm_files=["ora_1.dat"])
+            # A fake sleep that lets the probe detach between the first and the second look.
+            bindir = base / "bin"
+            bindir.mkdir()
+            detached = self.SHM_HEADER + (f"         0          1   600 1593835520    29  1387      0 {me:5d} {me:5d} "
+                                          f"{me:5d} {me:5d} 1794906340 1794906341 1794905447 1577058304 0\n")
+            (base / "detached").write_text(detached)
+            (bindir / "sleep").write_text(f"#!/usr/bin/env bash\necho \"$1\" >>{base}/slept\n"
+                                          f"cp {base}/detached {proc}/sysvipc/shm\n")
+            (bindir / "sleep").chmod(0o755)
+            self.extra_env = {"PATH": f"{bindir}:{os.environ['PATH']}", "IPC_CLEAN_ATTACH_WAIT": "5"}
+            try:
+                process, out, ran = self._run(base, script, proc, shm, tool)
+            finally:
+                del self.extra_env
+            self.assertEqual((base / "slept").read_text().split(), ["5"], out)
+            self.assertEqual(calls.read_text().split("\n")[0], "-f -l FREE", out)
+            self.assertFalse((shm / "ora_1.dat").exists(), out)
+            self.assertEqual(ran, [str(process.pid), "one", "two"])
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(base, segments=[(1, 2, me)])
+            process, out, ran = self._run(base, script, proc, shm, tool)
+            self.assertFalse(calls.exists())
+            self.assertIn("segments in use after 3 looks, nothing cleaned: 1(nattch 2)", out)
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(base, segments=[], semaphores=[(3, me)])
+            process, out, ran = self._run(base, script, proc, shm, tool)
+            self.assertEqual(calls.read_text().split("\n")[0], "-f -l FREE", out)
+            self.assertIn("done: no shared memory or semaphores", out)
+            self.assertEqual(ran, [str(process.pid), "one", "two"])
+        with tempfile.TemporaryDirectory() as raw:
+            # semaphores only, but an Oracle process runs: nothing
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(base, segments=[], semaphores=[(3, me)],
+                                                         procs=[(85, "ora_pmon_FREE")])
+            self._run(base, script, proc, shm, tool)
+            self.assertFalse(calls.exists())
 
     def test_the_start_is_never_blocked(self) -> None:
         import tempfile

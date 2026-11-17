@@ -151,10 +151,25 @@ check(trims["/data"]["trimmed"] and not trims["/data"]["notrim"], trims["/data"]
 check(trims["/kept"]["notrim"] and not trims["/kept"]["trimmed"], trims["/kept"])
 check(not trims["/nodiscard"]["trimmed"] and "/run/x" not in trims, trims)
 text = npj.render(report)
-check("# outside the window (2): fstrim.timer, /etc/crontab:2" in text, text)
+check("# outside the window or only at its edge (2): fstrim.timer, /etc/crontab:2" in text, text)
 check("fstrim | /data (UUID=a, ext4) | TRIMMED by fstrim" in text and "excluded (X-fstrim.notrim)" in text, text)
 listing = npj.render(npj.collect(None, None, runner=runner, reader=reader, lister=lister, tz=UTC))
 check("# no window given" in listing and "# outside the window" not in listing, listing)
+# Edge (review rv-orafix L6): a weekly run named 30 minutes before the window with a delay of 2h40
+# may start inside it, so it is neither inside nor plainly outside; the same run inside with the whole
+# delay inside the window is inside; at the window end, a run that could start after it is edge.
+monday = datetime(2026, 11, 16, 0, 0, tzinfo=UTC)
+edge = npj.collect(monday + timedelta(minutes=30), monday + timedelta(days=1), runner=runner, reader=reader,
+                   lister=lister, tz=UTC)
+fs = {t["unit"]: t for t in edge["timers"]}["fstrim.timer"]
+check(fs["window"] == "edge" and fs["runs_at_edge"] == ["2026-11-16T00:00:00Z"] and fs["runs_in_window"] == [], fs)
+check("(edge: 2026-11-16T00:00:00Z)" in npj.render(edge), npj.render(edge))
+inside = npj.collect(monday - timedelta(minutes=1), monday + timedelta(days=1), runner=runner, reader=reader,
+                     lister=lister, tz=UTC)
+check({t["unit"]: t for t in inside["timers"]}["fstrim.timer"]["window"] == "inside", "nominal in, delay in")
+late = npj.collect(monday - timedelta(minutes=1), monday + timedelta(hours=1), runner=runner, reader=reader,
+                   lister=lister, tz=UTC)
+check({t["unit"]: t for t in late["timers"]}["fstrim.timer"]["window"] == "edge", "delay may cross the end")
 print("[PASS] timers and cron jobs outside the window are named, monotonic timers are not guessed")
 print("[PASS] fstrim exposure follows fstab options and the device's discard support")
 

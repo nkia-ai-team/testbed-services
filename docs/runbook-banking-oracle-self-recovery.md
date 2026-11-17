@@ -65,9 +65,11 @@ fstrim 제외는 다음 fstrim(2026-11-23 월 09:23:56 KST) 전에 끝낸다.
    kubectl --kubeconfig /root/tb-kubeconfig -n rca-testbed-banking rollout status statefulset/testbed-oracle --timeout=15m
    kubectl --kubeconfig /root/tb-kubeconfig -n rca-testbed-banking logs testbed-oracle-0 | grep -E 'ipc-clean|READY TO USE|STARTUP FAILED'
    ```
-   기대: `CONTAINER: ipc-clean: no shared memory of uid 54321, nothing to clean`(새 샌드박스라 치울 것 없음), 그 뒤
+   기대: `CONTAINER: ipc-clean: no shared memory or semaphores of uid 54321, nothing to clean`(새 샌드박스라 치울 것 없음), 그 뒤
    `DATABASE IS READY TO USE!`. 파드 spec 의 `terminationGracePeriodSeconds` 가 300. account, ledger, transfer 5분 안 1/1.
-   `oracle-maintenance.sh check` rc 0.
+   `oracle-maintenance.sh check` rc 0. 재기동이 매시 23분 purge 와 겹쳤으면 tb-ops `/var/lib/lucida/oracle-capacity/PURGE_FAILED`
+   가 있을 수 있다(두 번 다 닿지 못함). 있으면 `/opt/testbed/oracle-maintenance.sh purge` 를 한 번 돌려 지운다.
+   적용 때 옛 파드는 옛 spec 의 유예(30초)로 끝나고, 적용 뒤의 파드 삭제는 최대 300초를 기다린다.
    되돌리기: 앞 커밋의 매니페스트를 apply(`git show <앞 커밋>:core-banking/k8s/10-oracle.yaml | kubectl apply -f -`) 뒤
    `kubectl delete configmap oracle-ipc-clean -n rca-testbed-banking`. 이것도 Oracle 파드를 한 번 다시 띄운다.
 
@@ -85,6 +87,9 @@ fstrim 제외는 다음 fstrim(2026-11-23 월 09:23:56 KST) 전에 끝낸다.
 3. 기다리며 본다(사람은 손대지 않는다): alert log 에 `log write elapsed`, `--ATTENTION--`, 파드 이벤트에
    `Liveness probe failed`(30초 간격 5회, 약 2분 30초), 그 뒤 `Killing`. 종료 유예 300초 안에 끝나면 정상 종료,
    못 끝나면 SIGKILL 이다. 두 경우 모두 이 재현의 대상이다(뒤의 판정에서 어느 쪽이었는지 적는다).
+   liveness 로 죽일 때도 파드 종료 유예(300초)를 쓰므로, IO 가 막혀 shutdown immediate 가 멈추면 감지 약 150초에
+   유예 최대 300초가 더해져 재시작까지 7분 넘게 걸릴 수 있다(종전 30초. Q25 답대로 이 상황에서는 유예가 회복을
+   늦추기만 한다. liveness 만 짧게 하려면 `livenessProbe.terminationGracePeriodSeconds`, 클러스터 v1.31 지원, 지휘 세션 판단).
 4. 컨테이너가 다시 시작된 것(재시작 수 +1)을 보면 바로 66 한도를 1단계 값으로 되돌린다:
    `qm set 103 --scsi1 <1단계 값 그대로>`. 되돌린 시각을 적는다. 한도가 낮은 채로는 인스턴스 복구가 끝나지 않는다.
    재시작이 15분 넘게 나지 않으면 한도를 되돌리고 멈춘다(재현 실패로 보고).
@@ -102,9 +107,29 @@ fstrim 제외는 다음 fstrim(2026-11-23 월 09:23:56 KST) 전에 끝낸다.
 | 건강 점검 | `status.line` 이 ALERT(재시작 증가)를 낸 뒤 다음 줄이 OK |
 
 실패하면(`LEFT after sysresv`, ORA-01012 반복): ORA.md 복구 A(파드 삭제)로 되돌리고 로그 전부를 결과에 남긴다.
+파드 삭제도 종료 유예 300초를 기다린다. 인스턴스가 이미 죽어 기다릴 것이 없으면
+`kubectl delete pod testbed-oracle-0 --grace-period=30` 로 줄인다(IO 가 멀쩡한 상태의 정상 종료는 30초 안에 끝난다).
+재현이 매시 23분 purge 와 겹쳐 `PURGE_FAILED` 가 남았으면 `oracle-maintenance.sh purge` 를 한 번 돌려 지운다.
 `sysresv` 가 남긴 것이 무엇인지(세그먼트, 세마포어)가 다음 판단의 근거다.
+
+## 104 에서 먼저 확인한 것 (2026-11-17 19:36 ~ 19:37 KST, 리뷰 rv-orafix M3)
+
+테스트베드와 같은 이미지(`gvenzl/oracle-free@sha256:fbbd3023...`, 23.26.2, tb-w2 파드의 imageID)로 104 docker 에서
+파드 구조를 흉내 냈다: IPC 만 가진 컨테이너(`--ipc shareable`, 파드 샌드박스 몫)에 Oracle 컨테이너를
+`--ipc container:` 로 붙이고 데이터는 같은 볼륨, `--memory 4g --cpus 2`, 무거운 작업 잠금과 MemoryMax=4G.
+
+| 단계 | 결과 |
+|---|---|
+| 첫 기동 | 30초에 `DATABASE IS READY TO USE!`. 공유메모리 4개(1,593,835,520 바이트 포함, 키 0x793455d4), 세마포어 1(키 0x052c12f4), `/dev/shm/ora_793455d4_*` 2개, nattch 110, 55, 55, 55 |
+| `docker kill -s KILL`(컨테이너 전체 SIGKILL) | 세그먼트 넷과 세마포어, `/dev/shm` 파일이 그대로 남고 nattch 0. 11-16 tb-w2 파드 IPC 와 같은 모양 |
+| 정리 없이 다시 기동(11-16 재시작) | 5초 만에 끝, 종료 코드 57, `ORA-01081: cannot start already-running ORACLE - shut it down first`. 11-16 은 ORA-01012 였는데 둘 다 낡은 SGA 에 붙어 생기는 같은 영구 실패다 |
+| 매니페스트와 같은 command 로 기동 | `ipc-clean: leftover IPC of a stopped instance (segments 0 1 2 3 semaphores 3 )`, sysresv 가 `Oracle Instance not alive for sid "FREE"` 로 판단해 세그먼트 넷, 세마포어, MGA 파일 둘을 지움(`Done removing ipc resources`), `ipc-clean: done`, 10초 만에 `DATABASE IS READY TO USE!`. 새 세그먼트(shmid 4 ~ 7)와 세마포어(semid 9)가 생김 |
+| 다시 SIGKILL 하고 같은 command 로 기동 | 같은 정리(segments 4 5 6 7 semaphores 9), 10초 만에 OPEN. 되풀이해도 된다 |
+
+이미지에 ipcs 가 없어 sysresv 가 `sh: /usr/bin/ipcs: No such file or directory` 를 찍지만 지우기에는 영향이 없다.
+sysresv 출력 약 50줄이 컨테이너 로그에 `CONTAINER: ipc-clean: sysresv:` 로 남는다(정리할 때만).
 
 ## 확인하지 않은 것
 
-- 이미지 안 `sysresv -f` 가 이 상태(배경 프로세스 없음, 키 세그먼트 nattch 0)에서 모든 세그먼트와 세마포어를
-  지우는지는 위 재현으로 처음 확인한다. 로컬 시험은 판단 조건과 진입점 exec 만 본다.
+- 테스트베드에서 liveness 가 실제로 죽이는 길(IO 포화, 종료 유예 300초, kubelet 재시작)은 위 재현으로 처음 본다.
+  104 확인은 컨테이너 SIGKILL 과 재기동만 흉내 냈다.

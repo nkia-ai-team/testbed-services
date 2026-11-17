@@ -100,7 +100,7 @@ fstab_uuid() { awk -v t="$PV_DIR" '$2 == t && $1 ~ /^UUID=/ {print substr($1, 6)
 # (not cut over: the volume is on the root file system, which fstrim may trim as before).
 notrim_state() {
   local lines
-  lines=$(awk -v t="$PV_DIR" '$2 == t' "$FSTAB")
+  lines=$(awk -v t="$PV_DIR" '$1 !~ /^#/ && $2 == t' "$FSTAB")
   [[ -n "$lines" ]] || return 2
   awk -v o="$NOTRIM_OPTION" '{ n = split($4, opts, ","); f = 0; for (i = 1; i <= n; i++) if (opts[i] == o) f = 1; if (!f) bad = 1 } END { exit bad }' <<<"$lines"
 }
@@ -123,9 +123,9 @@ fstab_notrim() {
     0) say "fstrim: $PV_DIR already excluded"; return 0 ;;
     2) die "no fstab line for $PV_DIR: nothing to exclude (cutover writes the option itself)" ;;
   esac
-  (( $(awk -v t="$PV_DIR" '$2 == t' "$FSTAB" | wc -l) == 1 )) || die "more than one fstab line for $PV_DIR: fix by hand"
+  (( $(awk -v t="$PV_DIR" '$1 !~ /^#/ && $2 == t' "$FSTAB" | wc -l) == 1 )) || die "more than one fstab line for $PV_DIR: fix by hand"
   local tmp; tmp=$(mktemp "$FSTAB.XXXXXX")
-  awk -v t="$PV_DIR" -v o="$NOTRIM_OPTION" '$2 == t { $4 = $4 "," o; print; next } { print }' "$FSTAB" >"$tmp"
+  awk -v t="$PV_DIR" -v o="$NOTRIM_OPTION" '$1 !~ /^#/ && $2 == t { $4 = $4 "," o; print; next } { print }' "$FSTAB" >"$tmp"
   chmod --reference="$FSTAB" "$tmp"
   sync "$tmp"
   mv -f "$tmp" "$FSTAB"

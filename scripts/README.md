@@ -64,8 +64,9 @@ scripts/scenarios/bin/f07-h-north-south-surge.sh
   리스너가 계속 덧붙이는 두 파일(listener.log, log.xml)은 `LISTENER_LOG_MAX_MB`(기본 256)를
   넘을 때만 비운다. 러너 API 가 실행 없음, 대기열 단계 idle, paused, completed 를 답할 때만
   돈다. 러너에 물을 수 없으면 건너뛴다(녹화 중 정리 금지). 파드나 컨테이너에 닿지 못해 실패하면
-  (`container not found` 등) 그 자리에서 `STATE_DIR/PURGE_FAILED`(시각과 사유 한 줄)를 쓰고, 러너
-  readiness(`oracle_maintenance_check`)가 바로 false 가 된다(v4 ORAFIX, Q25 답 2. 11-16 은 13시간 신선도
+  (`container not found` 등) `PURGE_RETRY_SEC`(기본 45초) 뒤 한 번 더 해 보고, 두 번 다 실패하면
+  `STATE_DIR/PURGE_FAILED`(시각, 사유, 시도 수 한 줄)를 쓰고, 러너 readiness(`oracle_maintenance_check`)가
+  바로 false 가 되며 주기 큐도 다음 주입 직전에 멈춘다(v4 ORAFIX, Q25 답 2. 11-16 은 13시간 신선도
   기한을 기다려 30시간 장애를 늦게 알렸다). 다음에 통과한 purge 가 지운다. 건너뛴 purge 는 그대로 둔다.
   손으로 지우려면 원인을 고친 뒤 `oracle-maintenance.sh purge` 를 한 번 돌린다.
 - `check`: PDB 에서 Oracle 관리 계정이 아닌 계정의 세그먼트 합(사용자 데이터)을 재서
@@ -159,7 +160,9 @@ scripts/test-disk-io-rate.sh
 `node-periodic-jobs.py` 는 노드에서 root 로 돌고 읽기만 한다(표준 라이브러리, 104 에서 표준 입력으로 흘려 돈다).
 systemd 타이머(OnCalendar, 지연 RandomizedDelaySec + AccuracySec, 마지막과 다음 실행, 실행하는 명령), 크론
 (`/etc/crontab`, `/etc/cron.d`, 사용자 crontab, run-parts 폴더), fstrim 이 trim 하는 파일 시스템(fstab 옵션과 장치의
-discard 지원)을 한 표로 낸다. 측정 창을 주면 작업마다 창 안 실행이 있는지(`inside`, `outside`)를 낸다. 달력 타이머의
+discard 지원)을 한 표로 낸다. 측정 창을 주면 작업마다 창 안 실행이 있는지(`inside`, `outside`, `edge`)를 낸다. 타이머는 명목 시각 뒤
+RandomizedDelaySec + AccuracySec 안에 돌므로, 지연을 다 더해도 창 안이면 `inside`, 창 경계에 걸쳐 어느 쪽인지
+모르면 `edge`(그 타이머 journal 로 확인, 요약 줄은 outside 와 함께 센다)다. 달력 타이머의
 실행 시각은 `systemd-analyze calendar --base-time` 으로, 크론은 노드 시간대로 분마다 맞춰 본다. 부팅이나 직전
 실행에 매인 타이머(`OnBootSec`, `OnUnitActiveSec`)는 `interval` 로 두고 짐작하지 않는다.
 
