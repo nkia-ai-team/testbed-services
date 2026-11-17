@@ -2,7 +2,7 @@
 title: 전통 3계층 테스트베드(civil-petition) 적용 runbook
 status: Planned (적용 전, 코드와 적용물만 준비됨)
 owner: project
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-18
 tags:
   - runbook
   - testbed
@@ -115,6 +115,8 @@ python3 civil-petition/deploy/provision/plan.py --inventory .../t.json --phase c
 
 확인: `qm list` 에 201~206 Running, 크기는 설계 §2-2 와 같다(vCPU 14, 메모리 22GB, 디스크 256GB). 각 VM 관리 주소로 66 에서 `ssh sysop@192.168.127.x hostname`.
 
+NIC 이름: 새 VM 안의 NIC 이름은 **eth0, eth1 ...** 이다. Proxmox cloud-init 이 NIC 를 MAC 으로 맞춰 `set-name: eth0` 을 쓰기 때문이다(커널 예측 이름은 ens18 ~ ens22). 인벤토리와 설치 코드는 ens18 ~ 을 쓰고, 이름은 §6 의 network 단계가 바꾼다. 여기서는 각 VM `ip -br link` 가 eth0 부터 NIC 수만큼이고, 그 MAC 이 66 `qm config <vmid> | grep ^net` 의 netN MAC(대소문자 무시)과 같은 번호끼리 같은지만 본다. netN 과 ipconfigN 을 같은 번호로 주므로 인벤토리 주소를 가진 NIC 가 그 netN 이다.
+
 첫 접속 호스트 키: `apply.sh` 는 이 테스트베드 전용 `~/.ssh/known_hosts_<도메인 값>` 에 `StrictHostKeyChecking=accept-new` 로 받아 둔다. VM 을 지우고 다시 만들었으면 먼저 `ssh-keygen -f ~/.ssh/known_hosts_civil-petition -R 192.168.127.x` 로 옛 키를 지운다. 적용 때 `ssh sysop@... id -u` 가 1000 인지 본다(운영자 uid 가정).
 
 ## 6. 서버 설치 (순서가 중요하다)
@@ -131,9 +133,43 @@ deploy/apply.sh --inventory $I --host web01
 deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설치만, 부하는 켜지 않는다
 ```
 
-각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → verify` 를 돈다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다. 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
+각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → verify` 를 돈다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
 
-S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. S 를 T 뒤에 지을 때는 T 의 판 목록을 그대로 쓴다: T 각 서버의 `/var/lib/petition-deploy/packages.txt` 를 모아 `--package-versions` 로 준다(쌍 조건 2, S 문서 §2-4).
+### 6-1. NIC 이름 바꾸기(network 단계)와 관리망
+
+`verify-host` 는 NIC 를 이름이 아니라 인벤토리 주소로 찾는다(처음엔 eth0 ~ 이라도 통과하고 `nic ens18 = eth0 <MAC>` 줄을 찍는다). `os-base` 가 cloud-init 을 끈다(`/etc/cloud/cloud-init.disabled`, 망 설정 `config: disabled`). 그래서 다음 부팅에 cloud-init 이 eth 이름과 자기 망 설정을 되살리지 않는다. `network` 는 이 둘이 없으면 아무것도 바꾸지 않고 멈춘다.
+
+`network` 단계 순서:
+
+1. 인벤토리 NIC 마다 지금 그 주소를 가진 장치의 MAC 을 `/var/lib/petition-deploy/nic-macs` 에 적는다. 이미 적힌 MAC 과 다르면 멈춘다.
+2. 지금 `/etc/netplan/*.yaml` 사본을 `/var/lib/petition-deploy/netplan-before/` 에 둔다. 처음 한 번은 cloud-init 설정을 `netplan-cloud-init/` 에도 남긴다.
+3. 되돌림 타이머 `netplan-rollback.timer` 를 건다(300초 뒤 `/usr/local/sbin/netplan-rollback` 이 사본으로 되돌리고 `netplan apply`).
+4. `/etc/netplan/01-host.yaml`(NIC 마다 `match: macaddress` 와 `set-name: ens18 ...`)을 놓고 `50-cloud-init.yaml` 을 지운 뒤 `netplan generate` 로 먼저 시험한다.
+5. `netplan apply` 를 세션과 떨어진 유닛 `netplan-switch` 로 돌린다. 이름이 바뀌는 NIC 는 netplan 이 잠깐 내렸다 올린다(관리 NIC 포함, 몇 초). 주소는 같아 SSH 세션은 보통 이어진다.
+6. 60초 안에 확인: NIC 마다 인벤토리 이름, 적어 둔 MAC, 인벤토리 주소. 인벤토리에 없는 물리 NIC 없음. 관리 NIC 에 기본 경로 없음. 관리 NIC 로 66 관리 주소(T 192.168.127.1, S 192.168.133.1)가 ARP 에 답함(66 은 VM 의 핑에 답하지 않으므로 이웃 표로 본다).
+7. 확인되면 타이머를 끈다(`network ok: eth0->ens18 ...` 줄). 확인이 안 되면 바로 사본으로 되돌리고 실패한다(`사본으로 되돌림`). 세션이 끊겨 6, 7 에 닿지 못하면 300초 뒤 타이머가 되돌린다. 어느 쪽이든 관리 접속은 cloud-init 설정(eth 이름)으로 돌아온다.
+
+첫 서버는 망 단계까지만 먼저 돌리고 바깥에서 본다:
+
+```
+deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리> --steps "verify-host os-base network"
+ssh -J root@192.168.200.66 sysop@192.168.127.10 'ip -br link; cat /var/lib/petition-deploy/nic-macs; systemctl is-active netplan-rollback.timer'
+```
+
+| 확인 | 기대 |
+|---|---|
+| 새 SSH 세션(66 을 거쳐 관리 주소) | 붙는다 |
+| `ip -br link` | ens18 부터 NIC 수만큼, eth 이름 없음 |
+| `nic-macs` | 66 `qm config <vmid>` 의 netN MAC 과 같은 번호끼리 같음 |
+| `systemctl is-active netplan-rollback.timer` | `inactive` |
+
+그다음 같은 서버를 단계 없이 다시 돌린다(망 단계는 다시 돌아도 이름을 바꾸지 않는다). 나머지 서버는 순서대로 그냥 돌린다.
+
+세션이 network 단계에서 끊겼으면: VM 을 재부팅하지 말고 5분 기다린 뒤 다시 접속한다(타이머가 cloud-init 설정으로 되돌렸다. 타이머는 일시 유닛이라 재부팅하면 사라진다). `journalctl -u netplan-switch -u netplan-rollback` 로 무엇이 있었는지 보고 `--steps "verify-host network"` 로 다시 돈다. 5분 뒤에도 닿지 않으면 66 에서 `qm reboot <vmid>`(디스크의 netplan 으로 부팅 때 망이 선다. 되돌림이 돌았으면 cloud-init 설정이다). 직렬 콘솔(`qm terminal`)은 있지만 운영자 계정에 비밀번호가 없어 로그인할 수 없다.
+
+손으로 cloud-init 설정까지 되돌리기: `cp -p /var/lib/petition-deploy/netplan-cloud-init/50-cloud-init.yaml /etc/netplan/ && rm -f /etc/netplan/01-host.yaml && netplan apply`(이름이 eth0 ~ 으로 돌아온다). cloud-init 은 꺼진 채 둔다.
+
+S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같다(서버마다 NIC 둘, eth0, eth1 → ens18, ens19). S 를 T 뒤에 지을 때는 T 의 판 목록을 그대로 쓴다: T 각 서버의 `/var/lib/petition-deploy/packages.txt` 를 모아 `--package-versions` 로 준다(쌍 조건 2, S 문서 §2-4).
 
 설치 뒤: `plan.py --phase rename` 출력을 66 에 넘긴다.
 
@@ -252,3 +288,4 @@ sudo systemctl start loadgen.service
 - 2026-11-17 KST, v4 T2C 5회차(D): db01 에 표 통계 사본 타이머 `pg-table-stats.timer`(30분, 설치 단계 `db-backup`, `verify` 의 `table-stats-timer`), 결과 `/var/lib/pg-table-stats/last.json`.
 - 2026-11-17 KST, v4 T2C 7회차(Q23): 부하기 담당자 처리 11%, 통계 화면 6%, 시드의 열린 건 0.15%(처리 중 12.5%), `archive-sql-check.sh` 의 시드 기준을 그에 맞춤.
 - 2026-11-17 KST, v4 T2C 8회차(Q24): §8 평시 24시간에 밤 배치 처리 능력 판정과 `design_load.py`.
+- 2026-11-18 KST, v4 T2NIC(ag-t2nic): §5 NIC 이름(새 VM 은 eth0 ~ , cloud-init 의 set-name), §6-1 network 단계가 MAC 맞춤과 set-name 으로 인벤토리 이름(ens18 ~ )을 주는 순서, 되돌림 타이머, 확인과 세션이 끊겼을 때.

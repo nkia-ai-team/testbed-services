@@ -39,6 +39,10 @@ TEMPLATES = HERE / "templates"
 
 PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
 SECRET = re.compile(r"@@SECRET:([a-z0-9_]+)@@")
+# NIC 의 MAC 자리. 설치 단계 network 가 VM 안에서 그 NIC 의 MAC 으로 채운다(steps/network.sh, lib.sh place_files).
+MAC_SLOT = re.compile(r"@@MAC:([a-z0-9]+)@@")
+# 커널 NIC 이름 꼴(IFNAMSIZ 16 에서 끝 NUL 을 뺀 15자). netplan set-name 이 이보다 길면 이름을 바꾸지 않는다.
+IFNAME = re.compile(r"^[a-z][a-z0-9]{0,14}$")
 ROLES = ("router", "web", "was", "db", "loadgen")
 SERVER_ROLES = ("web", "was", "db")
 # 게스트 쪽에 드러나는 이름에 쓰지 않는 낱말(설계 §2-2 원칙 8). Proxmox 이름은 관제 서버로 가지 않아 예외다.
@@ -65,6 +69,7 @@ COMMON_FILES = (
     FileSpec("os-base", "/etc/apt/apt.conf.d/20auto-upgrades", "common/apt-20auto-upgrades"),
     FileSpec("os-base", "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg", "common/cloud-99-disable-network.cfg"),
     FileSpec("network", "/etc/netplan/01-host.yaml", "common/netplan.yaml", "0600"),
+    FileSpec("network", "/usr/local/sbin/netplan-rollback", "common/netplan-rollback", "0755"),
     FileSpec("accounts", "/etc/sudoers.d/60-ops", "common/sudoers-ops", "0440"),
     FileSpec("time", "/etc/chrony/chrony.conf", "common/chrony.conf"),
     FileSpec("syslog", "/etc/rsyslog.conf", "common/rsyslog.conf"),
@@ -209,6 +214,8 @@ def validate(inventory: dict) -> None:
             network = _net(inventory, nic["net"])
             if ipaddress.ip_address(nic["addr"]) not in ipaddress.ip_network(network["cidr"]):
                 raise InventoryError(f"{name}: {nic['addr']} 가 {nic['net']} 대역 밖")
+            if not IFNAME.match(nic["ifname"]):
+                raise InventoryError(f"{name}: NIC 이름 {nic['ifname']} 이 커널 이름 꼴(소문자로 시작, 15자 이하)이 아님")
             if nic["ifname"] in ifnames:
                 raise InventoryError(f"{name}: NIC 이름 중복 {nic['ifname']}")
             ifnames.add(nic["ifname"])
@@ -252,10 +259,19 @@ def _mgmt_nic(host: dict, inventory: dict) -> dict:
 
 
 def _netplan(host: dict, inventory: dict) -> str:
+    """NIC 마다 MAC 으로 맞추고 인벤토리 이름을 준다.
+
+    Proxmox cloud-init 은 NIC 를 MAC 으로 맞춰 eth0, eth1 ... 로 이름 짓는다. 인벤토리와 설치 코드(nftables,
+    lldpd, snmpd, 라우터 도우미)는 인벤토리 이름(ens18 ...)을 쓰므로, 이 파일이 같은 MAC 에 set-name 으로 그
+    이름을 붙인다. MAC 은 렌더 때 모르므로 자리(@@MAC:<이름>@@)로 두고 설치 단계 network 가 VM 안에서 채운다.
+    """
     lines: list[str] = []
     for nic in host["nics"]:
         network = _net(inventory, nic["net"])
         lines.append(f"    {nic['ifname']}:")
+        lines.append("      match:")
+        lines.append(f"        macaddress: \"@@MAC:{nic['ifname']}@@\"")
+        lines.append(f"      set-name: {nic['ifname']}")
         lines.append("      dhcp4: false")
         lines.append("      accept-ra: false")
         lines.append(f"      addresses: [{nic['addr']}/{_prefix(network['cidr'])}]")
@@ -456,6 +472,9 @@ def render_host(inventory: dict, host: dict) -> dict:
     for spec in file_specs(inventory, host):
         source = TEMPLATES / spec.template
         text = render_text(source.read_text(encoding="utf-8"), context, spec.template)
+        unknown = sorted(set(MAC_SLOT.findall(text)) - {nic["ifname"] for nic in host["nics"]})
+        if unknown:
+            raise InventoryError(f"{spec.template}: 이 호스트에 없는 NIC 의 MAC 자리 {', '.join(unknown)}")
         files.append({
             "step": spec.step,
             "dest": spec.dest,
@@ -482,6 +501,7 @@ def render_host(inventory: dict, host: dict) -> dict:
         "EXECUTOR_UID": str(inventory["accounts"]["executor"]["uid"]),
         "OPERATOR_NAME": inventory["accounts"]["operator"]["name"],
         "MGMT_IF": context["mgmt_if"],
+        "MGMT_HOST": context["mgmt_host"],
         "CHRONY_SERVER": context["chrony_server"],
         "NIC_EXPECT": " ".join(f"{nic['ifname']}={nic['addr']}" for nic in host["nics"]),
         "MODULES": "sch_netem sch_tbf sch_prio cls_flower" if host["role"] != "loadgen" else "",

@@ -33,11 +33,16 @@ ip_forward_ok() {
     [[ "$HOST_ROLE" == router ]] && want=1
     [[ "$(sysctl -n net.ipv4.ip_forward)" == "$want" ]]
 }
+# NIC 가 인벤토리 이름, network 단계가 적은 MAC, 인벤토리 주소를 가지고 남은 물리 NIC 가 없다(lib.sh).
+nic_names_ok() { [[ -z "$(nic_named_problem)" ]]; }
+no_rollback_pending() { ! systemctl is-active --quiet netplan-rollback.timer; }
 no_dpm_traces() {
     ! grep -Eq "^[^#].*$MONITOR_ADDRESS" /etc/postgresql/16/main/pg_hba.conf \
         && ! runuser -u postgres -- psql -Atqc "select 1 from pg_roles where rolname ilike '%dpm%' or rolname ilike '%monitor%'" | grep -q 1
 }
 
+check nic-names nic_names_ok
+check no-network-rollback-pending no_rollback_pending
 check apt-timers-off no_apt_timers
 check no-javaagent no_javaagent
 check no-otel-env no_otel_env

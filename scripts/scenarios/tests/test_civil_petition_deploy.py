@@ -671,6 +671,352 @@ class ProvisionPlanTests(unittest.TestCase):
         self.assertNotIn("subprocess", source)
 
 
+# NIC 이름(T2NIC): cloud-init 의 eth 이름을 netplan 의 MAC 맞춤과 set-name 으로 인벤토리 이름으로 바꾼다.
+NETPLAN_STUB = r'''#!/usr/bin/env python3
+"""netplan 대역. generate 는 YAML 을 읽어 보기만, apply 는 진짜 netplan 1.1 처럼 match.macaddress 와 set-name 이
+있는 NIC 를 내리고 이름을 바꾸고 올린다(진짜 커널, 네임스페이스 안)."""
+import os, pathlib, subprocess, sys
+import yaml
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write("netplan " + " ".join(sys.argv[1:]) + "\n")
+folder = pathlib.Path(os.environ["NETPLAN_DIR"])
+docs = [yaml.safe_load(p.read_text()) for p in sorted(folder.glob("*.yaml"))]
+if sys.argv[1] == "generate":
+    sys.exit(int(os.environ.get("STUB_GENERATE_RC", "0")))
+pairs = []
+for doc in docs:
+    for eth in (doc["network"].get("ethernets") or {}).values():
+        mac = (eth.get("match") or {}).get("macaddress")
+        if mac and eth.get("set-name"):
+            pairs.append((mac.lower(), eth["set-name"]))
+sysnet = pathlib.Path("/sys/class/net")
+for mac, new in pairs:
+    current = [p.name for p in sysnet.iterdir() if (p / "address").read_text().strip() == mac]
+    if len(current) != 1 or current[0] == new:
+        continue
+    for args in (["down"], ["name", new]):
+        subprocess.run(["ip", "link", "set", "dev", current[0], *args], check=True)
+    subprocess.run(["ip", "link", "set", "dev", new, "up"], check=True)
+'''
+
+SYSTEMD_RUN_STUB = r'''#!/usr/bin/env python3
+"""systemd-run 대역. --on-active 는 걸린 명령을 STUB_ARMED 에 적기만 하고, 나머지는 명령을 바로 돌린다."""
+import os, pathlib, shlex, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write("systemd-run " + " ".join(args) + "\n")
+command, timer, index = [], False, 0
+while index < len(args):
+    if args[index] == "-p":
+        index += 2
+        continue
+    if args[index].startswith("--on-active"):
+        timer = True
+    if args[index].startswith("-"):
+        index += 1
+        continue
+    command = args[index:]
+    break
+if timer:
+    pathlib.Path(os.environ["STUB_ARMED"]).write_text(shlex.join(command))
+    sys.exit(0)
+sys.exit(subprocess.run(command).returncode)
+'''
+
+SYSTEMCTL_STUB = r'''#!/usr/bin/env python3
+"""systemctl 대역. 되돌림 타이머를 끄면 STUB_ARMED 를 지우고, is-active 는 그 파일이 있는지로 답한다."""
+import os, pathlib, sys
+args = sys.argv[1:]
+armed = pathlib.Path(os.environ["STUB_ARMED"])
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write("systemctl " + " ".join(args) + "\n")
+if args and args[0] == "stop" and "netplan-rollback.timer" in args:
+    armed.unlink(missing_ok=True)
+if args and args[0] == "is-active":
+    sys.exit(0 if armed.exists() else 3)
+'''
+
+CLOUD_INIT_NETPLAN = textwrap.dedent('''\
+    network:
+      version: 2
+      ethernets:
+        eth0:
+          match:
+            macaddress: "bc:24:11:00:00:10"
+          addresses:
+          - "10.77.1.2/24"
+          set-name: "eth0"
+        eth1:
+          match:
+            macaddress: "bc:24:11:00:00:11"
+          addresses:
+          - "10.77.2.2/24"
+          set-name: "eth1"
+    ''')
+
+NETWORK_KERNEL_SCRIPT = r'''
+set -u
+work=$1 mode=$2
+mount -t sysfs sysfs /sys
+ip link set lo up
+ip link add eth0 type dummy
+ip link set eth0 address bc:24:11:00:00:10
+ip addr add 10.77.1.2/24 dev eth0
+ip link set eth0 up
+ip link add eth1 type veth peer name hv1
+ip link set eth1 address bc:24:11:00:00:11
+ip addr add 10.77.2.2/24 dev eth1
+ip link set eth1 up
+unshare -n sleep 300 &
+peer=$!
+sleep 0.3
+ip link set hv1 netns "$peer"
+if [ "$mode" != silent ]; then
+    nsenter -t "$peer" -n --preserve-credentials ip addr add 10.77.2.1/24 dev hv1
+    nsenter -t "$peer" -n --preserve-credentials ip link set hv1 up
+fi
+sleep 0.3
+export PATH="$work/bin:$PATH" STUB_LOG="$work/calls" STUB_ARMED="$work/armed" NETPLAN_DIR="$work/etc/netplan" \
+    NETPLAN_BACKUP="$work/state/netplan-before" STATE_DIR="$work/state" CLOUD_DIR="$work/etc/cloud" \
+    NETPLAN_ROLLBACK="$work/sbin/netplan-rollback" NIC_MAC_FILE="$work/state/nic-macs" NET_SETTLE_SEC=4 \
+    HOST_NAME=$(hostname)
+step() {
+    bash -c 'set -euo pipefail; BUNDLE=$1; . "$BUNDLE/host.env"; . "$2/lib.sh"; . "$3"' _ "$work/bundle" "$work/steps" "$1" \
+        >>"$work/out" 2>&1
+    echo "$?" >> "$work/rc"
+}
+links() { ip -br link | awk '$1 != "lo" && $1 !~ /^hv/ {sub(/@.*/, "", $1); print $1}' | sort | tr '\n' ' ' >> "$work/links"; echo >> "$work/links"; }
+links
+step "$work/steps/verify-host.sh"
+case "$mode" in
+    ok|silent)
+        step "$work/steps/network.sh"; links
+        [ "$mode" = ok ] && { step "$work/steps/network.sh"; links; } ;;
+    interrupted)
+        # 적용까지만 돌고 세션이 끊긴 경우: 확인과 타이머 끄기에 닿지 못한다. 그 뒤 타이머가 걸린 명령을 돌린다.
+        sed '/^# 5\. 확인/,$d' "$work/steps/network.sh" > "$work/network-cut.sh"
+        step "$work/network-cut.sh"; links
+        bash -c "$(cat "$work/armed")" >>"$work/out" 2>&1; echo "$?" >> "$work/rc"; links ;;
+    macchange)
+        printf 'ens18 bc:24:11:00:00:99\nens19 bc:24:11:00:00:11\n' > "$work/state/nic-macs"
+        step "$work/steps/network.sh"; links ;;
+esac
+kill "$peer"
+'''
+
+
+class NicNamingRenderTests(unittest.TestCase):
+    """netplan 이 NIC 를 MAC 으로 맞추고 인벤토리 이름을 준다(66 에서 eth0~ 로 뜬 VM, APT2 §3 멈춤)."""
+
+    def test_netplan_matches_every_nic_by_mac_and_sets_the_inventory_name(self) -> None:
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            for host in inv["hosts"]:
+                netplan = file_of(bundles(path)[host["name"]], "/etc/netplan/01-host.yaml")
+                names = [nic["ifname"] for nic in host["nics"]]
+                with self.subTest(inventory=path.name, host=host["name"]):
+                    for name in names:
+                        self.assertIn(f"    {name}:\n      match:\n        macaddress: \"@@MAC:{name}@@\"\n"
+                                      f"      set-name: {name}\n", netplan)
+                    self.assertEqual(sorted(render.MAC_SLOT.findall(netplan)), sorted(names))
+                    self.assertEqual(netplan.count("set-name:"), len(names))
+                    self.assertEqual(netplan.count("match:"), len(names))
+
+    def test_filled_netplan_makes_mac_bound_names_with_the_real_generator(self) -> None:
+        inv = inventory(T_INV)
+        router = next(h for h in inv["hosts"] if h["role"] == "router")
+        text = file_of(bundles(T_INV)[router["name"]], "/etc/netplan/01-host.yaml")
+        macs = {nic["ifname"]: f"bc:24:11:00:01:{index:02x}" for index, nic in enumerate(router["nics"])}
+        filled = render.MAC_SLOT.sub(lambda m: macs[m.group(1)], text)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "etc" / "netplan").mkdir(parents=True)
+            target = root / "etc" / "netplan" / "01-host.yaml"
+            target.write_text(filled)
+            target.chmod(0o600)
+            done = subprocess.run(["netplan", "generate", "--root-dir", raw], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            for nic in router["nics"]:
+                name = nic["ifname"]
+                with self.subTest(nic=name):
+                    link = (root / "run" / "systemd" / "network" / f"10-netplan-{name}.link").read_text()
+                    self.assertIn(f"PermanentMACAddress={macs[name]}", link)
+                    self.assertIn(f"Name={name}", link)
+                    network = (root / "run" / "systemd" / "network" / f"10-netplan-{name}.network").read_text()
+                    self.assertIn(f"Address={nic['addr']}/24", network)
+                    self.assertIn(f"Name={name}", network)
+
+    def test_rejects_an_interface_name_the_kernel_would_not_take(self) -> None:
+        for bad in ("Ens18", "ens18-management0", "18ens"):
+            inv = inventory(T_INV)
+            inv["hosts"][0]["nics"][0]["ifname"] = bad
+            with self.subTest(name=bad), self.assertRaisesRegex(render.InventoryError, "커널 이름 꼴"):
+                render.validate(inv)
+
+    def test_render_stops_on_a_mac_slot_for_a_nic_the_host_does_not_have(self) -> None:
+        inv = inventory(T_INV)
+        host = inv["hosts"][1]
+        with unittest.mock.patch.object(render, "_netplan", return_value='    ens99:\n      match:\n        macaddress: "@@MAC:ens99@@"'):
+            with self.assertRaisesRegex(render.InventoryError, "없는 NIC 의 MAC 자리 ens99"):
+                render.render_host(inv, host)
+
+    def test_cloud_init_network_is_off_before_the_network_step_and_the_step_checks_it(self) -> None:
+        order = render.STEP_ORDER
+        self.assertLess(order.index("os-base"), order.index("network"))
+        cfg = (DEPLOY / "templates" / "common" / "cloud-99-disable-network.cfg").read_text()
+        self.assertIn("network: {config: disabled}", cfg)
+        self.assertIn("touch /etc/cloud/cloud-init.disabled", (DEPLOY / "steps" / "os-base.sh").read_text())
+        network = (DEPLOY / "steps" / "network.sh").read_text()
+        self.assertIn("config: disabled", network)
+        self.assertIn("cloud-init.disabled", network)
+        bundle = bundles(T_INV)["web01"]
+        steps = {entry["dest"]: entry["step"] for entry in bundle["files"]}
+        self.assertEqual(steps["/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"], "os-base")
+        self.assertEqual(steps["/usr/local/sbin/netplan-rollback"], "network")
+
+    def test_rollback_script_and_network_step_use_the_same_backup_folder(self) -> None:
+        rollback = (DEPLOY / "templates" / "common" / "netplan-rollback").read_text()
+        network = (DEPLOY / "steps" / "network.sh").read_text()
+        backup = re.search(r"backup=\$\{NETPLAN_BACKUP:-(\S+)\}", rollback).group(1)
+        state = re.search(r"state=\$\{STATE_DIR:-(\S+)\}", network).group(1)
+        self.assertEqual(backup, f"{state}/netplan-before")
+        self.assertIn('backup="$state/netplan-before"', network)
+        lib = (DEPLOY / "steps" / "lib.sh").read_text()
+        self.assertEqual(re.search(r"NIC_MAC_FILE=\$\{NIC_MAC_FILE:-(\S+)\}", lib).group(1), f"{state}/nic-macs")
+        self.assertIn('rollback_bin=${NETPLAN_ROLLBACK:-/usr/local/sbin/netplan-rollback}', network)
+
+    def test_network_step_arms_the_rollback_before_it_changes_anything_and_applies_outside_the_session(self) -> None:
+        source = (DEPLOY / "steps" / "network.sh").read_text()
+        body = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+        arm = body.index("--on-active=")
+        self.assertLess(body.index('cp -p "${current[@]}" "$backup"/'), arm)
+        self.assertLess(arm, body.index("place_files network ||"))
+        self.assertLess(arm, body.index('rm -f "$netplan_dir/50-cloud-init.yaml"'))
+        self.assertLess(body.index("netplan generate"), body.index("netplan apply"))
+        self.assertRegex(body, r"systemd-run --quiet --wait --collect --unit=netplan-switch [^\n]*netplan apply")
+        self.assertLess(body.index("nic_named_problem"), body.index("systemctl stop netplan-rollback.timer >/dev/null 2>&1 || true\nif"))
+
+    def test_leftover_physical_nic_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            sysnet = Path(raw)
+            for name, physical in (("ens18", True), ("ens19", True), ("eth2", True), ("lo", False), ("dummy0", False)):
+                (sysnet / name).mkdir()
+                if physical:
+                    (sysnet / name / "device").mkdir()
+            script = f". {DEPLOY / 'steps' / 'lib.sh'}; nic_leftover"
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                  env={"PATH": "/usr/bin:/bin", "SYS_NET": raw,
+                                       "NIC_EXPECT": "ens18=10.77.1.2 ens19=10.77.2.2"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.split(), ["eth2"])
+
+
+class NetworkStepKernelTests(unittest.TestCase):
+    """설치 단계 verify-host, network 를 사용자 네임스페이스의 진짜 커널 NIC 로 돌린다.
+
+    cloud-init 처럼 eth0(업무), eth1(관리, 66 관리 주소 역할의 짝 네임스페이스와 veth)로 뜬 VM 을 만들고, netplan,
+    systemd-run, systemctl 만 대역으로 바꾼다(netplan apply 대역은 진짜 netplan 1.1 의 이름 바꾸기와 같이 내리고
+    바꾸고 올린다). ip, ping, ARP 는 진짜다.
+    """
+
+    def _run(self, mode: str) -> dict:
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            for folder in ("bin", "etc/netplan", "etc/cloud/cloud.cfg.d", "state", "sbin", "steps",
+                           "bundle/files/netplan", "bundle/files/sbin"):
+                (work / folder).mkdir(parents=True)
+            for name, text in (("netplan", NETPLAN_STUB), ("systemd-run", SYSTEMD_RUN_STUB),
+                               ("systemctl", SYSTEMCTL_STUB), ("sysctl", "#!/bin/sh\nexit 0\n")):
+                (work / "bin" / name).write_text(text)
+                (work / "bin" / name).chmod(0o755)
+            for name in ("lib.sh", "verify-host.sh", "network.sh"):
+                (work / "steps" / name).write_text((DEPLOY / "steps" / name).read_text())
+            (work / "etc" / "netplan" / "50-cloud-init.yaml").write_text(CLOUD_INIT_NETPLAN)
+            (work / "etc" / "cloud" / "cloud.cfg.d" / "99-disable-network-config.cfg").write_text(
+                (DEPLOY / "templates" / "common" / "cloud-99-disable-network.cfg").read_text())
+            (work / "etc" / "cloud" / "cloud-init.disabled").write_text("")
+            mini = {"dns": ["192.0.2.53"], "networks": {
+                "biz": {"cidr": "10.77.1.0/24", "gateway": "10.77.1.1"},
+                "mgmt": {"cidr": "10.77.2.0/24", "management": True}}}
+            host = {"nics": [{"net": "biz", "addr": "10.77.1.2", "ifname": "ens18", "gateway": True},
+                             {"net": "mgmt", "addr": "10.77.2.2", "ifname": "ens19"}]}
+            header = (DEPLOY / "templates" / "common" / "netplan.yaml").read_text()
+            netplan_text = render.render_text(header, {"netplan_ethernets": render._netplan(host, mini)}, "netplan")
+            (work / "bundle" / "files" / "netplan" / "01-host.yaml").write_text(netplan_text)
+            (work / "bundle" / "files" / "sbin" / "netplan-rollback").write_text(
+                (DEPLOY / "templates" / "common" / "netplan-rollback").read_text())
+            (work / "bundle" / "files.tsv").write_text(
+                f"network\t{work}/etc/netplan/01-host.yaml\t0600\troot\troot\tfiles/netplan/01-host.yaml\n"
+                f"network\t{work}/sbin/netplan-rollback\t0755\troot\troot\tfiles/sbin/netplan-rollback\n")
+            (work / "bundle" / "host.env").write_text(
+                "NIC_EXPECT='ens18=10.77.1.2 ens19=10.77.2.2'\nMGMT_IF='ens19'\nMGMT_HOST='10.77.2.1'\n")
+            done = subprocess.run(["unshare", "-rnm", "bash", "-c", NETWORK_KERNEL_SCRIPT, "_", raw, mode],
+                                  capture_output=True, text=True, timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            read = lambda name: (work / name).read_text() if (work / name).exists() else ""
+            return {
+                "rc": [int(x) for x in read("rc").split()],
+                "links": [line.split() for line in read("links").splitlines()],
+                "out": read("out"),
+                "calls": read("calls").splitlines(),
+                "netplan": sorted(p.name for p in (work / "etc" / "netplan").glob("*.yaml")),
+                "netplan_text": {p.name: p.read_text() for p in (work / "etc" / "netplan").glob("*.yaml")},
+                "macs": read("state/nic-macs"),
+                "armed": (work / "armed").exists(),
+                "original": sorted(p.name for p in (work / "state" / "netplan-cloud-init").glob("*.yaml")),
+            }
+
+    def test_eth_names_become_inventory_names_and_a_second_run_changes_nothing(self) -> None:
+        result = self._run("ok")
+        self.assertEqual(result["rc"], [0, 0, 0], result["out"])
+        self.assertEqual(result["links"], [["eth0", "eth1"], ["ens18", "ens19"], ["ens18", "ens19"]])
+        self.assertIn("nic ens18 = eth0 bc:24:11:00:00:10", result["out"])
+        self.assertIn("network ok: eth0->ens18 eth1->ens19", result["out"])
+        self.assertEqual(result["macs"], "ens18 bc:24:11:00:00:10\nens19 bc:24:11:00:00:11\n")
+        self.assertEqual(result["netplan"], ["01-host.yaml"])
+        self.assertIn('macaddress: "bc:24:11:00:00:11"\n      set-name: ens19', result["netplan_text"]["01-host.yaml"])
+        self.assertEqual(result["original"], ["50-cloud-init.yaml"])
+        self.assertFalse(result["armed"], "되돌림 타이머가 남음")
+        calls = result["calls"]
+        arm = next(i for i, c in enumerate(calls) if "--on-active=300s" in c)
+        apply = next(i for i, c in enumerate(calls) if c.startswith("systemd-run") and "netplan apply" in c)
+        stop = next(i for i, c in enumerate(calls) if i > apply and c == "systemctl stop netplan-rollback.timer")
+        self.assertLess(calls.index("netplan generate"), apply)
+        self.assertLess(arm, calls.index("netplan generate"))
+        self.assertLess(apply, stop)
+        self.assertIn("--unit=netplan-switch", calls[apply])
+        # 두 번째 실행은 이름을 바꾸지 않는다(바꾼 이름 목록 없이 지금 이름만).
+        self.assertEqual(re.findall(r"network ok: (.*)", result["out"])[-1].split(), ["ens18", "ens19"])
+
+    def test_no_arp_answer_on_the_management_nic_rolls_back_to_the_cloud_init_names(self) -> None:
+        result = self._run("silent")
+        self.assertEqual(result["rc"][0], 0, result["out"])
+        self.assertNotEqual(result["rc"][1], 0)
+        self.assertIn("netplan 적용 뒤 확인 실패(4초): 관리 NIC ens19 로 10.77.2.1 가 ARP 에 답하지 않음. 사본으로 되돌림",
+                      result["out"])
+        self.assertIn("사본으로 되돌림", result["out"])
+        self.assertEqual(result["links"][-1], ["eth0", "eth1"])
+        self.assertEqual(result["netplan"], ["50-cloud-init.yaml"])
+        self.assertFalse(result["armed"])
+        self.assertTrue(any("--unit=netplan-rollback-now" in c for c in result["calls"]))
+
+    def test_a_lost_session_after_apply_is_undone_by_the_armed_timer(self) -> None:
+        result = self._run("interrupted")
+        self.assertEqual(result["rc"], [0, 0, 0], result["out"])
+        self.assertEqual(result["links"][1], ["ens18", "ens19"])
+        self.assertEqual(result["links"][2], ["eth0", "eth1"])
+        self.assertEqual(result["netplan"], ["50-cloud-init.yaml"])
+        self.assertIn("netplan-rollback: 1 개 파일로 되돌림", result["out"])
+
+    def test_a_changed_mac_stops_before_anything_is_touched(self) -> None:
+        result = self._run("macchange")
+        self.assertNotEqual(result["rc"][1], 0)
+        self.assertIn("ens18 의 MAC 이 bc:24:11:00:00:99 에서 bc:24:11:00:00:10 로 바뀜", result["out"])
+        self.assertEqual(result["links"][-1], ["eth0", "eth1"])
+        self.assertEqual(result["netplan"], ["50-cloud-init.yaml"])
+        self.assertFalse(any(c.startswith("systemd-run") for c in result["calls"]))
+
+
 def _qdisc(dev, kind, handle, drops, parent=None):
     entry = {"dev": dev, "kind": kind, "handle": handle, "drops": drops}
     if parent is None:
@@ -1683,6 +2029,36 @@ class StepScriptTests(unittest.TestCase):
             done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
             self.assertNotEqual(done.returncode, 0)
             self.assertIn("비밀값 파일 없음", done.stderr + done.stdout)
+
+    def test_place_files_fills_nic_macs_and_refuses_a_missing_one(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            bundle = Path(raw)
+            (bundle / "files").mkdir()
+            (bundle / "files" / "n.yaml").write_text('a: "@@MAC:ens18@@"\nb: "@@MAC:ens19@@"\n')
+            (bundle / "files" / "other.conf").write_text("x\n")
+            macs = bundle / "nic-macs"
+            macs.write_text("ens18 bc:24:11:16:6f:5a\nens19 bc:24:11:91:27:63\n")
+            dest = bundle / "out" / "n.yaml"
+            other = bundle / "out" / "other.conf"
+            group = subprocess.run(["id", "-gn"], capture_output=True, text=True, check=True).stdout.strip()
+            user = subprocess.run(["id", "-un"], capture_output=True, text=True, check=True).stdout.strip()
+            (bundle / "files.tsv").write_text(f"s1\t{dest}\t0600\t{user}\t{group}\tfiles/n.yaml\n"
+                                              f"s1\t{other}\t0644\t{user}\t{group}\tfiles/other.conf\n")
+            script = f"set -e; BUNDLE={bundle}; NIC_MAC_FILE={macs}; . {DEPLOY / 'steps' / 'lib.sh'}; place_files s1 {dest}"
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(dest.read_text(), 'a: "bc:24:11:16:6f:5a"\nb: "bc:24:11:91:27:63"\n')
+            self.assertFalse(other.exists(), "경로를 주면 그 파일 하나만 놓는다")
+            dest.unlink()
+            macs.write_text("ens18 bc:24:11:16:6f:5a\n")
+            # || 뒤에서 불려도(set -e 가 꺼져도) 실패를 돌려주고 파일을 놓지 않는다.
+            script = (f"BUNDLE={bundle}; NIC_MAC_FILE={macs}; . {DEPLOY / 'steps' / 'lib.sh'}; "
+                      f"place_files s1 {dest} || {{ echo refused; exit 7; }}")
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 7, done.stdout + done.stderr)
+            self.assertIn("NIC MAC 없음: ens19", done.stderr)
+            self.assertFalse(dest.exists())
+            self.assertFalse(Path(f"{dest}.new").exists())
 
     def test_db_step_keeps_the_password_out_of_argv_and_the_server_log(self) -> None:
         source = (DEPLOY / "steps" / "db.sh").read_text()

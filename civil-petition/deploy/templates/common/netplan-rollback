@@ -1,0 +1,20 @@
+#!/bin/bash
+# 망 전환 되돌리기. 설치 단계 network 가 netplan 을 바꾸기 직전에 둔 사본으로 /etc/netplan 을 되돌리고 적용한다.
+# 사본이 cloud-init 의 설정이면 NIC 이름도 그 설정의 이름(eth0 ...)으로 돌아간다(netplan apply 가 MAC 으로 맞춰
+# 이름을 바꾼다). 설치 단계가 적용 뒤 확인을 끝내지 못하면(세션이 끊김 등) 되돌림 타이머가 이것을 부르고,
+# 확인이 실패하면 설치 단계가 바로 부른다. 손으로 불러도 된다.
+set -u
+backup=${NETPLAN_BACKUP:-/var/lib/petition-deploy/netplan-before}
+netplan_dir=${NETPLAN_DIR:-/etc/netplan}
+shopt -s nullglob
+saved=("$backup"/*.yaml)
+if [[ ${#saved[@]} -eq 0 ]]; then
+    echo "netplan-rollback: 사본 없음 $backup" >&2
+    exit 1
+fi
+rm -f "$netplan_dir"/*.yaml
+cp -p "${saved[@]}" "$netplan_dir"/
+netplan apply
+status=$?
+echo "netplan-rollback: ${#saved[@]} 개 파일로 되돌림, netplan apply rc=$status" >&2
+exit "$status"

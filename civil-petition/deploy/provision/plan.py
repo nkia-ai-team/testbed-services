@@ -11,6 +11,9 @@
             호스트 이름으로 쓰므로, 처음부터 게스트 이름으로 만들어 "t4" 같은 이름이 게스트에 남지 않게 한다)
   rename    2단계: 설치 단계가 cloud-init 을 끈 뒤 Proxmox 이름을 pve_name 으로 바꾼다
   snapshot  T2 끝 재해 복구용 스냅숏(설계 §8, 녹화마다 되돌리지 않는다)
+  (NIC 이름: 새 VM 은 cloud-init 이 MAC 맞춤과 set-name 으로 eth0 ~ 을 준다. 인벤토리 이름 ens18 ~ 으로는
+            설치 단계 network 가 바꾼다. MAC 은 Proxmox 가 정하고, netN 과 ipconfigN 을 같은 번호로 주므로 설치
+            단계가 인벤토리 주소를 가진 NIC 에서 읽는다. 여기서 MAC 을 정하지 않는다)
   destroy   되돌리기. **사람 승인 뒤 사람이 66 에서 직접** 실행한다. 이 출력은 VMID 와 이름이 인벤토리와
             모두 맞을 때만 지우는 꼴로 찍힌다.
 """

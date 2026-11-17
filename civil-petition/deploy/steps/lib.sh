@@ -4,26 +4,45 @@
 log() { printf '%s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 
-# files.tsv 에서 이 단계의 파일을 놓는다. @@SECRET:<이름>@@ 자리는 secrets/<이름> 내용으로 채운다.
+# NIC 를 찾는 곳. 시험은 다른 경로를 준다.
+SYS_NET=${SYS_NET:-/sys/class/net}
+# 설치 단계 network 가 적는 "인벤토리 NIC 이름 MAC" 줄. place_files 가 @@MAC:<이름>@@ 자리를 이것으로 채운다.
+NIC_MAC_FILE=${NIC_MAC_FILE:-/var/lib/petition-deploy/nic-macs}
+
+# files.tsv 에서 이 단계의 파일을 놓는다. @@SECRET:<이름>@@ 자리는 secrets/<이름> 내용으로,
+# @@MAC:<NIC 이름>@@ 자리는 NIC_MAC_FILE 의 그 NIC 줄의 MAC 으로 채운다. 채울 값이 없으면 파일을 놓지 않고 멈춘다.
+# 둘째 인자로 놓을 경로를 주면 그 파일 하나만 놓는다. 실패하면 0 아닌 값을 돌려준다(|| 뒤에서 불려도).
 place_files() {
-    local step="$1" row_step dest mode owner group src
+    local step="$1" only="${2:-}" row_step dest mode owner group src
     while IFS=$'\t' read -r row_step dest mode owner group src; do
         [[ "$row_step" == "$step" ]] || continue
-        install -d -m 0755 "$(dirname "$dest")"
-        python3 - "$BUNDLE/$src" "$dest.new" "$BUNDLE/secrets" <<'PY'
+        [[ -z "$only" || "$dest" == "$only" ]] || continue
+        install -d -m 0755 "$(dirname "$dest")" || return 1
+        if ! python3 - "$BUNDLE/$src" "$dest.new" "$BUNDLE/secrets" "$NIC_MAC_FILE" <<'PY'
 import pathlib, re, sys
 source, target, secrets = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+mac_file = pathlib.Path(sys.argv[4])
 text = source.read_text(encoding="utf-8")
 def fill(match):
     path = secrets / match.group(1)
     if not path.is_file():
         sys.exit(f"비밀값 파일 없음: {match.group(1)}")
     return path.read_text(encoding="utf-8").strip()
-target.write_text(re.sub(r"@@SECRET:([a-z0-9_]+)@@", fill, text), encoding="utf-8")
+def fill_mac(match):
+    macs = dict(line.split()[:2] for line in mac_file.read_text(encoding="utf-8").splitlines()
+                if len(line.split()) >= 2) if mac_file.is_file() else {}
+    mac = macs.get(match.group(1), "")
+    if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac):
+        sys.exit(f"NIC MAC 없음: {match.group(1)}")
+    return mac
+text = re.sub(r"@@SECRET:([a-z0-9_]+)@@", fill, text)
+target.write_text(re.sub(r"@@MAC:([a-z0-9]+)@@", fill_mac, text), encoding="utf-8")
 PY
-        chown "$owner:$group" "$dest.new"
-        chmod "$mode" "$dest.new"
-        mv -f "$dest.new" "$dest"
+        then
+            rm -f "$dest.new"
+            return 1
+        fi
+        chown "$owner:$group" "$dest.new" && chmod "$mode" "$dest.new" && mv -f "$dest.new" "$dest" || return 1
         log "placed $dest"
     done < "$BUNDLE/files.tsv"
 }
@@ -67,4 +86,57 @@ apt_install() {
         return 1
     fi
     rm -f /usr/sbin/policy-rc.d
+}
+
+# 인벤토리 NIC(NIC_EXPECT 의 "이름=주소")마다 지금 그 주소를 가진 장치를 찾아 "이름 장치 MAC" 줄을 낸다.
+# VM 생성(plan.py create)이 Proxmox netN 과 ipconfigN 을 같은 번호로 주므로, cloud-init 이 netN 의 MAC 에 붙인
+# 인벤토리 주소가 그 NIC 를 가리킨다. 주소를 가진 장치가 없거나 둘 이상이거나, 한 장치가 두 NIC 의 주소를 가지면 실패.
+nic_resolve() {
+    local pair ifname addr devs dev mac seen=" "
+    for pair in $NIC_EXPECT; do
+        ifname=${pair%%=*}
+        addr=${pair#*=}
+        devs=$(ip -4 -o addr show | awk -v a="$addr" '{split($4, p, "/"); if (p[1] == a) print $2}' | sort -u)
+        if [[ -z "$devs" ]]; then
+            echo "nic: $addr 를 가진 장치 없음($ifname)" >&2; return 1
+        fi
+        if [[ $(wc -l <<<"$devs") -ne 1 ]]; then
+            echo "nic: $addr 를 가진 장치가 여럿($(tr '\n' ' ' <<<"$devs"))" >&2; return 1
+        fi
+        dev=$devs
+        if [[ "$seen" == *" $dev "* ]]; then
+            echo "nic: $dev 가 인벤토리 NIC 둘의 주소를 가짐" >&2; return 1
+        fi
+        seen+="$dev "
+        mac=$(tr 'A-F' 'a-f' < "$SYS_NET/$dev/address") || return 1
+        printf '%s %s %s\n' "$ifname" "$dev" "$mac"
+    done
+}
+
+# 인벤토리에 없는 물리 NIC(장치가 붙은 망 장치) 이름을 낸다. netplan 이 그 NIC 를 다루지 않게 되므로 있으면 안 된다.
+nic_leftover() {
+    local path name pair known=" "
+    for pair in $NIC_EXPECT; do known+="${pair%%=*} "; done
+    for path in "$SYS_NET"/*; do
+        name=${path##*/}
+        [[ -e "$path/device" ]] || continue
+        [[ "$known" == *" $name "* ]] || printf '%s\n' "$name"
+    done
+}
+
+# 인벤토리 이름대로 바뀌었는지 본다: NIC 마다 그 이름의 장치가 있고, MAC 이 NIC_MAC_FILE 의 값이고, 주소가 있다.
+# 남은 물리 NIC 도 없어야 한다. 문제가 없으면 아무것도 내지 않는다(문제는 한 줄씩).
+nic_named_problem() {
+    local pair ifname addr want have extra
+    for pair in $NIC_EXPECT; do
+        ifname=${pair%%=*}
+        addr=${pair#*=}
+        want=$(awk -v n="$ifname" '$1 == n {print $2}' "$NIC_MAC_FILE" 2>/dev/null)
+        if [[ ! -e "$SYS_NET/$ifname" ]]; then echo "$ifname 없음"; continue; fi
+        have=$(tr 'A-F' 'a-f' < "$SYS_NET/$ifname/address")
+        [[ -n "$want" && "$have" == "$want" ]] || echo "$ifname MAC $have != ${want:-기록 없음}"
+        ip -4 -o addr show dev "$ifname" | grep -q " $addr/" || echo "$ifname 에 $addr 없음"
+    done
+    extra=$(nic_leftover)
+    [[ -z "$extra" ]] || echo "인벤토리에 없는 물리 NIC $(tr '\n' ' ' <<<"$extra")"
 }
