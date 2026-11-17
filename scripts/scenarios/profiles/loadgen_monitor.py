@@ -94,7 +94,7 @@ class LiveDocumentBuilder:
                     if self.http_summary:
                         self.http_durations.append((stamp, value))
                     if self.window_log is not None:
-                        self.window_log.add_duration(stamp, value)
+                        self.window_log.add_duration(stamp, value, str(tags.get("step") or ""))
                     self.last_stamp = stamp
                     return True
                 if metric == "http_reqs":
@@ -289,9 +289,12 @@ class WindowLog:
     빠진 창으로 센다. 지난 창에 속하는 늦은 점은 지금 창에 넣는다(k6 json 출력은 거의 시각순이다).
     """
 
-    def __init__(self, path: str, window_sec: int = WINDOW_LOG_SEC) -> None:
+    def __init__(self, path: str, window_sec: int = WINDOW_LOG_SEC, steps: tuple[str, ...] = ()) -> None:
         self.path = path
         self.window_sec = window_sec
+        # 단계별 p95 를 따로 싣는 단계(--window-step, 2026-11-17 v4 T2C). 비우면 줄 모양은 그대로다.
+        # 평시 24시간 판정이 대표 질의 시간의 하루 변화를 보는 데 쓴다(SMS, NMS 전용 테스트베드 설계 §10 T2).
+        self.steps = tuple(steps)
         self.current: int | None = None
         self._reset()
 
@@ -302,6 +305,7 @@ class WindowLog:
         self.timeouts = 0
         self.iterations = 0
         self.durations: list[float] = []
+        self.step_durations: dict[str, list[float]] = {}
 
     def _bucket(self, stamp: datetime.datetime) -> int:
         epoch = int(stamp.timestamp())
@@ -322,9 +326,11 @@ class WindowLog:
         self.no_response += status == 0
         self.timeouts += error_code == K6_REQUEST_TIMEOUT
 
-    def add_duration(self, stamp: datetime.datetime, value: float) -> None:
+    def add_duration(self, stamp: datetime.datetime, value: float, step: str = "") -> None:
         self._advance(stamp)
         self.durations.append(value)
+        if step and step in self.steps:
+            self.step_durations.setdefault(step, []).append(value)
 
     def add_iteration(self, stamp: datetime.datetime) -> None:
         self._advance(stamp)
@@ -347,6 +353,9 @@ class WindowLog:
         }
         if self.durations:
             record["http_p95_ms"] = percentile(self.durations, 0.95)
+        if self.step_durations:
+            record["step_count"] = {step: len(values) for step, values in sorted(self.step_durations.items())}
+            record["step_p95_ms"] = {step: percentile(values, 0.95) for step, values in sorted(self.step_durations.items())}
         with open(self.path, "a", encoding="utf-8") as target:
             target.write(json.dumps(record, sort_keys=True) + "\n")
         self._reset()
@@ -439,15 +448,19 @@ def parse(argv: list[str] | None = None) -> tuple[argparse.Namespace, LiveDocume
     parser.add_argument("--unit", default="", help="baseline 모드의 systemd 유닛 이름")
     parser.add_argument("--http-summary", action="store_true", help="모든 요청의 5xx, 응답 없음, p95 를 싣는다")
     parser.add_argument("--window-log", default="", help="고정 5분 창 요약을 덧붙일 JSON 줄 파일")
+    parser.add_argument("--window-step", action="append", default=[],
+                        help="창 기록에 이 단계의 요청 수와 p95 를 따로 싣는다(여러 번 줄 수 있음, --window-log 와 함께)")
     args = parser.parse_args(argv)
     if args.domain and not args.unit:
         parser.error("--domain requires --unit")
+    if args.window_step and not args.window_log:
+        parser.error("--window-step requires --window-log")
     builder = LiveDocumentBuilder(
         build_identity(args),
         args.business_step,
         args.read_step,
         http_summary=args.http_summary,
-        window_log=WindowLog(args.window_log) if args.window_log else None,
+        window_log=WindowLog(args.window_log, steps=tuple(args.window_step)) if args.window_log else None,
     )
     return args, builder
 

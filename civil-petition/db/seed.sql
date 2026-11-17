@@ -34,12 +34,13 @@ FROM (SELECT u, CASE WHEN u <= 49700 THEN 'citizen' || lpad(u::text, 5, '0')
                      ELSE 'staff' || lpad((u - 49700)::text, 3, '0') END AS login
       FROM generate_series(1, 50000) AS u) AS s;
 
--- 민원: 지난 730일(보존 기간)에 고르게, 낮 시간에 몰리게 퍼뜨린다. 번호가 작을수록 오래됐다.
+-- 큰 수를 곱하는 두 식은 bigint 로 센다(정수로 세면 i 가 약 2만을 넘을 때 넘쳐 200만 시드가 실패한다).
+-- 민원: 지난 730일에 고르게, 낮 시간에 몰리게 퍼뜨린다. 번호가 작을수록 오래됐다.
 INSERT INTO petition (petition_id, receipt_no, user_id, dept_id, category, title, body, status, is_public, created_at, updated_at)
 SELECT i,
        'CP' || lpad(i::text, 8, '0'),
-       1 + (i * 7919) % 49700,
-       1 + (i * 104729) % 300,
+       1 + (i::bigint * 7919) % 49700,
+       1 + (i::bigint * 104729) % 300,
        (ARRAY['road', 'traffic', 'environment', 'building', 'welfare', 'tax', 'sanitation', 'etc'])[1 + i % 8],
        (ARRAY['보도블록 파손', '가로등 고장', '불법 주정차', '소음 피해', '쓰레기 무단투기', '악취 발생', '도로 포트홀',
               '버스 정류장 시설', '공원 시설물 파손', '하수구 막힘', '불법 현수막', '건축 공사 소음', '누수 신고',

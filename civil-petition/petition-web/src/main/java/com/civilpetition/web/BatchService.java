@@ -1,40 +1,89 @@
 package com.civilpetition.web;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
  * 야간 배치(설계 §2-3 배치). was02 의 systemd 타이머가 관리 경로로 부른다.
  * stats: 지난달과 이번 달의 부서별 월간 집계를 다시 만든다.
- * archive: 보존 기간(2년)이 지난 민원을 보관 표로 옮긴다(묶음 단위, 한 번에 오래 잠그지 않게).
+ * archive: 민원 표의 행 수가 보존 건수 상한을 넘은 만큼 가장 오래된 민원부터 보관 표로 옮긴다
+ * (처리 이력도 같은 민원 것을 함께 옮긴다). 작은 묶음으로 나눠 옮기고 묶음 사이에 쉬며,
+ * 야간 배치 시간 창 안에서만 돈다. 상한, 묶음 크기, 쉼, 창은 설정(application.properties 의 기본값,
+ * 환경변수로 덮음)이다. 보존 기준을 나이가 아니라 건수로 둔 까닭은 평시 쓰기가 시드 밀도보다 빨라
+ * 나이 기준으로는 표가 몇 달 동안 자라기 때문이다(검토 세션 Q21 답 (나)).
  */
 @Service
 public class BatchService {
 
-    static final int ARCHIVE_CHUNK = 5000;
-    static final String RETENTION = "730 days";
+    static final String COUNT_SQL = "SELECT count(*) FROM petition";
+    // 가장 오래된 민원 n 건과 그 처리 이력을 보관 표로 옮기고 지운다. 답변과 첨부 메타는 외래 키 cascade 로
+    // 함께 지워진다(옮기지 않는다). 여러 번 참조하는 CTE 라 old 는 한 번만 계산된다.
+    // 건수는 바인드 변수가 아니라 글자로 넣는다(검증한 int). 바인드 변수면 일반 계획(generic plan)이 건수를 몰라
+    // 처리 이력 표 전체를 읽는 해시 조인을 고를 수 있다(200만 시드에서 한 묶음 7초, 글자로 넣으면 0.07초).
+    static final String MOVE_SQL = "WITH old AS (SELECT petition_id FROM petition ORDER BY created_at, petition_id LIMIT %d), "
+            + "h AS (INSERT INTO petition_history_archive SELECT ph.* FROM petition_history ph "
+            + "JOIN old USING (petition_id) RETURNING 1), "
+            + "p AS (INSERT INTO petition_archive SELECT pt.*, now() FROM petition pt JOIN old USING (petition_id) RETURNING 1), "
+            + "d AS (DELETE FROM petition WHERE petition_id IN (SELECT petition_id FROM old) RETURNING 1) "
+            + "SELECT count(*)::int FROM d";
+
+    static String moveSql(int rows) {
+        if (rows < 1 || rows > ArchivePolicy.MAX_CHUNK_ROWS) {
+            throw new IllegalArgumentException("chunk size out of range: " + rows);
+        }
+        return String.format(java.util.Locale.ROOT, MOVE_SQL, rows);
+    }
+
+    /** 묶음 사이 쉼. 시험이 시계를 움직이려고 바꿔 끼운다. */
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
+    }
+
+    record Outcome(long rows, String result) {
+    }
+
     private static final Logger log = LoggerFactory.getLogger(BatchService.class);
     private final JdbcTemplate jdbc;
+    private final ArchivePolicy policy;
+    private final Clock clock;
+    private final Sleeper sleeper;
 
-    public BatchService(JdbcTemplate jdbc) {
+    @Autowired
+    public BatchService(JdbcTemplate jdbc,
+                        @Value("${petition.archive.keep-rows}") long keepRows,
+                        @Value("${petition.archive.chunk-rows}") int chunkRows,
+                        @Value("${petition.archive.pause-ms}") long pauseMillis,
+                        @Value("${petition.archive.window}") String window,
+                        @Value("${petition.archive.zone}") String zone) {
+        this(jdbc, ArchivePolicy.of(keepRows, chunkRows, pauseMillis, window, zone), Clock.systemUTC(), Thread::sleep);
+    }
+
+    BatchService(JdbcTemplate jdbc, ArchivePolicy policy, Clock clock, Sleeper sleeper) {
         this.jdbc = jdbc;
+        this.policy = policy;
+        this.clock = clock;
+        this.sleeper = sleeper;
     }
 
     public Map<String, Object> run(String job) {
         long started = System.currentTimeMillis();
-        long rows = switch (job) {
-            case "stats" -> refreshStats();
+        Outcome outcome = switch (job) {
+            case "stats" -> new Outcome(refreshStats(), "ok");
             case "archive" -> archive();
             default -> throw new ApiException(org.springframework.http.HttpStatus.NOT_FOUND, "no such job");
         };
         long took = System.currentTimeMillis() - started;
         jdbc.update("INSERT INTO batch_run (job, started_at, finished_at, rows_affected, result) "
-                + "VALUES (?, to_timestamp(?::double precision / 1000), now(), ?, 'ok')", job, started, rows);
-        log.info("batch job={} rows={} took_ms={}", job, rows, took);
-        return Map.of("job", job, "rows", rows, "tookMs", took);
+                + "VALUES (?, to_timestamp(?::double precision / 1000), now(), ?, ?)", job, started, outcome.rows(), outcome.result());
+        log.info("batch job={} result={} rows={} took_ms={}", job, outcome.result(), outcome.rows(), took);
+        return Map.of("job", job, "rows", outcome.rows(), "result", outcome.result(), "tookMs", took);
     }
 
     long refreshStats() {
@@ -49,22 +98,40 @@ public class BatchService {
                         + "completed = EXCLUDED.completed, avg_days = EXCLUDED.avg_days, refreshed_at = EXCLUDED.refreshed_at");
     }
 
-    long archive() {
+    /**
+     * 결과: ok(상한까지 옮김, 상한 아래면 0 건), skipped(창 밖이라 아무것도 하지 않음, 행 수도 세지 않음),
+     * partial(옮기는 중에 창이 닫혀 멈춤. 남은 몫은 다음 밤에 옮긴다).
+     */
+    Outcome archive() {
+        if (!policy.open(now())) {
+            return new Outcome(0, "skipped");
+        }
+        Long total = jdbc.queryForObject(COUNT_SQL, Long.class);
+        long excess = (total == null ? 0 : total) - policy.keepRows();
         long moved = 0;
-        while (true) {
-            Integer chunk = jdbc.queryForObject(
-                    "WITH old AS (SELECT petition_id FROM petition WHERE created_at < now() - interval '" + RETENTION + "' "
-                            + "ORDER BY petition_id LIMIT " + ARCHIVE_CHUNK + "), "
-                            + "h AS (INSERT INTO petition_history_archive SELECT ph.* FROM petition_history ph "
-                            + "JOIN old USING (petition_id) RETURNING 1), "
-                            + "p AS (INSERT INTO petition_archive SELECT pt.*, now() FROM petition pt JOIN old USING (petition_id) RETURNING 1), "
-                            + "d AS (DELETE FROM petition WHERE petition_id IN (SELECT petition_id FROM old) RETURNING 1) "
-                            + "SELECT count(*)::int FROM d",
-                    Integer.class);
+        while (moved < excess) {
+            if (!policy.open(now())) {
+                return new Outcome(moved, "partial");
+            }
+            int size = (int) Math.min(policy.chunkRows(), excess - moved);
+            Integer chunk = jdbc.queryForObject(moveSql(size), Integer.class);
             if (chunk == null || chunk == 0) {
-                return moved;
+                break;
             }
             moved += chunk;
+            if (moved < excess && policy.pauseMillis() > 0) {
+                try {
+                    sleeper.sleep(policy.pauseMillis());
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return new Outcome(moved, "partial");
+                }
+            }
         }
+        return new Outcome(moved, "ok");
+    }
+
+    private Instant now() {
+        return clock.instant();
     }
 }

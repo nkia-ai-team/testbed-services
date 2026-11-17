@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS stats_dept_monthly (
     PRIMARY KEY (dept_id, month)
 );
 
--- 보존 기간(2년)이 지난 민원을 옮겨 두는 표(야간 보관 배치).
+-- 보존 건수 상한을 넘어 옮긴 민원과 그 처리 이력을 두는 표(야간 보관 배치, 앱은 읽지 않는다).
 CREATE TABLE IF NOT EXISTS petition_archive (
     LIKE petition,
     archived_at timestamptz NOT NULL

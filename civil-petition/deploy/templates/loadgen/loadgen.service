@@ -18,7 +18,7 @@ Environment=PRE_ALLOCATED_VUS=40
 Environment=MAX_VUS=150
 Environment=BASELINE_MONITOR=/opt/loadgen/loadgen_monitor.py
 Environment=BASELINE_PUBLISH=/opt/loadgen/baseline-publish.sh
-Environment="BASELINE_MONITOR_ARGS=--http-summary --window-log /var/lib/k6/k6-{{domain}}-windows.jsonl"
+Environment="BASELINE_MONITOR_ARGS=--http-summary --window-log /var/lib/k6/k6-{{domain}}-windows.jsonl --window-step search --window-step my-list --window-step inbox"
 ExecStart=/bin/sh /opt/loadgen/{{domain}}/entrypoint.sh
 Restart=always
 RestartSec=10

@@ -351,12 +351,37 @@ class RenderContentTests(unittest.TestCase):
         for entry in other:
             self.assertNotRegex(entry["text"], r"^log_", entry["dest"])
 
+    def test_every_postgres_log_setting_changed_from_the_default_names_its_source_and_reason(self) -> None:
+        # 검토 세션 Q20-3 답: 기본값에서 바꾸는 항목마다 출처, 기본보다 자세히 남기는 항목은 그 이유.
+        logging = file_of(self.t["db01"], "/etc/postgresql/16/main/conf.d/20-logging.conf")
+        pg16_defaults = {"log_min_duration_statement": "-1", "log_lock_waits": "off", "log_checkpoints": "on",
+                         "log_connections": "off", "log_disconnections": "off", "log_statement": "'none'",
+                         "log_temp_files": "-1", "log_autovacuum_min_duration": "10min"}
+        blocks = re.findall(r"((?:^#.*\n)+)((?:^[a-z_]+ = .+\n)+)", logging, re.M)
+        seen = {}
+        for comment, settings in blocks:
+            for name, value in re.findall(r"^([a-z_]+) = (.+)$", settings, re.M):
+                seen[name] = (value, comment)
+        self.assertEqual(set(pg16_defaults) - set(seen), set())
+        changed = {name for name, default in pg16_defaults.items() if seen[name][0] != default}
+        self.assertEqual(changed, {"log_min_duration_statement", "log_lock_waits", "log_connections",
+                                   "log_disconnections", "log_statement"})
+        for name in changed:
+            with self.subTest(setting=name):
+                comment = seen[name][1]
+                self.assertIn("출처", comment)
+                self.assertRegex(comment, r"\[(CIS|GitLab|pgBadger)\]")
+                self.assertIn("기본보다 자세히 남기는 이유", comment)
+        self.assertNotIn("추정", logging)
+
     def test_loadgen_unit_points_at_the_web_and_sends_nothing_out(self) -> None:
         unit = file_of(self.t["loadgen"], "/etc/systemd/system/loadgen.service")
         self.assertIn("Environment=ENTRY_URL=http://192.168.124.11:80/petition", unit)
         self.assertIn("Environment=PEAK_RPS=30", unit)
         self.assertIn("Environment=TROUGH_RPS=5", unit)
         self.assertIn("--window-log /var/lib/k6/k6-civil-petition-windows.jsonl", unit)
+        # 평시 24시간 판정의 대표 질의(search)와 참고 둘의 단계별 p95 를 창 기록에 싣는다.
+        self.assertIn("--window-step search --window-step my-list --window-step inbox", unit)
         dests = {entry["dest"] for entry in self.t["loadgen"]["files"]}
         self.assertNotIn("/etc/rsyslog.remote.d/10-forward.conf", dests)
 
@@ -874,6 +899,35 @@ class LoadgenMonitorExtensionTests(unittest.TestCase):
         self.assertEqual(lines[0]["iterations"], 10)
         self.assertEqual(lines[0]["http_p95_ms"], 9.0)
 
+    def test_window_log_adds_per_step_p95_only_for_named_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            plain_path = Path(raw) / "plain.jsonl"
+            step_path = Path(raw) / "step.jsonl"
+            plain = monitor.LiveDocumentBuilder({"domain": "d", "unit": "u"}, "submit", window_log=monitor.WindowLog(str(plain_path)))
+            stepped = monitor.LiveDocumentBuilder({"domain": "d", "unit": "u"}, "submit",
+                                                  window_log=monitor.WindowLog(str(step_path), steps=("search", "inbox")))
+            for builder in (plain, stepped):
+                for i in range(20):
+                    stamp = self.BASE + datetime.timedelta(seconds=10 * i)
+                    step = "search" if i % 2 else "lookup"
+                    builder.consume(_point("iterations", stamp))
+                    builder.consume(_point("http_reqs", stamp, step=step, status="200"))
+                    builder.consume(_point("http_req_duration", stamp, value=float(i), step=step))
+                builder.consume(_point("iterations", self.BASE + datetime.timedelta(minutes=5, seconds=1)))
+            plain_line = json.loads(plain_path.read_text().splitlines()[0])
+            step_line = json.loads(step_path.read_text().splitlines()[0])
+        self.assertNotIn("step_p95_ms", plain_line)
+        self.assertNotIn("step_count", plain_line)
+        self.assertEqual({k: v for k, v in step_line.items() if not k.startswith("step_")}, plain_line)
+        # search 는 홀수 i(1, 3, ..., 19)의 10건, p95 는 가까운 순위 10번째 = 19. 이름만 준 inbox 는 표본이 없어 빠진다.
+        self.assertEqual(step_line["step_count"], {"search": 10})
+        self.assertEqual(step_line["step_p95_ms"], {"search": 19.0})
+
+    def test_window_step_needs_a_window_log(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            monitor.parse(["--source", "/x", "--output", "/y", "--business-step", "submit",
+                           "--domain", "d", "--unit", "loadgen", "--window-step", "search"])
+
     def test_cli_parses_the_new_flags(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             path = str(Path(raw) / "w.jsonl")
@@ -882,6 +936,10 @@ class LoadgenMonitorExtensionTests(unittest.TestCase):
             self.assertTrue(builder.http_summary)
             self.assertIsInstance(builder.window_log, monitor.WindowLog)
             self.assertEqual(builder.window_log.path, path)
+            self.assertEqual(builder.window_log.steps, ())
+            _, stepped = monitor.parse(["--source", "/x", "--output", "/y", "--business-step", "submit", "--domain", "d",
+                                        "--unit", "loadgen", "--window-log", path, "--window-step", "search", "--window-step", "inbox"])
+            self.assertEqual(stepped.window_log.steps, ("search", "inbox"))
             _, plain = monitor.parse(["--source", "/x", "--output", "/y", "--business-step", "submit",
                                       "--domain", "d", "--unit", "loadgen"])
             self.assertFalse(plain.http_summary)
@@ -932,26 +990,144 @@ class LoadgenScriptTests(unittest.TestCase):
         self.assertEqual(mine, theirs)
 
 
+class ArchiveBatchSettingsTests(unittest.TestCase):
+    """보관 배치의 건수 상한과 야간 창(검토 세션 Q21 답 (나)). 앱 쪽 동작은 Java 시험 BatchServiceTest 가 본다."""
+
+    PROPERTIES = DOMAIN / "petition-web" / "src" / "main" / "resources" / "application.properties"
+
+    def _settings(self) -> dict[str, str]:
+        return dict(re.findall(r"^petition\.archive\.([a-z-]+)=(.+)$", self.PROPERTIES.read_text(encoding="utf-8"), re.M))
+
+    def test_cap_is_the_seed_size_and_the_timer_runs_inside_the_window(self) -> None:
+        settings = self._settings()
+        seed_scale = re.search(r"^\\set scale (\d+)$", (DOMAIN / "db" / "seed.sql").read_text(), re.M).group(1)
+        self.assertEqual(settings["keep-rows"], seed_scale)
+        self.assertLessEqual(int(settings["chunk-rows"]), 1000)
+        self.assertEqual(settings["zone"], "Asia/Seoul")
+        timer = (DEPLOY / "templates" / "was" / "petition-archive.timer").read_text()
+        hour, minute = map(int, re.search(r"OnCalendar=\*-\*-\* (\d\d):(\d\d):00 Asia/Seoul", timer).groups())
+        start, end = (tuple(map(int, part.split(":"))) for part in settings["window"].split("-"))
+        self.assertLess(start, end, "야간 창은 자정을 넘지 않는 한 구간으로 둔다")
+        self.assertTrue(start <= (hour, minute) < end, (settings["window"], hour, minute))
+        # 창이 낮 부하(KST 9~22시)와 겹치지 않는다.
+        self.assertTrue(end <= (9, 0) and start >= (0, 0))
+
+    def test_daily_capacity_keeps_up_with_twice_the_daily_submissions(self) -> None:
+        settings = self._settings()
+        entry = (DOMAIN / "loadgen" / "entrypoint.sh").read_text()
+        pct = [int(v) for v in re.findall(r"\d+\) echo (\d+) ;;", entry)]
+        self.assertEqual(len(pct), 24)
+        daily = sum(5 + ((30 - 5) * p + 50) // 100 for p in pct) * 3600
+        submissions = daily * 8 // 100
+        self.assertEqual(submissions, 121824)
+        hour, minute = 2, 20
+        start, end = (tuple(map(int, part.split(":"))) for part in settings["window"].split("-"))
+        open_sec = (end[0] * 60 + end[1] - hour * 60 - minute) * 60
+        # 묶음 하나의 시간은 200만 시드에서 잰 0.07초(T2C 결과)에 넉넉히 1초를 잡는다.
+        per_chunk_sec = int(settings["pause-ms"]) / 1000 + 1.0
+        capacity = int(open_sec / per_chunk_sec) * int(settings["chunk-rows"])
+        self.assertGreater(capacity, 2 * submissions * 10)
+
+    def test_seed_products_cannot_overflow_at_two_million(self) -> None:
+        seed = (DOMAIN / "db" / "seed.sql").read_text()
+        for cast, factor in re.findall(r"\(i(::bigint)? \* (\d+)\)", seed):
+            with self.subTest(factor=factor):
+                if int(factor) * 2_000_000 > 2**31 - 1:
+                    self.assertEqual(cast, "::bigint")
+
+
 class StabilityCheckTests(unittest.TestCase):
     END = datetime.datetime(2026, 11, 17, 15, 0, tzinfo=datetime.timezone.utc)
 
-    def _windows(self, bad=None, gap=None, p95=200.0):
+    def _windows(self, bad=None, gap=None, p95=200.0, search_end=40.0):
+        """search_end: 마지막 2시간 창들의 search p95(처음 2시간과 그 사이는 40ms)."""
         windows = {}
         start = int(self.END.timestamp()) - 24 * 3600
         for t in range(start, int(self.END.timestamp()), 300):
             if gap and t in gap:
                 continue
+            search = search_end if t >= int(self.END.timestamp()) - 2 * 3600 else 40.0
             record = {"window_start": datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-                      "http_count": 6000, "http_5xx": 0, "http_no_response": 0, "http_timeout": 0, "http_p95_ms": p95}
+                      "http_count": 6000, "http_5xx": 0, "http_no_response": 0, "http_timeout": 0, "http_p95_ms": p95,
+                      "step_p95_ms": {"search": search, "my-list": 30.0, "inbox": 20.0}}
             if bad and t in bad:
                 record["http_5xx"] = bad[t]
             windows[t] = record
         return windows
 
+    # 02:20 KST 에 돈 보관 배치(판정 구간 2026-11-16 15:00Z ~ 11-17 15:00Z 안).
+    ARCHIVE_OK = {"finished_at": "2026-11-16T17:23:10Z", "rows": 121000, "result": "ok"}
+
+    def _db(self, start=(2_000_000, 5_900_000), end=(2_118_000, 6_170_000), runs=None):
+        return {"before": {"rows": {"petition": start[0], "petition_history": start[1]}, "archive_runs": []},
+                "after": {"rows": {"petition": end[0], "petition_history": end[1]},
+                          "archive_runs": [self.ARCHIVE_OK] if runs is None else runs}}
+
     def test_quiet_day_passes(self) -> None:
-        result = stability.judge(self._windows(), self.END)
+        result = stability.judge(self._windows(), self.END, db_facts=self._db())
         self.assertEqual(result["verdict"], "PASS_Q3_24H", result["reasons"])
         self.assertEqual(result["windows_expected"], 288)
+        self.assertEqual(result["steady_state"]["query"]["start_windows"], 24)
+        self.assertEqual(result["steady_state"]["query"]["change"], 0.0)
+        self.assertEqual([q["step"] for q in result["steady_state"]["reference_queries"]], ["my-list", "inbox"])
+
+    def test_without_db_facts_the_steady_state_is_not_shown_and_it_fails(self) -> None:
+        result = stability.judge(self._windows(), self.END)
+        self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+        self.assertTrue(any(r.startswith("DB 사실") for r in result["reasons"]))
+
+    def test_main_table_rows_must_stay_in_the_same_order_of_magnitude(self) -> None:
+        grown = stability.judge(self._windows(), self.END, db_facts=self._db(end=(12_000_000, 6_170_000)))
+        self.assertEqual(grown["verdict"], "FAIL_Q3_24H")
+        self.assertIn("주 표 petition 행 수 자릿수가 바뀜 2000000 -> 12000000", grown["reasons"])
+        history = stability.judge(self._windows(), self.END, db_facts=self._db(end=(2_100_000, 10_000_000)))
+        self.assertTrue(any(r.startswith("주 표 petition_history") for r in history["reasons"]))
+
+    def test_the_archive_batch_must_have_run_ok_inside_the_day(self) -> None:
+        cases = {
+            "없음": [],
+            "창 밖에서 건너뜀만": [{"finished_at": "2026-11-17T05:00:01Z", "rows": 0, "result": "skipped"}],
+            "다 못 옮김": [{"finished_at": "2026-11-16T20:00:01Z", "rows": 900000, "result": "partial"}],
+            "구간 앞": [{"finished_at": "2026-11-15T17:23:10Z", "rows": 121000, "result": "ok"}],
+        }
+        for name, runs in cases.items():
+            with self.subTest(case=name):
+                result = stability.judge(self._windows(), self.END, db_facts=self._db(runs=runs))
+                self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+                self.assertIn("판정 구간 안에 결과 ok 인 보관 배치가 없음", result["reasons"])
+
+    def test_representative_query_p95_may_move_at_most_ten_percent(self) -> None:
+        self.assertEqual(stability.judge(self._windows(search_end=43.6), self.END, db_facts=self._db())["verdict"], "PASS_Q3_24H")
+        self.assertEqual(stability.judge(self._windows(search_end=36.4), self.END, db_facts=self._db())["verdict"], "PASS_Q3_24H")
+        for value in (44.4, 35.6):
+            with self.subTest(end_ms=value):
+                result = stability.judge(self._windows(search_end=value), self.END, db_facts=self._db())
+                self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+                self.assertTrue(any(r.startswith("대표 질의(search) p95 변화") for r in result["reasons"]), result["reasons"])
+
+    def test_representative_query_without_samples_fails(self) -> None:
+        windows = self._windows()
+        for record in windows.values():
+            record.pop("step_p95_ms")
+        result = stability.judge(windows, self.END, db_facts=self._db())
+        self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+        self.assertIn("대표 질의(search) p95 표본 없음(처음 0창, 끝 0창)", result["reasons"])
+
+    def test_db_facts_files_are_read_from_the_tool_output_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            before = Path(raw) / "b.jsonl"
+            after = Path(raw) / "a.jsonl"
+            before.write_text('{"host":"db01","at":"2026-11-16T15:00:00Z","db":{"rows":{"petition":2000000,"petition_history":5900000},'
+                              '"archive_runs":[]}}\n')
+            after.write_text('{"host":"db01","at":"2026-11-17T15:00:00Z","db":{"rows":{"petition":2118000,"petition_history":6170000},'
+                             '"archive_runs":[{"finished_at":"2026-11-16T17:23:10Z","rows":121000,"result":"ok"}]}}\n')
+            facts = stability.read_db_facts(before, after)
+        self.assertEqual(facts, self._db())
+        source = (DEPLOY / "tools" / "db-facts.sh").read_text()
+        # 점검 읽기는 느린 문장 기준에 걸려도 서버 로그에 남지 않는다. 출력 열쇠는 판정기가 읽는 이름과 같다.
+        self.assertIn("SET log_min_duration_statement = -1;", source)
+        for key in ("'rows'", "'petition'", "'petition_history'", "'archive_runs'", "'finished_at'", "'result'", '"db":%s'):
+            self.assertIn(key, source)
 
     def test_total_rate_over_point_one_percent_fails(self) -> None:
         start = int(self.END.timestamp()) - 24 * 3600
@@ -971,7 +1147,7 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertEqual(stability.judge(self._windows(p95=900.0), self.END)["verdict"], "FAIL_Q3_24H")
         facts = {"was01": {"nrestarts_before": {"tomcat10.service": 0}, "nrestarts_after": {"tomcat10.service": 1},
                            "oom_kills": 0, "chrony_offset_ms": 1.2}}
-        result = stability.judge(self._windows(), self.END, host_facts=facts)
+        result = stability.judge(self._windows(), self.END, host_facts=facts, db_facts=self._db())
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
         self.assertIn("was01 tomcat10.service 재시작 1", result["reasons"])
 
@@ -1080,7 +1256,7 @@ class StepScriptTests(unittest.TestCase):
         self.assertIn("pg_createcluster --locale C.UTF-8 16 main", source)
 
     def test_tools_parse(self) -> None:
-        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh"):
+        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh"):
             with self.subTest(tool=name):
                 done = subprocess.run(["bash", "-n", str(DEPLOY / "tools" / name)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 0, done.stderr)

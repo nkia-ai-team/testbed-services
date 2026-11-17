@@ -122,7 +122,8 @@ function submit() {
 }
 
 function lookup() {
-    // 보관 배치가 옮기지 않은 최근 쪽(시드의 뒤 3/4)에서 고른다. 옮겨진 번호의 404 는 정상 결과다.
+    // 시드 번호의 뒤 3/4 에서 고른다. 옮겨진 번호의 404 는 정상 결과다. 보관 배치는 건수 상한을 넘은 만큼
+    // 가장 오래된 것부터 옮기므로, 부하가 쌓이면 이 범위도 앞쪽부터 보관되어 404 비율이 차츰 는다.
     const receipt = `CP${pad(randInt(SEED_PETITIONS / 4, SEED_PETITIONS), 8)}`;
     const res = http.get(`${ENTRY_URL}/api/petitions/${receipt}`, { tags: { step: 'lookup' }, timeout: TIMEOUT });
     record(res, 'lookup', [200, 404]);
