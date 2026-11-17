@@ -136,7 +136,9 @@ NIC 이름: 새 VM 안의 NIC 이름은 **eth0, eth1 ...** 이다. Proxmox cloud
 flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/rsyslog-check.sh
 ```
 
-일회 `ubuntu:24.04` 컨테이너(대상 VM 과 같은 rsyslog 패키지)에서 T, S 모든 서버의 렌더한 rsyslog 설정을 `rsyslogd -N1` 로 읽고, rsyslog 를 띄워 첫 규칙에 실행기 줄(계정 이름이나 uid 가 줄 끝에 오는 줄, 실행기 uid 로 보낸 줄 포함)과 아닌 줄을 보내 실행기 줄은 `/var/log/opsjobs.log` 에만, 아닌 줄은 syslog 나 auth.log 에만 가는지 본다. 원격 전달 파일은 읽기 검사만 하고 띄울 때는 빼서 검사 줄이 관제 서버로 가지 않는다. `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `failed=0`(지금 인벤토리 T 6대, S 5대로 `checks=231`) 이면 통과다. 첫 줄의 rsyslog 판을 대상 VM 의 `rsyslogd -v` 와 견준다. 기본 단위 시험은 큰따옴표 문자열 안의 맨 `$`(rsyslog 가 설정 전체를 거절한다. `\$` 로 쓴다) 같은 꼴만 본다. 컨테이너 안에서 rsyslog 를 apt 로 받으므로 바깥 길이 있어야 하고, 끝에 컨테이너를 지운다.
+다이제스트로 고정한 일회 `ubuntu:24.04` 컨테이너에 apt 로 rsyslog 를 받아(대상 VM 과 같은 패키지. `RSYSLOG_CHECK_VERSION` 을 주면 그 꼬리 판으로 고정) T, S 모든 서버의 렌더한 rsyslog 설정을 `rsyslogd -N1 -d` 로 읽는다. 오류 없음, 놓은 `rsyslog.d` 파일을 파서가 실제로 읽음, 읽는 파일과 포함 대상이 모두 `/etc/rsyslog.conf`, `/etc/rsyslog.d/` 안(Ubuntu rsyslogd AppArmor 프로필의 읽기 범위를 경로로 흉내 냄)을 본다. 이어 rsyslog 를 띄워 첫 규칙에 실행기 줄(계정 이름이나 uid 가 줄 끝에 오는 줄, 실행기 uid 로 보낸 줄 포함)과 아닌 줄을 보내 실행기 줄은 `/var/log/opsjobs.log` 에만, 아닌 줄은 syslog 나 auth.log 에만 가는지 본다. 원격 전달 파일은 읽기 검사만 하고 띄울 때는 빼서 검사 줄이 관제 서버로 가지 않는다. `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `failed=0`(지금 인벤토리 T 6대, S 5대로 `checks=253`) 이면 통과다. 첫 줄의 rsyslog 꼬리 판을 대상 VM 의 `dpkg-query -W rsyslog` 와 견준다. 기본 단위 시험은 큰따옴표 문자열 안의 맨 `$`(rsyslog 가 설정 전체를 거절한다. `\$` 로 쓴다) 같은 꼴만 본다. 컨테이너 안에서 rsyslog 를 받으므로 바깥 길이 있어야 하고, 끝에 컨테이너를 지운다.
+
+이 점검이 대상 VM 과 다른 점과 그것을 보는 곳: (1) 컨테이너에는 AppArmor 가 없다. 실제 거부는 설치 단계의 읽기 확인(아래)과 `verify` 의 `rsyslog-no-apparmor-denial` 이 본다. (2) 줄이 journald 를 거치지 않고 `/dev/log` 로 바로 들어온다. VM 의 길(journald 가 넘겨 주는 자격 증명의 uid)은 `syslog` 단계의 실행기 uid 줄 확인과 §7 이 본다. (3) VM 의 `rsyslog.d` 에만 있는 파일(`20-ufw.conf`, `21-cloudinit.conf`, WAS 의 tomcat10 파일)은 없다. 그 파일과 함께 읽는 검사는 설치 단계의 사본 검사가 VM 에서 한다.
 
 WAR 는 한 번 빌드해 T 와 S 가 같은 파일을 쓴다(`project.build.outputTimestamp` 로 같은 커밋이면 같은 체크섬). k6 는 tb-runner 의 `/usr/local/bin/k6`(v0.57.0, md5 c7e01ff21ecd3a2f2c43362a285a5906)를 복사해 쓴다.
 
@@ -152,7 +154,9 @@ deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설�
 
 `deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → verify` 를 돈다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
 
-`syslog`, `syslog-forward` 단계는 새 rsyslog 설정을 먼저 임시 사본(지금 `/etc` 의 rsyslog 설정 위에 새 파일을 놓고 포함 경로를 사본으로 바꾼 것)에서 `rsyslogd -N1` 로 보고, 통과할 때만 `/etc` 에 놓는다. 사본 검사가 실패하면 `/etc` 를 바꾸지 않고 `rsyslog 설정 검사(놓기 전, 단계 <단계>)` 로 멈춘다. 놓은 뒤 진짜 설정 검사가 실패하면 그 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다) `(놓은 뒤, ...)` 로 멈춘다. 어느 쪽이든 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로이고, 재시작이나 재부팅 때 못 읽을 설정이 남지 않는다.
+`syslog`, `syslog-forward` 단계는 새 rsyslog 설정을 먼저 검사 사본에서 본다. 사본은 `/etc/rsyslog.d/.check-<pid>/` 에 둔다(Ubuntu 의 rsyslogd AppArmor 프로필이 설정으로 읽게 두는 곳은 `/etc/rsyslog.conf` 와 `/etc/rsyslog.d/**` 뿐이라 `/tmp` 사본은 `Permission denied` 로 막힌다. 숨은 하위 디렉터리라 `*.conf` 포함에 들지 않는다). 지금 `rsyslog.conf`, `rsyslog.d` 의 `*.conf`, `rsyslog.d/remote` 의 `*.conf` 위에 새 파일을 놓고 포함 경로를 사본으로 바꿔 `rsyslogd -N1 -d` 로 읽은 뒤, 오류가 없고 이 단계의 rsyslog 파일을 파서가 모두 실제로 읽었을 때만 `/etc` 에 놓는다(`include(... mode="optional")` 는 AppArmor 가 막아도 오류가 아니므로 읽었는지를 따로 본다). 사본 검사가 실패하면 `/etc` 의 설정을 바꾸지 않고 `rsyslog 설정 검사(놓기 전, 단계 <단계>)` 로 멈춘다. 놓기나 놓은 뒤 진짜 설정 검사가 실패하면 그 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다. 되돌리지 못한 파일은 경로를 적는다) 멈춘다. 어느 쪽이든 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다. 사본은 끝나면 지우고, 끊겨 남은 `.check-*` 는 다음 실행이 처음에 지운다.
+
+원격 전달 설정은 `/etc/rsyslog.d/remote/10-forward.conf` 에 놓이고 `rsyslog.conf` 끝의 `include(file="/etc/rsyslog.d/remote/*.conf")` 가 모든 로컬 규칙 뒤에 읽는다(설계 §2-4). 옛 자리 `/etc/rsyslog.remote.d/` 는 AppArmor 범위 밖이라 rsyslog 가 읽지 못했다. `syslog` 단계가 비어 있으면 지운다. `syslog` 단계는 원격 전달이 꺼진 첫 설치에서 실행기 계정으로 한 줄(`setpriv ... logger`)을 보내 journald 를 거친 줄이 `/var/log/opsjobs.log` 에만 있고 syslog, auth.log 에는 없는지 본다(아니면 실패). 전달을 손으로 끄기: `sudo rm /etc/rsyslog.d/remote/10-forward.conf && sudo systemctl restart rsyslog`(다시 켤 때는 `--steps "syslog-forward verify"`).
 
 ### 6-1. NIC 이름 바꾸기(network 단계)와 관리망
 
@@ -211,6 +215,7 @@ S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같
 | 서비스 기동 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `sha256sum -c /var/lib/petition-deploy/war.sha256` | active, OK |
 | 시드 크기 | db01 `sudo -u postgres psql -Atc 'select count(*) from petition' petition` | 2,000,000 ±5% |
 | 시간, 자동 갱신, APM 흔적, 커널 모듈 | 설치의 `verify` CHECK 줄 | PASS |
+| rsyslog 설정을 실제로 읽음 | 설치의 `verify` 의 `rsyslog-first-rule`, `syslog-forward-matches-inventory`(파일이 아니라 `rsyslogd -N1 -d` 가 그 파일을 읽었는지), `rsyslog-no-apparmor-denial`(rsyslog 가 마지막으로 선 뒤 `profile="rsyslogd"` 의 `apparmor="DENIED"` 줄 0) | PASS |
 | rsyslog 첫 규칙 | 실행기 계정으로 한 번 접속, `sudo -n bash -s` 로 U8 가드 arm 하나 → 119(읽기) `syslog_local` 과 VM `/var/log/syslog`, `/var/log/auth.log` 에서 그 계정, uid, `run-r` 줄 0, `/var/log/opsjobs.log` 에 있음. 운영자 계정 sudo 한 줄은 119 에 있음 | 0, 있음, 있음 |
 | 큐 버림 보고 | 라우터 `sudo civil-petition/deploy/tools/router-discards-selftest.sh ens19 192.168.124.11`(부하 켜기 전) | PASS 4줄 |
 | 라우터 관제 흐름 notrack | 라우터 `sysctl -w net.netfilter.nf_conntrack_max=<지금 수 + 50>`, loadgen 에서 웹 80 으로 새 연결 수백 개, 라우터 `dmesg` 에 `table full` → 119(읽기) 라우터 상향 주소 SNMP 응답, `syslog_local` 에 그 줄. 끝나면 원래 값 | 둘 다 닿음 |
@@ -318,3 +323,4 @@ sudo systemctl start loadgen.service
 - 2026-11-18 KST, v4 T2V6(ag-t2v6): ap-t2 적용 중 발견 두 가지. §4 브리지마다 IPv6 끔(`disable-ipv6 yes`)과 post-up 확인, 검사기 `--ipv6-state`(up 에서 반드시), 이미 올린 66 에 이 판을 놓는 법, §7 관리망 격리 (3) 에 IPv6 확인과 업무망 브리지 주소 0 에 IPv6 포함. §4 확인의 러너 API 판정을 실제로 되는 길(104 → 200.66:8091, tb-ops → 127.0.0.1:8091)로 바꿈.
 - 2026-11-18 KST, v4 T2V6 리뷰 반영(rv-t2v6 M1, L1 ~ L3): 손 sysctl 이 이미 1 이면 다시 `ifup` 은 속성 동작을 증명하지 않음과 새로 만드는 길의 확인(S 첫 적용, 재부팅 뒤), post-up 실패에도 `ifup` 종료 코드 0 이라 판정은 검사기와 링크 상태로, `all.disable_ipv6` 를 쓰지 않음, §7 (3) IPv6 덧확인을 멀티캐스트 응답 출발지가 VM NIC 뿐인지로(브리지 MAC 은 tap 을 따라 바뀜).
 - 2026-11-18 KST, v4 T2RSYS(ag-t2rsys, APT2 §4-2 멈춤): §6 적용 전 점검 `rsyslog-check.sh`(docker, 진짜 rsyslog 파서와 첫 규칙 동작), `syslog`, `syslog-forward` 단계가 사본 검사 뒤에만 놓고 실패 때 되돌림, `deploy/apply.sh` 실행 비트.
+- 2026-11-18 KST, v4 T2RSYS 2회차(리뷰 rv-t2rsys H1, H2, M2, M3, L3): §6 검사 사본 자리(AppArmor 범위 안 `/etc/rsyslog.d/.check-<pid>/`)와 실제 읽기 확인, 원격 전달 자리 `/etc/rsyslog.d/remote/`(옛 `/etc/rsyslog.remote.d/` 는 AppArmor 가 막아 읽히지 않았음, 지휘 세션 결정)와 손으로 끄기, 실행기 uid 줄 확인, 점검 도구가 VM 과 다른 점과 다이제스트 고정, §7 설정을 실제로 읽음 행.

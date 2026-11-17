@@ -9,7 +9,7 @@ SYS_NET=${SYS_NET:-/sys/class/net}
 # 설치 단계 network 가 적는 "인벤토리 NIC 이름 MAC" 줄. place_files 가 @@MAC:<이름>@@ 자리를 이것으로 채운다.
 NIC_MAC_FILE=${NIC_MAC_FILE:-/var/lib/petition-deploy/nic-macs}
 
-# rsyslog 설정이 있는 곳(/etc/rsyslog.conf, rsyslog.d, rsyslog.remote.d 의 부모). 시험은 다른 경로를 준다.
+# rsyslog 설정이 있는 곳(/etc/rsyslog.conf, rsyslog.d 의 부모). 시험은 다른 경로를 준다.
 RSYSLOG_ETC=${RSYSLOG_ETC:-/etc}
 
 # files.tsv 에서 이 단계의 파일을 놓는다. @@SECRET:<이름>@@ 자리는 secrets/<이름> 내용으로,
@@ -52,56 +52,95 @@ PY
     done < "$BUNDLE/files.tsv"
 }
 
-# 이 단계의 파일(rsyslog 설정 포함)을 놓되, rsyslog 가 못 읽을 설정은 /etc 에 남기지 않는다.
-#   1. 지금 rsyslog 설정(rsyslog.conf, rsyslog.d, rsyslog.remote.d)을 임시 디렉터리에 베끼고 이 단계의 파일을 그 위에 놓은 뒤,
-#      사본 rsyslog.conf 의 포함 경로를 사본으로 바꿔 rsyslogd -N1 로 본다. 실패하면 /etc 는 건드리지 않고 멈춘다.
-#   2. 통과하면 이 단계 파일의 지금 내용을 남겨 두고 진짜로 놓은 뒤 진짜 설정을 rsyslogd -N1 로 다시 본다.
-#      실패하면 이 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다) 멈춘다.
-# 어느 쪽이든 실패하면 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다(재시작하는 것은 부른 단계).
-rsyslog_place_checked() {
-    local step="$1" stage out row_step dest dir i=0 kept=()
-    stage=$(mktemp -d) || fail "rsyslog 검사 디렉터리를 못 만듦"
-    mkdir -p "$stage$RSYSLOG_ETC/rsyslog.d" "$stage$RSYSLOG_ETC/rsyslog.remote.d" "$stage/keep"
-    [[ ! -e "$RSYSLOG_ETC/rsyslog.conf" ]] || cp -p "$RSYSLOG_ETC/rsyslog.conf" "$stage$RSYSLOG_ETC/rsyslog.conf"
-    for dir in rsyslog.d rsyslog.remote.d; do
-        [[ ! -d "$RSYSLOG_ETC/$dir" ]] || cp -a "$RSYSLOG_ETC/$dir/." "$stage$RSYSLOG_ETC/$dir/"
+# rsyslogd -N1 -d 로 설정을 읽어 보고, 준 파일마다 파서가 실제로 열어 읽었는지(디버그 줄
+# "pushed config fragment on top of stack: <파일>") 본다. 설정 오류이거나 못 읽은 파일이 있으면 rsyslogd 의 알림 줄과
+# 못 읽은 파일을 stderr 에 내고 1. include(... mode="optional") 는 AppArmor 가 막아 못 읽어도 오류가 아니라서
+# 종료 코드만으로는 못 읽은 것을 모른다.
+rsyslog_reads() {
+    local conf="$1" out status=0 f missing=()
+    shift
+    out=$(rsyslogd -N1 -d -f "$conf" 2>&1) || status=$?
+    for f in "$@"; do
+        awk -v s="on top of stack: $f" 'length($0) >= length(s) && substr($0, length($0) - length(s) + 1) == s { found = 1 }
+            END { exit !found }' <<<"$out" || missing+=("$f")
     done
-    if ! PLACE_ROOT="$stage" place_files "$step"; then
-        rm -rf "$stage"; fail "단계 $step 파일을 검사 사본에 못 놓음"
+    if [[ $status -ne 0 || ${#missing[@]} -gt 0 ]]; then
+        grep '^rsyslogd:' <<<"$out" >&2 || true
+        [[ ${#missing[@]} -eq 0 ]] || printf 'rsyslog 가 읽지 않은 파일: %s\n' "${missing[*]}" >&2
+        return 1
     fi
-    out=$(python3 - "$stage$RSYSLOG_ETC/rsyslog.conf" "$RSYSLOG_ETC" "$stage$RSYSLOG_ETC" <<'PY' 2>&1
+}
+
+# 앞 내용을 남긴 파일들을 되돌린다(남긴 것이 없으면 지운다). 되돌리지 못한 경로를 한 줄씩 낸다.
+#   rsyslog_put_back <남긴 디렉터리> <경로>...   (남긴 디렉터리/<순번> 이 그 순번 경로의 앞 내용)
+rsyslog_put_back() {
+    local keep="$1" dest i=0
+    shift
+    for dest in "$@"; do
+        i=$((i + 1))
+        rm -f "$dest.new"
+        if [[ -e "$keep/$i" ]]; then
+            cp -p "$keep/$i" "$dest" || echo "$dest"
+        else
+            rm -f "$dest" || echo "$dest"
+        fi
+    done
+}
+
+# 이 단계의 파일(rsyslog 설정 포함)을 놓되, rsyslog 가 못 읽을 설정은 /etc 에 남기지 않는다.
+#   1. 검사 사본: rsyslog.d 아래 숨은 하위 디렉터리 .check-<pid>(*.conf 포함에 들지 않고, AppArmor rsyslogd 프로필이
+#      읽게 두는 /etc/rsyslog.d/** 안)에 지금 rsyslog.conf 와 rsyslog.d 의 *.conf, rsyslog.d/remote 의 *.conf 를 베끼고
+#      (사본 디렉터리 자신은 베끼지 않는다) 이 단계 파일을 그 위에 놓은 뒤, 사본 rsyslog.conf 의 rsyslog.d 포함 경로를
+#      사본으로 바꿔 읽어 본다. 이 단계의 rsyslog 파일을 모두 실제로 읽어야 통과. 실패하면 /etc 의 설정은 그대로 두고 멈춘다.
+#   2. 통과하면 이 단계 파일의 지금 내용을 사본 디렉터리에 남기고 진짜로 놓은 뒤 진짜 설정을 같은 방법으로 본다.
+#      놓기나 검사가 실패하면 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다) 멈춘다.
+# 사본 디렉터리는 끝나면 지운다(EXIT trap 도 건다. 끊겨 남은 것은 다음 실행이 처음에 지운다).
+# 실패하면 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다(재시작하는 것은 부른 단계).
+rsyslog_place_checked() {
+    local step="$1" check_dir="$RSYSLOG_ETC/rsyslog.d" stage out row_step dest f i=0 kept=() reads=() staged=() undone
+    rm -rf "$check_dir"/.check-*
+    stage="$check_dir/.check-$$"
+    mkdir -p "$stage$RSYSLOG_ETC/rsyslog.d/remote" "$stage/keep" || fail "rsyslog 검사 디렉터리를 못 만듦: $stage"
+    trap "rm -rf '$stage'" EXIT
+    [[ ! -e "$RSYSLOG_ETC/rsyslog.conf" ]] || cp -p "$RSYSLOG_ETC/rsyslog.conf" "$stage$RSYSLOG_ETC/rsyslog.conf"
+    for f in "$check_dir"/*.conf; do [[ ! -f "$f" ]] || cp -p "$f" "$stage$RSYSLOG_ETC/rsyslog.d/"; done
+    for f in "$check_dir"/remote/*.conf; do [[ ! -f "$f" ]] || cp -p "$f" "$stage$RSYSLOG_ETC/rsyslog.d/remote/"; done
+    if ! PLACE_ROOT="$stage" place_files "$step"; then
+        rm -rf "$stage"; trap - EXIT; fail "단계 $step 파일을 검사 사본에 못 놓음"
+    fi
+    if ! out=$(python3 - "$stage$RSYSLOG_ETC/rsyslog.conf" "$RSYSLOG_ETC/rsyslog.d/" "$stage$RSYSLOG_ETC/rsyslog.d/" <<'PY' 2>&1
 import pathlib, sys
 conf, real, staged = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = conf.read_text(encoding="utf-8")
-for name in ("rsyslog.d/", "rsyslog.remote.d/"):
-    text = text.replace(f"{real}/{name}", f"{staged}/{name}")
-conf.write_text(text, encoding="utf-8")
+conf.write_text(conf.read_text(encoding="utf-8").replace(real, staged), encoding="utf-8")
 PY
-) || { rm -rf "$stage"; fail "rsyslog 검사 사본을 못 만듦: $out"; }
-    if ! out=$(rsyslogd -N1 -f "$stage$RSYSLOG_ETC/rsyslog.conf" 2>&1); then
-        printf '%s\n' "$out" >&2
-        rm -rf "$stage"
-        fail "rsyslog 설정 검사(놓기 전, 단계 $step). $RSYSLOG_ETC 는 바꾸지 않음"
+    ); then
+        rm -rf "$stage"; trap - EXIT; fail "rsyslog 검사 사본을 못 만듦: $out"
     fi
     while IFS=$'\t' read -r row_step dest _; do
         [[ "$row_step" == "$step" ]] || continue
+        # 이 단계가 놓는 rsyslog 설정 조각(rsyslog.d 아래든 그 밖의 rsyslog*.d 든)은 모두 실제로 읽혀야 한다.
+        case "$dest" in "$RSYSLOG_ETC"/rsyslog*.d/*.conf) reads+=("$dest"); staged+=("$stage$dest") ;; esac
         i=$((i + 1))
-        if [[ -e "$dest" ]]; then cp -p "$dest" "$stage/keep/$i" || { rm -rf "$stage"; fail "앞 내용을 못 남김: $dest"; }; fi
+        if [[ -e "$dest" ]] && ! cp -p "$dest" "$stage/keep/$i"; then
+            rm -rf "$stage"; trap - EXIT; fail "앞 내용을 못 남김: $dest"
+        fi
         kept+=("$dest")
     done < "$BUNDLE/files.tsv"
-    if place_files "$step" && out=$(rsyslogd -N1 -f "$RSYSLOG_ETC/rsyslog.conf" 2>&1); then
-        rm -rf "$stage"
-        return 0
+    if ! rsyslog_reads "$stage$RSYSLOG_ETC/rsyslog.conf" "${staged[@]}"; then
+        rm -rf "$stage"; trap - EXIT
+        fail "rsyslog 설정 검사(놓기 전, 단계 $step). $RSYSLOG_ETC 의 설정은 바꾸지 않음"
     fi
-    printf '%s\n' "$out" >&2
-    i=0
-    for dest in "${kept[@]}"; do
-        i=$((i + 1))
-        if [[ -e "$stage/keep/$i" ]]; then cp -p "$stage/keep/$i" "$dest"; else rm -f "$dest"; fi
-        rm -f "$dest.new"
-    done
-    rm -rf "$stage"
-    fail "rsyslog 설정 검사(놓은 뒤, 단계 $step). 놓은 파일을 앞 내용으로 되돌림"
+    if ! place_files "$step"; then
+        undone=$(rsyslog_put_back "$stage/keep" "${kept[@]}")
+        rm -rf "$stage"; trap - EXIT
+        fail "단계 $step 파일을 놓지 못함. ${undone:+되돌리지 못한 파일: $(paste -sd' ' - <<<"$undone")}${undone:-놓은 파일을 앞 내용으로 되돌림}"
+    fi
+    if ! rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "${reads[@]}"; then
+        undone=$(rsyslog_put_back "$stage/keep" "${kept[@]}")
+        rm -rf "$stage"; trap - EXIT
+        fail "rsyslog 설정 검사(놓은 뒤, 단계 $step). ${undone:+되돌리지 못한 파일: $(paste -sd' ' - <<<"$undone")}${undone:-놓은 파일을 앞 내용으로 되돌림}"
+    fi
+    rm -rf "$stage"; trap - EXIT
 }
 
 # 서비스 이름을 받아 켜고 다시 띄운다.

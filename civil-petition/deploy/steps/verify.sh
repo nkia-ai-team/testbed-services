@@ -24,9 +24,25 @@ chrony_offset_ok() {
     offset=$(chronyc -c tracking | awk -F, '{print $5}')
     awk -v o="$offset" 'BEGIN{exit !(o < 0.05 && o > -0.05)}'
 }
-first_rule_present() { [[ -s /etc/rsyslog.d/00-opsjobs.conf ]] && grep -q "$EXECUTOR_NAME" /etc/rsyslog.d/00-opsjobs.conf; }
+# rsyslog 설정은 파일이 있는 것이 아니라 rsyslog 가 실제로 읽는지 본다(include mode="optional" 은 AppArmor 가 막아도 오류가 아니다).
+first_rule_present() {
+    [[ -s "$RSYSLOG_ETC/rsyslog.d/00-opsjobs.conf" ]] && grep -q "$EXECUTOR_NAME" "$RSYSLOG_ETC/rsyslog.d/00-opsjobs.conf" \
+        && rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "$RSYSLOG_ETC/rsyslog.d/00-opsjobs.conf"
+}
 forward_state_ok() {
-    if [[ -s /etc/rsyslog.remote.d/10-forward.conf ]]; then [[ "$SYSLOG_FORWARD" == 1 ]]; else [[ "$SYSLOG_FORWARD" == 0 ]]; fi
+    local forward="$RSYSLOG_ETC/rsyslog.d/remote/10-forward.conf"
+    if [[ "$SYSLOG_FORWARD" == 1 ]]; then
+        [[ -s "$forward" ]] && rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "$forward"
+    else
+        ! compgen -G "$RSYSLOG_ETC/rsyslog.d/remote/*.conf" >/dev/null
+    fi
+}
+# 돌고 있는 rsyslog 가 마지막으로 선 뒤 AppArmor 가 rsyslogd 의 무엇을 막은 줄이 없다(커널 로그와 감사 기록 둘 다 본다).
+rsyslog_not_denied() {
+    local since
+    since=$(date -d "$(systemctl show -p ActiveEnterTimestamp --value rsyslog)" +%s) || return 1
+    ! journalctl -q --no-pager --since "@$since" _TRANSPORT=kernel + _TRANSPORT=audit \
+        | grep -q 'apparmor="DENIED".*profile="rsyslogd"'
 }
 ip_forward_ok() {
     local want=0
@@ -49,6 +65,7 @@ check no-otel-env no_otel_env
 check chrony-offset-under-50ms chrony_offset_ok
 check rsyslog-first-rule first_rule_present
 check syslog-forward-matches-inventory forward_state_ok
+check rsyslog-no-apparmor-denial rsyslog_not_denied
 check ip-forward ip_forward_ok
 check mgmt-guard nft list table inet mgmtguard
 [[ -n "$MODULES" ]] && check kernel-modules modules_loaded

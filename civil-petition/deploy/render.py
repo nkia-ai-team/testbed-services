@@ -78,7 +78,7 @@ COMMON_FILES = (
     FileSpec("firewall", "/etc/nftables.conf", "common/nftables.conf", "0755"),
 )
 SYSLOG_FORWARD_FILES = (
-    FileSpec("syslog-forward", "/etc/rsyslog.remote.d/10-forward.conf", "common/rsyslog-forward.conf"),
+    FileSpec("syslog-forward", "/etc/rsyslog.d/remote/10-forward.conf", "common/rsyslog-forward.conf"),
 )
 MODULE_FILES = (FileSpec("kernel-modules", "/etc/modules-load.d/qdisc.conf", "common/modules-qdisc.conf"),)
 LLDPD_FILES = (FileSpec("lldpd", "/etc/default/lldpd", "common/lldpd-default"),)

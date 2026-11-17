@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import fnmatch
 import datetime
 import importlib.util
 import io
@@ -68,7 +69,7 @@ def file_of(bundle: dict, dest: str) -> str:
 
 
 # rsyslog 가 읽는 설정이 놓이는 곳.
-RSYSLOG_DESTS = ("/etc/rsyslog.conf", "/etc/rsyslog.d/", "/etc/rsyslog.remote.d/")
+RSYSLOG_DESTS = ("/etc/rsyslog.conf", "/etc/rsyslog.d/", "/etc/rsyslog.remote.d/")  # 마지막은 옛 자리(지금 0 이어야 함)
 # RainerScript 큰따옴표 문자열의 이스케이프(rsyslog 가 풀어 쓰는 것만).
 RAINER_ESCAPES = {"$": "$", "\\": "\\", '"': '"', "'": "'", "n": "\n", "t": "\t"}
 
@@ -209,7 +210,7 @@ class SharedCodeTests(unittest.TestCase):
         t = bundles(T_INV)
         s = bundles(S_INV)
         self.assertNotIn("router", {b["role"] for b in s.values()})
-        optional_dests = {"/etc/rsyslog.remote.d/10-forward.conf", "/etc/default/lldpd"}
+        optional_dests = {"/etc/rsyslog.d/remote/10-forward.conf", "/etc/default/lldpd"}
         for name, bundle in s.items():
             self.assertNotIn("lldpd", bundle["steps"])
             self.assertNotIn("syslog-forward", bundle["steps"])
@@ -303,7 +304,7 @@ class RenderContentTests(unittest.TestCase):
         self.assertRegex(rule, r"action\([^)]*\)\s*\n\s*stop")
         self.assertNotIn(inv["accounts"]["operator"]["name"], rule)
         conf = file_of(self.t["web01"], "/etc/rsyslog.conf")
-        self.assertLess(conf.index("$IncludeConfig /etc/rsyslog.d/*.conf"), conf.index("rsyslog.remote.d"))
+        self.assertLess(conf.index("$IncludeConfig /etc/rsyslog.d/*.conf"), conf.index('include(file="/etc/rsyslog.d/remote/*.conf"'))
 
     def test_rsyslog_first_rule_regex_matches_executor_lines_only(self) -> None:
         inv = inventory()
@@ -342,7 +343,7 @@ class RenderContentTests(unittest.TestCase):
                     seen.add(entry["dest"])
                     with self.subTest(host=bundle["host"], dest=entry["dest"]):
                         self.assertEqual(rainer_bare_dollars(entry["text"]), [])
-        self.assertEqual(seen, {"/etc/rsyslog.conf", "/etc/rsyslog.d/00-opsjobs.conf", "/etc/rsyslog.remote.d/10-forward.conf"})
+        self.assertEqual(seen, {"/etc/rsyslog.conf", "/etc/rsyslog.d/00-opsjobs.conf", "/etc/rsyslog.d/remote/10-forward.conf"})
 
     def test_bare_dollar_scan_catches_the_unescaped_form(self) -> None:
         self.assertEqual(rainer_bare_dollars('if re_match($msg, "(a|$)") then stop\n'), ['"(a|$)" (1행)'])
@@ -354,7 +355,7 @@ class RenderContentTests(unittest.TestCase):
             rainer_unescape("\\.")
 
     def test_syslog_forward_targets_the_tunnel_address(self) -> None:
-        forward = file_of(self.t["db01"], "/etc/rsyslog.remote.d/10-forward.conf")
+        forward = file_of(self.t["db01"], "/etc/rsyslog.d/remote/10-forward.conf")
         self.assertIn('target="10.250.0.1"', forward)
         self.assertIn('protocol="udp"', forward)
 
@@ -463,7 +464,7 @@ class RenderContentTests(unittest.TestCase):
         # 평시 24시간 판정의 대표 질의(search)와 참고 둘의 단계별 p95 를 창 기록에 싣는다.
         self.assertIn("--window-step search --window-step my-list --window-step inbox", unit)
         dests = {entry["dest"] for entry in self.t["loadgen"]["files"]}
-        self.assertNotIn("/etc/rsyslog.remote.d/10-forward.conf", dests)
+        self.assertNotIn("/etc/rsyslog.d/remote/10-forward.conf", dests)
 
     def test_written_bundle_has_tsv_steps_env_and_meta(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1026,29 +1027,53 @@ if args[:1] == ["show"] and args[-1] == "netplan-rollback.service":
 '''
 
 RSYSLOGD_STUB = r'''#!/usr/bin/env python3
-"""rsyslogd -N1 -f <설정> 대역. $IncludeConfig 와 include(file=...) 를 따라 읽은 파일을 STUB_LOG 에 적고,
-읽은 파일 가운데 BAD 가 든 것이 있거나 설정 경로가 FAKE_FAIL_CONF 이면 실패한다."""
+"""rsyslogd -N1 [-d] -f <설정> 대역. Ubuntu rsyslogd AppArmor 프로필의 설정 읽기 범위(RSYSLOG_ETC 의 rsyslog.conf 와
+rsyslog.d/**)를 흉내 낸다: 그 밖의 -f 는 Permission denied 로 실패하고, 그 밖의 포함 대상은 mode="optional" 이면 조용히
+건너뛰고(진짜처럼 오류 없음) 아니면 실패한다. $IncludeConfig 와 include(file=...) 를 따라 읽은 파일을 STUB_LOG 에 적고,
+-d 이면 진짜 디버그처럼 읽은 포함 파일마다 "pushed config fragment on top of stack: <파일>" 을 낸다. 읽은 파일 가운데
+BAD 가 든 것이 있거나 설정 경로가 FAKE_FAIL_CONF 이면 실패한다. 실패할 때 FAKE_LOCK_DIR 을 읽기 전용으로 바꾼다."""
 import glob, os, re, sys
-args = sys.argv[1:]
-assert args[:2] == ["-N1", "-f"] and len(args) == 3, args
+args = [a for a in sys.argv[1:] if a != "-d"]
+debug = "-d" in sys.argv[1:]
+assert args[:2] == ["-N1", "-f"] and len(args) == 3, sys.argv
 conf = args[2]
-seen = []
+etc = os.environ["RSYSLOG_ETC"]
+log = open(os.environ["STUB_LOG"], "a")
+def allowed(path):
+    return path == f"{etc}/rsyslog.conf" or path.startswith(f"{etc}/rsyslog.d/")
+def die(message):
+    log.close()
+    if os.environ.get("FAKE_LOCK_DIR"):
+        os.chmod(os.environ["FAKE_LOCK_DIR"], 0o555)
+    print(f"rsyslogd: {message}", file=sys.stderr)
+    sys.exit(1)
+if not allowed(conf):
+    log.write(f"rsyslogd -f {conf} denied\n")
+    die(f"could not open config file '{conf}': Permission denied")
+seen, denied = [], []
 def walk(path):
     seen.append(path)
     text = open(path, encoding="utf-8").read()
-    for pattern in re.findall(r'^\$IncludeConfig (\S+)|include\(file="([^"]+)"', text, re.M):
-        for match in sorted(glob.glob(pattern[0] or pattern[1])):
+    for legacy, pattern, rest in re.findall(r'^\$IncludeConfig (\S+)|include\(file="([^"]+)"([^)]*)\)', text, re.M):
+        pattern = legacy or pattern
+        if not allowed(pattern):
+            if 'mode="optional"' in rest:
+                denied.append(pattern)
+                continue
+            die(f"could not open config file '{pattern}': Permission denied")
+        for match in sorted(glob.glob(pattern)):
+            if debug:
+                print(f"0.0:main thread    : lexer.l: config parser: pushed config fragment on top of stack: {match}")
             walk(match)
 walk(conf)
-with open(os.environ["STUB_LOG"], "a") as log:
-    log.write("rsyslogd -f " + conf + " read " + " ".join(seen) + "\n")
+log.write("rsyslogd -f " + conf + " read " + " ".join(seen) + "".join(f" denied {d}" for d in denied) + "\n")
 bad = [path for path in seen if "BAD" in open(path, encoding="utf-8").read()]
 if bad:
-    print(f"error during parsing file {bad[0]}", file=sys.stderr)
-    sys.exit(1)
+    die(f"error during parsing file {bad[0]}")
 if conf == os.environ.get("FAKE_FAIL_CONF"):
-    print("error after placing", file=sys.stderr)
-    sys.exit(1)
+    die("error after placing")
+log.close()
+print("rsyslogd: End of config validation run. Bye.", file=sys.stderr)
 '''
 
 CLOUD_INIT_NETPLAN = textwrap.dedent('''\
@@ -2409,11 +2434,13 @@ class StepScriptTests(unittest.TestCase):
             self.assertFalse(dest.exists())
             self.assertFalse(Path(f"{dest}.new").exists())
 
-    def _rsyslog_tree(self, root: Path, rule: str = "new rule\n", default: str = "default rules\n") -> tuple[dict, Path, Path]:
-        """지금 설정(old main, 50-default, old rule)이 있는 가짜 /etc 와 syslog, syslog-forward 단계 묶음."""
+    def _rsyslog_tree(self, root: Path, rule: str = "new rule\n", default: str = "default rules\n",
+                      remote: str = "rsyslog.d/remote") -> tuple[dict, Path, Path]:
+        """지금 설정(old main, 50-default, old rule)이 있는 가짜 /etc 와 syslog, syslog-forward 단계 묶음.
+        remote 는 전달 설정을 두고 rsyslog.conf 끝에서 포함하는 곳(옛 자리 rsyslog.remote.d 는 AppArmor 범위 밖)."""
         etc = root / "etc"
         (etc / "rsyslog.d").mkdir(parents=True)
-        includes = f'$IncludeConfig {etc}/rsyslog.d/*.conf\ninclude(file="{etc}/rsyslog.remote.d/*.conf" mode="optional")\n'
+        includes = f'$IncludeConfig {etc}/rsyslog.d/*.conf\ninclude(file="{etc}/{remote}/*.conf" mode="optional")\n'
         (etc / "rsyslog.conf").write_text("old main\n" + includes)
         (etc / "rsyslog.d" / "50-default.conf").write_text(default)
         (etc / "rsyslog.d" / "00-opsjobs.conf").write_text("old rule\n")
@@ -2428,22 +2455,49 @@ class StepScriptTests(unittest.TestCase):
         group = subprocess.run(["id", "-gn"], capture_output=True, text=True, check=True).stdout.strip()
         rows = [("syslog", etc / "rsyslog.conf", "rsyslog.conf"), ("syslog", etc / "rsyslog.d" / "00-opsjobs.conf", "00-opsjobs.conf"),
                 ("syslog", etc / "logrotate.d" / "opsjobs", "logrotate"),
-                ("syslog-forward", etc / "rsyslog.remote.d" / "10-forward.conf", "10-forward.conf")]
+                ("syslog-forward", etc / remote / "10-forward.conf", "10-forward.conf")]
         (bundle / "files.tsv").write_text("".join(f"{step}\t{dest}\t0644\t{user}\t{group}\tfiles/{src}\n" for step, dest, src in rows))
         bin_dir = root / "bin"
         bin_dir.mkdir()
         (bin_dir / "rsyslogd").write_text(RSYSLOGD_STUB)
-        (bin_dir / "systemctl").write_text(f"#!/bin/sh\necho systemctl \"$@\" >> {root / 'calls'}\n")
-        for tool in ("rsyslogd", "systemctl"):
+        calls = root / "calls"
+        log_dir = root / "log"
+        log_dir.mkdir()
+        (log_dir / "auth.log").write_text("")
+        stubs = {
+            "systemctl": f'#!/bin/sh\necho systemctl "$@" >> {calls}\n',
+            "chown": f'#!/bin/sh\necho chown "$@" >> {calls}\n',
+            # 실행기 계정으로 바꾼 셸에서 부른 logger 를 알 수 있게 표시를 넘긴다.
+            "setpriv": f'#!/bin/sh\necho setpriv "$@" >> {calls}\nwhile [ "${{1#--}}" != "$1" ]; do shift; done\nSTUB_AS_EXECUTOR=1 exec "$@"\n',
+            # 첫 규칙 대역: 실행기로 보낸 줄은 opsjobs.log 로(FAKE_UID_RULE=broken 이면 걸리지 않고 syslog 로), 나머지는 syslog 로.
+            "logger": (f'#!/bin/sh\necho logger "$@" >> {calls}\ntag=x\nwhile [ $# -gt 1 ]; do case "$1" in -t) tag=$2; shift 2;; --) shift;; *) shift;; esac; done\n'
+                       f'out={log_dir}/syslog\n[ -n "$STUB_AS_EXECUTOR" ] && [ "$FAKE_UID_RULE" != broken ] && out={log_dir}/opsjobs.log\n'
+                       f'echo "host $tag: $1" >> "$out"\n'),
+        }
+        for tool, text in stubs.items():
+            (bin_dir / tool).write_text(text)
+        for tool in ("rsyslogd", *stubs):
             (bin_dir / tool).chmod(0o755)
-        (root / "tmp").mkdir()
-        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_LOG": str(root / "calls"), "TMPDIR": str(root / "tmp"),
-               "RSYSLOG_ETC": str(etc)}
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_LOG": str(calls), "RSYSLOG_ETC": str(etc),
+               "RSYSLOG_LOG_DIR": str(log_dir), "EXECUTOR_NAME": "opsjob"}
         return env, etc, bundle
 
     def _run_step(self, bundle: Path, step: str, env: dict) -> subprocess.CompletedProcess:
         script = f"set -euo pipefail; BUNDLE={bundle}; . {DEPLOY / 'steps' / 'lib.sh'}; . {DEPLOY / 'steps' / (step + '.sh')}"
         return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+    @staticmethod
+    def _rsyslogd_calls(root: Path) -> list[tuple[str, list[str]]]:
+        """대역 rsyslogd 의 부름마다 (설정 경로, 읽은 파일과 'denied <대상>')."""
+        found = []
+        for line in (root / "calls").read_text().splitlines():
+            if line.startswith("rsyslogd -f "):
+                conf, _, rest = line[len("rsyslogd -f "):].partition(" ")
+                found.append((conf, rest.split()[1:] if rest.startswith("read") else [rest]))
+        return found
+
+    def _assert_no_check_dir(self, etc: Path) -> None:
+        self.assertEqual(sorted(p.name for p in (etc / "rsyslog.d").iterdir() if p.name.startswith(".")), [])
 
     def test_syslog_step_leaves_etc_alone_when_the_new_config_does_not_parse(self) -> None:
         # 새 규칙이 틀린 경우와 지금 설정(패키지 파일)이 틀린 경우 모두, 놓기 전 검사가 설정 전체를 읽고 멈춘다.
@@ -2458,14 +2512,16 @@ class StepScriptTests(unittest.TestCase):
                 self.assertEqual((etc / "rsyslog.d" / "00-opsjobs.conf").read_text(), "old rule\n")
                 self.assertTrue((etc / "rsyslog.conf").read_text().startswith("old main\n"))
                 self.assertFalse((etc / "logrotate.d").exists())
-                calls = (root / "calls").read_text().splitlines()
+                calls = self._rsyslogd_calls(root)
                 self.assertEqual(len(calls), 1, calls)
-                staged = calls[0]
-                self.assertTrue(staged.startswith(f"rsyslogd -f {root / 'tmp'}/"), staged)
-                self.assertNotIn(f" {etc}/", staged)
+                conf, read = calls[0]
+                check = f"{etc}/rsyslog.d/.check-"
+                self.assertTrue(conf.startswith(check), conf)
+                self.assertTrue(all(path.startswith(check) for path in read), read)
                 for name in ("rsyslog.d/00-opsjobs.conf", "rsyslog.d/50-default.conf"):
-                    self.assertIn(f"{etc}/{name}", staged)
-                self.assertEqual(list((root / "tmp").iterdir()), [])
+                    self.assertTrue(any(path.endswith(f"{etc}/{name}") for path in read), (name, read))
+                self.assertNotIn("systemctl restart rsyslog", (root / "calls").read_text())
+                self._assert_no_check_dir(etc)
 
     def test_rsyslog_forward_step_checks_a_copy_first_then_the_placed_config_then_restarts(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2473,17 +2529,35 @@ class StepScriptTests(unittest.TestCase):
             env, etc, bundle = self._rsyslog_tree(root)
             done = self._run_step(bundle, "syslog-forward", env)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual((etc / "rsyslog.remote.d" / "10-forward.conf").read_text(), "forward\n")
+            self.assertEqual((etc / "rsyslog.d" / "remote" / "10-forward.conf").read_text(), "forward\n")
             self.assertEqual((etc / "rsyslog.d" / "00-opsjobs.conf").read_text(), "old rule\n")
-            calls = (root / "calls").read_text().splitlines()
-            self.assertEqual(len(calls), 3, calls)
-            self.assertTrue(calls[0].startswith(f"rsyslogd -f {root / 'tmp'}/"), calls[0])
-            self.assertIn("rsyslog.remote.d/10-forward.conf", calls[0])
-            self.assertNotIn(f" {etc}/", calls[0])
-            self.assertEqual(calls[1], f"rsyslogd -f {etc}/rsyslog.conf read {etc}/rsyslog.conf {etc}/rsyslog.d/00-opsjobs.conf "
-                                       f"{etc}/rsyslog.d/50-default.conf {etc}/rsyslog.remote.d/10-forward.conf")
-            self.assertEqual(calls[2], "systemctl restart rsyslog")
-            self.assertEqual(list((root / "tmp").iterdir()), [])
+            calls = self._rsyslogd_calls(root)
+            self.assertEqual(len(calls), 2, calls)
+            self.assertTrue(calls[0][0].startswith(f"{etc}/rsyslog.d/.check-"), calls[0])
+            self.assertTrue(calls[0][1][-1].startswith(f"{etc}/rsyslog.d/.check-"), calls[0])
+            self.assertTrue(calls[0][1][-1].endswith("/rsyslog.d/remote/10-forward.conf"), calls[0])
+            self.assertEqual(calls[1], (f"{etc}/rsyslog.conf", [f"{etc}/rsyslog.conf", f"{etc}/rsyslog.d/00-opsjobs.conf",
+                                                                f"{etc}/rsyslog.d/50-default.conf",
+                                                                f"{etc}/rsyslog.d/remote/10-forward.conf"]))
+            self.assertEqual((root / "calls").read_text().splitlines()[-1], "systemctl restart rsyslog")
+            self._assert_no_check_dir(etc)
+
+    def test_rsyslog_forward_step_refuses_a_forward_file_rsyslog_cannot_read(self) -> None:
+        # 옛 자리(/etc/rsyslog.remote.d)는 AppArmor 범위 밖이다. 포함이 optional 이라 -N1 은 통과하지만 파일을 읽지 않으므로
+        # 놓기 전에 멈추고 /etc 를 바꾸지 않는다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root, remote="rsyslog.remote.d")
+            done = self._run_step(bundle, "syslog-forward", env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("rsyslog 가 읽지 않은 파일:", done.stderr)
+            self.assertIn("rsyslog 설정 검사(놓기 전, 단계 syslog-forward)", done.stderr)
+            self.assertFalse((etc / "rsyslog.remote.d" / "10-forward.conf").exists())
+            calls = self._rsyslogd_calls(root)
+            self.assertEqual(len(calls), 1, calls)
+            self.assertIn(f"denied {etc}/rsyslog.remote.d/*.conf", " ".join(calls[0][1]))
+            self.assertNotIn("systemctl", (root / "calls").read_text())
+            self._assert_no_check_dir(etc)
 
     def test_rsyslog_steps_put_back_what_they_placed_when_the_placed_config_fails(self) -> None:
         for step in ("syslog", "syslog-forward"):
@@ -2499,12 +2573,128 @@ class StepScriptTests(unittest.TestCase):
                 self.assertEqual(oct((etc / "rsyslog.d" / "00-opsjobs.conf").stat().st_mode & 0o777), "0o640")
                 self.assertTrue((etc / "rsyslog.conf").read_text().startswith("old main\n"))
                 self.assertFalse((etc / "logrotate.d" / "opsjobs").exists())
-                self.assertFalse((etc / "rsyslog.remote.d" / "10-forward.conf").exists())
+                self.assertFalse((etc / "rsyslog.d" / "remote" / "10-forward.conf").exists())
                 self.assertEqual(sorted(p.name for p in etc.rglob("*.new")), [])
-                calls = (root / "calls").read_text().splitlines()
-                self.assertEqual([c.split(" read ")[0] for c in calls][1:], [f"rsyslogd -f {etc}/rsyslog.conf"])
-                self.assertNotIn("systemctl restart rsyslog", calls)
-                self.assertEqual(list((root / "tmp").iterdir()), [])
+                self.assertEqual([conf for conf, _ in self._rsyslogd_calls(root)][1:], [f"{etc}/rsyslog.conf"])
+                self.assertNotIn("systemctl restart rsyslog", (root / "calls").read_text())
+                self._assert_no_check_dir(etc)
+
+    def test_rsyslog_put_back_failure_is_named(self) -> None:
+        # 되돌리지 못한 파일은 "되돌림" 이라 하지 않고 그 경로를 적는다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            env["FAKE_FAIL_CONF"] = str(etc / "rsyslog.conf")
+            env["FAKE_LOCK_DIR"] = str(etc / "logrotate.d")
+            try:
+                done = self._run_step(bundle, "syslog", env)
+            finally:
+                (etc / "logrotate.d").chmod(0o755)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(f"rsyslog 설정 검사(놓은 뒤, 단계 syslog). 되돌리지 못한 파일: {etc}/logrotate.d/opsjobs", done.stderr)
+            self.assertNotIn("놓은 파일을 앞 내용으로 되돌림", done.stderr)
+            self.assertEqual((etc / "rsyslog.d" / "00-opsjobs.conf").read_text(), "old rule\n")
+
+    def test_rsyslog_step_that_cannot_place_says_so_and_puts_back(self) -> None:
+        # 진짜 놓기가 실패하면 놓기 실패로 알리고(앞 검사의 성공 출력을 오류처럼 내지 않는다) 놓은 파일을 되돌린다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            (etc / "logrotate.d").write_text("not a directory\n")  # 사본에는 놓이고 진짜 자리에는 못 놓인다
+            done = self._run_step(bundle, "syslog", env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("단계 syslog 파일을 놓지 못함. 놓은 파일을 앞 내용으로 되돌림", done.stderr)
+            self.assertNotIn("rsyslogd:", done.stderr)
+            self.assertNotIn("pushed config fragment", done.stdout + done.stderr)
+            self.assertEqual((etc / "rsyslog.d" / "00-opsjobs.conf").read_text(), "old rule\n")
+            self.assertTrue((etc / "rsyslog.conf").read_text().startswith("old main\n"))
+            self.assertEqual(len(self._rsyslogd_calls(root)), 1)
+            self._assert_no_check_dir(etc)
+
+    def test_rsyslog_check_copy_left_by_a_cut_run_is_removed_first(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            (etc / "rsyslog.d" / ".check-1" / "keep").mkdir(parents=True)
+            done = self._run_step(bundle, "syslog-forward", env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self._assert_no_check_dir(etc)
+
+    def test_syslog_step_sends_an_executor_uid_line_through_the_first_rule(self) -> None:
+        for rule, ok in (("works", True), ("broken", False)):
+            with self.subTest(rule=rule), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                env, etc, bundle = self._rsyslog_tree(root)
+                env["FAKE_UID_RULE"] = rule
+                done = self._run_step(bundle, "syslog", env)
+                calls = (root / "calls").read_text()
+                self.assertIn("setpriv --reuid=opsjob --regid=opsjob --init-groups logger -t rsyslog-check -- uid route check", calls)
+                self.assertLess(calls.index("systemctl restart rsyslog"), calls.index("setpriv"))
+                if ok:
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertIn("rsyslog ok", done.stdout)
+                    self.assertIn("uid route check", (root / "log" / "opsjobs.log").read_text())
+                else:
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertIn("실행기 uid 줄이", done.stderr)
+                    self.assertIn("opsjobs.log 에 없음", done.stderr)
+
+    def test_syslog_step_skips_the_check_lines_once_forwarding_is_on(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            (etc / "rsyslog.d" / "remote").mkdir()
+            (etc / "rsyslog.d" / "remote" / "10-forward.conf").write_text("forward\n")
+            done = self._run_step(bundle, "syslog", env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("전달이 켜져 있어 검사 줄 생략", done.stdout)
+            calls = (root / "calls").read_text()
+            self.assertNotIn("logger", calls)
+            self.assertNotIn("setpriv", calls)
+
+    def test_rendered_rsyslog_config_stays_inside_the_apparmor_read_scope(self) -> None:
+        # Ubuntu 의 rsyslogd 프로필은 /etc/rsyslog.conf 와 /etc/rsyslog.d/** 만 읽게 둔다. 놓는 파일과 포함 대상이 그 안이어야
+        # 하고, 전달 설정은 rsyslog.d/*.conf 포함에 들지 않는 하위 디렉터리에서 rsyslog.conf 끝 포함으로 모든 로컬 규칙 뒤에 읽힌다.
+        inside = lambda path: path == "/etc/rsyslog.conf" or path.startswith("/etc/rsyslog.d/")  # noqa: E731
+        for path in (T_INV, S_INV):
+            for bundle in bundles(path).values():
+                dests = [e["dest"] for e in bundle["files"] if e["dest"].startswith(RSYSLOG_DESTS)]
+                conf = file_of(bundle, "/etc/rsyslog.conf")
+                targets = re.findall(r'^\$IncludeConfig (\S+)|include\(file="([^"]+)"', conf, re.M)
+                targets = [a or b for a, b in targets]
+                with self.subTest(host=bundle["host"]):
+                    self.assertEqual([d for d in dests + targets if not inside(d)], [])
+                    self.assertEqual(targets, ["/etc/rsyslog.d/*.conf", "/etc/rsyslog.d/remote/*.conf"])
+                    for dest in dests:
+                        self.assertTrue(dest == "/etc/rsyslog.conf" or any(fnmatch.fnmatch(dest, t) for t in targets), dest)
+                    forward = [d for d in dests if d.startswith("/etc/rsyslog.d/remote/")]
+                    self.assertEqual(forward, ["/etc/rsyslog.d/remote/10-forward.conf"] if "syslog-forward" in bundle["steps"] else [])
+
+    def test_verify_reads_the_rsyslog_config_rather_than_seeing_files(self) -> None:
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        first = source[source.index("first_rule_present()"):source.index("forward_state_ok()")]
+        forward = source[source.index("forward_state_ok()"):source.index("rsyslog_not_denied()")]
+        denied = source[source.index("rsyslog_not_denied()"):source.index("ip_forward_ok()")]
+        self.assertIn('rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "$RSYSLOG_ETC/rsyslog.d/00-opsjobs.conf"', first)
+        self.assertIn('rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "$forward"', forward)
+        self.assertIn('forward="$RSYSLOG_ETC/rsyslog.d/remote/10-forward.conf"', forward)
+        self.assertIn('apparmor="DENIED".*profile="rsyslogd"', denied)
+        self.assertIn("ActiveEnterTimestamp", denied)
+        self.assertIn("check rsyslog-no-apparmor-denial rsyslog_not_denied", source)
+
+    def test_rsyslog_reads_names_a_file_the_parser_did_not_open(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root, remote="rsyslog.remote.d")
+            (etc / "rsyslog.remote.d").mkdir()
+            (etc / "rsyslog.remote.d" / "10-forward.conf").write_text("forward\n")
+            script = (f"set -euo pipefail; . {DEPLOY / 'steps' / 'lib.sh'}; "
+                      f"rsyslog_reads {etc}/rsyslog.conf {etc}/rsyslog.d/00-opsjobs.conf && echo read-ok; "
+                      f"rsyslog_reads {etc}/rsyslog.conf {etc}/rsyslog.remote.d/10-forward.conf || echo not-read")
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.split(), ["read-ok", "not-read"])
+            self.assertIn(f"rsyslog 가 읽지 않은 파일: {etc}/rsyslog.remote.d/10-forward.conf", done.stderr)
 
     def test_every_step_that_places_or_restarts_rsyslog_checks_before_placing(self) -> None:
         placing = set()
@@ -2703,7 +2893,8 @@ class StepScriptTests(unittest.TestCase):
 
     def test_syslog_check_line_is_skipped_once_forwarding_is_on(self) -> None:
         source = (DEPLOY / "steps" / "syslog.sh").read_text()
-        guard = source.index("rsyslog.remote.d/*.conf")
+        self.assertIn('remote_dir="$RSYSLOG_ETC/rsyslog.d/remote"', source)
+        guard = source.index('compgen -G "$remote_dir/*.conf"')
         self.assertLess(guard, source.index("logger -t"))
 
     def test_install_host_reports_a_failing_step(self) -> None:
