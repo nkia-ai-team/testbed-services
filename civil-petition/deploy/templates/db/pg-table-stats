@@ -2,7 +2,7 @@
 # 민원 표 통계 사본(설계 §6-4, 검토 세션 Q22 덧붙임 2, 리뷰 rv-t2c M2, 지휘 세션 11-17 D). 30분 고정 주기 타이머
 # (pg-table-stats.timer)가 평시부터 늘 돌리고 /var/lib/pg-table-stats/last.json 에 한 줄을 남긴다. 주입과 무관한
 # 주기라 DB 서버 로그의 이 읽기 줄이 주입 시각과 짝을 이루지 않는다. 러너는 이 파일을(늘 열린 ssh 연결의 5분 평시
-# 점검 읽기로 가져와) readiness 입력으로 쓰고, 읽은 시각(at)이 1시간보다 묵으면 막는다. 출력 꼴은 db-facts.sh 와 같고
+# 점검 읽기로 가져와) readiness 입력으로 쓰고, 읽은 시각(at)이 75분(타이머 두 번 놓침)보다 묵으면 막는다. 출력 꼴은 db-facts.sh 와 같고
 # 녹화 막기 행 수 문턱(rows_limit)을 함께 싣는다.
 #
 # db-facts.sh(T2 24시간 판정의 처음과 끝 두 번만)와 달리 가볍게 읽는다:
@@ -47,7 +47,7 @@ mkdir -p "$out_dir"
 tmp=$(mktemp "$out_dir/.last.XXXXXX")
 # 녹화 막기 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5)과 밤 배치 창(타이머 시각, 창 끝, 시간대. 놓친 창 세기용)은
 # 설치 때 부하 설정과 앱 설정에서 계산해 넣은 값이다(설계 §6-4).
-printf '{"host":"%s","at":"%s","db":%s,"rows_limit":{"limit":{{rows_limit}},"keep_rows":{{rows_limit_keep_rows}},"design_daily_writes":{{rows_limit_daily_writes}},"days":{{rows_limit_days}}},"archive_schedule":{"timer":"{{archive_timer}}","window_end":"{{archive_window_end}}","zone":"{{archive_zone}}"}}\n' \
+printf '{"host":"%s","at":"%s","db":%s,"rows_limit":{"limit":{{rows_limit}},"keep_rows":{{rows_limit_keep_rows}},"design_daily_writes":{{rows_limit_daily_writes}},"days":{{rows_limit_days}}},"archive_schedule":{"timer":"{{archive_timer}}","window_end":"{{archive_window_end}}","zone":"{{archive_zone}}","timer_zone":"{{archive_timer_zone}}"}}\n' \
     "$host" "$at" "$body" >"$tmp"
 chmod 0644 "$tmp"
 mv -f "$tmp" "$out_dir/last.json"

@@ -338,6 +338,7 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         context["archive_timer"] = schedule["timer"]
         context["archive_window_end"] = schedule["window_end"]
         context["archive_zone"] = schedule["zone"]
+        context["archive_timer_zone"] = schedule["timer_zone"]
     biz_nics = [nic for nic in host["nics"] if nic["net"] != management]
     lldp_ifaces = ",".join(nic["ifname"] for nic in biz_nics)
     context["lldpd_args"] = ("-x " if host["role"] == "router" else "") + f"-I {lldp_ifaces}"

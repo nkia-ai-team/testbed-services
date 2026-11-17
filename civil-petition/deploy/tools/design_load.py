@@ -53,7 +53,8 @@ def archive_settings() -> dict:
     props = _read("petition-web/src/main/resources/application.properties")
     values = dict(re.findall(r"^petition\.archive\.([a-z-]+)=(.+)$", props, re.M))
     timer = _read("deploy/templates/was/petition-archive.timer")
-    hour, minute = map(int, re.search(r"OnCalendar=\*-\*-\* (\d\d):(\d\d):00 ", timer).groups())
+    calendar = re.search(r"OnCalendar=\*-\*-\* (\d\d):(\d\d):00 (\S+)$", timer, re.M)
+    hour, minute = int(calendar.group(1)), int(calendar.group(2))
     start, end = (datetime.time(*map(int, part.split(":"))) for part in values["window"].split("-"))
     timer_at = datetime.time(hour, minute)
     if not (start <= timer_at < end):
@@ -61,6 +62,7 @@ def archive_settings() -> dict:
     open_sec = (end.hour * 60 + end.minute - hour * 60 - minute) * 60
     return {
         "zone": values["zone"].strip(),
+        "timer_zone": calendar.group(3),
         "keep_rows": int(values["keep-rows"]),
         "chunk_rows": int(values["chunk-rows"]),
         "pause_ms": int(values["pause-ms"]),
@@ -84,7 +86,9 @@ def rows_limit() -> dict:
 def archive_schedule() -> dict:
     """밤 배치 창(놓친 창 세기용, 설계 §6-4, 지휘 세션 11-17 결정): 타이머 시각과 창 끝, 시간대."""
     settings = archive_settings()
-    return {"timer": settings["timer"], "window_end": settings["window"].split("-")[1].strip(), "zone": settings["zone"]}
+    # 타이머 유닛의 달력 시간대도 싣는다. 앱 창 시간대와 다르면 러너가 그 이유로 막는다(리뷰 rv-t2c L15).
+    return {"timer": settings["timer"], "window_end": settings["window"].split("-")[1].strip(), "zone": settings["zone"],
+            "timer_zone": settings["timer_zone"]}
 
 
 def night_capacity(rows_per_second: float | None = None) -> dict:

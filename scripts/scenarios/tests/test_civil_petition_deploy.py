@@ -1481,8 +1481,14 @@ class StabilityCheckTests(unittest.TestCase):
         line = [l for l in file_of(db, "/usr/local/sbin/pg-table-stats").splitlines() if l.startswith("printf ")][0]
         self.assertIn('"rows_limit":{"limit":2304560,"keep_rows":2000000,"design_daily_writes":121824,"days":2.5}', line)
         # 놓친 밤 배치 창을 세는 데 쓰는 창(앱 설정의 타이머 시각, 창 끝, 시간대)도 줄이 싣는다(리뷰 M3).
-        self.assertEqual(design.archive_schedule(), {"timer": "02:20", "window_end": "05:00", "zone": "Asia/Seoul"})
-        self.assertIn('"archive_schedule":{"timer":"02:20","window_end":"05:00","zone":"Asia/Seoul"}', line)
+        self.assertEqual(design.archive_schedule(),
+                         {"timer": "02:20", "window_end": "05:00", "zone": "Asia/Seoul", "timer_zone": "Asia/Seoul"})
+        self.assertIn('"archive_schedule":{"timer":"02:20","window_end":"05:00","zone":"Asia/Seoul","timer_zone":"Asia/Seoul"}', line)
+        # 리뷰 L15: 타이머 유닛의 달력 시간대는 타이머 파일에서 읽는다(앱 zone 을 베끼지 않는다). 다르면 러너가 막는다.
+        with unittest.mock.patch.object(design, "_read", lambda relative: real_read(relative).replace(
+                "02:20:00 Asia/Seoul", "02:20:00 UTC") if relative.endswith("petition-archive.timer") else real_read(relative)):
+            self.assertEqual(design.archive_schedule()["timer_zone"], "UTC")
+            self.assertEqual(design.archive_schedule()["zone"], "Asia/Seoul")
 
     def test_representative_query_without_samples_fails(self) -> None:
         windows = self._windows()
