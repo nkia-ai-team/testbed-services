@@ -574,6 +574,8 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
         "# 체인 내용은 규칙 파일 하나(iptables-restore 꼴)에 있고, 어느 브리지가 먼저 올라오든 없을 때만 한 번에 만든다.",
         "# 브리지마다 자기 훅만 걸고 지우며, 체인은 훅이 하나도 남지 않았을 때만 지운다.",
         "# 적용과 되돌리기는 ifup, ifdown 에 이 파일의 브리지 이름만 준다(ifreload -a 는 기존 tb-nat 의 post-up 을 다시 돌린다).",
+        "# 브리지마다 IPv6 를 끈다(disable-ipv6). 66 의 ssh, Proxmox 웹은 IPv6 로도 듣고 ip6tables 는 비어 있어, 켜 두면",
+        "# VM 이 링크 로컬 주소로 하이퍼바이저 관리면에 닿는다. ifupdown2 는 브리지를 만든 뒤 올리기 전에 이 값을 건다.",
         "",
     ]
     for name in networks:
@@ -585,8 +587,9 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
             lines.append(f"\taddress {network['host_addr']}/{_prefix(network['cidr'])}")
         else:
             lines.append(f"iface {bridge} inet manual")
-        lines += ["\tbridge-ports none", "\tbridge-stp off", "\tbridge-fd 0"]
+        lines += ["\tbridge-ports none", "\tbridge-stp off", "\tbridge-fd 0", "\tdisable-ipv6 yes"]
         lines += [f"\tpost-up {command}" for command in _bridge_up_commands(inventory, network)]
+        lines.append(f"\tpost-up {_bridge_ipv6_off_check(bridge)}")
         for other_name, other in networks.items():
             if other.get("via") and ipaddress.ip_address(other["via"]) in ipaddress.ip_network(network["cidr"]):
                 lines.append(f"\tpost-up ip route replace {other['cidr']} via {other['via']} dev {bridge}")
@@ -713,7 +716,7 @@ def _bridge_up_commands(inventory: dict, network: dict) -> list[str]:
     hv = inventory["hypervisor"]
     chain, input_chain = hv["chain"], hv["input_chain"]
     bridge = network["bridge"]
-    closed = f"{{ ip link set dev {bridge} down; echo '{bridge}: 전용 체인을 걸지 못해 내림' >&2; false; }}"
+    closed = _closed(bridge, "전용 체인을 걸지 못해")
     commands = [
         f"{{ iptables -n -L {chain} >/dev/null 2>&1 && iptables -n -L {input_chain} >/dev/null 2>&1; }} "
         f"|| {{ test -r {rules_path(inventory)} && iptables-restore --noflush {rules_path(inventory)}; }} || {closed}"
@@ -722,6 +725,22 @@ def _bridge_up_commands(inventory: dict, network: dict) -> list[str]:
         builtin, rest = hook.split(" ", 1)
         commands.append(f"iptables -C {hook} 2>/dev/null || iptables -I {builtin} 1 {rest} || {closed}")
     return commands
+
+
+def _closed(bridge: str, reason: str) -> str:
+    return f"{{ ip link set dev {bridge} down; echo '{bridge}: {reason} 내림' >&2; false; }}"
+
+
+def _bridge_ipv6_off_check(bridge: str) -> str:
+    """브리지가 올라온 뒤 IPv6 가 꺼져 있고 IPv6 주소가 하나도 없는지 본다. 아니면 그 브리지를 내린다(fail closed).
+
+    끄는 일은 stanza 의 `disable-ipv6 yes` 가 한다(66 의 ifupdown2 는 브리지를 만든 뒤, 관리상 올리기 전에 건다).
+    이 줄은 그 속성을 모르는 ifupdown 이거나 값이 다시 켜진 경우에 IPv6 가 열린 채로 남지 않게 하는 확인이다.
+    """
+    return (
+        f"test \"$(cat /proc/sys/net/ipv6/conf/{bridge}/disable_ipv6 2>/dev/null)\" = 1 "
+        f"&& test -z \"$(ip -6 -o addr show dev {bridge})\" || {_closed(bridge, 'IPv6 가 꺼지지 않아')}"
+    )
 
 
 def _bridge_down_commands(inventory: dict, network: dict) -> list[str]:
@@ -737,12 +756,23 @@ def _bridge_down_commands(inventory: dict, network: dict) -> list[str]:
 
 
 def hypervisor_commands(inventory: dict, direction: str) -> list[str]:
-    """66 에서 이 테스트베드 브리지만 올리고 내리는 명령(ifreload -a 를 쓰지 않는다)."""
+    """66 에서 이 테스트베드 브리지만 올리고 내리는 명령(ifreload -a 를 쓰지 않는다).
+
+    ipv6-state: 브리지마다 `이름 disable_ipv6 IPv6주소수 MAC` 한 줄을 찍는 명령. 출력을 검사기
+    (tools/hv_iptables_check.py --ipv6-state)에 준다. 브리지가 없으면 disable_ipv6 와 MAC 자리가 `-`.
+    """
     bridges = [network["bridge"] for network in inventory["networks"].values()]
     if direction == "up":
         return [f"ifup {' '.join(bridges)}"]
     if direction == "down":
         return [f"ifdown {' '.join(reversed(bridges))}"]
+    if direction == "ipv6-state":
+        return [
+            f"for b in {' '.join(bridges)}; do "
+            "d=$(cat /proc/sys/net/ipv6/conf/$b/disable_ipv6 2>/dev/null); "
+            "m=$(ip -br link show dev $b 2>/dev/null | awk '{print $3}'); "
+            "printf '%s %s %s %s\\n' \"$b\" \"${d:--}\" \"$(ip -6 -o addr show dev $b 2>/dev/null | wc -l)\" \"${m:--}\"; done"
+        ]
     raise InventoryError(f"모르는 방향 {direction}")
 
 
@@ -751,7 +781,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inventory", required=True, type=Path)
     parser.add_argument("--out", type=Path, help="서버별 묶음을 쓸 디렉터리")
     parser.add_argument("--hypervisor", type=Path, help="66 쪽 파일을 경로 그대로 쓸 디렉터리")
-    parser.add_argument("--hypervisor-commands", choices=["up", "down"], help="66 에서 브리지를 올리고 내리는 명령만 찍는다")
+    parser.add_argument("--hypervisor-commands", choices=["up", "down", "ipv6-state"],
+                        help="66 에서 브리지를 올리고 내리는 명령, 또는 브리지 IPv6 상태를 뜨는 명령만 찍는다")
     parser.add_argument("--host", action="append", default=[], help="이 호스트만(여러 번)")
     parser.add_argument("--check", action="store_true", help="렌더만 해 보고 아무것도 쓰지 않는다")
     args = parser.parse_args(argv)

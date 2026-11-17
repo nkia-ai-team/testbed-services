@@ -64,13 +64,17 @@ S 는 `s5-executor`, `s5-operator.pub`, `s5-petition-db` 를 같은 꼴로 만�
 ```
 python3 civil-petition/deploy/render.py --inventory civil-petition/deploy/inventory/t.json --hypervisor /tmp/t4-hv
 # /tmp/t4-hv/etc/network/interfaces.d/t4-net        브리지 5개(vmbr7~11), 업무망 경로 3개, MASQUERADE 4, 러너 SNAT 1,
-#                                                   브리지마다 자기 훅(FORWARD 들고 남, 주소 있는 브리지는 INPUT)
+#                                                   브리지마다 자기 훅(FORWARD 들고 남, 주소 있는 브리지는 INPUT),
+#                                                   브리지마다 IPv6 끔(disable-ipv6 yes)과 그 확인(post-up)
 # /tmp/t4-hv/etc/network/t4-net.rules               전용 체인 T4-FWD, T4-IN 의 선언과 규칙 전부(iptables-restore 꼴)
 # /tmp/t4-hv/etc/chrony/conf.d/t4-net.conf          allow 192.168.127.0/24 (VM 이 66 시간을 따른다)
 # /tmp/t4-hv/etc/modules-load.d/t4-net-qdisc.conf   sch_netem, sch_tbf, sch_prio, cls_flower
 python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-commands up     # ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11
 python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-commands down   # ifdown vmbr11 vmbr10 vmbr9 vmbr8 vmbr7
+python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-commands ipv6-state   # 브리지마다 IPv6 상태 한 줄을 찍는 명령
 ```
+
+**브리지 IPv6 는 끈다.** 66 의 sshd(`[::]:22`), pveproxy(`*:8006`)는 IPv6 로도 듣고 ip6tables 는 비어 있다. 아래 INPUT, FORWARD 격리는 IPv4 만 막으므로, 브리지에 IPv6 링크 로컬 주소가 있으면 VM 이 그 주소로 66 관리면에 닿는다(11-18 ap-t2 적용 중 발견). 그래서 브리지마다 ifupdown2 속성 `disable-ipv6 yes` 를 둔다. 66 의 ifupdown2(3.3.0-1+pmx12)는 이 값을 브리지를 만든 뒤, 관리상 올리기 전(pre-up 의 address 애드온)에 걸므로 주소가 한 번도 생기지 않는다. 내렸다 올려도(ifdown 은 브리지를 지우고 ifup 이 다시 만든다), 재부팅 뒤에도 같다. 그 뒤 post-up 한 줄이 `disable_ipv6=1` 이고 IPv6 주소가 0 인지 보고, 아니면 그 브리지를 내리고 실패한다(체인 훅과 같은 fail closed). 기존 vmbr0, vmbr0.200, vmbr1 과 전역 값(`all`, `default`)은 건드리지 않는다.
 
 **`ifreload -a` 를 쓰지 않는다.** 66 의 ifupdown2 는 reload 때 모든 auto 인터페이스의 post-up 을 다시 돌려, 확인 없는 `iptables -A` 로 된 기존 `tb-nat` 의 122 MASQUERADE 와 8091 DNAT 를 한 벌씩 더 만든다(리뷰 rv-t2 지적 1, 66 ifupdown2 3.3.0 소스). 이 테스트베드 브리지 이름만 `ifup`, `ifdown` 으로 다룬다.
 
@@ -88,20 +92,23 @@ python3 civil-petition/deploy/render.py --inventory .../t.json --hypervisor-comm
 
 T2 만 적용하는 창이면 2 를 적용 직전에 뜬다. 되돌리기는 늘 T2 가 먼저다(T0 를 먼저 되돌리면 T2 의 down 확인이 T0 줄 차이로 실패한다).
 
-브리지는 격리 없이 올라오지 않는다: 규칙 파일이 없거나 `iptables-restore` 나 훅 걸기가 실패하면 post-up 이 그 브리지를 내리고 실패로 끝난다(재부팅 뒤 규칙 파일을 잃은 경우 포함). 그때는 `/etc/network/t4-net.rules` 를 다시 렌더해 놓고 그 브리지를 `ifup` 한다.
+브리지는 격리 없이 올라오지 않는다: 규칙 파일이 없거나 `iptables-restore` 나 훅 걸기가 실패하면 post-up 이 그 브리지를 내리고 실패로 끝난다(재부팅 뒤 규칙 파일을 잃은 경우 포함). 그때는 `/etc/network/t4-net.rules` 를 다시 렌더해 놓고 그 브리지를 `ifup` 한다. IPv6 가 꺼지지 않았을 때도 같다(`<브리지>: IPv6 가 꺼지지 않아 내림`). 그때는 망 파일에 `disable-ipv6 yes` 가 있는지, ifupdown2 가 그 속성을 아는지(`ifquery --check <브리지>` 의 `disable-ipv6` 줄)를 본다.
 
 66 에서(파일 넷을 같은 경로로 놓은 뒤):
 
 1. 사전 확인: `ip -br link | grep -E 'vmbr(7|8|9|10|11)'` 빈 출력, `iptables-save > /root/t4-net.before`(적용 전 기준, T0 와 같은 창이면 T0 적용 뒤), chrony 의 `confdir /etc/chrony/conf.d` 있음(11-16 리뷰 조회로 있음).
 2. `ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11`, `systemctl restart chrony`, `modprobe` 넷.
 3. 확인(설계 §10 T2 "기존 테스트베드 영향 없음"):
-   - `iptables-save > /root/t4-net.after` 뒤 `python3 civil-petition/deploy/tools/hv_iptables_check.py --inventory .../t.json --mode up --before t4-net.before --after t4-net.after` 가 `PASS up`(지워진 줄 0, 늘어난 줄은 전용 체인과 MASQUERADE 4, SNAT 1 뿐, 같은 줄 두 벌 0).
+   - `iptables-save > /root/t4-net.after`, `--hypervisor-commands ipv6-state` 가 찍은 명령을 66 에서 돌려 `/root/t4-net.ipv6` 에 받는다. 셋을 가져와 `python3 civil-petition/deploy/tools/hv_iptables_check.py --inventory .../t.json --mode up --before t4-net.before --after t4-net.after --ipv6-state t4-net.ipv6` 가 `PASS up`(지워진 줄 0, 늘어난 줄은 전용 체인과 MASQUERADE 4, SNAT 1 뿐, 같은 줄 두 벌 0, 브리지 5개 모두 `disable_ipv6=1` 과 IPv6 주소 0). `--ipv6-state` 없이는 검사기가 up 을 거절한다. PASS 와 함께 찍히는 `IPV6` 줄의 링크 로컬 주소는 §7 관리망 격리 (3) 에 쓴다.
    - `iptables -t nat -S | grep -c 192.168.122.0/24` 가 1.
    - `iptables -S FORWARD` 정책 ACCEPT 그대로, 앞쪽에 T4-FWD 로 가는 줄 10개(브리지 5개의 들고 남).
-   - tb-ops 에서 `curl -s -o /dev/null -w '%{http_code}' http://192.168.200.66:8091/`, 사내망 핑, 기존 VM 6대의 바깥 통신.
+   - 러너 API: 104 에서 `curl -s -o /dev/null -w '%{http_code}' http://192.168.200.66:8091/` 가 200, tb-ops 에서 `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8091/` 가 200. tb-ops 에서 192.168.200.66:8091 로 묻는 길은 T2 전에도 안 되는 길이라 판정에 쓰지 않는다(66 의 8091 DNAT 는 `-i vmbr0.200` 에만 걸려 있고 66 자신은 8091 을 듣지 않아 vmbr1 에서 오면 거절된다, 11-18 ap-t2 확인).
+   - 사내망 핑, 기존 VM 6대의 바깥 통신.
 4. 되돌리기(VM 을 지운 뒤): **파일을 지우기 전에** `ifdown vmbr11 vmbr10 vmbr9 vmbr8 vmbr7`(pre-down 이 훅, NAT, 경로를 지우고 마지막 훅이 빠질 때 체인도 지운다). 그 다음 `rm` 파일 넷, `systemctl restart chrony`. 끝으로 `iptables-save > /root/t4-net.rollback` 와 `hv_iptables_check.py --mode down --before t4-net.before --after t4-net.rollback` 가 `PASS down`.
 
-S: `--inventory .../s.json`, 파일 `s5-net`, `s5-net.rules`(브리지 vmbr12~14, MASQUERADE 2, SNAT 1, 사용자망 → 웹 80 허용), `ifup vmbr12 vmbr13 vmbr14`.
+**IPv6 끄기가 없던 판으로 이미 브리지를 올린 66 에 이 판을 놓을 때.** 파일 넷을 새로 렌더해 같은 경로에 놓고 `ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11` 을 한 번 더 돈다(post-up 은 다시 돌아도 한 벌, `bridge-ports-condone-regex` 기본값이 VM 의 tap 포트를 떼지 않는다). address 애드온이 `disable_ipv6=1` 을 써 이미 붙은 링크 로컬이 지워진다. 그 뒤 위 3 의 확인(기준은 처음의 `t4-net.before`)을 다시 한다. 손으로 건 `sysctl -w net.ipv6.conf.<브리지>.disable_ipv6=1` 이 있으면 같은 값이라 그대로 두어도 되고, 재부팅이나 ifdown, ifup 뒤에는 망 파일의 속성이 같은 값을 건다. VM 이 아직 붙지 않았으면 `ifdown` 뒤 `ifup` 으로 "다시 만들어도 주소가 생기지 않음" 까지 본다(VM 이 붙은 뒤에는 ifdown 이 브리지를 지워 tap 이 떨어지므로 하지 않는다).
+
+S: `--inventory .../s.json`, 파일 `s5-net`, `s5-net.rules`(브리지 vmbr12~14, MASQUERADE 2, SNAT 1, 사용자망 → 웹 80 허용, 브리지마다 IPv6 끔), `ifup vmbr12 vmbr13 vmbr14`, 확인은 `--inventory .../s.json` 의 `ipv6-state` 와 `--ipv6-state`.
 
 ## 5. VM 생성
 
@@ -183,10 +190,10 @@ S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같
 | 조건 | 명령(어디서) | 기대 |
 |---|---|---|
 | VM 6대 크기와 주소 | 66 `qm list`, 각 VM `ip -br addr` | §2-2 표 |
-| 업무망 경로 | 각 서버 `ip route get 192.168.126.11` 등 | via 라우터 .1. 66 `ip -br addr show vmbr8 vmbr9 vmbr10` 주소 0 |
+| 업무망 경로 | 각 서버 `ip route get 192.168.126.11` 등 | via 라우터 .1. 66 `ip -br addr show vmbr8 vmbr9 vmbr10` 주소 0(IPv4, IPv6 모두. IPv6 는 §4 의 `PASS up` 이 브리지 5개 모두 보았다) |
 | 관리망 격리 (1) | web01 `curl -m 3 --interface 192.168.124.11 http://192.168.127.31:22` | 실패 |
 | 관리망 격리 (2) | web01, loadgen `ping -I ens18 -c 3 192.168.127.1`, `192.168.127.2` | 실패, 라우터 `nft list chain inet mgmtguard forward` 의 `oifname ... counter drop` 패킷 수 증가 |
-| 관리망 격리 (3) | 각 VM `nc -z -w 3 192.168.127.1 22`, `8006` | 실패 |
+| 관리망 격리 (3) | IPv4: 각 VM `nc -z -w 3 192.168.127.1 22`, `8006`. IPv6: §4 의 3 확인을 지금 상태로 다시(기준 `t4-net.before`, 새 `iptables-save`, 새 `ipv6-state` 출력) 돌려 `PASS up`, 각 VM 에서 자기 NIC 마다 그 NIC 가 붙은 브리지의 `IPV6` 줄 링크 로컬 주소로 `nc -6 -z -w 3 '<주소>%<NIC>' 22`, `8006` 과 `ping -6 -c 2 -w 3 -I <NIC> ff02::1` 의 응답 출발지 | IPv4, IPv6 모두 연결 실패, 멀티캐스트 핑 응답 출발지에 그 링크 로컬 주소 없음 |
 | 관리망 격리 (4) | 각 VM `ping -I ens19 -c 2 192.168.230.119`, `10.250.0.1` | 실패 |
 | 관리망 격리 (5) | 119(읽기) `ping -c 2 192.168.127.21` | 실패 |
 | 서비스 기동 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `sha256sum -c /var/lib/petition-deploy/war.sha256` | active, OK |
@@ -296,3 +303,4 @@ sudo systemctl start loadgen.service
 - 2026-11-18 KST, v4 T2NIC(ag-t2nic): §5 NIC 이름(새 VM 은 eth0 ~ , cloud-init 의 set-name), §6-1 network 단계가 MAC 맞춤과 set-name 으로 인벤토리 이름(ens18 ~ )을 주는 순서, 되돌림 타이머, 확인과 세션이 끊겼을 때.
 - 2026-11-18 KST, v4 T2NIC 2회차(리뷰 rv-t2nic M1, M2, L1 ~ L3): §6-1 이름에 기대는 단계의 첫 줄 이름 확인과 그 제한, 손 되돌리기는 firewall 앞에서만과 되돌린 뒤 순서, 앞 되돌림이 남았을 때 멈춤, 적용 120초 상한과 확정 전 발화 확인, 서버마다 `plan.py --phase nics` 대조, 확인 ssh 의 known_hosts.
 - 2026-11-18 KST, v4 T2NIC 3회차(재리뷰 rv-t2nic N1): §6-1 손 되돌리기에 보호 표 파일을 옮기는 줄(재부팅 뒤 다시 막지 않게).
+- 2026-11-18 KST, v4 T2V6(ag-t2v6): ap-t2 적용 중 발견 두 가지. §4 브리지마다 IPv6 끔(`disable-ipv6 yes`)과 post-up 확인, 검사기 `--ipv6-state`(up 에서 반드시), 이미 올린 66 에 이 판을 놓는 법, §7 관리망 격리 (3) 에 IPv6 확인과 업무망 브리지 주소 0 에 IPv6 포함. §4 확인의 러너 API 판정을 실제로 되는 길(104 → 200.66:8091, tb-ops → 127.0.0.1:8091)로 바꿈.

@@ -474,16 +474,55 @@ class HypervisorRenderTests(unittest.TestCase):
         self.assertIn("-s 192.168.132.10 -d 192.168.131.11 -p tcp --dport 80 -j ACCEPT", s_rules)
         self.assertIn("ifup vmbr12 vmbr13 vmbr14", render.hypervisor_commands(inventory(S_INV), "up"))
 
+    def test_every_testbed_bridge_turns_ipv6_off_and_no_other_interface_is_touched(self) -> None:
+        # 66 의 ssh, Proxmox 웹이 IPv6 로도 듣고 ip6tables 가 비어 있어, 브리지 IPv6 가 켜져 있으면 관리망 격리가 샌다.
+        for path, bridges in ((T_INV, ["vmbr7", "vmbr8", "vmbr9", "vmbr10", "vmbr11"]), (S_INV, ["vmbr12", "vmbr13", "vmbr14"])):
+            inv = inventory(path)
+            files = render.hypervisor_files(inv)
+            net = files[inv["hypervisor"]["file"]]
+            stanzas = re.split(r"^auto ", net, flags=re.M)[1:]
+            self.assertEqual([stanza.split()[0] for stanza in stanzas], bridges)
+            for stanza in stanzas:
+                bridge = stanza.split()[0]
+                lines = stanza.splitlines()
+                # ifupdown2 속성으로 끈다(브리지를 만든 뒤 관리상 올리기 전에 걸린다). 한 번만.
+                self.assertEqual(lines.count("\tdisable-ipv6 yes"), 1, bridge)
+                self.assertLess(lines.index("\tdisable-ipv6 yes"), min(i for i, l in enumerate(lines) if l.startswith("\tpost-up ")))
+                # 올라온 뒤 꺼짐과 주소 0 을 확인하고, 아니면 그 브리지를 내리고 실패한다.
+                check = [l for l in lines if l.startswith("\tpost-up ") and "disable_ipv6" in l]
+                self.assertEqual(len(check), 1, bridge)
+                self.assertIn(f"/proc/sys/net/ipv6/conf/{bridge}/disable_ipv6", check[0])
+                self.assertIn(f"ip -6 -o addr show dev {bridge}", check[0])
+                self.assertIn(f"ip link set dev {bridge} down", check[0])
+                self.assertTrue(check[0].rstrip().endswith("false; }"))
+                post = [l for l in lines if l.startswith("\tpost-up ")]
+                routes_and_nat = [i for i, l in enumerate(post) if "ip route" in l or "-t nat" in l]
+                if routes_and_nat:
+                    self.assertLess(post.index(check[0]), min(routes_and_nat))
+            # 기존 브리지(vmbr0, vmbr0.200, vmbr1)와 전역 값(all, default)에는 IPv6 줄이 없다.
+            self.assertEqual(net.count("disable-ipv6"), len(bridges) + 1)   # 머리 주석 한 번
+            for other in ("vmbr0", "vmbr0.200", "vmbr1", "all", "default"):
+                self.assertNotIn(f"/conf/{other}/", net)
+                self.assertNotIn(f"conf.{other}.", net)
+            self.assertNotRegex(net, r"(?m)^auto (vmbr0|vmbr1)\b")
+            self.assertFalse(any(dest.startswith("/etc/sysctl") for dest in files))
+            self.assertEqual(
+                re.findall(r"for b in ([^;]+);", render.hypervisor_commands(inv, "ipv6-state")[0]), [" ".join(bridges)]
+            )
+
 
 IPTABLES_SCRIPT = r'''
 import json, re, subprocess, sys
-net_file, rules_tmp, rules_path = sys.argv[1], sys.argv[2], sys.argv[3]
+net_file, rules_tmp, rules_path, ipv6_cmd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 stanzas, current = {}, None
 for line in open(net_file, encoding="utf-8"):
     m = re.match(r"auto (\S+)", line)
     if m:
         current = m.group(1)
-        stanzas[current] = {"up": [], "down": []}
+        stanzas[current] = {"up": [], "down": [], "disable_ipv6": False}
+        continue
+    if current and line.rstrip("\n") == "\tdisable-ipv6 yes":
+        stanzas[current]["disable_ipv6"] = True
         continue
     m = re.match(r"\t(post-up|pre-down) (.*)", line)
     if m and current:
@@ -498,23 +537,45 @@ def down(name):
     for c in stanzas[name]["down"]: run(c)
 def save():
     return subprocess.run(["iptables-save"], capture_output=True, text=True, check=True).stdout
+def create(name, honour_disable_ipv6=True):
+    # ifupdown2 의 address 애드온처럼 disable-ipv6 를 링크를 만든 뒤, 관리상 올리기 전에 건다.
+    subprocess.run(["ip", "link", "add", name, "type", "dummy"], check=True)
+    if honour_disable_ipv6 and stanzas.get(name, {}).get("disable_ipv6"):
+        with open(f"/proc/sys/net/ipv6/conf/{name}/disable_ipv6", "w") as handle:
+            handle.write("1")
+    subprocess.run(["ip", "link", "set", name, "up"], check=True)
+def ipv6_state():
+    return subprocess.run(["sh", "-c", ipv6_cmd], capture_output=True, text=True, check=True).stdout
+def link_ipv6(name):
+    disabled = open(f"/proc/sys/net/ipv6/conf/{name}/disable_ipv6").read().strip()
+    addrs = subprocess.run(["ip", "-6", "-o", "addr", "show", "dev", name], capture_output=True, text=True, check=True).stdout
+    return {"disable_ipv6": disabled, "addrs": len(addrs.splitlines())}
 def legacy():
     # 66 의 기존 tb-nat 과 같은 꼴(확인 없는 -A).
     subprocess.run("iptables -t nat -A POSTROUTING -s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE", shell=True, check=True)
+create("vmbr1")                         # 66 의 기존 브리지 자리(IPv6 를 건드리지 않아야 한다)
 for name in stanzas:
-    subprocess.run(["ip", "link", "add", name, "type", "dummy"], check=True)
-    subprocess.run(["ip", "link", "set", name, "up"], check=True)
+    create(name)
 legacy()
 subprocess.run("iptables -t nat -A PREROUTING -d 192.168.200.66/32 -i vmbr0.200 -p tcp --dport 8091 -j DNAT --to-destination 192.168.122.20:8091", shell=True, check=True)
 out = {"order": list(stanzas), "before": save()}
 for name in stanzas: up(name)
 for name in stanzas: up(name)          # 같은 post-up 이 다시 돌아도 한 벌
 out["up"] = save()
+import time
+time.sleep(0.3)                          # 링크 로컬이 생길 틈
+out["ipv6_up"] = ipv6_state()
+out["links_up"] = {name: link_ipv6(name) for name in stanzas}
+out["legacy_link"] = link_ipv6("vmbr1")
 mgmt = list(stanzas)[-1]
 down(mgmt)
 out["mgmt_down"] = save()
+subprocess.run(["ip", "link", "del", mgmt], check=True)   # ifdown 은 브리지를 지운다
+create(mgmt)                                              # ifup 이 다시 만든다
 up(mgmt)
 out["mgmt_up_again"] = save()
+time.sleep(0.3)
+out["mgmt_ipv6_again"] = link_ipv6(mgmt)
 subprocess.run(["iptables-restore", "--noflush", rules_tmp], check=True)   # 규칙 다시 넣기
 out["reloaded"] = save()
 legacy()                                 # ifreload -a 가 tb-nat 을 다시 돌린 꼴
@@ -528,9 +589,22 @@ os.rename(rules_tmp, rules_tmp + ".gone")
 first = list(stanzas)[1]
 subprocess.run(["ip", "link", "set", first, "up"], check=True)
 failed = [subprocess.run(["sh", "-c", c], capture_output=True, text=True).returncode
-          for c in stanzas[first]["up"] if not c.startswith("ip route") and "-t nat" not in c]
+          for c in stanzas[first]["up"]
+          if not c.startswith("ip route") and "-t nat" not in c and "disable_ipv6" not in c]
 link = subprocess.run(["ip", "-j", "link", "show", first], capture_output=True, text=True, check=True).stdout
 out["missing_rules"] = {"failed": failed, "link": json.loads(link)[0]["flags"], "save": save()}
+# IPv6 가 켜진 채로 올라온 브리지(disable-ipv6 를 모르는 ifupdown 의 꼴)는 post-up 확인이 내리고 실패한다.
+os.rename(rules_tmp + ".gone", rules_tmp)
+open_one = list(stanzas)[2]
+subprocess.run(["ip", "link", "del", open_one], check=True)
+create(open_one, honour_disable_ipv6=False)
+time.sleep(0.3)
+out["ipv6_open_state"] = ipv6_state()
+codes = [subprocess.run(["sh", "-c", c], capture_output=True, text=True) for c in stanzas[open_one]["up"]
+         if not c.startswith("ip route") and "-t nat" not in c]
+link = subprocess.run(["ip", "-j", "link", "show", open_one], capture_output=True, text=True, check=True).stdout
+out["ipv6_open"] = {"codes": [c.returncode for c in codes], "stderr": "".join(c.stderr for c in codes),
+                    "link": json.loads(link)[0]["flags"], "check_line": [c for c in stanzas[open_one]["up"] if "disable_ipv6" in c]}
 print(json.dumps(out))
 '''
 
@@ -548,7 +622,8 @@ class HypervisorIptablesKernelTests(unittest.TestCase):
             net.write_text(files[cls.inv["hypervisor"]["file"]])
             rules.write_text(files[render.rules_path(cls.inv)])
             done = subprocess.run(["unshare", "-rn", sys.executable, "-c", IPTABLES_SCRIPT, str(net), str(rules),
-                                   render.rules_path(cls.inv)], capture_output=True, text=True, timeout=120)
+                                   render.rules_path(cls.inv), render.hypervisor_commands(cls.inv, "ipv6-state")[0]],
+                                  capture_output=True, text=True, timeout=120)
         assert done.returncode == 0, done.stderr
         cls.out = json.loads(done.stdout.strip().splitlines()[-1])
 
@@ -594,6 +669,109 @@ class HypervisorIptablesKernelTests(unittest.TestCase):
     def test_reloading_the_rules_file_replaces_the_chains_in_place(self) -> None:
         self.assertEqual(hvcheck.lines_of(self.out["reloaded"]), hvcheck.lines_of(self.out["up"]))
 
+    def test_bridges_come_up_without_ipv6_and_the_legacy_bridge_keeps_it(self) -> None:
+        for name, state in self.out["links_up"].items():
+            self.assertEqual(state, {"disable_ipv6": "1", "addrs": 0}, name)
+        # 이 테스트베드 것이 아닌 브리지는 그대로(IPv6 켜짐, 링크 로컬 있음).
+        self.assertEqual(self.out["legacy_link"]["disable_ipv6"], "0")
+        self.assertGreaterEqual(self.out["legacy_link"]["addrs"], 1)
+        # 내렸다 지우고 다시 만들어 올려도 주소가 생기지 않는다(ifdown, ifup).
+        self.assertEqual(self.out["mgmt_ipv6_again"], {"disable_ipv6": "1", "addrs": 0})
+
+    def test_the_ipv6_check_passes_on_the_real_state_and_names_the_would_be_link_local(self) -> None:
+        problems, notes = hvcheck.check_ipv6(self.inv, self.out["ipv6_up"])
+        self.assertEqual(problems, [])
+        self.assertEqual([note.split()[0] for note in notes], ["vmbr7", "vmbr8", "vmbr9", "vmbr10", "vmbr11"])
+        self.assertTrue(all(re.search(r"링크 로컬 fe80::\S+$", note) for note in notes), notes)
+
+    def test_a_bridge_left_with_ipv6_on_is_taken_down_and_fails_the_check(self) -> None:
+        result = self.out["ipv6_open"]
+        self.assertEqual(len(result["check_line"]), 1)
+        self.assertNotEqual(result["codes"][-1], 0)
+        self.assertTrue(all(code == 0 for code in result["codes"][:-1]), result["codes"])
+        self.assertIn("vmbr9: IPv6 가 꺼지지 않아 내림", result["stderr"])
+        self.assertNotIn("UP", result["link"])
+        problems, _ = hvcheck.check_ipv6(self.inv, self.out["ipv6_open_state"])
+        self.assertIn("vmbr9 IPv6 가 켜져 있다(disable_ipv6=0)", problems)
+        self.assertTrue(any(re.fullmatch(r"vmbr9 에 IPv6 주소 [1-9]\d* 개", p) for p in problems), problems)
+        self.assertFalse(any(p.startswith(("vmbr7 ", "vmbr8 ", "vmbr10 ", "vmbr11 ")) for p in problems), problems)
+
+
+class HypervisorIpv6CheckTests(unittest.TestCase):
+    """검사기의 브리지 IPv6 검사(있음, 없음 둘 다)와 명령줄."""
+
+    GOOD = "\n".join(f"{b} 1 0 be:a7:16:7f:dc:a5" for b in ("vmbr7", "vmbr8", "vmbr9", "vmbr10", "vmbr11")) + "\n"
+
+    def setUp(self) -> None:
+        self.inv = inventory(T_INV)
+
+    def test_all_bridges_off_and_without_addresses_pass(self) -> None:
+        problems, notes = hvcheck.check_ipv6(self.inv, self.GOOD)
+        self.assertEqual(problems, [])
+        self.assertIn("vmbr7 disable_ipv6=1, IPv6 주소 0, 켜져 있었다면 생겼을 링크 로컬 fe80::bca7:16ff:fe7f:dca5", notes)
+
+    def test_each_kind_of_leak_fails(self) -> None:
+        cases = {
+            "vmbr8 0 0 be:a7:16:7f:dc:a5": "vmbr8 IPv6 가 켜져 있다(disable_ipv6=0)",
+            "vmbr8 1 2 be:a7:16:7f:dc:a5": "vmbr8 에 IPv6 주소 2 개",
+            "vmbr8 - 0 -": "vmbr8 가 없다(IPv6 상태를 뜰 때 브리지가 올라와 있지 않았다)",
+            "vmbr8 1 0": "IPv6 상태 줄 꼴이 다르다(이름 disable_ipv6 주소수 MAC): vmbr8 1 0",
+            "vmbr8 1 0 zz": "vmbr8 MAC 꼴이 다르다: zz",
+        }
+        for line, expected in cases.items():
+            text = self.GOOD.replace("vmbr8 1 0 be:a7:16:7f:dc:a5", line)
+            problems, _ = hvcheck.check_ipv6(self.inv, text)
+            self.assertIn(expected, problems, line)
+        missing = self.GOOD.replace("vmbr11 1 0 be:a7:16:7f:dc:a5\n", "")
+        self.assertIn("IPv6 상태에 vmbr11 줄이 없다", hvcheck.check_ipv6(self.inv, missing)[0])
+        doubled = self.GOOD + "vmbr7 1 0 be:a7:16:7f:dc:a5\n"
+        self.assertIn("IPv6 상태에 vmbr7 이 두 번 있다", hvcheck.check_ipv6(self.inv, doubled)[0])
+        # 다른 테스트베드의 상태만 준 경우.
+        s_only = "\n".join(f"{b} 1 0 be:a7:16:7f:dc:a5" for b in ("vmbr12", "vmbr13", "vmbr14"))
+        self.assertEqual(len(hvcheck.check_ipv6(self.inv, s_only)[0]), 5)
+
+    def test_eui64_matches_the_address_the_kernel_gave_vmbr7_on_66(self) -> None:
+        # 11-18 01:24 KST 66 조회: vmbr7 MAC be:a7:16:7f:dc:a5 에 fe80::bca7:16ff:fe7f:dca5 가 붙어 있었다.
+        self.assertEqual(hvcheck.eui64_link_local("be:a7:16:7f:dc:a5"), "fe80::bca7:16ff:fe7f:dca5")
+        self.assertEqual(hvcheck.eui64_link_local("02:00:00:00:00:01"), "fe80::ff:fe00:1")
+
+    def _main(self, *extra: str, ipv6: str | None = None, mode: str = "up") -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "before").write_text("*filter\nCOMMIT\n")
+            (root / "after").write_text("*filter\nCOMMIT\n")
+            args = ["--inventory", str(T_INV), "--mode", mode, "--before", str(root / "before"), "--after", str(root / "after")]
+            if ipv6 is not None:
+                (root / "ipv6").write_text(ipv6)
+                args += ["--ipv6-state", str(root / "ipv6")]
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    code = hvcheck.main(args + list(extra))
+                except SystemExit as stop:
+                    code = int(stop.code)
+            return code, out.getvalue(), err.getvalue()
+
+    def test_up_without_the_ipv6_state_is_refused(self) -> None:
+        code, out, err = self._main()
+        self.assertEqual(code, 2)
+        self.assertNotIn("PASS", out)
+        self.assertIn("--ipv6-state", err)
+
+    def test_down_with_the_ipv6_state_is_refused(self) -> None:
+        code, out, err = self._main(ipv6=self.GOOD, mode="down")
+        self.assertEqual(code, 2)
+        self.assertIn("--mode up 에서만", err)
+
+    def test_up_reports_ipv6_problems_together_with_iptables_problems(self) -> None:
+        # 빈 before, after 라 iptables 쪽은 MASQUERADE, SNAT, 체인 수 부족으로 실패한다. IPv6 줄도 함께 나와야 한다.
+        code, out, _ = self._main(ipv6=self.GOOD.replace("vmbr9 1 0", "vmbr9 0 1"))
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL vmbr9 IPv6 가 켜져 있다(disable_ipv6=0)", out)
+        self.assertIn("FAIL MASQUERADE 0 != 4", out)
+        self.assertNotIn("IPV6 ", out)
+        self.assertNotIn("PASS", out)
+
 
 class HypervisorApplyCommandTests(unittest.TestCase):
     def test_bring_up_and_down_only_this_testbeds_bridges(self) -> None:
@@ -609,6 +787,15 @@ class HypervisorApplyCommandTests(unittest.TestCase):
                     self.assertRegex(line, r"쓰지 않는다|다시 돌려", line)
         self.assertIn("hv_iptables_check.py --inventory .../t.json --mode up", runbook)
         self.assertIn("--mode down", runbook)
+        # up 확인에는 IPv6 상태가 함께 간다(검사기가 없으면 거절한다).
+        for line in runbook.splitlines():
+            if "--mode up" in line and "hv_iptables_check.py" in line:
+                self.assertIn("--ipv6-state", line)
+        self.assertIn("--hypervisor-commands ipv6-state", runbook)
+        # tb-ops 에서 200.66:8091 은 T2 전에도 안 되는 길이다(DNAT 는 -i vmbr0.200 에만, 66 은 8091 을 듣지 않음).
+        for line in runbook.splitlines():
+            if "tb-ops" in line and "192.168.200.66:8091" in line:
+                self.assertRegex(line, r"안 되는|거절")
 
     def test_every_bridge_creates_the_chains_when_missing_and_owns_only_its_hooks(self) -> None:
         inv = inventory(T_INV)
