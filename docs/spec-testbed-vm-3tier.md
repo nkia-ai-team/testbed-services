@@ -189,6 +189,7 @@ Q7 을 원천별로 나눈 이유: v1 은 "러너 계정 로그인, `bash -s`, �
 - syslog: 라우터와 서버 4대의 rsyslog 가 119 터널 주소 10.250.0.1:514 로 보낸다. 프로토콜은 E3 결정을 따른다. 지금 119 는 UDP 514 만 열려 있다(조회: `collector-syslog` hostNetwork, UDP 만). **loadgen 은 119 로 아무것도 보내지 않는다**(rsyslog 전달 없음, k6 출력은 로컬 파일). 기존 tb-runner 의 k6 진행 출력이 하루 42만~55만 행 119 로 가는 선례가 있고, 그 출력에는 러너 판정 신호(비정상 비율)가 담기기 때문이다.
 - rsyslog 첫 규칙: 실행기 배관 줄을 로컬 파일로 돌리고 멈춘다(§6-2). 이 규칙은 파일 쓰기와 119 전달보다 앞에 둔다.
 - rsyslog 설정 자리: 첫 규칙은 `/etc/rsyslog.d/00-opsjobs.conf`, 119 전달은 `/etc/rsyslog.d/remote/10-forward.conf` 이고 `/etc/rsyslog.conf` 끝의 `include(file="/etc/rsyslog.d/remote/*.conf")` 가 모든 로컬 규칙(패키지 파일 포함) 뒤에 읽는다. `remote` 는 하위 디렉터리라 `/etc/rsyslog.d/*.conf` 포함에 들지 않는다. Ubuntu 의 rsyslogd AppArmor 프로필(고객 기본값이라 고치지 않는다)이 설정으로 읽게 두는 곳이 `/etc/rsyslog.conf` 와 `/etc/rsyslog.d/**` 뿐이어서 그 밖(예: `/etc/rsyslog.remote.d/`)에 두면 `mode="optional"` 포함이 오류 없이 읽히지 않는다(v4 T2RSYS 리뷰 H2). 설치 점검은 파일이 있는지가 아니라 rsyslog 가 그 파일을 실제로 읽는지와 AppArmor 거부 0 을 본다.
+- rsyslog AppArmor 조각: 첫 규칙의 uid 갈래를 위해 켠 로컬 소켓 주석(`SysSock.Annotate`)은 줄을 보낸 프로세스의 `/proc/<pid>/comm`, `cmdline` 을 열고 `exe` 를 readlink(ptrace read 검사)한다. 고객 기본 rsyslogd 프로필은 이것을 허용하지 않아 로컬 줄마다 거부를 감사 기록으로 남기고, 그 커널 줄은 119 로 가 녹화에 이 테스트베드만의 흔적이 된다. 그래서 프로필의 포함 자리 `/etc/apparmor.d/rsyslog.d/annotate-proc` 에 그 읽기를 감사 없이 거부하는 deny 규칙 넷(`/proc/[0-9]*/comm`, `cmdline`, `exe` 읽기, `ptrace (read)`)을 두고 설치의 `syslog` 단계가 rsyslog 재시작 전에 프로필을 다시 읽는다(`apparmor_parser -r`, 실패하면 조각을 되돌림). 허용 범위는 넓히지 않고 다른 거부는 그대로 감사된다(지휘 세션 결정, v4 T2RSYS 리뷰). `$!uid` 는 소켓 자격 증명(`SCM_CREDENTIALS`, journald 가 넘겨 줌)에서 오고 `/proc` 를 읽지 않으므로(rsyslog 8.2312.0 `imuxsock.c` 의 주석 부분: uid 는 `cred->uid`, `/proc` 은 appname, exe, cmd 만) 이 거부와 무관하다. 그 세 속성은 비고 첫 규칙은 쓰지 않는다. `syslog` 단계와 `verify` 가 rsyslog 가 선 뒤 `/proc` 거부 감사 줄 0 을 본다.
 - 커널 모듈 미리 적재: 라우터, 서버 4대, 66 에 `sch_netem`, `sch_tbf`, `sch_prio`, `cls_flower` 를 T2 에서 적재하고 `/etc/modules-load.d/` 에 한 줄씩 둔다. sch_netem 은 적재 때 `netem: version 1.3`, cls_u32 는 `u32 classifier` 를 커널 로그에 찍고 그 줄이 119 로 간다(N1 확인 필요 1). 분류기는 printk 문자열이 없는 flower 만 쓴다. 적재는 녹화 밖 정비 창에서 하고, 부팅 때 찍히는 줄도 녹화 밖이다. 예외는 라우터 재시작 변형(`router.resource`)이다. 녹화 구간 안에서 라우터를 부팅하므로 `netem: version` 줄이 그 구간의 `syslog_local` 에 들어갈 수 있다(주입 도구 이름이 드러나는 줄, 원칙 8). T4 에서 재고, 닿으면 rsyslog 첫 규칙에 그 커널 줄 거르기를 더하기 전에는 그 변형을 녹화에 쓰지 않는다. Ubuntu 24.04 템플릿 커널(가상 머신용 판이면 `linux-modules-extra` 여부)에 sch_netem 이 있는지 T2 에서 먼저 본다.
 
 ### 2-5. S 와 같이 쓰는 코드의 변수화 (T2 요구, S 문서 결정 5)
@@ -915,3 +916,9 @@ T2 의 66 호스트 망 변경(브리지, wg0, NAT 와 FORWARD 규칙, 전용 �
 |---|---|
 | §2-4 rsyslog 설정 자리 | 119 전달 설정을 `/etc/rsyslog.d/remote/` 로(옛 `/etc/rsyslog.remote.d/` 는 AppArmor rsyslogd 프로필 밖이라 읽히지 않음), `rsyslog.conf` 끝 포함으로 모든 로컬 규칙 뒤, 설치 점검은 실제 읽기와 AppArmor 거부 0 |
 | §6-2 rsyslog 첫 규칙 | 파일 자리, uid 갈래의 journald 경유 확인을 설치 중에 |
+
+2026-11-18 KST, v4 T2RSYS 3회차(리뷰 rv-t2rsys 2회차 중간 보고, 지휘 세션 결정). 결정은 바꾸지 않았다.
+
+| 바뀐 곳 | 내용 |
+|---|---|
+| §2-4 rsyslog AppArmor 조각 | 로컬 소켓 주석의 `/proc` 읽기를 감사 없이 거부하는 deny 조각과 그 까닭(감사 줄이 119 로 가는 테스트베드 흔적), `$!uid` 가 소켓 자격 증명에서 와 무관함, 설치와 verify 의 거부 0 확인 |

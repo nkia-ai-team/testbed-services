@@ -5,6 +5,8 @@ remote_dir="$RSYSLOG_ETC/rsyslog.d/remote"
 install -d -m 0755 "$remote_dir"
 # 옛 전달 자리(AppArmor rsyslogd 프로필 밖이라 rsyslog 가 읽지 못하던 곳)는 비어 있으면 지운다.
 rmdir "$RSYSLOG_ETC/rsyslog.remote.d" 2>/dev/null || true
+# 로컬 소켓 주석의 /proc 읽기를 감사 없이 거부하는 AppArmor 조각을 먼저 놓고 프로필을 다시 읽는다(새 설정으로 재시작하기 전).
+apparmor_place_checked syslog "$APPARMOR_ETC/rsyslog.d/annotate-proc" "$APPARMOR_ETC/usr.sbin.rsyslogd"
 rsyslog_place_checked syslog
 touch "$log_dir/opsjobs.log" && chown syslog:adm "$log_dir/opsjobs.log" && chmod 0640 "$log_dir/opsjobs.log"
 systemctl restart rsyslog
@@ -29,3 +31,7 @@ else
     done
     log "rsyslog ok"
 fi
+# 재시작 뒤 rsyslogd 의 /proc 읽기 거부가 감사되지 않았는지 본다(조각이 먹지 않으면 로컬 줄마다 남고 119 로 간다).
+denied=$(rsyslog_denials "$RSYSLOG_PROC_DENIAL") || fail "rsyslog 시작 시각을 못 읽어 AppArmor 거부를 못 봄"
+[[ -z "$denied" ]] || fail "rsyslogd 의 /proc 읽기 거부가 감사됨(AppArmor 조각이 안 먹음): $(head -1 <<<"$denied")"
+log "apparmor proc denials 0"

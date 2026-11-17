@@ -2451,10 +2451,16 @@ class StepScriptTests(unittest.TestCase):
         (bundle / "files" / "00-opsjobs.conf").write_text(rule)
         (bundle / "files" / "logrotate").write_text("rotate\n")
         (bundle / "files" / "10-forward.conf").write_text("forward\n")
+        (bundle / "files" / "annotate-proc").write_text("deny @{PROC}/[0-9]*/comm r,\n")
+        apparmor = root / "apparmor.d"
+        (apparmor / "rsyslog.d").mkdir(parents=True)
+        (apparmor / "usr.sbin.rsyslogd").write_text("profile rsyslogd {\n  include if exists <rsyslog.d>\n}\n")
+        (root / "aafs").mkdir()
         user = subprocess.run(["id", "-un"], capture_output=True, text=True, check=True).stdout.strip()
         group = subprocess.run(["id", "-gn"], capture_output=True, text=True, check=True).stdout.strip()
         rows = [("syslog", etc / "rsyslog.conf", "rsyslog.conf"), ("syslog", etc / "rsyslog.d" / "00-opsjobs.conf", "00-opsjobs.conf"),
                 ("syslog", etc / "logrotate.d" / "opsjobs", "logrotate"),
+                ("syslog", apparmor / "rsyslog.d" / "annotate-proc", "annotate-proc"),
                 ("syslog-forward", etc / remote / "10-forward.conf", "10-forward.conf")]
         (bundle / "files.tsv").write_text("".join(f"{step}\t{dest}\t0644\t{user}\t{group}\tfiles/{src}\n" for step, dest, src in rows))
         bin_dir = root / "bin"
@@ -2465,7 +2471,12 @@ class StepScriptTests(unittest.TestCase):
         log_dir.mkdir()
         (log_dir / "auth.log").write_text("")
         stubs = {
-            "systemctl": f'#!/bin/sh\necho systemctl "$@" >> {calls}\n',
+            "systemctl": f'#!/bin/sh\necho systemctl "$@" >> {calls}\n[ "$1" = show ] && echo "Wed 2026-11-18 05:00:00 UTC"\nexit 0\n',
+            # 프로필 다시 읽기 대역: FAKE_AA_FAIL=1 이면 조각에 deny 줄이 있을 때 실패한다(되돌린 뒤 다시 읽기는 통과).
+            "apparmor_parser": (f'#!/bin/sh\necho apparmor_parser "$@" >> {calls}\n'
+                                f'if [ "$FAKE_AA_FAIL" = 1 ] && grep -qs deny {apparmor}/rsyslog.d/annotate-proc; then echo "parser error" >&2; exit 1; fi\n'),
+            # 커널, 감사 기록 대역: FAKE_JOURNAL 파일 내용을 낸다. FAKE_JOURNAL_FAIL=1 이면 실패.
+            "journalctl": f'#!/bin/sh\necho journalctl "$@" >> {calls}\n[ "$FAKE_JOURNAL_FAIL" = 1 ] && exit 1\ncat "$FAKE_JOURNAL" 2>/dev/null\nexit 0\n',
             "chown": f'#!/bin/sh\necho chown "$@" >> {calls}\n',
             # 실행기 계정으로 바꾼 셸에서 부른 logger 를 알 수 있게 표시를 넘긴다.
             "setpriv": f'#!/bin/sh\necho setpriv "$@" >> {calls}\nwhile [ "${{1#--}}" != "$1" ]; do shift; done\nSTUB_AS_EXECUTOR=1 exec "$@"\n',
@@ -2479,7 +2490,8 @@ class StepScriptTests(unittest.TestCase):
         for tool in ("rsyslogd", *stubs):
             (bin_dir / tool).chmod(0o755)
         env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_LOG": str(calls), "RSYSLOG_ETC": str(etc),
-               "RSYSLOG_LOG_DIR": str(log_dir), "EXECUTOR_NAME": "opsjob"}
+               "RSYSLOG_LOG_DIR": str(log_dir), "EXECUTOR_NAME": "opsjob", "APPARMOR_ETC": str(apparmor),
+               "APPARMOR_FS": str(root / "aafs"), "FAKE_JOURNAL": str(root / "journal")}
         return env, etc, bundle
 
     def _run_step(self, bundle: Path, step: str, env: dict) -> subprocess.CompletedProcess:
@@ -2678,8 +2690,7 @@ class StepScriptTests(unittest.TestCase):
         self.assertIn('rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "$RSYSLOG_ETC/rsyslog.d/00-opsjobs.conf"', first)
         self.assertIn('rsyslog_reads "$RSYSLOG_ETC/rsyslog.conf" "$forward"', forward)
         self.assertIn('forward="$RSYSLOG_ETC/rsyslog.d/remote/10-forward.conf"', forward)
-        self.assertIn('apparmor="DENIED".*profile="rsyslogd"', denied)
-        self.assertIn("ActiveEnterTimestamp", denied)
+        self.assertIn("rsyslog_denials", denied)
         self.assertIn("check rsyslog-no-apparmor-denial rsyslog_not_denied", source)
 
     def test_rsyslog_reads_names_a_file_the_parser_did_not_open(self) -> None:
@@ -2695,6 +2706,110 @@ class StepScriptTests(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(done.stdout.split(), ["read-ok", "not-read"])
             self.assertIn(f"rsyslog 가 읽지 않은 파일: {etc}/rsyslog.remote.d/10-forward.conf", done.stderr)
+
+    PROC_DENIAL_LINE = ('audit: type=1400 audit(1.0:1): apparmor="DENIED" operation="open" class="file" profile="rsyslogd" '
+                        'name="/proc/1234/cmdline" pid=900 comm="in:imuxsock" requested_mask="r" denied_mask="r"')
+    PTRACE_DENIAL_LINE = ('audit: type=1400 audit(1.0:2): apparmor="DENIED" operation="ptrace" class="ptrace" profile="rsyslogd" '
+                          'pid=900 comm="in:imuxsock" requested_mask="read" denied_mask="read" peer="unconfined"')
+    CONF_DENIAL_LINE = ('audit: type=1400 audit(1.0:3): apparmor="DENIED" operation="open" class="file" profile="rsyslogd" '
+                        'name="/etc/rsyslog.remote.d/" pid=900 comm="rsyslogd" requested_mask="r" denied_mask="r"')
+
+    def test_syslog_step_places_the_apparmor_fragment_and_reloads_before_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            done = self._run_step(bundle, "syslog", env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((root / "apparmor.d" / "rsyslog.d" / "annotate-proc").read_text(), "deny @{PROC}/[0-9]*/comm r,\n")
+            calls = (root / "calls").read_text().splitlines()
+            reload = f"apparmor_parser -r {root / 'apparmor.d' / 'usr.sbin.rsyslogd'}"
+            self.assertEqual(calls.count(reload), 1, calls)
+            self.assertLess(calls.index(reload), calls.index("systemctl restart rsyslog"))
+            self.assertIn("apparmor proc denials 0", done.stdout)
+            self.assertTrue(any(c.startswith("journalctl ") and "_TRANSPORT=kernel + _TRANSPORT=audit" in c for c in calls), calls)
+
+    def test_apparmor_reload_failure_puts_the_fragment_back_and_reloads_again(self) -> None:
+        for before in (None, "old fragment\n"):
+            with self.subTest(before=before), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                env, etc, bundle = self._rsyslog_tree(root)
+                fragment = root / "apparmor.d" / "rsyslog.d" / "annotate-proc"
+                if before:
+                    fragment.write_text(before)
+                env["FAKE_AA_FAIL"] = "1"
+                done = self._run_step(bundle, "syslog", env)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("AppArmor 프로필 다시 읽기 실패(단계 syslog). 조각을 앞 상태로 되돌림", done.stderr)
+                self.assertIn("parser error", done.stderr)
+                if before:
+                    self.assertEqual(fragment.read_text(), before)
+                else:
+                    self.assertFalse(fragment.exists())
+                calls = (root / "calls").read_text().splitlines()
+                self.assertEqual(sum(c.startswith("apparmor_parser -r ") for c in calls), 2, calls)
+                self.assertEqual(self._rsyslogd_calls(root), [])
+                self.assertNotIn("systemctl restart rsyslog", calls)
+                self.assertEqual((etc / "rsyslog.d" / "00-opsjobs.conf").read_text(), "old rule\n")
+
+    def test_apparmor_off_places_the_fragment_without_reloading(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            (root / "aafs").rmdir()
+            done = self._run_step(bundle, "syslog", env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue((root / "apparmor.d" / "rsyslog.d" / "annotate-proc").exists())
+            self.assertNotIn("apparmor_parser", (root / "calls").read_text())
+
+    def test_syslog_step_fails_when_proc_reads_are_still_audited(self) -> None:
+        for line, ok in ((self.PROC_DENIAL_LINE, False), (self.PTRACE_DENIAL_LINE, False), (self.CONF_DENIAL_LINE, True), ("", True)):
+            with self.subTest(line=line[:60]), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                env, etc, bundle = self._rsyslog_tree(root)
+                (root / "journal").write_text(line + "\n")
+                done = self._run_step(bundle, "syslog", env)
+                if ok:
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                else:
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertIn("rsyslogd 의 /proc 읽기 거부가 감사됨(AppArmor 조각이 안 먹음)", done.stderr)
+
+    def test_rsyslog_denials_reads_since_the_rsyslog_start_and_never_hides_a_failed_read(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, etc, bundle = self._rsyslog_tree(root)
+            (root / "journal").write_text("\n".join([self.PROC_DENIAL_LINE, self.CONF_DENIAL_LINE,
+                                                     'apparmor="DENIED" operation="open" profile="snapd" name="/proc/1/cmdline"']) + "\n")
+            lib = DEPLOY / "steps" / "lib.sh"
+            script = (f'set -euo pipefail; . {lib}; all=$(rsyslog_denials); proc=$(rsyslog_denials "$RSYSLOG_PROC_DENIAL"); '
+                      f'echo "all=$(wc -l <<<"$all") proc=$(wc -l <<<"$proc")"; grep -c cmdline <<<"$proc"')
+            done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.split(), ["all=2", "proc=1", "1"])
+            since = int(subprocess.run(["date", "-d", "Wed 2026-11-18 05:00:00 UTC", "+%s"], capture_output=True, text=True).stdout)
+            self.assertIn(f"journalctl -q --no-pager --since @{since} _TRANSPORT=kernel + _TRANSPORT=audit",
+                          (root / "calls").read_text())
+            env["FAKE_JOURNAL_FAIL"] = "1"
+            done = subprocess.run(["bash", "-c", f". {lib}; rsyslog_denials && echo read || echo unread"],
+                                  capture_output=True, text=True, env=env)
+            self.assertEqual(done.stdout.strip(), "unread")
+
+    def test_apparmor_fragment_only_denies_the_annotation_reads(self) -> None:
+        for path in (T_INV, S_INV):
+            for bundle in bundles(path).values():
+                text = file_of(bundle, "/etc/apparmor.d/rsyslog.d/annotate-proc")
+                rules = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")]
+                with self.subTest(host=bundle["host"]):
+                    self.assertEqual(rules, ["deny @{PROC}/[0-9]*/comm r,", "deny @{PROC}/[0-9]*/cmdline r,",
+                                             "deny @{PROC}/[0-9]*/exe r,", "deny ptrace (read),"])
+                    self.assertEqual([e["step"] for e in bundle["files"] if e["dest"].startswith("/etc/apparmor.d/")], ["syslog"])
+        source = (DEPLOY / "steps" / "syslog.sh").read_text()
+        self.assertLess(source.index('apparmor_place_checked syslog "$APPARMOR_ETC/rsyslog.d/annotate-proc" "$APPARMOR_ETC/usr.sbin.rsyslogd"'),
+                        source.index("systemctl restart rsyslog"))
+        self.assertLess(source.index("systemctl restart rsyslog"), source.index('rsyslog_denials "$RSYSLOG_PROC_DENIAL"'))
+        verify = (DEPLOY / "steps" / "verify.sh").read_text()
+        self.assertIn("check rsyslog-no-proc-audit rsyslog_no_proc_denial", verify)
+        self.assertIn('rsyslog_no_proc_denial() { local out; out=$(rsyslog_denials "$RSYSLOG_PROC_DENIAL") && [[ -z "$out" ]]; }', verify)
 
     def test_every_step_that_places_or_restarts_rsyslog_checks_before_placing(self) -> None:
         placing = set()

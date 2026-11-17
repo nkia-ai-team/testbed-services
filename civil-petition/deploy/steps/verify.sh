@@ -38,12 +38,9 @@ forward_state_ok() {
     fi
 }
 # 돌고 있는 rsyslog 가 마지막으로 선 뒤 AppArmor 가 rsyslogd 의 무엇을 막은 줄이 없다(커널 로그와 감사 기록 둘 다 본다).
-rsyslog_not_denied() {
-    local since
-    since=$(date -d "$(systemctl show -p ActiveEnterTimestamp --value rsyslog)" +%s) || return 1
-    ! journalctl -q --no-pager --since "@$since" _TRANSPORT=kernel + _TRANSPORT=audit \
-        | grep -q 'apparmor="DENIED".*profile="rsyslogd"'
-}
+# /proc 읽기 거부는 따로도 센다(로컬 소켓 주석의 부작용을 감사 없이 거부하는 조각이 먹는지).
+rsyslog_not_denied() { local out; out=$(rsyslog_denials) && [[ -z "$out" ]]; }
+rsyslog_no_proc_denial() { local out; out=$(rsyslog_denials "$RSYSLOG_PROC_DENIAL") && [[ -z "$out" ]]; }
 ip_forward_ok() {
     local want=0
     [[ "$HOST_ROLE" == router ]] && want=1
@@ -66,6 +63,7 @@ check chrony-offset-under-50ms chrony_offset_ok
 check rsyslog-first-rule first_rule_present
 check syslog-forward-matches-inventory forward_state_ok
 check rsyslog-no-apparmor-denial rsyslog_not_denied
+check rsyslog-no-proc-audit rsyslog_no_proc_denial
 check ip-forward ip_forward_ok
 check mgmt-guard nft list table inet mgmtguard
 [[ -n "$MODULES" ]] && check kernel-modules modules_loaded

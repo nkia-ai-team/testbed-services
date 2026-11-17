@@ -9,8 +9,9 @@
 #     실행기 줄(계정 이름이나 uid 가 줄 끝에 오는 줄, 실행기 uid 로 보낸 줄 포함)은 /var/log/opsjobs.log 에만,
 #     아닌 줄은 opsjobs.log 에 없고 syslog 나 auth.log 에 있어야 한다
 # 대상 VM 과 다른 점(여기서 못 보는 것과 보는 곳):
-#   - AppArmor 가 없다. 프로필 범위는 경로로만 흉내 낸다. 실제 거부는 설치 단계의 읽기 확인(rsyslog_reads)과
-#     verify 의 rsyslog-no-apparmor-denial 이 본다.
+#   - AppArmor 가 커널에 없다. 프로필 범위는 경로로만 흉내 내고, /proc 읽기 거부 조각은 패키지 프로필에 포함해 파싱만 본다
+#     (apparmor_parser -QTK, -p). 실제 거부는 설치 단계의 읽기 확인(rsyslog_reads), 재시작 뒤 /proc 거부 감사 0 확인과
+#     verify 의 rsyslog-no-apparmor-denial, rsyslog-no-proc-audit 이 본다.
 #   - 줄이 journald 를 거치지 않고 /dev/log 로 바로 들어온다. VM 의 길(journald 가 넘겨 주는 uid)은 syslog 단계의
 #     실행기 uid 줄 확인과 runbook §7 이 본다.
 #   - VM 의 rsyslog.d 에만 있는 파일(20-ufw.conf, 21-cloudinit.conf, WAS 의 tomcat10 파일)은 없다. 그 파일과 함께 읽는
@@ -44,7 +45,7 @@ chmod -R a+rX "$work"
 cat > "$work/inner.sh" <<'INNER'
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends "rsyslog${RSYSLOG_CHECK_VERSION:+=$RSYSLOG_CHECK_VERSION}" >/dev/null \
+apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends "rsyslog${RSYSLOG_CHECK_VERSION:+=$RSYSLOG_CHECK_VERSION}" apparmor >/dev/null \
     || { echo "rsyslog 설치 실패"; exit 2; }
 echo "rsyslog $(dpkg-query -W -f '${Version}' rsyslog) ($(rsyslogd -v | head -1))"
 mkdir -p /root/pristine
@@ -95,6 +96,21 @@ for bundle in /check/bundles/*/*/; do
         | sed -E "s/^(on top of stack: |include config file '|cnfDoInclude: file: ')//" \
         | grep -vE '^/etc/rsyslog\.(d/|conf$)' | sort -u | paste -sd' ' -)
     record "$label apparmor-scope" $(( ${#outside} > 0 )) "범위 밖: $outside"
+    # AppArmor 조각: 패키지 rsyslogd 프로필에 포함돼 파싱되고(커널에 올리지는 않는다) 조각의 규칙이 모두 들어가는가.
+    rm -f /etc/apparmor.d/rsyslog.d/annotate-proc
+    fragment=$(awk -F'\t' '$2 == "/etc/apparmor.d/rsyslog.d/annotate-proc" {print $6}' "$bundle/files.tsv")
+    aa_bad="조각 없음"
+    if [[ -n "$fragment" ]]; then
+        install -m 0644 "$bundle/$fragment" /etc/apparmor.d/rsyslog.d/annotate-proc
+        aa_bad=""
+        apparmor_parser -QTK /etc/apparmor.d/usr.sbin.rsyslogd >/dev/null 2>/tmp/aa.err || aa_bad="파싱 실패: $(grep -v 'Cache read' /tmp/aa.err | head -1)"
+        expanded=$(apparmor_parser -p /etc/apparmor.d/usr.sbin.rsyslogd 2>/dev/null)
+        while IFS= read -r rule; do
+            [[ -z "$rule" || "$rule" == \#* ]] && continue
+            grep -qxF -- "$rule" <<<"$expanded" || aa_bad+=" 프로필에 안 들어감: $rule"
+        done < /etc/apparmor.d/rsyslog.d/annotate-proc
+    fi
+    record "$label apparmor-fragment" $(( ${#aa_bad} > 0 )) "$aa_bad"
 
     # 첫 규칙 동작. 원격 전달은 빼고 띄운다.
     rm -f /etc/rsyslog.d/remote/*.conf

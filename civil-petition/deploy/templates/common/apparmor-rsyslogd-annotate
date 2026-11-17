@@ -1,0 +1,10 @@
+# rsyslogd AppArmor 프로필(/etc/apparmor.d/usr.sbin.rsyslogd)의 include if exists <rsyslog.d> 가 읽는 조각.
+# 이 서버의 rsyslog 는 로컬 소켓 주석(SysSock.Annotate)을 켠다. 주석은 줄을 보낸 프로세스의 /proc/<pid>/comm, cmdline 을
+# 열고 exe 를 readlink(ptrace read 검사)하는데, 프로필이 이것을 허용하지 않아 로컬 줄마다 거부가 감사 기록으로 남는다.
+# 그 읽기를 감사 없이 거부한다(deny 규칙은 기록하지 않는다). 허용 범위는 넓히지 않고, 그 밖의 거부는 그대로 기록된다.
+# uid 속성($!uid)은 소켓 자격 증명에서 오므로 이 거부와 무관하다(appname, exe, cmd 속성만 비게 된다).
+# 자기 자신의 /proc 읽기는 ptrace 검사를 거치지 않고, 스레드 이름(/proc/<pid>/task/...)은 이 꼴에 들지 않는다.
+deny @{PROC}/[0-9]*/comm r,
+deny @{PROC}/[0-9]*/cmdline r,
+deny @{PROC}/[0-9]*/exe r,
+deny ptrace (read),

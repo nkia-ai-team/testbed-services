@@ -74,6 +74,7 @@ COMMON_FILES = (
     FileSpec("time", "/etc/chrony/chrony.conf", "common/chrony.conf"),
     FileSpec("syslog", "/etc/rsyslog.conf", "common/rsyslog.conf"),
     FileSpec("syslog", "/etc/rsyslog.d/00-opsjobs.conf", "common/rsyslog-00-opsjobs.conf"),
+    FileSpec("syslog", "/etc/apparmor.d/rsyslog.d/annotate-proc", "common/apparmor-rsyslogd-annotate"),
     FileSpec("syslog", "/etc/logrotate.d/opsjobs", "common/logrotate-opsjobs"),
     FileSpec("firewall", "/etc/nftables.conf", "common/nftables.conf", "0755"),
 )

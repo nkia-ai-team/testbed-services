@@ -87,6 +87,47 @@ rsyslog_put_back() {
     done
 }
 
+# AppArmor 가 켜졌는지 보는 곳과 프로필 디렉터리. 시험은 다른 경로를 준다.
+APPARMOR_FS=${APPARMOR_FS:-/sys/kernel/security/apparmor}
+APPARMOR_ETC=${APPARMOR_ETC:-/etc/apparmor.d}
+# rsyslogd 의 /proc 읽기 거부(로컬 소켓 주석의 부작용) 감사 줄 꼴.
+RSYSLOG_PROC_DENIAL='name="/proc/[0-9]+/|operation="ptrace"'
+
+# 이 단계의 AppArmor 조각 하나(<경로>)를 놓고 그 조각을 포함하는 프로필(<프로필>)을 다시 읽는다(apparmor_parser -r).
+# 다시 읽기가 실패하면 조각을 앞 상태로 되돌리고(없던 것은 지운다) 프로필을 한 번 더 읽어 앞 규칙으로 돌린 뒤 멈춘다.
+# AppArmor 가 꺼졌거나 프로필이 없으면 조각만 놓고 다시 읽지 않는다.
+apparmor_place_checked() {
+    local step="$1" dest="$2" profile="$3" keep out again
+    keep=$(mktemp) || fail "AppArmor 조각 앞 내용을 남길 곳을 못 만듦"
+    if [[ -e "$dest" ]]; then cp -p "$dest" "$keep" || { rm -f "$keep"; fail "앞 내용을 못 남김: $dest"; }; else rm -f "$keep"; fi
+    place_files "$step" "$dest" && [[ -f "$dest" ]] || { rm -f "$keep"; fail "AppArmor 조각을 못 놓음(묶음에 없거나 놓기 실패): $dest"; }
+    if [[ ! -d "$APPARMOR_FS" || ! -f "$profile" ]]; then
+        rm -f "$keep"
+        log "apparmor off or no profile: $profile 다시 읽기 생략"
+        return 0
+    fi
+    if out=$(apparmor_parser -r "$profile" 2>&1); then
+        rm -f "$keep"
+        log "apparmor reloaded $profile"
+        return 0
+    fi
+    printf '%s\n' "$out" >&2
+    if [[ -e "$keep" ]]; then cp -p "$keep" "$dest"; else rm -f "$dest"; fi
+    rm -f "$keep"
+    again=$(apparmor_parser -r "$profile" 2>&1) || again="앞 규칙으로 다시 읽기도 실패: $again"
+    fail "AppArmor 프로필 다시 읽기 실패(단계 $step). 조각을 앞 상태로 되돌림. ${again}"
+}
+
+# rsyslog 가 마지막으로 선 뒤 AppArmor 가 rsyslogd 에 대해 남긴 거부 줄(커널 로그와 감사 기록)을 낸다.
+# 인자로 꼴(grep -E)을 주면 그 꼴만. 시각을 못 읽으면 1(빈 출력을 "거부 없음" 으로 읽지 않게).
+rsyslog_denials() {
+    local started since lines
+    started=$(systemctl show -p ActiveEnterTimestamp --value rsyslog) && [[ -n "$started" ]] || return 1
+    since=$(date -d "$started" +%s) || return 1
+    lines=$(journalctl -q --no-pager --since "@$since" _TRANSPORT=kernel + _TRANSPORT=audit) || return 1
+    grep 'apparmor="DENIED"' <<<"$lines" | grep 'profile="rsyslogd"' | grep -E -- "${1:-.}" || true
+}
+
 # 이 단계의 파일(rsyslog 설정 포함)을 놓되, rsyslog 가 못 읽을 설정은 /etc 에 남기지 않는다.
 #   1. 검사 사본: rsyslog.d 아래 숨은 하위 디렉터리 .check-<pid>(*.conf 포함에 들지 않고, AppArmor rsyslogd 프로필이
 #      읽게 두는 /etc/rsyslog.d/** 안)에 지금 rsyslog.conf 와 rsyslog.d 의 *.conf, rsyslog.d/remote 의 *.conf 를 베끼고
