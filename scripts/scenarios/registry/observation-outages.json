@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "_note": "관측 정지 기록. 러너(rca-scenario-runner app/seasonal_window.py)가 골든 복원마다 observer 의 21일 버킷 창 안에 든 정지 앞뒤 칸을 계산해 녹화 meta trainer_reset.seasonal_window 에 적는다(v4 G2META, Q19 덧붙임 답 A). 칸 목록이 아니라 정지 구간과 출처를 적는다. start 는 관측이 나빠지기 시작한 시각, end 는 수집이 다시 정상으로 들어온 시각(UTC). 칸은 start 부터 1시간, end 부터 1시간이다. 새 정지가 생기면 출처(상황판 줄, 로그)를 붙여 한 건 더한다. 지우지 않는다.",
+  "_note": "관측 정지와 러너 밖 테스트베드 장애의 손 기록. 러너(rca-scenario-runner app/seasonal_window.py)가 골든 복원마다 observer 의 21일 버킷 창 안에 든 칸을 계산해 녹화 meta trainer_reset.seasonal_window 에 적는다(v4 G2META, Q19 덧붙임 답 A, v4 ORAFIX, Q25 답 3). 칸 목록이 아니라 구간과 출처를 적는다. 시각은 UTC. kind 없음(관측 정지): start 는 관측이 나빠지기 시작한 시각, end 는 수집이 다시 정상으로 들어온 시각이고, 칸은 start 부터 1시간과 end 부터 1시간이다(outage_cells). kind testbed_fault(테스트베드 장애, 관측은 이어짐): start 는 장애가 시작한 시각, end 는 서비스가 정상으로 돌아온 시각이고, 칸은 start 부터 end 뒤 1시간까지 전부다(fault_cells). scope.domains(시나리오 domain)와 scope.services(정답지 서비스 이름)가 그 장애가 값을 바꾼 경로이고, 그 경로의 시나리오 녹화만 겹침에 넣는다. 녹화 meta 는 이 파일의 칸을 손 기록, 러너 실행 기록의 칸을 러너 기록으로 나눠 적는다(origins). 표시는 연구원용 기록이고 녹화를 막지 않는다. 새 정지나 장애가 생기면 출처(상황판 줄, 결과 문서, 로그)를 붙여 한 건 더한다. 지우지 않는다.",
   "outages": [
     {
       "id": "119-2026-10-30-soft-lockup",
@@ -8,6 +8,24 @@
       "start": "2026-10-30T16:33:00Z",
       "end": "2026-11-09T08:12:00Z",
       "source": "testbed-ops v4 board.md 11-09 17:15 줄: 지난 부팅 journal 마지막 기록 10-31 02:03 KST(10-30T17:03Z), 멈추기 30분 전부터 apiserver 시간 초과(start = 17:03Z - 30분), 11-09 16:55 KST virsh reset, 17:12 KST 파드 전부 Ready 와 syslog 유입 확인(end). 같은 파일 13행: 10-30 16:59Z soft lockup"
+    },
+    {
+      "id": "banking-oracle-2026-11-16-stall",
+      "kind": "testbed_fault",
+      "target": "은행 Oracle(rca-testbed-banking testbed-oracle-0, tb-w2)과 그것을 쓰는 경로",
+      "start": "2026-11-16T01:20:14Z",
+      "end": "2026-11-17T08:51:40Z",
+      "scope": {
+        "domains": [
+          "core-banking"
+        ],
+        "services": [
+          "commerce-payment",
+          "commerce-order",
+          "commerce-gateway"
+        ]
+      },
+      "source": "testbed-ops v4 agent-out/ORA.md 시간선: tb-w2 fstrim.service 시작 11-16 01:20:14Z(10:20:14 KST, journal), Oracle 멈춤과 10:25:33 KST SIGKILL 뒤 낡은 SGA 로 재기동 372회 실패. agent-out/APORA.md: 11-17 17:50:46 KST 파드 삭제, 17:51:02 Oracle Ready, 17:51:40 KST account, ledger, transfer 1/1(end), 17:52 뒤 은행 5xx 0. commerce 경로: payment 의 BankingTransferClient 가 이체 실패를 502 로 올리고 order checkout 과 gateway 가 그것을 받는다(commerce/payment-service BankingTransferClient.java, PaymentService.java), 119 열린 인시던트 commerce-payment 7건(ORA.md)"
     }
   ]
 }

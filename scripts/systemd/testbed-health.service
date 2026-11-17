@@ -1,0 +1,13 @@
+# tb-ops: testbed health in one line (scripts/testbed-health.py, scripts/README.md "테스트베드 건강 점검").
+# Kubernetes API list and the local runner API only; no ssh to any testbed node.
+[Unit]
+Description=Testbed health line
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/testbed/testbed-health.py
+# 3 = something is not healthy, 2 = could not tell: both are results written to the state files.
+SuccessExitStatus=2 3
+TimeoutStartSec=90
+Nice=10

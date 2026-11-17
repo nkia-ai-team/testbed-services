@@ -276,7 +276,13 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
     `outage_cells`(`scripts/scenarios/registry/observation-outages.json` 정지 기록의 앞뒤
     각 1시간, 칸마다 기록 id), `this_injection_cells`(이번 [t1, t2]), `overlap_cells`,
     `overlap`, 센 실행과 정지(`runs_counted`, `outages_counted`), 출처(`sources`), 한계
-    문장(`limits`). 계산은 러너 `app/seasonal_window.py`. 계산이 실패하면
+    문장(`limits`). 러너 밖 테스트베드 장애(같은 파일의 `kind: testbed_fault` 손 기록, v4 ORAFIX)는
+    `fault_cells`(구간 전부와 끝 뒤 1시간, 칸마다 기록 id)와 `faults_counted`(구간, 대상, 경로 `scope`)로
+    따로 적고, 이번 녹화 시나리오가 그 경로에 있을 때만(시나리오 `domain` 이 `scope.domains` 에 있거나 정답지
+    서비스가 `scope.services` 에 있음) `scenario_faults`(id, 구간, `matched_by`)와 `fault_overlap_cells` 에
+    넣고 `overlap` 에 더한다. `origins` 는 어느 키가 러너 기록(runs 폴더: `injection_cells`, `runs_counted`)이고
+    어느 키가 손 기록(이 파일: `outage_cells`, `outages_counted`, `fault_cells`, `faults_counted`)인지 적는다.
+    이 표시는 연구원용 기록이고 녹화를 막지 않는다. 계산은 러너 `app/seasonal_window.py`. 계산이 실패하면
     `{status: "error", error}` 만 남고 녹화는 그대로 간다. 어느 쪽이든 `judgement`
     (`{relevant, reason}`)가 붙는다: 아래 밴드 전략이 auto_single 이고 주기 프로필 0 이며 시리즈별
     전략 덮어쓰기가 0 이면 relevant false(이 칸들은 판정에 닿지 않는다. auto_single 은 168칸 버킷을

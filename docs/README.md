@@ -46,6 +46,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [테스트베드 이전 작업 계획 (109 → 66)](runbook-testbed-move-109-to-66.md):
   ARM 109 에서 x86 Proxmox 66 으로 옮기는 단계별 계획. 119 로 가던 데이터 종류
   15가지 기준표를 전환 조건으로 삼는다. (Planned)
+- [은행 Oracle 스스로 회복 적용과 재현 runbook](runbook-banking-oracle-self-recovery.md):
+  fstrim 제외, 기동 전 낡은 IPC 정리, 종료 유예 300초를 적용하는 순서와 정비 창에서 IO 를 막아
+  사람 손 없는 회복을 한 번 재현하는 절차, 판정, 되돌리기. (Planned, 적용 전)
 - [119 와 66 사이 WireGuard 터널 적용 runbook (T0)](runbook-testbed-tunnel.md):
   T 와 S 테스트베드가 같이 쓰는 터널을 `scripts/vm-tunnel/` 도구로 올리고 확인하고 내리는 절차,
   읽기 확인 결과, 119 k3s 와 수집 영향, 되돌리기, S 망 추가. (Planned, 적용 전)

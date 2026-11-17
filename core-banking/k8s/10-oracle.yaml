@@ -30,8 +30,8 @@ spec:
             - secretRef:
                 name: oracle-secret
           volumeMounts:
-            - name: oracledata
-              mountPath: /opt/oracle/oradata
+            - {name: oracledata, mountPath: /opt/oracle/oradata}
+            - {name: ipc-clean, mountPath: /opt/testbed-ipc-clean, readOnly: true}
             # alert log(diag)를 PVC로 꺼내 호스트의 SMS 로그 모니터가 tail 할 수 있게 한다.
             # subPath 디렉토리는 kubelet이 root 소유로 만들므로 호스트에서 uid 54321(oracle)로
             # 선생성 필요: <PVC>/diag (runbook-observability-agents.md §6 참조)
@@ -59,16 +59,16 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 10
             failureThreshold: 3
-          livenessProbe:
-            exec:
-              command: ["healthcheck.sh"]
-            periodSeconds: 30
-            timeoutSeconds: 10
-            failureThreshold: 5
+          livenessProbe: {exec: {command: ["healthcheck.sh"]}, periodSeconds: 30, timeoutSeconds: 10, failureThreshold: 5}
+          # 기동 전에 주인 없는 IPC(낡은 SGA, 세마포어)를 치우고 이미지 진입점을 그대로 exec 한다(아래 oracle-ipc-clean).
+          command: ["/bin/bash", "/opt/testbed-ipc-clean/oracle-ipc-clean.sh", "container-entrypoint.sh"]
+      # 종료 유예 300초: 진입점의 SIGTERM 처리(shutdown immediate)가 끝날 시간. 기본 30초는 쓰기가 느리면 모자란다.
+      terminationGracePeriodSeconds: 300
+      # 위 두 줄과 정리 스크립트의 까닭과 근거는 파일 끝 oracle-ipc-clean ConfigMap 주석.
       volumes:
         - {name: init-scripts, configMap: {name: oracle-init-scripts}}
-        - name: startdb-scripts
-          configMap: {name: oracle-startdb-scripts, defaultMode: 0555}
+        - {name: startdb-scripts, configMap: {name: oracle-startdb-scripts, defaultMode: 0555}}
+        - {name: ipc-clean, configMap: {name: oracle-ipc-clean, defaultMode: 0555}}
   volumeClaimTemplates:
     - metadata:
         name: oracledata
@@ -141,3 +141,115 @@ data:
     else
       echo "sqlnet.ora: ${sqlnet_file} not found, dead connection detection NOT set" >&2
     fi
+---
+# oracle-ipc-clean: 기동 전 낡은 IPC 정리(testbed v4 ORAFIX, questions.md Q25 답 1 ②).
+# 왜: Oracle 이 SIGKILL 로 끝나면(liveness 실패 뒤 종료 유예 초과) SGA 공유메모리와 세마포어가 파드 IPC
+# 이름공간에 남는다. 컨테이너만 다시 뜨는 동안 파드 샌드박스(pause)와 그 IPC 이름공간은 그대로라, 다음
+# 기동의 `sqlplus / as sysdba` 가 ORACLE_SID 와 ORACLE_HOME 으로 정해지는 키로 주인 없는 SGA 에 붙고
+# ORA-01012 로 1초 안에 끝난다. 파드를 지울 때까지 영영 못 뜬다(2026-11-16 10:25 ~ 11-17 17:50 KST, 372회).
+# 왜 이 방법인가(gvenzl/oracle-free 이미지에 맞춤):
+#   - initContainer 는 파드 샌드박스가 새로 생길 때만 돈다. 이 장애는 같은 샌드박스 안 컨테이너 재시작이라
+#     initContainer 가 다시 돌지 않는다(새 샌드박스는 IPC 도 새것이라 치울 것이 없다).
+#   - 이미지의 /container-entrypoint-startdb.d 스크립트는 DB 기동이 끝난 뒤에 돈다(진입점의 startup 다음).
+#     기동이 낡은 SGA 에서 실패하면 거기까지 가지 못한다.
+#   - 그래서 컨테이너 command 로 이 스크립트를 먼저 돌리고 이미지 진입점(ENTRYPOINT container-entrypoint.sh)을
+#     그 인자 그대로 exec 한다. 진입점 파일은 바꾸지 않고, exec 라 PID 1 과 SIGTERM 처리(shutdown immediate)도
+#     이미지 그대로다.
+#   - 이 이미지(slim)에는 ipcs, ipcrm, ps, pgrep 이 없다(설치 스크립트가 util-linux, procps-ng 를 지움). 그래서
+#     판단은 커널 표(/proc/sysvipc/shm, /proc/<pid>/comm)로 하고, 지우기는 Oracle 의 sysresv 로 한다
+#     (sysresv 는 그 SID 의 인스턴스가 살아 있지 않을 때만 지운다).
+# 진짜 인스턴스를 지우지 않는 조건(셋 다 만족할 때만 sysresv -f 를 부른다):
+#   1. 이 사용자(oracle) 소유 공유메모리 세그먼트가 있다(없으면 할 일 없음).
+#   2. 그 세그먼트의 nattch(붙은 프로세스 수, 커널이 이름공간과 무관하게 센다)가 모두 0 이다. 살아 있는
+#      인스턴스는 배경 프로세스가 늘 붙어 있으므로 0 이 아니다. 하나라도 붙어 있으면 아무것도 지우지 않는다.
+#   3. 이 컨테이너에서 보이는 프로세스 중 Oracle 배경 프로세스(ora_pmon_ 등)가 없다.
+# 지운 뒤 같은 표를 다시 읽어 남은 것이 없을 때만 /dev/shm 의 ora_* 파일(같은 인스턴스의 MGA 파일)을 지운다.
+# 어떤 경우에도 기동을 막지 않는다: 판단이나 지우기가 실패하면 그 사실을 로그에 남기고 진입점으로 간다
+# (그때는 종전처럼 실패하고, 파드 삭제가 복구다). 로그 줄은 "CONTAINER: ipc-clean:" 로 시작한다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oracle-ipc-clean
+  namespace: rca-testbed-banking
+data:
+  oracle-ipc-clean.sh: |
+    #!/bin/bash
+    # 시험이 가짜 경로를 넣을 수 있게 위치는 변수다. 기본값이 컨테이너 안 실제 위치다.
+    proc_root="${IPC_CLEAN_PROC_ROOT:-/proc}"
+    shm_dir="${IPC_CLEAN_SHM_DIR:-/dev/shm}"
+    sysresv="${IPC_CLEAN_SYSRESV:-${ORACLE_HOME:-}/bin/sysresv}"
+    sid="${ORACLE_SID:-FREE}"
+    me="${IPC_CLEAN_UID:-$UID}"
+
+    log() { echo "CONTAINER: ipc-clean: $*"; }
+
+    # "shmid nattch" for every shared memory segment this user owns (columns of /proc/sysvipc/shm:
+    # key shmid perms size cpid lpid nattch uid ...).
+    own_segments() {
+      awk -v me="$me" 'NR > 1 && $8 == me { print $2, $7 }' "$proc_root/sysvipc/shm" 2>/dev/null
+    }
+    # semid of every semaphore set this user owns (key semid perms nsems uid ...).
+    own_semaphores() {
+      awk -v me="$me" 'NR > 1 && $5 == me { print $2 }' "$proc_root/sysvipc/sem" 2>/dev/null
+    }
+    # Name of a running Oracle background process visible here, if any.
+    live_process() {
+      local f comm
+      for f in "$proc_root"/[0-9]*/comm; do
+        [ -r "$f" ] || continue
+        read -r comm <"$f" 2>/dev/null || continue
+        case "$comm" in
+          ora_pmon_*|ora_smon_*|ora_lgwr_*|ora_ckpt_*|ora_dbw*|ora_psp0_*) echo "$comm"; return 0 ;;
+        esac
+      done
+      return 1
+    }
+
+    clean() {
+      local segments attached proc left sems
+      if [ ! -r "$proc_root/sysvipc/shm" ]; then
+        log "cannot read $proc_root/sysvipc/shm, nothing cleaned"
+        return 0
+      fi
+      segments=$(own_segments)
+      if [ -z "$segments" ]; then
+        log "no shared memory of uid $me, nothing to clean"
+        return 0
+      fi
+      attached=$(awk '$2 != 0 { print $1 "(nattch " $2 ")" }' <<<"$segments" | tr '\n' ' ')
+      if [ -n "$attached" ]; then
+        log "segments in use, nothing cleaned: $attached"
+        return 0
+      fi
+      if proc=$(live_process); then
+        log "Oracle process $proc is running, nothing cleaned"
+        return 0
+      fi
+      if [ ! -x "$sysresv" ]; then
+        log "no sysresv at $sysresv, leftover segments stay: $(awk '{ print $1 }' <<<"$segments" | tr '\n' ' ')"
+        return 0
+      fi
+      log "leftover IPC of a stopped instance (segments $(awk '{ print $1 }' <<<"$segments" | tr '\n' ' ')semaphores $(own_semaphores | tr '\n' ' ')), removing with sysresv -f -l $sid"
+      # sysresv only reads and removes IPC; the time limit keeps a hung call from holding the start.
+      if command -v timeout >/dev/null 2>&1; then
+        timeout 120 "$sysresv" -f -l "$sid" 2>&1 | sed 's/^/CONTAINER: ipc-clean: sysresv: /'
+      else
+        "$sysresv" -f -l "$sid" 2>&1 | sed 's/^/CONTAINER: ipc-clean: sysresv: /'
+      fi
+      left=$(own_segments | awk '{ print $1 }' | tr '\n' ' ')
+      sems=$(own_semaphores | tr '\n' ' ')
+      if [ -n "$left" ] || [ -n "$sems" ]; then
+        log "LEFT after sysresv: segments ${left:-none}, semaphores ${sems:-none}; startup may fail, deleting the pod clears them"
+        return 0
+      fi
+      find "$shm_dir" -maxdepth 1 -type f -name 'ora_*' -uid "$me" -print -delete 2>/dev/null \
+        | sed 's/^/CONTAINER: ipc-clean: removed /'
+      log "done: no shared memory or semaphores of uid $me left"
+    }
+
+    clean
+    if [ "$#" -eq 0 ]; then
+      log "no entrypoint given"
+      exit 1
+    fi
+    exec "$@"

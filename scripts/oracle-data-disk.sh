@@ -21,7 +21,19 @@
 #   oracle-data-disk.sh rollback [--to-cutover]
 #                                           # copy back the current data (default) or keep the
 #                                           # copy taken at cutover, then restore the directory
+#   oracle-data-disk.sh fstab-notrim [--check]
+#                                           # keep the disk out of fstrim on a node cut over before
+#                                           # the fstab line carried it (Oracle may run; --check
+#                                           # only reads: rc 0 excluded, 1 not excluded, 2 no line)
 # Nothing here deletes data: the original directory, the disk and its contents all stay.
+#
+# fstrim: the fstab line carries X-fstrim.notrim (testbed v4 ORAFIX, Q25 answer 1). The disk has a
+# write limit at the hypervisor (Proxmox mbps_wr), and QEMU counts discards against it. The node's
+# weekly fstrim.timer (fstrim --listed-in /etc/fstab:/proc/self/mountinfo) sent the whole free area of
+# a fresh disk, 10.9 GiB, as discards on 11-16 10:20 KST: 336 seconds at the write limit, redo writes
+# of 2 to 15 seconds behind them, Oracle stopped. ext4 remembers trimmed block groups only in memory,
+# so every remount or reboot makes the next weekly run send the whole free area again. mount ignores
+# X- options, so the line still mounts the same way; fstrim skips a file system with this option.
 set -Eeuo pipefail
 
 PV_DIR=${PV_DIR:-/opt/local-path-provisioner/pvc-899a2f44-e397-4109-9e59-2bd6d7d5cd3a_rca-testbed-banking_oracledata-testbed-oracle-0}
@@ -61,7 +73,8 @@ oracle_stopped() {
   fi
 }
 
-fstab_line() { printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "$1" "$PV_DIR"; }
+NOTRIM_OPTION=X-fstrim.notrim
+fstab_line() { printf 'UUID=%s %s ext4 defaults,nofail,%s 0 2\n' "$1" "$PV_DIR" "$NOTRIM_OPTION"; }
 
 # fstab is replaced, never edited in place: a node that stops halfway keeps the old or the new file.
 fstab_rewrite() {  # fstab_rewrite add <uuid> | fstab_rewrite drop
@@ -82,6 +95,46 @@ same_tree() {
 }
 
 fstab_uuid() { awk -v t="$PV_DIR" '$2 == t && $1 ~ /^UUID=/ {print substr($1, 6)}' "$FSTAB"; }
+
+# Is the volume's fstab line kept out of fstrim? 0 = yes, 1 = the line lacks the option, 2 = no line
+# (not cut over: the volume is on the root file system, which fstrim may trim as before).
+notrim_state() {
+  local lines
+  lines=$(awk -v t="$PV_DIR" '$2 == t' "$FSTAB")
+  [[ -n "$lines" ]] || return 2
+  awk -v o="$NOTRIM_OPTION" '{ n = split($4, opts, ","); f = 0; for (i = 1; i <= n; i++) if (opts[i] == o) f = 1; if (!f) bad = 1 } END { exit bad }' <<<"$lines"
+}
+
+# Add the option to the volume's line of an existing cutover, leaving every other field and line as it
+# is. No remount: fstrim reads fstab each run, mount ignores X- options.
+fstab_notrim() {
+  local rc=0
+  notrim_state || rc=$?
+  if [[ "${1:-}" == --check ]]; then
+    case "$rc" in
+      0) say "fstrim: $PV_DIR is excluded ($NOTRIM_OPTION)" ;;
+      1) say "fstrim: $PV_DIR is NOT excluded: the weekly fstrim sends its free area as discards against the disk's write limit; run fstab-notrim" ;;
+      *) say "fstrim: no fstab line for $PV_DIR (not cut over)" ;;
+    esac
+    return "$rc"
+  fi
+  [[ -z "${1:-}" ]] || die "unknown fstab-notrim argument $1"
+  case "$rc" in
+    0) say "fstrim: $PV_DIR already excluded"; return 0 ;;
+    2) die "no fstab line for $PV_DIR: nothing to exclude (cutover writes the option itself)" ;;
+  esac
+  (( $(awk -v t="$PV_DIR" '$2 == t' "$FSTAB" | wc -l) == 1 )) || die "more than one fstab line for $PV_DIR: fix by hand"
+  local tmp; tmp=$(mktemp "$FSTAB.XXXXXX")
+  awk -v t="$PV_DIR" -v o="$NOTRIM_OPTION" '$2 == t { $4 = $4 "," o; print; next } { print }' "$FSTAB" >"$tmp"
+  chmod --reference="$FSTAB" "$tmp"
+  sync "$tmp"
+  mv -f "$tmp" "$FSTAB"
+  sync "$(dirname "$FSTAB")"
+  # The mount unit generated from fstab carries the options; keep systemd's copy in step (no remount).
+  systemctl daemon-reload
+  notrim_state || die "the option did not land in $FSTAB"
+  say "fstrim: $PV_DIR excluded ($NOTRIM_OPTION added to its fstab line)"
+}
 
 # Does the disk hold exactly the original copy? Read-only look, nothing written to either side.
 # 0 = same, 1 = differs, 2 = could not look (no read-only mount, or the comparison itself failed).
@@ -137,6 +190,7 @@ check() {
   esac
   [[ -d "$ORIG_DIR" ]] && say "original copy kept at $ORIG_DIR"
   grep -F " $PV_DIR " "$FSTAB" >/dev/null && say "fstab: $(grep -F " $PV_DIR " "$FSTAB")"
+  fstab_notrim --check || true
   local dev; dev=$(blkid -L "$LABEL" 2>/dev/null || true)
   [[ -n "$dev" ]] && say "disk labelled $LABEL: $dev"
   return 0
@@ -237,5 +291,6 @@ case "$action" in
   prepare) prepare "$@" ;;
   cutover) cutover "$@" ;;
   rollback) rollback "$@" ;;
+  fstab-notrim) fstab_notrim "$@" ;;
   *) die "unknown action $action" ;;
 esac

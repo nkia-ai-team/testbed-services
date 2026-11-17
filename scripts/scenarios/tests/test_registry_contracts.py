@@ -2268,6 +2268,234 @@ class ObservationOutageLedgerTests(unittest.TestCase):
         self.assertEqual((record["start"], record["end"]), ("2026-10-30T16:33:00Z", "2026-11-09T08:12:00Z"))
         self.assertIn("board.md", record["source"])
 
+    def test_testbed_faults_name_a_path_the_answer_keys_know(self) -> None:
+        """kind testbed_fault (v4 ORAFIX, Q25 answer 3): a fault outside the runner, written by hand. Its
+        scope must use the scenario-metadata domain values and answer-key service names, or no recording
+        would ever be marked (the runner matches them exactly)."""
+        metadata = json.loads((ROOT / "registry" / "scenario-metadata.json").read_text(encoding="utf-8"))["scenarios"]
+        domains = {v.get("domain") for v in metadata.values()} - {None}
+        services = set()
+        for entry in metadata.values():
+            scoring = entry.get("scoring") or {}
+            services.update(scoring.get("accept") or [])
+            services.update(scoring.get("partial") or [])
+        faults = [r for r in self.ledger["outages"] if "kind" in r]
+        self.assertTrue(faults)
+        for record in faults:
+            with self.subTest(id=record["id"]):
+                self.assertEqual(record["kind"], "testbed_fault")
+                scope = record["scope"]
+                self.assertTrue(scope.get("domains") or scope.get("services"))
+                self.assertLessEqual(set(scope.get("domains", [])), domains)
+                self.assertLessEqual(set(scope.get("services", [])), services)
+
+    def test_the_bank_oracle_stall_is_on_record(self) -> None:
+        """11-16 10:20:14 KST tb-w2 weekly fstrim stalled the bank Oracle until the pod was recreated;
+        the apps were Ready again at 11-17 17:51:40 KST (agent-out ORA.md, APORA.md). The bank path and
+        the commerce checkout path through payment (payment calls the bank transfer) carry the mark."""
+        record = next(r for r in self.ledger["outages"] if r["id"] == "banking-oracle-2026-11-16-stall")
+        self.assertEqual((record["start"], record["end"]), ("2026-11-16T01:20:14Z", "2026-11-17T08:51:40Z"))
+        self.assertEqual(record["scope"]["domains"], ["core-banking"])
+        self.assertIn("commerce-payment", record["scope"]["services"])
+        self.assertIn("ORA.md", record["source"])
+        self.assertIn("APORA.md", record["source"])
+
+
+class BankingOracleSelfRecoveryTests(unittest.TestCase):
+    """core-banking/k8s/10-oracle.yaml (testbed v4 ORAFIX, Q25 answer 1 ②): a container restart after
+    Oracle was killed must start again without a person. The container runs oracle-ipc-clean.sh before
+    the image entrypoint; it removes the dead instance's SGA and semaphores (sysresv -f) only when no
+    segment of the oracle user is attached and no Oracle background process runs. The grace period lets
+    the entrypoint's shutdown immediate finish."""
+
+    MANIFEST = ROOT.parents[1] / "core-banking" / "k8s" / "10-oracle.yaml"
+    SHM_HEADER = ("       key      shmid perms                  size  cpid  lpid nattch   uid   gid  cuid  cgid"
+                  "      atime      dtime      ctime                   rss                  swap\n")
+    SEM_HEADER = "       key      semid perms      nsems   uid   gid  cuid  cgid      otime      ctime\n"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import yaml
+
+        cls.text = cls.MANIFEST.read_text(encoding="utf-8")
+        docs = [d for d in yaml.safe_load_all(cls.text) if d]
+        cls.sts = next(d for d in docs if d["kind"] == "StatefulSet")
+        cls.cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "oracle-ipc-clean")
+        cls.script = cls.cm["data"]["oracle-ipc-clean.sh"]
+
+    def test_the_container_cleans_first_then_execs_the_image_entrypoint(self) -> None:
+        pod = self.sts["spec"]["template"]["spec"]
+        container = next(c for c in pod["containers"] if c["name"] == "oracle")
+        self.assertEqual(pod["terminationGracePeriodSeconds"], 300)
+        # The image has ENTRYPOINT ["container-entrypoint.sh"] and no CMD: the wrapper gets it as its
+        # argument and execs it, so PID 1 and the entrypoint's SIGTERM trap stay the image's.
+        self.assertEqual(container["command"],
+                         ["/bin/bash", "/opt/testbed-ipc-clean/oracle-ipc-clean.sh", "container-entrypoint.sh"])
+        self.assertNotIn("args", container)
+        mount = next(m for m in container["volumeMounts"] if m["name"] == "ipc-clean")
+        self.assertEqual((mount["mountPath"], mount.get("readOnly")), ("/opt/testbed-ipc-clean", True))
+        volume = next(v for v in pod["volumes"] if v["name"] == "ipc-clean")
+        self.assertEqual(volume["configMap"]["name"], self.cm["metadata"]["name"])
+        self.assertEqual(self.cm["metadata"]["namespace"], self.sts["metadata"]["namespace"])
+        # An initContainer would not help: it runs only when a new sandbox (with a new, empty IPC
+        # namespace) is made, never on a container restart inside the old one.
+        self.assertNotIn("initContainers", pod)
+        # The probes and the mounts the rest of the stack relies on are unchanged.
+        self.assertEqual(container["livenessProbe"], {"exec": {"command": ["healthcheck.sh"]}, "periodSeconds": 30,
+                                                      "timeoutSeconds": 10, "failureThreshold": 5})
+        mounts = {(m["name"], m["mountPath"]) for m in container["volumeMounts"]}
+        self.assertLessEqual({("oracledata", "/opt/oracle/oradata"), ("oracledata", "/opt/oracle/diag"),
+                              ("init-scripts", "/container-entrypoint-initdb.d"),
+                              ("startdb-scripts", "/container-entrypoint-startdb.d")}, mounts)
+        self.assertIsNone(INJECTION_TRACE.search(self.script))
+
+    def test_answer_key_line_anchors_still_point_at_the_same_lines(self) -> None:
+        """Answer keys cite 10-oracle.yaml by line (5-7, 13, 22-23, 43-49, 82-106): new items must not
+        move them."""
+        lines = self.text.splitlines()
+        expected = {5: "kind: StatefulSet", 7: "  name: testbed-oracle", 13: "  replicas: 1",
+                    22: "      nodeSelector:", 23: "        kubernetes.io/hostname: tb-w2",
+                    43: "          resources:", 45: "              cpu: 500m", 46: "              memory: 2Gi",
+                    48: "              cpu: 2000m", 49: "              memory: 4Gi", 82: "kind: Service",
+                    84: "  name: testbed-oracle", 97: "  name: testbed-oracle-external", 106: "      nodePort: 30308"}
+        for number, line in expected.items():
+            with self.subTest(line=number):
+                self.assertEqual(lines[number - 1], line)
+
+    # ---------------------------------------------------------------- the script itself
+
+    def _world(self, base: Path, *, segments, semaphores=(), procs=(), sysresv="removes", shm_files=()):
+        """A fake /proc (sysvipc tables and process comm files), /dev/shm, and sysresv.
+        segments: (shmid, nattch, uid); semaphores: (semid, uid)."""
+        proc = base / "proc"
+        (proc / "sysvipc").mkdir(parents=True)
+        (proc / "sysvipc" / "shm").write_text(self.SHM_HEADER + "".join(
+            f"         0 {shmid:10d}   600 1593835520    29  1387 {nattch:6d} {uid:5d} {uid:5d} {uid:5d} {uid:5d}"
+            f" 1794906340 1794906341 1794905447 1577058304 0\n" for shmid, nattch, uid in segments))
+        (proc / "sysvipc" / "sem").write_text(self.SEM_HEADER + "".join(
+            f"  86774516 {semid:10d}   600        204 {uid:5d} {uid:5d} {uid:5d} {uid:5d} 1794906343 1794906318\n"
+            for semid, uid in semaphores))
+        for pid, comm in procs:
+            (proc / str(pid)).mkdir()
+            (proc / str(pid) / "comm").write_text(comm + "\n")
+        shm = base / "shm"
+        shm.mkdir()
+        for name in shm_files:
+            (shm / name).write_text("x")
+        (shm / "orahpatch_FREE").mkdir()
+        calls = base / "sysresv.calls"
+        tool = base / "sysresv"
+        if sysresv == "removes":
+            body = (f'printf "%s\\n" "$*" >>{calls}\n'
+                    f'head -1 {proc}/sysvipc/shm >{base}/t && mv {base}/t {proc}/sysvipc/shm\n'
+                    f'head -1 {proc}/sysvipc/sem >{base}/t && mv {base}/t {proc}/sysvipc/sem\n')
+        else:  # leaves everything, as a sysresv that judged the instance alive would
+            body = f'printf "%s\\n" "$*" >>{calls}\necho "Oracle Instance alive for sid FREE"\n'
+        if sysresv is not None:
+            tool.write_text("#!/usr/bin/env bash\n" + body)
+            tool.chmod(0o755)
+        script = base / "oracle-ipc-clean.sh"
+        script.write_text(self.script)
+        return script, proc, shm, tool, calls
+
+    def _run(self, base: Path, script: Path, proc: Path, shm: Path, tool: Path, *args: str):
+        marker = base / "entrypoint.ran"
+        env = {**os.environ, "IPC_CLEAN_PROC_ROOT": str(proc), "IPC_CLEAN_SHM_DIR": str(shm),
+               "IPC_CLEAN_SYSRESV": str(tool), "ORACLE_SID": "FREE"}
+        if not args:
+            args = ("bash", "-c", f'echo "$$ $*" >{marker}', "entry", "one", "two")
+        process = subprocess.Popen(["bash", str(script), *args], env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True)
+        out, _ = process.communicate(timeout=30)
+        ran = marker.read_text().split() if marker.exists() else None
+        return process, out, ran
+
+    def test_a_dead_instances_ipc_is_removed_before_the_entrypoint(self) -> None:
+        import tempfile
+
+        me = os.getuid()
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(
+                base, segments=[(0, 0, me), (1, 0, me), (3, 0, me), (7, 0, me + 1)],
+                semaphores=[(3, me)], procs=[(1, "bash"), (12, "sleep")],
+                shm_files=["ora_793455d4_ab56eaf7_14_KSTRCB_MGA_NMSPC_0_0.dat", "other.dat"])
+            process, out, ran = self._run(base, script, proc, shm, tool)
+            self.assertEqual(calls.read_text().split("\n")[0], "-f -l FREE", out)
+            self.assertFalse((shm / "ora_793455d4_ab56eaf7_14_KSTRCB_MGA_NMSPC_0_0.dat").exists(), out)
+            self.assertTrue((shm / "other.dat").exists())
+            self.assertTrue((shm / "orahpatch_FREE").is_dir())
+            self.assertIn("done: no shared memory or semaphores", out)
+            # exec, not a child: the entrypoint runs in the wrapper's own process (PID 1 in the pod)
+            # with the arguments it was given.
+            self.assertEqual(ran, [str(process.pid), "one", "two"], out)
+            self.assertEqual(process.returncode, 0)
+
+    def test_nothing_is_removed_while_an_instance_may_be_alive(self) -> None:
+        import tempfile
+
+        me = os.getuid()
+        cases = {
+            # a segment with a process attached: an instance runs, perhaps where this container cannot see
+            "attached": dict(segments=[(0, 0, me), (1, 61, me)], semaphores=[(3, me)]),
+            # a background process of a running instance in this container
+            "pmon": dict(segments=[(0, 0, me)], semaphores=[(3, me)], procs=[(85, "ora_pmon_FREE")]),
+            "lgwr": dict(segments=[(0, 0, me)], procs=[(82, "ora_lgwr_FREE")]),
+            # nothing of this user: another user's segment is never touched
+            "other user": dict(segments=[(7, 0, me + 1)], semaphores=[(4, me + 1)]),
+            "nothing": dict(segments=[]),
+        }
+        for name, world in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                base = Path(raw)
+                script, proc, shm, tool, calls = self._world(base, shm_files=["ora_793455d4_x.dat"], **world)
+                before = (proc / "sysvipc" / "shm").read_text()
+                process, out, ran = self._run(base, script, proc, shm, tool)
+                self.assertFalse(calls.exists(), f"{name}: sysresv was called: {out}")
+                self.assertEqual((proc / "sysvipc" / "shm").read_text(), before)
+                self.assertTrue((shm / "ora_793455d4_x.dat").exists(), out)
+                self.assertEqual(ran, [str(process.pid), "one", "two"], out)
+
+    def test_the_start_is_never_blocked(self) -> None:
+        import tempfile
+
+        me = os.getuid()
+        with tempfile.TemporaryDirectory() as raw:
+            # sysresv leaves the segments (it judged the instance alive): say so, keep the files, start.
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(
+                base, segments=[(1, 0, me)], semaphores=[(3, me)], sysresv="keeps", shm_files=["ora_1.dat"])
+            process, out, ran = self._run(base, script, proc, shm, tool)
+            self.assertTrue(calls.exists())
+            self.assertIn("LEFT after sysresv: segments 1", out)
+            self.assertTrue((shm / "ora_1.dat").exists())
+            self.assertEqual(ran, [str(process.pid), "one", "two"])
+        with tempfile.TemporaryDirectory() as raw:
+            # no sysresv in the image
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(base, segments=[(1, 0, me)], sysresv=None)
+            process, out, ran = self._run(base, script, proc, shm, tool)
+            self.assertIn("no sysresv", out)
+            self.assertEqual(ran, [str(process.pid), "one", "two"])
+        with tempfile.TemporaryDirectory() as raw:
+            # the kernel table cannot be read
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(base, segments=[(1, 0, me)])
+            (proc / "sysvipc" / "shm").unlink()
+            process, out, ran = self._run(base, script, proc, shm, tool)
+            self.assertFalse(calls.exists())
+            self.assertIn("cannot read", out)
+            self.assertEqual(ran, [str(process.pid), "one", "two"])
+        with tempfile.TemporaryDirectory() as raw:
+            # no entrypoint to exec is a configuration error, not a silent start of nothing
+            base = Path(raw)
+            script, proc, shm, tool, calls = self._world(base, segments=[])
+            env = {**os.environ, "IPC_CLEAN_PROC_ROOT": str(proc), "IPC_CLEAN_SHM_DIR": str(shm),
+                   "IPC_CLEAN_SYSRESV": str(tool)}
+            result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no entrypoint given", result.stdout)
+
 
 class EntryPlacementTests(unittest.TestCase):
     """Domain manifests (testbed v4 E8): the entry nginx of commerce and banking

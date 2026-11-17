@@ -149,12 +149,14 @@ bash "$TOOL" cutover "$TMP_ROOT/by-id-link" >/dev/null
 grep -q "^chattr +i $PV_DIR\$" "$FAKE_LOG" || fail "the empty mount point is not made immutable"
 grep -q '^systemctl daemon-reload' "$FAKE_LOG" || fail "systemd was not told about the new fstab line"
 [[ $(grep -c " $PV_DIR " "$FSTAB") -eq 1 ]] || fail "expected exactly one fstab line"
-grep -qx "UUID=fake-uuid $PV_DIR ext4 defaults,nofail 0 2" "$FSTAB" || fail "fstab line: $(cat "$FSTAB")"
+grep -qx "UUID=fake-uuid $PV_DIR ext4 defaults,nofail,X-fstrim.notrim 0 2" "$FSTAB" || fail "fstab line: $(cat "$FSTAB")"
+bash "$TOOL" fstab-notrim --check >/dev/null || fail "a fresh cutover must keep the disk out of fstrim"
 [[ ! -L "$STAGING" ]] || fail "the staging mount was left behind"
 [[ "$(bash "$TOOL" cutover "$DEV")" == *"already cut over"* ]] || fail "cutover is not idempotent"
 report=$(bash "$TOOL" check)
 grep -q "original copy kept at $ORIG_DIR" <<<"$report" || fail "check does not report the original copy"
 grep -q "mounted from $DEV" <<<"$report" || fail "check does not report the mount"
+grep -q "fstrim: $PV_DIR is excluded (X-fstrim.notrim)" <<<"$report" || fail "check does not report the fstrim exclusion: $report"
 echo "[PASS] cutover copies identically, keeps the original and mounts the disk at the volume path"
 
 # rollback refuses while Oracle runs or the disk is still bound into a pod.
@@ -273,3 +275,44 @@ mv -T "$PV_DIR" "$ORIG_DIR"; mkdir "$PV_DIR"; printf 'new database?\n' >"$PV_DIR
 expect_fail "rollback over content of its own" bash "$TOOL" rollback
 [[ -f "$PV_DIR/stray" && -d "$ORIG_DIR" ]] || fail "a refused rollback changed the directories"
 echo "[PASS] a volume path with its own content next to an original copy is left to a person"
+
+# fstab-notrim (testbed v4 ORAFIX): a node cut over before the option existed gets it added to the
+# volume's line, every other field and line kept, no remount; --check only reads.
+reset; bash "$TOOL" prepare "$DEV" >/dev/null; bash "$TOOL" cutover "$DEV" >/dev/null
+printf 'UUID=other /data xfs defaults,discard 0 2\n' >>"$FSTAB"
+sed -i "s|^UUID=fake-uuid $PV_DIR ext4 defaults,nofail,X-fstrim.notrim 0 2\$|UUID=fake-uuid\t$PV_DIR  ext4 defaults,nofail,noatime 0 2|" "$FSTAB"
+grep -q $'^UUID=fake-uuid\t' "$FSTAB" || fail "precondition: the old-style line"
+rc=0; bash "$TOOL" fstab-notrim --check >"$TMP_ROOT/out" || rc=$?
+[[ $rc -eq 1 ]] || fail "--check on a line without the option must exit 1, got $rc"
+grep -q "NOT excluded" "$TMP_ROOT/out" || fail "--check must say the disk is not excluded"
+[[ "$(bash "$TOOL" check)" == *"NOT excluded"* ]] || fail "check must report a disk that fstrim still trims"
+cp "$FSTAB" "$TMP_ROOT/fstab.before"; : >"$FAKE_LOG"
+[[ "$(bash "$TOOL" fstab-notrim)" == *"excluded (X-fstrim.notrim added"* ]] || fail "fstab-notrim did not report the change"
+grep -qx "UUID=fake-uuid $PV_DIR ext4 defaults,nofail,noatime,X-fstrim.notrim 0 2" "$FSTAB" || fail "fstab-notrim line: $(cat "$FSTAB")"
+others() { awk -v t="$PV_DIR" '$2 != t' "$1"; }
+diff <(others "$TMP_ROOT/fstab.before") <(others "$FSTAB") >/dev/null || fail "fstab-notrim touched other lines"
+[[ $(grep -c " $PV_DIR " "$FSTAB") -eq 1 ]] || fail "fstab-notrim must leave exactly one line"
+grep -q '^systemctl daemon-reload' "$FAKE_LOG" || fail "fstab-notrim must tell systemd about the changed line"
+! grep -q '^mount \|^umount ' "$FAKE_LOG" || fail "fstab-notrim must not remount: $(cat "$FAKE_LOG")"
+[[ -L "$PV_DIR" ]] || fail "fstab-notrim changed the mount"
+bash "$TOOL" fstab-notrim --check >/dev/null || fail "--check after fstab-notrim must exit 0"
+cp "$FSTAB" "$TMP_ROOT/fstab.once"
+[[ "$(bash "$TOOL" fstab-notrim)" == *"already excluded"* ]] || fail "fstab-notrim is not idempotent"
+cmp -s "$FSTAB" "$TMP_ROOT/fstab.once" || fail "a second fstab-notrim changed fstab"
+umount "$PV_DIR"; mount "$PV_DIR" || fail "the line with the option must still mount the disk"
+echo "[PASS] fstab-notrim adds the option to an old cutover's line only, once, without a remount"
+
+# fstab-notrim refuses what it cannot do safely and changes nothing.
+reset
+rc=0; bash "$TOOL" fstab-notrim --check >/dev/null || rc=$?
+[[ $rc -eq 2 ]] || fail "--check without a line must exit 2, got $rc"
+cp "$FSTAB" "$TMP_ROOT/fstab.before"
+expect_fail "fstab-notrim without a line" bash "$TOOL" fstab-notrim
+expect_fail "fstab-notrim with an unknown argument" bash "$TOOL" fstab-notrim --sideways
+printf 'UUID=a %s ext4 defaults 0 2\nUUID=b %s ext4 defaults 0 2\n' "$PV_DIR" "$PV_DIR" >>"$FSTAB"
+cp "$FSTAB" "$TMP_ROOT/fstab.dup"
+expect_fail "fstab-notrim with two lines for the volume" bash "$TOOL" fstab-notrim
+cmp -s "$FSTAB" "$TMP_ROOT/fstab.dup" || fail "a refused fstab-notrim changed fstab"
+rc=0; bash "$TOOL" fstab-notrim --check >/dev/null || rc=$?
+[[ $rc -eq 1 ]] || fail "--check with one of two lines lacking the option must exit 1, got $rc"
+echo "[PASS] fstab-notrim refuses a missing or doubled line and unknown arguments"

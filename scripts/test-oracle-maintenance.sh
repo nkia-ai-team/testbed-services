@@ -139,6 +139,41 @@ rc=0; bash -c "$remote" _ "$TMP_ROOT" 10080 1048576 >/dev/null 2>&1 || rc=$?
 [[ -s "$DIAG_ROOT/tnslsnr/testbed-oracle-0/listener/trace/listener.log" ]] || fail 'listener.log under the cap was touched'
 grep -q 'exec -i testbed-oracle-0 -- bash -s --' "$FAKE_LOG" || fail 'purge did not run in the Oracle pod'
 
+# --- purge failure is a marker at once (v4 ORAFIX): readiness false until a purge gets through ---
+[[ -f "$STATE_DIR/PURGE_FAILED" ]] || fail 'a refused root must leave PURGE_FAILED'
+grep -q "purge failed: DIAG_ROOT $TMP_ROOT is not a \*/diag directory" "$STATE_DIR/PURGE_FAILED" || fail "marker: $(cat "$STATE_DIR/PURGE_FAILED")"
+reset_tree
+"$MAINT" purge | grep -q 'purge done' || fail 'purge after a refused root did not run'
+[[ ! -e "$STATE_DIR/PURGE_FAILED" ]] || fail 'a purge that got through must remove PURGE_FAILED'
+# The pod's container is gone (11-16: CrashLoopBackOff): the failure is marked with kubectl's reason.
+cat >"$TMP_ROOT/bin/kubectl-down" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_LOG"
+echo 'error: Internal error occurred: unable to upgrade connection: container not found ("oracle")' >&2
+exit 1
+SH
+chmod +x "$TMP_ROOT/bin/kubectl-down"
+cp "$TMP_ROOT/bin/kubectl" "$TMP_ROOT/kubectl.real"; cp "$TMP_ROOT/bin/kubectl-down" "$TMP_ROOT/bin/kubectl"
+reset_tree
+rc=0; out=$("$MAINT" purge 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail 'a purge that could not reach the container must fail'
+grep -q 'purge failed in testbed-oracle-0' <<<"$out" || fail "failure log: $out"
+grep -q 'purge failed: in testbed-oracle-0: error: Internal error occurred: unable to upgrade connection: container not found ("oracle")' "$STATE_DIR/PURGE_FAILED" \
+  || fail "marker must carry kubectl's reason: $(cat "$STATE_DIR/PURGE_FAILED")"
+[[ ! -e "$STATE_DIR/PURGE_FAILED.tmp" ]] || fail 'the marker is written whole and renamed'
+# A purge skipped for a recording keeps the marker: nothing was learned about the pod.
+FAKE_ACTIVE=true "$MAINT" purge | grep -q 'purge skipped' || fail 'expected a skip'
+[[ -f "$STATE_DIR/PURGE_FAILED" ]] || fail 'a skipped purge removed PURGE_FAILED'
+cp "$TMP_ROOT/kubectl.real" "$TMP_ROOT/bin/kubectl"
+reset_tree
+"$MAINT" purge | grep -q 'purge done' || fail 'purge after the container came back did not run'
+[[ ! -e "$STATE_DIR/PURGE_FAILED" ]] || fail 'the marker stayed after the container came back'
+# check does not touch the purge marker (it is the purge's own verdict).
+printf 'x purge failed: y\n' >"$STATE_DIR/PURGE_FAILED"
+"$MAINT" check >/dev/null || fail 'check failed with a purge marker present'
+[[ -f "$STATE_DIR/PURGE_FAILED" ]] || fail 'check removed the purge marker'
+rm -f "$STATE_DIR/PURGE_FAILED"
+
 # --- purge: the listener's single growing files are emptied above the cap ---
 reset_tree
 head -c $((2 * 1024 * 1024)) /dev/zero >"$DIAG_ROOT/tnslsnr/testbed-oracle-0/listener/trace/listener.log"

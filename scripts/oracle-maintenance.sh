@@ -39,6 +39,13 @@
 # old last.json, so one failure is tolerated and two in a row block). check writes its period
 # into last.json (check_period_hours) and the runner derives the limit from it, so the crontab
 # line and the runner's limit both follow CHECK_PERIOD_HOURS.
+#
+# A purge that fails (the pod or its container cannot be reached, the ADR root is wrong) writes
+# $STATE_DIR/PURGE_FAILED (one line: time and reason) at once, and the runner's readiness is false
+# while the file exists. The next purge that gets through removes it; a skipped purge leaves it as it
+# is. Why (testbed v4 ORAFIX, Q25 answer 2): 11-16 the bank Oracle stayed down 30 hours. Every hourly
+# purge from 11:23 KST failed with 'container not found', but only the log held that; readiness went
+# false at 22:07 KST, when the last good check passed the 13-hour limit.
 set -Eeuo pipefail
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/root/tb-kubeconfig}"
@@ -160,24 +167,41 @@ echo "deleted=$deleted bytes=$bytes truncated=${truncated:-none}"
 SH
 )
 
+# The failure marker the runner reads (see the header). Written whole, then renamed.
+purge_failed() {
+  local now; now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+  mkdir -p "$STATE_DIR"
+  printf '%s purge failed: %s\n' "$now" "$1" >"$STATE_DIR/PURGE_FAILED.tmp"
+  mv -f "$STATE_DIR/PURGE_FAILED.tmp" "$STATE_DIR/PURGE_FAILED"
+  log "purge failed: $1 (readiness is false until a purge gets through)"
+}
+
 purge() {
-  local state result
+  local state result errfile
   # Deletion is confined to an ADR tree. A mistyped DIAG_ROOT must not become a find
   # over some other directory.
   case "$DIAG_ROOT" in
     */diag) ;;
-    *) log "purge refused: DIAG_ROOT $DIAG_ROOT is not a */diag directory"; return 1 ;;
+    *) log "purge refused: DIAG_ROOT $DIAG_ROOT is not a */diag directory"
+       purge_failed "DIAG_ROOT $DIAG_ROOT is not a */diag directory"
+       return 1 ;;
   esac
   state=$(recording_state)
   if [[ "$state" != ok ]]; then
     log "purge skipped: $state"
     return 0
   fi
+  errfile=$(mktemp)
   if ! result=$(k exec -i "$ORACLE_POD" -- bash -s -- "$DIAG_ROOT" "$((RETENTION_HOURS * 60))" \
-    "$((LISTENER_LOG_MAX_MB * 1024 * 1024))" <<<"$PURGE_REMOTE"); then
+    "$((LISTENER_LOG_MAX_MB * 1024 * 1024))" <<<"$PURGE_REMOTE" 2>"$errfile"); then
+    local why; why=$(grep -v '^[[:space:]]*$' "$errfile" | tail -1 | cut -c1-300 || true)
+    cat "$errfile" >&2; rm -f "$errfile"
     log "purge failed in $ORACLE_POD"
+    purge_failed "in $ORACLE_POD: ${why:-no error output}"
     return 1
   fi
+  cat "$errfile" >&2; rm -f "$errfile"
+  rm -f "$STATE_DIR/PURGE_FAILED"
   log "purge done (retention ${RETENTION_HOURS}h): $result"
 }
 
