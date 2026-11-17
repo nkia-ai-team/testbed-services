@@ -241,6 +241,23 @@ class LeakscanCaptureMeta(unittest.TestCase):
                 self.assertEqual(_scan(Path(raw)).returncode, 1)
 
 
+    def test_the_answer_sheet_at_the_case_root_is_not_scanned_but_a_copy_inside_the_data_is(self) -> None:
+        """The capture puts the runner's scenario.md (registry answer sheet, v4 CAPMETA) beside meta.json. It names
+        its own scenario by design; the gate keeps it out, while the same text inside the recorded data still fails."""
+        sheet = "# 시나리오 정답지: F49-H\n\nroot cause food-delivery-order (F49-H)\n"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)  # the capture's layout: no input/, data/ beside meta.json
+            (root / "data" / "clickhouse").mkdir(parents=True)
+            pq.write_table(pa.table({"proc_key": ["k0"], "cmdline": ["mysqld"]}),
+                           root / "data" / "clickhouse" / "process_meta.parquet")
+            (root / "scenario.md").write_text(sheet)
+            (root / "meta.json").write_text('{"scenario_id": "F49-H"}')
+            done = _scan(root)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            (root / "data" / "notes.json").write_text(json.dumps({"text": sheet}))
+            self.assertEqual(_scan(root).returncode, 1)
+
+
 class LeakscanEmptyCase(unittest.TestCase):
     def test_a_case_with_nothing_to_read_is_not_clean(self) -> None:
         """Six v3 folders left empty by the 10-31 dump failure used to pass as clean (v4 LEAK review, low 2)."""

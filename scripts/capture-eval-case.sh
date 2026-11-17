@@ -16,6 +16,7 @@ Usage:
     --t1 <YYYY-MM-DDTHH:MM:SSZ> --t2 <YYYY-MM-DDTHH:MM:SSZ> \
     [--case-label <calibration|evaluation|failed>] [--run-result <result.json>] \
     [--phases-json <file>] [--topology-bundle <dir>] [--decoys-json <file>] \
+    [--scenario-doc-file <md>] [--source-commits-json <file>] \
     [--output-root <dir>] [--dry-run]
   capture-eval-case.sh --self-check
   capture-eval-case.sh --retention-check --window-start <UTC> --window-end <UTC>
@@ -56,6 +57,13 @@ Capture contract version:
                                (seed, plan, outcome; testbed v4). Carried
                                verbatim as meta.decoy_deployments. Omitted: the
                                key is absent (runner had decoys off).
+  --scenario-doc-file <md>     Runner-written answer sheet of the scenario (the
+                               registry entry copied verbatim). Placed at the case
+                               root as scenario.md, beside meta.json and outside
+                               data/; meta.scenario_doc carries its sha256.
+  --source-commits-json <file> testbed-services and runner commits of this run,
+                               read by the runner from the deploy markers.
+                               Carried verbatim as meta.source_commits.
 
 Required environment for a live capture:
   VM_URL             default: http://192.168.230.119:18428
@@ -232,6 +240,11 @@ topology_bundle=''
 # plan and outcome. Carried into meta.json as decoy_deployments, outside
 # scenario_metadata and its hash. Absent flag = absent key.
 decoys_json=''
+# 녹화 정답지와 커밋 표지(2026-11-18 v4 CAPMETA). 러너가 등록부 항목을 그대로 옮긴 scenario.md 를 넘기면
+# 케이스 최상위(meta.json 옆, data/ 밖)에 담고, 배포 표지에서 읽은 두 저장소 커밋을 meta.source_commits 로 싣는다.
+# 둘 다 scenario_metadata 와 그 해시 밖이라 채점 입력이 바뀌지 않는다. 플래그가 없으면 키도 파일도 없다.
+scenario_doc_file=''
+source_commits_file=''
 dry_run=false
 self_check=false
 retention_check=false
@@ -259,6 +272,8 @@ while (( $# > 0 )); do
     --phases-json) phases_json="${2:-}"; shift 2 ;;
     --topology-bundle) topology_bundle="${2:-}"; shift 2 ;;
     --decoys-json) decoys_json="${2:-}"; shift 2 ;;
+    --scenario-doc-file) scenario_doc_file="${2:-}"; shift 2 ;;
+    --source-commits-json) source_commits_file="${2:-}"; shift 2 ;;
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --self-check) self_check=true; shift ;;
@@ -487,6 +502,39 @@ if [[ -n "$decoys_json" ]]; then
 fi
 attach_decoy_deployments() {
   if [[ "$decoy_deployments" == null ]]; then cat; else jq --argjson decoys "$decoy_deployments" '. + {decoy_deployments: $decoys}'; fi
+}
+
+source_commits=null
+if [[ -n "$source_commits_file" ]]; then
+  [[ -r "$source_commits_file" ]] || die '--source-commits-json is not readable'
+  source_commits=$(jq -c . "$source_commits_file") || die '--source-commits-json is not JSON'
+  # stamped, dirty 는 40자리 커밋을 갖고(dirty 는 그 커밋 위에 커밋 안 된 변경), 표지가 없거나(missing),
+  # git archive 를 거치지 않아 치환 전 문구 그대로거나(unstamped), 알 수 없는 값이면(invalid) commit 은 null 이다.
+  jq -e '
+    def source: type == "object" and keys == ["commit", "source", "status"] and
+      (.source | type == "string" and length > 0) and
+      (if (.status | IN("stamped", "dirty")) then (.commit | type == "string" and test("^[0-9a-f]{40}$"))
+       elif (.status | IN("unstamped", "missing", "invalid")) then .commit == null
+       else false end);
+    type == "object" and keys == ["runner", "schema_version", "testbed_services"] and
+    .schema_version == 1 and (.testbed_services | source) and (.runner | source)' \
+    <<<"$source_commits" >/dev/null ||
+    die '--source-commits-json must be {schema_version:1, testbed_services:{commit, status, source}, runner:{commit, status, source}}'
+fi
+attach_source_commits() {
+  if [[ "$source_commits" == null ]]; then cat; else jq --argjson commits "$source_commits" '. + {source_commits: $commits}'; fi
+}
+
+scenario_doc_sha256=''
+if [[ -n "$scenario_doc_file" ]]; then
+  [[ -f "$scenario_doc_file" && -r "$scenario_doc_file" && -s "$scenario_doc_file" ]] ||
+    die '--scenario-doc-file must be a readable, non-empty file'
+  scenario_doc_sha256=$(sha256sum "$scenario_doc_file" | awk '{print $1}')
+fi
+attach_scenario_doc() {
+  if [[ -z "$scenario_doc_sha256" ]]; then cat; else
+    jq --arg sha "$scenario_doc_sha256" '. + {scenario_doc: {file: "scenario.md", sha256: $sha}}'
+  fi
 }
 
 evaluation_eligible=false
@@ -833,7 +881,8 @@ if [[ "$dry_run" == true ]]; then
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
-        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments
+        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments |
+        attach_source_commits | attach_scenario_doc
   else
     jq -n \
       --arg case_id "$case_id" \
@@ -870,7 +919,8 @@ if [[ "$dry_run" == true ]]; then
         preflight:$preflight, topology_snapshot:null,
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
-        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments
+        golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments |
+        attach_source_commits | attach_scenario_doc
   fi
   exit 0
 fi
@@ -1718,6 +1768,26 @@ if [[ "$decoy_deployments" != null ]]; then
   mv -f "$staging_dir/meta.json.decoys" "$staging_dir/meta.json"
   jq -e --argjson decoys "$decoy_deployments" '.decoy_deployments == $decoys' "$staging_dir/meta.json" >/dev/null ||
     die 'meta.json decoy_deployments mismatch'
+fi
+
+if [[ "$source_commits" != null ]]; then
+  attach_source_commits <"$staging_dir/meta.json" >"$staging_dir/meta.json.commits"
+  mv -f "$staging_dir/meta.json.commits" "$staging_dir/meta.json"
+  jq -e --argjson commits "$source_commits" '.source_commits == $commits' "$staging_dir/meta.json" >/dev/null ||
+    die 'meta.json source_commits mismatch'
+fi
+
+# 정답지는 케이스 최상위에 둔다(v3 녹화본의 scenario.md 와 같은 자리). leakscan 은 이 이름을 정답 파일로 보지 않고
+# 평가 복원은 meta.json 과 data/ 만 제품에 넣는다. 캡처 도중 원본이 바뀌었으면 담지 않고 멈춘다.
+if [[ -n "$scenario_doc_file" ]]; then
+  cp -- "$scenario_doc_file" "$staging_dir/scenario.md"
+  chmod 0644 "$staging_dir/scenario.md"
+  [[ "$(sha256sum "$staging_dir/scenario.md" | awk '{print $1}')" == "$scenario_doc_sha256" ]] ||
+    die 'scenario doc changed during capture'
+  attach_scenario_doc <"$staging_dir/meta.json" >"$staging_dir/meta.json.doc"
+  mv -f "$staging_dir/meta.json.doc" "$staging_dir/meta.json"
+  jq -e --arg sha "$scenario_doc_sha256" '.scenario_doc == {file: "scenario.md", sha256: $sha}' \
+    "$staging_dir/meta.json" >/dev/null || die 'meta.json scenario_doc mismatch'
 fi
 
 # Group-readable promotion (spec §2.2, 2026-07-24): a case staged under a

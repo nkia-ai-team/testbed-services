@@ -452,6 +452,53 @@ expect_rejected decoys-unknown-version \
   "${base_args[@]}" --decoys-json "$TMP_ROOT/decoys-version.json"
 grep -q -- '--decoys-json must be' "$TMP_ROOT/err" || fail 'decoys-unknown-version rejected for another reason'
 
+# 녹화 정답지와 커밋 표지(2026-11-18 v4 CAPMETA): --scenario-doc-file 은 meta.scenario_doc(파일 이름, sha256),
+# --source-commits-json 은 meta.source_commits 로 그대로 실리고, scenario_metadata 와 그 해시, 다른 meta 키는
+# 그대로다. 플래그가 없으면 키가 없고, 빈 정답지나 모양이 틀린 커밋 기록은 거절한다.
+doc_file="$TMP_ROOT/scenario.md"
+printf '# answer sheet\n\nroot cause text\n' >"$doc_file"
+doc_sha=$(sha256sum "$doc_file" | awk '{print $1}')
+commits_file="$TMP_ROOT/source-commits.json"
+jq -n '{schema_version:1,
+  testbed_services:{commit:"0123456789abcdef0123456789abcdef01234567", status:"stamped",
+    source:"scenario-contracts/SOURCE_COMMIT"},
+  runner:{commit:null, status:"unstamped", source:"backend/app/SOURCE_COMMIT"}}' >"$commits_file"
+for mode_args in "" "--phases-json $phases_json"; do
+  # shellcheck disable=SC2086
+  with_both=$("$CAPTURE" "${base_args[@]}" --case-label calibration $mode_args \
+    --scenario-doc-file "$doc_file" --source-commits-json "$commits_file" \
+    --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+  # shellcheck disable=SC2086
+  without=$("$CAPTURE" "${base_args[@]}" --case-label calibration $mode_args \
+    --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+  jq -e --slurpfile commits "$commits_file" --arg sha "$doc_sha" --argjson without "$without" '
+    .source_commits == $commits[0] and .scenario_doc == {file:"scenario.md", sha256:$sha} and
+    del(.source_commits, .scenario_doc) == $without' \
+    <<<"$with_both" >/dev/null || fail "scenario doc or source commits not carried (${mode_args:-v2})"
+  jq -e 'has("source_commits") or has("scenario_doc") | not' <<<"$without" >/dev/null ||
+    fail "scenario_doc or source_commits present without the flags (${mode_args:-v2})"
+done
+jq '.testbed_services.status = "dirty" | .testbed_services.commit = null' "$commits_file" >"$TMP_ROOT/commits-dirty-null.json"
+expect_rejected source-commits-dirty-without-commit \
+  "${base_args[@]}" --source-commits-json "$TMP_ROOT/commits-dirty-null.json"
+grep -q -- '--source-commits-json must be' "$TMP_ROOT/err" || fail 'source-commits-dirty-without-commit rejected for another reason'
+jq '.runner.commit = "0123456789abcdef0123456789abcdef01234567"' "$commits_file" >"$TMP_ROOT/commits-unstamped-commit.json"
+expect_rejected source-commits-unstamped-with-commit \
+  "${base_args[@]}" --source-commits-json "$TMP_ROOT/commits-unstamped-commit.json"
+grep -q -- '--source-commits-json must be' "$TMP_ROOT/err" || fail 'source-commits-unstamped-with-commit rejected for another reason'
+jq '.testbed_services.commit = "0123abc"' "$commits_file" >"$TMP_ROOT/commits-short.json"
+expect_rejected source-commits-short-hash \
+  "${base_args[@]}" --source-commits-json "$TMP_ROOT/commits-short.json"
+jq 'del(.runner)' "$commits_file" >"$TMP_ROOT/commits-no-runner.json"
+expect_rejected source-commits-missing-runner \
+  "${base_args[@]}" --source-commits-json "$TMP_ROOT/commits-no-runner.json"
+: >"$TMP_ROOT/empty-doc.md"
+expect_rejected scenario-doc-empty \
+  "${base_args[@]}" --scenario-doc-file "$TMP_ROOT/empty-doc.md"
+grep -q -- '--scenario-doc-file must be' "$TMP_ROOT/err" || fail 'scenario-doc-empty rejected for another reason'
+expect_rejected scenario-doc-missing \
+  "${base_args[@]}" --scenario-doc-file "$TMP_ROOT/no-such-doc.md"
+
 # ------------------------------------------------------------
 # v4 자동 발견 (2026-11-10 R1, spec §2.3). 라이브 경로를 가짜 curl, docker 로 돌린다.
 # 확인하는 것: v3 13개 CH 표의 이름, 파일 자리, 형식, meta 항목 불변(실제 v3 녹화본
@@ -949,6 +996,34 @@ grep -q 'product version unavailable' "$live_root/case-live-v4-nopv.err" || fail
 run_live case-live-v4-envpv FAKE_PV_FAIL=1 PRODUCT_VERSION=manual-1 || fail 'capture failed with PRODUCT_VERSION'
 jq -e '.product_version == "manual-1" and .product_version_source == "env:PRODUCT_VERSION"' \
   "$live_root/cases/case-live-v4-envpv/meta.json" >/dev/null || fail 'PRODUCT_VERSION env not used'
+
+# (g2) 정답지와 커밋 표지(v4 CAPMETA): 라이브 캡처가 scenario.md 를 케이스 최상위에 같은 바이트로 담고(data/ 밖),
+# meta 에 scenario_doc 과 source_commits 를 싣는다. 플래그 없는 위 녹화(case-live-v4)에는 둘 다 없다.
+run_live_extra() {
+  local case_id=$1; shift
+  env PATH="$fakebin:$PATH" FAKE_FIX="$fix" FAKE_LOG="$FAKE_LOG" \
+    VM_URL=http://fake-vm CH_URL=http://fake-ch CH_USER=lucida CH_PASSWORD=pw \
+    PG_PASSWORD=pw PG_DUMP_IMAGE=fake-pg QUERY_API_URL=http://fake-api QUERY_API_PASSWORD=pw \
+    MODEL_SOURCE="$live_root/model.json" \
+    "$CAPTURE" "${base_args[@]/case-policy-test/$case_id}" --case-label calibration \
+    --phases-json "$phases_json" --output-root "$live_root/cases" "$@" \
+    >"$live_root/$case_id.out" 2>"$live_root/$case_id.err"
+}
+run_live_extra case-live-v4-doc --scenario-doc-file "$doc_file" --source-commits-json "$commits_file" ||
+  { cat "$live_root/case-live-v4-doc.err" >&2; fail 'live capture with scenario doc failed'; }
+doc_case="$live_root/cases/case-live-v4-doc"
+cmp -s "$doc_file" "$doc_case/scenario.md" || fail 'scenario.md is not the runner doc byte for byte'
+[[ "$(find "$doc_case" -name scenario.md | wc -l)" == 1 ]] || fail 'scenario.md placed more than once or under data/'
+[[ "$(stat -c %a "$doc_case/scenario.md")" == 664 || "$(stat -c %a "$doc_case/scenario.md")" == 644 ]] ||
+  fail 'scenario.md is not group readable'
+jq -e --slurpfile commits "$commits_file" --arg sha "$doc_sha" '
+  .source_commits == $commits[0] and .scenario_doc == {file:"scenario.md", sha256:$sha}' \
+  "$doc_case/meta.json" >/dev/null || fail 'live meta lacks scenario_doc or source_commits'
+jq -e --argjson keys "$v3_meta_keys" '($keys - keys) == []' "$doc_case/meta.json" >/dev/null ||
+  fail 'a v3 meta key disappeared with the scenario doc'
+[[ ! -e "$live_root/cases/case-live-v4/scenario.md" ]] || fail 'scenario.md written without --scenario-doc-file'
+jq -e 'has("source_commits") or has("scenario_doc") | not' "$meta" >/dev/null ||
+  fail 'live meta has scenario_doc or source_commits without the flags'
 
 # (h) PG 도구 이미지의 메이저가 서버보다 낮으면(pg_dump 16 → 서버 17) 덤프 전에 멈춘다. 같거나 높으면 진행.
 # 기본 이미지는 postgres:17-alpine 이다(119 PG 17.11).

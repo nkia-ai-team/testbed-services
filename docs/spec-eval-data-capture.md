@@ -307,6 +307,8 @@ meta만으로 판정 가능해야 한다(07-24 "CH 데이터 없음" 논쟁의 �
 - 제거: `segments[]`·`rebase`·`normal_provenance` — phases[]가 대체.
 - 선택 `decoy_deployments`(2026-11-09, v4): 러너가 그 주기의 평시 구간에 넣은 무해한 배포(미끼, 평시 배포)의 기록이다. 러너가 `--decoys-json` 으로 넘기고 그대로 싣는다: `{schema_version:1, scenario_id, seed, policy_sha256, cycle_start, decoys:[{id, window(normal|near_fault), planned_at, kind(restart|config_rollout|configmap|annotation), namespace, deployment, service_name, target_id, relation(same_domain|off_domain), configmap, value, status(applied|rolled_back|failed|skipped), started_at, finished_at, detail}]}`. 러너가 미끼를 켜고 돌린 주기는 0건이어도 키가 있고, 끈 러너의 녹화에는 키가 없다. 정책은 testbed-services `scripts/scenarios/registry/decoy-deployments.json`, 같은 seed 와 정책이면 같은 일정이 나온다. 채점 입력이 아니며 `scenario_metadata` 해시 밖이다. 미끼는 장애 경로 밖 대상에만 간다: 정답지의 채점 이름, 채점 문항(root_cause, scoring, must_support, must_rule_out)이 부르는 대상, 정답지가 바뀌지 않았다고 말하는 대상, 그리고 정책 `path_scope=mentioned` 이면 정답지 어디서든 부르는 대상을 러너가 정답지에서 계산해 뺀다(2026-11-09 사용자 결정). 경로 위를 셀 때 다른 도메인 앱의 짧은 이름 가운데 흔한 낱말이거나 두 도메인이 같이 쓰는 것(order, payment, api, account, ledger 등)은 정답지가 그 도메인을 어디서든 부를 때만 그 앱으로 보고, URL 경로의 첫 마디(/api/orders 의 api)는 앱 이름으로 보지 않는다. 고유한 짧은 이름(cart, pricing, gateway 등)과 한국어 이름(게이트웨이)은 도메인을 부르지 않아도 어디서든 세고, 그 도메인을 부른 것으로도 친다. 러너가 도메인 낱말을 모르는 도메인이 정책에 있으면 정책을 거절해 큐가 사유와 함께 멈춘다(v4 U7b). 바뀌지 않았다는 문장을 읽을 때는 이 경계를 두지 않고 모든 도메인의 짧은 이름을 그대로 뺀다. 도메인이 없는 정답지에는 미끼를 넣지 않는다. `relation` 은 남은 대상이 시나리오와 같은 네임스페이스인지 아닌지다. 기본 종류는 재시작 롤아웃 하나다. 같은 주기의 `preflight` 에는 미끼가 설명하는 알람이 있었으면 `excused_alarms` 가 더해진다(그 알람은 `active_alarms` 값에서 빠진다).
 - 선택 `scenario_notes`(2026-10-19): 정답지에 참고 메모(`beyond_data`, `beyond_data_ko`)가 있을 때만 생긴다. 러너가 `--scenario-notes-file` 로 넘기고, 채점과 정답 판정 입력이 아니며 `scenario_metadata` 해시 밖이다(헌장 G7 참고 메모 칸). v2 에도 같다.
+- 선택 `source_commits`(2026-11-18, v4 CAPMETA): 그 녹화의 testbed-services 와 러너 커밋이다. `{schema_version:1, testbed_services:{commit, status, source}, runner:{commit, status, source}}`. 러너가 캡처를 예약할 때 배포 표지를 읽어 `--source-commits-json` 으로 넘기고 그대로 싣는다. testbed-services 표지는 `scripts/scenarios/SOURCE_COMMIT`(러너 안 `/opt/lucida/scenario-contracts/SOURCE_COMMIT`)이고, 러너 표지는 이미지 안 `backend/app/SOURCE_COMMIT` 이며 그 파일이 치환 전이면 빌드 때 받은 `RUNNER_SOURCE_COMMIT` 이다. 표지는 `git archive` 가 export-subst 로 커밋을 적고(.gitattributes), `deploy-live-promotions.sh` 는 rsync 뒤 HEAD 를 적으며 `scripts/scenarios` 에 커밋 안 된 변경이 있으면 `-dirty` 를 붙인다. status 는 stamped(커밋 그대로), dirty(그 커밋 위 변경), unstamped(치환 전 문구, git archive 도 배포 스크립트도 거치지 않음), missing(표지 없음), invalid(그 밖의 값)이고 뒤 셋은 commit 이 null 이다. 표지는 마지막 배포의 커밋이라 손으로 고친 파일은 드러내지 않는다. 카탈로그는 `run_catalog_sha256` 으로 함께 대조한다. 채점 입력이 아니며 `scenario_metadata` 해시 밖이다.
+- 선택 `scenario_doc`(2026-11-18, v4 CAPMETA): 케이스 최상위 `scenario.md` 의 `{file:"scenario.md", sha256}`. 아래 scenario.md 절.
 
 **토폴로지 주기 스냅샷 번들 (2026-07-24 신설 — EventCluster 소비자 계약)**:
 EventCluster의 event-time replay 평가는 "사건 당시" 토폴로지가 필요하므로,
@@ -335,7 +337,15 @@ EventCluster 담당(장재훈) 전달사항이며 요지:
 재발 방지. 정본 아카이브는 .104 `/data/eval-cases/`이며 소비자 안내는 항상 정본
 경로로 한다.
 
-**scenario.md (동반 문서)**: 형식 정본은 [AI Scenario Supervisor §6]
+**scenario.md (녹화 정답지, 2026-11-18 v4 CAPMETA)**: 러너가 캡처를 예약할 때 등록부
+(`scripts/scenarios/registry/scenario-metadata.json`)의 그 시나리오 항목을 칸마다 원문 그대로 옮기고 항목
+JSON 원문을 덧붙여 `scenario.md` 를 만든다. 러너가 쓰는 문장은 머리말과 칸 제목뿐이다. 캡처가
+`--scenario-doc-file` 로 받아 케이스 최상위(meta.json 옆, data/ 밖)에 담고 meta `scenario_doc` 에 sha256 을
+적는다. 정답지이므로 평가 대상과 판정관에게 주지 않으며 leakscan 은 이 이름을 보지 않는다. v3 캠페인
+녹화본(08-20 뒤)은 러너와 캡처 어디에도 이 단계가 없어 scenario.md 가 없었고, 07월 v3 녹화본의 scenario.md 는
+아래 supervisor 가 녹화 뒤 따로 저술한 문서였다. 관측 실측 서술은 이 정답지에 들어가지 않는다.
+
+**scenario.md (동반 문서, supervisor 저술)**: 형식 정본은 [AI Scenario Supervisor §6]
 (spec-scenario-supervisor.md)의 AI 저술 규칙을 승계하되, v3 케이스는 다음을
 추가·변경한다 — ① "사이클 타임라인" 표 신설(리셋~쿨다운 종료의 실측 UTC/KST),
 ② 시간축이 실제 연속임을 명기하고 rebase/이음새 서술 금지, ③ 관측 실측 절은

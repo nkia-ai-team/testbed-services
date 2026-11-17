@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import threading
@@ -387,6 +390,7 @@ class DeployScriptReGuardTests(unittest.TestCase):
         ("bash -s", "러너 ClickHouse 자격 확인"),
         ("--exclude registry/controllers.json", "시나리오 rsync"),
         ("registry/controllers.json root@", "controllers.json rsync"),
+        ("SOURCE_COMMIT.tmp", "SOURCE_COMMIT 표지"),
     )
 
     @classmethod
@@ -518,6 +522,51 @@ class DeployScriptLayoutTests(unittest.TestCase):
         script = DEPLOY_PATH.read_text(encoding="utf-8")
         self.assertNotIn("curl -sS '$runner_url/api/live-queue'", script)
         self.assertNotIn("| python3 \"$scenario_root/recording-guard.py\"", script)
+
+
+class SourceCommitMarkerTests(unittest.TestCase):
+    """tb-ops 사본은 git 이 아니라서 배포가 커밋 표지를 남긴다(2026-11-18 v4 CAPMETA). 러너가 그 표지를 읽어
+    녹화 meta.source_commits.testbed_services 에 싣는다."""
+
+    def test_deploy_script_does_not_ship_the_unstamped_marker_and_writes_the_commit_after_rsync(self) -> None:
+        script = (ROOT / "deploy-live-promotions.sh").read_text(encoding="utf-8")
+        first_rsync = script.index("rsync -az")
+        self.assertIn("--exclude SOURCE_COMMIT", script[first_rsync:script.index("\n", script.index("\n", first_rsync) + 1)])
+        write_at = script.index("SOURCE_COMMIT.tmp")
+        self.assertLess(script.index("recording-guard.py"), write_at)
+        self.assertLess(script.rindex("rsync -az"), write_at)
+        self.assertIn("git -C \"$repo_root\" rev-parse HEAD", script)
+        self.assertIn('source_commit+="-dirty"', script)
+
+    def test_git_archive_writes_the_archived_commit_into_the_marker(self) -> None:
+        repo_root = ROOT.parents[1]
+        marker = ROOT / "SOURCE_COMMIT"
+        self.assertEqual(marker.read_text(encoding="utf-8"), "$Format:%H$\n")
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            (work / "scripts" / "scenarios").mkdir(parents=True)
+            shutil.copyfile(repo_root / ".gitattributes", work / ".gitattributes")
+            shutil.copyfile(marker, work / "scripts" / "scenarios" / "SOURCE_COMMIT")
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", "-C", str(work), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                    check=True, capture_output=True, text=True,
+                ).stdout
+
+            git("init", "-q")
+            git("add", "-A")
+            git("commit", "-q", "-m", "marker")
+            head = git("rev-parse", "HEAD").strip()
+            archived = subprocess.run(
+                ["git", "-C", str(work), "archive", "--format=tar", "HEAD", "scripts/scenarios/SOURCE_COMMIT"],
+                check=True, capture_output=True,
+            ).stdout
+            with tarfile.open(fileobj=io.BytesIO(archived)) as tar:
+                content = tar.extractfile("scripts/scenarios/SOURCE_COMMIT").read().decode()
+            self.assertEqual(content, head + "\n")
+            # 작업 트리 파일은 치환되지 않는다(그래서 rsync 배포는 표지를 따로 적는다).
+            self.assertEqual((work / "scripts" / "scenarios" / "SOURCE_COMMIT").read_text(), "$Format:%H$\n")
 
 
 if __name__ == "__main__":

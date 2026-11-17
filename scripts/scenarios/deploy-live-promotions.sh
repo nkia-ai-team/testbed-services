@@ -208,12 +208,25 @@ PROBE
 PREFLIGHT
 
 # Publish implementations and manifests before the registry exposes new live IDs.
+# SOURCE_COMMIT 은 작업 트리에서 '$Format:%H$' 그대로라 보내지 않고 바로 아래에서 이 배포의 커밋을 적는다.
 recording_guard "시나리오 rsync"
-rsync -az --exclude registry/controllers.json \
+rsync -az --exclude registry/controllers.json --exclude SOURCE_COMMIT \
   "$scenario_root/" "$remote:$remote_root/"
 recording_guard "controllers.json rsync"
 rsync -az "$scenario_root/registry/controllers.json" \
   "$remote:$remote_root/registry/controllers.json"
+
+# 녹화 meta.source_commits.testbed_services 의 근거(2026-11-18 v4 CAPMETA). tb-ops 사본은 git 이 아니라서
+# 러너가 녹화에 그 커밋을 적으려면 배포가 표지를 남겨야 한다. git archive 로 올리면 export-subst 가 같은 파일에
+# 커밋을 적는다(.gitattributes). scripts/scenarios 에 커밋 안 된 변경이 있으면 -dirty 를 붙인다.
+source_commit=$(git -C "$repo_root" rev-parse HEAD)
+if [[ -n "$(git -C "$repo_root" status --porcelain -- scripts/scenarios)" ]]; then
+  source_commit+="-dirty"
+fi
+recording_guard "SOURCE_COMMIT 표지"
+printf '%s\n' "$source_commit" |
+  ssh "$remote" "cat > '$remote_root/SOURCE_COMMIT.tmp' && mv -f '$remote_root/SOURCE_COMMIT.tmp' '$remote_root/SOURCE_COMMIT'"
+echo "[deploy] SOURCE_COMMIT $source_commit"
 
 # 확인은 러너 HTTP 로 바로 읽는다(ssh 없음).
 curl -fsS --max-time 15 "$runner_api/api/live-queue/readiness" && echo && curl -fsS --max-time 15 "$runner_api/api/live-queue"
