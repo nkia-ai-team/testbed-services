@@ -59,6 +59,7 @@ class BatchServiceTest {
 
     static JdbcTemplate jdbc(long rows) {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(BatchService.LOCK_SQL, Boolean.class)).thenReturn(true);
         when(jdbc.queryForObject(BatchService.COUNT_SQL, Long.class)).thenReturn(rows);
         when(jdbc.queryForObject(org.mockito.ArgumentMatchers.startsWith(MOVE_HEAD), eq(Integer.class)))
                 .thenAnswer(call -> sizeOf(call.getArgument(0)));
@@ -137,12 +138,66 @@ class BatchServiceTest {
     @Test
     void stopsWhenNothingIsLeftToMove() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(BatchService.LOCK_SQL, Boolean.class)).thenReturn(true);
         when(jdbc.queryForObject(BatchService.COUNT_SQL, Long.class)).thenReturn(2_005_000L);
         when(jdbc.queryForObject(org.mockito.ArgumentMatchers.startsWith(MOVE_HEAD), eq(Integer.class))).thenReturn(1000, 0);
         BatchService service = new BatchService(jdbc, policy(2_000_000, 1000), new MovingClock(NIGHT), millis -> {
         });
 
         assertThat(service.archive()).isEqualTo(new BatchService.Outcome(1000, "ok"));
+    }
+
+    @Test
+    void aSecondRunWhileOneHoldsTheLockDoesNothing() {
+        JdbcTemplate jdbc = jdbc(3_000_000);
+        when(jdbc.queryForObject(BatchService.LOCK_SQL, Boolean.class)).thenReturn(false);
+        BatchService service = new BatchService(jdbc, policy(2_000_000, 1000), new MovingClock(NIGHT), millis -> {
+        });
+
+        assertThat(service.archive()).isEqualTo(new BatchService.Outcome(0, "busy"));
+        verify(jdbc, never()).queryForObject(BatchService.COUNT_SQL, Long.class);
+        verify(jdbc, never()).queryForObject(org.mockito.ArgumentMatchers.startsWith(MOVE_HEAD), eq(Integer.class));
+        verify(jdbc, never()).queryForObject(BatchService.UNLOCK_SQL, Boolean.class);
+    }
+
+    @Test
+    void theLockIsReleasedAfterTheRunAndAfterAFailure() {
+        JdbcTemplate ok = jdbc(2_001_000);
+        new BatchService(ok, policy(2_000_000, 1000), new MovingClock(NIGHT), millis -> {
+        }).archive();
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(ok);
+        order.verify(ok).queryForObject(BatchService.LOCK_SQL, Boolean.class);
+        order.verify(ok).queryForObject(BatchService.COUNT_SQL, Long.class);
+        order.verify(ok).queryForObject(BatchService.UNLOCK_SQL, Boolean.class);
+
+        JdbcTemplate failing = jdbc(2_001_000);
+        when(failing.queryForObject(org.mockito.ArgumentMatchers.startsWith(MOVE_HEAD), eq(Integer.class)))
+                .thenThrow(new org.springframework.dao.QueryTimeoutException("statement timeout"));
+        BatchService service = new BatchService(failing, policy(2_000_000, 1000), new MovingClock(NIGHT), millis -> {
+        });
+        assertThatThrownBy(service::archive).isInstanceOf(org.springframework.dao.QueryTimeoutException.class);
+        verify(failing).queryForObject(BatchService.UNLOCK_SQL, Boolean.class);
+    }
+
+    @Test
+    void lockAndWorkShareOneBorrowedConnection() throws Exception {
+        JdbcTemplate pool = mock(JdbcTemplate.class);
+        java.sql.Connection borrowed = mock(java.sql.Connection.class);
+        when(pool.execute(any(org.springframework.jdbc.core.ConnectionCallback.class))).thenAnswer(call ->
+                ((org.springframework.jdbc.core.ConnectionCallback<?>) call.getArgument(0)).doInConnection(borrowed));
+        List<JdbcTemplate> seen = new ArrayList<>();
+
+        BatchService.Outcome outcome = BatchService.pinned(pool).run(one -> {
+            seen.add(one);
+            return new BatchService.Outcome(0, "ok");
+        });
+
+        assertThat(outcome.result()).isEqualTo("ok");
+        assertThat(seen).hasSize(1);
+        assertThat(seen.get(0).getDataSource()).isInstanceOf(org.springframework.jdbc.datasource.SingleConnectionDataSource.class);
+        org.springframework.jdbc.datasource.SingleConnectionDataSource single =
+                (org.springframework.jdbc.datasource.SingleConnectionDataSource) seen.get(0).getDataSource();
+        assertThat(((org.springframework.jdbc.datasource.ConnectionProxy) single.getConnection()).getTargetConnection()).isSameAs(borrowed);
     }
 
     @Test

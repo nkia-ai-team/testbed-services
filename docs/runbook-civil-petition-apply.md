@@ -175,13 +175,16 @@ deploy/apply.sh --inventory $I --start-load
 # web01: host-facts.sh apache2.service / was01, was02: tomcat10.service / db01: postgresql@16-main.service / rt-core01: snmpd.service nftables.service
 ssh ... 'sh -s apache2.service' < deploy/tools/host-facts.sh >> facts-before.jsonl     # 24시간 뒤 facts-after.jsonl
 ssh db01 'sudo -n sh -s petition' < deploy/tools/db-facts.sh > db-before.jsonl         # 24시간 뒤 db-after.jsonl
-scp loadgen:/var/lib/k6/k6-civil-petition-windows.jsonl .
+scp loadgen:/var/lib/k6/k6-civil-petition-windows.jsonl .                              # db-after 를 뜬 뒤에 가져온다
 python3 deploy/tools/stability_check.py --windows k6-civil-petition-windows.jsonl \
+    --end "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).read())["at"])' db-after.jsonl)" \
     --facts-before facts-before.jsonl --facts-after facts-after.jsonl \
     --db-before db-before.jsonl --db-after db-after.jsonl
 ```
 
-기준(설계 값): 전체 비정상(5xx 와 응답 없음) 0.1% 이하, 5분 창의 99% 이상에서 0.5% 이하(기록이 없는 창은 못 지킨 창), 피크(KST 15~17시) p95 800ms 이하, 서비스 재시작 0, 커널 OOM 0, chrony 50ms 이하, 창 안 재부팅 없음. 정상 상태(검토 세션 Q21 답 ③): 주 표(민원, 처리 이력) 행 수가 처음과 끝에 같은 자릿수, 보관 배치가 구간 안에서 결과 `ok` 로 한 번 이상, 대표 질의(공개 민원 검색 `search`) p95 가 처음 2시간과 마지막 2시간(5분 창 p95 의 중앙값)에서 10% 안. DB 사실 파일이 없으면 실패로 센다. 판정 이름 `PASS_Q3_24H`, `FAIL_Q3_24H`, `INCOMPLETE_Q3_24H`. `db-facts.sh` 의 점검 읽기는 세션에서 느린 문장 기준을 꺼 서버 로그에 남지 않는다.
+`--end` 는 db-after 를 뜬 시각(`at`)이다. 그래야 행 수(사실 시각 기준)와 보관 배치, 창 판정이 같은 구간을 본다. db-before 는 그보다 24시간 앞(판정 구간 시작)에 뜬다. 대표 질의는 판정 구간 앞 2시간의 창도 쓰므로 부하 시작에서 26시간이 넘은 뒤에 판정한다.
+
+기준(설계 값): 전체 비정상(5xx 와 응답 없음) 0.1% 이하, 5분 창의 99% 이상에서 0.5% 이하(기록이 없는 창은 못 지킨 창), 피크(KST 15~17시) p95 800ms 이하, 서비스 재시작 0, 커널 OOM 0, chrony 50ms 이하, 창 안 재부팅 없음. 정상 상태(검토 세션 Q21 답 ③): 주 표(민원, 처리 이력) 행 수가 처음과 끝에 같은 자릿수, 보관 배치가 구간 안에서 결과 `ok` 로 한 번 이상, 대표 질의(공개 민원 검색 `search`) p95 가 정확히 24시간 떨어진 같은 시계 구간, 즉 판정 구간 바로 앞 2시간과 마지막 2시간(5분 창 p95 의 중앙값)에서 10% 안(부하기가 시간별 일주기로 돌기 때문, 어느 쪽이든 창이 없으면 실패). DB 사실 파일이 없으면 실패로 센다. 판정 이름 `PASS_Q3_24H`, `FAIL_Q3_24H`, `INCOMPLETE_Q3_24H`. `db-facts.sh` 의 점검 읽기는 세션에서 느린 문장 기준을 꺼 서버 로그에 남지 않는다.
 
 **규모 축(피크 2배 30분).** 녹화가 없는 창에서.
 
@@ -199,13 +202,15 @@ sudo systemctl start loadgen.service
 
 **디스크.** db01 `df -B1 /pgdata` 를 부하 시작과 24시간 뒤에 재서 하루 증가를 구하고, 90일 뒤 사용률이 70% 이하인지 적는다. 주 표는 보관 배치의 건수 상한(민원 200만, 설계 §2-3)으로 크기가 묶이지만, 옮겨 간 행이 쌓이는 보관 표(`petition_archive`, `petition_history_archive`)는 하루 약 12만 민원과 그 처리 이력만큼 계속 자란다. 하루 증가는 대부분 이 보관 표 몫이다.
 
-**보관 배치.** was02 의 `petition-archive.timer`(02:20 KST)가 앱의 보관 배치를 부른다. 설정 기본값은 WAR 의 `application.properties`(`petition.archive.keep-rows=2000000`, `chunk-rows=1000`, `pause-ms=1000`, `window=02:00-05:00`, `zone=Asia/Seoul`)이고 Tomcat 환경변수(`PETITION_ARCHIVE_KEEP_ROWS` 등)로 덮는다. 결과는 `batch_run` 표와 `/var/log/petition-batch.log` 에 `result=ok|skipped|partial` 로 남는다.
+**보관 배치.** was02 의 `petition-archive.timer`(02:20 KST)가 앱의 보관 배치를 부른다. 설정 기본값은 WAR 의 `application.properties`(`petition.archive.keep-rows=2000000`, `chunk-rows=1000`, `pause-ms=1000`, `window=02:00-05:00`, `zone=Asia/Seoul`)이고 Tomcat 환경변수(`PETITION_ARCHIVE_KEEP_ROWS` 등)로 덮는다. 결과는 `batch_run` 표와 `/var/log/petition-batch.log` 줄의 `result=` 에 앱이 답한 값 그대로 남는다: `ok`(상한까지 옮김, 넘은 것이 없으면 0 건), `skipped`(창 밖 호출, 행 수도 세지 않음), `partial`(옮기는 중 창이 닫힘, 남은 몫은 다음 밤), `busy`(다른 보관 배치가 PostgreSQL advisory lock 을 쥐고 있어 아무것도 안 함). 앱이 답하지 못하면 `result=fail` 이고 유닛이 실패한다. 평시 24시간 판정은 `ok` 만 센다.
+
+**보관 SQL 확인(수동, docker 필요).** Java 시험은 문장을 실행하지 않으므로 보관 문장의 뜻과 계획을 바꿨다면 저장소 뿌리에서 `flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/archive-sql-check.sh [규모]` 를 돌린다(기본 200만, 시드 약 5분, 문법만 볼 때 20000). 일회 `postgres:16` 컨테이너에서 가장 오래된 순서, 처리 이력 이동, 답변과 첨부 cascade, 처리 이력 색인을 타는 계획, 묶음과 `count(*)` 시간, advisory lock 을 보고 `CHECK ...|t` 일곱 줄과 `checks=7 failed=0` 이면 통과다. 끝에 컨테이너를 지운다.
 
 끝에 `plan.py --phase snapshot` 으로 재해 복구용 스냅숏 하나(설계 §8, 녹화마다 되돌리지 않는다).
 
 ## 9. PostgreSQL 서버 로그 설정 (평시 속성, 정본 `deploy/templates/db/logging.conf`)
 
-검토 세션 Q20-3 답(11-17 13:0x KST): 한 번 정하고 고정한다. 기본값에서 바꾸는 항목마다 출처를, 기본보다 자세히 남기는 항목은 그 이유를 적는다. 정한 뒤 시나리오가 안 보인다고 바꾸지 않는다. 출처 약칭: [CIS] CIS PostgreSQL 16 Benchmark v1.1.0 Level 1 의 3.1 로깅 항목(Tenable 감사 항목 목록 `tenable.com/audits/CIS_PostgreSQL_16_v1.1.0_L1_OS_Linux_PostgreSQLDB` 에서 본문 확인), [GitLab] GitLab 문서 "Monitoring and logging setup for external databases"(`docs.gitlab.com/administration/postgresql/external_metrics/`)의 권장 매개변수 표, [pgBadger] pgBadger README 의 "POSTGRESQL CONFIGURATION" 절. 세 곳 모두 2026-11-17 KST 에 읽었다.
+검토 세션 Q20-3 답(11-17 13:0x KST): 한 번 정하고 고정한다. 기본값에서 바꾸는 항목마다 출처를, 기본보다 자세히 남기는 항목은 그 이유를 적는다. 정한 뒤 시나리오가 안 보인다고 바꾸지 않는다. 출처 약칭: [CIS] CIS PostgreSQL 16 Benchmark v1.1.0 Level 1 의 3.1 로깅 항목(Tenable 감사 항목 목록 `tenable.com/audits/CIS_PostgreSQL_16_v1.1.0_L1_OS_Linux_PostgreSQLDB` 에서 본문 확인), [GitLab] GitLab 문서 "Monitoring and logging setup for external databases"(`docs.gitlab.com/administration/postgresql/external_metrics/`)의 권장 매개변수 목록, [pgBadger] pgBadger README 의 "POSTGRESQL CONFIGURATION" 절. 세 곳 모두 2026-11-17 KST 에 읽었다.
 
 | 설정 | 값(PostgreSQL 16 기본) | 출처 | 기본보다 자세히 남기는 이유 |
 |---|---|---|---|
@@ -213,7 +218,7 @@ sudo systemctl start loadgen.service
 | `log_min_duration_statement` | 1000(-1) | [GitLab] "1000: log slow queries (slower than 1 second)" | 느린 질의 기록은 DB 운영 점검의 기본 근거다. 0(모든 문장, [pgBadger])은 운영 부하가 커서 쓰지 않는다 |
 | `log_lock_waits` | on(off) | [GitLab] "a common cause of poor query performance", [pgBadger] | 잠금 대기는 느린 질의의 흔한 원인이고 1초 넘는 대기만 남아 평시 줄이 거의 없다 |
 | `log_checkpoints` | on(on) | PostgreSQL 15 부터 기본 | 바꾸지 않음 |
-| `log_connections`, `log_disconnections` | on(off) | [CIS] 3.1.20, 3.1.21, [pgBadger] | CIS 본문대로 PostgreSQL 은 접속 시도를 따로 기록하지 않아 감사에 이 로그가 필요하고, 공공기관 DB 는 보안 점검에서 이 항목을 받는다. 연결 풀(유휴 60초 정리)이 부하 곡선을 따라 늘고 줄 때 줄이 생긴다(24시간 줄 수는 실측해 적는다) |
+| `log_connections`, `log_disconnections` | on(off) | [CIS] 3.1.20, 3.1.21, [pgBadger] | CIS 본문대로 PostgreSQL 은 접속 시도를 따로 기록하지 않아 감사에 이 로그가 필요하다. 연결 풀(유휴 60초 정리)이 부하 곡선을 따라 늘고 줄 때 줄이 생긴다(24시간 줄 수는 실측해 적는다) |
 | `log_statement` | ddl(none) | [CIS] 3.1.25 "recommended this be set to ddl", [GitLab] | 스키마 변경의 감사 기록. mod, all 은 쓰지 않는다 |
 | `log_temp_files`, `log_autovacuum_min_duration` | 기본(-1, 10분) | 바꾸지 않음([GitLab], [pgBadger] 는 0 을 권하지만 로그 양을 패키지 기본에서 멀게 하지 않는다) | |
 | `lc_messages` | C(C.UTF-8 클러스터의 initdb 값과 같은 영어 메시지) | [pgBadger] 'C' | |
@@ -241,3 +246,4 @@ sudo systemctl start loadgen.service
 
 - 2026-11-16 KST, v4 T2(ag-t2): 처음 작성. 적용 전.
 - 2026-11-17 KST, v4 T2C(ag-t2c): 검토 세션 Q20-3, Q21 답 반영. §9 서버 로그 값마다 출처와 이유(값은 그대로), §8 평시 24시간에 DB 사실(`db-facts.sh`)과 정상 상태 기준(주 표 행 수, 보관 배치, 대표 질의 p95), 보관 배치 설정과 디스크 문단, §11 서버 ICMP 는 수집 정책 기본값대로 켬.
+- 2026-11-17 KST, v4 T2C 2회차(리뷰 rv-t2c): §8 대표 질의 구간을 24시간 떨어진 같은 시계 구간으로, `--end` 를 db-after 시각으로, 배치 로그 `result=` 가 앱 결과(ok, skipped, partial, busy)를 따름, 보관 SQL 확인 도구 실행법, §9 문구(출처 없는 서술 뺌, GitLab 은 목록).

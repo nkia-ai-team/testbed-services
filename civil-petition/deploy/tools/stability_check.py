@@ -20,8 +20,10 @@
     10% 안으로 같다. 대표 질의는 공개 민원 검색(부하기 단계 search)이다. 앱의 세 읽기(내 민원 목록, 공개 민원
     검색, 담당자 함) 가운데 주 표의 기간 범위를 가장 넓게 훑고(공개 인덱스로 기간을 거꾸로 읽으며 제목 LIKE 로
     거름) 다른 둘은 사용자별, 부서별 열린 민원으로 좁혀 읽으므로, 표 크기와 내용 변화가 시간에 가장 먼저
-    드러나는 질의이기 때문이다. 처음과 끝은 판정 구간의 첫 2시간과 마지막 2시간(24시간 떨어져 같은 시각대라
-    부하가 같다)이고, 그 안 5분 창들의 search p95 의 중앙값을 견준다. 목록과 담당자 함의 같은 값은 참고로 싣는다.
+    드러나는 질의이기 때문이다. 부하기는 시간별 일주기로 돌므로 처음과 끝은 정확히 24시간 떨어진 같은 시계 구간이다:
+    처음은 판정 구간 시작 바로 앞 2시간 [S-2h, S), 끝은 판정 구간 마지막 2시간 [E-2h, E)(E = S + 24h).
+    그 안 5분 창들의 search p95 중앙값을 견준다. 창 기록은 상시라 처음 구간도 있어야 하고, 어느 쪽이든 표본이
+    없으면 실패다(판정 끝 시각을 부하 시작에서 26시간 넘게 잡는다). 목록과 담당자 함의 같은 값은 참고로 싣는다.
 
 판정 이름: PASS_Q3_24H 또는 FAIL_Q3_24H. 창 수가 24시간에 못 미치면 INCOMPLETE_Q3_24H.
 """
@@ -44,6 +46,7 @@ MAIN_TABLES = ("petition", "petition_history")
 QUERY_STEP = "search"
 REFERENCE_STEPS = ("my-list", "inbox")
 QUERY_SPAN_SEC = 2 * 3600
+DAY_SEC = 24 * 3600
 QUERY_P95_CHANGE_MAX = 0.10
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -75,11 +78,12 @@ def median(values: list[float]) -> float:
 
 
 def step_p95_change(windows: dict[int, dict], start_epoch: int, end_epoch: int, step: str) -> dict:
-    """구간 첫 2시간과 마지막 2시간의 5분 창 step p95 중앙값과 그 변화율."""
+    """24시간 떨어진 같은 시계 구간 [S-2h, S) 와 [E-2h, E) 의 5분 창 step p95 중앙값과 그 변화율."""
     def span(lo: int, hi: int) -> list[float]:
         return [float(windows[t]["step_p95_ms"][step]) for t in sorted(windows)
                 if lo <= t < hi and step in windows[t].get("step_p95_ms", {})]
-    first = span(start_epoch, start_epoch + QUERY_SPAN_SEC)
+    # 판정 구간 길이(--hours)와 무관하게 끝 구간에서 정확히 하루 앞의 같은 시계 구간과 견준다.
+    first = span(end_epoch - DAY_SEC - QUERY_SPAN_SEC, end_epoch - DAY_SEC)
     last = span(end_epoch - QUERY_SPAN_SEC, end_epoch)
     result = {"step": step, "start_windows": len(first), "end_windows": len(last)}
     if first and last:

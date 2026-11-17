@@ -3,7 +3,8 @@
 # 보관 배치가 돌았는가). 24시간 창의 처음과 끝에 db01 에서 root 로 한 번씩 돌려
 # stability_check.py --db-before, --db-after 에 준다. 읽기만 한다.
 # 쓰는 법: db-facts.sh <DB 이름>   (예: ssh db01 'sudo -n sh -s petition' < db-facts.sh >> db-before.jsonl)
-# 이 점검 읽기는 느린 문장 기준(1초)에 걸려도 서버 로그에 남지 않게 세션에서 그 기준을 끈다.
+# 이 점검 읽기는 세션에서 느린 문장 기준(1초)을 꺼 느린 문장 줄은 서버 로그에 남지 않는다. 접속과 종료 줄
+# (log_connections, log_disconnections, postgres@<DB> 로컬 소켓)은 남는다. 24시간 판정의 처음과 끝 시각의 운영자 흔적이다.
 set -eu
 db="$1"
 host=$(hostname)

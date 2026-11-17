@@ -1028,6 +1028,29 @@ class ArchiveBatchSettingsTests(unittest.TestCase):
         capacity = int(open_sec / per_chunk_sec) * int(settings["chunk-rows"])
         self.assertGreater(capacity, 2 * submissions * 10)
 
+    def test_batch_log_line_carries_the_result_the_app_returned(self) -> None:
+        template = (DEPLOY / "templates" / "was" / "petition-batch").read_text()
+        script = template.replace("{{was_port}}", "8080").replace("{{app_context}}", "petition")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "petition-batch").write_text(script)
+            curl = root / "curl"
+            for result in ("ok", "skipped", "partial", "busy"):
+                with self.subTest(result=result):
+                    curl.write_text('#!/bin/sh\nprintf \'{"job":"archive","rows":12,"result":"%s","tookMs":3}\' "$FAKE_RESULT"\n')
+                    curl.chmod(0o755)
+                    log = root / f"{result}.log"
+                    done = subprocess.run(["sh", str(root / "petition-batch"), "archive"], capture_output=True, text=True, timeout=30,
+                                          env={"PATH": f"{root}:/usr/bin:/bin", "FAKE_RESULT": result, "PETITION_BATCH_LOG": str(log)})
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertRegex(log.read_text(), rf"^\S+ job=archive result={result} \{{")
+            curl.write_text("#!/bin/sh\necho 'connection refused' >&2\nexit 7\n")
+            log = root / "fail.log"
+            done = subprocess.run(["sh", str(root / "petition-batch"), "archive"], capture_output=True, text=True, timeout=30,
+                                  env={"PATH": f"{root}:/usr/bin:/bin", "PETITION_BATCH_LOG": str(log)})
+            self.assertEqual(done.returncode, 1)
+            self.assertIn("job=archive result=fail", log.read_text())
+
     def test_seed_products_cannot_overflow_at_two_million(self) -> None:
         seed = (DOMAIN / "db" / "seed.sql").read_text()
         for cast, factor in re.findall(r"\(i(::bigint)? \* (\d+)\)", seed):
@@ -1040,10 +1063,10 @@ class StabilityCheckTests(unittest.TestCase):
     END = datetime.datetime(2026, 11, 17, 15, 0, tzinfo=datetime.timezone.utc)
 
     def _windows(self, bad=None, gap=None, p95=200.0, search_end=40.0):
-        """search_end: 마지막 2시간 창들의 search p95(처음 2시간과 그 사이는 40ms)."""
+        """판정 구간 24시간과 그 앞 2시간(대표 질의의 처음 구간)의 창. search_end: 마지막 2시간 창들의 search p95(나머지는 40ms)."""
         windows = {}
         start = int(self.END.timestamp()) - 24 * 3600
-        for t in range(start, int(self.END.timestamp()), 300):
+        for t in range(start - 2 * 3600, int(self.END.timestamp()), 300):
             if gap and t in gap:
                 continue
             search = search_end if t >= int(self.END.timestamp()) - 2 * 3600 else 40.0
@@ -1105,6 +1128,46 @@ class StabilityCheckTests(unittest.TestCase):
                 self.assertEqual(result["verdict"], "FAIL_Q3_24H")
                 self.assertTrue(any(r.startswith("대표 질의(search) p95 변화") for r in result["reasons"]), result["reasons"])
 
+    def test_a_steady_daily_cycle_passes_at_every_end_hour_and_a_shift_at_the_same_hour_fails(self) -> None:
+        # 일주기 정상 상태: search p95 가 그 시각 목표 요청률을 따라 움직이되 같은 시각이면 매일 같다(리뷰 H1).
+        entry = (DOMAIN / "loadgen" / "entrypoint.sh").read_text()
+        pct = [int(v) for v in re.findall(r"\d+\) echo (\d+) ;;", entry)]
+        kst = datetime.timezone(datetime.timedelta(hours=9))
+
+        def windows(end, shift_from=None, factor=1.0):
+            out = {}
+            e = int(end.timestamp())
+            for t in range(e - 26 * 3600, e, 300):
+                hour = datetime.datetime.fromtimestamp(t, kst).hour
+                value = 40.0 + 1.0 * (5 + (25 * pct[hour] + 50) // 100)
+                if shift_from is not None and t >= shift_from:
+                    value *= factor
+                out[t] = {"window_start": datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+                          "http_count": 6000, "http_5xx": 0, "http_no_response": 0, "http_timeout": 0, "http_p95_ms": 200.0,
+                          "step_p95_ms": {"search": value, "my-list": 30.0, "inbox": 20.0}}
+            return out
+
+        for hour in range(24):
+            end = datetime.datetime(2026, 11, 18, hour, 0, tzinfo=kst).astimezone(datetime.timezone.utc)
+            db = self._db(runs=[{"finished_at": (end - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+                                 "rows": 121000, "result": "ok"}])
+            with self.subTest(end_hour_kst=hour):
+                steady = stability.judge(windows(end), end, db_facts=db)
+                self.assertEqual(steady["verdict"], "PASS_Q3_24H", steady["reasons"])
+                self.assertEqual(steady["steady_state"]["query"]["change"], 0.0)
+                shifted = stability.judge(windows(end, int(end.timestamp()) - 2 * 3600, 1.11), end, db_facts=db)
+                self.assertEqual(shifted["verdict"], "FAIL_Q3_24H")
+                self.assertTrue(any(r.startswith("대표 질의(search) p95 변화") for r in shifted["reasons"]), shifted["reasons"])
+
+    def test_representative_query_needs_the_same_hours_one_day_earlier(self) -> None:
+        windows = self._windows()
+        start = int(self.END.timestamp()) - 24 * 3600
+        for t in range(start - 2 * 3600, start, 300):
+            windows.pop(t)
+        result = stability.judge(windows, self.END, db_facts=self._db())
+        self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+        self.assertIn("대표 질의(search) p95 표본 없음(처음 0창, 끝 24창)", result["reasons"])
+
     def test_representative_query_without_samples_fails(self) -> None:
         windows = self._windows()
         for record in windows.values():
@@ -1139,12 +1202,15 @@ class StabilityCheckTests(unittest.TestCase):
     def test_missing_windows_count_against_the_ninety_nine_percent(self) -> None:
         start = int(self.END.timestamp()) - 24 * 3600
         gap = {start + 300 * i for i in range(1, 5)}
-        result = stability.judge(self._windows(gap=gap), self.END)
+        result = stability.judge(self._windows(gap=gap), self.END, db_facts=self._db())
         self.assertEqual(result["windows_missing"], 4)
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+        self.assertEqual(result["reasons"], ["0.5% 이하 창 비율 0.9861 < 0.99(빠진 창 4)"])
 
     def test_slow_peak_and_host_facts_fail(self) -> None:
-        self.assertEqual(stability.judge(self._windows(p95=900.0), self.END)["verdict"], "FAIL_Q3_24H")
+        slow = stability.judge(self._windows(p95=900.0), self.END, db_facts=self._db())
+        self.assertEqual(slow["verdict"], "FAIL_Q3_24H")
+        self.assertEqual(slow["reasons"], ["피크 p95 최댓값 900.0ms > 800.0ms"])
         facts = {"was01": {"nrestarts_before": {"tomcat10.service": 0}, "nrestarts_after": {"tomcat10.service": 1},
                            "oom_kills": 0, "chrony_offset_ms": 1.2}}
         result = stability.judge(self._windows(), self.END, host_facts=facts, db_facts=self._db())
@@ -1256,7 +1322,7 @@ class StepScriptTests(unittest.TestCase):
         self.assertIn("pg_createcluster --locale C.UTF-8 16 main", source)
 
     def test_tools_parse(self) -> None:
-        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh"):
+        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh", "archive-sql-check.sh"):
             with self.subTest(tool=name):
                 done = subprocess.run(["bash", "-n", str(DEPLOY / "tools" / name)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 0, done.stderr)

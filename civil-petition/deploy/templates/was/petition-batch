@@ -1,12 +1,16 @@
 #!/bin/sh
 # 야간 배치를 앱의 관리 경로로 부른다(설계 §2-3 배치). 결과는 배치 로그 파일과 journal 에 남는다.
+# 줄의 result 는 앱 응답의 결과(ok, skipped, partial, busy)를 그대로 쓴다. 응답을 못 받으면 fail 이고 종료 코드 1.
+# 앱이 답한 결과는 종료 코드 0 이다(partial, busy 는 batch_run 표와 이 줄로 본다, 평시 판정은 ok 만 센다).
 set -eu
 job="$1"
-log=/var/log/petition-batch.log
+log="${PETITION_BATCH_LOG:-/var/log/petition-batch.log}"
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 if out=$(curl -fsS -m 3600 -X POST "http://127.0.0.1:{{was_port}}/{{app_context}}/admin/batch/${job}" 2>&1); then
-    echo "${started} job=${job} result=ok ${out}" >>"$log"
-    echo "job=${job} result=ok ${out}"
+    result=$(printf '%s' "$out" | sed -n 's/.*"result":"\([a-z]*\)".*/\1/p')
+    result="${result:-unknown}"
+    echo "${started} job=${job} result=${result} ${out}" >>"$log"
+    echo "job=${job} result=${result} ${out}"
 else
     echo "${started} job=${job} result=fail ${out}" >>"$log"
     echo "job=${job} result=fail ${out}" >&2
