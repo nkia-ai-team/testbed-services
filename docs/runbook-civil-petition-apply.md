@@ -172,7 +172,7 @@ ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition -J root@192.168.200.
 
 세션이 network 단계에서 끊겼으면: VM 을 재부팅하지 말고 5분 기다린 뒤 다시 접속한다(타이머가 cloud-init 설정으로 되돌렸다. 타이머는 일시 유닛이라 재부팅하면 사라진다). `journalctl -u netplan-switch -u netplan-rollback` 로 무엇이 있었는지 보고 `--steps "verify-host network"` 로 다시 돈다. 5분 뒤에도 닿지 않으면 66 에서 `qm reboot <vmid>`(디스크의 netplan 으로 부팅 때 망이 선다. 되돌림이 돌았으면 cloud-init 설정이다). 직렬 콘솔(`qm terminal`)은 있지만 운영자 계정에 비밀번호가 없어 로그인할 수 없다.
 
-손으로 cloud-init 설정까지 되돌리기: **firewall 단계가 아직 돌지 않은 서버에서만** 한다. `cp -p /var/lib/petition-deploy/netplan-cloud-init/50-cloud-init.yaml /etc/netplan/ && rm -f /etc/netplan/01-host.yaml && netplan apply`(이름이 eth0 ~ 으로 돌아온다). cloud-init 은 꺼진 채 둔다. firewall 뒤라면 같은 세션에서 먼저 `nft delete table inet mgmtguard` 를 한 뒤에 되돌린다(라우터는 그러지 않으면 되돌리는 순간 관리 SSH 가 막힌다). 되돌린 뒤 다시 설치할 때는 `--steps "verify-host network"` 로 이름을 먼저 바꾸고 그다음 단계 없이 전체를 돌린다(firewall 이 보호 표를 다시 놓는다).
+손으로 cloud-init 설정까지 되돌리기: **firewall 단계가 아직 돌지 않은 서버에서만** 한다. `cp -p /var/lib/petition-deploy/netplan-cloud-init/50-cloud-init.yaml /etc/netplan/ && rm -f /etc/netplan/01-host.yaml && netplan apply`(이름이 eth0 ~ 으로 돌아온다). cloud-init 은 꺼진 채 둔다. firewall 뒤라면 같은 세션에서 먼저 `nft delete table inet mgmtguard` 를 한 뒤에 되돌린다(라우터는 그러지 않으면 되돌리는 순간 관리 SSH 가 막힌다). 이어서 `mv /etc/nftables.d/10-mgmt-guard.nft /var/lib/petition-deploy/` 로 보호 표 파일도 옮긴다. 그러지 않으면 `qm reboot` 뒤 `nftables.service` 가 그 파일을 다시 올려 관리 SSH 를 또 막는다. 옮긴 파일은 다시 설치할 때 firewall 단계가 묶음에서 새로 놓으므로 되돌려 둘 필요가 없다. 되돌린 뒤 다시 설치할 때는 `--steps "verify-host network"` 로 이름을 먼저 바꾸고 그다음 단계 없이 전체를 돌린다(firewall 이 보호 표를 다시 놓는다).
 
 S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같다(서버마다 NIC 둘, eth0, eth1 → ens18, ens19). S 를 T 뒤에 지을 때는 T 의 판 목록을 그대로 쓴다: T 각 서버의 `/var/lib/petition-deploy/packages.txt` 를 모아 `--package-versions` 로 준다(쌍 조건 2, S 문서 §2-4).
 
@@ -295,3 +295,4 @@ sudo systemctl start loadgen.service
 - 2026-11-17 KST, v4 T2C 8회차(Q24): §8 평시 24시간에 밤 배치 처리 능력 판정과 `design_load.py`.
 - 2026-11-18 KST, v4 T2NIC(ag-t2nic): §5 NIC 이름(새 VM 은 eth0 ~ , cloud-init 의 set-name), §6-1 network 단계가 MAC 맞춤과 set-name 으로 인벤토리 이름(ens18 ~ )을 주는 순서, 되돌림 타이머, 확인과 세션이 끊겼을 때.
 - 2026-11-18 KST, v4 T2NIC 2회차(리뷰 rv-t2nic M1, M2, L1 ~ L3): §6-1 이름에 기대는 단계의 첫 줄 이름 확인과 그 제한, 손 되돌리기는 firewall 앞에서만과 되돌린 뒤 순서, 앞 되돌림이 남았을 때 멈춤, 적용 120초 상한과 확정 전 발화 확인, 서버마다 `plan.py --phase nics` 대조, 확인 ssh 의 known_hosts.
+- 2026-11-18 KST, v4 T2NIC 3회차(재리뷰 rv-t2nic N1): §6-1 손 되돌리기에 보호 표 파일을 옮기는 줄(재부팅 뒤 다시 막지 않게).
