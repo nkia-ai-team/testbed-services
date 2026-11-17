@@ -9,7 +9,7 @@
 #   - 행 수는 count(*) 가 아니라 통계 뷰의 추정치 pg_stat_user_tables.n_live_tup 이다(표를 훑지 않고 민원 표에
 #     잠금을 걸지 않는다. 200만 시드에서 count(*) 와의 차이 0.0024~0.036%, 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5) 여유 약 8.6%). 통계가 초기화된 직후
 #     (비정상 종료, 통계 초기화)에는 0 에 가깝고 다음 vacuum, analyze 까지 그대로라 그 사이 행 수 조건이 늦게 걸린다
-#     (마지막 보관 ok 48시간 조건은 그대로 선다). 이 지연은 받아들인다.
+#     (놓친 밤 배치 창 조건은 그대로 선다). 이 지연은 받아들인다.
 #   - 마지막 보관 ok 는 batch_run(밤마다 몇 줄 쌓이는 작은 표)의 max(finished_at) 다.
 #   - 세션에서 lock_timeout 200ms, statement_timeout 1초. lock_timeout 이 deadlock_timeout(기본 1초)보다 짧아 잠금 대기
 #     줄("still waiting for ...")은 log_lock_waits 와 무관하게 생기지 않는다(그 줄은 deadlock_timeout 을 넘겨 기다릴 때만
@@ -45,8 +45,9 @@ SQL
 )
 mkdir -p "$out_dir"
 tmp=$(mktemp "$out_dir/.last.XXXXXX")
-# 녹화 막기 행 수 문턱은 설치 때 부하 설정에서 계산해 넣은 값이다(상한 + 설계 하루 쓰기 x 2.5, 설계 §6-4).
-printf '{"host":"%s","at":"%s","db":%s,"rows_limit":{"limit":{{rows_limit}},"keep_rows":{{rows_limit_keep_rows}},"design_daily_writes":{{rows_limit_daily_writes}},"days":{{rows_limit_days}}}}\n' \
+# 녹화 막기 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5)과 밤 배치 창(타이머 시각, 창 끝, 시간대. 놓친 창 세기용)은
+# 설치 때 부하 설정과 앱 설정에서 계산해 넣은 값이다(설계 §6-4).
+printf '{"host":"%s","at":"%s","db":%s,"rows_limit":{"limit":{{rows_limit}},"keep_rows":{{rows_limit_keep_rows}},"design_daily_writes":{{rows_limit_daily_writes}},"days":{{rows_limit_days}}},"archive_schedule":{"timer":"{{archive_timer}}","window_end":"{{archive_window_end}}","zone":"{{archive_zone}}"}}\n' \
     "$host" "$at" "$body" >"$tmp"
 chmod 0644 "$tmp"
 mv -f "$tmp" "$out_dir/last.json"

@@ -334,6 +334,10 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         context["rows_limit_keep_rows"] = str(limit["keep_rows"])
         context["rows_limit_daily_writes"] = str(limit["design_daily_writes"])
         context["rows_limit_days"] = str(limit["days"])
+        schedule = design_load.archive_schedule()
+        context["archive_timer"] = schedule["timer"]
+        context["archive_window_end"] = schedule["window_end"]
+        context["archive_zone"] = schedule["zone"]
     biz_nics = [nic for nic in host["nics"] if nic["net"] != management]
     lldp_ifaces = ",".join(nic["ifname"] for nic in biz_nics)
     context["lldpd_args"] = ("-x " if host["role"] == "router" else "") + f"-I {lldp_ifaces}"

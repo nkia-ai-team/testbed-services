@@ -6,7 +6,7 @@
     (deploy/templates/loadgen/loadgen.service)의 PEAK_RPS, TROUGH_RPS, loadgen/script.js 의 신청 여정 비중.
   - 보관 배치 설정: petition-web 의 application.properties(petition.archive.*), 타이머 시각(petition-archive.timer).
   - 녹화 막기 행 수 문턱 = 보존 건수 상한 + 설계 하루 쓰기 x 2.5. 밤 배치 한 번 실패는 견디고(다음 밤 배치 직전 최대
-    상한 + 하루 쓰기 x 2) 두 번 연속이면 그다음 날 낮에 넘는다. 48시간 조건과 같은 "두 번 연속에 막음" 뜻이다.
+    상한 + 하루 쓰기 x 2) 두 번 연속이면 그다음 날 낮에 넘는다. 놓친 밤 배치 창 조건과 같은 "두 번 연속에 막음" 뜻이다.
   - 밤 배치가 한 번에 옮길 수 있는 양: 창이 열린 시간(타이머 시각부터 창 끝까지) / (묶음 시간 + 묶음 사이 쉼) x 묶음 크기.
     Q24 답 조건 ①: 하루 쓰기 2.5일 몫 이상이어야 한 번 실패 뒤 다음 밤에 따라잡는다.
 
@@ -60,6 +60,7 @@ def archive_settings() -> dict:
         raise ValueError("보관 타이머 시각이 배치 창 밖")
     open_sec = (end.hour * 60 + end.minute - hour * 60 - minute) * 60
     return {
+        "zone": values["zone"].strip(),
         "keep_rows": int(values["keep-rows"]),
         "chunk_rows": int(values["chunk-rows"]),
         "pause_ms": int(values["pause-ms"]),
@@ -78,6 +79,12 @@ def rows_limit() -> dict:
         "design_daily_writes": daily,
         "days": ROWS_LIMIT_DAYS,
     }
+
+
+def archive_schedule() -> dict:
+    """밤 배치 창(놓친 창 세기용, 설계 §6-4, 지휘 세션 11-17 결정): 타이머 시각과 창 끝, 시간대."""
+    settings = archive_settings()
+    return {"timer": settings["timer"], "window_end": settings["window"].split("-")[1].strip(), "zone": settings["zone"]}
 
 
 def night_capacity(rows_per_second: float | None = None) -> dict:
@@ -109,7 +116,9 @@ def night_capacity_measured(rows: int, seconds: float) -> dict:
     """실제 밤 배치 한 번(옮긴 행 수, 걸린 시간. 묶음 사이 쉼 포함)의 처리량으로 창 하나가 옮길 수 있는 양."""
     settings = archive_settings()
     required = math.ceil(daily_submissions() * ROWS_LIMIT_DAYS)
-    capacity = int(rows / seconds * settings["open_sec"]) if rows > 0 and seconds > 0 else 0
+    if rows <= 0 or seconds <= 0:
+        raise ValueError("옮긴 행이나 걸린 시간이 0 이라 처리량을 잴 수 없음")
+    capacity = int(rows / seconds * settings["open_sec"])
     return {
         "verdict": "PASS_ARCHIVE_CAPACITY" if capacity >= required else "FAIL_ARCHIVE_CAPACITY",
         "capacity_rows": capacity,

@@ -125,9 +125,14 @@ def judge_steady_state(windows: dict[int, dict], start_epoch: int, end_epoch: in
         if moved:
             run = max(moved, key=lambda item: int(item["rows"]))
             seconds = (parse_time(run["finished_at"]) - parse_time(run["started_at"])).total_seconds()
-            capacity = design_load.night_capacity_measured(int(run["rows"]), seconds)
-            summary["night_capacity"] = capacity
-            if not capacity["verdict"].startswith("PASS"):
+            if seconds <= 0:
+                # 시각은 밀리초까지 오지만(db-facts.sh) 그래도 0 이면 처리량을 잴 수 없다(능력 0 으로 세지 않는다).
+                reasons.append(f"보관 배치({run['rows']}행)의 걸린 시간이 0 이라 밤 배치 처리 능력을 잴 수 없음")
+                capacity = None
+            else:
+                capacity = design_load.night_capacity_measured(int(run["rows"]), seconds)
+                summary["night_capacity"] = capacity
+            if capacity is not None and not capacity["verdict"].startswith("PASS"):
                 reasons.append(f"밤 배치 처리 능력 {capacity['capacity_rows']} < 하루 쓰기 2.5일 몫 {capacity['required_rows']}"
                                f"(실측 {capacity['measured_rows']}행 {capacity['measured_seconds']}초)")
         elif runs:

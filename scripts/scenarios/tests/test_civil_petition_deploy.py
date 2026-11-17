@@ -20,6 +20,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -1441,6 +1442,13 @@ class StabilityCheckTests(unittest.TestCase):
         result = stability.judge(self._windows(), self.END, db_facts=self._db(runs=[slow]))
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
         self.assertEqual(result["reasons"], ["밤 배치 처리 능력 297846 < 하루 쓰기 2.5일 몫 304560(실측 121000행 3900.0초)"])
+        # 리뷰 L12: 걸린 시간이 0 이면 처리 능력 0 으로 세지 않고 잴 수 없음으로 센다(시각은 밀리초까지 온다).
+        instant = {**self.ARCHIVE_OK, "started_at": "2026-11-16T17:23:10.000Z", "finished_at": "2026-11-16T17:23:10.000Z"}
+        result = stability.judge(self._windows(), self.END, db_facts=self._db(runs=[instant]))
+        self.assertEqual(result["reasons"], ["보관 배치(121000행)의 걸린 시간이 0 이라 밤 배치 처리 능력을 잴 수 없음"])
+        quick = {**self.ARCHIVE_OK, "started_at": "2026-11-16T17:23:10.120Z", "finished_at": "2026-11-16T17:23:10.870Z"}
+        self.assertEqual(stability.judge(self._windows(), self.END, db_facts=self._db(runs=[quick]))["verdict"], "PASS_Q3_24H")
+        self.assertIn('HH24:MI:SS.MS"Z"', (DEPLOY / "tools" / "db-facts.sh").read_text())
         # 행을 옮긴 배치가 없으면 잴 수 없어 실패로 센다(첫 밤은 부하 시작 뒤 쓰기만큼 옮긴다).
         empty = {**self.ARCHIVE_OK, "rows": 0}
         result = stability.judge(self._windows(), self.END, db_facts=self._db(runs=[empty]))
@@ -1456,17 +1464,25 @@ class StabilityCheckTests(unittest.TestCase):
         limit = design.rows_limit()["limit"]
         self.assertLess(2_000_000 + 2 * 121824, limit)
         self.assertGreater(2_000_000 + 3 * 121824, limit)
-        # 부하 설정이 바뀌면 문턱도 따라 바뀐다(하루 쓰기를 손으로 적지 않음).
-        unit = DEPLOY / "templates" / "loadgen" / "loadgen.service"
-        original = unit.read_text()
-        try:
-            unit.write_text(original.replace("Environment=PEAK_RPS=30", "Environment=PEAK_RPS=60"))
-            self.assertGreater(design.daily_submissions(), 121824)
-        finally:
-            unit.write_text(original)
+        # 부하 설정이 바뀌면 문턱도 따라 바뀐다(하루 쓰기를 손으로 적지 않음). 저장소 파일은 건드리지 않고
+        # 읽기만 바꿔 끼운다(리뷰 L13: 시험이 강제로 끝나도 추적 파일이 바뀐 채 남지 않게).
+        real_read = design._read
+
+        def doubled_peak(relative: str) -> str:
+            text = real_read(relative)
+            return text.replace("Environment=PEAK_RPS=30", "Environment=PEAK_RPS=60") if relative.endswith("loadgen.service") else text
+
+        with unittest.mock.patch.object(design, "_read", doubled_peak):
+            doubled = design.daily_submissions()
+            self.assertGreater(doubled, 121824)
+            self.assertEqual(design.rows_limit()["limit"], 2_000_000 + math.ceil(doubled * 2.5))
+        self.assertEqual(design.daily_submissions(), 121824)
         db = bundles(T_INV)["db01"]
         line = [l for l in file_of(db, "/usr/local/sbin/pg-table-stats").splitlines() if l.startswith("printf ")][0]
         self.assertIn('"rows_limit":{"limit":2304560,"keep_rows":2000000,"design_daily_writes":121824,"days":2.5}', line)
+        # 놓친 밤 배치 창을 세는 데 쓰는 창(앱 설정의 타이머 시각, 창 끝, 시간대)도 줄이 싣는다(리뷰 M3).
+        self.assertEqual(design.archive_schedule(), {"timer": "02:20", "window_end": "05:00", "zone": "Asia/Seoul"})
+        self.assertIn('"archive_schedule":{"timer":"02:20","window_end":"05:00","zone":"Asia/Seoul"}', line)
 
     def test_representative_query_without_samples_fails(self) -> None:
         windows = self._windows()
@@ -1519,7 +1535,8 @@ class StabilityCheckTests(unittest.TestCase):
                                   env={"PATH": f"{root}:/usr/bin:/bin"})
             self.assertEqual(done.returncode, 0, done.stderr)
             line = json.loads((root / "out" / "last.json").read_text())
-            self.assertEqual(sorted(line), ["at", "db", "host", "rows_limit"])
+            self.assertEqual(sorted(line), ["archive_schedule", "at", "db", "host", "rows_limit"])
+            self.assertEqual(line["archive_schedule"]["window_end"], "05:00")
             self.assertEqual(line["rows_limit"]["limit"], 2304560)
             self.assertEqual(line["db"]["rows"]["petition"], 2080000)
             self.assertEqual(line["db"]["last_archive_ok"], "2026-11-17T17:24:00Z")

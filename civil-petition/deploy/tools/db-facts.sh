@@ -19,8 +19,8 @@ SELECT json_build_object(
         'petition_history', (SELECT count(*) FROM petition_history)),
     'archive_runs', COALESCE((
         SELECT json_agg(json_build_object(
-                   'started_at', to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-                   'finished_at', to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                   'started_at', to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                   'finished_at', to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                    'rows', rows_affected, 'result', result) ORDER BY finished_at)
         FROM batch_run WHERE job = 'archive' AND finished_at > now() - interval '26 hours'), '[]'::json),
     'last_archive_ok', (
