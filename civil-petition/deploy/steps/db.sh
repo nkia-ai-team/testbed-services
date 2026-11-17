@@ -22,7 +22,8 @@ fi
 install -d -m 0750 -o postgres -g postgres "$DATA_MOUNT/backup"
 place_files db
 restart_enabled postgresql@16-main
-runuser -u postgres -- psql -Atqc "select 1" >/dev/null || fail "PostgreSQL 응답 없음"
+# 막 다시 띄운 PostgreSQL 이 연결을 받을 때까지 다시 읽는다(settle, lib.sh).
+settle "$SETTLE_SEC" "$SETTLE_EVERY" "PostgreSQL 응답 없음" runuser -u postgres -- psql -Atqc "select 1"
 # 앱 계정과 DB. 비밀번호 문장이 서버 로그(log_statement=ddl)에 남지 않게 이 세션만 문장 기록을 끈다.
 password=$(read_secret db_password)
 [[ "$password" =~ ^[A-Za-z0-9]{16,}$ ]] || fail "DB 비밀번호는 영문, 숫자 16자 이상이어야 함(XML 속성과 SQL 따옴표 안전)"

@@ -8,9 +8,6 @@ rm -rf /var/lib/tomcat10/webapps/petition
 install -d -m 0755 /var/lib/petition-deploy
 (cd "$BUNDLE/artifacts" && grep '  petition.war$' SHA256SUMS) > /var/lib/petition-deploy/war.sha256
 restart_enabled tomcat10
-for _ in $(seq 1 60); do
-    curl -fsS -m 3 "http://127.0.0.1:${WAS_PORT}/${APP_CONTEXT}/api/health" >/dev/null 2>&1 && break
-    sleep 2
-done
-curl -fsS -m 3 "http://127.0.0.1:${WAS_PORT}/${APP_CONTEXT}/api/health" >/dev/null || fail "앱 health 응답 없음"
+# WAR 를 펼치고 앱이 설 때까지 다시 읽는다(settle, lib.sh). 상한은 종전 고리(2초 간격 60번)와 같은 120초.
+settle 120 2 "앱 health 응답 없음" curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${WAS_PORT}/${APP_CONTEXT}/api/health"
 log "was ok: $(cat /var/lib/petition-deploy/war.sha256)"

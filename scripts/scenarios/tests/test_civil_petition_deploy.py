@@ -2491,7 +2491,9 @@ class StepScriptTests(unittest.TestCase):
             (bin_dir / tool).chmod(0o755)
         env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_LOG": str(calls), "RSYSLOG_ETC": str(etc),
                "RSYSLOG_LOG_DIR": str(log_dir), "EXECUTOR_NAME": "opsjob", "APPARMOR_ETC": str(apparmor),
-               "APPARMOR_FS": str(root / "aafs"), "FAKE_JOURNAL": str(root / "journal")}
+               "APPARMOR_FS": str(root / "aafs"), "FAKE_JOURNAL": str(root / "journal"),
+               # 줄이 안 오는 경우는 다시 읽기 상한까지 기다리므로 시험에서는 짧게 둔다(설치 기본은 30초).
+               "SETTLE_SEC": "2", "SETTLE_EVERY": "0.2"}
         return env, etc, bundle
 
     def _run_step(self, bundle: Path, step: str, env: dict) -> subprocess.CompletedProcess:
@@ -3030,6 +3032,207 @@ class StepScriptTests(unittest.TestCase):
         self.assertIn("fine", done.stdout)
         self.assertNotIn("never", done.stdout)
         self.assertIn("단계 bad 실패", done.stderr)
+
+
+    # 서비스를 다시 띄운 직후의 확인(settle, lib.sh). 시계는 date +%s 와 sleep 대역이 함께 쓰는 파일이라 시험이 기다리지 않는다.
+    #   sleep 대역은 부를 때마다 FAKE_TICK 초씩 시계를 민다.
+    FAKE_CLOCK_STUBS = {
+        "date": '#!/bin/sh\nif [ "$1" = +%s ]; then cat "$FAKE_CLOCK"; else exec /bin/date "$@"; fi\n',
+        "sleep": '#!/bin/sh\necho "sleep $1" >> "$FAKE_CLOCK.sleeps"\necho $(( $(cat "$FAKE_CLOCK") + ${FAKE_TICK:-1} )) > "$FAKE_CLOCK"\n',
+    }
+
+    def _fake_clock(self, root: Path) -> tuple[Path, dict]:
+        bin_dir = root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        for tool, text in self.FAKE_CLOCK_STUBS.items():
+            (bin_dir / tool).write_text(text)
+            (bin_dir / tool).chmod(0o755)
+        clock = root / "clock"
+        clock.write_text("1000\n")
+        return clock, {"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_CLOCK": str(clock)}
+
+    def _settle(self, root: Path, bad: int, tick: int, limit: int = 30, output: str = "Gauge32: 0") -> subprocess.CompletedProcess:
+        """앞 bad 번은 틀린 값(output)을 내고 실패, 그다음은 맞는 값을 내는 명령으로 settle 을 부른다."""
+        clock, env = self._fake_clock(root)
+        count = root / "count"
+        reader = root / "reader.sh"
+        reader.write_text(f'#!/bin/sh\nn=$(( $(cat {count} 2>/dev/null || echo 0) + 1 ))\necho $n > {count}\n'
+                          f'if [ $n -le {bad} ]; then printf "%s\\n" "{output}"; exit 1; fi\necho "Gauge32: 1000"\n')
+        reader.chmod(0o755)
+        env["FAKE_TICK"] = str(tick)
+        script = f'set -euo pipefail; . {DEPLOY / "steps" / "lib.sh"}; settle {limit} 1 "ens19 ifHighSpeed 가 1000 이 아님" {reader}; echo settled'
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+    def test_settle_passes_once_the_value_comes_right_after_some_wrong_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=3, tick=1)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("settled", done.stdout)
+            self.assertEqual((root / "count").read_text().strip(), "4")
+            self.assertEqual((root / "clock.sleeps").read_text().splitlines(), ["sleep 1"] * 3)
+            self.assertNotIn("Gauge32", done.stdout + done.stderr, "통과하면 명령 출력은 버린다")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=0, tick=1)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((root / "count").read_text().strip(), "1")
+            self.assertFalse((root / "clock.sleeps").exists(), "처음부터 맞으면 기다리지 않는다")
+
+    def test_settle_fails_at_the_time_limit_with_the_last_value(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=10**6, tick=1)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertNotIn("settled", done.stdout)
+            self.assertIn("FAIL ens19 ifHighSpeed 가 1000 이 아님(30초 동안 다시 읽음). 마지막 값: Gauge32: 0", done.stderr)
+            # 시계 1000 에서 시작해 1030 까지 1초마다: 1000, 1001, ..., 1030 에서 31 번 읽고 1030 에서 멈춘다.
+            self.assertEqual((root / "count").read_text().strip(), "31")
+            self.assertEqual((root / "clock").read_text().strip(), "1030")
+
+    def test_settle_limit_is_time_not_a_number_of_reads(self) -> None:
+        # 같은 상한(30초)에 다시 읽기 한 번이 10초 걸리면 4 번(0, 10, 20, 30초), 1초면 31 번 읽는다.
+        for tick, reads in ((10, 4), (1, 31), (31, 2)):
+            with self.subTest(tick=tick), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                done = self._settle(root, bad=10**6, tick=tick)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertEqual((root / "count").read_text().strip(), str(reads))
+                self.assertGreaterEqual(int((root / "clock").read_text()), 1030)
+        # 상한을 줄이면 같은 간격에서 읽는 수도 준다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=10**6, tick=1, limit=5)
+            self.assertIn("(5초 동안 다시 읽음)", done.stderr)
+            self.assertEqual((root / "count").read_text().strip(), "6")
+
+    def test_settle_last_value_is_one_line_and_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=10**6, tick=31, output="Timeout: No Response from 127.0.0.1\nsecond line")
+            self.assertIn("마지막 값: Timeout: No Response from 127.0.0.1 | second line\n", done.stderr)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=10**6, tick=31, output="x" * 1000)
+            last = done.stderr.split("마지막 값: ", 1)[1].rstrip("\n")
+            self.assertEqual(last, "x" * 300)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._settle(root, bad=10**6, tick=31, output="")
+            self.assertIn("마지막 값: (출력 없음)", done.stderr)
+
+    def _router_tree(self, root: Path, bad_speed: int, bad_discards: int = 0) -> tuple[Path, dict]:
+        """router 단계 대역: snmpd 가 막 서서 ifHighSpeed 를 앞 bad_speed 번은 0 으로, ifOutDiscards 를 앞 bad_discards 번은
+        noSuchInstance 로 답한다. 커뮤니티는 SNMPCONFPATH 의 snmp.conf 로만 받는다."""
+        clock, env = self._fake_clock(root)
+        sysnet = root / "sys"
+        for dev, mac, index in (("ens18", "bc:24:11:00:00:10", 2), ("ens19", "bc:24:11:00:00:11", 3)):
+            (sysnet / dev / "device").mkdir(parents=True)
+            (sysnet / dev / "address").write_text(mac + "\n")
+            (sysnet / dev / "ifindex").write_text(f"{index}\n")
+        (root / "nic-macs").write_text("ens18 bc:24:11:00:00:10\nens19 bc:24:11:00:00:11\n")
+        (root / "files.tsv").write_text("")
+        (root / "secrets").mkdir()
+        (root / "secrets" / "snmp_community").write_text("c0mmunity\n")
+        calls = root / "calls"
+        bin_dir = root / "bin"
+        snmpget = f"""#!/bin/sh
+echo "snmpget $* conf=$(cat "$SNMPCONFPATH/snmp.conf" | tr '\\n' ' ')" >> {calls}
+for oid; do :; done
+n=$(( $(cat "{root}/n.$oid" 2>/dev/null || echo 0) + 1 )); echo $n > "{root}/n.$oid"
+case "$oid" in
+    .1.3.6.1.2.1.1.5.0) echo "$oid = STRING: rt-core01" ;;
+    .1.3.6.1.2.1.2.2.1.19.*) if [ $n -le {bad_discards} ]; then echo "$oid = No Such Instance currently exists at this OID"; else echo "$oid = Counter32: 0"; fi ;;
+    .1.3.6.1.2.1.31.1.1.1.15.*) if [ $n -le {bad_speed} ]; then echo "$oid = Gauge32: 0"; else echo "$oid = Gauge32: 1000"; fi ;;
+esac
+"""
+        stubs = {"snmpget": snmpget,
+                 "ip": "#!/bin/sh\ncase \"$6\" in ens18) echo ' inet 10.77.1.2/24';; ens19) echo ' inet 10.77.2.2/24';; esac\n"}
+        for tool in ("install", "systemctl", "systemd-tmpfiles", "python3"):
+            stubs[tool] = f'#!/bin/sh\necho {tool} "$@" >> {calls}\n'
+        for tool, text in stubs.items():
+            (bin_dir / tool).write_text(text)
+            (bin_dir / tool).chmod(0o755)
+        env.update({"SYS_NET": str(sysnet), "NIC_MAC_FILE": str(root / "nic-macs"),
+                    "NIC_EXPECT": "ens18=10.77.1.2 ens19=10.77.2.2", "ROUTER_AUGMENT": "ens19"})
+        return calls, env
+
+    def _run_router(self, root: Path, env: dict) -> subprocess.CompletedProcess:
+        script = f"set -euo pipefail; BUNDLE={root}; . {DEPLOY / 'steps' / 'lib.sh'}; . {DEPLOY / 'steps' / 'router.sh'}"
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+    def test_router_step_rereads_snmp_values_until_they_settle_after_the_restart(self) -> None:
+        # snmpd 가 막 섰을 때 속도 덮어쓰기와 도우미 열이 늦게 서도(APT2 §6) 다시 읽어 통과한다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=3, bad_discards=2)
+            done = self._run_router(root, env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("router snmp ok", done.stdout)
+            text = calls.read_text()
+            self.assertLess(text.index("systemctl restart snmpd"), text.index("snmpget"))
+            self.assertEqual((root / "n..1.3.6.1.2.1.31.1.1.1.15.3").read_text().strip(), "4")
+            self.assertEqual((root / "n..1.3.6.1.2.1.2.2.1.19.3").read_text().strip(), "3")
+            self.assertFalse((root / "n..1.3.6.1.2.1.31.1.1.1.15.2").exists(), "ROUTER_AUGMENT 밖 NIC 는 읽지 않는다")
+            for line in (l for l in text.splitlines() if l.startswith("snmpget")):
+                self.assertNotIn("c0mmunity", line.split(" conf=")[0], "커뮤니티가 명령 인자에 있다")
+                self.assertIn("defCommunity c0mmunity", line.split(" conf=")[1])
+
+    def test_router_step_fails_with_the_last_value_once_the_limit_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=10**6)
+            done = self._run_router(root, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertNotIn("router snmp ok", done.stdout)
+            self.assertIn("FAIL ens19 ifHighSpeed 가 1000 이 아님(30초 동안 다시 읽음). "
+                          "마지막 값: .1.3.6.1.2.1.31.1.1.1.15.3 = Gauge32: 0", done.stderr)
+            # 기본 상한 30초, 간격 1초: 31 번 읽고 멈춘다.
+            self.assertEqual((root / "n..1.3.6.1.2.1.31.1.1.1.15.3").read_text().strip(), "31")
+        # 상한과 간격은 환경변수로 바꾼다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=10**6)
+            env.update({"SETTLE_SEC": "6", "SETTLE_EVERY": "2", "FAKE_TICK": "2"})
+            done = self._run_router(root, env)
+            self.assertIn("(6초 동안 다시 읽음)", done.stderr)
+            self.assertEqual((root / "n..1.3.6.1.2.1.31.1.1.1.15.3").read_text().strip(), "4")
+            self.assertEqual(set((root / "clock.sleeps").read_text().splitlines()), {"sleep 2"})
+
+    def test_router_speed_check_wants_exactly_1000(self) -> None:
+        # 종전 grep 'Gauge32: 1000' 은 10000 도 받았다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=0)
+            snmpget = root / "bin" / "snmpget"
+            snmpget.write_text(snmpget.read_text().replace('echo "$oid = Gauge32: 1000"', 'echo "$oid = Gauge32: 10000"'))
+            env["SETTLE_SEC"] = "2"
+            done = self._run_router(root, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("마지막 값: .1.3.6.1.2.1.31.1.1.1.15.3 = Gauge32: 10000", done.stderr)
+
+    def test_checks_right_after_a_service_restart_reread_through_settle(self) -> None:
+        # 서비스를 다시 띄운 뒤 값을 읽는 단계는 settle 로 다시 읽는다. 손으로 쓴 기다림 고리(sleep, seq)나
+        # 한 번 읽고 멈추는 확인을 다시 들이지 않는다. firewall 은 nftables(oneshot)가 표를 다 올린 뒤에야 restart 가 끝나
+        # 바로 읽어도 된다. lldpd, syslog-forward 는 재시작 뒤 읽는 값이 없다.
+        wanted = {"router": ["snmpget -On 127.0.0.1 .1.3.6.1.2.1.1.5.0", "ifOutDiscards 응답 없음", "ifHighSpeed 가 1000 이 아님"],
+                  "web": ["정적 첫 화면 응답 없음"], "db": ["PostgreSQL 응답 없음"], "was": ["앱 health 응답 없음"],
+                  "time": ["chrony 가 $CHRONY_SERVER 에 붙지 않음"],
+                  "syslog": ["rsyslog 검사 줄이", "실행기 uid 줄이"]}
+        restarting = set()
+        for path in sorted((DEPLOY / "steps").glob("*.sh")):
+            source = path.read_text()
+            hit = re.search(r"(?m)^(restart_enabled |systemctl restart )", source)
+            if path.stem == "lib" or not hit:
+                continue
+            restarting.add(path.stem)
+            after = source[hit.start():]
+            with self.subTest(step=path.stem):
+                self.assertNotRegex(after, r"(?m)^\s*(sleep\b|for _ in \$\(seq)", "손으로 쓴 기다림 고리")
+                for words in wanted.get(path.stem, []):
+                    settled = [m.group(0) for m in re.finditer(r'(?ms)^\s*settle [^\n]*(?:\\\n[^\n]*)*', after)]
+                    self.assertTrue(any(words in block for block in settled), f"{words} 확인이 settle 밖에 있다")
+        self.assertEqual(restarting, set(wanted) | {"firewall", "lldpd", "syslog-forward"})
 
 
 if __name__ == "__main__":

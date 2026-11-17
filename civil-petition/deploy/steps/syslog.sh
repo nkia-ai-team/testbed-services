@@ -15,17 +15,18 @@ if compgen -G "$remote_dir/*.conf" >/dev/null; then
     log "rsyslog ok (전달이 켜져 있어 검사 줄 생략)"
 else
     # ParseTrusted 를 켜도 본문에 _UID= 같은 꼬리가 붙지 않는지 본다(붙으면 모든 줄의 모양이 바뀐다).
-    logger -t rsyslog-check "annotation format check"
-    sleep 1
-    line=$(grep "rsyslog-check" "$log_dir/syslog" | tail -1)
-    [[ -n "$line" ]] || fail "rsyslog 검사 줄이 $log_dir/syslog 에 없음"
+    # 막 다시 띄운 rsyslog 가 줄을 쓸 때까지 다시 읽는다(settle, lib.sh). 이번 줄만 고르게 표시를 붙인다(다시 돌릴 때 옛 줄을 보지 않게).
+    note="annotation format check $(date +%s%N)"
+    logger -t rsyslog-check "$note"
+    settle "$SETTLE_SEC" "$SETTLE_EVERY" "rsyslog 검사 줄이 $log_dir/syslog 에 없음" grep -qF -- "$note" "$log_dir/syslog"
+    line=$(grep -F -- "$note" "$log_dir/syslog" | tail -1)
     [[ "$line" != *"_UID="* && "$line" != *"@["* ]] || fail "본문에 자격 증명 꼬리가 붙음: $line"
     # 실행기 계정으로 보낸 줄이 진짜 길(journald 가 넘겨 주는 자격 증명의 uid 속성)로 첫 규칙에 걸리는지 본다.
     # 그 줄은 opsjobs.log 에만 있어야 하고 syslog, auth.log 에는 없어야 한다(실행기 계정은 앞 단계 accounts 가 만든다).
     mark="uid route check $(date +%s%N)"
     setpriv --reuid="$EXECUTOR_NAME" --regid="$EXECUTOR_NAME" --init-groups logger -t rsyslog-check -- "$mark"
-    for _ in $(seq 20); do grep -qF -- "$mark" "$log_dir/opsjobs.log" && break; sleep 0.5; done
-    grep -qF -- "$mark" "$log_dir/opsjobs.log" || fail "실행기 uid 줄이 $log_dir/opsjobs.log 에 없음(첫 규칙의 uid 갈래가 안 걸림)"
+    settle "$SETTLE_SEC" "$SETTLE_EVERY" "실행기 uid 줄이 $log_dir/opsjobs.log 에 없음(첫 규칙의 uid 갈래가 안 걸림)" \
+        grep -qF -- "$mark" "$log_dir/opsjobs.log"
     for f in syslog auth.log; do
         [[ ! -f "$log_dir/$f" ]] || ! grep -qF -- "$mark" "$log_dir/$f" || fail "실행기 uid 줄이 $log_dir/$f 에도 있음"
     done

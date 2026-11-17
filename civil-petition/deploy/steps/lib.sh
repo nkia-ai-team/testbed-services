@@ -184,6 +184,30 @@ PY
     rm -rf "$stage"; trap - EXIT
 }
 
+# 서비스를 다시 띄운 직후의 확인은 값이 설 때까지 다시 읽는다. 서비스가 막 섰을 때는 첫 응답, 설정이 덮어쓰는 값,
+# 도우미가 답하는 열이 아직 서지 않았을 수 있다(snmpd 가 선 지 1초 안에 ifHighSpeed 를 한 번만 읽어 0 을 보고 멈춘 일).
+#   settle <상한 초> <간격 초> <실패 문구> <명령> [인자...]
+# 명령이 0 을 돌려줄 때까지 간격마다 다시 돌린다. 상한은 횟수가 아니라 시계(date +%s)로 재고, 넘으면 실패 문구 뒤에
+# 마지막으로 본 출력(stdout 과 stderr, 줄은 " | " 로 잇고 300자까지)을 붙여 멈춘다. 상한은 다시 읽기 전에 보므로
+# 마지막 읽기 하나의 시간만큼 넘칠 수 있다. 명령의 출력은 통과하면 버린다.
+SETTLE_SEC=${SETTLE_SEC:-30}
+SETTLE_EVERY=${SETTLE_EVERY:-1}
+settle() {
+    local limit="$1" every="$2" what="$3" deadline out=""
+    shift 3
+    deadline=$(( $(date +%s) + limit ))
+    while :; do
+        if out=$("$@" 2>&1); then
+            return 0
+        fi
+        (( $(date +%s) < deadline )) || break
+        sleep "$every"
+    done
+    out=${out//$'\n'/ | }
+    out=${out:0:300}
+    fail "$what(${limit}초 동안 다시 읽음). 마지막 값: ${out:-(출력 없음)}"
+}
+
 # 서비스 이름을 받아 켜고 다시 띄운다.
 restart_enabled() {
     systemctl daemon-reload
