@@ -1207,12 +1207,36 @@ def emit_restore_sql(cfg: dict, plan: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+# 계획 파일(data/catalog/postgres-scope-plan.json), restore.sql, meta.postgres_scope 로 옮겨지는 설정 칸
+# (2026-11-18 v4 CAPFIX3). 이유와 note 문구가 그대로 녹화본에 실린다. 캡처 시작 검사는 이것만 보고(녹화본에
+# 실리지 않는 밑줄 주석 때문에 주입 뒤 실행을 잃지 않게), 설정 전체는 큐 시작 전 self-check 와 저장소 시험이 본다.
+# 목록이 실제로 옮겨지는 칸을 다 덮는지는 시험(ScopeConfigLeakTest)이 표지를 심어 확인한다.
+CARRIED_KEYS = ("excluded_schemas", "excluded_relations", "secret_tables", "snap_tables", "secret_columns")
+
+
+def carried_text(cfg: dict) -> dict[str, str]:
+    """녹화본에 옮겨지는 설정 칸. {"칸.이름": 문구}. 값이 문자열이 아니면 JSON 으로."""
+    out: dict[str, str] = {}
+
+    def put(path: str, value) -> None:
+        out[path] = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+    for key in CARRIED_KEYS:
+        for name, value in cfg.get(key, {}).items():
+            if key == "secret_columns" and isinstance(value, dict):
+                for column, spec in value.items():
+                    put(f"{key}.{name}.{column}", spec)
+            else:
+                put(f"{key}.{name}", value)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--emit", required=True,
                     choices=["exclude-args", "export-sql", "restore-sql", "slice-tables", "masked-tables",
-                             "catalog-sql", "plan-json", "plan-summary"])
+                             "catalog-sql", "plan-json", "plan-summary", "carried-text"])
     ap.add_argument("--out-dir", default="/out/postgres",
                     help="export-sql, catalog-sql 이 파일을 쓸 경로(psql 이 보는 경로)")
     ap.add_argument("--catalog", type=Path,
@@ -1224,6 +1248,9 @@ def main() -> int:
         print(emit_catalog_sql(args.out_dir))
         return 0
     cfg = load(args.config)
+    if args.emit == "carried-text":
+        print(json.dumps(carried_text(cfg), ensure_ascii=False, indent=1, sort_keys=True))
+        return 0
     catalog = load_catalog(args.catalog) if args.catalog else None
     plan = plan_scope(cfg, catalog) if catalog else None
     if args.emit in ("plan-json", "plan-summary"):

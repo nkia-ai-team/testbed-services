@@ -29,6 +29,11 @@
 오탐 주의 — `rca-testbed-*` 는 k8s 네임스페이스(정상 인프라 명명)다. `rca-` 단독
 패턴을 쓰면 전 케이스가 거짓 불합격한다. 반드시 `rca-F\\d\\d-` 로 좁힌다.
 
+읽는 파일: parquet, csv, 텍스트(json, jsonl, export, sql, txt, tsv). tsv 는 2026-11-18 v4 CAPFIX3 에서 더했다.
+v4 녹화본의 data/catalog/{postgres,clickhouse}/*.tsv(원천 카탈로그: 표, 열, 외래 키, 의존 객체 이름)는 지금 평가
+재생이 읽지 않지만, 읽게 바뀌는 날 주입이 만든 객체 이름이 게이트 밖에 남지 않게 미리 본다(지난 녹화본 중 tsv 를
+가진 것은 첫 v4 녹화본 하나이고 그 9개에 걸리는 것이 없어 v3 판정은 그대로다).
+
 보지 않는 파일: 정답 파일(golden.json, scenario.md, causality-audit.json, meta.json, answer/)과 캡처 메타
 topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품에 넣지 않는다).
 
@@ -211,7 +216,7 @@ def scan_csv(path: Path, found, cols, samples) -> None:
                     _hit(cell, found, cols, samples, path.name)
 
 
-TEXT_SUFFIXES = {".json", ".jsonl", ".export", ".sql", ".txt"}
+TEXT_SUFFIXES = {".json", ".jsonl", ".export", ".sql", ".txt", ".tsv"}
 
 
 def _scan_file(path: Path, found, cols, samples, *, text_default: bool) -> bool:
@@ -285,7 +290,7 @@ def main() -> int:
 
     # 읽은 파일이 없으면 합격이 아니다(빈 녹화 폴더, 잘못된 경로). 2026-11-12 전에는 clean, rc 0 이었다.
     if scanned == 0:
-        print(f"[ERROR] {label}: 읽은 파일이 없다(parquet, csv, json, jsonl, export, sql, txt)", file=sys.stderr)
+        print(f"[ERROR] {label}: 읽은 파일이 없다(parquet, csv, json, jsonl, export, sql, txt, tsv)", file=sys.stderr)
         return 2
     total = sum(sum(c.values()) for c in found.values())
     if args.json:

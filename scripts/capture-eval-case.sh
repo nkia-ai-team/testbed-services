@@ -130,22 +130,52 @@ scope_tool_path() {
 }
 
 # 녹화본에 담기는 파일에 정답 단서가 없는지 leakscan.py 와 같은 패턴으로 본다(2026-11-17 v4 CAPFIX3).
-# 계획기 설정(pg-scope.json, ch-scope.json)의 이유와 note 문구는 data/catalog/postgres-scope-plan.json 과
-# meta 로 그대로 옮겨진다. security 스키마 note 에 적힌 시나리오 id 가 이 길로 녹화본에 실려 leakscan 이 그
-# 녹화를 거절한 일이 있었다. 인자가 없으면 두 설정을, 있으면 그 파일들을 본다. leakscan.py 는 pg-scope-export.py
-# 옆의 것(녹화본 게이트와 같은 판). 못 찾거나 못 읽으면 통과가 아니다. 출력은 leakscan 의 결과.
+# 계획기 설정(pg-scope.json)의 이유와 note 문구는 data/catalog/postgres-scope-plan.json, restore.sql, meta 로 그대로
+# 옮겨진다. security 스키마 note 에 적힌 시나리오 id 가 이 길로 녹화본에 실려 leakscan 이 그 녹화를 거절한 일이 있었다.
+# 검사의 분담(2026-11-18 지휘 세션 결정):
+#   큐 시작 전 self-check 와 저장소 시험(ScopeConfigLeakTest): 두 설정 전체(밑줄 키 주석 포함, 문구 규칙 그대로)
+#   캡처 시작(기다림, 내보내기 전): 녹화본에 실리는 칸만(pg-scope-export.py --emit carried-text). 이 시점은 주입이
+#     끝난 뒤라, 녹화본에 실리지 않는 주석 때문에 죽으면 실행 몇 시간을 잃는다
+#   pg_dump 전: 녹화본에 남는 계획 파일, restore.sql, 원천 카탈로그 tsv 그대로
+# ch-scope.json 의 문구는 meta.clickhouse_excluded(정답 쪽 메타)로만 가고 녹화본 파일로는 가지 않는다.
+# 인자가 없으면 두 설정 전체를, 있으면 그 파일들을 본다. 설정과 leakscan.py 는 계획기 실물 자리(realpath, 계획기가
+# 자기 설정을 읽는 자리)에서 찾는다. leakscan.py 는 녹화본 게이트와 같은 판. rc 는 leakscan 의 것(0 깨끗, 1 걸림),
+# 못 찾거나 못 읽으면(옛 leakscan 이 --files 를 모르는 경우 포함) 2 이상. 출력은 leakscan 의 결과.
 scope_leak_check() {
-  local pg_tool ch_tool leakscan files=("$@")
+  local pg_tool pg_dir ch_tool leakscan files=("$@")
   pg_tool=$(scope_tool_path pg-scope-export.py "${PG_SCOPE_TOOL:-}")
   [[ -n "$pg_tool" && -f "$pg_tool" ]] || { printf 'pg-scope-export.py 없음\n'; return 2; }
-  leakscan="$(dirname "$pg_tool")/leakscan.py"
+  pg_dir=$(dirname "$(realpath "$pg_tool")")
+  leakscan="$pg_dir/leakscan.py"
   [[ -f "$leakscan" ]] || { printf 'leakscan.py 없음: %s\n' "$leakscan"; return 2; }
   if (( ${#files[@]} == 0 )); then
-    files=("$(dirname "$pg_tool")/pg-scope.json")
+    files=("$pg_dir/pg-scope.json")
     ch_tool=$(scope_tool_path ch-scope-plan.py "${CH_SCOPE_TOOL:-}")
-    [[ -n "$ch_tool" && -f "$ch_tool" ]] && files+=("$(dirname "$ch_tool")/ch-scope.json")
+    [[ -n "$ch_tool" && -f "$ch_tool" ]] && files+=("$(dirname "$(realpath "$ch_tool")")/ch-scope.json")
   fi
   python3 "$leakscan" --files "${files[@]}" 2>&1
+}
+
+# 캡처 시작 검사: 녹화본에 실리는 설정 칸만(위 분담). 계획기가 그 칸을 뽑아 임시 파일에 쓰고 같은 leakscan 으로 본다.
+scope_carried_leak_check() {
+  local pg_tool tmp rc
+  pg_tool=$(scope_tool_path pg-scope-export.py "${PG_SCOPE_TOOL:-}")
+  [[ -n "$pg_tool" && -f "$pg_tool" ]] || { printf 'pg-scope-export.py 없음\n'; return 2; }
+  tmp=$(mktemp "${TMPDIR:-/tmp}/.scope-carried.XXXXXX") || return 2
+  if ! python3 "$pg_tool" --emit carried-text >"$tmp" 2>&1; then
+    printf 'pg-scope-export.py --emit carried-text 실패: %s\n' "$(head -c 300 "$tmp")"
+    rm -f "$tmp"; return 2
+  fi
+  scope_leak_check "$tmp"; rc=$?
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# rc 1 은 단서가 있음, 그 밖은 검사를 못 함(실패 닫힘). 둘을 다른 문구로 멈춘다.
+scope_leak_die() {
+  local rc=$1 what=$2 out=$3
+  (( rc == 1 )) && die "$what would put answer clues into the case:"$'\n'"$out"
+  die "cannot check scope config (leakscan, rc $rc) for $what:"$'\n'"$out"
 }
 
 iso_utc_from_epoch() {
@@ -327,7 +357,12 @@ if [[ "$self_check" == true ]]; then
   if sc_leak=$(scope_leak_check); then
     log 'self-check ok: scope config holds no answer clues (pg-scope.json, ch-scope.json)'
   else
-    sc_fail 'scope config holds answer clues or cannot be checked (pg-scope.json, ch-scope.json)'
+    sc_leak_rc=$?
+    if (( sc_leak_rc == 1 )); then
+      sc_fail 'scope config holds answer clues (pg-scope.json, ch-scope.json)'
+    else
+      sc_fail "cannot check scope config (leakscan, rc $sc_leak_rc)"
+    fi
     printf '%s\n' "$sc_leak" >&2
   fi
   sc_run "output root writable ($output_root)" bash -c "mkdir -p '$output_root' && touch '$output_root/.self-check' && rm -f '$output_root/.self-check'"
@@ -865,10 +900,10 @@ QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
 
 [[ -n "$PG_PASSWORD" ]] || die 'PG_PASSWORD is required for live capture'
 [[ -n "$QUERY_API_PASSWORD" ]] || die 'QUERY_API_PASSWORD is required for the topology snapshot'
-# 계획기 설정 문구가 녹화본에 실린다(2026-11-17 v4 CAPFIX3, scope_leak_check). 기다림과 내보내기 전에 멈춘다.
-# 고칠 것은 설정의 문구다(시나리오 id, 케이스 이름 없이 일반 서술로, 근거 사례는 문서와 커밋에).
-scope_leak=$(scope_leak_check) ||
-  die "scope config would put answer clues into the case (pg-scope.json, ch-scope.json):"$'\n'"$scope_leak"
+# 계획기 설정 문구 중 녹화본에 실리는 칸(2026-11-17 v4 CAPFIX3, 분담은 scope_leak_check 위 주석). 기다림과 내보내기
+# 전에 멈춘다. 고칠 것은 설정의 문구다(시나리오 id, 케이스 이름 없이 일반 서술로, 근거 사례는 문서와 커밋에).
+scope_leak=$(scope_carried_leak_check) ||
+  scope_leak_die $? 'scope config wording carried into the plan (pg-scope.json)' "$scope_leak"
 [[ ! -e "$final_dir" ]] || die "case already exists and is immutable: $final_dir"
 mkdir -p "$output_root"
 [[ -w "$output_root" ]] || die "output root is not writable: $output_root"
@@ -1271,10 +1306,15 @@ pg_masked_list=$("${pg_scope[@]}" --emit masked-tables)
 pg_scope_excl=$("${pg_scope[@]}" --emit exclude-args | tr '\n' ' ')
 "${pg_scope[@]}" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
 "${pg_scope[@]}" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
-# 녹화본에 남는 계획 파일 둘을 덤프 전에 본다(2026-11-17 v4 CAPFIX3). 설정은 위에서 봤으니 여기서 걸리면 원천
-# 카탈로그(표, 스키마 이름)에서 온 것이다. leakscan 이 이 녹화를 어차피 거절하므로 덤프에 시간을 쓰지 않는다.
-scope_leak=$(scope_leak_check "$staging_dir/data/catalog/postgres-scope-plan.json" "$staging_dir/data/postgres/restore.sql") ||
-  die "PostgreSQL scope plan would put answer clues into the case:"$'\n'"$scope_leak"
+# 녹화본에 남는 계획 파일, restore.sql, 원천 카탈로그 tsv(PG, CH)를 덤프 전에 본다(2026-11-17 v4 CAPFIX3, tsv 는
+# 11-18). 실리는 설정 칸은 위에서 봤으니 여기서 걸리면 원천 카탈로그(표, 열, 의존 객체 이름)에서 온 것이다. leakscan
+# 이 이 녹화를 어차피 거절하므로 덤프에 시간을 쓰지 않는다.
+scope_leak_files=("$staging_dir/data/catalog/postgres-scope-plan.json" "$staging_dir/data/postgres/restore.sql")
+for scope_tsv in "$staging_dir"/data/catalog/postgres/*.tsv "$staging_dir"/data/catalog/clickhouse/*.tsv; do
+  [[ -f "$scope_tsv" ]] && scope_leak_files+=("$scope_tsv")
+done
+scope_leak=$(scope_leak_check "${scope_leak_files[@]}") ||
+  scope_leak_die $? 'PostgreSQL scope plan or source catalog' "$scope_leak"
 # TCP keepalives + a hard timeout on the cross-network (109->119 AP bridge)
 # pg_dump. Without keepalives an idle COPY period lets the bridge/NAT reap the
 # connection and pg_dump blocks forever in poll() (2026-07-25 production run:

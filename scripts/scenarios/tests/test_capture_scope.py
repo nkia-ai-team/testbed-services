@@ -649,13 +649,13 @@ class ScopeConfigLeakTest(unittest.TestCase):
         return pg.plan_scope(cfg, pg_catalog(PgAccessTest.TABLES_119, schemas=PgAccessTest.SCHEMAS_119,
                                              denied=PgAccessTest.DENIED_119, deps=PgAccessTest.DEPS_119))
 
-    def outputs(self, cfg, plan):
+    def outputs(self, cfg, plan, catalog=None):
         """녹화본과 meta 에 남는 계획기 출력(plan-json 파일, meta 요약, restore.sql)과 덤프 인자, 내보내기 SQL."""
         return {
             "plan-json": json.dumps(plan, ensure_ascii=False),
             "plan-summary": json.dumps(pg.plan_summary(plan, cfg), ensure_ascii=False),
             "restore-sql": pg.emit_restore_sql(cfg, plan),
-            "export-sql": pg.emit_export_sql(cfg, "/out/postgres", plan),
+            "export-sql": pg.emit_export_sql(cfg, "/out/postgres", plan, catalog),
             "exclude-args": pg.emit_exclude_args(cfg, plan),
         }
 
@@ -672,6 +672,48 @@ class ScopeConfigLeakTest(unittest.TestCase):
         out = self.outputs(leaky, self.plan_119(leaky))
         self.assertEqual(leak_hits(out["plan-json"]), {"scenario_id": ["F49-H"]})
         self.assertEqual(leak_hits(out["plan-summary"]), {"scenario_id": ["F49-H"]})
+
+    def test_carried_text_covers_every_field_the_planner_copies(self):
+        """캡처 시작 검사(--emit carried-text)는 녹화본에 실리는 칸만 본다(2026-11-18 지휘 세션 결정). 그 목록이 실제로
+        옮겨지는 칸을 빠짐없이 덮는지, 설정의 모든 문구 칸에 표지를 심고 계획기 출력에 나온 표지를 대조한다."""
+        cfg = copy.deepcopy(PG_CFG)
+        marks: dict[str, str] = {}
+
+        def plant(node, path):
+            items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+            for k, v in list(items):
+                if isinstance(v, str) and " " in v:  # 문구 칸(식별자는 공백이 없다)
+                    tag = f"MARK{len(marks):04d}"
+                    marks[tag] = f"{path}.{k}"
+                    node[k] = f"{v} {tag}"
+                else:
+                    plant(v, f"{path}.{k}")
+
+        plant(cfg, "$")
+        tables = dict(PgAccessTest.TABLES_119)
+        tables.update({t: 8192 for t in cfg["secret_tables"]})
+        columns = {t: [(c, "text") for c in cs] for t, cs in cfg["secret_columns"].items()}
+        tables.update({t: 8192 for t in columns})
+        catalog = pg_catalog(tables, columns=columns, schemas=PgAccessTest.SCHEMAS_119,
+                             denied=PgAccessTest.DENIED_119, deps=PgAccessTest.DEPS_119)
+        plan = pg.plan_scope(cfg, catalog)
+        out = "".join(self.outputs(cfg, plan, catalog).values())
+        copied = set(re.findall(r"MARK\d{4}", out))
+        carried = set(re.findall(r"MARK\d{4}", json.dumps(pg.carried_text(cfg), ensure_ascii=False)))
+        self.assertGreater(len(copied), 50)  # 비밀 계열 표, snap 이유, 빼는 것, 가림 이유가 실제로 옮겨진다
+        self.assertEqual(sorted(marks[m] for m in copied - carried), [])
+        # 밑줄 주석과 옮겨지지 않는 칸은 캡처 시작 검사 밖이다(설정 전체는 self-check 와 저장소 시험이 본다).
+        not_carried = {marks[m].split(".")[1] for m in set(marks) - carried}
+        self.assertIn("_why", not_carried)
+        self.assertTrue(all(not k.startswith("_") for k in pg.CARRIED_KEYS))
+
+    def test_carried_text_names_the_field_of_a_leaky_note(self):
+        leaky = copy.deepcopy(PG_CFG)
+        leaky["excluded_schemas"]["security"] += " (F49-H 캡처에서 실측)"
+        leaky["_why"].append("F06-H 캡처에서 실측")  # 녹화본에 실리지 않는 주석
+        carried = pg.carried_text(leaky)
+        self.assertEqual({k for k, v in carried.items() if leak_hits(v)}, {"excluded_schemas.security"})
+        self.assertEqual(leak_hits(json.dumps(pg.carried_text(PG_CFG), ensure_ascii=False)), {})
 
 
 class PgSecretTest(unittest.TestCase):

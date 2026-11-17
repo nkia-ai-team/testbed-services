@@ -261,6 +261,22 @@ class LeakscanEmptyCase(unittest.TestCase):
             self.assertEqual(_scan(_case(Path(raw), ["mysqld"])).returncode, 0)
 
 
+class LeakscanCatalogTsv(unittest.TestCase):
+    def test_source_catalog_tsv_in_a_case_is_scanned(self) -> None:
+        """v4 녹화본의 data/catalog/*/*.tsv(원천 카탈로그)를 케이스 모드도 본다(2026-11-18 v4 CAPFIX3, 지휘 세션 결정)."""
+        for layout in ("input", ""):
+            with self.subTest(layout=layout or "old"), tempfile.TemporaryDirectory() as raw:
+                base = Path(raw) / layout if layout else Path(raw)
+                (base / "data" / "catalog" / "postgres").mkdir(parents=True)
+                columns = base / "data" / "catalog" / "postgres" / "columns.tsv"
+                columns.write_text("incidents\tid\tuuid\nincidents\ttitle\ttext\n")
+                self.assertEqual(_scan(Path(raw)).returncode, 0, _scan(Path(raw)).stdout)
+                columns.write_text("incidents\tid\tuuid\nscratch\tf49-h_note\ttext\n")
+                done = _scan(Path(raw))
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertEqual(json.loads(done.stdout)["columns"], {"scenario_id": ["columns.tsv"]})
+
+
 class LeakscanNamedFiles(unittest.TestCase):
     """--files: 캡처가 녹화본에 담길 설정과 계획 파일을 미리 본다(2026-11-17 v4 CAPFIX3)."""
 

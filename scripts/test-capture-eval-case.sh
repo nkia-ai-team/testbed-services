@@ -969,8 +969,8 @@ if grep -q '192.168.230.119:18080' "$CAPTURE"; then fail 'capture still defaults
 
 # (j) 계획기 설정 문구와 계획 파일에 정답 단서가 있으면 녹화하지 않는다(2026-11-17 v4 CAPFIX3). pg-scope.json 의
 # security note 에 적힌 시나리오 id 가 data/catalog/postgres-scope-plan.json 으로 녹화본에 실려 leakscan 이 그 녹화를
-# 거절했다. 패턴은 leakscan.py 의 것. 설정은 큐 시작 전(self-check)과 기다림, 내보내기 전에, 원천 카탈로그에서 온
-# 것은 pg_dump 전에 막는다.
+# 거절했다. 패턴은 leakscan.py 의 것. 분담(11-18): 설정 전체는 큐 시작 전 self-check, 캡처 시작 때는 녹화본에 실리는
+# 칸만, pg_dump 전에는 계획 파일, restore.sql, 원천 카탈로그 tsv.
 leaky_tools="$live_root/leaky-scenarios"
 mkdir -p "$leaky_tools"
 for f in pg-scope-export.py pg-scope.json ch-scope-plan.py ch-scope.json leakscan.py; do
@@ -982,9 +982,10 @@ python3 "$SCRIPT_DIR/scenarios/leakscan.py" --files "$SCRIPT_DIR/scenarios/pg-sc
   >/dev/null || fail 'the repository scope configs carry an answer clue'
 : >"$FAKE_LOG"
 if run_live case-live-v4-leaky-config "${leaky_env[@]}"; then fail 'capture ran with a scenario id in pg-scope.json'; fi
-grep -q 'scope config would put answer clues into the case' "$live_root/case-live-v4-leaky-config.err" ||
-  fail 'no clear message for a scenario id in the scope config'
+grep -q 'scope config wording carried into the plan (pg-scope.json) would put answer clues into the case' \
+  "$live_root/case-live-v4-leaky-config.err" || fail 'no clear message for a scenario id in the scope config'
 grep -qF "'F49-H'" "$live_root/case-live-v4-leaky-config.err" || fail 'the leaked id is not shown'
+grep -qF 'excluded_schemas.security' "$live_root/case-live-v4-leaky-config.err" || fail 'the leaking config field is not named'
 [[ ! -s "$FAKE_LOG" ]] || fail 'capture reached ClickHouse, PostgreSQL or the model before refusing the config'
 [[ ! -e "$live_root/cases/case-live-v4-leaky-config" ]] || fail 'a case was published with a leaky scope config'
 # 같은 판정을 큐 시작 전 self-check 가 낸다(다른 점검의 성패와 따로 본다).
@@ -1003,21 +1004,68 @@ fi
 grep -q 'self-check FAILED: scope config holds answer clues' "$live_root/self-check-leaky.err" ||
   fail 'self-check did not name the leaky scope config'
 grep -qF "'F49-H'" "$live_root/self-check-leaky.err" || fail 'self-check did not show the leaked id'
-# leakscan.py 를 못 찾으면 통과가 아니다.
+# 계획기를 심볼릭 링크로 가리켜도 계획기가 읽는 실물 설정을 본다(링크 옆의 다른 설정이 아니라).
+link_tools="$live_root/linked-scenarios"
+mkdir -p "$link_tools"
+for f in pg-scope.json ch-scope.json leakscan.py; do cp "$SCRIPT_DIR/scenarios/$f" "$link_tools/$f"; done
+ln -s "$leaky_tools/pg-scope-export.py" "$link_tools/pg-scope-export.py"
+ln -s "$leaky_tools/ch-scope-plan.py" "$link_tools/ch-scope-plan.py"
+if run_self_check PG_SCOPE_TOOL="$link_tools/pg-scope-export.py" CH_SCOPE_TOOL="$link_tools/ch-scope-plan.py" \
+     >"$live_root/self-check-link.out" 2>"$live_root/self-check-link.err"; then
+  fail 'self-check passed through a symlinked planner whose real config has a scenario id'
+fi
+grep -q 'self-check FAILED: scope config holds answer clues' "$live_root/self-check-link.err" ||
+  fail 'self-check read the config next to the symlink, not the one the planner reads'
+# 녹화본에 실리지 않는 밑줄 주석에만 id 가 있으면 큐 시작 전 self-check 는 막고, 캡처(주입 뒤)는 녹화를 끝낸다.
+jq '._why += ["F49-H 캡처에서 실측"]' "$SCRIPT_DIR/scenarios/pg-scope.json" >"$leaky_tools/pg-scope.json"
+if run_self_check "${leaky_env[@]}" >"$live_root/self-check-comment.out" 2>"$live_root/self-check-comment.err"; then
+  fail 'self-check passed a scenario id in a pg-scope.json comment'
+fi
+grep -q 'self-check FAILED: scope config holds answer clues' "$live_root/self-check-comment.err" ||
+  fail 'self-check did not name a scenario id in a comment'
+run_live case-live-v4-comment-only "${leaky_env[@]}" || {
+  cat "$live_root/case-live-v4-comment-only.err" >&2; fail 'capture died on a comment that never reaches the case'; }
+[[ -s "$live_root/cases/case-live-v4-comment-only/data/catalog/postgres-scope-plan.json" ]] ||
+  fail 'comment-only case was not published'
+python3 "$SCRIPT_DIR/scenarios/leakscan.py" --files "$live_root/cases/case-live-v4-comment-only/data/catalog/postgres-scope-plan.json" \
+  "$live_root/cases/case-live-v4-comment-only/data/postgres/restore.sql" >/dev/null ||
+  fail 'a comment-only id reached the plan files'
+# leakscan.py 를 못 찾으면 통과가 아니고, 단서가 있다는 문구와 다르게 알린다.
 rm "$leaky_tools/leakscan.py"
 cp "$SCRIPT_DIR/scenarios/pg-scope.json" "$leaky_tools/pg-scope.json"
 if run_live case-live-v4-no-leakscan "${leaky_env[@]}"; then fail 'capture ran without leakscan.py next to the planner'; fi
+grep -q 'cannot check scope config (leakscan, rc 2)' "$live_root/case-live-v4-no-leakscan.err" ||
+  fail 'a missing leakscan.py is not told apart from an answer clue'
 grep -q 'leakscan.py 없음' "$live_root/case-live-v4-no-leakscan.err" || fail 'no clear message for a missing leakscan.py'
-# 원천 카탈로그에서 온 단서(표 이름)는 계획 파일 검사가 pg_dump 전에 막는다.
-leaky_fix="$live_root/fixtures-leaky"
-cp -r "$fix" "$leaky_fix"
-printf '%s\n' $'public\tf49-h_scratch\tr\t8192\t1\t1\t0' >>"$leaky_fix/pg/tables.tsv"
-: >"$FAKE_LOG"
-if run_live case-live-v4-leaky-catalog FAKE_FIX="$leaky_fix"; then fail 'capture dumped a plan that names a scenario id'; fi
-grep -q 'PostgreSQL scope plan would put answer clues into the case' "$live_root/case-live-v4-leaky-catalog.err" ||
-  fail 'no clear message for a scenario id coming from the source catalog'
-grep -qF "'f49-h'" "$live_root/case-live-v4-leaky-catalog.err" || fail 'the catalog-borne id is not shown'
-if grep -q 'pg_dump -Fc' "$FAKE_LOG"; then fail 'pg_dump ran despite a leaky plan'; fi
-[[ ! -e "$live_root/cases/case-live-v4-leaky-catalog" ]] || fail 'a case was published with a leaky plan'
+if grep -q 'would put answer clues' "$live_root/case-live-v4-no-leakscan.err"; then fail 'a missing leakscan.py was reported as a clue'; fi
+if run_self_check "${leaky_env[@]}" >"$live_root/self-check-noscan.out" 2>"$live_root/self-check-noscan.err"; then
+  fail 'self-check passed without leakscan.py'
+fi
+grep -q 'self-check FAILED: cannot check scope config (leakscan, rc 2)' "$live_root/self-check-noscan.err" ||
+  fail 'self-check did not tell a missing leakscan.py apart from an answer clue'
+# 원천 카탈로그에서 온 단서는 pg_dump 전 검사가 막는다. 표 이름은 계획 파일에도 실리고, 열 이름은 카탈로그 tsv 에만 남는다.
+for kind in table column; do
+  leaky_fix="$live_root/fixtures-leaky-$kind"
+  cp -r "$fix" "$leaky_fix"
+  if [[ "$kind" == table ]]; then
+    printf '%s\n' $'public\tf49-h_scratch\tr\t8192\t1\t1\t0' >>"$leaky_fix/pg/tables.tsv"
+    want_file=postgres-scope-plan.json
+  else
+    printf '%s\n' $'target_config_latest\tf49-h_note\ttext' >>"$leaky_fix/pg/columns.tsv"
+    want_file=columns.tsv
+  fi
+  : >"$FAKE_LOG"
+  if run_live "case-live-v4-leaky-$kind" FAKE_FIX="$leaky_fix"; then fail "capture dumped with a scenario id in a source $kind name"; fi
+  err="$live_root/case-live-v4-leaky-$kind.err"
+  grep -q 'PostgreSQL scope plan or source catalog would put answer clues into the case' "$err" ||
+    fail "no clear message for a scenario id coming from a source $kind name"
+  grep -qF "'f49-h'" "$err" || fail "the catalog-borne id ($kind) is not shown"
+  grep -qF "'$want_file'" "$err" || fail "the $kind-borne id is not traced to $want_file"
+  if grep -q 'pg_dump -Fc' "$FAKE_LOG"; then fail "pg_dump ran despite a leaky source $kind name"; fi
+  [[ ! -e "$live_root/cases/case-live-v4-leaky-$kind" ]] || fail "a case was published with a leaky source $kind name"
+done
+if grep -qF "'postgres-scope-plan.json'" "$live_root/case-live-v4-leaky-column.err"; then
+  fail 'the column-only case should be caught by the catalog tsv, not the plan'
+fi
 
 printf '[PASS] capture policy dry-run tests\n'
