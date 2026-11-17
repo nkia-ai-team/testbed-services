@@ -26,6 +26,10 @@
     창 기록이 처음 구간 시작([E-24h-2h])보다 늦게 시작했으면(부하 시작 뒤 26시간이 안 됨) 짧은 구간으로 견주지
     않고 INCOMPLETE 다. 기록이 처음 구간을 덮는데 어느 구간이든 search 표본이 있는 창이 22개(2시간 24창의 약 90%)
     보다 적으면 부하가 멈춘 것이라 실패다.
+  - 밤 배치 처리 능력(검토 세션 Q24 답 조건 ①): 판정 구간 안 결과 ok 이고 옮긴 행이 있는 보관 배치의 처리량(옮긴 행 /
+    걸린 시간, 묶음 사이 쉼 포함)으로 창 하나(타이머 시각부터 창 끝)가 옮길 수 있는 양이 설계 하루 쓰기의 2.5일 몫
+    이상이어야 한다. 한 번 실패한 뒤 다음 밤에 다 따라잡아야 녹화 막기 문턱(상한 + 하루 쓰기 x 2.5)이 회복 뒤에도
+    막지 않는다. 하루 쓰기와 창은 design_load.py 가 부하 설정과 앱 설정에서 읽는다.
 
 판정 이름: PASS_Q3_24H 또는 FAIL_Q3_24H. 창 수가 24시간에 못 미치면 INCOMPLETE_Q3_24H.
 """
@@ -36,6 +40,9 @@ import datetime
 import json
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import design_load  # noqa: E402
 
 WINDOW_SEC = 300
 TOTAL_ABNORMAL_MAX = 0.001
@@ -114,6 +121,17 @@ def judge_steady_state(windows: dict[int, dict], start_epoch: int, end_epoch: in
         summary["archive_runs"] = runs
         if not any(run.get("result") == "ok" for run in runs):
             reasons.append("판정 구간 안에 결과 ok 인 보관 배치가 없음")
+        moved = [run for run in runs if run.get("result") == "ok" and int(run.get("rows") or 0) > 0 and run.get("started_at")]
+        if moved:
+            run = max(moved, key=lambda item: int(item["rows"]))
+            seconds = (parse_time(run["finished_at"]) - parse_time(run["started_at"])).total_seconds()
+            capacity = design_load.night_capacity_measured(int(run["rows"]), seconds)
+            summary["night_capacity"] = capacity
+            if not capacity["verdict"].startswith("PASS"):
+                reasons.append(f"밤 배치 처리 능력 {capacity['capacity_rows']} < 하루 쓰기 2.5일 몫 {capacity['required_rows']}"
+                               f"(실측 {capacity['measured_rows']}행 {capacity['measured_seconds']}초)")
+        elif runs:
+            reasons.append("판정 구간 안에 행을 옮긴 보관 배치가 없어 밤 배치 처리 능력을 잴 수 없음")
     query = step_p95_change(windows, start_epoch, end_epoch, QUERY_STEP)
     summary["query"] = query
     summary["reference_queries"] = [step_p95_change(windows, start_epoch, end_epoch, step) for step in REFERENCE_STEPS]

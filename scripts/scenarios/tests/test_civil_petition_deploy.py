@@ -42,6 +42,7 @@ def _load(name: str, path: Path):
 render = _load("render", DEPLOY / "render.py")
 plan = _load("civil_plan", DEPLOY / "provision" / "plan.py")
 ifdiscards = _load("ifdiscards", DEPLOY / "router" / "ifdiscards.py")
+design = _load("design_load", DEPLOY / "tools" / "design_load.py")
 stability = _load("stability_check", DEPLOY / "tools" / "stability_check.py")
 scale = _load("scale_verdict", DEPLOY / "tools" / "scale_verdict.py")
 monitor = _load("loadgen_monitor_cp", REPO / "scripts" / "scenarios" / "profiles" / "loadgen_monitor.py")
@@ -1318,7 +1319,7 @@ class StabilityCheckTests(unittest.TestCase):
         return windows
 
     # 02:20 KST 에 돈 보관 배치(판정 구간 2026-11-16 15:00Z ~ 11-17 15:00Z 안).
-    ARCHIVE_OK = {"finished_at": "2026-11-16T17:23:10Z", "rows": 121000, "result": "ok"}
+    ARCHIVE_OK = {"started_at": "2026-11-16T17:20:00Z", "finished_at": "2026-11-16T17:23:10Z", "rows": 121000, "result": "ok"}
 
     def _db(self, start=(2_000_000, 5_900_000), end=(2_118_000, 6_170_000), runs=None):
         return {"before": {"rows": {"petition": start[0], "petition_history": start[1]}, "archive_runs": []},
@@ -1388,7 +1389,8 @@ class StabilityCheckTests(unittest.TestCase):
 
         for hour in range(24):
             end = datetime.datetime(2026, 11, 18, hour, 0, tzinfo=kst).astimezone(datetime.timezone.utc)
-            db = self._db(runs=[{"finished_at": (end - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            db = self._db(runs=[{"started_at": (end - datetime.timedelta(hours=1, seconds=190)).isoformat().replace("+00:00", "Z"),
+                                 "finished_at": (end - datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
                                  "rows": 121000, "result": "ok"}])
             with self.subTest(end_hour_kst=hour):
                 steady = stability.judge(windows(end), end, db_facts=db)
@@ -1426,6 +1428,45 @@ class StabilityCheckTests(unittest.TestCase):
                 self.assertEqual(result["verdict"], verdict, result["reasons"])
                 if verdict.startswith("FAIL"):
                     self.assertEqual(result["reasons"], ["대표 질의(search) p95 표본 부족(처음 21창, 끝 24창, 구간마다 22창 이상)"])
+
+    def test_the_night_batch_must_be_able_to_move_two_and_a_half_days_of_writes(self) -> None:
+        # 검토 세션 Q24 답 조건 ①: 실측 처리량으로 창 하나(02:20~05:00, 9,600초)가 하루 쓰기 2.5일 몫(304,560) 이상을 옮긴다.
+        passing = stability.judge(self._windows(), self.END, db_facts=self._db())
+        capacity = passing["steady_state"]["night_capacity"]
+        self.assertEqual(capacity["verdict"], "PASS_ARCHIVE_CAPACITY")
+        self.assertEqual(capacity["required_rows"], 304560)
+        self.assertEqual(capacity["capacity_rows"], int(121000 / 190 * 9600))
+        # 같은 121,000 행에 3,900초가 걸린 밤(창 9,600초에 약 29.8만 행)은 2.5일 몫을 못 옮긴다.
+        slow = {**self.ARCHIVE_OK, "started_at": "2026-11-16T16:18:10Z"}
+        result = stability.judge(self._windows(), self.END, db_facts=self._db(runs=[slow]))
+        self.assertEqual(result["verdict"], "FAIL_Q3_24H")
+        self.assertEqual(result["reasons"], ["밤 배치 처리 능력 297846 < 하루 쓰기 2.5일 몫 304560(실측 121000행 3900.0초)"])
+        # 행을 옮긴 배치가 없으면 잴 수 없어 실패로 센다(첫 밤은 부하 시작 뒤 쓰기만큼 옮긴다).
+        empty = {**self.ARCHIVE_OK, "rows": 0}
+        result = stability.judge(self._windows(), self.END, db_facts=self._db(runs=[empty]))
+        self.assertIn("판정 구간 안에 행을 옮긴 보관 배치가 없어 밤 배치 처리 능력을 잴 수 없음", result["reasons"])
+
+    def test_the_design_numbers_are_read_from_the_load_and_app_settings(self) -> None:
+        # Q24 답 조건 ②: 손으로 적지 않고 부하 설정에서 읽어 계산한다.
+        self.assertEqual(design.daily_submissions(), 121824)
+        self.assertEqual(design.rows_limit(), {"limit": 2304560, "keep_rows": 2000000, "design_daily_writes": 121824, "days": 2.5})
+        static = design.night_capacity()
+        self.assertEqual((static["verdict"], static["open_sec"], static["capacity_rows"]), ("PASS_ARCHIVE_CAPACITY", 9600, 7680000))
+        # 문턱의 뜻: 한 번 실패한 다음 밤 배치 직전 최대(상한 + 하루 쓰기 x 2)는 통과, 두 번 연속이면 그다음 날 낮에 넘는다.
+        limit = design.rows_limit()["limit"]
+        self.assertLess(2_000_000 + 2 * 121824, limit)
+        self.assertGreater(2_000_000 + 3 * 121824, limit)
+        # 부하 설정이 바뀌면 문턱도 따라 바뀐다(하루 쓰기를 손으로 적지 않음).
+        unit = DEPLOY / "templates" / "loadgen" / "loadgen.service"
+        original = unit.read_text()
+        try:
+            unit.write_text(original.replace("Environment=PEAK_RPS=30", "Environment=PEAK_RPS=60"))
+            self.assertGreater(design.daily_submissions(), 121824)
+        finally:
+            unit.write_text(original)
+        db = bundles(T_INV)["db01"]
+        line = [l for l in file_of(db, "/usr/local/sbin/pg-table-stats").splitlines() if l.startswith("printf ")][0]
+        self.assertIn('"rows_limit":{"limit":2304560,"keep_rows":2000000,"design_daily_writes":121824,"days":2.5}', line)
 
     def test_representative_query_without_samples_fails(self) -> None:
         windows = self._windows()
@@ -1478,7 +1519,8 @@ class StabilityCheckTests(unittest.TestCase):
                                   env={"PATH": f"{root}:/usr/bin:/bin"})
             self.assertEqual(done.returncode, 0, done.stderr)
             line = json.loads((root / "out" / "last.json").read_text())
-            self.assertEqual(sorted(line), ["at", "db", "host"])
+            self.assertEqual(sorted(line), ["at", "db", "host", "rows_limit"])
+            self.assertEqual(line["rows_limit"]["limit"], 2304560)
             self.assertEqual(line["db"]["rows"]["petition"], 2080000)
             self.assertEqual(line["db"]["last_archive_ok"], "2026-11-17T17:24:00Z")
             self.assertEqual([p.name for p in (root / "out").iterdir()], ["last.json"])   # 임시 파일이 남지 않는다
@@ -1490,7 +1532,8 @@ class StabilityCheckTests(unittest.TestCase):
             before.write_text('{"host":"db01","at":"2026-11-16T15:00:00Z","db":{"rows":{"petition":2000000,"petition_history":5900000},'
                               '"archive_runs":[]}}\n')
             after.write_text('{"host":"db01","at":"2026-11-17T15:00:00Z","db":{"rows":{"petition":2118000,"petition_history":6170000},'
-                             '"archive_runs":[{"finished_at":"2026-11-16T17:23:10Z","rows":121000,"result":"ok"}]}}\n')
+                             '"archive_runs":[{"started_at":"2026-11-16T17:20:00Z","finished_at":"2026-11-16T17:23:10Z",'
+                             '"rows":121000,"result":"ok"}]}}\n')
             facts = stability.read_db_facts(before, after)
         self.assertEqual(facts, self._db())
         source = (DEPLOY / "tools" / "db-facts.sh").read_text()

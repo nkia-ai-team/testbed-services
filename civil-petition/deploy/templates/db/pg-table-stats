@@ -2,11 +2,12 @@
 # 민원 표 통계 사본(설계 §6-4, 검토 세션 Q22 덧붙임 2, 리뷰 rv-t2c M2, 지휘 세션 11-17 D). 30분 고정 주기 타이머
 # (pg-table-stats.timer)가 평시부터 늘 돌리고 /var/lib/pg-table-stats/last.json 에 한 줄을 남긴다. 주입과 무관한
 # 주기라 DB 서버 로그의 이 읽기 줄이 주입 시각과 짝을 이루지 않는다. 러너는 이 파일을(늘 열린 ssh 연결의 5분 평시
-# 점검 읽기로 가져와) readiness 입력으로 쓰고, 읽은 시각(at)이 1시간보다 묵으면 막는다. 출력 꼴은 db-facts.sh 와 같다.
+# 점검 읽기로 가져와) readiness 입력으로 쓰고, 읽은 시각(at)이 1시간보다 묵으면 막는다. 출력 꼴은 db-facts.sh 와 같고
+# 녹화 막기 행 수 문턱(rows_limit)을 함께 싣는다.
 #
 # db-facts.sh(T2 24시간 판정의 처음과 끝 두 번만)와 달리 가볍게 읽는다:
 #   - 행 수는 count(*) 가 아니라 통계 뷰의 추정치 pg_stat_user_tables.n_live_tup 이다(표를 훑지 않고 민원 표에
-#     잠금을 걸지 않는다. 200만 시드에서 count(*) 와의 차이 0.0024%, 1.1배 판정 여유 약 3.8%). 통계가 초기화된 직후
+#     잠금을 걸지 않는다. 200만 시드에서 count(*) 와의 차이 0.0024~0.036%, 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5) 여유 약 8.6%). 통계가 초기화된 직후
 #     (비정상 종료, 통계 초기화)에는 0 에 가깝고 다음 vacuum, analyze 까지 그대로라 그 사이 행 수 조건이 늦게 걸린다
 #     (마지막 보관 ok 48시간 조건은 그대로 선다). 이 지연은 받아들인다.
 #   - 마지막 보관 ok 는 batch_run(밤마다 몇 줄 쌓이는 작은 표)의 max(finished_at) 다.
@@ -17,7 +18,8 @@
 #     실패하면 종료 코드가 0 이 아니고 파일이 바뀌지 않아 러너 쪽에서 묵어 막힘(fail closed)이 된다. 읽은 뒤에는
 #     log_min_messages 를 되돌려 종료 줄이 평소대로 남게 한다(실패한 경우만 종료 줄이 빠진다).
 #   - 서버 로그에 남는 것은 log_connections, log_disconnections 의 접속 두 줄과 종료 한 줄(postgres@<DB>, 로컬 소켓)이
-#     30분마다(하루 48묶음)다. journal 에는 타이머 서비스의 시작, 끝 줄이 같은 주기로 남는다.
+#     30분마다(하루 48묶음)다. journal 에는 타이머 서비스의 시작, 끝 줄이, auth 시설에는 runuser 의 PAM 세션 열림,
+#     닫힘 두 줄이 같은 주기로 남아 syslog 로 전달된다(하루 96줄).
 #   - superuser 가 아닌 계정(앱 계정 등)은 log_lock_waits 를 세션에서 바꿀 수 없다(permission denied, PostgreSQL 16
 #     로컬 시험). 그래서 이 읽기는 postgres 로 돈다. 그렇지 않더라도 lock_timeout 이 deadlock_timeout 보다 짧아 대기 줄은 안 생긴다.
 set -eu
@@ -43,6 +45,8 @@ SQL
 )
 mkdir -p "$out_dir"
 tmp=$(mktemp "$out_dir/.last.XXXXXX")
-printf '{"host":"%s","at":"%s","db":%s}\n' "$host" "$at" "$body" >"$tmp"
+# 녹화 막기 행 수 문턱은 설치 때 부하 설정에서 계산해 넣은 값이다(상한 + 설계 하루 쓰기 x 2.5, 설계 §6-4).
+printf '{"host":"%s","at":"%s","db":%s,"rows_limit":{"limit":{{rows_limit}},"keep_rows":{{rows_limit_keep_rows}},"design_daily_writes":{{rows_limit_daily_writes}},"days":{{rows_limit_days}}}}\n' \
+    "$host" "$at" "$body" >"$tmp"
 chmod 0644 "$tmp"
 mv -f "$tmp" "$out_dir/last.json"

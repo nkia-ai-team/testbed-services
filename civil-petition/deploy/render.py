@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / "tools"))
+import design_load  # noqa: E402  (설계 부하에서 읽어 계산하는 값, tools/design_load.py)
 TEMPLATES = HERE / "templates"
 
 PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
@@ -325,6 +327,13 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         "db_user": app["db_user"],
         "netplan_ethernets": _netplan(host, inventory),
     }
+    if host["role"] == "db":
+        # 녹화 막기 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5)은 부하 설정에서 읽어 계산한다(설계 §6-4, 검토 세션 Q24 답).
+        limit = design_load.rows_limit()
+        context["rows_limit"] = str(limit["limit"])
+        context["rows_limit_keep_rows"] = str(limit["keep_rows"])
+        context["rows_limit_daily_writes"] = str(limit["design_daily_writes"])
+        context["rows_limit_days"] = str(limit["days"])
     biz_nics = [nic for nic in host["nics"] if nic["net"] != management]
     lldp_ifaces = ",".join(nic["ifname"] for nic in biz_nics)
     context["lldpd_args"] = ("-x " if host["role"] == "router" else "") + f"-I {lldp_ifaces}"
