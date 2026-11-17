@@ -261,6 +261,50 @@ class LeakscanEmptyCase(unittest.TestCase):
             self.assertEqual(_scan(_case(Path(raw), ["mysqld"])).returncode, 0)
 
 
+class LeakscanNamedFiles(unittest.TestCase):
+    """--files: 캡처가 녹화본에 담길 설정과 계획 파일을 미리 본다(2026-11-17 v4 CAPFIX3)."""
+
+    def run_files(self, *paths: Path, extra: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(LEAKSCAN), *extra, "--files", *map(str, paths)],
+                              capture_output=True, text=True, timeout=60)
+
+    def test_named_files_are_scanned_without_the_case_skip_list(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            clean = root / "pg-scope.json"
+            clean.write_text(json.dumps({"excluded_schemas": {"security": "첫 v4 캡처가 권한 오류로 실패"}}))
+            done = self.run_files(clean)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertIn("files     : ", done.stdout)
+            # 케이스 폴더에서는 건너뛰는 이름(meta.json)과 확장자(.tsv)도, 이름을 주면 본다.
+            for name in ("meta.json", "restore.sql", "tables.tsv", "plan"):
+                with self.subTest(name):
+                    leaky = root / name
+                    leaky.write_text("note: 2026-11-13 G2 F49-H 캡처가 실패\n")
+                    done = self.run_files(clean, leaky, extra=("--json",))
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    report = json.loads(done.stdout)
+                    self.assertEqual(report["hits"], {"scenario_id": {"F49-H": 1}})
+                    self.assertEqual(report["files_scanned"], 2)
+                    self.assertEqual(report["columns"], {"scenario_id": [name]})
+
+    def test_a_missing_file_or_a_mixed_call_is_not_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "ok.json").write_text("{}")
+            for missing in ("gone.json", "gone.tsv", "gone.csv"):
+                with self.subTest(missing):
+                    done = self.run_files(root / "ok.json", root / missing)
+                    self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            done = self.run_files(root)  # 폴더는 파일이 아니다
+            self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            both = subprocess.run([sys.executable, str(LEAKSCAN), str(root), "--files", str(root / "ok.json")],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(both.returncode, 2)
+            neither = subprocess.run([sys.executable, str(LEAKSCAN)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(neither.returncode, 2)
+
+
 class LeakscanTextFiles(unittest.TestCase):
     def test_text_scan_counts_what_a_line_by_line_scan_counts_across_block_edges(self) -> None:
         import collections

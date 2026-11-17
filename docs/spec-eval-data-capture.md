@@ -438,6 +438,15 @@ v3 캡처는 ClickHouse 표를 이름으로 골라 담았다. 새 수집이 만�
     없으면 덤프 전체가 실패한다. 빼는 것은 `meta.postgres_scope.excluded`(이름, 종류, 이유, 사람 확인 여부)에 남고,
     녹화 전 점검은 `excluded_schemas`, `excluded_relations` 에 이유가 없는 것과 빠지는 것에 기대는 객체를 막는다.
     복원한 PG 에는 뺀 스키마와 표가 없고, 현재값을 뺀 시퀀스는 시작값부터 센다.
+  - 설정 문구(2026-11-17 v4 CAPFIX3): `pg-scope.json` 의 이유와 note(빼는 것, 비밀 계열, 가림, snap 이유)는
+    `data/catalog/postgres-scope-plan.json` 과 `meta.postgres_scope` 로 그대로 옮겨진다. 그래서 `pg-scope.json`,
+    `ch-scope.json` 의 문구(밑줄 키 주석 포함)에 시나리오 id, 케이스 이름, 실행 id 를 쓰지 않고 일반 서술로 적는다.
+    근거가 된 녹화는 이 문서와 커밋 메시지에 남긴다. 계기: 2026-11-13 security 제외 note 에 그 캡처의 시나리오 id 를
+    적었고, 그 문구가 G2 녹화본 `case-f49-h-v4-3af6c70e` 의 계획 파일에 실려 leakscan 이 LEAK 1건으로 거절했다
+    (questions Q26). 캡처는 leakscan 과 같은 패턴(`leakscan.py --files`)으로 두 설정을 큐 시작 전(`--self-check`)과
+    캡처 시작 때(기다림, 내보내기 전) 보고, 계획 파일과 `restore.sql` 을 pg_dump 전에 본다. 걸리면 멈춘다. 계획 파일은
+    평가 복원(eval-incident-rca restore.sh, 러너, 제품)이 읽지 않는 캡처 기록이지만 leakscan 은 녹화본 안의 json 을
+    모두 보므로 같은 기준으로 깨끗해야 한다.
   - 비밀 계열 표(2026-11-16 사용자 결정, v4 녹화부터): public 안의 인증, 키, 자격증명, 봉인 키 계열 표는 행을 담지
     않고 스키마만 남긴다(복원하면 빈 표). 목록은 `pg-scope.json` `secret_tables` 한 곳이고 표마다 근거(그 표의 비밀
     열 이름과 타입)를 적는다. `secret_detect` 꼴(표 이름, 또는 문자열, bytea, json 타입 열의 이름. key, secret, otp,

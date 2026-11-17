@@ -26,6 +26,7 @@ def _load(name: str, file: str):
 pg = _load("pg_scope_export", "pg-scope-export.py")
 tsc = _load("threshold_slice_check", "threshold-slice-check.py")
 ch = _load("ch_scope_plan", "ch-scope-plan.py")
+leakscan = _load("leakscan", "leakscan.py")
 PG_CFG = pg.load(ROOT / "pg-scope.json")
 CH_CFG = ch.load(ROOT / "ch-scope.json")
 V3_CH = ["otel_traces_local", "lucida_logs_local", "lucida_events_local", "dpm_session_local",
@@ -595,6 +596,82 @@ class PgAccessTest(unittest.TestCase):
                 self.assertTrue(isinstance(why, str) and len(why) > 10, (k, name))
         self.assertIn("public", PG_CFG["capture_schemas"])
         self.assertFalse(set(PG_CFG["capture_schemas"]) & set(PG_CFG["excluded_schemas"]))
+
+
+def leak_hits(text: str) -> dict[str, list[str]]:
+    """leakscan.py 가 녹화본 게이트에서 쓰는 패턴 그대로. {패턴 이름: 걸린 문자열}."""
+    hits = {}
+    for name, pat in leakscan.PATTERNS.items():
+        found = pat.findall(text)
+        if found:
+            hits[name] = found
+    return hits
+
+
+def config_strings(node, path="$"):
+    """설정의 모든 키와 문자열 값(경로와 함께). 계획기가 어느 칸을 녹화본에 옮기는지와 무관하게 전부 본다."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield f"{path}.{k}", k
+            yield from config_strings(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from config_strings(v, f"{path}[{i}]")
+    elif isinstance(node, str):
+        yield path, node
+
+
+class ScopeConfigLeakTest(unittest.TestCase):
+    """계획기 설정 문구는 녹화본으로 옮겨진다(2026-11-17 v4 CAPFIX3).
+
+    pg-scope.json 의 security 제외 note 에 시나리오 id 가 적혀 있었고, 그 문구가 data/catalog/postgres-scope-plan.json
+    (excluded[].note)과 meta.postgres_scope 로 그대로 실려 leakscan 이 그 녹화를 거절했다. 설정 전체를 leakscan 의
+    패턴으로 막고, 그 문구가 실제로 계획 파일에 옮겨지는 길을 함께 확인한다. 캡처 쪽 검사는
+    scripts/test-capture-eval-case.sh (j).
+    """
+
+    def test_scope_configs_carry_no_answer_clue(self):
+        for file in ("pg-scope.json", "ch-scope.json"):
+            raw = (ROOT / file).read_text()
+            with self.subTest(file):
+                self.assertEqual(leak_hits(raw), {}, file)
+                bad = [(where, s) for where, s in config_strings(json.loads(raw)) if leak_hits(s)]
+                self.assertEqual(bad, [], file)
+
+    def test_the_patterns_are_the_gate_s_own_and_catch_the_g2_wording(self):
+        """옛 문구(origin/main 의 security note)는 걸리고, 소문자 케이스 이름도 걸린다."""
+        old = "녹화 대상이 아니다(2026-11-13 G2 F49-H 캡처가 이 스키마의 권한 오류로 실패)"
+        self.assertEqual(leak_hits(old), {"scenario_id": ["F49-H"]})
+        self.assertEqual(leak_hits("v3 case-f72-r-v3-bf50d2b7 을 복원"), {"scenario_id": ["f72-r"]})
+        self.assertEqual(leak_hits(PG_CFG["excluded_schemas"]["security"]), {})
+
+    def plan_119(self, cfg):
+        return pg.plan_scope(cfg, pg_catalog(PgAccessTest.TABLES_119, schemas=PgAccessTest.SCHEMAS_119,
+                                             denied=PgAccessTest.DENIED_119, deps=PgAccessTest.DEPS_119))
+
+    def outputs(self, cfg, plan):
+        """녹화본과 meta 에 남는 계획기 출력(plan-json 파일, meta 요약, restore.sql)과 덤프 인자, 내보내기 SQL."""
+        return {
+            "plan-json": json.dumps(plan, ensure_ascii=False),
+            "plan-summary": json.dumps(pg.plan_summary(plan, cfg), ensure_ascii=False),
+            "restore-sql": pg.emit_restore_sql(cfg, plan),
+            "export-sql": pg.emit_export_sql(cfg, "/out/postgres", plan),
+            "exclude-args": pg.emit_exclude_args(cfg, plan),
+        }
+
+    def test_config_wording_is_carried_into_the_plan_files(self):
+        plan = self.plan_119(PG_CFG)
+        notes = {e["object"]: e["note"] for e in plan["excluded"]}
+        self.assertEqual(notes["security"], PG_CFG["excluded_schemas"]["security"])
+        for name, text in self.outputs(PG_CFG, plan).items():
+            with self.subTest(name):
+                self.assertEqual(leak_hits(text), {}, name)
+        # 설정 문구 하나에 id 를 넣으면 계획 파일과 meta 요약에 그대로 실린다(이 시험이 막는 길).
+        leaky = copy.deepcopy(PG_CFG)
+        leaky["excluded_schemas"]["security"] += " (F49-H 캡처에서 실측)"
+        out = self.outputs(leaky, self.plan_119(leaky))
+        self.assertEqual(leak_hits(out["plan-json"]), {"scenario_id": ["F49-H"]})
+        self.assertEqual(leak_hits(out["plan-summary"]), {"scenario_id": ["F49-H"]})
 
 
 class PgSecretTest(unittest.TestCase):

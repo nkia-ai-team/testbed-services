@@ -117,6 +117,37 @@ pg_tool_major_check() {
   fi
 }
 
+# 계획기(pg-scope-export.py, ch-scope-plan.py)를 찾는다. 정본 배치는 scripts/scenarios/, 러너 컨테이너에서는
+# /opt/lucida/scenario-contracts/ 다(아래 PG 단계 주석). 덮어쓰기 값이 있으면 그대로. 못 찾으면 빈 줄.
+scope_tool_path() {
+  local tool=$1 override=$2 base candidate
+  if [[ -n "$override" ]]; then printf '%s\n' "$override"; return 0; fi
+  base="$(dirname "$(realpath "$0")")"
+  for candidate in "$base/scenarios/$tool" "$base/scenario-contracts/$tool"; do
+    [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  done
+  printf '\n'
+}
+
+# 녹화본에 담기는 파일에 정답 단서가 없는지 leakscan.py 와 같은 패턴으로 본다(2026-11-17 v4 CAPFIX3).
+# 계획기 설정(pg-scope.json, ch-scope.json)의 이유와 note 문구는 data/catalog/postgres-scope-plan.json 과
+# meta 로 그대로 옮겨진다. security 스키마 note 에 적힌 시나리오 id 가 이 길로 녹화본에 실려 leakscan 이 그
+# 녹화를 거절한 일이 있었다. 인자가 없으면 두 설정을, 있으면 그 파일들을 본다. leakscan.py 는 pg-scope-export.py
+# 옆의 것(녹화본 게이트와 같은 판). 못 찾거나 못 읽으면 통과가 아니다. 출력은 leakscan 의 결과.
+scope_leak_check() {
+  local pg_tool ch_tool leakscan files=("$@")
+  pg_tool=$(scope_tool_path pg-scope-export.py "${PG_SCOPE_TOOL:-}")
+  [[ -n "$pg_tool" && -f "$pg_tool" ]] || { printf 'pg-scope-export.py 없음\n'; return 2; }
+  leakscan="$(dirname "$pg_tool")/leakscan.py"
+  [[ -f "$leakscan" ]] || { printf 'leakscan.py 없음: %s\n' "$leakscan"; return 2; }
+  if (( ${#files[@]} == 0 )); then
+    files=("$(dirname "$pg_tool")/pg-scope.json")
+    ch_tool=$(scope_tool_path ch-scope-plan.py "${CH_SCOPE_TOOL:-}")
+    [[ -n "$ch_tool" && -f "$ch_tool" ]] && files+=("$(dirname "$ch_tool")/ch-scope.json")
+  fi
+  python3 "$leakscan" --files "${files[@]}" 2>&1
+}
+
 iso_utc_from_epoch() {
   date -u -d "@$1" +'%Y-%m-%dT%H:%M:%SZ'
 }
@@ -291,6 +322,14 @@ if [[ "$self_check" == true ]]; then
     sc_run "scope tool present ($sc_tool)" bash -c \
       "test -f '$sc_override' || test -f '$sc_scope_base/scenarios/$sc_tool' || test -f '$sc_scope_base/scenario-contracts/$sc_tool'"
   done
+  # 녹화본에 담기는 계획기 설정 문구에 정답 단서가 없다(2026-11-17 v4 CAPFIX3, scope_leak_check). 큐 시작 전에 막고
+  # 걸린 문구를 보인다.
+  if sc_leak=$(scope_leak_check); then
+    log 'self-check ok: scope config holds no answer clues (pg-scope.json, ch-scope.json)'
+  else
+    sc_fail 'scope config holds answer clues or cannot be checked (pg-scope.json, ch-scope.json)'
+    printf '%s\n' "$sc_leak" >&2
+  fi
   sc_run "output root writable ($output_root)" bash -c "mkdir -p '$output_root' && touch '$output_root/.self-check' && rm -f '$output_root/.self-check'"
   if [[ -n "${ARCHIVE_SSH_TARGET:-}" ]]; then
     sc_run "archive ssh (${ARCHIVE_SSH_TARGET})" \
@@ -826,6 +865,10 @@ QUERY_API_PASSWORD="${QUERY_API_PASSWORD:-}"
 
 [[ -n "$PG_PASSWORD" ]] || die 'PG_PASSWORD is required for live capture'
 [[ -n "$QUERY_API_PASSWORD" ]] || die 'QUERY_API_PASSWORD is required for the topology snapshot'
+# 계획기 설정 문구가 녹화본에 실린다(2026-11-17 v4 CAPFIX3, scope_leak_check). 기다림과 내보내기 전에 멈춘다.
+# 고칠 것은 설정의 문구다(시나리오 id, 케이스 이름 없이 일반 서술로, 근거 사례는 문서와 커밋에).
+scope_leak=$(scope_leak_check) ||
+  die "scope config would put answer clues into the case (pg-scope.json, ch-scope.json):"$'\n'"$scope_leak"
 [[ ! -e "$final_dir" ]] || die "case already exists and is immutable: $final_dir"
 mkdir -p "$output_root"
 [[ -w "$output_root" ]] || die "output root is not writable: $output_root"
@@ -1228,6 +1271,10 @@ pg_masked_list=$("${pg_scope[@]}" --emit masked-tables)
 pg_scope_excl=$("${pg_scope[@]}" --emit exclude-args | tr '\n' ' ')
 "${pg_scope[@]}" --emit export-sql --out-dir /out/postgres > "$staging_dir/data/postgres/.export.sql"
 "${pg_scope[@]}" --emit restore-sql > "$staging_dir/data/postgres/restore.sql"
+# 녹화본에 남는 계획 파일 둘을 덤프 전에 본다(2026-11-17 v4 CAPFIX3). 설정은 위에서 봤으니 여기서 걸리면 원천
+# 카탈로그(표, 스키마 이름)에서 온 것이다. leakscan 이 이 녹화를 어차피 거절하므로 덤프에 시간을 쓰지 않는다.
+scope_leak=$(scope_leak_check "$staging_dir/data/catalog/postgres-scope-plan.json" "$staging_dir/data/postgres/restore.sql") ||
+  die "PostgreSQL scope plan would put answer clues into the case:"$'\n'"$scope_leak"
 # TCP keepalives + a hard timeout on the cross-network (109->119 AP bridge)
 # pg_dump. Without keepalives an idle COPY period lets the bridge/NAT reap the
 # connection and pg_dump blocks forever in poll() (2026-07-25 production run:

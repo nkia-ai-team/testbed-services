@@ -890,7 +890,7 @@ if grep -qF -- 'polestar_notification' <<<"$dump_line"; then fail 'listed schema
 if grep -qF -- '--exclude-table-data=public.locked_by_owner' <<<"$dump_line"; then fail 'unreadable table only had its data excluded'; fi
 jq -e '.postgres_scope.excluded == [
     {object:"security",kind:"schema",reason:"no_usage",acknowledged:true,
-     note:"비밀번호 회전 기록(password_rotation_ledger). 소유 postgres, 캡처 사용자에게 USAGE 가 없고 녹화 대상이 아니다(2026-11-13 G2 F49-H 캡처가 이 스키마의 권한 오류로 실패)"},
+     note:"비밀번호 회전 기록(password_rotation_ledger). 소유 postgres, 캡처 사용자에게 USAGE 가 없고 녹화 대상이 아니다(2026-11-13 첫 v4 캡처가 이 스키마의 권한 오류로 실패)"},
     {object:"inputs_seq_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null},
     {object:"locked_by_owner",kind:"table",relkind:"r",reason:"no_select",acknowledged:false,note:null},
     {object:"locked_seq",kind:"sequence_data",relkind:"S",reason:"no_select",acknowledged:false,note:null},
@@ -966,5 +966,58 @@ run_live case-live-v4-pg16-on-16 PG_DUMP_IMAGE=fake-pg16 FAKE_PG_SERVER_NUM=1600
 [[ "$(grep -c 'QUERY_API_URL="${QUERY_API_URL:-http://192.168.230.119:13080}"' "$CAPTURE")" == 2 ]] ||
   fail 'QUERY_API_URL default is not the 119 web gateway in both places'
 if grep -q '192.168.230.119:18080' "$CAPTURE"; then fail 'capture still defaults to the closed 119:18080'; fi
+
+# (j) 계획기 설정 문구와 계획 파일에 정답 단서가 있으면 녹화하지 않는다(2026-11-17 v4 CAPFIX3). pg-scope.json 의
+# security note 에 적힌 시나리오 id 가 data/catalog/postgres-scope-plan.json 으로 녹화본에 실려 leakscan 이 그 녹화를
+# 거절했다. 패턴은 leakscan.py 의 것. 설정은 큐 시작 전(self-check)과 기다림, 내보내기 전에, 원천 카탈로그에서 온
+# 것은 pg_dump 전에 막는다.
+leaky_tools="$live_root/leaky-scenarios"
+mkdir -p "$leaky_tools"
+for f in pg-scope-export.py pg-scope.json ch-scope-plan.py ch-scope.json leakscan.py; do
+  cp "$SCRIPT_DIR/scenarios/$f" "$leaky_tools/$f"
+done
+jq '.excluded_schemas.security += " (F49-H 캡처에서 실측)"' "$SCRIPT_DIR/scenarios/pg-scope.json" >"$leaky_tools/pg-scope.json"
+leaky_env=(PG_SCOPE_TOOL="$leaky_tools/pg-scope-export.py" CH_SCOPE_TOOL="$leaky_tools/ch-scope-plan.py")
+python3 "$SCRIPT_DIR/scenarios/leakscan.py" --files "$SCRIPT_DIR/scenarios/pg-scope.json" "$SCRIPT_DIR/scenarios/ch-scope.json" \
+  >/dev/null || fail 'the repository scope configs carry an answer clue'
+: >"$FAKE_LOG"
+if run_live case-live-v4-leaky-config "${leaky_env[@]}"; then fail 'capture ran with a scenario id in pg-scope.json'; fi
+grep -q 'scope config would put answer clues into the case' "$live_root/case-live-v4-leaky-config.err" ||
+  fail 'no clear message for a scenario id in the scope config'
+grep -qF "'F49-H'" "$live_root/case-live-v4-leaky-config.err" || fail 'the leaked id is not shown'
+[[ ! -s "$FAKE_LOG" ]] || fail 'capture reached ClickHouse, PostgreSQL or the model before refusing the config'
+[[ ! -e "$live_root/cases/case-live-v4-leaky-config" ]] || fail 'a case was published with a leaky scope config'
+# 같은 판정을 큐 시작 전 self-check 가 낸다(다른 점검의 성패와 따로 본다).
+run_self_check() {
+  env PATH="$fakebin:$PATH" FAKE_FIX="$fix" FAKE_LOG="$FAKE_LOG" \
+    VM_URL=http://fake-vm CH_URL=http://fake-ch CH_USER=lucida CH_PASSWORD=pw \
+    PG_PASSWORD=pw PG_DUMP_IMAGE=fake-pg QUERY_API_URL=http://fake-api QUERY_API_PASSWORD=pw "$@" \
+    "$CAPTURE" --self-check --output-root "$live_root/cases"
+}
+run_self_check >"$live_root/self-check.out" 2>"$live_root/self-check.err" || true
+grep -q 'self-check ok: scope config holds no answer clues' "$live_root/self-check.out" ||
+  fail 'self-check did not pass the repository scope configs'
+if run_self_check "${leaky_env[@]}" >"$live_root/self-check-leaky.out" 2>"$live_root/self-check-leaky.err"; then
+  fail 'self-check passed a scenario id in pg-scope.json'
+fi
+grep -q 'self-check FAILED: scope config holds answer clues' "$live_root/self-check-leaky.err" ||
+  fail 'self-check did not name the leaky scope config'
+grep -qF "'F49-H'" "$live_root/self-check-leaky.err" || fail 'self-check did not show the leaked id'
+# leakscan.py 를 못 찾으면 통과가 아니다.
+rm "$leaky_tools/leakscan.py"
+cp "$SCRIPT_DIR/scenarios/pg-scope.json" "$leaky_tools/pg-scope.json"
+if run_live case-live-v4-no-leakscan "${leaky_env[@]}"; then fail 'capture ran without leakscan.py next to the planner'; fi
+grep -q 'leakscan.py 없음' "$live_root/case-live-v4-no-leakscan.err" || fail 'no clear message for a missing leakscan.py'
+# 원천 카탈로그에서 온 단서(표 이름)는 계획 파일 검사가 pg_dump 전에 막는다.
+leaky_fix="$live_root/fixtures-leaky"
+cp -r "$fix" "$leaky_fix"
+printf '%s\n' $'public\tf49-h_scratch\tr\t8192\t1\t1\t0' >>"$leaky_fix/pg/tables.tsv"
+: >"$FAKE_LOG"
+if run_live case-live-v4-leaky-catalog FAKE_FIX="$leaky_fix"; then fail 'capture dumped a plan that names a scenario id'; fi
+grep -q 'PostgreSQL scope plan would put answer clues into the case' "$live_root/case-live-v4-leaky-catalog.err" ||
+  fail 'no clear message for a scenario id coming from the source catalog'
+grep -qF "'f49-h'" "$live_root/case-live-v4-leaky-catalog.err" || fail 'the catalog-borne id is not shown'
+if grep -q 'pg_dump -Fc' "$FAKE_LOG"; then fail 'pg_dump ran despite a leaky plan'; fi
+[[ ! -e "$live_root/cases/case-live-v4-leaky-catalog" ]] || fail 'a case was published with a leaky plan'
 
 printf '[PASS] capture policy dry-run tests\n'

@@ -35,6 +35,8 @@ topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품
 사용:
   python3 leakscan.py <case_dir>                 # 케이스 전체(parquet + csv + 텍스트)
   python3 leakscan.py --own F01-R <case_dir>     # 자기 시나리오를 표시
+  python3 leakscan.py --files a.json b.sql       # 파일 몇 개만(건너뛰는 목록 없이). 캡처가 녹화본에 담길
+                                                 # 설정과 계획 파일을 미리 본다(2026-11-17 v4 CAPFIX3)
   echo $?                                        # 0 = 합격, 1 = 누설, 2 = 읽기 실패 또는 읽은 파일 없음
 """
 from __future__ import annotations
@@ -209,58 +211,88 @@ def scan_csv(path: Path, found, cols, samples) -> None:
                     _hit(cell, found, cols, samples, path.name)
 
 
+TEXT_SUFFIXES = {".json", ".jsonl", ".export", ".sql", ".txt"}
+
+
+def _scan_file(path: Path, found, cols, samples, *, text_default: bool) -> bool:
+    """확장자로 읽는 법을 고른다. 모르는 확장자는 text_default 면 텍스트로 읽고, 아니면 False(건너뜀)."""
+    if path.suffix == ".parquet":
+        scan_parquet(path, found, cols, samples)
+    elif path.suffix == ".csv":
+        scan_csv(path, found, cols, samples)
+    elif path.suffix in TEXT_SUFFIXES or text_default:
+        if not path.is_file():
+            raise FileNotFoundError(f"파일이 아니다: {path}")
+        scan_text(path, found, cols, samples)
+    else:
+        return False
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("case_dir", type=Path)
+    ap.add_argument("case_dir", type=Path, nargs="?")
+    ap.add_argument("--files", type=Path, nargs="+", metavar="FILE",
+                    help="케이스 폴더 대신 이 파일들만 본다(건너뛰는 목록 없음, 확장자 밖의 파일은 텍스트로)")
     ap.add_argument("--own", default=None, help="케이스 자신의 시나리오 id")
     ap.add_argument("--json", action="store_true", help="결과를 JSON 으로 출력")
     args = ap.parse_args()
-
-    root = args.case_dir
-    # 새 레이아웃이면 input/ 만, 옛 레이아웃이면 정답 파일을 빼고 본다.
-    scope = root / "input" if (root / "input").is_dir() else root
-    skip = {"golden.json", "scenario.md", "causality-audit.json", "meta.json"}
-    # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
-    # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,
-    # data/postgres(.dump, csv), data/victoriametrics.export 만 제품에 넣고 topology/ 는 읽지 않는다
-    # (2026-11-12 v4 LEAK 2회차 확인). 제품 입력이 아닌 캡처 메타라 보지 않는다. 같은 폴더의 graph/,
-    # service-tree/ 스냅샷은 제품 API 응답이라 계속 본다.
-    skip_paths = {("topology", "manifest.json")}
+    if (args.case_dir is None) == (args.files is None):
+        ap.error("case_dir 와 --files 가운데 하나만 준다")
 
     found = {k: collections.Counter() for k in PATTERNS}
     cols: dict[str, set[str]] = collections.defaultdict(set)
     samples: dict[tuple[str, str], str] = {}
     scanned = 0
 
-    for path in sorted(scope.rglob("*")):
-        if not path.is_file() or path.name in skip or "answer" in path.parts:
-            continue
-        if (path.parent.name, path.name) in skip_paths:
-            continue
-        try:
-            if path.suffix == ".parquet":
-                scan_parquet(path, found, cols, samples)
-            elif path.suffix == ".csv":
-                scan_csv(path, found, cols, samples)
-            elif path.suffix in {".json", ".jsonl", ".export", ".sql", ".txt"}:
-                scan_text(path, found, cols, samples)
-            else:
-                continue
+    if args.files is not None:
+        # 녹화본에 담길 파일을 캡처가 미리 본다(2026-11-17 v4 CAPFIX3). pg-scope.json 의 note 가
+        # data/catalog/postgres-scope-plan.json 으로 그대로 옮겨져 시나리오 id 가 녹화본에 실린 일이 있었다.
+        # 하나라도 못 읽으면 합격이 아니다.
+        label = " ".join(str(f) for f in args.files)
+        for path in args.files:
+            try:
+                _scan_file(path, found, cols, samples, text_default=True)
+            except Exception as exc:
+                print(f"[ERROR] {path}: {exc}", file=sys.stderr)
+                return 2
             scanned += 1
-        except Exception as exc:  # 읽기 실패를 합격으로 넘기지 않는다
-            print(f"[ERROR] {path}: {exc}", file=sys.stderr)
-            return 2
+    else:
+        root = args.case_dir
+        label = str(root)
+        # 새 레이아웃이면 input/ 만, 옛 레이아웃이면 정답 파일을 빼고 본다.
+        scope = root / "input" if (root / "input").is_dir() else root
+        skip = {"golden.json", "scenario.md", "causality-audit.json", "meta.json"}
+        # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
+        # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,
+        # data/postgres(.dump, csv), data/victoriametrics.export 만 제품에 넣고 topology/ 는 읽지 않는다
+        # (2026-11-12 v4 LEAK 2회차 확인). 제품 입력이 아닌 캡처 메타라 보지 않는다. 같은 폴더의 graph/,
+        # service-tree/ 스냅샷은 제품 API 응답이라 계속 본다.
+        skip_paths = {("topology", "manifest.json")}
+
+        for path in sorted(scope.rglob("*")):
+            if not path.is_file() or path.name in skip or "answer" in path.parts:
+                continue
+            if (path.parent.name, path.name) in skip_paths:
+                continue
+            try:
+                if not _scan_file(path, found, cols, samples, text_default=False):
+                    continue
+                scanned += 1
+            except Exception as exc:  # 읽기 실패를 합격으로 넘기지 않는다
+                print(f"[ERROR] {path}: {exc}", file=sys.stderr)
+                return 2
 
     # 읽은 파일이 없으면 합격이 아니다(빈 녹화 폴더, 잘못된 경로). 2026-11-12 전에는 clean, rc 0 이었다.
     if scanned == 0:
-        print(f"[ERROR] {root}: 읽은 파일이 없다(parquet, csv, json, jsonl, export, sql, txt)", file=sys.stderr)
+        print(f"[ERROR] {label}: 읽은 파일이 없다(parquet, csv, json, jsonl, export, sql, txt)", file=sys.stderr)
         return 2
     total = sum(sum(c.values()) for c in found.values())
     if args.json:
         print(
             json.dumps(
                 {
-                    "case": str(root),
+                    "case" if args.files is None else "files": label,
                     "files_scanned": scanned,
                     "verdict": "clean" if total == 0 else "leak",
                     "hits": {k: dict(v) for k, v in found.items() if v},
@@ -272,7 +304,7 @@ def main() -> int:
         )
         return 0 if total == 0 else 1
 
-    print(f"case      : {root}")
+    print(f"case      : {label}" if args.files is None else f"files     : {label}")
     print(f"scanned   : {scanned} files")
     if total == 0:
         print("verdict   : clean — 누설 0건")
