@@ -140,3 +140,31 @@ nic_named_problem() {
     extra=$(nic_leftover)
     [[ -z "$extra" ]] || echo "인벤토리에 없는 물리 NIC $(tr '\n' ' ' <<<"$extra")"
 }
+
+# NIC 이름에 기대는 단계(firewall, lldpd, router)의 첫 줄. 이름이 인벤토리와 다르면 아무것도 바꾸지 않고 멈춘다.
+# eth 이름 위에서 이 단계들이 돌면 라우터 보호 표가 66 → 관리 SSH 를 영구히 막고(부팅 때도 올라옴), 서버 보호 표는
+# 관리 NIC 에 걸리지 않아 보호가 조용히 사라진다.
+require_inventory_names() {
+    local problem
+    problem=$(nic_named_problem)
+    [[ -z "$problem" ]] || fail "NIC 이름이 인벤토리와 다름(network 단계를 먼저): $(paste -sd, - <<<"$problem")"
+}
+
+# 망 전환 되돌림(netplan-rollback 타이머와 서비스)의 상태를 한 낱말로 낸다.
+#   pending  타이머가 기다리는 중(아직 발화 안 함)
+#   running  되돌림 서비스가 도는 중
+#   failed   되돌림 서비스가 실패한 채 남음(사람이 journalctl 을 보고 reset-failed)
+#   clear    그 밖(없음, 또는 발화해 끝남. 발화한 일시 타이머는 elapsed 로 남는다)
+rollback_state() {
+    local timer service
+    timer=$(systemctl show -p SubState --value netplan-rollback.timer 2>/dev/null || true)
+    service=$(systemctl show -p ActiveState --value netplan-rollback.service 2>/dev/null || true)
+    case "$service" in
+        active|activating|deactivating|reloading|refreshing) echo running; return ;;
+        failed) echo failed; return ;;
+    esac
+    case "$timer" in
+        waiting|running) echo pending ;;
+        *) echo clear ;;
+    esac
+}

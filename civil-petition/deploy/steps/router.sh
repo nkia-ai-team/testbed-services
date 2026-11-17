@@ -1,4 +1,5 @@
 # SNMP 에이전트, ifOutDiscards 도우미, 링크 trap(설계 §4 rt-core01, §5 큐 버림 보고).
+require_inventory_names
 install -d -m 0755 /usr/local/lib/ifdiscards /etc/systemd/system/snmpd.service.d
 place_files router
 systemd-tmpfiles --create /etc/tmpfiles.d/ifdiscards.conf

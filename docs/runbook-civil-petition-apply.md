@@ -141,19 +141,20 @@ deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설�
 
 `network` 단계 순서:
 
+0. 앞 실행의 되돌림 타이머가 기다리는 중이거나 되돌림이 도는 중이거나 실패한 채면 아무것도 바꾸지 않고 멈춘다(실패면 `journalctl -u netplan-rollback` 을 보고 `systemctl reset-failed netplan-rollback.service`).
 1. 인벤토리 NIC 마다 지금 그 주소를 가진 장치의 MAC 을 `/var/lib/petition-deploy/nic-macs` 에 적는다. 이미 적힌 MAC 과 다르면 멈춘다.
 2. 지금 `/etc/netplan/*.yaml` 사본을 `/var/lib/petition-deploy/netplan-before/` 에 둔다. 처음 한 번은 cloud-init 설정을 `netplan-cloud-init/` 에도 남긴다.
 3. 되돌림 타이머 `netplan-rollback.timer` 를 건다(300초 뒤 `/usr/local/sbin/netplan-rollback` 이 사본으로 되돌리고 `netplan apply`).
 4. `/etc/netplan/01-host.yaml`(NIC 마다 `match: macaddress` 와 `set-name: ens18 ...`)을 놓고 `50-cloud-init.yaml` 을 지운 뒤 `netplan generate` 로 먼저 시험한다.
-5. `netplan apply` 를 세션과 떨어진 유닛 `netplan-switch` 로 돌린다. 이름이 바뀌는 NIC 는 netplan 이 잠깐 내렸다 올린다(관리 NIC 포함, 몇 초). 주소는 같아 SSH 세션은 보통 이어진다.
+5. `netplan apply` 를 세션과 떨어진 유닛 `netplan-switch` 로 돌린다(120초 넘으면 끊는다. 적용 120 + 확인 60 이 타이머 300 안에 들게). 이름이 바뀌는 NIC 는 netplan 이 잠깐 내렸다 올린다(관리 NIC 포함, 몇 초). 주소는 같아 SSH 세션은 보통 이어진다.
 6. 60초 안에 확인: NIC 마다 인벤토리 이름, 적어 둔 MAC, 인벤토리 주소. 인벤토리에 없는 물리 NIC 없음. 관리 NIC 에 기본 경로 없음. 관리 NIC 로 66 관리 주소(T 192.168.127.1, S 192.168.133.1)가 ARP 에 답함(66 은 VM 의 핑에 답하지 않으므로 이웃 표로 본다).
-7. 확인되면 타이머를 끈다(`network ok: eth0->ens18 ...` 줄). 확인이 안 되면 바로 사본으로 되돌리고 실패한다(`사본으로 되돌림`). 세션이 끊겨 6, 7 에 닿지 못하면 300초 뒤 타이머가 되돌린다. 어느 쪽이든 관리 접속은 cloud-init 설정(eth 이름)으로 돌아온다.
+7. 타이머가 아직 기다리는 중일 때만 끄고 확정한다(`network ok: eth0->ens18 ...` 줄). 그 사이 발화했으면 `network ok` 를 내지 않고 실패한다. 확인이 안 되면 바로 사본으로 되돌리고 실패한다(`사본으로 되돌림`). 세션이 끊겨 6, 7 에 닿지 못하면 300초 뒤 타이머가 되돌린다. 어느 쪽이든 관리 접속은 cloud-init 설정(eth 이름)으로 돌아온다.
 
 첫 서버는 망 단계까지만 먼저 돌리고 바깥에서 본다:
 
 ```
 deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리> --steps "verify-host os-base network"
-ssh -J root@192.168.200.66 sysop@192.168.127.10 'ip -br link; cat /var/lib/petition-deploy/nic-macs; systemctl is-active netplan-rollback.timer'
+ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition -J root@192.168.200.66 sysop@192.168.127.10 'ip -br link; cat /var/lib/petition-deploy/nic-macs; systemctl is-active netplan-rollback.timer'
 ```
 
 | 확인 | 기대 |
@@ -165,9 +166,13 @@ ssh -J root@192.168.200.66 sysop@192.168.127.10 'ip -br link; cat /var/lib/petit
 
 그다음 같은 서버를 단계 없이 다시 돌린다(망 단계는 다시 돌아도 이름을 바꾸지 않는다). 나머지 서버는 순서대로 그냥 돌린다.
 
+서버마다 MAC 대조: 66 에서 `plan.py --inventory .../t.json --phase nics` 출력을 `bash -s` 로 돌리면 `<호스트> <NIC 이름> <주소> <MAC>` 이 인벤토리 NIC 순서로 나온다(읽기만). 각 서버 설치 출력의 `nic <NIC 이름> = <장치> <MAC>` 줄과 같은 NIC 이름끼리 MAC 이 같아야 한다. VM 을 다시 만든 뒤에도 같은 대조를 한다.
+
+**NIC 이름에 기대는 단계(firewall, lldpd, router)는 첫 줄에서 이름을 본다.** 이름이 인벤토리와 다르면(network 앞, 또는 손으로 cloud-init 설정으로 되돌린 뒤) 아무것도 바꾸지 않고 `NIC 이름이 인벤토리와 다름(network 단계를 먼저)` 으로 멈춘다. eth 이름 위에서 이 단계들이 돌면 라우터 보호 표(`iifname != "ens22" ... drop`)가 66 → 관리 SSH 를 막고 nftables 는 부팅 때도 올라와 재부팅으로 풀리지 않는다. 서버 보호 표는 관리 NIC 에 걸리지 않아 보호가 조용히 사라진다. 그래서 `--steps` 로 부분만 돌릴 때도 이름이 바뀐 서버에서만 이 단계들을 돌린다.
+
 세션이 network 단계에서 끊겼으면: VM 을 재부팅하지 말고 5분 기다린 뒤 다시 접속한다(타이머가 cloud-init 설정으로 되돌렸다. 타이머는 일시 유닛이라 재부팅하면 사라진다). `journalctl -u netplan-switch -u netplan-rollback` 로 무엇이 있었는지 보고 `--steps "verify-host network"` 로 다시 돈다. 5분 뒤에도 닿지 않으면 66 에서 `qm reboot <vmid>`(디스크의 netplan 으로 부팅 때 망이 선다. 되돌림이 돌았으면 cloud-init 설정이다). 직렬 콘솔(`qm terminal`)은 있지만 운영자 계정에 비밀번호가 없어 로그인할 수 없다.
 
-손으로 cloud-init 설정까지 되돌리기: `cp -p /var/lib/petition-deploy/netplan-cloud-init/50-cloud-init.yaml /etc/netplan/ && rm -f /etc/netplan/01-host.yaml && netplan apply`(이름이 eth0 ~ 으로 돌아온다). cloud-init 은 꺼진 채 둔다.
+손으로 cloud-init 설정까지 되돌리기: **firewall 단계가 아직 돌지 않은 서버에서만** 한다. `cp -p /var/lib/petition-deploy/netplan-cloud-init/50-cloud-init.yaml /etc/netplan/ && rm -f /etc/netplan/01-host.yaml && netplan apply`(이름이 eth0 ~ 으로 돌아온다). cloud-init 은 꺼진 채 둔다. firewall 뒤라면 같은 세션에서 먼저 `nft delete table inet mgmtguard` 를 한 뒤에 되돌린다(라우터는 그러지 않으면 되돌리는 순간 관리 SSH 가 막힌다). 되돌린 뒤 다시 설치할 때는 `--steps "verify-host network"` 로 이름을 먼저 바꾸고 그다음 단계 없이 전체를 돌린다(firewall 이 보호 표를 다시 놓는다).
 
 S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같다(서버마다 NIC 둘, eth0, eth1 → ens18, ens19). S 를 T 뒤에 지을 때는 T 의 판 목록을 그대로 쓴다: T 각 서버의 `/var/lib/petition-deploy/packages.txt` 를 모아 `--package-versions` 로 준다(쌍 조건 2, S 문서 §2-4).
 
@@ -289,3 +294,4 @@ sudo systemctl start loadgen.service
 - 2026-11-17 KST, v4 T2C 7회차(Q23): 부하기 담당자 처리 11%, 통계 화면 6%, 시드의 열린 건 0.15%(처리 중 12.5%), `archive-sql-check.sh` 의 시드 기준을 그에 맞춤.
 - 2026-11-17 KST, v4 T2C 8회차(Q24): §8 평시 24시간에 밤 배치 처리 능력 판정과 `design_load.py`.
 - 2026-11-18 KST, v4 T2NIC(ag-t2nic): §5 NIC 이름(새 VM 은 eth0 ~ , cloud-init 의 set-name), §6-1 network 단계가 MAC 맞춤과 set-name 으로 인벤토리 이름(ens18 ~ )을 주는 순서, 되돌림 타이머, 확인과 세션이 끊겼을 때.
+- 2026-11-18 KST, v4 T2NIC 2회차(리뷰 rv-t2nic M1, M2, L1 ~ L3): §6-1 이름에 기대는 단계의 첫 줄 이름 확인과 그 제한, 손 되돌리기는 firewall 앞에서만과 되돌린 뒤 순서, 앞 되돌림이 남았을 때 멈춤, 적용 120초 상한과 확정 전 발화 확인, 서버마다 `plan.py --phase nics` 대조, 확인 ssh 의 known_hosts.

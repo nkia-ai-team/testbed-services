@@ -35,7 +35,7 @@ ip_forward_ok() {
 }
 # NIC 가 인벤토리 이름, network 단계가 적은 MAC, 인벤토리 주소를 가지고 남은 물리 NIC 가 없다(lib.sh).
 nic_names_ok() { [[ -z "$(nic_named_problem)" ]]; }
-no_rollback_pending() { ! systemctl is-active --quiet netplan-rollback.timer; }
+no_rollback_pending() { [[ "$(rollback_state)" == clear ]]; }
 no_dpm_traces() {
     ! grep -Eq "^[^#].*$MONITOR_ADDRESS" /etc/postgresql/16/main/pg_hba.conf \
         && ! runuser -u postgres -- psql -Atqc "select 1 from pg_roles where rolname ilike '%dpm%' or rolname ilike '%monitor%'" | grep -q 1

@@ -22,10 +22,22 @@ backup="$state/netplan-before"
 original="$state/netplan-cloud-init"
 : "${NET_ROLLBACK_SEC:=300}"
 : "${NET_SETTLE_SEC:=60}"
+# netplan apply 가 걸리면(안의 udevadm settle 은 최대 120초) 이 시간에 끊어, 적용과 확인이 타이머 안에 끝나게 한다.
+: "${NET_APPLY_MAX_SEC:=120}"
+(( NET_ROLLBACK_SEC >= NET_APPLY_MAX_SEC + NET_SETTLE_SEC + 60 )) \
+    || fail "NET_ROLLBACK_SEC($NET_ROLLBACK_SEC)는 적용 상한과 확인 시간의 합보다 60초 이상 길어야 함"
 
 grep -qs 'config: disabled' "$cloud_dir/cloud.cfg.d/99-disable-network-config.cfg" \
     || fail "cloud-init 망 설정이 꺼져 있지 않음(os-base 를 먼저)"
 [[ -e "$cloud_dir/cloud-init.disabled" ]] || fail "cloud-init 이 꺼져 있지 않음(os-base 를 먼저)"
+
+# 앞 실행의 되돌림이 기다리거나 돌거나 실패한 채면 아무것도 바꾸지 않고 멈춘다. 다시 돌리면 사본이 지금 상태로
+# 덮이고 기다리던 안전망이 꺼지기 때문이다.
+case "$(rollback_state)" in
+    pending) fail "앞 망 전환의 되돌림 타이머가 기다리는 중(NET_ROLLBACK_SEC 뒤 되돌림). 끝난 뒤 다시 돌린다" ;;
+    running) fail "앞 망 전환의 되돌림이 도는 중. 끝난 뒤 다시 돌린다" ;;
+    failed) fail "앞 망 전환의 되돌림이 실패한 채 남음. journalctl -u netplan-rollback 을 보고 systemctl reset-failed netplan-rollback.service 뒤 다시" ;;
+esac
 
 # NIC 를 인벤토리 주소로 찾아 MAC 을 적는다. 이미 적힌 MAC 과 다르면 멈춘다(NIC 가 바뀐 VM).
 install -d -m 0755 "$state"
@@ -51,14 +63,15 @@ if [[ ! -d "$original" && -e "$netplan_dir/50-cloud-init.yaml" ]]; then
     cp -p "$netplan_dir/50-cloud-init.yaml" "$original"/
 fi
 
-# 2. 되돌림 타이머. 앞 실행이 남긴 같은 이름 유닛은 먼저 치운다.
-systemctl stop netplan-rollback.timer netplan-rollback.service >/dev/null 2>&1 || true
-systemctl reset-failed netplan-rollback.timer netplan-rollback.service >/dev/null 2>&1 || true
+# 2. 되돌림 타이머. 앞에서 발화해 끝난 일시 타이머(elapsed)만 남아 있을 수 있어 그것을 치운다(위에서 기다림,
+#    돎, 실패가 아님을 확인했다).
+systemctl stop netplan-rollback.timer >/dev/null 2>&1 || true
 # 되돌림 스크립트는 타이머보다 먼저 있어야 한다. 묶음의 network 파일 중 그것만 먼저 놓는다.
 place_files network "$rollback_bin" || fail "되돌림 스크립트를 놓지 못함(아무것도 바꾸지 않음)"
 [[ -x "$rollback_bin" ]] || fail "묶음에 되돌림 스크립트 $rollback_bin 이 없음"
 systemd-run --quiet --unit=netplan-rollback --on-active="${NET_ROLLBACK_SEC}s" --timer-property=AccuracySec=1s \
     "$rollback_bin" || fail "되돌림 타이머를 걸지 못함(아무것도 바꾸지 않음)"
+armed_at=$SECONDS
 
 abort() {
     systemctl stop netplan-rollback.timer >/dev/null 2>&1 || true
@@ -76,7 +89,7 @@ netplan generate || abort "netplan generate 실패"
 
 # 4. 적용
 systemctl reset-failed netplan-switch.service >/dev/null 2>&1 || true
-systemd-run --quiet --wait --collect --unit=netplan-switch -p Type=oneshot netplan apply \
+systemd-run --quiet --wait --collect --unit=netplan-switch -p Type=oneshot -p RuntimeMaxSec="$NET_APPLY_MAX_SEC" netplan apply \
     || abort "netplan apply 실패"
 
 # 5. 확인
@@ -94,10 +107,14 @@ while :; do
     sleep 2
 done
 
-# 6. 확정
+# 6. 확정. 타이머가 아직 기다리는 중이고 발화 시각에서 20초 넘게 떨어져 있을 때만 끈다. 이미 발화했으면
+#    되돌림이 돌았거나 도는 중이라 "network ok" 를 내지 않는다.
+state=$(rollback_state)
+[[ "$state" == pending ]] || fail "확정 전에 되돌림이 발화함($state). 되돌림이 끝난 뒤 다시 돌린다"
+(( SECONDS - armed_at < NET_ROLLBACK_SEC - 20 )) \
+    || fail "확정이 되돌림 발화 시각에 너무 가까움. 되돌림이 끝난 뒤 다시 돌린다"
 systemctl stop netplan-rollback.timer >/dev/null 2>&1 || true
-if systemctl is-active --quiet netplan-rollback.timer; then
-    fail "되돌림 타이머를 끄지 못함(곧 되돌아간다). systemctl stop netplan-rollback.timer 를 손으로"
-fi
+state=$(rollback_state)
+[[ "$state" == clear ]] || fail "되돌림 타이머를 끄지 못함($state). systemctl stop netplan-rollback.timer 를 손으로"
 sysctl --system >/dev/null
 log "network ok: $(awk '$1 != $2 {printf "%s->%s ", $2, $1}' <<<"$map")$(ip -br link | awk '$1 != "lo" {sub(/@.*/, "", $1); printf "%s ", $1}')"

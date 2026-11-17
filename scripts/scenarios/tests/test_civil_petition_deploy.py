@@ -648,6 +648,24 @@ class ProvisionPlanTests(unittest.TestCase):
         rename = "\n".join(plan.rename(self.inv))
         self.assertIn("qm set 201 --name t4-rt", rename)
 
+    def test_nics_prints_inventory_name_address_and_the_proxmox_mac_per_nic(self) -> None:
+        lines = plan.nics(self.inv)
+        self.assertEqual(len(lines) - 1, sum(len(h["nics"]) for h in self.inv["hosts"]))
+        self.assertNotRegex("\n".join(lines), r"qm (set|start|stop|destroy|clone)")
+        with tempfile.TemporaryDirectory() as raw:
+            qm = Path(raw) / "qm"
+            qm.write_text("#!/bin/sh\n[ \"$2\" = 201 ] || exit 0\n"
+                          "printf 'name: rt-core01\\nnet0: virtio=BC:24:11:16:6F:5A,bridge=vmbr7\\n"
+                          "net4: virtio=BC:24:11:94:BE:4B,bridge=vmbr11\\n'\n")
+            qm.chmod(0o755)
+            done = subprocess.run(["bash", "-c", "\n".join(lines)], capture_output=True, text=True,
+                                  env={"PATH": f"{raw}:/usr/bin:/bin"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        out = done.stdout.splitlines()
+        self.assertEqual(out[0], "rt-core01 ens18 192.168.123.254 bc:24:11:16:6f:5a")
+        self.assertEqual(out[4], "rt-core01 ens22 192.168.127.2 bc:24:11:94:be:4b")
+        self.assertEqual(out[1], "rt-core01 ens19 192.168.124.1 ")
+
     def test_resources_match_the_design_total(self) -> None:
         hosts = self.inv["hosts"]
         self.assertEqual(sum(h["vcpu"] for h in hosts), 14)
@@ -720,7 +738,11 @@ while index < len(args):
 if timer:
     pathlib.Path(os.environ["STUB_ARMED"]).write_text(shlex.join(command))
     sys.exit(0)
-sys.exit(subprocess.run(command).returncode)
+rc = subprocess.run(command).returncode
+if command[-2:] == ["netplan", "apply"] and os.environ.get("STUB_FIRE_DURING_APPLY") == "1":
+    # 적용이 오래 걸려 그 사이 되돌림 타이머가 발화해 끝난 경우(발화한 일시 타이머는 기다림이 아니다).
+    pathlib.Path(os.environ["STUB_ARMED"]).unlink(missing_ok=True)
+sys.exit(rc)
 '''
 
 SYSTEMCTL_STUB = r'''#!/usr/bin/env python3
@@ -734,6 +756,11 @@ if args and args[0] == "stop" and "netplan-rollback.timer" in args:
     armed.unlink(missing_ok=True)
 if args and args[0] == "is-active":
     sys.exit(0 if armed.exists() else 3)
+if args[:1] == ["show"] and args[-1] == "netplan-rollback.timer":
+    print("waiting" if armed.exists() else "dead")
+if args[:1] == ["show"] and args[-1] == "netplan-rollback.service":
+    state = pathlib.Path(os.environ["STUB_ARMED"] + ".service")
+    print(state.read_text().strip() if state.exists() else "inactive")
 '''
 
 CLOUD_INIT_NETPLAN = textwrap.dedent('''\
@@ -800,6 +827,14 @@ case "$mode" in
     macchange)
         printf 'ens18 bc:24:11:00:00:99\nens19 bc:24:11:00:00:11\n' > "$work/state/nic-macs"
         step "$work/steps/network.sh"; links ;;
+    rerun_pending)
+        # 적용 뒤 세션이 끊겨 타이머가 기다리는 중에 다시 돌린 경우. 다시 돌림은 아무것도 바꾸지 않아야 한다.
+        sed '/^# 5\. 확인/,$d' "$work/steps/network.sh" > "$work/network-cut.sh"
+        step "$work/network-cut.sh"; links
+        grep -c '^systemd-run' "$work/calls" > "$work/runs-before"
+        step "$work/steps/network.sh"; links ;;
+    fired)
+        STUB_FIRE_DURING_APPLY=1 step "$work/steps/network.sh"; links ;;
 esac
 kill "$peer"
 '''
@@ -894,7 +929,11 @@ class NicNamingRenderTests(unittest.TestCase):
         self.assertLess(arm, body.index('rm -f "$netplan_dir/50-cloud-init.yaml"'))
         self.assertLess(body.index("netplan generate"), body.index("netplan apply"))
         self.assertRegex(body, r"systemd-run --quiet --wait --collect --unit=netplan-switch [^\n]*netplan apply")
-        self.assertLess(body.index("nic_named_problem"), body.index("systemctl stop netplan-rollback.timer >/dev/null 2>&1 || true\nif"))
+        confirm = body.index('[[ "$state" == pending ]]')
+        self.assertLess(body.index("nic_named_problem"), confirm)
+        self.assertLess(confirm, body.rindex("systemctl stop netplan-rollback.timer"))
+        self.assertLess(body.index("case \"$(rollback_state)\" in"), body.index('rm -rf "$backup"'))
+        self.assertLess(body.index("case \"$(rollback_state)\" in"), body.index("nic_resolve"))
 
     def test_leftover_physical_nic_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -964,6 +1003,8 @@ class NetworkStepKernelTests(unittest.TestCase):
                 "macs": read("state/nic-macs"),
                 "armed": (work / "armed").exists(),
                 "original": sorted(p.name for p in (work / "state" / "netplan-cloud-init").glob("*.yaml")),
+                "backup": {p.name: p.read_text() for p in (work / "state" / "netplan-before").glob("*.yaml")},
+                "runs_before": int(read("runs-before") or 0),
             }
 
     def test_eth_names_become_inventory_names_and_a_second_run_changes_nothing(self) -> None:
@@ -1007,6 +1048,26 @@ class NetworkStepKernelTests(unittest.TestCase):
         self.assertEqual(result["links"][2], ["eth0", "eth1"])
         self.assertEqual(result["netplan"], ["50-cloud-init.yaml"])
         self.assertIn("netplan-rollback: 1 개 파일로 되돌림", result["out"])
+
+    def test_a_rerun_while_the_rollback_waits_changes_nothing(self) -> None:
+        result = self._run("rerun_pending")
+        self.assertEqual(result["rc"][:2], [0, 0], result["out"])
+        self.assertNotEqual(result["rc"][2], 0)
+        self.assertIn("앞 망 전환의 되돌림 타이머가 기다리는 중", result["out"])
+        runs = [c for c in result["calls"] if c.startswith("systemd-run")]
+        self.assertEqual(len(runs), result["runs_before"], "다시 돌림이 systemd-run 을 불렀다")
+        self.assertEqual(list(result["backup"]), ["50-cloud-init.yaml"], "사본이 지금 상태로 덮였다")
+        self.assertEqual(result["backup"]["50-cloud-init.yaml"], CLOUD_INIT_NETPLAN)
+        self.assertTrue(result["armed"], "기다리던 되돌림 타이머가 꺼졌다")
+        self.assertNotIn("systemctl stop netplan-rollback.timer", result["calls"][-6:])
+
+    def test_a_rollback_that_fired_during_apply_is_not_reported_as_ok(self) -> None:
+        result = self._run("fired")
+        self.assertNotEqual(result["rc"][1], 0)
+        self.assertIn("확정 전에 되돌림이 발화함(clear)", result["out"])
+        self.assertNotIn("network ok", result["out"])
+        apply = next(c for c in result["calls"] if c.startswith("systemd-run") and "netplan apply" in c)
+        self.assertIn("-p RuntimeMaxSec=120", apply)
 
     def test_a_changed_mac_stops_before_anything_is_touched(self) -> None:
         result = self._run("macchange")
@@ -2059,6 +2120,119 @@ class StepScriptTests(unittest.TestCase):
             self.assertIn("NIC MAC 없음: ens19", done.stderr)
             self.assertFalse(dest.exists())
             self.assertFalse(Path(f"{dest}.new").exists())
+
+    def _stub_dir(self, root: Path) -> Path:
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        for name, text in (("systemctl", SYSTEMCTL_STUB), ("systemd-run", SYSTEMD_RUN_STUB)):
+            (bin_dir / name).write_text(text)
+            (bin_dir / name).chmod(0o755)
+        return bin_dir
+
+    def test_network_step_refuses_while_an_earlier_rollback_waits_runs_or_failed(self) -> None:
+        for state, words in (("pending", "타이머가 기다리는 중"), ("activating", "되돌림이 도는 중"),
+                             ("active", "되돌림이 도는 중"), ("failed", "journalctl -u netplan-rollback")):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                bin_dir = self._stub_dir(root)
+                (root / "cloud" / "cloud.cfg.d").mkdir(parents=True)
+                (root / "cloud" / "cloud.cfg.d" / "99-disable-network-config.cfg").write_text("network: {config: disabled}\n")
+                (root / "cloud" / "cloud-init.disabled").write_text("")
+                (root / "state" / "netplan-before").mkdir(parents=True)
+                (root / "state" / "netplan-before" / "50-cloud-init.yaml").write_text("saved\n")
+                armed = root / "armed"
+                if state == "pending":
+                    armed.write_text("x")
+                else:
+                    Path(f"{armed}.service").write_text(state + "\n")
+                env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_LOG": str(root / "calls"), "STUB_ARMED": str(armed),
+                       "STATE_DIR": str(root / "state"), "CLOUD_DIR": str(root / "cloud"),
+                       "NETPLAN_DIR": str(root / "netplan"), "NIC_MAC_FILE": str(root / "state" / "nic-macs")}
+                script = (f"set -euo pipefail; BUNDLE={root}; . {DEPLOY / 'steps' / 'lib.sh'}; "
+                          f". {DEPLOY / 'steps' / 'network.sh'}")
+                done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(words, done.stderr)
+                calls = (root / "calls").read_text() if (root / "calls").exists() else ""
+                self.assertNotIn("systemd-run", calls)
+                self.assertNotIn("systemctl stop", calls)
+                self.assertNotIn("reset-failed", calls)
+                self.assertEqual((root / "state" / "netplan-before" / "50-cloud-init.yaml").read_text(), "saved\n")
+                self.assertFalse((root / "state" / "nic-macs").exists())
+
+    def test_network_step_refuses_a_rollback_timer_shorter_than_apply_and_check(self) -> None:
+        script = f"set -euo pipefail; NET_ROLLBACK_SEC=200; . {DEPLOY / 'steps' / 'lib.sh'}; . {DEPLOY / 'steps' / 'network.sh'}"
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("NET_ROLLBACK_SEC(200)", done.stderr)
+
+    def test_steps_that_lean_on_nic_names_stop_first_on_eth_names(self) -> None:
+        name_steps = {"firewall", "lldpd", "router"}
+        for name in sorted(name_steps):
+            with self.subTest(step=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                sysnet = root / "sys"
+                for dev, mac in (("eth0", "bc:24:11:00:00:10"), ("eth1", "bc:24:11:00:00:11")):
+                    (sysnet / dev / "device").mkdir(parents=True)
+                    (sysnet / dev / "address").write_text(mac + "\n")
+                (root / "nic-macs").write_text("ens18 bc:24:11:00:00:10\nens19 bc:24:11:00:00:11\n")
+                dest = root / "placed.conf"
+                (root / "files").mkdir()
+                (root / "files" / "a").write_text("x\n")
+                (root / "files.tsv").write_text(f"{name}\t{dest}\t0644\troot\troot\tfiles/a\n")
+                calls = root / "calls"
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                for tool in ("install", "apt-get", "nft", "systemctl", "systemd-tmpfiles", "python3", "chown"):
+                    (bin_dir / tool).write_text(f"#!/bin/sh\necho {tool} \"$@\" >> {calls}\n")
+                    (bin_dir / tool).chmod(0o755)
+                env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "SYS_NET": str(sysnet), "NIC_MAC_FILE": str(root / "nic-macs"),
+                       "NIC_EXPECT": "ens18=10.77.1.2 ens19=10.77.2.2", "MGMT_IF": "ens19", "ROUTER_AUGMENT": "ens19"}
+                script = f"set -euo pipefail; BUNDLE={root}; . {DEPLOY / 'steps' / 'lib.sh'}; . {DEPLOY / 'steps' / (name + '.sh')}"
+                done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("NIC 이름이 인벤토리와 다름(network 단계를 먼저): ens18 없음,ens19 없음,인벤토리에 없는 물리 NIC eth0 eth1",
+                              done.stderr)
+                self.assertFalse(calls.exists(), "이름 확인 전에 무언가를 했다")
+                self.assertFalse(dest.exists())
+
+    def test_require_inventory_names_passes_on_inventory_names(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for dev, mac in (("ens18", "bc:24:11:00:00:10"), ("ens19", "bc:24:11:00:00:11")):
+                (root / "sys" / dev / "device").mkdir(parents=True)
+                (root / "sys" / dev / "address").write_text(mac + "\n")
+            (root / "nic-macs").write_text("ens18 bc:24:11:00:00:10\nens19 bc:24:11:00:00:11\n")
+            (root / "bin").mkdir()
+            (root / "bin" / "ip").write_text(
+                "#!/bin/sh\ncase \"$6\" in ens18) echo ' inet 10.77.1.2/24';; ens19) echo ' inet 10.77.2.2/24';; esac\n")
+            (root / "bin" / "ip").chmod(0o755)
+            env = {"PATH": f"{root / 'bin'}:/usr/bin:/bin", "SYS_NET": str(root / "sys"),
+                   "NIC_MAC_FILE": str(root / "nic-macs"), "NIC_EXPECT": "ens18=10.77.1.2 ens19=10.77.2.2"}
+            done = subprocess.run(["bash", "-c", f"set -euo pipefail; . {DEPLOY / 'steps' / 'lib.sh'}; require_inventory_names; echo passed"],
+                                  capture_output=True, text=True, env=env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("passed", done.stdout)
+
+    def test_every_step_that_uses_nic_names_checks_them_first(self) -> None:
+        exempt = {"network", "verify-host", "verify"}
+        found = set()
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            for host in inv["hosts"]:
+                names = {nic["ifname"] for nic in host["nics"]}
+                for entry in bundles(path)[host["name"]]["files"]:
+                    if entry["step"] not in exempt and any(re.search(rf"\b{n}\b", entry["text"]) for n in names):
+                        found.add(entry["step"])
+        for script in (DEPLOY / "steps").glob("*.sh"):
+            if script.stem not in exempt and script.stem != "lib" and re.search(
+                    r"\$\{?(MGMT_IF|ROUTER_AUGMENT|NIC_EXPECT)", script.read_text()):
+                found.add(script.stem)
+        self.assertEqual(found, {"firewall", "lldpd", "router"})
+        for step in found:
+            lines = [l for l in (DEPLOY / "steps" / f"{step}.sh").read_text().splitlines() if l and not l.startswith("#")]
+            with self.subTest(step=step):
+                self.assertEqual(lines[0], "require_inventory_names")
 
     def test_db_step_keeps_the_password_out_of_argv_and_the_server_log(self) -> None:
         source = (DEPLOY / "steps" / "db.sh").read_text()

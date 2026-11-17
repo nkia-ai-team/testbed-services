@@ -14,6 +14,8 @@
   (NIC 이름: 새 VM 은 cloud-init 이 MAC 맞춤과 set-name 으로 eth0 ~ 을 준다. 인벤토리 이름 ens18 ~ 으로는
             설치 단계 network 가 바꾼다. MAC 은 Proxmox 가 정하고, netN 과 ipconfigN 을 같은 번호로 주므로 설치
             단계가 인벤토리 주소를 가진 NIC 에서 읽는다. 여기서 MAC 을 정하지 않는다)
+  nics      읽기: 인벤토리 NIC 순서대로 "호스트 NIC 이름 주소 MAC" 을 찍는 명령(MAC 은 qm config 의 netN,
+            소문자). 설치 단계 verify-host 가 찍는 "nic <이름> = <장치> <MAC>" 과 서버마다 대조한다
   destroy   되돌리기. **사람 승인 뒤 사람이 66 에서 직접** 실행한다. 이 출력은 VMID 와 이름이 인벤토리와
             모두 맞을 때만 지우는 꼴로 찍힌다.
 """
@@ -85,6 +87,16 @@ def create(inventory: dict, sshkeys_path: str) -> list[str]:
     return lines
 
 
+def nics(inventory: dict) -> list[str]:
+    lines = ["set -eu"]
+    for host in inventory["hosts"]:
+        for index, nic in enumerate(host["nics"]):
+            mac = (f"$(qm config {host['vmid']} | sed -n 's/^net{index}: virtio=\\([^,]*\\),.*/\\1/p' "
+                   f"| tr A-F a-f)")
+            lines.append(f"printf '%s %s %s %s\\n' {host['name']} {nic['ifname']} {nic['addr']} \"{mac}\"")
+    return lines
+
+
 def rename(inventory: dict) -> list[str]:
     lines = ["set -eu"]
     for host in inventory["hosts"]:
@@ -124,7 +136,7 @@ def destroy(inventory: dict) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--inventory", required=True, type=Path)
-    parser.add_argument("--phase", required=True, choices=["precheck", "create", "rename", "snapshot", "destroy"])
+    parser.add_argument("--phase", required=True, choices=["precheck", "create", "nics", "rename", "snapshot", "destroy"])
     parser.add_argument("--sshkeys", default="",
                         help="66 위 운영자 공개 키 파일 경로(create 에 필요). 적용 때 인벤토리의 pubkey_file 을 66 으로 복사한 경로")
     args = parser.parse_args(argv)
@@ -140,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     phases = {
         "precheck": lambda: precheck(inventory),
         "create": lambda: create(inventory, args.sshkeys),
+        "nics": lambda: nics(inventory),
         "rename": lambda: rename(inventory),
         "snapshot": lambda: snapshot(inventory),
         "destroy": lambda: destroy(inventory),
