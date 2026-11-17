@@ -9,16 +9,21 @@ SYS_NET=${SYS_NET:-/sys/class/net}
 # 설치 단계 network 가 적는 "인벤토리 NIC 이름 MAC" 줄. place_files 가 @@MAC:<이름>@@ 자리를 이것으로 채운다.
 NIC_MAC_FILE=${NIC_MAC_FILE:-/var/lib/petition-deploy/nic-macs}
 
+# rsyslog 설정이 있는 곳(/etc/rsyslog.conf, rsyslog.d, rsyslog.remote.d 의 부모). 시험은 다른 경로를 준다.
+RSYSLOG_ETC=${RSYSLOG_ETC:-/etc}
+
 # files.tsv 에서 이 단계의 파일을 놓는다. @@SECRET:<이름>@@ 자리는 secrets/<이름> 내용으로,
 # @@MAC:<NIC 이름>@@ 자리는 NIC_MAC_FILE 의 그 NIC 줄의 MAC 으로 채운다. 채울 값이 없으면 파일을 놓지 않고 멈춘다.
 # 둘째 인자로 놓을 경로를 주면 그 파일 하나만 놓는다. 실패하면 0 아닌 값을 돌려준다(|| 뒤에서 불려도).
+# PLACE_ROOT 를 주면 놓을 경로 앞에 붙여 그 아래에 놓는다(검사용 사본).
 place_files() {
-    local step="$1" only="${2:-}" row_step dest mode owner group src
+    local step="$1" only="${2:-}" row_step dest mode owner group src target
     while IFS=$'\t' read -r row_step dest mode owner group src; do
         [[ "$row_step" == "$step" ]] || continue
         [[ -z "$only" || "$dest" == "$only" ]] || continue
-        install -d -m 0755 "$(dirname "$dest")" || return 1
-        if ! python3 - "$BUNDLE/$src" "$dest.new" "$BUNDLE/secrets" "$NIC_MAC_FILE" <<'PY'
+        target="${PLACE_ROOT:-}$dest"
+        install -d -m 0755 "$(dirname "$target")" || return 1
+        if ! python3 - "$BUNDLE/$src" "$target.new" "$BUNDLE/secrets" "$NIC_MAC_FILE" <<'PY'
 import pathlib, re, sys
 source, target, secrets = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
 mac_file = pathlib.Path(sys.argv[4])
@@ -39,12 +44,64 @@ text = re.sub(r"@@SECRET:([a-z0-9_]+)@@", fill, text)
 target.write_text(re.sub(r"@@MAC:([a-z0-9]+)@@", fill_mac, text), encoding="utf-8")
 PY
         then
-            rm -f "$dest.new"
+            rm -f "$target.new"
             return 1
         fi
-        chown "$owner:$group" "$dest.new" && chmod "$mode" "$dest.new" && mv -f "$dest.new" "$dest" || return 1
-        log "placed $dest"
+        chown "$owner:$group" "$target.new" && chmod "$mode" "$target.new" && mv -f "$target.new" "$target" || return 1
+        [[ -n "${PLACE_ROOT:-}" ]] || log "placed $dest"
     done < "$BUNDLE/files.tsv"
+}
+
+# 이 단계의 파일(rsyslog 설정 포함)을 놓되, rsyslog 가 못 읽을 설정은 /etc 에 남기지 않는다.
+#   1. 지금 rsyslog 설정(rsyslog.conf, rsyslog.d, rsyslog.remote.d)을 임시 디렉터리에 베끼고 이 단계의 파일을 그 위에 놓은 뒤,
+#      사본 rsyslog.conf 의 포함 경로를 사본으로 바꿔 rsyslogd -N1 로 본다. 실패하면 /etc 는 건드리지 않고 멈춘다.
+#   2. 통과하면 이 단계 파일의 지금 내용을 남겨 두고 진짜로 놓은 뒤 진짜 설정을 rsyslogd -N1 로 다시 본다.
+#      실패하면 이 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다) 멈춘다.
+# 어느 쪽이든 실패하면 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다(재시작하는 것은 부른 단계).
+rsyslog_place_checked() {
+    local step="$1" stage out row_step dest dir i=0 kept=()
+    stage=$(mktemp -d) || fail "rsyslog 검사 디렉터리를 못 만듦"
+    mkdir -p "$stage$RSYSLOG_ETC/rsyslog.d" "$stage$RSYSLOG_ETC/rsyslog.remote.d" "$stage/keep"
+    [[ ! -e "$RSYSLOG_ETC/rsyslog.conf" ]] || cp -p "$RSYSLOG_ETC/rsyslog.conf" "$stage$RSYSLOG_ETC/rsyslog.conf"
+    for dir in rsyslog.d rsyslog.remote.d; do
+        [[ ! -d "$RSYSLOG_ETC/$dir" ]] || cp -a "$RSYSLOG_ETC/$dir/." "$stage$RSYSLOG_ETC/$dir/"
+    done
+    if ! PLACE_ROOT="$stage" place_files "$step"; then
+        rm -rf "$stage"; fail "단계 $step 파일을 검사 사본에 못 놓음"
+    fi
+    out=$(python3 - "$stage$RSYSLOG_ETC/rsyslog.conf" "$RSYSLOG_ETC" "$stage$RSYSLOG_ETC" <<'PY' 2>&1
+import pathlib, sys
+conf, real, staged = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = conf.read_text(encoding="utf-8")
+for name in ("rsyslog.d/", "rsyslog.remote.d/"):
+    text = text.replace(f"{real}/{name}", f"{staged}/{name}")
+conf.write_text(text, encoding="utf-8")
+PY
+) || { rm -rf "$stage"; fail "rsyslog 검사 사본을 못 만듦: $out"; }
+    if ! out=$(rsyslogd -N1 -f "$stage$RSYSLOG_ETC/rsyslog.conf" 2>&1); then
+        printf '%s\n' "$out" >&2
+        rm -rf "$stage"
+        fail "rsyslog 설정 검사(놓기 전, 단계 $step). $RSYSLOG_ETC 는 바꾸지 않음"
+    fi
+    while IFS=$'\t' read -r row_step dest _; do
+        [[ "$row_step" == "$step" ]] || continue
+        i=$((i + 1))
+        if [[ -e "$dest" ]]; then cp -p "$dest" "$stage/keep/$i" || { rm -rf "$stage"; fail "앞 내용을 못 남김: $dest"; }; fi
+        kept+=("$dest")
+    done < "$BUNDLE/files.tsv"
+    if place_files "$step" && out=$(rsyslogd -N1 -f "$RSYSLOG_ETC/rsyslog.conf" 2>&1); then
+        rm -rf "$stage"
+        return 0
+    fi
+    printf '%s\n' "$out" >&2
+    i=0
+    for dest in "${kept[@]}"; do
+        i=$((i + 1))
+        if [[ -e "$stage/keep/$i" ]]; then cp -p "$stage/keep/$i" "$dest"; else rm -f "$dest"; fi
+        rm -f "$dest.new"
+    done
+    rm -rf "$stage"
+    fail "rsyslog 설정 검사(놓은 뒤, 단계 $step). 놓은 파일을 앞 내용으로 되돌림"
 }
 
 # 서비스 이름을 받아 켜고 다시 띄운다.

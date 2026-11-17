@@ -41,7 +41,7 @@ summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 �
 | `civil-petition/deploy/apply.sh` | 묶음을 만들어 관리망으로 보내고 설치 |
 | `civil-petition/deploy/provision/plan.py` | 66 Proxmox 명령을 찍기만 한다(실행 안 함) |
 | `civil-petition/deploy/router/ifdiscards.py` | 라우터 ifOutDiscards 도우미(GT0 결정 4) |
-| `civil-petition/deploy/tools/` | 평시 판정(`stability_check.py`, `host-facts.sh`, `db-facts.sh`), 규모 축 판정(`scale_verdict.py`, `cpu-sample.sh`), 라우터 큐 버림 실기 점검 |
+| `civil-petition/deploy/tools/` | 평시 판정(`stability_check.py`, `host-facts.sh`, `db-facts.sh`), 규모 축 판정(`scale_verdict.py`, `cpu-sample.sh`), 라우터 큐 버림 실기 점검, 적용 전 rsyslog 설정 확인(`rsyslog-check.sh`) |
 
 ## 3. 비밀값 파일 (적용 단계에서 적용 에이전트가 만든다)
 
@@ -130,6 +130,14 @@ NIC 이름: 새 VM 안의 NIC 이름은 **eth0, eth1 ...** 이다. Proxmox cloud
 
 ## 6. 서버 설치 (순서가 중요하다)
 
+**적용 전 점검: rsyslog 설정(104, docker).** 서버 설치 전에, 그리고 설치에 쓰는 커밋을 옮길 때마다 저장소 뿌리에서 돌린다.
+
+```
+flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/rsyslog-check.sh
+```
+
+일회 `ubuntu:24.04` 컨테이너(대상 VM 과 같은 rsyslog 패키지)에서 T, S 모든 서버의 렌더한 rsyslog 설정을 `rsyslogd -N1` 로 읽고, rsyslog 를 띄워 첫 규칙에 실행기 줄(계정 이름이나 uid 가 줄 끝에 오는 줄, 실행기 uid 로 보낸 줄 포함)과 아닌 줄을 보내 실행기 줄은 `/var/log/opsjobs.log` 에만, 아닌 줄은 syslog 나 auth.log 에만 가는지 본다. 원격 전달 파일은 읽기 검사만 하고 띄울 때는 빼서 검사 줄이 관제 서버로 가지 않는다. `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `failed=0`(지금 인벤토리 T 6대, S 5대로 `checks=231`) 이면 통과다. 첫 줄의 rsyslog 판을 대상 VM 의 `rsyslogd -v` 와 견준다. 기본 단위 시험은 큰따옴표 문자열 안의 맨 `$`(rsyslog 가 설정 전체를 거절한다. `\$` 로 쓴다) 같은 꼴만 본다. 컨테이너 안에서 rsyslog 를 apt 로 받으므로 바깥 길이 있어야 하고, 끝에 컨테이너를 지운다.
+
 WAR 는 한 번 빌드해 T 와 S 가 같은 파일을 쓴다(`project.build.outputTimestamp` 로 같은 커밋이면 같은 체크섬). k6 는 tb-runner 의 `/usr/local/bin/k6`(v0.57.0, md5 c7e01ff21ecd3a2f2c43362a285a5906)를 복사해 쓴다.
 
 ```
@@ -142,7 +150,9 @@ deploy/apply.sh --inventory $I --host web01
 deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설치만, 부하는 켜지 않는다
 ```
 
-각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → verify` 를 돈다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
+`deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → verify` 를 돈다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
+
+`syslog`, `syslog-forward` 단계는 새 rsyslog 설정을 먼저 임시 사본(지금 `/etc` 의 rsyslog 설정 위에 새 파일을 놓고 포함 경로를 사본으로 바꾼 것)에서 `rsyslogd -N1` 로 보고, 통과할 때만 `/etc` 에 놓는다. 사본 검사가 실패하면 `/etc` 를 바꾸지 않고 `rsyslog 설정 검사(놓기 전, 단계 <단계>)` 로 멈춘다. 놓은 뒤 진짜 설정 검사가 실패하면 그 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다) `(놓은 뒤, ...)` 로 멈춘다. 어느 쪽이든 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로이고, 재시작이나 재부팅 때 못 읽을 설정이 남지 않는다.
 
 ### 6-1. NIC 이름 바꾸기(network 단계)와 관리망
 
@@ -307,3 +317,4 @@ sudo systemctl start loadgen.service
 - 2026-11-18 KST, v4 T2NIC 3회차(재리뷰 rv-t2nic N1): §6-1 손 되돌리기에 보호 표 파일을 옮기는 줄(재부팅 뒤 다시 막지 않게).
 - 2026-11-18 KST, v4 T2V6(ag-t2v6): ap-t2 적용 중 발견 두 가지. §4 브리지마다 IPv6 끔(`disable-ipv6 yes`)과 post-up 확인, 검사기 `--ipv6-state`(up 에서 반드시), 이미 올린 66 에 이 판을 놓는 법, §7 관리망 격리 (3) 에 IPv6 확인과 업무망 브리지 주소 0 에 IPv6 포함. §4 확인의 러너 API 판정을 실제로 되는 길(104 → 200.66:8091, tb-ops → 127.0.0.1:8091)로 바꿈.
 - 2026-11-18 KST, v4 T2V6 리뷰 반영(rv-t2v6 M1, L1 ~ L3): 손 sysctl 이 이미 1 이면 다시 `ifup` 은 속성 동작을 증명하지 않음과 새로 만드는 길의 확인(S 첫 적용, 재부팅 뒤), post-up 실패에도 `ifup` 종료 코드 0 이라 판정은 검사기와 링크 상태로, `all.disable_ipv6` 를 쓰지 않음, §7 (3) IPv6 덧확인을 멀티캐스트 응답 출발지가 VM NIC 뿐인지로(브리지 MAC 은 tap 을 따라 바뀜).
+- 2026-11-18 KST, v4 T2RSYS(ag-t2rsys, APT2 §4-2 멈춤): §6 적용 전 점검 `rsyslog-check.sh`(docker, 진짜 rsyslog 파서와 첫 규칙 동작), `syslog`, `syslog-forward` 단계가 사본 검사 뒤에만 놓고 실패 때 되돌림, `deploy/apply.sh` 실행 비트.
