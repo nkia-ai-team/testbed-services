@@ -1275,6 +1275,30 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "FAIL_Q3_24H")
         self.assertIn("대표 질의(search) p95 표본 부족(처음 0창, 끝 0창, 구간마다 22창 이상)", result["reasons"])
 
+    def test_the_recording_preflight_read_is_light_and_leaves_no_wait_or_error_lines(self) -> None:
+        # 리뷰 rv-t2c M2: 녹화마다 한 번 읽는 보관 상태는 표를 훑거나 민원 표를 잠그지 않고, 잠금 대기 줄과 오류 줄을
+        # 남기지 않는다. 출력 꼴은 러너가 읽는 db-facts.sh 와 같다(rows.petition, last_archive_ok).
+        source = (DEPLOY / "tools" / "archive-state.sh").read_text()
+        sql = source[source.index("<<'SQL'"):source.index("\nSQL\n")]
+        self.assertNotIn("count(*)", sql)
+        self.assertIn("SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'petition'", sql)
+        self.assertIn("result = 'ok'", sql)
+        settings = dict(re.findall(r"^SET ([a-z_]+) = (.+);$", sql, re.M))
+        self.assertEqual(settings["log_lock_waits"], "off")
+        self.assertEqual(settings["log_min_duration_statement"], "-1")
+        self.assertEqual(settings["log_min_messages"], "panic")
+        self.assertEqual(settings["log_min_error_statement"], "panic")
+        # lock_timeout 은 deadlock_timeout(PostgreSQL 기본 1초, logging.conf 와 tuning.conf 가 바꾸지 않음)보다 짧다.
+        self.assertEqual(settings["lock_timeout"], "'200ms'")
+        self.assertEqual(settings["statement_timeout"], "'1s'")
+        for conf in ("logging.conf", "tuning.conf"):
+            self.assertNotRegex((DEPLOY / "templates" / "db" / conf).read_text(), r"(?m)^\s*deadlock_timeout\s*=")
+        # 읽은 뒤 log_min_messages 를 되돌려 종료 줄이 평소대로 남는다.
+        self.assertLess(sql.index("SELECT json_build_object"), sql.index("RESET log_min_messages;"))
+        self.assertIn("runuser -u postgres -- psql", source)
+        for key in ("'rows'", "'petition'", "'last_archive_ok'", '"db":%s', '"at":"%s"'):
+            self.assertIn(key, source)
+
     def test_db_facts_files_are_read_from_the_tool_output_shape(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             before = Path(raw) / "b.jsonl"
@@ -1422,7 +1446,8 @@ class StepScriptTests(unittest.TestCase):
         self.assertIn("pg_createcluster --locale C.UTF-8 16 main", source)
 
     def test_tools_parse(self) -> None:
-        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh", "archive-sql-check.sh"):
+        for name in ("router-discards-selftest.sh", "host-facts.sh", "cpu-sample.sh", "db-facts.sh", "archive-sql-check.sh",
+                     "archive-state.sh"):
             with self.subTest(tool=name):
                 done = subprocess.run(["bash", "-n", str(DEPLOY / "tools" / name)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 0, done.stderr)
