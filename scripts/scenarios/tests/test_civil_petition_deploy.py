@@ -24,6 +24,7 @@ import tempfile
 import textwrap
 import unittest
 import unittest.mock
+import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -51,6 +52,8 @@ stability = _load("stability_check", DEPLOY / "tools" / "stability_check.py")
 scale = _load("scale_verdict", DEPLOY / "tools" / "scale_verdict.py")
 monitor = _load("loadgen_monitor_cp", REPO / "scripts" / "scenarios" / "profiles" / "loadgen_monitor.py")
 hvcheck = _load("hv_iptables_check", DEPLOY / "tools" / "hv_iptables_check.py")
+t3reg = _load("t3_register", DEPLOY / "tools" / "t3_register.py")
+t3check = _load("t3_check", DEPLOY / "tools" / "t3_check.py")
 
 
 def inventory(path: Path = T_INV) -> dict:
@@ -3665,11 +3668,13 @@ esac
         wanted = {"router": ["snmpget -On 127.0.0.1 .1.3.6.1.2.1.1.5.0", "ifOutDiscards 응답 없음", "ifHighSpeed 가 1000 이 아님"],
                   "web": ["정적 첫 화면 응답 없음"], "db": ["PostgreSQL 응답 없음"], "was": ["앱 health 응답 없음"],
                   "time": ["chrony 가 $CHRONY_SERVER 에 붙지 않음"],
-                  "syslog": ["rsyslog 검사 줄이", "실행기 uid 줄이"]}
+                  "syslog": ["rsyslog 검사 줄이", "실행기 uid 줄이"],
+                  "sms-agent": ["에이전트가 서지 않음"]}
         restarting = set()
         for path in sorted((DEPLOY / "steps").glob("*.sh")):
             source = path.read_text()
-            hit = re.search(r"(?m)^(restart_enabled |systemctl restart )", source)
+            # 들여 쓴(조건 안의) 재시작도 센다(sms-agent 는 바뀐 것이 있을 때만 다시 띄운다).
+            hit = re.search(r"(?m)^\s*(restart_enabled |systemctl restart )", source)
             if path.stem == "lib" or not hit:
                 continue
             restarting.add(path.stem)
@@ -3680,6 +3685,676 @@ esac
                     settled = [m.group(0) for m in re.finditer(r'(?ms)^\s*settle [^\n]*(?:\\\n[^\n]*)*', after)]
                     self.assertTrue(any(words in block for block in settled), f"{words} 확인이 settle 밖에 있다")
         self.assertEqual(restarting, set(wanted) | {"firewall", "lldpd", "syslog-forward"})
+
+
+# ---------------------------------------------------------------- T3 준비(SMS 에이전트, 119 등록, 완료 조건 확인)
+
+LOG_MONITOR_DEFS = DEPLOY / "monitoring" / "log-monitors.json"
+
+
+class SmsAgentRenderTests(unittest.TestCase):
+    """설계 §4, §2-5(SMS 에이전트 설치: 같은 방식, 같은 판, LUCIDA_HOST 는 업무 주소), runbook §11."""
+
+    def test_servers_run_the_agent_after_their_role_and_router_and_loadgen_do_not(self) -> None:
+        for path in (T_INV, S_INV):
+            for name, bundle in bundles(path).items():
+                with self.subTest(inventory=path.name, host=name):
+                    if bundle["role"] in ("web", "was", "db"):
+                        self.assertEqual(bundle["steps"][-2:], ["sms-agent", "verify"])
+                        self.assertLess(bundle["steps"].index(bundle["role"]), bundle["steps"].index("sms-agent"))
+                    else:
+                        self.assertNotIn("sms-agent", bundle["steps"])
+                        self.assertFalse(any(f["step"] == "sms-agent" for f in bundle["files"]))
+
+    def test_agent_env_names_the_business_address_and_reports_to_the_monitor(self) -> None:
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            mgmt = next(n for n, v in inv["networks"].items() if v.get("management"))
+            for host in inv["hosts"]:
+                if host["role"] not in ("web", "was", "db"):
+                    continue
+                bundle = render.render_host(inv, host)
+                env_file = next(f for f in bundle["files"] if f["dest"] == "/opt/lucida-agent/agent.env")
+                text = env_file["text"]
+                biz = next(n["addr"] for n in host["nics"] if n.get("gateway") and n["net"] != mgmt)
+                mgmt_addr = next(n["addr"] for n in host["nics"] if n["net"] == mgmt)
+                server = f"http://{inv['monitoring']['address']}:{inv['monitoring']['sms_port']}"
+                settings = [line for line in text.splitlines() if line and not line.startswith("#")]
+                with self.subTest(inventory=path.name, host=host["name"]):
+                    self.assertEqual(settings, [f"LUCIDA_SERVER={server}", f"LUCIDA_HOST={biz}"])
+                    self.assertNotIn(mgmt_addr, text)
+                    self.assertTrue(text.isascii(), "lucidactl 이 source 하는 파일은 ASCII 만")
+                    self.assertEqual(env_file["mode"], "0600")
+                    self.assertEqual(bundle["env"]["SMS_AGENT_HOST"], biz)
+                    self.assertEqual(bundle["env"]["SMS_SERVER_URL"], server)
+
+    def test_unit_and_paths_carry_no_testbed_word_and_run_the_binary_as_root(self) -> None:
+        bundle = bundles(T_INV)["was01"]
+        unit = file_of(bundle, "/etc/systemd/system/lucida-agent.service")
+        self.assertIn("ExecStart=/opt/lucida-agent/bin/lucida-agent\n", unit)
+        self.assertIn("EnvironmentFile=/opt/lucida-agent/agent.env\n", unit)
+        self.assertIn("StandardOutput=append:/opt/lucida-agent/logs/agent.log\n", unit)
+        self.assertIn("Restart=always\n", unit)
+        self.assertNotRegex(unit, r"(?m)^(User|Group)=", "로그 파일을 읽으려면 root 로 돈다")
+        names = " ".join([unit, render.SMS_AGENT_HOME, render.SMS_AGENT_UNIT, "lucida-agent"]).lower()
+        for word in render.FORBIDDEN_WORDS:
+            with self.subTest(word=word):
+                self.assertNotRegex(names, rf"(^|[^a-z]){word}([^a-z]|$)")
+        self.assertNotIn("opsjobs", unit + file_of(bundle, "/opt/lucida-agent/agent.env"))
+
+    def test_verify_checks_the_agent_only_on_servers(self) -> None:
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        block = source[source.index('if [[ -n "${SMS_AGENT_UNIT:-}" ]]; then'):]
+        for name in ("sms-agent-active", "sms-agent-binary", "sms-agent-env"):
+            self.assertIn(f"check {name} ", block)
+        # 설치 전(기록도 자리도 없음)에만 건너뛰고, 둘 중 하나라도 있으면 세 항목을 모두 본다.
+        guard = block.index('if [[ -e "$SMS_AGENT_RECORD" || -e "$SMS_AGENT_HOME" ]]; then')
+        skipped = block[block.index("    else\n", guard):block.index("\n    fi\n", guard)]
+        self.assertNotIn("check ", skipped)
+        self.assertIn("NOT-INSTALLED", skipped)
+        self.assertLess(guard, block.index("check sms-agent-active"))
+        t = bundles(T_INV)
+        self.assertIn("SMS_AGENT_UNIT", t["db01"]["env"])
+        self.assertNotIn("SMS_AGENT_UNIT", t["rt-core01"]["env"])
+        self.assertNotIn("SMS_AGENT_UNIT", t["loadgen"]["env"])
+
+
+class SmsAgentApplyTests(unittest.TestCase):
+    """apply.sh --sms-agent: 서버의 sms-agent 단계가 돌 때만 바이너리가 있어야 하고, 묶음 artifacts 에 실린다."""
+
+    def _inventory(self, root: Path) -> Path:
+        inv = inventory(T_INV)
+        for key in ("executor", "operator"):
+            key_file = root / f"{key}.pub"
+            key_file.write_text("ssh-ed25519 AAAA test\n")
+            inv["accounts"][key]["pubkey_file"] = str(key_file)
+        for field in ("db_password_file",):
+            secret = root / "db"
+            secret.write_text("Abcdefgh12345678\n")
+            inv["app"][field] = str(secret)
+        out = root / "t.json"
+        out.write_text(json.dumps(inv))
+        return out
+
+    def _apply(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(DEPLOY / "apply.sh"), *args, "--dry-run"], capture_output=True, text=True)
+
+    def test_full_install_of_a_server_needs_the_agent_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inv = self._inventory(root)
+            done = self._apply("--inventory", str(inv), "--host", "web01")
+            self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+            self.assertIn("web01 에 --sms-agent 필요", done.stderr)
+            agent = root / "lucida-agent"
+            agent.write_bytes(b"\x7fELF fake")
+            done = self._apply("--inventory", str(inv), "--host", "web01", "--sms-agent", str(agent))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("./artifacts/lucida-agent", done.stdout)
+
+    def test_other_steps_and_other_roles_do_not_need_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            inv = self._inventory(Path(raw))
+            done = self._apply("--inventory", str(inv), "--host", "web01", "--steps", "firewall verify")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn("artifacts/lucida-agent", done.stdout)
+            done = self._apply("--inventory", str(inv), "--host", "web01", "--steps", "sms-agent verify")
+            self.assertEqual(done.returncode, 2)
+
+
+class SmsAgentStepTests(unittest.TestCase):
+    """steps/sms-agent.sh 를 대역 systemctl, pgrep 로 돌린다. 바뀐 것이 없으면 다시 띄우지 않는다(멱등)."""
+
+    HOST = "192.0.2.11"
+    SERVER = "http://198.51.100.1:18090"
+
+    def _tree(self, root: Path, env_text: str | None = None) -> tuple[dict, Path]:
+        bundle = root / "bundle"
+        (bundle / "artifacts").mkdir(parents=True, exist_ok=True)
+        (bundle / "files" / "x").mkdir(parents=True, exist_ok=True)
+        (bundle / "artifacts" / "lucida-agent").write_bytes(b"agent-binary-v1")
+        (bundle / "artifacts" / "SHA256SUMS").write_text(
+            subprocess.run(["sha256sum", "lucida-agent"], cwd=bundle / "artifacts", capture_output=True, text=True,
+                           check=True).stdout)
+        home = root / "opt"
+        unitdir = root / "units"
+        (bundle / "files" / "x" / "agent.env").write_text(env_text or f"LUCIDA_SERVER={self.SERVER}\nLUCIDA_HOST={self.HOST}\n")
+        (bundle / "files" / "x" / "unit").write_text("[Service]\nExecStart=x\n")
+        user = subprocess.run(["id", "-un"], capture_output=True, text=True, check=True).stdout.strip()
+        group = subprocess.run(["id", "-gn"], capture_output=True, text=True, check=True).stdout.strip()
+        (bundle / "files.tsv").write_text(
+            f"sms-agent\t{home}/agent.env\t0600\t{user}\t{group}\tfiles/x/agent.env\n"
+            f"sms-agent\t{unitdir}/lucida-agent.service\t0644\t{user}\t{group}\tfiles/x/unit\n"
+            f"other\t{root}/nope\t0644\t{user}\t{group}\tfiles/x/unit\n")
+        bin_dir = root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        calls = root / "calls"
+        state = root / "active"
+        log = home / "logs" / "agent.log"
+        # 대역 systemctl: is-active 는 state 파일로, restart 는 FAKE_START 가 ok 이면 시작 줄을 쓰고 state 를 켠다.
+        (bin_dir / "systemctl").write_text(
+            "#!/bin/sh\n"
+            f'echo systemctl "$@" >> {calls}\n'
+            'case "$1" in\n'
+            f'  is-active) test -f {state} ;;\n'
+            f'  restart) if [ "$FAKE_START" = ok ]; then touch {state}; mkdir -p {log.parent}; '
+            f'host=$(sed -n "s/^LUCIDA_HOST=//p" {home}/agent.env); '
+            f'echo "2026/11/19 INFO  [agent] agent started (version=x, variant=sms, host=$host, server={self.SERVER}, collect interval=60 sec)" >> {log}; fi ;;\n'
+            '  *) exit 0 ;;\n'
+            'esac\n')
+        (bin_dir / "pgrep").write_text(f"#!/bin/sh\ntest -f {state}\n")
+        for tool in ("systemctl", "pgrep"):
+            (bin_dir / tool).chmod(0o755)
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "SMS_AGENT_HOME": str(home), "SMS_AGENT_UNIT": "lucida-agent",
+               "SMS_AGENT_RECORD": str(root / "state" / "lucida-agent.sha256"), "SMS_AGENT_HOST": self.HOST,
+               "SMS_SERVER_URL": self.SERVER, "SETTLE_EVERY": "0.2", "SMS_AGENT_SETTLE_SEC": "2", "FAKE_START": "ok"}
+        return env, bundle
+
+    def _run(self, bundle: Path, env: dict) -> subprocess.CompletedProcess:
+        script = f"set -euo pipefail; BUNDLE={bundle}; . {DEPLOY / 'steps' / 'lib.sh'}; . {DEPLOY / 'steps' / 'sms-agent.sh'}"
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+    @staticmethod
+    def _restarts(root: Path) -> int:
+        return sum(1 for line in (root / "calls").read_text().splitlines() if line.startswith("systemctl restart"))
+
+    def test_first_run_installs_and_starts_and_a_second_run_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, bundle = self._tree(root)
+            done = self._run(bundle, env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((root / "opt" / "bin" / "lucida-agent").read_bytes(), b"agent-binary-v1")
+            self.assertTrue(os.access(root / "opt" / "bin" / "lucida-agent", os.X_OK))
+            self.assertEqual(stat.S_IMODE((root / "opt" / "agent.env").stat().st_mode), 0o600)
+            self.assertTrue((root / "units" / "lucida-agent.service").is_file())
+            self.assertFalse((root / "nope").exists(), "다른 단계 파일을 놓음")
+            want = subprocess.run(["sha256sum", str(root / "opt" / "bin" / "lucida-agent")], capture_output=True,
+                                  text=True, check=True).stdout.split()[0]
+            self.assertEqual((root / "state" / "lucida-agent.sha256").read_text().strip(), want)
+            self.assertEqual(self._restarts(root), 1)
+            self.assertIn("systemctl enable lucida-agent", (root / "calls").read_text())
+            again = self._run(bundle, env)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn("unchanged, not restarted", again.stdout)
+            self.assertEqual(self._restarts(root), 1)
+
+    def test_a_changed_setting_or_binary_restarts_once(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, bundle = self._tree(root)
+            self.assertEqual(self._run(bundle, env).returncode, 0)
+            (bundle / "artifacts" / "lucida-agent").write_bytes(b"agent-binary-v2")
+            (bundle / "artifacts" / "SHA256SUMS").write_text(
+                subprocess.run(["sha256sum", "lucida-agent"], cwd=bundle / "artifacts", capture_output=True, text=True,
+                               check=True).stdout)
+            done = self._run(bundle, env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(self._restarts(root), 2)
+            self.assertEqual((root / "opt" / "bin" / "lucida-agent").read_bytes(), b"agent-binary-v2")
+
+    def test_an_agent_that_does_not_come_up_or_reports_another_name_fails_the_step(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, bundle = self._tree(root)
+            env["FAKE_START"] = "no"
+            done = self._run(bundle, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("에이전트가 서지 않음", done.stderr)
+            self.assertFalse((root / "state" / "lucida-agent.sha256").exists())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, bundle = self._tree(root, env_text=f"LUCIDA_SERVER={self.SERVER}\nLUCIDA_HOST=192.0.2.99\n")
+            done = self._run(bundle, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("이름이나 보고 주소가 다름", done.stderr)
+
+    def test_a_wrong_artifact_checksum_stops_before_anything_is_placed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, bundle = self._tree(root)
+            (bundle / "artifacts" / "lucida-agent").write_bytes(b"tampered")
+            done = self._run(bundle, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("artifact 체크섬 다름: lucida-agent", done.stderr)
+            self.assertFalse((root / "opt").exists())
+
+
+class LogMonitorDefinitionTests(unittest.TestCase):
+    """설계 §4 로그 감시: 일반 패턴을 한 번 정하고 시나리오별로 고치지 않는다, opsjobs.log 는 감시하지 않는다."""
+
+    def setUp(self) -> None:
+        self.data = json.loads(LOG_MONITOR_DEFS.read_text(encoding="utf-8"))
+
+    def test_every_server_role_watches_the_design_files(self) -> None:
+        files = {role: {m["params"]["fileName"] for m in t3reg.log_monitor_specs(role)} for role in ("web", "was", "db")}
+        common = {"/var/log/syslog", "/var/log/auth.log"}
+        self.assertEqual(files["web"], common | {"/var/log/apache2/access.log", "/var/log/apache2/error.log"})
+        self.assertEqual(files["was"], common | {"/var/log/tomcat10/catalina.out", "/var/log/tomcat10/petition.log",
+                                                 "/var/log/tomcat10/localhost.[YYYY]-[MM]-[DD].log",
+                                                 "/var/log/tomcat10/localhost_access_log.[YYYY]-[MM]-[DD].txt"})
+        self.assertEqual(files["db"], common | {"/var/log/postgresql/postgresql-16-main.log"})
+        everything = json.dumps(self.data["common"]) + json.dumps(self.data["roles"])
+        self.assertNotIn("opsjobs", everything)
+
+    def test_system_log_patterns_are_the_other_domains_patterns(self) -> None:
+        # 기존 세 도메인 작업 노드 감시(119 등록값, 11-18 조회)와 같은 글자. 바꾸려면 이 시험을 함께 고친다.
+        common = {m["name"]: m for m in self.data["common"]}
+        self.assertEqual(common["syslog"]["errorPattern"], r".*\b([Ee]rror|ERROR|[Ff]ailed|FAILED|[Ff]ailure)\b.*")
+        self.assertEqual(common["syslog"]["fatalPattern"], ".*(kernel panic|I/O error|Out of memory|oom-kill|segfault).*")
+        self.assertEqual(common["syslog"]["warnPattern"], r".*\b([Ww]arn(ing)?|WARN)\b.*")
+        self.assertEqual(common["auth-log"]["errorPattern"], ".*([Ff]ailed password|authentication failure|[Ii]nvalid user).*")
+        self.assertEqual(common["auth-log"]["warnPattern"], ".*(session opened for user root|sudo:.*COMMAND).*")
+
+    def test_patterns_compile_without_constructs_go_regexp_lacks(self) -> None:
+        for role in ("web", "was", "db"):
+            for spec in t3reg.log_monitor_specs(role):
+                for key, value in spec["params"].items():
+                    if not key.endswith("Pattern") or not value:
+                        continue
+                    with self.subTest(role=role, name=spec["name"], key=key):
+                        re.compile(value)
+                        self.assertNotRegex(value, r"\(\?[=!<]|\\[1-9]", "에이전트(Go regexp) 가 못 읽는 꼴")
+
+    def test_patterns_match_the_lines_they_are_for_and_not_ordinary_lines(self) -> None:
+        cases = {
+            ("web", "apache-access"): ('10.0.0.1 - - [19/Nov/2026:15:00:00 +0000] "GET /x HTTP/1.1" 502 123 "-" "Mozilla"',
+                                       '10.0.0.1 - - [19/Nov/2026:15:00:00 +0000] "GET /x HTTP/1.1" 200 5023 "-" "Mozilla"'),
+            ("web", "apache-error"): ("[Thu Nov 19 15:00:00.1 2026] [proxy:error] [pid 1:tid 2] AH00957: connect failed",
+                                      "[Thu Nov 19 15:00:00.1 2026] [mpm_event:notice] [pid 1:tid 2] AH00489: resuming"),
+            ("was", "app-log"): ("2026-11-19 15:00:00.000 ERROR [http-nio-8080-exec-1] c.c.w.Portal - db down",
+                                 "2026-11-19 15:00:00.000 INFO  [main] c.c.w.Portal - started"),
+            ("was", "tomcat-access"): ('10.0.0.2 - - [19/Nov/2026:15:00:00 +0000] "GET /petition/api/x HTTP/1.1" 500 12',
+                                       '10.0.0.2 - - [19/Nov/2026:15:00:00 +0000] "GET /petition/api/x HTTP/1.1" 200 12'),
+            ("db", "postgresql"): ("2026-11-19 15:00:00 UTC [1] FATAL:  terminating connection",
+                                   "2026-11-19 15:00:00 UTC [1] LOG:  connection authorized: user=x"),
+        }
+        for (role, name), (hit, miss) in cases.items():
+            spec = next(s for s in t3reg.log_monitor_specs(role) if s["name"] == name)["params"]
+            patterns = [spec[f"{k}Pattern"] for k in t3reg.LOG_PATTERN_KEYS if spec[f"{k}Pattern"]]
+            with self.subTest(role=role, name=name):
+                self.assertTrue(any(re.fullmatch(p, hit) for p in patterns))
+                self.assertFalse(any(re.fullmatch(p, miss) for p in patterns))
+
+
+class FakeProduct:
+    """제품 API 대역. 경로와 몸통을 기록하고, 등록 대기 서버, 하위 대상, 감시, 망 대상을 상태로 쥔다."""
+
+    def __init__(self, inv: dict) -> None:
+        self.calls: list[tuple[str, str, object]] = []
+        self.pending: dict[str, dict] = {}
+        self.approved: dict[str, dict] = {}
+        self.nodes: dict[str, list[dict]] = {}
+        self.monitors: dict[str, list[dict]] = {}
+        self.network: list[dict] = []
+        self.fail: set[str] = set()
+        self.next = 0
+        for host in t3reg.servers(inv):
+            tid = self._new()
+            self.pending[host["agent_host"]] = {"id": tid, "name": host["agent_host"], "address": host["agent_host"],
+                                                "registration_status": "pending"}
+            self.nodes[tid] = [{"id": tid, "resource_type": "sms.server"},
+                               {"id": self._new(), "resource_type": "sms.network_interface", "resource_key": host["biz_if"],
+                                "management_status": "managed"},
+                               {"id": self._new(), "resource_type": "sms.network_interface", "resource_key": host["mgmt_if"],
+                                "management_status": "managed"},
+                               {"id": self._new(), "resource_type": "sms.file_system", "resource_key": "/"}]
+
+    def _new(self) -> str:
+        self.next += 1
+        return f"00000000-0000-4000-8000-{self.next:012d}"
+
+    def login(self, user, password) -> None:
+        self.calls.append(("LOGIN", user, None))
+
+    def request(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        parsed = urllib.parse.urlparse(path)
+        query = dict(urllib.parse.parse_qsl(parsed.query))
+        if method in self.fail or path in self.fail:
+            return 500, {"error": "boom"}
+        if method == "GET" and parsed.path == "/api/v1/targets":
+            if query.get("type") == "server":
+                pool = self.pending if query.get("registration_status") == "pending" else self.approved
+                return 200, {"targets": [t for t in pool.values() if query.get("search", "") in t["name"]]}
+            return 200, {"targets": [t for t in self.network if query.get("search", "") in (t.get("address") or t["name"])]}
+        if method == "POST" and parsed.path == "/api/v1/targets/approve":
+            for tid in body["ids"]:
+                name = next(n for n, t in self.pending.items() if t["id"] == tid)
+                self.approved[name] = dict(self.pending.pop(name), registration_status="approved")
+            return 200, {"approved_count": len(body["ids"])}
+        if method == "GET" and parsed.path.endswith("/subtree"):
+            return 200, {"nodes": self.nodes.get(parsed.path.split("/")[4], [])}
+        if method == "PUT" and "/authz/nodes/target/" in parsed.path:
+            for nodes in self.nodes.values():
+                for node in nodes:
+                    if node["id"] == parsed.path.split("/")[6]:
+                        node["management_status"] = body["state"]
+            return 200, {}
+        if method == "GET" and parsed.path == "/sm/api/custom-monitors":
+            return 200, {"custom_monitors": self.monitors.get(query["parent"], []), "total": 0}
+        if method == "POST" and parsed.path == "/sm/api/custom-monitors":
+            item = {"id": self._new(), "params": body["params"]}
+            self.monitors.setdefault(body["parent_target_id"], []).append(item)
+            return 201, item
+        if method == "POST" and parsed.path == "/api/v1/targets":
+            item = dict(body, id=self._new(), target_collectors=[])
+            self.network.append(item)
+            return 201, item
+        if method == "POST" and parsed.path.endswith("/collectors"):
+            tid = parsed.path.split("/")[4]
+            target = next(t for t in self.network if t["id"] == tid)
+            target["target_collectors"].append({"kind": body["kind"], "config": body["config"]})
+            return 201, {"id": self._new()}
+        if method == "DELETE":
+            return 204, None
+        return 404, {"error": f"no route {method} {path}"}
+
+    def writes(self) -> list[tuple[str, str]]:
+        return [(m, p) for m, p, _ in self.calls if m in ("POST", "PUT", "DELETE")]
+
+
+class T3RegisterTests(unittest.TestCase):
+    """runbook §12 의 119 등록 도구(제품 API 대역으로)."""
+
+    def setUp(self) -> None:
+        self.inv = inventory(T_INV)
+        self.product = FakeProduct(self.inv)
+        self.out = io.StringIO()
+
+    def session(self, yes: bool = True):
+        return t3reg.Session(self.product, yes, self.out)
+
+    def test_approve_finds_every_pending_server_by_its_business_address_in_one_call(self) -> None:
+        ids = t3reg.phase_approve(self.session(), self.inv)
+        self.assertEqual(len(ids), 4)
+        posts = [c for c in self.product.calls if c[0] == "POST"]
+        self.assertEqual(posts, [("POST", "/api/v1/targets/approve", {"ids": ids})])
+        self.assertEqual(t3reg.phase_approve(self.session(), self.inv), [])
+        self.assertEqual(len([c for c in self.product.calls if c[0] == "POST"]), 1, "다시 돌려도 승인 호출 없음")
+
+    def test_approve_refuses_a_pending_server_whose_address_is_not_the_business_one(self) -> None:
+        name = next(iter(self.product.pending))
+        self.product.pending[name]["address"] = "192.0.2.200"
+        with self.assertRaisesRegex(t3reg.RegisterError, "업무 주소가 아님"):
+            t3reg.phase_approve(self.session(), self.inv)
+        self.assertEqual(self.product.writes(), [])
+
+    def test_without_yes_nothing_is_written(self) -> None:
+        t3reg.phase_approve(self.session(yes=False), self.inv)
+        self.assertEqual(self.product.writes(), [])
+        self.assertIn("(찍기만) POST /api/v1/targets/approve", self.out.getvalue())
+
+    def test_nic_phase_unmanages_only_the_management_nic(self) -> None:
+        t3reg.phase_approve(self.session(), self.inv)
+        done = t3reg.phase_nic(self.session(), self.inv)
+        self.assertEqual(len(done), 4)
+        puts = [(p, b) for m, p, b in self.product.calls if m == "PUT"]
+        self.assertEqual(len(puts), 4)
+        for path, body in puts:
+            self.assertTrue(path.endswith("/state?scope=unified"))
+            self.assertEqual(body, {"state": "unmanaged"})
+        states = {n.get("resource_key"): n.get("management_status") for nodes in self.product.nodes.values() for n in nodes
+                  if n.get("resource_type") == "sms.network_interface"}
+        self.assertEqual(states, {"ens18": "managed", "ens19": "unmanaged"})
+        t3reg.phase_nic(self.session(), self.inv)
+        self.assertEqual(len([c for c in self.product.calls if c[0] == "PUT"]), 4, "다시 돌려도 같은 상태")
+
+    def test_nic_phase_waits_for_the_child_target(self) -> None:
+        t3reg.phase_approve(self.session(), self.inv)
+        for nodes in self.product.nodes.values():
+            nodes[:] = [n for n in nodes if n.get("resource_key") != "ens19"]
+        with self.assertRaisesRegex(t3reg.RegisterError, "첫 지표를 기다려 다시"):
+            t3reg.phase_nic(self.session(), self.inv)
+
+    def test_log_monitors_follow_the_role_file_and_a_rerun_adds_nothing(self) -> None:
+        t3reg.phase_approve(self.session(), self.inv)
+        added = t3reg.phase_log_monitors(self.session(), self.inv)
+        self.assertEqual(added, 4 + 6 + 6 + 3)
+        bodies = [b for m, p, b in self.product.calls if m == "POST" and p == "/sm/api/custom-monitors"]
+        for body in bodies:
+            self.assertEqual(body["kind"], "log")
+            self.assertTrue(body["enabled"])
+            self.assertEqual(body["params"]["matchingType"], "Exact")
+            self.assertEqual(body["params"]["scanType"], "End")
+            self.assertNotRegex(body["name"].lower(), r"(^|[^a-z])(test|testbed|tb|t4)([^a-z]|$)")
+        self.assertEqual(t3reg.phase_log_monitors(self.session(), self.inv), 0)
+
+    def test_nms_registration_never_prints_the_community_and_undoes_a_half_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            community = Path(raw) / "community"
+            community.write_text("s3cretCommunityValue\n")
+            self.inv["monitoring"]["snmp_community_file"] = str(community)
+            t3reg.phase_nms(self.session(yes=False), self.inv)
+            self.assertNotIn("s3cretCommunityValue", self.out.getvalue())
+            tid = t3reg.phase_nms(self.session(), self.inv)
+            collector = next(b for m, p, b in self.product.calls if m == "POST" and p.endswith("/collectors"))
+            self.assertEqual(collector["config_encrypted"], {"community": "s3cretCommunityValue"})
+            self.assertEqual(collector["config"], {"port": 161, "version": "2c"})
+            self.assertEqual(collector["collection_policy_id"], t3reg.NMS_DEFAULT_POLICY)
+            target = next(t for t in self.product.network if t["id"] == tid)
+            self.assertEqual(target["address"], "192.168.123.254")
+            self.assertNotIn("s3cretCommunityValue", self.out.getvalue())
+            self.assertEqual(t3reg.phase_nms(self.session(), self.inv), tid, "이미 등록됨")
+            self.product.network.clear()
+            self.product.fail.add("POST /collectors")
+            self.product.request = self._failing_collectors(self.product.request)
+            with self.assertRaises(t3reg.RegisterError):
+                t3reg.phase_nms(self.session(), self.inv)
+            self.assertEqual(self.product.writes()[-1][0], "DELETE")
+
+    @staticmethod
+    def _failing_collectors(request):
+        def wrapped(method, path, body=None):
+            if method == "POST" and path.endswith("/collectors"):
+                return 500, {"error": "boom"}
+            return request(method, path, body)
+        return wrapped
+
+    def test_trap_receiver_is_udp_162_and_not_added_twice(self) -> None:
+        tid = t3reg.phase_trap(self.session())
+        collector = next(b for m, p, b in self.product.calls if m == "POST" and p.endswith("/collectors"))
+        self.assertEqual((collector["kind"], collector["config"]["protocol"], collector["config"]["port"]), ("polestar_trap", "udp", 162))
+        self.assertFalse(collector["config"]["allow_unregistered"])
+        self.assertEqual(t3reg.phase_trap(self.session()), tid)
+        self.assertEqual(len([c for c in self.product.calls if c[0] == "POST"]), 2)
+
+    def test_record_then_rollback_deletes_in_reverse_and_servers_last(self) -> None:
+        t3reg.phase_approve(self.session(), self.inv)
+        t3reg.phase_nic(self.session(), self.inv)
+        t3reg.phase_log_monitors(self.session(), self.inv)
+        t3reg.phase_trap(self.session())
+        table = t3reg.phase_record(self.session(), self.inv)
+        self.assertEqual(table["schema"], "petition-portal-targets/1")
+        self.assertEqual(len(table["servers"]), 4)
+        self.assertEqual({s["agent_host"] for s in table["servers"]}, set(self.product.approved))
+        self.assertTrue(all(len(s["unmanaged"]) == 1 for s in table["servers"]))
+        self.assertTrue(all("sms.network_interface" in s["children"] for s in table["servers"]))
+        self.product.calls.clear()
+        n = t3reg.phase_rollback(self.session(), table)
+        deletes = [p for m, p, _ in self.product.calls if m == "DELETE"]
+        self.assertEqual(n, len(deletes))
+        server_ids = {s["target_id"] for s in table["servers"]}
+        first_server = next(i for i, p in enumerate(deletes) if p.split("/")[-1] in server_ids)
+        self.assertTrue(all(p.split("/")[-1] in server_ids for p in deletes[first_server:]), "서버 대상은 맨 끝")
+        self.assertTrue(deletes[0].endswith(table["trap_receivers"][0]["target_id"]))
+
+    def test_main_needs_the_runner_account_in_the_environment(self) -> None:
+        with unittest.mock.patch.dict(os.environ, {"LUCIDA_LOGIN_USER": "", "LUCIDA_LOGIN_PASSWORD": ""}):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(t3reg.main(["--inventory", str(T_INV), "--phase", "approve"],
+                                            client_factory=lambda base: self.product), 2)
+        self.assertIn("LUCIDA_LOGIN_USER", err.getvalue())
+
+
+class FakeRemote:
+    """t3_check 의 읽기 통로 대역. 질의 글자에 든 조각으로 답을 고른다."""
+
+    def __init__(self) -> None:
+        self.pg_rules: list[tuple[str, list]] = []
+        self.ch_rules: list[tuple[str, list]] = []
+        self.vm_rules: list[tuple[str, list]] = []
+        self.queries: list[str] = []
+
+    def _pick(self, rules, text):
+        self.queries.append(text)
+        for piece, answer in rules:
+            if piece in text:
+                return answer
+        return []
+
+    def pg(self, sql):
+        return self._pick(self.pg_rules, sql)
+
+    def ch(self, sql):
+        return self._pick(self.ch_rules, sql)
+
+    def vm(self, path, params):
+        return {"result": self._pick(self.vm_rules, params.get("query") or params.get("match[]", ""))}
+
+    def host(self, command):
+        return ""
+
+    def guest(self, addr, command):
+        return ""
+
+
+class T3CheckTests(unittest.TestCase):
+    """runbook §13 의 T3 완료 조건 확인 도구(판정 함수와 읽기 대역)."""
+
+    def setUp(self) -> None:
+        self.ctx = t3check.context(inventory(T_INV))
+        self.until = datetime.datetime(2026, 11, 20, 15, 0, tzinfo=datetime.timezone.utc)
+        self.since = self.until - datetime.timedelta(hours=1)
+
+    def test_context_reads_servers_router_and_loadgen_from_the_inventory(self) -> None:
+        self.assertEqual([s["name"] for s in self.ctx["servers"]], ["web01", "was01", "was02", "db01"])
+        self.assertEqual(self.ctx["router"]["addr"], "192.168.123.254")
+        self.assertEqual(self.ctx["router"]["downlinks"], ["ens19", "ens20", "ens21"])
+        self.assertEqual(next(s for s in self.ctx["servers"] if s["role"] == "db")["data_mount"], "/pgdata")
+        s_ctx = t3check.context(inventory(S_INV))
+        self.assertIsNone(s_ctx["router"])
+        self.assertEqual(t3check.item_nms(FakeRemote(), s_ctx, {"router": None}, self.until).verdict, "해당 없음")
+
+    def test_syslog_needs_a_row_in_every_ten_minutes_from_each_source_and_none_from_the_load_generator(self) -> None:
+        expected = {"192.0.2.1": "a", "192.0.2.2": "b"}
+        rows = [["192.0.2.1", str(i), "3"] for i in range(6)] + [["192.0.2.2", str(i), "1"] for i in range(6)]
+        ok, _, bad = t3check.syslog_verdict(rows, expected, ["192.0.2.9"], 6)
+        self.assertTrue(ok, bad)
+        ok, _, bad = t3check.syslog_verdict(rows[:-1], expected, ["192.0.2.9"], 6)
+        self.assertFalse(ok)
+        self.assertIn("b 10분 칸 1개에 행 없음", bad)
+        ok, _, bad = t3check.syslog_verdict(rows + [["192.0.2.9", "0", "2"]], expected, ["192.0.2.9"], 6)
+        self.assertFalse(ok)
+        self.assertIn("부하기 출발 행 2", bad)
+
+    def test_a_silent_monitor_passes_only_when_the_file_has_no_matching_line_either(self) -> None:
+        expected = [("web01", "/a"), ("web01", "/b"), ("web01", "/c")]
+        verdict, numbers, bad = t3check.monitor_verdict({("web01", "/a"): 4}, {("web01", "/b"): 0, ("web01", "/c"): 0}, expected)
+        self.assertEqual(verdict, "충족")
+        self.assertIn("줄 없음(파일에도 맞는 줄 없음) 2", " ".join(numbers))
+        verdict, _, bad = t3check.monitor_verdict({("web01", "/a"): 4}, {("web01", "/b"): 3, ("web01", "/c"): 0}, expected)
+        self.assertEqual(verdict, "미충족")
+        self.assertEqual(bad, ["web01 /b 줄 0(파일 맞는 줄 3)"])
+        verdict, _, bad = t3check.monitor_verdict({("web01", "/a"): 4}, None, expected)
+        self.assertEqual(verdict, "미충족", "VM 을 읽지 않았으면 줄 없음은 실패")
+
+    def test_date_named_files_match_the_day_file_the_agent_reports(self) -> None:
+        pattern = "/var/log/tomcat10/localhost_access_log.[YYYY]-[MM]-[DD].txt"
+        self.assertTrue(t3check._same_file(pattern, "/var/log/tomcat10/localhost_access_log.2026-11-19.txt"))
+        self.assertFalse(t3check._same_file(pattern, "/var/log/tomcat10/localhost_access_log.txt"))
+        self.assertTrue(t3check._same_file("/var/log/syslog", "/var/log/syslog"))
+
+    def test_sadf_average_counts_only_samples_inside_the_window(self) -> None:
+        text = ("# hostname;interval;timestamp;CPU;%user;%nice;%system;%iowait;%steal;%idle\n"
+                "h;600;2026-11-20 13:50:00 UTC;-1;90.00;0.00;5.00;0.00;5.00;0.00\n"
+                "h;600;2026-11-20 14:10:00 UTC;-1;30.00;1.00;9.00;1.00;2.00;57.00\n"
+                "h;600;2026-11-20 14:20:00 UTC;-1;40.00;0.00;10.00;3.00;4.00;43.00\n")
+        got = t3check.parse_sadf(text, self.since, self.until)
+        self.assertEqual(got, {"samples": 2, "cpu_busy_avg": 45.0, "iowait_avg": 2.0, "steal_avg": 3.0})
+        self.assertEqual(t3check.parse_sadf("", self.since, self.until)["samples"], 0)
+
+    def _budget(self, **over) -> dict:
+        base = {"ch_memory_resident_max_gib": 3.4, "vm_resident_max_gib": 2.5, "vm_limit_gib": 8.0, "disk_pct_now": 60.0,
+                "cpu": {"samples": 144, "cpu_busy_avg": 45.0, "iowait_avg": 1.0, "steal_avg": 2.0},
+                "wg0": {"rx_bytes": 0, "tx_bytes": 0, "at": 0}}
+        base.update(over)
+        return base
+
+    def test_budget_verdict_checks_all_five_resource_limits(self) -> None:
+        before = self._budget()
+        self.assertEqual(t3check.budget_verdict(before, self._budget(wg0={"rx_bytes": 10 ** 9, "tx_bytes": 0, "at": 86400})).verdict, "충족")
+        failing = {
+            "ClickHouse 메모리 예산": {"ch_memory_resident_max_gib": 3.6},
+            "VictoriaMetrics 메모리": {"vm_resident_max_gib": 6.4},
+            "디스크": {"disk_pct_now": 80.0},
+            "steal 증가": {"cpu": {"samples": 1, "cpu_busy_avg": 45.0, "iowait_avg": 1.0, "steal_avg": 5.1}},
+            "CPU": {"cpu": {"samples": 1, "cpu_busy_avg": 70.1, "iowait_avg": 1.0, "steal_avg": 2.0}},
+        }
+        for reason, change in failing.items():
+            with self.subTest(reason=reason):
+                it = t3check.budget_verdict(before, self._budget(**change))
+                self.assertEqual(it.verdict, "미충족")
+                self.assertIn(reason, " ".join(it.detail))
+        it = t3check.budget_verdict(before, self._budget(ch_memory_resident_max_gib=None))
+        self.assertEqual(it.verdict, "미충족", "값이 없으면 통과가 아니다")
+
+    def test_tunnel_average_comes_from_the_two_counter_readings(self) -> None:
+        it = t3check.budget_verdict(self._budget(), self._budget(wg0={"rx_bytes": 54 * 10 ** 9, "tx_bytes": 0, "at": 86400}))
+        self.assertIn("터널 평균 5.0 Mbps", " ".join(it.numbers))
+        it = t3check.budget_verdict(self._budget(), self._budget(wg0={"rx_bytes": 60 * 10 ** 9, "tx_bytes": 0, "at": 86400}))
+        self.assertIn("직렬 지점 기준을 넘음", " ".join(it.detail))
+
+    def test_trap_needs_link_down_and_link_up_from_the_router_address(self) -> None:
+        remote = FakeRemote()
+        remote.ch_rules.append(("snmp_traps_local", [[".1.3.6.1.6.3.1.1.5.3", "1", "1"], ["1.3.6.1.6.3.1.1.5.4", "2", "1"]]))
+        it = t3check.item_trap(remote, self.ctx, self.since, self.until)
+        self.assertEqual(it.verdict, "충족")
+        self.assertIn("source_ip = '192.168.123.254'", remote.queries[-1])
+        remote.ch_rules[0] = ("snmp_traps_local", [["1.3.6.1.6.3.1.1.5.3", "1", "1"]])
+        self.assertEqual(t3check.item_trap(remote, self.ctx, self.since, self.until).verdict, "미충족")
+        self.assertEqual(t3check.item_trap(remote, self.ctx, None, self.until).verdict, "미판정")
+
+    def test_icmp_wants_status_one_rtt_the_business_address_and_no_override(self) -> None:
+        remote = FakeRemote()
+        ids = {"servers": {}, "children": {}, "router": {"id": "00000000-0000-4000-8000-0000000000ff"}}
+        for n, s in enumerate(self.ctx["servers"]):
+            ids["servers"][s["name"]] = {"id": f"00000000-0000-4000-8000-{n:012d}", "address": s["addr"]}
+        remote.vm_rules += [("icmp_status", [{"metric": {}, "value": [0, "1"]}]), ("rtt", [{"metric": {}, "value": [0, "1"]}])]
+        remote.pg_rules += [("target_availability_latest", [["UP"]]), ("policy_device_overrides", [["0"]])]
+        self.assertEqual(t3check.item_icmp(remote, self.ctx, ids, self.until).verdict, "충족")
+        remote.pg_rules[1] = ("policy_device_overrides", [["1"]])
+        it = t3check.item_icmp(remote, self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("덮어쓰기 1건", " ".join(it.detail))
+        remote.pg_rules[1] = ("policy_device_overrides", [["0"]])
+        ids["servers"]["db01"]["address"] = "192.168.127.41"
+        it = t3check.item_icmp(remote, self.ctx, ids, self.until)
+        self.assertIn("db01 대상 주소 192.168.127.41 가 업무 주소 192.168.126.11 가 아님", " ".join(it.detail))
+
+    def test_only_target_numbers_go_into_a_promql_selector(self) -> None:
+        self.assertEqual(t3check.regex_ids(["00000000-0000-4000-8000-000000000001"]), "00000000-0000-4000-8000-000000000001")
+        with self.assertRaises(t3check.QueryError):
+            t3check.regex_ids(['x"}) or vector(1'])
+        self.assertEqual(t3check.promql_regex(["nms.cpu.usage"]), "nms\\\\.cpu\\\\.usage")
+
+    def test_every_design_row_has_an_item(self) -> None:
+        design = (REPO / "docs" / "spec-testbed-vm-3tier.md").read_text(encoding="utf-8")
+        block = design[design.index("### T3 (119 등록과 수집)"):design.index("### T4 (러너 연동)")]
+        rows = [line.split("|")[1].strip() for line in block.splitlines() if line.startswith("| ") and not line.startswith("| 조건")]
+        self.assertGreaterEqual(len(rows), 15, rows)
+        source = (DEPLOY / "tools" / "t3_check.py").read_text(encoding="utf-8")
+        covered = {"SMS": 'Item("SMS")', "관리 NIC": 'Item("관리 NIC(Q7d)")', "journal": 'Item("journal")',
+                   "프로세스 계열 단위": 'Item("프로세스 계열 단위")', "ICMP": 'Item("ICMP")', "NMS": 'Item("NMS")',
+                   "trap": 'Item("trap")', "DPM 없음": 'Item("DPM 없음")', "DB 서버 관제": 'Item("DB 서버 관제")',
+                   "syslog": 'Item("syslog")', "로그 감시": 'Item("로그 감시")', "탐지 밴드": 'Item("탐지 밴드")',
+                   "부담": 'Item("부담(Q8)")', "대상 번호 표": 'Item("대상 번호 표")'}
+        for row in rows:
+            with self.subTest(row=row):
+                if row == "원칙 문서":
+                    continue  # 문서를 고치는 행(도구는 수치만 낸다, runbook §13)
+                self.assertIn(row, covered)
+                self.assertIn(covered[row], source)
 
 
 if __name__ == "__main__":

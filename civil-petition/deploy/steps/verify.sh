@@ -96,6 +96,18 @@ data_mount_on_serial_disk() {
     [[ -n "$have" && "$(readlink -f "$have")" == "$(readlink -f "$want")" ]]
 }
 
+# SMS 에이전트(설계 §4, runbook §11): 도는 lucida-agent(root) 가 설치본 바이너리이고, 설치본은 sms-agent 단계가 적은 체크섬과
+# 같으며, agent.env 의 이름과 보고 주소가 인벤토리 값이다.
+sms_agent_binary_ok() {
+    local bin="$SMS_AGENT_HOME/bin/lucida-agent" pid
+    [[ -s "$SMS_AGENT_RECORD" ]] && [[ "$(sha256sum "$bin" | awk '{print $1}')" == "$(cat "$SMS_AGENT_RECORD")" ]] || return 1
+    pid=$(pgrep -x -u 0 lucida-agent) && [[ $(wc -w <<<"$pid") == 1 ]] && [[ "$(readlink -f "/proc/$pid/exe")" == "$(readlink -f "$bin")" ]]
+}
+sms_agent_env_ok() {
+    local env="$SMS_AGENT_HOME/agent.env"
+    grep -qxF "LUCIDA_HOST=$SMS_AGENT_HOST" "$env" && grep -qxF "LUCIDA_SERVER=$SMS_SERVER_URL" "$env"
+}
+
 check nic-names nic_names_ok
 check no-network-rollback-pending no_rollback_pending
 check apt-timers-off no_apt_timers
@@ -128,5 +140,16 @@ case "$HOST_ROLE" in
         check table-stats-timer systemctl is-enabled pg-table-stats.timer ;;
     loadgen) check loadgen-enabled systemctl is-enabled loadgen.service ;;
 esac
+# SMS 에이전트는 관제 서버 등록 창(T3, S 는 ST3)에서 단다(runbook §11). 그 전(설치 기록도 자리도 없음)에는 세 항목을 보지 않고
+# 그렇다고 한 줄 적는다. 기록이나 자리 중 하나라도 있으면(설치를 한 번이라도 했으면) 세 항목을 모두 본다.
+if [[ -n "${SMS_AGENT_UNIT:-}" ]]; then
+    if [[ -e "$SMS_AGENT_RECORD" || -e "$SMS_AGENT_HOME" ]]; then
+        check sms-agent-active systemctl is-active "$SMS_AGENT_UNIT"
+        check sms-agent-binary sms_agent_binary_ok
+        check sms-agent-env sms_agent_env_ok
+    else
+        log "CHECK sms-agent NOT-INSTALLED(관제 서버 등록 창 전, runbook §11)"
+    fi
+fi
 [[ "$failures" == 0 ]] || fail "점검 실패 $failures 건"
 log "verify ok"

@@ -1,0 +1,19 @@
+[Unit]
+Description=Lucida SMS agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LUCIDA_HOME={{sms_agent_home}}
+Environment=TMPDIR={{sms_agent_home}}/tmp
+WorkingDirectory={{sms_agent_home}}
+EnvironmentFile={{sms_agent_home}}/agent.env
+ExecStart={{sms_agent_home}}/bin/lucida-agent
+StandardOutput=append:{{sms_agent_home}}/logs/agent.log
+StandardError=append:{{sms_agent_home}}/logs/agent.log
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

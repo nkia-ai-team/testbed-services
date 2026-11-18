@@ -152,7 +152,7 @@ deploy/apply.sh --inventory $I --host web01
 deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설치만, 부하는 켜지 않는다
 ```
 
-`deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → verify` 를 돈다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
+`deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → sms-agent(웹, WAS, DB 만, 관제 서버 등록 창에서, §11) → verify` 를 돈다. 등록 창 전에는 `sms-agent` 를 `--steps` 에서 뺀다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
 
 `syslog`, `syslog-forward` 단계는 새 rsyslog 설정을 먼저 검사 사본에서 본다. 사본은 `/etc/rsyslog.d/.check-<pid>/` 에 둔다(Ubuntu 의 rsyslogd AppArmor 프로필이 설정으로 읽게 두는 곳은 `/etc/rsyslog.conf` 와 `/etc/rsyslog.d/**` 뿐이라 `/tmp` 사본은 `Permission denied` 로 막힌다. 숨은 하위 디렉터리라 `*.conf` 포함에 들지 않는다). 지금 `rsyslog.conf`, `rsyslog.d` 의 `*.conf`, `rsyslog.d/remote` 의 `*.conf` 위에 새 파일을 놓고 포함 경로를 사본으로 바꿔 `rsyslogd -N1 -d` 로 읽은 뒤, 오류가 없고 이 단계의 rsyslog 파일을 파서가 모두 실제로 읽었을 때만 `/etc` 에 놓는다(`include(... mode="optional")` 는 AppArmor 가 막아도 오류가 아니므로 읽었는지를 따로 본다). 사본 검사가 실패하면 `/etc` 의 설정을 바꾸지 않고 `rsyslog 설정 검사(놓기 전, 단계 <단계>)` 로 멈춘다. 놓기나 놓은 뒤 진짜 설정 검사가 실패하면 그 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다. 되돌리지 못한 파일은 경로를 적는다) 멈춘다. 어느 쪽이든 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다. 사본은 끝나면 지우고, 끊겨 남은 `.check-*` 는 다음 실행이 처음에 지운다.
 
@@ -296,18 +296,169 @@ sudo systemctl start loadgen.service
 
 - VM: `plan.py --phase destroy` 출력을 사람이 읽고 66 에서 직접 실행한다. VMID 와 이름이 인벤토리와 맞을 때만 지운다.
 - 66 망: §4 의 4(ifdown 을 파일 지우기 전에, 끝에 `--mode down` 확인).
-- 되돌릴 수 없는 단계는 없다. 119 등록 해제는 T3 의 몫이고 과거 데이터를 지우는지 먼저 확인한다(설계 §9).
+- 되돌릴 수 없는 단계는 없다. 119 등록 해제와 SMS 에이전트 제거는 §11, §12-5 이고, 등록 해제가 과거 데이터를 지우는지 먼저 확인한다(설계 §9).
 
-## 11. SMS 에이전트 설치 자리 (T3 몫, T2 에서 하지 않는다)
+## 11. SMS 에이전트 설치 (T3)
 
-| 서버 | 설치 | 인자 | 로그 감시 파일(일반 패턴, 시나리오별로 바꾸지 않음) |
+T3 적용 창 안에서만 한다(순서는 §12-0). 에이전트가 처음 보고하는 순간 관제 서버에 등록 대기 server 대상이 생기므로(관제 서버 쓰기) T2 평시 판정 전에는 설치하지 않는다. 설치는 서버 묶음의 `sms-agent` 단계다(`deploy/steps/sms-agent.sh`, 웹, WAS, DB 역할만, 역할 설치 뒤 `verify` 앞).
+
+| 서버 | `LUCIDA_HOST`(대상 이름이 됨) | 보고 주소 | 로그 감시 파일(서버 쪽 등록, §12 의 log-monitors 단계) |
 |---|---|---|---|
-| web01 | 기존 작업 노드와 같은 `lucida-agent` amd64(119 collector-sms 이미지 안 바이너리), systemd 유닛 | 보고 받는 주소 `10.250.0.1:18090`, `LUCIDA_HOST=192.168.124.11`(업무 주소) | `/var/log/apache2/access.log`, `error.log`, `/var/log/syslog`, `/var/log/auth.log` |
-| was01, was02 | 같음 | `LUCIDA_HOST=192.168.125.11`, `.12` | `/var/log/tomcat10/catalina.out`, `petition.log`, `localhost.*.log`(앱이 처리하지 못한 예외는 Tomcat JULI 기본으로 여기에만 간다), `localhost_access_log.*.txt`, `/var/log/syslog`, `/var/log/auth.log` |
-| db01 | 같음 | `LUCIDA_HOST=192.168.126.11` | `/var/log/postgresql/postgresql-16-main.log`, `/var/log/syslog`, `/var/log/auth.log` |
+| web01 | 192.168.124.11(업무 주소) | `http://10.250.0.1:18090` | `/var/log/apache2/access.log`, `error.log`, `/var/log/syslog`, `/var/log/auth.log` |
+| was01, was02 | 192.168.125.11, .12 | 같음 | `/var/log/tomcat10/catalina.out`, `petition.log`, `localhost.[YYYY]-[MM]-[DD].log`(앱이 처리하지 못한 예외는 Tomcat JULI 기본으로 여기에만 간다), `localhost_access_log.[YYYY]-[MM]-[DD].txt`, `/var/log/syslog`, `/var/log/auth.log` |
+| db01 | 192.168.126.11 | 같음 | `/var/log/postgresql/postgresql-16-main.log`, `/var/log/syslog`, `/var/log/auth.log` |
 | rt-core01, loadgen | 설치하지 않음 | | |
 
-수집 정책은 기본값 그대로 둔다. 서버 ICMP 상태와 RTT(`sms.server.icmp_status`, `sms.server.rtt`)는 SMS 등록에 딸려 오는 기본값대로 켜 두고, 끄는 장비 개별 덮어쓰기를 만들지 않는다(설계 §4-1, 11-17 검토 세션 답). `/var/log/opsjobs.log` 는 감시하지 않는다. 에이전트의 유닛 이름, 실행 사용자, 프로세스 이름에 테스트베드 낱말을 쓰지 않는다. S 는 websvr01 등 같은 자리, `LUCIDA_HOST` 는 S 업무 주소.
+S 는 websvr01 등 같은 자리, `LUCIDA_HOST` 는 S 업무 주소, 같은 바이너리 파일이다.
+
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 바이너리 출처 | 관제 서버 SMS 수집기 이미지 안 `/agent-dist/lucida-agent-linux-amd64`(Go 판). 11-18 조회: 이미지 `polestar/collector-sms:develop-ai-2026.11.09-01`, sha256 `b0ef5768...238c`. 배포 경로 `:18090/agent/dist/lucida-agent-linux-amd64` 는 404(설치 패키지가 비어 있다) | 기존 작업 노드도 같은 방식(이미지 안 바이너리)으로 깔았다(`runbook-testbed-move-109-to-66.md` 3단계). 그 노드들은 10-15 이미지의 판(`2026.08.23-01`)이라 판은 다르다 |
+| 자리 | `/opt/lucida-agent/{bin/lucida-agent, agent.env(0600), logs/, tmp/}` | `agent.env` 는 ASCII 만(에이전트와 lucidactl 이 읽는 꼴) |
+| 유닛 | `/etc/systemd/system/lucida-agent.service`, `Type=simple`, `Restart=always`, 표준 출력과 오류는 `logs/agent.log` 에 붙여 쓴다(journal 에 남지 않음) | 기존 작업 노드의 유닛 꼴 그대로(이름과 자리만 다름) |
+| 사용자, 프로세스 이름 | root, `lucida-agent` | 로그 파일(`syslog:adm 0640`, `postgres:adm`, `tomcat:adm`)을 읽는다. 이름, 유닛, 자리에 테스트베드 낱말 없음(시험) |
+| `agent.env` | `LUCIDA_SERVER`, `LUCIDA_HOST` 둘뿐. 나머지는 에이전트 기본값과 수집 정책 기본값 | 대상 주소(서버 ICMP 와 가용성이 핑하는 주소)는 `LUCIDA_HOST` 가 아니라 에이전트가 관제 서버로 나가는 출발 주소(업무 NIC, 기본 경로)에서 온다(lucida-next `agent/sms/goagent/inventory.go`) |
+| 감시하지 않는 것 | `/var/log/opsjobs.log`(실행기 배관 줄, 설계 §6-2) | 에이전트는 서버가 내려 준 파일만 읽는다. journal 을 읽지 않는다(코드, §13 journal 행) |
+
+바이너리 꺼내기(104 에서, 관제 서버는 읽기만):
+
+```
+A=~/dev/testbed-ops/v4/artifacts/lucida-agent-linux-amd64
+S119="sshpass -f ~/.config/testbed/ssh-192.168.230.119 ssh root@192.168.230.119"
+$S119 'k3s kubectl -n polestar exec deploy/collector-sms -c collector-sms -- sha256sum /agent-dist/lucida-agent-linux-amd64'
+$S119 'k3s kubectl -n polestar exec deploy/collector-sms -c collector-sms -- cat /agent-dist/lucida-agent-linux-amd64' > $A
+sha256sum $A          # 위 값과 같아야 한다. 결과 파일에 sha256 을 적는다(S 가 같은 파일을 쓴다)
+```
+
+설치(서버 네 대, 관리망):
+
+```
+deploy/apply.sh --inventory $I --host web01 --host was01 --host was02 --host db01 \
+    --steps "sms-agent verify" --sms-agent $A --war petition-web/target/petition.war
+```
+
+`--war` 는 WAS 묶음이 늘 요구해서 준다(`was` 단계를 돌지 않으므로 WAR 는 놓이지 않는다). 모든 단계를 돌거나 `--steps` 에 `sms-agent` 가 있으면 `--sms-agent` 가 없을 때 `apply: <서버> 에 --sms-agent 필요` 로 멈춘다. 단계는 바이너리 체크섬(묶음 `SHA256SUMS`)을 본 뒤 자리를 만들고, 바이너리, `agent.env`, 유닛 중 하나라도 바뀌었거나 유닛이 돌지 않을 때만 다시 띄운다(다시 돌려도 평시에 없는 재시작을 남기지 않는다). 에이전트 로그의 새 시작 줄 `agent started (... host=<업무 주소>, server=<보고 주소>, ...)` 를 60초 안에 기다리고(settle), 설치본 체크섬을 `/var/lib/petition-deploy/lucida-agent.sha256` 에 적는다.
+
+`verify` 는 서버마다 `sms-agent-active`(유닛), `sms-agent-binary`(도는 root 의 `lucida-agent` 하나가 설치본이고 설치본이 적힌 체크섬과 같음), `sms-agent-env`(`agent.env` 의 두 줄이 인벤토리 값)를 더 본다. 설치 기록(`/var/lib/petition-deploy/lucida-agent.sha256`)도 자리(`/opt/lucida-agent`)도 없는 서버(등록 창 전)는 세 항목 대신 `CHECK sms-agent NOT-INSTALLED` 한 줄만 찍는다. 하나라도 있으면 세 항목을 모두 본다. 등록 창 전(T2, S 는 ST2)에 서버를 처음부터 설치할 때는 `--steps` 로 `sms-agent` 를 뺀 단계를 준다(모든 단계를 돌면 에이전트가 깔려 관제 서버에 등록 대기 대상이 생긴다).
+
+되돌리기(서버마다, 운영자 계정):
+
+```
+sudo systemctl disable --now lucida-agent && sudo rm -f /etc/systemd/system/lucida-agent.service && sudo systemctl daemon-reload
+sudo rm -rf /opt/lucida-agent /var/lib/petition-deploy/lucida-agent.sha256
+```
+
+에이전트를 먼저 멈춘 뒤에 관제 서버의 대상을 지운다(§12-5). 순서가 거꾸로면 다음 보고에 등록 대기 대상이 다시 생긴다.
+
+## 12. 관제 서버(119) 등록 (T3)
+
+설계 §4 의 등록 대상만, 제품 화면이 부르는 것과 같은 API 로 한다. 도구는 `deploy/tools/t3_register.py` 이고 단계마다 `--yes` 없이 먼저 돌려(읽기와 로그인만, 쓸 호출은 찍기만) 본 뒤 `--yes` 로 쓴다. 계정은 러너 계정이다. 값은 러너 컨테이너 환경변수에서 셸 변수로만 옮기고 출력하지 않는다.
+
+```
+OPS="ssh -o BatchMode=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_tb66 -J root@192.168.200.66 nkia@192.168.122.20"
+export LUCIDA_LOGIN_USER=$($OPS docker exec scenario-runner printenv LUCIDA_LOGIN_USER)
+export LUCIDA_LOGIN_PASSWORD=$($OPS docker exec scenario-runner printenv LUCIDA_LOGIN_PASSWORD)
+RT="ssh -o BatchMode=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_civil-petition -J root@192.168.200.66 sysop@192.168.127.2"
+export LUCIDA_QUERY_URL=http://192.168.230.119:13080            # 러너와 같은 주소
+R="python3 deploy/tools/t3_register.py --inventory $I"
+```
+
+관제 서버에 쓰는 일은 이 절의 단계 안에서만 한다. 수집 정책은 건드리지 않는다(장비 개별 덮어쓰기 없음, 서버 ICMP 는 기본 켬 그대로, 설계 §4-1). DPM 은 등록하지 않는다.
+
+### 12-0. 적용 순서 (시각 기준: 부하 시작 11-18 12:42:48 KST + 26시간 = 11-19 14:42:48 KST 이후)
+
+| 순서 | 할 일 | 명령, 확인 |
+|---|---|---|
+| 0 | **T2 평시 24시간 판정을 먼저 끝낸다.** db-after, facts-after 를 뜨고 그 시각 E 로 `stability_check.py --end E`(§8). E 는 가장 이르면 11-19 14:42:48 KST | 판정 구간은 [E-24시간, E] 이고 대표 질의는 마지막 2시간을 쓴다. 아래 어느 것도 E 전에 하지 않는다(링크 내림의 부하 오류, 에이전트 설치가 판정 창에 들어가지 않게) |
+| 1 | 사전 확인과 녹화 정지(지휘 세션). 119 디스크 80% 미만(`df -P /`, 11-18 13:1x 조회 55%), 터널 핸드셰이크, 러너 idle | 등록은 녹화 시작 차단(2시간 30분)을 한 번 받는다(설계 결정 7) |
+| 2 | Q8 등록 전 사실 | `python3 deploy/tools/t3_check.py --inventory $I --budget --start <지금-24시간> --end <지금> --out t3-budget-before.json` |
+| 3 | trap 수신기, 라우터 NMS 장비 | `$R --phase trap`, `$R --phase nms`(각각 `--yes` 없이 본 뒤 `--yes`). 수신기가 있어야 관제 서버가 UDP 162 를 연다. 2분 뒤 `t3_check.py --since <지금>` 의 NMS 행 |
+| 4 | **trap 확인(T3 의 첫 주입 단계).** 라우터 하위 인터페이스 하나(인벤토리 첫 하위, 웹 쪽 `ens19`)를 90초 내렸다 올린다(snmpd 링크 감시 주기 60초보다 길게). 웹망만 끊겨 부하기 요청이 그동안 실패하고 WAS, DB 연결은 그대로다 | 시각 T 를 적고 `$RT "sudo -n sh -c 'ip link set dev ens19 down; sleep 90; ip link set dev ens19 up' </dev/null >/dev/null 2>&1 &"`(관리망 세션이 끊겨도 올림이 돈다). 3분 뒤 `$RT ip -br link show ens19` 가 UP, `t3_check.py --since T --trap-since T` 의 trap 행(linkDown, linkUp 각 1 이상, 출발 192.168.123.254). 되돌리기: `sudo ip link set dev ens19 up` |
+| 5 | SMS 에이전트 네 대 | §11 |
+| 6 | 등록 대기 서버 승인. 승인 시각 R 을 적는다(이후 판정 창의 시작) | `$R --phase approve`. 등록 대기 대상의 이름이 업무 주소이고 주소도 업무 주소일 때만 승인한다(관리 주소면 ICMP 가 닿지 않아 멈춘다) |
+| 7 | 관리 NIC 를 수집에서 뺌(Q7d) | 승인 뒤 첫 지표(약 1~2분)로 NIC 하위 대상이 생긴 다음 `$R --phase nic`. 하위 대상이 아직 없으면 멈추고 다시 돌리라고 알린다 |
+| 8 | 로그 감시 | `$R --phase log-monitors`(역할별 `deploy/monitoring/log-monitors.json`, 같은 파일 감시가 있으면 건너뜀) |
+| 9 | 대상 번호 표 | `$R --phase record --out deploy/inventory/t.targets.json`(쓰기 없음, 꼴 §12-4). 저장소 커밋은 지휘 세션 |
+| 10 | 바로 확인 | `t3_check.py --inventory $I --since R --table deploy/inventory/t.targets.json`(§13). 밴드와 부담은 24시간 뒤 |
+| 11 | 24시간 뒤 | `t3_check.py --since R --until R+24시간 --trap-since T --table ... --vm-reads --json t3-check.json`, `t3_check.py --budget --start R --end R+24시간 --out t3-budget-after.json`, `t3_check.py --budget-verdict --before t3-budget-before.json --after t3-budget-after.json` |
+| 12 | 원칙 문서 §3 수집 특성 표에 이 도메인 행(더하기만) | 값은 11 의 출력(SMS 표본 간격, NMS 폴링 간격, ICMP 표본)과 §12-3 |
+
+처음 설계(§10 T3 trap 행)는 trap 확인을 "T2 끝 부하 시작 전" 에 두었다. 부하가 11-18 12:42:48 KST 에 이미 켜졌으므로 11-18 지휘 세션 결정으로 평시 판정 뒤 T3 의 첫 주입 단계로 옮겼다. 수신기 등록(3)이 링크 내림(4)보다 먼저인 것은 수신기가 없으면 관제 서버가 UDP 162 를 듣지 않아 trap 이 버려지기 때문이다.
+
+### 12-1. 단계가 부르는 API (lucida-next develop-ai d0186576d2 의 화면 코드와 같은 꼴)
+
+| 단계 | 호출 | 되돌리기 |
+|---|---|---|
+| approve | `GET /api/v1/targets?type=server&registration_status=pending&search=<업무 주소>` → `POST /api/v1/targets/approve {"ids":[...]}`(그룹과 수집 모드는 보내지 않음 = 화면 기본) | 승인 취소 API 없음. 대상 삭제(§12-5) |
+| nic | `GET /api/v1/targets/<서버>/subtree` 의 `resource_type=sms.network_interface`, `resource_key=<관리 NIC>` → `PUT /api/v1/authz/nodes/target/<하위>/state?scope=unified {"state":"unmanaged"}`. 에이전트 정책의 관리 안 함 목록으로 내려가 에이전트가 그 NIC 를 수집하지 않고 서버도 적재 전에 버린다 | `DELETE /api/v1/authz/nodes/target/<하위>/state?scope=unified`(상위 상속으로 돌아감) |
+| log-monitors | `GET /sm/api/custom-monitors?kind=log&parent=<서버>&owner=sms` → 없는 파일만 `POST /sm/api/custom-monitors`(kind log, enabled, `unified_log_enabled` false, params 는 화면 기본 `matchingType Exact`, `scanType End`, `encodingType NOT_SPECIFIED`, `caseSensitive` true, 레벨별 패턴과 빈 제외 패턴). `/sm/` 은 웹 게이트웨이가 SMS 수집기로 넘기고 같은 세션 쿠키로 인가한다 | `DELETE /sm/api/custom-monitors/<id>` |
+| nms | `POST /api/v1/targets {"type":"network","name":"<라우터 이름>","address":"<상향 주소>","discovery":"manual","meta":{"collector":"polestar-nms","group":"Polestar NMS","endpoint_port":"161","name_sync":false}}` → `POST /api/v1/targets/<id>/collectors {"kind":"polestar_nms","enabled":true,"config":{"port":161,"version":"2c"},"config_encrypted":{"community":<t4-snmp-community 파일 값>},"collection_policy_id":"00000000-0000-4000-8009-000000000001"}`. 수집기를 못 만들면 방금 만든 대상을 지운다(화면과 같음). 인터페이스 하위 대상(`network_resource`)은 폴링이 스스로 만든다. 장비 폴링이 매번 장비 주소를 핑한다(`nms.network.icmp_status`, `rtt`) | `DELETE /api/v1/targets/<id>` |
+| trap | `POST /api/v1/targets {"type":"network","name":"trap-udp-162","discovery":"manual","meta":{"collector":"polestar-trap","group":"Polestar TRAP","endpoint_port":"162","endpoint_protocol":"udp"}}` → `POST .../collectors {"kind":"polestar_trap","enabled":true,"config":{"port":162,"protocol":"udp","v3_username":"","v3_auth_protocol":"","v3_priv_protocol":"","allow_unregistered":false}}`(커뮤니티 거르기 없음 = 화면 기본). 라이선스 `trap-receiver` 수량 10000(11-18 조회). trap 출발 주소를 등록된 network, server 대상 주소와 맞춘다 | `DELETE /api/v1/targets/<id>` |
+
+### 12-2. 등록하지 않는 것과 그대로 두는 것
+
+- DPM(db01 PostgreSQL), loadgen, 66 호스트, APM, KCM, WPM.
+- 서버 ICMP 와 RTT, 가용성 스위퍼 핑, 라우터 폴링 ICMP: 제품 기본(설계 §4-1).
+- 에이전트 등록 때 제품이 스스로 다는 «기본 로그 모니터 (Linux)»(`/var/log/messages`, Ubuntu 에는 없는 파일): 제품 기본이라 그대로 둔다.
+- syslog 수신기: P2 에서 이미 udp, tcp 514 로 등록됐다. VM 과 라우터의 줄은 지금도 들어온다(`registered=0`). 서버와 라우터를 등록하면 출발 주소가 대상 주소와 맞아 귀속된다.
+
+### 12-3. 미리 확인한 제품 동작 (11-18 KST, lucida-next d0186576d2 코드와 119 읽기)
+
+| 물음 | 답 | 근거 |
+|---|---|---|
+| SMS 서버는 손 등록이 필요한가 | 아니다. 에이전트 첫 보고에 `targets`(type server, 이름 = `LUCIDA_HOST`, `registration_status=pending`)가 생기고, 승인 전에는 지표를 저장하지 않는다. 자동 승인 설정은 없다 | `collector-sms/store/pg.go` `UpsertTargetForHost`, `registration_gate.go`. 119 `SM_BEARER_REQUIRED=false` |
+| 관리 NIC 를 SMS 수집에서 뺄 수 있나(Q7d) | 있다. 에이전트 환경변수로는 못 빼고(NIC 제외 변수 없음, IPv4 가 있고 UP 인 NIC 를 모두 수집) 그 NIC 하위 대상을 관리 안 함으로 두면 빠진다 | `goagent/metrics.go` `nicBlocked`, `agent_ingest.go` |
+| 에이전트가 journal 을 읽나 | 읽지 않는다. 서버가 내려 준 파일만 tail 한다. 기존 작업 노드 에이전트의 열린 파일에도 journal 이 없다(tb-w1 조회: `agent.log`, cgroup `cpu.max`, 잠금 파일뿐) | `goagent` 에 journal, sd_journal 없음 |
+| 프로세스 계열의 단위 | (호스트, 프로세스 이름, pid). 15초마다 CPU 상위 50개를 보낸다. 프로세스 하위 대상은 «프로세스» 하나이고 프로세스별 대상은 사용자 정의 감시로만 생긴다. `process_snapshot`(ClickHouse)은 60초마다 전체 목록(이름, 사용자, pid) | `goagent/main.go` `collectProcesses(cfg, 50)`, VM 라벨 `name`, `pid`, `host_target_id`. tb-w1 하루 고유 2,651 계열 |
+| 가용성 판정 | 보고가 끊긴 지 180초(`SM_AVAIL_GRACE_SEC`) 뒤 스위퍼(30초 주기)가 핑해 실패면 DOWN, 성공이면 UNKNOWN. 약 3~3.5분 | `collector-sms/store/availability.go`, 119 환경변수 |
+| 서버 ICMP 와 RTT 주기 | 수집 정책의 두 지표 주기(정책 행이 없으면 30초) | `rtt_prober.go` |
+| 로그 감시 파일 이름의 날짜 | 에이전트가 `[YYYY] [MM] [DD]` 자리를 자기 시각(VM 은 UTC, Tomcat 파일 이름도 UTC 날짜)으로 채운다(`matchingType Exact`) | `goagent/custommon_file.go` |
+
+### 12-4. 대상 번호 표 꼴 (`deploy/inventory/<테스트베드>.targets.json`)
+
+`t3_register.py --phase record` 가 관제 서버를 읽어 만든다(설계 §10 T3 "대상 번호 표"). 사람이 고치지 않는다.
+
+```
+{"schema": "petition-portal-targets/1", "testbed": "t", "domain": "<도메인>",
+ "servers": [{"name": "<게스트 이름>", "role": "web|was|db", "target_id": "<uuid>", "agent_host": "<업무 주소>",
+              "children": {"<resource_type, 예 sms.network_interface>": {"<resource_key, 예 NIC 이름>": "<uuid>"}},
+              "unmanaged": ["<관리 안 함으로 둔 하위 uuid>"],
+              "log_monitors": {"<감시 파일>": "<감시 uuid>"}}],
+ "network_devices": [{"name": "<라우터 이름>", "target_id": "<uuid>", "address": "<상향 주소>",
+                      "interfaces": {"<인터페이스 키>": "<uuid>"}}],
+ "trap_receivers": [{"name": "trap-udp-162", "target_id": "<uuid>", "protocol": "udp", "port": 162}]}
+```
+
+DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 메모리 대상 번호가 `children` 에 든다.
+
+### 12-5. 되돌리기
+
+1. 서버 네 대 에이전트를 먼저 멈추고 지운다(§11 되돌리기).
+2. `$R --phase rollback --record deploy/inventory/t.targets.json`(찍기만) 뒤 `--yes`: trap 수신기, NMS 장비, 로그 감시, 관리 NIC 경계, 서버 대상 순으로 지운다. 2차 인증을 켠 설치면 삭제가 `X-Function-Auth` 를 요구해 4xx 로 멈춘다. 그때는 화면에서 지운다.
+3. 등록 해제가 과거 데이터를 지우는지는 확인하지 않았다(설계 §13-7). 되돌리기 전에 지휘 세션이 정한다.
+
+## 13. T3 완료 조건 확인 (`deploy/tools/t3_check.py`, 읽기 전용)
+
+설계 §10 T3 표의 행마다 항목 하나다. 관제 서버 ClickHouse(파드 안 `clickhouse-client --readonly=1 --max_threads=2 --max_execution_time=60`, 모든 질의에 시각 범위), PostgreSQL(파드 안 psql, read only, statement_timeout 20초, 큰 열 안 읽음), VictoriaMetrics(104 에서 평가용 LB `:18428`), 119 호스트(`df`, `sadf`, wg0 바이트, `kubectl get`)만 읽는다. `--vm-reads` 일 때만 서버 VM 을 관리망 운영자 계정으로 읽는다(에이전트의 열린 파일, 감시 파일 `grep -c`). 끝 코드 0 은 모든 항목 충족.
+
+| 행 | 읽는 것 | 통과 |
+|---|---|---|
+| SMS | VM `sms.*` 이름(호스트 대상 `host_target_id` 또는 `target_id`) | CPU, 메모리, 디스크, 파일 시스템, NIC, 프로세스 이름군이 모두 있음. 활성 계열 수, `sms.cpu.utilization` 표본 간격은 기록 |
+| 관리 NIC | PG 하위 대상 관리 상태, VM 최근 10분 `sms.network_interface.*{device=<관리 NIC>}` | 관리 안 함이고 최근 계열 0 |
+| journal | 코드 사실 + (`--vm-reads`) 에이전트 `/proc/<pid>/fd` | journal 파일 0 |
+| 프로세스 계열 단위 | VM `sms.process.cpu_utilization` 라벨 | `name`, `pid` 라벨(단위 기록) |
+| ICMP | VM `sms.server.icmp_status`, `sms.server.rtt`, PG 대상 주소, `target_availability_latest`(server), `policy_device_overrides`(collection), 라우터 `nms.network.icmp_status`, `rtt` | 서버 넷 상태 1, RTT 계열, 주소 = 업무 주소, 가용성 UP, 덮어쓰기 0, 라우터 상태 1 과 RTT |
+| NMS | VM 라우터 `nms.interface.if_oper_status`, 옥텟, 오류, 버림, `nms.cpu.usage` | 이름이 모두 있고 인터페이스(snmp_index) 수가 하위 + 상향 이상. 폴링 간격 기록 |
+| trap | CH `snmp_traps_local`(`--trap-since` 부터, 출발 라우터 상향 주소) | linkDown, linkUp 각 1행 이상 |
+| DPM 없음 | VM `dpm.*`(이 도메인 대상), PG type database 이고 주소가 db01 업무 주소 | 둘 다 0 |
+| DB 서버 관제 | VM 데이터 마운트 파일 시스템, 디스크 IO, CH `process_snapshot` 의 postgres 행, CH 서버 로그 감시 줄 | 넷 다 있음 |
+| syslog | CH `syslog_local` 출발 주소별 10분 칸 | 서버 넷과 라우터의 칸마다 1행 이상, 부하기 출발 0 |
+| 로그 감시 | PG 감시 등록, CH `lucida_logs_local`(`event_source=log_monitor`, `file_path`), (`--vm-reads`) 파일의 패턴 맞는 줄 수 | 감시마다 줄이 있음. 줄이 없는데 파일에도 맞는 줄이 없으면 «줄 없음(파일에도 없음)» 으로 따로 센다(감시가 못 읽는 증거가 아님). 파일에 맞는 줄이 있는데 줄이 없거나, VM 을 읽지 않았으면 실패. 패턴에 맞을 줄을 일부러 만들지 않는다 |
+| 탐지 밴드 | VM `sms.*.bands`, `nms.*.bands`(등록 24시간 뒤) | 대상마다 밴드 계열이 있고 24시간 최댓값 +Inf 0 |
+| 부담(Q8) | `--budget` 사실 두 개(등록 전 24시간, 뒤 24시간): CH `MemoryResident` 최댓값, VM 상주 메모리 최댓값과 파드 한도, 디스크, `sadf` CPU(user+nice+system)와 steal 평균, wg0 바이트 | 뒤 사실이 3.6GiB 미만, 한도 80% 미만, 80% 미만, steal 증가 3%p 이하, CPU 70% 이하. 참고(판정 아님): 이 도메인 활성 계열, 구간 고유 계열, 원천 표 행, 두 사실 사이 터널 평균(직렬 지점 기준 5 Mbps) |
+| 대상 번호 표 | 표의 모든 번호가 PG `targets` 에 있음 | 없는 번호 0, 서버 하위에 NIC, 파일 시스템, 프로세스 |
+
+11-18 13:1x KST 조회(등록 전, 지난 24시간): ClickHouse `MemoryResident` 최댓값 **3.475GiB**(예산 3.6GiB 까지 0.125GiB), VictoriaMetrics 상주 최댓값 2.47GiB / 한도 8GiB, 디스크 55%, CPU 42.5%, steal 1.36%.
 
 ## 수정 기록
 
@@ -329,3 +480,4 @@ sudo systemctl start loadgen.service
 - 2026-11-18 KST, v4 T2RSYS 3회차(리뷰 rv-t2rsys 2회차 중간 보고, 지휘 세션 결정): §6 `syslog` 단계의 AppArmor 조각(로컬 소켓 주석의 `/proc` 읽기를 감사 없이 거부)과 다시 읽기, 재시작 뒤 `/proc` 거부 0 확인, 조각 손으로 빼기, 점검 도구의 `apparmor-fragment`, §7 `rsyslog-no-proc-audit`.
 - 2026-11-18 KST, v4 T2VER(ap-t2 §7 점검): §7 관리망 격리 (2) 의 기대를 실제 규칙대로(web01 은 라우터 `mgmtguard prerouting` 거절 카운터, loadgen 은 66 `T4-IN`, `T4-FWD` 거절 카운터), 66 상향 브리지 ICMP echo 허용을 브리지 자기 주소로 좁힘(렌더러), 라우터 prerouting 관리 대역 거절에 counter.
 - 2026-11-18 KST, v4 T2VER(ap-t2 §7 관찰, 지휘 세션 결정): 관리 SSH notrack(라우터와 서버 `mgmtguard`, conntrack 표가 가득 차도 정리 SSH 가 붙게)과 §7 notrack 행의 새 관리 SSH 확인, 가드 단독 시험 2-4 명령 `systemd-tmpfiles --boot --remove`, §7 WAR 체크섬 대조는 webapps 에서.
+- 2026-11-18 KST, v4 T3P(ag-t3p): T3 적용 준비. §11 SMS 에이전트 설치(`sms-agent` 단계, 바이너리 출처와 꺼내기, 자리, 유닛, 멱등, verify 세 항목, 되돌리기), §12 관제 서버 등록(적용 순서와 시각 기준, T2 판정 끝 E 전 금지, trap 확인을 평시 판정 뒤 T3 첫 주입 단계로 옮김과 수신기 등록이 먼저인 까닭, 단계별 API 와 되돌리기, 미리 확인한 제품 동작, 대상 번호 표 꼴), §13 완료 조건 확인 도구와 행별 통과 기준, 등록 전 119 자원 조회 값. §10 되돌리기 줄.

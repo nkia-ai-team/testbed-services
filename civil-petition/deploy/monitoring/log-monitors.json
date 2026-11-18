@@ -1,0 +1,77 @@
+{
+  "schema": "petition-portal-log-monitors/1",
+  "comment": "SMS 로그 감시(설계 §4, runbook §11, §12). 역할별 파일과 고객이 흔히 거는 일반 패턴을 T3 에 한 번 정하고 시나리오별로 고치지 않는다. syslog, auth.log 패턴은 기존 세 도메인 작업 노드의 감시(119 등록값, 11-18 조회)와 글자 그대로 같다. 날짜가 든 파일 이름은 에이전트의 날짜 자리([YYYY] [MM] [DD], matchingType Exact 는 에이전트 시각으로 채움)로 적는다. /var/log/opsjobs.log 는 감시하지 않는다(설계 §6-2).",
+  "defaults": {
+    "matchingType": "Exact",
+    "scanType": "End",
+    "encodingType": "NOT_SPECIFIED",
+    "caseSensitive": true
+  },
+  "common": [
+    {
+      "name": "syslog",
+      "fileName": "/var/log/syslog",
+      "errorPattern": ".*\\b([Ee]rror|ERROR|[Ff]ailed|FAILED|[Ff]ailure)\\b.*",
+      "fatalPattern": ".*(kernel panic|I/O error|Out of memory|oom-kill|segfault).*",
+      "warnPattern": ".*\\b([Ww]arn(ing)?|WARN)\\b.*"
+    },
+    {
+      "name": "auth-log",
+      "fileName": "/var/log/auth.log",
+      "errorPattern": ".*([Ff]ailed password|authentication failure|[Ii]nvalid user).*",
+      "warnPattern": ".*(session opened for user root|sudo:.*COMMAND).*"
+    }
+  ],
+  "roles": {
+    "web": [
+      {
+        "name": "apache-access",
+        "fileName": "/var/log/apache2/access.log",
+        "errorPattern": ".*\" 5[0-9][0-9] .*"
+      },
+      {
+        "name": "apache-error",
+        "fileName": "/var/log/apache2/error.log",
+        "errorPattern": ".*:error\\] .*",
+        "fatalPattern": ".*:(crit|alert|emerg)\\] .*",
+        "warnPattern": ".*:warn\\] .*"
+      }
+    ],
+    "was": [
+      {
+        "name": "catalina-out",
+        "fileName": "/var/log/tomcat10/catalina.out",
+        "errorPattern": ".*(SEVERE|ERROR|Exception).*",
+        "fatalPattern": ".*(OutOfMemoryError|StackOverflowError).*",
+        "warnPattern": ".*WARNING.*"
+      },
+      {
+        "name": "app-log",
+        "fileName": "/var/log/tomcat10/petition.log",
+        "errorPattern": ".*( ERROR |Exception).*",
+        "fatalPattern": ".*(OutOfMemoryError|StackOverflowError).*",
+        "warnPattern": ".* WARN .*"
+      },
+      {
+        "name": "tomcat-localhost",
+        "fileName": "/var/log/tomcat10/localhost.[YYYY]-[MM]-[DD].log",
+        "errorPattern": ".*(SEVERE|Exception).*",
+        "warnPattern": ".*WARNING.*"
+      },
+      {
+        "name": "tomcat-access",
+        "fileName": "/var/log/tomcat10/localhost_access_log.[YYYY]-[MM]-[DD].txt",
+        "errorPattern": ".*\" 5[0-9][0-9] .*"
+      }
+    ],
+    "db": [
+      {
+        "name": "postgresql",
+        "fileName": "/var/log/postgresql/postgresql-16-main.log",
+        "errorPattern": ".*ERROR.*",
+        "fatalPattern": ".*(PANIC|FATAL).*",
+        "warnPattern": ".*WARNING.*"
+      }
+    ]
+  }
+}

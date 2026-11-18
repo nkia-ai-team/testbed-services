@@ -3,7 +3,10 @@
 # 설계: docs/spec-testbed-vm-3tier.md §2-5, 적용 순서: docs/runbook-civil-petition-apply.md.
 #
 #   apply.sh --inventory inventory/t.json --host <이름> [--host ...] --war <petition.war> [--k6 <k6 바이너리>]
-#            [--package-versions <파일>] [--steps "단계 ..."] [--jump root@192.168.200.66] [--dry-run]
+#            [--sms-agent <lucida-agent 바이너리>] [--package-versions <파일>] [--steps "단계 ..."]
+#            [--jump root@192.168.200.66] [--dry-run]
+#   --sms-agent 는 서버(웹, WAS, DB)의 sms-agent 단계가 쓴다. 모든 단계를 돌거나 --steps 에 sms-agent 가 있으면 반드시
+#   준다(runbook §11: 관제 서버 SMS 수집기 이미지 안의 lucida-agent-linux-amd64, T 와 S 가 같은 파일).
 #   apply.sh --inventory inventory/t.json --start-load      부하기 유닛을 처음 띄운다(마지막 순서)
 #
 # 비밀값은 인벤토리에 적힌 파일 경로에서 셸 변수 없이 파일 그대로 묶음의 secrets/ 로 복사하고 화면에 내지 않는다.
@@ -18,6 +21,7 @@ inventory=""
 hosts=()
 war=""
 k6=""
+sms_agent=""
 versions=""
 steps=""
 jump="root@192.168.200.66"
@@ -29,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --host) hosts+=("$2"); shift 2 ;;
         --war) war="$2"; shift 2 ;;
         --k6) k6="$2"; shift 2 ;;
+        --sms-agent) sms_agent="$2"; shift 2 ;;
         --package-versions) versions="$2"; shift 2 ;;
         --steps) steps="$2"; shift 2 ;;
         --jump) jump="$2"; shift 2 ;;
@@ -77,6 +82,11 @@ for host in "${hosts[@]}"; do
     cp "$HERE/install-host.sh" "$bundle/"
     cp "$HERE"/steps/*.sh "$bundle/steps.d/"
     [[ -n "$versions" ]] && cp "$versions" "$bundle/artifacts/package-versions.txt"
+    # SMS 에이전트(설계 §4): 서버 역할 묶음이 sms-agent 단계를 돌 때만 바이너리가 있어야 한다.
+    if grep -qx sms-agent "$bundle/steps" && { [[ -z "$steps" ]] || [[ " $steps " == *" sms-agent "* ]]; }; then
+        [[ -r "$sms_agent" ]] || { echo "apply: $host 에 --sms-agent 필요(runbook §11)" >&2; exit 2; }
+        cp "$sms_agent" "$bundle/artifacts/lucida-agent"
+    fi
     install -m 0600 "$(expand "$(field accounts.executor.pubkey_file)")" "$bundle/secrets/$executor.pub"
     install -m 0600 "$(expand "$(field accounts.operator.pubkey_file)")" "$bundle/secrets/$operator.pub"
     case "$role" in

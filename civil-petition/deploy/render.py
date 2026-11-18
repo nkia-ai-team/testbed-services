@@ -86,6 +86,15 @@ SYSLOG_FORWARD_FILES = (
 )
 MODULE_FILES = (FileSpec("kernel-modules", "/etc/modules-load.d/qdisc.conf", "common/modules-qdisc.conf"),)
 LLDPD_FILES = (FileSpec("lldpd", "/etc/default/lldpd", "common/lldpd-default"),)
+# SMS 에이전트(설계 §4, runbook §11). T 와 S 가 같은 자리, 같은 유닛을 쓴다(설계 §2-5 "같은 방식, 같은 에이전트 판").
+# 자리와 유닛 이름은 게스트에 드러나므로 테스트베드 낱말을 쓰지 않는다(설계 §2-2).
+SMS_AGENT_HOME = "/opt/lucida-agent"
+SMS_AGENT_UNIT = "lucida-agent"
+SMS_AGENT_RECORD = "/var/lib/petition-deploy/lucida-agent.sha256"
+SMS_AGENT_FILES = (
+    FileSpec("sms-agent", f"{SMS_AGENT_HOME}/agent.env", "common/lucida-agent.env", "0600"),
+    FileSpec("sms-agent", f"/etc/systemd/system/{SMS_AGENT_UNIT}.service", "common/lucida-agent.service"),
+)
 NON_ROUTER_FILES = (
     FileSpec("network", "/etc/sysctl.d/60-host.conf", "common/sysctl-server.conf"),
     FileSpec("firewall", "/etc/nftables.d/10-mgmt-guard.nft", "common/nft-mgmt-guard.nft"),
@@ -144,6 +153,8 @@ STEP_ORDER = (
     "verify-host", "os-base", "network", "accounts", "time", "syslog", "kernel-modules", "syslog-forward",
     "firewall", "lldpd",
     "router", "db", "db-schema", "db-seed", "db-backup", "was", "was-batch", "web", "loadgen",
+    # SMS 에이전트는 서버 역할(웹, WAS, DB)에만, 역할 설치 뒤에 둔다(설계 §4, runbook §11).
+    "sms-agent",
     "verify",
 )
 
@@ -342,6 +353,8 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         "monitor_address": monitoring["address"],
         "syslog_port": str(monitoring["syslog_port"]),
         "sms_port": str(monitoring["sms_port"]),
+        "sms_server_url": f"http://{monitoring['address']}:{monitoring['sms_port']}",
+        "sms_agent_home": SMS_AGENT_HOME,
         "chrony_server": inventory["time"]["chrony_server"],
         "web_port": str(app["web_port"]),
         "was_port": str(app["was_port"]),
@@ -427,6 +440,8 @@ def file_specs(inventory: dict, host: dict) -> list[FileSpec]:
     if role != "router":
         specs += NON_ROUTER_FILES
     specs += ROLE_FILES[role]
+    if role in SERVER_ROLES:
+        specs += SMS_AGENT_FILES
     if host.get("batch"):
         specs += BATCH_FILES
     return specs
@@ -447,6 +462,8 @@ def host_steps(inventory: dict, host: dict) -> list[str]:
         wanted |= {"db-schema", "db-seed", "db-backup"}
     if host.get("batch"):
         wanted.add("was-batch")
+    if role in SERVER_ROLES:
+        wanted.add("sms-agent")
     return [step for step in STEP_ORDER if step in wanted]
 
 
@@ -526,6 +543,12 @@ def render_host(inventory: dict, host: dict) -> dict:
         env["ROUTER_AUGMENT"] = " ".join(nic["ifname"] for nic in host["nics"] if nic.get("downlink"))
     if host["role"] == "loadgen":
         env["ENTRY_URL"] = context["entry_url"]
+    if host["role"] in SERVER_ROLES:
+        env["SMS_AGENT_HOME"] = SMS_AGENT_HOME
+        env["SMS_AGENT_UNIT"] = SMS_AGENT_UNIT
+        env["SMS_AGENT_RECORD"] = SMS_AGENT_RECORD
+        env["SMS_AGENT_HOST"] = context["biz_addr"]
+        env["SMS_SERVER_URL"] = context["sms_server_url"]
     return {"host": host["name"], "role": host["role"], "steps": host_steps(inventory, host), "env": env, "files": files}
 
 
