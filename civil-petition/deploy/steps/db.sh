@@ -1,9 +1,17 @@
 # PostgreSQL 16 을 데이터 디스크에 둔다(설계 §2-2: 데이터 디스크를 OS 디스크와 따로).
-disk="/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_${DATA_DISK_SERIAL}"
-[[ -b "$disk" ]] || fail "데이터 디스크 없음: $disk"
-if ! blkid "$disk" >/dev/null 2>&1; then
-    mkfs.ext4 -q -L "$DATA_DISK_SERIAL" "$disk"
-fi
+# 디스크는 lsblk SERIAL 로 찾는다(disk_by_serial, lib.sh). 없거나 둘 이상이면 아무것도 바꾸지 않고 멈춘다.
+disk=$(disk_by_serial "$DATA_DISK_SERIAL") || fail "데이터 디스크(serial $DATA_DISK_SERIAL)를 하나로 찾지 못함. 아무것도 바꾸지 않음"
+# blkid 는 장치가 없을 때도 2 를 돌려주므로 블록 장치인지 먼저 본다.
+[[ -b "$disk" ]] || fail "데이터 디스크가 블록 장치가 아님: $disk"
+# 파일 시스템이나 파티션 표 같은 서명이 하나라도 있으면 포맷하지 않는다. blkid -p 가 "서명 없음"(2)이라 답할 때만 mkfs 하고,
+# 그 밖의 실패(읽기 오류, 서명이 여럿이라 모호함 8 등)는 비어 있다는 뜻이 아니므로 멈춘다.
+probe=0
+blkid -p "$disk" >/dev/null 2>&1 || probe=$?
+case "$probe" in
+    0) log "데이터 디스크 $disk 에 서명이 있어 포맷하지 않음" ;;
+    2) mkfs.ext4 -q -L "$DATA_DISK_SERIAL" "$disk" ;;
+    *) fail "데이터 디스크 $disk 를 blkid 가 읽지 못함(rc $probe). 포맷하지 않음" ;;
+esac
 install -d -m 0755 "$DATA_MOUNT"
 grep -q "^LABEL=${DATA_DISK_SERIAL} " /etc/fstab \
     || echo "LABEL=${DATA_DISK_SERIAL} ${DATA_MOUNT} ext4 defaults,noatime 0 2" >> /etc/fstab

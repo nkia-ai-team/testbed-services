@@ -14,8 +14,10 @@ import importlib.util
 import io
 import json
 import math
+import os
 import random
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -147,6 +149,24 @@ class InventoryValidationTests(unittest.TestCase):
         inv["hosts"] = [h for h in inv["hosts"] if h["role"] != "router"]
         with self.assertRaises(render.InventoryError):
             render.validate(inv)
+
+    def test_rejects_a_data_disk_serial_the_db_step_cannot_match(self) -> None:
+        # db 단계는 lsblk SERIAL 과 글자 그대로 맞춘다. serial 이 없거나, serial 없는 디스크가 보고하는 drive-scsiN 꼴이거나,
+        # lsblk -r 이 바꿔 쓰는 글자가 있거나, Proxmox 한도(20바이트)를 넘으면 렌더에서 멈춘다.
+        for bad in (None, "", "drive-scsi1", "pg data", "pg/data", "p" * 21):
+            inv = inventory()
+            disk = next(d for h in inv["hosts"] if h["role"] == "db" for d in h["disks"] if d.get("mount"))
+            if bad is None:
+                disk.pop("serial")
+            else:
+                disk["serial"] = bad
+            with self.subTest(serial=bad), self.assertRaisesRegex(render.InventoryError, "데이터 디스크 serial"):
+                render.validate(inv)
+        for good in ("pgdata", "PG_data-2", "p" * 20):
+            inv = inventory()
+            next(d for h in inv["hosts"] if h["role"] == "db" for d in h["disks"] if d.get("mount"))["serial"] = good
+            with self.subTest(serial=good):
+                render.validate(inv)
 
     def test_rejects_an_app_context_other_than_the_war_name(self) -> None:
         inv = inventory()
@@ -2952,6 +2972,119 @@ class StepScriptTests(unittest.TestCase):
             lines = [l for l in (DEPLOY / "steps" / f"{step}.sh").read_text().splitlines() if l and not l.startswith("#")]
             with self.subTest(step=step):
                 self.assertEqual(lines[0], "require_inventory_names")
+
+    # db 단계의 데이터 디스크 찾기와 포맷 보호. 단계는 앞부분(포맷까지)만 돌린다(뒤는 /etc/fstab 과 PostgreSQL 을 만진다).
+    # lsblk, blkid, mkfs.ext4 는 대역이다. [[ -b ]] 를 지나게 장치 경로는 이 호스트의 실제 블록 장치 이름을 빌려 쓰고,
+    # 대역 밖의 어떤 명령도 그 장치를 건드리지 않는다.
+    @staticmethod
+    def _block_devices(n: int) -> list[str]:
+        found = sorted(e.path for e in os.scandir("/dev") if stat.S_ISBLK(os.stat(e.path).st_mode))
+        if len(found) < n:
+            raise AssertionError(f"시험에 빌려 쓸 블록 장치가 {n}개 없음: {found}")
+        return found[:n]
+
+    def _db_disk(self, root: Path, table: str, probe: dict[str, int] | None = None) -> subprocess.CompletedProcess:
+        calls = root / "calls"
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        probe = probe or {}
+        cases = "".join(f'    "{dev}") exit {rc} ;;\n' for dev, rc in probe.items())
+        stubs = {
+            "lsblk": f'#!/bin/sh\necho lsblk "$@" >> {calls}\ncat {root / "table"}\n',
+            "blkid": f'#!/bin/sh\necho blkid "$@" >> {calls}\nfor dev; do :; done\ncase "$dev" in\n{cases}esac\nexit 2\n',
+            "mkfs.ext4": f'#!/bin/sh\necho mkfs.ext4 "$@" >> {calls}\n',
+        }
+        for tool, text in stubs.items():
+            (bin_dir / tool).write_text(text)
+            (bin_dir / tool).chmod(0o755)
+        (root / "table").write_text(table)
+        head = re.split(r'(?m)^install -d -m 0755 "\$DATA_MOUNT"', (DEPLOY / "steps" / "db.sh").read_text())[0]
+        (root / "db-head.sh").write_text(head)
+        script = f"set -euo pipefail; . {DEPLOY / 'steps' / 'lib.sh'}; . {root / 'db-head.sh'}; echo disk-done"
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "DATA_DISK_SERIAL": "pgdata", "DATA_MOUNT": str(root / "pgdata")}
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+    def test_db_step_finds_the_data_disk_by_lsblk_serial_whatever_the_by_id_name(self) -> None:
+        # 66 db01(11-18): by-id 는 scsi-SQEMU_QEMU_HARDDISK_pgdata 이고 scsi-0QEMU_ 꼴은 drive-scsiN 에만 붙었다.
+        # 다른 QEMU 판에서는 scsi-0QEMU_QEMU_HARDDISK_pgdata 꼴일 수 있다. 어느 쪽이든 lsblk SERIAL 은 serial 그대로다.
+        os_disk, data_disk, cdrom = self._block_devices(3)
+        layouts = {
+            "SQEMU": f"{os_disk} drive-scsi0 disk\n{data_disk} pgdata disk\n{cdrom} QM00003 rom\n",
+            "0QEMU": f"{data_disk} pgdata disk\n{os_disk} drive-scsi0 disk\n",
+        }
+        for name, table in layouts.items():
+            with self.subTest(by_id=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                done = self._db_disk(root, table)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("disk-done", done.stdout)
+                calls = (root / "calls").read_text().splitlines()
+                self.assertEqual(calls, ["lsblk -dnr -o PATH,SERIAL,TYPE", f"blkid -p {data_disk}",
+                                         f"mkfs.ext4 -q -L pgdata {data_disk}"])
+        source = (DEPLOY / "steps" / "db.sh").read_text()
+        self.assertNotIn("/dev/disk/by-id", source)
+        self.assertNotIn("QEMU", source)
+
+    def test_db_step_changes_nothing_without_exactly_one_data_disk(self) -> None:
+        a, b, c = self._block_devices(3)
+        tables = {
+            # serial 을 안 준 디스크(drive-scsiN), 이름만 비슷한 serial, 파티션과 CD 는 데이터 디스크가 아니다.
+            "none": (f"{a} drive-scsi0 disk\n{b} drive-scsi1 disk\n{c} pgdata part\n/dev/sr0 pgdata rom\n{c} pgdata2 disk\n", "0개"),
+            "two": (f"{a} drive-scsi0 disk\n{b} pgdata disk\n{c} pgdata disk\n", "2개"),
+            "empty": ("", "0개"),
+        }
+        for name, (table, count) in tables.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                done = self._db_disk(root, table)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertNotIn("disk-done", done.stdout)
+                self.assertIn(f"serial pgdata 인 디스크가 {count}(하나여야 함)", done.stderr)
+                self.assertIn("FAIL 데이터 디스크(serial pgdata)를 하나로 찾지 못함. 아무것도 바꾸지 않음", done.stderr)
+                self.assertEqual((root / "calls").read_text().splitlines(), ["lsblk -dnr -o PATH,SERIAL,TYPE"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._db_disk(root, f"{a} drive-scsi0 disk\n{b} pgdata disk\n")
+            self.assertEqual(done.returncode, 0, done.stderr)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._db_disk(root, f"{a} drive-scsi0 disk\n{b}  disk\n{c} pgdata disk\n")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(f"mkfs.ext4 -q -L pgdata {c}", (root / "calls").read_text())
+        # lsblk 가 실패하면 멈춘다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._db_disk(root, "")
+            (root / "bin" / "lsblk").write_text("#!/bin/sh\nexit 1\n")
+            done = subprocess.run(["bash", "-c", f"set -euo pipefail; . {DEPLOY / 'steps' / 'lib.sh'}; . {root / 'db-head.sh'}; echo disk-done"],
+                                  capture_output=True, text=True,
+                                  env={"PATH": f"{root / 'bin'}:/usr/bin:/bin", "DATA_DISK_SERIAL": "pgdata", "DATA_MOUNT": str(root / "m")})
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("lsblk 실패", done.stderr)
+
+    def test_db_step_formats_only_a_disk_with_no_signature(self) -> None:
+        a, b = self._block_devices(2)
+        table = f"{a} drive-scsi0 disk\n{b} pgdata disk\n"
+        # 0 = 파일 시스템이나 파티션 표가 있음, 8 = 서명이 여럿(모호함), 4 = 사용법 오류, 1 = 그 밖 오류.
+        for rc, ok in ((0, True), (8, False), (4, False), (1, False)):
+            with self.subTest(blkid=rc), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                done = self._db_disk(root, table, {b: rc})
+                calls = (root / "calls").read_text()
+                self.assertNotIn("mkfs", calls)
+                self.assertEqual(done.returncode == 0, ok, done.stderr)
+                if ok:
+                    self.assertIn(f"데이터 디스크 {b} 에 서명이 있어 포맷하지 않음", done.stdout)
+                else:
+                    self.assertIn(f"데이터 디스크 {b} 를 blkid 가 읽지 못함(rc {rc}). 포맷하지 않음", done.stderr)
+        # 블록 장치가 아니면(lsblk 와 실제가 어긋남) blkid 전에 멈춘다. blkid 는 없는 경로에도 2(서명 없음)를 돌려준다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            done = self._db_disk(root, f"{a} drive-scsi0 disk\n{root}/nodev pgdata disk\n")
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(f"데이터 디스크가 블록 장치가 아님: {root}/nodev", done.stderr)
+            self.assertNotIn("blkid", (root / "calls").read_text())
+            self.assertNotIn("mkfs", (root / "calls").read_text())
 
     def test_db_step_keeps_the_password_out_of_argv_and_the_server_log(self) -> None:
         source = (DEPLOY / "steps" / "db.sh").read_text()

@@ -184,6 +184,23 @@ PY
     rm -rf "$stage"; trap - EXIT
 }
 
+# serial 이 <serial> 과 글자 그대로 같은 디스크(lsblk TYPE disk, 파티션 제외) 하나의 장치 경로를 낸다.
+# 없거나 둘 이상이면 찾은 목록을 stderr 에 내고 1. /dev/disk/by-id 의 이름 꼴은 기대지 않는다: Proxmox 가 serial 을 준
+# 디스크는 scsi-SQEMU_QEMU_HARDDISK_<serial> 이고 scsi-0QEMU_QEMU_HARDDISK_ 꼴은 drive-scsiN 에 붙는(66 db01, 11-18)
+# 것처럼 QEMU 판과 serial 유무에 따라 다르다. serial 을 주지 않은 디스크는 lsblk SERIAL 이 drive-scsiN 이다.
+disk_by_serial() {
+    local want="$1" table found count
+    table=$(lsblk -dnr -o PATH,SERIAL,TYPE) || { echo "lsblk 실패" >&2; return 1; }
+    found=$(awk -v s="$want" '$3 == "disk" && $2 == s {print $1}' <<<"$table")
+    count=$(grep -c . <<<"$found" || true)
+    if [[ "$count" -ne 1 ]]; then
+        printf 'serial %s 인 디스크가 %s개(하나여야 함). lsblk: %s\n' "$want" "$count" \
+            "$(awk '$3 == "disk" {printf "%s=%s ", $1, ($2 == "" ? "(없음)" : $2)}' <<<"$table")" >&2
+        return 1
+    fi
+    printf '%s\n' "$found"
+}
+
 # 서비스를 다시 띄운 직후의 확인은 값이 설 때까지 다시 읽는다. 서비스가 막 섰을 때는 첫 응답, 설정이 덮어쓰는 값,
 # 도우미가 답하는 열이 아직 서지 않았을 수 있다(snmpd 가 선 지 1초 안에 ifHighSpeed 를 한 번만 읽어 0 을 보고 멈춘 일).
 #   settle <상한 초> <간격 초> <실패 문구> <명령> [인자...]

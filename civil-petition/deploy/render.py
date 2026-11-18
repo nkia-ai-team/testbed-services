@@ -43,6 +43,9 @@ SECRET = re.compile(r"@@SECRET:([a-z0-9_]+)@@")
 MAC_SLOT = re.compile(r"@@MAC:([a-z0-9]+)@@")
 # 커널 NIC 이름 꼴(IFNAMSIZ 16 에서 끝 NUL 을 뺀 15자). netplan set-name 이 이보다 길면 이름을 바꾸지 않는다.
 IFNAME = re.compile(r"^[a-z][a-z0-9]{0,14}$")
+# 데이터 디스크 serial: Proxmox 는 20바이트까지 받는다. db 단계가 lsblk SERIAL 과 글자 그대로 맞추므로 lsblk -r 이 바꿔 쓰는
+# 글자(공백 등)를 막고, serial 을 주지 않은 디스크가 보고하는 drive-scsiN 과 겹치지 않게 drive- 로 시작하지 못하게 한다.
+DISK_SERIAL = re.compile(r"^(?!drive-)[A-Za-z0-9_-]{1,20}$")
 ROLES = ("router", "web", "was", "db", "loadgen")
 SERVER_ROLES = ("web", "was", "db")
 # 게스트 쪽에 드러나는 이름에 쓰지 않는 낱말(설계 §2-2 원칙 8). Proxmox 이름은 관제 서버로 가지 않아 예외다.
@@ -223,6 +226,10 @@ def validate(inventory: dict) -> None:
         db_disks = [disk for disk in host.get("disks", []) if disk.get("mount")]
         if host["role"] == "db" and len(db_disks) != 1:
             raise InventoryError(f"{name}: DB 는 데이터 디스크 하나를 따로 가져야 함(설계 §2-2)")
+        for disk in db_disks:
+            if not DISK_SERIAL.match(str(disk.get("serial", ""))):
+                raise InventoryError(f"{name}: 데이터 디스크 serial {disk.get('serial')!r} 이 꼴(영문, 숫자, _, - 20자 이하, drive- 로 시작 안 함)이 아님."
+                                     " db 단계가 이 serial 로 디스크를 찾는다")
     for role in SERVER_ROLES + ("loadgen",):
         if role not in roles:
             raise InventoryError(f"역할 {role} 호스트가 없음")
