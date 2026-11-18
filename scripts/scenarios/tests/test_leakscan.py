@@ -264,6 +264,30 @@ class LeakscanCaptureMeta(unittest.TestCase):
             self.assertEqual(_scan(root).returncode, 1)
 
 
+    def test_only_the_answer_folder_at_the_case_root_is_skipped(self) -> None:
+        """v4 LSANS (Q29 확인 필요 1): `"answer" in path.parts` also skipped data/answer/ and any case whose own path
+        held an `answer` folder. Only <case>/answer/ (benchmark contract §2.2) is answer-side."""
+        report = "verification report for F49-H (case-f49-h-v4-3af6c70e)\n"
+        for layout in ("old", "input"):
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw) / "answer" / "case-x"  # a case path that itself passes through an answer folder
+                data = root / ("input" if layout == "input" else "data")
+                (data / "clickhouse").mkdir(parents=True)
+                pq.write_table(pa.table({"proc_key": ["k0"], "cmdline": ["mysqld"]}),
+                               data / "clickhouse" / "process_meta.parquet")
+                (root / "answer").mkdir()
+                (root / "answer" / "verification-report.txt").write_text(report)
+                done = _scan(root)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                (data / "answer").mkdir()
+                (data / "answer" / "verification-report.txt").write_text(report)
+                done = _scan(root)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                (data / "answer" / "verification-report.txt").unlink()
+                (data / "notes.txt").write_text(report)  # the case path's own answer folder no longer hides data
+                self.assertEqual(_scan(root).returncode, 1)
+
+
 class LeakscanEmptyCase(unittest.TestCase):
     def test_a_case_with_nothing_to_read_is_not_clean(self) -> None:
         """Six v3 folders left empty by the 10-31 dump failure used to pass as clean (v4 LEAK review, low 2)."""

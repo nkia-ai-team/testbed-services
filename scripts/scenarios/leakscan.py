@@ -34,7 +34,7 @@ v4 녹화본의 data/catalog/{postgres,clickhouse}/*.tsv(원천 카탈로그: �
 재생이 읽지 않지만, 읽게 바뀌는 날 주입이 만든 객체 이름이 게이트 밖에 남지 않게 미리 본다(지난 녹화본 중 tsv 를
 가진 것은 첫 v4 녹화본 하나이고 그 9개에 걸리는 것이 없어 v3 판정은 그대로다).
 
-보지 않는 파일: 정답 파일(golden.json, 케이스 최상위 scenario.md, causality-audit.json, meta.json, answer/)과 캡처 메타
+보지 않는 파일: 정답 파일(golden.json, 케이스 최상위 scenario.md, causality-audit.json, meta.json, 케이스 최상위 answer/)과 캡처 메타
 topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품에 넣지 않는다).
 
 사용:
@@ -271,6 +271,10 @@ def main() -> int:
         # 정답지 scenario.md 는 케이스 최상위의 것만 정답 파일이다(캡처가 그 자리에만 둔다, 2026-11-18 v4 CAPMETA).
         # 다른 자리의 같은 이름 파일은 녹화 데이터로 보고 텍스트로 읽는다.
         answer_sheet = root / "scenario.md"
+        # 정답 폴더도 케이스 최상위 answer/ 하나뿐이다(벤치마크 계약 §2.2, 하네스만 연다). 예전 조건
+        # ("answer" in path.parts)은 data/answer/ 처럼 데이터 안의 같은 이름 폴더와, 케이스 폴더까지의 경로에
+        # answer 가 든 경우까지 건너뛰었다(2026-11-18 v4 LSANS, Q29 확인 필요 1).
+        answer_dir = root / "answer"
         # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
         # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,
         # data/postgres(.dump, csv), data/victoriametrics.export 만 제품에 넣고 topology/ 는 읽지 않는다
@@ -279,7 +283,7 @@ def main() -> int:
         skip_paths = {("topology", "manifest.json")}
 
         for path in sorted(scope.rglob("*")):
-            if not path.is_file() or path.name in skip or "answer" in path.parts or path == answer_sheet:
+            if not path.is_file() or path.name in skip or path == answer_sheet or path.is_relative_to(answer_dir):
                 continue
             if (path.parent.name, path.name) in skip_paths:
                 continue
