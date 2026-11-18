@@ -3086,6 +3086,117 @@ class StepScriptTests(unittest.TestCase):
             self.assertNotIn("blkid", (root / "calls").read_text())
             self.assertNotIn("mkfs", (root / "calls").read_text())
 
+    # db-schema, db-seed 는 묶음(/root/petition-deploy/<호스트>, root 만 들어감) 안 SQL 을 postgres 로 돌린다.
+    # 가짜 runuser 는 명령을 도는 동안 묶음 디렉터리를 chmod 000 으로 막아 "다른 사용자는 묶음을 열 수 없음" 을 흉내 낸다
+    # (시험은 root 가 아닌 사용자로 돌아야 막힘이 진짜다). 부르는 셸이 미리 연 표준 입력은 그대로 읽힌다.
+    def _db_sql_tree(self, root: Path) -> tuple[Path, dict]:
+        if os.geteuid() == 0:
+            raise AssertionError("이 시험은 root 가 아닌 사용자로 돌아야 묶음 막힘을 흉내 낼 수 있다")
+        bundle = root / "bundle"
+        (bundle / "artifacts").mkdir(parents=True)
+        (bundle / "artifacts" / "schema.sql").write_text("\\set ON_ERROR_STOP 1\nCREATE TABLE petition(id int);\n")
+        (bundle / "artifacts" / "seed.sql").write_text("\\set ON_ERROR_STOP 1\nINSERT INTO petition VALUES (1);\n")
+        subprocess.run("sha256sum schema.sql seed.sql > SHA256SUMS", shell=True, check=True, cwd=bundle / "artifacts")
+        bundle.chmod(0o700)
+        calls, out = root / "calls", root / "psql-read"
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        stubs = {
+            "runuser": (f'#!/bin/sh\necho runuser "$@" >> {calls}\n[ "$1" = -u ] && shift 2\n[ "$1" = -- ] && shift\n'
+                        f'chmod 000 {bundle}\n"$@"\nrc=$?\nchmod 700 {bundle}\nexit $rc\n'),
+            "psql": (f'#!/bin/sh\necho psql "$@" >> {calls}\nfile=""; cmd=""\n'
+                     'while [ $# -gt 0 ]; do case "$1" in -f) file=$2; shift 2;; -c) cmd=$2; shift 2;; *) shift;; esac; done\n'
+                     'if [ -n "$cmd" ]; then case "$cmd" in "select count(*) from petition") echo "${FAKE_COUNT:-0}";; *) echo summary;; esac; exit 0; fi\n'
+                     f'if [ "$file" = - ]; then cat >> {out}; else data=$(cat "$file" 2>/dev/null) || {{ echo "psql: error: $file: Permission denied" >&2; exit 2; }}; printf "%s\\n" "$data" >> {out}; fi\n'
+                     '[ -n "$FAKE_PSQL_FAIL" ] && { echo "psql:<stdin>:2: ERROR: boom" >&2; exit 3; }\nexit 0\n'),
+        }
+        for tool, text in stubs.items():
+            (bin_dir / tool).write_text(text)
+            (bin_dir / tool).chmod(0o755)
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "DB_NAME": "petition", "DB_USER": "petition_app"}
+        return bundle, env
+
+    def _run_db_sql(self, bundle: Path, script: str, env: dict) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", "-c", f"set -euo pipefail; BUNDLE={bundle}; . {DEPLOY / 'steps' / 'lib.sh'}; {script}"],
+                              capture_output=True, text=True, env=env)
+
+    def test_fake_runuser_blocks_a_bundle_file_opened_by_the_other_user(self) -> None:
+        # 흉내가 실제로 막는지: postgres 가 묶음 파일을 직접 여는 종전 꼴은 Permission denied 로 실패한다(APT2 §6-5).
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle, env = self._db_sql_tree(root)
+            done = self._run_db_sql(bundle, 'runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q -d "$DB_NAME" -f "$BUNDLE/artifacts/schema.sql"', env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(f"psql: error: {bundle}/artifacts/schema.sql: Permission denied", done.stderr)
+            self.assertFalse((root / "psql-read").exists())
+            self.assertEqual(oct(bundle.stat().st_mode & 0o777), "0o700")
+
+    def test_db_schema_and_seed_hand_the_sql_over_stdin_opened_by_root(self) -> None:
+        for step, sql in (("db-schema", "CREATE TABLE petition"), ("db-seed", "INSERT INTO petition")):
+            with self.subTest(step=step), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                bundle, env = self._db_sql_tree(root)
+                done = self._run_db_sql(bundle, f". {DEPLOY / 'steps' / (step + '.sh')}", env)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(sql, (root / "psql-read").read_text())
+                runs = [l for l in (root / "calls").read_text().splitlines() if l.startswith("psql") and " -f " in l]
+                self.assertEqual(len(runs), 1, runs)
+                self.assertIn("-v ON_ERROR_STOP=1", runs[0])
+                self.assertIn("-v app_user=petition_app", runs[0])
+                self.assertTrue(runs[0].endswith(" -f -"), runs[0])
+                self.assertNotIn(str(bundle), runs[0])
+
+    def test_db_schema_and_seed_stop_when_psql_fails(self) -> None:
+        for step, ok_line in (("db-schema", "schema ok"), ("db-seed", "summary")):
+            with self.subTest(step=step), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                bundle, env = self._db_sql_tree(root)
+                env["FAKE_PSQL_FAIL"] = "1"
+                done = self._run_db_sql(bundle, f". {DEPLOY / 'steps' / (step + '.sh')}; echo step-done", env)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("ERROR: boom", done.stderr)
+                self.assertNotIn(ok_line, done.stdout)
+                self.assertNotIn("step-done", done.stdout)
+
+    def test_db_seed_does_not_load_into_a_filled_database(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle, env = self._db_sql_tree(root)
+            env["FAKE_COUNT"] = "2000000"
+            done = self._run_db_sql(bundle, f". {DEPLOY / 'steps' / 'db-seed.sh'}", env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn(" -f ", (root / "calls").read_text())
+            self.assertFalse((root / "psql-read").exists())
+
+    def test_nothing_running_as_another_user_opens_a_root_only_path(self) -> None:
+        # 설치 단계와 놓는 파일(T, S 공통) 전부: 다른 사용자로 도는 명령(runuser, setpriv --reuid, sudo -u, su)이 묶음,
+        # /root, 설치 상태 디렉터리를 인자로 받지 않는다. root 셸의 < 리다이렉트로 넘기는 것은 된다.
+        # 다른 사용자로 도는 서비스 유닛(User=)도 그 경로를 가리키지 않는다.
+        root_only = re.compile(r"\$\{?BUNDLE|/root\b|petition-deploy|\bsecrets/")
+        other_user = re.compile(r"\b(runuser\b|setpriv\b[^\n]*--reuid|sudo\s+-u\b|su\s+(-c\b|-\s|-l\b|[a-z_][a-z0-9_-]*\s+-c\b))")
+        sources = sorted((DEPLOY / "steps").glob("*.sh")) + sorted(p for p in (DEPLOY / "templates").rglob("*") if p.is_file())
+        found, seen = [], 0
+        for path in sources:
+            text = re.sub(r"\\\n\s*", " ", path.read_text())
+            for line in text.splitlines():
+                if line.lstrip().startswith("#") or not other_user.search(line):
+                    continue
+                seen += 1
+                command = re.sub(r"<\s*\"?\$\{?BUNDLE\}?[^\s\"]*\"?", "", line)
+                if root_only.search(command):
+                    found.append(f"{path.name}: {line.strip()}")
+        self.assertEqual(found, [])
+        self.assertGreaterEqual(seen, 8, "훑은 줄이 너무 적다(꼴이 바뀌어 아무것도 안 보고 있을 수 있음)")
+        units = []
+        for path in (T_INV, S_INV):
+            for bundle in bundles(path).values():
+                for entry in bundle["files"]:
+                    if re.search(r"(?m)^User=(?!root$)", entry["text"]):
+                        units.append(entry["dest"])
+                        with self.subTest(inventory=path.name, dest=entry["dest"]):
+                            self.assertIsNone(root_only.search(entry["text"]))
+        self.assertIn("/etc/systemd/system/loadgen.service", units)
+
     def test_db_step_keeps_the_password_out_of_argv_and_the_server_log(self) -> None:
         source = (DEPLOY / "steps" / "db.sh").read_text()
         block = source[source.index("<<SQL"):source.index("\nSQL\n")]
