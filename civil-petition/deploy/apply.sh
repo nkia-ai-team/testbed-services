@@ -3,8 +3,10 @@
 # 설계: docs/spec-testbed-vm-3tier.md §2-5, 적용 순서: docs/runbook-civil-petition-apply.md.
 #
 #   apply.sh --inventory inventory/t.json --host <이름> [--host ...] --war <petition.war> [--k6 <k6 바이너리>]
-#            [--sms-agent <lucida-agent 바이너리> [--sms-agent-sha256 <기대 sha256>]] [--package-versions <파일>] [--steps "단계 ..."]
-#            [--jump root@192.168.200.66] [--dry-run]
+#            [--sms-agent <lucida-agent 바이너리> [--sms-agent-sha256 <기대 sha256>]] [--package-versions <파일>]
+#            [--steps "단계 ..." | --skip-steps "단계 ..."] [--jump root@192.168.200.66] [--dry-run]
+#   --skip-steps 는 서버마다 묶음의 단계 목록에서 그 단계만 뺀다(역할마다 다른 목록을 손으로 적지 않게). 관제 서버 등록 창
+#   전 처음 설치에서 --skip-steps sms-agent 로 쓴다(runbook §11, §14). --steps 와 함께 쓰지 않는다.
 #   --sms-agent 는 서버(웹, WAS, DB)의 sms-agent 단계가 쓴다. 모든 단계를 돌거나 --steps 에 sms-agent 가 있으면 반드시
 #   준다(runbook §11: 관제 서버 SMS 수집기 이미지 안의 lucida-agent-linux-amd64, T 와 S 가 같은 파일).
 #   --sms-agent-sha256 을 주면 보내기 전에 그 값과 대조한다(T 와 S 가 같은 파일인지 사람의 눈 대조에만 기대지 않게).
@@ -26,6 +28,7 @@ sms_agent=""
 sms_agent_sha=""
 versions=""
 steps=""
+skip_steps=""
 jump="root@192.168.200.66"
 dry_run=0
 start_load=0
@@ -39,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --sms-agent-sha256) sms_agent_sha="$2"; shift 2 ;;
         --package-versions) versions="$2"; shift 2 ;;
         --steps) steps="$2"; shift 2 ;;
+        --skip-steps) skip_steps="$2"; shift 2 ;;
         --jump) jump="$2"; shift 2 ;;
         --dry-run) dry_run=1; shift ;;
         --start-load) start_load=1; shift ;;
@@ -46,6 +50,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ -r "$inventory" ]] || { echo "apply: --inventory 필요" >&2; exit 2; }
+if [[ -n "$skip_steps" ]]; then
+    [[ -z "$steps" ]] || { echo "apply: --steps 와 --skip-steps 는 함께 쓰지 않는다" >&2; exit 2; }
+    for name in $skip_steps; do
+        [[ -r "$HERE/steps/$name.sh" ]] || { echo "apply: --skip-steps 의 $name 은 설치 단계가 아님" >&2; exit 2; }
+    done
+fi
 if [[ -n "$sms_agent_sha" ]]; then
     [[ -r "$sms_agent" ]] || { echo "apply: --sms-agent-sha256 에는 --sms-agent 가 필요" >&2; exit 2; }
     have=$(sha256sum "$sms_agent" | awk '{print $1}')
@@ -86,6 +96,10 @@ for host in "${hosts[@]}"; do
     role=$(host_field "$host" role)
     addr=$(host_field "$host" mgmt)
     bundle="$work/bundles/$host"
+    for name in $skip_steps; do
+        grep -vxF -- "$name" "$bundle/steps" > "$bundle/steps.kept" || true
+        mv "$bundle/steps.kept" "$bundle/steps"
+    done
     mkdir -p "$bundle/steps.d" "$bundle/artifacts" "$bundle/secrets"
     cp "$HERE/install-host.sh" "$bundle/"
     cp "$HERE"/steps/*.sh "$bundle/steps.d/"
@@ -118,6 +132,7 @@ for host in "${hosts[@]}"; do
     remote="sudo mkdir -p /root/petition-deploy && sudo rm -rf /root/petition-deploy/$host && sudo tar -xzf - -C /root/petition-deploy && sudo bash /root/petition-deploy/$host/install-host.sh /root/petition-deploy/$host $steps"
     if [[ $dry_run == 1 ]]; then
         echo "== $host ($role) -> $operator@$addr"
+        echo "steps: ${steps:-$(tr '\n' ' ' < "$bundle/steps" | sed 's/ $//')}"
         (cd "$bundle" && find . -type f | sort | grep -v '^./secrets/' )
         echo "secrets: $(ls "$bundle/secrets" | tr '\n' ' ')"
         echo "ssh ${ssh_opts[*]} $operator@$addr '$remote'"

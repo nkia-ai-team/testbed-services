@@ -8,12 +8,12 @@ tags:
   - testbed
   - sms
   - nms
-summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 쓰는 S 테스트베드를 66 에 짓는 순서. 66 망 파일, VM 생성, 서버별 설치, 부하 시작, T2 완료 조건 점검, 평시 24시간과 규모 축 판정, SMS 에이전트 설치 자리, 되돌리기.
+summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 쓰는 S 테스트베드를 66 에 짓는 순서. 66 망 파일, VM 생성, 서버별 설치, 부하 시작, T2 완료 조건 점검, 평시 24시간과 규모 축 판정, SMS 에이전트 설치 자리, 되돌리기, S 에서 다른 단계(§14).
 ---
 
 # 전통 3계층 테스트베드(civil-petition) 적용 runbook
 
-설계 정본은 [SMS, NMS 전용 전통 3계층 테스트베드 설계](spec-testbed-vm-3tier.md)(이하 "설계")와 [SMS 에이전트만 쓰는 고객사 테스트베드 설계](spec-testbed-sms-only.md)(이하 "S 문서")다. 코드는 저장소 `civil-petition/` 하나이고, 테스트베드별 값은 `civil-petition/deploy/inventory/t.json`, `s.json` 둘뿐이다. 이 runbook 은 T 를 기준으로 적고 S 에서 다른 곳만 따로 적는다.
+설계 정본은 [SMS, NMS 전용 전통 3계층 테스트베드 설계](spec-testbed-vm-3tier.md)(이하 "설계")와 [SMS 에이전트만 쓰는 고객사 테스트베드 설계](spec-testbed-sms-only.md)(이하 "S 문서")다. 코드는 저장소 `civil-petition/` 하나이고, 테스트베드별 값은 `civil-petition/deploy/inventory/t.json`, `s.json` 둘뿐이다. 이 runbook 은 T 를 기준으로 적고 S 에서 다른 단계는 §14 한 곳에 모아 적는다.
 
 **이 runbook 의 모든 단계는 적용 에이전트가 지휘 세션의 지시로 한다.** 66 에 닿는 단계(망 파일, VM 생성, 이름 바꾸기, 스냅숏)는 테스트베드 잠금과 녹화 정지 창 아래에서만 한다(설계 §11). 시각은 KST 로 적는다.
 
@@ -41,7 +41,7 @@ summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 �
 | `civil-petition/deploy/apply.sh` | 묶음을 만들어 관리망으로 보내고 설치 |
 | `civil-petition/deploy/provision/plan.py` | 66 Proxmox 명령을 찍기만 한다(실행 안 함) |
 | `civil-petition/deploy/router/ifdiscards.py` | 라우터 ifOutDiscards 도우미(GT0 결정 4) |
-| `civil-petition/deploy/tools/` | 평시 판정(`stability_check.py`, `host-facts.sh`, `db-facts.sh`), 규모 축 판정(`scale_verdict.py`, `cpu-sample.sh`), 라우터 큐 버림 실기 점검, 적용 전 rsyslog 설정 확인(`rsyslog-check.sh`) |
+| `civil-petition/deploy/tools/` | 평시 판정(`stability_check.py`, `host-facts.sh`, `db-facts.sh`), 규모 축 판정(`scale_verdict.py`, `cpu-sample.sh`), 라우터 큐 버림 실기 점검, 적용 전 rsyslog 설정 확인(`rsyslog-check.sh`), T 와 S 짝 서버의 패키지 판 대조(`pair_packages.py`, §14) |
 
 ## 3. 비밀값 파일 (적용 단계에서 적용 에이전트가 만든다)
 
@@ -55,7 +55,7 @@ summary: SMS, NMS 전용 전통 3계층 테스트베드(T)와 같은 코드를 �
 | `~/.config/testbed/t4-snmp-community` | 0600 | `(umask 077; tr -dc A-Za-z0-9 </dev/urandom \| head -c 20 > ~/.config/testbed/t4-snmp-community)` | 라우터 snmpd 와 trap, 119 NMS 등록(T3) |
 
 확인은 값이 아니라 크기와 권한만 본다: `stat -c '%a %s %n' ~/.config/testbed/t4-*`.
-S 는 `s5-executor`, `s5-operator.pub`, `s5-petition-db` 를 같은 꼴로 만든다(SNMP 없음).
+S 는 §14 의 차례 1.
 
 ## 4. 66 망 (잠금, 녹화 정지 창)
 
@@ -110,7 +110,7 @@ T2 만 적용하는 창이면 2 를 적용 직전에 뜬다. 되돌리기는 늘
 
 **IPv6 끄기가 없던 판으로 이미 브리지를 올린 66 에 이 판을 놓을 때.** 파일 넷을 새로 렌더해 같은 경로에 놓고 `ifup vmbr7 vmbr8 vmbr9 vmbr10 vmbr11` 을 한 번 더 돈다(post-up 은 다시 돌아도 한 벌, `bridge-ports-condone-regex` 기본값이 VM 의 tap 포트를 떼지 않는다). 손 sysctl 이 없으면 address 애드온이 `disable_ipv6=1` 을 써 이미 붙은 링크 로컬이 지워진다. 그 뒤 위 3 의 확인(기준은 처음의 `t4-net.before`)을 다시 한다. **손으로 건 `sysctl -w net.ipv6.conf.<브리지>.disable_ipv6=1` 이 이미 1 이면 이번 `ifup` 은 속성 동작을 증명하지 않는다**: address 애드온은 지금 값과 설정 값이 같으면 아무것도 쓰지 않으므로(66 `addons/address.py` 1182~1185행) `PASS up` 은 손으로 건 값을 다시 볼 뿐이고, `ifquery --check <브리지>` 의 `disable-ipv6` pass 는 "ifupdown2 가 이 속성을 안다" 까지만 보인다. 손 sysctl 은 같은 값이라 그대로 두어도 되고, 재부팅이나 ifdown, ifup 뒤에는 망 파일의 속성이 같은 값을 건다. VM 이 붙은 뒤에는 ifdown 이 브리지를 지워 tap 이 떨어지므로 ifdown, ifup 으로 확인하지 않는다. 새로 만드는 길을 66 에서 처음 보는 것은 **S 첫 적용**(`ifup vmbr12 vmbr13 vmbr14` 뒤 S 의 `--ipv6-state` 가 `PASS up`, 손 sysctl 을 걸지 않고 판정) 또는 66 재부팅 뒤다(위 "새로 만드는 길의 확인").
 
-S: `--inventory .../s.json`, 파일 `s5-net`, `s5-net.rules`(브리지 vmbr12~14, MASQUERADE 2, SNAT 1, 사용자망 → 웹 80 허용, 브리지마다 IPv6 끔), `ifup vmbr12 vmbr13 vmbr14`, 확인은 `--inventory .../s.json` 의 `ipv6-state` 와 `--ipv6-state`.
+S 는 §14 의 차례 2.
 
 ## 5. VM 생성
 
@@ -152,7 +152,7 @@ deploy/apply.sh --inventory $I --host web01
 deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설치만, 부하는 켜지 않는다
 ```
 
-`deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → sms-agent(웹, WAS, DB 만, 관제 서버 등록 창에서, §11) → verify` 를 돈다. 등록 창 전에는 `sms-agent` 를 `--steps` 에서 뺀다. `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
+`deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → sms-agent(웹, WAS, DB 만, 관제 서버 등록 창에서, §11) → verify` 를 돈다. 등록 창 전에는 `--skip-steps sms-agent` 로 뺀다(서버마다 묶음의 단계 목록에서 그 단계만 빠진다. `--steps` 와 함께 쓰지 않는다). `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
 
 `syslog`, `syslog-forward` 단계는 새 rsyslog 설정을 먼저 검사 사본에서 본다. 사본은 `/etc/rsyslog.d/.check-<pid>/` 에 둔다(Ubuntu 의 rsyslogd AppArmor 프로필이 설정으로 읽게 두는 곳은 `/etc/rsyslog.conf` 와 `/etc/rsyslog.d/**` 뿐이라 `/tmp` 사본은 `Permission denied` 로 막힌다. 숨은 하위 디렉터리라 `*.conf` 포함에 들지 않는다). 지금 `rsyslog.conf`, `rsyslog.d` 의 `*.conf`, `rsyslog.d/remote` 의 `*.conf` 위에 새 파일을 놓고 포함 경로를 사본으로 바꿔 `rsyslogd -N1 -d` 로 읽은 뒤, 오류가 없고 이 단계의 rsyslog 파일을 파서가 모두 실제로 읽었을 때만 `/etc` 에 놓는다(`include(... mode="optional")` 는 AppArmor 가 막아도 오류가 아니므로 읽었는지를 따로 본다). 사본 검사가 실패하면 `/etc` 의 설정을 바꾸지 않고 `rsyslog 설정 검사(놓기 전, 단계 <단계>)` 로 멈춘다. 놓기나 놓은 뒤 진짜 설정 검사가 실패하면 그 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다. 되돌리지 못한 파일은 경로를 적는다) 멈춘다. 어느 쪽이든 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다. 사본은 끝나면 지우고, 끊겨 남은 `.check-*` 는 다음 실행이 처음에 지운다.
 
@@ -199,7 +199,7 @@ ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition -J root@192.168.200.
 
 손으로 cloud-init 설정까지 되돌리기: **firewall 단계가 아직 돌지 않은 서버에서만** 한다. `cp -p /var/lib/petition-deploy/netplan-cloud-init/50-cloud-init.yaml /etc/netplan/ && rm -f /etc/netplan/01-host.yaml && netplan apply`(이름이 eth0 ~ 으로 돌아온다). cloud-init 은 꺼진 채 둔다. firewall 뒤라면 같은 세션에서 먼저 `nft delete table inet mgmtguard` 를 한 뒤에 되돌린다(라우터는 그러지 않으면 되돌리는 순간 관리 SSH 가 막힌다). 이어서 `mv /etc/nftables.d/10-mgmt-guard.nft /var/lib/petition-deploy/` 로 보호 표 파일도 옮긴다. 그러지 않으면 `qm reboot` 뒤 `nftables.service` 가 그 파일을 다시 올려 관리 SSH 를 또 막는다. 옮긴 파일은 다시 설치할 때 firewall 단계가 묶음에서 새로 놓으므로 되돌려 둘 필요가 없다. 되돌린 뒤 다시 설치할 때는 `--steps "verify-host network"` 로 이름을 먼저 바꾸고 그다음 단계 없이 전체를 돌린다(firewall 이 보호 표를 다시 놓는다).
 
-S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같다(서버마다 NIC 둘, eth0, eth1 → ens18, ens19). S 를 T 뒤에 지을 때는 T 의 판 목록을 그대로 쓴다: T 각 서버의 `/var/lib/petition-deploy/packages.txt` 를 모아 `--package-versions` 로 준다(쌍 조건 2, S 문서 §2-4).
+S 는 §14 의 차례 5.
 
 설치 뒤: `plan.py --phase rename` 출력을 66 에 넘긴다.
 
@@ -260,12 +260,12 @@ sudo systemctl stop loadgen.service                                  # loadgen
 k6 run --env TARGET_RPS=60 --env DURATION=30m --env ENTRY_URL=<진입> --env PRE_ALLOCATED_VUS=80 --env MAX_VUS=200 \
     --summary-export /tmp/k6-2x.json /opt/loadgen/civil-petition/script.js
 # 같은 30분 동안: 라우터, was01, was02, web01, db01 에서 cpu-sample.sh <이름> 10 180, 66 에서 cpu-sample.sh hypervisor 10 180
-python3 deploy/tools/scale_verdict.py --summary k6-2x.json --cpu router=router.jsonl --cpu was01=was01.jsonl \
+python3 deploy/tools/scale_verdict.py --inventory $I --summary k6-2x.json --cpu router=router.jsonl --cpu was01=was01.jsonl \
     --cpu was02=was02.jsonl --cpu web01=web01.jsonl --cpu db01=db01.jsonl --cpu hypervisor=hv.jsonl
 sudo systemctl start loadgen.service
 ```
 
-기준: 비정상 1% 이하, 라우터 CPU 50% 이하와 softirq 20% 이하, WAS CPU 70% 이하, 66 CPU 70% 이하, VM steal 5% 이하, 달성 요청률이 60 의 95% 이상. CPU 는 10초 표본의 95 백분위. 판정 이름 `PASS_2X_60RPS_30M`, `FAIL_2X_60RPS_30M`. 라우터가 넘으면 vCPU 를 4 로 올리고 다시 잰다(설계 §3-6).
+기준: 비정상 1% 이하, 라우터 CPU 50% 이하와 softirq 20% 이하, WAS CPU 70% 이하, 66 CPU 70% 이하, VM steal 5% 이하, 달성 요청률이 60 의 95% 이상. CPU 는 10초 표본의 95 백분위. 판정 이름 `PASS_2X_60RPS_30M`, `FAIL_2X_60RPS_30M`. `--inventory` 를 주면 라우터가 없는 인벤토리(S)에서 라우터 표본을 요구하지 않는다(주지 않으면 늘 요구한다). 라우터가 넘으면 vCPU 를 4 로 올리고 다시 잰다(설계 §3-6).
 
 **디스크.** db01 `df -B1 /pgdata` 를 부하 시작과 24시간 뒤에 재서 하루 증가를 구하고, 90일 뒤 사용률이 70% 이하인지 적는다. 주 표는 보관 배치의 건수 상한(민원 200만, 설계 §2-3)으로 크기가 묶이지만, 옮겨 간 행이 쌓이는 보관 표(`petition_archive`, `petition_history_archive`)는 하루 약 12만 민원과 그 처리 이력만큼 계속 자란다. 하루 증가는 대부분 이 보관 표 몫이다.
 
@@ -273,7 +273,7 @@ sudo systemctl start loadgen.service
 
 **보관 SQL 확인(수동, docker 필요).** Java 시험은 문장을 실행하지 않으므로 보관 문장의 뜻과 계획을 바꿨다면 저장소 뿌리에서 `flock ~/dev/testbed-ops/v4/locks/heavy systemd-run --user --scope -q -p MemoryMax=4G -- civil-petition/deploy/tools/archive-sql-check.sh [규모]` 를 돌린다(기본 200만, 시드 약 5분, 문법만 볼 때 20000). 일회 `postgres:16` 컨테이너에서 시드의 정상 상태 꼴(행 수, 열린 건 0.15%, 처리 중 비율, 미래 시각 없음, 이력 비, 규모 50만 이상이면 접수 시각 폭과 KST 시간 비), 행 수 추정치 `n_live_tup` 오차, 가장 오래된 순서, 처리 이력 이동, 답변과 첨부 cascade, 처리 이력 색인을 타는 계획, 묶음과 `count(*)` 시간, advisory lock 을 보고 `CHECK ...|t` 줄이 모두 t 이고 끝 줄이 `checks=16 failed=0`(규모 50만 미만은 14)이면 통과다. 끝에 컨테이너를 지운다.
 
-끝에 `plan.py --phase snapshot` 으로 재해 복구용 스냅숏 하나(설계 §8, 녹화마다 되돌리지 않는다).
+끝에 `plan.py --phase snapshot` 으로 재해 복구용 스냅숏 하나(설계 §8, 녹화마다 되돌리지 않는다). 이름은 T 가 `t2-baseline`, S 가 `st2-baseline` 이다.
 
 ## 9. PostgreSQL 서버 로그 설정 (평시 속성, 정본 `deploy/templates/db/logging.conf`)
 
@@ -340,7 +340,7 @@ deploy/apply.sh --inventory $I --host web01 --host was01 --host was02 --host db0
 
 `--sms-agent-sha256` 을 주면 보내기 전에 파일을 그 값과 대조해 다르면 아무것도 보내지 않고 멈춘다(T 와 S 가 같은 파일인지 눈 대조에만 기대지 않게). `--war` 는 WAS 묶음이 늘 요구해서 준다(`was` 단계를 돌지 않으므로 WAR 는 놓이지 않는다). 모든 단계를 돌거나 `--steps` 에 `sms-agent` 가 있으면 `--sms-agent` 가 없을 때 `apply: <서버> 에 --sms-agent 필요` 로 멈춘다. 단계는 바이너리 체크섬(묶음 `SHA256SUMS`)을 본 뒤 자리를 만들고, 바이너리, `agent.env`, 유닛 중 하나라도 바뀌었거나 유닛이 돌지 않을 때만 다시 띄운다(다시 돌려도 평시에 없는 재시작을 남기지 않는다). 에이전트 로그의 새 시작 줄 `agent started (... host=<업무 주소>, server=<보고 주소>, ...)` 를 60초 안에 기다리고(settle), 설치본 체크섬을 `/var/lib/petition-deploy/lucida-agent.sha256` 에 적는다.
 
-`verify` 는 서버마다 `sms-agent-active`(유닛), `sms-agent-binary`(도는 root 의 `lucida-agent` 하나가 설치본이고 설치본이 적힌 체크섬과 같음), `sms-agent-env`(`agent.env` 의 두 줄이 인벤토리 값)를 더 본다. 설치 기록(`/var/lib/petition-deploy/lucida-agent.sha256`)도 자리(`/opt/lucida-agent`)도 없는 서버(등록 창 전)는 세 항목 대신 `CHECK sms-agent NOT-INSTALLED` 한 줄만 찍는다. 하나라도 있으면 세 항목을 모두 본다. 등록 창 전(T2, S 는 ST2)에 서버를 처음부터 설치할 때는 `--steps` 로 `sms-agent` 를 뺀 단계를 준다(모든 단계를 돌면 에이전트가 깔려 관제 서버에 등록 대기 대상이 생긴다).
+`verify` 는 서버마다 `sms-agent-active`(유닛), `sms-agent-binary`(도는 root 의 `lucida-agent` 하나가 설치본이고 설치본이 적힌 체크섬과 같음), `sms-agent-env`(`agent.env` 의 두 줄이 인벤토리 값)를 더 본다. 설치 기록(`/var/lib/petition-deploy/lucida-agent.sha256`)도 자리(`/opt/lucida-agent`)도 없는 서버(등록 창 전)는 세 항목 대신 `CHECK sms-agent NOT-INSTALLED` 한 줄만 찍는다. 하나라도 있으면 세 항목을 모두 본다. 등록 창 전(T2, S 는 ST2)에 서버를 처음부터 설치할 때는 `--skip-steps sms-agent` 를 준다(모든 단계를 돌면 에이전트가 깔려 관제 서버에 등록 대기 대상이 생긴다). 역할마다 단계 목록이 달라 `--steps` 로 손으로 적으면 단계를 빠뜨리거나 다른 역할의 단계를 돌리기 쉽다.
 
 되돌리기(서버마다, 운영자 계정):
 
@@ -463,6 +463,86 @@ DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 
 
 11-18 13:1x KST 조회(등록 전, 지난 24시간): ClickHouse `MemoryResident` 최댓값 **3.475GiB**(예산 3.6GiB 까지 0.125GiB), VictoriaMetrics 상주 최댓값 2.47GiB / 한도 8GiB, 디스크 55%, CPU 42.5%, steal 1.36%.
 
+## 14. S 적용 (ST2)
+
+S 는 같은 코드, 같은 WAR, 같은 단계를 인벤토리 `deploy/inventory/s.json` 으로 돈다. 아래는 **T 절차와 다른 것만** 적는다. 적지 않은 것(명령 꼴, 확인 방법, 멈춤과 되돌리기)은 같은 번호의 T 절을 따른다. 설계는 S 문서 §2-2(VM), §2-3(바꾸는 것과 빼는 것), §3(망), §11 ST2(완료 조건)다. 66 에 닿는 차례는 테스트베드 잠금과 녹화 정지 창 아래에서만 한다.
+
+### 14-1. T 와 다른 점
+
+| 항목 | T | S |
+|---|---|---|
+| 인벤토리, 도메인 값 | `t.json`, `civil-petition` | `s.json`, `civil-petition-sms` |
+| VM | 201~206, 6대(라우터 포함), vCPU 14, 22GB, 256GB | 211~215, 5대, vCPU 12, 20GB, 240GB |
+| 66 망 파일 | `t4-net`, `t4-net.rules`, `chrony/conf.d/t4-net.conf`, `modules-load.d/t4-net-qdisc.conf` | `s5-net`, `s5-net.rules`, `chrony/conf.d/s5-net.conf`(큐 모듈 파일 없음, 하이퍼바이저 실행기 없음) |
+| 66 브리지 | vmbr7~11, 66 주소는 상향과 관리만 | vmbr12(업무 131), vmbr13(사용자 132), vmbr14(관리 133), 셋 다 66 주소 .1 |
+| 66 NAT | MASQUERADE 4, SNAT 1 | MASQUERADE 2(131, 132), SNAT 1(러너 → 133.1) |
+| 서버의 기본 경로 | 라우터(각 망 .1) | 66(192.168.131.1), 부하기는 66(192.168.132.1) |
+| 119 가 서버에 닿는 길 | 66 → 라우터 상향 → 하위망 | 66 에서 바로 업무망(경로 줄 없음, 연결된 망). 터널 대역은 `add-net 192.168.131.0/24` |
+| 빠지는 단계 | 없음 | `syslog-forward`, `lldpd`, 라우터 전부(`router` 단계, `rt-core01`) |
+| 비밀값 파일 | `t4-executor.pub`, `t4-operator.pub`, `t4-petition-db`, `t4-snmp-community` | `s5-executor.pub`, `s5-operator.pub`, `s5-petition-db`(SNMP 없음) |
+| 관리 접속 known_hosts | `~/.ssh/known_hosts_civil-petition` | `~/.ssh/known_hosts_civil-petition-sms` |
+| 부하 요약 | `/tmp/k6-civil-petition-live.json`, `/var/lib/k6/k6-civil-petition-windows.jsonl` | `/tmp/k6-civil-petition-sms-live.json`, `/var/lib/k6/k6-civil-petition-sms-windows.jsonl` |
+| 스냅숏 | `t2-baseline` | `st2-baseline` |
+
+T 적용(11-18 APT2)에서 고친 저장소 결함(NIC 이름, 브리지 IPv6, rsyslog 검사 사본과 AppArmor, 데이터 디스크 serial, psql 표준 입력, no-dpm-traces, 66 ICMP 좁힘, 관리 SSH notrack, settle 다시 읽기)은 모두 같은 코드라 S 에도 걸린다. 라우터, syslog 전달, lldpd 쪽 고침은 S 에 해당 없다.
+
+### 14-2. 언제
+
+선행: T2 끝(설치와 §7 점검), T0 터널. **T 평시 24시간 판정 창(T 부하 시작 + 26시간까지) 안에 S 를 지으면 그 창의 66 부하(VM 생성, DB 시드, S 부하)가 함께 들어간다.** S 를 그 창 안에 지을지, T 판정 끝(E) 뒤에 지을지는 지휘 세션이 정한다. S 의 ST3(119 등록)는 S 평시 24시간 판정 뒤라 T3 정비 창에 묶으려면 S 를 그만큼 먼저 지어야 한다.
+
+### 14-3. 차례
+
+`I=deploy/inventory/s.json`, 저장소 뿌리는 `civil-petition/` 위.
+
+| 차례 | 할 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 0 | 사전(읽기). 66 `ip -br link \| grep -E 'vmbr1[234]'` 빈 출력, `qm status 211`~`215` 없음, `iptables-save \| grep -c S5-` 0, 자원(아래 14-5) | 빈 출력, 0 | 없음 |
+| 1 | 비밀값 파일(§3 과 같은 명령, 이름만 `s5-`): tb-ops `ssh-keygen -q -t ed25519 -N '' -C opsjob -f /root/.ssh/s5-executor` 의 공개 키를 `~/.config/testbed/s5-executor.pub`, `install -m 0600 ~/.ssh/id_ed25519.pub ~/.config/testbed/s5-operator.pub`, `(umask 077; tr -dc A-Za-z0-9 </dev/urandom \| head -c 24 > ~/.config/testbed/s5-petition-db)`. SNMP 파일은 만들지 않는다 | `stat -c '%a %s %n' ~/.config/testbed/s5-*` 셋 모두 600 | 104 `rm ~/.config/testbed/s5-*`, tb-ops `rm /root/.ssh/s5-executor /root/.ssh/s5-executor.pub` |
+| 2 | 66 망(§4). `render.py --inventory $I --hypervisor /tmp/s5-hv` 의 파일 셋을 66 같은 경로에. **기준은 T 망이 선 지금 뜬다**: `iptables-save > /root/s5-net.before`. `ifup vmbr12 vmbr13 vmbr14`, `systemctl restart chrony`(modprobe 없음) | `iptables-save > /root/s5-net.after`, `render.py --inventory $I --hypervisor-commands ipv6-state` 명령 출력을 `/root/s5-net.ipv6` 로, `hv_iptables_check.py --inventory .../s.json --mode up --before s5-net.before --after s5-net.after --ipv6-state s5-net.ipv6` 가 `PASS up`(늘어난 줄은 S5-FWD, S5-IN 과 그 훅 9, MASQUERADE 2, SNAT 1). **손 sysctl 없이** 판정한다(T2V6 의 "새로 만들 때 끔" 을 처음 보는 자리, §4). `ip -br link show vmbr12 vmbr13 vmbr14` 셋 다 UP. `iptables -t nat -S \| grep -c 192.168.122.0/24` 1, `iptables-save \| grep -c '^-A T4-'` 가 before 와 같음. `ip route` 에 131, 132, 133 은 연결된 망만(via 없음). 104 → `192.168.200.66:8091` 200, T 부하 요약(`/tmp/k6-civil-petition-live.json`)의 비정상 0 그대로 | §4 의 4 를 S 이름으로: `ifdown vmbr14 vmbr13 vmbr12`, `rm` 파일 셋, `systemctl restart chrony`, `--mode down --before s5-net.before` 가 `PASS down` |
+| 3 | 터널 대역 더하기(터널 runbook §8): 104 에서 `./t0-apply.sh add-net 192.168.131.0/24`(잠금 아래). 119 설정 변경이라 2시간 30분 시계를 새로 센다 | 차례 4 뒤 `./t0-apply.sh verify --target 192.168.131.11`(포트 없이, S 서버는 10.250.0.1 의 ICMP 만 받는다) | 66, 119 각각 `tb-wg del-net 192.168.131.0/24`(잠금 아래) |
+| 4 | VM 생성(§5). `plan.py --inventory $I --phase precheck` 를 66 에서, `scp ~/.config/testbed/s5-operator.pub root@192.168.200.66:/root/s5-operator.pub`, `plan.py --inventory $I --phase create --sshkeys /root/s5-operator.pub` | `qm list` 에 211~215 running, 크기는 S 문서 §2-2(저장소 시험 `SmsOnlyDesignTests` 가 같은 표를 대조한다). 각 VM `ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition-sms -J root@192.168.200.66 sysop@192.168.133.x id -u` 가 1000. `ip -br link` 가 eth0, eth1 | §10(destroy 는 사람) |
+| 5 | 서버 설치(§6). 적용 전 점검 `rsyslog-check.sh`(T, S 를 함께 본다). WAR 는 T 와 **같은 파일**(sha256 이 T 의 `/var/lib/petition-deploy/war.sha256` 과 같아야 한다), k6 도 같은 파일. 판 고정은 짝 T 서버의 지금 목록을 서버마다 준다: `ssh ... sysop@<T 관리 주소> "dpkg-query -W -f '\${Package} \${Version}\n'" > t-pkgs/<T 이름>.txt`. 순서는 부하기 망 단계(§6-1, 관리 주소 192.168.133.10) → dbsvr01 → wassvr01, wassvr02 → websvr01 → 부하기. 라우터가 없으므로 서버의 바깥 길은 차례 2 로 이미 있다. 모든 서버를 `--skip-steps sms-agent` 로 돈다. 예: `deploy/apply.sh --inventory $I --host dbsvr01 --skip-steps sms-agent --package-versions t-pkgs/db01.txt` | 서버마다 `verify` 의 CHECK 모두 PASS 와 `CHECK sms-agent NOT-INSTALLED`, `syslog-forward-matches-inventory` PASS(전달 파일 0). `plan.py --inventory $I --phase nics` 출력과 `nic ...` 줄의 MAC 대조. `--dry-run` 의 `steps:` 줄에 `sms-agent`, `syslog-forward`, `lldpd` 없음 | §6 과 같다 |
+| 6 | `plan.py --inventory $I --phase rename`(s5-*) | `qm list` 이름, 게스트 `hostname` 그대로 | `qm set <vmid> --name <게스트 이름>` |
+| 7 | ST2 점검(14-4) | | |
+| 8 | 부하 시작 `deploy/apply.sh --inventory $I --start-load` | `/tmp/k6-civil-petition-sms-live.json` 생김, 비정상 0. T 부하 요약도 그대로 | 부하기 `sudo systemctl stop loadgen.service` |
+| 9 | 평시 24시간, 규모 축(§8 을 S 이름으로), 스냅숏 `plan.py --inventory $I --phase snapshot`(`st2-baseline`) | 14-4 의 해당 행 | 스냅숏 지우기 `qm delsnapshot <vmid> st2-baseline` |
+
+### 14-4. ST2 점검 (S 문서 §11 ST2 행마다)
+
+| 조건 | 명령(어디서) | 기대 |
+|---|---|---|
+| VM 5대 크기와 주소 | 66 `qm list`, 각 VM `ip -br addr` | S 문서 §2-2. websvr01 131.11, wassvr01 131.21, wassvr02 131.22, dbsvr01 131.31, loadgen 132.10, 관리 133.x |
+| 경로 | 서버 `ip route`, 부하기 `ip route` | 서버 기본 경로 `via 192.168.131.1 dev ens18`, 부하기 `via 192.168.132.1 dev ens18`, 관리 NIC(ens19)에 기본 경로 없음 |
+| 기존, T 영향 없음 | 66 `iptables -t nat -S`(줄 수), 104 → 8091, 기존 VM 바깥 통신, T 부하 요약, websvr01 `nc -z -w 3 192.168.124.11 80`, `ping -c 2 192.168.122.20`, T web01 `nc -z -w 3 192.168.131.11 80`, 66 `iptables -nvxL S5-FWD`(앞뒤 읽기) | nat 줄은 기존 2, T 5 그대로에 S 3 만 늘어남. 200. 정상. 비정상 0. 연결 셋 모두 실패하고 S5-FWD 의 해당 DROP 패킷 수가 는다 |
+| 관리망 격리 | websvr01 `curl -m 3 --interface 192.168.131.11 http://192.168.133.21:22`, 각 VM `nc -z -w 3 192.168.133.1 22`, `8006`, IPv6 는 차례 2 의 확인을 지금 상태로 다시(`PASS up`)와 §7 (3) 의 멀티캐스트 덧확인, 각 VM `ping -I ens19 -c 2 192.168.230.119`, `10.250.0.1`, 119(읽기) `ping -c 2 192.168.133.11` | 모두 실패. 첫 줄은 66 `S5-FWD` 의 `-o vmbr14 -j DROP` 패킷 수가 는다 |
+| 66 관리면 보호 | websvr01 `nc -z -w 3 192.168.131.1 22`, `8006`, loadgen `nc -z -w 3 192.168.132.1 22`, `8006`, websvr01 `ping -I ens18 -c 2 192.168.133.1`, `ping -c 2 192.168.131.1` | 연결과 133.1 핑은 실패(66 `S5-IN` 의 `-i vmbr12 -j DROP`, `-i vmbr13 -j DROP` 이 는다), 게이트웨이 핑(131.1)은 됨. IPv6 는 차례 2 의 `PASS up`(브리지 셋 `disable_ipv6=1`, 주소 0) |
+| 서비스 기동 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `cd /var/lib/tomcat10/webapps && sha256sum -c /var/lib/petition-deploy/war.sha256` | active, `petition.war: OK` |
+| 쌍 조건 1, 2 | WAR: S 두 대와 T 두 대의 `/var/lib/petition-deploy/war.sha256` 이 같음. 설정: 저장소 시험 `SharedCodeTests`(정규화 체크섬과 설치 값). 커널: S 서버마다 `uname -r` 가 T 와 같음. 패키지: 짝마다 지금 목록을 `t-pkgs/`, `s-pkgs/` 에 떠서 `python3 deploy/tools/pair_packages.py --t-inventory deploy/inventory/t.json --s-inventory $I --t-dir t-pkgs --s-dir s-pkgs --allow-t-only lldpd --allow-t-only libsnmp40t64 --allow-t-only libsnmp-base --allow-t-only libevent-2.1-7t64 --allow-version libevent-core-2.1-7t64` | 같음, OK, 같음, `PASS`. 넘기는 다섯 이름은 T 에만 도는 `lldpd` 단계가 깐 것과 올린 것이다(11-18 T 서버 apt 기록, S 문서 §2-3 "빼는 것"). 그 밖의 차이가 나오면 쌍 조건 2 가 깨진 것이니 멈추고 알린다 |
+| 시드 크기 | dbsvr01 `sudo -u postgres psql -Atc 'select count(*) from petition' petition` | 2,000,000 ±5% |
+| 평시 24시간 | §8 의 명령을 S 이름으로(websvr01 apache2, wassvr01, wassvr02 tomcat10, dbsvr01 postgresql@16-main, 라우터 없음. 창 기록 `k6-civil-petition-sms-windows.jsonl`) | `PASS_Q3_24H`(부하 시작 + 26시간 뒤) |
+| 규모 축 | §8 의 명령. CPU 표본은 wassvr01, wassvr02, websvr01, dbsvr01, hypervisor, 판정은 `scale_verdict.py --inventory $I ...`(라우터 표본 없음). 녹화가 없는 창에서, T 부하는 그대로 둔다 | `PASS_2X_60RPS_30M`(66 CPU 70% 이하는 T 부하를 포함한 값) |
+| 시간, 자동 갱신, APM 흔적, 커널 모듈 | 설치의 `verify` | PASS(서버 4대 kernel-modules) |
+| syslog 전달 없음 | `verify` 의 `syslog-forward-matches-inventory`, 다섯 대 `ls /etc/rsyslog.d/remote/`, 119(읽기) 관제 서버 ClickHouse(§13 의 읽기 설정) `select count() from lucida.syslog_local where received_at >= '<차례 2 시각 UTC>' and (source_ip like '192.168.131.%' or source_ip like '192.168.132.%' or source_ip like '192.168.133.%')` | PASS, 빈 디렉터리, 0 |
+| rsyslog 첫 규칙 | §7 과 같게 실행기 계정(tb-ops `/root/.ssh/s5-executor`, 66 SNAT 133.1)으로 접속, `sudo -n bash -s` 로 가드 arm 하나 | VM `/var/log/syslog`, `/var/log/auth.log` 에 그 계정, uid, `run-r` 줄 0, `/var/log/opsjobs.log` 에 있음(119 로 가는 길이 없으니 119 는 보지 않는다) |
+| 가드 단독 시험 | §7 의 U8 시운전 절차 2번을 서버 1대(websvr01)에서 | 통과 |
+| DPM 흔적 없음 | `verify` 의 `no-dpm-traces` | PASS |
+
+### 14-5. 66 자원 (2026-11-18 16:15 KST 읽기)
+
+| 항목 | 지금 | S 를 더하면 |
+|---|---|---|
+| 실행 중 VM vCPU(48 스레드) | 46(기존 6대 24, dm-train 8, T 14) | 58(121%) |
+| 실행 중 VM 메모리 할당(251.6GiB) | 102GB | 122GB |
+| 66 사용 메모리 하루 최댓값 | 117.9GiB | 최대 약 138GiB(S 20GB 를 모두 쓴다고 보면) |
+| 66 CPU(하루 1분 평균의 평균과 최댓값) | 9.4%, 22.7%(10초 순간값 12.6%) | S 2배 시험에서 70% 이하인지 잰다 |
+| vmdata(thin, 6.68TiB) | 3.76% | S 할당 240GB 를 모두 써도 약 7.3% |
+
+S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 생기기 전 값이다. 메모리와 디스크는 넉넉하다. vCPU 는 할당이 스레드보다 많지만 실측 사용이 낮아 판정은 S 문서 §11 ST2 규모 축(66 CPU 70% 이하, S VM steal 5% 이하)으로 한다.
+
+### 14-6. S 되돌리기
+
+차례 역순: 부하 정지 → VM(§10, 사람) → 66 망(차례 2 의 되돌리기, `--mode down` 기준 `s5-net.before`) → 터널 대역(차례 3) → 비밀값 파일(차례 1). T 를 함께 되돌릴 때는 S 를 먼저 되돌린다(S 기준은 T 가 선 상태에서 떴다).
+
 ## 수정 기록
 
 - 2026-11-16 KST, v4 T2(ag-t2): 처음 작성. 적용 전.
@@ -485,3 +565,4 @@ DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 
 - 2026-11-18 KST, v4 T2VER(ap-t2 §7 관찰, 지휘 세션 결정): 관리 SSH notrack(라우터와 서버 `mgmtguard`, conntrack 표가 가득 차도 정리 SSH 가 붙게)과 §7 notrack 행의 새 관리 SSH 확인, 가드 단독 시험 2-4 명령 `systemd-tmpfiles --boot --remove`, §7 WAR 체크섬 대조는 webapps 에서.
 - 2026-11-18 KST, v4 T3P 2회차(리뷰 rv-t3p, 지휘 세션 결정): §11 로그 회전 파일, 바이너리 자리 만들기, `--sms-agent-sha256`, §12-0 대표 질의 구간 문장, 차단 시계 시작점, `--vm-reads` 는 녹화 정지 아래, §12-1 감시 꼴(기존 도메인과 같게)과 trap 수신기가 모든 주소에서 듣는다는 점, §13 NMS 인터페이스별, DB 서버 관제의 줄 없음 규칙, 대상 번호 표, 프로세스 계열 단위, 설계와 다르게 둔 것, 기준값 파일.
 - 2026-11-18 KST, v4 T3P(ag-t3p): T3 적용 준비. §11 SMS 에이전트 설치(`sms-agent` 단계, 바이너리 출처와 꺼내기, 자리, 유닛, 멱등, verify 세 항목, 되돌리기), §12 관제 서버 등록(적용 순서와 시각 기준, T2 판정 끝 E 전 금지, trap 확인을 평시 판정 뒤 T3 첫 주입 단계로 옮김과 수신기 등록이 먼저인 까닭, 단계별 API 와 되돌리기, 미리 확인한 제품 동작, 대상 번호 표 꼴), §13 완료 조건 확인 도구와 행별 통과 기준, 등록 전 119 자원 조회 값. §10 되돌리기 줄.
+- 2026-11-18 KST, v4 ST2P(ag-st2p): §14 S 적용(ST2) 절을 두고 흩어져 있던 S 문장(§3, §4, §6)을 그리로 모음. T 와 다른 점 표, 언제(T 판정 창과 겹침은 지휘 세션 결정), 차례와 확인과 되돌리기, ST2 점검 행별 명령, 66 자원 읽기 값. `apply.sh --skip-steps sms-agent`(등록 창 전 처음 설치), `scale_verdict.py --inventory`(라우터 없는 S), `pair_packages.py`(쌍 조건 2 패키지 판), 스냅숏 이름 `st2-baseline`.

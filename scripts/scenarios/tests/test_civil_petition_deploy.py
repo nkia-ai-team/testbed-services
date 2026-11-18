@@ -54,6 +54,8 @@ monitor = _load("loadgen_monitor_cp", REPO / "scripts" / "scenarios" / "profiles
 hvcheck = _load("hv_iptables_check", DEPLOY / "tools" / "hv_iptables_check.py")
 t3reg = _load("t3_register", DEPLOY / "tools" / "t3_register.py")
 t3check = _load("t3_check", DEPLOY / "tools" / "t3_check.py")
+pairpkg = _load("pair_packages", DEPLOY / "tools" / "pair_packages.py")
+S_SPEC = REPO / "docs" / "spec-testbed-sms-only.md"
 
 
 def inventory(path: Path = T_INV) -> dict:
@@ -259,6 +261,31 @@ class SharedCodeTests(unittest.TestCase):
             self.assertEqual(t_steps, s_bundle["steps"])
         self.assertGreater(compared, 50)
 
+    def test_s_host_env_differs_from_t_only_in_site_values_and_syslog_forwarding(self) -> None:
+        # S 문서 §2-3 "바꾸는 것"(주소, 이름, 도메인 값)과 "빼는 것"(119 전달) 말고 설치 단계에 가는 값이 다르지 않다.
+        # 주소, 이름, 도메인 값을 자리표시로 바꾼 뒤 같아야 하고, 다른 값은 syslog 전달 켜기 하나다(서버만, 부하기는 둘 다 끔).
+        t_inv, s_inv = inventory(T_INV), inventory(S_INV)
+        by_role_t = self._by_role(t_inv, bundles(T_INV))
+        by_role_s = self._by_role(s_inv, bundles(S_INV))
+        compared = 0
+        for key, s_bundle in by_role_s.items():
+            t_env, s_env = by_role_t[key]["env"], s_bundle["env"]
+            with self.subTest(role=key):
+                self.assertEqual(set(t_env), set(s_env))
+                differ = {name for name in s_env
+                          if render.normalize(t_env[name], t_inv, {}) != render.normalize(s_env[name], s_inv, {})}
+                if key.startswith("loadgen"):
+                    self.assertEqual(differ, set())
+                    self.assertEqual(s_env["SYSLOG_FORWARD"], "0")
+                else:
+                    self.assertEqual(differ, {"SYSLOG_FORWARD"})
+                    self.assertEqual((t_env["SYSLOG_FORWARD"], s_env["SYSLOG_FORWARD"]), ("1", "0"))
+                # 자리표시 뒤에 같다는 것이 값이 실제로 S 값이라는 뜻이 되게 한 번 더 본다.
+                self.assertEqual(s_env["DOMAIN"], s_inv["domain"])
+                self.assertTrue(s_env["MGMT_ADDR"].startswith("192.168.133."))
+                compared += len(s_env)
+        self.assertGreater(compared, 100)
+
     @staticmethod
     def _by_role(inv: dict, rendered: dict[str, dict]) -> dict[str, dict]:
         out = {}
@@ -291,6 +318,171 @@ class SharedCodeTests(unittest.TestCase):
         steps_text = "\n".join(p.read_text() for p in (DEPLOY / "steps").glob("*.sh"))
         self.assertNotRegex(steps_text.lower(), r"create (role|user)[^\n]*(dpm|monitor)")
         self.assertNotIn("dpm", " ".join(render.STEP_ORDER))
+
+
+def spec_section(path: Path, heading: str) -> str:
+    """설계 문서에서 제목 줄 하나부터 다음 같은 깊이 이상의 제목 앞까지."""
+    text = path.read_text(encoding="utf-8")
+    start = text.index(heading + "\n")
+    level = len(heading) - len(heading.lstrip("#"))
+    following = re.search(rf"^#{{1,{level}}} ", text[start + len(heading):], re.M)
+    return text[start:start + len(heading) + (following.start() if following else len(text))]
+
+
+def table_rows(section: str) -> list[list[str]]:
+    """마크다운 표의 데이터 줄(머리와 구분 줄을 뺀다)을 칸 목록으로."""
+    rows = [[cell.strip() for cell in line.strip().strip("|").split("|")]
+            for line in section.splitlines() if line.startswith("|")]
+    return [row for row in rows[2:]]
+
+
+class SmsOnlyDesignTests(unittest.TestCase):
+    """S 렌더와 VM 계획을 S 문서 §2-2(VM 표), §3-2(주소표), §3-3(경로), §3-5(66 에 더하는 것)와 기계로 대조한다."""
+
+    def setUp(self) -> None:
+        self.inv = inventory(S_INV)
+        self.t_inv = inventory(T_INV)
+        self.hosts = {host["name"]: host for host in self.inv["hosts"]}
+
+    def _vm_rows(self) -> list[dict]:
+        rows = []
+        for row in table_rows(spec_section(S_SPEC, "### 2-2. VM 목록과 크기")):
+            if not row[0].isdigit():
+                continue
+            vmid, pve, name, vcpu, memory, disks, biz, mgmt, pair = row
+            rows.append({"vmid": int(vmid), "pve_name": pve, "name": name, "vcpu": int(vcpu),
+                         "memory_mb": int(re.fullmatch(r"(\d+)GB", memory).group(1)) * 1024,
+                         "disks": [int(n) for n in re.findall(r"(\d+)GB", disks)],
+                         "biz": re.match(r"[0-9.]+", biz).group(0),
+                         "mgmt": "192.168" + mgmt, "pair": re.match(r"[a-z0-9-]+", pair).group(0),
+                         "batch": "배치" in pair})
+        return rows
+
+    def test_inventory_and_vm_plan_match_the_vm_table(self) -> None:
+        rows = self._vm_rows()
+        self.assertEqual([r["name"] for r in rows], [h["name"] for h in self.inv["hosts"]])
+        create = "\n".join(plan.create(self.inv, "/root/s5-operator.pub"))
+        t_hosts = {h["name"]: h for h in self.t_inv["hosts"]}
+        for row in rows:
+            host = self.hosts[row["name"]]
+            biz = next(nic for nic in host["nics"] if nic.get("gateway"))
+            mgmt = render._mgmt_nic(host, self.inv)
+            with self.subTest(host=row["name"]):
+                self.assertEqual((host["vmid"], host["pve_name"], host["vcpu"], host["memory_mb"]),
+                                 (row["vmid"], row["pve_name"], row["vcpu"], row["memory_mb"]))
+                self.assertEqual([d["size_gb"] for d in host["disks"]], row["disks"])
+                self.assertEqual((biz["addr"], mgmt["addr"]), (row["biz"], row["mgmt"]))
+                self.assertEqual(bool(host.get("batch")), row["batch"])
+                # 쌍 조건 2: T 의 짝과 같은 크기.
+                twin = t_hosts[row["pair"]]
+                self.assertEqual(twin["role"], host["role"])
+                self.assertEqual((twin["vcpu"], twin["memory_mb"], [d["size_gb"] for d in twin["disks"]]),
+                                 (host["vcpu"], host["memory_mb"], [d["size_gb"] for d in host["disks"]]))
+                self.assertEqual(bool(twin.get("batch")), bool(host.get("batch")))
+                # 계획이 표의 크기와 이름으로 만든다(처음엔 게스트 이름, rename 이 Proxmox 이름).
+                vmid = row["vmid"]
+                self.assertIn(f"qm clone 9000 {vmid} --name {row['name']} --full 1 --storage vmdata", create)
+                self.assertIn(f"qm set {vmid} --cores {row['vcpu']} --memory {row['memory_mb']} --onboot 1", create)
+                self.assertIn(f"qm resize {vmid} scsi0 {row['disks'][0]}G", create)
+                for index, size in enumerate(row["disks"][1:], start=1):
+                    self.assertIn(f"qm set {vmid} --scsi{index} vmdata:{size},", create)
+        self.assertIn("qm set 214 --scsi1 vmdata:100,discard=on,iothread=1,ssd=1,serial=pgdata", create)
+        self.assertEqual(sum(r["vcpu"] for r in rows), 12)
+        self.assertEqual(sum(r["memory_mb"] for r in rows), 20 * 1024)
+        self.assertEqual(sum(sum(r["disks"]) for r in rows), 240)
+        rename = "\n".join(plan.rename(self.inv))
+        for row in rows:
+            self.assertIn(f"qm set {row['vmid']} --name {row['pve_name']}", rename)
+        # T 의 VMID, 브리지와 겹치지 않는다.
+        self.assertFalse({h["vmid"] for h in self.inv["hosts"]} & {h["vmid"] for h in self.t_inv["hosts"]})
+        self.assertFalse({n["bridge"] for n in self.inv["networks"].values()}
+                         & {n["bridge"] for n in self.t_inv["networks"].values()})
+
+    def test_networks_match_the_address_table_and_paths(self) -> None:
+        names = {"S 업무망": "biz", "S 사용자망": "user", "S 관리망": "mgmt"}
+        seen = set()
+        for row in table_rows(spec_section(S_SPEC, "### 3-2. 주소표")):
+            if row[0] not in names:
+                continue
+            network = self.inv["networks"][names[row[0]]]
+            seen.add(row[0])
+            prefix = network["cidr"].rsplit(".", 1)[0]
+            with self.subTest(network=row[0]):
+                self.assertEqual(network["cidr"], row[1])
+                self.assertEqual(network["host_addr"], prefix + "." + re.match(r"\.(\d+)", row[2]).group(1))
+                for name, last in re.findall(r"([a-z][a-z0-9]+) \.(\d+)", row[3]):
+                    nic = next(n for n in self.hosts[name]["nics"] if n["net"] == names[row[0]])
+                    self.assertEqual(nic["addr"], f"{prefix}.{last}")
+        self.assertEqual(seen, set(names))
+        rendered = bundles(S_INV)
+        for name, host in self.hosts.items():
+            netplan = file_of(rendered[name], "/etc/netplan/01-host.yaml")
+            gateway = self.inv["networks"]["user" if host["role"] == "loadgen" else "biz"]["gateway"]
+            with self.subTest(host=name):
+                # 기본 경로는 66(라우터 없음, 결정 3), 관리 NIC 에는 경로가 없다(§3-6 규칙 4).
+                self.assertEqual(re.findall(r"- to: (\S+)\n\s+via: (\S+)", netplan), [("default", gateway)])
+                self.assertEqual(rendered[name]["env"]["CHRONY_SERVER"], "192.168.133.1")
+                self.assertEqual(rendered[name]["env"]["MGMT_HOST"], "192.168.133.1")
+                if host["role"] in render.SERVER_ROLES:
+                    self.assertEqual(rendered[name]["env"]["SMS_AGENT_HOST"], render._biz_nic(host, self.inv)["addr"])
+                    self.assertEqual(rendered[name]["env"]["SMS_SERVER_URL"], "http://10.250.0.1:18090")
+        # 사용자 요청: loadgen -> 66 -> websvr01. 계층 사이 호출은 같은 업무망 안.
+        self.assertEqual(rendered["loadgen"]["env"]["ENTRY_URL"], "http://192.168.131.11:80/petition")
+        web = file_of(rendered["websvr01"], "/etc/apache2/sites-available/petition.conf")
+        self.assertIn('BalancerMember "http://192.168.131.21:8080"', web)
+        self.assertIn('BalancerMember "http://192.168.131.22:8080"', web)
+        hba = file_of(rendered["dbsvr01"], "/etc/postgresql/16/main/pg_hba.conf")
+        self.assertRegex(hba, r"(?m)^host\s+petition\s+petition_app\s+192\.168\.131\.0/24\s+scram-sha-256$")
+
+    def test_hypervisor_files_follow_the_design(self) -> None:
+        files = render.hypervisor_files(self.inv)
+        self.assertEqual(set(files), {"/etc/network/interfaces.d/s5-net", "/etc/network/s5-net.rules",
+                                      "/etc/chrony/conf.d/s5-net.conf"})
+        net = files["/etc/network/interfaces.d/s5-net"]
+        # 브리지 셋, 셋 다 66 주소 .1. 119 의 길은 66 에서 바로 업무망이라 경로 줄(via)이 없다.
+        self.assertEqual(re.findall(r"^auto (\S+)$", net, re.M), ["vmbr12", "vmbr13", "vmbr14"])
+        self.assertEqual(re.findall(r"^\taddress (\S+)$", net, re.M),
+                         ["192.168.131.1/24", "192.168.132.1/24", "192.168.133.1/24"])
+        self.assertNotIn("ip route", net)
+        self.assertNotIn("wg0", net)
+        self.assertEqual(sorted(set(re.findall(r"iptables -t nat -A (POSTROUTING .*?)$", net, re.M))), [
+            "POSTROUTING -s 192.168.122.20 -o vmbr14 -p tcp --dport 22 -j SNAT --to-source 192.168.133.1",
+            "POSTROUTING -s 192.168.131.0/24 -o vmbr0.200 -j MASQUERADE",
+            "POSTROUTING -s 192.168.132.0/24 -o vmbr0.200 -j MASQUERADE",
+        ])
+        self.assertEqual(files["/etc/chrony/conf.d/s5-net.conf"].splitlines()[-1], "allow 192.168.133.0/24")
+        forward, inputs = render._chain_rules(self.inv)
+        # 허용은 이것뿐이다(§3-5): 이미 맺은 연결, 러너 ssh, 사용자망 -> 웹 80, 업무망과 사용자망 -> 패키지 설치.
+        self.assertEqual([r for r in forward if r.endswith("-j ACCEPT")], [
+            "-A S5-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+            "-A S5-FWD -s 192.168.122.20 -d 192.168.133.0/24 -o vmbr14 -p tcp --dport 22 -j ACCEPT",
+            "-A S5-FWD -s 192.168.132.10 -d 192.168.131.11 -p tcp --dport 80 -j ACCEPT",
+            "-A S5-FWD -s 192.168.131.0/24 -o vmbr0.200 -j ACCEPT",
+            "-A S5-FWD -s 192.168.132.0/24 -o vmbr0.200 -j ACCEPT",
+        ])
+        self.assertEqual([r for r in inputs if r.endswith("-j ACCEPT")], [
+            "-A S5-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+            "-A S5-IN -i vmbr12 -d 192.168.131.1 -p icmp --icmp-type echo-request -j ACCEPT",
+            "-A S5-IN -i vmbr13 -d 192.168.132.1 -p icmp --icmp-type echo-request -j ACCEPT",
+            "-A S5-IN -i vmbr14 -p udp --dport 123 -j ACCEPT",
+        ])
+        others = ["192.168.122.0/24"] + [f"192.168.{n}.0/24" for n in range(123, 128)]
+        for cidr in ("192.168.131.0/24", "192.168.132.0/24"):
+            with self.subTest(cidr=cidr):
+                for other in others:
+                    self.assertIn(f"-A S5-FWD -s {cidr} -d {other} -j DROP", forward)
+                    self.assertIn(f"-A S5-FWD -s {other} -d {cidr} -j DROP", forward)
+                real = forward.index(f"-A S5-FWD -s {cidr} -d 192.168.230.119 -j DROP")
+                leak = forward.index(f"-A S5-FWD -s {cidr} -d 10.250.0.0/30 -o vmbr0.200 -j DROP")
+                self.assertLess(max(real, leak), forward.index(f"-A S5-FWD -s {cidr} -o vmbr0.200 -j ACCEPT"))
+        allow = forward.index("-A S5-FWD -s 192.168.132.10 -d 192.168.131.11 -p tcp --dport 80 -j ACCEPT")
+        self.assertLess(allow, forward.index("-A S5-FWD -s 192.168.132.0/24 -d 192.168.131.0/24 -j DROP"))
+        self.assertIn("-A S5-FWD -s 192.168.131.0/24 -d 192.168.132.0/24 -j DROP", forward)
+        runner = forward.index("-A S5-FWD -s 192.168.122.20 -d 192.168.133.0/24 -o vmbr14 -p tcp --dport 22 -j ACCEPT")
+        self.assertLess(runner, forward.index("-A S5-FWD -i vmbr14 -j DROP"))
+        self.assertLess(runner, forward.index("-A S5-FWD -o vmbr14 -j DROP"))
+        for bridge in ("vmbr12", "vmbr13", "vmbr14"):
+            self.assertIn(f"-A S5-IN -i {bridge} -j DROP", inputs)
 
 
 class RenderContentTests(unittest.TestCase):
@@ -859,6 +1051,109 @@ class HypervisorIptablesKernelTests(unittest.TestCase):
         self.assertFalse(any(p.startswith(("vmbr7 ", "vmbr8 ", "vmbr10 ", "vmbr11 ")) for p in problems), problems)
 
 
+STACK_SCRIPT = r'''
+import json, re, subprocess, sys, time
+spec = json.loads(sys.argv[1])
+def parse(net_file, rules_tmp, rules_path):
+    stanzas, current = {}, None
+    for line in open(net_file, encoding="utf-8"):
+        m = re.match(r"auto (\S+)", line)
+        if m:
+            current = m.group(1)
+            stanzas[current] = {"up": [], "down": [], "disable_ipv6": False}
+            continue
+        if current and line.rstrip("\n") == "\tdisable-ipv6 yes":
+            stanzas[current]["disable_ipv6"] = True
+            continue
+        m = re.match(r"\t(post-up|pre-down) (.*)", line)
+        if m and current:
+            stanzas[current]["up" if m.group(1) == "post-up" else "down"].append(m.group(2).replace(rules_path, rules_tmp))
+    return stanzas
+def run(cmd):
+    if cmd.startswith("ip route"):
+        return
+    subprocess.run(["sh", "-c", cmd], check=True)
+def save():
+    return subprocess.run(["iptables-save"], capture_output=True, text=True, check=True).stdout
+def create(name, disable):
+    subprocess.run(["ip", "link", "add", name, "type", "dummy"], check=True)
+    if disable:
+        with open(f"/proc/sys/net/ipv6/conf/{name}/disable_ipv6", "w") as handle:
+            handle.write("1")
+    subprocess.run(["ip", "link", "set", name, "up"], check=True)
+first, second = (parse(*tb) for tb in spec["testbeds"])
+create("vmbr1", False)
+for stanzas in (first, second):
+    for name, stanza in stanzas.items():
+        create(name, stanza["disable_ipv6"])
+subprocess.run("iptables -t nat -A POSTROUTING -s 192.168.122.0/24 -o vmbr0.200 -j MASQUERADE", shell=True, check=True)
+subprocess.run("iptables -t nat -A PREROUTING -d 192.168.200.66/32 -i vmbr0.200 -p tcp --dport 8091 -j DNAT --to-destination 192.168.122.20:8091", shell=True, check=True)
+out = {"before": save()}
+for name in first:
+    for c in first[name]["up"]: run(c)
+out["first_up"] = save()
+for name in second:
+    for c in second[name]["up"]: run(c)
+out["second_up"] = save()
+time.sleep(0.3)
+out["second_ipv6"] = subprocess.run(["sh", "-c", spec["ipv6"]], capture_output=True, text=True, check=True).stdout
+for name in second:
+    for c in second[name]["up"]: run(c)
+out["second_up_again"] = save()
+for name in reversed(list(second)):
+    for c in second[name]["down"]: run(c)
+out["second_down"] = save()
+print(json.dumps(out))
+'''
+
+
+class HypervisorStackKernelTests(unittest.TestCase):
+    """S 망 파일을 T 망이 이미 선 66 위에 올리고 내린다(실제 적용 차례, ST2 는 T 뒤). 사용자 네임스페이스의 진짜 iptables.
+
+    S 의 검사기 기준(before)은 T 가 선 뒤에 뜨므로 T 줄은 차이에 나오지 않아야 하고, S 를 올리고 내려도 T 줄은 그대로다.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.t_inv, cls.s_inv = inventory(T_INV), inventory(S_INV)
+        with tempfile.TemporaryDirectory() as raw:
+            testbeds = []
+            for tag, inv in (("t", cls.t_inv), ("s", cls.s_inv)):
+                files = render.hypervisor_files(inv)
+                net, rules = Path(raw) / f"{tag}.net", Path(raw) / f"{tag}.rules"
+                net.write_text(files[inv["hypervisor"]["file"]])
+                rules.write_text(files[render.rules_path(inv)])
+                testbeds.append([str(net), str(rules), render.rules_path(inv)])
+            spec = {"testbeds": testbeds, "ipv6": render.hypervisor_commands(cls.s_inv, "ipv6-state")[0]}
+            done = subprocess.run(["unshare", "-rn", sys.executable, "-c", STACK_SCRIPT, json.dumps(spec)],
+                                  capture_output=True, text=True, timeout=120)
+        assert done.returncode == 0, done.stderr
+        cls.out = json.loads(done.stdout.strip().splitlines()[-1])
+
+    def test_s_up_on_top_of_t_passes_the_check_with_the_baseline_taken_after_t(self) -> None:
+        self.assertEqual(hvcheck.check(self.t_inv, "up", self.out["before"], self.out["first_up"]), [])
+        self.assertEqual(hvcheck.check(self.s_inv, "up", self.out["first_up"], self.out["second_up"]), [])
+        problems, notes = hvcheck.check_ipv6(self.s_inv, self.out["second_ipv6"])
+        self.assertEqual(problems, [])
+        self.assertEqual([note.split()[0] for note in notes], ["vmbr12", "vmbr13", "vmbr14"])
+
+    def test_s_leaves_every_t_line_in_place_and_adds_three_nat_lines(self) -> None:
+        t_up, s_up = hvcheck.lines_of(self.out["first_up"]), hvcheck.lines_of(self.out["second_up"])
+        self.assertEqual(t_up - s_up, collections.Counter())
+        added = s_up - t_up
+        nat = [line for (table, line) in added if table == "nat"]
+        self.assertEqual(len(nat), 3, nat)
+        hooks = [line for (table, line) in added if table == "filter" and re.search(r"-j S5-(FWD|IN)$", line)]
+        self.assertEqual(len(hooks), 3 * 2 + 3, hooks)
+        self.assertFalse(any("T4-" in line for (_, line) in added))
+
+    def test_s_again_is_idempotent_and_down_returns_to_the_t_state(self) -> None:
+        self.assertEqual(hvcheck.lines_of(self.out["second_up_again"]), hvcheck.lines_of(self.out["second_up"]))
+        self.assertEqual(hvcheck.check(self.s_inv, "down", self.out["first_up"], self.out["second_down"]), [])
+        self.assertNotIn("S5-", self.out["second_down"])
+        self.assertIn(":T4-FWD", self.out["second_down"])
+
+
 class HypervisorIpv6CheckTests(unittest.TestCase):
     """검사기의 브리지 IPv6 검사(있음, 없음 둘 다)와 명령줄."""
 
@@ -959,6 +1254,38 @@ class HypervisorApplyCommandTests(unittest.TestCase):
             if "tb-ops" in line and "192.168.200.66:8091" in line:
                 self.assertRegex(line, r"안 되는|거절")
 
+    def test_runbook_s_section_uses_the_s_inventory_and_skips_the_agent_on_first_install(self) -> None:
+        # S 에서 다른 단계는 §14 한 곳에. 그 절의 설치는 등록 창 전이라 sms-agent 를 빼고, 66 확인은 S 인벤토리와 IPv6 상태로.
+        runbook = (REPO / "docs" / "runbook-civil-petition-apply.md").read_text()
+        start = runbook.index("## 14. S 적용 (ST2)")
+        section = runbook[start:runbook.index("\n## ", start + 1)]
+        installs = [line for line in section.splitlines() if "deploy/apply.sh --inventory $I --host" in line]
+        self.assertTrue(installs)
+        for line in installs:
+            self.assertIn("--skip-steps sms-agent", line)
+        checks = [line for line in section.splitlines() if "hv_iptables_check.py" in line]
+        self.assertTrue(checks)
+        for line in checks:
+            self.assertIn("--inventory .../s.json", line)
+            self.assertNotIn("t.json --mode", line)
+        self.assertIn("--mode up", checks[0])
+        self.assertIn("--ipv6-state", checks[0])
+        self.assertIn("add-net 192.168.131.0/24", section)
+        self.assertIn("ifup vmbr12 vmbr13 vmbr14", section)
+        self.assertIn("ifdown vmbr14 vmbr13 vmbr12", section)
+        self.assertIn("scale_verdict.py --inventory $I", section)
+        self.assertIn("pair_packages.py", section)
+        self.assertIn("st2-baseline", section)
+        self.assertIn("I=deploy/inventory/s.json", section)
+        # 넘기는 패키지 이름은 lldpd 단계 몫뿐이다(T 에만 도는 단계, S 문서 §2-3).
+        allowed = re.findall(r"--allow-(?:t-only|version) ([^\s`]+)", section)
+        self.assertEqual(sorted(allowed), sorted(["lldpd", "libsnmp40t64", "libsnmp-base", "libevent-2.1-7t64",
+                                                  "libevent-core-2.1-7t64"]))
+        # 흩어진 S 문장을 남기지 않는다(§14 를 가리키는 줄만).
+        before = runbook[:start]
+        self.assertNotIn("s5-net.rules", before)
+        self.assertNotIn("--inventory .../s.json", before)
+
     def test_every_bridge_creates_the_chains_when_missing_and_owns_only_its_hooks(self) -> None:
         inv = inventory(T_INV)
         net = render.hypervisor_files(inv)[inv["hypervisor"]["file"]]
@@ -1028,6 +1355,17 @@ class ProvisionPlanTests(unittest.TestCase):
             line = next(l for l in lines if f"qm config {host['vmid']}" in l)
             self.assertIn(f"\"$name\" = {host['pve_name']}", line)
             self.assertIn("건너뜀", line)
+
+    def test_snapshot_names_the_stage_of_each_testbed(self) -> None:
+        # S VM 에 "T2" 스냅숏이 남지 않게 단계 이름을 인벤토리에서 고른다(T 는 그대로 t2-baseline).
+        self.assertIn("qm snapshot 201 t2-baseline --description 'T2 end, disaster recovery only'", plan.snapshot(self.inv))
+        s_lines = plan.snapshot(inventory(S_INV))
+        self.assertEqual(len(s_lines) - 1, 5)
+        self.assertIn("qm snapshot 211 st2-baseline --description 'ST2 end, disaster recovery only'", s_lines)
+        self.assertFalse(any("T2 end" in line or "t2-baseline" in line for line in s_lines if "st2" not in line))
+        other = dict(self.inv, testbed="x")
+        with self.assertRaises(render.InventoryError):
+            plan.snapshot(other)
 
     def test_cli_prints_and_never_runs_qm(self) -> None:
         out = io.StringIO()
@@ -2461,6 +2799,109 @@ class ScaleVerdictTests(unittest.TestCase):
                 self.assertEqual(scale.judge(summary, cpu)["verdict"], "FAIL_2X_60RPS_30M")
 
 
+    def test_a_testbed_without_a_router_needs_no_router_samples(self) -> None:
+        # S 는 라우터가 없다(S 문서 결정 3). 인벤토리를 주면 라우터 표본을 요구하지 않고, T 인벤토리나 인벤토리가 없으면 요구한다.
+        cpu = {"wassvr01": self._cpu(40), "wassvr02": self._cpu(45), "websvr01": self._cpu(10),
+               "dbsvr01": self._cpu(20), "hypervisor": self._cpu(30, steal=0)}
+        self.assertEqual(scale.needed_hosts(inventory(S_INV)), ("was", "hypervisor"))
+        self.assertEqual(scale.needed_hosts(inventory(T_INV)), ("router", "was", "hypervisor"))
+        self.assertEqual(scale.needed_hosts(None), ("router", "was", "hypervisor"))
+        result = scale.judge(self._summary(), cpu, scale.needed_hosts(inventory(S_INV)))
+        self.assertEqual(result["verdict"], "PASS_2X_60RPS_30M", result["reasons"])
+        result = scale.judge(self._summary(), cpu, scale.needed_hosts(inventory(T_INV)))
+        self.assertIn("router CPU 표본 파일이 없음", result["reasons"])
+        # S 의 WAS 이름(wassvr..)에도 WAS 기준이 걸리고, 다른 VM 의 steal 기준도 그대로다.
+        for name, sample in (("wassvr02", self._cpu(75)), ("dbsvr01", self._cpu(20, steal=6))):
+            with self.subTest(case=name):
+                result = scale.judge(self._summary(), {**cpu, name: sample}, scale.needed_hosts(inventory(S_INV)))
+                self.assertEqual(result["verdict"], "FAIL_2X_60RPS_30M")
+        without_was = {k: v for k, v in cpu.items() if not k.startswith("was")}
+        self.assertIn("was CPU 표본 파일이 없음",
+                      scale.judge(self._summary(), without_was, scale.needed_hosts(inventory(S_INV)))["reasons"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "k6.json").write_text(json.dumps(self._summary()))
+            args = ["--summary", str(root / "k6.json"), "--inventory", str(S_INV)]
+            for name, samples in cpu.items():
+                (root / f"{name}.jsonl").write_text("".join(json.dumps(x) + "\n" for x in samples))
+                args += ["--cpu", f"{name}={root / (name + '.jsonl')}"]
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(scale.main(args), 0)
+                self.assertEqual(scale.main([a if a != str(S_INV) else str(T_INV) for a in args]), 1)
+
+
+class PairPackagesTests(unittest.TestCase):
+    """tools/pair_packages.py: T 와 S 짝 서버의 패키지 판 대조(S 문서 §2-4 쌍 조건 2)."""
+
+    BASE = "chrony 4.5-1ubuntu4.2\nlibc6:amd64 2.39-0ubuntu8.9\nzstd 1.5.5+dfsg2-2build1.1\n"
+
+    def _run(self, t_lists: dict[str, str], s_lists: dict[str, str], *extra: str) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for side, lists in (("t", t_lists), ("s", s_lists)):
+                (root / side).mkdir()
+                for name, text in lists.items():
+                    (root / side / f"{name}.txt").write_text(text)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = pairpkg.main(["--t-inventory", str(T_INV), "--s-inventory", str(S_INV),
+                                     "--t-dir", str(root / "t"), "--s-dir", str(root / "s"), *extra])
+            return code, out.getvalue()
+
+    def _all(self, inv: dict, text: str, **override: str) -> dict[str, str]:
+        return {h["name"]: override.get(h["name"], text) for h in inv["hosts"] if h["role"] != "router"}
+
+    def test_pairs_are_role_and_order_and_the_router_has_no_pair(self) -> None:
+        self.assertEqual(pairpkg.pairs(inventory(T_INV), inventory(S_INV)), [
+            ("web0", "web01", "websvr01"), ("was0", "was01", "wassvr01"), ("was1", "was02", "wassvr02"),
+            ("db0", "db01", "dbsvr01"), ("loadgen0", "loadgen", "loadgen")])
+
+    def test_same_lists_pass_and_every_kind_of_difference_fails(self) -> None:
+        t, s = inventory(T_INV), inventory(S_INV)
+        code, out = self._run(self._all(t, self.BASE), self._all(s, self.BASE.replace("libc6:amd64", "libc6")))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines()[-1], "PASS")
+        self.assertEqual(out.count("문제 0"), 5)
+        cases = {
+            "판이 다름 zstd T 1.5.5+dfsg2-2build1.1 S 1.5.6": self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1", "zstd 1.5.6"),
+            "T 에만 있음 zstd": self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1\n", ""),
+            "S 에만 있음 lldpd 1.0.18": self.BASE + "lldpd 1.0.18\n",
+        }
+        for expected, s_text in cases.items():
+            with self.subTest(case=expected):
+                code, out = self._run(self._all(t, self.BASE), self._all(s, self.BASE, dbsvr01=s_text))
+                self.assertEqual(code, 1)
+                self.assertIn(f"FAIL db0 {expected}", out)
+                self.assertEqual(out.splitlines()[-1], "FAIL")
+                self.assertEqual(out.count("문제 0"), 4)
+
+    def test_named_t_only_step_packages_are_noted_not_failed(self) -> None:
+        # T 에만 도는 단계(lldpd)가 깐 것과 올린 것. 이름을 준 것만 넘기고 기록은 남긴다. S 에만 있는 것은 이름을 줘도 실패다.
+        t, s = inventory(T_INV), inventory(S_INV)
+        t_text = self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1", "zstd 1.5.6") + "lldpd 1.0.18\n"
+        code, out = self._run(self._all(t, t_text), self._all(s, self.BASE),
+                              "--allow-t-only", "lldpd", "--allow-version", "zstd")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count("NOTE "), 10)
+        self.assertIn("NOTE web0 T 에만 있음 lldpd 1.0.18", out)
+        code, out = self._run(self._all(t, self.BASE), self._all(s, self.BASE + "lldpd 1.0.18\n"), "--allow-t-only", "lldpd")
+        self.assertEqual(code, 1)
+        code, out = self._run(self._all(t, t_text), self._all(s, self.BASE), "--allow-t-only", "lldpd")
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL web0 판이 다름 zstd", out)
+
+    def test_missing_or_malformed_lists_fail(self) -> None:
+        t, s = inventory(T_INV), inventory(S_INV)
+        lists = self._all(s, self.BASE)
+        del lists["wassvr02"]
+        code, out = self._run(self._all(t, self.BASE), lists)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL was1 was02 wassvr02 목록을 읽지 못함", out)
+        for bad in ("chrony\n", "chrony 1\nchrony 2\n"):
+            with self.assertRaises(ValueError):
+                pairpkg.parse(bad)
+
+
 class StepScriptTests(unittest.TestCase):
     def test_every_step_script_parses(self) -> None:
         for path in sorted((DEPLOY / "steps").glob("*.sh")) + [DEPLOY / "install-host.sh", DEPLOY / "apply.sh",
@@ -3770,8 +4211,8 @@ class SmsAgentRenderTests(unittest.TestCase):
 class SmsAgentApplyTests(unittest.TestCase):
     """apply.sh --sms-agent: 서버의 sms-agent 단계가 돌 때만 바이너리가 있어야 하고, 묶음 artifacts 에 실린다."""
 
-    def _inventory(self, root: Path) -> Path:
-        inv = inventory(T_INV)
+    def _inventory(self, root: Path, path: Path = T_INV) -> Path:
+        inv = inventory(path)
         for key in ("executor", "operator"):
             key_file = root / f"{key}.pub"
             key_file.write_text("ssh-ed25519 AAAA test\n")
@@ -3780,7 +4221,7 @@ class SmsAgentApplyTests(unittest.TestCase):
             secret = root / "db"
             secret.write_text("Abcdefgh12345678\n")
             inv["app"][field] = str(secret)
-        out = root / "t.json"
+        out = root / path.name
         out.write_text(json.dumps(inv))
         return out
 
@@ -3822,6 +4263,48 @@ class SmsAgentApplyTests(unittest.TestCase):
             self.assertNotIn("artifacts/lucida-agent", done.stdout)
             done = self._apply("--inventory", str(inv), "--host", "web01", "--steps", "sms-agent verify")
             self.assertEqual(done.returncode, 2)
+
+
+    def test_skip_steps_drops_the_agent_from_every_role_for_a_first_install(self) -> None:
+        # 관제 서버 등록 창 전 처음 설치(S 는 ST2): 역할마다 다른 단계 목록을 손으로 적지 않고 sms-agent 만 뺀다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inv_path = self._inventory(root, S_INV)
+            inv = inventory(S_INV)
+            (root / "war").write_bytes(b"war")
+            (root / "k6").write_bytes(b"k6")
+            hosts = [h["name"] for h in inv["hosts"]]
+            args = ["--inventory", str(inv_path), "--war", str(root / "war"), "--k6", str(root / "k6")]
+            for name in hosts:
+                args += ["--host", name]
+            done = self._apply(*args, "--skip-steps", "sms-agent")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn("artifacts/lucida-agent", done.stdout)
+            shown = dict(re.findall(r"^== (\S+) .*\nsteps: (.*)$", done.stdout, re.M))
+            self.assertEqual(set(shown), set(hosts))
+            for host in inv["hosts"]:
+                wanted = [step for step in render.host_steps(inv, host) if step != "sms-agent"]
+                with self.subTest(host=host["name"]):
+                    self.assertEqual(shown[host["name"]].split(), wanted)
+                    self.assertIn("verify", wanted)
+            # 원격 명령은 단계를 따로 주지 않는다(묶음의 단계 목록을 그대로 돈다).
+            self.assertRegex(done.stdout, r"install-host\.sh /root/petition-deploy/websvr01 '")
+            # 빼지 않으면 서버는 에이전트 바이너리를 요구한다(모든 단계).
+            done = self._apply("--inventory", str(inv_path), "--host", "websvr01")
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("websvr01 에 --sms-agent 필요", done.stderr)
+
+    def test_skip_steps_refuses_unknown_steps_and_explicit_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            inv = self._inventory(Path(raw), S_INV)
+            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agnet")
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("설치 단계가 아님", done.stderr)
+            self.assertNotIn("== websvr01", done.stdout)
+            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--steps", "web verify",
+                               "--skip-steps", "sms-agent")
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("함께 쓰지 않는다", done.stderr)
 
 
 class SmsAgentStepTests(unittest.TestCase):

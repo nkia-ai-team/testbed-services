@@ -10,7 +10,8 @@
   create    1단계: 게스트 호스트 이름을 Proxmox 이름으로 써서 복제한다(cloud-init 이 Proxmox 이름을 게스트
             호스트 이름으로 쓰므로, 처음부터 게스트 이름으로 만들어 "t4" 같은 이름이 게스트에 남지 않게 한다)
   rename    2단계: 설치 단계가 cloud-init 을 끈 뒤 Proxmox 이름을 pve_name 으로 바꾼다
-  snapshot  T2 끝 재해 복구용 스냅숏(설계 §8, 녹화마다 되돌리지 않는다)
+  snapshot  설치 단계 끝(T 는 T2, S 는 ST2) 재해 복구용 스냅숏(설계 §8, 녹화마다 되돌리지 않는다). 이름과 설명에
+            그 단계를 적는다(S VM 에 "T2" 스냅숏이 남지 않게)
   (NIC 이름: 새 VM 은 cloud-init 이 MAC 맞춤과 set-name 으로 eth0 ~ 을 준다. 인벤토리 이름 ens18 ~ 으로는
             설치 단계 network 가 바꾼다. MAC 은 Proxmox 가 정하고, netN 과 ipconfigN 을 같은 번호로 주므로 설치
             단계가 인벤토리 주소를 가진 NIC 에서 읽는다. 여기서 MAC 을 정하지 않는다)
@@ -33,7 +34,15 @@ sys.path.insert(0, str(HERE.parent))
 
 import render  # noqa: E402
 
-SNAPSHOT_NAME = "t2-baseline"
+# 스냅숏을 뜨는 단계 이름. 인벤토리 testbed 값마다 다르다(T 의 T2, S 의 ST2).
+SNAPSHOT_STAGE = {"t": "T2", "s": "ST2"}
+
+
+def snapshot_stage(inventory: dict) -> str:
+    try:
+        return SNAPSHOT_STAGE[inventory["testbed"]]
+    except KeyError as error:
+        raise render.InventoryError(f"스냅숏 단계를 모르는 testbed 값 {inventory.get('testbed')!r}") from error
 
 
 def _prefix(inventory: dict, net: str) -> int:
@@ -106,8 +115,9 @@ def rename(inventory: dict) -> list[str]:
 
 
 def snapshot(inventory: dict) -> list[str]:
+    stage = snapshot_stage(inventory)
     return ["set -eu"] + [
-        f"qm snapshot {host['vmid']} {SNAPSHOT_NAME} --description 'T2 end, disaster recovery only'"
+        f"qm snapshot {host['vmid']} {stage.lower()}-baseline --description '{stage} end, disaster recovery only'"
         for host in inventory["hosts"]
     ]
 
@@ -143,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     inventory = json.loads(args.inventory.read_text())
     try:
         render.validate(inventory)
+        snapshot_stage(inventory)
     except render.InventoryError as error:
         print(f"plan: {error}", file=sys.stderr)
         return 2
