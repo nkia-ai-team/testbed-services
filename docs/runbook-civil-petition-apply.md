@@ -210,18 +210,18 @@ S 는 `--inventory deploy/inventory/s.json`, 라우터 없음. 망 단계는 같
 | VM 6대 크기와 주소 | 66 `qm list`, 각 VM `ip -br addr` | §2-2 표 |
 | 업무망 경로 | 각 서버 `ip route get 192.168.126.11` 등 | via 라우터 .1. 66 `ip -br addr show vmbr8 vmbr9 vmbr10` 주소 0(IPv4, IPv6 모두. IPv6 는 §4 의 `PASS up` 이 브리지 5개 모두 보았다) |
 | 관리망 격리 (1) | web01 `curl -m 3 --interface 192.168.124.11 http://192.168.127.31:22` | 실패 |
-| 관리망 격리 (2) | web01, loadgen `ping -I ens18 -c 3 192.168.127.1`, `192.168.127.2` | 실패, 라우터 `nft list chain inet mgmtguard forward` 의 `oifname ... counter drop` 패킷 수 증가 |
+| 관리망 격리 (2) | web01, loadgen `ping -I ens18 -c 3 192.168.127.1`, `192.168.127.2`. 거절이 남는 곳은 핑 앞뒤로 읽는다: web01 쪽은 라우터 `nft list chain inet mgmtguard prerouting`, loadgen 쪽은 66 `iptables -nvxL T4-IN`, `iptables -nvxL T4-FWD`(읽기) | 모두 실패. web01 의 핑은 라우터 `prerouting` 의 `iifname != "ens22" ip daddr 192.168.127.0/24 counter drop` 패킷 수가 는다(이 거절이 forward 훅보다 먼저라 `forward` 의 `oifname ... counter drop` 은 늘지 않는다). loadgen 의 업무 NIC 는 기본 경로가 66(123.1)이라 라우터에 닿지 않는다. 127.1 은 66 `T4-IN` 의 `-i vmbr7 -j DROP`(vmbr7 ICMP 허용은 목적지 192.168.123.1 만), 127.2 는 `T4-FWD` 의 `-o vmbr11 -j DROP` 패킷 수가 는다 |
 | 관리망 격리 (3) | IPv4: 각 VM `nc -z -w 3 192.168.127.1 22`, `8006`. IPv6: §4 의 3 확인을 지금 상태로 다시(기준 `t4-net.before`, 새 `iptables-save`, 새 `ipv6-state` 출력) 돌려 `PASS up`(판정의 본체). 덧확인으로 각 VM 에서 자기 NIC 마다 `ping -6 -c 2 -w 3 -I <NIC> ff02::1` 의 응답 출발지를 66 `qm config <vmid>` 의 그 세그먼트 VM NIC MAC(EUI-64)과 맞춘다 | IPv4 연결 실패. IPv6 는 `PASS up` 이고, 멀티캐스트 핑 응답 출발지가 모두 그 세그먼트 VM NIC 의 주소뿐(66 이 답하지 않음). 검사기 `IPV6` 줄의 링크 로컬은 그 순간 브리지 MAC 으로 셈한 참고값이다. 브리지 MAC 은 첫 포트(tap)를 따라 바뀌므로 그 주소로 `nc -6` 이 실패하는 것은 판정이 되지 않는다 |
 | 관리망 격리 (4) | 각 VM `ping -I ens19 -c 2 192.168.230.119`, `10.250.0.1` | 실패 |
 | 관리망 격리 (5) | 119(읽기) `ping -c 2 192.168.127.21` | 실패 |
-| 서비스 기동 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `sha256sum -c /var/lib/petition-deploy/war.sha256` | active, OK |
+| 서비스 기동 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `cd /var/lib/tomcat10/webapps && sha256sum -c /var/lib/petition-deploy/war.sha256`(체크섬 파일에 파일 이름만 적혀 있어 webapps 에서 돌린다. 다른 곳에서 돌리면 "could not be read") | active, `petition.war: OK` |
 | 시드 크기 | db01 `sudo -u postgres psql -Atc 'select count(*) from petition' petition` | 2,000,000 ±5% |
 | 시간, 자동 갱신, APM 흔적, 커널 모듈 | 설치의 `verify` CHECK 줄 | PASS |
 | rsyslog 설정을 실제로 읽음 | 설치의 `verify` 의 `rsyslog-first-rule`, `syslog-forward-matches-inventory`(파일이 아니라 `rsyslogd -N1 -d` 가 그 파일을 읽었는지), `rsyslog-no-apparmor-denial`(rsyslog 가 마지막으로 선 뒤 `profile="rsyslogd"` 의 `apparmor="DENIED"` 줄 0), `rsyslog-no-proc-audit`(그 가운데 `/proc` 읽기와 ptrace 거부 0) | PASS |
 | rsyslog 첫 규칙 | 실행기 계정으로 한 번 접속, `sudo -n bash -s` 로 U8 가드 arm 하나 → 119(읽기) `syslog_local` 과 VM `/var/log/syslog`, `/var/log/auth.log` 에서 그 계정, uid, `run-r` 줄 0, `/var/log/opsjobs.log` 에 있음. 운영자 계정 sudo 한 줄은 119 에 있음 | 0, 있음, 있음 |
 | 큐 버림 보고 | 라우터 `sudo civil-petition/deploy/tools/router-discards-selftest.sh ens19 192.168.124.11`(부하 켜기 전) | PASS 4줄 |
-| 라우터 관제 흐름 notrack | 라우터 `sysctl -w net.netfilter.nf_conntrack_max=<지금 수 + 50>`, loadgen 에서 웹 80 으로 새 연결 수백 개, 라우터 `dmesg` 에 `table full` → 119(읽기) 라우터 상향 주소 SNMP 응답, `syslog_local` 에 그 줄. 끝나면 원래 값 | 둘 다 닿음 |
-| 가드 단독 시험 | U8 시운전 절차 2번(`v4/agent-out/U8.md`)을 라우터와 web01 에서 | 통과 |
+| 라우터 관제 흐름 notrack | 라우터 `sysctl -w net.netfilter.nf_conntrack_max=<지금 수 + 50>`, loadgen 에서 웹 80 으로 새 연결 수백 개, 라우터 `dmesg` 에 `table full` → 119(읽기) 라우터 상향 주소 SNMP 응답, `syslog_local` 에 그 줄. 표가 찬 동안 66 에서 라우터 관리 NIC 로 새 SSH 하나(관리 SSH 는 `mgmtguard` 에서 notrack). 끝나면 원래 값(그 새 SSH 로 되돌린다) | 셋 다 됨(SNMP 응답, 그 줄, 새 관리 SSH) |
+| 가드 단독 시험 | U8 시운전 절차 2번(`v4/agent-out/U8.md`)을 라우터와 web01 에서. 2-4 의 부팅 규칙 확인은 `sudo systemd-tmpfiles --boot --remove <probe.unit 셋째 칸>` 이다(규칙이 `r!` 부팅 전용이라 `--boot` 없이는 아무것도 지우지 않는다). 그 뒤 남은 일시 타이머는 파일이 없어 disarm 이 못 찾으므로 `systemctl stop <run-r 타이머>` 로 손으로 멈춘다(실제 재부팅이면 사라지는 것). 2-3 의 "disarm 이 앞 발화 시각을 낸다" 는 바로 앞에 발화가 있었을 때만이다(arm 이 표지를 지운다) | 통과 |
 | S 와 같이 쓰는 코드 | 저장소 시험 `test_civil_petition_deploy.py` 의 SharedCodeTests | OK |
 | PostgreSQL 서버 로그 | §9 의 값, 24시간 동안 `wc -l /var/log/postgresql/postgresql-16-main.log` 증가와 T3 로그 감시 줄 수 | 결과에 적음 |
 | DPM 흔적 없음 | 설치의 `verify` 의 `no-dpm-traces`, `ls ~/.config/testbed/ \| grep -c t4-dpm` | PASS, 0 |
@@ -327,3 +327,5 @@ sudo systemctl start loadgen.service
 - 2026-11-18 KST, v4 T2RSYS(ag-t2rsys, APT2 §4-2 멈춤): §6 적용 전 점검 `rsyslog-check.sh`(docker, 진짜 rsyslog 파서와 첫 규칙 동작), `syslog`, `syslog-forward` 단계가 사본 검사 뒤에만 놓고 실패 때 되돌림, `deploy/apply.sh` 실행 비트.
 - 2026-11-18 KST, v4 T2RSYS 2회차(리뷰 rv-t2rsys H1, H2, M2, M3, L3): §6 검사 사본 자리(AppArmor 범위 안 `/etc/rsyslog.d/.check-<pid>/`)와 실제 읽기 확인, 원격 전달 자리 `/etc/rsyslog.d/remote/`(옛 `/etc/rsyslog.remote.d/` 는 AppArmor 가 막아 읽히지 않았음, 지휘 세션 결정)와 손으로 끄기, 실행기 uid 줄 확인, 점검 도구가 VM 과 다른 점과 다이제스트 고정, §7 설정을 실제로 읽음 행.
 - 2026-11-18 KST, v4 T2RSYS 3회차(리뷰 rv-t2rsys 2회차 중간 보고, 지휘 세션 결정): §6 `syslog` 단계의 AppArmor 조각(로컬 소켓 주석의 `/proc` 읽기를 감사 없이 거부)과 다시 읽기, 재시작 뒤 `/proc` 거부 0 확인, 조각 손으로 빼기, 점검 도구의 `apparmor-fragment`, §7 `rsyslog-no-proc-audit`.
+- 2026-11-18 KST, v4 T2VER(ap-t2 §7 점검): §7 관리망 격리 (2) 의 기대를 실제 규칙대로(web01 은 라우터 `mgmtguard prerouting` 거절 카운터, loadgen 은 66 `T4-IN`, `T4-FWD` 거절 카운터), 66 상향 브리지 ICMP echo 허용을 브리지 자기 주소로 좁힘(렌더러), 라우터 prerouting 관리 대역 거절에 counter.
+- 2026-11-18 KST, v4 T2VER(ap-t2 §7 관찰, 지휘 세션 결정): 관리 SSH notrack(라우터와 서버 `mgmtguard`, conntrack 표가 가득 차도 정리 SSH 가 붙게)과 §7 notrack 행의 새 관리 SSH 확인, 가드 단독 시험 2-4 명령 `systemd-tmpfiles --boot --remove`, §7 WAR 체크섬 대조는 webapps 에서.

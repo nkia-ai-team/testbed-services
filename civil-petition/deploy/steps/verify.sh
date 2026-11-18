@@ -49,6 +49,27 @@ ip_forward_ok() {
 # NIC 가 인벤토리 이름, network 단계가 적은 MAC, 인벤토리 주소를 가지고 남은 물리 NIC 가 없다(lib.sh).
 nic_names_ok() { [[ -z "$(nic_named_problem)" ]]; }
 no_rollback_pending() { [[ "$(rollback_state)" == clear ]]; }
+# 올라온 nft 표에 줄이 모두 있다(표가 있는 것만으로는 틀이 바뀌어 빠진 줄을 모른다).
+#   nft_table_has <표> <줄 조각>...   조각은 nft list 출력의 한 줄 안에 그대로 있어야 한다
+nft_table_has() {
+    local table="$1" listed piece
+    shift
+    listed=$(nft list table inet "$table") || return 1
+    for piece in "$@"; do grep -qF -- "$piece" <<<"$listed" || return 1; done
+}
+# 관리 보호 표: 관리 주소에서 오는 SSH 만 받고, 그 SSH 는 conntrack 에서 빠진다(표가 가득 차도 정리 SSH 가 붙게).
+mgmt_guard_ok() {
+    nft_table_has mgmtguard \
+        "iifname \"$MGMT_IF\" ip saddr $MGMT_HOST tcp dport 22 accept" \
+        "iifname \"$MGMT_IF\" ip saddr $MGMT_HOST ip daddr $MGMT_ADDR tcp dport 22 notrack" \
+        "oifname \"$MGMT_IF\" ip saddr $MGMT_ADDR ip daddr $MGMT_HOST tcp sport 22 notrack"
+}
+# 라우터 자신의 관제 흐름(SNMP, trap, syslog, ICMP) notrack 과 관리 대역 거절 카운터.
+monitor_notrack_ok() {
+    nft_table_has monraw "udp dport 161 notrack" "udp sport 161 notrack" "icmp type echo-request notrack" \
+        "icmp type echo-reply notrack" \
+        && nft list table inet mgmtguard | grep -Eq "iifname != \"$MGMT_IF\" ip daddr [0-9./]+ counter packets [0-9]+ bytes [0-9]+ drop"
+}
 # DPM 흔적이 없다(설계 §2-5, §4: DPM 등록 안 함).
 #   pg_hba: 주석 아닌 줄의 칸이 관제 주소 그대로이거나 그 주소의 /N 인 줄(종전 정규식은 점이 아무 글자, 앞뒤 숫자도 맞았다).
 #   역할: 로그인할 수 있고 이름에 dpm, monitor 가 든 역할. PostgreSQL 내장 역할(pg_ 로 시작, pg_monitor 등)은 늘 있고
@@ -86,13 +107,13 @@ check syslog-forward-matches-inventory forward_state_ok
 check rsyslog-no-apparmor-denial rsyslog_not_denied
 check rsyslog-no-proc-audit rsyslog_no_proc_denial
 check ip-forward ip_forward_ok
-check mgmt-guard nft list table inet mgmtguard
+check mgmt-guard mgmt_guard_ok
 [[ -n "$MODULES" ]] && check kernel-modules modules_loaded
 case "$HOST_ROLE" in
     router)
         check snmpd-active systemctl is-active snmpd
         check fwacl nft list table inet fwacl
-        check monitor-notrack nft list table inet monraw ;;
+        check monitor-notrack monitor_notrack_ok ;;
     web) check apache2-active systemctl is-active apache2 ;;
     was)
         check tomcat10-active systemctl is-active tomcat10

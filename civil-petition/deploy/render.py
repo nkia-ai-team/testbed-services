@@ -510,6 +510,7 @@ def render_host(inventory: dict, host: dict) -> dict:
         "OPERATOR_NAME": inventory["accounts"]["operator"]["name"],
         "MGMT_IF": context["mgmt_if"],
         "MGMT_HOST": context["mgmt_host"],
+        "MGMT_ADDR": context["mgmt_addr"],
         "CHRONY_SERVER": context["chrony_server"],
         "NIC_EXPECT": " ".join(f"{nic['ifname']}={nic['addr']}" for nic in host["nics"]),
         "MODULES": "sch_netem sch_tbf sch_prio cls_flower" if host["role"] != "loadgen" else "",
@@ -670,8 +671,9 @@ def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
         if network.get("nat"):
             forward.append(f"-A {chain} -s {network['cidr']} -o {uplink} -j ACCEPT")
     forward.append(f"-A {chain} -j RETURN")
-    # INPUT: 관리 브리지는 chrony 와 이미 맺은 연결 응답만. 주소를 가진 다른 브리지는 ICMP 와 응답만
-    # (VM 이 하이퍼바이저 관리면 ssh, 8006 에 닿지 못하게 한다).
+    # INPUT: 관리 브리지는 chrony 와 이미 맺은 연결 응답만. 주소를 가진 다른 브리지는 그 브리지 자기 주소로 오는 ICMP echo 와
+    # 응답만(VM 이 하이퍼바이저 관리면 ssh, 8006 에 닿지 못하게 한다). echo 를 목적지로 좁히는 것은 업무 NIC 에서 66 의 다른
+    # 주소(관리 주소 등)로 가는 핑이 66 자신의 INPUT 이 되어 응답하던 것을 막기 위해서다(설계 §10 관리망 격리 (2), APT2 §7).
     inputs = [f"-A {input_chain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"]
     for name, network in networks.items():
         if not network.get("host_addr"):
@@ -679,7 +681,7 @@ def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
         if name == management:
             inputs.append(f"-A {input_chain} -i {network['bridge']} -p udp --dport 123 -j ACCEPT")
         else:
-            inputs.append(f"-A {input_chain} -i {network['bridge']} -p icmp --icmp-type echo-request -j ACCEPT")
+            inputs.append(f"-A {input_chain} -i {network['bridge']} -d {network['host_addr']} -p icmp --icmp-type echo-request -j ACCEPT")
         inputs.append(f"-A {input_chain} -i {network['bridge']} -j DROP")
     inputs.append(f"-A {input_chain} -j RETURN")
     return forward, inputs

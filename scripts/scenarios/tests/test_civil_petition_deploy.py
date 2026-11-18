@@ -386,10 +386,47 @@ class RenderContentTests(unittest.TestCase):
         router_guard = file_of(self.t["rt-core01"], "/etc/nftables.d/10-mgmt-guard.nft")
         self.assertIn('iifname "ens22" counter drop', router_guard)
         self.assertIn('oifname "ens22" counter drop', router_guard)
-        self.assertIn('iifname != "ens22" ip daddr 192.168.127.0/24 drop', router_guard)
+        # 관리 대역 거절은 forward 훅보다 먼저라 관리망 격리 (2) 의 거절은 이 카운터에 남는다(runbook §7).
+        self.assertIn('iifname != "ens22" ip daddr 192.168.127.0/24 counter drop', router_guard)
+        prerouting = router_guard[router_guard.index("chain prerouting"):router_guard.index("chain input")]
+        self.assertEqual([l.strip() for l in prerouting.splitlines() if "drop" in l],
+                         ['iifname != "ens22" ip daddr 192.168.127.0/24 counter drop'])
         netplan = file_of(self.t["was01"], "/etc/netplan/01-host.yaml")
         mgmt = netplan[netplan.index("ens19:"):]
         self.assertNotIn("routes:", mgmt)
+
+    def test_management_ssh_is_untracked_on_every_host(self) -> None:
+        # conntrack 표가 가득 차는 장애 동안에도 러너의 정리 SSH 가 붙게 관리 SSH 는 conntrack 에서 뺀다(APT2 §7, 라우터와 서버, T 와 S).
+        # 빠진 흐름은 untracked 라 input 의 "관리 주소 22번 accept" 가 받는다(established 줄에 기대지 않는다).
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            mgmt_host = next(v for v in inv["networks"].values() if v.get("management"))["host_addr"]
+            for host in inv["hosts"]:
+                mgmt = next(n for n in host["nics"] if inv["networks"][n["net"]].get("management"))
+                guard = file_of(bundles(path)[host["name"]], "/etc/nftables.d/10-mgmt-guard.nft")
+                with self.subTest(inventory=path.name, host=host["name"]):
+                    self.assertIn(f'iifname "{mgmt["ifname"]}" ip saddr {mgmt_host} ip daddr {mgmt["addr"]} tcp dport 22 notrack', guard)
+                    self.assertIn(f'oifname "{mgmt["ifname"]}" ip saddr {mgmt["addr"]} ip daddr {mgmt_host} tcp sport 22 notrack', guard)
+                    self.assertIn(f'iifname "{mgmt["ifname"]}" ip saddr {mgmt_host} tcp dport 22 accept', guard)
+                    self.assertEqual(len(re.findall(r"notrack", re.sub(r"(?m)^#.*$", "", guard))), 2)
+                    self.assertEqual(guard.count("priority -300"), 2)
+
+    def test_rendered_nft_files_load_in_a_kernel(self) -> None:
+        # 진짜 nft 가 렌더된 표를 받아들이는지(notrack 이 raw 우선순위 filter 사슬에서 되는지 포함) 네임스페이스에서 본다.
+        for path in (T_INV, S_INV):
+            for name, bundle in bundles(path).items():
+                files = [e for e in bundle["files"] if e["dest"].startswith("/etc/nftables.d/")]
+                with self.subTest(inventory=path.name, host=name), tempfile.TemporaryDirectory() as raw:
+                    paths = []
+                    for entry in files:
+                        target = Path(raw) / Path(entry["dest"]).name
+                        target.write_text(entry["text"])
+                        paths.append(str(target))
+                    script = "set -e; for f in \"$@\"; do nft -f \"$f\"; done; nft list ruleset"
+                    done = subprocess.run(["unshare", "-rn", "sh", "-c", script, "_", *paths], capture_output=True, text=True)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertIn("tcp dport 22 notrack", done.stdout)
+                    self.assertIn("priority raw", done.stdout)
 
     def test_router_acl_allows_only_tier_flows_and_monitoring(self) -> None:
         acl = file_of(self.t["rt-core01"], "/etc/nftables.d/30-acl.nft")
@@ -550,6 +587,26 @@ class HypervisorRenderTests(unittest.TestCase):
         self.assertLess(drop_real, allow_uplink)
         self.assertIn(f"-A {self.inv['hypervisor']['input_chain']} -i vmbr11 -p udp --dport 123 -j ACCEPT", inputs)
         self.assertIn(f"-A {self.inv['hypervisor']['input_chain']} -i vmbr11 -j DROP", inputs)
+
+    def test_icmp_echo_to_the_hypervisor_only_reaches_the_bridge_own_address(self) -> None:
+        # 업무 NIC 에서 66 의 다른 주소(관리 주소 192.168.127.1 등)로 가는 핑은 66 자신의 INPUT 이 되므로, 브리지마다
+        # ICMP echo 허용을 그 브리지 자기 주소로 좁힌다(APT2 §7 관리망 격리 (2)). 관리 브리지는 ICMP 를 받지 않는다. S 도 같다.
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            _, inputs = render._chain_rules(inv)
+            chain = inv["hypervisor"]["input_chain"]
+            management = render._management_net(inv)
+            icmp = [r for r in inputs if "icmp" in r]
+            wanted = [f"-A {chain} -i {net['bridge']} -d {net['host_addr']} -p icmp --icmp-type echo-request -j ACCEPT"
+                      for name, net in inv["networks"].items() if net.get("host_addr") and name != management]
+            with self.subTest(inventory=path.name):
+                self.assertTrue(wanted)
+                self.assertEqual(icmp, wanted)
+                for net in (n for name, n in inv["networks"].items() if n.get("host_addr")):
+                    accept = inputs.index(next(r for r in inputs if f"-i {net['bridge']} " in r))
+                    self.assertLess(accept, inputs.index(f"-A {chain} -i {net['bridge']} -j DROP"))
+        self.assertIn("-A T4-IN -i vmbr7 -d 192.168.123.1 -p icmp --icmp-type echo-request -j ACCEPT",
+                      render._chain_rules(self.inv)[1])
 
     def test_rules_are_idempotent_and_never_touch_the_default_policy(self) -> None:
         self.assertNotRegex(self.net, r"iptables[^\n]* -P ")
@@ -725,6 +782,12 @@ class HypervisorIptablesKernelTests(unittest.TestCase):
 
     def test_up_adds_only_this_testbed_and_runs_twice_without_duplicates(self) -> None:
         self.assertEqual(hvcheck.check(self.inv, "up", self.out["before"], self.out["up"]), [])
+
+    def test_icmp_echo_accept_names_the_bridge_address_in_the_kernel(self) -> None:
+        # 실제 iptables 가 받은 꼴: 목적지 없는 ICMP 허용이 남지 않는다.
+        icmp = [l for l in self.out["up"].splitlines() if l.startswith("-A T4-IN") and "icmp" in l]
+        self.assertEqual(len(icmp), 1, icmp)
+        self.assertRegex(icmp[0], r"-d 192\.168\.123\.1/32 -i vmbr7 -p icmp -m icmp --icmp-type 8 -j ACCEPT$")
 
     def test_down_returns_exactly_to_the_starting_rules(self) -> None:
         self.assertEqual(hvcheck.check(self.inv, "down", self.out["before"], self.out["down"]), [])
@@ -3305,6 +3368,37 @@ for (name,) in db.execute(query.replace(" !~ ", " NOT REGEXP ").replace(" ilike 
         db_block = source[source.index("    db)\n"):source.index("    loadgen)")]
         self.assertIn("check data-mount-on-serial-disk data_mount_on_serial_disk", db_block)
         self.assertIn("check no-dpm-traces no_dpm_traces", db_block)
+
+    def test_verify_guard_checks_read_the_rules_not_just_the_table(self) -> None:
+        # verify 의 mgmt-guard, monitor-notrack 은 표가 있는지가 아니라 지켜야 할 줄이 올라왔는지 본다. 렌더된 표를 네임스페이스의
+        # 진짜 nft 에 올리고 verify 함수를 그 안에서 부른다. 한 줄을 빼고 올리면 실패한다.
+        bundle = bundles(T_INV)["rt-core01"]
+        env_text = bundle["env"]
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        defs = source[:re.search(r"(?m)^check ", source).start()]
+        cases = {"as rendered": (None, "PASS PASS"),
+                 "no ssh notrack": ("tcp dport 22 notrack", "FAIL PASS"),
+                 "no snmp notrack": ("udp dport 161 notrack", "PASS FAIL"),
+                 "no drop counter": ("192.168.127.0/24 counter drop", "PASS FAIL")}
+        for name, (cut, want) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                paths = []
+                for entry in (e for e in bundle["files"] if e["dest"].startswith("/etc/nftables.d/")):
+                    text = entry["text"]
+                    if cut:
+                        text = "\n".join(l if cut not in l else (l.replace(" counter drop", " drop") if "counter drop" in cut else "")
+                                         for l in text.splitlines()) + "\n"
+                    target = root / Path(entry["dest"]).name
+                    target.write_text(text)
+                    paths.append(str(target))
+                (root / "defs.sh").write_text(defs)
+                env_lines = "".join(f"export {k}={render._shell_quote(v)}\n" for k, v in env_text.items())
+                (root / "env.sh").write_text(env_lines)
+                script = (f'set -e; for f in "$@"; do nft -f "$f"; done; set +e; . {root / "env.sh"}; . {DEPLOY / "steps" / "lib.sh"}; '
+                          f'. {root / "defs.sh"}; r=""; for c in mgmt_guard_ok monitor_notrack_ok; do if $c; then r="$r PASS"; else r="$r FAIL"; fi; done; echo $r')
+                done = subprocess.run(["unshare", "-rn", "bash", "-c", script, "_", *paths], capture_output=True, text=True)
+                self.assertEqual(done.stdout.strip(), want, done.stderr)
 
     def test_db_step_keeps_the_password_out_of_argv_and_the_server_log(self) -> None:
         source = (DEPLOY / "steps" / "db.sh").read_text()
