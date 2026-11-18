@@ -1608,6 +1608,77 @@ class RegistryContractTests(unittest.TestCase):
                     "that does not come back after the load stops",
                 )
 
+    def test_recovery_gates_do_not_read_the_scenario_own_load_output(self) -> None:
+        # domain 을 받는 질의는 domain 없이 쓰면 시나리오 자기 k6 출력(tb-runner 의
+        # /tmp/rca-scenario-<id>-live.json)을 읽는다. 그 파일은 load.north_south 가 도는
+        # 동안만 있고, cleanup 이 k6 를 끝내며 지운다. recovery 는 cleanup 이 성공한 뒤에만
+        # 평가되므로 그런 신호는 recovery 내내 unusable 이고 all 조건은 끝내 참이 될 수
+        # 없다. 08-03 9dfeefb 가 9종에서 고쳤지만 막는 검사가 없어 11-18 F69-P run 73e014d0
+        # 이 같은 꼴로 피해 없이 recovery_timeout, dirty, 큐 정지로 끝났다. recovery 는 상주
+        # 기준선(domain 을 준 같은 질의)을 읽는다.
+        #
+        # 모든 live 시나리오를 돌려 걸리는 목록을 낸다. 아직 안 고친 것은 compile-plan 의
+        # RECOVERY_OWN_LOAD_PENDING 에만 있어야 하고(후보 보강 몫), 고친 뒤 남은 항목도 빨강이다.
+        domain_scoped = {
+            query_id
+            for query_id, query in self.queries["queries"].items()
+            if "domain" in query.get("allowed_parameters", [])
+        }
+        found = []
+        for scenario_id, controller in self.controllers["controllers"].items():
+            observations = {item["id"]: item for item in controller["observations"]}
+            block = controller.get("recovery") or {}
+            for condition in block.get("all", []) + block.get("any", []):
+                observation = observations[condition["observation"]]
+                if (
+                    observation["query_id"] in domain_scoped
+                    and "domain" not in (observation.get("parameters") or {})
+                ):
+                    found.append(f"{scenario_id}:recovery:{condition['id']}")
+        pending = sorted(getattr(compile_plan_module, "RECOVERY_OWN_LOAD_PENDING", ()))
+        self.assertEqual(
+            sorted(found),
+            pending,
+            "recovery 가 cleanup 이 지운 동반 부하 출력을 읽는 조건이 바뀌었다. 새 것은 같은 질의에 "
+            "domain 을 준 기준선 관측으로 고치고, 고친 것은 RECOVERY_OWN_LOAD_PENDING 에서 지울 것",
+        )
+        # 검사기(compile-plan)의 검출도 같은 답을 낸다.
+        detected = []
+        for scenario_id, controller in self.controllers["controllers"].items():
+            detected.extend(
+                compile_plan_module.recovery_own_load_reads(scenario_id, controller, self.queries)
+            )
+        self.assertEqual(sorted(detected), sorted(found))
+
+    def test_recovery_reading_the_scenario_own_load_output_is_rejected(self) -> None:
+        # 위 규칙을 compile-plan 이 막는지 본다. 이미 녹화된 F64-R 의 회복 조건을 동반
+        # 부하 쪽 관측(checkout_5xx_rate, domain 없음)으로 돌려 놓으면 거절해야 한다.
+        bad = copy.deepcopy(self.controllers)
+        recovery = bad["controllers"]["F64-R"]["recovery"]["all"]
+        target = next(c for c in recovery if c["id"] == "baseline-checkout-recovered")
+        target["observation"] = "checkout_5xx_rate"
+        with self.assertRaisesRegex(
+            compile_plan_module.ContractError,
+            r"F64-R recovery reads the scenario's own load output "
+            r"\(F64-R:recovery:baseline-checkout-recovered\)",
+        ):
+            compile_plan_module.validate_contracts(
+                self.catalog, self.locations, self.profiles, self.queries, bad
+            )
+        # 다른 질의(http.entry_health, domain 없음)도 같다.
+        bad = copy.deepcopy(self.controllers)
+        bad["controllers"]["F64-R"]["recovery"]["all"].append(
+            {"id": "entry-back", "observation": "entry_status", "op": "eq", "value": 200}
+        )
+        with self.assertRaisesRegex(compile_plan_module.ContractError, "F64-R:recovery:entry-back"):
+            compile_plan_module.validate_contracts(
+                self.catalog, self.locations, self.profiles, self.queries, bad
+            )
+        # domain 을 준 기준선 관측은 그대로 통과한다(원래 F64-R).
+        compile_plan_module.validate_contracts(
+            self.catalog, self.locations, self.profiles, self.queries, self.controllers
+        )
+
     def test_controller_registry_is_bound_into_registry_and_plan_digest(self) -> None:
         baseline = compile_plan_module.compile_plan("f07-h-north-south-surge")
         changed = copy.deepcopy(self.controllers)

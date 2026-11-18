@@ -238,6 +238,11 @@ def validate_controllers(
         recovery_pairs = {(item.get("observation"), item.get("op"), item.get("value")) for item in recovery_items}
         if ("target_health", "eq", 200) not in recovery_pairs or ("pod_ready", "eq", True) not in recovery_pairs:
             raise ContractError(f"controller {scenario_id} lacks health/pod recovery")
+        for found in recovery_own_load_reads(scenario_id, controller, queries_doc):
+            if found not in RECOVERY_OWN_LOAD_PENDING:
+                raise ContractError(
+                    f"controller {scenario_id} recovery reads the scenario's own load output ({found})"
+                )
         capture = controller.get("capture", {})
         if capture != {
             "enabled": True,
@@ -247,6 +252,41 @@ def validate_controllers(
             "create_golden_anomaly": False,
         }:
             raise ContractError(f"controller {scenario_id} capture policy mismatch")
+
+
+# recovery 가 시나리오 자기 부하 출력을 읽는 것으로 이미 알려진 조건("<시나리오>:recovery:<조건 id>").
+# 정의 고침은 그 시나리오의 후보 보강 몫이라 여기 남겨 두고, 고쳐지면 지운다. 새 항목을 더해 검사를
+# 통과시키지 않는다. 시험이 실제 검출 목록과 이 집합이 같은지 본다(고친 뒤 남은 항목도 빨강).
+RECOVERY_OWN_LOAD_PENDING = frozenset({
+    "F69-P:recovery:checkout-recovered",  # 11-18 run 73e014d0 recovery_timeout. 후보 보강 대기
+})
+
+
+def recovery_own_load_reads(
+    scenario_id: str, controller: dict[str, Any], queries_doc: dict[str, Any]
+) -> list[str]:
+    """recovery 조건 가운데 시나리오 자기 k6 출력을 읽는 것을 "<id>:recovery:<조건 id>" 로 돌려준다.
+
+    domain 을 받는 질의(loadgen_summary 전부, http.entry_health, business.checkout_invariant)는
+    domain 없이 쓰면 tb-runner 의 /tmp/rca-scenario-<id>-live.json 을 읽는다. 그 파일은
+    load.north_south 가 도는 동안만 있고, 그 cleanup 이 k6 를 끝내며 지운다. recovery 는 cleanup
+    이 모두 성공한 뒤에만 평가되므로 그 신호는 recovery 내내 unusable 이고, all 조건은 참이 될 수
+    없어 recovery_timeout, dirty, 큐 정지로 끝난다(08-03 9dfeefb 가 9종에서 고친 것, 11-18 F69-P
+    재발). 회복은 상주 기준선(같은 질의에 domain)으로 읽는다.
+    """
+    queries = queries_doc.get("queries", {})
+    observation_by_id = {item.get("id"): item for item in controller.get("observations", [])}
+    recovery = controller.get("recovery") or {}
+    found: list[str] = []
+    for match_key in ("all", "any"):
+        for item in recovery.get(match_key, []):
+            observation = observation_by_id.get(item.get("observation")) or {}
+            query = queries.get(observation.get("query_id"), {})
+            if "domain" in query.get("allowed_parameters", []) and "domain" not in (
+                observation.get("parameters") or {}
+            ):
+                found.append(f"{scenario_id}:recovery:{item.get('id')}")
+    return found
 
 
 def validate_observation_refs(observations: list[dict[str, Any]], queries_doc: dict[str, Any]) -> None:
