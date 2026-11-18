@@ -483,12 +483,13 @@ S 는 같은 코드, 같은 WAR, 같은 단계를 인벤토리 `deploy/inventory
 | 관리 접속 known_hosts | `~/.ssh/known_hosts_civil-petition` | `~/.ssh/known_hosts_civil-petition-sms` |
 | 부하 요약 | `/tmp/k6-civil-petition-live.json`, `/var/lib/k6/k6-civil-petition-windows.jsonl` | `/tmp/k6-civil-petition-sms-live.json`, `/var/lib/k6/k6-civil-petition-sms-windows.jsonl` |
 | 스냅숏 | `t2-baseline` | `st2-baseline` |
+| 패키지 색인 | 설치 때의 archive, security | 짝 T 서버의 apt 설치 시각의 Ubuntu snapshot 색인(`--apt-snapshot`, 14-3 차례 5) |
 
 T 적용(11-18 APT2)에서 고친 저장소 결함(NIC 이름, 브리지 IPv6, rsyslog 검사 사본과 AppArmor, 데이터 디스크 serial, psql 표준 입력, no-dpm-traces, 66 ICMP 좁힘, 관리 SSH notrack, settle 다시 읽기)은 모두 같은 코드라 S 에도 걸린다. 라우터, syslog 전달, lldpd 쪽 고침은 S 에 해당 없다.
 
 ### 14-2. 언제
 
-선행: T2 끝(설치와 §7 점검), T0 터널. **T 평시 24시간 판정 창(T 부하 시작 + 26시간까지) 안에 S 를 지으면 그 창의 66 부하(VM 생성, DB 시드, S 부하)가 함께 들어간다.** S 를 그 창 안에 지을지, T 판정 끝(E) 뒤에 지을지는 지휘 세션이 정한다. S 의 ST3(119 등록)는 S 평시 24시간 판정 뒤라 T3 정비 창에 묶으려면 S 를 그만큼 먼저 지어야 한다.
+선행: T2 끝(설치와 §7 점검), T0 터널. **S 는 T 평시 판정 끝 E(가장 이르면 2026-11-19 14:42:48 KST) 뒤에 짓는다**(11-18 지휘 세션 결정). 까닭: 계획 순서가 ST2 를 T 뒤에 두고, T 판정 창([E-26시간, E])에 S 의 VM 생성, DB 시드, 부하가 66 에 더해지지 않게 하기 위해서다. 차례는 §12-0 의 T3 적용(관제 서버 등록)과 같은 66 변경 창에 이어서 한다: T3 의 순서 1(녹화 정지, 잠금)~10 을 마친 뒤 같은 정지 창 안에서 아래 차례 0~6 을 하고, 부하 시작(차례 8) 뒤 창을 닫는다. 2시간 30분 녹화 시작 차단은 그 창의 마지막 변경(S 의 차례 3 `add-net` 이나 VM 안 마지막 설치 중 늦은 것)부터 센다. S 의 ST3(119 등록)는 S 평시 24시간 판정 뒤라 T3 창에는 들지 않는다(따로 창을 연다).
 
 ### 14-3. 차례
 
@@ -501,11 +502,29 @@ T 적용(11-18 APT2)에서 고친 저장소 결함(NIC 이름, 브리지 IPv6, r
 | 2 | 66 망(§4). `render.py --inventory $I --hypervisor /tmp/s5-hv` 의 파일 셋을 66 같은 경로에. **기준은 T 망이 선 지금 뜬다**: `iptables-save > /root/s5-net.before`. `ifup vmbr12 vmbr13 vmbr14`, `systemctl restart chrony`(modprobe 없음) | `iptables-save > /root/s5-net.after`, `render.py --inventory $I --hypervisor-commands ipv6-state` 명령 출력을 `/root/s5-net.ipv6` 로, `hv_iptables_check.py --inventory .../s.json --mode up --before s5-net.before --after s5-net.after --ipv6-state s5-net.ipv6` 가 `PASS up`(늘어난 줄은 S5-FWD, S5-IN 과 그 훅 9, MASQUERADE 2, SNAT 1). **손 sysctl 없이** 판정한다(T2V6 의 "새로 만들 때 끔" 을 처음 보는 자리, §4). `ip -br link show vmbr12 vmbr13 vmbr14` 셋 다 UP. `iptables -t nat -S \| grep -c 192.168.122.0/24` 1, `iptables-save \| grep -c '^-A T4-'` 가 before 와 같음. `ip route` 에 131, 132, 133 은 연결된 망만(via 없음). 104 → `192.168.200.66:8091` 200, T 부하 요약(`/tmp/k6-civil-petition-live.json`)의 비정상 0 그대로 | §4 의 4 를 S 이름으로: `ifdown vmbr14 vmbr13 vmbr12`, `rm` 파일 셋, `systemctl restart chrony`, `--mode down --before s5-net.before` 가 `PASS down` |
 | 3 | 터널 대역 더하기(터널 runbook §8): 104 에서 `./t0-apply.sh add-net 192.168.131.0/24`(잠금 아래). 119 설정 변경이라 2시간 30분 시계를 새로 센다 | 차례 4 뒤 `./t0-apply.sh verify --target 192.168.131.11`(포트 없이, S 서버는 10.250.0.1 의 ICMP 만 받는다) | 66, 119 각각 `tb-wg del-net 192.168.131.0/24`(잠금 아래) |
 | 4 | VM 생성(§5). `plan.py --inventory $I --phase precheck` 를 66 에서, `scp ~/.config/testbed/s5-operator.pub root@192.168.200.66:/root/s5-operator.pub`, `plan.py --inventory $I --phase create --sshkeys /root/s5-operator.pub` | `qm list` 에 211~215 running, 크기는 S 문서 §2-2(저장소 시험 `SmsOnlyDesignTests` 가 같은 표를 대조한다). 각 VM `ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition-sms -J root@192.168.200.66 sysop@192.168.133.x id -u` 가 1000. `ip -br link` 가 eth0, eth1 | §10(destroy 는 사람) |
-| 5 | 서버 설치(§6). 적용 전 점검 `rsyslog-check.sh`(T, S 를 함께 본다). WAR 는 T 와 **같은 파일**(sha256 이 T 의 `/var/lib/petition-deploy/war.sha256` 과 같아야 한다), k6 도 같은 파일. 판 고정은 짝 T 서버의 지금 목록을 서버마다 준다: `ssh ... sysop@<T 관리 주소> "dpkg-query -W -f '\${Package} \${Version}\n'" > t-pkgs/<T 이름>.txt`. 순서는 부하기 망 단계(§6-1, 관리 주소 192.168.133.10) → dbsvr01 → wassvr01, wassvr02 → websvr01 → 부하기. 라우터가 없으므로 서버의 바깥 길은 차례 2 로 이미 있다. 모든 서버를 `--skip-steps sms-agent` 로 돈다. 예: `deploy/apply.sh --inventory $I --host dbsvr01 --skip-steps sms-agent --package-versions t-pkgs/db01.txt` | 서버마다 `verify` 의 CHECK 모두 PASS 와 `CHECK sms-agent NOT-INSTALLED`, `syslog-forward-matches-inventory` PASS(전달 파일 0). `plan.py --inventory $I --phase nics` 출력과 `nic ...` 줄의 MAC 대조. `--dry-run` 의 `steps:` 줄에 `sms-agent`, `syslog-forward`, `lldpd` 없음 | §6 과 같다 |
+| 5 | 서버 설치(§6). 적용 전 점검 `rsyslog-check.sh`(T, S 를 함께 본다). WAR 는 T 와 **같은 파일**(sha256 이 T 의 `/var/lib/petition-deploy/war.sha256` 과 같아야 한다), k6 도 같은 파일. **패키지 색인은 짝 T 서버가 apt 로 설치한 시각의 Ubuntu snapshot 색인**을 쓴다(`--apt-snapshot`, 아래 14-3-1 표). 판 고정도 함께 준다: 짝 T 서버의 지금 목록 `ssh ... sysop@<T 관리 주소> "dpkg-query -W -f '\${Package} \${Version}\n'" > t-pkgs/<T 이름>.txt`. 순서는 부하기 망 단계(§6-1, 관리 주소 192.168.133.10) → dbsvr01 → wassvr01, wassvr02 → websvr01 → 부하기. 라우터가 없으므로 서버의 바깥 길은 차례 2 로 이미 있다. 모든 서버를 `--skip-steps sms-agent` 로 돈다. 예: `deploy/apply.sh --inventory $I --host dbsvr01 --skip-steps sms-agent --apt-snapshot 20261117T224105Z --package-versions t-pkgs/db01.txt` | 서버마다 os-base 출력에 `apt snapshot <ID>`, VM `/var/lib/petition-deploy/apt-snapshot` 가 그 ID. `verify` 의 CHECK 모두 PASS 와 `CHECK sms-agent NOT-INSTALLED`, `syslog-forward-matches-inventory` PASS(전달 파일 0). `plan.py --inventory $I --phase nics` 출력과 `nic ...` 줄의 MAC 대조. `--dry-run` 의 `steps:` 줄에 `sms-agent`, `syslog-forward`, `lldpd` 없음, `apt-snapshot:` 줄이 표의 ID | §6 과 같다 |
 | 6 | `plan.py --inventory $I --phase rename`(s5-*) | `qm list` 이름, 게스트 `hostname` 그대로 | `qm set <vmid> --name <게스트 이름>` |
 | 7 | ST2 점검(14-4) | | |
 | 8 | 부하 시작 `deploy/apply.sh --inventory $I --start-load` | `/tmp/k6-civil-petition-sms-live.json` 생김, 비정상 0. T 부하 요약도 그대로 | 부하기 `sudo systemctl stop loadgen.service` |
 | 9 | 평시 24시간, 규모 축(§8 을 S 이름으로), 스냅숏 `plan.py --inventory $I --phase snapshot`(`st2-baseline`) | 14-4 의 해당 행 | 스냅숏 지우기 `qm delsnapshot <vmid> st2-baseline` |
+
+#### 14-3-1. 패키지 색인 시각 (쌍 조건 2)
+
+`apt_install` 의 판 고정은 이름을 준 꼭대기 패키지만 묶고 의존 패키지는 그때 색인의 최신을 받는다. 그래서 S 는 짝 T 서버가 apt 로 설치한 시각의 Ubuntu snapshot 색인(`https://snapshot.ubuntu.com/ubuntu/<ID>/`, apt 2.8 의 `--snapshot`)으로 받고 설치한다. 시각은 T 서버의 `/var/log/apt/history.log` 첫 설치 명령의 `Start-Date`(VM 시각 UTC)이고 APT2 의 단계 시각과 맞는다.
+
+| S 서버 | T 짝 | T apt 설치 시작(UTC) | KST, APT2 단계 | `--apt-snapshot` |
+|---|---|---|---|---|
+| websvr01 | web01 | 2026-11-18 02:20:12 | 11:20:12, §6-8(11:19:50 ~) | `20261118T022012Z` |
+| wassvr01 | was01 | 2026-11-18 02:16:48 | 11:16:48, §6-7(11:16:02 ~) | `20261118T021648Z` |
+| wassvr02 | was02 | 2026-11-18 02:18:27 | 11:18:27, §6-7 | `20261118T021827Z` |
+| dbsvr01 | db01 | 2026-11-17 22:41:05 | 07:41:05, §6-3(07:40:18 ~) | `20261117T224105Z` |
+| loadgen | loadgen | 2026-11-17 19:24:45 | 04:24:45, §4-1(04:24:04 ~) | `20261117T192445Z` |
+
+미리 본 것(11-18 KST): T 서버에서 snapshot 저장소 `InRelease`(noble, updates, security)가 66 바깥 길로 200(loadgen, db01). 다섯 ID 의 색인에서 T 가 apt 로 깐 판(lldpd 단계 몫을 뺀 84 항목)이 모두 그 색인의 후보 판과 같다. 일회 `ubuntu:24.04` 컨테이너에서 이 판의 `apt_update`, `apt_install` 로 db01, web01 짝 묶음을 깔면 T 가 apt 로 깐 판과 같다(컨테이너에 없던 패키지 하나 빼고).
+
+설치 단계는 스냅숏 색인을 못 받으면 멈춘다(apt 는 인증서나 길 문제로 못 받아도 경고만 내고 끝 코드 0 으로 옛 색인을 쓰고, 미래 시각에는 최신 색인을 준다). 그래서 `W:`, `E:` 줄, 미래 시각, 받은 색인 파일(`snapshot.ubuntu.com_ubuntu_<ID>_dists_<배포판>{,-updates,-security}_InRelease`)을 따로 본다. 멈추면 설치는 그 앞이라 VM 에 바뀐 패키지가 없다. 원인(인증서 `ca-certificates`, 66 바깥 길, snapshot 저장소 상태)을 보고 다시 돈다. 스냅숏 없이 깔지 않는다(쌍 조건 2 가 깨진다).
+
+대조는 14-4 의 `pair_packages.py` 다. 짝마다 `dpkg-query -W` 전체 목록(의존 패키지와 템플릿 패키지 포함)을 견준다. 넘기는 것은 T 에만 도는 `lldpd` 단계가 깐 넷과 올린 하나뿐이다.
 
 ### 14-4. ST2 점검 (S 문서 §11 ST2 행마다)
 
@@ -566,3 +585,4 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 - 2026-11-18 KST, v4 T3P 2회차(리뷰 rv-t3p, 지휘 세션 결정): §11 로그 회전 파일, 바이너리 자리 만들기, `--sms-agent-sha256`, §12-0 대표 질의 구간 문장, 차단 시계 시작점, `--vm-reads` 는 녹화 정지 아래, §12-1 감시 꼴(기존 도메인과 같게)과 trap 수신기가 모든 주소에서 듣는다는 점, §13 NMS 인터페이스별, DB 서버 관제의 줄 없음 규칙, 대상 번호 표, 프로세스 계열 단위, 설계와 다르게 둔 것, 기준값 파일.
 - 2026-11-18 KST, v4 T3P(ag-t3p): T3 적용 준비. §11 SMS 에이전트 설치(`sms-agent` 단계, 바이너리 출처와 꺼내기, 자리, 유닛, 멱등, verify 세 항목, 되돌리기), §12 관제 서버 등록(적용 순서와 시각 기준, T2 판정 끝 E 전 금지, trap 확인을 평시 판정 뒤 T3 첫 주입 단계로 옮김과 수신기 등록이 먼저인 까닭, 단계별 API 와 되돌리기, 미리 확인한 제품 동작, 대상 번호 표 꼴), §13 완료 조건 확인 도구와 행별 통과 기준, 등록 전 119 자원 조회 값. §10 되돌리기 줄.
 - 2026-11-18 KST, v4 ST2P(ag-st2p): §14 S 적용(ST2) 절을 두고 흩어져 있던 S 문장(§3, §4, §6)을 그리로 모음. T 와 다른 점 표, 언제(T 판정 창과 겹침은 지휘 세션 결정), 차례와 확인과 되돌리기, ST2 점검 행별 명령, 66 자원 읽기 값. `apply.sh --skip-steps sms-agent`(등록 창 전 처음 설치), `scale_verdict.py --inventory`(라우터 없는 S), `pair_packages.py`(쌍 조건 2 패키지 판), 스냅숏 이름 `st2-baseline`.
+- 2026-11-18 KST, v4 ST2P 2회차(지휘 세션 결정): §14-2 S 는 T 판정 끝 E 뒤, T3 와 같은 66 변경 창에 이어서. §14-3-1 짝 T 서버의 apt 설치 시각 Ubuntu snapshot 색인(`apply.sh --apt-snapshot`, 설치 단계가 스냅숏 색인을 못 받으면 멈춤), 서버별 ID 표.

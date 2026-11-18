@@ -322,7 +322,10 @@ class SharedCodeTests(unittest.TestCase):
 
 def spec_section(path: Path, heading: str) -> str:
     """설계 문서에서 제목 줄 하나부터 다음 같은 깊이 이상의 제목 앞까지."""
-    text = path.read_text(encoding="utf-8")
+    return spec_section_text(path.read_text(encoding="utf-8"), heading)
+
+
+def spec_section_text(text: str, heading: str) -> str:
     start = text.index(heading + "\n")
     level = len(heading) - len(heading.lstrip("#"))
     following = re.search(rf"^#{{1,{level}}} ", text[start + len(heading):], re.M)
@@ -1263,6 +1266,16 @@ class HypervisorApplyCommandTests(unittest.TestCase):
         self.assertTrue(installs)
         for line in installs:
             self.assertIn("--skip-steps sms-agent", line)
+            self.assertIn("--apt-snapshot ", line)
+        # 서버마다 짝 T 서버의 apt 설치 시각(쌍 조건 2). 표는 S 의 모든 호스트를 덮고, 예시 ID 는 표에 있다.
+        table = {row[0]: row for row in table_rows(spec_section_text(section, "#### 14-3-1. 패키지 색인 시각 (쌍 조건 2)"))}
+        self.assertEqual(set(table), {h["name"] for h in inventory(S_INV)["hosts"]})
+        ids = {row[-1].strip("`") for row in table.values()}
+        for value in ids:
+            self.assertRegex(value, r"^\d{8}T\d{6}Z$")
+        for line in installs:
+            self.assertIn(re.search(r"--apt-snapshot (\S+)", line).group(1), ids)
+        self.assertIn("E(가장 이르면 2026-11-19 14:42:48 KST) 뒤에 짓는다", section)
         checks = [line for line in section.splitlines() if "hv_iptables_check.py" in line]
         self.assertTrue(checks)
         for line in checks:
@@ -3442,6 +3455,71 @@ class StepScriptTests(unittest.TestCase):
                 self.assertFalse(calls.exists(), "이름 확인 전에 무언가를 했다")
                 self.assertFalse(dest.exists())
 
+    def _apt(self, root: Path, snapshot: str | None, update_out: str = "Hit:1 x\n", lists: tuple[str, ...] = (),
+             call: str = "apt_update; apt_install chrony") -> tuple[subprocess.CompletedProcess, str]:
+        bin_dir, listdir = root / "bin", root / "lists"
+        bin_dir.mkdir()
+        listdir.mkdir()
+        for name in lists:
+            (listdir / name).write_text("")
+        calls = root / "calls"
+        (root / "out").write_text(update_out)
+        (bin_dir / "apt-get").write_text(f"#!/bin/sh\necho apt-get \"$@\" >> {calls}\n"
+                                         f"[ \"$1\" = update ] && cat {root / 'out'}\nexit 0\n")
+        (bin_dir / "apt-get").chmod(0o755)
+        (root / "os-release").write_text("NAME=Ubuntu\nVERSION_CODENAME=noble\n")
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "APT_LISTS": str(listdir), "OS_RELEASE": str(root / "os-release")}
+        if snapshot is not None:
+            env["APT_SNAPSHOT"] = snapshot
+        env["POLICY_RC"] = str(root / "policy-rc.d")
+        script = f"set -euo pipefail; BUNDLE={root}; . {DEPLOY / 'steps' / 'lib.sh'}; {call}"
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+        return done, calls.read_text() if calls.exists() else ""
+
+    SNAP_LISTS = tuple(f"snapshot.ubuntu.com_ubuntu_20261117T224105Z_dists_{suite}_InRelease"
+                       for suite in ("noble", "noble-updates", "noble-security", "noble-backports"))
+
+    def test_apt_snapshot_is_given_to_update_and_install_and_its_index_is_checked(self) -> None:
+        # S 쌍 조건 2: T 짝 서버의 apt 설치 시각 색인(runbook §14). 받기와 설치 둘 다 같은 --snapshot 이어야 한다.
+        with tempfile.TemporaryDirectory() as raw:
+            done, calls = self._apt(Path(raw), "20261117T224105Z", lists=self.SNAP_LISTS)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("apt snapshot 20261117T224105Z", done.stdout + done.stderr)
+        lines = calls.splitlines()
+        self.assertEqual(lines[0], "apt-get update -q --snapshot 20261117T224105Z")
+        self.assertRegex(lines[1], r"^apt-get install -y -q --no-install-recommends --snapshot 20261117T224105Z chrony$")
+
+    def test_without_a_snapshot_apt_is_called_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            done, calls = self._apt(Path(raw), None, update_out="W: something\n")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(calls.splitlines(), ["apt-get update -q", "apt-get install -y -q --no-install-recommends chrony"])
+        self.assertNotIn("apt snapshot", done.stdout + done.stderr)
+
+    def test_a_snapshot_index_that_did_not_arrive_stops_before_installing(self) -> None:
+        # apt 는 스냅숏 색인을 못 받아도 경고만 내고 0 으로 끝나 옛 색인을 쓴다(11-18 컨테이너 실측, 인증서 없음).
+        cases = {
+            "warning": ("W: Failed to fetch https://snapshot.ubuntu.com/ubuntu/20261117T224105Z/dists/noble/InRelease\n",
+                        self.SNAP_LISTS, "스냅숏 색인을 받지 못함(20261117T224105Z): W: Failed to fetch"),
+            "missing-security": ("Hit:1 x\n", tuple(n for n in self.SNAP_LISTS if "security" not in n),
+                                 "스냅숏 색인 noble-security 이 없음(20261117T224105Z)"),
+        }
+        for name, (out, lists, message) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                done, calls = self._apt(Path(raw), "20261117T224105Z", update_out=out, lists=lists)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+                self.assertNotIn("apt-get install", calls)
+
+    def test_a_future_or_malformed_snapshot_is_refused_before_apt_runs(self) -> None:
+        # 미래 시각은 snapshot 저장소가 최신 색인을 준다(11-18 실측 rc 0). 그러면 고정이 아니다.
+        for value, message in (("20991231T000000Z", "미래 시각"), ("2026-11-17", "꼴이 다름")):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as raw:
+                done, calls = self._apt(Path(raw), value, lists=self.SNAP_LISTS)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(message, done.stderr)
+                self.assertEqual(calls, "")
+
     def test_require_inventory_names_passes_on_inventory_names(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -4293,6 +4371,21 @@ class SmsAgentApplyTests(unittest.TestCase):
             done = self._apply("--inventory", str(inv_path), "--host", "websvr01")
             self.assertEqual(done.returncode, 2)
             self.assertIn("websvr01 에 --sms-agent 필요", done.stderr)
+
+    def test_apt_snapshot_goes_into_the_bundle_values(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            inv = self._inventory(Path(raw), S_INV)
+            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agent",
+                               "--apt-snapshot", "20261118T022012Z")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("apt-snapshot: 20261118T022012Z", done.stdout)
+            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agent")
+            self.assertIn("apt-snapshot: 없음", done.stdout)
+            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agent",
+                               "--apt-snapshot", "2026-11-18T02:20:12")
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("YYYYMMDDTHHMMSSZ", done.stderr)
+            self.assertNotIn("== websvr01", done.stdout)
 
     def test_skip_steps_refuses_unknown_steps_and_explicit_steps(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

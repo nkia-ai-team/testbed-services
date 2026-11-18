@@ -246,6 +246,37 @@ read_secret() {
     tr -d '\n' < "$BUNDLE/secrets/$name"
 }
 
+# 패키지 색인 시점(S 문서 §2-4 쌍 조건 2). APT_SNAPSHOT(apply.sh --apt-snapshot, 꼴 YYYYMMDDTHHMMSSZ, UTC)이 있으면
+# Ubuntu snapshot 저장소의 그 시각 색인으로 받고 설치한다(T 짝 서버의 apt 설치 시각을 주면 의존 패키지까지 T 와 같은 판).
+# apt 는 스냅숏 색인을 못 받아도(인증서, 길) 경고만 내고 끝 코드 0 으로 옛 색인을 쓰며, 미래 시각은 최신 색인을 준다.
+# 그래서 경고, 미래 시각, 받은 색인 파일을 따로 보고 하나라도 어긋나면 멈춘다. 받기와 설치 둘 다에 같은 값을 준다
+# (설치에 빠지면 스냅숏이 아닌 색인을 쓴다).
+APT_LISTS=${APT_LISTS:-/var/lib/apt/lists}
+POLICY_RC=${POLICY_RC:-/usr/sbin/policy-rc.d}
+OS_RELEASE=${OS_RELEASE:-/etc/os-release}
+apt_snapshot_opts=()
+if [[ -n "${APT_SNAPSHOT:-}" ]]; then
+    apt_snapshot_opts=(--snapshot "$APT_SNAPSHOT")
+fi
+apt_update() {
+    local out codename suite
+    if [[ -n "${APT_SNAPSHOT:-}" ]]; then
+        [[ "$APT_SNAPSHOT" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "APT_SNAPSHOT 꼴이 다름(YYYYMMDDTHHMMSSZ): $APT_SNAPSHOT"
+        [[ ! "$APT_SNAPSHOT" > "$(date -u +%Y%m%dT%H%M%SZ)" ]] || fail "APT_SNAPSHOT 이 미래 시각(최신 색인이 됨): $APT_SNAPSHOT"
+    fi
+    out=$(apt-get update -q "${apt_snapshot_opts[@]}" 2>&1) || { printf '%s\n' "$out" >&2; fail "apt-get update 실패"; }
+    printf '%s\n' "$out"
+    [[ -n "${APT_SNAPSHOT:-}" ]] || return 0
+    ! grep -qE '^(W|E):' <<<"$out" || fail "스냅숏 색인을 받지 못함($APT_SNAPSHOT): $(grep -E '^(W|E):' <<<"$out" | head -1)"
+    codename=$(. "$OS_RELEASE" && echo "${VERSION_CODENAME:-}")
+    [[ -n "$codename" ]] || fail "배포판 이름을 못 읽음: $OS_RELEASE"
+    for suite in "$codename" "$codename-updates" "$codename-security"; do
+        compgen -G "$APT_LISTS/snapshot.ubuntu.com_ubuntu_${APT_SNAPSHOT}_dists_${suite}_InRelease" >/dev/null \
+            || fail "스냅숏 색인 $suite 이 없음($APT_SNAPSHOT)"
+    done
+    log "apt snapshot $APT_SNAPSHOT"
+}
+
 # 패키지를 설치한다. 판 목록 파일(artifacts/package-versions.txt, "이름 판" 줄)이 있으면 그 판으로 고정한다
 # (S 가 T 와 같은 판을 쓰는 쌍 조건 2, S 문서 §2-4). 설치 직후 서비스를 띄우지 않는다(설정을 놓은 뒤 단계가 띄운다).
 apt_install() {
@@ -257,13 +288,13 @@ apt_install() {
         fi
         wanted+=("${name}${version:+=$version}")
     done
-    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
-    chmod 0755 /usr/sbin/policy-rc.d
-    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${wanted[@]}"; then
-        rm -f /usr/sbin/policy-rc.d
+    printf '#!/bin/sh\nexit 101\n' > "$POLICY_RC"
+    chmod 0755 "$POLICY_RC"
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends "${apt_snapshot_opts[@]}" "${wanted[@]}"; then
+        rm -f "$POLICY_RC"
         return 1
     fi
-    rm -f /usr/sbin/policy-rc.d
+    rm -f "$POLICY_RC"
 }
 
 # 인벤토리 NIC(NIC_EXPECT 의 "이름=주소")마다 지금 그 주소를 가진 장치를 찾아 "이름 장치 MAC" 줄을 낸다.
