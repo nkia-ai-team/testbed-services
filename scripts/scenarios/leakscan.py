@@ -34,7 +34,7 @@ v4 녹화본의 data/catalog/{postgres,clickhouse}/*.tsv(원천 카탈로그: �
 재생이 읽지 않지만, 읽게 바뀌는 날 주입이 만든 객체 이름이 게이트 밖에 남지 않게 미리 본다(지난 녹화본 중 tsv 를
 가진 것은 첫 v4 녹화본 하나이고 그 9개에 걸리는 것이 없어 v3 판정은 그대로다).
 
-보지 않는 파일: 정답 파일(golden.json, scenario.md, causality-audit.json, meta.json, answer/)과 캡처 메타
+보지 않는 파일: 정답 파일(golden.json, 케이스 최상위 scenario.md, causality-audit.json, meta.json, answer/)과 캡처 메타
 topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품에 넣지 않는다).
 
 사용:
@@ -225,7 +225,7 @@ def _scan_file(path: Path, found, cols, samples, *, text_default: bool) -> bool:
         scan_parquet(path, found, cols, samples)
     elif path.suffix == ".csv":
         scan_csv(path, found, cols, samples)
-    elif path.suffix in TEXT_SUFFIXES or text_default:
+    elif path.suffix in TEXT_SUFFIXES or text_default or path.name == "scenario.md":
         if not path.is_file():
             raise FileNotFoundError(f"파일이 아니다: {path}")
         scan_text(path, found, cols, samples)
@@ -267,7 +267,10 @@ def main() -> int:
         label = str(root)
         # 새 레이아웃이면 input/ 만, 옛 레이아웃이면 정답 파일을 빼고 본다.
         scope = root / "input" if (root / "input").is_dir() else root
-        skip = {"golden.json", "scenario.md", "causality-audit.json", "meta.json"}
+        skip = {"golden.json", "causality-audit.json", "meta.json"}
+        # 정답지 scenario.md 는 케이스 최상위의 것만 정답 파일이다(캡처가 그 자리에만 둔다, 2026-11-18 v4 CAPMETA).
+        # 다른 자리의 같은 이름 파일은 녹화 데이터로 보고 텍스트로 읽는다.
+        answer_sheet = root / "scenario.md"
         # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
         # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,
         # data/postgres(.dump, csv), data/victoriametrics.export 만 제품에 넣고 topology/ 는 읽지 않는다
@@ -276,7 +279,7 @@ def main() -> int:
         skip_paths = {("topology", "manifest.json")}
 
         for path in sorted(scope.rglob("*")):
-            if not path.is_file() or path.name in skip or "answer" in path.parts:
+            if not path.is_file() or path.name in skip or "answer" in path.parts or path == answer_sheet:
                 continue
             if (path.parent.name, path.name) in skip_paths:
                 continue

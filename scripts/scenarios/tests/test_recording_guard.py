@@ -388,6 +388,8 @@ class DeployScriptReGuardTests(unittest.TestCase):
         ("cat > /tmp/loadgen-publish.tgz", "부하 스크립트 올리기"),
         ("md5sum", "부하 스크립트 대조"),
         ("bash -s", "러너 ClickHouse 자격 확인"),
+        # v4 CAPMETA: 표지를 rsync 앞에서 «배포 중» 으로, 두 rsync 뒤에 커밋으로(각각 바로 앞 판정).
+        ("'deploying ", "SOURCE_COMMIT 배포 중"),
         ("--exclude registry/controllers.json", "시나리오 rsync"),
         ("registry/controllers.json root@", "controllers.json rsync"),
         ("SOURCE_COMMIT.tmp", "SOURCE_COMMIT 표지"),
@@ -532,11 +534,19 @@ class SourceCommitMarkerTests(unittest.TestCase):
         script = (ROOT / "deploy-live-promotions.sh").read_text(encoding="utf-8")
         first_rsync = script.index("rsync -az")
         self.assertIn("--exclude SOURCE_COMMIT", script[first_rsync:script.index("\n", script.index("\n", first_rsync) + 1)])
-        write_at = script.index("SOURCE_COMMIT.tmp")
-        self.assertLess(script.index("recording-guard.py"), write_at)
-        self.assertLess(script.rindex("rsync -az"), write_at)
+        # Review M3: the marker turns into «deploying» (read as invalid) before the first rsync and gets the
+        # commit only after the last one, so a cut deploy never leaves the old commit looking stamped.
+        deploying_at = script.index('write_source_commit "SOURCE_COMMIT 배포 중" "deploying $source_commit"')
+        final_at = script.index('write_source_commit "SOURCE_COMMIT 표지" "$source_commit"')
+        self.assertLess(script.index("recording-guard.py"), deploying_at)
+        self.assertLess(deploying_at, first_rsync)
+        self.assertLess(script.rindex("rsync -az"), final_at)
+        self.assertEqual(script.count("write_source_commit "), 2)
         self.assertIn("git -C \"$repo_root\" rev-parse HEAD", script)
         self.assertIn('source_commit+="-dirty"', script)
+        # Review L5: a HEAD on no remote branch is marked, after it the dirty suffix.
+        self.assertIn("branch -r --contains HEAD", script)
+        self.assertLess(script.index('source_commit+="-unpushed"'), script.index('source_commit+="-dirty"'))
 
     def test_git_archive_writes_the_archived_commit_into_the_marker(self) -> None:
         repo_root = ROOT.parents[1]
@@ -547,6 +557,8 @@ class SourceCommitMarkerTests(unittest.TestCase):
             (work / "scripts" / "scenarios").mkdir(parents=True)
             shutil.copyfile(repo_root / ".gitattributes", work / ".gitattributes")
             shutil.copyfile(marker, work / "scripts" / "scenarios" / "SOURCE_COMMIT")
+            capture = repo_root / "scripts" / "capture-eval-case.sh"
+            shutil.copyfile(capture, work / "scripts" / "capture-eval-case.sh")
 
             def git(*args: str) -> str:
                 return subprocess.run(
@@ -565,6 +577,16 @@ class SourceCommitMarkerTests(unittest.TestCase):
             with tarfile.open(fileobj=io.BytesIO(archived)) as tar:
                 content = tar.extractfile("scripts/scenarios/SOURCE_COMMIT").read().decode()
             self.assertEqual(content, head + "\n")
+            # The capture script carries its own version the same way (review M2), and only that one line changes.
+            archived = subprocess.run(
+                ["git", "-C", str(work), "archive", "--format=tar", "HEAD", "scripts/capture-eval-case.sh"],
+                check=True, capture_output=True,
+            ).stdout
+            with tarfile.open(fileobj=io.BytesIO(archived)) as tar:
+                stamped = tar.extractfile("scripts/capture-eval-case.sh").read().decode()
+            original = capture.read_text(encoding="utf-8")
+            self.assertIn(f"CAPTURE_SOURCE_COMMIT='{head}'\n", stamped)
+            self.assertEqual(stamped, original.replace("CAPTURE_SOURCE_COMMIT='$Format:%H$'", f"CAPTURE_SOURCE_COMMIT='{head}'"))
             # 작업 트리 파일은 치환되지 않는다(그래서 rsync 배포는 표지를 따로 적는다).
             self.assertEqual((work / "scripts" / "scenarios" / "SOURCE_COMMIT").read_text(), "$Format:%H$\n")
 

@@ -243,7 +243,8 @@ class LeakscanCaptureMeta(unittest.TestCase):
 
     def test_the_answer_sheet_at_the_case_root_is_not_scanned_but_a_copy_inside_the_data_is(self) -> None:
         """The capture puts the runner's scenario.md (registry answer sheet, v4 CAPMETA) beside meta.json. It names
-        its own scenario by design; the gate keeps it out, while the same text inside the recorded data still fails."""
+        its own scenario by design; the gate keeps only that one out. The same text inside the recorded data still
+        fails, also under the very same file name (review L4: the skip was by name at any depth)."""
         sheet = "# 시나리오 정답지: F49-H\n\nroot cause food-delivery-order (F49-H)\n"
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)  # the capture's layout: no input/, data/ beside meta.json
@@ -254,6 +255,11 @@ class LeakscanCaptureMeta(unittest.TestCase):
             (root / "meta.json").write_text('{"scenario_id": "F49-H"}')
             done = _scan(root)
             self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            (root / "data" / "scenario.md").write_text(sheet)
+            done = _scan(root)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            (root / "data" / "scenario.md").unlink()
+            self.assertEqual(_scan(root).returncode, 0)
             (root / "data" / "notes.json").write_text(json.dumps({"text": sheet}))
             self.assertEqual(_scan(root).returncode, 1)
 

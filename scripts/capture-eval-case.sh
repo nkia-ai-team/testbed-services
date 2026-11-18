@@ -5,6 +5,12 @@
 
 set -Eeuo pipefail
 
+# 이 캡처 스크립트 판의 커밋(2026-11-18 v4 CAPMETA 2회차). git archive 로 올리면 .gitattributes 의 export-subst 가
+# 아래 따옴표 안을 그 커밋 해시로 바꾼다. 녹화 meta.capture_script 에 이 파일의 sha256 과 함께 실린다.
+CAPTURE_SOURCE_COMMIT='$Format:%H$'
+# 러너 readiness 가 --capabilities 로 묻는 지원 인자. 러너가 넘기는 인자를 모르는 옛 판이면 큐를 시작하지 않는다.
+CAPTURE_CAPABILITIES='scenario-doc-file source-commits-json capture-script-meta'
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -19,6 +25,9 @@ Usage:
     [--scenario-doc-file <md>] [--source-commits-json <file>] \
     [--output-root <dir>] [--dry-run]
   capture-eval-case.sh --self-check
+  capture-eval-case.sh --capabilities
+                               One line "capabilities: <name> ..." naming the
+                               runner-facing flags this version accepts.
   capture-eval-case.sh --retention-check --window-start <UTC> --window-end <UTC>
                                JSON of the retention (TTL seconds from the window
                                start) of every ClickHouse table this capture would
@@ -277,6 +286,7 @@ while (( $# > 0 )); do
     --output-root) output_root="${2:-}"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
     --self-check) self_check=true; shift ;;
+    --capabilities) printf 'capabilities: %s\n' "$CAPTURE_CAPABILITIES"; exit 0 ;;
     --retention-check) retention_check=true; shift ;;
     --window-start) retention_window_start="${2:-}"; shift 2 ;;
     --window-end) retention_window_end="${2:-}"; shift 2 ;;
@@ -508,12 +518,13 @@ source_commits=null
 if [[ -n "$source_commits_file" ]]; then
   [[ -r "$source_commits_file" ]] || die '--source-commits-json is not readable'
   source_commits=$(jq -c . "$source_commits_file") || die '--source-commits-json is not JSON'
-  # stamped, dirty 는 40자리 커밋을 갖고(dirty 는 그 커밋 위에 커밋 안 된 변경), 표지가 없거나(missing),
-  # git archive 를 거치지 않아 치환 전 문구 그대로거나(unstamped), 알 수 없는 값이면(invalid) commit 은 null 이다.
+  # stamped, dirty, unpushed, unpushed_dirty 는 40자리 커밋을 갖고(dirty 는 그 커밋 위에 커밋 안 된 변경, unpushed 는
+  # 배포 때 그 커밋이 어느 원격 브랜치에도 없었음), 표지가 없거나(missing), git archive 를 거치지 않아 치환 전 문구
+  # 그대로거나(unstamped), 배포 도중이거나 알 수 없는 값이면(invalid) commit 은 null 이다.
   jq -e '
     def source: type == "object" and keys == ["commit", "source", "status"] and
       (.source | type == "string" and length > 0) and
-      (if (.status | IN("stamped", "dirty")) then (.commit | type == "string" and test("^[0-9a-f]{40}$"))
+      (if (.status | IN("stamped", "dirty", "unpushed", "unpushed_dirty")) then (.commit | type == "string" and test("^[0-9a-f]{40}$"))
        elif (.status | IN("unstamped", "missing", "invalid")) then .commit == null
        else false end);
     type == "object" and keys == ["runner", "schema_version", "testbed_services"] and
@@ -524,6 +535,19 @@ fi
 attach_source_commits() {
   if [[ "$source_commits" == null ]]; then cat; else jq --argjson commits "$source_commits" '. + {source_commits: $commits}'; fi
 }
+
+# 녹화를 만든 캡처 코드 판(M2). 러너 안에서 실제로 돈 파일의 sha256 과, 그 파일에 git archive 가 적은 커밋.
+# 커밋 표지(source_commits.testbed_services)는 scripts/scenarios 배포 기준이라 이 파일 판과 다를 수 있다.
+capture_script_sha256=$(sha256sum "$(realpath "$0")" | awk '{print $1}')
+if [[ "$CAPTURE_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  capture_script_meta=$(jq -cn --arg sha "$capture_script_sha256" --arg commit "$CAPTURE_SOURCE_COMMIT" \
+    '{sha256:$sha, commit:$commit, status:"stamped"}')
+elif [[ "$CAPTURE_SOURCE_COMMIT" == '$'Format:* ]]; then
+  capture_script_meta=$(jq -cn --arg sha "$capture_script_sha256" '{sha256:$sha, commit:null, status:"unstamped"}')
+else
+  capture_script_meta=$(jq -cn --arg sha "$capture_script_sha256" '{sha256:$sha, commit:null, status:"invalid"}')
+fi
+attach_capture_script() { jq --argjson script "$capture_script_meta" '. + {capture_script: $script}'; }
 
 scenario_doc_sha256=''
 if [[ -n "$scenario_doc_file" ]]; then
@@ -882,7 +906,7 @@ if [[ "$dry_run" == true ]]; then
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
         golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments |
-        attach_source_commits | attach_scenario_doc
+        attach_source_commits | attach_scenario_doc | attach_capture_script
   else
     jq -n \
       --arg case_id "$case_id" \
@@ -920,7 +944,7 @@ if [[ "$dry_run" == true ]]; then
         run_script_sha256:$run_script_sha256, run_catalog_sha256:$run_catalog_sha256,
         run_plan_sha256:$run_plan_sha256,
         golden_anomaly_file:false, final_dir:$final_dir}' | attach_scenario_notes | attach_decoy_deployments |
-        attach_source_commits | attach_scenario_doc
+        attach_source_commits | attach_scenario_doc | attach_capture_script
   fi
   exit 0
 fi
@@ -1776,6 +1800,11 @@ if [[ "$source_commits" != null ]]; then
   jq -e --argjson commits "$source_commits" '.source_commits == $commits' "$staging_dir/meta.json" >/dev/null ||
     die 'meta.json source_commits mismatch'
 fi
+
+attach_capture_script <"$staging_dir/meta.json" >"$staging_dir/meta.json.script"
+mv -f "$staging_dir/meta.json.script" "$staging_dir/meta.json"
+jq -e --argjson script "$capture_script_meta" '.capture_script == $script' "$staging_dir/meta.json" >/dev/null ||
+  die 'meta.json capture_script mismatch'
 
 # 정답지는 케이스 최상위에 둔다(v3 녹화본의 scenario.md 와 같은 자리). leakscan 은 이 이름을 정답 파일로 보지 않고
 # 평가 복원은 meta.json 과 data/ 만 제품에 넣는다. 캡처 도중 원본이 바뀌었으면 담지 않고 멈춘다.

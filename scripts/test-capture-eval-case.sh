@@ -498,6 +498,37 @@ expect_rejected scenario-doc-empty \
 grep -q -- '--scenario-doc-file must be' "$TMP_ROOT/err" || fail 'scenario-doc-empty rejected for another reason'
 expect_rejected scenario-doc-missing \
   "${base_args[@]}" --scenario-doc-file "$TMP_ROOT/no-such-doc.md"
+# 배포 때 그 커밋이 원격에 없었던 표지(unpushed, unpushed_dirty)도 커밋과 함께 받는다(리뷰 L5).
+for unpushed in unpushed unpushed_dirty; do
+  jq --arg s "$unpushed" '.testbed_services.status = $s' "$commits_file" >"$TMP_ROOT/commits-$unpushed.json"
+  "$CAPTURE" "${base_args[@]}" --case-label calibration --source-commits-json "$TMP_ROOT/commits-$unpushed.json" \
+    --output-root "$TMP_ROOT/cases" --dry-run >/dev/null 2>&1 || fail "source commits status $unpushed rejected"
+done
+
+# 캡처 스크립트 자기 판(리뷰 M2): meta.capture_script 는 실제로 돈 파일의 sha256 과, git archive 가 적은 커밋.
+# 저장소 판은 치환 전이라 unstamped. 치환된 사본은 그 커밋으로 stamped.
+capture_sha=$(sha256sum "$CAPTURE" | awk '{print $1}')
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+jq -e --arg sha "$capture_sha" '.capture_script == {sha256:$sha, commit:null, status:"unstamped"}' \
+  <<<"$output" >/dev/null || fail 'capture_script is not the unstamped repo version'
+stamped_dir="$TMP_ROOT/stamped"
+mkdir -p "$stamped_dir"
+sed "s/^CAPTURE_SOURCE_COMMIT='\$Format:%H\$'\$/CAPTURE_SOURCE_COMMIT='0123456789abcdef0123456789abcdef01234567'/" \
+  "$CAPTURE" >"$stamped_dir/capture-eval-case.sh"
+chmod +x "$stamped_dir/capture-eval-case.sh"
+cmp -s "$CAPTURE" "$stamped_dir/capture-eval-case.sh" && fail 'test could not stamp the capture copy'
+stamped_sha=$(sha256sum "$stamped_dir/capture-eval-case.sh" | awk '{print $1}')
+output=$("$stamped_dir/capture-eval-case.sh" "${base_args[@]}" --case-label calibration \
+  --output-root "$TMP_ROOT/cases" --dry-run 2>/dev/null)
+jq -e --arg sha "$stamped_sha" '.capture_script ==
+  {sha256:$sha, commit:"0123456789abcdef0123456789abcdef01234567", status:"stamped"}' \
+  <<<"$output" >/dev/null || fail 'capture_script does not carry the stamped commit'
+
+# 러너 readiness 가 묻는 지원 인자(리뷰 M1). 이 줄을 모르는 옛 판은 unknown argument 로 0 이 아니게 끝난다.
+caps=$("$CAPTURE" --capabilities) || fail '--capabilities failed'
+[[ "$caps" == 'capabilities: scenario-doc-file source-commits-json capture-script-meta' ]] ||
+  fail "unexpected capabilities line: $caps"
 
 # ------------------------------------------------------------
 # v4 자동 발견 (2026-11-10 R1, spec §2.3). 라이브 경로를 가짜 curl, docker 로 돌린다.
@@ -1019,6 +1050,9 @@ cmp -s "$doc_file" "$doc_case/scenario.md" || fail 'scenario.md is not the runne
 jq -e --slurpfile commits "$commits_file" --arg sha "$doc_sha" '
   .source_commits == $commits[0] and .scenario_doc == {file:"scenario.md", sha256:$sha}' \
   "$doc_case/meta.json" >/dev/null || fail 'live meta lacks scenario_doc or source_commits'
+jq -e --arg sha "$(sha256sum "$CAPTURE" | awk '{print $1}')" '.capture_script.sha256 == $sha' \
+  "$doc_case/meta.json" >/dev/null || fail 'live meta lacks capture_script'
+jq -e '.capture_script.status == "unstamped"' "$meta" >/dev/null || fail 'capture_script missing without the flags'
 jq -e --argjson keys "$v3_meta_keys" '($keys - keys) == []' "$doc_case/meta.json" >/dev/null ||
   fail 'a v3 meta key disappeared with the scenario doc'
 [[ ! -e "$live_root/cases/case-live-v4/scenario.md" ]] || fail 'scenario.md written without --scenario-doc-file'

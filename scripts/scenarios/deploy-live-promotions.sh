@@ -207,8 +207,30 @@ print("[deploy] clickhouse trace query reachable")
 PROBE
 PREFLIGHT
 
+# 녹화 meta.source_commits.testbed_services 의 근거(2026-11-18 v4 CAPMETA). tb-ops 사본은 git 이 아니라서
+# 러너가 녹화에 그 커밋을 적으려면 배포가 표지를 남겨야 한다. git archive 로 올리면 export-subst 가 같은 파일에
+# 커밋을 적는다(.gitattributes). 이 표지는 scripts/scenarios 배포 기준이다(캡처 스크립트 판은 meta.capture_script).
+# 덧붙임: HEAD 가 어느 원격 브랜치에도 없으면 -unpushed(나중에 그 해시로 저장소를 못 찾을 수 있음),
+# scripts/scenarios 에 커밋 안 된 변경이 있으면 -dirty.
+source_commit=$(git -C "$repo_root" rev-parse HEAD)
+if [[ -z "$(git -C "$repo_root" branch -r --contains HEAD 2>/dev/null)" ]]; then
+  source_commit+="-unpushed"
+  echo "[deploy] WARN HEAD $(git -C "$repo_root" rev-parse --short HEAD) is on no remote branch; marker says -unpushed" >&2
+fi
+if [[ -n "$(git -C "$repo_root" status --porcelain -- scripts/scenarios)" ]]; then
+  source_commit+="-dirty"
+fi
+# 값은 원격 명령에 싣는다(hex, 영문, '-' 뿐). 앞에 녹화 창 판정을 다시 한다(RGUARD: 원격 명령마다 바로 앞 판정).
+write_source_commit() {
+  recording_guard "$1"
+  ssh -n "$remote" "printf '%s\\n' '$2' > '$remote_root/SOURCE_COMMIT.tmp' && mv -f '$remote_root/SOURCE_COMMIT.tmp' '$remote_root/SOURCE_COMMIT'"
+}
+# rsync 전에 표지를 먼저 «배포 중» 으로 바꾼다(러너는 invalid 로 읽음). rsync 와 controllers.json 이 끝난 뒤에만
+# 최종 커밋을 적으므로, 중간에 끊기면 파일은 새 판인데 표지가 옛 커밋 stamped 로 남는 일이 없다(CAPMETA 리뷰 M3).
+write_source_commit "SOURCE_COMMIT 배포 중" "deploying $source_commit"
+
 # Publish implementations and manifests before the registry exposes new live IDs.
-# SOURCE_COMMIT 은 작업 트리에서 '$Format:%H$' 그대로라 보내지 않고 바로 아래에서 이 배포의 커밋을 적는다.
+# SOURCE_COMMIT 은 작업 트리에서 '$Format:%H$' 그대로라 보내지 않는다(위아래에서 따로 적는다).
 recording_guard "시나리오 rsync"
 rsync -az --exclude registry/controllers.json --exclude SOURCE_COMMIT \
   "$scenario_root/" "$remote:$remote_root/"
@@ -216,16 +238,7 @@ recording_guard "controllers.json rsync"
 rsync -az "$scenario_root/registry/controllers.json" \
   "$remote:$remote_root/registry/controllers.json"
 
-# 녹화 meta.source_commits.testbed_services 의 근거(2026-11-18 v4 CAPMETA). tb-ops 사본은 git 이 아니라서
-# 러너가 녹화에 그 커밋을 적으려면 배포가 표지를 남겨야 한다. git archive 로 올리면 export-subst 가 같은 파일에
-# 커밋을 적는다(.gitattributes). scripts/scenarios 에 커밋 안 된 변경이 있으면 -dirty 를 붙인다.
-source_commit=$(git -C "$repo_root" rev-parse HEAD)
-if [[ -n "$(git -C "$repo_root" status --porcelain -- scripts/scenarios)" ]]; then
-  source_commit+="-dirty"
-fi
-recording_guard "SOURCE_COMMIT 표지"
-printf '%s\n' "$source_commit" |
-  ssh "$remote" "cat > '$remote_root/SOURCE_COMMIT.tmp' && mv -f '$remote_root/SOURCE_COMMIT.tmp' '$remote_root/SOURCE_COMMIT'"
+write_source_commit "SOURCE_COMMIT 표지" "$source_commit"
 echo "[deploy] SOURCE_COMMIT $source_commit"
 
 # 확인은 러너 HTTP 로 바로 읽는다(ssh 없음).
