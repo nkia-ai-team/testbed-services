@@ -3197,6 +3197,115 @@ class StepScriptTests(unittest.TestCase):
                             self.assertIsNone(root_only.search(entry["text"]))
         self.assertIn("/etc/systemd/system/loadgen.service", units)
 
+    # verify.sh 의 db 항목 함수만 떼어 대역 위에서 부른다(앞부분 정의만, check 줄 전).
+    # 대역 psql 은 받은 질의를 그대로 sqlite 의 pg_roles 표(rolname, rolcanlogin)에 돌린다(!~ 는 NOT REGEXP, ilike 는
+    # 대소문자 무시 LIKE 로만 바꿈). 같은 질의를 PostgreSQL 16 에서 돌린 결과는 agent-out/T2VER.md 에 적었다.
+    PSQL_ROLES_STUB = r"""#!/usr/bin/env python3
+import json, os, re, sqlite3, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a") as log:
+    log.write("psql " + " ".join(args) + "\n")
+if os.environ.get("FAKE_PSQL_FAIL"):
+    sys.exit("psql: error: connection refused")
+query = args[args.index("-c") + 1]
+db = sqlite3.connect(":memory:")
+db.create_function("REGEXP", 2, lambda pattern, value: re.search(pattern, value) is not None)
+db.execute("create table pg_roles (rolname text, rolcanlogin boolean)")
+db.executemany("insert into pg_roles values (?, ?)", json.loads(os.environ["FAKE_ROLES"]))
+for (name,) in db.execute(query.replace(" !~ ", " NOT REGEXP ").replace(" ilike ", " LIKE ")):
+    print(name)
+"""
+    PG16_ROLES = [["pg_monitor", 0], ["pg_read_all_stats", 0], ["pg_signal_backend", 0], ["postgres", 1], ["petition_app", 1]]
+
+    def _verify_db(self, root: Path, call: str, env_extra: dict) -> subprocess.CompletedProcess:
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        (root / "verify-defs.sh").write_text(source[:re.search(r"(?m)^check ", source).start()])
+        bin_dir = root / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        stubs = {"runuser": '#!/bin/sh\n[ "$1" = -u ] && shift 2\n[ "$1" = -- ] && shift\nexec "$@"\n',
+                 "psql": self.PSQL_ROLES_STUB}
+        for tool, text in stubs.items():
+            (bin_dir / tool).write_text(text)
+            (bin_dir / tool).chmod(0o755)
+        hba = root / "pg_hba.conf"
+        if not hba.exists():
+            hba.write_text("local all postgres peer\nhost all all 127.0.0.1/32 scram-sha-256\nhost petition petition_app 192.168.126.21/32 scram-sha-256\n")
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_LOG": str(root / "calls"), "PG_HBA": str(hba),
+               "MONITOR_ADDRESS": "10.250.0.1", "FAKE_ROLES": json.dumps(self.PG16_ROLES), **env_extra}
+        script = f"set -uo pipefail; . {DEPLOY / 'steps' / 'lib.sh'}; . {root / 'verify-defs.sh'}; if {call}; then echo PASS; else echo FAIL; fi"
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+    def test_verify_no_dpm_traces_ignores_builtin_roles_and_catches_login_monitor_accounts(self) -> None:
+        cases = {
+            "builtin pg_monitor only": (self.PG16_ROLES, "PASS"),
+            "login monitor account": (self.PG16_ROLES + [["dpm_monitor", 1]], "FAIL"),
+            "login account with upper case DPM": (self.PG16_ROLES + [["DPMUser", 1]], "FAIL"),
+            "monitor role that cannot log in": (self.PG16_ROLES + [["monitor_ro", 0]], "PASS"),
+            "pg_ prefixed login role": (self.PG16_ROLES + [["pg_dpm", 1]], "PASS"),
+        }
+        for name, (roles, want) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                done = self._verify_db(root, "no_dpm_traces", {"FAKE_ROLES": json.dumps(roles)})
+                self.assertEqual(done.stdout.strip(), want, done.stderr)
+                query = (root / "calls").read_text()
+                self.assertIn("rolcanlogin", query)
+                self.assertIn("-v ON_ERROR_STOP=1", query)
+        # 질의가 실패하면 "역할 없음" 으로 통과하지 않는다(종전 꼴은 grep 이 못 찾아 통과했다).
+        with tempfile.TemporaryDirectory() as raw:
+            done = self._verify_db(Path(raw), "no_dpm_traces", {"FAKE_PSQL_FAIL": "1"})
+            self.assertEqual(done.stdout.strip(), "FAIL")
+
+    def test_verify_no_dpm_traces_matches_the_monitor_address_exactly_in_pg_hba(self) -> None:
+        cases = {
+            "address": ("host all dpm 10.250.0.1/32 scram-sha-256\n", "FAIL"),
+            "bare address": ("host all all 10.250.0.1 255.255.255.255 md5\n", "FAIL"),
+            "longer address": ("host all all 10.250.0.10/32 scram-sha-256\n", "PASS"),
+            "dots as any character": ("host all all 10x250y0z1/32 scram-sha-256\n", "PASS"),
+            "commented": ("# host all dpm 10.250.0.1/32 scram-sha-256\n  # 10.250.0.1\n", "PASS"),
+        }
+        for name, (line, want) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                (root / "pg_hba.conf").write_text("local all postgres peer\n" + line)
+                done = self._verify_db(root, "no_dpm_traces", {})
+                self.assertEqual(done.stdout.strip(), want, done.stderr)
+        with tempfile.TemporaryDirectory() as raw:
+            done = self._verify_db(Path(raw), "no_dpm_traces", {"PG_HBA": f"{raw}/missing"})
+            self.assertEqual(done.stdout.strip(), "FAIL")
+
+    def test_verify_data_mount_is_the_serial_disk(self) -> None:
+        def run(root: Path, table: str, source: str, mounted: bool = True) -> str:
+            bin_dir = root / "bin"
+            bin_dir.mkdir(exist_ok=True)
+            (bin_dir / "lsblk").write_text(f"#!/bin/sh\nprintf '%s' '{table}'\n")
+            (bin_dir / "findmnt").write_text(
+                f'#!/bin/sh\necho "findmnt $*" >> {root / "calls"}\n' + (f"echo '{source}'\n" if mounted else "exit 1\n"))
+            for tool in ("lsblk", "findmnt"):
+                (bin_dir / tool).chmod(0o755)
+            done = self._verify_db(root, "data_mount_on_serial_disk", {"DATA_DISK_SERIAL": "pgdata", "DATA_MOUNT": "/pgdata"})
+            return done.stdout.strip()
+        table = "/dev/sda drive-scsi0 disk\n/dev/sdb pgdata disk\n"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.assertEqual(run(root, table, "/dev/sdb"), "PASS")
+            self.assertIn("findmnt -n -o SOURCE --mountpoint /pgdata", (root / "calls").read_text())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "by-label").mkdir()
+            (root / "by-label" / "pgdata").symlink_to("/dev/sdb")
+            self.assertEqual(run(root, table, f"{root}/by-label/pgdata"), "PASS", "링크로 보고돼도 같은 장치면 통과")
+        for name, args in {"other disk": (table, "/dev/sda"), "not mounted": (table, "", False),
+                           "no serial disk": ("/dev/sda drive-scsi0 disk\n/dev/sdb drive-scsi1 disk\n", "/dev/sdb"),
+                           "two serial disks": ("/dev/sdb pgdata disk\n/dev/sdc pgdata disk\n", "/dev/sdb"),
+                           "empty source": (table, "")}.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                self.assertEqual(run(Path(raw), *args), "FAIL")
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        db_block = source[source.index("    db)\n"):source.index("    loadgen)")]
+        self.assertIn("check data-mount-on-serial-disk data_mount_on_serial_disk", db_block)
+        self.assertIn("check no-dpm-traces no_dpm_traces", db_block)
+
     def test_db_step_keeps_the_password_out_of_argv_and_the_server_log(self) -> None:
         source = (DEPLOY / "steps" / "db.sh").read_text()
         block = source[source.index("<<SQL"):source.index("\nSQL\n")]
