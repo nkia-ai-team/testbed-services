@@ -288,6 +288,46 @@ class LeakscanCaptureMeta(unittest.TestCase):
                 self.assertEqual(_scan(root).returncode, 1)
 
 
+    def test_answer_side_files_are_skipped_only_in_their_own_places(self) -> None:
+        """v4 LSANS 2: meta.json, golden.json, causality-audit.json and the topology bundle list were skipped by name at
+        any depth, so data/ files with those names escaped the gate. Only the places the capture and the benchmark
+        contract use are answer side: the case root (and answer/), and topology/manifest.json at the top of the scope."""
+        leak = json.dumps({"scenario_id": "F49-H", "run_id": "F49-H-run-3af6c70e"})
+        names = ("meta.json", "golden.json", "causality-audit.json")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)  # the capture's layout
+            (root / "data" / "clickhouse").mkdir(parents=True)
+            pq.write_table(pa.table({"proc_key": ["k0"], "cmdline": ["mysqld"]}),
+                           root / "data" / "clickhouse" / "process_meta.parquet")
+            for name in names:
+                (root / name).write_text(leak)
+            (root / "topology").mkdir()
+            (root / "topology" / "manifest.json").write_text(leak)
+            done = _scan(root)
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            for relative in [f"data/{name}" for name in names] + ["data/topology/manifest.json",
+                                                                  "data/clickhouse/meta.json"]:
+                with self.subTest(relative=relative):
+                    target = root / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(leak)
+                    done = _scan(root)
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    target.unlink()
+            self.assertEqual(_scan(root).returncode, 0)
+        with tempfile.TemporaryDirectory() as raw:
+            # Benchmark contract §2.2: input/meta.json is the consumer's copy without answer fields, so it is read;
+            # the answer files sit in answer/ beside input/.
+            root = _case(Path(raw), ["mysqld"])
+            (root / "answer").mkdir()
+            for name in names:
+                (root / "answer" / name).write_text(leak)
+            (root / "input" / "meta.json").write_text(json.dumps({"window": ["a", "b"]}))
+            self.assertEqual(_scan(root).returncode, 0)
+            (root / "input" / "meta.json").write_text(leak)
+            self.assertEqual(_scan(root).returncode, 1)
+
+
 class LeakscanEmptyCase(unittest.TestCase):
     def test_a_case_with_nothing_to_read_is_not_clean(self) -> None:
         """Six v3 folders left empty by the 10-31 dump failure used to pass as clean (v4 LEAK review, low 2)."""

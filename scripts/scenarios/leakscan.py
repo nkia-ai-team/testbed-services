@@ -34,7 +34,7 @@ v4 녹화본의 data/catalog/{postgres,clickhouse}/*.tsv(원천 카탈로그: �
 재생이 읽지 않지만, 읽게 바뀌는 날 주입이 만든 객체 이름이 게이트 밖에 남지 않게 미리 본다(지난 녹화본 중 tsv 를
 가진 것은 첫 v4 녹화본 하나이고 그 9개에 걸리는 것이 없어 v3 판정은 그대로다).
 
-보지 않는 파일: 정답 파일(golden.json, 케이스 최상위 scenario.md, causality-audit.json, meta.json, 케이스 최상위 answer/)과 캡처 메타
+보지 않는 파일: 케이스 최상위의 정답 파일(meta.json, scenario.md, golden.json, causality-audit.json, answer/)과 캡처 메타
 topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품에 넣지 않는다).
 
 사용:
@@ -267,25 +267,27 @@ def main() -> int:
         label = str(root)
         # 새 레이아웃이면 input/ 만, 옛 레이아웃이면 정답 파일을 빼고 본다.
         scope = root / "input" if (root / "input").is_dir() else root
-        skip = {"golden.json", "causality-audit.json", "meta.json"}
-        # 정답지 scenario.md 는 케이스 최상위의 것만 정답 파일이다(캡처가 그 자리에만 둔다, 2026-11-18 v4 CAPMETA).
-        # 다른 자리의 같은 이름 파일은 녹화 데이터로 보고 텍스트로 읽는다.
-        answer_sheet = root / "scenario.md"
-        # 정답 폴더도 케이스 최상위 answer/ 하나뿐이다(벤치마크 계약 §2.2, 하네스만 연다). 예전 조건
-        # ("answer" in path.parts)은 data/answer/ 처럼 데이터 안의 같은 이름 폴더와, 케이스 폴더까지의 경로에
-        # answer 가 든 경우까지 건너뛰었다(2026-11-18 v4 LSANS, Q29 확인 필요 1).
+        # 정답 쪽 파일은 정해진 자리의 것만 건너뛴다. 이름만 보던 예전 조건(어느 깊이든)은 data/ 안의 같은 이름 파일까지
+        # 검사에서 뺐다(2026-11-18 v4 LSANS). 자리는 캡처와 지난 녹화본으로 확인했다:
+        # - meta.json, scenario.md: 캡처가 케이스 최상위에만 쓴다(meta.json 은 정답 쪽 메타, scenario.md 는 정답지,
+        #   v4 CAPMETA). 새 레이아웃(벤치마크 계약 §2.2)의 input/meta.json 은 정답 칸이 없는 소비자 입력이라 본다.
+        # - golden.json, causality-audit.json: 새 레이아웃에서는 answer/ 안이고, 옛 레이아웃의 최상위도 정답 자리로 둔다.
+        # - answer/: 케이스 최상위의 것 하나(하네스만 연다). 예전 조건("answer" in path.parts)은 data/answer/ 와
+        #   케이스 폴더까지의 경로에 answer 가 든 경우까지 건너뛰었다(Q29 확인 필요 1).
+        answer_files = {root / name for name in ("meta.json", "scenario.md", "golden.json", "causality-audit.json")}
         answer_dir = root / "answer"
         # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
         # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,
         # data/postgres(.dump, csv), data/victoriametrics.export 만 제품에 넣고 topology/ 는 읽지 않는다
         # (2026-11-12 v4 LEAK 2회차 확인). 제품 입력이 아닌 캡처 메타라 보지 않는다. 같은 폴더의 graph/,
-        # service-tree/ 스냅샷은 제품 API 응답이라 계속 본다.
-        skip_paths = {("topology", "manifest.json")}
+        # service-tree/ 스냅샷은 제품 API 응답이라 계속 본다. 이 목록도 묶음 자리(보는 범위 최상위의 topology/)의
+        # 것만 건너뛴다. data/topology/ 는 제품 API 응답 자리라 같은 이름이 와도 본다.
+        topology_manifest = scope / "topology" / "manifest.json"
 
         for path in sorted(scope.rglob("*")):
-            if not path.is_file() or path.name in skip or path == answer_sheet or path.is_relative_to(answer_dir):
+            if not path.is_file() or path in answer_files or path.is_relative_to(answer_dir):
                 continue
-            if (path.parent.name, path.name) in skip_paths:
+            if path == topology_manifest:
                 continue
             try:
                 if not _scan_file(path, found, cols, samples, text_default=False):
