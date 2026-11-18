@@ -34,7 +34,7 @@ v4 녹화본의 data/catalog/{postgres,clickhouse}/*.tsv(원천 카탈로그: �
 재생이 읽지 않지만, 읽게 바뀌는 날 주입이 만든 객체 이름이 게이트 밖에 남지 않게 미리 본다(지난 녹화본 중 tsv 를
 가진 것은 첫 v4 녹화본 하나이고 그 9개에 걸리는 것이 없어 v3 판정은 그대로다).
 
-보지 않는 파일: 케이스 최상위의 정답 파일(meta.json, scenario.md, golden.json, causality-audit.json, answer/)과 캡처 메타
+보지 않는 파일: 케이스 최상위의 정답 파일(meta.json, scenario.md, golden.json, golden.rca.json, causality-audit.json, answer/)과 캡처 메타
 topology/manifest.json(case_id, run_id 가 들어 있고 평가 복원이 제품에 넣지 않는다).
 
 사용:
@@ -272,9 +272,12 @@ def main() -> int:
         # - meta.json, scenario.md: 캡처가 케이스 최상위에만 쓴다(meta.json 은 정답 쪽 메타, scenario.md 는 정답지,
         #   v4 CAPMETA). 새 레이아웃(벤치마크 계약 §2.2)의 input/meta.json 은 정답 칸이 없는 소비자 입력이라 본다.
         # - golden.json, causality-audit.json: 새 레이아웃에서는 answer/ 안이고, 옛 레이아웃의 최상위도 정답 자리로 둔다.
+        # - golden.rca.json: 케이스 안 골든 파일(spec-eval-data-capture 케이스 구조, runbook-eval-case-restore)로 케이스
+        #   최상위에 놓인다(지휘 세션 결정, LSANS 3회차). 지금 녹화본에는 0개.
         # - answer/: 케이스 최상위의 것 하나(하네스만 연다). 예전 조건("answer" in path.parts)은 data/answer/ 와
         #   케이스 폴더까지의 경로에 answer 가 든 경우까지 건너뛰었다(Q29 확인 필요 1).
-        answer_files = {root / name for name in ("meta.json", "scenario.md", "golden.json", "causality-audit.json")}
+        answer_files = {root / name for name in
+                        ("meta.json", "scenario.md", "golden.json", "golden.rca.json", "causality-audit.json")}
         answer_dir = root / "answer"
         # topology/manifest.json 은 러너가 모은 토폴로지 묶음의 목록(case_id, run_id, 수집 실패 기록)이다.
         # 평가 복원(eval-incident-rca restore.sh, runbook-eval-case-restore.md)은 meta.json, data/clickhouse,

@@ -293,7 +293,7 @@ class LeakscanCaptureMeta(unittest.TestCase):
         any depth, so data/ files with those names escaped the gate. Only the places the capture and the benchmark
         contract use are answer side: the case root (and answer/), and topology/manifest.json at the top of the scope."""
         leak = json.dumps({"scenario_id": "F49-H", "run_id": "F49-H-run-3af6c70e"})
-        names = ("meta.json", "golden.json", "causality-audit.json")
+        names = ("meta.json", "golden.json", "golden.rca.json", "causality-audit.json")
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)  # the capture's layout
             (root / "data" / "clickhouse").mkdir(parents=True)
