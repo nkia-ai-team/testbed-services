@@ -1,0 +1,12 @@
+{
+  "schema": "petition-portal-t3-budget/1",
+  "comment": "T3 부담 판정(설계 §1 Q8, §3-6, §10 T3 부담) 기준값과 정의를 한 곳에 둔다. 판정 방식은 검토 세션 Q31 답을 기다리는 지금 값이고 바꾸면 이 파일만 고친다(t3_check.py 가 읽는다).",
+  "clickhouse_memory_resident_max_gib": 3.6,
+  "victoriametrics_memory_share_of_limit_max": 0.8,
+  "victoriametrics_memory_source": "VictoriaMetrics 자기 지표 process_resident_memory_bytes{service_name=\"victoriametrics\"} 의 구간 최댓값(프로세스 상주 메모리. 설계 문구 '파드 메모리' 와 다르다, runbook §13)",
+  "disk_used_pct_max": 80.0,
+  "steal_increase_max_pp": 3.0,
+  "cpu_busy_avg_max_pct": 70.0,
+  "cpu_busy_definition": "sadf -u 의 %user + %nice + %system 구간 평균(iowait, steal 제외)",
+  "tunnel_avg_mbps_reference": 5.0
+}

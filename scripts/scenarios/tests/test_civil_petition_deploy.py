@@ -3742,6 +3742,14 @@ class SmsAgentRenderTests(unittest.TestCase):
                 self.assertNotRegex(names, rf"(^|[^a-z]){word}([^a-z]|$)")
         self.assertNotIn("opsjobs", unit + file_of(bundle, "/opt/lucida-agent/agent.env"))
 
+    def test_agent_log_is_rotated_with_copytruncate(self) -> None:
+        text = file_of(bundles(T_INV)["db01"], "/etc/logrotate.d/lucida-agent")
+        self.assertTrue(text.splitlines()[[i for i, l in enumerate(text.splitlines()) if l.endswith("{")][0]].startswith(
+            "/opt/lucida-agent/logs/agent.log "))
+        for word in ("copytruncate", "missingok", "rotate 7", "maxsize 50M"):
+            self.assertIn(word, text)
+        self.assertTrue(text.isascii())
+
     def test_verify_checks_the_agent_only_on_servers(self) -> None:
         source = (DEPLOY / "steps" / "verify.sh").read_text()
         block = source[source.index('if [[ -n "${SMS_AGENT_UNIT:-}" ]]; then'):]
@@ -3791,6 +3799,20 @@ class SmsAgentApplyTests(unittest.TestCase):
             done = self._apply("--inventory", str(inv), "--host", "web01", "--sms-agent", str(agent))
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("./artifacts/lucida-agent", done.stdout)
+
+    def test_the_expected_checksum_is_compared_before_anything_is_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inv = self._inventory(root)
+            agent = root / "lucida-agent"
+            agent.write_bytes(b"\x7fELF fake")
+            good = subprocess.run(["sha256sum", str(agent)], capture_output=True, text=True, check=True).stdout.split()[0]
+            done = self._apply("--inventory", str(inv), "--host", "web01", "--sms-agent", str(agent), "--sms-agent-sha256", good)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            done = self._apply("--inventory", str(inv), "--host", "web01", "--sms-agent", str(agent), "--sms-agent-sha256", "0" * 64)
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("기대값", done.stderr)
+            self.assertNotIn("== web01", done.stdout)
 
     def test_other_steps_and_other_roles_do_not_need_it(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -3878,6 +3900,20 @@ class SmsAgentStepTests(unittest.TestCase):
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertIn("unchanged, not restarted", again.stdout)
             self.assertEqual(self._restarts(root), 1)
+
+    def test_an_unchanged_rerun_after_log_rotation_still_passes_without_a_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            env, bundle = self._tree(root)
+            self.assertEqual(self._run(bundle, env).returncode, 0)
+            (root / "opt" / "logs" / "agent.log").write_text("")  # copytruncate 뒤
+            again = self._run(bundle, env)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual(self._restarts(root), 1)
+            (root / "active").unlink()  # 유닛이 멈춰 있으면 같은 설정이어도 다시 띄우고 시작 줄을 본다
+            third = self._run(bundle, env)
+            self.assertEqual(third.returncode, 0, third.stderr)
+            self.assertEqual(self._restarts(root), 2)
 
     def test_a_changed_setting_or_binary_restarts_once(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -3978,7 +4014,13 @@ class LogMonitorDefinitionTests(unittest.TestCase):
 
 
 class FakeProduct:
-    """제품 API 대역. 경로와 몸통을 기록하고, 등록 대기 서버, 하위 대상, 감시, 망 대상을 상태로 쥔다."""
+    """제품 API 대역. 경로와 몸통을 기록하고, 등록 대기 서버, 하위 대상, 감시, 망 대상을 상태로 쥔다.
+
+    응답 꼴은 lucida-next d0186576d2 의 실제 직렬화를 따른다: 대상 목록(include_collectors=1)은 대상에 수집기 칸이 없고
+    최상위 target_collectors 에 {"target", "collectors"} 쌍(query/handler/targets.go, store.Collector 의 json 칸),
+    하위 트리는 {"root_id", "revision", "nodes"}(store.TargetSubtree, 뿌리 노드 포함), 감시 목록은 {"custom_monitors", "total"}
+    이고 감시는 id 와 params(객체)를 가진다(collector-sms store.CustomMonitor).
+    """
 
     def __init__(self, inv: dict) -> None:
         self.calls: list[tuple[str, str, object]] = []
@@ -3987,6 +4029,7 @@ class FakeProduct:
         self.nodes: dict[str, list[dict]] = {}
         self.monitors: dict[str, list[dict]] = {}
         self.network: list[dict] = []
+        self.collectors: dict[str, list[dict]] = {}
         self.fail: set[str] = set()
         self.next = 0
         for host in t3reg.servers(inv):
@@ -4017,14 +4060,19 @@ class FakeProduct:
             if query.get("type") == "server":
                 pool = self.pending if query.get("registration_status") == "pending" else self.approved
                 return 200, {"targets": [t for t in pool.values() if query.get("search", "") in t["name"]]}
-            return 200, {"targets": [t for t in self.network if query.get("search", "") in (t.get("address") or t["name"])]}
+            found = [t for t in self.network if query.get("search", "") in (t.get("address") or t["name"])]
+            body = {"targets": found}
+            if query.get("include_collectors") == "1":
+                body["target_collectors"] = [{"target": t, "collectors": self.collectors.get(t["id"], [])} for t in found]
+            return 200, body
         if method == "POST" and parsed.path == "/api/v1/targets/approve":
             for tid in body["ids"]:
                 name = next(n for n, t in self.pending.items() if t["id"] == tid)
                 self.approved[name] = dict(self.pending.pop(name), registration_status="approved")
             return 200, {"approved_count": len(body["ids"])}
         if method == "GET" and parsed.path.endswith("/subtree"):
-            return 200, {"nodes": self.nodes.get(parsed.path.split("/")[4], [])}
+            root = parsed.path.split("/")[4]
+            return 200, {"root_id": root, "revision": "1", "nodes": self.nodes.get(root, [])}
         if method == "PUT" and "/authz/nodes/target/" in parsed.path:
             for nodes in self.nodes.values():
                 for node in nodes:
@@ -4038,15 +4086,21 @@ class FakeProduct:
             self.monitors.setdefault(body["parent_target_id"], []).append(item)
             return 201, item
         if method == "POST" and parsed.path == "/api/v1/targets":
-            item = dict(body, id=self._new(), target_collectors=[])
+            item = {"id": self._new(), "type": body["type"], "name": body["name"], "address": body.get("address", ""),
+                    "status": "active", "registration_status": "approved", "meta": body.get("meta", {})}
             self.network.append(item)
             return 201, item
         if method == "POST" and parsed.path.endswith("/collectors"):
             tid = parsed.path.split("/")[4]
-            target = next(t for t in self.network if t["id"] == tid)
-            target["target_collectors"].append({"kind": body["kind"], "config": body["config"]})
-            return 201, {"id": self._new()}
+            cid = self._new()
+            self.collectors.setdefault(tid, []).append({"id": cid, "target_id": tid, "kind": body["kind"],
+                                                        "enabled": body["enabled"], "config": body["config"],
+                                                        "storage_mode": "", "created_at": "2026-11-19T06:00:00Z"})
+            return 201, {"id": cid, "target_id": tid, "kind": body["kind"]}
         if method == "DELETE":
+            tid = parsed.path.split("/")[-1]
+            self.network = [t for t in self.network if t["id"] != tid]
+            self.collectors.pop(tid, None)
             return 204, None
         return 404, {"error": f"no route {method} {path}"}
 
@@ -4179,6 +4233,92 @@ class T3RegisterTests(unittest.TestCase):
         self.assertTrue(all(p.split("/")[-1] in server_ids for p in deletes[first_server:]), "서버 대상은 맨 끝")
         self.assertTrue(deletes[0].endswith(table["trap_receivers"][0]["target_id"]))
 
+    def _community(self, raw: str) -> None:
+        community = Path(raw) / "community"
+        community.write_text("s3cretCommunityValue\n")
+        self.inv["monitoring"]["snmp_community_file"] = str(community)
+
+    def test_monitor_form_follows_the_other_domains(self) -> None:
+        # 11-18 지휘 세션 결정: unified_log_enabled, log_type_tag 는 기존 세 도메인 감시와 같게(syslog, auth.log 는 system,
+        # DB 서버 로그는 database, 앱 파일은 태그 없음).
+        t3reg.phase_approve(self.session(), self.inv)
+        t3reg.phase_log_monitors(self.session(), self.inv)
+        bodies = {b["params"]["fileName"]: b for m, p, b in self.product.calls if m == "POST" and p == "/sm/api/custom-monitors"}
+        self.assertTrue(all(b["unified_log_enabled"] is True for b in bodies.values()))
+        self.assertEqual(bodies["/var/log/syslog"]["log_type_tag"], "system")
+        self.assertEqual(bodies["/var/log/auth.log"]["log_type_tag"], "system")
+        self.assertEqual(bodies["/var/log/postgresql/postgresql-16-main.log"]["log_type_tag"], "database")
+        self.assertNotIn("log_type_tag", bodies["/var/log/apache2/access.log"])
+
+    def test_no_phase_writes_without_yes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            self._community(raw)
+            t3reg.phase_approve(self.session(), self.inv)
+            t3reg.phase_trap(self.session())
+            t3reg.phase_nms(self.session(), self.inv)
+            table = t3reg.phase_record(self.session(), self.inv)
+            for nodes in self.product.nodes.values():
+                for node in nodes:
+                    node.pop("management_status", None)
+            before = len(self.product.writes())
+            dry = self.session(yes=False)
+            t3reg.phase_nic(dry, self.inv)
+            t3reg.phase_log_monitors(dry, self.inv)
+            self.product.network.clear()
+            t3reg.phase_nms(dry, self.inv)
+            t3reg.phase_trap(dry)
+            t3reg.phase_rollback(dry, table)
+            self.assertEqual(len(self.product.writes()), before, self.product.writes()[before:])
+            self.assertGreater(len(dry.writes), 10)
+            self.assertNotIn("s3cretCommunityValue", self.out.getvalue())
+
+    def test_an_nms_device_left_without_its_collector_is_not_reported_as_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            self._community(raw)
+            tid = t3reg.phase_nms(self.session(), self.inv)
+            self.product.collectors.pop(tid)
+            with self.assertRaisesRegex(t3reg.RegisterError, "polestar_nms 수집기가 있는 하나가 아님"):
+                t3reg.phase_nms(self.session(), self.inv)
+
+    def test_a_failed_undo_reports_both_reasons(self) -> None:
+        request = self.product.request
+
+        def failing(method, path, body=None):
+            if method == "POST" and path.endswith("/collectors"):
+                return 500, {"error": "collector boom"}
+            if method == "DELETE":
+                return 403, {"error": "function auth required"}
+            return request(method, path, body)
+        self.product.request = failing
+        with self.assertRaises(t3reg.RegisterError) as caught:
+            t3reg.phase_trap(self.session())
+        message = str(caught.exception)
+        self.assertIn("collector boom", message)
+        self.assertIn("지우지 못함", message)
+        self.assertIn("function auth required", message)
+
+    def test_trap_receiver_is_found_again_recorded_and_rolled_back_in_the_real_list_shape(self) -> None:
+        t3reg.phase_approve(self.session(), self.inv)
+        tid = t3reg.phase_trap(self.session())
+        self.assertEqual(t3reg.phase_trap(self.session()), tid)
+        self.assertEqual(sum(1 for m, p, _ in self.product.calls if m == "POST" and p == "/api/v1/targets"), 1)
+        table = t3reg.phase_record(self.session(), self.inv)
+        self.assertEqual([r["target_id"] for r in table["trap_receivers"]], [tid])
+        t3reg.phase_rollback(self.session(), table)
+        self.assertEqual(t3reg._trap_receivers(self.session()), [])
+
+    def test_a_list_without_target_collectors_stops_instead_of_finding_nothing(self) -> None:
+        request = self.product.request
+
+        def old_shape(method, path, body=None):
+            status, resp = request(method, path, body)
+            if method == "GET" and isinstance(resp, dict):
+                resp.pop("target_collectors", None)
+            return status, resp
+        self.product.request = old_shape
+        with self.assertRaisesRegex(t3reg.RegisterError, "target_collectors"):
+            t3reg.phase_trap(self.session())
+
     def test_main_needs_the_runner_account_in_the_environment(self) -> None:
         with unittest.mock.patch.dict(os.environ, {"LUCIDA_LOGIN_USER": "", "LUCIDA_LOGIN_PASSWORD": ""}):
             with contextlib.redirect_stderr(io.StringIO()) as err:
@@ -4199,7 +4339,11 @@ class FakeRemote:
     def _pick(self, rules, text):
         self.queries.append(text)
         for piece, answer in rules:
-            if piece in text:
+            if callable(piece):
+                got = piece(text)
+                if got is not None:
+                    return got
+            elif piece in text:
                 return answer
         return []
 
@@ -4210,13 +4354,18 @@ class FakeRemote:
         return self._pick(self.ch_rules, sql)
 
     def vm(self, path, params):
-        return {"result": self._pick(self.vm_rules, params.get("query") or params.get("match[]", ""))}
+        # 실제 통로(Remote.vm)는 응답의 data 를 돌려준다: /api/v1/series 는 계열 목록, /api/v1/query 는 {"result": [...]}.
+        answer = self._pick(self.vm_rules, params.get("query") or params.get("match[]", ""))
+        return answer if path == "/api/v1/series" else {"result": answer}
 
     def host(self, command):
         return ""
 
     def guest(self, addr, command):
-        return ""
+        self.queries.append(command)
+        return self.guest_answer
+
+    guest_answer = ""
 
 
 class T3CheckTests(unittest.TestCase):
@@ -4307,11 +4456,13 @@ class T3CheckTests(unittest.TestCase):
 
     def test_trap_needs_link_down_and_link_up_from_the_router_address(self) -> None:
         remote = FakeRemote()
+        remote.ch_rules.append(("source_ip != '192.168.123.254'", [["192.0.2.50", "3"]]))
         remote.ch_rules.append(("snmp_traps_local", [[".1.3.6.1.6.3.1.1.5.3", "1", "1"], ["1.3.6.1.6.3.1.1.5.4", "2", "1"]]))
         it = t3check.item_trap(remote, self.ctx, self.since, self.until)
         self.assertEqual(it.verdict, "충족")
-        self.assertIn("source_ip = '192.168.123.254'", remote.queries[-1])
-        remote.ch_rules[0] = ("snmp_traps_local", [["1.3.6.1.6.3.1.1.5.3", "1", "1"]])
+        self.assertIn("source_ip = '192.168.123.254'", remote.queries[0])
+        self.assertIn("참고: 라우터 아닌 출발 3행(192.0.2.50)", " ".join(it.numbers), "다른 장비 trap 은 기록만(리뷰 L6)")
+        remote.ch_rules[1] = ("snmp_traps_local", [["1.3.6.1.6.3.1.1.5.3", "1", "1"]])
         self.assertEqual(t3check.item_trap(remote, self.ctx, self.since, self.until).verdict, "미충족")
         self.assertEqual(t3check.item_trap(remote, self.ctx, None, self.until).verdict, "미판정")
 
@@ -4331,6 +4482,107 @@ class T3CheckTests(unittest.TestCase):
         ids["servers"]["db01"]["address"] = "192.168.127.41"
         it = t3check.item_icmp(remote, self.ctx, ids, self.until)
         self.assertIn("db01 대상 주소 192.168.127.41 가 업무 주소 192.168.126.11 가 아님", " ".join(it.detail))
+
+    ROUTER = "00000000-0000-4000-8000-0000000000ff"
+
+    def _nms_remote(self, missing: tuple[str, str] | None = None) -> FakeRemote:
+        """라우터 하위 대상(ens18~ens22, lo)과 인터페이스마다 네 이름군. missing=(인터페이스, 지표) 는 그 계열을 뺀다."""
+        remote = FakeRemote()
+        names = {"ens18": "2", "ens19": "3", "ens20": "4", "ens21": "5", "ens22": "6", "lo": "1"}
+        remote.pg_rules.append(("'network_interface'", [[k, v, f"00000000-0000-4000-8000-00000000010{v}"] for k, v in names.items()]))
+        all_names = [n for label, ns in t3check.NMS_FAMILIES.items() if label != "CPU" for n in ns]
+
+        def iface(text):
+            match = re.search(r'snmp_index="(\d+)"', text)
+            if not match:
+                return None
+            name = next(k for k, v in names.items() if v == match.group(1))
+            return [{"metric": {"__name__": n}, "value": [0, "1"]} for n in all_names if (name, n) != missing]
+        remote.vm_rules.append((iface, None))
+        remote.vm_rules.append(("nms.cpu.usage", [{"metric": {"__name__": "nms.cpu.usage"}, "value": [0, "10"]}]))
+        return remote
+
+    def test_nms_checks_every_design_interface_by_its_own_index(self) -> None:
+        ids = {"router": {"id": self.ROUTER}}
+        it = t3check.item_nms(self._nms_remote(), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertEqual(len([n for n in it.numbers if "snmp_index" in n]), 4, "상향과 하위 셋만(관리 NIC, lo 는 세지 않음)")
+        it = t3check.item_nms(self._nms_remote(("ens21", "nms.interface.if_out_discards")), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("ens21 버림 없음", " ".join(it.detail))
+        remote = self._nms_remote()
+        remote.pg_rules[0] = ("'network_interface'", [r for r in remote.pg_rules[0][1] if r[0] != "ens20"])
+        it = t3check.item_nms(remote, self.ctx, ids, self.until)
+        self.assertIn("ens20 인터페이스 대상(snmp_index) 없음", " ".join(it.detail))
+
+    def _db_remote(self, lines: int) -> tuple[FakeRemote, dict]:
+        remote = FakeRemote()
+        db = "00000000-0000-4000-8000-000000000004"
+        ids = {"servers": {"db01": {"id": db, "address": "192.168.126.11"}}, "children": {}, "router": None}
+        remote.vm_rules.append(("sms\\\\.file_system", [{"metric": {}, "value": [0, "6"]}]))
+        remote.vm_rules.append(("sms\\\\.disk", [{"metric": {}, "value": [0, "9"]}]))
+        remote.ch_rules.append(("process_snapshot", [["12"]]))
+        remote.ch_rules.append(("lucida_logs_local", [[str(lines)]]))
+        return remote, ids
+
+    def test_db_server_log_lines_follow_the_same_rule_as_the_log_monitor_row(self) -> None:
+        remote, ids = self._db_remote(5)
+        self.assertEqual(t3check.item_db_server(remote, self.ctx, ids, self.since, self.until).verdict, "충족")
+        remote, ids = self._db_remote(0)
+        it = t3check.item_db_server(remote, self.ctx, ids, self.since, self.until)
+        self.assertEqual(it.verdict, "미충족", "VM 을 읽지 않으면 줄 없음은 실패")
+        remote, ids = self._db_remote(0)
+        remote.guest_answer = "0\n"
+        it = t3check.item_db_server(remote, self.ctx, ids, self.since, self.until, vm_reads=True)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertIn("서버 로그 감시 줄 없음(파일에도 맞는 줄 없음)", it.numbers)
+        self.assertIn("grep -cE", remote.queries[-1])
+        remote, ids = self._db_remote(0)
+        remote.guest_answer = "4\n"
+        self.assertEqual(t3check.item_db_server(remote, self.ctx, ids, self.since, self.until, vm_reads=True).verdict, "미충족")
+
+    def test_target_table_needs_the_device_its_interfaces_and_the_trap_receiver(self) -> None:
+        def table(**over) -> dict:
+            base = {"servers": [{"target_id": f"00000000-0000-4000-8000-00000000000{n}",
+                                 "children": {"sms.network_interface": {"ens18": f"00000000-0000-4000-8000-00000000001{n}"},
+                                              "sms.file_system": {}, "sms.process": {}}} for n in range(4)],
+                    "network_devices": [{"target_id": self.ROUTER, "interfaces": {"ens19": "00000000-0000-4000-8000-000000000201"}}],
+                    "trap_receivers": [{"target_id": "00000000-0000-4000-8000-000000000301"}]}
+            base.update(over)
+            return base
+
+        class Echo(FakeRemote):
+            def pg(self, sql):
+                return [[i] for i in re.findall(r"'([0-9a-f-]{36})'", sql)]
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "t.targets.json"
+            for over, ok in (({}, True), ({"trap_receivers": []}, False), ({"network_devices": []}, False),
+                             ({"network_devices": [{"target_id": self.ROUTER, "interfaces": {}}]}, False)):
+                path.write_text(json.dumps(table(**over)))
+                with self.subTest(over=over):
+                    self.assertEqual(t3check.item_table(Echo(), path, self.ctx).verdict, "충족" if ok else "미충족")
+            path.write_text(json.dumps(table(network_devices=[], trap_receivers=[])))
+            s_ctx = t3check.context(inventory(S_INV))
+            self.assertEqual(t3check.item_table(Echo(), path, s_ctx).verdict, "충족", "라우터 없는 S 는 장비와 수신기를 요구하지 않음")
+
+    def test_budget_limits_come_from_the_one_criteria_file(self) -> None:
+        budget = t3check.load_budget()
+        self.assertEqual(budget["clickhouse_memory_resident_max_gib"], 3.6)
+        self.assertEqual(budget["disk_used_pct_max"], 80.0)
+        stricter = dict(budget, clickhouse_memory_resident_max_gib=3.0)
+        self.assertEqual(t3check.budget_verdict(self._budget(), self._budget(), stricter).verdict, "미충족")
+        source = (DEPLOY / "tools" / "t3_check.py").read_text()
+        self.assertNotRegex(source, r"(?m)^[A-Z_]+ = (3\.6|0\.8|80\.0|70\.0)\b", "기준값을 도구 안에 다시 두지 않는다")
+
+    def test_process_unit_row_records_the_labels(self) -> None:
+        remote = FakeRemote()
+        ids = {"servers": {"web01": {"id": "00000000-0000-4000-8000-000000000001"}}}
+        remote.vm_rules.append(("sms.process.cpu_utilization", [{"__name__": "x", "name": "java", "pid": "1", "host_target_id": "h"}]))
+        it = t3check.item_process_unit(remote, self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "충족")
+        self.assertIn("pid", it.numbers[0])
+        remote.vm_rules[0] = ("sms.process.cpu_utilization", [])
+        self.assertEqual(t3check.item_process_unit(remote, self.ctx, ids, self.until).verdict, "미충족")
 
     def test_only_target_numbers_go_into_a_promql_selector(self) -> None:
         self.assertEqual(t3check.regex_ids(["00000000-0000-4000-8000-000000000001"]), "00000000-0000-4000-8000-000000000001")

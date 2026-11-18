@@ -63,13 +63,17 @@ NMS_FAMILIES = {
 }
 LINK_DOWN = "1.3.6.1.6.3.1.1.5.3"
 LINK_UP = "1.3.6.1.6.3.1.1.5.4"
-# Q8 예산(설계 §1 Q8, §3-6).
-CH_MEM_BUDGET_GIB = 3.6
-VM_MEM_SHARE_MAX = 0.80
-DISK_PCT_MAX = 80.0
-STEAL_INCREASE_MAX_PP = 3.0
-CPU_BUSY_MAX_PCT = 70.0
-TUNNEL_AVG_MBPS_MAX = 5.0
+# Q8 예산(설계 §1 Q8, §3-6). 기준값과 정의는 monitoring/t3-budget.json 한 곳에 둔다(검토 세션 Q31 답 대기).
+BUDGET_FILE = DEPLOY / "monitoring" / "t3-budget.json"
+
+
+def load_budget(path: Path = BUDGET_FILE) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("clickhouse_memory_resident_max_gib", "victoriametrics_memory_share_of_limit_max", "disk_used_pct_max",
+                "steal_increase_max_pp", "cpu_busy_avg_max_pct", "tunnel_avg_mbps_reference"):
+        if not isinstance(data.get(key), (int, float)):
+            raise ValueError(f"{path}: {key} 가 수가 아님")
+    return data
 DPM_PREFIX = "dpm."
 
 
@@ -108,7 +112,7 @@ def context(inv: dict) -> dict:
             servers.append({"name": host["name"], "role": host["role"], "addr": biz["addr"], "mgmt_if": mnic["ifname"],
                             "mgmt_addr": mnic["addr"], "data_mount": mount})
         elif host["role"] == "router":
-            router = {"name": host["name"], "addr": biz["addr"], "mgmt_addr": mnic["addr"],
+            router = {"name": host["name"], "addr": biz["addr"], "mgmt_addr": mnic["addr"], "up_if": biz["ifname"],
                       "downlinks": [n["ifname"] for n in host["nics"] if n.get("downlink")]}
         elif host["role"] == "loadgen":
             loadgen = {"name": host["name"], "addr": biz["addr"]}
@@ -320,7 +324,10 @@ def item_process_unit(remote, ctx, ids, until) -> Item:
     it.numbers.append(f"라벨 {', '.join(keys)}")
     it.detail.append("프로세스 계열은 (호스트, 프로세스 이름, pid) 마다 하나다. 에이전트는 15초마다 CPU 상위 50개만 보낸다"
                      "(goagent main.go collectProcesses(cfg, 50)). process_snapshot 은 60초마다 전체 목록")
-    return it.set("pid" in keys and "name" in keys, "" if "pid" in keys else "pid 라벨 없음")
+    # 설계 행은 «기록» 이다. 계열이 있으면 라벨을 적고 충족, 계열이 없으면 기록할 것이 없어 미충족(리뷰 L9).
+    if "pid" not in keys or "name" not in keys:
+        it.detail.append("단위 라벨이 이 설명(pid, name)과 다르다. 위 라벨을 그대로 기록한다")
+    return it.set(bool(series), "" if series else "프로세스 계열 없음")
 
 
 def item_icmp(remote, ctx, ids, until) -> Item:
@@ -366,6 +373,12 @@ def item_icmp(remote, ctx, ids, until) -> Item:
 
 
 def item_nms(remote, ctx, ids, until) -> Item:
+    """라우터 상향과 하위 인터페이스마다 상태, 옥텟, 오류, 버림 계열과 장비 CPU(설계 §10 T3 NMS).
+
+    인터페이스 이름(인벤토리 ifname)은 장비 하위 대상(network_resource, resource_kind network_interface)의 resource_key
+    (ifDescr)이고, 그 meta.snmp_index 가 VM 계열의 snmp_index 라벨이다(119 조회 11-18: 기존 장비 하위 대상의 meta 칸,
+    계열 라벨 target_id = 장비, snmp_index). lo, 관리 NIC 처럼 설계 밖 인터페이스는 세지 않는다.
+    """
     it = Item("NMS")
     router = ids.get("router")
     if not ctx["router"]:
@@ -374,20 +387,30 @@ def item_nms(remote, ctx, ids, until) -> Item:
     if not router:
         return it.set(False, "라우터 장비 대상 없음")
     bad = []
-    for label, names in NMS_FAMILIES.items():
-        regex = promql_regex(names)
+    cpu = vm_vector(remote, f'count by (__name__) (last_over_time({{__name__="nms.cpu.usage",target_id="{router["id"]}"}}[15m]))', until)
+    if not cpu:
+        bad.append("CPU 없음(nms.cpu.usage)")
+    rows = remote.pg("select coalesce(meta->>'resource_key',''), coalesce(meta->>'snmp_index',''), id from targets "
+                     f"where meta->>'host_target_id' = '{router['id']}' and meta->>'resource_kind' = 'network_interface' "
+                     "and deleting_at is null;")
+    by_name = {key.strip(): (index, tid) for key, index, tid in rows}
+    families = {label: names for label, names in NMS_FAMILIES.items() if label != "CPU"}
+    regex = promql_regex([n for names in families.values() for n in names])
+    for name in [ctx["router"]["up_if"]] + ctx["router"]["downlinks"]:
+        if name not in by_name or not by_name[name][0]:
+            bad.append(f"{name} 인터페이스 대상(snmp_index) 없음")
+            it.numbers.append(f"{name} 대상 없음")
+            continue
+        index, child = by_name[name]
         found = {r["metric"]["__name__"] for r in vm_vector(
-            remote, f'count by (__name__) (last_over_time({{__name__=~"{regex}",target_id="{router["id"]}"}}[15m]))', until)}
-        if set(names) - found:
-            bad.append(f"{label} 없음({', '.join(sorted(set(names) - found))})")
-    ifaces = vm_scalar(remote, f'count(count by (snmp_index) (last_over_time({{__name__="nms.interface.if_oper_status",'
-                               f'target_id="{router["id"]}"}}[15m])))', until) or 0
-    samples = vm_scalar(remote, f'count_over_time({{__name__="nms.cpu.usage",target_id="{router["id"]}"}}[10m])', until) or 0
-    want = len(ctx["router"]["downlinks"]) + 1
-    it.numbers.append(f"인터페이스 {int(ifaces)}개(하위 {len(ctx['router']['downlinks'])} + 상향 1 이상), "
-                      f"폴링 간격 {round(600 / samples, 1) if samples else None}초")
-    if ifaces < want:
-        bad.append(f"인터페이스 {int(ifaces)} < {want}")
+            remote, f'count by (__name__) (last_over_time({{__name__=~"{regex}",target_id=~"{regex_ids([router["id"], child])}",'
+                    f'snmp_index="{index}"}}[15m]))', until)}
+        missing = [label for label, names in families.items() if set(names) - found]
+        it.numbers.append(f"{name}(snmp_index {index}) {'모두' if not missing else '빠짐 ' + ', '.join(missing)}")
+        if missing:
+            bad.append(f"{name} {', '.join(missing)} 없음")
+    samples = vm_scalar(remote, f'max(count_over_time({{__name__="nms.cpu.usage",target_id="{router["id"]}"}}[10m]))', until) or 0
+    it.numbers.append(f"폴링 간격 {round(600 / samples, 1) if samples else None}초")
     return it.set(not bad, "; ".join(bad))
 
 
@@ -407,6 +430,12 @@ def item_trap(remote, ctx, since: dt.datetime | None, until) -> Item:
     down = sum(n for oid, n in counts.items() if oid.startswith(LINK_DOWN))
     up = sum(n for oid, n in counts.items() if oid.startswith(LINK_UP))
     it.numbers.append(f"linkDown {down}, linkUp {up}(출발 {ctx['router']['addr']})")
+    # 수신기는 관제 서버의 모든 주소에서 UDP 162 를 연다. 다른 장비가 보내기 시작한 trap 을 기록한다(판정 아님, 리뷰 L6).
+    others = remote.ch("select source_ip, count() from lucida.snmp_traps_local "
+                       f"where received_at >= '{ch_ts(since)}' and received_at <= '{ch_ts(until)}' "
+                       f"and source_ip != '{ctx['router']['addr']}' group by source_ip format TSV;")
+    it.numbers.append(f"참고: 라우터 아닌 출발 {sum(int(r[1]) for r in others)}행"
+                      + (f"({', '.join(r[0] for r in others[:5])})" if others else ""))
     return it.set(down >= 1 and up >= 1, "" if down and up else "linkDown, linkUp 각 1행 이상이 아님")
 
 
@@ -430,7 +459,7 @@ def item_no_dpm(remote, ctx, ids, since, until) -> Item:
     return it.set(dpm == 0 and db_targets == 0)
 
 
-def item_db_server(remote, ctx, ids, since, until) -> Item:
+def item_db_server(remote, ctx, ids, since, until, vm_reads: bool = False) -> Item:
     it = Item("DB 서버 관제")
     db = next(s for s in ctx["servers"] if s["role"] == "db")
     target = ids["servers"].get(db["name"])
@@ -445,7 +474,8 @@ def item_db_server(remote, ctx, ids, since, until) -> Item:
                       f"'{ch_ts(until - dt.timedelta(minutes=10))}' and ts <= '{ch_ts(until)}' "
                       f"and target_id = '{target['id']}' and name like 'postgres%' format TSV;")
     procs = int(procs[0][0]) if procs else 0
-    db_log = next(m["fileName"] for m in log_monitor_files("db") if "postgresql" in m["fileName"])
+    db_monitor = next(m for m in log_monitor_files("db") if "postgresql" in m["fileName"])
+    db_log = db_monitor["fileName"]
     lines = remote.ch("select count() from lucida.lucida_logs_local where timestamp_date >= "
                       f"'{ch_date(since)}' and timestamp >= '{ch_ts(since)}' and timestamp <= '{ch_ts(until)}' "
                       f"and event_source = 'log_monitor' and host_target_id = '{target['id']}' "
@@ -459,8 +489,13 @@ def item_db_server(remote, ctx, ids, since, until) -> Item:
         bad.append("디스크 IO 계열 없음")
     if not procs:
         bad.append("PostgreSQL 프로세스 표본 없음")
-    if not lines:
-        bad.append("서버 로그 감시 줄 없음(로그 감시 항목의 줄 없음 판정을 본다)")
+    # 서버 로그 감시 줄은 로그 감시 행과 같은 규칙(11-18 지휘 세션 결정 8): 줄이 없을 때 파일에도 맞는 줄이 없으면 실패가
+    # 아니라 따로 센다. VM 을 읽지 않았으면 실패.
+    grep = {(db["name"], db_log): file_hits(remote, db, db_monitor)} if (vm_reads and not lines) else (None if not vm_reads else {})
+    verdict, numbers, monitor_bad = monitor_verdict({(db["name"], db_log): lines} if lines else {}, grep, [(db["name"], db_log)])
+    if lines == 0 and verdict == "충족":
+        it.numbers.append("서버 로그 감시 줄 없음(파일에도 맞는 줄 없음)")
+    bad += [f"서버 로그 감시: {b}" for b in monitor_bad]
     return it.set(not bad, "; ".join(bad))
 
 
@@ -531,6 +566,14 @@ def monitor_verdict(rows: dict[tuple[str, str], int], grep: dict[tuple[str, str]
     return ("충족" if not bad else "미충족"), numbers, bad
 
 
+def file_hits(remote, server: dict, monitor: dict) -> int:
+    """VM 감시 파일에서 감시 패턴(레벨 모두)에 맞는 줄 수(읽기, 운영자 sudo, runbook §12-0 순서 11 의 녹화 정지 아래)."""
+    pattern = "|".join(monitor[k] for k in ("fatalPattern", "errorPattern", "warnPattern", "infoPattern") if monitor.get(k))
+    path = monitor["fileName"].replace("[YYYY]", "$(date -u +%Y)").replace("[MM]", "$(date -u +%m)").replace("[DD]", "$(date -u +%d)")
+    out = remote.guest(server["mgmt_addr"], f"sudo -n grep -cE {shlex.quote(pattern)} \"{path}\" || true")
+    return int((out.strip().splitlines() or ["0"])[-1] or 0)
+
+
 def item_log_monitors(remote, ctx, ids, since, until, vm_reads: bool) -> Item:
     it = Item("로그 감시")
     expected, rows, grep = [], {}, {} if vm_reads else None
@@ -553,10 +596,7 @@ def item_log_monitors(remote, ctx, ids, since, until, vm_reads: bool) -> Item:
             rows[(s["name"], path)] = int(count)
         if vm_reads:
             for m in files:
-                pattern = "|".join(m[k] for k in ("fatalPattern", "errorPattern", "warnPattern", "infoPattern") if m.get(k))
-                path = m["fileName"].replace("[YYYY]", "$(date -u +%Y)").replace("[MM]", "$(date -u +%m)").replace("[DD]", "$(date -u +%d)")
-                out = remote.guest(s["mgmt_addr"], f"sudo -n grep -cE {shlex.quote(pattern)} \"{path}\" || true")
-                grep[(s["name"], m["fileName"])] = int((out.strip().splitlines() or ["0"])[-1] or 0)
+                grep[(s["name"], m["fileName"])] = file_hits(remote, s, m)
     # 날짜 자리가 든 파일은 줄의 file_path 가 그날 이름이다. 정의 이름으로 모은다.
     merged: dict[tuple[str, str], int] = {}
     for (name, path), count in rows.items():
@@ -599,7 +639,7 @@ def item_bands(remote, ctx, ids, since, until) -> Item:
     return it.set(not bad, "; ".join(bad))
 
 
-def item_table(remote, table_path: Path | None) -> Item:
+def item_table(remote, table_path: Path | None, ctx: dict) -> Item:
     it = Item("대상 번호 표")
     if not table_path:
         it.detail.append("--table 없음")
@@ -621,6 +661,17 @@ def item_table(remote, table_path: Path | None) -> Item:
     for want in ("sms.network_interface", "sms.file_system", "sms.process"):
         if want not in kinds:
             it.detail.append(f"서버 하위 대상 {want} 이 표에 없음")
+    if len(table.get("servers", [])) != len(ctx["servers"]):
+        it.detail.append(f"서버 {len(table.get('servers', []))}대(인벤토리 {len(ctx['servers'])}대)")
+    if ctx["router"]:
+        # 라우터가 있는 테스트베드는 장비, 그 인터페이스, trap 수신기 번호도 표에 있어야 한다(설계 §10 T3, 리뷰 L8).
+        devices = table.get("network_devices", [])
+        if len(devices) != 1:
+            it.detail.append(f"장비 {len(devices)}개(1개여야 함)")
+        elif not devices[0].get("interfaces"):
+            it.detail.append("장비 인터페이스 번호가 비었음")
+        if not table.get("trap_receivers"):
+            it.detail.append("trap 수신기 번호가 비었음")
     return it.set(not missing and not it.detail, f"119 에 없는 번호 {missing[:5]}" if missing else "")
 
 
@@ -715,24 +766,32 @@ def source_rows(remote, ctx, ids, start, end) -> dict:
     return out
 
 
-def budget_verdict(before: dict, after: dict) -> Item:
+def budget_verdict(before: dict, after: dict, budget: dict | None = None) -> Item:
     it = Item("부담(Q8)")
+    budget = budget or load_budget()
+    CH_MEM_BUDGET_GIB = budget["clickhouse_memory_resident_max_gib"]
+    VM_MEM_SHARE_MAX = budget["victoriametrics_memory_share_of_limit_max"]
+    DISK_PCT_MAX = budget["disk_used_pct_max"]
+    STEAL_INCREASE_MAX_PP = budget["steal_increase_max_pp"]
+    CPU_BUSY_MAX_PCT = budget["cpu_busy_avg_max_pct"]
+    TUNNEL_AVG_MBPS_MAX = budget["tunnel_avg_mbps_reference"]
     bad = []
     mem = after.get("ch_memory_resident_max_gib")
     it.numbers.append(f"ClickHouse MemoryResident 최댓값 전 {before.get('ch_memory_resident_max_gib')} 뒤 {mem} GiB(예산 {CH_MEM_BUDGET_GIB})")
     if mem is None or mem >= CH_MEM_BUDGET_GIB:
         bad.append("ClickHouse 메모리 예산")
     vm, limit = after.get("vm_resident_max_gib"), after.get("vm_limit_gib")
-    it.numbers.append(f"VictoriaMetrics 상주 최댓값 {vm} / 한도 {limit} GiB(80% 미만)")
+    it.numbers.append(f"VictoriaMetrics 상주 최댓값 {vm} / 한도 {limit} GiB({int(VM_MEM_SHARE_MAX * 100)}% 미만)")
     if vm is None or not limit or vm >= VM_MEM_SHARE_MAX * limit:
         bad.append("VictoriaMetrics 메모리")
     disk = after.get("disk_pct_now")
-    it.numbers.append(f"디스크 {disk}%(80% 미만)")
+    it.numbers.append(f"디스크 {disk}%({DISK_PCT_MAX}% 미만)")
     if disk is None or disk >= DISK_PCT_MAX:
         bad.append("디스크")
     steal_b, steal_a = (before.get("cpu") or {}).get("steal_avg"), (after.get("cpu") or {}).get("steal_avg")
     busy = (after.get("cpu") or {}).get("cpu_busy_avg")
-    it.numbers.append(f"steal 평균 전 {steal_b} 뒤 {steal_a}(증가 3%p 이하), CPU(user+nice+system) 평균 {busy}%(70% 이하)")
+    it.numbers.append(f"steal 평균 전 {steal_b} 뒤 {steal_a}(증가 {STEAL_INCREASE_MAX_PP}%p 이하), "
+                      f"CPU({budget.get('cpu_busy_definition', 'user+nice+system')}) 평균 {busy}%({CPU_BUSY_MAX_PCT}% 이하)")
     if steal_a is None or steal_b is None or steal_a - steal_b > STEAL_INCREASE_MAX_PP:
         bad.append("steal 증가")
     if busy is None or busy > CPU_BUSY_MAX_PCT:
@@ -816,11 +875,11 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
         item_nms(remote, ctx, ids, until),
         item_trap(remote, ctx, trap_since, until),
         item_no_dpm(remote, ctx, ids, since, until),
-        item_db_server(remote, ctx, ids, since, until),
+        item_db_server(remote, ctx, ids, since, until, args.vm_reads),
         item_syslog(remote, ctx, since, until),
         item_log_monitors(remote, ctx, ids, since, until, args.vm_reads),
         item_bands(remote, ctx, ids, since, until),
-        item_table(remote, args.table),
+        item_table(remote, args.table, ctx),
     ]
     print(f"창 {since.astimezone(KST).isoformat()} ~ {until.astimezone(KST).isoformat()}")
     print(render(items))

@@ -17,7 +17,7 @@ d0186576d2 의 frontend registerTarget.ts, ServerPendingRegistrations.tsx, Custo
   record        대상 번호 표(JSON)를 쓴다(--out). 쓰기 없음
   rollback      위에서 만든 것을 거꾸로 지운다(--record 의 표를 읽음. 서버 대상은 에이전트를 먼저 멈춘 뒤에만)
 
---yes 가 없으면 읽기(GET)만 하고 쓸 호출을 찍기만 한다. 로그인 계정은 환경변수 LUCIDA_LOGIN_USER,
+--yes 가 없으면 로그인(POST /api/v1/login, 관제 서버에 세션 행이 생긴다)과 읽기(GET)만 하고 쓸 호출은 찍기만 한다. 로그인 계정은 환경변수 LUCIDA_LOGIN_USER,
 LUCIDA_LOGIN_PASSWORD(러너 컨테이너와 같은 이름)에서만 읽고, 주소는 LUCIDA_QUERY_URL(없으면 인벤토리 관제 서버
 실주소의 13080). 비밀값(비밀번호, 커뮤니티)은 출력하지 않는다.
 """
@@ -92,7 +92,9 @@ def log_monitor_specs(role: str, path: Path = LOG_MONITORS) -> list[dict]:
         for key in LOG_PATTERN_KEYS:
             params[f"{key}Pattern"] = item.get(f"{key}Pattern", "")
             params[f"{key}ExcludePattern"] = ""
-        out.append({"name": item["name"], "params": params})
+        out.append({"name": item["name"], "params": params,
+                    "unified_log_enabled": bool(data.get("monitor_defaults", {}).get("unified_log_enabled", False)),
+                    "log_type_tag": item.get("logTypeTag", "")})
     return out
 
 
@@ -269,15 +271,40 @@ def phase_log_monitors(session: Session, inv: dict, specs_path: Path = LOG_MONIT
         for spec in log_monitor_specs(host["role"], specs_path):
             if spec["params"]["fileName"] in have:
                 continue
+            # 감시 꼴(unified_log_enabled, log_type_tag)은 기존 세 도메인 감시와 같게(11-18 지휘 세션 결정, 정의 파일).
             body = {"parent_target_id": sid, "kind": "log", "name": f"{spec['name']}-{host['name']}",
-                    "description": "", "enabled": True, "unified_log_enabled": False, "params": spec["params"]}
+                    "description": "", "enabled": True, "unified_log_enabled": spec["unified_log_enabled"],
+                    "params": spec["params"]}
+            if spec["log_type_tag"]:
+                body["log_type_tag"] = spec["log_type_tag"]
             session.write("POST", "/sm/api/custom-monitors", body)
             added += 1
     return added
 
 
-def _network_targets(session: Session, **query) -> list[dict]:
-    return _targets(session, type="network", limit=5000, include_collectors=1, **query)
+def _network_targets(session: Session, **query) -> list[tuple[dict, list[dict]]]:
+    """network 대상과 그 수집기의 쌍. 실제 응답은 수집기를 대상 안에 넣지 않고 최상위 target_collectors 에
+    {"target": 대상, "collectors": [수집기]} 로 따로 준다(lucida-next d0186576d2 query/handler/targets.go 목록,
+    store.Target 에는 수집기 칸이 없다). 대상 하나에 쌍 하나다."""
+    body = session.get("/api/v1/targets?" + urllib.parse.urlencode(dict(type="network", limit=5000, include_collectors=1, **query)))
+    pairs = (body or {}).get("target_collectors") if isinstance(body, dict) else None
+    if not isinstance(pairs, list):
+        raise RegisterError("대상 목록 응답에 target_collectors 가 없음(include_collectors=1 응답 꼴이 다름)")
+    return [(pair.get("target") or {}, list(pair.get("collectors") or [])) for pair in pairs]
+
+
+def _collector_config(col: dict) -> dict:
+    config = col.get("config") or {}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            config = {}
+    return config if isinstance(config, dict) else {}
+
+
+def _nms_devices(session: Session, address: str) -> list[tuple[dict, list[dict]]]:
+    return [(t, cols) for t, cols in _network_targets(session, search=address) if t.get("address") == address]
 
 
 def phase_nms(session: Session, inv: dict) -> str | None:
@@ -285,10 +312,15 @@ def phase_nms(session: Session, inv: dict) -> str | None:
     if not rt:
         print("라우터 없음(이 인벤토리는 NMS 장비를 등록하지 않는다)", file=session.out)
         return None
-    found = [t for t in _network_targets(session, search=rt["address"]) if t.get("address") == rt["address"]]
+    found = _nms_devices(session, rt["address"])
     if found:
-        print(f"{rt['name']}: 이미 등록됨 {found[0].get('id')}", file=session.out)
-        return found[0].get("id")
+        target, cols = found[0]
+        if len(found) > 1 or not any(c.get("kind") == "polestar_nms" for c in cols):
+            # 대상만 있고 수집기가 없으면(앞 실행에서 수집기 생성과 보상 삭제가 함께 실패) 폴링이 없다. 성공으로 찍지 않는다.
+            raise RegisterError(f"{rt['name']}: 주소 {rt['address']} 의 network 대상 {len(found)}개 가운데 polestar_nms 수집기가 있는 "
+                                f"하나가 아님({[t.get('id') for t, _ in found]}). 화면에서 확인해 지우고 다시")
+        print(f"{rt['name']}: 이미 등록됨 {target.get('id')}", file=session.out)
+        return target.get("id")
     community_path = expand(inv["monitoring"]["snmp_community_file"])
     community = community_path.read_text(encoding="utf-8").strip()
     if not community:
@@ -300,23 +332,31 @@ def phase_nms(session: Session, inv: dict) -> str | None:
     collector = {"kind": "polestar_nms", "enabled": True, "config": {"port": 161, "version": "2c"},
                  "config_encrypted": {"community": community}, "collection_policy_id": NMS_DEFAULT_POLICY}
     shown = dict(collector, config_encrypted={"community": f"<{inv['monitoring']['snmp_community_file']} 의 값>"})
+    _write_collector_or_undo(session, tid, collector, shown)
+    return tid
+
+
+def _write_collector_or_undo(session: Session, tid: str, collector: dict, shown: dict | None = None) -> None:
+    """화면과 같다: 수집기를 못 만들면 방금 만든 대상을 지운다. 지우기도 실패하면 두 사유를 함께 낸다."""
     try:
         session.write("POST", f"/api/v1/targets/{tid}/collectors", collector, shown=shown)
-    except RegisterError:
-        # 화면과 같다: 수집기를 못 만들면 방금 만든 대상을 지운다.
-        session.write("DELETE", f"/api/v1/targets/{tid}")
+    except RegisterError as error:
+        try:
+            session.write("DELETE", f"/api/v1/targets/{tid}")
+        except RegisterError as undo:
+            raise RegisterError(f"{error}; 그리고 방금 만든 대상 {tid} 를 지우지 못함({undo}). 수집기 없는 대상이 남았다, 화면에서 지운다") from error
         raise
-    return tid
 
 
 def _trap_receivers(session: Session) -> list[dict]:
     out = []
-    for target in _network_targets(session):
-        for col in target.get("target_collectors") or target.get("collectors") or []:
-            config = col.get("config") or {}
+    for target, cols in _network_targets(session):
+        for col in cols:
+            config = _collector_config(col)
             if col.get("kind") == "polestar_trap" and str(config.get("port")) == str(TRAP_PORT) \
                     and str(config.get("protocol", TRAP_PROTOCOL)).lower() == TRAP_PROTOCOL:
                 out.append(target)
+                break
     return out
 
 
@@ -334,11 +374,7 @@ def phase_trap(session: Session) -> str | None:
     collector = {"kind": "polestar_trap", "enabled": True,
                  "config": {"port": TRAP_PORT, "protocol": TRAP_PROTOCOL, "v3_username": "", "v3_auth_protocol": "",
                             "v3_priv_protocol": "", "allow_unregistered": False}}
-    try:
-        session.write("POST", f"/api/v1/targets/{tid}/collectors", collector)
-    except RegisterError:
-        session.write("DELETE", f"/api/v1/targets/{tid}")
-        raise
+    _write_collector_or_undo(session, tid, collector)
     return tid
 
 
@@ -363,9 +399,7 @@ def phase_record(session: Session, inv: dict, specs_path: Path = LOG_MONITORS) -
                                  "log_monitors": {f: monitors.get(f) for f in sorted(monitors)}})
     rt = router(inv)
     if rt:
-        for target in _network_targets(session, search=rt["address"]):
-            if target.get("address") != rt["address"]:
-                continue
+        for target, _ in _nms_devices(session, rt["address"]):
             nodes = subtree(session, target["id"])
             interfaces = {(n.get("resource_key") or n.get("display_name") or ""): n["id"] for n in nodes
                           if n.get("id") != target["id"] and (n.get("resource_kind") == "network_interface"

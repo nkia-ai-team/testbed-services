@@ -16,12 +16,13 @@ sms_agent_state() {
         printf '%s %s\n' "$(sha256sum "$dest" 2>/dev/null | awk '{print $1}')" "$dest"
     done < "$BUNDLE/files.tsv"
 }
-# 에이전트가 섰는지: 유닛이 돌고, root 의 lucida-agent 프로세스가 있고, 시작 줄이 기대보다 많아졌으며 마지막 시작 줄이
-# 이 서버 이름과 보고 주소를 담는다.
+# 에이전트가 섰는지: 유닛이 돌고, root 의 lucida-agent 프로세스가 있고, (want 가 1 이상이면) 시작 줄이 want 개 이상이며 마지막
+# 시작 줄이 이 서버 이름과 보고 주소를 담는다. 다시 띄우지 않은 경우(want 0)는 로그가 회전돼 시작 줄이 없을 수 있어 앞 둘만 본다.
 sms_agent_started() {
     local want="$1" count last
     systemctl is-active --quiet "$SMS_AGENT_UNIT" || { echo "유닛 $SMS_AGENT_UNIT 이 돌지 않음"; return 1; }
     pgrep -x -u 0 lucida-agent >/dev/null || { echo "root 의 lucida-agent 프로세스 없음"; return 1; }
+    (( want > 0 )) || return 0
     count=$(grep -c 'agent started (' "$agent_log" 2>/dev/null || true)
     (( ${count:-0} >= want )) || { echo "시작 줄 ${count:-0}개(기대 $want 이상)"; return 1; }
     last=$(grep 'agent started (' "$agent_log" | tail -n 1)
@@ -46,7 +47,7 @@ if [[ "$before" != "$after" ]] || ! systemctl is-active --quiet "$SMS_AGENT_UNIT
     want=$((started + 1))
     log "lucida-agent (re)started"
 else
-    want=$((started > 0 ? started : 1))
+    want=0
     log "lucida-agent unchanged, not restarted"
 fi
 settle "${SMS_AGENT_SETTLE_SEC:-60}" "$SETTLE_EVERY" "에이전트가 서지 않음" sms_agent_started "$want"

@@ -3,10 +3,11 @@
 # 설계: docs/spec-testbed-vm-3tier.md §2-5, 적용 순서: docs/runbook-civil-petition-apply.md.
 #
 #   apply.sh --inventory inventory/t.json --host <이름> [--host ...] --war <petition.war> [--k6 <k6 바이너리>]
-#            [--sms-agent <lucida-agent 바이너리>] [--package-versions <파일>] [--steps "단계 ..."]
+#            [--sms-agent <lucida-agent 바이너리> [--sms-agent-sha256 <기대 sha256>]] [--package-versions <파일>] [--steps "단계 ..."]
 #            [--jump root@192.168.200.66] [--dry-run]
 #   --sms-agent 는 서버(웹, WAS, DB)의 sms-agent 단계가 쓴다. 모든 단계를 돌거나 --steps 에 sms-agent 가 있으면 반드시
 #   준다(runbook §11: 관제 서버 SMS 수집기 이미지 안의 lucida-agent-linux-amd64, T 와 S 가 같은 파일).
+#   --sms-agent-sha256 을 주면 보내기 전에 그 값과 대조한다(T 와 S 가 같은 파일인지 사람의 눈 대조에만 기대지 않게).
 #   apply.sh --inventory inventory/t.json --start-load      부하기 유닛을 처음 띄운다(마지막 순서)
 #
 # 비밀값은 인벤토리에 적힌 파일 경로에서 셸 변수 없이 파일 그대로 묶음의 secrets/ 로 복사하고 화면에 내지 않는다.
@@ -22,6 +23,7 @@ hosts=()
 war=""
 k6=""
 sms_agent=""
+sms_agent_sha=""
 versions=""
 steps=""
 jump="root@192.168.200.66"
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --war) war="$2"; shift 2 ;;
         --k6) k6="$2"; shift 2 ;;
         --sms-agent) sms_agent="$2"; shift 2 ;;
+        --sms-agent-sha256) sms_agent_sha="$2"; shift 2 ;;
         --package-versions) versions="$2"; shift 2 ;;
         --steps) steps="$2"; shift 2 ;;
         --jump) jump="$2"; shift 2 ;;
@@ -43,6 +46,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ -r "$inventory" ]] || { echo "apply: --inventory 필요" >&2; exit 2; }
+if [[ -n "$sms_agent_sha" ]]; then
+    [[ -r "$sms_agent" ]] || { echo "apply: --sms-agent-sha256 에는 --sms-agent 가 필요" >&2; exit 2; }
+    have=$(sha256sum "$sms_agent" | awk '{print $1}')
+    [[ "$have" == "$sms_agent_sha" ]] || { echo "apply: --sms-agent sha256 $have 가 기대값 $sms_agent_sha 와 다름" >&2; exit 2; }
+fi
 
 field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d
 for k in sys.argv[2].split("."): v=v[k]

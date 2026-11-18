@@ -1,0 +1,12 @@
+# SMS agent log (runbook section 11). The Go agent does not rotate its stdout file itself; copytruncate keeps the
+# unit's append handle valid.
+{{sms_agent_home}}/logs/agent.log {
+    daily
+    rotate 7
+    maxsize 50M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

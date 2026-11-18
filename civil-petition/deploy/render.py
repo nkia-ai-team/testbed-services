@@ -94,6 +94,8 @@ SMS_AGENT_RECORD = "/var/lib/petition-deploy/lucida-agent.sha256"
 SMS_AGENT_FILES = (
     FileSpec("sms-agent", f"{SMS_AGENT_HOME}/agent.env", "common/lucida-agent.env", "0600"),
     FileSpec("sms-agent", f"/etc/systemd/system/{SMS_AGENT_UNIT}.service", "common/lucida-agent.service"),
+    # Go 판 에이전트는 표준 출력 파일을 스스로 회전하지 않는다(회전은 lucidactl 감싸개 몫, 이 유닛은 쓰지 않음).
+    FileSpec("sms-agent", f"/etc/logrotate.d/{SMS_AGENT_UNIT}", "common/logrotate-lucida-agent"),
 )
 NON_ROUTER_FILES = (
     FileSpec("network", "/etc/sysctl.d/60-host.conf", "common/sysctl-server.conf"),
