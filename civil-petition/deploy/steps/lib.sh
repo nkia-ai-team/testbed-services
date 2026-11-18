@@ -258,6 +258,15 @@ apt_snapshot_opts=()
 if [[ -n "${APT_SNAPSHOT:-}" ]]; then
     apt_snapshot_opts=(--snapshot "$APT_SNAPSHOT")
 fi
+# 이 서버를 앞서 깐 색인 시각(os-base 가 남김)과 이번 값이 다르면, 또는 앞서 스냅숏으로 깔았는데 이번에 값이 없으면 아무것도
+# 하지 않고 멈춘다(다시 돌릴 때 다른 색인이나 지금 색인으로 받아 판이 갈라지지 않게). 기록이 없으면(처음, 또는 기록 전에 깐 T) 통과.
+APT_SNAPSHOT_RECORD=${APT_SNAPSHOT_RECORD:-/var/lib/petition-deploy/apt-snapshot}
+apt_snapshot_record_check() {
+    local before=""
+    [[ -r "$APT_SNAPSHOT_RECORD" ]] && before=$(tr -d '[:space:]' < "$APT_SNAPSHOT_RECORD")
+    [[ -z "$before" || "$before" == "${APT_SNAPSHOT:-}" ]] \
+        || fail "앞서 깐 색인 시각 $before 과 이번 값 '${APT_SNAPSHOT:-}' 이 다름($APT_SNAPSHOT_RECORD). 인벤토리 apt_snapshot 을 본다"
+}
 apt_update() {
     local out codename suite
     if [[ -n "${APT_SNAPSHOT:-}" ]]; then

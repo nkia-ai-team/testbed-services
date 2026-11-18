@@ -194,6 +194,54 @@ class InventoryValidationTests(unittest.TestCase):
             render.render_text("x {{nope}} y", {"a": "b"}, "case")
 
 
+def site_tokens(inv: dict) -> dict[str, str]:
+    """S 문서 §2-3 "바꾸는 것" 가운데 주소 자리만 자리표시로(render.normalize 보다 좁게, 시험 전용).
+
+    render.normalize 는 모든 IPv4 를 바꾸므로 설계가 바꾸라고 하지 않은 주소(DNS 등)가 달라도 같아 보인다. 여기서는
+    인벤토리의 자리 값만 바꾼다: 호스트 NIC 주소(역할 순번과 업무, 관리 갈래), 망 대역(관리망과 그 밖), 망 게이트웨이,
+    관리망의 66 주소. 그 밖의 IPv4 는 그대로 남아 T 와 S 가 같아야 한다.
+    """
+    management = render._management_net(inv)
+    tokens: dict[str, str] = {}
+    for name, net in inv["networks"].items():
+        kind = "mgmt" if name == management else "biz"
+        tokens[net["cidr"]] = f"@{kind}-net@"
+        if name == management:
+            tokens[net["host_addr"]] = "@mgmt-hv@"
+    counter: dict[str, int] = {}
+    for host in inv["hosts"]:
+        index = counter.get(host["role"], 0)
+        counter[host["role"]] = index + 1
+        for nic in host["nics"]:
+            kind = "mgmt" if nic["net"] == management else ("biz" if nic.get("gateway") else nic["net"])
+            tokens[nic["addr"]] = f"@{host['role']}{index}.{kind}@"
+    for name, net in inv["networks"].items():
+        if net.get("gateway"):
+            tokens[net["gateway"]] = "@gw@"
+    return tokens
+
+
+def site_normalize(text: str, inv: dict) -> str:
+    tokens = site_tokens(inv)
+
+    def swap(match: re.Match) -> str:
+        value = match.group(0)
+        if value in tokens:
+            return tokens[value]
+        address, slash, prefix = value.partition("/")
+        return tokens[address] + slash + prefix if address in tokens else value
+    text = text.replace(inv["domain"], "@domain@")
+    counter: dict[str, int] = {}
+    names = []
+    for host in inv["hosts"]:
+        index = counter.get(host["role"], 0)
+        counter[host["role"]] = index + 1
+        names.append((host["name"], f"@{host['role']}{index}@"))
+    for name, token in sorted(names, key=lambda item: -len(item[0])):
+        text = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", token, text)
+    return render.IPV4.sub(swap, text)
+
+
 class SharedCodeTests(unittest.TestCase):
     """설계 §10 T2 "S 와 같이 쓰는 코드" (1)~(4)."""
 
@@ -257,6 +305,8 @@ class SharedCodeTests(unittest.TestCase):
                 compared += 1
                 with self.subTest(role=key, dest=dest):
                     self.assertEqual(t_files[dest]["normalized_sha256"], s_files[dest]["normalized_sha256"])
+                    # 좁은 정규화(주소 자리만)로도 같아야 한다. 모든 IPv4 를 지우는 normalize 는 DNS 같은 값의 차이를 못 본다.
+                    self.assertEqual(site_normalize(t_files[dest]["text"], t_inv), site_normalize(s_files[dest]["text"], s_inv))
             t_steps = [x for x in t_bundle["steps"] if x not in {"lldpd", "syslog-forward"}]
             self.assertEqual(t_steps, s_bundle["steps"])
         self.assertGreater(compared, 50)
@@ -273,7 +323,7 @@ class SharedCodeTests(unittest.TestCase):
             with self.subTest(role=key):
                 self.assertEqual(set(t_env), set(s_env))
                 differ = {name for name in s_env
-                          if render.normalize(t_env[name], t_inv, {}) != render.normalize(s_env[name], s_inv, {})}
+                          if site_normalize(t_env[name], t_inv) != site_normalize(s_env[name], s_inv)}
                 if key.startswith("loadgen"):
                     self.assertEqual(differ, set())
                     self.assertEqual(s_env["SYSLOG_FORWARD"], "0")
@@ -285,6 +335,57 @@ class SharedCodeTests(unittest.TestCase):
                 self.assertTrue(s_env["MGMT_ADDR"].startswith("192.168.133."))
                 compared += len(s_env)
         self.assertGreater(compared, 100)
+
+    def test_s_vm_plan_differs_from_t_only_in_ids_bridges_and_site_values(self) -> None:
+        # plan.py create 도 같은 좁은 정규화로 짝끼리 견준다(VMID, 브리지, 이름, 주소 자리 말고 같아야 한다. DNS 포함).
+        t_inv, s_inv = inventory(T_INV), inventory(S_INV)
+
+        def per_host(inv: dict) -> dict[str, list[str]]:
+            management = render._management_net(inv)
+            bridges = {net["bridge"]: ("@mgmt-br@" if name == management else "@biz-br@")
+                       for name, net in inv["networks"].items()}
+            out, counter, current = {}, {}, None
+            keys = {}
+            for host in inv["hosts"]:
+                index = counter.get(host["role"], 0)
+                counter[host["role"]] = index + 1
+                keys[host["name"]] = (f"{host['role']}{index}", host["vmid"])
+            for line in plan.create(inv, "/root/k.pub")[1:]:
+                head = re.match(r"# (\S+) ", line)
+                if head:
+                    current = keys[head.group(1)]
+                    out[current[0]] = []
+                    continue
+                line = re.sub(rf"\b{current[1]}\b", "@vmid@", line)
+                line = re.sub(r"bridge=(vmbr\d+)", lambda m: "bridge=" + bridges[m.group(1)], line)
+                out[current[0]].append(site_normalize(line, inv))
+            return out
+        t_plan, s_plan = per_host(t_inv), per_host(s_inv)
+        self.assertEqual(set(s_plan), set(t_plan) - {"router0"})
+        for key, lines in s_plan.items():
+            with self.subTest(role=key):
+                self.assertEqual(lines, t_plan[key])
+                self.assertTrue(any("--nameserver" in line for line in lines))
+
+    def test_s_servers_use_the_package_index_time_of_their_t_twin(self) -> None:
+        # 쌍 조건 2: S 서버의 apt_snapshot 은 짝 T 서버(같은 역할 순번)의 값과 같다(runbook §14-3-1).
+        t_inv, s_inv = inventory(T_INV), inventory(S_INV)
+        t_keys = {k: b["host"] for k, b in self._by_role(t_inv, bundles(T_INV)).items()}
+        s_keys = {k: b["host"] for k, b in self._by_role(s_inv, bundles(S_INV)).items()}
+        t_hosts = {h["name"]: h for h in t_inv["hosts"]}
+        s_hosts = {h["name"]: h for h in s_inv["hosts"]}
+        for key, s_name in s_keys.items():
+            with self.subTest(role=key):
+                self.assertEqual(s_hosts[s_name]["apt_snapshot"], t_hosts[t_keys[key]]["apt_snapshot"])
+        bad = json.loads(json.dumps(s_inv))
+        for value in (None, "", "2026-11-18T02:20:12Z", "20261118T022012"):
+            with self.subTest(value=value):
+                if value is None:
+                    bad["hosts"][0].pop("apt_snapshot", None)
+                else:
+                    bad["hosts"][0]["apt_snapshot"] = value
+                with self.assertRaises(render.InventoryError):
+                    render.validate(bad)
 
     @staticmethod
     def _by_role(inv: dict, rendered: dict[str, dict]) -> dict[str, dict]:
@@ -1266,16 +1367,20 @@ class HypervisorApplyCommandTests(unittest.TestCase):
         self.assertTrue(installs)
         for line in installs:
             self.assertIn("--skip-steps sms-agent", line)
-            self.assertIn("--apt-snapshot ", line)
-        # 서버마다 짝 T 서버의 apt 설치 시각(쌍 조건 2). 표는 S 의 모든 호스트를 덮고, 예시 ID 는 표에 있다.
+            self.assertNotIn("--apt-snapshot", line)
+        # 서버마다 짝 T 서버의 apt 설치 시각(쌍 조건 2). 표는 S 의 모든 호스트를 덮고 인벤토리 값과 같다.
         table = {row[0]: row for row in table_rows(spec_section_text(section, "#### 14-3-1. 패키지 색인 시각 (쌍 조건 2)"))}
-        self.assertEqual(set(table), {h["name"] for h in inventory(S_INV)["hosts"]})
-        ids = {row[-1].strip("`") for row in table.values()}
-        for value in ids:
-            self.assertRegex(value, r"^\d{8}T\d{6}Z$")
-        for line in installs:
-            self.assertIn(re.search(r"--apt-snapshot (\S+)", line).group(1), ids)
+        self.assertEqual({name: row[-1].strip("`") for name, row in table.items()},
+                         {h["name"]: h["apt_snapshot"] for h in inventory(S_INV)["hosts"]})
         self.assertIn("E(가장 이르면 2026-11-19 14:42:48 KST) 뒤에 짓는다", section)
+        # 2시간 30분 녹화 시작 차단은 창 안 마지막 변경(가드 시험, S 부하 시작 포함)부터 센다.
+        self.assertIn("2시간 30분 녹화 시작 차단은 이 창 안 S 의 마지막 변경 끝부터 센다(차례 7 의 가드 시험과 차례 8 의 S 부하 시작 포함)", section)
+        # ST2 점검 표는 행마다 언제(차례 7, 차례 8 뒤, 차례 9) 하는지 칸이 있다.
+        checks_table = table_rows(spec_section_text(section, "### 14-4. ST2 점검 (S 문서 §11 ST2 행마다)"))
+        self.assertTrue(checks_table)
+        self.assertTrue(all(row[1] in {"차례 7", "차례 8 뒤", "차례 9"} for row in checks_table), [r[:2] for r in checks_table])
+        # T 를 다시 깔 때도 처음 색인 시각(§6).
+        self.assertIn("t.json` 의 서버별 `apt_snapshot`", runbook[:start])
         checks = [line for line in section.splitlines() if "hv_iptables_check.py" in line]
         self.assertTrue(checks)
         for line in checks:
@@ -2846,7 +2951,7 @@ class ScaleVerdictTests(unittest.TestCase):
 class PairPackagesTests(unittest.TestCase):
     """tools/pair_packages.py: T 와 S 짝 서버의 패키지 판 대조(S 문서 §2-4 쌍 조건 2)."""
 
-    BASE = "chrony 4.5-1ubuntu4.2\nlibc6:amd64 2.39-0ubuntu8.9\nzstd 1.5.5+dfsg2-2build1.1\n"
+    BASE = "ii  chrony 4.5-1ubuntu4.2\nii  libc6:amd64 2.39-0ubuntu8.9\nii  zstd 1.5.5+dfsg2-2build1.1\n"
 
     def _run(self, t_lists: dict[str, str], s_lists: dict[str, str], *extra: str) -> tuple[int, str]:
         with tempfile.TemporaryDirectory() as raw:
@@ -2877,8 +2982,10 @@ class PairPackagesTests(unittest.TestCase):
         self.assertEqual(out.count("문제 0"), 5)
         cases = {
             "판이 다름 zstd T 1.5.5+dfsg2-2build1.1 S 1.5.6": self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1", "zstd 1.5.6"),
-            "T 에만 있음 zstd": self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1\n", ""),
-            "S 에만 있음 lldpd 1.0.18": self.BASE + "lldpd 1.0.18\n",
+            "T 에만 있음 zstd": self.BASE.replace("ii  zstd 1.5.5+dfsg2-2build1.1\n", ""),
+            "S 에만 있음 lldpd 1.0.18": self.BASE + "ii  lldpd 1.0.18\n",
+            # 설정 파일만 남은 줄(rc)은 설치된 것으로 보지 않는다. 그래서 T 에만 설치된 것으로 잡힌다.
+            "T 에만 있음 zstd 1.5.5": self.BASE.replace("ii  zstd", "rc  zstd"),
         }
         for expected, s_text in cases.items():
             with self.subTest(case=expected):
@@ -2891,13 +2998,13 @@ class PairPackagesTests(unittest.TestCase):
     def test_named_t_only_step_packages_are_noted_not_failed(self) -> None:
         # T 에만 도는 단계(lldpd)가 깐 것과 올린 것. 이름을 준 것만 넘기고 기록은 남긴다. S 에만 있는 것은 이름을 줘도 실패다.
         t, s = inventory(T_INV), inventory(S_INV)
-        t_text = self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1", "zstd 1.5.6") + "lldpd 1.0.18\n"
+        t_text = self.BASE.replace("zstd 1.5.5+dfsg2-2build1.1", "zstd 1.5.6") + "ii  lldpd 1.0.18\n"
         code, out = self._run(self._all(t, t_text), self._all(s, self.BASE),
                               "--allow-t-only", "lldpd", "--allow-version", "zstd")
         self.assertEqual(code, 0, out)
         self.assertEqual(out.count("NOTE "), 10)
         self.assertIn("NOTE web0 T 에만 있음 lldpd 1.0.18", out)
-        code, out = self._run(self._all(t, self.BASE), self._all(s, self.BASE + "lldpd 1.0.18\n"), "--allow-t-only", "lldpd")
+        code, out = self._run(self._all(t, self.BASE), self._all(s, self.BASE + "ii  lldpd 1.0.18\n"), "--allow-t-only", "lldpd")
         self.assertEqual(code, 1)
         code, out = self._run(self._all(t, t_text), self._all(s, self.BASE), "--allow-t-only", "lldpd")
         self.assertEqual(code, 1)
@@ -2910,9 +3017,41 @@ class PairPackagesTests(unittest.TestCase):
         code, out = self._run(self._all(t, self.BASE), lists)
         self.assertEqual(code, 1)
         self.assertIn("FAIL was1 was02 wassvr02 목록을 읽지 못함", out)
-        for bad in ("chrony\n", "chrony 1\nchrony 2\n"):
-            with self.assertRaises(ValueError):
+        # 상태 칸 없는 옛 꼴, 칸 수가 다름, 같은 이름 두 번.
+        for bad in ("chrony 4.5\n", "ii chrony\n", "ii  chrony 1\nrc  chrony 2\n"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
                 pairpkg.parse(bad)
+
+    def test_non_installed_lines_must_match_on_both_sides(self) -> None:
+        t, s = inventory(T_INV), inventory(S_INV)
+        rc = self.BASE + "rc  unattended-upgrades 2.9.1+nmu4ubuntu1\n"
+        code, out = self._run(self._all(t, rc), self._all(s, rc))
+        self.assertEqual(code, 0, out)
+        code, out = self._run(self._all(t, rc), self._all(s, self.BASE, dbsvr01=rc.replace("rc  unattended", "ii  unattended")))
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL db0 설치 상태가 ii 가 아닌 줄이 다름 unattended-upgrades T rc 2.9.1+nmu4ubuntu1 S 없음", out)
+        self.assertIn("FAIL db0 S 에만 있음 unattended-upgrades", out)
+
+    def test_an_s_server_without_a_t_twin_fails(self) -> None:
+        t, s = inventory(T_INV), inventory(S_INV)
+        extra = json.loads(json.dumps(s))
+        extra["hosts"].append(dict(extra["hosts"][1], name="wassvr03", vmid=216))
+        self.assertEqual(pairpkg.unpaired_s(t, extra), [("was2", "wassvr03")])
+        self.assertEqual(pairpkg.unpaired_s(t, s), [])
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "s.json"
+            path.write_text(json.dumps(extra))
+            root = Path(raw)
+            for side, inv in (("t", t), ("s", extra)):
+                (root / side).mkdir()
+                for host in inv["hosts"]:
+                    (root / side / f"{host['name']}.txt").write_text(self.BASE)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = pairpkg.main(["--t-inventory", str(T_INV), "--s-inventory", str(path),
+                                     "--t-dir", str(root / "t"), "--s-dir", str(root / "s")])
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL was2 wassvr03 짝 T 서버가 없다", out.getvalue())
 
 
 class StepScriptTests(unittest.TestCase):
@@ -3510,6 +3649,33 @@ class StepScriptTests(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(message, done.stderr)
                 self.assertNotIn("apt-get install", calls)
+
+    def test_a_rerun_with_another_or_no_index_time_stops_before_apt_runs(self) -> None:
+        # 앞서 스냅숏으로 깐 서버를 다른 시각이나 시각 없이 다시 돌리면 판이 갈라진다. 기록과 같거나 기록이 없을 때만 지나간다.
+        cases = (("20261117T224105Z", "20261117T224105Z", True), (None, "20261117T224105Z", True),
+                 ("", None, True), ("20261117T224105Z", "20261118T022012Z", False), ("20261117T224105Z", None, False))
+        for before, now, passes in cases:
+            with self.subTest(before=before, now=now), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                record = root / "apt-snapshot"
+                if before is not None:
+                    record.write_text(before + "\n")
+                call = f"APT_SNAPSHOT_RECORD={record}; apt_snapshot_record_check; apt_update"
+                done, calls = self._apt(root, now, lists=self.SNAP_LISTS, call=call)
+                if passes:
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertTrue(calls.startswith("apt-get update"))
+                else:
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertIn("앞서 깐 색인 시각 20261117T224105Z", done.stderr)
+                    self.assertEqual(calls, "")
+
+    def test_os_base_checks_the_record_first_and_never_blanks_it(self) -> None:
+        source = (DEPLOY / "steps" / "os-base.sh").read_text()
+        code = [line.strip() for line in source.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertLess(code.index("apt_snapshot_record_check"), code.index("apt_update"))
+        writes = [line for line in code if "APT_SNAPSHOT_RECORD" in line]
+        self.assertEqual(writes, ['[[ -z "${APT_SNAPSHOT:-}" ]] || printf \'%s\\n\' "$APT_SNAPSHOT" > "$APT_SNAPSHOT_RECORD"'])
 
     def test_a_future_or_malformed_snapshot_is_refused_before_apt_runs(self) -> None:
         # 미래 시각은 snapshot 저장소가 최신 색인을 준다(11-18 실측 rc 0). 그러면 고정이 아니다.
@@ -4372,19 +4538,37 @@ class SmsAgentApplyTests(unittest.TestCase):
             self.assertEqual(done.returncode, 2)
             self.assertIn("websvr01 에 --sms-agent 필요", done.stderr)
 
-    def test_apt_snapshot_goes_into_the_bundle_values(self) -> None:
+    def test_each_server_gets_its_own_package_index_time_from_the_inventory(self) -> None:
+        # 색인 시각은 사람이 명령마다 주지 않고 인벤토리에서 서버마다 읽는다(여러 서버를 한 번에 돌려도 섞이지 않는다).
         with tempfile.TemporaryDirectory() as raw:
-            inv = self._inventory(Path(raw), S_INV)
-            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agent",
-                               "--apt-snapshot", "20261118T022012Z")
+            root = Path(raw)
+            inv_path = self._inventory(root, S_INV)
+            (root / "war").write_bytes(b"war")
+            args = ["--inventory", str(inv_path), "--war", str(root / "war"), "--skip-steps", "sms-agent"]
+            names = ["websvr01", "wassvr01", "wassvr02", "dbsvr01"]
+            for name in names:
+                args += ["--host", name]
+            done = self._apply(*args)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn("apt-snapshot: 20261118T022012Z", done.stdout)
-            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agent")
-            self.assertIn("apt-snapshot: 없음", done.stdout)
-            done = self._apply("--inventory", str(inv), "--host", "websvr01", "--skip-steps", "sms-agent",
-                               "--apt-snapshot", "2026-11-18T02:20:12")
+            shown = dict(re.findall(r"^== (\S+) .*\nsteps: .*\napt-snapshot: (\S+)$", done.stdout, re.M))
+            wanted = {h["name"]: h["apt_snapshot"] for h in inventory(S_INV)["hosts"] if h["name"] in names}
+            self.assertEqual(shown, wanted)
+            self.assertEqual(len(set(wanted.values())), 4)
+            # 명령 인자로 주는 길은 없다(인벤토리 하나가 정본).
+            done = self._apply(*args, "--apt-snapshot", "20261118T022012Z")
             self.assertEqual(done.returncode, 2)
-            self.assertIn("YYYYMMDDTHHMMSSZ", done.stderr)
+            self.assertIn("모르는 인자 --apt-snapshot", done.stderr)
+
+    def test_a_server_without_a_package_index_time_is_not_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            inv_path = self._inventory(root, S_INV)
+            inv = json.loads(inv_path.read_text())
+            inv["hosts"][0].pop("apt_snapshot")
+            inv_path.write_text(json.dumps(inv))
+            done = self._apply("--inventory", str(inv_path), "--host", "websvr01", "--skip-steps", "sms-agent")
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("websvr01: apt_snapshot", done.stderr)
             self.assertNotIn("== websvr01", done.stdout)
 
     def test_skip_steps_refuses_unknown_steps_and_explicit_steps(self) -> None:

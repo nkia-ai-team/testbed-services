@@ -154,6 +154,8 @@ deploy/apply.sh --inventory $I --host loadgen --k6 <k6 바이너리>      # 설�
 
 `deploy/apply.sh` 는 저장소에서 실행 비트를 가진다(이 고침 전 체크아웃에서 `Permission denied` 이면 `bash deploy/apply.sh`). 각 서버는 `verify-host → os-base → network → accounts → time → syslog → syslog-forward → kernel-modules → firewall → lldpd → (역할) → sms-agent(웹, WAS, DB 만, 관제 서버 등록 창에서, §11) → verify` 를 돈다. 등록 창 전에는 `--skip-steps sms-agent` 로 뺀다(서버마다 묶음의 단계 목록에서 그 단계만 빠진다. `--steps` 와 함께 쓰지 않는다). `verify` 의 CHECK 줄이 모두 PASS 여야 끝난다(NIC 이름은 `nic-names`, `no-network-rollback-pending`). 한 단계만 다시 돌릴 때는 `--steps "web verify"`. `--dry-run` 은 묶음 목록과 명령만 찍는다.
 
+**패키지 색인 시각.** `apply.sh` 는 `t.json` 의 서버별 `apt_snapshot`(처음 apt 설치 때의 Ubuntu snapshot 색인 시각, UTC, §14-3-1 과 같은 값)을 묶음 값에 넣고, 설치 단계 `os-base` 는 그 시각 색인으로 받고 깐다. T 서버를 다시 깔 때도 같은 시각 색인이라 의존 패키지까지 처음 판과 같다(S 의 쌍 조건 2 를 지킨다). 값이 없는 서버는 보내지 않는다. `os-base` 는 쓴 시각을 `/var/lib/petition-deploy/apt-snapshot` 에 남기고, 다음에 다른 시각이나 시각 없이 돌면 apt 앞에서 멈춘다. T 서버는 이 기록 없이 깔렸으므로 처음 다시 돌 때 기록이 생긴다. 스냅숏 색인을 못 받았을 때의 멈춤과 대응은 §14-3-1.
+
 `syslog`, `syslog-forward` 단계는 새 rsyslog 설정을 먼저 검사 사본에서 본다. 사본은 `/etc/rsyslog.d/.check-<pid>/` 에 둔다(Ubuntu 의 rsyslogd AppArmor 프로필이 설정으로 읽게 두는 곳은 `/etc/rsyslog.conf` 와 `/etc/rsyslog.d/**` 뿐이라 `/tmp` 사본은 `Permission denied` 로 막힌다. 숨은 하위 디렉터리라 `*.conf` 포함에 들지 않는다). 지금 `rsyslog.conf`, `rsyslog.d` 의 `*.conf`, `rsyslog.d/remote` 의 `*.conf` 위에 새 파일을 놓고 포함 경로를 사본으로 바꿔 `rsyslogd -N1 -d` 로 읽은 뒤, 오류가 없고 이 단계의 rsyslog 파일을 파서가 모두 실제로 읽었을 때만 `/etc` 에 놓는다(`include(... mode="optional")` 는 AppArmor 가 막아도 오류가 아니므로 읽었는지를 따로 본다). 사본 검사가 실패하면 `/etc` 의 설정을 바꾸지 않고 `rsyslog 설정 검사(놓기 전, 단계 <단계>)` 로 멈춘다. 놓기나 놓은 뒤 진짜 설정 검사가 실패하면 그 단계가 놓은 파일을 앞 내용으로 되돌리고(없던 파일은 지운다. 되돌리지 못한 파일은 경로를 적는다) 멈춘다. 어느 쪽이든 rsyslog 를 재시작하지 않으므로 돌던 rsyslog 는 앞 설정 그대로다. 사본은 끝나면 지우고, 끊겨 남은 `.check-*` 는 다음 실행이 처음에 지운다.
 
 원격 전달 설정은 `/etc/rsyslog.d/remote/10-forward.conf` 에 놓이고 `rsyslog.conf` 끝의 `include(file="/etc/rsyslog.d/remote/*.conf")` 가 모든 로컬 규칙 뒤에 읽는다(설계 §2-4). 옛 자리 `/etc/rsyslog.remote.d/` 는 AppArmor 범위 밖이라 rsyslog 가 읽지 못했다. `syslog` 단계가 비어 있으면 지운다. `syslog` 단계는 원격 전달이 꺼진 첫 설치에서 실행기 계정으로 한 줄(`setpriv ... logger`)을 보내 journald 를 거친 줄이 `/var/log/opsjobs.log` 에만 있고 syslog, auth.log 에는 없는지 본다(아니면 실패). 전달을 손으로 끄기: `sudo rm /etc/rsyslog.d/remote/10-forward.conf && sudo systemctl restart rsyslog`(다시 켤 때는 `--steps "syslog-forward verify"`).
@@ -483,13 +485,13 @@ S 는 같은 코드, 같은 WAR, 같은 단계를 인벤토리 `deploy/inventory
 | 관리 접속 known_hosts | `~/.ssh/known_hosts_civil-petition` | `~/.ssh/known_hosts_civil-petition-sms` |
 | 부하 요약 | `/tmp/k6-civil-petition-live.json`, `/var/lib/k6/k6-civil-petition-windows.jsonl` | `/tmp/k6-civil-petition-sms-live.json`, `/var/lib/k6/k6-civil-petition-sms-windows.jsonl` |
 | 스냅숏 | `t2-baseline` | `st2-baseline` |
-| 패키지 색인 | 설치 때의 archive, security | 짝 T 서버의 apt 설치 시각의 Ubuntu snapshot 색인(`--apt-snapshot`, 14-3 차례 5) |
+| 패키지 색인 | `t.json` 서버별 `apt_snapshot`(처음 설치 시각, 다시 깔 때 같은 색인, §6) | `s.json` 서버별 `apt_snapshot` = 짝 T 서버 값(14-3-1) |
 
 T 적용(11-18 APT2)에서 고친 저장소 결함(NIC 이름, 브리지 IPv6, rsyslog 검사 사본과 AppArmor, 데이터 디스크 serial, psql 표준 입력, no-dpm-traces, 66 ICMP 좁힘, 관리 SSH notrack, settle 다시 읽기)은 모두 같은 코드라 S 에도 걸린다. 라우터, syslog 전달, lldpd 쪽 고침은 S 에 해당 없다.
 
 ### 14-2. 언제
 
-선행: T2 끝(설치와 §7 점검), T0 터널. **S 는 T 평시 판정 끝 E(가장 이르면 2026-11-19 14:42:48 KST) 뒤에 짓는다**(11-18 지휘 세션 결정). 까닭: 계획 순서가 ST2 를 T 뒤에 두고, T 판정 창([E-26시간, E])에 S 의 VM 생성, DB 시드, 부하가 66 에 더해지지 않게 하기 위해서다. 차례는 §12-0 의 T3 적용(관제 서버 등록)과 같은 66 변경 창에 이어서 한다: T3 의 순서 1(녹화 정지, 잠금)~10 을 마친 뒤 같은 정지 창 안에서 아래 차례 0~6 을 하고, 부하 시작(차례 8) 뒤 창을 닫는다. 2시간 30분 녹화 시작 차단은 그 창의 마지막 변경(S 의 차례 3 `add-net` 이나 VM 안 마지막 설치 중 늦은 것)부터 센다. S 의 ST3(119 등록)는 S 평시 24시간 판정 뒤라 T3 창에는 들지 않는다(따로 창을 연다).
+선행: T2 끝(설치와 §7 점검), T0 터널. **S 는 T 평시 판정 끝 E(가장 이르면 2026-11-19 14:42:48 KST) 뒤에 짓는다**(11-18 지휘 세션 결정). 까닭: 계획 순서가 ST2 를 T 뒤에 두고, T 판정 창([E-26시간, E])에 S 의 VM 생성, DB 시드, 부하가 66 에 더해지지 않게 하기 위해서다. 차례는 §12-0 의 T3 적용(관제 서버 등록)과 같은 66 변경 창에 이어서 한다: T3 의 순서 1(녹화 정지, 잠금)~10 을 마친 뒤 같은 정지 창 안에서 아래 차례 0~6 을 하고, 부하 시작(차례 8) 뒤 창을 닫는다. 2시간 30분 녹화 시작 차단은 이 창 안 S 의 마지막 변경 끝부터 센다(차례 7 의 가드 시험과 차례 8 의 S 부하 시작 포함). S 부하 시작은 66 경합 수준을 바꾸므로 그 앞에서 세면 다음 녹화의 평소 구간(t0 앞 3시간)에 S 부하 시작 전후가 섞인다. 차례 8 확인 칸에 그 시각을 적는다. S 의 ST3(119 등록)는 S 평시 24시간 판정 뒤라 T3 창에는 들지 않는다(따로 창을 연다).
 
 ### 14-3. 차례
 
@@ -502,17 +504,17 @@ T 적용(11-18 APT2)에서 고친 저장소 결함(NIC 이름, 브리지 IPv6, r
 | 2 | 66 망(§4). `render.py --inventory $I --hypervisor /tmp/s5-hv` 의 파일 셋을 66 같은 경로에. **기준은 T 망이 선 지금 뜬다**: `iptables-save > /root/s5-net.before`. `ifup vmbr12 vmbr13 vmbr14`, `systemctl restart chrony`(modprobe 없음) | `iptables-save > /root/s5-net.after`, `render.py --inventory $I --hypervisor-commands ipv6-state` 명령 출력을 `/root/s5-net.ipv6` 로, `hv_iptables_check.py --inventory .../s.json --mode up --before s5-net.before --after s5-net.after --ipv6-state s5-net.ipv6` 가 `PASS up`(늘어난 줄은 S5-FWD, S5-IN 과 그 훅 9, MASQUERADE 2, SNAT 1). **손 sysctl 없이** 판정한다(T2V6 의 "새로 만들 때 끔" 을 처음 보는 자리, §4). `ip -br link show vmbr12 vmbr13 vmbr14` 셋 다 UP. `iptables -t nat -S \| grep -c 192.168.122.0/24` 1, `iptables-save \| grep -c '^-A T4-'` 가 before 와 같음. `ip route` 에 131, 132, 133 은 연결된 망만(via 없음). 104 → `192.168.200.66:8091` 200, T 부하 요약(`/tmp/k6-civil-petition-live.json`)의 비정상 0 그대로 | §4 의 4 를 S 이름으로: `ifdown vmbr14 vmbr13 vmbr12`, `rm` 파일 셋, `systemctl restart chrony`, `--mode down --before s5-net.before` 가 `PASS down` |
 | 3 | 터널 대역 더하기(터널 runbook §8): 104 에서 `./t0-apply.sh add-net 192.168.131.0/24`(잠금 아래). 119 설정 변경이라 2시간 30분 시계를 새로 센다 | 차례 4 뒤 `./t0-apply.sh verify --target 192.168.131.11`(포트 없이, S 서버는 10.250.0.1 의 ICMP 만 받는다) | 66, 119 각각 `tb-wg del-net 192.168.131.0/24`(잠금 아래) |
 | 4 | VM 생성(§5). `plan.py --inventory $I --phase precheck` 를 66 에서, `scp ~/.config/testbed/s5-operator.pub root@192.168.200.66:/root/s5-operator.pub`, `plan.py --inventory $I --phase create --sshkeys /root/s5-operator.pub` | `qm list` 에 211~215 running, 크기는 S 문서 §2-2(저장소 시험 `SmsOnlyDesignTests` 가 같은 표를 대조한다). 각 VM `ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition-sms -J root@192.168.200.66 sysop@192.168.133.x id -u` 가 1000. `ip -br link` 가 eth0, eth1 | §10(destroy 는 사람) |
-| 5 | 서버 설치(§6). 적용 전 점검 `rsyslog-check.sh`(T, S 를 함께 본다). WAR 는 T 와 **같은 파일**(sha256 이 T 의 `/var/lib/petition-deploy/war.sha256` 과 같아야 한다), k6 도 같은 파일. **패키지 색인은 짝 T 서버가 apt 로 설치한 시각의 Ubuntu snapshot 색인**을 쓴다(`--apt-snapshot`, 아래 14-3-1 표). 판 고정도 함께 준다: 짝 T 서버의 지금 목록 `ssh ... sysop@<T 관리 주소> "dpkg-query -W -f '\${Package} \${Version}\n'" > t-pkgs/<T 이름>.txt`. 순서는 부하기 망 단계(§6-1, 관리 주소 192.168.133.10) → dbsvr01 → wassvr01, wassvr02 → websvr01 → 부하기. 라우터가 없으므로 서버의 바깥 길은 차례 2 로 이미 있다. 모든 서버를 `--skip-steps sms-agent` 로 돈다. 예: `deploy/apply.sh --inventory $I --host dbsvr01 --skip-steps sms-agent --apt-snapshot 20261117T224105Z --package-versions t-pkgs/db01.txt` | 서버마다 os-base 출력에 `apt snapshot <ID>`, VM `/var/lib/petition-deploy/apt-snapshot` 가 그 ID. `verify` 의 CHECK 모두 PASS 와 `CHECK sms-agent NOT-INSTALLED`, `syslog-forward-matches-inventory` PASS(전달 파일 0). `plan.py --inventory $I --phase nics` 출력과 `nic ...` 줄의 MAC 대조. `--dry-run` 의 `steps:` 줄에 `sms-agent`, `syslog-forward`, `lldpd` 없음, `apt-snapshot:` 줄이 표의 ID | §6 과 같다 |
+| 5 | 서버 설치(§6). 적용 전 점검 `rsyslog-check.sh`(T, S 를 함께 본다). WAR 는 T 와 **같은 파일**(sha256 이 T 의 `/var/lib/petition-deploy/war.sha256` 과 같아야 한다), k6 도 같은 파일. **패키지 색인은 짝 T 서버가 apt 로 설치한 시각의 Ubuntu snapshot 색인**이다(`s.json` 서버별 `apt_snapshot`, `apply.sh` 가 넣는다, 아래 14-3-1 표). 차례 4 와 차례 5 의 `os-base` 를 VM 을 만든 다음의 06:00 UTC(15:00 KST) 전에 끝낸다(템플릿의 apt 자동 갱신 타이머가 그때 지금 색인으로 보안 갱신을 깔 수 있다. `os-base` 가 타이머를 끄고 unattended-upgrades 를 지운다). 판 고정도 함께 준다: 짝 T 서버의 지금 목록 `ssh ... sysop@<T 관리 주소> "dpkg-query -W -f '\${Package} \${Version}\n'" > t-pkgs/<T 이름>.txt`. 순서는 부하기 망 단계(§6-1, 관리 주소 192.168.133.10) → dbsvr01 → wassvr01, wassvr02 → websvr01 → 부하기. 라우터가 없으므로 서버의 바깥 길은 차례 2 로 이미 있다. 모든 서버를 `--skip-steps sms-agent` 로 돈다. 예: `deploy/apply.sh --inventory $I --host dbsvr01 --skip-steps sms-agent --package-versions t-pkgs/db01.txt` | `os-base` 전 각 VM `grep ^Start-Date /var/log/apt/history.log` 가 템플릿 항목(2026-09-26)뿐. 서버마다 os-base 출력에 `apt snapshot <ID>`, VM `/var/lib/petition-deploy/apt-snapshot` 가 그 ID. `verify` 의 CHECK 모두 PASS 와 `CHECK sms-agent NOT-INSTALLED`, `syslog-forward-matches-inventory` PASS(전달 파일 0). `plan.py --inventory $I --phase nics` 출력과 `nic ...` 줄의 MAC 대조. `--dry-run` 의 `steps:` 줄에 `sms-agent`, `syslog-forward`, `lldpd` 없음, `apt-snapshot:` 줄이 표의 ID(서버마다 다름) | §6 과 같다 |
 | 6 | `plan.py --inventory $I --phase rename`(s5-*) | `qm list` 이름, 게스트 `hostname` 그대로 | `qm set <vmid> --name <게스트 이름>` |
-| 7 | ST2 점검(14-4) | | |
-| 8 | 부하 시작 `deploy/apply.sh --inventory $I --start-load` | `/tmp/k6-civil-petition-sms-live.json` 생김, 비정상 0. T 부하 요약도 그대로 | 부하기 `sudo systemctl stop loadgen.service` |
-| 9 | 평시 24시간, 규모 축(§8 을 S 이름으로), 스냅숏 `plan.py --inventory $I --phase snapshot`(`st2-baseline`) | 14-4 의 해당 행 | 스냅숏 지우기 `qm delsnapshot <vmid> st2-baseline` |
+| 7 | ST2 점검(14-4 의 `차례 7` 행) | 14-4 | |
+| 8 | 부하 시작 `deploy/apply.sh --inventory $I --start-load`, 이어서 14-4 의 `차례 8 뒤` 행 | `/tmp/k6-civil-petition-sms-live.json` 생김, 비정상 0. T 부하 요약도 그대로. **부하 시작 시각(`systemctl show -p ActiveEnterTimestamp loadgen.service`)과 창 안 마지막 변경 끝 시각을 적는다(2시간 30분 시계의 시작, 14-2)** | 부하기 `sudo systemctl stop loadgen.service` |
+| 9 | 평시 24시간, 규모 축(§8 을 S 이름으로), 스냅숏 `plan.py --inventory $I --phase snapshot`(`st2-baseline`) | 14-4 의 `차례 9` 행 | 스냅숏 지우기 `qm delsnapshot <vmid> st2-baseline` |
 
 #### 14-3-1. 패키지 색인 시각 (쌍 조건 2)
 
 `apt_install` 의 판 고정은 이름을 준 꼭대기 패키지만 묶고 의존 패키지는 그때 색인의 최신을 받는다. 그래서 S 는 짝 T 서버가 apt 로 설치한 시각의 Ubuntu snapshot 색인(`https://snapshot.ubuntu.com/ubuntu/<ID>/`, apt 2.8 의 `--snapshot`)으로 받고 설치한다. 시각은 T 서버의 `/var/log/apt/history.log` 첫 설치 명령의 `Start-Date`(VM 시각 UTC)이고 APT2 의 단계 시각과 맞는다.
 
-| S 서버 | T 짝 | T apt 설치 시작(UTC) | KST, APT2 단계 | `--apt-snapshot` |
+| S 서버 | T 짝 | T apt 설치 시작(UTC) | KST, APT2 단계 | 인벤토리 `apt_snapshot`(두 인벤토리 같음) |
 |---|---|---|---|---|
 | websvr01 | web01 | 2026-11-18 02:20:12 | 11:20:12, §6-8(11:19:50 ~) | `20261118T022012Z` |
 | wassvr01 | was01 | 2026-11-18 02:16:48 | 11:16:48, §6-7(11:16:02 ~) | `20261118T021648Z` |
@@ -522,29 +524,31 @@ T 적용(11-18 APT2)에서 고친 저장소 결함(NIC 이름, 브리지 IPv6, r
 
 미리 본 것(11-18 KST): T 서버에서 snapshot 저장소 `InRelease`(noble, updates, security)가 66 바깥 길로 200(loadgen, db01). 다섯 ID 의 색인에서 T 가 apt 로 깐 판(lldpd 단계 몫을 뺀 84 항목)이 모두 그 색인의 후보 판과 같다. 일회 `ubuntu:24.04` 컨테이너에서 이 판의 `apt_update`, `apt_install` 로 db01, web01 짝 묶음을 깔면 T 가 apt 로 깐 판과 같다(컨테이너에 없던 패키지 하나 빼고).
 
-설치 단계는 스냅숏 색인을 못 받으면 멈춘다(apt 는 인증서나 길 문제로 못 받아도 경고만 내고 끝 코드 0 으로 옛 색인을 쓰고, 미래 시각에는 최신 색인을 준다). 그래서 `W:`, `E:` 줄, 미래 시각, 받은 색인 파일(`snapshot.ubuntu.com_ubuntu_<ID>_dists_<배포판>{,-updates,-security}_InRelease`)을 따로 본다. 멈추면 설치는 그 앞이라 VM 에 바뀐 패키지가 없다. 원인(인증서 `ca-certificates`, 66 바깥 길, snapshot 저장소 상태)을 보고 다시 돈다. 스냅숏 없이 깔지 않는다(쌍 조건 2 가 깨진다).
+설치 단계는 스냅숏 색인을 못 받으면 멈춘다(apt 는 인증서나 길 문제로 못 받아도 경고만 내고 끝 코드 0 으로 옛 색인을 쓰고, 미래 시각에는 최신 색인을 준다). 그래서 `W:`, `E:` 줄, 미래 시각, 받은 색인 파일(`snapshot.ubuntu.com_ubuntu_<ID>_dists_<배포판>{,-updates,-security}_InRelease`)을 따로 본다. 멈추면 설치는 그 앞이라 VM 에 바뀐 패키지가 없다. 원인(인증서 `ca-certificates`, 66 바깥 길, snapshot 저장소 상태)을 보고 다시 돈다. 스냅숏 없이 깔지 않는다(쌍 조건 2 가 깨진다). 실제 apt 확인은 컨테이너였고 VM 에는 컨테이너에 없는 apt 훅(`20apt-esm-hook.conf`, `50command-not-found`, `99needrestart`)이 있다. 멈추면 `W:`, `E:` 줄 원문을 결과에 적고, 훅이 낸 줄이면 지휘 세션에 알린다(멈춤은 안전 쪽이라 그대로 둔다).
 
-대조는 14-4 의 `pair_packages.py` 다. 짝마다 `dpkg-query -W` 전체 목록(의존 패키지와 템플릿 패키지 포함)을 견준다. 넘기는 것은 T 에만 도는 `lldpd` 단계가 깐 넷과 올린 하나뿐이다.
+대조는 14-4 의 `pair_packages.py` 다. 짝마다 `dpkg-query -W` 전체 목록(의존 패키지와 템플릿 패키지 포함, 설치 상태 칸 포함)을 견준다. 넘기는 것은 T 에만 도는 `lldpd` 단계가 깐 넷과 올린 하나뿐이다.
 
 ### 14-4. ST2 점검 (S 문서 §11 ST2 행마다)
 
-| 조건 | 명령(어디서) | 기대 |
-|---|---|---|
-| VM 5대 크기와 주소 | 66 `qm list`, 각 VM `ip -br addr` | S 문서 §2-2. websvr01 131.11, wassvr01 131.21, wassvr02 131.22, dbsvr01 131.31, loadgen 132.10, 관리 133.x |
-| 경로 | 서버 `ip route`, 부하기 `ip route` | 서버 기본 경로 `via 192.168.131.1 dev ens18`, 부하기 `via 192.168.132.1 dev ens18`, 관리 NIC(ens19)에 기본 경로 없음 |
-| 기존, T 영향 없음 | 66 `iptables -t nat -S`(줄 수), 104 → 8091, 기존 VM 바깥 통신, T 부하 요약, websvr01 `nc -z -w 3 192.168.124.11 80`, `ping -c 2 192.168.122.20`, T web01 `nc -z -w 3 192.168.131.11 80`, 66 `iptables -nvxL S5-FWD`(앞뒤 읽기) | nat 줄은 기존 2, T 5 그대로에 S 3 만 늘어남. 200. 정상. 비정상 0. 연결 셋 모두 실패하고 S5-FWD 의 해당 DROP 패킷 수가 는다 |
-| 관리망 격리 | websvr01 `curl -m 3 --interface 192.168.131.11 http://192.168.133.21:22`, 각 VM `nc -z -w 3 192.168.133.1 22`, `8006`, IPv6 는 차례 2 의 확인을 지금 상태로 다시(`PASS up`)와 §7 (3) 의 멀티캐스트 덧확인, 각 VM `ping -I ens19 -c 2 192.168.230.119`, `10.250.0.1`, 119(읽기) `ping -c 2 192.168.133.11` | 모두 실패. 첫 줄은 66 `S5-FWD` 의 `-o vmbr14 -j DROP` 패킷 수가 는다 |
-| 66 관리면 보호 | websvr01 `nc -z -w 3 192.168.131.1 22`, `8006`, loadgen `nc -z -w 3 192.168.132.1 22`, `8006`, websvr01 `ping -I ens18 -c 2 192.168.133.1`, `ping -c 2 192.168.131.1` | 연결과 133.1 핑은 실패(66 `S5-IN` 의 `-i vmbr12 -j DROP`, `-i vmbr13 -j DROP` 이 는다), 게이트웨이 핑(131.1)은 됨. IPv6 는 차례 2 의 `PASS up`(브리지 셋 `disable_ipv6=1`, 주소 0) |
-| 서비스 기동 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `cd /var/lib/tomcat10/webapps && sha256sum -c /var/lib/petition-deploy/war.sha256` | active, `petition.war: OK` |
-| 쌍 조건 1, 2 | WAR: S 두 대와 T 두 대의 `/var/lib/petition-deploy/war.sha256` 이 같음. 설정: 저장소 시험 `SharedCodeTests`(정규화 체크섬과 설치 값). 커널: S 서버마다 `uname -r` 가 T 와 같음. 패키지: 짝마다 지금 목록을 `t-pkgs/`, `s-pkgs/` 에 떠서 `python3 deploy/tools/pair_packages.py --t-inventory deploy/inventory/t.json --s-inventory $I --t-dir t-pkgs --s-dir s-pkgs --allow-t-only lldpd --allow-t-only libsnmp40t64 --allow-t-only libsnmp-base --allow-t-only libevent-2.1-7t64 --allow-version libevent-core-2.1-7t64` | 같음, OK, 같음, `PASS`. 넘기는 다섯 이름은 T 에만 도는 `lldpd` 단계가 깐 것과 올린 것이다(11-18 T 서버 apt 기록, S 문서 §2-3 "빼는 것"). 그 밖의 차이가 나오면 쌍 조건 2 가 깨진 것이니 멈추고 알린다 |
-| 시드 크기 | dbsvr01 `sudo -u postgres psql -Atc 'select count(*) from petition' petition` | 2,000,000 ±5% |
-| 평시 24시간 | §8 의 명령을 S 이름으로(websvr01 apache2, wassvr01, wassvr02 tomcat10, dbsvr01 postgresql@16-main, 라우터 없음. 창 기록 `k6-civil-petition-sms-windows.jsonl`) | `PASS_Q3_24H`(부하 시작 + 26시간 뒤) |
-| 규모 축 | §8 의 명령. CPU 표본은 wassvr01, wassvr02, websvr01, dbsvr01, hypervisor, 판정은 `scale_verdict.py --inventory $I ...`(라우터 표본 없음). 녹화가 없는 창에서, T 부하는 그대로 둔다 | `PASS_2X_60RPS_30M`(66 CPU 70% 이하는 T 부하를 포함한 값) |
-| 시간, 자동 갱신, APM 흔적, 커널 모듈 | 설치의 `verify` | PASS(서버 4대 kernel-modules) |
-| syslog 전달 없음 | `verify` 의 `syslog-forward-matches-inventory`, 다섯 대 `ls /etc/rsyslog.d/remote/`, 119(읽기) 관제 서버 ClickHouse(§13 의 읽기 설정) `select count() from lucida.syslog_local where received_at >= '<차례 2 시각 UTC>' and (source_ip like '192.168.131.%' or source_ip like '192.168.132.%' or source_ip like '192.168.133.%')` | PASS, 빈 디렉터리, 0 |
-| rsyslog 첫 규칙 | §7 과 같게 실행기 계정(tb-ops `/root/.ssh/s5-executor`, 66 SNAT 133.1)으로 접속, `sudo -n bash -s` 로 가드 arm 하나 | VM `/var/log/syslog`, `/var/log/auth.log` 에 그 계정, uid, `run-r` 줄 0, `/var/log/opsjobs.log` 에 있음(119 로 가는 길이 없으니 119 는 보지 않는다) |
-| 가드 단독 시험 | §7 의 U8 시운전 절차 2번을 서버 1대(websvr01)에서 | 통과 |
-| DPM 흔적 없음 | `verify` 의 `no-dpm-traces` | PASS |
+`차례 7` 행은 S 부하 전에, `차례 8 뒤` 행은 S 부하를 켠 뒤(T 와 S 부하 요약, 부하 중 119 읽기), `차례 9` 행은 S 부하 시작 + 26시간 뒤와 녹화 없는 창에서 한다.
+
+| 조건 | 언제 | 명령(어디서) | 기대 |
+|---|---|---|---|
+| VM 5대 크기와 주소 | 차례 7 | 66 `qm list`, 각 VM `ip -br addr` | S 문서 §2-2. websvr01 131.11, wassvr01 131.21, wassvr02 131.22, dbsvr01 131.31, loadgen 132.10, 관리 133.x |
+| 경로 | 차례 7 | 서버 `ip route`, 부하기 `ip route` | 서버 기본 경로 `via 192.168.131.1 dev ens18`, 부하기 `via 192.168.132.1 dev ens18`, 관리 NIC(ens19)에 기본 경로 없음 |
+| 기존, T 영향 없음 | 차례 8 뒤 | 66 `iptables -t nat -S`(줄 수), 104 → 8091, 기존 VM 바깥 통신, T 부하 요약, websvr01 `nc -z -w 3 192.168.124.11 80`, `ping -c 2 192.168.122.20`, T web01 `nc -z -w 3 192.168.131.11 80`, 66 `iptables -nvxL S5-FWD`(앞뒤 읽기) | nat 줄은 기존 2, T 5 그대로에 S 3 만 늘어남. 200. 정상. 비정상 0. 연결 셋 모두 실패하고 S5-FWD 의 해당 DROP 패킷 수가 는다 |
+| 관리망 격리 | 차례 7 | websvr01 `curl -m 3 --interface 192.168.131.11 http://192.168.133.21:22`, 각 VM `nc -z -w 3 192.168.133.1 22`, `8006`, IPv6 는 차례 2 의 확인을 지금 상태로 다시(`PASS up`)와 §7 (3) 의 멀티캐스트 덧확인, 각 VM `ping -I ens19 -c 2 192.168.230.119`, `10.250.0.1`, 119(읽기) `ping -c 2 192.168.133.11` | 모두 실패. 첫 줄은 66 `S5-FWD` 의 `-o vmbr14 -j DROP` 패킷 수가 는다 |
+| 66 관리면 보호 | 차례 7 | websvr01 `nc -z -w 3 192.168.131.1 22`, `8006`, loadgen `nc -z -w 3 192.168.132.1 22`, `8006`, websvr01 `ping -I ens18 -c 2 192.168.133.1`, `ping -c 2 192.168.131.1` | 연결과 133.1 핑은 실패(66 `S5-IN` 의 `-i vmbr12 -j DROP`, `-i vmbr13 -j DROP` 이 는다), 게이트웨이 핑(131.1)은 됨. IPv6 는 차례 2 의 `PASS up`(브리지 셋 `disable_ipv6=1`, 주소 0) |
+| 서비스 기동 | 차례 7 | `systemctl is-active apache2 tomcat10 postgresql@16-main`, WAS `cd /var/lib/tomcat10/webapps && sha256sum -c /var/lib/petition-deploy/war.sha256` | active, `petition.war: OK` |
+| 쌍 조건 1, 2 | 차례 7 | WAR: S 두 대와 T 두 대의 `/var/lib/petition-deploy/war.sha256` 이 같음. 설정: 저장소 시험 `SharedCodeTests`(정규화 체크섬과 설치 값). 커널: S 서버마다 `uname -r` 가 T 와 같음. 패키지: 짝마다 `dpkg-query -W -f '\${db:Status-Abbrev} \${Package} \${Version}\n'` 목록(설치 상태 칸 포함, 판 고정용 `t-pkgs/` 와 다른 꼴)을 `t-st/<T 이름>.txt`, `s-st/<S 이름>.txt` 로 떠서 `python3 deploy/tools/pair_packages.py --t-inventory deploy/inventory/t.json --s-inventory $I --t-dir t-st --s-dir s-st --allow-t-only lldpd --allow-t-only libsnmp40t64 --allow-t-only libsnmp-base --allow-t-only libevent-2.1-7t64 --allow-version libevent-core-2.1-7t64` | 같음, OK, 같음, `PASS`. 넘기는 다섯 이름은 T 에만 도는 `lldpd` 단계가 깐 것과 올린 것이다(11-18 T 서버 apt 기록, S 문서 §2-3 "빼는 것"). 그 밖의 차이가 나오면 쌍 조건 2 가 깨진 것이니 멈추고 알린다 |
+| 시드 크기 | 차례 7 | dbsvr01 `sudo -u postgres psql -Atc 'select count(*) from petition' petition` | 2,000,000 ±5% |
+| 평시 24시간 | 차례 9 | §8 의 명령을 S 이름으로(websvr01 apache2, wassvr01, wassvr02 tomcat10, dbsvr01 postgresql@16-main, 라우터 없음. 창 기록 `k6-civil-petition-sms-windows.jsonl`) | `PASS_Q3_24H`(부하 시작 + 26시간 뒤) |
+| 규모 축 | 차례 9 | §8 의 명령. CPU 표본은 wassvr01, wassvr02, websvr01, dbsvr01, hypervisor, 판정은 `scale_verdict.py --inventory $I ...`(라우터 표본 없음). 녹화가 없는 창에서, T 부하는 그대로 둔다 | `PASS_2X_60RPS_30M`(66 CPU 70% 이하는 T 부하를 포함한 값) |
+| 시간, 자동 갱신, APM 흔적, 커널 모듈 | 차례 7 | 설치의 `verify` | PASS(서버 4대 kernel-modules) |
+| syslog 전달 없음 | 차례 8 뒤 | `verify` 의 `syslog-forward-matches-inventory`, 다섯 대 `ls /etc/rsyslog.d/remote/`, 119(읽기) 관제 서버 ClickHouse(§13 의 읽기 설정) `select count() from lucida.syslog_local where received_at >= '<차례 2 시각 UTC>' and (source_ip like '192.168.131.%' or source_ip like '192.168.132.%' or source_ip like '192.168.133.%')` | PASS, 빈 디렉터리, 0 |
+| rsyslog 첫 규칙 | 차례 7 | §7 과 같게 실행기 계정(tb-ops `/root/.ssh/s5-executor`, 66 SNAT 133.1)으로 접속, `sudo -n bash -s` 로 가드 arm 하나 | VM `/var/log/syslog`, `/var/log/auth.log` 에 그 계정, uid, `run-r` 줄 0, `/var/log/opsjobs.log` 에 있음(119 로 가는 길이 없으니 119 는 보지 않는다) |
+| 가드 단독 시험 | 차례 7 | §7 의 U8 시운전 절차 2번을 서버 1대(websvr01)에서 | 통과 |
+| DPM 흔적 없음 | 차례 7 | `verify` 의 `no-dpm-traces` | PASS |
 
 ### 14-5. 66 자원 (2026-11-18 16:15 KST 읽기)
 
@@ -586,3 +590,4 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 - 2026-11-18 KST, v4 T3P(ag-t3p): T3 적용 준비. §11 SMS 에이전트 설치(`sms-agent` 단계, 바이너리 출처와 꺼내기, 자리, 유닛, 멱등, verify 세 항목, 되돌리기), §12 관제 서버 등록(적용 순서와 시각 기준, T2 판정 끝 E 전 금지, trap 확인을 평시 판정 뒤 T3 첫 주입 단계로 옮김과 수신기 등록이 먼저인 까닭, 단계별 API 와 되돌리기, 미리 확인한 제품 동작, 대상 번호 표 꼴), §13 완료 조건 확인 도구와 행별 통과 기준, 등록 전 119 자원 조회 값. §10 되돌리기 줄.
 - 2026-11-18 KST, v4 ST2P(ag-st2p): §14 S 적용(ST2) 절을 두고 흩어져 있던 S 문장(§3, §4, §6)을 그리로 모음. T 와 다른 점 표, 언제(T 판정 창과 겹침은 지휘 세션 결정), 차례와 확인과 되돌리기, ST2 점검 행별 명령, 66 자원 읽기 값. `apply.sh --skip-steps sms-agent`(등록 창 전 처음 설치), `scale_verdict.py --inventory`(라우터 없는 S), `pair_packages.py`(쌍 조건 2 패키지 판), 스냅숏 이름 `st2-baseline`.
 - 2026-11-18 KST, v4 ST2P 2회차(지휘 세션 결정): §14-2 S 는 T 판정 끝 E 뒤, T3 와 같은 66 변경 창에 이어서. §14-3-1 짝 T 서버의 apt 설치 시각 Ubuntu snapshot 색인(`apply.sh --apt-snapshot`, 설치 단계가 스냅숏 색인을 못 받으면 멈춤), 서버별 ID 표.
+- 2026-11-18 KST, v4 ST2P 3회차(리뷰 rv-st2p, 지휘 세션 결정): 색인 시각을 인벤토리 서버별 `apt_snapshot` 으로(§6 T 다시 깔기, §14-3-1, `--apt-snapshot` 인자 없앰), 다른 시각이나 시각 없는 다시 돌리기 멈춤, §14-2 의 2시간 30분 시계를 창 안 S 마지막 변경(가드 시험, S 부하 시작 포함)부터, 차례 5 의 06:00 UTC 전과 apt 기록 확인, 훅 경고 대응, §14-4 언제 칸, `pair_packages.py` 입력에 설치 상태 칸.

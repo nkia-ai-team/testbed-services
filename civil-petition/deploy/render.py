@@ -46,6 +46,8 @@ IFNAME = re.compile(r"^[a-z][a-z0-9]{0,14}$")
 # 데이터 디스크 serial: Proxmox 는 20바이트까지 받는다. db 단계가 lsblk SERIAL 과 글자 그대로 맞추므로 lsblk -r 이 바꿔 쓰는
 # 글자(공백 등)를 막고, serial 을 주지 않은 디스크가 보고하는 drive-scsiN 과 겹치지 않게 drive- 로 시작하지 못하게 한다.
 DISK_SERIAL = re.compile(r"^(?!drive-)[A-Za-z0-9_-]{1,20}$")
+# 패키지 색인 시각(Ubuntu snapshot ID, UTC). 설치 단계 os-base 가 이 시각 색인으로 받고 깐다(S 문서 §2-4 쌍 조건 2).
+APT_SNAPSHOT = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
 ROLES = ("router", "web", "was", "db", "loadgen")
 SERVER_ROLES = ("web", "was", "db")
 # 게스트 쪽에 드러나는 이름에 쓰지 않는 낱말(설계 §2-2 원칙 8). Proxmox 이름은 관제 서버로 가지 않아 예외다.
@@ -236,6 +238,9 @@ def validate(inventory: dict) -> None:
             if nic["ifname"] in ifnames:
                 raise InventoryError(f"{name}: NIC 이름 중복 {nic['ifname']}")
             ifnames.add(nic["ifname"])
+        if not APT_SNAPSHOT.match(str(host.get("apt_snapshot", ""))):
+            raise InventoryError(f"{name}: apt_snapshot {host.get('apt_snapshot')!r} 이 꼴(YYYYMMDDTHHMMSSZ, UTC)이 아님."
+                                 " 패키지 색인 시각이 서버마다 있어야 한다(runbook §14-3-1)")
         db_disks = [disk for disk in host.get("disks", []) if disk.get("mount")]
         if host["role"] == "db" and len(db_disks) != 1:
             raise InventoryError(f"{name}: DB 는 데이터 디스크 하나를 따로 가져야 함(설계 §2-2)")

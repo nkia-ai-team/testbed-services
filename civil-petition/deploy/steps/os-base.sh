@@ -9,6 +9,7 @@ case "$HOST_ROLE" in
     loadgen) role="" ;;
     *) fail "모르는 역할 $HOST_ROLE" ;;
 esac
+apt_snapshot_record_check
 apt_update
 # openjdk 17 을 먼저 깔아 tomcat10 이 기본 JRE(21)를 끌어오지 않게 한다.
 if [[ "$HOST_ROLE" == was ]]; then
@@ -25,7 +26,7 @@ for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-
 done
 touch /etc/cloud/cloud-init.disabled
 install -d -m 0755 /var/lib/petition-deploy
-# 어느 색인 시점으로 깔았는지 남긴다(쌍 조건 2 확인용. 스냅숏 없이 깔았으면 빈 줄).
-printf '%s\n' "${APT_SNAPSHOT:-}" > /var/lib/petition-deploy/apt-snapshot
+# 어느 색인 시점으로 깔았는지 남긴다(쌍 조건 2 확인용). 스냅숏 없이 돌았으면 덮지 않는다(앞 기록을 지우지 않게).
+[[ -z "${APT_SNAPSHOT:-}" ]] || printf '%s\n' "$APT_SNAPSHOT" > "$APT_SNAPSHOT_RECORD"
 dpkg-query -W -f '${Package} ${Version}\n' | sort > /var/lib/petition-deploy/packages.txt
 log "packages: $(wc -l < /var/lib/petition-deploy/packages.txt) recorded"

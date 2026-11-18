@@ -5,8 +5,8 @@
 #   apply.sh --inventory inventory/t.json --host <이름> [--host ...] --war <petition.war> [--k6 <k6 바이너리>]
 #            [--sms-agent <lucida-agent 바이너리> [--sms-agent-sha256 <기대 sha256>]] [--package-versions <파일>]
 #            [--steps "단계 ..." | --skip-steps "단계 ..."] [--jump root@192.168.200.66] [--dry-run]
-#   --apt-snapshot <YYYYMMDDTHHMMSSZ> 는 패키지 색인을 Ubuntu snapshot 저장소의 그 시각(UTC)으로 받게 한다(S 가 T 짝 서버의
-#   apt 설치 시각을 주어 의존 패키지까지 같은 판을 쓰는 쌍 조건 2, runbook §14). 단계 os-base 와 lldpd 의 apt 가 쓴다.
+#   패키지 색인 시각은 인벤토리 호스트의 apt_snapshot(Ubuntu snapshot ID, UTC)에서 서버마다 읽어 묶음 값에 넣는다(S 는 짝 T
+#   서버의 apt 설치 시각, T 는 처음 설치 시각. 쌍 조건 2, runbook §6, §14-3-1). 값이 없는 서버는 보내지 않는다.
 #   --skip-steps 는 서버마다 묶음의 단계 목록에서 그 단계만 뺀다(역할마다 다른 목록을 손으로 적지 않게). 관제 서버 등록 창
 #   전 처음 설치에서 --skip-steps sms-agent 로 쓴다(runbook §11, §14). --steps 와 함께 쓰지 않는다.
 #   --sms-agent 는 서버(웹, WAS, DB)의 sms-agent 단계가 쓴다. 모든 단계를 돌거나 --steps 에 sms-agent 가 있으면 반드시
@@ -31,7 +31,6 @@ sms_agent_sha=""
 versions=""
 steps=""
 skip_steps=""
-apt_snapshot=""
 jump="root@192.168.200.66"
 dry_run=0
 start_load=0
@@ -46,7 +45,6 @@ while [[ $# -gt 0 ]]; do
         --package-versions) versions="$2"; shift 2 ;;
         --steps) steps="$2"; shift 2 ;;
         --skip-steps) skip_steps="$2"; shift 2 ;;
-        --apt-snapshot) apt_snapshot="$2"; shift 2 ;;
         --jump) jump="$2"; shift 2 ;;
         --dry-run) dry_run=1; shift ;;
         --start-load) start_load=1; shift ;;
@@ -54,9 +52,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ -r "$inventory" ]] || { echo "apply: --inventory 필요" >&2; exit 2; }
-if [[ -n "$apt_snapshot" && ! "$apt_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
-    echo "apply: --apt-snapshot 꼴은 YYYYMMDDTHHMMSSZ(UTC): $apt_snapshot" >&2; exit 2
-fi
 if [[ -n "$skip_steps" ]]; then
     [[ -z "$steps" ]] || { echo "apply: --steps 와 --skip-steps 는 함께 쓰지 않는다" >&2; exit 2; }
     for name in $skip_steps; do
@@ -75,7 +70,8 @@ print(v)' "$inventory" "$1"; }
 host_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))
 h=next(x for x in d["hosts"] if x["name"]==sys.argv[2])
 m=[n for n,v in d["networks"].items() if v.get("management")][0]
-print(h["role"] if sys.argv[3]=="role" else next(n["addr"] for n in h["nics"] if n["net"]==m))' "$inventory" "$1" "$2"; }
+print(h["role"] if sys.argv[3]=="role" else h.get("apt_snapshot", "") if sys.argv[3]=="apt_snapshot"
+      else next(n["addr"] for n in h["nics"] if n["net"]==m))' "$inventory" "$1" "$2"; }
 expand() { local p="$1"; echo "${p/#\~/$HOME}"; }
 
 operator=$(field accounts.operator.name)
@@ -107,7 +103,9 @@ for host in "${hosts[@]}"; do
         grep -vxF -- "$name" "$bundle/steps" > "$bundle/steps.kept" || true
         mv "$bundle/steps.kept" "$bundle/steps"
     done
-    [[ -z "$apt_snapshot" ]] || printf "APT_SNAPSHOT='%s'\n" "$apt_snapshot" >> "$bundle/host.env"
+    snapshot=$(host_field "$host" apt_snapshot)
+    [[ "$snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || { echo "apply: $host 의 인벤토리 apt_snapshot 이 없거나 꼴이 다름: '$snapshot'" >&2; exit 2; }
+    printf "APT_SNAPSHOT='%s'\n" "$snapshot" >> "$bundle/host.env"
     mkdir -p "$bundle/steps.d" "$bundle/artifacts" "$bundle/secrets"
     cp "$HERE/install-host.sh" "$bundle/"
     cp "$HERE"/steps/*.sh "$bundle/steps.d/"

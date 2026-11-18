@@ -2,7 +2,7 @@
   "schema": "petition-portal-inventory/1",
   "testbed": "s",
   "domain": "civil-petition-sms",
-  "comment": "S 테스트베드(SMS 만, 라우터 없음, syslog 전달 없음). 설계 docs/spec-testbed-sms-only.md §2-2, §2-3, §3-2, §3-5. 도메인 값은 S 문서 §2-3 대로 T 값(civil-petition) 뒤에 -sms 를 붙인 값으로 확정했다(11-18 지휘 세션). 비밀값은 값이 아니라 경로로만 적는다.",
+  "comment": "S 테스트베드(SMS 만, 라우터 없음, syslog 전달 없음). 설계 docs/spec-testbed-sms-only.md §2-2, §2-3, §3-2, §3-5. 도메인 값은 S 문서 §2-3 대로 T 값(civil-petition) 뒤에 -sms 를 붙인 값으로 확정했다(11-18 지휘 세션). 비밀값은 값이 아니라 경로로만 적는다. apt_snapshot 은 짝 T 서버의 apt 설치 시각(UTC, Ubuntu snapshot 색인, 쌍 조건 2, runbook §14-3-1)이다.",
   "features": {
     "router": false,
     "lldpd": false,
@@ -99,6 +99,7 @@
       "role": "web",
       "vmid": 211,
       "pve_name": "s5-web",
+      "apt_snapshot": "20261118T022012Z",
       "vcpu": 2,
       "memory_mb": 2048,
       "disks": [
@@ -125,6 +126,7 @@
       "role": "was",
       "vmid": 212,
       "pve_name": "s5-was1",
+      "apt_snapshot": "20261118T021648Z",
       "vcpu": 2,
       "memory_mb": 4096,
       "disks": [
@@ -152,6 +154,7 @@
       "batch": true,
       "vmid": 213,
       "pve_name": "s5-was2",
+      "apt_snapshot": "20261118T021827Z",
       "vcpu": 2,
       "memory_mb": 4096,
       "disks": [
@@ -178,6 +181,7 @@
       "role": "db",
       "vmid": 214,
       "pve_name": "s5-db",
+      "apt_snapshot": "20261117T224105Z",
       "vcpu": 4,
       "memory_mb": 8192,
       "disks": [
@@ -209,6 +213,7 @@
       "role": "loadgen",
       "vmid": 215,
       "pve_name": "s5-load",
+      "apt_snapshot": "20261117T192445Z",
       "vcpu": 2,
       "memory_mb": 2048,
       "disks": [
