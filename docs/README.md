@@ -37,6 +37,9 @@ summary: 테스트베드(testbed-services) 문서의 진입점과 주요 문서 
 - [전통 3계층 테스트베드 적용 runbook](runbook-civil-petition-apply.md):
   T, S 테스트베드를 같은 코드(civil-petition)로 66 에 짓는 순서. 66 망 파일, VM 생성, 서버별 설치, 부하,
   T2 완료 조건 점검, 평시 24시간과 규모 축 판정, SMS 에이전트 설치 자리, 되돌리기. (Planned, 적용 전)
+- [civil-petition 주입 수단별 119 흔적 표](ref-civil-petition-injection-traces.md):
+  실행기와 변형마다 119 에 실제로 남은 흔적을 칸(원천)별로 적는 표와 그 질의 도구 쓰는 법, 배관 흔적(Q7) 판정 자리.
+  시나리오를 사용자와 고를 때의 입력. (Planned, 틀만, T4 시험 실행 뒤 채움)
 - [테스트베드 배포 runbook](runbook-testbed-deploy.md):
   109 kubeadm 클러스터 배포·검증 실측 절차 — 환경 실값(OTLP/org id), 신규 VM
   전제조건(StorageClass·OTel jar), 트러블슈팅. (Active)

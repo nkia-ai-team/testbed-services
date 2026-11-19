@@ -582,6 +582,58 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 
 차례 역순: 부하 정지 → VM(§10, 사람) → 66 망(차례 2 의 되돌리기, `--mode down` 기준 `s5-net.before`) → 터널 대역(차례 3) → 비밀값 파일(차례 1). T 를 함께 되돌릴 때는 S 를 먼저 되돌린다(S 기준은 T 가 선 상태에서 떴다).
 
+## 15. 러너 연동 (T4)
+
+설계 §6-1 ~ §6-7, §10 T4. 코드는 `scripts/scenarios/profiles/` 의 VM 실행기 12개(공통부 `vm_executor_common.py`), 66 도우미
+`civil-petition/deploy/hypervisor/`, 시험 실행 도구 `scripts/scenarios/vm-executor-trial.py`, 흔적 표 질의 도구
+`civil-petition/deploy/tools/trace_table.py` 다. 러너 쪽(늘 열린 ssh 연결, preflight, 5분 평시 점검 읽기)은 rca-scenario-runner 가
+가진다. 실행기 계정(VM 의 `opsjob`)과 운영자 계정(`sysop`), 실행기 키(tb-ops `/root/.ssh/t4-executor`)는 T2 가 이미 두었다(§3, §6).
+
+### 15-1. 66 실행기 계정, 키, sudoers, 도우미, rsyslog 거르기
+
+66 에 닿는 변경이라 테스트베드 잠금과 녹화 정지(PAUSE) 창 아래에서 한다. 설치 줄(계정 추가, sudo 꾸러미 설치, rsyslog 재시작)이
+66 syslog 를 거쳐 119 에 가므로 녹화 구간과 겹치면 안 되고, 끝난 시각이 `last_66_change` 가 되어 녹화 시작은 그 뒤 2시간 30분부터다.
+**66 에는 지금 sudo 가 없다(2026-11-19 조회).** sudoers 방식(결정 2)을 쓰려면 꾸러미 `sudo` 를 하나 더 깐다. 이 꾸러미는 이 도우미
+때문에만 있으므로 66 거르기가 sudo 줄을 모두 66 로컬 파일로 돌린다.
+
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 1 | tb-ops: `ssh-keygen -q -t ed25519 -N '' -C hvjob -f /root/.ssh/t4-hv`. 공개 키만 104 `~/.config/testbed/t4-hv.pub`(0600)로 가져온다(화면에 내지 않고 파일로) | `stat -c '%a %s' ~/.config/testbed/t4-hv.pub` 600 | tb-ops `rm /root/.ssh/t4-hv /root/.ssh/t4-hv.pub`, 104 `rm ~/.config/testbed/t4-hv.pub` |
+| 2 | 104: 도우미 폴더를 임시 폴더로 옮기고(`cp -r civil-petition/deploy/hypervisor <임시>/hv-stage`) 그 안에 root 도우미 설치본을 만든다: `python3 civil-petition/deploy/hypervisor/build.py --inventory civil-petition/deploy/inventory/t.json --out <임시>/hv-stage/t4-hv-exec-root`. 허용 표(VMID, NIC, tap)와 probe 주소, 터널 끝 주소는 인벤토리에서 채우고 가드 함수는 `executor_common.GUARD_FUNCTIONS` 다. 저장소에는 설치본이 없고 체크섬만 있다 | `build.py --check` 끝 코드 0, `sha256sum <임시>/hv-stage/t4-hv-exec*` 이 `civil-petition/deploy/hypervisor/t4-hv-exec.sha256.json`(러너 버전 표류 기대값)과 같음 | 임시 폴더 지움 |
+| 3 | 104 → 66: `scp -r <임시>/hv-stage root@192.168.200.66:/root/hv-stage`, `scp ~/.config/testbed/t4-hv.pub root@192.168.200.66:/root/hv-stage/runner.pub` | 66 `ls /root/hv-stage` | 66 `rm -r /root/hv-stage` |
+| 4 | 66: `bash /root/hv-stage/install-hv-helper.sh install --pubkey /root/hv-stage/runner.pub` | 출력 `installed package sudo`, `added account hvjob`, `placed ...`, `rsyslog restarted`, 이어 check 의 PASS 줄 9개(sudo, 계정 uid 1460, 도우미 둘, sudoers, authorized_keys 강제 명령, 거르기 순서, 거르기 실제 동작, sch_netem) | `install-hv-helper.sh remove`(계정, sudoers, 도우미, 거르기, logrotate 를 지우고 rsyslog 재시작. sudo 꾸러미는 남김, 지우려면 `apt-get remove sudo`) |
+| 5 | tb-ops 러너 컨테이너: 66 호스트 키를 실행기 known_hosts 에 더한다(`ssh -F none -i /root/.ssh/t4-hv -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition hvjob@192.168.122.1 </dev/null`, 요청이 없어 도우미가 "no request" 로 끝 코드 3) | known_hosts 에 192.168.122.1 한 줄 | 그 줄 지움 |
+| 6 | 같은 옵션(StrictHostKeyChecking=yes)으로 `printf 'version\n'`, `printf 'guards\n'`, `printf 'tunnel\n'`, `printf 'link-check 202 net0\n'`, `printf 'qdisc-check tap202i0\n'` 를 stdin 으로 보낸다 | version JSON 이 `t4-hv-exec.sha256.json` 과 같음, guards `{"armed":0,...}`, tunnel 핸드셰이크 나이 150초 이하와 손실 0, link-check `up`, qdisc-check `default` | 없음(읽기) |
+| 7 | 거절 확인: `printf 'link-down 201 net0\nexpire_after=60 guard_hold=60\n'`(라우터 상향), `printf 'qdisc-apply tap206i0 100 0 0 0\n...'`(부하기), `printf 'link-restore 202 net0\n'`, `ssh ... hvjob@192.168.122.1 id`(명령 문자열은 무시됨), `ssh -t ...`(pty 거절) | 앞 셋 끝 코드 3, 넷째 "no request" 끝 코드 3, 다섯째 pty 거절 | 없음 |
+| 8 | 119 읽기: 차례 4 ~ 7 구간 `syslog_local` 에서 출발 192.168.200.66, 꼴 `hvjob`, `1460`, `t4-hv-exec`, `run-r<32 hex>`, `sudo` 줄 수(분할 조건 `toYYYYMM(received_at)` 과 시각 범위) | 0. 같은 줄은 66 `/var/log/hvjobs.log` 에 있다 | 없음 |
+
+### 15-2. 러너가 할 일(rca-scenario-runner, 이 저장소 밖)
+
+- VM 6대와 66 에 늘 열린 ssh 연결 하나씩. 옵션은 실행기와 같다(`-F none -i <키> -o IdentitiesOnly=yes -o BatchMode=yes
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition -o ConnectTimeout=10
+  -o ControlPath=$CIVIL_PETITION_SSH_CONTROL_DIR/%r@%h:%p`, 기본 `/app/state/ssh-control`). 실행기의 run 은 그 연결이 없으면
+  거절하고(새 연결은 녹화에 새 관리망 연결을 더한다), cleanup 과 recovery 는 새 연결로라도 간다.
+- 5분 평시 점검 읽기는 실행기 계정의 `sudo -n bash -s` 꼴로(설계 §6-2), db01 `last.json` 가져오기 포함(§6-4).
+- preflight 의 66 쪽 검사(터널, 가드 잔여, 도우미 체크섬)는 15-1 차례 6 의 읽기 동작을 쓴다.
+
+### 15-3. 시험 실행(설계 §10 T4 "시험 실행", "자가 복구 실측", 녹화 아님)
+
+실행기에는 시나리오 계약이 없다. 시험 실행은 러너 컨테이너 안에서 `vm-executor-trial.py` 로 한다. 계약 JSON 하나를 그 호출에만
+묶고 catalog 와 registry 는 바꾸지 않는다. 먼저 `--live` 없이 돌려 argv 와 확인 문자열을 보고, 같은 계약으로 `--live --confirm <그 문자열>`.
+
+| 차례 | 하는 일 | 확인 |
+|---|---|---|
+| 0 | 녹화 정지(PAUSE), 테스트베드 잠금, 다른 도메인 녹화 없음. 러너의 늘 열린 연결 7개 살아 있음 | 큐 상태, `ssh -O check` 7개 |
+| 1 | 실행기 종류마다 한 건씩, 한 번에 하나: preflight → run → 피해 신호가 판정 기준을 넘는지 부하기 요약으로 봄(설계 §6-3) → cleanup → recovery. 시작, 끝 시각 기록 | run 끝 코드 0, cleanup 0, recovery 0, 15분 안에 부하기 비정상 비율과 진입 p95 평시 대역 |
+| 2 | 자가 복구 실측: 하이퍼바이저 쪽 1건(`vmlink.state`)과 라우터 쪽 1건(`router.qdisc`)은 cleanup 대신 가드를 앞당겨 발화시킨다(`--max-injection 1m` 으로 run, 기한 = 1분 + 600초, 기다림. 또는 U8 시운전 4번처럼 타이머를 손으로 앞당김) | 66 `link-state` 가 `up`, 라우터 root qdisc 가 기본값, 가드 잔여 0 |
+| 3 | 실행기마다 흔적 표 한 줄: `trace_table.py`(흔적 표 문서 §1) | 표의 빈칸 0, Q7 판정 |
+| 4 | 격리 Q2: 시험 실행 중 tb-cp, tb-w1 ~ 3 의 CPU, 메모리가 평시 같은 시각 대비 ±5%p 안 | 119 읽기 |
+| 5 | 라우터 재시작 변형 구간의 `syslog_local` 에 `netem` 낱말 0(설계 §2-4 예외). 닿으면 거르기 보완 전에는 그 변형을 녹화에 쓰지 않는다 | 119 읽기 |
+| 6 | 끝: 가드 잔여 0(VM 6대와 66), DIRTY 0, PAUSE 풀기 | 러너 preflight |
+
+되돌리기: 실행기 cleanup, 안 되면 각 VM `/var/lib/opsjobs/*.undo` 를 root 로 돌림(가드의 되돌림 본문), 66 은
+`printf 'link-restore <vmid> <netN>\n' | sudo /usr/local/sbin/t4-hv-exec-root`(root), tap 은 `tc qdisc del dev <tap> root`(우리 핸들 1a7e 일 때만).
+
 ## 수정 기록
 
 - 2026-11-16 KST, v4 T2(ag-t2): 처음 작성. 적용 전.
@@ -611,3 +663,4 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 - 2026-11-19 KST, v4 T3R(ag-t3r, APT3 §2-5 redirect 꼬리, 지휘 세션 결정): §6-2 라우터 ICMP redirect 끄기(`router` 단계가 `61-router-redirects.conf` 를 놓고 바로 씀, all, default, NIC 마다), `verify` 의 `send-redirects-off`, 반영 명령과 사후 확인. 60-host.conf 의 redirect 두 줄은 이 파일로 옮김.
 - 2026-11-19 KST, v4 T3C(ag-t3o, APT3 §2-10, MNIC, 지휘 세션 결정): §13 NMS 행 CPU 는 host_target_id 로, 창은 잰 폴링 간격 2배(최소 15분, 실측 60초). 관리 NIC 는 «받아들임»: §12-0 차례 7 과 §12-1 nic 단계는 쓰기 없음, §12-3 실기 결과(관리 안 함이 제품 승격으로 지워지고 managed 로 다시 생김, 제품 결함 후보 Q34), §12-4 `management_nic`, §12-5 되돌리기에서 관리 NIC 경계 뺌, §13 관리 NIC 판정. S(ST3)도 같게.
 - 2026-11-19 KST, v4 S14R(ag-t3o, APS2 차례 7, 지휘 세션 결정): §14-4 관리망 격리 행의 기대를 실제 경로대로(websvr01 은 133/24 를 ens19 에 직접 가져 66 을 지나지 않고 wassvr01 mgmtguard 에서 버려짐, 66 `S5-FWD -o vmbr14 DROP` 은 늘지 않음). 다시 보는 IPv6 확인은 검사기 `--mode ipv6`(브리지 상태만)으로, §7 관리망 격리 (3) 도 같게(add-net 뒤 `--mode up` 다시 돌리기는 늘 FAIL).
+- 2026-11-19 KST, v4 T4S(ag-t4s): §15 러너 연동(66 실행기 계정, 키, sudoers, 도우미, rsyslog 거르기 설치 순서와 확인과 되돌리기, 러너가 할 일, 시험 실행 계획) 추가.

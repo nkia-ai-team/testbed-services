@@ -1,0 +1,195 @@
+#!/bin/bash
+# 66 하이퍼바이저 쪽 링크 주입의 root 도우미(설계 docs/spec-testbed-vm-3tier.md §6-1 vmlink.state, vmlink.qdisc, 결정 2).
+# sudoers 는 실행기 계정에 이 파일 하나만 비밀번호 없이 허용한다. 틀(t4-hv-exec-root.in)에 U8 가드 함수
+# (scripts/scenarios/profiles/executor_common.py GUARD_FUNCTIONS)를 넣어 build.py 가 설치본을 만든다. 손으로 고치지 않는다.
+#
+# 하는 일(허용 표 밖은 모두 거절, 끝 코드 3):
+#   link-*   QMP set_link 로 VM NIC 링크를 내리고 올린다. qm 을 거치지 않아 Proxmox 작업 기록과 그 syslog 줄이 없다.
+#   qdisc-*  VM NIC 뒤 tap 장치의 송신 큐(게스트로 들어가는 방향)에 netem(지연, 손실, 속도) 하나를 건다.
+#   guards, tunnel, probe  러너 preflight 와 적용 직후 확인용 읽기.
+# 바꾸는 동작은 바꾸기 전에 가드를 건다(U8). 66 에는 부팅 규칙을 두지 않는다(설계 §3-5 규칙 5): 가드 파일은 /run 아래라
+# 재부팅에 사라지고, QMP 링크 상태와 tap 의 qdisc 도 VM 이나 66 이 다시 켜지면 사라진다.
+set -euo pipefail
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# 시험만 아래 경로를 옮긴다. sudo 가 환경을 비우므로 66 에서는 늘 기본값이다.
+: "${OPSJOB_STATE_ROOT:=/run/hvjobs/state}"
+: "${OPSJOB_TMPFILES_DIR:=/run/hvjobs/boot}"
+: "${OPSJOB_LOCK_DIR:=/run/hvjobs/locks}"
+qmp_dir="${HV_QMP_DIR:-/var/run/qemu-server}"
+link_dir="${HV_LINK_DIR:-/run/hvjobs/links}"
+module_dir="${HV_MODULE_DIR:-/sys/module}"
+self="${HV_SELF:-/usr/local/sbin/t4-hv-exec-root}"
+wg_if="${HV_WG_IF:-wg0}"
+# 터널의 이쪽 끝(66)과 관제 서버 끝. build.py 가 인벤토리(monitoring.address, hypervisor.tunnel_cidr)로 채운다.
+tunnel_src="@TUNNEL_SRC@"
+monitor="@MONITOR@"
+@GUARD_FUNCTIONS@
+# 허용 표(설계 §3-5 규칙 2). "<VMID> <netN> <tap>": 라우터 웹, WAS, DB 쪽 NIC 와 서버의 업무 NIC. build.py 가 인벤토리에서
+# 채운다(라우터 하위 NIC, 서버 기본 경로 NIC). 라우터 상향, 모든 관리 NIC, 부하기, wg0, vmbr* 는 표에 들 수 없다.
+LINKS="@LINKS@"
+# probe 가 핑할 수 있는 주소: 라우터 상향 주소와 서버 업무 주소(설계 §3-5 규칙 6 "적용 직후 확인"). build.py 가 채운다.
+PROBES="@PROBES@"
+root_handle=1a7e
+
+refuse() { echo "refused: $*" >&2; exit 3; }
+request=""
+IFS= read -r request || true
+guard_line=""
+IFS= read -r guard_line || true
+read -r -a w <<<"$request"
+action="${w[0]:-}"
+expire_after=""; guard_hold=""
+if [[ "$guard_line" =~ ^expire_after=([0-9]{1,6})\ guard_hold=([0-9]{1,6})$ ]]; then
+  expire_after="${BASH_REMATCH[1]}"; guard_hold="${BASH_REMATCH[2]}"
+fi
+need_guard() { [[ -n "$expire_after" && "$expire_after" -gt 0 && -n "$guard_hold" ]] || refuse "guard values missing"; }
+
+link_tap() {
+  local vmid net tap
+  while read -r vmid net tap; do
+    if [[ "$vmid" == "$1" && "$net" == "$2" ]]; then echo "$tap"; return 0; fi
+  done <<<"$LINKS"
+  return 1
+}
+tap_allowed() {
+  local vmid net tap
+  while read -r vmid net tap; do if [[ "$tap" == "$1" ]]; then return 0; fi; done <<<"$LINKS"
+  return 1
+}
+
+# ---- QMP 링크
+qmp_set_link() {
+  python3 - "$qmp_dir/$1.qmp" "$2" "$3" <<'PY'
+import json, socket, sys
+sock, name, state = sys.argv[1:]
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(10)
+s.connect(sock)
+f = s.makefile("rw")
+def reply():
+    while True:
+        line = f.readline()
+        if not line:
+            raise SystemExit("qmp closed")
+        msg = json.loads(line)
+        if "event" not in msg:
+            return msg
+reply()
+for cmd in ({"execute": "qmp_capabilities"},
+            {"execute": "set_link", "arguments": {"name": name, "up": state == "up"}}):
+    f.write(json.dumps(cmd) + "\n")
+    f.flush()
+    msg = reply()
+    if "return" not in msg:
+        raise SystemExit(msg.get("error", {}).get("desc", "qmp error"))
+PY
+}
+link_args() {
+  [[ ${#w[@]} -eq 3 && "${w[1]}" =~ ^[0-9]{3}$ && "${w[2]}" =~ ^net[0-9]$ ]] || refuse "link actions take <vmid> <netN>"
+  vmid="${w[1]}"; net="${w[2]}"
+  link_tap "$vmid" "$net" >/dev/null || refuse "VM $vmid $net is not a link an injection may change"
+  job="link-$vmid-$net"; mark="$link_dir/$vmid-$net"
+}
+link_state() { if [[ -e "$mark" ]]; then echo down; else echo up; fi; }
+link_check() { [[ -S "$qmp_dir/$vmid.qmp" ]] || { echo "VM $vmid has no QMP socket (not running)" >&2; exit 1; }; }
+link_undo() { printf 'printf %q | %q\n' "link-restore $vmid $net\n" "$self"; }
+link_restore() { qmp_set_link "$vmid" "$net" up; rm -f "$mark"; }
+
+# ---- tap 송신 큐
+qdisc_args() {
+  [[ ${#w[@]} -ge 2 && "${w[1]}" =~ ^tap[0-9]{3}i[0-9]$ ]] || refuse "qdisc actions take <tap> first"
+  tap="${w[1]}"
+  tap_allowed "$tap" || refuse "$tap is not a device an injection may change"
+  job="link-$tap"
+}
+qdisc_state() {
+  local r
+  if ! ip link show dev "$tap" >/dev/null 2>&1; then echo absent; return 0; fi
+  r=$(tc qdisc show dev "$tap" root)
+  case "$r" in
+    "qdisc netem $root_handle: root"*) echo ours ;;
+    "qdisc "*" 0: root"*|"qdisc noqueue 0: root"*|"") echo default ;;
+    *) echo foreign ;;
+  esac
+}
+qdisc_check() {
+  ip link show dev "$tap" >/dev/null 2>&1 || { echo "no $tap" >&2; exit 1; }
+  # sch_netem 은 적재할 때 커널 로그에 판을 찍는다(설계 §2-4). 66 은 T2 에서 미리 적재했다.
+  [[ -d "$module_dir/sch_netem" ]] || { echo "sch_netem is not loaded" >&2; exit 1; }
+}
+qdisc_spec() {
+  [[ ${#w[@]} -eq 6 ]] || refuse "qdisc-apply takes <tap> <delay_ms> <jitter_ms> <loss_pct> <rate_kbit>"
+  local d="${w[2]}" j="${w[3]}" l="${w[4]}" r="${w[5]}"
+  [[ "$d" =~ ^[0-9]{1,4}$ && "$j" =~ ^[0-9]{1,4}$ && "$r" =~ ^[0-9]{1,7}$ ]] || refuse "bad numbers"
+  [[ "$l" =~ ^(100|[0-9]{1,2}(\.[0-9]{1,2})?)$ ]] || refuse "bad loss"
+  (( d <= 2000 && j <= d )) || refuse "delay above 2000 ms or jitter above delay"
+  spec=(limit 100000)
+  if (( d > 0 )); then spec+=(delay "${d}ms"); if (( j > 0 )); then spec+=("${j}ms"); fi; fi
+  if [[ "$l" != 0 ]]; then spec+=(loss "${l}%"); fi
+  if (( r > 0 )); then spec+=(rate "${r}kbit"); fi
+  (( ${#spec[@]} > 2 )) || refuse "a link change needs delay, loss or rate"
+}
+qdisc_undo() {
+  printf 'if [[ "$(tc qdisc show dev %q root 2>/dev/null)" == "qdisc netem %s: root"* ]]; then tc qdisc del dev %q root; fi\n' \
+    "$tap" "$root_handle" "$tap"
+}
+qdisc_remove() { if [[ "$(qdisc_state)" == ours ]]; then tc qdisc del dev "$tap" root; fi; }
+
+arm() { guard_arm "$job" "$expire_after" "$@"; }
+mkdir -p "$link_dir"
+chmod 700 "$link_dir"
+case "$action" in
+  link-check) link_args; link_check; s=$(link_state); [[ "$s" == up ]] || { echo "link is $s" >&2; exit 1; }; echo up ;;
+  link-state) link_args; link_state ;;
+  # 거는 순서: 확인, 가드, 표지, 바꿈. 표지가 바꿈보다 먼저라 도중에 끊겨도 정리가 링크를 올린다.
+  link-down) link_args; need_guard; link_check
+    s=$(link_state); [[ "$s" == up ]] || { echo "link is $s" >&2; exit 1; }
+    arm "$(link_undo)"
+    : >"$mark"
+    qmp_set_link "$vmid" "$net" down ;;
+  link-cleanup) link_args; need_guard
+    guard_postpone "$job" "$guard_hold"
+    link_check
+    link_restore
+    guard_disarm "$job" ;;
+  # 가드가 기한에 부르는 되돌림(가드 잠금을 쥔 채 돈다). t4-hv-exec 는 이 동작을 넘기지 않는다.
+  link-restore) link_args; if [[ -S "$qmp_dir/$vmid.qmp" ]]; then link_restore; else rm -f "$mark"; fi ;;
+  qdisc-check) qdisc_args; qdisc_check; s=$(qdisc_state); [[ "$s" == default ]] || { echo "$tap root qdisc is $s" >&2; exit 1; }; echo default ;;
+  qdisc-state) qdisc_args; qdisc_state ;;
+  qdisc-apply) qdisc_args; qdisc_spec; need_guard; qdisc_check
+    s=$(qdisc_state); [[ "$s" == default ]] || { echo "$tap root qdisc is $s" >&2; exit 1; }
+    arm "$(qdisc_undo)"
+    tc qdisc add dev "$tap" root handle "$root_handle": netem "${spec[@]}"
+    s=$(qdisc_state); [[ "$s" == ours ]] ;;
+  qdisc-cleanup) qdisc_args; need_guard
+    guard_postpone "$job" "$guard_hold"
+    qdisc_remove
+    s=$(qdisc_state); [[ "$s" != ours ]]
+    guard_disarm "$job" ;;
+  guards)
+    [[ ${#w[@]} -eq 1 ]] || refuse "guards takes no arguments"
+    shopt -s nullglob
+    jobs=()
+    for f in "$OPSJOB_STATE_ROOT"/*.unit; do jobs+=("$(basename "$f" .unit)"); done
+    printf '{"armed":%d,"jobs":[' "${#jobs[@]}"
+    sep=""; for j in ${jobs[@]+"${jobs[@]}"}; do printf '%s"%s"' "$sep" "$j"; sep=","; done
+    printf ']}\n' ;;
+  tunnel)
+    [[ ${#w[@]} -eq 1 ]] || refuse "tunnel takes no arguments"
+    now=$(date +%s)
+    hs=$(wg show "$wg_if" latest-handshakes | awk 'NR==1{print $2}')
+    age=-1; if [[ "$hs" =~ ^[0-9]+$ && "$hs" -gt 0 ]]; then age=$(( now - hs )); fi
+    read -r rx tx < <(wg show "$wg_if" transfer | awk 'NR==1{print $2, $3}')
+    out=$(ping -n -q -c 10 -i 0.2 -W 1 -I "$tunnel_src" "$monitor" 2>/dev/null || true)
+    sent=$(sed -n 's/^\([0-9]*\) packets transmitted, \([0-9]*\) received.*/\1/p' <<<"$out")
+    recv=$(sed -n 's/^\([0-9]*\) packets transmitted, \([0-9]*\) received.*/\2/p' <<<"$out")
+    max=$(sed -n 's#^rtt [^=]*= [0-9.]*/[0-9.]*/\([0-9.]*\)/.*#\1#p' <<<"$out")
+    printf '{"handshake_age_s":%s,"ping":{"sent":%s,"lost":%s,"max_ms":%s},"wg_rx_bytes":%s,"wg_tx_bytes":%s,"at":"%s"}\n' \
+      "$age" "${sent:-0}" "$(( ${sent:-0} - ${recv:-0} ))" "${max:-null}" "${rx:-0}" "${tx:-0}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+  probe)
+    [[ ${#w[@]} -eq 2 ]] || refuse "probe takes one address"
+    [[ " $PROBES " == *" ${w[1]} "* ]] || refuse "${w[1]} is not a probe address"
+    ping -n -q -c 3 -i 0.3 -W 1 -I "$tunnel_src" "${w[1]}" >/dev/null ;;
+  *) refuse "unknown action" ;;
+esac

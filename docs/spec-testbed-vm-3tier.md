@@ -501,7 +501,7 @@ rsyslog 첫 규칙(서버, 라우터에 같은 파일, 파일 쓰기와 119 전�
 | 러너 | ssh 호출 공통부 | VM 별 ControlMaster 연결 유지와 다시 열기 감시, 5분 평시 점검 읽기 |
 | 러너 | `backend/app/live_queue.py` | 도메인별 버전 표류 확인, 실패 사유 원문(U3), 정상 구간 표시는 지금처럼 전역 |
 | 스킬 초안 | `v4/skill-drafts/` | 생성, 검증, 운영 스킬에 도메인 지식과 터널 점검(PLAN §10 방식, 사람이 적용) |
-| testbed-services | `docs/` 아래 흔적 표(§6-7, 위치는 T4 에서 정함) | 수단별로 119 에 실제로 남는 흔적 실측값 |
+| testbed-services | `docs/ref-civil-petition-injection-traces.md`(§6-7, 11-19 T4S 가 정함), 질의 도구 `civil-petition/deploy/tools/trace_table.py` | 수단별로 119 에 실제로 남는 흔적 실측값 |
 
 ### 6-7. 수단별로 119 에 실제로 남는 흔적 표 (T4 산출물의 틀)
 
@@ -945,3 +945,9 @@ T2 의 66 호스트 망 변경(브리지, wg0, NAT 와 FORWARD 규칙, 전용 �
 |---|---|
 | §10 T3 부담 | ClickHouse 판정을 녹화 캡처 구간을 뺀 최댓값과 p99, 노드 가용 메모리로. 캡처 순간 최댓값 + T, S 추정 증가분이 ClickHouse 상한의 85% 아래인지 따로 본다 |
 | §4 로그 감시 | 앱 로그 감시 패턴 확정(정본 파일 그대로, 시나리오가 안 잡혀도 고치지 않는다) |
+
+2026-11-19 KST, T4 testbed-services 몫(v4 T4S). 설계 판단은 바꾸지 않았다.
+
+| 바뀐 곳 | 내용 |
+|---|---|
+| §6-6 흔적 표 줄 | 위치를 `docs/ref-civil-petition-injection-traces.md` 로 정하고 질의 도구 이름을 적음 |

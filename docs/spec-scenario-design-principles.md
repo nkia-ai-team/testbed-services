@@ -108,6 +108,20 @@ RCA 평가용 시나리오가 100개 넘게 필요하고, 사람이 한 건씩 �
 | 앱 DB의 업무 데이터 (이체 행, 주문 행 등) | **수집되지 않음.** DPM은 세션과 Top SQL만 | 업무 데이터 이상(중복, 불일치)은 러너가 판정할 수는 있어도 lucida-next 데이터로는 직접 보이지 않는다 |
 | 쿠버네티스 이벤트, 파드 상태, 호스트 지표, syslog | 수집 중(`kcm_events_local`, `syslog_local`, VM 호스트 지표) | 수집 범위와 지연은 시나리오마다 실데이터로 확인 |
 
+**civil-petition(전통 3계층, SMS 와 NMS 만) 수집 특성 (119, 2026-11-18 ~ 11-19 T3 실측과 코드 읽기, 근거 [적용 runbook](runbook-civil-petition-apply.md) §12-3, §13)**
+
+| 데이터 | 수집 정도 | 설계에 주는 의미 |
+|---|---|---|
+| 트레이스, APM, DPM | **없음.** 이 도메인은 SMS 와 NMS 만 등록한다(설계 spec-testbed-vm-3tier.md §1 Q1) | 원인 근거는 서버 지표, 표본, 로그 감시, syslog, NMS, ICMP 에만 선다 |
+| 프로세스 (CH `process_snapshot`, VM `sms.process.*`) | 표본은 60초마다 전체 목록(이름과 사용자, 명령줄 칸 없음). 계열은 (호스트, 이름, pid) 단위로 15초마다 CPU 상위 50개 | 짧게 뜬 프로세스는 계열에 안 남을 수 있다. 이름과 사용자만으로 원인이 서야 한다 |
+| 연결 (CH `host_connections`) | 30초마다 맺어진 연결 목록 | 새 연결은 원인 흔적이 될 수 있다. 관리망 연결은 늘 하나(설계 §6-2) |
+| 로그 감시 (CH `lucida_logs_local`, `event_source=log_monitor`) | 서버가 내려 준 파일만 tail, 감시 패턴에 맞는 줄만. journal 은 읽지 않는다 | DB 쪽 원인은 PostgreSQL 서버 로그의 감시 패턴에 맞는 줄로만 닿는다(접속 줄은 LOG 수준이라 안 간다) |
+| syslog (CH `syslog_local`) | 서버 4대와 라우터 전부(UDP, 터널 너머), 부하기 0. 실행기 배관 줄은 VM 의 첫 규칙이 거른다 | 운영자 sudo 줄, 서비스 재시작 줄은 원인 흔적으로 남는다 |
+| NMS (VM `nms.*`, CH `snmp_traps_local`) | 라우터 폴링 60초(첫 폴링만 장비, 그 뒤 하위 대상), linkDown 과 linkUp trap 수신 확인(T3 차례 4) | 링크 끊김은 상태와 trap 으로, 큐 넘침만 버림 카운터로 남는다(설계 결정 4) |
+| ICMP | 서버 `sms.server.icmp_status`, `rtt`(SMS 등록에 딸림), 라우터 `nms.network.icmp_status`, `rtt` | 지연, 손실 수단의 흔적은 RTT 와 앱 시간 초과 줄이다 |
+
+주입 수단별로 실제로 남는 흔적은 [civil-petition 흔적 표](ref-civil-petition-injection-traces.md)가 T4 시험 실행 뒤 채운다.
+
 이 표는 제품 버전이 바뀌면 다시 실측한다(특히 119 패치 뒤).
 
 ### 원칙 4. 계기에도 흔적이 있어야 한다

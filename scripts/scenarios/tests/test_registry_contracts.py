@@ -154,7 +154,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-30: 142 → 143. F69-P(후보) 추가. 기존 k8s.image release 모드를 commerce inventory 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-11-09: 시나리오 수는 그대로. 프로파일 35 → 36(db.cursor_reset 신설, F74-R 동반: 정리 뒤 건수 질의 커서 비우기와 계획 복귀 확인).
         self.assertEqual(len(self.catalog["scenarios"]), 143)
-        self.assertEqual(len(self.profiles["profiles"]), 36)
+        # 2026-11-19: 시나리오 수는 그대로. 프로파일 36 → 48(civil-petition VM 실행기 12개 신설, v4 T4S. 계약 0개라 시나리오가 아직 쓰지 않는다).
+        self.assertEqual(len(self.profiles["profiles"]), 48)
         known = set(self.profiles["profiles"])
         for scenario in self.catalog["scenarios"]:
             self.assertTrue(set(scenario["profiles"]) <= known)

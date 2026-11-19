@@ -1,0 +1,4 @@
+# 66 하이퍼바이저 실행기 계정은 root 도우미 하나만 비밀번호 없이 부른다(설계 §6-1 "66 호스트 권한", 결정 2).
+# 환경은 sudo 기본값대로 비운다(env_reset). 다른 명령, 인자 덧붙이기는 없다.
+Defaults:{{account}} env_reset, !requiretty
+{{account}} ALL=(root) NOPASSWD: /usr/local/sbin/t4-hv-exec-root ""

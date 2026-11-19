@@ -5821,6 +5821,150 @@
           "delay_ms": 1000
         }
       }
+    },
+    "vmlink.state": {
+      "executor": "profiles/vmlink_state_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-hypervisor"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmlink.qdisc": {
+      "executor": "profiles/vmlink_qdisc_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-hypervisor"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "router.qdisc": {
+      "executor": "profiles/router_qdisc_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-rt-core01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "router.config": {
+      "executor": "profiles/router_config_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-rt-core01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "router.resource": {
+      "executor": "profiles/router_resource_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-rt-core01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmhost.stress": {
+      "executor": "profiles/vmhost_stress_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-web01",
+        "petition-was01",
+        "petition-was02",
+        "petition-db01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmhost.job": {
+      "executor": "profiles/vmhost_job_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-web01",
+        "petition-was01",
+        "petition-was02",
+        "petition-db01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmhost.firewall": {
+      "executor": "profiles/vmhost_firewall_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-web01",
+        "petition-was01",
+        "petition-was02",
+        "petition-db01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vm.service": {
+      "executor": "profiles/vm_service_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-web01",
+        "petition-was01",
+        "petition-was02",
+        "petition-db01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmdb.lock": {
+      "executor": "profiles/vmdb_lock_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-db01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmdb.workload": {
+      "executor": "profiles/vmdb_workload_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-db01"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
+    },
+    "vmload.north_south": {
+      "executor": "profiles/vmload_north_south_executor.py",
+      "location_strategy": "scenario",
+      "allowed_locations": [
+        "petition-loadgen"
+      ],
+      "live_supported": false,
+      "default_queries": [
+        "http.entry_health"
+      ]
     }
   },
   "required_actions": [

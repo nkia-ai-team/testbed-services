@@ -6064,3 +6064,227 @@ class T3CheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+trace = _load("trace_table", DEPLOY / "tools" / "trace_table.py")
+HV = DEPLOY / "hypervisor"
+
+
+class HypervisorHelperFilesTests(unittest.TestCase):
+    """66 실행기 계정, 강제 명령, sudoers, rsyslog 거르기(설계 §6-1 "66 호스트 권한", §6-2 "66 호스트", 결정 2)."""
+
+    def render(self, tmp: Path) -> Path:
+        """runbook §15-1 차례 2, 3 처럼 도우미 폴더를 옮기고 build.py 로 설치본을 그 안에 만든 뒤 render."""
+        stage = tmp / "stage"
+        shutil.copytree(HV, stage)
+        subprocess.run([sys.executable, str(HV / "build.py"), "--inventory", str(T_INV), "--out", str(stage / "t4-hv-exec-root")],
+                       check=True, capture_output=True, timeout=60)
+        out = tmp / "out"
+        done = subprocess.run(["bash", str(stage / "install-hv-helper.sh"), "render", "--out", str(out)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return out
+
+    def test_render_names_one_helper_one_account_and_a_forced_command(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = self.render(Path(raw))
+            sudoers = (out / "60-hvjob").read_text()
+            rules = [l for l in sudoers.splitlines() if l and not l.startswith("#")]
+            self.assertEqual(rules, ["Defaults:hvjob env_reset, !requiretty",
+                                     'hvjob ALL=(root) NOPASSWD: /usr/local/sbin/t4-hv-exec-root ""'])
+            if shutil.which("visudo"):
+                check = subprocess.run(["visudo", "-cf", str(out / "60-hvjob")], capture_output=True, text=True)
+                self.assertEqual(check.returncode, 0, check.stderr)
+            self.assertEqual((out / "authorized_keys.prefix").read_text(),
+                             'command="/usr/local/sbin/t4-hv-exec",no-pty,no-port-forwarding,no-agent-forwarding,'
+                             'no-X11-forwarding,from="192.168.122.20" ')
+            self.assertEqual((out / "t4-hv-exec").read_bytes(), (HV / "t4-hv-exec").read_bytes())
+            sums = json.loads((HV / "t4-hv-exec.sha256.json").read_text())["files"]
+            import hashlib
+            for name in ("t4-hv-exec", "t4-hv-exec-root"):
+                self.assertEqual(hashlib.sha256((out / name).read_bytes()).hexdigest(), sums[name], name)
+            # Without a built helper in the folder render refuses (the repository keeps no copy).
+            bare = Path(raw) / "bare"
+            shutil.copytree(HV, bare)
+            done = subprocess.run(["bash", str(bare / "install-hv-helper.sh"), "render", "--out", str(Path(raw) / "o2")],
+                                  capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("build.py", done.stderr)
+            # The filter sorts before 66's forward file (60-lucida-forward.conf) and names the account, uid, helper and run-r.
+            self.assertLess("05-hvjobs.conf", "60-lucida-forward.conf")
+            text = (out / "05-hvjobs.conf").read_text()
+            for piece in ("hvjob", "1460", "t4-hv-exec", "run-r[0-9a-f]{32}", '$programname == "sudo"',
+                          "192[.]168[.]122[.]20", "/var/log/hvjobs.log", "stop"):
+                self.assertIn(piece, text)
+            self.assertNotIn("{{", text)
+
+    @unittest.skipUnless(shutil.which("rsyslogd") and shutil.which("logger"), "rsyslogd 와 logger 가 필요")
+    def test_filter_diverts_pipeline_lines_and_keeps_the_rest_with_a_real_rsyslogd(self) -> None:
+        """진짜 rsyslogd(-N1 문법 검사와 실제로 띄워 줄을 보냄). 66 의 rsyslog 판(8.2504)과 104 판(8.2112)은 다르지만
+        RainerScript 문자열 탈출 규칙(APT2 의 `$` 결함)은 같다."""
+        with tempfile.TemporaryDirectory() as raw, tempfile.TemporaryDirectory(dir="/tmp", prefix="rs") as short:
+            tmp, sock = Path(raw), Path(short)
+            out = self.render(tmp)
+            conf_d = tmp / "rsyslog.d"
+            conf_d.mkdir()
+            (conf_d / "05-hvjobs.conf").write_text((out / "05-hvjobs.conf").read_text().replace(
+                "/var/log/hvjobs.log", str(sock / "hvjobs.log")))
+            (tmp / "work").mkdir()
+            conf = tmp / "rsyslog.conf"
+            conf.write_text(f'global(workDirectory="{tmp / "work"}")\nmodule(load="imuxsock" SysSock.Use="off")\n'
+                            f'input(type="imuxsock" Socket="{sock / "l.sock"}")\ninclude(file="{conf_d}/*.conf")\n'
+                            f'*.* action(type="omfile" file="{sock / "forward.log"}")\n')
+            check = subprocess.run(["rsyslogd", "-N1", "-f", str(conf)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(check.returncode, 0, check.stderr)
+            proc = subprocess.Popen(["rsyslogd", "-n", "-f", str(conf), "-i", str(sock / "pid")],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                for _ in range(50):
+                    if (sock / "l.sock").exists():
+                        break
+                    time_sleep(0.1)
+                diverted = [("sshd", "Accepted publickey for hvjob from 192.168.122.20 port 5 ssh2"),
+                            ("sshd-session", "Received disconnect from 192.168.122.20 port 5:11: disconnected by user"),
+                            ("sudo", "pam_unix(sudo:session): session closed for user root"),
+                            ("systemd", "Started user@1460.service - User Manager for UID 1460."),
+                            ("systemd-logind", "New session 12 of user hvjob."),
+                            ("systemd", "Started run-r0123456789abcdef0123456789abcdef.timer."),
+                            ("sudo", "hvjob : PWD=/ ; USER=root ; COMMAND=/usr/local/sbin/t4-hv-exec-root")]
+                kept = [("sshd", "Accepted publickey for root from 192.168.230.104 port 1 ssh2"),
+                        ("sshd-session", "Disconnected from 192.168.122.201 port 9"),
+                        ("systemd", "Started user@14600.service"),
+                        ("CRON", "hvjobx is another word"),
+                        ("systemd", "session-12.scope: Deactivated successfully.")]
+                for tag, message in diverted + kept:
+                    subprocess.run(["logger", "-u", str(sock / "l.sock"), "-t", tag, message], check=True, timeout=10)
+                for _ in range(50):
+                    lines = (sock / "forward.log").read_text().count("\n") if (sock / "forward.log").exists() else 0
+                    if lines >= len(kept):
+                        break
+                    time_sleep(0.1)
+                time_sleep(0.3)
+            finally:
+                proc.terminate()
+                proc.wait(timeout=10)
+            forward = (sock / "forward.log").read_text()
+            hvjobs = (sock / "hvjobs.log").read_text()
+            for _, message in diverted:
+                self.assertIn(message, hvjobs)
+                self.assertNotIn(message, forward)
+            for _, message in kept:
+                self.assertIn(message, forward)
+                self.assertNotIn(message, hvjobs)
+
+    def test_front_helper_refuses_unknown_and_malformed_requests_without_calling_root(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            fake = tmp / "sudo"
+            fake.write_text('#!/bin/bash\necho called >>"$(dirname "$0")/log"\ncat >/dev/null\n')
+            fake.chmod(0o755)
+            env = {**os.environ, "HV_SUDO": str(fake), "HV_HELPER_DIR": str(HV)}
+            for request in ("", "rm -rf /", "link-restore 202 net0", "version extra", "link-down 202 net0 `id`",
+                            "link-down 202 net0 x x x x x x", "LINK-DOWN 202 net0", "bash"):
+                with self.subTest(request=request):
+                    done = subprocess.run([str(HV / "t4-hv-exec")], input=request + "\n", env=env, capture_output=True,
+                                          text=True, timeout=30)
+                    self.assertEqual(done.returncode, 3, (request, done.stderr))
+            done = subprocess.run([str(HV / "t4-hv-exec")], input="link-down 202 net0\nexpire_after=1800; id\n", env=env,
+                                  capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 3)
+            self.assertFalse((tmp / "log").exists())
+            done = subprocess.run([str(HV / "t4-hv-exec")], input="link-down 202 net0\nexpire_after=1800 guard_hold=960\n",
+                                  env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual((tmp / "log").read_text(), "called\n")
+
+
+def time_sleep(seconds: float) -> None:
+    import time
+    time.sleep(seconds)
+
+
+class TraceTableTests(unittest.TestCase):
+    """흔적 표 질의 도구(docs/ref-civil-petition-injection-traces.md, 설계 §6-7). 119 에 닿지 않는 대역으로 본다."""
+
+    START = datetime.datetime(2026, 11, 20, 10, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=9)))
+
+    def remote(self) -> FakeRemote:
+        r = FakeRemote()
+        r.pg_rules = [("from targets where type='server'", [
+            ["11111111-1111-1111-1111-111111111111", "192.168.124.11", "", "approved", "managed"],
+            ["22222222-2222-2222-2222-222222222222", "192.168.126.11", "", "approved", "managed"]]),
+            ("type='network'", [["33333333-3333-3333-3333-333333333333", "approved"]]),
+            ("meta->>'host_target_id'", [])]
+        return r
+
+    def run_tool(self, remote: FakeRemote, *extra: str) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = trace.main(["--inventory", str(T_INV), "--start", self.START.isoformat(),
+                             "--end", (self.START + datetime.timedelta(minutes=20)).isoformat(), "--executor", "router.qdisc",
+                             "--variant", "큐 넘침", "--run-id", "trial-1", "--words", "T4-TRIAL,queue-ens20", *extra],
+                            remote_factory=lambda: remote)
+        return rc, out.getvalue()
+
+    def test_every_clickhouse_query_names_its_partition_and_time_range(self) -> None:
+        remote = self.remote()
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        partition = {"lucida.process_snapshot": "toDate(ts) between", "lucida.host_connections": "toYYYYMMDD(timestamp) between",
+                     "lucida.lucida_logs_local": "timestamp_date between", "lucida.syslog_local": "toYYYYMM(received_at) between",
+                     "lucida.snmp_traps_local": "toYYYYMM(received_at) between", "lucida.lucida_events_local": "occurred_at between"}
+        seen = set()
+        for q in remote.queries:
+            for table, piece in partition.items():
+                if f"from {table} " in q:
+                    seen.add(table)
+                    self.assertIn(piece, q, q)
+                    self.assertRegex(q, r"between '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d' and '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d'", q)
+        self.assertEqual(seen, set(partition))
+        # The window is the injection window and baseline windows are the same length, 30 minutes before it.
+        self.assertIn("2026-11-20 01:00:00", " ".join(remote.queries))
+        self.assertIn("2026-11-20 00:30:00", " ".join(remote.queries))
+        row = out.splitlines()[0]
+        self.assertEqual(len(row[2:-2].split(" | ")), 16)
+        self.assertNotIn("| |", row)
+        self.assertIn("trial-1, 11-20 10:00 ~ 10:20 KST", row)
+
+    def test_q7_looks_for_every_hidden_word_and_counts_unmeasured_cells(self) -> None:
+        remote = self.remote()
+        remote.ch_rules = [(lambda q: [["2"]] if "lucida.syslog_local" in q and "match(lower(message)" in q
+                            and "t4-trial" in q and "select count()" in q else None, None)]
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        word_queries = [q for q in remote.queries if "match(lower(" in q and "select count()" in q]
+        for word in ("test", "testbed", "tb", "t4", "t4-trial", "queue-ens20"):
+            self.assertTrue(all(word in q for q in word_queries), word)
+        self.assertIn("Q7 공통 낱말 미충족", out)
+        pipe = [q for q in remote.queries if "run-r[0-9a-f]{32}" in q]
+        self.assertTrue(pipe)
+        self.assertTrue(all("opsjob" in q and "hvjob" in q and "1450" in q and "1460" in q for q in pipe))
+        # A cell whose query fails is "미측정, 이유", never empty.
+        class Broken(FakeRemote):
+            def vm(self, path, params):
+                raise t3check.QueryError("vm down")
+        broken = Broken()
+        broken.pg_rules = self.remote().pg_rules
+        rc, out = self.run_tool(broken)
+        self.assertEqual(rc, 0)
+        self.assertIn("미측정, QueryError: vm down", out.splitlines()[0])
+        ctx = t3check.context(inventory())
+        ctx["mgmt_prefix"] = "192.0.2."
+        w, base = trace.windows(self.START, self.START + datetime.timedelta(minutes=5), 1, datetime.timedelta(minutes=30))
+        for bad in ("a b", "x'; drop", "..."):
+            with self.subTest(word=bad), self.assertRaises(ValueError):
+                trace.q7(self.remote(), ctx, {"web01": "1"}, "opsjob", 1450, "hvjob", 1460, [bad], w, w, base)
+        with self.assertRaises(ValueError):
+            trace.q7(self.remote(), ctx, {"web01": "1"}, "ops'job", 1450, "hvjob", 1460, [], w, w, base)
+
+    def test_long_windows_and_naive_times_are_refused(self) -> None:
+        for start, end in (("2026-11-20T10:00:00", "2026-11-20T10:20:00"),
+                           ("2026-11-20T10:00:00+09:00", "2026-11-20T14:00:00+09:00"),
+                           ("2026-11-20T10:00:00+09:00", "2026-11-20T09:00:00+09:00")):
+            with self.subTest(start=start, end=end):
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    trace.main(["--inventory", str(T_INV), "--start", start, "--end", end, "--executor", "x",
+                                "--variant", "y", "--run-id", "z"], remote_factory=self.remote)

@@ -22,7 +22,14 @@
     "cross-domain-edge": {"transport": "ssh", "resolved": false, "prerequisite": "CNI/NET_ADMIN edge injection point"},
     "edge-route": {"transport": "kubectl", "kubeconfig": "/root/tb-kubeconfig", "resolved": false, "prerequisite": "concrete ingress resource"},
     "probe-edge": {"transport": "ssh", "resolved": false, "prerequisite": "WPM probe source host"},
-    "probe-location": {"transport": "ssh", "resolved": false, "prerequisite": "multi-location WPM topology"}
+    "probe-location": {"transport": "ssh", "resolved": false, "prerequisite": "multi-location WPM topology"},
+    "petition-rt-core01": {"transport": "ssh", "host": "192.168.127.2", "node": "rt-core01", "user": "opsjob", "domain": "civil-petition", "resolved": true},
+    "petition-web01": {"transport": "ssh", "host": "192.168.127.21", "node": "web01", "user": "opsjob", "domain": "civil-petition", "resolved": true},
+    "petition-was01": {"transport": "ssh", "host": "192.168.127.31", "node": "was01", "user": "opsjob", "domain": "civil-petition", "resolved": true},
+    "petition-was02": {"transport": "ssh", "host": "192.168.127.32", "node": "was02", "user": "opsjob", "domain": "civil-petition", "resolved": true},
+    "petition-db01": {"transport": "ssh", "host": "192.168.127.41", "node": "db01", "user": "opsjob", "domain": "civil-petition", "resolved": true},
+    "petition-loadgen": {"transport": "ssh", "host": "192.168.127.10", "node": "loadgen", "user": "opsjob", "domain": "civil-petition", "resolved": true},
+    "petition-hypervisor": {"transport": "ssh", "host": "192.168.122.1", "node": "pve66", "user": "hvjob", "domain": "civil-petition", "resolved": true}
   },
   "catalog_aliases": {
     "scenario-runner": "scenario-runner",
@@ -46,6 +53,13 @@
     "cross-domain edge": "cross-domain-edge",
     "edge route": "edge-route",
     "probe edge": "probe-edge",
-    "probe location": "probe-location"
+    "probe location": "probe-location",
+    "civil-petition rt-core01": "petition-rt-core01",
+    "civil-petition web01": "petition-web01",
+    "civil-petition was01": "petition-was01",
+    "civil-petition was02": "petition-was02",
+    "civil-petition db01": "petition-db01",
+    "civil-petition loadgen": "petition-loadgen",
+    "civil-petition hypervisor": "petition-hypervisor"
   }
 }

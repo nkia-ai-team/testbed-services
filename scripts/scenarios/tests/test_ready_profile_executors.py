@@ -5046,7 +5046,14 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         # disk write and an export process to the recording (decided 2026-11-09: left as it is). The
         # node stays Ready, so the runner's cleanup can always reach it.
         "host.image",
+        # civil-petition companion load (design spec-testbed-vm-3tier.md 6-1: no node change). k6 ends by
+        # itself at its duration and its unit unloads; the load generator sends nothing to 119.
+        "vmload.north_south",
     }
+    # 66's executors reach the hypervisor through a forced-command account that takes no bash, so the
+    # guard lives in the helper installed there (design 6-1 "U8 시험과의 연결"). Their arm check reads the
+    # helper's source, built from GUARD_FUNCTIONS (civil-petition/deploy/hypervisor/build.py).
+    HYPERVISOR_HELPER_EXECUTORS = {"vmlink.state", "vmlink.qdisc"}
     # Runs from tb-ops through the cluster API and reaches a node only on the side.
     NODE_SIDE_ONLY = {
         # The change is the Deployment's image (cluster API); the node only gains one extra image.
@@ -5060,6 +5067,39 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
             "delay_ms": 100, "jitter_ms": 0, "loss_percent": 0,
             "rules": [{"dst": "10.244.1.0/24", "protocol": "tcp", "dport": 8082}],
         }),
+        # civil-petition VM executors (v4 T4S): scenarios are designed with the user (design 7).
+        "vmlink.state": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 202, "net": "net0"}),
+        "vmlink.qdisc": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 203, "net": "net0",
+                                      "delay_ms": 100, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 0}),
+        "router.qdisc": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "device": "ens20", "kind": "rate",
+                                      "delay_ms": 0, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 2000,
+                                      "burst_kb": 32, "latency_ms": 50}),
+        "router.config": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "table": "acl-change",
+                                       "rules": [{"hook": "forward", "proto": "tcp", "src": "192.168.124.0/24",
+                                                  "dst": "192.168.125.0/24", "dport": 8080, "verdict": "drop"}],
+                                       "routes": [], "sysctls": {}, "log_prefix": ""}),
+        "router.resource": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "mode": "cpu",
+                                         "cpu_workers": 2, "entries": 0, "runtime_seconds": 300}),
+        "vmhost.stress": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "mode": "cpu", "cpu_workers": 2,
+                                       "mib": 0, "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0,
+                                       "runtime_seconds": 300}),
+        "vmhost.job": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "nightly-archive",
+                                    "description": "Nightly archive", "source_dir": "/var/log",
+                                    "output_dir": "/pgdata", "level": 6, "nice": 10, "runtime_seconds": 600,
+                                    "min_free_mib": 2048}),
+        "vmhost.firewall": ("T4-GUARD", {"host": "192.168.127.21", "node": "web01", "table": "web-guard",
+                                         "rules": [{"hook": "output", "proto": "tcp", "dst": "192.168.125.0/24",
+                                                    "dport": 8080, "verdict": "drop"}], "log_prefix": ""}),
+        "vm.service": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "unit": "tomcat10", "action": "stop",
+                                    "file": "-", "match": "-", "replace": "-", "release": "-", "release_sha256": "-"}),
+        "vmdb.lock": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "table-maintenance",
+                                   "description": "Table maintenance", "app_name": "maint", "table": "petition",
+                                   "lock_mode": "ACCESS EXCLUSIVE", "runtime_seconds": 300}),
+        "vmdb.workload": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "monthly-report",
+                                       "description": "Monthly report", "app_name": "report",
+                                       "statement": "petition-title-scan", "sessions": 4, "runtime_seconds": 300}),
+        "vmload.north_south": ("T4-GUARD", {"host": "192.168.127.10", "node": "loadgen", "unit": "surge-check",
+                                            "target_rps": 60, "duration_seconds": 600, "seed": 7}),
     }
     LOCATIONS = json.loads((ROOT / "registry" / "locations.json").read_text())["locations"]
 
@@ -5119,7 +5159,13 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                     _, stdin = module.build_invocation(plan, "run")
             else:
                 _, stdin = module.build_invocation(plan, "run")
-            if self._arms(stdin):
+            if profile_id in self.HYPERVISOR_HELPER_EXECUTORS:
+                # stdin carries one request line for the forced command and no program of its own.
+                self.assertNotIn(b"guard_arm_now()", stdin)
+                self.assertIn(b"hvjob@192.168.122.1", stdin)
+                if self._arms(hv_helper_source()):
+                    guarded.add(profile_id)
+            elif self._arms(stdin):
                 guarded.add(profile_id)
         self.assertEqual(set(on_node) - guarded, self.NO_NODE_UNDO)
         # Executors that reach a node over ssh without a node location must be named, too.
@@ -5547,3 +5593,785 @@ class NetworkLinkExecutorTests(unittest.TestCase):
             self.assertEqual((fields[2], fields[3], fields[10], fields[11]), (0, 0, 0, 0))
             self.assertLess(fields[9], 1600)
             self.assertEqual(self._act(box, env, "cleanup", params).returncode, 0)
+
+
+import vm_sandbox  # noqa: E402
+
+vm_common = load("vm_executor_common")
+VM_EXECUTORS = {
+    "vmlink.state": "vmlink_state_executor", "vmlink.qdisc": "vmlink_qdisc_executor",
+    "router.qdisc": "router_qdisc_executor", "router.config": "router_config_executor",
+    "router.resource": "router_resource_executor", "vmhost.stress": "vmhost_stress_executor",
+    "vmhost.job": "vmhost_job_executor", "vmhost.firewall": "vmhost_firewall_executor",
+    "vm.service": "vm_service_executor", "vmdb.lock": "vmdb_lock_executor",
+    "vmdb.workload": "vmdb_workload_executor", "vmload.north_south": "vmload_north_south_executor",
+}
+HV_DIR = ROOT.parents[1] / "civil-petition" / "deploy" / "hypervisor"
+
+
+def build_hv_helper(out: Path, inventory: Path | None = None) -> Path:
+    """The installed root helper as build.py makes it from the T inventory (the repository keeps only its checksum)."""
+    argv = [sys.executable, str(HV_DIR / "build.py"), "--out", str(out)]
+    if inventory is not None:
+        argv += ["--inventory", str(inventory)]
+    subprocess.run(argv, check=True, capture_output=True, timeout=60)
+    return out
+
+
+def hv_helper_source() -> bytes:
+    with tempfile.TemporaryDirectory() as raw:
+        return build_hv_helper(Path(raw) / "t4-hv-exec-root").read_bytes()
+
+
+class CivilPetitionVmExecutorTests(unittest.TestCase):
+    """civil-petition VM executors (docs/spec-testbed-vm-3tier.md 6-1, 6-2, 3-5, 10 T4 «실행기 시험»).
+
+    Each executor is checked for a normal cleanup, self-recovery when cleanup never comes (the guard's
+    undo fires), idempotence, refusal of every interface outside the allow list, and refusal of every
+    protected target by the content guard. tc, nft and ip run against a real kernel in a user and network
+    namespace; ssh, sudo, setpriv, systemd units, psql and conntrack are fakes (vm_sandbox)."""
+
+    SAMPLES = NodeGuardTests.UNUSED_NODE_EXECUTORS
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.env = vm_sandbox.install(self.tmp)
+
+    def tearDown(self) -> None:
+        for pidfile in (self.tmp / "units").glob("*.pid") if (self.tmp / "units").exists() else []:
+            try:
+                os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError, PermissionError):
+                pass
+        self._tmp.cleanup()
+
+    def module(self, profile_id: str):
+        return load(VM_EXECUTORS[profile_id])
+
+    def params(self, profile_id: str, **changes) -> dict:
+        params = json.loads(json.dumps(self.SAMPLES[profile_id][1]))
+        params.update(changes)
+        return params
+
+    def refused(self, profile_id: str, params: dict) -> None:
+        module = self.module(profile_id)
+        with self.assertRaises(ExecutorError):
+            with unittest.mock.patch.dict(module.CONTRACTS, {"T4-CASE": params}):
+                module.build_invocation(vm_sandbox.plan(profile_id, "T4-CASE", params), "run")
+
+    @staticmethod
+    def common_guard() -> bytes:
+        return sys.modules["executor_common"].GUARD_FUNCTIONS
+
+    def fire(self, job: str) -> subprocess.CompletedProcess:
+        return node_guard_fakes.fire(self.env, job, extra_env=self.env)
+
+    # ---------------------------------------------------------------- tables
+
+    def test_fixed_tables_match_the_inventory(self) -> None:
+        inv = json.loads(vm_common.INVENTORY.read_text())
+        hosts = {h["name"]: h for h in inv["hosts"]}
+        self.assertEqual(set(vm_common.VMS), set(hosts))
+        mgmt_net = next(n for n, v in inv["networks"].items() if v.get("management"))
+        for name, row in vm_common.VMS.items():
+            host = hosts[name]
+            mgmt = next(n for n in host["nics"] if n["net"] == mgmt_net)
+            self.assertEqual((row["vmid"], row["mgmt"], row["role"]), (host["vmid"], mgmt["addr"], host["role"]), name)
+            self.assertIn(mgmt["ifname"], vm_common.NEVER_INTERFACES[name])
+        router = hosts["rt-core01"]
+        self.assertEqual(set(vm_common.ROUTER_DOWNLINKS), {n["ifname"] for n in router["nics"] if n.get("downlink")})
+        uplink = next(n for n in router["nics"] if n.get("gateway"))
+        self.assertEqual((uplink["ifname"], uplink["addr"]), (vm_common.ROUTER_UPLINK_IF, vm_common.ROUTER_UPLINK_ADDR))
+        # Proxmox names a VM's net<i> tap<vmid>i<i>; the allowed taps are exactly the allowed NICs.
+        expected = {}
+        for name, host in hosts.items():
+            for i, nic in enumerate(host["nics"]):
+                allowed = (nic.get("downlink") if name == "rt-core01" else
+                           (name in vm_common.SERVER_NICS and nic["ifname"] == vm_common.SERVER_NICS[name]))
+                if allowed:
+                    expected[(host["vmid"], f"net{i}")] = f"tap{host['vmid']}i{i}"
+                else:
+                    self.assertIn(f"tap{host['vmid']}i{i}", vm_common.NEVER_INTERFACES["pve66"])
+        self.assertEqual(vm_common.HV_LINKS, expected)
+        # The root helper on 66 carries the same table and the same probe addresses.
+        helper = hv_helper_source().decode()
+        links = re.search(r'LINKS="([^"]*)"', helper).group(1).split("\n")
+        self.assertEqual({(int(l.split()[0]), l.split()[1]): l.split()[2] for l in links}, expected)
+        probes = re.search(r'PROBES="([^"]*)"', helper).group(1).split()
+        business = [next(n["addr"] for n in hosts[s]["nics"] if n.get("gateway")) for s in vm_common.SERVERS]
+        self.assertEqual(probes, [vm_common.ROUTER_UPLINK_ADDR, *business])
+        self.assertEqual(inv["accounts"]["executor"]["name"], vm_common.EXECUTOR_USER)
+        self.assertEqual(inv["accounts"]["operator"]["name"], vm_common.OPERATOR_USER)
+        self.assertEqual(inv["domain"], vm_common.DOMAIN)
+
+    def test_registry_places_every_executor_on_its_vms(self) -> None:
+        registry = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
+        locations = json.loads((ROOT / "registry" / "locations.json").read_text())["locations"]
+        for profile_id, name in VM_EXECUTORS.items():
+            profile = registry[profile_id]
+            self.assertEqual(profile["executor"], f"profiles/{name}.py")
+            self.assertFalse(profile["live_supported"], profile_id)
+            self.assertEqual(self.module(profile_id).CONTRACTS, {}, profile_id)
+            for location_id in profile["allowed_locations"]:
+                loc = locations[location_id]
+                self.assertEqual(loc["domain"], "civil-petition")
+                if loc["node"] == "pve66":
+                    self.assertEqual((loc["host"], loc["user"]), (vm_common.HYPERVISOR["host"], "hvjob"))
+                else:
+                    self.assertEqual((loc["host"], loc["user"]), (vm_common.VMS[loc["node"]]["mgmt"], "opsjob"))
+            # Without a contract every scenario is refused, whatever its parameters.
+            module = self.module(profile_id)
+            with self.assertRaises(ExecutorError):
+                module.validate("ANY", self.params(profile_id), profile)
+
+    # ---------------------------------------------------------------- allow list (3-5 rule 2)
+
+    def test_every_interface_outside_the_allow_list_is_refused(self) -> None:
+        for ifname in vm_common.NEVER_INTERFACES["rt-core01"] + ("ens23", "lo"):
+            with self.subTest(router=ifname):
+                self.refused("router.qdisc", self.params("router.qdisc", device=ifname))
+        refused_links = [(201, "net0"), (201, "net4"), (202, "net1"), (203, "net1"), (204, "net1"), (205, "net1"),
+                         (206, "net0"), (206, "net1"), (101, "net0"), (201, "net9")]
+        for vmid, net in refused_links:
+            for profile_id in ("vmlink.state", "vmlink.qdisc"):
+                with self.subTest(profile=profile_id, vmid=vmid, net=net):
+                    self.refused(profile_id, self.params(profile_id, vmid=vmid, net=net))
+        # Names alone: an interface name in a rule of the content-guarded executors.
+        for ifname in ("ens18", "ens22"):
+            rule = {"hook": "forward", "src": "192.168.124.0/24", "verdict": "drop", "proto": ifname}
+            self.refused("router.config", self.params("router.config", rules=[rule]))
+        # The node and the 66 helper refuse again whatever reaches them.
+        router = load("router_qdisc_executor")
+        program = vm_common.node_program(router.NODE_BODY)
+        for ifname in ("ens18", "ens22"):
+            done = vm_sandbox.node_call(program, ["run", ifname, "rate", "0", "0", "0", "1000", "32", "50"], self.env)
+            self.assertEqual(done.returncode, 3, done.stderr)
+            self.assertEqual(node_guard_fakes.timers(self.env), [])
+
+    # ---------------------------------------------------------------- content guard (3-5 rule 6)
+
+    def test_content_guard_refuses_every_protected_target(self) -> None:
+        protected_nets = ["10.250.0.0/30", "10.250.0.1/32", "10.250.0.2/32", "192.168.127.0/24", "192.168.127.1/32",
+                          "192.168.123.254/32", "0.0.0.0/0", "192.168.122.0/24", "192.168.230.119/32", "192.168.0.0/16"]
+        for profile_id, hook in (("router.config", "forward"), ("vmhost.firewall", "output")):
+            for side in ("src", "dst"):
+                for net in protected_nets:
+                    with self.subTest(profile=profile_id, side=side, net=net):
+                        rule = {"hook": hook, "verdict": "drop", side: net}
+                        self.refused(profile_id, self.params(profile_id, rules=[rule]))
+            for port in vm_common.MONITOR_PORTS:
+                for proto in ("tcp", "udp"):
+                    with self.subTest(profile=profile_id, port=port, proto=proto):
+                        rule = {"hook": hook, "verdict": "drop", "proto": proto, "dst": "192.168.125.0/24", "dport": port}
+                        self.refused(profile_id, self.params(profile_id, rules=[rule]))
+            for value in ("10.250.0.1", "10.250.0.2", "ens22", "ens19"):
+                with self.subTest(profile=profile_id, named=value):
+                    rule = {"hook": hook, "verdict": "drop", "dst": "192.168.125.0/24", "proto": value}
+                    self.refused(profile_id, self.params(profile_id, rules=[rule]))
+            for hook_name in ("prerouting", "postrouting", "ingress"):
+                with self.subTest(profile=profile_id, hook=hook_name):
+                    rule = {"hook": hook_name, "verdict": "drop", "dst": "192.168.125.0/24"}
+                    self.refused(profile_id, self.params(profile_id, rules=[rule]))
+        for dst in ("10.250.0.0/30", "10.250.0.1/32", "192.168.123.0/24", "192.168.123.254/32", "0.0.0.0/0",
+                    "192.168.127.0/24", "192.168.127.5/32", "192.168.122.0/24", "192.168.0.0/16"):
+            with self.subTest(route=dst):
+                self.refused("router.config", self.params("router.config", rules=[], routes=[{"dst": dst, "type": "blackhole"}]))
+        for via in ("10.250.0.1", "192.168.127.1", "192.168.123.254"):
+            with self.subTest(via=via):
+                route = {"dst": "192.168.126.11/32", "type": "via", "via": via}
+                self.refused("router.config", self.params("router.config", rules=[], routes=[route]))
+        for key in ("net.ipv4.ip_forward", "net.ipv4.conf.all.rp_filter", "kernel.panic"):
+            with self.subTest(sysctl=key):
+                self.refused("router.config", self.params("router.config", rules=[], sysctls={key: 1}))
+        # A change of a configuration line that names the tunnel, management or report port.
+        for text in ("Listen 10.250.0.1:80", "host=192.168.127.1", "port=18090"):
+            with self.subTest(replace=text):
+                self.refused("vm.service", self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
+                                                       match="old", replace=text))
+        # Names that reach the VM (tables, units, log prefixes, descriptions) stay neutral.
+        for name in ("tb-acl", "t4-acl", "testbed", "scenario-x", "rca-lock", "fault-net", "inject-1"):
+            with self.subTest(table=name):
+                self.refused("router.config", self.params("router.config", table=name))
+        for prefix in ("[TESTBED DROP] ", "[T4 DROP] ", "[RCA] ", "drop "):
+            with self.subTest(prefix=prefix):
+                self.refused("vmhost.firewall", self.params("vmhost.firewall", log_prefix=prefix))
+
+    def test_chains_start_with_the_protected_lines_and_a_broad_rule_cannot_catch_them(self) -> None:
+        """Mutation: the first lines are what keeps a broad rule off the reports to 10.250.0.1. With them the
+        report leaves and the business flow is dropped; without them (lines removed) the report is dropped."""
+        firewall = load("vmhost_firewall_executor")
+        params = self.params("vmhost.firewall", rules=[{"hook": "output", "src": "192.168.124.0/24", "verdict": "drop"}])
+        text = firewall.check_parameters(params)[1]
+        chain = text.splitlines()
+        first = [line.strip() for line in chain[3:3 + len(vm_common.protected_accept_lines("server", "ens19"))]]
+        self.assertEqual(first, vm_common.protected_accept_lines("server", "ens19"))
+        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda kind, mgmt_if: []):
+            mutated = vm_common.nft_table("web-guard", "server", "ens19", vm_common.filter_rules(
+                params["rules"], "server", ("ens19",)))
+        setup = ("ip link add dummy0 type dummy; ip addr add 192.168.124.11/24 dev dummy0; ip link set dummy0 up\n"
+                 "ip route add 10.250.0.0/30 dev dummy0; ip route add 192.168.125.0/24 dev dummy0\n")
+        probe = ("nft add table inet obs; nft add chain inet obs out '{ type filter hook output priority 100; policy accept; }'\n"
+                 "nft add rule inet obs out ip daddr 10.250.0.1 counter; nft add rule inet obs out ip daddr 192.168.125.11 counter\n"
+                 "nft -f {file}\n"
+                 "echo r >/dev/udp/10.250.0.1/18090; echo r >/dev/udp/10.250.0.1/514; echo b >/dev/udp/192.168.125.11/8080 || true\n"
+                 "nft list table inet obs\n")
+        results = {}
+        for name, body in (("guarded", text), ("mutated", mutated)):
+            path = self.tmp / f"{name}.nft"
+            path.write_text(body)
+            done = subprocess.run(["unshare", "-rn", "bash", "-c", setup + probe.replace("{file}", str(path))],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            results[name] = [int(n) for n in re.findall(r"counter packets (\d+)", done.stdout)]
+        self.assertEqual(results["guarded"], [2, 0])
+        self.assertEqual(results["mutated"], [0, 0])
+
+    # ---------------------------------------------------------------- router.qdisc (real kernel)
+
+    def test_router_queue_lifecycle_cleanup_self_recovery_and_idempotence(self) -> None:
+        router = load("router_qdisc_executor")
+        program = vm_common.node_program(router.NODE_BODY)
+        shell = vm_sandbox.NetnsShell(self.tmp, self.env, "ip link add ens20 type veth peer name p20; ip link set ens20 up; ip link set p20 up")
+        try:
+            for kind, args in (("rate", ["rate", "0", "0", "0", "2000", "32", "50"]),
+                               ("netem", ["netem", "100", "10", "1.5", "0", "0", "0"])):
+                with self.subTest(kind=kind):
+                    rc, out, err = shell.node(program, ["check", "ens20", *args])
+                    self.assertEqual(rc, 0, err)
+                    rc, out, err = shell.node(program, ["run", "ens20", *args])
+                    self.assertEqual(rc, 0, err)
+                    rc, out, _ = shell.run("tc qdisc show dev ens20 root\n")
+                    self.assertIn(f"qdisc {'tbf' if kind == 'rate' else 'netem'} 1a7e: root", out)
+                    self.assertEqual(node_guard_fakes.armed_seconds(self.env, "queue-ens20")[-1], 1800)
+                    # Idempotent: a second run refuses while the change is in, cleanup twice is fine.
+                    rc, _, err = shell.node(program, ["run", "ens20", *args])
+                    self.assertEqual(rc, 1)
+                    self.assertIn("the change is ours", err)
+                    for _ in range(2):
+                        rc, _, err = shell.node(program, ["cleanup", "ens20", *args])
+                        self.assertEqual(rc, 0, err)
+                    self.assertEqual(shell.node(program, ["state", "ens20", *args])[1].strip(), "default")
+                    self.assertEqual(node_guard_fakes.unit_record(self.env, "queue-ens20"), [])
+                    # Self-recovery: cleanup never comes, the guard fires and deletes exactly our root.
+                    self.assertEqual(shell.node(program, ["run", "ens20", *args])[0], 0)
+                    undo = Path(self.env["OPSJOB_STATE_ROOT"]) / "queue-ens20.undo"
+                    rc, _, err = shell.run(f"bash {shlex.quote(str(undo))}\n")
+                    self.assertEqual(rc, 0, err)
+                    self.assertEqual(shell.node(program, ["state", "ens20", *args])[1].strip(), "default")
+                    self.assertFalse(undo.exists())
+                    rc, _, err = shell.node(program, ["cleanup", "ens20", *args])
+                    self.assertEqual(rc, 0, err)
+                    node_guard_fakes.timers(self.env)
+                    for timer in node_guard_fakes.timers(self.env):
+                        (Path(self.env["FAKE_SYSTEMD"]) / timer).unlink()
+            # A foreign root is never touched.
+            shell.run("tc qdisc add dev ens20 root handle 5: tbf rate 1mbit burst 32k latency 50ms\n")
+            rc, _, err = shell.node(program, ["run", "ens20", "rate", "0", "0", "0", "2000", "32", "50"])
+            self.assertEqual(rc, 1)
+            self.assertIn("foreign", err)
+            self.assertEqual(shell.node(program, ["cleanup", "ens20", "rate", "0", "0", "0", "2000", "32", "50"])[0], 0)
+            self.assertIn("qdisc tbf 5: root", shell.run("tc qdisc show dev ens20 root\n")[1])
+        finally:
+            shell.close()
+
+    # ---------------------------------------------------------------- runner side (control connection)
+
+    def test_run_refuses_without_the_runners_master_and_cleanup_still_reaches(self) -> None:
+        router = load("router_qdisc_executor")
+        params = self.params("router.qdisc", device="ens20")
+        shell = vm_sandbox.NetnsShell(self.tmp, self.env, "ip link add ens20 type veth peer name p20; ip link set ens20 up")
+        try:
+            rc, _, err = vm_sandbox.runner_call(router, "router.qdisc", params, "run", self.env, shell=shell)
+            self.assertEqual(rc, 1)
+            self.assertIn("control connection to 192.168.127.2 is down", err)
+            self.assertNotIn("call ", "\n".join(vm_sandbox.logged(self.tmp, "ssh-log")))
+            vm_sandbox.master(self.tmp, "192.168.127.2")
+            rc, _, err = vm_sandbox.runner_call(router, "router.qdisc", params, "run", self.env, shell=shell)
+            self.assertEqual(rc, 0, err)
+            calls = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("call ")]
+            self.assertEqual(calls, ["call opsjob@192.168.127.2 sudo -n bash -s"])
+            # The master goes away: cleanup goes through a fresh connection anyway (undo first).
+            vm_sandbox.master(self.tmp, "192.168.127.2", up=False)
+            rc, _, err = vm_sandbox.runner_call(router, "router.qdisc", params, "cleanup", self.env, shell=shell)
+            self.assertEqual(rc, 0, err)
+            rc, _, err = vm_sandbox.runner_call(router, "router.qdisc", params, "recovery", self.env, shell=shell)
+            self.assertEqual(rc, 0, err)
+            # The ssh options are the runner contract's (one ControlPath per user, host and port).
+            argv, stdin = None, None
+            with unittest.mock.patch.dict(router.CONTRACTS, {"T4-CASE": params}):
+                argv, stdin = router.build_invocation(vm_sandbox.plan("router.qdisc", "T4-CASE", params), "run")
+            for option in (b"-F none", b"/root/.ssh/t4-executor", b"IdentitiesOnly=yes", b"BatchMode=yes",
+                           b"StrictHostKeyChecking=yes", b"UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition",
+                           b"ControlPath=$ctl/%r@%h:%p", b"ControlMaster=no", b"CIVIL_PETITION_SSH_CONTROL_DIR:-/app/state/ssh-control",
+                           b'"opsjob@$host" sudo -n bash -s'):
+                self.assertIn(option, stdin)
+            self.assertNotIn("ens20", " ".join(argv[:3]))
+        finally:
+            shell.close()
+
+    # ---------------------------------------------------------------- router.config, vmhost.firewall
+
+    def test_router_change_goes_the_operator_way_and_is_undone(self) -> None:
+        config = load("router_config_executor")
+        params = self.params("router.config", routes=[{"dst": "192.168.126.11/32", "type": "blackhole"}],
+                             sysctls={"net.netfilter.nf_conntrack_max": 4096}, log_prefix="[ACL DENY] ")
+        args = ["operator", *config.check_parameters(params)]
+        program = vm_common.node_program(vm_common.FIREWALL_BODY)
+        shell = vm_sandbox.NetnsShell(self.tmp, self.env, "ip link add ens21 type dummy; ip addr add 192.168.126.1/24 dev ens21; ip link set ens21 up")
+        try:
+            self.assertEqual(shell.node(program, ["check", *args])[0], 0)
+            rc, _, err = shell.node(program, ["run", *args])
+            self.assertEqual(rc, 0, err)
+            ruleset = shell.run("nft list table inet acl-change\n")[1]
+            self.assertIn('log prefix "[ACL DENY] "', ruleset)
+            self.assertIn("blackhole 192.168.126.11", shell.run("ip route\n")[1])
+            self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "4096")
+            operator = vm_sandbox.logged(self.tmp, "operator-log")
+            typed = [line.split(": ", 1)[1].replace(str(self.tmp), "{root}") for line in operator]
+            self.assertEqual(typed, [
+                "tee {root}/home/acl-change.nft",
+                "{root}/vm-bin/sudo -n nft -f {root}/home/acl-change.nft",
+                "{root}/vm-bin/sudo -n ip route add blackhole 192.168.126.11/32",
+                "{root}/vm-bin/sudo -n sysctl -w net.netfilter.nf_conntrack_max=4096",
+            ])
+            self.assertTrue(all(line.startswith("sysop: ") for line in operator))
+            self.assertEqual(shell.node(program, ["run", *args])[0], 1)
+            rc, _, err = shell.node(program, ["cleanup", *args])
+            self.assertEqual(rc, 0, err)
+            self.assertNotIn("acl-change", shell.run("nft list tables\n")[1])
+            self.assertNotIn("blackhole", shell.run("ip route\n")[1])
+            self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "65536")
+            self.assertFalse((self.tmp / "home" / "acl-change.nft").exists())
+            self.assertEqual(shell.node(program, ["state", *args])[1].strip(), "default")
+            self.assertEqual(shell.node(program, ["cleanup", *args])[0], 0)
+            # Self-recovery: the guard's undo (root, no operator) takes everything back.
+            for timer in node_guard_fakes.timers(self.env):
+                (Path(self.env["FAKE_SYSTEMD"]) / timer).unlink()
+            self.assertEqual(shell.node(program, ["run", *args])[0], 0)
+            undo = Path(self.env["OPSJOB_STATE_ROOT"]) / "cfg-acl-change.undo"
+            self.assertNotIn("sysop", undo.read_text())
+            rc, _, err = shell.run(f"bash {shlex.quote(str(undo))}\n")
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(shell.node(program, ["state", *args])[1].strip(), "default")
+            self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "65536")
+            boot = Path(node_guard_fakes.unit_record(self.env, "cfg-acl-change")[2]) if node_guard_fakes.unit_record(self.env, "cfg-acl-change") else None
+            self.assertIsNone(boot)
+        finally:
+            shell.close()
+
+    def test_a_change_that_cuts_the_tunnel_probe_is_undone_on_the_spot(self) -> None:
+        firewall = load("vmhost_firewall_executor")
+        params = self.params("vmhost.firewall")
+        front = self.tmp / "hv-front.sh"
+        front.write_text("#!/bin/bash\nread -r req; echo \"$req\" >>\"$VM_SANDBOX/hv-log\"; [[ -e \"$VM_SANDBOX/probe-ok\" ]]\n")
+        front.chmod(0o755)
+        env = {**self.env, "VM_SANDBOX_HV_FRONT": str(front)}
+        shell = vm_sandbox.NetnsShell(self.tmp, env, "ip link add ens18 type dummy; ip addr add 192.168.124.11/24 dev ens18; ip link set ens18 up")
+        try:
+            vm_sandbox.master(self.tmp, "192.168.127.21")
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertEqual(rc, 1)
+            self.assertIn("undoing it", err)
+            self.assertEqual(vm_sandbox.logged(self.tmp, "hv-log"), ["probe 192.168.124.11"])
+            self.assertNotIn("web-guard", shell.run("nft list tables\n")[1])
+            (self.tmp / "probe-ok").touch()
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("web-guard", shell.run("nft list tables\n")[1])
+            self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "cleanup", env, shell=shell)[0], 0)
+            self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "recovery", env, shell=shell)[0], 0)
+            # Root mode leaves no operator command and no file.
+            self.assertEqual(vm_sandbox.logged(self.tmp, "operator-log"), [])
+        finally:
+            shell.close()
+
+    # ---------------------------------------------------------------- 66 helper
+
+    def _helper_env(self) -> dict[str, str]:
+        bindir = self.tmp / "hv"
+        bindir.mkdir(exist_ok=True)
+        (bindir / "t4-hv-exec").write_bytes((HV_DIR / "t4-hv-exec").read_bytes())
+        (bindir / "t4-hv-exec").chmod(0o755)
+        build_hv_helper(bindir / "t4-hv-exec-root")
+        qmp = self.tmp / "qmp"
+        qmp.mkdir(exist_ok=True)
+        return {**self.env, "HV_HELPER_DIR": str(bindir), "HV_SUDO": str(self.tmp / "vm-bin" / "sudo"),
+                "HV_QMP_DIR": str(qmp), "HV_LINK_DIR": str(self.tmp / "links"), "HV_SELF": str(bindir / "t4-hv-exec-root"),
+                "HV_MODULE_DIR": "/sys/module", "VM_SANDBOX_HV_FRONT": str(bindir / "t4-hv-exec")}
+
+    def _qmp_server(self, vmid: int):
+        """A fake QMP socket for one VM: greets, accepts capabilities, records set_link."""
+        import socket
+        import threading
+        path = self.tmp / "qmp" / f"{vmid}.qmp"
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(path))
+        server.listen(4)
+        seen: list[dict] = []
+
+        def serve() -> None:
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                f = conn.makefile("rw")
+                f.write(json.dumps({"QMP": {"version": {}}}) + "\n")
+                f.flush()
+                for line in f:
+                    msg = json.loads(line)
+                    seen.append(msg)
+                    f.write(json.dumps({"return": {}}) + "\n")
+                    f.flush()
+                conn.close()
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(server.close)
+        return seen
+
+    def _helper(self, env: dict[str, str], request: str, guard: str = "expire_after=1800 guard_hold=960") -> subprocess.CompletedProcess:
+        return subprocess.run([env["VM_SANDBOX_HV_FRONT"]], input=f"{request}\n{guard}\n", env=env, capture_output=True,
+                              text=True, timeout=60)
+
+    def test_hypervisor_link_down_cleanup_self_recovery_and_refusals(self) -> None:
+        env = self._helper_env()
+        seen = self._qmp_server(202)
+        self.assertEqual(self._helper(env, "link-check 202 net0").stdout.strip(), "up")
+        done = self._helper(env, "link-down 202 net0")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        sets = [m["arguments"] for m in seen if m.get("execute") == "set_link"]
+        self.assertEqual(sets, [{"name": "net0", "up": False}])
+        self.assertEqual(self._helper(env, "link-state 202 net0").stdout.strip(), "down")
+        self.assertEqual(node_guard_fakes.armed_seconds(env, "link-202-net0"), [1800])
+        self.assertEqual(self._helper(env, "link-down 202 net0").returncode, 1)
+        for _ in range(2):
+            done = self._helper(env, "link-cleanup 202 net0")
+            self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual([m["arguments"]["up"] for m in seen if m.get("execute") == "set_link"], [False, True, True])
+        self.assertEqual(self._helper(env, "link-state 202 net0").stdout.strip(), "up")
+        self.assertEqual(node_guard_fakes.unit_record(env, "link-202-net0"), [])
+        # Self-recovery: the guard's undo calls the root helper's restore by itself.
+        self.assertEqual(self._helper(env, "link-down 202 net0").returncode, 0)
+        fired = node_guard_fakes.fire(env, "link-202-net0", extra_env=env)
+        self.assertEqual(fired.returncode, 0, fired.stderr)
+        self.assertEqual(seen[-1]["arguments"], {"name": "net0", "up": True})
+        self.assertEqual(self._helper(env, "link-state 202 net0").stdout.strip(), "up")
+        # 66 keeps no boot rule outside its state root (design 3-5 rule 5): the test roots stand in for /run.
+        # Refusals: not in the table, malformed, actions the front does not pass, missing guard values.
+        for request in ("link-down 201 net0", "link-down 201 net4", "link-down 202 net1", "link-down 206 net0",
+                        "qdisc-apply tap201i0 100 0 0 0", "qdisc-apply tap206i1 100 0 0 0", "qdisc-apply wg0 1 0 0 0",
+                        "link-restore 202 net0", "probe 192.168.230.119", "probe 10.250.0.1", "shell id",
+                        "link-down 202 net0; id", "link-down $(id) net0"):
+            with self.subTest(request=request):
+                before = len(seen)
+                done = self._helper(env, request)
+                self.assertEqual(done.returncode, 3, (done.stdout, done.stderr))
+                self.assertEqual(len(seen), before)
+        done = self._helper(env, "link-down 202 net0", guard="")
+        self.assertEqual(done.returncode, 3)
+
+    def test_hypervisor_tap_queue_on_a_real_kernel(self) -> None:
+        env = self._helper_env()
+        shell = vm_sandbox.NetnsShell(self.tmp, env, "ip link add tap203i0 type veth peer name v203; ip link set tap203i0 up")
+        front = env["VM_SANDBOX_HV_FRONT"]
+        call = lambda req: shell.run(f"printf '%s\\nexpire_after=1800 guard_hold=960\\n' {shlex.quote(req)} | {shlex.quote(front)}\n")
+        try:
+            self.assertEqual(call("qdisc-check tap203i0")[1].strip(), "default")
+            rc, _, err = call("qdisc-apply tap203i0 100 10 0.5 8000")
+            self.assertEqual(rc, 0, err)
+            self.assertIn("qdisc netem 1a7e: root", shell.run("tc qdisc show dev tap203i0 root\n")[1])
+            self.assertEqual(call("qdisc-apply tap203i0 100 10 0.5 8000")[0], 1)
+            self.assertEqual(call("qdisc-state tap203i0")[1].strip(), "ours")
+            for _ in range(2):
+                self.assertEqual(call("qdisc-cleanup tap203i0")[0], 0)
+            self.assertEqual(call("qdisc-state tap203i0")[1].strip(), "default")
+            self.assertEqual(call("qdisc-apply tap203i0 0 0 0 0")[0], 3)
+            self.assertEqual(call("qdisc-apply tap203i0 100 200 0 0")[0], 3)
+            # Self-recovery on the real kernel.
+            self.assertEqual(call("qdisc-apply tap203i0 50 0 0 0")[0], 0)
+            undo = Path(env["OPSJOB_STATE_ROOT"]) / "link-tap203i0.undo"
+            self.assertEqual(shell.run(f"bash {shlex.quote(str(undo))}\n")[0], 0)
+            self.assertEqual(call("qdisc-state tap203i0")[1].strip(), "default")
+        finally:
+            shell.close()
+
+    def test_hypervisor_executors_send_one_request_through_the_forced_command(self) -> None:
+        env = self._helper_env()
+        seen = self._qmp_server(205)
+        state = load("vmlink_state_executor")
+        params = self.params("vmlink.state", vmid=205, net="net0")
+        rc, _, err = vm_sandbox.runner_call(state, "vmlink.state", params, "run", env)
+        self.assertEqual(rc, 1)
+        self.assertIn("control connection to 192.168.122.1 is down", err)
+        vm_sandbox.master(self.tmp, "192.168.122.1")
+        rc, _, err = vm_sandbox.runner_call(state, "vmlink.state", params, "run", env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(seen[-1]["arguments"], {"name": "net0", "up": False})
+        self.assertEqual(vm_sandbox.runner_call(state, "vmlink.state", params, "recovery", env)[0], 1)
+        self.assertEqual(vm_sandbox.runner_call(state, "vmlink.state", params, "cleanup", env)[0], 0)
+        self.assertEqual(vm_sandbox.runner_call(state, "vmlink.state", params, "recovery", env)[0], 0)
+        calls = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("call ")]
+        self.assertTrue(calls)
+        self.assertTrue(all(l == "call hvjob@192.168.122.1 " for l in calls), calls)
+
+    def test_helper_arms_before_every_change_and_the_installed_copy_is_the_build(self) -> None:
+        """Design 6-1 "66 도우미 가드 시험" (1): in every branch that changes something, arm comes first.
+        (2) the installed copy's checksum is the repository's: build.py --check, and version answers it."""
+        source = hv_helper_source().decode()
+        self.assertTrue(NodeGuardTests._arms(source.encode()))
+        self.assertIn(self.common_guard().decode(), source)
+        self.assertNotIn("@LINKS@", source)
+        branches = dict(re.findall(r"(?m)^  ([a-z-]+)\) (.*?)(?=^  [a-z-]+\)|^  \*\))", source, re.S))
+        changes = {"link-down": "qmp_set_link", "qdisc-apply": "tc qdisc add"}
+        for action, change in changes.items():
+            body = branches[action]
+            self.assertLess(body.index('arm "$('), body.index(change), action)
+            self.assertIn("need_guard", body.split('arm "$(')[0])
+        # No other branch changes anything without a guard: restore is the guard's own undo, cleanup postpones first.
+        for action, body in branches.items():
+            if action in changes:
+                continue
+            if "qmp_set_link" in body or "link_restore" in body or "tc qdisc del" in body or "qdisc_remove" in body:
+                self.assertIn(action, ("link-cleanup", "qdisc-cleanup", "link-restore"), action)
+                if action != "link-restore":
+                    self.assertLess(body.index("guard_postpone"), min(body.find(x) for x in ("link_restore", "qdisc_remove") if x in body))
+        done = subprocess.run([sys.executable, str(HV_DIR / "build.py"), "--check"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        expected = json.loads((HV_DIR / "t4-hv-exec.sha256.json").read_text())
+        self.assertEqual(json.loads(subprocess.run([sys.executable, str(HV_DIR / "build.py"), "--sha256"], capture_output=True,
+                                                   text=True, check=True).stdout), expected)
+        # The repository keeps no copy with addresses (design 2-5): only the template and the checksums.
+        self.assertFalse((HV_DIR / "t4-hv-exec-root").exists())
+        env = self._helper_env()
+        self.assertEqual(json.loads(self._helper(env, "version", guard="").stdout), expected)
+        # A drifted copy shows: version answers a different checksum.
+        (Path(env["HV_HELPER_DIR"]) / "t4-hv-exec-root").write_text(source + "# drift\n")
+        self.assertNotEqual(json.loads(self._helper(env, "version", guard="").stdout), expected)
+        # The helper names nothing of the testbed in what it leaves on 66's journal (units are run-r<hex>).
+        self.assertIn("--description= ", source)
+
+    # ---------------------------------------------------------------- processes and units
+
+    def test_router_resource_cpu_and_conntrack_cleanup_and_self_recovery(self) -> None:
+        res = load("router_resource_executor")
+        program = vm_common.node_program(res.NODE_BODY)
+        for mode, args, job in (("cpu", ["cpu", "1", "0", "60"], "burnin"), ("conntrack", ["conntrack", "0", "2000", "60"], "tablefill")):
+            with self.subTest(mode=mode):
+                done = vm_sandbox.node_call(program, ["run", *args], self.env)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                pgid = int((Path(self.env["OPSJOB_STATE_ROOT"]) / f"{job}.pgid").read_text())
+                os.killpg(pgid, 0)
+                self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
+                if mode == "conntrack":
+                    for _ in range(100):
+                        if len(vm_sandbox.logged(self.tmp, "conntrack")) >= 50:
+                            break
+                        time.sleep(0.1)
+                    self.assertGreater(len(vm_sandbox.logged(self.tmp, "conntrack")), 0)
+                done = vm_sandbox.node_call(program, ["cleanup", *args], self.env)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(pgid, 0)
+                self.assertEqual(vm_sandbox.logged(self.tmp, "conntrack"), [])
+                self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+                # Self-recovery.
+                self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 0)
+                pgid = int((Path(self.env["OPSJOB_STATE_ROOT"]) / f"{job}.pgid").read_text())
+                fired = self.fire(job)
+                self.assertEqual(fired.returncode, 0, fired.stderr)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(pgid, 0)
+                self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+        # reboot arms nothing and asks systemd for a reboot (a fake here) a moment later.
+        fake = self.tmp / "vm-bin" / "systemctl"
+        fake.write_text("#!/bin/bash\necho \"$*\" >>\"$VM_SANDBOX/reboot-log\"\n")
+        fake.chmod(0o755)
+        done = vm_sandbox.node_call(program, ["run", "reboot", "0", "0", "0"], self.env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for _ in range(50):
+            if vm_sandbox.logged(self.tmp, "reboot-log"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(vm_sandbox.logged(self.tmp, "reboot-log"), ["reboot"])
+        self.assertEqual(node_guard_fakes.unit_record(self.env, "restart"), [])
+
+    def test_server_stress_modes_cleanup_and_self_recovery(self) -> None:
+        stress = load("vmhost_stress_executor")
+        program = vm_common.node_program(stress.NODE_BODY)
+        work = self.tmp / "data"
+        work.mkdir()
+        cases = (("cpu", ["cpu", "1", "0", "-", "0", "0", "60"], "burnin", None),
+                 ("memhog", ["memhog", "0", "16", "-", "0", "0", "60"], "memhold", None),
+                 ("io", ["io", "0", "4", str(work), "0", "0", "60"], "iobench", work / ".iobench.dat"),
+                 ("fill", ["fill", "0", "8", str(work), "99", "1", "0"], "bulkcopy", work / ".bulkcopy.part"))
+        for mode, args, job, artifact in cases:
+            with self.subTest(mode=mode):
+                done = vm_sandbox.node_call(program, ["run", *args], self.env)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
+                self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 1)
+                if artifact is not None and mode == "fill":
+                    self.assertEqual(artifact.stat().st_size, 8 * 1024 * 1024)
+                for _ in range(2):
+                    done = vm_sandbox.node_call(program, ["cleanup", *args], self.env)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+                if artifact is not None:
+                    self.assertFalse(artifact.exists())
+                self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 0)
+                record = node_guard_fakes.unit_record(self.env, job)
+                rule = Path(record[2]).read_text()
+                if artifact is not None:
+                    self.assertIn(f"r! {artifact}", rule)
+                fired = self.fire(job)
+                self.assertEqual(fired.returncode, 0, fired.stderr)
+                self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+
+    def test_server_job_service_and_database_units(self) -> None:
+        job = load("vmhost_job_executor")
+        src = self.tmp / "logs"
+        src.mkdir()
+        (src / "a.log").write_text("x" * 100000)
+        out = self.tmp / "out"
+        out.mkdir()
+        params = self.params("vmhost.job", source_dir=str(src), output_dir=str(out), min_free_mib=1024)
+        args = job.check_parameters(params)
+        program = vm_common.node_program(job.NODE_BODY)
+        done = vm_sandbox.node_call(program, ["run", *args], self.env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        start = [l for l in vm_sandbox.logged(self.tmp, "unit-log") if l.startswith("start ")][0]
+        self.assertTrue(start.startswith("start nightly-archive|Nightly archive|Nice=10 IOSchedulingClass=best-effort|/usr/bin/timeout 600 "))
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
+        self.assertEqual(vm_sandbox.node_call(program, ["cleanup", *args], self.env).returncode, 0)
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+        self.assertFalse((out / "nightly-archive.tar.gz").exists())
+        self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 0)
+        self.assertEqual(self.fire("nightly-archive").returncode, 0)
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+
+        db = load("vmdb_lock_executor")
+        dbc = load("vmdb_executor_common")
+        args = db.check_parameters(self.params("vmdb.lock"))
+        program = vm_common.node_program(dbc.NODE_BODY)
+        self.assertEqual(vm_sandbox.node_call(program, ["check", *args], self.env).returncode, 0)
+        done = vm_sandbox.node_call(program, ["run", *args], self.env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        for _ in range(50):
+            if (self.tmp / "backends").exists():
+                break
+            time.sleep(0.1)
+        self.assertIn("maint|BEGIN; LOCK TABLE petition IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(300); COMMIT;",
+                      vm_sandbox.logged(self.tmp, "psql-log"))
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
+        self.assertEqual(vm_sandbox.node_call(program, ["cleanup", *args], self.env).returncode, 0)
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+        self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 0)
+        time.sleep(0.5)
+        self.assertEqual(self.fire("table-maintenance").returncode, 0)
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+        self.assertTrue(any("pg_terminate_backend" in l and "application_name = 'maint'" in l
+                            for l in vm_sandbox.logged(self.tmp, "psql-log")))
+        wl = load("vmdb_workload_executor")
+        self.assertIn("SELECT count(*) FROM petition WHERE title LIKE", wl.check_parameters(self.params("vmdb.workload"))[4])
+        self.refused("vmdb.workload", self.params("vmdb.workload", statement="DELETE FROM petition"))
+        self.refused("vmdb.lock", self.params("vmdb.lock", table="pg_class"))
+        self.refused("vmdb.lock", self.params("vmdb.lock", host="192.168.127.31", node="was01"))
+
+    def test_service_change_goes_the_operator_way(self) -> None:
+        svc = load("vm_service_executor")
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "tomcat10.service-state").write_text("active\n")
+        conf = self.tmp / "etc" / "tomcat10" / "server.xml"
+        conf.parent.mkdir(parents=True)
+        conf.write_text('<Server>\n<Connector port="8080" maxThreads="200"/>\n</Server>\n')
+        params = self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
+                             match='<Connector port="8080" maxThreads="200"/>', replace='<Connector port="8080" maxThreads="4"/>')
+        args = svc.check_parameters(params)
+        args[2] = str(conf)
+        program = vm_common.node_program(svc.NODE_BODY)
+        done = vm_sandbox.node_call(program, ["run", *args], self.env)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('maxThreads="4"', conf.read_text())
+        typed = [l.split(": ", 1)[1].replace(str(self.tmp), "{root}") for l in vm_sandbox.logged(self.tmp, "operator-log")]
+        self.assertEqual(typed, ["tee {root}/home/server.xml.new",
+                                 "{root}/vm-bin/sudo -n cp -p {root}/etc/tomcat10/server.xml {root}/etc/tomcat10/server.xml.bak",
+                                 "{root}/vm-bin/sudo -n cp {root}/home/server.xml.new {root}/etc/tomcat10/server.xml",
+                                 "{root}/vm-bin/sudo -n {root}/vm-bin/unit-ctl restart tomcat10"])
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
+        self.assertEqual(vm_sandbox.node_call(program, ["cleanup", *args], self.env).returncode, 0)
+        self.assertIn('maxThreads="200"', conf.read_text())
+        self.assertFalse(Path(str(conf) + ".bak").exists())
+        self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 0)
+        self.assertEqual(self.fire("svc-tomcat10").returncode, 0)
+        self.assertIn('maxThreads="200"', conf.read_text())
+        # stop: the unit stops by the operator's hand; cleanup or the guard starts it again.
+        stop = svc.check_parameters(self.params("vm.service"))
+        self.assertEqual(vm_sandbox.node_call(program, ["run", *stop], self.env).returncode, 0)
+        self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "inactive")
+        self.assertEqual(self.fire("svc-tomcat10").returncode, 0)
+        self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "active")
+        # The line to change must be there exactly once; release swaps need the fixed checksum.
+        bad = list(args)
+        bad[3] = "<Connector missing/>"
+        self.assertEqual(vm_sandbox.node_call(program, ["check", *bad], self.env).returncode, 1)
+        self.refused("vm.service", self.params("vm.service", unit="apache2"))
+        self.refused("vm.service", self.params("vm.service", action="config", file="/etc/rsyslog.d/00-opsjobs.conf",
+                                               match="a", replace="b"))
+        self.refused("vm.service", self.params("vm.service", action="war", release="/tmp/x.war", release_sha256="0" * 64))
+
+
+class CivilPetitionTrialToolTests(unittest.TestCase):
+    """vm-executor-trial.py (design 10 T4 «시험 실행»): a contract bound only for one call, the executor's own checks."""
+
+    TOOL = ROOT / "vm-executor-trial.py"
+
+    def call(self, params: dict, *extra: str) -> subprocess.CompletedProcess:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(params, f)
+        self.addCleanup(os.unlink, f.name)
+        return subprocess.run([sys.executable, str(self.TOOL), "--params", f.name, *extra], capture_output=True, text=True,
+                              timeout=60)
+
+    def test_dry_run_prints_the_confirmation_and_live_needs_it(self) -> None:
+        params = NodeGuardTests.UNUSED_NODE_EXECUTORS["router.qdisc"][1]
+        done = self.call(params, "--profile", "router.qdisc", "--action", "run")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        out = json.loads(done.stdout)
+        self.assertRegex(out["confirmation"], r"^TRIAL:router\.qdisc:[0-9a-f]{12}$")
+        self.assertEqual(out["argv"][3:7], ["run", "192.168.127.2", "rt-core01", "ens20"])
+        self.assertEqual(out["guard_expiry_seconds"], 600 + 600)
+        self.assertFalse(out["live"])
+        done = self.call(params, "--profile", "router.qdisc", "--action", "run", "--live", "--confirm", "TRIAL:router.qdisc:000000000000")
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("--confirm must be", done.stderr)
+        # The executor's own checks stand: a protected interface or a host that is no registry location is refused.
+        bad = dict(params, device="ens18")
+        self.assertEqual(self.call(bad, "--profile", "router.qdisc", "--action", "run").returncode, 3)
+        bad = dict(params, host="192.168.127.21", node="web01")
+        self.assertEqual(self.call(bad, "--profile", "router.qdisc", "--action", "run").returncode, 3)
+        # The registry and catalog stay without contracts.
+        self.assertEqual(load("router_qdisc_executor").CONTRACTS, {})
+
+    def test_companion_load_starts_and_stops_its_unit_without_a_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            env = vm_sandbox.install(tmp)
+            fake = tmp / "vm-bin" / "k6"
+            fake.write_text("#!/bin/bash\nsleep 30\n")
+            fake.chmod(0o755)
+            module = load("vmload_north_south_executor")
+            params = NodeGuardTests.UNUSED_NODE_EXECUTORS["vmload.north_south"][1]
+            args = module.check_parameters(params)
+            program = module.NODE_PROGRAM.replace(b"[[ -r /opt/loadgen/civil-petition/script.js ]]", b"true")
+            done = vm_sandbox.node_call(program, ["run", *args], env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            start = [l for l in vm_sandbox.logged(tmp, "unit-log") if l.startswith("start ")][0]
+            self.assertIn("surge-check|k6 load driver|--uid=k6 --gid=k6 RuntimeMaxSec=720|", start.replace("--property=", ""))
+            self.assertIn("TARGET_RPS=60 DURATION=600s LOADGEN_SEED=7", start)
+            self.assertIn("ENTRY_URL=http://192.168.124.11/petition", start)
+            self.assertEqual(vm_sandbox.node_call(program, ["state", *args], env).stdout.decode().strip(), "ours")
+            self.assertEqual(vm_sandbox.node_call(program, ["run", *args], env).returncode, 1)
+            self.assertEqual(vm_sandbox.node_call(program, ["cleanup", *args], env).returncode, 0)
+            self.assertEqual(vm_sandbox.node_call(program, ["state", *args], env).stdout.decode().strip(), "default")
+            self.assertEqual(node_guard_fakes.timers(env), [])
