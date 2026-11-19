@@ -467,7 +467,7 @@ DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 
 | journal | 코드 사실 + (`--vm-reads`) 에이전트 `/proc/<pid>/fd` | journal 파일 0 |
 | 프로세스 계열 단위 | VM `sms.process.cpu_utilization` 라벨 | 계열이 있으면 라벨을 기록하고 충족(설계 행은 «기록»). 라벨이 `name`, `pid` 와 다르면 그 사실을 적는다 |
 | ICMP | VM `sms.server.icmp_status`, `sms.server.rtt`, PG 대상 주소, `target_availability_latest`(server), `policy_device_overrides`(collection), 라우터 `nms.network.icmp_status`, `rtt` | 서버 넷 상태 1, RTT 계열, 주소 = 업무 주소, 가용성 UP, 덮어쓰기 0, 라우터 상태 1 과 RTT |
-| NMS | PG 장비 하위 대상(`resource_kind` network_interface 의 `resource_key` = ifDescr, `meta.snmp_index`), VM 라우터 계열(`target_id` 장비, `snmp_index` 라벨) | 인벤토리의 상향과 하위 인터페이스(T 는 ens18 ~ ens21) 하나하나에 상태, 옥텟, 오류, 버림 계열이 모두 있음(관리 NIC, lo 는 세지 않음), 장비 `nms.cpu.usage` 있음. 폴링 간격 기록 |
+| NMS | PG 장비 하위 대상(`resource_kind` network_interface 의 `resource_key` = ifDescr, `meta.snmp_index`), VM 라우터 계열(인터페이스는 `target_id` 장비 또는 그 하위 대상과 `snmp_index` 라벨, CPU 는 `host_target_id` 장비. collector-nms 는 첫 폴링만 장비 대상으로 싣고 다음 폴링부터 하위 대상으로 싣는다, 11-19 119 실측 폴링 60초) | 인벤토리의 상향과 하위 인터페이스(T 는 ens18 ~ ens21) 하나하나에 상태, 옥텟, 오류, 버림 계열이 모두 있음(관리 NIC, lo 는 세지 않음), 장비 `nms.cpu.usage` 있음. 창은 잰 폴링 간격의 2배(최소 15분). 폴링 간격 기록 |
 | trap | CH `snmp_traps_local`(`--trap-since` 부터, 출발 라우터 상향 주소) | linkDown, linkUp 각 1행 이상. 참고(판정 아님): 같은 구간 라우터 아닌 출발 trap 수와 주소 |
 | DPM 없음 | VM `dpm.*`(이 도메인 대상), PG type database 이고 주소가 db01 업무 주소 | 둘 다 0 |
 | DB 서버 관제 | VM 데이터 마운트 파일 시스템, 디스크 IO, CH `process_snapshot` 의 postgres 행, CH 서버 로그 감시 줄, (`--vm-reads`) 서버 로그의 패턴 맞는 줄 수 | 앞 셋이 있고, 서버 로그 감시 줄은 로그 감시 행과 같은 규칙(줄이 없을 때 파일에도 맞는 줄이 없으면 실패 아님, 따로 셈) |

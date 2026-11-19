@@ -61,6 +61,14 @@ NMS_FAMILIES = {
     "버림": ("nms.interface.if_in_discards", "nms.interface.if_out_discards"),
     "CPU": ("nms.cpu.usage",),
 }
+# NMS 행의 되돌아봄 창. 폴링 간격을 표본에서 재고 그 두 배(최소 15분)를 본다. collector-nms 는 첫 폴링에서만 장비 대상
+# (target_id = 장비)으로 싣고, 그때 자원 하위 대상(targets.type network_resource, resource_kind cpu, memory, network_interface 등)을
+# 만든 뒤 다음 폴링부터
+# target_id = 하위 대상으로 싣는다. host_target_id = 장비 라벨은 처음부터 늘 있다(119 VM 실측 11-19, 폴링 60초).
+# 그래서 장비 단위 질의는 target_id 가 아니라 host_target_id 로 고른다. 폴링 간격은 같은 계열의 이웃 표본 간격
+# (VictoriaMetrics scrape_interval)을 1시간 안에서 재고, 계열마다 표본이 2개 미만이면 알 수 없음으로 둔다.
+NMS_MIN_WINDOW_SEC = 900
+NMS_POLL_LOOKBACK_SEC = 3600
 LINK_DOWN = "1.3.6.1.6.3.1.1.5.3"
 LINK_UP = "1.3.6.1.6.3.1.1.5.4"
 # Q8 예산(설계 §1 Q8, §3-6). 기준값은 monitoring/t3-budget.json 한 곳에 둔다(검토 세션 Q31 답 반영, 11-19).
@@ -374,12 +382,28 @@ def item_icmp(remote, ctx, ids, until) -> Item:
     return it.set(not bad, "; ".join(bad))
 
 
+def nms_poll_seconds(remote, device_id: str, until) -> float | None:
+    """장비 CPU 계열의 이웃 표본 간격(초). 하위 대상으로 옮겨 실린 계열까지 host_target_id 로 고른다(NMS_MIN_WINDOW_SEC 위 설명)."""
+    value = vm_scalar(remote, f'max(scrape_interval({{__name__="nms.cpu.usage",host_target_id="{device_id}"}}'
+                              f'[{NMS_POLL_LOOKBACK_SEC}s]))', until)
+    return value if value and value > 0 else None
+
+
+def nms_window_seconds(poll: float | None) -> int:
+    """NMS 행 되돌아봄 창: 폴링 간격의 두 배(올림), 최소 NMS_MIN_WINDOW_SEC. 간격을 모르면 최소값."""
+    if not poll:
+        return NMS_MIN_WINDOW_SEC
+    return max(NMS_MIN_WINDOW_SEC, -int(-2 * poll // 1))
+
+
 def item_nms(remote, ctx, ids, until) -> Item:
     """라우터 상향과 하위 인터페이스마다 상태, 옥텟, 오류, 버림 계열과 장비 CPU(설계 §10 T3 NMS).
 
     인터페이스 이름(인벤토리 ifname)은 장비 하위 대상(network_resource, resource_kind network_interface)의 resource_key
     (ifDescr)이고, 그 meta.snmp_index 가 VM 계열의 snmp_index 라벨이다(119 조회 11-18: 기존 장비 하위 대상의 meta 칸,
-    계열 라벨 target_id = 장비, snmp_index). lo, 관리 NIC 처럼 설계 밖 인터페이스는 세지 않는다.
+    계열 라벨 target_id = 장비 또는 하위 대상, snmp_index). lo, 관리 NIC 처럼 설계 밖 인터페이스는 세지 않는다.
+    CPU 는 host_target_id = 장비로 고르고, 창은 잰 폴링 간격에서 파생한다(NMS_MIN_WINDOW_SEC 위 설명). 계열이 창 안에
+    있어야 충족이고 폴링 간격을 모르는 것만으로는 미충족이 아니다(등록 직후 첫 폴링만 있을 때).
     """
     it = Item("NMS")
     router = ids.get("router")
@@ -389,7 +413,15 @@ def item_nms(remote, ctx, ids, until) -> Item:
     if not router:
         return it.set(False, "라우터 장비 대상 없음")
     bad = []
-    cpu = vm_vector(remote, f'count by (__name__) (last_over_time({{__name__="nms.cpu.usage",target_id="{router["id"]}"}}[15m]))', until)
+    poll = nms_poll_seconds(remote, router["id"], until)
+    window = nms_window_seconds(poll)
+    it.numbers.append(f"폴링 간격 {round(poll, 1)}초" if poll else
+                      f"폴링 간격 알 수 없음(최근 {NMS_POLL_LOOKBACK_SEC // 60}분 안 같은 CPU 계열 표본 2개 미만)")
+    it.numbers.append(f"창 {window}초(폴링 간격 2배, 최소 {NMS_MIN_WINDOW_SEC}초)")
+    # 첫 폴링(장비 대상)과 그 뒤(하위 대상)가 한 창에 함께 들면 같은 CPU 가 두 계열이라 resource_key(CPU 번호)로 센다.
+    cpu = len(vm_vector(remote, f'count by (resource_key) (last_over_time({{__name__="nms.cpu.usage",'
+                                f'host_target_id="{router["id"]}"}}[{window}s]))', until))
+    it.numbers.append(f"CPU {cpu}개")
     if not cpu:
         bad.append("CPU 없음(nms.cpu.usage)")
     rows = remote.pg("select coalesce(meta->>'resource_key',''), coalesce(meta->>'snmp_index',''), id from targets "
@@ -406,13 +438,11 @@ def item_nms(remote, ctx, ids, until) -> Item:
         index, child = by_name[name]
         found = {r["metric"]["__name__"] for r in vm_vector(
             remote, f'count by (__name__) (last_over_time({{__name__=~"{regex}",target_id=~"{regex_ids([router["id"], child])}",'
-                    f'snmp_index="{index}"}}[15m]))', until)}
+                    f'snmp_index="{index}"}}[{window}s]))', until)}
         missing = [label for label, names in families.items() if set(names) - found]
         it.numbers.append(f"{name}(snmp_index {index}) {'모두' if not missing else '빠짐 ' + ', '.join(missing)}")
         if missing:
             bad.append(f"{name} {', '.join(missing)} 없음")
-    samples = vm_scalar(remote, f'max(count_over_time({{__name__="nms.cpu.usage",target_id="{router["id"]}"}}[10m]))', until) or 0
-    it.numbers.append(f"폴링 간격 {round(600 / samples, 1) if samples else None}초")
     return it.set(not bad, "; ".join(bad))
 
 

@@ -5457,6 +5457,61 @@ class T3RegisterOriginTests(unittest.TestCase):
         self.assertIn(t3reg.ORIGIN_ENV, err.getvalue())
         self.assertEqual(self.gate.seen, [])
 
+
+class NmsVmStore:
+    """VictoriaMetrics 대역: 계열(라벨, 표본 시각)을 쥐고 t3_check NMS 행이 쓰는 꼴의 질의를 실제 의미로 푼다.
+
+    선택자의 =, =~ 라벨 맞춤, last_over_time(창 안 표본이 있는 계열), scrape_interval(창 안 표본 2개 이상인 계열의 이웃 간격 평균),
+    count, count by (라벨 하나), max. 모르는 꼴의 질의는 시험을 멈춘다(substring 대역이 축이 틀린 질의를 통과시킨 일, 11-19).
+    """
+
+    QUERY = re.compile(r'^(?P<agg>count by \((?P<by>\w+)\) |count|max)\s*\((?P<fn>last_over_time|scrape_interval)'
+                       r'\(\{(?P<sel>[^}]*)\}\[(?P<w>\d+)s\]\)\)$')
+    MATCHER = re.compile(r'(\w+)(=~|=)"((?:[^"\\]|\\.)*)"')
+
+    def __init__(self) -> None:
+        self.series: list[tuple[dict, list[float]]] = []
+        self.pg_rules: list[tuple[str, list]] = []
+        self.queries: list[str] = []
+
+    def add(self, labels: dict, times: list[float]) -> None:
+        if times:
+            self.series.append((labels, list(times)))
+
+    def pg(self, sql):
+        return next((answer for piece, answer in self.pg_rules if piece in sql), [])
+
+    def _match(self, labels: dict, sel: str) -> bool:
+        for name, op, raw in self.MATCHER.findall(sel):
+            value = raw.replace("\\\\", "\\")
+            got = labels.get(name, "")
+            if (op == "=" and got != value) or (op == "=~" and not re.fullmatch(value, got)):
+                return False
+        return True
+
+    def vm(self, path, params):
+        query = params["query"]
+        self.queries.append(query)
+        at = float(params["time"])
+        m = self.QUERY.match(query)
+        assert path == "/api/v1/query" and m, f"대역이 모르는 질의: {query}"
+        window = int(m["w"])
+        per = []
+        for labels, times in self.series:
+            if not self._match(labels, m["sel"]):
+                continue
+            inside = [t for t in times if at - window <= t <= at]
+            if m["fn"] == "last_over_time" and inside:
+                per.append((labels, 1.0))
+            elif m["fn"] == "scrape_interval" and len(inside) >= 2:
+                per.append((labels, (inside[-1] - inside[0]) / (len(inside) - 1)))
+        if m["agg"] == "count":
+            return {"result": [{"metric": {}, "value": [at, str(len(per))]}] if per else []}
+        if m["agg"] == "max":
+            return {"result": [{"metric": {}, "value": [at, str(max(v for _, v in per))]}] if per else []}
+        groups = collections.Counter(labels.get(m["by"], "") for labels, _ in per)
+        return {"result": [{"metric": {m["by"]: n}, "value": [at, str(c)]} for n, c in sorted(groups.items())]}
+
 class FakeRemote:
     """t3_check 의 읽기 통로 대역. 질의 글자에 든 조각으로 답을 고른다."""
 
@@ -5697,6 +5752,75 @@ class T3CheckTests(unittest.TestCase):
         remote.pg_rules[0] = ("'network_interface'", [r for r in remote.pg_rules[0][1] if r[0] != "ens20"])
         it = t3check.item_nms(remote, self.ctx, ids, self.until)
         self.assertIn("ens20 인터페이스 대상(snmp_index) 없음", " ".join(it.detail))
+
+    def _nms_store(self, poll: int, polls: int, last_ago: int, cpu: bool = True) -> "NmsVmStore":
+        """collector-nms 의 실제 계열 꼴(119 VM 실측 11-19): 첫 폴링은 target_id = 장비, 그 뒤는 target_id = 하위 대상,
+        host_target_id = 장비는 늘 있다. polls 번 폴링하고 마지막 폴링이 until 보다 last_ago 초 앞이다."""
+        names = {"ens18": "2", "ens19": "3", "ens20": "4", "ens21": "5", "ens22": "6", "lo": "1"}
+        child = {v: f"00000000-0000-4000-8000-00000000010{v}" for v in names.values()}
+        cpu_child = {"196608": "00000000-0000-4000-8000-000000000201", "196609": "00000000-0000-4000-8000-000000000202"}
+        end = self.until.timestamp() - last_ago
+        times = [end - poll * (polls - 1 - i) for i in range(polls)]
+        store = NmsVmStore()
+        store.pg_rules.append(("'network_interface'", [[k, v, child[v]] for k, v in names.items()]))
+        iface_names = [n for label, ns in t3check.NMS_FAMILIES.items() if label != "CPU" for n in ns]
+        for index in names.values():
+            for name in iface_names:
+                labels = {"__name__": name, "host_target_id": self.ROUTER, "snmp_index": index}
+                store.add(dict(labels, target_id=self.ROUTER), times[:1])
+                store.add(dict(labels, target_id=child[index]), times[1:])
+        if cpu:
+            for key, tid in cpu_child.items():
+                labels = {"__name__": "nms.cpu.usage", "host_target_id": self.ROUTER, "resource_key": key}
+                store.add(dict(labels, target_id=self.ROUTER), times[:1])
+                store.add(dict(labels, target_id=tid), times[1:])
+        return store
+
+    def test_nms_finds_cpu_moved_to_child_targets_after_the_first_poll(self) -> None:
+        ids = {"router": {"id": self.ROUTER}}
+        # 11-19 15:42 확인 3회와 같은 꼴: 등록 뒤 40분, 60초 폴링, 장비 대상 계열은 첫 폴링 하나뿐.
+        it = t3check.item_nms(self._nms_store(poll=60, polls=40, last_ago=30), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertIn("폴링 간격 60.0초", it.numbers)
+        self.assertIn("창 900초(폴링 간격 2배, 최소 900초)", it.numbers)
+        self.assertIn("CPU 2개", it.numbers)
+
+    def test_nms_window_follows_the_measured_poll(self) -> None:
+        ids = {"router": {"id": self.ROUTER}}
+        it = t3check.item_nms(self._nms_store(poll=600, polls=6, last_ago=590), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertIn("폴링 간격 600.0초", it.numbers)
+        self.assertIn("창 1200초(폴링 간격 2배, 최소 900초)", it.numbers)
+        # 30분 폴링에서 마지막 폴링이 1000초 앞: 고정 15분 창이면 놓치고 2배 창(3600초)이면 본다.
+        it = t3check.item_nms(self._nms_store(poll=1800, polls=3, last_ago=1000), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertIn("창 3600초(폴링 간격 2배, 최소 900초)", it.numbers)
+        self.assertEqual([t3check.nms_window_seconds(p) for p in (None, 0, 60, 450, 450.2, 600)], [900, 900, 900, 900, 901, 1200])
+
+    def test_nms_still_needs_cpu_series_in_the_window(self) -> None:
+        ids = {"router": {"id": self.ROUTER}}
+        it = t3check.item_nms(self._nms_store(poll=60, polls=40, last_ago=30, cpu=False), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertEqual(it.detail, ["CPU 없음(nms.cpu.usage)"])
+        self.assertIn("CPU 0개", it.numbers)
+        # 폴링이 멈춘 지 폴링 간격 2배(최소 15분)를 넘으면 미충족(창을 넓혀 옛 계열로 통과시키지 않는다).
+        it = t3check.item_nms(self._nms_store(poll=60, polls=40, last_ago=901), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("CPU 없음(nms.cpu.usage)", " ".join(it.detail))
+        self.assertIn("ens18 상태, 옥텟, 오류, 버림 없음", " ".join(it.detail))
+        self.assertIn("폴링 간격 60.0초", it.numbers)
+
+    def test_nms_right_after_registration_has_one_poll_and_unknown_interval(self) -> None:
+        ids = {"router": {"id": self.ROUTER}}
+        it = t3check.item_nms(self._nms_store(poll=60, polls=1, last_ago=90), self.ctx, ids, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertIn("폴링 간격 알 수 없음(최근 60분 안 같은 CPU 계열 표본 2개 미만)", it.numbers)
+        self.assertIn("창 900초(폴링 간격 2배, 최소 900초)", it.numbers)
+        self.assertIn("CPU 2개", it.numbers)
+        # 둘째 폴링 뒤: 장비 대상 계열과 하위 대상 계열이 한 창에 함께 들어도 CPU 는 둘이다.
+        it = t3check.item_nms(self._nms_store(poll=60, polls=3, last_ago=10), self.ctx, ids, self.until)
+        self.assertIn("CPU 2개", it.numbers)
+        self.assertIn("폴링 간격 60.0초", it.numbers)
 
     def _db_remote(self, lines: int) -> tuple[FakeRemote, dict]:
         remote = FakeRemote()
