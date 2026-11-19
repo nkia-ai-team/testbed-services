@@ -9,6 +9,33 @@ SYS_NET=${SYS_NET:-/sys/class/net}
 # 설치 단계 network 가 적는 "인벤토리 NIC 이름 MAC" 줄. place_files 가 @@MAC:<이름>@@ 자리를 이것으로 채운다.
 NIC_MAC_FILE=${NIC_MAC_FILE:-/var/lib/petition-deploy/nic-macs}
 
+# 커널 sysctl 값이 있는 곳(net.ipv4.conf.<NIC>.<이름> 은 그 아래 net/ipv4/conf/<NIC>/<이름>). 시험은 다른 경로를 준다.
+PROC_SYS=${PROC_SYS:-/proc/sys}
+
+# sysctl.d 꼴 파일(키 = 숫자 값 줄, # 주석)의 값을 커널(PROC_SYS)에 바로 쓴다. 이미 같은 값인 키는 쓰지 않는다.
+# 쓴 키를 공백으로 이어 stdout 에 낸다(아무것도 안 썼으면 빈 줄). 꼴이 아닌 줄이나 커널에 없는 키(NIC 이름이 다름)가
+# 있으면 그 앞까지 쓴 채 FAIL 줄을 내고 1. 키 이름에 점이 든 NIC(VLAN 등)는 쓰지 않는다(인벤토리 NIC 이름 꼴).
+sysctl_apply_file() {
+    local file="$1" line key want path changed=()
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        if [[ ! "$line" =~ ^[[:space:]]*([a-z0-9_.]+)[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$ ]]; then
+            printf 'FAIL %s 에 꼴이 아닌 줄: %s\n' "$file" "$line" >&2; return 1
+        fi
+        key=${BASH_REMATCH[1]} want=${BASH_REMATCH[2]}
+        path="$PROC_SYS/${key//.//}"
+        if [[ ! -e "$path" ]]; then
+            printf 'FAIL 커널에 %s 가 없음(NIC 이름이 인벤토리와 다름)\n' "$key" >&2; return 1
+        fi
+        [[ "$(cat "$path")" == "$want" ]] && continue
+        if ! printf '%s\n' "$want" > "$path" || [[ "$(cat "$path")" != "$want" ]]; then
+            printf 'FAIL %s 를 %s 로 바꾸지 못함\n' "$key" "$want" >&2; return 1
+        fi
+        changed+=("$key")
+    done < "$file"
+    printf '%s\n' "${changed[*]}"
+}
+
 # rsyslog 설정이 있는 곳(/etc/rsyslog.conf, rsyslog.d 의 부모). 시험은 다른 경로를 준다.
 RSYSLOG_ETC=${RSYSLOG_ETC:-/etc}
 

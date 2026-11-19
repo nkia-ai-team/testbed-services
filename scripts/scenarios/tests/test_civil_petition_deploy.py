@@ -17,6 +17,7 @@ import math
 import os
 import random
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -679,6 +680,33 @@ class RenderContentTests(unittest.TestCase):
         forward = file_of(self.t["db01"], "/etc/rsyslog.d/remote/10-forward.conf")
         self.assertIn('target="10.250.0.1"', forward)
         self.assertIn('protocol="udp"', forward)
+
+    def test_router_turns_off_icmp_redirects_on_all_default_and_every_nic(self) -> None:
+        # T3 차례 4(APT3 §2-5): default 는 나중에 생기는 NIC 몫이고 커널은 all 과 NIC 값의 OR 로 redirect 를 보내므로 NIC 마다 끈다.
+        inv = inventory()
+        router = next(h for h in inv["hosts"] if h["role"] == "router")
+        bundle = self.t["rt-core01"]
+        entry = next(e for e in bundle["files"] if e["dest"] == render.ROUTER_REDIRECTS_CONF)
+        self.assertEqual(render.ROUTER_REDIRECTS_CONF, "/etc/sysctl.d/61-router-redirects.conf")
+        self.assertEqual((entry["step"], entry["mode"], entry["owner"]), ("router", "0644", "root"))
+        settings = [l for l in entry["text"].splitlines() if l and not l.startswith("#")]
+        self.assertEqual(settings, ["net.ipv4.conf.all.send_redirects = 0", "net.ipv4.conf.default.send_redirects = 0"]
+                         + [f"net.ipv4.conf.{nic['ifname']}.send_redirects = 0" for nic in router["nics"]])
+        self.assertEqual(len(settings), 2 + 5)
+        self.assertEqual(bundle["env"]["ROUTER_REDIRECTS_CONF"], render.ROUTER_REDIRECTS_CONF)
+        # 60-host.conf 는 포워딩과 rp_filter 만, redirect 는 이 파일 하나가 맡는다.
+        host_conf = file_of(bundle, "/etc/sysctl.d/60-host.conf")
+        self.assertIn("net.ipv4.ip_forward = 1\n", host_conf)
+        self.assertIn("net.ipv4.conf.all.rp_filter = 1\n", host_conf)
+        self.assertNotRegex(host_conf, r"(?m)^[^#]*send_redirects")
+        for path in (T_INV, S_INV):
+            for name, other in bundles(path).items():
+                if other["role"] == "router":
+                    continue
+                with self.subTest(inventory=path.name, host=name):
+                    self.assertNotIn(render.ROUTER_REDIRECTS_CONF, {e["dest"] for e in other["files"]})
+                    self.assertNotIn("ROUTER_REDIRECTS_CONF", other["env"])
+                    self.assertNotIn("send_redirects", file_of(other, "/etc/sysctl.d/60-host.conf"))
 
     def test_management_nic_guard_on_servers_and_router(self) -> None:
         guard = file_of(self.t["was01"], "/etc/nftables.d/10-mgmt-guard.nft")
@@ -2101,6 +2129,75 @@ class IfDiscardsKernelTests(unittest.TestCase):
         self.assertEqual(result["first"]["dq1"], result["dq1"]["tbf"])
         # (3) qdisc 를 지운 뒤에도 값이 줄지 않는다.
         self.assertEqual(result["after_delete"]["dq0"], tbf0)
+
+
+# 라우터 네임스페이스(unshare -rn 의 셸)에 업무 상향 NIC ens18(브리지, 손님과 66 자리가 같은 L2)과 하향 NIC ens19 ~ ens22
+# (dummy)를 두고, 손님이 라우터를 거쳐 같은 ens18 쪽 다음 홉으로 가는 패킷을 보낸다(T3 차례 4 에서 하향 링크가 내려가
+# 기본 경로로 되돌아 나가던 꼴). NIC 값은 1, all, default 는 0(부팅 뒤 T 라우터의 값과 같은 꼴).
+REDIRECT_KERNEL_SCRIPT = r"""
+set -uo pipefail
+lib="$1"; defs="$2"; conf="$3"
+ip link set lo up
+mk() { unshare -n sleep 60 >/dev/null 2>&1 & echo $!; }
+c=$(mk); g=$(mk); sleep 0.3
+ip link add ens18 type bridge && ip link set ens18 up && ip addr add 10.9.0.254/24 dev ens18
+for n in ens19 ens20 ens21 ens22; do ip link add $n type dummy; ip link set $n up; done
+for n in c g; do
+    pid=${!n}; ip link add p$n type veth peer name i$n
+    ip link set p$n master ens18 up; ip link set i$n netns $pid
+done
+nsenter -t $c -n sh -c 'ip link set lo up; ip addr add 10.9.0.10/24 dev ic; ip link set ic up; ip route add default via 10.9.0.254'
+nsenter -t $g -n sh -c 'ip link set lo up; ip addr add 10.9.0.1/24 dev ig; ip link set ig up'
+echo 1 > /proc/sys/net/ipv4/ip_forward
+# 부팅 뒤 T 라우터에서 읽은 값(11-19 15:15 KST): NIC 마다 1. dummy 는 만들 때 값이 커널마다 달라 직접 1 로 둔다.
+for n in ens18 ens19 ens20 ens21 ens22; do echo 1 > /proc/sys/net/ipv4/conf/$n/send_redirects; done
+echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects
+echo 0 > /proc/sys/net/ipv4/conf/default/send_redirects
+ip route add 192.0.2.0/24 via 10.9.0.1
+redirects() { awk '/^Icmp:/{if(!h){split($0,k);h=1}else{split($0,v);for(i=1;i<=NF;i++) if(k[i]=="OutRedirects") print v[i]}}' /proc/net/snmp; }
+gw_rx() { nsenter -t $g -n awk '$1=="ig:"{print $3}' /proc/net/dev; }
+send() { nsenter -t $c -n ping -c 3 -i 0.2 -W 1 "$1" >/dev/null 2>&1; true; }
+export PROC_SYS=/proc/sys NIC_EXPECT="ens18=10.9.0.254 ens19=x ens20=x ens21=x ens22=x"
+. "$lib"; . "$defs"
+check() { if send_redirects_off; then echo PASS; else echo FAIL; fi; }
+v0=$(check); r0=$(redirects); x0=$(gw_rx); send 192.0.2.5; r1=$(redirects); x1=$(gw_rx)
+first=$(sysctl_apply_file "$conf"); rc1=$?
+v1=$(check); sleep 1.1; send 192.0.2.6; r2=$(redirects); x2=$(gw_rx)
+second=$(sysctl_apply_file "$conf"); rc2=$?
+kill $c $g
+printf '{"verify_before":"%s","redirects":[%s,%s,%s],"gw_rx":[%s,%s,%s],"first":"%s","rc1":%s,"verify_after":"%s","second":"%s","rc2":%s}\n' \
+    "$v0" "$r0" "$r1" "$r2" "$x0" "$x1" "$x2" "$first" "$rc1" "$v1" "$second" "$rc2"
+"""
+
+
+class RouterRedirectKernelTests(unittest.TestCase):
+    """진짜 커널로 본다: all, default 가 0 이어도 NIC 값 1 이면 redirect 를 보내고(커널은 둘의 OR), router 단계의
+    sysctl_apply_file 이 렌더된 파일을 쓰면 멈추며, 포워딩은 그대로이고, verify 의 send-redirects-off 가 앞뒤를 가른다(APT3 §2-5)."""
+
+    def test_rendered_file_stops_redirects_keeps_forwarding_and_verify_tells_before_from_after(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = (DEPLOY / "steps" / "verify.sh").read_text()
+            (root / "verify-defs.sh").write_text(source[:re.search(r"(?m)^check ", source).start()])
+            (root / "redirects.conf").write_text(file_of(bundles(T_INV)["rt-core01"], render.ROUTER_REDIRECTS_CONF))
+            done = subprocess.run(
+                ["unshare", "-rn", "bash", "-c", REDIRECT_KERNEL_SCRIPT, "redirect-kernel",
+                 str(DEPLOY / "steps" / "lib.sh"), str(root / "verify-defs.sh"), str(root / "redirects.conf")],
+                capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            result = json.loads(done.stdout.strip().splitlines()[-1])
+        r0, r1, r2 = result["redirects"]
+        x0, x1, x2 = result["gw_rx"]
+        self.assertEqual(result["verify_before"], "FAIL")
+        self.assertGreater(r1, r0, "NIC 값 1 이면 all, default 가 0 이어도 redirect 를 보낸다")
+        self.assertEqual((result["rc1"], result["first"]),
+                         (0, " ".join(f"net.ipv4.conf.ens{n}.send_redirects" for n in range(18, 23))))
+        self.assertEqual(result["verify_after"], "PASS")
+        self.assertEqual(r2, r1, "끈 뒤에는 redirect 를 보내지 않는다")
+        self.assertGreaterEqual(x1 - x0, 3)
+        self.assertGreaterEqual(x2 - x1, 3, "끈 뒤에도 같은 패킷을 다음 홉으로 포워딩한다")
+        self.assertEqual((result["rc2"], result["second"]), (0, ""), "다시 돌면 아무것도 쓰지 않는다")
 
 
 def _point(metric, stamp, value=1, **tags):
@@ -4290,9 +4387,24 @@ esac
         for tool, text in stubs.items():
             (bin_dir / tool).write_text(text)
             (bin_dir / tool).chmod(0o755)
+        # ICMP redirect 끄기: 놓인 파일은 T 라우터 렌더 결과 그대로, 커널 값은 부팅 때처럼 NIC 마다 1(all, default 는 0).
+        conf = root / "fs" / render.ROUTER_REDIRECTS_CONF.lstrip("/")
+        conf.parent.mkdir(parents=True)
+        conf.write_text(file_of(bundles(T_INV)["rt-core01"], render.ROUTER_REDIRECTS_CONF))
+        for name, value in self.ROUTER_PROC_SYS.items():
+            (root / "proc" / "net" / "ipv4" / "conf" / name).mkdir(parents=True)
+            (root / "proc" / "net" / "ipv4" / "conf" / name / "send_redirects").write_text(f"{value}\n")
         env.update({"SYS_NET": str(sysnet), "NIC_MAC_FILE": str(root / "nic-macs"),
-                    "NIC_EXPECT": "ens18=10.77.1.2 ens19=10.77.2.2", "ROUTER_AUGMENT": "ens19"})
+                    "NIC_EXPECT": "ens18=10.77.1.2 ens19=10.77.2.2", "ROUTER_AUGMENT": "ens19",
+                    "PROC_SYS": str(root / "proc"), "PLACE_ROOT": str(root / "fs"),
+                    "ROUTER_REDIRECTS_CONF": render.ROUTER_REDIRECTS_CONF})
         return calls, env
+
+    ROUTER_PROC_SYS = {"all": 0, "default": 0, "lo": 1, "ens18": 1, "ens19": 1, "ens20": 1, "ens21": 1, "ens22": 1}
+
+    def _redirects(self, root: Path) -> dict[str, str]:
+        base = root / "proc" / "net" / "ipv4" / "conf"
+        return {path.name: (path / "send_redirects").read_text().strip() for path in sorted(base.iterdir())}
 
     def _run_router(self, root: Path, env: dict) -> subprocess.CompletedProcess:
         script = f"set -euo pipefail; BUNDLE={root}; . {DEPLOY / 'steps' / 'lib.sh'}; . {DEPLOY / 'steps' / 'router.sh'}"
@@ -4347,6 +4459,92 @@ esac
             done = self._run_router(root, env)
             self.assertNotEqual(done.returncode, 0)
             self.assertIn("마지막 값: .1.3.6.1.2.1.31.1.1.1.15.3 = Gauge32: 10000", done.stderr)
+
+    def test_router_step_turns_off_icmp_redirects_now_and_writes_nothing_when_already_off(self) -> None:
+        # T3 차례 4(APT3 §2-5): 부팅 때 먼저 선 NIC 는 send_redirects 1 이고 커널은 all 과 NIC 값의 OR 로 redirect 를 보낸다.
+        # router 단계가 놓인 파일의 키를 커널에 바로 쓴다. 다시 돌면 이미 0 이라 아무것도 쓰지 않는다.
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=0)
+            done = self._run_router(root, env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            nics = ["ens18", "ens19", "ens20", "ens21", "ens22"]
+            self.assertIn("router send_redirects off: changed "
+                          + " ".join(f"net.ipv4.conf.{n}.send_redirects" for n in nics) + "\n", done.stdout)
+            want = {name: "0" for name in self.ROUTER_PROC_SYS}
+            want["lo"] = "1"
+            self.assertEqual(self._redirects(root), want)
+            # 키를 쓴 뒤에 snmpd 를 다시 띄운다(같은 단계 안, 끝까지 감).
+            self.assertIn("router snmp ok", done.stdout)
+            base = root / "proc" / "net" / "ipv4" / "conf"
+            stamps = {}
+            for name in self.ROUTER_PROC_SYS:
+                (base / name / "send_redirects").chmod(0o444)
+                stamps[name] = (base / name / "send_redirects").stat().st_mtime_ns
+            again = self._run_router(root, env)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn("router send_redirects off: already\n", again.stdout)
+            self.assertNotIn("changed", again.stdout)
+            self.assertEqual({n: (base / n / "send_redirects").stat().st_mtime_ns for n in self.ROUTER_PROC_SYS}, stamps)
+            self.assertEqual(self._redirects(root), want)
+
+    def test_router_step_stops_before_snmpd_when_a_redirects_key_is_missing_or_the_file_is_not_placed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=0)
+            shutil.rmtree(root / "proc" / "net" / "ipv4" / "conf" / "ens21")
+            done = self._run_router(root, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("FAIL 커널에 net.ipv4.conf.ens21.send_redirects 가 없음(NIC 이름이 인벤토리와 다름)", done.stderr)
+            self.assertNotIn("systemctl restart snmpd", calls.read_text())
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=0)
+            (root / "fs" / render.ROUTER_REDIRECTS_CONF.lstrip("/")).unlink()
+            done = self._run_router(root, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn(f"FAIL {render.ROUTER_REDIRECTS_CONF} 가 놓이지 않음", done.stderr)
+            self.assertEqual(self._redirects(root)["ens18"], "1")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            calls, env = self._router_tree(root, bad_speed=0)
+            conf = root / "fs" / render.ROUTER_REDIRECTS_CONF.lstrip("/")
+            conf.write_text(conf.read_text() + "net.ipv4.conf.ens18.send_redirects 0\n")
+            done = self._run_router(root, env)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("에 꼴이 아닌 줄: net.ipv4.conf.ens18.send_redirects 0", done.stderr)
+
+    def _verify_redirects(self, root: Path, values: dict[str, int], nic_expect: str) -> str:
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        (root / "verify-defs.sh").write_text(source[:re.search(r"(?m)^check ", source).start()])
+        for name, value in values.items():
+            (root / "proc" / "net" / "ipv4" / "conf" / name).mkdir(parents=True)
+            (root / "proc" / "net" / "ipv4" / "conf" / name / "send_redirects").write_text(f"{value}\n")
+        env = {"PATH": "/usr/bin:/bin", "PROC_SYS": str(root / "proc"), "NIC_EXPECT": nic_expect}
+        script = (f"set -uo pipefail; . {DEPLOY / 'steps' / 'lib.sh'}; . {root / 'verify-defs.sh'}; "
+                  "if send_redirects_off; then echo PASS; else echo FAIL; fi")
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env).stdout.strip()
+
+    def test_verify_send_redirects_off_needs_all_default_and_every_nic_at_zero(self) -> None:
+        expect = "ens18=192.0.2.1 ens19=198.51.100.1"
+        off = {"all": 0, "default": 0, "lo": 1, "ens18": 0, "ens19": 0}
+        cases = {
+            "all off, lo left on": (off, expect, "PASS"),
+            "one inventory NIC on (T3 before the fix)": ({**off, "ens18": 1}, expect, "FAIL"),
+            "all on": ({**off, "all": 1}, expect, "FAIL"),
+            "default on": ({**off, "default": 1}, expect, "FAIL"),
+            "a NIC outside the inventory on": ({**off, "ens23": 1}, expect, "FAIL"),
+            "a NIC outside the inventory off": ({**off, "ens23": 0}, expect, "PASS"),
+            "inventory NIC missing in the kernel": ({k: v for k, v in off.items() if k != "ens19"}, expect, "FAIL"),
+            "no NIC at all": ({"all": 0, "default": 0, "lo": 0}, "", "FAIL"),
+        }
+        for name, (values, nic_expect, want) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                self.assertEqual(self._verify_redirects(Path(raw), values, nic_expect), want)
+        source = (DEPLOY / "steps" / "verify.sh").read_text()
+        router_block = source[source.index("    router)\n"):source.index("    web)")]
+        self.assertIn("check send-redirects-off send_redirects_off", router_block)
+        self.assertEqual(source.count("check send-redirects-off "), 1, "라우터에서만 본다")
 
     def test_checks_right_after_a_service_restart_reread_through_settle(self) -> None:
         # 서비스를 다시 띄운 뒤 값을 읽는 단계는 settle 로 다시 읽는다. 손으로 쓴 기다림 고리(sleep, seq)나

@@ -46,6 +46,21 @@ ip_forward_ok() {
     [[ "$HOST_ROLE" == router ]] && want=1
     [[ "$(sysctl -n net.ipv4.ip_forward)" == "$want" ]]
 }
+# 라우터가 ICMP redirect 를 보내지 않는다(runbook §6-2). 커널은 all 과 NIC 값 중 하나라도 1 이면 보내므로 all, default,
+# 인벤토리 NIC 모두와 지금 있는 모든 NIC 가 0 이어야 한다. lo 는 포워딩하는 패킷이 들어오지 않아 redirect 를 낼 일이 없어 뺀다.
+send_redirects_off() {
+    local conf="$PROC_SYS/net/ipv4/conf" name pair path seen=0
+    for name in all default; do [[ "$(cat "$conf/$name/send_redirects")" == 0 ]] || return 1; done
+    for pair in $NIC_EXPECT; do [[ "$(cat "$conf/${pair%%=*}/send_redirects")" == 0 ]] || return 1; done
+    for path in "$conf"/*/send_redirects; do
+        name=${path%/send_redirects}
+        name=${name##*/}
+        case "$name" in all|default|lo) continue ;; esac
+        [[ "$(cat "$path")" == 0 ]] || return 1
+        seen=$((seen + 1))
+    done
+    (( seen > 0 ))
+}
 # NIC 가 인벤토리 이름, network 단계가 적은 MAC, 인벤토리 주소를 가지고 남은 물리 NIC 가 없다(lib.sh).
 nic_names_ok() { [[ -z "$(nic_named_problem)" ]]; }
 no_rollback_pending() { [[ "$(rollback_state)" == clear ]]; }
@@ -125,7 +140,8 @@ case "$HOST_ROLE" in
     router)
         check snmpd-active systemctl is-active snmpd
         check fwacl nft list table inet fwacl
-        check monitor-notrack monitor_notrack_ok ;;
+        check monitor-notrack monitor_notrack_ok
+        check send-redirects-off send_redirects_off ;;
     web) check apache2-active systemctl is-active apache2 ;;
     was)
         check tomcat10-active systemctl is-active tomcat10

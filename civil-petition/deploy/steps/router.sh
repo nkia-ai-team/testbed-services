@@ -2,6 +2,16 @@
 require_inventory_names
 install -d -m 0755 /usr/local/lib/ifdiscards /etc/systemd/system/snmpd.service.d
 place_files router
+# ICMP redirect 끄기(runbook §6-2). 놓은 파일의 값을 커널에 바로 쓴다(재부팅 뒤에는 systemd-sysctl 과, NIC 가 생길 때
+# udev 가 같은 파일을 읽는다). 이미 같은 값인 키는 쓰지 않는다(lib.sh sysctl_apply_file).
+redirects_conf="${PLACE_ROOT:-}$ROUTER_REDIRECTS_CONF"
+[[ -s "$redirects_conf" ]] || fail "$ROUTER_REDIRECTS_CONF 가 놓이지 않음"
+redirects_changed=$(sysctl_apply_file "$redirects_conf") || exit 1
+if [[ -n "$redirects_changed" ]]; then
+    log "router send_redirects off: changed $redirects_changed"
+else
+    log "router send_redirects off: already"
+fi
 systemd-tmpfiles --create /etc/tmpfiles.d/ifdiscards.conf
 python3 /usr/local/lib/ifdiscards/ifdiscards.py --config /etc/snmp/ifdiscards.json --dump >/dev/null \
     || fail "ifdiscards 도우미가 표를 만들지 못함"

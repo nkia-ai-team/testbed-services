@@ -99,6 +99,8 @@ SMS_AGENT_FILES = (
     # Go 판 에이전트는 표준 출력 파일을 스스로 회전하지 않는다(회전은 lucidactl 감싸개 몫, 이 유닛은 쓰지 않음).
     FileSpec("sms-agent", f"/etc/logrotate.d/{SMS_AGENT_UNIT}", "common/logrotate-lucida-agent"),
 )
+# 라우터의 ICMP redirect 끄기 파일. router 단계(steps/router.sh)가 같은 자리에서 읽어 바로 쓴다.
+ROUTER_REDIRECTS_CONF = "/etc/sysctl.d/61-router-redirects.conf"
 NON_ROUTER_FILES = (
     FileSpec("network", "/etc/sysctl.d/60-host.conf", "common/sysctl-server.conf"),
     FileSpec("firewall", "/etc/nftables.d/10-mgmt-guard.nft", "common/nft-mgmt-guard.nft"),
@@ -106,6 +108,8 @@ NON_ROUTER_FILES = (
 ROLE_FILES = {
     "router": (
         FileSpec("network", "/etc/sysctl.d/60-host.conf", "router/sysctl-router.conf"),
+        # ICMP redirect 끄기(runbook §6-2). 라우터 단계만 다시 돌려도 바로 반영되게 router 단계가 놓고 쓴다.
+        FileSpec("router", ROUTER_REDIRECTS_CONF, "router/sysctl-router-redirects.conf"),
         FileSpec("firewall", "/etc/nftables.d/10-mgmt-guard.nft", "router/nft-mgmt-guard.nft"),
         FileSpec("firewall", "/etc/nftables.d/20-monitor-notrack.nft", "router/nft-monitor-notrack.nft"),
         FileSpec("firewall", "/etc/nftables.d/30-acl.nft", "router/nft-acl.nft"),
@@ -423,6 +427,9 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         context["snmp_interface_lines"] = "\n".join(
             f"interface {nic['ifname']} 6 {nic['speed_bps']}" for nic in host["nics"] if nic.get("speed_bps")
         )
+        context["router_send_redirects"] = "\n".join(
+            f"net.ipv4.conf.{nic['ifname']}.send_redirects = 0" for nic in host["nics"]
+        )
         context["ifdiscards_augment"] = json.dumps([nic["ifname"] for nic in host["nics"] if nic.get("downlink")])
     return context
 
@@ -547,6 +554,7 @@ def render_host(inventory: dict, host: dict) -> dict:
         env["DATA_DISK_SERIAL"] = data_disk["serial"]
         env["DATA_MOUNT"] = data_disk["mount"]
     if host["role"] == "router":
+        env["ROUTER_REDIRECTS_CONF"] = ROUTER_REDIRECTS_CONF
         env["ROUTER_AUGMENT"] = " ".join(nic["ifname"] for nic in host["nics"] if nic.get("downlink"))
     if host["role"] == "loadgen":
         env["ENTRY_URL"] = context["entry_url"]

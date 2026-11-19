@@ -205,6 +205,20 @@ S 는 §14 의 차례 5.
 
 설치 뒤: `plan.py --phase rename` 출력을 66 에 넘긴다.
 
+### 6-2. 라우터 ICMP redirect 끄기 (router 단계)
+
+라우터는 ICMP redirect 를 보내지 않는다. 커널은 `all` 과 NIC 값 중 하나라도 1 이면 보내고 `default` 는 나중에 생기는 NIC 몫이라, 부팅 때 먼저 선 NIC 는 1 로 남는다(11-19 T 라우터: all, default 0, ens18 ~ ens22 1). T3 차례 4(APT3 §2-5)에서 하향 링크가 내려간 동안 라우터가 loadgen 에 다음 홉 66 redirect 를 보냈고, 66 의 123 → 124 DROP 에 막혀 장애가 90초 뒤에도 redirect 캐시 300초만큼 이어졌다. `router` 단계가 `/etc/sysctl.d/61-router-redirects.conf`(all, default, 인벤토리 NIC 마다 `send_redirects = 0`)를 놓고 그 값을 커널에 바로 쓴다(이미 0 인 키는 쓰지 않는다. 출력 `router send_redirects off: changed <키>` 또는 `already`). 재부팅 뒤에는 systemd-sysctl 과, NIC 가 생길 때 udev(`99-systemd.rules` 의 `systemd-sysctl --prefix=/net/ipv4/conf/$name`)가 같은 파일을 읽는다. `verify` 의 `send-redirects-off` 가 all, default, 인벤토리 NIC 와 지금 있는 모든 NIC(lo 뺌)의 0 을 본다. 포워딩, rp_filter, nftables, snmpd, lldpd 설정은 바꾸지 않는다(redirect 를 안 보낼 뿐 패킷은 그대로 다음 홉으로 나간다). 서버 쪽 `accept_redirects` 는 그대로 둔다.
+
+이미 설치된 라우터에 반영(라우터 단계만 다시):
+
+```
+deploy/apply.sh --inventory deploy/inventory/t.json --host rt-core01 --steps "router verify"
+ssh -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition -J root@192.168.200.66 sysop@192.168.127.2 \
+    'sysctl -a 2>/dev/null | grep "ipv4.conf.*send_redirects"; cat /etc/sysctl.d/61-router-redirects.conf; grep OutRedirects -A1 /proc/net/snmp'
+```
+
+기대: 설치 출력에 `router send_redirects off: changed net.ipv4.conf.ens18.send_redirects ... ens22.send_redirects`(다시 돌면 `already`), `CHECK send-redirects-off PASS`, `verify ok`. 사후 확인에서 all, default, ens18 ~ ens22 가 0(lo 는 1 그대로), 파일이 있음, `OutRedirects` 가 이후 하향 링크 주입에서 늘지 않음. `router` 단계는 앞과 같이 snmpd 를 다시 띄우므로(119 로 snmpd 종료, 시작 trap 이 가고 폴링이 몇 초 빈다) 66 변경 창에서 돌리고 시각을 남긴다.
+
 ## 7. T2 완료 조건 점검 (설계 §10 T2)
 
 | 조건 | 명령(어디서) | 기대 |
@@ -594,3 +608,4 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 - 2026-11-18 KST, v4 ST2P(ag-st2p): §14 S 적용(ST2) 절을 두고 흩어져 있던 S 문장(§3, §4, §6)을 그리로 모음. T 와 다른 점 표, 언제(T 판정 창과 겹침은 지휘 세션 결정), 차례와 확인과 되돌리기, ST2 점검 행별 명령, 66 자원 읽기 값. `apply.sh --skip-steps sms-agent`(등록 창 전 처음 설치), `scale_verdict.py --inventory`(라우터 없는 S), `pair_packages.py`(쌍 조건 2 패키지 판), 스냅숏 이름 `st2-baseline`.
 - 2026-11-18 KST, v4 ST2P 2회차(지휘 세션 결정): §14-2 S 는 T 판정 끝 E 뒤, T3 와 같은 66 변경 창에 이어서. §14-3-1 짝 T 서버의 apt 설치 시각 Ubuntu snapshot 색인(`apply.sh --apt-snapshot`, 설치 단계가 스냅숏 색인을 못 받으면 멈춤), 서버별 ID 표.
 - 2026-11-18 KST, v4 ST2P 3회차(리뷰 rv-st2p, 지휘 세션 결정): 색인 시각을 인벤토리 서버별 `apt_snapshot` 으로(§6 T 다시 깔기, §14-3-1, `--apt-snapshot` 인자 없앰), 다른 시각이나 시각 없는 다시 돌리기 멈춤, §14-2 의 2시간 30분 시계를 창 안 S 마지막 변경(가드 시험, S 부하 시작 포함)부터, 차례 5 의 06:00 UTC 전과 apt 기록 확인, 훅 경고 대응, §14-4 언제 칸, `pair_packages.py` 입력에 설치 상태 칸.
+- 2026-11-19 KST, v4 T3R(ag-t3r, APT3 §2-5 redirect 꼬리, 지휘 세션 결정): §6-2 라우터 ICMP redirect 끄기(`router` 단계가 `61-router-redirects.conf` 를 놓고 바로 씀, all, default, NIC 마다), `verify` 의 `send-redirects-off`, 반영 명령과 사후 확인. 60-host.conf 의 redirect 두 줄은 이 파일로 옮김.
