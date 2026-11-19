@@ -330,16 +330,29 @@ EventCluster 담당(장재훈) 전달사항이며 요지:
   캡처는 sha 재검증·시간순·injection 구간 [t1,t2] 커버(≥1 스냅샷) 검증 후
   바이트 그대로 반입. manifest의 case_id 주입만 허용.
 - 검증은 두 번, 같은 규칙으로 한다(2026-11-19 v4 TCAP). 기다림 앞(t2+20분)에
-  러너 번들을 검증해 나쁜 번들은 내보내기 전에 멈추고, 반입 뒤 케이스 사본
-  전부(manifest가 이름 붙인 파일 모두)를 다시 검증한다. 반입은 manifest를
-  먼저 복사하고 그 manifest가 이름 붙인 파일만 복사한다(이름 없는 파일은
-  담지 않음). 사본에서 sha256 불일치, 파일 수가 manifest와 다름, 첫 검증 때
-  있던 항목이 바뀜 중 하나라도 있으면 캡처를 멈춘다. 기다림 동안 수집기가
-  더한 스냅샷(t2+20분 ~ capture_end)도 이 검증을 거친다.
+  러너 번들의 manifest 를 한 번 복사한 판으로 검증해 나쁜 번들은 내보내기 전에
+  멈추고, 반입 뒤 케이스 사본 전부를 다시 검증한다. 반입은 manifest 를 먼저
+  복사하고 그 manifest 가 이름 붙인 파일만 복사한다(이름 없는 파일은 담지
+  않음). 기다림 동안 수집기가 더한 스냅샷(t2+20분 ~ capture_end)도 이 검증을
+  거친다.
+- 이름 붙은 파일: 모든 스냅샷의 `graph[].path` 와 null 이 아닌
+  `service_tree.path`. 스냅샷 모양과 상관없이 이 한 집합을 경로 검사, sha256,
+  복사, 파일 수에 쓴다.
+- 스냅샷 모양(2026-11-20 지휘 세션 결정): 정상 쌍, 그리고 한쪽이나 양쪽 요청이
+  실패한 틱(graph 가 빈 배열, service_tree 가 null, 또는 둘 다)을 받는다. 119 가
+  graph 500, service-tree 200 으로 답한 틱은 실제 응답이므로 그대로 담는다.
+  빠진 쪽마다 같은 `attempted_at` 의 `capture_failures[]` 항목이 있어야 하고 그
+  항목의 `request_url` 은 남은 쪽의 것이 아니어야 한다. 모든 스냅샷을 본다.
+- 캡처를 멈추는 경우: 필수 칸이 없거나 꼴이 깨진 스냅샷, 실패 항목과 짝이 없는
+  빠진 쪽, 안전하지 않거나 겹친 경로, 사본의 sha256 불일치, 사본의 manifest 밖
+  파일 수가 file_count 와 다름, 첫 검증 때 있던 스냅샷이나 실패 항목이 바뀌거나
+  줄어듦.
 - 수집기 장애는 큐를 멈추지 않고(capture_failures 기록) 캡처는 번들 부재
-  시 경고 후 진행(fail-open). meta.json에 `topology_bundle` 요약 기록. 요약
-  (`snapshot_count`, `capture_failure_count`, `interval_seconds`, `file_count`)
-  은 케이스 사본을 센 값이라 케이스 `topology/manifest.json`과 같다.
+  시 경고 후 진행(fail-open). meta.json에 `topology_bundle` 요약 기록. 요약은
+  케이스 사본을 센 값이다: `snapshot_count`(manifest 의 snapshots 길이),
+  `capture_failure_count`(capture_failures 길이), `interval_seconds`,
+  `file_count`(manifest 가 이름 붙인 파일 수, manifest.json 제외. 케이스
+  `topology/` 의 manifest.json 밖 파일 수와 같다).
 
 **산출물 권한 (2026-07-24 신설)**: 케이스 디렉터리·파일은 승격 시점부터 **그룹
 읽기 가능**(`g+rX`, 그룹은 저장 호스트 관례를 따름 — .104는 `sudo`)이어야 한다.

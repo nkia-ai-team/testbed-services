@@ -746,44 +746,67 @@ final_dir="${output_root%/}/$case_id"
 # 후 진행").
 # ------------------------------------------------------------
 
-# Paths a manifest may name: relative, inside the bundle, one per line.
-# Checked before any copy so a path can never leave the case's topology/.
-TB_SAFE_PATHS_JQ='
-  [.snapshots[] | select((.graph | length) > 0) | (.graph[].path), .service_tree.path] as $paths |
-  ($paths | all(type == "string" and length > 0 and (test("\n") | not) and . != "manifest.json" and
-                (split("/") | all(. != "" and . != "." and . != "..")))) and
+# Files a manifest names (spec §2.2): every snapshot's graph parts and its
+# service_tree when not null, whatever the tick's shape. One set for the path
+# check, the sha256 check, the copy and file_count, so a half tick's file is
+# carried like any other (2026-11-20 v4 TCAP 1회차, 리뷰 rv-tcap 높음 1).
+TB_NAMED_FILES_JQ='[.snapshots[] | (.graph[]?, (.service_tree // empty)) | {path, sha256}]'
+
+# Paths must be relative, stay inside the bundle, sit one per line and not
+# repeat. Checked before any copy so a path can never leave topology/.
+TB_SAFE_PATHS_JQ="($TB_NAMED_FILES_JQ | map(.path)) as \$paths |"'
+  ($paths | all(.[]; type == "string" and length > 0 and (test("\n") | not) and . != "manifest.json" and
+                (split("/") | all(.[]; . != "" and . != "." and . != "..")))) and
   (($paths | length) == ($paths | unique | length))'
 
-# verify_topology_bundle <dir> <label>: checks <dir>/manifest.json against the
-# files in <dir>: required fields, safe and unique paths, raw-bytes sha256 of
-# every referenced file (원본 무가공 원칙, no re-derivation), chronological
-# captured_at, and >=1 successful snapshot inside [t1, t2]. Sets
-# tb_snapshot_count, tb_failure_count, tb_interval_seconds, tb_file_count.
+# Snapshot shapes the collector writes (러너 collect_once, 수집 공백도 기록
+# 원칙): a full pair, or a tick with the graph, the service tree or both
+# missing because that request failed. Every missing part must be paired with
+# a capture_failures[] entry of the same attempted_at whose request_url is
+# not one of the parts present (119 graph 500 with service-tree 200 is real:
+# on 104 by 11-20, 127 cases hold 687 such ticks and 3 blank ones, all
+# paired). A snapshot
+# whose present parts lack a field, or whose missing part has no failure
+# entry, is broken and stops the capture. Prints the captured_at of the first
+# broken snapshot (or its index), nothing when all are fine.
+TB_BROKEN_SNAPSHOT_JQ='
+  def part_ok: type == "object" and (.path | type == "string") and (.request_url | type == "string") and
+               (.http_status | type == "number") and (.sha256 | type == "string");
+  .capture_failures as $failures |
+  [.snapshots | to_entries[] | .key as $i | .value |
+    select(
+      (type != "object") or (.captured_at | type != "string") or (.graph | type != "array") or
+      (all(.graph[]; part_ok) | not) or
+      ((.service_tree == null or (.service_tree | part_ok)) | not) or
+      ([.graph[].request_url, (.service_tree // empty | .request_url)] as $present |
+       .captured_at as $at |
+       ([$failures[] | select(type == "object" and .attempted_at == $at) | .request_url |
+         select(type == "string") | select(. as $u | any($present[]; . == $u) | not)] | unique | length) <
+       ((if (.graph | length) == 0 then 1 else 0 end) + (if .service_tree == null then 1 else 0 end)))) |
+    (if type == "object" and (.captured_at | type == "string") then .captured_at else "#\($i)" end)][0] // empty'
+
+# verify_topology_bundle <dir> <manifest> <label>: checks <manifest> against
+# the files in <dir>: required fields on every snapshot (shapes above), safe
+# and unique paths, raw-bytes sha256 of every named file (원본 무가공 원칙, no
+# re-derivation), chronological captured_at, and >=1 snapshot with a graph
+# inside [t1, t2]. <manifest> is read as one version (the caller copies it
+# once). Sets tb_snapshot_count, tb_failure_count, tb_interval_seconds,
+# tb_file_count.
 verify_topology_bundle() {
-  local dir=${1%/} label=$2
-  local manifest="$dir/manifest.json"
-  local rel_path sha256 file captured_at cur_epoch prev_epoch='' covered=0
+  local dir=${1%/} manifest=$2 label=$3
+  local rel_path sha256 file captured_at graph_parts cur_epoch prev_epoch='' covered=0 broken
   [[ -r "$manifest" ]] || die "$label has no readable manifest.json: $manifest"
-  # A snapshot is either a full pair or a blank failure tick (graph=[] and
-  # service_tree=null) — the collector appends blanks for failed ticks and
-  # records the failure in capture_failures[] (수집 공백도 기록 원칙).
   jq -e '
     ((.schema_version | tostring) == "1") and
     (.capture_interval_seconds | type == "number") and
     (.capture_failures | type == "array") and
-    (.snapshots | type == "array" and length > 0) and
-    (.snapshots[] |
-      (.captured_at | type == "string") and
-      (((.graph | type == "array" and length == 0) and .service_tree == null) or
-       ((.graph | type == "array" and length > 0) and
-        (.graph[] |
-          (.path | type == "string") and (.request_url | type == "string") and
-          (.http_status | type == "number") and (.sha256 | type == "string")) and
-        (.service_tree |
-          (.path | type == "string") and (.request_url | type == "string") and
-          (.http_status | type == "number") and (.sha256 | type == "string")))))
+    (.snapshots | type == "array" and length > 0)
   ' "$manifest" >/dev/null ||
     die "$label manifest.json is missing required fields (spec §2.2: schema_version/capture_interval_seconds/capture_failures[]/snapshots[].graph[]/service_tree)"
+  broken=$(jq -r "$TB_BROKEN_SNAPSHOT_JQ" "$manifest") ||
+    die "$label manifest.json could not be checked"
+  [[ -z "$broken" ]] ||
+    die "$label manifest.json is missing required fields at snapshot $broken (a broken part, or a missing part with no capture_failures entry)"
   jq -e "$TB_SAFE_PATHS_JQ" "$manifest" >/dev/null ||
     die "$label manifest.json names an unsafe or duplicate file path"
 
@@ -794,20 +817,21 @@ verify_topology_bundle() {
     [[ "$(sha256sum "$file" | awk '{print $1}')" == "$sha256" ]] ||
       die "$label sha256 mismatch: $rel_path"
     tb_file_count=$(( tb_file_count + 1 ))
-  done < <(jq -r '.snapshots[] | select((.graph | length) > 0) | (.graph[] | [.path, .sha256]), ([.service_tree.path, .service_tree.sha256]) | @tsv' "$manifest")
+  done < <(jq -r "$TB_NAMED_FILES_JQ | .[] | [.path, .sha256] | @tsv" "$manifest")
 
-  # Chronological order + minimum coverage: >=1 snapshot inside [t1, t2].
-  while IFS= read -r captured_at; do
+  # Chronological order over every snapshot; coverage counts snapshots that
+  # carry a graph: >=1 inside [t1, t2].
+  while IFS=$'\t' read -r captured_at graph_parts; do
     cur_epoch=$(parse_utc_epoch "$captured_at" "$label snapshots[].captured_at")
     if [[ -n "$prev_epoch" ]]; then
       (( cur_epoch >= prev_epoch )) ||
         die "$label snapshots[].captured_at is not chronological at $captured_at"
     fi
     prev_epoch=$cur_epoch
-    if (( cur_epoch >= t1_epoch && cur_epoch <= t2_epoch )); then
+    if (( graph_parts > 0 && cur_epoch >= t1_epoch && cur_epoch <= t2_epoch )); then
       covered=$(( covered + 1 ))
     fi
-  done < <(jq -r '.snapshots[] | select((.graph | length) > 0) | .captured_at' "$manifest")
+  done < <(jq -r '.snapshots[] | [.captured_at, (.graph | length)] | @tsv' "$manifest")
   (( covered >= 1 )) ||
     die "$label has no successful snapshots[] inside the injection window [t1, t2]"
 
@@ -843,10 +867,17 @@ if [[ -n "$topology_bundle" ]]; then
   [[ -d "$topology_bundle" ]] || die "--topology-bundle is not a directory: $topology_bundle"
   tb_manifest="${topology_bundle%/}/manifest.json"
   [[ -r "$tb_manifest" ]] || die "topology bundle has no readable manifest.json: $tb_manifest"
-  verify_topology_bundle "$topology_bundle" 'topology bundle'
+  # One version of the manifest for every check below: the collector replaces
+  # it every tick, and counts must come from the version whose files were hashed.
+  tb_early_manifest=$(mktemp "${TMPDIR:-/tmp}/.topology-manifest.XXXXXX")
+  trap 'rm -f "$tb_early_manifest"' EXIT
+  cp "$tb_manifest" "$tb_early_manifest"
+  verify_topology_bundle "$topology_bundle" "$tb_early_manifest" 'topology bundle'
   tb_early_snapshot_count=$tb_snapshot_count
   tb_early_failure_count=$tb_failure_count
-  tb_early_prefix_sha256=$(topology_prefix_sha256 "$tb_manifest" "$tb_snapshot_count" "$tb_failure_count")
+  tb_early_prefix_sha256=$(topology_prefix_sha256 "$tb_early_manifest" "$tb_snapshot_count" "$tb_failure_count")
+  rm -f "$tb_early_manifest"
+  trap - EXIT
   # Dry-run never copies, so this is its summary. A live capture replaces it
   # with the summary of the copy (re-home below).
   topology_bundle_meta=$(topology_bundle_meta_json)
@@ -1580,15 +1611,14 @@ if [[ -n "$topology_bundle" ]]; then
   cp -a "${topology_bundle%/}/manifest.json" "$tb_case_dir/manifest.json"
   jq -e "$TB_SAFE_PATHS_JQ" "$tb_case_dir/manifest.json" >/dev/null ||
     die 'topology bundle (case copy) manifest.json names an unsafe or duplicate file path'
-  jq -r '.snapshots[] | select((.graph | length) > 0) | (.graph[].path), .service_tree.path' \
-    "$tb_case_dir/manifest.json" >"$staging_dir/.topology-files"
+  jq -r "$TB_NAMED_FILES_JQ | .[].path" "$tb_case_dir/manifest.json" >"$staging_dir/.topology-files"
   if [[ -s "$staging_dir/.topology-files" ]]; then
     (cd "${topology_bundle%/}" && xargs -d '\n' cp -a --parents -t "$tb_case_dir" --) \
       <"$staging_dir/.topology-files" || die 'topology bundle copy failed'
   fi
   rm -f "$staging_dir/.topology-files"
 
-  verify_topology_bundle "$tb_case_dir" 'topology bundle (case copy)'
+  verify_topology_bundle "$tb_case_dir" "$tb_case_dir/manifest.json" 'topology bundle (case copy)'
   tb_copied_count=$(find "$tb_case_dir" -type f ! -path "$tb_case_dir/manifest.json" | wc -l)
   (( tb_copied_count == tb_file_count )) ||
     die "topology bundle (case copy) holds $tb_copied_count files but its manifest names $tb_file_count"

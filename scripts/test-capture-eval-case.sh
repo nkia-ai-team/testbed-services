@@ -391,6 +391,35 @@ for bad in escape dup; do
   grep -q 'unsafe or duplicate file path' "$TMP_ROOT/err" || fail "topology bad path ($bad) rejected for another reason"
 done
 
+# (c3) 필수 칸 검사는 마지막 스냅숏만이 아니라 모든 스냅숏을 본다. 실패 항목과 짝인 반쪽 틱(graph 500, service-tree 200)은
+# 받고 그 service-tree 파일도 센다. 짝 없는 반쪽 틱, 가운데의 깨진 항목은 거절한다(마지막 항목은 정상).
+half_bundle="$TMP_ROOT/topology-bundle-half"
+cp -r "$good_topology_bundle" "$half_bundle"
+jq '.snapshots[0].graph = [] |
+    .capture_failures = [{attempted_at:"2026-07-15T00:55:00Z", request_url:"http://query-api/api/v1/topology/graph",
+                          http_status:500, error:"non-2xx response: 500"}]' \
+  "$good_topology_bundle/manifest.json" >"$half_bundle/manifest.json"
+rm "$half_bundle/graph/2026-07-15T00-55-00Z-part-001.json"
+output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+  --topology-bundle "$half_bundle" --output-root "$TMP_ROOT/cases" --dry-run)
+jq -e '.topology_bundle == {path:"topology/", snapshot_count:3, capture_failure_count:1, interval_seconds:30, file_count:5}' \
+  <<<"$output" >/dev/null || fail 'paired half tick not accepted, or its service-tree not counted'
+for bad in unpaired other-url broken-mid; do
+  bad_shape_bundle="$TMP_ROOT/topology-bundle-shape-$bad"
+  cp -r "$half_bundle" "$bad_shape_bundle"
+  case "$bad" in
+    unpaired) filter='.capture_failures = []' ;;
+    other-url) filter='.capture_failures[0].request_url = .snapshots[0].service_tree.request_url' ;;
+    broken-mid) filter='.snapshots[1].service_tree.sha256 = null' ;;
+  esac
+  jq "$filter" "$half_bundle/manifest.json" >"$bad_shape_bundle/manifest.json"
+  expect_rejected "topology-bundle-shape-$bad" \
+    "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+    --topology-bundle "$bad_shape_bundle"
+  grep -q 'missing required fields at snapshot' "$TMP_ROOT/err" ||
+    { cat "$TMP_ROOT/err" >&2; fail "topology shape ($bad) rejected for another reason"; }
+done
+
 # (d) --topology-bundle omitted: fail-open (warns on stderr, still succeeds,
 # meta.topology_bundle is null).
 output=$("$CAPTURE" "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
@@ -717,29 +746,50 @@ def topo_grow(bundle, mode):
     import hashlib, json
     mpath = os.path.join(bundle, "manifest.json")
     m = json.load(open(mpath))
+    graph_url = "http://query-api/api/v1/topology/graph"
+    tree_url = "http://query-api/api/v1/asset-tree/service/unified"
+    def put(rel, body):
+        open(os.path.join(bundle, rel), "wb").write(body)
+        return hashlib.sha256(body).hexdigest()
+    def pair(ts, bad_sha=False):
+        stamp = ts.replace(":", "-")
+        gpath, tpath = f"graph/{stamp}-part-001.json", f"service-tree/{stamp}.json"
+        gsha = put(gpath, ('{"nodes":[],"edges":[],"snapshot":"%s"}\n' % ts).encode())
+        tsha = put(tpath, ('{"tree":[],"snapshot":"%s"}\n' % ts).encode())
+        return {"captured_at": ts, "snapshot_id": ts,
+                "graph": [{"path": gpath, "request_url": graph_url, "http_status": 200,
+                           "sha256": "0" * 64 if bad_sha else gsha, "part": 1, "part_count": 1, "anchors": []}],
+                "service_tree": {"path": tpath, "request_url": tree_url, "http_status": 200, "sha256": tsha}}
+    def half(ts, failure=True):  # 119 graph 500, service-tree 200 (실제 녹화의 반쪽 틱 모양)
+        snap = pair(ts)
+        os.unlink(os.path.join(bundle, snap["graph"][0]["path"]))
+        snap["graph"] = []
+        if failure:
+            m["capture_failures"].append({"attempted_at": ts, "request_url": graph_url, "http_status": 500,
+                                          "error": "non-2xx response: 500"})
+        return snap
     if mode == "tamper_old":  # 검증된 파일의 바이트가 뒤에 바뀜(매니페스트는 그대로)
         open(os.path.join(bundle, m["snapshots"][0]["graph"][0]["path"]), "ab").write(b" ")
         return
     if mode == "shrink":  # 검증된 마지막 항목이 매니페스트에서 사라짐
         m["snapshots"].pop()
-    elif mode == "rewrite_old":  # 검증된 항목을 파일과 sha256 을 맞춰 고쳐 씀
+    elif mode == "rewrite_old":  # 검증된 항목의 graph 를 파일과 sha256 을 맞춰 고쳐 씀
         g = m["snapshots"][0]["graph"][0]
-        body = b'{"nodes":["rewritten"],"edges":[]}\n'
-        open(os.path.join(bundle, g["path"]), "wb").write(body)
-        g["sha256"] = hashlib.sha256(body).hexdigest()
+        g["sha256"] = put(g["path"], b'{"nodes":["rewritten"],"edges":[]}\n')
+    elif mode == "rewrite_old_tree":  # 검증된 항목의 service_tree 를 파일과 sha256 을 맞춰 고쳐 씀
+        t = m["snapshots"][0]["service_tree"]
+        t["sha256"] = put(t["path"], b'{"tree":["rewritten"]}\n')
+    elif mode == "rewrite_old_failure":  # 검증된 실패 항목을 고쳐 씀
+        m["capture_failures"][0]["error"] = "rewritten"
+    elif mode == "half_mid":  # 반쪽 틱 뒤 정상 틱
+        m["snapshots"] += [half("2026-07-15T01:20:00Z"), pair("2026-07-15T01:20:35Z")]
+    elif mode == "half_last":  # 마지막 틱이 반쪽
+        m["snapshots"].append(half("2026-07-15T01:20:00Z"))
+    elif mode == "blank_unpaired":  # 실패 항목 없는 빈 틱
+        m["snapshots"].append({"captured_at": "2026-07-15T01:20:00Z", "snapshot_id": "2026-07-15T01:20:00Z",
+                               "graph": [], "service_tree": None})
     else:  # append, tamper_new: 수집기가 스냅숏 하나를 더한다(파일 먼저, 매니페스트는 원자 교체)
-        ts = "2026-07-15T01:20:00Z"
-        stamp = ts.replace(":", "-")
-        gpath, tpath = f"graph/{stamp}-part-001.json", f"service-tree/{stamp}.json"
-        gbody, tbody = b'{"nodes":[],"edges":[],"snapshot":"late"}\n', b'{"tree":[],"snapshot":"late"}\n'
-        open(os.path.join(bundle, gpath), "wb").write(gbody)
-        open(os.path.join(bundle, tpath), "wb").write(tbody)
-        gsha = "0" * 64 if mode == "tamper_new" else hashlib.sha256(gbody).hexdigest()
-        m["snapshots"].append({"captured_at": ts, "snapshot_id": ts,
-            "graph": [{"path": gpath, "request_url": "http://query-api/api/v1/topology/graph", "http_status": 200,
-                       "sha256": gsha, "part": 1, "part_count": 1, "anchors": []}],
-            "service_tree": {"path": tpath, "request_url": "http://query-api/api/v1/asset-tree/service/unified",
-                             "http_status": 200, "sha256": hashlib.sha256(tbody).hexdigest()}})
+        m["snapshots"].append(pair("2026-07-15T01:20:00Z", bad_sha=(mode == "tamper_new")))
     open(mpath + ".new", "w").write(json.dumps(m, indent=2, sort_keys=True) + "\n")
     os.replace(mpath + ".new", mpath)
     if mode == "append":  # 매니페스트 뒤에 생긴 것: 쓰는 중인 임시 파일과 아직 이름 없는 다음 틱 파일
@@ -844,6 +894,25 @@ if "psql" in args:
 sys.stderr.write("fake docker: unexpected call\n"); sys.exit(2)
 PYEOF
 chmod +x "$fakebin/curl" "$fakebin/docker"
+# 가짜 cp: 평소에는 진짜 cp 그대로. 토폴로지 반입(cp --parents -t <dir>) 때만, 지시가 있으면 복사본 하나를 바꾸거나
+# (FAKE_CP_CORRUPT=<경로>) 이름 없는 파일을 하나 더 둔다(FAKE_CP_EXTRA=1). 사본을 검증하는지 보는 데 쓴다.
+cat >"$fakebin/cp" <<'CPEOF'
+#!/usr/bin/env bash
+real=/bin/cp; [[ -x "$real" ]] || real=/usr/bin/cp
+"$real" "$@" || exit $?
+target=''; parents=false; prev=''
+for a in "$@"; do
+  [[ "$a" == --parents ]] && parents=true
+  [[ "$prev" == -t ]] && target=$a
+  prev=$a
+done
+if [[ "$parents" == true && -n "$target" ]]; then
+  if [[ -n "${FAKE_CP_CORRUPT:-}" && -e "$target/$FAKE_CP_CORRUPT" ]]; then printf ' ' >>"$target/$FAKE_CP_CORRUPT"; fi
+  if [[ -n "${FAKE_CP_EXTRA:-}" ]]; then printf '{}\n' >"$target/service-tree/stray.json"; fi
+fi
+exit 0
+CPEOF
+chmod +x "$fakebin/cp"
 printf '{"model":"fake"}\n' >"$live_root/model.json"
 
 run_live() {
@@ -1113,64 +1182,99 @@ jq -e --argjson keys "$v3_meta_keys" '($keys - keys) == []' "$doc_case/meta.json
 jq -e 'has("source_commits") or has("scenario_doc") | not' "$meta" >/dev/null ||
   fail 'live meta has scenario_doc or source_commits without the flags'
 
-# (g3) 토폴로지 묶음(2026-11-19 v4 TCAP): 첫 검증(기다림 앞) 뒤 수집기가 더한 스냅숏까지 케이스에 실리고, meta 의 수가
-# 케이스 manifest 와 같으며, 케이스에 든 파일은 전부 sha256 이 맞는다. 첫 검증 때 있던 파일은 원본과 바이트가 같다.
-# 매니페스트에 이름 없는 파일(쓰는 중 임시 파일, 다음 틱 파일)은 담지 않는다. 검증 뒤 바뀐 파일, 더해진 파일의
-# sha256 불일치, 검증된 항목을 고쳐 쓴 묶음은 녹화를 멈춘다.
+# (g3) 토폴로지 묶음(2026-11-19 v4 TCAP, 11-20 1회차): 첫 검증(기다림 앞) 뒤 수집기가 더한 스냅숏까지 케이스에 실리고,
+# meta 의 수가 케이스 manifest 와 같으며, manifest 가 이름 붙인 파일(반쪽 틱의 service-tree 포함)이 모두 실리고 sha256 이
+# 맞는다. 첫 검증 때 있던 파일은 원본과 바이트가 같다. 이름 없는 파일은 담지 않는다. 묶음은 실제 녹화 모양(가운데 반쪽 틱과
+# 그 실패 항목)으로 시작한다. 반쪽 틱이 가운데나 마지막에 더해져도 녹화한다. 검증 뒤 바뀐 파일, 더해진 파일의 sha256 불일치,
+# 검증된 항목(graph, service_tree, 실패 항목)을 고쳐 씀, 줄어듦, 실패 항목 없는 빈 틱, 복사본이 바뀜, 복사본에 이름 없는
+# 파일이 낌은 녹화를 멈춘다.
+shaped_topology_bundle="$live_root/topo-shaped"
+cp -a "$good_topology_bundle" "$shaped_topology_bundle"
+half_tree='{"tree":[],"snapshot":"half"}'
+printf '%s\n' "$half_tree" >"$shaped_topology_bundle/service-tree/2026-07-15T01-02-00Z.json"
+jq --arg sha "$(sha256sum "$shaped_topology_bundle/service-tree/2026-07-15T01-02-00Z.json" | awk '{print $1}')" '
+  .snapshots |= (.[:1] + [{captured_at:"2026-07-15T01:02:00Z", snapshot_id:"2026-07-15T01:02:00Z", graph:[],
+    service_tree:{path:"service-tree/2026-07-15T01-02-00Z.json",
+      request_url:"http://query-api/api/v1/asset-tree/service/unified", http_status:200, sha256:$sha}}] + .[1:]) |
+  .capture_failures = [{attempted_at:"2026-07-15T01:02:00Z", request_url:"http://query-api/api/v1/topology/graph",
+    http_status:500, error:"non-2xx response: 500"}]' \
+  "$shaped_topology_bundle/manifest.json" >"$shaped_topology_bundle/m.tmp"
+mv "$shaped_topology_bundle/m.tmp" "$shaped_topology_bundle/manifest.json"
 topo_src="$live_root/topo-src"
 run_topo_live() {
   local case_id=$1 mode=$2
+  shift 2  # 나머지는 이 녹화에만 더할 환경 변수(NAME=값)
   rm -rf "$topo_src"
-  cp -a "$good_topology_bundle" "$topo_src"
-  if [[ "$mode" == none ]]; then
+  cp -a "$shaped_topology_bundle" "$topo_src"
+  (
+    (( $# == 0 )) || export "$@"
+    [[ "$mode" == none ]] || export FAKE_TOPO_GROW="$topo_src" FAKE_TOPO_MODE="$mode"
     run_live_extra "$case_id" --topology-bundle "$topo_src"
-  else
-    FAKE_TOPO_GROW="$topo_src" FAKE_TOPO_MODE="$mode" run_live_extra "$case_id" --topology-bundle "$topo_src"
-  fi
+  )
 }
+# check_topo_case <case dir> <snapshots> <files> <failures>
 check_topo_case() {
-  local case_dir=$1 want_snapshots=$2 tdir
+  local case_dir=$1 want_snapshots=$2 want_files=$3 want_failures=$4 tdir rel
   tdir="$case_dir/topology"
-  jq -e --argjson n "$want_snapshots" --argjson files "$(( want_snapshots * 2 ))" '
-    .topology_bundle == {path:"topology/", snapshot_count:$n, capture_failure_count:0, interval_seconds:30, file_count:$files}' \
+  jq -e --argjson n "$want_snapshots" --argjson files "$want_files" --argjson f "$want_failures" '
+    .topology_bundle == {path:"topology/", snapshot_count:$n, capture_failure_count:$f, interval_seconds:30, file_count:$files}' \
     "$case_dir/meta.json" >/dev/null || fail "meta.topology_bundle does not count the case copy ($case_dir)"
   [[ "$(jq '.snapshots | length' "$tdir/manifest.json")" == "$want_snapshots" ]] ||
     fail "case manifest snapshot count is not $want_snapshots ($case_dir)"
-  [[ "$(find "$tdir" -type f ! -name manifest.json | wc -l)" == "$(( want_snapshots * 2 ))" ]] ||
-    fail "case topology/ holds files the manifest does not name ($case_dir)"
-  (cd "$tdir" && jq -r '.snapshots[] | (.graph[] | "\(.sha256)  \(.path)"), "\(.service_tree.sha256)  \(.service_tree.path)"' \
-    manifest.json | sha256sum -c --quiet >/dev/null) || fail "case topology/ file sha256 mismatch ($case_dir)"
-  local rel
+  [[ "$(jq '[.snapshots[] | (.graph[]?, (.service_tree // empty))] | length' "$tdir/manifest.json")" == "$want_files" ]] ||
+    fail "case manifest does not name $want_files files ($case_dir)"
+  [[ "$(find "$tdir" -type f ! -name manifest.json | wc -l)" == "$want_files" ]] ||
+    fail "case topology/ holds files the manifest does not name, or lacks some ($case_dir)"
+  (cd "$tdir" && jq -r '.snapshots[] | (.graph[]?, (.service_tree // empty)) | "\(.sha256)  \(.path)"' \
+    manifest.json | sha256sum -c --quiet >/dev/null) || fail "case topology/ named file missing or sha256 mismatch ($case_dir)"
   while IFS= read -r rel; do
     cmp -s "$topo_src/$rel" "$tdir/$rel" || fail "case topology/$rel is not the runner file byte for byte"
-  done < <(jq -r '.snapshots[] | (.graph[].path), .service_tree.path' "$tdir/manifest.json")
+  done < <(jq -r '.snapshots[] | (.graph[]?, (.service_tree // empty)) | .path' "$tdir/manifest.json")
   jq -e --slurpfile src "$topo_src/manifest.json" --arg id "${case_dir##*/}" \
     '.case_id == $id and (del(.case_id) == ($src[0] | del(.case_id)))' "$tdir/manifest.json" >/dev/null ||
     fail "case manifest differs from the runner manifest beyond case_id ($case_dir)"
 }
 run_topo_live case-live-v4-topo-still none ||
   { cat "$live_root/case-live-v4-topo-still.err" >&2; fail 'live capture with a still topology bundle failed'; }
-check_topo_case "$live_root/cases/case-live-v4-topo-still" 3
+check_topo_case "$live_root/cases/case-live-v4-topo-still" 4 7 1
+[[ -s "$live_root/cases/case-live-v4-topo-still/topology/service-tree/2026-07-15T01-02-00Z.json" ]] ||
+  fail 'half tick service-tree file did not reach the case'
 run_topo_live case-live-v4-topo-grow append ||
   { cat "$live_root/case-live-v4-topo-grow.err" >&2; fail 'live capture with a growing topology bundle failed'; }
-check_topo_case "$live_root/cases/case-live-v4-topo-grow" 4
-for f in "$good_topology_bundle"/graph/* "$good_topology_bundle"/service-tree/*; do
-  cmp -s "$f" "$live_root/cases/case-live-v4-topo-grow/topology/${f#"$good_topology_bundle"/}" ||
+check_topo_case "$live_root/cases/case-live-v4-topo-grow" 5 9 1
+for f in "$shaped_topology_bundle"/graph/* "$shaped_topology_bundle"/service-tree/*; do
+  cmp -s "$f" "$live_root/cases/case-live-v4-topo-grow/topology/${f#"$shaped_topology_bundle"/}" ||
     fail "first-check topology file changed in the case: ${f##*/}"
 done
 [[ -e "$topo_src/graph/2026-07-15T01-20-35Z-part-001.json" &&
    ! -e "$live_root/cases/case-live-v4-topo-grow/topology/graph/2026-07-15T01-20-35Z-part-001.json" &&
    -z "$(find "$live_root/cases/case-live-v4-topo-grow/topology" -name '.*')" ]] ||
   fail 'files written after the copied manifest reached the case'
-grep -q 'topology bundle verified on the case copy: 4 snapshots (1 after the first check), 8 files' \
+grep -q 'topology bundle verified on the case copy: 5 snapshots (1 after the first check), 9 files' \
   "$live_root/case-live-v4-topo-grow.out" || fail 'case-copy verification log line missing'
+run_topo_live case-live-v4-topo-half-mid half_mid ||
+  { cat "$live_root/case-live-v4-topo-half-mid.err" >&2; fail 'live capture stopped on a half tick in the middle'; }
+check_topo_case "$live_root/cases/case-live-v4-topo-half-mid" 6 10 2
+run_topo_live case-live-v4-topo-half-last half_last ||
+  { cat "$live_root/case-live-v4-topo-half-last.err" >&2; fail 'live capture stopped on a half tick at the end'; }
+check_topo_case "$live_root/cases/case-live-v4-topo-half-last" 5 8 2
 for mode_want in 'tamper_new:topology bundle (case copy) sha256 mismatch: graph/2026-07-15T01-20-00Z-part-001.json' \
                  'tamper_old:topology bundle (case copy) sha256 mismatch: graph/2026-07-15T00-55-00Z-part-001.json' \
                  'rewrite_old:topology bundle entries verified before the capture wait changed afterwards' \
-                 'shrink:topology bundle shrank after it was verified'; do
+                 'rewrite_old_tree:topology bundle entries verified before the capture wait changed afterwards' \
+                 'rewrite_old_failure:topology bundle entries verified before the capture wait changed afterwards' \
+                 'shrink:topology bundle shrank after it was verified' \
+                 'blank_unpaired:topology bundle (case copy) manifest.json is missing required fields at snapshot 2026-07-15T01:20:00Z' \
+                 'cp_corrupt:topology bundle (case copy) sha256 mismatch: service-tree/2026-07-15T01-02-00Z.json' \
+                 'cp_extra:topology bundle (case copy) holds 8 files but its manifest names 7'; do
   mode=${mode_want%%:*}
   topo_case="case-live-v4-topo-${mode//_/-}"
-  if run_topo_live "$topo_case" "$mode"; then fail "capture accepted a topology bundle after $mode"; fi
+  case "$mode" in
+    cp_corrupt) run_topo_live "$topo_case" none FAKE_CP_CORRUPT=service-tree/2026-07-15T01-02-00Z.json && accepted=true || accepted=false ;;
+    cp_extra) run_topo_live "$topo_case" none FAKE_CP_EXTRA=1 && accepted=true || accepted=false ;;
+    *) run_topo_live "$topo_case" "$mode" && accepted=true || accepted=false ;;
+  esac
+  [[ "$accepted" == false ]] || fail "capture accepted a topology bundle after $mode"
   grep -qF "${mode_want#*:}" "$live_root/$topo_case.err" ||
     { cat "$live_root/$topo_case.err" >&2; fail "topology $mode stopped for another reason"; }
   [[ ! -e "$live_root/cases/$topo_case" ]] || fail "topology $mode left a case behind"
