@@ -20,6 +20,11 @@ d0186576d2 의 frontend registerTarget.ts, ServerPendingRegistrations.tsx, Custo
 --yes 가 없으면 로그인(POST /api/v1/login, 관제 서버에 세션 행이 생긴다)과 읽기(GET)만 하고 쓸 호출은 찍기만 한다. 로그인 계정은 환경변수 LUCIDA_LOGIN_USER,
 LUCIDA_LOGIN_PASSWORD(러너 컨테이너와 같은 이름)에서만 읽고, 주소는 LUCIDA_QUERY_URL(없으면 인벤토리 관제 서버
 실주소의 13080). 비밀값(비밀번호, 커뮤니티)은 출력하지 않는다.
+
+모든 호출에 화면과 같은 Origin 머리를 싣는다. query 의 corsMiddleware(lucida-next backend/services/query/main.go)는
+쿠키가 있는 GET 아닌 요청에 허용 목록(LUCIDA_ALLOWED_ORIGINS, 설치기가 PUBLIC_URL 과 게이트웨이 포트에서 파생)과
+글자로 같은 Origin 을 요구하고, 없거나 다르면 403 forbidden origin 이다. 값은 관제 주소의 scheme://host[:port]
+(브라우저처럼 http 80, https 443 은 생략)이고 LUCIDA_WEB_ORIGIN 으로 덮어쓴다.
 """
 from __future__ import annotations
 
@@ -43,6 +48,8 @@ TRAP_PORT = 162
 TRAP_PROTOCOL = "udp"
 PHASES = ("approve", "nic", "log-monitors", "nms", "trap", "record", "rollback")
 LOG_PATTERN_KEYS = ("debug", "info", "warn", "error", "fatal")
+# 관제 주소에서 파생한 Origin 대신 쓸 값(scheme://host[:port]). 허용 목록이 다른 주소일 때만 둔다.
+ORIGIN_ENV = "LUCIDA_WEB_ORIGIN"
 
 
 class RegisterError(RuntimeError):
@@ -104,12 +111,42 @@ def expand(path: str) -> Path:
 
 # ---------------------------------------------------------------- HTTP
 
-class Client:
-    """세션 쿠키 하나로 query(/api/v1)와 SMS 수집기(/sm/api, 웹 게이트웨이 경유)를 부른다."""
+def web_origin(base: str, override: str | None = None) -> str:
+    """화면이 싣는 Origin. 브라우저처럼 scheme://host[:port] 이고 스킴 기본 포트는 생략한다.
 
-    def __init__(self, base: str, timeout: float = 30.0) -> None:
+    lucida-next deploy/src/ap/install-layout.sh _polestar_origin 과 같은 규칙이다(허용 목록이 이 꼴로 만들어지고
+    query 는 글자로 같은지만 본다). override 는 그대로 쓰되 경로, 질의, 사용자 정보가 붙은 값은 거절한다
+    (붙으면 허용 목록과 영영 맞지 않는다).
+    """
+    if override:
+        parts = urllib.parse.urlsplit(override)
+        if (parts.scheme not in ("http", "https") or not parts.hostname or parts.path or parts.query
+                or parts.fragment or "@" in parts.netloc):
+            raise RegisterError(f"{ORIGIN_ENV} 는 scheme://host[:port] 꼴이어야 함: {override!r}")
+        return override
+    parts = urllib.parse.urlsplit(base)
+    scheme = parts.scheme.lower()
+    host = parts.hostname
+    if scheme not in ("http", "https") or not host:
+        raise RegisterError(f"관제 주소에서 Origin 을 만들 수 없음: {base!r}")
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    if port is None or (scheme, port) in (("http", 80), ("https", 443)):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+class Client:
+    """세션 쿠키 하나로 query(/api/v1)와 SMS 수집기(/sm/api, 웹 게이트웨이 경유)를 부른다.
+
+    모든 호출에 Origin 을 싣는다(모듈 머리말). origin 을 주지 않으면 LUCIDA_WEB_ORIGIN, 없으면 base 에서 파생한다.
+    """
+
+    def __init__(self, base: str, timeout: float = 30.0, origin: str | None = None) -> None:
         self.base = base.rstrip("/")
         self.timeout = timeout
+        self.origin = web_origin(self.base, origin if origin is not None else os.environ.get(ORIGIN_ENV))
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
     def login(self, user: str, password: str) -> None:
@@ -120,7 +157,8 @@ class Client:
     def request(self, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(self.base + path, data=data, method=method,
-                                     headers={"Content-Type": "application/json", "Accept": "application/json"})
+                                     headers={"Content-Type": "application/json", "Accept": "application/json",
+                                              "Origin": self.origin})
         try:
             with self.opener.open(req, timeout=self.timeout) as resp:
                 raw = resp.read()
@@ -453,6 +491,12 @@ def main(argv: list[str] | None = None, client_factory=Client) -> int:
     if args.phase == "rollback" and not args.record:
         print("t3_register: rollback 은 --record <대상 번호 표> 필요", file=sys.stderr)
         return 2
+    try:
+        origin = web_origin(base, os.environ.get(ORIGIN_ENV))
+    except RegisterError as error:
+        print(f"t3_register: {error}", file=sys.stderr)
+        return 2
+    print(f"관제 주소 {base}, Origin {origin}")
     client = client_factory(base)
     try:
         client.login(user, password)

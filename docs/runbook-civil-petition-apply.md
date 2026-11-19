@@ -366,6 +366,8 @@ export LUCIDA_QUERY_URL=http://192.168.230.119:13080            # 러너와 같�
 R="python3 deploy/tools/t3_register.py --inventory $I"
 ```
 
+도구는 모든 호출에 화면과 같은 `Origin` 머리(관제 주소의 scheme://host[:port], 119 는 `http://192.168.230.119:13080`)를 싣는다. query 는 쿠키가 있는 GET 아닌 요청의 Origin 이 허용 목록(119 query-env `LUCIDA_ALLOWED_ORIGINS` = `http://192.168.230.119:13080,https://192.168.230.119:13443`, 11-19 조회)과 글자로 같지 않으면 `403 forbidden origin` 으로 거절한다(11-19 14:48 KST 첫 `--yes` 가 이것으로 멈춤). 허용 목록이 관제 주소와 다른 사이트에서만 `export LUCIDA_WEB_ORIGIN=<허용 목록의 한 값>` 으로 덮어쓴다.
+
 관제 서버에 쓰는 일은 이 절의 단계 안에서만 한다. 수집 정책은 건드리지 않는다(장비 개별 덮어쓰기 없음, 서버 ICMP 는 기본 켬 그대로, 설계 §4-1). DPM 은 등록하지 않는다.
 
 ### 12-0. 적용 순서 (시각 기준: 부하 시작 11-18 12:42:48 KST + 26시간 = 11-19 14:42:48 KST 이후)

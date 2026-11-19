@@ -24,7 +24,9 @@ import tempfile
 import textwrap
 import unittest
 import unittest.mock
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -5086,6 +5088,176 @@ class T3RegisterTests(unittest.TestCase):
                                             client_factory=lambda base: self.product), 2)
         self.assertIn("LUCIDA_LOGIN_USER", err.getvalue())
 
+
+
+class OriginGate:
+    """query corsMiddleware 판정을 흉내 낸 로컬 HTTP 대역(lucida-next backend/services/query/main.go corsMiddleware,
+    backend/pkg/originguard Allowed 는 목록에 글자로 같은 값이 있는지만 본다).
+
+    GET, HEAD, OPTIONS 가 아니고 Cookie 머리가 있는데 Origin 이 없거나 허용 목록에 없으면 403 본문 "forbidden origin".
+    로그인(POST /api/v1/login)은 쿠키가 아직 없어 이 판정을 받지 않고 세션 쿠키를 준다. 받은 (메서드, 경로, Origin) 을 적는다.
+    """
+
+    def __init__(self, allowed_hosts: tuple[str, ...] = ("127.0.0.1",)) -> None:
+        import http.server
+        import threading
+        gate = self
+        self.seen: list[tuple[str, str, str | None]] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:
+                pass
+
+            def _reply(self, status: int, body: bytes, ctype: str = "application/json", cookie: bool = False) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                if cookie:
+                    self.send_header("Set-Cookie", "lucida_session=s1; Path=/; HttpOnly")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _handle(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                origin = self.headers.get("Origin")
+                gate.seen.append((self.command, self.path, origin))
+                unsafe = self.command not in ("GET", "HEAD", "OPTIONS")
+                if unsafe and self.headers.get("Cookie") and (not origin or origin not in gate.allowed):
+                    self._reply(403, b"forbidden origin\n", "text/plain; charset=utf-8")
+                    return
+                if self.command == "POST" and self.path == "/api/v1/login":
+                    self._reply(200, b'{"ok":true}', cookie=True)
+                elif self.command == "POST" and self.path == "/api/v1/targets":
+                    self._reply(201, b'{"id":"00000000-0000-4000-8000-000000000001"}')
+                elif self.command == "POST":
+                    self._reply(201, b'{"id":"00000000-0000-4000-8000-000000000002"}')
+                elif self.command == "GET":
+                    self._reply(200, b'{"targets":[],"target_collectors":[]}')
+                else:
+                    self._reply(204, b"")
+
+            do_GET = do_POST = do_PUT = do_DELETE = _handle
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.server.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+        # 설치기 파생 꼴(http 게이트웨이 포트, https 포트) 그대로.
+        self.allowed = {f"http://{h}:{self.port}" for h in allowed_hosts} | {f"https://{h}:13443" for h in allowed_hosts}
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05})
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+
+
+class T3RegisterOriginTests(unittest.TestCase):
+    """등록 도구의 쓰기 호출이 query Origin 판정을 통과하는지(11-19 119 첫 --yes 가 403 forbidden origin 으로 멈춤)."""
+
+    def setUp(self) -> None:
+        self.gate = OriginGate()
+        self.addCleanup(self.gate.close)
+        env = unittest.mock.patch.dict(os.environ, {})
+        env.start()
+        self.addCleanup(env.stop)
+        for key in (t3reg.ORIGIN_ENV, "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+            os.environ.pop(key, None)
+
+    def test_origin_is_scheme_host_port_like_the_installer_derives_it(self) -> None:
+        cases = [
+            # 119: LUCIDA_QUERY_URL 과 query-env LUCIDA_ALLOWED_ORIGINS 첫 값(11-19 조회)이 같다.
+            ("http://192.168.230.119:13080", "http://192.168.230.119:13080"),
+            ("http://192.168.230.119:13080/", "http://192.168.230.119:13080"),
+            ("http://192.168.230.119:13080/api", "http://192.168.230.119:13080"),
+            ("HTTPS://Polestar.Example:13443", "https://polestar.example:13443"),
+            ("http://h.example:80", "http://h.example"),
+            ("https://h.example:443/x", "https://h.example"),
+            ("http://h.example", "http://h.example"),
+            ("http://[fd00::1]:13080", "http://[fd00::1]:13080"),
+            ("http://user@h.example:13080", "http://h.example:13080"),
+        ]
+        for base, want in cases:
+            with self.subTest(base=base):
+                self.assertEqual(t3reg.web_origin(base), want)
+        self.assertIn(t3reg.web_origin("http://192.168.230.119:13080"),
+                      "http://192.168.230.119:13080,https://192.168.230.119:13443".split(","))
+
+    def test_bad_base_or_override_stops(self) -> None:
+        for base in ("ftp://h.example", "192.168.230.119:13080", "http://"):
+            with self.subTest(base=base), self.assertRaises(t3reg.RegisterError):
+                t3reg.web_origin(base)
+        for override in ("http://h.example:13080/", "http://h.example:13080/api", "h.example:13080",
+                         "http://u@h.example:13080", "http://h.example:13080?x=1"):
+            with self.subTest(override=override), self.assertRaisesRegex(t3reg.RegisterError, t3reg.ORIGIN_ENV):
+                t3reg.web_origin("http://h.example:13080", override)
+        self.assertEqual(t3reg.web_origin("http://a.example:13080", "https://b.example:13443"), "https://b.example:13443")
+
+    def test_writes_pass_the_gate_and_every_call_carries_the_same_origin(self) -> None:
+        client = t3reg.Client(self.gate.base, timeout=5)
+        client.login("u", "p")
+        session = t3reg.Session(client, True, io.StringIO())
+        session.get("/api/v1/targets?type=network")
+        status, body = session.write("POST", "/api/v1/targets", {"type": "network", "name": "trap-udp-162"})
+        self.assertEqual(status, 201)
+        self.assertEqual(body, {"id": "00000000-0000-4000-8000-000000000001"})
+        session.write("DELETE", "/api/v1/targets/00000000-0000-4000-8000-000000000001")
+        self.assertEqual([m for m, _, _ in self.gate.seen], ["POST", "GET", "POST", "DELETE"])
+        self.assertEqual({o for _, _, o in self.gate.seen}, {self.gate.base})
+
+    def test_the_gate_refuses_a_write_without_origin_like_119_did(self) -> None:
+        client = t3reg.Client(self.gate.base, timeout=5)
+        client.login("u", "p")
+        status, body = client.request("GET", "/api/v1/targets")
+        self.assertEqual(status, 200)
+        bare = urllib.request.Request(self.gate.base + "/api/v1/targets", data=b"{}", method="POST",
+                                      headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            client.opener.open(bare, timeout=5)
+        self.assertEqual(caught.exception.code, 403)
+        self.assertEqual(caught.exception.read().strip(), b"forbidden origin")
+        self.assertEqual(self.gate.seen[-1], ("POST", "/api/v1/targets", None))
+
+    def test_a_wrong_override_is_refused_and_the_tool_reports_403_forbidden_origin(self) -> None:
+        os.environ[t3reg.ORIGIN_ENV] = "http://192.168.230.119:13080"
+        client = t3reg.Client(self.gate.base, timeout=5)
+        self.assertEqual(client.origin, "http://192.168.230.119:13080")
+        client.login("u", "p")
+        session = t3reg.Session(client, True, io.StringIO())
+        with self.assertRaisesRegex(t3reg.RegisterError, "403 forbidden origin"):
+            session.write("POST", "/api/v1/targets", {"type": "network"})
+
+    def test_a_right_override_passes(self) -> None:
+        gate = OriginGate(allowed_hosts=("localhost",))
+        self.addCleanup(gate.close)
+        os.environ[t3reg.ORIGIN_ENV] = f"http://localhost:{gate.port}"
+        client = t3reg.Client(gate.base, timeout=5)
+        client.login("u", "p")
+        status, _ = t3reg.Session(client, True, io.StringIO()).write("POST", "/api/v1/targets", {"type": "network"})
+        self.assertEqual(status, 201)
+        self.assertEqual(gate.seen[-1], ("POST", "/api/v1/targets", f"http://localhost:{gate.port}"))
+
+    def test_main_runs_a_phase_through_the_gate_and_prints_the_origin(self) -> None:
+        os.environ.update({"LUCIDA_QUERY_URL": self.gate.base, "LUCIDA_LOGIN_USER": "u", "LUCIDA_LOGIN_PASSWORD": "p"})
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = t3reg.main(["--inventory", str(T_INV), "--phase", "trap", "--yes"])
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertIn(f"Origin {self.gate.base}", out.getvalue())
+        posts = [(p, o) for m, p, o in self.gate.seen if m == "POST" and p != "/api/v1/login"]
+        self.assertEqual(posts, [("/api/v1/targets", self.gate.base),
+                                 ("/api/v1/targets/00000000-0000-4000-8000-000000000001/collectors", self.gate.base)])
+        self.assertIn("trap 수신기 00000000-0000-4000-8000-000000000001", out.getvalue())
+
+    def test_main_stops_on_a_malformed_override_before_logging_in(self) -> None:
+        os.environ.update({"LUCIDA_QUERY_URL": self.gate.base, "LUCIDA_LOGIN_USER": "u", "LUCIDA_LOGIN_PASSWORD": "p",
+                           t3reg.ORIGIN_ENV: "http://h.example:13080/"})
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = t3reg.main(["--inventory", str(T_INV), "--phase", "trap", "--yes"])
+        self.assertEqual(rc, 2)
+        self.assertIn(t3reg.ORIGIN_ENV, err.getvalue())
+        self.assertEqual(self.gate.seen, [])
 
 class FakeRemote:
     """t3_check 의 읽기 통로 대역. 질의 글자에 든 조각으로 답을 고른다."""
