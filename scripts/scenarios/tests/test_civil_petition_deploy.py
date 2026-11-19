@@ -6200,6 +6200,70 @@ class HypervisorHelperFilesTests(unittest.TestCase):
             with self.subTest(step=earlier):
                 self.assertLess(remove.index(earlier), drop_filter)
 
+    FAKES = {
+        "id": '#!/bin/bash\nd="$HV_FAKE"\nif [[ "$1" == -u && -z "${2:-}" ]]; then echo 0; exit 0; fi\n'
+              'u="${@: -1}"; [[ -e "$d/user-$u" ]] || exit 1\nif [[ "$1" == -u ]]; then cat "$d/user-$u"; fi\n',
+        "useradd": '#!/bin/bash\necho "useradd $*" >>"$HV_FAKE/calls"\nu="${@: -1}"\nwhile (($#)); do [[ "$1" == --uid ]] && echo "$2" >"$HV_FAKE/user-$u"; shift; done\nmkdir -p "$HV_FAKE/home/$u"\n',
+        "userdel": '#!/bin/bash\necho "userdel $*" >>"$HV_FAKE/calls"\nrm -f "$HV_FAKE/user-$1"\n',
+        "getent": '#!/bin/bash\n[[ -e "$HV_FAKE/user-$2" ]] || exit 2\necho "$2:x:$(cat "$HV_FAKE/user-$2"):1::$HV_FAKE/home/$2:/bin/bash"\n',
+        "passwd": '#!/bin/bash\n[[ "$1" == -S ]] && { echo "$2 L"; exit 0; }\necho "passwd $*" >>"$HV_FAKE/calls"\n',
+        "systemctl": '#!/bin/bash\nd="$HV_FAKE"\nf=no; [[ -e "$HV_FILTER" ]] && f=yes\necho "systemctl $* filter=$f" >>"$d/calls"\n'
+                     'case "$1" in is-enabled) [[ -e "$d/masked-$2" ]] && echo masked || echo static ;; '
+                     'mask) touch "$d/masked-$2" ;; unmask) rm -f "$d/masked-$2" ;; esac\n',
+        "rsyslogd": '#!/bin/bash\nexit 0\n',
+        # The filter is in place and diverts: the probe line lands in hvjobs.log only.
+        "logger": '#!/bin/bash\necho "logger $*" >>"$HV_FAKE/calls"\n[[ -e "$HV_FILTER" ]] && echo "${@: -1}" >>"$HV_LOG_DIR/hvjobs.log"\n',
+        "sleep": '#!/bin/bash\nexit 0\n',
+        "apt-get": '#!/bin/bash\necho "apt-get $*" >>"$HV_FAKE/calls"\n',
+        "visudo": '#!/bin/bash\nexit 0\n',
+        "pkill": '#!/bin/bash\nexit 1\n',
+        "install": '#!/bin/bash\na=(); while (($#)); do case "$1" in -o|-g) shift 2 ;; *) a+=("$1"); shift ;; esac; done\nexec /usr/bin/install "${a[@]}"\n',
+    }
+
+    def test_install_masks_the_user_manager_after_the_filter_and_before_the_account_and_remove_unmasks(self) -> None:
+        """T4F 확인 필요 1 결정 (나): 설치 스크립트를 대역 명령(id, useradd, systemctl, logger ...)으로 돌려 순서를 본다.
+        거르기를 놓고 실제로 돌리는지 본 뒤, 계정을 만들기 전에 user@<uid>.service 를 mask 하고, remove 는 계정을 지운 뒤
+        거르기가 아직 있을 때 unmask 한다. check 는 mask 를 PASS 줄로 낸다."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            stage = root / "stage"
+            shutil.copytree(HV, stage)
+            subprocess.run([sys.executable, str(HV / "build.py"), "--inventory", str(T_INV), "--stage", str(stage)],
+                           check=True, capture_output=True, timeout=60)
+            fake, bindir, logs = root / "fake", root / "bin", root / "log"
+            for d in (fake, bindir, logs, root / "sbin", root / "rsyslog.d", root / "sudoers.d", root / "logrotate.d"):
+                d.mkdir()
+            for name, body in self.FAKES.items():
+                (bindir / name).write_text(body)
+                (bindir / name).chmod(0o755)
+            (root / "rsyslog.d" / "60-lucida-forward.conf").write_text("*.* @x\n")
+            (root / "runner.pub").write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyForTheTest runner\n")
+            env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "HV_FAKE": str(fake), "HV_LOG_DIR": str(logs),
+                   "HV_SBIN": str(root / "sbin"), "HV_SUDOERS": str(root / "sudoers.d" / "60-hvjob"),
+                   "HV_FILTER": str(root / "rsyslog.d" / "05-hvjobs.conf"), "HV_LOGROTATE": str(root / "logrotate.d" / "hvjobs"),
+                   "HV_FORWARD": str(root / "rsyslog.d" / "60-lucida-forward.conf")}
+            done = subprocess.run(["bash", str(stage / "install-hv-helper.sh"), "install", "--pubkey", str(root / "runner.pub")],
+                                  capture_output=True, text=True, env=env, timeout=60)
+            self.assertIn("masked user@1460.service", done.stdout, done.stderr)
+            self.assertIn("PASS user@1460.service masked", done.stdout)
+            calls = (fake / "calls").read_text().splitlines()
+            at = lambda prefix: next(i for i, c in enumerate(calls) if c.startswith(prefix))  # noqa: E731
+            self.assertLess(at("systemctl restart rsyslog filter=yes"), at("logger"))
+            self.assertLess(at("logger"), at("systemctl mask user@1460.service"))
+            self.assertLess(at("systemctl mask user@1460.service"), at("useradd"))
+            # Running install again does not mask twice.
+            subprocess.run(["bash", str(stage / "install-hv-helper.sh"), "install", "--pubkey", str(root / "runner.pub")],
+                           capture_output=True, text=True, env=env, timeout=60)
+            self.assertEqual(sum(c.startswith("systemctl mask ") for c in (fake / "calls").read_text().splitlines()), 1)
+            (fake / "calls").write_text("")
+            done = subprocess.run(["bash", str(stage / "install-hv-helper.sh"), "remove"], capture_output=True, text=True,
+                                  env=env, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            calls = (fake / "calls").read_text().splitlines()
+            self.assertLess(at("userdel"), at("systemctl unmask user@1460.service filter=yes"))
+            self.assertLess(at("systemctl unmask"), at("systemctl restart rsyslog filter=no"))
+            self.assertFalse((fake / "masked-user@1460.service").exists())
+
     def test_front_helper_refuses_unknown_and_malformed_requests_without_calling_root(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             tmp = Path(raw)

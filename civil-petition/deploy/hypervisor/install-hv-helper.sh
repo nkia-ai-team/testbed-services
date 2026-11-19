@@ -24,7 +24,11 @@ sbin="${HV_SBIN:-/usr/local/sbin}"
 sudoers="${HV_SUDOERS:-/etc/sudoers.d/60-hvjob}"
 filter="${HV_FILTER:-/etc/rsyslog.d/05-hvjobs.conf}"
 logrotate_file="${HV_LOGROTATE:-/etc/logrotate.d/hvjobs}"
-forward="/etc/rsyslog.d/60-lucida-forward.conf"
+forward="${HV_FORWARD:-/etc/rsyslog.d/60-lucida-forward.conf}"
+log_dir="${HV_LOG_DIR:-/var/log}"
+# 실행기 계정의 사용자 관리자(systemd --user)를 띄우지 않는다. 그 줄은 이름도 uid 도 없어 거르기가 못 가른다(T4F 확인 필요 1,
+# 지휘 세션 결정 (나)). 이 계정은 강제 명령 하나만 돌려 사용자 서비스가 필요 없다.
+user_manager="user@${uid}.service"
 
 log() { printf '%s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
@@ -76,7 +80,12 @@ do_install() {
   if ! same "$stage/hvjobs.logrotate" "$logrotate_file"; then install -m 0644 "$stage/hvjobs.logrotate" "$logrotate_file"; fi
   filter_diverts || fail "거르기가 계정 줄을 돌리지 않는다(계정을 만들기 전에 멈춤)"
   log "filter diverts account lines"
-  # 2. sudo 꾸러미, 계정, 잠금
+  # 2. 사용자 관리자 막기(계정을 만들기 전에: 첫 로그인부터 user@<uid>.service 가 뜨지 않게)
+  if [[ "$(systemctl is-enabled "$user_manager" 2>/dev/null || true)" != masked ]]; then
+    systemctl mask "$user_manager" >/dev/null
+    log "masked $user_manager"
+  fi
+  # 3. sudo 꾸러미, 계정, 잠금
   if ! command -v sudo >/dev/null; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y -q sudo >/dev/null
     log "installed package sudo"
@@ -87,7 +96,7 @@ do_install() {
   fi
   [[ "$(id -u "$account")" == "$uid" ]] || fail "$account uid 가 $uid 이 아님"
   passwd -S "$account" | awk '{exit !($2=="L"||$2=="NP")}' || passwd -l "$account" >/dev/null
-  # 3. 도우미, sudoers, 강제 명령 키
+  # 4. 도우미, sudoers, 강제 명령 키
   for f in t4-hv-exec t4-hv-exec-root; do
     if ! same "$stage/$f" "$sbin/$f"; then install -o root -g root -m 0755 "$stage/$f" "$sbin/$f"; log "placed $sbin/$f"; fi
   done
@@ -109,7 +118,7 @@ filter_diverts() {
   mark="check-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
   logger -p auth.info "$account $mark"
   sleep 2
-  grep -q "$mark" /var/log/hvjobs.log 2>/dev/null && ! grep -q "$mark" /var/log/syslog /var/log/auth.log 2>/dev/null
+  grep -q "$mark" "$log_dir/hvjobs.log" 2>/dev/null && ! grep -q "$mark" "$log_dir/syslog" "$log_dir/auth.log" 2>/dev/null
 }
 
 do_check() {
@@ -138,11 +147,12 @@ do_check() {
   else
     nope "filter did not divert the probe line"
   fi
+  if [[ "$(systemctl is-enabled "$user_manager" 2>/dev/null || true)" == masked ]]; then pass "$user_manager masked"; else nope "$user_manager 이 masked 가 아님"; fi
   if [[ -d /sys/module/sch_netem ]]; then pass sch_netem; else nope "sch_netem 적재 안 됨"; fi
   return $bad
 }
 
-# 순서: 계정, 도우미, sudoers 를 먼저 지우고 거르기는 맨 끝에 지운다(계정 삭제 줄도 걸러지게, 리뷰 rv-t4s M1).
+# 순서: 계정, 도우미, sudoers 를 먼저 지우고 사용자 관리자 mask 를 풀고 거르기는 맨 끝에 지운다(계정 삭제 줄도 걸러지게, 리뷰 rv-t4s M1).
 do_remove() {
   local home
   [[ "$(id -u)" == 0 ]] || fail "root 로 돈다"
@@ -153,6 +163,10 @@ do_remove() {
     userdel "$account"
     rm -rf -- "$home"
     log "removed account $account"
+  fi
+  if [[ "$(systemctl is-enabled "$user_manager" 2>/dev/null || true)" == masked ]]; then
+    systemctl unmask "$user_manager" >/dev/null
+    log "unmasked $user_manager"
   fi
   sleep 2
   rm -f "$logrotate_file"
