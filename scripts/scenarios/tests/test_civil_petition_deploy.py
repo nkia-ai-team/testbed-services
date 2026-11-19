@@ -6309,20 +6309,35 @@ class TraceTableTests(unittest.TestCase):
         remote = self.remote()
         injection = "2026-11-20 01:00:00"
         remote.ch_rules = [
-            (lambda q: [["9"]] if "session closed for user root" in q and injection in q else None, None),
-            (lambda q: [["4"]] if "session closed for user root" in q else None, None),
+            (lambda q: [["9", "0"]] if "session closed for user root" in q and injection in q else None, None),
+            (lambda q: [["4", "0"]] if "session closed for user root" in q else None, None),
             (lambda q: [["11111111-1111-1111-1111-111111111111", "/var/log/a'b.log", "3"]]
              if "log_attributes['file_path'], count()" in q and injection in q else None, None),
         ]
         rc, out = self.run_tool(remote)
         self.assertEqual(rc, 0)
-        self.assertIn("VM sudo 세션 닫힘 줄 미충족 창 9 평시 최대 4", out)
+        self.assertIn("VM sudo 세션 닫힘 줄(운영자 몫 뺌) 미충족 창 9 평시 최대 4", out)
         closes = [q for q in remote.queries if "session closed for user root" in q]
         self.assertTrue(closes)
         self.assertTrue(all("192.168.200.66" not in q and "app_name = 'sudo'" in q for q in closes))
         sample = [q for q in remote.queries if "substring(body, 1, 160)" in q]
         self.assertEqual(len(sample), 1)
         self.assertIn("in ('/var/log/ab.log')", sample[0])
+
+    def test_operator_sudo_lines_are_not_counted_as_pipeline(self) -> None:
+        """리뷰 L5: 운영자 경로의 sudo 도 닫힘 줄을 남긴다(원인 흔적). 운영자 명령 줄 수만큼 빼고 따로 센다."""
+        remote = self.remote()
+        injection = "2026-11-20 01:00:00"
+        remote.ch_rules = [
+            # 주입 창: 닫힘 9 가운데 6 은 운영자 명령 6 의 짝, 실행기 몫 3. 평시 창: 닫힘 4, 운영자 0.
+            (lambda q: [["9", "6"]] if "session closed for user root" in q and injection in q else None, None),
+            (lambda q: [["4", "0"]] if "session closed for user root" in q else None, None),
+        ]
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        self.assertIn("VM sudo 세션 닫힘 줄(운영자 몫 뺌) 충족 창 3 평시 최대 4, 운영자 sudo 명령 줄 6", out)
+        closes = [q for q in remote.queries if "session closed for user root" in q]
+        self.assertTrue(all("startsWith(message, 'sysop : ')" in q for q in closes))
 
     def test_long_windows_and_naive_times_are_refused(self) -> None:
         for start, end in (("2026-11-20T10:00:00", "2026-11-20T10:20:00"),

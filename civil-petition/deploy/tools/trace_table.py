@@ -317,16 +317,26 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
     new_conns = [r for r in conns if tuple(r) not in seen]
     # 실행기 자기 sudo 의 세션 닫힘 줄(pam_unix(sudo:session): session closed for user root)에는 계정 이름이 없어 VM 첫 규칙의
     # 이름 갈래로는 안 걸린다(리뷰 rv-t4s M3). 평시 점검 읽기도 같은 줄을 남기므로 0 이 아니라 평시 창 최댓값과 견준다.
+    # 운영자 경로(router.config, vm.service)의 sudo 도 같은 닫힘 줄을 남긴다. 그것은 원인 흔적이라 배관 계수에서 뺀다(리뷰 L5).
+    # sudo 줄에는 pid 가 없어(119 proc_id 빈칸, 11-19 읽기) 짝을 지을 수 없으므로, sudo 한 번이 명령 줄 하나와 닫힘 줄 하나를
+    # 남기는 것을 써서 운영자 명령 줄(<운영자> : ...) 수만큼 닫힘 줄에서 뺀다. 실행기 명령 줄은 첫 규칙이 돌려 119 에 없다.
+    operator = ctx["operator"]
+    if not re.fullmatch(r"[a-z][a-z0-9]{1,30}", operator):
+        raise ValueError(f"운영자 계정 이름 꼴이 아님: {operator!r}")
     vm_sources = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else [])
 
-    def sudo_closes(win: Window) -> int:
-        rows = remote.ch(f"select count() from lucida.syslog_local where {span_received(win)} and source_ip in ({quote(vm_sources)}) "
-                         "and app_name = 'sudo' and position(message, 'session closed for user root') > 0 format TSV;")
-        return int(rows[0][0]) if rows else 0
-    close_now, close_base = sudo_closes(w), [sudo_closes(b) for b in base]
+    def sudo_closes(win: Window) -> tuple[int, int]:
+        """(실행기 몫 닫힘 줄, 운영자 명령 줄)."""
+        rows = remote.ch(f"select countIf(position(message, 'session closed for user root') > 0), "
+                         f"countIf(startsWith(message, '{operator} : ')) from lucida.syslog_local where {span_received(win)} "
+                         f"and source_ip in ({quote(vm_sources)}) and app_name = 'sudo' format TSV;")
+        closes, commands = (int(rows[0][0]), int(rows[0][1])) if rows and len(rows[0]) >= 2 else (0, 0)
+        return max(closes - commands, 0), commands
+    (close_now, operator_now), close_base = sudo_closes(w), [sudo_closes(b)[0] for b in base]
     return {
         "words": all_words,
         "sudo_close_window": close_now, "sudo_close_baseline_max": max(close_base) if close_base else None,
+        "operator_sudo_commands_window": operator_now,
         "q7_sudo_close": "충족" if close_base and close_now <= max(close_base) else "미충족", "word_hits": {k: int(v[0][0]) if v else 0 for k, v in word_hits.items()},
         "q7_common_words": "충족" if words_total == 0 else "미충족",
         "q7a_rows": q7a, "q7a": "충족" if not q7a else "미충족",
@@ -413,7 +423,8 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
     q = result["q7"]
     print(f"Q7 공통 낱말 {q['q7_common_words']} {q['word_hits']}, Q7a {q['q7a']} {q['q7a_rows']}, "
           f"Q7b {q['q7b']} 창 {q['q7b_window']} 평시 최대 {q['q7b_baseline_max']}, Q7c {q['q7c']} {q['q7c_new']}, "
-          f"VM sudo 세션 닫힘 줄 {q['q7_sudo_close']} 창 {q['sudo_close_window']} 평시 최대 {q['sudo_close_baseline_max']}")
+          f"VM sudo 세션 닫힘 줄(운영자 몫 뺌) {q['q7_sudo_close']} 창 {q['sudo_close_window']} 평시 최대 {q['sudo_close_baseline_max']}, "
+          f"운영자 sudo 명령 줄 {q['operator_sudo_commands_window']}")
     if args.json:
         args.json.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 0
