@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import fnmatch
+import hashlib
 import datetime
 import importlib.util
 import io
@@ -6291,9 +6292,10 @@ class TraceTableTests(unittest.TestCase):
 
 
 class InstallRecordTests(unittest.TestCase):
-    """설치 기록 expected.sha256(러너 계약 (라), 설계 §6-4 버전 표류). 러너는 `cd / && sha256sum -c` 로 견준다."""
+    """설치 기록 expected.sha256(러너 계약 (라), 설계 §6-4 버전 표류, 지휘 세션 결정 11-19). 러너는 `cd / && sha256sum -c` 로
+    견준다. 비밀값을 채운 파일(렌더 meta.json 의 secrets 표시)은 기록하지 않는다."""
 
-    def bundle(self, root: Path) -> Path:
+    def bundle(self, root: Path, meta_secrets: list[str] | None = None, meta: bool = True) -> Path:
         bundle = root / "bundle"
         (bundle / "steps.d").mkdir(parents=True)
         for name in ("lib.sh", "record.sh"):
@@ -6304,27 +6306,45 @@ class InstallRecordTests(unittest.TestCase):
         (bundle / "files").mkdir()
         (bundle / "files" / "a").write_text("alpha\n")
         (bundle / "files" / "b").write_text("beta\n")
-        (bundle / "files.tsv").write_text(f"place\t/etc/app/a.conf\t0644\t{os.getuid()}\t{os.getgid()}\tfiles/a\n"
-                                          f"place\t/etc/app/b.conf\t0600\t{os.getuid()}\t{os.getgid()}\tfiles/b\n")
+        (bundle / "files" / "c").write_text("password=@@SECRET:db_password@@\n")
+        (bundle / "secrets").mkdir()
+        (bundle / "secrets" / "db_password").write_text("Abc123def456ghi7\n")
+        rows = [("/etc/app/a.conf", "files/a"), ("/etc/app/b.conf", "files/b"), ("/etc/app/c.conf", "files/c")]
+        (bundle / "files.tsv").write_text("".join(f"place\t{d}\t0644\t{os.getuid()}\t{os.getgid()}\t{src}\n" for d, src in rows))
+        if meta:
+            secrets = {"/etc/app/c.conf": ["db_password"] if meta_secrets is None else meta_secrets}
+            (bundle / "meta.json").write_text(json.dumps({"files": [
+                {"dest": d, "secrets": secrets.get(d, [])} for d, _ in rows]}))
         source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
         source = source.replace("LOG=/var/log/petition-deploy.log", f"LOG={bundle}/log")
         (bundle / "install.sh").write_text(source)
         return bundle
 
-    def test_a_full_run_records_every_placed_file_and_a_partial_run_does_not(self) -> None:
+    def run_install(self, bundle: Path, place: Path, *steps: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(bundle / "install.sh"), str(bundle), *steps], capture_output=True, text=True,
+                              env={**os.environ, "PLACE_ROOT": str(place)})
+
+    def test_a_full_run_records_placed_files_without_secret_ones_and_a_partial_run_does_not(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             bundle = self.bundle(root)
             place = root / "place"
-            env = {**os.environ, "PLACE_ROOT": str(place)}
-            done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle), "place"], capture_output=True, text=True, env=env)
+            done = self.run_install(bundle, place, "place")
             self.assertEqual(done.returncode, 0, done.stderr)
             record = place / "var" / "lib" / "petition-deploy" / "expected.sha256"
             self.assertFalse(record.exists())
-            done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle)], capture_output=True, text=True, env=env)
+            self.assertIn("Abc123def456ghi7", (place / "etc" / "app" / "c.conf").read_text())
+            (bundle / "secrets").mkdir(exist_ok=True)
+            (bundle / "secrets" / "db_password").write_text("Abc123def456ghi7\n")
+            done = self.run_install(bundle, place)
             self.assertEqual(done.returncode, 0, done.stderr)
-            lines = record.read_text().splitlines()
+            text = record.read_text()
+            lines = text.splitlines()
             self.assertEqual([l.split("  ", 1)[1] for l in lines], ["/etc/app/a.conf", "/etc/app/b.conf"])
+            secret_sum = hashlib.sha256((place / "etc" / "app" / "c.conf").read_bytes()).hexdigest()
+            self.assertNotIn("c.conf", text)
+            self.assertNotIn(secret_sum, text)
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o644)
             # The runner's check (cd / && sha256sum -c) passes on the placed tree and names a changed file.
             check = lambda: subprocess.run(["sha256sum", "-c", "--quiet", "-"], cwd=place, capture_output=True, text=True,
                                            input="\n".join(l.replace("  /", "  ") for l in lines) + "\n")
@@ -6335,7 +6355,53 @@ class InstallRecordTests(unittest.TestCase):
             self.assertIn("etc/app/a.conf: FAILED", done.stdout)
             # An installed server gets the record on its own with the record step.
             record.unlink()
-            done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle), "record"], capture_output=True, text=True, env=env)
+            done = self.run_install(bundle, place, "record")
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(len(record.read_text().splitlines()), 2)
-            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o644)
+
+    def test_record_refuses_without_the_render_secret_marks(self) -> None:
+        """meta.json 이 없거나, 비밀값 자리를 품은 원본의 표시가 비었으면(렌더와 묶음이 어긋남) 기록하지 않는다."""
+        for case, kwargs in (("no meta", {"meta": False}), ("empty mark", {"meta_secrets": []})):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                bundle = self.bundle(root, **kwargs)
+                place = root / "place"
+                (place / "etc" / "app").mkdir(parents=True)
+                for name in ("a", "b", "c"):
+                    (place / "etc" / "app" / f"{name}.conf").write_text((bundle / "files" / name).read_text())
+                done = self.run_install(bundle, place, "record")
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("설치 기록을 남기지 못함", done.stdout + done.stderr)
+                self.assertIn("record 실패", done.stderr)
+                self.assertFalse((place / "var" / "lib" / "petition-deploy" / "expected.sha256").exists())
+
+    def test_real_render_bundles_leave_the_secret_files_out(self) -> None:
+        """T 렌더 묶음 그대로: 비밀값을 채우는 파일(SNMP 커뮤니티, Tomcat 컨텍스트)이 빠지고 나머지는 모두 든다."""
+        inv = inventory(T_INV)
+        for host in inv["hosts"]:
+            with self.subTest(host=host["name"]), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                bundle_root = render.write_bundle(render.render_host(inv, host), root / "bundles")
+                (bundle_root / "steps.d").mkdir()
+                for name in ("lib.sh", "record.sh"):
+                    (bundle_root / "steps.d" / name).write_text((DEPLOY / "steps" / name).read_text())
+                source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+                (bundle_root / "install.sh").write_text(source.replace("LOG=/var/log/petition-deploy.log", f"LOG={root}/log"))
+                place = root / "place"
+                meta = json.loads((bundle_root / "meta.json").read_text())["files"]
+                for entry in meta:
+                    target = place / entry["dest"].lstrip("/")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(bundle_root / "files" / entry["dest"].lstrip("/"), target)
+                done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
+                                      text=True, env={**os.environ, "PLACE_ROOT": str(place)})
+                self.assertEqual(done.returncode, 0, done.stderr)
+                recorded = [l.split("  ", 1)[1] for l in
+                            (place / "var/lib/petition-deploy/expected.sha256").read_text().splitlines()]
+                secret = {e["dest"] for e in meta if e["secrets"]}
+                self.assertEqual(set(recorded), {e["dest"] for e in meta} - secret)
+                self.assertTrue(secret.isdisjoint(recorded))
+                if host["role"] == "router":
+                    self.assertIn("/etc/snmp/snmpd.community.conf", secret)
+                if host["role"] == "was":
+                    self.assertIn("/etc/tomcat10/Catalina/localhost/petition.xml", secret)

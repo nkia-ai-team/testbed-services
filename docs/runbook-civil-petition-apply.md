@@ -610,7 +610,7 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 | 8 | 119 읽기: 차례 4 ~ 7 구간 `syslog_local` 에서 출발 192.168.200.66, 꼴 `hvjob`, `1460`, `t4-hv-exec`, `run-r<32 hex>`, `sudo` 줄 수(분할 조건 `toYYYYMM(received_at)` 과 시각 범위) | 0. 같은 줄은 66 `/var/log/hvjobs.log` 에 있다 | 없음 |
 
 **VM 설치 기록(버전 표류 기대값, 러너 계약 (라)).** 묶음 전체를 도는 설치는 이제 끝에 `record` 단계로
-`/var/lib/petition-deploy/expected.sha256`(그 묶음이 놓은 파일의 sha256, 절대 경로, sha256sum 꼴)을 남긴다(`steps/record.sh`).
+`/var/lib/petition-deploy/expected.sha256`(그 묶음이 놓은 파일 가운데 비밀값을 채운 파일을 뺀 것의 sha256, 절대 경로, sha256sum 꼴, 0644)을 남긴다(`steps/record.sh`). 빼는 규칙은 렌더 산출물 `meta.json` 의 파일별 `secrets` 표시다(T 에서는 라우터 `/etc/snmp/snmpd.community.conf`, WAS 의 `/etc/tomcat10/Catalina/localhost/petition.xml`). 표시가 없거나 묶음 원본과 어긋나면 기록하지 않고 멈춘다.
 이미 설치된 VM 6대에는 한 번 따로 돌린다: `apply.sh --inventory inventory/t.json --host <이름> ... --steps record`(나머지 인자는
 §6 과 같다). 확인: VM 마다 `cd / && sha256sum -c --quiet /var/lib/petition-deploy/expected.sha256` 끝 코드 0. 되돌리기: 그 파일 지움
 (러너 표류 게이트가 «missing» 으로 멈춘다). 설치 기록을 남긴 뒤 운영자가 설정을 바꾸면 표류로 잡히므로, 의도한 변경 뒤에는
