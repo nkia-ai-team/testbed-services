@@ -184,8 +184,8 @@ def cell_logs(remote, ids: dict[str, str], w: Window, base: list[Window]) -> Cel
         ref = [b.get(key, 0) for b in before]
         if above_baseline(n, ref):
             sample = remote.ch("select substring(body, 1, 160) from lucida.lucida_logs_local where "
-                               f"{span_logs(w)} and event_source = 'log_monitor' and host_target_id = '{key[0]}' "
-                               f"and log_attributes['file_path'] = '{key[1]}' order by timestamp limit 1 format TSV;")
+                               f"{span_logs(w)} and event_source = 'log_monitor' and host_target_id in ({quote([key[0]])}) "
+                               f"and log_attributes['file_path'] in ({quote([key[1]])}) order by timestamp limit 1 format TSV;")
             rows.append(f"{by_id.get(key[0], key[0])} {key[1]} {n}줄(평시 최대 {max(ref) if ref else 0}), 첫 줄 꼴 "
                         f"'{pattern(sample[0][0]) if sample else ''}'")
     return Cell("로그 감시", "; ".join(rows) or "없음(실측)", {"rows": rows})
@@ -315,8 +315,19 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
             f"select target_id, remote_addr, toString(local_port) from lucida.host_connections where {span_connections(b)} "
             f"and target_id in ({quote(ids.values())}) and startsWith(remote_addr, '{mgmt_prefix}') group by 1, 2, 3 format TSV;")}
     new_conns = [r for r in conns if tuple(r) not in seen]
+    # 실행기 자기 sudo 의 세션 닫힘 줄(pam_unix(sudo:session): session closed for user root)에는 계정 이름이 없어 VM 첫 규칙의
+    # 이름 갈래로는 안 걸린다(리뷰 rv-t4s M3). 평시 점검 읽기도 같은 줄을 남기므로 0 이 아니라 평시 창 최댓값과 견준다.
+    vm_sources = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else [])
+
+    def sudo_closes(win: Window) -> int:
+        rows = remote.ch(f"select count() from lucida.syslog_local where {span_received(win)} and source_ip in ({quote(vm_sources)}) "
+                         "and app_name = 'sudo' and position(message, 'session closed for user root') > 0 format TSV;")
+        return int(rows[0][0]) if rows else 0
+    close_now, close_base = sudo_closes(w), [sudo_closes(b) for b in base]
     return {
-        "words": all_words, "word_hits": {k: int(v[0][0]) if v else 0 for k, v in word_hits.items()},
+        "words": all_words,
+        "sudo_close_window": close_now, "sudo_close_baseline_max": max(close_base) if close_base else None,
+        "q7_sudo_close": "충족" if close_base and close_now <= max(close_base) else "미충족", "word_hits": {k: int(v[0][0]) if v else 0 for k, v in word_hits.items()},
         "q7_common_words": "충족" if words_total == 0 else "미충족",
         "q7a_rows": q7a, "q7a": "충족" if not q7a else "미충족",
         "q7b_window": q7b_now, "q7b_baseline_max": max(q7b_base) if q7b_base else None,
@@ -401,7 +412,8 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
     print(result["row"])
     q = result["q7"]
     print(f"Q7 공통 낱말 {q['q7_common_words']} {q['word_hits']}, Q7a {q['q7a']} {q['q7a_rows']}, "
-          f"Q7b {q['q7b']} 창 {q['q7b_window']} 평시 최대 {q['q7b_baseline_max']}, Q7c {q['q7c']} {q['q7c_new']}")
+          f"Q7b {q['q7b']} 창 {q['q7b_window']} 평시 최대 {q['q7b_baseline_max']}, Q7c {q['q7c']} {q['q7c_new']}, "
+          f"VM sudo 세션 닫힘 줄 {q['q7_sudo_close']} 창 {q['sudo_close_window']} 평시 최대 {q['sudo_close_baseline_max']}")
     if args.json:
         args.json.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 0

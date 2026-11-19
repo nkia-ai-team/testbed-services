@@ -417,15 +417,23 @@ def node_program(body: bytes) -> bytes:
     return b"set -euo pipefail\n" + GUARD_FUNCTIONS + NODE_DISPATCH + body + b"dispatch\n"
 
 
-# The operator path (design 6-1 "change cause"): the change is typed by the operator account through
-# sudo, as a real operator's change would be, over the executor's open connection (no new login, Q7c).
-# setpriv takes no PAM session and logs nothing; the operator's sudo line reaches 119.
+# The operator path (design 6-1 "change cause"). This block is the only place that decides how an operator
+# command reaches the VM; router.config and vm.service call as_operator and as_operator_user and nothing else, so
+# switching to a separate operator ssh login (review question Q35) changes only this block.
+#
+# Today: the change is typed by the operator account through sudo, as a real operator's change would be, over the
+# executor's open connection (no new login, Q7c). setpriv takes no PAM session and logs nothing. The command runs in
+# the operator's own environment: its home as the working directory (sudo logs PWD, and a PWD under the executor's
+# home would put the executor account's name into the line, so the VM's first rsyslog rule would divert the
+# operator's sudo line away from 119), and HOME, SHELL, USER, LOGNAME of the operator (setpriv --reset-env).
+# What still differs from a real operator: no login lines, TTY=unknown, and sudo's PAM "session opened ... by
+# <executor>" line is diverted (glibc getlogin reads the session's loginuid), so 119 sees the closing line only.
 OPERATOR_FUNCTIONS = br'''operator=sysop
 ops_setpriv="${OPS_SETPRIV:-setpriv}"
 ops_sudo="${OPS_SUDO:-sudo}"
 op_home="${OPS_HOME:-$(getent passwd "$operator" | cut -d: -f6)}"
 as_operator_user() {
-  "$ops_setpriv" --reuid="$operator" --regid="$operator" --init-groups --reset-env -- "$@"
+  ( cd "$op_home" && exec "$ops_setpriv" --reuid="$operator" --regid="$operator" --init-groups --reset-env -- "$@" )
 }
 as_operator() { as_operator_user "$ops_sudo" -n "$@"; }
 '''

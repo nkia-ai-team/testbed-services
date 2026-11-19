@@ -4,6 +4,7 @@ import importlib.util
 import json
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -6320,6 +6321,148 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.refused("vm.service", self.params("vm.service", action="config", file="/etc/rsyslog.d/00-opsjobs.conf",
                                                match="a", replace="b"))
         self.refused("vm.service", self.params("vm.service", action="war", release="/tmp/x.war", release_sha256="0" * 64))
+
+
+    # ---------------------------------------------------------------- review rv-t4s fixes
+
+    def test_operator_commands_run_in_the_operator_home_and_their_sudo_lines_reach_119(self) -> None:
+        """H1: sudo logs PWD. Under the executor's home the line carries the executor's name and the VM's first rsyslog
+        rule diverts it, so the change's own trace never reaches 119. The operator path runs in the operator's home; a
+        real rsyslogd with the repository's first rule shows the operator lines forwarded, the executor lines not."""
+        svc = load("vm_service_executor")
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "tomcat10.service-state").write_text("active\n")
+        conf = self.tmp / "etc" / "tomcat10" / "server.xml"
+        conf.parent.mkdir(parents=True)
+        conf.write_text('<Connector port="8080" maxThreads="200"/>\n')
+        params = self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
+                             match='<Connector port="8080" maxThreads="200"/>', replace='<Connector port="8080" maxThreads="4"/>')
+        args = svc.check_parameters(params)
+        args[2] = str(conf)
+        program = vm_common.node_program(svc.NODE_BODY)
+        executor_home = self.tmp / "opsjob"
+        executor_home.mkdir()
+        done = subprocess.run(["bash", "-s"], input=("set -- " + " ".join(shlex.quote(a) for a in ["run", *args]) + "\n"
+                              "expire_after=1800 guard_hold=960\n").encode() + program, env=self.env, cwd=executor_home,
+                              capture_output=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        cwd = [line.split(" ", 1)[0] for line in vm_sandbox.logged(self.tmp, "operator-cwd")]
+        self.assertTrue(cwd)
+        self.assertEqual(set(cwd), {self.env["OPS_HOME"]})
+        sudo_lines = vm_sandbox.logged(self.tmp, "sudo-syslog")
+        self.assertEqual(len(sudo_lines), 3)
+        # The same lines as the VM would log them (the operator's home is /home/sysop there).
+        real = [l.replace(self.env["OPS_HOME"], "/home/sysop").replace(str(self.tmp), "/etc/..") for l in sudo_lines]
+        self.assertTrue(all(l.startswith("sysop : TTY=unknown ; PWD=/home/sysop ; USER=root ; COMMAND=") for l in real), real)
+        if not (shutil.which("rsyslogd") and shutil.which("logger")):
+            self.skipTest("rsyslogd 와 logger 가 필요")
+        rule = (ROOT.parents[1] / "civil-petition" / "deploy" / "templates" / "common" / "rsyslog-00-opsjobs.conf").read_text()
+        rule = rule.replace("{{executor_name}}", "opsjob").replace("{{executor_uid}}", "1450").replace("/var/log/opsjobs.log", "{diverted}")
+        executor = [("authpriv.info", "sshd", "Accepted publickey for opsjob from 192.168.127.1 port 40000 ssh2"),
+                    ("authpriv.notice", "sudo", "opsjob : PWD=/home/opsjob ; USER=root ; COMMAND=/usr/bin/bash -s"),
+                    ("daemon.info", "systemd", "Started run-r0123456789abcdef0123456789abcdef.timer."),
+                    # The old path's operator line (PWD under the executor's home) is diverted: the reason for the fix.
+                    ("authpriv.notice", "sudo", real[0].replace("PWD=/home/sysop", "PWD=/home/opsjob"))]
+        operator = [("authpriv.notice", "sudo", line) for line in real]
+        forward, diverted = vm_sandbox.run_rsyslogd(rule, executor + operator, self.tmp / "rs")
+        for _, _, message in operator:
+            self.assertIn(message, forward)
+            self.assertNotIn(message, diverted)
+        for _, _, message in executor:
+            self.assertIn(message, diverted)
+            self.assertNotIn(message, forward)
+
+    def _flows(self, kind: str, lines: list[str]) -> dict[str, bool]:
+        """Which monitoring flows pass a broad drop rule when the chain starts with ``lines``(real kernel)."""
+        rules = {"server": [{"hook": "input", "dst": "192.168.124.11/32", "verdict": "drop"},
+                            {"hook": "output", "src": "192.168.124.11/32", "verdict": "drop"}],
+                 # A router rule takes forward or input only; its own reports leave by output, which no rule reaches.
+                 "router": [{"hook": "input", "dst": "192.168.124.0/24", "verdict": "drop"}]}[kind]
+        mgmt_if = "ens19" if kind == "server" else "ens22"
+        tokens = vm_common.filter_rules(rules, kind, (mgmt_if,))
+        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda k, m: lines):
+            text = vm_common.nft_table("probe-guard", kind, mgmt_if, tokens)
+        target = "192.168.124.11" if kind == "server" else "192.168.124.1"
+        path = self.tmp / f"{kind}-{len(lines)}-{abs(hash(tuple(lines)))}.nft"
+        path.write_text(text)
+        script = (
+            f"ip link add dummy0 type dummy; ip addr add {target}/24 dev dummy0; ip addr add 10.250.0.1/32 dev dummy0; ip link set dummy0 up; ip link set lo up\n"
+            "nft add table inet obs\n"
+            "nft add chain inet obs in '{ type filter hook input priority 100; policy accept; }'\n"
+            "nft add chain inet obs out '{ type filter hook output priority 100; policy accept; }'\n"
+            "nft add rule inet obs in ip saddr 10.250.0.1 icmp type echo-request counter\n"
+            "nft add rule inet obs in ip saddr 10.250.0.1 udp dport 161 counter\n"
+            f"nft add rule inet obs out ip saddr {target} ip daddr 10.250.0.1 udp dport 18090 counter\n"
+            f"nft -f {shlex.quote(str(path))}\n"
+            f"ping -n -q -c 1 -W 1 -I 10.250.0.1 {target} >/dev/null 2>&1 || true\n"
+            f"python3 -c \"import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('10.250.0.1', 0)); s.sendto(b'x', ('{target}', 161))\"\n"
+            f"python3 -c \"import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('{target}', 0)); s.sendto(b'x', ('10.250.0.1', 18090))\"\n"
+            "nft list table inet obs\n")
+        done = subprocess.run(["unshare", "-rn", "bash", "-c", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        counts = [int(n) for n in re.findall(r"counter packets (\d+)", done.stdout)]
+        return {"119 ping in": counts[0] > 0, "119 snmp in": counts[1] > 0, "report out": counts[2] > 0}
+
+    def test_each_tunnel_line_alone_keeps_its_monitoring_flow_through_a_broad_rule(self) -> None:
+        """M2 (1): inbound 119 ICMP and SNMP need `ip saddr 10.250.0.0/30 accept`, outbound reports need
+        `ip daddr 10.250.0.0/30 accept`. Removing either one alone breaks exactly its flows on a real kernel. The
+        management and router-upstream lines cover flows a rule cannot name (the content guard admits business
+        networks only); removing one of them alone is an equivalent mutation, shown here as no flow lost. The router's
+        forward path of the servers' reports uses the same generated destination line as the server's output chain."""
+        for kind in ("server", "router"):
+            lines = vm_common.protected_accept_lines(kind, "ens19" if kind == "server" else "ens22")
+            self.assertEqual(self._flows(kind, lines), {"119 ping in": True, "119 snmp in": True, "report out": True})
+            for line in lines:
+                with self.subTest(kind=kind, removed=line):
+                    flows = self._flows(kind, [l for l in lines if l != line])
+                    if line == "ip saddr 10.250.0.0/30 accept":
+                        self.assertEqual(flows, {"119 ping in": False, "119 snmp in": False, "report out": True})
+                    elif line == "ip daddr 10.250.0.0/30 accept" and kind == "server":
+                        self.assertEqual(flows, {"119 ping in": True, "119 snmp in": True, "report out": False})
+                    else:
+                        self.assertEqual(flows, {"119 ping in": True, "119 snmp in": True, "report out": True})
+
+    def test_a_lost_management_read_right_after_the_change_undoes_it(self) -> None:
+        """M2 (2): the check right after the change is two reads (66 probe and the VM over its management
+        connection). The probe passes, the management read fails: the run fails and cleanup is called."""
+        firewall = load("vmhost_firewall_executor")
+        params = self.params("vmhost.firewall")
+        front = self.tmp / "hv-front.sh"
+        front.write_text("#!/bin/bash\nread -r req; echo \"$req\" >>\"$VM_SANDBOX/hv-log\"\n")
+        front.chmod(0o755)
+        env = {**self.env, "VM_SANDBOX_HV_FRONT": str(front)}
+        shell = vm_sandbox.NetnsShell(self.tmp, env, "ip link add ens18 type dummy; ip addr add 192.168.124.11/24 dev ens18; ip link set ens18 up")
+        try:
+            vm_sandbox.master(self.tmp, "192.168.127.21")
+            (self.tmp / "fail-state").touch()
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertEqual(rc, 1)
+            self.assertIn("undoing it", err)
+            self.assertEqual(vm_sandbox.logged(self.tmp, "hv-log"), ["probe 192.168.124.11"])
+            self.assertNotIn("web-guard", shell.run("nft list tables\n")[1])
+        finally:
+            shell.close()
+
+    def test_service_config_refuses_a_linked_file(self) -> None:
+        """L1: a configuration file that is a symbolic link is refused (the copy would follow it elsewhere)."""
+        svc = load("vm_service_executor")
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "tomcat10.service-state").write_text("active\n")
+        real = self.tmp / "real.xml"
+        real.write_text("old\n")
+        link = self.tmp / "server.xml"
+        link.symlink_to(real)
+        args = svc.check_parameters(self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
+                                                match="old", replace="new"))
+        args[2] = str(link)
+        program = vm_common.node_program(svc.NODE_BODY)
+        done = vm_sandbox.node_call(program, ["check", *args], self.env)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn(b"no ", done.stderr)
+        args[2] = str(real)
+        self.assertEqual(vm_sandbox.node_call(program, ["check", *args], self.env).returncode, 0)
 
 
 class CivilPetitionTrialToolTests(unittest.TestCase):

@@ -6091,7 +6091,7 @@ class HypervisorHelperFilesTests(unittest.TestCase):
             out = self.render(Path(raw))
             sudoers = (out / "60-hvjob").read_text()
             rules = [l for l in sudoers.splitlines() if l and not l.startswith("#")]
-            self.assertEqual(rules, ["Defaults:hvjob env_reset, !requiretty",
+            self.assertEqual(rules, ["Defaults:hvjob env_reset, !requiretty, !syslog, !pam_session",
                                      'hvjob ALL=(root) NOPASSWD: /usr/local/sbin/t4-hv-exec-root ""'])
             if shutil.which("visudo"):
                 check = subprocess.run(["visudo", "-cf", str(out / "60-hvjob")], capture_output=True, text=True)
@@ -6114,9 +6114,11 @@ class HypervisorHelperFilesTests(unittest.TestCase):
             # The filter sorts before 66's forward file (60-lucida-forward.conf) and names the account, uid, helper and run-r.
             self.assertLess("05-hvjobs.conf", "60-lucida-forward.conf")
             text = (out / "05-hvjobs.conf").read_text()
-            for piece in ("hvjob", "1460", "t4-hv-exec", "run-r[0-9a-f]{32}", '$programname == "sudo"',
+            for piece in ("hvjob", "1460", "t4-hv-exec", "run-r[0-9a-f]{32}",
                           "192[.]168[.]122[.]20", "/var/log/hvjobs.log", "stop"):
                 self.assertIn(piece, text)
+            # The account's sudo leaves no line (sudoers), so the filter does not take every sudo line (review M4).
+            self.assertNotIn('$programname == "sudo"', text)
             self.assertNotIn("{{", text)
 
     @unittest.skipUnless(shutil.which("rsyslogd") and shutil.which("logger"), "rsyslogd 와 logger 가 필요")
@@ -6146,7 +6148,6 @@ class HypervisorHelperFilesTests(unittest.TestCase):
                     time_sleep(0.1)
                 diverted = [("sshd", "Accepted publickey for hvjob from 192.168.122.20 port 5 ssh2"),
                             ("sshd-session", "Received disconnect from 192.168.122.20 port 5:11: disconnected by user"),
-                            ("sudo", "pam_unix(sudo:session): session closed for user root"),
                             ("systemd", "Started user@1460.service - User Manager for UID 1460."),
                             ("systemd-logind", "New session 12 of user hvjob."),
                             ("systemd", "Started run-r0123456789abcdef0123456789abcdef.timer."),
@@ -6155,7 +6156,10 @@ class HypervisorHelperFilesTests(unittest.TestCase):
                         ("sshd-session", "Disconnected from 192.168.122.201 port 9"),
                         ("systemd", "Started user@14600.service"),
                         ("CRON", "hvjobx is another word"),
-                        ("systemd", "session-12.scope: Deactivated successfully.")]
+                        ("systemd", "session-12.scope: Deactivated successfully."),
+                        # Another root's sudo on 66 goes to the monitoring server as before (review M4).
+                        ("sudo", "root : PWD=/root ; USER=root ; COMMAND=/usr/bin/qm list"),
+                        ("sudo", "pam_unix(sudo:session): session closed for user root")]
                 for tag, message in diverted + kept:
                     subprocess.run(["logger", "-u", str(sock / "l.sock"), "-t", tag, message], check=True, timeout=10)
                 for _ in range(50):
@@ -6175,6 +6179,24 @@ class HypervisorHelperFilesTests(unittest.TestCase):
             for _, message in kept:
                 self.assertIn(message, forward)
                 self.assertNotIn(message, hvjobs)
+
+    def test_install_puts_the_filter_first_and_remove_takes_it_last(self) -> None:
+        """리뷰 M1: 계정 추가, 삭제 줄도 걸러지게 거르기를 설치 맨 앞(계정보다 먼저, 실제로 돌리는지 확인까지)과
+        삭제 맨 끝에 둔다."""
+        source = (HV / "install-hv-helper.sh").read_text()
+        install = source[source.index("do_install() {"):source.index("\n}\n", source.index("do_install() {"))]
+        remove = source[source.index("do_remove() {"):source.index("\n}\n", source.index("do_remove() {"))]
+        place_filter = install.index('install -m 0644 "$stage/05-hvjobs.conf" "$filter"')
+        diverts = install.index("filter_diverts || fail")
+        for later in ("apt-get install", "useradd", "passwd -l", "visudo -cf", "authorized_keys\"", 'install -o root -g root -m 0755'):
+            with self.subTest(step=later):
+                self.assertLess(place_filter, install.index(later))
+                self.assertLess(diverts, install.index(later))
+        self.assertLess(install.index("systemctl restart rsyslog"), diverts)
+        drop_filter = remove.index('rm -f "$filter"')
+        for earlier in ("userdel", 'rm -f "$sudoers"', 'rm -rf -- "$home"'):
+            with self.subTest(step=earlier):
+                self.assertLess(remove.index(earlier), drop_filter)
 
     def test_front_helper_refuses_unknown_and_malformed_requests_without_calling_root(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -6280,6 +6302,27 @@ class TraceTableTests(unittest.TestCase):
                 trace.q7(self.remote(), ctx, {"web01": "1"}, "opsjob", 1450, "hvjob", 1460, [bad], w, w, base)
         with self.assertRaises(ValueError):
             trace.q7(self.remote(), ctx, {"web01": "1"}, "ops'job", 1450, "hvjob", 1460, [], w, w, base)
+
+    def test_sudo_session_close_lines_are_counted_against_the_baseline_and_values_are_quoted(self) -> None:
+        """리뷰 M3: VM 출발 sudo 세션 닫힘 줄을 주입 창과 평시 창 최댓값으로 견준다. 리뷰 L3: 119 에서 읽은 값은 따옴표
+        처리를 거쳐 다음 질의에 들어간다."""
+        remote = self.remote()
+        injection = "2026-11-20 01:00:00"
+        remote.ch_rules = [
+            (lambda q: [["9"]] if "session closed for user root" in q and injection in q else None, None),
+            (lambda q: [["4"]] if "session closed for user root" in q else None, None),
+            (lambda q: [["11111111-1111-1111-1111-111111111111", "/var/log/a'b.log", "3"]]
+             if "log_attributes['file_path'], count()" in q and injection in q else None, None),
+        ]
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        self.assertIn("VM sudo 세션 닫힘 줄 미충족 창 9 평시 최대 4", out)
+        closes = [q for q in remote.queries if "session closed for user root" in q]
+        self.assertTrue(closes)
+        self.assertTrue(all("192.168.200.66" not in q and "app_name = 'sudo'" in q for q in closes))
+        sample = [q for q in remote.queries if "substring(body, 1, 160)" in q]
+        self.assertEqual(len(sample), 1)
+        self.assertIn("in ('/var/log/ab.log')", sample[0])
 
     def test_long_windows_and_naive_times_are_refused(self) -> None:
         for start, end in (("2026-11-20T10:00:00", "2026-11-20T10:20:00"),

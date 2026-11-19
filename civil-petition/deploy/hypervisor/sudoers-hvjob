@@ -1,4 +1,6 @@
 # 66 하이퍼바이저 실행기 계정은 root 도우미 하나만 비밀번호 없이 부른다(설계 §6-1 "66 호스트 권한", 결정 2).
 # 환경은 sudo 기본값대로 비운다(env_reset). 다른 명령, 인자 덧붙이기는 없다.
-Defaults:{{account}} env_reset, !requiretty
+# 이 계정의 sudo 는 syslog 줄도 PAM 세션도 남기지 않는다(!syslog, !pam_session). 그래서 66 거르기가 sudo 줄 전부를 돌리지
+# 않아도 되고, 66 의 다른 sudo 사용 줄은 그대로 관제 서버로 간다(리뷰 rv-t4s M4, 설계 §6-2 66 행).
+Defaults:{{account}} env_reset, !requiretty, !syslog, !pam_session
 {{account}} ALL=(root) NOPASSWD: /usr/local/sbin/t4-hv-exec-root ""

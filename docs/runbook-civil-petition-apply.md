@@ -609,6 +609,13 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 | 7 | 거절 확인: `printf 'link-down 201 net0\nexpire_after=60 guard_hold=60\n'`(라우터 상향), `printf 'qdisc-apply tap206i0 100 0 0 0\n...'`(부하기), `printf 'link-restore 202 net0\n'`, `ssh ... hvjob@192.168.122.1 id`(명령 문자열은 무시됨), `ssh -t ...`(pty 거절) | 앞 셋 끝 코드 3, 넷째 "no request" 끝 코드 3, 다섯째 pty 거절 | 없음 |
 | 8 | 119 읽기: 차례 4 ~ 7 구간 `syslog_local` 에서 출발 192.168.200.66, 꼴 `hvjob`, `1460`, `t4-hv-exec`, `run-r<32 hex>`, `sudo` 줄 수(분할 조건 `toYYYYMM(received_at)` 과 시각 범위) | 0. 같은 줄은 66 `/var/log/hvjobs.log` 에 있다 | 없음 |
 
+설치는 거르기 파일을 맨 먼저 놓고 실제로 계정 줄을 돌리는지 본 뒤에야 계정을 만든다(리뷰 rv-t4s M1). 그래서 계정 추가 줄도
+119 로 가지 않고 차례 8 의 기대 0 이 맞는다. remove 는 거르기를 맨 끝에 지운다. 실행기 계정의 sudo 는 sudoers 의 `!syslog`,
+`!pam_session` 으로 줄을 남기지 않는다. 66 `/root/hv-stage` 는 `install-hv-helper.sh check` 가 저장소 판과 견주는 자리라 T4 시험
+실행이 끝날 때까지 두고, 그 뒤 `rm -r /root/hv-stage` 로 지운다(공개 키만 들어 있다). 앞 도우미는 `HV_SUDO`, `HV_HELPER_DIR` 를
+환경에서 읽는다(시험용). 66 sshd 가 기본값(`PermitUserEnvironment no`, `AcceptEnv LANG LC_*`)이라 밖에서 넣을 수 없다. 66 의
+sshd 설정을 바꾸면 이 점을 다시 본다(리뷰 rv-t4s L2).
+
 **VM 설치 기록(버전 표류 기대값, 러너 계약 (라)).** 묶음 전체를 도는 설치는 이제 끝에 `record` 단계로
 `/var/lib/petition-deploy/expected.sha256`(그 묶음이 놓은 파일 가운데 비밀값을 채운 파일을 뺀 것의 sha256, 절대 경로, sha256sum 꼴, 0644)을 남긴다(`steps/record.sh`). 빼는 규칙은 렌더 산출물 `meta.json` 의 파일별 `secrets` 표시다(T 에서는 라우터 `/etc/snmp/snmpd.community.conf`, WAS 의 `/etc/tomcat10/Catalina/localhost/petition.xml`). 표시가 없거나 묶음 원본과 어긋나면 기록하지 않고 멈춘다.
 이미 설치된 VM 6대에는 한 번 따로 돌린다: `apply.sh --inventory inventory/t.json --host <이름> ... --steps record`(나머지 인자는
@@ -630,18 +637,16 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 실행기에는 시나리오 계약이 없다. 시험 실행은 러너 컨테이너 안에서 `vm-executor-trial.py` 로 한다. 계약 JSON 하나를 그 호출에만
 묶고 catalog 와 registry 는 바꾸지 않는다. 먼저 `--live` 없이 돌려 argv 와 확인 문자열을 보고, 같은 계약으로 `--live --confirm <그 문자열>`.
 
-| 차례 | 하는 일 | 확인 |
-|---|---|---|
-| 0 | 녹화 정지(PAUSE), 테스트베드 잠금, 다른 도메인 녹화 없음. 러너의 늘 열린 연결 7개 살아 있음 | 큐 상태, `ssh -O check` 7개 |
-| 1 | 실행기 종류마다 한 건씩, 한 번에 하나: preflight → run → 피해 신호가 판정 기준을 넘는지 부하기 요약으로 봄(설계 §6-3) → cleanup → recovery. 시작, 끝 시각 기록 | run 끝 코드 0, cleanup 0, recovery 0, 15분 안에 부하기 비정상 비율과 진입 p95 평시 대역 |
-| 2 | 자가 복구 실측: 하이퍼바이저 쪽 1건(`vmlink.state`)과 라우터 쪽 1건(`router.qdisc`)은 cleanup 대신 가드를 앞당겨 발화시킨다(`--max-injection 1m` 으로 run, 기한 = 1분 + 600초, 기다림. 또는 U8 시운전 4번처럼 타이머를 손으로 앞당김) | 66 `link-state` 가 `up`, 라우터 root qdisc 가 기본값, 가드 잔여 0 |
-| 3 | 실행기마다 흔적 표 한 줄: `trace_table.py`(흔적 표 문서 §1) | 표의 빈칸 0, Q7 판정 |
-| 4 | 격리 Q2: 시험 실행 중 tb-cp, tb-w1 ~ 3 의 CPU, 메모리가 평시 같은 시각 대비 ±5%p 안 | 119 읽기 |
-| 5 | 라우터 재시작 변형 구간의 `syslog_local` 에 `netem` 낱말 0(설계 §2-4 예외). 닿으면 거르기 보완 전에는 그 변형을 녹화에 쓰지 않는다 | 119 읽기 |
-| 6 | 끝: 가드 잔여 0(VM 6대와 66), DIRTY 0, PAUSE 풀기 | 러너 preflight |
-
-되돌리기: 실행기 cleanup, 안 되면 각 VM `/var/lib/opsjobs/*.undo` 를 root 로 돌림(가드의 되돌림 본문), 66 은
-`printf 'link-restore <vmid> <netN>\n' | sudo /usr/local/sbin/t4-hv-exec-root`(root), tap 은 `tc qdisc del dev <tap> root`(우리 핸들 1a7e 일 때만).
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 0 | 녹화 정지(PAUSE), 테스트베드 잠금, 다른 도메인 녹화 없음. 러너의 늘 열린 연결 7개 살아 있음. 한 VM 에서 실행기 연결로 `true` 를 한 번 친 뒤 그 VM `/var/log/syslog` 와 `/var/log/opsjobs.log` 에서 `pam_unix(sudo:session): session closed for user root` 가 어느 쪽에 남는지 본다(리뷰 rv-t4s M3) | 큐 상태, `ssh -O check` 7개. syslog 쪽에 남으면 그 줄은 119 로 가므로 VM sudoers 에 `Defaults:opsjob !pam_session` 을 둘지 T2 소유자와 지휘 세션이 정하고, 흔적 표 도구의 "VM sudo 세션 닫힘 줄" 판정(주입 창 ≤ 평시 창 최댓값)을 본다 | 없음(읽기) |
+| 1 | 실행기 종류마다 한 건씩, 한 번에 하나: preflight → run → 피해 신호가 판정 기준을 넘는지 부하기 요약으로 봄(설계 §6-3) → cleanup → recovery. 시작, 끝 시각 기록 | run 끝 코드 0, cleanup 0, recovery 0, 15분 안에 부하기 비정상 비율과 진입 p95 평시 대역 | 같은 계약으로 cleanup. 안 되면 그 VM 의 `/var/lib/opsjobs/<작업>.undo` 를 root 로 돌림(가드의 되돌림 본문). 66 은 `printf 'link-restore <vmid> <netN>\n' \| sudo /usr/local/sbin/t4-hv-exec-root`(root), tap 은 우리 핸들 1a7e 일 때만 `tc qdisc del dev <tap> root` |
+| 1-1 | router.config 와 vm.service 시험 실행 구간을 119 에서 읽는다(설계 §6-2 끝 문단) | `syslog_local` 에 그 VM 출발 `sysop : TTY=unknown ; PWD=/home/sysop ; USER=root ; COMMAND=...` 꼴 줄이 1건 이상(운영자 경로의 원인 흔적, 리뷰 rv-t4s H1). 0 이면 그 실행기를 녹화에 쓰지 않는다 | 없음(읽기) |
+| 2 | 자가 복구 실측: 하이퍼바이저 쪽 1건(`vmlink.state`)과 라우터 쪽 1건(`router.qdisc`)은 cleanup 대신 가드를 앞당겨 발화시킨다(`--max-injection 1m` 으로 run, 기한 = 1분 + 600초, 기다림. 또는 U8 시운전 4번처럼 타이머를 손으로 앞당김) | 66 `link-state` 가 `up`, 라우터 root qdisc 가 기본값, 가드 잔여 0 | 발화가 안 되면 차례 1 의 되돌리기 |
+| 3 | 실행기마다 흔적 표 한 줄: `trace_table.py`(흔적 표 문서 §1) | 표의 빈칸 0, Q7 판정 | 없음(읽기) |
+| 4 | 격리 Q2: 시험 실행 중 tb-cp, tb-w1 ~ 3 의 CPU, 메모리가 평시 같은 시각 대비 ±5%p 안 | 119 읽기 | 넘으면 이 도메인 부하를 낮추고 다시 |
+| 5 | 라우터 재시작 변형 구간의 `syslog_local` 에 `netem` 낱말 0(설계 §2-4 예외). 닿으면 거르기 보완 전에는 그 변형을 녹화에 쓰지 않는다 | 119 읽기 | 없음(읽기) |
+| 6 | 끝: 가드 잔여 0(VM 6대와 66), DIRTY 0, PAUSE 풀기 | 러너 preflight | 잔여가 있으면 차례 1 의 되돌리기 |
 
 ## 수정 기록
 

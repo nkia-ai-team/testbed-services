@@ -43,8 +43,11 @@ render_to() {
 
 same() { [[ -e "$2" ]] && cmp -s "$1" "$2"; }
 
+# 순서: 거르기 파일을 맨 먼저 놓고 rsyslog 가 실제로 그 줄을 돌리는지 본 뒤에야 계정을 만든다. 계정 추가 줄
+# (useradd 의 new user: name=<계정>, UID=<uid>)과 그 뒤 모든 줄이 66 의 관제 서버 전달보다 먼저 걸러져야 runbook §15-1
+# 차례 8 의 기대(119 에 0 줄)가 맞는다(리뷰 rv-t4s M1).
 do_install() {
-  local pubkey=$1 stage home changed=0
+  local pubkey=$1 stage home
   [[ "$(id -u)" == 0 ]] || fail "root 로 돈다"
   [[ -r "$pubkey" ]] || fail "공개 키 파일 없음: $pubkey"
   [[ "$(wc -l <"$pubkey")" -le 1 ]] || fail "공개 키 파일에 줄이 둘 이상"
@@ -53,29 +56,7 @@ do_install() {
   stage=$(mktemp -d)
   trap 'rm -rf "$stage"' RETURN
   render_to "$stage"
-  if ! command -v sudo >/dev/null; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q sudo >/dev/null
-    log "installed package sudo"
-  fi
-  if ! id "$account" >/dev/null 2>&1; then
-    useradd --uid "$uid" --create-home --shell /bin/bash --comment "" "$account"
-    log "added account $account"
-  fi
-  [[ "$(id -u "$account")" == "$uid" ]] || fail "$account uid 가 $uid 이 아님"
-  passwd -S "$account" | awk '{exit !($2=="L"||$2=="NP")}' || passwd -l "$account" >/dev/null
-  for f in t4-hv-exec t4-hv-exec-root; do
-    if ! same "$stage/$f" "$sbin/$f"; then install -o root -g root -m 0755 "$stage/$f" "$sbin/$f"; log "placed $sbin/$f"; changed=1; fi
-  done
-  visudo -cf "$stage/60-hvjob" >/dev/null || fail "sudoers 문법"
-  if ! same "$stage/60-hvjob" "$sudoers"; then install -o root -g root -m 0440 "$stage/60-hvjob" "$sudoers"; log "placed $sudoers"; fi
-  home=$(getent passwd "$account" | cut -d: -f6)
-  install -d -m 0700 -o "$account" -g "$account" "$home/.ssh"
-  { cat "$stage/authorized_keys.prefix"; cat "$pubkey"; } >"$stage/authorized_keys"
-  if ! same "$stage/authorized_keys" "$home/.ssh/authorized_keys"; then
-    install -m 0600 -o "$account" -g "$account" "$stage/authorized_keys" "$home/.ssh/authorized_keys"
-    log "placed authorized_keys (forced command)"
-  fi
-  if ! same "$stage/hvjobs.logrotate" "$logrotate_file"; then install -m 0644 "$stage/hvjobs.logrotate" "$logrotate_file"; fi
+  # 1. 거르기
   if ! same "$stage/05-hvjobs.conf" "$filter"; then
     local backup=""
     if [[ -e "$filter" ]]; then backup="$stage/05-hvjobs.conf.prev"; cp -p "$filter" "$backup"; fi
@@ -88,7 +69,43 @@ do_install() {
     systemctl restart rsyslog
     log "placed $filter, rsyslog restarted"
   fi
+  if ! same "$stage/hvjobs.logrotate" "$logrotate_file"; then install -m 0644 "$stage/hvjobs.logrotate" "$logrotate_file"; fi
+  filter_diverts || fail "거르기가 계정 줄을 돌리지 않는다(계정을 만들기 전에 멈춤)"
+  log "filter diverts account lines"
+  # 2. sudo 꾸러미, 계정, 잠금
+  if ! command -v sudo >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q sudo >/dev/null
+    log "installed package sudo"
+  fi
+  if ! id "$account" >/dev/null 2>&1; then
+    useradd --uid "$uid" --create-home --shell /bin/bash --comment "" "$account"
+    log "added account $account"
+  fi
+  [[ "$(id -u "$account")" == "$uid" ]] || fail "$account uid 가 $uid 이 아님"
+  passwd -S "$account" | awk '{exit !($2=="L"||$2=="NP")}' || passwd -l "$account" >/dev/null
+  # 3. 도우미, sudoers, 강제 명령 키
+  for f in t4-hv-exec t4-hv-exec-root; do
+    if ! same "$stage/$f" "$sbin/$f"; then install -o root -g root -m 0755 "$stage/$f" "$sbin/$f"; log "placed $sbin/$f"; fi
+  done
+  visudo -cf "$stage/60-hvjob" >/dev/null || fail "sudoers 문법"
+  if ! same "$stage/60-hvjob" "$sudoers"; then install -o root -g root -m 0440 "$stage/60-hvjob" "$sudoers"; log "placed $sudoers"; fi
+  home=$(getent passwd "$account" | cut -d: -f6)
+  install -d -m 0700 -o "$account" -g "$account" "$home/.ssh"
+  { cat "$stage/authorized_keys.prefix"; cat "$pubkey"; } >"$stage/authorized_keys"
+  if ! same "$stage/authorized_keys" "$home/.ssh/authorized_keys"; then
+    install -m 0600 -o "$account" -g "$account" "$stage/authorized_keys" "$home/.ssh/authorized_keys"
+    log "placed authorized_keys (forced command)"
+  fi
   do_check
+}
+
+# 거르기가 계정 이름이 든 줄을 hvjobs.log 로만 돌리는가(줄 하나를 보내 본다).
+filter_diverts() {
+  local mark
+  mark="check-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+  logger -p auth.info "$account $mark"
+  sleep 2
+  grep -q "$mark" /var/log/hvjobs.log 2>/dev/null && ! grep -q "$mark" /var/log/syslog /var/log/auth.log 2>/dev/null
 }
 
 do_check() {
@@ -112,11 +129,7 @@ do_check() {
     nope "rsyslog filter"
   fi
   # 거르기가 실제로 줄을 돌리는가: 계정 이름이 든 줄 하나를 보내고 hvjobs.log 에만 있는지 본다.
-  local mark
-  mark="check-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-  logger -p auth.info "$account $mark"
-  sleep 2
-  if grep -q "$mark" /var/log/hvjobs.log 2>/dev/null && ! grep -q "$mark" /var/log/syslog /var/log/auth.log 2>/dev/null; then
+  if filter_diverts; then
     pass "filter diverts account lines"
   else
     nope "filter did not divert the probe line"
@@ -125,11 +138,11 @@ do_check() {
   return $bad
 }
 
+# 순서: 계정, 도우미, sudoers 를 먼저 지우고 거르기는 맨 끝에 지운다(계정 삭제 줄도 걸러지게, 리뷰 rv-t4s M1).
 do_remove() {
   local home
   [[ "$(id -u)" == 0 ]] || fail "root 로 돈다"
-  rm -f "$sudoers" "$sbin/t4-hv-exec" "$sbin/t4-hv-exec-root" "$logrotate_file"
-  if [[ -e "$filter" ]]; then rm -f "$filter"; systemctl restart rsyslog; log "removed $filter, rsyslog restarted"; fi
+  rm -f "$sudoers" "$sbin/t4-hv-exec" "$sbin/t4-hv-exec-root"
   if id "$account" >/dev/null 2>&1; then
     home=$(getent passwd "$account" | cut -d: -f6)
     pkill -u "$account" 2>/dev/null || true
@@ -137,6 +150,9 @@ do_remove() {
     rm -rf -- "$home"
     log "removed account $account"
   fi
+  sleep 2
+  rm -f "$logrotate_file"
+  if [[ -e "$filter" ]]; then rm -f "$filter"; systemctl restart rsyslog; log "removed $filter, rsyslog restarted"; fi
   log "removed helper files and sudoers (package sudo stays; apt-get remove sudo if it was installed only for this)"
 }
 

@@ -46,6 +46,13 @@ fi
 printf 'call %s %s\n' "$dest" "$*" >>"$d/ssh-log"
 if [[ "${dest%@*}" == hvjob ]]; then exec "$VM_SANDBOX_HV_FRONT"; fi
 if [[ "$1" == sudo ]]; then shift; [[ "$1" == -n ]] && shift; fi
+# A file fail-state makes the read of the change's state fail (the management connection lost right after a run).
+if [[ -e "$d/fail-state" ]]; then
+  IFS= read -r first || true
+  if [[ "$first" == "set -- state"* ]]; then echo "ssh: connection lost" >&2; exit 255; fi
+  { printf '%s\n' "$first"; cat; } | "$@"
+  exit "${PIPESTATUS[1]}"
+fi
 exec "$@"
 '''
 
@@ -54,12 +61,16 @@ user=""
 while [[ "$1" != -- ]]; do case "$1" in --reuid=*) user="${1#--reuid=}" ;; esac; shift; done
 shift
 printf '%s: %s\n' "$user" "$*" >>"$VM_SANDBOX/operator-log"
+printf '%s %s\n' "$(pwd)" "$*" >>"$VM_SANDBOX/operator-cwd"
+export FAKE_SUDO_USER="$user"
 exec "$@"
 '''
 
 SUDO = r'''#!/usr/bin/env bash
 [[ "$1" == -n ]] && shift
 printf 'sudo %s\n' "$*" >>"$VM_SANDBOX/sudo-log"
+# The line sudo itself sends to syslog (auth facility), with the working directory it would log.
+printf '%s : TTY=unknown ; PWD=%s ; USER=root ; COMMAND=%s\n' "${FAKE_SUDO_USER:-root}" "$(pwd)" "$*" >>"$VM_SANDBOX/sudo-syslog"
 exec "$@"
 '''
 
@@ -245,6 +256,47 @@ def runner_call(module, profile_id: str, params: dict, action: str, env: dict[st
     script = shell.root / f"runner{shell.n + 1}.sh"
     script.write_bytes(stdin)
     return shell.run(" ".join(shlex.quote(a) for a in [argv[0], str(script), *argv[3:]]) + "\n", timeout=timeout)
+
+
+def run_rsyslogd(rules: str, lines: list[tuple[str, str, str]], workdir: Path) -> tuple[str, str]:
+    """A real rsyslogd (-n, user, own socket) with ``rules`` (a first rule that writes diverted lines to
+    {diverted} and stops) in front of a catch-all file. ``lines`` are (facility.priority, tag, message), sent with
+    logger. Returns (forwarded text, diverted text)."""
+    import tempfile
+    import time
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="rs") as short:
+        sock = Path(short)
+        conf_d = workdir / "rsyslog.d"
+        conf_d.mkdir(parents=True, exist_ok=True)
+        (conf_d / "00-first.conf").write_text(rules.replace("{diverted}", str(sock / "diverted.log")))
+        (workdir / "work").mkdir(exist_ok=True)
+        conf = workdir / "rsyslog.conf"
+        conf.write_text(f'global(workDirectory="{workdir / "work"}")\nmodule(load="imuxsock" SysSock.Use="off")\n'
+                        f'input(type="imuxsock" Socket="{sock / "l.sock"}")\ninclude(file="{conf_d}/*.conf")\n'
+                        f'*.* action(type="omfile" file="{sock / "forward.log"}")\n')
+        check = subprocess.run(["rsyslogd", "-N1", "-f", str(conf)], capture_output=True, text=True, timeout=30)
+        if check.returncode != 0:
+            raise AssertionError(check.stderr)
+        proc = subprocess.Popen(["rsyslogd", "-n", "-f", str(conf), "-i", str(sock / "pid")],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                if (sock / "l.sock").exists():
+                    break
+                time.sleep(0.1)
+            for prio, tag, message in lines:
+                subprocess.run(["logger", "-u", str(sock / "l.sock"), "-p", prio, "-t", tag, message], check=True, timeout=10)
+            expected = len(lines)
+            for _ in range(60):
+                got = sum((sock / f).read_text().count("\n") for f in ("forward.log", "diverted.log") if (sock / f).exists())
+                if got >= expected:
+                    break
+                time.sleep(0.1)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+        read = lambda name: (sock / name).read_text() if (sock / name).exists() else ""
+        return read("forward.log"), read("diverted.log")
 
 
 def dump(obj) -> str:
