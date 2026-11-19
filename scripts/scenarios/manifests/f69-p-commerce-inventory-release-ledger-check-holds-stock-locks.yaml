@@ -114,6 +114,16 @@
             "_note": "동반 부하(surge.js 3rps, 여정의 50% 가 checkout) checkout 단계 5xx 비율(60초 창). 평시 0 근처. checkout 은 order → product reserve-stock → inventory 예약(재고 행 FOR UPDATE)을 상품마다 부르는데, 릴리스 1.3.0 의 재조정 배치가 재고 행 16개를 공유 잠금으로 약 45초 쥐는 동안 예약이 모두 기다린다. 게이트웨이 → order 읽기 시간 제한 15초를 넘기는 checkout(잠금 구간 시작부터 끝나기 15초 전까지 시작한 것)과 inventory 풀(10)이 예약 대기로 차서 준비 안 됨으로 빠진 구간의 checkout 이 5xx 다. 배치 주기(잠금 약 45초 + 쉼 60초 ≈ 105초)에서 약 30초가 실패 구간이라 60초 창 비율은 0~0.5 사이를 오간다"
           },
           {
+            "id": "checkout_5xx_rate_baseline",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.checkout_5xx_rate",
+            "parameters": {
+              "domain": "commerce"
+            },
+            "freshness": "30s",
+            "_note": "상주 기준선(loadgen-commerce)의 checkout 5xx 비율. 평시 0. 동반 부하의 checkout_5xx_rate 는 동반 부하가 도는 동안만 읽히고 cleanup 이 k6 와 그 출력 파일을 지우므로, cleanup 뒤에 평가하는 회복 판정은 이것으로 읽는다. 30초 창에 checkout 이 없으면 필드가 빠져 unusable 이 될 뿐 통과로 읽히지 않는다"
+          },
+          {
             "id": "checkout_409_rate",
             "adapter": "loadgen_summary",
             "query_id": "loadgen.checkout_409_rate",
@@ -231,9 +241,10 @@
             },
             {
               "id": "checkout-recovered",
-              "observation": "checkout_5xx_rate",
+              "observation": "checkout_5xx_rate_baseline",
               "op": "lt",
-              "value": 0.05
+              "value": 0.05,
+              "_note": "기준선 checkout 으로 읽는다. 동반 부하는 cleanup 이 먼저 끝내고 그 출력 파일을 지우므로 동반 부하 신호로는 회복이 성립하지 않는다(11-18 run 73e014d0 이 이것으로 recovery_timeout, 08-03 9dfeefb 와 같은 고침). 기준선 checkout 도 같은 inventory 예약을 지나 되돌린 뒤에는 평시 0 으로 돌아온다. 임계는 바꾸지 않았다"
             }
           ],
           "consecutive_ticks": 2,

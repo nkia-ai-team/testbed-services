@@ -1617,8 +1617,7 @@ class RegistryContractTests(unittest.TestCase):
         # 이 같은 꼴로 피해 없이 recovery_timeout, dirty, 큐 정지로 끝났다. recovery 는 상주
         # 기준선(domain 을 준 같은 질의)을 읽는다.
         #
-        # 모든 live 시나리오를 돌려 걸리는 목록을 낸다. 아직 안 고친 것은 compile-plan 의
-        # RECOVERY_OWN_LOAD_PENDING 에만 있어야 하고(후보 보강 몫), 고친 뒤 남은 항목도 빨강이다.
+        # 모든 live 시나리오를 돌려 걸리는 목록을 낸다. 예외 없이 비어 있어야 한다.
         domain_scoped = {
             query_id
             for query_id, query in self.queries["queries"].items()
@@ -1635,12 +1634,11 @@ class RegistryContractTests(unittest.TestCase):
                     and "domain" not in (observation.get("parameters") or {})
                 ):
                     found.append(f"{scenario_id}:recovery:{condition['id']}")
-        pending = sorted(getattr(compile_plan_module, "RECOVERY_OWN_LOAD_PENDING", ()))
         self.assertEqual(
-            sorted(found),
-            pending,
-            "recovery 가 cleanup 이 지운 동반 부하 출력을 읽는 조건이 바뀌었다. 새 것은 같은 질의에 "
-            "domain 을 준 기준선 관측으로 고치고, 고친 것은 RECOVERY_OWN_LOAD_PENDING 에서 지울 것",
+            found,
+            [],
+            "recovery 가 cleanup 이 지운 동반 부하 출력을 읽는다. 같은 질의에 domain 을 준 "
+            "기준선 관측으로 바꿀 것",
         )
         # 검사기(compile-plan)의 검출도 같은 답을 낸다.
         detected = []
