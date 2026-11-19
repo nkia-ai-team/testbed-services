@@ -63,14 +63,16 @@ NMS_FAMILIES = {
 }
 LINK_DOWN = "1.3.6.1.6.3.1.1.5.3"
 LINK_UP = "1.3.6.1.6.3.1.1.5.4"
-# Q8 예산(설계 §1 Q8, §3-6). 기준값과 정의는 monitoring/t3-budget.json 한 곳에 둔다(검토 세션 Q31 답 대기).
+# Q8 예산(설계 §1 Q8, §3-6). 기준값은 monitoring/t3-budget.json 한 곳에 둔다(검토 세션 Q31 답 반영, 11-19).
+# 녹화 캡처 구간의 정의는 이 도구의 capture_intervals 한 곳이다.
 BUDGET_FILE = DEPLOY / "monitoring" / "t3-budget.json"
 
 
 def load_budget(path: Path = BUDGET_FILE) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     for key in ("clickhouse_memory_resident_max_gib", "victoriametrics_memory_share_of_limit_max", "disk_used_pct_max",
-                "steal_increase_max_pp", "cpu_busy_avg_max_pct", "tunnel_avg_mbps_reference"):
+                "steal_increase_max_pp", "cpu_busy_avg_max_pct", "tunnel_avg_mbps_reference",
+                "capture_increment_estimate_gib", "capture_peak_share_of_limit_max"):
         if not isinstance(data.get(key), (int, float)):
             raise ValueError(f"{path}: {key} 가 수가 아님")
     return data
@@ -675,6 +677,106 @@ def item_table(remote, table_path: Path | None, ctx: dict) -> Item:
     return it.set(not missing and not it.detail, f"119 에 없는 번호 {missing[:5]}" if missing else "")
 
 
+# ---------------------------------------------------------------- 녹화 캡처 구간(정의는 여기 한 곳)
+
+CAPTURE_GAP_SEC = 600      # 이보다 가까운 내보내기는 한 캡처로 묶는다(캡처 한 번이 표 여럿을 잇달아 내보낸다)
+CAPTURE_PAD_SEC = 60       # 구간 앞뒤 여유(MemoryResident 는 1초 표본이고 내보내기 뒤 메모리를 돌려주는 데 시간이 걸린다)
+DUMP_WINDOW_KST = ("00:00:00", "02:00:00")   # scripts/dump-normal-segment.sh 의 평시 보호 구간(하루 한 번 덤프)
+
+
+def capture_export_sql(start: dt.datetime, end: dt.datetime) -> str:
+    """녹화 캡처 구간의 출처: 119 ClickHouse system.query_log 의 Parquet 내보내기(lucida 표, 끝났거나 실패한 것).
+
+    캡처(scripts/capture-eval-case.sh)와 평시 구간 덤프(scripts/dump-normal-segment.sh)는 같은 꼴의
+    `SELECT ... FROM lucida.<표> ... FORMAT Parquet` 를 같은 계정으로 보낸다. 시작, 끝 시각은 질의의 query_start_time
+    과 event_time(끝난 시각)이다. 큰 열(질의 본문)은 범위 칸 두 개만 뽑아 읽는다.
+    """
+    return ("select toUnixTimestamp(query_start_time), toUnixTimestamp(event_time), "
+            "extract(query, 'FROM (lucida[.][a-z_]+)'), "
+            "extract(query, '>= parseDateTime64BestEffort[(].([^\\x27]+).[)]'), "
+            "extract(query, '<= parseDateTime64BestEffort[(].([^\\x27]+).[)]') "
+            "from system.query_log where event_date >= "
+            f"'{ch_date(start - dt.timedelta(hours=1))}' and event_time >= '{ch_ts(start - dt.timedelta(hours=1))}' "
+            f"and query_start_time <= '{ch_ts(end)}' and type in ('QueryFinish', 'ExceptionWhileProcessing') "
+            "and query like '%FORMAT Parquet%' and query like '%FROM lucida.%' order by 1 format TSV;")
+
+
+def is_normal_segment_dump(range_start: str, range_end: str) -> bool:
+    """평시 구간 덤프인가: 내보낸 시각 범위가 정확히 하루의 00:00 ~ 02:00 KST(덤프 스크립트의 보호 구간)."""
+    try:
+        a = dt.datetime.fromisoformat(range_start.replace("Z", "+00:00")).astimezone(KST)
+        b = dt.datetime.fromisoformat(range_end.replace("Z", "+00:00")).astimezone(KST)
+    except ValueError:
+        return False
+    return (a.date() == b.date() and a.strftime("%H:%M:%S") == DUMP_WINDOW_KST[0]
+            and b.strftime("%H:%M:%S") == DUMP_WINDOW_KST[1])
+
+
+def capture_intervals_from_exports(rows: list[list[str]]) -> list[dict]:
+    """내보내기 행(시작 epoch, 끝 epoch, 표, 범위 시작, 범위 끝)에서 녹화 캡처 구간을 만든다.
+
+    평시 구간 덤프는 빼고(녹화가 아니라 날마다 도는 평시 작업이라 하루 최댓값에 남긴다), 남은 내보내기를 CAPTURE_GAP_SEC
+    안이면 한 구간으로 묶어 앞뒤로 CAPTURE_PAD_SEC 씩 늘린다. 범위를 못 읽은 내보내기(시각 조건 없는 표)도 캡처로 센다.
+    """
+    exports = []
+    for row in rows:
+        if len(row) < 5:
+            continue
+        start, end, table, range_start, range_end = int(row[0]), int(row[1]), row[2], row[3], row[4]
+        if is_normal_segment_dump(range_start, range_end):
+            continue
+        exports.append((start, max(end, start), table))
+    intervals: list[dict] = []
+    for start, end, table in sorted(exports):
+        if intervals and start - intervals[-1]["_end"] <= CAPTURE_GAP_SEC:
+            intervals[-1]["_end"] = max(intervals[-1]["_end"], end)
+            intervals[-1]["tables"].add(table)
+            intervals[-1]["exports"] += 1
+        else:
+            intervals.append({"_start": start, "_end": end, "tables": {table}, "exports": 1})
+    out = []
+    for item in intervals:
+        a = item["_start"] - CAPTURE_PAD_SEC
+        b = item["_end"] + CAPTURE_PAD_SEC
+        out.append({"start": dt.datetime.fromtimestamp(a, KST).isoformat(), "end": dt.datetime.fromtimestamp(b, KST).isoformat(),
+                    "start_epoch": a, "end_epoch": b, "exports": item["exports"], "tables": sorted(t for t in item["tables"] if t)})
+    return out
+
+
+def capture_intervals(remote, start: dt.datetime, end: dt.datetime) -> list[dict]:
+    """판정 구간 [start, end] 와 겹치는 녹화 캡처 구간 목록."""
+    rows = remote.ch(capture_export_sql(start, end))
+    return [i for i in capture_intervals_from_exports(rows)
+            if i["end_epoch"] >= int(start.timestamp()) and i["start_epoch"] <= int(end.timestamp())]
+
+
+def _not_in(intervals: list[dict]) -> str:
+    if not intervals:
+        return "1"
+    return "not (" + " or ".join(f"toUnixTimestamp(event_time) between {i['start_epoch']} and {i['end_epoch']}"
+                                 for i in intervals) + ")"
+
+
+def _in(intervals: list[dict]) -> str:
+    if not intervals:
+        return "0"
+    return "(" + " or ".join(f"toUnixTimestamp(event_time) between {i['start_epoch']} and {i['end_epoch']}"
+                             for i in intervals) + ")"
+
+
+def parse_sadf_mem(text: str, start: dt.datetime, end: dt.datetime) -> float | None:
+    """sadf -d -- -r 출력(hostname;interval;timestamp;kbmemfree;kbavail;...)의 구간 안 kbavail 최솟값(GiB)."""
+    values = []
+    for line in text.splitlines():
+        parts = line.split(";")
+        if len(parts) < 5 or line.startswith("#"):
+            continue
+        ts = dt.datetime.strptime(parts[2].replace(" UTC", ""), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        if start <= ts <= end:
+            values.append(int(parts[4]))
+    return round(min(values) / 1024 ** 2, 3) if values else None
+
+
 # ---------------------------------------------------------------- Q8 예산
 
 def _sadf_days(start: dt.datetime, end: dt.datetime) -> list[str]:
@@ -706,9 +808,15 @@ def parse_sadf(text: str, start: dt.datetime, end: dt.datetime) -> dict:
 
 def budget_snapshot(remote, ctx, ids, start: dt.datetime, end: dt.datetime) -> dict:
     secs = int((end - start).total_seconds())
-    ch_mem = remote.ch("select max(value) from system.asynchronous_metric_log where event_date >= "
-                       f"'{ch_date(start)}' and event_time >= '{ch_ts(start)}' and event_time <= '{ch_ts(end)}' "
-                       "and metric = 'MemoryResident' format TSV;")
+    captures = capture_intervals(remote, start, end)
+    span = (f"event_date >= '{ch_date(start)}' and event_time >= '{ch_ts(start)}' and event_time <= '{ch_ts(end)}' "
+            "and metric = 'MemoryResident'")
+    ch_mem = remote.ch(f"select max(value), quantile(0.99)(value), maxIf(value, {_not_in(captures)}), "
+                       f"quantileIf(0.99)(value, {_not_in(captures)}), maxIf(value, {_in(captures)}), "
+                       f"countIf({_in(captures)}) from system.asynchronous_metric_log where {span} format TSV;")
+    ch_limit = remote.ch("select (select toUInt64(value) from system.server_settings where name = 'max_server_memory_usage'), "
+                         "(select toUInt64(value) from system.asynchronous_metrics where metric = 'CGroupMemoryTotal') format TSV;")
+    sadf_mem = remote.host(" ; ".join(f"LC_ALL=C sadf -d /var/log/sysstat/sa{d} -- -r 2>/dev/null" for d in _sadf_days(start, end)))
     vm_mem = vm_scalar(remote, f'max_over_time(process_resident_memory_bytes{{service_name="victoriametrics"}}[{secs}s])', end)
     limit = remote.host("k3s kubectl -n polestar get pods -o jsonpath='{range .items[*]}{.metadata.name} "
                         "{.spec.containers[0].resources.limits.memory}{\"\\n\"}{end}' | grep '^vmsingle-' | head -n 1")
@@ -717,7 +825,17 @@ def budget_snapshot(remote, ctx, ids, start: dt.datetime, end: dt.datetime) -> d
     wg = remote.host("cat /sys/class/net/wg0/statistics/rx_bytes /sys/class/net/wg0/statistics/tx_bytes 2>/dev/null; date +%s")
     wg_lines = wg.split()
     snap = {"start": start.astimezone(KST).isoformat(), "end": end.astimezone(KST).isoformat(),
-            "ch_memory_resident_max_gib": round(float(ch_mem[0][0]) / 1024 ** 3, 3) if ch_mem and ch_mem[0][0] not in ("", "\\N") else None,
+            # ClickHouse 상주 메모리: 판정은 녹화 캡처 구간을 뺀 최댓값과 p99(검토 세션 Q31 답). 캡처 순간 최댓값은 따로 둔다.
+            "ch_memory_resident_max_gib": _gib_of(ch_mem, 2),
+            "ch_memory_resident_p99_gib": _gib_of(ch_mem, 3),
+            "ch_capture_peak_gib": _gib_of(ch_mem, 4) if ch_mem and _num(ch_mem[0][5]) else None,
+            "ch_memory_resident_max_gib_all": _gib_of(ch_mem, 0),
+            "ch_memory_resident_p99_gib_all": _gib_of(ch_mem, 1),
+            "capture_intervals": [{k: i[k] for k in ("start", "end", "exports", "tables")} for i in captures],
+            "capture_definition": "system.query_log 의 lucida 표 Parquet 내보내기 가운데 평시 구간 덤프(00:00~02:00 KST 범위)를 뺀 것, "
+                                  f"{CAPTURE_GAP_SEC}초 안은 묶고 앞뒤 {CAPTURE_PAD_SEC}초(t3_check.py capture_intervals)",
+            "ch_memory_limit_gib": _limit_gib(ch_limit),
+            "node_mem_available_min_gib": parse_sadf_mem(sadf_mem, start, end),
             "vm_resident_max_gib": round(vm_mem / 1024 ** 3, 3) if vm_mem else None,
             "vm_limit_gib": _gib(limit.split()[-1]) if limit.strip() else None,
             "disk_pct_now": float(disk) if disk else None,
@@ -735,6 +853,25 @@ def budget_snapshot(remote, ctx, ids, start: dt.datetime, end: dt.datetime) -> d
                                                    f'or last_over_time({{target_id=~"{regex}"}}[{secs}s]))', end) or 0),
             "rows": source_rows(remote, ctx, ids, start, end)}
     return snap
+
+
+def _num(text) -> float | None:
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value == value else None  # NaN 은 없음으로
+
+
+def _gib_of(rows, index: int) -> float | None:
+    value = _num(rows[0][index]) if rows and len(rows[0]) > index else None
+    return round(value / 1024 ** 3, 3) if value else None
+
+
+def _limit_gib(rows) -> float | None:
+    """ClickHouse 메모리 상한: max_server_memory_usage 와 컨테이너(cgroup) 한도 중 낮은 것."""
+    values = [v for v in (_num(x) for x in (rows[0] if rows else [])) if v]
+    return round(min(values) / 1024 ** 3, 3) if values else None
 
 
 def _gib(text: str) -> float | None:
@@ -766,6 +903,27 @@ def source_rows(remote, ctx, ids, start, end) -> dict:
     return out
 
 
+def capture_margin_verdict(before: dict, after: dict, budget: dict | None = None) -> Item:
+    """캡처 순간 최댓값 + T, S 추정 증가분이 ClickHouse 메모리 상한의 85% 아래인가(검토 세션 Q31 답 ①, 판정은 Q8 과 따로).
+
+    넘을 것 같으면 T3 는 진행하고 ST3 전에 검토 세션에 다시 묻는다. 두 사실 가운데 큰 캡처 순간값을 쓴다.
+    """
+    budget = budget or load_budget()
+    it = Item("캡처 순간 여유")
+    peaks = [x for x in (before.get("ch_capture_peak_gib"), after.get("ch_capture_peak_gib")) if x is not None]
+    limit_ch = after.get("ch_memory_limit_gib") or before.get("ch_memory_limit_gib")
+    share = budget["capture_peak_share_of_limit_max"]
+    plus = budget["capture_increment_estimate_gib"]
+    if not peaks or not limit_ch:
+        it.detail.append("두 사실 구간 어디에도 녹화 캡처가 없거나 상한을 못 읽어 보지 않음")
+        return it
+    peak = max(peaks)
+    total = round(peak + plus, 3)
+    line = round(limit_ch * share, 3)
+    it.numbers.append(f"캡처 순간 최댓값 {peak} + T, S 추정 증가분 {plus} = {total} GiB, 상한 {limit_ch} 의 {int(share * 100)}% = {line}")
+    return it.set(total < line, "" if total < line else "넘음: T3 는 진행하고 ST3 전에 검토 세션에 다시 묻는다")
+
+
 def budget_verdict(before: dict, after: dict, budget: dict | None = None) -> Item:
     it = Item("부담(Q8)")
     budget = budget or load_budget()
@@ -776,10 +934,22 @@ def budget_verdict(before: dict, after: dict, budget: dict | None = None) -> Ite
     CPU_BUSY_MAX_PCT = budget["cpu_busy_avg_max_pct"]
     TUNNEL_AVG_MBPS_MAX = budget["tunnel_avg_mbps_reference"]
     bad = []
-    mem = after.get("ch_memory_resident_max_gib")
-    it.numbers.append(f"ClickHouse MemoryResident 최댓값 전 {before.get('ch_memory_resident_max_gib')} 뒤 {mem} GiB(예산 {CH_MEM_BUDGET_GIB})")
+    mem, p99 = after.get("ch_memory_resident_max_gib"), after.get("ch_memory_resident_p99_gib")
+    it.numbers.append(f"ClickHouse MemoryResident(녹화 캡처 구간 뺌) 최댓값 전 {before.get('ch_memory_resident_max_gib')} 뒤 {mem}, "
+                      f"p99 전 {before.get('ch_memory_resident_p99_gib')} 뒤 {p99} GiB(예산 {CH_MEM_BUDGET_GIB} 미만)")
+    for label, snap in (("전", before), ("뒤", after)):
+        spans = snap.get("capture_intervals") or []
+        it.numbers.append(f"뺀 캡처 구간({label}) {len(spans)}개" + (": " + ", ".join(f"{x['start']}~{x['end']}" for x in spans) if spans else ""))
     if mem is None or mem >= CH_MEM_BUDGET_GIB:
-        bad.append("ClickHouse 메모리 예산")
+        bad.append("ClickHouse 메모리 예산(최댓값)")
+    if p99 is None or p99 >= CH_MEM_BUDGET_GIB:
+        bad.append("ClickHouse 메모리 예산(p99)")
+    node, limit_ch = after.get("node_mem_available_min_gib"), after.get("ch_memory_limit_gib")
+    # 노드 가용 메모리: ClickHouse 가 평소(p99)에서 자기 상한까지 자라도 노드에 들어갈 만큼 남아 있어야 한다(정의 t3-budget.json).
+    need = round(limit_ch - p99, 3) if (limit_ch and p99) else None
+    it.numbers.append(f"노드 가용 메모리 최솟값 전 {before.get('node_mem_available_min_gib')} 뒤 {node} GiB(ClickHouse 상한 {limit_ch} - p99 = {need} 이상)")
+    if node is None or need is None or node < need:
+        bad.append("노드 가용 메모리")
     vm, limit = after.get("vm_resident_max_gib"), after.get("vm_limit_gib")
     it.numbers.append(f"VictoriaMetrics 상주 최댓값 {vm} / 한도 {limit} GiB({int(VM_MEM_SHARE_MAX * 100)}% 미만)")
     if vm is None or not limit or vm >= VM_MEM_SHARE_MAX * limit:
@@ -804,6 +974,8 @@ def budget_verdict(before: dict, after: dict, budget: dict | None = None) -> Ite
             it.detail.append("터널 평균이 직렬 지점 기준을 넘음(§3-6)")
     else:
         it.numbers.append("터널 평균: wg0 카운터가 두 사실에 다 있지 않거나 그 사이 줄어 계산 안 함")
+    if after.get("ch_memory_resident_max_gib_all") is not None:
+        it.numbers.append(f"참고(판정 아님): 캡처 포함 최댓값 {after['ch_memory_resident_max_gib_all']}, 캡처 순간 최댓값 {after.get('ch_capture_peak_gib')}")
     ref = after.get("reference")
     if ref:
         it.numbers.append(f"참고: 활성 계열 {ref['active_series']}, 구간 고유 계열 {ref['unique_series']}, 원천 행 {ref['rows']}")
@@ -849,8 +1021,10 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
     inv = load_inventory(args.inventory)
     ctx = context(inv)
     if args.budget_verdict:
-        it = budget_verdict(json.loads(args.before.read_text()), json.loads(args.after.read_text()))
-        print(render([it]))
+        before, after = json.loads(args.before.read_text()), json.loads(args.after.read_text())
+        it = budget_verdict(before, after)
+        margin = capture_margin_verdict(before, after)
+        print(render([it, margin]))
         return 0 if it.verdict == "충족" else 1
     remote = (remote_factory or Remote)(ctx["monitor_real"], ctx["operator"])
     ids = resolve_ids(remote, ctx)

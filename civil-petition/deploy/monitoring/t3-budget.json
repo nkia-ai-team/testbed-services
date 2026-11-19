@@ -1,6 +1,6 @@
 {
   "schema": "petition-portal-t3-budget/1",
-  "comment": "T3 부담 판정(설계 §1 Q8, §3-6, §10 T3 부담) 기준값과 정의를 한 곳에 둔다. 판정 방식은 검토 세션 Q31 답을 기다리는 지금 값이고 바꾸면 이 파일만 고친다(t3_check.py 가 읽는다).",
+  "comment": "T3 부담 판정(설계 §1 Q8, §3-6, §10 T3 부담) 기준값과 정의를 한 곳에 둔다(검토 세션 Q31 답, 11-19 반영). ClickHouse 는 녹화 캡처 구간을 뺀 최댓값과 p99 로 판정하고 노드 가용 메모리를 함께 본다. 캡처 구간 정의는 t3_check.py 의 capture_intervals 한 곳이다. 캡처 순간 최댓값은 판정에서 빼되 따로 '캡처 순간 최댓값 + T, S 추정 증가분' 이 ClickHouse 상한의 85% 아래인지 본다(넘으면 T3 진행, ST3 전에 다시 묻는다).",
   "clickhouse_memory_resident_max_gib": 3.6,
   "victoriametrics_memory_share_of_limit_max": 0.8,
   "victoriametrics_memory_source": "VictoriaMetrics 자기 지표 process_resident_memory_bytes{service_name=\"victoriametrics\"} 의 구간 최댓값(프로세스 상주 메모리. 설계 문구 '파드 메모리' 와 다르다, runbook §13)",
@@ -8,5 +8,11 @@
   "steal_increase_max_pp": 3.0,
   "cpu_busy_avg_max_pct": 70.0,
   "cpu_busy_definition": "sadf -u 의 %user + %nice + %system 구간 평균(iowait, steal 제외)",
-  "tunnel_avg_mbps_reference": 5.0
+  "tunnel_avg_mbps_reference": 5.0,
+  "clickhouse_memory_judged_on": "system.asynchronous_metric_log 의 MemoryResident(1초 표본) 가운데 녹화 캡처 구간 밖의 최댓값과 p99. 둘 다 clickhouse_memory_resident_max_gib 미만",
+  "node_mem_available_definition": "sadf -r 의 kbavail(10분 표본) 구간 최솟값이 'ClickHouse 상한 - 캡처 뺀 p99' 이상(ClickHouse 가 평소에서 자기 상한까지 자라도 노드에 들어갈 만큼)",
+  "clickhouse_memory_limit_definition": "max_server_memory_usage(system.server_settings) 와 컨테이너 한도(CGroupMemoryTotal) 중 낮은 것",
+  "capture_increment_estimate_gib": 0.22,
+  "capture_increment_source": "설계 §3-6: T 와 S 를 더한 최악 증가분 약 0.21~0.22GiB(3.24 기준 3.45~3.46)",
+  "capture_peak_share_of_limit_max": 0.85
 }

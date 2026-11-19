@@ -1,6 +1,6 @@
 {
   "schema": "petition-portal-log-monitors/1",
-  "comment": "SMS 로그 감시(설계 §4, runbook §11, §12). 역할별 파일과 고객이 흔히 거는 일반 패턴을 T3 에 한 번 정하고 시나리오별로 고치지 않는다. syslog, auth.log 패턴과 감시 꼴(unified_log_enabled, log_type_tag)은 기존 세 도메인 작업 노드의 감시(119 등록값, 11-18 조회)와 같다(11-18 지휘 세션 결정). 앱 파일(웹, WAS, DB 서버 로그) 패턴은 검토 세션 Q31 답을 기다리는 지금 값이고 바꾸면 이 파일만 고친다. 날짜가 든 파일 이름은 에이전트의 날짜 자리([YYYY] [MM] [DD], matchingType Exact 는 에이전트 시각으로 채움)로 적는다. /var/log/opsjobs.log 는 감시하지 않는다(설계 §6-2).",
+  "comment": "SMS 로그 감시(설계 §4, runbook §11, §12). 역할별 파일과 고객이 흔히 거는 일반 패턴을 T3 에 한 번 정하고 시나리오별로 고치지 않는다. syslog, auth.log 패턴과 감시 꼴(unified_log_enabled, log_type_tag)은 기존 세 도메인 작업 노드의 감시(119 등록값, 11-18 조회)와 같다(11-18 지휘 세션 결정). 앱 파일(웹, WAS, DB 서버 로그) 패턴은 검토 세션 Q31 답(11-19)으로 확정했다. 시나리오가 안 잡혀도 고치지 않는다(못 잡는 것도 평가 결과다). 날짜가 든 파일 이름은 에이전트의 날짜 자리([YYYY] [MM] [DD], matchingType Exact 는 에이전트 시각으로 채움)로 적는다. /var/log/opsjobs.log 는 감시하지 않는다(설계 §6-2).",
   "defaults": {
     "matchingType": "Exact",
     "scanType": "End",

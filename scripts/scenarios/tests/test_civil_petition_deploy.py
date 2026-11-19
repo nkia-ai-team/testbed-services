@@ -5184,7 +5184,9 @@ class T3CheckTests(unittest.TestCase):
         self.assertEqual(t3check.parse_sadf("", self.since, self.until)["samples"], 0)
 
     def _budget(self, **over) -> dict:
-        base = {"ch_memory_resident_max_gib": 3.4, "vm_resident_max_gib": 2.5, "vm_limit_gib": 8.0, "disk_pct_now": 60.0,
+        base = {"ch_memory_resident_max_gib": 3.4, "ch_memory_resident_p99_gib": 2.6, "ch_memory_limit_gib": 7.2,
+                "node_mem_available_min_gib": 8.0, "capture_intervals": [], "ch_capture_peak_gib": None,
+                "vm_resident_max_gib": 2.5, "vm_limit_gib": 8.0, "disk_pct_now": 60.0,
                 "cpu": {"samples": 144, "cpu_busy_avg": 45.0, "iowait_avg": 1.0, "steal_avg": 2.0},
                 "wg0": {"rx_bytes": 0, "tx_bytes": 0, "at": 0}}
         base.update(over)
@@ -5194,7 +5196,9 @@ class T3CheckTests(unittest.TestCase):
         before = self._budget()
         self.assertEqual(t3check.budget_verdict(before, self._budget(wg0={"rx_bytes": 10 ** 9, "tx_bytes": 0, "at": 86400})).verdict, "충족")
         failing = {
-            "ClickHouse 메모리 예산": {"ch_memory_resident_max_gib": 3.6},
+            "ClickHouse 메모리 예산(최댓값)": {"ch_memory_resident_max_gib": 3.6},
+            "ClickHouse 메모리 예산(p99)": {"ch_memory_resident_p99_gib": 3.6},
+            "노드 가용 메모리": {"node_mem_available_min_gib": 4.5},
             "VictoriaMetrics 메모리": {"vm_resident_max_gib": 6.4},
             "디스크": {"disk_pct_now": 80.0},
             "steal 증가": {"cpu": {"samples": 1, "cpu_busy_avg": 45.0, "iowait_avg": 1.0, "steal_avg": 5.1}},
@@ -5207,6 +5211,55 @@ class T3CheckTests(unittest.TestCase):
                 self.assertIn(reason, " ".join(it.detail))
         it = t3check.budget_verdict(before, self._budget(ch_memory_resident_max_gib=None))
         self.assertEqual(it.verdict, "미충족", "값이 없으면 통과가 아니다")
+
+    def test_capture_intervals_skip_the_daily_dump_group_exports_and_pad(self) -> None:
+        # 실제 119 query_log 꼴(11-17 ~ 11-18 KST 조회): 02:20 평시 구간 덤프 셋과 23:27 녹화 캡처 열셋.
+        dump = ["2026-11-16T15:00:00Z", "2026-11-16T17:00:00Z"]
+        cap = ["2026-11-17T11:29:05Z", "2026-11-17T14:27:08Z"]
+        rows = [["1794849614", "1794849618", "lucida.otel_traces_local", *dump],
+                ["1794849618", "1794849620", "lucida.lucida_logs_local", *dump],
+                ["1794925648", "1794925654", "lucida.otel_traces_local", *cap],
+                ["1794925655", "1794925659", "lucida.lucida_logs_local", *cap],
+                ["1794925661", "1794925662", "lucida.process_meta", *cap],
+                ["1794926500", "1794926501", "lucida.topology_edges", "", ""]]
+        got = t3check.capture_intervals_from_exports(rows)
+        self.assertEqual(len(got), 2, got)
+        self.assertEqual((got[0]["start_epoch"], got[0]["end_epoch"]), (1794925648 - 60, 1794925662 + 60))
+        self.assertEqual(got[0]["start"], "2026-11-17T23:26:28+09:00")
+        self.assertEqual(got[0]["exports"], 3)
+        self.assertEqual(got[1]["tables"], ["lucida.topology_edges"], "범위를 못 읽은 내보내기도 캡처로 센다")
+        self.assertTrue(t3check.is_normal_segment_dump(*dump))
+        self.assertFalse(t3check.is_normal_segment_dump("2026-11-16T15:00:00Z", "2026-11-16T18:00:00Z"))
+        self.assertFalse(t3check.is_normal_segment_dump(*cap))
+
+    def test_clickhouse_judgement_leaves_capture_seconds_out_of_the_query(self) -> None:
+        intervals = [{"start_epoch": 10, "end_epoch": 20}, {"start_epoch": 30, "end_epoch": 40}]
+        self.assertEqual(t3check._not_in(intervals),
+                         "not (toUnixTimestamp(event_time) between 10 and 20 or toUnixTimestamp(event_time) between 30 and 40)")
+        self.assertEqual(t3check._not_in([]), "1")
+        self.assertEqual(t3check._in([]), "0")
+        it = t3check.budget_verdict(self._budget(capture_intervals=[{"start": "a", "end": "b", "exports": 3, "tables": []}]),
+                                    self._budget())
+        self.assertIn("뺀 캡처 구간(전) 1개: a~b", " ".join(it.numbers))
+
+    def test_capture_peak_plus_growth_must_stay_under_85_percent_of_the_clickhouse_limit(self) -> None:
+        ok = t3check.capture_margin_verdict(self._budget(ch_capture_peak_gib=3.475), self._budget())
+        self.assertEqual(ok.verdict, "충족")
+        self.assertIn("3.475 + T, S 추정 증가분 0.22 = 3.695", ok.numbers[0])
+        self.assertIn("6.12", ok.numbers[0])
+        over = t3check.capture_margin_verdict(self._budget(), self._budget(ch_capture_peak_gib=6.0))
+        self.assertEqual(over.verdict, "미충족")
+        self.assertIn("ST3 전에", " ".join(over.detail))
+        self.assertEqual(t3check.capture_margin_verdict(self._budget(), self._budget()).verdict, "미판정")
+        self.assertEqual(t3check._limit_gib([["7730941132", "8589934592"]]), 7.2, "max_server_memory_usage 와 cgroup 중 낮은 것")
+
+    def test_node_available_memory_is_the_lowest_sample_in_the_window(self) -> None:
+        text = ("# hostname;interval;timestamp;kbmemfree;kbavail;kbmemused\n"
+                "h;600;2026-11-20 13:50:00 UTC;1;1048576;1\n"
+                "h;600;2026-11-20 14:10:00 UTC;1;9437184;1\n"
+                "h;600;2026-11-20 14:20:00 UTC;1;8388608;1\n")
+        self.assertEqual(t3check.parse_sadf_mem(text, self.since, self.until), 8.0)
+        self.assertIsNone(t3check.parse_sadf_mem("", self.since, self.until))
 
     def test_tunnel_average_comes_from_the_two_counter_readings(self) -> None:
         it = t3check.budget_verdict(self._budget(), self._budget(wg0={"rx_bytes": 54 * 10 ** 9, "tx_bytes": 0, "at": 86400}))
