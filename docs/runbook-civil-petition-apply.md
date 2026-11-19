@@ -588,6 +588,8 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 `civil-petition/deploy/hypervisor/`, 시험 실행 도구 `scripts/scenarios/vm-executor-trial.py`, 흔적 표 질의 도구
 `civil-petition/deploy/tools/trace_table.py` 다. 러너 쪽(늘 열린 ssh 연결, preflight, 5분 평시 점검 읽기)은 rca-scenario-runner 가
 가진다. 실행기 계정(VM 의 `opsjob`)과 운영자 계정(`sysop`), 실행기 키(tb-ops `/root/.ssh/t4-executor`)는 T2 가 이미 두었다(§3, §6).
+러너 컨테이너 안 경로는 러너 계약 2 대로 `/root/.ssh/vm-ops/`(키 `t4-executor`, `t4-hv`, `known_hosts_civil-petition`, tb-ops 같은
+경로를 읽기 전용으로 붙임)다. 실행기와 러너가 같은 경로와 같은 ControlPath(`$CIVIL_PETITION_SSH_CONTROL_DIR/%r@%h:%p`)를 쓴다.
 
 ### 15-1. 66 실행기 계정, 키, sudoers, 도우미, rsyslog 거르기
 
@@ -598,19 +600,26 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 
 | 차례 | 하는 일 | 확인 | 되돌리기 |
 |---|---|---|---|
-| 1 | tb-ops: `ssh-keygen -q -t ed25519 -N '' -C hvjob -f /root/.ssh/t4-hv`. 공개 키만 104 `~/.config/testbed/t4-hv.pub`(0600)로 가져온다(화면에 내지 않고 파일로) | `stat -c '%a %s' ~/.config/testbed/t4-hv.pub` 600 | tb-ops `rm /root/.ssh/t4-hv /root/.ssh/t4-hv.pub`, 104 `rm ~/.config/testbed/t4-hv.pub` |
+| 1 | tb-ops: 러너 컨테이너에 읽기 전용으로 붙일 키 폴더(러너 계약 2)를 만든다: `install -d -m 0700 /root/.ssh/vm-ops`, T2 의 `/root/.ssh/t4-executor` 와 `/root/.ssh/known_hosts_civil-petition` 을 그 안으로 복사(키 0600). 66 키도 그 안에 만든다: `ssh-keygen -q -t ed25519 -N '' -C hvjob -f /root/.ssh/vm-ops/t4-hv`. 공개 키만 104 `~/.config/testbed/t4-hv.pub`(0600)로 가져온다(화면에 내지 않고 파일로) | `stat -c '%a %n' /root/.ssh/vm-ops/*`, 104 `stat -c '%a %s' ~/.config/testbed/t4-hv.pub` 600 | tb-ops `rm -r /root/.ssh/vm-ops`, 104 `rm ~/.config/testbed/t4-hv.pub` |
 | 2 | 104: 도우미 폴더를 임시 폴더로 옮기고(`cp -r civil-petition/deploy/hypervisor <임시>/hv-stage`) 그 안에 root 도우미 설치본을 만든다: `python3 civil-petition/deploy/hypervisor/build.py --inventory civil-petition/deploy/inventory/t.json --out <임시>/hv-stage/t4-hv-exec-root`. 허용 표(VMID, NIC, tap)와 probe 주소, 터널 끝 주소는 인벤토리에서 채우고 가드 함수는 `executor_common.GUARD_FUNCTIONS` 다. 저장소에는 설치본이 없고 체크섬만 있다 | `build.py --check` 끝 코드 0, `sha256sum <임시>/hv-stage/t4-hv-exec*` 이 `civil-petition/deploy/hypervisor/t4-hv-exec.sha256.json`(러너 버전 표류 기대값)과 같음 | 임시 폴더 지움 |
 | 3 | 104 → 66: `scp -r <임시>/hv-stage root@192.168.200.66:/root/hv-stage`, `scp ~/.config/testbed/t4-hv.pub root@192.168.200.66:/root/hv-stage/runner.pub` | 66 `ls /root/hv-stage` | 66 `rm -r /root/hv-stage` |
 | 4 | 66: `bash /root/hv-stage/install-hv-helper.sh install --pubkey /root/hv-stage/runner.pub` | 출력 `installed package sudo`, `added account hvjob`, `placed ...`, `rsyslog restarted`, 이어 check 의 PASS 줄 9개(sudo, 계정 uid 1460, 도우미 둘, sudoers, authorized_keys 강제 명령, 거르기 순서, 거르기 실제 동작, sch_netem) | `install-hv-helper.sh remove`(계정, sudoers, 도우미, 거르기, logrotate 를 지우고 rsyslog 재시작. sudo 꾸러미는 남김, 지우려면 `apt-get remove sudo`) |
-| 5 | tb-ops 러너 컨테이너: 66 호스트 키를 실행기 known_hosts 에 더한다(`ssh -F none -i /root/.ssh/t4-hv -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition hvjob@192.168.122.1 </dev/null`, 요청이 없어 도우미가 "no request" 로 끝 코드 3) | known_hosts 에 192.168.122.1 한 줄 | 그 줄 지움 |
+| 5 | tb-ops 호스트(컨테이너는 그 폴더를 읽기만 하므로 호스트에서): 66 호스트 키를 실행기 known_hosts 에 더한다(`ssh -F none -i /root/.ssh/vm-ops/t4-hv -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/.ssh/vm-ops/known_hosts_civil-petition hvjob@192.168.122.1 </dev/null`, 요청이 없어 도우미가 "no request" 로 끝 코드 3) | known_hosts 에 192.168.122.1 한 줄 | 그 줄 지움 |
 | 6 | 같은 옵션(StrictHostKeyChecking=yes)으로 `printf 'version\n'`, `printf 'guards\n'`, `printf 'tunnel\n'`, `printf 'link-check 202 net0\n'`, `printf 'qdisc-check tap202i0\n'` 를 stdin 으로 보낸다 | version JSON 이 `t4-hv-exec.sha256.json` 과 같음, guards `{"armed":0,...}`, tunnel 핸드셰이크 나이 150초 이하와 손실 0, link-check `up`, qdisc-check `default` | 없음(읽기) |
 | 7 | 거절 확인: `printf 'link-down 201 net0\nexpire_after=60 guard_hold=60\n'`(라우터 상향), `printf 'qdisc-apply tap206i0 100 0 0 0\n...'`(부하기), `printf 'link-restore 202 net0\n'`, `ssh ... hvjob@192.168.122.1 id`(명령 문자열은 무시됨), `ssh -t ...`(pty 거절) | 앞 셋 끝 코드 3, 넷째 "no request" 끝 코드 3, 다섯째 pty 거절 | 없음 |
 | 8 | 119 읽기: 차례 4 ~ 7 구간 `syslog_local` 에서 출발 192.168.200.66, 꼴 `hvjob`, `1460`, `t4-hv-exec`, `run-r<32 hex>`, `sudo` 줄 수(분할 조건 `toYYYYMM(received_at)` 과 시각 범위) | 0. 같은 줄은 66 `/var/log/hvjobs.log` 에 있다 | 없음 |
 
+**VM 설치 기록(버전 표류 기대값, 러너 계약 (라)).** 묶음 전체를 도는 설치는 이제 끝에 `record` 단계로
+`/var/lib/petition-deploy/expected.sha256`(그 묶음이 놓은 파일의 sha256, 절대 경로, sha256sum 꼴)을 남긴다(`steps/record.sh`).
+이미 설치된 VM 6대에는 한 번 따로 돌린다: `apply.sh --inventory inventory/t.json --host <이름> ... --steps record`(나머지 인자는
+§6 과 같다). 확인: VM 마다 `cd / && sha256sum -c --quiet /var/lib/petition-deploy/expected.sha256` 끝 코드 0. 되돌리기: 그 파일 지움
+(러너 표류 게이트가 «missing» 으로 멈춘다). 설치 기록을 남긴 뒤 운영자가 설정을 바꾸면 표류로 잡히므로, 의도한 변경 뒤에는
+같은 명령으로 기록을 다시 남긴다.
+
 ### 15-2. 러너가 할 일(rca-scenario-runner, 이 저장소 밖)
 
 - VM 6대와 66 에 늘 열린 ssh 연결 하나씩. 옵션은 실행기와 같다(`-F none -i <키> -o IdentitiesOnly=yes -o BatchMode=yes
-  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition -o ConnectTimeout=10
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/vm-ops/known_hosts_civil-petition -o ConnectTimeout=10
   -o ControlPath=$CIVIL_PETITION_SSH_CONTROL_DIR/%r@%h:%p`, 기본 `/app/state/ssh-control`). 실행기의 run 은 그 연결이 없으면
   거절하고(새 연결은 녹화에 새 관리망 연결을 더한다), cleanup 과 recovery 는 새 연결로라도 간다.
 - 5분 평시 점검 읽기는 실행기 계정의 `sudo -n bash -s` 꼴로(설계 §6-2), db01 `last.json` 가져오기 포함(§6-4).

@@ -5901,8 +5901,9 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             argv, stdin = None, None
             with unittest.mock.patch.dict(router.CONTRACTS, {"T4-CASE": params}):
                 argv, stdin = router.build_invocation(vm_sandbox.plan("router.qdisc", "T4-CASE", params), "run")
-            for option in (b"-F none", b"/root/.ssh/t4-executor", b"IdentitiesOnly=yes", b"BatchMode=yes",
-                           b"StrictHostKeyChecking=yes", b"UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition",
+            for option in (b"-F none", b'keys="${VM_OPS_KEY_DIR:-/root/.ssh/vm-ops}"', b'-i "$keys/t4-executor"',
+                           b"IdentitiesOnly=yes", b"BatchMode=yes",
+                           b"StrictHostKeyChecking=yes", b'"UserKnownHostsFile=$keys/known_hosts_civil-petition"',
                            b"ControlPath=$ctl/%r@%h:%p", b"ControlMaster=no", b"CIVIL_PETITION_SSH_CONTROL_DIR:-/app/state/ssh-control",
                            b'"opsjob@$host" sudo -n bash -s'):
                 self.assertIn(option, stdin)

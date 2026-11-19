@@ -40,12 +40,15 @@ HELPER_DIR = REPO / "civil-petition" / "deploy" / "hypervisor"
 # Accounts and keys (runner contract, T4S/T4R 2026-11-19). Paths are on tb-ops, in the runner container.
 EXECUTOR_USER = "opsjob"
 OPERATOR_USER = "sysop"
-EXECUTOR_KEY = "/root/.ssh/t4-executor"
-KNOWN_HOSTS = "/root/.ssh/known_hosts_civil-petition"
+# One read-only folder mounted into the runner container (contract item 2, the runner's VM_OPS_KEY_DIR).
+KEY_DIR_ENV = "VM_OPS_KEY_DIR"
+KEY_DIR = "/root/.ssh/vm-ops"
+EXECUTOR_KEY = f"{KEY_DIR}/t4-executor"
+KNOWN_HOSTS = f"{KEY_DIR}/known_hosts_civil-petition"
 CONTROL_DIR_ENV = "CIVIL_PETITION_SSH_CONTROL_DIR"
 CONTROL_DIR_DEFAULT = "/app/state/ssh-control"
 HV_USER = "hvjob"
-HV_KEY = "/root/.ssh/t4-hv"
+HV_KEY = f"{KEY_DIR}/t4-hv"
 HV_HELPER = "/usr/local/sbin/t4-hv-exec"
 
 VMS: dict[str, dict[str, Any]] = {
@@ -340,10 +343,11 @@ set -euo pipefail
 action="$1"; host="$2"; node="$3"; shift 3
 node_args=("$@")
 ctl="${CIVIL_PETITION_SSH_CONTROL_DIR:-/app/state/ssh-control}"
-ssh_vm=(ssh -F none -i /root/.ssh/t4-executor -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
-  -o UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p")
-ssh_hv=(ssh -F none -i /root/.ssh/t4-hv -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
-  -o UserKnownHostsFile=/root/.ssh/known_hosts_civil-petition -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p"
+keys="${VM_OPS_KEY_DIR:-/root/.ssh/vm-ops}"
+ssh_vm=(ssh -F none -i "$keys/t4-executor" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p")
+ssh_hv=(ssh -F none -i "$keys/t4-hv" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p"
   -o ControlMaster=no)
 # The runner's own master for this VM (rca-scenario-runner keeps one per VM, design 6-2).
 master_up() { "${ssh_vm[@]}" -O check "opsjob@$host" >/dev/null 2>&1; }

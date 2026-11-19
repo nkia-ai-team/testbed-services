@@ -33,6 +33,8 @@ if [[ $# -gt 0 ]]; then
     steps=("$@")
 else
     mapfile -t steps < "$BUNDLE/steps"
+    # 묶음 전체를 돌리면 끝에 설치 기록(놓은 파일의 sha256)을 남긴다(steps/record.sh, 러너 버전 표류 기대값).
+    steps+=(record)
 fi
 
 LOG=/var/log/petition-deploy.log

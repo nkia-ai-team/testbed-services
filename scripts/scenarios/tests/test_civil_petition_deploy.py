@@ -6288,3 +6288,54 @@ class TraceTableTests(unittest.TestCase):
                 with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                     trace.main(["--inventory", str(T_INV), "--start", start, "--end", end, "--executor", "x",
                                 "--variant", "y", "--run-id", "z"], remote_factory=self.remote)
+
+
+class InstallRecordTests(unittest.TestCase):
+    """설치 기록 expected.sha256(러너 계약 (라), 설계 §6-4 버전 표류). 러너는 `cd / && sha256sum -c` 로 견준다."""
+
+    def bundle(self, root: Path) -> Path:
+        bundle = root / "bundle"
+        (bundle / "steps.d").mkdir(parents=True)
+        for name in ("lib.sh", "record.sh"):
+            (bundle / "steps.d" / name).write_text((DEPLOY / "steps" / name).read_text())
+        (bundle / "steps.d" / "place.sh").write_text("place_files place\n")
+        (bundle / "host.env").write_text("HOST_NAME='x'\n")
+        (bundle / "steps").write_text("place\n")
+        (bundle / "files").mkdir()
+        (bundle / "files" / "a").write_text("alpha\n")
+        (bundle / "files" / "b").write_text("beta\n")
+        (bundle / "files.tsv").write_text(f"place\t/etc/app/a.conf\t0644\t{os.getuid()}\t{os.getgid()}\tfiles/a\n"
+                                          f"place\t/etc/app/b.conf\t0600\t{os.getuid()}\t{os.getgid()}\tfiles/b\n")
+        source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+        source = source.replace("LOG=/var/log/petition-deploy.log", f"LOG={bundle}/log")
+        (bundle / "install.sh").write_text(source)
+        return bundle
+
+    def test_a_full_run_records_every_placed_file_and_a_partial_run_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle = self.bundle(root)
+            place = root / "place"
+            env = {**os.environ, "PLACE_ROOT": str(place)}
+            done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle), "place"], capture_output=True, text=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            record = place / "var" / "lib" / "petition-deploy" / "expected.sha256"
+            self.assertFalse(record.exists())
+            done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle)], capture_output=True, text=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            lines = record.read_text().splitlines()
+            self.assertEqual([l.split("  ", 1)[1] for l in lines], ["/etc/app/a.conf", "/etc/app/b.conf"])
+            # The runner's check (cd / && sha256sum -c) passes on the placed tree and names a changed file.
+            check = lambda: subprocess.run(["sha256sum", "-c", "--quiet", "-"], cwd=place, capture_output=True, text=True,
+                                           input="\n".join(l.replace("  /", "  ") for l in lines) + "\n")
+            self.assertEqual(check().returncode, 0)
+            (place / "etc" / "app" / "a.conf").write_text("changed\n")
+            done = check()
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("etc/app/a.conf: FAILED", done.stdout)
+            # An installed server gets the record on its own with the record step.
+            record.unlink()
+            done = subprocess.run(["bash", str(bundle / "install.sh"), str(bundle), "record"], capture_output=True, text=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(len(record.read_text().splitlines()), 2)
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o644)
