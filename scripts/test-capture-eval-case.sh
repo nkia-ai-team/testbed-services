@@ -347,7 +347,8 @@ jq -e '
   .topology_bundle.path == "topology/" and
   .topology_bundle.snapshot_count == 3 and
   .topology_bundle.capture_failure_count == 0 and
-  .topology_bundle.interval_seconds == 30' \
+  .topology_bundle.interval_seconds == 30 and
+  .topology_bundle.file_count == 6' \
   <<<"$output" >/dev/null || fail 'unexpected dry-run output for --topology-bundle (good bundle)'
 
 # (b) sha256 mismatch is rejected.
@@ -371,6 +372,24 @@ mv "$no_coverage_bundle/manifest.json.tmp" "$no_coverage_bundle/manifest.json"
 expect_rejected topology-bundle-no-coverage \
   "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
   --topology-bundle "$no_coverage_bundle"
+
+# (c2) a manifest path that leaves the bundle, or names one file twice, is rejected before any copy.
+for bad in escape dup; do
+  bad_path_bundle="$TMP_ROOT/topology-bundle-bad-path-$bad"
+  cp -r "$good_topology_bundle" "$bad_path_bundle"
+  if [[ "$bad" == escape ]]; then
+    cp "$bad_path_bundle/graph/2026-07-15T01-05-00Z-part-001.json" "$TMP_ROOT/outside.json"
+    jq '.snapshots[1].graph[0].path = "../outside.json"' "$bad_path_bundle/manifest.json" >"$bad_path_bundle/m.tmp"
+  else
+    jq '.snapshots[2] = (.snapshots[2] | .graph = $s.graph)' --argjson s "$(jq -c '.snapshots[1]' "$bad_path_bundle/manifest.json")" \
+      "$bad_path_bundle/manifest.json" >"$bad_path_bundle/m.tmp"
+  fi
+  mv "$bad_path_bundle/m.tmp" "$bad_path_bundle/manifest.json"
+  expect_rejected "topology-bundle-bad-path-$bad" \
+    "${base_args[@]}" --case-label calibration --phases-json "$phases_json" \
+    --topology-bundle "$bad_path_bundle"
+  grep -q 'unsafe or duplicate file path' "$TMP_ROOT/err" || fail "topology bad path ($bad) rejected for another reason"
+done
 
 # (d) --topology-bundle omitted: fail-open (warns on stderr, still succeeds,
 # meta.topology_bundle is null).
@@ -694,6 +713,38 @@ def emit(body):
         sys.stdout.write(body if isinstance(body, str) else body.decode())
 if jar:
     open(jar, "w").write("cookie")
+def topo_grow(bundle, mode):
+    import hashlib, json
+    mpath = os.path.join(bundle, "manifest.json")
+    m = json.load(open(mpath))
+    if mode == "tamper_old":  # 검증된 파일의 바이트가 뒤에 바뀜(매니페스트는 그대로)
+        open(os.path.join(bundle, m["snapshots"][0]["graph"][0]["path"]), "ab").write(b" ")
+        return
+    if mode == "shrink":  # 검증된 마지막 항목이 매니페스트에서 사라짐
+        m["snapshots"].pop()
+    elif mode == "rewrite_old":  # 검증된 항목을 파일과 sha256 을 맞춰 고쳐 씀
+        g = m["snapshots"][0]["graph"][0]
+        body = b'{"nodes":["rewritten"],"edges":[]}\n'
+        open(os.path.join(bundle, g["path"]), "wb").write(body)
+        g["sha256"] = hashlib.sha256(body).hexdigest()
+    else:  # append, tamper_new: 수집기가 스냅숏 하나를 더한다(파일 먼저, 매니페스트는 원자 교체)
+        ts = "2026-07-15T01:20:00Z"
+        stamp = ts.replace(":", "-")
+        gpath, tpath = f"graph/{stamp}-part-001.json", f"service-tree/{stamp}.json"
+        gbody, tbody = b'{"nodes":[],"edges":[],"snapshot":"late"}\n', b'{"tree":[],"snapshot":"late"}\n'
+        open(os.path.join(bundle, gpath), "wb").write(gbody)
+        open(os.path.join(bundle, tpath), "wb").write(tbody)
+        gsha = "0" * 64 if mode == "tamper_new" else hashlib.sha256(gbody).hexdigest()
+        m["snapshots"].append({"captured_at": ts, "snapshot_id": ts,
+            "graph": [{"path": gpath, "request_url": "http://query-api/api/v1/topology/graph", "http_status": 200,
+                       "sha256": gsha, "part": 1, "part_count": 1, "anchors": []}],
+            "service_tree": {"path": tpath, "request_url": "http://query-api/api/v1/asset-tree/service/unified",
+                             "http_status": 200, "sha256": hashlib.sha256(tbody).hexdigest()}})
+    open(mpath + ".new", "w").write(json.dumps(m, indent=2, sort_keys=True) + "\n")
+    os.replace(mpath + ".new", mpath)
+    if mode == "append":  # 매니페스트 뒤에 생긴 것: 쓰는 중인 임시 파일과 아직 이름 없는 다음 틱 파일
+        open(os.path.join(bundle, "graph", ".2026-07-15T01-20-35Z-part-001.json.x1"), "wb").write(b"partial")
+        open(os.path.join(bundle, "graph", "2026-07-15T01-20-35Z-part-001.json"), "wb").write(b"{}\n")
 if "fake-vm" in url:
     emit("".join('{"metric":{"__name__":"m%d"},"values":[1],"timestamps":[1]}\n' % n for n in range(3)))
 elif url.endswith("/api/v1/login"):
@@ -703,6 +754,9 @@ elif url.endswith("/api/v1/product/version"):
         sys.stderr.write("curl: (22) The requested URL returned error: 404\n"); sys.exit(22)
     emit('{"version":"2026.11.09-01","branch":"develop-ai"}')
 elif "/api/v1/topology/graph" in url:
+    # 사후 단발 스냅숏 요청은 첫 번들 검증(기다림 앞) 뒤, 번들 복사 앞에 온다. 그 사이 수집기가 하는 일을 흉내 낸다.
+    if os.environ.get("FAKE_TOPO_GROW"):
+        topo_grow(os.environ["FAKE_TOPO_GROW"], os.environ.get("FAKE_TOPO_MODE", "append"))
     emit('{"nodes":[],"edges":[]}')
 elif "/api/v1/asset-tree/service/unified" in url:
     emit('{"tree":[]}')
@@ -1058,6 +1112,71 @@ jq -e --argjson keys "$v3_meta_keys" '($keys - keys) == []' "$doc_case/meta.json
 [[ ! -e "$live_root/cases/case-live-v4/scenario.md" ]] || fail 'scenario.md written without --scenario-doc-file'
 jq -e 'has("source_commits") or has("scenario_doc") | not' "$meta" >/dev/null ||
   fail 'live meta has scenario_doc or source_commits without the flags'
+
+# (g3) 토폴로지 묶음(2026-11-19 v4 TCAP): 첫 검증(기다림 앞) 뒤 수집기가 더한 스냅숏까지 케이스에 실리고, meta 의 수가
+# 케이스 manifest 와 같으며, 케이스에 든 파일은 전부 sha256 이 맞는다. 첫 검증 때 있던 파일은 원본과 바이트가 같다.
+# 매니페스트에 이름 없는 파일(쓰는 중 임시 파일, 다음 틱 파일)은 담지 않는다. 검증 뒤 바뀐 파일, 더해진 파일의
+# sha256 불일치, 검증된 항목을 고쳐 쓴 묶음은 녹화를 멈춘다.
+topo_src="$live_root/topo-src"
+run_topo_live() {
+  local case_id=$1 mode=$2
+  rm -rf "$topo_src"
+  cp -a "$good_topology_bundle" "$topo_src"
+  if [[ "$mode" == none ]]; then
+    run_live_extra "$case_id" --topology-bundle "$topo_src"
+  else
+    FAKE_TOPO_GROW="$topo_src" FAKE_TOPO_MODE="$mode" run_live_extra "$case_id" --topology-bundle "$topo_src"
+  fi
+}
+check_topo_case() {
+  local case_dir=$1 want_snapshots=$2 tdir
+  tdir="$case_dir/topology"
+  jq -e --argjson n "$want_snapshots" --argjson files "$(( want_snapshots * 2 ))" '
+    .topology_bundle == {path:"topology/", snapshot_count:$n, capture_failure_count:0, interval_seconds:30, file_count:$files}' \
+    "$case_dir/meta.json" >/dev/null || fail "meta.topology_bundle does not count the case copy ($case_dir)"
+  [[ "$(jq '.snapshots | length' "$tdir/manifest.json")" == "$want_snapshots" ]] ||
+    fail "case manifest snapshot count is not $want_snapshots ($case_dir)"
+  [[ "$(find "$tdir" -type f ! -name manifest.json | wc -l)" == "$(( want_snapshots * 2 ))" ]] ||
+    fail "case topology/ holds files the manifest does not name ($case_dir)"
+  (cd "$tdir" && jq -r '.snapshots[] | (.graph[] | "\(.sha256)  \(.path)"), "\(.service_tree.sha256)  \(.service_tree.path)"' \
+    manifest.json | sha256sum -c --quiet >/dev/null) || fail "case topology/ file sha256 mismatch ($case_dir)"
+  local rel
+  while IFS= read -r rel; do
+    cmp -s "$topo_src/$rel" "$tdir/$rel" || fail "case topology/$rel is not the runner file byte for byte"
+  done < <(jq -r '.snapshots[] | (.graph[].path), .service_tree.path' "$tdir/manifest.json")
+  jq -e --slurpfile src "$topo_src/manifest.json" --arg id "${case_dir##*/}" \
+    '.case_id == $id and (del(.case_id) == ($src[0] | del(.case_id)))' "$tdir/manifest.json" >/dev/null ||
+    fail "case manifest differs from the runner manifest beyond case_id ($case_dir)"
+}
+run_topo_live case-live-v4-topo-still none ||
+  { cat "$live_root/case-live-v4-topo-still.err" >&2; fail 'live capture with a still topology bundle failed'; }
+check_topo_case "$live_root/cases/case-live-v4-topo-still" 3
+run_topo_live case-live-v4-topo-grow append ||
+  { cat "$live_root/case-live-v4-topo-grow.err" >&2; fail 'live capture with a growing topology bundle failed'; }
+check_topo_case "$live_root/cases/case-live-v4-topo-grow" 4
+for f in "$good_topology_bundle"/graph/* "$good_topology_bundle"/service-tree/*; do
+  cmp -s "$f" "$live_root/cases/case-live-v4-topo-grow/topology/${f#"$good_topology_bundle"/}" ||
+    fail "first-check topology file changed in the case: ${f##*/}"
+done
+[[ -e "$topo_src/graph/2026-07-15T01-20-35Z-part-001.json" &&
+   ! -e "$live_root/cases/case-live-v4-topo-grow/topology/graph/2026-07-15T01-20-35Z-part-001.json" &&
+   -z "$(find "$live_root/cases/case-live-v4-topo-grow/topology" -name '.*')" ]] ||
+  fail 'files written after the copied manifest reached the case'
+grep -q 'topology bundle verified on the case copy: 4 snapshots (1 after the first check), 8 files' \
+  "$live_root/case-live-v4-topo-grow.out" || fail 'case-copy verification log line missing'
+for mode_want in 'tamper_new:topology bundle (case copy) sha256 mismatch: graph/2026-07-15T01-20-00Z-part-001.json' \
+                 'tamper_old:topology bundle (case copy) sha256 mismatch: graph/2026-07-15T00-55-00Z-part-001.json' \
+                 'rewrite_old:topology bundle entries verified before the capture wait changed afterwards' \
+                 'shrink:topology bundle shrank after it was verified'; do
+  mode=${mode_want%%:*}
+  topo_case="case-live-v4-topo-${mode//_/-}"
+  if run_topo_live "$topo_case" "$mode"; then fail "capture accepted a topology bundle after $mode"; fi
+  grep -qF "${mode_want#*:}" "$live_root/$topo_case.err" ||
+    { cat "$live_root/$topo_case.err" >&2; fail "topology $mode stopped for another reason"; }
+  [[ ! -e "$live_root/cases/$topo_case" ]] || fail "topology $mode left a case behind"
+  [[ -z "$(find "$live_root/cases" -maxdepth 1 -name ".$topo_case.staging.*")" ]] ||
+    fail "topology $mode left staging behind"
+done
 
 # (h) PG 도구 이미지의 메이저가 서버보다 낮으면(pg_dump 16 → 서버 17) 덤프 전에 멈춘다. 같거나 높으면 진행.
 # 기본 이미지는 postgres:17-alpine 이다(119 PG 17.11).
