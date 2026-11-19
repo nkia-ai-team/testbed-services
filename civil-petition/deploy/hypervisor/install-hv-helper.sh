@@ -9,12 +9,17 @@
 #
 # 이 스크립트와 같은 폴더의 t4-hv-exec, t4-hv-exec-root(build.py 가 인벤토리로 이 폴더에 만든 설치본), sudoers-hvjob,
 # rsyslog-05-hvjobs.conf 를 쓴다.
-# 계정 이름, uid, 러너 주소는 아래 값(러너 계약, 결과 T4S.md 맨 위)이고 환경변수로만 바꾼다. 키 원문은 화면에 내지 않는다.
+# 키 원문은 화면에 내지 않는다.
 set -euo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-account="${HV_ACCOUNT:-hvjob}"
-uid="${HV_UID:-1460}"
-runner_addr="${HV_RUNNER_ADDR:-192.168.122.20}"
+# 계정 이름, uid, 러너 주소와 거르기 파일, root 도우미 설치본은 build.py --stage 가 이 폴더에 만든다(정의 한 곳:
+# scripts/scenarios/profiles/vm_executor_common.py 와 civil-petition/deploy/tools/pipeline_patterns.py). 저장소 폴더 그대로는 돌지 않는다.
+[[ -r "$here/hv.env" ]] || { printf 'FAIL %s\n' "$here/hv.env 없음(build.py --inventory <인벤토리> --stage <이 폴더> 로 먼저 만든다)" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$here/hv.env"
+account="$HV_ACCOUNT"
+uid="$HV_UID"
+runner_addr="$HV_RUNNER_ADDR"
 sbin="${HV_SBIN:-/usr/local/sbin}"
 sudoers="${HV_SUDOERS:-/etc/sudoers.d/60-hvjob}"
 filter="${HV_FILTER:-/etc/rsyslog.d/05-hvjobs.conf}"
@@ -25,11 +30,10 @@ log() { printf '%s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 
 render_to() {
-  local out=$1 re
+  local out=$1
   mkdir -p "$out"
-  re=${runner_addr//./[.]}
-  sed -e "s/{{account}}/$account/g" -e "s/{{uid}}/$uid/g" -e "s/{{runner_addr}}/$runner_addr/g" \
-      -e "s/{{runner_addr_re}}/$re/g" "$here/rsyslog-05-hvjobs.conf" >"$out/05-hvjobs.conf"
+  [[ -s "$here/05-hvjobs.conf" ]] || fail "$here/05-hvjobs.conf 없음(build.py --stage 로 먼저 만든다)"
+  install -m 0644 "$here/05-hvjobs.conf" "$out/05-hvjobs.conf"
   sed -e "s/{{account}}/$account/g" "$here/sudoers-hvjob" >"$out/60-hvjob"
   printf '/var/log/hvjobs.log {\n\tweekly\n\trotate 4\n\tcompress\n\tmissingok\n\tnotifempty\n\tpostrotate\n\t\t/usr/lib/rsyslog/rsyslog-rotate\n\tendscript\n}\n' \
     >"$out/hvjobs.logrotate"
@@ -37,7 +41,7 @@ render_to() {
     "$sbin" "$runner_addr" >"$out/authorized_keys.prefix"
   install -m 0755 "$here/t4-hv-exec" "$out/t4-hv-exec"
   # 설치본은 build.py 가 인벤토리로 이 폴더에 만들어 둔다(저장소에는 없다, runbook §15-1 차례 2).
-  [[ -s "$here/t4-hv-exec-root" ]] || fail "$here/t4-hv-exec-root 없음(build.py --inventory <인벤토리> --out 으로 먼저 만든다)"
+  [[ -s "$here/t4-hv-exec-root" ]] || fail "$here/t4-hv-exec-root 없음(build.py --inventory <인벤토리> --stage 로 먼저 만든다)"
   install -m 0755 "$here/t4-hv-exec-root" "$out/t4-hv-exec-root"
 }
 

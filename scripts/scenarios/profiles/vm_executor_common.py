@@ -48,6 +48,9 @@ KNOWN_HOSTS = f"{KEY_DIR}/known_hosts_civil-petition"
 CONTROL_DIR_ENV = "CIVIL_PETITION_SSH_CONTROL_DIR"
 CONTROL_DIR_DEFAULT = "/app/state/ssh-control"
 HV_USER = "hvjob"
+HV_UID = 1460
+# The runner container's host (tb-ops); 66's forced-command key takes only this source (from="...").
+RUNNER_ADDR = "192.168.122.20"
 HV_KEY = f"{KEY_DIR}/t4-hv"
 HV_HELPER = "/usr/local/sbin/t4-hv-exec"
 

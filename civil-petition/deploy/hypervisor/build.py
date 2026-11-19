@@ -7,7 +7,9 @@
 이름이 든 설치본은 저장소에 두지 않고(설계 §2-5, 설치 스크립트와 틀에 사이트 값 없음) 적용 때 만든다. 저장소에는 T 인벤토리로
 만든 두 파일의 sha256 만 둔다(t4-hv-exec.sha256.json, 러너 preflight 의 버전 표류 기대값, 설계 §6-4).
 
-  build.py --inventory <인벤토리> --out <파일>     설치본을 만든다
+  build.py --inventory <인벤토리> --stage <폴더>   66 에 올릴 폴더에 root 도우미 설치본, rsyslog 거르기(05-hvjobs.conf),
+                                                    계정 값(hv.env)을 만든다(runbook §15-1 차례 2)
+  build.py --inventory <인벤토리> --out <파일>     root 도우미 설치본만 만든다
   build.py --inventory <인벤토리> --sha256         설치될 두 파일의 sha256 을 JSON 한 줄로 낸다
   build.py --check                                 t4-hv-exec.sha256.json 이 T 인벤토리로 만든 것과 같은지 본다(다르면 끝 코드 1)
   build.py --write-sha256                          t4-hv-exec.sha256.json 을 T 인벤토리로 다시 쓴다
@@ -30,6 +32,8 @@ FRONT = HERE / "t4-hv-exec"
 SUMS = HERE / "t4-hv-exec.sha256.json"
 T_INVENTORY = HERE.parent / "inventory" / "t.json"
 SERVER_ROLES = ("web", "was", "db")
+FILTER_TEMPLATE = HERE / "rsyslog-05-hvjobs.conf"
+TOOLS = HERE.parent / "tools"
 
 
 def guard_functions() -> bytes:
@@ -78,6 +82,44 @@ def render(inv: dict) -> bytes:
     return text.encode().replace(b"@GUARD_FUNCTIONS@\n", guard_functions())
 
 
+def load_module(name: str, path: Path):
+    sys.path.insert(0, str(path.parent))
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def account() -> tuple[str, int, str]:
+    """66 실행기 계정 이름, uid, 러너 주소(정의 한 곳: vm_executor_common)."""
+    common = load_module("vm_executor_common", PROFILES / "vm_executor_common.py")
+    return common.HV_USER, int(common.HV_UID), common.RUNNER_ADDR
+
+
+def render_filter() -> str:
+    """66 rsyslog 거르기. 꼴은 pipeline_patterns 한 곳에서(VM 첫 규칙, runbook 확인 명령과 같은 정의)."""
+    name, uid, runner = account()
+    pat = load_module("pipeline_patterns", TOOLS / "pipeline_patterns.py")
+    text = FILTER_TEMPLATE.read_text(encoding="utf-8")
+    values = {"account_re": pat.rainer(pat.name_ere(name)), "uid_re": pat.rainer(pat.uid_ere(uid)),
+              "run_r_re": pat.rainer(pat.RUN_R), "runner_addr": runner, "runner_addr_re": runner.replace(".", "[.]")}
+    for key, value in values.items():
+        text = text.replace("{{" + key + "}}", value)
+    if "{{" in text:
+        raise SystemExit(f"{FILTER_TEMPLATE}: 채우지 못한 자리")
+    return text
+
+
+def write_stage(inv: dict, stage: Path) -> None:
+    stage.mkdir(parents=True, exist_ok=True)
+    (stage / "t4-hv-exec-root").write_bytes(render(inv))
+    (stage / "t4-hv-exec-root").chmod(0o755)
+    (stage / "05-hvjobs.conf").write_text(render_filter(), encoding="utf-8")
+    name, uid, runner = account()
+    (stage / "hv.env").write_text(f"HV_ACCOUNT={name}\nHV_UID={uid}\nHV_RUNNER_ADDR={runner}\n", encoding="utf-8")
+
+
 def sums(inv: dict) -> dict:
     sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
     return {"files": {"t4-hv-exec": sha(FRONT.read_bytes()), "t4-hv-exec-root": sha(render(inv))}}
@@ -87,6 +129,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--inventory", type=Path, default=T_INVENTORY)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--stage", type=Path)
     parser.add_argument("--sha256", action="store_true")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--write-sha256", action="store_true")
@@ -104,8 +147,11 @@ def main() -> int:
             print(f"{SUMS.name} 가 지금 틀, 가드 함수, T 인벤토리로 만든 것과 다르다. build.py --write-sha256", file=sys.stderr)
             return 1
         return 0
+    if args.stage:
+        write_stage(inv, args.stage)
+        return 0
     if not args.out:
-        parser.error("--out, --sha256, --check, --write-sha256 중 하나")
+        parser.error("--stage, --out, --sha256, --check, --write-sha256 중 하나")
     args.out.write_bytes(render(inv))
     args.out.chmod(0o755)
     return 0

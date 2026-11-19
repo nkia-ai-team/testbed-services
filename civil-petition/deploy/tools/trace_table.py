@@ -35,12 +35,13 @@ from typing import Callable
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import t3_check  # noqa: E402
+import pipeline_patterns  # noqa: E402  (배관 줄 꼴의 정의 한 곳, 거르기와 같은 꼴)
 
 UTC = dt.timezone.utc
 KST = dt.timezone(dt.timedelta(hours=9))
 HV_SOURCE = "192.168.200.66"
 COMMON_WORDS = ("test", "testbed", "tb", "t4")
-RUN_R = r"run-r[0-9a-f]{32}"
+RUN_R = pipeline_patterns.RUN_R
 COLUMNS = ("SMS 지표", "프로세스 표본", "연결 표본", "로그 감시", "syslog", "66 출발 syslog", "가용성", "NMS 지표", "trap",
            "ICMP", "SMS 구성 변경", "변경 감지 이벤트")
 
@@ -293,12 +294,11 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
     for name in (account, hv_account):
         if not re.fullmatch(r"[a-z][a-z0-9]{1,30}", name):
             raise ValueError(f"계정 이름 꼴이 아님: {name!r}")
-    pipe = (f"(^|[^a-z0-9_.-])({account}|{hv_account})([^a-z0-9_-]|$)|"
-            f"(user[@-]|uid |uid=|/user/)({uid}|{hv_uid})([^0-9]|$)|{RUN_R}|t4-hv-exec")
+    pipe = pipeline_patterns.check_ere([(account, uid), (hv_account, hv_uid)], ["t4-hv-exec"])
     q7a = remote.ch(f"select source_ip, count() from lucida.syslog_local where {span_received(w)} and source_ip in ({quote(sources)}) "
-                    f"and match(lower(message), '{pipe}') group by 1 format TSV;")
+                    f"and match(message, '{pipe}') group by 1 format TSV;")
     q7a += remote.ch(f"select host_target_id, count() from lucida.lucida_logs_local where {span_logs(w)} and event_source = 'log_monitor' "
-                     f"and host_target_id in ({quote(ids.values())}) and match(lower(body), '{pipe}') group by 1 format TSV;")
+                     f"and host_target_id in ({quote(ids.values())}) and match(body, '{pipe}') group by 1 format TSV;")
     around = Window(inject.start - dt.timedelta(minutes=10), inject.start + dt.timedelta(minutes=10))
 
     def executor_rows(win: Window) -> int:

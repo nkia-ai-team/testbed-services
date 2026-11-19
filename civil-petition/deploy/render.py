@@ -34,6 +34,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "tools"))
+import pipeline_patterns  # noqa: E402  (실행기 배관 줄 꼴의 정의 한 곳)
+sys.path.insert(0, str(HERE / "tools"))
 import design_load  # noqa: E402  (설계 부하에서 읽어 계산하는 값, tools/design_load.py)
 TEMPLATES = HERE / "templates"
 
@@ -359,6 +361,9 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         "mgmt_host": mgmt_net["host_addr"],
         "executor_name": accounts["executor"]["name"],
         "executor_uid": str(accounts["executor"]["uid"]),
+        "executor_name_re": pipeline_patterns.rainer(pipeline_patterns.name_ere(accounts["executor"]["name"])),
+        "executor_uid_re": pipeline_patterns.rainer(pipeline_patterns.uid_ere(accounts["executor"]["uid"])),
+        "run_r_re": pipeline_patterns.rainer(pipeline_patterns.RUN_R),
         "operator_name": accounts["operator"]["name"],
         "operator_uid": str(accounts["operator"]["uid"]),
         "monitor_address": monitoring["address"],

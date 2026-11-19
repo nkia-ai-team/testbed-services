@@ -634,7 +634,7 @@ class RenderContentTests(unittest.TestCase):
         name, uid = inv["accounts"]["executor"]["name"], str(inv["accounts"]["executor"]["uid"])
         rule = file_of(self.t["web01"], "/etc/rsyslog.d/00-opsjobs.conf")
         word = re.search(r're_match\(\$msg, "(\(\^\|\[\^\[:alnum:\]_\.-\]\)' + re.escape(name) + r'[^"]*)"\)', rule).group(1)
-        uid_re = re.search(r're_match\(\$msg, "(\(user\[@-\][^"]*)"\)', rule).group(1)
+        uid_re = re.search(r're_match\(\$msg, "(\(user-\|@[^"]*)"\)', rule).group(1)
         # rsyslog 가 문자열을 푼 뒤의 정규식으로 본다(설정 파일의 \$ 는 정규식의 $ 줄 끝 경계다).
         word, uid_re = rainer_unescape(word), rainer_unescape(uid_re)
         posix = lambda pattern: pattern.replace("[:alnum:]", "A-Za-z0-9")  # noqa: E731
@@ -6078,7 +6078,7 @@ class HypervisorHelperFilesTests(unittest.TestCase):
         """runbook §15-1 차례 2, 3 처럼 도우미 폴더를 옮기고 build.py 로 설치본을 그 안에 만든 뒤 render."""
         stage = tmp / "stage"
         shutil.copytree(HV, stage)
-        subprocess.run([sys.executable, str(HV / "build.py"), "--inventory", str(T_INV), "--out", str(stage / "t4-hv-exec-root")],
+        subprocess.run([sys.executable, str(HV / "build.py"), "--inventory", str(T_INV), "--stage", str(stage)],
                        check=True, capture_output=True, timeout=60)
         out = tmp / "out"
         done = subprocess.run(["bash", str(stage / "install-hv-helper.sh"), "render", "--out", str(out)],
@@ -6104,17 +6104,19 @@ class HypervisorHelperFilesTests(unittest.TestCase):
             import hashlib
             for name in ("t4-hv-exec", "t4-hv-exec-root"):
                 self.assertEqual(hashlib.sha256((out / name).read_bytes()).hexdigest(), sums[name], name)
-            # Without a built helper in the folder render refuses (the repository keeps no copy).
-            bare = Path(raw) / "bare"
-            shutil.copytree(HV, bare)
-            done = subprocess.run(["bash", str(bare / "install-hv-helper.sh"), "render", "--out", str(Path(raw) / "o2")],
-                                  capture_output=True, text=True, timeout=30)
-            self.assertNotEqual(done.returncode, 0)
-            self.assertIn("build.py", done.stderr)
+            # Without the built files in the folder render refuses (the repository keeps no copy).
+            for missing in ("hv.env", "t4-hv-exec-root", "05-hvjobs.conf"):
+                bare = Path(raw) / f"bare-{missing}"
+                shutil.copytree(Path(raw) / "stage", bare)
+                (bare / missing).unlink()
+                done = subprocess.run(["bash", str(bare / "install-hv-helper.sh"), "render", "--out", str(Path(raw) / f"o-{missing}")],
+                                      capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(done.returncode, 0, missing)
+                self.assertIn("build.py", done.stderr, missing)
             # The filter sorts before 66's forward file (60-lucida-forward.conf) and names the account, uid, helper and run-r.
             self.assertLess("05-hvjobs.conf", "60-lucida-forward.conf")
             text = (out / "05-hvjobs.conf").read_text()
-            for piece in ("hvjob", "1460", "t4-hv-exec", "run-r[0-9a-f]{32}",
+            for piece in ("hvjob", "(user-|@|UID |uid=|/user/)1460", "t4-hv-exec", "run-r[0-9a-f]{32}",
                           "192[.]168[.]122[.]20", "/var/log/hvjobs.log", "stop"):
                 self.assertIn(piece, text)
             # The account's sudo leaves no line (sudoers), so the filter does not take every sudo line (review M4).
@@ -6463,3 +6465,112 @@ class InstallRecordTests(unittest.TestCase):
                     self.assertIn("/etc/snmp/snmpd.community.conf", secret)
                 if host["role"] == "was":
                     self.assertIn("/etc/tomcat10/Catalina/localhost/petition.xml", secret)
+
+
+patterns = _load("pipeline_patterns", DEPLOY / "tools" / "pipeline_patterns.py")
+
+
+class PipelinePatternTests(unittest.TestCase):
+    """실행기 배관 줄 꼴의 정의 한 곳(tools/pipeline_patterns.py, v4 T4F, 11-20 APT4 차례 8 의 `user-runtime-dir@1460` 틈).
+    VM 첫 규칙, 66 거르기, runbook 확인 명령, 흔적 표 도구가 모두 같은 꼴을 쓰고, systemd 255/257 이 세션을 열고 닫을 때
+    내는 uid, 이름 줄이 모두 걸리며, 운영자 줄과 다른 uid 는 걸리지 않는다."""
+
+    OTHER_UIDS = ("14500", "1451", "11450", "145")
+
+    def ere(self, pattern: str) -> re.Pattern:
+        return re.compile(pattern.replace("[:alnum:]", "A-Za-z0-9"))
+
+    def test_every_session_line_of_the_account_matches_and_others_do_not(self) -> None:
+        for name, uid in (("opsjob", 1450), ("hvjob", 1460)):
+            check = self.ere(patterns.check_ere([(name, uid)]))
+            uid_only = self.ere(patterns.uid_ere(uid))
+            for prog, line in patterns.systemd_session_lines(name, uid):
+                with self.subTest(account=name, line=line):
+                    self.assertRegex(line, check)
+                    if name not in line:
+                        self.assertRegex(line, uid_only, "이름이 없는 줄은 uid 꼴이 잡아야 한다")
+            # The line APT4 found: the template unit instance with the uid after @.
+            self.assertRegex(f"user-runtime-dir@{uid}.service: Deactivated successfully.", uid_only)
+            for other in self.OTHER_UIDS:
+                for prog, line in patterns.systemd_session_lines("sysop", other):
+                    with self.subTest(account=name, other=other, line=line):
+                        self.assertNotRegex(line, check)
+            for prog, line in patterns.systemd_session_lines("sysop", 1000):
+                self.assertNotRegex(line, check)
+            # A session number equal to the uid is not the uid.
+            self.assertNotRegex(f"Started session-{uid}.scope - Session {uid} of User sysop.", uid_only)
+            for line in patterns.UNATTRIBUTABLE:
+                self.assertNotRegex(line.format(s=uid), check)
+
+    def _session(self, name: str, uid: int | str) -> list[tuple[str, str, str]]:
+        return [("daemon.info" if prog == "systemd" else "authpriv.info", prog, line)
+                for prog, line in patterns.systemd_session_lines(name, uid)]
+
+    @unittest.skipUnless(shutil.which("rsyslogd") and shutil.which("logger"), "rsyslogd 와 logger 가 필요")
+    def test_real_rsyslogd_diverts_every_session_line_on_the_vm_and_on_66(self) -> None:
+        sys.path.insert(0, str(HERE))
+        import vm_sandbox
+        inv = inventory()
+        vm_rule = file_of(bundles(T_INV)["web01"], "/etc/rsyslog.d/00-opsjobs.conf").replace("/var/log/opsjobs.log", "{diverted}")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            stage = root / "stage"
+            shutil.copytree(HV, stage)
+            subprocess.run([sys.executable, str(HV / "build.py"), "--inventory", str(T_INV), "--stage", str(stage)],
+                           check=True, capture_output=True, timeout=60)
+            hv_rule = (stage / "05-hvjobs.conf").read_text().replace("/var/log/hvjobs.log", "{diverted}")
+            executor = inv["accounts"]["executor"]
+            operator = inv["accounts"]["operator"]
+            for label, rule, name, uid in (("vm", vm_rule, executor["name"], executor["uid"]), ("66", hv_rule, "hvjob", 1460)):
+                with self.subTest(where=label):
+                    own = self._session(name, uid)
+                    others = self._session(operator["name"], operator["uid"])
+                    for other in self.OTHER_UIDS:
+                        others += self._session("someone", other)
+                    forward, diverted = vm_sandbox.run_rsyslogd(rule, own + others, root / f"rs-{label}")
+                    for _, _, line in own:
+                        self.assertIn(line, diverted)
+                        self.assertNotIn(line, forward)
+                    for _, _, line in others:
+                        self.assertIn(line, forward)
+                        self.assertNotIn(line, diverted)
+
+    def test_both_rules_and_the_tools_take_the_pattern_from_the_one_definition(self) -> None:
+        inv = inventory()
+        executor = inv["accounts"]["executor"]
+        vm_rule = file_of(bundles(T_INV)["web01"], "/etc/rsyslog.d/00-opsjobs.conf")
+        self.assertIn(patterns.rainer(patterns.uid_ere(executor["uid"])), vm_rule)
+        self.assertIn(patterns.rainer(patterns.name_ere(executor["name"])), vm_rule)
+        template = (DEPLOY / "templates" / "common" / "rsyslog-00-opsjobs.conf").read_text()
+        hv_template = (HV / "rsyslog-05-hvjobs.conf").read_text()
+        for text in (template, hv_template):
+            body = "\n".join(l for l in text.splitlines() if not l.startswith("#"))
+            self.assertNotIn("user[@-]", body)
+            self.assertNotIn("UID |", body)
+        trace_source = (DEPLOY / "tools" / "trace_table.py").read_text()
+        self.assertIn("pipeline_patterns.check_ere(", trace_source)
+        self.assertNotIn("(user[@-]", trace_source)
+
+    def test_runbook_checks_call_the_pattern_tool_and_its_output_counts_the_session_lines(self) -> None:
+        runbook = (REPO / "docs" / "runbook-civil-petition-apply.md").read_text()
+        rows = [l for l in runbook.splitlines() if l.startswith("| rsyslog 첫 규칙 |") or l.startswith("| 8 | 119 읽기")]
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertIn("pipeline_patterns.py --account", row)
+        self.assertIn("--account hvjob:1460 --extra t4-hv-exec --format clickhouse", rows[2])
+        with tempfile.TemporaryDirectory() as raw:
+            for account, extra in (("opsjob:1450", []), ("hvjob:1460", ["--extra", "t4-hv-exec"])):
+                name, uid = account.split(":")
+                ere = subprocess.run([sys.executable, str(DEPLOY / "tools" / "pipeline_patterns.py"), "--account", account, *extra],
+                                     check=True, capture_output=True, text=True).stdout.strip()
+                ch = subprocess.run([sys.executable, str(DEPLOY / "tools" / "pipeline_patterns.py"), "--account", account, *extra,
+                                     "--format", "clickhouse"], check=True, capture_output=True, text=True).stdout.strip()
+                self.assertEqual(ch, ere)  # no backslash or quote to escape today
+                own = Path(raw) / f"own-{name}"
+                own.write_text("".join(f"Nov 20 02:41:04 host {p}[1]: {l}\n" for p, l in patterns.systemd_session_lines(name, uid)))
+                other = Path(raw) / f"other-{name}"
+                other.write_text("".join(f"Nov 20 02:41:04 host {p}[1]: {l}\n" for o in self.OTHER_UIDS + ("1000",)
+                                         for p, l in patterns.systemd_session_lines("sysop", o)))
+                count = lambda path: int(subprocess.run(["grep", "-E", "-c", ere, str(path)], capture_output=True, text=True).stdout.strip() or 0)  # noqa: E731
+                self.assertEqual(count(own), len(patterns.systemd_session_lines(name, uid)))
+                self.assertEqual(count(other), 0)
