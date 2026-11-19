@@ -1,0 +1,289 @@
+{
+  "domain": "civil-petition",
+  "network_devices": [
+    {
+      "address": "192.168.123.254",
+      "interfaces": {
+        "ens18": "6876ab34-ed3b-4e21-9320-4ebaeae58669",
+        "ens19": "917e4af7-5879-4bb5-97a0-1b935894d75b",
+        "ens20": "8dd90421-b8fa-435d-b3fd-5fd5be103296",
+        "ens21": "79a3ac72-fde1-400a-89ca-bcbf414a4b92",
+        "ens22": "a648cad3-562b-47d8-a4d4-fd4b5c1b836b",
+        "인터페이스": "98523a83-d757-42de-8ecd-15f4962f5f3d"
+      },
+      "name": "rt-core01",
+      "target_id": "65b4ab9c-d1b4-42f6-be5c-7efb5c34cb3c"
+    }
+  ],
+  "schema": "petition-portal-targets/1",
+  "servers": [
+    {
+      "agent_host": "192.168.124.11",
+      "children": {
+        "sms.cpu": {
+          "": "1867ed47-8c0c-4350-9da9-6479ca9dfcc9"
+        },
+        "sms.disk": {
+          "": "cfe5673f-d0d0-4ffe-b359-a82f9bacfa40"
+        },
+        "sms.file_system": {
+          "/": "f48a6394-6f90-4c6a-9eb4-df98eef1e67b",
+          "/boot": "d225de5d-f304-4cba-99d9-53b741b19dc5",
+          "/boot/efi": "aed043f6-4d78-4c23-a17a-40504ca6d24e"
+        },
+        "sms.file_systems": {
+          "": "5def8024-1e78-4425-8d2b-41ff5e358929"
+        },
+        "sms.log_monitor": {
+          "apache-access-web01": "d510390b-d2d3-4da4-9f1b-64af8cd16bdd",
+          "apache-error-web01": "66b554a1-5bdd-4452-bbbf-ed2a24877701",
+          "auth-log-web01": "84be1294-8be9-4b68-a371-028272f284b1",
+          "syslog-web01": "0155d826-f750-4911-a660-8e3c72558f78",
+          "기본 로그 모니터 (Linux)": "80c1448d-c9a4-4efb-891b-df5e48ea055e"
+        },
+        "sms.memory": {
+          "": "e8573269-398c-4575-ad7b-bac299bf1c82"
+        },
+        "sms.netstat": {
+          "": "fa1c230b-2f4e-440d-b3a8-cd779cc02e36"
+        },
+        "sms.network_interface": {
+          "ens18": "cef19c9a-56f5-400c-96ac-460074edc12d",
+          "ens19": "6c789c99-61a4-40f4-8662-63003d2a7d25"
+        },
+        "sms.network_interfaces": {
+          "": "94ccb49d-a6fb-490e-af04-292059b81fc3"
+        },
+        "sms.other_memory": {
+          "": "f5207d9d-71e7-4709-8308-e6839bdb24e6"
+        },
+        "sms.process": {
+          "": "ccaf449f-73c5-4423-8db9-0b323e0f3b01"
+        },
+        "sms.virtual_memory": {
+          "": "e5d17f1a-72e8-4d57-9ab4-fdfb65766cec"
+        }
+      },
+      "log_monitors": {
+        "/var/log/apache2/access.log": "d510390b-d2d3-4da4-9f1b-64af8cd16bdd",
+        "/var/log/apache2/error.log": "66b554a1-5bdd-4452-bbbf-ed2a24877701",
+        "/var/log/auth.log": "84be1294-8be9-4b68-a371-028272f284b1",
+        "/var/log/messages": "80c1448d-c9a4-4efb-891b-df5e48ea055e",
+        "/var/log/syslog": "0155d826-f750-4911-a660-8e3c72558f78"
+      },
+      "management_nic": {
+        "decision": "accepted",
+        "ifname": "ens19",
+        "target_id": "6c789c99-61a4-40f4-8662-63003d2a7d25"
+      },
+      "name": "web01",
+      "role": "web",
+      "target_id": "c5f7161d-74ea-431d-90a7-09a9d534098f"
+    },
+    {
+      "agent_host": "192.168.125.11",
+      "children": {
+        "sms.cpu": {
+          "": "1d8696cc-896e-4c6f-90a0-c1aac1cfd4ef"
+        },
+        "sms.disk": {
+          "": "1cc6bb22-3ba1-4963-9203-3202e73aee70"
+        },
+        "sms.file_system": {
+          "/": "15d79063-46bf-483b-bb9f-636295d5eb25",
+          "/boot": "22083d0c-7adc-4721-aef8-e8bb4e2bd742",
+          "/boot/efi": "f9cf0db1-2d75-43d7-aee2-e9ab741c3b69"
+        },
+        "sms.file_systems": {
+          "": "e47a6000-7237-44c8-a19d-f2c89825a7b9"
+        },
+        "sms.log_monitor": {
+          "app-log-was01": "5aad9fbb-ec04-44b0-ba02-f81ced10af73",
+          "auth-log-was01": "245aa6a2-77ec-49eb-a814-387ea4243279",
+          "catalina-out-was01": "9833b877-5582-43bd-8648-eaa6a09b584a",
+          "syslog-was01": "2665200d-0f51-4dab-9afe-e8a509d371db",
+          "tomcat-access-was01": "69ebf84f-81c2-42f0-b45d-a49f93804e1f",
+          "tomcat-localhost-was01": "5ee51c5e-70af-45b1-a4dc-6a5589f92140",
+          "기본 로그 모니터 (Linux)": "cb2ff984-0b81-4d79-912e-a6482818d882"
+        },
+        "sms.memory": {
+          "": "d6556834-32aa-4567-b388-887d91ae6005"
+        },
+        "sms.netstat": {
+          "": "90d56d86-2839-4c80-97e6-b721d146b234"
+        },
+        "sms.network_interface": {
+          "ens18": "faec9000-d6c2-4874-938e-8c633f92909c",
+          "ens19": "a2ed47c8-c1d3-4aba-9195-97e6a329b4c7"
+        },
+        "sms.network_interfaces": {
+          "": "2a045b61-c5b4-4e98-9e68-38fc1cd5cec9"
+        },
+        "sms.other_memory": {
+          "": "607c7452-2360-4bc9-b289-823a49938663"
+        },
+        "sms.process": {
+          "": "9025a962-ad32-4b85-aa11-bc09533a0757"
+        },
+        "sms.virtual_memory": {
+          "": "7bd5b79c-fd58-4d9d-9754-28006c1cc3e9"
+        }
+      },
+      "log_monitors": {
+        "/var/log/auth.log": "245aa6a2-77ec-49eb-a814-387ea4243279",
+        "/var/log/messages": "cb2ff984-0b81-4d79-912e-a6482818d882",
+        "/var/log/syslog": "2665200d-0f51-4dab-9afe-e8a509d371db",
+        "/var/log/tomcat10/catalina.out": "9833b877-5582-43bd-8648-eaa6a09b584a",
+        "/var/log/tomcat10/localhost.[YYYY]-[MM]-[DD].log": "5ee51c5e-70af-45b1-a4dc-6a5589f92140",
+        "/var/log/tomcat10/localhost_access_log.[YYYY]-[MM]-[DD].txt": "69ebf84f-81c2-42f0-b45d-a49f93804e1f",
+        "/var/log/tomcat10/petition.log": "5aad9fbb-ec04-44b0-ba02-f81ced10af73"
+      },
+      "management_nic": {
+        "decision": "accepted",
+        "ifname": "ens19",
+        "target_id": "a2ed47c8-c1d3-4aba-9195-97e6a329b4c7"
+      },
+      "name": "was01",
+      "role": "was",
+      "target_id": "bda0dfa8-d90c-455f-b4ae-d20fcb0ae7bd"
+    },
+    {
+      "agent_host": "192.168.125.12",
+      "children": {
+        "sms.cpu": {
+          "": "874c55e3-9b0a-4c5d-b1ac-9470b6012a4a"
+        },
+        "sms.disk": {
+          "": "27989d38-f513-4228-a4cd-53bd2d37dd4e"
+        },
+        "sms.file_system": {
+          "/": "1256b3f8-f34a-4b7f-9cce-b34e00709d13",
+          "/boot": "832246e0-1f85-493f-b0b1-9ab60a45cb72",
+          "/boot/efi": "30b06f3c-243f-4139-a67d-f44ec0535066"
+        },
+        "sms.file_systems": {
+          "": "01c3b4f9-b1de-478e-b6db-308a07d10028"
+        },
+        "sms.log_monitor": {
+          "app-log-was02": "e466fa3e-c26a-41a6-9c04-90e840b6df21",
+          "auth-log-was02": "c32b8ef2-a73e-4b36-91c6-b039f109189a",
+          "catalina-out-was02": "abf0bc83-ab86-456e-82b9-dd54dd576a2d",
+          "syslog-was02": "e2ed49f0-8d96-4e28-8966-8eb3221173b7",
+          "tomcat-access-was02": "63de5bcc-f7cf-478b-ba1e-d9f044a70730",
+          "tomcat-localhost-was02": "2eee9b82-a6e3-481c-9d7e-3676b9eb9412",
+          "기본 로그 모니터 (Linux)": "371f8c3a-4923-40b6-924b-e77ec0442950"
+        },
+        "sms.memory": {
+          "": "9c339a3d-b984-428e-b13b-805d84913ebd"
+        },
+        "sms.netstat": {
+          "": "0b269908-3f8e-478d-abd2-63a2765c0841"
+        },
+        "sms.network_interface": {
+          "ens18": "703b44a3-bf0a-442a-bb78-584e4e151efb",
+          "ens19": "af5c2d17-d815-433b-8cfc-58f2aba69f59"
+        },
+        "sms.network_interfaces": {
+          "": "88db9c58-79ea-4b46-b1dc-a59f23bf2e7e"
+        },
+        "sms.other_memory": {
+          "": "b588ff98-0cb3-4f2b-9ca0-d5f258630049"
+        },
+        "sms.process": {
+          "": "26f8af02-0a8e-40dc-817a-684c1da60d58"
+        },
+        "sms.virtual_memory": {
+          "": "0e94184a-ab28-4c67-a9f3-c2adb1165af9"
+        }
+      },
+      "log_monitors": {
+        "/var/log/auth.log": "c32b8ef2-a73e-4b36-91c6-b039f109189a",
+        "/var/log/messages": "371f8c3a-4923-40b6-924b-e77ec0442950",
+        "/var/log/syslog": "e2ed49f0-8d96-4e28-8966-8eb3221173b7",
+        "/var/log/tomcat10/catalina.out": "abf0bc83-ab86-456e-82b9-dd54dd576a2d",
+        "/var/log/tomcat10/localhost.[YYYY]-[MM]-[DD].log": "2eee9b82-a6e3-481c-9d7e-3676b9eb9412",
+        "/var/log/tomcat10/localhost_access_log.[YYYY]-[MM]-[DD].txt": "63de5bcc-f7cf-478b-ba1e-d9f044a70730",
+        "/var/log/tomcat10/petition.log": "e466fa3e-c26a-41a6-9c04-90e840b6df21"
+      },
+      "management_nic": {
+        "decision": "accepted",
+        "ifname": "ens19",
+        "target_id": "af5c2d17-d815-433b-8cfc-58f2aba69f59"
+      },
+      "name": "was02",
+      "role": "was",
+      "target_id": "ebdf15e2-477d-4c8f-9afc-f4c4b1baf69b"
+    },
+    {
+      "agent_host": "192.168.126.11",
+      "children": {
+        "sms.cpu": {
+          "": "60579e7c-ac4f-41a0-a479-3cf25654fa28"
+        },
+        "sms.disk": {
+          "": "0eb9f566-8bb0-401b-b19c-97bee224c3c4"
+        },
+        "sms.file_system": {
+          "/": "192a67fc-d83a-4bf8-a75d-9159dc8146f2",
+          "/boot": "240f876b-f96c-4018-bc19-55b1af6b2c9c",
+          "/boot/efi": "bd4e53d1-8259-4514-a62f-9c725e139bcd",
+          "/pgdata": "36454d9b-97b8-4ebc-8b57-45d8d2f5c185"
+        },
+        "sms.file_systems": {
+          "": "d7ac5fa9-aff4-4363-ab86-22f6973c4e1e"
+        },
+        "sms.log_monitor": {
+          "auth-log-db01": "0f14cf70-f160-46e8-be14-f050ee3b4de9",
+          "postgresql-db01": "17a5d386-4f83-42c2-9e05-e7eecbafeb74",
+          "syslog-db01": "66d5e86a-9d40-45f2-ad66-f8c35f2ce18f",
+          "기본 로그 모니터 (Linux)": "e45be518-eded-4338-bbdd-9a3ca184e9e4"
+        },
+        "sms.memory": {
+          "": "1acbd536-3e3c-4425-a9cb-a8fbd91c0141"
+        },
+        "sms.netstat": {
+          "": "91b3f2aa-b537-47fc-ae62-3015fbf5f4c8"
+        },
+        "sms.network_interface": {
+          "ens18": "7d448c2f-03cb-4669-ab3a-16e7c217e928",
+          "ens19": "3601aa6d-9174-444e-8884-d97a0e37c40f"
+        },
+        "sms.network_interfaces": {
+          "": "68cd5971-1f28-49cb-a95a-a72930dde67a"
+        },
+        "sms.other_memory": {
+          "": "ebe3b100-cde7-4382-ae0b-725ba4c46d08"
+        },
+        "sms.process": {
+          "": "57c91d56-a180-4991-8d46-02cb13afb50c"
+        },
+        "sms.virtual_memory": {
+          "": "f5aff1c5-4382-49e8-a04c-7b43e1bd52d2"
+        }
+      },
+      "log_monitors": {
+        "/var/log/auth.log": "0f14cf70-f160-46e8-be14-f050ee3b4de9",
+        "/var/log/messages": "e45be518-eded-4338-bbdd-9a3ca184e9e4",
+        "/var/log/postgresql/postgresql-16-main.log": "17a5d386-4f83-42c2-9e05-e7eecbafeb74",
+        "/var/log/syslog": "66d5e86a-9d40-45f2-ad66-f8c35f2ce18f"
+      },
+      "management_nic": {
+        "decision": "accepted",
+        "ifname": "ens19",
+        "target_id": "3601aa6d-9174-444e-8884-d97a0e37c40f"
+      },
+      "name": "db01",
+      "role": "db",
+      "target_id": "73343434-0302-468f-b738-643aec7ab84b"
+    }
+  ],
+  "testbed": "t",
+  "trap_receivers": [
+    {
+      "name": "trap-udp-162",
+      "port": 162,
+      "protocol": "udp",
+      "target_id": "fc13f2d9-9155-4807-87ec-7168c0af1b1d"
+    }
+  ]
+}
