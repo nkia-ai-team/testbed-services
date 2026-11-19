@@ -10,7 +10,9 @@ d0186576d2 의 frontend registerTarget.ts, ServerPendingRegistrations.tsx, Custo
 
 단계(--phase, 순서대로):
   approve       에이전트가 처음 보고해 생긴 등록 대기 서버 대상(이름 = 업무 주소)을 승인한다
-  nic           서버마다 관리 NIC 하위 대상을 «관리 안 함» 으로 둔다(설계 Q7d. 에이전트 수집에서 빠진다)
+  nic           서버마다 관리 NIC 하위 대상이 생겼는지 본다(쓰기 없음). 관리 NIC 수집은 «받아들임»(설계 §10 T3, Q7d)
+                이고 «관리 안 함» PUT 을 하지 않는다. 제품 승격(collector-sms)이 관리 안 함 NIC 행을 지우고 managed 로
+                다시 만들며 그 NIC 가용성 이력도 지운다(11-19 119 실기, v4 MNIC, 제품 결함 후보 Q34)
   log-monitors  역할별 로그 감시(monitoring/log-monitors.json)를 서버마다 단다. 같은 파일 감시가 있으면 건너뛴다
   nms           라우터를 SNMP v2c 장비로 등록한다(커뮤니티는 인벤토리의 비밀값 파일에서 읽고 화면에 내지 않는다)
   trap          trap 수신기(udp 162)를 등록한다. 같은 (프로토콜, 포트) 수신기가 있으면 건너뛴다
@@ -263,8 +265,14 @@ def server_id(session: Session, host: dict) -> str:
     return found[0]["id"]
 
 
+MGMT_NIC_DECISION = "accepted"
+
+
 def phase_nic(session: Session, inv: dict) -> list[str]:
-    """관리 NIC 하위 대상을 관리 안 함으로. 하위 대상이 아직 없으면(첫 지표 전) 멈추고 다시 돌리라고 알린다."""
+    """관리 NIC 받아들임 확인(쓰기 없음). 하위 대상이 아직 없으면(첫 지표 전) 멈추고 다시 돌리라고 알린다.
+
+    «관리 안 함» 으로 두지 않는다(모듈 머리말 nic). 누가 이미 관리 안 함으로 두었어도 되돌리거나 다시 쓰지 않고 찍기만 한다.
+    """
     done, problems = [], []
     for host in servers(inv):
         sid = server_id(session, host)
@@ -274,11 +282,9 @@ def phase_nic(session: Session, inv: dict) -> list[str]:
             problems.append(f"{host['name']}: 관리 NIC {host['mgmt_if']} 하위 대상이 {len(nics)}개(승인 뒤 첫 지표를 기다려 다시)")
             continue
         node = nics[0]
-        if node.get("management_status") == "unmanaged":
-            print(f"{host['name']}: {host['mgmt_if']} 이미 관리 안 함 {node['id']}", file=session.out)
-            done.append(node["id"])
-            continue
-        session.write("PUT", f"/api/v1/authz/nodes/target/{node['id']}/state?scope=unified", {"state": "unmanaged"})
+        state = node.get("management_status") or "managed"
+        note = "" if state == "managed" else "(관리 안 함이어도 손대지 않는다. 제품 승격이 지우고 managed 로 다시 만든다)"
+        print(f"{host['name']}: {host['mgmt_if']} 받아들임 {node['id']} {state}{note}", file=session.out)
         done.append(node["id"])
     if problems:
         raise RegisterError("; ".join(problems))
@@ -431,9 +437,11 @@ def phase_record(session: Session, inv: dict, specs_path: Path = LOG_MONITORS) -
             key = node.get("resource_key") or ""
             children.setdefault(rtype, {})[key] = node["id"]
         monitors = {(_monitor_file(m) or ""): _id(m) for m in _monitors(session, sid)}
+        mgmt = children.get("sms.network_interface", {}).get(host["mgmt_if"])
         table["servers"].append({"name": host["name"], "role": host["role"], "target_id": sid,
                                  "agent_host": host["agent_host"], "children": children,
-                                 "unmanaged": sorted(n["id"] for n in nodes if n.get("management_status") == "unmanaged"),
+                                 "management_nic": {"ifname": host["mgmt_if"], "target_id": mgmt,
+                                                    "decision": MGMT_NIC_DECISION},
                                  "log_monitors": {f: monitors.get(f) for f in sorted(monitors)}})
     rt = router(inv)
     if rt:
@@ -451,9 +459,11 @@ def phase_record(session: Session, inv: dict, specs_path: Path = LOG_MONITORS) -
 
 
 def phase_rollback(session: Session, table: dict) -> int:
-    """대상 번호 표에 적힌 것을 거꾸로 지운다: trap 수신기, NMS 장비, 로그 감시, 관리 NIC 경계, 서버 대상.
+    """대상 번호 표에 적힌 것을 거꾸로 지운다: trap 수신기, NMS 장비, 로그 감시, 서버 대상.
 
     서버 대상은 에이전트가 멈춘 뒤에만 지운다(멈추지 않으면 다음 보고에 등록 대기로 다시 생긴다, runbook §12-5).
+    관리 NIC 는 관리 안 함으로 두지 않으므로(받아들임) 지울 관리 상태 선언이 없다. 옛 표의 "unmanaged" 목록도 지우지 않는다:
+    그 선언은 제품 승격이 행과 함께 이미 지웠고(MNIC), 남았더라도 서버 대상 삭제가 하위 대상과 선언을 함께 지운다.
     """
     n = 0
     for rec in table.get("trap_receivers", []):
@@ -464,8 +474,6 @@ def phase_rollback(session: Session, table: dict) -> int:
         for monitor_id in (rec.get("log_monitors") or {}).values():
             if monitor_id:
                 session.write("DELETE", f"/sm/api/custom-monitors/{monitor_id}"); n += 1
-        for child in rec.get("unmanaged", []):
-            session.write("DELETE", f"/api/v1/authz/nodes/target/{child}/state?scope=unified"); n += 1
     for rec in table.get("servers", []):
         session.write("DELETE", f"/api/v1/targets/{rec['target_id']}"); n += 1
     return n
@@ -504,7 +512,7 @@ def main(argv: list[str] | None = None, client_factory=Client) -> int:
         if args.phase == "approve":
             print(f"승인 {len(phase_approve(session, inv))}대")
         elif args.phase == "nic":
-            print(f"관리 NIC 관리 안 함 {len(phase_nic(session, inv))}개")
+            print(f"관리 NIC 받아들임 {len(phase_nic(session, inv))}개(쓰기 없음)")
         elif args.phase == "log-monitors":
             print(f"로그 감시 새로 {phase_log_monitors(session, inv, args.log_monitors)}개")
         elif args.phase == "nms":
@@ -525,7 +533,7 @@ def main(argv: list[str] | None = None, client_factory=Client) -> int:
     except RegisterError as error:
         print(f"t3_register: {error}", file=sys.stderr)
         return 1
-    if not args.yes and args.phase not in ("record",):
+    if not args.yes and args.phase not in ("record", "nic"):
         print("--yes 없음: 쓰기 호출은 찍기만 했다")
     return 0
 

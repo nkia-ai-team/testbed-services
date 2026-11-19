@@ -285,23 +285,43 @@ def item_sms(remote, ctx, ids, until) -> Item:
     return it.set(not bad, "; ".join(bad))
 
 
-def item_mgmt_nic(remote, ctx, ids, until) -> Item:
+def item_mgmt_nic(remote, ctx, ids, until, table: dict | None = None) -> Item:
+    """관리 NIC(Q7d)는 «받아들임»(설계 §10 T3 «빼거나 받아들인다고 기록», 11-19 지휘 세션 결정, v4 MNIC).
+
+    «관리 안 함» 으로 빼는 길은 쓸 수 없다: 에이전트가 그 NIC 를 보고에서 빼면 collector-sms 승격이 행을 지우고 managed 로
+    다시 만들며 가용성 이력도 지운다(제품 결함 후보 Q34). 그래서 충족 조건은 서버마다 ① 대상 번호 표에 관리 NIC 의
+    받아들임 표시(management_nic.decision = accepted, ifname 이 인벤토리 관리 NIC) ② 119 하위 대상이 있고 표의 번호와 같음
+    ③ 관리 상태 managed(관리 안 함이면 누가 다시 PUT 한 것) ④ 최근 10분 계열이 들어옴(받아들였으니 수집되는 것이 정상)이다.
+    """
     it = Item("관리 NIC(Q7d)")
     bad = []
+    if table is None:
+        return it.set(False, "대상 번호 표(--table) 가 없어 받아들임 표시를 볼 수 없음")
+    records = {rec.get("name"): rec for rec in table.get("servers", [])}
     for s in ctx["servers"]:
         target = ids["servers"].get(s["name"])
         if not target:
             bad.append(f"{s['name']} 대상 없음")
             continue
+        mark = (records.get(s["name"]) or {}).get("management_nic") or {}
         nic = [c for c in ids["children"].get(target["id"], [])
                if c["resource_type"] == "sms.network_interface" and c["resource_key"] == s["mgmt_if"]]
         state = nic[0]["management_status"] if nic else "하위 대상 없음"
         recent = vm_scalar(remote, f'count(last_over_time({{__name__=~"sms\\\\.network_interface\\\\..+",'
                                    f'host_target_id="{target["id"]}",device="{s["mgmt_if"]}"}}[10m]))', until) or 0
-        it.numbers.append(f"{s['name']} {s['mgmt_if']} {state}, 최근 10분 계열 {int(recent)}")
-        if state != "unmanaged" or recent:
-            bad.append(f"{s['name']} 관리 NIC 가 수집에서 빠지지 않음({state}, 계열 {int(recent)})")
-    return it.set(not bad, "; ".join(bad) or "관리 NIC 를 관리 안 함으로 두어 에이전트 수집에서 뺐다")
+        it.numbers.append(f"{s['name']} {s['mgmt_if']} 표 {mark.get('decision') or '표시 없음'}, {state}, 최근 10분 계열 {int(recent)}")
+        if mark.get("decision") != "accepted" or mark.get("ifname") != s["mgmt_if"]:
+            bad.append(f"{s['name']} 대상 번호 표에 관리 NIC {s['mgmt_if']} 받아들임 표시 없음")
+        if not nic:
+            bad.append(f"{s['name']} 관리 NIC {s['mgmt_if']} 하위 대상 없음")
+            continue
+        if mark.get("target_id") and mark["target_id"] != nic[0]["id"]:
+            bad.append(f"{s['name']} 표의 관리 NIC 번호 {mark['target_id']} 가 119 하위 대상 {nic[0]['id']} 와 다름")
+        if state != "managed":
+            bad.append(f"{s['name']} 관리 NIC 가 {state}(받아들임이면 managed, 관리 안 함 PUT 을 하지 않는다)")
+        if not recent:
+            bad.append(f"{s['name']} 관리 NIC 최근 10분 계열 0(받아들였으면 수집돼야 함)")
+    return it.set(not bad, "; ".join(bad) or "관리 NIC 수집을 받아들였다(대상 번호 표 표시, managed, 계열 들어옴)")
 
 
 def item_journal(remote, ctx, vm_reads: bool) -> Item:
@@ -1070,9 +1090,10 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
     since = parse_time(args.since)
     until = parse_time(args.until) if args.until else dt.datetime.now(UTC)
     trap_since = parse_time(args.trap_since) if args.trap_since else None
+    table = json.loads(args.table.read_text(encoding="utf-8")) if args.table else None
     items = [
         item_sms(remote, ctx, ids, until),
-        item_mgmt_nic(remote, ctx, ids, until),
+        item_mgmt_nic(remote, ctx, ids, until, table),
         item_journal(remote, ctx, args.vm_reads),
         item_process_unit(remote, ctx, ids, until),
         item_icmp(remote, ctx, ids, until),

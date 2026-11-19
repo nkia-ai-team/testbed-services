@@ -5099,20 +5099,30 @@ class T3RegisterTests(unittest.TestCase):
         self.assertEqual(self.product.writes(), [])
         self.assertIn("(찍기만) POST /api/v1/targets/approve", self.out.getvalue())
 
-    def test_nic_phase_unmanages_only_the_management_nic(self) -> None:
+    def test_nic_phase_accepts_the_management_nic_and_writes_nothing(self) -> None:
+        # 11-19 지휘 세션 결정(v4 MNIC): 관리 NIC 수집은 받아들임. «관리 안 함» PUT 은 제품 승격이 행을 지우고 managed 로
+        # 다시 만들게 해(가용성 이력도 지움) 쓰지 않는다.
         t3reg.phase_approve(self.session(), self.inv)
+        before = len(self.product.writes())
         done = t3reg.phase_nic(self.session(), self.inv)
+        mgmt = {n["id"] for nodes in self.product.nodes.values() for n in nodes
+                if n.get("resource_type") == "sms.network_interface" and n.get("resource_key") == "ens19"}
+        self.assertEqual(set(done), mgmt)
         self.assertEqual(len(done), 4)
-        puts = [(p, b) for m, p, b in self.product.calls if m == "PUT"]
-        self.assertEqual(len(puts), 4)
-        for path, body in puts:
-            self.assertTrue(path.endswith("/state?scope=unified"))
-            self.assertEqual(body, {"state": "unmanaged"})
+        self.assertEqual(self.product.writes()[before:], [])
+        self.assertFalse([c for c in self.product.calls if c[0] == "PUT" or "/authz/" in c[1]])
         states = {n.get("resource_key"): n.get("management_status") for nodes in self.product.nodes.values() for n in nodes
                   if n.get("resource_type") == "sms.network_interface"}
-        self.assertEqual(states, {"ens18": "managed", "ens19": "unmanaged"})
+        self.assertEqual(states, {"ens18": "managed", "ens19": "managed"})
+        self.assertEqual(self.out.getvalue().count("ens19 받아들임"), 4)
+        # 누가 이미 관리 안 함으로 두었어도 되돌리거나 다시 쓰지 않는다.
+        for nodes in self.product.nodes.values():
+            for node in nodes:
+                if node.get("resource_key") == "ens19":
+                    node["management_status"] = "unmanaged"
         t3reg.phase_nic(self.session(), self.inv)
-        self.assertEqual(len([c for c in self.product.calls if c[0] == "PUT"]), 4, "다시 돌려도 같은 상태")
+        self.assertEqual(self.product.writes()[before:], [])
+        self.assertIn("관리 안 함이어도 손대지 않는다", self.out.getvalue())
 
     def test_nic_phase_waits_for_the_child_target(self) -> None:
         t3reg.phase_approve(self.session(), self.inv)
@@ -5182,16 +5192,34 @@ class T3RegisterTests(unittest.TestCase):
         self.assertEqual(table["schema"], "petition-portal-targets/1")
         self.assertEqual(len(table["servers"]), 4)
         self.assertEqual({s["agent_host"] for s in table["servers"]}, set(self.product.approved))
-        self.assertTrue(all(len(s["unmanaged"]) == 1 for s in table["servers"]))
         self.assertTrue(all("sms.network_interface" in s["children"] for s in table["servers"]))
+        for rec in table["servers"]:
+            self.assertNotIn("unmanaged", rec)
+            self.assertEqual(rec["management_nic"], {"ifname": "ens19", "decision": "accepted",
+                                                     "target_id": rec["children"]["sms.network_interface"]["ens19"]})
         self.product.calls.clear()
         n = t3reg.phase_rollback(self.session(), table)
         deletes = [p for m, p, _ in self.product.calls if m == "DELETE"]
         self.assertEqual(n, len(deletes))
+        self.assertFalse([p for p in deletes if "/authz/" in p], "관리 NIC 는 관리 안 함으로 두지 않아 지울 경계가 없다")
+        self.assertEqual(n, 1 + sum(len([v for v in r["log_monitors"].values() if v]) for r in table["servers"]) + 4)
         server_ids = {s["target_id"] for s in table["servers"]}
         first_server = next(i for i, p in enumerate(deletes) if p.split("/")[-1] in server_ids)
         self.assertTrue(all(p.split("/")[-1] in server_ids for p in deletes[first_server:]), "서버 대상은 맨 끝")
         self.assertTrue(deletes[0].endswith(table["trap_receivers"][0]["target_id"]))
+
+    def test_rollback_of_an_old_table_does_not_touch_its_unmanaged_list(self) -> None:
+        # 11-19 이전 표(관리 NIC 를 관리 안 함으로 둔 때)의 "unmanaged" 목록: 그 선언은 제품 승격이 이미 지웠다(v4 MNIC).
+        t3reg.phase_approve(self.session(), self.inv)
+        table = t3reg.phase_record(self.session(), self.inv)
+        for rec in table["servers"]:
+            rec.pop("management_nic")
+            rec["unmanaged"] = [rec["children"]["sms.network_interface"]["ens19"]]
+        self.product.calls.clear()
+        t3reg.phase_rollback(self.session(), table)
+        self.assertFalse([p for m, p, _ in self.product.calls if "/authz/" in p])
+        self.assertEqual([p.split("/")[-1] for m, p, _ in self.product.calls if m == "DELETE"],
+                         [r["target_id"] for r in table["servers"]])
 
     def _community(self, raw: str) -> None:
         community = Path(raw) / "community"
@@ -5821,6 +5849,64 @@ class T3CheckTests(unittest.TestCase):
         it = t3check.item_nms(self._nms_store(poll=60, polls=3, last_ago=10), self.ctx, ids, self.until)
         self.assertIn("CPU 2개", it.numbers)
         self.assertIn("폴링 간격 60.0초", it.numbers)
+
+    def _mgmt_nic_case(self, recent: int = 12):
+        """등록 도구 record 표(제품 대역)와 그 번호로 답하는 119 PG 행(resolve_ids 질의 꼴), 관리 NIC 계열 수."""
+        product = FakeProduct(inventory(T_INV))
+        session = t3reg.Session(product, True, io.StringIO())
+        t3reg.phase_approve(session, inventory(T_INV))
+        table = json.loads(json.dumps(t3reg.phase_record(session, inventory(T_INV))))
+        remote = FakeRemote()
+        remote.pg_rules.append(("type='server'", [[t["id"], t["name"], t["address"], "approved", "managed"]
+                                                  for t in product.approved.values()]))
+        remote.pg_rules.append(("meta->>'host_target_id' in", [
+            [n["id"], sid, n["resource_type"], n.get("resource_key", ""), n.get("management_status", "managed")]
+            for sid, nodes in product.nodes.items() for n in nodes if n["id"] != sid]))
+        remote.vm_rules.append((lambda q: ([{"metric": {}, "value": [0, str(recent)]}] if recent else [])
+                                if 'device="ens19"' in q else None, None))
+        return remote, table, product
+
+    def test_mgmt_nic_is_accepted_when_the_table_marks_it_and_its_series_come_in(self) -> None:
+        remote, table, _ = self._mgmt_nic_case()
+        ids = t3check.resolve_ids(remote, self.ctx)
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, table)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertEqual(len([n for n in it.numbers if "표 accepted, managed, 최근 10분 계열 12" in n]), 4)
+
+    def test_mgmt_nic_fails_without_the_mark_or_with_unmanaged_or_without_series(self) -> None:
+        remote, table, product = self._mgmt_nic_case()
+        ids = t3check.resolve_ids(remote, self.ctx)
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, None)
+        self.assertEqual((it.verdict, it.detail), ("미충족", ["대상 번호 표(--table) 가 없어 받아들임 표시를 볼 수 없음"]))
+        old = json.loads(json.dumps(table))
+        for rec in old["servers"]:
+            rec.pop("management_nic")
+            rec["unmanaged"] = [rec["children"]["sms.network_interface"]["ens19"]]
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, old)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("web01 대상 번호 표에 관리 NIC ens19 받아들임 표시 없음", " ".join(it.detail))
+        wrong = json.loads(json.dumps(table))
+        wrong["servers"][0]["management_nic"]["ifname"] = "ens18"
+        wrong["servers"][1]["management_nic"]["target_id"] = "00000000-0000-4000-8000-000000000999"
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, wrong)
+        detail = " ".join(it.detail)
+        self.assertIn("web01 대상 번호 표에 관리 NIC ens19 받아들임 표시 없음", detail)
+        self.assertIn("was01 표의 관리 NIC 번호 00000000-0000-4000-8000-000000000999 가 119 하위 대상", detail)
+        for child in ids["children"].values():
+            for c in child:
+                if c["resource_key"] == "ens19":
+                    c["management_status"] = "unmanaged"
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, table)
+        self.assertIn("관리 NIC 가 unmanaged(받아들임이면 managed, 관리 안 함 PUT 을 하지 않는다)", " ".join(it.detail))
+        remote, table, _ = self._mgmt_nic_case(recent=0)
+        ids = t3check.resolve_ids(remote, self.ctx)
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, table)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("db01 관리 NIC 최근 10분 계열 0(받아들였으면 수집돼야 함)", " ".join(it.detail))
+        for child in ids["children"].values():
+            child[:] = [c for c in child if c["resource_key"] != "ens19"]
+        it = t3check.item_mgmt_nic(remote, self.ctx, ids, self.until, table)
+        self.assertIn("web01 관리 NIC ens19 하위 대상 없음", " ".join(it.detail))
 
     def _db_remote(self, lines: int) -> tuple[FakeRemote, dict]:
         remote = FakeRemote()

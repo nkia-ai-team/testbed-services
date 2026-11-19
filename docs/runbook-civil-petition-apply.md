@@ -389,13 +389,13 @@ R="python3 deploy/tools/t3_register.py --inventory $I"
 | 순서 | 할 일 | 명령, 확인 |
 |---|---|---|
 | 0 | **T2 평시 24시간 판정을 먼저 끝낸다.** db-after, facts-after 를 뜨고 그 시각 E 로 `stability_check.py --end E`(§8). E 는 가장 이르면 11-19 14:42:48 KST | 판정 구간은 [E-24시간, E] 이고 대표 질의는 처음 구간(판정 구간 앞 2시간, [E-26시간, E-24시간])과 끝 구간(마지막 2시간)을 견준다. E 가 부하 시작 + 26시간 이상이어야 하는 까닭이 처음 구간이다. 아래 어느 것도 E 전에 하지 않는다(링크 내림의 부하 오류, 에이전트 설치가 판정 창에 들어가지 않게) |
-| 1 | 사전 확인과 녹화 정지(지휘 세션). 119 디스크 80% 미만(`df -P /`, 11-18 13:1x 조회 55%), 터널 핸드셰이크, 러너 idle | 등록은 녹화 시작 차단(2시간 30분)을 한 번 받는다(설계 결정 7). 차단 시계는 관제 서버에 마지막으로 쓴 때(순서 8 의 끝, nic 이나 log-monitors 를 다시 돌렸으면 그 끝)부터 센다 |
+| 1 | 사전 확인과 녹화 정지(지휘 세션). 119 디스크 80% 미만(`df -P /`, 11-18 13:1x 조회 55%), 터널 핸드셰이크, 러너 idle | 등록은 녹화 시작 차단(2시간 30분)을 한 번 받는다(설계 결정 7). 차단 시계는 관제 서버에 마지막으로 쓴 때(순서 8 의 끝, log-monitors 를 다시 돌렸으면 그 끝)부터 센다 |
 | 2 | Q8 등록 전 사실(캡처 구간을 빼고 재는 것은 도구가 한다) | `python3 deploy/tools/t3_check.py --inventory $I --budget --start <지금-24시간> --end <지금> --out t3-budget-before.json` |
 | 3 | trap 수신기, 라우터 NMS 장비 | `$R --phase trap`, `$R --phase nms`(각각 `--yes` 없이 본 뒤 `--yes`). 수신기가 있어야 관제 서버가 UDP 162 를 연다. 2분 뒤 `t3_check.py --since <지금>` 의 NMS 행 |
 | 4 | **trap 확인(T3 의 첫 주입 단계).** 라우터 하위 인터페이스 하나(인벤토리 첫 하위, 웹 쪽 `ens19`)를 90초 내렸다 올린다(snmpd 링크 감시 주기 60초보다 길게). 웹망만 끊겨 부하기 요청이 그동안 실패하고 WAS, DB 연결은 그대로다 | 시각 T 를 적고 `$RT "sudo -n sh -c 'ip link set dev ens19 down; sleep 90; ip link set dev ens19 up' </dev/null >/dev/null 2>&1 &"`(관리망 세션이 끊겨도 올림이 돈다). 3분 뒤 `$RT ip -br link show ens19` 가 UP, `t3_check.py --since T --trap-since T` 의 trap 행(linkDown, linkUp 각 1 이상, 출발 192.168.123.254). 되돌리기: `sudo ip link set dev ens19 up` |
 | 5 | SMS 에이전트 네 대 | §11 |
 | 6 | 등록 대기 서버 승인. 승인 시각 R 을 적는다(이후 판정 창의 시작) | `$R --phase approve`. 등록 대기 대상의 이름이 업무 주소이고 주소도 업무 주소일 때만 승인한다(관리 주소면 ICMP 가 닿지 않아 멈춘다) |
-| 7 | 관리 NIC 를 수집에서 뺌(Q7d) | 승인 뒤 첫 지표(약 1~2분)로 NIC 하위 대상이 생긴 다음 `$R --phase nic`. 하위 대상이 아직 없으면 멈추고 다시 돌리라고 알린다 |
+| 7 | 관리 NIC 받아들임 확인(Q7d, 쓰기 없음) | 승인 뒤 첫 지표(약 1~2분)로 NIC 하위 대상이 생긴 다음 `$R --phase nic`. 하위 대상이 아직 없으면 멈추고 다시 돌리라고 알린다. «관리 안 함» 으로 두지 않는다(§12-3) |
 | 8 | 로그 감시 | `$R --phase log-monitors`(역할별 `deploy/monitoring/log-monitors.json`, 같은 파일 감시가 있으면 건너뜀) |
 | 9 | 대상 번호 표 | `$R --phase record --out deploy/inventory/t.targets.json`(쓰기 없음, 꼴 §12-4). 저장소 커밋은 지휘 세션 |
 | 10 | 바로 확인 | `t3_check.py --inventory $I --since R --table deploy/inventory/t.targets.json`(§13). 밴드와 부담은 24시간 뒤 |
@@ -409,7 +409,7 @@ R="python3 deploy/tools/t3_register.py --inventory $I"
 | 단계 | 호출 | 되돌리기 |
 |---|---|---|
 | approve | `GET /api/v1/targets?type=server&registration_status=pending&search=<업무 주소>` → `POST /api/v1/targets/approve {"ids":[...]}`(그룹과 수집 모드는 보내지 않음 = 화면 기본) | 승인 취소 API 없음. 대상 삭제(§12-5) |
-| nic | `GET /api/v1/targets/<서버>/subtree` 의 `resource_type=sms.network_interface`, `resource_key=<관리 NIC>` → `PUT /api/v1/authz/nodes/target/<하위>/state?scope=unified {"state":"unmanaged"}`. 에이전트 정책의 관리 안 함 목록으로 내려가 에이전트가 그 NIC 를 수집하지 않고 서버도 적재 전에 버린다 | `DELETE /api/v1/authz/nodes/target/<하위>/state?scope=unified`(상위 상속으로 돌아감) |
+| nic | `GET /api/v1/targets/<서버>/subtree` 의 `resource_type=sms.network_interface`, `resource_key=<관리 NIC>` 가 있는지만 본다. 쓰기 없음(관리 NIC 수집 받아들임, §12-3) | 없음 |
 | log-monitors | `GET /sm/api/custom-monitors?kind=log&parent=<서버>&owner=sms` → 없는 파일만 `POST /sm/api/custom-monitors`(kind log, enabled, 감시 꼴은 기존 세 도메인 감시와 같게 `unified_log_enabled` true 와 `log_type_tag`(syslog, auth.log 는 system, DB 서버 로그는 database, 앱 파일은 없음, 11-18 지휘 세션 결정. 두 칸은 collector-sms 에서 저장만 되고 적재 경로에 쓰이지 않는다), params 는 화면 기본 `matchingType Exact`, `scanType End`, `encodingType NOT_SPECIFIED`, `caseSensitive` true, 레벨별 패턴과 빈 제외 패턴). `/sm/` 은 웹 게이트웨이가 SMS 수집기로 넘기고 같은 세션 쿠키로 인가한다 | `DELETE /sm/api/custom-monitors/<id>` |
 | nms | `POST /api/v1/targets {"type":"network","name":"<라우터 이름>","address":"<상향 주소>","discovery":"manual","meta":{"collector":"polestar-nms","group":"Polestar NMS","endpoint_port":"161","name_sync":false}}` → `POST /api/v1/targets/<id>/collectors {"kind":"polestar_nms","enabled":true,"config":{"port":161,"version":"2c"},"config_encrypted":{"community":<t4-snmp-community 파일 값>},"collection_policy_id":"00000000-0000-4000-8009-000000000001"}`. 수집기를 못 만들면 방금 만든 대상을 지운다(화면과 같음). 인터페이스 하위 대상(`network_resource`)은 폴링이 스스로 만든다. 장비 폴링이 매번 장비 주소를 핑한다(`nms.network.icmp_status`, `rtt`) | `DELETE /api/v1/targets/<id>` |
 | trap | `POST /api/v1/targets {"type":"network","name":"trap-udp-162","discovery":"manual","meta":{"collector":"polestar-trap","group":"Polestar TRAP","endpoint_port":"162","endpoint_protocol":"udp"}}` → `POST .../collectors {"kind":"polestar_trap","enabled":true,"config":{"port":162,"protocol":"udp","v3_username":"","v3_auth_protocol":"","v3_priv_protocol":"","allow_unregistered":false}}`(커뮤니티 거르기 없음 = 화면 기본). 라이선스 `trap-receiver` 수량 10000(11-18 조회). trap 출발 주소를 등록된 network, server 대상 주소와 맞춘다. 수신기는 collector-trap(hostNetwork)이 관제 서버 모든 주소의 UDP 162 를 열게 하므로, 관제 서버 실주소로 trap 을 보내도록 설정된 기존 장비가 있으면 그 줄도 받기 시작한다(11-18 90초 관찰 0 패킷). 확인 도구가 라우터 아닌 출발 trap 수를 기록한다 | `DELETE /api/v1/targets/<id>` |
@@ -426,7 +426,7 @@ R="python3 deploy/tools/t3_register.py --inventory $I"
 | 물음 | 답 | 근거 |
 |---|---|---|
 | SMS 서버는 손 등록이 필요한가 | 아니다. 에이전트 첫 보고에 `targets`(type server, 이름 = `LUCIDA_HOST`, `registration_status=pending`)가 생기고, 승인 전에는 지표를 저장하지 않는다. 자동 승인 설정은 없다 | `collector-sms/store/pg.go` `UpsertTargetForHost`, `registration_gate.go`. 119 `SM_BEARER_REQUIRED=false` |
-| 관리 NIC 를 SMS 수집에서 뺄 수 있나(Q7d) | 있다. 에이전트 환경변수로는 못 빼고(NIC 제외 변수 없음, IPv4 가 있고 UP 인 NIC 를 모두 수집) 그 NIC 하위 대상을 관리 안 함으로 두면 빠진다 | `goagent/metrics.go` `nicBlocked`, `agent_ingest.go` |
+| 관리 NIC 를 SMS 수집에서 뺄 수 있나(Q7d) | **오래 뺄 길이 없다. 그래서 받아들인다**(설계 §10 T3 «빼거나 받아들인다고 기록», 11-19 지휘 세션 결정). 에이전트 환경변수로는 못 뺀다(NIC 제외 변수 없음). 그 NIC 하위 대상을 관리 안 함으로 두면 11-19 실기(`agent-out/MNIC.md`)에서 에이전트가 1분 안에 그 NIC 를 보고에서 빼고, collector-sms 승격이 «사라진 NIC» 로 읽어 행을 지운 뒤(가용성 이력, 관리 상태 선언 함께) 약 5분 뒤 같은 번호의 managed 행으로 다시 만들었다(제품 결함 후보 Q34). 그래서 등록 도구는 «관리 안 함» PUT 을 하지 않고 대상 번호 표에 받아들임(`management_nic.decision = accepted`)만 적는다. 관리 NIC 계열(약 12개)은 평시부터 쌓이고 그 NIC 대상은 표에 들되 정답 대상이 아니다(설계 §7). S(ST3)도 같게 한다 | collector-sms `server_resources.go` `deleteStaleResources`, `agent_polling.go` 관리 안 함 목록, 에이전트 `metrics.c` `policy_nic_blocked`, `goagent/metrics.go` `nicBlocked`(d0186576d2) |
 | 에이전트가 journal 을 읽나 | 읽지 않는다. 서버가 내려 준 파일만 tail 한다. 기존 작업 노드 에이전트의 열린 파일에도 journal 이 없다(tb-w1 조회: `agent.log`, cgroup `cpu.max`, 잠금 파일뿐) | `goagent` 에 journal, sd_journal 없음 |
 | 프로세스 계열의 단위 | (호스트, 프로세스 이름, pid). 15초마다 CPU 상위 50개를 보낸다. 프로세스 하위 대상은 «프로세스» 하나이고 프로세스별 대상은 사용자 정의 감시로만 생긴다. `process_snapshot`(ClickHouse)은 60초마다 전체 목록(이름, 사용자, pid) | `goagent/main.go` `collectProcesses(cfg, 50)`, VM 라벨 `name`, `pid`, `host_target_id`. tb-w1 하루 고유 2,651 계열 |
 | 가용성 판정 | 보고가 끊긴 지 180초(`SM_AVAIL_GRACE_SEC`) 뒤 스위퍼(30초 주기)가 핑해 실패면 DOWN, 성공이면 UNKNOWN. 약 3~3.5분 | `collector-sms/store/availability.go`, 119 환경변수 |
@@ -441,7 +441,7 @@ R="python3 deploy/tools/t3_register.py --inventory $I"
 {"schema": "petition-portal-targets/1", "testbed": "t", "domain": "<도메인>",
  "servers": [{"name": "<게스트 이름>", "role": "web|was|db", "target_id": "<uuid>", "agent_host": "<업무 주소>",
               "children": {"<resource_type, 예 sms.network_interface>": {"<resource_key, 예 NIC 이름>": "<uuid>"}},
-              "unmanaged": ["<관리 안 함으로 둔 하위 uuid>"],
+              "management_nic": {"ifname": "<관리 NIC 이름>", "target_id": "<그 하위 uuid>", "decision": "accepted"},
               "log_monitors": {"<감시 파일>": "<감시 uuid>"}}],
  "network_devices": [{"name": "<라우터 이름>", "target_id": "<uuid>", "address": "<상향 주소>",
                       "interfaces": {"<인터페이스 키>": "<uuid>"}}],
@@ -453,7 +453,7 @@ DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 
 ### 12-5. 되돌리기
 
 1. 서버 네 대 에이전트를 먼저 멈추고 지운다(§11 되돌리기).
-2. `$R --phase rollback --record deploy/inventory/t.targets.json`(찍기만) 뒤 `--yes`: trap 수신기, NMS 장비, 로그 감시, 관리 NIC 경계, 서버 대상 순으로 지운다. 2차 인증을 켠 설치면 삭제가 `X-Function-Auth` 를 요구해 4xx 로 멈춘다. 그때는 화면에서 지운다.
+2. `$R --phase rollback --record deploy/inventory/t.targets.json`(찍기만) 뒤 `--yes`: trap 수신기, NMS 장비, 로그 감시, 서버 대상 순으로 지운다(관리 NIC 는 관리 안 함으로 두지 않아 지울 경계가 없다. 11-19 이전 표의 `unmanaged` 목록은 읽지 않는다). 2차 인증을 켠 설치면 삭제가 `X-Function-Auth` 를 요구해 4xx 로 멈춘다. 그때는 화면에서 지운다.
 3. 등록 해제가 과거 데이터를 지우는지는 확인하지 않았다(설계 §13-7). 되돌리기 전에 지휘 세션이 정한다.
 
 ## 13. T3 완료 조건 확인 (`deploy/tools/t3_check.py`, 읽기 전용)
@@ -463,7 +463,7 @@ DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 
 | 행 | 읽는 것 | 통과 |
 |---|---|---|
 | SMS | VM `sms.*` 이름(호스트 대상 `host_target_id` 또는 `target_id`) | CPU, 메모리, 디스크, 파일 시스템, NIC, 프로세스 이름군이 모두 있음. 활성 계열 수, `sms.cpu.utilization` 표본 간격은 기록 |
-| 관리 NIC | PG 하위 대상 관리 상태, VM 최근 10분 `sms.network_interface.*{device=<관리 NIC>}` | 관리 안 함이고 최근 계열 0 |
+| 관리 NIC | 대상 번호 표(`--table`)의 `management_nic`, PG 하위 대상 관리 상태, VM 최근 10분 `sms.network_interface.*{device=<관리 NIC>}` | 받아들임: 서버마다 표에 `decision` accepted(관리 NIC 이름 맞음), 119 하위 대상이 있고 표 번호와 같음, managed, 최근 계열 1 이상 |
 | journal | 코드 사실 + (`--vm-reads`) 에이전트 `/proc/<pid>/fd` | journal 파일 0 |
 | 프로세스 계열 단위 | VM `sms.process.cpu_utilization` 라벨 | 계열이 있으면 라벨을 기록하고 충족(설계 행은 «기록»). 라벨이 `name`, `pid` 와 다르면 그 사실을 적는다 |
 | ICMP | VM `sms.server.icmp_status`, `sms.server.rtt`, PG 대상 주소, `target_availability_latest`(server), `policy_device_overrides`(collection), 라우터 `nms.network.icmp_status`, `rtt` | 서버 넷 상태 1, RTT 계열, 주소 = 업무 주소, 가용성 UP, 덮어쓰기 0, 라우터 상태 1 과 RTT |
@@ -609,3 +609,4 @@ S 문서 §0-1 의 "할당 24 → 50 vCPU(104%)" 는 dm-train(8 vCPU, 32GB)이 �
 - 2026-11-18 KST, v4 ST2P 2회차(지휘 세션 결정): §14-2 S 는 T 판정 끝 E 뒤, T3 와 같은 66 변경 창에 이어서. §14-3-1 짝 T 서버의 apt 설치 시각 Ubuntu snapshot 색인(`apply.sh --apt-snapshot`, 설치 단계가 스냅숏 색인을 못 받으면 멈춤), 서버별 ID 표.
 - 2026-11-18 KST, v4 ST2P 3회차(리뷰 rv-st2p, 지휘 세션 결정): 색인 시각을 인벤토리 서버별 `apt_snapshot` 으로(§6 T 다시 깔기, §14-3-1, `--apt-snapshot` 인자 없앰), 다른 시각이나 시각 없는 다시 돌리기 멈춤, §14-2 의 2시간 30분 시계를 창 안 S 마지막 변경(가드 시험, S 부하 시작 포함)부터, 차례 5 의 06:00 UTC 전과 apt 기록 확인, 훅 경고 대응, §14-4 언제 칸, `pair_packages.py` 입력에 설치 상태 칸.
 - 2026-11-19 KST, v4 T3R(ag-t3r, APT3 §2-5 redirect 꼬리, 지휘 세션 결정): §6-2 라우터 ICMP redirect 끄기(`router` 단계가 `61-router-redirects.conf` 를 놓고 바로 씀, all, default, NIC 마다), `verify` 의 `send-redirects-off`, 반영 명령과 사후 확인. 60-host.conf 의 redirect 두 줄은 이 파일로 옮김.
+- 2026-11-19 KST, v4 T3C(ag-t3o, APT3 §2-10, MNIC, 지휘 세션 결정): §13 NMS 행 CPU 는 host_target_id 로, 창은 잰 폴링 간격 2배(최소 15분, 실측 60초). 관리 NIC 는 «받아들임»: §12-0 차례 7 과 §12-1 nic 단계는 쓰기 없음, §12-3 실기 결과(관리 안 함이 제품 승격으로 지워지고 managed 로 다시 생김, 제품 결함 후보 Q34), §12-4 `management_nic`, §12-5 되돌리기에서 관리 NIC 경계 뺌, §13 관리 NIC 판정. S(ST3)도 같게.
