@@ -1364,6 +1364,47 @@ class HypervisorIpv6CheckTests(unittest.TestCase):
         self.assertNotIn("PASS", out)
 
 
+    def _run(self, *args: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = hvcheck.main(list(args))
+            except SystemExit as stop:
+                code = int(stop.code)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_ipv6_mode_checks_only_the_bridge_state(self) -> None:
+        # 11-19 S 차례 7(v4 APS2): 차례 3 add-net 이 TBWG 줄을 더한 뒤라 차례 2 기준의 up 은 늘 FAIL 이다.
+        # 다시 볼 때는 브리지 IPv6 상태만 본다.
+        s_good = "\n".join(f"{b} 1 0 be:a7:16:7f:dc:a5" for b in ("vmbr12", "vmbr13", "vmbr14")) + "\n"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "good").write_text(s_good)
+            (root / "bad").write_text(s_good.replace("vmbr14 1 0", "vmbr14 0 2"))
+            (root / "x").write_text("*filter\nCOMMIT\n")
+            code, out, _ = self._run("--inventory", str(S_INV), "--mode", "ipv6", "--ipv6-state", str(root / "good"))
+            self.assertEqual(code, 0)
+            self.assertEqual(out.splitlines()[-1], "PASS ipv6")
+            self.assertEqual(len([line for line in out.splitlines() if line.startswith("IPV6 ")]), 3)
+            code, out, _ = self._run("--inventory", str(S_INV), "--mode", "ipv6", "--ipv6-state", str(root / "bad"))
+            self.assertEqual(code, 1)
+            self.assertIn("FAIL vmbr14 IPv6 가 켜져 있다(disable_ipv6=0)", out)
+            self.assertIn("FAIL vmbr14 에 IPv6 주소 2 개", out)
+            self.assertNotIn("PASS", out)
+            code, out, err = self._run("--inventory", str(S_INV), "--mode", "ipv6")
+            self.assertEqual(code, 2)
+            self.assertIn("--ipv6-state", err)
+            code, out, err = self._run("--inventory", str(S_INV), "--mode", "ipv6", "--ipv6-state", str(root / "good"),
+                                       "--before", str(root / "x"), "--after", str(root / "x"))
+            self.assertEqual(code, 2)
+            self.assertIn("iptables 를 견주지 않는다", err)
+            code, out, err = self._run("--inventory", str(S_INV), "--mode", "up", "--ipv6-state", str(root / "good"))
+            self.assertEqual(code, 2)
+            self.assertIn("--before, --after", err)
+            code, out, err = self._run("--inventory", str(S_INV), "--mode", "down", "--before", str(root / "x"))
+            self.assertEqual(code, 2)
+            self.assertIn("--before, --after", err)
+
 class HypervisorApplyCommandTests(unittest.TestCase):
     def test_bring_up_and_down_only_this_testbeds_bridges(self) -> None:
         inv = inventory(T_INV)
@@ -1383,6 +1424,14 @@ class HypervisorApplyCommandTests(unittest.TestCase):
             if "--mode up" in line and "hv_iptables_check.py" in line:
                 self.assertIn("--ipv6-state", line)
         self.assertIn("--hypervisor-commands ipv6-state", runbook)
+        # 적용 뒤 시간이 지나 IPv6 를 다시 볼 때는 브리지 상태만(--mode ipv6). 적용 직전 기준의 up 을 다시 돌리면 그 사이의
+        # 다른 적용(add-net TBWG 줄, 다른 테스트베드 망) 때문에 늘 FAIL 이다(11-19 S 차례 7, v4 S14R).
+        row = next(line for line in runbook.splitlines() if line.startswith("| 관리망 격리 (3) |"))
+        self.assertIn("hv_iptables_check.py --inventory .../t.json --mode ipv6 --ipv6-state", row)
+        self.assertIn("`PASS ipv6`", row)
+        self.assertNotIn("PASS up` 이고", row)
+        for line in runbook.splitlines():
+            self.assertNotIn("확인을 지금 상태로 다시", line)
         # tb-ops 에서 200.66:8091 은 T2 전에도 안 되는 길이다(DNAT 는 -i vmbr0.200 에만, 66 은 8091 을 듣지 않음).
         for line in runbook.splitlines():
             if "tb-ops" in line and "192.168.200.66:8091" in line:
@@ -1418,6 +1467,17 @@ class HypervisorApplyCommandTests(unittest.TestCase):
             self.assertNotIn("t.json --mode", line)
         self.assertIn("--mode up", checks[0])
         self.assertIn("--ipv6-state", checks[0])
+        # 차례 7 관리망 격리: websvr01 은 133/24 를 ens19 에 직접 가져 66 을 지나지 않고 wassvr01 mgmtguard 에서 버려진다
+        # (11-19 실기, v4 APS2). 66 S5-FWD 의 vmbr14 거절은 늘지 않는 것이 기대이고, IPv6 다시 보기는 --mode ipv6.
+        isolation = next(row for row in checks_table if row[0] == "관리망 격리")
+        self.assertIn("ip route get 192.168.133.21 from 192.168.131.11", isolation[2])
+        self.assertIn("sudo nft list chain inet mgmtguard input", isolation[2])
+        self.assertIn("hv_iptables_check.py --inventory .../s.json --mode ipv6 --ipv6-state", isolation[2])
+        self.assertIn('wassvr01 `mgmtguard input` 의 `iifname "ens19" drop`', isolation[3])
+        self.assertIn("`-o vmbr14 -j DROP` 은 늘지 않는다", isolation[3])
+        self.assertNotIn("패킷 수가 는다", isolation[3])
+        self.assertIn("`PASS ipv6`", isolation[3])
+        self.assertIn("차례 3 add-net 이 그 뒤 66 mangle `TBWG-FWD` 에 줄 둘을 더해 늘 FAIL", isolation[3])
         self.assertIn("add-net 192.168.131.0/24", section)
         self.assertIn("ifup vmbr12 vmbr13 vmbr14", section)
         self.assertIn("ifdown vmbr14 vmbr13 vmbr12", section)
