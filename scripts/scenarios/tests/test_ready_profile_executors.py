@@ -6358,7 +6358,16 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         if not (shutil.which("rsyslogd") and shutil.which("logger")):
             self.skipTest("rsyslogd 와 logger 가 필요")
         rule = (ROOT.parents[1] / "civil-petition" / "deploy" / "templates" / "common" / "rsyslog-00-opsjobs.conf").read_text()
-        rule = rule.replace("{{executor_name}}", "opsjob").replace("{{executor_uid}}", "1450").replace("/var/log/opsjobs.log", "{diverted}")
+        # The rule as render.py fills it: the patterns come from the one definition (tools/pipeline_patterns.py).
+        spec = importlib.util.spec_from_file_location(
+            "pipeline_patterns_t", ROOT.parents[1] / "civil-petition" / "deploy" / "tools" / "pipeline_patterns.py")
+        pat = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pat)
+        for key, value in (("executor_name_re", pat.rainer(pat.name_ere("opsjob"))), ("executor_uid_re", pat.rainer(pat.uid_ere(1450))),
+                           ("run_r_re", pat.rainer(pat.RUN_R)), ("executor_uid", "1450"), ("executor_name", "opsjob")):
+            rule = rule.replace("{{" + key + "}}", value)
+        self.assertNotIn("{{", rule)
+        rule = rule.replace("/var/log/opsjobs.log", "{diverted}")
         executor = [("authpriv.info", "sshd", "Accepted publickey for opsjob from 192.168.127.1 port 40000 ssh2"),
                     ("authpriv.notice", "sudo", "opsjob : PWD=/home/opsjob ; USER=root ; COMMAND=/usr/bin/bash -s"),
                     ("daemon.info", "systemd", "Started run-r0123456789abcdef0123456789abcdef.timer."),
