@@ -2233,8 +2233,11 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
                     if re.search(r"(?m)^kind:\s*Deployment\b", document) and name and namespace:
                         cls.manifest_text[(namespace.group(1), name.group(1))] = document
 
+    def k8s_targets(self) -> list[dict]:
+        return [t for t in self.policy["targets"] if t.get("transport", "k8s") == "k8s"]
+
     def test_targets_are_app_deployments_with_their_manifest_identity(self) -> None:
-        for target in self.policy["targets"]:
+        for target in self.k8s_targets():
             key = (target["namespace"], target["deployment"])
             with self.subTest(key=key):
                 containers = self.workloads.get(("Deployment", *key))
@@ -2259,11 +2262,11 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
             if kind == "Deployment"
             and all("/" not in image and not image.startswith(("nginx", "redis")) for image in containers.values())
         }
-        listed = {(t["namespace"], t["deployment"]) for t in self.policy["targets"]}
+        listed = {(t["namespace"], t["deployment"]) for t in self.k8s_targets()}
         self.assertEqual(listed, apps)
 
     def test_maxsurge_zero_deployments_get_no_rollout(self) -> None:
-        for target in self.policy["targets"]:
+        for target in self.k8s_targets():
             document = self.manifest_text[(target["namespace"], target["deployment"])]
             surge_zero = re.search(r"maxSurge:\s*0\b", document) is not None
             self.assertEqual(target["rollout_ok"], not surge_zero, target["deployment"])
@@ -2279,7 +2282,8 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
             self.assertGreater(window["count_weights"]["0"], 0)
             self.assertGreater(max(int(count) for count in window["count_weights"]), 1)
         self.assertEqual(
-            set(self.policy["kind_weights"]), {"restart", "config_rollout", "configmap", "annotation"}
+            set(self.policy["kind_weights"]),
+            {"restart", "config_rollout", "configmap", "annotation", "war_redeploy", "config_reapply"},
         )
         self.assertEqual(set(self.policy["relation_weights"]), {"on_path", "same_domain", "off_domain"})
 
@@ -2289,19 +2293,61 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
         The other kinds stay in the policy as weights, switched off."""
         self.assertEqual(self.policy["relation_weights"]["on_path"], 0)
         enabled = {kind for kind, weight in self.policy["kind_weights"].items() if weight > 0}
-        self.assertEqual(enabled, {"restart"})
+        # Kubernetes: restart only (11-09). VM (civil-petition): both operator kinds, command session 11-20 (T4U).
+        self.assertEqual(enabled, {"restart", "war_redeploy", "config_reapply"})
         self.assertIn(self.policy["path_scope"], {"mentioned", "scored"})
         # Exclusions come from the answer key at plan time, not a hand list.
         self.assertEqual(self.policy["scenario_exclusions"], {})
 
     def test_domain_namespaces_and_configmap_exist(self) -> None:
         namespaces = {namespace for (_, namespace, _) in self.workloads}
-        self.assertEqual(set(self.policy["domain_namespaces"].values()), namespaces)
+        k8s = {d: n for d, n in self.policy["domain_namespaces"].items() if d != "civil-petition"}
+        self.assertEqual(set(k8s.values()), namespaces)
+        # The VM domain's name differs from the domain (an answer key names the domain in its text).
+        self.assertEqual(self.policy["domain_namespaces"]["civil-petition"], "civil-petition-vm")
+        self.assertNotIn("civil-petition-vm", namespaces)
         repo = ROOT.parents[1]
         for domain in ("commerce", "core-banking", "food-delivery"):
             text = (repo / domain / "k8s" / "02-configmaps.yaml").read_text(encoding="utf-8")
             self.assertRegex(text, rf"(?m)^  name:\s*{self.policy['configmap']['name']}\s*$")
             self.assertNotIn(self.policy["configmap"]["key"], text)
+
+
+    def test_vm_targets_are_the_operator_decoys_of_the_inventory(self) -> None:
+        """T4U: every civil-petition VM target names a VM that operator_session.py --decoy takes for each of its
+        kinds, its 119 server target id from the T targets file, and nothing of Kubernetes."""
+        import sys as _sys
+        profiles = str(ROOT / "profiles")
+        _sys.path.insert(0, profiles)
+        try:
+            spec = importlib.util.spec_from_file_location("operator_session_decoys", ROOT / "profiles" / "operator_session.py")
+            sess = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sess)
+        finally:
+            _sys.path.remove(profiles)
+        targets_file = json.loads((ROOT.parents[1] / "civil-petition" / "deploy" / "inventory" / "t.targets.json").read_text())
+        server_ids = {s["name"]: s["target_id"] for s in targets_file["servers"]}
+        vm_targets = [t for t in self.policy["targets"] if t.get("transport") == "vm"]
+        self.assertEqual(sorted(t["node"] for t in vm_targets), ["was01", "was02", "web01"])
+        vm_kinds = set(sess.DECOYS)
+        self.assertEqual(vm_kinds, {"war_redeploy", "config_reapply"})
+        for target in vm_targets:
+            with self.subTest(node=target["node"]):
+                self.assertEqual(target["namespace"], "civil-petition-vm")
+                self.assertEqual(target["deployment"], f"petition-{target['node']}")
+                self.assertEqual(target["service_name"], target["node"])
+                self.assertEqual(target["target_id"], server_ids[target["node"]])
+                self.assertTrue(target["kinds"] and set(target["kinds"]) <= vm_kinds)
+                for kind in target["kinds"]:
+                    self.assertIn(target["node"], sess.decoy_nodes(kind))
+                    self.assertGreater(self.policy["kind_weights"][kind], 0)
+        # Every VM that takes a decoy kind is a target with that kind; Kubernetes targets take no VM kind.
+        for kind in vm_kinds:
+            self.assertEqual(sorted(sess.decoy_nodes(kind)),
+                             sorted(t["node"] for t in vm_targets if kind in t["kinds"]))
+        for target in self.k8s_targets():
+            self.assertNotIn("kinds", target)
+            self.assertNotIn("node", target)
 
 
 class ObservationOutageLedgerTests(unittest.TestCase):

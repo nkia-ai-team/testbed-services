@@ -11,6 +11,7 @@ holds the two equal).
   operator_session.py --node <VM name> --check          one read-only operator session (the runner's schedule calls it)
   operator_session.py --node <VM name> --print          the ssh command and the session text as JSON, nothing run
   operator_session.py --list-nodes                      the VMs that take normal-time sessions, one JSON line
+  operator_session.py --node <VM name> --decoy <kind>   a harmless operator change and its undo (U7 decoy, T4U)
 
 The session takes the per-VM lock <CIVIL_PETITION_SSH_CONTROL_DIR>/operator-<VM>.lock that the executors take too, so
 a normal-time session and an injection never share a VM at once. The session text goes as the remote command
@@ -29,7 +30,9 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vm_executor_common as vm  # noqa: E402
@@ -50,6 +53,24 @@ ROLE_CHECKS: dict[str, list[str]] = {
             "sudo journalctl -u tomcat10 -n 20 --no-pager || true"],
     "db": ["uptime", "df -h / /pgdata", "sudo systemctl status postgresql@16-main --no-pager | head -n 15 || true",
            "sudo tail -n 20 /var/log/postgresql/postgresql-16-main.log || true"],
+}
+
+
+# U7 decoys on this domain (T4U, command session 11-20): an operator change that leaves the VM as it was, typed the way
+# vm.service types a change and its undo (run session, then cleanup session, each a login). The copies go to the
+# operator's home, not the executor's backup path, so a decoy never touches an injection's state.
+WAR = "/var/lib/tomcat10/webapps/petition.war"
+WEB_CONF = "/etc/apache2/sites-available/petition.conf"
+DECOYS: dict[str, dict[str, Any]] = {
+    # Tomcat redeploys the same bytes (the WAR's mtime changes); nothing else moves.
+    "war_redeploy": {"role": "was",
+                     "run": [f"sudo cp -p {WAR} ~/petition.war.prev", f"sudo cp ~/petition.war.prev {WAR}"],
+                     "cleanup": ["sudo rm -f ~/petition.war.prev"]},
+    # The site file copied back over itself and a graceful reload (open connections finish first).
+    "config_reapply": {"role": "web",
+                       "run": [f"sudo cp -p {WEB_CONF} ~/petition.conf.prev", f"sudo cp ~/petition.conf.prev {WEB_CONF}",
+                               "sudo systemctl reload apache2"],
+                       "cleanup": ["sudo rm -f ~/petition.conf.prev"]},
 }
 
 
@@ -90,11 +111,31 @@ def check_session(node: str) -> tuple[list[str], str]:
     return ssh_argv(row["mgmt"]) + [remote_command(text)], text
 
 
+def decoy_nodes(kind: str) -> list[str]:
+    return [name for name, row in vm.VMS.items() if row["role"] == DECOYS[kind]["role"]]
+
+
+def decoy_sessions(node: str, kind: str) -> list[list[str]]:
+    """The run session and the cleanup session of a decoy, each a full operator login command."""
+    if kind not in DECOYS:
+        raise Refused(f"{kind!r} is not a decoy kind ({', '.join(sorted(DECOYS))})")
+    row = vm.VMS.get(node)
+    if row is None or row["role"] != DECOYS[kind]["role"]:
+        raise Refused(f"{node!r} does not take {kind} (only {', '.join(decoy_nodes(kind))})")
+    return [ssh_argv(row["mgmt"]) + [remote_command(session_text(DECOYS[kind][part]))] for part in ("run", "cleanup")]
+
+
 def lock_path(node: str) -> Path:
     return Path(os.environ.get(vm.CONTROL_DIR_ENV, vm.CONTROL_DIR_DEFAULT)) / f"operator-{node}.lock"
 
 
 def run(node: str, argv: list[str], text: str) -> int:
+    return run_sessions(node, [argv])
+
+
+def run_sessions(node: str, sessions: list[list[str]]) -> int:
+    """The sessions one after another under the VM's lock and one deadline. Every session runs even when one before it
+    failed (a decoy's cleanup still removes its copy); the first failing code is the result."""
     path = lock_path(node)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as lock:
@@ -104,13 +145,20 @@ def run(node: str, argv: list[str], text: str) -> int:
         except BlockingIOError:
             print(f"operator session on {node} is busy", file=sys.stderr)
             return BUSY_EXIT
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
-        try:
-            return proc.wait(timeout=SESSION_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            end_group(proc)
-            print(f"operator session on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
-            return 124
+        deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
+        result = 0
+        for argv in sessions:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+            try:
+                rc = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
+            except subprocess.TimeoutExpired:
+                end_group(proc)
+                print(f"operator session on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
+                return 124
+            if rc != 0 and result == 0:
+                print(f"operator session on {node} ended with {rc}", file=sys.stderr)
+                result = rc
+        return result
 
 
 def end_group(proc: subprocess.Popen) -> None:
@@ -134,12 +182,20 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--print", action="store_true")
     mode.add_argument("--list-nodes", action="store_true")
+    mode.add_argument("--decoy")  # an unknown kind is a refusal (3), not a usage error
     args = parser.parse_args(argv)
     if args.list_nodes:
         print(json.dumps(routine_nodes()))
         return 0
     if not args.node:
-        parser.error("--node is needed with --check and --print")
+        parser.error("--node is needed with --check, --print and --decoy")
+    if args.decoy:
+        try:
+            sessions = decoy_sessions(args.node, args.decoy)
+        except Refused as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 3
+        return run_sessions(args.node, sessions)
     try:
         command, text = check_session(args.node)
     except Refused as exc:

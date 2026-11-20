@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+import executor_common
 from executor_common import ExecutorError, bind_level_parameters, with_failure_trace
 
 HERE = Path(__file__).resolve().parent
@@ -262,8 +263,8 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
 
 
 def execute(argv: Sequence[str], stdin: bytes) -> int:
-    completed = subprocess.run(argv, input=stdin, timeout=900, check=False)
-    return completed.returncode
+    # The shared form: the script's whole process group ends on a timeout or a stop (executor_common.execute).
+    return executor_common.execute(argv, stdin)
 
 
 def authorize_live(plan: dict[str, Any], plan_digest: str | None, confirmation: str | None) -> None:

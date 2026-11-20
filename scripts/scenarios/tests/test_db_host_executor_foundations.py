@@ -1842,3 +1842,66 @@ def connect(**kw): return Conn(**kw)
             self.assertEqual(relay.wait(timeout=10), 0)
             self.assertFalse(path.exists(), "the socket is removed once its one connection is taken")
         upstream.close()
+
+
+class ExecuteEndsTheWholeGroupTests(unittest.TestCase):
+    """executor_common.execute (review rv-t4o M2, command session T4U ⑤): the runner-side script runs in its own
+    process group, and that whole group ends on the timeout and when the executor itself is stopped, so no ssh
+    started by the script outlives it (holding a lock or a connection)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.tmp)], check=False))
+        self.pidfile = self.tmp / "child.pid"
+        self.script = ["bash", "-c", f"sleep 300 & echo $! > {self.pidfile}; wait"]
+
+    def _gone(self, pid: int) -> bool:
+        for _ in range(100):
+            if not Path(f"/proc/{pid}").exists():
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _child(self) -> int:
+        for _ in range(100):
+            if self.pidfile.exists() and self.pidfile.read_text().strip():
+                return int(self.pidfile.read_text())
+            time.sleep(0.05)
+        self.fail("the script did not start its child")
+
+    def test_the_timeout_ends_the_script_and_its_children(self) -> None:
+        sys.path.insert(0, str(PROFILES))
+        try:
+            import executor_common
+        finally:
+            sys.path.remove(str(PROFILES))
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            executor_common.execute(self.script, b"", timeout=1)
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertTrue(self._gone(self._child()), "the script's child outlived the timeout")
+
+    def test_stopping_the_executor_ends_the_script_and_its_children(self) -> None:
+        runner = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); import executor_common; "
+             "executor_common.execute(sys.argv[2:], b'')", str(PROFILES), *self.script],
+            start_new_session=True)
+
+        def end_all() -> None:  # a failing run must not leave the executor or its script's child behind
+            for pid in (runner.pid,):
+                try:
+                    os.killpg(pid, 9)
+                except ProcessLookupError:
+                    pass
+            if self.pidfile.exists() and self.pidfile.read_text().strip():
+                try:
+                    os.killpg(int(self.pidfile.read_text()), 9)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            runner.wait(timeout=5)
+        self.addCleanup(end_all)
+        child = self._child()
+        runner.terminate()  # the runner ends an executor TERM first
+        runner.wait(timeout=20)
+        self.assertTrue(self._gone(child), "the script's child outlived the stopped executor")

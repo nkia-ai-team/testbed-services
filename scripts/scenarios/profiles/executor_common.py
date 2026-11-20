@@ -7,9 +7,12 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -350,8 +353,51 @@ def node_guard_function(node_command: str) -> bytes:
     )
 
 
-def execute(argv: Sequence[str], stdin: bytes) -> int:
-    return subprocess.run(argv, input=stdin, timeout=900, check=False).returncode
+EXECUTE_TIMEOUT_SECONDS = 900
+
+
+def end_process_group(proc: subprocess.Popen, grace: float = 5.0) -> None:
+    """End a child started with start_new_session and everything it started: TERM to the group, KILL after grace."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            proc.wait(timeout=grace)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    proc.poll()
+
+
+def execute(argv: Sequence[str], stdin: bytes, timeout: float = EXECUTE_TIMEOUT_SECONDS) -> int:
+    """Run the runner-side script in its own process group.
+
+    The script starts ssh and other children. subprocess.run(timeout=...) killed only the script and left ssh behind,
+    holding the operator lock and a connection (review rv-t4o M2). Here the whole group ends on the timeout (then the
+    timeout is raised as before) and when this executor itself is told to stop (SIGTERM, SIGINT, SIGHUP from the runner,
+    which ends its own group TERM first): the script's group is in another session and would not get the runner's signal.
+    """
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, start_new_session=True)
+
+    def stop(signum, _frame):
+        end_process_group(proc)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    # Signal handlers can only be set from the main thread; a caller in another thread keeps the timeout path.
+    previous = ({sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+                if threading.current_thread() is threading.main_thread() else {})
+    try:
+        try:
+            proc.communicate(stdin, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            end_process_group(proc)
+            raise
+        return proc.returncode
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 Builder = Callable[[dict[str, Any], str], tuple[list[str], bytes]]

@@ -63,7 +63,7 @@ if [[ "${dest%@*}" == sysop ]]; then
   printf 'login %s bind=%s tty=%s opts=%s stdin=%s lock=%s\n' "$dest" "$bind" "$tty" "${opts[*]}" \
     "$([[ $nostdin == yes ]] && echo null || echo open)" "$lock" >>"$d/ssh-log"
   [[ -e "$d/operator-down" ]] && { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; }
-  export FAKE_SUDO_USER=sysop FAKE_TTY=pts/0 FAKE_SUDO_READS_TTY=1 PATH="$d/op-bin:$PATH"
+  export FAKE_SUDO_USER=sysop FAKE_TTY=pts/0 FAKE_SUDO_READS_TTY=1 PATH="$d/op-bin:$PATH" HOME="$OPS_HOME"
   cd "$OPS_HOME"
   [[ $nostdin == yes ]] && exec </dev/null
   exec python3 "$d/vm-bin/pty-remote" "$*"
@@ -135,6 +135,7 @@ case "${args[0]}" in
     if alive; then kill -TERM -- -"$(cat "$d/$name.pid")" 2>/dev/null || kill "$(cat "$d/$name.pid")"; for _ in $(seq 1 50); do alive || break; sleep 0.1; done; fi
     rm -f "$d/$name.pid" ;;
   start|restart) echo active >"$d/$name.service-state"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
+  reload) printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   *) exit 9 ;;
 esac
 '''
