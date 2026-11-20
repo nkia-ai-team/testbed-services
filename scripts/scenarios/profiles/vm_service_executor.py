@@ -5,7 +5,7 @@
 Every change goes the operator's way (design §6-1 "변경 원인 주입 위치", §6-2 운영자 경로, Q35): the operator
 logs in with ssh from the operator terminal address (key, pty, a session that opens and closes) and types
 `sudo systemctl stop|start|restart <unit>`, `sudo cp -p <file> <file>.bak`, `sudo awk ... > <edited copy>`,
-`sudo cp <edited copy> <file>`, `sudo cp <release> <webapps>/petition.war`. The login, those sudo lines (TTY=pts/N),
+`sudo cp <edited copy> <file>`, `sudo cp <release> <webapps>/petition.war` and `sudo systemctl restart tomcat10`. The login, those sudo lines (TTY=pts/N),
 the unit's journal lines and the application's own log lines are the change's trace and reach 119; the executor's
 own lines do not (§6-2). The executor only checks and arms before, and takes back what is left after.
 No unnamed systemd-run is used (its run-r line is diverted by the first rsyslog rule, which must not
@@ -16,7 +16,11 @@ swallow a cause trace of the same form).
 - config: one exact line of one allow-listed file becomes another line; the file is backed up next to
   itself as <file>.bak, the unit restarts. Cleanup copies the backup back and restarts.
 - war: the deployed WAR is backed up to /var/lib/petition-deploy/petition.war.bak and replaced by a
-  release file already on the VM whose sha256 the contract fixes. Tomcat redeploys it by itself.
+  release file already on the VM whose sha256 the contract fixes, named releases/petition-<sha256 first 12>.war
+  (release_path, the one naming rule for injections and the U7 decoy), then tomcat10 restarts: the VMs run Tomcat
+  with autoDeploy off (templates/was/server.xml), so a swapped WAR does nothing until a restart, and an operator of
+  such a server restarts after placing it (command session 11-21, rv-t4u2 N1). Cleanup copies the backup back and
+  restarts.
 
 Self-recovery (U8): stop, config and war arm the guard before the change; its undo (root) starts the
 unit, copies the backup back or the previous WAR back, exactly when the backup is still there.
@@ -41,6 +45,12 @@ WAR = "/var/lib/tomcat10/webapps/petition.war"
 RELEASES = "/var/lib/petition-deploy/releases/"
 LINE = re.compile(r"^[^\n\r'\\\\]{1,200}$")
 PROTECTED_TEXT = ("10.250.0.", "192.168.127.", "18090", "lucida")
+
+
+def release_path(release_sha256: str) -> str:
+    """The one naming rule for a release on the VM, injections and decoys alike (rv-t4u2 N6 (가)): the content's
+    sha256, first 12 characters. The was step leaves the deployed WAR under this name too (steps/was.sh)."""
+    return f"{RELEASES}petition-{release_sha256[:12]}.war"
 
 
 def check_parameters(p: dict[str, Any]) -> list[str]:
@@ -70,10 +80,10 @@ def check_parameters(p: dict[str, Any]) -> list[str]:
         if unit != "tomcat10":
             raise ExecutorError("war swaps the Tomcat application only")
         rel = p["release"]
-        if not isinstance(rel, str) or not rel.startswith(RELEASES) or ".." in rel or not rel.endswith(".war"):
-            raise ExecutorError(f"release must be a .war under {RELEASES}")
         if not isinstance(p["release_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", p["release_sha256"]):
             raise ExecutorError("release_sha256 must be a sha256")
+        if rel != release_path(p["release_sha256"]):
+            raise ExecutorError(f"release must be {release_path('<sha256>')} (petition-<sha256 first 12>.war)")
         if p["file"] != "-" or p["match"] != "-" or p["replace"] != "-":
             raise ExecutorError("war names the release only")
     else:
@@ -125,7 +135,7 @@ undo_body() {
   case "$action" in
     stop) printf 'if [[ -e %q ]]; then %q start %q; rm -f %q; fi\n' "$mark" "$ctl" "$svc" "$mark" ;;
     config) printf 'if [[ -e %q ]]; then cp %q %q; rm -f %q %q; %q restart %q; fi\n' "$file.bak" "$file.bak" "$file" "$file.bak" "$edited" "$ctl" "$svc" ;;
-    war) printf 'if [[ -e %q ]]; then cp %q %q; rm -f %q; fi\n' "$war_bak" "$war_bak" "$war" "$war_bak" ;;
+    war) printf 'if [[ -e %q ]]; then cp %q %q; rm -f %q; %q restart %q; fi\n' "$war_bak" "$war_bak" "$war" "$war_bak" "$ctl" "$svc" ;;
   esac
 }
 # The operator's commands (typed in the operator's ssh session, design 6-2 operator path).
@@ -140,7 +150,8 @@ op_apply_script() {
       op_line sudo systemctl restart "$svc" ;;
     war)
       op_line sudo cp -p "$war" "$war_bak"
-      op_line sudo cp "$release" "$war" ;;
+      op_line sudo cp "$release" "$war"
+      op_line sudo systemctl restart "$svc" ;;
     restart) op_line sudo systemctl restart "$svc" ;;
   esac
 }
@@ -154,7 +165,8 @@ op_remove_script() {
       op_line sudo systemctl restart "$svc" ;;
     war)
       op_line sudo cp "$war_bak" "$war"
-      op_line sudo rm -f "$war_bak" ;;
+      op_line sudo rm -f "$war_bak"
+      op_line sudo systemctl restart "$svc" ;;
   esac
 }
 # Root takes back what the operator's undo left (or everything when the operator session could not run).
@@ -163,7 +175,7 @@ remove() {
     stop) if [[ -e "$mark" ]]; then if ! svc_active; then "$ctl" start "$svc"; fi; rm -f "$mark"; fi ;;
     config) if [[ -e "$file.bak" ]]; then cp "$file.bak" "$file"; rm -f "$file.bak"; "$ctl" restart "$svc"; fi
       rm -f "$edited" ;;
-    war) if [[ -e "$war_bak" ]]; then cp "$war_bak" "$war"; rm -f "$war_bak"; fi ;;
+    war) if [[ -e "$war_bak" ]]; then cp "$war_bak" "$war"; rm -f "$war_bak"; "$ctl" restart "$svc"; fi ;;
   esac
 }
 apply() { echo "an operator change goes through the operator session" >&2; exit 2; }

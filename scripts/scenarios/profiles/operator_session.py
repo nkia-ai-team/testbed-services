@@ -29,6 +29,7 @@ import argparse
 import fcntl
 import json
 import os
+import random
 import shlex
 import signal
 import subprocess
@@ -64,33 +65,41 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # undo with harmless values, run through the vm.service executor itself, so every line the VM and 119 see (the
 # operator's login, the sudo COMMAND lines with the same backup files and the same word order, the restart and its
 # journal lines, the guard the executor arms) is an injection's, character for character. Only the values differ:
-#   war_redeploy    the WAR swapped for a release with the same bytes (releases/petition-<sha256 first 12>.war,
-#                   placed by the was step), so Tomcat redeploys the application it already runs.
+#   war_redeploy    the WAR swapped for a release with the same bytes (vm.service release_path, placed by the was
+#                   step) and tomcat10 restarted, as a war injection does (autoDeploy is off, rv-t4u2 N1): the same
+#                   application starts again.
 #   config_reapply  one line of the site file changed to a value with no effect on the traffic (the proxy timeout
-#                   30 -> 31 seconds, no request takes that long) and apache2 restarted, as a config injection does.
+#                   from 30 to one of PROXY_TIMEOUTS, drawn each time, rv-t4u2 N6; no request takes that long) and
+#                   apache2 restarted, as a config injection does. The undo copies the backup back (30 again).
 # The change and its undo are two calls (--decoy-change, --decoy-revert); the runner draws the gap between them from
 # the decoy policy's vm_hold_sec (the approved injections' durations, contract with the runner). The executor's guard
-# undoes the change by itself when the revert never comes (expire after vm_hold_sec max + DECOY_GUARD_MARGIN_SECONDS,
-# as max_injection_duration). After each call the application must answer its health check (review R4).
+# undoes the change by itself when the revert never comes: vm_hold_sec max goes in as max_injection_duration and the
+# guard adds its own 600 seconds (2100, rv-t4u2 N2). After each call the application must answer its health check
+# (review R4). Exit codes: 0, 1 not healthy after the change (taken back on the spot), 3 refused, 4 the executor
+# failed (it took back what it could as root), 75 busy, 124 the change passed its 90 seconds. The whole call, a
+# take-back included, ends within DECOY_BUDGET_SECONDS (the runner allows 150, rv-t4u2 N4).
 WAR = "/var/lib/tomcat10/webapps/petition.war"
-RELEASES = "/var/lib/petition-deploy/releases/"
 WAR_SHA256 = "/var/lib/petition-deploy/war.sha256"
 WEB_CONF = "/etc/apache2/sites-available/petition.conf"
 PROXY_LINE = '\tProxyPass        "/petition/" "balancer://wascluster/petition/" timeout=30'
-PROXY_LINE_DECOY = '\tProxyPass        "/petition/" "balancer://wascluster/petition/" timeout=31'
+PROXY_TIMEOUTS = (25, 35, 40, 45, 60)
 DECOYS: dict[str, dict[str, Any]] = {
     "war_redeploy": {"role": "was", "unit": "tomcat10", "health": "http://127.0.0.1:8080/petition/api/health"},
     "config_reapply": {"role": "web", "unit": "apache2", "health": "http://127.0.0.1:80/petition/api/health"},
 }
 DECOY_POLICY = Path(__file__).resolve().parents[1] / "registry" / "decoy-deployments.json"
-DECOY_GUARD_MARGIN_SECONDS = 600
 HEALTH_WAIT_SECONDS = 60
+DECOY_BUDGET_SECONDS = 140
+DECOY_EXECUTOR_FAILED = 4
 
 
-def decoy_guard_seconds() -> int:
-    """The guard's deadline for a decoy change: the longest gap the runner may draw, plus a margin."""
-    hold = json.loads(DECOY_POLICY.read_text(encoding="utf-8"))["vm_hold_sec"]
-    return int(hold["max"]) + DECOY_GUARD_MARGIN_SECONDS
+def decoy_hold_max() -> int:
+    """The longest gap the runner may draw (vm_hold_sec max); the executor's guard adds its 600 seconds to it."""
+    return int(json.loads(DECOY_POLICY.read_text(encoding="utf-8"))["vm_hold_sec"]["max"])
+
+
+def proxy_line(timeout: int) -> str:
+    return PROXY_LINE.replace("timeout=30", f"timeout={timeout}")
 
 
 class Refused(ValueError):
@@ -144,12 +153,14 @@ def decoy_row(node: str, kind: str) -> dict[str, Any]:
 
 
 def decoy_release(war_sha256: str) -> str:
-    """The same-bytes release the was step leaves next to the deployed WAR (steps/was.sh)."""
-    return f"{RELEASES}petition-{war_sha256[:12]}.war"
+    """The same-bytes release: vm.service's one naming rule (the was step leaves the deployed WAR under it)."""
+    import vm_service_executor as svc
+    return svc.release_path(war_sha256)
 
 
-def decoy_params(node: str, kind: str, war_sha256: str | None = None) -> dict[str, Any]:
-    """The vm.service contract of a decoy: an injection's parameters with harmless values."""
+def decoy_params(node: str, kind: str, war_sha256: str | None = None, timeout: int | None = None) -> dict[str, Any]:
+    """The vm.service contract of a decoy: an injection's parameters with harmless values. config_reapply draws the
+    proxy timeout unless one is given (the revert ignores it: the undo copies the backup back)."""
     row = decoy_row(node, kind)
     base = {"host": row["mgmt"], "node": node, "unit": DECOYS[kind]["unit"], "file": "-", "match": "-", "replace": "-",
             "release": "-", "release_sha256": "-"}
@@ -157,11 +168,15 @@ def decoy_params(node: str, kind: str, war_sha256: str | None = None) -> dict[st
         if not war_sha256 or len(war_sha256) != 64:
             raise Refused("the deployed WAR's sha256 is unknown")
         return {**base, "action": "war", "release": decoy_release(war_sha256), "release_sha256": war_sha256}
-    return {**base, "action": "config", "file": WEB_CONF, "match": PROXY_LINE, "replace": PROXY_LINE_DECOY}
+    if timeout is None:
+        timeout = random.SystemRandom().choice(PROXY_TIMEOUTS)
+    if timeout not in PROXY_TIMEOUTS:
+        raise Refused(f"proxy timeout {timeout} is not one of {PROXY_TIMEOUTS}")
+    return {**base, "action": "config", "file": WEB_CONF, "match": PROXY_LINE, "replace": proxy_line(timeout)}
 
 
 def decoy_plan(params: dict[str, Any], hold_seconds: int) -> dict[str, Any]:
-    """The plan shape the executor reads; the hold is the guard's deadline (max_injection_duration)."""
+    """The plan shape the executor reads; the hold is max_injection_duration (the guard adds its own margin)."""
     return {"scenario": {"id": "operator-decoy"}, "controller": {"runtime": {"max_injection_duration": f"{hold_seconds}s"}},
             "profile_instances": [{"profile_id": "vm.service", "parameters": params, "location": {
                 "transport": "ssh", "host": params["host"], "node": params["node"], "resolved": True}}]}
@@ -201,11 +216,14 @@ def deployed_war_sha256(host: str) -> str:
 def wait_healthy(host: str, kind: str, deadline: float) -> bool:
     url = DECOYS[kind]["health"]
     command = f'curl -fsS -m 3 -o /dev/null "${{PETITION_HEALTH_URL:-{url}}}"'
-    while time.monotonic() < deadline:
-        rc, _ = executor_read(host, command)
+    while time.monotonic() < deadline - 1:
+        try:
+            rc, _ = executor_read(host, command, timeout=min(20, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return False
         if rc == 0:
             return True
-        time.sleep(2)
+        time.sleep(min(2, max(deadline - time.monotonic(), 0)))
     return False
 
 
@@ -215,8 +233,9 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
     health. The executor's operator session takes the VM's lock itself; this only refuses early (75) when a session
     already holds it."""
     from executor_common import execute
+    started = time.monotonic()
     row = decoy_row(node, kind)
-    hold_seconds = decoy_guard_seconds()
+    hold_seconds = decoy_hold_max()
     path = lock_path(node)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as lock:
@@ -236,15 +255,21 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
             print(f"decoy {kind} {phase} on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
             return 124
         if rc != 0:
+            # Not the application's answer but the executor's own failure (it took back what it could): its own code.
             print(f"decoy {kind} {phase} on {node}: the executor's {action} ended with {rc}", file=sys.stderr)
-            return rc
+            return DECOY_EXECUTOR_FAILED
     if not wait_healthy(row["mgmt"], kind, min(deadline, time.monotonic() + HEALTH_WAIT_SECONDS)):
         if phase == "change":
-            # The change hurt: take it back now (the operator's undo, root for the rest), then report.
+            # The change hurt: take it back now (the operator's undo, root for the rest) within what is left of the
+            # whole call's budget, then report.
+            end = started + DECOY_BUDGET_SECONDS
             for action in ("cleanup", "recovery"):
                 argv, stdin = decoy_invocation(params, hold_seconds, action)
+                left = end - time.monotonic()
+                if left < 5:
+                    break
                 try:
-                    execute(argv, stdin, timeout=SESSION_TIMEOUT_SECONDS)
+                    execute(argv, stdin, timeout=left)
                 except subprocess.TimeoutExpired:
                     break
         print(f"decoy {kind} {phase} on {node}: the application did not answer its health check", file=sys.stderr)

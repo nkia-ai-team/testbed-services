@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """U7 decoy harm check for runbook §15-4 차례 9 (설계 §6-2 운영자 경로, T4U 리뷰 rv-t4u R3): samples the load
 generator's live document during a decoy window and judges it against fixed numbers, so the judgement rests on a
-record that stays (a JSON lines file) and counts the 404s a Tomcat redeploy gives (check_failed_rate).
+record that stays (a JSON lines file) and counts every wrong answer, 404 included, not only 5xx (check_failed_rate),
+while the decoy's restart (tomcat10 or apache2, as the injections do) happens.
 
   decoy_probe.py sample --inventory inventory/t.json --seconds 900 --out decoy-was01.jsonl [--interval 10]
   decoy_probe.py judge decoy-was01.jsonl [--from 2026-11-21T03:00:00+09:00 --to 2026-11-21T03:15:00+09:00]
 
 sample runs on 104: one ssh session to the load generator by the install path (operator account, through 66,
 `-J root@192.168.200.66`, the same as apply.sh), which prints the live document every --interval seconds. The load
-generator does not forward syslog to 119 (설계 §2-3), so the session leaves nothing in the recording. Each line of the
-output is {"sampled_at": <UTC>, "doc": <live document>}.
+generator does not forward syslog to 119 (설계 §2-3); the jump through 66 leaves a root login line on 66, which its
+filter does not divert, so this tool is used only inside §15-4's recording pause (rv-t4u2 N8). Each line of the output
+is {"sampled_at": <UTC>, "doc": <live document>}.
 
 judge reads such a file. The live document is a 30-second window republished every second, so samples every 10 seconds
 cover the whole span. The decoy is harmless when, in every sample inside the span:

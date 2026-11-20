@@ -6433,36 +6433,41 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual(count(), n + 3)
         self.assertIn('maxThreads="200"', conf.read_text())
         self.assertEqual(call(config, "recovery", swap)[0], 0)
-        # war: the deployed WAR swapped for a release whose checksum the contract fixes, and swapped back.
+        # war: the deployed WAR swapped for a release whose checksum the contract fixes (named by vm.service's one
+        # rule), then tomcat10 restarted (autoDeploy is off, rv-t4u2 N1); swapped back and restarted.
+        digest = hashlib.sha256(b"decoy release").hexdigest()
         rel_dir = self.tmp / "releases"
         rel_dir.mkdir()
-        release = rel_dir / "petition-decoy.war"
+        release = rel_dir / f"petition-{digest[:12]}.war"
         release.write_bytes(b"decoy release")
         war = self.tmp / "webapps" / "petition.war"
         war.parent.mkdir()
         war.write_bytes(b"current release")
         war_bak = self.tmp / "petition.war.bak"
-        digest = hashlib.sha256(b"decoy release").hexdigest()
-        war_params = self.params("vm.service", action="war", release="/var/lib/petition-deploy/releases/petition-decoy.war",
-                                 release_sha256=digest)
-        swap = {"/var/lib/petition-deploy/releases/petition-decoy.war": str(release)}
+        self.assertEqual(svc.release_path(digest), f"/var/lib/petition-deploy/releases/petition-{digest[:12]}.war")
+        war_params = self.params("vm.service", action="war", release=svc.release_path(digest), release_sha256=digest)
+        swap = {svc.release_path(digest): str(release)}
         wenv = {"PETITION_WAR": str(war), "PETITION_WAR_BAK": str(war_bak)}
         n = count()
         rc, err = call(war_params, "run", swap, wenv)
         self.assertEqual(rc, 0, err)
         self.assertEqual(new_lines(n), [f"cp -p {{root}}/webapps/petition.war {{root}}/petition.war.bak",
-                                        f"cp {{root}}/releases/petition-decoy.war {{root}}/webapps/petition.war"])
+                                        f"cp {{root}}/releases/petition-{digest[:12]}.war {{root}}/webapps/petition.war",
+                                        "systemctl restart tomcat10"])
         self.assertEqual(war.read_bytes(), b"decoy release")
         logins = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
         self.assertTrue(logins[-1].startswith("login sysop@192.168.127.31 bind=192.168.122.21 tty=yes"), logins[-1])
         n = count()
         rc, err = call(war_params, "cleanup", swap, wenv)
         self.assertEqual(rc, 0, err)
-        self.assertEqual(new_lines(n), ["cp {root}/petition.war.bak {root}/webapps/petition.war", "rm -f {root}/petition.war.bak"])
-        self.assertEqual(count(), n + 2)
+        self.assertEqual(new_lines(n), ["cp {root}/petition.war.bak {root}/webapps/petition.war", "rm -f {root}/petition.war.bak",
+                                        "systemctl restart tomcat10"])
+        self.assertEqual(count(), n + 3)
         self.assertEqual(war.read_bytes(), b"current release")
         self.assertFalse(war_bak.exists())
         self.assertEqual(call(war_params, "recovery", swap, wenv)[0], 0)
+        # Any other release name is refused: injections and decoys share the one naming rule (rv-t4u2 N6).
+        self.refused("vm.service", dict(war_params, release="/var/lib/petition-deploy/releases/petition-1.4.3.war"))
 
     # ---------------------------------------------------------------- review rv-t4s fixes, Q35 operator path
 
@@ -6637,12 +6642,16 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         policy's longest gap plus the margin. After each call the application answers its health check (R4). A revert
         with nothing to undo is 0."""
         sess, env, war, conf, digest, invocation = self._decoy_box()
-        holds = []
+        holds, stdins = [], []
         real = invocation
+        conf.chmod(0o640)
+        original = conf.read_text()
 
         def recorded(params, hold, action):
             holds.append(hold)
-            return real(params, hold, action)
+            argv, stdin = real(params, hold, action)
+            stdins.append(stdin)
+            return argv, stdin
         with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", recorded):
             self.assertEqual(sess.run_decoy("was02", "war_redeploy", "revert"), 0)  # nothing to undo
             self.assertFalse((self.tmp / "petition.war.bak").exists())
@@ -6651,14 +6660,15 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change"), 0)
             self.assertEqual(self._sudo_commands(n), [
                 "cp -p {root}/webapps/petition.war {root}/petition.war.bak",
-                f"cp {{root}}/releases/petition-{digest[:12]}.war {{root}}/webapps/petition.war"])
+                f"cp {{root}}/releases/petition-{digest[:12]}.war {{root}}/webapps/petition.war",
+                "systemctl restart tomcat10"])
             self.assertTrue((self.tmp / "petition.war.bak").exists())
             self.assertEqual(war.read_bytes(), b"deployed release")
             self.assertTrue(node_guard_fakes.timers(self.env), "the executor's guard is armed while the decoy holds")
             n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "revert"), 0)
             self.assertEqual(self._sudo_commands(n), ["cp {root}/petition.war.bak {root}/webapps/petition.war",
-                                                      "rm -f {root}/petition.war.bak"])
+                                                      "rm -f {root}/petition.war.bak", "systemctl restart tomcat10"])
             self.assertFalse((self.tmp / "petition.war.bak").exists())
             self.assertEqual(war.read_bytes(), b"deployed release")
             # config_reapply on web01: an injection's config lines and restart, the proxy timeout one second longer.
@@ -6666,15 +6676,18 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertEqual(sess.run_decoy("web01", "config_reapply", "change"), 0)
             lines = self._sudo_commands(n)
             self.assertEqual(lines[0], "cp -p {root}/etc/apache2/petition.conf {root}/etc/apache2/petition.conf.bak")
-            self.assertTrue(lines[1].startswith("awk -v m=" + sess.PROXY_LINE + " -v r=" + sess.PROXY_LINE_DECOY), lines[1])
+            drawn = [t for t in sess.PROXY_TIMEOUTS if lines[1].startswith("awk -v m=" + sess.PROXY_LINE + " -v r=" + sess.proxy_line(t) + " ")]
+            self.assertEqual(len(drawn), 1, lines[1])
             self.assertEqual(lines[2:], ["cp {root}/home/petition.conf.new {root}/etc/apache2/petition.conf",
                                          "systemctl restart apache2"])
-            self.assertIn("timeout=31", conf.read_text())
+            self.assertIn(f"timeout={drawn[0]}", conf.read_text())
             n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
             self.assertEqual(sess.run_decoy("web01", "config_reapply", "revert"), 0)
             self.assertEqual(self._sudo_commands(n), ["cp {root}/etc/apache2/petition.conf.bak {root}/etc/apache2/petition.conf",
                                                       "rm -f {root}/etc/apache2/petition.conf.bak", "systemctl restart apache2"])
-            self.assertIn("timeout=30", conf.read_text())
+            # Back as it was, byte for byte and mode (rv-t4u2 N7).
+            self.assertEqual(conf.read_text(), original)
+            self.assertEqual(conf.stat().st_mode & 0o777, 0o640)
             self.assertIn("http://127.0.0.1:80/petition/api/health", vm_sandbox.logged(self.tmp, "curl-log"))
             self.assertIn("http://127.0.0.1:8080/petition/api/health", vm_sandbox.logged(self.tmp, "curl-log"))
             # The operator logins: one per phase, from the operator address with a pty.
@@ -6682,7 +6695,10 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertEqual(len(logins), 4)
             self.assertTrue(all(" bind=192.168.122.21 tty=yes " in l for l in logins), logins)
         policy = json.loads((PROFILES.parent / "registry" / "decoy-deployments.json").read_text())
-        self.assertEqual(set(holds), {policy["vm_hold_sec"]["max"] + 600})
+        # The guard's deadline is the longest gap plus 600 seconds, as the invocation carries it (rv-t4u2 N2).
+        self.assertEqual(set(holds), {policy["vm_hold_sec"]["max"]})
+        expiry = policy["vm_hold_sec"]["max"] + 600
+        self.assertTrue(all(f"expire_after={expiry} ".encode() in stdin for stdin in stdins), expiry)
         # The same lines as an injection by construction: the decoy goes through vm.service's own invocation.
         params = sess.decoy_params("was02", "war_redeploy", digest)
         svc = load("vm_service_executor")
@@ -6727,6 +6743,16 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")], before)
         self.assertEqual(sorted(sess.decoy_nodes("war_redeploy")), ["was01", "was02"])
         self.assertEqual(sess.decoy_nodes("config_reapply"), ["web01"])
+
+    def test_an_executor_failure_has_its_own_code(self) -> None:
+        """rv-t4u2 N5: the executor's own failure (here the same-bytes release is missing on the VM) is 4, not the
+        1 that means "not healthy, taken back"; no operator login happens."""
+        sess, env, war, conf, digest, invocation = self._decoy_box()
+        (self.tmp / "releases" / f"petition-{digest[:12]}.war").unlink()
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", invocation):
+            self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change"), 4)
+        self.assertEqual([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")], [])
+        self.assertEqual(war.read_bytes(), b"deployed release")
 
     def test_a_stuck_normal_time_session_ends_with_its_whole_group(self) -> None:
         """Review rv-t4o M2: the CLI starts ssh in its own session and ends the whole group at its limit (the runner

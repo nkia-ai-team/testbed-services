@@ -6913,7 +6913,9 @@ class OperatorTerminalTests(unittest.TestCase):
             sys.path.remove(profiles)
         site = file_of(bundles(T_INV)["web01"], sess.WEB_CONF)
         self.assertEqual(site.splitlines().count(sess.PROXY_LINE), 1)
-        self.assertNotIn(sess.PROXY_LINE_DECOY, site)
+        for timeout in sess.PROXY_TIMEOUTS:
+            self.assertNotEqual(timeout, 30)
+            self.assertNotIn(sess.proxy_line(timeout), site)
         was = (DEPLOY / "steps" / "was.sh").read_text()
         self.assertIn('war_sum=$(cut -c1-64 /var/lib/petition-deploy/war.sha256)', was)
         self.assertIn('install -D -m 0644 "$BUNDLE/artifacts/petition.war" "/var/lib/petition-deploy/releases/petition-${war_sum:0:12}.war"', was)
