@@ -11,7 +11,9 @@ holds the two equal).
   operator_session.py --node <VM name> --check          one read-only operator session (the runner's schedule calls it)
   operator_session.py --node <VM name> --print          the ssh command and the session text as JSON, nothing run
   operator_session.py --list-nodes                      the VMs that take normal-time sessions, one JSON line
-  operator_session.py --node <VM name> --decoy-change <kind>   a U7 decoy: a vm.service change with harmless values
+  operator_session.py --node <VM name> --decoy-change <kind> [--guard-sec N]
+                                                        a U7 decoy: a vm.service change with harmless values; on 0 the
+                                                        last lines are "@@ decoy-changed <path>" per file it changed
   operator_session.py --node <VM name> --decoy-revert <kind>   its undo (nothing to undo is 0)
 
 The session takes the per-VM lock <CIVIL_PETITION_SSH_CONTROL_DIR>/operator-<VM>.lock that the executors take too, so
@@ -98,6 +100,13 @@ HEALTH_WAIT_SECONDS = 120
 DECOY_PHASE_SECONDS = 170
 DECOY_LIMIT_SECONDS = 240
 DECOY_EXECUTOR_FAILED = 4
+# --guard-sec (a decoy the runner puts back only after the recording, rv-t4u3 D1): the guard's deadline itself. The
+# executor adds its own 600 seconds to max_injection_duration, so the deadline must be above that margin.
+GUARD_SEC_RANGE = (660, 16000)
+GUARD_MARGIN = 600
+# What a successful change prints last, one line per file it left different from the install record
+# (expected.sha256 form): the runner excuses exactly these on that node while the decoy is held.
+CHANGED_MARK = "@@ decoy-changed"
 
 
 def decoy_hold_max() -> int:
@@ -237,7 +246,13 @@ def wait_healthy(host: str, kind: str, deadline: float) -> bool:
     return False
 
 
-def run_decoy(node: str, kind: str, phase: str) -> int:
+def changed_paths(kind: str) -> list[str]:
+    """The files a decoy change leaves different from expected.sha256: the site file for config_reapply. The war
+    decoy changes the WAR and leaves petition.war.bak, neither of which the install record lists."""
+    return [WEB_CONF] if kind == "config_reapply" else []
+
+
+def run_decoy(node: str, kind: str, phase: str, guard_seconds: int | None = None) -> int:
     """change: the executor's run (the operator's change), then the application's health; 0 only when healthy.
     revert: cleanup and recovery (the operator's undo, root takes back what is left; nothing to undo is 0), then
     health. The executor's operator session takes the VM's lock itself; this only refuses early (75) when a session
@@ -245,7 +260,12 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
     from executor_common import execute
     started = time.monotonic()
     row = decoy_row(node, kind)
-    hold_seconds = decoy_hold_max()
+    if guard_seconds is not None:
+        if phase != "change" or not GUARD_SEC_RANGE[0] <= guard_seconds <= GUARD_SEC_RANGE[1]:
+            raise Refused(f"--guard-sec goes with --decoy-change and is {GUARD_SEC_RANGE[0]} ~ {GUARD_SEC_RANGE[1]}")
+        hold_seconds = guard_seconds - GUARD_MARGIN
+    else:
+        hold_seconds = decoy_hold_max()
     path = lock_path(node)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as lock:
@@ -288,6 +308,9 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
                     break
         print(f"decoy {kind} {phase} on {node}: the application did not answer its health check", file=sys.stderr)
         return 1
+    if phase == "change":
+        for path in changed_paths(kind):
+            print(f"{CHANGED_MARK} {path}", flush=True)
     return 0
 
 
@@ -392,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     # An unknown kind is a refusal (3), not a usage error.
     mode.add_argument("--decoy-change", metavar="KIND")
     mode.add_argument("--decoy-revert", metavar="KIND")
+    parser.add_argument("--guard-sec", type=int, help="with --decoy-change: the executor guard's deadline in seconds")
     args = parser.parse_args(argv)
     if args.list_nodes:
         print(json.dumps(routine_nodes()))
@@ -401,8 +425,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.decoy_change or args.decoy_revert:
         try:
             if args.decoy_change:
-                return run_decoy(args.node, args.decoy_change, "change")
-            return run_decoy(args.node, args.decoy_revert, "revert")
+                return run_decoy(args.node, args.decoy_change, "change", args.guard_sec)
+            return run_decoy(args.node, args.decoy_revert, "revert", args.guard_sec)
         except Refused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 3

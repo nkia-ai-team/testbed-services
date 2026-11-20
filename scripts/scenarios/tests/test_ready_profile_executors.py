@@ -6775,6 +6775,41 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual(sorted(sess.decoy_nodes("war_redeploy")), ["was01", "was02"])
         self.assertEqual(sess.decoy_nodes("config_reapply"), ["web01"])
 
+    def test_a_held_decoy_gets_its_own_guard_and_names_what_it_changed(self) -> None:
+        """rv-t4u3 D1 (runner contract): --guard-sec sets the executor guard's deadline for a decoy the runner puts
+        back only after the recording; a change that succeeded names, last, each file it left different from the
+        install record ("@@ decoy-changed <path>"), the site file for config_reapply and none for the war decoy."""
+        import contextlib
+        import io
+        sess, env, war, conf, digest, invocation = self._decoy_box()
+        stdins = []
+
+        def recorded(params, hold, action):
+            argv, stdin = invocation(params, hold, action)
+            stdins.append((action, stdin))
+            return argv, stdin
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", recorded):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(sess.run_decoy("web01", "config_reapply", "change", 12000), 0)
+            self.assertEqual(out.getvalue().splitlines(), [f"@@ decoy-changed {sess.WEB_CONF}"])
+            self.assertIn(b"expire_after=12000 ", stdins[-1][1])
+            self.assertEqual(sess.run_decoy("web01", "config_reapply", "revert"), 0)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change", 9000), 0)
+            self.assertEqual(out.getvalue(), "")
+            self.assertIn(b"expire_after=9000 ", stdins[-1][1])
+            self.assertEqual(sess.run_decoy("was01", "war_redeploy", "revert"), 0)
+        cli = [sys.executable, str(PROFILES / "operator_session.py")]
+        for args in (["--node", "web01", "--decoy-change", "config_reapply", "--guard-sec", "659"],
+                     ["--node", "web01", "--decoy-change", "config_reapply", "--guard-sec", "16001"],
+                     ["--node", "web01", "--decoy-revert", "config_reapply", "--guard-sec", "900"]):
+            with self.subTest(args=args):
+                done = subprocess.run(cli + args, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(done.returncode, 3, done.stderr)
+        self.assertEqual(sess.GUARD_SEC_RANGE, (660, 16000))
+
     def test_the_war_decoy_draws_from_the_listed_releases(self) -> None:
         """rv-t4u3 D3: the war decoy's release is drawn from the was step's list, not the deployed WAR's one name."""
         sess, env, *_ = self._decoy_box()
