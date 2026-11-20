@@ -32,6 +32,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -150,7 +151,11 @@ def run_sessions(node: str, sessions: list[list[str]]) -> int:
         deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
         result = 0
         for argv in sessions:
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+            # ssh writes to a file of this CLI, never to the runner's pipes: an ssh that outlived the CLI would hold
+            # them open (rv-t4o2 N3). The last line goes to stderr when the session fails.
+            errors = tempfile.TemporaryFile()
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+                                    start_new_session=True)
             previous = forward_stop_to(proc)
             try:
                 rc = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
@@ -162,8 +167,11 @@ def run_sessions(node: str, sessions: list[list[str]]) -> int:
                 for sig, handler in previous.items():
                     signal.signal(sig, handler)
             if rc != 0 and result == 0:
-                print(f"operator session on {node} ended with {rc}", file=sys.stderr)
+                errors.seek(0)
+                last = [line for line in errors.read().decode(errors="replace").splitlines() if line.strip()][-1:]
+                print(f"operator session on {node} ended with {rc}" + (f": {last[0].strip()}" if last else ""), file=sys.stderr)
                 result = rc
+            errors.close()
         return result
 
 

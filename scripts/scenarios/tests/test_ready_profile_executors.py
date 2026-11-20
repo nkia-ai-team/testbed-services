@@ -6746,6 +6746,14 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(cli.returncode, -signal.SIGTERM)
         self.assertTrue(self._gone(ssh, 2), "ssh outlived the stopped CLI")
+        # ssh never holds the caller's pipes: its stderr goes to a file of the CLI, whose last line the CLI reports.
+        (self.tmp / "operator-hang").unlink()
+        (self.tmp / "operator-down").touch()
+        done = subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "web01", "--check"],
+                              env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 255)
+        self.assertEqual(done.stderr.strip().splitlines(),
+                         ["operator session on web01 ended with 255: ssh: connect to host 192.168.127.21 port 22: Connection refused"])
 
     def test_the_operator_session_survives_a_program_that_reads_the_terminal(self) -> None:
         """Review rv-t4o H1 on a real pty (vm_sandbox PTY_REMOTE): the operator's sudo reads the terminal, as sudo
