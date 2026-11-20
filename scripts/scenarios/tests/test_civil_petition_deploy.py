@@ -7031,9 +7031,9 @@ class DecoyValueTests(unittest.TestCase):
             subprocess.run([sys.executable, "-", str(war), str(again), "1"], input=builder, text=True, check=True)
             self.assertEqual(again.read_bytes(), (root / "v1.war").read_bytes())
 
-    def test_the_decoy_guard_covers_the_longest_change_to_revert(self) -> None:
-        """rv-t4u3 D1: when the runner reverts some decoys after the recording, the policy says how long that can be
-        (vm_revert_by_sec) and the guard covers it; without it, the longest drawn gap."""
+    def test_the_decoy_guard_is_the_longest_gap_unless_the_call_brings_its_own(self) -> None:
+        """rv-t4u3 D1: the guard's deadline comes from one of two places only: vm_hold_sec max (+ 600 by the executor)
+        or --guard-sec on the call (operator_session tests). The policy has no other field for it."""
         import importlib.util
         profiles = str(HERE.parent / "profiles")
         sys.path.insert(0, profiles)
@@ -7044,11 +7044,6 @@ class DecoyValueTests(unittest.TestCase):
         finally:
             sys.path.remove(profiles)
         policy = json.loads(sess.DECOY_POLICY.read_text())
-        with tempfile.TemporaryDirectory() as raw:
-            path = Path(raw) / "policy.json"
-            for extra, want in (({}, max(policy["vm_hold_sec"]["max"], policy.get("vm_revert_by_sec", 0))),
-                                ({"vm_revert_by_sec": 9000}, 9000), ({"vm_revert_by_sec": 10}, policy["vm_hold_sec"]["max"])):
-                body = {k: v for k, v in policy.items() if k != "vm_revert_by_sec"}
-                path.write_text(json.dumps({**body, **extra}))
-                with self.subTest(extra=extra), unittest.mock.patch.object(sess, "DECOY_POLICY", path):
-                    self.assertEqual(sess.decoy_hold_max(), want)
+        self.assertNotIn("vm_revert_by_sec", policy)
+        self.assertEqual(sess.decoy_hold_max(), policy["vm_hold_sec"]["max"])
+        self.assertNotIn("vm_revert_by_sec", (HERE.parent / "profiles" / "operator_session.py").read_text())

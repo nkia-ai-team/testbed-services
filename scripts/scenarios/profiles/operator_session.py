@@ -110,10 +110,9 @@ CHANGED_MARK = "@@ decoy-changed"
 
 
 def decoy_hold_max() -> int:
-    """The longest time from a change to its revert: vm_hold_sec max, or vm_revert_by_sec when the runner reverts
-    later (after the recording, rv-t4u3 D1); the executor's guard adds its 600 seconds to it."""
-    policy = json.loads(DECOY_POLICY.read_text(encoding="utf-8"))
-    return max(int(policy["vm_hold_sec"]["max"]), int(policy.get("vm_revert_by_sec", 0)))
+    """The longest gap the runner draws (vm_hold_sec max); the executor's guard adds its 600 seconds to it. A decoy
+    the runner puts back only after the recording brings its own deadline (--guard-sec, rv-t4u3 D1)."""
+    return int(json.loads(DECOY_POLICY.read_text(encoding="utf-8"))["vm_hold_sec"]["max"])
 
 
 def proxy_line(timeout: int) -> str:
