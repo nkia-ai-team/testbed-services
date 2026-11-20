@@ -6991,3 +6991,64 @@ class DecoyProbeTests(unittest.TestCase):
         # The load generator does not forward syslog to 119: the sampling session stays out of the recording.
         loadgen = next(b for b in bundles(T_INV).values() if b["role"] == "loadgen")
         self.assertEqual(loadgen["env"]["SYSLOG_FORWARD"], "0")
+
+
+class DecoyValueTests(unittest.TestCase):
+    """The decoys' values on the VMs and the guard's reach (T4U-4, rv-t4u3 D1, D3)."""
+
+    def test_the_war_decoy_variants_differ_only_by_a_build_mark(self) -> None:
+        """rv-t4u3 D3: the was step leaves three byte variants of the deployed WAR for the war decoy; each has every
+        entry of the WAR with the same bytes plus one build mark nothing reads, so the application is the same, and
+        each has its own name under the one release rule."""
+        was = (DEPLOY / "steps" / "was.sh").read_text()
+        builder = re.search(r"<<'WAR_VARIANT'\n(.*?)\nWAR_VARIANT\n", was, re.S).group(1)
+        self.assertIn('for mark in 1 2 3; do', was)
+        self.assertIn('printf \'%s  petition-%s.war\\n\' "$war_sum" "${war_sum:0:12}" > "$variants.new"', was)
+        self.assertIn('install -m 0644 "$tmp" "/var/lib/petition-deploy/releases/petition-${sum:0:12}.war"', was)
+        self.assertIn('mv -f "$variants.new" "$variants"', was)
+        import zipfile
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            war = root / "petition.war"
+            with zipfile.ZipFile(war, "w") as z:
+                z.writestr("WEB-INF/web.xml", "<web-app/>\n")
+                z.writestr(zipfile.ZipInfo("WEB-INF/lib/app.jar"), b"\x00jar bytes" * 50)
+                z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+            sums = set()
+            for mark in ("1", "2", "3"):
+                out = root / f"v{mark}.war"
+                subprocess.run([sys.executable, "-", str(war), str(out), mark], input=builder, text=True, check=True)
+                with zipfile.ZipFile(war) as a, zipfile.ZipFile(out) as b:
+                    original = {i.filename: a.read(i.filename) for i in a.infolist()}
+                    variant = {i.filename: b.read(i.filename) for i in b.infolist()}
+                self.assertEqual(variant.pop("META-INF/petition-build.txt"), f"build {mark}\n".encode())
+                self.assertEqual(variant, original)
+                sums.add(hashlib.sha256(out.read_bytes()).hexdigest())
+            sums.add(hashlib.sha256(war.read_bytes()).hexdigest())
+            self.assertEqual(len(sums), 4)
+            # Built again from the same WAR, a variant has the same bytes (the mark's time is fixed).
+            again = root / "again.war"
+            subprocess.run([sys.executable, "-", str(war), str(again), "1"], input=builder, text=True, check=True)
+            self.assertEqual(again.read_bytes(), (root / "v1.war").read_bytes())
+
+    def test_the_decoy_guard_covers_the_longest_change_to_revert(self) -> None:
+        """rv-t4u3 D1: when the runner reverts some decoys after the recording, the policy says how long that can be
+        (vm_revert_by_sec) and the guard covers it; without it, the longest drawn gap."""
+        import importlib.util
+        profiles = str(HERE.parent / "profiles")
+        sys.path.insert(0, profiles)
+        try:
+            spec = importlib.util.spec_from_file_location("operator_session_guard", HERE.parent / "profiles" / "operator_session.py")
+            sess = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sess)
+        finally:
+            sys.path.remove(profiles)
+        policy = json.loads(sess.DECOY_POLICY.read_text())
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "policy.json"
+            for extra, want in (({}, max(policy["vm_hold_sec"]["max"], policy.get("vm_revert_by_sec", 0))),
+                                ({"vm_revert_by_sec": 9000}, 9000), ({"vm_revert_by_sec": 10}, policy["vm_hold_sec"]["max"])):
+                body = {k: v for k, v in policy.items() if k != "vm_revert_by_sec"}
+                path.write_text(json.dumps({**body, **extra}))
+                with self.subTest(extra=extra), unittest.mock.patch.object(sess, "DECOY_POLICY", path):
+                    self.assertEqual(sess.decoy_hold_max(), want)

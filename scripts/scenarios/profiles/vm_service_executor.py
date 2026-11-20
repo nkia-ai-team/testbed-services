@@ -158,15 +158,17 @@ op_apply_script() {
 op_remove_script() {
   case "$action" in
     stop) op_line sudo systemctl start "$svc" ;;
+    # The restart comes before the backup goes (rv-t4u3 L3): a session cut before the restart leaves the backup, so
+    # root's remove copies and restarts again instead of reporting a file put back under a unit still running the change.
     config)
       op_line sudo cp "$file.bak" "$file"
+      op_line sudo systemctl restart "$svc"
       op_line sudo rm -f "$file.bak"
-      op_line rm -f "$edited"
-      op_line sudo systemctl restart "$svc" ;;
+      op_line rm -f "$edited" ;;
     war)
       op_line sudo cp "$war_bak" "$war"
-      op_line sudo rm -f "$war_bak"
-      op_line sudo systemctl restart "$svc" ;;
+      op_line sudo systemctl restart "$svc"
+      op_line sudo rm -f "$war_bak" ;;
   esac
 }
 # Root takes back what the operator's undo left (or everything when the operator session could not run).

@@ -65,8 +65,9 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # undo with harmless values, run through the vm.service executor itself, so every line the VM and 119 see (the
 # operator's login, the sudo COMMAND lines with the same backup files and the same word order, the restart and its
 # journal lines, the guard the executor arms) is an injection's, character for character. Only the values differ:
-#   war_redeploy    the WAR swapped for a release with the same bytes (vm.service release_path, placed by the was
-#                   step) and tomcat10 restarted, as a war injection does (autoDeploy is off, rv-t4u2 N1): the same
+#   war_redeploy    the WAR swapped for one of the releases the was step leaves (the deployed bytes, or the same
+#                   entries with a build mark only, drawn each time, rv-t4u3 D3; vm.service release_path names them)
+#                   and tomcat10 restarted, as a war injection does (autoDeploy is off, rv-t4u2 N1): the same
 #                   application starts again.
 #   config_reapply  one line of the site file changed to a value with no effect on the traffic (the proxy timeout
 #                   from 30 to one of PROXY_TIMEOUTS, drawn each time, rv-t4u2 N6; no request takes that long) and
@@ -82,6 +83,9 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # the whole call, a take-back included, within DECOY_LIMIT_SECONDS; the runner allows that plus 60 (300, rv-t4u2 N4).
 WAR = "/var/lib/tomcat10/webapps/petition.war"
 WAR_SHA256 = "/var/lib/petition-deploy/war.sha256"
+DECOY_RELEASES = "/var/lib/petition-deploy/decoy-releases.sha256"
+# A revert does not read the release list: the undo uses the backup only, any well-formed release passes the contract.
+REVERT_PLACEHOLDER_SHA256 = "0" * 64
 WEB_CONF = "/etc/apache2/sites-available/petition.conf"
 PROXY_LINE = '\tProxyPass        "/petition/" "balancer://wascluster/petition/" timeout=30'
 PROXY_TIMEOUTS = (25, 35, 40, 45, 60)
@@ -97,8 +101,10 @@ DECOY_EXECUTOR_FAILED = 4
 
 
 def decoy_hold_max() -> int:
-    """The longest gap the runner may draw (vm_hold_sec max); the executor's guard adds its 600 seconds to it."""
-    return int(json.loads(DECOY_POLICY.read_text(encoding="utf-8"))["vm_hold_sec"]["max"])
+    """The longest time from a change to its revert: vm_hold_sec max, or vm_revert_by_sec when the runner reverts
+    later (after the recording, rv-t4u3 D1); the executor's guard adds its 600 seconds to it."""
+    policy = json.loads(DECOY_POLICY.read_text(encoding="utf-8"))
+    return max(int(policy["vm_hold_sec"]["max"]), int(policy.get("vm_revert_by_sec", 0)))
 
 
 def proxy_line(timeout: int) -> str:
@@ -208,12 +214,13 @@ def executor_read(host: str, command: str, timeout: float = 20) -> tuple[int, st
     return done.returncode, done.stdout
 
 
-def deployed_war_sha256(host: str) -> str:
-    rc, out = executor_read(host, f'cut -c1-64 "${{PETITION_WAR_SHA256:-{WAR_SHA256}}}"')
-    sha = out.strip()
-    if rc != 0 or len(sha) != 64:
-        raise Refused(f"cannot read the deployed WAR's sha256 on {host}")
-    return sha
+def decoy_war_sha256(host: str) -> str:
+    """One of the releases the was step listed for decoys, drawn each time (rv-t4u3 D3)."""
+    rc, out = executor_read(host, f'cat "${{PETITION_DECOY_RELEASES:-{DECOY_RELEASES}}}"')
+    sums = [line.split()[0] for line in out.splitlines() if line.strip() and len(line.split()[0]) == 64]
+    if rc != 0 or not sums:
+        raise Refused(f"cannot read the decoy releases on {host}")
+    return random.SystemRandom().choice(sums)
 
 
 def wait_healthy(host: str, kind: str, deadline: float) -> bool:
@@ -248,7 +255,11 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
             print(f"operator session on {node} is busy", file=sys.stderr)
             return BUSY_EXIT
     deadline = started + DECOY_PHASE_SECONDS
-    params = decoy_params(node, kind, deployed_war_sha256(row["mgmt"]) if kind == "war_redeploy" else None)
+    if kind == "war_redeploy":
+        war_sha256 = decoy_war_sha256(row["mgmt"]) if phase == "change" else REVERT_PLACEHOLDER_SHA256
+    else:
+        war_sha256 = None
+    params = decoy_params(node, kind, war_sha256, None if phase == "change" else PROXY_TIMEOUTS[0])
     actions = ["run"] if phase == "change" else ["cleanup", "recovery"]
     for action in actions:
         argv, stdin = decoy_invocation(params, hold_seconds, action)
