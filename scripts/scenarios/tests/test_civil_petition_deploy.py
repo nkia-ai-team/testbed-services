@@ -6728,8 +6728,8 @@ class OperatorTerminalTests(unittest.TestCase):
     def test_terminal_key_is_bound_to_the_operator_source(self) -> None:
         apply = (DEPLOY / "apply.sh").read_text()
         self.assertIn("terminal_key=$(field_or_empty accounts.operator.terminal_pubkey_file)", apply)
-        self.assertIn("printf 'from=\"%s\" ' \"$(field_or_empty networks.mgmt.operator_host_addr)\"", apply)
-        self.assertIn('>> "$bundle/secrets/$operator.pub"', apply)
+        self.assertIn('bind_from "$(field_or_empty networks.mgmt.operator_host_addr)" "$(expand "$terminal_key")" '
+                      '>> "$bundle/secrets/$operator.pub"', apply)
         # field_or_empty answers an empty string for a missing field (S without a terminal would not break).
         with tempfile.TemporaryDirectory() as raw:
             inv = Path(raw) / "inv.json"
@@ -6739,3 +6739,82 @@ class OperatorTerminalTests(unittest.TestCase):
                                   'echo "[$(field_or_empty accounts.operator.terminal_pubkey_file)]"'],
                                  capture_output=True, text=True, check=True).stdout.splitlines()
             self.assertEqual(out, ["192.0.2.5", "[]"])
+
+    def test_executor_key_is_bound_to_the_management_host_address(self) -> None:
+        """지휘 세션 결정(T4O 확인 필요 1): 실행기 키도 from="<관리망 host_addr>" 로 묶어, 실행기가 운영자 출발 주소로 붙을 길을
+        키로 막는다. 묶는 함수의 동작, 설치 묶음이 그 함수로 실행기 키를 쓰는지, verify 가 VM 에 놓인 키 줄을 보는지."""
+        apply = (DEPLOY / "apply.sh").read_text()
+        self.assertIn('bind_from "$(field networks.mgmt.host_addr)" "$(expand "$(field accounts.executor.pubkey_file)")" '
+                      '> "$bundle/secrets/$executor.pub"', apply)
+        self.assertNotIn('install -m 0600 "$(expand "$(field accounts.executor.pubkey_file)")"', apply)
+        fn = re.search(r"^bind_from\(\) \{\n.*?\n\}\n", apply, re.S | re.M).group(0)
+        with tempfile.TemporaryDirectory() as raw:
+            key = Path(raw) / "k.pub"
+            key.write_text("ssh-ed25519 AAAA one\n\n# note\nssh-ed25519 BBBB two\n")
+            done = subprocess.run(["bash", "-c", fn + 'bind_from 192.168.127.1 "$1"', "_", str(key)],
+                                  capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout.splitlines(), ['from="192.168.127.1" ssh-ed25519 AAAA one',
+                                                        'from="192.168.127.1" ssh-ed25519 BBBB two'])
+            for bad in ("", "192.168.127", "192.168.127.1 x"):
+                with self.subTest(addr=bad):
+                    self.assertEqual(subprocess.run(["bash", "-c", fn + 'bind_from "$1" "$2"', "_", bad, str(key)],
+                                                    capture_output=True, text=True).returncode, 2)
+        # The verify item on the VM: every executor key line from the management host address, one operator terminal line.
+        verify = (DEPLOY / "steps" / "verify.sh").read_text()
+        self.assertIn("check account-keys-from account_keys_from_ok", verify)
+        fn = re.search(r"^account_keys_from_ok\(\) \{\n.*?\n\}\n", verify, re.S | re.M).group(0)
+        good_exec = 'from="192.168.127.1" ssh-ed25519 AAAA x\n'
+        good_op = 'ssh-ed25519 CCCC laptop\nfrom="192.168.127.5" ssh-ed25519 DDDD terminal\n'
+        cases = [("good", good_exec, good_op, "192.168.127.5", 0),
+                 ("good without terminal", good_exec, "ssh-ed25519 CCCC laptop\n", "", 0),
+                 ("executor unbound", "ssh-ed25519 AAAA x\n", good_op, "192.168.127.5", 1),
+                 ("executor second line unbound", good_exec + "ssh-ed25519 EEEE y\n", good_op, "192.168.127.5", 1),
+                 ("executor bound to the operator source", 'from="192.168.127.5" ssh-ed25519 AAAA x\n', good_op,
+                  "192.168.127.5", 1),
+                 ("executor empty", "", good_op, "192.168.127.5", 1),
+                 ("terminal missing", good_exec, "ssh-ed25519 CCCC laptop\n", "192.168.127.5", 1),
+                 ("terminal twice", good_exec, good_op + 'from="192.168.127.5" ssh-ed25519 DDDD terminal\n',
+                  "192.168.127.5", 1)]
+        for name, exec_keys, op_keys, op_addr, want in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                for account, text in (("opsjob", exec_keys), ("sysop", op_keys)):
+                    (root / account / ".ssh").mkdir(parents=True)
+                    (root / account / ".ssh" / "authorized_keys").write_text(text)
+                script = (f'getent() {{ echo "$2:x:1:1::{root}/$2:/bin/bash"; }}\n' + fn +
+                          f'EXECUTOR_NAME=opsjob OPERATOR_NAME=sysop MGMT_HOST=192.168.127.1 MGMT_OPERATOR="{op_addr}" '
+                          'account_keys_from_ok')
+                self.assertEqual(subprocess.run(["bash", "-c", script], capture_output=True, text=True).returncode, want)
+
+    def test_only_the_operator_session_binds_the_terminal_address(self) -> None:
+        """실행기 쪽 새 연결(cleanup, recovery 가 마스터 없이 여는 연결)과 러너의 늘 열린 연결, 평시 점검 읽기는 출발 주소를 묶지
+        않아 tb-ops 의 첫 주소(runner_addr)로 나가고, 66 이 관리망 host_addr 로 SNAT 한다. 덧붙인 운영자 주소는 관리 브리지의
+        둘째 주소라 66 자신이 여는 연결도 host_addr 로 나간다. 66 hvjob 키는 이미 from="<runner_addr>" 로 묶여 있다."""
+        import importlib.util
+        profiles = str(HERE.parent / "profiles")
+        sys.path.insert(0, profiles)
+        try:
+            spec = importlib.util.spec_from_file_location("vm_executor_common_t4o", HERE.parent / "profiles" / "vm_executor_common.py")
+            vm = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(vm)
+        finally:
+            sys.path.remove(profiles)
+        head = vm.RUNNER_HEAD.decode()
+        arrays = dict(re.findall(r"^(\w+)=\(ssh (.*?)\)\n", head, re.S | re.M))
+        self.assertEqual(sorted(arrays), ["op_ssh", "ssh_hv", "ssh_vm"])
+        for name in ("ssh_vm", "ssh_hv"):
+            self.assertNotIn(" -b ", f" {arrays[name]} ", name)
+            self.assertNotIn("BindAddress", arrays[name], name)
+        self.assertIn("-b 192.168.122.21", arrays["op_ssh"])
+        self.assertEqual(head.count(" -b "), 1)
+        inv = inventory(T_INV)
+        self.assertEqual(vm.OPERATOR_BIND_ADDR, inv["hypervisor"]["operator_addr"])
+        net = render.hypervisor_files(inv)["/etc/network/interfaces.d/t4-net"]
+        stanza = net.split("iface vmbr11 ", 1)[1].split("\nauto ", 1)[0]
+        self.assertEqual(re.findall(r"^\taddress (\S+)$", stanza, re.M), ["192.168.127.1/24", "192.168.127.5/24"])
+        self.assertIn("-s 192.168.122.20 -o vmbr11 -p tcp --dport 22 -j SNAT --to-source 192.168.127.1", stanza)
+        self.assertIn("-s 192.168.122.21 -o vmbr11 -p tcp --dport 22 -j SNAT --to-source 192.168.127.5", stanza)
+        helper = (DEPLOY / "hypervisor" / "install-hv-helper.sh").read_text()
+        self.assertIn('from="%s" \' \\\n    "$sbin" "$runner_addr"', helper)
+

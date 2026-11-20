@@ -73,6 +73,12 @@ m=[n for n,v in d["networks"].items() if v.get("management")][0]
 print(h["role"] if sys.argv[3]=="role" else h.get("apt_snapshot", "") if sys.argv[3]=="apt_snapshot"
       else next(n["addr"] for n in h["nics"] if n["net"]==m))' "$inventory" "$1" "$2"; }
 expand() { local p="$1"; echo "${p/#\~/$HOME}"; }
+# 공개 키 파일의 키 줄마다 받을 출발 주소를 묶는다(authorized_keys 의 from=, 빈 줄과 주석 줄은 뺀다). 출발 주소로 실행기와
+# 운영자를 가르므로(설계 §6-2 운영자 경로, Q35 조건 ①) 각 키는 제 출발 주소에서만 받는다. 키 원문은 화면에 내지 않는다.
+bind_from() {
+    [[ "$1" =~ ^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$ ]] || { echo "apply: 출발 주소 꼴이 아님: '$1'" >&2; return 2; }
+    awk -v a="$1" 'NF && $1 !~ /^#/ { print "from=\"" a "\" " $0 }' "$2"
+}
 field_or_empty() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d
 for k in sys.argv[2].split("."):
     v=v.get(k, {}) if isinstance(v, dict) else {}
@@ -119,13 +125,15 @@ for host in "${hosts[@]}"; do
         [[ -r "$sms_agent" ]] || { echo "apply: $host 에 --sms-agent 필요(runbook §11)" >&2; exit 2; }
         cp "$sms_agent" "$bundle/artifacts/lucida-agent"
     fi
-    install -m 0600 "$(expand "$(field accounts.executor.pubkey_file)")" "$bundle/secrets/$executor.pub"
+    # 실행기 키는 관리망 66 주소(러너 연결이 SNAT 로 보이는 주소)에서만 받는다(지휘 세션 결정, T4O 확인 필요 1).
+    install -m 0600 /dev/null "$bundle/secrets/$executor.pub"
+    bind_from "$(field networks.mgmt.host_addr)" "$(expand "$(field accounts.executor.pubkey_file)")" > "$bundle/secrets/$executor.pub"
+    [[ -s "$bundle/secrets/$executor.pub" ]] || { echo "apply: 실행기 공개 키가 비었음" >&2; exit 2; }
     install -m 0600 "$(expand "$(field accounts.operator.pubkey_file)")" "$bundle/secrets/$operator.pub"
     # 운영자 단말 키(러너가 운영자로 ssh 로그인할 때, 설계 §6-2 운영자 경로): 운영자 단말 출발 주소에서만 받는다.
     terminal_key=$(field_or_empty accounts.operator.terminal_pubkey_file)
     if [[ -n "$terminal_key" ]]; then
-        { printf 'from="%s" ' "$(field_or_empty networks.mgmt.operator_host_addr)"; cat "$(expand "$terminal_key")"; } \
-            >> "$bundle/secrets/$operator.pub"
+        bind_from "$(field_or_empty networks.mgmt.operator_host_addr)" "$(expand "$terminal_key")" >> "$bundle/secrets/$operator.pub"
     fi
     case "$role" in
         router)

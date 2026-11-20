@@ -9,6 +9,18 @@ check() {
         failures=$((failures + 1))
     fi
 }
+# 실행기 키는 관리망 66 주소에서만, 운영자 단말 키는 운영자 출발 주소에서만 받는다(설계 §6-2 운영자 경로). 실행기
+# authorized_keys 의 모든 키 줄이 from="<66 관리 주소>" 로 시작하고, 운영자 단말이 있으면 운영자 쪽에 from="<운영자 출발 주소>"
+# 줄이 하나 있다.
+account_keys_from_ok() {
+    local home keys
+    home=$(getent passwd "$EXECUTOR_NAME" | cut -d: -f6) && keys="$home/.ssh/authorized_keys" && [[ -s "$keys" ]] || return 1
+    awk -v p="from=\"$MGMT_HOST\" " 'NF && $1 !~ /^#/ { n++; if (index($0, p) != 1) bad++ } END { exit !(n > 0 && bad == 0) }' "$keys" || return 1
+    if [[ -n "${MGMT_OPERATOR:-}" ]]; then
+        home=$(getent passwd "$OPERATOR_NAME" | cut -d: -f6) && keys="$home/.ssh/authorized_keys" || return 1
+        [[ "$(grep -c "^from=\"$MGMT_OPERATOR\" " "$keys")" == 1 ]] || return 1
+    fi
+}
 no_apt_timers() { ! systemctl list-timers --all --no-legend | grep -q 'apt-'; }
 no_javaagent() { ! ps -eo args= | grep -v grep | grep -q -- '-javaagent'; }
 no_otel_env() {
@@ -139,6 +151,7 @@ check rsyslog-no-apparmor-denial rsyslog_not_denied
 check rsyslog-no-proc-audit rsyslog_no_proc_denial
 check ip-forward ip_forward_ok
 check mgmt-guard mgmt_guard_ok
+check account-keys-from account_keys_from_ok
 [[ -n "$MODULES" ]] && check kernel-modules modules_loaded
 case "$HOST_ROLE" in
     router)
