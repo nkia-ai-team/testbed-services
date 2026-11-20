@@ -11,8 +11,8 @@ holds the two equal).
   operator_session.py --node <VM name> --check          one read-only operator session (the runner's schedule calls it)
   operator_session.py --node <VM name> --print          the ssh command and the session text as JSON, nothing run
   operator_session.py --list-nodes                      the VMs that take normal-time sessions, one JSON line
-  operator_session.py --node <VM name> --decoy <kind> --phase apply|undo --hold-sec <s>
-                                                        a U7 decoy: a vm.service change with harmless values, or its undo
+  operator_session.py --node <VM name> --decoy-change <kind>   a U7 decoy: a vm.service change with harmless values
+  operator_session.py --node <VM name> --decoy-revert <kind>   its undo (nothing to undo is 0)
 
 The session takes the per-VM lock <CIVIL_PETITION_SSH_CONTROL_DIR>/operator-<VM>.lock that the executors take too, so
 a normal-time session and an injection never share a VM at once. The session text goes as the remote command
@@ -68,10 +68,10 @@ ROLE_CHECKS: dict[str, list[str]] = {
 #                   placed by the was step), so Tomcat redeploys the application it already runs.
 #   config_reapply  one line of the site file changed to a value with no effect on the traffic (the proxy timeout
 #                   30 -> 31 seconds, no request takes that long) and apache2 restarted, as a config injection does.
-# The change and its undo are two calls (--phase apply, --phase undo); the runner draws the gap between them from
-# the injections' durations (contract with the runner). The executor's guard undoes the change by itself when the
-# undo never comes (expire after --hold-sec, as max_injection_duration). After each phase the application must
-# answer its health check before the decoy counts as done (review R4).
+# The change and its undo are two calls (--decoy-change, --decoy-revert); the runner draws the gap between them from
+# the decoy policy's vm_hold_sec (the approved injections' durations, contract with the runner). The executor's guard
+# undoes the change by itself when the revert never comes (expire after vm_hold_sec max + DECOY_GUARD_MARGIN_SECONDS,
+# as max_injection_duration). After each call the application must answer its health check (review R4).
 WAR = "/var/lib/tomcat10/webapps/petition.war"
 RELEASES = "/var/lib/petition-deploy/releases/"
 WAR_SHA256 = "/var/lib/petition-deploy/war.sha256"
@@ -82,8 +82,15 @@ DECOYS: dict[str, dict[str, Any]] = {
     "war_redeploy": {"role": "was", "unit": "tomcat10", "health": "http://127.0.0.1:8080/petition/api/health"},
     "config_reapply": {"role": "web", "unit": "apache2", "health": "http://127.0.0.1:80/petition/api/health"},
 }
-DECOY_HOLD_MAX_SECONDS = 3600
+DECOY_POLICY = Path(__file__).resolve().parents[1] / "registry" / "decoy-deployments.json"
+DECOY_GUARD_MARGIN_SECONDS = 600
 HEALTH_WAIT_SECONDS = 60
+
+
+def decoy_guard_seconds() -> int:
+    """The guard's deadline for a decoy change: the longest gap the runner may draw, plus a margin."""
+    hold = json.loads(DECOY_POLICY.read_text(encoding="utf-8"))["vm_hold_sec"]
+    return int(hold["max"]) + DECOY_GUARD_MARGIN_SECONDS
 
 
 class Refused(ValueError):
@@ -202,14 +209,14 @@ def wait_healthy(host: str, kind: str, deadline: float) -> bool:
     return False
 
 
-def run_decoy(node: str, kind: str, phase: str, hold_seconds: int) -> int:
-    """apply: the executor's run (the operator's change), then the application's health. undo: cleanup and recovery
-    (the operator's undo, root takes back what is left), then health. The executor's operator session takes the VM's
-    lock itself; this only refuses early (75) when a session already holds it."""
+def run_decoy(node: str, kind: str, phase: str) -> int:
+    """change: the executor's run (the operator's change), then the application's health; 0 only when healthy.
+    revert: cleanup and recovery (the operator's undo, root takes back what is left; nothing to undo is 0), then
+    health. The executor's operator session takes the VM's lock itself; this only refuses early (75) when a session
+    already holds it."""
     from executor_common import execute
     row = decoy_row(node, kind)
-    if not 60 <= hold_seconds <= DECOY_HOLD_MAX_SECONDS:
-        raise Refused(f"--hold-sec must be 60 ~ {DECOY_HOLD_MAX_SECONDS}")
+    hold_seconds = decoy_guard_seconds()
     path = lock_path(node)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as lock:
@@ -220,7 +227,7 @@ def run_decoy(node: str, kind: str, phase: str, hold_seconds: int) -> int:
             return BUSY_EXIT
     deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
     params = decoy_params(node, kind, deployed_war_sha256(row["mgmt"]) if kind == "war_redeploy" else None)
-    actions = ["run"] if phase == "apply" else ["cleanup", "recovery"]
+    actions = ["run"] if phase == "change" else ["cleanup", "recovery"]
     for action in actions:
         argv, stdin = decoy_invocation(params, hold_seconds, action)
         try:
@@ -232,7 +239,7 @@ def run_decoy(node: str, kind: str, phase: str, hold_seconds: int) -> int:
             print(f"decoy {kind} {phase} on {node}: the executor's {action} ended with {rc}", file=sys.stderr)
             return rc
     if not wait_healthy(row["mgmt"], kind, min(deadline, time.monotonic() + HEALTH_WAIT_SECONDS)):
-        if phase == "apply":
+        if phase == "change":
             # The change hurt: take it back now (the operator's undo, root for the rest), then report.
             for action in ("cleanup", "recovery"):
                 argv, stdin = decoy_invocation(params, hold_seconds, action)
@@ -343,20 +350,20 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--print", action="store_true")
     mode.add_argument("--list-nodes", action="store_true")
-    mode.add_argument("--decoy")  # an unknown kind is a refusal (3), not a usage error
-    parser.add_argument("--phase", choices=("apply", "undo"))
-    parser.add_argument("--hold-sec", type=int)
+    # An unknown kind is a refusal (3), not a usage error.
+    mode.add_argument("--decoy-change", metavar="KIND")
+    mode.add_argument("--decoy-revert", metavar="KIND")
     args = parser.parse_args(argv)
     if args.list_nodes:
         print(json.dumps(routine_nodes()))
         return 0
     if not args.node:
-        parser.error("--node is needed with --check, --print and --decoy")
-    if args.decoy:
-        if not args.phase or args.hold_sec is None:
-            parser.error("--decoy needs --phase apply|undo and --hold-sec (the same value for both phases)")
+        parser.error("--node is needed with --check, --print, --decoy-change and --decoy-revert")
+    if args.decoy_change or args.decoy_revert:
         try:
-            return run_decoy(args.node, args.decoy, args.phase, args.hold_sec)
+            if args.decoy_change:
+                return run_decoy(args.node, args.decoy_change, "change")
+            return run_decoy(args.node, args.decoy_revert, "revert")
         except Refused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 3
