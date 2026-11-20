@@ -2343,14 +2343,16 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
                 for kind in target["kinds"]:
                     self.assertIn(target["node"], sess.decoy_nodes(kind))
                     self.assertGreater(self.policy["kind_weights"][kind], 0)
-        # The gap the runner draws between a decoy's change and revert (vm_hold_sec): from the approved injections,
-        # min_hold's short end and max_injection_duration's most common value (T4U-2 contract).
-        self.assertEqual(self.policy["vm_hold_sec"], {"min": 240, "max": 1500})
-        durations = []
-        for path in sorted((ROOT / "manifests").glob("*.yaml")):
-            durations += re.findall(r'"max_injection_duration": "(\d+)m"', path.read_text(encoding="utf-8"))
-        most = max(set(durations), key=durations.count)
-        self.assertEqual(int(most) * 60, self.policy["vm_hold_sec"]["max"])
+        # The gap the runner draws between a decoy's change and revert (vm_hold_sec): the whole range of the recorded
+        # injections' durations (command session 11-21), counted from the record the policy names.
+        record = json.loads((ROOT / "registry" / "recorded-injection-durations.json").read_text(encoding="utf-8"))
+        seconds = record["seconds"]
+        self.assertEqual(len(seconds), 129)
+        self.assertEqual(seconds, sorted(seconds))
+        self.assertTrue(all(isinstance(v, int) and v > 0 for v in seconds))
+        self.assertEqual(self.policy["vm_hold_sec"], {"min": min(seconds), "max": max(seconds)})
+        self.assertEqual(self.policy["vm_hold_sec"], {"min": 96, "max": 1878})
+        self.assertIn(f"({max(seconds) + 600}초)", self.policy["_note"])
         # Every VM that takes a decoy kind is a target with that kind; Kubernetes targets take no VM kind.
         for kind in vm_kinds:
             self.assertEqual(sorted(sess.decoy_nodes(kind)),

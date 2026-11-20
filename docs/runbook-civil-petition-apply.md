@@ -636,7 +636,7 @@ sshd 설정을 바꾸면 이 점을 다시 본다(리뷰 rv-t4s L2).
   `python3 /opt/lucida/scenario-contracts/profiles/operator_session.py --node <VM> --check` 로 150초 제한(CLI 안 90초 + 60초)에 부른다.
   끝 코드 0 성공, 75 는 실행기 운영자 세션이 그 VM 을 쥐고 있음(5분 뒤 같은 VM, 세 번 이어지면 다른 VM), 124 는 CLI 가 제 제한에
   세션을 끝냄, 그 밖은 실패. 마지막 성공이 180분보다 오래되면 preflight 가 이 도메인 주입을 막는다.
-- 미끼(U7): `operator_session.py --node <VM> --decoy-change war_redeploy|config_reapply`, 미끼 정책 `vm_hold_sec`(240 ~ 1500초) 안에서 뽑은 간격 뒤 `--decoy-revert <같은 종류>`(§15-4 차례 9). vm.service 실행기 그 자체를 무해한 값으로 돌리고, 각 호출 뒤 앱 health 를 기다린다(60초). 옛 러너(07de13b)는 VM 대상과 `vm_hold_sec` 가 든 정책을 검증 오류로 거절해 다음 주기 시작 때 큐가 멈추므로 러너 판을 먼저 올린다.
+- 미끼(U7): `operator_session.py --node <VM> --decoy-change war_redeploy|config_reapply`, 미끼 정책 `vm_hold_sec`(96 ~ 1878초, 녹화된 주입 길이 전체 범위) 안에서 뽑은 간격 뒤 `--decoy-revert <같은 종류>`(§15-4 차례 9). vm.service 실행기 그 자체를 무해한 값으로 돌리고, 각 호출 뒤 앱 health 를 기다린다(60초). 옛 러너(07de13b)는 VM 대상과 `vm_hold_sec` 가 든 정책을 검증 오류로 거절해 다음 주기 시작 때 큐가 멈추므로 러너 판을 먼저 올린다.
 
 ### 15-3. 시험 실행(설계 §10 T4 "시험 실행", "자가 복구 실측", 녹화 아님)
 
@@ -729,5 +729,6 @@ S 는 같은 tb-ops 주소와 같은 키를 쓰고 66 이 S 관리 브리지에�
 - 2026-11-20 KST, v4 T4O 4회차(지휘 세션 덧, ap-t2 차례 0 발견): §15-4 차례 2 를 cloud-init 이 다시 쓰지 않는 따로 netplan 파일(`60-operator-terminal.yaml`)로, 차례 2-1(옛 판으로 한 tb-ops 고침), 192.168.122.21 이 사라질 때의 영향(평시 세션 실패, 180분 뒤 preflight 막음).
 - 2026-11-20 KST, v4 T4U(지휘 세션 결정): §15-4 차례 9 에 미끼 무해 판정 숫자(창, 1분 칸 비정상 1.0% 이하, 진입 p95 800ms 이하, 새 알람 0, 넘으면 그 종류 무게 0).
 - 2026-11-21 KST, v4 T4U-2(리뷰 rv-t4u R1, R3, R4, 지휘 세션 결정): §15-2 미끼 두 단계 호출, §15-4 차례 9 에 기존 VM 의 같은 바이트 릴리스 놓기, 9-1 무해 판정(`decoy_probe.py` 표본 기록, 404 를 세는 `check_failed_rate`, 진입 p95 는 `http_p95_ms` 30초 창, WAR 는 `war.sha256`), 9-2 거듭 다시 배포 5번과 RSS, 누수 경고.
-- 2026-11-21 KST, v4 T4U-2 덧(러너 계약): 미끼 호출을 `--decoy-change`, `--decoy-revert` 로, 간격은 정책 `vm_hold_sec`(240 ~ 1500초) 안에서 러너가 뽑음.
+- 2026-11-21 KST, v4 T4U-2 덧(러너 계약): 미끼 호출을 `--decoy-change`, `--decoy-revert` 로, 간격은 정책 `vm_hold_sec`(96 ~ 1878초, 녹화된 주입 길이 전체 범위) 안에서 러너가 뽑음.
 - 2026-11-21 KST, v4 T4U-3(리뷰 rv-t4u2 N1, N3): §15-2 러너 먼저의 근거(옛 러너가 새 정책을 거절), §15-4 차례 8 의 거꾸로 순서 문구, 차례 9 의 CLI 플래그, 9-2 를 재시작이 있는 꼴로.
+- 2026-11-21 KST, v4 T4U-3 덧(지휘 세션 결정): 미끼 간격 범위 96 ~ 1878초(녹화된 주입 길이 전체), 가드 2478초.

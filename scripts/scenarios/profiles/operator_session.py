@@ -74,7 +74,7 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # The change and its undo are two calls (--decoy-change, --decoy-revert); the runner draws the gap between them from
 # the decoy policy's vm_hold_sec (the approved injections' durations, contract with the runner). The executor's guard
 # undoes the change by itself when the revert never comes: vm_hold_sec max goes in as max_injection_duration and the
-# guard adds its own 600 seconds (2100, rv-t4u2 N2). After each call the application must answer its health check
+# guard adds its own 600 seconds (2478 with the recorded range, rv-t4u2 N2). After each call the application must answer its health check
 # (review R4). Exit codes: 0, 1 not healthy after the change (taken back on the spot), 3 refused, 4 the executor
 # failed (it took back what it could as root), 75 busy, 124 the change passed its 90 seconds. The whole call, a
 # take-back included, ends within DECOY_BUDGET_SECONDS (the runner allows 150, rv-t4u2 N4).
