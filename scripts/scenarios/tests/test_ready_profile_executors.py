@@ -5914,51 +5914,86 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
 
     # ---------------------------------------------------------------- router.config, vmhost.firewall
 
+    def _hv_ok(self, env: dict[str, str]) -> dict[str, str]:
+        front = self.tmp / "hv-front.sh"
+        front.write_text("#!/bin/bash\nread -r req; echo \"$req\" >>\"$VM_SANDBOX/hv-log\"\n")
+        front.chmod(0o755)
+        return {**env, "VM_SANDBOX_HV_FRONT": str(front)}
+
+    def _operator_lines(self) -> list[str]:
+        return [l.replace(self.env["OPS_HOME"], "{home}") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")]
+
     def test_router_change_goes_the_operator_way_and_is_undone(self) -> None:
+        """Q35 (나): the operator logs in with ssh from the operator terminal address (a new connection, a pty, key
+        authentication) and types the change; the executor only arms before and takes back what is left after."""
         config = load("router_config_executor")
         params = self.params("router.config", routes=[{"dst": "192.168.126.11/32", "type": "blackhole"}],
                              sysctls={"net.netfilter.nf_conntrack_max": 4096}, log_prefix="[ACL DENY] ")
-        args = ["operator", *config.check_parameters(params)]
-        program = vm_common.node_program(vm_common.FIREWALL_BODY)
-        shell = vm_sandbox.NetnsShell(self.tmp, self.env, "ip link add ens21 type dummy; ip addr add 192.168.126.1/24 dev ens21; ip link set ens21 up")
+        env = self._hv_ok(self.env)
+        shell = vm_sandbox.NetnsShell(self.tmp, env, "ip link add ens21 type dummy; ip addr add 192.168.126.1/24 dev ens21; ip link set ens21 up")
+        call = lambda action: vm_sandbox.runner_call(config, "router.config", params, action, env, shell=shell)  # noqa: E731
         try:
-            self.assertEqual(shell.node(program, ["check", *args])[0], 0)
-            rc, _, err = shell.node(program, ["run", *args])
+            vm_sandbox.master(self.tmp, "192.168.127.2")
+            rc, _, err = call("run")
             self.assertEqual(rc, 0, err)
-            ruleset = shell.run("nft list table inet acl-change\n")[1]
-            self.assertIn('log prefix "[ACL DENY] "', ruleset)
+            logins = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
+            self.assertEqual(len(logins), 1)
+            self.assertTrue(logins[0].startswith("login sysop@192.168.127.2 bind=192.168.122.21 tty=yes "), logins[0])
+            self.assertIn("ControlPath=none", logins[0])
+            self.assertIn('log prefix "[ACL DENY] "', shell.run("nft list table inet acl-change\n")[1])
             self.assertIn("blackhole 192.168.126.11", shell.run("ip route\n")[1])
             self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "4096")
-            operator = vm_sandbox.logged(self.tmp, "operator-log")
-            typed = [line.split(": ", 1)[1].replace(str(self.tmp), "{root}") for line in operator]
-            self.assertEqual(typed, [
-                "tee {root}/home/acl-change.nft",
-                "{root}/vm-bin/sudo -n nft -f {root}/home/acl-change.nft",
-                "{root}/vm-bin/sudo -n ip route add blackhole 192.168.126.11/32",
-                "{root}/vm-bin/sudo -n sysctl -w net.netfilter.nf_conntrack_max=4096",
+            self.assertEqual(self._operator_lines(), [
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=nft -f {home}/acl-change.nft",
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=ip route add blackhole 192.168.126.11/32",
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=sysctl -w net.netfilter.nf_conntrack_max=4096",
             ])
-            self.assertTrue(all(line.startswith("sysop: ") for line in operator))
-            self.assertEqual(shell.node(program, ["run", *args])[0], 1)
-            rc, _, err = shell.node(program, ["cleanup", *args])
+            typed = (self.tmp / "operator-typed").read_text()
+            self.assertNotIn("\t", typed)  # the operator's file has spaces: no tab reaches a terminal
+            self.assertIn("cat > " + str(self.tmp / "home" / "acl-change.nft") + " <<'NFT_RULES'", typed)
+            self.assertEqual(vm_sandbox.logged(self.tmp, "hv-log"), ["probe 192.168.123.254"])
+            # The executor's own calls all went over its master; nothing of the executor logged in.
+            self.assertTrue(all(l.startswith(("call opsjob@", "check opsjob@", "call hvjob@", "call sysop@", "login sysop@"))
+                                for l in vm_sandbox.logged(self.tmp, "ssh-log")))
+            # Idempotent: a second run refuses while the change is in; cleanup is the operator's too.
+            self.assertEqual(call("run")[0], 1)
+            rc, _, err = call("cleanup")
             self.assertEqual(rc, 0, err)
+            self.assertEqual(len([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]), 2)
+            self.assertEqual(self._operator_lines()[3:], [
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=nft delete table inet acl-change",
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=ip route del blackhole 192.168.126.11/32",
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=sysctl -w net.netfilter.nf_conntrack_max=65536",
+            ])
             self.assertNotIn("acl-change", shell.run("nft list tables\n")[1])
-            self.assertNotIn("blackhole", shell.run("ip route\n")[1])
-            self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "65536")
             self.assertFalse((self.tmp / "home" / "acl-change.nft").exists())
-            self.assertEqual(shell.node(program, ["state", *args])[1].strip(), "default")
-            self.assertEqual(shell.node(program, ["cleanup", *args])[0], 0)
-            # Self-recovery: the guard's undo (root, no operator) takes everything back.
+            self.assertEqual(call("recovery")[0], 0)
+            self.assertEqual(call("cleanup")[0], 0)
+            # The operator cannot log in: the run fails and the executor takes the change back.
+            (self.tmp / "operator-down").touch()
+            rc, _, err = call("run")
+            self.assertEqual(rc, 1)
+            self.assertIn("the operator session failed", err)
+            self.assertEqual(call("recovery")[0], 0)
+            (self.tmp / "operator-down").unlink()
+            # Cleanup without the operator: root takes everything back.
+            self.assertEqual(call("run")[0], 0)
+            (self.tmp / "operator-down").touch()
+            rc, _, err = call("cleanup")
+            self.assertEqual(rc, 0, err)
+            self.assertIn("the executor takes the change back", err)
+            self.assertEqual(call("recovery")[0], 0)
+            self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "65536")
+            (self.tmp / "operator-down").unlink()
+            # Self-recovery: the guard's undo (root) takes the change back when cleanup never comes.
             for timer in node_guard_fakes.timers(self.env):
                 (Path(self.env["FAKE_SYSTEMD"]) / timer).unlink()
-            self.assertEqual(shell.node(program, ["run", *args])[0], 0)
+            self.assertEqual(call("run")[0], 0)
             undo = Path(self.env["OPSJOB_STATE_ROOT"]) / "cfg-acl-change.undo"
             self.assertNotIn("sysop", undo.read_text())
             rc, _, err = shell.run(f"bash {shlex.quote(str(undo))}\n")
             self.assertEqual(rc, 0, err)
-            self.assertEqual(shell.node(program, ["state", *args])[1].strip(), "default")
-            self.assertEqual((self.tmp / "sysctl" / "net.netfilter.nf_conntrack_max").read_text().strip(), "65536")
-            boot = Path(node_guard_fakes.unit_record(self.env, "cfg-acl-change")[2]) if node_guard_fakes.unit_record(self.env, "cfg-acl-change") else None
-            self.assertIsNone(boot)
+            self.assertEqual(call("recovery")[0], 0)
         finally:
             shell.close()
 
@@ -6279,6 +6314,15 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.refused("vmdb.lock", self.params("vmdb.lock", table="pg_class"))
         self.refused("vmdb.lock", self.params("vmdb.lock", host="192.168.127.31", node="was01"))
 
+    def _service_call(self, svc, params: dict, action: str, conf: Path | None = None) -> tuple[int, str, str]:
+        """The runner script with the contract's configuration path moved into the sandbox."""
+        with unittest.mock.patch.dict(svc.CONTRACTS, {"T4-CASE": params}):
+            argv, stdin = svc.build_invocation(vm_sandbox.plan("vm.service", "T4-CASE", params), action)
+        if conf is not None:
+            argv = [str(conf) if a == params["file"] else a for a in argv]
+        done = subprocess.run(argv, input=stdin, env=self.env, capture_output=True, timeout=120)
+        return done.returncode, done.stdout.decode(), done.stderr.decode()
+
     def test_service_change_goes_the_operator_way(self) -> None:
         svc = load("vm_service_executor")
         units = self.tmp / "units"
@@ -6289,91 +6333,103 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         conf.write_text('<Server>\n<Connector port="8080" maxThreads="200"/>\n</Server>\n')
         params = self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
                              match='<Connector port="8080" maxThreads="200"/>', replace='<Connector port="8080" maxThreads="4"/>')
-        args = svc.check_parameters(params)
-        args[2] = str(conf)
-        program = vm_common.node_program(svc.NODE_BODY)
-        done = vm_sandbox.node_call(program, ["run", *args], self.env)
-        self.assertEqual(done.returncode, 0, done.stderr)
+        vm_sandbox.master(self.tmp, "192.168.127.31")
+        rc, _, err = self._service_call(svc, params, "run", conf)
+        self.assertEqual(rc, 0, err)
         self.assertIn('maxThreads="4"', conf.read_text())
-        typed = [l.split(": ", 1)[1].replace(str(self.tmp), "{root}") for l in vm_sandbox.logged(self.tmp, "operator-log")]
-        self.assertEqual(typed, ["tee {root}/home/server.xml.new",
-                                 "{root}/vm-bin/sudo -n cp -p {root}/etc/tomcat10/server.xml {root}/etc/tomcat10/server.xml.bak",
-                                 "{root}/vm-bin/sudo -n cp {root}/home/server.xml.new {root}/etc/tomcat10/server.xml",
-                                 "{root}/vm-bin/sudo -n {root}/vm-bin/unit-ctl restart tomcat10"])
-        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
-        self.assertEqual(vm_sandbox.node_call(program, ["cleanup", *args], self.env).returncode, 0)
+        root = str(self.tmp)
+        lines = [l.replace(root, "{root}") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")]
+        self.assertEqual(lines, [
+            "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=cp -p {root}/etc/tomcat10/server.xml {root}/etc/tomcat10/server.xml.bak",
+            "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=awk -v m=<Connector port=\"8080\" maxThreads=\"200\"/> "
+            "-v r=<Connector port=\"8080\" maxThreads=\"4\"/> $0 == m { print r; next } { print } {root}/etc/tomcat10/server.xml",
+            "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=cp {root}/home/server.xml.new {root}/etc/tomcat10/server.xml",
+            "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=systemctl restart tomcat10",
+        ])
+        self.assertEqual([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")][0].split(" opts=")[0],
+                         "login sysop@192.168.127.31 bind=192.168.122.21 tty=yes")
+        rc, _, err = self._service_call(svc, params, "cleanup", conf)
+        self.assertEqual(rc, 0, err)
         self.assertIn('maxThreads="200"', conf.read_text())
         self.assertFalse(Path(str(conf) + ".bak").exists())
-        self.assertEqual(vm_sandbox.node_call(program, ["run", *args], self.env).returncode, 0)
+        self.assertFalse((self.tmp / "home" / "server.xml.new").exists())
+        self.assertEqual(self._service_call(svc, params, "recovery", conf)[0], 0)
+        self.assertEqual(self._service_call(svc, params, "run", conf)[0], 0)
         self.assertEqual(self.fire("svc-tomcat10").returncode, 0)
         self.assertIn('maxThreads="200"', conf.read_text())
-        # stop: the unit stops by the operator's hand; cleanup or the guard starts it again.
-        stop = svc.check_parameters(self.params("vm.service"))
-        self.assertEqual(vm_sandbox.node_call(program, ["run", *stop], self.env).returncode, 0)
+        # stop: the operator stops the unit; the guard (root) starts it again when cleanup never comes.
+        stop = self.params("vm.service")
+        self.assertEqual(self._service_call(svc, stop, "run")[0], 0)
         self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "inactive")
+        self.assertIn("COMMAND=systemctl stop tomcat10", vm_sandbox.logged(self.tmp, "sudo-syslog")[-1])
         self.assertEqual(self.fire("svc-tomcat10").returncode, 0)
         self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "active")
+        # restart: one operator command, nothing armed.
+        restart = self.params("vm.service", action="restart")
+        self.assertEqual(self._service_call(svc, restart, "run")[0], 0)
+        self.assertIn("COMMAND=systemctl restart tomcat10", vm_sandbox.logged(self.tmp, "sudo-syslog")[-1])
+        self.assertEqual(node_guard_fakes.unit_record(self.env, "svc-tomcat10"), [])
         # The line to change must be there exactly once; release swaps need the fixed checksum.
-        bad = list(args)
-        bad[3] = "<Connector missing/>"
-        self.assertEqual(vm_sandbox.node_call(program, ["check", *bad], self.env).returncode, 1)
+        args = svc.check_parameters(dict(params, match="<Connector missing/>"))
+        args[2] = str(conf)
+        program = vm_common.node_program(svc.NODE_BODY)
+        self.assertEqual(vm_sandbox.node_call(program, ["check", *args], self.env).returncode, 1)
         self.refused("vm.service", self.params("vm.service", unit="apache2"))
         self.refused("vm.service", self.params("vm.service", action="config", file="/etc/rsyslog.d/00-opsjobs.conf",
                                                match="a", replace="b"))
         self.refused("vm.service", self.params("vm.service", action="war", release="/tmp/x.war", release_sha256="0" * 64))
 
+    # ---------------------------------------------------------------- review rv-t4s fixes, Q35 operator path
 
-    # ---------------------------------------------------------------- review rv-t4s fixes
-
-    def test_operator_commands_run_in_the_operator_home_and_their_sudo_lines_reach_119(self) -> None:
-        """H1: sudo logs PWD. Under the executor's home the line carries the executor's name and the VM's first rsyslog
-        rule diverts it, so the change's own trace never reaches 119. The operator path runs in the operator's home; a
-        real rsyslogd with the repository's first rule shows the operator lines forwarded, the executor lines not."""
+    def test_the_operator_path_is_a_real_login_and_its_lines_reach_119(self) -> None:
+        """Q35 conditions ③ ④: the operator path leaves key authentication, a pty, a session that opens and closes
+        and sudo lines with TTY=pts/N, all of which reach 119: a real rsyslogd with the repository's VM first rule
+        forwards them and diverts only the executor's lines. The old form (setpriv over the executor's connection)
+        is gone from every operator executor."""
         svc = load("vm_service_executor")
         units = self.tmp / "units"
         units.mkdir(exist_ok=True)
         (units / "tomcat10.service-state").write_text("active\n")
-        conf = self.tmp / "etc" / "tomcat10" / "server.xml"
-        conf.parent.mkdir(parents=True)
-        conf.write_text('<Connector port="8080" maxThreads="200"/>\n')
-        params = self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
-                             match='<Connector port="8080" maxThreads="200"/>', replace='<Connector port="8080" maxThreads="4"/>')
-        args = svc.check_parameters(params)
-        args[2] = str(conf)
-        program = vm_common.node_program(svc.NODE_BODY)
-        executor_home = self.tmp / "opsjob"
-        executor_home.mkdir()
-        done = subprocess.run(["bash", "-s"], input=("set -- " + " ".join(shlex.quote(a) for a in ["run", *args]) + "\n"
-                              "expire_after=1800 guard_hold=960\n").encode() + program, env=self.env, cwd=executor_home,
-                              capture_output=True, timeout=60)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        cwd = [line.split(" ", 1)[0] for line in vm_sandbox.logged(self.tmp, "operator-cwd")]
-        self.assertTrue(cwd)
-        self.assertEqual(set(cwd), {self.env["OPS_HOME"]})
-        sudo_lines = vm_sandbox.logged(self.tmp, "sudo-syslog")
-        self.assertEqual(len(sudo_lines), 3)
-        # The same lines as the VM would log them (the operator's home is /home/sysop there).
-        real = [l.replace(self.env["OPS_HOME"], "/home/sysop").replace(str(self.tmp), "/etc/..") for l in sudo_lines]
-        self.assertTrue(all(l.startswith("sysop : TTY=unknown ; PWD=/home/sysop ; USER=root ; COMMAND=") for l in real), real)
+        vm_sandbox.master(self.tmp, "192.168.127.31")
+        rc, _, err = self._service_call(svc, self.params("vm.service", action="restart"), "run")
+        self.assertEqual(rc, 0, err)
+        login = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
+        self.assertEqual(len(login), 1)
+        for word in ("bind=192.168.122.21", "tty=yes", "ControlPath=none", "BatchMode=yes", "StrictHostKeyChecking=yes"):
+            self.assertIn(word, login[0])
+        sudo = [l.replace(self.env["OPS_HOME"], "/home/sysop") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")]
+        self.assertEqual(sudo, ["sysop : TTY=pts/0 ; PWD=/home/sysop ; USER=root ; COMMAND=systemctl restart tomcat10"])
+        for name in ("vm_executor_common.py", "vm_service_executor.py", "router_config_executor.py"):
+            source = (PROFILES / name).read_text()
+            self.assertNotIn("setpriv", source.split('"""', 2)[-1] if name != "vm_executor_common.py" else source.replace(
+                "PG_SETPRIV", ""), name)
         if not (shutil.which("rsyslogd") and shutil.which("logger")):
             self.skipTest("rsyslogd 와 logger 가 필요")
-        rule = (ROOT.parents[1] / "civil-petition" / "deploy" / "templates" / "common" / "rsyslog-00-opsjobs.conf").read_text()
-        # The rule as render.py fills it: the patterns come from the one definition (tools/pipeline_patterns.py).
         spec = importlib.util.spec_from_file_location(
             "pipeline_patterns_t", ROOT.parents[1] / "civil-petition" / "deploy" / "tools" / "pipeline_patterns.py")
         pat = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(pat)
+        rule = (ROOT.parents[1] / "civil-petition" / "deploy" / "templates" / "common" / "rsyslog-00-opsjobs.conf").read_text()
         for key, value in (("executor_name_re", pat.rainer(pat.name_ere("opsjob"))), ("executor_uid_re", pat.rainer(pat.uid_ere(1450))),
                            ("run_r_re", pat.rainer(pat.RUN_R)), ("executor_uid", "1450"), ("executor_name", "opsjob")):
             rule = rule.replace("{{" + key + "}}", value)
         self.assertNotIn("{{", rule)
         rule = rule.replace("/var/log/opsjobs.log", "{diverted}")
+        operator = [("authpriv.info", "sshd", "Accepted publickey for sysop from 192.168.127.5 port 51234 ssh2: ED25519 SHA256:abc"),
+                    ("authpriv.info", "sshd", "pam_unix(sshd:session): session opened for user sysop(uid=1000) by sysop(uid=0)"),
+                    ("authpriv.info", "systemd-logind", "New session 31 of user sysop."),
+                    ("daemon.info", "systemd", "Started session-31.scope - Session 31 of User sysop."),
+                    # The operator's own user manager and slice (uid 1000 in the systemd places the executor pattern uses).
+                    ("daemon.info", "systemd", "Created slice user-1000.slice - User Slice of UID 1000."),
+                    ("daemon.info", "systemd", "Starting user@1000.service - User Manager for UID 1000..."),
+                    ("daemon.info", "systemd", "run-user-1000.mount: Deactivated successfully."),
+                    *[("authpriv.notice", "sudo", line) for line in sudo],
+                    ("authpriv.info", "sudo", "pam_unix(sudo:session): session opened for user root(uid=0) by sysop(uid=1000)"),
+                    ("authpriv.info", "sshd", "Received disconnect from 192.168.127.5 port 51234:11: disconnected by user"),
+                    ("authpriv.info", "sshd", "pam_unix(sshd:session): session closed for user sysop")]
         executor = [("authpriv.info", "sshd", "Accepted publickey for opsjob from 192.168.127.1 port 40000 ssh2"),
                     ("authpriv.notice", "sudo", "opsjob : PWD=/home/opsjob ; USER=root ; COMMAND=/usr/bin/bash -s"),
-                    ("daemon.info", "systemd", "Started run-r0123456789abcdef0123456789abcdef.timer."),
-                    # The old path's operator line (PWD under the executor's home) is diverted: the reason for the fix.
-                    ("authpriv.notice", "sudo", real[0].replace("PWD=/home/sysop", "PWD=/home/opsjob"))]
-        operator = [("authpriv.notice", "sudo", line) for line in real]
+                    ("daemon.info", "systemd", "Started run-r0123456789abcdef0123456789abcdef.timer.")]
         forward, diverted = vm_sandbox.run_rsyslogd(rule, executor + operator, self.tmp / "rs")
         for _, _, message in operator:
             self.assertIn(message, forward)
@@ -6381,6 +6437,55 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         for _, _, message in executor:
             self.assertIn(message, diverted)
             self.assertNotIn(message, forward)
+
+    def test_normal_time_operator_sessions_have_the_same_form(self) -> None:
+        """Q35 condition ②: the runner's normal-time operator session (operator_session.py) is the injection's form:
+        the same ssh words, the same account and source address, the same session wrapper and the same lock."""
+        sess = load("operator_session")
+        argv, text = sess.check_session("was01")
+        self.assertEqual(argv[-3:], ["sysop@192.168.127.31", "bash", "-s"])
+        self.assertTrue(text.startswith("set -e\n") and text.endswith("exit 0\n"))
+        self.assertIn("sudo systemctl status tomcat10 --no-pager", text)
+        for line in text.splitlines():
+            for word in (" rm ", " cp ", " mv ", " tee ", ">", "restart", "stop", "start", "kill"):
+                if word == ">" and "|" in line:
+                    continue
+                self.assertNotIn(word, f" {line} ", line)
+        # The bash op_session of the executors: the same words.
+        head = vm_common.RUNNER_HEAD.decode()
+        bash_words = re.search(r"op_ssh=\((.*?)\)\n", head, re.S).group(1).split()
+        expected = [w.replace("/root/.ssh/vm-ops", "$keys") for w in argv[:-3]]
+        self.assertEqual([w.strip('"') for w in bash_words], [w if "$keys" not in w else w for w in expected])
+        self.assertIn('{ printf \'set -e\\n\'; cat; printf \'exit 0\\n\'; } | "${op_ssh[@]}" "sysop@$host" bash -s', head)
+        self.assertIn('8>"$ctl/operator-$node.lock"', head)
+        self.assertEqual(sess.lock_path("was01").name, "operator-was01.lock")
+        # Routers and servers only, and the addresses are the inventory's.
+        with self.assertRaises(sess.Refused):
+            sess.check_session("loadgen")
+        inv = json.loads(vm_common.INVENTORY.read_text())
+        self.assertEqual(inv["hypervisor"]["operator_addr"], vm_common.OPERATOR_BIND_ADDR)
+        mgmt = next(n for n in inv["networks"].values() if n.get("management"))
+        self.assertEqual(mgmt["operator_host_addr"], vm_common.OPERATOR_SOURCE_ADDR)
+        self.assertNotEqual(mgmt["operator_host_addr"], mgmt["host_addr"])
+        # A run through the fake ssh: one new login from the operator address, read-only commands.
+        env = {**self.env}
+        done = subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "was01", "--check"],
+                              env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(vm_sandbox.logged(self.tmp, "ssh-log")[-1].startswith("login sysop@192.168.127.31 bind=192.168.122.21 tty=yes"))
+        # An executor's operator session holds the VM: the normal-time session does not wait, it says busy (75).
+        import fcntl
+        lock = sess.lock_path("was01")
+        with open(Path(env["CIVIL_PETITION_SSH_CONTROL_DIR"]) / lock.name, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            before = len(vm_sandbox.logged(self.tmp, "ssh-log"))
+            done = subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "was01", "--check"],
+                                  env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 75, done.stderr)
+            self.assertIn("busy", done.stderr)
+            self.assertEqual(len(vm_sandbox.logged(self.tmp, "ssh-log")), before)
+        self.assertEqual(subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "loadgen", "--check"],
+                                        env=env, capture_output=True, text=True, timeout=60).returncode, 3)
 
     def _flows(self, kind: str, lines: list[str]) -> dict[str, bool]:
         """Which monitoring flows pass a broad drop rule when the chain starts with ``lines``(real kernel)."""

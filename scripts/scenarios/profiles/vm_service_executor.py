@@ -2,11 +2,12 @@
 """vm.service: an operator stops or restarts a service, edits its configuration, or swaps the WAR
 (docs/spec-testbed-vm-3tier.md §6-1; also the U7 decoy deployment's path).
 
-Every change goes the operator's way (design §6-1 "변경 원인 주입 위치"): over the executor's open
-connection root becomes the operator account (setpriv, no PAM session, no log) and the operator types
-`sudo systemctl stop|start|restart <unit>`, `sudo cp -p <file> <file>.bak`, `sudo cp <edited copy> <file>`,
-`sudo cp <release> <webapps>/petition.war`. Those sudo lines, the unit's journal lines and the
-application's own log lines are the change's trace and reach 119; the executor's own lines do not (§6-2).
+Every change goes the operator's way (design §6-1 "변경 원인 주입 위치", §6-2 운영자 경로, Q35): the operator
+logs in with ssh from the operator terminal address (key, pty, a session that opens and closes) and types
+`sudo systemctl stop|start|restart <unit>`, `sudo cp -p <file> <file>.bak`, `sudo awk ... > <edited copy>`,
+`sudo cp <edited copy> <file>`, `sudo cp <release> <webapps>/petition.war`. The login, those sudo lines (TTY=pts/N),
+the unit's journal lines and the application's own log lines are the change's trace and reach 119; the executor's
+own lines do not (§6-2). The executor only checks and arms before, and takes back what is left after.
 No unnamed systemd-run is used (its run-r line is diverted by the first rsyslog rule, which must not
 swallow a cause trace of the same form).
 
@@ -116,7 +117,7 @@ check() {
 prepare() {
   mkdir -p "$state_root"; chmod 700 "$state_root"
   case "$action" in
-    stop) boot_files=("$mark") ;;
+    stop) : >"$mark"; boot_files=("$mark") ;;
     config) boot_files=("$edited") ;;
   esac
 }
@@ -127,35 +128,53 @@ undo_body() {
     war) printf 'if [[ -e %q ]]; then cp %q %q; rm -f %q; fi\n' "$war_bak" "$war_bak" "$war" "$war_bak" ;;
   esac
 }
-apply() {
+# The operator's commands (typed in the operator's ssh session, design 6-2 operator path).
+op_apply_script() {
   case "$action" in
-    stop) : >"$mark"; as_operator "$ctl" stop "$svc" ;;
+    stop) op_line sudo systemctl stop "$svc" ;;
     config)
-      # The operator's own edited copy in the operator's home, then copied over the file with sudo.
-      awk -v m="$match" -v r="$replace" '$0 == m { print r; next } { print }' "$file" | as_operator_user tee "$edited" >/dev/null
-      as_operator cp -p "$file" "$file.bak"
-      as_operator cp "$edited" "$file"
-      as_operator "$ctl" restart "$svc" ;;
+      op_line sudo cp -p "$file" "$file.bak"
+      # The operator's own edited copy in the operator's home, then copied over the file.
+      printf 'sudo awk -v %q -v %q %q %q > %q\n' "m=$match" "r=$replace" '$0 == m { print r; next } { print }' "$file" "$edited"
+      op_line sudo cp "$edited" "$file"
+      op_line sudo systemctl restart "$svc" ;;
     war)
-      as_operator cp -p "$war" "$war_bak"
-      as_operator cp "$release" "$war" ;;
+      op_line sudo cp -p "$war" "$war_bak"
+      op_line sudo cp "$release" "$war" ;;
+    restart) op_line sudo systemctl restart "$svc" ;;
   esac
 }
+op_remove_script() {
+  case "$action" in
+    stop) op_line sudo systemctl start "$svc" ;;
+    config)
+      op_line sudo cp "$file.bak" "$file"
+      op_line sudo rm -f "$file.bak"
+      op_line rm -f "$edited"
+      op_line sudo systemctl restart "$svc" ;;
+    war)
+      op_line sudo cp "$war_bak" "$war"
+      op_line sudo rm -f "$war_bak" ;;
+  esac
+}
+# Root takes back what the operator's undo left (or everything when the operator session could not run).
 remove() {
   case "$action" in
-    stop) if [[ -e "$mark" ]]; then as_operator "$ctl" start "$svc"; rm -f "$mark"; fi ;;
-    config) if [[ -e "$file.bak" ]]; then as_operator cp "$file.bak" "$file"; as_operator rm -f "$file.bak"; as_operator "$ctl" restart "$svc"; fi
+    stop) if [[ -e "$mark" ]]; then if ! svc_active; then "$ctl" start "$svc"; fi; rm -f "$mark"; fi ;;
+    config) if [[ -e "$file.bak" ]]; then cp "$file.bak" "$file"; rm -f "$file.bak"; "$ctl" restart "$svc"; fi
       rm -f "$edited" ;;
-    war) if [[ -e "$war_bak" ]]; then as_operator cp "$war_bak" "$war"; as_operator rm -f "$war_bak"; fi ;;
+    war) if [[ -e "$war_bak" ]]; then cp "$war_bak" "$war"; rm -f "$war_bak"; fi ;;
   esac
 }
+apply() { echo "an operator change goes through the operator session" >&2; exit 2; }
 if [[ "$action" == restart ]]; then
   # One restart is the whole change; nothing stays changed, so nothing is armed.
   case "$act" in
     check) check ;;
     state) echo default ;;
-    run) check; as_operator "$ctl" restart "$svc" ;;
-    cleanup) : ;;
+    arm) check >&2; op_apply_script ;;
+    hold) : ;;
+    finish|cleanup) : ;;
     *) exit 2 ;;
   esac
   exit 0
@@ -169,7 +188,9 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     args = check_parameters(p)
     vm.check_vm_location(instance, p)
-    return vm.vm_invocation(plan, action, p, NODE_BODY, args)
+    # A restart leaves nothing changed, so there is no state to read back after the operator's session.
+    landed = b"true" if p["action"] == "restart" else vm.LANDED
+    return vm.vm_invocation(plan, action, p, NODE_BODY, args, vm.operator_dispatch(landed))
 
 
 if __name__ == "__main__":

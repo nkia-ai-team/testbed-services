@@ -73,6 +73,10 @@ m=[n for n,v in d["networks"].items() if v.get("management")][0]
 print(h["role"] if sys.argv[3]=="role" else h.get("apt_snapshot", "") if sys.argv[3]=="apt_snapshot"
       else next(n["addr"] for n in h["nics"] if n["net"]==m))' "$inventory" "$1" "$2"; }
 expand() { local p="$1"; echo "${p/#\~/$HOME}"; }
+field_or_empty() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d
+for k in sys.argv[2].split("."):
+    v=v.get(k, {}) if isinstance(v, dict) else {}
+print(v if isinstance(v, str) else "")' "$inventory" "$1"; }
 
 operator=$(field accounts.operator.name)
 executor=$(field accounts.executor.name)
@@ -117,6 +121,12 @@ for host in "${hosts[@]}"; do
     fi
     install -m 0600 "$(expand "$(field accounts.executor.pubkey_file)")" "$bundle/secrets/$executor.pub"
     install -m 0600 "$(expand "$(field accounts.operator.pubkey_file)")" "$bundle/secrets/$operator.pub"
+    # 운영자 단말 키(러너가 운영자로 ssh 로그인할 때, 설계 §6-2 운영자 경로): 운영자 단말 출발 주소에서만 받는다.
+    terminal_key=$(field_or_empty accounts.operator.terminal_pubkey_file)
+    if [[ -n "$terminal_key" ]]; then
+        { printf 'from="%s" ' "$(field_or_empty networks.mgmt.operator_host_addr)"; cat "$(expand "$terminal_key")"; } \
+            >> "$bundle/secrets/$operator.pub"
+    fi
     case "$role" in
         router)
             install -m 0600 "$(expand "$(field monitoring.snmp_community_file)")" "$bundle/secrets/snmp_community" ;;

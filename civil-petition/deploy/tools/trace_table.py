@@ -276,7 +276,6 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
        inject: Window, w: Window, base: list[Window]) -> dict:
     """Q7 공통 낱말, Q7a(실행기 계정, uid, 가드 유닛 줄), Q7b(실행기 계정 표본 행, 주입 앞뒤 10분), Q7c(관리망 새 연결)."""
     sources = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else []) + [HV_SOURCE]
-    mgmt_prefix = ctx["mgmt_prefix"]
     for x in words:
         if x and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}", x):
             raise ValueError(f"가릴 낱말은 영숫자와 - 만: {x!r}")
@@ -300,6 +299,10 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
     q7a += remote.ch(f"select host_target_id, count() from lucida.lucida_logs_local where {span_logs(w)} and event_source = 'log_monitor' "
                      f"and host_target_id in ({quote(ids.values())}) and match(body, '{pipe}') group by 1 format TSV;")
     around = Window(inject.start - dt.timedelta(minutes=10), inject.start + dt.timedelta(minutes=10))
+    operator = ctx["operator"]
+    if not re.fullmatch(r"[a-z][a-z0-9]{1,30}", operator):
+        raise ValueError(f"운영자 계정 이름 꼴이 아님: {operator!r}")
+    vm_sources_all = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else [])
 
     def executor_rows(win: Window) -> int:
         rows = remote.ch(f"select count() from lucida.process_snapshot where {span_process(win)} and target_id in "
@@ -307,23 +310,43 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
         return int(rows[0][0]) if rows else 0
     base20 = [Window(b.start, b.start + dt.timedelta(minutes=20)) for b in base]
     q7b_now, q7b_base = executor_rows(around), [executor_rows(b) for b in base20]
-    conns = remote.ch(f"select target_id, remote_addr, toString(local_port) from lucida.host_connections where {span_connections(around)} "
-                      f"and target_id in ({quote(ids.values())}) and startsWith(remote_addr, '{mgmt_prefix}') group by 1, 2, 3 format TSV;")
+    # Q7c 는 계정이 아니라 출발 주소로 가른다(Q35 조건 ①, host_connections 에는 계정이 없다). 실행기 늘 열린 연결의 출발
+    # 주소(관리망 host_addr)에서 온 새 연결만 배관 흔적이다. 운영자 단말 주소에서 온 연결은 원인 흔적이라 판정에서 빼고 따로 센다.
+    executor_src, operator_src = ctx["executor_source"], ctx.get("operator_source")
+
+    def mgmt_conns(win: Window, source: str) -> set[tuple[str, ...]]:
+        return {tuple(r) for r in remote.ch(
+            f"select target_id, remote_addr, toString(local_port) from lucida.host_connections where {span_connections(win)} "
+            f"and target_id in ({quote(ids.values())}) and remote_addr = '{source}' group by 1, 2, 3 format TSV;")}
     seen = set()
     for b in base20:
-        seen |= {tuple(r) for r in remote.ch(
-            f"select target_id, remote_addr, toString(local_port) from lucida.host_connections where {span_connections(b)} "
-            f"and target_id in ({quote(ids.values())}) and startsWith(remote_addr, '{mgmt_prefix}') group by 1, 2, 3 format TSV;")}
-    new_conns = [r for r in conns if tuple(r) not in seen]
+        seen |= mgmt_conns(b, executor_src)
+    new_conns = [list(r) for r in sorted(mgmt_conns(around, executor_src) - seen)]
+    # 운영자 경로(Q35 조건 ②, ④): 운영자 단말 주소에서 온 로그인 수를 주입 창과 같은 길이 평시 창들의 최댓값으로 견주고,
+    # 경로 줄(sshd 수락, 세션 열림, sudo TTY=pts, 세션 닫힘)이 119 에 닿았는지 센다. 판정은 사람이 한다(평시 세션이 있어야
+    # 로그인이 주입 표지가 되지 않는다).
+    operator_paths = {}
+    login_now, login_base = None, []
+    if operator_src:
+        def logins(win: Window) -> int:
+            rows = remote.ch(f"select count() from lucida.syslog_local where {span_received(win)} and source_ip in ({quote(vm_sources_all)}) "
+                             f"and app_name in ('sshd', 'sshd-session') and startsWith(message, 'Accepted publickey for {operator} from {operator_src} ') format TSV;")
+            return int(rows[0][0]) if rows else 0
+        login_now, login_base = logins(w), [logins(b) for b in base]
+        rows = remote.ch(
+            "select countIf(startsWith(message, 'Accepted publickey for " + operator + " from " + operator_src + " ')), "
+            "countIf(position(message, 'session opened for user " + operator + "(') > 0 and app_name in ('sshd', 'sshd-session')), "
+            "countIf(app_name = 'sudo' and startsWith(message, '" + operator + " : TTY=pts/')), "
+            "countIf(position(message, 'session closed for user " + operator + "') > 0 and app_name in ('sshd', 'sshd-session')) "
+            f"from lucida.syslog_local where {span_received(w)} and source_ip in ({quote(vm_sources_all)}) format TSV;")
+        values = [int(v) for v in rows[0]] if rows and len(rows[0]) == 4 else [0, 0, 0, 0]
+        operator_paths = dict(zip(("sshd_accepted", "session_opened", "sudo_tty_pts", "session_closed"), values))
     # 실행기 자기 sudo 의 세션 닫힘 줄(pam_unix(sudo:session): session closed for user root)에는 계정 이름이 없어 VM 첫 규칙의
     # 이름 갈래로는 안 걸린다(리뷰 rv-t4s M3). 평시 점검 읽기도 같은 줄을 남기므로 0 이 아니라 평시 창 최댓값과 견준다.
     # 운영자 경로(router.config, vm.service)의 sudo 도 같은 닫힘 줄을 남긴다. 그것은 원인 흔적이라 배관 계수에서 뺀다(리뷰 L5).
     # sudo 줄에는 pid 가 없어(119 proc_id 빈칸, 11-19 읽기) 짝을 지을 수 없으므로, sudo 한 번이 명령 줄 하나와 닫힘 줄 하나를
     # 남기는 것을 써서 운영자 명령 줄(<운영자> : ...) 수만큼 닫힘 줄에서 뺀다. 실행기 명령 줄은 첫 규칙이 돌려 119 에 없다.
-    operator = ctx["operator"]
-    if not re.fullmatch(r"[a-z][a-z0-9]{1,30}", operator):
-        raise ValueError(f"운영자 계정 이름 꼴이 아님: {operator!r}")
-    vm_sources = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else [])
+    vm_sources = vm_sources_all
 
     def sudo_closes(win: Window) -> tuple[int, int]:
         """(실행기 몫 닫힘 줄, 운영자 명령 줄)."""
@@ -342,7 +365,9 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
         "q7a_rows": q7a, "q7a": "충족" if not q7a else "미충족",
         "q7b_window": q7b_now, "q7b_baseline_max": max(q7b_base) if q7b_base else None,
         "q7b": "충족" if q7b_base and q7b_now <= max(q7b_base) else "미충족",
-        "q7c_new": new_conns, "q7c": "충족" if not new_conns else "미충족",
+        "q7c_new": new_conns, "q7c": "충족" if not new_conns else "미충족", "q7c_source": executor_src,
+        "operator_source": operator_src, "operator_logins_window": login_now,
+        "operator_logins_baseline_max": max(login_base) if login_base else None, "operator_path_lines": operator_paths,
         "q7d": "표의 SMS 지표 칸의 관리 NIC 줄로 사람이 본다(관리 NIC 는 받아들임, v4 MNIC)",
     }
 
@@ -360,7 +385,8 @@ def collect(remote, inv: dict, start: dt.datetime, end: dt.datetime, executor: s
             words: list[str], baseline_windows: int, gap: dt.timedelta) -> dict:
     ctx = t3_check.context(inv)
     mgmt = next(net for net in inv["networks"].values() if net.get("management"))
-    ctx["mgmt_prefix"] = ".".join(mgmt["cidr"].split("/")[0].split(".")[:3]) + "."
+    ctx["executor_source"] = mgmt["host_addr"]
+    ctx["operator_source"] = mgmt.get("operator_host_addr")
     ids_all = t3_check.resolve_ids(remote, ctx)
     ids = {name: t["id"] for name, t in ids_all["servers"].items() if t}
     router_id = ids_all["router"]["id"] if ids_all.get("router") else None
@@ -422,7 +448,9 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
     print(result["row"])
     q = result["q7"]
     print(f"Q7 공통 낱말 {q['q7_common_words']} {q['word_hits']}, Q7a {q['q7a']} {q['q7a_rows']}, "
-          f"Q7b {q['q7b']} 창 {q['q7b_window']} 평시 최대 {q['q7b_baseline_max']}, Q7c {q['q7c']} {q['q7c_new']}, "
+          f"Q7b {q['q7b']} 창 {q['q7b_window']} 평시 최대 {q['q7b_baseline_max']}, Q7c(출발 {q['q7c_source']}) {q['q7c']} {q['q7c_new']}, "
+          f"운영자 로그인(출발 {q['operator_source']}) 창 {q['operator_logins_window']} 평시 최대 {q['operator_logins_baseline_max']}, "
+          f"운영자 경로 줄 {q['operator_path_lines']}, "
           f"VM sudo 세션 닫힘 줄(운영자 몫 뺌) {q['q7_sudo_close']} 창 {q['sudo_close_window']} 평시 최대 {q['sudo_close_baseline_max']}, "
           f"운영자 sudo 명령 줄 {q['operator_sudo_commands_window']}")
     if args.json:

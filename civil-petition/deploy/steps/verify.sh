@@ -77,7 +77,11 @@ mgmt_guard_ok() {
     nft_table_has mgmtguard \
         "iifname \"$MGMT_IF\" ip saddr $MGMT_HOST tcp dport 22 accept" \
         "iifname \"$MGMT_IF\" ip saddr $MGMT_HOST ip daddr $MGMT_ADDR tcp dport 22 notrack" \
-        "oifname \"$MGMT_IF\" ip saddr $MGMT_ADDR ip daddr $MGMT_HOST tcp sport 22 notrack"
+        "oifname \"$MGMT_IF\" ip saddr $MGMT_ADDR ip daddr $MGMT_HOST tcp sport 22 notrack" || return 1
+    # 운영자 단말 출발 주소의 SSH 도 받는다(인벤토리에 운영자 단말이 있을 때만, 설계 §6-2 운영자 경로).
+    if [[ -n "${MGMT_OPERATOR:-}" ]]; then
+        nft_table_has mgmtguard "iifname \"$MGMT_IF\" ip saddr $MGMT_OPERATOR tcp dport 22 accept"
+    fi
 }
 # 라우터 자신의 관제 흐름(SNMP, trap, syslog, ICMP) notrack 과 관리 대역 거절 카운터.
 monitor_notrack_ok() {

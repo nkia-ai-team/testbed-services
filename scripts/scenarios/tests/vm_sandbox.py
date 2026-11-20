@@ -27,11 +27,14 @@ import node_guard_fakes
 
 SSH = r'''#!/usr/bin/env bash
 d="$VM_SANDBOX"
-dest=""; check=no
+dest=""; check=no; bind=""; tty=no; opts=()
 while (( $# )); do
   case "$1" in
     -O) [[ "$2" == check ]] && check=yes; shift 2 ;;
-    -F|-i|-o|-p|-l) shift 2 ;;
+    -b) bind="$2"; shift 2 ;;
+    -o) opts+=("$2"); shift 2 ;;
+    -F|-i|-p|-l) shift 2 ;;
+    -tt|-t) tty=yes; shift ;;
     -*) shift ;;
     *) dest="$1"; shift; break ;;
   esac
@@ -45,6 +48,16 @@ if [[ "$check" == yes ]]; then
 fi
 printf 'call %s %s\n' "$dest" "$*" >>"$d/ssh-log"
 if [[ "${dest%@*}" == hvjob ]]; then exec "$VM_SANDBOX_HV_FRONT"; fi
+# An operator login: a new connection (never the master), from the bind address, with a pty. The commands run as the
+# operator in its home; sudo then logs TTY=pts/0 like a real login's.
+if [[ "${dest%@*}" == sysop ]]; then
+  printf 'login %s bind=%s tty=%s opts=%s\n' "$dest" "$bind" "$tty" "${opts[*]}" >>"$d/ssh-log"
+  [[ -e "$d/operator-down" ]] && { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; }
+  export FAKE_SUDO_USER=sysop FAKE_TTY=pts/0 PATH="$d/op-bin:$PATH"
+  cd "$OPS_HOME"
+  tee -a "$d/operator-typed" | "$@"
+  exit "${PIPESTATUS[1]}"
+fi
 if [[ "$1" == sudo ]]; then shift; [[ "$1" == -n ]] && shift; fi
 # A file fail-state makes the read of the change's state fail (the management connection lost right after a run).
 if [[ -e "$d/fail-state" ]]; then
@@ -70,7 +83,7 @@ SUDO = r'''#!/usr/bin/env bash
 [[ "$1" == -n ]] && shift
 printf 'sudo %s\n' "$*" >>"$VM_SANDBOX/sudo-log"
 # The line sudo itself sends to syslog (auth facility), with the working directory it would log.
-printf '%s : TTY=unknown ; PWD=%s ; USER=root ; COMMAND=%s\n' "${FAKE_SUDO_USER:-root}" "$(pwd)" "$*" >>"$VM_SANDBOX/sudo-syslog"
+printf '%s : TTY=%s ; PWD=%s ; USER=root ; COMMAND=%s\n' "${FAKE_SUDO_USER:-root}" "${FAKE_TTY:-unknown}" "$(pwd)" "$*" >>"$VM_SANDBOX/sudo-syslog"
 exec "$@"
 '''
 
@@ -159,6 +172,10 @@ def install(root: Path) -> dict[str, str]:
         path.chmod(0o755)
     home = root / "home"
     home.mkdir(exist_ok=True)
+    # The operator's own tools: systemctl answers from the same fake units and services.
+    op_bin = root / "op-bin"
+    op_bin.mkdir(exist_ok=True)
+    (op_bin / "systemctl").symlink_to(bindir / "unit-ctl")
     env.update({
         "VM_SANDBOX": str(root),
         "PATH": f"{bindir}:{os.environ['PATH']}",

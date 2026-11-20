@@ -18,7 +18,8 @@
     "operator": {
       "name": "sysop",
       "uid": 1000,
-      "pubkey_file": "~/.config/testbed/t4-operator.pub"
+      "pubkey_file": "~/.config/testbed/t4-operator.pub",
+      "terminal_pubkey_file": "~/.config/testbed/t4-operator-terminal.pub"
     }
   },
   "monitoring": {
@@ -79,6 +80,7 @@
       "cidr": "192.168.127.0/24",
       "bridge": "vmbr11",
       "host_addr": "192.168.127.1",
+      "operator_host_addr": "192.168.127.5",
       "management": true
     }
   },
@@ -88,6 +90,7 @@
     "input_chain": "T4-IN",
     "uplink": "vmbr0.200",
     "runner_addr": "192.168.122.20",
+    "operator_addr": "192.168.122.21",
     "legacy_net": "192.168.122.0/24",
     "monitor_real_addr": "192.168.230.119",
     "template": 9000,

@@ -18,7 +18,8 @@
     "operator": {
       "name": "sysop",
       "uid": 1000,
-      "pubkey_file": "~/.config/testbed/s5-operator.pub"
+      "pubkey_file": "~/.config/testbed/s5-operator.pub",
+      "terminal_pubkey_file": "~/.config/testbed/s5-operator-terminal.pub"
     }
   },
   "monitoring": {
@@ -62,6 +63,7 @@
       "cidr": "192.168.133.0/24",
       "bridge": "vmbr14",
       "host_addr": "192.168.133.1",
+      "operator_host_addr": "192.168.133.5",
       "management": true
     }
   },
@@ -71,6 +73,7 @@
     "input_chain": "S5-IN",
     "uplink": "vmbr0.200",
     "runner_addr": "192.168.122.20",
+    "operator_addr": "192.168.122.21",
     "legacy_net": "192.168.122.0/24",
     "other_domain_nets": [
       "192.168.123.0/24",

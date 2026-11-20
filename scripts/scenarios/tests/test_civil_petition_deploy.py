@@ -18,6 +18,7 @@ import math
 import os
 import random
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -203,7 +204,7 @@ def site_tokens(inv: dict) -> dict[str, str]:
 
     render.normalize 는 모든 IPv4 를 바꾸므로 설계가 바꾸라고 하지 않은 주소(DNS 등)가 달라도 같아 보인다. 여기서는
     인벤토리의 자리 값만 바꾼다: 호스트 NIC 주소(역할 순번과 업무, 관리 갈래), 망 대역(관리망과 그 밖), 망 게이트웨이,
-    관리망의 66 주소. 그 밖의 IPv4 는 그대로 남아 T 와 S 가 같아야 한다.
+    관리망의 66 주소와 운영자 단말 출발 주소. 그 밖의 IPv4 는 그대로 남아 T 와 S 가 같아야 한다.
     """
     management = render._management_net(inv)
     tokens: dict[str, str] = {}
@@ -212,6 +213,8 @@ def site_tokens(inv: dict) -> dict[str, str]:
         tokens[net["cidr"]] = f"@{kind}-net@"
         if name == management:
             tokens[net["host_addr"]] = "@mgmt-hv@"
+            if net.get("operator_host_addr"):
+                tokens[net["operator_host_addr"]] = "@mgmt-operator@"
     counter: dict[str, int] = {}
     for host in inv["hosts"]:
         index = counter.get(host["role"], 0)
@@ -550,20 +553,23 @@ class SmsOnlyDesignTests(unittest.TestCase):
         # 브리지 셋, 셋 다 66 주소 .1. 119 의 길은 66 에서 바로 업무망이라 경로 줄(via)이 없다.
         self.assertEqual(re.findall(r"^auto (\S+)$", net, re.M), ["vmbr12", "vmbr13", "vmbr14"])
         self.assertEqual(re.findall(r"^\taddress (\S+)$", net, re.M),
-                         ["192.168.131.1/24", "192.168.132.1/24", "192.168.133.1/24"])
+                         ["192.168.131.1/24", "192.168.132.1/24", "192.168.133.1/24", "192.168.133.5/24"])
         self.assertNotIn("ip route", net)
         self.assertNotIn("wg0", net)
         self.assertEqual(sorted(set(re.findall(r"iptables -t nat -A (POSTROUTING .*?)$", net, re.M))), [
             "POSTROUTING -s 192.168.122.20 -o vmbr14 -p tcp --dport 22 -j SNAT --to-source 192.168.133.1",
+            "POSTROUTING -s 192.168.122.21 -o vmbr14 -p tcp --dport 22 -j SNAT --to-source 192.168.133.5",
             "POSTROUTING -s 192.168.131.0/24 -o vmbr0.200 -j MASQUERADE",
             "POSTROUTING -s 192.168.132.0/24 -o vmbr0.200 -j MASQUERADE",
         ])
         self.assertEqual(files["/etc/chrony/conf.d/s5-net.conf"].splitlines()[-1], "allow 192.168.133.0/24")
         forward, inputs = render._chain_rules(self.inv)
-        # 허용은 이것뿐이다(§3-5): 이미 맺은 연결, 러너 ssh, 사용자망 -> 웹 80, 업무망과 사용자망 -> 패키지 설치.
+        # 허용은 이것뿐이다(§3-5): 이미 맺은 연결, 러너 ssh, 운영자 단말 ssh(T 설계 §6-2 운영자 경로), 사용자망 -> 웹 80,
+        # 업무망과 사용자망 -> 패키지 설치.
         self.assertEqual([r for r in forward if r.endswith("-j ACCEPT")], [
             "-A S5-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
             "-A S5-FWD -s 192.168.122.20 -d 192.168.133.0/24 -o vmbr14 -p tcp --dport 22 -j ACCEPT",
+            "-A S5-FWD -s 192.168.122.21 -d 192.168.133.0/24 -o vmbr14 -p tcp --dport 22 -j ACCEPT",
             "-A S5-FWD -s 192.168.132.10 -d 192.168.131.11 -p tcp --dport 80 -j ACCEPT",
             "-A S5-FWD -s 192.168.131.0/24 -o vmbr0.200 -j ACCEPT",
             "-A S5-FWD -s 192.168.132.0/24 -o vmbr0.200 -j ACCEPT",
@@ -878,7 +884,9 @@ class HypervisorRenderTests(unittest.TestCase):
 
     def test_five_bridges_and_host_addresses_only_on_upstream_and_management(self) -> None:
         self.assertEqual(re.findall(r"^auto (vmbr\d+)$", self.net, re.M), ["vmbr7", "vmbr8", "vmbr9", "vmbr10", "vmbr11"])
-        self.assertEqual(re.findall(r"^\taddress (\S+)$", self.net, re.M), ["192.168.123.1/24", "192.168.127.1/24"])
+        # 관리 브리지는 둘째 주소로 운영자 단말 출발 주소를 갖는다(설계 §6-2 운영자 경로, Q35).
+        self.assertEqual(re.findall(r"^\taddress (\S+)$", self.net, re.M),
+                         ["192.168.123.1/24", "192.168.127.1/24", "192.168.127.5/24"])
         for bridge in ("vmbr8", "vmbr9", "vmbr10"):
             self.assertIn(f"iface {bridge} inet manual", self.net)
 
@@ -887,9 +895,11 @@ class HypervisorRenderTests(unittest.TestCase):
         masq = [rule for rule in added if "MASQUERADE" in rule]
         snat = [rule for rule in added if "SNAT" in rule]
         self.assertEqual(len(masq), 4)
-        self.assertEqual(len(snat), 1)
+        self.assertEqual(len(snat), 2)
         self.assertNotIn("192.168.127.0/24 -o vmbr0.200", " ".join(masq))
-        self.assertIn("-s 192.168.122.20 -o vmbr11 -p tcp --dport 22 -j SNAT --to-source 192.168.127.1", snat[0])
+        # 실행기(러너 주소)와 운영자 단말(덧붙인 주소)은 관리 브리지에서 서로 다른 출발 주소가 된다(Q35 조건 ①).
+        self.assertIn("POSTROUTING -s 192.168.122.20 -o vmbr11 -p tcp --dport 22 -j SNAT --to-source 192.168.127.1", snat)
+        self.assertIn("POSTROUTING -s 192.168.122.21 -o vmbr11 -p tcp --dport 22 -j SNAT --to-source 192.168.127.5", snat)
 
     def test_business_routes_go_through_the_router(self) -> None:
         for cidr in ("192.168.124.0/24", "192.168.125.0/24", "192.168.126.0/24"):
@@ -902,6 +912,8 @@ class HypervisorRenderTests(unittest.TestCase):
         self.assertEqual(forward[-1], f"-A {chain} -j RETURN")
         runner_allow = forward.index(f"-A {chain} -s 192.168.122.20 -d 192.168.127.0/24 -o vmbr11 -p tcp --dport 22 -j ACCEPT")
         self.assertLess(runner_allow, forward.index(f"-A {chain} -o vmbr11 -j DROP"))
+        operator_allow = forward.index(f"-A {chain} -s 192.168.122.21 -d 192.168.127.0/24 -o vmbr11 -p tcp --dport 22 -j ACCEPT")
+        self.assertLess(operator_allow, forward.index(f"-A {chain} -o vmbr11 -j DROP"))
         for cidr in ("192.168.123.0/24", "192.168.124.0/24", "192.168.125.0/24", "192.168.126.0/24"):
             self.assertIn(f"-A {chain} -s 192.168.122.0/24 -d {cidr} -j DROP", forward)
             self.assertIn(f"-A {chain} -s {cidr} -d 192.168.230.119 -j DROP", forward)
@@ -1272,12 +1284,14 @@ class HypervisorStackKernelTests(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertEqual([note.split()[0] for note in notes], ["vmbr12", "vmbr13", "vmbr14"])
 
-    def test_s_leaves_every_t_line_in_place_and_adds_three_nat_lines(self) -> None:
+    def test_s_leaves_every_t_line_in_place_and_adds_four_nat_lines(self) -> None:
+        # MASQUERADE 둘, 러너 SNAT, 운영자 단말 SNAT(설계 §6-2 운영자 경로, S 도 같은 실행기와 같은 주입).
         t_up, s_up = hvcheck.lines_of(self.out["first_up"]), hvcheck.lines_of(self.out["second_up"])
         self.assertEqual(t_up - s_up, collections.Counter())
         added = s_up - t_up
         nat = [line for (table, line) in added if table == "nat"]
-        self.assertEqual(len(nat), 3, nat)
+        self.assertEqual(len(nat), 4, nat)
+        self.assertIn("-A POSTROUTING -s 192.168.122.21/32 -o vmbr14 -p tcp -m tcp --dport 22 -j SNAT --to-source 192.168.133.5", nat)
         hooks = [line for (table, line) in added if table == "filter" and re.search(r"-j S5-(FWD|IN)$", line)]
         self.assertEqual(len(hooks), 3 * 2 + 3, hooks)
         self.assertFalse(any("T4-" in line for (_, line) in added))
@@ -4722,6 +4736,11 @@ class SmsAgentApplyTests(unittest.TestCase):
             key_file = root / f"{key}.pub"
             key_file.write_text("ssh-ed25519 AAAA test\n")
             inv["accounts"][key]["pubkey_file"] = str(key_file)
+        # 운영자 단말 키(설계 §6-2 운영자 경로): 인벤토리에 칸이 있으면 시험 파일로 바꾼다.
+        if inv["accounts"]["operator"].get("terminal_pubkey_file"):
+            terminal = root / "terminal.pub"
+            terminal.write_text("ssh-ed25519 BBBB terminal\n")
+            inv["accounts"]["operator"]["terminal_pubkey_file"] = str(terminal)
         for field in ("db_password_file",):
             secret = root / "db"
             secret.write_text("Abcdefgh12345678\n")
@@ -6361,7 +6380,7 @@ class TraceTableTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("미측정, QueryError: vm down", out.splitlines()[0])
         ctx = t3check.context(inventory())
-        ctx["mgmt_prefix"] = "192.0.2."
+        ctx["executor_source"], ctx["operator_source"] = "192.0.2.1", "192.0.2.5"
         w, base = trace.windows(self.START, self.START + datetime.timedelta(minutes=5), 1, datetime.timedelta(minutes=30))
         for bad in ("a b", "x'; drop", "..."):
             with self.subTest(word=bad), self.assertRaises(ValueError):
@@ -6404,6 +6423,30 @@ class TraceTableTests(unittest.TestCase):
         self.assertIn("VM sudo 세션 닫힘 줄(운영자 몫 뺌) 충족 창 3 평시 최대 4, 운영자 sudo 명령 줄 6", out)
         closes = [q for q in remote.queries if "session closed for user root" in q]
         self.assertTrue(all("startsWith(message, 'sysop : ')" in q for q in closes))
+
+    def test_q7c_is_judged_by_source_address_and_operator_logins_are_counted_apart(self) -> None:
+        """Q35 조건 ①: Q7c 는 실행기 출발 주소(관리망 host_addr)의 새 연결만 본다. 운영자 단말 주소(operator_host_addr)의
+        연결은 판정에 들지 않고, 운영자 로그인 수(주입 창 대 평시 창 최댓값)와 경로 줄 넷을 따로 낸다(조건 ②, ④)."""
+        remote = self.remote()
+        injection = "2026-11-20 01:00:00"
+        remote.ch_rules = [
+            # Connections around the injection: one from the operator terminal, none new from the executor.
+            (lambda q: [["11111111-1111-1111-1111-111111111111", "192.168.127.5", "22"]]
+             if "from lucida.host_connections" in q and "remote_addr = '192.168.127.5'" in q else None, None),
+            (lambda q: [["2"]] if "Accepted publickey for sysop from 192.168.127.5 " in q and "select count()" in q and injection in q else None, None),
+            (lambda q: [["1"]] if "Accepted publickey for sysop from 192.168.127.5 " in q and "select count()" in q else None, None),
+            (lambda q: [["2", "2", "5", "2"]] if "TTY=pts/" in q else None, None),
+        ]
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        # The Q7c reads (the 연결 표본 column reads every connection on purpose and is not a Q7c judgement).
+        conn = [q for q in remote.queries if "toString(local_port) from lucida.host_connections" in q]
+        self.assertEqual(len(conn), 7)
+        self.assertTrue(all("remote_addr = '192.168.127.1'" in q for q in conn), conn)
+        self.assertFalse(any("startsWith(remote_addr" in q for q in conn))
+        self.assertIn("Q7c(출발 192.168.127.1) 충족 []", out)
+        self.assertIn("운영자 로그인(출발 192.168.127.5) 창 2 평시 최대 1", out)
+        self.assertIn("'sshd_accepted': 2, 'session_opened': 2, 'sudo_tty_pts': 5, 'session_closed': 2", out)
 
     def test_long_windows_and_naive_times_are_refused(self) -> None:
         for start, end in (("2026-11-20T10:00:00", "2026-11-20T10:20:00"),
@@ -6638,3 +6681,61 @@ class PipelinePatternTests(unittest.TestCase):
                 count = lambda path: int(subprocess.run(["grep", "-E", "-c", ere, str(path)], capture_output=True, text=True).stdout.strip() or 0)  # noqa: E731
                 self.assertEqual(count(own), len(patterns.systemd_session_lines(name, uid)))
                 self.assertEqual(count(other), 0)
+
+
+class OperatorTerminalTests(unittest.TestCase):
+    """운영자 단말(설계 §6-2 운영자 경로, Q35 조건 ①): 실행기 늘 열린 연결과 다른 출발 주소. 인벤토리 세 칸, 66 의 관리 브리지
+    둘째 주소와 SNAT, FORWARD 허용, VM 과 라우터 관리 보호 표의 받아들임 줄, 운영자 authorized_keys 의 from= 줄."""
+
+    def test_inventory_fields_come_together_and_differ_from_the_executor(self) -> None:
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            render.validate(inv)
+            for change in ("drop_hv", "drop_host", "drop_key", "same_host", "same_runner", "outside"):
+                bad = json.loads(json.dumps(inv))
+                mgmt = next(n for n in bad["networks"].values() if n.get("management"))
+                if change == "drop_hv":
+                    del bad["hypervisor"]["operator_addr"]
+                elif change == "drop_host":
+                    del mgmt["operator_host_addr"]
+                elif change == "drop_key":
+                    del bad["accounts"]["operator"]["terminal_pubkey_file"]
+                elif change == "same_host":
+                    mgmt["operator_host_addr"] = mgmt["host_addr"]
+                elif change == "same_runner":
+                    bad["hypervisor"]["operator_addr"] = bad["hypervisor"]["runner_addr"]
+                else:
+                    mgmt["operator_host_addr"] = "192.168.200.5"
+                with self.subTest(inventory=path.name, change=change), self.assertRaises(render.InventoryError):
+                    render.validate(bad)
+
+    def test_guard_tables_take_the_operator_source_and_keep_it_tracked(self) -> None:
+        for path, host, mgmt_if, source in ((T_INV, "web01", "ens19", "192.168.127.5"), (T_INV, "rt-core01", "ens22", "192.168.127.5"),
+                                            (S_INV, None, None, "192.168.133.5")):
+            all_bundles = bundles(path)
+            names = [host] if host else [b for b in all_bundles if all_bundles[b]["role"] != "loadgen"][:1]
+            for name in names:
+                guard = file_of(all_bundles[name], "/etc/nftables.d/10-mgmt-guard.nft")
+                nic = mgmt_if or next(l.split('"')[1] for l in guard.splitlines() if "iifname" in l)
+                with self.subTest(inventory=path.name, host=name):
+                    self.assertIn(f'iifname "{nic}" ip saddr {source} tcp dport 22 accept', guard)
+                    # Only the executor's management ssh is untracked (cleanup during a full conntrack table).
+                    self.assertNotIn(f"ip saddr {source} ip daddr", guard)
+                    self.assertEqual(all_bundles[name]["env"]["MGMT_OPERATOR"], source)
+        verify = (DEPLOY / "steps" / "verify.sh").read_text()
+        self.assertIn('nft_table_has mgmtguard "iifname \\"$MGMT_IF\\" ip saddr $MGMT_OPERATOR tcp dport 22 accept"', verify)
+
+    def test_terminal_key_is_bound_to_the_operator_source(self) -> None:
+        apply = (DEPLOY / "apply.sh").read_text()
+        self.assertIn("terminal_key=$(field_or_empty accounts.operator.terminal_pubkey_file)", apply)
+        self.assertIn("printf 'from=\"%s\" ' \"$(field_or_empty networks.mgmt.operator_host_addr)\"", apply)
+        self.assertIn('>> "$bundle/secrets/$operator.pub"', apply)
+        # field_or_empty answers an empty string for a missing field (S without a terminal would not break).
+        with tempfile.TemporaryDirectory() as raw:
+            inv = Path(raw) / "inv.json"
+            inv.write_text(json.dumps({"networks": {"mgmt": {"operator_host_addr": "192.0.2.5"}}}))
+            fn = re.search(r"^field_or_empty\(\) \{.*?\n[^\n]*\n[^\n]*\n[^\n]*; \}\n", apply, re.S | re.M).group(0)
+            out = subprocess.run(["bash", "-c", fn + f'inventory={shlex.quote(str(inv))}; field_or_empty networks.mgmt.operator_host_addr; '
+                                  'echo "[$(field_or_empty accounts.operator.terminal_pubkey_file)]"'],
+                                 capture_output=True, text=True, check=True).stdout.splitlines()
+            self.assertEqual(out, ["192.0.2.5", "[]"])

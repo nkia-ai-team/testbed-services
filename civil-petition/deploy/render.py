@@ -211,6 +211,20 @@ def validate(inventory: dict) -> None:
     management = [n for n, v in inventory["networks"].items() if v.get("management")]
     if len(management) != 1:
         raise InventoryError("관리망(management: true)은 하나여야 함")
+    # 운영자 단말(설계 §6-2 운영자 경로, Q35): 셋이 함께 있거나 함께 없다. 있으면 66 이 operator_addr 의 ssh 를
+    # operator_host_addr 로 SNAT 해 VM 은 실행기(host_addr)와 다른 출발 주소로 본다.
+    mgmt_net = inventory["networks"][management[0]]
+    operator_fields = (inventory["hypervisor"].get("operator_addr"), mgmt_net.get("operator_host_addr"),
+                       operator.get("terminal_pubkey_file"))
+    if any(operator_fields) and not all(operator_fields):
+        raise InventoryError("운영자 단말 칸(hypervisor.operator_addr, 관리망 operator_host_addr, "
+                             "accounts.operator.terminal_pubkey_file)은 함께 있거나 함께 없어야 함")
+    if all(operator_fields):
+        op_host = ipaddress.ip_address(mgmt_net["operator_host_addr"])
+        if op_host not in ipaddress.ip_network(mgmt_net["cidr"]) or str(op_host) == mgmt_net["host_addr"]:
+            raise InventoryError("operator_host_addr 는 관리망 안이고 host_addr 와 달라야 함")
+        if inventory["hypervisor"]["operator_addr"] == inventory["hypervisor"]["runner_addr"]:
+            raise InventoryError("operator_addr 는 runner_addr 와 달라야 함(출발 주소로 실행기와 운영자를 가른다)")
     for network in inventory["networks"].values():
         ipaddress.ip_network(network["cidr"])
     for host in inventory["hosts"]:
@@ -359,6 +373,10 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
         "mgmt_addr": mgmt_nic["addr"],
         "mgmt_cidr": mgmt_net["cidr"],
         "mgmt_host": mgmt_net["host_addr"],
+        # 관리 NIC 로 ssh 를 받는 줄: 실행기(하이퍼바이저 관리 주소)는 위 고정 줄, 운영자 단말 주소는 이 줄(없으면 빈 줄).
+        # 운영자 ssh 는 conntrack 에서 빼지 않는다(실제 운영자 접속과 같은 꼴, 정리는 실행기 연결이 맡는다).
+        "operator_ssh_accept": (f'\t\tiifname "{mgmt_nic["ifname"]}" ip saddr {mgmt_net["operator_host_addr"]} tcp dport 22 accept'
+                                if mgmt_net.get("operator_host_addr") else "\t\t# 운영자 단말 없음"),
         "executor_name": accounts["executor"]["name"],
         "executor_uid": str(accounts["executor"]["uid"]),
         "executor_name_re": pipeline_patterns.rainer(pipeline_patterns.name_ere(accounts["executor"]["name"])),
@@ -546,6 +564,7 @@ def render_host(inventory: dict, host: dict) -> dict:
         "OPERATOR_NAME": inventory["accounts"]["operator"]["name"],
         "MGMT_IF": context["mgmt_if"],
         "MGMT_HOST": context["mgmt_host"],
+        "MGMT_OPERATOR": inventory["networks"][_management_net(inventory)].get("operator_host_addr", ""),
         "MGMT_ADDR": context["mgmt_addr"],
         "CHRONY_SERVER": context["chrony_server"],
         "NIC_EXPECT": " ".join(f"{nic['ifname']}={nic['addr']}" for nic in host["nics"]),
@@ -639,6 +658,9 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
             lines.append(f"\taddress {network['host_addr']}/{_prefix(network['cidr'])}")
         else:
             lines.append(f"iface {bridge} inet manual")
+        if name == management and network.get("operator_host_addr"):
+            # 운영자 단말 출발 주소(설계 §6-2 운영자 경로). VM 이 그 주소로 답할 수 있게 66 이 관리 브리지에서 갖는다.
+            lines.append(f"\taddress {network['operator_host_addr']}/{_prefix(network['cidr'])}")
         lines += ["\tbridge-ports none", "\tbridge-stp off", "\tbridge-fd 0", "\tdisable-ipv6 yes"]
         lines += [f"\tpost-up {command}" for command in _bridge_up_commands(inventory, network)]
         lines.append(f"\tpost-up {_bridge_ipv6_off_check(bridge)}")
@@ -657,6 +679,15 @@ def hypervisor_files(inventory: dict) -> dict[str, str]:
                 f"\tpre-down iptables -t nat -D POSTROUTING -s {hv['runner_addr']} -o {bridge} -p tcp --dport 22 "
                 f"-j SNAT --to-source {mgmt['host_addr']} 2>/dev/null || true"
             )
+            if hv.get("operator_addr"):
+                lines.append("\tpost-up " + _ipt(
+                    "nat",
+                    f"POSTROUTING -s {hv['operator_addr']} -o {bridge} -p tcp --dport 22 -j SNAT --to-source {mgmt['operator_host_addr']}",
+                ))
+                lines.append(
+                    f"\tpre-down iptables -t nat -D POSTROUTING -s {hv['operator_addr']} -o {bridge} -p tcp --dport 22 "
+                    f"-j SNAT --to-source {mgmt['operator_host_addr']} 2>/dev/null || true"
+                )
         lines += [f"\tpre-down {command}" for command in _bridge_down_commands(inventory, network)]
         lines.append("")
     files = {hv["file"]: "\n".join(lines), rules_path(inventory): rules_text(inventory)}
@@ -686,6 +717,9 @@ def _chain_rules(inventory: dict) -> tuple[list[str], list[str]]:
     forward: list[str] = [f"-A {chain} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"]
     # 관리망: 러너의 ssh 만 들어가고 나머지는 드나들지 못한다.
     forward.append(f"-A {chain} -s {hv['runner_addr']} -d {mgmt['cidr']} -o {mgmt['bridge']} -p tcp --dport 22 -j ACCEPT")
+    if hv.get("operator_addr"):
+        # 운영자 단말(같은 tb-ops 의 덧붙인 주소)의 ssh 도 들어간다(설계 §6-2 운영자 경로).
+        forward.append(f"-A {chain} -s {hv['operator_addr']} -d {mgmt['cidr']} -o {mgmt['bridge']} -p tcp --dport 22 -j ACCEPT")
     forward.append(f"-A {chain} -i {mgmt['bridge']} -j DROP")
     forward.append(f"-A {chain} -o {mgmt['bridge']} -j DROP")
     # 기존 테스트베드 내부망과 다른 테스트베드 대역과 격리(Q2).

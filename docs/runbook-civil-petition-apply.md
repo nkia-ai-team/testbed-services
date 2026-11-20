@@ -631,6 +631,9 @@ sshd 설정을 바꾸면 이 점을 다시 본다(리뷰 rv-t4s L2).
   거절하고(새 연결은 녹화에 새 관리망 연결을 더한다), cleanup 과 recovery 는 새 연결로라도 간다.
 - 5분 평시 점검 읽기는 실행기 계정의 `sudo -n bash -s` 꼴로(설계 §6-2), db01 `last.json` 가져오기 포함(§6-4).
 - preflight 의 66 쪽 검사(터널, 가드 잔여, 도우미 체크섬)는 15-1 차례 6 의 읽기 동작을 쓴다.
+- 평시 운영자 세션(설계 §6-2 운영자 경로): 라우터와 서버 4대에서 고르게 하나, 30 ~ 90분 고른 무작위 간격으로
+  `python3 /opt/lucida/scenario-contracts/profiles/operator_session.py --node <VM> --check`. 끝 코드 0 성공, 75 는 실행기 운영자
+  세션이 그 VM 을 쥐고 있음(5분 뒤 같은 VM), 그 밖은 실패. 마지막 성공이 180분보다 오래되면 preflight 가 이 도메인 주입을 막는다.
 
 ### 15-3. 시험 실행(설계 §10 T4 "시험 실행", "자가 복구 실측", 녹화 아님)
 
@@ -641,12 +644,37 @@ sshd 설정을 바꾸면 이 점을 다시 본다(리뷰 rv-t4s L2).
 |---|---|---|---|
 | 0 | 녹화 정지(PAUSE), 테스트베드 잠금, 다른 도메인 녹화 없음. 러너의 늘 열린 연결 7개 살아 있음. 한 VM 에서 실행기 연결로 `true` 를 한 번 친 뒤 그 VM `/var/log/syslog` 와 `/var/log/opsjobs.log` 에서 `pam_unix(sudo:session): session closed for user root` 가 어느 쪽에 남는지 본다(리뷰 rv-t4s M3) | 큐 상태, `ssh -O check` 7개. syslog 쪽에 남으면 그 줄은 119 로 가므로 VM sudoers 에 `Defaults:opsjob !pam_session` 을 둘지 T2 소유자와 지휘 세션이 정하고, 흔적 표 도구의 "VM sudo 세션 닫힘 줄" 판정(주입 창 ≤ 평시 창 최댓값)을 본다 | 없음(읽기) |
 | 1 | 실행기 종류마다 한 건씩, 한 번에 하나: preflight → run → 피해 신호가 판정 기준을 넘는지 부하기 요약으로 봄(설계 §6-3) → cleanup → recovery. 시작, 끝 시각 기록 | run 끝 코드 0, cleanup 0, recovery 0, 15분 안에 부하기 비정상 비율과 진입 p95 평시 대역 | 같은 계약으로 cleanup. 안 되면 그 VM 의 `/var/lib/opsjobs/<작업>.undo` 를 root 로 돌림(가드의 되돌림 본문). 66 은 `printf 'link-restore <vmid> <netN>\n' \| sudo /usr/local/sbin/t4-hv-exec-root`(root), tap 은 우리 핸들 1a7e 일 때만 `tc qdisc del dev <tap> root` |
-| 1-1 | router.config 와 vm.service 시험 실행 구간을 119 에서 읽는다(설계 §6-2 끝 문단) | `syslog_local` 에 그 VM 출발 `sysop : TTY=unknown ; PWD=/home/sysop ; USER=root ; COMMAND=...` 꼴 줄이 1건 이상(운영자 경로의 원인 흔적, 리뷰 rv-t4s H1). 0 이면 그 실행기를 녹화에 쓰지 않는다 | 없음(읽기) |
+| 1-1 | router.config 와 vm.service 시험 실행 구간을 119 에서 읽는다(설계 §6-2 운영자 경로) | `syslog_local` 에 그 VM 출발 운영자 경로 줄 넷: `Accepted publickey for sysop from <운영자 출발 주소>`, `session opened for user sysop(uid=1000)`, `sysop : TTY=pts/<N> ; PWD=/home/sysop ; USER=root ; COMMAND=...`, `session closed for user sysop` 가 각각 1건 이상(`trace_table.py` 둘째 줄의 운영자 경로 줄 수). 하나라도 0 이면 그 실행기를 녹화에 쓰지 않는다 | 없음(읽기) |
 | 2 | 자가 복구 실측: 하이퍼바이저 쪽 1건(`vmlink.state`)과 라우터 쪽 1건(`router.qdisc`)은 cleanup 대신 가드를 앞당겨 발화시킨다(`--max-injection 1m` 으로 run, 기한 = 1분 + 600초, 기다림. 또는 U8 시운전 4번처럼 타이머를 손으로 앞당김) | 66 `link-state` 가 `up`, 라우터 root qdisc 가 기본값, 가드 잔여 0 | 발화가 안 되면 차례 1 의 되돌리기 |
 | 3 | 실행기마다 흔적 표 한 줄: `trace_table.py`(흔적 표 문서 §1) | 표의 빈칸 0, Q7 판정 | 없음(읽기) |
 | 4 | 격리 Q2: 시험 실행 중 tb-cp, tb-w1 ~ 3 의 CPU, 메모리가 평시 같은 시각 대비 ±5%p 안 | 119 읽기 | 넘으면 이 도메인 부하를 낮추고 다시 |
 | 5 | 라우터 재시작 변형 구간의 `syslog_local` 에 `netem` 낱말 0(설계 §2-4 예외). 닿으면 거르기 보완 전에는 그 변형을 녹화에 쓰지 않는다 | 119 읽기 | 없음(읽기) |
 | 6 | 끝: 가드 잔여 0(VM 6대와 66), DIRTY 0, PAUSE 풀기 | 러너 preflight | 잔여가 있으면 차례 1 의 되돌리기 |
+
+### 15-4. 운영자 단말 (설계 §6-2 운영자 경로, Q35)
+
+운영자 명령은 tb-ops 에 덧붙인 주소(인벤토리 `hypervisor.operator_addr`, T 는 192.168.122.21)에서 운영자 단말 키로 VM 에 실제
+ssh 로그인해 친다. 66 이 그 연결을 관리 브리지 둘째 주소(관리망 `operator_host_addr`, T 는 192.168.127.5)로 SNAT 하므로 VM 은
+실행기(192.168.127.1)와 다른 출발 주소로 본다. 15-1 과 같이 66 에 닿는 변경이라 테스트베드 잠금과 녹화 정지 창에서 하고, 끝난
+시각이 `last_66_change` 다. VM 쪽 변경(키, 관리 보호 표)과 평시 운영자 세션도 같은 창에서 시작한다.
+
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 0 | 읽기: 두 주소가 비어 있는지. tb-ops `ip -br addr`, 66 `ip -br addr show vmbr11` 과 `ip neigh show 192.168.122.21`, 66 의 122 대역 DHCP 범위(tb-nat 설정)에 192.168.122.21 이 들지 않는지, VM 6대 관리 주소(인벤토리)와 겹치지 않는지 | 둘 다 쓰는 곳 없음. 쓰이고 있으면 멈추고 인벤토리 값을 바꿀지 지휘 세션에 묻는다 | 없음 |
+| 1 | tb-ops 호스트: 키 `ssh-keygen -q -t ed25519 -N '' -C sysop-terminal -f /root/.ssh/vm-ops/t4-operator`(실행기 키와 따로, 0600). 공개 키만 104 `~/.config/testbed/t4-operator-terminal.pub` 로 가져온다(인벤토리 `accounts.operator.terminal_pubkey_file`) | 키 파일 0600, 러너 컨테이너 안 `/root/.ssh/vm-ops/t4-operator` 가 읽힘(읽기 전용 마운트 그대로) | 두 파일 지움 |
+| 2 | tb-ops 호스트: 망 설정 파일(netplan)의 같은 NIC 에 `192.168.122.21/24` 를 덧붙이고 `netplan generate` 로 문법만 확인한 뒤 지금 바로는 `ip addr add 192.168.122.21/24 dev <그 NIC>` 로 올린다(`netplan apply` 는 러너 연결을 흔들 수 있어 쓰지 않는다. 재부팅 때 파일이 같은 주소를 올린다) | `ip -br addr` 에 두 주소. **`ip route get 192.168.127.2` 의 src 가 192.168.122.20 그대로**(덧붙인 주소는 같은 대역의 둘째 주소라 기본 출발 주소가 되지 않는다. 바뀌면 실행기 출발 주소가 운영자 것과 섞이므로 바로 되돌린다) | `ip addr del 192.168.122.21/24 dev <NIC>`, 파일 줄 지움 |
+| 3 | 104: §4 와 같이 66 파일 넷을 다시 렌더한다. 바뀌는 것은 `t4-net`(관리 브리지 `address 192.168.127.5/24`, 운영자 SNAT post-up 과 pre-down)과 `t4-net.rules`(T4-FWD 에 운영자 ssh 허용 한 줄)뿐이다 | 지금 66 파일과의 차이가 그 줄들뿐(`diff`) | 이전 파일을 다시 놓음 |
+| 4 | 66: `iptables-save > /root/t4o.before`. 파일 둘을 같은 경로에 놓고 `iptables-restore --noflush /etc/network/t4-net.rules`(두 전용 체인을 통째로 바꿈, 규칙 파일 머리 주석) 다음 `ifup vmbr11`(다시 돈 post-up 은 `-C` 확인으로 한 벌, 새 주소와 운영자 SNAT 이 더해진다). `ifdown` 과 `ifreload -a` 는 쓰지 않는다 | `ip -br addr show vmbr11` 에 127.1 과 127.5. `iptables-save > /root/t4o.after` 를 가져와 `hv_iptables_check.lines_of` 로 견준 차이가 늘어난 줄 둘(`-A POSTROUTING -s 192.168.122.21/32 -o vmbr11 ... SNAT --to-source 192.168.127.5`, `-A T4-FWD -s 192.168.122.21/32 -d 192.168.127.0/24 -o vmbr11 ... ACCEPT`)뿐이고 없어진 줄 0. 러너의 늘 열린 연결 7개가 `ssh -O check` 로 살아 있음 | `iptables -t nat -D POSTROUTING -s 192.168.122.21 -o vmbr11 -p tcp --dport 22 -j SNAT --to-source 192.168.127.5`, `ip addr del 192.168.127.5/24 dev vmbr11`, 이전 파일 둘을 놓고 `iptables-restore --noflush` |
+| 5 | 104: VM 6대(loadgen 포함, 관리 보호 표가 같은 틀)에 `apply.sh --inventory inventory/t.json --host <이름> ... --steps "accounts firewall verify"`(나머지 인자는 §6 과 같다), 이어서 `--steps record`(설치 기록 다시) | verify 의 `mgmt-guard` 가 운영자 주소 받아들임 줄까지 확인. VM 의 `~sysop/.ssh/authorized_keys` 에 `from="192.168.127.5" ` 로 시작하는 줄 하나. `sha256sum -c --quiet` 끝 코드 0 | 이 판 앞 묶음으로 같은 단계 |
+| 6 | tb-ops 호스트: 운영자 세션 한 번(조회만): 러너 컨테이너 안에서 `python3 /opt/lucida/scenario-contracts/profiles/operator_session.py --node web01 --check` | 끝 코드 0. web01 `/var/log/auth.log` 에 `Accepted publickey for sysop from 192.168.127.5`, `session opened for user sysop`, `sudo: sysop : TTY=pts/`, `session closed for user sysop`. 같은 줄이 119 `syslog_local` 에도(1분 안). `opsjobs.log` 로 돌려진 운영자 줄 0 | 없음(읽기 세션) |
+| 7 | 거절 확인: 운영자 단말 키로 출발 주소를 묶지 않고(`-b` 없이, 출발 192.168.127.1) `sysop@<web01 관리 주소>` 에 붙어 본다. 실행기 키로 `-b 192.168.122.21` 을 주어 `opsjob@` 에도 붙어 본다 | 첫째는 `from=` 이 맞지 않아 키 거절(끝 코드 255). 둘째는 실행기 키가 `from=` 없이 받아들여지므로 붙는다: 실행기 키는 늘 열린 연결로만 쓰고 `-b` 로 묶지 않는다(코드가 그렇게 묶음, 시험 `test_normal_time_operator_sessions_have_the_same_form`) | 없음 |
+| 8 | 러너: 평시 운영자 세션 일정을 켠다(러너 판 T4O, 15-2). 첫 세션은 1 ~ 10분 안 | 러너 state 의 마지막 성공 시각, preflight `operator_routine_age_sec` | 러너 이전 판 |
+
+S 는 같은 tb-ops 주소와 같은 키를 쓰고 66 이 S 관리 브리지에서 192.168.133.5 로 SNAT 한다(인벤토리 s.json, 공개 키는
+`~/.config/testbed/s5-operator-terminal.pub` 에 같은 키를 둔다). S 에 운영자 경로 실행기를 쓸 때 §14 차례로 같은 일을 한다.
+
+되돌리기 순서: 러너 일정 끔(8) → VM 이전 묶음(5) → 66(4) → tb-ops 주소(2) → 키(1). 되돌린 뒤에도 실행기 run 은 운영자 세션이
+실패하므로 router.config, vm.service 는 실패로 끝나고 root 로 되돌린다(운영자 경로 없이 원인 흔적을 남기지 않는다).
 
 ## 수정 기록
 
@@ -680,3 +708,4 @@ sshd 설정을 바꾸면 이 점을 다시 본다(리뷰 rv-t4s L2).
 - 2026-11-19 KST, v4 T4S(ag-t4s): §15 러너 연동(66 실행기 계정, 키, sudoers, 도우미, rsyslog 거르기 설치 순서와 확인과 되돌리기, 러너가 할 일, 시험 실행 계획) 추가.
 - 2026-11-20 KST, v4 T4F(ag-t4s, APT4 차례 8, 지휘 세션 지시): 실행기 uid 꼴에 systemd 템플릿 유닛 인스턴스(`<유닛>@<uid>`)를 더하고 VM 첫 규칙, 66 거르기, 확인 명령(§7 rsyslog 첫 규칙, §14-4 같은 행, §15-1 차례 8)이 모두 `tools/pipeline_patterns.py` 한 곳의 꼴을 쓰게 함. 66 설치 폴더는 `build.py --stage`(거르기, 계정 값 포함).
 - 2026-11-20 KST, v4 T4F 2회차(지휘 세션 결정 (나)): 66 설치가 거르기 확인 뒤, 계정을 만들기 전에 `systemctl mask user@1460.service` 로 hvjob 의 사용자 관리자를 막는다(그 줄은 이름도 uid 도 없어 거르지 못함). remove 는 unmask, check 는 mask 확인 줄. §15-1 차례 4 기대 줄과 되돌리기.
+- 2026-11-20 KST, v4 T4O(ag-t4s, 검토 세션 Q35 답 (나)): §15-4 운영자 단말(tb-ops 덧붙인 주소, 운영자 키, 66 관리 브리지 둘째 주소와 SNAT 과 FORWARD 허용, VM 관리 보호 표와 `from=` 키, 운영자 세션 한 번과 거절 확인, 러너 평시 세션, 되돌리기), §15-2 평시 운영자 세션, §15-3 차례 1-1 기대를 운영자 경로 줄 넷으로.

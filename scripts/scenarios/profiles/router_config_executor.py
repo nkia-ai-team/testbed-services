@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """router.config: an operator's configuration change on the router (docs/spec-testbed-vm-3tier.md §6-1).
 
-What it changes, in the operator's own way (design §6-1 "변경 원인 주입 위치"): the operator account
+What it changes, in the operator's own way (design §6-1 "변경 원인 주입 위치", §6-2 운영자 경로, Q35): the
+operator logs in with ssh from the operator terminal address (key, pty, a session that opens and closes),
 writes an nftables file in its home and loads it with `sudo nft -f`, adds or blackholes a route with
-`sudo ip route add`, or sets a conntrack sysctl with `sudo sysctl -w`. Those sudo lines are the
-change's own trace and reach 119 as a real operator's would. Nothing else of the executor does: the
-executor account's connection, sudo and the guard are diverted by the router's first rsyslog rule
-(§6-2), and the operator commands run over the same open connection (no new login, Q7c).
+`sudo ip route add`, or sets a conntrack sysctl with `sudo sysctl -w`. The login and those sudo lines
+(TTY=pts/N) are the change's own trace and reach 119 as a real operator's would. Nothing of the executor
+does: its connection, sudo and the guard are diverted by the router's first rsyslog rule (§6-2); its new
+connections stay at zero (Q7c is judged by source address, the operator's address is a cause trace).
 
 Content guard (§3-5 rule 6): the change is not tied to an interface, so every item is checked before
 anything connects. A rule may name only addresses inside the business networks (never the router's
@@ -94,7 +95,9 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     check_parameters(params)
 
 
-DISPATCH = vm.CHECKED_DISPATCH.replace(b"@PROBE@", vm.ROUTER_UPLINK_ADDR.encode())
+# Right after the operator's change: 66 pings the router's upstream address through a tunnel source and the change
+# reads as landed over the management connection (design 3-5 rule 6).
+DISPATCH = vm.operator_dispatch(b'hv_call "probe ' + vm.ROUTER_UPLINK_ADDR.encode() + b'" && ' + vm.LANDED)
 
 
 def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], bytes]:

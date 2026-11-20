@@ -9,8 +9,8 @@
   hv_iptables_check.py --inventory t.json --mode down --before 적용전.txt --after 되돌린뒤.txt
   hv_iptables_check.py --inventory t.json --mode ipv6 --ipv6-state ipv6.txt
 
-up:   지워진 줄 0, 늘어난 줄은 전용 체인(선언, 규칙, 훅)과 이 인벤토리의 MASQUERADE, 러너 SNAT 뿐이고
-      MASQUERADE 수는 NAT 대역 수, SNAT 은 1.
+up:   지워진 줄 0, 늘어난 줄은 전용 체인(선언, 규칙, 훅)과 이 인벤토리의 MASQUERADE, 러너 SNAT, 운영자 단말 SNAT 뿐이고
+      MASQUERADE 수는 NAT 대역 수, 러너 SNAT 은 1, 운영자 단말 SNAT 은 인벤토리에 운영자 단말이 있으면 1 없으면 0.
       그리고 이 테스트베드 브리지마다 IPv6 가 꺼져 있고(disable_ipv6=1) IPv6 주소가 0 개다. iptables 격리는
       IPv4 만 막으므로, 66 의 ssh, Proxmox 웹이 IPv6 로도 듣는 한 브리지의 IPv6 가 켜져 있으면 관리망 격리가 샌다.
       ipv6.txt 는 66 에서 `render.py --hypervisor-commands ipv6-state` 가 찍는 명령을 돌린 출력이다.
@@ -85,6 +85,10 @@ def classify(inventory: dict, table: str, line: str) -> str | None:
         if (src == _cidr(hv["runner_addr"]) and f"-o {mgmt['bridge']} " in line
                 and line.endswith(f"-j SNAT --to-source {mgmt['host_addr']}")):
             return "snat"
+        # 운영자 단말(설계 §6-2 운영자 경로): tb-ops 의 덧붙인 주소를 관리 브리지에서 운영자 출발 주소로.
+        if (hv.get("operator_addr") and src == _cidr(hv["operator_addr"]) and f"-o {mgmt['bridge']} " in line
+                and line.endswith(f"-j SNAT --to-source {mgmt.get('operator_host_addr')}")):
+            return "operator_snat"
     return None
 
 
@@ -118,6 +122,9 @@ def check(inventory: dict, mode: str, before_text: str, after_text: str) -> list
         problems.append(f"MASQUERADE {kinds['masquerade']} != {nat_count}")
     if kinds["snat"] != 1:
         problems.append(f"러너 SNAT {kinds['snat']} != 1")
+    want_operator = 1 if inventory["hypervisor"].get("operator_addr") else 0
+    if kinds["operator_snat"] != want_operator:
+        problems.append(f"운영자 단말 SNAT {kinds['operator_snat']} != {want_operator}")
     if kinds["chain"] != 2:
         problems.append(f"전용 체인 선언 {kinds['chain']} != 2")
     return problems

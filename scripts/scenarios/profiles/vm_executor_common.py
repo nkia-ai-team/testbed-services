@@ -49,6 +49,13 @@ CONTROL_DIR_ENV = "CIVIL_PETITION_SSH_CONTROL_DIR"
 CONTROL_DIR_DEFAULT = "/app/state/ssh-control"
 HV_USER = "hvjob"
 HV_UID = 1460
+# The operator terminal (design 6-2 operator path, Q35 answer): the runner opens operator sessions from a second
+# address of tb-ops; 66 SNATs it on the management bridge so the VMs see OPERATOR_SOURCE_ADDR, apart from the
+# executor's MGMT_HOST. The inventory (t.json hypervisor.operator_addr, networks.mgmt.operator_host_addr) holds the
+# same values; a test holds them equal.
+OPERATOR_KEY = f"{KEY_DIR}/t4-operator"
+OPERATOR_BIND_ADDR = "192.168.122.21"
+OPERATOR_SOURCE_ADDR = "192.168.127.5"
 # The runner container's host (tb-ops); 66's forced-command key takes only this source (from="...").
 RUNNER_ADDR = "192.168.122.20"
 HV_KEY = f"{KEY_DIR}/t4-hv"
@@ -360,7 +367,19 @@ hv_master_up() { "${ssh_hv[@]}" -O check hvjob@192.168.122.1 >/dev/null 2>&1; }
 need_hv_master() { if ! hv_master_up; then echo "control connection to 192.168.122.1 is down" >&2; exit 1; fi; }
 # One request to 66's forced-command helper: the request line, then the guard values.
 hv_call() { printf '%s\nexpire_after=%s guard_hold=%s\n' "$1" "$expire_after" "$guard_hold" | "${ssh_hv[@]}" hvjob@192.168.122.1; }
-'''
+# The operator path (design 6-2, Q35): a fresh ssh login as the operator from the operator terminal address, with a
+# pty (sudo logs TTY=pts/N), key authentication, a session that opens and closes. The commands go on stdin to bash.
+# One operator session per VM at a time: the runner's normal-time operator sessions take the same lock.
+op_ssh=(ssh -tt -F none -i "$keys/t4-operator" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o ControlPath=none -b @OPERATOR_BIND@)
+op_session() {
+  mkdir -p "$ctl"
+  {
+    if ! flock -w 600 8; then echo "operator session on $node is busy" >&2; return 1; fi
+    { printf 'set -e\n'; cat; printf 'exit 0\n'; } | "${op_ssh[@]}" "sysop@$host" bash -s
+  } 8>"$ctl/operator-$node.lock"
+}
+'''.replace(b"@OPERATOR_BIND@", OPERATOR_BIND_ADDR.encode())
 
 
 def runner_script(node_program: bytes, dispatch: bytes) -> bytes:
@@ -408,10 +427,25 @@ dispatch() {
       remove
       s=$(state); if [[ "$s" == ours ]]; then exit 1; fi
       guard_disarm "$job" ;;
+    # The operator path (design 6-2, Q35): the node checks and arms, then prints the operator's commands; the runner
+    # types them in an operator ssh session. cleanup: hold prints the operator's undo commands, finish takes back
+    # whatever is left as root and disarms. Only the operator's commands go to stdout.
+    arm) { check; if not_default; then exit 1; fi
+        prepare
+        arm "$(undo_body)" ${boot_files[@]+"${boot_files[@]}"}
+      } >&2
+      op_apply_script ;;
+    hold) guard_postpone "$job" "$guard_hold" >&2
+      s=$(state); if [[ "$s" == ours ]]; then op_remove_script; fi ;;
+    finish) remove >&2
+      s=$(state); if [[ "$s" == ours ]]; then exit 1; fi
+      guard_disarm "$job" ;;
     *) exit 2 ;;
   esac
 }
 prepare() { :; }
+op_apply_script() { :; }
+op_remove_script() { :; }
 '''
 
 
@@ -420,25 +454,13 @@ def node_program(body: bytes) -> bytes:
     return b"set -euo pipefail\n" + GUARD_FUNCTIONS + NODE_DISPATCH + body + b"dispatch\n"
 
 
-# The operator path (design 6-1 "change cause"). This block is the only place that decides how an operator
-# command reaches the VM; router.config and vm.service call as_operator and as_operator_user and nothing else, so
-# switching to a separate operator ssh login (review question Q35) changes only this block.
-#
-# Today: the change is typed by the operator account through sudo, as a real operator's change would be, over the
-# executor's open connection (no new login, Q7c). setpriv takes no PAM session and logs nothing. The command runs in
-# the operator's own environment: its home as the working directory (sudo logs PWD, and a PWD under the executor's
-# home would put the executor account's name into the line, so the VM's first rsyslog rule would divert the
-# operator's sudo line away from 119), and HOME, SHELL, USER, LOGNAME of the operator (setpriv --reset-env).
-# What still differs from a real operator: no login lines, TTY=unknown, and sudo's PAM "session opened ... by
-# <executor>" line is diverted (glibc getlogin reads the session's loginuid), so 119 sees the closing line only.
+# The operator path, node side (design 6-2, Q35). The operator's commands are typed in a real operator ssh login
+# (runner side op_session); this node side only names the operator and prints the commands, shell-quoted.
+# This block and op_session (RUNNER_HEAD) are the whole operator path; router.config and vm.service use nothing else.
 OPERATOR_FUNCTIONS = br'''operator=sysop
-ops_setpriv="${OPS_SETPRIV:-setpriv}"
-ops_sudo="${OPS_SUDO:-sudo}"
 op_home="${OPS_HOME:-$(getent passwd "$operator" | cut -d: -f6)}"
-as_operator_user() {
-  ( cd "$op_home" && exec "$ops_setpriv" --reuid="$operator" --regid="$operator" --init-groups --reset-env -- "$@" )
-}
-as_operator() { as_operator_user "$ops_sudo" -n "$@"; }
+# One operator command line: the words shell-quoted, as the operator's bash will read them.
+op_line() { local first=1 w; for w in "$@"; do if (( first )); then first=0; else printf ' '; fi; printf '%q' "$w"; done; printf '\n'; }
 '''
 
 # A bounded background job in its own process group (cpu loops, memory hold, IO, table fill): the
@@ -501,7 +523,6 @@ job="cfg-$table"
 state_root="${OPSJOB_STATE_ROOT:-/var/lib/opsjobs}"
 prev="$state_root/$job.prev"
 file="$op_home/$table.nft"
-op() { if [[ "$mode" == operator ]]; then as_operator "$@"; else "$@"; fi; }
 table_present() { nft list table inet "$table" >/dev/null 2>&1; }
 route_parts() { dst="${1%%=*}"; local rest="${1#*=}"; rtype="${rest%%=*}"; via="${rest#*=}"; shown="${dst%/32}"; }
 route_ours() {
@@ -562,37 +583,65 @@ undo_body() {
     printf 'rm -f %q\n' "$prev"
   fi
 }
+# Root mode (vmhost.firewall): the executor applies. Operator mode (router.config): the operator does, in its own
+# ssh session (op_apply_script below); the root apply refuses so no change can bypass the operator.
 apply() {
   local t
-  if [[ "$text" != - ]]; then
-    if [[ "$mode" == operator ]]; then
-      printf '%s' "$text" | as_operator_user tee "$file" >/dev/null
-      as_operator nft -f "$file"
-    else
-      printf '%s' "$text" | nft -f -
-    fi
-  fi
+  if [[ "$mode" == operator ]]; then echo "an operator change goes through the operator session" >&2; exit 2; fi
+  if [[ "$text" != - ]]; then printf '%s' "$text" | nft -f -; fi
   while read -r t; do
     [[ -n "$t" ]] || continue
     route_parts "$t"
-    if [[ "$rtype" == via ]]; then op ip route add "$dst" via "$via"; else op ip route add "$rtype" "$dst"; fi
+    if [[ "$rtype" == via ]]; then ip route add "$dst" via "$via"; else ip route add "$rtype" "$dst"; fi
   done < <(items "$routes")
-  while read -r t; do if [[ -n "$t" ]]; then op sysctl -w "$t" >/dev/null; fi; done < <(items "$sysctls")
+  while read -r t; do if [[ -n "$t" ]]; then sysctl -w "$t" >/dev/null; fi; done < <(items "$sysctls")
 }
+# What is left after the operator's undo (or all of it when the operator session could not run): root takes it back.
 remove() {
   local t k v
-  if table_present; then op nft delete table inet "$table"; fi
-  if [[ "$mode" == operator && "$text" != - && -e "$file" ]]; then as_operator_user rm -f "$file"; fi
+  if table_present; then nft delete table inet "$table"; fi
+  if [[ "$mode" == operator && "$text" != - && -e "$file" ]]; then rm -f "$file"; fi
   while read -r t; do
     [[ -n "$t" ]] || continue
     if route_ours "$t"; then
       route_parts "$t"
-      if [[ "$rtype" == via ]]; then op ip route del "$dst" via "$via"; else op ip route del "$rtype" "$dst"; fi
+      if [[ "$rtype" == via ]]; then ip route del "$dst" via "$via"; else ip route del "$rtype" "$dst"; fi
     fi
   done < <(items "$routes")
   if [[ -s "$prev" ]]; then
-    while IFS== read -r k v; do if [[ "$(sysctl -n "$k")" != "$v" ]]; then op sysctl -w "$k=$v" >/dev/null; fi; done <"$prev"
+    while IFS== read -r k v; do if [[ "$(sysctl -n "$k")" != "$v" ]]; then sysctl -w "$k=$v" >/dev/null; fi; done <"$prev"
     rm -f "$prev"
+  fi
+}
+# The operator's commands. The rules file is written by the operator into its home (spaces, not tabs), then loaded.
+op_apply_script() {
+  local t
+  if [[ "$text" != - ]]; then
+    printf 'cat > %q <<%s\n' "$file" "'NFT_RULES'"
+    printf '%s' "${text//$'\t'/    }"
+    printf 'NFT_RULES\n'
+    op_line sudo nft -f "$file"
+  fi
+  while read -r t; do
+    [[ -n "$t" ]] || continue
+    route_parts "$t"
+    if [[ "$rtype" == via ]]; then op_line sudo ip route add "$dst" via "$via"; else op_line sudo ip route add "$rtype" "$dst"; fi
+  done < <(items "$routes")
+  while read -r t; do if [[ -n "$t" ]]; then op_line sudo sysctl -w "$t"; fi; done < <(items "$sysctls")
+}
+op_remove_script() {
+  local t k v
+  if table_present; then op_line sudo nft delete table inet "$table"; fi
+  if [[ "$text" != - && -e "$file" ]]; then op_line rm -f "$file"; fi
+  while read -r t; do
+    [[ -n "$t" ]] || continue
+    if route_ours "$t"; then
+      route_parts "$t"
+      if [[ "$rtype" == via ]]; then op_line sudo ip route del "$dst" via "$via"; else op_line sudo ip route del "$rtype" "$dst"; fi
+    fi
+  done < <(items "$routes")
+  if [[ -s "$prev" ]]; then
+    while IFS== read -r k v; do if [[ "$(sysctl -n "$k")" != "$v" ]]; then op_line sudo sysctl -w "$k=$v"; fi; done <"$prev"
   fi
 }
 '''
@@ -613,6 +662,39 @@ CHECKED_DISPATCH = br'''case "$action" in
   *) exit 2 ;;
 esac
 '''
+
+
+# The operator path, runner side (design 6-2, Q35): the node arms and prints the operator's commands, the runner
+# types them in an operator ssh session, then @CHECK@ (a condition that holds when the change landed and nothing
+# protected was cut). cleanup: the operator types the undo, then the node takes back whatever is left as root.
+OPERATOR_DISPATCH = br'''case "$action" in
+  preflight) node_call check ;;
+  run) need_master
+    script=$(node_call arm)
+    if ! printf '%s\n' "$script" | op_session; then
+      echo "the operator session failed; undoing" >&2
+      node_call cleanup || true
+      exit 1
+    fi
+    if ! { @CHECK@; }; then
+      echo "the change cut a protected path or did not land; undoing it" >&2
+      node_call cleanup || true
+      exit 1
+    fi ;;
+  cleanup) script=$(node_call hold)
+    if [[ -n "$script" ]] && ! printf '%s\n' "$script" | op_session; then
+      echo "the operator session failed; the executor takes the change back" >&2
+    fi
+    node_call finish ;;
+  recovery) s=$(node_call state); [[ "$s" == default ]] ;;
+  *) exit 2 ;;
+esac
+'''
+LANDED = b's=$(node_call state) && [[ "$s" == ours ]]'
+
+
+def operator_dispatch(check: bytes = LANDED) -> bytes:
+    return OPERATOR_DISPATCH.replace(b"@CHECK@", check)
 
 
 def vm_invocation(plan: dict[str, Any], action: str, params: dict[str, Any], node_body: bytes,

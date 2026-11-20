@@ -16,6 +16,7 @@ table inet mgmtguard {
 		type filter hook input priority -10; policy accept;
 		iifname "{{mgmt_if}}" ct state established,related accept
 		iifname "{{mgmt_if}}" ip saddr {{mgmt_host}} tcp dport 22 accept
+{{operator_ssh_accept}}
 		iifname "{{mgmt_if}}" drop
 	}
 }
