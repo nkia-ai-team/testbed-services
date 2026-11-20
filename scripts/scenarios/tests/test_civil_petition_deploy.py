@@ -6922,6 +6922,13 @@ class OperatorTerminalTests(unittest.TestCase):
         self.assertEqual(sess.decoy_release("a" * 64), "/var/lib/petition-deploy/releases/petition-aaaaaaaaaaaa.war")
         self.assertEqual(sess.WAR_SHA256, "/var/lib/petition-deploy/war.sha256")
         self.assertIn("> /var/lib/petition-deploy/war.sha256", was)
+        # The decoy waits for the application as long as the was step does after the same restart (command session
+        # 11-21), within its own limits; the normal-time check keeps its 90 seconds.
+        settle = re.search(r'^settle (\d+) \d+ "앱 health 응답 없음"', was, re.M)
+        self.assertEqual(int(settle.group(1)), sess.HEALTH_WAIT_SECONDS)
+        self.assertEqual((sess.HEALTH_WAIT_SECONDS, sess.DECOY_PHASE_SECONDS, sess.DECOY_LIMIT_SECONDS), (120, 170, 240))
+        self.assertGreaterEqual(sess.DECOY_PHASE_SECONDS - sess.HEALTH_WAIT_SECONDS, 50)
+        self.assertEqual(sess.SESSION_TIMEOUT_SECONDS, 90)
 
 
 class DecoyProbeTests(unittest.TestCase):

@@ -76,8 +76,10 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # undoes the change by itself when the revert never comes: vm_hold_sec max goes in as max_injection_duration and the
 # guard adds its own 600 seconds (2478 with the recorded range, rv-t4u2 N2). After each call the application must answer its health check
 # (review R4). Exit codes: 0, 1 not healthy after the change (taken back on the spot), 3 refused, 4 the executor
-# failed (it took back what it could as root), 75 busy, 124 the change passed its 90 seconds. The whole call, a
-# take-back included, ends within DECOY_BUDGET_SECONDS (the runner allows 150, rv-t4u2 N4).
+# failed (it took back what it could as root), 75 busy, 124 the phase passed DECOY_PHASE_SECONDS. The health wait is
+# the was step's 120 seconds (the same restart, steps/was.sh settle; command session 11-21). A decoy call has its own
+# limits, apart from the normal-time check's 90: the executor and the health wait end within DECOY_PHASE_SECONDS,
+# the whole call, a take-back included, within DECOY_LIMIT_SECONDS; the runner allows that plus 60 (300, rv-t4u2 N4).
 WAR = "/var/lib/tomcat10/webapps/petition.war"
 WAR_SHA256 = "/var/lib/petition-deploy/war.sha256"
 WEB_CONF = "/etc/apache2/sites-available/petition.conf"
@@ -88,8 +90,9 @@ DECOYS: dict[str, dict[str, Any]] = {
     "config_reapply": {"role": "web", "unit": "apache2", "health": "http://127.0.0.1:80/petition/api/health"},
 }
 DECOY_POLICY = Path(__file__).resolve().parents[1] / "registry" / "decoy-deployments.json"
-HEALTH_WAIT_SECONDS = 60
-DECOY_BUDGET_SECONDS = 140
+HEALTH_WAIT_SECONDS = 120
+DECOY_PHASE_SECONDS = 170
+DECOY_LIMIT_SECONDS = 240
 DECOY_EXECUTOR_FAILED = 4
 
 
@@ -244,7 +247,7 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
         except BlockingIOError:
             print(f"operator session on {node} is busy", file=sys.stderr)
             return BUSY_EXIT
-    deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
+    deadline = started + DECOY_PHASE_SECONDS
     params = decoy_params(node, kind, deployed_war_sha256(row["mgmt"]) if kind == "war_redeploy" else None)
     actions = ["run"] if phase == "change" else ["cleanup", "recovery"]
     for action in actions:
@@ -252,7 +255,7 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
         try:
             rc = execute(argv, stdin, timeout=max(deadline - time.monotonic(), 1))
         except subprocess.TimeoutExpired:
-            print(f"decoy {kind} {phase} on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
+            print(f"decoy {kind} {phase} on {node} passed {DECOY_PHASE_SECONDS}s and was ended", file=sys.stderr)
             return 124
         if rc != 0:
             # Not the application's answer but the executor's own failure (it took back what it could): its own code.
@@ -262,7 +265,7 @@ def run_decoy(node: str, kind: str, phase: str) -> int:
         if phase == "change":
             # The change hurt: take it back now (the operator's undo, root for the rest) within what is left of the
             # whole call's budget, then report.
-            end = started + DECOY_BUDGET_SECONDS
+            end = started + DECOY_LIMIT_SECONDS
             for action in ("cleanup", "recovery"):
                 argv, stdin = decoy_invocation(params, hold_seconds, action)
                 left = end - time.monotonic()
