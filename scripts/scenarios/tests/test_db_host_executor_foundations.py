@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -1905,3 +1906,55 @@ class ExecuteEndsTheWholeGroupTests(unittest.TestCase):
         runner.terminate()  # the runner ends an executor TERM first
         runner.wait(timeout=20)
         self.assertTrue(self._gone(child), "the script's child outlived the stopped executor")
+
+    def _executor_with(self, prelude: str, script: list[str]) -> subprocess.Popen:
+        runner = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); import executor_common, os, signal, subprocess\n" + prelude +
+             "\nexecutor_common.execute(sys.argv[2:], b'')", str(PROFILES), *script],
+            start_new_session=True)
+
+        def end_all() -> None:
+            try:
+                os.killpg(runner.pid, 9)
+            except ProcessLookupError:
+                pass
+            if self.pidfile.exists() and self.pidfile.read_text().strip():
+                try:
+                    os.killpg(int(self.pidfile.read_text()), 9)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            runner.wait(timeout=5)
+        self.addCleanup(end_all)
+        return runner
+
+    def test_a_script_that_ignores_term_ends_inside_the_runners_five_seconds(self) -> None:
+        """rv-t4u L1: on a stop the executor gives the script's group 2 seconds after TERM, then KILL, so it is done
+        before the runner's own KILL 5 seconds after its TERM."""
+        script = ["bash", "-c", f"trap '' TERM; sleep 300 & echo $! > {self.pidfile}; wait; wait"]
+        runner = self._executor_with("", script)
+        child = self._child()
+        started = time.monotonic()
+        runner.terminate()
+        runner.wait(timeout=20)
+        self.assertLess(time.monotonic() - started, 4.5)
+        self.assertTrue(self._gone(child), "the script's child outlived the stopped executor")
+
+    def test_a_stop_while_the_script_starts_is_not_lost(self) -> None:
+        """rv-t4u L2: a TERM that comes while Popen is starting the script (the handler sees no process yet) is
+        handled right after: the script's group ends and the executor goes with TERM."""
+        prelude = ("real = subprocess.Popen\n"
+                   "def popen(*a, **k):\n"
+                   "    p = real(*a, **k)\n"
+                   "    import time\n"
+                   "    for _ in range(100):\n"
+                   "        if os.path.exists(sys.argv[-1].split('> ')[-1].split(';')[0]) : break\n"
+                   "        time.sleep(0.05)\n"
+                   "    os.kill(os.getpid(), signal.SIGTERM)\n"
+                   "    return p\n"
+                   "executor_common.subprocess.Popen = popen")
+        script = ["bash", "-c", f"sleep 300 & echo $! > {self.pidfile}; wait"]
+        runner = self._executor_with(prelude, script)
+        runner.wait(timeout=20)
+        self.assertEqual(runner.returncode, -signal.SIGTERM)
+        self.assertTrue(self._gone(self._child()), "the script's child outlived a stop during its start")

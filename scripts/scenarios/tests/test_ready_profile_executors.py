@@ -6593,77 +6593,131 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual(subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "loadgen", "--check"],
                                         env=env, capture_output=True, text=True, timeout=60).returncode, 3)
 
-    def test_decoys_are_an_operator_change_and_its_undo_that_leave_the_vm_as_it_was(self) -> None:
-        """T4U (review rv-t4o M3): operator_session.py --decoy runs two operator logins (the change, then its undo), the
-        way vm.service types an injection, and the VM ends as it was. Refusals: a kind a VM does not take, an unknown
-        kind, a VM the lock holds (75)."""
+    def _decoy_box(self):
+        """The sandbox VM for decoys: a deployed WAR with its recorded sha256 and its same-bytes release, the site file
+        with the proxy line once, the executor's master up, active units."""
         sess = load("operator_session")
         root = self.tmp
         war = root / "webapps" / "petition.war"
         war.parent.mkdir()
         war.write_bytes(b"deployed release")
-        conf = root / "sites" / "petition.conf"
-        conf.parent.mkdir()
-        conf.write_text("<VirtualHost *:80>\n</VirtualHost>\n")
-        conf.chmod(0o640)
-        swap = {sess.WAR: str(war), sess.WEB_CONF: str(conf)}
+        digest = hashlib.sha256(b"deployed release").hexdigest()
+        (root / "war.sha256").write_text(f"{digest}  petition.war\n")
+        releases = root / "releases"
+        releases.mkdir()
+        (releases / f"petition-{digest[:12]}.war").write_bytes(b"deployed release")
+        conf = root / "etc" / "apache2" / "petition.conf"
+        conf.parent.mkdir(parents=True)
+        conf.write_text("<VirtualHost *:80>\n" + sess.PROXY_LINE + "\n</VirtualHost>\n")
+        units = root / "units"
+        units.mkdir(exist_ok=True)
+        for unit in ("tomcat10", "apache2"):
+            (units / f"{unit}.service-state").write_text("active\n")
+        for host in ("192.168.127.21", "192.168.127.31", "192.168.127.32"):
+            vm_sandbox.master(root, host)
+        env = {**self.env, "PETITION_WAR": str(war), "PETITION_WAR_BAK": str(root / "petition.war.bak"),
+               "PETITION_WAR_SHA256": str(root / "war.sha256")}
+        swap = {sess.decoy_release(digest): str(releases / f"petition-{digest[:12]}.war"), sess.WEB_CONF: str(conf)}
+        real = sess.decoy_invocation
 
-        def sessions(node: str, kind: str) -> list[list[str]]:
-            out = []
-            for argv in sess.decoy_sessions(node, kind):
-                command = argv[-1]
-                for a, b in swap.items():
-                    command = command.replace(a, b)
-                out.append(argv[:-1] + [command])
-            return out
+        def invocation(params, hold, action):
+            argv, stdin = real(params, hold, action)
+            return [swap.get(a, a) for a in argv], stdin
+        return sess, env, war, conf, digest, invocation
 
-        home = Path(self.env["OPS_HOME"])
-        with unittest.mock.patch.dict(os.environ, self.env):
-            before = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
-            self.assertEqual(sess.run_sessions("was01", sessions("was01", "war_redeploy")), 0)
-            lines = [l.replace(str(root), "{root}") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")[before:]]
-            self.assertEqual(lines, [
-                "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=cp -p {root}/webapps/petition.war {root}/home/petition.war.prev",
-                "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=cp {root}/home/petition.war.prev {root}/webapps/petition.war",
-                "sysop : TTY=pts/0 ; PWD={root}/home ; USER=root ; COMMAND=rm -f {root}/home/petition.war.prev",
-            ])
+    def _sudo_commands(self, before: int) -> list[str]:
+        root = str(self.tmp)
+        return [l.split(" ; COMMAND=")[1].replace(root, "{root}") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")[before:]
+                if l.startswith("sysop : TTY=pts/0")]
+
+    def test_decoys_are_vm_service_changes_with_harmless_values(self) -> None:
+        """T4U, review rv-t4u R1 (가): a decoy is the vm.service executor's own change and undo, so its sudo COMMAND
+        lines (backup files, word order, the restart) are an injection's; only the values are harmless (the WAR's own
+        bytes as the release, the proxy timeout 30 -> 31). apply and undo are two calls; the guard is armed with the
+        hold. After each phase the application answers its health check (R4)."""
+        sess, env, war, conf, digest, invocation = self._decoy_box()
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", invocation):
+            # war_redeploy, apply then undo.
+            n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
+            self.assertEqual(sess.run_decoy("was01", "war_redeploy", "apply", 900), 0)
+            self.assertEqual(self._sudo_commands(n), [
+                "cp -p {root}/webapps/petition.war {root}/petition.war.bak",
+                f"cp {{root}}/releases/petition-{digest[:12]}.war {{root}}/webapps/petition.war"])
+            self.assertTrue((self.tmp / "petition.war.bak").exists())
+            self.assertEqual(war.read_bytes(), b"deployed release")
+            self.assertTrue(node_guard_fakes.timers(self.env), "the executor's guard is armed while the decoy holds")
+            n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
+            self.assertEqual(sess.run_decoy("was01", "war_redeploy", "undo", 900), 0)
+            self.assertEqual(self._sudo_commands(n), ["cp {root}/petition.war.bak {root}/webapps/petition.war",
+                                                      "rm -f {root}/petition.war.bak"])
+            self.assertFalse((self.tmp / "petition.war.bak").exists())
+            self.assertEqual(war.read_bytes(), b"deployed release")
+            # config_reapply on web01: an injection's config lines and restart, the proxy timeout one second longer.
+            n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
+            self.assertEqual(sess.run_decoy("web01", "config_reapply", "apply", 900), 0)
+            lines = self._sudo_commands(n)
+            self.assertEqual(lines[0], "cp -p {root}/etc/apache2/petition.conf {root}/etc/apache2/petition.conf.bak")
+            self.assertTrue(lines[1].startswith("awk -v m=" + sess.PROXY_LINE + " -v r=" + sess.PROXY_LINE_DECOY), lines[1])
+            self.assertEqual(lines[2:], ["cp {root}/home/petition.conf.new {root}/etc/apache2/petition.conf",
+                                         "systemctl restart apache2"])
+            self.assertIn("timeout=31", conf.read_text())
+            n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
+            self.assertEqual(sess.run_decoy("web01", "config_reapply", "undo", 900), 0)
+            self.assertEqual(self._sudo_commands(n), ["cp {root}/etc/apache2/petition.conf.bak {root}/etc/apache2/petition.conf",
+                                                      "rm -f {root}/etc/apache2/petition.conf.bak", "systemctl restart apache2"])
+            self.assertIn("timeout=30", conf.read_text())
+            self.assertIn("http://127.0.0.1:80/petition/api/health", vm_sandbox.logged(self.tmp, "curl-log"))
+            self.assertIn("http://127.0.0.1:8080/petition/api/health", vm_sandbox.logged(self.tmp, "curl-log"))
+            # The operator logins: one per phase, from the operator address with a pty.
             logins = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
-            self.assertEqual(len(logins), 2)
-            self.assertTrue(all(l.startswith("login sysop@192.168.127.31 bind=192.168.122.21 tty=yes") for l in logins), logins)
-            self.assertEqual(war.read_bytes(), b"deployed release")
-            self.assertFalse((home / "petition.war.prev").exists())
-            before = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
-            self.assertEqual(sess.run_sessions("web01", sessions("web01", "config_reapply")), 0)
-            lines = [l.split(" ; COMMAND=")[1].replace(str(root), "{root}") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")[before:]]
-            self.assertEqual(lines, ["cp -p {root}/sites/petition.conf {root}/home/petition.conf.prev",
-                                     "cp {root}/home/petition.conf.prev {root}/sites/petition.conf",
-                                     "systemctl reload apache2", "rm -f {root}/home/petition.conf.prev"])
-            self.assertEqual(conf.read_text(), "<VirtualHost *:80>\n</VirtualHost>\n")
-            self.assertEqual(conf.stat().st_mode & 0o777, 0o640)
-            self.assertIn("reload apache2", vm_sandbox.logged(self.tmp, "service-log"))
-            # The undo session runs even when the change session failed after its copy (the copy does not stay
-            # behind): the WAR cannot be written, so the second line fails once the copy is in the operator's home.
-            war.chmod(0o444)
-            before = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
-            self.assertNotEqual(sess.run_sessions("was01", sessions("was01", "war_redeploy")), 0)
-            lines = [l.split(" ; COMMAND=")[1].replace(str(root), "{root}") for l in vm_sandbox.logged(self.tmp, "sudo-syslog")[before:]]
-            self.assertEqual(lines[0], "cp -p {root}/webapps/petition.war {root}/home/petition.war.prev")
-            self.assertEqual(lines[-1], "rm -f {root}/home/petition.war.prev")
-            self.assertFalse((home / "petition.war.prev").exists())
-            self.assertEqual(war.read_bytes(), b"deployed release")
-            war.chmod(0o644)
-        # Refusals and the CLI's codes.
+            self.assertEqual(len(logins), 4)
+            self.assertTrue(all(" bind=192.168.122.21 tty=yes " in l for l in logins), logins)
+        # The same lines as an injection by construction: the decoy goes through vm.service's own invocation.
+        params = sess.decoy_params("was02", "war_redeploy", digest)
+        svc = load("vm_service_executor")
+        self.assertEqual(svc.check_parameters(params)[1], "war")
+        self.assertEqual(sess.decoy_params("web01", "config_reapply")["action"], "config")
+
+    def test_a_decoy_that_hurts_the_application_is_taken_back_at_once(self) -> None:
+        """Review rv-t4u R4: the application must answer its health check after the change; otherwise the decoy is
+        undone on the spot (the operator's undo, root for the rest) and the call fails."""
+        sess, env, war, conf, digest, invocation = self._decoy_box()
+        (self.tmp / "health-down").touch()
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", invocation), \
+                unittest.mock.patch.object(sess, "HEALTH_WAIT_SECONDS", 3):
+            self.assertEqual(sess.run_decoy("was01", "war_redeploy", "apply", 900), 1)
+        self.assertFalse((self.tmp / "petition.war.bak").exists())
+        self.assertEqual(war.read_bytes(), b"deployed release")
+
+    def test_decoy_refusals_and_codes(self) -> None:
+        sess, env, *_ = self._decoy_box()
         cli = [sys.executable, str(PROFILES / "operator_session.py")]
         for node, kind in (("web01", "war_redeploy"), ("was01", "config_reapply"), ("db01", "war_redeploy"),
                            ("rt-core01", "config_reapply"), ("was01", "restart")):
             with self.subTest(node=node, kind=kind):
-                done = subprocess.run(cli + ["--node", node, "--decoy", kind], env=self.env, capture_output=True, text=True, timeout=60)
+                done = subprocess.run(cli + ["--node", node, "--decoy", kind, "--phase", "apply", "--hold-sec", "900"],
+                                      env=env, capture_output=True, text=True, timeout=60)
                 self.assertEqual(done.returncode, 3, done.stderr)
+        for hold in ("30", "7200"):
+            done = subprocess.run(cli + ["--node", "was01", "--decoy", "war_redeploy", "--phase", "apply", "--hold-sec", hold],
+                                  env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 3, done.stderr)
+        self.assertEqual(subprocess.run(cli + ["--node", "was01", "--decoy", "war_redeploy"], env=env,
+                                        capture_output=True, text=True, timeout=60).returncode, 2)
         import fcntl
-        with open(Path(self.env["CIVIL_PETITION_SSH_CONTROL_DIR"]) / "operator-was02.lock", "a") as held:
+        Path(env["CIVIL_PETITION_SSH_CONTROL_DIR"]).mkdir(parents=True, exist_ok=True)
+        with open(Path(env["CIVIL_PETITION_SSH_CONTROL_DIR"]) / "operator-was02.lock", "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
-            done = subprocess.run(cli + ["--node", "was02", "--decoy", "war_redeploy"], env=self.env, capture_output=True, text=True, timeout=60)
+            done = subprocess.run(cli + ["--node", "was02", "--decoy", "war_redeploy", "--phase", "apply", "--hold-sec", "900"],
+                                  env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(done.returncode, 75, done.stderr)
+        # The executor's connection down: the WAR's checksum cannot be read, refused without a login.
+        vm_sandbox.master(self.tmp, "192.168.127.31", up=False)
+        before = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
+        done = subprocess.run(cli + ["--node", "was01", "--decoy", "war_redeploy", "--phase", "apply", "--hold-sec", "900"],
+                              env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 3, done.stderr)
+        self.assertEqual([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")], before)
         self.assertEqual(sorted(sess.decoy_nodes("war_redeploy")), ["was01", "was02"])
         self.assertEqual(sess.decoy_nodes("config_reapply"), ["web01"])
 

@@ -11,7 +11,8 @@ holds the two equal).
   operator_session.py --node <VM name> --check          one read-only operator session (the runner's schedule calls it)
   operator_session.py --node <VM name> --print          the ssh command and the session text as JSON, nothing run
   operator_session.py --list-nodes                      the VMs that take normal-time sessions, one JSON line
-  operator_session.py --node <VM name> --decoy <kind>   a harmless operator change and its undo (U7 decoy, T4U)
+  operator_session.py --node <VM name> --decoy <kind> --phase apply|undo --hold-sec <s>
+                                                        a U7 decoy: a vm.service change with harmless values, or its undo
 
 The session takes the per-VM lock <CIVIL_PETITION_SSH_CONTROL_DIR>/operator-<VM>.lock that the executors take too, so
 a normal-time session and an injection never share a VM at once. The session text goes as the remote command
@@ -59,22 +60,30 @@ ROLE_CHECKS: dict[str, list[str]] = {
 }
 
 
-# U7 decoys on this domain (T4U, command session 11-20): an operator change that leaves the VM as it was, typed the way
-# vm.service types a change and its undo (run session, then cleanup session, each a login). The copies go to the
-# operator's home, not the executor's backup path, so a decoy never touches an injection's state.
+# U7 decoys on this domain (T4U, command session 11-20; review rv-t4u R1 (가)): a decoy IS a vm.service change and its
+# undo with harmless values, run through the vm.service executor itself, so every line the VM and 119 see (the
+# operator's login, the sudo COMMAND lines with the same backup files and the same word order, the restart and its
+# journal lines, the guard the executor arms) is an injection's, character for character. Only the values differ:
+#   war_redeploy    the WAR swapped for a release with the same bytes (releases/petition-<sha256 first 12>.war,
+#                   placed by the was step), so Tomcat redeploys the application it already runs.
+#   config_reapply  one line of the site file changed to a value with no effect on the traffic (the proxy timeout
+#                   30 -> 31 seconds, no request takes that long) and apache2 restarted, as a config injection does.
+# The change and its undo are two calls (--phase apply, --phase undo); the runner draws the gap between them from
+# the injections' durations (contract with the runner). The executor's guard undoes the change by itself when the
+# undo never comes (expire after --hold-sec, as max_injection_duration). After each phase the application must
+# answer its health check before the decoy counts as done (review R4).
 WAR = "/var/lib/tomcat10/webapps/petition.war"
+RELEASES = "/var/lib/petition-deploy/releases/"
+WAR_SHA256 = "/var/lib/petition-deploy/war.sha256"
 WEB_CONF = "/etc/apache2/sites-available/petition.conf"
+PROXY_LINE = '\tProxyPass        "/petition/" "balancer://wascluster/petition/" timeout=30'
+PROXY_LINE_DECOY = '\tProxyPass        "/petition/" "balancer://wascluster/petition/" timeout=31'
 DECOYS: dict[str, dict[str, Any]] = {
-    # Tomcat redeploys the same bytes (the WAR's mtime changes); nothing else moves.
-    "war_redeploy": {"role": "was",
-                     "run": [f"sudo cp -p {WAR} ~/petition.war.prev", f"sudo cp ~/petition.war.prev {WAR}"],
-                     "cleanup": ["sudo rm -f ~/petition.war.prev"]},
-    # The site file copied back over itself and a graceful reload (open connections finish first).
-    "config_reapply": {"role": "web",
-                       "run": [f"sudo cp -p {WEB_CONF} ~/petition.conf.prev", f"sudo cp ~/petition.conf.prev {WEB_CONF}",
-                               "sudo systemctl reload apache2"],
-                       "cleanup": ["sudo rm -f ~/petition.conf.prev"]},
+    "war_redeploy": {"role": "was", "unit": "tomcat10", "health": "http://127.0.0.1:8080/petition/api/health"},
+    "config_reapply": {"role": "web", "unit": "apache2", "health": "http://127.0.0.1:80/petition/api/health"},
 }
+DECOY_HOLD_MAX_SECONDS = 3600
+HEALTH_WAIT_SECONDS = 60
 
 
 class Refused(ValueError):
@@ -118,14 +127,122 @@ def decoy_nodes(kind: str) -> list[str]:
     return [name for name, row in vm.VMS.items() if row["role"] == DECOYS[kind]["role"]]
 
 
-def decoy_sessions(node: str, kind: str) -> list[list[str]]:
-    """The run session and the cleanup session of a decoy, each a full operator login command."""
+def decoy_row(node: str, kind: str) -> dict[str, Any]:
     if kind not in DECOYS:
         raise Refused(f"{kind!r} is not a decoy kind ({', '.join(sorted(DECOYS))})")
     row = vm.VMS.get(node)
     if row is None or row["role"] != DECOYS[kind]["role"]:
         raise Refused(f"{node!r} does not take {kind} (only {', '.join(decoy_nodes(kind))})")
-    return [ssh_argv(row["mgmt"]) + [remote_command(session_text(DECOYS[kind][part]))] for part in ("run", "cleanup")]
+    return row
+
+
+def decoy_release(war_sha256: str) -> str:
+    """The same-bytes release the was step leaves next to the deployed WAR (steps/was.sh)."""
+    return f"{RELEASES}petition-{war_sha256[:12]}.war"
+
+
+def decoy_params(node: str, kind: str, war_sha256: str | None = None) -> dict[str, Any]:
+    """The vm.service contract of a decoy: an injection's parameters with harmless values."""
+    row = decoy_row(node, kind)
+    base = {"host": row["mgmt"], "node": node, "unit": DECOYS[kind]["unit"], "file": "-", "match": "-", "replace": "-",
+            "release": "-", "release_sha256": "-"}
+    if kind == "war_redeploy":
+        if not war_sha256 or len(war_sha256) != 64:
+            raise Refused("the deployed WAR's sha256 is unknown")
+        return {**base, "action": "war", "release": decoy_release(war_sha256), "release_sha256": war_sha256}
+    return {**base, "action": "config", "file": WEB_CONF, "match": PROXY_LINE, "replace": PROXY_LINE_DECOY}
+
+
+def decoy_plan(params: dict[str, Any], hold_seconds: int) -> dict[str, Any]:
+    """The plan shape the executor reads; the hold is the guard's deadline (max_injection_duration)."""
+    return {"scenario": {"id": "operator-decoy"}, "controller": {"runtime": {"max_injection_duration": f"{hold_seconds}s"}},
+            "profile_instances": [{"profile_id": "vm.service", "parameters": params, "location": {
+                "transport": "ssh", "host": params["host"], "node": params["node"], "resolved": True}}]}
+
+
+def decoy_invocation(params: dict[str, Any], hold_seconds: int, action: str) -> tuple[list[str], bytes]:
+    import vm_service_executor as svc
+    svc.CONTRACTS["operator-decoy"] = params
+    return svc.build_invocation(decoy_plan(params, hold_seconds), action)
+
+
+def executor_read(host: str, command: str, timeout: float = 20) -> tuple[int, str]:
+    """One read over the runner's always-open executor connection (never a new login: no master, no read)."""
+    keys = os.environ.get(vm.KEY_DIR_ENV, vm.KEY_DIR)
+    ctl = os.environ.get(vm.CONTROL_DIR_ENV, vm.CONTROL_DIR_DEFAULT)
+    base = ["ssh", "-F", "none", "-i", f"{keys}/t4-executor", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={keys}/known_hosts_civil-petition",
+            "-o", "ConnectTimeout=10", "-o", f"ControlPath={ctl}/%r@%h:%p"]
+    check = subprocess.run(base + ["-O", "check", f"opsjob@{host}"], stdin=subprocess.DEVNULL, capture_output=True,
+                           timeout=timeout)
+    if check.returncode != 0:
+        return 255, f"control connection to {host} is down"
+    # The command on stdin to `bash -s`, as the runner's own reads go (no sudo: both reads need none).
+    done = subprocess.run(base + ["-o", "ControlMaster=no", f"opsjob@{host}", "bash", "-s"],
+                          input=command + "\n", capture_output=True, text=True, timeout=timeout)
+    return done.returncode, done.stdout
+
+
+def deployed_war_sha256(host: str) -> str:
+    rc, out = executor_read(host, f'cut -c1-64 "${{PETITION_WAR_SHA256:-{WAR_SHA256}}}"')
+    sha = out.strip()
+    if rc != 0 or len(sha) != 64:
+        raise Refused(f"cannot read the deployed WAR's sha256 on {host}")
+    return sha
+
+
+def wait_healthy(host: str, kind: str, deadline: float) -> bool:
+    url = DECOYS[kind]["health"]
+    command = f'curl -fsS -m 3 -o /dev/null "${{PETITION_HEALTH_URL:-{url}}}"'
+    while time.monotonic() < deadline:
+        rc, _ = executor_read(host, command)
+        if rc == 0:
+            return True
+        time.sleep(2)
+    return False
+
+
+def run_decoy(node: str, kind: str, phase: str, hold_seconds: int) -> int:
+    """apply: the executor's run (the operator's change), then the application's health. undo: cleanup and recovery
+    (the operator's undo, root takes back what is left), then health. The executor's operator session takes the VM's
+    lock itself; this only refuses early (75) when a session already holds it."""
+    from executor_common import execute
+    row = decoy_row(node, kind)
+    if not 60 <= hold_seconds <= DECOY_HOLD_MAX_SECONDS:
+        raise Refused(f"--hold-sec must be 60 ~ {DECOY_HOLD_MAX_SECONDS}")
+    path = lock_path(node)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"operator session on {node} is busy", file=sys.stderr)
+            return BUSY_EXIT
+    deadline = time.monotonic() + SESSION_TIMEOUT_SECONDS
+    params = decoy_params(node, kind, deployed_war_sha256(row["mgmt"]) if kind == "war_redeploy" else None)
+    actions = ["run"] if phase == "apply" else ["cleanup", "recovery"]
+    for action in actions:
+        argv, stdin = decoy_invocation(params, hold_seconds, action)
+        try:
+            rc = execute(argv, stdin, timeout=max(deadline - time.monotonic(), 1))
+        except subprocess.TimeoutExpired:
+            print(f"decoy {kind} {phase} on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
+            return 124
+        if rc != 0:
+            print(f"decoy {kind} {phase} on {node}: the executor's {action} ended with {rc}", file=sys.stderr)
+            return rc
+    if not wait_healthy(row["mgmt"], kind, min(deadline, time.monotonic() + HEALTH_WAIT_SECONDS)):
+        if phase == "apply":
+            # The change hurt: take it back now (the operator's undo, root for the rest), then report.
+            for action in ("cleanup", "recovery"):
+                argv, stdin = decoy_invocation(params, hold_seconds, action)
+                try:
+                    execute(argv, stdin, timeout=SESSION_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    break
+        print(f"decoy {kind} {phase} on {node}: the application did not answer its health check", file=sys.stderr)
+        return 1
+    return 0
 
 
 def lock_path(node: str) -> Path:
@@ -137,8 +254,9 @@ def run(node: str, argv: list[str], text: str) -> int:
 
 
 def run_sessions(node: str, sessions: list[list[str]]) -> int:
-    """The sessions one after another under the VM's lock and one deadline. Every session runs even when one before it
-    failed (a decoy's cleanup still removes its copy); the first failing code is the result."""
+    """The sessions one after another under the VM's lock and one deadline. A session runs even when one before it
+    failed; the first failing code is the result. At the deadline the running session's group ends and the call
+    returns 124 (rv-t4u L3)."""
     path = lock_path(node)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as lock:
@@ -153,39 +271,55 @@ def run_sessions(node: str, sessions: list[list[str]]) -> int:
         for argv in sessions:
             # ssh writes to a file of this CLI, never to the runner's pipes: an ssh that outlived the CLI would hold
             # them open (rv-t4o2 N3). The last line goes to stderr when the session fails.
-            errors = tempfile.TemporaryFile()
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
-                                    start_new_session=True)
-            previous = forward_stop_to(proc)
-            try:
-                rc = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
-            except subprocess.TimeoutExpired:
-                end_group(proc)
-                print(f"operator session on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
-                return 124
-            finally:
-                for sig, handler in previous.items():
-                    signal.signal(sig, handler)
-            if rc != 0 and result == 0:
-                errors.seek(0)
-                last = [line for line in errors.read().decode(errors="replace").splitlines() if line.strip()][-1:]
-                print(f"operator session on {node} ended with {rc}" + (f": {last[0].strip()}" if last else ""), file=sys.stderr)
-                result = rc
-            errors.close()
+            with tempfile.TemporaryFile() as errors:
+                proc, previous = start_forwarding(argv, errors)
+                try:
+                    rc = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
+                except subprocess.TimeoutExpired:
+                    end_group(proc)
+                    print(f"operator session on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
+                    return 124  # the deadline is the whole call's: later sessions do not run
+                finally:
+                    for sig, handler in previous.items():
+                        signal.signal(sig, handler)
+                if rc != 0 and result == 0:
+                    errors.seek(0)
+                    last = [line for line in errors.read().decode(errors="replace").splitlines() if line.strip()][-1:]
+                    print(f"operator session on {node} ended with {rc}" + (f": {last[0].strip()}" if last else ""),
+                          file=sys.stderr)
+                    result = rc
         return result
 
 
-STOP_GRACE_SECONDS = 2
+STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 
-def forward_stop_to(proc: subprocess.Popen) -> dict:
+def start_forwarding(argv: list[str], errors) -> tuple[subprocess.Popen, dict]:
     """While ssh runs, a TERM, INT or HUP to this CLI ends ssh's group (within 2 x STOP_GRACE_SECONDS, under the
-    runner's 5 seconds before KILL), then the CLI goes with the same signal."""
+    runner's 5 seconds before KILL), then the CLI goes with the same signal (rv-t4o2 N3).
+
+    Start ssh in its own session with the forwarding handler already set, so a stop that comes while ssh starts is
+    not lost and cannot leave ssh behind (rv-t4u L2). A stop before Popen returned is noted and handled right after."""
+    holder: dict[str, Any] = {}
+    early: list[int] = []
+
     def stop(signum, _frame):
-        end_group(proc, STOP_GRACE_SECONDS)
+        if "proc" not in holder:
+            early.append(signum)
+            return
+        end_group(holder["proc"], STOP_GRACE_SECONDS)
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
-    return {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+    previous = {sig: signal.signal(sig, stop) for sig in STOPS}
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,
+                            start_new_session=True)
+    holder["proc"] = proc
+    if early:
+        stop(early[0], None)
+    return proc, previous
+
+
+STOP_GRACE_SECONDS = 2
 
 
 def end_group(proc: subprocess.Popen, grace: float = 5) -> None:
@@ -210,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--print", action="store_true")
     mode.add_argument("--list-nodes", action="store_true")
     mode.add_argument("--decoy")  # an unknown kind is a refusal (3), not a usage error
+    parser.add_argument("--phase", choices=("apply", "undo"))
+    parser.add_argument("--hold-sec", type=int)
     args = parser.parse_args(argv)
     if args.list_nodes:
         print(json.dumps(routine_nodes()))
@@ -217,12 +353,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.node:
         parser.error("--node is needed with --check, --print and --decoy")
     if args.decoy:
+        if not args.phase or args.hold_sec is None:
+            parser.error("--decoy needs --phase apply|undo and --hold-sec (the same value for both phases)")
         try:
-            sessions = decoy_sessions(args.node, args.decoy)
+            return run_decoy(args.node, args.decoy, args.phase, args.hold_sec)
         except Refused as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 3
-        return run_sessions(args.node, sessions)
     try:
         command, text = check_session(args.node)
     except Refused as exc:

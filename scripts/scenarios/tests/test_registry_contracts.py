@@ -2234,7 +2234,7 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
                         cls.manifest_text[(namespace.group(1), name.group(1))] = document
 
     def k8s_targets(self) -> list[dict]:
-        return [t for t in self.policy["targets"] if t.get("transport", "k8s") == "k8s"]
+        return [t for t in self.policy["targets"] if t.get("transport") != "vm"]  # the runner says "kubernetes" (rv-t4u L4)
 
     def test_targets_are_app_deployments_with_their_manifest_identity(self) -> None:
         for target in self.k8s_targets():
@@ -2336,6 +2336,8 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
                 self.assertEqual(target["namespace"], "civil-petition-vm")
                 self.assertEqual(target["deployment"], f"petition-{target['node']}")
                 self.assertEqual(target["service_name"], target["node"])
+                # Role names for an answer key that names the role, never another VM's name (rv-t4u L5).
+                self.assertEqual(target["aliases"], ["WAS"] if target["node"].startswith("was") else ["웹 서버"])
                 self.assertEqual(target["target_id"], server_ids[target["node"]])
                 self.assertTrue(target["kinds"] and set(target["kinds"]) <= vm_kinds)
                 for kind in target["kinds"]:

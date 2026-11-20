@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "_note": "러너가 녹화 주기의 평시 구간에 넣는 무해한 배포(미끼, 평시 배포)의 정책. 근거: runbook-testbed-move-109-to-66.md §8-4, 사용자 결정 2026-11-09(미끼는 장애 경로 밖 대상에만, 정답지가 바뀌지 않았다고 말하는 대상은 제외, KCM 변경 이력 수집(P4) 확인 전까지 종류는 재시작만). 러너(rca-scenario-runner app/decoys.py)가 주기 시작 때 이 파일, 정답지, 시드로 일정을 정하고 같은 시드와 같은 파일이면 같은 일정이 나온다. 경로 위 대상과 변경 없음 대상은 러너가 정답지에서 기계적으로 계산하며, scenario_exclusions 는 그 밖에 손으로 더할 때만 쓴다. 대상은 앱 Deployment 만이다. DB, Kafka, Redis, mock, nginx 는 재시작이 피해를 내거나 상태를 잃어 넣지 않는다. rollout_ok=false 는 maxSurge 0 이라 재시작이 곧 중단인 대상으로, 롤아웃 없는 종류(configmap, annotation)만 받는다(지금은 그 종류가 꺼져 있어 후보가 아니다). 이미지는 바꾸지 않는다. 알람 면제(alarm_excuse_grace_sec)는 preflight 가 미끼 끝에서 유예 안일 때만 일어나는데, 장애 근처 창이 buffer 12분 전에 끝나고 preflight 는 buffer 시작 10분 뒤라 지금 수치에서는 거의 일어나지 않는다. 즉 미끼 대상 알람은 preflight 전에 꺼져 있어야 하고, 아니면 주기를 다시 시작한다(재리뷰 M1, 안전한 쪽으로 둔 결정). 2026-11-20 지휘 세션 결정(T4U, 리뷰 rv-t4o M3): civil-petition 도메인은 쿠버네티스가 아니라 VM 이라 대상이 transport vm 이고, 미끼는 testbed-services operator_session.py --node <VM> --decoy <종류> 가 운영자 경로(별도 출발 주소의 ssh 로그인, sudo)로 바꾸고 되돌린다. war_redeploy 는 WAS 에 같은 WAR 를 다시 놓고(Tomcat 이 같은 바이트를 다시 배포), config_reapply 는 웹의 사이트 설정을 같은 내용으로 다시 놓고 apache2 를 graceful reload 한다. 둘 다 끝나면 VM 은 앞과 같다. 율(창과 개수 무게)은 기존 도메인과 같고, VM 종류 무게는 쿠버네티스 restart 와 같은 100 이다. 쿠버네티스 종류의 재시작만 규칙(11-09)은 그대로다. domain_namespaces 의 civil-petition-vm 은 도메인 이름과 다르게 둔 이름이다(정답지가 도메인을 글로 담아 같으면 모든 VM 대상이 경로 위로 빠진다).",
+ "_note": "러너가 녹화 주기의 평시 구간에 넣는 무해한 배포(미끼, 평시 배포)의 정책. 근거: runbook-testbed-move-109-to-66.md §8-4, 사용자 결정 2026-11-09(미끼는 장애 경로 밖 대상에만, 정답지가 바뀌지 않았다고 말하는 대상은 제외, KCM 변경 이력 수집(P4) 확인 전까지 종류는 재시작만). 러너(rca-scenario-runner app/decoys.py)가 주기 시작 때 이 파일, 정답지, 시드로 일정을 정하고 같은 시드와 같은 파일이면 같은 일정이 나온다. 경로 위 대상과 변경 없음 대상은 러너가 정답지에서 기계적으로 계산하며, scenario_exclusions 는 그 밖에 손으로 더할 때만 쓴다. 대상은 앱 Deployment 만이다. DB, Kafka, Redis, mock, nginx 는 재시작이 피해를 내거나 상태를 잃어 넣지 않는다. rollout_ok=false 는 maxSurge 0 이라 재시작이 곧 중단인 대상으로, 롤아웃 없는 종류(configmap, annotation)만 받는다(지금은 그 종류가 꺼져 있어 후보가 아니다). 이미지는 바꾸지 않는다. 알람 면제(alarm_excuse_grace_sec)는 preflight 가 미끼 끝에서 유예 안일 때만 일어나는데, 장애 근처 창이 buffer 12분 전에 끝나고 preflight 는 buffer 시작 10분 뒤라 지금 수치에서는 거의 일어나지 않는다. 즉 미끼 대상 알람은 preflight 전에 꺼져 있어야 하고, 아니면 주기를 다시 시작한다(재리뷰 M1, 안전한 쪽으로 둔 결정). 2026-11-20 지휘 세션 결정(T4U, 리뷰 rv-t4o M3): civil-petition 도메인은 쿠버네티스가 아니라 VM 이라 대상이 transport vm 이고, 미끼는 testbed-services operator_session.py --node <VM> --decoy <종류> 가 운영자 경로(별도 출발 주소의 ssh 로그인, sudo)로 바꾸고 되돌린다. 미끼는 vm.service 실행기 그 자체를 무해한 값으로 부른다(11-21 지휘 세션 결정, 리뷰 rv-t4u R1 (가)): war_redeploy 는 지금 WAR 와 같은 바이트의 릴리스로 바꾸고, config_reapply 는 웹 사이트 설정의 프록시 시간 제한을 30 에서 31 초로 바꾸고 apache2 를 restart 한다. 되돌리기는 러너가 주입 길이에서 뽑은 간격 뒤 --phase undo 로. 사용자 결정 9(재시작만)는 근거가 P4(KCM 변경 이력)라 쿠버네티스 한정으로 본다(11-21 지휘 세션). aliases 는 정답지가 역할 이름으로 적은 경우를 위한 것이다. 율(창과 개수 무게)은 기존 도메인과 같고, VM 종류 무게는 쿠버네티스 restart 와 같은 100 이다. 쿠버네티스 종류의 재시작만 규칙(11-09)은 그대로다. domain_namespaces 의 civil-petition-vm 은 도메인 이름과 다르게 둔 이름이다(정답지가 도메인을 글로 담아 같으면 모든 VM 대상이 경로 위로 빠진다).",
  "windows": {
   "normal": {
    "start_after_cycle_start_sec": 600,
@@ -250,7 +250,9 @@
    "service_name": "web01",
    "target_id": "c5f7161d-74ea-431d-90a7-09a9d534098f",
    "rollout_ok": true,
-   "aliases": [],
+   "aliases": [
+    "웹 서버"
+   ],
    "transport": "vm",
    "node": "web01",
    "kinds": [
@@ -264,7 +266,9 @@
    "service_name": "was01",
    "target_id": "bda0dfa8-d90c-455f-b4ae-d20fcb0ae7bd",
    "rollout_ok": true,
-   "aliases": [],
+   "aliases": [
+    "WAS"
+   ],
    "transport": "vm",
    "node": "was01",
    "kinds": [
@@ -278,7 +282,9 @@
    "service_name": "was02",
    "target_id": "ebdf15e2-477d-4c8f-9afc-f4c4b1baf69b",
    "rollout_ok": true,
-   "aliases": [],
+   "aliases": [
+    "WAS"
+   ],
    "transport": "vm",
    "node": "was02",
    "kinds": [

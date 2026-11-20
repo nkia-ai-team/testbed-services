@@ -6898,3 +6898,87 @@ class OperatorTerminalTests(unittest.TestCase):
         net = render.hypervisor_files(inventory(T_INV))["/etc/network/interfaces.d/t4-net"]
         stanza = net.split("iface vmbr11 ", 1)[1]
         self.assertEqual(re.findall(r"^\taddress (\S+)$", stanza, re.M)[0], "192.168.127.1/24")
+
+    def test_decoy_values_exist_on_the_vms(self) -> None:
+        """T4U-2: the decoys' harmless values are real on the installed VMs: the proxy line config_reapply changes is in
+        web01's site file exactly once, and the was step leaves the same-bytes release under the name the CLI uses."""
+        import importlib.util
+        profiles = str(HERE.parent / "profiles")
+        sys.path.insert(0, profiles)
+        try:
+            spec = importlib.util.spec_from_file_location("operator_session_t4u", HERE.parent / "profiles" / "operator_session.py")
+            sess = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sess)
+        finally:
+            sys.path.remove(profiles)
+        site = file_of(bundles(T_INV)["web01"], sess.WEB_CONF)
+        self.assertEqual(site.splitlines().count(sess.PROXY_LINE), 1)
+        self.assertNotIn(sess.PROXY_LINE_DECOY, site)
+        was = (DEPLOY / "steps" / "was.sh").read_text()
+        self.assertIn('war_sum=$(cut -c1-64 /var/lib/petition-deploy/war.sha256)', was)
+        self.assertIn('install -D -m 0644 "$BUNDLE/artifacts/petition.war" "/var/lib/petition-deploy/releases/petition-${war_sum:0:12}.war"', was)
+        self.assertEqual(sess.decoy_release("a" * 64), "/var/lib/petition-deploy/releases/petition-aaaaaaaaaaaa.war")
+        self.assertEqual(sess.WAR_SHA256, "/var/lib/petition-deploy/war.sha256")
+        self.assertIn("> /var/lib/petition-deploy/war.sha256", was)
+
+
+class DecoyProbeTests(unittest.TestCase):
+    """tools/decoy_probe.py (runbook §15-4 차례 9, 리뷰 rv-t4u R3): the decoy harm check rests on a kept record of the
+    load generator's live document and counts 404s (check_failed_rate), not only 5xx."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location("decoy_probe", DEPLOY / "tools" / "decoy_probe.py")
+        cls.probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.probe)
+
+    def lines(self, docs: list[dict | None], start: str = "2026-11-21T03:00:00Z") -> list[str]:
+        t0 = datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
+        out = []
+        for i, doc in enumerate(docs):
+            at = t0 + datetime.timedelta(seconds=10 * i)
+            stamp = at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            body = {"observed_at": stamp, "check_failed_rate": 0.0, "http_abnormal_rate": 0.001, "http_p95_ms": 120.0}
+            if doc is None:
+                body = {}
+            else:
+                body.update(doc)
+            out.append(json.dumps({"sampled_at": stamp, "doc": body}))
+        return out
+
+    def test_a_quiet_window_is_harmless(self) -> None:
+        code, report = self.probe.judge(self.lines([{}] * 30), None, None, 10)
+        self.assertEqual(code, 0, report)
+
+    def test_404s_from_a_redeploy_are_harm_even_without_5xx(self) -> None:
+        docs = [{}] * 10 + [{"check_failed_rate": 0.04}] + [{}] * 19
+        code, report = self.probe.judge(self.lines(docs), None, None, 10)
+        self.assertEqual(code, 1)
+        self.assertIn("check_failed_rate 0.04 > 0.01", report[1])
+        for key, value in (("http_abnormal_rate", 0.02), ("http_p95_ms", 950.0)):
+            with self.subTest(key=key):
+                code, _ = self.probe.judge(self.lines([{}] * 10 + [{key: value}] + [{}] * 19), None, None, 10)
+                self.assertEqual(code, 1)
+
+    def test_too_few_or_stale_samples_cannot_judge(self) -> None:
+        self.assertEqual(self.probe.judge(self.lines([None] * 30), None, None, 10)[0], 2)
+        stale = [{"observed_at": "2026-11-21T02:00:00Z"}] * 30
+        self.assertEqual(self.probe.judge(self.lines(stale), None, None, 10)[0], 2)
+        start = datetime.datetime(2026, 11, 21, 3, 0, tzinfo=datetime.timezone.utc)
+        self.assertEqual(self.probe.judge(self.lines([{}] * 10), start, start + datetime.timedelta(minutes=15), 10)[0], 2)
+        self.assertEqual(self.probe.judge([], None, None, 10)[0], 2)
+
+    def test_the_span_limits_what_is_judged(self) -> None:
+        docs = [{"check_failed_rate": 0.5}] + [{}] * 29
+        start = datetime.datetime(2026, 11, 21, 3, 0, 10, tzinfo=datetime.timezone.utc)
+        self.assertEqual(self.probe.judge(self.lines(docs), start, None, 10)[0], 0)
+
+    def test_sampling_goes_the_install_path_to_the_load_generator(self) -> None:
+        argv = self.probe.sample_argv(inventory(T_INV), 900, 10)
+        self.assertEqual(argv[:6], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-J"])
+        self.assertEqual(argv[6:8], ["root@192.168.200.66", "sysop@192.168.127.10"])
+        self.assertIn("seq 90", argv[8])
+        self.assertIn("/tmp/k6-civil-petition-live.json", argv[8])
+        # The load generator does not forward syslog to 119: the sampling session stays out of the recording.
+        loadgen = next(b for b in bundles(T_INV).values() if b["role"] == "loadgen")
+        self.assertEqual(loadgen["env"]["SYSLOG_FORWARD"], "0")

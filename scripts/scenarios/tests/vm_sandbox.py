@@ -91,6 +91,12 @@ export FAKE_SUDO_USER="$user"
 exec "$@"
 '''
 
+# curl on the VM: the application's health answers unless the file health-down is there; every URL is logged.
+CURL = r'''#!/usr/bin/env bash
+printf '%s\n' "${@: -1}" >>"$VM_SANDBOX/curl-log"
+[[ ! -e "$VM_SANDBOX/health-down" ]]
+'''
+
 SUDO = r'''#!/usr/bin/env bash
 [[ "$1" == -n ]] && shift
 # The operator's sudo on a pty reads the terminal (use_pty relays it): it eats whatever was typed ahead.
@@ -229,7 +235,7 @@ def install(root: Path) -> dict[str, str]:
     bindir.mkdir(parents=True, exist_ok=True)
     for name, body in (("ssh", SSH), ("setpriv", SETPRIV), ("sudo", SUDO), ("unit-run", UNIT_RUN),
                        ("unit-ctl", UNIT_CTL), ("psql", PSQL), ("conntrack", CONNTRACK), ("sysctl", SYSCTL),
-                       ("pty-remote", PTY_REMOTE)):
+                       ("pty-remote", PTY_REMOTE), ("curl", CURL)):
         path = bindir / name
         path.write_text(body)
         path.chmod(0o755)

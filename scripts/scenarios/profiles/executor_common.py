@@ -354,6 +354,7 @@ def node_guard_function(node_command: str) -> bytes:
 
 
 EXECUTE_TIMEOUT_SECONDS = 900
+STOP_GRACE_SECONDS = 2
 
 
 def end_process_group(proc: subprocess.Popen, grace: float = 5.0) -> None:
@@ -379,15 +380,32 @@ def execute(argv: Sequence[str], stdin: bytes, timeout: float = EXECUTE_TIMEOUT_
     timeout is raised as before) and when this executor itself is told to stop (SIGTERM, SIGINT, SIGHUP from the runner,
     which ends its own group TERM first): the script's group is in another session and would not get the runner's signal.
     """
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, start_new_session=True)
+    stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    # Signal handlers can only be set from the main thread; a caller in another thread keeps the timeout path.
+    main = threading.current_thread() is threading.main_thread()
+    proc: subprocess.Popen | None = None
+    early: list[int] = []
 
-    def stop(signum, _frame):
-        end_process_group(proc)
+    def go(signum: int) -> None:
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
-    # Signal handlers can only be set from the main thread; a caller in another thread keeps the timeout path.
-    previous = ({sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
-                if threading.current_thread() is threading.main_thread() else {})
+
+    def stop(signum, _frame):
+        if proc is None:
+            # Before Popen returned (the script may already exist): noted and handled right after (rv-t4u L2).
+            early.append(signum)
+            return
+        # The runner sends KILL 5 seconds after TERM: end the script's group well within that (rv-t4u L1).
+        end_process_group(proc, grace=STOP_GRACE_SECONDS)
+        go(signum)
+    # The handler is set before the script starts (a blocked mask would be inherited by the script).
+    previous = {sig: signal.signal(sig, stop) for sig in stops} if main else {}
+    if early:
+        go(early[0])
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, start_new_session=True)
+    if early:
+        end_process_group(proc, grace=STOP_GRACE_SECONDS)
+        go(early[0])
     try:
         try:
             proc.communicate(stdin, timeout=timeout)
