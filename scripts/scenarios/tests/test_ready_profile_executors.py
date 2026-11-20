@@ -6778,7 +6778,8 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
     def test_a_held_decoy_gets_its_own_guard_and_names_what_it_changed(self) -> None:
         """rv-t4u3 D1 (runner contract): --guard-sec sets the executor guard's deadline for a decoy the runner puts
         back only after the recording; a change that succeeded names, last, each file it left different from the
-        install record ("@@ decoy-changed <path>"), the site file for config_reapply and none for the war decoy."""
+        runner's drift reads check ("@@ decoy-changed <path>"): the site file for config_reapply, the deployed WAR for
+        the war decoy (war.sha256)."""
         import contextlib
         import io
         sess, env, war, conf, digest, invocation = self._decoy_box()
@@ -6798,7 +6799,8 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change", 9000), 0)
-            self.assertEqual(out.getvalue(), "")
+            self.assertEqual(out.getvalue().splitlines(), [f"@@ decoy-changed {sess.WAR}"])
+            self.assertEqual(sess.WAR, "/var/lib/tomcat10/webapps/petition.war")
             self.assertIn(b"expire_after=9000 ", stdins[-1][1])
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "revert"), 0)
         cli = [sys.executable, str(PROFILES / "operator_session.py")]

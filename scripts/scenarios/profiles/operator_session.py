@@ -247,9 +247,10 @@ def wait_healthy(host: str, kind: str, deadline: float) -> bool:
 
 
 def changed_paths(kind: str) -> list[str]:
-    """The files a decoy change leaves different from expected.sha256: the site file for config_reapply. The war
-    decoy changes the WAR and leaves petition.war.bak, neither of which the install record lists."""
-    return [WEB_CONF] if kind == "config_reapply" else []
+    """The files a decoy change leaves different from what the runner's drift reads check: the site file for
+    config_reapply (expected.sha256), the deployed WAR for war_redeploy (war.sha256, petition.war under webapps; a
+    build-mark variant differs, the deployed bytes do not, the line is there either way)."""
+    return [WEB_CONF] if kind == "config_reapply" else [WAR]
 
 
 def run_decoy(node: str, kind: str, phase: str, guard_seconds: int | None = None) -> int:
