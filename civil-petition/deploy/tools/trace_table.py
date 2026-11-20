@@ -323,9 +323,9 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
             f"select target_id, remote_addr, toString(local_port), toString(remote_port) from lucida.host_connections "
             f"where {span_connections(win)} and target_id in ({quote(ids.values())}) and remote_addr = '{source}' "
             "group by 1, 2, 3, 4 format TSV;")}
-    seen = set()
-    for b in base20:
-        seen |= mgmt_conns(b, executor_src)
+    # "Seen" runs from the earliest baseline window up to the injection window (rv-t4o2 N1): a master reopened after
+    # the baseline windows (redeploy, reboot, a network cut) has a new source port, and is not new at the injection.
+    seen = mgmt_conns(Window(min(b.start for b in base20), around.start), executor_src) if base20 else set()
     new_conns = [list(r) for r in sorted(mgmt_conns(around, executor_src) - seen)]
     # 운영자 출발 연결 수(리뷰 L2): 주입 창과 같은 길이 평시 창들의 최댓값. 원인 흔적이라 판정은 없다.
     operator_conns_now = len(mgmt_conns(w, operator_src)) if operator_src else None

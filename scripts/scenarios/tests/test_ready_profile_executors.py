@@ -6019,8 +6019,9 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertIn("web-guard", shell.run("nft list tables\n")[1])
             self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "cleanup", env, shell=shell)[0], 0)
             self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "recovery", env, shell=shell)[0], 0)
-            # Root mode leaves no operator command and no file.
+            # Root mode leaves no operator command, no operator login and no file (rv-t4o2 N6).
             self.assertEqual(vm_sandbox.logged(self.tmp, "operator-log"), [])
+            self.assertEqual([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login sysop")], [])
         finally:
             shell.close()
 
@@ -6547,7 +6548,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         head = vm_common.RUNNER_HEAD.decode()
         bash_words = re.search(r"op_ssh=\((.*?)\)\n", head, re.S).group(1).split()
         self.assertEqual([w.strip('"').replace("$keys", "/root/.ssh/vm-ops") for w in bash_words], argv[:-2])
-        self.assertIn('timeout -k 10 300 "${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"', head)
+        self.assertIn('timeout --foreground -k 10 300 "${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"', head)
         self.assertIn('8>"$ctl/operator-$node.lock"', head)
         functions = re.search(r"^op_quote\(\).*?^\}\n", head, re.S | re.M).group(0)
         typed = "\n".join(sess.ROLE_CHECKS["was"])
@@ -6667,8 +6668,8 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual(sess.decoy_nodes("config_reapply"), ["web01"])
 
     def test_a_stuck_normal_time_session_ends_with_its_whole_group(self) -> None:
-        """Review rv-t4o M2: the CLI starts ssh in its own session and ends the whole group at its limit (under the
-        runner's 120 seconds), so no ssh or child stays on the VM or holds the lock."""
+        """Review rv-t4o M2: the CLI starts ssh in its own session and ends the whole group at its limit (the runner
+        allows that plus 60 seconds), so no ssh or child stays on the VM or holds the lock."""
         sess = load("operator_session")
         fake = self.tmp / "slow-ssh"
         pidfile = self.tmp / "slow-child.pid"
@@ -6692,13 +6693,67 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             with open(sess.lock_path("web01"), "a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    def _hung_pid(self) -> int:
+        for _ in range(200):
+            path = self.tmp / "operator-hang.pid"
+            if path.exists() and path.read_text().strip():
+                return int(path.read_text())
+            time.sleep(0.05)
+        self.fail("the hung session did not start")
+
+    def _gone(self, pid: int, wait: float = 10) -> bool:
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            try:
+                state = Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0]
+            except FileNotFoundError:
+                return True
+            if state == "Z":
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_ending_the_executors_group_ends_a_hung_operator_session(self) -> None:
+        """rv-t4o2 N2: the runner ends the scenario script's process group; the operator session (timeout and ssh)
+        is in that group (timeout --foreground), so it ends with it and lets go of the VM's lock."""
+        head = vm_common.RUNNER_HEAD.decode()
+        functions = head[head.index("ctl="):head.index("\n}\n", head.index("op_session()")) + 3]
+        (self.tmp / "operator-hang").touch()
+        script = self.tmp / "hang.sh"
+        script.write_text("set -euo pipefail\nhost=192.168.127.21; node=web01\n" + functions + "printf 'true\\n' | op_session\n")
+        proc = subprocess.Popen(["bash", str(script)], env=self.env, start_new_session=True,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, signal.SIGKILL))
+        ssh = self._hung_pid()
+        os.killpg(proc.pid, signal.SIGTERM)  # what the runner does to the scenario script's group
+        proc.wait(timeout=20)
+        self.assertTrue(self._gone(ssh), "the operator session outlived the script's group")
+        import fcntl
+        with open(Path(self.env["CIVIL_PETITION_SSH_CONTROL_DIR"]) / "operator-web01.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_stopping_the_cli_ends_its_ssh_group(self) -> None:
+        """rv-t4o2 N3: ssh runs in its own session, out of reach of the runner's group kill; a TERM to the CLI ends
+        ssh's group first (inside the runner's 5 seconds before KILL), so nothing holds the runner's pipe."""
+        (self.tmp / "operator-hang").touch()
+        cli = subprocess.Popen([sys.executable, str(PROFILES / "operator_session.py"), "--node", "web01", "--check"],
+                               env=self.env, start_new_session=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: cli.poll() is None and os.killpg(cli.pid, signal.SIGKILL))
+        ssh = self._hung_pid()
+        started = time.monotonic()
+        cli.terminate()
+        out, err = cli.communicate(timeout=20)  # returns only when nothing holds the pipes any more
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(cli.returncode, -signal.SIGTERM)
+        self.assertTrue(self._gone(ssh, 2), "ssh outlived the stopped CLI")
+
     def test_the_operator_session_survives_a_program_that_reads_the_terminal(self) -> None:
         """Review rv-t4o H1 on a real pty (vm_sandbox PTY_REMOTE): the operator's sudo reads the terminal, as sudo
         with use_pty relays it. The lines go as the remote command, so every later line still runs and the exit
         code comes back; the old form (lines typed into the pty) loses them and never ends."""
         head = vm_common.RUNNER_HEAD.decode()
         functions = head[head.index("ctl="):head.index("\n}\n", head.index("op_session()")) + 3]
-        functions = functions.replace("timeout -k 10 300", "timeout -k 2 30")
+        functions = functions.replace("timeout --foreground -k 10 300", "timeout --foreground -k 2 30")
         marks = self.tmp / "marks"
         call = lambda body: subprocess.run(  # noqa: E731
             ["bash", "-c", "set -euo pipefail\nhost=192.168.127.21; node=web01\n" + functions + body],

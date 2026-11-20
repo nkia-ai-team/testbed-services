@@ -374,7 +374,8 @@ hv_call() { printf '%s\nexpire_after=%s guard_hold=%s\n' "$1" "$expire_after" "$
 # command, `bash -c '<set -e, the lines, exit 0>'`, never on the pty's input: on a pty `bash -s` is an interactive
 # shell, and a program that reads the terminal (sudo with use_pty relays it) would eat the lines typed ahead and the
 # session would never end (review rv-t4o H1). stdin is /dev/null (-n). The session is bounded: keepalives end a dead
-# connection and timeout ends a stuck one, so a killed executor leaves no ssh holding the VM's lock (M2).
+# connection and timeout ends a stuck one (M2). --foreground keeps timeout and ssh in the script's process group (plain
+# timeout makes its own group), so the runner ending the script's group ends the session too (rv-t4o2 N2).
 # One operator session per VM at a time: the runner's normal-time operator sessions take the same lock.
 op_ssh=(ssh -tt -n -F none -i "$keys/t4-operator" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
   -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o ServerAliveInterval=15
@@ -387,7 +388,7 @@ op_session() {
   mkdir -p "$ctl"
   {
     if ! flock -w 600 8; then echo "operator session on $node is busy" >&2; return 1; fi
-    timeout -k 10 @OPERATOR_LIMIT@ "${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"
+    timeout --foreground -k 10 @OPERATOR_LIMIT@ "${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"
   } 8>"$ctl/operator-$node.lock"
 }
 '''.replace(b"@OPERATOR_BIND@", OPERATOR_BIND_ADDR.encode()).replace(b"@OPERATOR_LIMIT@", str(OPERATOR_SESSION_LIMIT).encode())

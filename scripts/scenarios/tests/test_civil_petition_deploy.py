@@ -6447,7 +6447,8 @@ class TraceTableTests(unittest.TestCase):
         conn = [q for q in remote.queries if "toString(remote_port) from lucida.host_connections" in q]
         executor = [q for q in conn if "remote_addr = '192.168.127.1'" in q]
         operator = [q for q in conn if "remote_addr = '192.168.127.5'" in q]
-        self.assertEqual((len(executor), len(operator), len(conn)), (7, 7, 14))
+        # Executor: one "seen" read from the first baseline window up to the injection window, one around it (N1).
+        self.assertEqual((len(executor), len(operator), len(conn)), (2, 7, 9))
         self.assertFalse(any("startsWith(remote_addr" in q for q in conn))
         self.assertIn("Q7c(출발 192.168.127.1) 충족 []", out)
         self.assertIn("운영자 로그인(출발 192.168.127.5) 창 2 평시 최대 1", out)
@@ -6461,7 +6462,7 @@ class TraceTableTests(unittest.TestCase):
         새 실행기 연결이 새 연결로 잡힌다."""
         remote = self.remote()
         target = "11111111-1111-1111-1111-111111111111"
-        around = "2026-11-20 00:50:00"
+        around = "timestamp between '2026-11-20 00:50:00' and '2026-11-20 01:10:00'"
         remote.ch_rules = [
             (lambda q: [[target, "192.168.127.1", "22", "40000"], [target, "192.168.127.1", "22", "40123"]]
              if "remote_addr = '192.168.127.1'" in q and around in q else None, None),
@@ -6481,6 +6482,25 @@ class TraceTableTests(unittest.TestCase):
         remote.ch_rules = [(lambda q: [[target, "192.168.127.1", "22", "40000"]] if "remote_addr = '192.168.127.1'" in q else None, None)]
         rc, out = self.run_tool(remote)
         self.assertIn("Q7c(출발 192.168.127.1) 충족 []", out)
+
+    def test_a_master_reopened_after_the_baseline_windows_is_not_a_new_connection(self) -> None:
+        """rv-t4o2 N1: the always-open master reopened between the baseline windows and the injection (new source port)
+        is the one connection the injection window shows: satisfied. "Seen" covers everything up to the window."""
+        remote = self.remote()
+        target = "11111111-1111-1111-1111-111111111111"
+        around = "timestamp between '2026-11-20 00:50:00' and '2026-11-20 01:10:00'"
+        remote.ch_rules = [
+            (lambda q: [[target, "192.168.127.1", "22", "40200"]] if "remote_addr = '192.168.127.1'" in q and around in q else None, None),
+            # The read that ends where the injection window starts saw the old master and the reopened one.
+            (lambda q: [[target, "192.168.127.1", "22", "40000"], [target, "192.168.127.1", "22", "40200"]]
+             if "remote_addr = '192.168.127.1'" in q and "and '2026-11-20 00:50:00'" in q else None, None),
+            (lambda q: [[target, "192.168.127.1", "22", "40000"]] if "remote_addr = '192.168.127.1'" in q else None, None),
+        ]
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        self.assertIn("Q7c(출발 192.168.127.1) 충족 []", out)
+        seen = [q for q in remote.queries if "remote_addr = '192.168.127.1'" in q and "and '2026-11-20 00:50:00'" in q]
+        self.assertEqual(len(seen), 1)
 
     def test_long_windows_and_naive_times_are_refused(self) -> None:
         for start, end in (("2026-11-20T10:00:00", "2026-11-20T10:20:00"),

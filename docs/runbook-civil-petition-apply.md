@@ -631,9 +631,12 @@ sshd 설정을 바꾸면 이 점을 다시 본다(리뷰 rv-t4s L2).
   거절하고(새 연결은 녹화에 새 관리망 연결을 더한다), cleanup 과 recovery 는 새 연결로라도 간다.
 - 5분 평시 점검 읽기는 실행기 계정의 `sudo -n bash -s` 꼴로(설계 §6-2), db01 `last.json` 가져오기 포함(§6-4).
 - preflight 의 66 쪽 검사(터널, 가드 잔여, 도우미 체크섬)는 15-1 차례 6 의 읽기 동작을 쓴다.
-- 평시 운영자 세션(설계 §6-2 운영자 경로): 라우터와 서버 4대에서 고르게 하나, 30 ~ 90분 고른 무작위 간격으로
-  `python3 /opt/lucida/scenario-contracts/profiles/operator_session.py --node <VM> --check`. 끝 코드 0 성공, 75 는 실행기 운영자
-  세션이 그 VM 을 쥐고 있음(5분 뒤 같은 VM), 그 밖은 실패. 마지막 성공이 180분보다 오래되면 preflight 가 이 도메인 주입을 막는다.
+- 평시 운영자 세션(설계 §6-2 운영자 경로): VM 목록은 `operator_session.py --list-nodes`(한 줄 JSON) 에서만 읽고(못 읽으면
+  세션을 돌리지 않고 사유를 남김), 그 가운데 고르게 하나를 30 ~ 90분 고른 무작위 간격으로
+  `python3 /opt/lucida/scenario-contracts/profiles/operator_session.py --node <VM> --check` 로 150초 제한(CLI 안 90초 + 60초)에 부른다.
+  끝 코드 0 성공, 75 는 실행기 운영자 세션이 그 VM 을 쥐고 있음(5분 뒤 같은 VM, 세 번 이어지면 다른 VM), 124 는 CLI 가 제 제한에
+  세션을 끝냄, 그 밖은 실패. 마지막 성공이 180분보다 오래되면 preflight 가 이 도메인 주입을 막는다.
+- 미끼(U7): `operator_session.py --node <VM> --decoy war_redeploy|config_reapply`(§15-4 차례 9).
 
 ### 15-3. 시험 실행(설계 §10 T4 "시험 실행", "자가 복구 실측", 녹화 아님)
 
@@ -670,7 +673,7 @@ ssh 로그인해 친다. 66 이 그 연결을 관리 브리지 둘째 주소(관
 | 5-1 | 실행기 키 `from=` 확인(이미 붙은 늘 열린 연결은 키를 다시 보지 않으므로 다시 연 연결로 본다). VM 하나씩, 앞 VM 이 끝나면 다음: tb-ops 호스트에서 그 VM 의 마스터를 닫고(`ssh -F none ... -o ControlPath=<제어 폴더>/opsjob@<관리 주소>:22 -O exit opsjob@<관리 주소>`) 러너 감시가 다시 열 때까지 기다린다 | 다시 연 마스터가 `ssh -O check` 로 살아 있음(1분 안), 그 VM `/var/log/auth.log` 의 새 로그인 출발이 192.168.127.1. 6대 모두 끝나면 늘 열린 연결 7개(66 포함) 생존과 5분 평시 점검 읽기 한 바퀴 성공 | 다시 열리지 않으면 그 자리에서 멈추고 그 VM 만 이 판 앞 묶음으로 `--steps accounts`(104 경로라 실행기 키 없이 된다, 아래 문단). 나머지 VM 은 하지 않는다 |
 | 6 | tb-ops 호스트: 운영자 세션 한 번(조회만): 러너 컨테이너 안에서 `python3 /opt/lucida/scenario-contracts/profiles/operator_session.py --node web01 --check` | 끝 코드 0. web01 `/var/log/auth.log` 에 `Accepted publickey for sysop from 192.168.127.5`, `session opened for user sysop`, `sudo: sysop : TTY=pts/`, `session closed for user sysop`. 같은 줄이 119 `syslog_local` 에도(1분 안). `opsjobs.log` 로 돌려진 운영자 줄 0 | 없음(읽기 세션) |
 | 7 | 거절 확인: 운영자 단말 키로 출발 주소를 묶지 않고(`-b` 없이, 출발 192.168.127.1) `sysop@<web01 관리 주소>` 에 붙어 본다. 실행기 키로 `-b 192.168.122.21 -o ControlPath=none` 을 주어 `opsjob@` 에도 붙어 본다 | 둘 다 `from=` 이 맞지 않아 키 거절(끝 코드 255). 출발 주소 분리가 코드가 아니라 키로 강제된다 | 없음 |
-| 8 | 러너: 평시 운영자 세션 일정을 켠다(러너 판 T4O, 15-2). 첫 세션은 1 ~ 10분 안 | 러너 state 의 마지막 성공 시각, preflight `operator_routine_age_sec` | 러너 이전 판 |
+| 8 | 러너: 평시 운영자 세션 일정을 켠다(러너 판 T4O, 15-2). **tb-ops 의 testbed-services 사본을 `--list-nodes` 가 있는 판으로 먼저(또는 같은 창에서 함께) 갱신한다.** 새 러너가 `--list-nodes` 없는 사본과 돌면 평시 세션을 돌리지 않고 180분 뒤 이 도메인 preflight 가 막힌다. 반대 순서(사본 먼저)는 옛 러너가 CLI 를 제 제한으로 부르고 CLI 가 90초 안에 끝나 괜찮다. 첫 세션은 1 ~ 10분 안 | 러너 state 의 마지막 성공 시각, preflight `operator_routine_age_sec` | 러너 이전 판 |
 | 9 | 미끼(U7, T4U): **러너 T4U 판을 먼저** 올리고(옛 러너는 VM 대상이 든 미끼 정책을 거절해 미끼 계획 단계에서 큐가 멈춘다), 그 다음 tb-ops 의 testbed-services 사본(`registry/decoy-deployments.json` 의 VM 대상 셋과 `operator_session.py --decoy`)을 갱신한다. 손 확인 한 번: 러너 컨테이너 안에서 `operator_session.py --node was01 --decoy war_redeploy` 와 `--node web01 --decoy config_reapply` | 둘 다 끝 코드 0, 그 VM 의 운영자 로그인 둘과 sudo 줄(사본, 다시 놓기, 지움, 웹은 `systemctl reload apache2`), WAR 와 사이트 설정의 sha256 이 앞과 같음(`sha256sum -c --quiet /var/lib/petition-deploy/expected.sha256` 끝 코드 0), 부하기 비정상 비율이 평시 대역 | 정책 파일을 앞 판으로(러너는 VM 대상 없이 돈다) |
 
 **104 설치 경로(잠김 없는 되돌리기).** `apply.sh` 는 104 에서 `ssh -o BatchMode=yes ... -J root@192.168.200.66 sysop@<VM 관리 주소>` 로 들어간다. 계정은 운영자 `sysop`, 키는 104 사용자 자신의 ssh 키(`-i` 없음, 그 공개 키가 인벤토리 `accounts.operator.pubkey_file`, T 는 `~/.config/testbed/t4-operator.pub`), 출발 주소는 66 이 관리 브리지로 여는 연결이라 66 관리 주소 192.168.127.1 이다. 이 키 줄은 `from=` 없이 그대로 놓이고(`install -m 0600 ... secrets/sysop.pub`, 운영자 단말 줄만 그 뒤에 `from=` 으로 덧붙음), verify `account-keys-from` 도 운영자 쪽은 단말 줄 하나만 본다. 그래서 실행기 키와 운영자 단말 키의 `from=` 이 무엇이든 104 에서 VM 으로 들어가 이전 묶음을 놓을 수 있다(시험 `test_the_install_path_from_104_is_not_bound`).
@@ -717,3 +720,4 @@ S 는 같은 tb-ops 주소와 같은 키를 쓰고 66 이 S 관리 브리지에�
 - 2026-11-20 KST, v4 T4O 2회차(지휘 세션 결정, 확인 필요 1): 실행기 키도 `from="<관리망 host_addr>"` 로 묶는다. §15-4 차례 5 의 verify `account-keys-from`, 차례 5-1(다시 연 늘 열린 연결로 확인, VM 하나씩, 되돌리기), 차례 7 의 기대(실행기 키도 운영자 출발 주소에서 거절), 되돌리기 순서.
 - 2026-11-20 KST, v4 T4O 3회차(리뷰 rv-t4o L1, 지휘 세션 덧): §15-4 차례 2 에 tb-ops netplan 주소 순서(.20 정적이 먼저, DHCP 면 멈춤)와 재부팅 뒤 확인 한 줄, 차례 4-1 되돌리기 길 확인, 104 설치 경로(계정, 키, 출발 주소)와 잠김 없는 되돌리기 문단.
 - 2026-11-20 KST, v4 T4U(지휘 세션 결정, 리뷰 rv-t4o M3): §15-4 차례 9 미끼(러너 T4U 판 먼저, 정책과 CLI 사본, 손 확인과 되돌리기).
+- 2026-11-20 KST, v4 T4O 4회차(리뷰 rv-t4o2 N5): §15-2 평시 세션(`--list-nodes`, 150초, 세 번 바쁨이면 다른 VM, 124)과 미끼, §15-4 차례 8 적용 순서(`--list-nodes` 판 사본을 러너보다 먼저 또는 함께).

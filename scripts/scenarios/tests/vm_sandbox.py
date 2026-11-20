@@ -63,6 +63,8 @@ if [[ "${dest%@*}" == sysop ]]; then
   printf 'login %s bind=%s tty=%s opts=%s stdin=%s lock=%s\n' "$dest" "$bind" "$tty" "${opts[*]}" \
     "$([[ $nostdin == yes ]] && echo null || echo open)" "$lock" >>"$d/ssh-log"
   [[ -e "$d/operator-down" ]] && { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; }
+  # A hung session: this process itself (standing for ssh) waits; its pid is noted for the test.
+  if [[ -e "$d/operator-hang" ]]; then echo $$ >"$d/operator-hang.pid"; exec sleep 300; fi
   export FAKE_SUDO_USER=sysop FAKE_TTY=pts/0 FAKE_SUDO_READS_TTY=1 PATH="$d/op-bin:$PATH" HOME="$OPS_HOME"
   cd "$OPS_HOME"
   [[ $nostdin == yes ]] && exec </dev/null
@@ -276,7 +278,7 @@ class NetnsShell:
         self.env = env
         self.n = 0
         script = root / "netns-shell.sh"
-        script.write_text(setup + "\nwhile IFS= read -r cmd; do bash \"$cmd\"; echo \"$?\" >\"$cmd.rc\"; done\n")
+        script.write_text(setup + "\nwhile IFS= read -r cmd; do bash \"$cmd\"; echo \"$?\" >\"$cmd.rc.part\"; mv \"$cmd.rc.part\" \"$cmd.rc\"; done\n")
         self.proc = subprocess.Popen(["unshare", "-rn", "bash", str(script)], stdin=subprocess.PIPE, env=env,
                                      text=True)
 
@@ -295,7 +297,8 @@ class NetnsShell:
             if time.time() > deadline:
                 raise TimeoutError(body[:200])
             time.sleep(0.02)
-        return int(rc.read_text().strip() or "1"), out.read_text(), err.read_text()
+        # The shell writes the code to a side file and renames it, so rc never exists half written (rv-t4o2).
+        return int(rc.read_text().strip()), out.read_text(), err.read_text()
 
     def node(self, program: bytes, args: list[str], expire_after: int = 1800, guard_hold: int = 960) -> tuple[int, str, str]:
         prog = self.root / f"prog{self.n + 1}.sh"

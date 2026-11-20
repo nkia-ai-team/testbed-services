@@ -16,7 +16,9 @@ holds the two equal).
 The session takes the per-VM lock <CIVIL_PETITION_SSH_CONTROL_DIR>/operator-<VM>.lock that the executors take too, so
 a normal-time session and an injection never share a VM at once. The session text goes as the remote command
 (`bash -c '<text>'`, stdin /dev/null), never on the pty's input (review rv-t4o H1). ssh runs in its own process group
-and the whole group ends after SESSION_TIMEOUT_SECONDS (under the runner's 120 seconds, review rv-t4o M2). Exit code:
+and the whole group ends after SESSION_TIMEOUT_SECONDS (the runner allows this plus 60 seconds, review rv-t4o M2).
+ssh is in its own session, so a stop of this CLI (TERM, INT, HUP: the runner ends its group TERM first) ends ssh's
+group before the CLI goes (rv-t4o2 N3). Exit code:
 the ssh session's, 75 when the lock is held (the runner retries that VM later), 124 when the limit ended it, 3 on
 refusal.
 """
@@ -40,7 +42,7 @@ import vm_executor_common as vm  # noqa: E402
 OPERATOR = "sysop"
 # Exit code when an executor's operator session holds the VM's lock (EX_TEMPFAIL): the runner retries that VM later.
 BUSY_EXIT = 75
-# Under the runner's limit for this CLI (120 seconds) with room for the group to end (review rv-t4o M2).
+# The runner calls this CLI with this limit plus 60 seconds (150), room for the group to end (review rv-t4o M2).
 SESSION_TIMEOUT_SECONDS = 90
 # What an operator looks at on a routine check of each role. Read-only: nothing here changes the VM. Each sudo line
 # reaches 119 as the injection sessions' do (TTY=pts/N); "|| true" keeps a missing log from ending the session.
@@ -149,21 +151,38 @@ def run_sessions(node: str, sessions: list[list[str]]) -> int:
         result = 0
         for argv in sessions:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+            previous = forward_stop_to(proc)
             try:
                 rc = proc.wait(timeout=max(deadline - time.monotonic(), 0.1))
             except subprocess.TimeoutExpired:
                 end_group(proc)
                 print(f"operator session on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
                 return 124
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
             if rc != 0 and result == 0:
                 print(f"operator session on {node} ended with {rc}", file=sys.stderr)
                 result = rc
         return result
 
 
-def end_group(proc: subprocess.Popen) -> None:
+STOP_GRACE_SECONDS = 2
+
+
+def forward_stop_to(proc: subprocess.Popen) -> dict:
+    """While ssh runs, a TERM, INT or HUP to this CLI ends ssh's group (within 2 x STOP_GRACE_SECONDS, under the
+    runner's 5 seconds before KILL), then the CLI goes with the same signal."""
+    def stop(signum, _frame):
+        end_group(proc, STOP_GRACE_SECONDS)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    return {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+
+
+def end_group(proc: subprocess.Popen, grace: float = 5) -> None:
     """End ssh and anything it started (its own session), TERM first then KILL."""
-    for sig, wait in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, grace)):
         try:
             os.killpg(proc.pid, sig)
         except ProcessLookupError:
