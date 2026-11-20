@@ -10,10 +10,14 @@ holds the two equal).
 
   operator_session.py --node <VM name> --check          one read-only operator session (the runner's schedule calls it)
   operator_session.py --node <VM name> --print          the ssh command and the session text as JSON, nothing run
+  operator_session.py --list-nodes                      the VMs that take normal-time sessions, one JSON line
 
 The session takes the per-VM lock <CIVIL_PETITION_SSH_CONTROL_DIR>/operator-<VM>.lock that the executors take too, so
-a normal-time session and an injection never share a VM at once. Exit code: the ssh session's, 75 when the lock is
-held (the runner retries that VM later), 3 on refusal.
+a normal-time session and an injection never share a VM at once. The session text goes as the remote command
+(`bash -c '<text>'`, stdin /dev/null), never on the pty's input (review rv-t4o H1). ssh runs in its own process group
+and the whole group ends after SESSION_TIMEOUT_SECONDS (under the runner's 120 seconds, review rv-t4o M2). Exit code:
+the ssh session's, 75 when the lock is held (the runner retries that VM later), 124 when the limit ended it, 3 on
+refusal.
 """
 from __future__ import annotations
 
@@ -21,6 +25,8 @@ import argparse
 import fcntl
 import json
 import os
+import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +37,8 @@ import vm_executor_common as vm  # noqa: E402
 OPERATOR = "sysop"
 # Exit code when an executor's operator session holds the VM's lock (EX_TEMPFAIL): the runner retries that VM later.
 BUSY_EXIT = 75
-SESSION_TIMEOUT_SECONDS = 120
+# Under the runner's limit for this CLI (120 seconds) with room for the group to end (review rv-t4o M2).
+SESSION_TIMEOUT_SECONDS = 90
 # What an operator looks at on a routine check of each role. Read-only: nothing here changes the VM. Each sudo line
 # reaches 119 as the injection sessions' do (TTY=pts/N); "|| true" keeps a missing log from ending the session.
 ROLE_CHECKS: dict[str, list[str]] = {
@@ -51,24 +58,36 @@ class Refused(ValueError):
 
 
 def ssh_argv(host: str) -> list[str]:
-    """The operator login (the same words as op_ssh in vm_executor_common.RUNNER_HEAD)."""
+    """The operator login up to the destination (the same words as op_ssh in vm_executor_common.RUNNER_HEAD)."""
     keys = os.environ.get(vm.KEY_DIR_ENV, vm.KEY_DIR)
-    return ["ssh", "-tt", "-F", "none", "-i", f"{keys}/t4-operator", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={keys}/known_hosts_civil-petition",
-            "-o", "ConnectTimeout=10", "-o", "ControlPath=none", "-b", vm.OPERATOR_BIND_ADDR,
-            f"{OPERATOR}@{host}", "bash", "-s"]
+    return ["ssh", "-tt", "-n", "-F", "none", "-i", f"{keys}/t4-operator", "-o", "IdentitiesOnly=yes",
+            "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={keys}/known_hosts_civil-petition", "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ControlPath=none",
+            "-b", vm.OPERATOR_BIND_ADDR, f"{OPERATOR}@{host}"]
 
 
 def session_text(lines: list[str]) -> str:
-    """What op_session sends: set -e, the operator's lines, exit 0."""
-    return "set -e\n" + "".join(line + "\n" for line in lines) + "exit 0\n"
+    """What op_session runs: set -e, the operator's lines, exit 0 (op_session builds the same text)."""
+    return "set -e\n" + "\n".join(lines) + "\nexit 0"
+
+
+def remote_command(text: str) -> str:
+    """The remote command: bash -c with the text single-quoted (op_quote in RUNNER_HEAD quotes the same way)."""
+    return "bash -c " + shlex.quote(text)
+
+
+def routine_nodes() -> list[str]:
+    """The VMs that take normal-time operator sessions: the router and the servers (the runner's list, review L3)."""
+    return [name for name, row in vm.VMS.items() if row["role"] in ROLE_CHECKS]
 
 
 def check_session(node: str) -> tuple[list[str], str]:
     row = vm.VMS.get(node)
     if row is None or row["role"] not in ROLE_CHECKS:
         raise Refused(f"{node!r} is not a router or server VM of the domain")
-    return ssh_argv(row["mgmt"]), session_text(ROLE_CHECKS[row["role"]])
+    text = session_text(ROLE_CHECKS[row["role"]])
+    return ssh_argv(row["mgmt"]) + [remote_command(text)], text
 
 
 def lock_path(node: str) -> Path:
@@ -85,18 +104,42 @@ def run(node: str, argv: list[str], text: str) -> int:
         except BlockingIOError:
             print(f"operator session on {node} is busy", file=sys.stderr)
             return BUSY_EXIT
-        done = subprocess.run(argv, input=text.encode(), timeout=SESSION_TIMEOUT_SECONDS, check=False,
-                              stdout=subprocess.DEVNULL)
-        return done.returncode
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+        try:
+            return proc.wait(timeout=SESSION_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            end_group(proc)
+            print(f"operator session on {node} passed {SESSION_TIMEOUT_SECONDS}s and was ended", file=sys.stderr)
+            return 124
+
+
+def end_group(proc: subprocess.Popen) -> None:
+    """End ssh and anything it started (its own session), TERM first then KILL."""
+    for sig, wait in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--node", required=True)
+    parser.add_argument("--node")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--print", action="store_true")
+    mode.add_argument("--list-nodes", action="store_true")
     args = parser.parse_args(argv)
+    if args.list_nodes:
+        print(json.dumps(routine_nodes()))
+        return 0
+    if not args.node:
+        parser.error("--node is needed with --check and --print")
     try:
         command, text = check_session(args.node)
     except Refused as exc:

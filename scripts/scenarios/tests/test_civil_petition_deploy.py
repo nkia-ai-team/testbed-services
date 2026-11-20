@@ -6426,27 +6426,61 @@ class TraceTableTests(unittest.TestCase):
 
     def test_q7c_is_judged_by_source_address_and_operator_logins_are_counted_apart(self) -> None:
         """Q35 조건 ①: Q7c 는 실행기 출발 주소(관리망 host_addr)의 새 연결만 본다. 운영자 단말 주소(operator_host_addr)의
-        연결은 판정에 들지 않고, 운영자 로그인 수(주입 창 대 평시 창 최댓값)와 경로 줄 넷을 따로 낸다(조건 ②, ④)."""
+        연결은 판정에 들지 않고 수만 따로 낸다(리뷰 L2). 운영자 로그인 수(주입 창 대 평시 창 최댓값)는 합과 VM 별로(M3),
+        경로 줄 넷과 함께 낸다(조건 ②, ④)."""
         remote = self.remote()
         injection = "2026-11-20 01:00:00"
         remote.ch_rules = [
-            # Connections around the injection: one from the operator terminal, none new from the executor.
-            (lambda q: [["11111111-1111-1111-1111-111111111111", "192.168.127.5", "22"]]
+            # Connections in the injection window: two operator sessions to web01 (two source ports).
+            (lambda q: [["11111111-1111-1111-1111-111111111111", "192.168.127.5", "22", "51234"],
+                        ["11111111-1111-1111-1111-111111111111", "192.168.127.5", "22", "51240"]]
+             if "from lucida.host_connections" in q and "remote_addr = '192.168.127.5'" in q and injection in q else None, None),
+            (lambda q: [["11111111-1111-1111-1111-111111111111", "192.168.127.5", "22", "50000"]]
              if "from lucida.host_connections" in q and "remote_addr = '192.168.127.5'" in q else None, None),
-            (lambda q: [["2"]] if "Accepted publickey for sysop from 192.168.127.5 " in q and "select count()" in q and injection in q else None, None),
-            (lambda q: [["1"]] if "Accepted publickey for sysop from 192.168.127.5 " in q and "select count()" in q else None, None),
             (lambda q: [["2", "2", "5", "2"]] if "TTY=pts/" in q else None, None),
+            (lambda q: [["192.168.124.11", "2"]] if "Accepted publickey for sysop from 192.168.127.5 " in q and injection in q else None, None),
+            (lambda q: [["192.168.125.11", "1"]] if "Accepted publickey for sysop from 192.168.127.5 " in q and "group by 1" in q else None, None),
         ]
         rc, out = self.run_tool(remote)
         self.assertEqual(rc, 0)
         # The Q7c reads (the 연결 표본 column reads every connection on purpose and is not a Q7c judgement).
-        conn = [q for q in remote.queries if "toString(local_port) from lucida.host_connections" in q]
-        self.assertEqual(len(conn), 7)
-        self.assertTrue(all("remote_addr = '192.168.127.1'" in q for q in conn), conn)
+        conn = [q for q in remote.queries if "toString(remote_port) from lucida.host_connections" in q]
+        executor = [q for q in conn if "remote_addr = '192.168.127.1'" in q]
+        operator = [q for q in conn if "remote_addr = '192.168.127.5'" in q]
+        self.assertEqual((len(executor), len(operator), len(conn)), (7, 7, 14))
         self.assertFalse(any("startsWith(remote_addr" in q for q in conn))
         self.assertIn("Q7c(출발 192.168.127.1) 충족 []", out)
         self.assertIn("운영자 로그인(출발 192.168.127.5) 창 2 평시 최대 1", out)
         self.assertIn("'sshd_accepted': 2, 'session_opened': 2, 'sudo_tty_pts': 5, 'session_closed': 2", out)
+        self.assertIn("VM 별 운영자 로그인(창, 평시 최대) {'rt-core01': (0, 0), 'web01': (2, 0), 'was01': (0, 1), "
+                      "'was02': (0, 0), 'db01': (0, 0)}", out)
+        self.assertIn("운영자 출발 연결 창 2 평시 최대 1", out)
+
+    def test_a_new_executor_ssh_beside_the_always_open_one_is_a_new_connection(self) -> None:
+        """리뷰 rv-t4o M1: VM 으로 들어오는 ssh 는 늘 22 번이라 출발 포트가 열쇠에 있어야 늘 열린 연결(평시에도 보임) 옆의
+        새 실행기 연결이 새 연결로 잡힌다."""
+        remote = self.remote()
+        target = "11111111-1111-1111-1111-111111111111"
+        around = "2026-11-20 00:50:00"
+        remote.ch_rules = [
+            (lambda q: [[target, "192.168.127.1", "22", "40000"], [target, "192.168.127.1", "22", "40123"]]
+             if "remote_addr = '192.168.127.1'" in q and around in q else None, None),
+            (lambda q: [[target, "192.168.127.1", "22", "40000"]] if "remote_addr = '192.168.127.1'" in q else None, None),
+        ]
+        rc, out = self.run_tool(remote)
+        self.assertEqual(rc, 0)
+        self.assertIn(f"Q7c(출발 192.168.127.1) 미충족 [['{target}', '192.168.127.1', '22', '40123']]", out)
+        # The key is the whole tuple in the query too (ClickHouse groups by exactly those four).
+        q7c = [q for q in remote.queries if "remote_addr = '192.168.127.1'" in q]
+        self.assertTrue(q7c)
+        for q in q7c:
+            self.assertIn("select target_id, remote_addr, toString(local_port), toString(remote_port) from", q)
+            self.assertIn("group by 1, 2, 3, 4 format TSV;", q)
+        # Only the always-open connection: satisfied.
+        remote = self.remote()
+        remote.ch_rules = [(lambda q: [[target, "192.168.127.1", "22", "40000"]] if "remote_addr = '192.168.127.1'" in q else None, None)]
+        rc, out = self.run_tool(remote)
+        self.assertIn("Q7c(출발 192.168.127.1) 충족 []", out)
 
     def test_long_windows_and_naive_times_are_refused(self) -> None:
         for start, end in (("2026-11-20T10:00:00", "2026-11-20T10:20:00"),
@@ -6818,3 +6852,29 @@ class OperatorTerminalTests(unittest.TestCase):
         helper = (DEPLOY / "hypervisor" / "install-hv-helper.sh").read_text()
         self.assertIn('from="%s" \' \\\n    "$sbin" "$runner_addr"', helper)
 
+
+    def test_the_install_path_from_104_is_not_bound(self) -> None:
+        """지휘 세션 덧(T4O 3회차): 실행기 키와 운영자 단말 키에 from= 을 묶어도 104 의 설치 경로(운영자 계정, 104 사용자 자신의
+        키, 66 을 거쳐 66 관리 주소에서 나감)는 묶이지 않아 되돌리기가 잠기지 않는다."""
+        apply = (DEPLOY / "apply.sh").read_text()
+        # The installer's ssh: the operator account, through 66 (-J), no key option (the 104 user's own key).
+        self.assertIn('ssh_opts=(-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new '
+                      '-o "UserKnownHostsFile=$known_hosts" -J "$jump")', apply)
+        self.assertIn('jump="root@192.168.200.66"', apply)
+        self.assertIn('ssh "${ssh_opts[@]}" "$operator@$addr" "$remote"', apply)
+        self.assertNotRegex(apply, r"ssh_opts=\([^)]*-i ")
+        self.assertIn('operator=$(field accounts.operator.name)', apply)
+        # The operator's own key (the 104 key) goes in as it is; only the terminal line gets from=.
+        self.assertIn('install -m 0600 "$(expand "$(field accounts.operator.pubkey_file)")" "$bundle/secrets/$operator.pub"', apply)
+        for path in (T_INV, S_INV):
+            inv = inventory(path)
+            with self.subTest(inventory=path.name):
+                self.assertNotEqual(inv["accounts"]["operator"]["pubkey_file"], inv["accounts"]["operator"]["terminal_pubkey_file"])
+                self.assertNotEqual(inv["accounts"]["operator"]["pubkey_file"], inv["accounts"]["executor"]["pubkey_file"])
+        # The VM check allows the 104 key line next to the one bound terminal line.
+        verify = (DEPLOY / "steps" / "verify.sh").read_text()
+        self.assertIn('[[ "$(grep -c "^from=\\"$MGMT_OPERATOR\\" " "$keys")" == 1 ]]', verify)
+        # The jump's last hop leaves 66 from the management bridge's first (primary) address, the executor's.
+        net = render.hypervisor_files(inventory(T_INV))["/etc/network/interfaces.d/t4-net"]
+        stanza = net.split("iface vmbr11 ", 1)[1]
+        self.assertEqual(re.findall(r"^\taddress (\S+)$", stanza, re.M)[0], "192.168.127.1/24")

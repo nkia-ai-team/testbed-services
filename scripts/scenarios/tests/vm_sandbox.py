@@ -8,8 +8,11 @@ state as files and log every call:
 - ssh: `-O check` answers from the file ``master-<host>`` (present = the runner's master is up); any
   other call runs the remote command locally (sudo -n dropped) and logs the destination. A file
   ``down-<host>`` makes every call fail like an unreachable host.
-- setpriv, sudo: the operator path (vm_executor_common.OPERATOR_FUNCTIONS); setpriv logs what the
-  operator typed and runs it.
+- ssh as the operator (sysop): a login on a real pty (PTY_REMOTE, `pty.fork`), the remote command run by
+  `bash -c` as sshd runs it with the login shell, and whatever came on ssh's stdin typed into that pty. The
+  operator's sudo reads the terminal (as sudo with use_pty relays it), so lines typed ahead are eaten exactly
+  where a real session would lose them (review rv-t4o H1). A held operator-*.lock is noted on the login line.
+- setpriv, sudo: setpriv (the database executors' account switch) logs and runs; sudo logs its syslog line.
 - systemd-run, systemctl (UNIT_SYSTEMD_RUN, UNIT_SYSTEMCTL): named units and services; a unit's
   command runs in the background and the unit is active while it lives.
 - psql, conntrack, sysctl: just enough to answer the executors' queries.
@@ -27,7 +30,7 @@ import node_guard_fakes
 
 SSH = r'''#!/usr/bin/env bash
 d="$VM_SANDBOX"
-dest=""; check=no; bind=""; tty=no; opts=()
+dest=""; check=no; bind=""; tty=no; nostdin=no; opts=()
 while (( $# )); do
   case "$1" in
     -O) [[ "$2" == check ]] && check=yes; shift 2 ;;
@@ -35,6 +38,7 @@ while (( $# )); do
     -o) opts+=("$2"); shift 2 ;;
     -F|-i|-p|-l) shift 2 ;;
     -tt|-t) tty=yes; shift ;;
+    -n) nostdin=yes; shift ;;
     -*) shift ;;
     *) dest="$1"; shift; break ;;
   esac
@@ -46,17 +50,23 @@ if [[ "$check" == yes ]]; then
   [[ -e "$d/master-$host" ]] && exit 0
   echo "Control socket connect: No such file or directory" >&2; exit 255
 fi
-printf 'call %s %s\n' "$dest" "$*" >>"$d/ssh-log"
+args="$*"
+printf 'call %s %s\n' "$dest" "${args//$'\n'/\\n}" >>"$d/ssh-log"
 if [[ "${dest%@*}" == hvjob ]]; then exec "$VM_SANDBOX_HV_FRONT"; fi
 # An operator login: a new connection (never the master), from the bind address, with a pty. The commands run as the
 # operator in its home; sudo then logs TTY=pts/0 like a real login's.
 if [[ "${dest%@*}" == sysop ]]; then
-  printf 'login %s bind=%s tty=%s opts=%s\n' "$dest" "$bind" "$tty" "${opts[*]}" >>"$d/ssh-log"
+  lock=free
+  for f in "${CIVIL_PETITION_SSH_CONTROL_DIR:-/nonexistent}"/operator-*.lock; do
+    [[ -e "$f" ]] && ! flock -n "$f" true && lock=held
+  done
+  printf 'login %s bind=%s tty=%s opts=%s stdin=%s lock=%s\n' "$dest" "$bind" "$tty" "${opts[*]}" \
+    "$([[ $nostdin == yes ]] && echo null || echo open)" "$lock" >>"$d/ssh-log"
   [[ -e "$d/operator-down" ]] && { echo "ssh: connect to host $host port 22: Connection refused" >&2; exit 255; }
-  export FAKE_SUDO_USER=sysop FAKE_TTY=pts/0 PATH="$d/op-bin:$PATH"
+  export FAKE_SUDO_USER=sysop FAKE_TTY=pts/0 FAKE_SUDO_READS_TTY=1 PATH="$d/op-bin:$PATH"
   cd "$OPS_HOME"
-  tee -a "$d/operator-typed" | "$@"
-  exit "${PIPESTATUS[1]}"
+  [[ $nostdin == yes ]] && exec </dev/null
+  exec python3 "$d/vm-bin/pty-remote" "$*"
 fi
 if [[ "$1" == sudo ]]; then shift; [[ "$1" == -n ]] && shift; fi
 # A file fail-state makes the read of the change's state fail (the management connection lost right after a run).
@@ -81,6 +91,8 @@ exec "$@"
 
 SUDO = r'''#!/usr/bin/env bash
 [[ "$1" == -n ]] && shift
+# The operator's sudo on a pty reads the terminal (use_pty relays it): it eats whatever was typed ahead.
+if [[ -n "${FAKE_SUDO_READS_TTY:-}" ]]; then while IFS= read -r -t 0.2 _ </dev/tty 2>/dev/null; do :; done; fi
 printf 'sudo %s\n' "$*" >>"$VM_SANDBOX/sudo-log"
 # The line sudo itself sends to syslog (auth facility), with the working directory it would log.
 printf '%s : TTY=%s ; PWD=%s ; USER=root ; COMMAND=%s\n' "${FAKE_SUDO_USER:-root}" "${FAKE_TTY:-unknown}" "$(pwd)" "$*" >>"$VM_SANDBOX/sudo-syslog"
@@ -160,13 +172,61 @@ esac
 '''
 
 
+# The operator's end of an ssh -tt login: argv[1] is the remote command, run as sshd runs it (`bash -c`, standing in
+# for the login shell) on a new pty; what arrives on stdin is typed into the pty while the session runs. Output comes
+# back with the pty's line ends; the exit code is the session's, 124 when it does not end within FAKE_PTY_LIMIT.
+PTY_REMOTE = r'''#!/usr/bin/env python3
+import os, pty, select, shlex, signal, sys, time
+remote = sys.argv[1]
+box = os.environ["VM_SANDBOX"]
+try:
+    words = shlex.split(remote)
+except ValueError:
+    words = []
+typed = words[2] + "\n" if words[:2] == ["bash", "-c"] and len(words) == 3 else ""
+pending = sys.stdin.buffer.read()
+with open(os.path.join(box, "operator-typed"), "a") as log:
+    log.write(typed + pending.decode(errors="replace"))
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-c", remote])
+deadline = time.monotonic() + float(os.environ.get("FAKE_PTY_LIMIT", "20"))
+out = bytearray()
+status = None
+while True:
+    if time.monotonic() > deadline:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        sys.stdout.buffer.write(bytes(out).replace(b"\r\n", b"\n"))
+        print("pty session did not end", file=sys.stderr)
+        sys.exit(124)
+    want_w = [fd] if pending else []
+    r, w, _ = select.select([fd], want_w, [], 0.1)
+    if w:
+        n = os.write(fd, pending[:256])
+        pending = pending[n:]
+    if r:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            chunk = b""
+        if not chunk:
+            break
+        out += chunk
+done, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(bytes(out).replace(b"\r\n", b"\n"))
+sys.exit(os.waitstatus_to_exitcode(status) if os.waitstatus_to_exitcode(status) >= 0 else 128 - os.waitstatus_to_exitcode(status))
+'''
+
+
 def install(root: Path) -> dict[str, str]:
     """The fakes under ``root``; returns the environment a node program or runner script reads."""
     env = node_guard_fakes.install(root)
     bindir = root / "vm-bin"
     bindir.mkdir(parents=True, exist_ok=True)
     for name, body in (("ssh", SSH), ("setpriv", SETPRIV), ("sudo", SUDO), ("unit-run", UNIT_RUN),
-                       ("unit-ctl", UNIT_CTL), ("psql", PSQL), ("conntrack", CONNTRACK), ("sysctl", SYSCTL)):
+                       ("unit-ctl", UNIT_CTL), ("psql", PSQL), ("conntrack", CONNTRACK), ("sysctl", SYSCTL),
+                       ("pty-remote", PTY_REMOTE)):
         path = bindir / name
         path.write_text(body)
         path.chmod(0o755)

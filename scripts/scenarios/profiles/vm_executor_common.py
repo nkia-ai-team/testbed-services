@@ -56,6 +56,8 @@ HV_UID = 1460
 OPERATOR_KEY = f"{KEY_DIR}/t4-operator"
 OPERATOR_BIND_ADDR = "192.168.122.21"
 OPERATOR_SOURCE_ADDR = "192.168.127.5"
+# An injection's operator session ends within this many seconds (timeout -k 10 around ssh, review rv-t4o M2).
+OPERATOR_SESSION_LIMIT = 300
 # The runner container's host (tb-ops); 66's forced-command key takes only this source (from="...").
 RUNNER_ADDR = "192.168.122.20"
 HV_KEY = f"{KEY_DIR}/t4-hv"
@@ -368,18 +370,27 @@ need_hv_master() { if ! hv_master_up; then echo "control connection to 192.168.1
 # One request to 66's forced-command helper: the request line, then the guard values.
 hv_call() { printf '%s\nexpire_after=%s guard_hold=%s\n' "$1" "$expire_after" "$guard_hold" | "${ssh_hv[@]}" hvjob@192.168.122.1; }
 # The operator path (design 6-2, Q35): a fresh ssh login as the operator from the operator terminal address, with a
-# pty (sudo logs TTY=pts/N), key authentication, a session that opens and closes. The commands go on stdin to bash.
+# pty (sudo logs TTY=pts/N), key authentication, a session that opens and closes. The commands go as the remote
+# command, `bash -c '<set -e, the lines, exit 0>'`, never on the pty's input: on a pty `bash -s` is an interactive
+# shell, and a program that reads the terminal (sudo with use_pty relays it) would eat the lines typed ahead and the
+# session would never end (review rv-t4o H1). stdin is /dev/null (-n). The session is bounded: keepalives end a dead
+# connection and timeout ends a stuck one, so a killed executor leaves no ssh holding the VM's lock (M2).
 # One operator session per VM at a time: the runner's normal-time operator sessions take the same lock.
-op_ssh=(ssh -tt -F none -i "$keys/t4-operator" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
-  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o ControlPath=none -b @OPERATOR_BIND@)
+op_ssh=(ssh -tt -n -F none -i "$keys/t4-operator" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o ServerAliveInterval=15
+  -o ServerAliveCountMax=3 -o ControlPath=none -b @OPERATOR_BIND@)
+# Single quotes with each ' as '"'"' (the same quoting as Python's shlex.quote): any login shell reads it back.
+op_quote() { local sq="'" rep="'\"'\"'"; printf "'%s'" "${1//$sq/$rep}"; }
 op_session() {
+  local text
+  text="set -e"$'\n'"$(cat)"$'\n'"exit 0"
   mkdir -p "$ctl"
   {
     if ! flock -w 600 8; then echo "operator session on $node is busy" >&2; return 1; fi
-    { printf 'set -e\n'; cat; printf 'exit 0\n'; } | "${op_ssh[@]}" "sysop@$host" bash -s
+    timeout -k 10 @OPERATOR_LIMIT@ "${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"
   } 8>"$ctl/operator-$node.lock"
 }
-'''.replace(b"@OPERATOR_BIND@", OPERATOR_BIND_ADDR.encode())
+'''.replace(b"@OPERATOR_BIND@", OPERATOR_BIND_ADDR.encode()).replace(b"@OPERATOR_LIMIT@", str(OPERATOR_SESSION_LIMIT).encode())
 
 
 def runner_script(node_program: bytes, dispatch: bytes) -> bytes:

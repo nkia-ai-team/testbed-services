@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -6379,6 +6380,89 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
                                                match="a", replace="b"))
         self.refused("vm.service", self.params("vm.service", action="war", release="/tmp/x.war", release_sha256="0" * 64))
 
+    def test_every_service_change_and_its_undo_are_the_operators_lines(self) -> None:
+        """Review rv-t4o M4 (V10, V15, V16): for stop, config and war, run and cleanup are typed by the operator
+        (exact sudo lines, TTY=pts/0), and root has nothing left to take back. war is the U7 decoy deployment path."""
+        svc = load("vm_service_executor")
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "tomcat10.service-state").write_text("active\n")
+        vm_sandbox.master(self.tmp, "192.168.127.31")
+        root = str(self.tmp)
+
+        def call(params: dict, action: str, swap: dict[str, str], extra_env: dict[str, str] | None = None):
+            with unittest.mock.patch.dict(svc.CONTRACTS, {"T4-CASE": params}):
+                argv, stdin = svc.build_invocation(vm_sandbox.plan("vm.service", "T4-CASE", params), action)
+            argv = [swap.get(a, a) for a in argv]
+            done = subprocess.run(argv, input=stdin, env={**self.env, **(extra_env or {})}, capture_output=True, timeout=120)
+            return done.returncode, done.stderr.decode()
+
+        def new_lines(before: int) -> list[str]:
+            return [l.replace(root, "{root}").split(" ; COMMAND=")[1] for l in vm_sandbox.logged(self.tmp, "sudo-syslog")[before:]
+                    if l.startswith("sysop : TTY=pts/0 ; PWD={root}/home".replace("{root}", root))]
+
+        def count() -> int:
+            return len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
+
+        # stop
+        stop = self.params("vm.service")
+        n = count()
+        self.assertEqual(call(stop, "run", {})[0], 0)
+        self.assertEqual(new_lines(n), ["systemctl stop tomcat10"])
+        n = count()
+        rc, err = call(stop, "cleanup", {})
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(new_lines(n), ["systemctl start tomcat10"])
+        self.assertEqual(count(), n + 1)  # nothing by root
+        self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "active")
+        self.assertEqual(call(stop, "recovery", {})[0], 0)
+        # config
+        conf = self.tmp / "etc" / "tomcat10" / "server.xml"
+        conf.parent.mkdir(parents=True)
+        conf.write_text('<Server>\n<Connector port="8080" maxThreads="200"/>\n</Server>\n')
+        config = self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
+                             match='<Connector port="8080" maxThreads="200"/>', replace='<Connector port="8080" maxThreads="4"/>')
+        swap = {"/etc/tomcat10/server.xml": str(conf)}
+        self.assertEqual(call(config, "run", swap)[0], 0)
+        n = count()
+        rc, err = call(config, "cleanup", swap)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(new_lines(n), ["cp {root}/etc/tomcat10/server.xml.bak {root}/etc/tomcat10/server.xml",
+                                        "rm -f {root}/etc/tomcat10/server.xml.bak", "systemctl restart tomcat10"])
+        self.assertEqual(count(), n + 3)
+        self.assertIn('maxThreads="200"', conf.read_text())
+        self.assertEqual(call(config, "recovery", swap)[0], 0)
+        # war: the deployed WAR swapped for a release whose checksum the contract fixes, and swapped back.
+        rel_dir = self.tmp / "releases"
+        rel_dir.mkdir()
+        release = rel_dir / "petition-decoy.war"
+        release.write_bytes(b"decoy release")
+        war = self.tmp / "webapps" / "petition.war"
+        war.parent.mkdir()
+        war.write_bytes(b"current release")
+        war_bak = self.tmp / "petition.war.bak"
+        digest = hashlib.sha256(b"decoy release").hexdigest()
+        war_params = self.params("vm.service", action="war", release="/var/lib/petition-deploy/releases/petition-decoy.war",
+                                 release_sha256=digest)
+        swap = {"/var/lib/petition-deploy/releases/petition-decoy.war": str(release)}
+        wenv = {"PETITION_WAR": str(war), "PETITION_WAR_BAK": str(war_bak)}
+        n = count()
+        rc, err = call(war_params, "run", swap, wenv)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(new_lines(n), [f"cp -p {{root}}/webapps/petition.war {{root}}/petition.war.bak",
+                                        f"cp {{root}}/releases/petition-decoy.war {{root}}/webapps/petition.war"])
+        self.assertEqual(war.read_bytes(), b"decoy release")
+        logins = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
+        self.assertTrue(logins[-1].startswith("login sysop@192.168.127.31 bind=192.168.122.21 tty=yes"), logins[-1])
+        n = count()
+        rc, err = call(war_params, "cleanup", swap, wenv)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(new_lines(n), ["cp {root}/petition.war.bak {root}/webapps/petition.war", "rm -f {root}/petition.war.bak"])
+        self.assertEqual(count(), n + 2)
+        self.assertEqual(war.read_bytes(), b"current release")
+        self.assertFalse(war_bak.exists())
+        self.assertEqual(call(war_params, "recovery", swap, wenv)[0], 0)
+
     # ---------------------------------------------------------------- review rv-t4s fixes, Q35 operator path
 
     def test_the_operator_path_is_a_real_login_and_its_lines_reach_119(self) -> None:
@@ -6440,39 +6524,60 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
 
     def test_normal_time_operator_sessions_have_the_same_form(self) -> None:
         """Q35 condition ②: the runner's normal-time operator session (operator_session.py) is the injection's form:
-        the same ssh words, the same account and source address, the same session wrapper and the same lock."""
+        the same ssh words, the same account and source address, the same remote command, the same lock."""
         sess = load("operator_session")
         argv, text = sess.check_session("was01")
-        self.assertEqual(argv[-3:], ["sysop@192.168.127.31", "bash", "-s"])
-        self.assertTrue(text.startswith("set -e\n") and text.endswith("exit 0\n"))
+        self.assertEqual(argv[-2], "sysop@192.168.127.31")
+        self.assertEqual(argv[-1], "bash -c " + shlex.quote(text))
+        self.assertEqual(shlex.split(argv[-1]), ["bash", "-c", text])
+        self.assertTrue(text.startswith("set -e\n") and text.endswith("\nexit 0"))
         self.assertIn("sudo systemctl status tomcat10 --no-pager", text)
-        for line in text.splitlines():
-            for word in (" rm ", " cp ", " mv ", " tee ", ">", "restart", "stop", "start", "kill"):
-                if word == ">" and "|" in line:
-                    continue
-                self.assertNotIn(word, f" {line} ", line)
-        # The bash op_session of the executors: the same words.
+        # Read-only on every role (review rv-t4o M4 V4): no word that changes a VM in any role's lines.
+        changing = (" rm ", " cp ", " mv ", " tee ", ">", "restart", "stop", "start", "kill", "flush", "delete",
+                    " add ", " del ", " -w ", " -f ", "reload", "truncate", " dd ", "mkfs", "chmod", "chown", " sed ")
+        self.assertEqual(sorted(sess.ROLE_CHECKS), ["db", "router", "was", "web"])
+        for role, lines in sess.ROLE_CHECKS.items():
+            for line in lines:
+                for word in changing:
+                    if word == ">" and "|" in line:
+                        continue
+                    with self.subTest(role=role, line=line, word=word):
+                        self.assertNotIn(word, f" {line} ")
+        # The bash op_session of the executors: the same ssh words, the same quoting of the same text.
         head = vm_common.RUNNER_HEAD.decode()
         bash_words = re.search(r"op_ssh=\((.*?)\)\n", head, re.S).group(1).split()
-        expected = [w.replace("/root/.ssh/vm-ops", "$keys") for w in argv[:-3]]
-        self.assertEqual([w.strip('"') for w in bash_words], [w if "$keys" not in w else w for w in expected])
-        self.assertIn('{ printf \'set -e\\n\'; cat; printf \'exit 0\\n\'; } | "${op_ssh[@]}" "sysop@$host" bash -s', head)
+        self.assertEqual([w.strip('"').replace("$keys", "/root/.ssh/vm-ops") for w in bash_words], argv[:-2])
+        self.assertIn('timeout -k 10 300 "${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"', head)
         self.assertIn('8>"$ctl/operator-$node.lock"', head)
+        functions = re.search(r"^op_quote\(\).*?^\}\n", head, re.S | re.M).group(0)
+        typed = "\n".join(sess.ROLE_CHECKS["was"])
+        done = subprocess.run(["bash", "-c", functions + 'op_session() { printf "%s" "set -e"$\'\\n\'"$(cat)"$\'\\n\'"exit 0"; }\n'
+                               'text=$(printf "%s\\n" "$1" | op_session); printf "bash -c %s" "$(op_quote "$text")"', "_", typed],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(done.stdout, argv[-1])
         self.assertEqual(sess.lock_path("was01").name, "operator-was01.lock")
+        self.assertEqual(sess.SESSION_TIMEOUT_SECONDS, 90)
         # Routers and servers only, and the addresses are the inventory's.
         with self.assertRaises(sess.Refused):
             sess.check_session("loadgen")
+        self.assertEqual(sess.routine_nodes(), [n for n, r in vm_common.VMS.items() if r["role"] != "loadgen"])
+        listed = subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--list-nodes"], capture_output=True,
+                                text=True, check=True).stdout
+        self.assertEqual(json.loads(listed), ["rt-core01", "web01", "was01", "was02", "db01"])
         inv = json.loads(vm_common.INVENTORY.read_text())
         self.assertEqual(inv["hypervisor"]["operator_addr"], vm_common.OPERATOR_BIND_ADDR)
         mgmt = next(n for n in inv["networks"].values() if n.get("management"))
         self.assertEqual(mgmt["operator_host_addr"], vm_common.OPERATOR_SOURCE_ADDR)
         self.assertNotEqual(mgmt["operator_host_addr"], mgmt["host_addr"])
-        # A run through the fake ssh: one new login from the operator address, read-only commands.
+        # A run through the fake ssh: one new login from the operator address, stdin closed, read-only commands run.
         env = {**self.env}
         done = subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "was01", "--check"],
                               env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertTrue(vm_sandbox.logged(self.tmp, "ssh-log")[-1].startswith("login sysop@192.168.127.31 bind=192.168.122.21 tty=yes"))
+        login = vm_sandbox.logged(self.tmp, "ssh-log")[-1]
+        self.assertTrue(login.startswith("login sysop@192.168.127.31 bind=192.168.122.21 tty=yes"), login)
+        self.assertIn("stdin=null lock=held", login)  # the CLI holds the VM lock while its session runs
+        self.assertIn("ServerAliveInterval=15", login)
         # An executor's operator session holds the VM: the normal-time session does not wait, it says busy (75).
         import fcntl
         lock = sess.lock_path("was01")
@@ -6486,6 +6591,66 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertEqual(len(vm_sandbox.logged(self.tmp, "ssh-log")), before)
         self.assertEqual(subprocess.run([sys.executable, str(PROFILES / "operator_session.py"), "--node", "loadgen", "--check"],
                                         env=env, capture_output=True, text=True, timeout=60).returncode, 3)
+
+    def test_a_stuck_normal_time_session_ends_with_its_whole_group(self) -> None:
+        """Review rv-t4o M2: the CLI starts ssh in its own session and ends the whole group at its limit (under the
+        runner's 120 seconds), so no ssh or child stays on the VM or holds the lock."""
+        sess = load("operator_session")
+        fake = self.tmp / "slow-ssh"
+        pidfile = self.tmp / "slow-child.pid"
+        fake.write_text(f"#!/bin/bash\nsleep 300 & echo $! > {shlex.quote(str(pidfile))}\nwait\n")
+        fake.chmod(0o755)
+        argv, _ = sess.check_session("web01")
+        with unittest.mock.patch.object(sess, "SESSION_TIMEOUT_SECONDS", 1), \
+                unittest.mock.patch.dict(os.environ, {"CIVIL_PETITION_SSH_CONTROL_DIR": str(self.tmp / "ctl")}):
+            started = time.monotonic()
+            rc = sess.run("web01", [str(fake)] + argv[1:], "x")
+            self.assertEqual(rc, 124)
+            self.assertLess(time.monotonic() - started, 10)
+            child = int(pidfile.read_text())
+            for _ in range(50):
+                if not Path(f"/proc/{child}").exists():
+                    break
+                time.sleep(0.1)
+            self.assertFalse(Path(f"/proc/{child}").exists(), "the session's child outlived the limit")
+            # The lock is free again for the next session.
+            import fcntl
+            with open(sess.lock_path("web01"), "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_the_operator_session_survives_a_program_that_reads_the_terminal(self) -> None:
+        """Review rv-t4o H1 on a real pty (vm_sandbox PTY_REMOTE): the operator's sudo reads the terminal, as sudo
+        with use_pty relays it. The lines go as the remote command, so every later line still runs and the exit
+        code comes back; the old form (lines typed into the pty) loses them and never ends."""
+        head = vm_common.RUNNER_HEAD.decode()
+        functions = head[head.index("ctl="):head.index("\n}\n", head.index("op_session()")) + 3]
+        functions = functions.replace("timeout -k 10 300", "timeout -k 2 30")
+        marks = self.tmp / "marks"
+        call = lambda body: subprocess.run(  # noqa: E731
+            ["bash", "-c", "set -euo pipefail\nhost=192.168.127.21; node=web01\n" + functions + body],
+            env={**self.env, "FAKE_PTY_LIMIT": "15"}, capture_output=True, text=True, timeout=60)
+        lines = f"sudo true\necho second >> {marks}\nsudo true\necho third >> {marks}\n"
+        done = call(f"printf %s {shlex.quote(lines)} | op_session")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(marks.read_text().split(), ["second", "third"])
+        login = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")][-1]
+        self.assertIn("stdin=null lock=held", login)  # the executor's session holds the VM's lock while it runs
+        self.assertEqual(len([l for l in vm_sandbox.logged(self.tmp, "sudo-syslog") if "TTY=pts/0" in l]), 2)
+        # A failing line ends the session with its code; later lines do not run.
+        marks.unlink()
+        done = call(f"printf %s {shlex.quote(f'sudo true; (exit 7)' + chr(10) + f'echo after >> {marks}' + chr(10))} | op_session")
+        self.assertEqual(done.returncode, 7, done.stdout + done.stderr)
+        self.assertFalse(marks.exists())
+        # The old form: the same lines typed into the pty to `bash -s` are eaten by the first sudo.
+        old = functions.replace("ssh -tt -n -F", "ssh -tt -F").replace(
+            '"${op_ssh[@]}" "sysop@$host" "bash -c $(op_quote "$text")"',
+            'printf "%s\\n" "$text" | "${op_ssh[@]}" "sysop@$host" bash -s')
+        self.assertNotEqual(old, functions)
+        done = subprocess.run(["bash", "-c", "set -euo pipefail\nhost=192.168.127.21; node=web01\n" + old +
+                               f"printf %s {shlex.quote(lines)} | op_session"],
+                              env={**self.env, "FAKE_PTY_LIMIT": "5"}, capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(marks.exists() and "third" in marks.read_text())
 
     def _flows(self, kind: str, lines: list[str]) -> dict[str, bool]:
         """Which monitoring flows pass a broad drop rule when the chain starts with ``lines``(real kernel)."""

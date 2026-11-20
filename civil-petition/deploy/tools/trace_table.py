@@ -303,6 +303,8 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
     if not re.fullmatch(r"[a-z][a-z0-9]{1,30}", operator):
         raise ValueError(f"운영자 계정 이름 꼴이 아님: {operator!r}")
     vm_sources_all = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else [])
+    vm_names_by_addr = ([(ctx["router"]["name"], ctx["router"]["addr"])] if ctx["router"] else []) + \
+        [(s["name"], s["addr"]) for s in ctx["servers"]]
 
     def executor_rows(win: Window) -> int:
         rows = remote.ch(f"select count() from lucida.process_snapshot where {span_process(win)} and target_id in "
@@ -314,25 +316,38 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
     # 주소(관리망 host_addr)에서 온 새 연결만 배관 흔적이다. 운영자 단말 주소에서 온 연결은 원인 흔적이라 판정에서 빼고 따로 센다.
     executor_src, operator_src = ctx["executor_source"], ctx.get("operator_source")
 
+    # 열쇠에 출발 포트를 넣는다(리뷰 rv-t4o M1): VM 으로 들어오는 ssh 는 늘 22 번이라 (대상, 출발 주소, 22) 만으로는 늘 열린
+    # 연결과 새 연결이 같은 열쇠가 된다. 늘 열린 연결의 출발 포트는 그 수명 동안 같다.
     def mgmt_conns(win: Window, source: str) -> set[tuple[str, ...]]:
         return {tuple(r) for r in remote.ch(
-            f"select target_id, remote_addr, toString(local_port) from lucida.host_connections where {span_connections(win)} "
-            f"and target_id in ({quote(ids.values())}) and remote_addr = '{source}' group by 1, 2, 3 format TSV;")}
+            f"select target_id, remote_addr, toString(local_port), toString(remote_port) from lucida.host_connections "
+            f"where {span_connections(win)} and target_id in ({quote(ids.values())}) and remote_addr = '{source}' "
+            "group by 1, 2, 3, 4 format TSV;")}
     seen = set()
     for b in base20:
         seen |= mgmt_conns(b, executor_src)
     new_conns = [list(r) for r in sorted(mgmt_conns(around, executor_src) - seen)]
+    # 운영자 출발 연결 수(리뷰 L2): 주입 창과 같은 길이 평시 창들의 최댓값. 원인 흔적이라 판정은 없다.
+    operator_conns_now = len(mgmt_conns(w, operator_src)) if operator_src else None
+    operator_conns_base = [len(mgmt_conns(b, operator_src)) for b in base] if operator_src else []
     # 운영자 경로(Q35 조건 ②, ④): 운영자 단말 주소에서 온 로그인 수를 주입 창과 같은 길이 평시 창들의 최댓값으로 견주고,
     # 경로 줄(sshd 수락, 세션 열림, sudo TTY=pts, 세션 닫힘)이 119 에 닿았는지 센다. 판정은 사람이 한다(평시 세션이 있어야
     # 로그인이 주입 표지가 되지 않는다).
+    # VM 별로도 낸다(지휘 세션 결정 M3): 한 VM 의 짧은 창에 로그인이 몰리는지 보려는 것이고 판정 기준은 두지 않는다.
     operator_paths = {}
     login_now, login_base = None, []
+    by_vm: dict[str, dict[str, int]] = {}
     if operator_src:
-        def logins(win: Window) -> int:
-            rows = remote.ch(f"select count() from lucida.syslog_local where {span_received(win)} and source_ip in ({quote(vm_sources_all)}) "
-                             f"and app_name in ('sshd', 'sshd-session') and startsWith(message, 'Accepted publickey for {operator} from {operator_src} ') format TSV;")
-            return int(rows[0][0]) if rows else 0
-        login_now, login_base = logins(w), [logins(b) for b in base]
+        def logins(win: Window) -> dict[str, int]:
+            rows = remote.ch(f"select source_ip, count() from lucida.syslog_local where {span_received(win)} "
+                             f"and source_ip in ({quote(vm_sources_all)}) and app_name in ('sshd', 'sshd-session') "
+                             f"and startsWith(message, 'Accepted publickey for {operator} from {operator_src} ') group by 1 format TSV;")
+            return {r[0]: int(r[1]) for r in rows if len(r) == 2}
+        now, base_counts = logins(w), [logins(b) for b in base]
+        login_now, login_base = sum(now.values()), [sum(c.values()) for c in base_counts]
+        for name, addr in vm_names_by_addr:
+            by_vm[name] = {"window": now.get(addr, 0),
+                           "baseline_max": max((c.get(addr, 0) for c in base_counts), default=0)}
         rows = remote.ch(
             "select countIf(startsWith(message, 'Accepted publickey for " + operator + " from " + operator_src + " ')), "
             "countIf(position(message, 'session opened for user " + operator + "(') > 0 and app_name in ('sshd', 'sshd-session')), "
@@ -368,6 +383,8 @@ def q7(remote, ctx: dict, ids: dict[str, str], account: str, uid: int, hv_accoun
         "q7c_new": new_conns, "q7c": "충족" if not new_conns else "미충족", "q7c_source": executor_src,
         "operator_source": operator_src, "operator_logins_window": login_now,
         "operator_logins_baseline_max": max(login_base) if login_base else None, "operator_path_lines": operator_paths,
+        "operator_logins_by_vm": by_vm, "operator_conns_window": operator_conns_now,
+        "operator_conns_baseline_max": max(operator_conns_base) if operator_conns_base else None,
         "q7d": "표의 SMS 지표 칸의 관리 NIC 줄로 사람이 본다(관리 NIC 는 받아들임, v4 MNIC)",
     }
 
@@ -450,7 +467,9 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
     print(f"Q7 공통 낱말 {q['q7_common_words']} {q['word_hits']}, Q7a {q['q7a']} {q['q7a_rows']}, "
           f"Q7b {q['q7b']} 창 {q['q7b_window']} 평시 최대 {q['q7b_baseline_max']}, Q7c(출발 {q['q7c_source']}) {q['q7c']} {q['q7c_new']}, "
           f"운영자 로그인(출발 {q['operator_source']}) 창 {q['operator_logins_window']} 평시 최대 {q['operator_logins_baseline_max']}, "
-          f"운영자 경로 줄 {q['operator_path_lines']}, "
+          f"운영자 경로 줄 {q['operator_path_lines']}, VM 별 운영자 로그인(창, 평시 최대) "
+          f"{ {n: (v['window'], v['baseline_max']) for n, v in q['operator_logins_by_vm'].items()} }, "
+          f"운영자 출발 연결 창 {q['operator_conns_window']} 평시 최대 {q['operator_conns_baseline_max']}, "
           f"VM sudo 세션 닫힘 줄(운영자 몫 뺌) {q['q7_sudo_close']} 창 {q['sudo_close_window']} 평시 최대 {q['sudo_close_baseline_max']}, "
           f"운영자 sudo 명령 줄 {q['operator_sudo_commands_window']}")
     if args.json:
