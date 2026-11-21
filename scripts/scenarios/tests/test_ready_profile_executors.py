@@ -6433,6 +6433,21 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual(count(), n + 3)
         self.assertIn('maxThreads="200"', conf.read_text())
         self.assertEqual(call(config, "recovery", swap)[0], 0)
+        # A restart that fails in root's remove or the guard's undo leaves the backup for the next try (rv-t4u4 L-B).
+        bak = Path(str(conf) + ".bak")
+        self.assertEqual(call(config, "run", swap)[0], 0)
+        (self.tmp / "restart-fails").touch()
+        self.fire("svc-tomcat10")
+        self.assertTrue(bak.exists(), "the guard's undo dropped the backup before its restart")
+        (self.tmp / "operator-down").touch()
+        self.assertNotEqual(call(config, "cleanup", swap)[0], 0)
+        self.assertTrue(bak.exists(), "root's remove dropped the backup before its restart")
+        (self.tmp / "restart-fails").unlink()
+        self.assertEqual(call(config, "cleanup", swap)[0], 0)
+        (self.tmp / "operator-down").unlink()
+        self.assertFalse(bak.exists())
+        self.assertIn('maxThreads="200"', conf.read_text())
+        self.assertEqual(call(config, "recovery", swap)[0], 0)
         # war: the deployed WAR swapped for a release whose checksum the contract fixes (named by vm.service's one
         # rule), then tomcat10 restarted (autoDeploy is off, rv-t4u2 N1); swapped back and restarted.
         digest = hashlib.sha256(b"decoy release").hexdigest()
@@ -6487,6 +6502,22 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual(war.read_bytes(), b"current release")
         self.assertFalse(war_bak.exists())
         self.assertEqual(restarts(), before + 1)
+        # A restart that fails during root's remove or the guard's undo leaves the backup, so the next try copies and
+        # restarts again (copy, restart, then drop the backup; rv-t4u4 L-B).
+        self.assertEqual(call(war_params, "run", swap, wenv)[0], 0)
+        (self.tmp / "restart-fails").touch()
+        self.fire("svc-tomcat10")  # the unit's own exit code is the timer's business; what is left is ours
+        self.assertTrue(war_bak.exists(), "the guard's undo dropped the backup before its restart")
+        (self.tmp / "operator-down").touch()
+        self.assertNotEqual(call(war_params, "cleanup", swap, wenv)[0], 0)
+        self.assertTrue(war_bak.exists(), "root's remove dropped the backup before its restart")
+        (self.tmp / "restart-fails").unlink()
+        rc, err = call(war_params, "cleanup", swap, wenv)
+        self.assertEqual(rc, 0, err)
+        (self.tmp / "operator-down").unlink()
+        self.assertFalse(war_bak.exists())
+        self.assertEqual(war.read_bytes(), b"current release")
+        self.assertEqual(call(war_params, "recovery", swap, wenv)[0], 0)
         # Any other release name is refused: injections and decoys share the one naming rule (rv-t4u2 N6).
         self.refused("vm.service", dict(war_params, release="/var/lib/petition-deploy/releases/petition-1.4.3.war"))
 
@@ -6620,26 +6651,20 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
                                         env=env, capture_output=True, text=True, timeout=60).returncode, 3)
 
     def _decoy_box(self):
-        """The sandbox VM for decoys: a deployed WAR with its recorded sha256 and its same-bytes release, the site file
-        with the proxy line once, the executor's master up, active units."""
+        """The sandbox VM for decoys: a deployed WAR (a real zip, the variant maker reads it), the site file with the
+        proxy line once, the executor's master up, active units. Release paths are moved into the sandbox."""
+        import zipfile
         sess = load("operator_session")
         root = self.tmp
         war = root / "webapps" / "petition.war"
         war.parent.mkdir()
-        war.write_bytes(b"deployed release")
-        digest = hashlib.sha256(b"deployed release").hexdigest()
+        with zipfile.ZipFile(war, "w") as z:
+            z.writestr("WEB-INF/web.xml", "<web-app/>\n")
+            z.writestr("WEB-INF/classes/app.properties", "name=petition\n")
+        self.deployed = war.read_bytes()
+        digest = hashlib.sha256(self.deployed).hexdigest()
         (root / "war.sha256").write_text(f"{digest}  petition.war\n")
         releases = root / "releases"
-        releases.mkdir()
-        # The was step's list: the deployed bytes first, then three build-mark variants (rv-t4u3 D3).
-        self.decoy_bytes = {}
-        lines = []
-        for content in (b"deployed release", b"deployed release mark 1", b"deployed release mark 2", b"deployed release mark 3"):
-            sha = hashlib.sha256(content).hexdigest()
-            (releases / f"petition-{sha[:12]}.war").write_bytes(content)
-            self.decoy_bytes[sha] = content
-            lines.append(f"{sha}  petition-{sha[:12]}.war\n")
-        (root / "decoy-releases.sha256").write_text("".join(lines))
         conf = root / "etc" / "apache2" / "petition.conf"
         conf.parent.mkdir(parents=True)
         conf.write_text("<VirtualHost *:80>\n" + sess.PROXY_LINE + "\n</VirtualHost>\n")
@@ -6650,14 +6675,19 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         for host in ("192.168.127.21", "192.168.127.31", "192.168.127.32"):
             vm_sandbox.master(root, host)
         env = {**self.env, "PETITION_WAR": str(war), "PETITION_WAR_BAK": str(root / "petition.war.bak"),
-               "PETITION_WAR_SHA256": str(root / "war.sha256"), "PETITION_DECOY_RELEASES": str(root / "decoy-releases.sha256")}
-        swap = {sess.decoy_release(sha): str(releases / f"petition-{sha[:12]}.war") for sha in self.decoy_bytes}
-        swap[sess.WEB_CONF] = str(conf)
+               "PETITION_WAR_SHA256": str(root / "war.sha256"), "PETITION_RELEASES": str(releases),
+               "PETITION_DECOY_MADE": str(root / "decoy-made.list")}
+        prefix = sess.decoy_release("0" * 64).rsplit("/", 1)[0] + "/"
         real = sess.decoy_invocation
+
+        def moved(arg: str) -> str:
+            if arg == sess.WEB_CONF:
+                return str(conf)
+            return str(releases) + "/" + arg[len(prefix):] if arg.startswith(prefix) else arg
 
         def invocation(params, hold, action):
             argv, stdin = real(params, hold, action)
-            return [swap.get(a, a) for a in argv], stdin
+            return [moved(a) for a in argv], stdin
         return sess, env, war, conf, digest, invocation
 
     def _sudo_commands(self, before: int) -> list[str]:
@@ -6690,18 +6720,21 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change"), 0)
             lines = self._sudo_commands(n)
             self.assertEqual(lines[0], "cp -p {root}/webapps/petition.war {root}/petition.war.bak")
-            chosen = [sha for sha in self.decoy_bytes if lines[1] == f"cp {{root}}/releases/petition-{sha[:12]}.war {{root}}/webapps/petition.war"]
-            self.assertEqual(len(chosen), 1, lines[1])
+            variants = sorted((self.tmp / "releases").glob("petition-*.war"))
+            self.assertEqual(len(variants), 1)  # made on the spot for this decoy (D-B)
+            self.assertEqual(lines[1], f"cp {{root}}/releases/{variants[0].name} {{root}}/webapps/petition.war")
             self.assertEqual(lines[2:], ["systemctl restart tomcat10"])
             self.assertTrue((self.tmp / "petition.war.bak").exists())
-            self.assertEqual(war.read_bytes(), self.decoy_bytes[chosen[0]])
+            self.assertEqual(war.read_bytes(), variants[0].read_bytes())
+            self.assertEqual(variants[0].name, f"petition-{hashlib.sha256(variants[0].read_bytes()).hexdigest()[:12]}.war")
             self.assertTrue(node_guard_fakes.timers(self.env), "the executor's guard is armed while the decoy holds")
             n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "revert"), 0)
             self.assertEqual(self._sudo_commands(n), ["cp {root}/petition.war.bak {root}/webapps/petition.war",
                                                       "systemctl restart tomcat10", "rm -f {root}/petition.war.bak"])
             self.assertFalse((self.tmp / "petition.war.bak").exists())
-            self.assertEqual(war.read_bytes(), b"deployed release")
+            self.assertEqual(war.read_bytes(), self.deployed)
+            self.assertEqual(list((self.tmp / "releases").glob("petition-*.war")), [])  # the revert removed its variant
             # config_reapply on web01: an injection's config lines and restart, the proxy timeout one second longer.
             n = len(vm_sandbox.logged(self.tmp, "sudo-syslog"))
             self.assertEqual(sess.run_decoy("web01", "config_reapply", "change"), 0)
@@ -6745,7 +6778,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
                 unittest.mock.patch.object(sess, "HEALTH_WAIT_SECONDS", 3):
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change"), 1)
         self.assertFalse((self.tmp / "petition.war.bak").exists())
-        self.assertEqual(war.read_bytes(), b"deployed release")
+        self.assertEqual(war.read_bytes(), self.deployed)
 
     def test_decoy_refusals_and_codes(self) -> None:
         sess, env, *_ = self._decoy_box()
@@ -6812,28 +6845,30 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
                 self.assertEqual(done.returncode, 3, done.stderr)
         self.assertEqual(sess.GUARD_SEC_RANGE, (660, 16000))
 
-    def test_the_war_decoy_draws_from_the_listed_releases(self) -> None:
-        """rv-t4u3 D3: the war decoy's release is drawn from the was step's list, not the deployed WAR's one name."""
-        sess, env, *_ = self._decoy_box()
-        listed = [line.split()[0] for line in (self.tmp / "decoy-releases.sha256").read_text().splitlines()]
-        for pick in (0, 3):
-            class Draw:
-                def choice(self, seq, pick=pick):
-                    return list(seq)[pick]
-            with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess.random, "SystemRandom", Draw):
-                self.assertEqual(sess.decoy_war_sha256("192.168.127.31"), listed[pick])
-        self.assertEqual(len(set(listed)), 4)
+    def test_every_war_decoy_makes_a_new_release(self) -> None:
+        """Command session D-B: two war decoys on the same VM make two different releases (fresh tokens), each
+        removed by its revert."""
+        sess, env, war, conf, digest, invocation = self._decoy_box()
+        names = []
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", invocation):
+            for _ in range(2):
+                self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change"), 0)
+                names += [p.name for p in (self.tmp / "releases").glob("petition-*.war")]
+                self.assertEqual(sess.run_decoy("was01", "war_redeploy", "revert"), 0)
+                self.assertEqual(list((self.tmp / "releases").glob("petition-*.war")), [])
+        self.assertEqual(len(names), 2)
+        self.assertNotEqual(names[0], names[1])
+        self.assertEqual(war.read_bytes(), self.deployed)
 
     def test_an_executor_failure_has_its_own_code(self) -> None:
-        """rv-t4u2 N5: the executor's own failure (here the listed releases are missing on the VM) is 4, not the
+        """rv-t4u2 N5: the executor's own failure (here its check: the unit is not active) is 4, not the
         1 that means "not healthy, taken back"; no operator login happens."""
         sess, env, war, conf, digest, invocation = self._decoy_box()
-        for release in (self.tmp / "releases").glob("petition-*.war"):
-            release.unlink()  # every listed release is gone, whichever the decoy draws
+        (self.tmp / "units" / "tomcat10.service-state").write_text("inactive\n")  # the executor's check refuses
         with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", invocation):
             self.assertEqual(sess.run_decoy("was01", "war_redeploy", "change"), 4)
         self.assertEqual([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")], [])
-        self.assertEqual(war.read_bytes(), b"deployed release")
+        self.assertEqual(war.read_bytes(), self.deployed)
 
     def test_a_stuck_normal_time_session_ends_with_its_whole_group(self) -> None:
         """Review rv-t4o M2: the CLI starts ssh in its own session and ends the whole group at its limit (the runner

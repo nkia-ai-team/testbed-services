@@ -142,7 +142,10 @@ case "${args[0]}" in
     if [[ -e "$d/$name.service-state" ]]; then echo inactive >"$d/$name.service-state"; exit 0; fi
     if alive; then kill -TERM -- -"$(cat "$d/$name.pid")" 2>/dev/null || kill "$(cat "$d/$name.pid")"; for _ in $(seq 1 50); do alive || break; sleep 0.1; done; fi
     rm -f "$d/$name.pid" ;;
-  start|restart) echo active >"$d/$name.service-state"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
+  start|restart)
+    # A file restart-fails makes a restart fail (the unit does not come up), to test what is left for the next try.
+    if [[ "${args[0]}" == restart && -e "$VM_SANDBOX/restart-fails" ]]; then printf 'failed restart %s\n' "$name" >>"$VM_SANDBOX/service-log"; exit 1; fi
+    echo active >"$d/$name.service-state"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   reload) printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   *) exit 9 ;;
 esac

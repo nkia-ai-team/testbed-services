@@ -6901,7 +6901,7 @@ class OperatorTerminalTests(unittest.TestCase):
 
     def test_decoy_values_exist_on_the_vms(self) -> None:
         """T4U-2: the decoys' harmless values are real on the installed VMs: the proxy line config_reapply changes is in
-        web01's site file exactly once, and the was step leaves the same-bytes release under the name the CLI uses."""
+        web01's site file exactly once, and the war decoy's release follows vm.service's one naming rule."""
         import importlib.util
         profiles = str(HERE.parent / "profiles")
         sys.path.insert(0, profiles)
@@ -6917,9 +6917,11 @@ class OperatorTerminalTests(unittest.TestCase):
             self.assertNotEqual(timeout, 30)
             self.assertNotIn(sess.proxy_line(timeout), site)
         was = (DEPLOY / "steps" / "was.sh").read_text()
-        self.assertIn('war_sum=$(cut -c1-64 /var/lib/petition-deploy/war.sha256)', was)
-        self.assertIn('install -D -m 0644 "$BUNDLE/artifacts/petition.war" "/var/lib/petition-deploy/releases/petition-${war_sum:0:12}.war"', was)
+        # The war decoy makes its release on the spot (D-B): nothing of it is left by the was step any more.
+        self.assertNotIn("releases", was)
         self.assertEqual(sess.decoy_release("a" * 64), "/var/lib/petition-deploy/releases/petition-aaaaaaaaaaaa.war")
+        self.assertIn('rel="${PETITION_RELEASES:-/var/lib/petition-deploy/releases}"', sess.WAR_VARIANT_SCRIPT)
+        self.assertIn('install -m 0644 "$tmp" "$rel/petition-${sum:0:12}.war"', sess.WAR_VARIANT_SCRIPT)
         self.assertEqual(sess.WAR_SHA256, "/var/lib/petition-deploy/war.sha256")
         self.assertIn("> /var/lib/petition-deploy/war.sha256", was)
         # The decoy waits for the application as long as the was step does after the same restart (command session
@@ -6996,17 +6998,20 @@ class DecoyProbeTests(unittest.TestCase):
 class DecoyValueTests(unittest.TestCase):
     """The decoys' values on the VMs and the guard's reach (T4U-4, rv-t4u3 D1, D3)."""
 
-    def test_the_war_decoy_variants_differ_only_by_a_build_mark(self) -> None:
-        """rv-t4u3 D3: the was step leaves three byte variants of the deployed WAR for the war decoy; each has every
-        entry of the WAR with the same bytes plus one build mark nothing reads, so the application is the same, and
-        each has its own name under the one release rule."""
-        was = (DEPLOY / "steps" / "was.sh").read_text()
-        builder = re.search(r"<<'WAR_VARIANT'\n(.*?)\nWAR_VARIANT\n", was, re.S).group(1)
-        self.assertIn('for mark in 1 2 3; do', was)
-        self.assertIn('printf \'%s  petition-%s.war\\n\' "$war_sum" "${war_sum:0:12}" > "$variants.new"', was)
-        self.assertIn('install -m 0644 "$tmp" "/var/lib/petition-deploy/releases/petition-${sum:0:12}.war"', was)
-        self.assertIn('mv -f "$variants.new" "$variants"', was)
+    def test_the_war_decoy_variant_differs_only_by_a_fresh_build_mark(self) -> None:
+        """Command session D-B (rv-t4u4): the executor makes each war decoy's release on the spot from the deployed
+        WAR, every entry with the same bytes plus one build mark holding a fresh token, so the application is the same
+        and the name (vm.service's rule) is new for every decoy; the variant is listed so a revert can remove it."""
+        import importlib.util
         import zipfile
+        profiles = str(HERE.parent / "profiles")
+        sys.path.insert(0, profiles)
+        try:
+            spec = importlib.util.spec_from_file_location("operator_session_variant", HERE.parent / "profiles" / "operator_session.py")
+            sess = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sess)
+        finally:
+            sys.path.remove(profiles)
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             war = root / "petition.war"
@@ -7014,22 +7019,35 @@ class DecoyValueTests(unittest.TestCase):
                 z.writestr("WEB-INF/web.xml", "<web-app/>\n")
                 z.writestr(zipfile.ZipInfo("WEB-INF/lib/app.jar"), b"\x00jar bytes" * 50)
                 z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
-            sums = set()
-            for mark in ("1", "2", "3"):
-                out = root / f"v{mark}.war"
-                subprocess.run([sys.executable, "-", str(war), str(out), mark], input=builder, text=True, check=True)
-                with zipfile.ZipFile(war) as a, zipfile.ZipFile(out) as b:
+            env = {**os.environ, "PETITION_WAR": str(war), "PETITION_RELEASES": str(root / "releases"),
+                   "PETITION_DECOY_MADE": str(root / "made.list")}
+            sums = []
+            for token in ("a1b2c3d4", "e5f6a7b8"):
+                done = subprocess.run(["bash", "-s"], input=f"set -- {token}\n" + sess.WAR_VARIANT_SCRIPT, env=env,
+                                      capture_output=True, text=True, check=True)
+                sha = done.stdout.strip()
+                variant = root / "releases" / f"petition-{sha[:12]}.war"
+                self.assertEqual(hashlib.sha256(variant.read_bytes()).hexdigest(), sha)
+                with zipfile.ZipFile(war) as a, zipfile.ZipFile(variant) as b:
                     original = {i.filename: a.read(i.filename) for i in a.infolist()}
-                    variant = {i.filename: b.read(i.filename) for i in b.infolist()}
-                self.assertEqual(variant.pop("META-INF/petition-build.txt"), f"build {mark}\n".encode())
-                self.assertEqual(variant, original)
-                sums.add(hashlib.sha256(out.read_bytes()).hexdigest())
-            sums.add(hashlib.sha256(war.read_bytes()).hexdigest())
-            self.assertEqual(len(sums), 4)
-            # Built again from the same WAR, a variant has the same bytes (the mark's time is fixed).
-            again = root / "again.war"
-            subprocess.run([sys.executable, "-", str(war), str(again), "1"], input=builder, text=True, check=True)
-            self.assertEqual(again.read_bytes(), (root / "v1.war").read_bytes())
+                    made = {i.filename: b.read(i.filename) for i in b.infolist()}
+                self.assertEqual(made.pop("META-INF/petition-build.txt"), f"build {token}\n".encode())
+                self.assertEqual(made, original)
+                sums.append(sha)
+            self.assertEqual(len(set(sums)), 2)
+            self.assertEqual((root / "made.list").read_text().split(), [str(root / "releases" / f"petition-{s[:12]}.war") for s in sums])
+            self.assertEqual(sorted(p.name for p in (root / "releases").iterdir()), sorted(f"petition-{s[:12]}.war" for s in sums))
+            # The revert's clean-up removes exactly the listed variants under releases, nothing else.
+            other = root / "releases" / "petition-injection00.war"
+            other.write_bytes(b"an injection's release")
+            outside = root / "keep.war"
+            outside.write_bytes(b"x")
+            with (root / "made.list").open("a") as listed:
+                listed.write(f"{outside}\n")
+            subprocess.run(["bash", "-s"], input=sess.WAR_VARIANT_CLEAN, env=env, text=True, check=True)
+            self.assertEqual([p.name for p in (root / "releases").iterdir()], ["petition-injection00.war"])
+            self.assertTrue(outside.exists())
+            self.assertEqual((root / "made.list").read_text(), "")
 
     def test_the_decoy_guard_is_the_longest_gap_unless_the_call_brings_its_own(self) -> None:
         """rv-t4u3 D1: the guard's deadline comes from one of two places only: vm_hold_sec max (+ 600 by the executor)

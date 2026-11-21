@@ -134,8 +134,8 @@ prepare() {
 undo_body() {
   case "$action" in
     stop) printf 'if [[ -e %q ]]; then %q start %q; rm -f %q; fi\n' "$mark" "$ctl" "$svc" "$mark" ;;
-    config) printf 'if [[ -e %q ]]; then cp %q %q; rm -f %q %q; %q restart %q; fi\n' "$file.bak" "$file.bak" "$file" "$file.bak" "$edited" "$ctl" "$svc" ;;
-    war) printf 'if [[ -e %q ]]; then cp %q %q; rm -f %q; %q restart %q; fi\n' "$war_bak" "$war_bak" "$war" "$war_bak" "$ctl" "$svc" ;;
+    config) printf 'if [[ -e %q ]]; then cp %q %q && %q restart %q && rm -f %q %q; fi\n' "$file.bak" "$file.bak" "$file" "$ctl" "$svc" "$file.bak" "$edited" ;;
+    war) printf 'if [[ -e %q ]]; then cp %q %q && %q restart %q && rm -f %q; fi\n' "$war_bak" "$war_bak" "$war" "$ctl" "$svc" "$war_bak" ;;
   esac
 }
 # The operator's commands (typed in the operator's ssh session, design 6-2 operator path).
@@ -171,13 +171,15 @@ op_remove_script() {
       op_line sudo rm -f "$war_bak" ;;
   esac
 }
-# Root takes back what the operator's undo left (or everything when the operator session could not run).
+# Root takes back what the operator's undo left (or everything when the operator session could not run). The guard's
+# undo and root's remove go in the operator's order, copy, restart, then drop the backup (rv-t4u4 L-B): cut before the
+# restart, the backup stays and the next try copies and restarts again.
 remove() {
   case "$action" in
     stop) if [[ -e "$mark" ]]; then if ! svc_active; then "$ctl" start "$svc"; fi; rm -f "$mark"; fi ;;
-    config) if [[ -e "$file.bak" ]]; then cp "$file.bak" "$file"; rm -f "$file.bak"; "$ctl" restart "$svc"; fi
+    config) if [[ -e "$file.bak" ]]; then cp "$file.bak" "$file" && "$ctl" restart "$svc" && rm -f "$file.bak"; fi
       rm -f "$edited" ;;
-    war) if [[ -e "$war_bak" ]]; then cp "$war_bak" "$war"; rm -f "$war_bak"; "$ctl" restart "$svc"; fi ;;
+    war) if [[ -e "$war_bak" ]]; then cp "$war_bak" "$war" && "$ctl" restart "$svc" && rm -f "$war_bak"; fi ;;
   esac
 }
 apply() { echo "an operator change goes through the operator session" >&2; exit 2; }

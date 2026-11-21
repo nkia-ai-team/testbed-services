@@ -32,6 +32,7 @@ import fcntl
 import json
 import os
 import random
+import secrets
 import shlex
 import signal
 import subprocess
@@ -67,10 +68,12 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # undo with harmless values, run through the vm.service executor itself, so every line the VM and 119 see (the
 # operator's login, the sudo COMMAND lines with the same backup files and the same word order, the restart and its
 # journal lines, the guard the executor arms) is an injection's, character for character. Only the values differ:
-#   war_redeploy    the WAR swapped for one of the releases the was step leaves (the deployed bytes, or the same
-#                   entries with a build mark only, drawn each time, rv-t4u3 D3; vm.service release_path names them)
-#                   and tomcat10 restarted, as a war injection does (autoDeploy is off, rv-t4u2 N1): the same
-#                   application starts again.
+#   war_redeploy    the WAR swapped for a variant made on the spot for this decoy: the deployed WAR's entries with
+#                   the same bytes plus one build mark holding a fresh random token (a real deployment's release is new
+#                   every build, command session 11-21 D-B; vm.service release_path names it), and tomcat10 restarted,
+#                   as a war injection does (autoDeploy is off, rv-t4u2 N1): the same application starts again. The
+#                   executor makes the variant as root over its always-open connection; a revert that succeeded
+#                   removes the variants its decoys made (DECOY_MADE).
 #   config_reapply  one line of the site file changed to a value with no effect on the traffic (the proxy timeout
 #                   from 30 to one of PROXY_TIMEOUTS, drawn each time, rv-t4u2 N6; no request takes that long) and
 #                   apache2 restarted, as a config injection does. The undo copies the backup back (30 again).
@@ -85,7 +88,41 @@ ROLE_CHECKS: dict[str, list[str]] = {
 # the whole call, a take-back included, within DECOY_LIMIT_SECONDS; the runner allows that plus 60 (300, rv-t4u2 N4).
 WAR = "/var/lib/tomcat10/webapps/petition.war"
 WAR_SHA256 = "/var/lib/petition-deploy/war.sha256"
-DECOY_RELEASES = "/var/lib/petition-deploy/decoy-releases.sha256"
+DECOY_MADE = "/var/lib/petition-deploy/decoy-made.list"
+# The variant maker, run as root on the VM (set -- <token>). Paths have the VM defaults; PETITION_* only in tests.
+WAR_VARIANT_SCRIPT = r'''set -euo pipefail
+token="$1"
+war="${PETITION_WAR:-/var/lib/tomcat10/webapps/petition.war}"
+rel="${PETITION_RELEASES:-/var/lib/petition-deploy/releases}"
+made="${PETITION_DECOY_MADE:-/var/lib/petition-deploy/decoy-made.list}"
+install -d -m 0755 "$rel"
+tmp=$(mktemp "$rel/.variant.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+python3 - "$war" "$tmp" "$token" <<'WAR_VARIANT'
+import sys, zipfile
+source, target, token = sys.argv[1], sys.argv[2], sys.argv[3]
+with zipfile.ZipFile(source) as war, zipfile.ZipFile(target, "w") as out:
+    for entry in war.infolist():
+        if entry.filename == "META-INF/petition-build.txt":
+            continue
+        out.writestr(entry, war.read(entry.filename))
+    out.writestr(zipfile.ZipInfo("META-INF/petition-build.txt", date_time=(2026, 11, 21, 0, 0, 0)), f"build {token}\n")
+WAR_VARIANT
+sum=$(sha256sum "$tmp" | cut -c1-64)
+install -m 0644 "$tmp" "$rel/petition-${sum:0:12}.war"
+printf '%s\n' "$rel/petition-${sum:0:12}.war" >> "$made"
+printf '%s\n' "$sum"
+'''
+# After a revert that succeeded: the variants this VM's decoys made go (only those listed, only under releases).
+WAR_VARIANT_CLEAN = r'''set -euo pipefail
+rel="${PETITION_RELEASES:-/var/lib/petition-deploy/releases}"
+made="${PETITION_DECOY_MADE:-/var/lib/petition-deploy/decoy-made.list}"
+[[ -f "$made" ]] || exit 0
+while IFS= read -r f; do
+  case "$f" in "$rel"/petition-*.war) rm -f -- "$f" ;; esac
+done < "$made"
+: > "$made"
+'''
 # A revert does not read the release list: the undo uses the backup only, any well-formed release passes the contract.
 REVERT_PLACEHOLDER_SHA256 = "0" * 64
 WEB_CONF = "/etc/apache2/sites-available/petition.conf"
@@ -205,8 +242,9 @@ def decoy_invocation(params: dict[str, Any], hold_seconds: int, action: str) -> 
     return svc.build_invocation(decoy_plan(params, hold_seconds), action)
 
 
-def executor_read(host: str, command: str, timeout: float = 20) -> tuple[int, str]:
-    """One read over the runner's always-open executor connection (never a new login: no master, no read)."""
+def executor_read(host: str, command: str, timeout: float = 20, root: bool = False) -> tuple[int, str]:
+    """One call over the runner's always-open executor connection (never a new login: no master, no call). root:
+    through the executor's `sudo -n`, as the executors' own node calls go (their lines stay on the VM, §6-2)."""
     keys = os.environ.get(vm.KEY_DIR_ENV, vm.KEY_DIR)
     ctl = os.environ.get(vm.CONTROL_DIR_ENV, vm.CONTROL_DIR_DEFAULT)
     base = ["ssh", "-F", "none", "-i", f"{keys}/t4-executor", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
@@ -216,19 +254,25 @@ def executor_read(host: str, command: str, timeout: float = 20) -> tuple[int, st
                            timeout=timeout)
     if check.returncode != 0:
         return 255, f"control connection to {host} is down"
-    # The command on stdin to `bash -s`, as the runner's own reads go (no sudo: both reads need none).
-    done = subprocess.run(base + ["-o", "ControlMaster=no", f"opsjob@{host}", "bash", "-s"],
+    # The command on stdin to `bash -s`, as the runner's own reads go.
+    remote = ["sudo", "-n", "bash", "-s"] if root else ["bash", "-s"]
+    done = subprocess.run(base + ["-o", "ControlMaster=no", f"opsjob@{host}", *remote],
                           input=command + "\n", capture_output=True, text=True, timeout=timeout)
     return done.returncode, done.stdout
 
 
 def decoy_war_sha256(host: str) -> str:
-    """One of the releases the was step listed for decoys, drawn each time (rv-t4u3 D3)."""
-    rc, out = executor_read(host, f'cat "${{PETITION_DECOY_RELEASES:-{DECOY_RELEASES}}}"')
-    sums = [line.split()[0] for line in out.splitlines() if line.strip() and len(line.split()[0]) == 64]
-    if rc != 0 or not sums:
-        raise Refused(f"cannot read the decoy releases on {host}")
-    return random.SystemRandom().choice(sums)
+    """A fresh variant of the deployed WAR for this decoy, made by the executor as root (D-B); its sha256."""
+    token = secrets.token_hex(8)
+    rc, out = executor_read(host, f"set -- {token}\n" + WAR_VARIANT_SCRIPT, root=True, timeout=60)
+    sha = out.strip().splitlines()[-1] if out.strip() else ""
+    if rc != 0 or len(sha) != 64:
+        raise Refused(f"cannot make the decoy release on {host}")
+    return sha
+
+
+def clean_war_variants(host: str) -> None:
+    executor_read(host, WAR_VARIANT_CLEAN, root=True)
 
 
 def wait_healthy(host: str, kind: str, deadline: float) -> bool:
@@ -306,8 +350,13 @@ def run_decoy(node: str, kind: str, phase: str, guard_seconds: int | None = None
                     execute(argv, stdin, timeout=left)
                 except subprocess.TimeoutExpired:
                     break
+            else:
+                if kind == "war_redeploy":
+                    clean_war_variants(row["mgmt"])
         print(f"decoy {kind} {phase} on {node}: the application did not answer its health check", file=sys.stderr)
         return 1
+    if phase == "revert" and kind == "war_redeploy":
+        clean_war_variants(row["mgmt"])
     if phase == "change":
         for path in changed_paths(kind):
             print(f"{CHANGED_MARK} {path}", flush=True)
