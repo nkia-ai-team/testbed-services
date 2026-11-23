@@ -5278,7 +5278,7 @@ class T3RegisterTests(unittest.TestCase):
             self.assertEqual(rec["management_nic"], {"ifname": "ens19", "decision": "accepted",
                                                      "target_id": rec["children"]["sms.network_interface"]["ens19"]})
         self.product.calls.clear()
-        n = t3reg.phase_rollback(self.session(), table)
+        n = t3reg.phase_rollback(self.session(), table, self.inv)
         deletes = [p for m, p, _ in self.product.calls if m == "DELETE"]
         self.assertEqual(n, len(deletes))
         self.assertFalse([p for p in deletes if "/authz/" in p], "관리 NIC 는 관리 안 함으로 두지 않아 지울 경계가 없다")
@@ -5296,7 +5296,7 @@ class T3RegisterTests(unittest.TestCase):
             rec.pop("management_nic")
             rec["unmanaged"] = [rec["children"]["sms.network_interface"]["ens19"]]
         self.product.calls.clear()
-        t3reg.phase_rollback(self.session(), table)
+        t3reg.phase_rollback(self.session(), table, self.inv)
         self.assertFalse([p for m, p, _ in self.product.calls if "/authz/" in p])
         self.assertEqual([p.split("/")[-1] for m, p, _ in self.product.calls if m == "DELETE"],
                          [r["target_id"] for r in table["servers"]])
@@ -5335,7 +5335,7 @@ class T3RegisterTests(unittest.TestCase):
             self.product.network.clear()
             t3reg.phase_nms(dry, self.inv)
             t3reg.phase_trap(dry)
-            t3reg.phase_rollback(dry, table)
+            t3reg.phase_rollback(dry, table, self.inv)
             self.assertEqual(len(self.product.writes()), before, self.product.writes()[before:])
             self.assertGreater(len(dry.writes), 10)
             self.assertNotIn("s3cretCommunityValue", self.out.getvalue())
@@ -5372,8 +5372,55 @@ class T3RegisterTests(unittest.TestCase):
         self.assertEqual(sum(1 for m, p, _ in self.product.calls if m == "POST" and p == "/api/v1/targets"), 1)
         table = t3reg.phase_record(self.session(), self.inv)
         self.assertEqual([r["target_id"] for r in table["trap_receivers"]], [tid])
-        t3reg.phase_rollback(self.session(), table)
+        t3reg.phase_rollback(self.session(), table, self.inv)
         self.assertEqual(t3reg._trap_receivers(self.session()), [])
+
+    def test_a_testbed_without_a_router_neither_records_nor_deletes_the_trap_receiver(self) -> None:
+        """ST3 G1: 119 has one udp 162 trap receiver, made for T (the router is the trap source). S has no router: its
+        table does not list the receiver, and a rollback with the S inventory leaves it even when an old S table lists
+        it. A table of another testbed is refused."""
+        s_inv = inventory(S_INV)
+        self.assertIsNone(t3reg.router(s_inv))
+        product = FakeProduct(s_inv)
+        session = lambda: t3reg.Session(product, True, self.out)  # noqa: E731
+        trap = t3reg.phase_trap(session())  # T's receiver on the same 119
+        t3reg.phase_approve(session(), s_inv)
+        table = t3reg.phase_record(session(), s_inv)
+        self.assertEqual(table["trap_receivers"], [])
+        self.assertEqual(table["network_devices"], [])
+        self.assertEqual(len(table["servers"]), 4)
+        # An S table written by the old tool lists T's receiver: the rollback skips it, deletes S's servers.
+        table["trap_receivers"] = [{"name": "trap-udp-162", "target_id": trap, "protocol": "udp", "port": 162}]
+        own = [r["target_id"] for r in table["servers"]]
+        foreign = "00000000-0000-4000-8000-00000000f001"
+        table["servers"].append({"name": "web01", "target_id": foreign, "log_monitors": {"/var/log/syslog": "m-foreign"}})
+        product.calls.clear()
+        n = t3reg.phase_rollback(session(), table, s_inv)
+        deletes = [path.split("/")[-1] for method, path, _ in product.calls if method == "DELETE" and "/targets/" in path]
+        self.assertNotIn(trap, deletes)
+        self.assertNotIn(foreign, deletes)  # a server the S inventory does not name (T's web01) is not deleted
+        self.assertFalse([p for m, p, _ in product.calls if m == "DELETE" and p.endswith("/m-foreign")])
+        self.assertEqual(sorted(deletes), sorted(own))
+        self.assertEqual(n, len([c for c in product.calls if c[0] == "DELETE"]))
+        self.assertEqual([t.get("id") for t in t3reg._trap_receivers(session())], [trap])
+        self.assertIn("지우지 않는다", self.out.getvalue())
+        # A T table under the S inventory (or the other way round) is refused before any delete.
+        t_table = dict(table, testbed=self.inv["testbed"], domain=self.inv["domain"])
+        product.calls.clear()
+        with self.assertRaisesRegex(t3reg.RegisterError, "인벤토리.*와 다름"):
+            t3reg.phase_rollback(session(), t_table, s_inv)
+        self.assertEqual([c for c in product.calls if c[0] == "DELETE"], [])
+
+    def test_the_t_inventory_still_records_and_deletes_its_trap_receiver(self) -> None:
+        """ST3 G1 keeps T as it was: T has the router, so its table lists the receiver and its rollback deletes it."""
+        t3reg.phase_approve(self.session(), self.inv)
+        tid = t3reg.phase_trap(self.session())
+        table = t3reg.phase_record(self.session(), self.inv)
+        self.assertEqual([r["target_id"] for r in table["trap_receivers"]], [tid])
+        self.product.calls.clear()
+        t3reg.phase_rollback(self.session(), table, self.inv)
+        deletes = [p for m, p, _ in self.product.calls if m == "DELETE"]
+        self.assertTrue(deletes[0].endswith(tid))
 
     def test_a_list_without_target_collectors_stops_instead_of_finding_nothing(self) -> None:
         request = self.product.request
@@ -5689,6 +5736,98 @@ class T3CheckTests(unittest.TestCase):
         ok, _, bad = t3check.syslog_verdict(rows + [["192.0.2.9", "0", "2"]], expected, ["192.0.2.9"], 6)
         self.assertFalse(ok)
         self.assertIn("부하기 출발 행 2", bad)
+
+    def _s_ids(self, s_ctx) -> dict:
+        ids = {"servers": {}, "children": {}, "router": None}
+        for n, srv in enumerate(s_ctx["servers"]):
+            ids["servers"][srv["name"]] = {"id": f"00000000-0000-4000-8000-1000000000{n:02d}", "address": srv["addr"]}
+            ids["children"][ids["servers"][srv["name"]]["id"]] = [{"id": f"00000000-0000-4000-8000-2000000000{n:02d}"}]
+        return ids
+
+    def test_syslog_of_a_testbed_that_does_not_forward_wants_no_row(self) -> None:
+        """ST3 G2: S has syslog_forward false: its servers (and load generator) send nothing; a row fails it. T is
+        unchanged (a row in every ten minutes)."""
+        s_ctx = t3check.context(inventory(S_INV))
+        self.assertFalse(s_ctx["syslog_forward"])
+        self.assertTrue(self.ctx["syslog_forward"])
+        remote = FakeRemote()
+        it = t3check.item_syslog(remote, s_ctx, self.since, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        q = remote.queries[0]
+        for srv in s_ctx["servers"]:
+            self.assertIn(f"'{srv['addr']}'", q)
+        self.assertIn(f"'{s_ctx['loadgen']['addr']}'", q)
+        self.assertIn("received_at >=", q)
+        remote = FakeRemote()
+        remote.ch_rules.append(("syslog_local", [["192.168.131.21", "3"]]))
+        it = t3check.item_syslog(remote, s_ctx, self.since, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("192.168.131.21 출발 3행", " ".join(it.detail))
+        # T: the per-ten-minute query as before (the S branch is not taken).
+        remote = FakeRemote()
+        t3check.item_syslog(remote, self.ctx, self.since, self.until)
+        self.assertIn("intDiv(toUnixTimestamp(received_at)", remote.queries[0])
+
+    def test_vm_reads_use_the_testbeds_known_hosts(self) -> None:
+        """ST3 G3: the guest ssh reads this testbed's known_hosts (apply.sh's rule): T civil-petition, S
+        civil-petition-sms."""
+        s_ctx = t3check.context(inventory(S_INV))
+        self.assertEqual(s_ctx["known_hosts"], os.path.expanduser("~/.ssh/known_hosts_civil-petition-sms"))
+        self.assertEqual(self.ctx["known_hosts"], os.path.expanduser("~/.ssh/known_hosts_civil-petition"))
+        apply = (DEPLOY / "apply.sh").read_text()
+        self.assertIn('known_hosts="$HOME/.ssh/known_hosts_$(field domain)"', apply)
+        seen = []
+        remote = t3check.Remote(s_ctx["monitor_real"], s_ctx["operator"], s_ctx["known_hosts"])
+        with unittest.mock.patch.object(t3check.Remote, "_run", staticmethod(lambda cmd, stdin=None, timeout=150: seen.append(cmd) or "")):
+            remote.guest("192.168.133.11", "true")
+        self.assertIn("UserKnownHostsFile=" + s_ctx["known_hosts"], seen[0])
+        self.assertEqual(t3check.Remote("192.0.2.1", "sysop").known_hosts,
+                         os.path.expanduser("~/.ssh/known_hosts_civil-petition"))
+
+    def test_an_sms_only_testbed_has_no_out_of_scope_series_and_its_servers_in_change_detect(self) -> None:
+        """ST3 G4: S's "범위 밖 0" (no nms, dpm, apm, kcm series on its targets) and "변경 감지" (each server a
+        change-detect coverage target; the window's change-detect events are only counted)."""
+        s_ctx = t3check.context(inventory(S_INV))
+        self.assertTrue(s_ctx["sms_only"])
+        self.assertFalse(self.ctx["sms_only"])
+        ids = self._s_ids(s_ctx)
+        remote = FakeRemote()
+        it = t3check.item_out_of_scope(remote, s_ctx, ids, self.since, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertEqual([n.split(" ")[0] for n in it.numbers], ["nms.*", "dpm.*", "apm.*", "kcm.*"])
+        child = ids["children"][ids["servers"]["dbsvr01"]["id"]][0]["id"]
+        self.assertTrue(all(child in q for q in remote.queries))
+        remote = FakeRemote()
+        remote.vm_rules.append(("apm", [{"metric": {}, "value": [0, "3"]}]))
+        it = t3check.item_out_of_scope(remote, s_ctx, ids, self.since, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("apm.* 3", " ".join(it.detail))
+        # Change detection: every server covered passes; the events are counted, never judged.
+        remote = FakeRemote()
+        covered = [[t["id"]] for t in ids["servers"].values()]
+        remote.pg_rules.append(("change-detect", covered))
+        it = t3check.item_change_detect(remote, s_ctx, ids, self.since, self.until)
+        self.assertEqual(it.verdict, "충족", it.detail)
+        self.assertIn("change-detect 이벤트 0건(기록만)", " ".join(it.numbers))
+        self.assertIn("detector = 'change-detect'", " ".join(remote.queries))
+        remote = FakeRemote()
+        remote.pg_rules.append(("change-detect", covered[1:]))
+        it = t3check.item_change_detect(remote, s_ctx, ids, self.since, self.until)
+        self.assertEqual(it.verdict, "미충족")
+        self.assertIn("websvr01 change-detect 감시 대상 아님", " ".join(it.detail))
+
+    def test_the_t_rows_are_as_before_and_s_adds_its_two(self) -> None:
+        """ST3 G4 changes nothing for T: the same thirteen rows; S gets "범위 밖 0" and "변경 감지" after them."""
+        rows = {}
+        for name, path in (("t", T_INV), ("s", S_INV)):
+            with tempfile.TemporaryDirectory() as raw, contextlib.redirect_stdout(io.StringIO()):
+                out = Path(raw) / "items.json"
+                t3check.main(["--inventory", str(path), "--since", self.since.isoformat(), "--until", self.until.isoformat(),
+                              "--json", str(out)], remote_factory=lambda *a: FakeRemote())
+                rows[name] = [i["row"] for i in json.loads(out.read_text())]
+        self.assertEqual(len(rows["t"]), 13)
+        self.assertNotIn("범위 밖 0", rows["t"])
+        self.assertEqual(rows["s"], rows["t"] + ["범위 밖 0", "변경 감지"])
 
     def test_a_silent_monitor_passes_only_when_the_file_has_no_matching_line_either(self) -> None:
         expected = [("web01", "/a"), ("web01", "/b"), ("web01", "/c")]
@@ -6986,10 +7125,15 @@ class DecoyProbeTests(unittest.TestCase):
 
     def test_sampling_goes_the_install_path_to_the_load_generator(self) -> None:
         argv = self.probe.sample_argv(inventory(T_INV), 900, 10)
-        self.assertEqual(argv[:6], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-J"])
-        self.assertEqual(argv[6:8], ["root@192.168.200.66", "sysop@192.168.127.10"])
-        self.assertIn("seq 90", argv[8])
-        self.assertIn("/tmp/k6-civil-petition-live.json", argv[8])
+        self.assertEqual(argv[:6], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o"])
+        # The testbed's own known_hosts, strict (as apply.sh keeps it): T civil-petition, S civil-petition-sms.
+        self.assertEqual(argv[6], "UserKnownHostsFile=" + os.path.expanduser("~/.ssh/known_hosts_civil-petition"))
+        self.assertEqual(argv[7:9], ["-o", "StrictHostKeyChecking=yes"])
+        self.assertEqual(argv[9:12], ["-J", "root@192.168.200.66", "sysop@192.168.127.10"])
+        self.assertIn("seq 90", argv[12])
+        self.assertIn("/tmp/k6-civil-petition-live.json", argv[12])
+        s_argv = self.probe.sample_argv(inventory(S_INV), 900, 10)
+        self.assertEqual(s_argv[6], "UserKnownHostsFile=" + os.path.expanduser("~/.ssh/known_hosts_civil-petition-sms"))
         # The load generator does not forward syslog to 119: the sampling session stays out of the recording.
         loadgen = next(b for b in bundles(T_INV).values() if b["role"] == "loadgen")
         self.assertEqual(loadgen["env"]["SYSLOG_FORWARD"], "0")

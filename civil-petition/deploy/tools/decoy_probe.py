@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -57,7 +58,10 @@ def sample_argv(inventory: dict, seconds: int, interval: int) -> list[str]:
     count = max(seconds // interval, 1)
     remote = (f"for i in $(seq {count}); do printf '%s\\t' \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"; "
               f"tr -d '\\n' < {LIVE_DOC.format(domain=domain)} 2>/dev/null || printf '{{}}'; echo; sleep {interval}; done")
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-J", JUMP, f"{operator}@{addr}", remote]
+    # The VM host keys are where apply.sh keeps them for this testbed (strict check, APT4U 차례 4 note).
+    known_hosts = os.path.expanduser(f"~/.ssh/known_hosts_{domain}")
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", f"UserKnownHostsFile={known_hosts}",
+            "-o", "StrictHostKeyChecking=yes", "-J", JUMP, f"{operator}@{addr}", remote]
 
 
 def sample(inventory: dict, seconds: int, interval: int, out: Path) -> int:

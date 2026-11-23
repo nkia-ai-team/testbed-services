@@ -471,15 +471,35 @@ DB 대상은 없다. 서버 하위의 NIC, 파일 시스템, 프로세스, CPU, 
 | trap | CH `snmp_traps_local`(`--trap-since` 부터, 출발 라우터 상향 주소) | linkDown, linkUp 각 1행 이상. 참고(판정 아님): 같은 구간 라우터 아닌 출발 trap 수와 주소 |
 | DPM 없음 | VM `dpm.*`(이 도메인 대상), PG type database 이고 주소가 db01 업무 주소 | 둘 다 0 |
 | DB 서버 관제 | VM 데이터 마운트 파일 시스템, 디스크 IO, CH `process_snapshot` 의 postgres 행, CH 서버 로그 감시 줄, (`--vm-reads`) 서버 로그의 패턴 맞는 줄 수 | 앞 셋이 있고, 서버 로그 감시 줄은 로그 감시 행과 같은 규칙(줄이 없을 때 파일에도 맞는 줄이 없으면 실패 아님, 따로 셈) |
-| syslog | CH `syslog_local` 출발 주소별 10분 칸 | 서버 넷과 라우터의 칸마다 1행 이상, 부하기 출발 0 |
+| syslog | CH `syslog_local` 출발 주소별 10분 칸. 인벤토리 `features.syslog_forward` 가 false 면(S) 창 안 서버와 부하기 출발 행 수 | 서버 넷과 라우터의 칸마다 1행 이상, 부하기 출발 0. syslog 전달을 끈 인벤토리(S)는 서버, 부하기 출발 0행(S 문서 ST3 "범위 밖 0") |
 | 로그 감시 | PG 감시 등록, CH `lucida_logs_local`(`event_source=log_monitor`, `file_path`), (`--vm-reads`) 파일의 패턴 맞는 줄 수 | 감시마다 줄이 있음. 줄이 없는데 파일에도 맞는 줄이 없으면 «줄 없음(파일에도 없음)» 으로 따로 센다(감시가 못 읽는 증거가 아님). 파일에 맞는 줄이 있는데 줄이 없거나, VM 을 읽지 않았으면 실패. 패턴에 맞을 줄을 일부러 만들지 않는다 |
 | 탐지 밴드 | VM `sms.*.bands`, `nms.*.bands`(등록 24시간 뒤) | 대상마다 밴드 계열이 있고 24시간 최댓값 +Inf 0 |
 | 부담(Q8) | `--budget` 사실 두 개(등록 전 24시간, 뒤 24시간): CH `system.asynchronous_metric_log` `MemoryResident`(1초 표본)를 녹화 캡처 구간 밖과 안으로 나눈 최댓값, p99, 캡처 순간 최댓값, 뺀 구간 목록, ClickHouse 상한(`max_server_memory_usage` 와 컨테이너 한도 중 낮은 것, 11-19 09:3x 조회 7.2GiB), `sadf -r` 노드 가용 메모리 최솟값, VM 상주 메모리 최댓값과 파드 한도, 디스크, `sadf -u` CPU 와 steal 평균, wg0 바이트 | 뒤 사실의 캡처 뺀 최댓값과 p99 가 3.6GiB 미만, 노드 가용 메모리 최솟값이 'ClickHouse 상한 - 캡처 뺀 p99' 이상, VM 한도 80% 미만, 디스크 80% 미만, steal 증가 3%p 이하, CPU 70% 이하. 따로(Q8 판정과 별개) **캡처 순간 여유**: 두 사실 가운데 큰 캡처 순간 최댓값 + T, S 추정 증가분(0.22GiB, 설계 §3-6)이 ClickHouse 상한의 85% 미만(넘으면 T3 는 진행하고 ST3 전에 검토 세션에 다시 묻는다). 참고(판정 아님): 캡처 포함 최댓값, 이 도메인 활성 계열, 구간 고유 계열, 원천 표 행, 터널 평균 |
+| 범위 밖 0(라우터 없는 인벤토리, S 만) | VM `nms.*`, `dpm.*`, `apm.*`, `kcm.*`(서버와 하위 대상의 `target_id` 또는 `host_target_id`) | 네 이름군 모두 0 계열 |
+| 변경 감지(S 만) | PG `ai_coverages`(`agent_id = 'change-detect'`, 켜짐), CH `lucida_events_local`(`detector = 'change-detect'`, 창, 서버 대상) | 서버마다 change-detect 감시 대상. 창 안 change-detect 이벤트 수는 적기만 한다(재시작 1회가 들어오는지 기록, 안 들어와도 실패 아님) |
 | 대상 번호 표 | 표의 모든 번호가 PG `targets` 에 있음 | 없는 번호 0, 서버가 인벤토리 수만큼, 서버 하위에 NIC, 파일 시스템, 프로세스. 라우터가 있는 인벤토리면 장비 하나, 그 인터페이스 번호, trap 수신기 번호가 비지 않음 |
 
 설계와 다르게 둔 것(판정 바꿈 기록): (1) 로그 감시 행과 DB 서버 관제 행의 서버 로그 감시 줄은 «줄이 없고 VM 파일에도 패턴에 맞는 줄이 없으면 실패가 아니라 따로 센다»(설계 문구 "감시 항목별 행이 생김" 보다 느슨, 11-18 지휘 세션 결정. 맞는 줄을 일부러 만들지 않는다). (2) Q8 의 VictoriaMetrics 는 설계 "파드 메모리" 대신 VictoriaMetrics 자기 지표 `process_resident_memory_bytes`(프로세스 상주 메모리)의 구간 최댓값을 파드 한도와 견준다(구간 최댓값을 다시 읽을 수 있는 기록이 이것뿐이다). (3) 관리 NIC 행은 관리 안 함 상태와 최근 계열 0 을 함께 본다(설계보다 엄격). (4) ClickHouse 예산은 하루 최댓값 하나가 아니라 녹화 캡처 구간을 뺀 최댓값과 p99, 노드 가용 메모리로 판정한다(검토 세션 Q31 답, 11-19). 녹화 캡처 구간의 정의는 `t3_check.py` 의 `capture_intervals` 한 곳이다: 출처는 119 ClickHouse `system.query_log` 의 lucida 표 `FORMAT Parquet` 내보내기(끝났거나 실패한 것, 시작 `query_start_time`, 끝 `event_time`)이고, 내보낸 시각 범위가 하루의 00:00~02:00 KST 인 평시 구간 덤프(`scripts/dump-normal-segment.sh`, 날마다 도는 평시 작업이라 남긴다)는 빼며, 600초 안의 내보내기는 한 구간으로 묶고 앞뒤 60초를 더한다. 뺀 구간 목록은 결과에 함께 찍힌다. 기준값(3.6GiB, 80%, 3%p, 70%, 85%, 증가분 0.22GiB, CPU 와 노드 가용 메모리 정의)은 `deploy/monitoring/t3-budget.json` 한 곳에 있다. 앱 로그 감시 패턴은 `deploy/monitoring/log-monitors.json` 이고 Q31 답으로 확정했다(시나리오가 안 잡혀도 고치지 않는다).
 
 11-18 13:1x KST 조회(등록 전, 지난 24시간): ClickHouse `MemoryResident` 최댓값 **3.475GiB**(예산 3.6GiB 까지 0.125GiB), VictoriaMetrics 상주 최댓값 2.47GiB / 한도 8GiB, 디스크 55%, CPU 42.5%, steal 1.36%.
+
+VM 을 읽는 `--vm-reads` 는 인벤토리 도메인의 known_hosts(`~/.ssh/known_hosts_<domain>`, apply.sh 와 같은 규칙: T `civil-petition`, S `civil-petition-sms`)로 호스트 키를 엄격히 본다.
+
+### 13-1. S 등록(ST3) 때 다르게 도는 것
+
+- `t3_register.py --phase record` 는 인벤토리에 라우터(trap 원천)가 있을 때만 trap 수신기를 표에 적는다. 119 의 udp 162 수신기는 T 가 만든 것 하나다. `--phase rollback` 은 표의 testbed, domain 이 인벤토리와 같을 때만 돌고, 인벤토리의 서버 이름, 라우터 이름, 그리고 라우터가 있을 때의 trap 수신기만 지운다. 그 밖의 줄은 지우지 않고 그 수를 알린다(옛 판으로 쓴 S 표에 T 의 trap 수신기가 들어 있어도 S 되돌리기가 지우지 않는다).
+- `t3_check.py` 는 S 인벤토리에서 syslog 행을 "서버, 부하기 출발 0행" 으로 보고, 끝에 "범위 밖 0" 과 "변경 감지" 두 행을 더한다(위 표). T 인벤토리의 행과 판정은 그대로다(13행).
+
+### 13-2. S 서버를 change-detect 감시 대상에 넣기 (손으로, 제품 경로)
+
+S 문서 §6 등록 표의 "변경 감지" 행(11-11 사용자 결정). P3 의 stream-anomaly 배포와 같은 제품 경로로 손으로 한다(도구에 넣지 않음, PG 직접 INSERT 금지). T 와 S 의 쌍 조건(T 다섯은 지금 change-detect 에 없다)은 지휘 세션이 정한다(AST3 "감시 범위의 쌍 조건").
+
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 1 | 러너 계정으로 로그인(§12 머리, 값은 셸 변수로만). change-detect 정책 번호와 지금 판, 지금 뿌리 대상을 읽는다(PG `ai_coverages` 의 change-detect 행 읽기, 또는 제품 화면의 정책 목록. 11-23 AST3 읽기: 정책 cae82888, version 2, 34 대상). 배포 경로는 P3 가 쓴 `POST /api/v1/ai/ai-detection-policies/<id>/deploy` 와 `/deploy/preview`(권한 execute, Origin) | 정책 하나, 판 번호를 적음 | 없음(읽기) |
+| 2 | 미리보기: `POST /api/v1/ai/ai-detection-policies/<id>/deploy/preview`, 본문 add.include 에 지금 뿌리 대상 선택자 전부 + S 서버 넷(대상 번호 표 `s.targets.json` 의 `servers[].target_id`) | `root_targets` = 지금 뿌리 + 4, 늘어나는 쌍 수와 observer 메모리 몫을 P3 처럼 셈(한도 70% 이하) | 없음(쓰기 없음) |
+| 3 | 배포: 같은 본문으로 `POST .../deploy`, `expected_version` = 차례 1 의 판. 시각(KST 초)을 적는다(119 변경) | 응답 200, 새 판 번호. PG `ai_coverages` 의 change-detect 행에 S 서버 넷. 30분 동안 ai-observer 재시작 0, 메모리 평탄 | 같은 API 의 remove.include 로 S 서버 넷을 걷어 낸다 |
+| 4 | `t3_check.py --inventory inventory/s.json --since <등록 시각>` 의 "변경 감지" 행. 재시작 1회 이벤트를 보려면 그 창 안의 서비스 재시작(시나리오나 설치 단계) 시각을 함께 적는다 | 서버 넷 모두 "감시 대상 예". 이벤트 수는 기록만 | 없음(읽기) |
 
 ## 14. S 적용 (ST2)
 
@@ -735,3 +755,4 @@ S 는 같은 tb-ops 주소와 같은 키를 쓰고 66 이 S 관리 브리지에�
 - 2026-11-21 KST, v4 T4U-3 덧 2(지휘 세션 결정): 미끼 health 기다림 120초(was 단계와 같음), 미끼 호출만 따로 CLI 제한 170, 240초, 러너 300초.
 - 2026-11-21 KST, v4 T4U-4(리뷰 rv-t4u3 D2, D3, L6, 지휘 세션 결정): §15-4 차례 9 에 기존 WAS 의 미끼 릴리스 넷을 `--steps was` 로 놓기, 9-1 무해 판정은 사용자 영향 숫자만(새 알람은 기록), sudo 줄 꼴에 war 재시작과 되돌리기 순서.
 - 2026-11-21 KST, v4 T4U-5(리뷰 rv-t4u4 L-E, L-F, 지휘 세션 결정 D-A, D-B): §15-2 에 녹화 뒤 되돌림(D1), `--guard-sec`, 면제, 멈춤, config 는 장애 전만, 미끼마다 새 변형. §15-4 차례 9 의 `--steps was` 한 번은 D-B 로 필요 없어져 지움(L-F 의 sha256 확인과 펼친 앱 설명도 함께 필요 없어짐).
+- 2026-11-23 KST, v4 ST3T(ag-t4s, AST3 G1 ~ G4, 지휘 세션 지시): §13 표의 syslog 행(전달 끈 인벤토리), "범위 밖 0" 과 "변경 감지" 행, `--vm-reads` known_hosts 규칙, §13-1 S 등록 때 다르게 도는 것(trap 수신기 기록과 되돌리기 범위), §13-2 S 서버를 change-detect 감시 대상에 넣는 손 절차.

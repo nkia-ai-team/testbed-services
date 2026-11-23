@@ -452,29 +452,49 @@ def phase_record(session: Session, inv: dict, specs_path: Path = LOG_MONITORS) -
                                                               or "interface" in (n.get("resource_type") or ""))}
             table["network_devices"].append({"name": rt["name"], "target_id": target["id"], "address": rt["address"],
                                              "interfaces": interfaces})
-    for target in _trap_receivers(session):
-        table["trap_receivers"].append({"name": target.get("name"), "target_id": target.get("id"),
-                                        "protocol": TRAP_PROTOCOL, "port": TRAP_PORT})
+    # The trap receiver is this inventory's only when it has a router (the trap source): 119 has one udp 162 receiver
+    # for every testbed, and a testbed without a router (S) must not list, and so later delete, another's (ST3 G1).
+    if rt:
+        for target in _trap_receivers(session):
+            table["trap_receivers"].append({"name": target.get("name"), "target_id": target.get("id"),
+                                            "protocol": TRAP_PROTOCOL, "port": TRAP_PORT})
     return table
 
 
-def phase_rollback(session: Session, table: dict) -> int:
+def phase_rollback(session: Session, table: dict, inv: dict) -> int:
     """대상 번호 표에 적힌 것을 거꾸로 지운다: trap 수신기, NMS 장비, 로그 감시, 서버 대상.
+
+    이 인벤토리가 만든 것만 지운다(ST3 G1): 표의 testbed 가 인벤토리와 다르면 거절하고, 서버는 인벤토리의 서버 이름만,
+    NMS 장비는 인벤토리 라우터 이름만, trap 수신기는 인벤토리에 라우터가 있을 때만 지운다. 그 밖의 줄은 지우지 않고 알린다
+    (옛 판의 S 표에는 T 의 trap 수신기가 들어 있을 수 있다).
 
     서버 대상은 에이전트가 멈춘 뒤에만 지운다(멈추지 않으면 다음 보고에 등록 대기로 다시 생긴다, runbook §12-5).
     관리 NIC 는 관리 안 함으로 두지 않으므로(받아들임) 지울 관리 상태 선언이 없다. 옛 표의 "unmanaged" 목록도 지우지 않는다:
     그 선언은 제품 승격이 행과 함께 이미 지웠고(MNIC), 남았더라도 서버 대상 삭제가 하위 대상과 선언을 함께 지운다.
     """
+    if table.get("testbed") != inv["testbed"] or table.get("domain") != inv["domain"]:
+        raise RegisterError(f"표의 testbed {table.get('testbed')!r}, domain {table.get('domain')!r} 가 인벤토리 "
+                            f"({inv['testbed']!r}, {inv['domain']!r})와 다름: 지우지 않는다")
+    own_servers = {host["name"] for host in servers(inv)}
+    rt = router(inv)
+    traps = table.get("trap_receivers", []) if rt else []
+    devices = [rec for rec in table.get("network_devices", []) if rt and rec.get("name") == rt["name"]]
+    hosts = [rec for rec in table.get("servers", []) if rec.get("name") in own_servers]
+    skipped = (len(table.get("trap_receivers", [])) - len(traps) + len(table.get("network_devices", [])) - len(devices)
+               + len(table.get("servers", [])) - len(hosts))
+    if skipped:
+        print(f"이 인벤토리가 만들지 않은 줄 {skipped}개는 지우지 않는다(라우터 없는 테스트베드의 trap 수신기, "
+              "인벤토리 밖 이름)", file=session.out)
     n = 0
-    for rec in table.get("trap_receivers", []):
+    for rec in traps:
         session.write("DELETE", f"/api/v1/targets/{rec['target_id']}"); n += 1
-    for rec in table.get("network_devices", []):
+    for rec in devices:
         session.write("DELETE", f"/api/v1/targets/{rec['target_id']}"); n += 1
-    for rec in table.get("servers", []):
+    for rec in hosts:
         for monitor_id in (rec.get("log_monitors") or {}).values():
             if monitor_id:
                 session.write("DELETE", f"/sm/api/custom-monitors/{monitor_id}"); n += 1
-    for rec in table.get("servers", []):
+    for rec in hosts:
         session.write("DELETE", f"/api/v1/targets/{rec['target_id']}"); n += 1
     return n
 
@@ -529,7 +549,7 @@ def main(argv: list[str] | None = None, client_factory=Client) -> int:
                 print(text, end="")
         elif args.phase == "rollback":
             table = json.loads(args.record.read_text(encoding="utf-8"))
-            print(f"지울 호출 {phase_rollback(session, table)}개")
+            print(f"지울 호출 {phase_rollback(session, table, inv)}개")
     except RegisterError as error:
         print(f"t3_register: {error}", file=sys.stderr)
         return 1

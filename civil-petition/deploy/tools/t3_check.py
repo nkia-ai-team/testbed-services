@@ -126,8 +126,15 @@ def context(inv: dict) -> dict:
                       "downlinks": [n["ifname"] for n in host["nics"] if n.get("downlink")]}
         elif host["role"] == "loadgen":
             loadgen = {"name": host["name"], "addr": biz["addr"]}
+    features = inv.get("features", {})
     return {"servers": servers, "router": router, "loadgen": loadgen, "operator": inv["accounts"]["operator"]["name"],
-            "monitor_real": inv["hypervisor"]["monitor_real_addr"], "domain": inv["domain"]}
+            "monitor_real": inv["hypervisor"]["monitor_real_addr"], "domain": inv["domain"],
+            # The VM host keys live where apply.sh keeps them for this testbed (ST3 G3).
+            "known_hosts": os.path.expanduser(f"~/.ssh/known_hosts_{inv['domain']}"),
+            # S does not forward syslog (S 문서 결정 2): its servers must send none (ST3 G2).
+            "syslog_forward": bool(features.get("syslog_forward", True)),
+            # An SMS-only testbed (no router: S) has the ST3 rows "범위 밖 0" and "변경 감지" (ST3 G4).
+            "sms_only": not features.get("router", True)}
 
 
 def log_monitor_files(role: str, path: Path = LOG_MONITORS) -> list[dict]:
@@ -140,11 +147,12 @@ def log_monitor_files(role: str, path: Path = LOG_MONITORS) -> list[dict]:
 class Remote:
     """119(ssh 로 파드 안 클라이언트), VictoriaMetrics(HTTP), VM(66 경유 관리망) 읽기."""
 
-    def __init__(self, monitor_real: str, operator: str) -> None:
+    def __init__(self, monitor_real: str, operator: str, known_hosts: str | None = None) -> None:
         secret = os.path.expanduser(f"~/.config/testbed/ssh-{monitor_real}")
         self.ssh119 = ["sshpass", "-f", secret, "ssh", "-o", "ConnectTimeout=15", f"root@{monitor_real}"]
         self.vm_url = f"http://{monitor_real}:{VM_PORT}"
         self.operator = operator
+        self.known_hosts = known_hosts or os.path.expanduser("~/.ssh/known_hosts_civil-petition")
 
     @staticmethod
     def _run(cmd: list[str], stdin: str | None = None, timeout: int = 150) -> str:
@@ -178,8 +186,7 @@ class Remote:
         return data["data"]
 
     def guest(self, mgmt_addr: str, command: str) -> str:
-        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o",
-               "UserKnownHostsFile=" + os.path.expanduser("~/.ssh/known_hosts_civil-petition"),
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "UserKnownHostsFile=" + self.known_hosts,
                "-J", GUEST_GATEWAY, f"{self.operator}@{mgmt_addr}", command]
         return self._run(cmd, timeout=60)
 
@@ -574,6 +581,8 @@ def syslog_verdict(rows: list[list[str]], expected: dict[str, str], forbidden: l
 
 def item_syslog(remote, ctx, since, until) -> Item:
     it = Item("syslog")
+    if not ctx.get("syslog_forward", True):
+        return item_no_syslog(remote, ctx, since, until, it)
     expected = {s["addr"]: s["name"] for s in ctx["servers"]}
     if ctx["router"]:
         expected[ctx["router"]["addr"]] = ctx["router"]["name"]
@@ -593,6 +602,66 @@ def item_syslog(remote, ctx, since, until) -> Item:
     ok, numbers, bad = syslog_verdict(rows, expected, forbidden, slots)
     it.numbers += numbers
     return it.set(ok, "; ".join(bad))
+
+
+def item_no_syslog(remote, ctx, since, until, it: Item) -> Item:
+    """A testbed that does not forward syslog (S): no row from its servers, router or load generator in the window
+    (S 문서 ST3 "범위 밖 0", ST3 G2)."""
+    addrs = [s["addr"] for s in ctx["servers"]] + ([ctx["router"]["addr"]] if ctx["router"] else []) \
+        + ([ctx["loadgen"]["addr"]] if ctx["loadgen"] else [])
+    rows = remote.ch(f"select source_ip, count() from lucida.syslog_local where received_at >= '{ch_ts(since)}' "
+                     f"and received_at <= '{ch_ts(until)}' and source_ip in ({quote(addrs)}) group by 1 format TSV;")
+    total = sum(int(r[1]) for r in rows if len(r) == 2)
+    it.numbers.append(f"syslog 전달 끔: 서버, 부하기 출발 {total}행(0 이어야 함)")
+    return it.set(total == 0, "; ".join(f"{r[0]} 출발 {r[1]}행" for r in rows if len(r) == 2 and int(r[1])))
+
+
+OUT_OF_SCOPE_PREFIXES = ("nms", "dpm", "apm", "kcm")
+
+
+def item_out_of_scope(remote, ctx, ids, since, until) -> Item:
+    """S 문서 ST3 "범위 밖 0": S 대상(서버와 하위 대상)의 nms.*, dpm.*, apm.*, kcm.* 계열 0(ST3 G4). syslog 0 은 syslog 행."""
+    it = Item("범위 밖 0")
+    all_ids = [t["id"] for t in ids["servers"].values() if t]
+    for host_id in list(all_ids):
+        all_ids += [c["id"] for c in ids["children"].get(host_id, [])]
+    if not all_ids:
+        return it.set(False, "S 대상 없음")
+    secs = max(int((until - since).total_seconds()), 60)
+    bad = []
+    for prefix in OUT_OF_SCOPE_PREFIXES:
+        n = vm_scalar(remote, f'count(last_over_time({{__name__=~"{prefix}\\..+",target_id=~"{regex_ids(all_ids)}"}}[{secs}s]) '
+                              f'or last_over_time({{__name__=~"{prefix}\\..+",host_target_id=~"{regex_ids(all_ids)}"}}[{secs}s]))',
+                      until) or 0
+        it.numbers.append(f"{prefix}.* 계열 {int(n)}")
+        if n:
+            bad.append(f"{prefix}.* {int(n)}")
+    return it.set(not bad, "; ".join(bad))
+
+
+def item_change_detect(remote, ctx, ids, since, until) -> Item:
+    """S 문서 ST3 "변경 감지": 서버마다 change-detect 감시 대상(ai_coverages, 켜짐)에 들었는지(판정). 창 안
+    change-detect 이벤트 수는 적어만 둔다(재시작 1회가 들어오는지 기록, 안 들어와도 실패가 아니다, ST3 G4)."""
+    it = Item("변경 감지")
+    host_ids = {name: t["id"] for name, t in ids["servers"].items() if t}
+    missing = [s["name"] for s in ctx["servers"] if s["name"] not in host_ids]
+    covered: set[str] = set()
+    if host_ids:
+        rows = remote.pg("select distinct target_id::text from ai_coverages where agent_id = 'change-detect' and enabled "
+                         f"and target_id::text in ({quote(host_ids.values())});")
+        covered = {r[0] for r in rows if r}
+    events = []
+    if host_ids:
+        events = remote.ch("select target_id, count() from lucida.lucida_events_local where occurred_at >= "
+                           f"'{ch_ts(since)}' and occurred_at <= '{ch_ts(until)}' and detector = 'change-detect' "
+                           f"and target_id in ({quote(host_ids.values())}) group by 1 format TSV;")
+    counts = {r[0]: int(r[1]) for r in events if len(r) == 2}
+    bad = [f"{name} 대상 없음" for name in missing]
+    for name, tid in host_ids.items():
+        it.numbers.append(f"{name} 감시 대상 {'예' if tid in covered else '아니오'}, change-detect 이벤트 {counts.get(tid, 0)}건(기록만)")
+        if tid not in covered:
+            bad.append(f"{name} change-detect 감시 대상 아님")
+    return it.set(not bad, "; ".join(bad))
 
 
 def monitor_verdict(rows: dict[tuple[str, str], int], grep: dict[tuple[str, str], int] | None,
@@ -1076,7 +1145,8 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
         margin = capture_margin_verdict(before, after)
         print(render([it, margin]))
         return 0 if it.verdict == "충족" else 1
-    remote = (remote_factory or Remote)(ctx["monitor_real"], ctx["operator"])
+    remote = remote_factory(ctx["monitor_real"], ctx["operator"]) if remote_factory \
+        else Remote(ctx["monitor_real"], ctx["operator"], ctx["known_hosts"])
     ids = resolve_ids(remote, ctx)
     if args.budget:
         if not (args.start and args.end and args.out):
@@ -1106,6 +1176,8 @@ def main(argv: list[str] | None = None, remote_factory=None) -> int:
         item_bands(remote, ctx, ids, since, until),
         item_table(remote, args.table, ctx),
     ]
+    if ctx["sms_only"]:
+        items += [item_out_of_scope(remote, ctx, ids, since, until), item_change_detect(remote, ctx, ids, since, until)]
     print(f"창 {since.astimezone(KST).isoformat()} ~ {until.astimezone(KST).isoformat()}")
     print(render(items))
     if args.json:
