@@ -630,8 +630,8 @@ def item_out_of_scope(remote, ctx, ids, since, until) -> Item:
     secs = max(int((until - since).total_seconds()), 60)
     bad = []
     for prefix in OUT_OF_SCOPE_PREFIXES:
-        n = vm_scalar(remote, f'count(last_over_time({{__name__=~"{prefix}\\..+",target_id=~"{regex_ids(all_ids)}"}}[{secs}s]) '
-                              f'or last_over_time({{__name__=~"{prefix}\\..+",host_target_id=~"{regex_ids(all_ids)}"}}[{secs}s]))',
+        n = vm_scalar(remote, f'count(last_over_time({{__name__=~"{prefix}\\\\..+",target_id=~"{regex_ids(all_ids)}"}}[{secs}s]) '
+                              f'or last_over_time({{__name__=~"{prefix}\\\\..+",host_target_id=~"{regex_ids(all_ids)}"}}[{secs}s]))',
                       until) or 0
         it.numbers.append(f"{prefix}.* 계열 {int(n)}")
         if n:

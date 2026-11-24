@@ -5829,6 +5829,33 @@ class T3CheckTests(unittest.TestCase):
         self.assertNotIn("범위 밖 0", rows["t"])
         self.assertEqual(rows["s"], rows["t"] + ["범위 밖 0", "변경 감지"])
 
+    def test_every_promql_name_regex_escapes_its_dots_for_the_string(self) -> None:
+        """ST3T 후속(11-24, VictoriaMetrics 422): inside a PromQL double-quoted string a regex dot is written \\. (the
+        string escape of a backslash, then the dot). A lone \. is an invalid string escape and the query fails. Every
+        VictoriaMetrics query the tool builds, T and S, every row and the budget facts."""
+        import re
+        lone = re.compile(r'(?<!\\)\\\.')
+        for name, path in (("t", T_INV), ("s", S_INV)):
+            remote = FakeRemote()
+            with tempfile.TemporaryDirectory() as raw, contextlib.redirect_stdout(io.StringIO()):
+                t3check.main(["--inventory", str(path), "--since", self.since.isoformat(), "--until", self.until.isoformat(),
+                              "--json", str(Path(raw) / "items.json")], remote_factory=lambda *a, r=remote: r)
+            ids = self._s_ids(t3check.context(inventory(path)))
+            t3check.item_out_of_scope(remote, t3check.context(inventory(path)), ids, self.since, self.until)
+            promql = [q for q in remote.queries if "__name__" in q]
+            with self.subTest(inventory=name):
+                self.assertTrue(promql)
+                for q in promql:
+                    self.assertIsNone(lone.search(q), q)
+                    if '=~"' in q and "." in q.split('=~"', 1)[1].split('"', 1)[0]:
+                        self.assertIn("\\\\.", q, q)
+        # The out-of-scope row builds exactly the escaped form.
+        remote = FakeRemote()
+        s_ctx = t3check.context(inventory(S_INV))
+        t3check.item_out_of_scope(remote, s_ctx, self._s_ids(s_ctx), self.since, self.until)
+        for prefix in t3check.OUT_OF_SCOPE_PREFIXES:
+            self.assertTrue(any(f'__name__=~"{prefix}\\\\..+"' in q for q in remote.queries), prefix)
+
     def test_a_silent_monitor_passes_only_when_the_file_has_no_matching_line_either(self) -> None:
         expected = [("web01", "/a"), ("web01", "/b"), ("web01", "/c")]
         verdict, numbers, bad = t3check.monitor_verdict({("web01", "/a"): 4}, {("web01", "/b"): 0, ("web01", "/c"): 0}, expected)
