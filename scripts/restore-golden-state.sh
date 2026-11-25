@@ -328,10 +328,12 @@ PG_ADMIN_USER="${PG_ADMIN_USER:-}"
 PG_ADMIN_PASSWORD="${PG_ADMIN_PASSWORD:-}"
 if [[ "$RUNTIME" == k8s && -z "$PG_ADMIN_USER" ]]; then
   PG_SUPERUSER_SECRET="${PG_SUPERUSER_SECRET:-pg-superuser}"
+  # 못 읽으면 빈 값이다. pipefail 로 대입이 실패해 set -e 가 메시지 없이 끝내지 않게 || true 로 받고,
+  # 아래 WARN 과 PG_USER 대체 경로로 간다(v4 GOLDFIX 확인 필요 1, 캡처 스크립트의 같은 꼴과 맞춤).
   _admin_u=$($KUBECTL -n "$K8S_NAMESPACE" get secret "$PG_SUPERUSER_SECRET" \
-    -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null)
+    -o jsonpath='{.data.username}' 2>/dev/null | base64 -d 2>/dev/null || true)
   _admin_p=$($KUBECTL -n "$K8S_NAMESPACE" get secret "$PG_SUPERUSER_SECRET" \
-    -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null)
+    -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)
   if [[ -n "$_admin_u" && -n "$_admin_p" ]]; then
     PG_ADMIN_USER="$_admin_u"
     PG_ADMIN_PASSWORD="$_admin_p"

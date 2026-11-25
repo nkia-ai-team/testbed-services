@@ -324,8 +324,8 @@ case "$*" in
   *get\ deployment/*|*scale*|*rollout*) exit 0 ;;
   *'get svc pg-rw'*) printf '10.43.0.4' ;;
   *'get svc ai-observer'*) printf '10.43.0.3' ;;
-  *'get secret pg-superuser'*'.data.username'*) printf 'fakeadmin' | base64 ;;
-  *'get secret pg-superuser'*'.data.password'*) printf 'fake-admin-secret' | base64 ;;
+  *'get secret pg-superuser'*) [[ -n "${FAKE_NO_ADMIN_SECRET:-}" ]] && exit 1
+    case "$*" in *'.data.username'*) printf 'fakeadmin' | base64 ;; *'.data.password'*) printf 'fake-admin-secret' | base64 ;; esac ;;
   *) exit 1 ;;
 esac
 SH
@@ -346,6 +346,19 @@ if RUNTIME=k8s KUBECTL="$TMP_ROOT/bin/kubectl-k8s" FAKE_POD_POLLS=99 OBSERVER_ST
 fi
 grep -q 'observer is still running' "$TMP_ROOT/err" || fail "unexpected k8s failure: $(cat "$TMP_ROOT/err")"
 ! grep -q 'DELETE FROM' "$FAKE_LOG" || fail 'k8s: nothing may be emptied while observer pods remain'
+
+# 5e. k8s: an unreadable pg-superuser secret is not a silent exit (pipefail on the read used to end the
+#     script with no message). The WARN fallback to PG_USER runs, the admin username is PG_USER, and the
+#     restore goes on (here through the band restore).
+rm -f "$FAKE_STATE"/*; : >"$FAKE_LOG"
+RUNTIME=k8s KUBECTL="$TMP_ROOT/bin/kubectl-k8s" FAKE_NO_ADMIN_SECRET=1 PG_USER=fallbackuser \
+  "$RESTORE" --golden-dir "$band_golden" --ready-timeout-sec 5 >"$TMP_ROOT/out" 2>"$TMP_ROOT/err" ||
+  fail "restore must go on without the admin secret: $(tail -3 "$TMP_ROOT/err")"
+grep -q 'WARN: k8s secret polestar/pg-superuser not readable' "$TMP_ROOT/err" ||
+  fail "an unreadable admin secret must log the WARN fallback: $(cat "$TMP_ROOT/err")"
+grep -q 'PG admin privilege check passed (user=fallbackuser)' "$TMP_ROOT/err" ||
+  fail "the admin role must fall back to PG_USER: $(grep 'admin' "$TMP_ROOT/err")"
+jq -e '.status == "ok"' "$TMP_ROOT/out" >/dev/null || fail "restore without the admin secret: $(cat "$TMP_ROOT/out")"
 
 # 2. Dry run reports the same digest without touching anything.
 : >"$FAKE_LOG"
