@@ -2,7 +2,7 @@
 title: 장애 시나리오 설계 원칙과 자동화 점검표
 status: Active
 owner: project
-last_reviewed: 2026-11-09
+last_reviewed: 2026-11-25
 tags:
   - scenario
   - design
@@ -123,6 +123,22 @@ RCA 평가용 시나리오가 100개 넘게 필요하고, 사람이 한 건씩 �
 주입 수단별로 실제로 남는 흔적은 [civil-petition 흔적 표](ref-civil-petition-injection-traces.md)가 T4 시험 실행 뒤 채운다.
 
 이 표는 제품 버전이 바뀌면 다시 실측한다(특히 119 패치 뒤).
+
+**S(SMS 전용 서버 4대) 수집 특성 (119 판 develop-ai-2026.11.20-01, lucida-next b65cbe9722, 실측 창 2026-11-24 10:47:35 ~ 11-25 10:47:35 KST 등록 뒤 24시간, 근거 [S 문서](spec-testbed-sms-only.md) ST3, [적용 runbook](runbook-civil-petition-apply.md) §14)**
+
+| 데이터 | 수집 정도 | 설계에 주는 의미 |
+|---|---|---|
+| 트레이스, APM, DPM, NMS, trap | **없음.** S 는 SMS 서버 4대만 등록하고 라우터가 없다. S 대상의 `nms.*`, `dpm.*`, `apm.*`, `kcm.*` 계열 0 | 원인 근거는 서버 지표, 프로세스 표본, 연결, 로그 감시, ICMP 에만 선다 |
+| syslog (CH `syslog_local`) | **전달하지 않음.** 서버와 부하기 출발 0행 | 운영자 sudo 줄, 서비스 재시작 줄은 syslog 로 가지 않는다. 로그 감시가 tail 하는 파일(auth.log 등)의 감시 패턴에 맞는 줄로만 닿는다 |
+| 로그 감시 (CH `lucida_logs_local`, `event_source=log_monitor`) | 감시 19개 가운데 24시간에 줄이 있는 것 11개, 줄 없음 8개(파일에도 맞는 줄 없음). 줄 있는 감시의 평시 24시간 줄 수: websvr01 syslog 44, auth.log 174, access.log 2, error.log 6, wassvr01 syslog 2, auth.log 175, wassvr02 syslog 52, auth.log 174, petition.log 2, dbsvr01 syslog 46, auth.log 174 | 원인 줄은 감시 패턴에 맞아야 남는다. 평시 줄이 없는 감시 8개는 장애 때 맞는 줄이 생기는지 시험 실행에서 확인한다 |
+| DB 서버 (dbsvr01) | DPM 없음(DB 대상 0). `/pgdata` 계열 8, 디스크 IO 계열 85, postgres 프로세스 표본 160(10분), PostgreSQL 서버 로그 감시 줄 24시간 0(평시 0, 파일에도 맞는 줄 없음) | DB 쪽 원인은 `/pgdata`, 디스크 IO, postgres 프로세스 표본, 서버 로그 감시 줄로만 닿는다. 서버 로그 감시는 평시 0 이라 장애 때 맞는 줄이 생기는지 시험 실행에서 확인한다 |
+| 프로세스, 연결, ICMP | civil-petition 표와 같은 꼴(표본 60초 전체 목록, 계열 (호스트, 이름, pid) 15초 CPU 상위 50, 연결 30초). ICMP 는 4대 `sms.server.icmp_status` 1, `rtt` 계열 1, 주소는 업무 주소(192.168.131.x) | civil-petition 표의 같은 행을 따른다 |
+| 변경 감지 (CH `lucida_events_local`, detector=change-detect) | 4대가 change-detect 감시 대상. wassvr01 tomcat10 재시작 1회(2026-11-24 11:51:52 KST) 뒤 이벤트 0(30분 뒤와 24시간 창 모두). 이 판의 변경 원천 열 개에는 같은 이름 프로세스의 재시작이 없어 보인다(코드 읽기) | 서비스 재시작 원인은 change-detect 이벤트로 서지 않는다. 정답의 근거는 프로세스 표본(pid 바뀜)과 로그 감시 줄로 잡는다 |
+| 탐지 밴드 (VM `sms.*.bands`) | 이 판에서는 S 의 `sms.*.bands` 0 계열. 감시 범위 행(stream-anomaly 975, change-detect 4)과 예측 행(`band_forecast`, 이력 24시간이 찬 2026-11-25 11:06 회차부터 806)은 생긴다. 119 를 다시 패치한 뒤 다시 잰다 | 한 대상 안에 시리즈가 여럿인 지표(NIC 장치별, 프로세스 pid 와 이름별, 코어별 cpu 등)는 롤업 차원이 없으면 밴드로 판정하지 않는다. 정답에 그 지표의 메트릭 이상감지를 기대하지 않는다 |
+
+위 변경 감지 행이 S 문서 ST3 의 "안 들어오면 그대로 흔적 표에 적는다" 의 기록이다. S 의 주입 수단별 흔적 표는 ST4 가 만든다(T 흔적 표 [civil-petition 흔적 표](ref-civil-petition-injection-traces.md)는 그대로 둔다).
+
+이 표는 제품 판이 바뀌면 다시 실측한다(특히 119 패치 뒤).
 
 ### 원칙 4. 계기에도 흔적이 있어야 한다
 
