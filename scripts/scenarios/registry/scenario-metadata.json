@@ -18236,6 +18236,150 @@
      "대조: 같은 재고 잠금 증상의 F01-R 은 잠금 주인이 앱 밖 세션이고, 같은 원본의 F69-R 은 food 의 별도 Job 덤프다"
     ]
    }
+  },
+  "F72-P": {
+   "title": "An operator narrows access to PostgreSQL through the router rt-core01 to the monitoring and management networks and leaves out the WAS network: every forwarded connection from was01 and was02 to db01:5432 is reset, the portal answers 503 and 500 to almost every request, while db01 and PostgreSQL stay up and still answer ping",
+   "description": "The civil-petition portal is a traditional three-tier system on VMs: Apache httpd on web01 proxies /petition/ to Tomcat on was01 and was02 (192.168.125.0/24), whose Spring application reaches PostgreSQL 16 on db01 (192.168.126.11:5432) through a Tomcat JDBC pool (initialSize and minIdle 5, maxActive 40, maxWait 10 s, PgJDBC connect timeout 10 s). Every tier talks through the router rt-core01, whose stateful ACL (table fwacl, forward priority 0) lets the WAS network reach the DB network on 5432. Only the two WAS servers use that port; the monitoring server 10.250.0.1 reaches the servers through the tunnel and the router, and operators come in on the management network 192.168.127.0/24. An operator tightens database access on the router: logged in as sysop over ssh from the operator terminal, they write /home/sysop/db-acl.nft, a table db-acl whose forward chain (priority -5, before the stateful ACL) first accepts the monitoring tunnel, the management network and the router's own address, then logs at most 6 a minute with the prefix '[DB ACL] ' and rejects with a TCP reset every other TCP connection to 192.168.126.11 port 5432, and loads it with 'sudo nft -f /home/sysop/db-acl.nft'. The WAS network is not on the list. From the next packet on, the router answers every connect from was01 and was02 to db01:5432 with a reset ('Connection refused') and resets each open pooled connection on its next use, so the pool can neither keep nor make a database connection. Every portal function needs the database: login, submission, receipt lookup, my petitions, public search, staff inbox and processing, statistics. Read paths answer 503 'database unavailable' within milliseconds and log 'database access failed' with the refused connection; submission and staff processing answer 500 when their transaction cannot get a connection, or 503 when an open pooled connection is reset at the transaction's first statement. db01 itself is untouched: PostgreSQL keeps its processes, ICMP and its SMS reports pass the router as before, and only TCP to 5432 is refused. When the operator deletes the table the pool reconnects on the next request and the portal recovers within seconds.",
+   "cause": "Router ACL change on rt-core01: table inet db-acl (forward, priority -5) accepts only the monitoring tunnel 10.250.0.0/30, the management network 192.168.127.0/24 and the router address 192.168.123.254, then logs '[DB ACL] ' (6/min) and rejects with a TCP reset every other TCP connection to 192.168.126.11:5432, leaving out the WAS network 192.168.125.0/24 → was01 and was02 cannot keep or open any connection to PostgreSQL (open pooled connections reset on next use, new connects refused at once) → every portal request that needs the database fails: 503 'database unavailable' on reads, 500 or 503 on submission and staff processing (500 when the transaction cannot get a connection, 503 when its first statement meets a reset) → web01 returns those 5xx to users. db01 and PostgreSQL are healthy and reachable by ping; only the path WAS → DB 5432 through the router is cut.",
+   "injection_summary": "The router.config executor runs in the runner. Preflight, over the executor's always-open management connection to rt-core01 (192.168.127.2), checks that nft and ip exist, that the operator sysop has a home, that the table text passes 'nft -c' and that no table db-acl is present. Run arms the router's self-undo guard first (delete table db-acl, remove the file), then the operator logs in by ssh from the operator terminal address 192.168.127.5 (key, pty), writes /home/sysop/db-acl.nft (table inet db-acl, forward chain priority -5: accept 10.250.0.0/30 both ways, the management NIC ens22 and 192.168.127.0/24 both ways, 192.168.123.254 both ways, then for TCP to 192.168.126.11 port 5432 a log line with the prefix \"[DB ACL] \" at most 6 a minute and 'reject with tcp reset') and runs 'sudo nft -f /home/sysop/db-acl.nft'. Right after, 66 pings the router's upstream address through a tunnel source and the executor reads the table as present; either failing undoes the change and fails the run. The change is held for 10 minutes. Cleanup: the operator logs in again and runs 'sudo nft delete table inet db-acl' and 'rm -f /home/sysop/db-acl.nft'; the executor takes back anything left as root and disarms the guard.",
+   "user_impact": "For as long as the table is in, almost every portal request fails within milliseconds: citizens cannot log in, submit a petition, look up a receipt, list their petitions or search public petitions, staff cannot open their inbox or process petitions, and the statistics page fails (503, or 500 or 503 for submission and processing). The static front page still loads. Nothing written before is touched and nothing half-written remains: a write fails before or at its first statement and nothing is committed. Submissions made during the window are refused, not lost; users retry. Deleting the table brings the portal back within seconds.",
+   "distinguishing_evidence": "The change is recorded on the router: rt-core01's syslog shows the operator's ssh login from 192.168.127.5 and 'sudo ... COMMAND=/usr/sbin/nft -f /home/sysop/db-acl.nft' at the moment the failures start (the routine operator sessions on the router only run 'nft list ruleset' and 'tail'), and from then on its kernel logs '[DB ACL] IN=ens20 OUT=ens21 ... SRC=192.168.125.11 or .12 DST=192.168.126.11 ... PROTO=TCP ... DPT=5432' up to 6 a minute, naming the router, the WAS sources, the DB server and the port; cleanup leaves 'nft delete table inet db-acl'. At the same second both was01 and was02 log 'database access failed: java.net.ConnectException: Connection refused' with 'Connection to 192.168.126.11:5432 refused' (no ERROR line in the week before), their access logs and web01's access log turn to 503 and 500. db01 stays up: its ICMP status stays 1 with normal RTT, its PostgreSQL processes keep their pids, its CPU does not rise and the PostgreSQL log has no FATAL, shutdown or start line. On the router's NMS data the DB-side interface ens21 stays up (no linkDown trap) while its outbound traffic to db01 falls to almost nothing.",
+   "domain": "civil-petition",
+   "class": "B",
+   "observation_domains": [
+    "SMS",
+    "NMS"
+   ],
+   "root_cause": {
+    "target_kind": "node",
+    "target_id": "65b4ab9c-d1b4-42f6-be5c-7efb5c34cb3c",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 라우터 rt-core01 의 접근 규칙(nftables) 설정이다. 운영자가 DB 서버 PostgreSQL 포트(192.168.126.11:5432)로 가는 길을 '관제와 관리 쪽만' 남기도록 좁히는 표 db-acl 을 넣으면서, 그 포트를 실제로 쓰는 유일한 클라이언트인 WAS 망(192.168.125.0/24, was01, was02)을 허용 목록에 넣지 않았다. 표는 상태 기반 ACL(fwacl) 앞(우선순위 -5)에서 연결 상태를 보지 않고 TCP 재설정으로 거절하므로, 열린 풀 연결도 다음 사용 때 끊기고 새 연결은 바로 거부된다. 앱의 연결 시도와 PostgreSQL 은 늘 하던 그대로 정당하다(원칙 6: 정당한 요청이 잘못된 규칙에 막힘). 원본 사후 보고(Harness 2024-09-01, 지나치게 느슨하던 방화벽 규칙을 좁혔는데 새 규칙이 그것을 쓰는 구성 요소 하나의 주소를 빠뜨려 그 구성 요소가 실패, 규칙을 다시 만들어 복구)와 같은 층위, 곧 '정당한 클라이언트를 빠뜨린 방화벽 규칙'이 정답이다. 근본과 계기가 같은 곳(rt-core01 규칙 변경)이라 trigger_target_id 는 비운다. target_id 는 라우터의 NMS 대상 번호다. 관제 데이터로의 도달 경로: ① 119 syslog(rt-core01)의 운영자 로그인과 sudo COMMAND=/usr/sbin/nft -f /home/sysop/db-acl.nft ② 같은 원천 kernel 의 '[DB ACL] IN=ens20 OUT=ens21 ... SRC=192.168.125.x DST=192.168.126.11 ... DPT=5432' ③ was01, was02 앱 로그 감시의 'database access failed' 와 'Connection to 192.168.126.11:5432 refused' ④ db01 이 살아 있음(ICMP 상태 1, postgres 프로세스 pid 그대로, PostgreSQL 로그 FATAL 없음) ⑤ 라우터 ens21 이 올라간 채 db01 쪽 송신만 감소. 왜 WAS 망을 빠뜨렸는지(변경 검토 절차)와 규칙 파일의 글은 요구하지 않는다.",
+    "code_anchor": [
+     "civil-petition/deploy/templates/router/nft-acl.nft:3-7 (chain forward, ct state established, acl_rules — 평시 상태 기반 ACL 이 WAS 망 → DB 망 5432 를 허용하고, 주입 표는 이보다 앞 우선순위에서 거절한다)",
+     "civil-petition/deploy/inventory/t.json:107-125 (acl, was, db_port — 라우터 ACL 의 허용 흐름 정본: 상향 → 웹, 웹 → WAS, WAS → DB 5432)",
+     "civil-petition/deploy/render.py:434 (jdbc_url, db_addr — WAS 의 JDBC 주소가 db01 업무 주소 192.168.126.11:5432 라 라우터를 지난다)",
+     "civil-petition/deploy/templates/was/petition-context.xml:4-10 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 10초)",
+     "civil-petition/petition-web/src/main/java/com/civilpetition/web/ApiExceptionHandler.java:23-26 (DataAccessException, log.error, SERVICE_UNAVAILABLE — DB 오류는 'database access failed' ERROR 와 503)",
+     "civil-petition/petition-web/src/main/java/com/civilpetition/web/PetitionRepository.java:29 (Transactional — 신청과 처리는 트랜잭션을 열 때 연결을 못 얻으면 500, 열린 연결이 첫 질의에서 재설정되면 503)",
+     "civil-petition/deploy/templates/web/petition-site.conf:16 (ProxyPass, balancer, timeout — 웹이 WAS 두 대로 넘기고 WAS 의 5xx 를 그대로 돌려준다)",
+     "scripts/scenarios/profiles/router_config_executor.py:42-52 (CONTRACTS, F72-P, reset — 주입 계약)"
+    ],
+    "infra_anchor": "라우터 rt-core01(관리 192.168.127.2, 상향 192.168.123.254, 웹 ens19 192.168.124.1, WAS ens20 192.168.125.1, DB ens21 192.168.126.1, 관리 ens22). nftables 표: fwacl(forward 우선순위 0, policy drop, established 수용, WAS 망 → DB 망 tcp 5432 수용), mgmtguard, monraw. rsyslog 가 *.* 를 10.250.0.1:514/udp 로 넘기고 실행기 계정 줄만 첫 규칙이 거른다(운영자 sysop 줄과 kernel 줄은 간다). NMS 폴링 60초, 인터페이스 대상 ens20 8dd90421-b8fa-435d-b3fd-5fd5be103296, ens21 79a3ac72-fde1-400a-89ca-bcbf414a4b92. 평시(2026-11-25 KST 조회): ens21 if_out_octets 중앙 약 109,000(최소 약 90,000), if_out_ucast_pkts 중앙 92, db01 쪽 postgres 연결 WAS 마다 5(ESTABLISHED), db01 postgres 프로세스 16, 라우터 sudo 명령은 nft list ruleset 과 tail 뿐(7일), 라우터 kernel 줄 7일 3줄(DPT 없음)."
+   },
+   "must_support": [
+    "rt-core01 syslog 에 주입 시각 192.168.127.5 에서 온 sysop 의 sshd 'Accepted publickey' 와 sudo 'COMMAND=/usr/sbin/nft -f /home/sysop/db-acl.nft' 가 있다. 평시 라우터의 운영자 sudo 명령은 'nft list ruleset' 과 'tail -n 20 /var/log/syslog' 뿐이다(2026-11-18 ~ 11-25 KST 7일 nft -f 0건)",
+    "rt-core01 kernel syslog 에 '[DB ACL] ' 로 시작하고 IN=ens20 OUT=ens21, SRC=192.168.125.11 이나 192.168.125.12, DST=192.168.126.11, PROTO=TCP, DPT=5432 인 줄이 주입부터 cleanup 까지 분당 최대 6줄 이어진다. 평시 라우터 kernel 줄은 7일 3줄이고 DPT 를 담은 줄은 0이다",
+    "was01, was02 앱 로그(petition.log) 감시에 'database access failed' ERROR 와 'Connection refused', 'Connection to 192.168.126.11:5432 refused' 를 담은 줄이 같은 시각 두 서버에서 함께 시작된다. 평시 7일 두 서버 앱 로그 ERROR 0줄",
+    "web01 접근 로그 감시와 두 WAS 의 Tomcat 접근 로그 감시에 /petition/api 요청의 503, 500 줄이 주입 동안 이어진다. 평시 web01 접근 로그 5xx 는 7일 6줄, Tomcat 접근 로그 5xx 는 0줄",
+    "db01 은 살아 있다: sms.server.icmp_status 1 과 평소 RTT(평시 4~13ms), postgres 프로세스 pid 그대로(평시 16개), CPU 상승 없음(평시 약 1%), PostgreSQL 서버 로그 감시에 FATAL, PANIC, 종료나 시작 줄 없음",
+    "rt-core01 의 DB 쪽 인터페이스 ens21 은 if_oper_status 가 올라간 채이고 linkDown trap 이 없는데, db01 로 나가는 if_out_octets(평시 중앙 약 109,000)와 if_out_ucast_pkts(평시 중앙 92)가 거의 0 으로 떨어진다"
+   ],
+   "must_rule_out": [
+    "PostgreSQL 다운이나 재시작이 아님: 앱 오류의 'refused' 는 닫힌 포트처럼 보이지만 db01 의 postgres 프로세스 pid 가 그대로이고 PostgreSQL 로그와 db01 syslog 에 종료, 시작 줄이 없으며, 거절 줄은 db01 이 아니라 rt-core01 kernel(IN=ens20 OUT=ens21)에 있다",
+    "링크나 인터페이스 장애가 아님: rt-core01 ens20, ens21 의 if_oper_status 가 올라가 있고 linkDown trap 이 없으며, db01 ICMP 상태 1 과 SMS 보고가 끊기지 않는다. 막힌 것은 5432 TCP 뿐이다",
+    "WAS 배포나 설정 변경(WAR 교체, tomcat10 재시작)이 아님: 실패 시작 시각에 was01, was02 의 java 프로세스 pid 가 그대로이고 tomcat10 재시작 줄이 없으며 두 서버가 같은 초에 함께 실패한다",
+    "DB 과부하나 연결 고갈, 느린 질의가 아님: db01 CPU 가 오르지 않고 오류가 기다린 끝의 시간 초과(풀 대기 10초, 3초 이상 느린 요청 WARN)가 아니라 바로 난 연결 거부다",
+    "웹 서버 설정 변경이나 웹 서버 장애가 아님: web01 이 WAS 의 503, 500 을 몇 ms 안에 그대로 돌려주고 프록시 시간 초과나 WAS 연결 실패 줄(AH01114, AH00957)이 원인이 아니다"
+   ],
+   "beyond_data": {
+    "detail": "The rule file's text: accept lines for the monitoring tunnel, the management network and the router's own address, then a TCP reset for every other connection to 192.168.126.11:5432, and the operator's intent to keep only monitoring and management on the database port",
+    "missing_data": "file contents on the router (119 receives the sudo command line and the kernel's blocked-packet lines, not the file); the load generator's step results and request rates",
+    "confirmed_by": "the executor contract (router_config_executor.py CONTRACTS F72-P), /home/sysop/db-acl.nft on rt-core01 during the run, and the runner's load summary"
+   },
+   "beyond_data_ko": {
+    "detail": "규칙 파일의 글: 관제 터널, 관리망, 라우터 자기 주소를 받는 줄 다음에 192.168.126.11:5432 로 가는 그 밖의 연결을 TCP 재설정으로 거절하는 줄, 그리고 DB 포트를 관제와 관리 쪽만 남기려던 운영자의 의도",
+    "missing_data": "라우터 안의 파일 내용(119 는 sudo 명령 줄과 커널 차단 줄만 받고 파일은 받지 않는다); 부하 생성기의 단계별 결과와 요청률",
+    "confirmed_by": "실행기 계약(router_config_executor.py CONTRACTS F72-P), 실행 중 rt-core01 의 /home/sysop/db-acl.nft, 러너 부하 요약"
+   },
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F72-R (같은 원본(Harness 2024-09-01), 같은 'DB 포트 허용 목록이 정당한 클라이언트를 빠뜨림'. 쿠버네티스 워커의 호스트 방화벽이 새 연결 SYN 만 버려 풀이 수명대로 비며 10분 늦게 드러나고 ORA-12170 연결 시간 초과다. F72-P 는 계층 사이 라우터의 표가 연결 상태를 보지 않고 TCP 재설정으로 거절해 열린 연결까지 바로 끊기고 'Connection refused' 다)",
+     "F44-R, F44-P (같은 원인 꼴이 서비스 API 포트에서 났다. 막힌 쪽이 앱 사이 호출이다)",
+     "F71-H (DB 접근을 좁힌 같은 원본이지만 DB 의 접근 파일(pg_hba)이라 DB 가 연결을 받아 FATAL 로 거절하고 DB 로그에도 남는다. F72-P 는 DB 가 연결을 보지 못하고 거절 줄이 라우터 kernel 에 있다)"
+    ]
+   },
+   "scoring": {
+    "granularity": "node",
+    "accept": [
+     "rt-core01",
+     "65b4ab9c-d1b4-42f6-be5c-7efb5c34cb3c"
+    ],
+    "partial": [
+     "db01",
+     "73343434-0302-468f-b738-643aec7ab84b",
+     "was01",
+     "bda0dfa8-d90c-455f-b4ae-d20fcb0ae7bd",
+     "was02",
+     "ebdf15e2-477d-4c8f-9afc-f4c4b1baf69b",
+     "web01",
+     "c5f7161d-74ea-431d-90a7-09a9d534098f",
+     "8dd90421-b8fa-435d-b3fd-5fd5be103296",
+     "79a3ac72-fde1-400a-89ca-bcbf414a4b92"
+    ]
+   },
+   "title_ko": "운영자가 라우터 rt-core01 에서 PostgreSQL(db01:5432)로 가는 길을 관제망과 관리망만 남기고 좁히면서 WAS 망을 빠뜨림: was01, was02 에서 db01:5432 로 가는 연결이 모두 재설정되어 포털이 거의 모든 요청에 503, 500 을 내는데 db01 과 PostgreSQL 은 살아 있고 핑에도 답한다",
+   "description_ko": "민원 포털은 VM 위 전통 3계층이다. web01 의 Apache httpd 가 /petition/ 을 was01, was02(192.168.125.0/24)의 Tomcat 으로 넘기고, Spring 앱은 Tomcat JDBC 풀(initialSize, minIdle 5, maxActive 40, maxWait 10초, PgJDBC 연결 시간 제한 10초)로 db01 의 PostgreSQL 16(192.168.126.11:5432)에 붙는다. 계층 사이 통신은 모두 라우터 rt-core01 을 지나고, 라우터의 상태 기반 ACL(표 fwacl, forward 우선순위 0)이 WAS 망에서 DB 망 5432 로 가는 것을 허용한다. 이 포트를 쓰는 것은 WAS 두 대뿐이고, 관제 서버 10.250.0.1 은 터널과 라우터를 거쳐 서버에 닿으며, 운영자는 관리망 192.168.127.0/24 로 들어온다. 운영자가 라우터에서 DB 접근을 좁힌다: 운영자 단말에서 sysop 으로 ssh 로그인해 /home/sysop/db-acl.nft 를 쓰는데, 이 표 db-acl 의 forward 체인(우선순위 -5, 상태 기반 ACL 보다 앞)은 관제 터널, 관리망, 라우터 자기 주소를 먼저 받고, 그 밖에 192.168.126.11 의 5432 로 가는 TCP 연결은 '[DB ACL] ' 접두어로 분당 최대 6줄 기록한 뒤 TCP 재설정으로 거절한다. 'sudo nft -f /home/sysop/db-acl.nft' 로 적용한다. WAS 망은 목록에 없다. 다음 패킷부터 라우터가 was01, was02 의 db01:5432 연결 시도를 재설정('Connection refused')하고 열린 풀 연결도 다음 사용 때 재설정해, 풀은 DB 연결을 지키지도 새로 맺지도 못한다. 포털 기능(로그인, 신청, 접수번호 조회, 내 민원, 공개 검색, 담당자 함과 처리, 통계)은 모두 DB 가 필요하다. 읽기 경로는 몇 ms 안에 503 'database unavailable' 로 답하고 거부된 연결과 함께 'database access failed' 를 남기며, 신청과 담당자 처리는 트랜잭션이 연결을 얻지 못하면 500, 열린 풀 연결이 트랜잭션 첫 질의에서 재설정되면 503 이다. db01 자체는 그대로다: PostgreSQL 프로세스가 그대로 있고 ICMP 와 SMS 보고는 평소처럼 라우터를 지나며, 5432 TCP 만 거절된다. 운영자가 표를 지우면 풀이 다음 요청에서 다시 연결해 몇 초 안에 회복한다.",
+   "cause_ko": "rt-core01 의 라우터 ACL 변경: 표 inet db-acl(forward, 우선순위 -5)이 관제 터널 10.250.0.0/30, 관리망 192.168.127.0/24, 라우터 주소 192.168.123.254 만 받고 그 밖에 192.168.126.11:5432 로 가는 TCP 연결은 '[DB ACL] ' 로 기록(분당 6)한 뒤 TCP 재설정으로 거절해, WAS 망 192.168.125.0/24 를 빠뜨림 → was01, was02 가 PostgreSQL 연결을 지키지도 새로 맺지도 못함(열린 풀 연결은 다음 사용 때 재설정, 새 연결은 바로 거부) → DB 가 필요한 포털 요청이 모두 실패: 읽기는 503 'database unavailable', 신청과 담당자 처리는 500 또는 503(연결을 못 얻으면 500, 첫 질의에서 재설정되면 503) → web01 이 그 5xx 를 사용자에게 돌려줌. db01 과 PostgreSQL 은 멀쩡하고 핑에도 답하며, 라우터를 지나는 WAS → DB 5432 길만 끊겼다.",
+   "injection_summary_ko": "router.config 실행기가 러너에서 돈다. preflight 는 rt-core01(192.168.127.2)의 실행기 상시 관리 연결로 nft 와 ip 가 있는지, 운영자 sysop 의 홈이 있는지, 표 글이 'nft -c' 를 통과하는지, 표 db-acl 이 없는지 본다. run 은 라우터 자기 되돌림 가드(표 db-acl 삭제, 파일 삭제)를 먼저 건 뒤, 운영자가 운영자 단말 주소 192.168.127.5 에서 ssh(키, pty)로 로그인해 /home/sysop/db-acl.nft(표 inet db-acl, forward 체인 우선순위 -5: 10.250.0.0/30 양방향, 관리 NIC ens22 와 192.168.127.0/24 양방향, 192.168.123.254 양방향을 받고, 이어 192.168.126.11 의 5432 로 가는 TCP 를 \"[DB ACL] \" 접두어로 분당 최대 6줄 기록하고 'reject with tcp reset')를 쓰고 'sudo nft -f /home/sysop/db-acl.nft' 를 친다. 바로 뒤 66 이 터널 출발지로 라우터 상향 주소를 핑하고 실행기가 표가 들어갔는지 읽으며, 하나라도 실패하면 그 자리에서 되돌리고 실패로 끝낸다. 10분 둔다. cleanup 은 운영자가 다시 로그인해 'sudo nft delete table inet db-acl' 과 'rm -f /home/sysop/db-acl.nft' 를 치고, 남은 것은 실행기가 root 로 되돌린 뒤 가드를 푼다.",
+   "user_impact_ko": "표가 들어가 있는 동안 포털 요청이 거의 모두 몇 ms 안에 실패한다: 민원인은 로그인, 신청, 접수번호 조회, 내 민원 목록, 공개 민원 검색을 못 하고, 담당자는 함을 열거나 처리하지 못하며, 통계 화면도 실패한다(503, 신청과 처리는 500 또는 503). 정적 첫 화면은 뜬다. 이미 쓰인 데이터는 건드리지 않고 반쯤 쓰인 것도 없다(쓰기는 첫 질의나 그 전에 실패하고 아무것도 커밋되지 않는다). 그 사이 신청은 잃는 것이 아니라 거절되어 사용자가 다시 한다. 표를 지우면 몇 초 안에 돌아온다.",
+   "distinguishing_evidence_ko": "변경이 라우터에 남는다: rt-core01 syslog 에 실패가 시작되는 순간 192.168.127.5 에서 온 운영자 ssh 로그인과 'sudo ... COMMAND=/usr/sbin/nft -f /home/sysop/db-acl.nft' 가 있고(라우터의 평시 운영자 세션은 'nft list ruleset' 과 'tail' 만 친다), 그때부터 커널이 '[DB ACL] IN=ens20 OUT=ens21 ... SRC=192.168.125.11 이나 .12 DST=192.168.126.11 ... PROTO=TCP ... DPT=5432' 를 분당 최대 6줄 남겨 라우터, WAS 출발지, DB 서버, 포트를 직접 보여 준다. cleanup 은 'nft delete table inet db-acl' 을 남긴다. 같은 초에 was01, was02 가 함께 'database access failed: java.net.ConnectException: Connection refused' 와 'Connection to 192.168.126.11:5432 refused' 를 남기고(앞선 일주일 ERROR 줄 0), 두 WAS 접근 로그와 web01 접근 로그가 503, 500 으로 바뀐다. db01 은 멀쩡하다: ICMP 상태 1 과 평소 RTT, PostgreSQL 프로세스 pid 그대로, CPU 상승 없음, PostgreSQL 로그에 FATAL, 종료, 시작 줄 없음. 라우터 NMS 에서 DB 쪽 인터페이스 ens21 은 올라가 있고(linkDown trap 없음) db01 로 나가는 트래픽만 거의 0 으로 떨어진다.",
+   "injected_fault": {
+    "profile": "router.config",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f72-p",
+      "parameters": {
+       "host": "192.168.127.2",
+       "node": "rt-core01",
+       "table": "db-acl",
+       "rules": [
+        {
+         "hook": "forward",
+         "proto": "tcp",
+         "dst": "192.168.126.11/32",
+         "dport": 5432,
+         "verdict": "reset"
+        }
+       ],
+       "routes": [],
+       "sysctls": {},
+       "log_prefix": "[DB ACL] "
+      }
+     }
+    ]
+   },
+   "story_ko": {
+    "overview": "운영자가 라우터에서 DB 서버로 가는 길을 좁히다 WAS 를 빠뜨려, DB 와 서버는 멀쩡한데 민원 포털의 거의 모든 요청이 실패한다.",
+    "injected_fault": "라우터(rt-core01)에 DB 서버(PostgreSQL, db01, 192.168.126.11)의 5432 포트로 가는 연결을 관제망과 관리망 말고는 모두 거절하는 규칙을 넣어 약 10분 둔다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "규칙이 들어간 직후부터 WAS 두 대(Tomcat, was01, 192.168.125.11, was02, 192.168.125.12)가 DB 에 붙지 못한다. 관제 화면에서는 라우터 syslog 에 운영자 로그인과 규칙 적용 명령, 이어서 DB 포트 차단 줄이 보인다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "같은 초부터 규칙을 지울 때까지 로그인, 신청, 조회, 검색, 담당자 처리가 몇 ms 안에 503 이나 500 으로 실패한다. WAS 두 대의 앱 로그에 DB 연결 거부 오류가, 웹 서버(Apache, web01, 192.168.124.11) 접근 로그에 5xx 가 쌓이고, 라우터의 DB 쪽 인터페이스 송신량이 거의 0 이 된다."
+     },
+     {
+      "stage": "회복",
+      "text": "운영자가 규칙을 지우면 다음 요청에서 DB 연결이 다시 맺어져 몇 초 안에 정상으로 돌아온다."
+     }
+    ],
+    "root_cause": "근본 원인은 라우터 rt-core01 의 접근 규칙 변경이다. WAS 와 웹 서버는 오류를 크게 남기는 피해자이고, DB 서버 db01 과 PostgreSQL 은 내내 멀쩡하며 핑에도 답한다.",
+    "design_notes": [
+     "주입: router.config 운영자 경로. 운영자 sysop 이 192.168.127.5 에서 ssh 로그인해 /home/sysop/db-acl.nft(표 db-acl, forward 우선순위 -5, 관제, 관리, 라우터 주소 수용 뒤 192.168.126.11:5432 TCP 를 '[DB ACL] ' 기록과 TCP 재설정으로 거절)를 쓰고 sudo nft -f 로 적용, cleanup 은 같은 경로의 nft delete table",
+     "경로: 사용자 → web01 Apache → was01, was02 Tomcat → rt-core01 → db01 PostgreSQL 5432. 모든 업무 경로가 DB 를 쓴다",
+     "풀: Tomcat JDBC minIdle 5, maxActive 40, maxWait 10초, PgJDBC 연결 시간 제한 10초. 재설정이라 기다림 없이 바로 거부된다",
+     "판정: 상주 부하의 접수번호 조회(로그인 없는 공개 경로) 비정상 비율로 본다. 신청, 내 민원, 담당자 처리는 장애 중 재로그인이 실패해 로그인 상태가 풀린 가상 사용자가 요청 자체를 보내지 않게 되어 판정에 쓰지 않는다",
+     "재설정을 쓴 까닭: drop 이면 연결 시간 초과 10초가 부하기 요청 시간 제한 10초와 같아 사용자 쪽이 응답 없음으로 보이고, 일반 reject(ICMP)는 커널이 목적지마다 초당 약 1개로 제한해 대부분 시간 초과로 바뀐다",
+     "관측 근거: 라우터 syslog 의 운영자 sudo nft -f 와 kernel '[DB ACL] ... DPT=5432', 두 WAS 앱 로그의 Connection refused, web01 과 Tomcat 접근 로그 5xx, db01 ICMP 1 과 postgres pid 그대로, ens21 송신 감소. 녹화 전이라 모두 설계 예상이다",
+     "원본 사례: Harness 2024-09-01(지나치게 느슨하던 방화벽 규칙을 좁히며 그것을 쓰는 구성 요소 하나의 주소를 빠뜨림)",
+     "대조: F72-R 은 같은 원본을 쿠버네티스 워커 호스트 방화벽의 새 연결 버림으로 재구성해 풀 수명만큼 늦게 드러난다. F71-H 는 DB 접근 파일이라 DB 로그에 FATAL 이 남는다"
+    ]
+   }
   }
  }
 }

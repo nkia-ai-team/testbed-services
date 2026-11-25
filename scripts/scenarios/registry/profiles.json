@@ -5861,10 +5861,35 @@
       "allowed_locations": [
         "petition-rt-core01"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "http.entry_health"
-      ]
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F72-P"
+        ]
+      },
+      "scenario_parameters": {
+        "F72-P": {
+          "host": "192.168.127.2",
+          "node": "rt-core01",
+          "table": "db-acl",
+          "rules": [
+            {
+              "hook": "forward",
+              "proto": "tcp",
+              "dst": "192.168.126.11/32",
+              "dport": 5432,
+              "verdict": "reset"
+            }
+          ],
+          "routes": [],
+          "sysctls": {},
+          "log_prefix": "[DB ACL] "
+        }
+      },
+      "scenario_levels": {}
     },
     "router.resource": {
       "executor": "profiles/router_resource_executor.py",

@@ -4504,6 +4504,8 @@ else:
             "F80-R",
             # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F69-P",
+            # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -5076,10 +5078,6 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         "router.qdisc": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "device": "ens20", "kind": "rate",
                                       "delay_ms": 0, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 2000,
                                       "burst_kb": 32, "latency_ms": 50}),
-        "router.config": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "table": "acl-change",
-                                       "rules": [{"hook": "forward", "proto": "tcp", "src": "192.168.124.0/24",
-                                                  "dst": "192.168.125.0/24", "dport": 8080, "verdict": "drop"}],
-                                       "routes": [], "sysctls": {}, "log_prefix": ""}),
         "router.resource": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "mode": "cpu",
                                          "cpu_workers": 2, "entries": 0, "runtime_seconds": 300}),
         "vmhost.stress": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "mode": "cpu", "cpu_workers": 2,
@@ -5127,6 +5125,14 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         "vmload.north_south": ("ST4-GUARD", {"host": "192.168.133.10", "node": "loadgen", "unit": "surge-check",
                                              "target_rps": 60, "duration_seconds": 600, "seed": 7}),
     }
+    # Sample contracts of node executors a scenario uses now (the catalog check covers their guard); the VM executor
+    # tests still vary these samples. router.config: F72-P since 2026-11-25.
+    USED_NODE_SAMPLES = {
+        "router.config": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "table": "acl-change",
+                                       "rules": [{"hook": "forward", "proto": "tcp", "src": "192.168.124.0/24",
+                                                  "dst": "192.168.125.0/24", "dport": 8080, "verdict": "drop"}],
+                                       "routes": [], "sysctls": {}, "log_prefix": ""}),
+    }
     LOCATIONS = json.loads((ROOT / "registry" / "locations.json").read_text())["locations"]
 
     @staticmethod
@@ -5161,7 +5167,8 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                     self.assertFalse(registry[instance["profile_id"]]["live_supported"], instance["profile_id"])
                 elif location.get("node") or location["host"] in self.CLUSTER_NODES:
                     on_node.setdefault(instance["profile_id"], plan)
-        self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress"})
+        # 2026-11-25: router.config(F72-P, civil-petition rt-core01) joins: the first VM executor a scenario uses.
+        self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config"})
         # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
         # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
         node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
@@ -5682,7 +5689,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
     protected target by the content guard. tc, nft and ip run against a real kernel in a user and network
     namespace; ssh, sudo, setpriv, systemd units, psql and conntrack are fakes (vm_sandbox)."""
 
-    SAMPLES = NodeGuardTests.UNUSED_NODE_EXECUTORS
+    SAMPLES = {**NodeGuardTests.UNUSED_NODE_EXECUTORS, **NodeGuardTests.USED_NODE_SAMPLES}
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -5769,8 +5776,13 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         for profile_id, name in VM_EXECUTORS.items():
             profile = registry[profile_id]
             self.assertEqual(profile["executor"], f"profiles/{name}.py")
-            self.assertFalse(profile["live_supported"], profile_id)
-            self.assertEqual(self.module(profile_id).CONTRACTS, {}, profile_id)
+            # An executor goes live with its first exact contract (2026-11-25 F72-P on router.config): the contracts in
+            # the executor are exactly the registry's, both ways (G2), and an executor without one stays off.
+            contracts = self.module(profile_id).CONTRACTS
+            self.assertEqual(contracts, profile.get("scenario_parameters", {}), profile_id)
+            self.assertEqual(profile["live_supported"], bool(contracts), profile_id)
+            if contracts:
+                self.assertEqual(set(profile["parameter_contract"]["allowed_scenarios"]), set(contracts), profile_id)
             for location_id in profile["allowed_locations"]:
                 loc = locations[location_id]
                 self.assertIn(loc["domain"], ("civil-petition", "civil-petition-sms"))
@@ -5856,6 +5868,103 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         for prefix in ("[TESTBED DROP] ", "[T4 DROP] ", "[RCA] ", "drop "):
             with self.subTest(prefix=prefix):
                 self.refused("vmhost.firewall", self.params("vmhost.firewall", log_prefix=prefix))
+
+    def test_a_reset_verdict_is_tcp_only_and_renders_a_tcp_reset(self) -> None:
+        """reset = `reject with tcp reset`: a plain reject answers with ICMP port unreachable, which the kernel rate
+        limits per destination (about one a second), so most refused connects would wait out their own timeout."""
+        for profile_id, hook in (("router.config", "forward"), ("vmhost.firewall", "output")):
+            for proto in (None, "udp"):
+                with self.subTest(profile=profile_id, proto=proto):
+                    rule = {"hook": hook, "verdict": "reset", "dst": "192.168.126.11/32"}
+                    if proto:
+                        rule["proto"] = proto
+                    self.refused(profile_id, self.params(profile_id, rules=[rule]))
+        rules = [{"hook": "forward", "proto": "tcp", "dst": "192.168.126.11/32", "dport": 5432, "verdict": "reset"},
+                 {"hook": "forward", "proto": "tcp", "dst": "192.168.126.12/32", "dport": 5432, "verdict": "reject"}]
+        text = vm_common.nft_table("db-acl", "router", "ens22", vm_common.filter_rules(rules, "router", ("ens18", "ens22")), "",
+                                    vm_common.T_TESTBED)
+        self.assertIn("ip daddr 192.168.126.11/32 meta l4proto tcp th dport 5432 counter reject with tcp reset", text)
+        self.assertIn("ip daddr 192.168.126.12/32 meta l4proto tcp th dport 5432 counter reject\n", text)
+        path = self.tmp / "reset.nft"
+        path.write_text(text)
+        done = subprocess.run(["unshare", "-rn", "bash", "-c", f"nft -f {shlex.quote(str(path))} && nft list table inet db-acl"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("tcp dport 5432 counter packets 0 bytes 0 reject with tcp reset", done.stdout)
+        self.assertIn("reject with icmp port-unreachable", done.stdout)
+
+    def test_f72p_router_table_refuses_forwarded_db_connects_at_once_and_cuts_open_ones(self) -> None:
+        """F72-P's contract on a real kernel: a router namespace forwards between a WAS and a DB namespace. With the
+        table loaded an open connection to 5432 is reset on its next packet and every new connect is refused at once
+        (the portal then answers 503 within milliseconds, not after the 10 s connect timeout); ICMP still passes."""
+        config = load("router_config_executor")
+        params = config.CONTRACTS["F72-P"]
+        text = config.check_parameters(params)[1]
+        table = self.tmp / "db-acl.nft"
+        table.write_text(text)
+        script = r'''
+set -e
+mount -t tmpfs none /run
+mkdir -p /run/netns
+ip netns add was; ip netns add db
+ip link add ens20 type veth peer name w1; ip link add ens21 type veth peer name d1
+ip link set w1 netns was; ip link set d1 netns db
+ip addr add 192.168.125.1/24 dev ens20; ip addr add 192.168.126.1/24 dev ens21
+ip link set ens20 up; ip link set ens21 up; ip link set lo up
+ip netns exec was sh -c 'ip addr add 192.168.125.11/24 dev w1; ip link set w1 up; ip link set lo up; ip route add default via 192.168.125.1'
+ip netns exec db sh -c 'ip addr add 192.168.126.11/24 dev d1; ip link set d1 up; ip link set lo up; ip route add default via 192.168.126.1'
+echo 1 > /proc/sys/net/ipv4/ip_forward
+ip netns exec db python3 -c "
+import socket, threading, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('192.168.126.11', 5432)); s.listen(8)
+def echo(c):
+    while True:
+        d = c.recv(64)
+        if not d: break
+        c.send(d)
+def serve():
+    while True:
+        c, _ = s.accept(); threading.Thread(target=echo, args=(c,), daemon=True).start()
+threading.Thread(target=serve, daemon=True).start(); time.sleep(20)" >/dev/null 2>&1 &
+server=$!
+sleep 1
+ip netns exec was python3 -c "
+import os, socket, sys, time
+c = socket.create_connection(('192.168.126.11', 5432), timeout=5); c.send(b'a'); assert c.recv(8) == b'a'
+print('before ok', flush=True)
+open(sys.argv[1] + '.open', 'w').close()
+while not os.path.exists(sys.argv[1] + '.loaded'):
+    time.sleep(0.05)
+t = time.time()
+try:
+    c.settimeout(5); c.send(b'b'); c.recv(8); print('open kept')
+except OSError as e:
+    print('open', type(e).__name__, round(time.time() - t, 2))
+for _ in range(10):
+    t = time.time()
+    try:
+        socket.create_connection(('192.168.126.11', 5432), timeout=5); print('new ok')
+    except OSError as e:
+        print('new', type(e).__name__, round(time.time() - t, 2))
+" "$1" &
+client=$!
+while [ ! -e "$1.open" ]; do sleep 0.05; done
+nft -f "$1"
+touch "$1.loaded"
+wait $client
+ip netns exec was ping -c 1 -W 2 192.168.126.11 >/dev/null && echo 'ping ok'
+nft list table inet db-acl | grep -c 'reject with tcp reset'
+kill $server
+'''
+        done = subprocess.run(["unshare", "-rnm", "bash", "-c", script, "bash", str(table)],
+                              capture_output=True, text=True, timeout=90)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = done.stdout.splitlines()
+        self.assertIn("before ok", lines)
+        self.assertIn("open ConnectionResetError 0.0", lines)
+        refused = [line for line in lines if line.startswith("new ")]
+        self.assertEqual(refused, ["new ConnectionRefusedError 0.0"] * 10)
+        self.assertIn("ping ok", lines)
 
     def test_chains_start_with_the_protected_lines_and_a_broad_rule_cannot_catch_them(self) -> None:
         """Mutation: the first lines are what keeps a broad rule off the reports to 10.250.0.1. With them the

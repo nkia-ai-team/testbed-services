@@ -76,6 +76,8 @@ PROFILE_PREFLIGHTS = {
     "network.fault": "network-oob-recovery",
     # A host firewall rule is removed over SSH on the host network, which the rule never matches.
     "host.firewall": "network-oob-recovery",
+    # The router's change is taken back over its management NIC, which the content guard keeps out of every rule.
+    "router.config": "network-oob-recovery",
     # The inverse of removing node images is loading the same images (same image IDs) back
     # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
     "host.image": "kubernetes-recovery-capacity",
@@ -113,6 +115,9 @@ def transport_for(location: str) -> str:
     if any(token in lowered for token in ("namespace", "edge route")):
         return "kubectl"
     if any(token in lowered for token in ("tb-runner", "worker", "batch host", "external-server")):
+        return "ssh"
+    # VM testbeds (docs/spec-testbed-vm-3tier.md 6-1): the executors reach each VM over its management NIC with ssh.
+    if lowered.startswith(("civil-petition ", "civil-petition-sms ")):
         return "ssh"
     raise ValueError(f"unmapped injection location: {location}")
 

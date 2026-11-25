@@ -22,7 +22,14 @@ spot and the run fails.
 Self-recovery (U8): armed before the change, with an undo that deletes exactly this table, these
 routes and puts the sysctls back. The file in the operator's home is removed at the next boot.
 
-The executor is the means only; until a scenario adds an exact contract every scenario is refused.
+The executor is the means only; a scenario without an exact contract below is refused.
+
+F72-P (Harness 2024-09-01 rebuilt on the router): the operator narrows who may reach the DB server's PostgreSQL port
+through the router. The file keeps the monitoring, management and router lines first (the protected lines every
+chain starts with) and then refuses every other forwarded TCP connection to 192.168.126.11:5432 with a TCP reset and
+a rate-limited kernel log line; the WAS network, the only real client of that port, is not on the list. A reset (not
+a drop) because the portal's connect timeout (PgJDBC 10 s) and pool wait (10 s) equal the load generator's request
+timeout: dropped connects would read as "no response" at the entry instead of the 503 the application answers.
 """
 from __future__ import annotations
 
@@ -32,7 +39,17 @@ from executor_common import ExecutorError, cli, profile_instance
 import vm_executor_common as vm
 
 PROFILE_ID = "router.config"
-CONTRACTS: dict[str, dict[str, Any]] = {}
+CONTRACTS: dict[str, dict[str, Any]] = {
+    "F72-P": {
+        "host": "192.168.127.2",
+        "node": "rt-core01",
+        "table": "db-acl",
+        "rules": [{"hook": "forward", "proto": "tcp", "dst": "192.168.126.11/32", "dport": 5432, "verdict": "reset"}],
+        "routes": [],
+        "sysctls": {},
+        "log_prefix": "[DB ACL] ",
+    },
+}
 KEYS = {"host", "node", "table", "rules", "routes", "sysctls", "log_prefix"}
 SYSCTLS = {
     "net.netfilter.nf_conntrack_max": (1024, 1_048_576),

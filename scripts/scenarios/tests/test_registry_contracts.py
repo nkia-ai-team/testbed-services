@@ -153,7 +153,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-16: 141 → 142. F80-R(후보) 추가. 프로파일 34 → 35(host.job 신설).
         # 2026-10-30: 142 → 143. F69-P(후보) 추가. 기존 k8s.image release 모드를 commerce inventory 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-11-09: 시나리오 수는 그대로. 프로파일 35 → 36(db.cursor_reset 신설, F74-R 동반: 정리 뒤 건수 질의 커서 비우기와 계획 복귀 확인).
-        self.assertEqual(len(self.catalog["scenarios"]), 143)
+        # 2026-11-25: 143 → 144. F72-P(후보) 추가. 민원 포털 라우터 router.config 에 첫 계약(프로파일 수는 그대로).
+        self.assertEqual(len(self.catalog["scenarios"]), 144)
         # 2026-11-19: 시나리오 수는 그대로. 프로파일 36 → 48(civil-petition VM 실행기 12개 신설, v4 T4S. 계약 0개라 시나리오가 아직 쓰지 않는다).
         self.assertEqual(len(self.profiles["profiles"]), 48)
         known = set(self.profiles["profiles"])
@@ -363,6 +364,8 @@ class RegistryContractTests(unittest.TestCase):
             "F80-R",
             # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F69-P",
+            # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려, WAS 두 대의 DB 연결이 TCP 재설정으로 끊기고 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -927,6 +930,8 @@ class RegistryContractTests(unittest.TestCase):
             "F80-R",
             # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F69-P",
+            # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려, WAS 두 대의 DB 연결이 TCP 재설정으로 끊기고 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-P",
             },
         )
         self.assertEqual(
@@ -1135,6 +1140,8 @@ class RegistryContractTests(unittest.TestCase):
             "F80-R",
             # 2026-10-30: commerce inventory-service 를 재고 재조정 배치가 재고 행 16개를 공유 잠금(FOR SHARE)으로 쥔 채 상품마다 45일 이동 이력을 합산하는 릴리스 1.3.0(fault-images/f69-p)으로 롤아웃, 배치마다 약 45초 동안 재고 예약이 기다려 checkout 이 약 105초마다 5xx(KnowBe4 2025-10-13 재구성, 기존 k8s.image release 모드에 계약 추가). 새 후보, 설계 강도 1단 고정 evaluation.
             "F69-P",
+            # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려, WAS 두 대의 DB 연결이 TCP 재설정으로 끊기고 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1352,8 +1359,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-12: F79-R(후보, 고정 evaluation)이 끝에 붙어 F75-R 이 끝 5개에서 빠졌다.
         # 2026-10-16: F80-R(후보, 고정 evaluation)이 끝에 붙어 F76-R 이 끝 5개에서 빠졌다.
         # 2026-10-30: F69-P(후보, 고정 evaluation)이 끝에 붙어 F76-P 가 끝 5개에서 빠졌다.
+        # 2026-11-25: F72-P(후보, 고정 evaluation, 첫 민원 포털 시나리오)가 끝에 붙어 F77-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F77-R", "F71-H", "F79-R", "F80-R", "F69-P"])
+                         ["F71-H", "F79-R", "F80-R", "F69-P", "F72-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
@@ -1677,6 +1685,44 @@ class RegistryContractTests(unittest.TestCase):
         compile_plan_module.validate_contracts(
             self.catalog, self.locations, self.profiles, self.queries, self.controllers
         )
+
+    def test_vm_domain_recovery_reads_the_domain_entry_instead_of_a_pod(self) -> None:
+        # VM 테스트베드(civil-petition)에는 파드가 없어 회복 조건이 pod_ready 대신 그 도메인 상주 부하의 진입
+        # 상태(http.entry_health, domain=civil-petition)가 200 으로 돌아왔는지를 본다(2026-11-25 F72-P, 첫 VM
+        # 시나리오). 쿠버네티스 시나리오의 pod_ready 규칙은 그대로다.
+        self.assertEqual(
+            compile_plan_module.scenario_location_domain(
+                next(row for row in self.catalog["scenarios"] if row["id"] == "F72-P"), self.locations),
+            "civil-petition",
+        )
+        compile_plan_module.validate_contracts(
+            self.catalog, self.locations, self.profiles, self.queries, self.controllers
+        )
+        cases = {
+            "no entry recovery": lambda c: c["recovery"]["all"].__setitem__(
+                slice(None), [i for i in c["recovery"]["all"] if i["observation"] != "entry_status"]),
+            "entry of another domain": lambda c: next(
+                o for o in c["observations"] if o["id"] == "entry_status")["parameters"].__setitem__("domain", "commerce"),
+            "kubernetes observation": lambda c: c["observations"].append(
+                {"id": "pod_ready", "adapter": "kubernetes", "query_id": "kubernetes.pod_ready",
+                 "parameters": {"namespace": "rca-testbed-commerce", "resource": "testbed-order"}, "freshness": "30s"}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                bad = copy.deepcopy(self.controllers)
+                mutate(bad["controllers"]["F72-P"])
+                with self.assertRaisesRegex(compile_plan_module.ContractError, "F72-P"):
+                    compile_plan_module.validate_contracts(
+                        self.catalog, self.locations, self.profiles, self.queries, bad
+                    )
+        # 쿠버네티스 시나리오는 여전히 pod_ready 회복을 요구한다.
+        bad = copy.deepcopy(self.controllers)
+        bad["controllers"]["F72-R"]["recovery"]["all"] = [
+            i for i in bad["controllers"]["F72-R"]["recovery"]["all"] if i["observation"] != "pod_ready"]
+        with self.assertRaisesRegex(compile_plan_module.ContractError, "F72-R lacks health/pod recovery"):
+            compile_plan_module.validate_contracts(
+                self.catalog, self.locations, self.profiles, self.queries, bad
+            )
 
     def test_controller_registry_is_bound_into_registry_and_plan_digest(self) -> None:
         baseline = compile_plan_module.compile_plan("f07-h-north-south-surge")

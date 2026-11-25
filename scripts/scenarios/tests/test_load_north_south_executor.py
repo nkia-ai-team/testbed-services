@@ -83,6 +83,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.row_update",
                 # 2026-11-09: F74-R 동반 — 부하 정리 뒤 건수 질의 하나의 공유 커서 비우기(DBMS_SHARED_POOL.PURGE)와 계획 복귀 확인.
                 "db.cursor_reset",
+                # 2026-11-25: F72-P — 민원 포털 라우터 rt-core01 에 운영자가 nftables 표 하나 넣기와 지우기(운영자 ssh, sudo nft).
+                "router.config",
             },
         )
 

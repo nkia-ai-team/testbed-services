@@ -407,7 +407,10 @@ def guarded_port(value: Any, field: str) -> int:
 
 RULE_KEYS = {"hook", "proto", "src", "dst", "dport", "verdict"}
 HOOKS = {"router": ("forward", "input"), "server": ("input", "output")}
-VERDICTS = ("drop", "reject")
+# reset: `reject with tcp reset` (tcp only). A plain reject answers with ICMP port unreachable, which the kernel rate
+# limits per destination (net.ipv4.icmp_ratelimit, about one a second), so most refused connects would wait out their
+# own timeout instead; a TCP reset is not rate limited and also ends a connection that was already open.
+VERDICTS = ("drop", "reject", "reset")
 
 
 def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str], tb: Testbed = T_TESTBED) -> list[str]:
@@ -428,6 +431,8 @@ def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str], tb: Testbe
         proto = rule.get("proto", "-")
         if proto not in ("tcp", "udp", "-"):
             raise ExecutorError("rule proto must be tcp or udp")
+        if rule["verdict"] == "reset" and proto != "tcp":
+            raise ExecutorError("a reset verdict needs proto tcp")
         src = business_network(rule["src"], "rule src", tb) if "src" in rule else "-"
         dst = business_network(rule["dst"], "rule dst", tb) if "dst" in rule else "-"
         if src == "-" and dst == "-":
@@ -492,7 +497,8 @@ def nft_table(table: str, kind: str, mgmt_if: str, tokens: list[str], prefix: st
         match = " ".join(parts)
         if prefix:
             by_hook.setdefault(hook, []).append(f'{match} limit rate 6/minute log prefix "{prefix}"')
-        by_hook.setdefault(hook, []).append(f"{match} counter {verdict}")
+        action = "reject with tcp reset" if verdict == "reset" else verdict
+        by_hook.setdefault(hook, []).append(f"{match} counter {action}")
     out = [f"table inet {table} {{"]
     for hook in sorted(by_hook):
         out.append(f"\tchain {hook} {{")

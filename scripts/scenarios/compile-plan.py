@@ -126,7 +126,19 @@ def validate_contracts(
         for profile_id in scenario.get("profiles", []):
             if profile_id not in profiles:
                 raise ContractError(f"scenario {scenario.get('id')} references unknown profile {profile_id}")
-    validate_controllers(catalog, profiles_doc, queries_doc, controllers_doc)
+    validate_controllers(catalog, profiles_doc, queries_doc, controllers_doc, locations_doc)
+
+
+# VM testbeds (docs/spec-testbed-vm-3tier.md, spec-testbed-sms-only.md): no Kubernetes, so no pod to be Ready again.
+VM_DOMAINS = frozenset({"civil-petition", "civil-petition-sms"})
+
+
+def scenario_location_domain(scenario: dict[str, Any], locations_doc: dict[str, Any] | None) -> str | None:
+    """The domain of the scenario's injection location (catalog alias -> location), None when unknown."""
+    if not locations_doc:
+        return None
+    location_id = locations_doc.get("catalog_aliases", {}).get(scenario.get("injection_location"))
+    return locations_doc.get("locations", {}).get(location_id, {}).get("domain")
 
 
 def validate_controllers(
@@ -134,6 +146,7 @@ def validate_controllers(
     profiles_doc: dict[str, Any],
     queries_doc: dict[str, Any],
     controllers_doc: dict[str, Any],
+    locations_doc: dict[str, Any] | None = None,
 ) -> None:
     scenarios = {item["id"]: item for item in catalog_doc.get("scenarios", [])}
     profiles = profiles_doc.get("profiles", {})
@@ -236,7 +249,23 @@ def validate_controllers(
             raise ContractError(f"controller {scenario_id} lacks catastrophic abort gates")
         recovery_items = controller["recovery"].get("all", [])
         recovery_pairs = {(item.get("observation"), item.get("op"), item.get("value")) for item in recovery_items}
-        if ("target_health", "eq", 200) not in recovery_pairs or ("pod_ready", "eq", True) not in recovery_pairs:
+        domain = scenario_location_domain(scenario, locations_doc)
+        if domain in VM_DOMAINS:
+            # A VM testbed has no pod to be Ready again (2026-11-25, F72-P the first one). Its serving path is back when
+            # the domain's own entry answers 200 again: the resident loadgen's last business request (entry_status of
+            # the domain's baseline document), the same observation the catastrophic abort above reads. Kubernetes
+            # observations would read another testbed.
+            entry = next((item for item in observations if item.get("id") == "entry_status"), {})
+            if (
+                ("target_health", "eq", 200) not in recovery_pairs
+                or ("entry_status", "eq", 200) not in recovery_pairs
+                or entry.get("query_id") != "http.entry_health"
+                or (entry.get("parameters") or {}).get("domain") != domain
+            ):
+                raise ContractError(f"controller {scenario_id} lacks health/entry recovery for VM domain {domain}")
+            if any(item.get("adapter") == "kubernetes" for item in observations):
+                raise ContractError(f"controller {scenario_id} reads kubernetes on VM domain {domain}")
+        elif ("target_health", "eq", 200) not in recovery_pairs or ("pod_ready", "eq", True) not in recovery_pairs:
             raise ContractError(f"controller {scenario_id} lacks health/pod recovery")
         for found in recovery_own_load_reads(scenario_id, controller, queries_doc):
             raise ContractError(
