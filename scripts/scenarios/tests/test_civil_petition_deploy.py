@@ -6685,8 +6685,10 @@ class InstallRecordTests(unittest.TestCase):
     # Stand-in normalized checksums of the three files (render.py puts the real ones in meta.json).
     NORMALIZED = {"/etc/app/a.conf": "a" * 64, "/etc/app/b.conf": "b" * 64, "/etc/app/c.conf": "c" * 64}
 
+    RULES = {"domain": "dom-x", "names": [], "ipv4": render.IPV4.pattern}
+
     def bundle(self, root: Path, meta_secrets: list[str] | None = None, meta: bool = True,
-               drop_normalized: bool = False) -> Path:
+               drop_rules: bool = False) -> Path:
         bundle = root / "bundle"
         (bundle / "steps.d").mkdir(parents=True)
         for name in ("lib.sh", "record.sh"):
@@ -6705,8 +6707,8 @@ class InstallRecordTests(unittest.TestCase):
         if meta:
             secrets = {"/etc/app/c.conf": ["db_password"] if meta_secrets is None else meta_secrets}
             (bundle / "meta.json").write_text(json.dumps({"files": [
-                {"dest": d, "secrets": secrets.get(d, []), **({} if drop_normalized else {"normalized_sha256": self.NORMALIZED[d]})}
-                for d, _ in rows]}))
+                {"dest": d, "secrets": secrets.get(d, []), "normalized_sha256": self.NORMALIZED[d]} for d, _ in rows],
+                **({} if drop_rules else {"normalize": self.RULES})}))
         source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
         source = source.replace("LOG=/var/log/petition-deploy.log", f"LOG={bundle}/log")
         (bundle / "install.sh").write_text(source)
@@ -6745,9 +6747,12 @@ class InstallRecordTests(unittest.TestCase):
             done = check()
             self.assertNotEqual(done.returncode, 0)
             self.assertIn("etc/app/a.conf: FAILED", done.stdout)
-            # The pair record (ST4 M2): the same files' normalized checksums from meta.json, no secret file.
+            # The pair record (ST4 M2, 3회차 M): the placed files read back and normalized with the bundle's rules (not the
+            # bundle's own values), no secret file. Written by the full run, before a.conf changed.
             pair = place / "var" / "lib" / "petition-deploy" / "normalized.sha256"
-            self.assertEqual(pair.read_text(), f"{'a' * 64}  /etc/app/a.conf\n{'b' * 64}  /etc/app/b.conf\n")
+            norm = lambda text: hashlib.sha256(render.apply_normalize(text, self.RULES).encode()).hexdigest()
+            self.assertEqual(pair.read_text(), f"{norm('alpha' + chr(10))}  /etc/app/a.conf\n{norm('beta' + chr(10))}  /etc/app/b.conf\n")
+            self.assertNotIn("a" * 64, pair.read_text())
             self.assertEqual(stat.S_IMODE(pair.stat().st_mode), 0o644)
             # An installed server gets the record on its own with the record step.
             record.unlink()
@@ -6756,11 +6761,13 @@ class InstallRecordTests(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(len(record.read_text().splitlines()), 2)
             self.assertEqual(len(pair.read_text().splitlines()), 2)
+            # Rewritten from the VM as it is now: a.conf's line is the changed file's, not the bundle's.
+            self.assertIn(f"{norm('changed' + chr(10))}  /etc/app/a.conf", pair.read_text().splitlines())
 
     def test_record_refuses_without_the_render_secret_marks(self) -> None:
         """meta.json 이 없거나, 비밀값 자리를 품은 원본의 표시가 비었으면(렌더와 묶음이 어긋남) 기록하지 않는다."""
         for case, kwargs in (("no meta", {"meta": False}), ("empty mark", {"meta_secrets": []}),
-                             ("no normalized", {"drop_normalized": True})):
+                             ("no normalize rules", {"drop_rules": True})):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
                 bundle = self.bundle(root, **kwargs)
@@ -6936,6 +6943,42 @@ class PairExpectedTests(unittest.TestCase):
                 self.assertEqual(s_cmp, expected)
                 self.assertTrue(set(pair["t_only"]) <= set(t_rec))
                 self.assertFalse(set(pair["t_only"]) & set(s_rec))
+
+    def test_a_placed_file_one_line_off_the_bundle_breaks_the_pair(self) -> None:
+        """3회차 리뷰 M: 놓인 파일 한 줄이 지금 묶음과 다르면(설치 뒤 틀이 바뀐 VM, 기록만 다시 쓴 경우) 그 VM 의 쌍 줄이 기대값과
+        달라 쌍이 서지 않는다. expected.sha256 은 VM 바이트라 표류 0 이어도 그렇다."""
+        doc = json.loads(render.PAIR_EXPECTED.read_text(encoding="utf-8"))
+        pair = next(p for p in doc["pairs"] if p["t"] == "web01")
+        inv = inventory(S_INV)
+        host = next(h for h in inv["hosts"] if h["name"] == pair["s"])
+        dest = "/etc/apache2/sites-available/petition.conf"
+        self.assertIn(dest, pair["files"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = render.write_bundle(render.render_host(inv, host), root / "bundles")
+            (bundle_root / "steps.d").mkdir()
+            for step in ("lib.sh", "record.sh"):
+                (bundle_root / "steps.d" / step).write_text((DEPLOY / "steps" / step).read_text())
+            source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+            (bundle_root / "install.sh").write_text(source.replace("LOG=/var/log/petition-deploy.log", f"LOG={root}/log"))
+            place = root / "place"
+            for entry in json.loads((bundle_root / "meta.json").read_text())["files"]:
+                target = place / entry["dest"].lstrip("/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(bundle_root / "files" / entry["dest"].lstrip("/"), target)
+            (place / dest.lstrip("/")).write_text((place / dest.lstrip("/")).read_text() + "    KeepAlive On\n")
+            done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
+                                  text=True, env={**os.environ, "PLACE_ROOT": str(place)})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            rec = dict(reversed(l.split("  ", 1)) for l in (place / "var/lib/petition-deploy/normalized.sha256").read_text().splitlines())
+            self.assertNotEqual(rec[dest], pair["files"][dest])
+            others = {d: v for d, v in rec.items() if d != dest and d not in pair["t_only"] and d not in pair["differs"]}
+            self.assertEqual(others, {d: v for d, v in pair["files"].items() if d != dest})
+            # The runner's comparison (the pair's files against the record) is false; the install record shows no drift.
+            self.assertNotEqual({d: v for d, v in rec.items() if d not in pair["t_only"] + pair["differs"]}, pair["files"])
+            check = subprocess.run(["sha256sum", "-c", "--quiet", "-"], cwd=place, capture_output=True, text=True,
+                                   input=(place / "var/lib/petition-deploy/expected.sha256").read_text().replace("  /", "  "))
+            self.assertEqual(check.returncode, 0, check.stdout)
 
     def test_a_load_generator_record_needs_its_two_scripts(self) -> None:
         inv = inventory(S_INV)

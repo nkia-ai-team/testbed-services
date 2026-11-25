@@ -155,7 +155,7 @@ S 와 T 에서 다른 것 전부(쌍 비교에서 "관제 범위 말고 다른 �
 6. **원인 위치**: 근본 원인과 계기가 서버(호스트와 그 하위 리소스, 서비스 프로세스, 서버 위 설정과 파일)에 있다. 근거가 라우터(라우터의 NMS 장비 지표, trap, syslog)에만 있는 원인과 계층 사이 망 경로에 기대는 원인은 쌍이 아니다(결정 3 에서 S 에 라우터가 없다). T 에는 DPM 이 없다(11-16). 서버의 syslog 줄이 근거인 원인은 S 에서도 로그 감시 줄(`/var/log/syslog`, `auth.log`)로 남을 수 있으므로 여기서 빼지 않고 조건 7(S 정답지의 원칙 5 판정)에 맡긴다. 서버 ICMP 상태와 RTT 는 T 와 S 모두 켬이라(T 문서 §4-1, 11-17 검토 세션 답) 그 근거에 기대는 원인도 위 조건을 지키면 쌍이 된다.
 7. **정답지**: 두 장. 근본, 계기 칸이 가리키는 물리 위치는 같고 대상 번호만 다르다. S 쪽 정답지가 원칙 5 를 만족하지 못하면(SMS 데이터로 원인을 낼 수 없으면) 그 장애는 T 에만 두고 쌍으로 만들지 않는다.
 
-조건 1 의 대조에서 빼는 파일(ST4, 2026-11-25 지휘 세션 결정). 견주는 것은 짝(was01 과 wassvr01 처럼 역할 차례가 같은 두 서버, `deploy/tools/pair_packages.py` 의 규칙)마다다. 역할 하나에 기대값 하나로는 서지 않는다(T 안에서도 야간 배치 노드인 was02 는 was01 과 여섯 파일이 다르다). 빼는 것은 셋과 비밀값 파일이다. (가) `/etc/default/lldpd`: T 에만 있다(S 는 LLDP 를 읽을 NMS 가 없어 lldpd 를 뺀다, 결정 3). (나) `/etc/rsyslog.d/remote/10-forward.conf`: T 에만 있다(S 는 syslog 를 보내지 않는다, 결정 2). (다) 부하기의 `/etc/netplan/01-host.yaml`: 두 쪽에 다 있지만 T 부하기는 상향망, S 부하기는 사용자망이라 망 꼴이 달라 정규화 체크섬이 다르다. 비밀값을 채우는 파일(WAS 의 Tomcat 컨텍스트)은 설치 기록처럼 해시를 남기지 않는다. 기대값은 렌더가 만드는 `deploy/inventory/pair-expected.json`(짝별 파일과 정규화 체크섬, 빼는 목록, 부하 스크립트 `script.js`, `entrypoint.sh` 의 sha256)이고, VM 쪽은 설치 기록 단계가 남기는 `/var/lib/petition-deploy/normalized.sha256` 이다. WAR 는 S 두 WAS 의 `war.sha256` 줄이 T 두 WAS 의 줄과 같아야 한다. 이 목록 밖의 차이가 렌더에 생기면 기대값을 만들지 않고 멈춘다(저장소 시험이 잡는다).
+조건 1 의 대조에서 빼는 파일(ST4, 2026-11-25 지휘 세션 결정). 견주는 것은 짝(was01 과 wassvr01 처럼 역할 차례가 같은 두 서버, `deploy/tools/pair_packages.py` 의 규칙)마다다. 역할 하나에 기대값 하나로는 서지 않는다(T 안에서도 야간 배치 노드인 was02 는 was01 과 여섯 파일이 다르다). 빼는 것은 셋과 비밀값 파일이다. (가) `/etc/default/lldpd`: T 에만 있다(S 는 LLDP 를 읽을 NMS 가 없어 lldpd 를 뺀다, 결정 3). (나) `/etc/rsyslog.d/remote/10-forward.conf`: T 에만 있다(S 는 syslog 를 보내지 않는다, 결정 2). (다) 부하기의 `/etc/netplan/01-host.yaml`: 두 쪽에 다 있지만 T 부하기는 상향망, S 부하기는 사용자망이라 망 꼴이 달라 정규화 체크섬이 다르다. 비밀값을 채우는 파일(WAS 의 Tomcat 컨텍스트)은 설치 기록처럼 해시를 남기지 않는다. 기대값은 렌더가 만드는 `deploy/inventory/pair-expected.json`(짝별 파일과 정규화 체크섬, 빼는 목록, 부하 스크립트 `script.js`, `entrypoint.sh` 의 sha256)이고, VM 쪽은 설치 기록 단계가 VM 에 놓인 파일을 읽어 같은 규칙으로 정규화해 남기는 `/var/lib/petition-deploy/normalized.sha256` 이다(묶음 값을 옮겨 적지 않으므로 설치 뒤 바뀐 파일은 쌍을 깬다). WAR 는 S 두 WAS 의 `war.sha256` 줄이 T 두 WAS 의 줄과 같아야 한다. 이 목록 밖의 차이가 렌더에 생기면 기대값을 만들지 않고 멈춘다(저장소 시험이 잡는다).
 
 조건 6 과 7 때문에 쌍은 "T 의 모든 녹화"가 아니라 서버 쪽 원인 장애에만 생긴다. 이 제한은 숨기지 않고 생성 스킬에 알린다(§8).
 
@@ -671,4 +671,4 @@ T2 코드(변수화 포함) ───┘
 
 | 바뀐 곳 | 내용 |
 |---|---|
-| §2-4 | 조건 1 대조를 짝별로 하고 설계로 빼는 파일 셋(lldpd, syslog 전달, 부하기 netplan)과 비밀값 파일, 기대값 `deploy/inventory/pair-expected.json` 과 VM 쪽 `normalized.sha256`, WAR 는 T 두 WAS 줄과 대조 |
+| §2-4 | 조건 1 대조를 짝별로 하고 설계로 빼는 파일 셋(lldpd, syslog 전달, 부하기 netplan)과 비밀값 파일, 기대값 `deploy/inventory/pair-expected.json` 과 VM 쪽 `normalized.sha256`(VM 에 놓인 파일을 정규화, 3회차), WAR 는 T 두 WAS 줄과 대조 |

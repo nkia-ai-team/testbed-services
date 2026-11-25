@@ -7,32 +7,39 @@
 # (@@SECRET:<이름>@@)를 적는다. 그 목록이 빈 파일만 기록한다. 비밀값 파일의 해시는 0644 파일에 남기지 않는다.
 # meta.json 이 없거나, 어느 파일의 표시가 없거나, 표시는 비었는데 묶음 원본에 비밀값 자리가 있으면 기록하지 않고 멈춘다.
 #
-# 쌍 기록 normalized.sha256(S 문서 spec-testbed-sms-only.md §2-4 조건 1, ST4 M2): 같은 파일들의 렌더 정규화 체크섬(주소와 이름
-# 자리를 자리표시로 바꾼 뒤, meta.json 의 normalized_sha256)을 `<값>  <dest>` 로, 부하기는 놓인 부하 스크립트 둘의 sha256 을
-# `<값>  loadgen/<이름>` 으로 더해 남긴다. 러너가 짝 T 서버의 기록, 저장소 deploy/pair-expected.json 과 견주어 쌍을 판정한다.
-# 정규화 체크섬은 묶음이 놓은 내용의 것이라, VM 파일이 그 내용과 같은지는 expected.sha256 검사가 함께 맡는다.
+# 쌍 기록 normalized.sha256(S 문서 spec-testbed-sms-only.md §2-4 조건 1, ST4 M2): 같은 파일들을 **VM 에 놓인 그대로 읽어**
+# 묶음 meta.json 의 정규화 규칙("normalize", render.py 의 normalize_rules 와 apply_normalize 와 같은 순서: 도메인 값, 긴 호스트
+# 이름부터, IPv4)으로 바꾼 뒤의 sha256 을 `<값>  <dest>` 로, 부하기는 놓인 부하 스크립트 둘의 sha256 을 `<값>  loadgen/<이름>`
+# 으로 더해 남긴다. 러너가 짝 T 서버의 기록, 저장소 deploy/inventory/pair-expected.json 과 견주어 쌍을 판정한다. 묶음의 값을
+# 옮겨 적지 않으므로, 설치 뒤 틀이 바뀌어 VM 파일이 지금 묶음과 다르면 그 줄이 기대값과 달라 쌍이 서지 않는다(ST4 3회차
+# 리뷰 M). 기록만 다시 써도(--steps record) 거짓 쌍이 생기지 않는다.
 record="${PLACE_ROOT:-}${EXPECTED_RECORD:-/var/lib/petition-deploy/expected.sha256}"
 pair_record="${PLACE_ROOT:-}${NORMALIZED_RECORD:-/var/lib/petition-deploy/normalized.sha256}"
 install -d -m 0755 "$(dirname "$record")" "$(dirname "$pair_record")"
 tmp="$record.new"
 pair_tmp="$pair_record.new"
 if ! python3 - "$BUNDLE" "${PLACE_ROOT:-}" "$tmp" "$pair_tmp" "${HOST_ROLE:-}" "${DOMAIN:-}" <<'PY'
-import hashlib, json, pathlib, sys
+import hashlib, json, pathlib, re, sys
 bundle, place, out = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
 pair_out, role, domain = pathlib.Path(sys.argv[4]), sys.argv[5], sys.argv[6]
 meta_path = bundle / "meta.json"
 if not meta_path.is_file():
     sys.exit("record: meta.json 없음(렌더 산출물의 비밀값 표시를 읽을 수 없다)")
-marks, normalized = {}, {}
-for entry in json.loads(meta_path.read_text(encoding="utf-8"))["files"]:
+meta = json.loads(meta_path.read_text(encoding="utf-8"))
+rules = meta.get("normalize")
+if not (isinstance(rules, dict) and isinstance(rules.get("domain"), str) and rules["domain"]
+        and isinstance(rules.get("names"), list) and isinstance(rules.get("ipv4"), str)):
+    sys.exit("record: meta.json 의 정규화 규칙 없음")
+def normalized(text):
+    result = text.replace(rules["domain"], "@domain@")
+    for name, token in rules["names"]:
+        result = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", token, result)
+    return hashlib.sha256(re.sub(rules["ipv4"], "@ip@", result).encode("utf-8", "surrogateescape")).hexdigest()
+marks = {}
+for entry in meta["files"]:
     if not isinstance(entry.get("secrets"), list):
         sys.exit(f"record: {entry.get('dest')} 의 비밀값 표시 없음")
     marks.setdefault(entry["dest"], set()).update(entry["secrets"])
-    if not entry["secrets"]:
-        value = entry.get("normalized_sha256")
-        if not isinstance(value, str) or len(value) != 64:
-            sys.exit(f"record: {entry['dest']} 의 정규화 체크섬 없음")
-        normalized[entry["dest"]] = value
 lines, pair_lines, seen = [], [], set()
 for row in (bundle / "files.tsv").read_text(encoding="utf-8").splitlines():
     if not row.strip():
@@ -49,8 +56,9 @@ for row in (bundle / "files.tsv").read_text(encoding="utf-8").splitlines():
         continue
     path = pathlib.Path(place + dest)
     if path.is_file():
-        lines.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {dest}")
-        pair_lines.append(f"{normalized[dest]}  {dest}")
+        data = path.read_bytes()
+        lines.append(f"{hashlib.sha256(data).hexdigest()}  {dest}")
+        pair_lines.append(f"{normalized(data.decode('utf-8', 'surrogateescape'))}  {dest}")
 if role == "loadgen":
     for name in ("script.js", "entrypoint.sh"):
         path = pathlib.Path(f"{place}/opt/loadgen/{domain}/{name}")

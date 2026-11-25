@@ -531,16 +531,28 @@ def normalize(text: str, inventory: dict, host: dict) -> str:
     체크섬을 비교할 수 있다. 호스트 이름은 긴 것부터 바꿔 짧은 이름이 긴 이름의 일부를 먼저 먹지 않게 한다.
     """
     del host
-    result = text.replace(inventory["domain"], "@domain@")
+    return apply_normalize(text, normalize_rules(inventory))
+
+
+def normalize_rules(inventory: dict) -> dict:
+    """정규화 규칙을 값으로(묶음 meta.json 의 "normalize"). 설치 기록 단계가 VM 에 놓인 파일을 같은 규칙으로 정규화해
+    쌍 기록에 적는다(steps/record.sh, ST4 3회차 리뷰 M: 묶음 값이 아니라 VM 파일의 값)."""
     role_index: dict[str, int] = {}
     names: list[tuple[str, str]] = []
     for other in inventory["hosts"]:
         index = role_index.get(other["role"], 0)
         role_index[other["role"]] = index + 1
         names.append((other["name"], f"@{other['role']}{index}@"))
-    for name, token in sorted(names, key=lambda item: -len(item[0])):
+    return {"domain": inventory["domain"], "names": [list(n) for n in sorted(names, key=lambda item: -len(item[0]))],
+            "ipv4": IPV4.pattern}
+
+
+def apply_normalize(text: str, rules: dict) -> str:
+    """규칙대로 바꾼다. steps/record.sh 가 같은 순서(도메인, 긴 이름부터, IPv4)를 그대로 따른다(시험이 묶는다)."""
+    result = text.replace(rules["domain"], "@domain@")
+    for name, token in rules["names"]:
         result = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", token, result)
-    return IPV4.sub("@ip@", result)
+    return re.sub(rules["ipv4"], "@ip@", result)
 
 
 def render_host(inventory: dict, host: dict) -> dict:
@@ -604,7 +616,8 @@ def render_host(inventory: dict, host: dict) -> dict:
         env["SMS_AGENT_RECORD"] = SMS_AGENT_RECORD
         env["SMS_AGENT_HOST"] = context["biz_addr"]
         env["SMS_SERVER_URL"] = context["sms_server_url"]
-    return {"host": host["name"], "role": host["role"], "steps": host_steps(inventory, host), "env": env, "files": files}
+    return {"host": host["name"], "role": host["role"], "steps": host_steps(inventory, host), "env": env, "files": files,
+            "normalize": normalize_rules(inventory)}
 
 
 def _shell_quote(value: str) -> str:
@@ -630,7 +643,8 @@ def write_bundle(bundle: dict, out: Path) -> Path:
         "".join(f"{key}={_shell_quote(value)}\n" for key, value in sorted(bundle["env"].items())), encoding="utf-8"
     )
     (root / "meta.json").write_text(
-        json.dumps({"host": bundle["host"], "role": bundle["role"], "steps": bundle["steps"], "files": meta_files},
+        json.dumps({"host": bundle["host"], "role": bundle["role"], "steps": bundle["steps"], "files": meta_files,
+                    "normalize": bundle["normalize"]},
                    ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
