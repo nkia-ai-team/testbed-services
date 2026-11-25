@@ -704,10 +704,46 @@ ssh 로그인해 친다. 66 이 그 연결을 관리 브리지 둘째 주소(관
 **104 설치 경로(잠김 없는 되돌리기).** `apply.sh` 는 104 에서 `ssh -o BatchMode=yes ... -J root@192.168.200.66 sysop@<VM 관리 주소>` 로 들어간다. 계정은 운영자 `sysop`, 키는 104 사용자 자신의 ssh 키(`-i` 없음, 그 공개 키가 인벤토리 `accounts.operator.pubkey_file`, T 는 `~/.config/testbed/t4-operator.pub`), 출발 주소는 66 이 관리 브리지로 여는 연결이라 66 관리 주소 192.168.127.1 이다. 이 키 줄은 `from=` 없이 그대로 놓이고(`install -m 0600 ... secrets/sysop.pub`, 운영자 단말 줄만 그 뒤에 `from=` 으로 덧붙음), verify `account-keys-from` 도 운영자 쪽은 단말 줄 하나만 본다. 그래서 실행기 키와 운영자 단말 키의 `from=` 이 무엇이든 104 에서 VM 으로 들어가 이전 묶음을 놓을 수 있다(시험 `test_the_install_path_from_104_is_not_bound`).
 
 S 는 같은 tb-ops 주소와 같은 키를 쓰고 66 이 S 관리 브리지에서 192.168.133.5 로 SNAT 한다(인벤토리 s.json, 공개 키는
-`~/.config/testbed/s5-operator-terminal.pub` 에 같은 키를 둔다). S 에 운영자 경로 실행기를 쓸 때 §14 차례로 같은 일을 한다.
+`~/.config/testbed/s5-operator-terminal.pub` 에 같은 키를 둔다). S 에 적용하는 차례는 §15-5 다.
 
 되돌리기 순서: 러너 일정 끔(8) → VM 이전 묶음(5, 실행기 키의 `from=` 도 함께 빠진다) → 66(4) → tb-ops 주소(2) → 키(1). 66 hvjob 키는 처음부터 `from="<runner_addr>"`(192.168.122.20)로 묶여 있어 이 절과 상관없다. 되돌린 뒤에도 실행기 run 은 운영자 세션이
 실패하므로 router.config, vm.service 는 실패로 끝나고 root 로 되돌린다(운영자 경로 없이 원인 흔적을 남기지 않는다).
+
+### 15-5. S 연동 (ST4, S 문서 §7)
+
+S(`civil-petition-sms`)는 T4 실행기 12개 가운데 서버, DB, 부하기 쪽 일곱(`vmhost.stress`, `vmhost.job`, `vmhost.firewall`,
+`vm.service`, `vmdb.lock`, `vmdb.workload`, `vmload.north_south`)을 그대로 쓴다. 새 실행기 코드는 없다(S 문서 §7-1). S 의 표(VM,
+관리 주소, 업무 주소, 업무 NIC, 보호 주소)는 `vm_executor_common.derive_testbed` 가 S 인벤토리에서 읽는다(러너 컨테이너 안에서는
+`CIVIL_PETITION_DEPLOY_DIR/inventory/s.json`, 러너가 S VM 을 읽는 파일과 같다). registry 위치는 `petition-sms-<VM>`, 미끼 대상은
+`civil-petition-sms-vm` 의 셋이다. 키는 실행기 `s5-executor`, 운영자 단말 `t4-operator`(T 와 같은 키, §15-4 끝 문단), 호스트 키
+`known_hosts_civil-petition-sms` 이고 셋 다 러너의 키 폴더(`/root/.ssh/vm-ops/`)에 둔다. 66 도우미는 하나이고 probe 표에 S 서버
+업무 주소 넷이 붙는다(`vmhost.firewall` 적용 직후 66 에서 그 서버를 핑, S 문서 §3-6 규칙 3). S 는 66 쪽 실행기(`vmlink.*`)와
+라우터가 없다.
+
+가 단계(코드와 시험)에서는 적용하지 않았다. 아래는 나 단계(66 변경 창) 순서다. 66, tb-ops, S VM 에 닿는 차례는 테스트베드 잠금과
+녹화 정지(PAUSE) 창 아래에서 하고, 끝난 시각이 `last_66_change` 다. 순서에 걸린 것이 둘 있다. (1) 러너는 이 판의 짝(ST4 러너 판)을
+먼저 올린다. 옛 러너는 미끼 정책의 `civil-petition-sms` 도메인을 몰라 검증 오류로 거절하고 다음 주기 시작 때 큐가 멈춘다(S 문서
+§7-6 첫 행). (2) tb-ops 의 testbed-services 사본을 이 판으로 바꾸면 `t4-hv-exec.sha256.json`(러너가 66 도우미 표류를 보는 기대값)이
+S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 않으면 T preflight 가 도우미 표류로 막힌다.
+
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 0 | 읽기: 러너 `GET /api/live-queue` 와 실행 목록에서 도는 실행 0, PAUSE 있음. tb-ops `ls -l /root/.ssh/s5-executor /root/.ssh/vm-ops/`. 104 `ssh-keygen -F 192.168.133.11 -f ~/.ssh/known_hosts_civil-petition-sms`(S VM 만들 때 66 을 거쳐 받은 호스트 키, §14-3 차례 4) 를 다섯 관리 주소마다 | 도는 실행 0, `s5-executor` 0600, 다섯 주소 모두 찾음 | 없음 |
+| 1 | tb-ops 호스트: `install -m 0600 /root/.ssh/s5-executor /root/.ssh/vm-ops/s5-executor`. 104 의 `~/.ssh/known_hosts_civil-petition-sms` 에서 다섯 관리 주소 줄만 뽑아(`ssh-keygen -F <주소> -f ...` 의 키 줄) tb-ops `/root/.ssh/vm-ops/known_hosts_civil-petition-sms`(0600)로 옮긴다. 처음 접속에서 받는 꼴(`accept-new`)은 쓰지 않는다 | `stat -c '%a %n' /root/.ssh/vm-ops/s5-executor /root/.ssh/vm-ops/known_hosts_civil-petition-sms` 600, 러너 컨테이너 안에서 두 파일이 읽힘(읽기 전용 마운트 그대로), `ssh-keygen -F` 다섯 주소 | 두 파일 지움 |
+| 2 | 104 → 66: 66 도우미 다시 만들기와 깔기(§15-1 차례 2 ~ 4 그대로, `build.py --inventory civil-petition/deploy/inventory/t.json --stage <임시>/hv-stage`). 설치는 같은 파일이면 건너뛰므로 바뀌는 것은 root 도우미 하나다 | `build.py --check` 끝 코드 0, `install-hv-helper.sh check` PASS 전부, `printf 'version\n'` JSON 이 이 판의 `t4-hv-exec.sha256.json` 과 같음, `printf 'probe 192.168.131.11\n...'` 끝 코드 0(S 업무 주소), `printf 'probe 192.168.131.1\n...'` 끝 코드 3(표에 없음), 러너의 늘 열린 66 연결 생존 | 앞 판 사본으로 같은 `install`(그 판의 도우미를 다시 놓는다) |
+| 3 | 104 → 66: S 망 파일 둘 다시 렌더(`render.py --inventory civil-petition/deploy/inventory/s.json --hypervisor <임시>/s5-hv`). ST2 때 놓인 판과 다른 것은 운영자 칸뿐이다: `s5-net` 의 관리 브리지 `address 192.168.133.5/24`, 운영자 SNAT post-up, pre-down 두 줄, `s5-net.rules` 의 S5-FWD 운영자 ssh 허용 한 줄. 66: `iptables-save > /root/s5o.before`, 파일 둘을 같은 경로에, `iptables-restore --noflush /etc/network/s5-net.rules` 다음 `ifup vmbr14`(`ifdown`, `ifreload -a` 는 쓰지 않는다) | 지금 66 파일과의 `diff` 가 위 줄들뿐. `ip -br addr show vmbr14` 에 133.1 과 133.5. `iptables-save > /root/s5o.after` 를 `hv_iptables_check.lines_of` 로 견준 차이가 늘어난 줄 둘(`-A POSTROUTING -s 192.168.122.21/32 -o vmbr14 ... SNAT --to-source 192.168.133.5`, `-A S5-FWD -s 192.168.122.21/32 -d 192.168.133.0/24 -o vmbr14 ... ACCEPT`)뿐이고 없어진 줄 0. T 의 늘 열린 연결 7개와 S 부하 비정상 0 | `iptables -t nat -D POSTROUTING -s 192.168.122.21 -o vmbr14 -p tcp --dport 22 -j SNAT --to-source 192.168.133.5`, 앞 판 `s5-net.rules` 로 `iptables-restore --noflush`, `ip addr del 192.168.133.5/24 dev vmbr14`, 앞 판 `s5-net` 을 다시 놓음 |
+| 3-1 | 104: 되돌리기 길 확인 `ssh -o BatchMode=yes -o UserKnownHostsFile=~/.ssh/known_hosts_civil-petition-sms -J root@192.168.200.66 sysop@192.168.133.11 true`(§15-4 "104 설치 경로") | 끝 코드 0. 안 되면 차례 4 로 가지 않는다 | 없음(읽기) |
+| 4 | 104: S VM 5대(부하기 포함)에 `apply.sh --inventory inventory/s.json --host <이름> ... --steps "accounts firewall verify"`, 이어서 `--steps record`(나머지 인자는 §14-3 차례 5 와 같다). 한 대씩 | verify 의 `mgmt-guard`(관리 보호 표의 133.5 받아들임 줄)와 `account-keys-from`(`~opsjob` 키 줄 모두 `from="192.168.133.1" `, `~sysop` 에 `from="192.168.133.5" ` 줄 하나)이 PASS, 나머지도 PASS. 지금 S 의 verify 가 이 두 항목만 FAIL 인 것(11-20)이 풀린다. `cd / && sha256sum -c --quiet /var/lib/petition-deploy/expected.sha256` 끝 코드 0 | 이 판 앞 묶음으로 같은 단계(104 경로라 실행기 키와 상관없이 된다) |
+| 5 | 러너 ST4 판 배포(러너 저장소 쪽 절차). S VM 5대의 늘 열린 연결과 5분 평시 점검 읽기가 선다 | 러너 로그 오류 0, S 다섯 마스터가 `ssh -O check` 로 살아 있음, 평시 점검 읽기 한 바퀴의 표류 `[]`, 미끼 정책 검증 오류 0 | 러너 앞 판 |
+| 5-1 | 실행기 키 `from=` 확인: S VM 하나씩 러너 마스터를 닫고 다시 열리기를 기다린다(§15-4 차례 5-1 과 같은 꼴, 주소만 133.x) | 다시 연 마스터 생존(1분 안), 그 VM `/var/log/auth.log` 새 로그인 출발이 192.168.133.1 | 다시 열리지 않으면 멈추고 그 VM 만 앞 묶음으로 `--steps accounts` |
+| 6 | tb-ops: testbed-services 사본을 이 판으로(§15-4 차례 9 와 같은 git archive, 표지, md5). 차례 2 와 차례 5 뒤에만 | 러너가 다음 주기 미끼 계획을 검증 오류 없이 세움(S 대상 셋 포함), T preflight 의 66 도우미 표류 0, `operator_session.py --list-nodes --domain civil-petition-sms` 가 `["websvr01","wassvr01","wassvr02","dbsvr01"]` | 사본을 앞 판으로 |
+| 7 | 러너 컨테이너 안에서 운영자 세션 한 번(조회만): `operator_session.py --node websvr01 --check` | 끝 코드 0. websvr01 `/var/log/auth.log` 에 `Accepted publickey for sysop from 192.168.133.5`, `session opened for user sysop`, `sudo: sysop : TTY=pts/`, `session closed for user sysop`. S 는 syslog 를 보내지 않으므로 119 에는 로그 감시가 auth.log 에서 감시 패턴에 맞는 줄만 간다. `opsjobs.log` 로 돌려진 운영자 줄 0 | 없음(읽기 세션) |
+| 8 | 거절 확인(§15-4 차례 7 과 같은 꼴, S 관리 주소): 운영자 단말 키로 `-b` 없이 `sysop@192.168.133.11`, 실행기 키로 `-b 192.168.122.21 -o ControlPath=none` 을 주어 `opsjob@192.168.133.11` | 둘 다 키 거절(끝 코드 255) | 없음 |
+| 9 | 미끼 무해 판정(§15-4 차례 9-1, 9-2 를 S 이름으로): war_redeploy 는 wassvr01, wassvr02 각 한 번, config_reapply 는 websvr01 한 번. `decoy_probe.py sample --inventory civil-petition/deploy/inventory/s.json ...`. 9-2 는 wassvr01 에 다섯 짝 | §15-4 9-1, 9-2 와 같은 기준(`harmless`, RSS 증가 20% 이하, 누수 경고 늘지 않음). `harmful` 이면 S 대상의 그 종류를 정책에서 빼기 전에 지휘 세션에 알린다 | 마지막 `--decoy-revert` |
+| 10 | 시험 실행과 쌍 시험(S 문서 §11 ST4 행, §15-3 의 차례를 S 실행기 일곱으로): 실행기 종류마다 1건, 같은 실행기와 같은 강도로 T 와 S 에서 1건씩 | §15-3 과 S 문서 §11 ST4 의 수치(피해 신호 최댓값의 비 0.8 ~ 1.25), 끝나면 S 다섯 대 가드 잔여 0 | §15-3 차례 1 의 되돌리기(S 관리 주소) |
+
+되돌리기 순서: 러너 미끼와 평시 세션의 S 몫(사본 앞 판, 6) → 러너 앞 판(5) → S VM 앞 묶음(4, `from=` 도 함께 빠진다) → 66 S 망
+파일(3) → 66 도우미 앞 판(2) → tb-ops 키 폴더의 두 파일(1). T 는 차례 2 의 도우미 말고는 바뀌지 않는다.
 
 ## 수정 기록
 
@@ -756,3 +792,4 @@ S 는 같은 tb-ops 주소와 같은 키를 쓰고 66 이 S 관리 브리지에�
 - 2026-11-21 KST, v4 T4U-4(리뷰 rv-t4u3 D2, D3, L6, 지휘 세션 결정): §15-4 차례 9 에 기존 WAS 의 미끼 릴리스 넷을 `--steps was` 로 놓기, 9-1 무해 판정은 사용자 영향 숫자만(새 알람은 기록), sudo 줄 꼴에 war 재시작과 되돌리기 순서.
 - 2026-11-21 KST, v4 T4U-5(리뷰 rv-t4u4 L-E, L-F, 지휘 세션 결정 D-A, D-B): §15-2 에 녹화 뒤 되돌림(D1), `--guard-sec`, 면제, 멈춤, config 는 장애 전만, 미끼마다 새 변형. §15-4 차례 9 의 `--steps was` 한 번은 D-B 로 필요 없어져 지움(L-F 의 sha256 확인과 펼친 앱 설명도 함께 필요 없어짐).
 - 2026-11-23 KST, v4 ST3T(ag-t4s, AST3 G1 ~ G4, 지휘 세션 지시): §13 표의 syslog 행(전달 끈 인벤토리), "범위 밖 0" 과 "변경 감지" 행, `--vm-reads` known_hosts 규칙, §13-1 S 등록 때 다르게 도는 것(trap 수신기 기록과 되돌리기 범위), §13-2 S 서버를 change-detect 감시 대상에 넣는 손 절차.
+- 2026-11-25 KST, v4 ST4 가 단계(ag-t4s): §15-5 S 연동(키 폴더, 66 도우미 probe 표, S 망 파일의 운영자 칸, S VM `accounts firewall`, 러너와 사본 순서, 운영자 세션, 미끼, 시험 실행). 적용은 나 단계. §15-4 끝 문단의 S 차례를 §15-5 로.

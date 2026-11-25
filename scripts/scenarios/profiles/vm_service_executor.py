@@ -44,7 +44,12 @@ UNITS = {"web": {"apache2": ("/etc/apache2/",)},
 WAR = "/var/lib/tomcat10/webapps/petition.war"
 RELEASES = "/var/lib/petition-deploy/releases/"
 LINE = re.compile(r"^[^\n\r'\\\\]{1,200}$")
-PROTECTED_TEXT = ("10.250.0.", "192.168.127.", "18090", "lucida")
+# Text a changed line may not carry: the tunnel, the testbed's management network, the report port, the product.
+PROTECTED_WORDS = ("10.250.0.", "18090", "lucida")
+
+
+def protected_text(tb: vm.Testbed) -> tuple[str, ...]:
+    return (PROTECTED_WORDS[0], tb.mgmt_prefix, *PROTECTED_WORDS[1:])
 
 
 def release_path(release_sha256: str) -> str:
@@ -56,7 +61,8 @@ def release_path(release_sha256: str) -> str:
 def check_parameters(p: dict[str, Any]) -> list[str]:
     vm.exact_keys(p, KEYS, PROFILE_ID)
     node = vm.vm_named(p, ("web", "was", "db"))
-    role = vm.VMS[node]["role"]
+    tb = vm.testbed_of(p)
+    role = tb.vms[node]["role"]
     unit = p["unit"]
     if unit not in UNITS[role]:
         raise ExecutorError(f"unit must be one of {sorted(UNITS[role])} on a {role} VM")
@@ -72,7 +78,7 @@ def check_parameters(p: dict[str, Any]) -> list[str]:
         for key in ("match", "replace"):
             if not isinstance(p[key], str) or not LINE.fullmatch(p[key]):
                 raise ExecutorError(f"{key} must be one line without quotes or backslashes")
-        if any(word in p["replace"] for word in PROTECTED_TEXT):
+        if any(word in p["replace"] for word in protected_text(tb)):
             raise ExecutorError("replace names a monitoring or management address or port")
         if p["match"] == p["replace"] or p["release"] != "-" or p["release_sha256"] != "-":
             raise ExecutorError("config changes one line to a different line and names no release")

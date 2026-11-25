@@ -5884,7 +5884,11 @@
         "petition-web01",
         "petition-was01",
         "petition-was02",
-        "petition-db01"
+        "petition-db01",
+        "petition-sms-websvr01",
+        "petition-sms-wassvr01",
+        "petition-sms-wassvr02",
+        "petition-sms-dbsvr01"
       ],
       "live_supported": false,
       "default_queries": [
@@ -5898,7 +5902,11 @@
         "petition-web01",
         "petition-was01",
         "petition-was02",
-        "petition-db01"
+        "petition-db01",
+        "petition-sms-websvr01",
+        "petition-sms-wassvr01",
+        "petition-sms-wassvr02",
+        "petition-sms-dbsvr01"
       ],
       "live_supported": false,
       "default_queries": [
@@ -5912,7 +5920,11 @@
         "petition-web01",
         "petition-was01",
         "petition-was02",
-        "petition-db01"
+        "petition-db01",
+        "petition-sms-websvr01",
+        "petition-sms-wassvr01",
+        "petition-sms-wassvr02",
+        "petition-sms-dbsvr01"
       ],
       "live_supported": false,
       "default_queries": [
@@ -5926,7 +5938,11 @@
         "petition-web01",
         "petition-was01",
         "petition-was02",
-        "petition-db01"
+        "petition-db01",
+        "petition-sms-websvr01",
+        "petition-sms-wassvr01",
+        "petition-sms-wassvr02",
+        "petition-sms-dbsvr01"
       ],
       "live_supported": false,
       "default_queries": [
@@ -5937,7 +5953,8 @@
       "executor": "profiles/vmdb_lock_executor.py",
       "location_strategy": "scenario",
       "allowed_locations": [
-        "petition-db01"
+        "petition-db01",
+        "petition-sms-dbsvr01"
       ],
       "live_supported": false,
       "default_queries": [
@@ -5948,7 +5965,8 @@
       "executor": "profiles/vmdb_workload_executor.py",
       "location_strategy": "scenario",
       "allowed_locations": [
-        "petition-db01"
+        "petition-db01",
+        "petition-sms-dbsvr01"
       ],
       "live_supported": false,
       "default_queries": [
@@ -5959,7 +5977,8 @@
       "executor": "profiles/vmload_north_south_executor.py",
       "location_strategy": "scenario",
       "allowed_locations": [
-        "petition-loadgen"
+        "petition-loadgen",
+        "petition-sms-loadgen"
       ],
       "live_supported": false,
       "default_queries": [

@@ -37,8 +37,9 @@ def app_name(value: Any) -> str:
 
 
 def common_args(p: dict[str, Any]) -> list[str]:
-    if vm.vm_named(p, ("db",)) != "db01":
-        raise ExecutorError("vmdb executors run on db01")
+    node = vm.vm_named(p, ("db",))
+    if node != vm.testbed_of(p).role_vm("db"):
+        raise ExecutorError("vmdb executors run on the testbed's database VM")
     return [vm.neutral_name(p["unit"], "unit"), vm.description(p["description"]), app_name(p["app_name"])]
 
 

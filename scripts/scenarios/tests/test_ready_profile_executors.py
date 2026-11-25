@@ -5103,6 +5103,30 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         "vmload.north_south": ("T4-GUARD", {"host": "192.168.127.10", "node": "loadgen", "unit": "surge-check",
                                             "target_rps": 60, "duration_seconds": 600, "seed": 7}),
     }
+    # The same executors on the S testbed's places (civil-petition-sms, spec-testbed-sms-only.md 7-1, ST4): S has no
+    # router and no 66-side executor, so only the server, database and load generator executors have S samples.
+    UNUSED_NODE_EXECUTORS_S = {
+        "vmhost.stress": ("ST4-GUARD", {"host": "192.168.133.21", "node": "wassvr01", "mode": "cpu", "cpu_workers": 2,
+                                        "mib": 0, "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0,
+                                        "runtime_seconds": 300}),
+        "vmhost.job": ("ST4-GUARD", {"host": "192.168.133.31", "node": "dbsvr01", "unit": "nightly-archive",
+                                     "description": "Nightly archive", "source_dir": "/var/log",
+                                     "output_dir": "/pgdata", "level": 6, "nice": 10, "runtime_seconds": 600,
+                                     "min_free_mib": 2048}),
+        "vmhost.firewall": ("ST4-GUARD", {"host": "192.168.133.11", "node": "websvr01", "table": "web-guard",
+                                          "rules": [{"hook": "output", "proto": "tcp", "dst": "192.168.131.21/32",
+                                                     "dport": 8080, "verdict": "drop"}], "log_prefix": ""}),
+        "vm.service": ("ST4-GUARD", {"host": "192.168.133.21", "node": "wassvr01", "unit": "tomcat10", "action": "stop",
+                                     "file": "-", "match": "-", "replace": "-", "release": "-", "release_sha256": "-"}),
+        "vmdb.lock": ("ST4-GUARD", {"host": "192.168.133.31", "node": "dbsvr01", "unit": "table-maintenance",
+                                    "description": "Table maintenance", "app_name": "maint", "table": "petition",
+                                    "lock_mode": "ACCESS EXCLUSIVE", "runtime_seconds": 300}),
+        "vmdb.workload": ("ST4-GUARD", {"host": "192.168.133.31", "node": "dbsvr01", "unit": "monthly-report",
+                                        "description": "Monthly report", "app_name": "report",
+                                        "statement": "petition-title-scan", "sessions": 4, "runtime_seconds": 300}),
+        "vmload.north_south": ("ST4-GUARD", {"host": "192.168.133.10", "node": "loadgen", "unit": "surge-check",
+                                             "target_rps": 60, "duration_seconds": 600, "seed": 7}),
+    }
     LOCATIONS = json.loads((ROOT / "registry" / "locations.json").read_text())["locations"]
 
     @staticmethod
@@ -5170,6 +5194,31 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
             elif self._arms(stdin):
                 guarded.add(profile_id)
         self.assertEqual(set(on_node) - guarded, self.NO_NODE_UNDO)
+        # The S places (ST4): every S location an executor may run on is checked the same way, on that location.
+        s_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("domain") == "civil-petition-sms"}
+        self.assertEqual(len(s_locations), 5)
+        s_seen = set()
+        for profile_id, (scenario_id, params) in self.UNUSED_NODE_EXECUTORS_S.items():
+            with self.subTest(s_profile=profile_id):
+                allowed = set(registry[profile_id]["allowed_locations"]) & s_locations
+                self.assertTrue(allowed, profile_id)
+                module = load(self._executor_source(registry[profile_id]).stem)
+                for location_id in sorted(allowed):
+                    loc = self.LOCATIONS[location_id]
+                    sample = dict(params, host=loc["host"], node=loc["node"])
+                    if profile_id == "vm.service":
+                        role = vm_common.s_testbed().vms[loc["node"]]["role"]
+                        sample["unit"] = {"web": "apache2", "was": "tomcat10", "db": "postgresql@16-main"}[role]
+                    plan = {"scenario": {"id": scenario_id}, "controller": {"runtime": {}},
+                            "profile_instances": [{"profile_id": profile_id, "parameters": sample, "location": {
+                                "transport": "ssh", "host": loc["host"], "node": loc["node"], "resolved": True}}]}
+                    with unittest.mock.patch.dict(module.CONTRACTS, {scenario_id: sample}):
+                        _, stdin = module.build_invocation(plan, "run")
+                    self.assertIn(f'"opsjob@$host"'.encode(), stdin)
+                    self.assertIn(b'-i "$keys/s5-executor"', stdin)
+                    self.assertEqual(self._arms(stdin), profile_id not in self.NO_NODE_UNDO, profile_id)
+                    s_seen.add(location_id)
+        self.assertEqual(s_seen, s_locations)
         # Executors that reach a node over ssh without a node location must be named, too.
         side = {pid for pid, profile in registry.items()
                 if pid not in on_node and "nkia@" in self._executor_source(profile).read_text()}
@@ -5702,10 +5751,17 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertEqual({(int(l.split()[0]), l.split()[1]): l.split()[2] for l in links}, expected)
         probes = re.search(r'PROBES="([^"]*)"', helper).group(1).split()
         business = [next(n["addr"] for n in hosts[s]["nics"] if n.get("gateway")) for s in vm_common.SERVERS]
-        self.assertEqual(probes, [vm_common.ROUTER_UPLINK_ADDR, *business])
+        # One helper on 66 for both testbeds: S's server business addresses follow T's (S design 3-6 rule 3, the probe
+        # right after a vmhost.firewall change on S); S has no 66-side executor, so the link table stays T's.
+        s_tb = vm_common.s_testbed()
+        self.assertEqual(probes, [vm_common.ROUTER_UPLINK_ADDR, *business, *(s_tb.business[n] for n in s_tb.servers)])
         self.assertEqual(inv["accounts"]["executor"]["name"], vm_common.EXECUTOR_USER)
         self.assertEqual(inv["accounts"]["operator"]["name"], vm_common.OPERATOR_USER)
         self.assertEqual(inv["domain"], vm_common.DOMAIN)
+        # The rules derive_testbed reads the S tables by give exactly the T tables above from the T inventory.
+        self.assertEqual(vm_common.derive_testbed(inv, "petition-"), vm_common.T_TESTBED)
+        self.assertEqual(vm_common.T_TESTBED.business, {
+            s: next(n["addr"] for n in hosts[s]["nics"] if n.get("gateway")) for s in vm_common.SERVERS})
 
     def test_registry_places_every_executor_on_its_vms(self) -> None:
         registry = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
@@ -5717,11 +5773,13 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
             self.assertEqual(self.module(profile_id).CONTRACTS, {}, profile_id)
             for location_id in profile["allowed_locations"]:
                 loc = locations[location_id]
-                self.assertEqual(loc["domain"], "civil-petition")
+                self.assertIn(loc["domain"], ("civil-petition", "civil-petition-sms"))
                 if loc["node"] == "pve66":
                     self.assertEqual((loc["host"], loc["user"]), (vm_common.HYPERVISOR["host"], "hvjob"))
                 else:
-                    self.assertEqual((loc["host"], loc["user"]), (vm_common.VMS[loc["node"]]["mgmt"], "opsjob"))
+                    tb = vm_common.testbed_named(loc["domain"])
+                    self.assertEqual((loc["host"], loc["user"]), (tb.vms[loc["node"]]["mgmt"], "opsjob"))
+                    self.assertEqual(tb.vms[loc["node"]]["location"], location_id)
             # Without a contract every scenario is refused, whatever its parameters.
             module = self.module(profile_id)
             with self.assertRaises(ExecutorError):
@@ -5808,7 +5866,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         chain = text.splitlines()
         first = [line.strip() for line in chain[3:3 + len(vm_common.protected_accept_lines("server", "ens19"))]]
         self.assertEqual(first, vm_common.protected_accept_lines("server", "ens19"))
-        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda kind, mgmt_if: []):
+        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda kind, mgmt_if, mgmt_net=None: []):
             mutated = vm_common.nft_table("web-guard", "server", "ens19", vm_common.filter_rules(
                 params["rules"], "server", ("ens19",)))
         setup = ("ip link add dummy0 type dummy; ip addr add 192.168.124.11/24 dev dummy0; ip link set dummy0 up\n"
@@ -7000,7 +7058,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
                  "router": [{"hook": "input", "dst": "192.168.124.0/24", "verdict": "drop"}]}[kind]
         mgmt_if = "ens19" if kind == "server" else "ens22"
         tokens = vm_common.filter_rules(rules, kind, (mgmt_if,))
-        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda k, m: lines):
+        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda k, m, n=None: lines):
             text = vm_common.nft_table("probe-guard", kind, mgmt_if, tokens)
         target = "192.168.124.11" if kind == "server" else "192.168.124.1"
         path = self.tmp / f"{kind}-{len(lines)}-{abs(hash(tuple(lines)))}.nft"
@@ -7082,6 +7140,398 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         self.assertIn(b"no ", done.stderr)
         args[2] = str(real)
         self.assertEqual(vm_sandbox.node_call(program, ["check", *args], self.env).returncode, 0)
+
+
+class SmsVmExecutorTests(unittest.TestCase):
+    """The same VM executors on the S testbed's places (civil-petition-sms, docs/spec-testbed-sms-only.md 7-1, 3-6,
+    11 ST4 «실행기 시험»): a normal cleanup, self-recovery when cleanup never comes or the connection is lost (the
+    guard's undo fires on the VM), idempotence, refusal outside the allow list, and refusal of every S protected
+    target by the content guard. The node programs are T's byte for byte; what S changes is the runner side (its
+    executor key, its host keys, its management and business addresses) and the guard's protected values."""
+
+    SAMPLES = NodeGuardTests.UNUSED_NODE_EXECUTORS_S
+    S_INV = ROOT.parents[1] / "civil-petition" / "deploy" / "inventory" / "s.json"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.env = vm_sandbox.install(self.tmp)
+        self.s = vm_common.s_testbed()
+
+    def tearDown(self) -> None:
+        CivilPetitionVmExecutorTests.tearDown(self)
+
+    def module(self, profile_id: str):
+        return load(VM_EXECUTORS[profile_id])
+
+    def params(self, profile_id: str, **changes) -> dict:
+        params = json.loads(json.dumps(self.SAMPLES[profile_id][1]))
+        params.update(changes)
+        return params
+
+    def refused(self, profile_id: str, params: dict) -> None:
+        module = self.module(profile_id)
+        with self.assertRaises(ExecutorError):
+            with unittest.mock.patch.dict(module.CONTRACTS, {"ST4-CASE": params}):
+                module.build_invocation(vm_sandbox.plan(profile_id, "ST4-CASE", params), "run")
+
+    def invocation(self, profile_id: str, params: dict, action: str = "run") -> tuple[list[str], bytes]:
+        module = self.module(profile_id)
+        with unittest.mock.patch.dict(module.CONTRACTS, {"ST4-CASE": params}):
+            return module.build_invocation(vm_sandbox.plan(profile_id, "ST4-CASE", params), action)
+
+    # ---------------------------------------------------------------- tables and places
+
+    def test_s_tables_come_from_the_s_inventory(self) -> None:
+        inv = json.loads(self.S_INV.read_text())
+        self.assertEqual(inv["domain"], vm_common.S_DOMAIN)
+        self.assertEqual(vm_common.s_inventory_path(), self.S_INV)
+        hosts = {h["name"]: h for h in inv["hosts"]}
+        s = self.s
+        self.assertEqual(set(s.vms), set(hosts))
+        for name, host in hosts.items():
+            mgmt = next(n for n in host["nics"] if n["net"] == "mgmt")
+            self.assertEqual((s.vms[name]["vmid"], s.vms[name]["mgmt"], s.vms[name]["role"]),
+                             (host["vmid"], mgmt["addr"], host["role"]), name)
+            self.assertIn(mgmt["ifname"], s.never_interfaces[name])
+        self.assertEqual(s.servers, ("websvr01", "wassvr01", "wassvr02", "dbsvr01"))
+        self.assertEqual(s.business, {"websvr01": "192.168.131.11", "wassvr01": "192.168.131.21",
+                                      "wassvr02": "192.168.131.22", "dbsvr01": "192.168.131.31"})
+        self.assertEqual(s.server_nics, {n: "ens18" for n in s.servers})
+        self.assertEqual(s.never_interfaces["loadgen"], ("ens18", "ens19"))
+        self.assertEqual((s.mgmt_net, s.mgmt_host, s.operator_source), ("192.168.133.0/24", "192.168.133.1", "192.168.133.5"))
+        self.assertEqual(s.operator_source, inv["networks"]["mgmt"]["operator_host_addr"])
+        self.assertEqual(s.business_nets, ("192.168.131.0/24", "192.168.132.0/24"))
+        # The servers' default route (3-6 rule 3) and the user network's 66 address.
+        self.assertEqual(s.protected_addrs, ("192.168.131.1", "192.168.132.1"))
+        self.assertEqual((s.executor_key, s.known_hosts, s.router), ("s5-executor", "known_hosts_civil-petition-sms", None))
+        self.assertEqual(inv["accounts"]["executor"]["name"], vm_common.EXECUTOR_USER)
+        self.assertEqual(inv["accounts"]["operator"]["name"], vm_common.OPERATOR_USER)
+        self.assertEqual(inv["hypervisor"]["operator_addr"], vm_common.OPERATOR_BIND_ADDR)
+        self.assertEqual((s.loadgen_script, s.entry_url),
+                         ("/opt/loadgen/civil-petition-sms/script.js", "http://192.168.131.11/petition"))
+        # The registry places are the inventory's, one per VM, under the S domain.
+        doc = json.loads((ROOT / "registry" / "locations.json").read_text())
+        s_locations = {lid: loc for lid, loc in doc["locations"].items() if loc.get("domain") == vm_common.S_DOMAIN}
+        self.assertEqual(s_locations, {row["location"]: {"transport": "ssh", "host": row["mgmt"], "node": name,
+                                                          "user": "opsjob", "domain": vm_common.S_DOMAIN, "resolved": True}
+                                       for name, row in s.vms.items()})
+        for name, row in s.vms.items():
+            self.assertEqual(doc["catalog_aliases"][f"{vm_common.S_DOMAIN} {name}"], row["location"])
+        # In the runner container the inventory is the deploy folder the runner mounts (contract ST4 2).
+        with unittest.mock.patch.dict(os.environ, {"CIVIL_PETITION_DEPLOY_DIR": "/opt/lucida/civil-petition-deploy"}):
+            self.assertEqual(vm_common.s_inventory_path(), Path("/opt/lucida/civil-petition-deploy/inventory/s.json"))
+
+    def test_s_places_per_executor(self) -> None:
+        registry = json.loads((ROOT / "registry" / "profiles.json").read_text())["profiles"]
+        servers = [f"petition-sms-{n}" for n in self.s.servers]
+        expected = {"vmhost.stress": servers, "vmhost.job": servers, "vmhost.firewall": servers, "vm.service": servers,
+                    "vmdb.lock": ["petition-sms-dbsvr01"], "vmdb.workload": ["petition-sms-dbsvr01"],
+                    "vmload.north_south": ["petition-sms-loadgen"], "router.qdisc": [], "router.config": [],
+                    "router.resource": [], "vmlink.state": [], "vmlink.qdisc": []}
+        for profile_id, places in expected.items():
+            with self.subTest(profile=profile_id):
+                self.assertEqual([l for l in registry[profile_id]["allowed_locations"] if l.startswith("petition-sms-")],
+                                 places)
+                # Without a contract every S scenario is refused too.
+                if profile_id in self.SAMPLES:
+                    with self.assertRaises(ExecutorError):
+                        self.module(profile_id).validate("ANY", self.params(profile_id), registry[profile_id])
+        # The trial tool finds an S contract's place in the registry the same way.
+        trial = importlib.util.spec_from_file_location("st4_trial", ROOT / "vm-executor-trial.py")
+        module = importlib.util.module_from_spec(trial)
+        trial.loader.exec_module(module)
+        plan = module.plan_for("vm.service", self.params("vm.service"), "10m")
+        self.assertEqual(plan["profile_instances"][0]["location_id"], "petition-sms-wassvr01")
+
+    # ---------------------------------------------------------------- allow list (S 3-6 rule 2)
+
+    def test_s_allow_list_refusals(self) -> None:
+        # A node of one testbed with an address of the other, or a role the executor does not take.
+        self.refused("vmhost.stress", self.params("vmhost.stress", host="192.168.127.31"))
+        self.refused("vmhost.stress", self.params("vmhost.stress", node="was01"))
+        self.refused("vmhost.stress", self.params("vmhost.stress", host="192.168.133.10", node="loadgen"))
+        self.refused("vmdb.lock", self.params("vmdb.lock", host="192.168.133.21", node="wassvr01"))
+        self.refused("vmload.north_south", self.params("vmload.north_south", host="192.168.133.11", node="websvr01"))
+        self.refused("vmload.north_south", self.params("vmload.north_south", host="192.168.133.11"))
+        for name, row in self.s.vms.items():
+            with self.subTest(router_on=name):
+                self.refused("router.qdisc", dict(NodeGuardTests.UNUSED_NODE_EXECUTORS["router.qdisc"][1],
+                                                  host=row["mgmt"], node=name, device="ens18"))
+                self.refused("router.resource", dict(NodeGuardTests.UNUSED_NODE_EXECUTORS["router.resource"][1],
+                                                     host=row["mgmt"], node=name))
+        # S has no 66-side executor: its VMs' links are not in the helper's table.
+        for vmid in (211, 212, 213, 214, 215):
+            for profile_id in ("vmlink.state", "vmlink.qdisc"):
+                with self.subTest(profile=profile_id, vmid=vmid):
+                    self.refused(profile_id, dict(NodeGuardTests.UNUSED_NODE_EXECUTORS[profile_id][1], vmid=vmid, net="net0"))
+        # The management NIC (and every NIC of the load generator) is never one an injection names.
+        for name in self.s.servers:
+            with self.subTest(server=name):
+                self.assertEqual(vm_common.interface_allowed(name, "ens18", self.s), "ens18")
+                with self.assertRaises(ExecutorError):
+                    vm_common.interface_allowed(name, "ens19", self.s)
+        for ifname in ("ens18", "ens19"):
+            with self.assertRaises(ExecutorError):
+                vm_common.interface_allowed("loadgen", ifname, self.s)
+        rule = {"hook": "output", "verdict": "drop", "dst": "192.168.131.21/32", "proto": "ens19"}
+        self.refused("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]))
+
+    # ---------------------------------------------------------------- content guard (S 3-6 rule 3)
+
+    def test_s_content_guard_refuses_every_protected_target(self) -> None:
+        protected_nets = ["10.250.0.0/30", "10.250.0.1/32", "10.250.0.2/32", "192.168.133.0/24", "192.168.133.1/32",
+                          "192.168.133.5/32", "192.168.131.1/32", "192.168.132.1/32", "0.0.0.0/0", "192.168.122.0/24",
+                          "192.168.230.119/32", "192.168.0.0/16", "192.168.124.0/24", "192.168.127.0/24"]
+        for hook in ("output", "input"):
+            for side in ("src", "dst"):
+                for net in protected_nets:
+                    with self.subTest(hook=hook, side=side, net=net):
+                        self.refused("vmhost.firewall", self.params("vmhost.firewall",
+                                                                    rules=[{"hook": hook, "verdict": "drop", side: net}]))
+        for port in vm_common.MONITOR_PORTS:
+            for proto in ("tcp", "udp"):
+                with self.subTest(port=port, proto=proto):
+                    rule = {"hook": "output", "verdict": "drop", "proto": proto, "dst": "192.168.131.21/32", "dport": port}
+                    self.refused("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]))
+        for value in ("10.250.0.1", "10.250.0.2", "ens19"):
+            with self.subTest(named=value):
+                rule = {"hook": "output", "verdict": "drop", "dst": "192.168.131.21/32", "proto": value}
+                self.refused("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]))
+        for hook_name in ("forward", "prerouting", "ingress"):
+            with self.subTest(hook=hook_name):
+                rule = {"hook": hook_name, "verdict": "drop", "dst": "192.168.131.21/32"}
+                self.refused("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]))
+        # A changed configuration line may not name the tunnel, the S management network or the report port.
+        for text in ("Listen 10.250.0.1:80", "host=192.168.133.1", "port=18090"):
+            with self.subTest(replace=text):
+                self.refused("vm.service", self.params("vm.service", action="config", file="/etc/tomcat10/server.xml",
+                                                       match="old", replace=text))
+        # Business flows inside S pass: the user network to the web server, WAS to the database.
+        firewall = self.module("vmhost.firewall")
+        for rule in ({"hook": "input", "proto": "tcp", "src": "192.168.132.0/24", "dport": 80, "verdict": "drop"},
+                     {"hook": "output", "proto": "tcp", "dst": "192.168.131.31/32", "dport": 5432, "verdict": "reject"}):
+            with self.subTest(allowed=rule):
+                text = firewall.check_parameters(self.params("vmhost.firewall", rules=[rule]))[1]
+                self.assertIn("ip saddr 192.168.133.0/24 accept", text)
+                self.assertNotIn("192.168.127.", text)
+
+    def test_s_chains_start_with_the_s_protected_lines_and_a_broad_rule_cannot_catch_them(self) -> None:
+        """Mutation, on a real kernel: with S's first lines the report to 10.250.0.1 and the management ssh reply
+        leave through a broad drop of the server's own address; without them both are dropped."""
+        firewall = self.module("vmhost.firewall")
+        params = self.params("vmhost.firewall", rules=[{"hook": "output", "src": "192.168.131.11/32", "verdict": "drop"}])
+        text = firewall.check_parameters(params)[1]
+        lines = vm_common.protected_accept_lines("server", "ens19", "192.168.133.0/24")
+        self.assertEqual([l.strip() for l in text.splitlines()[3:3 + len(lines)]], lines)
+        with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda kind, mgmt_if, mgmt_net=None: []):
+            mutated = vm_common.nft_table("web-guard", "server", "ens19", vm_common.filter_rules(
+                params["rules"], "server", ("ens19",), self.s), "", self.s)
+        setup = ("ip link add dummy0 type dummy; ip addr add 192.168.131.11/24 dev dummy0; ip addr add 192.168.133.11/24 dev dummy0;"
+                 " ip link set dummy0 up; ip route add 10.250.0.0/30 dev dummy0\n")
+        probe = ("nft add table inet obs; nft add chain inet obs out '{ type filter hook output priority 100; policy accept; }'\n"
+                 "nft add rule inet obs out ip daddr 10.250.0.1 counter; nft add rule inet obs out ip daddr 192.168.133.1 counter\n"
+                 "nft -f {file}\n"
+                 "python3 -c \"import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('192.168.131.11', 0)); s.sendto(b'r', ('10.250.0.1', 18090))\" || true\n"
+                 "python3 -c \"import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('192.168.131.11', 0)); s.sendto(b'm', ('192.168.133.1', 22))\" || true\n"
+                 "nft list table inet obs\n")
+        results = {}
+        for name, body in (("guarded", text), ("mutated", mutated)):
+            path = self.tmp / f"{name}.nft"
+            path.write_text(body)
+            done = subprocess.run(["unshare", "-rn", "bash", "-c", setup + probe.replace("{file}", str(path))],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            results[name] = [int(n) for n in re.findall(r"counter packets (\d+)", done.stdout)]
+        self.assertEqual(results["guarded"], [1, 1])
+        self.assertEqual(results["mutated"], [0, 0])
+
+    # ---------------------------------------------------------------- lifecycles on S places
+
+    def test_s_firewall_probe_cleanup_idempotence_and_self_recovery(self) -> None:
+        firewall = self.module("vmhost.firewall")
+        params = self.params("vmhost.firewall")
+        front = self.tmp / "hv-front.sh"
+        front.write_text("#!/bin/bash\nread -r req; echo \"$req\" >>\"$VM_SANDBOX/hv-log\"; [[ -e \"$VM_SANDBOX/probe-ok\" ]]\n")
+        front.chmod(0o755)
+        env = {**self.env, "VM_SANDBOX_HV_FRONT": str(front)}
+        shell = vm_sandbox.NetnsShell(self.tmp, env, "ip link add ens18 type dummy; ip addr add 192.168.131.11/24 dev ens18; ip link set ens18 up")
+        try:
+            # No master: refused before any call.
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertEqual(rc, 1)
+            self.assertIn("control connection to 192.168.133.11 is down", err)
+            self.assertNotIn("call ", "\n".join(vm_sandbox.logged(self.tmp, "ssh-log")))
+            vm_sandbox.master(self.tmp, "192.168.133.11")
+            # 66 cannot reach the S business address after the change: undone on the spot.
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertEqual(rc, 1)
+            self.assertIn("undoing it", err)
+            self.assertEqual(vm_sandbox.logged(self.tmp, "hv-log"), ["probe 192.168.131.11"])
+            self.assertNotIn("web-guard", shell.run("nft list tables\n")[1])
+            (self.tmp / "probe-ok").touch()
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("ip saddr 192.168.133.0/24 accept", shell.run("nft list table inet web-guard\n")[1])
+            calls = {l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("call ")}
+            self.assertEqual(calls, {"call opsjob@192.168.133.11 sudo -n bash -s", "call hvjob@192.168.122.1 "})
+            # Idempotent: a second run refuses while the table is in (the executor undoes nothing of ours), cleanup
+            # twice is fine.
+            rc, _, err = vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)
+            self.assertNotEqual(rc, 0)
+            self.assertIn("web-guard", shell.run("nft list tables\n")[1])
+            for _ in range(2):
+                self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "cleanup", env, shell=shell)[0], 0)
+            self.assertNotIn("web-guard", shell.run("nft list tables\n")[1])
+            self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "recovery", env, shell=shell)[0], 0)
+            # The connection is lost after a run: cleanup cannot reach, the guard's undo on the VM takes it back.
+            self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "run", env, shell=shell)[0], 0)
+            (self.tmp / "down-192.168.133.11").touch()
+            self.assertNotEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "cleanup", env, shell=shell)[0], 0)
+            undo = Path(self.env["OPSJOB_STATE_ROOT"]) / "cfg-web-guard.undo"
+            rc, _, err = shell.run(f"bash {shlex.quote(str(undo))}\n")
+            self.assertEqual(rc, 0, err)
+            self.assertNotIn("web-guard", shell.run("nft list tables\n")[1])
+            (self.tmp / "down-192.168.133.11").unlink()
+            self.assertEqual(vm_sandbox.runner_call(firewall, "vmhost.firewall", params, "recovery", env, shell=shell)[0], 0)
+        finally:
+            shell.close()
+        # The runner side is S's: its executor key and host keys; 66 is the one helper connection.
+        _, stdin = self.invocation("vmhost.firewall", params)
+        self.assertIn(b'ssh_vm=(ssh -F none -i "$keys/s5-executor" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes\n'
+                      b'  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition-sms"', stdin)
+        # 66's host key lives with T's (runbook 15-1 step 5): the helper connection is the same for both testbeds.
+        self.assertIn(b'ssh_hv=(ssh -F none -i "$keys/t4-hv" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes\n'
+                      b'  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition"', stdin)
+        self.assertNotIn(b"t4-executor", stdin)
+
+    def test_s_stress_job_database_and_load_runs_clean_up_and_recover(self) -> None:
+        for profile_id in ("vmhost.stress", "vmhost.job", "vmdb.lock", "vmdb.workload", "vmload.north_south"):
+            with self.subTest(profile=profile_id):
+                params = self.params(profile_id)
+                t_params = dict(NodeGuardTests.UNUSED_NODE_EXECUTORS[profile_id][1])
+                _, s_stdin = self.invocation(profile_id, params)
+                module = self.module(profile_id)
+                with unittest.mock.patch.dict(module.CONTRACTS, {"T4-CASE": t_params}):
+                    _, t_stdin = module.build_invocation(vm_sandbox.plan(profile_id, "T4-CASE", t_params), "run")
+                s_head, s_rest = s_stdin.split(b"<<'VM_NODE_PROGRAM'\n", 1)
+                _, t_rest = t_stdin.split(b"<<'VM_NODE_PROGRAM'\n", 1)
+                s_node, t_node = s_rest.split(b"\nVM_NODE_PROGRAM\n")[0], t_rest.split(b"\nVM_NODE_PROGRAM\n")[0]
+                if profile_id == "vmload.north_south":
+                    # The companion load runs S's own script against S's web server.
+                    self.assertIn(b"/opt/loadgen/civil-petition-sms/script.js", s_node)
+                    self.assertIn(b"ENTRY_URL=http://192.168.131.11/petition", s_node)
+                    self.assertNotIn(b"192.168.124.", s_node)
+                else:
+                    self.assertEqual(s_node, t_node)  # the same node program, byte for byte
+                self.assertIn(b'-i "$keys/s5-executor"', s_head)
+                self.assertNotIn(b"t4-executor", s_head)
+        # One server job end to end on an S place: refused without the master, run, idempotence, cleanup twice,
+        # recovery, and the guard's undo when the connection is lost and cleanup never comes.
+        stress = self.module("vmhost.stress")
+        params = self.params("vmhost.stress", runtime_seconds=60)
+        rc, _, err = vm_sandbox.runner_call(stress, "vmhost.stress", params, "run", self.env)
+        self.assertEqual(rc, 1)
+        self.assertIn("control connection to 192.168.133.21 is down", err)
+        vm_sandbox.master(self.tmp, "192.168.133.21")
+        program = vm_common.node_program(stress.NODE_BODY)
+        args = stress.check_parameters(params)
+        rc, _, err = vm_sandbox.runner_call(stress, "vmhost.stress", params, "run", self.env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "ours")
+        self.assertEqual(vm_sandbox.runner_call(stress, "vmhost.stress", params, "run", self.env)[0], 1)
+        for _ in range(2):
+            rc, _, err = vm_sandbox.runner_call(stress, "vmhost.stress", params, "cleanup", self.env)
+            self.assertEqual(rc, 0, err)
+        self.assertEqual(vm_sandbox.runner_call(stress, "vmhost.stress", params, "recovery", self.env)[0], 0)
+        self.assertEqual(vm_sandbox.runner_call(stress, "vmhost.stress", params, "run", self.env)[0], 0)
+        (self.tmp / "down-192.168.133.21").touch()
+        self.assertNotEqual(vm_sandbox.runner_call(stress, "vmhost.stress", params, "cleanup", self.env)[0], 0)
+        fired = node_guard_fakes.fire(self.env, "burnin", extra_env=self.env)
+        self.assertEqual(fired.returncode, 0, fired.stderr)
+        self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
+        (self.tmp / "down-192.168.133.21").unlink()
+        self.assertEqual(vm_sandbox.runner_call(stress, "vmhost.stress", params, "recovery", self.env)[0], 0)
+        calls = {l.split(" ", 2)[1] for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("call ")}
+        self.assertEqual(calls, {"opsjob@192.168.133.21"})
+
+    def test_s_service_change_goes_the_operator_way_from_the_same_terminal(self) -> None:
+        svc = self.module("vm.service")
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "tomcat10.service-state").write_text("active\n")
+        params = self.params("vm.service")
+        vm_sandbox.master(self.tmp, "192.168.133.21")
+        rc, _, err = vm_sandbox.runner_call(svc, "vm.service", params, "run", self.env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "inactive")
+        self.assertIn("sysop : TTY=pts/0", vm_sandbox.logged(self.tmp, "sudo-syslog")[-1])
+        self.assertIn("COMMAND=systemctl stop tomcat10", vm_sandbox.logged(self.tmp, "sudo-syslog")[-1])
+        login = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")][0]
+        # The S VM sees the operator's login from the same terminal address and key as T (runbook 15-4), checked
+        # against S's host keys.
+        self.assertTrue(login.startswith("login sysop@192.168.133.21 bind=192.168.122.21 tty=yes "), login)
+        self.assertIn("UserKnownHostsFile=", login)
+        self.assertIn("known_hosts_civil-petition-sms", login)
+        self.assertIn(" stdin=null", login)
+        self.assertEqual(vm_sandbox.runner_call(svc, "vm.service", params, "run", self.env)[0], 1)  # idempotent
+        for _ in range(2):
+            self.assertEqual(vm_sandbox.runner_call(svc, "vm.service", params, "cleanup", self.env)[0], 0)
+        self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "active")
+        self.assertEqual(vm_sandbox.runner_call(svc, "vm.service", params, "recovery", self.env)[0], 0)
+        # Self-recovery: stopped, the connection lost, the guard (root) starts it again.
+        self.assertEqual(vm_sandbox.runner_call(svc, "vm.service", params, "run", self.env)[0], 0)
+        self.assertEqual(node_guard_fakes.fire(self.env, "svc-tomcat10", extra_env=self.env).returncode, 0)
+        self.assertEqual((units / "tomcat10.service-state").read_text().strip(), "active")
+        _, stdin = self.invocation("vm.service", params)
+        self.assertIn(b'op_ssh=(ssh -tt -n -F none -i "$keys/t4-operator"', stdin)
+        self.assertIn(b'-o "UserKnownHostsFile=$keys/known_hosts_civil-petition-sms" -o ConnectTimeout=10 -o ServerAliveInterval=15', stdin)
+
+    # ---------------------------------------------------------------- operator sessions and decoys on S
+
+    def test_s_operator_sessions_and_decoys(self) -> None:
+        sess = load("operator_session")
+        cli = [sys.executable, str(PROFILES / "operator_session.py")]
+        done = subprocess.run(cli + ["--list-nodes", "--domain", "civil-petition-sms"], capture_output=True, text=True, timeout=60)
+        self.assertEqual((done.returncode, json.loads(done.stdout)), (0, ["websvr01", "wassvr01", "wassvr02", "dbsvr01"]))
+        done = subprocess.run(cli + ["--list-nodes"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(json.loads(done.stdout), ["rt-core01", "web01", "was01", "was02", "db01"])
+        self.assertEqual(subprocess.run(cli + ["--list-nodes", "--domain", "commerce"], capture_output=True,
+                                        timeout=60).returncode, 3)
+        self.assertEqual(subprocess.run(cli + ["--node", "websvr01", "--check", "--domain", "civil-petition-sms"],
+                                        capture_output=True, timeout=60).returncode, 2)
+        argv, text = sess.check_session("dbsvr01")
+        self.assertEqual(argv[-2], "sysop@192.168.133.31")
+        self.assertIn(f"UserKnownHostsFile={vm_common.KEY_DIR}/known_hosts_civil-petition-sms", argv)
+        self.assertIn(f"{vm_common.KEY_DIR}/t4-operator", argv)
+        self.assertIn("df -h / /pgdata", text)
+        with self.assertRaises(sess.Refused):
+            sess.check_session("loadgen")
+        self.assertEqual(sess.decoy_nodes("war_redeploy", "civil-petition-sms"), ["wassvr01", "wassvr02"])
+        self.assertEqual(sess.decoy_nodes("config_reapply", "civil-petition-sms"), ["websvr01"])
+        params = sess.decoy_params("wassvr02", "war_redeploy", "a" * 64)
+        self.assertEqual((params["host"], params["node"], params["action"]), ("192.168.133.22", "wassvr02", "war"))
+        with self.assertRaises(sess.Refused):
+            sess.decoy_params("dbsvr01", "war_redeploy", "a" * 64)
+        # A decoy end to end on S: the executor's always-open connection (S key, S host keys) makes the variant,
+        # the operator logs in from the terminal address, the guard holds, the revert takes it back.
+        sess, env, war, conf, digest, invocation = CivilPetitionVmExecutorTests._decoy_box(self)
+        for host in ("192.168.133.11", "192.168.133.21", "192.168.133.22"):
+            vm_sandbox.master(self.tmp, host)
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(sess, "decoy_invocation", invocation):
+            self.assertEqual(sess.run_decoy("wassvr01", "war_redeploy", "change"), 0)
+            self.assertTrue((self.tmp / "petition.war.bak").exists())
+            self.assertEqual(sess.run_decoy("wassvr01", "war_redeploy", "revert"), 0)
+            self.assertEqual(war.read_bytes(), self.deployed)
+            self.assertEqual(sess.run_decoy("websvr01", "config_reapply", "change"), 0)
+            self.assertEqual(sess.run_decoy("websvr01", "config_reapply", "revert"), 0)
+        log = vm_sandbox.logged(self.tmp, "ssh-log")
+        self.assertTrue({"check opsjob@192.168.133.21", "call opsjob@192.168.133.21 sudo -n bash -s"} <= set(log))
+        logins = [l for l in log if l.startswith("login ")]
+        self.assertEqual([l.split(" bind=")[0] for l in logins], ["login sysop@192.168.133.21"] * 2 + ["login sysop@192.168.133.11"] * 2)
+        self.assertTrue(all("known_hosts_civil-petition-sms" in l for l in logins), logins)
+        self.assertFalse([l for l in log if "192.168.127." in l], log)
+
 
 
 class CivilPetitionTrialToolTests(unittest.TestCase):

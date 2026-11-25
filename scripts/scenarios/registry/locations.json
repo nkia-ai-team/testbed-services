@@ -29,7 +29,12 @@
     "petition-was02": {"transport": "ssh", "host": "192.168.127.32", "node": "was02", "user": "opsjob", "domain": "civil-petition", "resolved": true},
     "petition-db01": {"transport": "ssh", "host": "192.168.127.41", "node": "db01", "user": "opsjob", "domain": "civil-petition", "resolved": true},
     "petition-loadgen": {"transport": "ssh", "host": "192.168.127.10", "node": "loadgen", "user": "opsjob", "domain": "civil-petition", "resolved": true},
-    "petition-hypervisor": {"transport": "ssh", "host": "192.168.122.1", "node": "pve66", "user": "hvjob", "domain": "civil-petition", "resolved": true}
+    "petition-hypervisor": {"transport": "ssh", "host": "192.168.122.1", "node": "pve66", "user": "hvjob", "domain": "civil-petition", "resolved": true},
+    "petition-sms-websvr01": {"transport": "ssh", "host": "192.168.133.11", "node": "websvr01", "user": "opsjob", "domain": "civil-petition-sms", "resolved": true},
+    "petition-sms-wassvr01": {"transport": "ssh", "host": "192.168.133.21", "node": "wassvr01", "user": "opsjob", "domain": "civil-petition-sms", "resolved": true},
+    "petition-sms-wassvr02": {"transport": "ssh", "host": "192.168.133.22", "node": "wassvr02", "user": "opsjob", "domain": "civil-petition-sms", "resolved": true},
+    "petition-sms-dbsvr01": {"transport": "ssh", "host": "192.168.133.31", "node": "dbsvr01", "user": "opsjob", "domain": "civil-petition-sms", "resolved": true},
+    "petition-sms-loadgen": {"transport": "ssh", "host": "192.168.133.10", "node": "loadgen", "user": "opsjob", "domain": "civil-petition-sms", "resolved": true}
   },
   "catalog_aliases": {
     "scenario-runner": "scenario-runner",
@@ -60,6 +65,11 @@
     "civil-petition was02": "petition-was02",
     "civil-petition db01": "petition-db01",
     "civil-petition loadgen": "petition-loadgen",
-    "civil-petition hypervisor": "petition-hypervisor"
+    "civil-petition hypervisor": "petition-hypervisor",
+    "civil-petition-sms websvr01": "petition-sms-websvr01",
+    "civil-petition-sms wassvr01": "petition-sms-wassvr01",
+    "civil-petition-sms wassvr02": "petition-sms-wassvr02",
+    "civil-petition-sms dbsvr01": "petition-sms-dbsvr01",
+    "civil-petition-sms loadgen": "petition-sms-loadgen"
   }
 }

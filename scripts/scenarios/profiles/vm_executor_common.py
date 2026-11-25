@@ -11,6 +11,12 @@ A request for anything else is refused before any connection is made, and the no
 it again. The tables are written here, not read from the inventory; a test holds them equal to
 civil-petition/deploy/inventory/t.json so the two cannot drift apart unseen.
 
+The S testbed (civil-petition-sms, docs/spec-testbed-sms-only.md §7-1, §3-6) runs the same executors on its own
+four servers and load generator; only its places are added (no new executor code). Its tables are not written a
+second time: derive_testbed() reads them from the S inventory, and a test holds the same function, applied to the T
+inventory, equal to the T tables above. An executor finds the testbed from the contract's node and management
+address together (node names never repeat across the testbeds except loadgen, whose addresses differ).
+
 Content guard (design §3-5 rule 6): the executors whose change is not tied to one interface
 (router.config, vmhost.firewall) refuse any item that names a protected address, network,
 interface or port, and the chain they build starts with fixed lines that accept the protected flows,
@@ -25,10 +31,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import shlex
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 from executor_common import ExecutorError, GUARD_FUNCTIONS, kubectl_bash_argv, profile_instance, with_guard_values
 
@@ -111,6 +118,154 @@ ROUTER_MGMT_IF = "ens22"
 ROUTER_UPLINK_IF = "ens18"
 SERVER_MGMT_IF = "ens19"
 
+
+# ---------------------------------------------------------------- testbeds (T, S)
+
+S_DOMAIN = "civil-petition-sms"
+# The inventories as the executors find them: the repository, or in the runner container the deploy folder the runner
+# mounts (CIVIL_PETITION_DEPLOY_DIR, the same file the runner reads its S hosts from, contract ST4 ①②).
+DEPLOY_DIR_ENV = "CIVIL_PETITION_DEPLOY_DIR"
+SERVER_ROLES = ("web", "was", "db")
+
+
+class Testbed(NamedTuple):
+    """One testbed's places and protected values, as the executors check a contract against them."""
+
+    domain: str
+    vms: dict[str, dict[str, Any]]
+    servers: tuple[str, ...]
+    server_nics: dict[str, str]
+    # Each server's business address: the 66 probe right after a firewall change, the SMS agent's host.
+    business: dict[str, str]
+    never_interfaces: dict[str, tuple[str, ...]]
+    mgmt_net: str
+    mgmt_host: str
+    operator_source: str
+    business_nets: tuple[str, ...]
+    # Exact addresses a rule may not name on its own (/32): T the router's upstream address, S the 66 gateways.
+    protected_addrs: tuple[str, ...]
+    executor_key: str
+    known_hosts: str
+    router: str | None
+    loadgen_script: str
+    entry_url: str
+
+    @property
+    def mgmt_prefix(self) -> str:
+        """The management network's first three octets with the dot ("192.168.127."), for text guards."""
+        return self.mgmt_net.rsplit(".", 1)[0] + "."
+
+    def role_vm(self, role: str) -> str:
+        names = [name for name, row in self.vms.items() if row["role"] == role]
+        if len(names) != 1:
+            raise ExecutorError(f"the {self.domain} testbed has no single {role} VM")
+        return names[0]
+
+
+def derive_testbed(inv: dict[str, Any], location_prefix: str) -> Testbed:
+    """A testbed's tables from its inventory, by the rules the T tables were written by (a test holds the two equal)."""
+    networks = inv["networks"]
+    mgmt_name = next(name for name, net in networks.items() if net.get("management"))
+    mgmt = networks[mgmt_name]
+    vms: dict[str, dict[str, Any]] = {}
+    never: dict[str, tuple[str, ...]] = {}
+    server_nics: dict[str, str] = {}
+    business: dict[str, str] = {}
+    router = None
+    uplinks: list[str] = []
+    for host in inv["hosts"]:
+        name, role = host["name"], host["role"]
+        mgmt_nic = next(nic for nic in host["nics"] if nic["net"] == mgmt_name)
+        vms[name] = {"vmid": host["vmid"], "mgmt": mgmt_nic["addr"], "role": role, "location": f"{location_prefix}{name}"}
+        if role == "router":
+            router = name
+            uplinks += [nic["addr"] for nic in host["nics"] if nic.get("gateway")]
+            never[name] = tuple(nic["ifname"] for nic in host["nics"] if not nic.get("downlink"))
+        elif role in SERVER_ROLES:
+            biz = next(nic for nic in host["nics"] if nic.get("gateway") and nic["net"] != mgmt_name)
+            server_nics[name], business[name] = biz["ifname"], biz["addr"]
+            never[name] = (mgmt_nic["ifname"],)
+        else:
+            never[name] = tuple(nic["ifname"] for nic in host["nics"])
+    gateways = tuple(net["gateway"] for name, net in networks.items() if name != mgmt_name and net.get("gateway"))
+    web = next(name for name, row in vms.items() if row["role"] == "web")
+    domain = inv["domain"]
+    return Testbed(
+        domain=domain, vms=vms, servers=tuple(server_nics), server_nics=server_nics, business=business,
+        never_interfaces=never, mgmt_net=mgmt["cidr"], mgmt_host=mgmt["host_addr"],
+        operator_source=mgmt["operator_host_addr"],
+        business_nets=tuple(net["cidr"] for name, net in networks.items() if name != mgmt_name),
+        protected_addrs=tuple(uplinks) if router else gateways,
+        executor_key=Path(inv["accounts"]["executor"]["pubkey_file"]).name.removesuffix(".pub"),
+        known_hosts=f"known_hosts_{domain}", router=router,
+        loadgen_script=f"/opt/loadgen/{domain}/script.js",
+        entry_url=f"http://{business[web]}/{inv['app']['context']}",
+    )
+
+
+T_TESTBED = Testbed(
+    domain=DOMAIN, vms=VMS, servers=SERVERS, server_nics=SERVER_NICS,
+    business={"web01": "192.168.124.11", "was01": "192.168.125.11", "was02": "192.168.125.12", "db01": "192.168.126.11"},
+    never_interfaces={k: v for k, v in NEVER_INTERFACES.items() if k != HYPERVISOR["node"]},
+    mgmt_net=MGMT_NET, mgmt_host=MGMT_HOST, operator_source=OPERATOR_SOURCE_ADDR, business_nets=BUSINESS_NETS,
+    protected_addrs=(ROUTER_UPLINK_ADDR,), executor_key=Path(EXECUTOR_KEY).name, known_hosts=Path(KNOWN_HOSTS).name,
+    router=ROUTER, loadgen_script="/opt/loadgen/civil-petition/script.js", entry_url="http://192.168.124.11/petition",
+)
+S_LOCATION_PREFIX = "petition-sms-"
+_S_TESTBED: list[Testbed] = []
+
+
+def s_inventory_path() -> Path:
+    return Path(os.environ.get(DEPLOY_DIR_ENV) or REPO / "civil-petition" / "deploy") / "inventory" / "s.json"
+
+
+def s_testbed() -> Testbed:
+    """The S tables, read once from the S inventory (a T contract never needs them)."""
+    if not _S_TESTBED:
+        try:
+            inv = json.loads(s_inventory_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ExecutorError(f"the S inventory cannot be read: {exc}") from exc
+        if inv.get("domain") != S_DOMAIN:
+            raise ExecutorError("the S inventory names another domain")
+        _S_TESTBED.append(derive_testbed(inv, S_LOCATION_PREFIX))
+    return _S_TESTBED[0]
+
+
+def testbeds() -> tuple[Testbed, ...]:
+    return (T_TESTBED, s_testbed())
+
+
+def testbed_named(domain: str) -> Testbed:
+    for tb in (T_TESTBED,) if domain == DOMAIN else testbeds():
+        if tb.domain == domain:
+            return tb
+    raise ExecutorError(f"{domain!r} is not a VM testbed domain")
+
+
+def testbed_of(params: dict[str, Any]) -> Testbed:
+    """The testbed whose VM the contract names: node is a VM name there and host that VM's management address."""
+    node, host = params.get("node"), params.get("host")
+    if isinstance(node, str):
+        row = VMS.get(node)
+        if row is not None and row["mgmt"] == host:
+            return T_TESTBED
+        s = s_testbed()
+        row = s.vms.get(node)
+        if row is not None and row["mgmt"] == host:
+            return s
+        if node in VMS or node in s.vms:
+            raise ExecutorError("host must be the VM's management address")
+    raise ExecutorError("node must name one of the domain's VMs")
+
+
+def testbed_of_host(host: str) -> Testbed:
+    """The testbed whose VM has this management address."""
+    for tb in testbeds():
+        if any(row["mgmt"] == host for row in tb.vms.values()):
+            return tb
+    raise ExecutorError(f"{host} is not a VM management address")
+
 # Names the executors leave on a VM (unit, chain, table, file) must stay neutral (design principle 8).
 FORBIDDEN_WORDS = ("test", "testbed", "tb", "t4", "lucida", "scenario", "inject", "rca", "fault")
 NAME = re.compile(r"^[a-z][a-z0-9-]{1,30}[a-z0-9]$")
@@ -161,13 +316,9 @@ def exact_keys(params: Any, keys: Iterable[str], what: str) -> dict[str, Any]:
 
 
 def vm_named(params: dict[str, Any], roles: Iterable[str] | None = None) -> str:
-    """The contract's VM: node is a known VM name and host its management address."""
+    """The contract's VM: node is a known VM name of one testbed and host its management address."""
     node = params.get("node")
-    vm = VMS.get(node) if isinstance(node, str) else None
-    if vm is None:
-        raise ExecutorError("node must name one of the domain's VMs")
-    if params.get("host") != vm["mgmt"]:
-        raise ExecutorError("host must be the VM's management address")
+    vm = testbed_of(params).vms[node]
     if roles is not None and vm["role"] not in set(roles):
         raise ExecutorError(f"node {node} is not a {'/'.join(sorted(roles))} VM")
     return node
@@ -186,9 +337,10 @@ def check_hv_location(instance: dict[str, Any]) -> None:
         raise ExecutorError("location must be the hypervisor")
 
 
-def interface_allowed(node: str, ifname: Any) -> str:
-    """§3-5 rule 2: the router's downlinks or the server's business NIC, nothing else."""
-    allowed = set(ROUTER_DOWNLINKS) if node == ROUTER else ({SERVER_NICS[node]} if node in SERVER_NICS else set())
+def interface_allowed(node: str, ifname: Any, tb: Testbed = T_TESTBED) -> str:
+    """§3-5 rule 2 (S §3-6 rule 2): the router's downlinks or the server's business NIC, nothing else."""
+    allowed = (set(ROUTER_DOWNLINKS) if tb.router is not None and node == tb.router
+               else ({tb.server_nics[node]} if node in tb.server_nics else set()))
     if not isinstance(ifname, str) or ifname not in allowed:
         raise ExecutorError(f"interface {ifname!r} on {node} is not one an injection may change")
     return ifname
@@ -213,14 +365,15 @@ def _network(value: Any, field: str) -> ipaddress.IPv4Network:
     return net
 
 
-def business_network(value: Any, field: str) -> str:
-    """An address in a rule: inside one business network, never the router's upstream address, the
-    tunnel or the management network."""
+def business_network(value: Any, field: str, tb: Testbed = T_TESTBED) -> str:
+    """An address in a rule: inside one business network, never the router's upstream address (S: the 66
+    gateway, the servers' default route), the tunnel or the management network."""
     net = _network(value, field)
-    if not any(net.subnet_of(ipaddress.ip_network(b)) for b in BUSINESS_NETS):
+    if not any(net.subnet_of(ipaddress.ip_network(b)) for b in tb.business_nets):
         raise ExecutorError(f"{field} {value} is outside the domain's business networks")
-    if ipaddress.ip_address(ROUTER_UPLINK_ADDR) in net and net.prefixlen == 32:
-        raise ExecutorError(f"{field} names the router's upstream address")
+    if net.prefixlen == 32 and any(ipaddress.ip_address(a) in net for a in tb.protected_addrs):
+        raise ExecutorError(f"{field} names the router's upstream address" if tb.router
+                            else f"{field} names the servers' gateway")
     return str(net)
 
 
@@ -248,7 +401,7 @@ HOOKS = {"router": ("forward", "input"), "server": ("input", "output")}
 VERDICTS = ("drop", "reject")
 
 
-def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str]) -> list[str]:
+def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str], tb: Testbed = T_TESTBED) -> list[str]:
     """Validated rule tokens hook:proto:src:dst:dport:verdict ("-" for any)."""
     if not isinstance(rules, list) or not 1 <= len(rules) <= 8:
         raise ExecutorError("rules must be a list of 1 to 8 rules")
@@ -266,8 +419,8 @@ def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str]) -> list[st
         proto = rule.get("proto", "-")
         if proto not in ("tcp", "udp", "-"):
             raise ExecutorError("rule proto must be tcp or udp")
-        src = business_network(rule["src"], "rule src") if "src" in rule else "-"
-        dst = business_network(rule["dst"], "rule dst") if "dst" in rule else "-"
+        src = business_network(rule["src"], "rule src", tb) if "src" in rule else "-"
+        dst = business_network(rule["dst"], "rule dst", tb) if "dst" in rule else "-"
         if src == "-" and dst == "-":
             raise ExecutorError("a rule names src or dst")
         dport = "-"
@@ -281,15 +434,15 @@ def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str]) -> list[st
     return tokens
 
 
-def protected_accept_lines(kind: str, mgmt_if: str) -> list[str]:
+def protected_accept_lines(kind: str, mgmt_if: str, mgmt_net: str = MGMT_NET) -> list[str]:
     """The first lines of every chain an executor builds: the protected flows pass whatever follows."""
     lines = [
         f"ip saddr {TUNNEL_NET} accept",
         f"ip daddr {TUNNEL_NET} accept",
         f'iifname "{mgmt_if}" accept',
         f'oifname "{mgmt_if}" accept',
-        f"ip saddr {MGMT_NET} accept",
-        f"ip daddr {MGMT_NET} accept",
+        f"ip saddr {mgmt_net} accept",
+        f"ip daddr {mgmt_net} accept",
     ]
     if kind == "router":
         lines += [f"ip saddr {ROUTER_UPLINK_ADDR} accept", f"ip daddr {ROUTER_UPLINK_ADDR} accept"]
@@ -312,7 +465,8 @@ def log_prefix(value: Any) -> str:
     return value
 
 
-def nft_table(table: str, kind: str, mgmt_if: str, tokens: list[str], prefix: str = "") -> str:
+def nft_table(table: str, kind: str, mgmt_if: str, tokens: list[str], prefix: str = "",
+              tb: Testbed = T_TESTBED) -> str:
     """One nftables table: a base chain per hook the rules use, protected lines first."""
     by_hook: dict[str, list[str]] = {}
     for token in tokens:
@@ -334,7 +488,7 @@ def nft_table(table: str, kind: str, mgmt_if: str, tokens: list[str], prefix: st
     for hook in sorted(by_hook):
         out.append(f"\tchain {hook} {{")
         out.append(f"\t\ttype filter hook {hook} priority -5; policy accept;")
-        out += [f"\t\t{line}" for line in protected_accept_lines(kind, mgmt_if)]
+        out += [f"\t\t{line}" for line in protected_accept_lines(kind, mgmt_if, tb.mgmt_net)]
         out += [f"\t\t{line}" for line in by_hook[hook]]
         out.append("\t}")
     out.append("}")
@@ -350,14 +504,14 @@ SSH_OPTIONS = (
 
 # Runs in the runner container. argv: action host node <program arguments...>. stdin of each remote call
 # is the `set --` line, the guard values and the node program; the VM's auth log sees only `bash -s`.
-RUNNER_HEAD = br'''#!/usr/bin/env bash
+RUNNER_HEAD_TEMPLATE = br'''#!/usr/bin/env bash
 set -euo pipefail
 action="$1"; host="$2"; node="$3"; shift 3
 node_args=("$@")
 ctl="${CIVIL_PETITION_SSH_CONTROL_DIR:-/app/state/ssh-control}"
 keys="${VM_OPS_KEY_DIR:-/root/.ssh/vm-ops}"
-ssh_vm=(ssh -F none -i "$keys/t4-executor" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
-  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p")
+ssh_vm=(ssh -F none -i "$keys/@EXECUTOR_KEY@" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
+  -o "UserKnownHostsFile=$keys/@VM_KNOWN_HOSTS@" -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p")
 ssh_hv=(ssh -F none -i "$keys/t4-hv" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
   -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o "ControlPath=$ctl/%r@%h:%p"
   -o ControlMaster=no)
@@ -378,7 +532,7 @@ hv_call() { printf '%s\nexpire_after=%s guard_hold=%s\n' "$1" "$expire_after" "$
 # timeout makes its own group), so the runner ending the script's group ends the session too (rv-t4o2 N2).
 # One operator session per VM at a time: the runner's normal-time operator sessions take the same lock.
 op_ssh=(ssh -tt -n -F none -i "$keys/t4-operator" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
-  -o "UserKnownHostsFile=$keys/known_hosts_civil-petition" -o ConnectTimeout=10 -o ServerAliveInterval=15
+  -o "UserKnownHostsFile=$keys/@VM_KNOWN_HOSTS@" -o ConnectTimeout=10 -o ServerAliveInterval=15
   -o ServerAliveCountMax=3 -o ControlPath=none -b @OPERATOR_BIND@)
 # Single quotes with each ' as '"'"' (the same quoting as Python's shlex.quote): any login shell reads it back.
 op_quote() { local sq="'" rep="'\"'\"'"; printf "'%s'" "${1//$sq/$rep}"; }
@@ -394,9 +548,19 @@ op_session() {
 '''.replace(b"@OPERATOR_BIND@", OPERATOR_BIND_ADDR.encode()).replace(b"@OPERATOR_LIMIT@", str(OPERATOR_SESSION_LIMIT).encode())
 
 
-def runner_script(node_program: bytes, dispatch: bytes) -> bytes:
+def runner_head(tb: Testbed = T_TESTBED) -> bytes:
+    """The runner-side head for one testbed: its executor key and its VMs' host keys. 66 (ssh_hv) and the operator
+    terminal key are one each for both testbeds (S design 7-1; runbook 15-4: S uses the same terminal address and key)."""
+    return (RUNNER_HEAD_TEMPLATE.replace(b"@EXECUTOR_KEY@", tb.executor_key.encode())
+            .replace(b"@VM_KNOWN_HOSTS@", tb.known_hosts.encode()))
+
+
+RUNNER_HEAD = runner_head(T_TESTBED)
+
+
+def runner_script(node_program: bytes, dispatch: bytes, tb: Testbed = T_TESTBED) -> bytes:
     """A runner-side bash body: shared head, node_call (the program on stdin), then dispatch."""
-    return RUNNER_HEAD + br'''node_call() {
+    return runner_head(tb) + br'''node_call() {
   local act=$1
   {
     printf 'set --'; printf ' %q' "$act" ${node_args[@]+"${node_args[@]}"}; printf '\n'
@@ -711,7 +875,7 @@ def operator_dispatch(check: bytes = LANDED) -> bytes:
 
 def vm_invocation(plan: dict[str, Any], action: str, params: dict[str, Any], node_body: bytes,
                   program_args: list[str], dispatch: bytes = STANDARD_DISPATCH) -> tuple[list[str], bytes]:
-    script = runner_script(node_program(node_body), dispatch)
+    script = runner_script(node_program(node_body), dispatch, testbed_of(params))
     return (kubectl_bash_argv([action, params["host"], params["node"], *program_args]),
             with_guard_values(script, plan))
 

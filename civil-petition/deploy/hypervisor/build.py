@@ -3,7 +3,9 @@
 
 가드 함수의 정본은 scripts/scenarios/profiles/executor_common.py 의 GUARD_FUNCTIONS 하나다(설계 §6-1 "U8 시험과의 연결").
 허용 표(VMID, NIC, tap)와 probe 주소는 인벤토리에서 채운다: 라우터의 하위 NIC(downlink), 서버(웹, WAS, DB)의 기본 경로 NIC,
-라우터 상향 주소와 서버 업무 주소. 설치본은 그 고정 표를 가진 채 66 에 놓인다(설계 §3-5 규칙 2 "코드 안 고정 표"). 주소와
+라우터 상향 주소와 서버 업무 주소. 66 도우미는 하나라 T 인벤토리로 만들 때 S 인벤토리(s.json)의 서버 업무 주소도 probe 표 뒤에
+붙인다(S 문서 spec-testbed-sms-only.md §3-6 규칙 3 "적용 직후 66 에서 그 서버 업무 주소 핑"). S 는 66 쪽 실행기가 없으므로(1차)
+허용 표에는 들지 않는다. 설치본은 그 고정 표를 가진 채 66 에 놓인다(설계 §3-5 규칙 2 "코드 안 고정 표"). 주소와
 이름이 든 설치본은 저장소에 두지 않고(설계 §2-5, 설치 스크립트와 틀에 사이트 값 없음) 적용 때 만든다. 저장소에는 T 인벤토리로
 만든 두 파일의 sha256 만 둔다(t4-hv-exec.sha256.json, 러너 preflight 의 버전 표류 기대값, 설계 §6-4).
 
@@ -31,6 +33,7 @@ TEMPLATE = HERE / "t4-hv-exec-root.in"
 FRONT = HERE / "t4-hv-exec"
 SUMS = HERE / "t4-hv-exec.sha256.json"
 T_INVENTORY = HERE.parent / "inventory" / "t.json"
+S_INVENTORY = HERE.parent / "inventory" / "s.json"
 SERVER_ROLES = ("web", "was", "db")
 FILTER_TEMPLATE = HERE / "rsyslog-05-hvjobs.conf"
 TOOLS = HERE.parent / "tools"
@@ -64,7 +67,16 @@ def tables(inv: dict) -> tuple[list[str], list[str]]:
         probes += [nic["addr"] for nic in host["nics"] if nic.get("gateway") and nic["net"] not in mgmt]
     if not links or not probes:
         raise SystemExit("인벤토리에 하이퍼바이저 쪽 링크가 없다(라우터 하위 NIC, 서버 업무 NIC)")
+    if inv.get("testbed") == "t":
+        probes += s_probes(json.loads(S_INVENTORY.read_text(encoding="utf-8")))
     return links, probes
+
+
+def s_probes(s_inv: dict) -> list[str]:
+    """S 서버(웹, WAS, DB)의 업무 주소. 관리 NIC 와 부하기는 들지 않는다."""
+    mgmt = {name for name, net in s_inv["networks"].items() if net.get("management")}
+    return [nic["addr"] for host in s_inv["hosts"] if host["role"] in SERVER_ROLES
+            for nic in host["nics"] if nic.get("gateway") and nic["net"] not in mgmt]
 
 
 def render(inv: dict) -> bytes:

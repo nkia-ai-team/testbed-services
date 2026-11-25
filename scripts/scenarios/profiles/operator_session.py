@@ -10,7 +10,9 @@ holds the two equal).
 
   operator_session.py --node <VM name> --check          one read-only operator session (the runner's schedule calls it)
   operator_session.py --node <VM name> --print          the ssh command and the session text as JSON, nothing run
-  operator_session.py --list-nodes                      the VMs that take normal-time sessions, one JSON line
+  operator_session.py --list-nodes [--domain <domain>]  the VMs that take normal-time sessions, one JSON line
+                                                        (civil-petition when no domain is named; civil-petition-sms
+                                                        for the S testbed, spec-testbed-sms-only.md §7-2)
   operator_session.py --node <VM name> --decoy-change <kind> [--guard-sec N]
                                                         a U7 decoy: a vm.service change with harmless values; on 0 the
                                                         last lines are "@@ decoy-changed <path>" per file it changed
@@ -161,11 +163,13 @@ class Refused(ValueError):
 
 
 def ssh_argv(host: str) -> list[str]:
-    """The operator login up to the destination (the same words as op_ssh in vm_executor_common.RUNNER_HEAD)."""
+    """The operator login up to the destination (the same words as op_ssh in vm_executor_common.runner_head of the
+    host's testbed: one terminal key for both testbeds, each testbed's own host keys)."""
     keys = os.environ.get(vm.KEY_DIR_ENV, vm.KEY_DIR)
+    known_hosts = vm.testbed_of_host(host).known_hosts
     return ["ssh", "-tt", "-n", "-F", "none", "-i", f"{keys}/t4-operator", "-o", "IdentitiesOnly=yes",
             "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-            "-o", f"UserKnownHostsFile={keys}/known_hosts_civil-petition", "-o", "ConnectTimeout=10",
+            "-o", f"UserKnownHostsFile={keys}/{known_hosts}", "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ControlPath=none",
             "-b", vm.OPERATOR_BIND_ADDR, f"{OPERATOR}@{host}"]
 
@@ -180,29 +184,40 @@ def remote_command(text: str) -> str:
     return "bash -c " + shlex.quote(text)
 
 
-def routine_nodes() -> list[str]:
-    """The VMs that take normal-time operator sessions: the router and the servers (the runner's list, review L3)."""
-    return [name for name, row in vm.VMS.items() if row["role"] in ROLE_CHECKS]
+def routine_nodes(domain: str = vm.DOMAIN) -> list[str]:
+    """The VMs that take normal-time operator sessions: the router and the servers (the runner's list, review L3), of
+    one testbed (the runner keeps a schedule per testbed; S has no router)."""
+    return [name for name, row in vm.testbed_named(domain).vms.items() if row["role"] in ROLE_CHECKS]
+
+
+def vm_row(node: str) -> dict[str, Any] | None:
+    """A VM of either testbed by name (names do not repeat across them except loadgen, which takes no session)."""
+    for tb in vm.testbeds():
+        if node in tb.vms and tb.vms[node]["role"] != "loadgen":
+            return tb.vms[node]
+    return None
 
 
 def check_session(node: str) -> tuple[list[str], str]:
-    row = vm.VMS.get(node)
+    row = vm_row(node)
     if row is None or row["role"] not in ROLE_CHECKS:
         raise Refused(f"{node!r} is not a router or server VM of the domain")
     text = session_text(ROLE_CHECKS[row["role"]])
     return ssh_argv(row["mgmt"]) + [remote_command(text)], text
 
 
-def decoy_nodes(kind: str) -> list[str]:
-    return [name for name, row in vm.VMS.items() if row["role"] == DECOYS[kind]["role"]]
+def decoy_nodes(kind: str, domain: str | None = vm.DOMAIN) -> list[str]:
+    """The VMs that take a decoy kind, of one testbed (T unless named) or, with domain None, of both."""
+    beds = vm.testbeds() if domain is None else (vm.testbed_named(domain),)
+    return [name for tb in beds for name, row in tb.vms.items() if row["role"] == DECOYS[kind]["role"]]
 
 
 def decoy_row(node: str, kind: str) -> dict[str, Any]:
     if kind not in DECOYS:
         raise Refused(f"{kind!r} is not a decoy kind ({', '.join(sorted(DECOYS))})")
-    row = vm.VMS.get(node)
+    row = vm_row(node)
     if row is None or row["role"] != DECOYS[kind]["role"]:
-        raise Refused(f"{node!r} does not take {kind} (only {', '.join(decoy_nodes(kind))})")
+        raise Refused(f"{node!r} does not take {kind} (only {', '.join(decoy_nodes(kind, None))})")
     return row
 
 
@@ -247,8 +262,9 @@ def executor_read(host: str, command: str, timeout: float = 20, root: bool = Fal
     through the executor's `sudo -n`, as the executors' own node calls go (their lines stay on the VM, §6-2)."""
     keys = os.environ.get(vm.KEY_DIR_ENV, vm.KEY_DIR)
     ctl = os.environ.get(vm.CONTROL_DIR_ENV, vm.CONTROL_DIR_DEFAULT)
-    base = ["ssh", "-F", "none", "-i", f"{keys}/t4-executor", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={keys}/known_hosts_civil-petition",
+    tb = vm.testbed_of_host(host)
+    base = ["ssh", "-F", "none", "-i", f"{keys}/{tb.executor_key}", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={keys}/{tb.known_hosts}",
             "-o", "ConnectTimeout=10", "-o", f"ControlPath={ctl}/%r@%h:%p"]
     check = subprocess.run(base + ["-O", "check", f"opsjob@{host}"], stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=timeout)
@@ -465,9 +481,16 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--decoy-change", metavar="KIND")
     mode.add_argument("--decoy-revert", metavar="KIND")
     parser.add_argument("--guard-sec", type=int, help="with --decoy-change: the executor guard's deadline in seconds")
+    parser.add_argument("--domain", help="with --list-nodes: the testbed's domain (default civil-petition)")
     args = parser.parse_args(argv)
+    if args.domain is not None and not args.list_nodes:
+        parser.error("--domain goes with --list-nodes")
     if args.list_nodes:
-        print(json.dumps(routine_nodes()))
+        try:
+            print(json.dumps(routine_nodes(args.domain or vm.DOMAIN)))
+        except vm.ExecutorError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 3
         return 0
     if not args.node:
         parser.error("--node is needed with --check, --print, --decoy-change and --decoy-revert")

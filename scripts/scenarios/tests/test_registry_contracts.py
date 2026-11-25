@@ -2301,11 +2301,14 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
 
     def test_domain_namespaces_and_configmap_exist(self) -> None:
         namespaces = {namespace for (_, namespace, _) in self.workloads}
-        k8s = {d: n for d, n in self.policy["domain_namespaces"].items() if d != "civil-petition"}
+        vm_domains = {"civil-petition": "civil-petition-vm", "civil-petition-sms": "civil-petition-sms-vm"}
+        k8s = {d: n for d, n in self.policy["domain_namespaces"].items() if d not in vm_domains}
         self.assertEqual(set(k8s.values()), namespaces)
-        # The VM domain's name differs from the domain (an answer key names the domain in its text).
-        self.assertEqual(self.policy["domain_namespaces"]["civil-petition"], "civil-petition-vm")
-        self.assertNotIn("civil-petition-vm", namespaces)
+        # The VM domains' names differ from the domains (an answer key names the domain in its text); T and S
+        # (ST4, spec-testbed-sms-only.md 7-6) each have their own.
+        for domain, namespace in vm_domains.items():
+            self.assertEqual(self.policy["domain_namespaces"][domain], namespace)
+            self.assertNotIn(namespace, namespaces)
         repo = ROOT.parents[1]
         for domain in ("commerce", "core-banking", "food-delivery"):
             text = (repo / domain / "k8s" / "02-configmaps.yaml").read_text(encoding="utf-8")
@@ -2325,24 +2328,42 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
             spec.loader.exec_module(sess)
         finally:
             _sys.path.remove(profiles)
-        targets_file = json.loads((ROOT.parents[1] / "civil-petition" / "deploy" / "inventory" / "t.targets.json").read_text())
-        server_ids = {s["name"]: s["target_id"] for s in targets_file["servers"]}
+        inventory = ROOT.parents[1] / "civil-petition" / "deploy" / "inventory"
+        # T and S (ST4): each testbed's targets file, namespace and decoy VMs.
+        testbeds = {"civil-petition-vm": ("t.targets.json", "civil-petition", ["was01", "was02", "web01"]),
+                    "civil-petition-sms-vm": ("s.targets.json", "civil-petition-sms", ["wassvr01", "wassvr02", "websvr01"])}
+        server_ids, domain_of = {}, {}
+        for namespace, (name, domain, _) in testbeds.items():
+            targets_file = json.loads((inventory / name).read_text())
+            self.assertEqual(targets_file["domain"], domain)
+            server_ids[namespace] = {s["name"]: s["target_id"] for s in targets_file["servers"]}
+            domain_of[namespace] = domain
         vm_targets = [t for t in self.policy["targets"] if t.get("transport") == "vm"]
-        self.assertEqual(sorted(t["node"] for t in vm_targets), ["was01", "was02", "web01"])
+        self.assertEqual({t["namespace"] for t in vm_targets}, set(testbeds))
+        for namespace, (_, _, nodes) in testbeds.items():
+            self.assertEqual(sorted(t["node"] for t in vm_targets if t["namespace"] == namespace), nodes)
         vm_kinds = set(sess.DECOYS)
         self.assertEqual(vm_kinds, {"war_redeploy", "config_reapply"})
         for target in vm_targets:
             with self.subTest(node=target["node"]):
-                self.assertEqual(target["namespace"], "civil-petition-vm")
+                namespace = target["namespace"]
                 self.assertEqual(target["deployment"], f"petition-{target['node']}")
                 self.assertEqual(target["service_name"], target["node"])
                 # Role names for an answer key that names the role, never another VM's name (rv-t4u L5).
                 self.assertEqual(target["aliases"], ["WAS"] if target["node"].startswith("was") else ["웹 서버"])
-                self.assertEqual(target["target_id"], server_ids[target["node"]])
+                self.assertEqual(target["target_id"], server_ids[namespace][target["node"]])
                 self.assertTrue(target["kinds"] and set(target["kinds"]) <= vm_kinds)
                 for kind in target["kinds"]:
-                    self.assertIn(target["node"], sess.decoy_nodes(kind))
+                    self.assertIn(target["node"], sess.decoy_nodes(kind, domain_of[namespace]))
                     self.assertGreater(self.policy["kind_weights"][kind], 0)
+        # The shared-name rule (U7b; S design 7-6): T and S run the same application, so a role name or container one
+        # answer key names is written for both testbeds (both are then excluded, the safe side), and the VM names that
+        # make a target's own name never repeat across them.
+        roles = {ns: {(t["container"], tuple(t["aliases"]), tuple(t["kinds"])) for t in vm_targets if t["namespace"] == ns}
+                 for ns in testbeds}
+        self.assertEqual(roles["civil-petition-vm"], roles["civil-petition-sms-vm"])
+        names = {ns: {t["deployment"] for t in vm_targets if t["namespace"] == ns} for ns in testbeds}
+        self.assertFalse(names["civil-petition-vm"] & names["civil-petition-sms-vm"])
         # The gap the runner draws between a decoy's change and revert (vm_hold_sec): the whole range of the recorded
         # injections' durations (command session 11-21), counted from the record the policy names.
         record = json.loads((ROOT / "registry" / "recorded-injection-durations.json").read_text(encoding="utf-8"))
@@ -2353,9 +2374,13 @@ class DecoyDeploymentPolicyTests(unittest.TestCase):
         self.assertEqual(self.policy["vm_hold_sec"], {"min": min(seconds), "max": max(seconds)})
         self.assertEqual(self.policy["vm_hold_sec"], {"min": 96, "max": 1878})
         self.assertIn(f"({max(seconds) + 600}초)", self.policy["_note"])
-        # Every VM that takes a decoy kind is a target with that kind; Kubernetes targets take no VM kind.
+        # Every VM that takes a decoy kind is a target with that kind, on each testbed; Kubernetes targets take no
+        # VM kind.
         for kind in vm_kinds:
-            self.assertEqual(sorted(sess.decoy_nodes(kind)),
+            for namespace, domain in domain_of.items():
+                self.assertEqual(sorted(sess.decoy_nodes(kind, domain)),
+                                 sorted(t["node"] for t in vm_targets if kind in t["kinds"] and t["namespace"] == namespace))
+            self.assertEqual(sorted(sess.decoy_nodes(kind, None)),
                              sorted(t["node"] for t in vm_targets if kind in t["kinds"]))
         for target in self.k8s_targets():
             self.assertNotIn("kinds", target)

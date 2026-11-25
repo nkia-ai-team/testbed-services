@@ -17,6 +17,10 @@ is undone and the run fails.
 Self-recovery (U8): armed before the change with an undo that deletes exactly this table. A table
 ends with a reboot, so the boot rule removes only the guard's own files.
 
+On the S testbed (spec-testbed-sms-only.md §3-6 rule 3) the protected values are S's: its management network,
+and its 66 gateways (the servers' default route) as addresses a rule may not name; 66 pings the server's S business
+address the same way.
+
 The executor is the means only; until a scenario adds an exact contract every scenario is refused.
 """
 from __future__ import annotations
@@ -29,16 +33,16 @@ import vm_executor_common as vm
 PROFILE_ID = "vmhost.firewall"
 CONTRACTS: dict[str, dict[str, Any]] = {}
 KEYS = {"host", "node", "table", "rules", "log_prefix"}
-BUSINESS = {"web01": "192.168.124.11", "was01": "192.168.125.11", "was02": "192.168.125.12", "db01": "192.168.126.11"}
 
 
 def check_parameters(p: dict[str, Any]) -> list[str]:
     vm.exact_keys(p, KEYS, PROFILE_ID)
-    node = vm.vm_named(p, ("web", "was", "db"))
+    vm.vm_named(p, ("web", "was", "db"))
+    tb = vm.testbed_of(p)
     table = vm.neutral_name(p["table"], "table")
     prefix = vm.log_prefix(p["log_prefix"])
-    tokens = vm.filter_rules(p["rules"], "server", (vm.SERVER_MGMT_IF,))
-    text = vm.nft_table(table, "server", vm.SERVER_MGMT_IF, tokens, prefix)
+    tokens = vm.filter_rules(p["rules"], "server", (vm.SERVER_MGMT_IF,), tb)
+    text = vm.nft_table(table, "server", vm.SERVER_MGMT_IF, tokens, prefix, tb)
     return [table, text, "-", "-"]
 
 
@@ -53,7 +57,7 @@ def build_invocation(plan: dict[str, Any], action: str) -> tuple[list[str], byte
     validate(plan["scenario"]["id"], p, {})
     args = check_parameters(p)
     vm.check_vm_location(instance, p)
-    dispatch = vm.CHECKED_DISPATCH.replace(b"@PROBE@", BUSINESS[p["node"]].encode())
+    dispatch = vm.CHECKED_DISPATCH.replace(b"@PROBE@", vm.testbed_of(p).business[p["node"]].encode())
     return vm.vm_invocation(plan, action, p, vm.FIREWALL_BODY, ["root", *args], dispatch)
 
 
