@@ -85,6 +85,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "db.cursor_reset",
                 # 2026-11-25: F72-P — 민원 포털 라우터 rt-core01 에 운영자가 nftables 표 하나 넣기와 지우기(운영자 ssh, sudo nft).
                 "router.config",
+                # 2026-11-25: F80-P — SMS 전용 민원 포털 DB 서버 dbsvr01 에서 작업 프로세스 묶음 띄우기와 멈추기, 내려간 PostgreSQL 유닛 다시 띄우기.
+                "vmhost.stress",
             },
         )
 

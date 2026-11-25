@@ -49,6 +49,15 @@
       "requested_at": "2026-11-25",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F80-P",
+      "reason": "new",
+      "note": "새 테스트베드 첫 시나리오, 흔적 표 실측과 119 보강 뒤 녹화(지휘 세션 판단)",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-11-25",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

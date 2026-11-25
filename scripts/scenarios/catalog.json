@@ -1819,6 +1819,18 @@
       "load_mode": "fixed",
       "injection_location": "civil-petition rt-core01",
       "prerequisite": ""
+    },
+    {
+      "id": "F80-P",
+      "slug": "f80-p-petition-db-job-memory-oom-stops-postgres",
+      "profiles": [
+        "vmhost.stress"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "civil-petition-sms dbsvr01",
+      "prerequisite": ""
     }
   ]
 }

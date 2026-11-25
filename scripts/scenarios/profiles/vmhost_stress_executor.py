@@ -5,6 +5,13 @@ The VM counterpart of host.stress, with the tools a server VM has (no stress-ng 
 
 - cpu: N `yes` busy loops in one process group for a bounded time.
 - memhog: one python3 process allocates and touches N MiB, then holds it.
+- memprocs: a job of several python3 worker processes that together allocate and touch N MiB (each N/P MiB) and
+  hold it, meant to be more than the server has free. The kernel's OOM killer picks the process with the largest
+  resident set, and a database's processes count the shared buffers they have touched in theirs, so a job of
+  workers each smaller than the database's largest process makes the kernel kill the database, not the job
+  (one big job process would be the bigger one and die itself). Its undo also starts the service unit the
+  contract names when that unit is no longer active (systemd's default OOMPolicy=stop takes a unit down when the
+  kernel kills one of its processes, and the PostgreSQL unit has no Restart=).
 - io: `dd` writes a file under the target directory with direct IO, over and over, for a bounded time.
 - fill: one fallocate'd file under the target directory brings the file system to a watermark, never
   past a reserve, never more than a maximum.
@@ -18,7 +25,7 @@ that).
 Self-recovery (U8): armed before the job starts, with an undo that kills exactly this process group and
 removes the job's files; the files are listed for removal at the next boot.
 
-The executor is the means only; until a scenario adds an exact contract every scenario is refused.
+The executor is the means only; a scenario without an exact contract is refused.
 """
 from __future__ import annotations
 
@@ -28,16 +35,43 @@ from executor_common import ExecutorError, cli, profile_instance
 import vm_executor_common as vm
 
 PROFILE_ID = "vmhost.stress"
-CONTRACTS: dict[str, dict[str, Any]] = {}
+CONTRACTS: dict[str, dict[str, Any]] = {
+    # F80-P: a job of twelve 512 MiB workers on the SMS testbed's database server dbsvr01 (8 GB, no swap, PostgreSQL
+    # shared_buffers 2 GB whose processes show about 2.1 GiB resident each); the kernel kills a PostgreSQL process,
+    # systemd stops the unit (OOMPolicy=stop, no Restart=), cleanup stops the job and starts PostgreSQL again.
+    "F80-P": {"host": "192.168.133.31", "node": "dbsvr01", "mode": "memprocs", "processes": 12, "mib": 6144,
+              "runtime_seconds": 1500, "revive_unit": "postgresql@16-main"},
+}
 KEYS = {"host", "node", "mode", "cpu_workers", "mib", "target_dir", "watermark_percent", "reserve_mib", "runtime_seconds"}
-JOBS = {"cpu": "burnin", "memhog": "memhold", "io": "iobench", "fill": "bulkcopy"}
+JOBS = {"cpu": "burnin", "memhog": "memhold", "io": "iobench", "fill": "bulkcopy", "memprocs": "extract"}
+# memprocs takes its own keys (the other modes keep theirs exactly): the worker count and the unit the undo brings
+# back. The unit is the server role's own service, nothing else.
+PROC_KEYS = {"host", "node", "mode", "processes", "mib", "runtime_seconds", "revive_unit"}
+REVIVE_UNITS = {"db": "postgresql@16-main", "was": "tomcat10", "web": "apache2"}
+MIN_WORKER_MIB = 16
+
+
+def check_proc_parameters(p: dict[str, Any]) -> list[str]:
+    vm.exact_keys(p, PROC_KEYS, PROFILE_ID)
+    node = vm.vm_named(p, ("web", "was", "db"))
+    role = vm.testbed_of(p).vms[node]["role"]
+    processes = vm.integer(p["processes"], "processes", 2, 16)
+    mib = vm.integer(p["mib"], "mib", 1, 7168)
+    runtime = vm.integer(p["runtime_seconds"], "runtime_seconds", 60, 1800)
+    if mib % processes or mib // processes < MIN_WORKER_MIB:
+        raise ExecutorError(f"mib must split evenly into workers of at least {MIN_WORKER_MIB} MiB")
+    if p["revive_unit"] != REVIVE_UNITS[role]:
+        raise ExecutorError(f"revive_unit must be the {role} server's service {REVIVE_UNITS[role]}")
+    return ["memprocs", str(processes), str(mib), "-", "0", "0", str(runtime), p["revive_unit"]]
 
 
 def check_parameters(p: dict[str, Any]) -> list[str]:
+    if isinstance(p, dict) and p.get("mode") == "memprocs":
+        return check_proc_parameters(p)
     vm.exact_keys(p, KEYS, PROFILE_ID)
     vm.vm_named(p, ("web", "was", "db"))
     mode = p["mode"]
-    if mode not in JOBS:
+    if mode not in JOBS or mode == "memprocs":
         raise ExecutorError(f"mode must be one of {sorted(JOBS)}")
     workers = vm.integer(p["cpu_workers"], "cpu_workers", 0, 8)
     mib = vm.integer(p["mib"], "mib", 0, 7168)
@@ -64,17 +98,33 @@ def validate(scenario_id: str, params: dict[str, Any], profile: dict[str, Any]) 
     check_parameters(params)
 
 
-# set -- <act> <mode> <workers> <mib> <target dir> <watermark> <reserve> <runtime>
-NODE_BODY = vm.GROUP_FUNCTIONS + br'''act="$1"; mode="$2"; workers="$3"; mib="$4"; target="$5"; watermark="$6"; reserve="$7"; runtime="$8"
-case "$mode" in cpu) job=burnin ;; memhog) job=memhold ;; io) job=iobench ;; fill) job=bulkcopy ;; *) exit 2 ;; esac
+# set -- <act> <mode> <workers> <mib> <target dir> <watermark> <reserve> <runtime> [<revive unit>]
+# memprocs: workers is the process count and mib their total; the ninth word is the unit its undo brings back.
+NODE_BODY = vm.GROUP_FUNCTIONS + br'''act="$1"; mode="$2"; workers="$3"; mib="$4"; target="$5"; watermark="$6"; reserve="$7"; runtime="$8"; revive="${9:--}"
+case "$mode" in cpu) job=burnin ;; memhog) job=memhold ;; io) job=iobench ;; fill) job=bulkcopy ;; memprocs) job=extract ;; *) exit 2 ;; esac
 group_setup "$job"
+unit_ctl="${UNIT_SYSTEMCTL:-systemctl}"
 artifact=""
 if [[ "$mode" == io ]]; then artifact="$target/.$job.dat"; fi
 if [[ "$mode" == fill ]]; then artifact="$target/.$job.part"; fi
 if [[ -n "$artifact" ]]; then boot_files+=("$artifact"); fi
+revive_active() { [[ "$revive" == - ]] || "$unit_ctl" is-active --quiet "$revive.service" </dev/null; }
+# The largest resident set (MiB) among the revive unit's processes, read from its control group.
+revive_rss() {
+  local cg pid r m=0
+  cg=$("$unit_ctl" show -P ControlGroup "$revive.service" </dev/null) || return 1
+  [[ -n "$cg" && -r "${UNIT_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" ]] || return 1
+  while read -r pid; do
+    r=$(awk '/^VmRSS:/{print int($2/1024)}' "/proc/$pid/status" 2>/dev/null || true)
+    if [[ -n "$r" ]] && (( r > m )); then m=$r; fi
+  done <"${UNIT_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs"
+  echo "$m"
+}
+revive() { if ! revive_active; then "$unit_ctl" start "$revive.service" </dev/null; fi; }
 state() {
   if group_live || [[ -e "$pgidfile" ]]; then echo ours; return 0; fi
   if [[ -n "$artifact" && -e "$artifact" ]]; then echo ours; return 0; fi
+  if ! revive_active; then echo "$revive-down"; return 0; fi
   echo default
 }
 calculate() {
@@ -91,6 +141,14 @@ check() {
     cpu) command -v yes >/dev/null ;;
     memhog) command -v python3 >/dev/null
       (( $(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo) > mib )) || { echo "not enough available memory" >&2; exit 1; } ;;
+    # More than is free is the point; what must hold is that the job alone fits (1 GiB left for the system once
+    # the service is down) and that each worker is at most half the service's largest process, so the kernel
+    # picks the service and not the job.
+    memprocs) command -v python3 >/dev/null
+      (( mib + 1024 <= $(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo) )) || { echo "the job does not fit in memory" >&2; exit 1; }
+      revive_active || { echo "$revive is not active" >&2; exit 1; }
+      local largest; largest=$(revive_rss) || { echo "cannot read the processes of $revive" >&2; exit 1; }
+      (( largest >= 2 * mib / workers )) || { echo "$revive's largest process ($largest MiB) is not twice a worker" >&2; exit 1; } ;;
     io) command -v dd >/dev/null; [[ -d "$target" && ! -L "$target" ]]
       (( $(df -Pk "$target" | awk 'NR==2{print $4}') > (mib + 1024) * 1024 )) || { echo "not enough room under $target" >&2; exit 1; } ;;
     fill) command -v fallocate >/dev/null; [[ -d "$target" && ! -L "$target" ]]; calculate ;;
@@ -99,6 +157,9 @@ check() {
 undo_body() {
   group_undo
   if [[ -n "$artifact" ]]; then printf 'rm -f %q\n' "$artifact"; fi
+  if [[ "$revive" != - ]]; then
+    printf 'if ! %q is-active --quiet %q; then %q start %q; fi\n' "$unit_ctl" "$revive.service" "$unit_ctl" "$revive.service"
+  fi
 }
 apply() {
   case "$mode" in
@@ -107,6 +168,9 @@ apply() {
 buf=bytearray(int(sys.argv[1])*1048576)
 for off in range(0,len(buf),1048576): buf[off]=1
 time.sleep(int(sys.argv[2]))' $mib $runtime" ;;
+    memprocs) group_start "for _ in \$(seq 1 $workers); do python3 -c 'import sys,time
+n=int(sys.argv[1]); held=[bytearray(min(64,n-i)*1048576) for i in range(0,n,64)]
+time.sleep(int(sys.argv[2]))' $(( mib / workers )) $runtime & done; wait" ;;
     io) group_start "end=\$(( SECONDS + $runtime )); while (( SECONDS < end )); do dd if=/dev/zero of=$(printf %q "$artifact") bs=1M count=$mib oflag=direct conv=notrunc status=none || break; done" ;;
     fill) calculate; fallocate -l "${desired}K" "$artifact"; sync -f "$artifact" ;;
   esac
@@ -114,6 +178,7 @@ time.sleep(int(sys.argv[2]))' $mib $runtime" ;;
 remove() {
   group_stop
   if [[ -n "$artifact" ]]; then rm -f -- "$artifact"; sync -f "$target" 2>/dev/null || true; fi
+  revive
 }
 '''
 

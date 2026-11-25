@@ -271,7 +271,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-27: 4 → 3. F72-R 정식 승격(녹화 case-f72-r-v3-bf50d2b7).
         # 2026-10-30: 3 → 4. F69-P(commerce inventory-service 릴리스 1.3.0 의 재조정 배치가 재고 행을 공유 잠금으로 쥔 채 45일 원장 합계를 돌아 재고 예약과 checkout 이 주기적으로 막힘) 후보 추가.
         # 2026-11-25: 4 → 5. F72-P(민원 포털 라우터에서 운영자가 DB 포트 허용 목록을 좁히다 WAS 망을 빠뜨림) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 5)
+        # 2026-11-25: 5 → 6. F80-P(SMS 전용 민원 포털 DB 서버 작업이 메모리를 다 써 커널 OOM 이 PostgreSQL 을 죽임) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 6)
 
 
 class RecordingQueueTests(unittest.TestCase):

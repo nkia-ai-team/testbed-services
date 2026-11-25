@@ -5915,10 +5915,27 @@
         "petition-sms-wassvr02",
         "petition-sms-dbsvr01"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "http.entry_health"
-      ]
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F80-P"
+        ]
+      },
+      "scenario_parameters": {
+        "F80-P": {
+          "host": "192.168.133.31",
+          "node": "dbsvr01",
+          "mode": "memprocs",
+          "processes": 12,
+          "mib": 6144,
+          "runtime_seconds": 1500,
+          "revive_unit": "postgresql@16-main"
+        }
+      },
+      "scenario_levels": {}
     },
     "vmhost.job": {
       "executor": "profiles/vmhost_job_executor.py",

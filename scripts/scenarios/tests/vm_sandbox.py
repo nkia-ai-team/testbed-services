@@ -147,6 +147,8 @@ case "${args[0]}" in
     if [[ "${args[0]}" == restart && -e "$VM_SANDBOX/restart-fails" ]]; then printf 'failed restart %s\n' "$name" >>"$VM_SANDBOX/service-log"; exit 1; fi
     echo active >"$d/$name.service-state"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   reload) printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
+  # show -P ControlGroup <unit>: the unit's control group, from the file <unit>.cgroup (the test writes it).
+  show) n="${args[${#args[@]}-1]}"; n="${n%.service}"; [[ -e "$d/$n.cgroup" ]] && cat "$d/$n.cgroup" ;;
   *) exit 9 ;;
 esac
 '''

@@ -1,0 +1,253 @@
+{
+  "schema_version": "1.0",
+  "id": "F80-P",
+  "slug": "f80-p-petition-db-job-memory-oom-stops-postgres",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "civil-petition-sms dbsvr01",
+    "matrix_location_transport": "V/ssh vmhost.stress(civil-petition-sms dbsvr01, 실행기 opsjob 이 상시 관리 연결로 가드를 먼저 건 뒤 root 로 작업 프로세스 묶음 시작, 새 모드 memprocs)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/vmhost.stress"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "host-placement-and-oob-recovery"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "vmhost.stress",
+        "companion_refs": [],
+        "approved_profile_id": "vmhost.stress"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health",
+          "vm-sms-entry-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            },
+            {
+              "check": "vm-sms-entry-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f80-p",
+              "parameters": {
+                "host": "192.168.133.31",
+                "node": "dbsvr01",
+                "mode": "memprocs",
+                "processes": 12,
+                "mib": 6144,
+                "runtime_seconds": 1500,
+                "revive_unit": "postgresql@16-main"
+              },
+              "min_hold": "10m",
+              "settle": "60s",
+              "timeout": "15m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "civil-petition-sms"
+            },
+            "_note": "SMS 전용 민원 포털 상주 부하기(loadgen VM)의 마지막 민원 신청 상태. PostgreSQL 이 커널 OOM 으로 죽고 systemd 가 유닛을 멈추면(OOMPolicy=stop, Restart= 없음) 5432 에 듣는 쪽이 없어 연결이 바로 거부되고, 신청은 트랜잭션이 연결을 얻지 못해 몇 ms 안에 500 이다. 0(응답 없음)은 웹 서버가 죽었거나 DB 서버가 메모리 회수로 멈춰 요청이 10초를 넘길 때만 나온다(작업은 수 초 안에 다 잡아 OOM 까지 가는 회수 구간을 짧게 둔다)",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "전역 회복 조건(다른 테스트베드 진입). 이 시나리오는 건드리지 않는다"
+          },
+          {
+            "id": "lookup_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "civil-petition-sms"
+            },
+            "_note": "상주 부하의 접수번호 조회(단계 lookup, 여정 30%, websvr01 → wassvr01, wassvr02 → dbsvr01 기본 키 조회) 비정상 비율. 쿠키 단지 없이 부르는 공개 경로라 장애 중 로그인 상태가 풀려도 사라지지 않는다. 30초 창에 저점 5rps 에서도 약 45건. 평시 약 0.01(없는 번호 조회 1% 고정이 404). PostgreSQL 이 멈추면 503('database unavailable')",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "parameters": {
+              "domain": "civil-petition-sms"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "lookups-failing",
+              "observation": "lookup_nonok_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "접수번호 조회가 DB 연결 거부로 503"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "작업이 메모리를 잡으면 수 초 안에 커널이 PostgreSQL 프로세스(공유 버퍼를 RSS 로 세어 약 2.1 GiB, 작업 프로세스 하나는 512 MiB)를 죽이고 systemd 가 유닛을 멈춘다. 그 뒤 cleanup 까지 PostgreSQL 은 내려가 있다. 신청 단계는 성공 조건에 쓰지 않는다: 장애 중 재로그인이 실패해 로그인 상태가 풀린 가상 사용자는 신청 요청을 보내지 않아 몇 분 뒤 30초 창에 신청이 0건이 된다(F72-P 1회차 평가 차단 1 과 같은 이유). min_hold 10m 은 피해와 원인 흔적(syslog 감시의 커널 OOM 줄과 유닛 실패 줄, PostgreSQL 로그 FATAL, 메모리 사용률, 프로세스 표본의 python3 작업 프로세스들)이 쌓일 길이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 2.0,
+              "_note": "상주 부하 저점(KST 4시) 목표 5rps 의 40%. 부하가 실제로 끊겼을 때만 발화한다(빠른 503 은 도착률을 바꾸지 않는다)"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "entry-recovered",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "lookups-recovered",
+              "observation": "lookup_nonok_rate",
+              "op": "lt",
+              "value": 0.1,
+              "_note": "평시 창별 비정상 비율은 없는 번호 1% 때문에 저점 5rps 30초 창에서 최대 약 0.055(모의)라 0.1 로 둔다. 장애 중 값은 1.0"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 은 작업 프로세스 묶음을 멈춰 메모리를 돌려주고 postgresql@16-main 이 내려가 있으면 다시 띄운다(운영자의 복구와 같은 일). PostgreSQL 이 다시 듣기 시작하면 풀이 다음 요청에서 새 연결을 맺는다. OS 파일 캐시가 비어 첫 몇 분은 디스크에서 읽는다. entry_status 200 은 로그인이 풀렸던 가상 사용자가 다시 로그인한 뒤의 첫 신청이다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "vmhost.stress"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "vmhost.stress"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "vmhost.stress"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

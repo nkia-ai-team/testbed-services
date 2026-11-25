@@ -4506,6 +4506,8 @@ else:
             "F69-P",
             # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-P",
+            # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춤(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F80-P",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -5080,9 +5082,6 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                       "burst_kb": 32, "latency_ms": 50}),
         "router.resource": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "mode": "cpu",
                                          "cpu_workers": 2, "entries": 0, "runtime_seconds": 300}),
-        "vmhost.stress": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "mode": "cpu", "cpu_workers": 2,
-                                       "mib": 0, "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0,
-                                       "runtime_seconds": 300}),
         "vmhost.job": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "nightly-archive",
                                     "description": "Nightly archive", "source_dir": "/var/log",
                                     "output_dir": "/pgdata", "level": 6, "nice": 10, "runtime_seconds": 600,
@@ -5132,6 +5131,10 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                        "rules": [{"hook": "forward", "proto": "tcp", "src": "192.168.124.0/24",
                                                   "dst": "192.168.125.0/24", "dport": 8080, "verdict": "drop"}],
                                        "routes": [], "sysctls": {}, "log_prefix": ""}),
+        # vmhost.stress: F80-P since 2026-11-25 (memprocs on dbsvr01); the VM executor tests still vary this cpu sample.
+        "vmhost.stress": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "mode": "cpu", "cpu_workers": 2,
+                                       "mib": 0, "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0,
+                                       "runtime_seconds": 300}),
     }
     LOCATIONS = json.loads((ROOT / "registry" / "locations.json").read_text())["locations"]
 
@@ -5168,7 +5171,9 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                 elif location.get("node") or location["host"] in self.CLUSTER_NODES:
                     on_node.setdefault(instance["profile_id"], plan)
         # 2026-11-25: router.config(F72-P, civil-petition rt-core01) joins: the first VM executor a scenario uses.
-        self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config"})
+        # 2026-11-25: vmhost.stress(F80-P, civil-petition-sms dbsvr01) joins: the first S scenario.
+        self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config",
+                                        "vmhost.stress"})
         # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
         # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
         node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
@@ -6433,6 +6438,123 @@ kill $server
                 self.assertEqual(fired.returncode, 0, fired.stderr)
                 self.assertEqual(vm_sandbox.node_call(program, ["state", *args], self.env).stdout.decode().strip(), "default")
 
+    def test_memprocs_job_splits_into_workers_and_brings_the_service_back(self) -> None:
+        """memprocs (F80-P): a job of P python3 workers that together hold N MiB, each worker at most half the
+        service's largest process, so the kernel's OOM killer picks the service and not the job. Preflight refuses
+        when the service is down or its largest process is not twice a worker; cleanup and the guard's undo stop
+        the job and start the service again (systemd's OOMPolicy=stop leaves it down)."""
+        stress = load("vmhost_stress_executor")
+        program = vm_common.node_program(stress.NODE_BODY)
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        (units / "postgresql@16-main.service-state").write_text("active\n")
+        (units / "postgresql@16-main.cgroup").write_text("/system.slice/pg.service\n")
+        cg = self.tmp / "cgroup" / "system.slice" / "pg.service"
+        cg.mkdir(parents=True)
+        env = {**self.env, "UNIT_CGROUP_ROOT": str(self.tmp / "cgroup")}
+        # The service's largest process: 48 MiB resident (twice a 16 MiB worker is 32).
+        big = subprocess.Popen([sys.executable, "-c", "import time; b=bytearray(48*1048576); time.sleep(120)"])
+        small = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        args = ["memprocs", "2", "32", "-", "0", "0", "60", "postgresql@16-main"]
+
+        def state() -> str:
+            return vm_sandbox.node_call(program, ["state", *args], env).stdout.decode().strip()
+
+        def workers() -> list[int]:
+            pgid = int((self.tmp / "state" / "extract.pgid").read_text())
+            found = []
+            for proc in Path("/proc").iterdir():
+                if proc.name.isdigit():
+                    try:
+                        if os.getpgid(int(proc.name)) == pgid and (proc / "comm").read_text().startswith("python"):
+                            found.append(int(proc.name))
+                    except (ProcessLookupError, FileNotFoundError, PermissionError):
+                        pass
+            return found
+
+        try:
+            for _ in range(50):
+                if "VmRSS" in (Path(f"/proc/{big.pid}/status").read_text()) and int(
+                        [l for l in Path(f"/proc/{big.pid}/status").read_text().splitlines() if l.startswith("VmRSS")][0].split()[1]) > 40000:
+                    break
+                time.sleep(0.1)
+            # Preflight: the service's largest process must be twice a worker.
+            (cg / "cgroup.procs").write_text(f"{small.pid}\n")
+            done = vm_sandbox.node_call(program, ["check", *args], env)
+            self.assertEqual(done.returncode, 1)
+            self.assertIn(b"is not twice a worker", done.stderr)
+            (cg / "cgroup.procs").write_text(f"{small.pid}\n{big.pid}\n")
+            # Preflight: the service must be up (a down service is not the default state either).
+            (units / "postgresql@16-main.service-state").write_text("inactive\n")
+            self.assertEqual(vm_sandbox.node_call(program, ["check", *args], env).returncode, 1)
+            self.assertEqual(state(), "postgresql@16-main-down")
+            (units / "postgresql@16-main.service-state").write_text("active\n")
+            self.assertEqual(state(), "default")
+            done = vm_sandbox.node_call(program, ["check", *args], env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            # Run: armed first, two workers of 16 MiB each, resident.
+            done = vm_sandbox.node_call(program, ["run", *args], env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(state(), "ours")
+            self.assertEqual(vm_sandbox.node_call(program, ["run", *args], env).returncode, 1)
+            pids = []
+            for _ in range(100):
+                pids = workers()
+                rss = [int([l for l in Path(f"/proc/{pid}/status").read_text().splitlines() if l.startswith("VmRSS")][0].split()[1])
+                       for pid in pids] if len(pids) == 2 else []
+                if len(rss) == 2 and min(rss) >= 16 * 1024:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(len(pids), 2)
+            self.assertGreaterEqual(min(rss), 16 * 1024)
+            # What systemd does when the kernel kills one of the unit's processes (OOMPolicy=stop): the unit goes down.
+            (units / "postgresql@16-main.service-state").write_text("inactive\n")
+            self.assertEqual(state(), "ours")
+            for _ in range(2):
+                done = vm_sandbox.node_call(program, ["cleanup", *args], env)
+                self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(workers() if (self.tmp / "state" / "extract.pgid").exists() else [], [])
+            self.assertEqual(state(), "default")
+            self.assertIn("start postgresql@16-main", vm_sandbox.logged(self.tmp, "service-log"))
+            # Self-recovery: the connection is lost and cleanup never comes; the guard's undo stops the job and
+            # starts the service.
+            done = vm_sandbox.node_call(program, ["run", *args], env)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            (units / "postgresql@16-main.service-state").write_text("inactive\n")
+            fired = node_guard_fakes.fire(env, "extract", extra_env=env)
+            self.assertEqual(fired.returncode, 0, fired.stderr)
+            self.assertEqual(state(), "default")
+            self.assertEqual(vm_sandbox.logged(self.tmp, "service-log").count("start postgresql@16-main"), 2)
+        finally:
+            vm_sandbox.node_call(program, ["cleanup", *args], env)
+            big.kill(); small.kill(); big.wait(); small.wait()
+
+    def test_memprocs_parameters_name_the_role_service_and_even_workers(self) -> None:
+        stress = load("vmhost_stress_executor")
+        good = {"host": "192.168.133.31", "node": "dbsvr01", "mode": "memprocs", "processes": 6, "mib": 6144,
+                "runtime_seconds": 1500, "revive_unit": "postgresql@16-main"}
+        self.assertEqual(stress.check_parameters(good),
+                         ["memprocs", "6", "6144", "-", "0", "0", "1500", "postgresql@16-main"])
+        self.assertEqual(stress.check_parameters(dict(good, host="192.168.127.41", node="db01"))[-1], "postgresql@16-main")
+        bad = (dict(good, revive_unit="tomcat10"), dict(good, processes=1), dict(good, processes=17),
+               dict(good, mib=6145), dict(good, processes=8, mib=64), dict(good, runtime_seconds=30),
+               dict(good, cpu_workers=0), {k: v for k, v in good.items() if k != "revive_unit"},
+               dict(good, node="loadgen", host="192.168.133.10"),
+               {"host": "192.168.133.31", "node": "dbsvr01", "mode": "memprocs", "cpu_workers": 6, "mib": 6144,
+                "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0, "runtime_seconds": 1500})
+        for params in bad:
+            with self.subTest(params=params):
+                with self.assertRaises(ExecutorError):
+                    stress.check_parameters(params)
+        self.assertEqual(stress.check_parameters(dict(good, host="192.168.133.21", node="wassvr01",
+                                                       revive_unit="tomcat10"))[-1], "tomcat10")
+        # The other modes keep their keys exactly; memprocs words do not leak into them.
+        cpu = {"host": "192.168.133.21", "node": "wassvr01", "mode": "cpu", "cpu_workers": 2, "mib": 0,
+               "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0, "runtime_seconds": 60}
+        self.assertEqual(stress.check_parameters(cpu), ["cpu", "2", "0", "-", "0", "0", "60"])
+        with self.assertRaises(ExecutorError):
+            stress.check_parameters(dict(cpu, revive_unit="tomcat10"))
+
     def test_server_job_service_and_database_units(self) -> None:
         job = load("vmhost_job_executor")
         src = self.tmp / "logs"
@@ -7534,7 +7656,7 @@ class SmsVmExecutorTests(unittest.TestCase):
         for profile_id in ("vmhost.stress", "vmhost.job", "vmdb.lock", "vmdb.workload", "vmload.north_south"):
             with self.subTest(profile=profile_id):
                 params = self.params(profile_id)
-                t_params = dict(NodeGuardTests.UNUSED_NODE_EXECUTORS[profile_id][1])
+                t_params = dict({**NodeGuardTests.UNUSED_NODE_EXECUTORS, **NodeGuardTests.USED_NODE_SAMPLES}[profile_id][1])
                 _, s_stdin = self.invocation(profile_id, params)
                 module = self.module(profile_id)
                 with unittest.mock.patch.dict(module.CONTRACTS, {"T4-CASE": t_params}):

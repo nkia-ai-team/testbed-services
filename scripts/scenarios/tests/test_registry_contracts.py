@@ -154,7 +154,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-30: 142 → 143. F69-P(후보) 추가. 기존 k8s.image release 모드를 commerce inventory 에 한 번 더 써서 프로파일 수는 그대로.
         # 2026-11-09: 시나리오 수는 그대로. 프로파일 35 → 36(db.cursor_reset 신설, F74-R 동반: 정리 뒤 건수 질의 커서 비우기와 계획 복귀 확인).
         # 2026-11-25: 143 → 144. F72-P(후보) 추가. 민원 포털 라우터 router.config 에 첫 계약(프로파일 수는 그대로).
-        self.assertEqual(len(self.catalog["scenarios"]), 144)
+        # 2026-11-25: 144 → 145. F80-P(후보) 추가. vmhost.stress 에 새 모드 memprocs 와 첫 계약(프로파일 수는 그대로).
+        self.assertEqual(len(self.catalog["scenarios"]), 145)
         # 2026-11-19: 시나리오 수는 그대로. 프로파일 36 → 48(civil-petition VM 실행기 12개 신설, v4 T4S. 계약 0개라 시나리오가 아직 쓰지 않는다).
         self.assertEqual(len(self.profiles["profiles"]), 48)
         known = set(self.profiles["profiles"])
@@ -366,6 +367,8 @@ class RegistryContractTests(unittest.TestCase):
             "F69-P",
             # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려, WAS 두 대의 DB 연결이 TCP 재설정으로 끊기고 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-P",
+            # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 root 의 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 공유 버퍼를 RSS 로 세는 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춰 포털 503, 500(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F80-P",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -932,6 +935,8 @@ class RegistryContractTests(unittest.TestCase):
             "F69-P",
             # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려, WAS 두 대의 DB 연결이 TCP 재설정으로 끊기고 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-P",
+            # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 root 의 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 공유 버퍼를 RSS 로 세는 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춰 포털 503, 500(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F80-P",
             },
         )
         self.assertEqual(
@@ -1142,6 +1147,8 @@ class RegistryContractTests(unittest.TestCase):
             "F69-P",
             # 2026-11-25: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 DB 포트(192.168.126.11:5432) 허용 목록 표를 넣으며 WAS 망을 빠뜨려, WAS 두 대의 DB 연결이 TCP 재설정으로 끊기고 포털 거의 모든 요청 503, 500(Harness 2024-09-01 재구성, router.config 첫 계약과 reset 판정). 새 후보, 설계 강도 1단 고정 evaluation.
             "F72-P",
+            # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 root 의 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 공유 버퍼를 RSS 로 세는 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춰 포털 503, 500(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F80-P",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1360,8 +1367,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-16: F80-R(후보, 고정 evaluation)이 끝에 붙어 F76-R 이 끝 5개에서 빠졌다.
         # 2026-10-30: F69-P(후보, 고정 evaluation)이 끝에 붙어 F76-P 가 끝 5개에서 빠졌다.
         # 2026-11-25: F72-P(후보, 고정 evaluation, 첫 민원 포털 시나리오)가 끝에 붙어 F77-R 이 끝 5개에서 빠졌다.
+        # 2026-11-25: F80-P(후보, 고정 evaluation, 첫 SMS 전용 민원 포털 시나리오)가 끝에 붙어 F71-H 가 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F71-H", "F79-R", "F80-R", "F69-P", "F72-P"])
+                         ["F79-R", "F80-R", "F69-P", "F72-P", "F80-P"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}
