@@ -79,6 +79,14 @@ summary: 매 시나리오 주입 전에 AI 학습 계층(trainer/observer)을 "�
   산출물(`trainer_seed_verdicts`, `trainer_prompts`)을 더했다. `trainer_trace_window_threshold`
   (trace 60분 임계)는 15분마다 24시간 원천으로 새 판을 만들고 옛 판을 쌓아 3GB 를 넘어 담지 않는다.
   캡처는 k8s 평면에서 ClusterIP 와 클러스터 시크릿으로 붙는다(스크립트 usage).
+- **2026-11-25 보강(v4 GOLDFIX, Q43 답)**: 28개에 밴드 엔진 상태 `band_forecast`, `band_state` 를 더해 30개.
+  develop-ai 2026-11 판은 stream-anomaly 학습을 은퇴시켜 `trainer_stream_*` 는 옛 산출물로 남고(목록에 두되
+  복원 영향 없음), 지표 판정은 밴드 두 표가 정한다. 복원은 observer 파드가 다 내려간 것을 확인한 뒤에만 두
+  표를 되돌리고, 되돌린 뒤 `band_state` 의 열린 사건 열(episode_id, episode_opened_at 과 사건을 닫을 때 함께
+  비우는 orig_*)만 NULL 로 하며(행, 임시 밴드, 재학습 예약은 그대로), `band_forecast_seq` 를 되돌린 max(seq),
+  캡처 때 값(meta `pg_ai_state.sequences`), 지금 값 가운데 큰 값으로 올린다. observer 는 부팅 때 seq 0 부터
+  전부 읽으므로 이 순서면 복원 직후와 그 뒤 새 예측이 모두 잡힌다. 밴드 학습 일정은 따로 표가 없고
+  `band_forecast.valid_from` 과 시리즈 배정 요일로 정해진다.
 - **볼륨 4종**: `lucida_ai-model-store`·`lucida_clickhouse-data`·
   `lucida_vm-data`·`lucida_redpanda-data`.
 - **Kafka(redpanda) consumer offset** — 재생 시 소비 위치 정합.

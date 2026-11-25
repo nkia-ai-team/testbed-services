@@ -50,6 +50,9 @@ case "$*" in
   *'SHOW server_version_num'*)
     [[ -n "${FAKE_PG_HANG:-}" ]] && exec sleep 60   # 주소가 막혀 접속이 걸린 경우
     echo "${FAKE_PG_SERVER_NUM:-170011}"; exit 0 ;;
+  *band_forecast_seq*)
+    [[ -n "${FAKE_BAND_SEQ_FAIL:-}" ]] && exit 2
+    echo "${FAKE_BAND_SEQ-11372}"; exit 0 ;;
   *pg_stat_user_tables*) exit 0 ;;
   *"-tAc SELECT 1"*) exit 0 ;;
   *'pg_dump -Fc'*)
@@ -167,13 +170,30 @@ meta=$(find "$TMP_ROOT/g7" -name meta.json)
 [[ -s "$meta" ]] || fail 'k8s capture published no meta.json'
 for t in trainer_stream_generations trainer_stream_drift trainer_log_generations trainer_seed_verdicts trainer_prompts \
          trainer_stream_threshold trainer_stream_periodic_profile trainer_stream_distribution_profile \
-         trainer_masking_rules trainer_thresholds trainer_periodic_templates trainer_template_profiles; do
+         trainer_masking_rules trainer_thresholds trainer_periodic_templates trainer_template_profiles \
+         band_forecast band_state; do
   jq -e --arg t "$t" '.pg_ai_state.tables | index($t) != null' "$meta" >/dev/null || fail "golden table list lacks $t"
   grep -q -- "--table public.$t " "$FAKE_LOG" || fail "pg_dump did not dump $t"
 done
-[[ "$(jq '.pg_ai_state.tables | length' "$meta")" == 28 ]] || fail 'golden table list is not 28 tables'
+[[ "$(jq '.pg_ai_state.tables | length' "$meta")" == 30 ]] || fail 'golden table list is not 30 tables'
+# v4 GOLDFIX(Q43 답): band_forecast_seq 의 캡처 때 값이 meta 에 실리고, 덤프 뒤에 읽는다(덤프의 max(seq) 이상).
+jq -e '.pg_ai_state.sequences.band_forecast_seq == 11372' "$meta" >/dev/null ||
+  fail "meta must carry band_forecast_seq: $(jq -c .pg_ai_state.sequences "$meta")"
+dump_line=$(grep -n 'pg_dump -Fc' "$FAKE_LOG" | head -1 | cut -d: -f1)
+seq_line=$(grep -n 'SELECT last_value FROM public.band_forecast_seq' "$FAKE_LOG" | head -1 | cut -d: -f1)
+[[ -n "$dump_line" && -n "$seq_line" ]] && (( dump_line < seq_line )) ||
+  fail 'band_forecast_seq must be read after pg_dump'
+grep -q -- '--network host .*band_forecast_seq' "$FAKE_LOG" || fail 'the sequence read did not use the host network'
 ! jq -e '.pg_ai_state.tables | index("trainer_trace_window_threshold") != null' "$meta" >/dev/null ||
   fail 'trainer_trace_window_threshold must stay out of the golden'
+
+# 7b. band_forecast_seq 를 못 읽으면(밴드 표가 없는 옛 판) meta 값은 null 이고 캡처는 끝난다.
+: >"$FAKE_LOG"
+FAKE_K8S=1 FAKE_BAND_SEQ_FAIL=1 PG_PASSWORD='' CH_PASSWORD='' PG_DUMP_IMAGE=fake-pg17 "$GOLDEN" --skip-freshness \
+  --output-root "$TMP_ROOT/g7b" >"$TMP_ROOT/out" 2>"$TMP_ROOT/err" || fail "capture failed on an unreadable sequence: $(cat "$TMP_ROOT/err")"
+meta=$(find "$TMP_ROOT/g7b" -name meta.json)
+jq -e '.pg_ai_state.sequences.band_forecast_seq == null and (.pg_ai_state.sequences | has("band_forecast_seq"))' "$meta" >/dev/null ||
+  fail "unreadable sequence must leave null: $(jq -c .pg_ai_state.sequences "$meta")"
 
 # 8. k8s 에서도 준 값은 그대로 쓴다(주소 넷, PG 자격, CH 비밀번호). freshness gate 도 켠 채로 본다.
 #    준 값이 있으면 그 시크릿은 읽지 않는다.

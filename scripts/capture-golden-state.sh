@@ -80,6 +80,10 @@ kst_from_epoch() { TZ='Asia/Seoul' date -d "@$1" +'%Y-%m-%dT%H:%M:%S+09:00'; }
 # coverage/registry. Explicit list (not a pattern) so the golden is reproducible
 # and reviewable. Row counts are recorded into meta.json for verification.
 AI_STATE_TABLES=(
+  # trainer_stream_* 일곱 표(distribution_profile, periodic_profile, snapshot_history, threshold,
+  # generations, drift 와 아래 E11 주석의 것)는 develop-ai 2026-11 판에서 stream-anomaly 학습이 은퇴해
+  # (trainer autoloop.py RETIRED_AGENTS) 더 갱신되지 않는 옛 산출물이다. 지표 판정은 아래 밴드 두 표가
+  # 정한다. 옛 판 골든과 표 목록을 맞추려고 그대로 두며, 새 판에서 되돌려도 판정에 영향이 없다.
   trainer_forecast_conformal
   trainer_forecast_model_route
   trainer_forecast_season
@@ -116,6 +120,16 @@ AI_STATE_TABLES=(
   trainer_log_generations
   trainer_seed_verdicts
   trainer_prompts
+  # 2026-11-25(v4 GOLDFIX, Q43 답): 새 판 지표 판정의 밴드 엔진 상태(lucida-next 006d8a6784 DDL 831, 832).
+  # band_forecast 는 시리즈별 8일 예측 폭(시리즈당 1행, 주 1회와 재학습 때 덮어씀). observer 는 부팅 때
+  # seq 0 부터 전부 읽고(band_load.go bootBandEngine) 그 뒤 메모리 커서로 변경분만 읽는다. 그래서 복원은
+  # observer 를 멈춘 채 하고, 복원 뒤 band_forecast_seq 를 복원된 max(seq) 이상으로 올린다. 그때 값은 meta
+  # pg_ai_state.sequences 에 싣는다. band_state 는 임시 밴드, 재학습 예약, 열린 사건. 복원은 열린 사건 열만
+  # 비운다(restore-golden-state.sh 2a). 학습 일정은 따로 표가 없다: 무엇을 다시 학습할지는 band_forecast 의
+  # valid_from 과 시리즈 배정 요일로 정해지고(query ai_trainer_band_select.go), 작업 진행은 ai_trainer_jobs
+  # 의 짧은 작업 행이라 담지 않는다.
+  band_forecast
+  band_state
 )
 
 window_minutes=120
@@ -444,6 +458,18 @@ if counts_tsv=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "${pg_net_args[@]}" --
   row_counts_json=$(printf '%s\n' "$counts_tsv" | jq -R -s 'split("\n") | map(select(length>0) | split("\t")) | map({(.[0]): (.[1]|tonumber)}) | add // {}')
 fi
 
+# --- band_forecast_seq at capture (v4 GOLDFIX): pg_dump 는 이 시퀀스를 담지 않는다(표에 딸리지 않음).
+#     덤프 뒤에 읽으므로 덤프의 max(seq) 이상이다. 복원이 setval 의 하한 하나로 쓴다. 표가 없는 옛 판은 null.
+band_forecast_seq_json=null
+if seq_out=$(PGPASSWORD="$PG_PASSWORD" docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+    psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DATABASE" -tAc \
+    'SELECT last_value FROM public.band_forecast_seq' 2>/dev/null) && [[ "$(tr -d '[:space:]' <<<"$seq_out")" =~ ^[0-9]+$ ]]; then
+  band_forecast_seq_json=$(tr -d '[:space:]' <<<"$seq_out")
+  log "band_forecast_seq last_value $band_forecast_seq_json"
+else
+  log 'WARN: band_forecast_seq not readable, meta pg_ai_state.sequences.band_forecast_seq left null'
+fi
+
 dump_sha=$(sha256sum "$staging_dir/data/golden-pg-state.dump" | cut -d' ' -f1)
 
 jq -n \
@@ -457,6 +483,7 @@ jq -n \
   --arg dump_sha "$dump_sha" \
   --argjson ai_state_tables "$(printf '%s\n' "${AI_STATE_TABLES[@]}" | jq -R . | jq -s .)" \
   --argjson row_counts "$row_counts_json" \
+  --argjson band_forecast_seq "$band_forecast_seq_json" \
   '{schema_version:$schema_version, kind:"golden", time_basis:"UTC",
     captured_at:$captured_at, captured_at_kst:$captured_at_kst,
     tod_phase_kst:$tod_phase,
@@ -465,7 +492,8 @@ jq -n \
     window_start_kst:$window_start_kst, window_end_kst:$window_end_kst,
     label:(if $label_text == "" then null else $label_text end),
     pg_ai_state:{dump:"data/golden-pg-state.dump", sha256:$dump_sha,
-                 tables:$ai_state_tables, row_counts:$row_counts},
+                 tables:$ai_state_tables, row_counts:$row_counts,
+                 sequences:{band_forecast_seq:$band_forecast_seq}},
     stores:["postgres.ai-state.dump","victoriametrics.export","clickhouse/*.parquet"],
     model_note:"stream-anomaly model.json is a static human-seeded default (not part of golden); trainer models are in the PG dump"}' \
   > "$staging_dir/meta.json"

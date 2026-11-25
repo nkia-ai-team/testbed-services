@@ -446,6 +446,43 @@ else
 fi
 
 # ------------------------------------------------------------
+# 1c. Band engine tables (v4 GOLDFIX, Q43 답 2). The observer reads band_forecast
+#     from seq 0 at boot and then only rows above an in-memory cursor
+#     (lucida-next band_load.go bootBandEngine, pollBandForecasts), and it writes
+#     band_state. Restoring either while it runs would leave it on the old bands or
+#     race its writes, so the band tables are restored only once its pods are gone
+#     (scale 0 returns before they are; rollout status above is best effort).
+#     Goldens without band tables skip this (behaviour of the other tables unchanged).
+# ------------------------------------------------------------
+golden_has_table() {
+  local t
+  for t in "${golden_tables[@]}"; do [[ "$t" == "$1" ]] && return 0; done
+  return 1
+}
+band_restore=false
+if golden_has_table band_forecast || golden_has_table band_state; then band_restore=true; fi
+observer_pods_gone() {
+  if [[ "$RUNTIME" == docker ]]; then
+    [[ "$(workload_running "$observer_container")" == false ]]
+    return
+  fi
+  local w out spec status
+  w=$(workload_for "$observer_container")
+  out=$($KUBECTL -n "$K8S_NAMESPACE" get "$w" -o jsonpath='{.spec.replicas} {.status.replicas}' 2>/dev/null) || return 1
+  read -r spec status <<<"$out"
+  [[ "${spec:-}" == 0 && ( -z "${status:-}" || "$status" == 0 ) ]]
+}
+if [[ "$band_restore" == true ]]; then
+  band_stop_deadline=$(( $(date +%s) + ${OBSERVER_STOP_WAIT_SEC:-120} ))
+  until observer_pods_gone; do
+    (( $(date +%s) < band_stop_deadline )) ||
+      die "observer is still running; band_forecast and band_state are not restored while it runs. Nothing was emptied; the trainer is frozen (retry, or run --thaw)"
+    sleep 3
+  done
+  log 'observer confirmed stopped for the band tables'
+fi
+
+# ------------------------------------------------------------
 # 2. Restore golden PG AI-state (the 23 tables in the dump). Empty the tables then
 #    COPY golden data back (data-only, FK-safe); no live writer during the reset.
 # ------------------------------------------------------------
@@ -481,6 +518,50 @@ PGPASSWORD="$PG_ADMIN_PASSWORD" docker run --rm "${pg_net_args[@]}" \
   /in/golden-pg-state.dump ||
   die 'pg_restore failed — trainer is frozen; investigate before injecting'
 log 'PostgreSQL AI-state restored (data-only, FK-safe)'
+
+# ------------------------------------------------------------
+# 2a. Band engine follow-up (v4 GOLDFIX, Q43 답 1, 2), still with the observer down.
+#     band_state: the golden rows stay (temporary bands shift, base, flat_*, and the
+#     retrain schedule retrain_*, buffer_due_at are kept); only the open episode is
+#     closed, i.e. the columns the observer itself nulls when an episode closes
+#     (service/band.go closeEpisode marks BandColEpisode|BandColOrig: episode_id,
+#     episode_opened_at, orig_valid_from, orig_upper, orig_lower). The observer
+#     treats a row as an open episode by episode_opened_at (RestoreState), so both
+#     episode columns go. Otherwise every recording would start with the golden's
+#     episodes open.
+#     band_forecast_seq: not in the dump. Set it to at least the restored max(seq)
+#     (also the capture-time value from meta, and never below its live value), so
+#     rows the trainer writes after thaw get a seq above the observer's boot cursor.
+# ------------------------------------------------------------
+band_open_episodes_cleared=null
+band_forecast_seq_set=null
+if [[ "$band_restore" == true ]]; then
+  meta_band_seq=$(jq -r '.pg_ai_state.sequences.band_forecast_seq // 0' "$meta")
+  [[ "$meta_band_seq" =~ ^[0-9]+$ ]] || meta_band_seq=0
+  band_cleared_expr='NULL'
+  band_seq_expr='NULL'
+  band_reset_sql=''
+  if golden_has_table band_state; then
+    band_reset_sql="WITH cleared AS (UPDATE public.band_state SET episode_id = NULL, episode_opened_at = NULL,
+  orig_valid_from = NULL, orig_upper = NULL, orig_lower = NULL
+  WHERE episode_id IS NOT NULL OR episode_opened_at IS NOT NULL RETURNING 1) "
+    band_cleared_expr='(SELECT count(*) FROM cleared)'
+  fi
+  if golden_has_table band_forecast; then
+    band_seq_expr="setval('public.band_forecast_seq', GREATEST((SELECT COALESCE(max(seq), 0) FROM public.band_forecast),
+  $meta_band_seq, (SELECT last_value FROM public.band_forecast_seq), 1), true)"
+  fi
+  band_reset_sql+="SELECT $band_cleared_expr, $band_seq_expr"
+  band_reset_row=$(PGPASSWORD="$PG_ADMIN_PASSWORD" docker run --rm "${pg_net_args[@]}" --env PGPASSWORD "$PG_DUMP_IMAGE" \
+    psql -v ON_ERROR_STOP=1 -tA -F '|' --host "$PG_HOST" --port "$PG_PORT" --username "$PG_ADMIN_USER" \
+    --dbname "$PG_DATABASE" -c "$band_reset_sql" | head -1) ||
+    die 'band follow-up (close open episodes, band_forecast_seq) failed — trainer is frozen, observer is down; investigate before injecting'
+  [[ "$band_reset_row" =~ ^([0-9]*)\|([0-9]*)$ ]] ||
+    die "band follow-up returned an unexpected row ($band_reset_row) — trainer is frozen, observer is down; investigate before injecting"
+  [[ -n "${BASH_REMATCH[1]}" ]] && band_open_episodes_cleared=${BASH_REMATCH[1]}
+  [[ -n "${BASH_REMATCH[2]}" ]] && band_forecast_seq_set=${BASH_REMATCH[2]}
+  log "band follow-up: open episodes cleared ${band_open_episodes_cleared}, band_forecast_seq ${band_forecast_seq_set}"
+fi
 
 # ------------------------------------------------------------
 # 2b. Golden stream generation and its boot-load deadline (v4 G2META, Q19 B), and
@@ -634,12 +715,16 @@ jq -n \
   --argjson golden_stream_boot_load_until "$golden_stream_boot_load_until" \
   --argjson golden_stream_periodic_count "$golden_stream_periodic_count" \
   --argjson observer_band_sources "$observer_band_sources" \
+  --argjson band_open_episodes_cleared "$band_open_episodes_cleared" \
+  --argjson band_forecast_seq_set "$band_forecast_seq_set" \
   '{action:"restore-golden", status:"ok", golden_dir:$golden_dir, golden_tod_kst:$tod,
     golden_sha256:$golden_sha256,
     golden_stream_generation:$golden_stream_generation,
     golden_stream_boot_load_until:$golden_stream_boot_load_until,
     golden_stream_periodic_count:$golden_stream_periodic_count,
     observer_band_sources:$observer_band_sources,
+    band_open_episodes_cleared:$band_open_episodes_cleared,
+    band_forecast_seq_set:$band_forecast_seq_set,
     pg_tables_restored:$n_tables, trainer_frozen:$frozen, observer_container:$observer,
     trainer_container:$trainer, restored_at:$restored_at,
     note:"trainer stays frozen for evaluation; run with --thaw afterwards"}'
