@@ -135,6 +135,8 @@ class Testbed(NamedTuple):
     vms: dict[str, dict[str, Any]]
     servers: tuple[str, ...]
     server_nics: dict[str, str]
+    # The servers' management NIC (the chain's iifname, oifname protected lines).
+    mgmt_if: str
     # Each server's business address: the 66 probe right after a firewall change, the SMS agent's host.
     business: dict[str, str]
     never_interfaces: dict[str, tuple[str, ...]]
@@ -173,6 +175,7 @@ def derive_testbed(inv: dict[str, Any], location_prefix: str) -> Testbed:
     business: dict[str, str] = {}
     router = None
     uplinks: list[str] = []
+    mgmt_ifs: set[str] = set()
     for host in inv["hosts"]:
         name, role = host["name"], host["role"]
         mgmt_nic = next(nic for nic in host["nics"] if nic["net"] == mgmt_name)
@@ -185,13 +188,17 @@ def derive_testbed(inv: dict[str, Any], location_prefix: str) -> Testbed:
             biz = next(nic for nic in host["nics"] if nic.get("gateway") and nic["net"] != mgmt_name)
             server_nics[name], business[name] = biz["ifname"], biz["addr"]
             never[name] = (mgmt_nic["ifname"],)
+            mgmt_ifs.add(mgmt_nic["ifname"])
         else:
             never[name] = tuple(nic["ifname"] for nic in host["nics"])
     gateways = tuple(net["gateway"] for name, net in networks.items() if name != mgmt_name and net.get("gateway"))
     web = next(name for name, row in vms.items() if row["role"] == "web")
     domain = inv["domain"]
+    if len(mgmt_ifs) != 1:
+        raise ExecutorError(f"the {domain} servers do not share one management NIC name: {sorted(mgmt_ifs)}")
     return Testbed(
-        domain=domain, vms=vms, servers=tuple(server_nics), server_nics=server_nics, business=business,
+        domain=domain, vms=vms, servers=tuple(server_nics), server_nics=server_nics, mgmt_if=mgmt_ifs.pop(),
+        business=business,
         never_interfaces=never, mgmt_net=mgmt["cidr"], mgmt_host=mgmt["host_addr"],
         operator_source=mgmt["operator_host_addr"],
         business_nets=tuple(net["cidr"] for name, net in networks.items() if name != mgmt_name),
@@ -204,7 +211,7 @@ def derive_testbed(inv: dict[str, Any], location_prefix: str) -> Testbed:
 
 
 T_TESTBED = Testbed(
-    domain=DOMAIN, vms=VMS, servers=SERVERS, server_nics=SERVER_NICS,
+    domain=DOMAIN, vms=VMS, servers=SERVERS, server_nics=SERVER_NICS, mgmt_if=SERVER_MGMT_IF,
     business={"web01": "192.168.124.11", "was01": "192.168.125.11", "was02": "192.168.125.12", "db01": "192.168.126.11"},
     never_interfaces={k: v for k, v in NEVER_INTERFACES.items() if k != HYPERVISOR["node"]},
     mgmt_net=MGMT_NET, mgmt_host=MGMT_HOST, operator_source=OPERATOR_SOURCE_ADDR, business_nets=BUSINESS_NETS,
@@ -260,10 +267,12 @@ def testbed_of(params: dict[str, Any]) -> Testbed:
 
 
 def testbed_of_host(host: str) -> Testbed:
-    """The testbed whose VM has this management address."""
-    for tb in testbeds():
-        if any(row["mgmt"] == host for row in tb.vms.values()):
-            return tb
+    """The testbed whose VM has this management address. T is matched first, so a T address never reads the S
+    inventory (a missing or broken s.json must not stop T's operator path, review rv-st4s M)."""
+    if any(row["mgmt"] == host for row in T_TESTBED.vms.values()):
+        return T_TESTBED
+    if any(row["mgmt"] == host for row in s_testbed().vms.values()):
+        return s_testbed()
     raise ExecutorError(f"{host} is not a VM management address")
 
 # Names the executors leave on a VM (unit, chain, table, file) must stay neutral (design principle 8).
@@ -434,7 +443,7 @@ def filter_rules(rules: Any, kind: str, protected_ifs: Iterable[str], tb: Testbe
     return tokens
 
 
-def protected_accept_lines(kind: str, mgmt_if: str, mgmt_net: str = MGMT_NET) -> list[str]:
+def protected_accept_lines(kind: str, mgmt_if: str, mgmt_net: str) -> list[str]:
     """The first lines of every chain an executor builds: the protected flows pass whatever follows."""
     lines = [
         f"ip saddr {TUNNEL_NET} accept",
@@ -465,9 +474,9 @@ def log_prefix(value: Any) -> str:
     return value
 
 
-def nft_table(table: str, kind: str, mgmt_if: str, tokens: list[str], prefix: str = "",
-              tb: Testbed = T_TESTBED) -> str:
-    """One nftables table: a base chain per hook the rules use, protected lines first."""
+def nft_table(table: str, kind: str, mgmt_if: str, tokens: list[str], prefix: str, tb: Testbed) -> str:
+    """One nftables table: a base chain per hook the rules use, protected lines first. The testbed has no default:
+    a caller that left it out would get T's management network on an S chain, the open side (review rv-st4s L)."""
     by_hook: dict[str, list[str]] = {}
     for token in tokens:
         hook, proto, src, dst, dport, verdict = token.split(":")

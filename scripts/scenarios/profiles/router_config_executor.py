@@ -82,7 +82,7 @@ def check_parameters(p: dict[str, Any]) -> list[str]:
     text = "-"
     if p["rules"]:
         tokens = vm.filter_rules(p["rules"], "router", protected_ifs)
-        text = vm.nft_table(table, "router", vm.ROUTER_MGMT_IF, tokens, prefix)
+        text = vm.nft_table(table, "router", vm.ROUTER_MGMT_IF, tokens, prefix, vm.T_TESTBED)
     routes = check_routes(p["routes"])
     sysctls = check_sysctls(p["sysctls"])
     if text == "-" and routes == "-" and sysctls == "-":

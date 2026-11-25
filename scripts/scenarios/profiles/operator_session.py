@@ -191,11 +191,13 @@ def routine_nodes(domain: str = vm.DOMAIN) -> list[str]:
 
 
 def vm_row(node: str) -> dict[str, Any] | None:
-    """A VM of either testbed by name (names do not repeat across them except loadgen, which takes no session)."""
-    for tb in vm.testbeds():
-        if node in tb.vms and tb.vms[node]["role"] != "loadgen":
-            return tb.vms[node]
-    return None
+    """A VM of either testbed by name (names do not repeat across them except loadgen, which takes no session). T is
+    matched first, so a T name never reads the S inventory (review rv-st4s M: a missing or broken s.json must not stop
+    T's normal-time sessions and decoys)."""
+    row = vm.T_TESTBED.vms.get(node)
+    if row is None:
+        row = vm.s_testbed().vms.get(node)
+    return row if row is not None and row["role"] != "loadgen" else None
 
 
 def check_session(node: str) -> tuple[list[str], str]:
@@ -217,7 +219,8 @@ def decoy_row(node: str, kind: str) -> dict[str, Any]:
         raise Refused(f"{kind!r} is not a decoy kind ({', '.join(sorted(DECOYS))})")
     row = vm_row(node)
     if row is None or row["role"] != DECOYS[kind]["role"]:
-        raise Refused(f"{node!r} does not take {kind} (only {', '.join(decoy_nodes(kind, None))})")
+        domain = vm.DOMAIN if node in vm.T_TESTBED.vms else None
+        raise Refused(f"{node!r} does not take {kind} (only {', '.join(decoy_nodes(kind, domain))})")
     return row
 
 
@@ -499,12 +502,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.decoy_change:
                 return run_decoy(args.node, args.decoy_change, "change", args.guard_sec)
             return run_decoy(args.node, args.decoy_revert, "revert", args.guard_sec)
-        except Refused as exc:
+        except (Refused, vm.ExecutorError) as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 3
     try:
         command, text = check_session(args.node)
-    except Refused as exc:
+    except (Refused, vm.ExecutorError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     if args.print:

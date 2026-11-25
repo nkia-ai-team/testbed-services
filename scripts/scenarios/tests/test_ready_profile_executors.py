@@ -5864,11 +5864,11 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         params = self.params("vmhost.firewall", rules=[{"hook": "output", "src": "192.168.124.0/24", "verdict": "drop"}])
         text = firewall.check_parameters(params)[1]
         chain = text.splitlines()
-        first = [line.strip() for line in chain[3:3 + len(vm_common.protected_accept_lines("server", "ens19"))]]
-        self.assertEqual(first, vm_common.protected_accept_lines("server", "ens19"))
+        first = [line.strip() for line in chain[3:3 + len(vm_common.protected_accept_lines("server", "ens19", vm_common.MGMT_NET))]]
+        self.assertEqual(first, vm_common.protected_accept_lines("server", "ens19", vm_common.MGMT_NET))
         with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda kind, mgmt_if, mgmt_net=None: []):
             mutated = vm_common.nft_table("web-guard", "server", "ens19", vm_common.filter_rules(
-                params["rules"], "server", ("ens19",)))
+                params["rules"], "server", ("ens19",)), "", vm_common.T_TESTBED)
         setup = ("ip link add dummy0 type dummy; ip addr add 192.168.124.11/24 dev dummy0; ip link set dummy0 up\n"
                  "ip route add 10.250.0.0/30 dev dummy0; ip route add 192.168.125.0/24 dev dummy0\n")
         probe = ("nft add table inet obs; nft add chain inet obs out '{ type filter hook output priority 100; policy accept; }'\n"
@@ -7059,7 +7059,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         mgmt_if = "ens19" if kind == "server" else "ens22"
         tokens = vm_common.filter_rules(rules, kind, (mgmt_if,))
         with unittest.mock.patch.object(vm_common, "protected_accept_lines", lambda k, m, n=None: lines):
-            text = vm_common.nft_table("probe-guard", kind, mgmt_if, tokens)
+            text = vm_common.nft_table("probe-guard", kind, mgmt_if, tokens, "", vm_common.T_TESTBED)
         target = "192.168.124.11" if kind == "server" else "192.168.124.1"
         path = self.tmp / f"{kind}-{len(lines)}-{abs(hash(tuple(lines)))}.nft"
         path.write_text(text)
@@ -7088,7 +7088,7 @@ class CivilPetitionVmExecutorTests(unittest.TestCase):
         networks only); removing one of them alone is an equivalent mutation, shown here as no flow lost. The router's
         forward path of the servers' reports uses the same generated destination line as the server's output chain."""
         for kind in ("server", "router"):
-            lines = vm_common.protected_accept_lines(kind, "ens19" if kind == "server" else "ens22")
+            lines = vm_common.protected_accept_lines(kind, "ens19" if kind == "server" else "ens22", vm_common.MGMT_NET)
             self.assertEqual(self._flows(kind, lines), {"119 ping in": True, "119 snmp in": True, "report out": True})
             for line in lines:
                 with self.subTest(kind=kind, removed=line):
@@ -7175,6 +7175,12 @@ class SmsVmExecutorTests(unittest.TestCase):
             with unittest.mock.patch.dict(module.CONTRACTS, {"ST4-CASE": params}):
                 module.build_invocation(vm_sandbox.plan(profile_id, "ST4-CASE", params), "run")
 
+    def refused_because(self, profile_id: str, params: dict, reason: str) -> None:
+        module = self.module(profile_id)
+        with self.assertRaisesRegex(ExecutorError, reason):
+            with unittest.mock.patch.dict(module.CONTRACTS, {"ST4-CASE": params}):
+                module.build_invocation(vm_sandbox.plan(profile_id, "ST4-CASE", params), "run")
+
     def invocation(self, profile_id: str, params: dict, action: str = "run") -> tuple[list[str], bytes]:
         module = self.module(profile_id)
         with unittest.mock.patch.dict(module.CONTRACTS, {"ST4-CASE": params}):
@@ -7198,6 +7204,13 @@ class SmsVmExecutorTests(unittest.TestCase):
         self.assertEqual(s.business, {"websvr01": "192.168.131.11", "wassvr01": "192.168.131.21",
                                       "wassvr02": "192.168.131.22", "dbsvr01": "192.168.131.31"})
         self.assertEqual(s.server_nics, {n: "ens18" for n in s.servers})
+        # The protected lines' management NIC comes from the S inventory too (review rv-st4s L).
+        self.assertEqual({s.mgmt_if}, {next(n["ifname"] for n in hosts[name]["nics"] if n["net"] == "mgmt")
+                                       for name in s.servers})
+        mixed = json.loads(json.dumps(inv))
+        next(n for n in mixed["hosts"][0]["nics"] if n["net"] == "mgmt")["ifname"] = "ens20"
+        with self.assertRaisesRegex(ExecutorError, "one management NIC name"):
+            vm_common.derive_testbed(mixed, "x-")
         self.assertEqual(s.never_interfaces["loadgen"], ("ens18", "ens19"))
         self.assertEqual((s.mgmt_net, s.mgmt_host, s.operator_source), ("192.168.133.0/24", "192.168.133.1", "192.168.133.5"))
         self.assertEqual(s.operator_source, inv["networks"]["mgmt"]["operator_host_addr"])
@@ -7294,10 +7307,13 @@ class SmsVmExecutorTests(unittest.TestCase):
                 with self.subTest(port=port, proto=proto):
                     rule = {"hook": "output", "verdict": "drop", "proto": proto, "dst": "192.168.131.21/32", "dport": port}
                     self.refused("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]))
+        # Named in any field: refused by the protected-name check itself, not by a later field check (rv-st4s L).
         for value in ("10.250.0.1", "10.250.0.2", "ens19"):
-            with self.subTest(named=value):
-                rule = {"hook": "output", "verdict": "drop", "dst": "192.168.131.21/32", "proto": value}
-                self.refused("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]))
+            for key in ("proto", "hook", "verdict"):
+                with self.subTest(named=value, field=key):
+                    rule = {"hook": "output", "verdict": "drop", "dst": "192.168.131.21/32", key: value}
+                    self.refused_because("vmhost.firewall", self.params("vmhost.firewall", rules=[rule]),
+                                         f"rule {key} names a protected interface or address")
         for hook_name in ("forward", "prerouting", "ingress"):
             with self.subTest(hook=hook_name):
                 rule = {"hook": hook_name, "verdict": "drop", "dst": "192.168.131.21/32"}
@@ -7486,6 +7502,41 @@ class SmsVmExecutorTests(unittest.TestCase):
         _, stdin = self.invocation("vm.service", params)
         self.assertIn(b'op_ssh=(ssh -tt -n -F none -i "$keys/t4-operator"', stdin)
         self.assertIn(b'-o "UserKnownHostsFile=$keys/known_hosts_civil-petition-sms" -o ConnectTimeout=10 -o ServerAliveInterval=15', stdin)
+
+    def test_t_paths_never_read_the_s_inventory(self) -> None:
+        """Review rv-st4s M: with no S inventory where the runner mounts it, T's executors, operator sessions and decoys
+        work as before; an S name is refused (3), never a traceback."""
+        env = {**os.environ, "CIVIL_PETITION_DEPLOY_DIR": str(self.tmp / "no-deploy")}
+        probe = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import operator_session as s, vm_executor_common as vm\n"
+            "print(s.check_session('web01')[0][-2]); print(s.ssh_argv('192.168.127.21')[-1])\n"
+            "print(s.decoy_row('was01', 'war_redeploy')['mgmt']); print(vm.testbed_of_host('192.168.127.41').domain)\n"
+            "print(s.routine_nodes()); print(s.decoy_nodes('war_redeploy'))\n"
+            "try:\n    s.decoy_row('web01', 'war_redeploy')\nexcept s.Refused as e:\n    print('refused', e)\n"
+            "import vm_service_executor as svc\n"
+            "p = {'host': '192.168.127.31', 'node': 'was01', 'unit': 'tomcat10', 'action': 'stop', 'file': '-', 'match': '-',"
+            " 'replace': '-', 'release': '-', 'release_sha256': '-'}\n"
+            "svc.CONTRACTS['X'] = p\n"
+            "plan = {'scenario': {'id': 'X'}, 'controller': {'runtime': {}}, 'profile_instances': [{'profile_id': 'vm.service',"
+            " 'parameters': p, 'location': {'transport': 'ssh', 'host': p['host'], 'node': p['node'], 'resolved': True}}]}\n"
+            "print(len(svc.build_invocation(plan, 'run')[1]) > 0)\n"
+            "print(vm._S_TESTBED)\n")
+        done = subprocess.run([sys.executable, "-c", probe, str(PROFILES)], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.splitlines(), [
+            "sysop@192.168.127.21", "sysop@192.168.127.21", "192.168.127.31", "civil-petition",
+            "['rt-core01', 'web01', 'was01', 'was02', 'db01']", "['was01', 'was02']",
+            "refused 'web01' does not take war_redeploy (only was01, was02)", "True", "[]"])
+        cli = [sys.executable, str(PROFILES / "operator_session.py")]
+        for args, code in ((["--node", "web01", "--print"], 0), (["--list-nodes"], 0),
+                           (["--node", "websvr01", "--print"], 3), (["--node", "wassvr01", "--decoy-revert", "war_redeploy"], 3),
+                           (["--list-nodes", "--domain", "civil-petition-sms"], 3)):
+            with self.subTest(args=args):
+                done = subprocess.run(cli + args, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(done.returncode, code, done.stderr)
+                if code == 3:
+                    self.assertIn("the S inventory cannot be read", done.stderr)
+                    self.assertNotIn("Traceback", done.stderr)
 
     # ---------------------------------------------------------------- operator sessions and decoys on S
 

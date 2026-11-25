@@ -41,8 +41,8 @@ def check_parameters(p: dict[str, Any]) -> list[str]:
     tb = vm.testbed_of(p)
     table = vm.neutral_name(p["table"], "table")
     prefix = vm.log_prefix(p["log_prefix"])
-    tokens = vm.filter_rules(p["rules"], "server", (vm.SERVER_MGMT_IF,), tb)
-    text = vm.nft_table(table, "server", vm.SERVER_MGMT_IF, tokens, prefix, tb)
+    tokens = vm.filter_rules(p["rules"], "server", (tb.mgmt_if,), tb)
+    text = vm.nft_table(table, "server", tb.mgmt_if, tokens, prefix, tb)
     return [table, text, "-", "-"]
 
 
