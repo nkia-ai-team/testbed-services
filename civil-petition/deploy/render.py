@@ -354,6 +354,15 @@ def _netplan(host: dict, inventory: dict) -> str:
     return "\n".join(lines)
 
 
+def _tunnel_end_66(inventory: dict) -> str:
+    """터널 대역에서 관제 서버 끝이 아닌 하나(66 쪽 끝). hypervisor/build.py 의 도우미 tunnel_src 와 같은 규칙."""
+    monitor = inventory["monitoring"]["address"]
+    ends = [str(a) for a in ipaddress.ip_network(inventory["hypervisor"]["tunnel_cidr"]).hosts() if str(a) != monitor]
+    if len(ends) != 1:
+        raise InventoryError("터널 대역에서 66 끝을 하나로 정할 수 없다")
+    return ends[0]
+
+
 def _acl_rules(inventory: dict, router: dict) -> str:
     app = inventory["app"]
     up = next(nic for nic in router["nics"] if nic.get("gateway"))
@@ -368,6 +377,9 @@ def _acl_rules(inventory: dict, router: dict) -> str:
         lines.append(f"\t\tip saddr {src} ip daddr {dst} {rule['proto']} dport {port} accept")
     monitor = inventory["monitoring"]["address"]
     lines.append(f"\t\tip saddr {monitor} ip daddr {biz_set} icmp type echo-request accept")
+    # 66 쪽 터널 끝(10.250.0.2)이 내는 probe(66 도우미 `probe`, 실행기가 vmhost.firewall 적용 직후 서버 업무 주소를 핑, 설계 §3-5
+    # 규칙 6). 이 줄이 없으면 정책 drop 이 그 요청을 라우터에서 버려 probe 가 규칙과 상관없이 늘 실패한다(v4 PROBE).
+    lines.append(f"\t\tip saddr {_tunnel_end_66(inventory)} ip daddr {biz_set} icmp type echo-request accept")
     lines.append(f"\t\tip saddr {biz_set} ip daddr {biz_set} ip protocol icmp accept")
     lines.append(f"\t\tip saddr {biz_set} oifname \"{up['ifname']}\" accept")
     return "\n".join(lines)

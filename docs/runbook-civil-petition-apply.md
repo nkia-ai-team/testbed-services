@@ -749,6 +749,26 @@ S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 
 되돌리기 순서: T VM 의 쌍 기록 지움(6-1) → 러너 미끼와 평시 세션의 S 몫(사본 앞 판, 6) → 러너의 `CIVIL_PETITION_SMS_OPS`, `PETITION_SMS_ARCHIVE_STATE_DIR` 비움, 필요하면 러너 앞 판(5) → S VM 앞 묶음(4, `from=` 도 함께 빠진다) → 66 S 망
 파일(3) → 66 도우미 앞 판(2) → tb-ops 키 폴더의 두 파일(1). T 는 차례 2 의 도우미 말고는 바뀌지 않는다.
 
+### 15-6. 66 probe 가 라우터 ACL 을 지나게 (v4 PROBE)
+
+결함: 66 도우미 `probe` 는 터널의 66 끝(10.250.0.2)에서 서버 업무 주소를 핑한다(vmhost.firewall 과 router.config 가 적용 직후
+보호 경로를 확인, 설계 §3-5 규칙 6). 라우터 `fwacl` 의 forward 는 정책 drop 이고 echo-request 는 10.250.0.1(관제) 발만 받았다. 그래서
+서버로 가는 probe 요청이 라우터에서 버려져, 규칙과 상관없이 vmhost.firewall 이 매번 "the change cut a protected path" 로 되돌렸다.
+라우터 상향 주소(123.254) probe 는 라우터 input 이 ICMP 를 받아 되었고, 119 발 핑은 10.250.0.1 줄로 되었다. 고침은 라우터 ACL 에
+`ip saddr 10.250.0.2 ip daddr { 서버 업무망 셋 } icmp type echo-request accept` 한 줄(66 끝은 도우미와 같은 규칙으로 인벤토리 터널
+대역에서 정한다). 응답은 forward 의 established 로, 66 에서는 T4-IN 의 established 로 받는다. S 는 라우터가 없고 66 이 업무망에
+바로 닿아(S5-IN established 로 응답을 받음) 이 결함이 없다(S 의 확인은 §15-5 차례 2).
+
+녹화 정지(PAUSE)와 테스트베드 잠금 아래, 주입과 미끼가 돌지 않을 때 한다. 라우터 nftables 를 다시 읽는 VM 변경이라 끝난 시각이
+`last_66_change` 다(라우터 syslog 의 nftables 재시작 줄이 119 로 간다).
+
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 0 | 읽기: 러너 도는 실행 0, PAUSE. 104 에서 이 판으로 라우터 묶음 렌더(`render.py --inventory inventory/t.json --out <임시> --host rt-core01`), 지금 라우터 `/etc/nftables.d/30-acl.nft` 와 `diff` | 차이가 위 한 줄뿐 | 없음 |
+| 1 | 104: `apply.sh --inventory inventory/t.json --host rt-core01 ... --steps "firewall verify"`, 이어서 `--steps record`(나머지 인자는 §6 과 같다) | 단계 끝 `firewall ok`, verify PASS, 라우터 `sudo nft list chain inet fwacl forward` 에 그 줄, 기록 다시 남김(러너 표류 0) | 앞 판 묶음으로 같은 단계(`firewall`, `record`) |
+| 2 | 66 도우미로 probe(§15-1 차례 6 과 같은 연결): `printf 'probe 192.168.124.11\n'`, `125.11`, `125.12`, `126.11` | 넷 모두 끝 코드 0. 119 의 서버 `sms.server.icmp_status` 가 그대로 1, T 부하 비정상 0 | 차례 1 의 되돌리기 |
+| 3 | vmhost.firewall 시험 실행 한 건을 다시(§15-3 차례 1) | run 끝 코드 0(바꾼 뒤 probe 성공), cleanup, recovery 0 | §15-3 차례 1 의 되돌리기 |
+
 ## 수정 기록
 
 - 2026-11-16 KST, v4 T2(ag-t2): 처음 작성. 적용 전.
@@ -799,3 +819,4 @@ S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 
 - 2026-11-25 KST, v4 ST4 가 단계(ag-t4s): §15-5 S 연동(키 폴더, 66 도우미 probe 표, S 망 파일의 운영자 칸, S VM `accounts firewall`, 러너와 사본 순서, 운영자 세션, 미끼, 시험 실행). 적용은 나 단계. §15-4 끝 문단의 S 차례를 §15-5 로.
 - 2026-11-25 KST, v4 ST4 2회차(ag-t4s, 리뷰 rv-st4s L): §15-5 차례 0 에 단말 공개 키 지문 대조, 차례 5 에 러너 S 스위치 둘과 되돌리기, 차례 2 와 6 사이 T 도우미 표류가 정상이라는 줄.
 - 2026-11-25 KST, v4 ST4 3회차(ag-t4s, 리뷰 rv-st4s 2회차 L1): §15-5 차례 6-1 T VM 6대 `--steps record`(쌍 기록, 사본 갱신 뒤).
+- 2026-11-25 KST, v4 PROBE(ag-t4s): §15-6 66 probe 가 라우터 ACL 을 지나게(10.250.0.2 발 echo-request 허용 한 줄), 적용과 확인.

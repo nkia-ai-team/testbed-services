@@ -774,6 +774,52 @@ class RenderContentTests(unittest.TestCase):
         self.assertIn("udp dport 161 notrack", notrack)
         self.assertIn("udp dport { 162, 514 } notrack", notrack)
 
+    def test_router_acl_lets_the_66_probe_reach_the_servers_on_a_real_kernel(self) -> None:
+        """v4 PROBE: 66 도우미 probe 는 터널 66 끝(10.250.0.2)에서 서버 업무 주소를 핑한다(vmhost.firewall 적용 직후 확인). 라우터의
+        forward 정책 drop 이 그 요청을 받아야 한다. 66, 라우터, 서버를 실제 커널의 망 이름공간 셋으로 놓고 렌더된 30-acl.nft
+        그대로 견준다. 그 줄을 지운 표(결함 때의 표)에서는 같은 probe 가 실패하고 10.250.0.1 발 핑(관제)은 두 표 모두 된다."""
+        acl = file_of(self.t["rt-core01"], "/etc/nftables.d/30-acl.nft")
+        probe_line = "ip saddr 10.250.0.2 ip daddr { 192.168.124.0/24, 192.168.125.0/24, 192.168.126.0/24 } icmp type echo-request accept"
+        self.assertIn(probe_line, acl)
+        old = "\n".join(line for line in acl.splitlines() if line.strip() != probe_line) + "\n"
+        self.assertNotEqual(old, acl)
+        script = r'''
+set -eu
+acl=$1; work=$2
+sysctl -qw net.ipv4.ip_forward=1
+for role in hv srv; do unshare -n sh -c "echo \$\$ > $work/$role.pid; exec sleep 60" & done
+for role in hv srv; do for _ in $(seq 50); do [ -s "$work/$role.pid" ] && break; sleep 0.1; done; done
+hv=$(cat $work/hv.pid); srv=$(cat $work/srv.pid)
+ip link add ens18 type veth peer name hv0; ip link add ens19 type veth peer name srv0
+ip link set hv0 netns "$hv"; ip link set srv0 netns "$srv"
+ip addr add 192.168.123.254/24 dev ens18; ip addr add 192.168.124.1/24 dev ens19
+ip link set ens18 up; ip link set ens19 up; ip link set lo up
+ip route add 10.250.0.0/30 via 192.168.123.1
+nsenter -t "$hv" -n sh -c 'ip link set lo up; ip addr add 10.250.0.1/32 dev lo; ip addr add 10.250.0.2/32 dev lo
+  ip addr add 192.168.123.1/24 dev hv0; ip link set hv0 up; ip route add 192.168.124.0/24 via 192.168.123.254'
+nsenter -t "$srv" -n sh -c 'ip link set lo up; ip addr add 192.168.124.11/24 dev srv0; ip link set srv0 up
+  ip route add default via 192.168.124.1'
+nft -f "$acl"
+for src in 10.250.0.1 10.250.0.2; do
+  if nsenter -t "$hv" -n ping -n -q -c 1 -W 1 -I $src 192.168.124.11 >/dev/null 2>&1; then echo "$src ok"; else echo "$src lost"; fi
+done
+kill "$hv" "$srv"
+'''
+        results = {}
+        for name, text in (("rendered", acl), ("without the probe line", old)):
+            with tempfile.TemporaryDirectory() as raw:
+                path = Path(raw) / "30-acl.nft"
+                path.write_text(text)
+                done = subprocess.run(["unshare", "-rn", "sh", "-c", script, "_", str(path), raw], capture_output=True,
+                                      text=True, timeout=60)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                results[name] = done.stdout.split()
+        self.assertEqual(results["rendered"], ["10.250.0.1", "ok", "10.250.0.2", "ok"])
+        self.assertEqual(results["without the probe line"], ["10.250.0.1", "ok", "10.250.0.2", "lost"])
+        # 66 쪽 끝은 66 도우미가 ping -I 로 쓰는 값과 같다(같은 규칙: 터널 대역에서 관제 서버 끝이 아닌 하나).
+        helper = (DEPLOY / "hypervisor" / "build.py").read_text()
+        self.assertIn('ends = [str(a) for a in ipaddress.ip_network(inv["hypervisor"]["tunnel_cidr"]).hosts() if str(a) != monitor]', helper)
+
     def test_snmpd_reports_speed_traps_and_overrides_only_ifoutdiscards(self) -> None:
         conf = file_of(self.t["rt-core01"], "/etc/snmp/snmpd.conf")
         self.assertIn("linkUpDownNotifications yes", conf)
