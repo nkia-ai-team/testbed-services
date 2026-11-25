@@ -6871,6 +6871,15 @@ class PairExpectedTests(unittest.TestCase):
         with unittest.mock.patch.object(render, "render_host", drifted):
             with self.assertRaisesRegex(render.InventoryError, "쌍 밖의 차이"):
                 render.pair_expected(inventory(T_INV), s_inv)
+        def s_extra(inv, host):
+            bundle = real(inv, host)
+            if inv["domain"] == s_inv["domain"] and host["name"] == "dbsvr01":
+                extra = dict(bundle["files"][0], dest="/etc/only-on-s.conf")
+                bundle["files"] = [*bundle["files"], extra]
+            return bundle
+        with unittest.mock.patch.object(render, "render_host", s_extra):
+            with self.assertRaisesRegex(render.InventoryError, "S 에만 \\['/etc/only-on-s.conf'\\]"):
+                render.pair_expected(inventory(T_INV), s_inv)
         with unittest.mock.patch.object(render, "PAIR_T_ONLY", ("/etc/default/lldpd",)):
             with self.assertRaisesRegex(render.InventoryError, "10-forward.conf"):
                 render.pair_expected(inventory(T_INV), s_inv)
