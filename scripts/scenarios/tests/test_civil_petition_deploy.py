@@ -6731,10 +6731,10 @@ class InstallRecordTests(unittest.TestCase):
     # Stand-in normalized checksums of the three files (render.py puts the real ones in meta.json).
     NORMALIZED = {"/etc/app/a.conf": "a" * 64, "/etc/app/b.conf": "b" * 64, "/etc/app/c.conf": "c" * 64}
 
-    RULES = {"domain": "dom-x", "names": [], "ipv4": render.IPV4.pattern}
+    RULES = {"mac": render.MAC_NORMALIZE, "domain": "dom-x", "names": [], "ipv4": render.IPV4.pattern}
 
     def bundle(self, root: Path, meta_secrets: list[str] | None = None, meta: bool = True,
-               drop_rules: bool = False) -> Path:
+               drop_rules: bool = False, rules: dict | None = None) -> Path:
         bundle = root / "bundle"
         (bundle / "steps.d").mkdir(parents=True)
         for name in ("lib.sh", "record.sh"):
@@ -6754,7 +6754,7 @@ class InstallRecordTests(unittest.TestCase):
             secrets = {"/etc/app/c.conf": ["db_password"] if meta_secrets is None else meta_secrets}
             (bundle / "meta.json").write_text(json.dumps({"files": [
                 {"dest": d, "secrets": secrets.get(d, []), "normalized_sha256": self.NORMALIZED[d]} for d, _ in rows],
-                **({} if drop_rules else {"normalize": self.RULES})}))
+                **({} if drop_rules else {"normalize": self.RULES if rules is None else rules})}))
         source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
         source = source.replace("LOG=/var/log/petition-deploy.log", f"LOG={bundle}/log")
         (bundle / "install.sh").write_text(source)
@@ -6813,7 +6813,9 @@ class InstallRecordTests(unittest.TestCase):
     def test_record_refuses_without_the_render_secret_marks(self) -> None:
         """meta.json 이 없거나, 비밀값 자리를 품은 원본의 표시가 비었으면(렌더와 묶음이 어긋남) 기록하지 않는다."""
         for case, kwargs in (("no meta", {"meta": False}), ("empty mark", {"meta_secrets": []}),
-                             ("no normalize rules", {"drop_rules": True})):
+                             ("no normalize rules", {"drop_rules": True}),
+                             # PAIRMAC: a bundle from before the MAC rule would leave MAC lines unmatched; it stops instead.
+                             ("rules without mac", {"rules": {k: v for k, v in self.RULES.items() if k != "mac"}})):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
                 bundle = self.bundle(root, **kwargs)
@@ -6948,33 +6950,72 @@ class PairExpectedTests(unittest.TestCase):
         for word in ("deploy/inventory/pair-expected.json", "normalized.sha256", "war.sha256", "script.js", "entrypoint.sh"):
             self.assertIn(word, section)
 
+    @staticmethod
+    def vm_mac(seed: str, ifname: str) -> str:
+        """설치 단계 network 가 채우는 꼴(소문자 MAC) 그대로, 테스트베드와 NIC 마다 다른 값."""
+        digest = hashlib.sha256(f"{seed}/{ifname}".encode()).hexdigest()
+        return "52:54:00:" + ":".join(digest[i:i + 2] for i in (0, 2, 4))
+
+    def installed_pair_record(self, inv: dict, name: str, root: Path, edit=None) -> dict[str, str]:
+        """렌더 묶음을 VM 에 놓듯 놓고(MAC 자리는 그 VM 의 실제 MAC 으로 채움, steps/lib.sh place_files 와 같은 꼴) 설치 기록
+        단계를 돌린 쌍 기록. edit(dest, text) 가 있으면 놓기 전에 파일 내용을 바꾼다."""
+        host = next(h for h in inv["hosts"] if h["name"] == name)
+        bundle_root = render.write_bundle(render.render_host(inv, host), root / "bundles")
+        (bundle_root / "steps.d").mkdir()
+        for step in ("lib.sh", "record.sh"):
+            (bundle_root / "steps.d" / step).write_text((DEPLOY / "steps" / step).read_text())
+        source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+        (bundle_root / "install.sh").write_text(source.replace("LOG=/var/log/petition-deploy.log", f"LOG={root}/log"))
+        place = root / "place"
+        for entry in json.loads((bundle_root / "meta.json").read_text())["files"]:
+            target = place / entry["dest"].lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            text = (bundle_root / "files" / entry["dest"].lstrip("/")).read_text(encoding="utf-8")
+            text = render.MAC_SLOT.sub(lambda m: self.vm_mac(inv["testbed"] + name, m.group(1)), text)
+            if edit is not None:
+                text = edit(entry["dest"], text)
+            target.write_text(text, encoding="utf-8")
+        if host["role"] == "loadgen":
+            (place / "opt" / "loadgen" / inv["domain"]).mkdir(parents=True)
+            for n in ("script.js", "entrypoint.sh"):
+                shutil.copyfile(DOMAIN / "loadgen" / n, place / "opt" / "loadgen" / inv["domain"] / n)
+        done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
+                              text=True, env={**os.environ, "PLACE_ROOT": str(place)})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = (place / "var/lib/petition-deploy/normalized.sha256").read_text().splitlines()
+        return {l.split("  ", 1)[1]: l.split("  ", 1)[0] for l in lines}
+
+    def test_netplan_with_the_vm_mac_matches_and_another_line_still_differs(self) -> None:
+        """v4 PAIRMAC: 렌더 기대값은 MAC 자리표시로, VM 기록은 채운 실제 MAC 으로 센다. 두 쪽 정규화가 MAC 을 같은 토큰으로
+        바꿔야 같아진다. MAC 이 아닌 줄이 다르면 여전히 다르다."""
+        doc = json.loads(render.PAIR_EXPECTED.read_text(encoding="utf-8"))
+        netplan = "/etc/netplan/01-host.yaml"
+        for t_name, inv in (("web01", inventory(T_INV)), ("websvr01", inventory(S_INV))):
+            pair = next(p for p in doc["pairs"] if t_name in (p["t"], p["s"]))
+            name = t_name
+            with self.subTest(vm=name), tempfile.TemporaryDirectory() as raw:
+                placed = {}
+
+                def keep(dest, text):
+                    placed[dest] = text
+                    return text
+                rec = self.installed_pair_record(inv, name, Path(raw) / "a", keep)
+                self.assertNotIn("@@MAC:", placed[netplan])
+                self.assertRegex(placed[netplan], r'macaddress: "52:54:00:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}"')
+                self.assertEqual(rec[netplan], pair["files"][netplan])
+                changed = self.installed_pair_record(
+                    inv, name, Path(raw) / "b",
+                    lambda dest, text: text.replace("dhcp4: false", "dhcp4: true", 1) if dest == netplan else text)
+                self.assertNotEqual(changed[netplan], pair["files"][netplan])
+
     def test_pair_records_of_two_installed_partners_match_the_expected_value(self) -> None:
-        """T 와 S 짝을 렌더 그대로 놓고 설치 기록을 돌리면, 빼는 줄을 뺀 두 normalized.sha256 이 서로 같고 기대값과 같다."""
+        """T 와 S 짝을 렌더 그대로(MAC 자리는 VM 마다 다른 실제 MAC 으로 채워) 놓고 설치 기록을 돌리면, 빼는 줄을 뺀 두
+        normalized.sha256 이 서로 같고 기대값과 같다."""
         doc = json.loads(render.PAIR_EXPECTED.read_text(encoding="utf-8"))
         t_inv, s_inv = inventory(T_INV), inventory(S_INV)
 
         def pair_record(inv: dict, name: str, root: Path) -> dict[str, str]:
-            host = next(h for h in inv["hosts"] if h["name"] == name)
-            bundle_root = render.write_bundle(render.render_host(inv, host), root / "bundles")
-            (bundle_root / "steps.d").mkdir()
-            for step in ("lib.sh", "record.sh"):
-                (bundle_root / "steps.d" / step).write_text((DEPLOY / "steps" / step).read_text())
-            source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
-            (bundle_root / "install.sh").write_text(source.replace("LOG=/var/log/petition-deploy.log", f"LOG={root}/log"))
-            place = root / "place"
-            for entry in json.loads((bundle_root / "meta.json").read_text())["files"]:
-                target = place / entry["dest"].lstrip("/")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(bundle_root / "files" / entry["dest"].lstrip("/"), target)
-            if host["role"] == "loadgen":
-                (place / "opt" / "loadgen" / inv["domain"]).mkdir(parents=True)
-                for n in ("script.js", "entrypoint.sh"):
-                    shutil.copyfile(DOMAIN / "loadgen" / n, place / "opt" / "loadgen" / inv["domain"] / n)
-            done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
-                                  text=True, env={**os.environ, "PLACE_ROOT": str(place)})
-            self.assertEqual(done.returncode, 0, done.stderr)
-            lines = (place / "var/lib/petition-deploy/normalized.sha256").read_text().splitlines()
-            return {l.split("  ", 1)[1]: l.split("  ", 1)[0] for l in lines}
+            return self.installed_pair_record(inv, name, root)
         for pair in doc["pairs"]:
             with self.subTest(pair=pair["t"]), tempfile.TemporaryDirectory() as raw:
                 t_rec = pair_record(t_inv, pair["t"], Path(raw) / "t")

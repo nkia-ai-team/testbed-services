@@ -8,7 +8,8 @@
 # meta.json 이 없거나, 어느 파일의 표시가 없거나, 표시는 비었는데 묶음 원본에 비밀값 자리가 있으면 기록하지 않고 멈춘다.
 #
 # 쌍 기록 normalized.sha256(S 문서 spec-testbed-sms-only.md §2-4 조건 1, ST4 M2): 같은 파일들을 **VM 에 놓인 그대로 읽어**
-# 묶음 meta.json 의 정규화 규칙("normalize", render.py 의 normalize_rules 와 apply_normalize 와 같은 순서: 도메인 값, 긴 호스트
+# 묶음 meta.json 의 정규화 규칙("normalize", render.py 의 normalize_rules 와 apply_normalize 와 같은 순서: MAC(렌더 자리표시와
+# 채운 실제 MAC 을 같은 토큰으로), 도메인 값, 긴 호스트
 # 이름부터, IPv4)으로 바꾼 뒤의 sha256 을 `<값>  <dest>` 로, 부하기는 놓인 부하 스크립트 둘의 sha256 을 `<값>  loadgen/<이름>`
 # 으로 더해 남긴다. 러너가 짝 T 서버의 기록, 저장소 deploy/inventory/pair-expected.json 과 견주어 쌍을 판정한다. 묶음의 값을
 # 옮겨 적지 않으므로, 설치 뒤 틀이 바뀌어 VM 파일이 지금 묶음과 다르면 그 줄이 기대값과 달라 쌍이 서지 않는다(ST4 3회차
@@ -27,11 +28,13 @@ if not meta_path.is_file():
     sys.exit("record: meta.json 없음(렌더 산출물의 비밀값 표시를 읽을 수 없다)")
 meta = json.loads(meta_path.read_text(encoding="utf-8"))
 rules = meta.get("normalize")
-if not (isinstance(rules, dict) and isinstance(rules.get("domain"), str) and rules["domain"]
+if not (isinstance(rules, dict) and isinstance(rules.get("mac"), str) and rules["mac"]
+        and isinstance(rules.get("domain"), str) and rules["domain"]
         and isinstance(rules.get("names"), list) and isinstance(rules.get("ipv4"), str)):
     sys.exit("record: meta.json 의 정규화 규칙 없음")
 def normalized(text):
-    result = text.replace(rules["domain"], "@domain@")
+    result = re.sub(rules["mac"], "@mac@", text)
+    result = result.replace(rules["domain"], "@domain@")
     for name, token in rules["names"]:
         result = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", token, result)
     return hashlib.sha256(re.sub(rules["ipv4"], "@ip@", result).encode("utf-8", "surrogateescape")).hexdigest()

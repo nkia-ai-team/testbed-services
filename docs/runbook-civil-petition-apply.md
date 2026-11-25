@@ -746,6 +746,12 @@ S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 
 | 9 | 미끼 무해 판정(§15-4 차례 9-1, 9-2 를 S 이름으로): war_redeploy 는 wassvr01, wassvr02 각 한 번, config_reapply 는 websvr01 한 번. `decoy_probe.py sample --inventory civil-petition/deploy/inventory/s.json ...`. 9-2 는 wassvr01 에 다섯 짝 | §15-4 9-1, 9-2 와 같은 기준(`harmless`, RSS 증가 20% 이하, 누수 경고 늘지 않음). `harmful` 이면 S 대상의 그 종류를 정책에서 빼기 전에 지휘 세션에 알린다 | 마지막 `--decoy-revert` |
 | 10 | 시험 실행과 쌍 시험(S 문서 §11 ST4 행, §15-3 의 차례를 S 실행기 일곱으로): 실행기 종류마다 1건, 같은 실행기와 같은 강도로 T 와 S 에서 1건씩 | §15-3 과 S 문서 §11 ST4 의 수치(피해 신호 최댓값의 비 0.8 ~ 1.25), 끝나면 S 다섯 대 가드 잔여 0 | §15-3 차례 1 의 되돌리기(S 관리 주소) |
 
+정규화 규칙이 바뀌는 판(v4 PAIRMAC: MAC 을 렌더 자리표시와 채운 실제 MAC 이 같은 토큰이 되게)을 tb-ops 사본에 올렸을 때도 차례 6-1 을
+다시 한다. T VM 6대와 S VM 5대 모두 이 판 묶음으로 `--steps record` 를 한 번씩 돌린다. 기록 단계는 묶음 meta.json 의 규칙으로 VM
+파일을 다시 정규화하므로, 사본만 바꾸면 기대값(`inventory/pair-expected.json`)과 옛 규칙의 VM 기록이 어긋나 쌍이 거짓이 된다. 사본과
+기록 사이에는 쌍이 거짓인 것이 정상이다(녹화는 막지 않는다). 확인은 다음 S 실행의 `pair.json` 이 `pair: true`, 어긋나면 그 까닭 줄에
+어느 VM 의 어느 dest 인지 나온다.
+
 되돌리기 순서: T VM 의 쌍 기록 지움(6-1) → 러너 미끼와 평시 세션의 S 몫(사본 앞 판, 6) → 러너의 `CIVIL_PETITION_SMS_OPS`, `PETITION_SMS_ARCHIVE_STATE_DIR` 비움, 필요하면 러너 앞 판(5) → S VM 앞 묶음(4, `from=` 도 함께 빠진다) → 66 S 망
 파일(3) → 66 도우미 앞 판(2) → tb-ops 키 폴더의 두 파일(1). T 는 차례 2 의 도우미 말고는 바뀌지 않는다.
 
@@ -820,3 +826,4 @@ S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 
 - 2026-11-25 KST, v4 ST4 2회차(ag-t4s, 리뷰 rv-st4s L): §15-5 차례 0 에 단말 공개 키 지문 대조, 차례 5 에 러너 S 스위치 둘과 되돌리기, 차례 2 와 6 사이 T 도우미 표류가 정상이라는 줄.
 - 2026-11-25 KST, v4 ST4 3회차(ag-t4s, 리뷰 rv-st4s 2회차 L1): §15-5 차례 6-1 T VM 6대 `--steps record`(쌍 기록, 사본 갱신 뒤).
 - 2026-11-25 KST, v4 PROBE(ag-t4s): §15-6 66 probe 가 라우터 ACL 을 지나게(10.250.0.2 발 echo-request 허용 한 줄), 적용과 확인.
+- 2026-11-26 KST, v4 PAIRMAC(ag-t4s): §15-5 차례 6-1 아래에 정규화 규칙이 바뀐 판을 올린 뒤 T, S VM 기록을 다시 하는 문단.

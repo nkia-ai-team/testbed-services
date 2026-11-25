@@ -59,6 +59,10 @@ PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
 SECRET = re.compile(r"@@SECRET:([a-z0-9_]+)@@")
 # NIC 의 MAC 자리. 설치 단계 network 가 VM 안에서 그 NIC 의 MAC 으로 채운다(steps/network.sh, lib.sh place_files).
 MAC_SLOT = re.compile(r"@@MAC:([a-z0-9]+)@@")
+# 정규화에서 MAC 자리. 렌더본의 자리표시(@@MAC:<NIC>@@)와 설치 단계 network 가 채운 실제 MAC(steps/lib.sh place_files 의
+# 소문자 꼴)이 같은 토큰 @mac@ 이 되어야 렌더 기대값과 VM 쌍 기록이 같아진다(v4 PAIRMAC). 다른 자리표시(@@SECRET:)는 비밀값
+# 파일이라 쌍 대조에서 빠진다.
+MAC_NORMALIZE = r"@@MAC:[a-z0-9]+@@|(?<![0-9A-Fa-f:])[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:])"
 # 커널 NIC 이름 꼴(IFNAMSIZ 16 에서 끝 NUL 을 뺀 15자). netplan set-name 이 이보다 길면 이름을 바꾸지 않는다.
 IFNAME = re.compile(r"^[a-z][a-z0-9]{0,14}$")
 # 데이터 디스크 serial: Proxmox 는 20바이트까지 받는다. db 단계가 lsblk SERIAL 과 글자 그대로 맞추므로 lsblk -r 이 바꿔 쓰는
@@ -555,13 +559,14 @@ def normalize_rules(inventory: dict) -> dict:
         index = role_index.get(other["role"], 0)
         role_index[other["role"]] = index + 1
         names.append((other["name"], f"@{other['role']}{index}@"))
-    return {"domain": inventory["domain"], "names": [list(n) for n in sorted(names, key=lambda item: -len(item[0]))],
-            "ipv4": IPV4.pattern}
+    return {"mac": MAC_NORMALIZE, "domain": inventory["domain"],
+            "names": [list(n) for n in sorted(names, key=lambda item: -len(item[0]))], "ipv4": IPV4.pattern}
 
 
 def apply_normalize(text: str, rules: dict) -> str:
-    """규칙대로 바꾼다. steps/record.sh 가 같은 순서(도메인, 긴 이름부터, IPv4)를 그대로 따른다(시험이 묶는다)."""
-    result = text.replace(rules["domain"], "@domain@")
+    """규칙대로 바꾼다. steps/record.sh 가 같은 순서(MAC, 도메인, 긴 이름부터, IPv4)를 그대로 따른다(시험이 묶는다)."""
+    result = re.sub(rules["mac"], "@mac@", text)
+    result = result.replace(rules["domain"], "@domain@")
     for name, token in rules["names"]:
         result = re.sub(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", token, result)
     return re.sub(rules["ipv4"], "@ip@", result)
