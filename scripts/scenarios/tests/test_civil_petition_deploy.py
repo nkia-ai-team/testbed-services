@@ -6682,7 +6682,11 @@ class InstallRecordTests(unittest.TestCase):
     """설치 기록 expected.sha256(러너 계약 (라), 설계 §6-4 버전 표류, 지휘 세션 결정 11-19). 러너는 `cd / && sha256sum -c` 로
     견준다. 비밀값을 채운 파일(렌더 meta.json 의 secrets 표시)은 기록하지 않는다."""
 
-    def bundle(self, root: Path, meta_secrets: list[str] | None = None, meta: bool = True) -> Path:
+    # Stand-in normalized checksums of the three files (render.py puts the real ones in meta.json).
+    NORMALIZED = {"/etc/app/a.conf": "a" * 64, "/etc/app/b.conf": "b" * 64, "/etc/app/c.conf": "c" * 64}
+
+    def bundle(self, root: Path, meta_secrets: list[str] | None = None, meta: bool = True,
+               drop_normalized: bool = False) -> Path:
         bundle = root / "bundle"
         (bundle / "steps.d").mkdir(parents=True)
         for name in ("lib.sh", "record.sh"):
@@ -6701,7 +6705,8 @@ class InstallRecordTests(unittest.TestCase):
         if meta:
             secrets = {"/etc/app/c.conf": ["db_password"] if meta_secrets is None else meta_secrets}
             (bundle / "meta.json").write_text(json.dumps({"files": [
-                {"dest": d, "secrets": secrets.get(d, [])} for d, _ in rows]}))
+                {"dest": d, "secrets": secrets.get(d, []), **({} if drop_normalized else {"normalized_sha256": self.NORMALIZED[d]})}
+                for d, _ in rows]}))
         source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
         source = source.replace("LOG=/var/log/petition-deploy.log", f"LOG={bundle}/log")
         (bundle / "install.sh").write_text(source)
@@ -6740,15 +6745,22 @@ class InstallRecordTests(unittest.TestCase):
             done = check()
             self.assertNotEqual(done.returncode, 0)
             self.assertIn("etc/app/a.conf: FAILED", done.stdout)
+            # The pair record (ST4 M2): the same files' normalized checksums from meta.json, no secret file.
+            pair = place / "var" / "lib" / "petition-deploy" / "normalized.sha256"
+            self.assertEqual(pair.read_text(), f"{'a' * 64}  /etc/app/a.conf\n{'b' * 64}  /etc/app/b.conf\n")
+            self.assertEqual(stat.S_IMODE(pair.stat().st_mode), 0o644)
             # An installed server gets the record on its own with the record step.
             record.unlink()
+            pair.unlink()
             done = self.run_install(bundle, place, "record")
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(len(record.read_text().splitlines()), 2)
+            self.assertEqual(len(pair.read_text().splitlines()), 2)
 
     def test_record_refuses_without_the_render_secret_marks(self) -> None:
         """meta.json 이 없거나, 비밀값 자리를 품은 원본의 표시가 비었으면(렌더와 묶음이 어긋남) 기록하지 않는다."""
-        for case, kwargs in (("no meta", {"meta": False}), ("empty mark", {"meta_secrets": []})):
+        for case, kwargs in (("no meta", {"meta": False}), ("empty mark", {"meta_secrets": []}),
+                             ("no normalized", {"drop_normalized": True})):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
                 bundle = self.bundle(root, **kwargs)
@@ -6761,6 +6773,7 @@ class InstallRecordTests(unittest.TestCase):
                 self.assertIn("설치 기록을 남기지 못함", done.stdout + done.stderr)
                 self.assertIn("record 실패", done.stderr)
                 self.assertFalse((place / "var" / "lib" / "petition-deploy" / "expected.sha256").exists())
+                self.assertFalse((place / "var" / "lib" / "petition-deploy" / "normalized.sha256").exists())
 
     def test_real_render_bundles_leave_the_secret_files_out(self) -> None:
         """T 렌더 묶음 그대로: 비밀값을 채우는 파일(SNMP 커뮤니티, Tomcat 컨텍스트)이 빠지고 나머지는 모두 든다."""
@@ -6780,6 +6793,12 @@ class InstallRecordTests(unittest.TestCase):
                     target = place / entry["dest"].lstrip("/")
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(bundle_root / "files" / entry["dest"].lstrip("/"), target)
+                if host["role"] == "loadgen":
+                    # The loadgen step's two scripts (steps/loadgen.sh), as the pair record reads them.
+                    scripts = place / "opt" / "loadgen" / inv["domain"]
+                    scripts.mkdir(parents=True)
+                    for name in ("script.js", "entrypoint.sh"):
+                        shutil.copyfile(DOMAIN / "loadgen" / name, scripts / name)
                 done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
                                       text=True, env={**os.environ, "PLACE_ROOT": str(place)})
                 self.assertEqual(done.returncode, 0, done.stderr)
@@ -6788,10 +6807,143 @@ class InstallRecordTests(unittest.TestCase):
                 secret = {e["dest"] for e in meta if e["secrets"]}
                 self.assertEqual(set(recorded), {e["dest"] for e in meta} - secret)
                 self.assertTrue(secret.isdisjoint(recorded))
+                pair = (place / "var/lib/petition-deploy/normalized.sha256").read_text().splitlines()
+                expected = [f"{e['normalized_sha256']}  {e['dest']}" for e in meta if not e["secrets"]]
+                if host["role"] == "loadgen":
+                    expected += [f"{hashlib.sha256((DOMAIN / 'loadgen' / n).read_bytes()).hexdigest()}  loadgen/{n}"
+                                 for n in ("script.js", "entrypoint.sh")]
+                self.assertEqual(pair, sorted(expected, key=lambda l: l.split("  ", 1)[1]))
                 if host["role"] == "router":
                     self.assertIn("/etc/snmp/snmpd.community.conf", secret)
                 if host["role"] == "was":
                     self.assertIn("/etc/tomcat10/Catalina/localhost/petition.xml", secret)
+
+
+class PairExpectedTests(unittest.TestCase):
+    """쌍 기대값(S 문서 §2-4 조건 1, ST4 M2): 짝별로 T 와 같은 값 하나. 렌더가 inventory/pair-expected.json 을 만들고,
+    설치 기록 단계가 VM 에 normalized.sha256 을 남기며, 러너가 둘을 견준다. 빼는 파일은 문서와 코드가 같은 셋뿐이다."""
+
+    def test_the_committed_file_is_what_the_render_makes(self) -> None:
+        self.assertEqual(render.PAIR_EXPECTED, DEPLOY / "inventory" / "pair-expected.json")
+        self.assertEqual(render.PAIR_EXPECTED.read_text(encoding="utf-8"), render.pair_expected_text())
+        self.assertEqual(subprocess.run([sys.executable, str(DEPLOY / "render.py"), "--check-pair-expected"],
+                                        capture_output=True, timeout=120).returncode, 0)
+
+    def test_pairs_by_role_order_and_only_the_design_exclusions(self) -> None:
+        doc = json.loads(render.PAIR_EXPECTED.read_text(encoding="utf-8"))
+        self.assertEqual(doc["schema"], "petition-pair-expected/1")
+        self.assertEqual([(p["t"], p["s"]) for p in doc["pairs"]],
+                         [(t, s) for _, t, s in pairpkg.pairs(inventory(T_INV), inventory(S_INV))])
+        self.assertEqual([(p["t"], p["s"]) for p in doc["pairs"]],
+                         [("web01", "websvr01"), ("was01", "wassvr01"), ("was02", "wassvr02"), ("db01", "dbsvr01"),
+                          ("loadgen", "loadgen")])
+        t_b, s_b = bundles(T_INV), bundles(S_INV)
+        for pair in doc["pairs"]:
+            with self.subTest(pair=pair["t"]):
+                t_files = {f["dest"]: f for f in t_b[pair["t"]]["files"]}
+                s_files = {f["dest"]: f for f in s_b[pair["s"]]["files"]}
+                server = pair["role"] != "loadgen"
+                self.assertEqual(pair["t_only"], ["/etc/default/lldpd", "/etc/rsyslog.d/remote/10-forward.conf"] if server else [])
+                self.assertEqual(pair["differs"], [] if server else ["/etc/netplan/01-host.yaml"])
+                secret = {d for d, f in t_files.items() if f["secrets"]}
+                self.assertEqual(set(pair["files"]), set(t_files) - secret - set(pair["t_only"]) - set(pair["differs"]))
+                for dest, value in pair["files"].items():
+                    self.assertEqual((t_files[dest]["normalized_sha256"], s_files[dest]["normalized_sha256"]), (value, value))
+                if pair["role"] == "was":
+                    self.assertIn("/etc/tomcat10/Catalina/localhost/petition.xml", secret)
+        # One expected value per role does not hold even inside T (was02 is the night batch node).
+        was = [p for p in doc["pairs"] if p["role"] == "was"]
+        self.assertNotEqual(was[0]["files"], was[1]["files"])
+        self.assertEqual(doc["loadgen_files"], {f"loadgen/{n}": hashlib.sha256((DOMAIN / "loadgen" / n).read_bytes()).hexdigest()
+                                                for n in ("script.js", "entrypoint.sh")})
+
+    def test_a_difference_outside_the_exclusions_stops_the_render(self) -> None:
+        s_inv = inventory(S_INV)
+        real = render.render_host
+
+        def drifted(inv, host):
+            bundle = real(inv, host)
+            if inv["domain"] == s_inv["domain"] and host["name"] == "wassvr01":
+                for entry in bundle["files"]:
+                    if entry["dest"] == "/etc/tomcat10/server.xml":
+                        entry["normalized_sha256"] = "0" * 64
+            return bundle
+        with unittest.mock.patch.object(render, "render_host", drifted):
+            with self.assertRaisesRegex(render.InventoryError, "쌍 밖의 차이"):
+                render.pair_expected(inventory(T_INV), s_inv)
+        with unittest.mock.patch.object(render, "PAIR_T_ONLY", ("/etc/default/lldpd",)):
+            with self.assertRaisesRegex(render.InventoryError, "10-forward.conf"):
+                render.pair_expected(inventory(T_INV), s_inv)
+        with unittest.mock.patch.object(render, "PAIR_DIFFERS", {}):
+            with self.assertRaisesRegex(render.InventoryError, "netplan"):
+                render.pair_expected(inventory(T_INV), s_inv)
+
+    def test_the_design_document_names_the_same_exclusions(self) -> None:
+        text = S_SPEC.read_text(encoding="utf-8")
+        section = text.split("### 2-4.", 1)[1].split("### 2-5.", 1)[0]
+        for dest in (*render.PAIR_T_ONLY, *(d for ds in render.PAIR_DIFFERS.values() for d in ds)):
+            self.assertIn(f"`{dest}`", section)
+        for word in ("deploy/inventory/pair-expected.json", "normalized.sha256", "war.sha256", "script.js", "entrypoint.sh"):
+            self.assertIn(word, section)
+
+    def test_pair_records_of_two_installed_partners_match_the_expected_value(self) -> None:
+        """T 와 S 짝을 렌더 그대로 놓고 설치 기록을 돌리면, 빼는 줄을 뺀 두 normalized.sha256 이 서로 같고 기대값과 같다."""
+        doc = json.loads(render.PAIR_EXPECTED.read_text(encoding="utf-8"))
+        t_inv, s_inv = inventory(T_INV), inventory(S_INV)
+
+        def pair_record(inv: dict, name: str, root: Path) -> dict[str, str]:
+            host = next(h for h in inv["hosts"] if h["name"] == name)
+            bundle_root = render.write_bundle(render.render_host(inv, host), root / "bundles")
+            (bundle_root / "steps.d").mkdir()
+            for step in ("lib.sh", "record.sh"):
+                (bundle_root / "steps.d" / step).write_text((DEPLOY / "steps" / step).read_text())
+            source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+            (bundle_root / "install.sh").write_text(source.replace("LOG=/var/log/petition-deploy.log", f"LOG={root}/log"))
+            place = root / "place"
+            for entry in json.loads((bundle_root / "meta.json").read_text())["files"]:
+                target = place / entry["dest"].lstrip("/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(bundle_root / "files" / entry["dest"].lstrip("/"), target)
+            if host["role"] == "loadgen":
+                (place / "opt" / "loadgen" / inv["domain"]).mkdir(parents=True)
+                for n in ("script.js", "entrypoint.sh"):
+                    shutil.copyfile(DOMAIN / "loadgen" / n, place / "opt" / "loadgen" / inv["domain"] / n)
+            done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
+                                  text=True, env={**os.environ, "PLACE_ROOT": str(place)})
+            self.assertEqual(done.returncode, 0, done.stderr)
+            lines = (place / "var/lib/petition-deploy/normalized.sha256").read_text().splitlines()
+            return {l.split("  ", 1)[1]: l.split("  ", 1)[0] for l in lines}
+        for pair in doc["pairs"]:
+            with self.subTest(pair=pair["t"]), tempfile.TemporaryDirectory() as raw:
+                t_rec = pair_record(t_inv, pair["t"], Path(raw) / "t")
+                s_rec = pair_record(s_inv, pair["s"], Path(raw) / "s")
+                drop = set(pair["t_only"]) | set(pair["differs"])
+                t_cmp = {d: v for d, v in t_rec.items() if d not in drop}
+                s_cmp = {d: v for d, v in s_rec.items() if d not in drop}
+                self.assertEqual(t_cmp, s_cmp)
+                expected = dict(pair["files"])
+                if pair["role"] == "loadgen":
+                    expected.update(doc["loadgen_files"])
+                self.assertEqual(s_cmp, expected)
+                self.assertTrue(set(pair["t_only"]) <= set(t_rec))
+                self.assertFalse(set(pair["t_only"]) & set(s_rec))
+
+    def test_a_load_generator_record_needs_its_two_scripts(self) -> None:
+        inv = inventory(S_INV)
+        host = next(h for h in inv["hosts"] if h["role"] == "loadgen")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            bundle_root = render.write_bundle(render.render_host(inv, host), root / "bundles")
+            (bundle_root / "steps.d").mkdir()
+            for step in ("lib.sh", "record.sh"):
+                (bundle_root / "steps.d" / step).write_text((DEPLOY / "steps" / step).read_text())
+            source = (DEPLOY / "install-host.sh").read_text().replace("[[ $EUID -eq 0 ]] ||", "true ||")
+            (bundle_root / "install.sh").write_text(source.replace("LOG=/var/log/petition-deploy.log", f"LOG={root}/log"))
+            done = subprocess.run(["bash", str(bundle_root / "install.sh"), str(bundle_root), "record"], capture_output=True,
+                                  text=True, env={**os.environ, "PLACE_ROOT": str(root / "place")})
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("부하 스크립트", done.stdout + done.stderr)
+            self.assertFalse((root / "place/var/lib/petition-deploy/normalized.sha256").exists())
 
 
 patterns = _load("pipeline_patterns", DEPLOY / "tools" / "pipeline_patterns.py")

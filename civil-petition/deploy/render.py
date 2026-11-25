@@ -20,6 +20,12 @@ T 와 S 두 테스트베드가 같은 설정 틀(templates/)과 같은 설치 �
   render.py --inventory inventory/t.json --out <디렉터리>            서버별 묶음
   render.py --inventory inventory/t.json --hypervisor <디렉터리>     66 망 파일, chrony 허용, 모듈
   render.py --inventory inventory/t.json --check                      검사만
+  render.py --write-pair-expected                                      쌍 기대값 inventory/pair-expected.json 을 T, S 인벤토리로 다시 쓴다
+  render.py --check-pair-expected                                      그 파일이 지금 틀과 두 인벤토리로 만든 것과 같은지(다르면 끝 코드 1)
+
+쌍 기대값(S 문서 spec-testbed-sms-only.md §2-4 조건 1, ST4 M2): 짝(pair_packages.pairs 의 역할 차례)마다 두 렌더에 다 있고
+정규화 체크섬이 같은 파일, T 에만 있어도 되는 파일, 설계로 다른 파일, 그리고 부하기에 놓이는 저장소 부하 스크립트 둘의 sha256.
+러너가 VM 의 normalized.sha256(steps/record.sh)을 이 값에 견주어 쌍을 판정한다. 주소와 이름이 들어 인벤토리 폴더에 둔다.
 """
 from __future__ import annotations
 
@@ -37,7 +43,17 @@ sys.path.insert(0, str(HERE / "tools"))
 import pipeline_patterns  # noqa: E402  (실행기 배관 줄 꼴의 정의 한 곳)
 sys.path.insert(0, str(HERE / "tools"))
 import design_load  # noqa: E402  (설계 부하에서 읽어 계산하는 값, tools/design_load.py)
+import pair_packages  # noqa: E402  (T, S 짝을 정하는 역할 차례 규칙 한 곳)
 TEMPLATES = HERE / "templates"
+PAIR_EXPECTED = HERE / "inventory" / "pair-expected.json"
+PAIR_T_INVENTORY = HERE / "inventory" / "t.json"
+PAIR_S_INVENTORY = HERE / "inventory" / "s.json"
+LOADGEN_SOURCES = HERE.parent / "loadgen"
+LOADGEN_FILES = ("script.js", "entrypoint.sh")
+# 쌍 대조에서 설계로 빼는 파일(S 문서 §2-4 조건 1 의 문단). T 에만 있는 것: lldpd(S 에 NMS 없음, 결정 3)와 syslog 전달(결정 2).
+# 짝끼리 다른 것: 부하기 netplan(T 부하기는 상향망, S 부하기는 사용자망으로 망 꼴이 다르다). 그 밖에 생기면 렌더가 멈춘다.
+PAIR_T_ONLY = ("/etc/default/lldpd", "/etc/rsyslog.d/remote/10-forward.conf")
+PAIR_DIFFERS = {"loadgen": ("/etc/netplan/01-host.yaml",)}
 
 PLACEHOLDER = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
 SECRET = re.compile(r"@@SECRET:([a-z0-9_]+)@@")
@@ -863,9 +879,44 @@ def hypervisor_commands(inventory: dict, direction: str) -> list[str]:
     raise InventoryError(f"모르는 방향 {direction}")
 
 
+def pair_expected(t_inv: dict, s_inv: dict) -> dict:
+    """쌍 기대값(모듈 설명). 비밀값 파일은 설치 기록처럼 뺀다. 빼는 목록 밖의 차이가 있으면 쌍이 서지 않으므로 멈춘다."""
+    validate(t_inv)
+    validate(s_inv)
+    unpaired = pair_packages.unpaired_s(t_inv, s_inv)
+    if unpaired:
+        raise InventoryError(f"짝 없는 S 호스트: {unpaired}")
+    t_hosts = {h["name"]: h for h in t_inv["hosts"]}
+    s_hosts = {h["name"]: h for h in s_inv["hosts"]}
+    out = []
+    for _, t_name, s_name in pair_packages.pairs(t_inv, s_inv):
+        t_b, s_b = render_host(t_inv, t_hosts[t_name]), render_host(s_inv, s_hosts[s_name])
+        t_files = {f["dest"]: f["normalized_sha256"] for f in t_b["files"] if not f["secrets"]}
+        s_files = {f["dest"]: f["normalized_sha256"] for f in s_b["files"] if not f["secrets"]}
+        if {f["dest"] for f in t_b["files"] if f["secrets"]} != {f["dest"] for f in s_b["files"] if f["secrets"]}:
+            raise InventoryError(f"{t_name}, {s_name}: 비밀값 파일이 다르다")
+        s_only = sorted(set(s_files) - set(t_files))
+        t_only = sorted(set(t_files) - set(s_files))
+        differs = sorted(d for d in set(t_files) & set(s_files) if t_files[d] != s_files[d])
+        if s_only or not set(t_only) <= set(PAIR_T_ONLY) or not set(differs) <= set(PAIR_DIFFERS.get(t_b["role"], ())):
+            raise InventoryError(f"{t_name}, {s_name}: 쌍 밖의 차이 S 에만 {s_only}, T 에만 {t_only}, 다름 {differs}")
+        out.append({"t": t_name, "s": s_name, "role": t_b["role"], "t_only": t_only, "differs": differs,
+                    "files": {d: t_files[d] for d in sorted(set(t_files) & set(s_files)) if d not in differs}})
+    loadgen = {f"loadgen/{name}": hashlib.sha256((LOADGEN_SOURCES / name).read_bytes()).hexdigest()
+               for name in LOADGEN_FILES}
+    return {"schema": "petition-pair-expected/1", "pairs": out, "loadgen_files": loadgen}
+
+
+def pair_expected_text() -> str:
+    return json.dumps(pair_expected(_load(PAIR_T_INVENTORY), _load(PAIR_S_INVENTORY)), ensure_ascii=False,
+                      indent=1, sort_keys=True) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--inventory", required=True, type=Path)
+    parser.add_argument("--inventory", type=Path)
+    parser.add_argument("--write-pair-expected", action="store_true", help="쌍 기대값 파일을 다시 쓴다")
+    parser.add_argument("--check-pair-expected", action="store_true", help="쌍 기대값 파일이 지금 만든 것과 같은지")
     parser.add_argument("--out", type=Path, help="서버별 묶음을 쓸 디렉터리")
     parser.add_argument("--hypervisor", type=Path, help="66 쪽 파일을 경로 그대로 쓸 디렉터리")
     parser.add_argument("--hypervisor-commands", choices=["up", "down", "ipv6-state"],
@@ -873,6 +924,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", action="append", default=[], help="이 호스트만(여러 번)")
     parser.add_argument("--check", action="store_true", help="렌더만 해 보고 아무것도 쓰지 않는다")
     args = parser.parse_args(argv)
+    if args.write_pair_expected or args.check_pair_expected:
+        try:
+            text = pair_expected_text()
+        except InventoryError as error:
+            print(f"render: {error}", file=sys.stderr)
+            return 2
+        if args.write_pair_expected:
+            PAIR_EXPECTED.write_text(text, encoding="utf-8")
+            return 0
+        if not PAIR_EXPECTED.is_file() or PAIR_EXPECTED.read_text(encoding="utf-8") != text:
+            print(f"{PAIR_EXPECTED.name} 가 지금 틀과 두 인벤토리로 만든 것과 다르다. render.py --write-pair-expected", file=sys.stderr)
+            return 1
+        return 0
+    if args.inventory is None:
+        parser.error("--inventory 가 필요하다")
     inventory = _load(args.inventory)
     try:
         validate(inventory)

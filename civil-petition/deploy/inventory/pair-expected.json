@@ -1,0 +1,172 @@
+{
+ "loadgen_files": {
+  "loadgen/entrypoint.sh": "00a2b4e4018256ea25cc7a03d03be2158e5a61f3d38e6ed6241d58eeb71b23d2",
+  "loadgen/script.js": "c6ea169aa298adc757a28093310bba01d7b5462d4070145d0a2a58df0bc5f5e4"
+ },
+ "pairs": [
+  {
+   "differs": [],
+   "files": {
+    "/etc/apache2/sites-available/petition.conf": "2a7285e2c308027da5c9385c0d19b8a42c4b90598fa65aa5744000c510303e40",
+    "/etc/apparmor.d/rsyslog.d/annotate-proc": "1f4aee22f687c9cad20056f4dbd6125fcf8806ade3e39096cdb0299472cc174a",
+    "/etc/apt/apt.conf.d/20auto-upgrades": "a0b7a69016e3413035298fd0256c0a234d7f293eae47973ce83713a8a7c9583c",
+    "/etc/chrony/chrony.conf": "3a11291c2bad687986f7074043a8bfd1b20ddeb33259338ddb3ab4fdc470c84c",
+    "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg": "9ebec9b7f08ded3474c2b827ea4353507fcb7a5ba200b362665457dad83c1d8b",
+    "/etc/logrotate.d/lucida-agent": "37ad8cbd389c3a8195300ebf08c91597eb2035a094426da6c4539aa4e9736007",
+    "/etc/logrotate.d/opsjobs": "4448c5f8a1ec3f9c4bf1fce921ee8108cca38e20b0af734c2b41cee04cf4e021",
+    "/etc/modules-load.d/qdisc.conf": "90af6af092ff967fb23ab7aa3e80348e333c95bc987cb0b2f4d6f32cd9df2e54",
+    "/etc/netplan/01-host.yaml": "fea61516d57ee0aa47184d6c06328540274f7779d898e9d88b9e87e1f13a27b1",
+    "/etc/nftables.conf": "40159d94a62b50286a8166eec6d835111a2b7c69dc7c2c274a2eef75caea811e",
+    "/etc/nftables.d/10-mgmt-guard.nft": "70c956a782e4315e4dd3605a4c75639ce06e08514a189abfb18a202b03e7535a",
+    "/etc/rsyslog.conf": "339c9017363b0f6090bd1e2d833cb9bd56f251810eafd25daa61cf6d60294351",
+    "/etc/rsyslog.d/00-opsjobs.conf": "9b4cdcf8d43a452d73f720db327d4eeccc8405aae87c2f7a5c74b2d85cfb0046",
+    "/etc/sudoers.d/60-ops": "ba2c8ec819d0360175c2f09fb7ec8fb54de950cc92421df9a23da7672e85177c",
+    "/etc/sysctl.d/60-host.conf": "891deae10a930d1019d2a23fa7054179575f16b6f7c725b2cc7a1daf072bbd56",
+    "/etc/systemd/system/lucida-agent.service": "55f478e76f52f73db173f9bcf726e8a23b9e4f043c1ca018d8280b7f9964e694",
+    "/opt/lucida-agent/agent.env": "40b1b300ccc918ea493173ea17e1d0ad2e096246a5393dfcd6742c166f806b0e",
+    "/usr/local/sbin/netplan-rollback": "df26ef44f4cd50976fdda310d88e78299153c3344af72457b59fc02e7e19a46c",
+    "/var/www/petition/index.html": "a8f0b42d1b2b87591eede7614774dd949042e38a894002ac5cd368fb987b1e6c",
+    "/var/www/petition/static/portal.css": "20500f14438e22dc3c81245926b6b4fc3f573011dbfd78430dbf0f5332882b96"
+   },
+   "role": "web",
+   "s": "websvr01",
+   "t": "web01",
+   "t_only": [
+    "/etc/default/lldpd",
+    "/etc/rsyslog.d/remote/10-forward.conf"
+   ]
+  },
+  {
+   "differs": [],
+   "files": {
+    "/etc/apparmor.d/rsyslog.d/annotate-proc": "1f4aee22f687c9cad20056f4dbd6125fcf8806ade3e39096cdb0299472cc174a",
+    "/etc/apt/apt.conf.d/20auto-upgrades": "a0b7a69016e3413035298fd0256c0a234d7f293eae47973ce83713a8a7c9583c",
+    "/etc/chrony/chrony.conf": "3a11291c2bad687986f7074043a8bfd1b20ddeb33259338ddb3ab4fdc470c84c",
+    "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg": "9ebec9b7f08ded3474c2b827ea4353507fcb7a5ba200b362665457dad83c1d8b",
+    "/etc/default/tomcat10": "62bf1b2f67c16ad934cf3c92e36c3588dcb0f5a0a729207d388624610c116a43",
+    "/etc/logrotate.d/lucida-agent": "37ad8cbd389c3a8195300ebf08c91597eb2035a094426da6c4539aa4e9736007",
+    "/etc/logrotate.d/opsjobs": "4448c5f8a1ec3f9c4bf1fce921ee8108cca38e20b0af734c2b41cee04cf4e021",
+    "/etc/modules-load.d/qdisc.conf": "90af6af092ff967fb23ab7aa3e80348e333c95bc987cb0b2f4d6f32cd9df2e54",
+    "/etc/netplan/01-host.yaml": "fea61516d57ee0aa47184d6c06328540274f7779d898e9d88b9e87e1f13a27b1",
+    "/etc/nftables.conf": "40159d94a62b50286a8166eec6d835111a2b7c69dc7c2c274a2eef75caea811e",
+    "/etc/nftables.d/10-mgmt-guard.nft": "70c956a782e4315e4dd3605a4c75639ce06e08514a189abfb18a202b03e7535a",
+    "/etc/rsyslog.conf": "339c9017363b0f6090bd1e2d833cb9bd56f251810eafd25daa61cf6d60294351",
+    "/etc/rsyslog.d/00-opsjobs.conf": "9b4cdcf8d43a452d73f720db327d4eeccc8405aae87c2f7a5c74b2d85cfb0046",
+    "/etc/sudoers.d/60-ops": "ba2c8ec819d0360175c2f09fb7ec8fb54de950cc92421df9a23da7672e85177c",
+    "/etc/sysctl.d/60-host.conf": "891deae10a930d1019d2a23fa7054179575f16b6f7c725b2cc7a1daf072bbd56",
+    "/etc/systemd/system/lucida-agent.service": "55f478e76f52f73db173f9bcf726e8a23b9e4f043c1ca018d8280b7f9964e694",
+    "/etc/tomcat10/server.xml": "d13ac4fdad7c6db9f248e18245689502678c33ebb1165a39dab7803fc5778a0e",
+    "/opt/lucida-agent/agent.env": "40b1b300ccc918ea493173ea17e1d0ad2e096246a5393dfcd6742c166f806b0e",
+    "/usr/local/sbin/netplan-rollback": "df26ef44f4cd50976fdda310d88e78299153c3344af72457b59fc02e7e19a46c"
+   },
+   "role": "was",
+   "s": "wassvr01",
+   "t": "was01",
+   "t_only": [
+    "/etc/default/lldpd",
+    "/etc/rsyslog.d/remote/10-forward.conf"
+   ]
+  },
+  {
+   "differs": [],
+   "files": {
+    "/etc/apparmor.d/rsyslog.d/annotate-proc": "1f4aee22f687c9cad20056f4dbd6125fcf8806ade3e39096cdb0299472cc174a",
+    "/etc/apt/apt.conf.d/20auto-upgrades": "a0b7a69016e3413035298fd0256c0a234d7f293eae47973ce83713a8a7c9583c",
+    "/etc/chrony/chrony.conf": "3a11291c2bad687986f7074043a8bfd1b20ddeb33259338ddb3ab4fdc470c84c",
+    "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg": "9ebec9b7f08ded3474c2b827ea4353507fcb7a5ba200b362665457dad83c1d8b",
+    "/etc/default/tomcat10": "62bf1b2f67c16ad934cf3c92e36c3588dcb0f5a0a729207d388624610c116a43",
+    "/etc/logrotate.d/lucida-agent": "37ad8cbd389c3a8195300ebf08c91597eb2035a094426da6c4539aa4e9736007",
+    "/etc/logrotate.d/opsjobs": "4448c5f8a1ec3f9c4bf1fce921ee8108cca38e20b0af734c2b41cee04cf4e021",
+    "/etc/logrotate.d/petition-batch": "a19da14b0a7b8d248b88dcb6b4c0439dce2271521999e328022f97aa7d367c07",
+    "/etc/modules-load.d/qdisc.conf": "90af6af092ff967fb23ab7aa3e80348e333c95bc987cb0b2f4d6f32cd9df2e54",
+    "/etc/netplan/01-host.yaml": "fea61516d57ee0aa47184d6c06328540274f7779d898e9d88b9e87e1f13a27b1",
+    "/etc/nftables.conf": "40159d94a62b50286a8166eec6d835111a2b7c69dc7c2c274a2eef75caea811e",
+    "/etc/nftables.d/10-mgmt-guard.nft": "70c956a782e4315e4dd3605a4c75639ce06e08514a189abfb18a202b03e7535a",
+    "/etc/rsyslog.conf": "339c9017363b0f6090bd1e2d833cb9bd56f251810eafd25daa61cf6d60294351",
+    "/etc/rsyslog.d/00-opsjobs.conf": "9b4cdcf8d43a452d73f720db327d4eeccc8405aae87c2f7a5c74b2d85cfb0046",
+    "/etc/sudoers.d/60-ops": "ba2c8ec819d0360175c2f09fb7ec8fb54de950cc92421df9a23da7672e85177c",
+    "/etc/sysctl.d/60-host.conf": "891deae10a930d1019d2a23fa7054179575f16b6f7c725b2cc7a1daf072bbd56",
+    "/etc/systemd/system/lucida-agent.service": "55f478e76f52f73db173f9bcf726e8a23b9e4f043c1ca018d8280b7f9964e694",
+    "/etc/systemd/system/petition-archive.timer": "43b67b51744bc2c460bace51dbfa463631fa048b8f51f85d4daaef2f86b8fd24",
+    "/etc/systemd/system/petition-batch@.service": "fb29efe8b44c52eae782eb0196e4915f596ddcb59eed3ebbb82cd653ceb31260",
+    "/etc/systemd/system/petition-stats.timer": "7bd45f02cac8959c2df5444c4cc86f3945158aaac457d1e5e1d023720a006e2e",
+    "/etc/tomcat10/server.xml": "17626cc7e24ebf77f5c2395f91b196ee238cb120fee57543ba277c11c93a7ca6",
+    "/opt/lucida-agent/agent.env": "40b1b300ccc918ea493173ea17e1d0ad2e096246a5393dfcd6742c166f806b0e",
+    "/usr/local/sbin/netplan-rollback": "df26ef44f4cd50976fdda310d88e78299153c3344af72457b59fc02e7e19a46c",
+    "/usr/local/sbin/petition-batch": "070c7e4a7fff0cec7e3b260f79f8126d1b6398d539017410a1ba13ecd9480669"
+   },
+   "role": "was",
+   "s": "wassvr02",
+   "t": "was02",
+   "t_only": [
+    "/etc/default/lldpd",
+    "/etc/rsyslog.d/remote/10-forward.conf"
+   ]
+  },
+  {
+   "differs": [],
+   "files": {
+    "/etc/apparmor.d/rsyslog.d/annotate-proc": "1f4aee22f687c9cad20056f4dbd6125fcf8806ade3e39096cdb0299472cc174a",
+    "/etc/apt/apt.conf.d/20auto-upgrades": "a0b7a69016e3413035298fd0256c0a234d7f293eae47973ce83713a8a7c9583c",
+    "/etc/chrony/chrony.conf": "3a11291c2bad687986f7074043a8bfd1b20ddeb33259338ddb3ab4fdc470c84c",
+    "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg": "9ebec9b7f08ded3474c2b827ea4353507fcb7a5ba200b362665457dad83c1d8b",
+    "/etc/logrotate.d/lucida-agent": "37ad8cbd389c3a8195300ebf08c91597eb2035a094426da6c4539aa4e9736007",
+    "/etc/logrotate.d/opsjobs": "4448c5f8a1ec3f9c4bf1fce921ee8108cca38e20b0af734c2b41cee04cf4e021",
+    "/etc/logrotate.d/pg-backup": "402e1a89637c0da34da7d371edd419a9a2f41e52992f5a66b7536ee6ee666e46",
+    "/etc/modules-load.d/qdisc.conf": "90af6af092ff967fb23ab7aa3e80348e333c95bc987cb0b2f4d6f32cd9df2e54",
+    "/etc/netplan/01-host.yaml": "fea61516d57ee0aa47184d6c06328540274f7779d898e9d88b9e87e1f13a27b1",
+    "/etc/nftables.conf": "40159d94a62b50286a8166eec6d835111a2b7c69dc7c2c274a2eef75caea811e",
+    "/etc/nftables.d/10-mgmt-guard.nft": "70c956a782e4315e4dd3605a4c75639ce06e08514a189abfb18a202b03e7535a",
+    "/etc/postgresql/16/main/conf.d/05-listen.conf": "00316455b081886006f2cfd15144860ab3d60be5047697f232eec537e785ff02",
+    "/etc/postgresql/16/main/conf.d/10-tuning.conf": "cec8842023c56bdc4ff2ef79e44042c733b1dd44cc9a0d9137ea923f711e8186",
+    "/etc/postgresql/16/main/conf.d/20-logging.conf": "45629376b3e296a9d1e285e8f69bf28d8343e2d2c5deddda18644460f64f3bc8",
+    "/etc/postgresql/16/main/pg_hba.conf": "2c432793a5fda4c696099e287b7b5c33a31f576c8db22a3e0e74a935f3fca1db",
+    "/etc/rsyslog.conf": "339c9017363b0f6090bd1e2d833cb9bd56f251810eafd25daa61cf6d60294351",
+    "/etc/rsyslog.d/00-opsjobs.conf": "9b4cdcf8d43a452d73f720db327d4eeccc8405aae87c2f7a5c74b2d85cfb0046",
+    "/etc/sudoers.d/60-ops": "ba2c8ec819d0360175c2f09fb7ec8fb54de950cc92421df9a23da7672e85177c",
+    "/etc/sysctl.d/60-host.conf": "891deae10a930d1019d2a23fa7054179575f16b6f7c725b2cc7a1daf072bbd56",
+    "/etc/systemd/system/lucida-agent.service": "55f478e76f52f73db173f9bcf726e8a23b9e4f043c1ca018d8280b7f9964e694",
+    "/etc/systemd/system/pg-backup.service": "6c04698bfdb777cecf404c7c980439860d2fab1070bf9c4625fb4f3da81be15a",
+    "/etc/systemd/system/pg-backup.timer": "b4288afc072ca27ac8c6cadc6ac147e344ed77e1342de688d5a340719f99e072",
+    "/etc/systemd/system/pg-table-stats.service": "251e8d892fd381ad05a9c6b30a0eaf4bf6763b0152ae89985ca9aaa8f277b371",
+    "/etc/systemd/system/pg-table-stats.timer": "f4767cfba4625002f871e35e6660aa8f4a61b6a87016da4bb6dae5feee9b9cf5",
+    "/opt/lucida-agent/agent.env": "40b1b300ccc918ea493173ea17e1d0ad2e096246a5393dfcd6742c166f806b0e",
+    "/usr/local/sbin/netplan-rollback": "df26ef44f4cd50976fdda310d88e78299153c3344af72457b59fc02e7e19a46c",
+    "/usr/local/sbin/pg-backup": "5d1b9911ecd88f1b39f7f19868e93b8bfa6532bfa5347481cfda04a927e89c80",
+    "/usr/local/sbin/pg-table-stats": "d512c1f945a573d74edd7cf9f55378f566c09b2dc541e79c0351fb7541755377"
+   },
+   "role": "db",
+   "s": "dbsvr01",
+   "t": "db01",
+   "t_only": [
+    "/etc/default/lldpd",
+    "/etc/rsyslog.d/remote/10-forward.conf"
+   ]
+  },
+  {
+   "differs": [
+    "/etc/netplan/01-host.yaml"
+   ],
+   "files": {
+    "/etc/apparmor.d/rsyslog.d/annotate-proc": "1f4aee22f687c9cad20056f4dbd6125fcf8806ade3e39096cdb0299472cc174a",
+    "/etc/apt/apt.conf.d/20auto-upgrades": "a0b7a69016e3413035298fd0256c0a234d7f293eae47973ce83713a8a7c9583c",
+    "/etc/chrony/chrony.conf": "3a11291c2bad687986f7074043a8bfd1b20ddeb33259338ddb3ab4fdc470c84c",
+    "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg": "9ebec9b7f08ded3474c2b827ea4353507fcb7a5ba200b362665457dad83c1d8b",
+    "/etc/logrotate.d/opsjobs": "4448c5f8a1ec3f9c4bf1fce921ee8108cca38e20b0af734c2b41cee04cf4e021",
+    "/etc/nftables.conf": "40159d94a62b50286a8166eec6d835111a2b7c69dc7c2c274a2eef75caea811e",
+    "/etc/nftables.d/10-mgmt-guard.nft": "70c956a782e4315e4dd3605a4c75639ce06e08514a189abfb18a202b03e7535a",
+    "/etc/rsyslog.conf": "339c9017363b0f6090bd1e2d833cb9bd56f251810eafd25daa61cf6d60294351",
+    "/etc/rsyslog.d/00-opsjobs.conf": "9b4cdcf8d43a452d73f720db327d4eeccc8405aae87c2f7a5c74b2d85cfb0046",
+    "/etc/sudoers.d/60-ops": "ba2c8ec819d0360175c2f09fb7ec8fb54de950cc92421df9a23da7672e85177c",
+    "/etc/sysctl.d/60-host.conf": "891deae10a930d1019d2a23fa7054179575f16b6f7c725b2cc7a1daf072bbd56",
+    "/etc/systemd/system/loadgen.service": "7b5854866c02bb3424daa4709a670e27c7480715e03329f32919477189deede9",
+    "/usr/local/sbin/netplan-rollback": "df26ef44f4cd50976fdda310d88e78299153c3344af72457b59fc02e7e19a46c"
+   },
+   "role": "loadgen",
+   "s": "loadgen",
+   "t": "loadgen",
+   "t_only": []
+  }
+ ],
+ "schema": "petition-pair-expected/1"
+}
