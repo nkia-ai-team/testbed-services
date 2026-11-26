@@ -18258,7 +18258,7 @@
     "code_anchor": [
      "civil-petition/deploy/templates/router/nft-acl.nft:3-7 (chain forward, ct state established, acl_rules — 평시 상태 기반 ACL 이 WAS 망 → DB 망 5432 를 허용하고, 주입 표는 이보다 앞 우선순위에서 거절한다)",
      "civil-petition/deploy/inventory/t.json:107-125 (acl, was, db_port — 라우터 ACL 의 허용 흐름 정본: 상향 → 웹, 웹 → WAS, WAS → DB 5432)",
-     "civil-petition/deploy/render.py:434 (jdbc_url, db_addr — WAS 의 JDBC 주소가 db01 업무 주소 192.168.126.11:5432 라 라우터를 지난다)",
+     "civil-petition/deploy/render.py:450 (jdbc_url, db_addr — WAS 의 JDBC 주소가 db01 업무 주소 192.168.126.11:5432 라 라우터를 지난다)",
      "civil-petition/deploy/templates/was/petition-context.xml:9-15 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 3초, PgJDBC connectTimeout, loginTimeout 3초)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/ApiExceptionHandler.java:23-26 (DataAccessException, log.error, SERVICE_UNAVAILABLE — DB 오류는 'database access failed' ERROR 와 503)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/PetitionRepository.java:29 (Transactional — 신청과 처리는 트랜잭션을 열 때 연결을 못 얻으면 500, 열린 연결이 첫 질의에서 재설정되면 503)",
