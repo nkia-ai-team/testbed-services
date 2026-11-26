@@ -30,6 +30,7 @@ import unittest.mock
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -845,6 +846,25 @@ kill "$hv" "$srv"
         self.assertIn('password="@@SECRET:db_password@@"', ctx)
         self.assertIn("org.apache.tomcat.jdbc.pool.DataSourceFactory", ctx)
         self.assertIn("jdbc:postgresql://192.168.126.11:5432/petition", ctx)
+
+    def test_app_gives_up_on_the_db_before_the_load_generator_gives_up(self) -> None:
+        # DB 가 대답 없이 멈추면 앱이 먼저 포기하고 503 을 돌려줘야 부하기가 "응답 없음"이 아니라 오류 응답을 받는다.
+        timeout = re.search(r"const TIMEOUT = '(\d+)s';", (DEPLOY.parent / "loadgen" / "script.js").read_text())
+        loadgen_s = int(timeout.group(1))
+        for path in (T_INV, S_INV):
+            for name, bundle in bundles(path).items():
+                if not any(e["dest"] == "/etc/tomcat10/Catalina/localhost/petition.xml" for e in bundle["files"]):
+                    continue
+                ctx = file_of(bundle, "/etc/tomcat10/Catalina/localhost/petition.xml")
+                res = ET.fromstring(ctx).find("Resource")
+                url = res.get("url")
+                self.assertIn("connectTimeout=3", url, name)
+                self.assertIn("loginTimeout=3", url, name)
+                self.assertNotIn("socketTimeout", url, name)
+                self.assertEqual(res.get("maxWait"), "3000", name)
+                self.assertEqual(res.get("validationQueryTimeout"), "3", name)
+                worst_s = int(res.get("maxWait")) / 1000 + 3
+                self.assertLess(worst_s, loadgen_s, name)
 
     def test_web_balances_both_was_with_sticky_routes(self) -> None:
         site = file_of(self.t["web01"], "/etc/apache2/sites-available/petition.conf")

@@ -448,6 +448,10 @@ def host_context(inventory: dict, host: dict) -> dict[str, str]:
     db_host = _hosts(inventory, "db")[0]
     db_addr = _biz_nic(db_host, inventory)["addr"]
     context["jdbc_url"] = f"jdbc:postgresql://{db_addr}:{app['db_port']}/{app['db_name']}"
+    # 앱이 DB 를 기다리는 상한(연결 맺기, 로그인, 풀에서 빌리기, 검증 질의). 부하기 요청 시간 제한보다 짧아야
+    # DB 가 대답 없이 멈춘 장애에서 앱이 먼저 포기하고 503 을 돌려준다(사용자 결정 2026-11-26).
+    context["db_wait_s"] = str(app["db_wait_s"])
+    context["db_wait_ms"] = str(app["db_wait_s"] * 1000)
     if host["role"] != "router":
         context["biz_if"] = _biz_nic(host, inventory)["ifname"]
         context["biz_addr"] = _biz_nic(host, inventory)["addr"]

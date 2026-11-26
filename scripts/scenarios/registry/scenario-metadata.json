@@ -18259,7 +18259,7 @@
      "civil-petition/deploy/templates/router/nft-acl.nft:3-7 (chain forward, ct state established, acl_rules — 평시 상태 기반 ACL 이 WAS 망 → DB 망 5432 를 허용하고, 주입 표는 이보다 앞 우선순위에서 거절한다)",
      "civil-petition/deploy/inventory/t.json:107-125 (acl, was, db_port — 라우터 ACL 의 허용 흐름 정본: 상향 → 웹, 웹 → WAS, WAS → DB 5432)",
      "civil-petition/deploy/render.py:434 (jdbc_url, db_addr — WAS 의 JDBC 주소가 db01 업무 주소 192.168.126.11:5432 라 라우터를 지난다)",
-     "civil-petition/deploy/templates/was/petition-context.xml:4-10 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 10초)",
+     "civil-petition/deploy/templates/was/petition-context.xml:9-15 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 3초, PgJDBC connectTimeout, loginTimeout 3초)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/ApiExceptionHandler.java:23-26 (DataAccessException, log.error, SERVICE_UNAVAILABLE — DB 오류는 'database access failed' ERROR 와 503)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/PetitionRepository.java:29 (Transactional — 신청과 처리는 트랜잭션을 열 때 연결을 못 얻으면 500, 열린 연결이 첫 질의에서 재설정되면 503)",
      "civil-petition/deploy/templates/web/petition-site.conf:16 (ProxyPass, balancer, timeout — 웹이 WAS 두 대로 넘기고 WAS 의 5xx 를 그대로 돌려준다)",
@@ -18372,7 +18372,7 @@
     "design_notes": [
      "주입: router.config 운영자 경로. 운영자 sysop 이 192.168.127.5 에서 ssh 로그인해 /home/sysop/db-acl.nft(표 db-acl, forward 우선순위 -5, 관제, 관리, 라우터 주소 수용 뒤 192.168.126.11:5432 TCP 를 '[DB ACL] ' 기록과 TCP 재설정으로 거절)를 쓰고 sudo nft -f 로 적용, cleanup 은 같은 경로의 nft delete table",
      "경로: 사용자 → web01 Apache → was01, was02 Tomcat → rt-core01 → db01 PostgreSQL 5432. 모든 업무 경로가 DB 를 쓴다",
-     "풀: Tomcat JDBC minIdle 5, maxActive 40, maxWait 10초, PgJDBC 연결 시간 제한 10초. 재설정이라 기다림 없이 바로 거부된다",
+     "풀: Tomcat JDBC minIdle 5, maxActive 40, maxWait 3초, PgJDBC 연결과 로그인 시간 제한 3초. 재설정이라 기다림 없이 바로 거부된다",
      "판정: 상주 부하의 접수번호 조회(로그인 없는 공개 경로) 비정상 비율로 본다. 신청, 내 민원, 담당자 처리는 장애 중 재로그인이 실패해 로그인 상태가 풀린 가상 사용자가 요청 자체를 보내지 않게 되어 판정에 쓰지 않는다",
      "재설정을 쓴 까닭: drop 이면 연결 시간 초과 10초가 부하기 요청 시간 제한 10초와 같아 사용자 쪽이 응답 없음으로 보이고, 일반 reject(ICMP)는 커널이 목적지마다 초당 약 1개로 제한해 대부분 시간 초과로 바뀐다",
      "관측 근거: 라우터 syslog 의 운영자 sudo nft -f 와 kernel '[DB ACL] ... DPT=5432', 두 WAS 앱 로그의 Connection refused, web01 과 Tomcat 접근 로그 5xx, db01 ICMP 1 과 postgres pid 그대로, ens21 송신 감소. 녹화 전이라 모두 설계 예상이다",
@@ -18404,7 +18404,7 @@
      "civil-petition/deploy/templates/db/logging.conf:37-51 (log_connections, log_disconnections, lc_messages C — 재시작과 종료 중 연결 시도의 FATAL 줄이 서버 로그에 남는다)",
      "civil-petition/deploy/monitoring/log-monitors.json:15-21 (syslog 감시 fatalPattern 'Out of memory|oom-kill', errorPattern '[Ff]ailed' — 커널 OOM 줄과 유닛 실패 줄을 잡는다)",
      "civil-petition/deploy/monitoring/log-monitors.json:74-79 (postgresql 감시 fatalPattern 'PANIC|FATAL')",
-     "civil-petition/deploy/templates/was/petition-context.xml:4-10 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 10초)",
+     "civil-petition/deploy/templates/was/petition-context.xml:9-15 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 3초, PgJDBC connectTimeout, loginTimeout 3초)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/ApiExceptionHandler.java:23-26 (DataAccessException, log.error, SERVICE_UNAVAILABLE — DB 오류는 'database access failed' ERROR 와 503)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/PetitionRepository.java:29 (Transactional — 신청과 처리는 트랜잭션을 열 때 연결을 못 얻으면 500)",
      "scripts/scenarios/profiles/vmhost_stress_executor.py:38-44 (CONTRACTS, F80-P, memprocs — 주입 계약)"

@@ -41,6 +41,7 @@
     "context": "petition",
     "db_name": "petition",
     "db_user": "petition_app",
+    "db_wait_s": 3,
     "db_password_file": "~/.config/testbed/t4-petition-db"
   },
   "networks": {

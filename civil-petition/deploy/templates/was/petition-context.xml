@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 민원 포털 앱의 JNDI 데이터소스(Tomcat JDBC 풀). 비밀번호는 설치 때 비밀값 파일에서 채운다. -->
+<!-- DB 기다림 상한 {{db_wait_s}}초: 연결 맺기(connectTimeout), 로그인(loginTimeout), 풀에서 빌리기(maxWait),
+     검증 질의(validationQueryTimeout). 합(빌리기 + 로그인)이 부하기 요청 시간 제한 10초보다 짧아, DB 가 대답 없이
+     멈추면 앱이 먼저 포기하고 503 을 돌려준다. 열린 연결의 읽기 상한(socketTimeout)은 두지 않는다. 야간 배치
+     (BatchService 집계, 보관)가 같은 풀로 몇 초 넘는 질의를 돌리기 때문이다. 열린 연결이 멈추면 그 연결만 붙잡히고
+     새 요청은 새 연결 맺기나 풀 빌리기에서 {{db_wait_s}}초 안에 실패한다. -->
 <Context>
   <Resource name="jdbc/petitionDS" auth="Container" type="javax.sql.DataSource"
             factory="org.apache.tomcat.jdbc.pool.DataSourceFactory"
             driverClassName="org.postgresql.Driver"
-            url="{{jdbc_url}}"
+            url="{{jdbc_url}}?connectTimeout={{db_wait_s}}&amp;loginTimeout={{db_wait_s}}"
             username="{{db_user}}" password="@@SECRET:db_password@@"
-            initialSize="5" minIdle="5" maxIdle="20" maxActive="40" maxWait="10000"
-            testOnBorrow="true" validationQuery="SELECT 1" validationInterval="30000"
+            initialSize="5" minIdle="5" maxIdle="20" maxActive="40" maxWait="{{db_wait_ms}}"
+            testOnBorrow="true" validationQuery="SELECT 1" validationQueryTimeout="{{db_wait_s}}" validationInterval="30000"
             timeBetweenEvictionRunsMillis="30000" minEvictableIdleTimeMillis="60000"
             jmxEnabled="false" />
 </Context>
