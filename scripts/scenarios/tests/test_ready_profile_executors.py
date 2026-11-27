@@ -4508,6 +4508,8 @@ else:
             "F72-P",
             # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춤(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-P",
+            # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 의 DB 쪽 포트 ens21 링크가 끊겨(변경 아님) DB 망이 라우터에서 빠지고 WAS 두 대의 DB 연결이 대답 없이 버려져 3초 시간 초과, 포털 거의 모든 요청 503, 500, db01 은 관제에서 함께 사라짐(Magic Pages 2026-10-20 재구성, vmlink.state 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-H",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -5074,7 +5076,6 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
             "rules": [{"dst": "10.244.1.0/24", "protocol": "tcp", "dport": 8082}],
         }),
         # civil-petition VM executors (v4 T4S): scenarios are designed with the user (design 7).
-        "vmlink.state": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 202, "net": "net0"}),
         "vmlink.qdisc": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 203, "net": "net0",
                                       "delay_ms": 100, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 0}),
         "router.qdisc": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "device": "ens20", "kind": "rate",
@@ -5131,6 +5132,8 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                                        "rules": [{"hook": "forward", "proto": "tcp", "src": "192.168.124.0/24",
                                                   "dst": "192.168.125.0/24", "dport": 8080, "verdict": "drop"}],
                                        "routes": [], "sysctls": {}, "log_prefix": ""}),
+        # vmlink.state: F72-H since 2026-11-27 (the router's DB side NIC); the VM executor tests still vary this sample.
+        "vmlink.state": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 202, "net": "net0"}),
         # vmhost.stress: F80-P since 2026-11-25 (memprocs on dbsvr01); the VM executor tests still vary this cpu sample.
         "vmhost.stress": ("T4-GUARD", {"host": "192.168.127.31", "node": "was01", "mode": "cpu", "cpu_workers": 2,
                                        "mib": 0, "target_dir": "-", "watermark_percent": 0, "reserve_mib": 0,
@@ -5172,8 +5175,9 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
                     on_node.setdefault(instance["profile_id"], plan)
         # 2026-11-25: router.config(F72-P, civil-petition rt-core01) joins: the first VM executor a scenario uses.
         # 2026-11-25: vmhost.stress(F80-P, civil-petition-sms dbsvr01) joins: the first S scenario.
+        # 2026-11-27: vmlink.state(F72-H, civil-petition 66 hypervisor) joins: the first 66-side executor a scenario uses.
         self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config",
-                                        "vmhost.stress"})
+                                        "vmhost.stress", "vmlink.state"})
         # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
         # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
         node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
@@ -7508,7 +7512,8 @@ class SmsVmExecutorTests(unittest.TestCase):
         for vmid in (211, 212, 213, 214, 215):
             for profile_id in ("vmlink.state", "vmlink.qdisc"):
                 with self.subTest(profile=profile_id, vmid=vmid):
-                    self.refused(profile_id, dict(NodeGuardTests.UNUSED_NODE_EXECUTORS[profile_id][1], vmid=vmid, net="net0"))
+                    self.refused(profile_id, dict({**NodeGuardTests.UNUSED_NODE_EXECUTORS,
+                                                   **NodeGuardTests.USED_NODE_SAMPLES}[profile_id][1], vmid=vmid, net="net0"))
         # The management NIC (and every NIC of the load generator) is never one an injection names.
         for name in self.s.servers:
             with self.subTest(server=name):

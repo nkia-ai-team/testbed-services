@@ -272,7 +272,8 @@ class StageTests(unittest.TestCase):
         # 2026-10-30: 3 → 4. F69-P(commerce inventory-service 릴리스 1.3.0 의 재조정 배치가 재고 행을 공유 잠금으로 쥔 채 45일 원장 합계를 돌아 재고 예약과 checkout 이 주기적으로 막힘) 후보 추가.
         # 2026-11-25: 4 → 5. F72-P(민원 포털 라우터에서 운영자가 DB 포트 허용 목록을 좁히다 WAS 망을 빠뜨림) 후보 추가.
         # 2026-11-25: 5 → 6. F80-P(SMS 전용 민원 포털 DB 서버 작업이 메모리를 다 써 커널 OOM 이 PostgreSQL 을 죽임) 후보 추가.
-        self.assertEqual(stages.count("candidate"), 6)
+        # 2026-11-27: 6 → 7. F72-H(민원 포털 라우터 DB 쪽 포트 링크 끊김으로 WAS 가 DB 에 닿지 못함) 후보 추가.
+        self.assertEqual(stages.count("candidate"), 7)
 
 
 class RecordingQueueTests(unittest.TestCase):

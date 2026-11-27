@@ -81,6 +81,8 @@ PROFILE_PREFLIGHTS = {
     # A server job (VM, not a Kubernetes node) is stopped over the management NIC; the job never touches that path.
     # Its undo also starts the server's own service unit if the job's memory took it down (F80-P).
     "vmhost.stress": "host-placement-and-oob-recovery",
+    # A VM NIC's link is set back up on 66 through the forced-command helper (QMP), apart from every guest network (F72-H).
+    "vmlink.state": "network-oob-recovery",
     # The inverse of removing node images is loading the same images (same image IDs) back
     # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
     "host.image": "kubernetes-recovery-capacity",

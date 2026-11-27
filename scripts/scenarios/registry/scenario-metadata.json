@@ -18352,12 +18352,12 @@
     ]
    },
    "story_ko": {
-    "overview": "운영자가 라우터에서 DB 서버로 가는 길을 좁히다 WAS 를 빠뜨려, DB 와 서버는 멀쩡한데 민원 포털의 거의 모든 요청이 실패한다.",
-    "injected_fault": "라우터(rt-core01)에 DB 서버(PostgreSQL, db01, 192.168.126.11)의 5432 포트로 가는 연결을 관제망과 관리망 말고는 모두 거절하는 규칙을 넣어 약 10분 둔다.",
+    "overview": "운영자가 라우터(rt-core01)에서 DB 서버(PostgreSQL, db01, 192.168.126.11)로 가는 길을 좁히다 WAS(Tomcat, was01, 192.168.125.11, was02, 192.168.125.12)를 빠뜨려, DB 서버는 멀쩡한데 민원 포털의 거의 모든 요청이 실패한다.",
+    "injected_fault": "라우터에 DB 서버의 5432 포트로 가는 연결을 관제망과 관리망 말고는 모두 거절하는 규칙을 넣어 약 10분 둔다.",
     "propagation": [
      {
       "stage": "초기",
-      "text": "규칙이 들어간 직후부터 WAS 두 대(Tomcat, was01, 192.168.125.11, was02, 192.168.125.12)가 DB 에 붙지 못한다. 관제 화면에서는 라우터 syslog 에 운영자 로그인과 규칙 적용 명령, 이어서 DB 포트 차단 줄이 보인다."
+      "text": "규칙이 들어간 직후부터 WAS 두 대가 DB 에 붙지 못한다. 관제 화면에서는 라우터 syslog 에 운영자 로그인과 규칙 적용 명령, 이어서 DB 포트 차단 줄이 보인다."
      },
      {
       "stage": "전면 장애",
@@ -18374,7 +18374,7 @@
      "경로: 사용자 → web01 Apache → was01, was02 Tomcat → rt-core01 → db01 PostgreSQL 5432. 모든 업무 경로가 DB 를 쓴다",
      "풀: Tomcat JDBC minIdle 5, maxActive 40, maxWait 3초, PgJDBC 연결과 로그인 시간 제한 3초. 재설정이라 기다림 없이 바로 거부된다",
      "판정: 상주 부하의 접수번호 조회(로그인 없는 공개 경로) 비정상 비율로 본다. 신청, 내 민원, 담당자 처리는 장애 중 재로그인이 실패해 로그인 상태가 풀린 가상 사용자가 요청 자체를 보내지 않게 되어 판정에 쓰지 않는다",
-     "재설정을 쓴 까닭: drop 이면 연결 시간 초과 10초가 부하기 요청 시간 제한 10초와 같아 사용자 쪽이 응답 없음으로 보이고, 일반 reject(ICMP)는 커널이 목적지마다 초당 약 1개로 제한해 대부분 시간 초과로 바뀐다",
+     "재설정을 쓴 까닭: 옛 10초 설정(2026-11-26 전)에서는 drop 이면 연결 시간 초과 10초가 부하기 요청 시간 제한 10초와 같아 사용자 쪽이 응답 없음으로 보였고(지금은 앱 DB 기다림 상한 3초라 drop 이라도 3초에 실패한다), 일반 reject(ICMP)는 커널이 목적지마다 초당 약 1개로 제한해 대부분 시간 초과로 바뀐다",
      "관측 근거: 라우터 syslog 의 운영자 sudo nft -f 와 kernel '[DB ACL] ... DPT=5432', 두 WAS 앱 로그의 Connection refused, web01 과 Tomcat 접근 로그 5xx, db01 ICMP 1 과 postgres pid 그대로, ens21 송신 감소. 녹화 전이라 모두 설계 예상이다",
      "원본 사례: Harness 2024-09-01(지나치게 느슨하던 방화벽 규칙을 좁히며 그것을 쓰는 구성 요소 하나의 주소를 빠뜨림)",
      "대조: F72-R 은 같은 원본을 쿠버네티스 워커 호스트 방화벽의 새 연결 버림으로 재구성해 풀 수명만큼 늦게 드러난다. F71-H 는 DB 접근 파일이라 DB 로그에 FATAL 이 남는다"
@@ -18514,6 +18514,142 @@
      "관측 근거: dbsvr01 syslog 감시의 커널 OOM 줄과 유닛 실패 줄, PostgreSQL 로그 감시 FATAL, 메모리 사용률, 프로세스 표본의 python3 작업 프로세스들과 postgres 사라짐, 두 WAS 앱 로그의 연결 거부, 접근 로그 5xx. 녹화 전이라 모두 설계 예상이다",
      "원본 사례: Wikimedia 2017-07-28(DB 서버의 관리 도구 pt-kill 메모리 누수로 커널 OOM 이 s5 마스터 mysqld 를 죽임, Wikidata 와 독일어 위키백과 편집 76분 불가)",
      "대조: F80-R 은 쿠버네티스 워커의 백업 작업이 DB 파드를 밀어낸다. F25-H 는 DB 컨테이너 자신의 한도 OOM 이다. F72-P 는 같은 포털 전면 5xx 지만 DB 는 살아 있다"
+    ]
+   }
+  },
+  "F72-H": {
+   "title": "The router rt-core01's DB side port ens21 loses its link: the DB network drops off the router, was01 and was02 can no longer reach PostgreSQL on db01 and time out after 3 s, the portal answers 503 and 500 to almost every request, and db01 goes silent to monitoring while nobody changed anything",
+   "description": "The civil-petition portal is a traditional three-tier system on VMs: Apache httpd on web01 proxies /petition/ to Tomcat on was01 and was02 (192.168.125.0/24), whose Spring application reaches PostgreSQL 16 on db01 (192.168.126.11:5432) through a Tomcat JDBC pool (initialSize and minIdle 5, maxActive 40, maxWait 3 s, PgJDBC connect timeout and login timeout 3 s, no read timeout on an open connection). Every tier talks through the router rt-core01; its NIC ens21 (192.168.126.1) is the only path to the DB network, and db01's reports to the monitoring server leave through it too. The link of ens21 goes down, as a failed cable or switch port would take it down; no operator logs in and no configuration changes. The router sees carrier loss: systemd-networkd logs 'ens21: Lost carrier' and takes the DB network's address and route off the interface, snmpd sends a linkDown trap and reports ens21 down, and the port's counters stop. Packets from was01 and was02 to db01 now leave by the router's default route toward the hypervisor, come back and are dropped by the router's reverse path filter without any answer. New connections from the pool time out after 3 s (PgJDBC connect timeout) and requests waiting for a pooled connection give up after 3 s (pool maxWait), so read paths answer 503 'database unavailable' after about 3 s with 'database access failed: ...' naming 'java.net.SocketTimeoutException: Connect timed out' or PgJDBC's 'Connection attempt timed out.' (the connect timeout and the login timeout are both 3 s, so either can fire first), or 'Timeout: Pool empty. Unable to fetch a connection in 3 seconds', and the slow request filter logs each of them as a request of 3 s or more; submission and staff processing answer 500 when their transaction cannot get a connection. The about five connections each WAS held open when the link went down have no read timeout: the first requests that borrow them hang until the link returns, and the load generator gives up on them after 10 s. db01 itself keeps running, but its SMS reports and syslog stop, its ICMP status turns 0 and the availability sweeper marks it DOWN, because its only path is the dead port. The web and WAS networks and the router's other ports keep working. When the link comes back the router restores the DB network, the pool connects again, the held connections are released by TCP retransmission and the portal recovers within a minute.",
+   "cause": "Link failure of rt-core01's DB side port ens21 (carrier lost, no change by anyone) → the router drops the DB network 192.168.126.0/24 from ens21 and sends traffic for it out of its default route, where it is dropped without an answer → was01 and was02 can neither open nor use a connection to PostgreSQL on db01 (new connects time out after 3 s, pooled connections hang) → every portal request that needs the database fails after about 3 s: 503 'database unavailable' on reads, 500 on submission and staff processing, and the first few requests on the held connections time out at the load generator → web01 returns those failures to users. db01 is not down: it only becomes unreachable, so its reports, ICMP and availability go dark at the same time.",
+   "injection_summary": "The vmlink.state executor runs in the runner and reaches the hypervisor 66 only through its forced-command account. Preflight asks the root helper whether VM 201 (rt-core01) has a QMP socket and net3 (ens21, the router's DB side NIC) is up. Run arms the helper's own undo on 66 first (set the link up again when the deadline passes), then sends QMP set_link net3 off straight to the VM's QMP socket (no qm command, so Proxmox keeps no task line). Nothing runs inside any guest. The link stays down for 10 minutes. Cleanup sends set_link net3 on and disarms the undo; recovery reads the link as up.",
+   "user_impact": "For as long as the link is down, almost every portal request fails after about 3 seconds: citizens cannot log in, submit a petition, look up a receipt, list their petitions or search public petitions, staff cannot open their inbox or process petitions, and the statistics page fails (503, or 500 for submission and processing). A handful of requests caught on the connections open at the moment of the failure hang until the user's client gives up. The static front page still loads. Nothing written before is touched and nothing half-written remains: a write fails before its first statement and nothing is committed. Submissions made during the window are refused, not lost; users retry. When the link returns the portal comes back within a minute.",
+   "distinguishing_evidence": "The router reports a physical link failure, not a change: rt-core01's NMS data shows ens21's if_oper_status going down (it is up every poll of the week before) and its octet counters stopping, 119 receives a linkDown trap from 192.168.123.254 and the availability history marks network_interface ens21 DOWN, and the router's syslog has 'systemd-networkd: ens21: Lost carrier' (later 'Gained carrier'). At that moment the router has no configuration change command (nft -f, a deployment) and no kernel drop line (a routine operator session that only runs 'nft list ruleset' and 'tail' may overlap). At the same time db01 goes dark: its SMS metrics stop, sms.server.icmp_status falls to 0 and the availability sweeper marks it DOWN, while web01, was01 and was02 keep reporting and answering ping and the router keeps being polled (its NMS ICMP also has short false DOWNs in normal times, 21 in the week before, each under a minute, so a single router ping miss is not the sign). Both was01 and was02 log, from the same second, 'database access failed' naming 'Connect timed out' or 'Connection attempt timed out.', or 'Timeout: Pool empty. Unable to fetch a connection in 3 seconds' together with 'slow request ... took_ms=' of about 3000 (timeouts, not 'Connection refused'), and their access logs and web01's access log turn to 503 and 500. After the link returns db01's postgres processes have the same pids, its syslog has no boot or service start line and its PostgreSQL log has no shutdown or startup line: the server never stopped, it was cut off.",
+   "domain": "civil-petition",
+   "class": "B",
+   "observation_domains": [
+    "SMS",
+    "NMS"
+   ],
+   "root_cause": {
+    "target_kind": "node",
+    "target_id": "79a3ac72-fde1-400a-89ca-bcbf414a4b92",
+    "trigger_target_id": null,
+    "mechanism": "결함 보유 대상은 라우터 rt-core01 의 DB 쪽 포트 ens21 의 링크다(케이블이나 맞은편 스위치 포트가 끊긴 것과 같은 물리 링크 끊김). 누구도 설정을 바꾸지 않았다. 포트가 캐리어를 잃으면 라우터 systemd-networkd 가 ens21 의 DB 망 주소와 경로를 내리고(망 설정에 캐리어를 잃어도 설정을 지키는 지시가 없다), WAS 에서 db01 로 가는 패킷은 기본 경로로 하이퍼바이저 쪽에 나갔다 되돌아와 라우터의 역경로 검사(rp_filter 1)에 대답 없이 버려진다. 그래서 was01, was02 의 새 연결은 3초 연결 시간 제한으로, 풀 기다림은 3초 maxWait 로 실패하고 끊기는 순간 열려 있던 풀 연결은 읽기 상한이 없어 붙잡힌다. 앱과 PostgreSQL 은 늘 하던 그대로 정당하다(원칙 6: 정당한 요청이 끊긴 길에서 실패). 원본 사후 보고(Magic Pages 2026-10-20, 서버 사이 사설망이 연결을 버려 작업 서버들이 데이터베이스에 닿지 못하고 요청이 약 10초 뒤 오류로 끝남)와 같은 층위, 곧 '앱 서버와 DB 사이 망 경로의 끊김'이 정답이다. 근본과 계기가 같은 곳(ens21 링크)이라 trigger_target_id 는 비운다. target_id 는 라우터 인터페이스 ens21 의 NMS 대상 번호이고, 장비 이름(rt-core01)으로 짚은 답도 받는다. 관제 데이터로의 도달 경로: ① NMS rt-core01 ens21 if_oper_status down 과 옥텟 카운터 멈춤 ② snmp_traps_local 의 linkDown trap(1.3.6.1.6.3.1.1.5.3) ③ 가용성 이력 network_interface ens21 DOWN ④ 라우터 syslog 'systemd-networkd: ens21: Lost carrier' ⑤ 같은 시각 db01 보고 공백, ICMP 0, 가용성 DOWN(그 뒤에 있는 서버만) ⑥ was01, was02 앱 로그의 'Connect timed out' 이나 'Connection attempt timed out.', 'Unable to fetch a connection in 3 seconds' 와 3초 느린 요청 WARN. 링크가 왜 끊겼는지(케이블, 맞은편 포트, NIC)는 요구하지 않는다.",
+    "code_anchor": [
+     "civil-petition/deploy/render.py:327-358 (_netplan, addresses, routes — 라우터 NIC 마다 주소와 경로만 두고 캐리어를 잃어도 설정을 지키는 지시가 없어, ens21 캐리어가 사라지면 networkd 가 DB 망 주소와 경로를 내린다)",
+     "civil-petition/deploy/templates/router/sysctl-router.conf:3-4 (rp_filter — 기본 경로로 나갔다 상향 NIC 로 되돌아온 WAS 출발 패킷을 대답 없이 버린다)",
+     "civil-petition/deploy/render.py:450 (jdbc_url, db_addr — WAS 의 JDBC 주소가 db01 업무 주소 192.168.126.11:5432 라 라우터 ens21 을 지난다)",
+     "civil-petition/deploy/templates/was/petition-context.xml:9-15 (connectTimeout, loginTimeout, maxWait, validationQueryTimeout — DB 기다림 상한 3초, 열린 연결의 읽기 상한 없음)",
+     "civil-petition/petition-web/src/main/java/com/civilpetition/web/ApiExceptionHandler.java:23-26 (DataAccessException, log.error, SERVICE_UNAVAILABLE — DB 오류는 'database access failed' ERROR 와 503)",
+     "civil-petition/petition-web/src/main/java/com/civilpetition/web/SlowRequestFilter.java:17-29 (SLOW_MS, log.warn — 3초 넘게 걸린 요청을 WARN 'slow request' 로 남긴다)",
+     "civil-petition/petition-web/src/main/java/com/civilpetition/web/PetitionRepository.java:29 (Transactional — 신청과 처리는 트랜잭션을 열 때 연결을 못 얻으면 500)",
+     "civil-petition/deploy/templates/router/snmpd.conf:13 (linkUpDownNotifications — 링크 상태가 바뀌면 linkDown, linkUp trap 을 10.250.0.1 로 보낸다)",
+     "scripts/scenarios/profiles/vmlink_state_executor.py:34-36 (CONTRACTS, F72-H — 주입 계약: 66 QMP set_link VM 201 net3)"
+    ],
+    "infra_anchor": "라우터 rt-core01(VM 201, 상향 ens18 192.168.123.254 = net0, 웹 ens19 = net1, WAS ens20 192.168.125.1 = net2, DB ens21 192.168.126.1 = net3, 관리 ens22). DB 망 192.168.126.0/24 에는 db01(192.168.126.11) 하나와 라우터 ens21 만 있고 66 호스트 주소는 없다(66 은 그 대역을 192.168.123.254 로 보낸다). NMS 폴링 60초, 인터페이스 대상 ens21 79a3ac72-fde1-400a-89ca-bcbf414a4b92. 평시(2026-11-27 KST 조회): ens21 if_oper_status 24시간 내내 1, if_out_octets 3시간 중앙 약 105,000(최소 약 92,000), if_in_octets 중앙 약 258,000, 7일 linkDown trap 은 11-25 T4 시험(ens20) 1건뿐이고 ens21 인터페이스 DOWN 0, db01 ICMP 24시간 내내 1, RTT 중앙 약 5ms(최대 12), db01 가용성 DOWN 7일 0, db01 postgres 프로세스 16, WAS 마다 db01 쪽 ESTABLISHED 5."
+   },
+   "must_support": [
+    "rt-core01 의 DB 쪽 인터페이스 ens21(79a3ac72-fde1-400a-89ca-bcbf414a4b92) if_oper_status 가 주입 동안 down 이고 if_in_octets, if_out_octets 가 늘지 않는다. 평시 if_oper_status 는 24시간 내내 1, 옥텟은 60초마다 약 9만~26만씩 는다",
+    "119 snmp_traps_local 에 192.168.123.254 출발 linkDown trap(1.3.6.1.6.3.1.1.5.3)이 주입 시각에 오고, 가용성 이력에 rt-core01 network_interface ens21 DOWN 이 생긴다. 평시 7일 linkDown trap 은 11-25 시험(ens20) 1건, ens21 인터페이스 DOWN 0건",
+    "rt-core01 syslog 에 'systemd-networkd: ens21: Lost carrier' 가 주입 시각에, 'Gained carrier' 가 cleanup 시각에 있고, 그 시각 라우터에 설정 변경 명령(nft -f, 배포)이 없다(평시 운영자 sudo 는 'nft list ruleset', 'tail -n' 같은 조회뿐, 7일 Lost carrier 는 11-25 시험 1줄)",
+    "같은 시각 db01(192.168.126.11)만 관제에서 사라진다: SMS 지표 표본이 끊기고(평시 1시간 60표본) sms.server.icmp_status 가 0, 가용성이 DOWN 이 된다. 평시 ICMP 24시간 내내 1, 가용성 DOWN 7일 0. web01, was01, was02 는 계속 보고하고 핑에 답하고 라우터는 계속 폴링된다(라우터 NMS ICMP 의 짧은 거짓 DOWN 은 평시에도 7일 21번, 번마다 1분 안이라 그것과 갈라 본다)",
+    "was01, was02 앱 로그(petition.log) 감시에 'Connect timed out' 이나 'Connection attempt timed out.' 을 담은 'database access failed', 또는 'Timeout: Pool empty. Unable to fetch a connection in 3 seconds' ERROR 와 took_ms 약 3000 의 'slow request' WARN 이 같은 시각 두 서버에서 함께 시작된다. 평시(11-27) 두 서버 앱 로그 ERROR 0줄, WARN 은 was02 의 야간 배치 2줄뿐",
+    "web01 접근 로그 감시와 두 WAS 의 Tomcat 접근 로그 감시에 /petition/api 요청의 503, 500 줄이 주입 동안 이어진다. 평시(11-21 ~ 11-24, 11-27) 두 감시의 5xx 줄 0"
+   ],
+   "must_rule_out": [
+    "라우터 접근 규칙 변경이 아님: 실패 시작 시각에 rt-core01 에 설정 변경 명령(nft -f, 배포)과 kernel 차단 줄이 없고(평시 조회 세션은 겹칠 수 있다), ens21 이 내려가 linkDown trap 이 왔다. 앱 오류도 바로 난 'Connection refused' 가 아니라 3초 기다린 'Connect timed out' 이나 'Connection attempt timed out.' 과 풀 기다림 시간 초과다. db01 보고와 ICMP 까지 끊긴 것은 포트 하나에 걸린 서버 전체가 닿지 않는다는 뜻이다",
+    "db01 서버 다운이나 재부팅, PostgreSQL 다운이 아님: 서버가 꺼져도 라우터 포트는 올라가 있는데 여기서는 라우터가 ens21 down 과 linkDown trap 을 보고한다. 링크가 돌아온 뒤 db01 postgres 프로세스 pid 가 그대로이고 db01 syslog 에 부팅이나 postgresql 시작 줄, PostgreSQL 로그에 종료나 시작 줄이 없다",
+    "WAS 배포나 설정 변경(WAR 교체, tomcat10 재시작)이 아님: 실패 시작 시각에 was01, was02 의 java 프로세스 pid 가 그대로이고 tomcat10 재시작 줄이 없으며 두 서버가 같은 초에 함께 실패한다",
+    "DB 과부하나 느린 질의, 연결 고갈이 아님: 오류는 DB 에서 온 대답이 아니라 연결 맺기 시간 초과이고, db01 은 그 시각 보고 자체가 끊겼으며 끊기기 직전 CPU(평시 약 1~2%)가 오르지 않았다",
+    "라우터 전체 장애(재시작, CPU, conntrack)가 아님: 라우터는 상향 주소로 계속 폴링되고 ens19, ens20 은 올라간 채 트래픽이 이어지며 web01, was01, was02 의 ICMP 와 보고가 정상이다. 끊긴 것은 ens21 하나다",
+    "웹 서버 설정 변경이나 웹 서버 장애가 아님: web01 은 WAS 가 3초 남짓에 돌려준 503, 500 을 그대로 전한다. 웹과 WAS 사이 연결 실패 줄(AH01114, AH00957)이 원인이 아니다"
+   ],
+   "beyond_data": {
+    "detail": "Why the link went down: a pulled or failed cable, a failed port on the peer switch, or the NIC itself. In this testbed the hypervisor turned the router's virtual NIC link off",
+    "missing_data": "physical layer diagnostics (cable test, peer switch port log, NIC error log); 119 sees the router's carrier loss, port state and trap, not what broke the link",
+    "confirmed_by": "the executor contract (vmlink_state_executor.py CONTRACTS F72-H: QMP set_link VM 201 net3) and the runner's run record"
+   },
+   "beyond_data_ko": {
+    "detail": "링크가 끊긴 까닭: 케이블이 빠지거나 상함, 맞은편 스위치 포트 고장, NIC 자체 고장 가운데 무엇인지. 이 테스트베드에서는 하이퍼바이저가 라우터 가상 NIC 의 링크를 내렸다",
+    "missing_data": "물리 계층 진단(케이블 시험, 맞은편 스위치 포트 기록, NIC 오류 기록). 119 는 라우터의 캐리어 잃음, 포트 상태, trap 만 보고 무엇이 링크를 끊었는지는 보지 못한다",
+    "confirmed_by": "실행기 계약(vmlink_state_executor.py CONTRACTS F72-H: QMP set_link VM 201 net3)과 러너 실행 기록"
+   },
+   "difficulty": "medium",
+   "related_scenarios": {
+    "contrast_with": [
+     "F72-P (같은 증상: WAS 두 대가 라우터를 지나 DB 에 못 붙어 포털 거의 모든 요청 503, 500. 원인은 운영자의 라우터 접근 규칙 변경이라 라우터 syslog 에 운영자 로그인과 sudo nft -f, kernel '[DB ACL]' 줄이 있고, ens21 은 올라간 채 trap 이 없으며, db01 은 보고와 핑을 이어 가고, 앱 오류는 바로 난 'Connection refused' 다. F72-H 는 ens21 링크가 끊겨 down 과 linkDown trap, 'Lost carrier' 가 있고 운영자 줄이 없으며, db01 이 관제에서 함께 사라지고, 앱 오류는 3초 기다린 연결 시간 초과('Connect timed out' 이나 'Connection attempt timed out.')다)",
+     "F72-R (DB 포트 허용 목록이 새 연결만 버려 풀 수명만큼 늦게 드러남, 쿠버네티스 워커, Oracle)",
+     "F80-P (DB 서버 쪽 PostgreSQL 이 실제로 죽어 연결 거부, 서버 보고와 핑은 이어짐. 도메인은 SMS 전용 민원)"
+    ]
+   },
+   "scoring": {
+    "granularity": "node",
+    "accept": [
+     "rt-core01 ens21",
+     "79a3ac72-fde1-400a-89ca-bcbf414a4b92",
+     "rt-core01",
+     "65b4ab9c-d1b4-42f6-be5c-7efb5c34cb3c"
+    ],
+    "partial": [
+     "db01",
+     "73343434-0302-468f-b738-643aec7ab84b",
+     "7d448c2f-03cb-4669-ab3a-16e7c217e928",
+     "was01",
+     "bda0dfa8-d90c-455f-b4ae-d20fcb0ae7bd",
+     "was02",
+     "ebdf15e2-477d-4c8f-9afc-f4c4b1baf69b",
+     "web01",
+     "c5f7161d-74ea-431d-90a7-09a9d534098f"
+    ]
+   },
+   "title_ko": "라우터 rt-core01 의 DB 쪽 포트 ens21 링크가 끊김: DB 망이 라우터에서 빠져 was01, was02 가 db01 의 PostgreSQL 에 닿지 못하고 3초 뒤 시간 초과로 실패해 포털이 거의 모든 요청에 503, 500 을 내고, db01 은 관제에서 함께 사라지는데 누구도 무엇을 바꾸지 않았다",
+   "description_ko": "민원 포털은 VM 위 전통 3계층이다. web01 의 Apache httpd 가 /petition/ 을 was01, was02(192.168.125.0/24)의 Tomcat 으로 넘기고, Spring 앱은 Tomcat JDBC 풀(initialSize, minIdle 5, maxActive 40, maxWait 3초, PgJDBC 연결과 로그인 시간 제한 3초, 열린 연결의 읽기 상한 없음)로 db01 의 PostgreSQL 16(192.168.126.11:5432)에 붙는다. 계층 사이 통신은 모두 라우터 rt-core01 을 지나고, 라우터 NIC ens21(192.168.126.1)이 DB 망으로 가는 유일한 길이며 db01 이 관제 서버로 보내는 보고도 이 길로 나간다. ens21 의 링크가 끊긴다(케이블이나 스위치 포트가 끊긴 것과 같다). 운영자 로그인도 설정 변경도 없다. 라우터는 캐리어를 잃는다: systemd-networkd 가 'ens21: Lost carrier' 를 남기고 그 인터페이스의 DB 망 주소와 경로를 내리며, snmpd 가 linkDown trap 을 보내고 ens21 을 down 으로 보고하고, 포트 카운터가 멈춘다. was01, was02 에서 db01 로 가는 패킷은 이제 라우터 기본 경로로 하이퍼바이저 쪽에 나갔다 되돌아와 라우터 역경로 검사에 대답 없이 버려진다. 풀의 새 연결은 3초 뒤 시간 초과(PgJDBC 연결 시간 제한)로, 풀 연결을 기다리던 요청은 3초 뒤(풀 maxWait) 포기해, 읽기 경로는 약 3초 뒤 503 'database unavailable' 로 답하며 'Connect timed out' 이나 PgJDBC 의 'Connection attempt timed out.'(연결 시간 제한과 로그인 시간 제한이 둘 다 3초라 어느 쪽이든 먼저 날 수 있다)을 담은 'database access failed', 또는 'Timeout: Pool empty. Unable to fetch a connection in 3 seconds' 를 남기고, 느린 요청 필터가 그 요청마다 3초 넘은 요청 WARN 을 남긴다. 신청과 담당자 처리는 트랜잭션이 연결을 얻지 못해 500 이다. 끊기는 순간 WAS 마다 열려 있던 연결 약 5개는 읽기 상한이 없어, 그것을 빌린 첫 요청들이 링크가 돌아올 때까지 붙잡히고 부하기는 10초 뒤 그 요청을 포기한다. db01 자체는 계속 돌지만 유일한 길이 끊겨 SMS 보고와 syslog 가 멈추고 ICMP 상태가 0, 가용성 스위퍼가 DOWN 으로 표시한다. 웹 망, WAS 망과 라우터의 다른 포트는 그대로다. 링크가 돌아오면 라우터가 DB 망을 되살리고 풀이 다시 연결하며, 붙잡힌 연결도 TCP 재전송이 닿아 풀려나 1분 안에 회복한다.",
+   "cause_ko": "rt-core01 의 DB 쪽 포트 ens21 링크 끊김(캐리어 잃음, 누구의 변경도 아님) → 라우터가 ens21 에서 DB 망 192.168.126.0/24 를 내리고 그 대역 트래픽을 기본 경로로 내보내 대답 없이 버려짐 → was01, was02 가 db01 의 PostgreSQL 에 새로 붙지도 열린 연결을 쓰지도 못함(새 연결은 3초 뒤 시간 초과, 열린 풀 연결은 붙잡힘) → DB 가 필요한 포털 요청이 약 3초 뒤 모두 실패: 읽기는 503 'database unavailable', 신청과 담당자 처리는 500, 붙잡힌 연결에 걸린 첫 몇 요청은 부하기에서 시간 초과 → web01 이 그 실패를 사용자에게 돌려줌. db01 은 죽은 것이 아니라 닿지 않게 된 것이라 보고, ICMP, 가용성이 같은 시각 함께 끊긴다.",
+   "injection_summary_ko": "vmlink.state 실행기가 러너에서 돌고 하이퍼바이저 66 에는 강제 명령 계정으로만 닿는다. preflight 는 root 도우미에게 VM 201(rt-core01)의 QMP 소켓이 있고 net3(ens21, 라우터 DB 쪽 NIC)이 올라가 있는지 묻는다. run 은 66 에 도우미의 자기 되돌림(기한이 지나면 링크를 다시 올림)을 먼저 건 뒤 VM 의 QMP 소켓에 set_link net3 off 를 바로 보낸다(qm 명령을 거치지 않아 Proxmox 작업 줄이 남지 않는다). 어느 게스트 안에서도 아무것도 돌지 않는다. 링크를 10분 내려 둔다. cleanup 은 set_link net3 on 을 보내고 되돌림을 풀며, recovery 는 링크가 올라왔는지 읽는다.",
+   "user_impact_ko": "링크가 끊긴 동안 포털 요청이 거의 모두 약 3초 뒤 실패한다: 민원인은 로그인, 신청, 접수번호 조회, 내 민원 목록, 공개 민원 검색을 못 하고, 담당자는 함을 열거나 처리하지 못하며, 통계 화면도 실패한다(503, 신청과 처리는 500). 끊기는 순간 열려 있던 연결에 걸린 몇 요청은 사용자 쪽이 포기할 때까지 응답이 없다. 정적 첫 화면은 뜬다. 이미 쓰인 데이터는 건드리지 않고 반쯤 쓰인 것도 없다(쓰기는 첫 질의 전에 실패하고 아무것도 커밋되지 않는다). 그 사이 신청은 잃는 것이 아니라 거절되어 사용자가 다시 한다. 링크가 돌아오면 1분 안에 돌아온다.",
+   "distinguishing_evidence_ko": "라우터가 변경이 아니라 물리 링크 끊김을 보고한다: rt-core01 NMS 데이터에서 ens21 의 if_oper_status 가 down 이 되고(앞선 일주일 모든 폴링에서 up) 옥텟 카운터가 멈추며, 119 가 192.168.123.254 에서 linkDown trap 을 받고 가용성 이력에 network_interface ens21 DOWN 이 생기고, 라우터 syslog 에 'systemd-networkd: ens21: Lost carrier'(뒤에 'Gained carrier')가 있다. 그 시각 라우터에는 설정 변경 명령(nft -f, 배포)과 kernel 차단 줄이 없다(평시 조회 세션은 겹칠 수 있다. 그 세션은 'nft list ruleset' 과 'tail' 만 친다). 같은 시각 db01 이 관제에서 사라진다: SMS 지표가 끊기고 sms.server.icmp_status 가 0, 가용성 스위퍼가 DOWN 으로 표시하는데 web01, was01, was02 는 계속 보고하고 핑에 답하며 라우터도 계속 폴링된다(라우터 NMS ICMP 는 평시에도 7일 21번, 번마다 1분 안의 짧은 거짓 DOWN 이 있어 라우터 핑 한 번 빠짐은 근거가 아니다). was01, was02 가 같은 초부터 함께 'Connect timed out' 이나 'Connection attempt timed out.' 을 담은 'database access failed', 또는 'Timeout: Pool empty. Unable to fetch a connection in 3 seconds' 와 took_ms 약 3000 의 'slow request' 를 남기고('Connection refused' 가 아니라 기다린 끝의 시간 초과), 두 WAS 접근 로그와 web01 접근 로그가 503, 500 으로 바뀐다. 링크가 돌아온 뒤 db01 postgres 프로세스 pid 가 그대로이고 db01 syslog 에 부팅이나 서비스 시작 줄, PostgreSQL 로그에 종료나 시작 줄이 없다: 서버는 멈춘 적이 없고 길이 끊겼다.",
+   "injected_fault": {
+    "profile": "vmlink.state",
+    "companions": [],
+    "levels": [
+     {
+      "id": "approved-fixed-f72-h",
+      "parameters": {
+       "host": "192.168.122.1",
+       "node": "pve66",
+       "vmid": 201,
+       "net": "net3"
+      }
+     }
+    ]
+   },
+   "story_ko": {
+    "overview": "라우터(rt-core01)의 DB 쪽 포트(ens21) 링크가 끊겨, 아무도 무엇을 바꾸지 않았는데 WAS(Tomcat, was01, 192.168.125.11, was02, 192.168.125.12)가 DB 서버(PostgreSQL, db01, 192.168.126.11)에 닿지 못하고 민원 포털의 거의 모든 요청이 3초 뒤 실패한다.",
+    "injected_fault": "라우터의 DB 쪽 포트 링크를 케이블이 빠진 것처럼 약 10분 끊는다.",
+    "propagation": [
+     {
+      "stage": "초기",
+      "text": "링크가 끊기면 약 1분 안에 라우터가 그 포트를 down 으로 보고하고 linkDown trap 을 보내며, DB 서버는 관제에서 보고와 핑이 함께 끊긴다."
+     },
+     {
+      "stage": "전면 장애",
+      "text": "같은 초부터 WAS 두 대의 DB 연결이 3초 기다린 끝에 실패해 로그인, 신청, 조회, 검색, 담당자 처리가 503 이나 500 으로 끝난다. WAS 앱 로그에 연결 시간 초과 오류와 3초 넘은 느린 요청이, 웹 서버(Apache, web01, 192.168.124.11) 접근 로그에 5xx 가 쌓인다."
+     },
+     {
+      "stage": "회복",
+      "text": "링크가 돌아오면 라우터가 DB 망을 되살리고 WAS 가 다시 연결해 1분 안에 정상으로 돌아온다. db01 은 그동안 멈춘 적이 없다."
+     }
+    ],
+    "root_cause": "근본 원인은 라우터 rt-core01 의 DB 쪽 포트 ens21 링크 끊김이다. WAS 와 웹 서버는 오류를 크게 남기는 피해자이고, DB 서버 db01 은 관제에서 사라져 죽은 것처럼 보이지만 길이 끊겼을 뿐 내내 돌고 있었다.",
+    "design_notes": [
+     "주입: vmlink.state. 66 하이퍼바이저의 강제 명령 도우미가 자기 되돌림을 먼저 건 뒤 QMP set_link 로 VM 201(rt-core01) net3(ens21)을 내리고, cleanup 이 다시 올린다. 게스트 안에는 주입 흔적이 없다",
+     "경로: 사용자 → web01 Apache → was01, was02 Tomcat → rt-core01 ens21 → db01 PostgreSQL 5432. 모든 업무 경로가 DB 를 쓴다",
+     "버려지는 길: 캐리어를 잃은 라우터가 DB 망 주소와 경로를 내려 WAS 출발 패킷이 기본 경로로 66 에 나갔다 되돌아오고 역경로 검사(rp_filter)에 대답 없이 버려진다. ICMP 거부가 없어 연결은 시간 초과로 끝난다(11-26 시험의 WAS 쪽 링크 끊김에서 웹 연결이 3초씩 기다린 것과 같은 꼴)",
+     "풀: Tomcat JDBC minIdle 5, maxActive 40, maxWait 3초, PgJDBC 연결과 로그인 시간 제한 3초, 읽기 상한 없음. 새 연결과 풀 기다림은 3초에 실패하고 끊기는 순간 열린 연결(WAS 마다 약 5개)만 붙잡혀, 그것을 빌린 첫 몇 요청은 링크가 돌아올 때까지 응답이 없다(부하기는 10초에 포기)",
+     "판정: 상주 부하의 접수번호 조회(로그인 없는 공개 경로) 비정상 비율로 본다. 필수 중단(신청 응답 없음 2틱)은 3초 상한 덕에 피한다(설계 시트 §9-3 모의)",
+     "관측 근거: rt-core01 ens21 down 과 linkDown trap(11-26 시험의 ens20 에서 약 36초 뒤), 가용성 ens21 DOWN(약 43초 뒤), 라우터 syslog Lost carrier, db01 보고 공백과 ICMP 0 과 가용성 DOWN, 두 WAS 앱 로그의 Connect timed out 이나 Connection attempt timed out. 과 slow request, web01 과 Tomcat 접근 로그 5xx. 녹화 전이라 모두 설계 예상이다",
+     "원본 사례: Magic Pages 2026-10-20(서버 사이 사설망이 연결을 버려 작업 서버가 데이터베이스에 닿지 못하고 요청이 약 10초 뒤 오류로 끝남)",
+     "대조: F72-P 는 같은 증상을 운영자의 라우터 접근 규칙 변경으로 낸다. 운영자 sudo 줄과 kernel 차단 줄이 있고 포트는 올라가 있으며 db01 은 보고와 핑을 이어 가고 앱 오류는 바로 난 연결 거부다"
     ]
    }
   }

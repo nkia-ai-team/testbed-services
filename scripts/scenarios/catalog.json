@@ -1831,6 +1831,18 @@
       "load_mode": "fixed",
       "injection_location": "civil-petition-sms dbsvr01",
       "prerequisite": ""
+    },
+    {
+      "id": "F72-H",
+      "slug": "f72-h-petition-router-db-link-down",
+      "profiles": [
+        "vmlink.state"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "civil-petition hypervisor",
+      "prerequisite": ""
     }
   ]
 }

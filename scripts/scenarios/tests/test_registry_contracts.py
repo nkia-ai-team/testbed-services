@@ -155,7 +155,8 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-11-09: 시나리오 수는 그대로. 프로파일 35 → 36(db.cursor_reset 신설, F74-R 동반: 정리 뒤 건수 질의 커서 비우기와 계획 복귀 확인).
         # 2026-11-25: 143 → 144. F72-P(후보) 추가. 민원 포털 라우터 router.config 에 첫 계약(프로파일 수는 그대로).
         # 2026-11-25: 144 → 145. F80-P(후보) 추가. vmhost.stress 에 새 모드 memprocs 와 첫 계약(프로파일 수는 그대로).
-        self.assertEqual(len(self.catalog["scenarios"]), 145)
+        # 2026-11-27: 145 → 146. F72-H(후보) 추가. vmlink.state 에 첫 계약(프로파일 수는 그대로).
+        self.assertEqual(len(self.catalog["scenarios"]), 146)
         # 2026-11-19: 시나리오 수는 그대로. 프로파일 36 → 48(civil-petition VM 실행기 12개 신설, v4 T4S. 계약 0개라 시나리오가 아직 쓰지 않는다).
         self.assertEqual(len(self.profiles["profiles"]), 48)
         known = set(self.profiles["profiles"])
@@ -369,6 +370,8 @@ class RegistryContractTests(unittest.TestCase):
             "F72-P",
             # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 root 의 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 공유 버퍼를 RSS 로 세는 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춰 포털 503, 500(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-P",
+            # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 의 DB 쪽 포트 ens21 링크가 끊겨(변경 아님) DB 망이 라우터에서 빠지고 WAS 두 대의 DB 연결이 대답 없이 버려져 3초 시간 초과, 포털 거의 모든 요청 503, 500, db01 은 관제에서 함께 사라짐(Magic Pages 2026-10-20 재구성, vmlink.state 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-H",
         }
         for scenario in self.catalog["scenarios"]:
             plan = compile_plan_module.compile_plan(scenario["slug"])
@@ -937,6 +940,8 @@ class RegistryContractTests(unittest.TestCase):
             "F72-P",
             # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 root 의 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 공유 버퍼를 RSS 로 세는 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춰 포털 503, 500(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-P",
+            # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 의 DB 쪽 포트 ens21 링크가 끊겨(변경 아님) DB 망이 라우터에서 빠지고 WAS 두 대의 DB 연결이 대답 없이 버려져 3초 시간 초과, 포털 거의 모든 요청 503, 500, db01 은 관제에서 함께 사라짐(Magic Pages 2026-10-20 재구성, vmlink.state 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-H",
             },
         )
         self.assertEqual(
@@ -1149,6 +1154,8 @@ class RegistryContractTests(unittest.TestCase):
             "F72-P",
             # 2026-11-25: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 root 의 python3 작업 프로세스 열둘(각 512 MiB)이 메모리를 다 써 커널 OOM 이 공유 버퍼를 RSS 로 세는 PostgreSQL 을 죽이고 systemd 가 유닛을 멈춰 포털 503, 500(Wikimedia 2017-07-28 재구성, vmhost.stress 새 모드 memprocs 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F80-P",
+            # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 의 DB 쪽 포트 ens21 링크가 끊겨(변경 아님) DB 망이 라우터에서 빠지고 WAS 두 대의 DB 연결이 대답 없이 버려져 3초 시간 초과, 포털 거의 모든 요청 503, 500, db01 은 관제에서 함께 사라짐(Magic Pages 2026-10-20 재구성, vmlink.state 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F72-H",
             ],
         )
         for scenario in self.catalog["scenarios"]:
@@ -1368,8 +1375,9 @@ class RegistryContractTests(unittest.TestCase):
         # 2026-10-30: F69-P(후보, 고정 evaluation)이 끝에 붙어 F76-P 가 끝 5개에서 빠졌다.
         # 2026-11-25: F72-P(후보, 고정 evaluation, 첫 민원 포털 시나리오)가 끝에 붙어 F77-R 이 끝 5개에서 빠졌다.
         # 2026-11-25: F80-P(후보, 고정 evaluation, 첫 SMS 전용 민원 포털 시나리오)가 끝에 붙어 F71-H 가 끝 5개에서 빠졌다.
+        # 2026-11-27: F72-H(후보, 고정 evaluation, 민원 포털 라우터 링크 끊김)가 끝에 붙어 F79-R 이 끝 5개에서 빠졌다.
         self.assertEqual(self.controllers["live_scenario_ids"][-5:],
-                         ["F79-R", "F80-R", "F69-P", "F72-P", "F80-P"])
+                         ["F80-R", "F69-P", "F72-P", "F80-P", "F72-H"])
 
     def test_every_live_primary_plan_binds_controller_levels_for_runtime_apply(self) -> None:
         catalog_by_id = {item["id"]: item for item in self.catalog["scenarios"]}

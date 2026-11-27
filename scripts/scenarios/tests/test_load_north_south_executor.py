@@ -87,6 +87,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "router.config",
                 # 2026-11-25: F80-P — SMS 전용 민원 포털 DB 서버 dbsvr01 에서 작업 프로세스 묶음 띄우기와 멈추기, 내려간 PostgreSQL 유닛 다시 띄우기.
                 "vmhost.stress",
+                # 2026-11-27: F72-H — 66 하이퍼바이저 도우미로 라우터 rt-core01 의 DB 쪽 NIC(VM 201 net3) 링크 내리기와 올리기(QMP set_link).
+                "vmlink.state",
             },
         )
 

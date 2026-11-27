@@ -14,7 +14,14 @@ checks the table again, arms the U8 guard on 66 before it changes the link, and 
 itself if cleanup never comes. A link set through QMP comes back up when the VM restarts, so 66 needs
 no boot rule (§3-5 rule 5).
 
-The executor is the means only; until a scenario adds an exact contract every scenario is refused.
+The executor is the means only; a scenario runs only with its exact contract below.
+
+Contracts:
+- F72-H (2026-11-27): the router rt-core01's DB side NIC ens21 (VM 201 net3) loses carrier for the scenario's hold,
+  as a failed cable or switch port would. The router drops the DB network's address and route with the carrier, so
+  WAS packets to db01 leave by the default route and are dropped without an answer (no ICMP), and db01's own
+  reports stop. Nothing changes inside any guest; the evidence is the router's port state, linkDown trap and syslog
+  carrier line, db01's report gap, ICMP and availability, and the WAS application's connect timeouts.
 """
 from __future__ import annotations
 
@@ -24,7 +31,9 @@ from executor_common import ExecutorError, cli, kubectl_bash_argv, profile_insta
 import vm_executor_common as vm
 
 PROFILE_ID = "vmlink.state"
-CONTRACTS: dict[str, dict[str, Any]] = {}
+CONTRACTS: dict[str, dict[str, Any]] = {
+    "F72-H": {"host": "192.168.122.1", "node": "pve66", "vmid": 201, "net": "net3"},
+}
 KEYS = {"host", "node", "vmid", "net"}
 
 

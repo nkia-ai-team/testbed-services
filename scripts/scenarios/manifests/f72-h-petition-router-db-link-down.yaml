@@ -1,0 +1,251 @@
+{
+  "schema_version": "1.0",
+  "id": "F72-H",
+  "slug": "f72-h-petition-router-db-link-down",
+  "readiness": "ready",
+  "stage": "candidate",
+  "authoritative_sources": {
+    "catalog": "scripts/scenarios/catalog.json",
+    "execution_matrix": "docs/spec-scenario-execution-matrix.md"
+  },
+  "injection": {
+    "location": "civil-petition hypervisor",
+    "matrix_location_transport": "V/ssh vmlink.state(civil-petition 66 하이퍼바이저, 강제 명령 계정 hvjob 의 도우미가 66 에 자기 되돌림 가드를 먼저 건 뒤 QMP set_link VM 201 net3 off, qm 을 거치지 않음)",
+    "transport": "ssh",
+    "profile_refs": [
+      "injector-profiles/vmlink.state"
+    ]
+  },
+  "execution": {
+    "preflight_ids": [
+      "catalog-integrity",
+      "canonical-kubeconfig",
+      "global-dirty-lease",
+      "baseline-clean-window",
+      "target-health",
+      "profile-prerequisites",
+      "transport-ssh-access",
+      "network-oob-recovery"
+    ],
+    "controller": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "binding": {
+        "primary_ref": "vmlink.state",
+        "companion_refs": [],
+        "approved_profile_id": "vmlink.state"
+      },
+      "runtime": {
+        "mode": "evaluation",
+        "tick_interval": "15s",
+        "settle_after_change": "30s",
+        "max_injection_duration": "20m",
+        "preflight": [
+          "coordinator-clean",
+          "clean-window",
+          "baseline-traffic",
+          "target-health",
+          "vm-entry-health"
+        ],
+        "baseline": {
+          "clean_window": "30m",
+          "required": [
+            {
+              "check": "coordinator-clean"
+            },
+            {
+              "check": "clean-window"
+            },
+            {
+              "check": "baseline-traffic"
+            },
+            {
+              "check": "target-health"
+            },
+            {
+              "check": "vm-entry-health"
+            }
+          ]
+        },
+        "profile": {
+          "kind": "fixed",
+          "levels": [
+            {
+              "id": "approved-fixed-f72-h",
+              "parameters": {
+                "host": "192.168.122.1",
+                "node": "pve66",
+                "vmid": 201,
+                "net": "net3"
+              },
+              "min_hold": "10m",
+              "settle": "60s",
+              "timeout": "15m"
+            }
+          ]
+        },
+        "observations": [
+          {
+            "id": "entry_status",
+            "adapter": "http_probe",
+            "query_id": "http.entry_health",
+            "parameters": {
+              "domain": "civil-petition"
+            },
+            "_note": "민원 포털 상주 부하기(loadgen VM)의 마지막 민원 신청 상태. 링크가 끊기면 WAS 에서 DB 로 가는 패킷이 대답 없이 버려지지만, 앱 DB 기다림 상한 3초(PgJDBC connectTimeout, loginTimeout, 풀 maxWait)로 새 연결과 풀 빌리기가 3초 남짓에 실패해 신청은 500 으로 답한다. 0(응답 없음)이 되는 것은 끊기는 순간 WAS 마다 열려 있던 풀 연결(평시 약 5개)을 빌린 첫 요청 몇 개뿐이고 (읽기 상한이 없어 붙잡힘), 그중 신청이 있어도 몇 초 안의 다음 신청 500 이 값을 덮는다(설계 시트 §9-3 모의: 열린 연결 WAS 마다 5개면 저점에서 피크까지 4,000번 가운데 2틱 연속 0 이 0번, 10개로 잡아도 4,000번 가운데 2번)",
+            "freshness": "15s"
+          },
+          {
+            "id": "target_health",
+            "adapter": "http_probe",
+            "query_id": "http.target_health",
+            "freshness": "15s",
+            "_note": "전역 회복 조건(다른 테스트베드 진입). 이 시나리오는 건드리지 않는다"
+          },
+          {
+            "id": "lookup_nonok_rate",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.read_step_status_rate",
+            "parameters": {
+              "domain": "civil-petition"
+            },
+            "_note": "상주 부하의 접수번호 조회(단계 lookup, 여정 30%, 웹 → WAS → DB 기본 키 조회) 비정상 비율. 쿠키 단지 없이 부르는 공개 경로라 장애 중 로그인 상태가 풀려도 사라지지 않는다. 30초 창에 저점 5rps 에서도 약 45건. 평시 약 0.01(없는 번호 조회 1% 고정이 404). 링크가 끊기면 3초 남짓 뒤 503('database unavailable'), 첫 몇 건은 부하기 10초 시간 초과(0)",
+            "freshness": "30s"
+          },
+          {
+            "id": "achieved_rps",
+            "adapter": "loadgen_summary",
+            "query_id": "loadgen.achieved_rps",
+            "parameters": {
+              "domain": "civil-petition"
+            },
+            "freshness": "30s"
+          }
+        ],
+        "success": {
+          "all": [
+            {
+              "id": "lookups-failing",
+              "observation": "lookup_nonok_rate",
+              "op": "gte",
+              "value": 0.5,
+              "_note": "접수번호 조회가 DB 연결 시간 초과(3초)로 503"
+            }
+          ],
+          "consecutive_ticks": 3,
+          "_note": "링크가 끊긴 다음 요청부터 실패한다(새 연결은 3초 연결 시간 제한, 열린 풀 연결은 붙잡힘). 신청 단계는 성공 조건에 쓰지 않는다: 장애 중 재로그인 여정이 실패해 로그인 상태가 풀린 가상 사용자는 신청 요청을 보내지 않아 몇 분 뒤 30초 창에 신청이 0건이 되고 그 비율이 실리지 않는다(F72-P 평가 지적과 같음). min_hold 10m 은 피해와 원인 흔적(라우터 ens21 상태와 trap, 60초 NMS 폴링 여러 점, db01 보고 공백과 가용성 DOWN, WAS 시간 초과 줄)이 쌓일 길이다"
+        },
+        "must_rule_out": {
+          "any": [
+            {
+              "id": "load-not-delivered",
+              "observation": "achieved_rps",
+              "op": "lt",
+              "value": 2.0,
+              "_note": "상주 부하 저점(KST 4시) 목표 5rps 의 40%. 부하가 실제로 끊겼을 때만 발화한다(3초 실패는 도착률을 바꾸지 않고, 동시 VU 는 피크에서 약 120 으로 최대 150 안)"
+            }
+          ],
+          "consecutive_ticks": 2
+        },
+        "abort": {
+          "any": [
+            {
+              "id": "entry-unreachable",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 0
+            }
+          ],
+          "consecutive_ticks": 2,
+          "_note": "필수 중단(compile-plan). 3초 상한 덕에 신청은 500 으로 답한다. 남는 위험은 끊기는 순간 열린 풀 연결을 빌린 신청 하나가 10초 시간 초과(0)가 되고 그 뒤 15초 넘게 다른 신청이 없을 때뿐이다(설계 시트 §9-3). 3초 설정이 아직 두 WAS 에 없으면(옛 10초) 이 조건이 30~45초 안에 실행을 끊는다(11-25 막힘)"
+        },
+        "recovery": {
+          "all": [
+            {
+              "id": "target-recovered",
+              "observation": "target_health",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "entry-recovered",
+              "observation": "entry_status",
+              "op": "eq",
+              "value": 200
+            },
+            {
+              "id": "lookups-recovered",
+              "observation": "lookup_nonok_rate",
+              "op": "lt",
+              "value": 0.1,
+              "_note": "평시 창별 비정상 비율은 없는 번호 1% 때문에 저점 5rps 30초 창에서 최대 약 0.055(모의)라 0.05 가 아니라 0.1 로 둔다. 장애 중 값은 1.0"
+            }
+          ],
+          "consecutive_ticks": 2,
+          "timeout": "10m",
+          "_note": "cleanup 은 66 도우미가 QMP 로 라우터 ens21 링크를 다시 올린다. 라우터 systemd-networkd 가 캐리어를 다시 얻으며 DB 망 주소와 경로를 되살리면 새 연결이 맺어지고, 붙잡혀 있던 열린 연결도 TCP 재전송이 닿으며 풀려난다. entry_status 200 은 로그인이 풀렸던 가상 사용자가 다시 로그인한 뒤의 첫 신청이다"
+        },
+        "cleanup": {
+          "required": true,
+          "order": "reverse",
+          "timeout": "5m"
+        },
+        "capture": {
+          "enabled": true,
+          "pre_window": "10m",
+          "post_window": "20m",
+          "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+          "create_golden_anomaly": false
+        }
+      }
+    }
+  },
+  "actions": {
+    "plan": {
+      "mode": "dry-run",
+      "mutation": false,
+      "adapter_refs": [
+        "vmlink.state"
+      ]
+    },
+    "run": {
+      "mode": "dry-run",
+      "mutation": false,
+      "requires_preflight": true,
+      "adapter_refs": [
+        "vmlink.state"
+      ]
+    },
+    "cleanup": {
+      "mode": "dry-run",
+      "mutation": false,
+      "required": true,
+      "order": "reverse",
+      "recovery_gate": true,
+      "adapter_refs": [
+        "vmlink.state"
+      ]
+    }
+  },
+  "prerequisite_gate": {
+    "state": "satisfied",
+    "required": false,
+    "description": "none",
+    "live_allowed": true
+  },
+  "capture_policy": {
+    "policy_ref": "focused-window-v1",
+    "time_basis": "UTC",
+    "t1": "earliest-actual-effect-start",
+    "t2": "latest-load-end-or-fault-release",
+    "query_window": "[t1-10m,t2+20m]",
+    "export_not_before": "t2+20m",
+    "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json@t2+20m",
+    "create_golden_anomaly": false,
+    "allowed_case_labels": [
+      "calibration",
+      "evaluation",
+      "failed"
+    ]
+  }
+}

@@ -5828,10 +5828,24 @@
       "allowed_locations": [
         "petition-hypervisor"
       ],
-      "live_supported": false,
+      "live_supported": true,
       "default_queries": [
         "http.entry_health"
-      ]
+      ],
+      "parameter_contract": {
+        "allowed_scenarios": [
+          "F72-H"
+        ]
+      },
+      "scenario_parameters": {
+        "F72-H": {
+          "host": "192.168.122.1",
+          "node": "pve66",
+          "vmid": 201,
+          "net": "net3"
+        }
+      },
+      "scenario_levels": {}
     },
     "vmlink.qdisc": {
       "executor": "profiles/vmlink_qdisc_executor.py",
