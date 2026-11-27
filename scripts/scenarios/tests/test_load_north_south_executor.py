@@ -91,6 +91,8 @@ class NorthSouthExecutorTests(unittest.TestCase):
                 "vmlink.state",
                 # 2026-11-27: F81-R — SMS 전용 민원 포털 DB 서버 dbsvr01 에서 운영자가 sudo -u postgres psql 로 유일 제약 지우기와 같은 정의로 다시 만들기.
                 "vmdb.lock",
+                # 2026-11-27: F82-R — 민원 포털 라우터 rt-core01 의 WAS 쪽 NIC ens20 에 운영자가 sudo tc 로 tbf 속도 제한 넣기와 지우기.
+                "router.qdisc",
             },
         )
 

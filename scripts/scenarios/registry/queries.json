@@ -730,6 +730,16 @@
       "freshness_sec": 30,
       "update_interval_sec": 30
     },
+    "loadgen.http_p95_ms": {
+      "adapter": "loadgen_summary",
+      "selector": "http.p95.ms",
+      "allowed_parameters": [
+        "domain"
+      ],
+      "value_type": "number",
+      "freshness_sec": 30,
+      "update_interval_sec": 30
+    },
     "clickhouse.service_error_rate": {
       "adapter": "clickhouse",
       "template_id": "trace-service-error-rate-v1",

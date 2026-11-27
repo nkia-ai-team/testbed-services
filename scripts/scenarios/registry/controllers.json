@@ -122,7 +122,8 @@
     "F72-P",
     "F80-P",
     "F72-H",
-    "F81-R"
+    "F81-R",
+    "F82-R"
   ],
   "controllers": {
     "F01-R": {
@@ -28742,6 +28743,196 @@
         "consecutive_ticks": 2,
         "timeout": "10m",
         "_note": "cleanup 은 운영자가 지운 것과 같은 정의(ALTER TABLE petition ADD CONSTRAINT petition_receipt_no_key UNIQUE (receipt_no))로 제약을 다시 만든다(운영자 세션, 남으면 실행기 root). ACCESS EXCLUSIVE 잠금을 얻으려 진행 중인 표 읽기가 끝나기를 기다리는 동안 새 질의가 그 뒤에 서므로 수 초~십수 초 포털이 더 멈췄다가(104 docker 포화 중 6초) 색인이 생기면 다음 요청부터 정상이다. entry_status 200 은 로그인이 풀렸던 가상 사용자가 다시 로그인한 뒤의 첫 신청이다"
+      },
+      "cleanup": {
+        "required": true,
+        "order": "reverse",
+        "timeout": "5m"
+      },
+      "capture": {
+        "enabled": true,
+        "pre_window": "10m",
+        "post_window": "20m",
+        "model_snapshot": "/var/lib/lucida/ai-models/stream-anomaly/global/v1/model.json",
+        "create_golden_anomaly": false
+      }
+    },
+    "F82-R": {
+      "dispatcher_mode": "trusted",
+      "live_enabled": true,
+      "mode": "evaluation",
+      "tick_interval": "15s",
+      "settle_after_change": "30s",
+      "max_injection_duration": "20m",
+      "preflight": [
+        "coordinator-clean",
+        "clean-window",
+        "baseline-traffic",
+        "target-health",
+        "vm-entry-health"
+      ],
+      "baseline": {
+        "clean_window": "30m",
+        "required": [
+          {
+            "check": "coordinator-clean"
+          },
+          {
+            "check": "clean-window"
+          },
+          {
+            "check": "baseline-traffic"
+          },
+          {
+            "check": "target-health"
+          },
+          {
+            "check": "vm-entry-health"
+          }
+        ]
+      },
+      "profile": {
+        "kind": "fixed",
+        "primary_ref": "router.qdisc",
+        "companion_refs": [],
+        "approved_profile_id": "router.qdisc",
+        "levels": [
+          {
+            "id": "approved-fixed-f82-r",
+            "parameters": {
+              "host": "192.168.127.2",
+              "node": "rt-core01",
+              "mode": "operator-rate",
+              "device": "ens20",
+              "rate_kbit": 400,
+              "burst_kb": 32,
+              "latency_ms": 400,
+              "min_load_pct": 102,
+              "max_load_pct": 112
+            },
+            "min_hold": "10m",
+            "settle": "60s",
+            "timeout": "15m"
+          }
+        ]
+      },
+      "observations": [
+        {
+          "id": "entry_status",
+          "adapter": "http_probe",
+          "query_id": "http.entry_health",
+          "parameters": {
+            "domain": "civil-petition"
+          },
+          "_note": "민원 포털 상주 부하기(loadgen VM)의 마지막 민원 신청 상태. 라우터 WAS 쪽 포트 ens20 의 송신이 400 kbit/s 로 묶여 바쁜 시간 수요(제한값의 102~112%)보다 조금 모자라면 요청과 DB 응답이 큐에서 기다리거나 버려져 재전송되고, 신청은 몇 초 걸려 200 이거나 풀 기다림 3초 뒤 500 이다. 부하기 10초 시간 초과(0)로 끝나는 신청은 모의에서 비 1.02~1.08 일 때 약 1~2%, 15초 틱 두 번 연속 마지막 신청이 0 일 확률은 10분 동안 0~수 %(표본 적음), 창 위쪽 끝(비 1.10~1.13)에서 약 2~7% 다(설계 시트 §9-3, §9-4). 단 모의는 관제 흐름을 30 kbit/s 고정 하나로만 넣었다. 119 에는 WAS 의 fwupd 메타데이터 내려받기(약 2 MB, 하루 한두 번, 최근 KST 16시 후반~17시)가 ens20 송신을 1분 동안 약 700k 로 올리는 몰림이 있어, 주입 중 겹치면 그 동안 넘침이 커져 중단 위험이 모의보다 클 수 있다. 송신량이 제한값의 112% 를 넘는 시각에는 실행기 preflight 가 거절한다(넘으면 0 이 빠르게 는다)",
+          "freshness": "15s"
+        },
+        {
+          "id": "target_health",
+          "adapter": "http_probe",
+          "query_id": "http.target_health",
+          "freshness": "15s",
+          "_note": "전역 회복 조건(다른 테스트베드 진입). 이 시나리오는 건드리지 않는다"
+        },
+        {
+          "id": "request_p95_ms",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.http_p95_ms",
+          "parameters": {
+            "domain": "civil-petition"
+          },
+          "_note": "상주 부하(civil-petition) 모든 요청의 30초 창 응답 시간 p95(ms, 부하 모니터 --http-summary). 평시 약 8~10ms. 큐가 넘치면 요청과 DB 응답이 큐(최대 약 1초: latency 400ms 와 burst 32kb 분량)에서 기다리고 버려진 패킷의 재전송을 기다려 요청 대부분이 수 초가 된다(모의 창별 p95 2.9~10초, 수요가 제한을 겨우 넘을 때는 밀린 것이 쌓이며 1~2분에 걸쳐 오른다). 비정상 비율(5xx, 응답 없음)은 창 안 모의 1.3~7.5% 라 판정에 쓰지 않는다. 로그인과 무관하게 모든 여정의 요청이 들어가 장애 내내 값이 실린다. 러너 새 관측(이 시나리오에서 더함)이라 러너 재빌드가 필요하다",
+          "freshness": "30s"
+        },
+        {
+          "id": "lookup_nonok_rate",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.read_step_status_rate",
+          "parameters": {
+            "domain": "civil-petition"
+          },
+          "_note": "접수번호 조회(로그인 없는 공개 경로) 비정상 비율. 평시 약 0.01(없는 번호 1%). 회복 조건에만 쓴다(장애 중 모의 0.01~0.10 이라 성공 조건으로는 약하다)",
+          "freshness": "30s"
+        },
+        {
+          "id": "achieved_rps",
+          "adapter": "loadgen_summary",
+          "query_id": "loadgen.achieved_rps",
+          "parameters": {
+            "domain": "civil-petition"
+          },
+          "freshness": "30s"
+        }
+      ],
+      "success": {
+        "all": [
+          {
+            "id": "requests-slow",
+            "observation": "request_p95_ms",
+            "op": "gte",
+            "value": 3000,
+            "_note": "요청 p95 가 앱 느린 요청 기록 문턱(SlowRequestFilter 3초)을 넘음. 모의 장애 중 창별 p95 2.9~10초(첫 30초 창 뒤로는 4.4초 이상), 평시 약 0.01초"
+          }
+        ],
+        "consecutive_ticks": 3,
+        "_note": "제한이 들어간 직후부터 큐가 차고 수십 초 안에 두 WAS 풀(각 40)이 찬다. min_hold 10m 은 피해와 원인 흔적(라우터 ens20 ifOutDiscards 60초 NMS 폴링 여러 점, WAS 핑 지연, 느린 요청 WARN 과 풀 고갈 ERROR, 접근 로그 5xx)이 쌓일 길이다"
+      },
+      "must_rule_out": {
+        "any": [
+          {
+            "id": "load-not-delivered",
+            "observation": "achieved_rps",
+            "op": "lt",
+            "value": 2.0,
+            "_note": "부하가 실제로 끊겼을 때만 발화한다. 장애 중 부하기 가상 사용자가 최대 150 에 닿아 반복 일부가 버려지지만(창 안 모의 0~7%) 달성 반복률은 목표의 90% 넘게 남는다"
+          }
+        ],
+        "consecutive_ticks": 2
+      },
+      "abort": {
+        "any": [
+          {
+            "id": "entry-unreachable",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "consecutive_ticks": 2,
+        "_note": "필수 중단(compile-plan). 신청은 대부분 몇 초 걸려 200 이거나 3초 풀 기다림 뒤 500 이다. 남는 위험은 큐에 오래 묶인 신청이 10초 시간 초과(0)가 되고 15초 뒤 다음 틱의 마지막 신청도 그런 경우뿐이다(모의 10분: 16~18시 비 약 1.06 에서 0~수 %(표본 적음), 창 위쪽 끝에서 약 2~7%, 설계 시트 §9-3, §9-4. WAS fwupd 내려받기 같은 1분짜리 몰림이 겹치면 모의보다 클 수 있다). preflight 의 상한 112% 가 이 위험을 묶는다. 3초 설정이 아직 두 WAS 에 없으면(옛 10초) 풀 기다림이 부하기 시간 제한과 같아져 이 조건이 실행을 끊을 수 있다"
+      },
+      "recovery": {
+        "all": [
+          {
+            "id": "target-recovered",
+            "observation": "target_health",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "entry-recovered",
+            "observation": "entry_status",
+            "op": "eq",
+            "value": 200
+          },
+          {
+            "id": "requests-fast",
+            "observation": "request_p95_ms",
+            "op": "lt",
+            "value": 1000,
+            "_note": "평시 p95 약 8~10ms, 장애 중 수 초"
+          },
+          {
+            "id": "lookups-recovered",
+            "observation": "lookup_nonok_rate",
+            "op": "lt",
+            "value": 0.1,
+            "_note": "평시 창별 비정상 비율은 없는 번호 1% 때문에 저점 30초 창에서 최대 약 0.055 라 0.1 로 둔다"
+          }
+        ],
+        "consecutive_ticks": 2,
+        "timeout": "10m",
+        "_note": "cleanup 은 운영자가 다시 로그인해 sudo tc qdisc del dev ens20 root 로 제한을 지운다. 큐가 사라지면 밀린 DB 응답과 요청이 몇 초 안에 빠지고 풀이 비어 정상으로 돌아온다"
       },
       "cleanup": {
         "required": true,

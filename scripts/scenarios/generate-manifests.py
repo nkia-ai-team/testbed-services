@@ -86,6 +86,8 @@ PROFILE_PREFLIGHTS = {
     # The database VM's DDL (mode drop-index, F81-R): the inverse is one statement, the definition read from the catalog
     # before the change and kept for the guard, run over the management NIC.
     "vmdb.lock": "db-inverse-ddl-ready",
+    # The router's queue (mode operator-rate, F82-R) is deleted over its management NIC, which no downlink queue carries.
+    "router.qdisc": "network-oob-recovery",
     # The inverse of removing node images is loading the same images (same image IDs) back
     # from 109 docker over SSH, after which the restarted Deployment must have its pod again.
     "host.image": "kubernetes-recovery-capacity",

@@ -76,6 +76,15 @@
       "requested_at": "2026-11-27",
       "attempts": 0,
       "status": "waiting"
+    },
+    {
+      "scenario_id": "F82-R",
+      "reason": "new",
+      "note": "새 테스트베드 첫 시나리오, 흔적 표 실측과 119 보강 뒤 녹화(지휘 세션 판단). 순서: 앱 DB 기다림 상한 3초(petition-context.xml)가 was01, was02 에 적용되고 재기준선이 끝난 것, 그리고 러너에 새 관측 loadgen.http_p95_ms 가 배포(러너 재빌드)된 것을 지휘 세션이 확인한 뒤에만 집어 간다. 시각: KST 16:00~18:30 에 시작한다(상주 부하 30 rps 구간 약 15:48~18:48, 119 시간대 중앙으로 ens20 약 424 kbit/s. 깨끗한 6일 119 60초 값이 창 102~112% 안에 드는 비율은 16:00~18:30 69~100%, 15:30~16:00 34~48%, 18:30~19:00 43~57%). 시작 조건 하나 더: 그날 119 syslog 에서 was01, was02 의 fwupd 내려받기 줄('Successfully downloaded new metadata')을 확인한 뒤 시작한다. 최근 모양(16:37~17:01)이면 17:05~18:30 에 시작한다(내려받기 약 2 MB 가 제한 중에 겹치면 약 40초 동안 넘침이 커져 중단 위험이 오른다, 설계 시트 §9-3-1). 실행기 preflight 가 라우터 ens20 송신량이 제한값(400 kbit/s)의 102~112% 안일 때만 통과한다(아래면 피해가 없고 위면 링크가 서듯 응답 없음이 늘어 필수 중단 위험, 설계 시트 §9). 다른 시각에 집히면 preflight 가 주입 전에 거절하고 resume 한 번이나 재실행 세 번 뒤 hold 가 된다",
+      "requested_by": "testbed-scenario-create",
+      "requested_at": "2026-11-27",
+      "attempts": 0,
+      "status": "waiting"
     }
   ]
 }

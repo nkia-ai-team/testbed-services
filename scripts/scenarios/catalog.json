@@ -1855,6 +1855,18 @@
       "load_mode": "fixed",
       "injection_location": "civil-petition-sms dbsvr01",
       "prerequisite": ""
+    },
+    {
+      "id": "F82-R",
+      "slug": "f82-r-petition-router-was-rate-limit-queue-overflow",
+      "profiles": [
+        "router.qdisc"
+      ],
+      "readiness": "ready",
+      "stage": "candidate",
+      "load_mode": "fixed",
+      "injection_location": "civil-petition rt-core01",
+      "prerequisite": ""
     }
   ]
 }

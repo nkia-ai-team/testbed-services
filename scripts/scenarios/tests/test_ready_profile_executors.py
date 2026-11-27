@@ -4512,6 +4512,8 @@ else:
             "F72-H",
             # 2026-11-27: SMS 전용 민원 포털(civil-petition-sms) DB 서버 dbsvr01 에서 운영자가 sudo -u postgres psql 로 접수번호 유일 제약을 지워 조회마다 표 전체를 읽고 바쁜 시간에 DB CPU 100%, 풀 고갈로 포털 503, 500(Chargebee 2018-03-02 재구성, vmdb.lock 새 모드 drop-index 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
             "F81-R",
+            # 2026-11-27: 민원 포털(civil-petition) 라우터 rt-core01 에서 운영자가 WAS 쪽 포트 ens20 에 송신 속도 제한(tbf)을 단위를 잘못 적어 너무 낮게 걸어 바쁜 시간에 큐가 넘치고 포털 요청이 3초 넘게 걸리거나 503, 500(Google Compute Engine 2015-03-07 재구성, router.qdisc 새 모드 operator-rate 와 첫 계약). 새 후보, 설계 강도 1단 고정 evaluation.
+            "F82-R",
         }
         catalog = json.loads((ROOT / "catalog.json").read_text())
         actual = {row["id"] for row in catalog["scenarios"] if compiler.compile_plan(row["slug"])["live_allowed"]}
@@ -5080,9 +5082,6 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         # civil-petition VM executors (v4 T4S): scenarios are designed with the user (design 7).
         "vmlink.qdisc": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 203, "net": "net0",
                                       "delay_ms": 100, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 0}),
-        "router.qdisc": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "device": "ens20", "kind": "rate",
-                                      "delay_ms": 0, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 2000,
-                                      "burst_kb": 32, "latency_ms": 50}),
         "router.resource": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "mode": "cpu",
                                          "cpu_workers": 2, "entries": 0, "runtime_seconds": 300}),
         "vmhost.job": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "nightly-archive",
@@ -5135,6 +5134,10 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         "vmdb.lock": ("T4-GUARD", {"host": "192.168.127.41", "node": "db01", "unit": "table-maintenance",
                                    "description": "Table maintenance", "app_name": "maint", "table": "petition",
                                    "lock_mode": "ACCESS EXCLUSIVE", "runtime_seconds": 300}),
+        # router.qdisc: F82-R since 2026-11-27 (mode operator-rate on ens20); the VM executor tests still vary this rate sample.
+        "router.qdisc": ("T4-GUARD", {"host": "192.168.127.2", "node": "rt-core01", "device": "ens20", "kind": "rate",
+                                      "delay_ms": 0, "jitter_ms": 0, "loss_percent": 0, "rate_kbit": 2000,
+                                      "burst_kb": 32, "latency_ms": 50}),
         # vmlink.state: F72-H since 2026-11-27 (the router's DB side NIC); the VM executor tests still vary this sample.
         "vmlink.state": ("T4-GUARD", {"host": "192.168.122.1", "node": "pve66", "vmid": 202, "net": "net0"}),
         # vmhost.stress: F80-P since 2026-11-25 (memprocs on dbsvr01); the VM executor tests still vary this cpu sample.
@@ -5180,8 +5183,9 @@ exec {env['OPSJOB_SYSTEMCTL']} "$@"
         # 2026-11-25: vmhost.stress(F80-P, civil-petition-sms dbsvr01) joins: the first S scenario.
         # 2026-11-27: vmlink.state(F72-H, civil-petition 66 hypervisor) joins: the first 66-side executor a scenario uses.
         # 2026-11-27: vmdb.lock(F81-R, civil-petition-sms dbsvr01, mode drop-index) joins.
+        # 2026-11-27: router.qdisc(F82-R, civil-petition rt-core01, mode operator-rate) joins.
         self.assertEqual(set(on_node), {"host.firewall", "host.image", "host.job", "host.stress", "router.config",
-                                        "vmhost.stress", "vmlink.state", "vmdb.lock"})
+                                        "vmhost.stress", "vmlink.state", "vmdb.lock", "router.qdisc"})
         # A node executor no scenario uses yet is checked with a contract of its own shape, as long as
         # the registry lets it run on a node. Once a scenario uses it, the catalog check above takes over.
         node_locations = {lid for lid, loc in self.LOCATIONS.items() if loc.get("node")}
@@ -6056,6 +6060,103 @@ kill $server
             self.assertIn("qdisc tbf 5: root", shell.run("tc qdisc show dev ens20 root\n")[1])
         finally:
             shell.close()
+
+    def test_router_rate_limit_goes_the_operator_way_inside_its_load_window(self) -> None:
+        """router.qdisc mode operator-rate (F82-R): preflight reads what the NIC sends now and refuses outside the
+        contract's window (below, the limit never fills its queue; far above, it stalls the link); the operator logs in
+        and types `sudo tc qdisc add ... tbf` (the syslog COMMAND line is the cause trace); cleanup has the operator
+        delete the root, root deletes what is left, the guard deletes it when cleanup never comes, a foreign root is
+        never touched. tc runs against a real kernel; the NIC's traffic is a UDP stream to a neighbour on its link."""
+        router = load("router_qdisc_executor")
+        contract = router.CONTRACTS["F82-R"]
+        # The stream below sends roughly 400 to 900 kbit/s: a wide window passes, a high floor or a low ceiling refuses.
+        params = dict(contract, rate_kbit=300, min_load_pct=100, max_load_pct=400)
+        setup = ("ip link add ens20 type veth peer name p20; ip addr add 10.9.9.1/24 dev ens20; ip link set ens20 up; "
+                 "ip link set p20 up; ip neigh add 10.9.9.2 lladdr 02:00:00:00:00:02 dev ens20; "
+                 # The stream ends with the namespace shell (it must not hold the test's output open after close).
+                 "( while kill -0 $$ 2>/dev/null; do printf '%1000s' x >/dev/udp/10.9.9.2/9 2>/dev/null; sleep 0.01; done ) "
+                 ">/dev/null 2>&1 &")
+        shell = vm_sandbox.NetnsShell(self.tmp, self.env, setup)
+        call = lambda action, p=params: vm_sandbox.runner_call(router, "router.qdisc", p, action, self.env, shell=shell)  # noqa: E731
+        try:
+            vm_sandbox.master(self.tmp, "192.168.127.2")
+            rc, _, err = call("preflight", dict(params, min_load_pct=400))
+            self.assertEqual(rc, 1)
+            self.assertIn("would not fill its queue now", err)
+            rc, _, err = call("preflight", dict(params, rate_kbit=64, max_load_pct=100))
+            self.assertEqual(rc, 1)
+            self.assertIn("would stall the link now", err)
+            rc, _, err = call("preflight")
+            self.assertEqual(rc, 0, err)
+            self.assertRegex(err, r"ens20 sends \d+ kbit/s now, \d+ % of the 300 kbit/s limit \(window 100 to 400 %\)")
+            self.assertFalse([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")])
+            rc, _, err = call("run")
+            self.assertEqual(rc, 0, err)
+            logins = [l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]
+            self.assertEqual(len(logins), 1)
+            self.assertTrue(logins[0].startswith("login sysop@192.168.127.2 bind=192.168.122.21 tty=yes "), logins[0])
+            self.assertIn("qdisc tbf 1: root", shell.run("tc qdisc show dev ens20 root\n")[1])
+            self.assertEqual(self._operator_lines(), [
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=tc qdisc add dev ens20 root handle 1: tbf rate "
+                f"300kbit burst {contract['burst_kb']}kb latency {contract['latency_ms']}ms"])
+            # The guard is armed before the operator types; its undo deletes exactly a tbf root with handle 1:.
+            undo = Path(self.env["OPSJOB_STATE_ROOT"]) / "queue-ens20.undo"
+            self.assertIn("qdisc tbf 1: root", undo.read_text())
+            self.assertNotIn("sysop", undo.read_text())
+            # Idempotent: a second run refuses while the limit is in; cleanup is the operator's too.
+            self.assertEqual(call("run")[0], 1)
+            rc, _, err = call("cleanup")
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(self._operator_lines()[1:], [
+                "sysop : TTY=pts/0 ; PWD={home} ; USER=root ; COMMAND=tc qdisc del dev ens20 root"])
+            self.assertNotIn("tbf", shell.run("tc qdisc show dev ens20 root\n")[1])
+            self.assertEqual(call("recovery")[0], 0)
+            self.assertEqual(call("cleanup")[0], 0)  # nothing left: no operator login
+            self.assertEqual(len([l for l in vm_sandbox.logged(self.tmp, "ssh-log") if l.startswith("login ")]), 2)
+            # Cleanup without the operator: root takes the limit back.
+            self.assertEqual(call("run")[0], 0)
+            (self.tmp / "operator-down").touch()
+            rc, _, err = call("cleanup")
+            self.assertEqual(rc, 0, err)
+            self.assertIn("the executor takes the change back", err)
+            self.assertEqual(call("recovery")[0], 0)
+            (self.tmp / "operator-down").unlink()
+            # Self-recovery: the guard's undo (root) deletes the limit when cleanup never comes.
+            for timer in node_guard_fakes.timers(self.env):
+                (Path(self.env["FAKE_SYSTEMD"]) / timer).unlink()
+            self.assertEqual(call("run")[0], 0)
+            rc, _, err = shell.run(f"bash {shlex.quote(str(undo))}\n")
+            self.assertEqual(rc, 0, err)
+            self.assertEqual(call("recovery")[0], 0)
+            self.assertEqual(call("cleanup")[0], 0)
+            # A foreign root is never touched: preflight refuses and cleanup leaves it.
+            shell.run("tc qdisc add dev ens20 root handle 5: tbf rate 1mbit burst 32k latency 50ms\n")
+            rc, _, err = call("preflight")
+            self.assertEqual(rc, 1)
+            self.assertIn("the change is foreign", err)
+            self.assertEqual(call("cleanup")[0], 0)
+            self.assertIn("qdisc tbf 5: root", shell.run("tc qdisc show dev ens20 root\n")[1])
+        finally:
+            shell.close()
+
+    def test_router_rate_limit_parameters(self) -> None:
+        router = load("router_qdisc_executor")
+        contract = router.CONTRACTS["F82-R"]
+        self.assertEqual(router.check_parameters(contract)[0], "ens20")
+        self.assertEqual(router.check_parameters(contract)[-1], str(router.PROBE_SECONDS))
+        # The raw mode's parameters and arguments are as before.
+        self.assertEqual(router.check_parameters(self.params("router.qdisc")),
+                         ["ens20", "rate", "0", "0", "0", "2000", "32", "50"])
+        for change in ({"mode": "rate"}, {"device": "ens18"}, {"device": "ens22"}, {"rate_kbit": 10},
+                       {"min_load_pct": 120, "max_load_pct": 110}, {"burst_kb": 0}, {"kind": "rate"}):
+            with self.subTest(change=change):
+                self.refused("router.qdisc", {**contract, **change})
+        self.refused("router.qdisc", {k: v for k, v in contract.items() if k != "max_load_pct"})
+        self.refused("router.qdisc", {**contract, "host": "192.168.127.21", "node": "web01"})
+        with unittest.mock.patch.dict(router.CONTRACTS, {"T4-CASE": contract}):
+            _, stdin = router.build_invocation(vm_sandbox.plan("router.qdisc", "T4-CASE", contract), "run")
+        self.assertIn(b"op_session", stdin)
+        self.assertIn(b"tbf rate", stdin)
 
     # ---------------------------------------------------------------- runner side (control connection)
 
@@ -7668,7 +7769,7 @@ class SmsVmExecutorTests(unittest.TestCase):
         self.refused("vmload.north_south", self.params("vmload.north_south", host="192.168.133.11"))
         for name, row in self.s.vms.items():
             with self.subTest(router_on=name):
-                self.refused("router.qdisc", dict(NodeGuardTests.UNUSED_NODE_EXECUTORS["router.qdisc"][1],
+                self.refused("router.qdisc", dict(NodeGuardTests.USED_NODE_SAMPLES["router.qdisc"][1],
                                                   host=row["mgmt"], node=name, device="ens18"))
                 self.refused("router.resource", dict(NodeGuardTests.UNUSED_NODE_EXECUTORS["router.resource"][1],
                                                      host=row["mgmt"], node=name))
@@ -8073,7 +8174,7 @@ class CivilPetitionTrialToolTests(unittest.TestCase):
                               timeout=60)
 
     def test_dry_run_prints_the_confirmation_and_live_needs_it(self) -> None:
-        params = NodeGuardTests.UNUSED_NODE_EXECUTORS["router.qdisc"][1]
+        params = NodeGuardTests.USED_NODE_SAMPLES["router.qdisc"][1]
         done = self.call(params, "--profile", "router.qdisc", "--action", "run")
         self.assertEqual(done.returncode, 0, done.stderr)
         out = json.loads(done.stdout)
@@ -8089,8 +8190,9 @@ class CivilPetitionTrialToolTests(unittest.TestCase):
         self.assertEqual(self.call(bad, "--profile", "router.qdisc", "--action", "run").returncode, 3)
         bad = dict(params, host="192.168.127.21", node="web01")
         self.assertEqual(self.call(bad, "--profile", "router.qdisc", "--action", "run").returncode, 3)
-        # The registry and catalog stay without contracts.
-        self.assertEqual(load("router_qdisc_executor").CONTRACTS, {})
+        # The trial binds its contract for the one call only: the executor keeps exactly the scenarios' contracts
+        # (2026-11-27: F82-R is the first; before it the executor had none).
+        self.assertEqual(set(load("router_qdisc_executor").CONTRACTS), {"F82-R"})
 
     def test_companion_load_starts_and_stops_its_unit_without_a_guard(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
