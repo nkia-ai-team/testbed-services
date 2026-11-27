@@ -6,43 +6,77 @@
 # 녹화 막기 행 수 문턱(rows_limit)을 함께 싣는다.
 #
 # db-facts.sh(T2 24시간 판정의 처음과 끝 두 번만)와 달리 가볍게 읽는다:
-#   - 행 수는 count(*) 가 아니라 통계 뷰의 추정치 pg_stat_user_tables.n_live_tup 이다(표를 훑지 않고 민원 표에
-#     잠금을 걸지 않는다. 200만 시드에서 count(*) 와의 차이 0.0024~0.036%, 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5) 여유 약 8.6%). 통계가 초기화된 직후
-#     (비정상 종료, 통계 초기화)에는 0 에 가깝고 다음 vacuum, analyze 까지 그대로라 그 사이 행 수 조건이 늦게 걸린다
-#     (놓친 밤 배치 창 조건은 그대로 선다). 이 지연은 받아들인다.
+#   - 행 수는 먼저 통계 뷰의 추정치 pg_stat_user_tables.n_live_tup 으로 본다(표를 훑지 않고 민원 표에 잠금을 걸지 않는다).
+#     추정이 녹화 막기 문턱(rows_limit, 상한 + 설계 하루 쓰기 x 2.5, 여유 약 8.6%) 이하이면 그 값을 쓴다(rows_source
+#     n_live_tup). 문턱을 넘을 때만 같은 실행에서 count(*) 로 다시 세어 그 값을 쓴다(rows_source count, v4 ARCH). 추정은
+#     시드 직후에는 count(*) 와 0.0024~0.036% 차이였지만, 밤 보관 삭제(약 12만 행) 뒤 autovacuum, autoanalyze 가 돌면
+#     15~20% 부푼다(11-24 T 추정 2,311,322 / 실제 2,019,769, 11-27 T 2,422,890 / 2,027,591, 11-27 S 2,368,885 /
+#     2,014,951). 그래서 추정만으로는 실제 행 수가 문턱 아래인데도 막혔다. 다시 세기는 추정이 부푼 동안(보관 뒤 다음
+#     analyze 까지)만 일어난다. 통계가 초기화된 직후(비정상 종료, 통계 초기화)에는 추정이 0 에 가까워 다음 vacuum,
+#     analyze 까지 행 수 조건이 늦게 걸린다(놓친 밤 배치 창 조건은 그대로 선다). 이 지연은 받아들인다.
+#   - count(*) 의 statement_timeout 은 30초다. 200만 행(heap 약 1.6GB, 색인 포함 1.9GB), shared_buffers 2GB, CPU 4 개로 맞춘
+#     복제 표 실측이 0.08 ~ 0.11초다(created_at 색인의 병렬 index only scan, 11-27). 가시성 맵이 덜 채워져 heap 을 디스크에서
+#     모두 읽는 최악(1.6GB)도 초당 55MB 이상이면 30초 안이다. 넘으면 아래처럼 실패해 fail closed 다. count(*) 는 ACCESS
+#     SHARE 잠금만 잡아 앱의 읽기, 쓰기를 막지 않는다. ACCESS EXCLUSIVE 를 쥔 세션(잠금 주입)이 있으면 lock_timeout
+#     200ms 로 실패해 fail closed 다(주입은 30분 안에 끝나고 러너는 75분 묵어야 막는다).
 #   - 마지막 보관 ok 는 batch_run(밤마다 몇 줄 쌓이는 작은 표)의 max(finished_at) 다.
-#   - 세션에서 lock_timeout 200ms, statement_timeout 1초. lock_timeout 이 deadlock_timeout(기본 1초)보다 짧아 잠금 대기
-#     줄("still waiting for ...")은 log_lock_waits 와 무관하게 생기지 않는다(그 줄은 deadlock_timeout 을 넘겨 기다릴 때만
-#     찍힌다). 이 읽기는 postgres(superuser) 로 돌므로 superuser 전용 설정인 log_lock_waits, log_min_duration_statement,
-#     log_min_messages, log_min_error_statement 도 세션에서 꺼, 시간 초과로 실패해도 서버 로그에 오류 줄을 남기지 않는다.
-#     실패하면 종료 코드가 0 이 아니고 파일이 바뀌지 않아 러너 쪽에서 묵어 막힘(fail closed)이 된다. 읽은 뒤에는
-#     log_min_messages 를 되돌려 종료 줄이 평소대로 남게 한다(실패한 경우만 종료 줄이 빠진다).
+#   - 세션에서 lock_timeout 200ms, 추정 읽기의 statement_timeout 1초. lock_timeout 이 deadlock_timeout(기본 1초)보다 짧아
+#     잠금 대기 줄("still waiting for ...")은 log_lock_waits 와 무관하게 생기지 않는다(그 줄은 deadlock_timeout 을 넘겨
+#     기다릴 때만 찍힌다). 이 읽기는 postgres(superuser) 로 돌므로 superuser 전용 설정인 log_lock_waits,
+#     log_min_duration_statement, log_min_messages, log_min_error_statement 도 세션에서 꺼, 시간 초과로 실패해도 서버 로그에
+#     오류 줄을 남기지 않는다(count(*) 가 몇 초 걸려도 느린 문장 줄이 남지 않는다). 실패하면 종료 코드가 0 이 아니고 파일이
+#     바뀌지 않아 러너 쪽에서 묵어 막힘(fail closed)이 된다. 읽은 뒤에는 log_min_messages 를 되돌려 종료 줄이 평소대로 남게
+#     한다(실패한 경우만 종료 줄이 빠진다).
 #   - 서버 로그에 남는 것은 log_connections, log_disconnections 의 접속 두 줄과 종료 한 줄(postgres@<DB>, 로컬 소켓)이
-#     30분마다(하루 48묶음)다. journal 에는 타이머 서비스의 시작, 끝 줄이, auth 시설에는 runuser 의 PAM 세션 열림,
-#     닫힘 두 줄이 같은 주기로 남아 syslog 로 전달된다(하루 96줄).
+#     30분마다(하루 48묶음)다. 다시 세는 실행은 접속이 하나 더 있어 그 세 줄이 한 묶음 더 남는다. journal 에는 타이머
+#     서비스의 시작, 끝 줄이, auth 시설에는 runuser 의 PAM 세션 열림, 닫힘 두 줄이 같은 주기로 남아 syslog 로 전달된다(하루
+#     96줄, 다시 세는 실행은 runuser 두 줄이 더). 다시 세는 동안 DB 서버의 postgres 프로세스 CPU 와 디스크 읽기가 잠깐
+#     늘 수 있다(주입과 무관한 고정 주기라 시각이 주입과 짝을 이루지 않는다).
 #   - superuser 가 아닌 계정(앱 계정 등)은 log_lock_waits 를 세션에서 바꿀 수 없다(permission denied, PostgreSQL 16
 #     로컬 시험). 그래서 이 읽기는 postgres 로 돈다. 그렇지 않더라도 lock_timeout 이 deadlock_timeout 보다 짧아 대기 줄은 안 생긴다.
 set -eu
 out_dir=/var/lib/pg-table-stats
 host=$(hostname)
 at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-body=$(runuser -u postgres -- psql -X -Atq -v ON_ERROR_STOP=1 -d {{db_name}} <<'SQL'
+rows_limit={{rows_limit}}
+# 첫 읽기: 추정치와 마지막 보관 ok, 한 줄 "<추정>|<시각 또는 빈칸>".
+first=$(runuser -u postgres -- psql -X -Atq -v ON_ERROR_STOP=1 -d {{db_name}} <<'SQL'
 SET log_min_messages = panic;
 SET log_min_error_statement = panic;
 SET log_min_duration_statement = -1;
 SET log_lock_waits = off;
 SET lock_timeout = '200ms';
 SET statement_timeout = '1s';
-SELECT json_build_object(
-    'rows', json_build_object(
-        'petition', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'petition' AND schemaname = 'public')),
-    'rows_source', 'n_live_tup',
-    'last_archive_ok', (
+SELECT (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'petition' AND schemaname = 'public')
+    || '|' || coalesce((
         SELECT to_char(max(finished_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-        FROM batch_run WHERE job = 'archive' AND result = 'ok'));
+        FROM batch_run WHERE job = 'archive' AND result = 'ok'), '');
 RESET log_min_messages;
 SQL
 )
+estimate=${first%%|*}
+last_ok=${first#*|}
+case "$estimate" in ''|*[!0-9]*) echo "pg-table-stats: 추정치를 읽지 못함" >&2; exit 1 ;; esac
+rows=$estimate
+rows_source=n_live_tup
+if [ "$estimate" -gt "$rows_limit" ]; then
+    # 추정이 문턱을 넘을 때만 표를 센다(보관 삭제 뒤 추정이 부푼 경우). 실패하면 set -e 로 끝나 파일이 그대로다.
+    rows=$(runuser -u postgres -- psql -X -Atq -v ON_ERROR_STOP=1 -d {{db_name}} <<'SQL'
+SET log_min_messages = panic;
+SET log_min_error_statement = panic;
+SET log_min_duration_statement = -1;
+SET log_lock_waits = off;
+SET lock_timeout = '200ms';
+SET statement_timeout = '30s';
+SELECT count(*) FROM petition;
+RESET log_min_messages;
+SQL
+)
+    case "$rows" in ''|*[!0-9]*) echo "pg-table-stats: count(*) 를 읽지 못함" >&2; exit 1 ;; esac
+    rows_source=count
+fi
+if [ -n "$last_ok" ]; then last_ok_json="\"$last_ok\""; else last_ok_json=null; fi
+body=$(printf '{"rows" : {"petition" : %s}, "rows_source" : "%s", "last_archive_ok" : %s}' "$rows" "$rows_source" "$last_ok_json")
 mkdir -p "$out_dir"
 tmp=$(mktemp "$out_dir/.last.XXXXXX")
 # 녹화 막기 행 수 문턱(상한 + 설계 하루 쓰기 x 2.5)과 밤 배치 창(타이머 시각, 창 끝, 시간대. 놓친 창 세기용)은

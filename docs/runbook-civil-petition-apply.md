@@ -775,6 +775,20 @@ S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 
 | 2 | 66 도우미로 probe(§15-1 차례 6 과 같은 연결): `printf 'probe 192.168.124.11\n'`, `125.11`, `125.12`, `126.11` | 넷 모두 끝 코드 0. 119 의 서버 `sms.server.icmp_status` 가 그대로 1, T 부하 비정상 0 | 차례 1 의 되돌리기 |
 | 3 | vmhost.firewall 시험 실행 한 건을 다시(§15-3 차례 1) | run 끝 코드 0(바꾼 뒤 probe 성공), cleanup, recovery 0 | §15-3 차례 1 의 되돌리기 |
 
+### 15-7. 보관 행 수 읽기의 다시 세기 (v4 ARCH)
+
+db 서버의 `pg-table-stats`(30분 타이머, 설치 단계 `db-backup`)는 추정치(`n_live_tup`)가 녹화 막기 문턱(2,304,560)을 넘을 때만 같은 실행에서
+`count(*)` 로 다시 센다(설계 §6-4). 보관 삭제 뒤 추정이 부풀어 readiness(T `petition_archive_state`, S `petition_sms_archive_state`)가
+거짓으로 막던 것을 없앤다. 러너는 바꾸지 않는다(같은 파일, 같은 판정, 줄의 `rows_source` 만 `count` 가 될 수 있다).
+
+녹화 정지(PAUSE)와 테스트베드 잠금 아래, 주입이 돌지 않을 때 한다. db 서버 파일 하나와 기록이 바뀌는 VM 변경이다. 이 파일은 쌍 기대값(`inventory/pair-expected.json`)의 db 짝에 들어 있어 값이 바뀐다. tb-ops 사본을 이 판으로 올린 뒤 db01 과 dbsvr01 의 기록(차례 1 의 record)을 다시 남겨야 러너 쌍 판정이 참으로 돌아온다(그 사이 쌍 거짓은 정상, §15-5 차례 6-1 아래 문단).
+
+| 차례 | 하는 일 | 확인 | 되돌리기 |
+|---|---|---|---|
+| 0 | 읽기: 러너 도는 실행 0. 이 판으로 db 서버 묶음 렌더(`render.py --inventory inventory/t.json --out <임시> --host db01`, S 는 `s.json`, `dbsvr01`), 지금 VM `/usr/local/sbin/pg-table-stats` 와 `diff` | 차이가 다시 세기 부분과 머리 주석뿐 | 없음 |
+| 1 | 104: `apply.sh --inventory inventory/t.json --host db01 ... --steps "db-backup verify"`, 이어서 `--steps record`(나머지 인자는 §6 과 같다). S 는 `--inventory inventory/s.json --host dbsvr01` 로 같게(§14-3 차례 5 의 인자) | 단계 끝 줄의 `table stats:` 가 새 `last.json`(`rows_source` 가 `n_live_tup` 또는 `count`), verify 의 `table-stats-timer` PASS, 기록 다시 남김(러너 표류 0) | 앞 판 묶음으로 같은 단계(`db-backup`, `record`) |
+| 2 | 확인: 그 VM 에서 `sudo systemctl start pg-table-stats.service`, `cat /var/lib/pg-table-stats/last.json`, `sudo -u postgres psql -Atc 'select count(*) from petition' petition` | 추정이 문턱 아래면 `rows_source` 가 `n_live_tup`, 넘으면 `count` 이고 그 행 수가 손으로 센 값과 같음. 러너 readiness 의 보관 항목 ready | 차례 1 의 되돌리기 |
+
 ## 수정 기록
 
 - 2026-11-16 KST, v4 T2(ag-t2): 처음 작성. 적용 전.
@@ -827,3 +841,4 @@ S probe 주소가 든 값으로 바뀐다. 66 도우미를 먼저 다시 깔지 
 - 2026-11-25 KST, v4 ST4 3회차(ag-t4s, 리뷰 rv-st4s 2회차 L1): §15-5 차례 6-1 T VM 6대 `--steps record`(쌍 기록, 사본 갱신 뒤).
 - 2026-11-25 KST, v4 PROBE(ag-t4s): §15-6 66 probe 가 라우터 ACL 을 지나게(10.250.0.2 발 echo-request 허용 한 줄), 적용과 확인.
 - 2026-11-26 KST, v4 PAIRMAC(ag-t4s): §15-5 차례 6-1 아래에 정규화 규칙이 바뀐 판을 올린 뒤 T, S VM 기록을 다시 하는 문단.
+- 2026-11-27 KST, v4 ARCH(ag-t4s): §15-7 보관 행 수 읽기의 다시 세기(추정이 문턱을 넘을 때만 count), db01 과 dbsvr01 적용 차례.

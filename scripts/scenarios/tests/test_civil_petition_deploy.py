@@ -3001,28 +3001,36 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertIn("대표 질의(search) p95 표본 부족(처음 0창, 끝 0창, 구간마다 22창 이상)", result["reasons"])
 
     def test_the_table_stats_read_is_light_periodic_and_leaves_no_wait_or_error_lines(self) -> None:
-        # 리뷰 rv-t2c M2 와 지휘 세션 D: 보관 상태 읽기는 표를 훑거나 민원 표를 잠그지 않고, 잠금 대기 줄과 오류 줄을
-        # 남기지 않으며, 주입과 무관한 30분 고정 주기 타이머로 평시부터 늘 돈다. 출력 꼴은 러너가 읽는 꼴(db-facts.sh 와 같음).
+        # 리뷰 rv-t2c M2 와 지휘 세션 D: 보관 상태 읽기는 평소 표를 훑거나 민원 표를 잠그지 않고(추정이 문턱을 넘을 때만 세기,
+        # v4 ARCH), 잠금 대기 줄과 오류 줄을 남기지 않으며, 주입과 무관한 30분 고정 주기 타이머로 평시부터 늘 돈다. 출력 꼴은
+        # 러너가 읽는 꼴(db-facts.sh 와 같음).
         db = bundles(T_INV)["db01"]
         source = file_of(db, "/usr/local/sbin/pg-table-stats")
-        sql = source[source.index("<<'SQL'"):source.index("\nSQL\n")]
-        self.assertIn("-d petition <<'SQL'", source)
+        blocks = re.findall(r"<<'SQL'\n(.*?)\nSQL\n", source, re.S)
+        self.assertEqual(len(blocks), 2)
+        sql, count_sql = blocks
+        self.assertEqual(source.count("-d petition <<'SQL'"), 2)
+        # 첫 읽기는 표를 훑지 않는다(추정치). 표 세기는 둘째 읽기 하나뿐이고 추정이 문턱을 넘을 때만 돈다(v4 ARCH).
         self.assertNotIn("count(*)", sql)
         self.assertIn("SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'petition'", sql)
         self.assertIn("result = 'ok'", sql)
-        settings = dict(re.findall(r"^SET ([a-z_]+) = (.+);$", sql, re.M))
-        self.assertEqual(settings["log_lock_waits"], "off")
-        self.assertEqual(settings["log_min_duration_statement"], "-1")
-        self.assertEqual(settings["log_min_messages"], "panic")
-        self.assertEqual(settings["log_min_error_statement"], "panic")
-        # lock_timeout 은 deadlock_timeout(PostgreSQL 기본 1초, logging.conf 와 tuning.conf 가 바꾸지 않음)보다 짧다.
-        self.assertEqual(settings["lock_timeout"], "'200ms'")
-        self.assertEqual(settings["statement_timeout"], "'1s'")
+        self.assertIn("SELECT count(*) FROM petition;", count_sql)
+        self.assertIn('if [ "$estimate" -gt "$rows_limit" ]; then', source)
+        self.assertIn("rows_limit=2304560", source)
+        for block, timeout in ((sql, "'1s'"), (count_sql, "'30s'")):
+            settings = dict(re.findall(r"^SET ([a-z_]+) = (.+);$", block, re.M))
+            self.assertEqual(settings["log_lock_waits"], "off")
+            self.assertEqual(settings["log_min_duration_statement"], "-1")
+            self.assertEqual(settings["log_min_messages"], "panic")
+            self.assertEqual(settings["log_min_error_statement"], "panic")
+            # lock_timeout 은 deadlock_timeout(PostgreSQL 기본 1초, logging.conf 와 tuning.conf 가 바꾸지 않음)보다 짧다.
+            self.assertEqual(settings["lock_timeout"], "'200ms'")
+            self.assertEqual(settings["statement_timeout"], timeout)
+            # 읽은 뒤 log_min_messages 를 되돌려 종료 줄이 평소대로 남는다.
+            self.assertTrue(block.rstrip().endswith("RESET log_min_messages;"), block)
         for conf in ("logging.conf", "tuning.conf"):
             self.assertNotRegex((DEPLOY / "templates" / "db" / conf).read_text(), r"(?m)^\s*deadlock_timeout\s*=")
-        # 읽은 뒤 log_min_messages 를 되돌려 종료 줄이 평소대로 남는다.
-        self.assertLess(sql.index("SELECT json_build_object"), sql.index("RESET log_min_messages;"))
-        self.assertIn("runuser -u postgres -- psql", source)
+        self.assertEqual(source.count("runuser -u postgres -- psql"), 2)
         # 30분 고정 주기(매시 05, 35분), 주입과 무관. 설치가 켜고 한 번 돌려 첫 파일을 만든다.
         timer = file_of(db, "/etc/systemd/system/pg-table-stats.timer")
         self.assertIn("OnCalendar=*-*-* *:05,35:00", timer)
@@ -3032,23 +3040,61 @@ class StabilityCheckTests(unittest.TestCase):
         self.assertIn("systemctl start pg-table-stats.service", step)
         self.assertIn("check table-stats-timer systemctl is-enabled pg-table-stats.timer",
                       (DEPLOY / "steps" / "verify.sh").read_text())
+        line, calls = self._table_stats_run(source, estimate=2080000, count=None)
+        self.assertEqual(sorted(line), ["archive_schedule", "at", "db", "host", "rows_limit"])
+        self.assertEqual(line["archive_schedule"]["window_end"], "05:00")
+        self.assertEqual(line["rows_limit"]["limit"], 2304560)
+        self.assertEqual(line["db"], {"rows": {"petition": 2080000}, "rows_source": "n_live_tup",
+                                      "last_archive_ok": "2026-11-17T17:24:00Z"})
+        self.assertEqual(calls, ["estimate"])
+
+    def _table_stats_run(self, source: str, estimate: int | str, count: int | None, last_ok: str = "2026-11-17T17:24:00Z",
+                         count_fails: bool = False) -> tuple[dict | None, list[str]]:
+        """pg-table-stats 를 가짜 runuser 로 돌린다. 가짜는 받은 SQL 을 보고 추정 읽기면 "<추정>|<시각>", 표 세기면 행 수를 낸다.
+        (last.json 또는 실패면 None, 불린 읽기 차례)."""
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            (root / "runuser").write_text('#!/bin/sh\ncat >/dev/null\nprintf \'{"rows" : {"petition" : 2080000}, "rows_source" : '
-                                          '"n_live_tup", "last_archive_ok" : "2026-11-17T17:24:00Z"}\\n\'\n')
+            (root / "runuser").write_text(
+                "#!/bin/sh\nsql=$(cat)\n"
+                "case \"$sql\" in *'count(*)'*) echo count >>\"$CALLS\"; "
+                f"{'exit 1' if count_fails else 'printf ' + repr(str(count) + chr(10))} ;;\n"
+                f"*) echo estimate >>\"$CALLS\"; printf '%s|%s\\n' '{estimate}' '{last_ok}' ;; esac\n")
             (root / "runuser").chmod(0o755)
+            out = root / "out"
+            out.mkdir()
+            (out / "last.json").write_text('{"old": true}\n')
             script = root / "pg-table-stats"
-            script.write_text(source.replace("/var/lib/pg-table-stats", str(root / "out")))
+            script.write_text(source.replace("/var/lib/pg-table-stats", str(out)))
             done = subprocess.run(["sh", str(script)], capture_output=True, text=True, timeout=30,
-                                  env={"PATH": f"{root}:/usr/bin:/bin"})
-            self.assertEqual(done.returncode, 0, done.stderr)
-            line = json.loads((root / "out" / "last.json").read_text())
-            self.assertEqual(sorted(line), ["archive_schedule", "at", "db", "host", "rows_limit"])
-            self.assertEqual(line["archive_schedule"]["window_end"], "05:00")
-            self.assertEqual(line["rows_limit"]["limit"], 2304560)
-            self.assertEqual(line["db"]["rows"]["petition"], 2080000)
-            self.assertEqual(line["db"]["last_archive_ok"], "2026-11-17T17:24:00Z")
-            self.assertEqual([p.name for p in (root / "out").iterdir()], ["last.json"])   # 임시 파일이 남지 않는다
+                                  env={"PATH": f"{root}:/usr/bin:/bin", "CALLS": str(root / "calls")})
+            calls = (root / "calls").read_text().split() if (root / "calls").exists() else []
+            self.assertEqual([p.name for p in out.iterdir()], ["last.json"])   # 임시 파일이 남지 않는다
+            if done.returncode != 0:
+                self.assertEqual((out / "last.json").read_text(), '{"old": true}\n')   # fail closed: 그대로
+                return None, calls
+            return json.loads((out / "last.json").read_text()), calls
+
+    def test_the_table_stats_read_counts_only_when_the_estimate_is_over_the_limit(self) -> None:
+        """v4 ARCH: 보관 삭제 뒤 추정이 15~20% 부풀어 문턱(2,304,560)을 넘으면 같은 실행에서 count(*) 로 다시 세어 그 값을 쓴다.
+        추정이 문턱 이하이면 세지 않는다. 다시 세기가 실패하면 파일을 바꾸지 않는다(fail closed). T, S 두 렌더 모두."""
+        for path, name in ((T_INV, "db01"), (S_INV, "dbsvr01")):
+            source = file_of(bundles(path)[name], "/usr/local/sbin/pg-table-stats")
+            with self.subTest(db=name):
+                self.assertIn("rows_limit=2304560", source)
+                line, calls = self._table_stats_run(source, estimate=2304560, count=None)
+                self.assertEqual((line["db"]["rows"]["petition"], line["db"]["rows_source"], calls),
+                                 (2304560, "n_live_tup", ["estimate"]))
+                line, calls = self._table_stats_run(source, estimate=2422890, count=2027591)
+                self.assertEqual((line["db"]["rows"]["petition"], line["db"]["rows_source"], calls),
+                                 (2027591, "count", ["estimate", "count"]))
+                self.assertEqual(line["db"]["last_archive_ok"], "2026-11-17T17:24:00Z")
+                line, calls = self._table_stats_run(source, estimate=2422890, count=None, count_fails=True)
+                self.assertEqual((line, calls), (None, ["estimate", "count"]))
+                line, _ = self._table_stats_run(source, estimate=2080000, count=None, last_ok="")
+                self.assertIsNone(line["db"]["last_archive_ok"])
+                # 추정을 못 읽으면(빈 값) 세지도 않고 끝난다(fail closed).
+                line, calls = self._table_stats_run(source, estimate="", count=None)
+                self.assertEqual((line, calls), (None, ["estimate"]))
 
     def test_db_facts_files_are_read_from_the_tool_output_shape(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

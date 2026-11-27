@@ -133,7 +133,7 @@
     "/opt/lucida-agent/agent.env": "40b1b300ccc918ea493173ea17e1d0ad2e096246a5393dfcd6742c166f806b0e",
     "/usr/local/sbin/netplan-rollback": "df26ef44f4cd50976fdda310d88e78299153c3344af72457b59fc02e7e19a46c",
     "/usr/local/sbin/pg-backup": "5d1b9911ecd88f1b39f7f19868e93b8bfa6532bfa5347481cfda04a927e89c80",
-    "/usr/local/sbin/pg-table-stats": "d512c1f945a573d74edd7cf9f55378f566c09b2dc541e79c0351fb7541755377"
+    "/usr/local/sbin/pg-table-stats": "de29dea4f62ace01d81858dfa68e7e53abd283e577350673d5dca8cba26fc61c"
    },
    "role": "db",
    "s": "dbsvr01",
