@@ -3009,7 +3009,9 @@ class StabilityCheckTests(unittest.TestCase):
         blocks = re.findall(r"<<'SQL'\n(.*?)\nSQL\n", source, re.S)
         self.assertEqual(len(blocks), 2)
         sql, count_sql = blocks
-        self.assertEqual(source.count("-d petition <<'SQL'"), 2)
+        self.assertIn("-d petition <<'SQL'", source)
+        # 다시 세기는 psql 의 stderr 를 버린다(실패 줄이 journal 에 남지 않게, RVARCH M1).
+        self.assertIn("-d petition 2>/dev/null <<'SQL'", source)
         # 첫 읽기는 표를 훑지 않는다(추정치). 표 세기는 둘째 읽기 하나뿐이고 추정이 문턱을 넘을 때만 돈다(v4 ARCH).
         self.assertNotIn("count(*)", sql)
         self.assertIn("SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'petition'", sql)
@@ -3048,7 +3050,7 @@ class StabilityCheckTests(unittest.TestCase):
                                       "last_archive_ok": "2026-11-17T17:24:00Z"})
         self.assertEqual(calls, ["estimate"])
 
-    def _table_stats_run(self, source: str, estimate: int | str, count: int | None, last_ok: str = "2026-11-17T17:24:00Z",
+    def _table_stats_run(self, source: str, estimate: int | str, count: int | str | None, last_ok: str = "2026-11-17T17:24:00Z",
                          count_fails: bool = False) -> tuple[dict | None, list[str]]:
         """pg-table-stats 를 가짜 runuser 로 돌린다. 가짜는 받은 SQL 을 보고 추정 읽기면 "<추정>|<시각>", 표 세기면 행 수를 낸다.
         (last.json 또는 실패면 None, 불린 읽기 차례)."""
@@ -3057,7 +3059,7 @@ class StabilityCheckTests(unittest.TestCase):
             (root / "runuser").write_text(
                 "#!/bin/sh\nsql=$(cat)\n"
                 "case \"$sql\" in *'count(*)'*) echo count >>\"$CALLS\"; "
-                f"{'exit 1' if count_fails else 'printf ' + repr(str(count) + chr(10))} ;;\n"
+                f"{'echo ERROR: canceling statement due to lock timeout >&2; exit 1' if count_fails else 'printf ' + repr(str(count) + chr(10))} ;;\n"
                 f"*) echo estimate >>\"$CALLS\"; printf '%s|%s\\n' '{estimate}' '{last_ok}' ;; esac\n")
             (root / "runuser").chmod(0o755)
             out = root / "out"
@@ -3069,9 +3071,10 @@ class StabilityCheckTests(unittest.TestCase):
                                   env={"PATH": f"{root}:/usr/bin:/bin", "CALLS": str(root / "calls")})
             calls = (root / "calls").read_text().split() if (root / "calls").exists() else []
             self.assertEqual([p.name for p in out.iterdir()], ["last.json"])   # 임시 파일이 남지 않는다
-            if done.returncode != 0:
-                self.assertEqual((out / "last.json").read_text(), '{"old": true}\n')   # fail closed: 그대로
-                return None, calls
+            self.last_run = done
+            if (out / "last.json").read_text() == '{"old": true}\n':
+                return None, calls   # fail closed: 파일 그대로
+            self.assertEqual(done.returncode, 0, done.stderr)
             return json.loads((out / "last.json").read_text()), calls
 
     def test_the_table_stats_read_counts_only_when_the_estimate_is_over_the_limit(self) -> None:
@@ -3088,13 +3091,20 @@ class StabilityCheckTests(unittest.TestCase):
                 self.assertEqual((line["db"]["rows"]["petition"], line["db"]["rows_source"], calls),
                                  (2027591, "count", ["estimate", "count"]))
                 self.assertEqual(line["db"]["last_archive_ok"], "2026-11-17T17:24:00Z")
+                # 다시 세기 실패(잠금 주입의 ACCESS EXCLUSIVE 에 lock timeout 등)는 조용히 끝난다: 종료 코드 0, 출력 없음,
+                # 파일 그대로(러너는 75분 묵음으로 막는다). 실패 줄이 journal, syslog 에 주입 시각과 짝으로 남지 않게(RVARCH M1).
                 line, calls = self._table_stats_run(source, estimate=2422890, count=None, count_fails=True)
                 self.assertEqual((line, calls), (None, ["estimate", "count"]))
+                self.assertEqual((self.last_run.returncode, self.last_run.stdout, self.last_run.stderr), (0, "", ""))
+                line, calls = self._table_stats_run(source, estimate=2422890, count="ERROR")
+                self.assertEqual((line, calls), (None, ["estimate", "count"]))
+                self.assertEqual((self.last_run.returncode, self.last_run.stdout, self.last_run.stderr), (0, "", ""))
                 line, _ = self._table_stats_run(source, estimate=2080000, count=None, last_ok="")
                 self.assertIsNone(line["db"]["last_archive_ok"])
-                # 추정을 못 읽으면(빈 값) 세지도 않고 끝난다(fail closed).
+                # 추정을 못 읽으면(빈 값) 세지도 않고 끝난다(fail closed). 첫 읽기 실패는 종료 코드가 0 이 아니다(그대로).
                 line, calls = self._table_stats_run(source, estimate="", count=None)
                 self.assertEqual((line, calls), (None, ["estimate"]))
+                self.assertNotEqual(self.last_run.returncode, 0)
 
     def test_db_facts_files_are_read_from_the_tool_output_shape(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -18,7 +18,11 @@
 #     복제 표 실측이 0.08 ~ 0.11초다(created_at 색인의 병렬 index only scan, 11-27). 가시성 맵이 덜 채워져 heap 을 디스크에서
 #     모두 읽는 최악(1.6GB)도 초당 55MB 이상이면 30초 안이다. 넘으면 아래처럼 실패해 fail closed 다. count(*) 는 ACCESS
 #     SHARE 잠금만 잡아 앱의 읽기, 쓰기를 막지 않는다. ACCESS EXCLUSIVE 를 쥔 세션(잠금 주입)이 있으면 lock_timeout
-#     200ms 로 실패해 fail closed 다(주입은 30분 안에 끝나고 러너는 75분 묵어야 막는다).
+#     200ms 로 실패한다. **다시 세기의 실패는 조용히 끝낸다**(psql 의 stderr 를 버리고 스크립트도 아무것도 찍지 않고 종료
+#     코드 0, last.json 은 그대로). 실패 줄(psql 오류, 서비스 실패)이 journal 에 남으면 잠금 주입 창 안에만 생겨 T 에서는
+#     syslog 로 119 에 가고 S 에서는 로그 감시에 걸려, 주입 시각과 짝을 이루는 배관 흔적이 되기 때문이다(v4 ARCH 리뷰
+#     RVARCH M1). 파일이 묵으므로 러너는 75분 묵음으로 막는다(fail closed 그대로, 주입은 30분 안에 끝난다). 첫 읽기(통계
+#     뷰)는 민원 표를 잠그지 않아 주입과 짝을 이루지 않으므로 실패하면 지금처럼 종료 코드가 0 이 아니다.
 #   - 마지막 보관 ok 는 batch_run(밤마다 몇 줄 쌓이는 작은 표)의 max(finished_at) 다.
 #   - 세션에서 lock_timeout 200ms, 추정 읽기의 statement_timeout 1초. lock_timeout 이 deadlock_timeout(기본 1초)보다 짧아
 #     잠금 대기 줄("still waiting for ...")은 log_lock_waits 와 무관하게 생기지 않는다(그 줄은 deadlock_timeout 을 넘겨
@@ -60,8 +64,9 @@ case "$estimate" in ''|*[!0-9]*) echo "pg-table-stats: 추정치를 읽지 못�
 rows=$estimate
 rows_source=n_live_tup
 if [ "$estimate" -gt "$rows_limit" ]; then
-    # 추정이 문턱을 넘을 때만 표를 센다(보관 삭제 뒤 추정이 부푼 경우). 실패하면 set -e 로 끝나 파일이 그대로다.
-    rows=$(runuser -u postgres -- psql -X -Atq -v ON_ERROR_STOP=1 -d {{db_name}} <<'SQL'
+    # 추정이 문턱을 넘을 때만 표를 센다(보관 삭제 뒤 추정이 부푼 경우). 실패하면 아무것도 찍지 않고 종료 코드 0 으로
+    # 끝나 파일이 그대로다(머리 주석, 잠금 주입과 짝을 이루는 실패 줄을 남기지 않는다).
+    rows=$(runuser -u postgres -- psql -X -Atq -v ON_ERROR_STOP=1 -d {{db_name}} 2>/dev/null <<'SQL'
 SET log_min_messages = panic;
 SET log_min_error_statement = panic;
 SET log_min_duration_statement = -1;
@@ -71,8 +76,8 @@ SET statement_timeout = '30s';
 SELECT count(*) FROM petition;
 RESET log_min_messages;
 SQL
-)
-    case "$rows" in ''|*[!0-9]*) echo "pg-table-stats: count(*) 를 읽지 못함" >&2; exit 1 ;; esac
+) || exit 0
+    case "$rows" in ''|*[!0-9]*) exit 0 ;; esac
     rows_source=count
 fi
 if [ -n "$last_ok" ]; then last_ok_json="\"$last_ok\""; else last_ok_json=null; fi
