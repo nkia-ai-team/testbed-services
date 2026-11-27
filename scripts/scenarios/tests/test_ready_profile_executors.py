@@ -6567,7 +6567,8 @@ kill $server
         unit.write_text("active\n")
         done, _ = cleanup()
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn(b"revive postgresql@16-main.service: active at +0s", done.stdout)
+        # bash SECONDS can tick over between the start and the first read: +0s or +1s.
+        self.assertRegex(done.stdout, rb"revive postgresql@16-main\.service: active at \+[01]s")
         self.assertEqual(service_log(), [])
         # Down (OOMPolicy=stop finished): reset-failed and a non-blocking start, then active.
         unit.write_text("failed\n")
@@ -6581,7 +6582,7 @@ kill $server
         unit.write_text("deactivating\n")
         done, took = cleanup()
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn(b"still deactivating after 2s, systemctl kill -s SIGKILL", done.stdout)
+        self.assertRegex(done.stdout, rb"still deactivating after [23]s, systemctl kill -s SIGKILL at \+\d+s")
         self.assertEqual(unit.read_text().strip(), "active")
         self.assertIn("ctl kill -s SIGKILL postgresql@16-main.service", vm_sandbox.logged(self.tmp, "unit-log"))
         self.assertEqual(service_log()[-2:], ["kill postgresql@16-main", "start postgresql@16-main"])
