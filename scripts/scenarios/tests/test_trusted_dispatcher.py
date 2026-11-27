@@ -133,7 +133,7 @@ class TrustedDispatcherTests(unittest.TestCase):
             dispatcher.dispatch(slug=slug, action="run", digest=plan["plan_digest"],
                                 confirmation=dispatcher.confirmation(plan))
             cleanup = max(dispatcher_module.timeouts.duration_seconds(plan["controller"]["runtime"]["cleanup"]["timeout"]),
-                          480)
+                          900)
             waits = {(profile, action): timeout for profile, action, timeout in invoker.timeouts}
             self.assertEqual(waits[("db_lock_executor.py", "cleanup")], cleanup + 60)
             self.assertEqual(waits[("load_north_south_executor.py", "cleanup")], cleanup + 60)

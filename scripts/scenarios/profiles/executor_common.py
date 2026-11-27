@@ -359,20 +359,29 @@ EXECUTE_TIMEOUT_SECONDS = 900
 # group first (execute) and reports, rather than being cut by its caller (v4 REVIVE).
 DISPATCH_DEFAULT_SECONDS = 1200
 DISPATCH_GRACE_SECONDS = 60
-# A cleanup bound never goes below this: most cleanups wait in the node for a rollout or a unit for up to
-# cleanup_wait=420s (k8s.*, app_release*, load.*, host.job, ...), and 29 manifests say 5m. Cutting those at 5 minutes
-# would turn a slow but successful cleanup into DIRTY. 420 s plus 60 s for ssh, the state reads and the recovery.
-CLEANUP_FLOOR_SECONDS = 480
+# A cleanup bound never goes below this: the executor's own bound before v4 REVIVE (EXECUTE_TIMEOUT_SECONDS). Many
+# cleanups wait in the node for a rollout or a unit (cleanup_wait=420s in k8s.*, app_release*, load.*, host.job, ...),
+# and the k8s.image release form (F55-R, F58-R, F75-R, F79-R) can take up to about 510 s in the worst case, while 29
+# manifests say 5m. Cutting those below what they had would turn a slow but successful cleanup into DIRTY
+# (review RVREVIVE M). Manifests that say more than 15 minutes get their own value.
+CLEANUP_FLOOR_SECONDS = 900
 
 
 def plan_cleanup_seconds(plan: dict[str, Any]) -> int | None:
-    """The manifest's cleanup timeout (controller.runtime.cleanup.timeout) in seconds, or None when it has none."""
+    """The manifest's cleanup timeout (controller.runtime.cleanup.timeout) in seconds, or None when it has none. A value
+    that is zero, negative or not a duration falls back to None (the default bounds) with one warning line: a cleanup
+    must always be called, never refused over its bound (review RVREVIVE L)."""
     value = plan.get("controller", {}).get("runtime", {}).get("cleanup", {}).get("timeout")
     if value is None:
         return None
-    seconds = duration_seconds(value)
+    try:
+        seconds = duration_seconds(value)
+    except ExecutorError:
+        seconds = 0
     if seconds <= 0:
-        raise ExecutorError("cleanup timeout must be positive")
+        print(f"warning: cleanup timeout {value!r} is not a positive duration; the default bound applies",
+              file=sys.stderr)
+        return None
     return seconds
 
 

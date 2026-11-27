@@ -140,6 +140,12 @@ case "${args[0]}" in
   is-active)
     # Like systemctl: the state word unless --quiet, success only for active. A state file holds the state; a unit
     # whose state file says deactivating stays so until a kill (systemd's stop job waiting on a hung main process).
+    # A start-slow unit reads inactive, then activating, then active on the next reads after a start.
+    if [[ -e "$d/$name.coming" ]]; then
+      n=$(( $(cat "$d/$name.coming") + 1 )); echo "$n" >"$d/$name.coming"
+      case $n in 1) echo inactive >"$d/$name.service-state" ;; 2) echo activating >"$d/$name.service-state" ;;
+        *) echo active >"$d/$name.service-state"; rm -f "$d/$name.coming" ;; esac
+    fi
     if [[ -e "$d/$name.service-state" ]]; then
       st=$(cat "$d/$name.service-state"); [[ $q == yes ]] || echo "$st"; [[ "$st" == active ]]; exit
     fi
@@ -162,6 +168,7 @@ case "${args[0]}" in
     if [[ "${args[0]}" == restart && -e "$VM_SANDBOX/restart-fails" ]]; then printf 'failed restart %s\n' "$name" >>"$VM_SANDBOX/service-log"; exit 1; fi
     # A file <unit>.start-fails makes the unit fail to come up.
     if [[ -e "$d/$name.start-fails" ]]; then echo failed >"$d/$name.service-state"; printf 'failed start %s\n' "$name" >>"$VM_SANDBOX/service-log"; exit 0; fi
+    if [[ -e "$d/$name.start-slow" ]]; then echo inactive >"$d/$name.service-state"; echo 0 >"$d/$name.coming"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log"; exit 0; fi
     echo active >"$d/$name.service-state"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   reload) printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   # show -P ControlGroup <unit>: the unit's control group, from the file <unit>.cgroup (the test writes it).

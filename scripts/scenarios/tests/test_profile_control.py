@@ -91,6 +91,21 @@ class ProfileControlTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_cleanup_waits_for_the_cleanup_bound_and_run_for_1200(self) -> None:
+        """v4 REVIVE: profile-control waits for an executor's cleanup as long as the plan's cleanup bound plus 60 s
+        (a manifest of 20 minutes over the 900 s floor here) and for a run the old 1200 s."""
+        self.plan["controller"] = {"runtime": {"cleanup": {"timeout": "20m"}}}
+        parameters = module.ProfileController._canonical(self.level_parameters[0])
+        self.call("apply", "apply:0", level_index=0, level_id="healthy-high-120", parameters_json=parameters)
+        self.call("cleanup", "cleanup:run-1")
+        self.assertEqual(self.runner.timeouts,
+                         [("preflight", None), ("run", 1200), ("preflight", None), ("cleanup", 1260), ("recovery", None)])
+        del self.plan["controller"]
+        self.runner.timeouts.clear()
+        self.call("apply", "apply:1", level_index=0, level_id="healthy-high-120", parameters_json=parameters)
+        self.call("cleanup", "cleanup:run-1b")
+        self.assertEqual([t for verb, t in self.runner.timeouts if verb in ("run", "cleanup")], [1200, 1200])
+
     def test_apply_remains_active_until_explicit_cleanup(self) -> None:
         parameters = module.ProfileController._canonical(self.level_parameters[0])
         applied = self.call(

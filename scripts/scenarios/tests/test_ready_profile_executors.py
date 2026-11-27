@@ -6600,9 +6600,19 @@ kill $server
         (units / "postgresql@16-main.start-fails").touch()
         done, took = cleanup()
         self.assertNotEqual(done.returncode, 0)
-        self.assertIn(b"start failed (failed)", done.stderr)
+        self.assertIn(b"start failed at", done.stderr)
         self.assertLess(took, 5)
         (units / "postgresql@16-main.start-fails").unlink()
+        # A start that is still inactive, then activating, a moment after the non-blocking start is waited for within
+        # the bound (review RVREVIVE L), not taken as a failure.
+        unit.write_text("failed\n")
+        (units / "postgresql@16-main.start-slow").touch()
+        done, took = cleanup()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(unit.read_text().strip(), "active")
+        self.assertRegex(done.stdout, rb"revive postgresql@16-main\.service: active at \+\d+s")
+        self.assertLess(took, 8)
+        (units / "postgresql@16-main.start-slow").unlink()
         # Only the role's own unit can be named (the fixed table): nothing else is killed or started.
         base = {"host": "192.168.133.31", "node": "dbsvr01", "mode": "memprocs", "processes": 6, "mib": 6144,
                 "runtime_seconds": 1500}
@@ -6613,21 +6623,37 @@ kill $server
 
     def test_memprocs_revive_bounds_fit_the_f80p_cleanup_bound(self) -> None:
         """v4 REVIVE: one cleanup bound for the executor and the dispatchers: the manifest's cleanup timeout, never below
-        480 s (the common in-node cleanup wait 420 s plus 60). F80-P says 5 minutes, so 480 s, not the old fixed 900 s;
-        the dispatcher waits 540 s, not 1200. The bring-back's total (180 s) plus the job's own stop (TERM, 30 s, then
-        KILL) fits even inside the manifest's 5 minutes."""
+        900 s (the executor's bound before; review RVREVIVE M: the k8s.image release cleanups can take about 510 s).
+        F80-P says 5 minutes, so 900 s and the dispatcher waits 960 s; a manifest over 15 minutes gets its own value.
+        A zero, negative or unreadable value falls back to the defaults with a warning, never refusing the cleanup. The
+        bring-back's total (180 s) plus the job's own stop (TERM, 30 s, then KILL) fits even inside the manifest's 5
+        minutes."""
         common = sys.modules["executor_common"]
         plan = compiler.compile_plan("f80-p-petition-db-job-memory-oom-stops-postgres")
         cleanup = common.plan_cleanup_seconds(plan)
         self.assertEqual(cleanup, 300)
-        self.assertEqual(common.executor_timeout_seconds(plan, "cleanup"), 480)
+        self.assertEqual(common.CLEANUP_FLOOR_SECONDS, common.EXECUTE_TIMEOUT_SECONDS)
+        self.assertEqual(common.executor_timeout_seconds(plan, "cleanup"), 900)
         self.assertEqual(common.executor_timeout_seconds(plan, "run"), common.EXECUTE_TIMEOUT_SECONDS)
-        self.assertEqual(common.dispatch_timeout_seconds(plan, "cleanup"), 540)
-        longer = json.loads(json.dumps(plan))
-        longer["controller"]["runtime"]["cleanup"]["timeout"] = "12m"
-        self.assertEqual((common.executor_timeout_seconds(longer, "cleanup"), common.dispatch_timeout_seconds(longer, "cleanup")),
-                         (720, 780))
+        self.assertEqual(common.dispatch_timeout_seconds(plan, "cleanup"), 960)
         self.assertEqual(common.dispatch_timeout_seconds(plan, "run"), 1200)
+        for value, bounds in (("10m", (900, 960)), ("15m", (900, 960)), ("20m", (1200, 1260)), (1500, (1500, 1560))):
+            with self.subTest(timeout=value):
+                other = json.loads(json.dumps(plan))
+                other["controller"]["runtime"]["cleanup"]["timeout"] = value
+                self.assertEqual((common.executor_timeout_seconds(other, "cleanup"),
+                                  common.dispatch_timeout_seconds(other, "cleanup")), bounds)
+        import contextlib
+        import io
+        for value in ("0s", 0, -60, "soon", "5 minutes", True):
+            with self.subTest(bad=value):
+                other = json.loads(json.dumps(plan))
+                other["controller"]["runtime"]["cleanup"]["timeout"] = value
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    bounds = (common.executor_timeout_seconds(other, "cleanup"), common.dispatch_timeout_seconds(other, "cleanup"))
+                self.assertEqual(bounds, (common.EXECUTE_TIMEOUT_SECONDS, 1200))
+                self.assertIn("is not a positive duration; the default bound applies", err.getvalue())
         no_bound = json.loads(json.dumps(plan))
         del no_bound["controller"]["runtime"]["cleanup"]["timeout"]
         self.assertEqual(common.executor_timeout_seconds(no_bound, "cleanup"), common.EXECUTE_TIMEOUT_SECONDS)
@@ -6647,6 +6673,29 @@ kill $server
         self.assertIn("for _ in $(seq 1 30); do group_live || break; sleep 1; done", vm_common.GROUP_FUNCTIONS.decode())
         self.assertLess(stop_wait, total)
         self.assertLess(total + group_stop + 30, cleanup)   # 30 s of room for ssh and the state reads
+
+    def test_the_executor_cli_runs_cleanup_under_the_cleanup_bound(self) -> None:
+        """Review RVREVIVE L: main_for hands execute the cleanup bound for cleanup and the default for the other actions.
+        A plan whose manifest says 20m (over the floor) makes the two differ."""
+        common = sys.modules["executor_common"]
+        stress = load("vmhost_stress_executor")
+        slug = "f80-p-petition-db-job-memory-oom-stops-postgres"
+        real = common.compiler.compile_plan
+
+        def twenty(name):
+            plan = real(name)
+            plan["controller"]["runtime"]["cleanup"]["timeout"] = "20m"
+            return plan
+        plan = real(slug)
+        seen = []
+        for action in ("cleanup", "run", "recovery"):
+            argv = ["x", action, "--scenario", slug, "--live", "--plan-digest", plan["plan_digest"],
+                    "--confirm", common.confirmation_for(plan)]
+            with unittest.mock.patch.object(sys, "argv", argv), \
+                    unittest.mock.patch.object(common.compiler, "compile_plan", twenty), \
+                    unittest.mock.patch.object(common, "execute", lambda a, s, timeout: seen.append((action, timeout)) or 0):
+                self.assertEqual(common.main_for("vmhost.stress", stress.build_invocation, stress.validate), 0)
+        self.assertEqual(seen, [("cleanup", 1200), ("run", 900), ("recovery", 900)])
 
     def test_memprocs_parameters_name_the_role_service_and_even_workers(self) -> None:
         stress = load("vmhost_stress_executor")

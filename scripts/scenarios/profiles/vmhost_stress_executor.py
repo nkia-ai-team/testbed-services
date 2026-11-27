@@ -19,8 +19,8 @@ The VM counterpart of host.stress, with the tools a server VM has (no stress-ng 
   that unit's control group only (systemctl kill, the unit from the fixed role table), resets a failed state, starts
   it without blocking and waits until it is active. The whole bring-back ends within REVIVE_TOTAL seconds (180: the stop
   wait, the kill and a start whose crash recovery took 0.13 s on dbsvr01, with room); with the job's own stop (at most
-  about a minute) it stays inside the manifest's cleanup timeout (5 minutes for F80-P), the executor's 900 s and the
-  dispatcher's 1200 s. Past it the undo fails (DIRTY), as before. Each step goes to the cleanup output with its second.
+  about a minute) it stays inside the manifest's cleanup timeout (5 minutes for F80-P) and so inside the cleanup bound
+  (executor_common.cleanup_bound_seconds: 900 s for F80-P) and the dispatcher's wait (960 s). Past it the undo fails (DIRTY), as before. Each step goes to the cleanup output with its second.
 - io: `dd` writes a file under the target directory with direct IO, over and over, for a bounded time.
 - fill: one fallocate'd file under the target directory brings the file system to a watermark, never
   past a reserve, never more than a maximum.
@@ -145,7 +145,12 @@ revive_up() {
           killed=1
         fi ;;
       inactive|failed)
-        if (( started )); then echo "revive $svc: start failed ($st) at +$(( SECONDS - t0 ))s" >&2; return 1; fi
+        # After the start, inactive can be the moment before the job runs (wait within the bound); failed is final.
+        if (( started )); then
+          if [[ "$st" == failed ]]; then echo "revive $svc: start failed at +$(( SECONDS - t0 ))s" >&2; return 1; fi
+          if (( SECONDS - t0 >= total )); then echo "revive $svc: not active after ${total}s (last $st)" >&2; return 1; fi
+          sleep 1; continue
+        fi
         echo "revive $svc: $st, reset-failed and start at +$(( SECONDS - t0 ))s"
         "$ctl" reset-failed "$svc" </dev/null 2>/dev/null || true
         "$ctl" start --no-block "$svc" </dev/null || { echo "revive $svc: start refused at +$(( SECONDS - t0 ))s" >&2; return 1; }
