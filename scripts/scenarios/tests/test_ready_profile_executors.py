@@ -6525,17 +6525,90 @@ kill $server
             self.assertEqual(state(), "default")
             self.assertIn("start postgresql@16-main", vm_sandbox.logged(self.tmp, "service-log"))
             # Self-recovery: the connection is lost and cleanup never comes; the guard's undo stops the job and
-            # starts the service.
-            done = vm_sandbox.node_call(program, ["run", *args], env)
+            # starts the service. The undo has the same bounded bring-back (v4 REVIVE) with the bounds of the run that
+            # armed it: here the stop hangs in deactivating, the undo kills that unit after the stop wait and starts it.
+            bounded = {**env, "REVIVE_STOP_WAIT": "1", "REVIVE_TOTAL": "10"}
+            done = vm_sandbox.node_call(program, ["run", *args], bounded)
             self.assertEqual(done.returncode, 0, done.stderr)
-            (units / "postgresql@16-main.service-state").write_text("inactive\n")
+            undo = (Path(env["OPSJOB_STATE_ROOT"]) / "extract.undo").read_text()
+            self.assertIn("revive_up ()", undo)
+            self.assertIn("revive_up " + str(self.tmp / "vm-bin" / "unit-ctl") + " postgresql@16-main 1 10", undo)
+            (units / "postgresql@16-main.service-state").write_text("deactivating\n")
             fired = node_guard_fakes.fire(env, "extract", extra_env=env)
             self.assertEqual(fired.returncode, 0, fired.stderr)
             self.assertEqual(state(), "default")
+            self.assertEqual(vm_sandbox.logged(self.tmp, "service-log")[-2:], ["kill postgresql@16-main", "start postgresql@16-main"])
             self.assertEqual(vm_sandbox.logged(self.tmp, "service-log").count("start postgresql@16-main"), 2)
         finally:
             vm_sandbox.node_call(program, ["cleanup", *args], env)
             big.kill(); small.kill(); big.wait(); small.wait()
+
+    def test_memprocs_revive_is_bounded_and_kills_a_hung_stop(self) -> None:
+        """v4 REVIVE (F80-P third recording): when the kernel kills only the postmaster's children, the unit can hang in
+        deactivating for its 1 hour stop timeout and a plain start waits behind it. The bring-back waits for the stop
+        at most REVIVE_STOP_WAIT, then SIGKILLs that unit, resets it and starts it without blocking, all within
+        REVIVE_TOTAL, and says each step; past the bound cleanup fails (DIRTY). The guard's undo does the same."""
+        stress = load("vmhost_stress_executor")
+        program = vm_common.node_program(stress.NODE_BODY)
+        units = self.tmp / "units"
+        units.mkdir(exist_ok=True)
+        unit = units / "postgresql@16-main.service-state"
+        args = ["memprocs", "2", "32", "-", "0", "0", "60", "postgresql@16-main"]
+        env = {**self.env, "REVIVE_STOP_WAIT": "2", "REVIVE_TOTAL": "8"}
+
+        def cleanup() -> tuple[subprocess.CompletedProcess, float]:
+            started = time.monotonic()
+            done = vm_sandbox.node_call(program, ["cleanup", *args], env, timeout=60)
+            return done, time.monotonic() - started
+
+        def service_log() -> list[str]:
+            return vm_sandbox.logged(self.tmp, "service-log")
+        # Already active: nothing to do, said once.
+        unit.write_text("active\n")
+        done, _ = cleanup()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(b"revive postgresql@16-main.service: active at +0s", done.stdout)
+        self.assertEqual(service_log(), [])
+        # Down (OOMPolicy=stop finished): reset-failed and a non-blocking start, then active.
+        unit.write_text("failed\n")
+        done, _ = cleanup()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(b"failed, reset-failed and start", done.stdout)
+        self.assertEqual(unit.read_text().strip(), "active")
+        self.assertIn("ctl start --no-block postgresql@16-main.service", vm_sandbox.logged(self.tmp, "unit-log"))
+        self.assertIn("ctl reset-failed postgresql@16-main.service", vm_sandbox.logged(self.tmp, "unit-log"))
+        # A hung stop: deactivating past REVIVE_STOP_WAIT, then SIGKILL to that unit only, then started.
+        unit.write_text("deactivating\n")
+        done, took = cleanup()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(b"still deactivating after 2s, systemctl kill -s SIGKILL", done.stdout)
+        self.assertEqual(unit.read_text().strip(), "active")
+        self.assertIn("ctl kill -s SIGKILL postgresql@16-main.service", vm_sandbox.logged(self.tmp, "unit-log"))
+        self.assertEqual(service_log()[-2:], ["kill postgresql@16-main", "start postgresql@16-main"])
+        self.assertLess(took, 8)
+        # Past the bound: the stop does not end even after the kill; cleanup fails within REVIVE_TOTAL (DIRTY).
+        unit.write_text("deactivating\n")
+        (units / "postgresql@16-main.kill-ignored").touch()
+        done, took = cleanup()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(b"not active after 8s (last deactivating)", done.stderr)
+        self.assertLess(took, 20)
+        (units / "postgresql@16-main.kill-ignored").unlink()
+        # A start that fails is not waited out.
+        unit.write_text("failed\n")
+        (units / "postgresql@16-main.start-fails").touch()
+        done, took = cleanup()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn(b"start failed (failed)", done.stderr)
+        self.assertLess(took, 5)
+        (units / "postgresql@16-main.start-fails").unlink()
+        # Only the role's own unit can be named (the fixed table): nothing else is killed or started.
+        base = {"host": "192.168.133.31", "node": "dbsvr01", "mode": "memprocs", "processes": 6, "mib": 6144,
+                "runtime_seconds": 1500}
+        for other in ("sshd", "systemd-journald", "lucida-agent", "tomcat10", "postgresql@16-main.service"):
+            with self.subTest(revive_unit=other):
+                with self.assertRaises(ExecutorError):
+                    stress.check_parameters(dict(base, revive_unit=other))
 
     def test_memprocs_parameters_name_the_role_service_and_even_workers(self) -> None:
         stress = load("vmhost_stress_executor")

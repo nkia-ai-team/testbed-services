@@ -11,7 +11,16 @@ The VM counterpart of host.stress, with the tools a server VM has (no stress-ng 
   workers each smaller than the database's largest process makes the kernel kill the database, not the job
   (one big job process would be the bigger one and die itself). Its undo also starts the service unit the
   contract names when that unit is no longer active (systemd's default OOMPolicy=stop takes a unit down when the
-  kernel kills one of its processes, and the PostgreSQL unit has no Restart=).
+  kernel kills one of its processes, and the PostgreSQL unit has no Restart=). Bringing it back is bounded (v4 REVIVE,
+  F80-P third recording): when the kernel kills only the postmaster's children, the postmaster can hang in its
+  shutdown and the unit stays deactivating for its TimeoutStopSec (1 hour for postgresql@), with a plain start queued
+  behind that stop job. So the undo waits for the stop at most REVIVE_STOP_WAIT seconds (60: a clean PostgreSQL stop
+  writes at most its 2 GB of shared buffers in the shutdown checkpoint, about 37 s at 55 MB/s), then sends SIGKILL to
+  that unit's control group only (systemctl kill, the unit from the fixed role table), resets a failed state, starts
+  it without blocking and waits until it is active. The whole bring-back ends within REVIVE_TOTAL seconds (180: the stop
+  wait, the kill and a start whose crash recovery took 0.13 s on dbsvr01, with room); with the job's own stop (at most
+  about a minute) it stays inside the manifest's cleanup timeout (5 minutes for F80-P), the executor's 900 s and the
+  dispatcher's 1200 s. Past it the undo fails (DIRTY), as before. Each step goes to the cleanup output with its second.
 - io: `dd` writes a file under the target directory with direct IO, over and over, for a bounded time.
 - fill: one fallocate'd file under the target directory brings the file system to a watermark, never
   past a reserve, never more than a maximum.
@@ -120,7 +129,35 @@ revive_rss() {
   done <"${UNIT_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs"
   echo "$m"
 }
-revive() { if ! revive_active; then "$unit_ctl" start "$revive.service" </dev/null; fi; }
+# Bring the unit back within bounds (module docstring): revive_up <systemctl> <unit> <stop wait> <total>. Prints each
+# step with its second; returns 1 when the unit is not active within <total> seconds or its start fails.
+revive_up() {
+  local ctl=$1 svc=$2.service stop_wait=$3 total=$4 t0=$SECONDS since="" killed=0 started=0 st
+  while :; do
+    st=$("$ctl" is-active "$svc" </dev/null 2>/dev/null || true)
+    case "$st" in
+      active) echo "revive $svc: active at +$(( SECONDS - t0 ))s"; return 0 ;;
+      deactivating)
+        [[ -n "$since" ]] || since=$SECONDS
+        if (( ! killed && SECONDS - since >= stop_wait )); then
+          echo "revive $svc: still deactivating after $(( SECONDS - since ))s, systemctl kill -s SIGKILL at +$(( SECONDS - t0 ))s"
+          "$ctl" kill -s SIGKILL "$svc" </dev/null || true
+          killed=1
+        fi ;;
+      inactive|failed)
+        if (( started )); then echo "revive $svc: start failed ($st) at +$(( SECONDS - t0 ))s" >&2; return 1; fi
+        echo "revive $svc: $st, reset-failed and start at +$(( SECONDS - t0 ))s"
+        "$ctl" reset-failed "$svc" </dev/null 2>/dev/null || true
+        "$ctl" start --no-block "$svc" </dev/null || { echo "revive $svc: start refused at +$(( SECONDS - t0 ))s" >&2; return 1; }
+        started=1 ;;
+    esac
+    if (( SECONDS - t0 >= total )); then echo "revive $svc: not active after ${total}s (last $st)" >&2; return 1; fi
+    sleep 1
+  done
+}
+revive_stop_wait="${REVIVE_STOP_WAIT:-60}"
+revive_total="${REVIVE_TOTAL:-180}"
+revive() { if [[ "$revive" != - ]]; then revive_up "$unit_ctl" "$revive" "$revive_stop_wait" "$revive_total"; fi; }
 state() {
   if group_live || [[ -e "$pgidfile" ]]; then echo ours; return 0; fi
   if [[ -n "$artifact" && -e "$artifact" ]]; then echo ours; return 0; fi
@@ -158,7 +195,8 @@ undo_body() {
   group_undo
   if [[ -n "$artifact" ]]; then printf 'rm -f %q\n' "$artifact"; fi
   if [[ "$revive" != - ]]; then
-    printf 'if ! %q is-active --quiet %q; then %q start %q; fi\n' "$unit_ctl" "$revive.service" "$unit_ctl" "$revive.service"
+    declare -f revive_up
+    printf 'revive_up %q %q %q %q\n' "$unit_ctl" "$revive" "$revive_stop_wait" "$revive_total"
   fi
 }
 apply() {

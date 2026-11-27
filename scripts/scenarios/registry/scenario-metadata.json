@@ -18407,7 +18407,7 @@
      "civil-petition/deploy/templates/was/petition-context.xml:9-15 (Resource, maxActive, maxWait, testOnBorrow — Tomcat JDBC 풀: minIdle 5, maxActive 40, maxWait 3초, PgJDBC connectTimeout, loginTimeout 3초)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/ApiExceptionHandler.java:23-26 (DataAccessException, log.error, SERVICE_UNAVAILABLE — DB 오류는 'database access failed' ERROR 와 503)",
      "civil-petition/petition-web/src/main/java/com/civilpetition/web/PetitionRepository.java:29 (Transactional — 신청과 처리는 트랜잭션을 열 때 연결을 못 얻으면 500)",
-     "scripts/scenarios/profiles/vmhost_stress_executor.py:38-44 (CONTRACTS, F80-P, memprocs — 주입 계약)"
+     "scripts/scenarios/profiles/vmhost_stress_executor.py:47-53 (CONTRACTS, F80-P, memprocs — 주입 계약)"
     ],
     "infra_anchor": "DB 서버 dbsvr01(업무 192.168.131.31, 관리 192.168.133.31, 4 vCPU, 메모리 8GB(MemTotal 7,941 MiB), 스왑 없음, 데이터 디스크 /pgdata). PostgreSQL 16 Ubuntu 패키지, 유닛 postgresql@16-main(postgresql-common 257build1.1 의 postgresql@.service: OOMScoreAdjust=-900, '#Restart=on-failure' 주석, pg_ctlcluster 가 PG_OOM_ADJUST_FILE=/proc/self/oom_score_adj 로 자식을 0 으로 되돌림), systemd 255.4(system.conf '#DefaultOOMPolicy=stop', 기본 stop). 서버 로그 /var/log/postgresql/postgresql-16-main.log, syslog /var/log/syslog 를 SMS 로그 감시가 tail(syslog 는 119 로 보내지 않음). 평시(2026-11-25 KST 조회): 메모리 사용률 1.47~1.88%, 가용 페이지 1,327,116~1,336,500(5,184~5,221 MiB, 약 5.07 GiB), cached 약 7.07~7.37GB, postgres 프로세스 16개(백엔드 RSS 최대 2,171 MiB, 체크포인터 2,103, 백그라운드 라이터 1,528, postmaster 83), python 프로세스 7일 0, syslog 감시 FATAL 0(ERROR 70, fwupd 66), PostgreSQL 로그 감시 줄 0, ICMP 1(RTT 3.8~13.1ms), CPU 0.7~1.9%."
    },

@@ -132,13 +132,26 @@ UNIT_CTL = r'''#!/usr/bin/env bash
 d="$VM_SANDBOX/units"; mkdir -p "$d"
 q=no; args=()
 for a in "$@"; do if [[ "$a" == --quiet ]]; then q=yes; else args+=("$a"); fi; done
-name="${args[1]:-}"; name="${name%.service}"
+# The unit is the last word (start --no-block <unit>, kill -s SIGKILL <unit>, reset-failed <unit>).
+name="${args[${#args[@]}-1]:-}"; name="${name%.service}"
 alive() { [[ -e "$d/$name.pid" ]] && kill -0 "$(cat "$d/$name.pid")" 2>/dev/null; }
 printf 'ctl %s\n' "${args[*]}" >>"$VM_SANDBOX/unit-log"
 case "${args[0]}" in
   is-active)
-    if [[ -e "$d/$name.service-state" ]]; then [[ "$(cat "$d/$name.service-state")" == active ]]; exit; fi
-    alive ;;
+    # Like systemctl: the state word unless --quiet, success only for active. A state file holds the state; a unit
+    # whose state file says deactivating stays so until a kill (systemd's stop job waiting on a hung main process).
+    if [[ -e "$d/$name.service-state" ]]; then
+      st=$(cat "$d/$name.service-state"); [[ $q == yes ]] || echo "$st"; [[ "$st" == active ]]; exit
+    fi
+    if alive; then [[ $q == yes ]] || echo active; exit 0; fi
+    [[ $q == yes ]] || echo inactive; exit 3 ;;
+  # kill -s SIGKILL <unit>: a deactivating unit ends failed, unless the file <unit>.kill-ignored says it does not.
+  kill)
+    printf 'kill %s\n' "$name" >>"$VM_SANDBOX/service-log"
+    if [[ -e "$d/$name.service-state" && "$(cat "$d/$name.service-state")" == deactivating && ! -e "$d/$name.kill-ignored" ]]; then
+      echo failed >"$d/$name.service-state"; fi ;;
+  reset-failed)
+    if [[ -e "$d/$name.service-state" && "$(cat "$d/$name.service-state")" == failed ]]; then echo inactive >"$d/$name.service-state"; fi ;;
   cat) [[ -e "$d/$name.pid" || -e "$d/$name.service-state" ]] ;;
   stop)
     if [[ -e "$d/$name.service-state" ]]; then echo inactive >"$d/$name.service-state"; exit 0; fi
@@ -147,6 +160,8 @@ case "${args[0]}" in
   start|restart)
     # A file restart-fails makes a restart fail (the unit does not come up), to test what is left for the next try.
     if [[ "${args[0]}" == restart && -e "$VM_SANDBOX/restart-fails" ]]; then printf 'failed restart %s\n' "$name" >>"$VM_SANDBOX/service-log"; exit 1; fi
+    # A file <unit>.start-fails makes the unit fail to come up.
+    if [[ -e "$d/$name.start-fails" ]]; then echo failed >"$d/$name.service-state"; printf 'failed start %s\n' "$name" >>"$VM_SANDBOX/service-log"; exit 0; fi
     echo active >"$d/$name.service-state"; printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   reload) printf '%s %s\n' "${args[0]}" "$name" >>"$VM_SANDBOX/service-log" ;;
   # show -P ControlGroup <unit>: the unit's control group, from the file <unit>.cgroup (the test writes it).
